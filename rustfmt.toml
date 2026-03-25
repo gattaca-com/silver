@@ -1,0 +1,18 @@
+reorder_imports = true
+imports_granularity = "Crate"
+use_small_heuristics = "Max"
+wrap_comments = true
+binop_separator = "Back"
+trailing_comma = "Vertical"
+trailing_semicolon = false
+use_field_init_shorthand = true
+group_imports = "StdExternalCrate"
+overflow_delimited_expr = true
+
+ignore = [
+    "crates/rust_types/src/proto_types/*",
+    "crates/rpc/src/account_validator/subscriber.rs",
+    "crates/rpc/src/bundle_validator.rs",
+    "crates/rpc/src/metrics.rs",
+    "crates/rpc/src/types/bundle.rs",
+]

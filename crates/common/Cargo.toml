@@ -1,0 +1,13 @@
+[package]
+name = "silver-common"
+edition.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+flux.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

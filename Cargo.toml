@@ -1,0 +1,56 @@
+[workspace]
+members = [
+  "crates/common",
+  "crates/network"
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+repository = "https://github.com/gattaca-com/silver"
+rust-version = "1.91.0"
+version = "0.0.1"
+
+[profile.release-prod]
+codegen-units = 1
+debug = false
+inherits = "release"
+lto = "fat"
+opt-level = 3
+panic = "abort"
+split-debuginfo = "off"
+
+[profile.release-alpha]
+codegen-units = 1
+debug = true
+inherits = "release"
+lto = true
+opt-level = 3
+split-debuginfo = "off"
+
+[profile.dev.package."*"]
+# Set the default for dependencies in Development mode.
+opt-level = 3
+
+[profile.dev]
+# Turn on a small amount of optimisation in Development mode.
+opt-level = 1
+
+# Release profile used when running locally.
+# Build optimised, but with all debug checks enabled.
+[profile.release-with-debug]
+debug-assertions = true
+inherits = "dev"
+opt-level = 3
+
+[workspace.dependencies]
+silver-common = { path = "crates/common" }
+flux = { git = "https://github.com/gattaca-com/flux", rev = "899e5fa" }
+
+# External
+mio = { features = ["net", "os-poll"], version = "1.0.4" }
+slab = "0.4.12"
+tracing = "0.1.40"
+
+[workspace.lints.clippy]
+too_long_first_doc_paragraph = "allow"

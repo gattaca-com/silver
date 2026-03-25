@@ -1,0 +1,15 @@
+[package]
+name = "network"
+edition.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+silver-common.workspace = true
+flux.workspace = true
+mio.workspace = true
+slab.workspace = true
+
+[lints]
+workspace = true
