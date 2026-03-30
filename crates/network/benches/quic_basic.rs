@@ -15,95 +15,105 @@ use silver_network::{NetworkTile, RemotePeer};
 const BATCH_SIZE: usize = 8192 * 10;
 
 pub fn broadcast(c: &mut Criterion) {
-    let _guard = tracing_subscriber::fmt().init();
+    //let _guard = tracing_subscriber::fmt().init();
 
-    let criterion_batch_size = BatchSize::PerIteration;
     let group_name = format!("quic_basic_{}", BATCH_SIZE);
     let mut group = c.benchmark_group(group_name);
 
     let (data, total) = random_data();
-    let throughput = Throughput::Elements(total as u64);
+    tracing::info!("total: {total}");
 
     let mut rng = rand::rngs::OsRng::default();
 
-    group.throughput(throughput.clone()).bench_function(format!("quic_basic_{BATCH_SIZE}"), |x| {
-        x.iter_batched(
-            || {
-                let recv_counter = Arc::new(AtomicUsize::default());
+    for i in 1..=3 {
+        let criterion_batch_size = BatchSize::PerIteration;
+        let throughput = Throughput::Elements((total * i) as u64);
+        
+        group.throughput(throughput.clone()).bench_function(format!("quic_basic_{BATCH_SIZE}_{i}"), |x| {
+            x.iter_batched(
+                || {
+                    let recv_counter = Arc::new(AtomicUsize::default());
 
-                let (mut server_tile, server_id) = {
-                    let secret = k256::ecdsa::SigningKey::random(&mut rng);
-                    let key_bytes: [u8; 32] = secret.to_bytes().into();
-                    let keypair = Keypair::from_secret(&key_bytes).unwrap();
-                    let server_id = keypair.peer_id();
-                    let server_config = silver_network::create_server_config(&keypair).unwrap();
-                    let server_endpoint = Endpoint::new(
-                        Arc::new(EndpointConfig::default()),
-                        Some(Arc::new(server_config)),
-                        false,
-                        None,
-                    );
-                    (
-                        NetworkTile::new(
-                            keypair,
-                            server_endpoint,
-                            "0.0.0.0:20001".parse().unwrap(),
-                            ServerHandler(recv_counter.clone()),
+                    let (mut server_tile, server_id) = {
+                        let secret = k256::ecdsa::SigningKey::random(&mut rng);
+                        let key_bytes: [u8; 32] = secret.to_bytes().into();
+                        let keypair = Keypair::from_secret(&key_bytes).unwrap();
+                        let server_id = keypair.peer_id();
+                        let server_config = silver_network::create_server_config(&keypair).unwrap();
+                        let server_endpoint = Endpoint::new(
+                            Arc::new(EndpointConfig::default()),
+                            Some(Arc::new(server_config)),
+                            false,
+                            None,
+                        );
+                        (
+                            NetworkTile::new(
+                                keypair,
+                                server_endpoint,
+                                "0.0.0.0:20001".parse().unwrap(),
+                                ServerHandler(recv_counter.clone()),
+                            )
+                            .unwrap(),
+                            server_id,
                         )
-                        .unwrap(),
-                        server_id,
-                    )
-                };
-
-                let server_handle = std::thread::spawn(move || {
-                    loop {
-                        server_tile.spin();
-                        if recv_counter.load(Ordering::Relaxed) == total {
-                            tracing::info!("server completed");
-                            break;
-                        }
-                    }
-                });
-
-                let data = data.clone();
-                let client_tile = {
-                    let secret = k256::ecdsa::SigningKey::random(&mut rng);
-                    let key_bytes: [u8; 32] = secret.to_bytes().into();
-                    let keypair = Keypair::from_secret(&key_bytes).unwrap();
-                    let client_endpoint =
-                        Endpoint::new(Arc::new(EndpointConfig::default()), None, false, None);
-
-                    let client_data = ClientData {
-                        server_id: Some(server_id),
-                        server_addr: "127.0.0.1:20001".parse().unwrap(),
-                        remote_peer: None,
-                        remote_stream: None,
-                        data,
-                        offset: 0,
-                        did_stream: false,
                     };
 
-                    NetworkTile::new(
-                        keypair,
-                        client_endpoint,
-                        "127.0.0.1:20002".parse().unwrap(),
-                        client_data,
-                    )
-                    .unwrap()
-                };
+                    let server_handle = std::thread::spawn(move || {
+                        loop {
+                            server_tile.spin();
+                            if recv_counter.load(Ordering::Relaxed) == (total * i) {
+                                tracing::info!("server completed");
+                                break;
+                            }
+                        }
+                    });
 
-                std::thread::sleep(Duration::from_millis(200));
-                (server_handle, client_tile)
-            },
-            |(handle, mut client)| {
-                while !handle.is_finished() {
-                    client.spin();
-                }
-                handle.join().unwrap();
-            },
-            criterion_batch_size,
-        );
-    });
+                    let mut clients = vec![];
+                    for n in 0..i {
+                        let data = data.clone();
+                        
+                        let secret = k256::ecdsa::SigningKey::random(&mut rng);
+                        let key_bytes: [u8; 32] = secret.to_bytes().into();
+                        let keypair = Keypair::from_secret(&key_bytes).unwrap();
+                        let client_endpoint =
+                            Endpoint::new(Arc::new(EndpointConfig::default()), None, false, None);
+
+                        let client_data = ClientData {
+                            server_id: Some(server_id.clone()),
+                            server_addr: "127.0.0.1:20001".parse().unwrap(),
+                            remote_peer: None,
+                            remote_stream: None,
+                            data,
+                            offset: 0,
+                            did_stream: false,
+                        };
+
+                        let addr = format!("127.0.0.1:{}", 20002 + n);
+
+                        clients.push(NetworkTile::new(
+                            keypair,
+                            client_endpoint,
+                            addr.parse().unwrap(),
+                            client_data,
+                        )
+                        .unwrap());
+                    }
+
+                    std::thread::sleep(Duration::from_millis(200));
+                    (server_handle, clients)
+                },
+                |(handle, mut clients)| {
+                    while !handle.is_finished() {
+                        for client in &mut clients {
+                            client.spin();
+                        }
+                    }
+                    handle.join().unwrap();
+                },
+                criterion_batch_size,
+            );
+        });
+    }
 }
 
 fn random_data() -> (Vec<Vec<u8>>, usize) {

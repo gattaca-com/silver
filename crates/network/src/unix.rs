@@ -7,7 +7,7 @@ use std::{
 use flux::tracing;
 use mio::net::UdpSocket;
 
-pub(crate) const RX_BATCH_MAX: usize = 32;
+pub(crate) const RX_BATCH_MAX: usize = 128;
 const RX_BUF_SIZE: usize = 2048;
 /// Index of the scratch buffer used for poll_transmit.
 pub(crate) const SCRATCH: usize = RX_BATCH_MAX;
@@ -162,7 +162,7 @@ impl TxBatch {
         if self.entries.is_empty() {
             return true;
         }
-        
+
         if !self.prepared {
             self.prepare();
         }
