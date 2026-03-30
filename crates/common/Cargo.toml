@@ -7,6 +7,9 @@ version.workspace = true
 
 [dependencies]
 flux.workspace = true
+k256.workspace = true
+rcgen.workspace = true
+rustls.workspace = true
 tracing.workspace = true
 
 [lints]

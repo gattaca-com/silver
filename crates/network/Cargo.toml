@@ -1,15 +1,39 @@
 [package]
-name = "network"
+name = "silver_network"
 edition.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
-silver-common.workspace = true
+buffa.workspace = true
+bytes.workspace = true
 flux.workspace = true
+k256.workspace = true
+libc.workspace = true
 mio.workspace = true
-slab.workspace = true
+quinn-proto.workspace = true
+rcgen.workspace = true
+ring.workspace = true
+rustls.workspace = true
+silver-common.workspace = true
+tracing.workspace = true
+x509-parser.workspace = true
+yasna.workspace = true
+
+[build-dependencies]
+buffa-build = "0.2.0"
+
+[dev-dependencies]
+criterion.workspace = true
+pprof.workspace = true
+rand.workspace = true
+rand_core.workspace = true
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true
+
+[[bench]]
+harness = false
+name = "quic_basic"
