@@ -5,9 +5,9 @@ use std::{
 
 use alloy_rlp::{Decodable, Encodable};
 use flux::utils::ArrayVec;
-use k256::ecdsa::SigningKey;
 use rand::RngCore as _;
 use rustc_hash::FxHashMap;
+use secp256k1::{SECP256K1, SecretKey};
 use silver_common::{Enr, NodeId};
 use tracing::warn;
 
@@ -33,7 +33,7 @@ const IP_VOTE_THRESHOLD: u32 = 3;
 
 pub struct DiscV5 {
     config: DiscoveryConfig,
-    local_key: SigningKey,
+    local_key: SecretKey,
     local_id: NodeId,
     local_enr: Enr,
     local_enr_raw: ArrayVec<u8, ENR_RECORD_MAX>,
@@ -47,6 +47,7 @@ pub struct DiscV5 {
     challenges: FxHashMap<NodeId, PendingChallenge>,
     pending_findnodes: FxHashMap<NodeId, (u64, Distances)>,
     pending_probe_nonces: FxHashMap<NodeId, [u8; 12]>,
+    pending_pings: FxHashMap<u64, NodeId>,
     event_queue: Vec<DiscoveryEvent>,
 
     ip_votes: FxHashMap<NodeId, (IpAddr, u16)>,
@@ -59,11 +60,11 @@ pub struct DiscV5 {
 impl DiscV5 {
     pub fn new(
         config: DiscoveryConfig,
-        local_key: SigningKey,
+        local_key: SecretKey,
         local_enr: Enr,
         fork_digest: [u8; 4],
     ) -> Self {
-        let local_id = NodeId::from(*local_key.verifying_key());
+        let local_id = NodeId::from(local_key.public_key(SECP256K1));
         let kbuckets = KBucketsTable::new(Key::from(local_id), Duration::from_secs(60));
         let query_timeout =
             config.query_peer_timeout() * (config.query_parallelism as u32).saturating_add(1);
@@ -91,9 +92,13 @@ impl DiscV5 {
                 MAX_SESSIONS_COUNT,
                 Default::default(),
             ),
+            pending_pings: FxHashMap::with_capacity_and_hasher(
+                MAX_SESSIONS_COUNT,
+                Default::default(),
+            ),
+            event_queue: Vec::with_capacity(MAX_SESSIONS_COUNT * 2),
             ip_votes: FxHashMap::with_capacity_and_hasher(MAX_SESSIONS_COUNT, Default::default()),
             ip_vote_counts: FxHashMap::with_capacity_and_hasher(8, Default::default()),
-            event_queue: Vec::with_capacity(MAX_SESSIONS_COUNT * 2),
             next_request_id: 0,
             last_ping: Instant::now(),
         }
@@ -227,17 +232,24 @@ impl DiscV5 {
         }
     }
 
-    fn on_pong(&mut self, src_id: NodeId, ip: IpAddr, port: u16) {
+    fn on_pong(&mut self, src_id: NodeId, request_id: u64, ip: IpAddr, port: u16) {
+        match self.pending_pings.remove(&request_id) {
+            Some(expected) if expected == src_id => {}
+            _ => return,
+        }
+
         let addr = (ip, port);
         let old = self.ip_votes.insert(src_id, addr);
         if old == Some(addr) {
             return;
         }
+
         if let Some(old_addr) = old {
             if let Some(c) = self.ip_vote_counts.get_mut(&old_addr) {
                 *c = c.saturating_sub(1);
             }
         }
+
         let count = self.ip_vote_counts.entry(addr).or_insert(0);
         *count += 1;
 
@@ -246,6 +258,7 @@ impl DiscV5 {
                 IpAddr::V4(a) => self.local_enr.ip4() != Some(a),
                 IpAddr::V6(a) => self.local_enr.ip6() != Some(a),
             };
+
             if changed {
                 let socket = SocketAddr::new(ip, port);
                 let _ = self.local_enr.set_udp_socket(socket, &self.local_key);
@@ -278,10 +291,7 @@ impl DiscV5 {
                 continue;
             };
 
-            let Ok(pk_bytes) = enr.public_key().to_encoded_point(true).as_bytes().try_into() else {
-                continue;
-            };
-
+            let pk_bytes = enr.public_key().serialize();
             let node_id = enr.node_id();
             let _ = self.kbuckets.insert_or_update(
                 &Key::from(node_id),
@@ -305,12 +315,12 @@ impl DiscV5 {
         request_id: u64,
         distances: &Distances,
     ) {
-        let node_ids = self.kbuckets.nodes_by_distances(distances.as_slice(), MAX_NODES_PER_BUCKET);
-
         let mut enrs: ArrayVec<ArrayVec<u8, ENR_RECORD_MAX>, 16> = ArrayVec::new();
         if distances.iter().any(|&d| d == 0) {
             enrs.push(self.local_enr_raw);
         }
+
+        let node_ids = self.kbuckets.nodes_by_distances(distances.as_slice(), MAX_NODES_PER_BUCKET);
         for id in node_ids {
             if enrs.is_full() {
                 break;
@@ -407,11 +417,13 @@ impl DiscV5 {
             Message::Ping { request_id, enr_seq } => {
                 self.on_ping(src_id, src_addr, request_id, enr_seq, existing.enr_seq);
             }
-            Message::Pong { ip, port, .. } => {
-                self.on_pong(src_id, ip, port);
+            Message::Pong { request_id, ip, port, .. } => {
+                self.on_pong(src_id, request_id, ip, port);
             }
             Message::FindNode { request_id, distances } => {
-                self.send_nodes_response(src_id, src_addr, request_id, &distances);
+                if existing.addr == src_addr {
+                    self.send_nodes_response(src_id, src_addr, request_id, &distances);
+                }
             }
             Message::Nodes { nodes, .. } => {
                 self.on_nodes(src_id, nodes, now);
@@ -572,14 +584,7 @@ impl DiscV5 {
                     return;
                 }
 
-                let pk_bytes: [u8; 33] =
-                    match enr.public_key().to_encoded_point(true).as_bytes().try_into() {
-                        Ok(b) => b,
-                        Err(_) => {
-                            warn!(%src_id, %src_addr, "handshake ENR has invalid public key");
-                            return;
-                        }
-                    };
+                let pk_bytes = enr.public_key().serialize();
 
                 self.kbuckets.insert_or_update(
                     &Key::from(src_id),
@@ -601,20 +606,16 @@ impl DiscV5 {
             if stored_enr_raw != Some(raw) {
                 if let Ok(enr) = Enr::decode(&mut raw.as_slice()) {
                     if enr.node_id() == src_id {
-                        if let Ok(pk_bytes) =
-                            enr.public_key().to_encoded_point(true).as_bytes().try_into()
-                        {
-                            let _ = self.kbuckets.insert_or_update(
-                                &Key::from(src_id),
-                                NodeEntry {
-                                    addr: src_addr,
-                                    enr_seq: enr.seq(),
-                                    pubkey: pk_bytes,
-                                    enr_raw: Some(raw),
-                                },
-                                now,
-                            );
-                        }
+                        let _ = self.kbuckets.insert_or_update(
+                            &Key::from(src_id),
+                            NodeEntry {
+                                addr: src_addr,
+                                enr_seq: enr.seq(),
+                                pubkey: enr.public_key().serialize(),
+                                enr_raw: Some(raw),
+                            },
+                            now,
+                        );
                     }
                 }
             }
@@ -748,6 +749,7 @@ impl DiscoveryNetworking for DiscV5 {
                             enr_seq: self.local_enr.seq(),
                         })
                 {
+                    self.pending_pings.insert(rid, node_id);
                     rid = rid.wrapping_add(1);
                     f(DiscoveryEvent::SendMessage { to: node.value.addr, data });
                 }
@@ -812,11 +814,6 @@ impl DiscoveryNetworking for DiscV5 {
 
         match packet.kind {
             MessageKind::Message => {
-                // Invalidate session if peer's endpoint changed.
-                if self.sessions.get(&src_id).is_some_and(|s| s.addr != src_addr) {
-                    self.sessions.remove(&src_id);
-                }
-
                 if let Some(s) = self.sessions.get_mut(&src_id) {
                     if !s.check_and_record_nonce(&nonce, now) {
                         warn!(%src_id, %src_addr, ?nonce, "replayed nonce, dropping message");
@@ -824,11 +821,21 @@ impl DiscoveryNetworking for DiscV5 {
                     }
 
                     let plain = decrypt_message(&s.dec, &nonce, &aad, packet.message);
-                    if let Some(bytes) = plain {
-                        self.handle_message(src_id, src_addr, &bytes, now);
-                    } else {
-                        // Stale session or decryption failure; re-challenge.
-                        self.send_whoareyou(src_id, src_addr, nonce, now);
+                    let addr_matches = s.addr == src_addr;
+
+                    match (plain, addr_matches) {
+                        (Some(bytes), true) => {
+                            self.handle_message(src_id, src_addr, &bytes, now);
+                        }
+                        (Some(_), false) => {
+                            // Decrypted OK but endpoint changed — re-handshake.
+                            self.sessions.remove(&src_id);
+                            self.send_whoareyou(src_id, src_addr, nonce, now);
+                        }
+                        (None, _) => {
+                            // Stale session or decryption failure; re-challenge.
+                            self.send_whoareyou(src_id, src_addr, nonce, now);
+                        }
                     }
                 } else {
                     self.send_whoareyou(src_id, src_addr, nonce, now);
@@ -935,7 +942,6 @@ mod tests {
         time::Instant,
     };
 
-    use k256::ecdsa::SigningKey;
     use silver_common::{Enr, NodeId};
 
     use super::*;
@@ -955,12 +961,11 @@ mod tests {
     }
 
     fn make_node(port: u16) -> (DiscV5, SocketAddr, [u8; 33]) {
-        let key = SigningKey::random(&mut rand::thread_rng());
+        let sk = SecretKey::new(&mut rand::thread_rng());
         let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
-        let enr = Enr::builder().ip4(Ipv4Addr::LOCALHOST).udp4(port).build(&key).unwrap();
-        let pubkey: [u8; 33] =
-            key.verifying_key().to_encoded_point(true).as_bytes().try_into().unwrap();
-        let disco = DiscV5::new(test_config(), key, enr, [0u8; 4]);
+        let enr = Enr::builder().ip4(Ipv4Addr::LOCALHOST).udp4(port).build(&sk).unwrap();
+        let pubkey = sk.public_key(SECP256K1).serialize();
+        let disco = DiscV5::new(test_config(), sk, enr, [0u8; 4]);
         (disco, addr, pubkey)
     }
 
@@ -1054,7 +1059,9 @@ mod tests {
 
         let votes_before = a.ip_votes.len();
 
-        // A sends Ping; B replies with Pong.
+        // A sends Ping; B replies with Pong. Register the pending ping so A
+        // accepts the PONG.
+        a.pending_pings.insert(1, b.local_id);
         inject_message(&mut a, &mut b, a_addr, Message::Ping { request_id: 1, enr_seq: 0 }, now);
         let b_sends = collect_sends(&mut b);
         for (to, data) in &b_sends {
@@ -1161,10 +1168,10 @@ mod tests {
     fn test_pong_ipv6_vote_updates_enr() {
         let now = Instant::now();
         // A has no IP so every Pong-observed address is "new".
-        let key = SigningKey::random(&mut rand::thread_rng());
+        let sk = SecretKey::new(&mut rand::thread_rng());
         let a_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 19041);
-        let enr = Enr::builder().build(&key).unwrap();
-        let mut a = DiscV5::new(test_config(), key, enr, [0u8; 4]);
+        let enr = Enr::builder().build(&sk).unwrap();
+        let mut a = DiscV5::new(test_config(), sk, enr, [0u8; 4]);
 
         // Need 3 distinct peers to cross IP_VOTE_THRESHOLD (one vote per NodeId).
         let (mut b, b_addr, b_pubkey) = make_node(19042);
@@ -1177,25 +1184,29 @@ mod tests {
         let ipv6 = IpAddr::V6(Ipv6Addr::LOCALHOST);
         let port = 19041u16;
 
+        a.pending_pings.insert(100, b.local_id);
+        a.pending_pings.insert(101, c.local_id);
+        a.pending_pings.insert(102, d.local_id);
+
         inject_message(
             &mut b,
             &mut a,
             b_addr,
-            Message::Pong { request_id: 0, enr_seq: 0, ip: ipv6, port },
+            Message::Pong { request_id: 100, enr_seq: 0, ip: ipv6, port },
             now,
         );
         inject_message(
             &mut c,
             &mut a,
             c_addr,
-            Message::Pong { request_id: 0, enr_seq: 0, ip: ipv6, port },
+            Message::Pong { request_id: 101, enr_seq: 0, ip: ipv6, port },
             now,
         );
         inject_message(
             &mut d,
             &mut a,
             d_addr,
-            Message::Pong { request_id: 0, enr_seq: 0, ip: ipv6, port },
+            Message::Pong { request_id: 102, enr_seq: 0, ip: ipv6, port },
             now,
         );
 
@@ -1212,10 +1223,10 @@ mod tests {
     fn test_nodes_fork_digest_filter() {
         let now = Instant::now();
         let fork_digest = [0x01, 0x02, 0x03, 0x04u8];
-        let key_a = SigningKey::random(&mut rand::thread_rng());
+        let sk_a = SecretKey::new(&mut rand::thread_rng());
         let a_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 19051);
-        let enr_a = Enr::builder().ip4(Ipv4Addr::LOCALHOST).udp4(19051u16).build(&key_a).unwrap();
-        let mut a = DiscV5::new(test_config(), key_a, enr_a, fork_digest);
+        let enr_a = Enr::builder().ip4(Ipv4Addr::LOCALHOST).udp4(19051u16).build(&sk_a).unwrap();
+        let mut a = DiscV5::new(test_config(), sk_a, enr_a, fork_digest);
 
         let (mut b, b_addr, b_pubkey) = make_node(19052);
         do_handshake(&mut a, a_addr, &mut b, b_addr, b_pubkey, now);
@@ -1223,16 +1234,16 @@ mod tests {
         // Build two ENRs:
         // - good: no eth2 field (passes the filter)
         // - bad: eth2 with wrong fork_digest (dropped)
-        let key_good = SigningKey::random(&mut rand::thread_rng());
+        let sk_good = SecretKey::new(&mut rand::thread_rng());
         let enr_good =
-            Enr::builder().ip4(Ipv4Addr::new(10, 0, 0, 1)).udp4(19053u16).build(&key_good).unwrap();
+            Enr::builder().ip4(Ipv4Addr::new(10, 0, 0, 1)).udp4(19053u16).build(&sk_good).unwrap();
         let id_good = enr_good.node_id();
 
-        let key_bad = SigningKey::random(&mut rand::thread_rng());
+        let sk_bad = SecretKey::new(&mut rand::thread_rng());
         let mut enr_bad =
-            Enr::builder().ip4(Ipv4Addr::new(10, 0, 0, 2)).udp4(19054u16).build(&key_bad).unwrap();
+            Enr::builder().ip4(Ipv4Addr::new(10, 0, 0, 2)).udp4(19054u16).build(&sk_bad).unwrap();
         // Wrong fork digest: all zeros.
-        enr_bad.set_eth2([0u8; 16], &key_bad).unwrap();
+        enr_bad.set_eth2([0u8; 16], &sk_bad).unwrap();
         let id_bad = enr_bad.node_id();
 
         let mut good_raw: ArrayVec<u8, ENR_RECORD_MAX> = ArrayVec::new();
@@ -1275,21 +1286,20 @@ mod tests {
         // to push each record to ~180 bytes, forcing multi-packet responses.
         let mut peer_ids: Vec<NodeId> = Vec::new();
         for i in 0u16..8 {
-            let pk = SigningKey::random(&mut rand::thread_rng());
+            let sk = SecretKey::new(&mut rand::thread_rng());
             let port = 20000 + i;
             let mut enr = Enr::builder()
                 .ip4(Ipv4Addr::new(10, 0, 0, (i + 1) as u8))
                 .udp4(port)
-                .build(&pk)
+                .build(&sk)
                 .unwrap();
             // fork_digest [0;4] matches B's fork_digest from make_node.
-            enr.set_eth2([0u8; 16], &pk).unwrap();
-            enr.set_attnets([0xFF; 8], &pk).unwrap();
-            enr.set_syncnets(0x0F, &pk).unwrap();
+            enr.set_eth2([0u8; 16], &sk).unwrap();
+            enr.set_attnets([0xFF; 8], &sk).unwrap();
+            enr.set_syncnets(0x0F, &sk).unwrap();
             let p_id = enr.node_id();
             let p_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, (i + 1) as u8)), port);
-            let p_pubkey: [u8; 33] =
-                pk.verifying_key().to_encoded_point(true).as_bytes().try_into().unwrap();
+            let p_pubkey = sk.public_key(SECP256K1).serialize();
             let mut raw: ArrayVec<u8, ENR_RECORD_MAX> = ArrayVec::new();
             enr.encode(&mut raw);
             let _ = a.kbuckets.insert_or_update(

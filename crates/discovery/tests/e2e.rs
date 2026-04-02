@@ -4,7 +4,7 @@ use std::{
 };
 
 use discovery::{DiscV5, Discovery, DiscoveryConfig, DiscoveryEvent, DiscoveryNetworking};
-use k256::ecdsa::SigningKey;
+use secp256k1::{SECP256K1, SecretKey};
 use silver_common::{Enr, NodeId};
 
 struct TestNode {
@@ -26,17 +26,16 @@ impl TestNode {
     }
 
     fn build(port: u16, config: DiscoveryConfig, with_ip: bool) -> Self {
-        let key = SigningKey::random(&mut rand::thread_rng());
+        let sk = SecretKey::new(&mut rand::thread_rng());
         let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
         let enr = if with_ip {
-            Enr::builder().ip4(Ipv4Addr::LOCALHOST).udp4(port).build(&key).unwrap()
+            Enr::builder().ip4(Ipv4Addr::LOCALHOST).udp4(port).build(&sk).unwrap()
         } else {
-            Enr::builder().build(&key).unwrap()
+            Enr::builder().build(&sk).unwrap()
         };
         let enr_seq = enr.seq();
-        let pubkey: [u8; 33] =
-            key.verifying_key().to_encoded_point(true).as_bytes().try_into().unwrap();
-        Self { disco: DiscV5::new(config, key, enr, [0u8; 4]), addr, pubkey, enr_seq }
+        let pubkey = sk.public_key(SECP256K1).serialize();
+        Self { disco: DiscV5::new(config, sk, enr, [0u8; 4]), addr, pubkey, enr_seq }
     }
 
     fn node_id(&self) -> NodeId {

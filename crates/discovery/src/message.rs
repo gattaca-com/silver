@@ -426,20 +426,17 @@ mod tests {
         hex::decode(s).unwrap()
     }
 
+    fn node_id_from_hex(hex_sk: &str) -> NodeId {
+        let sk = secp256k1::SecretKey::from_slice(&hex_decode(hex_sk)).unwrap();
+        NodeId::from(sk.public_key(secp256k1::SECP256K1))
+    }
+
     fn node_id_1() -> NodeId {
-        let sk = k256::ecdsa::SigningKey::from_slice(&hex_decode(
-            "eef77acb6c6a6eebc5b363a475ac583ec7eccdb42b6481424c60f59aa326547f",
-        ))
-        .unwrap();
-        NodeId::from(*sk.verifying_key())
+        node_id_from_hex("eef77acb6c6a6eebc5b363a475ac583ec7eccdb42b6481424c60f59aa326547f")
     }
 
     fn node_id_2() -> NodeId {
-        let sk = k256::ecdsa::SigningKey::from_slice(&hex_decode(
-            "66fb62bfbd66b9177a138c1e5cddbe4f7c30c343e94e68df8769459cb1cde628",
-        ))
-        .unwrap();
-        NodeId::from(*sk.verifying_key())
+        node_id_from_hex("66fb62bfbd66b9177a138c1e5cddbe4f7c30c343e94e68df8769459cb1cde628")
     }
 
     #[test]
@@ -798,11 +795,11 @@ mod tests {
 
     #[test]
     fn test_nodes_encode_decode_enr_bytes() {
-        let key = k256::ecdsa::SigningKey::random(&mut rand::thread_rng());
+        let sk = secp256k1::SecretKey::new(&mut rand::thread_rng());
         let enr = silver_common::Enr::builder()
             .ip4(std::net::Ipv4Addr::LOCALHOST)
             .udp4(9000u16)
-            .build(&key)
+            .build(&sk)
             .unwrap();
         let enr_bytes = alloy_rlp::encode(&enr);
         let mut enr_raw: ArrayVec<u8, ENR_RECORD_MAX> = ArrayVec::new();
