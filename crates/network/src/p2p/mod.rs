@@ -103,7 +103,7 @@ impl<H: NetworkSend + NetworkRecv> P2p<H> {
         while let Some((connection_id, stream, data)) = self.handler.to_send() {
             let peer = self.peers.get_mut(&ConnectionHandle(connection_id)).unwrap(); // TODO
             let wrote = peer.send(stream, data).unwrap(); // TODO
-            if wrote == 0 {
+            if wrote < data.len() {
                 break;
             }
             self.handler.sent(peer.id(), &stream, wrote);
@@ -117,11 +117,14 @@ impl<H: NetworkSend + NetworkRecv> P2p<H> {
         let mut ep_callback = |handle, ep_event| self.endpoint.handle_event(handle, ep_event);
 
         for peer in self.peers.values_mut() {
+
             // N.B. peer transmit MUST be called before peer.spin();
             if !socket.is_blocked() {
                 while !socket.is_blocked() && socket.send(poll, |buf| peer.transmit(now, MAX_GSO_SEGMENTS, buf)) {
                     //tracing::info!("socket send");
                 }
+            } else {
+                tracing::warn!(local=?socket.udp_socket().local_addr(), "socket blocked");
             }
 
             let next_timeout = peer.spin(now, &mut ep_callback, &mut self.handler);

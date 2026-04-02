@@ -56,12 +56,10 @@ pub fn broadcast(c: &mut Criterion) {
                                 ServerHandler {
                                     counter: recv_counter.clone(), 
                                     connection: 0, 
-                                    seq: 0,
-                                    tail: 0,
                                     stream_id: StreamId::from(VarInt::MAX), 
-                                    buffer: Buffer::new(), 
                                     to_send: VecDeque::with_capacity(8 * 1024),
-                                    sent: VecDeque::with_capacity(8 * 1024),
+                                    offset: 0,
+                                    total: 0,
                                 },
                             );
                             (
@@ -74,8 +72,8 @@ pub fn broadcast(c: &mut Criterion) {
                         let server_handle = std::thread::spawn(move || {
                             loop {
                                 server_tile.spin();
-                                tracing::info!(srv_recv=recv_counter.load(Ordering::Relaxed), client_recv=counter.load(Ordering::Relaxed), "srv");
-                                if counter.load(Ordering::Relaxed) == total {
+                                //tracing::info!(srv_recv=recv_counter.load(Ordering::Relaxed), client_recv=counter.load(Ordering::Relaxed), "srv");
+                                if counter.load(Ordering::Relaxed) >= total {
                                     tracing::info!("server completed");
                                     break;
                                 }
@@ -105,6 +103,8 @@ pub fn broadcast(c: &mut Criterion) {
                             did_stream: false,
                             histogram: hdrhistogram::Histogram::<u64>::new_with_max(1000, 3).unwrap(),
                             count: client_counter.clone(),
+                            recv: Vec::with_capacity(16),
+                            last_send: Instant::now(),
                         };
 
                         let addr = "127.0.0.1:20002";
@@ -118,7 +118,7 @@ pub fn broadcast(c: &mut Criterion) {
                     |(handle, mut client, counter)| {
                         while counter.load(Ordering::Relaxed) < total {
                             client.spin();
-                            tracing::info!(client_recv=counter.load(Ordering::Relaxed), server_finished=handle.is_finished(), "client");
+                            //tracing::info!(client_recv=counter.load(Ordering::Relaxed), server_finished=handle.is_finished(), "client");
                         }
                         tracing::info!("client spun out");
                         handle.join().unwrap();
@@ -134,7 +134,7 @@ fn random_data() -> (Vec<Vec<u8>>, usize) {
     let mut data = Vec::with_capacity(BATCH_SIZE);
     let mut total = 0;
     for _ in 0..BATCH_SIZE {
-        let len = rng.gen_range(256..1024);
+        let len = rng.gen_range(256..2048);
         total += len;
         let mut vec = vec![0u8; len];
         rng.fill_bytes(&mut vec);
@@ -146,12 +146,10 @@ fn random_data() -> (Vec<Vec<u8>>, usize) {
 struct ServerHandler {
     counter: Arc<AtomicUsize>, 
     connection: usize, 
-    seq: usize, 
-    tail: usize, 
     stream_id: StreamId, 
-    buffer: Buffer<524288>, 
     to_send: VecDeque<Vec<u8>>,
-    sent: VecDeque<Vec<u8>>,
+    offset: usize,
+    total: usize,
 }
 
 impl silver_network::NetworkSend for ServerHandler {
@@ -160,12 +158,9 @@ impl silver_network::NetworkSend for ServerHandler {
     }
 
     fn to_send(&mut self) -> Option<(usize, quinn_proto::StreamId, &[u8])> {
-        match self.to_send.pop_front() {
+        match self.to_send.front() {
             Some(data) => {
-                self.seq += data.len();
-                //tracing::info!(send=self.seq, "srv send");
-                self.sent.push_back(data);
-                Some((self.connection, self.stream_id, self.sent.back().unwrap()))
+                Some((self.connection, self.stream_id, &data[self.offset..]))
             },
             None => {
                 //tracing::info!("srv nothing to send");
@@ -178,25 +173,16 @@ impl silver_network::NetworkSend for ServerHandler {
         None
     }
 
-    fn sent(&mut self, _peer: &RemotePeer, _stream: &quinn_proto::StreamId, mut sent: usize) {
-        //tracing::info!(recv=self.counter.load(Ordering::Relaxed), sent=self.tail, buffer=?self.buffer, "srv sent");
-        //self.buffer.set_tail(self.tail);
-        while sent > 0 {
-            let pop = self.sent.front().map(|front| {
-                if sent + self.tail >= front.len() {
-                    self.tail = 0;
-                    sent -= front.len();
-                    true
-                } else {
-                    self.tail += sent;
-                    sent = 0;
-                    false
-                }
-            }).unwrap_or_default();
-            if pop {
-                self.sent.pop_front();
-            }
+    fn sent(&mut self, _peer: &RemotePeer, _stream: &quinn_proto::StreamId, sent: usize) {
+        self.total += sent;
+        self.offset += sent;
+       
+        let pop = self.to_send.front().map(|v| self.offset >= v.len()).unwrap_or_default();
+        if pop {
+            let buf = self.to_send.pop_front();
+            self.offset -= buf.map(|b| b.len()).unwrap_or_default();
         }
+        //tracing::info!(offset=self.offset, sent, total=self.total, "sent");
     }
 }
 
@@ -240,17 +226,21 @@ struct ClientData {
     did_stream: bool,
     histogram: hdrhistogram::Histogram<u64>,
     count: Arc<AtomicUsize>,
+    recv: Vec<u8>,
+    last_send: Instant,
 }
 
 impl Drop for ClientData {
     fn drop(&mut self) {
+        let p10 = self.histogram.value_at_quantile(0.1);
         let p50 = self.histogram.value_at_quantile(0.5);
         let p60 = self.histogram.value_at_quantile(0.6);
         let p70 = self.histogram.value_at_quantile(0.7);
         let p80 = self.histogram.value_at_quantile(0.8);
         let p90 = self.histogram.value_at_quantile(0.9);
         let p99 = self.histogram.value_at_quantile(0.99);
-        println!("p50: {p50}, p60: {p60}, p70: {p70}, p80: {p80}, p90: {p90}, p99: {p99}");
+        let count = self.count.load(Ordering::Relaxed);
+        println!("{count}: p10: {p10}, p50: {p50}, p60: {p60}, p70: {p70}, p80: {p80}, p90: {p90}, p99: {p99}");
     }
 }
 
@@ -260,10 +250,14 @@ impl silver_network::NetworkSend for ClientData {
     }
 
     fn to_send(&mut self) -> Option<(usize, quinn_proto::StreamId, &[u8])> {
+        if self.last_send.elapsed().as_micros_u64() < 10 {
+            return None;
+        }
         if let Some(remote_peer) = self.remote_peer.as_ref() &&
             let Some(remote_stream) = self.remote_stream.as_ref()
         {
             if let Some(data) = self.data.last_mut() {
+                self.last_send = Instant::now();
                 let len = data.len();
                 data[0..8].copy_from_slice(len.to_le_bytes().as_slice());
                 data[8..16].copy_from_slice(Instant::now().0.to_le_bytes().as_slice());
@@ -306,33 +300,50 @@ impl silver_network::NetworkRecv for ClientData {
     }
 
     fn recv(&mut self, _peer: &RemotePeer, _stream_id: &quinn_proto::StreamId, data: &[u8]) {
-        self.count.fetch_add(data.len(), Ordering::Relaxed);
+        let was = self.count.fetch_add(data.len(), Ordering::Relaxed);
         let mut buf = data;
 
-        if self.read_remaining > 0 {
-            if self.read_remaining >= buf.len() {
-                self.read_remaining -= buf.len();
-                return;
-            } else {
-                buf = &data[self.read_remaining..];
-                self.read_remaining = 0;
-            }
+        let mut scratch = vec![];
+        if !self.recv.is_empty() {
+            scratch.extend_from_slice(&self.recv);
+            scratch.extend_from_slice(data);
+            self.recv.clear();
+            buf = scratch.as_slice();
         }
 
-        if buf.len() >= 8 {
-            let full_len = usize::from_le_bytes(buf[0..8].try_into().unwrap());
-            if full_len > buf.len() {
-                self.read_remaining = full_len - buf.len();
+        while !buf.is_empty() {
+            if self.read_remaining > 0 {
+                if self.read_remaining >= buf.len() {
+                    self.read_remaining -= buf.len();
+                    return;
+                } else {
+                    buf = &data[self.read_remaining..];
+                    self.read_remaining = 0;
+                }
             }
-        } else {
-            println!("yikes: {}", buf.len());
-        }
-        if buf.len() >= 16 {
-            let instant = u64::from_le_bytes(buf[8..16].try_into().unwrap());
-            let elapsed = Instant(instant).elapsed().as_micros_u64();
-            println!("{elapsed}");
-            let _ = self.histogram.record(elapsed);
-        } 
+
+            if buf.len() >= 16 {
+                let instant = u64::from_le_bytes(buf[8..16].try_into().unwrap());
+                let elapsed = Instant(instant).elapsed().as_micros_u64();
+                //println!("{elapsed}");
+                let _ = self.histogram.record(elapsed);
+                
+                let full_len = usize::from_le_bytes(buf[0..8].try_into().unwrap());
+                //std::thread::sleep(Duration::from_millis(200));
+                //tracing::info!(full_len, was, remain=self.read_remaining, buf=buf.len(), data=data.len());
+                if full_len > buf.len() {
+                    self.read_remaining = full_len - buf.len();
+                    buf = &[];
+                } else if full_len <= buf.len() {
+                    buf = &buf[full_len..];
+                    self.read_remaining = 0;
+                }
+            } else {
+                self.recv.clear();
+                self.recv.extend_from_slice(buf);
+                break;
+            }
+        }        
     }
 }
 
