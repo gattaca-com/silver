@@ -5,8 +5,19 @@ use secp256k1::{SECP256K1, SecretKey};
 use crate::{Error, util::decode_varint};
 
 /// libp2p peer identity (multihash-encoded).
-#[derive(Clone, Default, PartialEq, Eq, Hash)]
-pub struct PeerId(Vec<u8>);
+#[derive(Clone, PartialEq, Eq, Hash)]
+#[repr(C)]
+pub struct PeerId {
+    // Maximum id length is theoretically 44 bytes - pad out to 48.
+    buffer: [u8; 48],
+    length: usize,
+}
+
+impl Default for PeerId {
+    fn default() -> Self {
+        Self { buffer: [0u8; 48], length: 0 }
+    }
+}
 
 impl PeerId {
     /// Derive from protobuf-encoded libp2p public key.
@@ -14,22 +25,22 @@ impl PeerId {
     /// 42-byte identity multihash threshold.
     pub fn from_protobuf_encoded(encoded: &[u8]) -> Self {
         debug_assert!(encoded.len() <= 42);
-        let mut buf = Vec::with_capacity(2 + encoded.len());
-        buf.push(0x00); // identity hash function code
-        buf.push(encoded.len() as u8);
-        buf.extend_from_slice(encoded);
-        Self(buf)
+        let mut buffer = [0u8; 48];
+        buffer[0] = 0x00; // identity hash function code
+        buffer[1] = encoded.len() as u8;
+        buffer[2..2 + encoded.len()].copy_from_slice(encoded);
+        Self { buffer, length: encoded.len() + 2 }
     }
 
     pub fn as_bytes(&self) -> &[u8] {
-        &self.0
+        &self.buffer[..self.length]
     }
 }
 
 impl fmt::Debug for PeerId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "PeerId(")?;
-        for b in &self.0 {
+        for b in self.as_bytes() {
             write!(f, "{b:02x}")?;
         }
         write!(f, ")")

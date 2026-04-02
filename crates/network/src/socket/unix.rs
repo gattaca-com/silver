@@ -4,13 +4,12 @@ use std::{
     os::fd::AsRawFd as _,
 };
 
+use bytes::BytesMut;
 use flux::tracing;
 use mio::net::UdpSocket;
 
 pub(crate) const RX_BATCH_MAX: usize = 128;
-const RX_BUF_SIZE: usize = 2048;
-/// Index of the scratch buffer used for poll_transmit.
-pub(crate) const SCRATCH: usize = RX_BATCH_MAX;
+pub(crate) const RX_BUF_SIZE: usize = 2048;
 const TX_BATCH_MAX: usize = 256;
 const MAX_GSO_SEGMENTS: usize = 10;
 const CMSG_BUF_SIZE: usize = 64;
@@ -18,9 +17,10 @@ const CMSG_BUF_SIZE: usize = 64;
 // --- RxBatch ----------------------------------------------------------------
 
 pub(crate) struct RxBatch {
-    /// Per-datagram buffers. Indices 0..RX_BATCH_MAX are receive slots,
-    /// index SCRATCH is a spare buffer for poll_transmit.
-    pub(crate) bufs: Vec<Vec<u8>>,
+    /// Per-datagram backing buffers. Each slot hands off a split to quinn
+    /// on receive; the slot reclaims the backing storage via `try_reclaim`
+    /// on the next recv round (succeeds if quinn dropped its split).
+    bufs: Vec<BytesMut>,
     addrs: Vec<libc::sockaddr_storage>,
     iovecs: Vec<libc::iovec>,
     hdrs: Vec<libc::mmsghdr>,
@@ -33,34 +33,55 @@ unsafe impl Send for RxBatch {}
 
 impl RxBatch {
     pub(crate) fn new() -> Self {
-        let bufs = (0..RX_BATCH_MAX + 1).map(|_| vec![0u8; RX_BUF_SIZE]).collect();
-        Self {
-            bufs,
+        let mut bufs: Vec<BytesMut> =
+            (0..RX_BATCH_MAX).map(|_| BytesMut::with_capacity(RX_BUF_SIZE)).collect();
+
+        let mut batch = Self {
             addrs: vec![unsafe { std::mem::zeroed() }; RX_BATCH_MAX],
             iovecs: vec![unsafe { std::mem::zeroed() }; RX_BATCH_MAX],
             hdrs: vec![unsafe { std::mem::zeroed() }; RX_BATCH_MAX],
             count: 0,
+            bufs: Vec::new(),
+        };
+
+        // One-time wiring: header fields and iovec pointers.
+        // SAFETY: capacity is RX_BUF_SIZE on each slot; kernel writes fill
+        // these bytes before we read them.
+        for i in 0..RX_BATCH_MAX {
+            unsafe { bufs[i].set_len(RX_BUF_SIZE) };
+            batch.iovecs[i].iov_base = bufs[i].as_mut_ptr() as *mut _;
+            batch.iovecs[i].iov_len = RX_BUF_SIZE;
+
+            batch.hdrs[i].msg_hdr.msg_name = &mut batch.addrs[i] as *mut _ as *mut _;
+            batch.hdrs[i].msg_hdr.msg_namelen =
+                std::mem::size_of::<libc::sockaddr_storage>() as u32;
+            batch.hdrs[i].msg_hdr.msg_iov = &mut batch.iovecs[i] as *mut _;
+            batch.hdrs[i].msg_hdr.msg_iovlen = 1;
         }
+        batch.bufs = bufs;
+
+        batch
     }
 
     /// Batch-receive datagrams via recvmmsg. Returns number received.
     pub(crate) fn recv(&mut self, socket: &UdpSocket) -> usize {
-        let fd = socket.as_raw_fd();
-
-        for i in 0..RX_BATCH_MAX {
+        // Re-arm slots used in the previous round: try to reclaim backing
+        // storage from splits quinn has since dropped. Slots beyond
+        // `self.count` weren't `take()`d last round — they still have
+        // valid iovec pointers and RX_BUF_SIZE len.
+        for i in 0..self.count {
+            if !self.bufs[i].try_reclaim(RX_BUF_SIZE) {
+                self.bufs[i] = BytesMut::with_capacity(RX_BUF_SIZE);
+            }
+            // SAFETY: capacity ≥ RX_BUF_SIZE after reclaim/alloc; kernel
+            // will overwrite these bytes via recvmmsg.
+            unsafe { self.bufs[i].set_len(RX_BUF_SIZE) };
+            // Rewire iovec — backing pointer may have shifted after
+            // split_to + reclaim, or reallocated fresh.
             self.iovecs[i].iov_base = self.bufs[i].as_mut_ptr() as *mut _;
-            self.iovecs[i].iov_len = RX_BUF_SIZE;
-
-            self.hdrs[i].msg_hdr.msg_name = &mut self.addrs[i] as *mut _ as *mut _;
-            self.hdrs[i].msg_hdr.msg_namelen = std::mem::size_of::<libc::sockaddr_storage>() as u32;
-            self.hdrs[i].msg_hdr.msg_iov = &mut self.iovecs[i] as *mut _;
-            self.hdrs[i].msg_hdr.msg_iovlen = 1;
-            self.hdrs[i].msg_hdr.msg_control = std::ptr::null_mut();
-            self.hdrs[i].msg_hdr.msg_controllen = 0;
-            self.hdrs[i].msg_hdr.msg_flags = 0;
-            self.hdrs[i].msg_len = 0;
         }
 
+        let fd = socket.as_raw_fd();
         let ret = unsafe {
             libc::recvmmsg(
                 fd,
@@ -84,12 +105,13 @@ impl RxBatch {
         self.count
     }
 
-    /// Get the i-th received datagram as (data, source_addr).
-    pub(crate) fn get(&self, i: usize) -> (&[u8], SocketAddr) {
+    /// Take the i-th received datagram as an owned `BytesMut` plus source
+    /// address.
+    pub(crate) fn take(&mut self, i: usize) -> (BytesMut, SocketAddr) {
         let len = self.hdrs[i].msg_len as usize;
-        let data = &self.bufs[i][..len];
         let addr = sockaddr_to_std(&self.addrs[i]);
-        (data, addr)
+        let packet = self.bufs[i].split_to(len);
+        (packet, addr)
     }
 }
 
@@ -139,10 +161,6 @@ impl TxBatch {
 
     pub(crate) fn is_full(&self) -> bool {
         self.entries.len() >= TX_BATCH_MAX
-    }
-
-    pub(crate) fn has_pending(&self) -> bool {
-        self.prepared && self.send_idx < self.hdrs.len()
     }
 
     /// Record a transmit after poll_transmit wrote into bufs[entries.len()].

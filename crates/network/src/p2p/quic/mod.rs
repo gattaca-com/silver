@@ -8,7 +8,6 @@ use silver_common::{Keypair, PeerId};
 
 use super::tls;
 
-mod endpoint;
 mod peer;
 
 pub(crate) use peer::Peer;

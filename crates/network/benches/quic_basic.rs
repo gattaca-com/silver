@@ -1,7 +1,7 @@
 use std::{
-    net::SocketAddr,
+    collections::HashMap,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
@@ -11,13 +11,13 @@ use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_mai
 use pprof::criterion::{Output, PProfProfiler};
 use quinn_proto::{Endpoint, EndpointConfig};
 use rand::{Rng, RngCore, SeedableRng};
-use silver_common::{Keypair, PeerId};
-use silver_network::{NetworkTile, RemotePeer};
+use silver_common::{Keypair, P2pStreamId, StreamProtocol};
+use silver_network::{NetEvent, NetworkTileInner, P2p, RemotePeer, StreamData};
 
 const BATCH_SIZE: usize = 8192 * 10;
 
 pub fn broadcast(c: &mut Criterion) {
-    //let _guard = tracing_subscriber::fmt().init();
+    let _guard = tracing_subscriber::fmt().init();
 
     let group_name = format!("quic_basic_{}", BATCH_SIZE);
     let mut group = c.benchmark_group(group_name);
@@ -27,7 +27,7 @@ pub fn broadcast(c: &mut Criterion) {
 
     let mut rng = rand::rngs::OsRng::default();
 
-    for i in 1..=3 {
+    for i in 1..3 {
         let criterion_batch_size = BatchSize::PerIteration;
         let throughput = Throughput::Elements((total * i) as u64);
 
@@ -51,12 +51,15 @@ pub fn broadcast(c: &mut Criterion) {
                                 false,
                                 None,
                             );
+                            let p2p = P2p::new(keypair, server_endpoint);
                             (
-                                NetworkTile::new(
-                                    keypair,
-                                    server_endpoint,
+                                NetworkTileInner::new(
                                     "0.0.0.0:20001".parse().unwrap(),
-                                    ServerHandler(recv_counter.clone()),
+                                    p2p,
+                                    ServerHandler {
+                                        counter: recv_counter.clone(),
+                                        streams: HashMap::new(),
+                                    },
                                 )
                                 .unwrap(),
                                 server_id,
@@ -65,7 +68,7 @@ pub fn broadcast(c: &mut Criterion) {
 
                         let server_handle = std::thread::spawn(move || {
                             loop {
-                                server_tile.spin();
+                                server_tile.spin(&mut |_: NetEvent| {});
                                 if recv_counter.load(Ordering::Relaxed) == (total * i) {
                                     tracing::info!("server completed");
                                     break;
@@ -87,27 +90,30 @@ pub fn broadcast(c: &mut Criterion) {
                                 None,
                             );
 
-                            let client_data = ClientData {
-                                server_id: Some(server_id.clone()),
-                                server_addr: "127.0.0.1:20001".parse().unwrap(),
-                                remote_peer: None,
-                                remote_stream: None,
-                                data,
-                                offset: 0,
-                                did_stream: false,
-                            };
+                            let client_data = ClientData { data, next_idx: 0, current: None };
 
                             let addr = format!("127.0.0.1:{}", 20002 + n);
+                            let mut p2p = P2p::new(keypair, client_endpoint);
+                            p2p.connect(server_id.clone(), "127.0.0.1:20001".parse().unwrap());
 
-                            clients.push(
-                                NetworkTile::new(
-                                    keypair,
-                                    client_endpoint,
-                                    addr.parse().unwrap(),
-                                    client_data,
-                                )
-                                .unwrap(),
-                            );
+                            // Pending actions accumulated by the event callback, drained
+                            // and applied by the main loop after each spin.
+                            let pending: Arc<Mutex<Vec<(usize, StreamProtocol)>>> =
+                                Arc::new(Mutex::new(Vec::new()));
+                            let pending_cb = pending.clone();
+                            let on_event = move |event: NetEvent| {
+                                if let NetEvent::PeerConnected { peer, .. } = event {
+                                    pending_cb
+                                        .lock()
+                                        .unwrap()
+                                        .push((peer.connection, StreamProtocol::GossipSub));
+                                }
+                            };
+
+                            let tile =
+                                NetworkTileInner::new(addr.parse().unwrap(), p2p, client_data)
+                                    .unwrap();
+                            clients.push((tile, pending, on_event));
                         }
 
                         std::thread::sleep(Duration::from_millis(200));
@@ -115,8 +121,13 @@ pub fn broadcast(c: &mut Criterion) {
                     },
                     |(handle, mut clients)| {
                         while !handle.is_finished() {
-                            for client in &mut clients {
-                                client.spin();
+                            for (client, pending, on_event) in &mut clients {
+                                client.spin(on_event);
+                                // Apply any queued actions.
+                                let todo: Vec<_> = pending.lock().unwrap().drain(..).collect();
+                                for (peer, proto) in todo {
+                                    let _ = client.p2p_mut().open_stream(peer, proto);
+                                }
                             }
                         }
                         handle.join().unwrap();
@@ -142,107 +153,100 @@ fn random_data() -> (Vec<Vec<u8>>, usize) {
     (data, total)
 }
 
-struct ServerHandler(Arc<AtomicUsize>);
-impl silver_network::NetworkSend for ServerHandler {
-    fn new_peer(&mut self) -> Option<(silver_common::PeerId, std::net::SocketAddr)> {
-        None
-    }
-
-    fn to_send(&mut self) -> Option<(silver_network::RemotePeer, quinn_proto::StreamId, &[u8])> {
-        None
-    }
-
-    fn new_streams(&mut self) -> Option<(RemotePeer, quinn_proto::Dir)> {
-        None
-    }
-
-    fn sent(&mut self, _peer: &RemotePeer, _stream: &quinn_proto::StreamId, _sent: usize) {}
+/// Server-side: accumulates received bytes per stream.
+struct ServerHandler {
+    counter: Arc<AtomicUsize>,
+    streams: HashMap<P2pStreamId, StreamRecv>,
 }
 
-impl silver_network::NetworkRecv for ServerHandler {
-    fn new_connection(&mut self, remote_peer: silver_network::RemotePeer, remote_addr: SocketAddr) {
-        tracing::info!("new remote peer from: {remote_addr:?} {remote_peer:?}");
-    }
-
-    fn new_stream(
-        &mut self,
-        _peer: &silver_network::RemotePeer,
-        stream_id: &quinn_proto::StreamId,
-    ) {
-        tracing::info!("new stream: {stream_id:?}");
-    }
-
-    fn recv(
-        &mut self,
-        _peer: &silver_network::RemotePeer,
-        _stream_id: &quinn_proto::StreamId,
-        data: &[u8],
-    ) {
-        let _was = self.0.fetch_add(data.len(), Ordering::Relaxed);
-        //tracing::info!("recv: {}, total: {}", data.len(), was + data.len());
-    }
-}
-
-struct ClientData {
-    server_id: Option<PeerId>,
-    server_addr: SocketAddr,
-    remote_peer: Option<RemotePeer>,
-    remote_stream: Option<quinn_proto::StreamId>,
-    data: Vec<Vec<u8>>,
+struct StreamRecv {
+    buf: Vec<u8>,
     offset: usize,
-    did_stream: bool,
 }
 
-impl silver_network::NetworkSend for ClientData {
-    fn new_peer(&mut self) -> Option<(PeerId, SocketAddr)> {
-        self.server_id.take().map(|id| (id, self.server_addr))
+impl StreamData for ServerHandler {
+    fn new_stream(&mut self, _peer: &RemotePeer, _stream: &P2pStreamId) {}
+    fn stream_closed(&mut self, _stream: &P2pStreamId) {}
+
+    fn alloc_recv(&mut self, stream: &P2pStreamId, length: usize) -> Result<(), std::io::Error> {
+        self.streams.insert(*stream, StreamRecv { buf: vec![0u8; length], offset: 0 });
+        Ok(())
     }
 
-    fn to_send(&mut self) -> Option<(silver_network::RemotePeer, quinn_proto::StreamId, &[u8])> {
-        if let Some(remote_peer) = self.remote_peer.as_ref() &&
-            let Some(remote_stream) = self.remote_stream.as_ref()
-        {
-            if let Some(data) = self.data.last() {
-                return Some((remote_peer.clone(), remote_stream.clone(), &data[self.offset..]));
-            }
+    fn recv_buf(&mut self, stream: &P2pStreamId) -> Result<&mut [u8], std::io::Error> {
+        let s = self.streams.get_mut(stream).ok_or_else(|| std::io::Error::other("no alloc"))?;
+        Ok(&mut s.buf[s.offset..])
+    }
+
+    fn recv_advance(&mut self, stream: &P2pStreamId, written: usize) -> Result<(), std::io::Error> {
+        let s = self.streams.get_mut(stream).ok_or_else(|| std::io::Error::other("no alloc"))?;
+        s.offset += written;
+        self.counter.fetch_add(written, Ordering::Relaxed);
+        if s.offset >= s.buf.len() {
+            self.streams.remove(stream);
         }
+        Ok(())
+    }
+
+    fn poll_send(&mut self, _stream: &P2pStreamId) -> Option<usize> {
         None
     }
 
-    fn new_streams(&mut self) -> Option<(RemotePeer, quinn_proto::Dir)> {
-        if let Some(remote_peer) = self.remote_peer.as_ref() &&
-            self.remote_stream.is_none() &&
-            !self.did_stream
-        {
-            self.did_stream = true;
-            return Some((remote_peer.clone(), quinn_proto::Dir::Bi));
-        }
+    fn send_data(&mut self, _stream: &P2pStreamId, _offset: usize) -> Option<&[u8]> {
         None
     }
 
-    fn sent(&mut self, _peer: &RemotePeer, _stream: &quinn_proto::StreamId, sent: usize) {
-        self.offset += sent;
-        let pop = self.data.last().map(|v| self.offset >= v.len()).unwrap_or_default();
-        if pop {
-            self.data.pop();
-            self.offset = 0;
-        }
-    }
+    fn send_complete(&mut self, _stream: &P2pStreamId) {}
 }
 
-impl silver_network::NetworkRecv for ClientData {
-    fn new_connection(&mut self, remote_peer: RemotePeer, remote_addr: SocketAddr) {
-        tracing::info!("new connection to {remote_addr:?}");
-        self.remote_peer = Some(remote_peer);
+/// Client-side: sends pre-computed messages sequentially.
+struct ClientData {
+    data: Vec<Vec<u8>>,
+    next_idx: usize,
+    current: Option<usize>,
+}
+
+impl StreamData for ClientData {
+    fn new_stream(&mut self, _peer: &RemotePeer, _stream: &P2pStreamId) {}
+    fn stream_closed(&mut self, _stream: &P2pStreamId) {}
+
+    fn alloc_recv(&mut self, _stream: &P2pStreamId, _length: usize) -> Result<(), std::io::Error> {
+        Ok(())
     }
 
-    fn new_stream(&mut self, _peer: &RemotePeer, stream_id: &quinn_proto::StreamId) {
-        tracing::info!("new client stream {stream_id:?}");
-        self.remote_stream = Some(*stream_id);
+    fn recv_buf(&mut self, _stream: &P2pStreamId) -> Result<&mut [u8], std::io::Error> {
+        Err(std::io::Error::other("client does not receive"))
     }
 
-    fn recv(&mut self, _peer: &RemotePeer, _stream_id: &quinn_proto::StreamId, _data: &[u8]) {
-        tracing::warn!("unexpected data!");
+    fn recv_advance(
+        &mut self,
+        _stream: &P2pStreamId,
+        _written: usize,
+    ) -> Result<(), std::io::Error> {
+        Ok(())
+    }
+
+    fn poll_send(&mut self, _stream: &P2pStreamId) -> Option<usize> {
+        if self.current.is_some() {
+            return None;
+        }
+        if self.next_idx >= self.data.len() {
+            return None;
+        }
+        let idx = self.next_idx;
+        self.next_idx += 1;
+        let len = self.data[idx].len();
+        self.current = Some(idx);
+        Some(len)
+    }
+
+    fn send_data(&mut self, _stream: &P2pStreamId, offset: usize) -> Option<&[u8]> {
+        let idx = self.current?;
+        Some(&self.data[idx][offset..])
+    }
+
+    fn send_complete(&mut self, _stream: &P2pStreamId) {
+        self.current = None;
     }
 }
 
