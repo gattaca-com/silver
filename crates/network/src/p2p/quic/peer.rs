@@ -2,11 +2,11 @@ use std::{io::Error, time::Instant};
 
 use bytes::Bytes;
 use quinn_proto::{
-    Connection, ConnectionEvent, ConnectionHandle, Dir, EndpointEvent, StreamId, Transmit, VarInt
+    Connection, ConnectionEvent, ConnectionHandle, Dir, EndpointEvent, StreamId, Transmit, VarInt,
 };
 use silver_common::PeerId;
 
-use crate::{p2p::tls::peer_id_from_certificate, NetworkRecv, NetworkSend, RemotePeer};
+use crate::{NetworkRecv, NetworkSend, RemotePeer, p2p::tls::peer_id_from_certificate};
 
 pub(crate) struct Peer {
     id: RemotePeer,
@@ -38,7 +38,8 @@ impl Peer {
         now: Instant,
         ep_callback: &mut F,
         handler: &mut H,
-    ) -> Option<Instant> where
+    ) -> Option<Instant>
+    where
         F: FnMut(ConnectionHandle, EndpointEvent) -> Option<ConnectionEvent>,
     {
         while self.connection.poll_timeout().is_some_and(|t| t <= now) {
@@ -75,7 +76,12 @@ impl Peer {
                     match stream_event {
                         quinn_proto::StreamEvent::Opened { dir } => {
                             while let Some(id) = self.connection.streams().accept(dir) {
-                                tracing::info!(?id, ?dir,  spins=self.spin_count, "stream openned");
+                                tracing::info!(
+                                    ?id,
+                                    ?dir,
+                                    spins = self.spin_count,
+                                    "stream openned"
+                                );
                                 handler.new_stream(&self.id, &id);
 
                                 // try to read
@@ -100,7 +106,8 @@ impl Peer {
                             // conn.send_stream(id).write(data) {
 
                             // }
-                            //tracing::info!(spins=self.spin_count, "stream writable");
+                            //tracing::info!(spins=self.spin_count, "stream
+                            // writable");
                         }
                         quinn_proto::StreamEvent::Finished { id } => {
                             tracing::info!(?id, "stream finished");
@@ -111,7 +118,7 @@ impl Peer {
                         quinn_proto::StreamEvent::Available { dir } => {
                             // Callback if it is now possible ot open a new stream (when previously
                             // at limits)
-                            tracing::info!(?dir, spins=self.spin_count, "stream available");
+                            tracing::info!(?dir, spins = self.spin_count, "stream available");
                             if let Some(id) = self.connection.streams().open(dir) {}
                         }
                     }

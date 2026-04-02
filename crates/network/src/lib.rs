@@ -30,7 +30,7 @@ pub trait NetworkSend: Send {
     /// `None` is returned.
     fn to_send(&mut self) -> Option<(RemotePeer, StreamId, &[u8])>;
 
-    /// Send result callback. 
+    /// Send result callback.
     fn sent(&mut self, peer: &RemotePeer, stream: &StreamId, sent: usize);
 }
 
