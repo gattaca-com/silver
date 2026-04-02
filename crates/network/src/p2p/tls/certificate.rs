@@ -273,10 +273,13 @@ fn verify_host_key_signature(
 ) -> Result<(), Error> {
     match key_type {
         KEY_TYPE_SECP256K1 => {
-            use k256::ecdsa::{DerSignature, VerifyingKey, signature::Verifier};
-            let vk = VerifyingKey::from_sec1_bytes(public_key).map_err(|_| Error::BadPublicKey)?;
-            let sig = DerSignature::try_from(signature).map_err(|_| Error::BadSignature)?;
-            vk.verify(message, &sig).map_err(|_| Error::BadSignature)
+            let pk =
+                secp256k1::PublicKey::from_slice(public_key).map_err(|_| Error::BadPublicKey)?;
+            let sig = secp256k1::ecdsa::Signature::from_der(signature)
+                .map_err(|_| Error::BadSignature)?;
+            let msg =
+                secp256k1::Message::from_digest_slice(message).map_err(|_| Error::BadSignature)?;
+            secp256k1::SECP256K1.verify_ecdsa(&msg, &sig, &pk).map_err(|_| Error::BadSignature)
         }
         _ => Err(Error::UnsupportedKeyType),
     }

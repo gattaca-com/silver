@@ -1,3 +1,5 @@
+#![allow(dead_code, unused_variables, unused_mut)]
+
 mod p2p;
 #[cfg(not(target_os = "linux"))]
 mod portable;
@@ -30,7 +32,7 @@ pub trait NetworkSend: Send {
     /// `None` is returned.
     fn to_send(&mut self) -> Option<(RemotePeer, StreamId, &[u8])>;
 
-    /// Send result callback. 
+    /// Send result callback.
     fn sent(&mut self, peer: &RemotePeer, stream: &StreamId, sent: usize);
 }
 

@@ -3,7 +3,6 @@ use std::{
     io::Error,
     net::SocketAddr,
     time::{Duration, Instant},
-    usize,
 };
 
 use flux::{tile::Tile, tracing};
