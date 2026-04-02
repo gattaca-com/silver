@@ -25,7 +25,12 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2025-10-01
+          toolchain: nightly-2025-06-01
+
+      - name: Install buf
+        uses: bufbuild/buf-action@v1
+        with:
+          setup_only: true
 
       - name: Run tests
         run: cargo test
