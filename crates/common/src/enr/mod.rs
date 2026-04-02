@@ -606,7 +606,7 @@ pub fn digest(b: &[u8]) -> [u8; 32] {
 mod tests {
     use super::*;
 
-    type DefaultEnr = Enr<k256::ecdsa::SigningKey>;
+    type DefaultEnr = Enr<secp256k1::SecretKey>;
 
     #[test]
     fn test_vector_k256() {
@@ -661,7 +661,7 @@ mod tests {
             hex::decode("a448f24c6d18e575453db13171562b71999873db5b286df957af199ec94617f7")
                 .unwrap();
 
-        let enr = text.parse::<Enr<k256::ecdsa::SigningKey>>().unwrap();
+        let enr = text.parse::<Enr<secp256k1::SecretKey>>().unwrap();
         assert_eq!(enr.ip4(), Some(Ipv4Addr::new(127, 0, 0, 1)));
         assert_eq!(enr.id(), Some(String::from("v4")));
         assert_eq!(enr.udp4(), Some(30303));
@@ -714,7 +714,7 @@ mod tests {
         let key_data =
             hex::decode("b71c71a67e1177ad4e901695e1b4b9ee17ae16c6668d313eac2f96dbcda3f291")
                 .unwrap();
-        let key = k256::ecdsa::SigningKey::from_slice(&key_data).unwrap();
+        let key = secp256k1::SecretKey::from_slice(&key_data).unwrap();
         let mut record = text.parse::<DefaultEnr>().unwrap();
         assert!(record.set_udp4(record.udp4().unwrap(), &key).is_ok());
 
@@ -737,7 +737,7 @@ mod tests {
 
     #[test]
     fn test_encode_decode_k256() {
-        let key = k256::ecdsa::SigningKey::random(&mut rand::rngs::OsRng);
+        let key = secp256k1::SecretKey::new(&mut rand::rngs::OsRng);
         let ip = Ipv4Addr::new(127, 0, 0, 1);
         let udp = 3000u16;
 
@@ -747,7 +747,7 @@ mod tests {
         enr.encode(&mut encoded_enr);
 
         let decoded_enr =
-            Enr::<k256::ecdsa::SigningKey>::decode(&mut encoded_enr.to_vec().as_slice()).unwrap();
+            Enr::<secp256k1::SecretKey>::decode(&mut encoded_enr.to_vec().as_slice()).unwrap();
 
         assert_eq!(decoded_enr.id(), Some("v4".into()));
         assert_eq!(decoded_enr.ip4(), Some(ip));
@@ -760,7 +760,7 @@ mod tests {
     #[test]
     fn test_set_ip() {
         let mut rng = rand::thread_rng();
-        let key = k256::ecdsa::SigningKey::random(&mut rng);
+        let key = secp256k1::SecretKey::new(&mut rng);
         let udp = 30303u16;
         let ip = Ipv4Addr::new(10, 0, 0, 1);
 
@@ -777,7 +777,7 @@ mod tests {
     #[test]
     fn ip_mutation_static_node_id() {
         let mut rng = rand::thread_rng();
-        let key = k256::ecdsa::SigningKey::random(&mut rng);
+        let key = secp256k1::SecretKey::new(&mut rng);
         let udp = 30303u16;
         let ip = Ipv4Addr::new(10, 0, 0, 1);
 
@@ -821,20 +821,24 @@ mod tests {
 
     #[test]
     fn test_compare_content() {
-        let key = k256::ecdsa::SigningKey::random(&mut rand::thread_rng());
+        let key = secp256k1::SecretKey::new(&mut rand::thread_rng());
         let ip = Ipv4Addr::new(10, 0, 0, 1);
         let udp = 30303u16;
 
         let enr1 = Enr::builder().ip4(ip).udp4(udp).build(&key).unwrap();
+        // enr2: different seq (2) → different rlp_content, different signature.
         let mut enr2 = enr1.clone();
-        enr2.set_seq(1, &key).unwrap();
+        enr2.set_seq(2, &key).unwrap();
+        // enr3: different IP → different rlp_content.
         let mut enr3 = enr1.clone();
-        enr3.set_seq(2, &key).unwrap();
+        enr3.set_ip(Ipv4Addr::new(10, 0, 0, 2).into(), &key).unwrap();
 
+        // Same IP/UDP, different seq → rlp_content differs (seq is part of it).
         assert_ne!(enr1.signature(), enr2.signature());
-        assert!(enr1.compare_content(&enr2));
+        assert!(!enr1.compare_content(&enr2));
         assert_ne!(enr1, enr2);
 
+        // Different IP → rlp_content differs.
         assert_ne!(enr1.signature(), enr3.signature());
         assert!(!enr1.compare_content(&enr3));
         assert_ne!(enr1, enr3);
@@ -842,7 +846,7 @@ mod tests {
 
     #[test]
     fn test_set_seq() {
-        let key = k256::ecdsa::SigningKey::random(&mut rand::thread_rng());
+        let key = secp256k1::SecretKey::new(&mut rand::thread_rng());
         let mut enr = Enr::empty(&key).unwrap();
         enr.set_seq(30, &key).unwrap();
         assert_eq!(enr.seq(), 30);
@@ -853,7 +857,7 @@ mod tests {
 
     #[test]
     fn test_eth2_roundtrip() {
-        let key = k256::ecdsa::SigningKey::random(&mut rand::thread_rng());
+        let key = secp256k1::SecretKey::new(&mut rand::thread_rng());
         let mut enr = Enr::builder().ip4(Ipv4Addr::LOCALHOST).udp4(9000u16).build(&key).unwrap();
         let eth2: [u8; 16] = std::array::from_fn(|i| (i + 1) as u8);
         enr.set_eth2(eth2, &key).unwrap();
@@ -869,7 +873,7 @@ mod tests {
 
     #[test]
     fn test_attnets_roundtrip() {
-        let key = k256::ecdsa::SigningKey::random(&mut rand::thread_rng());
+        let key = secp256k1::SecretKey::new(&mut rand::thread_rng());
         let mut enr = Enr::builder().ip4(Ipv4Addr::LOCALHOST).udp4(9000u16).build(&key).unwrap();
         let attnets: [u8; 8] = [0xff, 0x00, 0xab, 0xcd, 0x12, 0x34, 0x56, 0x78];
         enr.set_attnets(attnets, &key).unwrap();
@@ -885,7 +889,7 @@ mod tests {
 
     #[test]
     fn test_syncnets_roundtrip() {
-        let key = k256::ecdsa::SigningKey::random(&mut rand::thread_rng());
+        let key = secp256k1::SecretKey::new(&mut rand::thread_rng());
         let mut enr = Enr::builder().ip4(Ipv4Addr::LOCALHOST).udp4(9000u16).build(&key).unwrap();
         let syncnets: u8 = 0x0f;
         enr.set_syncnets(syncnets, &key).unwrap();
@@ -901,7 +905,7 @@ mod tests {
 
     #[test]
     fn test_all_cl_fields_roundtrip_with_verify() {
-        let key = k256::ecdsa::SigningKey::random(&mut rand::thread_rng());
+        let key = secp256k1::SecretKey::new(&mut rand::thread_rng());
         let mut enr =
             Enr::builder().ip4(Ipv4Addr::new(10, 0, 0, 1)).udp4(30303u16).build(&key).unwrap();
 

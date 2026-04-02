@@ -61,7 +61,6 @@ criterion = { version = "0.5.1", features = ["async_std", "async_tokio"] }
 ctr = "0.9"
 hex = "0.4"
 hkdf = "0.12"
-k256 = { version = "0.13", features = ["ecdsa"] }
 libc = "0.2"
 mio = { version = "1.0.4", features = ["net", "os-poll"] }
 pprof = { version = "0.13", features = ["criterion", "flamegraph"] }
@@ -71,6 +70,7 @@ rand_core = "0.6.4"
 rcgen = "0.14.7"
 ring = "0.17"
 rustc-hash = "2"
+secp256k1 = { version = "0.30", features = ["global-context", "rand"] }
 rustls = "0.23.37"
 serde = { version = "1.0.228", features = ["derive"] }
 sha2 = "0.10"

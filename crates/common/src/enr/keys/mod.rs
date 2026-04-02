@@ -1,6 +1,6 @@
 // Adapted from https://github.com/sigp/enr (MIT License)
 
-mod k256_key;
+mod secp256k1_key;
 
 use std::{
     error::Error,

@@ -1,14 +1,7 @@
 use aes_gcm::{Aes128Gcm, aead::KeyInit};
 use flux::utils::ArrayVec;
 use hkdf::Hkdf;
-use k256::{
-    ProjectivePoint,
-    ecdsa::{
-        Signature, SigningKey, VerifyingKey,
-        signature::{DigestSigner, DigestVerifier},
-    },
-    elliptic_curve::sec1::ToEncodedPoint,
-};
+use secp256k1::{PublicKey, SECP256K1, SecretKey, ecdh::shared_secret_point, ecdsa::Signature};
 use sha2::{Digest, Sha256};
 use silver_common::NodeId;
 
@@ -23,13 +16,15 @@ pub fn make_cipher(key: &[u8; 16]) -> SessionCipher {
     Aes128Gcm::new_from_slice(key).expect("key is 16 bytes")
 }
 
-/// Static ECDH: scalar multiply `remote_vk` by `local_sk`, return compressed
+/// Static ECDH: scalar multiply `remote_pk` by `local_sk`, return compressed
 /// point.
-pub fn ecdh(remote_vk: &VerifyingKey, local_sk: &SigningKey) -> [u8; 33] {
-    let pt = (ProjectivePoint::from(*remote_vk.as_affine()) *
-        local_sk.as_nonzero_scalar().as_ref())
-    .to_affine();
-    pt.to_encoded_point(true).as_bytes().try_into().expect("compressed point is 33 bytes")
+pub fn ecdh(remote_pk: &PublicKey, local_sk: &SecretKey) -> [u8; 33] {
+    let xy = shared_secret_point(remote_pk, local_sk);
+    let mut compressed = [0u8; 33];
+    // Parity byte: 0x02 if y is even, 0x03 if odd.
+    compressed[0] = if xy[63] & 1 == 0 { 0x02 } else { 0x03 };
+    compressed[1..].copy_from_slice(&xy[..32]);
+    compressed
 }
 
 /// HKDF-SHA256 key derivation per discv5 spec.
@@ -66,46 +61,44 @@ pub fn ecdh_generate_and_derive(
     remote_id: &NodeId,
     challenge_data: &[u8],
 ) -> Option<([u8; 33], [u8; 16], [u8; 16])> {
-    let remote_vk = VerifyingKey::from_sec1_bytes(remote_pubkey).ok()?;
-    let ephem_sk = SigningKey::random(&mut rand::thread_rng());
-    let ephem_pk_bytes: [u8; 33] =
-        ephem_sk.verifying_key().to_encoded_point(true).as_bytes().try_into().ok()?;
-    let secret = ecdh(&remote_vk, &ephem_sk);
+    let remote_pk = PublicKey::from_slice(remote_pubkey).ok()?;
+    let ephem_sk = SecretKey::new(&mut rand::thread_rng());
+    let ephem_pk_bytes = ephem_sk.public_key(SECP256K1).serialize();
+    let secret = ecdh(&remote_pk, &ephem_sk);
     let (initiator_key, recipient_key) =
         derive_session_keys(&secret, local_id, remote_id, challenge_data);
     Some((ephem_pk_bytes, initiator_key, recipient_key))
 }
 
-/// ECDH on responder side: local static key × peer's ephemeral pubkey.
+/// ECDH on responder side: local static key x peer's ephemeral pubkey.
 /// Returns `(initiator_key, recipient_key)`.
 pub fn ecdh_and_derive_keys_responder(
-    local_key: &SigningKey,
+    local_sk: &SecretKey,
     ephem_pubkey: &[u8; 33],
     initiator_id: &NodeId,
     responder_id: &NodeId,
     challenge_data: &[u8],
 ) -> Option<([u8; 16], [u8; 16])> {
-    let ephem_vk = VerifyingKey::from_sec1_bytes(ephem_pubkey).ok()?;
-    let secret = ecdh(&ephem_vk, local_key);
+    let ephem_pk = PublicKey::from_slice(ephem_pubkey).ok()?;
+    let secret = ecdh(&ephem_pk, local_sk);
     Some(derive_session_keys(&secret, initiator_id, responder_id, challenge_data))
 }
 
 pub fn sign_id_nonce(
-    local_key: &SigningKey,
+    local_sk: &SecretKey,
     challenge_data: &[u8],
     ephem_pubkey: &[u8; 33],
     dst_id: &NodeId,
 ) -> Option<[u8; 64]> {
-    let digest = Sha256::new()
+    let hash = Sha256::new()
         .chain_update(ID_SIGNATURE_PREFIX)
         .chain_update(challenge_data)
         .chain_update(ephem_pubkey)
-        .chain_update(dst_id.raw());
-    let sig: Signature = local_key.sign_digest(digest);
-    let raw = sig.to_bytes();
-    let mut out = [0u8; 64];
-    out.copy_from_slice(raw.as_ref());
-    Some(out)
+        .chain_update(dst_id.raw())
+        .finalize();
+    let msg = secp256k1::Message::from_digest_slice(&hash).ok()?;
+    let sig = SECP256K1.sign_ecdsa(&msg, local_sk);
+    Some(sig.serialize_compact())
 }
 
 pub fn verify_id_nonce_sig(
@@ -115,14 +108,16 @@ pub fn verify_id_nonce_sig(
     dst_id: &NodeId,
     sig: &[u8; 64],
 ) -> bool {
-    let Ok(vk) = VerifyingKey::from_sec1_bytes(remote_pubkey) else { return false };
-    let Ok(signature) = Signature::from_slice(sig) else { return false };
-    let digest = Sha256::new()
+    let Ok(pk) = PublicKey::from_slice(remote_pubkey) else { return false };
+    let Ok(signature) = Signature::from_compact(sig) else { return false };
+    let hash = Sha256::new()
         .chain_update(ID_SIGNATURE_PREFIX)
         .chain_update(challenge_data)
         .chain_update(ephem_pubkey)
-        .chain_update(dst_id.raw());
-    vk.verify_digest(digest, &signature).is_ok()
+        .chain_update(dst_id.raw())
+        .finalize();
+    let Ok(msg) = secp256k1::Message::from_digest_slice(&hash) else { return false };
+    SECP256K1.verify_ecdsa(&msg, &signature, &pk).is_ok()
 }
 
 pub fn encrypt_message(
@@ -163,25 +158,25 @@ mod tests {
 
     #[test]
     fn ecdh_matches_spec() {
-        let sk = SigningKey::from_slice(&h(
+        let sk = SecretKey::from_slice(&h(
             "fb757dc581730490a1d7a00deea65e9b1936924caaea8f44d476014856b68736",
         ))
         .unwrap();
-        let remote_vk = VerifyingKey::from_sec1_bytes(&h(
+        let remote_pk = PublicKey::from_slice(&h(
             "039961e4c2356d61bedb83052c115d311acb3a96f5777296dcf297351130266231",
         ))
         .unwrap();
         let expected = h("033b11a2a1f214567e1537ce5e509ffd9b21373247f2a3ff6841f4976f53165e7e");
-        assert_eq!(ecdh(&remote_vk, &sk).as_slice(), expected.as_slice());
+        assert_eq!(ecdh(&remote_pk, &sk).as_slice(), expected.as_slice());
     }
 
     #[test]
     fn key_derivation_matches_spec() {
-        let ephem_sk = SigningKey::from_slice(&h(
+        let ephem_sk = SecretKey::from_slice(&h(
             "fb757dc581730490a1d7a00deea65e9b1936924caaea8f44d476014856b68736",
         ))
         .unwrap();
-        let dest_vk = VerifyingKey::from_sec1_bytes(&h(
+        let dest_pk = PublicKey::from_slice(&h(
             "0317931e6e0840220642f230037d285d122bc59063221ef3226b1f403ddc69ca91",
         ))
         .unwrap();
@@ -199,7 +194,7 @@ mod tests {
             "000000000000000000000000000000006469736376350001010102030405060708090a0b0c00180102030405060708090a0b0c0d0e0f100000000000000000",
         );
 
-        let secret = ecdh(&dest_vk, &ephem_sk);
+        let secret = ecdh(&dest_pk, &ephem_sk);
         let (ik, rk) = derive_session_keys(&secret, &node_id_a, &node_id_b, &challenge_data);
 
         assert_eq!(ik.as_slice(), h("dccc82d81bd610f4f76d3ebe97a40571").as_slice());
@@ -208,7 +203,7 @@ mod tests {
 
     #[test]
     fn id_nonce_sig_verifies_spec_vector() {
-        let sk = SigningKey::from_slice(&h(
+        let sk = SecretKey::from_slice(&h(
             "fb757dc581730490a1d7a00deea65e9b1936924caaea8f44d476014856b68736",
         ))
         .unwrap();
@@ -228,8 +223,7 @@ mod tests {
             .try_into()
             .unwrap();
 
-        let static_pk: [u8; 33] =
-            sk.verifying_key().to_encoded_point(true).as_bytes().try_into().unwrap();
+        let static_pk = sk.public_key(SECP256K1).serialize();
 
         assert!(verify_id_nonce_sig(
             &static_pk,
