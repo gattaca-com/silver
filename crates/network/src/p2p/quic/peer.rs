@@ -2,17 +2,16 @@ use std::{io::Error, time::Instant};
 
 use bytes::Bytes;
 use quinn_proto::{
-    Connection, ConnectionEvent, ConnectionHandle, Dir, EndpointEvent, StreamId, Transmit, VarInt
+    Connection, ConnectionEvent, ConnectionHandle, Dir, EndpointEvent, StreamId, Transmit, VarInt,
 };
 use silver_common::PeerId;
 
-use crate::{p2p::tls::peer_id_from_certificate, NetworkRecv, NetworkSend, RemotePeer};
+use crate::{NetworkRecv, NetworkSend, RemotePeer, p2p::tls::peer_id_from_certificate};
 
 pub(crate) struct Peer {
     id: RemotePeer,
     handle: ConnectionHandle,
     connection: Connection,
-    spin_count: usize,
 }
 
 impl Peer {
@@ -21,8 +20,11 @@ impl Peer {
             id: RemotePeer { peer_id: PeerId::default(), connection: handle.0 },
             handle,
             connection,
-            spin_count: 0,
         }
+    }
+
+    pub(crate) fn id(&self) -> &RemotePeer {
+        &self.id
     }
 
     pub(crate) fn event(&mut self, event: ConnectionEvent) {
@@ -38,7 +40,8 @@ impl Peer {
         now: Instant,
         ep_callback: &mut F,
         handler: &mut H,
-    ) -> Option<Instant> where
+    ) -> Option<Instant>
+    where
         F: FnMut(ConnectionHandle, EndpointEvent) -> Option<ConnectionEvent>,
     {
         while self.connection.poll_timeout().is_some_and(|t| t <= now) {
@@ -53,7 +56,6 @@ impl Peer {
         }
 
         while let Some(event) = self.connection.poll() {
-            self.spin_count += 1;
             match event {
                 quinn_proto::Event::Connected => {
                     let Some(peer_id) = id_from_connection(&self.connection) else {
@@ -65,7 +67,7 @@ impl Peer {
                         continue;
                     };
                     self.id.peer_id = peer_id;
-                    tracing::info!(handle = ?self.handle, spins=self.spin_count, "connected");
+                    tracing::info!(handle = ?self.handle, "connected");
                     handler.new_connection(self.id.clone(), self.connection.remote_address());
                 }
                 quinn_proto::Event::ConnectionLost { reason } => {
@@ -73,9 +75,10 @@ impl Peer {
                 }
                 quinn_proto::Event::Stream(stream_event) => {
                     match stream_event {
+                        // Event produced for incoming streams.
                         quinn_proto::StreamEvent::Opened { dir } => {
                             while let Some(id) = self.connection.streams().accept(dir) {
-                                tracing::info!(?id, ?dir,  spins=self.spin_count, "stream openned");
+                                tracing::info!(peer=?self.id, ?id, ?dir, "stream openned");
                                 handler.new_stream(&self.id, &id);
 
                                 // try to read
@@ -95,12 +98,13 @@ impl Peer {
                                 let _should_transmit = chunks.finalize();
                             }
                         }
-                        quinn_proto::StreamEvent::Writable { id } => {
+                        quinn_proto::StreamEvent::Writable { id: _ } => { // TODO
                             // if let Ok(written) =
                             // conn.send_stream(id).write(data) {
 
                             // }
-                            //tracing::info!(spins=self.spin_count, "stream writable");
+                            //tracing::info!(spins=self.spin_count, "stream
+                            // writable");
                         }
                         quinn_proto::StreamEvent::Finished { id } => {
                             tracing::info!(?id, "stream finished");
@@ -108,11 +112,11 @@ impl Peer {
                         quinn_proto::StreamEvent::Stopped { id, error_code } => {
                             tracing::warn!(?id, ?error_code, "stream stopped");
                         }
-                        quinn_proto::StreamEvent::Available { dir } => {
+                        quinn_proto::StreamEvent::Available { dir } => { // TODO
                             // Callback if it is now possible ot open a new stream (when previously
                             // at limits)
-                            tracing::info!(?dir, spins=self.spin_count, "stream available");
-                            if let Some(id) = self.connection.streams().open(dir) {}
+                            tracing::info!(?dir, "stream available");
+                            //if let Some(id) = self.connection.streams().open(dir) {}
                         }
                     }
                 }

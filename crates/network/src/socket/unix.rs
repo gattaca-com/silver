@@ -8,9 +8,7 @@ use flux::tracing;
 use mio::net::UdpSocket;
 
 pub(crate) const RX_BATCH_MAX: usize = 128;
-const RX_BUF_SIZE: usize = 2048;
-/// Index of the scratch buffer used for poll_transmit.
-pub(crate) const SCRATCH: usize = RX_BATCH_MAX;
+pub(crate) const RX_BUF_SIZE: usize = 2048;
 const TX_BATCH_MAX: usize = 256;
 const MAX_GSO_SEGMENTS: usize = 10;
 const CMSG_BUF_SIZE: usize = 64;
@@ -33,7 +31,7 @@ unsafe impl Send for RxBatch {}
 
 impl RxBatch {
     pub(crate) fn new() -> Self {
-        let bufs = (0..RX_BATCH_MAX + 1).map(|_| vec![0u8; RX_BUF_SIZE]).collect();
+        let bufs = (0..RX_BATCH_MAX).map(|_| vec![0u8; RX_BUF_SIZE]).collect();
         Self {
             bufs,
             addrs: vec![unsafe { std::mem::zeroed() }; RX_BATCH_MAX],
@@ -139,10 +137,6 @@ impl TxBatch {
 
     pub(crate) fn is_full(&self) -> bool {
         self.entries.len() >= TX_BATCH_MAX
-    }
-
-    pub(crate) fn has_pending(&self) -> bool {
-        self.prepared && self.send_idx < self.hdrs.len()
     }
 
     /// Record a transmit after poll_transmit wrote into bufs[entries.len()].

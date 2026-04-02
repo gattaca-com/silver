@@ -1,13 +1,10 @@
 mod p2p;
-#[cfg(not(target_os = "linux"))]
-mod portable;
+mod socket;
 mod tile;
-#[cfg(target_os = "linux")]
-mod unix;
 
 use std::net::SocketAddr;
 
-pub use p2p::{create_endpoint, create_server_config};
+pub use p2p::{P2p, create_endpoint, create_server_config};
 use quinn_proto::{Dir, StreamId};
 use silver_common::PeerId;
 pub use tile::NetworkTile;
@@ -15,7 +12,7 @@ pub use tile::NetworkTile;
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct RemotePeer {
     pub peer_id: PeerId,
-    connection: usize,
+    pub connection: usize,
 }
 
 pub trait NetworkSend: Send {
@@ -28,9 +25,9 @@ pub trait NetworkSend: Send {
 
     /// Return data to send. Called in a loop by the network tile until
     /// `None` is returned.
-    fn to_send(&mut self) -> Option<(RemotePeer, StreamId, &[u8])>;
+    fn to_send(&mut self) -> Option<(usize, StreamId, &[u8])>;
 
-    /// Send result callback. 
+    /// Send result callback.
     fn sent(&mut self, peer: &RemotePeer, stream: &StreamId, sent: usize);
 }
 

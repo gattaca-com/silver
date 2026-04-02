@@ -51,7 +51,9 @@ flux = { git = "https://github.com/gattaca-com/flux", rev = "899e5fa" }
 buffa = "0.2.0"
 bytes = "1.11.1"
 criterion = { features = ["async_std", "async_tokio"], version = "0.5.1" }
+hdrhistogram = "7.5.4"
 k256 = { version = "0.13", features = ["ecdsa"] }
+libc = "0.2"
 mio = { features = ["net", "os-poll"], version = "1.0.4" }
 pprof = { features = ["criterion", "flamegraph"], version = "0.13" }
 quinn-proto = "0.11.14"
@@ -60,7 +62,7 @@ rand_core = "=0.6.4"
 rcgen = "0.14.7"
 ring = "0.17"
 rustls = "0.23.37"
-libc = "0.2"
+snap = "1.1.1"
 tracing = "0.1.40"
 tracing-subscriber = "0.3.23"
 x509-parser = { version = "0.17", features = ["verify"] }
