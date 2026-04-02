@@ -6,9 +6,13 @@ pub use crate::{
     util::create_self_signed_certificate,
 };
 
+mod enr;
 mod error;
 mod id;
 mod util;
+
+pub type Enr = enr::Enr<k256::ecdsa::SigningKey>;
+pub use enr::NodeId;
 
 #[from_spine("silver")]
 #[derive(Debug)]
