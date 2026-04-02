@@ -14,6 +14,7 @@ use super::{
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[allow(clippy::enum_variant_names)]
 pub enum Error {
     #[error("enr exceeds max size")]
     ExceedsMaxSize,
