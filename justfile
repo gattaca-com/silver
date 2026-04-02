@@ -1,12 +1,10 @@
 toolchain := "nightly-2025-06-01"
 
 fmt:
-  rustup toolchain install {{toolchain}} > /dev/null 2>&1 && \
   rustup toolchain install {{toolchain}} --component rustfmt > /dev/null 2>&1 && \
   cargo +{{toolchain}} fmt
 
 fmt-check:
-  rustup toolchain install {{toolchain}} > /dev/null 2>&1 && \
   rustup toolchain install {{toolchain}} --component rustfmt > /dev/null 2>&1 && \
   cargo +{{toolchain}} fmt --check
 
