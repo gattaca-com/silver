@@ -1,7 +1,12 @@
 use std::{
-    collections::VecDeque, fmt::Debug, net::SocketAddr, sync::{
-        atomic::{AtomicUsize, Ordering}, Arc
-    }, time::Duration
+    collections::VecDeque,
+    fmt::Debug,
+    net::SocketAddr,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
 };
 
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
@@ -25,108 +30,100 @@ pub fn broadcast(c: &mut Criterion) {
 
     let mut rng = rand::rngs::OsRng::default();
 
-    
-        let criterion_batch_size = BatchSize::PerIteration;
-        let throughput = Throughput::Elements((total) as u64);
+    let criterion_batch_size = BatchSize::PerIteration;
+    let throughput = Throughput::Elements((total) as u64);
 
-        group.throughput(throughput.clone()).bench_function(
-            format!("quic_ping_pong_{BATCH_SIZE}"),
-            |x| {
-                x.iter_batched(
-                    || {
-                        let recv_counter = Arc::new(AtomicUsize::default());
-                        let client_counter = Arc::new(AtomicUsize::default());
+    group.throughput(throughput.clone()).bench_function(
+        format!("quic_ping_pong_{BATCH_SIZE}"),
+        |x| {
+            x.iter_batched(
+                || {
+                    let recv_counter = Arc::new(AtomicUsize::default());
+                    let client_counter = Arc::new(AtomicUsize::default());
 
-                        let (mut server_tile, server_id) = {
-                            let secret = k256::ecdsa::SigningKey::random(&mut rng);
-                            let key_bytes: [u8; 32] = secret.to_bytes().into();
-                            let keypair = Keypair::from_secret(&key_bytes).unwrap();
-                            let server_id = keypair.peer_id();
-                            let server_config =
-                                silver_network::create_server_config(&keypair).unwrap();
-                            let server_endpoint = Endpoint::new(
-                                Arc::new(EndpointConfig::default()),
-                                Some(Arc::new(server_config)),
-                                false,
-                                None,
-                            );
-                            let p2p = P2p::new(
-                                keypair,
-                                server_endpoint,
-                                ServerHandler {
-                                    counter: recv_counter.clone(), 
-                                    connection: 0, 
-                                    stream_id: StreamId::from(VarInt::MAX), 
-                                    to_send: VecDeque::with_capacity(8 * 1024),
-                                    offset: 0,
-                                    total: 0,
-                                },
-                            );
-                            (
-                                NetworkTile::new("0.0.0.0:20001".parse().unwrap(), p2p).unwrap(),
-                                server_id,
-                            )
-                        };
-
-                        let counter = client_counter.clone();
-                        let server_handle = std::thread::spawn(move || {
-                            loop {
-                                server_tile.spin();
-                                //tracing::info!(srv_recv=recv_counter.load(Ordering::Relaxed), client_recv=counter.load(Ordering::Relaxed), "srv");
-                                if counter.load(Ordering::Relaxed) >= total {
-                                    tracing::info!("server completed");
-                                    break;
-                                }
-                            }
-                        });
-
-                        
-                        let data = data.clone();
+                    let (mut server_tile, server_id) = {
                         let secret = k256::ecdsa::SigningKey::random(&mut rng);
                         let key_bytes: [u8; 32] = secret.to_bytes().into();
                         let keypair = Keypair::from_secret(&key_bytes).unwrap();
-                        let client_endpoint = Endpoint::new(
+                        let server_id = keypair.peer_id();
+                        let server_config = silver_network::create_server_config(&keypair).unwrap();
+                        let server_endpoint = Endpoint::new(
                             Arc::new(EndpointConfig::default()),
-                            None,
+                            Some(Arc::new(server_config)),
                             false,
                             None,
                         );
-
-                        let client_data = ClientData {
-                            server_id: Some(server_id.clone()),
-                            server_addr: "127.0.0.1:20001".parse().unwrap(),
-                            remote_peer: None,
-                            remote_stream: None,
-                            data,
+                        let p2p = P2p::new(keypair, server_endpoint, ServerHandler {
+                            counter: recv_counter.clone(),
+                            connection: 0,
+                            stream_id: StreamId::from(VarInt::MAX),
+                            to_send: VecDeque::with_capacity(8 * 1024),
                             offset: 0,
-                            read_remaining: 0,
-                            did_stream: false,
-                            histogram: hdrhistogram::Histogram::<u64>::new_with_max(1000, 3).unwrap(),
-                            count: client_counter.clone(),
-                            recv: Vec::with_capacity(16),
-                            last_send: Instant::now(),
-                        };
+                            total: 0,
+                        });
+                        (
+                            NetworkTile::new("0.0.0.0:20001".parse().unwrap(), p2p).unwrap(),
+                            server_id,
+                        )
+                    };
 
-                        let addr = "127.0.0.1:20002";
-                        let p2p = P2p::new(keypair, client_endpoint, client_data);
-
-                        let client = NetworkTile::new(addr.parse().unwrap(), p2p).unwrap();
-
-                        std::thread::sleep(Duration::from_millis(200));
-                        (server_handle, client, client_counter)
-                    },
-                    |(handle, mut client, counter)| {
-                        while counter.load(Ordering::Relaxed) < total {
-                            client.spin();
-                            //tracing::info!(client_recv=counter.load(Ordering::Relaxed), server_finished=handle.is_finished(), "client");
+                    let counter = client_counter.clone();
+                    let server_handle = std::thread::spawn(move || {
+                        loop {
+                            server_tile.spin();
+                            //tracing::info!(srv_recv=recv_counter.load(Ordering::Relaxed),
+                            // client_recv=counter.load(Ordering::Relaxed), "srv");
+                            if counter.load(Ordering::Relaxed) >= total {
+                                tracing::info!("server completed");
+                                break;
+                            }
                         }
-                        tracing::info!("client spun out");
-                        handle.join().unwrap();
-                    },
-                    criterion_batch_size,
-                );
-            },
-        );
+                    });
+
+                    let data = data.clone();
+                    let secret = k256::ecdsa::SigningKey::random(&mut rng);
+                    let key_bytes: [u8; 32] = secret.to_bytes().into();
+                    let keypair = Keypair::from_secret(&key_bytes).unwrap();
+                    let client_endpoint =
+                        Endpoint::new(Arc::new(EndpointConfig::default()), None, false, None);
+
+                    let client_data = ClientData {
+                        server_id: Some(server_id.clone()),
+                        server_addr: "127.0.0.1:20001".parse().unwrap(),
+                        remote_peer: None,
+                        remote_stream: None,
+                        data,
+                        offset: 0,
+                        read_remaining: 0,
+                        did_stream: false,
+                        histogram: hdrhistogram::Histogram::<u64>::new_with_max(1000, 3).unwrap(),
+                        count: client_counter.clone(),
+                        recv: Vec::with_capacity(16),
+                        last_send: Instant::now(),
+                    };
+
+                    let addr = "127.0.0.1:20002";
+                    let p2p = P2p::new(keypair, client_endpoint, client_data);
+
+                    let client = NetworkTile::new(addr.parse().unwrap(), p2p).unwrap();
+
+                    std::thread::sleep(Duration::from_millis(200));
+                    (server_handle, client, client_counter)
+                },
+                |(handle, mut client, counter)| {
+                    while counter.load(Ordering::Relaxed) < total {
+                        client.spin();
+                        //tracing::info!(client_recv=counter.
+                        // load(Ordering::Relaxed),
+                        // server_finished=handle.is_finished(), "client");
+                    }
+                    tracing::info!("client spun out");
+                    handle.join().unwrap();
+                },
+                criterion_batch_size,
+            );
+        },
+    );
 }
 
 fn random_data() -> (Vec<Vec<u8>>, usize) {
@@ -144,9 +141,9 @@ fn random_data() -> (Vec<Vec<u8>>, usize) {
 }
 
 struct ServerHandler {
-    counter: Arc<AtomicUsize>, 
-    connection: usize, 
-    stream_id: StreamId, 
+    counter: Arc<AtomicUsize>,
+    connection: usize,
+    stream_id: StreamId,
     to_send: VecDeque<Vec<u8>>,
     offset: usize,
     total: usize,
@@ -159,9 +156,7 @@ impl silver_network::NetworkSend for ServerHandler {
 
     fn to_send(&mut self) -> Option<(usize, quinn_proto::StreamId, &[u8])> {
         match self.to_send.front() {
-            Some(data) => {
-                Some((self.connection, self.stream_id, &data[self.offset..]))
-            },
+            Some(data) => Some((self.connection, self.stream_id, &data[self.offset..])),
             None => {
                 //tracing::info!("srv nothing to send");
                 None
@@ -169,14 +164,14 @@ impl silver_network::NetworkSend for ServerHandler {
         }
     }
 
-    fn new_streams(&mut self) -> Option<(RemotePeer, quinn_proto::Dir)> {
+    fn new_streams(&mut self) -> Option<(RemotePeer, silver_network::StreamProtocol)> {
         None
     }
 
     fn sent(&mut self, _peer: &RemotePeer, _stream: &quinn_proto::StreamId, sent: usize) {
         self.total += sent;
         self.offset += sent;
-       
+
         let pop = self.to_send.front().map(|v| self.offset >= v.len()).unwrap_or_default();
         if pop {
             let buf = self.to_send.pop_front();
@@ -191,11 +186,7 @@ impl silver_network::NetworkRecv for ServerHandler {
         tracing::info!("new remote peer from: {remote_addr:?} {remote_peer:?}");
     }
 
-    fn new_stream(
-        &mut self,
-        peer: &silver_network::RemotePeer,
-        stream_id: &quinn_proto::StreamId,
-    ) {
+    fn new_stream(&mut self, peer: &silver_network::RemotePeer, stream_id: &quinn_proto::StreamId) {
         tracing::info!("new stream: {stream_id:?}");
         self.connection = peer.connection;
         self.stream_id = *stream_id;
@@ -210,8 +201,9 @@ impl silver_network::NetworkRecv for ServerHandler {
         let was = self.counter.fetch_add(data.len(), Ordering::Relaxed);
         //tracing::info!(was, "src recv");
         self.to_send.push_back(data.to_vec());
-        //self.buffer.write_all(data).inspect_err(|e| tracing::error!("buffer write failed: {e:?}")).unwrap();
-        //tracing::info!("recv: {}, total: {}", data.len(), was + data.len());
+        //self.buffer.write_all(data).inspect_err(|e| tracing::error!("buffer
+        // write failed: {e:?}")).unwrap(); tracing::info!("recv: {},
+        // total: {}", data.len(), was + data.len());
     }
 }
 
@@ -240,7 +232,9 @@ impl Drop for ClientData {
         let p90 = self.histogram.value_at_quantile(0.9);
         let p99 = self.histogram.value_at_quantile(0.99);
         let count = self.count.load(Ordering::Relaxed);
-        println!("{count}: p10: {p10}, p50: {p50}, p60: {p60}, p70: {p70}, p80: {p80}, p90: {p90}, p99: {p99}");
+        println!(
+            "{count}: p10: {p10}, p50: {p50}, p60: {p60}, p70: {p70}, p80: {p80}, p90: {p90}, p99: {p99}"
+        );
     }
 }
 
@@ -267,13 +261,13 @@ impl silver_network::NetworkSend for ClientData {
         None
     }
 
-    fn new_streams(&mut self) -> Option<(RemotePeer, quinn_proto::Dir)> {
+    fn new_streams(&mut self) -> Option<(RemotePeer, silver_network::StreamProtocol)> {
         if let Some(remote_peer) = self.remote_peer.as_ref() &&
             self.remote_stream.is_none() &&
             !self.did_stream
         {
             self.did_stream = true;
-            return Some((remote_peer.clone(), quinn_proto::Dir::Bi));
+            return Some((remote_peer.clone(), silver_network::StreamProtocol::GossipSub));
         }
         None
     }
@@ -327,10 +321,11 @@ impl silver_network::NetworkRecv for ClientData {
                 let elapsed = Instant(instant).elapsed().as_micros_u64();
                 //println!("{elapsed}");
                 let _ = self.histogram.record(elapsed);
-                
+
                 let full_len = usize::from_le_bytes(buf[0..8].try_into().unwrap());
                 //std::thread::sleep(Duration::from_millis(200));
-                //tracing::info!(full_len, was, remain=self.read_remaining, buf=buf.len(), data=data.len());
+                //tracing::info!(full_len, was, remain=self.read_remaining, buf=buf.len(),
+                // data=data.len());
                 if full_len > buf.len() {
                     self.read_remaining = full_len - buf.len();
                     buf = &[];
@@ -343,7 +338,7 @@ impl silver_network::NetworkRecv for ClientData {
                 self.recv.extend_from_slice(buf);
                 break;
             }
-        }        
+        }
     }
 }
 
@@ -365,7 +360,11 @@ struct Buffer<const N: usize> {
 
 impl<const N: usize> Debug for Buffer<N> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Buffer").field("buffer", &N).field("head", &self.head).field("tail", &self.tail).finish()
+        f.debug_struct("Buffer")
+            .field("buffer", &N)
+            .field("head", &self.head)
+            .field("tail", &self.tail)
+            .finish()
     }
 }
 
@@ -400,11 +399,7 @@ impl<const N: usize> Buffer<N> {
     }
 
     fn write_capacity(&self) -> usize {
-        if self.tail > self.head {
-            self.tail - self.head
-        } else {
-            N - self.head + self.tail
-        }
+        if self.tail > self.head { self.tail - self.head } else { N - self.head + self.tail }
     }
 }
 

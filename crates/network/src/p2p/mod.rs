@@ -13,9 +13,10 @@ pub(crate) use quic::{Peer, create_client_config};
 pub use quic::{create_endpoint, create_server_config};
 use quinn_proto::{ConnectionHandle, DatagramEvent, Endpoint};
 use silver_common::Keypair;
+pub use stream::StreamProtocol;
 
 use crate::{
-    NetworkRecv, NetworkSend,
+    NetworkRecv, NetworkSend, RemotePeer,
     socket::{MAX_GSO_SEGMENTS, Socket},
 };
 
@@ -26,6 +27,8 @@ pub struct P2p<H: NetworkSend + NetworkRecv> {
     timeout: Option<Duration>,
     handler: H,
     recv_count: usize,
+    /// Stream open requests that failed because the connection wasn't ready.
+    pending_streams: Vec<(RemotePeer, StreamProtocol)>,
 }
 
 impl<H: NetworkSend + NetworkRecv> P2p<H> {
@@ -37,6 +40,7 @@ impl<H: NetworkSend + NetworkRecv> P2p<H> {
             timeout: Some(Duration::ZERO),
             handler,
             recv_count: 0,
+            pending_streams: Vec::new(),
         }
     }
 
@@ -92,18 +96,33 @@ impl<H: NetworkSend + NetworkRecv> P2p<H> {
             self.peers.insert(handle, peer);
         }
 
-        // New outbound streams
-        while let Some((id, dir)) = self.handler.new_streams() {
-            if let Some(peer) = self.peers.get_mut(&ConnectionHandle(id.connection)) {
-                peer.new_stream(dir, &mut self.handler);
+        // Retry any pending stream opens from previous cycles.
+        self.pending_streams.retain(|(id, protocol)| {
+            self.peers
+                .get_mut(&ConnectionHandle(id.connection))
+                .and_then(|peer| peer.open_stream(*protocol))
+                .is_none()
+        });
+
+        // New outbound streams from handler.
+        while let Some((id, protocol)) = self.handler.new_streams() {
+            let opened = self
+                .peers
+                .get_mut(&ConnectionHandle(id.connection))
+                .and_then(|peer| peer.open_stream(protocol));
+            if opened.is_none() {
+                self.pending_streams.push((id, protocol));
             }
         }
 
         // Things to send.
         while let Some((connection_id, stream, data)) = self.handler.to_send() {
             let peer = self.peers.get_mut(&ConnectionHandle(connection_id)).unwrap(); // TODO
-            let wrote = peer.send(stream, data).unwrap(); // TODO
+            let wrote = peer.write(stream, data).unwrap(); // TODO
             if wrote < data.len() {
+                if wrote > 0 {
+                    self.handler.sent(peer.id(), &stream, wrote);
+                }
                 break;
             }
             self.handler.sent(peer.id(), &stream, wrote);
@@ -117,10 +136,11 @@ impl<H: NetworkSend + NetworkRecv> P2p<H> {
         let mut ep_callback = |handle, ep_event| self.endpoint.handle_event(handle, ep_event);
 
         for peer in self.peers.values_mut() {
-
             // N.B. peer transmit MUST be called before peer.spin();
             if !socket.is_blocked() {
-                while !socket.is_blocked() && socket.send(poll, |buf| peer.transmit(now, MAX_GSO_SEGMENTS, buf)) {
+                while !socket.is_blocked() &&
+                    socket.send(poll, |buf| peer.transmit(now, MAX_GSO_SEGMENTS, buf))
+                {
                     //tracing::info!("socket send");
                 }
             } else {

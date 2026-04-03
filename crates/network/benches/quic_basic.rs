@@ -144,7 +144,7 @@ impl silver_network::NetworkSend for ServerHandler {
         None
     }
 
-    fn new_streams(&mut self) -> Option<(RemotePeer, quinn_proto::Dir)> {
+    fn new_streams(&mut self) -> Option<(RemotePeer, silver_network::StreamProtocol)> {
         None
     }
 
@@ -201,13 +201,13 @@ impl silver_network::NetworkSend for ClientData {
         None
     }
 
-    fn new_streams(&mut self) -> Option<(RemotePeer, quinn_proto::Dir)> {
+    fn new_streams(&mut self) -> Option<(RemotePeer, silver_network::StreamProtocol)> {
         if let Some(remote_peer) = self.remote_peer.as_ref() &&
             self.remote_stream.is_none() &&
             !self.did_stream
         {
             self.did_stream = true;
-            return Some((remote_peer.clone(), quinn_proto::Dir::Bi));
+            return Some((remote_peer.clone(), silver_network::StreamProtocol::GossipSub));
         }
         None
     }

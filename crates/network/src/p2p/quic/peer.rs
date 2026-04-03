@@ -1,4 +1,4 @@
-use std::{io::Error, time::Instant};
+use std::{collections::HashMap, io::Error, time::Instant};
 
 use bytes::Bytes;
 use quinn_proto::{
@@ -6,12 +6,19 @@ use quinn_proto::{
 };
 use silver_common::PeerId;
 
-use crate::{NetworkRecv, NetworkSend, RemotePeer, p2p::tls::peer_id_from_certificate};
+use crate::{
+    NetworkRecv, RemotePeer,
+    p2p::{
+        stream::{Stream, StreamEvent, StreamProtocol},
+        tls::peer_id_from_certificate,
+    },
+};
 
 pub(crate) struct Peer {
     id: RemotePeer,
     handle: ConnectionHandle,
     connection: Connection,
+    streams: HashMap<StreamId, Stream>,
 }
 
 impl Peer {
@@ -20,6 +27,7 @@ impl Peer {
             id: RemotePeer { peer_id: PeerId::default(), connection: handle.0 },
             handle,
             connection,
+            streams: HashMap::with_capacity(16),
         }
     }
 
@@ -35,11 +43,53 @@ impl Peer {
         self.connection.is_drained()
     }
 
-    pub(crate) fn spin<F, H: NetworkSend + NetworkRecv>(
+    /// Open an outbound stream with the given protocol. Multistream-select
+    /// negotiation runs internally — the handler receives on_stream_ready
+    /// once complete.
+    pub(crate) fn open_stream(&mut self, protocol: StreamProtocol) -> Option<StreamId> {
+        // All streams are Bi — multistream-select negotiation requires
+        // bidirectional communication even for request-response protocols.
+        let id = self.connection.streams().open(Dir::Bi)?;
+        let mut stream = Stream::new_outbound(id, protocol);
+        // Kick off the first write (multistream header + protocol).
+        stream.drive(&mut self.connection);
+        self.streams.insert(id, stream);
+        Some(id)
+    }
+
+    /// Write application data to a negotiated stream.
+    /// Returns 0 if the stream is still negotiating.
+    pub(crate) fn write(&mut self, stream_id: StreamId, data: &[u8]) -> Result<usize, Error> {
+        let active = self.streams.get(&stream_id).is_some_and(|s| s.is_active());
+        if !active {
+            return Ok(0);
+        }
+        match self.connection.send_stream(stream_id).write(data) {
+            Ok(wrote) => Ok(wrote),
+            Err(quinn_proto::WriteError::Blocked) => Ok(0),
+            Err(e) => Err(Error::other(e)),
+        }
+    }
+
+    /// Half-close the write side of a stream.
+    pub(crate) fn finish_stream(&mut self, id: StreamId) {
+        let _ = self.connection.send_stream(id).finish();
+    }
+
+    pub(crate) fn transmit(
+        &mut self,
+        now: Instant,
+        max_datagrams: usize,
+        buf: &mut Vec<u8>,
+    ) -> Option<Transmit> {
+        self.connection.poll_transmit(now, max_datagrams, buf)
+    }
+
+    pub(crate) fn spin<F>(
         &mut self,
         now: Instant,
         ep_callback: &mut F,
-        handler: &mut H,
+        handler: &mut impl NetworkRecv,
     ) -> Option<Instant>
     where
         F: FnMut(ConnectionHandle, EndpointEvent) -> Option<ConnectionEvent>,
@@ -62,7 +112,7 @@ impl Peer {
                         self.connection.close(
                             now,
                             VarInt::from_u32(400),
-                            Bytes::from_static("bad peer id".as_bytes()),
+                            Bytes::from_static(b"bad peer id"),
                         );
                         continue;
                     };
@@ -74,93 +124,114 @@ impl Peer {
                     tracing::info!(handle = ?self.handle, ?reason, "connection lost");
                 }
                 quinn_proto::Event::Stream(stream_event) => {
-                    match stream_event {
-                        // Event produced for incoming streams.
-                        quinn_proto::StreamEvent::Opened { dir } => {
-                            while let Some(id) = self.connection.streams().accept(dir) {
-                                tracing::info!(peer=?self.id, ?id, ?dir, "stream openned");
-                                handler.new_stream(&self.id, &id);
-
-                                // try to read
-                                if let Ok(mut chunks) = self.connection.recv_stream(id).read(true) {
-                                    while let Ok(Some(chunk)) = chunks.next(usize::MAX) {
-                                        handler.recv(&self.id, &id, &chunk.bytes);
-                                    }
-                                    let _should_transmit = chunks.finalize();
-                                }
-                            }
-                        }
-                        quinn_proto::StreamEvent::Readable { id } => {
-                            if let Ok(mut chunks) = self.connection.recv_stream(id).read(true) {
-                                while let Ok(Some(chunk)) = chunks.next(usize::MAX) {
-                                    handler.recv(&self.id, &id, &chunk.bytes);
-                                }
-                                let _should_transmit = chunks.finalize();
-                            }
-                        }
-                        quinn_proto::StreamEvent::Writable { id: _ } => { // TODO
-                            // if let Ok(written) =
-                            // conn.send_stream(id).write(data) {
-
-                            // }
-                            //tracing::info!(spins=self.spin_count, "stream
-                            // writable");
-                        }
-                        quinn_proto::StreamEvent::Finished { id } => {
-                            tracing::info!(?id, "stream finished");
-                        }
-                        quinn_proto::StreamEvent::Stopped { id, error_code } => {
-                            tracing::warn!(?id, ?error_code, "stream stopped");
-                        }
-                        quinn_proto::StreamEvent::Available { dir } => { // TODO
-                            // Callback if it is now possible ot open a new stream (when previously
-                            // at limits)
-                            tracing::info!(?dir, "stream available");
-                            //if let Some(id) = self.connection.streams().open(dir) {}
-                        }
-                    }
+                    self.handle_stream_event(stream_event, handler);
                 }
                 _ => {}
             }
         }
 
         while let Some(ep_event) = self.connection.poll_endpoint_events() {
-            tracing::info!("post spin ep events");
             if let Some(conn_event) = (ep_callback)(self.handle, ep_event) {
                 self.connection.handle_event(conn_event);
             }
         }
 
+        // Drive all negotiating streams (they may have writes pending).
+        self.drive_streams(handler);
+
         next_timeout
     }
 
-    pub(crate) fn transmit(
+    fn handle_stream_event(
         &mut self,
-        now: Instant,
-        max_datagrams: usize,
-        buf: &mut Vec<u8>,
-    ) -> Option<Transmit> {
-        self.connection.poll_transmit(now, max_datagrams, buf)
-    }
-
-    pub(crate) fn send(&mut self, stream_id: StreamId, data: &[u8]) -> Result<usize, Error> {
-        match self.connection.send_stream(stream_id).write(data) {
-            Ok(wrote) => {
-                // if wrote < data.len() {
-                //     tracing::warn!("only wrote {wrote} / {}", data.len());
-                // }
-                Ok(wrote)
+        event: quinn_proto::StreamEvent,
+        handler: &mut impl NetworkRecv,
+    ) {
+        match event {
+            quinn_proto::StreamEvent::Opened { dir } => {
+                while let Some(id) = self.connection.streams().accept(dir) {
+                    let mut stream = Stream::new_inbound(id);
+                    let ev = stream.drive(&mut self.connection);
+                    self.streams.insert(id, stream);
+                    self.process_stream_event(id, ev, handler);
+                }
             }
-            Err(e) => match e {
-                quinn_proto::WriteError::Blocked => Ok(0),
-                e => Err(Error::other(e)),
-            },
+            quinn_proto::StreamEvent::Readable { id } => {
+                if let Some(stream) = self.streams.get_mut(&id) {
+                    if stream.is_active() {
+                        self.read_active(id, handler);
+                    } else {
+                        let event = stream.drive_read(&mut self.connection);
+                        self.process_stream_event(id, event, handler);
+                    }
+                }
+            }
+            quinn_proto::StreamEvent::Writable { id } => {
+                if let Some(stream) = self.streams.get_mut(&id) {
+                    let event = stream.drive_write(&mut self.connection);
+                    self.process_stream_event(id, event, handler);
+                }
+            }
+            quinn_proto::StreamEvent::Finished { id } => {
+                tracing::debug!(?id, "stream finished");
+                self.streams.remove(&id);
+            }
+            quinn_proto::StreamEvent::Stopped { id, error_code } => {
+                tracing::warn!(?id, ?error_code, "stream stopped");
+                self.streams.remove(&id);
+            }
+            quinn_proto::StreamEvent::Available { dir } => {
+                tracing::debug!(?dir, "stream available");
+            }
         }
     }
 
-    pub(crate) fn new_stream<R: NetworkRecv>(&mut self, dir: Dir, recv: &mut R) {
-        if let Some(id) = self.connection.streams().open(dir) {
-            recv.new_stream(&self.id, &id);
+    fn process_stream_event(
+        &mut self,
+        id: StreamId,
+        event: StreamEvent,
+        handler: &mut impl NetworkRecv,
+    ) {
+        match &event {
+            StreamEvent::Ready(proto) => {
+                tracing::info!(peer=?self.id, ?id, ?proto, "stream negotiated");
+                if let Some(stream) = self.streams.get_mut(&id) {
+                    stream.apply(&event);
+                }
+                handler.new_stream(&self.id, &id);
+            }
+            StreamEvent::Data => {
+                // TODO: pass decoded data to handler.recv()
+            }
+            StreamEvent::Failed => {
+                tracing::warn!(peer=?self.id, ?id, "stream negotiation failed");
+                self.streams.remove(&id);
+            }
+            StreamEvent::Pending => {}
+        }
+    }
+
+    /// Read application data from an active stream and forward to handler.
+    fn read_active(&mut self, id: StreamId, handler: &mut impl NetworkRecv) {
+        let mut recv = self.connection.recv_stream(id);
+        let Ok(mut chunks) = recv.read(true) else {
+            return;
+        };
+        while let Ok(Some(chunk)) = chunks.next(usize::MAX) {
+            handler.recv(&self.id, &id, &chunk.bytes);
+        }
+        let _ = chunks.finalize();
+    }
+
+    /// Drive all streams that may have pending work (e.g. outbound negotiate
+    /// writes).
+    fn drive_streams(&mut self, handler: &mut impl NetworkRecv) {
+        let ids: Vec<StreamId> = self.streams.keys().copied().collect();
+        for id in ids {
+            if let Some(stream) = self.streams.get_mut(&id) {
+                let event = stream.drive(&mut self.connection);
+                self.process_stream_event(id, event, handler);
+            }
         }
     }
 }
@@ -170,7 +241,7 @@ fn id_from_connection(conn: &Connection) -> Option<PeerId> {
     let Some(certs): Option<Box<Vec<rustls::pki_types::CertificateDer>>> =
         identity.map(|i| i.downcast()).and_then(|r| r.ok())
     else {
-        tracing::error!("identity cannot be downcast to certifactes");
+        tracing::error!("identity cannot be downcast to certificates");
         return None;
     };
     peer_id_from_certificate(certs[0].as_ref())
@@ -178,4 +249,375 @@ fn id_from_connection(conn: &Connection) -> Option<PeerId> {
             tracing::error!(?e, "failed to extract peer id from certificate");
         })
         .ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{net::SocketAddr, sync::Arc, time::Instant};
+
+    use quinn_proto::{ConnectionHandle, DatagramEvent, Endpoint, EndpointConfig, StreamId};
+    use silver_common::Keypair;
+
+    use super::*;
+    use crate::{NetworkRecv, RemotePeer, p2p::stream::StreamProtocol};
+
+    /// Records all callbacks from NetworkRecv.
+    #[derive(Default)]
+    struct Recorder {
+        connections: Vec<RemotePeer>,
+        streams: Vec<(RemotePeer, StreamId)>,
+        received: Vec<(StreamId, Vec<u8>)>,
+    }
+
+    impl NetworkRecv for Recorder {
+        fn new_connection(&mut self, remote_peer: RemotePeer, _remote_addr: SocketAddr) {
+            self.connections.push(remote_peer);
+        }
+
+        fn new_stream(&mut self, peer: &RemotePeer, stream_id: &StreamId) {
+            self.streams.push((peer.clone(), *stream_id));
+        }
+
+        fn recv(&mut self, _peer: &RemotePeer, stream_id: &StreamId, data: &[u8]) {
+            self.received.push((*stream_id, data.to_vec()));
+        }
+    }
+
+    /// Test harness: two endpoints + peers connected via in-memory datagram
+    /// shuttle.
+    struct PeerPair {
+        client_ep: Endpoint,
+        server_ep: Endpoint,
+        client_peer: Peer,
+        server_peer: Peer,
+        client_addr: SocketAddr,
+        server_addr: SocketAddr,
+    }
+
+    impl PeerPair {
+        fn new() -> Self {
+            let server_addr: SocketAddr = "127.0.0.1:5000".parse().unwrap();
+            let client_addr: SocketAddr = "127.0.0.1:5001".parse().unwrap();
+            let now = Instant::now();
+
+            let server_kp = Keypair::from_secret(&[1u8; 32]).unwrap();
+            let client_kp = Keypair::from_secret(&[2u8; 32]).unwrap();
+
+            let server_config = super::super::create_server_config(&server_kp).unwrap();
+            let mut server_ep = Endpoint::new(
+                Arc::new(EndpointConfig::default()),
+                Some(Arc::new(server_config)),
+                false,
+                None,
+            );
+
+            let mut client_ep =
+                Endpoint::new(Arc::new(EndpointConfig::default()), None, false, None);
+
+            let client_config =
+                super::super::create_client_config(&client_kp, Some(server_kp.peer_id())).unwrap();
+            let (client_handle, client_conn) =
+                client_ep.connect(now, client_config, server_addr, "x").unwrap();
+            let mut client_peer = Peer::new(client_handle, client_conn);
+
+            // Shuttle the initial client transmit to bootstrap the server-side connection.
+            let mut buf = Vec::new();
+            let mut scratch = vec![0u8; 2048];
+            let mut server_peer: Option<Peer> = None;
+
+            while let Some(tx) = client_peer.transmit(now, 1, &mut buf) {
+                let data = bytes::BytesMut::from(&buf[..tx.size]);
+                buf.clear();
+                if let Some(event) =
+                    server_ep.handle(now, client_addr, None, None, data, &mut scratch)
+                {
+                    match event {
+                        DatagramEvent::NewConnection(incoming) => {
+                            let (handle, conn) =
+                                server_ep.accept(incoming, now, &mut scratch, None).unwrap();
+                            server_peer = Some(Peer::new(handle, conn));
+                        }
+                        DatagramEvent::ConnectionEvent(_, ce) => {
+                            if let Some(ref mut p) = server_peer {
+                                p.event(ce);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            let mut pair = Self {
+                client_ep,
+                server_ep,
+                client_peer,
+                server_peer: server_peer.expect("server never received initial packet"),
+                client_addr,
+                server_addr,
+            };
+
+            // Pump until both sides are connected.
+            let mut client_rec = Recorder::default();
+            let mut server_rec = Recorder::default();
+            for _ in 0..100 {
+                pair.step(now, &mut client_rec, &mut server_rec);
+                if !client_rec.connections.is_empty() && !server_rec.connections.is_empty() {
+                    break;
+                }
+            }
+            assert!(!client_rec.connections.is_empty(), "client never connected");
+            assert!(!server_rec.connections.is_empty(), "server never connected");
+
+            pair
+        }
+
+        /// Shuttle datagrams and spin both peers until quiescent.
+        fn step(&mut self, now: Instant, client_rec: &mut Recorder, server_rec: &mut Recorder) {
+            let mut buf = Vec::new();
+            let mut scratch = vec![0u8; 2048];
+
+            for _ in 0..20 {
+                let mut progress = false;
+
+                // Client → Server.
+                while let Some(tx) = self.client_peer.transmit(now, 1, &mut buf) {
+                    progress = true;
+                    let data = bytes::BytesMut::from(&buf[..tx.size]);
+                    buf.clear();
+                    if let Some(event) =
+                        self.server_ep.handle(now, self.client_addr, None, None, data, &mut scratch)
+                    {
+                        if let DatagramEvent::ConnectionEvent(_, ce) = event {
+                            self.server_peer.event(ce);
+                        }
+                    }
+                }
+
+                // Server → Client.
+                while let Some(tx) = self.server_peer.transmit(now, 1, &mut buf) {
+                    progress = true;
+                    let data = bytes::BytesMut::from(&buf[..tx.size]);
+                    buf.clear();
+                    if let Some(event) =
+                        self.client_ep.handle(now, self.server_addr, None, None, data, &mut scratch)
+                    {
+                        if let DatagramEvent::ConnectionEvent(_, ce) = event {
+                            self.client_peer.event(ce);
+                        }
+                    }
+                }
+
+                // Spin both.
+                {
+                    let mut cb = |h, e| self.client_ep.handle_event(h, e);
+                    self.client_peer.spin(now, &mut cb, client_rec);
+                }
+                {
+                    let mut cb = |h, e| self.server_ep.handle_event(h, e);
+                    self.server_peer.spin(now, &mut cb, server_rec);
+                }
+
+                if !progress {
+                    break;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn outbound_stream_negotiation() {
+        let mut pair = PeerPair::new();
+        let now = Instant::now();
+        let mut client_rec = Recorder::default();
+        let mut server_rec = Recorder::default();
+
+        // Client opens a gossipsub (bi) stream.
+        let stream_id = pair.client_peer.open_stream(StreamProtocol::GossipSub).unwrap();
+
+        // Pump until both sides see the negotiated stream.
+        for _ in 0..100 {
+            pair.step(now, &mut client_rec, &mut server_rec);
+            if !client_rec.streams.is_empty() && !server_rec.streams.is_empty() {
+                break;
+            }
+        }
+
+        assert!(!client_rec.streams.is_empty(), "client never got stream ready");
+        assert!(!server_rec.streams.is_empty(), "server never got stream ready");
+    }
+
+    #[test]
+    fn outbound_stream_data_transfer() {
+        let mut pair = PeerPair::new();
+        let now = Instant::now();
+        let mut client_rec = Recorder::default();
+        let mut server_rec = Recorder::default();
+
+        let stream_id = pair.client_peer.open_stream(StreamProtocol::GossipSub).unwrap();
+
+        // Negotiate.
+        for _ in 0..100 {
+            pair.step(now, &mut client_rec, &mut server_rec);
+            if !client_rec.streams.is_empty() && !server_rec.streams.is_empty() {
+                break;
+            }
+        }
+        assert!(!client_rec.streams.is_empty());
+        assert!(!server_rec.streams.is_empty());
+
+        // Client sends data.
+        let payload = b"hello from the client side";
+        let wrote = pair.client_peer.write(stream_id, payload).unwrap();
+        assert_eq!(wrote, payload.len());
+
+        // Pump until server receives.
+        for _ in 0..100 {
+            pair.step(now, &mut client_rec, &mut server_rec);
+            if !server_rec.received.is_empty() {
+                break;
+            }
+        }
+
+        assert!(!server_rec.received.is_empty(), "server never received data");
+        let all_data: Vec<u8> = server_rec.received.iter().flat_map(|(_, d)| d.clone()).collect();
+        assert_eq!(all_data, payload);
+    }
+
+    #[test]
+    fn bidirectional_data_transfer() {
+        let mut pair = PeerPair::new();
+        let now = Instant::now();
+        let mut client_rec = Recorder::default();
+        let mut server_rec = Recorder::default();
+
+        // Client opens bi stream (gossipsub).
+        let client_stream_id = pair.client_peer.open_stream(StreamProtocol::GossipSub).unwrap();
+
+        // Negotiate.
+        for _ in 0..100 {
+            pair.step(now, &mut client_rec, &mut server_rec);
+            if !client_rec.streams.is_empty() && !server_rec.streams.is_empty() {
+                break;
+            }
+        }
+        assert!(!server_rec.streams.is_empty());
+
+        // The server-side stream id for the same stream.
+        let server_stream_id = server_rec.streams[0].1;
+
+        // Client → Server.
+        let c2s = b"client to server";
+        pair.client_peer.write(client_stream_id, c2s).unwrap();
+
+        // Server → Client.
+        let s2c = b"server to client";
+        pair.server_peer.write(server_stream_id, s2c).unwrap();
+
+        // Pump both directions.
+        for _ in 0..100 {
+            pair.step(now, &mut client_rec, &mut server_rec);
+            if !server_rec.received.is_empty() && !client_rec.received.is_empty() {
+                break;
+            }
+        }
+
+        let server_got: Vec<u8> = server_rec.received.iter().flat_map(|(_, d)| d.clone()).collect();
+        let client_got: Vec<u8> = client_rec.received.iter().flat_map(|(_, d)| d.clone()).collect();
+        assert_eq!(server_got, c2s);
+        assert_eq!(client_got, s2c);
+    }
+
+    #[test]
+    fn inbound_stream_negotiation() {
+        let mut pair = PeerPair::new();
+        let now = Instant::now();
+        let mut client_rec = Recorder::default();
+        let mut server_rec = Recorder::default();
+
+        // Server opens a stream toward the client.
+        let stream_id = pair.server_peer.open_stream(StreamProtocol::Ping).unwrap();
+
+        for _ in 0..100 {
+            pair.step(now, &mut client_rec, &mut server_rec);
+            if !server_rec.streams.is_empty() && !client_rec.streams.is_empty() {
+                break;
+            }
+        }
+
+        assert!(!server_rec.streams.is_empty(), "server never got stream ready");
+        assert!(!client_rec.streams.is_empty(), "client never got stream ready");
+    }
+
+    #[test]
+    fn stream_finish() {
+        let mut pair = PeerPair::new();
+        let now = Instant::now();
+        let mut client_rec = Recorder::default();
+        let mut server_rec = Recorder::default();
+
+        let stream_id = pair.client_peer.open_stream(StreamProtocol::GossipSub).unwrap();
+
+        // Negotiate.
+        for _ in 0..100 {
+            pair.step(now, &mut client_rec, &mut server_rec);
+            if !client_rec.streams.is_empty() && !server_rec.streams.is_empty() {
+                break;
+            }
+        }
+
+        // Send data then finish.
+        let payload = b"last message";
+        pair.client_peer.write(stream_id, payload).unwrap();
+        pair.client_peer.finish_stream(stream_id);
+
+        // Pump until server receives.
+        for _ in 0..100 {
+            pair.step(now, &mut client_rec, &mut server_rec);
+            if !server_rec.received.is_empty() {
+                break;
+            }
+        }
+
+        let data: Vec<u8> = server_rec.received.iter().flat_map(|(_, d)| d.clone()).collect();
+        assert_eq!(data, payload);
+    }
+
+    #[test]
+    fn multiple_streams() {
+        let mut pair = PeerPair::new();
+        let now = Instant::now();
+        let mut client_rec = Recorder::default();
+        let mut server_rec = Recorder::default();
+
+        // Open two streams with different protocols.
+        let s1 = pair.client_peer.open_stream(StreamProtocol::GossipSub).unwrap();
+        let s2 = pair.client_peer.open_stream(StreamProtocol::Identity).unwrap();
+
+        // Negotiate both.
+        for _ in 0..200 {
+            pair.step(now, &mut client_rec, &mut server_rec);
+            if client_rec.streams.len() >= 2 && server_rec.streams.len() >= 2 {
+                break;
+            }
+        }
+
+        assert!(client_rec.streams.len() >= 2, "client streams: {}", client_rec.streams.len());
+        assert!(server_rec.streams.len() >= 2, "server streams: {}", server_rec.streams.len());
+
+        // Send different data on each stream.
+        pair.client_peer.write(s1, b"stream one").unwrap();
+        pair.client_peer.write(s2, b"stream two").unwrap();
+
+        for _ in 0..100 {
+            pair.step(now, &mut client_rec, &mut server_rec);
+            if server_rec.received.len() >= 2 {
+                break;
+            }
+        }
+
+        assert!(server_rec.received.len() >= 2);
+        let all: Vec<u8> = server_rec.received.iter().flat_map(|(_, d)| d.clone()).collect();
+        assert!(all.windows(10).any(|w| w == b"stream one"));
+        assert!(all.windows(10).any(|w| w == b"stream two"));
+    }
 }

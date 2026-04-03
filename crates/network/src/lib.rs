@@ -4,8 +4,8 @@ mod tile;
 
 use std::net::SocketAddr;
 
-pub use p2p::{P2p, create_endpoint, create_server_config};
-use quinn_proto::{Dir, StreamId};
+pub use p2p::{P2p, StreamProtocol, create_endpoint, create_server_config};
+use quinn_proto::StreamId;
 use silver_common::PeerId;
 pub use tile::NetworkTile;
 
@@ -20,8 +20,9 @@ pub trait NetworkSend: Send {
     /// called in a loop by the Network tile until `None` is returned.
     fn new_peer(&mut self) -> Option<(PeerId, SocketAddr)>;
 
-    /// Return new stream to open
-    fn new_streams(&mut self) -> Option<(RemotePeer, Dir)>;
+    /// Return new stream to open with the given protocol. Multistream-select
+    /// negotiation is handled internally by the peer.
+    fn new_streams(&mut self) -> Option<(RemotePeer, StreamProtocol)>;
 
     /// Return data to send. Called in a loop by the network tile until
     /// `None` is returned.

@@ -1,12 +1,14 @@
 mod snappy;
-mod state;
+pub(crate) mod state;
 mod stream;
+
+pub(crate) use stream::{Stream, StreamEvent};
 
 const MULTISTREAM_V1: &[u8] = b"\x13/multistream/1.0.0\n";
 const REJECT_RESPONSE: &[u8] = b"\x13/multistream/1.0.0\n\x03na\n";
-const PROTOCOL_LEN_OFFSET: usize = 20;
 
-enum StreamProtocol {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamProtocol {
     GossipSub,
     Identity,
     StatusV1,
@@ -20,25 +22,38 @@ enum StreamProtocol {
     DataColumnSidecarsByRoot,
 }
 
+const ALL_PROTOCOLS: &[StreamProtocol] = &[
+    StreamProtocol::GossipSub,
+    StreamProtocol::Identity,
+    StreamProtocol::StatusV1,
+    StreamProtocol::StatusV2,
+    StreamProtocol::Ping,
+    StreamProtocol::Goodbye,
+    StreamProtocol::Metadata,
+    StreamProtocol::BeaconBlocksByRange,
+    StreamProtocol::BeaconBlocksByRoot,
+    StreamProtocol::DataColumnSidecarsByRange,
+    StreamProtocol::DataColumnSidecarsByRoot,
+];
+
 impl StreamProtocol {
-    const fn is_request_response(&self) -> bool {
+    pub(crate) const fn is_request_response(&self) -> bool {
         match self {
-            Self::GossipSub => false,
+            Self::GossipSub | Self::Identity => false,
             _ => true,
         }
     }
 
-    /// Next protocol to try if the intial proposal is rejected.
-    const fn next(&self) -> Option<Self> {
+    /// Next protocol to try if the initial proposal is rejected.
+    pub(crate) const fn next(&self) -> Option<Self> {
         match self {
             Self::StatusV2 => Some(Self::StatusV1),
             _ => None,
         }
     }
 
-    /// Returns the mutliselect prefix lines (used for both request and
-    /// response)
-    const fn multiselect(&self) -> &[u8] {
+    /// Varint-length-prefixed protocol line (including trailing \n).
+    pub(crate) const fn multiselect(&self) -> &[u8] {
         match self {
             StreamProtocol::GossipSub => b"\x0f/meshsub/1.1.0\n",
             StreamProtocol::Identity => b"\x0f/ipfs/id/1.0.0\n",
@@ -60,6 +75,11 @@ impl StreamProtocol {
                 b"\x41/eth2/beacon_chain/req/data_column_sidecars_by_root/1/ssz_snappy\n"
             }
         }
+    }
+
+    /// Match a varint-prefixed protocol line against known protocols.
+    pub(crate) fn from_multiselect(data: &[u8]) -> Option<Self> {
+        ALL_PROTOCOLS.iter().find(|p| p.multiselect() == data).copied()
     }
 }
 

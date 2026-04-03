@@ -1,16 +1,15 @@
 #[cfg(not(target_os = "linux"))]
-mod portable;
+#[path = "portable.rs"]
+mod udp;
 #[cfg(target_os = "linux")]
-mod unix;
+#[path = "unix.rs"]
+mod udp;
 
 use std::{io::Error, net::SocketAddr};
 
 use mio::{Interest, Poll, Token, net::UdpSocket};
-#[cfg(not(target_os = "linux"))]
-pub(crate) use portable::{RX_BATCH_MAX, RxBatch, SCRATCH, TxBatch};
 use quinn_proto::Transmit;
-#[cfg(target_os = "linux")]
-pub(crate) use unix::{RX_BATCH_MAX, RX_BUF_SIZE, RxBatch, TxBatch};
+pub(crate) use udp::{RX_BATCH_MAX, RX_BUF_SIZE, RxBatch, TxBatch};
 
 pub(crate) const MAX_GSO_SEGMENTS: usize = 10;
 
