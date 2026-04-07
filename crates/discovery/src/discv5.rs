@@ -9,7 +9,7 @@ use rand::RngCore as _;
 use rustc_hash::FxHashMap;
 use secp256k1::{SECP256K1, SecretKey};
 use silver_common::{Enr, NodeId};
-use tracing::warn;
+use tracing::{trace, warn};
 
 use crate::{
     config::DiscoveryConfig,
@@ -51,6 +51,9 @@ pub struct DiscV5 {
 
     ip_votes: FxHashMap<NodeId, (IpAddr, u16)>,
     ip_vote_counts: FxHashMap<(IpAddr, u16), u32>,
+
+    banned_nodes: FxHashMap<NodeId, Option<Instant>>,
+    banned_ips: FxHashMap<IpAddr, Option<Instant>>,
 
     next_request_id: u64,
     last_ping: Instant,
@@ -96,10 +99,33 @@ impl DiscV5 {
             event_queue: Vec::with_capacity(MAX_SESSIONS_COUNT * 2),
             ip_votes: FxHashMap::with_capacity_and_hasher(MAX_SESSIONS_COUNT, Default::default()),
             ip_vote_counts: FxHashMap::with_capacity_and_hasher(8, Default::default()),
+            banned_nodes: FxHashMap::default(),
+            banned_ips: FxHashMap::default(),
             next_request_id: 0,
             last_ping: Instant::now(),
             last_lookup: Instant::now(),
         }
+    }
+
+    fn is_banned(
+        banned_nodes: &mut FxHashMap<NodeId, Option<Instant>>,
+        banned_ips: &mut FxHashMap<IpAddr, Option<Instant>>,
+        id: &NodeId,
+        ip: IpAddr,
+    ) -> bool {
+        if let Some(expires) = banned_nodes.get(id) {
+            if expires.map_or(true, |t| Instant::now() < t) {
+                return true;
+            }
+            banned_nodes.remove(id);
+        }
+        if let Some(expires) = banned_ips.get(&ip) {
+            if expires.map_or(true, |t| Instant::now() < t) {
+                return true;
+            }
+            banned_ips.remove(&ip);
+        }
+        false
     }
 
     fn next_id(&mut self) -> u64 {
@@ -707,6 +733,19 @@ impl Discovery for DiscV5 {
         // trigger lookup on the next poll
         self.last_lookup = Instant::now() - self.config.lookup_interval();
     }
+
+    fn ban_node(&mut self, id: NodeId, duration: Option<Duration>) {
+        let expires = duration.map(|d| Instant::now() + d);
+        self.banned_nodes.insert(id, expires);
+        self.sessions.remove(&id);
+        self.pending_findnodes.remove(&id);
+        self.pending_probe_nonces.remove(&id);
+    }
+
+    fn ban_ip(&mut self, ip: IpAddr, duration: Option<Duration>) {
+        let expires = duration.map(|d| Instant::now() + d);
+        self.banned_ips.insert(ip, expires);
+    }
 }
 
 impl DiscoveryNetworking for DiscV5 {
@@ -733,6 +772,14 @@ impl DiscoveryNetworking for DiscV5 {
             let mut rid = self.next_request_id;
             for node in self.kbuckets.iter_ref() {
                 let node_id = *node.key.preimage();
+                if Self::is_banned(
+                    &mut self.banned_nodes,
+                    &mut self.banned_ips,
+                    &node_id,
+                    node.value.addr.ip(),
+                ) {
+                    continue;
+                }
                 if let Some(s) = self.sessions.get(&node_id) &&
                     let Some(data) =
                         Packet::encode_message(self.local_id, node_id, &s.enc, Message::Ping {
@@ -762,7 +809,14 @@ impl DiscoveryNetworking for DiscV5 {
                 .iter_ref()
                 .filter(|n| {
                     let id = n.key.preimage();
-                    !self.sessions.contains_key(id) && !self.pending_findnodes.contains_key(id)
+                    !self.sessions.contains_key(id) &&
+                        !self.pending_findnodes.contains_key(id) &&
+                        !Self::is_banned(
+                            &mut self.banned_nodes,
+                            &mut self.banned_ips,
+                            id,
+                            n.value.addr.ip(),
+                        )
                 })
                 .take(32)
                 .map(|n| (*n.key.preimage(), n.value.addr))
@@ -780,7 +834,15 @@ impl DiscoveryNetworking for DiscV5 {
                 let with_session: ArrayVec<(NodeId, SocketAddr), 32> = self
                     .kbuckets
                     .iter_ref()
-                    .filter(|n| self.sessions.contains_key(n.key.preimage()))
+                    .filter(|n| {
+                        self.sessions.contains_key(n.key.preimage()) &&
+                            !Self::is_banned(
+                                &mut self.banned_nodes,
+                                &mut self.banned_ips,
+                                n.key.preimage(),
+                                n.value.addr.ip(),
+                            )
+                    })
                     .take(32)
                     .map(|n| (*n.key.preimage(), n.value.addr))
                     .collect();
@@ -816,6 +878,15 @@ impl DiscoveryNetworking for DiscV5 {
 
         let src_id = packet.src_id;
         let nonce = packet.nonce;
+
+        if Self::is_banned(&mut self.banned_nodes, &mut self.banned_ips, &src_id, src_addr.ip()) {
+            trace!(
+                "dropping message from the banned node with node_id = {} and ip = {}",
+                src_id,
+                src_addr.ip()
+            );
+            return;
+        }
 
         match packet.kind {
             MessageKind::Message => {
@@ -1559,5 +1630,108 @@ mod tests {
         // Verify the stored enr_seq was updated.
         let updated_seq = a.kbuckets.get(&Key::from(b.local_id)).unwrap().value.enr_seq;
         assert_eq!(updated_seq, new_seq, "A's stored enr_seq for B should match B's new seq");
+    }
+
+    #[test]
+    fn test_ban_node_drops_messages() {
+        let now = Instant::now();
+        let (mut a, a_addr, _) = make_node(19111);
+        let (mut b, b_addr, b_pubkey) = make_node(19112);
+
+        do_handshake(&mut a, a_addr, &mut b, b_addr, b_pubkey, now);
+
+        // Ban B by node ID (permanent).
+        a.ban_node(b.local_id, None);
+
+        // Session should have been removed.
+        assert!(!a.sessions.contains_key(&b.local_id), "session should be cleared on ban");
+
+        // B sends a Ping — A should silently drop it.
+        let rid = b.next_id();
+        let data = {
+            // B still has its session with A, re-create one for encoding.
+            let s = b.sessions.get(&a.local_id).unwrap();
+            Packet::encode_message(b.local_id, a.local_id, &s.enc, Message::Ping {
+                request_id: rid,
+                enr_seq: 1,
+            })
+            .unwrap()
+        };
+        a.handle(b_addr, &data, now);
+
+        // A should produce no events toward B.
+        let a_sends = collect_sends(&mut a);
+        let to_b: Vec<_> = a_sends.iter().filter(|(to, _)| *to == b_addr).collect();
+        assert!(to_b.is_empty(), "banned node's messages should be dropped");
+    }
+
+    #[test]
+    fn test_ban_ip_drops_messages() {
+        let now = Instant::now();
+        let (mut a, a_addr, _) = make_node(19121);
+        let (mut b, b_addr, b_pubkey) = make_node(19122);
+
+        do_handshake(&mut a, a_addr, &mut b, b_addr, b_pubkey, now);
+
+        // Ban B's IP (permanent).
+        a.ban_ip(b_addr.ip(), None);
+
+        // B sends a probe — A should silently drop it.
+        let data = {
+            let s = b.sessions.get(&a.local_id).unwrap();
+            Packet::encode_message(b.local_id, a.local_id, &s.enc, Message::Ping {
+                request_id: 0,
+                enr_seq: 1,
+            })
+            .unwrap()
+        };
+        a.handle(b_addr, &data, now);
+
+        let a_sends = collect_sends(&mut a);
+        let to_b: Vec<_> = a_sends.iter().filter(|(to, _)| *to == b_addr).collect();
+        assert!(to_b.is_empty(), "banned IP's messages should be dropped");
+    }
+
+    #[test]
+    fn test_ban_skips_ping() {
+        let now = Instant::now();
+        let (mut a, a_addr, _) = make_node(19131);
+        let (mut b, b_addr, b_pubkey) = make_node(19132);
+
+        do_handshake(&mut a, a_addr, &mut b, b_addr, b_pubkey, now);
+
+        // Ban B, but keep the session to verify the ping loop skips it.
+        // (Normally ban_node removes the session, so insert a fresh ban
+        //  without going through ban_node.)
+        a.banned_nodes.insert(b.local_id, None);
+
+        // Force a ping round.
+        a.last_ping = Instant::now() - a.config.ping_frequency() - Duration::from_secs(1);
+        let a_sends = collect_sends(&mut a);
+
+        let to_b: Vec<_> = a_sends.iter().filter(|(to, _)| *to == b_addr).collect();
+        assert!(to_b.is_empty(), "banned node should not receive pings");
+    }
+
+    #[test]
+    fn test_timed_ban_expires() {
+        let now = Instant::now();
+        let (mut a, a_addr, _) = make_node(19141);
+        let (mut b, b_addr, b_pubkey) = make_node(19142);
+
+        do_handshake(&mut a, a_addr, &mut b, b_addr, b_pubkey, now);
+
+        // Ban B for 0 duration (already expired).
+        a.ban_node(b.local_id, Some(Duration::ZERO));
+
+        // Re-establish session and verify B can communicate again.
+        do_handshake(&mut a, a_addr, &mut b, b_addr, b_pubkey, now);
+
+        assert!(!a.banned_nodes.contains_key(&b.local_id), "expired ban should be cleaned up");
+
+        inject_message(&mut b, &mut a, b_addr, Message::Ping { request_id: 1, enr_seq: 0 }, now);
+        let a_sends = collect_sends(&mut a);
+        let to_b: Vec<_> = a_sends.iter().filter(|(to, _)| *to == b_addr).collect();
+        assert!(!to_b.is_empty(), "expired ban should allow messages again");
     }
 }

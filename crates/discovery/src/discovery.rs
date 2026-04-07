@@ -1,4 +1,7 @@
-use std::{net::SocketAddr, time::Instant};
+use std::{
+    net::{IpAddr, SocketAddr},
+    time::{Duration, Instant},
+};
 
 use flux::utils::ArrayVec;
 use silver_common::{Enr, NodeId};
@@ -28,7 +31,9 @@ pub trait Discovery {
 
     fn find_nodes(&mut self);
 
-    // todo @ nina: ban / unban
+    fn ban_node(&mut self, id: NodeId, duration: Option<Duration>);
+
+    fn ban_ip(&mut self, ip: IpAddr, duration: Option<Duration>);
 }
 
 pub trait DiscoveryNetworking {
