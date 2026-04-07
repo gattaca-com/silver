@@ -62,6 +62,9 @@ pub struct DiscV5 {
     next_request_id: u64,
     last_ping: Instant,
     last_lookup: Instant,
+    last_cleanup: Instant,
+
+    ping_cursor: usize,
 }
 
 impl DiscV5 {
@@ -114,6 +117,8 @@ impl DiscV5 {
             next_request_id: 0,
             last_ping: Instant::now(),
             last_lookup: Instant::now(),
+            last_cleanup: Instant::now(),
+            ping_cursor: 0,
         }
     }
 
@@ -206,16 +211,16 @@ impl DiscV5 {
         }
 
         let ip = src_addr.ip();
-        let window = self.config.whoareyou_window();
+        let whoareyou_window = self.config.whoareyou_window();
         let entry = self.whoareyou_per_ip.entry(ip).or_insert((0, now));
-        if now.duration_since(entry.1) >= window {
+        if now.duration_since(entry.1) > whoareyou_window {
             *entry = (0, now);
         }
         if entry.0 >= self.config.whoareyou_per_ip_limit {
             return;
         }
 
-        if now.duration_since(self.whoareyou_global.1) >= window {
+        if now.duration_since(self.whoareyou_global.1) >= whoareyou_window {
             self.whoareyou_global = (0, now);
         }
         if self.whoareyou_global.0 >= self.config.whoareyou_global_limit {
@@ -738,6 +743,20 @@ impl DiscV5 {
         }
         distances
     }
+
+    fn cleanup(&mut self) {
+        let now = Instant::now();
+        self.last_cleanup = now;
+
+        self.challenges.retain(|_, c| c.sent_at.elapsed() < CHALLENGE_TTL);
+        self.sessions.retain(|_, s| s.last_active.elapsed() < SESSION_TIMEOUT);
+
+        let whoareyou_window = self.config.whoareyou_window();
+        self.whoareyou_per_ip.retain(|_, (_, t)| t.elapsed() < whoareyou_window);
+
+        self.banned_nodes.retain(|_, exp| exp.map_or(true, |t| now < t));
+        self.banned_ips.retain(|_, exp| exp.map_or(true, |t| now < t));
+    }
 }
 
 impl Discovery for DiscV5 {
@@ -788,10 +807,9 @@ impl DiscoveryNetworking for DiscV5 {
             f(event);
         }
 
-        self.challenges.retain(|_, c| c.sent_at.elapsed() < CHALLENGE_TTL);
-        self.sessions.retain(|_, s| s.last_active.elapsed() < SESSION_TIMEOUT);
-        let wru_window = self.config.whoareyou_window();
-        self.whoareyou_per_ip.retain(|_, (_, t)| t.elapsed() < wru_window);
+        if self.last_cleanup.elapsed() >= self.config.cleanup_interval() {
+            self.cleanup();
+        }
 
         while let Some(applied) = self.kbuckets.take_applied_pending() {
             if let Some(enr) = self.decode_enr_for(*applied.inserted.preimage()) {
@@ -800,16 +818,22 @@ impl DiscoveryNetworking for DiscV5 {
         }
 
         if self.last_ping.elapsed() >= self.config.ping_frequency() {
-            self.last_ping = Instant::now();
-
+            let mut sent = 0usize;
+            let mut visited = 0usize;
             let mut rid = self.next_request_id;
-            for node in self.kbuckets.iter_ref() {
+
+            for node in self.kbuckets.iter_ref().skip(self.ping_cursor) {
+                if sent >= self.config.pings_per_poll {
+                    break;
+                }
+                visited += 1;
                 let node_id = *node.key.preimage();
+                let addr = node.value.addr;
                 if Self::is_banned(
                     &mut self.banned_nodes,
                     &mut self.banned_ips,
                     &node_id,
-                    node.value.addr.ip(),
+                    addr.ip(),
                 ) {
                     continue;
                 }
@@ -822,11 +846,19 @@ impl DiscoveryNetworking for DiscV5 {
                 {
                     self.pending_pings.insert(rid, node_id);
                     rid = rid.wrapping_add(1);
-                    f(DiscoveryEvent::SendMessage { to: node.value.addr, data });
+                    f(DiscoveryEvent::SendMessage { to: addr, data });
+                    sent += 1;
                 }
             }
 
-            self.next_request_id = rid.wrapping_add(1);
+            self.next_request_id = rid;
+            self.ping_cursor += visited;
+
+            if sent < self.config.pings_per_poll {
+                // Iterator exhausted — wrap cursor, wait for next cycle.
+                self.ping_cursor = 0;
+                self.last_ping = Instant::now();
+            }
         }
 
         // Single-hop random lookup: pick a known peer, send FindNode with
@@ -1066,6 +1098,8 @@ mod tests {
             lookup_distances: 6,
             target_sessions: 100,
             ping_frequency_s: 3600,
+            pings_per_poll: 256,
+            cleanup_interval_ms: 0,
             whoareyou_per_ip_limit: 5,
             whoareyou_global_limit: 100,
             whoareyou_window_ms: 1000,

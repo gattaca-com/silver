@@ -9,6 +9,10 @@ pub struct DiscoveryConfig {
     pub lookup_distances: usize,
     pub target_sessions: usize,
     pub ping_frequency_s: u64,
+    #[serde(default = "default_usize::<10>")]
+    pub pings_per_poll: usize,
+    #[serde(default = "default_u64::<5000>")]
+    pub cleanup_interval_ms: u64,
     #[serde(default = "default_u32::<5>")]
     pub whoareyou_per_ip_limit: u32,
     #[serde(default = "default_u32::<100>")]
@@ -24,6 +28,10 @@ impl DiscoveryConfig {
 
     pub fn ping_frequency(&self) -> Duration {
         Duration::from_secs(self.ping_frequency_s)
+    }
+
+    pub fn cleanup_interval(&self) -> Duration {
+        Duration::from_millis(self.cleanup_interval_ms)
     }
 
     pub fn whoareyou_window(&self) -> Duration {
