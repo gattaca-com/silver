@@ -26,11 +26,6 @@ const NONCE_RING_SIZE: usize = 64;
 const PENDING_PROBES_CAPACITY: usize = 64;
 const BANNED_NODES_CAPACITY: usize = 32;
 
-const SESSION_TIMEOUT: Duration = Duration::from_secs(20 * 60);
-const CHALLENGE_TTL: Duration = Duration::from_secs(5);
-
-const IP_VOTE_THRESHOLD: u32 = 3;
-
 pub struct DiscV5 {
     config: DiscoveryConfig,
     local_key: SecretKey,
@@ -47,7 +42,7 @@ pub struct DiscV5 {
     /// FINDNODE to send once a session with the given peer is established.
     pending_findnodes: FxHashMap<NodeId, (u64, Distances)>,
     pending_probe_nonces: FxHashMap<NodeId, [u8; 12]>,
-    pending_pings: FxHashMap<u64, NodeId>,
+    pending_pings: FxHashMap<u64, (NodeId, Instant)>,
     event_queue: Vec<DiscoveryEvent>,
 
     ip_votes: FxHashMap<NodeId, (IpAddr, u16)>,
@@ -65,6 +60,7 @@ pub struct DiscV5 {
     last_cleanup: Instant,
 
     ping_cursor: usize,
+    lookup_requested: bool,
 }
 
 impl DiscV5 {
@@ -75,7 +71,7 @@ impl DiscV5 {
         fork_digest: [u8; 4],
     ) -> Self {
         let local_id = NodeId::from(local_key.public_key(SECP256K1));
-        let kbuckets = KBucketsTable::new(Key::from(local_id), Duration::from_secs(60));
+        let kbuckets = KBucketsTable::new(Key::from(local_id), config.kbucket_pending_timeout());
         let local_enr_raw = {
             let mut buf: ArrayVec<u8, ENR_RECORD_MAX> = ArrayVec::new();
             local_enr.encode(&mut buf);
@@ -119,6 +115,7 @@ impl DiscV5 {
             last_lookup: Instant::now(),
             last_cleanup: Instant::now(),
             ping_cursor: 0,
+            lookup_requested: false,
         }
     }
 
@@ -166,10 +163,7 @@ impl DiscV5 {
     /// decrypt it and will respond with WhoAreYou, initiating the handshake.
     /// The probe nonce is recorded so we can verify the WhoAreYou echoes it.
     // todo @nina: pre-generate random material at idle time?
-    fn send_probe<F>(&mut self, dest_id: NodeId, dest_addr: SocketAddr, f: &mut F)
-    where
-        F: FnMut(DiscoveryEvent),
-    {
+    fn send_probe(&mut self, dest_id: NodeId, dest_addr: SocketAddr) {
         let mut rng_buf = [0u8; 44];
         rand::thread_rng().fill_bytes(&mut rng_buf);
 
@@ -177,7 +171,7 @@ impl DiscV5 {
         let iv: u128 = u128::from_be_bytes(rng_buf[12..28].try_into().unwrap());
         let cipher = make_cipher(&rng_buf[28..].try_into().unwrap());
 
-        let mut plain: ArrayVec<u8, 580> = ArrayVec::new();
+        let mut plain: ArrayVec<u8, 128> = ArrayVec::new();
         Message::Ping { request_id: 0, enr_seq: 0 }.encode(&mut plain);
 
         let tmp =
@@ -195,7 +189,7 @@ impl DiscV5 {
             .encode(&dest_id);
 
             self.pending_probe_nonces.insert(dest_id, nonce);
-            f(DiscoveryEvent::SendMessage { to: dest_addr, data });
+            self.event_queue.push(DiscoveryEvent::SendMessage { to: dest_addr, data });
         }
     }
 
@@ -294,7 +288,7 @@ impl DiscV5 {
 
     fn on_pong(&mut self, src_id: NodeId, request_id: u64, ip: IpAddr, port: u16) {
         match self.pending_pings.remove(&request_id) {
-            Some(expected) if expected == src_id => {}
+            Some((expected, _)) if expected == src_id => {}
             _ => return,
         }
 
@@ -313,7 +307,7 @@ impl DiscV5 {
         let count = self.ip_vote_counts.entry(addr).or_insert(0);
         *count += 1;
 
-        if *count >= IP_VOTE_THRESHOLD {
+        if *count >= self.config.ip_vote_threshold {
             let changed = match ip {
                 IpAddr::V4(a) => self.local_enr.ip4() != Some(a),
                 IpAddr::V6(a) => self.local_enr.ip6() != Some(a),
@@ -572,7 +566,7 @@ impl DiscV5 {
 
         let enc_cipher = make_cipher(&enc_key);
         let ciphertext = if let Some((rid, dists)) = self.pending_findnodes.remove(&remote_id) {
-            let mut plain: ArrayVec<u8, 580> = ArrayVec::new();
+            let mut plain: ArrayVec<u8, 128> = ArrayVec::new();
             Message::FindNode { request_id: rid, distances: dists }.encode(&mut plain);
             encrypt_message(&enc_cipher, &handshake_nonce, &hs_aad, &plain)
         } else {
@@ -744,12 +738,82 @@ impl DiscV5 {
         distances
     }
 
+    fn do_lookup(&mut self) {
+        // Probe all un-sessioned peers first (bootstrap / new additions).
+        let without_session: ArrayVec<(NodeId, SocketAddr), 32> = self
+            .kbuckets
+            .iter_ref()
+            .filter(|n| {
+                let id = n.key.preimage();
+                !self.sessions.contains_key(id) &&
+                    !self.pending_findnodes.contains_key(id) &&
+                    !Self::is_banned(
+                        &mut self.banned_nodes,
+                        &mut self.banned_ips,
+                        id,
+                        n.value.addr.ip(),
+                    )
+            })
+            .take(self.config.probes_per_lookup)
+            .map(|n| (*n.key.preimage(), n.value.addr))
+            .collect();
+
+        for (node_id, addr) in &without_session {
+            let rid = self.next_id();
+            let distances = Self::random_distances(self.config.lookup_distances, true);
+            self.pending_findnodes.insert(*node_id, (rid, distances));
+            self.send_probe(*node_id, *addr);
+        }
+
+        // Send FindNode to a random sessioned peer for ongoing discovery.
+        if without_session.is_empty() {
+            let with_session: ArrayVec<(NodeId, SocketAddr), 32> = self
+                .kbuckets
+                .iter_ref()
+                .filter(|n| {
+                    self.sessions.contains_key(n.key.preimage()) &&
+                        !Self::is_banned(
+                            &mut self.banned_nodes,
+                            &mut self.banned_ips,
+                            n.key.preimage(),
+                            n.value.addr.ip(),
+                        )
+                })
+                .take(self.config.probes_per_lookup)
+                .map(|n| (*n.key.preimage(), n.value.addr))
+                .collect();
+
+            if !with_session.is_empty() {
+                let idx = rand::random::<usize>() % with_session.len();
+                let (node_id, addr) = with_session[idx];
+                let rid = self.next_id();
+                let distances = Self::random_distances(self.config.lookup_distances, false);
+                if let Some(s) = self.sessions.get(&node_id) &&
+                    let Some(data) = Packet::encode_message(
+                        self.local_id,
+                        node_id,
+                        &s.enc,
+                        Message::FindNode { request_id: rid, distances },
+                    )
+                {
+                    self.event_queue.push(DiscoveryEvent::SendMessage { to: addr, data });
+                }
+            }
+        }
+    }
+
     fn cleanup(&mut self) {
         let now = Instant::now();
         self.last_cleanup = now;
 
-        self.challenges.retain(|_, c| c.sent_at.elapsed() < CHALLENGE_TTL);
-        self.sessions.retain(|_, s| s.last_active.elapsed() < SESSION_TIMEOUT);
+        let challenge_ttl = self.config.challenge_ttl();
+        self.challenges.retain(|_, c| c.sent_at.elapsed() < challenge_ttl);
+
+        let session_timeout = self.config.session_timeout();
+        self.sessions.retain(|_, s| s.last_active.elapsed() < session_timeout);
+
+        let request_timeout = self.config.request_timeout();
+        self.pending_pings.retain(|_, (_, sent_at)| sent_at.elapsed() < request_timeout);
 
         let whoareyou_window = self.config.whoareyou_window();
         self.whoareyou_per_ip.retain(|_, (_, t)| t.elapsed() < whoareyou_window);
@@ -780,8 +844,7 @@ impl Discovery for DiscV5 {
     }
 
     fn find_nodes(&mut self) {
-        // trigger lookup on the next poll
-        self.last_lookup = Instant::now() - self.config.lookup_interval();
+        self.lookup_requested = true;
     }
 
     fn ban_node(&mut self, id: NodeId, duration: Option<Duration>) {
@@ -803,10 +866,6 @@ impl DiscoveryNetworking for DiscV5 {
     where
         F: FnMut(DiscoveryEvent),
     {
-        for event in self.event_queue.drain(..) {
-            f(event);
-        }
-
         if self.last_cleanup.elapsed() >= self.config.cleanup_interval() {
             self.cleanup();
         }
@@ -844,7 +903,7 @@ impl DiscoveryNetworking for DiscV5 {
                             enr_seq: self.local_enr.seq(),
                         })
                 {
-                    self.pending_pings.insert(rid, node_id);
+                    self.pending_pings.insert(rid, (node_id, Instant::now()));
                     rid = rid.wrapping_add(1);
                     f(DiscoveryEvent::SendMessage { to: addr, data });
                     sent += 1;
@@ -861,74 +920,18 @@ impl DiscoveryNetworking for DiscV5 {
             }
         }
 
-        // Single-hop random lookup: pick a known peer, send FindNode with
-        // random distances. Only runs when below target session count.
         let below_capacity = self.sessions.len() < self.config.target_sessions;
-        if below_capacity && self.last_lookup.elapsed() >= self.config.lookup_interval() {
+        let do_lookup = self.lookup_requested ||
+            (below_capacity && self.last_lookup.elapsed() >= self.config.lookup_interval());
+        if do_lookup {
+            self.lookup_requested = false;
             self.last_lookup = Instant::now();
-            let n_dists = self.config.lookup_distances;
 
-            // Probe all un-sessioned peers first (bootstrap / new additions).
-            let without_session: ArrayVec<(NodeId, SocketAddr), 32> = self
-                .kbuckets
-                .iter_ref()
-                .filter(|n| {
-                    let id = n.key.preimage();
-                    !self.sessions.contains_key(id) &&
-                        !self.pending_findnodes.contains_key(id) &&
-                        !Self::is_banned(
-                            &mut self.banned_nodes,
-                            &mut self.banned_ips,
-                            id,
-                            n.value.addr.ip(),
-                        )
-                })
-                .take(32)
-                .map(|n| (*n.key.preimage(), n.value.addr))
-                .collect();
+            self.do_lookup();
+        }
 
-            for (node_id, addr) in &without_session {
-                let rid = self.next_id();
-                let distances = Self::random_distances(n_dists, true);
-                self.pending_findnodes.insert(*node_id, (rid, distances));
-                self.send_probe(*node_id, *addr, &mut f);
-            }
-
-            // Send FindNode to a random sessioned peer for ongoing discovery.
-            if without_session.is_empty() {
-                let with_session: ArrayVec<(NodeId, SocketAddr), 32> = self
-                    .kbuckets
-                    .iter_ref()
-                    .filter(|n| {
-                        self.sessions.contains_key(n.key.preimage()) &&
-                            !Self::is_banned(
-                                &mut self.banned_nodes,
-                                &mut self.banned_ips,
-                                n.key.preimage(),
-                                n.value.addr.ip(),
-                            )
-                    })
-                    .take(32)
-                    .map(|n| (*n.key.preimage(), n.value.addr))
-                    .collect();
-
-                if !with_session.is_empty() {
-                    let idx = rand::random::<usize>() % with_session.len();
-                    let (node_id, addr) = with_session[idx];
-                    let rid = self.next_id();
-                    let distances = Self::random_distances(n_dists, false);
-                    if let Some(s) = self.sessions.get(&node_id) &&
-                        let Some(data) = Packet::encode_message(
-                            self.local_id,
-                            node_id,
-                            &s.enc,
-                            Message::FindNode { request_id: rid, distances },
-                        )
-                    {
-                        f(DiscoveryEvent::SendMessage { to: addr, data });
-                    }
-                }
-            }
+        for event in self.event_queue.drain(..) {
+            f(event);
         }
     }
 
@@ -1098,8 +1101,14 @@ mod tests {
             lookup_distances: 6,
             target_sessions: 100,
             ping_frequency_s: 3600,
+            probes_per_lookup: 8,
             pings_per_poll: 256,
             cleanup_interval_ms: 0,
+            session_timeout_s: 1200,
+            challenge_ttl_s: 1,
+            request_timeout_ms: 500,
+            ip_vote_threshold: 3,
+            kbucket_pending_timeout_s: 60,
             whoareyou_per_ip_limit: 5,
             whoareyou_global_limit: 100,
             whoareyou_window_ms: 1000,
@@ -1207,7 +1216,7 @@ mod tests {
 
         // A sends Ping; B replies with Pong. Register the pending ping so A
         // accepts the PONG.
-        a.pending_pings.insert(1, b.local_id);
+        a.pending_pings.insert(1, (b.local_id, now));
         inject_message(&mut a, &mut b, a_addr, Message::Ping { request_id: 1, enr_seq: 0 }, now);
         let b_sends = collect_sends(&mut b);
         for (to, data) in &b_sends {
@@ -1330,9 +1339,9 @@ mod tests {
         let ipv6 = IpAddr::V6(Ipv6Addr::LOCALHOST);
         let port = 19041u16;
 
-        a.pending_pings.insert(100, b.local_id);
-        a.pending_pings.insert(101, c.local_id);
-        a.pending_pings.insert(102, d.local_id);
+        a.pending_pings.insert(100, (b.local_id, now));
+        a.pending_pings.insert(101, (c.local_id, now));
+        a.pending_pings.insert(102, (d.local_id, now));
 
         inject_message(
             &mut b,
@@ -1600,8 +1609,8 @@ mod tests {
         assert!(b.sessions.contains_key(&a.local_id));
 
         b.sessions.get_mut(&a.local_id).unwrap().last_active = Instant::now()
-            .checked_sub(SESSION_TIMEOUT + Duration::from_secs(1))
-            .expect("system uptime > SESSION_TIMEOUT");
+            .checked_sub(b.config.session_timeout() + Duration::from_secs(1))
+            .expect("system uptime > session_timeout");
 
         collect_events(&mut b);
         assert!(!b.sessions.contains_key(&a.local_id), "expired session should be removed");
@@ -1623,8 +1632,8 @@ mod tests {
         assert!(b.challenges.contains_key(&a.local_id));
 
         b.challenges.get_mut(&a.local_id).unwrap().sent_at = Instant::now()
-            .checked_sub(CHALLENGE_TTL + Duration::from_secs(1))
-            .expect("system uptime > CHALLENGE_TTL");
+            .checked_sub(b.config.challenge_ttl() + Duration::from_secs(1))
+            .expect("system uptime > challenge_ttl");
 
         collect_events(&mut b);
         assert!(!b.challenges.contains_key(&a.local_id), "expired challenge should be removed");
