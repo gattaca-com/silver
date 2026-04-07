@@ -27,7 +27,9 @@ const FLAG_HANDSHAKE: u8 = 2;
 
 const MAX_HEADER_SIZE: usize = STATIC_HEADER_LENGTH + 131 + ENR_RECORD_MAX;
 
-pub type Distances = ArrayVec<u64, 64>;
+pub const NUM_DISTANCES_TO_REQUEST: usize = 16;
+
+pub type Distances = ArrayVec<u64, NUM_DISTANCES_TO_REQUEST>;
 
 #[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)]

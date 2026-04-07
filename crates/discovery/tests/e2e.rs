@@ -59,6 +59,9 @@ fn default_config() -> DiscoveryConfig {
         lookup_distances: 6,
         target_sessions: 100,
         ping_frequency_s: 0,
+        whoareyou_per_ip_limit: 5,
+        whoareyou_global_limit: 100,
+        whoareyou_window_ms: 1000,
     }
 }
 

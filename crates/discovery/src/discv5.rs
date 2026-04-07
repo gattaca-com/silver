@@ -19,11 +19,12 @@ use crate::{
     },
     discovery::{Discovery, DiscoveryEvent, DiscoveryNetworking},
     kbucket::{InsertResult, KBucketsTable, Key, MAX_NODES_PER_BUCKET},
-    message::{Distances, ENR_RECORD_MAX, Message, MessageKind, Packet},
+    message::{Distances, ENR_RECORD_MAX, Message, MessageKind, NUM_DISTANCES_TO_REQUEST, Packet},
 };
 
-const MAX_SESSIONS_COUNT: usize = 1024;
 const NONCE_RING_SIZE: usize = 64;
+const PENDING_PROBES_CAPACITY: usize = 64;
+const BANNED_NODES_CAPACITY: usize = 32;
 
 const SESSION_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 const CHALLENGE_TTL: Duration = Duration::from_secs(5);
@@ -55,6 +56,9 @@ pub struct DiscV5 {
     banned_nodes: FxHashMap<NodeId, Option<Instant>>,
     banned_ips: FxHashMap<IpAddr, Option<Instant>>,
 
+    whoareyou_per_ip: FxHashMap<IpAddr, (u32, Instant)>,
+    whoareyou_global: (u32, Instant),
+
     next_request_id: u64,
     last_ping: Instant,
     last_lookup: Instant,
@@ -74,6 +78,7 @@ impl DiscV5 {
             local_enr.encode(&mut buf);
             buf
         };
+        let target = config.target_sessions;
         Self {
             config,
             local_key,
@@ -82,25 +87,30 @@ impl DiscV5 {
             local_enr_raw,
             fork_digest,
             kbuckets,
-            sessions: FxHashMap::with_capacity_and_hasher(MAX_SESSIONS_COUNT, Default::default()),
-            challenges: FxHashMap::with_capacity_and_hasher(MAX_SESSIONS_COUNT, Default::default()),
+            sessions: FxHashMap::with_capacity_and_hasher(target, Default::default()),
+            challenges: FxHashMap::with_capacity_and_hasher(target, Default::default()),
             pending_findnodes: FxHashMap::with_capacity_and_hasher(
-                MAX_SESSIONS_COUNT,
+                PENDING_PROBES_CAPACITY,
                 Default::default(),
             ),
             pending_probe_nonces: FxHashMap::with_capacity_and_hasher(
-                MAX_SESSIONS_COUNT,
+                PENDING_PROBES_CAPACITY,
                 Default::default(),
             ),
-            pending_pings: FxHashMap::with_capacity_and_hasher(
-                MAX_SESSIONS_COUNT,
-                Default::default(),
-            ),
-            event_queue: Vec::with_capacity(MAX_SESSIONS_COUNT * 2),
-            ip_votes: FxHashMap::with_capacity_and_hasher(MAX_SESSIONS_COUNT, Default::default()),
+            pending_pings: FxHashMap::with_capacity_and_hasher(target, Default::default()),
+            event_queue: Vec::with_capacity(target),
+            ip_votes: FxHashMap::with_capacity_and_hasher(target, Default::default()),
             ip_vote_counts: FxHashMap::with_capacity_and_hasher(8, Default::default()),
-            banned_nodes: FxHashMap::default(),
-            banned_ips: FxHashMap::default(),
+            banned_nodes: FxHashMap::with_capacity_and_hasher(
+                BANNED_NODES_CAPACITY,
+                Default::default(),
+            ),
+            banned_ips: FxHashMap::with_capacity_and_hasher(
+                BANNED_NODES_CAPACITY,
+                Default::default(),
+            ),
+            whoareyou_per_ip: FxHashMap::with_capacity_and_hasher(target, Default::default()),
+            whoareyou_global: (0, Instant::now()),
             next_request_id: 0,
             last_ping: Instant::now(),
             last_lookup: Instant::now(),
@@ -194,6 +204,27 @@ impl DiscV5 {
         if self.challenges.contains_key(&src_id) {
             return;
         }
+
+        let ip = src_addr.ip();
+        let window = self.config.whoareyou_window();
+        let entry = self.whoareyou_per_ip.entry(ip).or_insert((0, now));
+        if now.duration_since(entry.1) >= window {
+            *entry = (0, now);
+        }
+        if entry.0 >= self.config.whoareyou_per_ip_limit {
+            return;
+        }
+
+        if now.duration_since(self.whoareyou_global.1) >= window {
+            self.whoareyou_global = (0, now);
+        }
+        if self.whoareyou_global.0 >= self.config.whoareyou_global_limit {
+            return;
+        }
+
+        self.whoareyou_per_ip.get_mut(&ip).unwrap().0 += 1;
+        self.whoareyou_global.0 += 1;
+
         let known_enr_seq =
             self.kbuckets.get(&Key::from(src_id)).map(|n| n.value.enr_seq).unwrap_or(0);
 
@@ -694,7 +725,7 @@ impl DiscV5 {
     }
 
     fn random_distances(n: usize, include_self: bool) -> Distances {
-        let n = n.min(64);
+        let n = n.min(NUM_DISTANCES_TO_REQUEST);
         let mut distances = Distances::new();
         if include_self {
             distances.push(0);
@@ -759,6 +790,8 @@ impl DiscoveryNetworking for DiscV5 {
 
         self.challenges.retain(|_, c| c.sent_at.elapsed() < CHALLENGE_TTL);
         self.sessions.retain(|_, s| s.last_active.elapsed() < SESSION_TIMEOUT);
+        let wru_window = self.config.whoareyou_window();
+        self.whoareyou_per_ip.retain(|_, (_, t)| t.elapsed() < wru_window);
 
         while let Some(applied) = self.kbuckets.take_applied_pending() {
             if let Some(enr) = self.decode_enr_for(*applied.inserted.preimage()) {
@@ -1033,6 +1066,9 @@ mod tests {
             lookup_distances: 6,
             target_sessions: 100,
             ping_frequency_s: 3600,
+            whoareyou_per_ip_limit: 5,
+            whoareyou_global_limit: 100,
+            whoareyou_window_ms: 1000,
         }
     }
 
@@ -1393,7 +1429,7 @@ mod tests {
 
         // Request all distances so A returns as many peers as possible.
         let mut distances = Distances::new();
-        for d in 240u64..=256 {
+        for d in 241u64..=256 {
             distances.push(d);
         }
         inject_message(
@@ -1733,5 +1769,65 @@ mod tests {
         let a_sends = collect_sends(&mut a);
         let to_b: Vec<_> = a_sends.iter().filter(|(to, _)| *to == b_addr).collect();
         assert!(!to_b.is_empty(), "expired ban should allow messages again");
+    }
+
+    #[test]
+    fn test_whoareyou_per_ip_rate_limit() {
+        let now = Instant::now();
+        let (mut a, _, _) = make_node(19151);
+
+        // Simulate messages from unknown nodes at the same IP, each triggering
+        // a WhoAreYou. After the per-IP limit, further ones are dropped.
+        let limit = a.config.whoareyou_per_ip_limit;
+        let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        for i in 0..(limit + 3) {
+            let port = 30000 + i as u16;
+            let src_addr = SocketAddr::new(ip, port);
+            let sk = SecretKey::new(&mut rand::thread_rng());
+            let src_id = NodeId::from(sk.public_key(SECP256K1));
+            // Craft a minimal Message packet that A can't decrypt → triggers WhoAreYou.
+            let garbage_key = crate::crypto::make_cipher(&[0xAA; 16]);
+            if let Some(data) =
+                Packet::encode_message(src_id, a.local_id, &garbage_key, Message::Ping {
+                    request_id: i as u64,
+                    enr_seq: 0,
+                })
+            {
+                a.handle(src_addr, &data, now);
+            }
+        }
+
+        let events = collect_sends(&mut a);
+        let whoareyou_count = events.iter().filter(|(to, _)| to.ip() == ip).count();
+        assert_eq!(whoareyou_count, limit as usize, "should cap WhoAreYou at per-IP limit");
+    }
+
+    #[test]
+    fn test_whoareyou_global_rate_limit() {
+        let now = Instant::now();
+        let (mut a, _, _) = make_node(19161);
+
+        // Send from distinct IPs to bypass per-IP limit, hit global limit.
+        let limit = a.config.whoareyou_global_limit;
+        let count = limit + 10;
+        for i in 0..count {
+            let octets = [10, (i >> 16) as u8, (i >> 8) as u8, i as u8];
+            let src_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::from(octets)), 30000);
+            let sk = SecretKey::new(&mut rand::thread_rng());
+            let src_id = NodeId::from(sk.public_key(SECP256K1));
+            let garbage_key = crate::crypto::make_cipher(&[0xBB; 16]);
+            if let Some(data) =
+                Packet::encode_message(src_id, a.local_id, &garbage_key, Message::Ping {
+                    request_id: i as u64,
+                    enr_seq: 0,
+                })
+            {
+                a.handle(src_addr, &data, now);
+            }
+        }
+
+        let events = collect_sends(&mut a);
+        let whoareyou_count = events.len();
+        assert_eq!(whoareyou_count, limit as usize, "should cap WhoAreYou at global limit");
     }
 }

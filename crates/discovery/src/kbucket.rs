@@ -261,10 +261,10 @@ impl<T: Copy> KBucketsTable<T> {
                 continue;
             }
             for node in self.buckets[(d - 1) as usize].iter() {
-                out.push(*node.key.preimage());
-                if out.len() >= max_nodes {
+                if out.is_full() || out.len() >= max_nodes {
                     return out;
                 }
+                out.push(*node.key.preimage());
             }
         }
         out
