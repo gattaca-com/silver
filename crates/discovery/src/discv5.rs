@@ -17,7 +17,7 @@ use crate::{
         MAX_PACKET_SIZE, SessionCipher, decrypt_message, ecdh_and_derive_keys_responder,
         ecdh_generate_and_derive, encrypt_message, make_cipher, sign_id_nonce, verify_id_nonce_sig,
     },
-    discovery::{Discovery, DiscoveryEvent, DiscoveryNetworking},
+    discovery::{Discovery, DiscoveryEvent, DiscoveryMetrics, DiscoveryNetworking},
     kbucket::{InsertResult, KBucketsTable, Key, MAX_NODES_PER_BUCKET},
     message::{Distances, ENR_RECORD_MAX, Message, MessageKind, NUM_DISTANCES_TO_REQUEST, Packet},
 };
@@ -61,6 +61,8 @@ pub struct DiscV5 {
 
     ping_cursor: usize,
     lookup_requested: bool,
+
+    metrics: DiscoveryMetrics,
 }
 
 impl DiscV5 {
@@ -116,6 +118,7 @@ impl DiscV5 {
             last_cleanup: Instant::now(),
             ping_cursor: 0,
             lookup_requested: false,
+            metrics: Default::default(),
         }
     }
 
@@ -126,13 +129,13 @@ impl DiscV5 {
         ip: IpAddr,
     ) -> bool {
         if let Some(expires) = banned_nodes.get(id) {
-            if expires.map_or(true, |t| Instant::now() < t) {
+            if expires.is_none_or(|t| Instant::now() < t) {
                 return true;
             }
             banned_nodes.remove(id);
         }
         if let Some(expires) = banned_ips.get(&ip) {
-            if expires.map_or(true, |t| Instant::now() < t) {
+            if expires.is_none_or(|t| Instant::now() < t) {
                 return true;
             }
             banned_ips.remove(&ip);
@@ -211,6 +214,7 @@ impl DiscV5 {
             *entry = (0, now);
         }
         if entry.0 >= self.config.whoareyou_per_ip_limit {
+            self.metrics.whoareyou_limit_hits += 1;
             return;
         }
 
@@ -218,6 +222,7 @@ impl DiscV5 {
             self.whoareyou_global = (0, now);
         }
         if self.whoareyou_global.0 >= self.config.whoareyou_global_limit {
+            self.metrics.whoareyou_limit_hits += 1;
             return;
         }
 
@@ -355,6 +360,7 @@ impl DiscV5 {
             );
             let is_new = matches!(result, InsertResult::Inserted | InsertResult::Updated);
             if is_new && !had_enr {
+                self.metrics.nodes_discovered += 1;
                 self.event_queue.push(DiscoveryEvent::NodeFound(enr));
             }
         }
@@ -628,12 +634,14 @@ impl DiscV5 {
                     Ok(e) => e,
                     Err(_) => {
                         warn!(%src_id, %src_addr, "handshake contains invalid ENR");
+                        self.metrics.failed_nodes += 1;
                         return;
                     }
                 };
 
                 if enr.node_id() != src_id {
                     warn!(%src_id, %src_addr, "handshake ENR node-id mismatch");
+                    self.metrics.failed_nodes += 1;
                     return;
                 }
 
@@ -682,6 +690,7 @@ impl DiscV5 {
             &id_nonce_sig,
         ) {
             warn!(%src_id, %src_addr, "handshake id-nonce signature verification failed");
+            self.metrics.failed_nodes += 1;
             return;
         }
 
@@ -708,6 +717,7 @@ impl DiscV5 {
             self.handle_message(src_id, src_addr, &bytes, now);
         } else {
             warn!(%src_id, %src_addr, msg_len = message.len(), "handshake message decryption failed");
+            self.metrics.failed_nodes += 1;
             return;
         }
 
@@ -818,8 +828,12 @@ impl DiscV5 {
         let whoareyou_window = self.config.whoareyou_window();
         self.whoareyou_per_ip.retain(|_, (_, t)| t.elapsed() < whoareyou_window);
 
-        self.banned_nodes.retain(|_, exp| exp.map_or(true, |t| now < t));
-        self.banned_ips.retain(|_, exp| exp.map_or(true, |t| now < t));
+        self.banned_nodes.retain(|_, exp| exp.is_none_or(|t| now < t));
+        self.banned_ips.retain(|_, exp| exp.is_none_or(|t| now < t));
+
+        self.metrics.active_sessions = self.sessions.len();
+        self.metrics.pending_challenges = self.challenges.len();
+        self.metrics.routing_table_nodes = self.kbuckets.iter_ref().count();
     }
 }
 
@@ -872,6 +886,7 @@ impl DiscoveryNetworking for DiscV5 {
 
         while let Some(applied) = self.kbuckets.take_applied_pending() {
             if let Some(enr) = self.decode_enr_for(*applied.inserted.preimage()) {
+                self.metrics.nodes_discovered += 1;
                 f(DiscoveryEvent::NodeFound(enr));
             }
         }
@@ -961,6 +976,7 @@ impl DiscoveryNetworking for DiscV5 {
                 if let Some(s) = self.sessions.get_mut(&src_id) {
                     if !s.check_and_record_nonce(&nonce, now) {
                         warn!(%src_id, %src_addr, ?nonce, "replayed nonce, dropping message");
+                        self.metrics.failed_nodes += 1;
                         return;
                     }
 

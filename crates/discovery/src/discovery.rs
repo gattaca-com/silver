@@ -16,6 +16,17 @@ pub enum DiscoveryEvent {
     ExternalAddrChanged(SocketAddr),
 }
 
+// todo @nina - export these
+#[derive(Debug, Default)]
+pub struct DiscoveryMetrics {
+    pub active_sessions: usize,
+    pub pending_challenges: usize,
+    pub routing_table_nodes: usize,
+    pub nodes_discovered: usize,
+    pub whoareyou_limit_hits: usize,
+    pub failed_nodes: usize,
+}
+
 pub trait Discovery {
     fn local_id(&self) -> NodeId;
 
