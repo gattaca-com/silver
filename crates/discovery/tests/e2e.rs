@@ -22,7 +22,7 @@ impl TestNode {
     /// No IP in ENR (so Pong-reported IP is always "new") and ping fires on
     /// every poll call.
     fn no_ip_fast_ping(port: u16) -> Self {
-        Self::build(port, zero_ping_config(), false)
+        Self::build(port, default_config(), false)
     }
 
     fn build(port: u16, config: DiscoveryConfig, with_ip: bool) -> Self {
@@ -55,19 +55,10 @@ impl TestNode {
 
 fn default_config() -> DiscoveryConfig {
     DiscoveryConfig {
-        find_nodes_peer_count: 3,
-        ping_frequency_s: 3600,
-        query_parallelism: 3,
-        query_peer_timeout_ms: 5_000,
-    }
-}
-
-fn zero_ping_config() -> DiscoveryConfig {
-    DiscoveryConfig {
-        find_nodes_peer_count: 3,
+        lookup_interval_ms: 3_600_000,
+        lookup_distances: 6,
+        target_sessions: 100,
         ping_frequency_s: 0,
-        query_parallelism: 3,
-        query_peer_timeout_ms: 5_000,
     }
 }
 
@@ -82,15 +73,12 @@ fn sends_to(events: &[DiscoveryEvent], to: SocketAddr) -> Vec<Vec<u8>> {
         .collect()
 }
 
-fn has_session_established(events: &[DiscoveryEvent], node_id: NodeId) -> bool {
-    events.iter().any(|e| {
-        matches!(e,
-            DiscoveryEvent::SessionEstablished { node_id: id, .. } if *id == node_id
-        )
-    })
+fn has_node_found(events: &[DiscoveryEvent], node_id: NodeId) -> bool {
+    events.iter().any(|e| matches!(e, DiscoveryEvent::NodeFound(enr) if enr.node_id() == node_id))
 }
 
-/// Full WhoAreYou→Handshake exchange. Both sides emit SessionEstablished.
+/// Full WhoAreYou→Handshake exchange. Both sides emit NodeFound once ENRs are
+/// exchanged.
 #[test]
 fn handshake_establishes_session() {
     let now = Instant::now();
@@ -98,7 +86,7 @@ fn handshake_establishes_session() {
     let mut b = TestNode::new(9002);
 
     a.disco.add_node(b.node_id(), b.addr, b.enr_seq, b.pubkey, now);
-    a.disco.find_node(NodeId::random());
+    a.disco.find_nodes();
 
     // A → probe → B
     let a_ev = a.poll();
@@ -111,19 +99,18 @@ fn handshake_establishes_session() {
     let to_a = sends_to(&b_ev, a.addr);
     assert!(!to_a.is_empty(), "expected WhoAreYou from B");
 
-    // A handles WhoAreYou, queues Handshake + FindNode
+    // A handles WhoAreYou, queues Handshake + piggybacked FindNode
     a.deliver(b.addr, &to_a[0], now);
     let a_ev = a.poll();
 
-    assert!(has_session_established(&a_ev, b.node_id()), "A: expected SessionEstablished(B)");
-
-    // Route A's packets to B in order: Handshake must arrive before FindNode.
+    // Route A's Handshake+FindNode to B.
     for pkt in sends_to(&a_ev, b.addr) {
         b.deliver(a.addr, &pkt, now);
     }
     let b_ev = b.poll();
 
-    assert!(has_session_established(&b_ev, a.node_id()), "B: expected SessionEstablished(A)");
+    // B has A's ENR from the Handshake.
+    assert!(has_node_found(&b_ev, a.node_id()), "B: expected NodeFound(A)");
 }
 
 /// A message packet from an unknown source triggers a WhoAreYou reply.
@@ -135,7 +122,7 @@ fn probe_from_unknown_source_triggers_whoareyou() {
 
     // A initiates but B has no prior knowledge of A.
     a.disco.add_node(b.node_id(), b.addr, b.enr_seq, b.pubkey, now);
-    a.disco.find_node(NodeId::random());
+    a.disco.find_nodes();
 
     let a_ev = a.poll();
     let probes = sends_to(&a_ev, b.addr);
@@ -153,7 +140,7 @@ fn probe_from_unknown_source_triggers_whoareyou() {
 /// session.
 fn do_handshake(a: &mut TestNode, b: &mut TestNode, now: Instant) {
     a.disco.add_node(b.node_id(), b.addr, b.enr_seq, b.pubkey, now);
-    a.disco.find_node(NodeId::random());
+    a.disco.find_nodes();
 
     let a_ev = a.poll();
     let probes = sends_to(&a_ev, b.addr);

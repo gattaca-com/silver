@@ -4,18 +4,18 @@ use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct DiscoveryConfig {
-    pub find_nodes_peer_count: usize,
+    pub lookup_interval_ms: u64,
+    pub lookup_distances: usize,
+    pub target_sessions: usize,
     pub ping_frequency_s: u64,
-    pub query_parallelism: usize,
-    pub query_peer_timeout_ms: u64,
 }
 
 impl DiscoveryConfig {
-    pub fn ping_frequency(&self) -> Duration {
-        Duration::from_secs(self.ping_frequency_s)
+    pub fn lookup_interval(&self) -> Duration {
+        Duration::from_millis(self.lookup_interval_ms)
     }
 
-    pub fn query_peer_timeout(&self) -> Duration {
-        Duration::from_millis(self.query_peer_timeout_ms)
+    pub fn ping_frequency(&self) -> Duration {
+        Duration::from_secs(self.ping_frequency_s)
     }
 }

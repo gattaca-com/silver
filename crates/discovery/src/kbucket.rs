@@ -50,14 +50,6 @@ impl Key {
     pub fn distance(&self, other: &Key) -> Distance {
         Distance(self.hash ^ other.hash)
     }
-
-    /// Integer log-2 of the XOR distance. Returns `None` if keys are identical.
-    /// Range: 1–256.
-    pub fn log2_distance(&self, other: &Key) -> Option<u64> {
-        let xor = self.distance(other);
-        let log = u64::from(256 - xor.0.leading_zeros());
-        if log == 0 { None } else { Some(log) }
-    }
 }
 
 impl From<NodeId> for Key {
@@ -284,21 +276,6 @@ impl<T: Copy> KBucketsTable<T> {
         let pos = self.buckets[i.get()].position(key)?;
         Some(&self.buckets[i.get()].nodes[pos])
     }
-
-    /// Iterator over keys closest to `target`, ordered by increasing XOR
-    /// distance.
-    pub fn closest_keys(&mut self, target: &Key) -> impl Iterator<Item = Key> + '_ {
-        let distance = self.local_key.distance(target);
-        ClosestIter {
-            target: *target,
-            iter: None,
-            table: self,
-            buckets_iter: ClosestBucketsIter::new(distance),
-            fmap: |b: &KBucket<T>| -> ArrayVec<_, MAX_NODES_PER_BUCKET> {
-                b.iter().map(|n| n.key).collect()
-            },
-        }
-    }
 }
 
 #[derive(Copy, Clone)]
@@ -314,115 +291,6 @@ impl BucketIndex {
     }
 }
 
-struct ClosestIter<'a, T: Copy, TMap, TOut: Copy> {
-    target: Key,
-    table: &'a mut KBucketsTable<T>,
-    buckets_iter: ClosestBucketsIter,
-    iter: Option<<ArrayVec<TOut, MAX_NODES_PER_BUCKET> as IntoIterator>::IntoIter>,
-    fmap: TMap,
-}
-
-struct ClosestBucketsIter {
-    distance: Distance,
-    state: ClosestBucketsIterState,
-}
-
-enum ClosestBucketsIterState {
-    Start(BucketIndex),
-    ZoomIn(BucketIndex),
-    ZoomOut(BucketIndex),
-    Done,
-}
-
-impl ClosestBucketsIter {
-    fn new(distance: Distance) -> Self {
-        let state = match BucketIndex::new(&distance) {
-            Some(i) => ClosestBucketsIterState::Start(i),
-            None => ClosestBucketsIterState::Start(BucketIndex(0)),
-        };
-        Self { distance, state }
-    }
-
-    fn next_in(&self, i: BucketIndex) -> Option<BucketIndex> {
-        (0..i.get())
-            .rev()
-            .find_map(|i| if self.distance.0.bit(i) { Some(BucketIndex(i)) } else { None })
-    }
-
-    fn next_out(&self, i: BucketIndex) -> Option<BucketIndex> {
-        (i.get() + 1..NUM_BUCKETS)
-            .find_map(|i| if !self.distance.0.bit(i) { Some(BucketIndex(i)) } else { None })
-    }
-}
-
-impl Iterator for ClosestBucketsIter {
-    type Item = BucketIndex;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self.state {
-            ClosestBucketsIterState::Start(i) => {
-                self.state = ClosestBucketsIterState::ZoomIn(i);
-                Some(i)
-            }
-            ClosestBucketsIterState::ZoomIn(i) => {
-                if let Some(i) = self.next_in(i) {
-                    self.state = ClosestBucketsIterState::ZoomIn(i);
-                    Some(i)
-                } else {
-                    let i = BucketIndex(0);
-                    self.state = ClosestBucketsIterState::ZoomOut(i);
-                    Some(i)
-                }
-            }
-            ClosestBucketsIterState::ZoomOut(i) => {
-                if let Some(i) = self.next_out(i) {
-                    self.state = ClosestBucketsIterState::ZoomOut(i);
-                    Some(i)
-                } else {
-                    self.state = ClosestBucketsIterState::Done;
-                    None
-                }
-            }
-            ClosestBucketsIterState::Done => None,
-        }
-    }
-}
-
-impl<T: Copy, TMap, TOut: Copy> Iterator for ClosestIter<'_, T, TMap, TOut>
-where
-    TMap: Fn(&KBucket<T>) -> ArrayVec<TOut, MAX_NODES_PER_BUCKET>,
-    TOut: AsRef<Key>,
-{
-    type Item = TOut;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            match &mut self.iter {
-                Some(iter) => match iter.next() {
-                    Some(k) => return Some(k),
-                    None => self.iter = None,
-                },
-                None => {
-                    if let Some(i) = self.buckets_iter.next() {
-                        let bucket = &mut self.table.buckets[i.get()];
-                        if let Some(applied) = bucket.apply_pending() {
-                            self.table.applied_pending.push_back(applied);
-                        }
-                        let mut v = (self.fmap)(bucket);
-                        let target = self.target;
-                        v.sort_by(|a, b| {
-                            target.distance(a.as_ref()).cmp(&target.distance(b.as_ref()))
-                        });
-                        self.iter = Some(v.into_iter());
-                    } else {
-                        return None;
-                    }
-                }
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, Instant};
@@ -432,20 +300,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn basic_closest() {
-        let local_key = Key::from(NodeId::random());
-        let other_key = Key::from(NodeId::random());
-        let mut table = KBucketsTable::<()>::new(local_key, Duration::from_secs(5));
-        assert!(matches!(
-            table.insert_or_update(&other_key, (), Instant::now()),
-            InsertResult::Inserted
-        ));
-        let res: Vec<_> = table.closest_keys(&other_key).collect();
-        assert_eq!(res.len(), 1);
-        assert_eq!(res[0], other_key);
-    }
-
-    #[test]
     fn insert_local_fails() {
         let local_key = Key::from(NodeId::random());
         let mut table = KBucketsTable::<()>::new(local_key, Duration::from_secs(5));
@@ -453,42 +307,5 @@ mod tests {
             table.insert_or_update(&local_key, (), Instant::now()),
             InsertResult::Failed(FailureReason::SelfUpdate)
         ));
-    }
-
-    #[test]
-    fn closest_sorted() {
-        let local_key = Key::from(NodeId::random());
-        let mut table = KBucketsTable::<()>::new(local_key, Duration::from_secs(5));
-        let now = Instant::now();
-        let mut count = 0;
-        while count < 100 {
-            let key = Key::from(NodeId::random());
-            if matches!(table.insert_or_update(&key, (), now), InsertResult::Inserted) {
-                count += 1;
-            }
-        }
-        let mut expected: Vec<Key> =
-            table.buckets.iter().flat_map(|b| b.iter().map(|n| n.key)).collect();
-        for _ in 0..10 {
-            let target = Key::from(NodeId::random());
-            let keys: Vec<_> = table.closest_keys(&target).collect();
-            expected.sort_by_key(|k| k.distance(&target));
-            assert_eq!(keys, expected);
-        }
-    }
-
-    #[test]
-    fn closest_local() {
-        let local_key = Key::from(NodeId::random());
-        let mut table = KBucketsTable::<()>::new(local_key, Duration::from_secs(5));
-        let now = Instant::now();
-        let mut count = 0;
-        while count < 100 {
-            let key = Key::from(NodeId::random());
-            if matches!(table.insert_or_update(&key, (), now), InsertResult::Inserted) {
-                count += 1;
-            }
-        }
-        assert_eq!(table.closest_keys(&local_key).count(), count);
     }
 }

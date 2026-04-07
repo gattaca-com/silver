@@ -1,7 +1,7 @@
 use std::{net::SocketAddr, time::Instant};
 
 use flux::utils::ArrayVec;
-use silver_common::NodeId;
+use silver_common::{Enr, NodeId};
 
 use crate::crypto::MAX_PACKET_SIZE;
 
@@ -9,14 +9,14 @@ use crate::crypto::MAX_PACKET_SIZE;
 #[allow(clippy::large_enum_variant)]
 pub enum DiscoveryEvent {
     SendMessage { to: SocketAddr, data: ArrayVec<u8, MAX_PACKET_SIZE> },
-    NodeFound(NodeId),
-    SessionEstablished { node_id: NodeId, addr: SocketAddr },
+    NodeFound(Enr),
     ExternalAddrChanged(SocketAddr),
 }
 
 pub trait Discovery {
     fn local_id(&self) -> NodeId;
 
+    // todo @nina - change to enr?
     fn add_node(
         &mut self,
         id: NodeId,
@@ -26,7 +26,7 @@ pub trait Discovery {
         now: Instant,
     );
 
-    fn find_node(&mut self, target: NodeId);
+    fn find_nodes(&mut self);
 
     // todo @ nina: ban / unban
 }

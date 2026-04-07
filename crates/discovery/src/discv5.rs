@@ -18,9 +18,8 @@ use crate::{
         ecdh_generate_and_derive, encrypt_message, make_cipher, sign_id_nonce, verify_id_nonce_sig,
     },
     discovery::{Discovery, DiscoveryEvent, DiscoveryNetworking},
-    kbucket::{KBucketsTable, Key, MAX_NODES_PER_BUCKET},
+    kbucket::{InsertResult, KBucketsTable, Key, MAX_NODES_PER_BUCKET},
     message::{Distances, ENR_RECORD_MAX, Message, MessageKind, Packet},
-    query_pool::{FindNodeQueryConfig, QueryPool, QueryPoolState},
 };
 
 const MAX_SESSIONS_COUNT: usize = 1024;
@@ -40,11 +39,11 @@ pub struct DiscV5 {
     fork_digest: [u8; 4],
 
     kbuckets: KBucketsTable<NodeEntry>,
-    queries: QueryPool,
 
     sessions: FxHashMap<NodeId, Session>,
 
     challenges: FxHashMap<NodeId, PendingChallenge>,
+    /// FINDNODE to send once a session with the given peer is established.
     pending_findnodes: FxHashMap<NodeId, (u64, Distances)>,
     pending_probe_nonces: FxHashMap<NodeId, [u8; 12]>,
     pending_pings: FxHashMap<u64, NodeId>,
@@ -55,6 +54,7 @@ pub struct DiscV5 {
 
     next_request_id: u64,
     last_ping: Instant,
+    last_lookup: Instant,
 }
 
 impl DiscV5 {
@@ -66,8 +66,6 @@ impl DiscV5 {
     ) -> Self {
         let local_id = NodeId::from(local_key.public_key(SECP256K1));
         let kbuckets = KBucketsTable::new(Key::from(local_id), Duration::from_secs(60));
-        let query_timeout =
-            config.query_peer_timeout() * (config.query_parallelism as u32).saturating_add(1);
         let local_enr_raw = {
             let mut buf: ArrayVec<u8, ENR_RECORD_MAX> = ArrayVec::new();
             local_enr.encode(&mut buf);
@@ -81,7 +79,6 @@ impl DiscV5 {
             local_enr_raw,
             fork_digest,
             kbuckets,
-            queries: QueryPool::new(query_timeout),
             sessions: FxHashMap::with_capacity_and_hasher(MAX_SESSIONS_COUNT, Default::default()),
             challenges: FxHashMap::with_capacity_and_hasher(MAX_SESSIONS_COUNT, Default::default()),
             pending_findnodes: FxHashMap::with_capacity_and_hasher(
@@ -101,6 +98,7 @@ impl DiscV5 {
             ip_vote_counts: FxHashMap::with_capacity_and_hasher(8, Default::default()),
             next_request_id: 0,
             last_ping: Instant::now(),
+            last_lookup: Instant::now(),
         }
     }
 
@@ -272,11 +270,10 @@ impl DiscV5 {
 
     fn on_nodes(
         &mut self,
-        src_id: NodeId,
+        _src_id: NodeId,
         nodes: ArrayVec<ArrayVec<u8, ENR_RECORD_MAX>, 8>,
         now: Instant,
     ) {
-        let mut discovered: ArrayVec<NodeId, 8> = ArrayVec::new();
         for raw in nodes.iter() {
             let Ok(enr) = Enr::decode(&mut raw.as_slice()) else { continue };
             if enr.eth2().map(|e| e[..4] != self.fork_digest).unwrap_or(false) {
@@ -293,18 +290,17 @@ impl DiscV5 {
 
             let pk_bytes = enr.public_key().serialize();
             let node_id = enr.node_id();
-            let _ = self.kbuckets.insert_or_update(
+            let had_enr =
+                self.kbuckets.get(&Key::from(node_id)).and_then(|n| n.value.enr_raw).is_some();
+            let result = self.kbuckets.insert_or_update(
                 &Key::from(node_id),
                 NodeEntry { addr, enr_seq: enr.seq(), pubkey: pk_bytes, enr_raw: Some(*raw) },
                 now,
             );
-
-            if !discovered.is_full() {
-                discovered.push(node_id);
+            let is_new = matches!(result, InsertResult::Inserted | InsertResult::Updated);
+            if is_new && !had_enr {
+                self.event_queue.push(DiscoveryEvent::NodeFound(enr));
             }
-        }
-        if let Some(query) = self.queries.find_query_for_peer(&src_id) {
-            query.on_success(&src_id, discovered);
         }
     }
 
@@ -533,8 +529,9 @@ impl DiscV5 {
         self.sessions.insert(remote_id, Session::new(enc_key, dec_key, src_addr, now));
 
         self.event_queue.push(DiscoveryEvent::SendMessage { to: src_addr, data: wire });
-        self.event_queue
-            .push(DiscoveryEvent::SessionEstablished { node_id: remote_id, addr: src_addr });
+        if let Some(enr) = self.decode_enr_for(remote_id) {
+            self.event_queue.push(DiscoveryEvent::NodeFound(enr));
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -660,24 +657,28 @@ impl DiscV5 {
 
         self.pending_probe_nonces.remove(&src_id);
 
-        self.event_queue
-            .push(DiscoveryEvent::SessionEstablished { node_id: src_id, addr: src_addr });
+        if let Some(enr) = self.decode_enr_for(src_id) {
+            self.event_queue.push(DiscoveryEvent::NodeFound(enr));
+        }
     }
 
-    fn to_log2distances(&self, target: NodeId) -> Distances {
-        let local_key = Key::from(self.local_id);
-        let target_key = Key::from(target);
-        let base = local_key.log2_distance(&target_key).unwrap_or(255);
+    fn decode_enr_for(&self, id: NodeId) -> Option<Enr> {
+        let raw = self.kbuckets.get(&Key::from(id))?.value.enr_raw?;
+        Enr::decode(&mut raw.as_slice()).ok()
+    }
 
-        let count = (self.config.find_nodes_peer_count as u64).min(64);
+    fn random_distances(n: usize, include_self: bool) -> Distances {
+        let n = n.min(64);
         let mut distances = Distances::new();
-        for i in 0..count {
-            let d = base.saturating_sub(i / 2).clamp(1, 256);
-            if !distances.iter().any(|&x| x == d) && distances.len() < 64 {
+        if include_self {
+            distances.push(0);
+        }
+        while distances.len() < n {
+            let d = rand::random::<u8>() as u64 + 1; // 1..=256
+            if !distances.iter().any(|&x| x == d) {
                 distances.push(d);
             }
         }
-
         distances
     }
 }
@@ -702,21 +703,9 @@ impl Discovery for DiscV5 {
         );
     }
 
-    fn find_node(&mut self, target: NodeId) {
-        let target_key = Key::from(target);
-        let (kbuckets, queries) = (&mut self.kbuckets, &mut self.queries);
-
-        let mut closest =
-            kbuckets.closest_keys(&target_key).take(self.config.find_nodes_peer_count).peekable();
-        if closest.peek().is_none() {
-            return;
-        }
-
-        queries.add_findnode_query(
-            FindNodeQueryConfig::new_from_config(&self.config),
-            target_key,
-            closest,
-        );
+    fn find_nodes(&mut self) {
+        // trigger lookup on the next poll
+        self.last_lookup = Instant::now() - self.config.lookup_interval();
     }
 }
 
@@ -733,7 +722,9 @@ impl DiscoveryNetworking for DiscV5 {
         self.sessions.retain(|_, s| s.last_active.elapsed() < SESSION_TIMEOUT);
 
         while let Some(applied) = self.kbuckets.take_applied_pending() {
-            f(DiscoveryEvent::NodeFound(*applied.inserted.preimage()));
+            if let Some(enr) = self.decode_enr_for(*applied.inserted.preimage()) {
+                f(DiscoveryEvent::NodeFound(enr));
+            }
         }
 
         if self.last_ping.elapsed() >= self.config.ping_frequency() {
@@ -758,42 +749,56 @@ impl DiscoveryNetworking for DiscV5 {
             self.next_request_id = rid.wrapping_add(1);
         }
 
-        loop {
-            match self.queries.poll() {
-                QueryPoolState::Idle | QueryPoolState::Waiting(None) => break,
-                QueryPoolState::Waiting(Some((query, node_id))) => {
-                    let qid = query.id();
-                    let addr = self.kbuckets.get(&Key::from(node_id)).map(|n| n.value.addr);
-                    if let Some(addr) = addr {
-                        let rid = self.next_id();
-                        let distances = self.to_log2distances(node_id);
+        // Single-hop random lookup: pick a known peer, send FindNode with
+        // random distances. Only runs when below target session count.
+        let below_capacity = self.sessions.len() < self.config.target_sessions;
+        if below_capacity && self.last_lookup.elapsed() >= self.config.lookup_interval() {
+            self.last_lookup = Instant::now();
+            let n_dists = self.config.lookup_distances;
 
-                        if let Some(s) = self.sessions.get(&node_id) {
-                            if let Some(data) = Packet::encode_message(
-                                self.local_id,
-                                node_id,
-                                &s.enc,
-                                Message::FindNode { request_id: rid, distances },
-                            ) {
-                                f(DiscoveryEvent::SendMessage { to: addr, data });
-                            }
-                        } else {
-                            // No session: probe to trigger WhoAreYou→Handshake;
-                            // queue FINDNODE for once the session is up.
-                            // Only probe once — if an entry already exists we're waiting.
-                            let is_new =
-                                self.pending_findnodes.insert(node_id, (rid, distances)).is_none();
-                            if is_new {
-                                self.send_probe(node_id, addr, &mut f);
-                            }
-                        }
-                    } else if let Some(query) = self.queries.get_mut(qid) {
-                        query.on_failure(&node_id);
-                    }
-                }
-                QueryPoolState::Finished(query) | QueryPoolState::Timeout(query) => {
-                    for node_id in query.into_result() {
-                        f(DiscoveryEvent::NodeFound(node_id));
+            // Probe all un-sessioned peers first (bootstrap / new additions).
+            let without_session: ArrayVec<(NodeId, SocketAddr), 32> = self
+                .kbuckets
+                .iter_ref()
+                .filter(|n| {
+                    let id = n.key.preimage();
+                    !self.sessions.contains_key(id) && !self.pending_findnodes.contains_key(id)
+                })
+                .take(32)
+                .map(|n| (*n.key.preimage(), n.value.addr))
+                .collect();
+
+            for (node_id, addr) in &without_session {
+                let rid = self.next_id();
+                let distances = Self::random_distances(n_dists, true);
+                self.pending_findnodes.insert(*node_id, (rid, distances));
+                self.send_probe(*node_id, *addr, &mut f);
+            }
+
+            // Send FindNode to a random sessioned peer for ongoing discovery.
+            if without_session.is_empty() {
+                let with_session: ArrayVec<(NodeId, SocketAddr), 32> = self
+                    .kbuckets
+                    .iter_ref()
+                    .filter(|n| self.sessions.contains_key(n.key.preimage()))
+                    .take(32)
+                    .map(|n| (*n.key.preimage(), n.value.addr))
+                    .collect();
+
+                if !with_session.is_empty() {
+                    let idx = rand::random::<usize>() % with_session.len();
+                    let (node_id, addr) = with_session[idx];
+                    let rid = self.next_id();
+                    let distances = Self::random_distances(n_dists, false);
+                    if let Some(s) = self.sessions.get(&node_id) &&
+                        let Some(data) = Packet::encode_message(
+                            self.local_id,
+                            node_id,
+                            &s.enc,
+                            Message::FindNode { request_id: rid, distances },
+                        )
+                    {
+                        f(DiscoveryEvent::SendMessage { to: addr, data });
                     }
                 }
             }
@@ -953,10 +958,10 @@ mod tests {
 
     fn test_config() -> DiscoveryConfig {
         DiscoveryConfig {
-            find_nodes_peer_count: 3,
+            lookup_interval_ms: 3_600_000,
+            lookup_distances: 6,
+            target_sessions: 100,
             ping_frequency_s: 3600,
-            query_parallelism: 3,
-            query_peer_timeout_ms: 5_000,
         }
     }
 
@@ -1011,7 +1016,7 @@ mod tests {
         now: Instant,
     ) {
         a.add_node(b.local_id, b_addr, b.local_enr.seq(), b_pubkey, now);
-        a.find_node(NodeId::random());
+        a.find_nodes();
 
         // A → probe
         let a_sends = collect_sends(a);
@@ -1032,7 +1037,7 @@ mod tests {
                 b.handle(a_addr, data, now);
             }
         }
-        // B drains its queue (SessionEstablished, etc.)
+        // B drains its queue (NodeFound, etc.)
         collect_events(b);
     }
 
@@ -1405,7 +1410,7 @@ mod tests {
 
         // Add B to A's kbuckets and trigger a probe to generate a challenge in B.
         a.add_node(b.local_id, b_addr, b.local_enr.seq(), b_pubkey, now);
-        a.find_node(NodeId::random());
+        a.find_nodes();
         let a_sends = collect_sends(&mut a);
         let probe = a_sends.iter().find(|(to, _)| *to == b_addr).map(|(_, d)| d.clone()).unwrap();
 
@@ -1468,7 +1473,7 @@ mod tests {
         let (mut b, b_addr, b_pubkey) = make_node(19122);
 
         a.add_node(b.local_id, b_addr, b.local_enr.seq(), b_pubkey, now);
-        a.find_node(NodeId::random());
+        a.find_nodes();
         let a_sends = collect_sends(&mut a);
         let probe = a_sends.iter().find(|(to, _)| *to == b_addr).unwrap().1.clone();
 
@@ -1482,5 +1487,77 @@ mod tests {
 
         collect_events(&mut b);
         assert!(!b.challenges.contains_key(&a.local_id), "expired challenge should be removed");
+    }
+
+    #[test]
+    fn test_ping_with_newer_enr_seq_triggers_enr_refresh() {
+        let now = Instant::now();
+        let (mut a, a_addr, _) = make_node(19101);
+        let (mut b, b_addr, b_pubkey) = make_node(19102);
+
+        do_handshake(&mut a, a_addr, &mut b, b_addr, b_pubkey, now);
+
+        // A doesn't have B's ENR yet (add_node sets enr_raw = None, and the
+        // handshake piggybacked FindNode response hasn't been routed yet in
+        // this test). Stored enr_seq for B in A's kbuckets is whatever
+        // add_node set (seq from B's initial ENR, typically 1).
+        let stored = a.kbuckets.get(&Key::from(b.local_id)).unwrap().value.enr_seq;
+
+        // B bumps its ENR seq by setting a new field.
+        b.local_enr.set_eth2([0u8; 16], &b.local_key).unwrap();
+        b.local_enr_raw = {
+            let mut buf = ArrayVec::new();
+            b.local_enr.encode(&mut buf);
+            buf
+        };
+        let new_seq = b.local_enr.seq();
+        assert!(new_seq > stored, "B's ENR seq should have increased");
+
+        // B sends Ping to A with the new enr_seq.
+        inject_message(
+            &mut b,
+            &mut a,
+            b_addr,
+            Message::Ping { request_id: 100, enr_seq: new_seq },
+            now,
+        );
+
+        // A should reply with Pong AND send FindNode(distance=0) to fetch B's
+        // updated ENR.
+        let a_sends = collect_sends(&mut a);
+        let packets_to_b: Vec<_> = a_sends.iter().filter(|(to, _)| *to == b_addr).collect();
+
+        // Expect at least 2 packets: Pong + FindNode.
+        assert!(
+            packets_to_b.len() >= 2,
+            "expected Pong + FindNode, got {} packets",
+            packets_to_b.len()
+        );
+
+        // Deliver all to B; B responds with Nodes containing its own ENR.
+        for (_, data) in &packets_to_b {
+            b.handle(a_addr, data, now);
+        }
+        let b_sends = collect_sends(&mut b);
+
+        // Route B's Nodes response back to A.
+        for (to, data) in &b_sends {
+            if *to == a_addr {
+                a.handle(b_addr, data, now);
+            }
+        }
+        let a_ev = collect_events(&mut a);
+
+        // A should now have B's updated ENR and emit NodeFound.
+        assert!(
+            a_ev.iter().any(
+                |e| matches!(e, DiscoveryEvent::NodeFound(enr) if enr.node_id() == b.local_id)
+            ),
+            "A should emit NodeFound with B's refreshed ENR"
+        );
+
+        // Verify the stored enr_seq was updated.
+        let updated_seq = a.kbuckets.get(&Key::from(b.local_id)).unwrap().value.enr_seq;
+        assert_eq!(updated_seq, new_seq, "A's stored enr_seq for B should match B's new seq");
     }
 }
