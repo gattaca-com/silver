@@ -351,15 +351,14 @@ impl DiscV5 {
 
             let pk_bytes = enr.public_key().serialize();
             let node_id = enr.node_id();
-            let had_enr =
-                self.kbuckets.get(&Key::from(node_id)).and_then(|n| n.value.enr_raw).is_some();
+            let prev_raw = self.kbuckets.get(&Key::from(node_id)).and_then(|n| n.value.enr_raw);
             let result = self.kbuckets.insert_or_update(
                 &Key::from(node_id),
                 NodeEntry { addr, enr_seq: enr.seq(), pubkey: pk_bytes, enr_raw: Some(*raw) },
                 now,
             );
-            let is_new = matches!(result, InsertResult::Inserted | InsertResult::Updated);
-            if is_new && !had_enr {
+            let is_new = matches!(result, InsertResult::Inserted) || prev_raw != Some(*raw);
+            if is_new {
                 self.metrics.nodes_discovered += 1;
                 self.event_queue.push(DiscoveryEvent::NodeFound(enr));
             }
@@ -842,17 +841,24 @@ impl Discovery for DiscV5 {
         self.local_id
     }
 
-    fn add_node(
-        &mut self,
-        id: NodeId,
-        addr: SocketAddr,
-        enr_seq: u64,
-        pubkey: [u8; 33],
-        now: Instant,
-    ) {
+    fn add_enr(&mut self, enr: &Enr, now: Instant) {
+        let addr = if let (Some(ip4), Some(udp4)) = (enr.ip4(), enr.udp4()) {
+            SocketAddr::new(IpAddr::V4(ip4), udp4)
+        } else if let (Some(ip6), Some(udp6)) = (enr.ip6(), enr.udp6()) {
+            SocketAddr::new(IpAddr::V6(ip6), udp6)
+        } else {
+            warn!("skipping adding node enr with no ip4 / ip6 fields: {enr}");
+            return;
+        };
+
+        let pubkey = enr.public_key().serialize();
+
+        let mut enr_raw: ArrayVec<u8, ENR_RECORD_MAX> = ArrayVec::new();
+        enr.encode(&mut enr_raw);
+
         let _ = self.kbuckets.insert_or_update(
-            &Key::from(id),
-            NodeEntry { addr, enr_seq, pubkey, enr_raw: None },
+            &Key::from(enr.node_id()),
+            NodeEntry { addr, enr_seq: enr.seq(), pubkey, enr_raw: Some(enr_raw) },
             now,
         );
     }
@@ -1111,33 +1117,12 @@ mod tests {
         message::{Message, Packet},
     };
 
-    fn test_config() -> DiscoveryConfig {
-        DiscoveryConfig {
-            lookup_interval_ms: 3_600_000,
-            lookup_distances: 6,
-            target_sessions: 100,
-            ping_frequency_s: 3600,
-            probes_per_lookup: 8,
-            pings_per_poll: 256,
-            cleanup_interval_ms: 0,
-            session_timeout_s: 1200,
-            challenge_ttl_s: 1,
-            request_timeout_ms: 500,
-            ip_vote_threshold: 3,
-            kbucket_pending_timeout_s: 60,
-            whoareyou_per_ip_limit: 5,
-            whoareyou_global_limit: 100,
-            whoareyou_window_ms: 1000,
-        }
-    }
-
-    fn make_node(port: u16) -> (DiscV5, SocketAddr, [u8; 33]) {
+    fn make_node(port: u16) -> (DiscV5, SocketAddr) {
         let sk = SecretKey::new(&mut rand::thread_rng());
         let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
         let enr = Enr::builder().ip4(Ipv4Addr::LOCALHOST).udp4(port).build(&sk).unwrap();
-        let pubkey = sk.public_key(SECP256K1).serialize();
-        let disco = DiscV5::new(test_config(), sk, enr, [0u8; 4]);
-        (disco, addr, pubkey)
+        let disco = DiscV5::new(DiscoveryConfig::default(), sk, enr, [0u8; 4]);
+        (disco, addr)
     }
 
     fn collect_sends(node: &mut DiscV5) -> Vec<(SocketAddr, Vec<u8>)> {
@@ -1178,10 +1163,9 @@ mod tests {
         a_addr: SocketAddr,
         b: &mut DiscV5,
         b_addr: SocketAddr,
-        b_pubkey: [u8; 33],
         now: Instant,
     ) {
-        a.add_node(b.local_id, b_addr, b.local_enr.seq(), b_pubkey, now);
+        a.add_enr(&b.local_enr, now);
         a.find_nodes();
 
         // A → probe
@@ -1210,10 +1194,10 @@ mod tests {
     #[test]
     fn test_session_establishment() {
         let now = Instant::now();
-        let (mut a, a_addr, _) = make_node(19001);
-        let (mut b, b_addr, b_pubkey) = make_node(19002);
+        let (mut a, a_addr) = make_node(19001);
+        let (mut b, b_addr) = make_node(19002);
 
-        do_handshake(&mut a, a_addr, &mut b, b_addr, b_pubkey, now);
+        do_handshake(&mut a, a_addr, &mut b, b_addr, now);
 
         assert!(a.sessions.contains_key(&b.local_id), "A missing session for B");
         assert!(b.sessions.contains_key(&a.local_id), "B missing session for A");
@@ -1223,10 +1207,10 @@ mod tests {
     #[test]
     fn test_ping_pong_roundtrip() {
         let now = Instant::now();
-        let (mut a, a_addr, _) = make_node(19011);
-        let (mut b, b_addr, b_pubkey) = make_node(19012);
+        let (mut a, a_addr) = make_node(19011);
+        let (mut b, b_addr) = make_node(19012);
 
-        do_handshake(&mut a, a_addr, &mut b, b_addr, b_pubkey, now);
+        do_handshake(&mut a, a_addr, &mut b, b_addr, now);
 
         let votes_before = a.ip_votes.len();
 
@@ -1249,10 +1233,10 @@ mod tests {
     #[test]
     fn test_findnode_distance_zero_returns_own_enr() {
         let now = Instant::now();
-        let (mut a, a_addr, _) = make_node(19021);
-        let (mut b, b_addr, b_pubkey) = make_node(19022);
+        let (mut a, a_addr) = make_node(19021);
+        let (mut b, b_addr) = make_node(19022);
 
-        do_handshake(&mut a, a_addr, &mut b, b_addr, b_pubkey, now);
+        do_handshake(&mut a, a_addr, &mut b, b_addr, now);
 
         // B sends FindNode(distance=0) to A.
         let mut distances = Distances::new();
@@ -1285,30 +1269,16 @@ mod tests {
     #[test]
     fn test_findnode_returns_discovered_peers() {
         let now = Instant::now();
-        let (mut a, a_addr, _) = make_node(19031);
-        let (mut b, b_addr, b_pubkey) = make_node(19032);
+        let (mut a, a_addr) = make_node(19031);
+        let (mut b, b_addr) = make_node(19032);
         // C is a third node known to A with a full ENR.
-        let (c, c_addr, c_pubkey) = make_node(19033);
+        let (c, _) = make_node(19033);
         let c_id = c.local_id;
 
         // Pre-populate A's kbuckets with C's ENR.
-        let c_enr_raw = {
-            let mut buf: ArrayVec<u8, ENR_RECORD_MAX> = ArrayVec::new();
-            c.local_enr.encode(&mut buf);
-            buf
-        };
-        let _ = a.kbuckets.insert_or_update(
-            &Key::from(c_id),
-            NodeEntry {
-                addr: c_addr,
-                enr_seq: c.local_enr.seq(),
-                pubkey: c_pubkey,
-                enr_raw: Some(c_enr_raw),
-            },
-            now,
-        );
+        a.add_enr(&c.local_enr, now);
 
-        do_handshake(&mut a, a_addr, &mut b, b_addr, b_pubkey, now);
+        do_handshake(&mut a, a_addr, &mut b, b_addr, now);
 
         // B sends FindNode over all plausible distances; A should include C.
         let mut distances = Distances::new();
@@ -1342,15 +1312,15 @@ mod tests {
         let sk = SecretKey::new(&mut rand::thread_rng());
         let a_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 19041);
         let enr = Enr::builder().build(&sk).unwrap();
-        let mut a = DiscV5::new(test_config(), sk, enr, [0u8; 4]);
+        let mut a = DiscV5::new(DiscoveryConfig::default(), sk, enr, [0u8; 4]);
 
         // Need 3 distinct peers to cross IP_VOTE_THRESHOLD (one vote per NodeId).
-        let (mut b, b_addr, b_pubkey) = make_node(19042);
-        let (mut c, c_addr, c_pubkey) = make_node(19043);
-        let (mut d, d_addr, d_pubkey) = make_node(19044);
-        do_handshake(&mut a, a_addr, &mut b, b_addr, b_pubkey, now);
-        do_handshake(&mut a, a_addr, &mut c, c_addr, c_pubkey, now);
-        do_handshake(&mut a, a_addr, &mut d, d_addr, d_pubkey, now);
+        let (mut b, b_addr) = make_node(19042);
+        let (mut c, c_addr) = make_node(19043);
+        let (mut d, d_addr) = make_node(19044);
+        do_handshake(&mut a, a_addr, &mut b, b_addr, now);
+        do_handshake(&mut a, a_addr, &mut c, c_addr, now);
+        do_handshake(&mut a, a_addr, &mut d, d_addr, now);
 
         let ipv6 = IpAddr::V6(Ipv6Addr::LOCALHOST);
         let port = 19041u16;
@@ -1397,10 +1367,10 @@ mod tests {
         let sk_a = SecretKey::new(&mut rand::thread_rng());
         let a_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 19051);
         let enr_a = Enr::builder().ip4(Ipv4Addr::LOCALHOST).udp4(19051u16).build(&sk_a).unwrap();
-        let mut a = DiscV5::new(test_config(), sk_a, enr_a, fork_digest);
+        let mut a = DiscV5::new(DiscoveryConfig::default(), sk_a, enr_a, fork_digest);
 
-        let (mut b, b_addr, b_pubkey) = make_node(19052);
-        do_handshake(&mut a, a_addr, &mut b, b_addr, b_pubkey, now);
+        let (mut b, b_addr) = make_node(19052);
+        do_handshake(&mut a, a_addr, &mut b, b_addr, now);
 
         // Build two ENRs:
         // - good: no eth2 field (passes the filter)
@@ -1448,10 +1418,10 @@ mod tests {
     #[test]
     fn test_nodes_response_splits_across_packets() {
         let now = Instant::now();
-        let (mut a, a_addr, _) = make_node(19081);
-        let (mut b, b_addr, b_pubkey) = make_node(19082);
+        let (mut a, a_addr) = make_node(19081);
+        let (mut b, b_addr) = make_node(19082);
 
-        do_handshake(&mut a, a_addr, &mut b, b_addr, b_pubkey, now);
+        do_handshake(&mut a, a_addr, &mut b, b_addr, now);
 
         // Populate A's kbuckets with 8 peers whose ENRs include CL fields
         // to push each record to ~180 bytes, forcing multi-packet responses.
@@ -1545,10 +1515,10 @@ mod tests {
     #[test]
     fn test_nodes_response_empty_distances() {
         let now = Instant::now();
-        let (mut a, a_addr, _) = make_node(19091);
-        let (mut b, b_addr, b_pubkey) = make_node(19092);
+        let (mut a, a_addr) = make_node(19091);
+        let (mut b, b_addr) = make_node(19092);
 
-        do_handshake(&mut a, a_addr, &mut b, b_addr, b_pubkey, now);
+        do_handshake(&mut a, a_addr, &mut b, b_addr, now);
 
         // Request distance 1 — extremely unlikely any random peer lands there.
         let mut distances = Distances::new();
@@ -1571,11 +1541,11 @@ mod tests {
     #[test]
     fn test_challenge_inserted_before_handshake_complete() {
         let now = Instant::now();
-        let (mut a, a_addr, _) = make_node(19061);
-        let (mut b, b_addr, b_pubkey) = make_node(19062);
+        let (mut a, a_addr) = make_node(19061);
+        let (mut b, b_addr) = make_node(19062);
 
         // Add B to A's kbuckets and trigger a probe to generate a challenge in B.
-        a.add_node(b.local_id, b_addr, b.local_enr.seq(), b_pubkey, now);
+        a.add_enr(&b.local_enr, now);
         a.find_nodes();
         let a_sends = collect_sends(&mut a);
         let probe = a_sends.iter().find(|(to, _)| *to == b_addr).map(|(_, d)| d.clone()).unwrap();
@@ -1592,9 +1562,9 @@ mod tests {
     #[test]
     fn test_nonce_replay_rejected() {
         let now = Instant::now();
-        let (mut a, a_addr, _) = make_node(19071);
-        let (mut b, b_addr, b_pubkey) = make_node(19072);
-        do_handshake(&mut a, a_addr, &mut b, b_addr, b_pubkey, now);
+        let (mut a, a_addr) = make_node(19071);
+        let (mut b, b_addr) = make_node(19072);
+        do_handshake(&mut a, a_addr, &mut b, b_addr, now);
 
         let wire = {
             let s = a.sessions.get(&b.local_id).expect("no session a→b");
@@ -1619,26 +1589,26 @@ mod tests {
     #[test]
     fn test_session_expiry_on_poll() {
         let now = Instant::now();
-        let (mut a, a_addr, _) = make_node(19111);
-        let (mut b, b_addr, b_pubkey) = make_node(19112);
-        do_handshake(&mut a, a_addr, &mut b, b_addr, b_pubkey, now);
+        let (mut a, a_addr) = make_node(19111);
+        let (mut b, b_addr) = make_node(19112);
+        do_handshake(&mut a, a_addr, &mut b, b_addr, now);
         assert!(b.sessions.contains_key(&a.local_id));
 
         b.sessions.get_mut(&a.local_id).unwrap().last_active = Instant::now()
             .checked_sub(b.config.session_timeout() + Duration::from_secs(1))
             .expect("system uptime > session_timeout");
 
-        collect_events(&mut b);
+        b.cleanup();
         assert!(!b.sessions.contains_key(&a.local_id), "expired session should be removed");
     }
 
     #[test]
     fn test_challenge_ttl_expiry() {
         let now = Instant::now();
-        let (mut a, a_addr, _) = make_node(19121);
-        let (mut b, b_addr, b_pubkey) = make_node(19122);
+        let (mut a, a_addr) = make_node(19121);
+        let (mut b, b_addr) = make_node(19122);
 
-        a.add_node(b.local_id, b_addr, b.local_enr.seq(), b_pubkey, now);
+        a.add_enr(&b.local_enr, now);
         a.find_nodes();
         let a_sends = collect_sends(&mut a);
         let probe = a_sends.iter().find(|(to, _)| *to == b_addr).unwrap().1.clone();
@@ -1651,17 +1621,17 @@ mod tests {
             .checked_sub(b.config.challenge_ttl() + Duration::from_secs(1))
             .expect("system uptime > challenge_ttl");
 
-        collect_events(&mut b);
+        b.cleanup();
         assert!(!b.challenges.contains_key(&a.local_id), "expired challenge should be removed");
     }
 
     #[test]
     fn test_ping_with_newer_enr_seq_triggers_enr_refresh() {
         let now = Instant::now();
-        let (mut a, a_addr, _) = make_node(19101);
-        let (mut b, b_addr, b_pubkey) = make_node(19102);
+        let (mut a, a_addr) = make_node(19101);
+        let (mut b, b_addr) = make_node(19102);
 
-        do_handshake(&mut a, a_addr, &mut b, b_addr, b_pubkey, now);
+        do_handshake(&mut a, a_addr, &mut b, b_addr, now);
 
         // A doesn't have B's ENR yet (add_node sets enr_raw = None, and the
         // handshake piggybacked FindNode response hasn't been routed yet in
@@ -1730,10 +1700,10 @@ mod tests {
     #[test]
     fn test_ban_node_drops_messages() {
         let now = Instant::now();
-        let (mut a, a_addr, _) = make_node(19111);
-        let (mut b, b_addr, b_pubkey) = make_node(19112);
+        let (mut a, a_addr) = make_node(19111);
+        let (mut b, b_addr) = make_node(19112);
 
-        do_handshake(&mut a, a_addr, &mut b, b_addr, b_pubkey, now);
+        do_handshake(&mut a, a_addr, &mut b, b_addr, now);
 
         // Ban B by node ID (permanent).
         a.ban_node(b.local_id, None);
@@ -1763,10 +1733,10 @@ mod tests {
     #[test]
     fn test_ban_ip_drops_messages() {
         let now = Instant::now();
-        let (mut a, a_addr, _) = make_node(19121);
-        let (mut b, b_addr, b_pubkey) = make_node(19122);
+        let (mut a, a_addr) = make_node(19121);
+        let (mut b, b_addr) = make_node(19122);
 
-        do_handshake(&mut a, a_addr, &mut b, b_addr, b_pubkey, now);
+        do_handshake(&mut a, a_addr, &mut b, b_addr, now);
 
         // Ban B's IP (permanent).
         a.ban_ip(b_addr.ip(), None);
@@ -1790,10 +1760,10 @@ mod tests {
     #[test]
     fn test_ban_skips_ping() {
         let now = Instant::now();
-        let (mut a, a_addr, _) = make_node(19131);
-        let (mut b, b_addr, b_pubkey) = make_node(19132);
+        let (mut a, a_addr) = make_node(19131);
+        let (mut b, b_addr) = make_node(19132);
 
-        do_handshake(&mut a, a_addr, &mut b, b_addr, b_pubkey, now);
+        do_handshake(&mut a, a_addr, &mut b, b_addr, now);
 
         // Ban B, but keep the session to verify the ping loop skips it.
         // (Normally ban_node removes the session, so insert a fresh ban
@@ -1811,16 +1781,16 @@ mod tests {
     #[test]
     fn test_timed_ban_expires() {
         let now = Instant::now();
-        let (mut a, a_addr, _) = make_node(19141);
-        let (mut b, b_addr, b_pubkey) = make_node(19142);
+        let (mut a, a_addr) = make_node(19141);
+        let (mut b, b_addr) = make_node(19142);
 
-        do_handshake(&mut a, a_addr, &mut b, b_addr, b_pubkey, now);
+        do_handshake(&mut a, a_addr, &mut b, b_addr, now);
 
         // Ban B for 0 duration (already expired).
         a.ban_node(b.local_id, Some(Duration::ZERO));
 
         // Re-establish session and verify B can communicate again.
-        do_handshake(&mut a, a_addr, &mut b, b_addr, b_pubkey, now);
+        do_handshake(&mut a, a_addr, &mut b, b_addr, now);
 
         assert!(!a.banned_nodes.contains_key(&b.local_id), "expired ban should be cleaned up");
 
@@ -1833,7 +1803,7 @@ mod tests {
     #[test]
     fn test_whoareyou_per_ip_rate_limit() {
         let now = Instant::now();
-        let (mut a, _, _) = make_node(19151);
+        let (mut a, _) = make_node(19151);
 
         // Simulate messages from unknown nodes at the same IP, each triggering
         // a WhoAreYou. After the per-IP limit, further ones are dropped.
@@ -1864,7 +1834,7 @@ mod tests {
     #[test]
     fn test_whoareyou_global_rate_limit() {
         let now = Instant::now();
-        let (mut a, _, _) = make_node(19161);
+        let (mut a, _) = make_node(19161);
 
         // Send from distinct IPs to bypass per-IP limit, hit global limit.
         let limit = a.config.whoareyou_global_limit;

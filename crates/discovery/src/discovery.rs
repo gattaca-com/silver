@@ -30,15 +30,7 @@ pub struct DiscoveryMetrics {
 pub trait Discovery {
     fn local_id(&self) -> NodeId;
 
-    // todo @nina - change to enr?
-    fn add_node(
-        &mut self,
-        id: NodeId,
-        addr: SocketAddr,
-        enr_seq: u64,
-        pubkey: [u8; 33],
-        now: Instant,
-    );
+    fn add_enr(&mut self, enr: &Enr, now: Instant);
 
     fn find_nodes(&mut self);
 

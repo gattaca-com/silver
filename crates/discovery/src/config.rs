@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 
 use serde::Deserialize;
 
@@ -34,6 +34,7 @@ pub struct DiscoveryConfig {
     pub whoareyou_global_limit: u32,
     #[serde(default = "default_u64::<1000>")]
     pub whoareyou_window_ms: u64,
+    pub persisted_routing_table_path: Option<PathBuf>,
 }
 
 impl DiscoveryConfig {
@@ -67,6 +68,29 @@ impl DiscoveryConfig {
 
     pub fn whoareyou_window(&self) -> Duration {
         Duration::from_millis(self.whoareyou_window_ms)
+    }
+}
+
+impl Default for DiscoveryConfig {
+    fn default() -> Self {
+        Self {
+            lookup_interval_ms: 3_600_000,
+            lookup_distances: 6,
+            target_sessions: 128,
+            ping_frequency_s: 5,
+            probes_per_lookup: 5,
+            pings_per_poll: 10,
+            cleanup_interval_ms: 5000,
+            session_timeout_s: 1200,
+            challenge_ttl_s: 1,
+            request_timeout_ms: 500,
+            ip_vote_threshold: 3,
+            kbucket_pending_timeout_s: 60,
+            whoareyou_per_ip_limit: 5,
+            whoareyou_global_limit: 100,
+            whoareyou_window_ms: 1000,
+            persisted_routing_table_path: None,
+        }
     }
 }
 

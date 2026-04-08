@@ -4,25 +4,26 @@ use std::{
 };
 
 use discovery::{DiscV5, Discovery, DiscoveryConfig, DiscoveryEvent, DiscoveryNetworking};
-use secp256k1::{SECP256K1, SecretKey};
+use secp256k1::SecretKey;
 use silver_common::{Enr, NodeId};
 
 struct TestNode {
     disco: DiscV5,
     addr: SocketAddr,
-    pubkey: [u8; 33],
-    enr_seq: u64,
+    enr: Enr,
 }
 
 impl TestNode {
     fn new(port: u16) -> Self {
-        Self::build(port, default_config(), true)
+        Self::build(port, DiscoveryConfig::default(), true)
     }
 
     /// No IP in ENR (so Pong-reported IP is always "new") and ping fires on
     /// every poll call.
     fn no_ip_fast_ping(port: u16) -> Self {
-        Self::build(port, default_config(), false)
+        let mut config = DiscoveryConfig::default();
+        config.ping_frequency_s = 0;
+        Self::build(port, config, false)
     }
 
     fn build(port: u16, config: DiscoveryConfig, with_ip: bool) -> Self {
@@ -33,9 +34,8 @@ impl TestNode {
         } else {
             Enr::builder().build(&sk).unwrap()
         };
-        let enr_seq = enr.seq();
-        let pubkey = sk.public_key(SECP256K1).serialize();
-        Self { disco: DiscV5::new(config, sk, enr, [0u8; 4]), addr, pubkey, enr_seq }
+        let node_enr = enr.clone();
+        Self { disco: DiscV5::new(config, sk, enr, [0u8; 4]), addr, enr: node_enr }
     }
 
     fn node_id(&self) -> NodeId {
@@ -50,26 +50,6 @@ impl TestNode {
 
     fn deliver(&mut self, from: SocketAddr, data: &[u8], now: Instant) {
         self.disco.handle(from, data, now);
-    }
-}
-
-fn default_config() -> DiscoveryConfig {
-    DiscoveryConfig {
-        lookup_interval_ms: 3_600_000,
-        lookup_distances: 6,
-        target_sessions: 100,
-        ping_frequency_s: 0,
-        probes_per_lookup: 32,
-        pings_per_poll: 256,
-        cleanup_interval_ms: 0,
-        session_timeout_s: 1200,
-        challenge_ttl_s: 1,
-        request_timeout_ms: 500,
-        ip_vote_threshold: 3,
-        kbucket_pending_timeout_s: 60,
-        whoareyou_per_ip_limit: 5,
-        whoareyou_global_limit: 100,
-        whoareyou_window_ms: 1000,
     }
 }
 
@@ -96,7 +76,7 @@ fn handshake_establishes_session() {
     let mut a = TestNode::new(9001);
     let mut b = TestNode::new(9002);
 
-    a.disco.add_node(b.node_id(), b.addr, b.enr_seq, b.pubkey, now);
+    a.disco.add_enr(&b.enr, now);
     a.disco.find_nodes();
 
     // A → probe → B
@@ -132,7 +112,7 @@ fn probe_from_unknown_source_triggers_whoareyou() {
     let mut b = TestNode::new(9012);
 
     // A initiates but B has no prior knowledge of A.
-    a.disco.add_node(b.node_id(), b.addr, b.enr_seq, b.pubkey, now);
+    a.disco.add_enr(&b.enr, now);
     a.disco.find_nodes();
 
     let a_ev = a.poll();
@@ -150,7 +130,7 @@ fn probe_from_unknown_source_triggers_whoareyou() {
 /// Drive the probe → WhoAreYou → Handshake exchange so both sides have a
 /// session.
 fn do_handshake(a: &mut TestNode, b: &mut TestNode, now: Instant) {
-    a.disco.add_node(b.node_id(), b.addr, b.enr_seq, b.pubkey, now);
+    a.disco.add_enr(&b.enr, now);
     a.disco.find_nodes();
 
     let a_ev = a.poll();
