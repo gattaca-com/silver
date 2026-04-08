@@ -12,6 +12,7 @@ alloy-rlp.workspace = true
 ctr.workspace = true
 bytes.workspace = true
 flux.workspace = true
+hex.workspace = true
 flux-utils.workspace = true
 hkdf.workspace = true
 rand.workspace = true
@@ -25,7 +26,6 @@ tracing.workspace = true
 uint.workspace = true
 
 [dev-dependencies]
-hex.workspace = true
 rand.workspace = true
 silver-common.workspace = true
 

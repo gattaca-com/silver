@@ -34,7 +34,8 @@ pub struct DiscoveryConfig {
     pub whoareyou_global_limit: u32,
     #[serde(default = "default_u64::<1000>")]
     pub whoareyou_window_ms: u64,
-    pub persisted_routing_table_path: Option<PathBuf>,
+    pub persisted_kbuckets_path: Option<PathBuf>,
+    pub persisted_banned_nodes_path: Option<PathBuf>,
 }
 
 impl DiscoveryConfig {
@@ -89,7 +90,8 @@ impl Default for DiscoveryConfig {
             whoareyou_per_ip_limit: 5,
             whoareyou_global_limit: 100,
             whoareyou_window_ms: 1000,
-            persisted_routing_table_path: None,
+            persisted_kbuckets_path: None,
+            persisted_banned_nodes_path: None,
         }
     }
 }

@@ -1,4 +1,5 @@
 use std::{
+    io::{BufRead, BufWriter, Write},
     net::{IpAddr, SocketAddr},
     time::{Duration, Instant},
 };
@@ -9,7 +10,7 @@ use rand::RngCore as _;
 use rustc_hash::FxHashMap;
 use secp256k1::{SECP256K1, SecretKey};
 use silver_common::{Enr, NodeId};
-use tracing::{trace, warn};
+use tracing::{info, trace, warn};
 
 use crate::{
     config::DiscoveryConfig,
@@ -80,7 +81,7 @@ impl DiscV5 {
             buf
         };
         let target = config.target_sessions;
-        Self {
+        let mut disc = Self {
             config,
             local_key,
             local_id,
@@ -119,7 +120,10 @@ impl DiscV5 {
             ping_cursor: 0,
             lookup_requested: false,
             metrics: Default::default(),
-        }
+        };
+
+        disc.load_persisted(Instant::now());
+        disc
     }
 
     fn is_banned(
@@ -811,6 +815,118 @@ impl DiscV5 {
         }
     }
 
+    fn load_persisted(&mut self, now: Instant) {
+        if let Some(path) = self.config.persisted_kbuckets_path.clone() {
+            if let Ok(file) = std::fs::File::open(&path) {
+                let mut i = 0usize;
+                for line in std::io::BufReader::new(file).lines() {
+                    let Ok(line) = line else { continue };
+                    let line = line.trim();
+                    if line.is_empty() {
+                        continue;
+                    }
+
+                    if let Ok(enr) = line.parse::<Enr>() {
+                        self.add_enr(&enr, now);
+                        i += 1;
+                    }
+                }
+
+                info!("loaded {i} persisted kbuckets from {}", path.display());
+            }
+        }
+
+        if let Some(path) = self.config.persisted_banned_nodes_path.clone() {
+            if let Ok(file) = std::fs::File::open(&path) {
+                let mut i = 0usize;
+                for line in std::io::BufReader::new(file).lines() {
+                    let Ok(line) = line else { continue };
+                    let line = line.trim();
+                    if line.is_empty() {
+                        continue;
+                    }
+
+                    let mut parts = line.split_whitespace();
+                    let (Some(kind), Some(key), Some(secs_str)) =
+                        (parts.next(), parts.next(), parts.next())
+                    else {
+                        continue;
+                    };
+
+                    let Ok(secs) = secs_str.parse::<u64>() else { continue };
+                    let expires = if secs == 0 {
+                        None
+                    } else {
+                        Some(Instant::now() + Duration::from_secs(secs))
+                    };
+
+                    match kind {
+                        "node" => {
+                            let Ok(id_bytes) = hex::decode(key) else { continue };
+                            let Ok(arr) = <[u8; 32]>::try_from(id_bytes.as_slice()) else {
+                                continue;
+                            };
+                            self.banned_nodes.insert(NodeId::new(&arr), expires);
+                        }
+                        "ip" => {
+                            let Ok(ip) = key.parse::<IpAddr>() else { continue };
+                            self.banned_ips.insert(ip, expires);
+                        }
+                        _ => continue,
+                    }
+                    i += 1;
+                }
+
+                info!("loaded {i} banned nodes from {}", path.display());
+            }
+        }
+    }
+
+    fn persist_kbuckets(&self) {
+        let Some(path) = &self.config.persisted_kbuckets_path else { return };
+        let Ok(file) = std::fs::File::create(path) else {
+            warn!(path = %path.display(), "failed to create kbuckets file");
+            return;
+        };
+
+        let mut w = BufWriter::new(file);
+        for node in self.kbuckets.iter_ref() {
+            if let Some(raw) = &node.value.enr_raw {
+                if let Ok(enr) = Enr::decode(&mut raw.as_slice()) {
+                    let _ = writeln!(w, "{}", enr.to_base64());
+                }
+            }
+        }
+    }
+
+    fn persist_banned_nodes(&self) {
+        let Some(path) = &self.config.persisted_banned_nodes_path else { return };
+        let Ok(file) = std::fs::File::create(path) else {
+            warn!(path = %path.display(), "failed to open banned nodes file");
+            return;
+        };
+
+        let mut w = BufWriter::new(file);
+        let now = Instant::now();
+        for (id, expires) in &self.banned_nodes {
+            let secs = match expires {
+                None => 0,
+                Some(t) if *t > now => (*t - now).as_secs(),
+                Some(_) => continue,
+            };
+            let _ = writeln!(w, "node {} {secs}", hex::encode(id.raw()));
+        }
+
+        for (ip, expires) in &self.banned_ips {
+            let secs = match expires {
+                None => 0,
+                Some(t) if *t > now => (*t - now).as_secs(),
+                Some(_) => continue,
+            };
+            let _ = writeln!(w, "ip {ip} {secs}");
+        }
+    }
+
     fn cleanup(&mut self) {
         let now = Instant::now();
         self.last_cleanup = now;
@@ -878,6 +994,11 @@ impl Discovery for DiscV5 {
     fn ban_ip(&mut self, ip: IpAddr, duration: Option<Duration>) {
         let expires = duration.map(|d| Instant::now() + d);
         self.banned_ips.insert(ip, expires);
+    }
+
+    fn teardown(&self) {
+        self.persist_kbuckets();
+        self.persist_banned_nodes();
     }
 }
 
