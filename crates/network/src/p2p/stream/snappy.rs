@@ -86,6 +86,12 @@ impl SnappyDecoder {
                 out_pos += written;
                 self.buf_len = 0;
                 self.need = FRAME_HDR_LEN;
+
+                // If output buffer is exactly filled, stop consuming input.
+                // We've completed our payload!
+                if out_pos == out.len() {
+                    break;
+                }
             }
         }
 

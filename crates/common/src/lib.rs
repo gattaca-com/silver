@@ -3,7 +3,7 @@ use flux::{communication::ShmemData, spine::SpineQueue, spine_derive::from_spine
 pub use crate::{
     error::Error,
     id::{Keypair, PeerId, decode_protobuf_pubkey, encode_secp256k1_protobuf},
-    util::{create_self_signed_certificate, encode_varint},
+    util::{create_self_signed_certificate, encode_varint, decode_varint},
 };
 
 mod error;

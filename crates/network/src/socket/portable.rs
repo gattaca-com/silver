@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 
+use bytes::BytesMut;
 use flux::tracing;
 use mio::net::UdpSocket;
 
@@ -11,15 +12,14 @@ const MAX_GSO_SEGMENTS: usize = 10;
 // --- RxBatch ----------------------------------------------------------------
 
 pub(crate) struct RxBatch {
-    /// Per-datagram buffers. Indices 0..RX_BATCH_MAX are receive slots,
-    /// index SCRATCH is a spare buffer for poll_transmit.
-    pub(crate) bufs: Vec<Vec<u8>>,
+    /// Per-datagram buffers. 
+    pub(crate) bufs: Vec<BytesMut>,
     datagrams: Vec<(usize, usize, SocketAddr)>, // (buf_index, len, remote)
 }
 
 impl RxBatch {
     pub(crate) fn new() -> Self {
-        let bufs = (0..RX_BATCH_MAX).map(|_| vec![0u8; RX_BUF_SIZE]).collect();
+        let bufs = (0..RX_BATCH_MAX).map(|_| BytesMut::zeroed(RX_BUF_SIZE)).collect();
         Self { bufs, datagrams: Vec::with_capacity(RX_BATCH_MAX) }
     }
 
@@ -28,6 +28,9 @@ impl RxBatch {
         self.datagrams.clear();
 
         for i in 0..RX_BATCH_MAX {
+            debug_assert!(self.bufs[i].try_reclaim(RX_BUF_SIZE));
+            unsafe { self.bufs[i].set_len(RX_BUF_SIZE);}
+
             match socket.recv_from(&mut self.bufs[i]) {
                 Ok((len, remote)) => {
                     self.datagrams.push((i, len, remote));
@@ -118,5 +121,22 @@ impl TxBatch {
             self.send_idx += 1;
         }
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bytes::BytesMut;
+
+    #[test]
+    fn buf() {
+        let mut bytes_mut = BytesMut::zeroed(1024);
+        assert_eq!(1024, bytes_mut.len());
+        let other = bytes_mut.split();
+        assert_eq!(0, bytes_mut.len());
+        drop(other);
+        assert!(bytes_mut.try_reclaim(1024));
+        unsafe { bytes_mut.set_len(1024);}
+        println!("{} / {}", bytes_mut.len(), bytes_mut.capacity());
     }
 }

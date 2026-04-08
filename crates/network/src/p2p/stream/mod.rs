@@ -1,8 +1,9 @@
 mod snappy;
 pub(crate) mod state;
 mod stream;
+pub mod protocol;
 
-pub(crate) use stream::{Stream, StreamEvent};
+pub(crate) use stream::{Stream, StreamEvent, DCacheRef};
 
 const MULTISTREAM_V1: &[u8] = b"\x13/multistream/1.0.0\n";
 const REJECT_RESPONSE: &[u8] = b"\x13/multistream/1.0.0\n\x03na\n";

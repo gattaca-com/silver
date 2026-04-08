@@ -8,6 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use bytes::BytesMut;
 use mio::{Poll, net::UdpSocket};
 pub(crate) use quic::{Peer, create_client_config};
 pub use quic::{create_endpoint, create_server_config};
@@ -29,6 +30,8 @@ pub struct P2p<H: NetworkSend + NetworkRecv> {
     recv_count: usize,
     /// Stream open requests that failed because the connection wasn't ready.
     pending_streams: Vec<(RemotePeer, StreamProtocol)>,
+    /// Global shared buffer to safely decode multiplexed QUIC streams sequentially.
+    decode_buf: Vec<u8>,
 }
 
 impl<H: NetworkSend + NetworkRecv> P2p<H> {
@@ -41,6 +44,7 @@ impl<H: NetworkSend + NetworkRecv> P2p<H> {
             handler,
             recv_count: 0,
             pending_streams: Vec::new(),
+            decode_buf: vec![0u8; 10 * 1024 * 1024],
         }
     }
 
@@ -147,7 +151,7 @@ impl<H: NetworkSend + NetworkRecv> P2p<H> {
                 tracing::warn!(local=?socket.udp_socket().local_addr(), "socket blocked");
             }
 
-            let next_timeout = peer.spin(now, &mut ep_callback, &mut self.handler);
+            let next_timeout = peer.spin(now, &mut ep_callback, &mut self.handler, &mut self.decode_buf);
             let drained = peer.is_drained();
 
             if let Some(t) = next_timeout {
