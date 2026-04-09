@@ -19,4 +19,5 @@ target/
 .vscode
 .cursor
 .claude
+.local
 CLAUDE.md
