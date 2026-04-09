@@ -554,8 +554,12 @@ impl DiscV5 {
         let handshake_nonce: [u8; 12] = rng_buf[..12].try_into().unwrap();
         let iv: u128 = u128::from_be_bytes(rng_buf[12..].try_into().unwrap());
 
-        let enr_record =
-            if peer_enr_seq < self.local_enr.seq() { Some(self.local_enr_raw) } else { None };
+        // Include our ENR if the peer doesn't have it or has a stale version.
+        let enr_record = if peer_enr_seq == 0 || peer_enr_seq < self.local_enr.seq() {
+            Some(self.local_enr_raw)
+        } else {
+            None
+        };
 
         let kind = MessageKind::Handshake {
             id_nonce_sig: sig_bytes,

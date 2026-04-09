@@ -8,8 +8,8 @@ use secp256k1::{SECP256K1, SecretKey};
 
 use super::{
     ATTNETS_ENR_KEY, ENR_VERSION, ETH2_ENR_KEY, Enr, ID_ENR_KEY, IP_ENR_KEY, IP6_ENR_KEY,
-    MAX_ENR_SIZE, NodeId, QUIC_ENR_KEY, QUIC6_ENR_KEY, SYNCNETS_ENR_KEY, UDP_ENR_KEY, UDP6_ENR_KEY,
-    keys,
+    MAX_ENR_SIZE, NodeId, QUIC_ENR_KEY, QUIC6_ENR_KEY, SYNCNETS_ENR_KEY, TCP_ENR_KEY, TCP6_ENR_KEY,
+    UDP_ENR_KEY, UDP6_ENR_KEY, keys,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -27,18 +27,38 @@ pub enum Error {
     InvalidRlpData(#[from] alloy_rlp::Error),
 }
 
-#[derive(Default)]
 pub struct Builder {
     seq: u64,
     ip4: Option<Ipv4Addr>,
     ip6: Option<Ipv6Addr>,
     udp4: Option<u16>,
     udp6: Option<u16>,
+    tcp4: Option<u16>,
+    tcp6: Option<u16>,
     quic4: Option<u16>,
     quic6: Option<u16>,
     eth2: Option<[u8; 16]>,
     attnets: Option<[u8; 8]>,
     syncnets: Option<u8>,
+}
+
+impl Default for Builder {
+    fn default() -> Self {
+        Self {
+            seq: 1,
+            ip4: None,
+            ip6: None,
+            udp4: None,
+            udp6: None,
+            tcp4: None,
+            tcp6: None,
+            quic4: None,
+            quic6: None,
+            eth2: None,
+            attnets: None,
+            syncnets: None,
+        }
+    }
 }
 
 impl Builder {
@@ -74,6 +94,16 @@ impl Builder {
         self
     }
 
+    pub fn tcp4(&mut self, port: u16) -> &mut Self {
+        self.tcp4 = Some(port);
+        self
+    }
+
+    pub fn tcp6(&mut self, port: u16) -> &mut Self {
+        self.tcp6 = Some(port);
+        self
+    }
+
     pub fn quic4(&mut self, port: u16) -> &mut Self {
         self.quic4 = Some(port);
         self
@@ -101,7 +131,7 @@ impl Builder {
 
     // Keys in lexicographic order:
     //   attnets < eth2 < id < ip < ip6 < quic < quic6 < secp256k1 < syncnets <
-    //   udp < udp6
+    //   tcp < tcp6 < udp < udp6
     fn rlp_content(&self, public_key: &secp256k1::PublicKey) -> BytesMut {
         let mut list = BytesMut::with_capacity(MAX_ENR_SIZE);
         self.seq.encode(&mut list);
@@ -138,6 +168,14 @@ impl Builder {
             SYNCNETS_ENR_KEY.encode(&mut list);
             [syncnets].as_ref().encode(&mut list);
         }
+        if let Some(tcp4) = self.tcp4 {
+            TCP_ENR_KEY.encode(&mut list);
+            tcp4.encode(&mut list);
+        }
+        if let Some(tcp6) = self.tcp6 {
+            TCP6_ENR_KEY.encode(&mut list);
+            tcp6.encode(&mut list);
+        }
         if let Some(udp4) = self.udp4 {
             UDP_ENR_KEY.encode(&mut list);
             udp4.encode(&mut list);
@@ -167,6 +205,8 @@ impl Builder {
             ip6: self.ip6,
             udp4: self.udp4,
             udp6: self.udp6,
+            tcp4: self.tcp4,
+            tcp6: self.tcp6,
             quic4: self.quic4,
             quic6: self.quic6,
             eth2: self.eth2,

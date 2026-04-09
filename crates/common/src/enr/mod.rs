@@ -31,12 +31,13 @@ pub const QUIC6_ENR_KEY: &[u8] = b"quic6";
 pub const ETH2_ENR_KEY: &[u8] = b"eth2";
 pub const ATTNETS_ENR_KEY: &[u8] = b"attnets";
 pub const SYNCNETS_ENR_KEY: &[u8] = b"syncnets";
+pub const TCP_ENR_KEY: &[u8] = b"tcp";
+pub const TCP6_ENR_KEY: &[u8] = b"tcp6";
 
 /// An ENR record with a verified signature.
 ///
-/// Fields are the standard ENR fields relevant to discovery. TCP fields are
-/// omitted; the p2p layer uses QUIC. Unknown fields from decoded records are
-/// verified against the signature and then dropped.
+/// Fields are the standard ENR fields relevant to discovery. Unknown fields
+/// from decoded records are verified against the signature and then dropped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Enr {
     seq: u64,
@@ -45,6 +46,8 @@ pub struct Enr {
     ip6: Option<Ipv6Addr>,
     udp4: Option<u16>,
     udp6: Option<u16>,
+    tcp4: Option<u16>,
+    tcp6: Option<u16>,
     quic4: Option<u16>,
     quic6: Option<u16>,
     /// SSZ-encoded ENRForkID: fork_digest[4] + next_fork_version[4] +
@@ -95,6 +98,16 @@ impl Enr {
     #[inline]
     pub fn udp6(&self) -> Option<u16> {
         self.udp6
+    }
+
+    #[inline]
+    pub fn tcp4(&self) -> Option<u16> {
+        self.tcp4
+    }
+
+    #[inline]
+    pub fn tcp6(&self) -> Option<u16> {
+        self.tcp6
     }
 
     #[inline]
@@ -322,6 +335,14 @@ impl Enr {
             SYNCNETS_ENR_KEY.encode(stream);
             [syncnets].as_ref().encode(stream);
         }
+        if let Some(tcp4) = self.tcp4 {
+            TCP_ENR_KEY.encode(stream);
+            tcp4.encode(stream);
+        }
+        if let Some(tcp6) = self.tcp6 {
+            TCP6_ENR_KEY.encode(stream);
+            tcp6.encode(stream);
+        }
         if let Some(udp4) = self.udp4 {
             UDP_ENR_KEY.encode(stream);
             udp4.encode(stream);
@@ -432,6 +453,8 @@ impl Decodable for Enr {
         let mut ip6: Option<Ipv6Addr> = None;
         let mut udp4: Option<u16> = None;
         let mut udp6: Option<u16> = None;
+        let mut tcp4: Option<u16> = None;
+        let mut tcp6: Option<u16> = None;
         let mut quic4: Option<u16> = None;
         let mut quic6: Option<u16> = None;
         let mut eth2: Option<[u8; 16]> = None;
@@ -475,6 +498,12 @@ impl Decodable for Enr {
                 }
                 QUIC6_ENR_KEY => {
                     quic6 = Some(u16::decode(payload)?);
+                }
+                TCP_ENR_KEY => {
+                    tcp4 = Some(u16::decode(payload)?);
+                }
+                TCP6_ENR_KEY => {
+                    tcp6 = Some(u16::decode(payload)?);
                 }
                 b"secp256k1" => {
                     pk_bytes = Some(Header::decode_bytes(payload, false)?);
@@ -542,6 +571,8 @@ impl Decodable for Enr {
             ip6,
             udp4,
             udp6,
+            tcp4,
+            tcp6,
             quic4,
             quic6,
             eth2,
