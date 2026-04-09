@@ -73,6 +73,10 @@ unsafe impl Send for Reservation {}
 unsafe impl Sync for Reservation {}
 
 impl Reservation {
+    pub fn seq(&self) -> u64 {
+        self.seq
+    }
+
     pub fn remaining(&self) -> Result<usize, std::io::Error> {
         let buffer = self.cache.write(self.seq).map_err(std::io::Error::other)?;
         Ok(buffer.len() - self.offset)

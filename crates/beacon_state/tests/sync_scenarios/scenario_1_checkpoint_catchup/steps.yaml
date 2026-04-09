@@ -1,20 +1,36 @@
-# Scenario 1 (PR 1 subset): node boots from a checkpoint and observes
-# that the tile is in Syncing mode at the checkpoint's slot.
-#
-# The "catch up via RPC blocks" half of the original scenario lives in a
-# later PR that ships state_transition, sync_step, and block handling.
-# Here we exercise only the bootstrap path through a real SilverSpine
-# adapter with a real EF checkpoint SSZ.
+# Scenario 1: node boots from a checkpoint, learns it is behind, requests
+# and applies blocks via RPC range, ends up Following.
 #
 # Source material borrowed from EF's sanity/blocks/attestation case:
-# pre.ssz_snappy is the pre-state at slot 32.
+# pre.ssz_snappy + blocks_0/1 form a valid 2-block chain.
 
 startup_checkpoint: tests/mainnet/fulu/sanity/blocks/pyspec_tests/attestation/pre.ssz_snappy
-# Checkpoint is at slot 32; the harness floors `slots_missing` to 3
-# (must be > 2 for `Mode::Syncing` at bootstrap).
-slots_missing: 3
+# checkpoint is at slot 32; the attestation case's two blocks are slot 33
+# and 65. Harness floors `slots_missing` to 3 (must be > 2 for Syncing).
+# Final sync_target is checkpoint_slot+slots_missing = 65 — matches the slot
+# of the second EF block. The single in-flight range request asks for
+# [33, 65+1) which covers both blocks; head_slot+2=67 ≥ target=65 then flips
+# the tile to Following after the blocks apply.
+slots_missing: 33
 
 steps:
+  # Bootstrap put the tile in Syncing; first loop_body issues the range req.
   - kind: check
-    mode: syncing
-    head_slot: 32
+    outbound_has: [request_blocks_by_range]
+
+  # Deliver the two chained blocks as RPC range-resp chunks.
+  - kind: blocks_range_resp
+    from: tests/mainnet/fulu/sanity/blocks/pyspec_tests/attestation/blocks_0.ssz_snappy
+  - kind: blocks_range_resp
+    from: tests/mainnet/fulu/sanity/blocks/pyspec_tests/attestation/blocks_1.ssz_snappy
+  - kind: step
+
+  # Each accepted block emits PersistBlock + Status (head changed).
+  - kind: check
+    outbound_has: [persist_block, status]
+
+  # Synced fires on the next loop_body after the mode flipped to Following
+  # inside sync_step.
+  - kind: step
+  - kind: check
+    outbound_has: [synced]

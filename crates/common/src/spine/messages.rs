@@ -7,7 +7,8 @@ use crate::{
     ssz_view::{
         BeaconBlocksByRangeRequestView, BeaconBlocksByRootRequestView, BlobIdentifierView,
         DataColumnSidecarView, DataColumnSidecarsByRangeRequestView,
-        DataColumnsByRootIdentifierView, SignedBeaconBlockView, StatusView,
+        DataColumnsByRootIdentifierView, STATUS_V2_SIZE, SignedBeaconBlockView, SszView,
+        StatusView,
     },
 };
 
@@ -263,46 +264,32 @@ pub enum RpcMsg {
 
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
-pub struct PeerGossipIn {
-    pub topic: GossipTopic,
-    pub sender: Peer,
-    pub tcache: TCacheRead,
-}
-
-#[derive(Clone, Copy, Debug)]
-#[repr(C)]
-pub struct PeerGossipOut {
-    pub topic: GossipTopic,
-    pub tcache: TCacheRead,
-}
-
-#[derive(Clone, Copy, Debug)]
-#[repr(C)]
 pub struct PeerRpcIn {
     pub msg: RpcMsg,
-    pub sender: Peer,
+    pub sender: P2pStreamId,
     pub tcache: TCacheRead,
+    /// Request id this chunk belongs to. `0` = unsolicited (no matching
+    /// outgoing request).
+    pub request_id: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
-pub struct PeerRpcOut {
-    pub msg: RpcMsg,
-    pub recipient: Option<Peer>,
-    pub tcache: TCacheRead,
+pub enum BeaconStateEvent {
+    Synced([u8; STATUS_V2_SIZE]),
+    RequestBlocksByRange { request_id: u64, ssz: TCacheRead },
+    Status([u8; STATUS_V2_SIZE]),
+    PersistBlock(TCacheRead),
 }
 
-#[derive(Clone, Copy, Debug)]
-#[repr(C)]
-pub enum Feedback {
-    Valid,
-    Invalid,
-}
-
-#[derive(Clone, Copy, Debug)]
-#[repr(C)]
-pub struct GossipFeedback {
-    // TODO or tcache reference?
-    pub sender: Peer,
-    pub feedback: Feedback,
+impl BeaconStateEvent {
+    pub fn view(&self) -> SszView {
+        match self {
+            Self::Synced { .. } | Self::Status { .. } => SszView::Status(StatusView {}),
+            Self::RequestBlocksByRange { .. } => {
+                SszView::BeaconBlocksByRangeRequest(BeaconBlocksByRangeRequestView {})
+            }
+            Self::PersistBlock { .. } => SszView::SignedBeaconBlock(SignedBeaconBlockView {}),
+        }
+    }
 }
