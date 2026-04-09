@@ -1,16 +1,15 @@
 // Adapted from https://github.com/sigp/enr (MIT License)
 
-use std::{
-    marker::PhantomData,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr},
-};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use alloy_rlp::{Encodable, Header};
 use bytes::BytesMut;
+use secp256k1::{SECP256K1, SecretKey};
 
 use super::{
-    ENR_VERSION, Enr, EnrKey, EnrPublicKey, ID_ENR_KEY, IP_ENR_KEY, IP6_ENR_KEY, MAX_ENR_SIZE,
-    NodeId, UDP_ENR_KEY, UDP6_ENR_KEY,
+    ATTNETS_ENR_KEY, ENR_VERSION, ETH2_ENR_KEY, Enr, ID_ENR_KEY, IP_ENR_KEY, IP6_ENR_KEY,
+    MAX_ENR_SIZE, NodeId, QUIC_ENR_KEY, QUIC6_ENR_KEY, SYNCNETS_ENR_KEY, UDP_ENR_KEY, UDP6_ENR_KEY,
+    keys,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -28,22 +27,21 @@ pub enum Error {
     InvalidRlpData(#[from] alloy_rlp::Error),
 }
 
-pub struct Builder<K: EnrKey> {
+#[derive(Default)]
+pub struct Builder {
     seq: u64,
     ip4: Option<Ipv4Addr>,
     ip6: Option<Ipv6Addr>,
     udp4: Option<u16>,
     udp6: Option<u16>,
-    phantom: PhantomData<K>,
+    quic4: Option<u16>,
+    quic6: Option<u16>,
+    eth2: Option<[u8; 16]>,
+    attnets: Option<[u8; 8]>,
+    syncnets: Option<u8>,
 }
 
-impl<K: EnrKey> Default for Builder<K> {
-    fn default() -> Self {
-        Self { seq: 1, ip4: None, ip6: None, udp4: None, udp6: None, phantom: PhantomData }
-    }
-}
-
-impl<K: EnrKey> Builder<K> {
+impl Builder {
     pub fn seq(&mut self, seq: u64) -> &mut Self {
         self.seq = seq;
         self
@@ -76,18 +74,45 @@ impl<K: EnrKey> Builder<K> {
         self
     }
 
-    // Produces the RLP list content used for signing (no signature prefix).
-    // Key order matches the sorted order required by the ENR spec.
-    fn rlp_content(&self, public_key: &K::PublicKey) -> BytesMut {
+    pub fn quic4(&mut self, port: u16) -> &mut Self {
+        self.quic4 = Some(port);
+        self
+    }
+
+    pub fn quic6(&mut self, port: u16) -> &mut Self {
+        self.quic6 = Some(port);
+        self
+    }
+
+    pub fn eth2(&mut self, eth2: [u8; 16]) -> &mut Self {
+        self.eth2 = Some(eth2);
+        self
+    }
+
+    pub fn attnets(&mut self, attnets: [u8; 8]) -> &mut Self {
+        self.attnets = Some(attnets);
+        self
+    }
+
+    pub fn syncnets(&mut self, syncnets: u8) -> &mut Self {
+        self.syncnets = Some(syncnets);
+        self
+    }
+
+    // Keys in lexicographic order:
+    //   attnets < eth2 < id < ip < ip6 < quic < quic6 < secp256k1 < syncnets <
+    //   udp < udp6
+    fn rlp_content(&self, public_key: &secp256k1::PublicKey) -> BytesMut {
         let mut list = BytesMut::with_capacity(MAX_ENR_SIZE);
         self.seq.encode(&mut list);
 
-        let pk_key = public_key.enr_key();
-        let pk_encoded = public_key.encode();
-
-        if pk_key == b"ed25519" {
-            pk_key.encode(&mut list);
-            pk_encoded.as_ref().encode(&mut list);
+        if let Some(attnets) = self.attnets {
+            ATTNETS_ENR_KEY.encode(&mut list);
+            attnets.as_ref().encode(&mut list);
+        }
+        if let Some(eth2) = self.eth2 {
+            ETH2_ENR_KEY.encode(&mut list);
+            eth2.as_ref().encode(&mut list);
         }
         ID_ENR_KEY.encode(&mut list);
         ENR_VERSION.encode(&mut list);
@@ -99,9 +124,19 @@ impl<K: EnrKey> Builder<K> {
             IP6_ENR_KEY.encode(&mut list);
             ip6.octets().as_ref().encode(&mut list);
         }
-        if pk_key == b"secp256k1" {
-            pk_key.encode(&mut list);
-            pk_encoded.as_ref().encode(&mut list);
+        if let Some(quic4) = self.quic4 {
+            QUIC_ENR_KEY.encode(&mut list);
+            quic4.encode(&mut list);
+        }
+        if let Some(quic6) = self.quic6 {
+            QUIC6_ENR_KEY.encode(&mut list);
+            quic6.encode(&mut list);
+        }
+        keys::ENR_KEY.encode(&mut list);
+        public_key.serialize().as_ref().encode(&mut list);
+        if let Some(syncnets) = self.syncnets {
+            SYNCNETS_ENR_KEY.encode(&mut list);
+            [syncnets].as_ref().encode(&mut list);
         }
         if let Some(udp4) = self.udp4 {
             UDP_ENR_KEY.encode(&mut list);
@@ -119,19 +154,12 @@ impl<K: EnrKey> Builder<K> {
         out
     }
 
-    pub fn build(&mut self, key: &K) -> Result<Enr<K>, Error> {
-        let public_key = key.public();
+    pub fn build(&mut self, key: &SecretKey) -> Result<Enr, Error> {
+        let public_key = key.public_key(SECP256K1);
         let rlp_content = self.rlp_content(&public_key);
 
-        let sig_bytes = key.sign_v4(&rlp_content).map_err(|_| Error::SigningError)?;
-        if sig_bytes.len() != 64 {
-            return Err(Error::SigningError);
-        }
-        let mut signature = [0u8; 64];
-        signature.copy_from_slice(&sig_bytes);
-
-        let node_id = NodeId::from(public_key.clone());
-
+        let signature = keys::sign_v4(key, &rlp_content).map_err(|_| Error::SigningError)?;
+        let node_id = NodeId::from(public_key);
         let enr = Enr {
             seq: self.seq,
             node_id,
@@ -139,9 +167,11 @@ impl<K: EnrKey> Builder<K> {
             ip6: self.ip6,
             udp4: self.udp4,
             udp6: self.udp6,
-            eth2: None,
-            attnets: None,
-            syncnets: None,
+            quic4: self.quic4,
+            quic6: self.quic6,
+            eth2: self.eth2,
+            attnets: self.attnets,
+            syncnets: self.syncnets,
             public_key,
             signature,
         };

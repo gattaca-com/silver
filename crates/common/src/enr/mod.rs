@@ -5,7 +5,6 @@ mod keys;
 mod node_id;
 
 use std::{
-    hash::{Hash, Hasher},
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
     str::FromStr,
 };
@@ -14,8 +13,8 @@ use alloy_rlp::{Decodable, Encodable, Error as DecoderError, Header};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 pub use builder::Error;
 use bytes::{Buf, BytesMut};
-pub use keys::{EnrKey, EnrPublicKey};
 pub use node_id::NodeId;
+use secp256k1::{PublicKey, SECP256K1, SecretKey};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 use sha3::{Digest, Keccak256};
 
@@ -27,6 +26,8 @@ pub const IP_ENR_KEY: &[u8] = b"ip";
 pub const IP6_ENR_KEY: &[u8] = b"ip6";
 pub const UDP_ENR_KEY: &[u8] = b"udp";
 pub const UDP6_ENR_KEY: &[u8] = b"udp6";
+pub const QUIC_ENR_KEY: &[u8] = b"quic";
+pub const QUIC6_ENR_KEY: &[u8] = b"quic6";
 pub const ETH2_ENR_KEY: &[u8] = b"eth2";
 pub const ATTNETS_ENR_KEY: &[u8] = b"attnets";
 pub const SYNCNETS_ENR_KEY: &[u8] = b"syncnets";
@@ -36,13 +37,16 @@ pub const SYNCNETS_ENR_KEY: &[u8] = b"syncnets";
 /// Fields are the standard ENR fields relevant to discovery. TCP fields are
 /// omitted; the p2p layer uses QUIC. Unknown fields from decoded records are
 /// verified against the signature and then dropped.
-pub struct Enr<K: EnrKey> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Enr {
     seq: u64,
     node_id: NodeId,
     ip4: Option<Ipv4Addr>,
     ip6: Option<Ipv6Addr>,
     udp4: Option<u16>,
     udp6: Option<u16>,
+    quic4: Option<u16>,
+    quic6: Option<u16>,
     /// SSZ-encoded ENRForkID: fork_digest[4] + next_fork_version[4] +
     /// next_fork_epoch[8].
     eth2: Option<[u8; 16]>,
@@ -50,18 +54,16 @@ pub struct Enr<K: EnrKey> {
     attnets: Option<[u8; 8]>,
     /// Sync committee subnet bitfield (lower 4 bits, SSZ Bitvector[4]).
     syncnets: Option<u8>,
-    public_key: K::PublicKey,
+    public_key: PublicKey,
     signature: [u8; 64],
 }
 
-impl<K: EnrKey> Copy for Enr<K> where K::PublicKey: Copy {}
-
-impl<K: EnrKey> Enr<K> {
-    pub fn builder() -> builder::Builder<K> {
+impl Enr {
+    pub fn builder() -> builder::Builder {
         builder::Builder::default()
     }
 
-    pub fn empty(signing_key: &K) -> Result<Self, Error> {
+    pub fn empty(signing_key: &SecretKey) -> Result<Self, Error> {
         Self::builder().build(signing_key)
     }
 
@@ -120,15 +122,15 @@ impl<K: EnrKey> Enr<K> {
         self.syncnets
     }
 
-    pub fn set_eth2(&mut self, eth2: [u8; 16], key: &K) -> Result<(), Error> {
+    pub fn set_eth2(&mut self, eth2: [u8; 16], key: &SecretKey) -> Result<(), Error> {
         self.apply(key, |enr| enr.eth2 = Some(eth2))
     }
 
-    pub fn set_attnets(&mut self, attnets: [u8; 8], key: &K) -> Result<(), Error> {
+    pub fn set_attnets(&mut self, attnets: [u8; 8], key: &SecretKey) -> Result<(), Error> {
         self.apply(key, |enr| enr.attnets = Some(attnets))
     }
 
-    pub fn set_syncnets(&mut self, syncnets: u8, key: &K) -> Result<(), Error> {
+    pub fn set_syncnets(&mut self, syncnets: u8, key: &SecretKey) -> Result<(), Error> {
         self.apply(key, |enr| enr.syncnets = Some(syncnets))
     }
 
@@ -145,8 +147,8 @@ impl<K: EnrKey> Enr<K> {
     }
 
     #[inline]
-    pub fn public_key(&self) -> K::PublicKey {
-        self.public_key.clone()
+    pub fn public_key(&self) -> PublicKey {
+        self.public_key
     }
 
     /// Returns true if the ENR's signature is valid against the stored public
@@ -158,7 +160,7 @@ impl<K: EnrKey> Enr<K> {
     /// here and this method will return false for them.
     #[inline]
     pub fn verify(&self) -> bool {
-        self.public_key.verify_v4(&self.rlp_content(), &self.signature)
+        keys::verify_v4(&self.public_key, &self.rlp_content(), &self.signature)
     }
 
     #[inline]
@@ -185,7 +187,7 @@ impl<K: EnrKey> Enr<K> {
         out.len()
     }
 
-    pub fn set_seq(&mut self, seq: u64, key: &K) -> Result<(), Error> {
+    pub fn set_seq(&mut self, seq: u64, key: &SecretKey) -> Result<(), Error> {
         let prev_seq = self.seq;
         let prev_sig = self.signature;
         self.seq = seq;
@@ -198,11 +200,11 @@ impl<K: EnrKey> Enr<K> {
             self.signature = prev_sig;
             return Err(Error::ExceedsMaxSize);
         }
-        self.node_id = NodeId::from(key.public());
+        self.node_id = NodeId::from(key.public_key(SECP256K1));
         Ok(())
     }
 
-    pub fn set_ip(&mut self, ip: IpAddr, key: &K) -> Result<Option<IpAddr>, Error> {
+    pub fn set_ip(&mut self, ip: IpAddr, key: &SecretKey) -> Result<Option<IpAddr>, Error> {
         let prev = match ip {
             IpAddr::V4(_) => self.ip4.map(IpAddr::V4),
             IpAddr::V6(_) => self.ip6.map(IpAddr::V6),
@@ -214,27 +216,27 @@ impl<K: EnrKey> Enr<K> {
         Ok(prev)
     }
 
-    pub fn set_udp4(&mut self, udp: u16, key: &K) -> Result<Option<u16>, Error> {
+    pub fn set_udp4(&mut self, udp: u16, key: &SecretKey) -> Result<Option<u16>, Error> {
         let prev = self.udp4;
         self.apply(key, |enr| enr.udp4 = Some(udp))?;
         Ok(prev)
     }
 
-    pub fn remove_udp4(&mut self, key: &K) -> Result<(), Error> {
+    pub fn remove_udp4(&mut self, key: &SecretKey) -> Result<(), Error> {
         self.apply(key, |enr| enr.udp4 = None)
     }
 
-    pub fn set_udp6(&mut self, udp: u16, key: &K) -> Result<Option<u16>, Error> {
+    pub fn set_udp6(&mut self, udp: u16, key: &SecretKey) -> Result<Option<u16>, Error> {
         let prev = self.udp6;
         self.apply(key, |enr| enr.udp6 = Some(udp))?;
         Ok(prev)
     }
 
-    pub fn remove_udp6(&mut self, key: &K) -> Result<(), Error> {
+    pub fn remove_udp6(&mut self, key: &SecretKey) -> Result<(), Error> {
         self.apply(key, |enr| enr.udp6 = None)
     }
 
-    pub fn set_udp_socket(&mut self, socket: SocketAddr, key: &K) -> Result<(), Error> {
+    pub fn set_udp_socket(&mut self, socket: SocketAddr, key: &SecretKey) -> Result<(), Error> {
         self.apply(key, |enr| match socket.ip() {
             IpAddr::V4(addr) => {
                 enr.ip4 = Some(addr);
@@ -247,14 +249,14 @@ impl<K: EnrKey> Enr<K> {
         })
     }
 
-    pub fn remove_udp_socket(&mut self, key: &K) -> Result<(), Error> {
+    pub fn remove_udp_socket(&mut self, key: &SecretKey) -> Result<(), Error> {
         self.apply(key, |enr| {
             enr.ip4 = None;
             enr.udp4 = None;
         })
     }
 
-    pub fn remove_udp6_socket(&mut self, key: &K) -> Result<(), Error> {
+    pub fn remove_udp6_socket(&mut self, key: &SecretKey) -> Result<(), Error> {
         self.apply(key, |enr| {
             enr.ip6 = None;
             enr.udp6 = None;
@@ -262,15 +264,15 @@ impl<K: EnrKey> Enr<K> {
     }
 
     // Clone, apply f, re-sign, check size, commit.
-    fn apply<F>(&mut self, key: &K, f: F) -> Result<(), Error>
+    fn apply<F>(&mut self, key: &SecretKey, f: F) -> Result<(), Error>
     where
         F: FnOnce(&mut Self),
     {
-        let mut new = self.clone();
+        let mut new = *self;
         f(&mut new);
         new.seq = new.seq.checked_add(1).ok_or(Error::SequenceNumberTooHigh)?;
         new.sign(key)?;
-        new.node_id = NodeId::from(key.public());
+        new.node_id = NodeId::from(key.public_key(SECP256K1));
         if new.size() > MAX_ENR_SIZE {
             return Err(Error::ExceedsMaxSize);
         }
@@ -280,24 +282,17 @@ impl<K: EnrKey> Enr<K> {
 
     // Encode (seq + k-v pairs) into a flat buffer; signature is prepended only
     // when include_signature is true. Keys emitted in lexicographic sorted order:
-    //   attnets < ed25519 < eth2 < id < ip < ip6 < secp256k1 < syncnets < udp <
-    // udp6
+    //   attnets < eth2 < id < ip < ip6 < quic < quic6 < secp256k1 < syncnets <
+    //   udp < udp6
     fn append_rlp_content(&self, stream: &mut BytesMut, include_signature: bool) {
         if include_signature {
             self.signature.as_ref().encode(stream);
         }
         self.seq.encode(stream);
 
-        let pk_key = self.public_key.enr_key();
-        let pk_encoded = self.public_key.encode();
-
         if let Some(attnets) = self.attnets {
             ATTNETS_ENR_KEY.encode(stream);
             attnets.as_ref().encode(stream);
-        }
-        if pk_key == b"ed25519" {
-            pk_key.encode(stream);
-            pk_encoded.as_ref().encode(stream);
         }
         if let Some(eth2) = self.eth2 {
             ETH2_ENR_KEY.encode(stream);
@@ -313,10 +308,16 @@ impl<K: EnrKey> Enr<K> {
             IP6_ENR_KEY.encode(stream);
             ip6.octets().as_ref().encode(stream);
         }
-        if pk_key == b"secp256k1" {
-            pk_key.encode(stream);
-            pk_encoded.as_ref().encode(stream);
+        if let Some(quic4) = self.quic4 {
+            QUIC_ENR_KEY.encode(stream);
+            quic4.encode(stream);
         }
+        if let Some(quic6) = self.quic6 {
+            QUIC6_ENR_KEY.encode(stream);
+            quic6.encode(stream);
+        }
+        keys::ENR_KEY.encode(stream);
+        self.public_key.serialize().as_ref().encode(stream);
         if let Some(syncnets) = self.syncnets {
             SYNCNETS_ENR_KEY.encode(stream);
             [syncnets].as_ref().encode(stream);
@@ -342,74 +343,21 @@ impl<K: EnrKey> Enr<K> {
         out
     }
 
-    fn sign(&mut self, key: &K) -> Result<[u8; 64], Error> {
-        let sig_bytes = key.sign_v4(&self.rlp_content()).map_err(|_| Error::SigningError)?;
-        if sig_bytes.len() != 64 {
-            return Err(Error::SigningError);
-        }
-        let mut new_sig = [0u8; 64];
-        new_sig.copy_from_slice(&sig_bytes);
+    fn sign(&mut self, key: &SecretKey) -> Result<[u8; 64], Error> {
+        let sig_bytes = keys::sign_v4(key, &self.rlp_content()).map_err(|_| Error::SigningError)?;
         let old = self.signature;
-        self.signature = new_sig;
+        self.signature = sig_bytes;
         Ok(old)
     }
 }
 
-impl<K: EnrKey> Clone for Enr<K> {
-    fn clone(&self) -> Self {
-        Self {
-            seq: self.seq,
-            node_id: self.node_id,
-            ip4: self.ip4,
-            ip6: self.ip6,
-            udp4: self.udp4,
-            udp6: self.udp6,
-            eth2: self.eth2,
-            attnets: self.attnets,
-            syncnets: self.syncnets,
-            public_key: self.public_key.clone(),
-            signature: self.signature,
-        }
-    }
-}
-
-impl<K: EnrKey> Eq for Enr<K> {}
-
-impl<K: EnrKey> PartialEq for Enr<K> {
-    fn eq(&self, other: &Self) -> bool {
-        self.seq == other.seq && self.node_id == other.node_id && self.signature == other.signature
-    }
-}
-
-impl<K: EnrKey> Hash for Enr<K> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.seq.hash(state);
-        self.node_id.hash(state);
-        self.signature.hash(state);
-    }
-}
-
-impl<K: EnrKey> std::fmt::Display for Enr<K> {
+impl std::fmt::Display for Enr {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "{}", self.to_base64())
     }
 }
 
-impl<K: EnrKey> std::fmt::Debug for Enr<K> {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        f.debug_struct("Enr")
-            .field("seq", &self.seq)
-            .field("node_id", &self.node_id())
-            .field("ip4", &self.ip4)
-            .field("ip6", &self.ip6)
-            .field("udp4", &self.udp4)
-            .field("udp6", &self.udp6)
-            .field("signature", &hex::encode(self.signature))
-            .finish_non_exhaustive()
-    }
-}
-
-impl<K: EnrKey> FromStr for Enr<K> {
+impl FromStr for Enr {
     type Err = String;
 
     fn from_str(base64_string: &str) -> Result<Self, Self::Err> {
@@ -428,20 +376,20 @@ impl<K: EnrKey> FromStr for Enr<K> {
     }
 }
 
-impl<K: EnrKey> Serialize for Enr<K> {
+impl Serialize for Enr {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(&self.to_base64())
     }
 }
 
-impl<'de, K: EnrKey> Deserialize<'de> for Enr<K> {
+impl<'de> Deserialize<'de> for Enr {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let s: String = Deserialize::deserialize(deserializer)?;
         Self::from_str(&s).map_err(D::Error::custom)
     }
 }
 
-impl<K: EnrKey> Encodable for Enr<K> {
+impl Encodable for Enr {
     fn encode(&self, out: &mut dyn bytes::BufMut) {
         let mut stream = BytesMut::with_capacity(MAX_ENR_SIZE);
         self.append_rlp_content(&mut stream, true);
@@ -451,7 +399,7 @@ impl<K: EnrKey> Encodable for Enr<K> {
     }
 }
 
-impl<K: EnrKey> Decodable for Enr<K> {
+impl Decodable for Enr {
     fn decode(buf: &mut &[u8]) -> Result<Self, DecoderError> {
         if buf.len() > MAX_ENR_SIZE {
             return Err(DecoderError::Custom("enr exceeds max size"));
@@ -484,10 +432,12 @@ impl<K: EnrKey> Decodable for Enr<K> {
         let mut ip6: Option<Ipv6Addr> = None;
         let mut udp4: Option<u16> = None;
         let mut udp6: Option<u16> = None;
+        let mut quic4: Option<u16> = None;
+        let mut quic6: Option<u16> = None;
         let mut eth2: Option<[u8; 16]> = None;
         let mut attnets: Option<[u8; 8]> = None;
         let mut syncnets: Option<u8> = None;
-        let mut pubkey_info: Option<(&[u8], &[u8])> = None;
+        let mut pk_bytes: Option<&[u8]> = None;
 
         let mut prev: Option<&[u8]> = None;
         while !payload.is_empty() {
@@ -520,9 +470,14 @@ impl<K: EnrKey> Decodable for Enr<K> {
                 IP6_ENR_KEY => {
                     ip6 = Some(Ipv6Addr::decode(payload)?);
                 }
-                b"secp256k1" | b"ed25519" => {
-                    let pk_bytes = Header::decode_bytes(payload, false)?;
-                    pubkey_info = Some((key, pk_bytes));
+                QUIC_ENR_KEY => {
+                    quic4 = Some(u16::decode(payload)?);
+                }
+                QUIC6_ENR_KEY => {
+                    quic6 = Some(u16::decode(payload)?);
+                }
+                b"secp256k1" => {
+                    pk_bytes = Some(Header::decode_bytes(payload, false)?);
                 }
                 ETH2_ENR_KEY => {
                     let b = Header::decode_bytes(payload, false)?;
@@ -564,9 +519,9 @@ impl<K: EnrKey> Decodable for Enr<K> {
             content_list.extend_from_slice(raw_val);
         }
 
-        let (scheme, pk_bytes) = pubkey_info.ok_or(DecoderError::Custom("Missing public key"))?;
-        let public_key = K::enr_to_public(scheme, pk_bytes)?;
-        let node_id = NodeId::from(public_key.clone());
+        let pk_bytes = pk_bytes.ok_or(DecoderError::Custom("Missing public key"))?;
+        let public_key = keys::decode_public(pk_bytes)?;
+        let node_id = NodeId::from(public_key);
 
         // Verify signature over the full content (including skipped fields).
         let content_rlp = {
@@ -576,7 +531,7 @@ impl<K: EnrKey> Decodable for Enr<K> {
             out.extend_from_slice(&content_list);
             out
         };
-        if !public_key.verify_v4(&content_rlp, &signature) {
+        if !keys::verify_v4(&public_key, &content_rlp, &signature) {
             return Err(DecoderError::Custom("Invalid Signature"));
         }
 
@@ -587,6 +542,8 @@ impl<K: EnrKey> Decodable for Enr<K> {
             ip6,
             udp4,
             udp6,
+            quic4,
+            quic6,
             eth2,
             attnets,
             syncnets,
@@ -606,8 +563,6 @@ pub fn digest(b: &[u8]) -> [u8; 32] {
 mod tests {
     use super::*;
 
-    type DefaultEnr = Enr<secp256k1::SecretKey>;
-
     #[test]
     fn test_vector_k256() {
         let valid_record = hex::decode("f884b8407098ad865b00a582051940cb9cf36836572411a47278783077011599ed5cd16b76f2635f4e234738f30813a89eb9137e3e3df5266e3a1f11df72ecf1145ccb9c01826964827634826970847f00000189736563703235366b31a103ca634cae0d49acb401d8a4c6b6fe8c55b70d115bf400769cc1400f3258cd31388375647082765f").unwrap();
@@ -617,10 +572,10 @@ mod tests {
                 .unwrap();
 
         let mut buf = valid_record.as_slice();
-        let enr = DefaultEnr::decode(&mut buf).unwrap();
+        let enr = Enr::decode(&mut buf).unwrap();
         assert!(buf.is_empty());
 
-        let pubkey = enr.public_key().encode();
+        let pubkey = enr.public_key().serialize();
 
         assert_eq!(enr.ip4(), Some(Ipv4Addr::new(127, 0, 0, 1)));
         assert_eq!(enr.id(), Some(String::from("v4")));
@@ -641,8 +596,8 @@ mod tests {
             hex::decode("a448f24c6d18e575453db13171562b71999873db5b286df957af199ec94617f7")
                 .unwrap();
 
-        let enr = text.parse::<DefaultEnr>().unwrap();
-        let pubkey = enr.public_key().encode();
+        let enr = text.parse::<Enr>().unwrap();
+        let pubkey = enr.public_key().serialize();
         assert_eq!(enr.ip4(), Some(Ipv4Addr::new(127, 0, 0, 1)));
         assert_eq!(enr.ip6(), None);
         assert_eq!(enr.id(), Some(String::from("v4")));
@@ -661,7 +616,7 @@ mod tests {
             hex::decode("a448f24c6d18e575453db13171562b71999873db5b286df957af199ec94617f7")
                 .unwrap();
 
-        let enr = text.parse::<Enr<secp256k1::SecretKey>>().unwrap();
+        let enr = text.parse::<Enr>().unwrap();
         assert_eq!(enr.ip4(), Some(Ipv4Addr::new(127, 0, 0, 1)));
         assert_eq!(enr.id(), Some(String::from("v4")));
         assert_eq!(enr.udp4(), Some(30303));
@@ -684,20 +639,20 @@ mod tests {
             ),
         ];
         for (test_name, err, text) in test_data {
-            assert_eq!(text.parse::<DefaultEnr>().unwrap_err(), err, "{test_name}");
+            assert_eq!(text.parse::<Enr>().unwrap_err(), err, "{test_name}");
         }
     }
 
     #[test]
     fn test_read_enr_no_prefix() {
         let text = "-Iu4QM-YJF2RRpMcZkFiWzMf2kRd1A5F1GIekPa4Sfi_v0DCLTDBfOMTMMWJhhawr1YLUPb5008CpnBKrgjY3sstjfgCgmlkgnY0gmlwhH8AAAGJc2VjcDI1NmsxoQP8u1uyQFyJYuQUTyA1raXKhSw1HhhxNUQ2VE52LNHWMIN0Y3CCIyiDdWRwgiMo";
-        text.parse::<DefaultEnr>().unwrap();
+        text.parse::<Enr>().unwrap();
     }
 
     #[test]
     fn test_read_enr_prefix() {
         let text = "enr:-Iu4QM-YJF2RRpMcZkFiWzMf2kRd1A5F1GIekPa4Sfi_v0DCLTDBfOMTMMWJhhawr1YLUPb5008CpnBKrgjY3sstjfgCgmlkgnY0gmlwhH8AAAGJc2VjcDI1NmsxoQP8u1uyQFyJYuQUTyA1raXKhSw1HhhxNUQ2VE52LNHWMIN0Y3CCIyiDdWRwgiMo";
-        text.parse::<DefaultEnr>().unwrap();
+        text.parse::<Enr>().unwrap();
     }
 
     #[test]
@@ -715,7 +670,7 @@ mod tests {
             hex::decode("b71c71a67e1177ad4e901695e1b4b9ee17ae16c6668d313eac2f96dbcda3f291")
                 .unwrap();
         let key = secp256k1::SecretKey::from_slice(&key_data).unwrap();
-        let mut record = text.parse::<DefaultEnr>().unwrap();
+        let mut record = text.parse::<Enr>().unwrap();
         assert!(record.set_udp4(record.udp4().unwrap(), &key).is_ok());
 
         // 301-byte record, creation should fail.
@@ -726,13 +681,13 @@ mod tests {
             "eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4",
             "eHh4eHh4eHh4eHh4eHh4eA"
         );
-        assert!(text.parse::<DefaultEnr>().unwrap_err().contains("enr exceeds max size"));
+        assert!(text.parse::<Enr>().unwrap_err().contains("enr exceeds max size"));
     }
 
     #[test]
     fn test_rlp_integer_decoding() {
         let text = "enr:-Ia4QHCYrYZbAKWCBRlAy5zzaDZXJBGkcnh4MHcBFZntXNFrdvJjX04jRzjzCBOonrkTfj499SZuOh8R33Ls8RRcy5yCAAGCaWSCdjSCaXCEfwAAAYlzZWNwMjU2azGhA8pjTK4NSay0Adikxrb-jFW3DRFb9AB2nMFADzJYzTE4g3VkcIJ2Xw";
-        assert_eq!(text.parse::<DefaultEnr>().unwrap_err(), "Invalid ENR: LeadingZero");
+        assert_eq!(text.parse::<Enr>().unwrap_err(), "Invalid ENR: LeadingZero");
     }
 
     #[test]
@@ -746,14 +701,13 @@ mod tests {
         let mut encoded_enr = BytesMut::new();
         enr.encode(&mut encoded_enr);
 
-        let decoded_enr =
-            Enr::<secp256k1::SecretKey>::decode(&mut encoded_enr.to_vec().as_slice()).unwrap();
+        let decoded_enr = Enr::decode(&mut encoded_enr.to_vec().as_slice()).unwrap();
 
         assert_eq!(decoded_enr.id(), Some("v4".into()));
         assert_eq!(decoded_enr.ip4(), Some(ip));
         assert_eq!(decoded_enr.udp4(), Some(udp));
-        assert_eq!(decoded_enr.public_key().encode(), key.public().encode());
-        decoded_enr.public_key().encode_uncompressed();
+        assert_eq!(decoded_enr.public_key().serialize(), key.public_key(SECP256K1).serialize());
+        keys::encode_uncompressed(&decoded_enr.public_key());
         assert!(decoded_enr.verify());
     }
 
@@ -771,7 +725,7 @@ mod tests {
         assert_eq!(enr.ip4(), Some(ip));
         assert_eq!(enr.udp4(), Some(udp));
         assert!(enr.verify());
-        assert_eq!(enr.public_key().encode(), key.public().encode());
+        assert_eq!(enr.public_key().serialize(), key.public_key(SECP256K1).serialize());
     }
 
     #[test]
@@ -803,8 +757,8 @@ mod tests {
             hex::decode("03ca634cae0d49acb401d8a4c6b6fe8c55b70d115bf400769cc1400f3258cd3138")
                 .unwrap();
 
-        let enr = DefaultEnr::decode(&mut valid_record.as_slice()).unwrap();
-        assert_eq!(enr.public_key().encode().to_vec(), expected_pubkey);
+        let enr = Enr::decode(&mut valid_record.as_slice()).unwrap();
+        assert_eq!(enr.public_key().serialize().to_vec(), expected_pubkey);
         assert!(enr.verify());
 
         // Truncated payload length
@@ -815,7 +769,7 @@ mod tests {
             "634cae0d49acb401d8a4c6b6fe8c55b70d115bf400769cc1400f3258cd313883",
             "75647082765f"
         );
-        DefaultEnr::decode(&mut hex::decode(invalid_hex).unwrap().as_slice())
+        Enr::decode(&mut hex::decode(invalid_hex).unwrap().as_slice())
             .expect_err("should reject truncated payload");
     }
 
@@ -866,7 +820,7 @@ mod tests {
 
         let mut encoded = BytesMut::new();
         enr.encode(&mut encoded);
-        let decoded = DefaultEnr::decode(&mut encoded.to_vec().as_slice()).unwrap();
+        let decoded = Enr::decode(&mut encoded.to_vec().as_slice()).unwrap();
         assert_eq!(decoded.eth2(), Some(eth2));
         assert!(decoded.verify());
     }
@@ -882,7 +836,7 @@ mod tests {
 
         let mut encoded = BytesMut::new();
         enr.encode(&mut encoded);
-        let decoded = DefaultEnr::decode(&mut encoded.to_vec().as_slice()).unwrap();
+        let decoded = Enr::decode(&mut encoded.to_vec().as_slice()).unwrap();
         assert_eq!(decoded.attnets(), Some(attnets));
         assert!(decoded.verify());
     }
@@ -898,7 +852,7 @@ mod tests {
 
         let mut encoded = BytesMut::new();
         enr.encode(&mut encoded);
-        let decoded = DefaultEnr::decode(&mut encoded.to_vec().as_slice()).unwrap();
+        let decoded = Enr::decode(&mut encoded.to_vec().as_slice()).unwrap();
         assert_eq!(decoded.syncnets(), Some(syncnets));
         assert!(decoded.verify());
     }
@@ -924,7 +878,7 @@ mod tests {
 
         let mut encoded = BytesMut::new();
         enr.encode(&mut encoded);
-        let decoded = DefaultEnr::decode(&mut encoded.to_vec().as_slice()).unwrap();
+        let decoded = Enr::decode(&mut encoded.to_vec().as_slice()).unwrap();
         assert_eq!(decoded.eth2(), Some(eth2));
         assert_eq!(decoded.attnets(), Some(attnets));
         assert_eq!(decoded.syncnets(), Some(syncnets));

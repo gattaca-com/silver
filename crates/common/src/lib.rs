@@ -11,8 +11,7 @@ mod error;
 mod id;
 mod util;
 
-pub type Enr = enr::Enr<secp256k1::SecretKey>;
-pub use enr::NodeId;
+pub use enr::{Enr, NodeId};
 
 #[from_spine("silver")]
 #[derive(Debug)]

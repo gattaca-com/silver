@@ -1,8 +1,9 @@
 // Adapted from https://github.com/sigp/enr (MIT License)
 
+use secp256k1::PublicKey;
 use serde::{Deserialize, Serialize};
 
-use super::{Enr, EnrKey, digest, keys::EnrPublicKey};
+use super::{Enr, digest, keys};
 
 type RawNodeId = [u8; 32];
 
@@ -33,20 +34,20 @@ impl<'a> From<&'a NodeId> for NodeId {
     }
 }
 
-impl<T: EnrPublicKey> From<T> for NodeId {
-    fn from(public_key: T) -> Self {
-        Self::new(&digest(public_key.encode_uncompressed().as_ref()))
+impl From<PublicKey> for NodeId {
+    fn from(public_key: PublicKey) -> Self {
+        Self::new(&digest(&keys::encode_uncompressed(&public_key)))
     }
 }
 
-impl<T: EnrKey> From<Enr<T>> for NodeId {
-    fn from(enr: Enr<T>) -> Self {
+impl From<Enr> for NodeId {
+    fn from(enr: Enr) -> Self {
         enr.node_id()
     }
 }
 
-impl<T: EnrKey> From<&Enr<T>> for NodeId {
-    fn from(enr: &Enr<T>) -> Self {
+impl From<&Enr> for NodeId {
+    fn from(enr: &Enr) -> Self {
         enr.node_id()
     }
 }
