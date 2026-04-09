@@ -47,9 +47,28 @@ pub const PENDING_CONSOLIDATIONS_LIMIT: usize = 1 << 18;
 
 pub const PENDING_POOL_CAP: usize = 32;
 
+pub const MAX_TRANSACTIONS_PER_PAYLOAD: usize = 1 << 20;
+pub const MAX_BYTES_PER_TRANSACTION: usize = 1 << 30;
+pub const MAX_WITHDRAWALS_PER_PAYLOAD: usize = 16;
+pub const MAX_DEPOSIT_REQUESTS_PER_PAYLOAD: usize = 8192;
+pub const MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD: usize = 16;
+pub const MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD: usize = 2;
+pub const EPOCHS_PER_ETH1_VOTING_PERIOD: u64 = 64;
+pub const EPOCHS_PER_SYNC_COMMITTEE_PERIOD: u64 = 256;
+
+pub const MAX_FORK_CHOICE_NODES: usize = 256;
+pub const MAX_SHUFFLING_CACHE: usize = 4;
+pub const MAX_ATTESTERS_PER_AGGREGATE: usize = 16 * 1024;
+
 // Tier pool capacities.
-/// `Immutable` mutates only across hard forks; one slot suffices until
-/// fork-transition lands.
+//
+// TODO(soundness): TierPool is a ring allocator with no free tracking.
+// `copy_from` bumps the cursor mod N and overwrites whatever was there. A
+// BeaconStateRef held in a ForkChoiceNode (cap MAX_FORK_CHOICE_NODES=256)
+// can reference index k; ~N allocations later index k gets clobbered. With
+// SLOT_POOL_CAP=32 a 33-deep live fork tree silently corrupts state. Mainnet
+// fork trees are usually shallow but a 1-epoch fork during sync is plausible.
+
 pub const IMM_POOL_CAP: usize = 1;
 pub const VID_POOL_CAP: usize = 4;
 pub const LONGTAIL_POOL_CAP: usize = 2;
@@ -195,18 +214,93 @@ impl PendingQueues {
     }
 }
 
+#[repr(C)]
+#[derive(Default)]
+pub struct ForkChoice {
+    pub nodes: ArrayVec<ForkChoiceNode, MAX_FORK_CHOICE_NODES>,
+    pub indices: ArrayVec<ForkChoiceIndex, MAX_FORK_CHOICE_NODES>,
+    pub finalized_checkpoint: Checkpoint,
+    pub justified_checkpoint: Checkpoint,
+    pub proposer_boost_root: B256,
+    pub proposer_boost_score: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct ForkChoiceIndex {
+    pub block_root: B256,
+    pub node_idx: usize,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct ForkChoiceNode {
+    pub slot: Slot,
+    pub block_root: B256,
+    pub state_root: B256,
+    pub parent_root: B256,
+    pub execution_block_hash: B256,
+
+    /// Index into nodes array. usize::MAX = null.
+    pub parent: usize,
+    pub best_child: usize,
+    pub best_descendant: usize,
+
+    pub weight: u64,
+
+    pub justified_checkpoint: Checkpoint,
+    pub finalized_checkpoint: Checkpoint,
+
+    /// 0=irrelevant, 1=optimistic, 2=valid, 3=invalid
+    pub execution_status: u8,
+
+    pub state: BeaconStateRef,
+}
+
+/// Per-validator latest LMD attestation. ~72 MB at 1M validators.
+#[repr(C)]
+pub struct VoteTracker {
+    pub votes: [Vote; MAX_VALIDATORS],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct Vote {
+    pub current_root: B256,
+    pub next_root: B256,
+    pub next_epoch: Epoch,
+}
+
 /// Indices into each tier's pool. Every tier is arena-resident except
 /// `pending_idx` (heap Vec — see `PendingQueues`).
 #[repr(C)]
-#[derive(Clone, Copy, Default, Debug)]
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub struct BeaconStateRef {
     pub imm_idx: usize,
     pub vid_idx: usize,
+    pub vid_gen: u32,
     pub longtail_idx: usize,
     pub epoch_idx: usize,
+    pub epoch_gen: u32,
     pub roots_idx: usize,
+    pub roots_gen: u32,
     pub slot_idx: usize,
+    pub slot_gen: u32,
     pub pending_idx: usize,
+}
+
+#[repr(C)]
+pub struct ShufflingCache {
+    pub entries: [ShufflingEntry; MAX_SHUFFLING_CACHE],
+}
+
+#[repr(C)]
+pub struct ShufflingEntry {
+    pub epoch: Epoch,
+    pub seed: B256,
+    /// 0=empty, 1=valid
+    pub status: u64,
+    pub shuffled_indices: ArrayVec<u32, MAX_VALIDATORS>,
 }
 
 pub type Version = [u8; 4];

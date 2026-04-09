@@ -1,5 +1,5 @@
 use crate::{
-    ssz_hash,
+    epoch_transition, ssz_hash,
     types::{
         B256, Checkpoint, EPOCHS_PER_HISTORICAL_VECTOR, EPOCHS_PER_SLASHINGS_VECTOR, EpochData,
         Eth1Data, ExecutionPayloadHeader, Fork, HISTORICAL_ROOTS_LIMIT, HISTORICAL_SUMMARIES_CAP,
@@ -392,9 +392,7 @@ pub fn decompose_beacon_state(
             .push(PendingConsolidation { source_index: u64_le(c, 0), target_index: u64_le(c, 8) });
     }
 
-    // sync_committee_indices is a derived pubkey→index cache populated by
-    // epoch_transition::rebuild_sync_committee_indices (not in this PR).
-    // Left zeroed; consumers that need it rebuild at first use.
+    epoch_transition::rebuild_sync_committee_indices(vid, longtail);
 
     Some(pq)
 }
