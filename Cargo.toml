@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "crates/common",
+  "crates/discovery",
   "crates/network"
 ]
 resolver = "2"
@@ -45,24 +46,40 @@ opt-level = 3
 
 [workspace.dependencies]
 silver-common = { path = "crates/common" }
-flux = { git = "https://github.com/gattaca-com/flux", rev = "899e5fa" }
+silver-discovery = {path = "crates/discovery" }
+flux = { git = "https://github.com/gattaca-com/flux", rev = "41d1c369fa14392285b46d2bc4093ac3b04e21b6"}
+flux-utils = { git = "https://github.com/gattaca-com/flux", rev = "41d1c369fa14392285b46d2bc4093ac3b04e21b6", features = ["bytes"]}
 
 # External
+aes = "0.8"
+aes-gcm = "0.10"
+alloy-rlp = { version = "0.3.12", default-features = false, features = ["derive", "std"] }
+base64 = "0.22"
 buffa = "0.2.0"
 bytes = "1.11.1"
-criterion = { features = ["async_std", "async_tokio"], version = "0.5.1" }
-k256 = { version = "0.13", features = ["ecdsa"] }
-mio = { features = ["net", "os-poll"], version = "1.0.4" }
-pprof = { features = ["criterion", "flamegraph"], version = "0.13" }
+criterion = { version = "0.5.1", features = ["async_std", "async_tokio"] }
+ctr = "0.9"
+hex = "0.4"
+hkdf = "0.12"
+libc = "0.2"
+mio = { version = "1.0.4", features = ["net", "os-poll"] }
+pprof = { version = "0.13", features = ["criterion", "flamegraph"] }
 quinn-proto = "0.11.14"
-rand = "=0.8.5"
-rand_core = "=0.6.4"
+rand = "0.8.5"
+rand_core = "0.6.4"
 rcgen = "0.14.7"
 ring = "0.17"
+rustc-hash = "2"
+secp256k1 = { version = "0.30", features = ["global-context", "rand"] }
 rustls = "0.23.37"
-libc = "0.2"
+serde = { version = "1.0.228", features = ["derive"] }
+sha2 = "0.10"
+sha3 = "0.10"
+slab = "0.4.12"
+thiserror = "1.0.58"
 tracing = "0.1.40"
 tracing-subscriber = "0.3.23"
+uint = "0.9"
 x509-parser = { version = "0.17", features = ["verify"] }
 yasna = "0.5"
 
