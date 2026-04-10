@@ -9,10 +9,10 @@ use std::{
 
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
 use pprof::criterion::{Output, PProfProfiler};
-use quinn_proto::{Endpoint, EndpointConfig};
+use quinn_proto::{ConnectionHandle, Endpoint, EndpointConfig};
 use rand::{Rng, RngCore, SeedableRng};
-use silver_common::{Keypair, PeerId};
-use silver_network::{NetworkTile, P2p, RemotePeer};
+use silver_common::{Keypair, PeerId, StreamProtocol};
+use silver_network::{NetworkTile, P2p, PeerHandler, RemotePeer, StreamHandler};
 
 const BATCH_SIZE: usize = 8192 * 10;
 
@@ -54,7 +54,13 @@ pub fn broadcast(c: &mut Criterion) {
                             let p2p = P2p::new(
                                 keypair,
                                 server_endpoint,
-                                ServerHandler(recv_counter.clone()),
+                                ServerPeerHandler,
+                                ServerHandler {
+                                    counter: recv_counter.clone(),
+                                    total,
+                                    offsets: vec![0; i],
+                                    data: data.iter().map(|v| v.len()).collect(),
+                                },
                             );
                             (
                                 NetworkTile::new("0.0.0.0:20001".parse().unwrap(), p2p).unwrap(),
@@ -86,18 +92,24 @@ pub fn broadcast(c: &mut Criterion) {
                                 None,
                             );
 
-                            let client_data = ClientData {
-                                server_id: Some(server_id.clone()),
-                                server_addr: "127.0.0.1:20001".parse().unwrap(),
+                            let client_peer_handler = ClientPeerHandler {
+                                peer: Some((server_id.clone(), "127.0.0.1:20001".parse().unwrap())),
                                 remote_peer: None,
-                                remote_stream: None,
+                            };
+
+                            let client_data = ClientData {
+                                stream: Some(StreamProtocol::GossipSub),
                                 data,
                                 offset: 0,
-                                did_stream: false,
                             };
 
                             let addr = format!("127.0.0.1:{}", 20002 + n);
-                            let p2p = P2p::new(keypair, client_endpoint, client_data);
+                            let p2p = P2p::new(
+                                keypair,
+                                client_endpoint,
+                                client_peer_handler,
+                                client_data,
+                            );
 
                             clients.push(NetworkTile::new(addr.parse().unwrap(), p2p).unwrap());
                         }
@@ -134,107 +146,121 @@ fn random_data() -> (Vec<Vec<u8>>, usize) {
     (data, total)
 }
 
-struct ServerHandler(Arc<AtomicUsize>);
-impl silver_network::NetworkSend for ServerHandler {
-    fn new_peer(&mut self) -> Option<(silver_common::PeerId, std::net::SocketAddr)> {
+struct ServerPeerHandler;
+impl PeerHandler for ServerPeerHandler {
+    fn poll_new_peer(&mut self) -> Option<(PeerId, SocketAddr)> {
         None
     }
 
-    fn to_send(&mut self) -> Option<(usize, quinn_proto::StreamId, &[u8])> {
-        None
-    }
-
-    fn new_streams(&mut self) -> Option<(RemotePeer, silver_network::StreamProtocol)> {
-        None
-    }
-
-    fn sent(&mut self, _peer: &RemotePeer, _stream: &quinn_proto::StreamId, _sent: usize) {}
-}
-
-impl silver_network::NetworkRecv for ServerHandler {
-    fn new_connection(&mut self, remote_peer: silver_network::RemotePeer, remote_addr: SocketAddr) {
+    fn new_peer(&mut self, remote_peer: RemotePeer, remote_addr: SocketAddr) {
         tracing::info!("new remote peer from: {remote_addr:?} {remote_peer:?}");
     }
+}
 
-    fn new_stream(
+struct ServerHandler {
+    counter: Arc<AtomicUsize>,
+    total: usize,
+    offsets: Vec<usize>,
+    data: Vec<usize>,
+}
+impl silver_network::StreamHandler for ServerHandler {
+    type BufferId = usize;
+
+    fn recv_new(
         &mut self,
-        _peer: &silver_network::RemotePeer,
-        stream_id: &quinn_proto::StreamId,
-    ) {
-        tracing::info!("new stream: {stream_id:?}");
+        length: usize,
+        stream: silver_common::P2pStreamId,
+    ) -> Result<Self::BufferId, std::io::Error> {
+        let id = self.offsets[ConnectionHandle::from(&stream).0];
+        self.offsets[ConnectionHandle::from(&stream).0] += 1;
+        assert_eq!(length, self.data[id], "length mismatch at {id}");
+        Ok(id)
     }
 
-    fn recv(
+    fn recv(&mut self, buffer_id: &Self::BufferId, data: &[u8]) -> Result<usize, std::io::Error> {
+        let _was = self.counter.fetch_add(data.len(), Ordering::Relaxed);
+        //assert!(data.len() <= self.data[*buffer_id]);
+        //self.data[*buffer_id] -= data.len();
+        //tracing::info!(buffer_id, len=data.len(), was, total=self.total, "srv recv");
+        Ok(data.len())
+    }
+
+    fn poll_new_stream(&mut self, _peer: usize) -> Option<StreamProtocol> {
+        None
+    }
+
+    fn poll_new_send(
         &mut self,
-        _peer: &silver_network::RemotePeer,
-        _stream_id: &quinn_proto::StreamId,
-        data: &[u8],
-    ) {
-        let _was = self.0.fetch_add(data.len(), Ordering::Relaxed);
-        //tracing::info!("recv: {}, total: {}", data.len(), was + data.len());
+        _stream: &silver_common::P2pStreamId,
+    ) -> Option<(Self::BufferId, usize)> {
+        None
+    }
+
+    fn poll_send(&mut self, _buffer_id: &Self::BufferId, _offset: usize) -> Option<&[u8]> {
+        None
     }
 }
 
 struct ClientData {
-    server_id: Option<PeerId>,
-    server_addr: SocketAddr,
-    remote_peer: Option<RemotePeer>,
-    remote_stream: Option<quinn_proto::StreamId>,
+    stream: Option<StreamProtocol>,
     data: Vec<Vec<u8>>,
     offset: usize,
-    did_stream: bool,
 }
 
-impl silver_network::NetworkSend for ClientData {
-    fn new_peer(&mut self) -> Option<(PeerId, SocketAddr)> {
-        self.server_id.take().map(|id| (id, self.server_addr))
-    }
-
-    fn to_send(&mut self) -> Option<(usize, quinn_proto::StreamId, &[u8])> {
-        if let Some(remote_peer) = self.remote_peer.as_ref() &&
-            let Some(remote_stream) = self.remote_stream.as_ref()
-        {
-            if let Some(data) = self.data.last() {
-                return Some((remote_peer.connection, remote_stream.clone(), &data[self.offset..]));
-            }
-        }
-        None
-    }
-
-    fn new_streams(&mut self) -> Option<(RemotePeer, silver_network::StreamProtocol)> {
-        if let Some(remote_peer) = self.remote_peer.as_ref() &&
-            self.remote_stream.is_none() &&
-            !self.did_stream
-        {
-            self.did_stream = true;
-            return Some((remote_peer.clone(), silver_network::StreamProtocol::GossipSub));
-        }
-        None
-    }
-
-    fn sent(&mut self, _peer: &RemotePeer, _stream: &quinn_proto::StreamId, sent: usize) {
-        self.offset += sent;
-        let pop = self.data.last().map(|v| self.offset >= v.len()).unwrap_or_default();
-        if pop {
-            self.data.pop();
-            self.offset = 0;
-        }
-    }
+struct ClientPeerHandler {
+    peer: Option<(PeerId, SocketAddr)>,
+    remote_peer: Option<RemotePeer>,
 }
 
-impl silver_network::NetworkRecv for ClientData {
-    fn new_connection(&mut self, remote_peer: RemotePeer, remote_addr: SocketAddr) {
+impl PeerHandler for ClientPeerHandler {
+    fn poll_new_peer(&mut self) -> Option<(PeerId, SocketAddr)> {
+        self.peer.take()
+    }
+
+    fn new_peer(&mut self, remote_peer: RemotePeer, remote_addr: SocketAddr) {
         tracing::info!("new connection to {remote_addr:?}");
         self.remote_peer = Some(remote_peer);
     }
+}
 
-    fn new_stream(&mut self, _peer: &RemotePeer, stream_id: &quinn_proto::StreamId) {
-        tracing::info!("new client stream {stream_id:?}");
-        self.remote_stream = Some(*stream_id);
+impl StreamHandler for ClientData {
+    type BufferId = usize;
+
+    fn recv_new(
+        &mut self,
+        _length: usize,
+        _stream: silver_common::P2pStreamId,
+    ) -> Result<Self::BufferId, std::io::Error> {
+        Ok(0)
     }
 
-    fn recv(&mut self, _peer: &RemotePeer, _stream_id: &quinn_proto::StreamId, _data: &[u8]) {
-        tracing::warn!("unexpected data!");
+    fn recv(&mut self, _buffer_id: &Self::BufferId, _data: &[u8]) -> Result<usize, std::io::Error> {
+        Ok(0)
+    }
+
+    fn poll_new_stream(&mut self, _peer: usize) -> Option<StreamProtocol> {
+        self.stream.take()
+    }
+
+    fn poll_new_send(
+        &mut self,
+        _stream: &silver_common::P2pStreamId,
+    ) -> Option<(Self::BufferId, usize)> {
+        let id = self.offset;
+        self.offset += 1;
+        if id >= self.data.len() {
+            return None;
+        } else {
+            //tracing::info!("client send new: {id}");
+            return Some((id, self.data[id].len()))
+        }
+    }
+
+    fn poll_send(&mut self, buffer_id: &Self::BufferId, offset: usize) -> Option<&[u8]> {
+        self.data.get(*buffer_id).map(|v| {
+            //tracing::info!(buffer_id, offset, "client send {} bytes", v.len());
+            &v[offset..]
+        })
     }
 }
 

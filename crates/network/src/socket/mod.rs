@@ -58,10 +58,6 @@ impl Socket {
         self.blocked
     }
 
-    pub(crate) fn udp_socket(&self) -> &UdpSocket {
-        &self.socket
-    }
-
     pub(crate) fn flush(&mut self, poll: &Poll) -> bool {
         if !self.tx_batch.entries.is_empty() {
             if self.tx_batch.flush(&self.socket) {

@@ -2307,6 +2307,7 @@ version = "0.0.1"
 dependencies = [
  "flux",
  "k256",
+ "quinn-proto",
  "rcgen",
  "rustls",
  "tracing",

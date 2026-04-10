@@ -12,7 +12,7 @@ const MAX_GSO_SEGMENTS: usize = 10;
 // --- RxBatch ----------------------------------------------------------------
 
 pub(crate) struct RxBatch {
-    /// Per-datagram buffers. 
+    /// Per-datagram buffers.
     pub(crate) bufs: Vec<BytesMut>,
     datagrams: Vec<(usize, usize, SocketAddr)>, // (buf_index, len, remote)
 }
@@ -29,7 +29,9 @@ impl RxBatch {
 
         for i in 0..RX_BATCH_MAX {
             debug_assert!(self.bufs[i].try_reclaim(RX_BUF_SIZE));
-            unsafe { self.bufs[i].set_len(RX_BUF_SIZE);}
+            unsafe {
+                self.bufs[i].set_len(RX_BUF_SIZE);
+            }
 
             match socket.recv_from(&mut self.bufs[i]) {
                 Ok((len, remote)) => {
@@ -136,7 +138,9 @@ mod tests {
         assert_eq!(0, bytes_mut.len());
         drop(other);
         assert!(bytes_mut.try_reclaim(1024));
-        unsafe { bytes_mut.set_len(1024);}
+        unsafe {
+            bytes_mut.set_len(1024);
+        }
         println!("{} / {}", bytes_mut.len(), bytes_mut.capacity());
     }
 }

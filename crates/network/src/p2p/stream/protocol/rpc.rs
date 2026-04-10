@@ -1,39 +1,40 @@
-use std::io::Error as IoError;
+use std::io::{Error as IoError, ErrorKind, Write};
 
-use silver_common::{decode_varint, encode_varint};
+use silver_common::{P2pStreamId, decode_varint, encode_varint};
 use snap::write::FrameEncoder;
-use std::io::Write;
 
 use super::super::snappy::SnappyDecoder;
+use crate::StreamHandler;
 
-/// State machine for reading a single length-prefixed, snappy-compressed SSZ chunk.
+/// State machine for reading a single length-prefixed, snappy-compressed SSZ
+/// chunk.
 #[derive(Debug)]
-pub enum RpcFrameState {
+pub enum RpcFrameState<S: StreamHandler> {
     /// Reading the varint length prefix of the SSZ chunk
     ReadingLength { buf: [u8; 10], read: usize },
     /// Stream Snappy decompressing the chunk payload
-    ReadingBody { remaining: usize },
+    ReadingBody { buffer_id: S::BufferId, remaining: usize },
 }
 
-impl Default for RpcFrameState {
+impl<S: StreamHandler> Default for RpcFrameState<S> {
     fn default() -> Self {
-        Self::ReadingLength {
-            buf: [0; 10],
-            read: 0,
-        }
+        Self::ReadingLength { buf: [0; 10], read: 0 }
     }
 }
 
-impl RpcFrameState {
+impl<S: StreamHandler> RpcFrameState<S> {
     /// Feeds bytes into the payload state machine.
     /// Returns `Ok((is_complete, bytes_decoded))`
     pub fn feed_chunk(
         &mut self,
         chunk: &mut &[u8],
         decoder: &mut SnappyDecoder,
-        mut out_buf: &mut [u8],
+        out_buf: &mut [u8],
+        stream_id: &P2pStreamId,
+        handler: &mut S,
     ) -> Result<(bool, usize), IoError> {
-        let mut total_decoded = 0;
+        let start = chunk.len();
+
         while !chunk.is_empty() {
             match self {
                 Self::ReadingLength { buf, read } => {
@@ -46,48 +47,48 @@ impl RpcFrameState {
                     if b & 0x80 == 0 {
                         let (length, _) = decode_varint(&buf[..*read], 0)
                             .map_err(|_| IoError::other("invalid varint"))?;
-                        *self = Self::ReadingBody {
-                            remaining: length as usize,
-                        };
+
+                        let buffer_id = handler.recv_new(length as usize, *stream_id)?;
+                        *self = Self::ReadingBody { buffer_id, remaining: length as usize };
                     }
                 }
-                Self::ReadingBody { remaining } => {
-                    if out_buf.is_empty() {
-                        break;
-                    }
+                Self::ReadingBody { buffer_id, remaining } => {
                     let out_limit = (*remaining).min(out_buf.len());
                     let (consumed, decoded_bytes) = decoder
                         .decompress(chunk, &mut out_buf[..out_limit])
                         .map_err(|e| IoError::other(format!("snappy error: {e:?}")))?;
 
+                    let received = handler.recv(buffer_id, &out_buf[..decoded_bytes])?;
+                    if received < decoded_bytes {
+                        return Err(ErrorKind::StorageFull.into());
+                    }
+
                     *remaining -= decoded_bytes;
                     *chunk = &chunk[consumed..];
-                    out_buf = &mut out_buf[decoded_bytes..];
-                    total_decoded += decoded_bytes;
 
                     if *remaining == 0 {
                         decoder.reset();
-                        return Ok((true, total_decoded));
+                        return Ok((true, start - chunk.len()));
                     }
                 }
             }
         }
-        Ok((false, total_decoded))
+        Ok((false, start - chunk.len()))
     }
 }
 
 /// State machine for handling an incoming request-response RPC stream.
 #[derive(Debug)]
-pub enum RpcInboundState {
+pub enum RpcInboundState<S: StreamHandler> {
     /// Reading the request chunk
-    ReadingRequest(RpcFrameState),
+    ReadingRequest(RpcFrameState<S>),
     /// Request fully received, writing response code and payload chunks
-    WritingResponse { current: Option<(super::super::DCacheRef, usize)> },
+    WritingResponse { current: Option<(S::BufferId, usize)> },
     /// Stream gracefully closed
     AwaitingClose,
 }
 
-impl RpcInboundState {
+impl<S: StreamHandler> RpcInboundState<S> {
     pub fn new() -> Self {
         Self::ReadingRequest(RpcFrameState::default())
     }
@@ -96,15 +97,16 @@ impl RpcInboundState {
         &mut self,
         mut chunk: &[u8],
         decoder: &mut SnappyDecoder,
-        mut out_buf: &mut [u8],
+        out_buf: &mut [u8],
+        handler: &mut S,
+        stream_id: &P2pStreamId,
     ) -> Result<usize, IoError> {
-        let mut total_decoded = 0;
+        let start = chunk.len();
         while !chunk.is_empty() {
             match self {
                 Self::ReadingRequest(frame) => {
-                    let (done, decoded) = frame.feed_chunk(&mut chunk, decoder, out_buf)?;
-                    total_decoded += decoded;
-                    out_buf = &mut out_buf[decoded..];
+                    let (done, _decoded) =
+                        frame.feed_chunk(&mut chunk, decoder, out_buf, stream_id, handler)?;
                     if done {
                         *self = Self::WritingResponse { current: None };
                     }
@@ -113,13 +115,14 @@ impl RpcInboundState {
                 Self::AwaitingClose => break,
             }
         }
-        Ok(total_decoded)
+        Ok(start - chunk.len())
     }
 
     pub(crate) fn drive_write(
         &mut self,
         send: &mut quinn_proto::SendStream<'_>,
-        outbound_queue: &mut std::collections::VecDeque<super::super::DCacheRef>,
+        stream_id: &P2pStreamId,
+        handler: &mut S,
     ) -> super::super::StreamEvent {
         match self {
             Self::WritingResponse { current } => {
@@ -127,27 +130,27 @@ impl RpcInboundState {
                 loop {
                     // Try to load next message if we don't have a current one
                     if current.is_none() {
-                        if let Some(msg) = outbound_queue.pop_front() {
-                            *current = Some((msg, 0));
+                        if let Some((buffer_id, _length)) = handler.poll_new_send(stream_id) {
+                            *current = Some((buffer_id, 0));
                         } else {
                             break;
                         }
                     }
 
-                    if let Some((msg, offset)) = current.as_mut() {
-                        let chunk = &msg.payload[*offset..];
-                        if chunk.is_empty() {
-                            *current = None;
-                            continue;
-                        }
+                    if let Some((buffer_id, offset)) = current.as_mut() {
+                        let chunk = match handler.poll_send(buffer_id, *offset) {
+                            Some(chunk) if !chunk.is_empty() => chunk,
+                            _ => {
+                                *current = None;
+                                continue;
+                            }
+                        };
 
                         match send.write(chunk) {
                             Ok(written) => {
                                 bytes_written += written;
                                 *offset += written;
-                                if *offset >= msg.payload.len() {
-                                    *current = None;
-                                } else {
+                                if *offset < chunk.len() {
                                     // Quinn buffer full
                                     break;
                                 }
@@ -184,7 +187,8 @@ pub fn encode_rpc_payload(
     Ok(())
 }
 
-/// Helper function to zero-copy compress an entire outbound SSZ response payload.
+/// Helper function to zero-copy compress an entire outbound SSZ response
+/// payload.
 pub fn encode_rpc_response(
     response_code: u8,
     uncompressed_ssz: &[u8],
@@ -196,21 +200,28 @@ pub fn encode_rpc_response(
 
 /// State machine for initiating and tracking an outgoing request-response RPC.
 #[derive(Debug)]
-pub enum RpcOutboundState {
+pub enum RpcOutboundState<S: StreamHandler> {
     /// Writing the SSZ+Snappy encoded request to the peer
-    WritingRequest { current: Option<(super::super::DCacheRef, usize)> },
+    WritingRequest {
+        current: Option<(S::BufferId, usize)>,
+    },
     /// Reading the 1-byte response code
     ReadingResponseCode,
     /// Reading the response chunk
-    ReadingResponse(RpcFrameState),
+    ReadingResponse(RpcFrameState<S>),
     /// Reading the raw UTF-8 Error Message string (no snappy)
-    ReadingErrorMessageLen { buf: [u8; 10], read: usize },
-    ReadingErrorMessageData { remaining: usize },
+    ReadingErrorMessageLen {
+        buf: [u8; 10],
+        read: usize,
+    },
+    ReadingErrorMessageData {
+        remaining: usize,
+    },
     /// Awaiting final stream closure or next chunk
     Done,
 }
 
-impl RpcOutboundState {
+impl<S: StreamHandler> RpcOutboundState<S> {
     pub fn new() -> Self {
         Self::WritingRequest { current: None }
     }
@@ -220,8 +231,10 @@ impl RpcOutboundState {
         mut chunk: &[u8],
         decoder: &mut SnappyDecoder,
         mut out_buf: &mut [u8],
+        stream_id: &P2pStreamId,
+        handler: &mut S,
     ) -> Result<usize, IoError> {
-        let mut total_decoded = 0;
+        let start = chunk.len();
         while !chunk.is_empty() {
             match self {
                 Self::WritingRequest { .. } => break,
@@ -231,7 +244,8 @@ impl RpcOutboundState {
                     if code == 0 {
                         *self = Self::ReadingResponse(RpcFrameState::default());
                     } else {
-                        // Non-zero response codes mean the payload is an uncompressed string error message
+                        // Non-zero response codes mean the payload is an uncompressed string error
+                        // message
                         *self = Self::ReadingErrorMessageLen { buf: [0; 10], read: 0 };
                     }
                 }
@@ -247,22 +261,24 @@ impl RpcOutboundState {
                     }
                 }
                 Self::ReadingErrorMessageData { remaining } => {
-                    if out_buf.is_empty() { break; }
+                    if out_buf.is_empty() {
+                        break;
+                    }
                     let transfer = chunk.len().min(*remaining).min(out_buf.len());
                     out_buf[..transfer].copy_from_slice(&chunk[..transfer]);
                     *remaining -= transfer;
                     chunk = &chunk[transfer..];
                     out_buf = &mut out_buf[transfer..];
-                    total_decoded += transfer;
                     if *remaining == 0 {
-                        // We extracted the full error string. Discard it or send it as StreamEvent Data and return to start.
-                        *self = Self::Done; 
+                        // We extracted the full error string. Discard it or send it as StreamEvent
+                        // Data and return to start.
+                        // TODO
+                        *self = Self::Done;
                     }
                 }
                 Self::ReadingResponse(frame) => {
-                    let (done, decoded) = frame.feed_chunk(&mut chunk, decoder, out_buf)?;
-                    total_decoded += decoded;
-                    out_buf = &mut out_buf[decoded..];
+                    let (done, _decoded) =
+                        frame.feed_chunk(&mut chunk, decoder, out_buf, stream_id, handler)?;
                     if done {
                         *self = Self::ReadingResponseCode;
                     }
@@ -270,44 +286,42 @@ impl RpcOutboundState {
                 Self::Done => break,
             }
         }
-        Ok(total_decoded)
+        Ok(start - chunk.len())
     }
 
     pub(crate) fn drive_write(
         &mut self,
         send: &mut quinn_proto::SendStream<'_>,
-        outbound_queue: &mut std::collections::VecDeque<super::super::DCacheRef>,
+        stream_id: &P2pStreamId,
+        handler: &mut S,
     ) -> super::super::StreamEvent {
         match self {
             Self::WritingRequest { current } => {
                 let mut bytes_written = 0;
                 loop {
                     if current.is_none() {
-                        if let Some(msg) = outbound_queue.pop_front() {
-                            *current = Some((msg, 0));
+                        if let Some((buffer_id, _length)) = handler.poll_new_send(stream_id) {
+                            *current = Some((buffer_id, 0));
                         } else {
                             break;
                         }
                     }
 
-                    if let Some((msg, offset)) = current.as_mut() {
-                        let chunk = &msg.payload[*offset..];
-                        if chunk.is_empty() {
-                            *current = None;
-                            // If we finished writing our one request, immediately flip state!
-                            *self = Self::ReadingResponseCode;
-                            break;
-                        }
+                    if let Some((buffer_id, offset)) = current.as_mut() {
+                        let chunk = match handler.poll_send(buffer_id, *offset) {
+                            Some(chunk) if !chunk.is_empty() => chunk,
+                            _ => {
+                                *self = Self::ReadingResponseCode;
+                                break;
+                            }
+                        };
 
                         match send.write(chunk) {
                             Ok(written) => {
                                 bytes_written += written;
                                 *offset += written;
-                                if *offset >= msg.payload.len() {
-                                    *current = None;
-                                    *self = Self::ReadingResponseCode;
-                                    break;
-                                } else {
+                                if *offset < chunk.len() {
+                                    // Quinn buffer full
                                     break;
                                 }
                             }
@@ -330,12 +344,55 @@ impl RpcOutboundState {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use rand::RngCore;
+    use silver_common::StreamProtocol;
+
+    use super::*;
+
+    /// Test handler that accumulates received data.
+    struct TestHandler {
+        received: Vec<u8>,
+    }
+
+    impl TestHandler {
+        fn new() -> Self {
+            Self { received: Vec::new() }
+        }
+    }
+
+    impl StreamHandler for TestHandler {
+        type BufferId = usize;
+
+        fn recv_new(
+            &mut self,
+            _length: usize,
+            _stream: P2pStreamId,
+        ) -> Result<Self::BufferId, IoError> {
+            Ok(0)
+        }
+
+        fn recv(&mut self, _buffer_id: &Self::BufferId, data: &[u8]) -> Result<usize, IoError> {
+            self.received.extend_from_slice(data);
+            Ok(data.len())
+        }
+
+        fn poll_new_stream(&mut self, _peer: usize) -> Option<StreamProtocol> {
+            None
+        }
+
+        fn poll_new_send(&mut self, _stream: &P2pStreamId) -> Option<(Self::BufferId, usize)> {
+            None
+        }
+
+        fn poll_send(&mut self, _buffer_id: &Self::BufferId, _offset: usize) -> Option<&[u8]> {
+            None
+        }
+    }
 
     #[test]
     fn test_rpc_state_machines() {
         let mut rng = rand::thread_rng();
+        let stream_id = P2pStreamId::new(0, 0, Some(StreamProtocol::Ping));
 
         // 1. Generate a random SSZ request
         let mut original_request = vec![0u8; 125 * 1024];
@@ -348,49 +405,48 @@ mod tests {
         // 3. Inbound receives request via chunked driving
         let mut inbound = RpcInboundState::new();
         let mut inbound_decoder = SnappyDecoder::new();
-        let mut inbound_received = vec![0u8; original_request.len() + 8192];
-        let mut decoded_offset = 0;
+        let mut out_buf = vec![0u8; 65536];
+        let mut handler = TestHandler::new();
 
         let mut network_stream = req_encoded.as_slice();
         while !network_stream.is_empty() {
             let chunk_sz = (rng.next_u32() as usize % 4096 + 1).min(network_stream.len());
             let chunk = &network_stream[..chunk_sz];
-            let decoded = inbound
-                .feed_chunk(chunk, &mut inbound_decoder, &mut inbound_received[decoded_offset..])
+            let consumed = inbound
+                .feed_chunk(chunk, &mut inbound_decoder, &mut out_buf, &mut handler, &stream_id)
                 .unwrap();
-            decoded_offset += decoded;
-            network_stream = &network_stream[chunk_sz..];
+            network_stream = &network_stream[consumed..];
         }
 
         assert!(matches!(inbound, RpcInboundState::WritingResponse { .. }));
-        assert_eq!(&inbound_received[..original_request.len()], original_request.as_slice());
+        assert_eq!(handler.received, original_request);
 
-        // 4. Inbound responds with an echo 
+        // 4. Inbound responds with an echo
         let mut resp_encoded = Vec::new();
         encode_rpc_response(0, &original_request, &mut resp_encoded).unwrap();
 
-        // 5. Outbound processes the response 
-        let mut outbound = RpcOutboundState::ReadingResponseCode; // manually step to reading reading
+        // 5. Outbound processes the response
+        let mut outbound = RpcOutboundState::ReadingResponseCode;
         let mut outbound_decoder = SnappyDecoder::new();
-        let mut outbound_received = vec![0u8; original_request.len() + 8192];
-        let mut out_decoded_offset = 0;
+        let mut out_handler = TestHandler::new();
 
         let mut network_stream = resp_encoded.as_slice();
         while !network_stream.is_empty() {
             let chunk_sz = (rng.next_u32() as usize % 4096 + 1).min(network_stream.len());
             let chunk = &network_stream[..chunk_sz];
-            let decoded = outbound
+            let consumed = outbound
                 .feed_chunk(
                     chunk,
                     &mut outbound_decoder,
-                    &mut outbound_received[out_decoded_offset..],
+                    &mut out_buf,
+                    &stream_id,
+                    &mut out_handler,
                 )
                 .unwrap();
-            out_decoded_offset += decoded;
-            network_stream = &network_stream[chunk_sz..];
+            network_stream = &network_stream[consumed..];
         }
 
         assert!(matches!(outbound, RpcOutboundState::ReadingResponseCode));
-        assert_eq!(&outbound_received[..original_request.len()], original_request.as_slice());
+        assert_eq!(out_handler.received, original_request);
     }
 }

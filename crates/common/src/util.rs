@@ -45,3 +45,17 @@ pub fn decode_varint(data: &[u8], mut pos: usize) -> Result<(u64, usize), Error>
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::{decode_varint, encode_varint};
+
+    #[test]
+    fn encode_decode() {
+        let mut buf = [0u8; 8];
+        let len = encode_varint(123456, &mut buf).unwrap();
+        let (val, offset) = decode_varint(&buf, 0).unwrap();
+        assert_eq!(123456, val);
+        assert_eq!(len, offset);
+    }
+}

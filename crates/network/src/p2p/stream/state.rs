@@ -1,4 +1,4 @@
-use super::{MULTISTREAM_V1, REJECT_RESPONSE, StreamProtocol};
+use silver_common::{MULTISTREAM_V1, REJECT_RESPONSE, StreamProtocol};
 
 /// Multistream-select negotiation state for a single QUIC stream.
 pub(crate) enum NegotiateState {
@@ -47,12 +47,12 @@ impl NegotiateState {
     /// Bytes to write for current state, if any. Returns (buf, offset).
     pub(crate) fn pending_write(&self) -> Option<(&[u8], usize)> {
         match self {
-            Self::OutWriting { protocol, written } => {
+            Self::OutWriting { protocol: _, written } => {
                 // Write MULTISTREAM_V1 ++ protocol.multiselect() in one go.
                 // Caller must handle the boundary between the two slices.
                 Some((MULTISTREAM_V1, *written))
             }
-            Self::InWriting { protocol, written } => Some((MULTISTREAM_V1, *written)),
+            Self::InWriting { protocol: _, written } => Some((MULTISTREAM_V1, *written)),
             Self::InWritingReject { written } => Some((REJECT_RESPONSE, *written)),
             _ => None,
         }
@@ -198,8 +198,9 @@ impl NegotiateState {
 
 #[cfg(test)]
 mod tests {
+    use silver_common::ALL_PROTOCOLS;
+
     use super::*;
-    use crate::p2p::stream::{ALL_PROTOCOLS, MULTISTREAM_V1, REJECT_RESPONSE, StreamProtocol};
 
     /// Feed data one byte at a time, collecting write outputs and action
     /// transitions.

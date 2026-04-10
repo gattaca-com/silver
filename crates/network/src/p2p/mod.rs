@@ -1,3 +1,4 @@
+mod handlers;
 mod quic;
 mod stream;
 pub(crate) mod tls;
@@ -8,43 +9,35 @@ use std::{
     time::{Duration, Instant},
 };
 
-use bytes::BytesMut;
+pub use handlers::{PeerHandler, StreamHandler};
 use mio::{Poll, net::UdpSocket};
 pub(crate) use quic::{Peer, create_client_config};
 pub use quic::{create_endpoint, create_server_config};
 use quinn_proto::{ConnectionHandle, DatagramEvent, Endpoint};
 use silver_common::Keypair;
-pub use stream::StreamProtocol;
 
-use crate::{
-    NetworkRecv, NetworkSend, RemotePeer,
-    socket::{MAX_GSO_SEGMENTS, Socket},
-};
+use crate::socket::{MAX_GSO_SEGMENTS, Socket};
 
-pub struct P2p<H: NetworkSend + NetworkRecv> {
+pub struct P2p<P: PeerHandler, S: StreamHandler> {
     keypair: Keypair,
     endpoint: Endpoint,
-    peers: HashMap<ConnectionHandle, Peer>,
+    peers: HashMap<ConnectionHandle, Peer<S>>,
     timeout: Option<Duration>,
-    handler: H,
     recv_count: usize,
-    /// Stream open requests that failed because the connection wasn't ready.
-    pending_streams: Vec<(RemotePeer, StreamProtocol)>,
-    /// Global shared buffer to safely decode multiplexed QUIC streams sequentially.
-    decode_buf: Vec<u8>,
+    peer_handler: P,
+    stream_handler: S,
 }
 
-impl<H: NetworkSend + NetworkRecv> P2p<H> {
-    pub fn new(keypair: Keypair, endpoint: Endpoint, handler: H) -> Self {
+impl<P: PeerHandler, S: StreamHandler> P2p<P, S> {
+    pub fn new(keypair: Keypair, endpoint: Endpoint, peer_handler: P, stream_handler: S) -> Self {
         Self {
             keypair,
             endpoint,
             peers: HashMap::with_capacity(1024),
             timeout: Some(Duration::ZERO),
-            handler,
+            peer_handler,
+            stream_handler,
             recv_count: 0,
-            pending_streams: Vec::new(),
-            decode_buf: vec![0u8; 10 * 1024 * 1024],
         }
     }
 
@@ -92,7 +85,7 @@ impl<H: NetworkSend + NetworkRecv> P2p<H> {
 
     pub(crate) fn poll(&mut self, now: Instant, poll: &Poll, socket: &mut Socket) {
         // New outbound connections
-        while let Some((id, addr)) = self.handler.new_peer() {
+        while let Some((id, addr)) = self.peer_handler.poll_new_peer() {
             let client_config = create_client_config(&self.keypair, Some(id.clone())).unwrap(); // TODO
             let (handle, connection) =
                 self.endpoint.connect(now, client_config, addr, "x").unwrap(); // TODO
@@ -100,69 +93,34 @@ impl<H: NetworkSend + NetworkRecv> P2p<H> {
             self.peers.insert(handle, peer);
         }
 
-        // Retry any pending stream opens from previous cycles.
-        self.pending_streams.retain(|(id, protocol)| {
-            self.peers
-                .get_mut(&ConnectionHandle(id.connection))
-                .and_then(|peer| peer.open_stream(*protocol))
-                .is_none()
-        });
-
-        // New outbound streams from handler.
-        while let Some((id, protocol)) = self.handler.new_streams() {
-            let opened = self
-                .peers
-                .get_mut(&ConnectionHandle(id.connection))
-                .and_then(|peer| peer.open_stream(protocol));
-            if opened.is_none() {
-                self.pending_streams.push((id, protocol));
-            }
-        }
-
-        // Things to send.
-        while let Some((connection_id, stream, data)) = self.handler.to_send() {
-            let peer = self.peers.get_mut(&ConnectionHandle(connection_id)).unwrap(); // TODO
-            let wrote = peer.write(stream, data).unwrap(); // TODO
-            if wrote < data.len() {
-                if wrote > 0 {
-                    self.handler.sent(peer.id(), &stream, wrote);
-                }
-                break;
-            }
-            self.handler.sent(peer.id(), &stream, wrote);
-        }
-
-        self.timeout = Some(Duration::ZERO);
-        // if collect_transmits {
-        //     self.tx_batch.clear();
-        // }
-
         let mut ep_callback = |handle, ep_event| self.endpoint.handle_event(handle, ep_event);
 
+        self.timeout = Some(Duration::ZERO);
+
+        let mut dead_peers = vec![]; // todo
         for peer in self.peers.values_mut() {
             // N.B. peer transmit MUST be called before peer.spin();
-            if !socket.is_blocked() {
-                while !socket.is_blocked() &&
-                    socket.send(poll, |buf| peer.transmit(now, MAX_GSO_SEGMENTS, buf))
-                {
-                    //tracing::info!("socket send");
-                }
-            } else {
-                tracing::warn!(local=?socket.udp_socket().local_addr(), "socket blocked");
+            while !socket.is_blocked() &&
+                socket.send(poll, |buf| peer.transmit(now, MAX_GSO_SEGMENTS, buf))
+            {
+                //tracing::info!("socket send");
             }
 
-            let next_timeout = peer.spin(now, &mut ep_callback, &mut self.handler, &mut self.decode_buf);
-            let drained = peer.is_drained();
-
+            let next_timeout =
+                peer.spin(now, &mut ep_callback, &mut self.stream_handler, &mut self.peer_handler);
             if let Some(t) = next_timeout {
                 let dur = t.saturating_duration_since(now);
                 self.timeout = Some(self.timeout.map_or(dur, |cur| cur.min(dur)));
             }
 
-            if drained {
+            if peer.is_drained() {
                 tracing::info!("peer is drained");
-                //self.connections.remove(&peer.);
+                dead_peers.push(peer.id().connection);
             }
+        }
+
+        for dead_peer in dead_peers {
+            self.peers.remove(&ConnectionHandle(dead_peer));
         }
     }
 }

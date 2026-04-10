@@ -1,36 +1,32 @@
 use quinn_proto::{Connection, StreamId};
+use silver_common::{MULTISTREAM_V1, P2pStreamId, REJECT_RESPONSE, StreamProtocol};
 
-use super::protocol::{
-    GossipsubState, IdentifyInboundState, IdentifyOutboundState,
-    RpcInboundState, RpcOutboundState,
-};
 use super::{
-    MULTISTREAM_V1, REJECT_RESPONSE, StreamProtocol,
+    protocol::{
+        GossipsubState, IdentifyInboundState, IdentifyOutboundState, RpcInboundState,
+        RpcOutboundState,
+    },
+    snappy::SnappyDecoder,
     state::{NegotiateAction, NegotiateState},
 };
+use crate::p2p::StreamHandler;
 
-use super::snappy::SnappyDecoder;
-
-pub(crate) enum ProtocolState {
-    RpcInbound(RpcInboundState, SnappyDecoder),
-    RpcOutbound(RpcOutboundState, SnappyDecoder),
-    IdentifyInbound(IdentifyInboundState),
+pub(crate) enum ProtocolState<S: StreamHandler> {
+    RpcInbound(RpcInboundState<S>, SnappyDecoder),
+    RpcOutbound(RpcOutboundState<S>, SnappyDecoder),
+    IdentifyInbound(IdentifyInboundState<S>),
     IdentifyOutbound(IdentifyOutboundState),
-    Gossipsub(GossipsubState),
+    Gossipsub(GossipsubState<S>),
 }
 
-impl ProtocolState {
-    pub fn new(protocol: StreamProtocol, is_inbound: bool) -> Self {
+impl<S: StreamHandler> ProtocolState<S> {
+    pub fn new(protocol: StreamProtocol, is_inbound: bool, stream: P2pStreamId) -> Self {
         match (protocol, is_inbound) {
-            (StreamProtocol::Identity, true) => {
-                Self::IdentifyInbound(IdentifyInboundState::new())
-            }
+            (StreamProtocol::Identity, true) => Self::IdentifyInbound(IdentifyInboundState::new()),
             (StreamProtocol::Identity, false) => {
                 Self::IdentifyOutbound(IdentifyOutboundState::new())
             }
-            (StreamProtocol::GossipSub, _) => {
-                Self::Gossipsub(GossipsubState::new())
-            }
+            (StreamProtocol::GossipSub, _) => Self::Gossipsub(GossipsubState::new(stream)),
             (_, true) => Self::RpcInbound(RpcInboundState::new(), SnappyDecoder::new()),
             (_, false) => Self::RpcOutbound(RpcOutboundState::new(), SnappyDecoder::new()),
         }
@@ -39,34 +35,35 @@ impl ProtocolState {
     pub(crate) fn drive_write(
         &mut self,
         send: &mut quinn_proto::SendStream<'_>,
-        outbound_queue: &mut std::collections::VecDeque<DCacheRef>,
+        stream_id: &P2pStreamId,
+        stream_handler: &mut S,
     ) -> StreamEvent {
         match self {
-            Self::RpcInbound(state, _) => state.drive_write(send, outbound_queue),
-            Self::RpcOutbound(state, _) => state.drive_write(send, outbound_queue),
-            Self::IdentifyInbound(state) => state.drive_write(send, outbound_queue),
-            Self::IdentifyOutbound(state) => state.drive_write(send, outbound_queue),
-            Self::Gossipsub(state) => state.drive_write(send, outbound_queue),
+            Self::RpcInbound(state, _) => state.drive_write(send, stream_id, stream_handler),
+            Self::RpcOutbound(state, _) => state.drive_write(send, stream_id, stream_handler),
+            Self::IdentifyInbound(_) => StreamEvent::Pending,
+            Self::IdentifyOutbound(_) => StreamEvent::Pending,
+            Self::Gossipsub(state) => match state.drive_write(send, stream_handler) {
+                Ok(_) => StreamEvent::Pending,
+                Err(e) => {
+                    tracing::error!(?e, "gossip stream write failed");
+                    StreamEvent::Failed
+                }
+            },
         }
     }
 }
 
-pub(crate) struct Stream {
-    id: StreamId,
+pub(crate) struct Stream<S: StreamHandler> {
+    id: P2pStreamId,
     is_inbound: bool,
-    state: StreamState,
+    state: StreamState<S>,
     leftover: bytes::Bytes,
 }
 
-/// Placeholder representing a slice or memory-mapped offset within the shared application ring buffer
-#[derive(Debug, Clone)]
-pub struct DCacheRef {
-    pub payload: bytes::Bytes,
-}
-
-enum StreamState {
+enum StreamState<S: StreamHandler> {
     Negotiating(NegotiateState),
-    Active(StreamProtocol, ProtocolState),
+    Active(StreamProtocol, ProtocolState<S>),
     Dead,
 }
 
@@ -85,8 +82,8 @@ pub(crate) enum StreamEvent {
     Pending,
 }
 
-impl Stream {
-    pub(crate) fn new_inbound(id: StreamId) -> Self {
+impl<S: StreamHandler> Stream<S> {
+    pub(crate) fn new_inbound(id: P2pStreamId) -> Self {
         Self {
             id,
             is_inbound: true,
@@ -95,7 +92,8 @@ impl Stream {
         }
     }
 
-    pub(crate) fn new_outbound(id: StreamId, protocol: StreamProtocol) -> Self {
+    pub(crate) fn new_outbound(id: P2pStreamId) -> Self {
+        let protocol = id.protocol().unwrap(); // TODO
         Self {
             id,
             is_inbound: false,
@@ -105,68 +103,63 @@ impl Stream {
     }
 
     pub(crate) fn id(&self) -> StreamId {
-        self.id
-    }
-
-    pub(crate) fn protocol(&self) -> Option<StreamProtocol> {
-        match &self.state {
-            StreamState::Active(p, _) => Some(*p),
-            _ => None,
-        }
+        (&self.id).into()
     }
 
     pub(crate) fn is_active(&self) -> bool {
         matches!(self.state, StreamState::Active(_, _))
     }
 
-    pub(crate) fn is_dead(&self) -> bool {
-        matches!(self.state, StreamState::Dead)
-    }
-
     /// Drive this stream forward. Reads from / writes to the quinn connection
     /// as needed by the current state.
-    pub(crate) fn drive(&mut self, conn: &mut Connection) -> StreamEvent {
-        let StreamState::Negotiating(ref mut neg) = self.state else {
-            return StreamEvent::Pending;
-        };
-        drive_negotiate(self.id, neg, conn)
+    pub(crate) fn drive(&mut self, conn: &mut Connection, handler: &mut S) -> StreamEvent {
+        let stream_id = self.id();
+
+        match &mut self.state {
+            StreamState::Negotiating(neg) => drive_negotiate(stream_id, neg, conn),
+            StreamState::Active(..) => self.drive_write(conn, handler),
+            StreamState::Dead => StreamEvent::Pending,
+        }
     }
 
     /// Drive read side only (called on Readable events).
-    pub(crate) fn drive_read(&mut self, conn: &mut Connection, mut out_buf: &mut [u8]) -> StreamEvent {
+    pub(crate) fn drive_read(&mut self, conn: &mut Connection, handler: &mut S) -> StreamEvent {
         use bytes::Buf;
-        
+        let stream_id = self.id();
+
         match self.state {
-            StreamState::Negotiating(ref mut neg) => drive_negotiate(self.id, neg, conn),
+            StreamState::Negotiating(ref mut neg) => drive_negotiate(stream_id, neg, conn),
             StreamState::Active(_, ref mut proto_state) => {
-                let mut total_decoded = 0;
+                let mut out_buf = [0u8]; // TODO
 
                 // Process leftovers first
-                if !self.leftover.is_empty() {
+                if !self.leftover.chunk().is_empty() {
                     let mut slice = &self.leftover[..];
                     let decoded_bytes = match proto_state {
-                        ProtocolState::RpcInbound(state, decoder) => state.feed_chunk(&mut slice, decoder, out_buf),
-                        ProtocolState::RpcOutbound(state, decoder) => state.feed_chunk(&mut slice, decoder, out_buf),
-                        ProtocolState::IdentifyOutbound(state) => state.feed_chunk(&mut slice, out_buf),
-                        ProtocolState::Gossipsub(state) => state.feed_chunk(&mut slice, out_buf),
-                        ProtocolState::IdentifyInbound(state) => state.feed_chunk(slice).map(|_| { slice = &[]; 0 }),
+                        ProtocolState::RpcInbound(state, decoder) => {
+                            state.feed_chunk(&mut slice, decoder, &mut out_buf, handler, &self.id)
+                        }
+                        ProtocolState::RpcOutbound(state, decoder) => {
+                            state.feed_chunk(&mut slice, decoder, &mut out_buf, &self.id, handler)
+                        }
+                        ProtocolState::IdentifyOutbound(state) => {
+                            state.feed_chunk(&mut slice, &mut out_buf)
+                        }
+                        ProtocolState::Gossipsub(state) => state.recv(&mut slice, handler),
+                        ProtocolState::IdentifyInbound(state) => {
+                            state.feed_chunk(slice).map(|_| {
+                                slice = &[];
+                                0
+                            })
+                        }
                     };
-
-                    let consumed = self.leftover.len() - slice.len();
-                    
-                    if consumed == 0 && !out_buf.is_empty() {
-                        // The state machine refused to consume bytes despite available capacity.
-                        // This means it hit a terminal state (e.g. Done) and is ignoring trailing data.
-                        // We must clear the unconsumed portion to prevent infinite CPU loops.
-                        self.leftover.clear();
-                    } else {
-                        self.leftover.advance(consumed);
-                    }
 
                     match decoded_bytes {
                         Ok(n) => {
-                            total_decoded += n;
-                            out_buf = &mut out_buf[n..];
+                            self.leftover.advance(n);
+                            if !self.leftover.chunk().is_empty() {
+                                return StreamEvent::Pending;
+                            }
                         }
                         Err(_) => {
                             self.state = StreamState::Dead;
@@ -175,77 +168,71 @@ impl Stream {
                     }
                 }
 
-                // If output buffer is full or leftover remained, stop and yield Data
-                if !self.leftover.is_empty() || (out_buf.is_empty() && total_decoded > 0) {
-                    return StreamEvent::Data(total_decoded);
-                }
-
                 // Drain from QUIC stream
-                let mut recv = conn.recv_stream(self.id);
+                let mut recv = conn.recv_stream(stream_id);
                 if let Ok(mut chunks) = recv.read(true) {
                     while let Ok(Some(chunk)) = chunks.next(usize::MAX) {
                         let mut chunk_bytes = chunk.bytes;
                         let mut slice = &chunk_bytes[..];
 
                         let decoded_bytes = match proto_state {
-                            ProtocolState::RpcInbound(state, decoder) => state.feed_chunk(&mut slice, decoder, out_buf),
-                            ProtocolState::RpcOutbound(state, decoder) => state.feed_chunk(&mut slice, decoder, out_buf),
-                            ProtocolState::IdentifyOutbound(state) => state.feed_chunk(&mut slice, out_buf),
-                            ProtocolState::Gossipsub(state) => state.feed_chunk(&mut slice, out_buf),
-                            ProtocolState::IdentifyInbound(state) => state.feed_chunk(slice).map(|_| { slice = &[]; 0 }),
+                            ProtocolState::RpcInbound(state, decoder) => state.feed_chunk(
+                                &mut slice,
+                                decoder,
+                                &mut out_buf,
+                                handler,
+                                &self.id,
+                            ),
+                            ProtocolState::RpcOutbound(state, decoder) => state.feed_chunk(
+                                &mut slice,
+                                decoder,
+                                &mut out_buf,
+                                &self.id,
+                                handler,
+                            ),
+                            ProtocolState::IdentifyOutbound(state) => {
+                                state.feed_chunk(&mut slice, &mut out_buf)
+                            }
+                            ProtocolState::Gossipsub(state) => state.recv(&mut slice, handler),
+                            ProtocolState::IdentifyInbound(state) => {
+                                state.feed_chunk(slice).map(|_| {
+                                    slice = &[];
+                                    0
+                                })
+                            }
                         };
-
-                        let consumed = chunk_bytes.len() - slice.len();
-                        
-                        if consumed == 0 && !out_buf.is_empty() {
-                            chunk_bytes.clear();
-                        } else {
-                            chunk_bytes.advance(consumed);
-                        }
-
-                        if !chunk_bytes.is_empty() {
-                            self.leftover = chunk_bytes;
-                        }
 
                         match decoded_bytes {
                             Ok(n) => {
-                                total_decoded += n;
-                                out_buf = &mut out_buf[n..];
+                                chunk_bytes.advance(n);
+                                if !chunk_bytes.chunk().is_empty() {
+                                    // protocol did not consume all bytes
+                                    self.leftover = chunk_bytes;
+                                    break;
+                                }
                             }
                             Err(_) => {
                                 self.state = StreamState::Dead;
                                 return StreamEvent::Failed;
                             }
                         }
-
-                        if !self.leftover.is_empty() || out_buf.is_empty() {
-                            break;
-                        }
                     }
                     let _ = chunks.finalize(); // Notify Quinn of precisely what we consumed
                 }
-
-                if total_decoded > 0 {
-                    StreamEvent::Data(total_decoded)
-                } else {
-                    StreamEvent::Pending
-                }
+                StreamEvent::Pending
             }
             StreamState::Dead => StreamEvent::Pending,
         }
     }
 
     /// Drive write side only (called on Writable events).
-    pub(crate) fn drive_write(
-        &mut self,
-        conn: &mut Connection,
-        outbound_queue: &mut std::collections::VecDeque<DCacheRef>,
-    ) -> StreamEvent {
+    pub(crate) fn drive_write(&mut self, conn: &mut Connection, handler: &mut S) -> StreamEvent {
+        let stream_id = self.id();
         match &mut self.state {
-            StreamState::Negotiating(neg) => drive_negotiate(self.id, neg, conn),
+            StreamState::Negotiating(neg) => drive_negotiate(stream_id, neg, conn),
             StreamState::Active(_proto, state_machine) => {
-                let mut send = conn.send_stream(self.id);
-                state_machine.drive_write(&mut send, outbound_queue)
+                let mut send = conn.send_stream(stream_id);
+                state_machine.drive_write(&mut send, &self.id, handler)
             }
             StreamState::Dead => StreamEvent::Pending,
         }
@@ -256,7 +243,7 @@ impl Stream {
     pub(crate) fn apply(&mut self, event: &StreamEvent) {
         match event {
             StreamEvent::Ready(proto) => {
-                let active_state = ProtocolState::new(*proto, self.is_inbound);
+                let active_state = ProtocolState::new(*proto, self.is_inbound, self.id.into());
                 self.state = StreamState::Active(*proto, active_state);
             }
             StreamEvent::Failed => self.state = StreamState::Dead,

@@ -1,20 +1,22 @@
 use std::io::Error as IoError;
-use silver_common::decode_varint;
+
+use silver_common::{decode_varint, P2pStreamId};
+
+use crate::StreamHandler;
 
 /// State machine for an incoming Identity protocol stream (/ipfs/id/1.0.0).
 /// When a peer opens an Identity stream to us, there is no request message!
-/// We simply immediately write our node's Identify protobuf message and close the stream.
+/// We simply immediately write our node's Identify protobuf message and close
+/// the stream.
 #[derive(Debug)]
-pub enum IdentifyInboundState {
+pub enum IdentifyInboundState<S: StreamHandler> {
     /// Write our local node's identify payload back to the peer.
-    WritingResponse {
-        current: Option<(super::super::DCacheRef, usize)>,
-    },
+    WritingResponse { current: Option<(S::BufferId, usize)> },
     /// Finished writing, stream cleanly closing.
     Done,
 }
 
-impl IdentifyInboundState {
+impl<S: StreamHandler> IdentifyInboundState<S> {
     pub fn new() -> Self {
         Self::WritingResponse { current: None }
     }
@@ -28,37 +30,36 @@ impl IdentifyInboundState {
     pub(crate) fn drive_write(
         &mut self,
         send: &mut quinn_proto::SendStream<'_>,
-        outbound_queue: &mut std::collections::VecDeque<super::super::DCacheRef>,
+        stream_id: &P2pStreamId,
+        handler: &mut S,
     ) -> super::super::StreamEvent {
         match self {
             Self::WritingResponse { current } => {
                 let mut bytes_written = 0;
                 loop {
                     if current.is_none() {
-                        if let Some(msg) = outbound_queue.pop_front() {
-                            *current = Some((msg, 0));
+                        if let Some((buffer_id, _)) = handler.poll_new_send(stream_id) {
+                            *current = Some((buffer_id, 0));
                         } else {
                             break;
                         }
                     }
 
-                    if let Some((msg, offset)) = current.as_mut() {
-                        let chunk = &msg.payload[*offset..];
-                        if chunk.is_empty() {
-                            *current = None;
-                            *self = Self::Done;
-                            break;
-                        }
+                    if let Some((buffer_id, offset)) = current.as_mut() {
+                        let chunk = match handler.poll_send(buffer_id, *offset) {
+                            Some(data) if !data.is_empty() => data,
+                            _ => {
+                                *current = None;
+                                *self = Self::Done;
+                                break;
+                            }
+                        };
 
                         match send.write(chunk) {
                             Ok(written) => {
                                 bytes_written += written;
                                 *offset += written;
-                                if *offset >= msg.payload.len() {
-                                    *current = None;
-                                    *self = Self::Done;
-                                    break; // Identify only sends one message
-                                } else {
+                                if *offset < chunk.len() {
                                     break;
                                 }
                             }
@@ -97,15 +98,16 @@ pub enum IdentifyOutboundState {
 
 impl IdentifyOutboundState {
     pub fn new() -> Self {
-        Self::ReadingLength {
-            buf: [0; 10],
-            read: 0,
-        }
+        Self::ReadingLength { buf: [0; 10], read: 0 }
     }
 
-    pub fn feed_chunk(&mut self, mut chunk: &[u8], mut out_buf: &mut [u8]) -> Result<usize, IoError> {
+    pub fn feed_chunk(
+        &mut self,
+        mut chunk: &[u8],
+        mut out_buf: &mut [u8],
+    ) -> Result<usize, IoError> {
         let mut total_decoded = 0;
-        
+
         while !chunk.is_empty() {
             match self {
                 Self::ReadingLength { buf, read } => {
@@ -127,7 +129,7 @@ impl IdentifyOutboundState {
                     }
                     let out_limit = (*remaining).min(out_buf.len());
                     let transfer = chunk.len().min(out_limit);
-                    
+
                     // Identify is NOT compressed! We just copy the raw protobuf bytes directly.
                     out_buf[..transfer].copy_from_slice(&chunk[..transfer]);
 
@@ -149,7 +151,6 @@ impl IdentifyOutboundState {
     pub(crate) fn drive_write(
         &mut self,
         _send: &mut quinn_proto::SendStream<'_>,
-        _outbound_queue: &mut std::collections::VecDeque<super::super::DCacheRef>,
     ) -> super::super::StreamEvent {
         super::super::StreamEvent::Pending
     }
