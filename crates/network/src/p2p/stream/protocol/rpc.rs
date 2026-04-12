@@ -1,4 +1,4 @@
-use std::io::{Error as IoError, ErrorKind, Write};
+use std::io::{Error as IoError, Write};
 
 use silver_common::{P2pStreamId, decode_varint, encode_varint};
 use snap::write::FrameEncoder;
@@ -29,7 +29,6 @@ impl<S: StreamHandler> RpcFrameState<S> {
         &mut self,
         chunk: &mut &[u8],
         decoder: &mut SnappyDecoder,
-        out_buf: &mut [u8],
         stream_id: &P2pStreamId,
         handler: &mut S,
     ) -> Result<(bool, usize), IoError> {
@@ -53,15 +52,13 @@ impl<S: StreamHandler> RpcFrameState<S> {
                     }
                 }
                 Self::ReadingBody { buffer_id, remaining } => {
+                    let out_buf = handler.recv_buffer(buffer_id)?;
                     let out_limit = (*remaining).min(out_buf.len());
                     let (consumed, decoded_bytes) = decoder
                         .decompress(chunk, &mut out_buf[..out_limit])
                         .map_err(|e| IoError::other(format!("snappy error: {e:?}")))?;
 
-                    let received = handler.recv(buffer_id, &out_buf[..decoded_bytes])?;
-                    if received < decoded_bytes {
-                        return Err(ErrorKind::StorageFull.into());
-                    }
+                    handler.recv_buffer_written(buffer_id, decoded_bytes)?;
 
                     *remaining -= decoded_bytes;
                     *chunk = &chunk[consumed..];
@@ -106,7 +103,7 @@ impl<S: StreamHandler> RpcInboundState<S> {
             match self {
                 Self::ReadingRequest(frame) => {
                     let (done, _decoded) =
-                        frame.feed_chunk(&mut chunk, decoder, out_buf, stream_id, handler)?;
+                        frame.feed_chunk(&mut chunk, decoder, stream_id, handler)?;
                     if done {
                         *self = Self::WritingResponse { current: None };
                     }
@@ -126,45 +123,7 @@ impl<S: StreamHandler> RpcInboundState<S> {
     ) -> super::super::StreamEvent {
         match self {
             Self::WritingResponse { current } => {
-                let mut bytes_written = 0;
-                loop {
-                    // Try to load next message if we don't have a current one
-                    if current.is_none() {
-                        if let Some((buffer_id, _length)) = handler.poll_new_send(stream_id) {
-                            *current = Some((buffer_id, 0));
-                        } else {
-                            break;
-                        }
-                    }
-
-                    if let Some((buffer_id, offset)) = current.as_mut() {
-                        let chunk = match handler.poll_send(buffer_id, *offset) {
-                            Some(chunk) if !chunk.is_empty() => chunk,
-                            _ => {
-                                *current = None;
-                                continue;
-                            }
-                        };
-
-                        match send.write(chunk) {
-                            Ok(written) => {
-                                bytes_written += written;
-                                *offset += written;
-                                if *offset < chunk.len() {
-                                    // Quinn buffer full
-                                    break;
-                                }
-                            }
-                            Err(quinn_proto::WriteError::Blocked) => break,
-                            Err(_) => return super::super::StreamEvent::Failed,
-                        }
-                    }
-                }
-                if bytes_written > 0 {
-                    super::super::StreamEvent::Sent(bytes_written)
-                } else {
-                    super::super::StreamEvent::Pending
-                }
+                super::drive_send_loop(current, send, stream_id, handler)
             }
             _ => super::super::StreamEvent::Pending,
         }
@@ -278,7 +237,7 @@ impl<S: StreamHandler> RpcOutboundState<S> {
                 }
                 Self::ReadingResponse(frame) => {
                     let (done, _decoded) =
-                        frame.feed_chunk(&mut chunk, decoder, out_buf, stream_id, handler)?;
+                        frame.feed_chunk(&mut chunk, decoder, stream_id, handler)?;
                     if done {
                         *self = Self::ReadingResponseCode;
                     }
@@ -297,42 +256,16 @@ impl<S: StreamHandler> RpcOutboundState<S> {
     ) -> super::super::StreamEvent {
         match self {
             Self::WritingRequest { current } => {
-                let mut bytes_written = 0;
-                loop {
-                    if current.is_none() {
-                        if let Some((buffer_id, _length)) = handler.poll_new_send(stream_id) {
-                            *current = Some((buffer_id, 0));
-                        } else {
-                            break;
-                        }
-                    }
-
-                    if let Some((buffer_id, offset)) = current.as_mut() {
-                        let chunk = match handler.poll_send(buffer_id, *offset) {
-                            Some(chunk) if !chunk.is_empty() => chunk,
-                            _ => {
-                                *self = Self::ReadingResponseCode;
-                                break;
-                            }
-                        };
-
-                        match send.write(chunk) {
-                            Ok(written) => {
-                                bytes_written += written;
-                                *offset += written;
-                                if *offset < chunk.len() {
-                                    // Quinn buffer full
-                                    break;
-                                }
-                            }
-                            Err(quinn_proto::WriteError::Blocked) => break,
-                            Err(_) => return super::super::StreamEvent::Failed,
-                        }
-                    }
+                // TODO: compress `encode_rpc_payload`.
+                let (total, result) = super::drive_send(current, send, stream_id, handler);
+                if matches!(result, super::WriteResult::Done) {
+                    *self = Self::ReadingResponseCode;
                 }
-
-                if bytes_written > 0 {
-                    super::super::StreamEvent::Sent(bytes_written)
+                if matches!(result, super::WriteResult::Failed) {
+                    return super::super::StreamEvent::Failed;
+                }
+                if total > 0 {
+                    super::super::StreamEvent::Sent(total)
                 } else {
                     super::super::StreamEvent::Pending
                 }
@@ -352,11 +285,12 @@ mod tests {
     /// Test handler that accumulates received data.
     struct TestHandler {
         received: Vec<u8>,
+        offset: usize,
     }
 
     impl TestHandler {
         fn new() -> Self {
-            Self { received: Vec::new() }
+            Self { received: Vec::new(), offset: 0, }
         }
     }
 
@@ -365,15 +299,27 @@ mod tests {
 
         fn recv_new(
             &mut self,
-            _length: usize,
+            length: usize,
             _stream: P2pStreamId,
         ) -> Result<Self::BufferId, IoError> {
+            self.received.resize(length, 0u8);
+            self.offset = 0;
             Ok(0)
         }
 
         fn recv(&mut self, _buffer_id: &Self::BufferId, data: &[u8]) -> Result<usize, IoError> {
-            self.received.extend_from_slice(data);
+            self.received[self.offset..self.offset + data.len()].copy_from_slice(data);
+            self.offset += data.len();
             Ok(data.len())
+        }
+
+        fn recv_buffer(&mut self, _buffer_id: &Self::BufferId) -> Result<&mut [u8], IoError> {
+            Ok(&mut self.received[self.offset..])
+        }
+
+        fn recv_buffer_written(&mut self, _buffer_id: &Self::BufferId, written: usize) -> Result<(), IoError> {
+            self.offset += written;
+            Ok(())
         }
 
         fn poll_new_stream(&mut self, _peer: usize) -> Option<StreamProtocol> {

@@ -106,31 +106,11 @@ impl<S: StreamHandler> Peer<S> {
 
         // New outbound streams from handler.
         while let Some(protocol) = stream_handler.poll_new_stream(self.id.connection) {
-            // TODO inside peer spin
             let opened = self.open_stream(protocol, stream_handler);
             if opened.is_none() {
                 self.pending_streams.push(protocol);
             }
         }
-
-        // Things to send.
-        // for stream in self.streams.values_mut() {
-        //     if stream.is_active() {
-        //         while let Some(data) = handler.poll_to_send(&self.id, stream.id()) {
-        //             let wrote = match
-        // self.connection.send_stream(stream.id()).write(data) {
-        // Ok(wrote) => Ok(wrote),
-        // Err(quinn_proto::WriteError::Blocked) => Ok(0),
-        // Err(e) => Err(Error::other(e)),             }.unwrap(); // TODO
-
-        //             let len = data.len();
-        //             handler.sent(&self.id, &stream.id(), wrote);
-        //             if wrote < len {
-        //                 break;
-        //             }
-        //         }
-        //     }
-        // }
 
         while self.connection.poll_timeout().is_some_and(|t| t <= now) {
             self.connection.handle_timeout(now);
@@ -188,7 +168,7 @@ impl<S: StreamHandler> Peer<S> {
                         Stream::new_inbound(P2pStreamId::new(self.id.connection, id.into(), None));
                     let ev = stream.drive(&mut self.connection, stream_handler);
                     self.streams.insert(id, stream);
-                    self.process_stream_event(id, ev, stream_handler);
+                    self.process_stream_event(id, ev);
                 }
             }
             quinn_proto::StreamEvent::Readable { id } => {
@@ -197,14 +177,14 @@ impl<S: StreamHandler> Peer<S> {
                         self.read_active(id, stream_handler);
                     } else {
                         let event = stream.drive_read(&mut self.connection, stream_handler);
-                        self.process_stream_event(id, event, stream_handler);
+                        self.process_stream_event(id, event);
                     }
                 }
             }
             quinn_proto::StreamEvent::Writable { id } => {
                 if let Some(stream) = self.streams.get_mut(&id) {
                     let event = stream.drive_write(&mut self.connection, stream_handler);
-                    self.process_stream_event(id, event, stream_handler);
+                    self.process_stream_event(id, event);
                 }
             }
             quinn_proto::StreamEvent::Finished { id } => {
@@ -222,7 +202,7 @@ impl<S: StreamHandler> Peer<S> {
         }
     }
 
-    fn process_stream_event(&mut self, id: StreamId, event: StreamEvent, handler: &mut S) {
+    fn process_stream_event(&mut self, id: StreamId, event: StreamEvent) {
         match &event {
             StreamEvent::Ready(proto) => {
                 tracing::info!(peer=?self.id, ?id, ?proto, "stream negotiated");
@@ -231,7 +211,7 @@ impl<S: StreamHandler> Peer<S> {
                 }
                 //handler.new_stream(&self.id, &id);
             }
-            StreamEvent::Data(decoded) => {
+            StreamEvent::Data(_decoded) => {
                 //handler.recv(&self.id, &id, &decode_buf[..*decoded]);
             }
             StreamEvent::Sent(written) => {
@@ -251,7 +231,7 @@ impl<S: StreamHandler> Peer<S> {
         loop {
             let event = stream.drive_read(&mut self.connection, handler);
             match event {
-                StreamEvent::Data(decoded) => {
+                StreamEvent::Data(_decoded) => {
                     //handler.recv(&self.id, &id, &decode_buf[..decoded]);
                 }
                 StreamEvent::Failed => {
@@ -271,7 +251,7 @@ impl<S: StreamHandler> Peer<S> {
         for id in ids {
             if let Some(stream) = self.streams.get_mut(&id) {
                 let event = stream.drive(&mut self.connection, handler);
-                self.process_stream_event(id, event, handler);
+                self.process_stream_event(id, event);
             }
         }
     }
@@ -375,6 +355,14 @@ mod tests {
         ) -> Result<usize, std::io::Error> {
             self.received.push((*buffer_id, data.to_vec()));
             Ok(data.len())
+        }
+        
+        fn recv_buffer(&mut self, _buffer_id: &Self::BufferId) -> Result<&mut [u8], std::io::Error> {
+            Ok(&mut [])
+        }
+        
+        fn recv_buffer_written(&mut self, _buffer_id: &Self::BufferId, _written: usize) -> Result<(), std::io::Error> {
+            Ok(())
         }
     }
 

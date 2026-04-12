@@ -207,6 +207,14 @@ impl StreamHandler for ServerHandler {
     fn poll_send(&mut self, buffer_id: &Self::BufferId, offset: usize) -> Option<&[u8]> {
         self.to_send.get(*buffer_id).map(|v| &v[offset..])
     }
+    
+    fn recv_buffer(&mut self, _buffer_id: &Self::BufferId) -> Result<&mut [u8], std::io::Error> {
+        todo!()
+    }
+    
+    fn recv_buffer_written(&mut self, _buffer_id: &Self::BufferId, _written: usize) -> Result<(), std::io::Error> {
+        todo!()
+    }
 }
 
 struct ClientPeerHandler {
@@ -310,6 +318,14 @@ impl StreamHandler for ClientData {
 
     fn poll_send(&mut self, buffer_id: &Self::BufferId, offset: usize) -> Option<&[u8]> {
         self.data.get(*buffer_id).map(|v| &v[offset..])
+    }
+    
+    fn recv_buffer(&mut self, _buffer_id: &Self::BufferId) -> Result<&mut [u8], std::io::Error> {
+        todo!()
+    }
+    
+    fn recv_buffer_written(&mut self, _buffer_id: &Self::BufferId, _written: usize) -> Result<(), std::io::Error> {
+        todo!()
     }
 }
 

@@ -50,4 +50,10 @@ impl<P: PeerHandler, S: StreamHandler> Tile<SilverSpine> for NetworkTile<P, S> {
     fn loop_body(&mut self, _adapter: &mut flux::spine::SpineAdapter<SilverSpine>) {
         self.spin();
     }
+    
+    fn try_init(&mut self, adapter: &mut flux::spine::SpineAdapter<SilverSpine>) -> bool {
+        let _producers = adapter.producers.clone();
+        // TODO set producers on StreamHandler
+        true
+    }
 }

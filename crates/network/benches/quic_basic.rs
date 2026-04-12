@@ -57,7 +57,6 @@ pub fn broadcast(c: &mut Criterion) {
                                 ServerPeerHandler,
                                 ServerHandler {
                                     counter: recv_counter.clone(),
-                                    total,
                                     offsets: vec![0; i],
                                     data: data.iter().map(|v| v.len()).collect(),
                                 },
@@ -159,7 +158,6 @@ impl PeerHandler for ServerPeerHandler {
 
 struct ServerHandler {
     counter: Arc<AtomicUsize>,
-    total: usize,
     offsets: Vec<usize>,
     data: Vec<usize>,
 }
@@ -177,7 +175,7 @@ impl silver_network::StreamHandler for ServerHandler {
         Ok(id)
     }
 
-    fn recv(&mut self, buffer_id: &Self::BufferId, data: &[u8]) -> Result<usize, std::io::Error> {
+    fn recv(&mut self, _buffer_id: &Self::BufferId, data: &[u8]) -> Result<usize, std::io::Error> {
         let _was = self.counter.fetch_add(data.len(), Ordering::Relaxed);
         //assert!(data.len() <= self.data[*buffer_id]);
         //self.data[*buffer_id] -= data.len();
@@ -198,6 +196,14 @@ impl silver_network::StreamHandler for ServerHandler {
 
     fn poll_send(&mut self, _buffer_id: &Self::BufferId, _offset: usize) -> Option<&[u8]> {
         None
+    }
+    
+    fn recv_buffer(&mut self, _buffer_id: &Self::BufferId) -> Result<&mut [u8], std::io::Error> {
+        todo!()
+    }
+    
+    fn recv_buffer_written(&mut self, _buffer_id: &Self::BufferId, _written: usize) -> Result<(), std::io::Error> {
+        todo!()
     }
 }
 
@@ -261,6 +267,14 @@ impl StreamHandler for ClientData {
             //tracing::info!(buffer_id, offset, "client send {} bytes", v.len());
             &v[offset..]
         })
+    }
+    
+    fn recv_buffer(&mut self, _buffer_id: &Self::BufferId) -> Result<&mut [u8], std::io::Error> {
+        todo!()
+    }
+    
+    fn recv_buffer_written(&mut self, _buffer_id: &Self::BufferId, _written: usize) -> Result<(), std::io::Error> {
+        todo!()
     }
 }
 

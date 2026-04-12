@@ -41,7 +41,7 @@ impl<S: StreamHandler> ProtocolState<S> {
         match self {
             Self::RpcInbound(state, _) => state.drive_write(send, stream_id, stream_handler),
             Self::RpcOutbound(state, _) => state.drive_write(send, stream_id, stream_handler),
-            Self::IdentifyInbound(_) => StreamEvent::Pending,
+            Self::IdentifyInbound(state) => state.drive_write(send, stream_id, stream_handler),
             Self::IdentifyOutbound(_) => StreamEvent::Pending,
             Self::Gossipsub(state) => match state.drive_write(send, stream_handler) {
                 Ok(_) => StreamEvent::Pending,

@@ -1,6 +1,6 @@
 use std::io::Error as IoError;
 
-use silver_common::{decode_varint, P2pStreamId};
+use silver_common::{P2pStreamId, decode_varint};
 
 use crate::StreamHandler;
 
@@ -35,41 +35,15 @@ impl<S: StreamHandler> IdentifyInboundState<S> {
     ) -> super::super::StreamEvent {
         match self {
             Self::WritingResponse { current } => {
-                let mut bytes_written = 0;
-                loop {
-                    if current.is_none() {
-                        if let Some((buffer_id, _)) = handler.poll_new_send(stream_id) {
-                            *current = Some((buffer_id, 0));
-                        } else {
-                            break;
-                        }
-                    }
-
-                    if let Some((buffer_id, offset)) = current.as_mut() {
-                        let chunk = match handler.poll_send(buffer_id, *offset) {
-                            Some(data) if !data.is_empty() => data,
-                            _ => {
-                                *current = None;
-                                *self = Self::Done;
-                                break;
-                            }
-                        };
-
-                        match send.write(chunk) {
-                            Ok(written) => {
-                                bytes_written += written;
-                                *offset += written;
-                                if *offset < chunk.len() {
-                                    break;
-                                }
-                            }
-                            Err(quinn_proto::WriteError::Blocked) => break,
-                            Err(_) => return super::super::StreamEvent::Failed,
-                        }
-                    }
+                let (total, result) = super::drive_send(current, send, stream_id, handler);
+                if matches!(result, super::WriteResult::Done) {
+                    *self = Self::Done;
                 }
-                if bytes_written > 0 {
-                    super::super::StreamEvent::Sent(bytes_written)
+                if matches!(result, super::WriteResult::Failed) {
+                    return super::super::StreamEvent::Failed;
+                }
+                if total > 0 {
+                    super::super::StreamEvent::Sent(total)
                 } else {
                     super::super::StreamEvent::Pending
                 }
