@@ -1,5 +1,7 @@
 use std::fmt;
 
+use secp256k1::{SECP256K1, SecretKey};
+
 use crate::{Error, util::decode_varint};
 
 /// libp2p peer identity (multihash-encoded).
@@ -36,16 +38,15 @@ impl fmt::Debug for PeerId {
 
 /// secp256k1 keypair for libp2p node identity.
 pub struct Keypair {
-    signing_key: k256::ecdsa::SigningKey,
+    signing_key: SecretKey,
     compressed: [u8; 33],
 }
 
 impl Keypair {
     /// Create from raw 32-byte secret key.
     pub fn from_secret(secret: &[u8; 32]) -> Result<Self, Error> {
-        let signing_key =
-            k256::ecdsa::SigningKey::from_bytes(secret.into()).map_err(|_| Error::BadPrivateKey)?;
-        let compressed = compress(&signing_key);
+        let signing_key = SecretKey::from_slice(secret).map_err(|_| Error::BadPrivateKey)?;
+        let compressed = signing_key.public_key(SECP256K1).serialize();
         Ok(Self { signing_key, compressed })
     }
 
@@ -59,17 +60,10 @@ impl Keypair {
     }
 
     pub fn sign(&self, msg: &[u8]) -> Vec<u8> {
-        use k256::ecdsa::{DerSignature, signature::Signer};
-        let sig: DerSignature = self.signing_key.sign(msg);
-        sig.as_ref().to_vec()
+        let msg = secp256k1::Message::from_digest_slice(msg).expect("message must be 32 bytes");
+        let sig = SECP256K1.sign_ecdsa(&msg, &self.signing_key);
+        sig.serialize_der().to_vec()
     }
-}
-
-fn compress(key: &k256::ecdsa::SigningKey) -> [u8; 33] {
-    let point = key.verifying_key().to_encoded_point(true);
-    let mut out = [0u8; 33];
-    out.copy_from_slice(point.as_bytes());
-    out
 }
 
 /// Encode secp256k1 compressed pubkey as libp2p protobuf PublicKey.

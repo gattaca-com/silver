@@ -6,9 +6,12 @@ pub use crate::{
     util::create_self_signed_certificate,
 };
 
+mod enr;
 mod error;
 mod id;
 mod util;
+
+pub use enr::{Enr, NodeId};
 
 #[from_spine("silver")]
 #[derive(Debug)]

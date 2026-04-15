@@ -1,3 +1,5 @@
+#![allow(dead_code, unused_variables, unused_mut)]
+
 mod p2p;
 #[cfg(not(target_os = "linux"))]
 mod portable;
