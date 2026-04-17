@@ -1,4 +1,4 @@
-name: lint
+name: test
 
 on:
   push:
@@ -9,7 +9,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  lint:
+  test:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -26,23 +26,11 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2025-06-01
-          components: clippy, rustfmt
 
       - name: Install buf
         uses: bufbuild/buf-action@v1
         with:
           setup_only: true
 
-      - name: Setup just
-        uses: extractions/setup-just@v2
-        with:
-          just-version: 1.5.0
-
-      - name: Check compilation
-        run: cargo check
-
-      - name: Check formatting
-        run: just fmt-check
-
-      - name: Check clippy
-        run: just clippy
+      - name: Run tests
+        run: cargo test
