@@ -1,6 +1,6 @@
 pub mod protocol;
 mod snappy;
 pub(crate) mod state;
-mod stream;
+mod p2p_stream;
 
-pub(crate) use stream::{Stream, StreamEvent};
+pub(crate) use p2p_stream::{Stream, StreamEvent};

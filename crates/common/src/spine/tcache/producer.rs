@@ -39,12 +39,12 @@ impl Producer {
     }
 
     pub fn cache_ref(&self) -> TCacheRef {
-        TCacheRef { cache: self.cache }
+        TCacheRef { cache: self.cache as *const c_void }
     }
 
     #[allow(clippy::mut_from_ref)]
     pub fn reservation_buffer(&self, reservation: &mut Reservation) -> Result<&mut [u8], Error> {
-        if reservation.cache.cache != self.cache {
+        if reservation.cache.cache != (self.cache as *const c_void) {
             return Err(Error::UnexpectedCacheRef);
         }
         let tcache = unsafe { &*self.cache };

@@ -42,11 +42,11 @@ impl Socket {
     }
 
     /// Returns true if writable value was changed
-    fn set_writable(&mut self, writable: bool, poll: &Poll) -> Result<bool, Error> {
-        if self.blocked != writable {
-            self.blocked = writable;
+    fn set_blocked(&mut self, blocked: bool, poll: &Poll) -> Result<bool, Error> {
+        if self.blocked != blocked {
+            self.blocked = blocked;
             let interest =
-                if writable { Interest::READABLE | Interest::WRITABLE } else { Interest::READABLE };
+                if blocked { Interest::READABLE | Interest::WRITABLE } else { Interest::READABLE };
             self.re_register(poll, interest)?;
             Ok(true)
         } else {
@@ -62,10 +62,10 @@ impl Socket {
         if !self.tx_batch.entries.is_empty() {
             if self.tx_batch.flush(&self.socket) {
                 self.tx_batch.clear();
-                let _ = self.set_writable(false, poll);
+                let _ = self.set_blocked(false, poll);
                 true
             } else {
-                let _ = self.set_writable(true, poll); // TODO
+                let _ = self.set_blocked(true, poll);
                 false
             }
         } else {
@@ -77,7 +77,6 @@ impl Socket {
     where
         F: FnMut(&mut Vec<u8>) -> Option<Transmit>,
     {
-        // TODO
         let buf_idx = self.tx_batch.entries.len();
         self.tx_batch.bufs[buf_idx].clear();
 
@@ -89,7 +88,7 @@ impl Socket {
 
         if self.tx_batch.is_full() {
             if !self.tx_batch.flush(&self.socket) {
-                let _ = self.set_writable(true, poll); // TODO
+                let _ = self.set_blocked(true, poll); 
                 return false;
             }
             self.tx_batch.clear();

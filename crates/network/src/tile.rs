@@ -25,7 +25,8 @@ impl Tile<SilverSpine> for NetworkTile {
             NetEvent::PeerConnected { peer, addr } => {
                 // TODO start identity exchange
                 // TODO start status exchange?
-                adapter.produce(PeerEvent::NewP2pConnection { p2p_peer: peer.connection, addr });
+                let port = addr.port();
+                adapter.produce(PeerEvent::NewP2pConnection { p2p_peer: peer.connection, ip: addr.ip().into(), port });
             }
             NetEvent::PeerDisconnected { peer } => {
                 adapter.produce(PeerEvent::P2pDisconnect { p2p_peer: peer.connection });

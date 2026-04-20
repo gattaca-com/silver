@@ -47,8 +47,8 @@ opt-level = 3
 [workspace.dependencies]
 silver-common = { path = "crates/common" }
 silver-discovery = {path = "crates/discovery" }
-flux = { git = "https://github.com/gattaca-com/flux", rev = "41d1c369fa14392285b46d2bc4093ac3b04e21b6"}
-flux-utils = { git = "https://github.com/gattaca-com/flux", rev = "41d1c369fa14392285b46d2bc4093ac3b04e21b6", features = ["bytes"]}
+flux = { git = "https://github.com/gattaca-com/flux", rev = "f902769fe25915d8e58b50469f4a8b76f6045870"}
+flux-utils = { git = "https://github.com/gattaca-com/flux", rev = "f902769fe25915d8e58b50469f4a8b76f6045870", features = ["bytes"]}
 
 # External
 aes = "0.8"
