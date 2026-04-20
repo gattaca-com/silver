@@ -319,11 +319,12 @@ mod tests {
     }
 
     impl StreamData for Recorder {
-        fn new_stream(&mut self, _peer: &RemotePeer, _stream: &P2pStreamId) {}
+        fn new_stream(&mut self, _peer: &RemotePeer, stream: &P2pStreamId) {
+            self.active_streams.insert(*stream);
+        }
         fn stream_closed(&mut self, _stream: &P2pStreamId) {}
 
         fn poll_send(&mut self, stream: &P2pStreamId) -> Option<usize> {
-            self.active_streams.insert(*stream);
             let data = self.to_send.remove(stream)?;
             let len = data.len();
             self.sending.insert(*stream, data);

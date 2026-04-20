@@ -1,6 +1,7 @@
 /// X.509 certificate generation and parsing for libp2p TLS.
 use std::sync::Arc;
 
+use secp256k1::hashes::{Hash, sha256};
 use silver_common::{Error, Keypair, PeerId, decode_protobuf_pubkey, encode_secp256k1_protobuf};
 use x509_parser::prelude::*;
 
@@ -277,8 +278,8 @@ fn verify_host_key_signature(
                 secp256k1::PublicKey::from_slice(public_key).map_err(|_| Error::BadPublicKey)?;
             let sig = secp256k1::ecdsa::Signature::from_der(signature)
                 .map_err(|_| Error::BadSignature)?;
-            let msg =
-                secp256k1::Message::from_digest_slice(message).map_err(|_| Error::BadSignature)?;
+            let digest = sha256::Hash::hash(message);
+            let msg = secp256k1::Message::from_digest(digest.to_byte_array());
             secp256k1::SECP256K1.verify_ecdsa(&msg, &sig, &pk).map_err(|_| Error::BadSignature)
         }
         _ => Err(Error::UnsupportedKeyType),

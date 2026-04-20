@@ -1,6 +1,9 @@
 use std::fmt;
 
-use secp256k1::{SECP256K1, SecretKey};
+use secp256k1::{
+    SECP256K1, SecretKey,
+    hashes::{Hash, sha256},
+};
 
 use crate::{Error, util::decode_varint};
 
@@ -71,7 +74,8 @@ impl Keypair {
     }
 
     pub fn sign(&self, msg: &[u8]) -> Vec<u8> {
-        let msg = secp256k1::Message::from_digest_slice(msg).expect("message must be 32 bytes");
+        let digest = sha256::Hash::hash(msg);
+        let msg = secp256k1::Message::from_digest(digest.to_byte_array());
         let sig = SECP256K1.sign_ecdsa(&msg, &self.signing_key);
         sig.serialize_der().to_vec()
     }

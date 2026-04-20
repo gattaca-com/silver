@@ -39,8 +39,8 @@ pub fn broadcast(c: &mut Criterion) {
                     let client_counter = Arc::new(AtomicUsize::default());
 
                     let (mut server_tile, server_id) = {
-                        let secret = k256::ecdsa::SigningKey::random(&mut rng);
-                        let key_bytes: [u8; 32] = secret.to_bytes().into();
+                        let secret = secp256k1::SecretKey::new(&mut rng);
+                        let key_bytes: [u8; 32] = secret.secret_bytes();
                         let keypair = Keypair::from_secret(&key_bytes).unwrap();
                         let server_id = keypair.peer_id();
                         let server_config = silver_network::create_server_config(&keypair).unwrap();
@@ -81,8 +81,8 @@ pub fn broadcast(c: &mut Criterion) {
                     });
 
                     let data = data.clone();
-                    let secret = k256::ecdsa::SigningKey::random(&mut rng);
-                    let key_bytes: [u8; 32] = secret.to_bytes().into();
+                    let secret = secp256k1::SecretKey::new(&mut rng);
+                    let key_bytes: [u8; 32] = secret.secret_bytes();
                     let keypair = Keypair::from_secret(&key_bytes).unwrap();
                     let client_endpoint =
                         Endpoint::new(Arc::new(EndpointConfig::default()), None, false, None);

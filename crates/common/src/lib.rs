@@ -17,13 +17,3 @@ mod spine;
 mod util;
 
 pub use enr::{Enr, NodeId};
-
-#[from_spine("silver")]
-#[derive(Debug)]
-pub struct SilverSpine {
-    pub tile_info: ShmemData<TileInfo>,
-
-    // TODO: placeholder queue
-    #[queue(size(2usize.pow(8)))]
-    pub base: SpineQueue<()>,
-}
