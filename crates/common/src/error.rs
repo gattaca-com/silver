@@ -13,6 +13,7 @@ pub enum Error {
     UnsupportedCriticalExtension,
     UnsupportedKeyType,
     PeerIdMismatch,
+    BufferTooSmall,
 }
 
 impl fmt::Display for Error {
