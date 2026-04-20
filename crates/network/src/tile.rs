@@ -26,7 +26,7 @@ impl Tile<SilverSpine> for NetworkTile {
                 // TODO start identity exchange
                 // TODO start status exchange?
                 let port = addr.port();
-                adapter.produce(PeerEvent::NewP2pConnection {
+                adapter.produce(PeerEvent::P2pNewConnection {
                     p2p_peer: peer.connection,
                     ip: addr.ip().into(),
                     port,
@@ -65,7 +65,7 @@ impl Tile<SilverSpine> for NetworkTile {
                             None => {
                                 // cannot create new stream - peer at capacity
                                 producers.peer_events.produce(
-                                    &(PeerEvent::CannotCreateStream {
+                                    &(PeerEvent::P2pCannotCreateStream {
                                         p2p_peer: msg.peer_id,
                                         protocol: StreamProtocol::GossipSub,
                                     }
@@ -78,7 +78,7 @@ impl Tile<SilverSpine> for NetworkTile {
                 {
                     if !self.p2p_stream_handler.enqueue_gossip(&p2p_stream_id, msg) {
                         producers.peer_events.produce(
-                            &(PeerEvent::OutboundMessageDropped {
+                            &(PeerEvent::P2pOutboundMessageDropped {
                                 p2p_peer: msg.peer_id,
                                 protocol: StreamProtocol::GossipSub,
                             }
@@ -105,7 +105,7 @@ impl Tile<SilverSpine> for NetworkTile {
                             None => {
                                 // cannot create new stream - peer at capacity
                                 producers.peer_events.produce(
-                                    &(PeerEvent::CannotCreateStream {
+                                    &(PeerEvent::P2pCannotCreateStream {
                                         p2p_peer: *peer,
                                         protocol: *protocol,
                                     }
@@ -119,7 +119,7 @@ impl Tile<SilverSpine> for NetworkTile {
                 } {
                     if !self.p2p_stream_handler.enqueue_rpc_out(&p2p_stream_id, msg) {
                         producers.peer_events.produce(
-                            &(PeerEvent::OutboundMessageDropped {
+                            &(PeerEvent::P2pOutboundMessageDropped {
                                 p2p_peer: p2p_stream_id.peer(),
                                 protocol: p2p_stream_id.protocol(),
                             }

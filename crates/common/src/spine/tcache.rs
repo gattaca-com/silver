@@ -316,7 +316,7 @@ mod tests {
             let mut total = 0;
             let start = Instant::now();
             while total < (2 << 32) {
-                if let Some(mut buffer) = producer.reserve(rng.gen_range(512..8192)) {
+                if let Some(mut buffer) = producer.reserve(rng.gen_range(512..8192), true) {
                     let remaining = buffer.remaining().unwrap();
                     total += remaining;
                     buffer.flush().unwrap();

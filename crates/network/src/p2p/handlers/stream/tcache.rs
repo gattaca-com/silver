@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    io::{Error, ErrorKind},
+    io::{Error, ErrorKind, Write},
 };
 
 use silver_common::{
@@ -115,9 +115,15 @@ impl StreamData for TCacheStreamData {
     fn alloc_recv(&mut self, stream: &P2pStreamId, length: usize) -> Result<(), Error> {
         let reservation = match stream.protocol() {
             StreamProtocol::GossipSub => {
-                self.gossip_in.reserve(length).ok_or(ErrorKind::FileTooLarge)?
+                // Writing gossip: P2pStreamId || Gossip protobuf
+                let mut reservation = self
+                    .gossip_in
+                    .reserve(length + size_of::<P2pStreamId>(), true)
+                    .ok_or(ErrorKind::FileTooLarge)?;
+                reservation.write(stream.as_ref())?;
+                reservation
             }
-            _ => self.rpc_in.reserve(length).ok_or(ErrorKind::FileTooLarge)?,
+            _ => self.rpc_in.reserve(length, true).ok_or(ErrorKind::FileTooLarge)?,
         };
         self.in_reservations.insert(*stream, reservation);
         Ok(())

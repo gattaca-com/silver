@@ -1,0 +1,35 @@
+[package]
+name = "silver_compression"
+edition.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+buffa.workspace = true
+bytes.workspace = true
+flux.workspace = true
+fxhash.workspace = true
+libc.workspace = true
+mio.workspace = true
+quinn-proto.workspace = true
+ring.workspace = true
+secp256k1.workspace = true
+silver-common.workspace = true
+snap.workspace = true
+tracing.workspace = true
+
+[build-dependencies]
+buffa-build = "0.2.0"
+
+[dev-dependencies]
+criterion.workspace = true
+hdrhistogram.workspace = true
+pprof.workspace = true
+rand.workspace = true
+rand_core.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true
+
