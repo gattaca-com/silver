@@ -55,8 +55,8 @@ pub enum PeerEvent {
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub enum IpBytes {
-    V4([u8;4]),
-    V6([u8;16]),
+    V4([u8; 4]),
+    V6([u8; 16]),
 }
 
 impl From<IpAddr> for IpBytes {

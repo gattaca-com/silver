@@ -1,4 +1,4 @@
-use std::{hash::Hash};
+use std::hash::Hash;
 
 use quinn_proto::{ConnectionHandle, StreamId, VarInt};
 

@@ -1,5 +1,11 @@
 use std::{
-    alloc::{self, Layout}, array, ffi::c_void, ops::Deref, ptr::addr_of, slice, sync::atomic::{AtomicU64, Ordering}
+    alloc::{self, Layout},
+    array,
+    ffi::c_void,
+    ops::Deref,
+    ptr::addr_of,
+    slice,
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 pub use consumer::{Consumer, RandomAccessConsumer, TCacheRead};
@@ -30,7 +36,7 @@ pub struct TCache {
 #[derive(Copy, Clone, Debug)]
 #[repr(C)]
 pub struct TCacheRef {
-    // SAFETY: take care when dereferencing 
+    // SAFETY: take care when dereferencing
     cache: *const c_void,
 }
 
@@ -101,7 +107,12 @@ impl TCache {
             })
             .ok_or(Error::MaxConsumers)?;
 
-        Ok(Consumer { cache: TCacheRef { cache: addr_of!(*self) as *const c_void }, index, seq, next_seq: seq })
+        Ok(Consumer {
+            cache: TCacheRef { cache: addr_of!(*self) as *const c_void },
+            index,
+            seq,
+            next_seq: seq,
+        })
     }
 
     fn index(&self, seq: u64) -> usize {

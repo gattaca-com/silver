@@ -36,6 +36,7 @@ impl RxBatch {
         }
         self.datagrams.clear();
 
+        #[allow(clippy::needless_range_loop)]
         for i in 0..RX_BATCH_MAX {
             // First time init: slots not yet set_len'd still have len=0.
             // Subsequent rounds: used slots were reclaimed above; unused

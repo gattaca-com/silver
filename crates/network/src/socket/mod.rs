@@ -1,15 +1,15 @@
+#[cfg(target_os = "linux")]
+#[path = "linux.rs"]
+mod linux;
 #[cfg(not(target_os = "linux"))]
 #[path = "portable.rs"]
-mod udp;
-#[cfg(target_os = "linux")]
-#[path = "unix.rs"]
 mod udp;
 
 use std::{io::Error, net::SocketAddr};
 
+pub(crate) use linux::{RX_BATCH_MAX, RX_BUF_SIZE, RxBatch, TxBatch};
 use mio::{Interest, Poll, Token, net::UdpSocket};
 use quinn_proto::Transmit;
-pub(crate) use udp::{RX_BATCH_MAX, RX_BUF_SIZE, RxBatch, TxBatch};
 
 pub(crate) const MAX_GSO_SEGMENTS: usize = 10;
 
@@ -88,7 +88,7 @@ impl Socket {
 
         if self.tx_batch.is_full() {
             if !self.tx_batch.flush(&self.socket) {
-                let _ = self.set_blocked(true, poll); 
+                let _ = self.set_blocked(true, poll);
                 return false;
             }
             self.tx_batch.clear();
