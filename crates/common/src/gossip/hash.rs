@@ -31,7 +31,6 @@ impl Deref for MessageId {
     }
 }
 
-
 /// Altair+ msg-id for a payload that snappy-decompressed cleanly. `topic` is
 /// the full wire string `/eth2/{fork_digest_hex}/{name}/ssz_snappy`;
 /// `decompressed` is the SSZ-encoded payload after snappy decompression.

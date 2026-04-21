@@ -25,7 +25,7 @@ pub struct NewGossipMsg {
     pub msg_hash: MessageId,
     /// Decompressed message SSZ
     pub ssz: TCacheRead,
-    /// Protobuf wrapped snappy compressed - as received. 
+    /// Protobuf wrapped snappy compressed - as received.
     /// Use this cache ref in `GossipMsgOut`.
     pub protobuf: TCacheRead,
 }
@@ -65,8 +65,8 @@ pub enum PeerEvent {
     P2pGossipTopicUnsubscribe { p2p_peer: usize, topic: GossipTopic },
     P2pGossipTopicGraft { p2p_peer: usize, topic: GossipTopic },
     P2pGossipTopicPrune { p2p_peer: usize, topic: GossipTopic },
-    // A tcache value of 'None' means we don't have the requested message. 
-    P2pGossipWant { p2p_peer: usize, hash: MessageId, tcache: Option<TCacheRead> },
+    P2pGossipWant { p2p_peer: usize, hash: MessageId, tcache: TCacheRead },
+    P2pGossipWantUnknown { p2p_peer: usize, hash: MessageId },
     P2pGossipDontWant { p2p_peer: usize, hash: MessageId },
     P2pGossipHave { p2p_peer: usize, topic: GossipTopic, hash: MessageId },
     P2pGossipInvalidMsg { p2p_peer: usize, topic: GossipTopic, hash: MessageId },

@@ -2,11 +2,17 @@ use std::time::Instant;
 
 use buffa::MessageView;
 use flux::tile::Tile;
-use silver_common::{
-    P2pStreamId, SilverSpine, TConsumer, TProducer,
-};
+use silver_common::{P2pStreamId, SilverSpine, TConsumer, TProducer};
 
-use crate::{control::{handle_grafts, handle_idontwants, handle_ihaves, handle_iwants, handle_prunes, handle_subscriptions}, dedup::DedupCache, generated::RPCView, mcache::MessageCache};
+use crate::{
+    control::{
+        handle_grafts, handle_idontwants, handle_ihaves, handle_iwants, handle_prunes,
+        handle_subscriptions,
+    },
+    dedup::DedupCache,
+    generated::RPCView,
+    mcache::MessageCache,
+};
 
 mod control;
 mod dedup;
@@ -17,10 +23,11 @@ mod mcache;
 mod message;
 
 /// Reads all incoming gossip protobuf messages (sequential consumer):
-/// - handles control messages and emits spine messages 
+/// - handles control messages and emits spine messages
 /// - deduplicates individual gossip messages
 ///   - decompresses individual messages and writes SSZ to downstream TCache
-///   - copies individual message snappy to message cache TCache wrapped in protobuf ready for sending 
+///   - copies individual message snappy to message cache TCache wrapped in
+///     protobuf ready for sending
 ///   - publishes TCacheRead for message cache messages
 ///   - produces NewGossipMsg on spine for downstream consumers
 pub struct GossipCompressionTile {
@@ -49,15 +56,25 @@ impl Tile<SilverSpine> for GossipCompressionTile {
             buffer = &buffer[size_of::<P2pStreamId>()..];
 
             if let Ok(gossip_proto) = RPCView::decode_view(buffer) {
-                handle_subscriptions(stream_id, gossip_proto.subscriptions, &self.fork_digest_hex, adapter);
-
+                handle_subscriptions(
+                    stream_id,
+                    gossip_proto.subscriptions,
+                    &self.fork_digest_hex,
+                    adapter,
+                );
 
                 if let Some(control) = gossip_proto.control.as_option() {
                     handle_grafts(stream_id, &control.graft, &self.fork_digest_hex, adapter);
                     handle_prunes(stream_id, &control.prune, &self.fork_digest_hex, adapter);
                     handle_iwants(stream_id, &control.iwant, &self.mcache, adapter);
                     handle_idontwants(stream_id, &control.idontwant, adapter);
-                    handle_ihaves(stream_id, &control.ihave, &self.fork_digest_hex, &self.mcache, adapter);
+                    handle_ihaves(
+                        stream_id,
+                        &control.ihave,
+                        &self.fork_digest_hex,
+                        &self.mcache,
+                        adapter,
+                    );
                 }
 
                 for gossip_msg in &gossip_proto.publish {

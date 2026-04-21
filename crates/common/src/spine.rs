@@ -1,6 +1,7 @@
 use flux::{communication::ShmemData, spine::SpineQueue, spine_derive::from_spine, tile::TileInfo};
 pub use messages::{
-    DecompressedGossipMsg, GossipMsgIn, GossipMsgOut, NewGossipMsg, PeerEvent, RpcMsgIn, RpcMsgOut, RpcOutType,
+    DecompressedGossipMsg, GossipMsgIn, GossipMsgOut, NewGossipMsg, PeerEvent, RpcMsgIn, RpcMsgOut,
+    RpcOutType,
 };
 pub use stream_id::P2pStreamId;
 pub use stream_protocol::{ALL_PROTOCOLS, MULTISTREAM_V1, REJECT_RESPONSE, StreamProtocol};

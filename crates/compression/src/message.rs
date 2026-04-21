@@ -6,7 +6,9 @@ use buffa::{
 };
 use flux::spine::SpineAdapter;
 use silver_common::{
-    encode_varint, msg_id_invalid_snappy, msg_id_valid_snappy, DecompressedGossipMsg, Error, GossipTopic, MessageId, NewGossipMsg, P2pStreamId, PeerEvent, SilverSpine, TCacheRead, TProducer, TReservation
+    DecompressedGossipMsg, Error, GossipTopic, MessageId, NewGossipMsg, P2pStreamId, PeerEvent,
+    SilverSpine, TCacheRead, TProducer, TReservation, encode_varint, msg_id_invalid_snappy,
+    msg_id_valid_snappy,
 };
 
 use crate::{GossipCompressionTile, dedup::DedupCache, mcache::MessageCache};
@@ -81,7 +83,13 @@ impl GossipCompressionTile {
         // Flush the reservation matching the gossip message available downstream.
         reservation.flush()?;
 
-        adapter.produce(NewGossipMsg { stream_id: *stream_id, topic, msg_hash: msg_id, ssz: ssz_read, protobuf: mcache_read });
+        adapter.produce(NewGossipMsg {
+            stream_id: *stream_id,
+            topic,
+            msg_hash: msg_id,
+            ssz: ssz_read,
+            protobuf: mcache_read,
+        });
         Ok(())
     }
 }
