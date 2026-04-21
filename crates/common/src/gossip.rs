@@ -2,11 +2,15 @@ use std::fmt;
 
 use crate::Error;
 
+mod hash;
+
+pub use hash::{MessageId, MessageIdHasher, msg_id_invalid_snappy, msg_id_valid_snappy};
+
 /// Eth2 gossipsub topic name. Wire topic is
 /// `/eth2/{fork_digest_hex}/{name}/ssz_snappy`; this enum covers the `{name}`
 /// portion. Subnet ids travel inline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[repr(u8)]
+#[repr(C, u8)]
 pub enum GossipTopic {
     BeaconBlock,
     BeaconAggregateAndProof,

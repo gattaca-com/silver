@@ -1,6 +1,6 @@
 use std::{net::IpAddr, ptr::addr_of, slice};
 
-use crate::{GossipTopic, P2pStreamId, StreamProtocol, TCacheRef};
+use crate::{GossipTopic, MessageId, P2pStreamId, StreamProtocol, TCacheRead, TCacheRef};
 
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
@@ -11,12 +11,23 @@ pub struct GossipMsgIn {
 }
 
 #[derive(Clone, Copy, Debug)]
-#[allow(improper_ctypes)]
 #[repr(C)]
 pub struct GossipMsgOut {
     pub peer_id: usize,
-    pub cache_ref: TCacheRef,
-    pub tcache_seq: u64,
+    pub tcache: TCacheRead,
+}
+
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct NewGossipMsg {
+    pub stream_id: P2pStreamId,
+    pub topic: GossipTopic,
+    pub msg_hash: MessageId,
+    /// Decompressed message SSZ
+    pub ssz: TCacheRead,
+    /// Protobuf wrapped snappy compressed - as received. 
+    /// Use this cache ref in `GossipMsgOut`.
+    pub protobuf: TCacheRead,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -44,7 +55,7 @@ pub struct RpcMsgIn {
 }
 
 #[derive(Clone, Copy, Debug)]
-#[repr(C)]
+#[repr(C, u8)]
 pub enum PeerEvent {
     P2pNewConnection { p2p_peer: usize, ip: IpBytes, port: u16 },
     P2pDisconnect { p2p_peer: usize },
@@ -54,10 +65,12 @@ pub enum PeerEvent {
     P2pGossipTopicUnsubscribe { p2p_peer: usize, topic: GossipTopic },
     P2pGossipTopicGraft { p2p_peer: usize, topic: GossipTopic },
     P2pGossipTopicPrune { p2p_peer: usize, topic: GossipTopic },
-    P2pGossipWant { p2p_peer: usize, hash: [u8; 20] },
-    P2pGossipDontWant { p2p_peer: usize, hash: [u8; 20] },
-    P2pGossipHave { p2p_peer: usize, topic: GossipTopic, hash: [u8; 20] },
-    P2pGossipInvalidMsg { p2p_peer: usize, topic: GossipTopic, hash: [u8; 20] },
+    // A tcache value of 'None' means we don't have the requested message. 
+    P2pGossipWant { p2p_peer: usize, hash: MessageId, tcache: Option<TCacheRead> },
+    P2pGossipDontWant { p2p_peer: usize, hash: MessageId },
+    P2pGossipHave { p2p_peer: usize, topic: GossipTopic, hash: MessageId },
+    P2pGossipInvalidMsg { p2p_peer: usize, topic: GossipTopic, hash: MessageId },
+    P2pGossipInvalidControl { p2p_peer: usize },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -86,11 +99,7 @@ pub struct DecompressedGossipMsg {
 
 impl DecompressedGossipMsg {
     pub fn new(stream_id: P2pStreamId) -> Self {
-        Self {
-            stream_id,
-            msg_hash: [0u8; 20],
-            _padding: [0x6a, 0x77, 0xac, 0xca],
-        }
+        Self { stream_id, msg_hash: [0u8; 20], _padding: [0x6a, 0x77, 0xac, 0xca] }
     }
 }
 

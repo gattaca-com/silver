@@ -3,10 +3,11 @@ use std::sync::atomic::Ordering;
 use crate::{GossipMsgOut, RpcMsgOut, TCacheError, TCacheRef};
 
 /// Reader for a TCache msg
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
 pub struct TCacheRead {
-    tcache: TCacheRef,
-    seq: u64,
+    pub(super) tcache: TCacheRef,
+    pub(super) seq: u64,
 }
 
 impl TCacheRead {
@@ -26,11 +27,16 @@ impl TCacheRead {
     pub fn seq(&self) -> u64 {
         self.seq
     }
+
+    #[inline]
+    pub fn cache_ref(&self) -> TCacheRef {
+        self.tcache
+    }
 }
 
 impl From<GossipMsgOut> for TCacheRead {
     fn from(value: GossipMsgOut) -> Self {
-        Self { tcache: value.cache_ref, seq: value.tcache_seq }
+        value.tcache
     }
 }
 

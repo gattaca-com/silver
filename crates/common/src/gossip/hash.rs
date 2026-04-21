@@ -4,6 +4,8 @@
 //! Per phase0/p2p-interface.md:403-404 clients MUST reject msg ids whose
 //! length is not [`MESSAGE_ID_LEN`].
 
+use std::{hash::Hasher, ops::Deref};
+
 use ring::digest::{Context, SHA256};
 
 /// 4-byte domain tag for successfully-decompressed snappy payloads.
@@ -15,7 +17,20 @@ pub const MESSAGE_DOMAIN_INVALID_SNAPPY: [u8; 4] = [0x00, 0x00, 0x00, 0x00];
 /// Truncated SHA-256 output length used as the wire message-id.
 pub const MESSAGE_ID_LEN: usize = 20;
 
-pub type MessageId = [u8; MESSAGE_ID_LEN];
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[repr(C)]
+pub struct MessageId {
+    pub id: [u8; MESSAGE_ID_LEN],
+}
+
+impl Deref for MessageId {
+    type Target = [u8; MESSAGE_ID_LEN];
+
+    fn deref(&self) -> &Self::Target {
+        &self.id
+    }
+}
+
 
 /// Altair+ msg-id for a payload that snappy-decompressed cleanly. `topic` is
 /// the full wire string `/eth2/{fork_digest_hex}/{name}/ssz_snappy`;
@@ -42,7 +57,20 @@ fn hash_id(domain: &[u8; 4], topic: &[u8], body: &[u8]) -> MessageId {
     let digest = ctx.finish();
     let mut out = [0u8; MESSAGE_ID_LEN];
     out.copy_from_slice(&digest.as_ref()[..MESSAGE_ID_LEN]);
-    out
+    MessageId { id: out }
+}
+
+// MessageId = [u8; 20] → take first 8 bytes as u64 for the hash.
+// A message id is already a hash, no need ot hash further.
+#[derive(Default)]
+pub struct MessageIdHasher(u64);
+impl Hasher for MessageIdHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        self.0 = u64::from_ne_bytes(bytes.try_into().unwrap());
+    }
+    fn finish(&self) -> u64 {
+        self.0
+    }
 }
 
 #[cfg(test)]
@@ -82,7 +110,7 @@ mod tests {
         //       bytes([1,0,0,0]) + (0).to_bytes(8,"little")).hexdigest()[:40])'
         let id = msg_id_valid_snappy("", b"");
         let expected = hex_to_bytes("ca888f40c3caca805b37a5434c75de5550616e07");
-        assert_eq!(id, expected.as_slice());
+        assert_eq!(id.deref(), expected.as_slice());
     }
 
     fn hex_to_bytes(s: &str) -> Vec<u8> {

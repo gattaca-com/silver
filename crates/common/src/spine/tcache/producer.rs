@@ -15,15 +15,21 @@ unsafe impl Sync for Producer {}
 impl Producer {
     /// Return requested buffer space, if available.
     /// If None is returned, caller should retry.
-    /// if `auto_commit` the reservation will be commited as soon as it is filled. 
-    /// otherwise it must ber manually committed by calling `flush`.
+    /// if `auto_commit` the reservation will be commited as soon as it is
+    /// filled. otherwise it must ber manually committed by calling `flush`.
     pub fn reserve(&mut self, len: usize, auto_commit: bool) -> Option<Reservation> {
         let tcache = unsafe { &*self.cache };
         match tcache.reserve(self, len as u32) {
             Some((seq, reservation_len)) => {
                 self.seq += reservation_len as u64;
                 self.space -= reservation_len as u32;
-                Some(Reservation { cache: self.cache_ref(), seq, offset: 0, committed: false, auto_commit })
+                Some(Reservation {
+                    cache: self.cache_ref(),
+                    seq,
+                    offset: 0,
+                    committed: false,
+                    auto_commit,
+                })
             }
             None => {
                 // reset available space.
@@ -84,6 +90,11 @@ impl Reservation {
 
     pub fn buffer(&self) -> Result<&mut [u8], std::io::Error> {
         self.cache.write(self.seq).map_err(std::io::Error::other)
+    }
+
+    /// Returns a `TCacheRead` reference for this reservation.
+    pub fn read(&self) -> TCacheRead {
+        TCacheRead { tcache: self.cache, seq: self.seq }
     }
 }
 

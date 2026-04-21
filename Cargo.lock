@@ -2382,6 +2382,7 @@ dependencies = [
  "quinn-proto",
  "rand 0.8.5",
  "rcgen",
+ "ring",
  "rustls",
  "secp256k1",
  "serde",
