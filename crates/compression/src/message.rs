@@ -6,9 +6,8 @@ use buffa::{
 };
 use flux::spine::SpineAdapter;
 use silver_common::{
-    DecompressedGossipMsg, Error, GossipTopic, MessageId, NewGossipMsg, P2pStreamId, PeerEvent,
-    SilverSpine, TCacheRead, TProducer, TReservation, encode_varint, msg_id_invalid_snappy,
-    msg_id_valid_snappy,
+    Error, GossipTopic, MessageId, NewGossipMsg, P2pStreamId, PeerEvent, SilverSpine, TCacheRead,
+    TProducer, TReservation, encode_varint, msg_id_invalid_snappy, msg_id_valid_snappy,
 };
 
 use crate::{GossipCompressionTile, dedup::DedupCache, mcache::MessageCache};
@@ -46,9 +45,8 @@ impl GossipCompressionTile {
         })?;
 
         // Alloc into downstream tcache - SSZ message bytes
-        let length = len + size_of::<DecompressedGossipMsg>();
         let mut reservation =
-            incoming_gossip_publish.reserve(length, false).ok_or(Error::BufferTooSmall)?;
+            incoming_gossip_publish.reserve(len, false).ok_or(Error::BufferTooSmall)?;
 
         let msg_id = decompress_to_reservation(
             incoming_gossip_publish,

@@ -55,6 +55,10 @@ impl TCacheRef {
     pub fn consumer(&self) -> Result<Consumer, Error> {
         self.deref().consumer()
     }
+
+    pub fn random_access(&self) -> Result<RandomAccessConsumer, Error> {
+        self.deref().random_access_consumer()
+    }
 }
 
 #[derive(Error, Debug)]
@@ -112,6 +116,26 @@ impl TCache {
             index,
             seq,
             next_seq: seq,
+        })
+    }
+
+    pub fn random_access_consumer(&self) -> Result<RandomAccessConsumer, Error> {
+        // find start seq
+        let seq = self.head.seq.load(Ordering::Acquire);
+
+        let index = self
+            .head
+            .tails
+            .iter()
+            .position(|t| {
+                t.compare_exchange(u64::MAX, seq, Ordering::Release, Ordering::Relaxed).is_ok()
+            })
+            .ok_or(Error::MaxConsumers)?;
+
+        Ok(RandomAccessConsumer {
+            cache: TCacheRef { cache: addr_of!(*self) as *const c_void },
+            index,
+            tail: seq,
         })
     }
 

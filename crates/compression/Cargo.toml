@@ -7,14 +7,9 @@ version.workspace = true
 
 [dependencies]
 buffa.workspace = true
-bytes.workspace = true
 flux.workspace = true
 fxhash.workspace = true
-libc.workspace = true
-mio.workspace = true
-quinn-proto.workspace = true
 ring.workspace = true
-secp256k1.workspace = true
 silver-common.workspace = true
 snap.workspace = true
 tracing.workspace = true

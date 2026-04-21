@@ -2,7 +2,7 @@ use std::time::Instant;
 
 use buffa::MessageView;
 use flux::tile::Tile;
-use silver_common::{P2pStreamId, SilverSpine, TConsumer, TProducer};
+use silver_common::{Error, P2pStreamId, PeerEvent, SilverSpine, TConsumer, TProducer};
 
 use crate::{
     control::{
@@ -39,6 +39,27 @@ pub struct GossipCompressionTile {
     // publisher of gossip message protobufs.
     mcache_publish: TProducer,
     mcache: MessageCache,
+}
+
+impl GossipCompressionTile {
+    pub fn new(
+        incoming_gossip: TConsumer,
+        ssz_gossip_publish: TProducer,
+        protobuf_gossip_publish: TProducer,
+        fork_digest_hex: String,
+    ) -> Result<Self, Error> {
+        let mcache_consumer = protobuf_gossip_publish.cache_ref().random_access()?;
+        let mcache = MessageCache::new(mcache_consumer);
+
+        Ok(Self {
+            incoming_gossip,
+            incoming_gossip_publish: ssz_gossip_publish,
+            fork_digest_hex,
+            dedup_cache: DedupCache::default(),
+            mcache_publish: protobuf_gossip_publish,
+            mcache,
+        })
+    }
 }
 
 impl Tile<SilverSpine> for GossipCompressionTile {
@@ -84,7 +105,9 @@ impl Tile<SilverSpine> for GossipCompressionTile {
                         gossip_msg.from.is_some()
                     {
                         // Spec violation
-                        // TODO peer behaviour message
+                        adapter.produce(PeerEvent::P2pGossipInvalidFrame {
+                            p2p_peer: stream_id.peer(),
+                        });
                         continue;
                     }
                     if let Some(snappy_data) = gossip_msg.data {

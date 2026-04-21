@@ -17,15 +17,16 @@ const IHAVE_BUCKETS: usize = 3;
 const MAX_IHAVES: usize = 5000;
 
 #[derive(Clone)]
-struct CachedMessage {
-    tcache: TCacheRead,
-    topic: GossipTopic,
-}
-
 struct Bucket {
-    messages: HashMap<MessageId, CachedMessage, BuildHasherDefault<MessageIdHasher>>,
+    messages: HashMap<MessageId, TCacheRead, BuildHasherDefault<MessageIdHasher>>,
     ihaves: HashMap<GossipTopic, Vec<MessageId>>,
     tcache_min_seq: u64,
+}
+
+impl Default for Bucket {
+    fn default() -> Self {
+        Self { messages: Default::default(), ihaves: Default::default(), tcache_min_seq: u64::MAX }
+    }
 }
 
 pub(crate) struct MessageCache {
@@ -36,17 +37,26 @@ pub(crate) struct MessageCache {
 }
 
 impl MessageCache {
+    pub(crate) fn new(cache_consumer: TRandomAccess) -> Self {
+        Self {
+            buckets: vec![Bucket::default(); BUCKETS].into_boxed_slice(),
+            cache_consumer,
+            current_bucket: 0,
+            last_rotation: Instant::now(),
+        }
+    }
+
     pub(crate) fn insert(&mut self, id: MessageId, topic: GossipTopic, tcache: TCacheRead) {
         let bucket = &mut self.buckets[self.current_bucket];
 
         // TODO could have a preallocated ring of max ihaves per gossip topic.
         bucket.ihaves.entry(topic).and_modify(|v| v.push(id)).or_insert_with(|| vec![id]);
         bucket.tcache_min_seq = bucket.tcache_min_seq.min(tcache.seq());
-        bucket.messages.insert(id, CachedMessage { tcache, topic });
+        bucket.messages.insert(id, tcache);
     }
 
     pub(crate) fn get(&self, id: &MessageId) -> Option<TCacheRead> {
-        self.buckets.iter().find_map(|bucket| bucket.messages.get(id).cloned().map(|cm| cm.tcache))
+        self.buckets.iter().find_map(|bucket| bucket.messages.get(id).copied())
     }
 
     pub(crate) fn has(&self, id: &MessageId) -> bool {
