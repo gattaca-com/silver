@@ -1,6 +1,13 @@
-use buffa::RepeatedView;
+use buffa::{
+    RepeatedView,
+    encoding::{Tag, WireType, encode_varint, varint_len},
+    types::{encode_bytes, encode_string, string_encoded_len},
+};
 use flux::spine::SpineAdapter;
-use silver_common::{Error, GossipTopic, MessageId, P2pStreamId, PeerEvent, SilverSpine};
+use silver_common::{
+    Error, GossipTopic, MESSAGE_ID_LEN, MessageId, P2pStreamId, PeerEvent, SilverSpine, TCacheRead,
+    TProducer,
+};
 
 use crate::{
     generated::{
@@ -138,6 +145,53 @@ pub(super) fn handle_ihaves<'a>(
             }
         }
     }
+}
+
+/// Encode an `RPC { control: ControlMessage { ihave: [ ControlIHave { topic_id,
+/// message_ids } ] } }` frame directly into a TCache reservation. Single copy
+/// per `MessageId` (via `encode_bytes`'s `put_slice`), no intermediate heap.
+pub(crate) fn copy_ihaves_to_protobuf_output<'a>(
+    producer: &mut TProducer,
+    topic: &str,
+    message_ids: impl ExactSizeIterator<Item = &'a MessageId>,
+) -> Result<TCacheRead, Error> {
+    // Fields 1..=15 encode as 1-byte tags (varint < 128).
+    // RPC.control = field 3, ControlMessage.ihave = field 1,
+    // ControlIHave.topic_id = field 1, ControlIHave.message_ids = field 2.
+    const TAG_LEN: usize = 1;
+    let (id_count, _) = message_ids.size_hint();
+    let ids_len = id_count * (TAG_LEN + varint_len(MESSAGE_ID_LEN as u64) + MESSAGE_ID_LEN);
+    //let ids_len: usize =
+    //    message_ids.iter().map(|id| TAG_LEN + bytes_encoded_len(&id[..])).sum();
+    let ihave_inner_len = TAG_LEN + string_encoded_len(topic) + ids_len;
+    let control_inner_len = TAG_LEN + varint_len(ihave_inner_len as u64) + ihave_inner_len;
+    let total = TAG_LEN + varint_len(control_inner_len as u64) + control_inner_len;
+
+    let mut reservation = producer.reserve(total, true).ok_or(Error::BufferTooSmall)?;
+    let out = producer.reservation_buffer(&mut reservation)?;
+    // `&mut [u8]` implements `BufMut` and advances in-place on each put.
+    let mut cursor: &mut [u8] = &mut out[..total];
+
+    // RPC.control (field 3, LD).
+    Tag::new(3, WireType::LengthDelimited).encode(&mut cursor);
+    encode_varint(control_inner_len as u64, &mut cursor);
+
+    // ControlMessage.ihave (field 1, LD) — single ControlIHave entry.
+    Tag::new(1, WireType::LengthDelimited).encode(&mut cursor);
+    encode_varint(ihave_inner_len as u64, &mut cursor);
+
+    // ControlIHave.topic_id (field 1, string).
+    Tag::new(1, WireType::LengthDelimited).encode(&mut cursor);
+    encode_string(topic, &mut cursor);
+
+    // ControlIHave.message_ids (field 2, bytes, repeated).
+    for id in message_ids {
+        Tag::new(2, WireType::LengthDelimited).encode(&mut cursor);
+        encode_bytes(&id[..], &mut cursor);
+    }
+
+    reservation.increment_offset(total);
+    Ok(reservation.read())
 }
 
 fn gossip_topic(topic: &str, fork_digest_hex: &str) -> Result<GossipTopic, Error> {

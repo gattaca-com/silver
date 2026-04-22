@@ -1,13 +1,15 @@
 use std::time::Instant;
 
 use buffa::MessageView;
-use flux::tile::Tile;
-use silver_common::{Error, P2pStreamId, PeerEvent, SilverSpine, TConsumer, TProducer};
+use flux::{spine::SpineAdapter, tile::Tile};
+use silver_common::{
+    Error, Gossip, GossipIHaveOut, P2pStreamId, PeerEvent, SilverSpine, TConsumer, TProducer,
+};
 
 use crate::{
     control::{
-        handle_grafts, handle_idontwants, handle_ihaves, handle_iwants, handle_prunes,
-        handle_subscriptions,
+        copy_ihaves_to_protobuf_output, handle_grafts, handle_idontwants, handle_ihaves,
+        handle_iwants, handle_prunes, handle_subscriptions,
     },
     dedup::DedupCache,
     generated::RPCView,
@@ -28,8 +30,9 @@ mod message;
 ///   - decompresses individual messages and writes SSZ to downstream TCache
 ///   - copies individual message snappy to message cache TCache wrapped in
 ///     protobuf ready for sending
-///   - publishes TCacheRead for message cache messages
-///   - produces NewGossipMsg on spine for downstream consumers
+///   - produces `NewGossipMsg` on spine for downstream consumers
+///  - periodically generates new IHAVE messages
+///    - produces `NewIHaveMsg`s on spine
 pub struct GossipCompressionTile {
     incoming_gossip: TConsumer,
     incoming_gossip_publish: TProducer,
@@ -60,6 +63,28 @@ impl GossipCompressionTile {
             mcache,
         })
     }
+
+    fn generate_ihave_messages(&mut self, now: Instant, adapter: &mut SpineAdapter<SilverSpine>) {
+        if self.mcache.generate_ihaves(now) {
+            for topic in self.mcache.topics() {
+                let msgs_iter = self.mcache.get_ihaves(topic);
+                let (msg_count, _) = msgs_iter.size_hint(); // exact size iterator
+                if msg_count > 0 {
+                    if let Ok(tcache) = copy_ihaves_to_protobuf_output(
+                        &mut self.mcache_publish,
+                        &topic.to_wire(&self.fork_digest_hex),
+                        msgs_iter,
+                    ) {
+                        adapter.produce(Gossip::NewOutboundIHave(GossipIHaveOut {
+                            topic: *topic,
+                            msg_count,
+                            protobuf: tcache,
+                        }));
+                    }
+                }
+            }
+        }
+    }
 }
 
 impl Tile<SilverSpine> for GossipCompressionTile {
@@ -67,9 +92,12 @@ impl Tile<SilverSpine> for GossipCompressionTile {
         let now = Instant::now();
         self.dedup_cache.maybe_rotate(now);
         self.mcache.maybe_rotate(now);
+        self.generate_ihave_messages(now, adapter);
 
         // Mark consumed messages as free.
         self.incoming_gossip.free();
+
+        // TODO Periodically generate ihave messages per topic.
 
         while let Ok(mut buffer) = self.incoming_gossip.read() {
             // Incoming gossip messages are prefixed with P2pStreamId

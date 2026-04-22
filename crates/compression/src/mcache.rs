@@ -10,11 +10,11 @@ use silver_common::{GossipTopic, MessageId, MessageIdHasher, TCacheRead, TRandom
 /// Another rotating bucket cache. Each bucket optionally maps a message id to
 /// TCacheRead. This cache maintains a tail of the TCache containing the cached
 /// messages.
-
 const ROTATION_INTERVAL: Duration = Duration::from_millis(700);
 const BUCKETS: usize = 12;
 const IHAVE_BUCKETS: usize = 3;
-const MAX_IHAVES: usize = 5000;
+const MAX_IHAVES_PER_TOPIC: usize = 500;
+const IHAVE_GENERATION_INTERVAL: Duration = Duration::from_millis(500);
 
 #[derive(Clone)]
 struct Bucket {
@@ -34,6 +34,7 @@ pub(crate) struct MessageCache {
     cache_consumer: TRandomAccess,
     current_bucket: usize,
     last_rotation: Instant,
+    last_ihaves: Instant,
 }
 
 impl MessageCache {
@@ -43,6 +44,7 @@ impl MessageCache {
             cache_consumer,
             current_bucket: 0,
             last_rotation: Instant::now(),
+            last_ihaves: Instant::now(),
         }
     }
 
@@ -68,6 +70,19 @@ impl MessageCache {
         topic: &GossipTopic,
     ) -> impl ExactSizeIterator<Item = &MessageId> {
         IHaveIterator::new(*topic, self)
+    }
+
+    pub(crate) fn topics(&self) -> impl Iterator<Item = &GossipTopic> {
+        self.buckets.iter().flat_map(|b| b.ihaves.keys())
+    }
+
+    pub(crate) fn generate_ihaves(&mut self, now: Instant) -> bool {
+        if self.last_ihaves.elapsed() > IHAVE_GENERATION_INTERVAL {
+            self.last_ihaves = now;
+            true
+        } else {
+            false
+        }
     }
 
     pub(crate) fn maybe_rotate(&mut self, now: Instant) {
@@ -107,7 +122,7 @@ impl<'a> IHaveIterator<'a> {
         Self {
             topic,
             count: 0,
-            len: len.min(MAX_IHAVES),
+            len: len.min(MAX_IHAVES_PER_TOPIC),
             bucket: mcache.current_bucket,
             buckets_left: IHAVE_BUCKETS - 1,
             iter,
@@ -122,7 +137,7 @@ impl<'a> Iterator for IHaveIterator<'a> {
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             match self.iter.as_mut().and_then(|i| i.next()) {
-                Some(id) if self.count < MAX_IHAVES => {
+                Some(id) if self.count < MAX_IHAVES_PER_TOPIC => {
                     self.count += 1;
                     return Some(id)
                 }

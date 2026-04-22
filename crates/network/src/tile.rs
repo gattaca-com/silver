@@ -27,7 +27,8 @@ impl Tile<SilverSpine> for NetworkTile {
                 // TODO start status exchange?
                 let port = addr.port();
                 adapter.produce(PeerEvent::P2pNewConnection {
-                    p2p_peer: peer.connection,
+                    p2p_peer_id: peer.connection,
+                    peer_id_full: peer.peer_id,
                     ip: addr.ip().into(),
                     port,
                 });

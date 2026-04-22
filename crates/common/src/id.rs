@@ -8,7 +8,7 @@ use secp256k1::{
 use crate::{Error, util::decode_varint};
 
 /// libp2p peer identity (multihash-encoded).
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(C)]
 pub struct PeerId {
     // Maximum id length is theoretically 44 bytes - pad out to 48.
@@ -37,6 +37,12 @@ impl PeerId {
 
     pub fn as_bytes(&self) -> &[u8] {
         &self.buffer[..self.length]
+    }
+
+    /// Returns the secp256k1 pubket embedded in this id.
+    pub fn pubkey(&self) -> &[u8] {
+        debug_assert!(self.length == 39);
+        &self.buffer[6..self.length]
     }
 }
 

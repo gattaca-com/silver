@@ -1,13 +1,13 @@
 use std::io::Write;
 
 use buffa::{
-    encoding::{Tag, WireType, varint_len},
+    encoding::{Tag, WireType, encode_varint, varint_len},
     types::{bytes_encoded_len, encode_bytes, encode_string, string_encoded_len},
 };
 use flux::spine::SpineAdapter;
 use silver_common::{
-    Error, GossipTopic, MessageId, NewGossipMsg, P2pStreamId, PeerEvent, SilverSpine, TCacheRead,
-    TProducer, TReservation, encode_varint, msg_id_invalid_snappy, msg_id_valid_snappy,
+    Error, Gossip, GossipTopic, MessageId, NewGossipMsg, P2pStreamId, PeerEvent, SilverSpine,
+    TCacheRead, TProducer, TReservation, msg_id_invalid_snappy, msg_id_valid_snappy,
 };
 
 use crate::{GossipCompressionTile, dedup::DedupCache, mcache::MessageCache};
@@ -81,13 +81,13 @@ impl GossipCompressionTile {
         // Flush the reservation matching the gossip message available downstream.
         reservation.flush()?;
 
-        adapter.produce(NewGossipMsg {
+        adapter.produce(Gossip::NewInbound(NewGossipMsg {
             stream_id: *stream_id,
             topic,
             msg_hash: msg_id,
             ssz: ssz_read,
             protobuf: mcache_read,
-        });
+        }));
         Ok(())
     }
 }
@@ -129,7 +129,7 @@ fn copy_compressed_to_protobuf_output(
     let mut cursor: &mut [u8] = &mut out[..total];
 
     Tag::new(2, WireType::LengthDelimited).encode(&mut cursor); // RPC.publish
-    encode_varint(inner_len as u64, &mut cursor)?;
+    encode_varint(inner_len as u64, &mut cursor);
 
     Tag::new(2, WireType::LengthDelimited).encode(&mut cursor); // Message.data
     encode_bytes(snappy_data, &mut cursor);
