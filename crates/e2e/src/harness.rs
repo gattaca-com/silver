@@ -53,9 +53,9 @@ impl TwoStackHarness {
         let publisher_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), pick_free_port()?);
         let echo_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), pick_free_port()?);
 
-        let publisher = PublisherStack::new(tempdir.path(), "_pub", publisher_addr, publisher_kp)?;
+        let publisher = PublisherStack::new(tempdir.path(), format!("_pub").as_str(), publisher_addr, publisher_kp)?;
         let echo =
-            EchoStack::new(tempdir.path(), "_echo", echo_addr, echo_kp, fork_digest_hex.clone())?;
+            EchoStack::new(tempdir.path(), format!("_echo").as_str(), echo_addr, echo_kp, fork_digest_hex.clone())?;
 
         Ok(Self {
             publisher,
@@ -109,7 +109,14 @@ impl TwoStackHarness {
         // record the one-way latency in the histogram.
         self.echo.stats_adapter.consume::<Gossip, _>(|msg, _p| {
             if let Gossip::NewInbound(new_msg) = msg {
-                let _ = self.echo.stats.receive_ns.record(new_msg.recv_ts.elapsed().0);
+                // Saturating subtract guards against garbage/unstamped
+                // timestamps: a `recv_ts` that somehow ends up in the future
+                // yields 0 ns rather than panicking.
+                let _ = self
+                    .echo
+                    .stats
+                    .receive_ns
+                    .record(new_msg.recv_ts.elapsed_saturating().0);
 
                 let now_wall = Instant::now();
                 self.echo.stats.gossip_received += 1;
@@ -120,7 +127,13 @@ impl TwoStackHarness {
                     self.echo.stats.gossip_decompressed_bytes += bytes.len() as u64;
                     if bytes.len() >= 8 {
                         let sent_ns = u64::from_le_bytes(bytes[..8].try_into().expect("8 bytes"));
-                        let _ = self.echo.stats.latency_ns.record(Nanos(sent_ns).elapsed().0);
+                        // Same guard: integration tests may publish unstamped
+                        // (random) bytes, where `sent_ns` is meaningless.
+                        let _ = self
+                            .echo
+                            .stats
+                            .latency_ns
+                            .record(Nanos(sent_ns).elapsed_saturating().0);
                     }
                 }
             }
