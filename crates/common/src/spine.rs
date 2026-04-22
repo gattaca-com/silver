@@ -1,7 +1,9 @@
+#![allow(improper_ctypes, improper_ctypes_definitions)]
+
 use flux::{communication::ShmemData, spine::SpineQueue, spine_derive::from_spine, tile::TileInfo};
 pub use messages::{
-    Gossip, GossipIHaveOut, GossipMsgIn, GossipMsgOut, NewGossipMsg, PeerEvent, RpcMsgIn,
-    RpcMsgOut, RpcOutType,
+    Gossip, GossipFeedback, GossipIHaveOut, GossipMsgIn, GossipMsgOut, NewGossipMsg, PeerEvent,
+    PeerGossipIn, PeerGossipOut, PeerRpcIn, PeerRpcOut, RpcMsgIn, RpcMsgOut, RpcOutType,
 };
 pub use stream_id::P2pStreamId;
 pub use stream_protocol::{ALL_PROTOCOLS, MULTISTREAM_V1, REJECT_RESPONSE, StreamProtocol};
@@ -30,4 +32,15 @@ pub struct SilverSpine {
     pub rpc_outgoing: SpineQueue<RpcMsgOut>,
     #[queue(size(2usize.pow(14)))]
     pub peer_events: SpineQueue<PeerEvent>,
+
+    // Used by BeaconState tile
+    #[queue(size(2usize.pow(14)))]
+    pub peer_gossip_in: SpineQueue<PeerGossipIn>,
+    #[queue(size(2usize.pow(14)))]
+    pub peer_gossip_out: SpineQueue<PeerGossipOut>,
+    #[queue(size(2usize.pow(14)))]
+    pub peer_rpc_in: SpineQueue<PeerRpcIn>,
+    #[queue(size(2usize.pow(14)))]
+    pub peer_rpc_out: SpineQueue<PeerRpcOut>,
+    pub gossip_feedback: SpineQueue<GossipFeedback>,
 }

@@ -118,6 +118,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "940b3a0ca603d1eade50a4846a2afffd5ef57a9feac2c0e2ec2e14f9ead76000"
 
 [[package]]
+name = "anyhow"
+version = "1.0.102"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
+
+[[package]]
 name = "arrayvec"
 version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -460,6 +466,12 @@ name = "bytemuck"
 version = "1.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8efb64bd706a16a1bdde310ae86b351e4d21550d98d056f22f8a7f7a2183fec"
+
+[[package]]
+name = "byteorder"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0fc10e8cc6b2580fda3f36eb6dc5316657f812a3df879a44a66fc9f0fdbc4855"
 
 [[package]]
 name = "byteorder"
@@ -938,7 +950,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40b9e59cd0f7e0806cca4be089683ecb6434e602038df21fe6bf6711b2f07f64"
 dependencies = [
  "cc",
- "lazy_static",
+ "lazy_static 1.5.0",
  "libc",
  "winapi",
 ]
@@ -1147,7 +1159,7 @@ version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c31b6d751ae2c7f11320402d34e41349dd1016f8d5d45e48c4312bc8625af50c"
 dependencies = [
- "byteorder",
+ "byteorder 1.5.0",
 ]
 
 [[package]]
@@ -1280,7 +1292,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "765c9198f173dd59ce26ff9f95ef0aafd0a0fe01fb9d72841bc5066a4c06511d"
 dependencies = [
  "base64 0.21.7",
- "byteorder",
+ "byteorder 1.5.0",
  "crossbeam-channel",
  "flate2",
  "nom",
@@ -1459,6 +1471,12 @@ dependencies = [
 
 [[package]]
 name = "lazy_static"
+version = "0.2.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "76f033c7ad61445c5b347c7382dd1237847eb1bce590fe50365dcb33d546be73"
+
+[[package]]
+name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
@@ -1482,6 +1500,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7ddbf48fd451246b1f8c2610bd3b4ac0cc6e149d89832867093ab69a17194f08"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "libyml"
+version = "0.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3302702afa434ffa30847a83305f0a69d6abd74293b6554c18ec85c7ef30c980"
+dependencies = [
+ "anyhow",
+ "version_check",
 ]
 
 [[package]]
@@ -2224,6 +2252,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 
 [[package]]
+name = "ryu"
+version = "1.0.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
+
+[[package]]
 name = "same-file"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2302,6 +2336,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_yml"
+version = "0.0.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "59e2dd588bf1597a252c3b920e0143eb99b0f76e4e082f4c92ce34fbc9e71ddd"
+dependencies = [
+ "indexmap",
+ "itoa",
+ "libyml",
+ "memchr",
+ "ryu",
+ "serde",
+ "version_check",
+]
+
+[[package]]
 name = "sha2"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2328,7 +2377,7 @@ version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
 dependencies = [
- "lazy_static",
+ "lazy_static 1.5.0",
 ]
 
 [[package]]
@@ -2388,9 +2437,21 @@ dependencies = [
  "serde",
  "serde_json",
  "sha3",
- "snap",
+ "snap 1.1.1",
  "thiserror 1.0.69",
  "tracing",
+]
+
+[[package]]
+name = "silver_beacon_state"
+version = "0.0.1"
+dependencies = [
+ "flux",
+ "ring",
+ "serde",
+ "serde_yml",
+ "silver-common",
+ "snap 0.1.2",
 ]
 
 [[package]]
@@ -2408,7 +2469,7 @@ dependencies = [
  "rand_core 0.6.4",
  "ring",
  "silver-common",
- "snap",
+ "snap 1.1.1",
  "tracing",
  "tracing-subscriber",
 ]
@@ -2426,7 +2487,7 @@ dependencies = [
  "silver-common",
  "silver_compression",
  "silver_network",
- "snap",
+ "snap 1.1.1",
  "tempfile",
  "tracing",
  "tracing-subscriber",
@@ -2453,7 +2514,7 @@ dependencies = [
  "rustls",
  "secp256k1",
  "silver-common",
- "snap",
+ "snap 1.1.1",
  "tracing",
  "tracing-subscriber",
  "x509-parser 0.17.0",
@@ -2483,6 +2544,16 @@ name = "smallvec"
 version = "1.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
+
+[[package]]
+name = "snap"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "37877bedec5e9d6b3324b4f99886f118844903a4e7532e5e59c7afd264da7b4f"
+dependencies = [
+ "byteorder 0.5.3",
+ "lazy_static 0.2.11",
+]
 
 [[package]]
 name = "snap"
@@ -2830,7 +2901,7 @@ version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "76f64bba2c53b04fcab63c01a7d7427eadc821e3bc48c34dc9ba29c501164b52"
 dependencies = [
- "byteorder",
+ "byteorder 1.5.0",
  "crunchy",
  "hex",
  "static_assertions",
@@ -3304,7 +3375,7 @@ dependencies = [
  "asn1-rs",
  "data-encoding",
  "der-parser",
- "lazy_static",
+ "lazy_static 1.5.0",
  "nom",
  "oid-registry",
  "ring",
@@ -3322,7 +3393,7 @@ dependencies = [
  "asn1-rs",
  "data-encoding",
  "der-parser",
- "lazy_static",
+ "lazy_static 1.5.0",
  "nom",
  "oid-registry",
  "ring",

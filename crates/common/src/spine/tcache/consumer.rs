@@ -13,6 +13,23 @@ pub struct TCacheRead {
 }
 
 impl TCacheRead {
+    #[inline]
+    pub fn new(tcache: TCacheRef, seq: u64) -> Self {
+        Self { tcache, seq }
+    }
+
+    /// Read the data buffer. Returns `(buffer, seq_increment)`.
+    #[inline]
+    pub fn read(&self) -> Result<(&[u8], u64, Nanos), TCacheError> {
+        self.tcache.read(self.seq)
+    }
+
+    /// Read just the data buffer.
+    #[inline]
+    pub fn data(&self) -> Result<&[u8], TCacheError> {
+        self.tcache.read(self.seq).map(|(buf, _, _)| buf)
+    }
+
     /// Returns the length the data buffer.
     #[inline]
     pub fn len(&self) -> Result<usize, TCacheError> {
@@ -49,7 +66,7 @@ impl From<GossipMsgOut> for TCacheRead {
 
 impl From<RpcMsgOut> for TCacheRead {
     fn from(value: RpcMsgOut) -> Self {
-        Self { tcache: value.cache_ref, seq: value.tcache_seq }
+        value.data
     }
 }
 

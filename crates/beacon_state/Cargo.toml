@@ -1,0 +1,16 @@
+[package]
+name = "silver_beacon_state"
+edition.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+silver-common.workspace = true
+flux.workspace = true
+ring.workspace = true
+
+[dev-dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_yml = "0.0.12"
+snap = "0.1"

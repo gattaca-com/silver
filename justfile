@@ -17,3 +17,9 @@ clippy-fix:
 machete:
   cargo install cargo-machete && \
   cargo machete
+
+ef-tests-download:
+  make -C crates/beacon_state
+
+test:
+  cargo test -p silver_beacon_state --features ef_tests --release 2>&1
