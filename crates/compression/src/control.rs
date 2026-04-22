@@ -85,7 +85,7 @@ pub(super) fn handle_iwants<'a>(
 ) {
     for iwant in wants {
         for want in &iwant.message_ids {
-            let Some(hash) = message_id(*want, stream_id, adapter) else {
+            let Some(hash) = message_id(want, stream_id, adapter) else {
                 continue;
             };
             // TODO we could serve IWANT directly from message cache, but forward
@@ -110,7 +110,7 @@ pub(super) fn handle_idontwants<'a>(
 ) {
     for idontwant in wants {
         for dontwant in &idontwant.message_ids {
-            let Some(hash) = message_id(*dontwant, stream_id, adapter) else {
+            let Some(hash) = message_id(dontwant, stream_id, adapter) else {
                 continue;
             };
             adapter.produce(PeerEvent::P2pGossipDontWant { p2p_peer: stream_id.peer(), hash });
@@ -131,7 +131,7 @@ pub(super) fn handle_ihaves<'a>(
                 continue;
             };
             for have in &ihave.message_ids {
-                let Some(hash) = message_id(*have, stream_id, adapter) else {
+                let Some(hash) = message_id(have, stream_id, adapter) else {
                     continue;
                 };
                 if !mcache.has(&hash) {
@@ -195,7 +195,7 @@ pub(crate) fn copy_ihaves_to_protobuf_output<'a>(
 }
 
 fn gossip_topic(topic: &str, fork_digest_hex: &str) -> Result<GossipTopic, Error> {
-    GossipTopic::from_wire(topic, &fork_digest_hex).inspect_err(|_| {
+    GossipTopic::from_wire(topic, fork_digest_hex).inspect_err(|_| {
         tracing::warn!(topic, "invalid gossipsub topic");
     })
 }

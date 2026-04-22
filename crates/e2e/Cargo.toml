@@ -1,0 +1,31 @@
+[package]
+name = "silver_e2e"
+edition.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+buffa.workspace = true
+bytes.workspace = true
+flux.workspace = true
+hdrhistogram.workspace = true
+quinn-proto.workspace = true
+rand.workspace = true
+silver-common.workspace = true
+silver_compression = { path = "../compression" }
+silver_network = { path = "../network" }
+snap.workspace = true
+tempfile = "3"
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[[example]]
+name = "gossip_oneway"
+
+[lints]
+workspace = true

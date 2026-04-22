@@ -92,6 +92,14 @@ impl Reservation {
         self.cache.write(self.seq).map_err(std::io::Error::other)
     }
 
+    /// Buffer slice from the current write offset to the end of the
+    /// reservation. Use this when successive writes must not overwrite
+    /// earlier bytes (e.g. a framed header followed by body chunks).
+    pub fn remaining_buffer(&self) -> Result<&mut [u8], std::io::Error> {
+        let buf = self.cache.write(self.seq).map_err(std::io::Error::other)?;
+        Ok(&mut buf[self.offset..])
+    }
+
     /// Returns a `TCacheRead` reference for this reservation.
     pub fn read(&self) -> TCacheRead {
         TCacheRead { tcache: self.cache, seq: self.seq }

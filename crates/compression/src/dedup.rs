@@ -31,12 +31,15 @@ impl DedupCache {
         self.dedup_sets[self.current_bucket].insert(msg_id)
     }
 
-    /// Returns a value if the cache DID NOT contain the fast hash.
+    /// Returns `Some(fh)` if the hash was NOT found (i.e. message is new
+    /// and the caller should proceed with processing), `None` if the hash
+    /// was already present across any rotation bucket (= duplicate).
     pub(crate) fn contains_fast(&self, data: &[u8]) -> Option<u64> {
         let mut hasher = FxHasher::default();
         data.hash(&mut hasher);
         let fh = hasher.finish();
-        self.fast_sets.iter().any(|fs| fs.contains_key(&fh)).then_some(fh)
+        let hit = self.fast_sets.iter().any(|fs| fs.contains_key(&fh));
+        (!hit).then_some(fh)
     }
 
     pub(crate) fn maybe_rotate(&mut self, now: Instant) {

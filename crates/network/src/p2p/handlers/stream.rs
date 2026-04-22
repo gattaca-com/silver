@@ -4,7 +4,7 @@ use silver_common::P2pStreamId;
 
 mod tcache;
 
-pub use tcache::TCacheStreamData;
+pub use tcache::{MAX_PENDING_OUTBOUND_MSGS, TCacheStreamData};
 
 use crate::RemotePeer;
 

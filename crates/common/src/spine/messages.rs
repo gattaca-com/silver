@@ -1,5 +1,7 @@
 use std::net::IpAddr;
 
+use flux::timing::Nanos;
+
 use crate::{GossipTopic, MessageId, P2pStreamId, PeerId, StreamProtocol, TCacheRead, TCacheRef};
 
 #[derive(Clone, Copy, Debug)]
@@ -30,6 +32,7 @@ pub struct NewGossipMsg {
     pub stream_id: P2pStreamId,
     pub topic: GossipTopic,
     pub msg_hash: MessageId,
+    pub recv_ts: Nanos,
     /// Decompressed message SSZ
     pub ssz: TCacheRead,
     /// Protobuf wrapped snappy compressed - as received.

@@ -2414,6 +2414,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "silver_e2e"
+version = "0.0.1"
+dependencies = [
+ "buffa",
+ "bytes",
+ "flux",
+ "hdrhistogram",
+ "quinn-proto",
+ "rand 0.8.5",
+ "silver-common",
+ "silver_compression",
+ "silver_network",
+ "snap",
+ "tempfile",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "silver_network"
 version = "0.0.1"
 dependencies = [

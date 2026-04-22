@@ -222,6 +222,7 @@ impl Stream {
     pub(crate) fn apply(&mut self, event: &StreamEvent) {
         match event {
             StreamEvent::Ready(proto) => {
+                self.id.set_protocol(*proto);
                 let active_state = ProtocolState::new(*proto, self.is_inbound, self.id);
                 self.state = StreamState::Active(*proto, active_state);
             }

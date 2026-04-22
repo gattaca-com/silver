@@ -4,7 +4,7 @@ use buffa::{
     encoding::{Tag, WireType, encode_varint, varint_len},
     types::{bytes_encoded_len, encode_bytes, encode_string, string_encoded_len},
 };
-use flux::spine::SpineAdapter;
+use flux::{spine::SpineAdapter, timing::Nanos};
 use silver_common::{
     Error, Gossip, GossipTopic, MessageId, NewGossipMsg, P2pStreamId, PeerEvent, SilverSpine,
     TCacheRead, TProducer, TReservation, msg_id_invalid_snappy, msg_id_valid_snappy,
@@ -13,11 +13,13 @@ use silver_common::{
 use crate::{GossipCompressionTile, dedup::DedupCache, mcache::MessageCache};
 
 impl GossipCompressionTile {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn handle_incoming(
         topic_string: &str,
         snappy_data: &[u8],
         stream_id: &P2pStreamId,
         fork_digest_hex: &str,
+        recv_ts: Nanos,
         dedup_cache: &mut DedupCache,
         incoming_gossip_publish: &mut TProducer,
         mcache_publish: &mut TProducer,
@@ -85,6 +87,7 @@ impl GossipCompressionTile {
             stream_id: *stream_id,
             topic,
             msg_hash: msg_id,
+            recv_ts,
             ssz: ssz_read,
             protobuf: mcache_read,
         }));
@@ -104,7 +107,7 @@ fn decompress_to_reservation(
     let decompressed_len = snap_decoder.decompress(data, output_buffer)?;
     reservation.increment_offset(decompressed_len);
 
-    let msg_id = msg_id_valid_snappy(topic, &mut output_buffer[..decompressed_len]);
+    let msg_id = msg_id_valid_snappy(topic, &output_buffer[..decompressed_len]);
     Ok(msg_id)
 }
 

@@ -21,6 +21,7 @@ mod dedup;
 #[path = "generated/protobuf.gossipsub.rs"]
 #[allow(dead_code)]
 #[rustfmt::skip]
+#[allow(clippy::all)]
 mod generated;
 mod mcache;
 mod message;
@@ -95,12 +96,7 @@ impl Tile<SilverSpine> for GossipCompressionTile {
         self.mcache.maybe_rotate(now);
         self.generate_ihave_messages(now, adapter);
 
-        // Mark consumed messages as free.
-        self.incoming_gossip.free();
-
-        // TODO Periodically generate ihave messages per topic.
-
-        while let Ok(mut buffer) = self.incoming_gossip.read() {
+        while let Ok((mut buffer, recv_ts)) = self.incoming_gossip.read() {
             // Incoming gossip messages are prefixed with P2pStreamId
             let stream_id: &P2pStreamId = buffer.into();
             buffer = &buffer[size_of::<P2pStreamId>()..];
@@ -145,6 +141,7 @@ impl Tile<SilverSpine> for GossipCompressionTile {
                             snappy_data,
                             stream_id,
                             &self.fork_digest_hex,
+                            recv_ts,
                             &mut self.dedup_cache,
                             &mut self.incoming_gossip_publish,
                             &mut self.mcache_publish,
@@ -161,6 +158,7 @@ impl Tile<SilverSpine> for GossipCompressionTile {
                     }
                 }
             }
+            self.incoming_gossip.free();
         }
     }
 }

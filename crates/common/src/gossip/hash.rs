@@ -59,13 +59,16 @@ fn hash_id(domain: &[u8; 4], topic: &[u8], body: &[u8]) -> MessageId {
     MessageId { id: out }
 }
 
-// MessageId = [u8; 20] → take first 8 bytes as u64 for the hash.
-// A message id is already a hash, no need ot hash further.
+// MessageId = [u8; 20] is already a SHA-256 truncation — skip re-hashing and
+// take the first 8 bytes as the u64. `Hasher::write` is also invoked via
+// `write_u64` when the hashed key is a plain u64 (e.g. the fast-dedup cache),
+// so accept both 8- and 20-byte writes.
 #[derive(Default)]
 pub struct MessageIdHasher(u64);
 impl Hasher for MessageIdHasher {
     fn write(&mut self, bytes: &[u8]) {
-        self.0 = u64::from_ne_bytes(bytes.try_into().unwrap());
+        debug_assert!(bytes.len() >= 8, "MessageIdHasher: write of <8 bytes");
+        self.0 = u64::from_ne_bytes(bytes[..8].try_into().unwrap());
     }
     fn finish(&self) -> u64 {
         self.0

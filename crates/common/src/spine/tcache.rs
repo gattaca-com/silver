@@ -9,6 +9,7 @@ use std::{
 };
 
 pub use consumer::{Consumer, RandomAccessConsumer, TCacheRead};
+use flux::timing::Nanos;
 pub use producer::{Producer, Reservation};
 use thiserror::Error;
 
@@ -77,7 +78,7 @@ pub enum Error {
 
 impl TCache {
     pub fn producer(n: usize) -> Producer {
-        assert!(n.is_power_of_two() && n.is_multiple_of(ALIGN));
+        assert!(n.is_power_of_two() && n.is_multiple_of(ALIGN), "n is not mutiple of {ALIGN}");
         let layout = Layout::from_size_align(n, ALIGN).unwrap();
         let tcache = unsafe {
             let ptr = alloc::alloc_zeroed(layout);
@@ -161,7 +162,7 @@ impl TCache {
         min
     }
 
-    fn read(&self, seq: u64) -> Result<(&[u8], u64), Error> {
+    fn read(&self, seq: u64) -> Result<(&[u8], u64, Nanos), Error> {
         let idx = self.index(seq);
         let slot: &Slot = (&self.data[idx..]).into();
         if slot.magic != MAGIC {
@@ -173,10 +174,28 @@ impl TCache {
             return Err(Error::WrongSeq { expected: seq, slot: slot_seq });
         }
         if slot.skip != 0 {
-            return Ok((&[], slot.reservation_len as u64));
+            return Ok((&[], slot.reservation_len as u64, slot.reserve_ns));
         }
 
-        Ok((&self.data[slot.data_start..slot.data_end], slot.reservation_len as u64))
+        Ok((
+            &self.data[slot.data_start as usize..slot.data_end as usize],
+            slot.reservation_len as u64,
+            slot.reserve_ns,
+        ))
+    }
+
+    fn slot_ts(&self, seq: u64) -> Result<Nanos, Error> {
+        let idx = self.index(seq);
+        let slot: &Slot = (&self.data[idx..]).into();
+        if slot.magic != MAGIC {
+            return Err(Error::NoMagic);
+        }
+
+        let slot_seq = slot.seq.load(Ordering::Acquire);
+        if slot_seq != seq {
+            return Err(Error::WrongSeq { expected: seq, slot: slot_seq });
+        }
+        Ok(slot.reserve_ns)
     }
 
     fn reserve(&self, producer: &mut Producer, len: u32) -> Option<(u64, usize)> {
@@ -208,8 +227,9 @@ impl TCache {
 
             slot.seq = AtomicU64::new(u64::MAX);
             slot.reservation_len = reserve_len as u32;
-            slot.data_start = start;
-            slot.data_end = end;
+            slot.reserve_ns = Nanos::now();
+            slot.data_start = start as u32;
+            slot.data_end = end as u32;
             slot.skip = 1;
             slot.magic = MAGIC;
 
@@ -233,8 +253,12 @@ impl TCache {
         }
 
         unsafe {
-            let mut_ptr = self.data[slot.data_start..slot.data_end].as_ptr() as *mut u8;
-            Ok(slice::from_raw_parts_mut(mut_ptr, slot.data_end - slot.data_start))
+            let mut_ptr =
+                self.data[slot.data_start as usize..slot.data_end as usize].as_ptr() as *mut u8;
+            Ok(slice::from_raw_parts_mut(
+                mut_ptr,
+                slot.data_end as usize - slot.data_start as usize,
+            ))
         }
     }
 
@@ -261,8 +285,9 @@ struct TCacheHead {
 #[repr(C)]
 struct Slot {
     seq: AtomicU64,
-    data_start: usize,
-    data_end: usize,
+    reserve_ns: Nanos,
+    data_start: u32,
+    data_end: u32,
     reservation_len: u32,
     skip: u8,
     magic: [u8; 3],
@@ -272,6 +297,7 @@ impl Default for Slot {
     fn default() -> Self {
         Self {
             seq: AtomicU64::new(0),
+            reserve_ns: Nanos::now(),
             data_start: 0,
             data_end: 0,
             reservation_len: 0,
@@ -287,6 +313,7 @@ impl Clone for Slot {
             seq: AtomicU64::new(self.seq.load(Ordering::Relaxed)),
             data_start: self.data_start,
             data_end: self.data_end,
+            reserve_ns: self.reserve_ns,
             reservation_len: self.reservation_len,
             skip: self.skip,
             magic: MAGIC,
@@ -355,7 +382,7 @@ mod tests {
         let mut total = consumer.seq as usize;
         while total < (2 << 32) {
             match consumer.read() {
-                Ok(buf) => {
+                Ok((buf, _)) => {
                     total += buf.len();
                     //println!("Read: {} / {total} @ {seq_was}", buf.len());
                     assert!(buf.len() > 0);
