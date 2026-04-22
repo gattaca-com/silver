@@ -53,9 +53,19 @@ impl TwoStackHarness {
         let publisher_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), pick_free_port()?);
         let echo_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), pick_free_port()?);
 
-        let publisher = PublisherStack::new(tempdir.path(), format!("_pub").as_str(), publisher_addr, publisher_kp)?;
-        let echo =
-            EchoStack::new(tempdir.path(), format!("_echo").as_str(), echo_addr, echo_kp, fork_digest_hex.clone())?;
+        let publisher = PublisherStack::new(
+            tempdir.path(),
+            format!("_pub").as_str(),
+            publisher_addr,
+            publisher_kp,
+        )?;
+        let echo = EchoStack::new(
+            tempdir.path(),
+            format!("_echo").as_str(),
+            echo_addr,
+            echo_kp,
+            fork_digest_hex.clone(),
+        )?;
 
         Ok(Self {
             publisher,
@@ -112,11 +122,7 @@ impl TwoStackHarness {
                 // Saturating subtract guards against garbage/unstamped
                 // timestamps: a `recv_ts` that somehow ends up in the future
                 // yields 0 ns rather than panicking.
-                let _ = self
-                    .echo
-                    .stats
-                    .receive_ns
-                    .record(new_msg.recv_ts.elapsed_saturating().0);
+                let _ = self.echo.stats.receive_ns.record(new_msg.recv_ts.elapsed_saturating().0);
 
                 let now_wall = Instant::now();
                 self.echo.stats.gossip_received += 1;
