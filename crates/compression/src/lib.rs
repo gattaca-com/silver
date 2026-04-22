@@ -20,6 +20,7 @@ mod control;
 mod dedup;
 #[path = "generated/protobuf.gossipsub.rs"]
 #[allow(dead_code)]
+#[rustfmt::skip]
 mod generated;
 mod mcache;
 mod message;
