@@ -15,7 +15,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use flux::timing::Instant as FluxInstant;
+use flux::timing::Nanos;
 use rand::{Rng, RngCore};
 use silver_common::GossipTopic;
 use silver_e2e::TwoStackHarness;
@@ -62,7 +62,7 @@ fn main() {
             rng.fill_bytes(&mut payload);
             // Stamp nanosecond timestamp into the first 8 bytes — echo side
             // reads this back to compute one-way latency.
-            payload[..8].copy_from_slice(&FluxInstant::now().0.to_le_bytes());
+            payload[..8].copy_from_slice(&Nanos::now().0.to_le_bytes());
             let _ = harness.publish_synthetic(GossipTopic::BeaconBlock, &payload);
             sent_new += 1;
         }

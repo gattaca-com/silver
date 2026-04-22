@@ -10,7 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use flux::tile::Tile;
+use flux::{tile::Tile, timing::Nanos};
 use silver_common::{Gossip, GossipMsgOut, GossipTopic, PeerEvent};
 use tempfile::TempDir;
 
@@ -120,10 +120,7 @@ impl TwoStackHarness {
                     self.echo.stats.gossip_decompressed_bytes += bytes.len() as u64;
                     if bytes.len() >= 8 {
                         let sent_ns = u64::from_le_bytes(bytes[..8].try_into().expect("8 bytes"));
-                        let now_ns = flux::timing::Instant::now().0;
-                        if now_ns > sent_ns {
-                            let _ = self.echo.stats.latency_ns.record(now_ns - sent_ns);
-                        }
+                        let _ = self.echo.stats.latency_ns.record(Nanos(sent_ns).elapsed().0);
                     }
                 }
             }
