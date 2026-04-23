@@ -32,5 +32,8 @@ jobs:
         with:
           setup_only: true
 
+      - name: Download consensus-spec-tests
+        run: make -C crates/beacon_state
+
       - name: Run tests
-        run: cargo test
+        run: cargo test --no-fail-fast

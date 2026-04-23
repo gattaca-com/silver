@@ -2,14 +2,20 @@ use std::net::IpAddr;
 
 use flux::timing::Nanos;
 
-use crate::{GossipTopic, MessageId, P2pStreamId, PeerId, StreamProtocol, TCacheRead, TCacheRef};
+use crate::{
+    GossipTopic, MessageId, P2pStreamId, PeerId, StreamProtocol, TCacheRead,
+    ssz_view::{
+        BeaconBlocksByRangeRequestView, BeaconBlocksByRootRequestView, BlobIdentifierView,
+        DataColumnSidecarView, DataColumnSidecarsByRangeRequestView,
+        DataColumnsByRootIdentifierView, SignedBeaconBlockView, StatusView,
+    },
+};
 
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct GossipMsgIn {
     pub stream_id: P2pStreamId,
-    pub cache_ref: TCacheRef,
-    pub tcache_seq: u64,
+    pub tcache: TCacheRead,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -63,8 +69,7 @@ pub enum RpcOutType {
 #[repr(C)]
 pub struct RpcMsgOut {
     pub msg_type: RpcOutType,
-    pub cache_ref: TCacheRef,
-    pub tcache_seq: u64,
+    pub tcache: TCacheRead,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -72,8 +77,7 @@ pub struct RpcMsgOut {
 pub struct RpcMsgIn {
     pub stream_id: P2pStreamId,
     pub request_id: Option<usize>,
-    pub cache_ref: TCacheRef,
-    pub tcache_seq: u64,
+    pub tcache: TCacheRead,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -159,4 +163,70 @@ impl From<IpAddr> for IpBytes {
             IpAddr::V6(ipv6_addr) => IpBytes::V6(ipv6_addr.octets()),
         }
     }
+}
+
+pub type Peer = u64;
+
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub enum RpcMsg {
+    // missing ping and goodbye
+    // Status v2 and MetaData v3 are symmetric: same view for req and resp.
+    Status(StatusView),
+    BlocksRangeReq(BeaconBlocksByRangeRequestView),
+    BlocksRootReq(BeaconBlocksByRootRequestView),
+    BlobId(BlobIdentifierView),
+    DataColumnRangeReq(DataColumnSidecarsByRangeRequestView),
+    DataColumnByRoot(DataColumnsByRootIdentifierView),
+    // rpc response chunks (one per successful response_chunk)
+    BlocksRangeResp(SignedBeaconBlockView),
+    BlocksRootResp(SignedBeaconBlockView),
+    DataColumnRangeResp(DataColumnSidecarView),
+    DataColumnByRootResp(DataColumnSidecarView),
+}
+
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct PeerGossipIn {
+    pub topic: GossipTopic,
+    pub sender: Peer,
+    pub tcache: TCacheRead,
+}
+
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct PeerGossipOut {
+    pub topic: GossipTopic,
+    pub tcache: TCacheRead,
+}
+
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct PeerRpcIn {
+    pub msg: RpcMsg,
+    pub sender: Peer,
+    pub tcache: TCacheRead,
+}
+
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct PeerRpcOut {
+    pub msg: RpcMsg,
+    pub recipient: Option<Peer>,
+    pub tcache: TCacheRead,
+}
+
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub enum Feedback {
+    Valid,
+    Invalid,
+}
+
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct GossipFeedback {
+    // TODO or tcache reference?
+    pub sender: Peer,
+    pub feedback: Feedback,
 }

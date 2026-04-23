@@ -49,7 +49,7 @@ impl From<GossipMsgOut> for TCacheRead {
 
 impl From<RpcMsgOut> for TCacheRead {
     fn from(value: RpcMsgOut) -> Self {
-        Self { tcache: value.cache_ref, seq: value.tcache_seq }
+        value.tcache
     }
 }
 

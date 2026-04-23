@@ -1,6 +1,15 @@
 use std::fmt;
 
-use crate::Error;
+use crate::{
+    Error,
+    ssz_view::{
+        AttesterSlashingView, BlobSidecarView, DataColumnSidecarView,
+        LightClientFinalityUpdateView, LightClientOptimisticUpdateView, ProposerSlashingView,
+        SignedAggregateAndProofView, SignedBeaconBlockView, SignedBlsToExecutionChangeView,
+        SignedContributionAndProofView, SignedVoluntaryExitView, SingleAttestationView, SszView,
+        SyncCommitteeView,
+    },
+};
 
 mod hash;
 
@@ -82,6 +91,41 @@ impl GossipTopic {
         let rest = rest.strip_prefix('/').ok_or(Error::ParseTopicError)?;
         let name = rest.strip_suffix("/ssz_snappy").ok_or(Error::ParseTopicError)?;
         Self::try_from(name)
+    }
+
+    /// View marker for topics whose payload is an ssz_view type.
+    pub fn view(&self) -> SszView {
+        match self {
+            Self::BeaconBlock => SszView::SignedBeaconBlock(SignedBeaconBlockView),
+            Self::BeaconAggregateAndProof => {
+                SszView::SignedAggregateAndProof(SignedAggregateAndProofView)
+            }
+            Self::BeaconAttestation(_) => SszView::SingleAttestation(SingleAttestationView),
+            Self::VoluntaryExit => SszView::SignedVoluntaryExit(SignedVoluntaryExitView),
+            Self::ProposerSlashing => SszView::ProposerSlashing(ProposerSlashingView),
+            Self::AttesterSlashing => SszView::AttesterSlashing(AttesterSlashingView),
+            Self::SyncCommitteeContributionAndProof => {
+                SszView::SignedContributionAndProof(SignedContributionAndProofView)
+            }
+            Self::SyncCommittee(_) => SszView::SyncCommittee(SyncCommitteeView),
+            Self::BlsToExecutionChange => {
+                SszView::SignedBlsToExecutionChange(SignedBlsToExecutionChangeView)
+            }
+            Self::BlobSidecar(_) => SszView::BlobSidecar(BlobSidecarView),
+            Self::DataColumnSidecar(_) => SszView::DataColumnSidecar(DataColumnSidecarView),
+            Self::LightClientFinalityUpdate => {
+                SszView::LightClientFinalityUpdate(LightClientFinalityUpdateView)
+            }
+            Self::LightClientOptimisticUpdate => {
+                SszView::LightClientOptimisticUpdate(LightClientOptimisticUpdateView)
+            }
+            // Post-Fulu
+            Self::ExecutionPayloadBid |
+            Self::ExecutionPayload |
+            Self::PayloadAttestationMessage |
+            Self::ProposerPreferences |
+            Self::InclusionList => unimplemented!(),
+        }
     }
 }
 
@@ -169,11 +213,9 @@ mod tests {
     #[test]
     fn sync_committee_disambiguation() {
         // The contribution topic must not be misparsed as subnet form.
-        let s: String = GossipTopic::SyncCommitteeContributionAndProof.into();
-        assert_eq!(
-            GossipTopic::try_from(s.as_str()).unwrap(),
-            GossipTopic::SyncCommitteeContributionAndProof
-        );
+        let t = GossipTopic::SyncCommitteeContributionAndProof;
+        let s: String = t.into();
+        assert_eq!(GossipTopic::try_from(s.as_str()).unwrap(), t);
     }
 
     #[test]
