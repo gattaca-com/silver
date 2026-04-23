@@ -6,7 +6,7 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
-silver-common.workspace = true
+silver_common.workspace = true
 flux.workspace = true
 ring.workspace = true
 

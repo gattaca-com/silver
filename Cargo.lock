@@ -2396,6 +2396,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "silver_beacon_state"
+version = "0.0.1"
+dependencies = [
+ "flux",
+ "ring",
+ "serde",
+ "serde_yml",
+ "silver_common",
+ "snap 0.1.2",
+]
+
+[[package]]
 name = "silver_common"
 version = "0.0.1"
 dependencies = [
@@ -2419,18 +2431,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "silver_beacon_state"
-version = "0.0.1"
-dependencies = [
- "flux",
- "ring",
- "serde",
- "serde_yml",
- "silver-common",
- "snap 0.1.2",
-]
-
-[[package]]
 name = "silver_compression"
 version = "0.0.1"
 dependencies = [
@@ -2444,13 +2444,8 @@ dependencies = [
  "rand 0.8.5",
  "rand_core 0.6.4",
  "ring",
-<<<<<<< HEAD
- "silver-common",
- "snap 1.1.1",
-=======
  "silver_common",
- "snap",
->>>>>>> c48d0fd (wire discovery into network tile)
+ "snap 1.1.1",
  "tracing",
  "tracing-subscriber",
 ]
@@ -2519,14 +2514,9 @@ dependencies = [
  "ring",
  "rustls",
  "secp256k1",
-<<<<<<< HEAD
- "silver-common",
- "snap 1.1.1",
-=======
  "silver_common",
  "silver_discovery",
- "snap",
->>>>>>> c48d0fd (wire discovery into network tile)
+ "snap 1.1.1",
  "tracing",
  "tracing-subscriber",
  "x509-parser 0.17.0",
