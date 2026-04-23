@@ -2445,7 +2445,7 @@ dependencies = [
  "rand_core 0.6.4",
  "ring",
  "silver_common",
- "snap 1.1.1",
+ "snap",
  "tracing",
  "tracing-subscriber",
 ]
@@ -2516,7 +2516,7 @@ dependencies = [
  "secp256k1",
  "silver_common",
  "silver_discovery",
- "snap 1.1.1",
+ "snap",
  "tracing",
  "tracing-subscriber",
  "x509-parser 0.17.0",

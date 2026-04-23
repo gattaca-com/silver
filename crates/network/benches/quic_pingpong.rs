@@ -327,7 +327,6 @@ impl Discovery for DummyDisc {
     fn ban_ip(&mut self, _ip: std::net::IpAddr, _duration: Option<Duration>) {}
 
     fn teardown(&self) {}
-
     fn handle(&mut self, _src_addr: std::net::SocketAddr, _data: &[u8], _now: std::time::Instant) {}
 
     fn poll<F: FnMut(silver_discovery::DiscoveryEvent)>(&mut self, _f: F) {}
