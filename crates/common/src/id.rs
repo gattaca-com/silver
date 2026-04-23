@@ -74,6 +74,10 @@ impl Keypair {
         &self.compressed
     }
 
+    pub fn secret_key(&self) -> &SecretKey {
+        &self.signing_key
+    }
+
     pub fn peer_id(&self) -> PeerId {
         let encoded = encode_secp256k1_protobuf(&self.compressed);
         PeerId::from_protobuf_encoded(&encoded)

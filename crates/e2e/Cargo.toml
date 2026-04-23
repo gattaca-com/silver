@@ -12,9 +12,10 @@ flux.workspace = true
 hdrhistogram.workspace = true
 quinn-proto.workspace = true
 rand.workspace = true
-silver-common.workspace = true
-silver_compression = { path = "../compression" }
-silver_network = { path = "../network" }
+silver_common.workspace = true
+silver_compression.workspace = true
+silver_discovery.workspace = true
+silver_network.workspace = true
 snap.workspace = true
 tempfile = "3"
 tracing.workspace = true

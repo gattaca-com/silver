@@ -162,7 +162,8 @@ impl Stream {
                                 return StreamEvent::Pending;
                             }
                         }
-                        Err(_) => {
+                        Err(e) => {
+                            tracing::error!(?e, id=?self.id, "stream leftover read error");
                             self.state = StreamState::Dead;
                             return StreamEvent::Failed;
                         }
@@ -186,7 +187,8 @@ impl Stream {
                                     break;
                                 }
                             }
-                            Err(_) => {
+                            Err(e) => {
+                                tracing::error!(?e, id=?self.id, "stream read error");
                                 self.state = StreamState::Dead;
                                 return StreamEvent::Failed;
                             }

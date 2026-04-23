@@ -8,8 +8,11 @@ use std::{net::SocketAddr, sync::atomic::AtomicUsize};
 
 use flux::{spine::SpineAdapter, tile::Tile};
 use quinn_proto::Endpoint;
-use silver_common::{Keypair, PeerId, SilverSpine, TCache, TConsumer, TProducer, TRandomAccess};
+use silver_common::{
+    Enr, Keypair, PeerId, SilverSpine, TCache, TConsumer, TProducer, TRandomAccess,
+};
 use silver_compression::GossipCompressionTile;
+use silver_discovery::{DiscV5, DiscoveryConfig};
 use silver_network::{NetworkTile, P2p, TCacheStreamData, create_endpoint, create_server_config};
 
 use crate::Stats;
@@ -109,6 +112,7 @@ impl PublisherStack {
         base_dir: &std::path::Path,
         path_suffix: &str,
         addr: SocketAddr,
+        disc_addr: SocketAddr,
         keypair: Keypair,
     ) -> std::io::Result<Self> {
         let peer_id = keypair.peer_id();
@@ -141,9 +145,17 @@ impl PublisherStack {
             rpc_out_ra,
         );
 
+        let discovery = DiscV5::new(
+            DiscoveryConfig::default(),
+            *keypair.secret_key(),
+            Enr::empty(keypair.secret_key()).unwrap(),
+            [0, 0, 0, 0],
+        );
+
         let endpoint = quic_endpoint(&keypair, /* is_server= */ true);
         let p2p = P2p::new(keypair, endpoint);
-        let network = NetworkTile::new(addr, p2p, stream_data).map_err(std::io::Error::other)?;
+        let network = NetworkTile::new(disc_addr, discovery, addr, p2p, stream_data)
+            .map_err(std::io::Error::other)?;
 
         // Spine + per-tile adapters.
         let mut spine = SilverSpine::new_with_base_dir(base_dir, Some(path_suffix));
@@ -175,6 +187,7 @@ impl EchoStack {
         base_dir: &std::path::Path,
         path_suffix: &str,
         addr: SocketAddr,
+        disc_addr: SocketAddr,
         keypair: Keypair,
         fork_digest_hex: String,
     ) -> std::io::Result<Self> {
@@ -208,9 +221,17 @@ impl EchoStack {
             rpc_out_ra,
         );
 
+        let discovery = DiscV5::new(
+            DiscoveryConfig::default(),
+            *keypair.secret_key(),
+            Enr::empty(keypair.secret_key()).unwrap(),
+            [0, 0, 0, 0],
+        );
+
         let endpoint = quic_endpoint(&keypair, /* is_server= */ true);
         let p2p = P2p::new(keypair, endpoint);
-        let network = NetworkTile::new(addr, p2p, stream_data).map_err(std::io::Error::other)?;
+        let network = NetworkTile::new(disc_addr, discovery, addr, p2p, stream_data)
+            .map_err(std::io::Error::other)?;
 
         let compression = GossipCompressionTile::new(
             gossip_in_consumer,

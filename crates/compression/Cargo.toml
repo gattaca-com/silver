@@ -10,7 +10,7 @@ buffa.workspace = true
 flux.workspace = true
 fxhash.workspace = true
 ring.workspace = true
-silver-common.workspace = true
+silver_common.workspace = true
 snap.workspace = true
 tracing.workspace = true
 

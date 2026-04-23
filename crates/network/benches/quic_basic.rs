@@ -12,7 +12,8 @@ use pprof::criterion::{Output, PProfProfiler};
 use quinn_proto::{Endpoint, EndpointConfig};
 use rand::{Rng, RngCore, SeedableRng};
 use silver_common::{Keypair, P2pStreamId, StreamProtocol};
-use silver_network::{NetEvent, NetworkTileInner, P2p, RemotePeer, StreamData};
+use silver_discovery::{Discovery, DiscoveryNetworking};
+use silver_network::{NetEvent, NetworkTileEvent, NetworkTileInner, P2p, RemotePeer, StreamData};
 
 const BATCH_SIZE: usize = 8192 * 10;
 
@@ -60,6 +61,8 @@ pub fn broadcast(c: &mut Criterion) {
                                         counter: recv_counter.clone(),
                                         streams: HashMap::new(),
                                     },
+                                    "0.0.0.0:12345".parse().unwrap(),
+                                    DummyDisc,
                                 )
                                 .unwrap(),
                                 server_id,
@@ -68,7 +71,7 @@ pub fn broadcast(c: &mut Criterion) {
 
                         let server_handle = std::thread::spawn(move || {
                             loop {
-                                server_tile.spin(&mut |_: NetEvent| {});
+                                server_tile.spin(&mut |_: NetworkTileEvent| {});
                                 if recv_counter.load(Ordering::Relaxed) == (total * i) {
                                     tracing::info!("server completed");
                                     break;
@@ -101,8 +104,12 @@ pub fn broadcast(c: &mut Criterion) {
                             let pending: Arc<Mutex<Vec<(usize, StreamProtocol)>>> =
                                 Arc::new(Mutex::new(Vec::new()));
                             let pending_cb = pending.clone();
-                            let on_event = move |event: NetEvent| {
-                                if let NetEvent::PeerConnected { peer, .. } = event {
+                            let on_event = move |event: NetworkTileEvent| {
+                                if let NetworkTileEvent::P2pNet(NetEvent::PeerConnected {
+                                    peer,
+                                    ..
+                                }) = event
+                                {
                                     pending_cb
                                         .lock()
                                         .unwrap()
@@ -110,9 +117,14 @@ pub fn broadcast(c: &mut Criterion) {
                                 }
                             };
 
-                            let tile =
-                                NetworkTileInner::new(addr.parse().unwrap(), p2p, client_data)
-                                    .unwrap();
+                            let tile = NetworkTileInner::new(
+                                addr.parse().unwrap(),
+                                p2p,
+                                client_data,
+                                format!("0.0.0.0:{}", 12346 + n).parse().unwrap(),
+                                DummyDisc,
+                            )
+                            .unwrap();
                             clients.push((tile, pending, on_event));
                         }
 
@@ -248,6 +260,29 @@ impl StreamData for ClientData {
     fn send_complete(&mut self, _stream: &P2pStreamId) {
         self.current = None;
     }
+}
+
+struct DummyDisc;
+impl Discovery for DummyDisc {
+    fn local_id(&self) -> silver_common::NodeId {
+        silver_common::NodeId::random()
+    }
+
+    fn add_enr(&mut self, _enr: &silver_common::Enr, _now: std::time::Instant) {}
+
+    fn find_nodes(&mut self) {}
+
+    fn ban_node(&mut self, _id: silver_common::NodeId, _duration: Option<Duration>) {}
+
+    fn ban_ip(&mut self, _ip: std::net::IpAddr, _duration: Option<Duration>) {}
+
+    fn teardown(&self) {}
+}
+
+impl DiscoveryNetworking for DummyDisc {
+    fn handle(&mut self, _src_addr: std::net::SocketAddr, _data: &[u8], _now: std::time::Instant) {}
+
+    fn poll<F: FnMut(silver_discovery::DiscoveryEvent)>(&mut self, _f: F) {}
 }
 
 criterion_group! {

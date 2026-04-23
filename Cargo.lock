@@ -830,30 +830,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "discovery"
-version = "0.0.1"
-dependencies = [
- "aes",
- "aes-gcm",
- "alloy-rlp",
- "bytes",
- "ctr",
- "flux",
- "flux-utils",
- "hex",
- "hkdf",
- "rand 0.8.5",
- "rustc-hash",
- "secp256k1",
- "serde",
- "sha2",
- "silver-common",
- "thiserror 1.0.69",
- "tracing",
- "uint",
-]
-
-[[package]]
 name = "displaydoc"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2420,7 +2396,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "silver-common"
+name = "silver_common"
 version = "0.0.1"
 dependencies = [
  "alloy-rlp",
@@ -2468,10 +2444,39 @@ dependencies = [
  "rand 0.8.5",
  "rand_core 0.6.4",
  "ring",
+<<<<<<< HEAD
  "silver-common",
  "snap 1.1.1",
+=======
+ "silver_common",
+ "snap",
+>>>>>>> c48d0fd (wire discovery into network tile)
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "silver_discovery"
+version = "0.0.1"
+dependencies = [
+ "aes",
+ "aes-gcm",
+ "alloy-rlp",
+ "bytes",
+ "ctr",
+ "flux",
+ "flux-utils",
+ "hex",
+ "hkdf",
+ "rand 0.8.5",
+ "rustc-hash",
+ "secp256k1",
+ "serde",
+ "sha2",
+ "silver_common",
+ "thiserror 1.0.69",
+ "tracing",
+ "uint",
 ]
 
 [[package]]
@@ -2484,8 +2489,9 @@ dependencies = [
  "hdrhistogram",
  "quinn-proto",
  "rand 0.8.5",
- "silver-common",
+ "silver_common",
  "silver_compression",
+ "silver_discovery",
  "silver_network",
  "snap 1.1.1",
  "tempfile",
@@ -2513,8 +2519,14 @@ dependencies = [
  "ring",
  "rustls",
  "secp256k1",
+<<<<<<< HEAD
  "silver-common",
  "snap 1.1.1",
+=======
+ "silver_common",
+ "silver_discovery",
+ "snap",
+>>>>>>> c48d0fd (wire discovery into network tile)
  "tracing",
  "tracing-subscriber",
  "x509-parser 0.17.0",
