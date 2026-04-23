@@ -7,7 +7,7 @@ use crate::{
         PENDING_CONSOLIDATIONS_LIMIT, PENDING_DEPOSITS_LIMIT, PENDING_PARTIAL_WITHDRAWALS_LIMIT,
         PendingConsolidation, PendingDeposit, PendingPartialWithdrawal, PendingQueues,
         SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT, SYNC_COMMITTEE_SIZE, SlotData, SlotRoots,
-        SyncCommittee, ValidatorIdentity, box_zeroed,
+        SyncCommittee, ValidatorIdentity,
     },
 };
 
@@ -76,18 +76,18 @@ fn b256(s: &[u8], off: usize) -> B256 {
     s[off..off + 32].try_into().unwrap()
 }
 
-pub struct DecomposedState {
-    pub imm: Box<Immutable>,
-    pub vid: Box<ValidatorIdentity>,
-    pub longtail: Box<HistoricalLongtail>,
-    pub epoch: Box<EpochData>,
-    pub roots: Box<SlotRoots>,
-    pub sd: Box<SlotData>,
-    pub pq: PendingQueues,
-}
-
-/// Decompose a Fulu BeaconState SSZ blob into the storage tiers.
-pub fn decompose_beacon_state(ssz: &[u8], zh: &[B256]) -> Option<DecomposedState> {
+// On `None`, destinations may have been partially populated.
+#[allow(clippy::too_many_arguments)]
+pub fn decompose_beacon_state(
+    ssz: &[u8],
+    zh: &[B256],
+    imm: &mut Immutable,
+    vid: &mut ValidatorIdentity,
+    longtail: &mut HistoricalLongtail,
+    epoch: &mut EpochData,
+    roots: &mut SlotRoots,
+    sd: &mut SlotData,
+) -> Option<PendingQueues> {
     if ssz.len() < FIXED_PART {
         return None;
     }
@@ -135,12 +135,6 @@ pub fn decompose_beacon_state(ssz: &[u8], zh: &[B256]) -> Option<DecomposedState
         return None;
     }
 
-    let mut imm: Box<Immutable> = box_zeroed();
-    let mut vid: Box<ValidatorIdentity> = box_zeroed();
-    let mut longtail: Box<HistoricalLongtail> = box_zeroed();
-    let mut epoch: Box<EpochData> = box_zeroed();
-    let mut roots: Box<SlotRoots> = box_zeroed();
-    let mut sd: Box<SlotData> = box_zeroed();
     let mut pq = PendingQueues::new();
 
     imm.genesis_time = u64_le(ssz, F0);
@@ -402,7 +396,7 @@ pub fn decompose_beacon_state(ssz: &[u8], zh: &[B256]) -> Option<DecomposedState
     // epoch_transition::rebuild_sync_committee_indices (not in this PR).
     // Left zeroed; consumers that need it rebuild at first use.
 
-    Some(DecomposedState { imm, vid, longtail, epoch, roots, sd, pq })
+    Some(pq)
 }
 
 fn read_checkpoint(s: &[u8], off: usize) -> Checkpoint {

@@ -21,7 +21,7 @@ use flux::communication::ShmemData;
 /// number of concurrently-referenced indices must never exceed `N`.
 #[repr(C, align(64))]
 pub struct TierPool<T, const N: usize> {
-    next: AtomicU32,
+    next: UnsafeCell<u32>,
     generation: AtomicU32,
     _pad: [u8; 56],
     entries: [UnsafeCell<T>; N],
@@ -41,9 +41,10 @@ impl<T, const N: usize> TierPool<T, N> {
     }
 
     pub fn alloc(&self) -> usize {
-        let curr = self.next.load(Ordering::Relaxed) as usize;
-        let next = ((curr + 1) % N) as u32;
-        self.next.store(next, Ordering::Relaxed);
+        // SAFETY: single-producer contract — no concurrent writes to `next`.
+        let slot = unsafe { &mut *self.next.get() };
+        let curr = *slot as usize;
+        *slot = ((curr + 1) % N) as u32;
         self.generation.fetch_add(1, Ordering::Relaxed);
         curr
     }
@@ -81,7 +82,8 @@ impl<T, const N: usize> TierPool<T, N> {
     }
 
     pub fn set_cursor(&self, idx: usize) {
-        self.next.store((idx % N) as u32, Ordering::Relaxed);
+        // SAFETY: single-producer contract.
+        unsafe { *self.next.get() = (idx % N) as u32 };
     }
 }
 

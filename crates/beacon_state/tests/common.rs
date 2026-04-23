@@ -9,7 +9,10 @@ use std::{
 use flux::{spine::SpineAdapter, tile::Tile};
 use serde::Deserialize;
 use silver_beacon_state::{SlotTicker, tile::BeaconStateTile};
-use silver_common::SilverSpine;
+use silver_common::{SilverSpine, TCache, TProducer};
+
+/// Per-TCache capacity for the harness. Power of two; tests are bounded.
+const TCACHE_SIZE: usize = 1 << 20;
 
 #[derive(Debug, Deserialize)]
 pub struct Setup {
@@ -46,6 +49,9 @@ pub struct Harness {
     tile: BeaconStateTile,
     tile_adapter: SpineAdapter<SilverSpine>,
     _base_dir: PathBuf, // owned to keep temp files around for the run
+
+    _gossip_producer: TProducer,
+    _rpc_producer: TProducer,
 }
 
 impl Harness {
@@ -66,10 +72,22 @@ impl Harness {
         let genesis = now.saturating_sub(wall_slot * 12);
         let ticker = SlotTicker::new(genesis, Duration::from_secs(12), Duration::from_secs(4));
 
-        let tile = BeaconStateTile::new_heap(ticker, checkpoint_ssz);
+        let gossip_producer = TCache::producer(TCACHE_SIZE);
+        let gossip_ra = gossip_producer.cache_ref().random_access().expect("random_access");
+        let rpc_producer = TCache::producer(TCACHE_SIZE);
+        let rpc_ra = rpc_producer.cache_ref().random_access().expect("random_access");
+
+        let tile = BeaconStateTile::new_heap(ticker, gossip_ra, rpc_ra, checkpoint_ssz);
         let tile_adapter = SpineAdapter::connect_tile(&tile, &mut spine);
 
-        Self { spine, tile, tile_adapter, _base_dir: base }
+        Self {
+            spine,
+            tile,
+            tile_adapter,
+            _base_dir: base,
+            _gossip_producer: gossip_producer,
+            _rpc_producer: rpc_producer,
+        }
     }
 
     pub fn mode(&self) -> &'static str {

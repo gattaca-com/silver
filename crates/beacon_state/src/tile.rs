@@ -1,5 +1,5 @@
 use flux::{spine::SpineAdapter, tile::Tile};
-use silver_common::{PeerGossipIn, PeerRpcIn, SilverSpine};
+use silver_common::{PeerGossipIn, PeerRpcIn, SilverSpine, TRandomAccess};
 
 use crate::{
     arena::ArenaBacking,
@@ -25,21 +25,52 @@ pub struct BeaconStateTile {
 
     head: BeaconStateRef,
 
+    gossip_consumer: TRandomAccess,
+    rpc_consumer: TRandomAccess,
+
     zero_hashes: [B256; ssz_hash::ZERO_HASHES_LEN],
 }
 
 impl BeaconStateTile {
     /// Shm-backed arena. Bootstraps from `checkpoint_state` if non-empty.
-    pub fn new(ticker: SlotTicker, checkpoint_state: &[u8]) -> Self {
-        Self::with_arena(ticker, ArenaBacking::open_shm("silver"), checkpoint_state)
+    pub fn new(
+        ticker: SlotTicker,
+        gossip_consumer: TRandomAccess,
+        rpc_consumer: TRandomAccess,
+        checkpoint_state: &[u8],
+    ) -> Self {
+        Self::with_arena(
+            ticker,
+            gossip_consumer,
+            rpc_consumer,
+            ArenaBacking::open_shm("silver"),
+            checkpoint_state,
+        )
     }
 
     /// Heap-backed arena for tests.
-    pub fn new_heap(ticker: SlotTicker, checkpoint_state: &[u8]) -> Self {
-        Self::with_arena(ticker, ArenaBacking::heap(), checkpoint_state)
+    pub fn new_heap(
+        ticker: SlotTicker,
+        gossip_consumer: TRandomAccess,
+        rpc_consumer: TRandomAccess,
+        checkpoint_state: &[u8],
+    ) -> Self {
+        Self::with_arena(
+            ticker,
+            gossip_consumer,
+            rpc_consumer,
+            ArenaBacking::heap(),
+            checkpoint_state,
+        )
     }
 
-    fn with_arena(ticker: SlotTicker, arena: ArenaBacking, checkpoint_state: &[u8]) -> Self {
+    fn with_arena(
+        ticker: SlotTicker,
+        gossip_consumer: TRandomAccess,
+        rpc_consumer: TRandomAccess,
+        arena: ArenaBacking,
+        checkpoint_state: &[u8],
+    ) -> Self {
         let pending_pool: Vec<PendingQueues> =
             (0..PENDING_POOL_CAP).map(|_| PendingQueues::new()).collect();
         let head = BeaconStateRef {
@@ -54,7 +85,7 @@ impl BeaconStateTile {
 
         // TierPool cursors start at 0; bump past slot 0 (reserved for the
         // bootstrap state that `head` points at).
-        arena.imm.set_cursor(1);
+        arena.imm.set_cursor(0);
         arena.vid.set_cursor(1);
         arena.longtail.set_cursor(1);
         arena.epoch.set_cursor(1);
@@ -67,6 +98,8 @@ impl BeaconStateTile {
             arena,
             pending_pool,
             head,
+            gossip_consumer,
+            rpc_consumer,
             zero_hashes: ssz_hash::compute_zero_hashes(),
         };
 
@@ -79,17 +112,19 @@ impl BeaconStateTile {
     /// Load a checkpoint state SSZ blob. Decomposes into tiered storage at
     /// slot 0 of each pool. Returns false if the SSZ is invalid.
     fn bootstrap(&mut self, ssz: &[u8]) -> bool {
-        let Some(d) = decompose::decompose_beacon_state(ssz, &self.zero_hashes) else {
+        let Some(pq) = decompose::decompose_beacon_state(
+            ssz,
+            &self.zero_hashes,
+            self.arena.imm.get_mut(0),
+            self.arena.vid.get_mut(0),
+            self.arena.longtail.get_mut(0),
+            self.arena.epoch.get_mut(0),
+            self.arena.roots.get_mut(0),
+            self.arena.slot.get_mut(0),
+        ) else {
             return false;
         };
-
-        self.arena.imm.set(0, &d.imm);
-        self.arena.vid.set(0, &d.vid);
-        self.arena.longtail.set(0, &d.longtail);
-        self.arena.epoch.set(0, &d.epoch);
-        self.arena.roots.set(0, &d.roots);
-        self.arena.slot.set(0, &d.sd);
-        self.pending_pool[0] = d.pq;
+        self.pending_pool[0] = pq;
         self.head = BeaconStateRef {
             imm_idx: 0,
             vid_idx: 0,
@@ -152,14 +187,16 @@ impl Tile<SilverSpine> for BeaconStateTile {
         }
 
         adapter.consume(|m: PeerGossipIn, _producers| {
-            if let Ok(_bytes) = m.data.data() {
+            if let Ok((_bytes, _ts)) = self.gossip_consumer.read_at(m.tcache.seq()) {
                 // TODO handle gossip
             }
+            self.gossip_consumer.set_tail(m.tcache.seq());
         });
         adapter.consume(|m: PeerRpcIn, _producers| {
-            if let Ok(_bytes) = m.data.data() {
+            if let Ok((_bytes, _ts)) = self.rpc_consumer.read_at(m.tcache.seq()) {
                 // TODO handle rpc
             }
+            self.rpc_consumer.set_tail(m.tcache.seq());
         });
 
         if self.mode == Mode::Syncing {

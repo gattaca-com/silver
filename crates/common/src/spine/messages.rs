@@ -5,11 +5,9 @@ use flux::timing::Nanos;
 use crate::{
     GossipTopic, MessageId, P2pStreamId, PeerId, StreamProtocol, TCacheRead,
     ssz_view::{
-        AttesterSlashingView, BeaconBlocksByRangeRequestView, BeaconBlocksByRootRequestView,
-        BlobIdentifierView, DataColumnSidecarView, DataColumnSidecarsByRangeRequestView,
-        DataColumnsByRootIdentifierView, ProposerSlashingView, SignedAggregateAndProofView,
-        SignedBeaconBlockView, SignedBlsToExecutionChangeView, SignedContributionAndProofView,
-        SignedVoluntaryExitView, SingleAttestationView, StatusView, SyncCommitteeView,
+        BeaconBlocksByRangeRequestView, BeaconBlocksByRootRequestView, BlobIdentifierView,
+        DataColumnSidecarView, DataColumnSidecarsByRangeRequestView,
+        DataColumnsByRootIdentifierView, SignedBeaconBlockView, StatusView,
     },
 };
 
@@ -71,7 +69,7 @@ pub enum RpcOutType {
 #[repr(C)]
 pub struct RpcMsgOut {
     pub msg_type: RpcOutType,
-    pub data: TCacheRead,
+    pub tcache: TCacheRead,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -79,7 +77,7 @@ pub struct RpcMsgOut {
 pub struct RpcMsgIn {
     pub stream_id: P2pStreamId,
     pub request_id: Option<usize>,
-    pub data: TCacheRead,
+    pub tcache: TCacheRead,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -171,22 +169,6 @@ pub type Peer = u64;
 
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
-pub enum GossipMsg {
-    Attestation(SingleAttestationView),
-    ProposerSlashing(ProposerSlashingView),
-    Exit(SignedVoluntaryExitView),
-    SyncCommittee(SyncCommitteeView),
-    CntrbProof(SignedContributionAndProofView),
-    BlsExec(SignedBlsToExecutionChangeView),
-    Block(SignedBeaconBlockView),
-    AggrProof(SignedAggregateAndProofView),
-    AttesterSlashing(AttesterSlashingView),
-    DataColumn(DataColumnSidecarView),
-    // TBD: lightclient support missing
-}
-
-#[derive(Clone, Copy, Debug)]
-#[repr(C)]
 pub enum RpcMsg {
     // missing ping and goodbye
     // Status v2 and MetaData v3 are symmetric: same view for req and resp.
@@ -206,16 +188,16 @@ pub enum RpcMsg {
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct PeerGossipIn {
-    pub msg: GossipMsg,
+    pub topic: GossipTopic,
     pub sender: Peer,
-    pub data: TCacheRead,
+    pub tcache: TCacheRead,
 }
 
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct PeerGossipOut {
-    pub msg: GossipMsg,
-    pub data: TCacheRead,
+    pub topic: GossipTopic,
+    pub tcache: TCacheRead,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -223,7 +205,7 @@ pub struct PeerGossipOut {
 pub struct PeerRpcIn {
     pub msg: RpcMsg,
     pub sender: Peer,
-    pub data: TCacheRead,
+    pub tcache: TCacheRead,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -231,7 +213,7 @@ pub struct PeerRpcIn {
 pub struct PeerRpcOut {
     pub msg: RpcMsg,
     pub recipient: Option<Peer>,
-    pub data: TCacheRead,
+    pub tcache: TCacheRead,
 }
 
 #[derive(Clone, Copy, Debug)]

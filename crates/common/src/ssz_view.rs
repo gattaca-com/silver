@@ -1,5 +1,31 @@
 // Zero-copy SSZ field extraction for Fulu p2p wire types.
 
+pub enum SszView {
+    SingleAttestation(SingleAttestationView),
+    ProposerSlashing(ProposerSlashingView),
+    SignedVoluntaryExit(SignedVoluntaryExitView),
+    SyncCommittee(SyncCommitteeView),
+    SignedContributionAndProof(SignedContributionAndProofView),
+    SignedBlsToExecutionChange(SignedBlsToExecutionChangeView),
+    SignedBeaconBlock(SignedBeaconBlockView),
+    SignedAggregateAndProof(SignedAggregateAndProofView),
+    AttesterSlashing(AttesterSlashingView),
+    DataColumnSidecar(DataColumnSidecarView),
+    BlobSidecar(BlobSidecarView),
+    LightClientHeader(LightClientHeaderView),
+    LightClientFinalityUpdate(LightClientFinalityUpdateView),
+    LightClientOptimisticUpdate(LightClientOptimisticUpdateView),
+    Status(StatusView),
+    Metadata(MetadataView),
+    BeaconBlocksByRangeRequest(BeaconBlocksByRangeRequestView),
+    Ping(PingView),
+    Goodbye(GoodbyeView),
+    BeaconBlocksByRootRequest(BeaconBlocksByRootRequestView),
+    BlobIdentifier(BlobIdentifierView),
+    DataColumnSidecarsByRangeRequest(DataColumnSidecarsByRangeRequestView),
+    DataColumnsByRootIdentifier(DataColumnsByRootIdentifierView),
+}
+
 #[inline(always)]
 fn u64_le(buf: &[u8], off: usize) -> u64 {
     u64::from_le_bytes(buf[off..off + 8].try_into().unwrap())
@@ -69,7 +95,7 @@ pub const SYNC_COMMITTEE_SIZE: usize = 512;
 
 pub const SINGLE_ATT_SIZE: usize = 240;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 #[repr(C)]
 pub struct SingleAttestationView;
 
@@ -134,7 +160,7 @@ impl SingleAttestationView {
 
 pub const PROPOSER_SLASHING_SIZE: usize = 416;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 #[repr(C)]
 pub struct ProposerSlashingView;
 
@@ -198,7 +224,7 @@ impl ProposerSlashingView {
 
 pub const SIGNED_VOLUNTARY_EXIT_SIZE: usize = 112;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 #[repr(C)]
 pub struct SignedVoluntaryExitView;
 
@@ -227,7 +253,7 @@ impl SignedVoluntaryExitView {
 
 pub const SYNC_COMMITTEE_MSG_SIZE: usize = 144;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 #[repr(C)]
 pub struct SyncCommitteeView;
 
@@ -270,7 +296,7 @@ impl SyncCommitteeView {
 
 pub const SIGNED_CONTRIBUTION_AND_PROOF_SIZE: usize = 360;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 #[repr(C)]
 pub struct SignedContributionAndProofView;
 
@@ -319,7 +345,7 @@ impl SignedContributionAndProofView {
 
 pub const SIGNED_BLS_CHANGE_SIZE: usize = 172;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 #[repr(C)]
 pub struct SignedBlsToExecutionChangeView;
 
@@ -400,7 +426,7 @@ pub const SIGNED_BEACON_BLOCK_MAX: usize = SIGNED_BEACON_BLOCK_MIN +
     MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD * 76 +
     MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD * 116;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 #[repr(C)]
 pub struct SignedBeaconBlockView;
 
@@ -429,6 +455,13 @@ impl SignedBeaconBlockView {
     #[inline]
     pub fn body(buf: &[u8]) -> &[u8] {
         &buf[184..]
+    }
+    /// Validates `buf` is large enough for every accessor above to read
+    /// without panicking. Accessors only read compile-time fixed offsets
+    /// plus `&buf[184..]`, so a bare length bound suffices.
+    #[inline]
+    pub fn check_size(buf: &[u8]) -> bool {
+        buf.len() >= SIGNED_BEACON_BLOCK_MIN && buf.len() <= SIGNED_BEACON_BLOCK_MAX
     }
 }
 
@@ -468,7 +501,7 @@ pub const SIGNED_AGG_PROOF_MIN: usize = 444;
 // aggregation_bits: Bitlist[MAX_ATTESTING_INDICES], ceil((N+1)/8) bytes.
 pub const SIGNED_AGG_PROOF_MAX: usize = SIGNED_AGG_PROOF_MIN + MAX_ATTESTING_INDICES / 8 + 1;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 #[repr(C)]
 pub struct SignedAggregateAndProofView;
 
@@ -529,6 +562,12 @@ impl SignedAggregateAndProofView {
     pub fn agg_aggregation_bits(buf: &[u8]) -> &[u8] {
         &buf[444..]
     }
+    /// All accessors read compile-time fixed offsets plus `&buf[444..]`;
+    /// a length bound suffices.
+    #[inline]
+    pub fn check_size(buf: &[u8]) -> bool {
+        buf.len() >= SIGNED_AGG_PROOF_MIN && buf.len() <= SIGNED_AGG_PROOF_MAX
+    }
 }
 
 // -- AttesterSlashing (attester_slashing) -----------------------------
@@ -554,7 +593,7 @@ pub const ATTESTER_SLASHING_MIN: usize = 8 + 228 + 228; // 464
 // Two IndexedAttestations; each: 228B fixed + MAX_ATTESTING_INDICES * 8B.
 pub const ATTESTER_SLASHING_MAX: usize = 8 + 2 * (228 + MAX_ATTESTING_INDICES * 8);
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 #[repr(C)]
 pub struct AttesterSlashingView;
 
@@ -651,6 +690,20 @@ impl AttesterSlashingView {
         let off = Self::att2_off(buf);
         &buf[off + 228..]
     }
+    /// Validates:
+    ///   - `buf.len()` within [MIN, MAX];
+    ///   - `att2_off` at least 236 (att_1 fixed ends there) so
+    ///     `&buf[236..att2_off]` is a valid slice;
+    ///   - `att2_off + 228 <= buf.len()` so att_2's fixed reads and the
+    ///     `&buf[att2_off+228..]` tail are in-bounds.
+    #[inline]
+    pub fn check_size(buf: &[u8]) -> bool {
+        if buf.len() < ATTESTER_SLASHING_MIN || buf.len() > ATTESTER_SLASHING_MAX {
+            return false;
+        }
+        let off2 = u32_le(buf, 4) as usize;
+        off2 >= 236 && off2.saturating_add(228) <= buf.len()
+    }
 }
 
 // -- DataColumnSidecar (data_column_sidecar_{subnet_id}) -------------
@@ -686,7 +739,7 @@ pub const DATA_COLUMN_SIDECAR_MAX: usize = DATA_COLUMN_SIDECAR_MIN +
     MAX_BLOB_COMMITMENTS_PER_BLOCK * BYTES_PER_KZG_COMMITMENT +
     MAX_BLOB_COMMITMENTS_PER_BLOCK * BYTES_PER_KZG_PROOF;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 #[repr(C)]
 pub struct DataColumnSidecarView;
 
@@ -745,20 +798,325 @@ impl DataColumnSidecarView {
         let start = u32_le(buf, 16) as usize;
         &buf[start..]
     }
+    /// Validates fixed part fits, then hops through the three offset
+    /// fields at [8..20) and checks the classic SSZ offset invariants:
+    /// first >= fixed-part size, monotonically non-decreasing, last
+    /// <= buf.len(). That makes every variable-field slice in-bounds.
+    #[inline]
+    pub fn check_size(buf: &[u8]) -> bool {
+        if buf.len() < DATA_COLUMN_SIDECAR_MIN || buf.len() > DATA_COLUMN_SIDECAR_MAX {
+            return false;
+        }
+        let col_off = u32_le(buf, 8) as usize;
+        let com_off = u32_le(buf, 12) as usize;
+        let proof_off = u32_le(buf, 16) as usize;
+        col_off >= DATA_COLUMN_SIDECAR_MIN &&
+            col_off <= com_off &&
+            com_off <= proof_off &&
+            proof_off <= buf.len()
+    }
 }
 
-// -- Status (req/status/2, req & resp) --------------------------------
+// -- BlobSidecar (blob_sidecar_{subnet_id}) --------------------------
 //
-// All fixed, exactly 92B.
-// ForkDigest = [u8; 4], Root = [u8; 32], Epoch/Slot = u64.
+// All fixed, exactly 131928B. Deprecated in Fulu (transition period only).
+//   [0..8)                   index (BlobIndex = u64)
+//   [8..131080)              blob (BYTES_PER_BLOB = 131072B)
+//   [131080..131128)         kzg_commitment (48B)
+//   [131128..131176)         kzg_proof (48B)
+//   [131176..131384)         signed_block_header (208B)
+//     [131176..131184)         slot
+//     [131184..131192)         proposer_index
+//     [131192..131224)         parent_root
+//     [131224..131256)         state_root
+//     [131256..131288)         body_root
+//     [131288..131384)         signature
+//   [131384..131928)         kzg_commitment_inclusion_proof
+//                            (KZG_COMMITMENT_INCLUSION_PROOF_DEPTH*32 = 544B)
+
+pub const BYTES_PER_BLOB: usize = 131_072;
+pub const KZG_COMMITMENT_INCLUSION_PROOF_DEPTH: usize = 17;
+pub const BLOB_INCLUSION_PROOF_SIZE: usize = KZG_COMMITMENT_INCLUSION_PROOF_DEPTH * 32;
+pub const BLOB_SIDECAR_SIZE: usize = 8 +
+    BYTES_PER_BLOB +
+    BYTES_PER_KZG_COMMITMENT +
+    BYTES_PER_KZG_PROOF +
+    208 +
+    BLOB_INCLUSION_PROOF_SIZE;
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[repr(C)]
+pub struct BlobSidecarView;
+
+impl BlobSidecarView {
+    #[inline]
+    pub fn index(buf: &[u8; BLOB_SIDECAR_SIZE]) -> u64 {
+        u64_le(buf, 0)
+    }
+    #[inline]
+    pub fn blob(buf: &[u8; BLOB_SIDECAR_SIZE]) -> &[u8; BYTES_PER_BLOB] {
+        fixed(buf, 8)
+    }
+    #[inline]
+    pub fn kzg_commitment(buf: &[u8; BLOB_SIDECAR_SIZE]) -> &[u8; BYTES_PER_KZG_COMMITMENT] {
+        fixed(buf, 131_080)
+    }
+    #[inline]
+    pub fn kzg_proof(buf: &[u8; BLOB_SIDECAR_SIZE]) -> &[u8; BYTES_PER_KZG_PROOF] {
+        fixed(buf, 131_128)
+    }
+    #[inline]
+    pub fn slot(buf: &[u8; BLOB_SIDECAR_SIZE]) -> u64 {
+        u64_le(buf, 131_176)
+    }
+    #[inline]
+    pub fn proposer_index(buf: &[u8; BLOB_SIDECAR_SIZE]) -> u64 {
+        u64_le(buf, 131_184)
+    }
+    #[inline]
+    pub fn parent_root(buf: &[u8; BLOB_SIDECAR_SIZE]) -> &[u8; 32] {
+        fixed(buf, 131_192)
+    }
+    #[inline]
+    pub fn state_root(buf: &[u8; BLOB_SIDECAR_SIZE]) -> &[u8; 32] {
+        fixed(buf, 131_224)
+    }
+    #[inline]
+    pub fn body_root(buf: &[u8; BLOB_SIDECAR_SIZE]) -> &[u8; 32] {
+        fixed(buf, 131_256)
+    }
+    #[inline]
+    pub fn block_signature(buf: &[u8; BLOB_SIDECAR_SIZE]) -> &[u8; 96] {
+        fixed(buf, 131_288)
+    }
+    #[inline]
+    pub fn kzg_commitment_inclusion_proof(
+        buf: &[u8; BLOB_SIDECAR_SIZE],
+    ) -> &[u8; BLOB_INCLUSION_PROOF_SIZE] {
+        fixed(buf, 131_384)
+    }
+}
+
+// -- LightClientHeader (inner container for LC updates) --------------
+//
+// Variable (inner ExecutionPayloadHeader has variable extra_data).
+//
+// Fixed part: beacon(112) + offset(4) + execution_branch(128) = 244B
+//   [0..112)   beacon (BeaconBlockHeader)
+//     [0..8)     slot
+//     [8..16)    proposer_index
+//     [16..48)   parent_root
+//     [48..80)   state_root
+//     [80..112)  body_root
+//   [112..116) offset to execution (== 244)
+//   [116..244) execution_branch
+//                (Vector[Bytes32, EXECUTION_BRANCH_DEPTH=4] = 128B)
+//   [244..)    execution (ExecutionPayloadHeader, variable)
+
+pub const EXECUTION_BRANCH_DEPTH: usize = 4;
+pub const EXECUTION_BRANCH_SIZE: usize = EXECUTION_BRANCH_DEPTH * 32;
+// ExecutionPayloadHeader fixed part: parent_hash(32) + fee_recipient(20)
+// + state_root(32) + receipts_root(32) + logs_bloom(256) + prev_randao(32)
+// + block_number(8) + gas_limit(8) + gas_used(8) + timestamp(8)
+// + extra_data_offset(4) + base_fee_per_gas(32) + block_hash(32)
+// + transactions_root(32) + withdrawals_root(32) + blob_gas_used(8)
+// + excess_blob_gas(8) = 584B.
+pub const EXECUTION_PAYLOAD_HEADER_FIXED: usize = 584;
+pub const LC_HEADER_FIXED: usize = 112 + 4 + EXECUTION_BRANCH_SIZE;
+pub const LIGHT_CLIENT_HEADER_MIN: usize = LC_HEADER_FIXED + EXECUTION_PAYLOAD_HEADER_FIXED;
+pub const LIGHT_CLIENT_HEADER_MAX: usize = LIGHT_CLIENT_HEADER_MIN + MAX_EXTRA_DATA_BYTES;
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[repr(C)]
+pub struct LightClientHeaderView;
+
+impl LightClientHeaderView {
+    #[inline]
+    pub fn slot(buf: &[u8]) -> u64 {
+        u64_le(buf, 0)
+    }
+    #[inline]
+    pub fn proposer_index(buf: &[u8]) -> u64 {
+        u64_le(buf, 8)
+    }
+    #[inline]
+    pub fn parent_root(buf: &[u8]) -> &[u8; 32] {
+        fixed(buf, 16)
+    }
+    #[inline]
+    pub fn state_root(buf: &[u8]) -> &[u8; 32] {
+        fixed(buf, 48)
+    }
+    #[inline]
+    pub fn body_root(buf: &[u8]) -> &[u8; 32] {
+        fixed(buf, 80)
+    }
+    #[inline]
+    pub fn execution_branch(buf: &[u8]) -> &[u8; EXECUTION_BRANCH_SIZE] {
+        fixed(buf, 116)
+    }
+    /// Raw ExecutionPayloadHeader bytes.
+    #[inline]
+    pub fn execution(buf: &[u8]) -> &[u8] {
+        &buf[LC_HEADER_FIXED..]
+    }
+    /// Accessors read compile-time fixed offsets plus `&buf[244..]`;
+    /// a length bound suffices.
+    #[inline]
+    pub fn check_size(buf: &[u8]) -> bool {
+        buf.len() >= LIGHT_CLIENT_HEADER_MIN && buf.len() <= LIGHT_CLIENT_HEADER_MAX
+    }
+}
+
+// -- LightClientFinalityUpdate (light_client_finality_update) --------
+//
+// Variable. Two nested LightClientHeaders, each variable.
+//
+// Fixed part: offset(4) + offset(4) + finality_branch(224)
+//             + sync_aggregate(160) + signature_slot(8) = 400B
+//   [0..4)     offset to attested_header (== 400)
+//   [4..8)     offset to finalized_header (>= 400 + LCH_MIN)
+//   [8..232)   finality_branch
+//                (Vector[Bytes32, FINALITY_BRANCH_DEPTH=7] = 224B)
+//   [232..392) sync_aggregate (160B)
+//     [232..296) sync_committee_bits (Bitvector[512] = 64B)
+//     [296..392) sync_committee_signature (96B)
+//   [392..400) signature_slot
+//   [400..fin_off)  attested_header
+//   [fin_off..)     finalized_header
+
+pub const FINALITY_BRANCH_DEPTH: usize = 7;
+pub const FINALITY_BRANCH_SIZE: usize = FINALITY_BRANCH_DEPTH * 32;
+pub const SYNC_AGGREGATE_SIZE: usize = SYNC_COMMITTEE_SIZE / 8 + 96; // 160
+pub const LC_FINALITY_UPDATE_FIXED: usize = 4 + 4 + FINALITY_BRANCH_SIZE + SYNC_AGGREGATE_SIZE + 8;
+pub const LIGHT_CLIENT_FINALITY_UPDATE_MIN: usize =
+    LC_FINALITY_UPDATE_FIXED + 2 * LIGHT_CLIENT_HEADER_MIN;
+pub const LIGHT_CLIENT_FINALITY_UPDATE_MAX: usize =
+    LC_FINALITY_UPDATE_FIXED + 2 * LIGHT_CLIENT_HEADER_MAX;
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[repr(C)]
+pub struct LightClientFinalityUpdateView;
+
+impl LightClientFinalityUpdateView {
+    #[inline]
+    pub fn finality_branch(buf: &[u8]) -> &[u8; FINALITY_BRANCH_SIZE] {
+        fixed(buf, 8)
+    }
+    #[inline]
+    pub fn sync_committee_bits(buf: &[u8]) -> &[u8; SYNC_COMMITTEE_SIZE / 8] {
+        fixed(buf, 232)
+    }
+    #[inline]
+    pub fn sync_committee_signature(buf: &[u8]) -> &[u8; 96] {
+        fixed(buf, 296)
+    }
+    #[inline]
+    pub fn signature_slot(buf: &[u8]) -> u64 {
+        u64_le(buf, 392)
+    }
+    #[inline]
+    fn finalized_off(buf: &[u8]) -> usize {
+        u32_le(buf, 4) as usize
+    }
+    /// Raw LightClientHeader bytes for `attested_header` — feed to
+    /// `LightClientHeaderView`.
+    #[inline]
+    pub fn attested_header(buf: &[u8]) -> &[u8] {
+        &buf[LC_FINALITY_UPDATE_FIXED..Self::finalized_off(buf)]
+    }
+    /// Raw LightClientHeader bytes for `finalized_header`.
+    #[inline]
+    pub fn finalized_header(buf: &[u8]) -> &[u8] {
+        &buf[Self::finalized_off(buf)..]
+    }
+    /// Validates:
+    ///   - `buf.len()` within [MIN, MAX];
+    ///   - `finalized_off` leaves attested_header with an LCH-valid length
+    ///     (i.e. `LC_FINALITY_UPDATE_FIXED + LCH_MIN <= fin_off <=
+    ///     LC_FINALITY_UPDATE_FIXED + LCH_MAX`);
+    ///   - `finalized_header` slice (`buf[fin_off..]`) has an LCH-valid length.
+    #[inline]
+    pub fn check_size(buf: &[u8]) -> bool {
+        if buf.len() < LIGHT_CLIENT_FINALITY_UPDATE_MIN ||
+            buf.len() > LIGHT_CLIENT_FINALITY_UPDATE_MAX
+        {
+            return false;
+        }
+        let fin_off = Self::finalized_off(buf);
+        let att_range = LC_FINALITY_UPDATE_FIXED + LIGHT_CLIENT_HEADER_MIN..=
+            LC_FINALITY_UPDATE_FIXED + LIGHT_CLIENT_HEADER_MAX;
+        if !att_range.contains(&fin_off) {
+            return false;
+        }
+        let rem = buf.len() - fin_off;
+        (LIGHT_CLIENT_HEADER_MIN..=LIGHT_CLIENT_HEADER_MAX).contains(&rem)
+    }
+}
+
+// -- LightClientOptimisticUpdate (light_client_optimistic_update) ----
+//
+// Variable. One nested LightClientHeader.
+//
+// Fixed part: offset(4) + sync_aggregate(160) + signature_slot(8) = 172B
+//   [0..4)    offset to attested_header (== 172)
+//   [4..164)  sync_aggregate
+//     [4..68)   sync_committee_bits
+//     [68..164) sync_committee_signature
+//   [164..172) signature_slot
+//   [172..)   attested_header
+
+pub const LC_OPTIMISTIC_UPDATE_FIXED: usize = 4 + SYNC_AGGREGATE_SIZE + 8;
+pub const LIGHT_CLIENT_OPTIMISTIC_UPDATE_MIN: usize =
+    LC_OPTIMISTIC_UPDATE_FIXED + LIGHT_CLIENT_HEADER_MIN;
+pub const LIGHT_CLIENT_OPTIMISTIC_UPDATE_MAX: usize =
+    LC_OPTIMISTIC_UPDATE_FIXED + LIGHT_CLIENT_HEADER_MAX;
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[repr(C)]
+pub struct LightClientOptimisticUpdateView;
+
+impl LightClientOptimisticUpdateView {
+    #[inline]
+    pub fn sync_committee_bits(buf: &[u8]) -> &[u8; SYNC_COMMITTEE_SIZE / 8] {
+        fixed(buf, 4)
+    }
+    #[inline]
+    pub fn sync_committee_signature(buf: &[u8]) -> &[u8; 96] {
+        fixed(buf, 68)
+    }
+    #[inline]
+    pub fn signature_slot(buf: &[u8]) -> u64 {
+        u64_le(buf, 164)
+    }
+    /// Raw LightClientHeader bytes for `attested_header` — feed to
+    /// `LightClientHeaderView`.
+    #[inline]
+    pub fn attested_header(buf: &[u8]) -> &[u8] {
+        &buf[LC_OPTIMISTIC_UPDATE_FIXED..]
+    }
+    /// Accessors read compile-time fixed offsets plus `&buf[172..]`;
+    /// a length bound suffices.
+    #[inline]
+    pub fn check_size(buf: &[u8]) -> bool {
+        buf.len() >= LIGHT_CLIENT_OPTIMISTIC_UPDATE_MIN &&
+            buf.len() <= LIGHT_CLIENT_OPTIMISTIC_UPDATE_MAX
+    }
+}
+
+// -- Status (req/status/{1,2}, req & resp) ----------------------------
+//
+// All fixed. v1 is 84B; v2 (new in Fulu) appends `earliest_available_slot`
+// for 92B total. ForkDigest = [u8; 4], Root = [u8; 32], Epoch/Slot = u64.
 //   [0..4)    fork_digest
 //   [4..36)   finalized_root
 //   [36..44)  finalized_epoch
 //   [44..76)  head_root
 //   [76..84)  head_slot
-//   [84..92)  earliest_available_slot (new in Fulu)
+//   [84..92)  earliest_available_slot (v2 only)
 
-pub const STATUS_SIZE: usize = 92;
+pub const STATUS_V1_SIZE: usize = 84;
+pub const STATUS_V2_SIZE: usize = 92;
 
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
@@ -766,28 +1124,34 @@ pub struct StatusView;
 
 impl StatusView {
     #[inline]
-    pub fn fork_digest(buf: &[u8; STATUS_SIZE]) -> &[u8; 4] {
+    pub fn fork_digest(buf: &[u8]) -> &[u8; 4] {
         fixed(buf, 0)
     }
     #[inline]
-    pub fn finalized_root(buf: &[u8; STATUS_SIZE]) -> &[u8; 32] {
+    pub fn finalized_root(buf: &[u8]) -> &[u8; 32] {
         fixed(buf, 4)
     }
     #[inline]
-    pub fn finalized_epoch(buf: &[u8; STATUS_SIZE]) -> u64 {
+    pub fn finalized_epoch(buf: &[u8]) -> u64 {
         u64_le(buf, 36)
     }
     #[inline]
-    pub fn head_root(buf: &[u8; STATUS_SIZE]) -> &[u8; 32] {
+    pub fn head_root(buf: &[u8]) -> &[u8; 32] {
         fixed(buf, 44)
     }
     #[inline]
-    pub fn head_slot(buf: &[u8; STATUS_SIZE]) -> u64 {
+    pub fn head_slot(buf: &[u8]) -> u64 {
         u64_le(buf, 76)
     }
+    /// v2-only; `None` for v1 buffers.
     #[inline]
-    pub fn earliest_available_slot(buf: &[u8; STATUS_SIZE]) -> u64 {
-        u64_le(buf, 84)
+    pub fn earliest_available_slot(buf: &[u8]) -> Option<u64> {
+        (buf.len() >= STATUS_V2_SIZE).then(|| u64_le(buf, 84))
+    }
+    /// A Status buffer is valid at exactly v1 or v2 size.
+    #[inline]
+    pub fn check_size(buf: &[u8]) -> bool {
+        buf.len() == STATUS_V1_SIZE || buf.len() == STATUS_V2_SIZE
     }
 }
 
@@ -901,6 +1265,13 @@ impl BeaconBlocksByRootRequestView {
     pub fn root(buf: &[u8], i: usize) -> &[u8; 32] {
         fixed(buf, i * 32)
     }
+    /// List of fixed-size (32B) roots: length must be a multiple of 32
+    /// and bounded by the Deneb+ request cap. `root(buf, i)` is then safe
+    /// for all `i < count(buf)`.
+    #[inline]
+    pub fn check_size(buf: &[u8]) -> bool {
+        buf.len() <= BLOCKS_BY_ROOT_REQ_MAX && buf.len().is_multiple_of(32)
+    }
 }
 
 // -- BlobIdentifier (used in req/blob_sidecars_by_root/1 request list)
@@ -959,6 +1330,15 @@ impl DataColumnSidecarsByRangeRequestView {
     pub fn columns(buf: &[u8]) -> &[u8] {
         &buf[20..]
     }
+    /// Fixed part must fit and the columns list tail must be a whole
+    /// number of 8B ColumnIndex elements.
+    #[inline]
+    pub fn check_size(buf: &[u8]) -> bool {
+        if buf.len() < DC_BY_RANGE_REQ_MIN || buf.len() > DC_BY_RANGE_REQ_MAX {
+            return false;
+        }
+        (buf.len() - DC_BY_RANGE_REQ_MIN).is_multiple_of(8)
+    }
 }
 
 // -- DataColumnsByRootIdentifier (used in req/data_column_sidecars_by_root/1)
@@ -988,5 +1368,14 @@ impl DataColumnsByRootIdentifierView {
     #[inline]
     pub fn columns(buf: &[u8]) -> &[u8] {
         &buf[36..]
+    }
+    /// Fixed part must fit and the columns list tail must be a whole
+    /// number of 8B ColumnIndex elements.
+    #[inline]
+    pub fn check_size(buf: &[u8]) -> bool {
+        if buf.len() < DC_BY_ROOT_ID_MIN || buf.len() > DC_BY_ROOT_ID_MAX {
+            return false;
+        }
+        (buf.len() - DC_BY_ROOT_ID_MIN).is_multiple_of(8)
     }
 }

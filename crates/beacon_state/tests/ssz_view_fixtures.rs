@@ -1,13 +1,24 @@
 //! Field-level verification of ssz_view accessors against EF consensus-spec
 //! ssz_static fixtures (mainnet/fulu).
 
-mod common;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
-use std::{fs, path::PathBuf};
-
-use common::{snappy_decode, spec_tests_dir};
 use serde_yml::Value;
 use silver_common::ssz_view::*;
+
+fn spec_tests_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("consensus-spec-tests")
+}
+
+fn snappy_decode(path: &Path) -> Vec<u8> {
+    let compressed = fs::read(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    snap::Decoder::new()
+        .decompress_vec(&compressed)
+        .unwrap_or_else(|e| panic!("{}: snappy: {e}", path.display()))
+}
 
 fn cases_for(container: &str) -> Vec<(PathBuf, Vec<u8>, Value)> {
     let dir =
@@ -390,5 +401,114 @@ fn data_columns_by_root_identifier() {
         assert_eq!(*DataColumnsByRootIdentifierView::block_root(buf), b32(&v["block_root"]));
         // columns: List[ColumnIndex (u64)]; raw bytes == LE concatenation.
         assert_eq!(DataColumnsByRootIdentifierView::columns(buf), u64_list_le(&v["columns"]));
+    }
+}
+
+#[test]
+fn blob_sidecar() {
+    for (case, bytes, v) in cases_for("BlobSidecar") {
+        let buf: &[u8; BLOB_SIDECAR_SIZE] = bytes
+            .as_slice()
+            .try_into()
+            .unwrap_or_else(|_| panic!("{}: wrong len {}", case.display(), bytes.len()));
+        let sbh = &v["signed_block_header"];
+        let m = &sbh["message"];
+
+        assert_eq!(BlobSidecarView::index(buf), u(&v["index"]));
+        assert_eq!(BlobSidecarView::blob(buf)[..], b(&v["blob"], BYTES_PER_BLOB)[..]);
+        assert_eq!(*BlobSidecarView::kzg_commitment(buf), b48(&v["kzg_commitment"]));
+        assert_eq!(*BlobSidecarView::kzg_proof(buf), b48(&v["kzg_proof"]));
+        assert_eq!(BlobSidecarView::slot(buf), u(&m["slot"]));
+        assert_eq!(BlobSidecarView::proposer_index(buf), u(&m["proposer_index"]));
+        assert_eq!(*BlobSidecarView::parent_root(buf), b32(&m["parent_root"]));
+        assert_eq!(*BlobSidecarView::state_root(buf), b32(&m["state_root"]));
+        assert_eq!(*BlobSidecarView::body_root(buf), b32(&m["body_root"]));
+        assert_eq!(*BlobSidecarView::block_signature(buf), b96(&sbh["signature"]));
+        assert_eq!(
+            BlobSidecarView::kzg_commitment_inclusion_proof(buf)[..],
+            hex_list_concat(&v["kzg_commitment_inclusion_proof"], 32)[..]
+        );
+    }
+}
+
+/// Verify a LightClientHeader slice against its YAML representation.
+fn assert_lch(buf: &[u8], hdr: &Value) {
+    assert!(LightClientHeaderView::check_size(buf));
+    let b_hdr = &hdr["beacon"];
+    assert_eq!(LightClientHeaderView::slot(buf), u(&b_hdr["slot"]));
+    assert_eq!(LightClientHeaderView::proposer_index(buf), u(&b_hdr["proposer_index"]));
+    assert_eq!(*LightClientHeaderView::parent_root(buf), b32(&b_hdr["parent_root"]));
+    assert_eq!(*LightClientHeaderView::state_root(buf), b32(&b_hdr["state_root"]));
+    assert_eq!(*LightClientHeaderView::body_root(buf), b32(&b_hdr["body_root"]));
+    assert_eq!(
+        LightClientHeaderView::execution_branch(buf)[..],
+        hex_list_concat(&hdr["execution_branch"], 32)[..]
+    );
+    // execution is a variable ExecutionPayloadHeader; length is 584B fixed
+    // + up to MAX_EXTRA_DATA_BYTES (= 32) of extra_data.
+    let exec = LightClientHeaderView::execution(buf);
+    assert!((584..=584 + MAX_EXTRA_DATA_BYTES).contains(&exec.len()));
+}
+
+#[test]
+fn light_client_optimistic_update() {
+    for (_case, bytes, v) in cases_for("LightClientOptimisticUpdate") {
+        let buf = bytes.as_slice();
+        assert!(LightClientOptimisticUpdateView::check_size(buf));
+
+        // Offset invariant: attested_header sits right after the fixed part.
+        assert_eq!(
+            u32::from_le_bytes(buf[0..4].try_into().unwrap()) as usize,
+            LC_OPTIMISTIC_UPDATE_FIXED
+        );
+
+        let sa = &v["sync_aggregate"];
+        assert_eq!(
+            LightClientOptimisticUpdateView::sync_committee_bits(buf)[..],
+            b(&sa["sync_committee_bits"], SYNC_COMMITTEE_SIZE / 8)[..]
+        );
+        assert_eq!(
+            *LightClientOptimisticUpdateView::sync_committee_signature(buf),
+            b96(&sa["sync_committee_signature"])
+        );
+        assert_eq!(LightClientOptimisticUpdateView::signature_slot(buf), u(&v["signature_slot"]));
+
+        assert_lch(LightClientOptimisticUpdateView::attested_header(buf), &v["attested_header"]);
+    }
+}
+
+#[test]
+fn light_client_finality_update() {
+    for (_case, bytes, v) in cases_for("LightClientFinalityUpdate") {
+        let buf = bytes.as_slice();
+        assert!(LightClientFinalityUpdateView::check_size(buf));
+
+        // Offset invariants: attested_header at fixed-part end; finalized
+        // offset is monotonic and leaves both LCH slices within spec bounds.
+        assert_eq!(
+            u32::from_le_bytes(buf[0..4].try_into().unwrap()) as usize,
+            LC_FINALITY_UPDATE_FIXED
+        );
+        let fin_off = u32::from_le_bytes(buf[4..8].try_into().unwrap()) as usize;
+        assert!(fin_off >= LC_FINALITY_UPDATE_FIXED + LIGHT_CLIENT_HEADER_MIN);
+        assert!(fin_off <= LC_FINALITY_UPDATE_FIXED + LIGHT_CLIENT_HEADER_MAX);
+
+        let sa = &v["sync_aggregate"];
+        assert_eq!(
+            LightClientFinalityUpdateView::finality_branch(buf)[..],
+            hex_list_concat(&v["finality_branch"], 32)[..]
+        );
+        assert_eq!(
+            LightClientFinalityUpdateView::sync_committee_bits(buf)[..],
+            b(&sa["sync_committee_bits"], SYNC_COMMITTEE_SIZE / 8)[..]
+        );
+        assert_eq!(
+            *LightClientFinalityUpdateView::sync_committee_signature(buf),
+            b96(&sa["sync_committee_signature"])
+        );
+        assert_eq!(LightClientFinalityUpdateView::signature_slot(buf), u(&v["signature_slot"]));
+
+        assert_lch(LightClientFinalityUpdateView::attested_header(buf), &v["attested_header"]);
+        assert_lch(LightClientFinalityUpdateView::finalized_header(buf), &v["finalized_header"]);
     }
 }
