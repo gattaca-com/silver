@@ -10,7 +10,7 @@ use quinn_proto::Transmit;
 use silver_common::{
     GossipMsgOut, P2pStreamId, PeerEvent, RpcMsgOut, RpcOutType, SilverSpine, StreamProtocol,
 };
-use silver_discovery::{DiscV5, Discovery, DiscoveryEvent, DiscoveryNetworking};
+use silver_discovery::{DiscV5, Discovery, DiscoveryEvent};
 
 use crate::{
     NetEvent, StreamData, TCacheStreamData,
@@ -184,7 +184,7 @@ impl Tile<SilverSpine> for NetworkTile {
 pub struct NetworkTileInner<S, D>
 where
     S: StreamData,
-    D: Discovery + DiscoveryNetworking,
+    D: Discovery,
 {
     p2p_socket: Socket,
     p2p_endpoint: P2p,
@@ -198,7 +198,7 @@ where
 impl<S, D> NetworkTileInner<S, D>
 where
     S: StreamData,
-    D: Discovery + DiscoveryNetworking,
+    D: Discovery,
 {
     pub fn new(
         p2p_addr: SocketAddr,

@@ -12,7 +12,7 @@ use pprof::criterion::{Output, PProfProfiler};
 use quinn_proto::{Endpoint, EndpointConfig};
 use rand::{Rng, RngCore, SeedableRng};
 use silver_common::{Keypair, P2pStreamId, StreamProtocol};
-use silver_discovery::{Discovery, DiscoveryNetworking};
+use silver_discovery::Discovery;
 use silver_network::{NetEvent, NetworkTileEvent, NetworkTileInner, P2p, RemotePeer, StreamData};
 
 const BATCH_SIZE: usize = 8192 * 10;
@@ -277,9 +277,7 @@ impl Discovery for DummyDisc {
     fn ban_ip(&mut self, _ip: std::net::IpAddr, _duration: Option<Duration>) {}
 
     fn teardown(&self) {}
-}
 
-impl DiscoveryNetworking for DummyDisc {
     fn handle(&mut self, _src_addr: std::net::SocketAddr, _data: &[u8], _now: std::time::Instant) {}
 
     fn poll<F: FnMut(silver_discovery::DiscoveryEvent)>(&mut self, _f: F) {}

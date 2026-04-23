@@ -8,5 +8,5 @@ mod discv5;
 mod kbucket;
 mod message;
 pub use config::DiscoveryConfig;
-pub use discovery::{Discovery, DiscoveryEvent, DiscoveryNetworking};
+pub use discovery::{Discovery, DiscoveryEvent};
 pub use discv5::DiscV5;

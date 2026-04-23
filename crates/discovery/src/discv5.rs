@@ -18,7 +18,7 @@ use crate::{
         MAX_PACKET_SIZE, SessionCipher, decrypt_message, ecdh_and_derive_keys_responder,
         ecdh_generate_and_derive, encrypt_message, make_cipher, sign_id_nonce, verify_id_nonce_sig,
     },
-    discovery::{Discovery, DiscoveryEvent, DiscoveryMetrics, DiscoveryNetworking},
+    discovery::{Discovery, DiscoveryEvent, DiscoveryMetrics},
     kbucket::{InsertResult, KBucketsTable, Key, MAX_NODES_PER_BUCKET},
     message::{Distances, ENR_RECORD_MAX, Message, MessageKind, NUM_DISTANCES_TO_REQUEST, Packet},
 };
@@ -1004,9 +1004,7 @@ impl Discovery for DiscV5 {
         self.persist_kbuckets();
         self.persist_banned_nodes();
     }
-}
 
-impl DiscoveryNetworking for DiscV5 {
     fn poll<F>(&mut self, mut f: F)
     where
         F: FnMut(DiscoveryEvent),
@@ -1238,7 +1236,7 @@ mod tests {
     use super::*;
     use crate::{
         config::DiscoveryConfig,
-        discovery::{Discovery, DiscoveryEvent, DiscoveryNetworking},
+        discovery::{Discovery, DiscoveryEvent},
         message::{Message, Packet},
     };
 

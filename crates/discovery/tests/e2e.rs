@@ -5,7 +5,7 @@ use std::{
 
 use secp256k1::SecretKey;
 use silver_common::{Enr, NodeId};
-use silver_discovery::{DiscV5, Discovery, DiscoveryConfig, DiscoveryEvent, DiscoveryNetworking};
+use silver_discovery::{DiscV5, Discovery, DiscoveryConfig, DiscoveryEvent};
 
 struct TestNode {
     disco: DiscV5,
