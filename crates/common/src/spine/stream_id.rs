@@ -1,4 +1,4 @@
-use std::hash::Hash;
+use std::{hash::Hash, ptr::addr_of, slice};
 
 use quinn_proto::{ConnectionHandle, StreamId, VarInt};
 
@@ -12,11 +12,12 @@ pub struct P2pStreamId {
     connection: usize,
     stream: u64,
     protocol: StreamProtocol,
+    _padding: [u8; 7],
 }
 
 impl P2pStreamId {
     pub fn new(connection: usize, stream: u64, protocol: StreamProtocol) -> Self {
-        Self { connection, stream, protocol }
+        Self { connection, stream, protocol, _padding: [0u8; 7] }
     }
 
     pub fn protocol(&self) -> StreamProtocol {
@@ -60,5 +61,19 @@ impl Hash for P2pStreamId {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.connection.hash(state);
         self.stream.hash(state);
+    }
+}
+
+impl AsRef<[u8]> for P2pStreamId {
+    fn as_ref(&self) -> &[u8] {
+        let ptr = addr_of!(*self) as *const u8;
+        unsafe { slice::from_raw_parts(ptr, size_of::<P2pStreamId>()) }
+    }
+}
+
+impl From<&[u8]> for &P2pStreamId {
+    fn from(value: &[u8]) -> Self {
+        let slot = value.as_ptr() as *const P2pStreamId;
+        unsafe { &*slot }
     }
 }

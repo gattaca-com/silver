@@ -15,13 +15,21 @@ unsafe impl Sync for Producer {}
 impl Producer {
     /// Return requested buffer space, if available.
     /// If None is returned, caller should retry.
-    pub fn reserve(&mut self, len: usize) -> Option<Reservation> {
+    /// if `auto_commit` the reservation will be commited as soon as it is
+    /// filled. otherwise it must ber manually committed by calling `flush`.
+    pub fn reserve(&mut self, len: usize, auto_commit: bool) -> Option<Reservation> {
         let tcache = unsafe { &*self.cache };
         match tcache.reserve(self, len as u32) {
             Some((seq, reservation_len)) => {
                 self.seq += reservation_len as u64;
                 self.space -= reservation_len as u32;
-                Some(Reservation { cache: self.cache_ref(), seq, offset: 0, committed: false })
+                Some(Reservation {
+                    cache: self.cache_ref(),
+                    seq,
+                    offset: 0,
+                    committed: false,
+                    auto_commit,
+                })
             }
             None => {
                 // reset available space.
@@ -58,6 +66,7 @@ pub struct Reservation {
     pub(super) seq: u64,
     offset: usize,
     committed: bool,
+    auto_commit: bool,
 }
 
 unsafe impl Send for Reservation {}
@@ -72,7 +81,7 @@ impl Reservation {
     pub fn increment_offset(&mut self, len: usize) {
         self.offset += len;
         if let Ok(len) = self.buffer().map(|b| b.len()) {
-            if self.offset == len {
+            if self.auto_commit && self.offset == len {
                 self.cache.commit(self.seq, true);
                 self.committed = true;
             }
@@ -81,6 +90,19 @@ impl Reservation {
 
     pub fn buffer(&self) -> Result<&mut [u8], std::io::Error> {
         self.cache.write(self.seq).map_err(std::io::Error::other)
+    }
+
+    /// Buffer slice from the current write offset to the end of the
+    /// reservation. Use this when successive writes must not overwrite
+    /// earlier bytes (e.g. a framed header followed by body chunks).
+    pub fn remaining_buffer(&self) -> Result<&mut [u8], std::io::Error> {
+        let buf = self.cache.write(self.seq).map_err(std::io::Error::other)?;
+        Ok(&mut buf[self.offset..])
+    }
+
+    /// Returns a `TCacheRead` reference for this reservation.
+    pub fn read(&self) -> TCacheRead {
+        TCacheRead { tcache: self.cache, seq: self.seq }
     }
 }
 
@@ -93,7 +115,7 @@ impl Write for Reservation {
         buffer[self.offset..self.offset + buf.len()].copy_from_slice(buf);
         self.offset += buf.len();
 
-        if self.offset == buffer.len() {
+        if self.auto_commit && self.offset == buffer.len() {
             self.cache.commit(self.seq, true);
             self.committed = true;
         }

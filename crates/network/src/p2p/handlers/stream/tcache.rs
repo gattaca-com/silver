@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    io::{Error, ErrorKind},
+    io::{Error, ErrorKind, Write},
 };
 
 use silver_common::{
@@ -10,7 +10,7 @@ use silver_common::{
 
 use crate::{RemotePeer, StreamData};
 
-const MAX_PENDING_OUTBOUND_MSGS: usize = 64;
+pub const MAX_PENDING_OUTBOUND_MSGS: usize = 1024;
 
 /// Stream data handler that reads and writes messages from `TCache` buffers.
 pub struct TCacheStreamData {
@@ -115,9 +115,15 @@ impl StreamData for TCacheStreamData {
     fn alloc_recv(&mut self, stream: &P2pStreamId, length: usize) -> Result<(), Error> {
         let reservation = match stream.protocol() {
             StreamProtocol::GossipSub => {
-                self.gossip_in.reserve(length).ok_or(ErrorKind::FileTooLarge)?
+                // Writing gossip: P2pStreamId || Gossip protobuf
+                let mut reservation = self
+                    .gossip_in
+                    .reserve(length + size_of::<P2pStreamId>(), true)
+                    .ok_or(ErrorKind::FileTooLarge)?;
+                let _ = reservation.write(stream.as_ref())?;
+                reservation
             }
-            _ => self.rpc_in.reserve(length).ok_or(ErrorKind::FileTooLarge)?,
+            _ => self.rpc_in.reserve(length, true).ok_or(ErrorKind::FileTooLarge)?,
         };
         self.in_reservations.insert(*stream, reservation);
         Ok(())
@@ -127,12 +133,11 @@ impl StreamData for TCacheStreamData {
         let reservation =
             self.in_reservations.get_mut(stream).ok_or_else(|| Error::other("no reservation"))?;
 
-        match stream.protocol() {
-            StreamProtocol::GossipSub => {
-                self.gossip_in.reservation_buffer(reservation).map_err(Error::other)
-            }
-            _ => self.rpc_in.reservation_buffer(reservation).map_err(Error::other),
-        }
+        // Return suffix from the current write offset — the GossipSub branch
+        // of `alloc_recv` pre-writes a `P2pStreamId` header, and successive
+        // `recv_buf` calls must not clobber either it or previously written
+        // body chunks.
+        reservation.remaining_buffer().map_err(Error::other)
     }
 
     fn recv_advance(&mut self, stream: &P2pStreamId, written: usize) -> Result<(), Error> {
@@ -163,7 +168,7 @@ impl StreamData for TCacheStreamData {
 
     fn send_data(&mut self, stream: &P2pStreamId, offset: usize) -> Option<&[u8]> {
         let current = self.out_current.get(stream)?;
-        let buffer = match stream.protocol() {
+        let (buffer, _) = match stream.protocol() {
             StreamProtocol::GossipSub => self.gossip_out.read_at(current.seq()).ok()?,
             _ => self.rpc_out.read_at(current.seq()).ok()?,
         };

@@ -1,6 +1,10 @@
 use std::{fmt, sync::Arc};
 
-#[derive(Debug)]
+use thiserror::Error;
+
+use crate::TCacheError;
+
+#[derive(Debug, Error)]
 pub enum Error {
     CertGeneration,
     BadDer,
@@ -14,6 +18,11 @@ pub enum Error {
     UnsupportedKeyType,
     PeerIdMismatch,
     BufferTooSmall,
+    ParseTopicError,
+    InvalidSnappy,
+    IoError(#[from] std::io::Error),
+    TCacheError(#[from] TCacheError),
+    SnappyError(#[from] snap::Error),
 }
 
 impl fmt::Display for Error {
@@ -21,8 +30,6 @@ impl fmt::Display for Error {
         fmt::Debug::fmt(self, f)
     }
 }
-
-impl std::error::Error for Error {}
 
 impl From<Error> for rustls::Error {
     fn from(e: Error) -> Self {

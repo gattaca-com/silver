@@ -9,7 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub use handlers::{StreamData, TCacheStreamData};
+pub use handlers::{MAX_PENDING_OUTBOUND_MSGS, StreamData, TCacheStreamData};
 use mio::{Poll, net::UdpSocket};
 pub(crate) use quic::{Peer, create_client_config};
 pub use quic::{create_endpoint, create_server_config};

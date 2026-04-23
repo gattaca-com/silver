@@ -1,19 +1,22 @@
 use std::sync::atomic::Ordering;
 
+use flux::timing::Nanos;
+
 use crate::{GossipMsgOut, RpcMsgOut, TCacheError, TCacheRef};
 
 /// Reader for a TCache msg
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
 pub struct TCacheRead {
-    tcache: TCacheRef,
-    seq: u64,
+    pub(super) tcache: TCacheRef,
+    pub(super) seq: u64,
 }
 
 impl TCacheRead {
     /// Returns the length the data buffer.
     #[inline]
     pub fn len(&self) -> Result<usize, TCacheError> {
-        let (buffer, _) = self.tcache.read(self.seq)?;
+        let (buffer, ..) = self.tcache.read(self.seq)?;
         Ok(buffer.len())
     }
 
@@ -26,11 +29,21 @@ impl TCacheRead {
     pub fn seq(&self) -> u64 {
         self.seq
     }
+
+    #[inline]
+    pub fn cache_ref(&self) -> TCacheRef {
+        self.tcache
+    }
+
+    #[inline]
+    pub fn cache_ts(&self) -> Result<Nanos, TCacheError> {
+        self.tcache.slot_ts(self.seq)
+    }
 }
 
 impl From<GossipMsgOut> for TCacheRead {
     fn from(value: GossipMsgOut) -> Self {
-        Self { tcache: value.cache_ref, seq: value.tcache_seq }
+        value.tcache
     }
 }
 
@@ -50,11 +63,11 @@ pub struct Consumer {
 }
 
 impl Consumer {
-    /// Read next data in the buffer.
-    pub fn read(&mut self) -> Result<&[u8], TCacheError> {
-        self.cache.read(self.seq).map(|(data, inc)| {
+    /// Read next data in the buffer with write timestamp.
+    pub fn read(&mut self) -> Result<(&[u8], Nanos), TCacheError> {
+        self.cache.read(self.seq).map(|(data, inc, ts)| {
             self.next_seq = self.seq + inc;
-            data
+            (data, ts)
         })
     }
 
@@ -76,12 +89,12 @@ pub struct RandomAccessConsumer {
 
 impl RandomAccessConsumer {
     /// Read buffer at specified offset.
-    pub fn read_at(&self, seq: u64) -> Result<&[u8], TCacheError> {
+    pub fn read_at(&self, seq: u64) -> Result<(&[u8], Nanos), TCacheError> {
         if seq < self.tail {
             return Err(TCacheError::StaleSeq { seq, tail: self.tail });
         }
 
-        self.cache.read(seq).map(|(data, _)| data)
+        self.cache.read(seq).map(|(data, _, ts)| (data, ts))
     }
 
     /// Called to set the tail value of the consumer. User of the consumer is

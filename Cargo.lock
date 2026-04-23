@@ -1142,6 +1142,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fxhash"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c31b6d751ae2c7f11320402d34e41349dd1016f8d5d45e48c4312bc8625af50c"
+dependencies = [
+ "byteorder",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2373,13 +2382,54 @@ dependencies = [
  "quinn-proto",
  "rand 0.8.5",
  "rcgen",
+ "ring",
  "rustls",
  "secp256k1",
  "serde",
  "serde_json",
  "sha3",
+ "snap",
  "thiserror 1.0.69",
  "tracing",
+]
+
+[[package]]
+name = "silver_compression"
+version = "0.0.1"
+dependencies = [
+ "buffa",
+ "buffa-build",
+ "criterion",
+ "flux",
+ "fxhash",
+ "hdrhistogram",
+ "pprof",
+ "rand 0.8.5",
+ "rand_core 0.6.4",
+ "ring",
+ "silver-common",
+ "snap",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "silver_e2e"
+version = "0.0.1"
+dependencies = [
+ "buffa",
+ "bytes",
+ "flux",
+ "hdrhistogram",
+ "quinn-proto",
+ "rand 0.8.5",
+ "silver-common",
+ "silver_compression",
+ "silver_network",
+ "snap",
+ "tempfile",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

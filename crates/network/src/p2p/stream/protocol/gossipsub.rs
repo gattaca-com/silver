@@ -94,6 +94,9 @@ impl GossipsubState {
                     if b & 0x80 == 0 {
                         let (length, _) = decode_varint(&buf[..*read], 0)
                             .map_err(|_| IoError::other("invalid varint"))?;
+
+                        // TODO: check vs MAX_FRAME_SIZE
+
                         data.alloc_recv(&self.stream, length as usize)?;
                         self.read_state =
                             GossipReadState::ReadingBody { remaining: length as usize };

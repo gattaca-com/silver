@@ -14,10 +14,12 @@ hex.workspace = true
 quinn-proto.workspace = true
 rand.workspace = true
 rcgen.workspace = true
+ring.workspace = true
 rustls.workspace = true
 secp256k1.workspace = true
 serde.workspace = true
 sha3.workspace = true
+snap.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
