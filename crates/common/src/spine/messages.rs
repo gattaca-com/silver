@@ -185,15 +185,15 @@ pub enum PeerEvent {
         p2p_peer: usize,
         iwant: TCacheRead,
     },
-    /// Emitted in order to trigger sending of a gossip message. 
-    /// Peer manager with generate select peers to send to. 
+    /// Emitted in order to trigger sending of a gossip message.
+    /// Peer manager with generate select peers to send to.
     SendGossip {
         originator_stream_id: P2pStreamId,
         topic: GossipTopic,
         msg_hash: MessageId,
         recv_ts: Nanos,
         protobuf: TCacheRead,
-    }
+    },
 }
 
 #[derive(Clone, Copy, Debug)]
