@@ -10,32 +10,61 @@ use silver_common::{
     TCacheRead, TProducer, TReservation, msg_id_invalid_snappy, msg_id_valid_snappy,
 };
 
-use crate::{GossipCompressionTile, dedup::DedupCache, mcache::MessageCache};
+use crate::{control::copy_idontwants_to_protobuf_output, dedup::DedupCache, mcache::MessageCache};
 
-impl GossipCompressionTile {
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn handle_incoming(
-        topic_string: &str,
-        snappy_data: &[u8],
-        stream_id: &P2pStreamId,
-        fork_digest_hex: &str,
-        recv_ts: Nanos,
-        dedup_cache: &mut DedupCache,
-        incoming_gossip_publish: &mut TProducer,
-        mcache_publish: &mut TProducer,
-        mcache: &mut MessageCache,
-        adapter: &mut SpineAdapter<SilverSpine>,
-    ) -> Result<(), Error> {
-        // Fast duplicate check.
-        let fast_id = match dedup_cache.contains_fast(snappy_data) {
-            Some(fast_hash) => fast_hash,
-            None => return Ok(()), // duplicate
-        };
+#[allow(clippy::too_many_arguments)]
+pub(super) fn handle_incoming(
+    topic_string: &str,
+    snappy_data: &[u8],
+    stream_id: &P2pStreamId,
+    fork_digest_hex: &str,
+    recv_ts: Nanos,
+    dedup_cache: &mut DedupCache,
+    incoming_gossip_publish: &mut TProducer,
+    mcache_publish: &mut TProducer,
+    mcache: &mut MessageCache,
+    adapter: &mut SpineAdapter<SilverSpine>,
+) -> Result<(), Error> {
+    // Fast duplicate check.
+    let fast_id = match dedup_cache.contains_fast(snappy_data) {
+        Some(fast_hash) => fast_hash,
+        None => return Ok(()), // duplicate
+    };
 
-        let topic = GossipTopic::from_wire(topic_string, fork_digest_hex)?;
+    let topic = GossipTopic::from_wire(topic_string, fork_digest_hex)?;
 
-        // Decompress: block snappy.
-        let len = read_message_length(snappy_data, &topic).inspect_err(|_| {
+    // Decompress: block snappy.
+    let len = read_message_length(snappy_data, &topic).inspect_err(|_| {
+        let hash = msg_id_invalid_snappy(topic_string, snappy_data);
+        if dedup_cache.insert(fast_id, hash) {
+            adapter.produce(PeerEvent::P2pGossipInvalidMsg {
+                p2p_peer: stream_id.peer(),
+                topic,
+                hash,
+            });
+        }
+    })?;
+
+    // Alloc into downstream tcache - SSZ message bytes
+    let mut reservation =
+        incoming_gossip_publish.reserve(len, false).ok_or(Error::BufferTooSmall)?;
+
+    let msg_id = decompress_to_reservation(
+        incoming_gossip_publish,
+        snappy_data,
+        &mut reservation,
+        topic_string,
+    )?;
+
+    if !dedup_cache.insert(fast_id, msg_id) {
+        // Second dedup check. Different snappy bytes can decompress to the same message
+        // bytes so this second check is required.
+        return Ok(());
+    }
+
+    let ssz_read = reservation.read();
+    let mcache_read = copy_compressed_to_protobuf_output(mcache_publish, snappy_data, topic_string)
+        .inspect_err(|_| {
             let hash = msg_id_invalid_snappy(topic_string, snappy_data);
             if dedup_cache.insert(fast_id, hash) {
                 adapter.produce(PeerEvent::P2pGossipInvalidMsg {
@@ -46,53 +75,32 @@ impl GossipCompressionTile {
             }
         })?;
 
-        // Alloc into downstream tcache - SSZ message bytes
-        let mut reservation =
-            incoming_gossip_publish.reserve(len, false).ok_or(Error::BufferTooSmall)?;
+    // Add message to message cache.
+    mcache.insert(msg_id, topic, mcache_read);
 
-        let msg_id = decompress_to_reservation(
-            incoming_gossip_publish,
-            snappy_data,
-            &mut reservation,
-            topic_string,
-        )?;
+    // Flush the reservation matching the gossip message available downstream.
+    reservation.flush()?;
 
-        if !dedup_cache.insert(fast_id, msg_id) {
-            // Second dedup check. Different snappy bytes can decompress to the same message
-            // bytes so this second check is required.
-            return Ok(());
-        }
+    adapter.produce(Gossip::NewInbound(NewGossipMsg {
+        stream_id: *stream_id,
+        topic,
+        msg_hash: msg_id,
+        recv_ts,
+        ssz: ssz_read,
+        protobuf: mcache_read,
+    }));
 
-        let ssz_read = reservation.read();
-        let mcache_read =
-            copy_compressed_to_protobuf_output(mcache_publish, snappy_data, topic_string)
-                .inspect_err(|_| {
-                    let hash = msg_id_invalid_snappy(topic_string, snappy_data);
-                    if dedup_cache.insert(fast_id, hash) {
-                        adapter.produce(PeerEvent::P2pGossipInvalidMsg {
-                            p2p_peer: stream_id.peer(),
-                            topic,
-                            hash,
-                        });
-                    }
-                })?;
-
-        // Add message to message cache.
-        mcache.insert(msg_id, topic, mcache_read);
-
-        // Flush the reservation matching the gossip message available downstream.
-        reservation.flush()?;
-
-        adapter.produce(Gossip::NewInbound(NewGossipMsg {
-            stream_id: *stream_id,
-            topic,
-            msg_hash: msg_id,
-            recv_ts,
-            ssz: ssz_read,
-            protobuf: mcache_read,
-        }));
-        Ok(())
-    }
+    // Pre-encode an IDONTWANT control frame carrying this single id; the
+    // peer manager fans it out to mesh peers (except the sender) as a
+    // `P2pGossipSendDontWant` control.
+    let idontwant = copy_idontwants_to_protobuf_output(mcache_publish, std::iter::once(&msg_id))?;
+    adapter.produce(PeerEvent::NewGossip {
+        p2p_peer: stream_id.peer(),
+        topic,
+        msg_hash: msg_id,
+        idontwant,
+    });
+    Ok(())
 }
 
 fn decompress_to_reservation(

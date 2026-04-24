@@ -18,7 +18,7 @@ use silver_network::{NetEvent, NetworkTileEvent, NetworkTileInner, P2p, RemotePe
 const BATCH_SIZE: usize = 8192 * 10;
 
 pub fn broadcast(c: &mut Criterion) {
-    let _guard = tracing_subscriber::fmt().init();
+    //let _guard = tracing_subscriber::fmt().init();
 
     let group_name = format!("quic_basic_{}", BATCH_SIZE);
     let mut group = c.benchmark_group(group_name);
@@ -277,7 +277,6 @@ impl Discovery for DummyDisc {
     fn ban_ip(&mut self, _ip: std::net::IpAddr, _duration: Option<Duration>) {}
 
     fn teardown(&self) {}
-
     fn handle(&mut self, _src_addr: std::net::SocketAddr, _data: &[u8], _now: std::time::Instant) {}
 
     fn poll<F: FnMut(silver_discovery::DiscoveryEvent)>(&mut self, _f: F) {}

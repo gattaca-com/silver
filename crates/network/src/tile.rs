@@ -85,8 +85,12 @@ impl Tile<SilverSpine> for NetworkTile {
             },
             Event::Discovery(disc_event) => match disc_event {
                 DiscoveryEvent::SendMessage { to, data } => todo!(),
-                DiscoveryEvent::NodeFound(enr) => todo!(),
-                DiscoveryEvent::ExternalAddrChanged(socket_addr) => todo!(),
+                DiscoveryEvent::NodeFound(enr) => {
+                    adapter.produce(PeerEvent::DiscNodeFound { enr });
+                }
+                DiscoveryEvent::ExternalAddrChanged(socket_addr) => {
+                    adapter.produce(PeerEvent::DiscExternalAddress { address: socket_addr });
+                }
             },
         };
 

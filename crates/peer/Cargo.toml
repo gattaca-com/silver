@@ -1,0 +1,13 @@
+[package]
+name = "silver_peer"
+edition.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+flux.workspace = true
+silver_common.workspace = true
+
+[lints]
+workspace = true
