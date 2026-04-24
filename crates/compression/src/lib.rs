@@ -2,10 +2,9 @@ use std::time::Instant;
 
 use buffa::MessageView;
 use flux::{spine::SpineAdapter, tile::Tile};
-use silver_common::{
-    Error, Gossip, GossipIHaveOut, P2pStreamId, PeerEvent, SilverSpine, TConsumer, TProducer,
-};
+use silver_common::{Error, P2pStreamId, PeerEvent, SilverSpine, TConsumer, TProducer};
 
+pub use crate::control::copy_iwants_to_protobuf_output;
 use crate::{
     control::{
         copy_ihaves_to_protobuf_output, handle_grafts, handle_idontwants, handle_ihaves,
@@ -77,11 +76,11 @@ impl GossipCompressionTile {
                         &topic.to_wire(&self.fork_digest_hex),
                         msgs_iter,
                     ) {
-                        adapter.produce(Gossip::NewOutboundIHave(GossipIHaveOut {
+                        adapter.produce(PeerEvent::OutboundIHave {
                             topic: *topic,
                             msg_count,
                             protobuf: tcache,
-                        }));
+                        });
                     }
                 }
             }
@@ -112,13 +111,14 @@ impl Tile<SilverSpine> for GossipCompressionTile {
                 if let Some(control) = gossip_proto.control.as_option() {
                     handle_grafts(stream_id, &control.graft, &self.fork_digest_hex, adapter);
                     handle_prunes(stream_id, &control.prune, &self.fork_digest_hex, adapter);
-                    handle_iwants(stream_id, &control.iwant, &self.mcache, adapter);
+                    handle_iwants(stream_id, &control.iwant, &mut self.mcache, adapter);
                     handle_idontwants(stream_id, &control.idontwant, adapter);
                     handle_ihaves(
                         stream_id,
                         &control.ihave,
                         &self.fork_digest_hex,
                         &self.mcache,
+                        &mut self.mcache_publish,
                         adapter,
                     );
                 }

@@ -8,8 +8,8 @@ pub use crate::{
     id::{Keypair, PeerId, decode_protobuf_pubkey, encode_secp256k1_protobuf},
     spine::{
         ALL_PROTOCOLS, Consumer as TConsumer, Error as TCacheError, Gossip, GossipIHaveOut,
-        GossipMsgIn, GossipMsgOut, MULTISTREAM_V1, NewGossipMsg, P2pStreamId, PeerEvent,
-        PeerGossipIn, PeerRpcIn, Producer as TProducer, REJECT_RESPONSE,
+        GossipMsgIn, GossipMsgOut, IpBytes, MULTISTREAM_V1, NewGossipMsg, P2pStreamId, PeerControl,
+        PeerEvent, PeerGossipIn, PeerRpcIn, Producer as TProducer, REJECT_RESPONSE,
         RandomAccessConsumer as TRandomAccess, Reservation as TReservation, RpcMsgIn, RpcMsgOut,
         RpcOutType, SilverSpine, StreamProtocol, TCache, TCacheRead, TCacheRef,
     },
@@ -26,3 +26,4 @@ pub mod ssz_view;
 mod util;
 
 pub use enr::{Enr, NodeId};
+pub use flux::timing::Nanos;

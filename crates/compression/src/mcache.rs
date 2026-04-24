@@ -15,17 +15,40 @@ const BUCKETS: usize = 12;
 const IHAVE_BUCKETS: usize = 3;
 const MAX_IHAVES_PER_TOPIC: usize = 500;
 const IHAVE_GENERATION_INTERVAL: Duration = Duration::from_millis(500);
+/// Gossipsub v1.1 `gossip_retransmission`: how many times we'll serve the
+/// same msg_id to the same peer via IWANT before dropping further requests.
+/// Matches rust-libp2p's default.
+pub(crate) const GOSSIP_RETRANSMISSION: u16 = 3;
+
+/// Outcome of an IWANT lookup in the mcache.
+pub(crate) enum IwantServe {
+    /// Message found and retransmission count is under cap — serve `tcache`.
+    Serve(TCacheRead),
+    /// Message found but the per-(peer, msg_id) cap is exhausted; caller
+    /// should emit a `P2pGossipWantOverCap` rather than serving.
+    OverCap,
+    /// Message not in cache.
+    Unknown,
+}
 
 #[derive(Clone)]
 struct Bucket {
     messages: HashMap<MessageId, TCacheRead, BuildHasherDefault<MessageIdHasher>>,
     ihaves: HashMap<GossipTopic, Vec<MessageId>>,
+    /// Per-(peer_conn, msg_id) IWANT serve count. Cleared when the bucket
+    /// rotates out, so entries live at most `BUCKETS * ROTATION_INTERVAL`.
+    retransmissions: HashMap<(usize, MessageId), u16>,
     tcache_min_seq: u64,
 }
 
 impl Default for Bucket {
     fn default() -> Self {
-        Self { messages: Default::default(), ihaves: Default::default(), tcache_min_seq: u64::MAX }
+        Self {
+            messages: Default::default(),
+            ihaves: Default::default(),
+            retransmissions: Default::default(),
+            tcache_min_seq: u64::MAX,
+        }
     }
 }
 
@@ -57,12 +80,28 @@ impl MessageCache {
         bucket.messages.insert(id, tcache);
     }
 
-    pub(crate) fn get(&self, id: &MessageId) -> Option<TCacheRead> {
-        self.buckets.iter().find_map(|bucket| bucket.messages.get(id).copied())
-    }
-
     pub(crate) fn has(&self, id: &MessageId) -> bool {
         self.buckets.iter().any(|b| b.messages.contains_key(id))
+    }
+
+    /// Attempt to serve an IWANT for `id` to `peer_conn`. Increments the
+    /// per-(peer, id) retransmission counter in the bucket that owns the id
+    /// and returns `IwantServe::Serve` when still under
+    /// `GOSSIP_RETRANSMISSION`, `OverCap` once the cap is reached,
+    /// `Unknown` if the id isn't cached.
+    pub(crate) fn serve_iwant(&mut self, id: &MessageId, peer_conn: usize) -> IwantServe {
+        for bucket in self.buckets.iter_mut() {
+            let Some(tcache) = bucket.messages.get(id).copied() else {
+                continue;
+            };
+            let count = bucket.retransmissions.entry((peer_conn, *id)).or_insert(0);
+            if *count >= GOSSIP_RETRANSMISSION {
+                return IwantServe::OverCap;
+            }
+            *count += 1;
+            return IwantServe::Serve(tcache);
+        }
+        IwantServe::Unknown
     }
 
     pub(crate) fn get_ihaves(
@@ -95,6 +134,7 @@ impl MessageCache {
             bucket.tcache_min_seq = u64::MAX;
             bucket.messages.clear();
             bucket.ihaves.clear();
+            bucket.retransmissions.clear();
 
             self.last_rotation = now;
         }
@@ -159,3 +199,48 @@ impl<'a> Iterator for IHaveIterator<'a> {
 }
 
 impl<'a> ExactSizeIterator for IHaveIterator<'a> {}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+
+    use silver_common::{MessageId, TCache};
+
+    use super::*;
+
+    fn mk_mcache() -> (MessageCache, silver_common::TProducer) {
+        let producer = TCache::producer(1 << 14);
+        let consumer = producer.cache_ref().random_access().unwrap();
+        (MessageCache::new(consumer), producer)
+    }
+
+    fn mk_tcache_read(producer: &mut silver_common::TProducer) -> TCacheRead {
+        let mut reservation = producer.reserve(64, true).unwrap();
+        reservation.write_all(&[0u8; 64]).unwrap();
+        reservation.read()
+    }
+
+    #[test]
+    fn serve_iwant_respects_retransmission_cap_per_peer() {
+        let (mut mcache, mut producer) = mk_mcache();
+        let id = MessageId { id: [1u8; 20] };
+        let tc = mk_tcache_read(&mut producer);
+        mcache.insert(id, GossipTopic::BeaconBlock, tc);
+
+        // Peer 1: first GOSSIP_RETRANSMISSION serves hit; the (N+1)th is over cap.
+        for _ in 0..GOSSIP_RETRANSMISSION {
+            assert!(matches!(mcache.serve_iwant(&id, 1), IwantServe::Serve(_)));
+        }
+        assert!(matches!(mcache.serve_iwant(&id, 1), IwantServe::OverCap));
+
+        // Peer 2 is tracked independently — still eligible.
+        assert!(matches!(mcache.serve_iwant(&id, 2), IwantServe::Serve(_)));
+    }
+
+    #[test]
+    fn serve_iwant_unknown_for_missing_id() {
+        let (mut mcache, _producer) = mk_mcache();
+        let id = MessageId { id: [2u8; 20] };
+        assert!(matches!(mcache.serve_iwant(&id, 1), IwantServe::Unknown));
+    }
+}

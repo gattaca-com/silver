@@ -18,7 +18,7 @@ use silver_network::{NetEvent, NetworkTileEvent, NetworkTileInner, P2p, RemotePe
 const BATCH_SIZE: usize = 8192 * 10;
 
 pub fn broadcast(c: &mut Criterion) {
-    let _guard = tracing_subscriber::fmt().init();
+    //let _guard = tracing_subscriber::fmt().init();
 
     let group_name = format!("quic_basic_{}", BATCH_SIZE);
     let mut group = c.benchmark_group(group_name);

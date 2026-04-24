@@ -14,7 +14,7 @@ use crate::{
         ControlGraftView, ControlIDontWantView, ControlIHaveView, ControlIWantView,
         ControlPruneView, rpc::SubOptsView,
     },
-    mcache::MessageCache,
+    mcache::{IwantServe, MessageCache},
 };
 
 pub(super) fn handle_subscriptions<'a>(
@@ -72,6 +72,8 @@ pub(super) fn handle_prunes<'a>(
             let Ok(topic) = gossip_topic(topic, fork_digest_hex) else {
                 continue;
             };
+            // TODO: prune.peers may contain list of signed peer records of alternate peers
+            // but e.g. Lighthouse does not send peer records. So maybe just ignore?
             adapter.produce(PeerEvent::P2pGossipTopicPrune { p2p_peer: stream_id.peer(), topic });
         }
     }
@@ -80,7 +82,7 @@ pub(super) fn handle_prunes<'a>(
 pub(super) fn handle_iwants<'a>(
     stream_id: &P2pStreamId,
     wants: &RepeatedView<'a, ControlIWantView<'a>>,
-    mcache: &MessageCache,
+    mcache: &mut MessageCache,
     adapter: &mut SpineAdapter<SilverSpine>,
 ) {
     for iwant in wants {
@@ -88,15 +90,17 @@ pub(super) fn handle_iwants<'a>(
             let Some(hash) = message_id(want, stream_id, adapter) else {
                 continue;
             };
-            // TODO we could serve IWANT directly from message cache, but forward
-            // for flow control.
-            match mcache.get(&hash) {
-                Some(tcache) => adapter.produce(PeerEvent::P2pGossipWant {
+            // mcache enforces the per-(peer, id) gossip_retransmission cap
+            // internally; we translate the outcome into a spine event.
+            match mcache.serve_iwant(&hash, stream_id.peer()) {
+                IwantServe::Serve(tcache) => adapter.produce(PeerEvent::P2pGossipWant {
                     p2p_peer: stream_id.peer(),
                     hash,
                     tcache,
                 }),
-                None => adapter
+                IwantServe::OverCap => adapter
+                    .produce(PeerEvent::P2pGossipWantOverCap { p2p_peer: stream_id.peer(), hash }),
+                IwantServe::Unknown => adapter
                     .produce(PeerEvent::P2pGossipWantUnknown { p2p_peer: stream_id.peer(), hash }),
             };
         }
@@ -123,8 +127,10 @@ pub(super) fn handle_ihaves<'a>(
     haves: &RepeatedView<'a, ControlIHaveView<'a>>,
     fork_digest_hex: &str,
     mcache: &MessageCache,
+    mcache_publish: &mut TProducer,
     adapter: &mut SpineAdapter<SilverSpine>,
 ) {
+    let mut iwants = Vec::with_capacity(haves.len());
     for ihave in haves {
         if let Some(topic) = ihave.topic_id {
             let Ok(topic) = gossip_topic(topic, fork_digest_hex) else {
@@ -134,16 +140,28 @@ pub(super) fn handle_ihaves<'a>(
                 let Some(hash) = message_id(have, stream_id, adapter) else {
                     continue;
                 };
-                if !mcache.has(&hash) {
-                    // We don't care if a peer has a message, if we already have it.
-                    adapter.produce(PeerEvent::P2pGossipHave {
-                        p2p_peer: stream_id.peer(),
-                        hash,
-                        topic,
-                    });
+                // Emit for every id, including ones we already have — the
+                // peer manager uses the total count for rate/flood scoring.
+                // `already_seen` tells it whether an IWANT is implied.
+                let already_seen = mcache.has(&hash);
+                adapter.produce(PeerEvent::P2pGossipHave {
+                    p2p_peer: stream_id.peer(),
+                    hash,
+                    topic,
+                    already_seen,
+                });
+
+                if !already_seen {
+                    iwants.push(hash);
                 }
             }
         }
+    }
+    if iwants.is_empty() {
+        return;
+    }
+    if let Ok(cache_read) = copy_iwants_to_protobuf_output(mcache_publish, iwants.iter()) {
+        adapter.produce(PeerEvent::OutboundIWant { p2p_peer: stream_id.peer(), iwant: cache_read });
     }
 }
 
@@ -187,6 +205,82 @@ pub(crate) fn copy_ihaves_to_protobuf_output<'a>(
     // ControlIHave.message_ids (field 2, bytes, repeated).
     for id in message_ids {
         Tag::new(2, WireType::LengthDelimited).encode(&mut cursor);
+        encode_bytes(&id[..], &mut cursor);
+    }
+
+    reservation.increment_offset(total);
+    Ok(reservation.read())
+}
+
+/// Encode an `RPC { control: ControlMessage { iwant: [ ControlIWant {
+/// message_ids } ] } }` frame directly into a TCache reservation. No
+/// topic_id field (IWANT is not topic-scoped).
+pub fn copy_iwants_to_protobuf_output<'a>(
+    producer: &mut TProducer,
+    message_ids: impl ExactSizeIterator<Item = &'a MessageId>,
+) -> Result<TCacheRead, Error> {
+    // RPC.control = field 3, ControlMessage.iwant = field 2,
+    // ControlIWant.message_ids = field 1. All ≤ 15 → 1-byte tags.
+    const TAG_LEN: usize = 1;
+    let (id_count, _) = message_ids.size_hint();
+    let ids_len = id_count * (TAG_LEN + varint_len(MESSAGE_ID_LEN as u64) + MESSAGE_ID_LEN);
+    let iwant_inner_len = ids_len;
+    let control_inner_len = TAG_LEN + varint_len(iwant_inner_len as u64) + iwant_inner_len;
+    let total = TAG_LEN + varint_len(control_inner_len as u64) + control_inner_len;
+
+    let mut reservation = producer.reserve(total, true).ok_or(Error::BufferTooSmall)?;
+    let out = producer.reservation_buffer(&mut reservation)?;
+    let mut cursor: &mut [u8] = &mut out[..total];
+
+    // RPC.control (field 3, LD).
+    Tag::new(3, WireType::LengthDelimited).encode(&mut cursor);
+    encode_varint(control_inner_len as u64, &mut cursor);
+
+    // ControlMessage.iwant (field 2, LD) — single ControlIWant entry.
+    Tag::new(2, WireType::LengthDelimited).encode(&mut cursor);
+    encode_varint(iwant_inner_len as u64, &mut cursor);
+
+    // ControlIWant.message_ids (field 1, bytes, repeated).
+    for id in message_ids {
+        Tag::new(1, WireType::LengthDelimited).encode(&mut cursor);
+        encode_bytes(&id[..], &mut cursor);
+    }
+
+    reservation.increment_offset(total);
+    Ok(reservation.read())
+}
+
+/// Encode an `RPC { control: ControlMessage { idontwant: [ ControlIDontWant
+/// { message_ids } ] } }` frame directly into a TCache reservation. IDONTWANT
+/// is not topic-scoped.
+pub(crate) fn copy_idontwants_to_protobuf_output<'a>(
+    producer: &mut TProducer,
+    message_ids: impl ExactSizeIterator<Item = &'a MessageId>,
+) -> Result<TCacheRead, Error> {
+    // RPC.control = field 3, ControlMessage.idontwant = field 5,
+    // ControlIDontWant.message_ids = field 1. All ≤ 15 → 1-byte tags.
+    const TAG_LEN: usize = 1;
+    let (id_count, _) = message_ids.size_hint();
+    let ids_len = id_count * (TAG_LEN + varint_len(MESSAGE_ID_LEN as u64) + MESSAGE_ID_LEN);
+    let idontwant_inner_len = ids_len;
+    let control_inner_len = TAG_LEN + varint_len(idontwant_inner_len as u64) + idontwant_inner_len;
+    let total = TAG_LEN + varint_len(control_inner_len as u64) + control_inner_len;
+
+    let mut reservation = producer.reserve(total, true).ok_or(Error::BufferTooSmall)?;
+    let out = producer.reservation_buffer(&mut reservation)?;
+    let mut cursor: &mut [u8] = &mut out[..total];
+
+    // RPC.control (field 3, LD).
+    Tag::new(3, WireType::LengthDelimited).encode(&mut cursor);
+    encode_varint(control_inner_len as u64, &mut cursor);
+
+    // ControlMessage.idontwant (field 5, LD) — single ControlIDontWant entry.
+    Tag::new(5, WireType::LengthDelimited).encode(&mut cursor);
+    encode_varint(idontwant_inner_len as u64, &mut cursor);
+
+    // ControlIDontWant.message_ids (field 1, bytes, repeated).
+    for id in message_ids {
+        Tag::new(1, WireType::LengthDelimited).encode(&mut cursor);
         encode_bytes(&id[..], &mut cursor);
     }
 

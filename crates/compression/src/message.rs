@@ -10,7 +10,10 @@ use silver_common::{
     TCacheRead, TProducer, TReservation, msg_id_invalid_snappy, msg_id_valid_snappy,
 };
 
-use crate::{GossipCompressionTile, dedup::DedupCache, mcache::MessageCache};
+use crate::{
+    GossipCompressionTile, control::copy_idontwants_to_protobuf_output, dedup::DedupCache,
+    mcache::MessageCache,
+};
 
 impl GossipCompressionTile {
     #[allow(clippy::too_many_arguments)]
@@ -91,6 +94,18 @@ impl GossipCompressionTile {
             ssz: ssz_read,
             protobuf: mcache_read,
         }));
+
+        // Pre-encode an IDONTWANT control frame carrying this single id; the
+        // peer manager fans it out to mesh peers (except the sender) as a
+        // `P2pGossipSendDontWant` control.
+        let idontwant =
+            copy_idontwants_to_protobuf_output(mcache_publish, std::iter::once(&msg_id))?;
+        adapter.produce(PeerEvent::NewGossip {
+            p2p_peer: stream_id.peer(),
+            topic,
+            msg_hash: msg_id,
+            idontwant,
+        });
         Ok(())
     }
 }

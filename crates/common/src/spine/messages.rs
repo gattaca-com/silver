@@ -1,9 +1,9 @@
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 
 use flux::timing::Nanos;
 
 use crate::{
-    GossipTopic, MessageId, P2pStreamId, PeerId, StreamProtocol, TCacheRead,
+    Enr, GossipTopic, MessageId, NodeId, P2pStreamId, PeerId, StreamProtocol, TCacheRead,
     ssz_view::{
         BeaconBlocksByRangeRequestView, BeaconBlocksByRootRequestView, BlobIdentifierView,
         DataColumnSidecarView, DataColumnSidecarsByRangeRequestView,
@@ -127,6 +127,13 @@ pub enum PeerEvent {
         p2p_peer: usize,
         hash: MessageId,
     },
+    /// Peer kept asking for the same message beyond the mcache's per-(peer,
+    /// msg_id) retransmission cap (`gossip_retransmission`, default 3 —
+    /// matches rust-libp2p). Informational; no score impact by default.
+    P2pGossipWantOverCap {
+        p2p_peer: usize,
+        hash: MessageId,
+    },
     P2pGossipDontWant {
         p2p_peer: usize,
         hash: MessageId,
@@ -135,6 +142,10 @@ pub enum PeerEvent {
         p2p_peer: usize,
         topic: GossipTopic,
         hash: MessageId,
+        /// `true` if we already have this message in our dedup/mcache
+        /// (no IWANT will be sent; counts toward IHAVE rate limits only).
+        /// `false` if the id is new-to-us — an IWANT is implied.
+        already_seen: bool,
     },
     P2pGossipInvalidMsg {
         p2p_peer: usize,
@@ -146,6 +157,101 @@ pub enum PeerEvent {
     },
     P2pGossipInvalidFrame {
         p2p_peer: usize,
+    },
+    DiscNodeFound {
+        enr: Enr,
+    },
+    DiscExternalAddress {
+        address: SocketAddr,
+    },
+    /// A fully-validated inbound gossip message arrived (post-dedup). Carries
+    /// the sending peer, topic, msg id (for promise/score accounting) and a
+    /// pre-encoded IDONTWANT protobuf frame the peer manager can fan out to
+    /// mesh peers without re-encoding per target.
+    NewGossip {
+        p2p_peer: usize,
+        topic: GossipTopic,
+        msg_hash: MessageId,
+        idontwant: TCacheRead,
+    },
+    /// Compression tile has prepared a batched IHAVE frame for `topic`.
+    /// Peer manager fans it out to non-mesh subscribers with acceptable score.
+    OutboundIHave {
+        topic: GossipTopic,
+        msg_count: usize,
+        protobuf: TCacheRead,
+    },
+    OutboundIWant {
+        p2p_peer: usize,
+        iwant: TCacheRead,
+    },
+}
+
+#[derive(Clone, Copy, Debug)]
+#[repr(C, u8)]
+pub enum PeerControl {
+    Ban {
+        p2p: PeerId,
+        p2p_connection: usize,
+        disc: NodeId,
+    },
+    BanIp {
+        ip: IpAddr,
+    },
+    DiscoverNodes,
+    P2pGossipSubscribe {
+        p2p: PeerId,
+        p2p_connection: usize,
+        topic: GossipTopic,
+    },
+    P2pGossipUnsubscribe {
+        p2p: PeerId,
+        p2p_connection: usize,
+        topic: GossipTopic,
+    },
+    P2pGossipGraft {
+        p2p: PeerId,
+        p2p_connection: usize,
+        topic: GossipTopic,
+    },
+    P2pGossipPrune {
+        p2p: PeerId,
+        p2p_connection: usize,
+        topic: GossipTopic,
+    },
+    /// Serve an IWANT: forward the message referenced by `tcache` to the
+    /// peer. Emitted after score-check passes for a `P2pGossipWant` event.
+    P2pGossipForwardMsg {
+        p2p: PeerId,
+        p2p_connection: usize,
+        tcache: TCacheRead,
+    },
+    /// Send a pre-encoded IHAVE control frame (the `tcache` bytes produced
+    /// by the compression tile on `Gossip::NewOutboundIHave`) to a specific
+    /// peer. One emission per target peer per outgoing IHAVE batch.
+    P2pGossipSendIHave {
+        p2p: PeerId,
+        p2p_connection: usize,
+        topic: GossipTopic,
+        tcache: TCacheRead,
+    },
+    /// Send a pre-encoded IDONTWANT control frame (the `tcache` bytes
+    /// produced by the compression tile on `PeerEvent::NewGossip`) to a
+    /// specific mesh peer. Emitted by the manager after accepting a new
+    /// inbound gossip message — mesh peers who haven't yet forwarded this
+    /// id to us get told not to.
+    P2pGossipSendDontWant {
+        p2p: PeerId,
+        p2p_connection: usize,
+        tcache: TCacheRead,
+    },
+    /// Send a pre-encoded IWANT control frame (the `tcache` bytes produced
+    /// by the compression tile on `PeerEvent::OutboundIWant`) to the peer
+    /// whose IHAVE announced these ids. Gated on score ≥ `gossip_threshold`.
+    P2pGossipSendIWant {
+        p2p: PeerId,
+        p2p_connection: usize,
+        tcache: TCacheRead,
     },
 }
 
