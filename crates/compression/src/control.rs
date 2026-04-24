@@ -129,8 +129,9 @@ pub(super) fn handle_ihaves<'a>(
     mcache: &MessageCache,
     mcache_publish: &mut TProducer,
     adapter: &mut SpineAdapter<SilverSpine>,
+    scratch_buffer: &mut Vec<MessageId>,
 ) {
-    let mut iwants = Vec::with_capacity(haves.len());
+    scratch_buffer.clear();
     for ihave in haves {
         if let Some(topic) = ihave.topic_id {
             let Ok(topic) = gossip_topic(topic, fork_digest_hex) else {
@@ -152,15 +153,15 @@ pub(super) fn handle_ihaves<'a>(
                 });
 
                 if !already_seen {
-                    iwants.push(hash);
+                    scratch_buffer.push(hash);
                 }
             }
         }
     }
-    if iwants.is_empty() {
+    if scratch_buffer.is_empty() {
         return;
     }
-    if let Ok(cache_read) = copy_iwants_to_protobuf_output(mcache_publish, iwants.iter()) {
+    if let Ok(cache_read) = copy_iwants_to_protobuf_output(mcache_publish, scratch_buffer.iter()) {
         adapter.produce(PeerEvent::OutboundIWant { p2p_peer: stream_id.peer(), iwant: cache_read });
     }
 }

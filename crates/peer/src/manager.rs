@@ -160,7 +160,8 @@ impl PeerManager {
                 self.add_behaviour_penalty(p2p_peer, 1.0);
             }
             PeerEvent::DiscNodeFound { enr: _ } => {
-                // Discovery pool management lives elsewhere; no-op in manager.
+                // TODO init p2p connection? determine if we need more p2p peers?
+                // TODO init status rpc
             }
             PeerEvent::DiscExternalAddress { address: _ } => {
                 // Informational — network tile handles advertisement.

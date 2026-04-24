@@ -2,7 +2,7 @@ use std::time::Instant;
 
 use buffa::MessageView;
 use flux::{spine::SpineAdapter, tile::Tile};
-use silver_common::{Error, P2pStreamId, PeerEvent, SilverSpine, TConsumer, TProducer};
+use silver_common::{Error, MessageId, P2pStreamId, PeerEvent, SilverSpine, TConsumer, TProducer};
 
 use crate::{
     control::{
@@ -33,6 +33,9 @@ pub struct GossipCompressionTile {
     // publisher of gossip message protobufs.
     mcache_publish: TProducer,
     mcache: MessageCache,
+
+    // scratch buffer for iwant meessage ids.
+    iwant_buffer: Vec<MessageId>,
 }
 
 impl GossipCompressionTile {
@@ -52,6 +55,7 @@ impl GossipCompressionTile {
             dedup_cache: DedupCache::default(),
             mcache_publish: protobuf_gossip_publish,
             mcache,
+            iwant_buffer: Vec::with_capacity(256),
         })
     }
 
@@ -110,6 +114,7 @@ impl Tile<SilverSpine> for GossipCompressionTile {
                         &self.mcache,
                         &mut self.mcache_publish,
                         adapter,
+                        &mut self.iwant_buffer,
                     );
                 }
 
