@@ -52,10 +52,25 @@ impl TwoStackHarness {
 
         let publisher_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), pick_free_port()?);
         let echo_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), pick_free_port()?);
+        let publisher_disc_addr =
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), pick_free_port()?);
+        let echo_disc_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), pick_free_port()?);
 
-        let publisher = PublisherStack::new(tempdir.path(), "_pub", publisher_addr, publisher_kp)?;
-        let echo =
-            EchoStack::new(tempdir.path(), "_echo", echo_addr, echo_kp, fork_digest_hex.clone())?;
+        let publisher = PublisherStack::new(
+            tempdir.path(),
+            "_pub",
+            publisher_addr,
+            publisher_disc_addr,
+            publisher_kp,
+        )?;
+        let echo = EchoStack::new(
+            tempdir.path(),
+            "_echo",
+            echo_addr,
+            echo_disc_addr,
+            echo_kp,
+            fork_digest_hex.clone(),
+        )?;
 
         Ok(Self {
             publisher,

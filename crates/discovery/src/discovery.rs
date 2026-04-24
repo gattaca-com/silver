@@ -38,11 +38,9 @@ pub trait Discovery {
 
     fn ban_ip(&mut self, ip: IpAddr, duration: Option<Duration>);
 
-    fn teardown(&self);
-}
-
-pub trait DiscoveryNetworking {
     fn handle(&mut self, src_addr: SocketAddr, data: &[u8], now: Instant);
 
     fn poll<F: FnMut(DiscoveryEvent)>(&mut self, f: F);
+
+    fn teardown(&self);
 }

@@ -48,8 +48,10 @@ inherits = "dev"
 opt-level = 3
 
 [workspace.dependencies]
-silver-common = { path = "crates/common" }
-silver-discovery = {path = "crates/discovery" }
+silver_common = { path = "crates/common" }
+silver_compression = {path = "crates/compression" }
+silver_discovery = {path = "crates/discovery" }
+silver_network = {path = "crates/network" }
 flux = { git = "https://github.com/gattaca-com/flux", rev = "f902769fe25915d8e58b50469f4a8b76f6045870"}
 flux-utils = { git = "https://github.com/gattaca-com/flux", rev = "f902769fe25915d8e58b50469f4a8b76f6045870", features = ["bytes"]}
 
