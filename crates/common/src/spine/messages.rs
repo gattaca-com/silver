@@ -185,6 +185,15 @@ pub enum PeerEvent {
         p2p_peer: usize,
         iwant: TCacheRead,
     },
+    /// Emitted in order to trigger sending of a gossip message. 
+    /// Peer manager with generate select peers to send to. 
+    SendGossip {
+        originator_stream_id: P2pStreamId,
+        topic: GossipTopic,
+        msg_hash: MessageId,
+        recv_ts: Nanos,
+        protobuf: TCacheRead,
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -219,36 +228,8 @@ pub enum PeerControl {
         p2p_connection: usize,
         topic: GossipTopic,
     },
-    /// Serve an IWANT: forward the message referenced by `tcache` to the
-    /// peer. Emitted after score-check passes for a `P2pGossipWant` event.
-    P2pGossipForwardMsg {
-        p2p: PeerId,
-        p2p_connection: usize,
-        tcache: TCacheRead,
-    },
-    /// Send a pre-encoded IHAVE control frame (the `tcache` bytes produced
-    /// by the compression tile on `Gossip::NewOutboundIHave`) to a specific
-    /// peer. One emission per target peer per outgoing IHAVE batch.
-    P2pGossipSendIHave {
-        p2p: PeerId,
-        p2p_connection: usize,
-        topic: GossipTopic,
-        tcache: TCacheRead,
-    },
-    /// Send a pre-encoded IDONTWANT control frame (the `tcache` bytes
-    /// produced by the compression tile on `PeerEvent::NewGossip`) to a
-    /// specific mesh peer. Emitted by the manager after accepting a new
-    /// inbound gossip message — mesh peers who haven't yet forwarded this
-    /// id to us get told not to.
-    P2pGossipSendDontWant {
-        p2p: PeerId,
-        p2p_connection: usize,
-        tcache: TCacheRead,
-    },
-    /// Send a pre-encoded IWANT control frame (the `tcache` bytes produced
-    /// by the compression tile on `PeerEvent::OutboundIWant`) to the peer
-    /// whose IHAVE announced these ids. Gated on score ≥ `gossip_threshold`.
-    P2pGossipSendIWant {
+    /// Send a message
+    P2pGossipSend {
         p2p: PeerId,
         p2p_connection: usize,
         tcache: TCacheRead,

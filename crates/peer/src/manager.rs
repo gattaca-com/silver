@@ -147,7 +147,7 @@ impl<F: FnMut(PeerControl)> PeerManager<F> {
                 // which silently drops these requests).
             }
             PeerEvent::P2pGossipDontWant { .. } => {
-                // Tracked by the forwarding layer, not peer scoring.
+                // TODO need ot track which peers don't want which messages so we can exclude from gossip.
             }
             PeerEvent::P2pGossipInvalidMsg { p2p_peer, topic, hash: _ } => {
                 self.add_invalid_delivery(p2p_peer, topic);
@@ -170,6 +170,10 @@ impl<F: FnMut(PeerControl)> PeerManager<F> {
             }
             PeerEvent::OutboundIWant { p2p_peer, iwant } => {
                 self.on_outbound_iwant(p2p_peer, iwant);
+            }
+            PeerEvent::SendGossip { originator_stream_id, topic, msg_hash, recv_ts: _, protobuf } => {
+                // TODO recv_ts elpased metric
+                self.on_send_gossip(originator_stream_id.peer(), msg_hash, topic, protobuf);
             }
         }
     }
@@ -400,7 +404,7 @@ impl<F: FnMut(PeerControl)> PeerManager<F> {
         if score < self.params.gossip_threshold {
             return;
         }
-        (self.emitter)(PeerControl::P2pGossipForwardMsg {
+        (self.emitter)(PeerControl::P2pGossipSend {
             p2p: peer_id,
             p2p_connection: conn,
             tcache,
@@ -457,7 +461,7 @@ impl<F: FnMut(PeerControl)> PeerManager<F> {
             }
         }
         for (conn, peer_id) in targets {
-            (self.emitter)(PeerControl::P2pGossipSendDontWant {
+            (self.emitter)(PeerControl::P2pGossipSend {
                 p2p: peer_id,
                 p2p_connection: conn,
                 tcache: idontwant,
@@ -490,10 +494,9 @@ impl<F: FnMut(PeerControl)> PeerManager<F> {
             }
         }
         for (conn, peer_id) in targets {
-            (self.emitter)(PeerControl::P2pGossipSendIHave {
+            (self.emitter)(PeerControl::P2pGossipSend {
                 p2p: peer_id,
                 p2p_connection: conn,
-                topic,
                 tcache: protobuf,
             });
         }
@@ -511,11 +514,34 @@ impl<F: FnMut(PeerControl)> PeerManager<F> {
         if peer.cached_score < self.params.gossip_threshold {
             return;
         }
-        (self.emitter)(PeerControl::P2pGossipSendIWant {
+        (self.emitter)(PeerControl::P2pGossipSend {
             p2p: peer.peer_id,
             p2p_connection: conn,
             tcache,
         });
+    }
+
+    fn on_send_gossip(&mut self, sender: usize, _msg_hash: MessageId, topic: GossipTopic, tcache: TCacheRead) {
+        if let Some(meshed_peers) = self.mesh.get(&topic) {
+            for peer in meshed_peers {
+                if *peer == sender {
+                    continue;
+                }
+                let Some(peer_state) = self.peers.get(peer) else {
+                    continue;
+                };
+                if peer_state.cached_score < self.params.gossip_threshold {
+                    continue;
+                } 
+                // TODO if has sent don't want for this message -> continue
+
+                (self.emitter)(PeerControl::P2pGossipSend {
+                    p2p: peer_state.peer_id,
+                    p2p_connection: *peer,
+                    tcache,
+                });
+            }
+        }
     }
 
     fn add_invalid_delivery(&mut self, conn: usize, topic: GossipTopic) {
@@ -1207,7 +1233,7 @@ mod tests {
         let send_ihaves: Vec<_> = events
             .iter()
             .filter_map(|e| {
-                if let PeerControl::P2pGossipSendIHave { p2p_connection, .. } = e {
+                if let PeerControl::P2pGossipSend { p2p_connection, .. } = e {
                     Some(*p2p_connection)
                 } else {
                     None
@@ -1255,7 +1281,7 @@ mod tests {
         );
         let events = cap.lock().unwrap();
         assert!(
-            !events.iter().any(|e| matches!(e, PeerControl::P2pGossipSendIHave { .. })),
+            !events.iter().any(|e| matches!(e, PeerControl::P2pGossipSend { .. })),
             "below-threshold peer should not receive IHAVE, got {events:?}"
         );
     }
@@ -1282,7 +1308,7 @@ mod tests {
         assert!(
             events
                 .iter()
-                .any(|e| matches!(e, PeerControl::P2pGossipForwardMsg { p2p_connection: 1, .. })),
+                .any(|e| matches!(e, PeerControl::P2pGossipSend { p2p_connection: 1, .. })),
             "expected ForwardMsg emission, got {events:?}"
         );
     }
@@ -1319,7 +1345,7 @@ mod tests {
 
         let events = cap.lock().unwrap();
         assert!(
-            !events.iter().any(|e| matches!(e, PeerControl::P2pGossipForwardMsg { .. })),
+            !events.iter().any(|e| matches!(e, PeerControl::P2pGossipSend { .. })),
             "expected no ForwardMsg for below-threshold peer, got {events:?}"
         );
     }
@@ -1373,7 +1399,7 @@ mod tests {
         let dontwants: Vec<usize> = events
             .iter()
             .filter_map(|e| match e {
-                PeerControl::P2pGossipSendDontWant { p2p_connection, .. } => Some(*p2p_connection),
+                PeerControl::P2pGossipSend { p2p_connection, .. } => Some(*p2p_connection),
                 _ => None,
             })
             .collect();
@@ -1440,7 +1466,7 @@ mod tests {
 
         let events = cap.lock().unwrap();
         assert!(
-            !events.iter().any(|e| matches!(e, PeerControl::P2pGossipSendDontWant { .. })),
+            !events.iter().any(|e| matches!(e, PeerControl::P2pGossipSend { .. })),
             "below-threshold mesh peer should not receive IDONTWANT, got {events:?}"
         );
     }
