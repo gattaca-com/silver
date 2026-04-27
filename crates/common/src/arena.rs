@@ -8,12 +8,8 @@ use flux::communication::ShmemData;
 /// Fixed-capacity pool of `N` entries of type `T`, ring-allocated.
 ///
 /// SPMC: a **single producer** calls `alloc` / `copy_from` / `set` /
-/// `set_cursor`; any number of consumers call `get` / `generation`.
-///
-/// `next` wraps `mod N` and supplies the next allocated index.
-/// `generation` is a monotonic count of allocations, used by consumers
-/// (e.g. cold storage) to detect mutation across a long window where
-/// `next` would wrap multiple times.
+/// `set_cursor`; any number of consumers call `get` / `gen_at` /
+/// `get_checked`.
 ///
 /// # Ring-wrap contract
 /// `alloc` and `copy_from` silently overwrite slot `next % N` on each
@@ -22,8 +18,8 @@ use flux::communication::ShmemData;
 #[repr(C, align(64))]
 pub struct TierPool<T, const N: usize> {
     next: UnsafeCell<u32>,
-    generation: AtomicU32,
-    _pad: [u8; 56],
+    slot_gens: [AtomicU32; N],
+    _pad: [u8; 60],
     entries: [UnsafeCell<T>; N],
 }
 
@@ -40,17 +36,23 @@ impl<T, const N: usize> TierPool<T, N> {
         unsafe { &*(ptr as *const Self) }
     }
 
+    /// Advance the cursor and return the next index to write.
+    /// Does NOT bump `slot_gens` — the caller commits via `set` /
+    /// `copy_from` after the data write so a reader who sees the new gen
+    /// also sees the new data.
     pub fn alloc(&self) -> usize {
         // SAFETY: single-producer contract — no concurrent writes to `next`.
         let slot = unsafe { &mut *self.next.get() };
         let curr = *slot as usize;
         *slot = ((curr + 1) % N) as u32;
-        self.generation.fetch_add(1, Ordering::Relaxed);
         curr
     }
 
-    pub fn generation(&self) -> u32 {
-        self.generation.load(Ordering::Relaxed)
+    /// Per-slot generation. Bumps once per committed write at `idx`.
+    /// `Acquire` pairs with the `Release` in `set`/`copy_from` so a
+    /// reader who sees the new gen also sees the new data.
+    pub fn gen_at(&self, idx: usize) -> u32 {
+        self.slot_gens[idx].load(Ordering::Acquire)
     }
 
     pub fn copy_from(&self, src_idx: usize) -> usize {
@@ -63,6 +65,9 @@ impl<T, const N: usize> TierPool<T, N> {
             let d = self.entries[dst].get();
             core::ptr::copy_nonoverlapping(src, d, 1);
         }
+        // Commit AFTER the write so cross-thread readers who see the new
+        // gen also see the new data.
+        self.slot_gens[dst].fetch_add(1, Ordering::Release);
         dst
     }
 
@@ -75,10 +80,32 @@ impl<T, const N: usize> TierPool<T, N> {
         unsafe { &mut *self.entries[idx].get() }
     }
 
+    pub fn get_checked(&self, idx: usize, expected_gen: u32) -> &T {
+        let actual = self.gen_at(idx);
+        flux_utils::safe_assert_eq!(
+            actual,
+            expected_gen,
+            "TierPool ring-wrap: idx={idx} expected_gen={expected_gen} actual_gen={actual}"
+        );
+        unsafe { &*self.entries[idx].get() }
+    }
+
+    #[allow(clippy::mut_from_ref)]
+    pub fn get_mut_checked(&self, idx: usize, expected_gen: u32) -> &mut T {
+        let actual = self.gen_at(idx);
+        flux_utils::safe_assert_eq!(
+            actual,
+            expected_gen,
+            "TierPool ring-wrap: idx={idx} expected_gen={expected_gen} actual_gen={actual}"
+        );
+        unsafe { &mut *self.entries[idx].get() }
+    }
+
     pub fn set(&self, idx: usize, value: &T) {
         unsafe {
             core::ptr::copy_nonoverlapping(value as *const T, self.entries[idx].get(), 1);
         }
+        self.slot_gens[idx].fetch_add(1, Ordering::Release);
     }
 
     pub fn set_cursor(&self, idx: usize) {

@@ -7,11 +7,12 @@ pub use crate::{
     },
     id::{Keypair, PeerId, decode_protobuf_pubkey, encode_secp256k1_protobuf},
     spine::{
-        ALL_PROTOCOLS, Consumer as TConsumer, Error as TCacheError, Gossip, GossipIHaveOut,
-        GossipMsgIn, GossipMsgOut, IpBytes, MULTISTREAM_V1, NewGossipMsg, P2pStreamId, PeerControl,
-        PeerEvent, PeerGossipIn, PeerRpcIn, Producer as TProducer, REJECT_RESPONSE,
-        RandomAccessConsumer as TRandomAccess, Reservation as TReservation, RpcMsgIn, RpcMsgOut,
-        RpcOutType, SilverSpine, StreamProtocol, TCache, TCacheRead, TCacheRef,
+        ALL_PROTOCOLS, BeaconStateEvent, Consumer as TConsumer, Error as TCacheError, Gossip,
+        GossipIHaveOut, GossipMsgIn, GossipMsgOut, IpBytes, MULTISTREAM_V1, NewGossipMsg,
+        P2pStreamId, Peer, PeerControl, PeerEvent, PeerRpcIn, Producer as TProducer,
+        REJECT_RESPONSE, RandomAccessConsumer as TRandomAccess, Reservation as TReservation,
+        RpcMsg, RpcMsgIn, RpcMsgOut, RpcOutType, SilverSpine, StreamProtocol, TCache, TCacheRead,
+        TCacheRef,
     },
     util::{create_self_signed_certificate, decode_varint, encode_varint},
 };

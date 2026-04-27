@@ -5,12 +5,18 @@ repository.workspace = true
 rust-version.workspace = true
 version.workspace = true
 
+[features]
+ef_tests = []
+
 [dependencies]
 silver_common.workspace = true
 flux.workspace = true
 ring.workspace = true
+blst.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
+rand.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_yml = "0.0.12"
 snap = "0.1"
