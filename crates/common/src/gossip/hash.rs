@@ -17,7 +17,7 @@ pub const MESSAGE_DOMAIN_INVALID_SNAPPY: [u8; 4] = [0x00, 0x00, 0x00, 0x00];
 /// Truncated SHA-256 output length used as the wire message-id.
 pub const MESSAGE_ID_LEN: usize = 20;
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 #[repr(C)]
 pub struct MessageId {
     pub id: [u8; MESSAGE_ID_LEN],
@@ -64,7 +64,7 @@ fn hash_id(domain: &[u8; 4], topic: &[u8], body: &[u8]) -> MessageId {
 // `write_u64` when the hashed key is a plain u64 (e.g. the fast-dedup cache),
 // so accept both 8- and 20-byte writes.
 #[derive(Default)]
-pub struct MessageIdHasher(u64);
+pub struct MessageIdHasher(pub u64);
 impl Hasher for MessageIdHasher {
     fn write(&mut self, bytes: &[u8]) {
         debug_assert!(bytes.len() >= 8, "MessageIdHasher: write of <8 bytes");

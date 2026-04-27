@@ -14,6 +14,8 @@ use std::{
 
 use silver_common::{GossipTopic, MessageId, MessageIdHasher, PeerId};
 
+use crate::wither::CountingWitherFilter;
+
 /// Max topics an honest eth2 peer can reasonably subscribe to (64 attnets +
 /// 4 syncnets + 6 blobs + aggregates + blocks + slashings + exits + bls-
 /// change + lc updates ≈ 80). Cap capacity so inserts don't rehash in steady
@@ -36,6 +38,16 @@ pub(crate) struct PeerState {
     // Per-topic scoring. Sparse — entry created on first meshed activity.
     pub topic_stats: HashMap<GossipTopic, TopicScore>,
 
+    // WANT/ DONTWANT message id cache. For mesh peers this cache contains DONTWANT msg ids
+    // and for non-mesh peers it tracks WANT requests.
+    // This filter may return false negatives which will have the effect of:
+    // - replying to an IWANT in excess of retransmission limit (non-mesh)
+    // - broadcasting a gossip message for which we had IDNOTWANT
+    // Note that this struct is NOT cleared or rotated. This means message ids may persist
+    // longer than specced timeouts (4.2s for IWANT limits and 3s for IDONTWANT) - but would
+    // argue that this is irrelevent - msg ids naturally age out.
+    pub msg_cache: CountingWitherFilter<MessageId, MessageIdHasher, 4096>,
+
     // Global score components.
     pub application_score: f64, // P5
     pub behaviour_penalty: f64, // P7, quadratic over threshold
@@ -57,6 +69,7 @@ impl PeerState {
             ip_prefix: IpPrefix::from(addr.ip()),
             topics: HashSet::with_capacity(TOPICS_PER_PEER_CAP),
             topic_stats: HashMap::with_capacity(TOPICS_PER_PEER_CAP),
+            msg_cache: CountingWitherFilter::new(),
             application_score: 0.0,
             behaviour_penalty: 0.0,
             ihaves_received: 0,
@@ -72,6 +85,15 @@ impl PeerState {
         self.application_score = archive.application_score;
         self.behaviour_penalty = archive.behaviour_penalty;
         self.topic_stats = archive.topic_stats;
+    }
+
+    /// Inserts or updates msg cache entry, returning previous count
+    pub fn msg_cache_insert(&mut self, msg_id: MessageId) -> u32 {
+        self.msg_cache.upsert(msg_id)
+    }
+
+    pub fn msg_cache_contains(&self, msg_id: &MessageId) -> bool {
+        self.msg_cache.contains(msg_id)
     }
 }
 

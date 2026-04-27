@@ -14,7 +14,7 @@ use crate::{
         ControlGraftView, ControlIDontWantView, ControlIHaveView, ControlIWantView,
         ControlPruneView, rpc::SubOptsView,
     },
-    mcache::{IwantServe, MessageCache},
+    mcache::MessageCache,
 };
 
 pub(super) fn handle_subscriptions<'a>(
@@ -90,19 +90,14 @@ pub(super) fn handle_iwants<'a>(
             let Some(hash) = message_id(want, stream_id, adapter) else {
                 continue;
             };
-            // mcache enforces the per-(peer, id) gossip_retransmission cap
-            // internally; we translate the outcome into a spine event.
-            match mcache.serve_iwant(&hash, stream_id.peer()) {
-                IwantServe::Serve(tcache) => adapter.produce(PeerEvent::P2pGossipWant {
+
+            if let Some(tcache) = mcache.get(&hash) {
+                adapter.produce(PeerEvent::P2pGossipWant {
                     p2p_peer: stream_id.peer(),
                     hash,
                     tcache,
-                }),
-                IwantServe::OverCap => adapter
-                    .produce(PeerEvent::P2pGossipWantOverCap { p2p_peer: stream_id.peer(), hash }),
-                IwantServe::Unknown => adapter
-                    .produce(PeerEvent::P2pGossipWantUnknown { p2p_peer: stream_id.peer(), hash }),
-            };
+                });
+            }
         }
     }
 }

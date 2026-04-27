@@ -123,17 +123,6 @@ pub enum PeerEvent {
         hash: MessageId,
         tcache: TCacheRead,
     },
-    P2pGossipWantUnknown {
-        p2p_peer: usize,
-        hash: MessageId,
-    },
-    /// Peer kept asking for the same message beyond the mcache's per-(peer,
-    /// msg_id) retransmission cap (`gossip_retransmission`, default 3 —
-    /// matches rust-libp2p). Informational; no score impact by default.
-    P2pGossipWantOverCap {
-        p2p_peer: usize,
-        hash: MessageId,
-    },
     P2pGossipDontWant {
         p2p_peer: usize,
         hash: MessageId,
