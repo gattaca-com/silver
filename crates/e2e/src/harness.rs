@@ -11,7 +11,7 @@ use std::{
 };
 
 use flux::{tile::Tile, timing::Nanos};
-use silver_common::{Gossip, GossipMsgOut, GossipTopic, PeerEvent};
+use silver_common::{GossipMsgOut, GossipTopic, NewGossipMsg, PeerEvent};
 use tempfile::TempDir;
 
 use crate::{
@@ -122,30 +122,25 @@ impl TwoStackHarness {
         // ≥8 bytes we interpret the first 8 bytes as a
         // `flux::timing::Instant::now().0` stamp from the publisher and
         // record the one-way latency in the histogram.
-        self.echo.stats_adapter.consume::<Gossip, _>(|msg, _p| {
-            if let Gossip::NewInbound(new_msg) = msg {
-                // Saturating subtract guards against garbage/unstamped
-                // timestamps: a `recv_ts` that somehow ends up in the future
-                // yields 0 ns rather than panicking.
-                let _ = self.echo.stats.receive_ns.record(new_msg.recv_ts.elapsed_saturating().0);
+        self.echo.stats_adapter.consume::<NewGossipMsg, _>(|new_msg, _p| {
+            // Saturating subtract guards against garbage/unstamped
+            // timestamps: a `recv_ts` that somehow ends up in the future
+            // yields 0 ns rather than panicking.
+            let _ = self.echo.stats.receive_ns.record(new_msg.recv_ts.elapsed_saturating().0);
 
-                let now_wall = Instant::now();
-                self.echo.stats.gossip_received += 1;
-                self.echo.stats.first_seen_at.get_or_insert(now_wall);
-                self.echo.stats.last_seen_at = Some(now_wall);
+            let now_wall = Instant::now();
+            self.echo.stats.gossip_received += 1;
+            self.echo.stats.first_seen_at.get_or_insert(now_wall);
+            self.echo.stats.last_seen_at = Some(now_wall);
 
-                if let Ok((bytes, _)) = self.echo.ssz_consumer.read_at(new_msg.ssz.seq()) {
-                    self.echo.stats.gossip_decompressed_bytes += bytes.len() as u64;
-                    if bytes.len() >= 8 {
-                        let sent_ns = u64::from_le_bytes(bytes[..8].try_into().expect("8 bytes"));
-                        // Same guard: integration tests may publish unstamped
-                        // (random) bytes, where `sent_ns` is meaningless.
-                        let _ = self
-                            .echo
-                            .stats
-                            .latency_ns
-                            .record(Nanos(sent_ns).elapsed_saturating().0);
-                    }
+            if let Ok((bytes, _)) = self.echo.ssz_consumer.read_at(new_msg.ssz.seq()) {
+                self.echo.stats.gossip_decompressed_bytes += bytes.len() as u64;
+                if bytes.len() >= 8 {
+                    let sent_ns = u64::from_le_bytes(bytes[..8].try_into().expect("8 bytes"));
+                    // Same guard: integration tests may publish unstamped
+                    // (random) bytes, where `sent_ns` is meaningless.
+                    let _ =
+                        self.echo.stats.latency_ns.record(Nanos(sent_ns).elapsed_saturating().0);
                 }
             }
         });

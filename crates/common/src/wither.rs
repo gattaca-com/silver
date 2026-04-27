@@ -51,9 +51,63 @@ where
     }
 }
 
+pub struct WitherFilter<T, H, const N: usize>
+where
+    T: Copy + Hash + Eq,
+    H: Default + Hasher,
+{
+    slots: Box<[T]>,
+    default_value: T,
+    _hasher: PhantomData<H>,
+}
+
+impl<T, H, const N: usize> WitherFilter<T, H, N>
+where
+    T: Copy + Hash + Eq,
+    H: Default + Hasher,
+{
+    pub fn new(default_value: T) -> Self {
+        assert!(N.is_power_of_two());
+        Self { slots: vec![default_value; N].into_boxed_slice(), default_value, _hasher: PhantomData }
+    }
+
+    /// Insert the specified key, return `true` if not already present. 
+    pub fn insert(&mut self, val: T) -> bool {
+        let index = self.index(&val);
+        if val == self.slots[index] {
+            false
+        } else {
+            self.slots[index] = val;
+            true
+        }
+    }
+
+    pub fn contains(&self, val: &T) -> bool {
+        let index = self.index(val);
+        self.slots[index] == *val
+    }
+
+    pub fn remove(&mut self, val: &T) -> bool {
+        let index = self.index(&val);
+        if *val == self.slots[index] {
+            self.slots[index] = self.default_value;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn index(&self, val: &T) -> usize {
+        let mut hasher = H::default();
+        val.hash(&mut hasher);
+        let hash = hasher.finish();
+        (hash as usize) & (N - 1)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use silver_common::{MessageId, MessageIdHasher};
+    use crate::{MessageId, MessageIdHasher};
 
     use super::*;
 

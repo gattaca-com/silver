@@ -12,9 +12,7 @@ use std::{
     time::Instant,
 };
 
-use silver_common::{GossipTopic, MessageId, MessageIdHasher, PeerId};
-
-use crate::wither::CountingWitherFilter;
+use silver_common::{CountingWitherFilter, GossipTopic, MessageId, MessageIdHasher, PeerId};
 
 /// Max topics an honest eth2 peer can reasonably subscribe to (64 attnets +
 /// 4 syncnets + 6 blobs + aggregates + blocks + slashings + exits + bls-

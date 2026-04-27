@@ -121,6 +121,16 @@ impl Enr {
     }
 
     #[inline]
+    pub fn quic4_socket(&self) -> Option<SocketAddr> {
+        Some(SocketAddrV4::new(self.ip4?, self.quic4?).into())
+    }
+
+    #[inline]
+    pub fn quic6_socket(&self) -> Option<SocketAddr> {
+        Some(SocketAddrV6::new(self.ip6?, self.quic6?, 0, 0).into())
+    }
+
+    #[inline]
     pub fn eth2(&self) -> Option<[u8; 16]> {
         self.eth2
     }

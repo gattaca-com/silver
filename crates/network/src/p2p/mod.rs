@@ -4,11 +4,11 @@ mod stream;
 pub(crate) mod tls;
 
 use std::{
-    collections::HashMap,
     net::SocketAddr,
     time::{Duration, Instant},
 };
 
+use fxhash::{FxHashMap, FxHashSet};
 pub use handlers::{MAX_PENDING_OUTBOUND_MSGS, StreamData, TCacheStreamData};
 use mio::{Poll, net::UdpSocket};
 pub(crate) use quic::{Peer, create_client_config};
@@ -58,7 +58,8 @@ pub enum NetEvent {
 pub struct P2p {
     keypair: Keypair,
     endpoint: Endpoint,
-    peers: HashMap<ConnectionHandle, Peer>,
+    peers: FxHashMap<ConnectionHandle, Peer>,
+    banned: FxHashSet<PeerId>,
     timeout: Option<Duration>,
     recv_count: usize,
     /// Pending outbound connections (queued via `connect`).
@@ -70,7 +71,8 @@ impl P2p {
         Self {
             keypair,
             endpoint,
-            peers: HashMap::with_capacity(1024),
+            peers: FxHashMap::default(),
+            banned: FxHashSet::default(),
             timeout: Some(Duration::ZERO),
             recv_count: 0,
             pending_connect: Vec::new(),
@@ -90,6 +92,14 @@ impl P2p {
     pub fn open_stream(&mut self, peer: usize, protocol: StreamProtocol) -> Option<StreamId> {
         let peer_obj = self.peers.get_mut(&ConnectionHandle(peer))?;
         peer_obj.open_stream(protocol)
+    }
+
+    pub fn ban_peer(&mut self, peer_id: PeerId) {
+        self.banned.insert(peer_id);
+    }
+
+    pub fn unban_peer(&mut self, peer_id: PeerId) {
+        self.banned.remove(&peer_id);
     }
 
     pub(crate) fn recv(
@@ -115,6 +125,7 @@ impl P2p {
                 match self.endpoint.accept(incoming, now, scratch, None) {
                     Ok((handle, conn)) => {
                         let peer = Peer::new(handle, conn);
+                        
                         self.peers.insert(handle, peer);
                     }
                     Err(e) => {
@@ -165,7 +176,7 @@ impl P2p {
                 socket.send(poll, |buf| peer.transmit(now, MAX_GSO_SEGMENTS, buf))
             {}
 
-            let next_timeout = peer.spin(now, &mut ep_callback, data, on_event);
+            let next_timeout = peer.spin(now, &mut ep_callback, data, on_event, &self.banned);
             if let Some(t) = next_timeout {
                 let dur = t.saturating_duration_since(now);
                 self.timeout = Some(self.timeout.map_or(dur, |cur| cur.min(dur)));

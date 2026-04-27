@@ -5,11 +5,16 @@ mod linux;
 #[path = "portable.rs"]
 mod udp;
 
-use std::{io::Error, net::SocketAddr};
+use std::{
+    io::Error,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+};
 
+use fxhash::FxHasher;
 pub(crate) use linux::{RX_BATCH_MAX, RX_BUF_SIZE, RxBatch, TxBatch};
 use mio::{Interest, Poll, Token, net::UdpSocket};
 use quinn_proto::Transmit;
+use silver_common::WitherFilter;
 
 pub(crate) const MAX_GSO_SEGMENTS: usize = 10;
 
@@ -20,6 +25,7 @@ pub struct Socket {
     tx_batch: TxBatch,
     blocked: bool,
     scratch_buffer: Vec<u8>,
+    banned_ips: WitherFilter<IpAddr, FxHasher, 1024>,
 }
 
 impl Socket {
@@ -34,6 +40,7 @@ impl Socket {
             tx_batch: TxBatch::new(),
             blocked: false,
             scratch_buffer: vec![0u8; RX_BUF_SIZE],
+            banned_ips: WitherFilter::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED)),
         })
     }
 
@@ -108,13 +115,24 @@ impl Socket {
 
             for i in 0..n {
                 let (data, remote) = self.rx_batch.take(i);
-                self.scratch_buffer.clear();
-                f(data, remote, &mut self.scratch_buffer, &self.socket);
+
+                if !self.banned_ips.contains(&remote.ip()) {
+                    self.scratch_buffer.clear();
+                    f(data, remote, &mut self.scratch_buffer, &self.socket);
+                }
             }
 
             if n < RX_BATCH_MAX {
                 break;
             }
         }
+    }
+
+    pub(crate) fn ban(&mut self, ip: IpAddr) {
+        self.banned_ips.insert(ip);
+    }
+
+    pub(crate) fn un_ban(&mut self, ip: IpAddr) {
+        self.banned_ips.remove(&ip);
     }
 }

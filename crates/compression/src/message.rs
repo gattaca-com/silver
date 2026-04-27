@@ -6,8 +6,8 @@ use buffa::{
 };
 use flux::{spine::SpineAdapter, timing::Nanos};
 use silver_common::{
-    Error, Gossip, GossipTopic, MessageId, NewGossipMsg, P2pStreamId, PeerEvent, SilverSpine,
-    TCacheRead, TProducer, TReservation, msg_id_invalid_snappy, msg_id_valid_snappy,
+    Error, GossipTopic, MessageId, NewGossipMsg, P2pStreamId, PeerEvent, SilverSpine, TCacheRead,
+    TProducer, TReservation, msg_id_invalid_snappy, msg_id_valid_snappy,
 };
 
 use crate::{control::copy_idontwants_to_protobuf_output, dedup::DedupCache, mcache::MessageCache};
@@ -81,14 +81,14 @@ pub(super) fn handle_incoming(
     // Flush the reservation matching the gossip message available downstream.
     reservation.flush()?;
 
-    adapter.produce(Gossip::NewInbound(NewGossipMsg {
+    adapter.produce(NewGossipMsg {
         stream_id: *stream_id,
         topic,
         msg_hash: msg_id,
         recv_ts,
         ssz: ssz_read,
         protobuf: mcache_read,
-    }));
+    });
 
     // Pre-encode an IDONTWANT control frame carrying this single id; the
     // peer manager fans it out to mesh peers (except the sender) as a

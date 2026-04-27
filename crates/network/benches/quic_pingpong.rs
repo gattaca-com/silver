@@ -330,6 +330,12 @@ impl Discovery for DummyDisc {
     fn handle(&mut self, _src_addr: std::net::SocketAddr, _data: &[u8], _now: std::time::Instant) {}
 
     fn poll<F: FnMut(silver_discovery::DiscoveryEvent)>(&mut self, _f: F) {}
+
+    fn unban_node(&mut self, _id: silver_common::NodeId) {
+    }
+    
+    fn unban_ip(&mut self, _ip: std::net::IpAddr) {
+    }
 }
 
 criterion_group! {

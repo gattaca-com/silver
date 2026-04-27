@@ -1000,6 +1000,14 @@ impl Discovery for DiscV5 {
         self.banned_ips.insert(ip, expires);
     }
 
+    fn unban_node(&mut self, id: NodeId) {
+        self.banned_nodes.remove(&id);
+    }
+
+    fn unban_ip(&mut self, ip: IpAddr) {
+        self.banned_ips.remove(&ip);
+    }
+
     fn teardown(&self) {
         self.persist_kbuckets();
         self.persist_banned_nodes();

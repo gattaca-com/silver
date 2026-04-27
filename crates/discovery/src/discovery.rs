@@ -38,6 +38,10 @@ pub trait Discovery {
 
     fn ban_ip(&mut self, ip: IpAddr, duration: Option<Duration>);
 
+    fn unban_node(&mut self, id: NodeId);
+
+    fn unban_ip(&mut self, ip: IpAddr);
+
     fn handle(&mut self, src_addr: SocketAddr, data: &[u8], now: Instant);
 
     fn poll<F: FnMut(DiscoveryEvent)>(&mut self, f: F);

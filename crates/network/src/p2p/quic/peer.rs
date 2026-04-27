@@ -1,6 +1,7 @@
 use std::{collections::HashMap, time::Instant};
 
 use bytes::Bytes;
+use fxhash::FxHashSet;
 use quinn_proto::{
     Connection, ConnectionEvent, ConnectionHandle, Dir, EndpointEvent, StreamId, Transmit, VarInt,
 };
@@ -79,6 +80,7 @@ impl Peer {
         ep_callback: &mut F,
         data: &mut S,
         on_event: &mut E,
+        banned_peers: &FxHashSet<PeerId>,
     ) -> Option<Instant>
     where
         F: FnMut(ConnectionHandle, EndpointEvent) -> Option<ConnectionEvent>,
@@ -99,13 +101,16 @@ impl Peer {
         while let Some(event) = self.connection.poll() {
             match event {
                 quinn_proto::Event::Connected => {
-                    let Some(peer_id) = id_from_connection(&self.connection) else {
-                        self.connection.close(
-                            now,
-                            VarInt::from_u32(400),
-                            Bytes::from_static(b"bad peer id"),
-                        );
-                        continue;
+                    let peer_id = match id_from_connection(&self.connection) {
+                        Some(id) if !banned_peers.contains(&id) => id,
+                        _ => {
+                            self.connection.close(
+                                now,
+                                VarInt::from_u32(400),
+                                Bytes::from_static(b"bad peer id"),
+                            );
+                            continue;
+                        }
                     };
                     self.id.peer_id = peer_id;
                     tracing::info!(handle = ?self.handle, "connected");
@@ -512,11 +517,11 @@ mod tests {
 
                 {
                     let mut cb = |h, e| self.client_ep.handle_event(h, e);
-                    self.client_peer.spin(now, &mut cb, client_rec, client_on_event);
+                    self.client_peer.spin(now, &mut cb, client_rec, client_on_event, &FxHashSet::default());
                 }
                 {
                     let mut cb = |h, e| self.server_ep.handle_event(h, e);
-                    self.server_peer.spin(now, &mut cb, server_rec, server_on_event);
+                    self.server_peer.spin(now, &mut cb, server_rec, server_on_event, &FxHashSet::default());
                 }
 
                 if !progress {

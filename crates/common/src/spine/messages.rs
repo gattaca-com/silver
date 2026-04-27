@@ -3,7 +3,7 @@ use std::net::{IpAddr, SocketAddr};
 use flux::timing::Nanos;
 
 use crate::{
-    Enr, GossipTopic, MessageId, NodeId, P2pStreamId, PeerId, StreamProtocol, TCacheRead,
+    Enr, GossipTopic, MessageId, P2pStreamId, PeerId, StreamProtocol, TCacheRead,
     ssz_view::{
         BeaconBlocksByRangeRequestView, BeaconBlocksByRootRequestView, BlobIdentifierView,
         DataColumnSidecarView, DataColumnSidecarsByRangeRequestView,
@@ -11,13 +11,8 @@ use crate::{
     },
 };
 
-#[derive(Clone, Copy, Debug)]
-#[repr(C)]
-pub struct GossipMsgIn {
-    pub stream_id: P2pStreamId,
-    pub tcache: TCacheRead,
-}
-
+/// Consumed by network tile. Gossip message indicated by `tcache` will be sent
+/// to specified peer.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct GossipMsgOut {
@@ -25,13 +20,9 @@ pub struct GossipMsgOut {
     pub tcache: TCacheRead,
 }
 
-#[derive(Clone, Copy, Debug)]
-#[repr(C)]
-pub enum Gossip {
-    NewInbound(NewGossipMsg),
-    NewOutboundIHave(GossipIHaveOut),
-}
-
+/// New inbound, decoded gossip message. Consumed by beacon state tile. The
+/// `protobuf` message can be broadcast producing `PeerEvent::SendGossip` with
+/// details from this message.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct NewGossipMsg {
@@ -42,19 +33,7 @@ pub struct NewGossipMsg {
     /// Decompressed message SSZ
     pub ssz: TCacheRead,
     /// Protobuf wrapped snappy compressed - as received.
-    /// Use this cache ref in `GossipMsgOut`.
-    pub protobuf: TCacheRead,
-}
-
-/// A new IHAVE message has been generated for a
-/// topic that can be sent to peers.
-#[derive(Clone, Copy, Debug)]
-#[repr(C)]
-pub struct GossipIHaveOut {
-    pub topic: GossipTopic,
-    pub msg_count: usize,
-    /// Protobuf wrapped IHAVE control message.
-    /// Use this cache ref in `GossipMsgOut` to send ot a peer.
+    /// Use this cache ref in `PeerEvent::SendGossip` and `GossipMsgOut`.
     pub protobuf: TCacheRead,
 }
 
@@ -183,15 +162,43 @@ pub enum PeerEvent {
         recv_ts: Nanos,
         protobuf: TCacheRead,
     },
+    /// Misbehaviour observed on the RPC (req/resp) sub-protocol. The peer
+    /// manager translates `severity` into a P5 application-score delta;
+    /// `Fatal` is calibrated to push the peer below `graylist_threshold`
+    /// outright so the next `tick` evicts them.
+    RpcMisbehaviour {
+        p2p_peer: usize,
+        severity: RpcSeverity,
+    },
+}
+
+/// Severity levels for RPC misbehaviour reports. Mirrors lighthouse's
+/// `PeerAction` taxonomy. Mapping to score deltas lives in the peer manager.
+#[derive(Clone, Copy, Debug)]
+#[repr(u8)]
+pub enum RpcSeverity {
+    /// Cryptographic violation (bad signature on a chunk), fork-digest
+    /// mismatch on Status, or response root mismatch with the request.
+    Fatal,
+    /// Invalid SSZ, malformed RPC chunk envelope, chunk-count overflow.
+    LowTolerance,
+    /// Stream timeout, slow response, missing-but-not-malicious chunks.
+    MidTolerance,
+    /// Soft signal — single dropped message, transient stream issue.
+    HighTolerance,
 }
 
 #[derive(Clone, Copy, Debug)]
 #[repr(C, u8)]
+// `P2pDial { enr }` carries the full ~200B `Enr` while most variants fit in
+// ~60B. Boxing would break `Copy` (used widely in this enum's hot path) for
+// the sake of one cold-path variant — the spine already pays the larger
+// variant's footprint per slot, so we accept the disparity.
+#[allow(clippy::large_enum_variant)]
 pub enum PeerControl {
     Ban {
         p2p: PeerId,
         p2p_connection: usize,
-        disc: NodeId,
     },
     BanIp {
         ip: IpAddr,
@@ -222,6 +229,25 @@ pub enum PeerControl {
         p2p: PeerId,
         p2p_connection: usize,
         tcache: TCacheRead,
+    },
+    /// Open a libp2p connection to the peer described by `enr`. Emitted by
+    /// the peer manager on `DiscNodeFound` when capacity allows. The network
+    /// tile dedupes against in-flight dials and existing connections.
+    P2pDial {
+        p2p: PeerId,
+        enr: Enr,
+    },
+    /// Peer-level ban has timed out — counterpart to `Ban`. Network tile
+    /// removes the peer from any deny-list / discv5 routing-table eviction
+    /// state. Emitted from `tick` when the per-peer ban TTL expires.
+    Unban {
+        p2p: PeerId,
+    },
+    /// IP-level ban has timed out — counterpart to `BanIp`. Network tile
+    /// removes the IP from its socket-level deny set. Emitted from `tick`
+    /// when `banned_ip_ttl` elapses since the ban.
+    UnbanIp {
+        ip: IpAddr,
     },
 }
 
