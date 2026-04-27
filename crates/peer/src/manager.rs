@@ -51,9 +51,6 @@ pub struct PeerManager {
     /// of them — broken-promise penalty only applies if the message never
     /// arrives from anyone by `iwant_followup`.
     promises: MsgIdMap<Vec<(usize, Instant)>>,
-
-    // TODO retransmissions = > 3 IWANT for same msg id < - non-mesh
-    // TODO don't want tracking to exclude peers from broadcast < - mesh
     params: ScoreParams,
 
     /// Last heartbeat rollover time. When `now - last_heartbeat >=
