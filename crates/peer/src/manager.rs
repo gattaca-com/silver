@@ -52,6 +52,8 @@ pub struct PeerManager {
     /// arrives from anyone by `iwant_followup`.
     promises: MsgIdMap<Vec<(usize, Instant)>>,
 
+    // TODO retransmissions = > 3 IWANT for same msg id < - non-mesh
+    // TODO don't want tracking to exclude peers from broadcast < - mesh
     params: ScoreParams,
 
     /// Last heartbeat rollover time. When `now - last_heartbeat >=
@@ -144,13 +146,8 @@ impl PeerManager {
             PeerEvent::P2pGossipWant { p2p_peer, hash, tcache } => {
                 self.on_iwant_received(p2p_peer, hash, tcache, emit);
             }
-            PeerEvent::P2pGossipWantUnknown { .. } | PeerEvent::P2pGossipWantOverCap { .. } => {
-                // Informational; not scored in MVP (matches rust-libp2p,
-                // which silently drops these requests).
-            }
-            PeerEvent::P2pGossipDontWant { .. } => {
-                // TODO need ot track which peers don't want which messages so
-                // we can exclude from gossip.
+            PeerEvent::P2pGossipDontWant { p2p_peer, hash } => {
+                self.on_idontwant_received(p2p_peer, hash);
             }
             PeerEvent::P2pGossipInvalidMsg { p2p_peer, topic, hash: _ } => {
                 self.add_invalid_delivery(p2p_peer, topic);
@@ -413,23 +410,35 @@ impl PeerManager {
         }
     }
 
-    /// Peer sent us an IWANT that hit our mcache AND was within the
-    /// per-(peer, id) `gossip_retransmission` cap (enforced inside the
-    /// mcache in the compression tile). Here we only apply the score gate.
+    /// Peer sent us an IWANT that hit our mcache. Check retransmission
+    /// threshold and apply the score gate.
     fn on_iwant_received(
         &mut self,
         conn: usize,
-        _hash: MessageId,
+        hash: MessageId,
         tcache: TCacheRead,
         emit: &mut impl FnMut(PeerControl),
     ) {
-        let Some(peer) = self.peers.get(&conn) else {
+        let Some(peer) = self.peers.get_mut(&conn) else {
             return;
         };
+        if peer.msg_cache_insert(hash) > 2 {
+            // exceeds retransmission threshold
+            return;
+        }
         if peer.cached_score < self.params.gossip_threshold {
             return;
         }
         emit(PeerControl::P2pGossipSend { p2p: peer.peer_id, p2p_connection: conn, tcache });
+    }
+
+    /// Peer sent us an IDONTWANT - store the message id in the peer message
+    /// cache.
+    fn on_idontwant_received(&mut self, conn: usize, hash: MessageId) {
+        let Some(peer) = self.peers.get_mut(&conn) else {
+            return;
+        };
+        peer.msg_cache_insert(hash);
     }
 
     /// A fully-validated inbound gossip message arrived — this is the first
@@ -540,7 +549,7 @@ impl PeerManager {
     fn on_send_gossip(
         &mut self,
         sender: usize,
-        _msg_hash: MessageId,
+        msg_hash: MessageId,
         topic: GossipTopic,
         tcache: TCacheRead,
         emit: &mut impl FnMut(PeerControl),
@@ -558,7 +567,10 @@ impl PeerManager {
             if peer_state.cached_score < self.params.gossip_threshold {
                 continue;
             }
-            // TODO if has sent don't want for this message -> continue
+            if peer_state.msg_cache_contains(&msg_hash) {
+                // dontwant
+                continue;
+            }
             emit(PeerControl::P2pGossipSend {
                 p2p: peer_state.peer_id,
                 p2p_connection: *peer,
@@ -1490,6 +1502,72 @@ mod tests {
             !cap.0.iter().any(|e| matches!(e, PeerControl::P2pGossipSend { .. })),
             "below-threshold mesh peer should not receive IDONTWANT, got {:?}",
             cap.0
+        );
+    }
+
+    #[test]
+    fn send_gossip_skips_mesh_peer_with_idontwant() {
+        let now = Instant::now();
+        let mut params = ScoreParams::default();
+        // d_low=0 disables the auto-graft on subscribe so manual mesh seeding
+        // is the only thing populating the mesh map.
+        params.d_low = 0;
+        params.d = 0;
+        params.d_high = 8;
+        let (mut mgr, mut cap) = fixture(vec![GossipTopic::BeaconBlock], params);
+
+        for i in 1..=3u8 {
+            connect(&mut mgr, &mut cap, i as usize, i, now);
+            mgr.handle_event(
+                PeerEvent::P2pGossipTopicSubscribe {
+                    p2p_peer: i as usize,
+                    topic: GossipTopic::BeaconBlock,
+                },
+                now,
+                &mut |c| cap.0.push(c),
+            );
+        }
+        for i in 1..=3usize {
+            mgr.mesh.entry(GossipTopic::BeaconBlock).or_default().push(i);
+        }
+
+        let hash = silver_common::MessageId { id: [0xAB; 20] };
+
+        // Peer 2 says "don't send me this id".
+        mgr.handle_event(PeerEvent::P2pGossipDontWant { p2p_peer: 2, hash }, now, &mut |c| {
+            cap.0.push(c)
+        });
+
+        cap.0.clear();
+
+        // Internal SendGossip with originator stream from peer 1.
+        let stream_id =
+            silver_common::P2pStreamId::new(1, 0, silver_common::StreamProtocol::GossipSub);
+        mgr.handle_event(
+            PeerEvent::SendGossip {
+                originator_stream_id: stream_id,
+                topic: GossipTopic::BeaconBlock,
+                msg_hash: hash,
+                recv_ts: silver_common::Nanos::now(),
+                protobuf: mk_tcache_read(),
+            },
+            now,
+            &mut |c| cap.0.push(c),
+        );
+
+        let recipients: Vec<usize> = cap
+            .0
+            .iter()
+            .filter_map(|e| match e {
+                PeerControl::P2pGossipSend { p2p_connection, .. } => Some(*p2p_connection),
+                _ => None,
+            })
+            .collect();
+        // Peer 1 = sender (skipped), peer 2 = IDONTWANT (skipped), peer 3 = served.
+        assert_eq!(
+            recipients,
+            vec![3],
+            "expected only peer 3 to receive the broadcast, got {recipients:?}"
         );
     }
 
