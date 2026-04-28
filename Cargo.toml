@@ -6,7 +6,7 @@ members = [
   "crates/e2e",
   "crates/gossip",
   "crates/network"
-, "crates/peer"]
+, "crates/peer", "crates/rpc"]
 resolver = "2"
 
 [workspace.package]

@@ -7,7 +7,8 @@ use crate::{
     ssz_view::{
         BeaconBlocksByRangeRequestView, BeaconBlocksByRootRequestView, BlobIdentifierView,
         DataColumnSidecarView, DataColumnSidecarsByRangeRequestView,
-        DataColumnsByRootIdentifierView, SignedBeaconBlockView, StatusView,
+        DataColumnsByRootIdentifierView, GoodbyeView, MetadataView, PingView,
+        SignedBeaconBlockView, StatusView,
     },
 };
 
@@ -40,8 +41,8 @@ pub struct NewGossipMsg {
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub enum RpcOutType {
-    Request(usize, StreamProtocol), // peer id
-    Response(P2pStreamId),          // response
+    Request { id: u64, peer: usize, protocol: StreamProtocol },
+    Response(P2pStreamId),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -55,8 +56,30 @@ pub struct RpcMsgOut {
 #[repr(C)]
 pub struct RpcMsgIn {
     pub stream_id: P2pStreamId,
-    pub request_id: Option<usize>,
+    pub request_id: Option<u64>,
     pub tcache: TCacheRead,
+}
+
+/// Bridge from the network tile (chunk framing) to the silver_rpc tile
+/// (SSZ-shape decode + dispatch). Emitted by the network tile when a
+/// complete RPC request or response chunk has been read into `tcache`;
+/// consumed by silver_rpc which then produces typed `RpcMsgIn`.
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct RpcInboundFrame {
+    pub stream_id: P2pStreamId,
+    pub protocol: StreamProtocol,
+    /// `Some(id)` for a response chunk matched back to an outbound
+    /// request; `None` for an inbound request.
+    pub request_id: Option<u64>,
+    /// The decompressed SSZ payload bytes (without varint length prefix
+    /// and without snappy framing — those layers are unwrapped by the
+    /// network tile). For responses the leading result-code byte is
+    /// stripped here as well; status is carried via a separate `u8` field.
+    pub tcache: TCacheRead,
+    /// 0 = success on responses; non-zero is an error code per spec.
+    /// Always 0 for inbound requests.
+    pub result_code: u8,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -273,9 +296,14 @@ pub type Peer = u64;
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub enum RpcMsg {
-    // missing ping and goodbye
     // Status v2 and MetaData v3 are symmetric: same view for req and resp.
     Status(StatusView),
+    /// `Ping` request and `Pong` response share wire shape (uint64 seq).
+    Ping(PingView),
+    /// `Goodbye` is request-only (uint64 reason).
+    Goodbye(GoodbyeView),
+    /// `MetaData` request body is empty; this carries the response only.
+    MetaData(MetadataView),
     BlocksRangeReq(BeaconBlocksByRangeRequestView),
     BlocksRootReq(BeaconBlocksByRootRequestView),
     BlobId(BlobIdentifierView),

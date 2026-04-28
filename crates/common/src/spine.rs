@@ -3,7 +3,8 @@
 use flux::{communication::ShmemData, spine::SpineQueue, spine_derive::from_spine, tile::TileInfo};
 pub use messages::{
     GossipFeedback, GossipMsgOut, IpBytes, NewGossipMsg, PeerControl, PeerEvent, PeerGossipIn,
-    PeerGossipOut, PeerRpcIn, PeerRpcOut, RpcMsgIn, RpcMsgOut, RpcOutType, RpcSeverity,
+    PeerGossipOut, PeerRpcIn, PeerRpcOut, RpcInboundFrame, RpcMsg, RpcMsgIn, RpcMsgOut, RpcOutType,
+    RpcSeverity,
 };
 pub use stream_id::P2pStreamId;
 pub use stream_protocol::{ALL_PROTOCOLS, MULTISTREAM_V1, REJECT_RESPONSE, StreamProtocol};
@@ -30,6 +31,11 @@ pub struct SilverSpine {
     /// RPC send messages.
     #[queue(size(2usize.pow(16)))]
     pub rpc_outgoing: SpineQueue<RpcMsgOut>,
+    /// Bridge between the network tile (chunk framing) and the silver_rpc
+    /// tile (SSZ shape decode + dispatch). Network tile produces; rpc tile
+    /// consumes and emits typed `PeerRpcIn`.
+    #[queue(size(2usize.pow(14)))]
+    pub rpc_inbound: SpineQueue<RpcInboundFrame>,
     #[queue(size(2usize.pow(14)))]
     pub peer_events: SpineQueue<PeerEvent>,
     #[queue(size(2usize.pow(14)))]

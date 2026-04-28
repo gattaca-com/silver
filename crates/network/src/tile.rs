@@ -187,7 +187,7 @@ impl Tile<SilverSpine> for NetworkTile {
             // TCacheMxBuffered
             if !adapter.consume_one(|msg: RpcMsgOut, producers| {
                 if let Some(p2p_stream_id) = match &msg.msg_type {
-                    RpcOutType::Request(peer, protocol) => {
+                    RpcOutType::Request { id, peer, protocol } => {
                         match self.inner.p2p_endpoint.open_stream(*peer, *protocol) {
                             Some(stream_id) => Some(P2pStreamId::new(
                                 *peer,
