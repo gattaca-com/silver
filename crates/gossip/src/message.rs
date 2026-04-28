@@ -4,13 +4,16 @@ use buffa::{
     encoding::{Tag, WireType, encode_varint, varint_len},
     types::{bytes_encoded_len, encode_bytes, encode_string, string_encoded_len},
 };
-use flux::{spine::SpineAdapter, timing::Nanos};
+use flux::timing::Nanos;
 use silver_common::{
-    Error, Gossip, GossipTopic, MessageId, NewGossipMsg, P2pStreamId, PeerEvent, SilverSpine,
-    TCacheRead, TProducer, TReservation, msg_id_invalid_snappy, msg_id_valid_snappy,
+    Error, GossipTopic, MessageId, NewGossipMsg, P2pStreamId, PeerEvent, TCacheRead, TProducer,
+    TReservation, msg_id_invalid_snappy, msg_id_valid_snappy,
 };
 
-use crate::{control::copy_idontwants_to_protobuf_output, dedup::DedupCache, mcache::MessageCache};
+use crate::{
+    GossipHandlerEvent, control::copy_idontwants_to_protobuf_output, dedup::DedupCache,
+    mcache::MessageCache,
+};
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn handle_incoming(
@@ -23,7 +26,7 @@ pub(super) fn handle_incoming(
     incoming_gossip_publish: &mut TProducer,
     mcache_publish: &mut TProducer,
     mcache: &mut MessageCache,
-    adapter: &mut SpineAdapter<SilverSpine>,
+    emit: &mut impl FnMut(GossipHandlerEvent),
 ) -> Result<(), Error> {
     // Fast duplicate check.
     let fast_id = match dedup_cache.contains_fast(snappy_data) {
@@ -37,11 +40,11 @@ pub(super) fn handle_incoming(
     let len = read_message_length(snappy_data, &topic).inspect_err(|_| {
         let hash = msg_id_invalid_snappy(topic_string, snappy_data);
         if dedup_cache.insert(fast_id, hash) {
-            adapter.produce(PeerEvent::P2pGossipInvalidMsg {
+            emit(GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipInvalidMsg {
                 p2p_peer: stream_id.peer(),
                 topic,
                 hash,
-            });
+            }));
         }
     })?;
 
@@ -67,11 +70,11 @@ pub(super) fn handle_incoming(
         .inspect_err(|_| {
             let hash = msg_id_invalid_snappy(topic_string, snappy_data);
             if dedup_cache.insert(fast_id, hash) {
-                adapter.produce(PeerEvent::P2pGossipInvalidMsg {
+                emit(GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipInvalidMsg {
                     p2p_peer: stream_id.peer(),
                     topic,
                     hash,
-                });
+                }));
             }
         })?;
 
@@ -81,7 +84,7 @@ pub(super) fn handle_incoming(
     // Flush the reservation matching the gossip message available downstream.
     reservation.flush()?;
 
-    adapter.produce(Gossip::NewInbound(NewGossipMsg {
+    emit(GossipHandlerEvent::NewGossip(NewGossipMsg {
         stream_id: *stream_id,
         topic,
         msg_hash: msg_id,
@@ -94,12 +97,12 @@ pub(super) fn handle_incoming(
     // peer manager fans it out to mesh peers (except the sender) as a
     // `P2pGossipSendDontWant` control.
     let idontwant = copy_idontwants_to_protobuf_output(mcache_publish, std::iter::once(&msg_id))?;
-    adapter.produce(PeerEvent::NewGossip {
+    emit(GossipHandlerEvent::PeerEvent(PeerEvent::NewGossip {
         p2p_peer: stream_id.peer(),
         topic,
         msg_hash: msg_id,
         idontwant,
-    });
+    }));
     Ok(())
 }
 

@@ -1,6 +1,7 @@
 use std::{collections::HashMap, time::Instant};
 
 use bytes::Bytes;
+use fxhash::FxHashSet;
 use quinn_proto::{
     Connection, ConnectionEvent, ConnectionHandle, Dir, EndpointEvent, StreamId, Transmit, VarInt,
 };
@@ -20,15 +21,17 @@ pub(crate) struct Peer {
     handle: ConnectionHandle,
     connection: Connection,
     streams: HashMap<StreamId, Stream>,
+    dialler: bool,
 }
 
 impl Peer {
-    pub(crate) fn new(handle: ConnectionHandle, connection: Connection) -> Self {
+    pub(crate) fn new(handle: ConnectionHandle, connection: Connection, dialler: bool) -> Self {
         Self {
             id: RemotePeer { peer_id: PeerId::default(), connection: handle.0 },
             handle,
             connection,
             streams: HashMap::with_capacity(16),
+            dialler,
         }
     }
 
@@ -79,6 +82,7 @@ impl Peer {
         ep_callback: &mut F,
         data: &mut S,
         on_event: &mut E,
+        banned_peers: &FxHashSet<PeerId>,
     ) -> Option<Instant>
     where
         F: FnMut(ConnectionHandle, EndpointEvent) -> Option<ConnectionEvent>,
@@ -99,19 +103,23 @@ impl Peer {
         while let Some(event) = self.connection.poll() {
             match event {
                 quinn_proto::Event::Connected => {
-                    let Some(peer_id) = id_from_connection(&self.connection) else {
-                        self.connection.close(
-                            now,
-                            VarInt::from_u32(400),
-                            Bytes::from_static(b"bad peer id"),
-                        );
-                        continue;
+                    let peer_id = match id_from_connection(&self.connection) {
+                        Some(id) if !banned_peers.contains(&id) => id,
+                        _ => {
+                            self.connection.close(
+                                now,
+                                VarInt::from_u32(400),
+                                Bytes::from_static(b"bad peer id"),
+                            );
+                            continue;
+                        }
                     };
                     self.id.peer_id = peer_id;
                     tracing::info!(handle = ?self.handle, "connected");
                     on_event(NetEvent::PeerConnected {
                         peer: self.id.clone(),
                         addr: self.connection.remote_address(),
+                        local_dialler: self.dialler,
                     });
                 }
                 quinn_proto::Event::ConnectionLost { reason } => {
@@ -403,7 +411,7 @@ mod tests {
                 super::super::create_client_config(&client_kp, Some(server_kp.peer_id())).unwrap();
             let (client_handle, client_conn) =
                 client_ep.connect(now, client_config, server_addr, "x").unwrap();
-            let mut client_peer = Peer::new(client_handle, client_conn);
+            let mut client_peer = Peer::new(client_handle, client_conn, true);
 
             let mut buf = Vec::new();
             let mut scratch = vec![0u8; 2048];
@@ -419,7 +427,7 @@ mod tests {
                         DatagramEvent::NewConnection(incoming) => {
                             let (handle, conn) =
                                 server_ep.accept(incoming, now, &mut scratch, None).unwrap();
-                            server_peer = Some(Peer::new(handle, conn));
+                            server_peer = Some(Peer::new(handle, conn, false));
                         }
                         DatagramEvent::ConnectionEvent(_, ce) => {
                             if let Some(ref mut p) = server_peer {
@@ -512,11 +520,23 @@ mod tests {
 
                 {
                     let mut cb = |h, e| self.client_ep.handle_event(h, e);
-                    self.client_peer.spin(now, &mut cb, client_rec, client_on_event);
+                    self.client_peer.spin(
+                        now,
+                        &mut cb,
+                        client_rec,
+                        client_on_event,
+                        &FxHashSet::default(),
+                    );
                 }
                 {
                     let mut cb = |h, e| self.server_ep.handle_event(h, e);
-                    self.server_peer.spin(now, &mut cb, server_rec, server_on_event);
+                    self.server_peer.spin(
+                        now,
+                        &mut cb,
+                        server_rec,
+                        server_on_event,
+                        &FxHashSet::default(),
+                    );
                 }
 
                 if !progress {

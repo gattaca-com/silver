@@ -7,8 +7,10 @@ use std::{
 use flux::{spine::SpineAdapter, tile::Tile, tracing};
 use mio::{Events, Poll, Token};
 use quinn_proto::Transmit;
+use secp256k1::PublicKey;
 use silver_common::{
-    GossipMsgOut, P2pStreamId, PeerEvent, RpcMsgOut, RpcOutType, SilverSpine, StreamProtocol,
+    GossipMsgOut, P2pStreamId, PeerControl, PeerEvent, RpcMsgOut, RpcOutType, SilverSpine,
+    StreamProtocol,
 };
 use silver_discovery::{DiscV5, Discovery, DiscoveryEvent};
 
@@ -45,6 +47,43 @@ impl NetworkTile {
     pub fn stream_data_mut(&mut self) -> &mut TCacheStreamData {
         self.inner.data_mut()
     }
+
+    fn handle_peer_control(&mut self, peer_control: PeerControl, now: Instant) {
+        match peer_control {
+            PeerControl::Ban { p2p, p2p_connection } => {
+                if let Ok(pubkey) = PublicKey::from_slice(p2p.pubkey()) {
+                    self.inner.discovery.ban_node(pubkey.into());
+                }
+                self.inner.p2p_endpoint.ban_peer(p2p);
+            }
+            PeerControl::Unban { p2p } => {
+                if let Ok(pubkey) = PublicKey::from_slice(p2p.pubkey()) {
+                    self.inner.discovery.unban_node(pubkey.into());
+                }
+                self.inner.p2p_endpoint.unban_peer(p2p);
+            }
+            PeerControl::BanIp { ip } => {
+                self.inner.discovery.ban_ip(ip, None);
+                self.inner.p2p_socket.ban(ip);
+                self.inner.disc_socket.ban(ip);
+            }
+            PeerControl::UnbanIp { ip } => {
+                self.inner.discovery.unban_ip(ip);
+                self.inner.p2p_socket.unban(ip);
+                self.inner.disc_socket.unban(ip);
+            }
+            PeerControl::DiscoverNodes => self.inner.discovery.find_nodes(),
+            PeerControl::P2pDial { p2p, enr } => {
+                let addr = enr.quic4_socket().or(enr.quic6_socket());
+                if let Some(addr) = addr {
+                    if let Err(e) = self.inner.p2p_endpoint.connect(p2p, addr, now) {
+                        tracing::error!(?e, ?p2p, ?addr, "failed to initiate p2p to peer");
+                    }
+                }
+            }
+            _ => {} // no-ops for this tile
+        }
+    }
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -55,22 +94,24 @@ pub enum Event {
 
 impl Tile<SilverSpine> for NetworkTile {
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
-        // TODO consume peer 'control' messages
-        // - ban
-        // - ban ip
-        // - request more peers
+        // Consume peer control messages
+        let now = Instant::now();
+        adapter.consume(|peer_control: PeerControl, _producers| {
+            self.handle_peer_control(peer_control, now);
+        });
 
         let mut on_event = |event| match event {
             Event::P2pNet(net_event) => match net_event {
-                NetEvent::PeerConnected { peer, addr } => {
+                NetEvent::PeerConnected { peer, addr, local_dialler } => {
                     // TODO start identity exchange
-                    // TODO start status exchange?
+
                     let port = addr.port();
                     adapter.produce(PeerEvent::P2pNewConnection {
                         p2p_peer_id: peer.connection,
                         peer_id_full: peer.peer_id,
                         ip: addr.ip().into(),
                         port,
+                        local_dial: local_dialler,
                     });
                 }
                 NetEvent::PeerDisconnected { peer } => {
@@ -218,7 +259,7 @@ where
             p2p_socket,
             p2p_endpoint,
             poll,
-            events: Events::with_capacity(16 * 1024),
+            events: Events::with_capacity(8),
             stream_data,
             disc_socket,
             discovery,
@@ -242,21 +283,30 @@ where
             return;
         }
 
+        let now = Instant::now();
         p2p::p2p_spin(
             &self.poll,
             &mut self.p2p_endpoint,
             &mut self.p2p_socket,
             &mut self.stream_data,
+            now,
             &mut |evt| on_event(Event::P2pNet(evt)),
         );
 
-        let now = Instant::now();
+        for evt in &self.events {
+            if evt.token() == DISC_SOCKET_TOKEN && evt.is_readable() {
+                self.disc_socket.recv(|data, remote, scratch, socket| {
+                    self.discovery.handle(remote, &data[..], now);
+                    true
+                });
+            } else if evt.token() == P2P_SOCKET_TOKEN && evt.is_readable() {
+                self.p2p_socket.recv(|data, remote, scratch, socket| {
+                    self.p2p_endpoint.recv(now, data, remote, scratch, socket)
+                });
+            }
+        }
 
         self.disc_socket.flush(&self.poll);
-        self.disc_socket.recv(|data, remote, scratch, socket| {
-            self.discovery.handle(remote, &data[..], now);
-            true
-        });
         self.discovery.poll(|disc_event| match disc_event {
             DiscoveryEvent::SendMessage { to, data } => {
                 self.disc_socket.send(&self.poll, |buffer| {

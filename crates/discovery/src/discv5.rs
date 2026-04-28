@@ -7,7 +7,7 @@ use std::{
 use alloy_rlp::{Decodable, Encodable};
 use flux::utils::ArrayVec;
 use rand::RngCore as _;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use secp256k1::{SECP256K1, SecretKey};
 use silver_common::{Enr, NodeId};
 use tracing::{info, trace, warn};
@@ -49,7 +49,7 @@ pub struct DiscV5 {
     ip_votes: FxHashMap<NodeId, (IpAddr, u16)>,
     ip_vote_counts: FxHashMap<(IpAddr, u16), u32>,
 
-    banned_nodes: FxHashMap<NodeId, Option<Instant>>,
+    banned_nodes: FxHashSet<NodeId>,
     banned_ips: FxHashMap<IpAddr, Option<Instant>>,
 
     whoareyou_per_ip: FxHashMap<IpAddr, (u32, Instant)>,
@@ -103,7 +103,7 @@ impl DiscV5 {
             event_queue: Vec::with_capacity(target),
             ip_votes: FxHashMap::with_capacity_and_hasher(target, Default::default()),
             ip_vote_counts: FxHashMap::with_capacity_and_hasher(8, Default::default()),
-            banned_nodes: FxHashMap::with_capacity_and_hasher(
+            banned_nodes: FxHashSet::with_capacity_and_hasher(
                 BANNED_NODES_CAPACITY,
                 Default::default(),
             ),
@@ -127,16 +127,13 @@ impl DiscV5 {
     }
 
     fn is_banned(
-        banned_nodes: &mut FxHashMap<NodeId, Option<Instant>>,
+        banned_nodes: &mut FxHashSet<NodeId>,
         banned_ips: &mut FxHashMap<IpAddr, Option<Instant>>,
         id: &NodeId,
         ip: IpAddr,
     ) -> bool {
-        if let Some(expires) = banned_nodes.get(id) {
-            if expires.is_none_or(|t| Instant::now() < t) {
-                return true;
-            }
-            banned_nodes.remove(id);
+        if banned_nodes.contains(id) {
+            return true;
         }
         if let Some(expires) = banned_ips.get(&ip) {
             if expires.is_none_or(|t| Instant::now() < t) {
@@ -870,7 +867,7 @@ impl DiscV5 {
                             let Ok(arr) = <[u8; 32]>::try_from(id_bytes.as_slice()) else {
                                 continue;
                             };
-                            self.banned_nodes.insert(NodeId::new(&arr), expires);
+                            self.banned_nodes.insert(NodeId::new(&arr));
                         }
                         "ip" => {
                             let Ok(ip) = key.parse::<IpAddr>() else { continue };
@@ -912,13 +909,8 @@ impl DiscV5 {
 
         let mut w = BufWriter::new(file);
         let now = Instant::now();
-        for (id, expires) in &self.banned_nodes {
-            let secs = match expires {
-                None => 0,
-                Some(t) if *t > now => (*t - now).as_secs(),
-                Some(_) => continue,
-            };
-            let _ = writeln!(w, "node {} {secs}", hex::encode(id.raw()));
+        for id in &self.banned_nodes {
+            let _ = writeln!(w, "node {} 0", hex::encode(id.raw()));
         }
 
         for (ip, expires) in &self.banned_ips {
@@ -947,7 +939,6 @@ impl DiscV5 {
         let whoareyou_window = self.config.whoareyou_window();
         self.whoareyou_per_ip.retain(|_, (_, t)| t.elapsed() < whoareyou_window);
 
-        self.banned_nodes.retain(|_, exp| exp.is_none_or(|t| now < t));
         self.banned_ips.retain(|_, exp| exp.is_none_or(|t| now < t));
 
         self.metrics.active_sessions = self.sessions.len();
@@ -987,9 +978,8 @@ impl Discovery for DiscV5 {
         self.lookup_requested = true;
     }
 
-    fn ban_node(&mut self, id: NodeId, duration: Option<Duration>) {
-        let expires = duration.map(|d| Instant::now() + d);
-        self.banned_nodes.insert(id, expires);
+    fn ban_node(&mut self, id: NodeId) {
+        self.banned_nodes.insert(id);
         self.sessions.remove(&id);
         self.pending_findnodes.remove(&id);
         self.pending_probe_nonces.remove(&id);
@@ -998,6 +988,14 @@ impl Discovery for DiscV5 {
     fn ban_ip(&mut self, ip: IpAddr, duration: Option<Duration>) {
         let expires = duration.map(|d| Instant::now() + d);
         self.banned_ips.insert(ip, expires);
+    }
+
+    fn unban_node(&mut self, id: NodeId) {
+        self.banned_nodes.remove(&id);
+    }
+
+    fn unban_ip(&mut self, ip: IpAddr) {
+        self.banned_ips.remove(&ip);
     }
 
     fn teardown(&self) {
@@ -1829,7 +1827,7 @@ mod tests {
         do_handshake(&mut a, a_addr, &mut b, b_addr, now);
 
         // Ban B by node ID (permanent).
-        a.ban_node(b.local_id, None);
+        a.ban_node(b.local_id);
 
         // Session should have been removed.
         assert!(!a.sessions.contains_key(&b.local_id), "session should be cleared on ban");
@@ -1891,7 +1889,7 @@ mod tests {
         // Ban B, but keep the session to verify the ping loop skips it.
         // (Normally ban_node removes the session, so insert a fresh ban
         //  without going through ban_node.)
-        a.banned_nodes.insert(b.local_id, None);
+        a.banned_nodes.insert(b.local_id);
 
         // Force a ping round.
         a.last_ping = Instant::now() - a.config.ping_frequency() - Duration::from_secs(1);
@@ -1899,28 +1897,6 @@ mod tests {
 
         let to_b: Vec<_> = a_sends.iter().filter(|(to, _)| *to == b_addr).collect();
         assert!(to_b.is_empty(), "banned node should not receive pings");
-    }
-
-    #[test]
-    fn test_timed_ban_expires() {
-        let now = Instant::now();
-        let (mut a, a_addr) = make_node(19141);
-        let (mut b, b_addr) = make_node(19142);
-
-        do_handshake(&mut a, a_addr, &mut b, b_addr, now);
-
-        // Ban B for 0 duration (already expired).
-        a.ban_node(b.local_id, Some(Duration::ZERO));
-
-        // Re-establish session and verify B can communicate again.
-        do_handshake(&mut a, a_addr, &mut b, b_addr, now);
-
-        assert!(!a.banned_nodes.contains_key(&b.local_id), "expired ban should be cleaned up");
-
-        inject_message(&mut b, &mut a, b_addr, Message::Ping { request_id: 1, enr_seq: 0 }, now);
-        let a_sends = collect_sends(&mut a);
-        let to_b: Vec<_> = a_sends.iter().filter(|(to, _)| *to == b_addr).collect();
-        assert!(!to_b.is_empty(), "expired ban should allow messages again");
     }
 
     #[test]

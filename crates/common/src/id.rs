@@ -35,6 +35,27 @@ impl PeerId {
         Self { buffer, length: encoded.len() + 2 }
     }
 
+    /// Construct from a 33-byte secp256k1 compressed public key — the form
+    /// returned by `secp256k1::PublicKey::serialize` and stored in eth2 ENR
+    /// records' `secp256k1` field. Wraps via the libp2p PublicKey protobuf
+    /// then identity-multihashes (no allocation: builds the protobuf inline
+    /// into the same fixed buffer).
+    pub fn from_secp256k1_pubkey(compressed: &[u8; 33]) -> Self {
+        // Same wire layout as `encode_secp256k1_protobuf`, just written
+        // directly into the multihash buffer to skip the intermediate Vec.
+        // libp2p PublicKey: { Type=1 varint, Data=2 length-delimited(33) }
+        // = 4 header bytes + 33 key bytes = 37 bytes.
+        let mut buffer = [0u8; 48];
+        buffer[0] = 0x00; // identity multihash code
+        buffer[1] = 37; // multihash length
+        buffer[2] = 0x08; // field 1 tag (varint, KeyType)
+        buffer[3] = 0x02; // KeyType::Secp256k1
+        buffer[4] = 0x12; // field 2 tag (length-delimited, Data)
+        buffer[5] = 33; // Data length
+        buffer[6..6 + 33].copy_from_slice(compressed);
+        Self { buffer, length: 2 + 37 }
+    }
+
     pub fn as_bytes(&self) -> &[u8] {
         &self.buffer[..self.length]
     }
@@ -101,6 +122,31 @@ pub fn encode_secp256k1_protobuf(compressed: &[u8; 33]) -> Vec<u8> {
     buf.push(33);
     buf.extend_from_slice(compressed);
     buf
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_secp256k1_pubkey_matches_keypair_peer_id() {
+        // The factory's output must agree with the well-trodden path of
+        // `Keypair::peer_id()` (which goes via the `Vec`-allocating
+        // `encode_secp256k1_protobuf` + `from_protobuf_encoded`).
+        let kp = Keypair::from_secret(&[7u8; 32]).unwrap();
+        let from_kp = kp.peer_id();
+        let from_pk = PeerId::from_secp256k1_pubkey(kp.public_key_compressed());
+        assert_eq!(from_kp.as_bytes(), from_pk.as_bytes());
+        assert_eq!(from_kp, from_pk);
+    }
+
+    #[test]
+    fn from_secp256k1_pubkey_round_trips_pubkey_accessor() {
+        let kp = Keypair::from_secret(&[42u8; 32]).unwrap();
+        let pid = PeerId::from_secp256k1_pubkey(kp.public_key_compressed());
+        // `pubkey()` returns the 33 compressed bytes embedded in the id.
+        assert_eq!(pid.pubkey(), &kp.public_key_compressed()[..]);
+    }
 }
 
 /// Decode libp2p protobuf PublicKey. Returns (key_type, raw_key_bytes).

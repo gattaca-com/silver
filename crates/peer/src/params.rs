@@ -76,6 +76,35 @@ pub struct ScoreParams {
 
     /// Backoff applied after a PRUNE before re-grafting the same peer.
     pub prune_backoff: Duration,
+
+    // ── Peer pool sizing ─────────────────────────────────────────────────
+    /// Desired live-peer count. Below this, discovery hits trigger a dial
+    /// and `tick` periodically emits `DiscoverNodes` to refill.
+    pub target_peers: usize,
+    /// Hard ceiling on dials when a discovery hit advertises a subnet we
+    /// need (`attnets`/`syncnets` ∩ our subscribed subnets ≠ 0). Lets us
+    /// stay slightly above `target_peers` to fill mesh gaps on validator-
+    /// critical subnets without unbounded growth.
+    pub max_priority_peers: usize,
+    /// Minimum gap between `DiscoverNodes` emissions while under-target.
+    pub discovery_query_interval: Duration,
+    /// How long to keep an IP in the ban-set after we graylisted the peer
+    /// behind it. Tuned independently of `archived_ttl` because IP-level
+    /// bans have higher false-positive blast radius (NAT/CGN) than the
+    /// PeerId-level reputation archive.
+    pub banned_ip_ttl: Duration,
+    /// Number of recent peer-level graylist evictions from a single IP
+    /// before we escalate to an IP-level ban. Mirrors lighthouse's
+    /// `BANNED_PEERS_PER_IP_THRESHOLD`. Higher → more tolerant of NAT/CGN
+    /// where multiple honest peers share an IP. Lower → faster lockout of
+    /// PeerId-rotation sybils.
+    pub ip_ban_threshold: u32,
+    /// How long a peer-level ban (the `PeerId`) is held before it auto-
+    /// expires and the manager emits `Unban`. Independent of
+    /// `banned_ip_ttl` — peer-level granularity is finer (one PeerId is
+    /// one entity), so this can run on a different cadence to the
+    /// IP-level lockout.
+    pub banned_peer_ttl: Duration,
 }
 
 impl Default for ScoreParams {
@@ -137,6 +166,13 @@ impl Default for ScoreParams {
             d_lazy: 6,
 
             prune_backoff: Duration::from_secs(60),
+
+            target_peers: 100,
+            max_priority_peers: 130, // ~30% headroom, matches lighthouse PRIORITY_PEER_EXCESS
+            discovery_query_interval: Duration::from_secs(5),
+            banned_ip_ttl: Duration::from_secs(3600),
+            ip_ban_threshold: 5,
+            banned_peer_ttl: Duration::from_secs(3600),
         }
     }
 }

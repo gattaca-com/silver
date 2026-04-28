@@ -4,7 +4,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
@@ -97,7 +97,12 @@ pub fn broadcast(c: &mut Criterion) {
 
                             let addr = format!("127.0.0.1:{}", 20002 + n);
                             let mut p2p = P2p::new(keypair, client_endpoint);
-                            p2p.connect(server_id.clone(), "127.0.0.1:20001".parse().unwrap());
+                            p2p.connect(
+                                server_id.clone(),
+                                "127.0.0.1:20001".parse().unwrap(),
+                                Instant::now(),
+                            )
+                            .unwrap();
 
                             // Pending actions accumulated by the event callback, drained
                             // and applied by the main loop after each spin.
@@ -272,7 +277,7 @@ impl Discovery for DummyDisc {
 
     fn find_nodes(&mut self) {}
 
-    fn ban_node(&mut self, _id: silver_common::NodeId, _duration: Option<Duration>) {}
+    fn ban_node(&mut self, _id: silver_common::NodeId) {}
 
     fn ban_ip(&mut self, _ip: std::net::IpAddr, _duration: Option<Duration>) {}
 
@@ -280,6 +285,10 @@ impl Discovery for DummyDisc {
     fn handle(&mut self, _src_addr: std::net::SocketAddr, _data: &[u8], _now: std::time::Instant) {}
 
     fn poll<F: FnMut(silver_discovery::DiscoveryEvent)>(&mut self, _f: F) {}
+
+    fn unban_node(&mut self, _id: silver_common::NodeId) {}
+
+    fn unban_ip(&mut self, _ip: std::net::IpAddr) {}
 }
 
 criterion_group! {
