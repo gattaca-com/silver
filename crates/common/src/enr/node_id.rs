@@ -1,9 +1,10 @@
 // Adapted from https://github.com/sigp/enr (MIT License)
 
-use secp256k1::PublicKey;
+use secp256k1::{Error as KeyError, PublicKey};
 use serde::{Deserialize, Serialize};
 
 use super::{Enr, digest, keys};
+use crate::PeerId;
 
 type RawNodeId = [u8; 32];
 
@@ -75,6 +76,14 @@ impl TryFrom<&[u8]> for NodeId {
 
     fn try_from(raw_input: &[u8]) -> Result<Self, Self::Error> {
         raw_input.try_into().map(Self::new).map_err(|_| "NodeId must be exactly 32 bytes")
+    }
+}
+
+impl TryFrom<&PeerId> for NodeId {
+    type Error = KeyError;
+
+    fn try_from(value: &PeerId) -> Result<Self, Self::Error> {
+        Ok(PublicKey::from_slice(value.pubkey())?.into())
     }
 }
 

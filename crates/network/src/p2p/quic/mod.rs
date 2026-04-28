@@ -9,8 +9,10 @@ use silver_common::{Keypair, PeerId};
 use super::tls;
 
 mod peer;
+mod stream;
 
 pub(crate) use peer::Peer;
+pub(crate) use stream::StreamWriter;
 
 /// Create an endpoint that uses a self-signed server certificate.
 pub fn create_endpoint(server_config: Option<Arc<ServerConfig>>) -> Result<Endpoint, Error> {
@@ -34,4 +36,12 @@ pub fn create_server_config(keypair: &Keypair) -> Result<ServerConfig, Error> {
     Ok(ServerConfig::with_crypto(Arc::new(
         QuicServerConfig::try_from(rustls_cfg).map_err(Error::other)?,
     )))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SendResult {
+    Ok,
+    StreamCreationError,
+    MessageDropped,
+    UnknownPeer,
 }

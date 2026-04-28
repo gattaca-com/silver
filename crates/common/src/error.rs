@@ -23,6 +23,7 @@ pub enum Error {
     IoError(#[from] std::io::Error),
     TCacheError(#[from] TCacheError),
     SnappyError(#[from] snap::Error),
+    InvalidStreamState,
 }
 
 impl fmt::Display for Error {

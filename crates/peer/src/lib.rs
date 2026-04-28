@@ -1,3 +1,4 @@
+mod database;
 mod manager;
 mod params;
 mod scoring;

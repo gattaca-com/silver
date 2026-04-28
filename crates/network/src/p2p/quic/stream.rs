@@ -1,0 +1,73 @@
+use std::io::{Error, Write};
+
+use quinn_proto::{Connection, StreamId, WriteError};
+
+use crate::p2p::{
+    quic::peer::OutboundBuffer,
+    streams::{StreamError, StreamIo},
+};
+
+pub struct StreamIoImpl<'a> {
+    pub connection: &'a mut Connection,
+    pub outbound: &'a mut OutboundBuffer,
+}
+
+impl<'a> StreamIo for StreamIoImpl<'a> {
+    fn write_to_stream(&mut self, id: StreamId, data: &[u8]) -> Result<usize, StreamError> {
+        let mut stream = self.connection.send_stream(id);
+        match stream.write(data) {
+            Ok(wrote) => Ok(wrote),
+            Err(WriteError::Blocked) => Ok(0),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn read_from_stream(&mut self, id: StreamId, data: &mut [u8]) -> Result<usize, StreamError> {
+        let mut stream = self.connection.recv_stream(id);
+        let mut chunks = stream.read(true)?;
+        let mut offset = 0;
+        while offset < data.len() {
+            match chunks.next(data.len() - offset) {
+                Ok(Some(chunk)) => {
+                    let len = (data.len() - offset).min(chunk.bytes.len());
+                    data[offset..offset + len].copy_from_slice(&chunk.bytes[..len]);
+                    offset += len;
+                }
+                Ok(None) | Err(quinn_proto::ReadError::Blocked) => break,
+                Err(e) => return Err(e.into()),
+            }
+        }
+        let _ = chunks.finalize();
+        Ok(offset)
+    }
+
+    fn close_write(&mut self, id: StreamId) -> Result<(), StreamError> {
+        Ok(self.connection.send_stream(id).finish()?)
+    }
+
+    fn rpc_next(&mut self) -> Option<silver_common::RpcOutbound> {
+        match self.outbound {
+            OutboundBuffer::Rpc(out_buffer) => out_buffer.pop(),
+            _ => None,
+        }
+    }
+
+    fn gossip_next(&mut self) -> Option<silver_common::TCacheRead> {
+        match self.outbound {
+            OutboundBuffer::Gossip(out_buffer) => out_buffer.pop(),
+            _ => None,
+        }
+    }
+}
+
+pub struct StreamWriter<'a, S: StreamIo>(pub StreamId, pub &'a mut S);
+
+impl<'a, S: StreamIo> Write for StreamWriter<'a, S> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.1.write_to_stream(self.0, buf).map_err(Error::other)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}

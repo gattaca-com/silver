@@ -164,7 +164,7 @@ impl<'a> ExactSizeIterator for IHaveIterator<'a> {}
 mod tests {
     use std::io::Write;
 
-    use silver_common::{MessageId, TCache};
+    use silver_common::{MessageId, TCache, TCacheProducer};
 
     use super::*;
 

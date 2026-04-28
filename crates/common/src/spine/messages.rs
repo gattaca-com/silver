@@ -3,12 +3,13 @@ use std::net::{IpAddr, SocketAddr};
 use flux::timing::Nanos;
 
 use crate::{
-    Enr, GossipTopic, MessageId, P2pStreamId, PeerId, StreamProtocol, TCacheRead,
+    Enr, GossipTopic, Identify, MessageId, P2pStreamId, PeerId, StreamProtocol, TCacheRead,
     ssz_view::{
         BLOCKS_BY_RANGE_REQ_SIZE, BeaconBlocksByRangeRequestView, BeaconBlocksByRootRequestView,
-        BlobIdentifierView, DataColumnSidecarView, DataColumnSidecarsByRangeRequestView,
-        DataColumnsByRootIdentifierView, STATUS_V2_SIZE, SignedBeaconBlockView, SszView,
-        StatusView,
+        BlobIdentifierView, DC_BY_RANGE_REQ_MAX, DataColumnSidecarView,
+        DataColumnSidecarsByRangeRequestView, DataColumnsByRootIdentifierView, GOODBYE_SIZE,
+        GoodbyeView, METADATA_SIZE, MetadataView, PING_SIZE, PingView, STATUS_V1_SIZE,
+        STATUS_V2_SIZE, SignedBeaconBlockView, StatusView,
     },
 };
 
@@ -22,8 +23,8 @@ pub struct GossipMsgOut {
 }
 
 /// New inbound, decoded gossip message. Consumed by beacon state tile. The
-/// `protobuf` message can be broadcast producing `PeerEvent::SendGossip` with
-/// details from this message.
+/// `protobuf` message can be broadcast by producing `PeerEvent::SendGossip`
+/// with details from this message.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct NewGossipMsg {
@@ -39,17 +40,126 @@ pub struct NewGossipMsg {
 }
 
 #[derive(Clone, Copy, Debug)]
+#[allow(clippy::large_enum_variant)]
 #[repr(C)]
-pub enum RpcOutType {
-    Request(usize, StreamProtocol), // peer id
-    Response(P2pStreamId),          // response
+pub enum RpcRequest {
+    StatusV1([u8; STATUS_V1_SIZE]),
+    StatusV2([u8; STATUS_V2_SIZE]),
+    Ping([u8; PING_SIZE]),
+    Goodbye([u8; GOODBYE_SIZE]),
+    MetaData,
+    BlocksByRange([u8; BLOCKS_BY_RANGE_REQ_SIZE]),
+    BlockByRoot(TCacheRead),
+    DataColumnsByRange { ssz: [u8; DC_BY_RANGE_REQ_MAX], len: usize },
+    DataColumnsByRoot(TCacheRead),
+}
+
+impl RpcRequest {
+    pub fn protocol(&self) -> StreamProtocol {
+        match self {
+            RpcRequest::StatusV1(_) => StreamProtocol::StatusV1,
+            RpcRequest::StatusV2(_) => StreamProtocol::StatusV2,
+            RpcRequest::Ping(_) => StreamProtocol::Ping,
+            RpcRequest::Goodbye(_) => StreamProtocol::Goodbye,
+            RpcRequest::MetaData => StreamProtocol::Metadata,
+            RpcRequest::BlocksByRange(_) => StreamProtocol::BeaconBlocksByRange,
+            RpcRequest::BlockByRoot { .. } => StreamProtocol::BeaconBlocksByRoot,
+            RpcRequest::DataColumnsByRange { .. } => StreamProtocol::DataColumnSidecarsByRange,
+            RpcRequest::DataColumnsByRoot { .. } => StreamProtocol::DataColumnSidecarsByRoot,
+        }
+    }
+}
+
+/// An RPC request recevied from a peer.
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct RpcRequestInbound {
+    pub stream_id: P2pStreamId,
+    pub request: RpcRequest,
+}
+
+/// An RPC request to be sent to a peer.
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct RpcRequestOutbound {
+    pub application_id: u64,
+    pub peer: usize,
+    pub request: RpcRequest,
 }
 
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
-pub struct RpcMsgOut {
-    pub msg_type: RpcOutType,
-    pub tcache: TCacheRead,
+pub enum RpcResponse {
+    StatusV1([u8; STATUS_V1_SIZE]),
+    StatusV2([u8; STATUS_V2_SIZE]),
+    Ping([u8; PING_SIZE]),
+    MetaData([u8; METADATA_SIZE]),
+    BeaconBlock {
+        fork_digest: [u8; 4],
+        ssz: TCacheRead,
+    },
+    DataColumnSidecar {
+        fork_digest: [u8; 4],
+        ssz: TCacheRead,
+    },
+    Error {
+        error: u8,
+        msg: [u8; 256],
+        len: usize,
+    },
+    /// Indicates that a multi-part response is complete / stream is closed.
+    /// Produced following `BeaconBlock`s or `DataColumnSidecar`s unless an
+    /// `Error` is produced first.
+    Complete,
+}
+
+/// RPC response received from a peer.
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct RpcResponseInbound {
+    pub application_id: u64,
+    pub stream_id: P2pStreamId,
+    pub response: RpcResponse,
+}
+
+/// RPC response to send to a peer.
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct RpcResponseOutbound {
+    pub stream_id: P2pStreamId,
+    pub response: RpcResponse,
+}
+
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+#[allow(clippy::large_enum_variant)]
+pub enum RpcInbound {
+    Request(RpcRequestInbound),
+    Response(RpcResponseInbound),
+}
+
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+#[allow(clippy::large_enum_variant)]
+pub enum RpcOutbound {
+    Request(RpcRequestOutbound),
+    Response(RpcResponseOutbound),
+}
+
+impl RpcOutbound {
+    pub fn peer_id(&self) -> usize {
+        match self {
+            RpcOutbound::Request(req) => req.peer,
+            RpcOutbound::Response(rsp) => rsp.stream_id.peer(),
+        }
+    }
+
+    pub fn protocol(&self) -> StreamProtocol {
+        match self {
+            RpcOutbound::Request(req) => req.request.protocol(),
+            RpcOutbound::Response(rsp) => rsp.stream_id.protocol(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -148,7 +258,7 @@ pub enum PeerEvent {
         iwant: TCacheRead,
     },
     /// Emitted in order to trigger sending of a gossip message.
-    /// Peer manager with generate select peers to send to.
+    /// Peer manager will generate select peers to send to.
     SendGossip {
         originator_stream_id: P2pStreamId,
         topic: GossipTopic,
@@ -163,6 +273,37 @@ pub enum PeerEvent {
     RpcMisbehaviour {
         p2p_peer: usize,
         severity: RpcSeverity,
+    },
+    /// Peer status received over RPC
+    P2pPeerStatus {
+        p2p_peer: usize,
+        status_ssz: [u8; STATUS_V2_SIZE],
+    },
+    /// Peer metadata recevied over RPC
+    P2pPeerMetadata {
+        p2p_peer: usize,
+        metadata_ssz: [u8; METADATA_SIZE],
+    },
+    /// Peer ping request received.
+    P2pPeerPingRequest {
+        p2p_peer: usize,
+        metadata_seq: u64,
+    },
+    /// Peer ping response received
+    P2pPeerPingResponse {
+        p2p_peer: usize,
+        metadata_seq: u64,
+    },
+    /// Goodbye received from peer
+    P2pPeerGoodbye {
+        p2p_peer: usize,
+        status: u64,
+    },
+    /// Peer identity information.
+    P2pPeerIdentity {
+        p2p_peer: usize,
+        /// Identify information.
+        identify: Identify,
     },
 }
 
@@ -264,9 +405,14 @@ impl From<IpAddr> for IpBytes {
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub enum RpcMsg {
-    // missing ping and goodbye
     // Status v2 and MetaData v3 are symmetric: same view for req and resp.
     Status(StatusView),
+    /// `Ping` request and `Pong` response share wire shape (uint64 seq).
+    Ping(PingView),
+    /// `Goodbye` is request-only (uint64 reason).
+    Goodbye(GoodbyeView),
+    /// `MetaData` request body is empty; this carries the response only.
+    MetaData(MetadataView),
     BlocksRangeReq(BeaconBlocksByRangeRequestView),
     BlocksRootReq(BeaconBlocksByRootRequestView),
     BlobId(BlobIdentifierView),

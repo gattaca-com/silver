@@ -4,7 +4,8 @@ use buffa::{
     types::{encode_bytes, encode_string, string_encoded_len},
 };
 use silver_common::{
-    Error, GossipTopic, MESSAGE_ID_LEN, MessageId, P2pStreamId, PeerEvent, TCacheRead, TProducer,
+    Error, GossipTopic, MESSAGE_ID_LEN, MessageId, P2pStreamId, PeerEvent, TCacheProducer,
+    TCacheRead, TProducer,
 };
 
 use crate::{

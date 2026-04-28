@@ -9,22 +9,23 @@ use mio::{Events, Poll, Token};
 use quinn_proto::Transmit;
 use secp256k1::PublicKey;
 use silver_common::{
-    GossipMsgOut, P2pStreamId, PeerControl, PeerEvent, RpcMsgOut, RpcOutType, SilverSpine,
-    StreamProtocol,
+    GossipMsgOut, PeerControl, PeerEvent, RpcOutbound, SilverSpine, StreamProtocol,
 };
 use silver_discovery::{DiscV5, Discovery, DiscoveryEvent};
 
 use crate::{
-    NetEvent, StreamData, TCacheStreamData,
-    p2p::{self, MAX_PENDING_OUTBOUND_MSGS, P2p},
+    NetEvent,
+    p2p::{self, Context, P2p},
     socket::Socket,
 };
 
+const MAX_PENDING_OUTBOUND_GOSSIP_MSGS: usize = 1024;
+const MAX_PENDING_OUTBOUND_RPC_MSGS: usize = 128;
 const P2P_SOCKET_TOKEN: Token = Token(0);
 const DISC_SOCKET_TOKEN: Token = Token(1);
 
 pub struct NetworkTile {
-    inner: NetworkTileInner<TCacheStreamData, DiscV5>,
+    inner: NetworkTileInner<DiscV5>,
 }
 
 impl NetworkTile {
@@ -33,19 +34,15 @@ impl NetworkTile {
         discv5: DiscV5,
         p2p_addr: SocketAddr,
         p2p_endpoint: P2p,
-        p2p_stream_handler: TCacheStreamData,
+        p2p_context: Context,
     ) -> Result<Self, Error> {
         let inner =
-            NetworkTileInner::new(p2p_addr, p2p_endpoint, p2p_stream_handler, discv5_addr, discv5)?;
+            NetworkTileInner::new(p2p_addr, p2p_endpoint, p2p_context, discv5_addr, discv5)?;
         Ok(Self { inner })
     }
 
     pub fn p2p_mut(&mut self) -> &mut P2p {
         self.inner.p2p_mut()
-    }
-
-    pub fn stream_data_mut(&mut self) -> &mut TCacheStreamData {
-        self.inner.data_mut()
     }
 
     fn handle_peer_control(&mut self, peer_control: PeerControl, now: Instant) {
@@ -114,6 +111,9 @@ impl Tile<SilverSpine> for NetworkTile {
                         local_dial: local_dialler,
                     });
                 }
+                NetEvent::PeerIdentify { peer, identify } => {
+                    adapter.produce(PeerEvent::P2pPeerIdentity { p2p_peer: peer, identify });
+                }
                 NetEvent::PeerDisconnected { peer } => {
                     adapter.produce(PeerEvent::P2pDisconnect { p2p_peer: peer.connection });
                 }
@@ -122,6 +122,12 @@ impl Tile<SilverSpine> for NetworkTile {
                 }
                 NetEvent::StreamClosed { stream: _ } => {
                     // TODO notify stream end
+                }
+                NetEvent::RpcInbound(rpc_inbound) => {
+                    adapter.produce(rpc_inbound);
+                }
+                NetEvent::RpcMisbehaviour { p2p_peer, severity } => {
+                    adapter.produce(PeerEvent::RpcMisbehaviour { p2p_peer, severity });
                 }
             },
             Event::Discovery(disc_event) => match disc_event {
@@ -136,39 +142,21 @@ impl Tile<SilverSpine> for NetworkTile {
         };
 
         self.inner.spin(&mut on_event);
-        self.inner.stream_data.update_tail();
 
-        for _ in 0..MAX_PENDING_OUTBOUND_MSGS {
-            // TCacheMxBuffered
+        for _ in 0..MAX_PENDING_OUTBOUND_GOSSIP_MSGS {
             if !adapter.consume_one(|msg: GossipMsgOut, producers| {
-                if let Some(p2p_stream_id) =
-                    match self.inner.stream_data.gossip_stream_id(msg.peer_id) {
-                        Some(id) => Some(*id),
-                        None => match self
-                            .inner
-                            .p2p_endpoint
-                            .open_stream(msg.peer_id, StreamProtocol::GossipSub)
-                        {
-                            Some(stream_id) => Some(P2pStreamId::new(
-                                msg.peer_id,
-                                stream_id.into(),
-                                StreamProtocol::GossipSub,
-                            )),
-                            None => {
-                                // cannot create new stream - peer at capacity
-                                producers.peer_events.produce(
-                                    &(PeerEvent::P2pCannotCreateStream {
-                                        p2p_peer: msg.peer_id,
-                                        protocol: StreamProtocol::GossipSub,
-                                    }
-                                    .into()),
-                                );
-                                None
+                match self.inner.p2p_endpoint.enqueue_gossip(msg) {
+                    p2p::SendResult::Ok => {}
+                    p2p::SendResult::StreamCreationError => {
+                        producers.peer_events.produce(
+                            &(PeerEvent::P2pCannotCreateStream {
+                                p2p_peer: msg.peer_id,
+                                protocol: StreamProtocol::GossipSub,
                             }
-                        },
+                            .into()),
+                        );
                     }
-                {
-                    if !self.inner.stream_data.enqueue_gossip(&p2p_stream_id, msg) {
+                    p2p::SendResult::MessageDropped => {
                         producers.peer_events.produce(
                             &(PeerEvent::P2pOutboundMessageDropped {
                                 p2p_peer: msg.peer_id,
@@ -177,47 +165,37 @@ impl Tile<SilverSpine> for NetworkTile {
                             .into()),
                         );
                     }
+                    p2p::SendResult::UnknownPeer => todo!(),
                 }
             }) {
                 break;
             }
         }
 
-        for _ in 0..MAX_PENDING_OUTBOUND_MSGS {
+        for _ in 0..MAX_PENDING_OUTBOUND_RPC_MSGS {
             // TCacheMxBuffered
-            if !adapter.consume_one(|msg: RpcMsgOut, producers| {
-                if let Some(p2p_stream_id) = match &msg.msg_type {
-                    RpcOutType::Request(peer, protocol) => {
-                        match self.inner.p2p_endpoint.open_stream(*peer, *protocol) {
-                            Some(stream_id) => Some(P2pStreamId::new(
-                                *peer,
-                                stream_id.into(),
-                                StreamProtocol::GossipSub,
-                            )),
-                            None => {
-                                // cannot create new stream - peer at capacity
-                                producers.peer_events.produce(
-                                    &(PeerEvent::P2pCannotCreateStream {
-                                        p2p_peer: *peer,
-                                        protocol: *protocol,
-                                    }
-                                    .into()),
-                                );
-                                None
-                            }
-                        }
-                    }
-                    RpcOutType::Response(p2p_stream_id) => Some(*p2p_stream_id),
-                } {
-                    if !self.inner.stream_data.enqueue_rpc_out(&p2p_stream_id, msg) {
+            if !adapter.consume_one(|msg: RpcOutbound, producers| {
+                match self.inner.p2p_endpoint.enqueue_rpc_out(msg) {
+                    p2p::SendResult::Ok => {}
+                    p2p::SendResult::StreamCreationError => {
                         producers.peer_events.produce(
-                            &(PeerEvent::P2pOutboundMessageDropped {
-                                p2p_peer: p2p_stream_id.peer(),
-                                protocol: p2p_stream_id.protocol(),
+                            &(PeerEvent::P2pCannotCreateStream {
+                                p2p_peer: msg.peer_id(),
+                                protocol: msg.protocol(),
                             }
                             .into()),
                         );
                     }
+                    p2p::SendResult::MessageDropped => {
+                        producers.peer_events.produce(
+                            &(PeerEvent::P2pOutboundMessageDropped {
+                                p2p_peer: msg.peer_id(),
+                                protocol: msg.protocol(),
+                            }
+                            .into()),
+                        );
+                    }
+                    p2p::SendResult::UnknownPeer => todo!(),
                 }
             }) {
                 break;
@@ -226,29 +204,27 @@ impl Tile<SilverSpine> for NetworkTile {
     }
 }
 
-pub struct NetworkTileInner<S, D>
+pub struct NetworkTileInner<D>
 where
-    S: StreamData,
     D: Discovery,
 {
     p2p_socket: Socket,
     p2p_endpoint: P2p,
     poll: Poll,
     events: Events,
-    stream_data: S,
+    context: Context,
     disc_socket: Socket,
     discovery: D,
 }
 
-impl<S, D> NetworkTileInner<S, D>
+impl<D> NetworkTileInner<D>
 where
-    S: StreamData,
     D: Discovery,
 {
     pub fn new(
         p2p_addr: SocketAddr,
         p2p_endpoint: P2p,
-        stream_data: S,
+        context: Context,
         discovery_addr: SocketAddr,
         discovery: D,
     ) -> Result<Self, Error> {
@@ -260,7 +236,7 @@ where
             p2p_endpoint,
             poll,
             events: Events::with_capacity(8),
-            stream_data,
+            context,
             disc_socket,
             discovery,
         })
@@ -270,8 +246,8 @@ where
         &mut self.p2p_endpoint
     }
 
-    pub fn data_mut(&mut self) -> &mut S {
-        &mut self.stream_data
+    pub fn context_mut(&mut self) -> &mut Context {
+        &mut self.context
     }
 
     pub fn spin<E>(&mut self, on_event: &mut E)
@@ -288,7 +264,7 @@ where
             &self.poll,
             &mut self.p2p_endpoint,
             &mut self.p2p_socket,
-            &mut self.stream_data,
+            &mut self.context,
             now,
             &mut |evt| on_event(Event::P2pNet(evt)),
         );

@@ -11,7 +11,7 @@ const FORK_DIGEST_HEX: &str = "abcd1234";
 
 #[test]
 fn publisher_echo_one_way() {
-    tracing_subscriber::fmt().with_max_level(tracing::Level::WARN).try_init().ok();
+    tracing_subscriber::fmt().with_max_level(tracing::Level::DEBUG).try_init().ok();
 
     let mut harness = TwoStackHarness::new(FORK_DIGEST_HEX).expect("harness");
     harness.connect();
@@ -29,6 +29,7 @@ fn publisher_echo_one_way() {
         harness
             .publish_synthetic(GossipTopic::BeaconBlock, &payload)
             .unwrap_or_else(|e| panic!("publish_synthetic #{i}: {e}"));
+        tracing::debug!("published: {i}");
         // Tick in between to keep the send queue flowing.
         harness.spin_once();
     }

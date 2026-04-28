@@ -8,6 +8,7 @@ version.workspace = true
 [dependencies]
 buffa.workspace = true
 bytes.workspace = true
+crc32c.workspace = true
 flux.workspace = true
 fxhash.workspace = true
 libc.workspace = true
@@ -20,6 +21,7 @@ rustls.workspace = true
 silver_common.workspace = true
 silver_discovery.workspace = true
 snap.workspace = true
+thiserror.workspace = true
 tracing.workspace = true
 x509-parser.workspace = true
 yasna.workspace = true

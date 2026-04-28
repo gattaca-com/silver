@@ -12,12 +12,13 @@ pub struct P2pStreamId {
     connection: usize,
     stream: u64,
     protocol: StreamProtocol,
-    _padding: [u8; 7],
+    incoming: bool,
+    _padding: [u8; 6],
 }
 
 impl P2pStreamId {
-    pub fn new(connection: usize, stream: u64, protocol: StreamProtocol) -> Self {
-        Self { connection, stream, protocol, _padding: [0u8; 7] }
+    pub fn new(connection: usize, stream: u64, protocol: StreamProtocol, incoming: bool) -> Self {
+        Self { connection, stream, protocol, incoming, _padding: [0u8; 6] }
     }
 
     pub fn protocol(&self) -> StreamProtocol {
@@ -30,6 +31,14 @@ impl P2pStreamId {
 
     pub fn stream(&self) -> u64 {
         self.stream
+    }
+
+    pub fn is_incoming(&self) -> bool {
+        self.incoming
+    }
+
+    pub fn stream_id(&self) -> StreamId {
+        StreamId::from(self)
     }
 
     pub fn set_protocol(&mut self, protocol: StreamProtocol) {

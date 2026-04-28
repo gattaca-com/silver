@@ -2,13 +2,18 @@
 
 use flux::{communication::ShmemData, spine::SpineQueue, spine_derive::from_spine, tile::TileInfo};
 pub use messages::{
-    BeaconStateEvent, GossipMsgOut, IpBytes, NewGossipMsg, PeerControl, PeerEvent, PeerRpcIn,
-    RpcMsg, RpcMsgOut, RpcOutType, RpcSeverity,
+    GossipFeedback, GossipMsgOut, IpBytes, NewGossipMsg, PeerControl, PeerEvent, PeerGossipIn,
+    PeerGossipOut, PeerRpcIn, PeerRpcOut, RpcInbound, RpcMsg, RpcOutbound, RpcRequest,
+    RpcRequestInbound, RpcRequestOutbound, RpcResponse, RpcResponseInbound, RpcResponseOutbound,
+    RpcSeverity,
 };
 pub use stream_id::P2pStreamId;
-pub use stream_protocol::{ALL_PROTOCOLS, MULTISTREAM_V1, REJECT_RESPONSE, StreamProtocol};
+pub use stream_protocol::{
+    ALL_PROTOCOLS, MULTISTREAM_V1, REJECT_RESPONSE, RPC_PROTOCOLS, StreamProtocol,
+};
 pub use tcache::{
-    Consumer, Error, Producer, RandomAccessConsumer, Reservation, TCache, TCacheRead, TCacheRef,
+    Consumer, Error, MultiProducer, Producer, RandomAccessConsumer, Reservation, TCache,
+    TCacheProducer, TCacheRead, TCacheRef,
 };
 
 mod messages;
@@ -29,7 +34,10 @@ pub struct SilverSpine {
     pub gossip_outgoing: SpineQueue<GossipMsgOut>,
     /// RPC send messages.
     #[queue(size(2usize.pow(16)))]
-    pub rpc_outgoing: SpineQueue<RpcMsgOut>,
+    pub rpc_outbound: SpineQueue<RpcOutbound>,
+    /// RPC recv messages.
+    #[queue(size(2usize.pow(14)))]
+    pub rpc_inbound: SpineQueue<RpcInbound>,
     #[queue(size(2usize.pow(14)))]
     pub peer_events: SpineQueue<PeerEvent>,
     #[queue(size(2usize.pow(14)))]

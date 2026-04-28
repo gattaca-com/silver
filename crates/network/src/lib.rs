@@ -4,7 +4,7 @@ mod p2p;
 mod socket;
 mod tile;
 
-pub use p2p::{NetEvent, P2p, StreamData, TCacheStreamData, create_endpoint, create_server_config};
+pub use p2p::{Context, NetEvent, P2p, SendResult, create_endpoint, create_server_config};
 use silver_common::PeerId;
 pub use tile::{Event as NetworkTileEvent, NetworkTile, NetworkTileInner};
 

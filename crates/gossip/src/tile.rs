@@ -3,8 +3,8 @@ use std::time::Instant;
 use buffa::MessageView;
 use flux::tile::Tile;
 use silver_common::{
-    Error, GossipMsgOut, MessageId, P2pStreamId, PeerControl, PeerEvent, SilverSpine, TConsumer,
-    TProducer,
+    Error, GossipMsgOut, MessageId, P2pStreamId, PeerControl, PeerEvent, SilverSpine,
+    TCacheProducer, TConsumer, TProducer,
 };
 
 use crate::{
@@ -158,6 +158,8 @@ impl GossipHandler {
         while let Ok((mut buffer, recv_ts)) = self.incoming_gossip.read() {
             // Incoming gossip messages are prefixed with P2pStreamId
             let stream_id: &P2pStreamId = buffer.into();
+            tracing::debug!(?stream_id, len = buffer.len(), "gossip protobuf recv");
+
             buffer = &buffer[size_of::<P2pStreamId>()..];
 
             if let Ok(gossip_proto) = RPCView::decode_view(buffer) {
@@ -219,6 +221,8 @@ impl GossipHandler {
                     }
                 }
             }
+
+            // Free read data.
             self.incoming_gossip.free();
         }
     }

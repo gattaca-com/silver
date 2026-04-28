@@ -6,8 +6,8 @@ use buffa::{
 };
 use flux::timing::Nanos;
 use silver_common::{
-    Error, GossipTopic, MessageId, NewGossipMsg, P2pStreamId, PeerEvent, TCacheRead, TProducer,
-    TReservation, msg_id_invalid_snappy, msg_id_valid_snappy,
+    Error, GossipTopic, MessageId, NewGossipMsg, P2pStreamId, PeerEvent, TCacheProducer,
+    TCacheRead, TProducer, TReservation, msg_id_invalid_snappy, msg_id_valid_snappy,
 };
 
 use crate::{

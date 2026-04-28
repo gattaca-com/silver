@@ -126,6 +126,7 @@ impl TwoStackHarness {
             // Saturating subtract guards against garbage/unstamped
             // timestamps: a `recv_ts` that somehow ends up in the future
             // yields 0 ns rather than panicking.
+            tracing::debug!("new gossip!");
             let _ = self.echo.stats.receive_ns.record(new_msg.recv_ts.elapsed_saturating().0);
 
             let now_wall = Instant::now();

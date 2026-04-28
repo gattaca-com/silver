@@ -9,11 +9,11 @@ use std::{net::SocketAddr, sync::atomic::AtomicUsize};
 use flux::{spine::SpineAdapter, tile::Tile};
 use quinn_proto::Endpoint;
 use silver_common::{
-    Enr, Keypair, PeerId, SilverSpine, TCache, TConsumer, TProducer, TRandomAccess,
+    Enr, Keypair, PeerId, SilverSpine, TCache, TCacheProducer, TConsumer, TProducer, TRandomAccess,
 };
 use silver_discovery::{DiscV5, DiscoveryConfig};
 use silver_gossip::GossipHandler;
-use silver_network::{NetworkTile, P2p, TCacheStreamData, create_endpoint, create_server_config};
+use silver_network::{Context, NetworkTile, P2p, create_endpoint, create_server_config};
 
 use crate::Stats;
 
@@ -138,12 +138,12 @@ impl PublisherStack {
         let gossip_out_ra_for_network =
             mcache_producer.cache_ref().random_access().expect("random_access");
 
-        let stream_data = TCacheStreamData::new(
-            gossip_in_producer,
-            gossip_out_ra_for_network,
-            rpc_in_producer,
-            rpc_out_ra,
-        );
+        let context = Context {
+            gossip_producer: gossip_in_producer,
+            gossip_consumer: gossip_out_ra_for_network,
+            rpc_producer: rpc_in_producer,
+            rpc_consumer: rpc_out_ra,
+        };
 
         let discovery = DiscV5::new(
             DiscoveryConfig::default(),
@@ -154,7 +154,7 @@ impl PublisherStack {
 
         let endpoint = quic_endpoint(&keypair, /* is_server= */ true);
         let p2p = P2p::new(keypair, endpoint);
-        let network = NetworkTile::new(disc_addr, discovery, addr, p2p, stream_data)
+        let network = NetworkTile::new(disc_addr, discovery, addr, p2p, context)
             .map_err(std::io::Error::other)?;
 
         // Spine + per-tile adapters.
@@ -214,12 +214,12 @@ impl EchoStack {
         let rpc_out_producer = TCache::producer(TCACHE_SIZE);
         let rpc_out_ra = rpc_out_producer.cache_ref().random_access().expect("random_access");
 
-        let stream_data = TCacheStreamData::new(
-            gossip_in_producer,
-            protobuf_ra_for_network,
-            rpc_in_producer,
-            rpc_out_ra,
-        );
+        let context = Context {
+            gossip_producer: gossip_in_producer,
+            gossip_consumer: protobuf_ra_for_network,
+            rpc_producer: rpc_in_producer,
+            rpc_consumer: rpc_out_ra,
+        };
 
         let discovery = DiscV5::new(
             DiscoveryConfig::default(),
@@ -230,7 +230,7 @@ impl EchoStack {
 
         let endpoint = quic_endpoint(&keypair, /* is_server= */ true);
         let p2p = P2p::new(keypair, endpoint);
-        let network = NetworkTile::new(disc_addr, discovery, addr, p2p, stream_data)
+        let network = NetworkTile::new(disc_addr, discovery, addr, p2p, context)
             .map_err(std::io::Error::other)?;
 
         let compression = GossipHandler::new(

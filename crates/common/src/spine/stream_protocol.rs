@@ -32,6 +32,18 @@ pub const ALL_PROTOCOLS: &[StreamProtocol] = &[
     StreamProtocol::DataColumnSidecarsByRoot,
 ];
 
+pub const RPC_PROTOCOLS: &[StreamProtocol] = &[
+    StreamProtocol::StatusV1,
+    StreamProtocol::StatusV2,
+    StreamProtocol::Ping,
+    StreamProtocol::Goodbye,
+    StreamProtocol::Metadata,
+    StreamProtocol::BeaconBlocksByRange,
+    StreamProtocol::BeaconBlocksByRoot,
+    StreamProtocol::DataColumnSidecarsByRange,
+    StreamProtocol::DataColumnSidecarsByRoot,
+];
+
 impl StreamProtocol {
     pub const fn is_request_response(&self) -> bool {
         !matches!(self, Self::GossipSub | Self::Identity)
@@ -74,6 +86,20 @@ impl StreamProtocol {
     /// Match a varint-prefixed protocol line against known protocols.
     pub fn from_multiselect(data: &[u8]) -> Option<Self> {
         ALL_PROTOCOLS.iter().find(|p| p.multiselect() == data).copied()
+    }
+
+    pub fn from_multiselect_str(data: &str) -> Option<Self> {
+        ALL_PROTOCOLS
+            .iter()
+            .find(|p| {
+                let bytes = p.multiselect();
+                data.as_bytes() == &bytes[1..(bytes.len() - 1)]
+            })
+            .copied()
+    }
+
+    pub const fn ordinal(&self) -> u8 {
+        *self as u8
     }
 }
 
@@ -126,6 +152,17 @@ mod tests {
         assert_eq!(
             StreamProtocol::DataColumnSidecarsByRoot.multiselect().len(),
             (StreamProtocol::DataColumnSidecarsByRoot.multiselect()[0] + 1) as usize
+        );
+    }
+
+    #[test]
+    fn from_str() {
+        assert_eq!(
+            StreamProtocol::DataColumnSidecarsByRange,
+            StreamProtocol::from_multiselect_str(
+                "/eth2/beacon_chain/req/data_column_sidecars_by_range/1/ssz_snappy"
+            )
+            .unwrap()
         );
     }
 }

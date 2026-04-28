@@ -21,12 +21,31 @@ tempfile = "3"
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
+# Optional — `lh-client` brings up a rust-libp2p test peer for end-to-end
+# wire-format checks. Heavy dep tree, kept off the default build.
+futures = { version = "0.3", optional = true }
+libp2p = { version = "0.56", default-features = false, features = [
+    "quic",
+    "tokio",
+    "secp256k1",
+    "macros",
+], optional = true }
+tokio = { version = "1", features = ["rt", "time", "macros"], optional = true }
+
+[features]
+default = []
+lh-client = ["dep:futures", "dep:libp2p", "dep:tokio"]
+
 [dev-dependencies]
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [[example]]
 name = "gossip_oneway"
+
+[[test]]
+name = "lh_handshake"
+required-features = ["lh-client"]
 
 [lints]
 workspace = true
