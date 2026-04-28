@@ -1153,6 +1153,11 @@ impl StatusView {
     pub fn check_size(buf: &[u8]) -> bool {
         buf.len() == STATUS_V1_SIZE || buf.len() == STATUS_V2_SIZE
     }
+
+    #[inline]
+    pub fn as_v1(buf: &[u8]) -> &[u8] {
+        &buf[..STATUS_V1_SIZE]
+    }
 }
 
 // -- MetaData (req/metadata/3, resp only) -----------------------------

@@ -235,51 +235,13 @@ impl BeaconStateTile {
             ForkChoice::init(finalized, justified, slot, block_root, block_root, self.head);
 
         let current_epoch = slot / SLOTS_PER_EPOCH;
-        let vid0 = self.arena.vid.get(0);
-        let epoch0 = self.arena.epoch.get(0);
-        Self::compute_shuffling_into(
-            vid0,
-            epoch0,
-            current_epoch,
-            &mut self.shuffling_cache,
-            &mut self.active_scratch,
-        );
-        if current_epoch > 0 {
-            Self::compute_shuffling_into(
-                vid0,
-                epoch0,
-                current_epoch - 1,
-                &mut self.shuffling_cache,
-                &mut self.active_scratch,
-            );
-        }
+        self.ensure_shuffling_window(current_epoch);
 
         let wall_slot = self.ticker.current_slot();
         self.sync_cursor = slot + 1;
         self.sync_target = wall_slot;
         self.mode = if wall_slot > slot + 2 { Mode::Syncing } else { Mode::Following };
         true
-    }
-
-    fn compute_shuffling_into(
-        vid: &ValidatorIdentity,
-        epoch_data: &EpochData,
-        epoch: Epoch,
-        cache: &mut ShufflingCache,
-        scratch: &mut Vec<u32>,
-    ) {
-        let seed = shuffling::get_seed(epoch_data, epoch, DOMAIN_BEACON_ATTESTER);
-        shuffling::get_active_validator_indices_into(epoch_data, vid.validator_cnt, epoch, scratch);
-        shuffling::shuffle_list(scratch, &seed);
-        let slot = cache.entries.iter().position(|e| e.status == 0).unwrap_or(0);
-        let entry = &mut cache.entries[slot];
-        entry.epoch = epoch;
-        entry.seed = seed;
-        entry.status = 1;
-        entry.shuffled_indices.clear();
-        for &idx in scratch.iter() {
-            entry.shuffled_indices.push(idx);
-        }
     }
 
     fn alloc_pending(&mut self) -> usize {
@@ -321,6 +283,16 @@ impl BeaconStateTile {
     }
 
     /// Compute and cache the shuffling for `epoch`. No-op if already cached.
+    /// Maintain the 2-epoch attester window: attestations with
+    /// `target_epoch ∈ {epoch, epoch - 1}` resolve their committee against
+    /// both.
+    fn ensure_shuffling_window(&mut self, epoch: Epoch) {
+        self.ensure_shuffling(epoch);
+        if epoch > 0 {
+            self.ensure_shuffling(epoch - 1);
+        }
+    }
+
     fn ensure_shuffling(&mut self, epoch: Epoch) {
         for entry in self.shuffling_cache.entries.iter() {
             if entry.status == 1 && entry.epoch == epoch {
@@ -406,10 +378,7 @@ impl BeaconStateTile {
                 self.synced_emitted = false; // re-emit on next loop_body tick
             }
             let epoch = head_slot / SLOTS_PER_EPOCH;
-            self.ensure_shuffling(epoch);
-            if epoch > 0 {
-                self.ensure_shuffling(epoch - 1);
-            }
+            self.ensure_shuffling_window(epoch);
             return;
         }
 
@@ -640,10 +609,7 @@ impl BeaconStateTile {
         self.fork_choice.finalized_checkpoint = cp.1;
 
         self.prune_fork_choice();
-        self.ensure_shuffling(new_epoch);
-        if new_epoch > 0 {
-            self.ensure_shuffling(new_epoch - 1);
-        }
+        self.ensure_shuffling_window(new_epoch);
     }
 
     fn on_attestation(&mut self, validator_idx: usize, block_root: B256, epoch: Epoch) {
@@ -835,10 +801,7 @@ impl BeaconStateTile {
             }
         }
 
-        self.ensure_shuffling(block_epoch);
-        if block_epoch > 0 {
-            self.ensure_shuffling(block_epoch - 1);
-        }
+        self.ensure_shuffling_window(block_epoch);
 
         let head = self.head;
 
