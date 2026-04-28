@@ -34,7 +34,7 @@ pub trait Discovery {
 
     fn find_nodes(&mut self);
 
-    fn ban_node(&mut self, id: NodeId, duration: Option<Duration>);
+    fn ban_node(&mut self, id: NodeId);
 
     fn ban_ip(&mut self, ip: IpAddr, duration: Option<Duration>);
 

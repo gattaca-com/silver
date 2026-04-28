@@ -277,7 +277,7 @@ impl Discovery for DummyDisc {
 
     fn find_nodes(&mut self) {}
 
-    fn ban_node(&mut self, _id: silver_common::NodeId, _duration: Option<Duration>) {}
+    fn ban_node(&mut self, _id: silver_common::NodeId) {}
 
     fn ban_ip(&mut self, _ip: std::net::IpAddr, _duration: Option<Duration>) {}
 

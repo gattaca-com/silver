@@ -52,7 +52,7 @@ impl NetworkTile {
         match peer_control {
             PeerControl::Ban { p2p, p2p_connection } => {
                 if let Ok(pubkey) = PublicKey::from_slice(p2p.pubkey()) {
-                    self.inner.discovery.ban_node(pubkey.into(), None);
+                    self.inner.discovery.ban_node(pubkey.into());
                 }
                 self.inner.p2p_endpoint.ban_peer(p2p);
             }
@@ -69,8 +69,8 @@ impl NetworkTile {
             }
             PeerControl::UnbanIp { ip } => {
                 self.inner.discovery.unban_ip(ip);
-                self.inner.p2p_socket.un_ban(ip);
-                self.inner.disc_socket.un_ban(ip);
+                self.inner.p2p_socket.unban(ip);
+                self.inner.disc_socket.unban(ip);
             }
             PeerControl::DiscoverNodes => self.inner.discovery.find_nodes(),
             PeerControl::P2pDial { p2p, enr } => {

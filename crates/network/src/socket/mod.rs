@@ -132,7 +132,7 @@ impl Socket {
         self.banned_ips.insert(ip);
     }
 
-    pub(crate) fn un_ban(&mut self, ip: IpAddr) {
+    pub(crate) fn unban(&mut self, ip: IpAddr) {
         self.banned_ips.remove(&ip);
     }
 }
