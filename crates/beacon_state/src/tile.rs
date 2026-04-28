@@ -4,7 +4,7 @@ use flux::{
 };
 use silver_common::{
     BeaconStateEvent, GossipTopic, NewGossipMsg, P2pStreamId, PeerEvent, PeerRpcIn, RpcMsg,
-    SilverSpine, TProducer, TRandomAccess,
+    SilverSpine, TCacheRead, TRandomAccess,
     ssz_view::{
         BLOCKS_BY_RANGE_REQ_SIZE, SIGNED_BEACON_BLOCK_MIN, SINGLE_ATT_SIZE, STATUS_V2_SIZE,
         SignedBeaconBlockView, SingleAttestationView,
@@ -81,7 +81,6 @@ pub struct BeaconStateTile {
     active_scratch: Vec<u32>,
     postponed_scratch: Vec<types::PendingDeposit>,
 
-    event_producer: TProducer,
     gossip_consumer: TRandomAccess,
     rpc_consumer: TRandomAccess,
 }
@@ -92,14 +91,12 @@ impl BeaconStateTile {
     pub fn new(
         ticker: SlotTicker,
         gossip_consumer: TRandomAccess,
-        event_producer: TProducer,
         rpc_consumer: TRandomAccess,
         checkpoint_state: &[u8],
     ) -> Self {
         Self::with_arena(
             ticker,
             gossip_consumer,
-            event_producer,
             rpc_consumer,
             ArenaBacking::open_shm("silver"),
             checkpoint_state,
@@ -109,14 +106,12 @@ impl BeaconStateTile {
     pub fn new_heap(
         ticker: SlotTicker,
         gossip_consumer: TRandomAccess,
-        event_producer: TProducer,
         rpc_consumer: TRandomAccess,
         checkpoint_state: &[u8],
     ) -> Self {
         Self::with_arena(
             ticker,
             gossip_consumer,
-            event_producer,
             rpc_consumer,
             ArenaBacking::heap(),
             checkpoint_state,
@@ -129,7 +124,6 @@ impl BeaconStateTile {
     fn with_arena(
         ticker: SlotTicker,
         gossip_consumer: TRandomAccess,
-        event_producer: TProducer,
         rpc_consumer: TRandomAccess,
         arena: ArenaBacking,
         checkpoint_state: &[u8],
@@ -177,7 +171,6 @@ impl BeaconStateTile {
             zero_hashes: ssz_hash::compute_zero_hashes(),
             active_scratch: Vec::with_capacity(MAX_VALIDATORS),
             postponed_scratch: Vec::with_capacity(MAX_PENDING_DEPOSITS_PER_EPOCH),
-            event_producer,
             gossip_consumer,
             rpc_consumer,
         };
@@ -387,17 +380,16 @@ impl BeaconStateTile {
             let start_slot = self.sync_cursor;
             let count = (self.sync_target - self.sync_cursor + 1).min(64);
             let request_id = self.next_request_id;
-            if let Some(ev) = self.build_request_blocks_by_range(request_id, start_slot, count) {
-                adapter.produce(ev);
-                self.next_request_id += 1;
-                self.in_flight = Some((request_id, PendingRangeReq {
-                    start_slot,
-                    count,
-                    last_seen_slot: 0,
-                    chunks_received: 0,
-                    issued_at_wall_slot: wall_slot,
-                }));
-            }
+            let event = self.build_request_blocks_by_range(request_id, start_slot, count);
+            adapter.produce(event);
+            self.next_request_id += 1;
+            self.in_flight = Some((request_id, PendingRangeReq {
+                start_slot,
+                count,
+                last_seen_slot: 0,
+                chunks_received: 0,
+                issued_at_wall_slot: wall_slot,
+            }));
         }
     }
 
@@ -434,37 +426,25 @@ impl BeaconStateTile {
         request_id: u64,
         start_slot: Slot,
         count: u64,
-    ) -> Option<BeaconStateEvent> {
-        let Some(mut r) = self.event_producer.reserve(BLOCKS_BY_RANGE_REQ_SIZE, true) else {
-            tracing::warn!("event_producer reserve failed (request_blocks_by_range)");
-            return None;
-        };
-        if let Ok(buf) = r.buffer() {
-            buf[0..8].copy_from_slice(&start_slot.to_le_bytes());
-            buf[8..16].copy_from_slice(&count.to_le_bytes());
-            buf[16..24].copy_from_slice(&1u64.to_le_bytes());
-        }
-        r.increment_offset(BLOCKS_BY_RANGE_REQ_SIZE);
-        Some(BeaconStateEvent::RequestBlocksByRange { request_id, ssz: r.read() })
-    }
+    ) -> BeaconStateEvent {
+        let mut ssz = [0u8; BLOCKS_BY_RANGE_REQ_SIZE];
+        ssz[0..8].copy_from_slice(&start_slot.to_le_bytes());
+        ssz[8..16].copy_from_slice(&count.to_le_bytes());
+        // TODO @nina - not 1?
+        ssz[16..24].copy_from_slice(&1u64.to_le_bytes());
 
-    fn build_persist_block(&mut self, data: &[u8]) -> Option<BeaconStateEvent> {
-        let len = data.len();
-        let Some(mut r) = self.event_producer.reserve(len, true) else {
-            tracing::warn!(len, "event_producer reserve failed (persist_block)");
-            return None;
-        };
-        if let Ok(buf) = r.buffer() {
-            buf[..len].copy_from_slice(data);
-        }
-        r.increment_offset(len);
-        Some(BeaconStateEvent::PersistBlock(r.read()))
+        BeaconStateEvent::RequestBlocksByRange { request_id, ssz }
     }
 
     /// Post-import emission: PersistBlock (for storage) + Status (head and
     /// possibly finalized just moved). Called after `handle_block` returns
     /// `GossipFeedback::Accept` from gossip or RPC range/root response paths.
-    fn apply_block(&mut self, data: &[u8], producers: &mut Producers) -> GossipFeedback {
+    fn apply_block(
+        &mut self,
+        data: &[u8],
+        data_tcache: TCacheRead,
+        producers: &mut Producers,
+    ) -> GossipFeedback {
         let prev_head = self.head;
         let prev_finalized = self.slot(&prev_head).finalized_checkpoint;
 
@@ -473,9 +453,7 @@ impl BeaconStateTile {
             return f;
         }
 
-        if let Some(ev) = self.build_persist_block(data) {
-            producers.produce(ev);
-        }
+        producers.produce(BeaconStateEvent::PersistBlock(data_tcache));
 
         let head_changed = self.head != prev_head;
         let new_finalized = self.slot(&self.head).finalized_checkpoint;
@@ -702,7 +680,7 @@ impl BeaconStateTile {
 
     fn handle_gossip(&mut self, m: NewGossipMsg, data: &[u8], producers: &mut Producers) {
         let feedback = match m.topic {
-            GossipTopic::BeaconBlock => Some(self.apply_block(data, producers)),
+            GossipTopic::BeaconBlock => Some(self.apply_block(data, m.ssz, producers)),
             GossipTopic::BeaconAttestation(_) => Some(self.handle_attestation(data)),
             _ => None,
         };
@@ -729,13 +707,14 @@ impl BeaconStateTile {
         _sender: P2pStreamId,
         request_id: u64,
         data: &[u8],
+        data_tcache: TCacheRead,
         producers: &mut Producers,
     ) {
         if let RpcMsg::BlocksRangeResp(_) = msg {
             if !self.accept_blocks_range_chunk(request_id, data) {
                 return;
             }
-            if self.apply_block(data, producers) == GossipFeedback::Accept &&
+            if self.apply_block(data, data_tcache, producers) == GossipFeedback::Accept &&
                 let Some((_, req)) = self.in_flight.as_mut()
             {
                 req.last_seen_slot = SignedBeaconBlockView::slot(data);
@@ -1059,7 +1038,7 @@ impl Tile<SilverSpine> for BeaconStateTile {
             let seq = m.tcache.seq();
             let data = self.rpc_consumer.read_at(seq).ok().map(|(d, _)| d as *const [u8]);
             if let Some(p) = data {
-                self.handle_rpc(m.msg, m.sender, m.request_id, unsafe { &*p }, producers);
+                self.handle_rpc(m.msg, m.sender, m.request_id, unsafe { &*p }, m.tcache, producers);
             }
             self.rpc_consumer.set_tail(seq);
         });
@@ -1068,9 +1047,6 @@ impl Tile<SilverSpine> for BeaconStateTile {
         if self.mode == Mode::Syncing {
             self.sync_step(adapter);
         }
-
-        // Publish outbound tcache head so downstream consumers see new seqs.
-        self.event_producer.publish_head();
     }
 }
 
@@ -1131,8 +1107,7 @@ mod tests {
         let event_p = TCache::producer(1 << 20);
         let gossip_c = gossip_p.cache_ref().random_access().unwrap();
         let rpc_c = event_p.cache_ref().random_access().unwrap();
-        let event_p = TCache::producer(1 << 20);
-        BeaconStateTile::new_heap(ticker, gossip_c, event_p, rpc_c, &[])
+        BeaconStateTile::new_heap(ticker, gossip_c, rpc_c, &[])
     }
 
     fn seed_tile(tile: &mut BeaconStateTile, n: usize, start_slot: Slot) {

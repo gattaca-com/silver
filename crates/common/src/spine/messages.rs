@@ -5,8 +5,8 @@ use flux::timing::Nanos;
 use crate::{
     Enr, GossipTopic, MessageId, P2pStreamId, PeerId, StreamProtocol, TCacheRead,
     ssz_view::{
-        BeaconBlocksByRangeRequestView, BeaconBlocksByRootRequestView, BlobIdentifierView,
-        DataColumnSidecarView, DataColumnSidecarsByRangeRequestView,
+        BLOCKS_BY_RANGE_REQ_SIZE, BeaconBlocksByRangeRequestView, BeaconBlocksByRootRequestView,
+        BlobIdentifierView, DataColumnSidecarView, DataColumnSidecarsByRangeRequestView,
         DataColumnsByRootIdentifierView, STATUS_V2_SIZE, SignedBeaconBlockView, SszView,
         StatusView,
     },
@@ -294,7 +294,7 @@ pub struct PeerRpcIn {
 #[repr(C)]
 pub enum BeaconStateEvent {
     Synced([u8; STATUS_V2_SIZE]),
-    RequestBlocksByRange { request_id: u64, ssz: TCacheRead },
+    RequestBlocksByRange { request_id: u64, ssz: [u8; BLOCKS_BY_RANGE_REQ_SIZE] },
     Status([u8; STATUS_V2_SIZE]),
     PersistBlock(TCacheRead),
 }

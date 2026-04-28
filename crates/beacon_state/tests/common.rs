@@ -114,14 +114,14 @@ impl OutboundKind {
 
 impl Harness {
     pub fn new(wall_slot: u64, checkpoint_ssz: &[u8]) -> Self {
-        Self::build(wall_slot, |ticker, gc, rp, rc| {
-            BeaconStateTile::new_heap(ticker, gc, rp, rc, checkpoint_ssz)
+        Self::build(wall_slot, |ticker, gc, rc| {
+            BeaconStateTile::new_heap(ticker, gc, rc, checkpoint_ssz)
         })
     }
 
     fn build<F>(wall_slot: u64, build_tile: F) -> Self
     where
-        F: FnOnce(SlotTicker, TRandomAccess, TProducer, TRandomAccess) -> BeaconStateTile,
+        F: FnOnce(SlotTicker, TRandomAccess, TRandomAccess) -> BeaconStateTile,
     {
         static SEQ: AtomicU64 = AtomicU64::new(0);
         let seq = SEQ.fetch_add(1, Ordering::Relaxed);
@@ -145,9 +145,8 @@ impl Harness {
         let rpc_in_producer = TCache::producer(1 << 24);
         let gossip_consumer = gossip_in_producer.cache_ref().random_access().expect("gossip ra");
         let rpc_consumer = rpc_in_producer.cache_ref().random_access().expect("rpc ra");
-        let rpc_out_producer = TCache::producer(1 << 24);
 
-        let tile = build_tile(ticker, gossip_consumer, rpc_out_producer, rpc_consumer);
+        let tile = build_tile(ticker, gossip_consumer, rpc_consumer);
 
         // Order matters: attach tile first so its tile_id stays 0 for the
         // real consumer of `inbound`; Injector gets tile_id 1.
