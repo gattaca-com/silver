@@ -168,8 +168,8 @@ impl PeerManager {
         emit: &mut impl FnMut(PeerControl),
     ) {
         match event {
-            PeerEvent::P2pNewConnection { p2p_peer_id, peer_id_full, ip, port } => {
-                self.on_connected(p2p_peer_id, peer_id_full, ip, port, now, emit);
+            PeerEvent::P2pNewConnection { p2p_peer_id, peer_id_full, ip, port, local_dial } => {
+                self.on_connected(p2p_peer_id, peer_id_full, ip, port, now, emit, local_dial);
             }
             PeerEvent::P2pDisconnect { p2p_peer } => {
                 self.on_disconnected(p2p_peer, now, emit);
@@ -274,6 +274,7 @@ impl PeerManager {
 
     // ── Lifecycle ───────────────────────────────────────────────────────
 
+    #[allow(clippy::too_many_arguments)]
     fn on_connected(
         &mut self,
         conn: usize,
@@ -282,6 +283,7 @@ impl PeerManager {
         port: u16,
         now: Instant,
         emit: &mut impl FnMut(PeerControl),
+        local_dialler: bool,
     ) {
         let addr = SocketAddr::new(ip_bytes_to_addr(ip), port);
         let mut state = PeerState::new(peer_id, addr, now);
@@ -298,6 +300,10 @@ impl PeerManager {
             .push(conn);
 
         self.peers.insert(conn, state);
+
+        if local_dialler {
+            // TODO send rpc Status
+        }
 
         // Announce our own topic subscriptions to this peer.
         for &topic in &self.our_topics {
@@ -1089,6 +1095,7 @@ mod tests {
                 peer_id_full: peer_id(seed),
                 ip: IpBytes::V4([10, 0, 0, seed]),
                 port: 4000 + seed as u16,
+                local_dial: false,
             },
             now,
             &mut |c| cap.0.push(c),
@@ -1269,6 +1276,7 @@ mod tests {
                     peer_id_full: peer_id(i),
                     ip: IpBytes::V4([10, 0, 0, i]),
                     port: 4000 + i as u16,
+                    local_dial: false,
                 },
                 now,
                 &mut |c| cap.0.push(c),
@@ -1983,6 +1991,7 @@ mod tests {
                     peer_id_full: peer_id(seed),
                     ip: IpBytes::V4(ip.octets()),
                     port: 4000 + seed as u16,
+                    local_dial: false,
                 },
                 now,
                 &mut |c| cap.0.push(c),
@@ -2029,6 +2038,7 @@ mod tests {
                 peer_id_full: peer_id(1),
                 ip: IpBytes::V4(ip.octets()),
                 port: 4001,
+                local_dial: false,
             },
             now,
             &mut |c| cap.0.push(c),
@@ -2054,6 +2064,7 @@ mod tests {
                 peer_id_full: peer_id(2),
                 ip: IpBytes::V4(ip.octets()),
                 port: 4002,
+                local_dial: false,
             },
             now,
             &mut |c| cap.0.push(c),

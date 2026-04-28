@@ -1,5 +1,6 @@
 use std::{
-    collections::HashSet, net::{IpAddr, Ipv4Addr}
+    collections::HashSet,
+    net::{IpAddr, Ipv4Addr},
 };
 
 use criterion::{Criterion, criterion_group, criterion_main};
@@ -24,11 +25,11 @@ pub fn filter(c: &mut Criterion) {
             if i & 1 == 0 {
                 filter.push(Ipv4Addr::from_octets(octets).into());
             }
-        };
+        }
         (addrs, filter)
     };
 
-    group.bench_with_input( "hashset", &(&universe, &filter), |b, (universe, filter)| {
+    group.bench_with_input("hashset", &(&universe, &filter), |b, (universe, filter)| {
         let mut filter_set = HashSet::new();
         for i in *filter {
             filter_set.insert(*i);
@@ -42,7 +43,7 @@ pub fn filter(c: &mut Criterion) {
         });
     });
 
-    group.bench_with_input( "trie", &(&universe, &filter), |b, (universe, filter)| {
+    group.bench_with_input("trie", &(&universe, &filter), |b, (universe, filter)| {
         let mut filter_set = IpnetTrie::new();
         for i in *filter {
             filter_set.insert(*i, ());
@@ -56,8 +57,9 @@ pub fn filter(c: &mut Criterion) {
         });
     });
 
-    group.bench_with_input( "wither", &(&universe, &filter), |b, (universe, filter)| {
-        let mut filter_set = WitherFilter::<IpAddr, FxHasher, 4096>::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+    group.bench_with_input("wither", &(&universe, &filter), |b, (universe, filter)| {
+        let mut filter_set =
+            WitherFilter::<IpAddr, FxHasher, 4096>::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
         for i in *filter {
             filter_set.insert(*i);
         }

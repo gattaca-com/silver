@@ -67,7 +67,7 @@ impl PeerState {
             ip_prefix: IpPrefix::from(addr.ip()),
             topics: HashSet::with_capacity(TOPICS_PER_PEER_CAP),
             topic_stats: HashMap::with_capacity(TOPICS_PER_PEER_CAP),
-            msg_cache: CountingWitherFilter::new(),
+            msg_cache: CountingWitherFilter::default(),
             application_score: 0.0,
             behaviour_penalty: 0.0,
             ihaves_received: 0,

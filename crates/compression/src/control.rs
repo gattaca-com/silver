@@ -3,13 +3,12 @@ use buffa::{
     encoding::{Tag, WireType, encode_varint, varint_len},
     types::{encode_bytes, encode_string, string_encoded_len},
 };
-use flux::spine::SpineAdapter;
 use silver_common::{
-    Error, GossipTopic, MESSAGE_ID_LEN, MessageId, P2pStreamId, PeerEvent, SilverSpine, TCacheRead,
-    TProducer,
+    Error, GossipTopic, MESSAGE_ID_LEN, MessageId, P2pStreamId, PeerEvent, TCacheRead, TProducer,
 };
 
 use crate::{
+    GossipHandlerEvent,
     generated::{
         ControlGraftView, ControlIDontWantView, ControlIHaveView, ControlIWantView,
         ControlPruneView, rpc::SubOptsView,
@@ -21,7 +20,7 @@ pub(super) fn handle_subscriptions<'a>(
     stream_id: &P2pStreamId,
     subscriptions: RepeatedView<'a, SubOptsView<'a>>,
     fork_digest_hex: &str,
-    adapter: &mut SpineAdapter<SilverSpine>,
+    emit: &mut impl FnMut(GossipHandlerEvent),
 ) {
     for subscription in subscriptions {
         if let Some(topic) = subscription.topic_id &&
@@ -31,15 +30,15 @@ pub(super) fn handle_subscriptions<'a>(
                 continue;
             };
             if subscribe {
-                adapter.produce(PeerEvent::P2pGossipTopicSubscribe {
+                emit(GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipTopicSubscribe {
                     p2p_peer: stream_id.peer(),
                     topic,
-                });
+                }));
             } else {
-                adapter.produce(PeerEvent::P2pGossipTopicUnsubscribe {
+                emit(GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipTopicUnsubscribe {
                     p2p_peer: stream_id.peer(),
                     topic,
-                });
+                }));
             }
         }
     }
@@ -49,14 +48,17 @@ pub(super) fn handle_grafts<'a>(
     stream_id: &P2pStreamId,
     grafts: &RepeatedView<'a, ControlGraftView<'a>>,
     fork_digest_hex: &str,
-    adapter: &mut SpineAdapter<SilverSpine>,
+    emit: &mut impl FnMut(GossipHandlerEvent),
 ) {
     for graft in grafts {
         if let Some(topic) = graft.topic_id {
             let Ok(topic) = gossip_topic(topic, fork_digest_hex) else {
                 continue;
             };
-            adapter.produce(PeerEvent::P2pGossipTopicGraft { p2p_peer: stream_id.peer(), topic });
+            emit(GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipTopicGraft {
+                p2p_peer: stream_id.peer(),
+                topic,
+            }));
         }
     }
 }
@@ -65,7 +67,7 @@ pub(super) fn handle_prunes<'a>(
     stream_id: &P2pStreamId,
     prunes: &RepeatedView<'a, ControlPruneView<'a>>,
     fork_digest_hex: &str,
-    adapter: &mut SpineAdapter<SilverSpine>,
+    emit: &mut impl FnMut(GossipHandlerEvent),
 ) {
     for prune in prunes {
         if let Some(topic) = prune.topic_id {
@@ -74,7 +76,10 @@ pub(super) fn handle_prunes<'a>(
             };
             // TODO: prune.peers may contain list of signed peer records of alternate peers
             // but e.g. Lighthouse does not send peer records. So maybe just ignore?
-            adapter.produce(PeerEvent::P2pGossipTopicPrune { p2p_peer: stream_id.peer(), topic });
+            emit(GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipTopicPrune {
+                p2p_peer: stream_id.peer(),
+                topic,
+            }));
         }
     }
 }
@@ -83,20 +88,20 @@ pub(super) fn handle_iwants<'a>(
     stream_id: &P2pStreamId,
     wants: &RepeatedView<'a, ControlIWantView<'a>>,
     mcache: &mut MessageCache,
-    adapter: &mut SpineAdapter<SilverSpine>,
+    emit: &mut impl FnMut(GossipHandlerEvent),
 ) {
     for iwant in wants {
         for want in &iwant.message_ids {
-            let Some(hash) = message_id(want, stream_id, adapter) else {
+            let Some(hash) = message_id(want, stream_id, emit) else {
                 continue;
             };
 
             if let Some(tcache) = mcache.get(&hash) {
-                adapter.produce(PeerEvent::P2pGossipWant {
+                emit(GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipWant {
                     p2p_peer: stream_id.peer(),
                     hash,
                     tcache,
-                });
+                }));
             }
         }
     }
@@ -105,14 +110,17 @@ pub(super) fn handle_iwants<'a>(
 pub(super) fn handle_idontwants<'a>(
     stream_id: &P2pStreamId,
     wants: &RepeatedView<'a, ControlIDontWantView<'a>>,
-    adapter: &mut SpineAdapter<SilverSpine>,
+    emit: &mut impl FnMut(GossipHandlerEvent),
 ) {
     for idontwant in wants {
         for dontwant in &idontwant.message_ids {
-            let Some(hash) = message_id(dontwant, stream_id, adapter) else {
+            let Some(hash) = message_id(dontwant, stream_id, emit) else {
                 continue;
             };
-            adapter.produce(PeerEvent::P2pGossipDontWant { p2p_peer: stream_id.peer(), hash });
+            emit(GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipDontWant {
+                p2p_peer: stream_id.peer(),
+                hash,
+            }));
         }
     }
 }
@@ -123,7 +131,7 @@ pub(super) fn handle_ihaves<'a>(
     fork_digest_hex: &str,
     mcache: &MessageCache,
     mcache_publish: &mut TProducer,
-    adapter: &mut SpineAdapter<SilverSpine>,
+    emit: &mut impl FnMut(GossipHandlerEvent),
     scratch_buffer: &mut Vec<MessageId>,
 ) {
     scratch_buffer.clear();
@@ -133,19 +141,19 @@ pub(super) fn handle_ihaves<'a>(
                 continue;
             };
             for have in &ihave.message_ids {
-                let Some(hash) = message_id(have, stream_id, adapter) else {
+                let Some(hash) = message_id(have, stream_id, emit) else {
                     continue;
                 };
                 // Emit for every id, including ones we already have — the
                 // peer manager uses the total count for rate/flood scoring.
                 // `already_seen` tells it whether an IWANT is implied.
                 let already_seen = mcache.has(&hash);
-                adapter.produce(PeerEvent::P2pGossipHave {
+                emit(GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipHave {
                     p2p_peer: stream_id.peer(),
                     hash,
                     topic,
                     already_seen,
-                });
+                }));
 
                 if !already_seen {
                     scratch_buffer.push(hash);
@@ -157,7 +165,10 @@ pub(super) fn handle_ihaves<'a>(
         return;
     }
     if let Ok(cache_read) = copy_iwants_to_protobuf_output(mcache_publish, scratch_buffer.iter()) {
-        adapter.produce(PeerEvent::OutboundIWant { p2p_peer: stream_id.peer(), iwant: cache_read });
+        emit(GossipHandlerEvent::PeerEvent(PeerEvent::OutboundIWant {
+            p2p_peer: stream_id.peer(),
+            iwant: cache_read,
+        }));
     }
 }
 
@@ -417,13 +428,15 @@ fn gossip_topic(topic: &str, fork_digest_hex: &str) -> Result<GossipTopic, Error
 fn message_id(
     bytes: &[u8],
     stream_id: &P2pStreamId,
-    adapter: &mut SpineAdapter<SilverSpine>,
+    emit: &mut impl FnMut(GossipHandlerEvent),
 ) -> Option<MessageId> {
     match (bytes).try_into() {
         Ok(hash) => Some(MessageId { id: hash }),
         Err(_) => {
             tracing::warn!(?bytes, ?stream_id, "invalid message hash");
-            adapter.produce(PeerEvent::P2pGossipInvalidControl { p2p_peer: stream_id.peer() });
+            emit(GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipInvalidControl {
+                p2p_peer: stream_id.peer(),
+            }));
             None
         }
     }

@@ -69,6 +69,7 @@ pub enum PeerEvent {
         peer_id_full: PeerId,
         ip: IpBytes,
         port: u16,
+        local_dial: bool,
     },
     P2pDisconnect {
         p2p_peer: usize,

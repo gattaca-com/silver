@@ -4,6 +4,7 @@ mod stream;
 pub(crate) mod tls;
 
 use std::{
+    io::Error,
     net::SocketAddr,
     time::{Duration, Instant},
 };
@@ -27,14 +28,10 @@ pub fn p2p_spin<D: StreamData, F: FnMut(NetEvent)>(
     p2p_endpoint: &mut P2p,
     p2p_socket: &mut Socket,
     stream_data: &mut D,
+    now: Instant,
     on_event: &mut F,
-) {
-    let now = Instant::now();
-
+) { 
     p2p_socket.flush(poll);
-    p2p_socket.recv(|data, remote, scratch, socket| {
-        p2p_endpoint.recv(now, data, remote, scratch, socket)
-    });
     p2p_endpoint.poll(now, poll, p2p_socket, stream_data, on_event);
     p2p_socket.flush(poll);
 }
@@ -44,7 +41,7 @@ pub fn p2p_spin<D: StreamData, F: FnMut(NetEvent)>(
 #[derive(Debug, Clone)]
 pub enum NetEvent {
     /// A peer connection has been established and its PeerId verified.
-    PeerConnected { peer: RemotePeer, addr: SocketAddr },
+    PeerConnected { peer: RemotePeer, addr: SocketAddr, local_dialler: bool },
     /// A peer connection has been lost or the underlying QUIC connection
     /// drained.
     PeerDisconnected { peer: RemotePeer },
@@ -62,8 +59,6 @@ pub struct P2p {
     banned: FxHashSet<PeerId>,
     timeout: Option<Duration>,
     recv_count: usize,
-    /// Pending outbound connections (queued via `connect`).
-    pending_connect: Vec<(PeerId, SocketAddr)>,
 }
 
 impl P2p {
@@ -75,14 +70,22 @@ impl P2p {
             banned: FxHashSet::default(),
             timeout: Some(Duration::ZERO),
             recv_count: 0,
-            pending_connect: Vec::new(),
         }
     }
 
-    /// Request an outbound connection to a peer. Processed during the next
-    /// `poll()` cycle.
-    pub fn connect(&mut self, peer_id: PeerId, addr: SocketAddr) {
-        self.pending_connect.push((peer_id, addr));
+    /// Request an outbound connection to a peer.
+    pub fn connect(
+        &mut self,
+        peer_id: PeerId,
+        addr: SocketAddr,
+        now: Instant,
+    ) -> Result<(), Error> {
+        let client_config = create_client_config(&self.keypair, Some(peer_id))?;
+        let (handle, connection) =
+            self.endpoint.connect(now, client_config, addr, "x").map_err(Error::other)?;
+        let peer = Peer::new(handle, connection, true);
+        self.peers.insert(handle, peer);
+        Ok(())
     }
 
     /// Open a new bidirectional stream on the given peer connection with the
@@ -124,8 +127,8 @@ impl P2p {
             DatagramEvent::NewConnection(incoming) => {
                 match self.endpoint.accept(incoming, now, scratch, None) {
                     Ok((handle, conn)) => {
-                        let peer = Peer::new(handle, conn);
-                        
+                        let peer = Peer::new(handle, conn, false);
+
                         self.peers.insert(handle, peer);
                     }
                     Err(e) => {
@@ -156,15 +159,6 @@ impl P2p {
         S: StreamData,
         E: FnMut(NetEvent),
     {
-        // New outbound connections from queued connect requests.
-        for (id, addr) in self.pending_connect.drain(..) {
-            let client_config = create_client_config(&self.keypair, Some(id)).unwrap(); // TODO
-            let (handle, connection) =
-                self.endpoint.connect(now, client_config, addr, "x").unwrap(); // TODO
-            let peer = Peer::new(handle, connection);
-            self.peers.insert(handle, peer);
-        }
-
         let mut ep_callback = |handle, ep_event| self.endpoint.handle_event(handle, ep_event);
 
         self.timeout = Some(Duration::ZERO);

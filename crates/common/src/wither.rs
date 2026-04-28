@@ -12,16 +12,22 @@ where
     _hasher: PhantomData<H>,
 }
 
+impl<T, H, const N: usize> Default for CountingWitherFilter<T, H, N>
+where
+    T: Copy + Default + Hash + Eq,
+    H: Default + Hasher,
+{
+    fn default() -> Self {
+        assert!(N.is_power_of_two());
+        Self { slots: vec![(T::default(), 0); N].into_boxed_slice(), _hasher: PhantomData }
+    }
+}
+
 impl<T, H, const N: usize> CountingWitherFilter<T, H, N>
 where
     T: Copy + Default + Hash + Eq,
     H: Default + Hasher,
 {
-    pub fn new() -> Self {
-        assert!(N.is_power_of_two());
-        Self { slots: vec![(T::default(), 0); N].into_boxed_slice(), _hasher: PhantomData }
-    }
-
     /// Insert or update count for the specified key, returning the previous
     /// value.
     pub fn upsert(&mut self, val: T) -> u32 {
@@ -68,10 +74,14 @@ where
 {
     pub fn new(default_value: T) -> Self {
         assert!(N.is_power_of_two());
-        Self { slots: vec![default_value; N].into_boxed_slice(), default_value, _hasher: PhantomData }
+        Self {
+            slots: vec![default_value; N].into_boxed_slice(),
+            default_value,
+            _hasher: PhantomData,
+        }
     }
 
-    /// Insert the specified key, return `true` if not already present. 
+    /// Insert the specified key, return `true` if not already present.
     pub fn insert(&mut self, val: T) -> bool {
         let index = self.index(&val);
         if val == self.slots[index] {
@@ -88,7 +98,7 @@ where
     }
 
     pub fn remove(&mut self, val: &T) -> bool {
-        let index = self.index(&val);
+        let index = self.index(val);
         if *val == self.slots[index] {
             self.slots[index] = self.default_value;
             true
@@ -107,9 +117,8 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::{MessageId, MessageIdHasher};
-
     use super::*;
+    use crate::{MessageId, MessageIdHasher};
 
     type F = CountingWitherFilter<MessageId, MessageIdHasher, 4096>;
 
@@ -122,7 +131,7 @@ mod tests {
 
     #[test]
     fn upsert_returns_previous_count_for_same_key() {
-        let mut f = F::new();
+        let mut f = F::default();
         let a = id(0x42, 0x07, 0xAA);
         // 1st: prev=0 (slot starts empty). 2nd: prev=1. 3rd: prev=2.
         assert_eq!(f.upsert(a), 0);
@@ -133,7 +142,7 @@ mod tests {
 
     #[test]
     fn contains_returns_false_for_unseen() {
-        let f = F::new();
+        let f = F::default();
         assert!(!f.contains(&id(0x42, 0x07, 0xAA)));
     }
 
@@ -142,7 +151,7 @@ mod tests {
         // MessageIdHasher reads bytes[0..8] as native-endian u64; index is the
         // low 12 bits of that. On x86_64 (LE) that's all of byte[0] + low 4
         // bits of byte[1]. Two ids sharing those bits collide.
-        let mut f = F::new();
+        let mut f = F::default();
         let a = id(0x42, 0x07, 0x11);
         let b = id(0x42, 0x07, 0x22);
         assert_ne!(a, b);
@@ -159,7 +168,7 @@ mod tests {
 
     #[test]
     fn non_colliding_keys_are_independent() {
-        let mut f = F::new();
+        let mut f = F::default();
         // Different byte[0] → different low-12-bit index.
         let a = id(0x42, 0x07, 0xAA);
         let b = id(0x99, 0x08, 0xBB);

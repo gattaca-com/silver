@@ -13,4 +13,12 @@ pub use control::{
     copy_grafts_to_protobuf_output, copy_prunes_to_protobuf_output,
     copy_subscribes_to_protobuf_output, copy_unsubscribes_to_protobuf_output,
 };
-pub use tile::GossipCompressionTile;
+use silver_common::{GossipMsgOut, NewGossipMsg, PeerEvent};
+pub use tile::GossipHandler;
+
+/// Events emitted by the GossipHandler.
+pub enum GossipHandlerEvent {
+    PeerEvent(PeerEvent),
+    NewGossip(NewGossipMsg),
+    SendGossip(GossipMsgOut),
+}

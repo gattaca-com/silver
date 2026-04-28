@@ -11,7 +11,7 @@ use quinn_proto::Endpoint;
 use silver_common::{
     Enr, Keypair, PeerId, SilverSpine, TCache, TConsumer, TProducer, TRandomAccess,
 };
-use silver_compression::GossipCompressionTile;
+use silver_compression::GossipHandler;
 use silver_discovery::{DiscV5, DiscoveryConfig};
 use silver_network::{NetworkTile, P2p, TCacheStreamData, create_endpoint, create_server_config};
 
@@ -59,7 +59,7 @@ pub struct EchoStack {
     pub spine: SilverSpine,
     pub network: NetworkTile,
     pub ssz_consumer: TRandomAccess,
-    pub compression: GossipCompressionTile,
+    pub compression: GossipHandler,
     pub network_adapter: SpineAdapter<SilverSpine>,
     pub compression_adapter: SpineAdapter<SilverSpine>,
     /// Adapter whose consumers cover `new_gossip` (Gossip) and `peer_events`
@@ -233,7 +233,7 @@ impl EchoStack {
         let network = NetworkTile::new(disc_addr, discovery, addr, p2p, stream_data)
             .map_err(std::io::Error::other)?;
 
-        let compression = GossipCompressionTile::new(
+        let compression = GossipHandler::new(
             gossip_in_consumer,
             ssz_producer,
             protobuf_producer,

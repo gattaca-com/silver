@@ -1,13 +1,14 @@
 use std::time::Instant;
 
 use buffa::MessageView;
-use flux::{spine::SpineAdapter, tile::Tile};
+use flux::tile::Tile;
 use silver_common::{
-    Error, GossipMsgOut, MessageId, P2pStreamId, PeerControl, PeerEvent, SilverSpine,
-    SilverSpineProducers, TConsumer, TProducer,
+    Error, GossipMsgOut, MessageId, P2pStreamId, PeerControl, PeerEvent, SilverSpine, TConsumer,
+    TProducer,
 };
 
 use crate::{
+    GossipHandlerEvent,
     control::{
         self, copy_ihaves_to_protobuf_output, handle_grafts, handle_idontwants, handle_ihaves,
         handle_iwants, handle_prunes, handle_subscriptions,
@@ -27,7 +28,7 @@ use crate::{
 ///   - produces `NewGossipMsg` on spine for downstream consumers
 ///  - periodically generates new IHAVE messages
 ///    - produces `NewIHaveMsg`s on spine
-pub struct GossipCompressionTile {
+pub struct GossipHandler {
     incoming_gossip: TConsumer,
     incoming_gossip_publish: TProducer,
     fork_digest_hex: String,
@@ -41,7 +42,7 @@ pub struct GossipCompressionTile {
     iwant_buffer: Vec<MessageId>,
 }
 
-impl GossipCompressionTile {
+impl GossipHandler {
     pub fn new(
         incoming_gossip: TConsumer,
         ssz_gossip_publish: TProducer,
@@ -62,7 +63,7 @@ impl GossipCompressionTile {
         })
     }
 
-    fn generate_ihave_messages(&mut self, now: Instant, adapter: &mut SpineAdapter<SilverSpine>) {
+    fn generate_ihave_messages(&mut self, now: Instant, emit: &mut impl FnMut(GossipHandlerEvent)) {
         if self.mcache.generate_ihaves(now) {
             for topic in self.mcache.topics() {
                 let msgs_iter = self.mcache.get_ihaves(topic);
@@ -73,11 +74,11 @@ impl GossipCompressionTile {
                         &topic.to_wire(&self.fork_digest_hex),
                         msgs_iter,
                     ) {
-                        adapter.produce(PeerEvent::OutboundIHave {
+                        emit(GossipHandlerEvent::PeerEvent(PeerEvent::OutboundIHave {
                             topic: *topic,
                             msg_count,
                             protobuf: tcache,
-                        });
+                        }));
                     }
                 }
             }
@@ -87,7 +88,7 @@ impl GossipCompressionTile {
     fn handle_peer_control(
         &mut self,
         peer_control: PeerControl,
-        producers: &mut SilverSpineProducers,
+        emit: &mut impl FnMut(GossipHandlerEvent),
     ) {
         match peer_control {
             PeerControl::P2pGossipSubscribe { p2p: _, p2p_connection, topic } => {
@@ -96,9 +97,10 @@ impl GossipCompressionTile {
                         &topic.to_wire(&self.fork_digest_hex)
                     ])
                 {
-                    producers
-                        .gossip_outgoing
-                        .produce(&(GossipMsgOut { peer_id: p2p_connection, tcache }.into()));
+                    emit(GossipHandlerEvent::SendGossip(GossipMsgOut {
+                        peer_id: p2p_connection,
+                        tcache,
+                    }));
                 }
             }
             PeerControl::P2pGossipUnsubscribe { p2p: _, p2p_connection, topic } => {
@@ -107,9 +109,10 @@ impl GossipCompressionTile {
                         &topic.to_wire(&self.fork_digest_hex),
                     ])
                 {
-                    producers
-                        .gossip_outgoing
-                        .produce(&(GossipMsgOut { peer_id: p2p_connection, tcache }.into()));
+                    emit(GossipHandlerEvent::SendGossip(GossipMsgOut {
+                        peer_id: p2p_connection,
+                        tcache,
+                    }));
                 }
             }
             PeerControl::P2pGossipGraft { p2p: _, p2p_connection, topic } => {
@@ -118,9 +121,10 @@ impl GossipCompressionTile {
                         &topic.to_wire(&self.fork_digest_hex)
                     ])
                 {
-                    producers
-                        .gossip_outgoing
-                        .produce(&(GossipMsgOut { peer_id: p2p_connection, tcache }.into()));
+                    emit(GossipHandlerEvent::SendGossip(GossipMsgOut {
+                        peer_id: p2p_connection,
+                        tcache,
+                    }));
                 }
             }
             PeerControl::P2pGossipPrune { p2p: _, p2p_connection, topic } => {
@@ -129,31 +133,27 @@ impl GossipCompressionTile {
                         &topic.to_wire(&self.fork_digest_hex)
                     ])
                 {
-                    producers
-                        .gossip_outgoing
-                        .produce(&(GossipMsgOut { peer_id: p2p_connection, tcache }.into()));
+                    emit(GossipHandlerEvent::SendGossip(GossipMsgOut {
+                        peer_id: p2p_connection,
+                        tcache,
+                    }));
                 }
             }
             PeerControl::P2pGossipSend { p2p: _, p2p_connection, tcache } => {
-                producers
-                    .gossip_outgoing
-                    .produce(&(GossipMsgOut { peer_id: p2p_connection, tcache }.into()));
+                emit(GossipHandlerEvent::SendGossip(GossipMsgOut {
+                    peer_id: p2p_connection,
+                    tcache,
+                }));
             }
             _ => {} // no_ops for this tile
         }
     }
-}
 
-impl Tile<SilverSpine> for GossipCompressionTile {
-    fn loop_body(&mut self, adapter: &mut flux::spine::SpineAdapter<SilverSpine>) {
+    pub fn spin(&mut self, emit: &mut impl FnMut(GossipHandlerEvent)) {
         let now = Instant::now();
         self.dedup_cache.maybe_rotate(now);
         self.mcache.maybe_rotate(now);
-        self.generate_ihave_messages(now, adapter);
-
-        adapter.consume(|peer_control: PeerControl, producers| {
-            self.handle_peer_control(peer_control, producers);
-        });
+        self.generate_ihave_messages(now, emit);
 
         while let Ok((mut buffer, recv_ts)) = self.incoming_gossip.read() {
             // Incoming gossip messages are prefixed with P2pStreamId
@@ -165,21 +165,21 @@ impl Tile<SilverSpine> for GossipCompressionTile {
                     stream_id,
                     gossip_proto.subscriptions,
                     &self.fork_digest_hex,
-                    adapter,
+                    emit,
                 );
 
                 if let Some(control) = gossip_proto.control.as_option() {
-                    handle_grafts(stream_id, &control.graft, &self.fork_digest_hex, adapter);
-                    handle_prunes(stream_id, &control.prune, &self.fork_digest_hex, adapter);
-                    handle_iwants(stream_id, &control.iwant, &mut self.mcache, adapter);
-                    handle_idontwants(stream_id, &control.idontwant, adapter);
+                    handle_grafts(stream_id, &control.graft, &self.fork_digest_hex, emit);
+                    handle_prunes(stream_id, &control.prune, &self.fork_digest_hex, emit);
+                    handle_iwants(stream_id, &control.iwant, &mut self.mcache, emit);
+                    handle_idontwants(stream_id, &control.idontwant, emit);
                     handle_ihaves(
                         stream_id,
                         &control.ihave,
                         &self.fork_digest_hex,
                         &self.mcache,
                         &mut self.mcache_publish,
-                        adapter,
+                        emit,
                         &mut self.iwant_buffer,
                     );
                 }
@@ -191,9 +191,9 @@ impl Tile<SilverSpine> for GossipCompressionTile {
                         gossip_msg.from.is_some()
                     {
                         // Spec violation
-                        adapter.produce(PeerEvent::P2pGossipInvalidFrame {
+                        emit(GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipInvalidFrame {
                             p2p_peer: stream_id.peer(),
-                        });
+                        }));
                         continue;
                     }
                     if let Some(snappy_data) = gossip_msg.data {
@@ -207,7 +207,7 @@ impl Tile<SilverSpine> for GossipCompressionTile {
                             &mut self.incoming_gossip_publish,
                             &mut self.mcache_publish,
                             &mut self.mcache,
-                            adapter,
+                            emit,
                         ) {
                             tracing::error!(
                                 ?e,
@@ -221,5 +221,23 @@ impl Tile<SilverSpine> for GossipCompressionTile {
             }
             self.incoming_gossip.free();
         }
+    }
+}
+
+/// Wire the GossipHandler as a tile.
+impl Tile<SilverSpine> for GossipHandler {
+    fn loop_body(&mut self, adapter: &mut flux::spine::SpineAdapter<SilverSpine>) {
+        adapter.consume(|peer_control: PeerControl, producers| {
+            self.handle_peer_control(peer_control, &mut |event| {
+                if let GossipHandlerEvent::SendGossip(gossip_msg_out) = event {
+                    producers.gossip_outgoing.produce(&gossip_msg_out.into());
+                }
+            });
+        });
+        self.spin(&mut |event| match event {
+            GossipHandlerEvent::PeerEvent(peer_event) => adapter.produce(peer_event),
+            GossipHandlerEvent::NewGossip(new_gossip_msg) => adapter.produce(new_gossip_msg),
+            GossipHandlerEvent::SendGossip(gossip_msg_out) => adapter.produce(gossip_msg_out),
+        })
     }
 }

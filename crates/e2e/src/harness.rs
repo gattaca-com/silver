@@ -87,7 +87,7 @@ impl TwoStackHarness {
     pub fn connect(&mut self) {
         let echo_peer_id = self.echo.peer_id;
         let echo_addr = self.echo.addr;
-        self.publisher.network.p2p_mut().connect(echo_peer_id, echo_addr);
+        self.publisher.network.p2p_mut().connect(echo_peer_id, echo_addr, Instant::now()).unwrap();
     }
 
     /// True when publisher has observed a `PeerConnected` with the echo's
