@@ -36,6 +36,9 @@ pub const BYTES_PER_LOGS_BLOOM: usize = 256;
 pub const MAX_EXTRA_DATA_BYTES: usize = 32;
 
 // These are the pending queue high-water marks observed on mainnet.
+// TODO(stalls): drained at most once per epoch boundary; a long finality
+// stall with active deposit pressure can saturate. Either gate ingress on
+// queue depth or persist overflow to disk.
 pub const PENDING_DEPOSITS_CAP: usize = 8192;
 pub const PENDING_PARTIAL_WITHDRAWALS_CAP: usize = 8192;
 pub const PENDING_CONSOLIDATIONS_CAP: usize = 4096;
@@ -56,7 +59,14 @@ pub const MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD: usize = 2;
 pub const EPOCHS_PER_ETH1_VOTING_PERIOD: u64 = 64;
 pub const EPOCHS_PER_SYNC_COMMITTEE_PERIOD: u64 = 256;
 
+// TODO(stalls): ~8 epochs of unpruned mainnet activity hits 256. The May
+// 2023 incident lasted ~25 epochs. Either grow + paginate the node table or
+// drop lowest-weight subtrees under pressure.
 pub const MAX_FORK_CHOICE_NODES: usize = 256;
+// TODO(reorg): keyed by `epoch` only — a re-org across an epoch boundary
+// returns the stale shuffling for the new chain (different RANDAO mix →
+// different active set / seed). Key by `(epoch, vid_gen, epoch_gen)` and
+// size to fork-fanout × 2.
 pub const MAX_SHUFFLING_CACHE: usize = 4;
 pub const MAX_ATTESTERS_PER_AGGREGATE: usize = 16 * 1024;
 
@@ -66,8 +76,9 @@ pub const MAX_ATTESTERS_PER_AGGREGATE: usize = 16 * 1024;
 // `copy_from` bumps the cursor mod N and overwrites whatever was there. A
 // BeaconStateRef held in a ForkChoiceNode (cap MAX_FORK_CHOICE_NODES=256)
 // can reference index k; ~N allocations later index k gets clobbered. With
-// SLOT_POOL_CAP=32 a 33-deep live fork tree silently corrupts state. Mainnet
-// fork trees are usually shallow but a 1-epoch fork during sync is plausible.
+// SLOT_POOL_CAP=32 a 33-deep live fork tree silently corrupts state — also
+// fires from a >1-epoch finality stall (32 blocks/epoch). Refcount + free
+// list per pool, BeaconStateRef → !Copy with explicit clone/drop.
 
 pub const IMM_POOL_CAP: usize = 1;
 pub const VID_POOL_CAP: usize = 4;

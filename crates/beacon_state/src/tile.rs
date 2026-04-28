@@ -286,6 +286,10 @@ impl BeaconStateTile {
         }
     }
 
+    // TODO(reorg): cache hit is keyed on `epoch` only; a re-org across an
+    // epoch boundary into a fork with different RANDAO history serves the
+    // stale entry. Include the head's `vid_gen`/`epoch_gen` (or seed) in the
+    // key. See MAX_SHUFFLING_CACHE.
     fn ensure_shuffling(&mut self, epoch: Epoch) {
         for entry in self.shuffling_cache.entries.iter() {
             if entry.status == 1 && entry.epoch == epoch {
