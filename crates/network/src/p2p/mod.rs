@@ -30,7 +30,7 @@ pub fn p2p_spin<D: StreamData, F: FnMut(NetEvent)>(
     stream_data: &mut D,
     now: Instant,
     on_event: &mut F,
-) { 
+) {
     p2p_socket.flush(poll);
     p2p_endpoint.poll(now, poll, p2p_socket, stream_data, on_event);
     p2p_socket.flush(poll);

@@ -2,9 +2,9 @@
 members = [
   "crates/beacon_state",
   "crates/common",
-  "crates/compression",
   "crates/discovery",
   "crates/e2e",
+  "crates/gossip",
   "crates/network"
 , "crates/peer"]
 resolver = "2"
@@ -49,8 +49,8 @@ opt-level = 3
 
 [workspace.dependencies]
 silver_common = { path = "crates/common" }
-silver_compression = {path = "crates/compression" }
 silver_discovery = {path = "crates/discovery" }
+silver_gossip = {path = "crates/gossip" }
 silver_network = {path = "crates/network" }
 flux = { git = "https://github.com/gattaca-com/flux", rev = "f902769fe25915d8e58b50469f4a8b76f6045870"}
 flux-utils = { git = "https://github.com/gattaca-com/flux", rev = "f902769fe25915d8e58b50469f4a8b76f6045870", features = ["bytes"]}

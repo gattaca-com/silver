@@ -2457,26 +2457,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "silver_compression"
-version = "0.0.1"
-dependencies = [
- "buffa",
- "buffa-build",
- "criterion",
- "flux",
- "fxhash",
- "hdrhistogram",
- "pprof",
- "rand 0.8.5",
- "rand_core 0.6.4",
- "ring",
- "silver_common",
- "snap 1.1.1",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "silver_discovery"
 version = "0.0.1"
 dependencies = [
@@ -2511,11 +2491,31 @@ dependencies = [
  "quinn-proto",
  "rand 0.8.5",
  "silver_common",
- "silver_compression",
  "silver_discovery",
+ "silver_gossip",
  "silver_network",
  "snap 1.1.1",
  "tempfile",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "silver_gossip"
+version = "0.0.1"
+dependencies = [
+ "buffa",
+ "buffa-build",
+ "criterion",
+ "flux",
+ "fxhash",
+ "hdrhistogram",
+ "pprof",
+ "rand 0.8.5",
+ "rand_core 0.6.4",
+ "ring",
+ "silver_common",
+ "snap 1.1.1",
  "tracing",
  "tracing-subscriber",
 ]

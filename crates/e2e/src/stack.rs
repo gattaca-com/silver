@@ -11,8 +11,8 @@ use quinn_proto::Endpoint;
 use silver_common::{
     Enr, Keypair, PeerId, SilverSpine, TCache, TConsumer, TProducer, TRandomAccess,
 };
-use silver_compression::GossipHandler;
 use silver_discovery::{DiscV5, DiscoveryConfig};
+use silver_gossip::GossipHandler;
 use silver_network::{NetworkTile, P2p, TCacheStreamData, create_endpoint, create_server_config};
 
 use crate::Stats;
