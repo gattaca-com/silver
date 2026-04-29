@@ -69,10 +69,6 @@ pub fn validate_proposer_slashing(data: &[u8]) -> bool {
     if data[0..112] == data[208..320] {
         return false;
     }
-    // TODO(spec): is_slashable_validator(state.validators[proposer], current_epoch)
-    // — currently checked at process_proposer_slashings via `val_slashed == 0`
-    // only; spec also requires `activation_epoch <= current_epoch` and
-    // `current_epoch < withdrawable_epoch`.
     // TODO(BLS): verify SignedBeaconBlockHeader signatures on both headers under
     // DOMAIN_BEACON_PROPOSER (sig at data[112..208] and data[320..416]).
     true

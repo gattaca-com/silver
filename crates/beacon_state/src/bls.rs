@@ -66,6 +66,10 @@ pub fn verify_block_signature(
         return false;
     }
 
+    // TODO(spec): hardcoded SignedBeaconBlock SSZ offsets — fork-fragile.
+    // If the wire layout shifts in a future fork, sig/parent/state will be
+    // misread silently. Centralise via `SignedBeaconBlockView` accessors or a
+    // wire-format constant module.
     let sig_bytes = &block_bytes[4..100];
     let parent_root: B256 = block_bytes[116..148].try_into().unwrap();
     let state_root: B256 = block_bytes[148..180].try_into().unwrap();

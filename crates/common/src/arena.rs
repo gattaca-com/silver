@@ -55,6 +55,12 @@ impl<T, const N: usize> TierPool<T, N> {
         self.slot_gens[idx].load(Ordering::Acquire)
     }
 
+    // TODO(perf): whole-tier memcpy blows L3 — at mainnet scale `SlotData` is
+    // ~20 MB, `EpochData` ~100 MB, `ValidatorIdentity` ~160 MB. Every accepted
+    // block does at least the SlotData copy; epoch boundaries do EpochData;
+    // any deposit/BLS-change-bearing block does VID. Either move to a
+    // proto-array fork tree with snapshot-on-finalize (no per-fork tier copy),
+    // or use streaming non-temporal stores so we don't evict the working set.
     pub fn copy_from(&self, src_idx: usize) -> usize {
         let dst = self.alloc();
         debug_assert!(src_idx < N);

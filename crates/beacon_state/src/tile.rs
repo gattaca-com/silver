@@ -559,14 +559,8 @@ impl BeaconStateTile {
             self.arena.vid.copy_from(head.vid_idx)
         };
 
-        // COW HistoricalLongtail if sync committee rotates or historical summary
-        // pushes.
-        let slot = self.slot(&head).slot;
-        let next_epoch = slot / SLOTS_PER_EPOCH + 1;
-        let hs_period = SLOTS_PER_HISTORICAL_ROOT as u64 / SLOTS_PER_EPOCH;
-        let sync_rotates = next_epoch.is_multiple_of(types::EPOCHS_PER_SYNC_COMMITTEE_PERIOD);
-        let hs_pushes = next_epoch.is_multiple_of(hs_period);
-        let new_longtail = if sync_rotates || hs_pushes {
+        let next_epoch = self.slot(&head).slot / SLOTS_PER_EPOCH + 1;
+        let new_longtail = if longtail_rotates_at_epoch(next_epoch) {
             self.arena.longtail.copy_from(head.longtail_idx)
         } else {
             head.longtail_idx
@@ -892,6 +886,12 @@ impl BeaconStateTile {
             return Err(GossipFeedback::Ignore);
         }
 
+        // Future-slot blocks: spec gossip rule says IGNORE blocks whose slot
+        // exceeds wall slot.
+        if block_slot > self.ticker.current_slot() + 1 {
+            return Err(GossipFeedback::Ignore);
+        }
+
         let block_epoch = block_slot / SLOTS_PER_EPOCH;
         let head_epoch = head_slot / SLOTS_PER_EPOCH;
         // Fulu canonicalises proposer selection via `proposer_lookahead`
@@ -981,15 +981,9 @@ impl BeaconStateTile {
             state_ref.epoch_idx = self.arena.epoch.copy_from(state_ref.epoch_idx);
             state_ref.epoch_gen = self.arena.epoch.gen_at(state_ref.epoch_idx);
         }
-        // COW longtail if the block crosses a sync-committee rotation or
-        // historical-summary push boundary.
-        if crosses_epoch {
-            let hs_period = SLOTS_PER_HISTORICAL_ROOT as u64 / SLOTS_PER_EPOCH;
-            let sync_rotates = block_epoch.is_multiple_of(types::EPOCHS_PER_SYNC_COMMITTEE_PERIOD);
-            let hs_pushes = block_epoch.is_multiple_of(hs_period);
-            if sync_rotates || hs_pushes {
-                state_ref.longtail_idx = self.arena.longtail.copy_from(state_ref.longtail_idx);
-            }
+        // COW longtail at sync-committee / historical-summaries boundaries.
+        if crosses_epoch && longtail_rotates_at_epoch(block_epoch) {
+            state_ref.longtail_idx = self.arena.longtail.copy_from(state_ref.longtail_idx);
         }
 
         state_ref
@@ -1085,6 +1079,15 @@ impl Tile<SilverSpine> for BeaconStateTile {
             self.sync_step(adapter);
         }
     }
+}
+
+/// `true` when crossing into `epoch` rotates the `HistoricalLongtail` tier:
+/// either a sync-committee rotation (every `EPOCHS_PER_SYNC_COMMITTEE_PERIOD`)
+/// or a historical-summaries push (every `SLOTS_PER_HISTORICAL_ROOT /
+/// SLOTS_PER_EPOCH`).
+fn longtail_rotates_at_epoch(epoch: Epoch) -> bool {
+    let hs_period = SLOTS_PER_HISTORICAL_ROOT as u64 / SLOTS_PER_EPOCH;
+    epoch.is_multiple_of(types::EPOCHS_PER_SYNC_COMMITTEE_PERIOD) || epoch.is_multiple_of(hs_period)
 }
 
 /// Cheap offset-based inspection of a BeaconBlockBody to decide which tiers
