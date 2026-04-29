@@ -52,6 +52,26 @@ pub fn apply_block(
     active_scratch: &mut Vec<u32>,
     postponed_scratch: &mut Vec<types::PendingDeposit>,
 ) -> bool {
+    if block_slot <= sd.latest_block_header.slot {
+        return false;
+    }
+
+    // Proposer must match `proposer_lookahead` (Fulu, valid for
+    // current_epoch and next_epoch — 64 slots from current_epoch start).
+    let head_epoch = sd.slot / SLOTS_PER_EPOCH;
+    let block_epoch = block_slot / SLOTS_PER_EPOCH;
+    if block_epoch == head_epoch || block_epoch == head_epoch + 1 {
+        let la_idx = (block_slot - head_epoch * SLOTS_PER_EPOCH) as usize;
+        if la_idx < types::PROPOSER_LOOKAHEAD_SIZE &&
+            proposer_index != sd.proposer_lookahead[la_idx]
+        {
+            return false;
+        }
+    }
+
+    // BLS signature verification is the caller's responsibility — see
+    // tile's `handle_block` (pre-COW) and `apply_signed_block_debug`.
+
     if block_slot > sd.slot {
         process_slots(
             imm,
@@ -66,21 +86,6 @@ pub fn apply_block(
             active_scratch,
             postponed_scratch,
         );
-    }
-    if block_slot != sd.slot {
-        return false;
-    }
-
-    if !bls::verify_block_signature(
-        imm,
-        vid,
-        block_bytes,
-        block_slot,
-        proposer_index,
-        body_root,
-        zh,
-    ) {
-        return false;
     }
 
     if !process_block_header(vid, epoch, sd, block_slot, proposer_index, parent_root, body_root, zh)
@@ -110,7 +115,6 @@ pub fn apply_block(
     if actual != block_state_root {
         return false;
     }
-
     true
 }
 
@@ -157,6 +161,13 @@ pub fn apply_signed_block_debug(
         return Err("block too short".into());
     }
     let block_slot = u64::from_le_bytes(block_bytes[100..108].try_into().unwrap());
+    if block_slot <= sd.latest_block_header.slot {
+        return Err(format!(
+            "block_slot <= latest_block_header.slot: block={block_slot} latest={}",
+            sd.latest_block_header.slot
+        ));
+    }
+
     let proposer_index = u64::from_le_bytes(block_bytes[108..116].try_into().unwrap());
     let parent_root: B256 = block_bytes[116..148].try_into().unwrap();
     let state_root: B256 = block_bytes[148..180].try_into().unwrap();
@@ -165,6 +176,33 @@ pub fn apply_signed_block_debug(
 
     let mut active_scratch = Vec::new();
     let mut postponed_scratch = Vec::new();
+
+    let head_epoch = sd.slot / SLOTS_PER_EPOCH;
+    let block_epoch = block_slot / SLOTS_PER_EPOCH;
+    if block_epoch == head_epoch || block_epoch == head_epoch + 1 {
+        let la_idx = (block_slot - head_epoch * SLOTS_PER_EPOCH) as usize;
+        if la_idx < types::PROPOSER_LOOKAHEAD_SIZE &&
+            proposer_index != sd.proposer_lookahead[la_idx]
+        {
+            return Err(format!(
+                "proposer_lookahead mismatch: got={proposer_index} expected={}",
+                sd.proposer_lookahead[la_idx]
+            ));
+        }
+    }
+
+    if !bls::verify_block_signature(
+        imm,
+        vid,
+        block_bytes,
+        block_slot,
+        proposer_index,
+        body_root,
+        zh,
+    ) {
+        return Err(format!("BLS sig failed: slot={block_slot} proposer={proposer_index}"));
+    }
+
     if block_slot > sd.slot {
         process_slots(
             imm,
@@ -179,20 +217,6 @@ pub fn apply_signed_block_debug(
             &mut active_scratch,
             &mut postponed_scratch,
         );
-    }
-    if block_slot != sd.slot {
-        return Err(format!("slot mismatch: block={block_slot} state={}", sd.slot));
-    }
-    if !bls::verify_block_signature(
-        imm,
-        vid,
-        block_bytes,
-        block_slot,
-        proposer_index,
-        body_root,
-        zh,
-    ) {
-        return Err(format!("BLS sig failed: slot={block_slot} proposer={proposer_index}"));
     }
     if !process_block_header(vid, epoch, sd, block_slot, proposer_index, parent_root, body_root, zh)
     {
@@ -379,6 +403,10 @@ pub fn process_block_body(
     } else {
         &[] as &[u8]
     };
+
+    if !validate::validate_execution_payload(imm, sd, payload, block_slot) {
+        return false;
+    }
 
     // Spec order: withdrawals, then execution_payload, then randao, then eth1.
     // TODO(EL): before processing, send NewPayloadRequest to execution engine

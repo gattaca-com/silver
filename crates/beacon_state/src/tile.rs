@@ -6,14 +6,14 @@ use silver_common::{
     BeaconStateEvent, GossipTopic, NewGossipMsg, P2pStreamId, PeerEvent, PeerRpcIn, RpcMsg,
     SilverSpine, TCacheRead, TRandomAccess,
     ssz_view::{
-        BLOCKS_BY_RANGE_REQ_SIZE, SIGNED_BEACON_BLOCK_MIN, SINGLE_ATT_SIZE, STATUS_V2_SIZE,
-        SignedBeaconBlockView, SingleAttestationView,
+        BLOCKS_BY_RANGE_REQ_SIZE, SINGLE_ATT_SIZE, STATUS_V2_SIZE, SignedBeaconBlockView,
+        SingleAttestationView,
     },
 };
 
 use crate::{
     arena::ArenaBacking,
-    decompose,
+    bls, decompose,
     epoch_transition::{self, MAX_PENDING_DEPOSITS_PER_EPOCH},
     fork_choice::{BlockImport, compute_deltas},
     shuffling::{self, DOMAIN_BEACON_ATTESTER},
@@ -42,6 +42,15 @@ pub enum GossipFeedback {
     Reject,
 }
 
+struct ParsedBlock<'a> {
+    block_slot: Slot,
+    proposer_index: u64,
+    parent_root: B256,
+    state_root: B256,
+    body_root: B256,
+    body: &'a [u8],
+}
+
 #[derive(Clone, Copy, Debug)]
 struct PendingRangeReq {
     start_slot: Slot,
@@ -67,6 +76,7 @@ pub struct BeaconStateTile {
     shuffling_cache: Box<ShufflingCache>,
 
     head: BeaconStateRef,
+    head_block_root: B256,
 
     // Sync state.
     sync_cursor: Slot,
@@ -163,6 +173,7 @@ impl BeaconStateTile {
             vote_tracker: box_zeroed(),
             shuffling_cache: box_zeroed(),
             head,
+            head_block_root: [0u8; 32],
             sync_cursor: 0,
             sync_target: 0,
             in_flight: None,
@@ -223,6 +234,7 @@ impl BeaconStateTile {
             slot_gen: self.arena.slot.gen_at(0),
             pending_idx: 0,
         };
+        self.head_block_root = block_root;
 
         self.fork_choice =
             ForkChoice::init(finalized, justified, slot, block_root, block_root, self.head);
@@ -409,8 +421,10 @@ impl BeaconStateTile {
     fn status_payload(&self) -> [u8; STATUS_V2_SIZE] {
         let sd = self.slot(&self.head);
         let fork_digest = self.fork_digest();
-        let head_root =
-            ssz_hash::hash_tree_root_block_header(&sd.latest_block_header, &self.zero_hashes);
+        // Use the cached canonical block_root rather than rehashing
+        // `latest_block_header` — the header's `state_root` is zero in the
+        // window between block-apply and the next `process_slot`.
+        let head_root = self.head_block_root;
         let finalized = sd.finalized_checkpoint;
         let slot = sd.slot;
         let earliest = finalized.epoch * SLOTS_PER_EPOCH;
@@ -752,8 +766,113 @@ impl BeaconStateTile {
     }
 
     fn handle_block(&mut self, data: &[u8]) -> GossipFeedback {
-        if !SignedBeaconBlockView::check_size(data) {
+        let parsed = match self.precheck_block(data) {
+            Ok(p) => p,
+            Err(fb) => return fb,
+        };
+
+        let block_epoch = parsed.block_slot / SLOTS_PER_EPOCH;
+        self.ensure_shuffling_window(block_epoch);
+
+        let state_ref = self.cow_state_for_block(parsed.body, block_epoch);
+
+        // Build shuffling reference for attestation processing.
+        // Access shuffling cache fields directly to avoid borrow conflict
+        // with the mutable borrows on the arena below.
+        let prev_epoch = block_epoch.saturating_sub(1);
+        let find_entry = |epoch: Epoch| -> Option<usize> {
+            self.shuffling_cache.entries.iter().position(|e| e.status == 1 && e.epoch == epoch)
+        };
+        let cur_idx = find_entry(block_epoch);
+        let prev_idx = find_entry(prev_epoch);
+        let shuffling_ref = match (cur_idx, prev_idx) {
+            (Some(ci), Some(pi)) => {
+                let c = &self.shuffling_cache.entries[ci];
+                let p = &self.shuffling_cache.entries[pi];
+                Some(state_transition::ShufflingRef {
+                    current_epoch: block_epoch,
+                    current_shuffled: c.shuffled_indices.as_slice(),
+                    current_cps: shuffling::committees_per_slot(c.shuffled_indices.len()),
+                    previous_epoch: prev_epoch,
+                    previous_shuffled: p.shuffled_indices.as_slice(),
+                    previous_cps: shuffling::committees_per_slot(p.shuffled_indices.len()),
+                })
+            }
+            _ => None,
+        };
+
+        let imm = self.arena.imm.get(state_ref.imm_idx);
+        let vid = self.arena.vid.get_mut_checked(state_ref.vid_idx, state_ref.vid_gen);
+        let longtail = self.arena.longtail.get_mut(state_ref.longtail_idx);
+        let epoch = self.arena.epoch.get_mut_checked(state_ref.epoch_idx, state_ref.epoch_gen);
+        let roots = self.arena.roots.get_mut_checked(state_ref.roots_idx, state_ref.roots_gen);
+        let sd = self.arena.slot.get_mut_checked(state_ref.slot_idx, state_ref.slot_gen);
+
+        let ok = state_transition::apply_block(
+            imm,
+            vid,
+            longtail,
+            epoch,
+            roots,
+            sd,
+            &mut self.pending_pool[state_ref.pending_idx],
+            data,
+            parsed.block_slot,
+            parsed.proposer_index,
+            parsed.parent_root,
+            parsed.body_root,
+            parsed.state_root,
+            shuffling_ref.as_ref(),
+            &self.zero_hashes,
+            &mut self.active_scratch,
+            &mut self.postponed_scratch,
+        );
+        if !ok {
             return GossipFeedback::Reject;
+        }
+
+        let block_header = types::BeaconBlockHeader {
+            slot: parsed.block_slot,
+            proposer_index: parsed.proposer_index,
+            parent_root: parsed.parent_root,
+            state_root: parsed.state_root,
+            body_root: parsed.body_root,
+        };
+        let block_root = ssz_hash::hash_tree_root_block_header(&block_header, &self.zero_hashes);
+
+        let sd = self.slot(&state_ref);
+        // TODO(EL): extract execution_block_hash from the execution payload
+        // header (sd.latest_execution_payload_header.block_hash) and pass it to
+        // fork choice. After recomputing head, send engine_forkchoiceUpdatedV3
+        // to the EL with the new head's execution_block_hash, finalized hash,
+        // and safe hash. The EL response determines whether the head is VALID,
+        // INVALID, or SYNCING (optimistic).
+        self.fork_choice.on_block(&BlockImport {
+            slot: parsed.block_slot,
+            block_root,
+            parent_root: parsed.parent_root,
+            state_root: parsed.state_root,
+            execution_block_hash: [0u8; 32],
+            justified: sd.current_justified_checkpoint,
+            finalized: sd.finalized_checkpoint,
+            state_ref,
+        });
+
+        self.recompute_head();
+        let new_head = self.fork_choice.find_head();
+        if let Some(idx) = self.fork_choice.find_node_idx(&new_head) {
+            self.head = self.fork_choice.node(idx).state;
+            self.head_block_root = new_head;
+        }
+        GossipFeedback::Accept
+    }
+
+    /// Pre-COW block validation: parse, parent-known, past-slot, proposer
+    /// lookahead, BLS sig. Cheap, no state mutation. Returns parsed fields
+    /// on accept; the GossipFeedback variant on reject/ignore.
+    fn precheck_block<'a>(&self, data: &'a [u8]) -> Result<ParsedBlock<'a>, GossipFeedback> {
+        if !SignedBeaconBlockView::check_size(data) {
+            return Err(GossipFeedback::Reject);
         }
         let block_slot = SignedBeaconBlockView::slot(data);
         let proposer_index = SignedBeaconBlockView::proposer_index(data);
@@ -762,30 +881,54 @@ impl BeaconStateTile {
 
         // Parent not yet imported — not the sender's fault.
         if self.fork_choice.find_node_idx(&parent_root).is_none() {
-            return GossipFeedback::Ignore;
+            return Err(GossipFeedback::Ignore);
+        }
+
+        let head = self.head;
+        let head_slot = self.slot(&head).slot;
+
+        // Past-slot blocks: state has already advanced past their slot.
+        if block_slot < head_slot {
+            return Err(GossipFeedback::Ignore);
         }
 
         let block_epoch = block_slot / SLOTS_PER_EPOCH;
-        {
-            let head = self.head;
-            let sd_head = self.slot(&head);
-            let head_epoch = sd_head.slot / SLOTS_PER_EPOCH;
-            // Fulu canonicalises proposer selection via `proposer_lookahead`
-            // (spans current + next epoch, 64 slots). Using this avoids
-            // recomputing from (epoch_data, seed) which can diverge mid-epoch
-            // because the lookahead was fixed at the prior epoch boundary.
-            if block_epoch == head_epoch || block_epoch == head_epoch + 1 {
-                let la_idx = (block_slot - head_epoch * SLOTS_PER_EPOCH) as usize;
-                if la_idx < types::PROPOSER_LOOKAHEAD_SIZE &&
-                    proposer_index != sd_head.proposer_lookahead[la_idx]
-                {
-                    return GossipFeedback::Reject;
-                }
+        let head_epoch = head_slot / SLOTS_PER_EPOCH;
+        // Fulu canonicalises proposer selection via `proposer_lookahead`
+        // (spans current + next epoch, 64 slots). Avoids recomputing from
+        // (epoch_data, seed), which can diverge mid-epoch because the
+        // lookahead was fixed at the prior epoch boundary.
+        if block_epoch == head_epoch || block_epoch == head_epoch + 1 {
+            let la_idx = (block_slot - head_epoch * SLOTS_PER_EPOCH) as usize;
+            if la_idx < types::PROPOSER_LOOKAHEAD_SIZE &&
+                proposer_index != self.slot(&head).proposer_lookahead[la_idx]
+            {
+                return Err(GossipFeedback::Reject);
             }
         }
 
-        self.ensure_shuffling_window(block_epoch);
+        // body_root needed for BLS now and for the new latest_block_header
+        // set in process_block_header later. Compute once.
+        let body = SignedBeaconBlockView::body(data);
+        let body_root = ssz_hash::hash_tree_root_body(body, &self.zero_hashes);
 
+        if !bls::verify_block_signature(
+            self.imm(&head),
+            self.vid(&head),
+            data,
+            block_slot,
+            proposer_index,
+            body_root,
+            &self.zero_hashes,
+        ) {
+            return Err(GossipFeedback::Reject);
+        }
+
+        Ok(ParsedBlock { block_slot, proposer_index, parent_root, state_root, body_root, body })
+    }
+
+    /// Allocate fresh tier indices for the new block's post-state.
+    fn cow_state_for_block(&mut self, body: &[u8], block_epoch: Epoch) -> BeaconStateRef {
         let head = self.head;
 
         let new_slot_idx = self.arena.slot.copy_from(head.slot_idx);
@@ -821,21 +964,10 @@ impl BeaconStateTile {
             pending_idx: new_pending_idx,
         };
 
-        // Check if the block body may mutate vid (new deposits, BLS changes) or
-        // the epoch tier (slashings, exits, etc). If so, COW the affected
-        // tier(s) from the head's shared entry. Cheap offset inspection.
         // TODO(simpler): body_mutation_hints duplicates the SSZ offset parsing
         // that process_block_body does. Combine both into one parse pass, or
         // drop hints and conservatively COW (profile to confirm cost).
-        let body = if data.len() > SIGNED_BEACON_BLOCK_MIN {
-            &data[SIGNED_BEACON_BLOCK_MIN..]
-        } else {
-            &[]
-        };
         let (may_mut_vid, may_mut_epoch) = body_mutation_hints(body);
-
-        // COW vid if block may mutate it, or if we'll cross an epoch boundary
-        // (epoch transition may add validators via process_pending_deposits).
         let head_epoch = self.slot(&state_ref).slot / SLOTS_PER_EPOCH;
         let crosses_epoch = block_epoch != head_epoch;
 
@@ -843,123 +975,24 @@ impl BeaconStateTile {
             state_ref.vid_idx = self.arena.vid.copy_from(state_ref.vid_idx);
             state_ref.vid_gen = self.arena.vid.gen_at(state_ref.vid_idx);
         }
-
         // COW epoch if this block mutates it, OR if it crosses an epoch
         // boundary (process_slots runs epoch transition on the EpochData).
         if may_mut_epoch || crosses_epoch {
             state_ref.epoch_idx = self.arena.epoch.copy_from(state_ref.epoch_idx);
             state_ref.epoch_gen = self.arena.epoch.gen_at(state_ref.epoch_idx);
         }
-
         // COW longtail if the block crosses a sync-committee rotation or
         // historical-summary push boundary.
         if crosses_epoch {
-            let next_epoch = block_epoch;
             let hs_period = SLOTS_PER_HISTORICAL_ROOT as u64 / SLOTS_PER_EPOCH;
-            let sync_rotates = next_epoch.is_multiple_of(types::EPOCHS_PER_SYNC_COMMITTEE_PERIOD);
-            let hs_pushes = next_epoch.is_multiple_of(hs_period);
+            let sync_rotates = block_epoch.is_multiple_of(types::EPOCHS_PER_SYNC_COMMITTEE_PERIOD);
+            let hs_pushes = block_epoch.is_multiple_of(hs_period);
             if sync_rotates || hs_pushes {
                 state_ref.longtail_idx = self.arena.longtail.copy_from(state_ref.longtail_idx);
             }
         }
 
-        // Compute body_root before state transition (needed for header storage).
-        let body = silver_common::ssz_view::SignedBeaconBlockView::body(data);
-        let body_root = ssz_hash::hash_tree_root_body(body, &self.zero_hashes);
-
-        // Build shuffling reference for attestation processing.
-        // Access shuffling cache fields directly to avoid borrow conflict
-        // with the mutable borrows on the arena below.
-        let block_epoch = block_slot / SLOTS_PER_EPOCH;
-        let prev_epoch = block_epoch.saturating_sub(1);
-
-        let find_entry = |epoch: Epoch| -> Option<usize> {
-            self.shuffling_cache.entries.iter().position(|e| e.status == 1 && e.epoch == epoch)
-        };
-        let cur_idx = find_entry(block_epoch);
-        let prev_idx = find_entry(prev_epoch);
-
-        let shuffling_ref = match (cur_idx, prev_idx) {
-            (Some(ci), Some(pi)) => {
-                let c = &self.shuffling_cache.entries[ci];
-                let p = &self.shuffling_cache.entries[pi];
-                Some(state_transition::ShufflingRef {
-                    current_epoch: block_epoch,
-                    current_shuffled: c.shuffled_indices.as_slice(),
-                    current_cps: shuffling::committees_per_slot(c.shuffled_indices.len()),
-                    previous_epoch: prev_epoch,
-                    previous_shuffled: p.shuffled_indices.as_slice(),
-                    previous_cps: shuffling::committees_per_slot(p.shuffled_indices.len()),
-                })
-            }
-            _ => None,
-        };
-
-        let imm = self.arena.imm.get(state_ref.imm_idx);
-        let vid = self.arena.vid.get_mut_checked(state_ref.vid_idx, state_ref.vid_gen);
-        let longtail = self.arena.longtail.get_mut(state_ref.longtail_idx);
-        let epoch = self.arena.epoch.get_mut_checked(state_ref.epoch_idx, state_ref.epoch_gen);
-        let roots = self.arena.roots.get_mut_checked(state_ref.roots_idx, state_ref.roots_gen);
-        let sd = self.arena.slot.get_mut_checked(state_ref.slot_idx, state_ref.slot_gen);
-
-        let ok = state_transition::apply_block(
-            imm,
-            vid,
-            longtail,
-            epoch,
-            roots,
-            sd,
-            &mut self.pending_pool[state_ref.pending_idx],
-            data,
-            block_slot,
-            proposer_index,
-            parent_root,
-            body_root,
-            state_root,
-            shuffling_ref.as_ref(),
-            &self.zero_hashes,
-            &mut self.active_scratch,
-            &mut self.postponed_scratch,
-        );
-        if !ok {
-            return GossipFeedback::Reject;
-        }
-
-        let block_header = types::BeaconBlockHeader {
-            slot: block_slot,
-            proposer_index,
-            parent_root,
-            state_root,
-            body_root,
-        };
-        let block_root = ssz_hash::hash_tree_root_block_header(&block_header, &self.zero_hashes);
-
-        let sd = self.slot(&state_ref);
-
-        // TODO(EL): extract execution_block_hash from the execution payload
-        // header (sd.latest_execution_payload_header.block_hash) and pass it to
-        // fork choice. After recomputing head, send engine_forkchoiceUpdatedV3
-        // to the EL with the new head's execution_block_hash, finalized hash,
-        // and safe hash. The EL response determines whether the head is VALID,
-        // INVALID, or SYNCING (optimistic).
-        self.fork_choice.on_block(&BlockImport {
-            slot: block_slot,
-            block_root,
-            parent_root,
-            state_root,
-            execution_block_hash: [0u8; 32],
-            justified: sd.current_justified_checkpoint,
-            finalized: sd.finalized_checkpoint,
-            state_ref,
-        });
-
-        self.recompute_head();
-        let new_head = self.fork_choice.find_head();
-
-        if let Some(idx) = self.fork_choice.find_node_idx(&new_head) {
-            self.head = self.fork_choice.node(idx).state;
-        }
-        GossipFeedback::Accept
+        state_ref
     }
 
     fn handle_attestation(&mut self, data: &[u8]) -> GossipFeedback {
@@ -1135,6 +1168,7 @@ mod tests {
         }
 
         tile.fork_choice = ForkChoice::init(cp, cp, start_slot, root, root, tile.head);
+        tile.head_block_root = root;
         tile.mode = Mode::Following;
 
         // Precompute shuffling for the start epoch.
@@ -1287,6 +1321,7 @@ mod tests {
         // Fork choice genesis must use this root too.
         let cp = Checkpoint { epoch: 0, root: parent_root };
         tile.fork_choice = ForkChoice::init(cp, cp, 10, parent_root, parent_root, tile.head);
+        tile.head_block_root = parent_root;
 
         // Construct a block with valid structure but zeroed BLS signature.
         let mut buf = vec![0u8; 200];
