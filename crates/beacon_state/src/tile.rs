@@ -192,6 +192,23 @@ impl BeaconStateTile {
         tile
     }
 
+    /// SSZ `hash_tree_root` of the current head's full BeaconState. Used by
+    /// integration tests to cross-check tile-applied STF output against EF
+    /// post-state vectors.
+    pub fn head_state_root(&self) -> B256 {
+        let h = self.head;
+        ssz_hash::hash_tree_root_state(
+            self.imm(&h),
+            self.vid(&h),
+            self.longtail(&h),
+            self.epoch(&h),
+            self.roots(&h),
+            self.slot(&h),
+            &self.pending_pool[h.pending_idx],
+            &self.zero_hashes,
+        )
+    }
+
     /// Load a checkpoint state SSZ blob. Decomposes into tiered storage at
     /// slot 0 of each pool. Returns false if the SSZ is invalid.
     fn bootstrap(&mut self, ssz: &[u8]) -> bool {
@@ -448,7 +465,6 @@ impl BeaconStateTile {
         let mut ssz = [0u8; BLOCKS_BY_RANGE_REQ_SIZE];
         ssz[0..8].copy_from_slice(&start_slot.to_le_bytes());
         ssz[8..16].copy_from_slice(&count.to_le_bytes());
-        // TODO @nina - not 1?
         ssz[16..24].copy_from_slice(&1u64.to_le_bytes());
 
         BeaconStateEvent::RequestBlocksByRange { request_id, ssz }

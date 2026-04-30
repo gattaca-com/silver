@@ -8,7 +8,16 @@ use std::{
 
 use flux::{spine::SpineAdapter, tile::Tile, timing::Nanos};
 use serde::Deserialize;
-use silver_beacon_state::{ticker::SlotTicker, tile::BeaconStateTile};
+use silver_beacon_state::{
+    decompose::decompose_beacon_state,
+    ssz_hash::{compute_zero_hashes, hash_tree_root_state},
+    ticker::SlotTicker,
+    tile::BeaconStateTile,
+    types::{
+        EpochData, HistoricalLongtail, Immutable, SlotData, SlotRoots, ValidatorIdentity,
+        box_zeroed,
+    },
+};
 use silver_common::{
     BeaconStateEvent, GossipTopic, MessageId, NewGossipMsg, P2pStreamId, PeerRpcIn, RpcMsg,
     SilverSpine, StreamProtocol, TCache, TProducer, TRandomAccess,
@@ -50,6 +59,10 @@ pub enum Step {
     Status { head_slot: u64, finalized_epoch: u64, finalized_root: String },
     /// Assertions against observable state and accumulated outbound.
     Check(Checks),
+    /// Assert the tile's current head state has `hash_tree_root` equal to the
+    /// EF post-state at `from`. Path resolves like `GossipBlock { from }`:
+    /// relative is rooted at `consensus-spec-tests/`.
+    StateRootMatches { from: String },
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -257,6 +270,36 @@ impl Harness {
         });
     }
 
+    pub fn assert_state_root(&self, post_ssz: &[u8]) {
+        let zh = compute_zero_hashes();
+        let mut imm: Box<Immutable> = box_zeroed();
+        let mut vid: Box<ValidatorIdentity> = box_zeroed();
+        let mut longtail: Box<HistoricalLongtail> = box_zeroed();
+        let mut epoch: Box<EpochData> = box_zeroed();
+        let mut roots: Box<SlotRoots> = box_zeroed();
+        let mut sd: Box<SlotData> = box_zeroed();
+        let pq = decompose_beacon_state(
+            post_ssz,
+            &zh,
+            &mut imm,
+            &mut vid,
+            &mut longtail,
+            &mut epoch,
+            &mut roots,
+            &mut sd,
+        )
+        .expect("decompose post.ssz");
+        let expected = hash_tree_root_state(&imm, &vid, &longtail, &epoch, &roots, &sd, &pq, &zh);
+        let got = self.tile.head_state_root();
+        assert_eq!(
+            got,
+            expected,
+            "head state root mismatch: got {} expected {}",
+            hex32(&got),
+            hex32(&expected),
+        );
+    }
+
     pub fn assert_checks(&mut self, c: &Checks) {
         for want in &c.outbound_has {
             let want = OutboundKind::from_str(want)
@@ -290,7 +333,9 @@ pub fn run_scenario(case_dir: &Path) {
     // Skip when the referenced EF vectors aren't fetched (CI or fresh
     // checkout without `make` in the crate dir).
     for p in t.startup_checkpoint.iter().chain(t.steps.iter().filter_map(|s| match s {
-        Step::GossipBlock { from } | Step::BlocksRangeResp { from } => Some(from),
+        Step::GossipBlock { from } |
+        Step::BlocksRangeResp { from } |
+        Step::StateRootMatches { from } => Some(from),
         _ => None,
     })) {
         if !resolve(p).exists() {
@@ -336,8 +381,20 @@ pub fn run_scenario(case_dir: &Path) {
             Step::Check(c) => {
                 h.assert_checks(c);
             }
+            Step::StateRootMatches { from } => {
+                let ssz = snappy_decode(&resolve(from));
+                h.assert_state_root(&ssz);
+            }
         }
     }
+}
+
+fn hex32(b: &[u8; 32]) -> String {
+    let mut s = String::with_capacity(64);
+    for x in b {
+        s.push_str(&format!("{x:02x}"));
+    }
+    s
 }
 
 fn parse_b256(s: &str) -> [u8; 32] {

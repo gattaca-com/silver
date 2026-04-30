@@ -34,3 +34,8 @@ steps:
   - kind: step
   - kind: check
     outbound_has: [synced]
+
+  # Strictly stronger than the per-event
+  # checks above — any field divergence diverges the root.
+  - kind: state_root_matches
+    from: tests/mainnet/fulu/sanity/blocks/pyspec_tests/attestation/post.ssz_snappy
