@@ -295,7 +295,7 @@ pub fn process_slots(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn process_slot(
+pub fn process_slot(
     imm: &Immutable,
     vid: &ValidatorIdentity,
     longtail: &HistoricalLongtail,

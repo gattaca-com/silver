@@ -287,17 +287,17 @@ pub struct Vote {
 #[repr(C)]
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub struct BeaconStateRef {
-    pub imm_idx: usize,
-    pub vid_idx: usize,
+    pub imm_idx: u8,
+    pub vid_idx: u8,
     pub vid_gen: u32,
-    pub longtail_idx: usize,
-    pub epoch_idx: usize,
+    pub longtail_idx: u8,
+    pub epoch_idx: u8,
     pub epoch_gen: u32,
-    pub roots_idx: usize,
+    pub roots_idx: u8,
     pub roots_gen: u32,
-    pub slot_idx: usize,
+    pub slot_idx: u8,
     pub slot_gen: u32,
-    pub pending_idx: usize,
+    pub pending_idx: u8,
 }
 
 #[repr(C)]

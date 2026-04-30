@@ -105,20 +105,39 @@ impl SlotTicker {
         let slot = ms / self.slot_ms;
         let into = ms % self.slot_ms;
 
-        let start = match self.last {
-            Some((s, i)) if s == slot => i + 1,
-            Some((s, _)) if s < slot => 0,
-            None => 0,
-            _ => return TickEvent::None, /* defensive: last slot > current (can't happen with
-                                          * monotonic clock) */
+        // First tick of a new slot (or ever): jump to current wall-clock slot,
+        // emit SlotStart, and consume any in-slot phases whose offset has
+        // already passed.
+        let crossed = match self.last {
+            Some((s, _)) if s < slot => true,
+            None => true,
+            Some((s, _)) if s == slot => false,
+            _ => return TickEvent::None,
         };
 
-        // Phases are sorted by offset — if the next one is in the future, all
-        // subsequent ones are too.
-        if let Some(&(offset, phase)) = self.phases.get(start) &&
+        if crossed {
+            // Advance past any non-SlotStart phases whose offset <= into so
+            // they won't fire later in this slot. phases[0] is SlotStart at
+            // offset 0 and is always the emitted event here.
+            let mut consumed = 0;
+            for i in 1..NUM_PHASES {
+                if self.phases[i].0 <= into {
+                    consumed = i;
+                } else {
+                    break;
+                }
+            }
+            self.last = Some((slot, consumed));
+            return TickEvent::SlotStart(slot);
+        }
+
+        // Same slot, advance to the next phase if its offset has been reached.
+        let last_idx = self.last.unwrap().1;
+        let next = last_idx + 1;
+        if let Some(&(offset, phase)) = self.phases.get(next) &&
             offset <= into
         {
-            self.last = Some((slot, start));
+            self.last = Some((slot, next));
             return phase.event(slot);
         }
         TickEvent::None
@@ -146,25 +165,17 @@ mod tests {
     }
 
     #[test]
-    fn catches_up_within_current_slot() {
+    fn skips_stale_phases_on_catchup() {
         let slot_dur = Duration::from_secs(12);
         // 22s since genesis → slot 1, ~10s in.
-        // Overdue: SlotStart(0), Payload(8s), StateAdv(9s).
-        // ForkChoiceLookahead(11.5s) not yet.
+        // Overdue offsets: Payload(8s), StateAdv(9s).
+        // FCLookahead(11.5s) not yet reached.
+        // Expect: only SlotStart(1) emitted; stale phases dropped.
         let genesis = genesis_secs_ago(22);
         let mut t = SlotTicker::new(genesis, slot_dur, Duration::from_secs(4));
 
-        let mut events = Vec::new();
-        loop {
-            let ev = t.tick();
-            if ev == TickEvent::None {
-                break;
-            }
-            events.push(ev);
-        }
-        assert_eq!(events.len(), 3);
-        assert!(matches!(events[0], TickEvent::SlotStart(1)));
-        assert!(matches!(events[2], TickEvent::StateAdvance(1)));
+        assert!(matches!(t.tick(), TickEvent::SlotStart(1)));
+        assert_eq!(t.tick(), TickEvent::None);
     }
 
     #[test]
