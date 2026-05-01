@@ -22,8 +22,8 @@ use crate::{
     types::{
         self, B256, BeaconStateRef, EPOCH_POOL_CAP, Epoch, EpochData, ForkChoice, MAX_VALIDATORS,
         PENDING_POOL_CAP, PendingQueues, ROOTS_POOL_CAP, SLOT_POOL_CAP, SLOTS_PER_EPOCH,
-        SLOTS_PER_HISTORICAL_ROOT, ShufflingCache, Slot, SlotData, ValidatorIdentity, Vote,
-        VoteTracker, box_zeroed,
+        SLOTS_PER_HISTORICAL_ROOT, ShufflingCache, Slot, SlotData, ValidatorIdentity, VoteTracker,
+        box_zeroed,
     },
 };
 
@@ -90,6 +90,10 @@ pub struct BeaconStateTile {
     zero_hashes: [B256; ssz_hash::ZERO_HASHES_LEN],
     active_scratch: Vec<u32>,
     postponed_scratch: Vec<types::PendingDeposit>,
+    /// Per-block buffer of (validator_idx, beacon_block_root, target_epoch)
+    /// emitted by `process_attestations` so the tile can fold them into the
+    /// vote tracker after `apply_block` returns.
+    attestation_votes_scratch: Vec<(u32, B256, Epoch)>,
 
     gossip_consumer: TRandomAccess,
     rpc_consumer: TRandomAccess,
@@ -182,6 +186,8 @@ impl BeaconStateTile {
             zero_hashes: ssz_hash::compute_zero_hashes(),
             active_scratch: Vec::with_capacity(MAX_VALIDATORS),
             postponed_scratch: Vec::with_capacity(MAX_PENDING_DEPOSITS_PER_EPOCH),
+            // Worst case: MAX_ATTESTATIONS_ELECTRA × full committee participation
+            attestation_votes_scratch: Vec::with_capacity(16 * 1024),
             gossip_consumer,
             rpc_consumer,
         };
@@ -604,11 +610,17 @@ impl BeaconStateTile {
         if validator_idx >= self.vid(&head).validator_cnt {
             return;
         }
-        self.vote_tracker.votes[validator_idx] = Vote {
-            current_root: self.vote_tracker.votes[validator_idx].current_root,
-            next_root: block_root,
-            next_epoch: epoch,
-        };
+        // Spec `update_latest_messages`: only newer-epoch votes overwrite.
+        // Same-epoch later messages are slashable double-votes; LMD keeps the
+        // first one observed. Applies to both gossip and block-included paths.
+        // Zero `next_root` is the uninitialised sentinel — first vote always
+        // takes; a real attestation never has a zero `beacon_block_root`.
+        let v = &mut self.vote_tracker.votes[validator_idx];
+        if v.next_root != [0u8; 32] && epoch <= v.next_epoch {
+            return;
+        }
+        v.next_root = block_root;
+        v.next_epoch = epoch;
     }
 
     fn recompute_head(&mut self) {
@@ -818,6 +830,7 @@ impl BeaconStateTile {
             self.arena.roots.get_mut_checked(state_ref.roots_idx as usize, state_ref.roots_gen);
         let sd = self.arena.slot.get_mut_checked(state_ref.slot_idx as usize, state_ref.slot_gen);
 
+        self.attestation_votes_scratch.clear();
         let ok = state_transition::apply_block(
             imm,
             vid,
@@ -836,9 +849,16 @@ impl BeaconStateTile {
             &self.zero_hashes,
             &mut self.active_scratch,
             &mut self.postponed_scratch,
+            &mut self.attestation_votes_scratch,
         );
         if !ok {
             return GossipFeedback::Reject;
+        }
+
+        // Fold block-included attestations into the tracker.
+        for i in 0..self.attestation_votes_scratch.len() {
+            let (vi, root, ep) = self.attestation_votes_scratch[i];
+            self.on_attestation(vi as usize, root, ep);
         }
 
         let block_header = types::BeaconBlockHeader {

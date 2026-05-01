@@ -51,6 +51,7 @@ pub fn apply_block(
     zh: &[B256],
     active_scratch: &mut Vec<u32>,
     postponed_scratch: &mut Vec<types::PendingDeposit>,
+    attestation_votes: &mut Vec<(u32, B256, Epoch)>,
 ) -> bool {
     if block_slot <= sd.latest_block_header.slot {
         return false;
@@ -107,6 +108,7 @@ pub fn apply_block(
         proposer_index,
         shuffling,
         zh,
+        attestation_votes,
     ) {
         return false;
     }
@@ -234,6 +236,7 @@ pub fn apply_signed_block_debug(
         previous_shuffled: &prev,
         previous_cps: prev_cps,
     };
+    let mut votes_sink: Vec<(u32, B256, Epoch)> = Vec::new();
     if !process_block_body(
         imm,
         vid,
@@ -247,6 +250,7 @@ pub fn apply_signed_block_debug(
         proposer_index,
         Some(&sref),
         zh,
+        &mut votes_sink,
     ) {
         return Err("process_block_body rejected".into());
     }
@@ -383,6 +387,7 @@ pub fn process_block_body(
     proposer_index: u64,
     shuffling: Option<&ShufflingRef<'_>>,
     zh: &[B256],
+    attestation_votes: &mut Vec<(u32, B256, Epoch)>,
 ) -> bool {
     if body.len() < 396 {
         return false;
@@ -446,6 +451,7 @@ pub fn process_block_body(
             block_slot,
             proposer_index,
             shuffling,
+            attestation_votes,
         );
     }
 
@@ -536,6 +542,7 @@ pub fn process_attestations(
     block_slot: Slot,
     proposer_index: u64,
     shuffling: Option<&ShufflingRef<'_>>,
+    votes_sink: &mut Vec<(u32, B256, Epoch)>,
 ) {
     // Electra attestations are variable-size (have committee_bits).
     // SSZ list of variable-size elements: first N*4 bytes are offsets.
@@ -581,6 +588,7 @@ pub fn process_attestations(
             current_epoch,
             previous_epoch,
             shuffling,
+            votes_sink,
         );
         // Proposer reward from newly-set participation flags.
         if reward > 0 && (proposer_index as usize) < vid.validator_cnt {
@@ -622,6 +630,7 @@ pub fn process_single_attestation(
     current_epoch: Epoch,
     previous_epoch: Epoch,
     shuffling: Option<&ShufflingRef<'_>>,
+    votes_sink: &mut Vec<(u32, B256, Epoch)>,
 ) -> u64 {
     if !validate::validate_attestation_data(att, sd.slot, current_epoch, previous_epoch) {
         return 0;
@@ -735,6 +744,10 @@ pub fn process_single_attestation(
             }
 
             let vi = validator_idx as usize;
+            // Feed LMD-GHOST: same vote that drives participation flags also
+            // updates the latest-message tracker (spec on_attestation contract).
+            // Tile-side `on_attestation` applies the monotonic-epoch guard.
+            votes_sink.push((validator_idx, beacon_block_root, target_epoch));
             let participation = if is_current {
                 &mut sd.current_epoch_participation[vi]
             } else {

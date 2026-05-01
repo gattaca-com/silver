@@ -114,6 +114,7 @@ fn attestation() {
             previous_shuffled: &prev_active,
             previous_cps: prev_cps,
         };
+        let mut votes_sink = Vec::new();
         state_transition::process_attestations(
             &s.vid,
             &s.epoch,
@@ -123,6 +124,7 @@ fn attestation() {
             block_slot,
             proposer_index,
             Some(&sref),
+            &mut votes_sink,
         );
     });
 }
