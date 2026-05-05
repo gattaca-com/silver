@@ -28,7 +28,7 @@ use silver_common::{
 };
 
 fn null_stream_id() -> P2pStreamId {
-    P2pStreamId::new(0, 0, StreamProtocol::Unset)
+    P2pStreamId::new(0, 0, StreamProtocol::Unset, false)
 }
 
 #[derive(Debug, Deserialize)]

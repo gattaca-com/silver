@@ -8,9 +8,9 @@ pub use crate::{
     id::{Keypair, PeerId, decode_protobuf_pubkey, encode_secp256k1_protobuf},
     identity::{AGENT_VERSION, Eth2Addr, Identify, PROTOCOL_VERSION, parse_eth2_multiaddr},
     spine::{
-        ALL_PROTOCOLS, Consumer as TConsumer, Error as TCacheError, GossipMsgOut, IpBytes,
-        MULTISTREAM_V1, MultiProducer as TMultiProducer, NewGossipMsg, P2pStreamId, PeerControl,
-        PeerEvent, PeerGossipIn, PeerRpcIn, Producer as TProducer, REJECT_RESPONSE, RPC_PROTOCOLS,
+        ALL_PROTOCOLS, BeaconStateEvent, Consumer as TConsumer, Error as TCacheError, GossipMsgOut,
+        IpBytes, MULTISTREAM_V1, MultiProducer as TMultiProducer, NewGossipMsg, P2pStreamId,
+        PeerControl, PeerEvent, PeerRpcIn, Producer as TProducer, REJECT_RESPONSE, RPC_PROTOCOLS,
         RandomAccessConsumer as TRandomAccess, Reservation as TReservation, RpcInbound, RpcMsg,
         RpcOutbound, RpcRequest, RpcRequestInbound, RpcRequestOutbound, RpcResponse,
         RpcResponseInbound, RpcResponseOutbound, RpcSeverity, SilverSpine, SilverSpineProducers,

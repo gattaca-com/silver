@@ -9,7 +9,7 @@ use crate::{
         BlobIdentifierView, DC_BY_RANGE_REQ_MAX, DataColumnSidecarView,
         DataColumnSidecarsByRangeRequestView, DataColumnsByRootIdentifierView, GOODBYE_SIZE,
         GoodbyeView, METADATA_SIZE, MetadataView, PING_SIZE, PingView, STATUS_V1_SIZE,
-        STATUS_V2_SIZE, SignedBeaconBlockView, StatusView,
+        STATUS_V2_SIZE, SignedBeaconBlockView, SszView, StatusView,
     },
 };
 

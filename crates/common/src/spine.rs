@@ -2,10 +2,9 @@
 
 use flux::{communication::ShmemData, spine::SpineQueue, spine_derive::from_spine, tile::TileInfo};
 pub use messages::{
-    GossipFeedback, GossipMsgOut, IpBytes, NewGossipMsg, PeerControl, PeerEvent, PeerGossipIn,
-    PeerGossipOut, PeerRpcIn, PeerRpcOut, RpcInbound, RpcMsg, RpcOutbound, RpcRequest,
-    RpcRequestInbound, RpcRequestOutbound, RpcResponse, RpcResponseInbound, RpcResponseOutbound,
-    RpcSeverity,
+    BeaconStateEvent, GossipMsgOut, IpBytes, NewGossipMsg, PeerControl, PeerEvent, PeerRpcIn,
+    RpcInbound, RpcMsg, RpcOutbound, RpcRequest, RpcRequestInbound, RpcRequestOutbound,
+    RpcResponse, RpcResponseInbound, RpcResponseOutbound, RpcSeverity,
 };
 pub use stream_id::P2pStreamId;
 pub use stream_protocol::{
