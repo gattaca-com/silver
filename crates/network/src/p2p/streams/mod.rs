@@ -16,7 +16,6 @@ mod rpc;
 mod snappy;
 mod state;
 
-pub(crate) use negotiate::NegotiateState;
 pub use state::StreamState;
 
 #[derive(Debug, Error)]

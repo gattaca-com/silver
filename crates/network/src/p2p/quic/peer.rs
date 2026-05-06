@@ -18,7 +18,7 @@ use crate::{
         NetEvent,
         context::Context,
         quic::{SendResult, stream::StreamIoImpl},
-        streams::{NegotiateState, StreamError, StreamState},
+        streams::{StreamError, StreamState},
         tls::peer_id_from_certificate,
     },
 };
