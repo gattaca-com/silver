@@ -6,19 +6,14 @@ use silver_common::{
 
 use super::{gossip_in::GossipReadState, gossip_out::GossipWriteState};
 use crate::{
-    NetEvent,
     p2p::{
         context::Context,
         streams::{
-            StreamError, StreamIo,
-            identify_in::WriteIdentifyResponse,
-            identify_out::ReadIdentifyResponse,
-            negotiate::NegotiateState,
-            rpc::{
+            identify_in::WriteIdentifyResponse, identify_out::ReadIdentifyResponse, negotiate::NegotiateState, rpc::{
                 RpcIn, RpcOut, RpcReadRequest, RpcReadResponse, RpcWriteRequest, RpcWriteResponse,
-            },
+            }, StreamError, StreamIo
         },
-    },
+    }, NetEvent,
 };
 
 #[derive(Debug, Default)]
