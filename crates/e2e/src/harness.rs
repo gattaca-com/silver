@@ -99,12 +99,14 @@ impl TwoStackHarness {
     /// Single pass: tick both stacks' `loop_body`, then drain peer events
     /// into harness state + stats.
     pub fn spin_once(&mut self) {
-        // Publisher: network tile only (no compression).
+        // Publisher: network + controller (no compression).
         self.publisher.network.loop_body(&mut self.publisher.network_adapter);
+        self.publisher.controller.loop_body(&mut self.publisher.controller_adapter);
 
-        // Echo: network + compression tiles.
+        // Echo: network + compression + controller.
         self.echo.network.loop_body(&mut self.echo.network_adapter);
         self.echo.compression.loop_body(&mut self.echo.compression_adapter);
+        self.echo.controller.loop_body(&mut self.echo.controller_adapter);
 
         // Drain publisher-side peer events to discover echo's connection handle.
         let handle_slot = self.publisher_echo_handle.clone();

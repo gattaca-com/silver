@@ -67,6 +67,43 @@ pub struct Controller {
     /// Latest beacon status - set on sync.
     status: Option<[u8; STATUS_V2_SIZE]>,
     metadata: [u8; METADATA_SIZE],
+    /// When false, the 700ms heartbeat skips the per-peer Ping fan-out.
+    /// Tests use this to keep the peer-state machine ticking without
+    /// generating background Ping traffic that would interfere with
+    /// targeted RPC assertions.
+    auto_ping: bool,
+}
+
+impl Controller {
+    /// Build a Controller with a fresh `PeerManager`. `status` and
+    /// `metadata` start empty — callers update them via `set_status` /
+    /// `set_metadata` once chain state is available.
+    pub fn new(peer_manager: PeerManager) -> Self {
+        Self {
+            peer_manager,
+            last_tick: Instant::now(),
+            status: None,
+            metadata: [0u8; METADATA_SIZE],
+            auto_ping: true,
+        }
+    }
+
+    pub fn set_status(&mut self, status: [u8; STATUS_V2_SIZE]) {
+        self.status = Some(status);
+    }
+
+    pub fn set_metadata(&mut self, metadata: [u8; METADATA_SIZE]) {
+        self.metadata = metadata;
+    }
+
+    /// Toggle the heartbeat-driven outbound Ping fan-out. Default is on.
+    pub fn set_auto_ping(&mut self, enabled: bool) {
+        self.auto_ping = enabled;
+    }
+
+    pub fn peer_manager(&self) -> &PeerManager {
+        &self.peer_manager
+    }
 }
 
 impl Tile<SilverSpine> for Controller {
@@ -278,13 +315,15 @@ impl Tile<SilverSpine> for Controller {
             });
 
             // send pings
-            let ping = RpcRequest::Ping(MetadataView::seq_number(&self.metadata).to_le_bytes());
-            for peer in self.peer_manager.live_peers() {
-                adapter.produce(P2pSend::Rpc(RpcOutbound::Request(RpcRequestOutbound {
-                    application_id: 0,
-                    peer,
-                    request: ping,
-                })));
+            if self.auto_ping {
+                let ping = RpcRequest::Ping(MetadataView::seq_number(&self.metadata).to_le_bytes());
+                for peer in self.peer_manager.live_peers() {
+                    adapter.produce(P2pSend::Rpc(RpcOutbound::Request(RpcRequestOutbound {
+                        application_id: 0,
+                        peer,
+                        request: ping,
+                    })));
+                }
             }
         }
     }

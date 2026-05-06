@@ -185,12 +185,16 @@ impl SnappyDecoder {
         &mut self.buf[self.buf_len..self.need]
     }
 
-    /// Returns number of decompressed bytes written to `out`
+    /// Account for `amount` bytes the caller just wrote into the buffer
+    /// returned by `decompress_buffer`, advance `buf_len`, and decode any
+    /// complete frame into `out`. Returns number of decompressed bytes
+    /// written to `out`.
     pub fn decompress_written(
         &mut self,
         amount: usize,
         out: &mut [u8],
     ) -> Result<usize, SnappyError> {
+        self.buf_len += amount;
         let mut out_pos = 0;
 
         if self.buf_len < self.need {

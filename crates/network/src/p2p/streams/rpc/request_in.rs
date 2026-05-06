@@ -113,7 +113,19 @@ impl RpcReadRequest {
                 Ok(Spin::Next(Self::ReadingBody { decoder, reservation, remaining }))
             }
             RpcReadRequest::ReadingBody { mut decoder, mut reservation, mut remaining } => {
-                let mut decompress_buffer = decoder.decompress_buffer();
+                // Short-circuit BEFORE attempting another read — once the
+                // SSZ payload is fully decoded the peer's already FIN'd
+                // (single-chunk request) and reading would surface
+                // `ClosedStream`.
+                if remaining == 0 {
+                    match reservation.into_rpc() {
+                        Rpc::Request(rpc_request) => {
+                            return Ok(Spin::Ok(Self::Complete { msg: rpc_request }))
+                        }
+                        Rpc::Response(_) => return Err(StreamError::InvalidRpc),
+                    }
+                }
+                let decompress_buffer = decoder.decompress_buffer();
                 if !decompress_buffer.is_empty() {
                     let written = io.read_from_stream(p2p_id.stream_id(), decompress_buffer)?;
                     if written == 0 {
@@ -121,14 +133,6 @@ impl RpcReadRequest {
                     }
                     remaining -=
                         decoder.decompress_written(written, reservation.remaining_buffer()?)?;
-                }
-                if remaining == 0 {
-                    match reservation.into_rpc() {
-                        Rpc::Request(rpc_request) => {
-                            return Ok(Spin::Ok(Self::Complete { msg: rpc_request }))
-                        }
-                        Rpc::Response(rpc_response) => return Err(StreamError::InvalidRpc),
-                    }
                 }
                 Ok(Spin::Next(Self::ReadingBody { decoder, reservation, remaining }))
             }

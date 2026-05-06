@@ -77,7 +77,15 @@ impl RpcWriteResponse {
                 written += wrote;
 
                 if wrote == buffer.len() && pending == 0 {
-                    if matches!(response, RpcResponse::Error { .. }) {
+                    // FIN the write side for any single-chunk response
+                    // shape — receivers detect end-of-response from FIN,
+                    // not from a sentinel chunk. Multi-chunk shapes
+                    // (BeaconBlock / DataColumnSidecar) keep the stream
+                    // open until the explicit `Complete` sentinel.
+                    if !matches!(
+                        response,
+                        RpcResponse::BeaconBlock { .. } | RpcResponse::DataColumnSidecar { .. }
+                    ) {
                         io.close_write(id.stream_id())?;
                     }
                     Ok(Spin::Ok(Self::Idle))

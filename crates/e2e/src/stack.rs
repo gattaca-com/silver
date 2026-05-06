@@ -11,9 +11,11 @@ use quinn_proto::Endpoint;
 use silver_common::{
     Enr, Keypair, PeerId, SilverSpine, TCache, TCacheProducer, TConsumer, TProducer, TRandomAccess,
 };
+use silver_control::Controller;
 use silver_discovery::{DiscV5, DiscoveryConfig};
 use silver_gossip::GossipHandler;
 use silver_network::{Context, NetworkTile, P2p, create_endpoint, create_server_config};
+use silver_peer::{PeerManager, ScoreParams};
 
 use crate::Stats;
 
@@ -41,7 +43,9 @@ pub struct PublisherStack {
     pub peer_id: PeerId,
     pub spine: SilverSpine,
     pub network: NetworkTile,
+    pub controller: Controller,
     pub network_adapter: SpineAdapter<SilverSpine>,
+    pub controller_adapter: SpineAdapter<SilverSpine>,
     pub injector_adapter: SpineAdapter<SilverSpine>,
     /// Producer into the publisher's dedicated "mcache" TCache — harness
     /// writes snappy-ready protobuf RPC frames here to get a `TCacheRead`
@@ -60,8 +64,10 @@ pub struct EchoStack {
     pub network: NetworkTile,
     pub ssz_consumer: TRandomAccess,
     pub compression: GossipHandler,
+    pub controller: Controller,
     pub network_adapter: SpineAdapter<SilverSpine>,
     pub compression_adapter: SpineAdapter<SilverSpine>,
+    pub controller_adapter: SpineAdapter<SilverSpine>,
     /// Adapter whose consumers cover `new_gossip` (Gossip) and `peer_events`
     /// (PeerEvent); ticked by the harness after each compression cycle to
     /// drain into `stats`.
@@ -158,9 +164,15 @@ impl PublisherStack {
         let network = NetworkTile::new(disc_addr, discovery, addr, p2p, context)
             .map_err(std::io::Error::other)?;
 
+        // Tests don't subscribe to gossip topics, so PeerManager runs with
+        // an empty subscription set — meshes stay empty, score deltas
+        // exercise only the connection / RPC paths.
+        let controller = Controller::new(PeerManager::new(Vec::new(), ScoreParams::default()));
+
         // Spine + per-tile adapters.
         let mut spine = SilverSpine::new_with_base_dir(base_dir, Some(path_suffix));
         let network_adapter = SpineAdapter::connect_tile(&network, &mut spine);
+        let controller_adapter = SpineAdapter::connect_tile(&controller, &mut spine);
         let injector_tile = Injector;
         let injector_adapter = SpineAdapter::connect_tile(&injector_tile, &mut spine);
 
@@ -169,7 +181,9 @@ impl PublisherStack {
             peer_id,
             spine,
             network,
+            controller,
             network_adapter,
+            controller_adapter,
             injector_adapter,
             mcache_producer,
             _keep_alive: StackKeepAlive {
@@ -243,9 +257,12 @@ impl EchoStack {
         )
         .map_err(std::io::Error::other)?;
 
+        let controller = Controller::new(PeerManager::new(Vec::new(), ScoreParams::default()));
+
         let mut spine = SilverSpine::new_with_base_dir(base_dir, Some(path_suffix));
         let network_adapter = SpineAdapter::connect_tile(&network, &mut spine);
         let compression_adapter = SpineAdapter::connect_tile(&compression, &mut spine);
+        let controller_adapter = SpineAdapter::connect_tile(&controller, &mut spine);
         let stats_tile = StatsSink;
         let stats_adapter = SpineAdapter::connect_tile(&stats_tile, &mut spine);
 
@@ -255,9 +272,11 @@ impl EchoStack {
             spine,
             network,
             compression,
+            controller,
             ssz_consumer,
             network_adapter,
             compression_adapter,
+            controller_adapter,
             stats_adapter,
             stats: Stats::default(),
             received: AtomicUsize::default(),

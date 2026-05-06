@@ -358,17 +358,21 @@ impl Stream {
         let state = self.state.take();
         let mut io = StreamIoImpl { connection, outbound: &mut self.out_buffer };
 
-        match state.spin(&mut io, &self.p2p_id, context, on_event) {
+        match state.spin(&mut io, &mut self.p2p_id, context, on_event) {
             Ok(state) => {
                 tracing::trace!(id=?self.p2p_id, ?state, "stream state");
                 let mut result = SpinResult::Ok;
+                // After the negotiate state machine has transitioned past
+                // Done (`set_protocol` fires inside `state.spin`), the
+                // inbound stream still has an `OutboundBuffer::Unset`.
+                // Initialise it the first time we observe a non-Unset
+                // protocol so RPC responses have somewhere to land.
                 if self.p2p_id.is_incoming() &&
-                    let StreamState::Negotiate(NegotiateState::Done(protocol)) = &state
+                    matches!(self.out_buffer, OutboundBuffer::Unset) &&
+                    self.p2p_id.protocol() != StreamProtocol::Unset
                 {
-                    // set protocol, allocate the outbound buffer a/c the negotiated protocol.
-                    self.p2p_id.set_protocol(*protocol);
                     self.out_buffer = out_buffer(&self.p2p_id, true);
-                    result = SpinResult::Protocol(*protocol);
+                    result = SpinResult::Protocol(self.p2p_id.protocol());
                 }
 
                 self.state.replace(state);
@@ -398,7 +402,7 @@ impl Stream {
     {
         let state = self.state.take();
         let mut io = StreamIoImpl { connection, outbound: &mut self.out_buffer };
-        let new_state = state.spin(&mut io, &self.p2p_id, context, on_event)?;
+        let new_state = state.spin(&mut io, &mut self.p2p_id, context, on_event)?;
         self.state.replace(new_state);
         Ok(())
     }

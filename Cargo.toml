@@ -51,6 +51,7 @@ opt-level = 3
 
 [workspace.dependencies]
 silver_common = { path = "crates/common" }
+silver_control = { path = "crates/control" }
 silver_discovery = {path = "crates/discovery" }
 silver_gossip = {path = "crates/gossip" }
 silver_network = {path = "crates/network" }

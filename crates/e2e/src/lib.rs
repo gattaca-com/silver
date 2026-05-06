@@ -10,7 +10,7 @@ mod stack;
 mod stats;
 
 #[cfg(feature = "lh-client")]
-mod lh_client;
+pub mod lh_client;
 
 pub use harness::TwoStackHarness;
 #[cfg(feature = "lh-client")]

@@ -1,7 +1,7 @@
 use buffa::Message;
 use silver_common::{
-    P2pStreamId, RpcInbound, RpcOutbound, RpcRequestInbound, RpcResponseInbound, StreamProtocol,
-    encode_observed_addr,
+    P2pStreamId, RpcInbound, RpcOutbound, RpcRequest, RpcRequestInbound, RpcResponseInbound,
+    StreamProtocol, encode_observed_addr,
 };
 
 use super::{gossip_in::GossipReadState, gossip_out::GossipWriteState};
@@ -50,7 +50,7 @@ impl StreamState {
     pub fn spin<S, F>(
         self,
         io: &mut S,
-        id: &P2pStreamId,
+        id: &mut P2pStreamId,
         context: &mut Context,
         emit: &mut F,
     ) -> Result<Self, StreamError>
@@ -61,42 +61,67 @@ impl StreamState {
         match self {
             StreamState::Negotiate(negotiate_state) => {
                 match negotiate_state.spin(id.stream_id(), io)? {
-                    NegotiateState::Done(stream_protocol) => match stream_protocol {
-                        StreamProtocol::Unset => unreachable!(),
-                        StreamProtocol::GossipSub => Ok(Self::Gossip {
-                            read: GossipReadState::default(),
-                            write: GossipWriteState::Idle,
-                        }),
-                        StreamProtocol::Identity => {
-                            if id.is_incoming() {
-                                // TODO identify should always be present post-startup.
-                                let mut identify = context.identify.clone().unwrap();
-                                identify.observedAddr =
-                                    Some(encode_observed_addr(&io.remote_addr()));
-                                let identify_protobuf = identify.encode_to_vec();
-                                Ok(Self::IncomingIdentify(WriteIdentifyResponse::new(
-                                    identify_protobuf,
-                                )?))
-                            } else {
-                                Ok(Self::OutgoingIdentify(ReadIdentifyResponse::default()))
+                    NegotiateState::Done(stream_protocol) => {
+                        // Pin the negotiated protocol onto the stream id
+                        // so downstream RPC reservation / out-buffer logic
+                        // can dispatch on it.
+                        id.set_protocol(stream_protocol);
+                        match stream_protocol {
+                            StreamProtocol::Unset => unreachable!(),
+                            StreamProtocol::GossipSub => Ok(Self::Gossip {
+                                read: GossipReadState::default(),
+                                write: GossipWriteState::Idle,
+                            }),
+                            StreamProtocol::Identity => {
+                                if id.is_incoming() {
+                                    // TODO identify should always be present post-startup.
+                                    let mut identify = context.identify.clone().unwrap();
+                                    identify.observedAddr =
+                                        Some(encode_observed_addr(&io.remote_addr()));
+                                    let identify_protobuf = identify.encode_to_vec();
+                                    Ok(Self::IncomingIdentify(WriteIdentifyResponse::new(
+                                        identify_protobuf,
+                                    )?))
+                                } else {
+                                    Ok(Self::OutgoingIdentify(ReadIdentifyResponse::default()))
+                                }
                             }
-                        }
-                        rpc => {
-                            if id.is_incoming() {
-                                Ok(Self::IncomingRpc(RpcIn::ReadRequest(RpcReadRequest::default())))
-                            } else {
-                                let (app_id, request) = match io.rpc_next() {
-                                    Some(RpcOutbound::Request(req)) => {
-                                        (req.application_id, req.request)
+                            rpc => {
+                                if id.is_incoming() {
+                                    if rpc == StreamProtocol::Metadata {
+                                        // Per spec MetaData has no request body —
+                                        // emit the inbound request now so the
+                                        // controller can issue a response without
+                                        // silver trying to read a non-existent
+                                        // varint+snappy body off the wire.
+                                        emit(NetEvent::RpcInbound(RpcInbound::Request(
+                                            RpcRequestInbound {
+                                                stream_id: *id,
+                                                request: RpcRequest::MetaData,
+                                            },
+                                        )));
+                                        Ok(Self::IncomingRpc(RpcIn::WriteResponse(
+                                            RpcWriteResponse::Idle,
+                                        )))
+                                    } else {
+                                        Ok(Self::IncomingRpc(RpcIn::ReadRequest(
+                                            RpcReadRequest::default(),
+                                        )))
                                     }
-                                    _ => return Err(StreamError::InvalidRpc),
-                                };
-                                Ok(Self::OutgoingRpc(RpcOut::WriteRequest(RpcWriteRequest::new(
-                                    app_id, request,
-                                )?)))
+                                } else {
+                                    let (app_id, request) = match io.rpc_next() {
+                                        Some(RpcOutbound::Request(req)) => {
+                                            (req.application_id, req.request)
+                                        }
+                                        _ => return Err(StreamError::InvalidRpc),
+                                    };
+                                    Ok(Self::OutgoingRpc(RpcOut::WriteRequest(
+                                        RpcWriteRequest::new(app_id, request)?,
+                                    )))
+                                }
                             }
                         }
-                    },
+                    }
                     other => Ok(Self::Negotiate(other)),
                 }
             }
