@@ -6,7 +6,7 @@ pub use crate::{
         msg_id_valid_snappy,
     },
     id::{Keypair, PeerId, decode_protobuf_pubkey, encode_secp256k1_protobuf},
-    identity::{AGENT_VERSION, Eth2Addr, Identify, PROTOCOL_VERSION, parse_eth2_multiaddr},
+    identity::{AGENT_VERSION, Eth2Addr, Identify, PROTOCOL_VERSION, encode_observed_addr, parse_eth2_multiaddr},
     spine::{
         ALL_PROTOCOLS, BeaconStateEvent, Consumer as TConsumer, Error as TCacheError, GossipMsgOut,
         IpBytes, MULTISTREAM_V1, MultiProducer as TMultiProducer, NewGossipMsg, P2pStreamId,
@@ -23,6 +23,10 @@ pub use crate::{
 pub mod arena;
 mod enr;
 mod error;
+#[path = "generated/protobuf.identify.rs"]
+#[allow(clippy::all, dead_code, non_snake_case)]
+#[rustfmt::skip]
+mod generated;
 mod gossip;
 mod id;
 mod identity;
@@ -33,3 +37,4 @@ mod wither;
 
 pub use enr::{Enr, NodeId};
 pub use flux::timing::Nanos;
+pub use generated::{Identify as ProtoIdentify, IdentifyView as ProtoIdentifyView};

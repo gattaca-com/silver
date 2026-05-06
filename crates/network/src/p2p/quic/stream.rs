@@ -58,6 +58,10 @@ impl<'a> StreamIo for StreamIoImpl<'a> {
             _ => None,
         }
     }
+    
+    fn remote_addr(&self) -> std::net::SocketAddr {
+        self.connection.remote_address()
+    }
 }
 
 pub struct StreamWriter<'a, S: StreamIo>(pub StreamId, pub &'a mut S);

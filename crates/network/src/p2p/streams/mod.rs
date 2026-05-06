@@ -1,4 +1,4 @@
-use std::{array::TryFromSliceError, fmt};
+use std::{array::TryFromSliceError, fmt, net::SocketAddr};
 
 use buffa::DecodeError;
 use quinn_proto::{FinishError, ReadError, ReadableError, StreamId, WriteError};
@@ -56,4 +56,5 @@ pub trait StreamIo {
     fn close_write(&mut self, id: StreamId) -> Result<(), StreamError>;
     fn rpc_next(&mut self) -> Option<RpcOutbound>;
     fn gossip_next(&mut self) -> Option<TCacheRead>;
+    fn remote_addr(&self) -> SocketAddr;
 }

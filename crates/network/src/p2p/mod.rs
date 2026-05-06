@@ -1,8 +1,4 @@
 mod context;
-#[path = "generated/protobuf.identify.rs"]
-#[allow(clippy::all, dead_code, non_snake_case)]
-#[rustfmt::skip]
-mod generated;
 mod quic;
 mod streams;
 pub(crate) mod tls;
@@ -109,7 +105,7 @@ impl P2p {
         let client_config = create_client_config(&self.keypair, Some(peer_id))?;
         let (handle, connection) =
             self.endpoint.connect(now, client_config, addr, "x").map_err(Error::other)?;
-        let peer = Peer::new(handle, connection, true);
+        let peer = Peer::new(handle, connection);
         self.peers.insert(handle, peer);
         Ok(())
     }
@@ -153,7 +149,7 @@ impl P2p {
             DatagramEvent::NewConnection(incoming) => {
                 match self.endpoint.accept(incoming, now, scratch, None) {
                     Ok((handle, conn)) => {
-                        let peer = Peer::new(handle, conn, false);
+                        let peer = Peer::new(handle, conn);
 
                         self.peers.insert(handle, peer);
                     }

@@ -4,7 +4,7 @@ use bytes::Bytes;
 use flux::utils::ArrayVec;
 use fxhash::{FxHashMap, FxHashSet};
 use quinn_proto::{
-    Connection, ConnectionEvent, ConnectionHandle, Dir, EndpointEvent, StreamId, Transmit, VarInt,
+    Connection, ConnectionEvent, ConnectionHandle, Dir, EndpointEvent, Side, StreamId, Transmit, VarInt
 };
 use silver_common::{
     ALL_PROTOCOLS, P2pStreamId, PeerId, RPC_PROTOCOLS, RpcOutbound, RpcRequest, RpcResponse,
@@ -28,18 +28,16 @@ pub(crate) struct Peer {
     connection: Connection,
     streams: FxHashMap<StreamId, Stream>,
     streams_by_protocol: [Option<StreamId>; ALL_PROTOCOLS.len() + 1],
-    dialler: bool,
 }
 
 impl Peer {
-    pub(crate) fn new(handle: ConnectionHandle, connection: Connection, dialler: bool) -> Self {
+    pub(crate) fn new(handle: ConnectionHandle, connection: Connection) -> Self {
         Self {
-            id: RemotePeer { peer_id: PeerId::default(), connection: handle.0 },
+            id: RemotePeer { peer_id: PeerId::default(), connection: handle.0, addr: connection.remote_address() },
             handle,
             connection,
             streams: FxHashMap::with_capacity_and_hasher(16, BuildHasherDefault::default()),
             streams_by_protocol: [None; ALL_PROTOCOLS.len() + 1],
-            dialler,
         }
     }
 
@@ -193,7 +191,7 @@ impl Peer {
                     on_event(NetEvent::PeerConnected {
                         peer: self.id.clone(),
                         addr: self.connection.remote_address(),
-                        local_dialler: self.dialler,
+                        local_dialler: self.connection.side() == Side::Client,
                     });
                 }
                 quinn_proto::Event::ConnectionLost { reason } => {
@@ -595,6 +593,7 @@ mod tests {
                     gossip_consumer: gossip_out_c,
                     rpc_producer: rpc_in_p,
                     rpc_consumer: rpc_out_c,
+                    identify: None,
                 },
                 gossip_in_consumer: gossip_in_c,
                 gossip_out_producer: gossip_out_p,
@@ -660,7 +659,7 @@ mod tests {
                 super::super::create_client_config(&client_kp, Some(server_kp.peer_id())).unwrap();
             let (client_handle, client_conn) =
                 client_ep.connect(now, client_config, server_addr, "x").unwrap();
-            let mut client_peer = Peer::new(client_handle, client_conn, true);
+            let mut client_peer = Peer::new(client_handle, client_conn);
 
             let mut buf = Vec::new();
             let mut scratch = vec![0u8; 2048];
@@ -676,7 +675,7 @@ mod tests {
                         DatagramEvent::NewConnection(incoming) => {
                             let (handle, conn) =
                                 server_ep.accept(incoming, now, &mut scratch, None).unwrap();
-                            server_peer = Some(Peer::new(handle, conn, false));
+                            server_peer = Some(Peer::new(handle, conn));
                         }
                         DatagramEvent::ConnectionEvent(_, ce) => {
                             if let Some(ref mut p) = server_peer {

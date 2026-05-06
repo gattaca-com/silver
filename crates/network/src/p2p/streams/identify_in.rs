@@ -12,19 +12,6 @@ pub enum WriteIdentifyResponse {
 
 impl WriteIdentifyResponse {
     pub fn new(identify_protobuf: Vec<u8>) -> Result<Self, StreamError> {
-        // let mut proto = ProtoIdentify::default();
-        // proto.protocolVersion = Some(PROTOCOL_VERSION.to_owned());
-        // proto.agentVersion = Some(AGENT_VERSION.to_owned());
-        // proto.protocols = (0..32).filter_map(|bit| (response.protocols & (1 << bit)
-        // == 1).then_some(bit)).map(|idx| {     // multiselect protocol string
-        // is the bytes version withuot length prefix and newline suffix.
-        //     let mut bytes = ALL_PROTOCOLS[idx].multiselect();
-        //     bytes = &bytes[1..bytes.len() - 1];
-        //     unsafe { String::from_utf8_unchecked(bytes) }
-        // }).collect();
-        // proto.listenAddrs = response.encode_listen_addrs(local_dialler);
-        // proto.signedPeerRecord = Some(response.signed_peer_record(keypair, seq))
-
         let mut buf = [0u8; 10];
         let length = encode_varint(identify_protobuf.len() as u64, &mut buf)?;
         Ok(Self::WritingLength { buf, length, written: 0, response: identify_protobuf })

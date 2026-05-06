@@ -143,6 +143,7 @@ impl PublisherStack {
             gossip_consumer: gossip_out_ra_for_network,
             rpc_producer: rpc_in_producer,
             rpc_consumer: rpc_out_ra,
+            identify: None,
         };
 
         let discovery = DiscV5::new(
@@ -219,6 +220,7 @@ impl EchoStack {
             gossip_consumer: protobuf_ra_for_network,
             rpc_producer: rpc_in_producer,
             rpc_consumer: rpc_out_ra,
+            identify: None,
         };
 
         let discovery = DiscV5::new(

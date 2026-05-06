@@ -1,22 +1,18 @@
+use buffa::Message;
 use silver_common::{
-    P2pStreamId, RpcInbound, RpcOutbound, RpcRequestInbound, RpcResponseInbound, StreamProtocol,
+    encode_observed_addr, P2pStreamId, RpcInbound, RpcOutbound, RpcRequestInbound, RpcResponseInbound, StreamProtocol
 };
 
 use super::{gossip_in::GossipReadState, gossip_out::GossipWriteState};
 use crate::{
-    NetEvent,
     p2p::{
         context::Context,
         streams::{
-            StreamError, StreamIo,
-            identify_in::WriteIdentifyResponse,
-            identify_out::ReadIdentifyResponse,
-            negotiate::NegotiateState,
-            rpc::{
+            identify_in::WriteIdentifyResponse, identify_out::ReadIdentifyResponse, negotiate::NegotiateState, rpc::{
                 RpcIn, RpcOut, RpcReadRequest, RpcReadResponse, RpcWriteRequest, RpcWriteResponse,
-            },
+            }, StreamError, StreamIo
         },
-    },
+    }, NetEvent,
 };
 
 #[derive(Debug, Default)]
@@ -67,7 +63,10 @@ impl StreamState {
                         }),
                         StreamProtocol::Identity => {
                             if id.is_incoming() {
-                                let identify_protobuf = vec![]; // TODO
+                                // TODO identify should always be present post-startup.
+                                let mut identify = context.identify.clone().unwrap();
+                                identify.observedAddr = Some(encode_observed_addr(&io.remote_addr()));
+                                let identify_protobuf = identify.encode_to_vec();
                                 Ok(Self::IncomingIdentify(WriteIdentifyResponse::new(
                                     identify_protobuf,
                                 )?))

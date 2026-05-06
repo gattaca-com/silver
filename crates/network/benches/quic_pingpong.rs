@@ -65,6 +65,7 @@ pub fn broadcast(c: &mut Criterion) {
                             gossip_consumer: go_consumer,
                             rpc_producer: rpc_in,
                             rpc_consumer: rpc_out,
+                            identify: None,
                         };
 
                         (
@@ -129,6 +130,7 @@ pub fn broadcast(c: &mut Criterion) {
                         gossip_consumer: go_consumer,
                         rpc_producer: rpc_in,
                         rpc_consumer: rpc_out,
+                        identify: None,
                     };
 
                     let addr = "127.0.0.1:20002";

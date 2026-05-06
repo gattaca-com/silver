@@ -61,6 +61,7 @@ pub fn broadcast(c: &mut Criterion) {
                                 gossip_consumer: go_consumer,
                                 rpc_producer: rpc_in,
                                 rpc_consumer: rpc_out,
+                                identify: None,
                             };
 
                             let p2p = P2p::new(keypair, server_endpoint);
@@ -118,6 +119,7 @@ pub fn broadcast(c: &mut Criterion) {
                                 gossip_consumer: go_consumer,
                                 rpc_producer: rpc_in,
                                 rpc_consumer: rpc_out,
+                                identify: None,
                             };
 
                             let addr = format!("127.0.0.1:{}", 20002 + n);
