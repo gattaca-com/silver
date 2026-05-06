@@ -216,6 +216,7 @@ impl Identify {
 }
 
 impl From<(&Identify, &Keypair)> for ProtoIdentify {
+    #[allow(clippy::field_reassign_with_default)]
     fn from((identify, keypair): (&Identify, &Keypair)) -> Self {
         let mut proto = ProtoIdentify::default();
         proto.protocolVersion = Some(PROTOCOL_VERSION.to_owned());

@@ -8,9 +8,7 @@ use flux::{spine::SpineAdapter, tile::Tile, tracing};
 use mio::{Events, Poll, Token};
 use quinn_proto::Transmit;
 use secp256k1::PublicKey;
-use silver_common::{
-    GossipMsgOut, PeerControl, PeerEvent, RpcOutbound, SilverSpine, StreamProtocol,
-};
+use silver_common::{P2pSend, PeerControl, PeerEvent, SilverSpine};
 use silver_discovery::{DiscV5, Discovery, DiscoveryEvent};
 
 use crate::{
@@ -143,39 +141,26 @@ impl Tile<SilverSpine> for NetworkTile {
 
         self.inner.spin(&mut on_event);
 
-        for _ in 0..MAX_PENDING_OUTBOUND_GOSSIP_MSGS {
-            if !adapter.consume_one(|msg: GossipMsgOut, producers| {
-                match self.inner.p2p_endpoint.enqueue_gossip(msg) {
-                    p2p::SendResult::Ok => {}
-                    p2p::SendResult::StreamCreationError => {
-                        producers.peer_events.produce(
-                            &(PeerEvent::P2pCannotCreateStream {
-                                p2p_peer: msg.peer_id,
-                                protocol: StreamProtocol::GossipSub,
-                            }
-                            .into()),
-                        );
-                    }
-                    p2p::SendResult::MessageDropped => {
-                        producers.peer_events.produce(
-                            &(PeerEvent::P2pOutboundMessageDropped {
-                                p2p_peer: msg.peer_id,
-                                protocol: StreamProtocol::GossipSub,
-                            }
-                            .into()),
-                        );
-                    }
-                    p2p::SendResult::UnknownPeer => todo!(),
-                }
-            }) {
-                break;
-            }
-        }
+        let mut rpcs = 0;
+        let mut gossips = 0;
 
-        for _ in 0..MAX_PENDING_OUTBOUND_RPC_MSGS {
-            // TCacheMxBuffered
-            if !adapter.consume_one(|msg: RpcOutbound, producers| {
-                match self.inner.p2p_endpoint.enqueue_rpc_out(msg) {
+        loop {
+            if rpcs > MAX_PENDING_OUTBOUND_RPC_MSGS || gossips > MAX_PENDING_OUTBOUND_GOSSIP_MSGS {
+                break;
+            }
+
+            if !adapter.consume_one(|msg: P2pSend, producers| {
+                let result = match msg {
+                    P2pSend::Gossip(gossip_msg_out) => {
+                        gossips += 1;
+                        self.inner.p2p_endpoint.enqueue_gossip(gossip_msg_out)
+                    },
+                    P2pSend::Rpc(rpc_outbound) => {
+                        rpcs += 1;
+                        self.inner.p2p_endpoint.enqueue_rpc_out(rpc_outbound)
+                    },
+                };
+                match result {
                     p2p::SendResult::Ok => {}
                     p2p::SendResult::StreamCreationError => {
                         producers.peer_events.produce(
@@ -195,11 +180,14 @@ impl Tile<SilverSpine> for NetworkTile {
                             .into()),
                         );
                     }
-                    p2p::SendResult::UnknownPeer => todo!(),
+                    p2p::SendResult::UnknownPeer => {
+                        // Can happen if peer has disconnected.
+                        tracing::warn!(peer=msg.peer_id(), protocol=?msg.protocol(), "Tried to send to unknown peer");
+                    },
                 }
             }) {
                 break;
-            }
+            };
         }
     }
 }

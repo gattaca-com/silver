@@ -277,22 +277,12 @@ pub enum PeerEvent {
     /// Peer status received over RPC
     P2pPeerStatus {
         p2p_peer: usize,
-        status_ssz: [u8; STATUS_V2_SIZE],
+        status_ssz: PeerStatus,
     },
     /// Peer metadata recevied over RPC
     P2pPeerMetadata {
         p2p_peer: usize,
         metadata_ssz: [u8; METADATA_SIZE],
-    },
-    /// Peer ping request received.
-    P2pPeerPingRequest {
-        p2p_peer: usize,
-        metadata_seq: u64,
-    },
-    /// Peer ping response received
-    P2pPeerPingResponse {
-        p2p_peer: usize,
-        metadata_seq: u64,
     },
     /// Goodbye received from peer
     P2pPeerGoodbye {
@@ -305,6 +295,13 @@ pub enum PeerEvent {
         /// Identify information.
         identify: Identify,
     },
+}
+
+#[derive(Clone, Copy, Debug)]
+#[repr(C, u8)]
+pub enum PeerStatus {
+    V1([u8; STATUS_V1_SIZE]),
+    V2([u8; STATUS_V2_SIZE]),
 }
 
 /// Severity levels for RPC misbehaviour reports. Mirrors lighthouse's
@@ -321,6 +318,30 @@ pub enum RpcSeverity {
     MidTolerance,
     /// Soft signal — single dropped message, transient stream issue.
     HighTolerance,
+}
+
+#[derive(Clone, Copy, Debug)]
+#[repr(C, u8)]
+#[allow(clippy::large_enum_variant)]
+pub enum P2pSend {
+    Gossip(GossipMsgOut),
+    Rpc(RpcOutbound),
+}
+
+impl P2pSend {
+    pub fn peer_id(&self) -> usize {
+        match self {
+            P2pSend::Gossip(gossip_msg_out) => gossip_msg_out.peer_id,
+            P2pSend::Rpc(rpc_outbound) => rpc_outbound.peer_id(),
+        }
+    }
+
+    pub fn protocol(&self) -> StreamProtocol {
+        match self {
+            P2pSend::Gossip(_) => StreamProtocol::GossipSub,
+            P2pSend::Rpc(rpc_outbound) => rpc_outbound.protocol(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -359,12 +380,6 @@ pub enum PeerControl {
         p2p_connection: usize,
         topic: GossipTopic,
     },
-    /// Send a message
-    P2pGossipSend {
-        p2p: PeerId,
-        p2p_connection: usize,
-        tcache: TCacheRead,
-    },
     /// Open a libp2p connection to the peer described by `enr`. Emitted by
     /// the peer manager on `DiscNodeFound` when capacity allows. The network
     /// tile dedupes against in-flight dials and existing connections.
@@ -372,6 +387,7 @@ pub enum PeerControl {
         p2p: PeerId,
         enr: Enr,
     },
+    P2pSend(P2pSend),
     /// Peer-level ban has timed out — counterpart to `Ban`. Network tile
     /// removes the peer from any deny-list / discv5 routing-table eviction
     /// state. Emitted from `tick` when the per-peer ban TTL expires.

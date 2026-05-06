@@ -1,7 +1,7 @@
 use fxhash::{FxHashMap, FxHashSet};
 use silver_common::{
-    ALL_PROTOCOLS, Enr, Identify, NodeId, PeerId, StreamProtocol,
-    ssz_view::{METADATA_SIZE, MetadataView, STATUS_V2_SIZE},
+    ALL_PROTOCOLS, Enr, Identify, NodeId, PeerId, PeerStatus, StreamProtocol,
+    ssz_view::{METADATA_SIZE, MetadataView},
 };
 use slab::Slab;
 
@@ -100,7 +100,7 @@ impl PeerDatabase {
         self.by_p2p_id.remove(&p2p_id);
     }
 
-    pub fn p2p_status(&mut self, p2p_id: usize, status: [u8; STATUS_V2_SIZE]) {
+    pub fn p2p_status(&mut self, p2p_id: usize, status: PeerStatus) {
         if let Some(record) = self.by_p2p_id.get(&p2p_id).and_then(|idx| self.peers.get_mut(*idx)) {
             record.status.replace(status);
         }
@@ -130,7 +130,7 @@ pub struct PeerRecord {
     /// Enr
     pub enr: Option<Enr>,
     /// Latest peer status
-    pub status: Option<[u8; STATUS_V2_SIZE]>,
+    pub status: Option<PeerStatus>,
     /// Latest peer metadata
     pub metadata: Option<[u8; METADATA_SIZE]>,
     /// Identify record

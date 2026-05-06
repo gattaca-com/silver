@@ -4,7 +4,8 @@ use bytes::Bytes;
 use flux::utils::ArrayVec;
 use fxhash::{FxHashMap, FxHashSet};
 use quinn_proto::{
-    Connection, ConnectionEvent, ConnectionHandle, Dir, EndpointEvent, Side, StreamId, Transmit, VarInt
+    Connection, ConnectionEvent, ConnectionHandle, Dir, EndpointEvent, Side, StreamId, Transmit,
+    VarInt,
 };
 use silver_common::{
     ALL_PROTOCOLS, P2pStreamId, PeerId, RPC_PROTOCOLS, RpcOutbound, RpcRequest, RpcResponse,
@@ -33,7 +34,11 @@ pub(crate) struct Peer {
 impl Peer {
     pub(crate) fn new(handle: ConnectionHandle, connection: Connection) -> Self {
         Self {
-            id: RemotePeer { peer_id: PeerId::default(), connection: handle.0, addr: connection.remote_address() },
+            id: RemotePeer {
+                peer_id: PeerId::default(),
+                connection: handle.0,
+                addr: connection.remote_address(),
+            },
             handle,
             connection,
             streams: FxHashMap::with_capacity_and_hasher(16, BuildHasherDefault::default()),

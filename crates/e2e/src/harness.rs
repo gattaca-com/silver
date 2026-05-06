@@ -11,7 +11,7 @@ use std::{
 };
 
 use flux::{tile::Tile, timing::Nanos};
-use silver_common::{GossipMsgOut, GossipTopic, NewGossipMsg, PeerEvent};
+use silver_common::{GossipMsgOut, GossipTopic, NewGossipMsg, P2pSend, PeerEvent};
 use tempfile::TempDir;
 
 use crate::{
@@ -188,7 +188,7 @@ impl TwoStackHarness {
         let tcache =
             build_publish_frame(&mut self.publisher.mcache_producer, &wire_topic, &snappy)?;
         let msg = GossipMsgOut { peer_id: handle, tcache };
-        self.publisher.injector_adapter.produce(msg);
+        self.publisher.injector_adapter.produce(P2pSend::Gossip(msg));
         self.last_msg = Some(msg);
         Ok(())
     }
@@ -203,7 +203,7 @@ impl TwoStackHarness {
         };
         // Refresh peer handle in case the connection handle changed (e.g.
         // reconnect); `msg.peer_id` is captured at original publish time.
-        self.publisher.injector_adapter.produce(msg);
+        self.publisher.injector_adapter.produce(P2pSend::Gossip(msg));
         true
     }
 }

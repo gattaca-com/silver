@@ -77,6 +77,9 @@ impl RpcWriteResponse {
                 written += wrote;
 
                 if wrote == buffer.len() && pending == 0 {
+                    if matches!(response, RpcResponse::Error { .. }) {
+                        io.close_write(id.stream_id())?;
+                    }
                     Ok(Spin::Ok(Self::Idle))
                 } else {
                     Ok(Spin::Ok(Self::WritingResponse { encoder, response, written }))

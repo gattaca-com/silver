@@ -3,7 +3,7 @@ use std::time::Instant;
 use buffa::MessageView;
 use flux::tile::Tile;
 use silver_common::{
-    Error, GossipMsgOut, MessageId, P2pStreamId, PeerControl, PeerEvent, SilverSpine,
+    Error, GossipMsgOut, MessageId, P2pSend, P2pStreamId, PeerControl, PeerEvent, SilverSpine,
     TCacheProducer, TConsumer, TProducer,
 };
 
@@ -139,12 +139,6 @@ impl GossipHandler {
                     }));
                 }
             }
-            PeerControl::P2pGossipSend { p2p: _, p2p_connection, tcache } => {
-                emit(GossipHandlerEvent::SendGossip(GossipMsgOut {
-                    peer_id: p2p_connection,
-                    tcache,
-                }));
-            }
             _ => {} // no_ops for this tile
         }
     }
@@ -234,14 +228,16 @@ impl Tile<SilverSpine> for GossipHandler {
         adapter.consume(|peer_control: PeerControl, producers| {
             self.handle_peer_control(peer_control, &mut |event| {
                 if let GossipHandlerEvent::SendGossip(gossip_msg_out) = event {
-                    producers.gossip_outgoing.produce(&gossip_msg_out.into());
+                    producers.p2p_send.produce(&P2pSend::Gossip(gossip_msg_out).into());
                 }
             });
         });
         self.spin(&mut |event| match event {
             GossipHandlerEvent::PeerEvent(peer_event) => adapter.produce(peer_event),
             GossipHandlerEvent::NewGossip(new_gossip_msg) => adapter.produce(new_gossip_msg),
-            GossipHandlerEvent::SendGossip(gossip_msg_out) => adapter.produce(gossip_msg_out),
+            GossipHandlerEvent::SendGossip(gossip_msg_out) => {
+                adapter.produce(P2pSend::Gossip(gossip_msg_out))
+            }
         })
     }
 }

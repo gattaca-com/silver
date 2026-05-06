@@ -1,6 +1,4 @@
-use silver_common::{
-    ProtoIdentify, TProducer, TRandomAccess
-};
+use silver_common::{ProtoIdentify, TProducer, TRandomAccess};
 
 pub struct Context {
     pub gossip_producer: TProducer,

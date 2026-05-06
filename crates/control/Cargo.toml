@@ -1,5 +1,5 @@
 [package]
-name = "silver_rpc"
+name = "silver_control"
 edition.workspace = true
 repository.workspace = true
 rust-version.workspace = true
@@ -8,6 +8,8 @@ version.workspace = true
 [dependencies]
 flux.workspace = true
 silver_common.workspace = true
+silver_peer.workspace = true
+tracing.workspace = true
 
 [lints]
 workspace = true
