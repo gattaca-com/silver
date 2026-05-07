@@ -72,7 +72,7 @@ impl RpcReadResponse {
         producer: &mut TProducer,
     ) -> Result<Spin, StreamError> {
         match self {
-            RpcReadResponse::ReadingPrefix { app_id, mut decoder, mut buf, mut read } => {
+            RpcReadResponse::ReadingPrefix { app_id, decoder, mut buf, mut read } => {
                 read += io.read_from_stream(p2p_id.stream_id(), &mut buf[read..])?;
 
                 let prefix_length = rpc_response_context_length(p2p_id.protocol());
@@ -103,8 +103,6 @@ impl RpcReadResponse {
                 Ok(Spin::Ok(Self::ReadingPrefix { app_id, decoder, buf, read }))
             }
             RpcReadResponse::AllocBody { app_id, mut decoder, length, buf, buf_start, buf_end } => {
-                let status = buf[0];
-
                 let mut reservation = if buf[0] == 0 {
                     match alloc_incoming_rpc(producer, p2p_id, length) {
                         Ok(reservation) => reservation,
@@ -130,7 +128,7 @@ impl RpcReadResponse {
                     let len = buf_end - buf_start;
                     let out_buf = reservation.remaining_buffer()?;
                     let out_limit = len.min(out_buf.len());
-                    let (consumed, decoded_bytes) =
+                    let (_, decoded_bytes) =
                         decoder.decompress(&buf[buf_start..buf_end], &mut out_buf[..out_limit])?;
 
                     reservation.increment_offset(decoded_bytes)?;
@@ -145,7 +143,7 @@ impl RpcReadResponse {
                 mut reservation,
                 mut remaining,
             } => {
-                let mut decompress_buffer = decoder.decompress_buffer();
+                let decompress_buffer = decoder.decompress_buffer();
                 if !decompress_buffer.is_empty() {
                     let written = io.read_from_stream(p2p_id.stream_id(), decompress_buffer)?;
                     if written == 0 {

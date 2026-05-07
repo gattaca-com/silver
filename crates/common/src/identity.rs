@@ -56,9 +56,13 @@ pub struct Identify {
 
 impl Default for Identify {
     fn default() -> Self {
+        let mut user_agent = [0u8; 64];
+        let agent_bytes = AGENT_VERSION.as_bytes();
+        user_agent[..agent_bytes.len()].copy_from_slice(agent_bytes);
+
         Self {
-            user_agent: [0u8; 64],
-            user_agent_len: 0,
+            user_agent,
+            user_agent_len: agent_bytes.len(),
             public_key: [0u8; 33],
             protocols: Default::default(),
             tcp_ipv4: Default::default(),

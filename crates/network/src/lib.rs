@@ -1,5 +1,3 @@
-#![allow(dead_code, unused_variables, unused_mut)]
-
 mod p2p;
 mod socket;
 mod tile;

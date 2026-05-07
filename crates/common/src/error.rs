@@ -29,6 +29,9 @@ pub enum Error {
     IdentifyInvalidObservedAddr,
     IdentifyInvalidMultiAddr,
     IdentifyMissingPubkey,
+    EnrError(#[from] crate::enr::Error),
+    KeyError(#[from] secp256k1::Error),
+    InvalidStreamProtocol,
 }
 
 impl fmt::Display for Error {

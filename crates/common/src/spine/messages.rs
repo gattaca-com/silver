@@ -325,6 +325,7 @@ pub enum RpcSeverity {
 #[allow(clippy::large_enum_variant)]
 pub enum P2pSend {
     Gossip(GossipMsgOut),
+    Identify(usize),
     Rpc(RpcOutbound),
 }
 
@@ -332,6 +333,7 @@ impl P2pSend {
     pub fn peer_id(&self) -> usize {
         match self {
             P2pSend::Gossip(gossip_msg_out) => gossip_msg_out.peer_id,
+            P2pSend::Identify(peer) => *peer,
             P2pSend::Rpc(rpc_outbound) => rpc_outbound.peer_id(),
         }
     }
@@ -339,6 +341,7 @@ impl P2pSend {
     pub fn protocol(&self) -> StreamProtocol {
         match self {
             P2pSend::Gossip(_) => StreamProtocol::GossipSub,
+            P2pSend::Identify(_) => StreamProtocol::Identity,
             P2pSend::Rpc(rpc_outbound) => rpc_outbound.protocol(),
         }
     }

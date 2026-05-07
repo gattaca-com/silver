@@ -17,5 +17,5 @@ cargo test -p silver_e2e --tests
 
 ## Lighthouse tests
 ```
-cargo test -p silver_e2e --features lh-client --test lh_handshake
+cargo test -p silver_e2e --features lh-client
 ```

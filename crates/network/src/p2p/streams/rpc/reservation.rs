@@ -183,7 +183,7 @@ impl RpcReservation {
                         }
                     }
                 }
-                RpcResponse::Error { error, msg, len } => &mut msg[self.offset..*len],
+                RpcResponse::Error { error: _, msg, len } => &mut msg[self.offset..*len],
                 RpcResponse::Complete => return Err(ErrorKind::InvalidData.into()), /* no reservation for Complete */
             },
         };
@@ -199,7 +199,7 @@ impl RpcReservation {
                 None => self.offset += written,
             },
             Rpc::Response(rsp) => match rsp {
-                RpcResponse::BeaconBlock { fork_digest, ssz: _ } => {
+                RpcResponse::BeaconBlock { fork_digest: _, ssz: _ } => {
                     if self.offset < 4 {
                         self.offset += written;
                         debug_assert!(self.offset <= 4);
@@ -210,7 +210,7 @@ impl RpcReservation {
                         }
                     }
                 }
-                RpcResponse::DataColumnSidecar { fork_digest, ssz: _ } => {
+                RpcResponse::DataColumnSidecar { fork_digest: _, ssz: _ } => {
                     if self.offset < 4 {
                         self.offset += written;
                         debug_assert!(self.offset <= 4);

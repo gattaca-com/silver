@@ -58,7 +58,6 @@ impl<'a> StreamIo for StreamIoImpl<'a> {
             _ => None,
         }
     }
-
     fn remote_addr(&self) -> std::net::SocketAddr {
         self.connection.remote_address()
     }

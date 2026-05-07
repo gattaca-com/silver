@@ -1,5 +1,6 @@
 pub use crate::{
     arena::{ArenaPtr, TierPool},
+    config::{Config, DiscoveryConfig, ScoreParams},
     error::Error,
     gossip::{
         GossipTopic, MESSAGE_ID_LEN, MessageId, MessageIdHasher, msg_id_invalid_snappy,
@@ -25,6 +26,7 @@ pub use crate::{
 };
 
 pub mod arena;
+mod config;
 mod enr;
 mod error;
 #[path = "generated/protobuf.identify.rs"]

@@ -9,11 +9,10 @@ use flux::utils::ArrayVec;
 use rand::RngCore as _;
 use rustc_hash::{FxHashMap, FxHashSet};
 use secp256k1::{SECP256K1, SecretKey};
-use silver_common::{Enr, NodeId};
+use silver_common::{DiscoveryConfig, Enr, NodeId};
 use tracing::{info, trace, warn};
 
 use crate::{
-    config::DiscoveryConfig,
     crypto::{
         MAX_PACKET_SIZE, SessionCipher, decrypt_message, ecdh_and_derive_keys_responder,
         ecdh_generate_and_derive, encrypt_message, make_cipher, sign_id_nonce, verify_id_nonce_sig,
@@ -1233,7 +1232,6 @@ mod tests {
 
     use super::*;
     use crate::{
-        config::DiscoveryConfig,
         discovery::{Discovery, DiscoveryEvent},
         message::{Message, Packet},
     };

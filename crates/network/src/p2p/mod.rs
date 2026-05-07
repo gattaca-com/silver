@@ -5,17 +5,21 @@ pub(crate) mod tls;
 
 use std::{
     io::Error,
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     time::{Duration, Instant},
 };
 
+use buffa::{Message, MessageView};
 pub use context::Context;
 use fxhash::{FxHashMap, FxHashSet};
 use mio::{Poll, net::UdpSocket};
 pub(crate) use quic::{Peer, create_client_config};
 pub use quic::{SendResult, create_endpoint, create_server_config};
 use quinn_proto::{ConnectionHandle, DatagramEvent, Endpoint};
-use silver_common::{GossipMsgOut, Identify, Keypair, P2pStreamId, PeerId, RpcOutbound};
+use silver_common::{
+    GossipMsgOut, Identify, Keypair, P2pStreamId, PeerId, ProtoIdentify, ProtoIdentifyView,
+    RpcOutbound,
+};
 
 use crate::{
     RemotePeer,
@@ -223,6 +227,13 @@ impl P2p {
         }
     }
 
+    pub fn enqueue_identify(&mut self, peer: usize) -> SendResult {
+        match self.peers.get_mut(&ConnectionHandle(peer)) {
+            Some(peer) => peer.send_identify(),
+            None => SendResult::UnknownPeer,
+        }
+    }
+
     pub fn update_tail(&self, context: &mut Context) {
         let mut gossip_min = u64::MAX;
         let mut rpc_min = u64::MAX;
@@ -252,5 +263,34 @@ impl P2p {
 
     pub fn pending(&self, peer: usize) -> usize {
         self.peers.get(&ConnectionHandle(peer)).map(|p| p.pending()).unwrap_or_default()
+    }
+
+    pub fn update_identify_record(
+        &self,
+        identify: &ProtoIdentify,
+        new_addr: IpAddr,
+    ) -> Result<ProtoIdentify, Error> {
+        let proto_bytes = identify.encode_to_vec();
+        let view = ProtoIdentifyView::decode_view(proto_bytes.as_slice()).map_err(Error::other)?;
+        let mut identify = Identify::try_from(view).map_err(Error::other)?;
+
+        if new_addr.is_ipv4() {
+            if let Some(tcp_v4) = &mut identify.tcp_ipv4 {
+                tcp_v4.set_ip(new_addr);
+            }
+            if let Some(udp_v4) = &mut identify.udp_ipv4 {
+                udp_v4.set_ip(new_addr);
+            }
+        } else {
+            if let Some(tcp_v6) = &mut identify.tcp_ipv6 {
+                tcp_v6.set_ip(new_addr);
+            }
+            if let Some(udp_v6) = &mut identify.udp_ipv6 {
+                udp_v6.set_ip(new_addr);
+            }
+        }
+
+        // Rebuild and resign identify proto.
+        Ok(ProtoIdentify::from((&identify, &self.keypair)))
     }
 }

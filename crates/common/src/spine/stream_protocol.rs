@@ -83,6 +83,11 @@ impl StreamProtocol {
         }
     }
 
+    pub fn multiselect_string(&self) -> String {
+        let ms = self.multiselect();
+        String::from_utf8_lossy(&ms[1..ms.len() - 1]).to_string()
+    }
+
     /// Match a varint-prefixed protocol line against known protocols.
     pub fn from_multiselect(data: &[u8]) -> Option<Self> {
         ALL_PROTOCOLS.iter().find(|p| p.multiselect() == data).copied()

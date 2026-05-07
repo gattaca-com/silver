@@ -3,7 +3,9 @@
 
 use std::time::Duration;
 
-#[derive(Clone, Debug)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ScoreParams {
     // ── Action thresholds ────────────────────────────────────────────────
     /// Below this score, peer is fully graylisted — all inbound messages

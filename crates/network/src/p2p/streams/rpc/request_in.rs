@@ -63,7 +63,7 @@ impl RpcReadRequest {
         producer: &mut TProducer,
     ) -> Result<Spin, StreamError> {
         match self {
-            RpcReadRequest::ReadingLength { mut decoder, mut buf, mut read } => {
+            RpcReadRequest::ReadingLength { decoder, mut buf, mut read } => {
                 read += io.read_from_stream(p2p_id.stream_id(), &mut buf[read..])?;
 
                 for pos in 0..read {
@@ -103,7 +103,7 @@ impl RpcReadRequest {
                     let len = buf_end - buf_start;
                     let out_buf = reservation.remaining_buffer()?;
                     let out_limit = len.min(out_buf.len());
-                    let (consumed, decoded_bytes) =
+                    let (_, decoded_bytes) =
                         decoder.decompress(&buf[buf_start..buf_end], &mut out_buf[..out_limit])?;
 
                     reservation.increment_offset(decoded_bytes)?;
