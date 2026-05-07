@@ -9,7 +9,7 @@ use buffa::{
     encoding::{Tag, WireType, encode_varint, varint_len},
     types::{bytes_encoded_len, encode_bytes, encode_string, string_encoded_len},
 };
-use silver_common::{TCacheError, TCacheRead, TProducer};
+use silver_common::{TCacheError, TCacheProducer, TCacheRead, TProducer};
 
 #[derive(Debug)]
 pub enum InjectError {

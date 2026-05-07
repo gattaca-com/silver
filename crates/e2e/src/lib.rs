@@ -9,6 +9,11 @@ mod inject;
 mod stack;
 mod stats;
 
+#[cfg(feature = "lh-client")]
+pub mod lh_client;
+
 pub use harness::TwoStackHarness;
+#[cfg(feature = "lh-client")]
+pub use lh_client::LhClient;
 pub use stack::{EchoStack, PublisherStack, keypair_from_seed};
 pub use stats::Stats;

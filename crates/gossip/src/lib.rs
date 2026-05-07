@@ -17,6 +17,7 @@ use silver_common::{GossipMsgOut, NewGossipMsg, PeerEvent};
 pub use tile::GossipHandler;
 
 /// Events emitted by the GossipHandler.
+#[allow(clippy::large_enum_variant)]
 pub enum GossipHandlerEvent {
     PeerEvent(PeerEvent),
     NewGossip(NewGossipMsg),

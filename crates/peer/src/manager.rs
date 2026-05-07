@@ -9,10 +9,12 @@ use std::{
 };
 
 use silver_common::{
-    Enr, GossipTopic, IpBytes, MessageId, PeerControl, PeerEvent, PeerId, RpcSeverity, TCacheRead,
+    Enr, GossipMsgOut, GossipTopic, IpBytes, MessageId, P2pSend, PeerControl, PeerEvent, PeerId,
+    RpcSeverity, TCacheRead,
 };
 
 use crate::{
+    database::PeerDatabase,
     params::ScoreParams,
     scoring,
     state::{ArchivedState, IpPrefix, MsgIdMap, PeerState, TopicScore},
@@ -94,6 +96,9 @@ pub struct PeerManager {
     /// Last `DiscoverNodes` emission. Throttles repeat queries while we're
     /// under target.
     last_discovery: Instant,
+
+    /// Database of peers
+    database: PeerDatabase,
 }
 
 impl PeerManager {
@@ -119,6 +124,7 @@ impl PeerManager {
             params,
             last_heartbeat: now,
             last_discovery: now,
+            database: PeerDatabase::default(),
         }
     }
 
@@ -141,9 +147,12 @@ impl PeerManager {
         self.our_fork_digest = Some(digest);
     }
 
+    pub fn peer_metadata_seq(&self, p2p_peer: usize) -> Option<u64> {
+        self.database.p2p_metadata_seq(p2p_peer)
+    }
+
     /// Iterator over live peer connection handles (for tests/introspection).
-    #[allow(dead_code)]
-    pub(crate) fn live_peers(&self) -> impl Iterator<Item = usize> + '_ {
+    pub fn live_peers(&self) -> impl Iterator<Item = usize> + '_ {
         self.peers.keys().copied()
     }
 
@@ -228,11 +237,24 @@ impl PeerManager {
                 recv_ts: _,
                 protobuf,
             } => {
-                // TODO recv_ts elpased metric
+                // TODO recv_ts elapsed metric
                 self.on_send_gossip(originator_stream_id.peer(), msg_hash, topic, protobuf, emit);
             }
             PeerEvent::RpcMisbehaviour { p2p_peer, severity } => {
                 self.on_rpc_misbehaviour(p2p_peer, severity);
+            }
+            PeerEvent::P2pPeerStatus { p2p_peer, status_ssz } => {
+                self.database.p2p_status(p2p_peer, status_ssz)
+            }
+            PeerEvent::P2pPeerMetadata { p2p_peer, metadata_ssz } => {
+                self.database.p2p_metadata(p2p_peer, metadata_ssz)
+            }
+            PeerEvent::P2pPeerGoodbye { p2p_peer: _, status: _ } => {
+                // TODO send p2p disconnect
+                // TODO scoring based on status?
+            }
+            PeerEvent::P2pPeerIdentity { p2p_peer, identify } => {
+                self.database.add_p2p_identify(p2p_peer, identify)
             }
         }
     }
@@ -300,6 +322,7 @@ impl PeerManager {
             .push(conn);
 
         self.peers.insert(conn, state);
+        self.database.add_peer_id(peer_id, conn);
 
         if local_dialler {
             // TODO send rpc Status
@@ -354,6 +377,8 @@ impl PeerManager {
             topic_stats: std::mem::take(&mut state.topic_stats),
             archived_at: now,
         });
+
+        self.database.peer_disconnected(conn);
     }
 
     // ── Gossip event handlers ───────────────────────────────────────────
@@ -492,7 +517,7 @@ impl PeerManager {
         if peer.cached_score < self.params.gossip_threshold {
             return;
         }
-        emit(PeerControl::P2pGossipSend { p2p: peer.peer_id, p2p_connection: conn, tcache });
+        emit(PeerControl::P2pSend(P2pSend::Gossip(GossipMsgOut { peer_id: conn, tcache })));
     }
 
     /// Peer sent us an IDONTWANT - store the message id in the peer message
@@ -547,11 +572,10 @@ impl PeerManager {
             if peer.cached_score < self.params.gossip_threshold {
                 continue;
             }
-            emit(PeerControl::P2pGossipSend {
-                p2p: peer.peer_id,
-                p2p_connection: *conn,
+            emit(PeerControl::P2pSend(P2pSend::Gossip(GossipMsgOut {
+                peer_id: *conn,
                 tcache: idontwant,
-            });
+            })));
         }
     }
 
@@ -580,11 +604,10 @@ impl PeerManager {
             if peer.cached_score < self.params.gossip_threshold {
                 continue;
             }
-            emit(PeerControl::P2pGossipSend {
-                p2p: peer.peer_id,
-                p2p_connection: *conn,
+            emit(PeerControl::P2pSend(P2pSend::Gossip(GossipMsgOut {
+                peer_id: *conn,
                 tcache: protobuf,
-            });
+            })));
             emitted += 1;
         }
     }
@@ -606,7 +629,7 @@ impl PeerManager {
         if peer.cached_score < self.params.gossip_threshold {
             return;
         }
-        emit(PeerControl::P2pGossipSend { p2p: peer.peer_id, p2p_connection: conn, tcache });
+        emit(PeerControl::P2pSend(P2pSend::Gossip(GossipMsgOut { peer_id: conn, tcache })));
     }
 
     fn on_send_gossip(
@@ -634,11 +657,7 @@ impl PeerManager {
                 // dontwant
                 continue;
             }
-            emit(PeerControl::P2pGossipSend {
-                p2p: peer_state.peer_id,
-                p2p_connection: *peer,
-                tcache,
-            });
+            emit(PeerControl::P2pSend(P2pSend::Gossip(GossipMsgOut { peer_id: *peer, tcache })));
         }
     }
 
@@ -679,6 +698,9 @@ impl PeerManager {
         if self.archived.contains_key(&peer_id) {
             return;
         }
+
+        // Add to peer database.
+        self.database.add_enr(enr);
 
         // 4. Capacity gate. Priority match: ENR's attnets/syncnets bitfield intersects
         //    ours, meaning the peer can fill a subnet we care about. Lets us go past
@@ -1067,7 +1089,7 @@ type _TopicScoreAlias = TopicScore;
 mod tests {
     use std::time::Duration;
 
-    use silver_common::Keypair;
+    use silver_common::{Keypair, TCacheProducer};
 
     use super::*;
 
@@ -1502,8 +1524,8 @@ mod tests {
             .0
             .iter()
             .filter_map(|e| {
-                if let PeerControl::P2pGossipSend { p2p_connection, .. } = e {
-                    Some(*p2p_connection)
+                if let PeerControl::P2pSend(P2pSend::Gossip(GossipMsgOut { peer_id, .. })) = e {
+                    Some(*peer_id)
                 } else {
                     None
                 }
@@ -1553,7 +1575,9 @@ mod tests {
             &mut |c| cap.0.push(c),
         );
         assert!(
-            !cap.0.iter().any(|e| matches!(e, PeerControl::P2pGossipSend { .. })),
+            !cap.0
+                .iter()
+                .any(|e| matches!(e, PeerControl::P2pSend(P2pSend::Gossip(GossipMsgOut { .. })))),
             "below-threshold peer should not receive IHAVE, got {:?}",
             cap.0
         );
@@ -1579,7 +1603,10 @@ mod tests {
         });
 
         assert!(
-            cap.0.iter().any(|e| matches!(e, PeerControl::P2pGossipSend { p2p_connection: 1, .. })),
+            cap.0.iter().any(|e| matches!(
+                e,
+                PeerControl::P2pSend(P2pSend::Gossip(GossipMsgOut { peer_id: 1, .. }))
+            )),
             "expected ForwardMsg emission, got {:?}",
             cap.0
         );
@@ -1618,7 +1645,9 @@ mod tests {
         );
 
         assert!(
-            !cap.0.iter().any(|e| matches!(e, PeerControl::P2pGossipSend { .. })),
+            !cap.0
+                .iter()
+                .any(|e| matches!(e, PeerControl::P2pSend(P2pSend::Gossip(GossipMsgOut { .. })))),
             "expected no ForwardMsg for below-threshold peer, got {:?}",
             cap.0
         );
@@ -1665,7 +1694,9 @@ mod tests {
             .0
             .iter()
             .filter_map(|e| match e {
-                PeerControl::P2pGossipSend { p2p_connection, .. } => Some(*p2p_connection),
+                PeerControl::P2pSend(P2pSend::Gossip(GossipMsgOut { peer_id, .. })) => {
+                    Some(*peer_id)
+                }
                 _ => None,
             })
             .collect();
@@ -1733,7 +1764,9 @@ mod tests {
         );
 
         assert!(
-            !cap.0.iter().any(|e| matches!(e, PeerControl::P2pGossipSend { .. })),
+            !cap.0
+                .iter()
+                .any(|e| matches!(e, PeerControl::P2pSend(P2pSend::Gossip(GossipMsgOut { .. })))),
             "below-threshold mesh peer should not receive IDONTWANT, got {:?}",
             cap.0
         );
@@ -1776,7 +1809,7 @@ mod tests {
 
         // Internal SendGossip with originator stream from peer 1.
         let stream_id =
-            silver_common::P2pStreamId::new(1, 0, silver_common::StreamProtocol::GossipSub);
+            silver_common::P2pStreamId::new(1, 0, silver_common::StreamProtocol::GossipSub, false);
         mgr.handle_event(
             PeerEvent::SendGossip {
                 originator_stream_id: stream_id,
@@ -1793,7 +1826,9 @@ mod tests {
             .0
             .iter()
             .filter_map(|e| match e {
-                PeerControl::P2pGossipSend { p2p_connection, .. } => Some(*p2p_connection),
+                PeerControl::P2pSend(P2pSend::Gossip(GossipMsgOut { peer_id, .. })) => {
+                    Some(*peer_id)
+                }
                 _ => None,
             })
             .collect();

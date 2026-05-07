@@ -1,6 +1,6 @@
-mod handlers;
+mod context;
 mod quic;
-mod stream;
+mod streams;
 pub(crate) mod tls;
 
 use std::{
@@ -9,13 +9,13 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub use context::Context;
 use fxhash::{FxHashMap, FxHashSet};
-pub use handlers::{MAX_PENDING_OUTBOUND_MSGS, StreamData, TCacheStreamData};
 use mio::{Poll, net::UdpSocket};
 pub(crate) use quic::{Peer, create_client_config};
-pub use quic::{create_endpoint, create_server_config};
-use quinn_proto::{ConnectionHandle, DatagramEvent, Endpoint, StreamId};
-use silver_common::{Keypair, P2pStreamId, PeerId, StreamProtocol};
+pub use quic::{SendResult, create_endpoint, create_server_config};
+use quinn_proto::{ConnectionHandle, DatagramEvent, Endpoint};
+use silver_common::{GossipMsgOut, Identify, Keypair, P2pStreamId, PeerId, RpcOutbound};
 
 use crate::{
     RemotePeer,
@@ -23,25 +23,35 @@ use crate::{
 };
 
 /// Function to spin the P2p stack - invoked from tile main loop.
-pub fn p2p_spin<D: StreamData, F: FnMut(NetEvent)>(
+pub fn p2p_spin<F: FnMut(NetEvent)>(
     poll: &Poll,
     p2p_endpoint: &mut P2p,
     p2p_socket: &mut Socket,
-    stream_data: &mut D,
+    context: &mut Context,
     now: Instant,
     on_event: &mut F,
 ) {
     p2p_socket.flush(poll);
-    p2p_endpoint.poll(now, poll, p2p_socket, stream_data, on_event);
+    p2p_endpoint.poll(now, poll, p2p_socket, context, on_event);
+    p2p_endpoint.update_tail(context);
     p2p_socket.flush(poll);
 }
 
 /// Lifecycle events surfaced by the network layer during `poll()`. The
 /// application handles these inline via the callback passed to `poll`.
+///
+/// `RpcInbound(_)` carries up to 4 KB of inline payload (BlocksByRoot
+/// request) which dwarfs the other variants — same trade-off as
+/// `PeerControl::P2pDial`. Boxing would defeat the inline-payload win;
+/// the spine slot already pays the largest-variant cost per event so
+/// allow it here too.
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum NetEvent {
     /// A peer connection has been established and its PeerId verified.
     PeerConnected { peer: RemotePeer, addr: SocketAddr, local_dialler: bool },
+    /// Peer Identify response
+    PeerIdentify { peer: usize, identify: Identify },
     /// A peer connection has been lost or the underlying QUIC connection
     /// drained.
     PeerDisconnected { peer: RemotePeer },
@@ -50,6 +60,18 @@ pub enum NetEvent {
     StreamReady { stream: P2pStreamId },
     /// A stream was closed or rejected.
     StreamClosed { stream: P2pStreamId },
+    /// A complete inbound RPC chunk has been decoded into a typed
+    /// `RpcInbound`. Network tile produces this onto the `rpc_inbound`
+    /// spine queue. Inline-payload variants (every `RpcRequest` variant
+    /// plus small `RpcResponse` variants like Status/Ping/MetaData/Error)
+    /// carry their bytes directly; large-payload variants such as
+    /// `RpcResponse::BeaconBlock` and `DataColumnSidecar` carry a
+    /// `TCacheRead` ref into the `rpc_in` TCache.
+    RpcInbound(silver_common::RpcInbound),
+    /// SSZ-shape / chunk-framing violation observed on an RPC stream.
+    /// Network tile translates this into `PeerEvent::RpcMisbehaviour`
+    /// onto `peer_events`. The peer manager applies the P5 score delta.
+    RpcMisbehaviour { p2p_peer: usize, severity: silver_common::RpcSeverity },
 }
 
 pub struct P2p {
@@ -83,19 +105,19 @@ impl P2p {
         let client_config = create_client_config(&self.keypair, Some(peer_id))?;
         let (handle, connection) =
             self.endpoint.connect(now, client_config, addr, "x").map_err(Error::other)?;
-        let peer = Peer::new(handle, connection, true);
+        let peer = Peer::new(handle, connection);
         self.peers.insert(handle, peer);
         Ok(())
     }
 
-    /// Open a new bidirectional stream on the given peer connection with the
-    /// specified protocol. Multistream-select negotiation runs internally;
-    /// `NetEvent::StreamReady` is delivered via the event callback once it
-    /// completes. Returns `None` if the connection isn't ready yet.
-    pub fn open_stream(&mut self, peer: usize, protocol: StreamProtocol) -> Option<StreamId> {
-        let peer_obj = self.peers.get_mut(&ConnectionHandle(peer))?;
-        peer_obj.open_stream(protocol)
-    }
+    // /// Open a new bidirectional stream on the given peer connection with the
+    // /// specified protocol. Multistream-select negotiation runs internally;
+    // /// `NetEvent::StreamReady` is delivered via the event callback once it
+    // /// completes. Returns `None` if the connection isn't ready yet.
+    // pub fn open_stream(&mut self, peer: usize, protocol: StreamProtocol) ->
+    // Option<StreamId> {     let peer_obj =
+    // self.peers.get_mut(&ConnectionHandle(peer))?;     peer_obj.
+    // open_stream(protocol) }
 
     pub fn ban_peer(&mut self, peer_id: PeerId) {
         self.banned.insert(peer_id);
@@ -127,7 +149,7 @@ impl P2p {
             DatagramEvent::NewConnection(incoming) => {
                 match self.endpoint.accept(incoming, now, scratch, None) {
                     Ok((handle, conn)) => {
-                        let peer = Peer::new(handle, conn, false);
+                        let peer = Peer::new(handle, conn);
 
                         self.peers.insert(handle, peer);
                     }
@@ -148,15 +170,14 @@ impl P2p {
 
     /// Drive the network. `data` handles byte movement for streams;
     /// `on_event` is called inline for lifecycle events.
-    pub fn poll<S, E>(
+    pub fn poll<E>(
         &mut self,
         now: Instant,
         poll: &Poll,
         socket: &mut Socket,
-        data: &mut S,
+        context: &mut Context,
         on_event: &mut E,
     ) where
-        S: StreamData,
         E: FnMut(NetEvent),
     {
         let mut ep_callback = |handle, ep_event| self.endpoint.handle_event(handle, ep_event);
@@ -170,7 +191,7 @@ impl P2p {
                 socket.send(poll, |buf| peer.transmit(now, MAX_GSO_SEGMENTS, buf))
             {}
 
-            let next_timeout = peer.spin(now, &mut ep_callback, data, on_event, &self.banned);
+            let next_timeout = peer.spin(now, &mut ep_callback, context, on_event, &self.banned);
             if let Some(t) = next_timeout {
                 let dur = t.saturating_duration_since(now);
                 self.timeout = Some(self.timeout.map_or(dur, |cur| cur.min(dur)));
@@ -186,5 +207,50 @@ impl P2p {
         for dead_peer in dead_peers {
             self.peers.remove(&ConnectionHandle(dead_peer));
         }
+    }
+
+    pub fn enqueue_gossip(&mut self, msg: GossipMsgOut) -> SendResult {
+        match self.peers.get_mut(&ConnectionHandle(msg.peer_id)) {
+            Some(peer) => peer.send_gossip(msg.into()),
+            None => SendResult::UnknownPeer,
+        }
+    }
+
+    pub fn enqueue_rpc_out(&mut self, msg: RpcOutbound) -> SendResult {
+        match self.peers.get_mut(&ConnectionHandle(msg.peer_id())) {
+            Some(peer) => peer.send_rpc(msg),
+            None => SendResult::UnknownPeer,
+        }
+    }
+
+    pub fn update_tail(&self, context: &mut Context) {
+        let mut gossip_min = u64::MAX;
+        let mut rpc_min = u64::MAX;
+
+        for peer in self.peers.values() {
+            gossip_min = gossip_min.min(peer.gossip_tail());
+            rpc_min = rpc_min.min(peer.rpc_tail());
+        }
+
+        if gossip_min != u64::MAX {
+            context.gossip_consumer.set_tail(gossip_min);
+            context.gossip_consumer.free();
+        }
+
+        if rpc_min != u64::MAX {
+            context.rpc_consumer.set_tail(rpc_min);
+            context.rpc_consumer.free();
+        }
+    }
+
+    pub fn has_pending_outbound(&self, peer: usize) -> bool {
+        self.peers
+            .get(&ConnectionHandle(peer))
+            .map(|p| p.has_pending_outbound())
+            .unwrap_or_default()
+    }
+
+    pub fn pending(&self, peer: usize) -> usize {
+        self.peers.get(&ConnectionHandle(peer)).map(|p| p.pending()).unwrap_or_default()
     }
 }

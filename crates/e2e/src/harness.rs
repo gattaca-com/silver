@@ -11,7 +11,7 @@ use std::{
 };
 
 use flux::{tile::Tile, timing::Nanos};
-use silver_common::{GossipMsgOut, GossipTopic, NewGossipMsg, PeerEvent};
+use silver_common::{GossipMsgOut, GossipTopic, NewGossipMsg, P2pSend, PeerEvent};
 use tempfile::TempDir;
 
 use crate::{
@@ -99,12 +99,14 @@ impl TwoStackHarness {
     /// Single pass: tick both stacks' `loop_body`, then drain peer events
     /// into harness state + stats.
     pub fn spin_once(&mut self) {
-        // Publisher: network tile only (no compression).
+        // Publisher: network + controller (no compression).
         self.publisher.network.loop_body(&mut self.publisher.network_adapter);
+        self.publisher.controller.loop_body(&mut self.publisher.controller_adapter);
 
-        // Echo: network + compression tiles.
+        // Echo: network + compression + controller.
         self.echo.network.loop_body(&mut self.echo.network_adapter);
         self.echo.compression.loop_body(&mut self.echo.compression_adapter);
+        self.echo.controller.loop_body(&mut self.echo.controller_adapter);
 
         // Drain publisher-side peer events to discover echo's connection handle.
         let handle_slot = self.publisher_echo_handle.clone();
@@ -126,6 +128,7 @@ impl TwoStackHarness {
             // Saturating subtract guards against garbage/unstamped
             // timestamps: a `recv_ts` that somehow ends up in the future
             // yields 0 ns rather than panicking.
+            tracing::debug!("new gossip!");
             let _ = self.echo.stats.receive_ns.record(new_msg.recv_ts.elapsed_saturating().0);
 
             let now_wall = Instant::now();
@@ -187,7 +190,7 @@ impl TwoStackHarness {
         let tcache =
             build_publish_frame(&mut self.publisher.mcache_producer, &wire_topic, &snappy)?;
         let msg = GossipMsgOut { peer_id: handle, tcache };
-        self.publisher.injector_adapter.produce(msg);
+        self.publisher.injector_adapter.produce(P2pSend::Gossip(msg));
         self.last_msg = Some(msg);
         Ok(())
     }
@@ -202,7 +205,7 @@ impl TwoStackHarness {
         };
         // Refresh peer handle in case the connection handle changed (e.g.
         // reconnect); `msg.peer_id` is captured at original publish time.
-        self.publisher.injector_adapter.produce(msg);
+        self.publisher.injector_adapter.produce(P2pSend::Gossip(msg));
         true
     }
 }

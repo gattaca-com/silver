@@ -20,7 +20,7 @@ use silver_beacon_state::{
 };
 use silver_common::{
     BeaconStateEvent, GossipTopic, MessageId, NewGossipMsg, P2pStreamId, PeerRpcIn, RpcMsg,
-    SilverSpine, StreamProtocol, TCache, TProducer, TRandomAccess,
+    SilverSpine, StreamProtocol, TCache, TCacheProducer, TProducer, TRandomAccess,
     ssz_view::{
         BLOCKS_BY_RANGE_REQ_SIZE, BeaconBlocksByRangeRequestView, STATUS_V2_SIZE,
         SignedBeaconBlockView, StatusView,
@@ -28,7 +28,7 @@ use silver_common::{
 };
 
 fn null_stream_id() -> P2pStreamId {
-    P2pStreamId::new(0, 0, StreamProtocol::Unset)
+    P2pStreamId::new(0, 0, StreamProtocol::Unset, false)
 }
 
 #[derive(Debug, Deserialize)]

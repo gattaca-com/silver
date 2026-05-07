@@ -4,7 +4,9 @@ mod p2p;
 mod socket;
 mod tile;
 
-pub use p2p::{NetEvent, P2p, StreamData, TCacheStreamData, create_endpoint, create_server_config};
+use std::net::SocketAddr;
+
+pub use p2p::{Context, NetEvent, P2p, SendResult, create_endpoint, create_server_config};
 use silver_common::PeerId;
 pub use tile::{Event as NetworkTileEvent, NetworkTile, NetworkTileInner};
 
@@ -13,4 +15,5 @@ pub use tile::{Event as NetworkTileEvent, NetworkTile, NetworkTileInner};
 pub struct RemotePeer {
     pub peer_id: PeerId,
     pub connection: usize,
+    pub addr: SocketAddr,
 }

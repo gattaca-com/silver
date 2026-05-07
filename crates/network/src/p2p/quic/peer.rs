@@ -1,17 +1,24 @@
-use std::{collections::HashMap, time::Instant};
+use std::{cell::Cell, hash::BuildHasherDefault, time::Instant};
 
 use bytes::Bytes;
-use fxhash::FxHashSet;
+use flux::utils::ArrayVec;
+use fxhash::{FxHashMap, FxHashSet};
 use quinn_proto::{
-    Connection, ConnectionEvent, ConnectionHandle, Dir, EndpointEvent, StreamId, Transmit, VarInt,
+    Connection, ConnectionEvent, ConnectionHandle, Dir, EndpointEvent, Side, StreamId, Transmit,
+    VarInt,
 };
-use silver_common::{P2pStreamId, PeerId, StreamProtocol};
+use silver_common::{
+    ALL_PROTOCOLS, P2pStreamId, PeerId, RPC_PROTOCOLS, RpcOutbound, RpcRequest, RpcResponse,
+    StreamProtocol, TCacheRead,
+};
 
 use crate::{
     RemotePeer,
     p2p::{
         NetEvent,
-        stream::{Stream, StreamEvent},
+        context::Context,
+        quic::{SendResult, stream::StreamIoImpl},
+        streams::{StreamError, StreamState},
         tls::peer_id_from_certificate,
     },
 };
@@ -20,18 +27,22 @@ pub(crate) struct Peer {
     id: RemotePeer,
     handle: ConnectionHandle,
     connection: Connection,
-    streams: HashMap<StreamId, Stream>,
-    dialler: bool,
+    streams: FxHashMap<StreamId, Stream>,
+    streams_by_protocol: [Option<StreamId>; ALL_PROTOCOLS.len() + 1],
 }
 
 impl Peer {
-    pub(crate) fn new(handle: ConnectionHandle, connection: Connection, dialler: bool) -> Self {
+    pub(crate) fn new(handle: ConnectionHandle, connection: Connection) -> Self {
         Self {
-            id: RemotePeer { peer_id: PeerId::default(), connection: handle.0 },
+            id: RemotePeer {
+                peer_id: PeerId::default(),
+                connection: handle.0,
+                addr: connection.remote_address(),
+            },
             handle,
             connection,
-            streams: HashMap::with_capacity(16),
-            dialler,
+            streams: FxHashMap::with_capacity_and_hasher(16, BuildHasherDefault::default()),
+            streams_by_protocol: [None; ALL_PROTOCOLS.len() + 1],
         }
     }
 
@@ -47,24 +58,91 @@ impl Peer {
         self.connection.is_drained()
     }
 
+    pub(crate) fn send_gossip(&mut self, msg: TCacheRead) -> SendResult {
+        if let Some(stream) =
+            match &self.streams_by_protocol[StreamProtocol::GossipSub.ordinal() as usize] {
+                Some(id) => self.streams.get_mut(id),
+                None => self
+                    .open_stream(StreamProtocol::GossipSub)
+                    .and_then(|id| self.streams.get_mut(&id)),
+            }
+        {
+            if let OutboundBuffer::Gossip(buffer) = &mut stream.out_buffer {
+                match buffer.add_msg(msg) {
+                    true => return SendResult::MessageDropped,
+                    false => return SendResult::Ok,
+                }
+            }
+        }
+        SendResult::StreamCreationError
+    }
+
+    pub(crate) fn send_rpc(&mut self, msg: RpcOutbound) -> SendResult {
+        if let Some(stream) = match &msg {
+            RpcOutbound::Request(req) => {
+                match self.streams_by_protocol[req.request.protocol().ordinal() as usize] {
+                    Some(_) => todo!(), // TODO should allow 2 concurrent ofr each protocol
+                    None => self
+                        .open_stream(req.request.protocol())
+                        .and_then(|id| self.streams.get_mut(&id)),
+                }
+            }
+            RpcOutbound::Response(rsp) => self.streams.get_mut(&rsp.stream_id.stream_id()),
+        } {
+            if let OutboundBuffer::Rpc(buffer) = &mut stream.out_buffer {
+                match buffer.add_msg(msg) {
+                    true => return SendResult::MessageDropped,
+                    false => return SendResult::Ok,
+                }
+            }
+        };
+        SendResult::StreamCreationError
+    }
+
+    pub(crate) fn gossip_tail(&self) -> u64 {
+        self.streams_by_protocol[StreamProtocol::GossipSub.ordinal() as usize]
+            .and_then(|id| self.streams.get(&id))
+            .map(|s| s.out_buffer.cache_tail())
+            .unwrap_or(u64::MAX)
+    }
+
+    pub(crate) fn rpc_tail(&self) -> u64 {
+        let mut min = u64::MAX;
+        for protocol in RPC_PROTOCOLS {
+            min = min.min(
+                self.streams_by_protocol[protocol.ordinal() as usize]
+                    .and_then(|id| self.streams.get(&id))
+                    .map(|s| s.out_buffer.cache_tail())
+                    .unwrap_or(u64::MAX),
+            );
+        }
+        min
+    }
+
+    pub(crate) fn has_pending_outbound(&self) -> bool {
+        self.streams.values().any(|s| !s.out_buffer.is_empty())
+    }
+
+    pub(crate) fn pending(&self) -> usize {
+        self.streams.values().map(|s| s.out_buffer.len()).sum()
+    }
+
     /// Open an outbound stream with the given protocol. Returns `None` if
     /// the connection isn't ready (e.g. stream limit not yet negotiated).
     /// Multistream-select negotiation runs internally; `NetEvent::StreamReady`
     /// is emitted once it completes.
-    pub(crate) fn open_stream(&mut self, protocol: StreamProtocol) -> Option<StreamId> {
+    fn open_stream(&mut self, protocol: StreamProtocol) -> Option<StreamId> {
         // All streams are Bi — multistream-select requires bidirectional I/O
         // even for request-response protocols.
         let id = self.connection.streams().open(Dir::Bi)?;
-        let stream =
-            Stream::new_outbound(P2pStreamId::new(self.id.connection, id.into(), protocol));
-        self.streams.insert(id, stream);
-        Some(id)
-    }
+        let p2p_id = P2pStreamId::new(self.id.connection, id.into(), protocol, false);
 
-    /// Half-close the write side of a stream.
-    #[allow(dead_code)]
-    pub(crate) fn finish_stream(&mut self, id: StreamId) {
-        let _ = self.connection.send_stream(id).finish();
+        // allocate out buffer.
+        let out_buffer = out_buffer(&p2p_id, false);
+        let stream = StreamState::new_outbound(protocol);
+        self.streams.insert(id, Stream { p2p_id, state: Cell::new(stream), out_buffer });
+        self.streams_by_protocol[protocol.ordinal() as usize] = Some(id);
+        Some(id)
     }
 
     pub(crate) fn transmit(
@@ -76,17 +154,16 @@ impl Peer {
         self.connection.poll_transmit(now, max_datagrams, buf)
     }
 
-    pub(crate) fn spin<F, S, E>(
+    pub(crate) fn spin<F, E>(
         &mut self,
         now: Instant,
         ep_callback: &mut F,
-        data: &mut S,
+        context: &mut Context,
         on_event: &mut E,
         banned_peers: &FxHashSet<PeerId>,
     ) -> Option<Instant>
     where
         F: FnMut(ConnectionHandle, EndpointEvent) -> Option<ConnectionEvent>,
-        S: crate::StreamData,
         E: FnMut(crate::NetEvent),
     {
         while self.connection.poll_timeout().is_some_and(|t| t <= now) {
@@ -119,14 +196,14 @@ impl Peer {
                     on_event(NetEvent::PeerConnected {
                         peer: self.id.clone(),
                         addr: self.connection.remote_address(),
-                        local_dialler: self.dialler,
+                        local_dialler: self.connection.side() == Side::Client,
                     });
                 }
                 quinn_proto::Event::ConnectionLost { reason } => {
                     tracing::info!(handle = ?self.handle, ?reason, "connection lost");
                 }
                 quinn_proto::Event::Stream(stream_event) => {
-                    self.handle_stream_event(stream_event, data, on_event);
+                    self.handle_stream_event(stream_event, context, on_event);
                 }
                 _ => {}
             }
@@ -139,136 +216,89 @@ impl Peer {
         }
 
         // Drive all streams (negotiating and active) — catches pending writes.
-        self.drive_streams(data, on_event);
+        let mut to_remove = ArrayVec::<StreamId, 8>::new();
+        for (id, stream) in &mut self.streams {
+            match stream.spin(&mut self.connection, context, on_event) {
+                SpinResult::Ok => {}
+                SpinResult::Protocol(protocol) => {
+                    self.streams_by_protocol[protocol.ordinal() as usize].replace(*id);
+                }
+                SpinResult::End => {
+                    self.streams_by_protocol[stream.p2p_id.protocol().ordinal() as usize] = None;
+                    to_remove.try_push(stream.p2p_id.stream_id());
+                }
+            }
+        }
+        for id in to_remove {
+            self.streams.remove(&id);
+        }
 
         next_timeout
     }
 
-    fn handle_stream_event<S, E>(
+    fn handle_stream_event<E>(
         &mut self,
         event: quinn_proto::StreamEvent,
-        data: &mut S,
+        context: &mut Context,
         on_event: &mut E,
     ) where
-        S: crate::StreamData,
         E: FnMut(crate::NetEvent),
     {
         match event {
             quinn_proto::StreamEvent::Opened { dir } => {
+                tracing::debug!("stream open event");
                 while let Some(id) = self.connection.streams().accept(dir) {
-                    let mut stream = Stream::new_inbound(P2pStreamId::new(
+                    let p2p_id = P2pStreamId::new(
                         self.id.connection,
                         id.into(),
                         StreamProtocol::Unset,
-                    ));
-                    let ev = stream.drive(&mut self.connection, data);
-                    self.streams.insert(id, stream);
-                    self.process_stream_event(id, ev, data, on_event);
+                        true,
+                    );
+
+                    self.streams.insert(id, Stream {
+                        p2p_id,
+                        state: Cell::new(StreamState::new_inbound()),
+                        out_buffer: OutboundBuffer::Unset,
+                    });
+                    on_event(NetEvent::StreamReady { stream: p2p_id });
+                    tracing::debug!(?p2p_id, "stream open");
                 }
             }
-            quinn_proto::StreamEvent::Readable { id } => {
-                if let Some(stream) = self.streams.get_mut(&id) {
-                    if stream.is_active() {
-                        self.read_active(id, data, on_event);
-                    } else {
-                        let event = stream.drive_read(&mut self.connection, data);
-                        self.process_stream_event(id, event, data, on_event);
-                    }
-                }
-            }
+            quinn_proto::StreamEvent::Readable { id } |
             quinn_proto::StreamEvent::Writable { id } => {
-                if let Some(stream) = self.streams.get_mut(&id) {
-                    let event = stream.drive_write(&mut self.connection, data);
-                    self.process_stream_event(id, event, data, on_event);
+                let remove = match self.streams.get_mut(&id) {
+                    Some(stream) => match stream.spin(&mut self.connection, context, on_event) {
+                        SpinResult::Ok => false,
+                        SpinResult::Protocol(protocol) => {
+                            self.streams_by_protocol[protocol.ordinal() as usize].replace(id);
+                            false
+                        }
+                        SpinResult::End => {
+                            self.streams_by_protocol[stream.p2p_id.protocol().ordinal() as usize] =
+                                None;
+                            true
+                        }
+                    },
+                    None => false,
+                };
+                if remove {
+                    self.streams.remove(&id);
                 }
             }
             quinn_proto::StreamEvent::Finished { id } => {
                 tracing::debug!(?id, "stream finished");
                 if let Some(stream) = self.streams.remove(&id) {
-                    data.stream_closed(stream.p2p_id());
-                    on_event(NetEvent::StreamClosed { stream: *stream.p2p_id() });
-                    let _ = stream;
+                    on_event(NetEvent::StreamClosed { stream: stream.p2p_id });
                 }
             }
             quinn_proto::StreamEvent::Stopped { id, error_code } => {
                 tracing::warn!(?id, ?error_code, "stream stopped");
                 if let Some(stream) = self.streams.remove(&id) {
-                    let p2p_id = *stream.p2p_id();
-                    data.stream_closed(&p2p_id);
-                    on_event(NetEvent::StreamClosed { stream: p2p_id });
+                    // TODO include error
+                    on_event(NetEvent::StreamClosed { stream: stream.p2p_id });
                 }
             }
             quinn_proto::StreamEvent::Available { dir: _ } => {}
-        }
-    }
-
-    fn process_stream_event<S, E>(
-        &mut self,
-        id: StreamId,
-        event: StreamEvent,
-        data: &mut S,
-        on_event: &mut E,
-    ) where
-        S: crate::StreamData,
-        E: FnMut(crate::NetEvent),
-    {
-        match &event {
-            StreamEvent::Ready(proto) => {
-                tracing::info!(peer=?self.id, ?id, ?proto, "stream negotiated");
-                if let Some(stream) = self.streams.get_mut(&id) {
-                    stream.apply(&StreamEvent::Ready(*proto));
-                }
-                let p2p_id = P2pStreamId::new(self.id.connection, id.into(), *proto);
-                data.new_stream(&self.id, &p2p_id);
-                on_event(NetEvent::StreamReady { stream: p2p_id });
-            }
-            StreamEvent::Sent(written) => {
-                tracing::debug!(peer=?self.id, ?id, %written, "wrote data to stream");
-            }
-            StreamEvent::Failed => {
-                tracing::warn!(peer=?self.id, ?id, "stream failed");
-                let _ = self.connection.recv_stream(id).stop(VarInt::from_u32(1));
-                let _ = self.connection.send_stream(id).finish();
-                if let Some(p2p) = self.streams.remove(&id) {
-                    data.stream_closed(p2p.p2p_id());
-                    on_event(NetEvent::StreamClosed { stream: *p2p.p2p_id() });
-                }
-            }
-            StreamEvent::Pending => {}
-        }
-    }
-
-    /// Read application data from an active stream and forward to data.
-    fn read_active<S, E>(&mut self, id: StreamId, data: &mut S, on_event: &mut E)
-    where
-        S: crate::StreamData,
-        E: FnMut(crate::NetEvent),
-    {
-        let Some(stream) = self.streams.get_mut(&id) else { return };
-
-        if let StreamEvent::Failed = stream.drive_read(&mut self.connection, data) {
-            tracing::warn!(peer=?self.id, ?id, "stream actively failed during reading");
-            let p2p_id = *stream.p2p_id();
-            self.streams.remove(&id);
-            let _ = self.connection.recv_stream(id).stop(VarInt::from_u32(1));
-            data.stream_closed(&p2p_id);
-            on_event(NetEvent::StreamClosed { stream: p2p_id });
-        }
-    }
-
-    /// Drive all streams — progresses negotiation writes and application
-    /// writes where possible.
-    fn drive_streams<S, E>(&mut self, data: &mut S, on_event: &mut E)
-    where
-        S: crate::StreamData,
-        E: FnMut(crate::NetEvent),
-    {
-        let ids: Vec<StreamId> = self.streams.keys().copied().collect();
-        for id in ids {
-            if let Some(stream) = self.streams.get_mut(&id) {
-                let event = stream.drive(&mut self.connection, data);
-                self.process_stream_event(id, event, data, on_event);
-            }
         }
     }
 }
@@ -288,96 +318,323 @@ fn id_from_connection(conn: &Connection) -> Option<PeerId> {
         .ok()
 }
 
+fn out_buffer(id: &P2pStreamId, incoming: bool) -> OutboundBuffer {
+    match id.protocol() {
+        StreamProtocol::GossipSub => OutboundBuffer::Gossip(OutBuffer::new(*id, 1024)),
+        StreamProtocol::BeaconBlocksByRange |
+        StreamProtocol::BeaconBlocksByRoot |
+        StreamProtocol::DataColumnSidecarsByRange |
+        StreamProtocol::DataColumnSidecarsByRoot
+            if incoming =>
+        {
+            OutboundBuffer::Rpc(OutBuffer::new(*id, 128))
+        }
+        _ => OutboundBuffer::Rpc(OutBuffer::new(*id, 1)),
+    }
+}
+
+struct Stream {
+    p2p_id: P2pStreamId,
+    state: Cell<StreamState>,
+    out_buffer: OutboundBuffer,
+}
+
+enum SpinResult {
+    Ok,
+    End,
+    Protocol(StreamProtocol),
+}
+
+impl Stream {
+    fn spin<E>(
+        &mut self,
+        connection: &mut Connection,
+        context: &mut Context,
+        on_event: &mut E,
+    ) -> SpinResult
+    where
+        E: FnMut(crate::NetEvent),
+    {
+        let state = self.state.take();
+        let mut io = StreamIoImpl { connection, outbound: &mut self.out_buffer };
+
+        match state.spin(&mut io, &mut self.p2p_id, context, on_event) {
+            Ok(state) => {
+                tracing::trace!(id=?self.p2p_id, ?state, "stream state");
+                let mut result = SpinResult::Ok;
+                // After the negotiate state machine has transitioned past
+                // Done (`set_protocol` fires inside `state.spin`), the
+                // inbound stream still has an `OutboundBuffer::Unset`.
+                // Initialise it the first time we observe a non-Unset
+                // protocol so RPC responses have somewhere to land.
+                if self.p2p_id.is_incoming() &&
+                    matches!(self.out_buffer, OutboundBuffer::Unset) &&
+                    self.p2p_id.protocol() != StreamProtocol::Unset
+                {
+                    self.out_buffer = out_buffer(&self.p2p_id, true);
+                    result = SpinResult::Protocol(self.p2p_id.protocol());
+                }
+
+                self.state.replace(state);
+                result
+            }
+            Err(e) => {
+                tracing::error!(id=?self.p2p_id, ?e, "stream error");
+                let id = self.p2p_id.stream_id();
+                let _ = connection.send_stream(id).finish();
+                let _ = connection.recv_stream(id).stop(VarInt::from_u32(1));
+
+                // TODO error info.
+                on_event(NetEvent::StreamClosed { stream: self.p2p_id });
+                SpinResult::End
+            }
+        }
+    }
+
+    fn inner<E>(
+        &mut self,
+        connection: &mut Connection,
+        context: &mut Context,
+        on_event: &mut E,
+    ) -> Result<(), StreamError>
+    where
+        E: FnMut(crate::NetEvent),
+    {
+        let state = self.state.take();
+        let mut io = StreamIoImpl { connection, outbound: &mut self.out_buffer };
+        let new_state = state.spin(&mut io, &mut self.p2p_id, context, on_event)?;
+        self.state.replace(new_state);
+        Ok(())
+    }
+}
+
+pub(super) enum OutboundBuffer {
+    Unset,
+    Gossip(OutBuffer<TCacheRead>),
+    Rpc(OutBuffer<RpcOutbound>),
+}
+
+impl OutboundBuffer {
+    fn cache_tail(&self) -> u64 {
+        match self {
+            OutboundBuffer::Unset => u64::MAX,
+            OutboundBuffer::Gossip(out_buffer) => out_buffer.cache_tail,
+            OutboundBuffer::Rpc(out_buffer) => out_buffer.cache_tail,
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            OutboundBuffer::Unset => 0,
+            OutboundBuffer::Gossip(out_buffer) => out_buffer.len(),
+            OutboundBuffer::Rpc(out_buffer) => out_buffer.len(),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        match self {
+            OutboundBuffer::Unset => true,
+            OutboundBuffer::Gossip(out_buffer) => out_buffer.is_empty(),
+            OutboundBuffer::Rpc(out_buffer) => out_buffer.is_empty(),
+        }
+    }
+}
+
+pub(super) trait HasSeq {
+    fn seq(&self) -> u64;
+}
+
+impl HasSeq for TCacheRead {
+    fn seq(&self) -> u64 {
+        self.seq()
+    }
+}
+
+impl HasSeq for RpcOutbound {
+    fn seq(&self) -> u64 {
+        match self {
+            RpcOutbound::Request(req) => match &req.request {
+                RpcRequest::BlockByRoot(tcache_read) => tcache_read.seq(),
+                RpcRequest::DataColumnsByRoot(tcache_read) => tcache_read.seq(),
+                _ => u64::MAX,
+            },
+            RpcOutbound::Response(rsp) => match &rsp.response {
+                RpcResponse::BeaconBlock { fork_digest: _, ssz } => ssz.seq(),
+                RpcResponse::DataColumnSidecar { fork_digest: _, ssz } => ssz.seq(),
+                _ => u64::MAX,
+            },
+        }
+    }
+}
+
+pub(super) struct OutBuffer<T: HasSeq + Clone> {
+    stream_id: P2pStreamId,
+    cache_tail: u64,
+    msgs: Box<[Option<T>]>,
+    len: usize,
+    head: usize,
+    tail: usize,
+}
+
+impl<T: HasSeq + Clone> OutBuffer<T> {
+    fn new(id: P2pStreamId, len: usize) -> Self {
+        assert!(len.is_power_of_two());
+        Self {
+            stream_id: id,
+            cache_tail: u64::MAX,
+            msgs: vec![None; len].into_boxed_slice(),
+            len,
+            head: 0,
+            tail: 0,
+        }
+    }
+
+    fn pos(&self, seq: usize) -> usize {
+        seq & (self.len - 1)
+    }
+
+    /// Returns `true` if adding the new message overwrote an old message.
+    fn add_msg(&mut self, msg: T) -> bool {
+        if self.cache_tail == u64::MAX {
+            self.cache_tail = msg.seq();
+        }
+
+        let old_msg = self.msgs[self.pos(self.head)].replace(msg);
+        self.head += 1;
+        old_msg.is_some()
+    }
+
+    /// Called when the current read is complete.
+    pub(super) fn pop(&mut self) -> Option<T> {
+        match self.msgs[self.pos(self.tail)].take() {
+            Some(msg) => {
+                if msg.seq() != u64::MAX {
+                    self.cache_tail = msg.seq();
+                }
+                //println!("popped - cache tail is {}", self.cache_tail);
+                self.tail += 1;
+                Some(msg)
+            }
+            None => {
+                //self.cache_tail = u64::MAX;
+                None
+            }
+        }
+    }
+
+    /// Moves the cache tail to the next message - if any
+    pub(super) fn send_complete(&mut self) {
+        match &self.msgs[self.pos(self.tail)] {
+            Some(msg) => {
+                if msg.seq() != u64::MAX {
+                    self.cache_tail = msg.seq();
+                }
+            }
+            None => {
+                self.cache_tail = u64::MAX;
+            }
+        }
+    }
+
+    pub(super) fn len(&self) -> usize {
+        self.head - self.tail
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.head == self.tail
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashSet, io::Error, net::SocketAddr, sync::Arc, time::Instant};
+    use std::{
+        collections::{HashMap, VecDeque},
+        io::Write,
+        net::SocketAddr,
+        sync::Arc,
+        time::Instant,
+    };
 
     use quinn_proto::{DatagramEvent, Endpoint, EndpointConfig};
-    use silver_common::Keypair;
+    use silver_common::{Keypair, TCache, TCacheProducer, TCacheRead, TConsumer, TProducer};
 
     use super::*;
-    use crate::StreamData;
 
-    /// Records stream data callbacks for integration tests.
-    struct Recorder {
-        /// Streams that have been polled via poll_new_send (i.e. active).
-        active_streams: HashSet<P2pStreamId>,
-        /// Received messages by stream.
+    /// Per-stream queue of outbound `TCacheRead`s the test wants drained
+    /// onto the wire. Held inside `Context` so the gossip-out state machine
+    /// can pull from it.
+    #[derive(Default)]
+    struct TestGossipQueue {
+        pending: HashMap<P2pStreamId, VecDeque<TCacheRead>>,
+    }
+
+    const TCACHE_BYTES: usize = 64 * 1024;
+
+    /// Per-peer test plumbing. Owns the four tcaches plus the `Context`
+    /// passed into `Peer::spin`.
+    struct PeerHarness {
+        context: Context,
+        /// Tail-reads inbound gossip frames (the network's `gossip_producer`
+        /// writes here).
+        gossip_in_consumer: TConsumer,
+        /// Test enqueues outbound gossip payloads here. The network's
+        /// `gossip_consumer` reads via random access.
+        gossip_out_producer: TProducer,
+        /// Bytes received per stream — extracted from inbound frames in
+        /// `drain_inbound`.
         received: HashMap<P2pStreamId, Vec<u8>>,
-        /// Receive buffer in progress per stream.
-        recv_buf: HashMap<P2pStreamId, Vec<u8>>,
-        recv_offset: HashMap<P2pStreamId, usize>,
-        /// Pending sends — removed when poll_new_send returns.
-        to_send: HashMap<P2pStreamId, Vec<u8>>,
-        /// In-flight sends (moved from to_send).
-        sending: HashMap<P2pStreamId, Vec<u8>>,
     }
 
-    impl Default for Recorder {
-        fn default() -> Self {
+    impl PeerHarness {
+        fn new() -> Self {
+            let gossip_in_p = TCache::producer(TCACHE_BYTES);
+            let gossip_in_c = gossip_in_p.cache_ref().consumer().unwrap();
+            let gossip_out_p = TCache::producer(TCACHE_BYTES);
+            let gossip_out_c = gossip_out_p.cache_ref().random_access().unwrap();
+
+            let rpc_in_p = TCache::producer(TCACHE_BYTES);
+            let rpc_out_p = TCache::producer(TCACHE_BYTES);
+            let rpc_out_c = rpc_out_p.cache_ref().random_access().unwrap();
+
             Self {
-                active_streams: HashSet::new(),
+                context: Context {
+                    gossip_producer: gossip_in_p,
+                    gossip_consumer: gossip_out_c,
+                    rpc_producer: rpc_in_p,
+                    rpc_consumer: rpc_out_c,
+                    identify: None,
+                },
+                gossip_in_consumer: gossip_in_c,
+                gossip_out_producer: gossip_out_p,
                 received: HashMap::new(),
-                recv_buf: HashMap::new(),
-                recv_offset: HashMap::new(),
-                to_send: HashMap::new(),
-                sending: HashMap::new(),
+            }
+        }
+
+        /// Stage `payload` for outbound delivery on `stream_id`. Reserves
+        /// space in the gossip-out tcache, copies the payload, then queues
+        /// the `TCacheRead` so the gossip-out state machine can pick it up.
+        fn send_gossip(&mut self, stream_id: P2pStreamId, payload: &[u8], peer: &mut Peer) {
+            let mut res =
+                self.gossip_out_producer.reserve(payload.len(), true).expect("tcache full");
+            res.write_all(payload).unwrap();
+            assert!(res.is_committed());
+            peer.send_gossip(res.read());
+        }
+
+        /// Pull all newly-arrived inbound frames out of the consumer and
+        /// merge into `received`. Each frame is `[P2pStreamId | body]`.
+        fn drain_inbound(&mut self) {
+            while let Ok((data, _)) = self.gossip_in_consumer.read() {
+                let id_bytes = &data[..size_of::<P2pStreamId>()];
+                let id: &P2pStreamId = id_bytes.into();
+                let body = &data[size_of::<P2pStreamId>()..];
+                self.received.entry(*id).or_default().extend_from_slice(body);
+                self.gossip_in_consumer.free();
             }
         }
     }
 
-    impl StreamData for Recorder {
-        fn new_stream(&mut self, _peer: &RemotePeer, stream: &P2pStreamId) {
-            self.active_streams.insert(*stream);
-        }
-        fn stream_closed(&mut self, _stream: &P2pStreamId) {}
-
-        fn poll_send(&mut self, stream: &P2pStreamId) -> Option<usize> {
-            let data = self.to_send.remove(stream)?;
-            let len = data.len();
-            self.sending.insert(*stream, data);
-            Some(len)
-        }
-
-        fn send_data(&mut self, stream: &P2pStreamId, offset: usize) -> Option<&[u8]> {
-            self.sending.get(stream).map(|v| &v[offset..])
-        }
-
-        fn send_complete(&mut self, stream: &P2pStreamId) {
-            self.sending.remove(stream);
-        }
-
-        fn alloc_recv(&mut self, stream: &P2pStreamId, length: usize) -> Result<(), Error> {
-            self.recv_buf.insert(*stream, vec![0u8; length]);
-            self.recv_offset.insert(*stream, 0);
-            Ok(())
-        }
-
-        fn recv_buf(&mut self, stream: &P2pStreamId) -> Result<&mut [u8], Error> {
-            let offset =
-                *self.recv_offset.get(stream).ok_or_else(|| Error::other("no alloc_recv"))?;
-            let buf =
-                self.recv_buf.get_mut(stream).ok_or_else(|| Error::other("no recv buffer"))?;
-            Ok(&mut buf[offset..])
-        }
-
-        fn recv_advance(&mut self, stream: &P2pStreamId, written: usize) -> Result<(), Error> {
-            let offset =
-                self.recv_offset.get_mut(stream).ok_or_else(|| Error::other("no recv offset"))?;
-            *offset += written;
-            let buf = self.recv_buf.get(stream).ok_or_else(|| Error::other("no recv buffer"))?;
-            if *offset >= buf.len() {
-                // Message complete — append to received.
-                let msg = self.recv_buf.remove(stream).unwrap();
-                self.recv_offset.remove(stream);
-                self.received.entry(*stream).or_default().extend(msg);
-            }
-            Ok(())
-        }
-    }
-
-    /// Test harness: two endpoints + peers connected via in-memory datagram
-    /// shuttle.
+    /// Two endpoints + peers connected via in-memory datagram shuttle.
     struct PeerPair {
         client_ep: Endpoint,
         server_ep: Endpoint,
@@ -411,7 +668,7 @@ mod tests {
                 super::super::create_client_config(&client_kp, Some(server_kp.peer_id())).unwrap();
             let (client_handle, client_conn) =
                 client_ep.connect(now, client_config, server_addr, "x").unwrap();
-            let mut client_peer = Peer::new(client_handle, client_conn, true);
+            let mut client_peer = Peer::new(client_handle, client_conn);
 
             let mut buf = Vec::new();
             let mut scratch = vec![0u8; 2048];
@@ -427,7 +684,7 @@ mod tests {
                         DatagramEvent::NewConnection(incoming) => {
                             let (handle, conn) =
                                 server_ep.accept(incoming, now, &mut scratch, None).unwrap();
-                            server_peer = Some(Peer::new(handle, conn, false));
+                            server_peer = Some(Peer::new(handle, conn));
                         }
                         DatagramEvent::ConnectionEvent(_, ce) => {
                             if let Some(ref mut p) = server_peer {
@@ -449,8 +706,8 @@ mod tests {
             };
 
             // Pump until both sides are connected.
-            let mut client_rec = Recorder::default();
-            let mut server_rec = Recorder::default();
+            let mut client_h = PeerHarness::new();
+            let mut server_h = PeerHarness::new();
             let mut client_connected = false;
             let mut server_connected = false;
             for _ in 0..100 {
@@ -465,7 +722,7 @@ mod tests {
                             server_connected = true;
                         }
                     };
-                    pair.step(now, &mut client_rec, &mut server_rec, &mut ccb, &mut scb);
+                    pair.step(now, &mut client_h, &mut server_h, &mut ccb, &mut scb);
                 }
                 if client_connected && server_connected {
                     break;
@@ -478,8 +735,8 @@ mod tests {
         fn step<CE, SE>(
             &mut self,
             now: Instant,
-            client_rec: &mut Recorder,
-            server_rec: &mut Recorder,
+            client_h: &mut PeerHarness,
+            server_h: &mut PeerHarness,
             client_on_event: &mut CE,
             server_on_event: &mut SE,
         ) where
@@ -523,7 +780,7 @@ mod tests {
                     self.client_peer.spin(
                         now,
                         &mut cb,
-                        client_rec,
+                        &mut client_h.context,
                         client_on_event,
                         &FxHashSet::default(),
                     );
@@ -533,11 +790,14 @@ mod tests {
                     self.server_peer.spin(
                         now,
                         &mut cb,
-                        server_rec,
+                        &mut server_h.context,
                         server_on_event,
                         &FxHashSet::default(),
                     );
                 }
+
+                client_h.drain_inbound();
+                server_h.drain_inbound();
 
                 if !progress {
                     break;
@@ -546,10 +806,10 @@ mod tests {
         }
     }
 
-    fn wait_for<F: FnMut(&Recorder, &Recorder) -> bool>(
+    fn wait_for<F: FnMut(&PeerHarness, &PeerHarness) -> bool>(
         pair: &mut PeerPair,
-        client_rec: &mut Recorder,
-        server_rec: &mut Recorder,
+        client_h: &mut PeerHarness,
+        server_h: &mut PeerHarness,
         max: usize,
         mut cond: F,
     ) {
@@ -557,81 +817,90 @@ mod tests {
         for _ in 0..max {
             let mut noop_c = |_: NetEvent| {};
             let mut noop_s = |_: NetEvent| {};
-            pair.step(now, client_rec, server_rec, &mut noop_c, &mut noop_s);
-            if cond(client_rec, server_rec) {
+            pair.step(now, client_h, server_h, &mut noop_c, &mut noop_s);
+            if cond(client_h, server_h) {
                 break;
             }
         }
     }
 
+    /// Negotiation completion is observed indirectly by sending a tiny
+    /// payload and waiting for it to arrive — only possible after the
+    /// gossip-write state machine has crossed out of `NegotiateState`.
     #[test]
     fn outbound_stream_negotiation() {
         let mut pair = PeerPair::new();
-        let mut client_rec = Recorder::default();
-        let mut server_rec = Recorder::default();
+        let mut client_h = PeerHarness::new();
+        let mut server_h = PeerHarness::new();
 
-        let _ = pair.client_peer.open_stream(StreamProtocol::GossipSub);
+        let sid = pair.client_peer.open_stream(StreamProtocol::GossipSub).unwrap();
+        let stream_id = P2pStreamId::new(
+            pair.client_peer.id.connection,
+            sid.into(),
+            StreamProtocol::GossipSub,
+            false,
+        );
+        client_h.send_gossip(stream_id, b"ping", &mut pair.client_peer);
 
-        wait_for(&mut pair, &mut client_rec, &mut server_rec, 100, |c, s| {
-            !c.active_streams.is_empty() && !s.active_streams.is_empty()
-        });
+        wait_for(&mut pair, &mut client_h, &mut server_h, 200, |_, s| !s.received.is_empty());
 
-        assert!(!client_rec.active_streams.is_empty(), "client never got stream ready");
-        assert!(!server_rec.active_streams.is_empty(), "server never got stream ready");
+        assert!(!server_h.received.is_empty(), "server never received data");
     }
 
     #[test]
     fn outbound_stream_data_transfer() {
         let mut pair = PeerPair::new();
-        let mut client_rec = Recorder::default();
-        let mut server_rec = Recorder::default();
+        let mut client_h = PeerHarness::new();
+        let mut server_h = PeerHarness::new();
 
         let sid = pair.client_peer.open_stream(StreamProtocol::GossipSub).unwrap();
-        let stream_id =
-            P2pStreamId::new(pair.client_peer.id.connection, sid.into(), StreamProtocol::GossipSub);
+        let stream_id = P2pStreamId::new(
+            pair.client_peer.id.connection,
+            sid.into(),
+            StreamProtocol::GossipSub,
+            false,
+        );
 
-        wait_for(&mut pair, &mut client_rec, &mut server_rec, 100, |c, s| {
-            !c.active_streams.is_empty() && !s.active_streams.is_empty()
-        });
-
-        // Queue send. Gossipsub adds varint prefix.
         let payload = b"hello from the client side".to_vec();
-        client_rec.to_send.insert(stream_id, payload.clone());
+        client_h.send_gossip(stream_id, &payload, &mut pair.client_peer);
 
-        wait_for(&mut pair, &mut client_rec, &mut server_rec, 100, |_c, s| !s.received.is_empty());
+        wait_for(&mut pair, &mut client_h, &mut server_h, 200, |_, s| !s.received.is_empty());
 
-        assert!(!server_rec.received.is_empty(), "server never received data");
-        let data: Vec<u8> = server_rec.received.values().flat_map(|v| v.clone()).collect();
+        let data: Vec<u8> = server_h.received.values().flat_map(|v| v.clone()).collect();
         assert_eq!(data, payload);
     }
 
     #[test]
     fn bidirectional_data_transfer() {
         let mut pair = PeerPair::new();
-        let mut client_rec = Recorder::default();
-        let mut server_rec = Recorder::default();
+        let mut client_h = PeerHarness::new();
+        let mut server_h = PeerHarness::new();
 
         let sid = pair.client_peer.open_stream(StreamProtocol::GossipSub).unwrap();
-        let client_stream_id =
-            P2pStreamId::new(pair.client_peer.id.connection, sid.into(), StreamProtocol::GossipSub);
-
-        wait_for(&mut pair, &mut client_rec, &mut server_rec, 100, |c, s| {
-            !c.active_streams.is_empty() && !s.active_streams.is_empty()
-        });
-
-        let server_stream_id = *server_rec.active_streams.iter().next().unwrap();
+        let client_stream_id = P2pStreamId::new(
+            pair.client_peer.id.connection,
+            sid.into(),
+            StreamProtocol::GossipSub,
+            false,
+        );
 
         let c2s = b"client to server".to_vec();
+        client_h.send_gossip(client_stream_id, &c2s, &mut pair.client_peer);
+
+        // Wait for server to see the inbound frame so it knows the stream id
+        // (server-side P2pStreamId differs — its connection field is the
+        // server's handle, not the client's).
+        wait_for(&mut pair, &mut client_h, &mut server_h, 200, |_, s| !s.received.is_empty());
+
+        let server_stream_id =
+            *server_h.received.keys().next().expect("server should have one stream");
         let s2c = b"server to client".to_vec();
-        client_rec.to_send.insert(client_stream_id, c2s.clone());
-        server_rec.to_send.insert(server_stream_id, s2c.clone());
+        server_h.send_gossip(server_stream_id, &s2c, &mut pair.server_peer);
 
-        wait_for(&mut pair, &mut client_rec, &mut server_rec, 100, |c, s| {
-            !c.received.is_empty() && !s.received.is_empty()
-        });
+        wait_for(&mut pair, &mut client_h, &mut server_h, 200, |c, _| !c.received.is_empty());
 
-        let server_got: Vec<u8> = server_rec.received.values().flat_map(|v| v.clone()).collect();
-        let client_got: Vec<u8> = client_rec.received.values().flat_map(|v| v.clone()).collect();
+        let server_got: Vec<u8> = server_h.received.values().flat_map(|v| v.clone()).collect();
+        let client_got: Vec<u8> = client_h.received.values().flat_map(|v| v.clone()).collect();
         assert_eq!(server_got, c2s);
         assert_eq!(client_got, s2c);
     }
@@ -639,46 +908,49 @@ mod tests {
     #[test]
     fn inbound_stream_negotiation() {
         let mut pair = PeerPair::new();
-        let mut client_rec = Recorder::default();
-        let mut server_rec = Recorder::default();
+        let mut client_h = PeerHarness::new();
+        let mut server_h = PeerHarness::new();
 
-        let _ = pair.server_peer.open_stream(StreamProtocol::GossipSub);
+        let sid = pair.server_peer.open_stream(StreamProtocol::GossipSub).unwrap();
+        let server_stream_id = P2pStreamId::new(
+            pair.server_peer.id.connection,
+            sid.into(),
+            StreamProtocol::GossipSub,
+            false,
+        );
+        server_h.send_gossip(server_stream_id, b"pong", &mut pair.server_peer);
 
-        wait_for(&mut pair, &mut client_rec, &mut server_rec, 100, |c, s| {
-            !c.active_streams.is_empty() && !s.active_streams.is_empty()
-        });
+        wait_for(&mut pair, &mut client_h, &mut server_h, 200, |c, _| !c.received.is_empty());
 
-        assert!(!server_rec.active_streams.is_empty(), "server never got stream ready");
-        assert!(!client_rec.active_streams.is_empty(), "client never got stream ready");
+        assert!(!client_h.received.is_empty(), "client never received server-initiated data");
     }
 
+    /// Multiple buffered messages on a single gossip stream — the new
+    /// `GossipQueues` design is one queue per peer, so this exercises the
+    /// per-peer buffer's pop / send-complete cycle under back-to-back
+    /// enqueues.
     #[test]
     fn multiple_streams() {
         let mut pair = PeerPair::new();
-        let mut client_rec = Recorder::default();
-        let mut server_rec = Recorder::default();
+        let mut client_h = PeerHarness::new();
+        let mut server_h = PeerHarness::new();
 
-        let s1 = pair.client_peer.open_stream(StreamProtocol::GossipSub).unwrap();
-        let s1 =
-            P2pStreamId::new(pair.client_peer.id.connection, s1.into(), StreamProtocol::GossipSub);
-        let s2 = pair.client_peer.open_stream(StreamProtocol::GossipSub).unwrap();
-        let s2 =
-            P2pStreamId::new(pair.client_peer.id.connection, s2.into(), StreamProtocol::GossipSub);
+        let sid = pair.client_peer.open_stream(StreamProtocol::GossipSub).unwrap();
+        let stream_id = P2pStreamId::new(
+            pair.client_peer.id.connection,
+            sid.into(),
+            StreamProtocol::GossipSub,
+            false,
+        );
 
-        wait_for(&mut pair, &mut client_rec, &mut server_rec, 200, |c, s| {
-            c.active_streams.len() >= 2 && s.active_streams.len() >= 2
+        client_h.send_gossip(stream_id, b"stream one", &mut pair.client_peer);
+        client_h.send_gossip(stream_id, b"stream two", &mut pair.client_peer);
+
+        wait_for(&mut pair, &mut client_h, &mut server_h, 300, |_, s| {
+            s.received.values().any(|v| v.windows(10).any(|w| w == b"stream two"))
         });
 
-        assert!(client_rec.active_streams.len() >= 2);
-        assert!(server_rec.active_streams.len() >= 2);
-
-        client_rec.to_send.insert(s1, b"stream one".to_vec());
-        client_rec.to_send.insert(s2, b"stream two".to_vec());
-
-        wait_for(&mut pair, &mut client_rec, &mut server_rec, 100, |_c, s| s.received.len() >= 2);
-
-        assert!(server_rec.received.len() >= 2, "received: {}", server_rec.received.len());
-        let all: Vec<u8> = server_rec.received.values().flat_map(|v| v.clone()).collect();
+        let all: Vec<u8> = server_h.received.values().flat_map(|v| v.clone()).collect();
         assert!(all.windows(10).any(|w| w == b"stream one"));
         assert!(all.windows(10).any(|w| w == b"stream two"));
     }

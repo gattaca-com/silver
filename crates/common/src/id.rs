@@ -35,6 +35,19 @@ impl PeerId {
         Self { buffer, length: encoded.len() + 2 }
     }
 
+    /// Wrap raw multihash bytes (e.g. the value of a `/p2p/<peer-id>`
+    /// multiaddr segment, or peer ids carried in libp2p PeerRecord
+    /// envelopes). Returns `None` if the input doesn't fit the internal
+    /// 48-byte buffer.
+    pub fn from_multihash_bytes(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() > 48 {
+            return None;
+        }
+        let mut buffer = [0u8; 48];
+        buffer[..bytes.len()].copy_from_slice(bytes);
+        Some(Self { buffer, length: bytes.len() })
+    }
+
     /// Construct from a 33-byte secp256k1 compressed public key — the form
     /// returned by `secp256k1::PublicKey::serialize` and stored in eth2 ENR
     /// records' `secp256k1` field. Wraps via the libp2p PublicKey protobuf

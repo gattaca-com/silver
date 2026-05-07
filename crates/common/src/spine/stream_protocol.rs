@@ -4,7 +4,6 @@ pub const REJECT_RESPONSE: &[u8] = b"\x13/multistream/1.0.0\n\x03na\n";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum StreamProtocol {
-    Unset,
     GossipSub,
     Identity,
     StatusV1,
@@ -16,11 +15,24 @@ pub enum StreamProtocol {
     BeaconBlocksByRoot,
     DataColumnSidecarsByRange,
     DataColumnSidecarsByRoot,
+    Unset,
 }
 
 pub const ALL_PROTOCOLS: &[StreamProtocol] = &[
     StreamProtocol::GossipSub,
     StreamProtocol::Identity,
+    StreamProtocol::StatusV1,
+    StreamProtocol::StatusV2,
+    StreamProtocol::Ping,
+    StreamProtocol::Goodbye,
+    StreamProtocol::Metadata,
+    StreamProtocol::BeaconBlocksByRange,
+    StreamProtocol::BeaconBlocksByRoot,
+    StreamProtocol::DataColumnSidecarsByRange,
+    StreamProtocol::DataColumnSidecarsByRoot,
+];
+
+pub const RPC_PROTOCOLS: &[StreamProtocol] = &[
     StreamProtocol::StatusV1,
     StreamProtocol::StatusV2,
     StreamProtocol::Ping,
@@ -75,6 +87,20 @@ impl StreamProtocol {
     pub fn from_multiselect(data: &[u8]) -> Option<Self> {
         ALL_PROTOCOLS.iter().find(|p| p.multiselect() == data).copied()
     }
+
+    pub fn from_multiselect_str(data: &str) -> Option<Self> {
+        ALL_PROTOCOLS
+            .iter()
+            .find(|p| {
+                let bytes = p.multiselect();
+                data.as_bytes() == &bytes[1..(bytes.len() - 1)]
+            })
+            .copied()
+    }
+
+    pub const fn ordinal(&self) -> u8 {
+        *self as u8
+    }
 }
 
 #[cfg(test)]
@@ -126,6 +152,17 @@ mod tests {
         assert_eq!(
             StreamProtocol::DataColumnSidecarsByRoot.multiselect().len(),
             (StreamProtocol::DataColumnSidecarsByRoot.multiselect()[0] + 1) as usize
+        );
+    }
+
+    #[test]
+    fn from_str() {
+        assert_eq!(
+            StreamProtocol::DataColumnSidecarsByRange,
+            StreamProtocol::from_multiselect_str(
+                "/eth2/beacon_chain/req/data_column_sidecars_by_range/1/ssz_snappy"
+            )
+            .unwrap()
         );
     }
 }

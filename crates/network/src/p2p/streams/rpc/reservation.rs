@@ -1,0 +1,233 @@
+use std::io::{Error, ErrorKind};
+
+use silver_common::{
+    P2pStreamId, RpcRequest, RpcResponse, StreamProtocol, TCacheProducer, TProducer, TReservation,
+    ssz_view::{
+        BLOCKS_BY_RANGE_REQ_SIZE, DC_BY_RANGE_REQ_MAX, GOODBYE_SIZE, METADATA_SIZE, PING_SIZE,
+        STATUS_V1_SIZE, STATUS_V2_SIZE,
+    },
+};
+
+pub fn alloc_incoming_rpc(
+    rpc_in: &mut TProducer,
+    id: &P2pStreamId,
+    len: usize,
+) -> Result<RpcReservation, Error> {
+    let (inbound, tcache) = if id.is_incoming() {
+        // incoming rpc = request
+        match id.protocol() {
+            StreamProtocol::StatusV1 => {
+                (Rpc::Request(RpcRequest::StatusV1([0u8; STATUS_V1_SIZE])), None)
+            }
+            StreamProtocol::StatusV2 => {
+                (Rpc::Request(RpcRequest::StatusV2([0u8; STATUS_V2_SIZE])), None)
+            }
+            StreamProtocol::Ping => (Rpc::Request(RpcRequest::Ping([0u8; PING_SIZE])), None),
+            StreamProtocol::Goodbye => {
+                (Rpc::Request(RpcRequest::Goodbye([0u8; GOODBYE_SIZE])), None)
+            }
+            StreamProtocol::Metadata => (Rpc::Request(RpcRequest::MetaData), None),
+            StreamProtocol::BeaconBlocksByRange => {
+                (Rpc::Request(RpcRequest::BlocksByRange([0u8; BLOCKS_BY_RANGE_REQ_SIZE])), None)
+            }
+            StreamProtocol::BeaconBlocksByRoot => {
+                let reservation = rpc_in.reserve(len, true).ok_or(ErrorKind::FileTooLarge)?;
+                let tcache = reservation.read();
+                (Rpc::Request(RpcRequest::BlockByRoot(tcache)), Some(reservation))
+            }
+            StreamProtocol::DataColumnSidecarsByRange => (
+                Rpc::Request(RpcRequest::DataColumnsByRange {
+                    ssz: [0u8; DC_BY_RANGE_REQ_MAX],
+                    len,
+                }),
+                None,
+            ),
+            StreamProtocol::DataColumnSidecarsByRoot => {
+                let reservation = rpc_in.reserve(len, true).ok_or(ErrorKind::FileTooLarge)?;
+                let tcache = reservation.read();
+                (Rpc::Request(RpcRequest::DataColumnsByRoot(tcache)), Some(reservation))
+            }
+            _ => return Err(ErrorKind::InvalidInput.into()),
+        }
+    } else {
+        match id.protocol() {
+            StreamProtocol::StatusV1 => {
+                (Rpc::Response(RpcResponse::StatusV1([0u8; STATUS_V1_SIZE])), None)
+            }
+            StreamProtocol::StatusV2 => {
+                (Rpc::Response(RpcResponse::StatusV2([0u8; STATUS_V2_SIZE])), None)
+            }
+            StreamProtocol::Ping => (Rpc::Response(RpcResponse::Ping([0u8; PING_SIZE])), None),
+            StreamProtocol::Metadata => {
+                (Rpc::Response(RpcResponse::MetaData([0u8; METADATA_SIZE])), None)
+            }
+            StreamProtocol::BeaconBlocksByRange => {
+                let reservation = rpc_in.reserve(len, true).ok_or(ErrorKind::FileTooLarge)?;
+                let tcache = reservation.read();
+                (
+                    Rpc::Response(RpcResponse::BeaconBlock { fork_digest: [0u8; 4], ssz: tcache }),
+                    Some(reservation),
+                )
+            }
+            StreamProtocol::BeaconBlocksByRoot => {
+                let reservation = rpc_in.reserve(len, true).ok_or(ErrorKind::FileTooLarge)?;
+                let tcache = reservation.read();
+                (
+                    Rpc::Response(RpcResponse::BeaconBlock { fork_digest: [0u8; 4], ssz: tcache }),
+                    Some(reservation),
+                )
+            }
+            StreamProtocol::DataColumnSidecarsByRange => {
+                let reservation = rpc_in.reserve(len, true).ok_or(ErrorKind::FileTooLarge)?;
+                let tcache = reservation.read();
+                (
+                    Rpc::Response(RpcResponse::DataColumnSidecar {
+                        fork_digest: [0u8; 4],
+                        ssz: tcache,
+                    }),
+                    Some(reservation),
+                )
+            }
+            StreamProtocol::DataColumnSidecarsByRoot => {
+                let reservation = rpc_in.reserve(len, true).ok_or(ErrorKind::FileTooLarge)?;
+                let tcache = reservation.read();
+                (
+                    Rpc::Response(RpcResponse::DataColumnSidecar {
+                        fork_digest: [0u8; 4],
+                        ssz: tcache,
+                    }),
+                    Some(reservation),
+                )
+            }
+            _ => return Err(ErrorKind::InvalidInput.into()),
+        }
+    };
+
+    Ok(RpcReservation { inbound, offset: 0, tcache })
+}
+
+pub fn alloc_error_response(error: u8) -> RpcReservation {
+    RpcReservation {
+        inbound: Rpc::Response(RpcResponse::Error { error, msg: [0u8; 256], len: 0 }),
+        offset: 0,
+        tcache: None,
+    }
+}
+
+pub fn rpc_response_context_length(protocol: StreamProtocol) -> usize {
+    match protocol {
+        StreamProtocol::BeaconBlocksByRange |
+        StreamProtocol::BeaconBlocksByRoot |
+        StreamProtocol::DataColumnSidecarsByRange |
+        StreamProtocol::DataColumnSidecarsByRoot => 4,
+        _ => 0,
+    }
+}
+
+#[derive(Debug)]
+pub struct RpcReservation {
+    inbound: Rpc,
+    offset: usize,
+    tcache: Option<TReservation>,
+}
+
+#[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
+pub enum Rpc {
+    Request(RpcRequest),
+    Response(RpcResponse),
+}
+
+impl RpcReservation {
+    pub fn remaining_buffer(&mut self) -> Result<&mut [u8], Error> {
+        let buffer = match &mut self.inbound {
+            Rpc::Request(req) => match req {
+                RpcRequest::StatusV1(s) => &mut s[self.offset..],
+                RpcRequest::StatusV2(s) => &mut s[self.offset..],
+                RpcRequest::Ping(p) => &mut p[self.offset..],
+                RpcRequest::Goodbye(g) => &mut g[self.offset..],
+                RpcRequest::MetaData => &mut [],
+                RpcRequest::BlocksByRange(b) => &mut b[self.offset..],
+                RpcRequest::BlockByRoot(_) => match &mut self.tcache {
+                    Some(reservation) => reservation.remaining_buffer()?,
+                    None => return Err(ErrorKind::InvalidData.into()), // uses reservation
+                },
+                RpcRequest::DataColumnsByRange { ssz, len } => &mut ssz[self.offset..*len],
+                RpcRequest::DataColumnsByRoot(_) => match &mut self.tcache {
+                    Some(reservation) => reservation.remaining_buffer()?,
+                    None => return Err(ErrorKind::InvalidData.into()), // uses reservation
+                },
+            },
+            Rpc::Response(rsp) => match rsp {
+                RpcResponse::StatusV1(s) => &mut s[self.offset..],
+                RpcResponse::StatusV2(s) => &mut s[self.offset..],
+                RpcResponse::Ping(p) => &mut p[self.offset..],
+                RpcResponse::MetaData(m) => &mut m[self.offset..],
+                RpcResponse::BeaconBlock { fork_digest, ssz: _ } => {
+                    if self.offset < fork_digest.len() {
+                        &mut fork_digest[self.offset..]
+                    } else {
+                        match &mut self.tcache {
+                            Some(reservation) => reservation.remaining_buffer()?,
+                            None => return Err(ErrorKind::InvalidData.into()), // uses reservation
+                        }
+                    }
+                }
+                RpcResponse::DataColumnSidecar { fork_digest, ssz: _ } => {
+                    if self.offset < fork_digest.len() {
+                        &mut fork_digest[self.offset..]
+                    } else {
+                        match &mut self.tcache {
+                            Some(reservation) => reservation.remaining_buffer()?,
+                            None => return Err(ErrorKind::InvalidData.into()), // uses reservation
+                        }
+                    }
+                }
+                RpcResponse::Error { error, msg, len } => &mut msg[self.offset..*len],
+                RpcResponse::Complete => return Err(ErrorKind::InvalidData.into()), /* no reservation for Complete */
+            },
+        };
+
+        Ok(buffer)
+    }
+
+    /// Returns whether or not the write is complete.
+    pub fn increment_offset(&mut self, written: usize) -> Result<bool, Error> {
+        match &mut self.inbound {
+            Rpc::Request(_) => match &mut self.tcache {
+                Some(reservation) => reservation.increment_offset(written),
+                None => self.offset += written,
+            },
+            Rpc::Response(rsp) => match rsp {
+                RpcResponse::BeaconBlock { fork_digest, ssz: _ } => {
+                    if self.offset < 4 {
+                        self.offset += written;
+                        debug_assert!(self.offset <= 4);
+                    } else {
+                        match &mut self.tcache {
+                            Some(reservation) => reservation.increment_offset(written),
+                            None => return Err(ErrorKind::InvalidData.into()), // uses reservation
+                        }
+                    }
+                }
+                RpcResponse::DataColumnSidecar { fork_digest, ssz: _ } => {
+                    if self.offset < 4 {
+                        self.offset += written;
+                        debug_assert!(self.offset <= 4);
+                    } else {
+                        match &mut self.tcache {
+                            Some(reservation) => reservation.increment_offset(written),
+                            None => return Err(ErrorKind::InvalidData.into()), // uses reservation
+                        }
+                    }
+                }
+                _ => self.offset += written,
+            },
+        }
+        self.remaining_buffer().map(|b| b.is_empty())
+    }
+
+    pub fn into_rpc(self) -> Rpc {
+        self.inbound
+    }
+}

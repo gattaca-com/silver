@@ -2,7 +2,7 @@ use std::sync::atomic::Ordering;
 
 use flux::timing::Nanos;
 
-use crate::{GossipMsgOut, RpcMsgOut, TCacheError, TCacheRef};
+use crate::{GossipMsgOut, TCacheError, TCacheRef};
 
 /// Reader for a TCache msg
 #[derive(Clone, Copy, Debug)]
@@ -47,12 +47,6 @@ impl From<GossipMsgOut> for TCacheRead {
     }
 }
 
-impl From<RpcMsgOut> for TCacheRead {
-    fn from(value: RpcMsgOut) -> Self {
-        value.tcache
-    }
-}
-
 /// Tailing consumer. Reads all messages in a TCache, in order.
 #[derive(Debug)]
 pub struct Consumer {
@@ -74,6 +68,7 @@ impl Consumer {
     /// Release all data read so far. Should be called often, not necessarily
     /// after each read.
     pub fn free(&mut self) {
+        //tracing::warn!("consumer free: {}", self.seq);
         self.seq = self.next_seq;
         self.cache.head.tails[self.index].store(self.seq, Ordering::Release);
     }

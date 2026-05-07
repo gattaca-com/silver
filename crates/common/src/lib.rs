@@ -6,12 +6,19 @@ pub use crate::{
         msg_id_valid_snappy,
     },
     id::{Keypair, PeerId, decode_protobuf_pubkey, encode_secp256k1_protobuf},
+    identity::{
+        AGENT_VERSION, Eth2Addr, Identify, PROTOCOL_VERSION, encode_observed_addr,
+        parse_eth2_multiaddr,
+    },
     spine::{
         ALL_PROTOCOLS, BeaconStateEvent, Consumer as TConsumer, Error as TCacheError, GossipMsgOut,
-        IpBytes, MULTISTREAM_V1, NewGossipMsg, P2pStreamId, PeerControl, PeerEvent, PeerRpcIn,
-        Producer as TProducer, REJECT_RESPONSE, RandomAccessConsumer as TRandomAccess,
-        Reservation as TReservation, RpcMsg, RpcMsgOut, RpcOutType, RpcSeverity, SilverSpine,
-        SilverSpineProducers, StreamProtocol, TCache, TCacheRead, TCacheRef,
+        IpBytes, MULTISTREAM_V1, MultiProducer as TMultiProducer, NewGossipMsg, P2pSend,
+        P2pStreamId, PeerControl, PeerEvent, PeerRpcIn, PeerStatus, Producer as TProducer,
+        REJECT_RESPONSE, RPC_PROTOCOLS, RandomAccessConsumer as TRandomAccess,
+        Reservation as TReservation, RpcInbound, RpcMsg, RpcOutbound, RpcRequest,
+        RpcRequestInbound, RpcRequestOutbound, RpcResponse, RpcResponseInbound,
+        RpcResponseOutbound, RpcSeverity, SilverSpine, SilverSpineProducers, StreamProtocol,
+        TCache, TCacheProducer, TCacheRead, TCacheRef,
     },
     util::{create_self_signed_certificate, decode_varint, encode_varint},
     wither::{CountingWitherFilter, WitherFilter},
@@ -20,8 +27,13 @@ pub use crate::{
 pub mod arena;
 mod enr;
 mod error;
+#[path = "generated/protobuf.identify.rs"]
+#[allow(clippy::all, dead_code, non_snake_case)]
+#[rustfmt::skip]
+mod generated;
 mod gossip;
 mod id;
+mod identity;
 mod spine;
 pub mod ssz_view;
 mod util;
@@ -29,3 +41,4 @@ mod wither;
 
 pub use enr::{Enr, NodeId};
 pub use flux::timing::Nanos;
+pub use generated::{Identify as ProtoIdentify, IdentifyView as ProtoIdentifyView};

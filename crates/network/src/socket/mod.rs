@@ -1,6 +1,6 @@
 #[cfg(target_os = "linux")]
 #[path = "linux.rs"]
-mod linux;
+mod udp;
 #[cfg(not(target_os = "linux"))]
 #[path = "portable.rs"]
 mod udp;
@@ -11,10 +11,10 @@ use std::{
 };
 
 use fxhash::FxHasher;
-pub(crate) use linux::{RX_BATCH_MAX, RX_BUF_SIZE, RxBatch, TxBatch};
 use mio::{Interest, Poll, Token, net::UdpSocket};
 use quinn_proto::Transmit;
 use silver_common::WitherFilter;
+pub(crate) use udp::{RX_BATCH_MAX, RX_BUF_SIZE, RxBatch, TxBatch};
 
 pub(crate) const MAX_GSO_SEGMENTS: usize = 10;
 

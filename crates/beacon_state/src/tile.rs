@@ -1173,7 +1173,7 @@ fn body_mutation_hints(body: &[u8]) -> (bool, bool) {
 mod tests {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-    use silver_common::TCache;
+    use silver_common::{TCache, TCacheProducer};
 
     use super::*;
     use crate::types::Checkpoint;
