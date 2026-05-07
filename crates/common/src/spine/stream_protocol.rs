@@ -4,7 +4,6 @@ pub const REJECT_RESPONSE: &[u8] = b"\x13/multistream/1.0.0\n\x03na\n";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum StreamProtocol {
-    Unset,
     GossipSub,
     Identity,
     StatusV1,
@@ -16,6 +15,7 @@ pub enum StreamProtocol {
     BeaconBlocksByRoot,
     DataColumnSidecarsByRange,
     DataColumnSidecarsByRoot,
+    Unset,
 }
 
 pub const ALL_PROTOCOLS: &[StreamProtocol] = &[
