@@ -153,7 +153,7 @@ fn request_length(request: &RpcRequest) -> Result<usize, StreamError> {
         RpcRequest::MetaData => 0,
         RpcRequest::BlocksByRange(b) => b.len(),
         RpcRequest::BlockByRoot(tcache_read) => tcache_read.len()?,
-        RpcRequest::DataColumnsByRange { ssz, len } => *len,
+        RpcRequest::DataColumnsByRange { ssz: _, len } => *len,
         RpcRequest::DataColumnsByRoot(tcache_read) => tcache_read.len()?,
     };
     Ok(len)

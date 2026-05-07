@@ -7,7 +7,9 @@
 
 use std::time::Instant;
 
-use crate::{params::ScoreParams, state::PeerState};
+use silver_common::ScoreParams;
+
+use crate::state::PeerState;
 
 /// Compute the current peer score.
 ///

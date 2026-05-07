@@ -1,8 +1,8 @@
 use std::{path::PathBuf, time::Duration};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DiscoveryConfig {
     #[serde(default = "default_u64::<1000>")]
     pub lookup_interval_ms: u64,

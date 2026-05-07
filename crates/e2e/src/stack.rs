@@ -9,13 +9,14 @@ use std::{net::SocketAddr, sync::atomic::AtomicUsize};
 use flux::{spine::SpineAdapter, tile::Tile};
 use quinn_proto::Endpoint;
 use silver_common::{
-    Enr, Keypair, PeerId, SilverSpine, TCache, TCacheProducer, TConsumer, TProducer, TRandomAccess,
+    DiscoveryConfig, Enr, Keypair, PeerId, ScoreParams, SilverSpine, TCache, TCacheProducer,
+    TConsumer, TProducer, TRandomAccess,
 };
 use silver_control::Controller;
-use silver_discovery::{DiscV5, DiscoveryConfig};
+use silver_discovery::DiscV5;
 use silver_gossip::GossipHandler;
 use silver_network::{Context, NetworkTile, P2p, create_endpoint, create_server_config};
-use silver_peer::{PeerManager, ScoreParams};
+use silver_peer::PeerManager;
 
 use crate::Stats;
 

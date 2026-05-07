@@ -30,6 +30,7 @@ pub struct Socket {
 
 impl Socket {
     pub(crate) fn new(addr: SocketAddr, poll: &Poll, token: Token) -> Result<Self, Error> {
+        tracing::debug!("bind to: {addr:?}");
         let mut socket = UdpSocket::bind(addr)?;
         poll.registry().register(&mut socket, token, Interest::READABLE)?;
 

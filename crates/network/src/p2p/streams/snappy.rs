@@ -66,16 +66,6 @@ impl Default for SnappyDecoder {
 }
 
 impl SnappyDecoder {
-    pub fn new() -> Self {
-        Self {
-            buf: Box::new([0u8; BUF_CAP]),
-            buf_len: 0,
-            need: FRAME_HDR_LEN,
-            got_stream_id: false,
-            decoder: Decoder::new(),
-        }
-    }
-
     /// Feed compressed bytes, decompress complete frames into `out`.
     /// Returns `(bytes_consumed, bytes_written)`.
     pub fn decompress(
@@ -175,10 +165,6 @@ impl SnappyDecoder {
         }
     }
 
-    pub fn need(&self) -> usize {
-        self.need
-    }
-
     /// Current buffer to fill.
     /// Retunrs buffer with currently needed bytes length.
     pub fn decompress_buffer(&mut self) -> &mut [u8] {
@@ -220,12 +206,6 @@ impl SnappyDecoder {
         }
 
         Ok(out_pos)
-    }
-
-    pub fn reset(&mut self) {
-        self.buf_len = 0;
-        self.need = FRAME_HDR_LEN;
-        self.got_stream_id = false;
     }
 }
 
@@ -383,7 +363,7 @@ mod tests {
         let mut compressed = vec![];
         FrameEncoder::new(raw.as_slice()).read_to_end(&mut compressed).unwrap();
 
-        let mut decoder = SnappyDecoder::new();
+        let mut decoder = SnappyDecoder::default();
         let mut out = vec![0u8; raw.len()];
         let mut in_off = 0;
         let mut out_off = 0;
@@ -436,7 +416,7 @@ mod tests {
         assert_eq!(consumed, raw.len());
         assert_eq!(pending, 0);
 
-        let mut decoder = SnappyDecoder::new();
+        let mut decoder = SnappyDecoder::default();
         let mut out = vec![0u8; raw.len()];
         let (_, produced) = decoder.decompress(&compressed, &mut out).unwrap();
         assert_eq!(produced, raw.len());
@@ -456,7 +436,7 @@ mod tests {
         assert_eq!(consumed, raw.len());
         assert_eq!(pending, 0);
 
-        let mut decoder = SnappyDecoder::new();
+        let mut decoder = SnappyDecoder::default();
         let mut out = vec![0u8; raw.len()];
         let mut in_off = 0;
         let mut out_off = 0;

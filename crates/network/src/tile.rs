@@ -45,7 +45,7 @@ impl NetworkTile {
 
     fn handle_peer_control(&mut self, peer_control: PeerControl, now: Instant) {
         match peer_control {
-            PeerControl::Ban { p2p, p2p_connection } => {
+            PeerControl::Ban { p2p, p2p_connection: _ } => {
                 if let Ok(pubkey) = PublicKey::from_slice(p2p.pubkey()) {
                     self.inner.discovery.ban_node(pubkey.into());
                 }
@@ -98,8 +98,6 @@ impl Tile<SilverSpine> for NetworkTile {
         let mut on_event = |event| match event {
             Event::P2pNet(net_event) => match net_event {
                 NetEvent::PeerConnected { peer, addr, local_dialler } => {
-                    // TODO start identity exchange
-
                     let port = addr.port();
                     adapter.produce(PeerEvent::P2pNewConnection {
                         p2p_peer_id: peer.connection,
@@ -116,10 +114,10 @@ impl Tile<SilverSpine> for NetworkTile {
                     adapter.produce(PeerEvent::P2pDisconnect { p2p_peer: peer.connection });
                 }
                 NetEvent::StreamReady { stream: _ } => {
-                    // TODO notifiy new stream
+                    // TODO notifiy new stream?
                 }
                 NetEvent::StreamClosed { stream: _ } => {
-                    // TODO notify stream end
+                    // TODO notify stream end?
                 }
                 NetEvent::RpcInbound(rpc_inbound) => {
                     adapter.produce(rpc_inbound);
@@ -129,13 +127,13 @@ impl Tile<SilverSpine> for NetworkTile {
                 }
             },
             Event::Discovery(disc_event) => match disc_event {
-                DiscoveryEvent::SendMessage { to, data } => todo!(),
                 DiscoveryEvent::NodeFound(enr) => {
                     adapter.produce(PeerEvent::DiscNodeFound { enr });
                 }
                 DiscoveryEvent::ExternalAddrChanged(socket_addr) => {
                     adapter.produce(PeerEvent::DiscExternalAddress { address: socket_addr });
                 }
+                _ => {} // no-ops
             },
         };
 
@@ -155,6 +153,9 @@ impl Tile<SilverSpine> for NetworkTile {
                         gossips += 1;
                         self.inner.p2p_endpoint.enqueue_gossip(gossip_msg_out)
                     },
+                    P2pSend::Identify(peer) => {
+                        self.inner.p2p_endpoint.enqueue_identify(peer)
+                    }
                     P2pSend::Rpc(rpc_outbound) => {
                         rpcs += 1;
                         self.inner.p2p_endpoint.enqueue_rpc_out(rpc_outbound)
@@ -259,7 +260,7 @@ where
 
         for evt in &self.events {
             if evt.token() == DISC_SOCKET_TOKEN && evt.is_readable() {
-                self.disc_socket.recv(|data, remote, scratch, socket| {
+                self.disc_socket.recv(|data, remote, _scratch, _socket| {
                     self.discovery.handle(remote, &data[..], now);
                     true
                 });
@@ -283,6 +284,16 @@ where
                         src_ip: None,
                     })
                 });
+            }
+            DiscoveryEvent::ExternalAddrChanged(addr) => {
+                if let Some(identify) = self.context.identify.as_mut() {
+                    match self.p2p_endpoint.update_identify_record(identify, addr.ip()) {
+                        Ok(new_identify) => *identify = new_identify,
+                        Err(e) => {
+                            tracing::error!(?addr, ?e, "failed to update identify record ip");
+                        }
+                    }
+                }
             }
             other => on_event(Event::Discovery(other)),
         });

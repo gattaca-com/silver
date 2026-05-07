@@ -55,7 +55,7 @@ impl NegotiateState {
         }
     }
 
-    fn spin_inner<S: StreamIo>(mut self, id: StreamId, io: &mut S) -> Result<Spin, StreamError> {
+    fn spin_inner<S: StreamIo>(self, id: StreamId, io: &mut S) -> Result<Spin, StreamError> {
         match self {
             NegotiateState::OutWriting { protocol, mut written } => {
                 // try to write any remaining negotiate bytes: MULTISELECT_V1 ++
@@ -148,7 +148,6 @@ impl NegotiateState {
                 Ok(Spin::Ok(Self::InReadingProtocol { buf, read }))
             }
             NegotiateState::InWriting { protocol, mut written } => {
-                let total = MULTISTREAM_V1.len() + protocol.multiselect().len();
                 if written < MULTISTREAM_V1.len() {
                     written += io.write_to_stream(id, &MULTISTREAM_V1[written..])?;
                 } else {
@@ -223,7 +222,7 @@ mod tests {
             Ok(n)
         }
 
-        fn close_write(&mut self, id: StreamId) -> Result<(), StreamError> {
+        fn close_write(&mut self, _id: StreamId) -> Result<(), StreamError> {
             Ok(())
         }
 

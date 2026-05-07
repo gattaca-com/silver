@@ -18,7 +18,7 @@ use crate::{
         NetEvent,
         context::Context,
         quic::{SendResult, stream::StreamIoImpl},
-        streams::{StreamError, StreamState},
+        streams::StreamState,
         tls::peer_id_from_certificate,
     },
 };
@@ -97,6 +97,13 @@ impl Peer {
             }
         };
         SendResult::StreamCreationError
+    }
+
+    pub(crate) fn send_identify(&mut self) -> SendResult {
+        match self.open_stream(StreamProtocol::Identity) {
+            Some(_) => SendResult::Ok,
+            None => SendResult::StreamCreationError,
+        }
     }
 
     pub(crate) fn gossip_tail(&self) -> u64 {
@@ -320,16 +327,16 @@ fn id_from_connection(conn: &Connection) -> Option<PeerId> {
 
 fn out_buffer(id: &P2pStreamId, incoming: bool) -> OutboundBuffer {
     match id.protocol() {
-        StreamProtocol::GossipSub => OutboundBuffer::Gossip(OutBuffer::new(*id, 1024)),
+        StreamProtocol::GossipSub => OutboundBuffer::Gossip(OutBuffer::new(1024)),
         StreamProtocol::BeaconBlocksByRange |
         StreamProtocol::BeaconBlocksByRoot |
         StreamProtocol::DataColumnSidecarsByRange |
         StreamProtocol::DataColumnSidecarsByRoot
             if incoming =>
         {
-            OutboundBuffer::Rpc(OutBuffer::new(*id, 128))
+            OutboundBuffer::Rpc(OutBuffer::new(128))
         }
-        _ => OutboundBuffer::Rpc(OutBuffer::new(*id, 1)),
+        _ => OutboundBuffer::Rpc(OutBuffer::new(1)),
     }
 }
 
@@ -389,22 +396,6 @@ impl Stream {
                 SpinResult::End
             }
         }
-    }
-
-    fn inner<E>(
-        &mut self,
-        connection: &mut Connection,
-        context: &mut Context,
-        on_event: &mut E,
-    ) -> Result<(), StreamError>
-    where
-        E: FnMut(crate::NetEvent),
-    {
-        let state = self.state.take();
-        let mut io = StreamIoImpl { connection, outbound: &mut self.out_buffer };
-        let new_state = state.spin(&mut io, &mut self.p2p_id, context, on_event)?;
-        self.state.replace(new_state);
-        Ok(())
     }
 }
 
@@ -468,7 +459,6 @@ impl HasSeq for RpcOutbound {
 }
 
 pub(super) struct OutBuffer<T: HasSeq + Clone> {
-    stream_id: P2pStreamId,
     cache_tail: u64,
     msgs: Box<[Option<T>]>,
     len: usize,
@@ -477,10 +467,9 @@ pub(super) struct OutBuffer<T: HasSeq + Clone> {
 }
 
 impl<T: HasSeq + Clone> OutBuffer<T> {
-    fn new(id: P2pStreamId, len: usize) -> Self {
+    fn new(len: usize) -> Self {
         assert!(len.is_power_of_two());
         Self {
-            stream_id: id,
             cache_tail: u64::MAX,
             msgs: vec![None; len].into_boxed_slice(),
             len,
@@ -523,6 +512,7 @@ impl<T: HasSeq + Clone> OutBuffer<T> {
     }
 
     /// Moves the cache tail to the next message - if any
+    #[allow(dead_code)]
     pub(super) fn send_complete(&mut self) {
         match &self.msgs[self.pos(self.tail)] {
             Some(msg) => {
@@ -547,26 +537,12 @@ impl<T: HasSeq + Clone> OutBuffer<T> {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::{HashMap, VecDeque},
-        io::Write,
-        net::SocketAddr,
-        sync::Arc,
-        time::Instant,
-    };
+    use std::{collections::HashMap, io::Write, net::SocketAddr, sync::Arc, time::Instant};
 
     use quinn_proto::{DatagramEvent, Endpoint, EndpointConfig};
-    use silver_common::{Keypair, TCache, TCacheProducer, TCacheRead, TConsumer, TProducer};
+    use silver_common::{Keypair, TCache, TCacheProducer, TConsumer, TProducer};
 
     use super::*;
-
-    /// Per-stream queue of outbound `TCacheRead`s the test wants drained
-    /// onto the wire. Held inside `Context` so the gossip-out state machine
-    /// can pull from it.
-    #[derive(Default)]
-    struct TestGossipQueue {
-        pending: HashMap<P2pStreamId, VecDeque<TCacheRead>>,
-    }
 
     const TCACHE_BYTES: usize = 64 * 1024;
 
@@ -613,7 +589,7 @@ mod tests {
         /// Stage `payload` for outbound delivery on `stream_id`. Reserves
         /// space in the gossip-out tcache, copies the payload, then queues
         /// the `TCacheRead` so the gossip-out state machine can pick it up.
-        fn send_gossip(&mut self, stream_id: P2pStreamId, payload: &[u8], peer: &mut Peer) {
+        fn send_gossip(&mut self, _stream_id: P2pStreamId, payload: &[u8], peer: &mut Peer) {
             let mut res =
                 self.gossip_out_producer.reserve(payload.len(), true).expect("tcache full");
             res.write_all(payload).unwrap();

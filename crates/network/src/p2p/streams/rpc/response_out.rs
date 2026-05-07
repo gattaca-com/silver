@@ -55,7 +55,13 @@ impl RpcWriteResponse {
     ) -> Result<Spin, StreamError> {
         match self {
             RpcWriteResponse::Idle => match io.rpc_next() {
-                Some(RpcOutbound::Response(rsp)) => Ok(Spin::Next(Self::new(rsp.response)?)),
+                Some(RpcOutbound::Response(rsp)) => match &rsp.response {
+                    RpcResponse::Complete => {
+                        io.close_write(id.stream_id())?;
+                        Ok(Spin::Ok(Self::Idle))
+                    }
+                    _ => Ok(Spin::Next(Self::new(rsp.response)?)),
+                },
                 Some(_) => Err(StreamError::InvalidRpc),
                 None => Ok(Spin::Ok(Self::Idle)),
             },
@@ -139,7 +145,7 @@ fn response_buffer<'a, 'b: 'a>(
             let (buf, _) = consumer.read_at(ssz.seq())?;
             if offset < buf.len() { &buf[offset..] } else { &[] }
         }
-        RpcResponse::Error { error, msg, len } => {
+        RpcResponse::Error { error: _, msg, len } => {
             if offset < *len {
                 &msg[offset..*len]
             } else {
@@ -179,7 +185,7 @@ fn write_prefix(response: &RpcResponse, prefix: &mut [u8; 15]) -> Result<usize, 
             let offset = encode_varint(ssz.len()? as u64, &mut prefix[5..])?;
             Ok(offset + 5)
         }
-        RpcResponse::Error { error, msg, len } => {
+        RpcResponse::Error { error, msg: _, len } => {
             prefix[0] = *error;
             let offset = encode_varint(*len as u64, &mut prefix[1..])?;
             Ok(offset + 1)

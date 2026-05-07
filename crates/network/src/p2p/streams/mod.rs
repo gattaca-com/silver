@@ -34,12 +34,7 @@ pub enum StreamError {
     TCacheError(#[from] TCacheError),
     SnappyError(#[from] SnappyError),
     ProtobufDecodeError(#[from] DecodeError),
-    InvalidIdentifyProtocol,
-    MissingIdentifyAgent,
-    MissingIdentifyPubkey,
     InvalidPubkey(#[from] TryFromSliceError),
-    InvalidIdentifyMultiAddr,
-    InvalidIdentifyObservedAddr,
     IdentifyTooBig,
 }
 

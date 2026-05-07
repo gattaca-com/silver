@@ -141,11 +141,11 @@ impl Tile<SilverSpine> for Controller {
                             &mut on_event,
                         );
                         if let Some(status) = self.status.as_ref() {
-                            let status = StatusView::as_v1(status).try_into().unwrap();
+                            let status_v1 = StatusView::as_v1(status).try_into().unwrap();
                             producers.p2p_send.produce(
                                 &P2pSend::Rpc(RpcOutbound::Response(RpcResponseOutbound {
                                     stream_id,
-                                    response: RpcResponse::StatusV1(status),
+                                    response: RpcResponse::StatusV1(status_v1),
                                 }))
                                 .into(),
                             );
@@ -280,6 +280,11 @@ impl Tile<SilverSpine> for Controller {
                             );
                         }
                     }
+                    RpcResponse::MetaData(metadata_ssz) => self.peer_manager.handle_event(
+                        PeerEvent::P2pPeerMetadata { p2p_peer: stream_id.peer(), metadata_ssz },
+                        now,
+                        &mut on_event,
+                    ),
                     RpcResponse::Error { error, msg, len } => {
                         let err = String::from_utf8_lossy(&msg[..len]);
                         tracing::error!(

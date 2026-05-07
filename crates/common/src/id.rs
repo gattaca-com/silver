@@ -91,6 +91,7 @@ impl fmt::Debug for PeerId {
 }
 
 /// secp256k1 keypair for libp2p node identity.
+#[derive(Clone, Copy)]
 pub struct Keypair {
     signing_key: SecretKey,
     compressed: [u8; 33],

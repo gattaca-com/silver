@@ -1,0 +1,24 @@
+[package]
+name = "silver"
+edition.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+silver_common.workspace = true
+silver_control.workspace = true
+silver_discovery.workspace = true
+silver_gossip.workspace = true
+silver_network.workspace = true
+silver_peer.workspace = true
+
+flux.workspace = true
+hex.workspace = true
+quinn-proto.workspace = true
+rand.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

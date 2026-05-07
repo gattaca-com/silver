@@ -10,12 +10,11 @@ use std::{
 
 use silver_common::{
     Enr, GossipMsgOut, GossipTopic, IpBytes, MessageId, P2pSend, PeerControl, PeerEvent, PeerId,
-    RpcSeverity, TCacheRead,
+    RpcSeverity, ScoreParams, TCacheRead,
 };
 
 use crate::{
     database::PeerDatabase,
-    params::ScoreParams,
     scoring,
     state::{ArchivedState, IpPrefix, MsgIdMap, PeerState, TopicScore},
 };
