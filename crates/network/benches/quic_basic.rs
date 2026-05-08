@@ -1,6 +1,9 @@
 use std::{
     io::Write,
-    sync::{atomic::{AtomicBool, Ordering}, Arc},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     thread,
     time::{Duration, Instant},
 };
