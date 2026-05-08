@@ -168,6 +168,7 @@ impl RpcReadResponse {
                 Ok(Spin::Next(Self::ReadingBody { app_id, decoder, reservation, remaining }))
             }
             RpcReadResponse::Complete { app_id, msg } => {
+                tracing::warn!(?p2p_id, "read response");
                 Ok(Spin::Ok(Self::Complete { app_id, msg }))
             }
         }

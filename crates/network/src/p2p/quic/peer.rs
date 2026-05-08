@@ -8,8 +8,7 @@ use quinn_proto::{
     VarInt,
 };
 use silver_common::{
-    ALL_PROTOCOLS, P2pStreamId, PeerId, RPC_PROTOCOLS, RpcOutbound, RpcRequest, RpcResponse,
-    StreamProtocol, TCacheRead,
+    P2pStreamId, PeerId, RpcOutbound, RpcRequest, RpcResponse, StreamProtocol, TCacheRead,
 };
 
 use crate::{
@@ -28,7 +27,8 @@ pub(crate) struct Peer {
     handle: ConnectionHandle,
     connection: Connection,
     streams: FxHashMap<StreamId, Stream>,
-    streams_by_protocol: [Option<StreamId>; ALL_PROTOCOLS.len() + 1],
+    inbound_gossip: Option<StreamId>,
+    outbound_gossip: Option<StreamId>,
 }
 
 impl Peer {
@@ -42,7 +42,8 @@ impl Peer {
             handle,
             connection,
             streams: FxHashMap::with_capacity_and_hasher(16, BuildHasherDefault::default()),
-            streams_by_protocol: [None; ALL_PROTOCOLS.len() + 1],
+            inbound_gossip: None,
+            outbound_gossip: None,
         }
     }
 
@@ -59,14 +60,13 @@ impl Peer {
     }
 
     pub(crate) fn send_gossip(&mut self, msg: TCacheRead) -> SendResult {
-        if let Some(stream) =
-            match &self.streams_by_protocol[StreamProtocol::GossipSub.ordinal() as usize] {
-                Some(id) => self.streams.get_mut(id),
-                None => self
-                    .open_stream(StreamProtocol::GossipSub)
-                    .and_then(|id| self.streams.get_mut(&id)),
-            }
-        {
+        if let Some(stream) = match &self.outbound_gossip {
+            Some(id) => self.streams.get_mut(id),
+            None => self.open_stream(StreamProtocol::GossipSub).and_then(|id| {
+                self.outbound_gossip.replace(id);
+                self.streams.get_mut(&id)
+            }),
+        } {
             if let OutboundBuffer::Gossip(buffer) = &mut stream.out_buffer {
                 match buffer.add_msg(msg) {
                     true => return SendResult::MessageDropped,
@@ -80,12 +80,7 @@ impl Peer {
     pub(crate) fn send_rpc(&mut self, msg: RpcOutbound) -> SendResult {
         if let Some(stream) = match &msg {
             RpcOutbound::Request(req) => {
-                match self.streams_by_protocol[req.request.protocol().ordinal() as usize] {
-                    Some(_) => todo!(), // TODO should allow 2 concurrent ofr each protocol
-                    None => self
-                        .open_stream(req.request.protocol())
-                        .and_then(|id| self.streams.get_mut(&id)),
-                }
+                self.open_stream(req.request.protocol()).and_then(|id| self.streams.get_mut(&id))
             }
             RpcOutbound::Response(rsp) => self.streams.get_mut(&rsp.stream_id.stream_id()),
         } {
@@ -107,21 +102,22 @@ impl Peer {
     }
 
     pub(crate) fn gossip_tail(&self) -> u64 {
-        self.streams_by_protocol[StreamProtocol::GossipSub.ordinal() as usize]
-            .and_then(|id| self.streams.get(&id))
-            .map(|s| s.out_buffer.cache_tail())
-            .unwrap_or(u64::MAX)
+        let mut min = u64::MAX;
+        if let Some(stream) = self.inbound_gossip.as_ref().and_then(|id| self.streams.get(id)) {
+            min = min.min(stream.out_buffer.cache_tail());
+        }
+        if let Some(stream) = self.outbound_gossip.as_ref().and_then(|id| self.streams.get(id)) {
+            min = min.min(stream.out_buffer.cache_tail());
+        }
+        min
     }
 
     pub(crate) fn rpc_tail(&self) -> u64 {
         let mut min = u64::MAX;
-        for protocol in RPC_PROTOCOLS {
-            min = min.min(
-                self.streams_by_protocol[protocol.ordinal() as usize]
-                    .and_then(|id| self.streams.get(&id))
-                    .map(|s| s.out_buffer.cache_tail())
-                    .unwrap_or(u64::MAX),
-            );
+        for stream in self.streams.values() {
+            if stream.p2p_id.protocol().is_request_response() {
+                min = min.min(stream.out_buffer.cache_tail());
+            }
         }
         min
     }
@@ -141,6 +137,13 @@ impl Peer {
     fn open_stream(&mut self, protocol: StreamProtocol) -> Option<StreamId> {
         // All streams are Bi — multistream-select requires bidirectional I/O
         // even for request-response protocols.
+        tracing::debug!(?protocol, "open outbound stream");
+
+        if protocol == StreamProtocol::GossipSub && self.outbound_gossip.is_some() {
+            tracing::warn!(id=?self.id, "open stream: already have outbound gossip stream");
+            return None;
+        }
+
         let id = self.connection.streams().open(Dir::Bi)?;
         let p2p_id = P2pStreamId::new(self.id.connection, id.into(), protocol, false);
 
@@ -148,7 +151,6 @@ impl Peer {
         let out_buffer = out_buffer(&p2p_id, false);
         let stream = StreamState::new_outbound(protocol);
         self.streams.insert(id, Stream { p2p_id, state: Cell::new(stream), out_buffer });
-        self.streams_by_protocol[protocol.ordinal() as usize] = Some(id);
         Some(id)
     }
 
@@ -228,15 +230,27 @@ impl Peer {
             match stream.spin(&mut self.connection, context, on_event) {
                 SpinResult::Ok => {}
                 SpinResult::Protocol(protocol) => {
-                    self.streams_by_protocol[protocol.ordinal() as usize].replace(*id);
+                    tracing::debug!(?id, ?protocol, "incoming stream negotatied");
+                    if protocol == StreamProtocol::GossipSub {
+                        self.inbound_gossip.replace(*id);
+                    }
                 }
                 SpinResult::End => {
-                    self.streams_by_protocol[stream.p2p_id.protocol().ordinal() as usize] = None;
                     to_remove.try_push(stream.p2p_id.stream_id());
                 }
             }
         }
         for id in to_remove {
+            if let Some(in_id) = self.inbound_gossip &&
+                in_id == id
+            {
+                self.inbound_gossip.take();
+            }
+            if let Some(in_id) = self.outbound_gossip &&
+                in_id == id
+            {
+                self.outbound_gossip.take();
+            }
             self.streams.remove(&id);
         }
 
@@ -277,18 +291,27 @@ impl Peer {
                     Some(stream) => match stream.spin(&mut self.connection, context, on_event) {
                         SpinResult::Ok => false,
                         SpinResult::Protocol(protocol) => {
-                            self.streams_by_protocol[protocol.ordinal() as usize].replace(id);
+                            tracing::debug!(?id, ?protocol, "incoming stream negotatied");
+                            if protocol == StreamProtocol::GossipSub {
+                                self.inbound_gossip.replace(id);
+                            }
                             false
                         }
-                        SpinResult::End => {
-                            self.streams_by_protocol[stream.p2p_id.protocol().ordinal() as usize] =
-                                None;
-                            true
-                        }
+                        SpinResult::End => true,
                     },
                     None => false,
                 };
                 if remove {
+                    if let Some(in_id) = self.inbound_gossip &&
+                        in_id == id
+                    {
+                        self.inbound_gossip.take();
+                    }
+                    if let Some(in_id) = self.outbound_gossip &&
+                        in_id == id
+                    {
+                        self.outbound_gossip.take();
+                    }
                     self.streams.remove(&id);
                 }
             }
@@ -366,6 +389,10 @@ impl Stream {
         let mut io = StreamIoImpl { connection, outbound: &mut self.out_buffer };
 
         match state.spin(&mut io, &mut self.p2p_id, context, on_event) {
+            Ok(StreamState::Finished) => {
+                self.state.replace(StreamState::Finished);
+                SpinResult::End
+            }
             Ok(state) => {
                 tracing::trace!(id=?self.p2p_id, ?state, "stream state");
                 let mut result = SpinResult::Ok;

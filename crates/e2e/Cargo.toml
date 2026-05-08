@@ -7,7 +7,6 @@ version.workspace = true
 
 [dependencies]
 buffa.workspace = true
-bytes.workspace = true
 flux.workspace = true
 hdrhistogram.workspace = true
 quinn-proto.workspace = true

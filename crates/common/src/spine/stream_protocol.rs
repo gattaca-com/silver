@@ -49,6 +49,16 @@ impl StreamProtocol {
         !matches!(self, Self::GossipSub | Self::Identity)
     }
 
+    pub const fn has_multipart_response(&self) -> bool {
+        matches!(
+            self,
+            Self::BeaconBlocksByRange |
+                Self::BeaconBlocksByRoot |
+                Self::DataColumnSidecarsByRange |
+                Self::DataColumnSidecarsByRoot
+        )
+    }
+
     /// Next protocol to try if the initial proposal is rejected.
     pub const fn next(&self) -> Option<Self> {
         match self {

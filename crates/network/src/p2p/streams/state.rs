@@ -169,9 +169,13 @@ impl StreamState {
                                 stream_id: *id,
                                 response: msg,
                             })));
-                            Ok(Self::OutgoingRpc(RpcOut::ReadResponse(RpcReadResponse::new(
-                                app_id,
-                            ))))
+                            if id.protocol().has_multipart_response() {
+                                Ok(Self::OutgoingRpc(RpcOut::ReadResponse(RpcReadResponse::new(
+                                    app_id,
+                                ))))
+                            } else {
+                                Ok(Self::Finished)
+                            }
                         }
                         other => Ok(Self::OutgoingRpc(RpcOut::ReadResponse(other))),
                     }

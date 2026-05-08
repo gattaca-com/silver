@@ -3824,13 +3824,11 @@ dependencies = [
  "bytes",
  "ctr",
  "flux",
- "flux-utils",
  "hex",
  "hkdf",
  "rand 0.8.6",
  "rustc-hash",
  "secp256k1",
- "serde",
  "sha2",
  "silver_common",
  "thiserror 1.0.69",
@@ -3844,7 +3842,6 @@ version = "0.0.1"
 dependencies = [
  "async-trait",
  "buffa",
- "bytes",
  "flux",
  "futures",
  "hdrhistogram",
@@ -3877,7 +3874,6 @@ dependencies = [
  "pprof",
  "rand 0.8.6",
  "rand_core 0.6.4",
- "ring",
  "silver_common",
  "snap 1.1.1",
  "tracing",
@@ -3895,7 +3891,6 @@ dependencies = [
  "flux",
  "fxhash",
  "hdrhistogram",
- "hex",
  "ipnet-trie",
  "libc",
  "mio",
@@ -3907,7 +3902,6 @@ dependencies = [
  "ring",
  "rustls",
  "secp256k1",
- "serde",
  "silver_common",
  "silver_discovery",
  "snap 1.1.1",
@@ -3922,7 +3916,6 @@ dependencies = [
 name = "silver_peer"
 version = "0.0.1"
 dependencies = [
- "flux",
  "fxhash",
  "silver_common",
  "slab",

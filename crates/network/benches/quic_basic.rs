@@ -1,6 +1,7 @@
 use std::{
     io::Write,
-    sync::Arc,
+    sync::{Arc, atomic::AtomicBool},
+    thread,
     time::{Duration, Instant},
 };
 
@@ -16,7 +17,7 @@ use tracing::Level;
 const BATCH_SIZE: usize = 8192 * 10;
 
 pub fn broadcast(c: &mut Criterion) {
-    let _guard = tracing_subscriber::fmt().with_max_level(Level::INFO).init();
+    let _guard = tracing_subscriber::fmt().with_max_level(Level::WARN).init();
 
     let group_name = format!("quic_basic_{}", BATCH_SIZE);
     let mut group = c.benchmark_group(group_name);
@@ -26,7 +27,7 @@ pub fn broadcast(c: &mut Criterion) {
 
     let mut rng = rand::rngs::OsRng::default();
 
-    for i in 1..3 {
+    for i in 1..=3 {
         let criterion_batch_size = BatchSize::PerIteration;
         let throughput = Throughput::Elements((total * i) as u64);
 
@@ -109,7 +110,7 @@ pub fn broadcast(c: &mut Criterion) {
                             );
 
                             let gi_producer = TCache::producer(32);
-                            let go_producer = TCache::producer(2 << 28);
+                            let mut go_producer = TCache::producer(2 << 28);
                             let go_consumer = go_producer.cache_ref().random_access().unwrap();
                             let rpc_in = TCache::producer(32);
                             let rpc_out = rpc_in.cache_ref().random_access().unwrap();
@@ -139,44 +140,59 @@ pub fn broadcast(c: &mut Criterion) {
                                 DummyDisc,
                             )
                             .unwrap();
-                            clients.push((tile, data, go_producer));
+
+                            // stage msgs
+                            let mut msgs = vec![];
+                            for datum in &data {
+                                let mut reservation =
+                                    go_producer.reserve(datum.len(), true).unwrap();
+                                reservation.write_all(datum.as_slice()).unwrap();
+
+                                msgs.push(GossipMsgOut { peer_id: 0, tcache: reservation.read() });
+                            }
+                            msgs.reverse();
+
+                            clients.push((tile, msgs));
                         }
 
                         std::thread::sleep(Duration::from_millis(200));
                         (server_handle, clients)
                     },
-                    |(handle, mut clients)| {
-                        while !handle.is_finished() {
-                            for (client, data, producer) in &mut clients {
-                                let mut r_peer = None;
-                                client.spin(&mut |evt| match evt {
-                                    NetworkTileEvent::P2pNet(net_event) => match net_event {
-                                        NetEvent::PeerConnected { peer, .. } => {
-                                            r_peer.replace(peer);
-                                        }
-                                        _ => {}
-                                    },
-                                    NetworkTileEvent::Discovery(_) => {}
-                                });
-                                if client.p2p_mut().pending(0) < 1000 &&
-                                    let Some(datum) = data.last()
-                                {
-                                    let mut reservation =
-                                        producer.reserve(datum.len(), true).unwrap();
-                                    reservation.write_all(&datum.as_slice()).unwrap();
-
-                                    if let SendResult::Ok =
-                                        client.p2p_mut().enqueue_gossip(GossipMsgOut {
-                                            peer_id: 0,
-                                            tcache: reservation.read(),
-                                        })
+                    |(handle, clients)| {
+                        let run = Arc::new(AtomicBool::new(true));
+                        for (mut client, mut msgs) in clients {
+                            let run = run.clone();
+                            thread::spawn(move || {
+                                while run.load(std::sync::atomic::Ordering::Relaxed) {
+                                    let mut r_peer = None;
+                                    client.spin(&mut |evt| match evt {
+                                        NetworkTileEvent::P2pNet(net_event) => match net_event {
+                                            NetEvent::PeerConnected { peer, .. } => {
+                                                r_peer.replace(peer);
+                                            }
+                                            _ => {}
+                                        },
+                                        NetworkTileEvent::Discovery(_) => {}
+                                    });
+                                    if client.p2p_mut().pending(0) < 1000 &&
+                                        let Some(msg) = msgs.last()
                                     {
-                                        data.pop();
+                                        let result = client.p2p_mut().enqueue_gossip(*msg);
+                                        if result == SendResult::Ok {
+                                            msgs.pop();
+                                            //println!("enqueue_gossip failed:
+                                            // {result:?}");
+                                        };
                                     }
                                 }
-                            }
+                            });
+                        }
+
+                        while !handle.is_finished() {
+                            std::thread::sleep(Duration::from_micros(100));
                         }
                         handle.join().unwrap();
+                        run.store(false, std::sync::atomic::Ordering::Relaxed);
                     },
                     criterion_batch_size,
                 );
