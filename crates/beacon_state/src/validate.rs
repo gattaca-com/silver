@@ -1,8 +1,14 @@
+use silver_common::ssz_view::{
+    ATTESTATION_FIXED, AttestationDataView, AttestationView, EXECUTION_PAYLOAD_FIXED,
+    ExecutionPayloadView, PROPOSER_SLASHING_SIZE, ProposerSlashingView,
+};
+
 use crate::{ssz_hash, types::*};
 
 const SECONDS_PER_SLOT: u64 = 12;
 
-// Spec operation limits (Electra).
+// Spec operation limits — `_ELECTRA` suffixed constants retain the spec
+// name; values are unchanged in Fulu.
 pub const MAX_PROPOSER_SLASHINGS: usize = 16;
 pub const MAX_ATTESTER_SLASHINGS_ELECTRA: usize = 1;
 pub const MAX_ATTESTATIONS_ELECTRA: usize = 8;
@@ -10,24 +16,20 @@ pub const MAX_DEPOSITS: usize = 16;
 pub const MAX_VOLUNTARY_EXITS: usize = 16;
 pub const MAX_BLS_TO_EXECUTION_CHANGES: usize = 16;
 
-// TODO(BLS): caller must FastAggregateVerify each attestation's aggregate
-// signature against the participants' pubkeys under DOMAIN_BEACON_ATTESTER for
-// the attestation's target epoch. Not yet wired into process_single_attestation
-// — every block-included attestation should be BLS-checked before
-// participation flags are set.
 pub fn validate_attestation_data(
     att: &[u8],
     state_slot: Slot,
     current_epoch: Epoch,
     previous_epoch: Epoch,
 ) -> bool {
-    if att.len() < 236 {
+    if att.len() < ATTESTATION_FIXED {
         return false;
     }
 
-    let att_slot = u64::from_le_bytes(att[4..12].try_into().unwrap());
-    let att_index = u64::from_le_bytes(att[12..20].try_into().unwrap());
-    let target_epoch = u64::from_le_bytes(att[92..100].try_into().unwrap());
+    let data = AttestationView::data(att);
+    let att_slot = AttestationDataView::slot(data);
+    let att_index = AttestationDataView::index(data);
+    let target_epoch = AttestationDataView::target_epoch(data);
 
     if att_slot >= state_slot {
         return false;
@@ -50,33 +52,23 @@ pub fn validate_attestation_data(
 }
 
 pub fn validate_proposer_slashing(data: &[u8]) -> bool {
-    if data.len() < 416 {
+    if data.len() < PROPOSER_SLASHING_SIZE {
         return false;
     }
-    // Header 1: slot at [0..8), proposer at [8..16)
-    // Header 2: slot at [208..216), proposer at [216..224)
-    let slot_1 = u64::from_le_bytes(data[0..8].try_into().unwrap());
-    let proposer_1 = u64::from_le_bytes(data[8..16].try_into().unwrap());
-    let slot_2 = u64::from_le_bytes(data[208..216].try_into().unwrap());
-    let proposer_2 = u64::from_le_bytes(data[216..224].try_into().unwrap());
-
-    if proposer_1 != proposer_2 {
+    let s: &[u8; PROPOSER_SLASHING_SIZE] = data[..PROPOSER_SLASHING_SIZE].try_into().unwrap();
+    if ProposerSlashingView::h1_proposer_index(s) != ProposerSlashingView::h2_proposer_index(s) {
         return false;
     }
-    if slot_1 != slot_2 {
+    if ProposerSlashingView::h1_slot(s) != ProposerSlashingView::h2_slot(s) {
         return false;
     }
+    // Distinct headers — same SignedBeaconBlockHeader is not slashable.
     if data[0..112] == data[208..320] {
         return false;
     }
-    // TODO(BLS): verify SignedBeaconBlockHeader signatures on both headers under
-    // DOMAIN_BEACON_PROPOSER (sig at data[112..208] and data[320..416]).
     true
 }
 
-// TODO(BLS): caller must verify SignedVoluntaryExit signature under
-// DOMAIN_VOLUNTARY_EXIT before invoking this. The sig is the trailing 96 B of
-// the SSZ container; not currently checked in process_voluntary_exits.
 pub fn validate_voluntary_exit(
     vid: &ValidatorIdentity,
     epoch: &EpochData,
@@ -103,9 +95,6 @@ pub fn validate_voluntary_exit(
     true
 }
 
-// TODO(BLS): verify the SignedBLSToExecutionChange signature under
-// DOMAIN_BLS_TO_EXECUTION_CHANGE (Capella). Caller in
-// process_bls_to_execution_changes drops only structural / credential checks.
 pub fn validate_bls_to_execution_change(
     vid: &ValidatorIdentity,
     vi: usize,
@@ -130,16 +119,12 @@ pub fn validate_execution_payload(
     payload: &[u8],
     block_slot: Slot,
 ) -> bool {
-    if payload.len() < 528 {
+    if payload.len() < EXECUTION_PAYLOAD_FIXED {
         return false;
     }
-    let b256 = |off: usize| -> B256 { payload[off..off + 32].try_into().unwrap() };
-    let u64le =
-        |off: usize| -> u64 { u64::from_le_bytes(payload[off..off + 8].try_into().unwrap()) };
 
     // parent_hash == state.latest_execution_payload_header.block_hash
-    let parent_hash = b256(0);
-    if parent_hash != sd.latest_execution_payload_header.block_hash &&
+    if ExecutionPayloadView::parent_hash(payload) != &sd.latest_execution_payload_header.block_hash &&
         sd.latest_execution_payload_header.block_number > 0
     {
         return false;
@@ -147,12 +132,12 @@ pub fn validate_execution_payload(
 
     // Spec: timestamp == compute_timestamp_at_slot(state, block.slot).
     let expected_timestamp = imm.genesis_time + block_slot * SECONDS_PER_SLOT;
-    if u64le(428) != expected_timestamp {
+    if ExecutionPayloadView::timestamp(payload) != expected_timestamp {
         return false;
     }
 
     // Spec: prev_randao == get_randao_mix(state, current_epoch).
-    if b256(372) != sd.randao_mix_current {
+    if ExecutionPayloadView::prev_randao(payload) != &sd.randao_mix_current {
         return false;
     }
 

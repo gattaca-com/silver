@@ -14,19 +14,22 @@ pub fn sha256(data: &[u8]) -> B256 {
     out
 }
 
-fn hash_concat(a: &B256, b: &B256) -> B256 {
+#[inline]
+pub(crate) fn hash_concat(a: &B256, b: &B256) -> B256 {
     let mut buf = [0u8; 64];
     buf[..32].copy_from_slice(a);
     buf[32..].copy_from_slice(b);
     sha256(&buf)
 }
 
+#[inline]
 fn uint64_chunk(v: u64) -> B256 {
     let mut chunk = [0u8; 32];
     chunk[..8].copy_from_slice(&v.to_le_bytes());
     chunk
 }
 
+#[inline]
 fn usize_chunk(v: usize) -> B256 {
     uint64_chunk(v as u64)
 }
@@ -126,6 +129,7 @@ pub fn merkleize_padded(chunks: &[B256], leaf_count: usize, zh: &[B256]) -> B256
     merkle_finalize(stack, target_depth, zh)
 }
 
+#[inline]
 pub fn mix_in_length(root: &B256, length: usize) -> B256 {
     hash_concat(root, &usize_chunk(length))
 }
@@ -200,7 +204,7 @@ pub fn hash_eth1_data(e: &Eth1Data, zh: &[B256]) -> B256 {
 }
 
 /// Compute hash_tree_root of a BeaconBlockBody from raw SSZ bytes.
-/// Electra layout: 13 fields → 16 leaves.
+/// Fulu layout: 13 fields → 16 leaves.
 pub fn hash_tree_root_body(body: &[u8], zh: &[B256]) -> B256 {
     if body.len() < 396 {
         return ZERO_HASH;
@@ -450,11 +454,40 @@ fn hash_attestation(d: &[u8], zh: &[B256]) -> B256 {
     merkleize(&[agg_root, data_root, sig_root, cb], zh)
 }
 
-pub(crate) fn hash_attestation_data(d: &[u8], zh: &[B256]) -> B256 {
+/// SSZ root of the 128-byte AttestationData container. Used both for block
+/// hashing and for signature signing-roots (attestations + IndexedAttestations
+/// inside AttesterSlashing).
+pub fn hash_attestation_data(d: &[u8], zh: &[B256]) -> B256 {
     let u64c = |off: usize| uint64_chunk(u64::from_le_bytes(d[off..off + 8].try_into().unwrap()));
     let b = |off: usize| -> B256 { d[off..off + 32].try_into().unwrap() };
     let cp = |off: usize| hash_concat(&u64c(off), &b(off + 8));
     merkleize(&[u64c(0), u64c(8), b(16), cp(48), cp(88)], zh)
+}
+
+/// SSZ root of `VoluntaryExit { epoch, validator_index }`. Two uint64 fields
+/// merkleized in order.
+pub fn hash_tree_root_voluntary_exit(epoch: u64, validator_index: u64, zh: &[B256]) -> B256 {
+    merkleize(&[uint64_chunk(epoch), uint64_chunk(validator_index)], zh)
+}
+
+/// SSZ root of `BLSToExecutionChange { validator_index, from_bls_pubkey,
+/// to_execution_address }`. The pubkey is a 48-byte vector → packed into two
+/// 32-byte chunks (`pad_to_64(pubkey)` then sha256). The address is 20 bytes
+/// in the low end of a 32-byte chunk.
+pub fn hash_tree_root_bls_change(
+    validator_index: u64,
+    from_pubkey: &[u8; 48],
+    to_address: &[u8; 20],
+    zh: &[B256],
+) -> B256 {
+    let mut pk_chunk = [0u8; 64];
+    pk_chunk[..48].copy_from_slice(from_pubkey);
+    let pk_root = sha256(&pk_chunk);
+
+    let mut addr_chunk = [0u8; 32];
+    addr_chunk[..20].copy_from_slice(to_address);
+
+    merkleize(&[uint64_chunk(validator_index), pk_root, addr_chunk], zh)
 }
 
 fn hash_indexed_attestation(d: &[u8], zh: &[B256]) -> B256 {

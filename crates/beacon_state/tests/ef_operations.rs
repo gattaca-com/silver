@@ -6,6 +6,7 @@ use ef_common::{
     LoadedState, compare_states, iter_test_cases, load_state, snappy_decode, spec_tests_dir,
 };
 use silver_beacon_state::{
+    bls::SigBatch,
     ssz_hash::compute_zero_hashes,
     state_transition::{self, ShufflingRef},
     types::SLOTS_PER_EPOCH,
@@ -14,7 +15,8 @@ use silver_beacon_state::{
 fn operations_handler(
     handler_name: &str,
     operation_file: &str,
-    run: impl Fn(&mut LoadedState, &[u8]),
+    detects_reject: bool,
+    run: impl Fn(&mut LoadedState, &[u8]) -> bool,
 ) {
     let base = spec_tests_dir().join("tests/mainnet/fulu/operations").join(handler_name);
     let cases = iter_test_cases(&base);
@@ -32,11 +34,6 @@ fn operations_handler(
         let post_path = dir.join("post.ssz_snappy");
         let op_path = dir.join(format!("{operation_file}.ssz_snappy"));
 
-        if !post_path.exists() {
-            // Expected failure case — skip (we don't reject invalid ops yet).
-            skip += 1;
-            continue;
-        }
         if !op_path.exists() {
             skip += 1;
             continue;
@@ -44,9 +41,41 @@ fn operations_handler(
 
         let mut pre = load_state(&pre_path, &zh);
         let op_ssz = snappy_decode(&op_path);
-        run(&mut pre, &op_ssz);
-        let post = load_state(&post_path, &zh);
 
+        if !post_path.exists() {
+            if !detects_reject {
+                skip += 1;
+                continue;
+            }
+            // Expected-reject case: op must be rejected and pre-state
+            // must not be mutated past the rejection point.
+            let pre_snapshot = load_state(&pre_path, &zh);
+            let accepted = run(&mut pre, &op_ssz);
+            if accepted {
+                fail += 1;
+                eprintln!("{name}: expected reject, but op was accepted");
+                continue;
+            }
+            let diffs = compare_states(name, &pre, &pre_snapshot, &zh);
+            if diffs.is_empty() {
+                pass += 1;
+            } else {
+                fail += 1;
+                eprintln!("{name}: rejected but pre-state was mutated");
+                for d in &diffs {
+                    eprintln!("{d}");
+                }
+            }
+            continue;
+        }
+
+        let accepted = run(&mut pre, &op_ssz);
+        if !accepted {
+            fail += 1;
+            eprintln!("{name}: expected accept, but op was rejected");
+            continue;
+        }
+        let post = load_state(&post_path, &zh);
         let diffs = compare_states(name, &pre, &post, &zh);
         if diffs.is_empty() {
             pass += 1;
@@ -63,27 +92,45 @@ fn operations_handler(
 
 #[test]
 fn proposer_slashing() {
-    operations_handler("proposer_slashing", "proposer_slashing", |s, op| {
-        state_transition::process_proposer_slashings(&s.vid, &mut s.epoch, &mut s.sd, op);
+    let zh = compute_zero_hashes();
+    operations_handler("proposer_slashing", "proposer_slashing", true, move |s, op| {
+        let mut batch = SigBatch::new();
+        if !state_transition::collect_sigs_proposer_slashings(&s.imm, &s.vid, op, &mut batch, &zh) {
+            return false;
+        }
+        batch.verify_all() &&
+            state_transition::process_proposer_slashings(&s.vid, &mut s.epoch, &mut s.sd, op)
     });
 }
 
 #[test]
 fn attester_slashing() {
-    // Single attester slashing: wrap as 1-element variable list (4-byte offset +
-    // data).
-    operations_handler("attester_slashing", "attester_slashing", |s, op| {
+    let zh = compute_zero_hashes();
+    operations_handler("attester_slashing", "attester_slashing", true, move |s, op| {
         let mut list = Vec::with_capacity(4 + op.len());
-        // Offset to first (only) element = 4.
         list.extend_from_slice(&4u32.to_le_bytes());
         list.extend_from_slice(op);
-        state_transition::process_attester_slashings(&s.vid, &mut s.epoch, &mut s.sd, &list);
+        let mut active_scratch = Vec::new();
+        let mut batch = SigBatch::new();
+        if !state_transition::collect_sigs_attester_slashings(
+            &s.imm,
+            &s.vid,
+            &list,
+            &mut active_scratch,
+            &mut batch,
+            &zh,
+        ) {
+            return false;
+        }
+        batch.verify_all() &&
+            state_transition::process_attester_slashings(&s.vid, &mut s.epoch, &mut s.sd, &list)
     });
 }
 
 #[test]
 fn attestation() {
-    operations_handler("attestation", "attestation", |s, op| {
+    let zh = compute_zero_hashes();
+    operations_handler("attestation", "attestation", true, move |s, op| {
         let mut list = Vec::with_capacity(4 + op.len());
         list.extend_from_slice(&4u32.to_le_bytes());
         list.extend_from_slice(op);
@@ -93,7 +140,6 @@ fn attestation() {
         let prev_epoch = current_epoch.saturating_sub(1);
         let n = s.vid.validator_cnt;
 
-        // Build shuffling from the state's randao_mixes.
         use silver_beacon_state::shuffling;
         let cur_seed = shuffling::get_seed(&s.epoch, current_epoch, 1); // DOMAIN_BEACON_ATTESTER
         let prev_seed = shuffling::get_seed(&s.epoch, prev_epoch, 1);
@@ -115,68 +161,110 @@ fn attestation() {
             previous_cps: prev_cps,
         };
         let mut votes_sink = Vec::new();
-        state_transition::process_attestations(
+        let mut active_scratch = Vec::new();
+        let mut batch = SigBatch::new();
+        if !state_transition::collect_sigs_attestations(
+            &s.imm,
             &s.vid,
-            &s.epoch,
-            &s.roots,
-            &mut s.sd,
             &list,
             block_slot,
-            proposer_index,
             Some(&sref),
-            &mut votes_sink,
-        );
+            &mut active_scratch,
+            &mut batch,
+            &zh,
+        ) {
+            return false;
+        }
+        batch.verify_all() &&
+            state_transition::process_attestations(
+                &s.vid,
+                &s.epoch,
+                &s.roots,
+                &mut s.sd,
+                &list,
+                block_slot,
+                proposer_index,
+                Some(&sref),
+                &mut votes_sink,
+                &mut active_scratch,
+            )
     });
 }
 
 #[test]
 fn deposit() {
     let zh = compute_zero_hashes();
-    operations_handler("deposit", "deposit", move |s, op| {
+    operations_handler("deposit", "deposit", false, move |s, op| {
         state_transition::process_deposits(&mut s.vid, &mut s.epoch, &mut s.sd, &mut s.pq, op, &zh);
+        true
     });
 }
 
 #[test]
 fn voluntary_exit() {
-    operations_handler("voluntary_exit", "voluntary_exit", |s, op| {
-        state_transition::process_voluntary_exits(&s.vid, &mut s.epoch, &mut s.sd, &s.pq, op);
+    let zh = compute_zero_hashes();
+    operations_handler("voluntary_exit", "voluntary_exit", true, move |s, op| {
+        let mut batch = SigBatch::new();
+        state_transition::collect_sigs_voluntary_exits(&s.imm, &s.vid, op, &mut batch, &zh);
+        batch.verify_all() &&
+            state_transition::process_voluntary_exits(&s.vid, &mut s.epoch, &mut s.sd, &s.pq, op)
     });
 }
 
 #[test]
 fn bls_to_execution_change() {
-    operations_handler("bls_to_execution_change", "address_change", |s, op| {
-        state_transition::process_bls_to_execution_changes(&mut s.vid, &mut s.sd, op);
+    let zh = compute_zero_hashes();
+    operations_handler("bls_to_execution_change", "address_change", true, move |s, op| {
+        let mut batch = SigBatch::new();
+        if !state_transition::collect_sigs_bls_to_execution_changes(
+            &s.imm, &s.vid, op, &mut batch, &zh,
+        ) {
+            return false;
+        }
+        batch.verify_all() && state_transition::process_bls_to_execution_changes(&mut s.vid, op)
     });
 }
 
 #[test]
 fn sync_aggregate() {
-    operations_handler("sync_aggregate", "sync_aggregate", |s, op| {
-        // Proposer index for reward distribution — use proposer_lookahead.
+    operations_handler("sync_aggregate", "sync_aggregate", true, move |s, op| {
         let proposer_index = s.sd.proposer_lookahead[(s.sd.slot % SLOTS_PER_EPOCH) as usize];
-        state_transition::process_sync_aggregate(
+        let block_slot = s.sd.slot;
+        let mut active_scratch = Vec::new();
+        let mut batch = SigBatch::new();
+        state_transition::collect_sigs_sync_aggregate(
+            &s.imm,
             &s.vid,
             &s.longtail,
-            &s.epoch,
-            &mut s.sd,
             op,
-            proposer_index,
+            block_slot,
+            &s.roots,
+            &mut active_scratch,
+            &mut batch,
         );
+        batch.verify_all() &&
+            state_transition::process_sync_aggregate(
+                &s.vid,
+                &s.longtail,
+                &s.epoch,
+                &mut s.sd,
+                op,
+                proposer_index,
+            )
     });
 }
 
 #[test]
 fn deposit_request() {
-    operations_handler("deposit_request", "deposit_request", |s, op| {
+    operations_handler("deposit_request", "deposit_request", false, |s, op| {
         state_transition::process_deposit_requests(&mut s.sd, &mut s.pq, op);
+        true
     });
 }
 
 #[test]
 fn withdrawal_request() {
-    operations_handler("withdrawal_request", "withdrawal_request", |s, op| {
+    operations_handler("withdrawal_request", "withdrawal_request", false, |s, op| {
         state_transition::process_withdrawal_requests(
             &s.vid,
             &mut s.epoch,
@@ -184,12 +272,13 @@ fn withdrawal_request() {
             &mut s.pq,
             op,
         );
+        true
     });
 }
 
 #[test]
 fn consolidation_request() {
-    operations_handler("consolidation_request", "consolidation_request", |s, op| {
+    operations_handler("consolidation_request", "consolidation_request", false, |s, op| {
         state_transition::process_consolidation_requests(
             &mut s.vid,
             &mut s.epoch,
@@ -197,23 +286,24 @@ fn consolidation_request() {
             &mut s.pq,
             op,
         );
+        true
     });
 }
 
 #[test]
 fn withdrawals() {
     // The withdrawals test provides an execution_payload, not the full block body.
-    operations_handler("withdrawals", "execution_payload", |s, op| {
-        state_transition::process_withdrawals(&s.vid, &s.epoch, &mut s.sd, &mut s.pq, op);
+    operations_handler("withdrawals", "execution_payload", true, |s, op| {
+        state_transition::process_withdrawals(&s.vid, &s.epoch, &mut s.sd, &mut s.pq, op)
     });
 }
 
 #[test]
 fn execution_payload() {
     let zh = compute_zero_hashes();
-    operations_handler("execution_payload", "body", move |s, op| {
+    operations_handler("execution_payload", "body", false, move |s, op| {
         if op.len() < 396 {
-            return;
+            return true;
         }
         let off = |pos: usize| u32::from_le_bytes(op[pos..pos + 4].try_into().unwrap()) as usize;
         let exec_off = off(380);
@@ -226,17 +316,18 @@ fn execution_payload() {
             );
             state_transition::process_withdrawals(&s.vid, &s.epoch, &mut s.sd, &mut s.pq, payload);
         }
+        true
     });
 }
 
 #[test]
 fn block_header() {
     let zh = compute_zero_hashes();
-    operations_handler("block_header", "block", move |s, op| {
+    operations_handler("block_header", "block", true, move |s, op| {
         // op is a BeaconBlock SSZ: slot(8) + proposer_index(8) + parent_root(32) +
         // state_root(32) + body_offset(4) + body(...)
         if op.len() < 84 {
-            return;
+            return false;
         }
         let slot = u64::from_le_bytes(op[0..8].try_into().unwrap());
         let proposer_index = u64::from_le_bytes(op[8..16].try_into().unwrap());
@@ -253,6 +344,6 @@ fn block_header() {
             parent_root,
             body_root,
             &zh,
-        );
+        )
     });
 }

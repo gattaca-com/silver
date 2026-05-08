@@ -1,5 +1,9 @@
-use std::alloc::{Layout, alloc_zeroed};
+use std::{
+    alloc::{Layout, alloc_zeroed},
+    collections::VecDeque,
+};
 
+use blst::min_pk::PublicKey;
 use flux::utils::ArrayVec;
 
 pub fn box_zeroed<T>() -> Box<T> {
@@ -68,7 +72,9 @@ pub const MAX_FORK_CHOICE_NODES: usize = 256;
 // different active set / seed). Key by `(epoch, vid_gen, epoch_gen)` and
 // size to fork-fanout × 2.
 pub const MAX_SHUFFLING_CACHE: usize = 4;
-pub const MAX_ATTESTERS_PER_AGGREGATE: usize = 16 * 1024;
+/// Worst-case participants in a block-included Fulu `Attestation`:
+/// `MAX_COMMITTEES_PER_SLOT (64) * MAX_VALIDATORS_PER_COMMITTEE (2048)`.
+pub const MAX_ATTESTERS_PER_AGGREGATE: usize = 64 * 2048;
 
 // Tier pool capacities.
 //
@@ -95,7 +101,7 @@ pub struct Checkpoint {
 }
 
 /// Tier 0: never-mutated-on-hot-path scalars.
-/// Mutated only at hard forks. 88 B.
+/// Mutated only at hard forks. 96 B.
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct Immutable {
@@ -104,14 +110,27 @@ pub struct Immutable {
     /// Precomputed SSZ tree hash root of the frozen historical_roots list.
     pub historical_roots_hash: B256,
     pub fork: Fork,
+    /// Spec pins `BLS-to-execution-change` signatures to `GENESIS_FORK_VERSION`
+    /// (Capella) so signed messages stay valid across forks.
+    pub genesis_fork_version: Version,
+    /// Spec pins `voluntary_exit` signatures to `CAPELLA_FORK_VERSION` (Fulu
+    /// `process_voluntary_exit` inherits the post-Capella pin).
+    pub capella_fork_version: Version,
 }
 
 /// Mutated rarely — new deposits, BLS-to-exec changes, compounding switch.
-/// ~160 MB at 2M validators.
+/// ~352 MB at 2M validators (compressed pubkeys 96 MB, decompressed 192 MB,
+/// withdrawal credentials 64 MB).
+///
+/// `val_pubkey_decompressed` is a parallel cache of `val_pubkey` populated at
+/// admission (`decompose` for the bootstrap state, `apply_deposit` for new
+/// validators). All hot-path BLS verifies use the cache; the compressed copy
+/// is retained for SSZ hashing, gossip messages, and rare cold paths.
 #[repr(C)]
 pub struct ValidatorIdentity {
     pub validator_cnt: usize,
     pub val_pubkey: [BLSPubkey; MAX_VALIDATORS],
+    pub val_pubkey_decompressed: [PublicKey; MAX_VALIDATORS],
     pub val_withdrawal_credentials: [B256; MAX_VALIDATORS],
 }
 
@@ -211,7 +230,7 @@ pub struct SlotData {
 #[derive(Clone, Default)]
 pub struct PendingQueues {
     pub pending_deposits: Vec<PendingDeposit>,
-    pub pending_partial_withdrawals: Vec<PendingPartialWithdrawal>,
+    pub pending_partial_withdrawals: VecDeque<PendingPartialWithdrawal>,
     pub pending_consolidations: Vec<PendingConsolidation>,
 }
 
@@ -219,7 +238,7 @@ impl PendingQueues {
     pub fn new() -> Self {
         Self {
             pending_deposits: Vec::with_capacity(PENDING_DEPOSITS_CAP),
-            pending_partial_withdrawals: Vec::with_capacity(PENDING_PARTIAL_WITHDRAWALS_CAP),
+            pending_partial_withdrawals: VecDeque::with_capacity(PENDING_PARTIAL_WITHDRAWALS_CAP),
             pending_consolidations: Vec::with_capacity(PENDING_CONSOLIDATIONS_CAP),
         }
     }
@@ -325,7 +344,7 @@ pub struct Fork {
     pub epoch: Epoch,
 }
 
-/// Execution layer payload header (Deneb/Electra).
+/// Execution layer payload header.
 /// 17 fields. extra_data is variable but bounded to 32 bytes.
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -413,14 +432,20 @@ const _: () = {
     assert!(size_of::<Fork>() == 4 + 4 + 8);
     assert!(size_of::<Checkpoint>() == 8 + 32);
 
-    assert!(size_of::<Immutable>() == 8 + 32 + 32 + size_of::<Fork>());
+    assert!(size_of::<Immutable>() == 8 + 32 + 32 + size_of::<Fork>() + 4 + 4);
 
     assert!(
         size_of::<ValidatorIdentity>() ==
             size_of::<usize>() +
                 size_of::<BLSPubkey>() * MAX_VALIDATORS +
+                size_of::<PublicKey>() * MAX_VALIDATORS +
                 size_of::<B256>() * MAX_VALIDATORS
     );
+    // BLSPubkey is byte-aligned, so PublicKey's alignment dictates the
+    // overall struct alignment. If blst ever increases the alignment of
+    // its underlying affine point (e.g. for SIMD), the layout calc above
+    // would silently start including pad bytes — assert it stays at 8.
+    assert!(align_of::<PublicKey>() == 8);
 
     assert!(
         size_of::<EpochData>() ==

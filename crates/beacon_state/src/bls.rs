@@ -1,32 +1,53 @@
 use blst::{
-    BLST_ERROR,
+    BLST_ERROR, Pairing, blst_p1_affine, blst_p2_affine,
     min_pk::{AggregatePublicKey, PublicKey, Signature},
+};
+use ring::rand::{SecureRandom, SystemRandom};
+use silver_common::ssz_view::{
+    SIGNED_BEACON_BLOCK_MIN, SINGLE_ATT_SIZE, SignedBeaconBlockView, SingleAttestationView,
 };
 
 use crate::{
-    shuffling::{DOMAIN_BEACON_PROPOSER, DOMAIN_RANDAO},
-    ssz_hash::{self, hash_tree_root_block_header},
-    types::{
-        self, B256, BLSPubkey, BeaconBlockHeader, Epoch, Fork, Immutable, SLOTS_PER_EPOCH,
-        ValidatorIdentity,
-    },
+    ssz_hash::{self, hash_attestation_data, hash_tree_root_block_header},
+    types::{B256, BLSPubkey, BeaconBlockHeader, SYNC_COMMITTEE_SIZE},
+};
+
+// `verify_batch` casts `&PublicKey -> &blst_p1_affine` and
+// `&Signature -> &blst_p2_affine`. blst-rs declares both as
+// `#[repr(transparent)]` single-field wrappers
+const _: () = {
+    use core::mem::{align_of, size_of};
+    assert!(size_of::<PublicKey>() == size_of::<blst_p1_affine>());
+    assert!(align_of::<PublicKey>() == align_of::<blst_p1_affine>());
+    assert!(size_of::<Signature>() == size_of::<blst_p2_affine>());
+    assert!(align_of::<Signature>() == align_of::<blst_p2_affine>());
 };
 
 const DST: &[u8] = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_";
 
-/// Compute the 32-byte domain for a given domain type, fork version, and
-/// genesis validators root.
-/// domain[0..4] = domain_type LE, domain[4..32] = fork_data_root[0..28].
-fn compute_domain(
+/// G2 point at infinity (compressed). Spec: a sync_aggregate over an empty
+/// participant set verifies iff the signature is this value.
+const G2_POINT_AT_INFINITY: [u8; 96] = {
+    let mut s = [0u8; 96];
+    s[0] = 0xc0;
+    s
+};
+
+pub const DOMAIN_BEACON_PROPOSER: u32 = 0x0000_0000;
+pub const DOMAIN_BEACON_ATTESTER: u32 = 0x0000_0001;
+pub const DOMAIN_RANDAO: u32 = 0x0000_0002;
+pub const DOMAIN_VOLUNTARY_EXIT: u32 = 0x0000_0004;
+pub const DOMAIN_SYNC_COMMITTEE: u32 = 0x0000_0007;
+pub const DOMAIN_BLS_TO_EXECUTION_CHANGE: u32 = 0x0000_000a;
+
+pub fn compute_domain(
     domain_type: u32,
     fork_version: [u8; 4],
-    genesis_validators_root: B256,
-    zh: &[B256],
+    genesis_validators_root: &B256,
 ) -> B256 {
-    // ForkData: current_version(4B padded to 32) + genesis_validators_root(32B).
     let mut version_chunk = [0u8; 32];
     version_chunk[..4].copy_from_slice(&fork_version);
-    let fork_data_root = ssz_hash::merkleize(&[version_chunk, genesis_validators_root], zh);
+    let fork_data_root = ssz_hash::hash_concat(&version_chunk, genesis_validators_root);
 
     let mut domain = [0u8; 32];
     domain[0..4].copy_from_slice(&domain_type.to_le_bytes());
@@ -34,89 +55,222 @@ fn compute_domain(
     domain
 }
 
-/// Compute signing root = hash_tree_root(SigningData { object_root, domain }).
-/// SigningData is a 2-field container → hash_concat(object_root, domain).
-fn compute_signing_root(object_root: B256, domain: B256, zh: &[B256]) -> B256 {
-    ssz_hash::merkleize(&[object_root, domain], zh)
+pub fn compute_signing_root(object_root: &B256, domain: &B256) -> B256 {
+    ssz_hash::hash_concat(object_root, domain)
 }
 
-/// Get the fork version for a given epoch from the Fork struct.
-fn get_fork_version(fork: &Fork, epoch: Epoch) -> [u8; 4] {
-    if epoch < fork.epoch { fork.previous_version } else { fork.current_version }
+#[inline]
+pub fn fork_version_at_epoch(
+    fork_epoch: u64,
+    previous_version: [u8; 4],
+    current_version: [u8; 4],
+    epoch: u64,
+) -> [u8; 4] {
+    if epoch < fork_epoch { previous_version } else { current_version }
 }
 
-/// Verify the proposer's BLS signature on a signed beacon block.
-/// `block_bytes` is the full SignedBeaconBlock SSZ.
-#[allow(clippy::too_many_arguments)]
-pub fn verify_block_signature(
-    imm: &Immutable,
-    vid: &ValidatorIdentity,
-    block_bytes: &[u8],
-    block_slot: u64,
-    proposer_index: u64,
-    body_root: B256,
-    zh: &[B256],
-) -> bool {
-    if block_bytes.len() < 184 {
-        return false;
+/// Single-key BLS verify over an arbitrary 32-byte message. Caller passes
+/// a decompressed pubkey (from `vid.val_pubkey_decompressed`) — pubkeys are
+/// admission-validated, so we skip `pk_validate` and only group-check the
+/// signature. For one-shot paths where only the compressed bytes are
+/// available (e.g. `verify_deposit_signature`), use `verify_one_compressed`.
+pub(crate) fn verify_one(pk: &PublicKey, sig: &[u8; 96], message: &B256) -> bool {
+    let Ok(sig) = Signature::from_bytes(sig) else { return false };
+    sig.verify(true, message, DST, &[], pk, false) == BLST_ERROR::BLST_SUCCESS
+}
+
+/// Same as `verify_one` but decompresses the pubkey inline. Used at
+/// admission time (deposit pop) before the cache exists.
+pub(crate) fn verify_one_compressed(pubkey: &BLSPubkey, sig: &[u8; 96], message: &B256) -> bool {
+    let Ok(pk) = PublicKey::key_validate(pubkey) else { return false };
+    verify_one(&pk, sig, message)
+}
+
+pub struct SigBatch {
+    msgs: Vec<B256>,
+    pks: Vec<PublicKey>,
+    sigs: Vec<Signature>,
+    /// Per-tuple 64-bit random scalars, packed as little-endian bytes.
+    /// Pre-allocated to `SIG_BATCH_CAP * 8`; resized (no realloc) per call.
+    rand_bytes: Vec<u8>,
+    /// Multi-pairing accumulator.
+    pairing: Pairing,
+    poisoned: bool,
+}
+
+/// Capacity for the per-block sig batch. Worst-case Fulu block envelope at
+/// the spec's MAX_* limits: 1 (block) + 1 (randao) + 16×2 (proposer
+/// slashings) + 1×2 (attester slashings) + 8 (attestations) + 16 (exits) +
+/// 16 (bls_changes) + 1 (sync_aggregate) = 77. Round up.
+const SIG_BATCH_CAP: usize = 128;
+
+impl Default for SigBatch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SigBatch {
+    pub fn new() -> Self {
+        Self {
+            msgs: Vec::with_capacity(SIG_BATCH_CAP),
+            pks: Vec::with_capacity(SIG_BATCH_CAP),
+            sigs: Vec::with_capacity(SIG_BATCH_CAP),
+            rand_bytes: Vec::with_capacity(SIG_BATCH_CAP * 8),
+            pairing: Pairing::new(true, DST),
+            poisoned: false,
+        }
     }
 
-    let vi = proposer_index as usize;
-    if vi >= vid.validator_cnt {
-        return false;
+    #[inline]
+    pub fn poison(&mut self) {
+        self.poisoned = true;
     }
 
-    // TODO(spec): hardcoded SignedBeaconBlock SSZ offsets — fork-fragile.
-    // If the wire layout shifts in a future fork, sig/parent/state will be
-    // misread silently. Centralise via `SignedBeaconBlockView` accessors or a
-    // wire-format constant module.
-    let sig_bytes = &block_bytes[4..100];
-    let parent_root: B256 = block_bytes[116..148].try_into().unwrap();
-    let state_root: B256 = block_bytes[148..180].try_into().unwrap();
-
-    let header =
-        BeaconBlockHeader { slot: block_slot, proposer_index, parent_root, state_root, body_root };
-    let object_root = hash_tree_root_block_header(&header, zh);
-
-    let block_epoch = block_slot / SLOTS_PER_EPOCH;
-    let fork_version = get_fork_version(&imm.fork, block_epoch);
-    let domain =
-        compute_domain(DOMAIN_BEACON_PROPOSER, fork_version, imm.genesis_validators_root, zh);
-    let signing_root = compute_signing_root(object_root, domain, zh);
-
-    verify_signature(&vid.val_pubkey[vi], sig_bytes, &signing_root)
-}
-
-/// Verify the RANDAO reveal signature.
-/// The message is the epoch (uint64), signed by the proposer.
-pub fn verify_randao_reveal(
-    imm: &Immutable,
-    vid: &ValidatorIdentity,
-    reveal: &[u8],
-    block_slot: u64,
-    proposer_index: u64,
-    zh: &[B256],
-) -> bool {
-    let vi = proposer_index as usize;
-    if vi >= vid.validator_cnt || reveal.len() != 96 {
-        return false;
+    pub fn clear(&mut self) {
+        self.msgs.clear();
+        self.pks.clear();
+        self.sigs.clear();
+        self.rand_bytes.clear();
+        self.poisoned = false;
     }
 
-    let block_epoch = block_slot / SLOTS_PER_EPOCH;
-    // Message = hash_tree_root(epoch). Epoch is a uint64 → 32-byte LE-padded chunk.
-    let mut epoch_chunk = [0u8; 32];
-    epoch_chunk[..8].copy_from_slice(&block_epoch.to_le_bytes());
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.msgs.len()
+    }
 
-    let fork_version = get_fork_version(&imm.fork, block_epoch);
-    let domain = compute_domain(DOMAIN_RANDAO, fork_version, imm.genesis_validators_root, zh);
-    let signing_root = compute_signing_root(epoch_chunk, domain, zh);
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.msgs.is_empty()
+    }
 
-    verify_signature(&vid.val_pubkey[vi], reveal, &signing_root)
+    pub fn push_one(&mut self, pubkey: &PublicKey, sig: &[u8; 96], signing_root: B256) {
+        let Ok(sig) = Signature::from_bytes(sig) else {
+            self.poisoned = true;
+            return;
+        };
+        self.msgs.push(signing_root);
+        self.pks.push(*pubkey);
+        self.sigs.push(sig);
+    }
+
+    pub fn push_aggregate<'a, I>(&mut self, participants: I, sig: &[u8; 96], signing_root: B256)
+    where
+        I: IntoIterator<Item = &'a PublicKey>,
+    {
+        let mut iter = participants.into_iter();
+        let Some(first) = iter.next() else {
+            self.poisoned = true;
+            return;
+        };
+        let mut agg = AggregatePublicKey::from_public_key(first);
+        for pk in iter {
+            if agg.add_public_key(pk, false).is_err() {
+                self.poisoned = true;
+                return;
+            }
+        }
+        let Ok(sig) = Signature::from_bytes(sig) else {
+            self.poisoned = true;
+            return;
+        };
+        self.msgs.push(signing_root);
+        self.pks.push(agg.to_public_key());
+        self.sigs.push(sig);
+    }
+
+    /// Sync-aggregate semantics: empty participants accepted iff sig is
+    /// G2 infinity. The empty-with-infinity case verifies trivially without
+    /// pushing anything; non-infinity empty poisons the batch.
+    pub fn push_eth_aggregate<'a, I>(
+        &mut self,
+        participant_count: usize,
+        participants: I,
+        sig: &[u8; 96],
+        signing_root: B256,
+    ) where
+        I: IntoIterator<Item = &'a PublicKey>,
+    {
+        if participant_count == 0 {
+            if *sig != G2_POINT_AT_INFINITY {
+                self.poisoned = true;
+            }
+            return;
+        }
+        self.push_aggregate(participants, sig, signing_root);
+    }
+
+    /// Verify all collected entries.
+    ///
+    /// - 0 entries → trivially true.
+    /// - 1 entry → single pre-aggregated verify (avoids the multi-pairing setup
+    ///   cost for the common case of a single sig).
+    /// - 2+ entries → one multi-Miller-loop with random per-tuple scalars to
+    ///   prevent rogue-key attacks. Roughly 10–30× faster than the per-tuple
+    ///   loop for a busy block.
+    pub fn verify_all(&mut self) -> bool {
+        if self.poisoned {
+            return false;
+        }
+        match self.msgs.len() {
+            0 => true,
+            1 => {
+                self.sigs[0].fast_aggregate_verify_pre_aggregated(
+                    true,
+                    &self.msgs[0],
+                    DST,
+                    &self.pks[0],
+                ) == BLST_ERROR::BLST_SUCCESS
+            }
+            _ => self.verify_batch(),
+        }
+    }
+
+    /// Multi-pairing batch verify with random 64-bit scalars per tuple.
+    /// Random scalars are required to defend against rogue-aggregate
+    /// attacks: without them, an adversarial proposer could split one
+    /// invalid sig across two crafted sigs that cancel in the multi-pairing
+    /// sum. `pks` are admission-time validated, so `pks_validate=false`.
+    fn verify_batch(&mut self) -> bool {
+        let n = self.msgs.len();
+
+        self.rand_bytes.resize(n * 8, 0);
+        if SystemRandom::new().fill(&mut self.rand_bytes).is_err() {
+            return false;
+        }
+        // Patch any all-zero chunk: a zero scalar would null this tuple's
+        // contribution to the pairing sum, so the tuple wouldn't actually be
+        // checked. Probability is ~n·2⁻⁶⁴ but the scan is free.
+        for c in self.rand_bytes.chunks_exact_mut(8) {
+            if c.iter().all(|&b| b == 0) {
+                c[0] = 1;
+            }
+        }
+
+        // Re-init the existing pairing buffer.
+        let SigBatch { msgs, pks, sigs, rand_bytes, pairing, .. } = self;
+        pairing.init(true, DST);
+
+        for (((pk, sig), msg), rand) in
+            pks.iter().zip(sigs.iter()).zip(msgs.iter()).zip(rand_bytes.chunks_exact(8))
+        {
+            let pk_pt: &blst_p1_affine =
+                unsafe { &*(pk as *const PublicKey as *const blst_p1_affine) };
+            let sig_pt: &blst_p2_affine =
+                unsafe { &*(sig as *const Signature as *const blst_p2_affine) };
+            if pairing.mul_n_aggregate(pk_pt, false, sig_pt, true, rand, 64, msg, &[]) !=
+                BLST_ERROR::BLST_SUCCESS
+            {
+                return false;
+            }
+        }
+        pairing.commit();
+        pairing.finalverify(None)
+    }
 }
 
-/// Aggregate an array of BLS pubkeys into a single pubkey
-/// (eth_aggregate_pubkeys). Returns all-zeros if any key is invalid.
-pub fn aggregate_pubkeys(pubkeys: &[BLSPubkey; types::SYNC_COMMITTEE_SIZE]) -> BLSPubkey {
+pub fn aggregate_pubkeys(pubkeys: &[BLSPubkey; SYNC_COMMITTEE_SIZE]) -> BLSPubkey {
     let mut iter = pubkeys.iter();
     let Some(first_bytes) = iter.next() else { return [0u8; 48] };
     let Ok(first_pk) = PublicKey::from_bytes(first_bytes) else { return [0u8; 48] };
@@ -130,25 +284,58 @@ pub fn aggregate_pubkeys(pubkeys: &[BLSPubkey; types::SYNC_COMMITTEE_SIZE]) -> B
     agg.to_public_key().to_bytes()
 }
 
-/// Verify a deposit BLS signature (proof of possession).
-pub fn verify_deposit_signature(
-    pubkey_bytes: &[u8; 48],
-    sig_bytes: &[u8; 96],
-    message: &B256,
+pub fn verify_block_signature(
+    block_ssz: &[u8],
+    proposer_pubkey: &PublicKey,
+    body_root: &B256,
+    fork_version: [u8; 4],
+    genesis_validators_root: &B256,
+    zh: &[B256],
 ) -> bool {
-    verify_signature(pubkey_bytes, sig_bytes, message)
+    if block_ssz.len() < SIGNED_BEACON_BLOCK_MIN {
+        return false;
+    }
+
+    let sig = SignedBeaconBlockView::signature(block_ssz);
+    let header = BeaconBlockHeader {
+        slot: SignedBeaconBlockView::slot(block_ssz),
+        proposer_index: SignedBeaconBlockView::proposer_index(block_ssz),
+        parent_root: *SignedBeaconBlockView::parent_root(block_ssz),
+        state_root: *SignedBeaconBlockView::state_root(block_ssz),
+        body_root: *body_root,
+    };
+    let object_root = hash_tree_root_block_header(&header, zh);
+
+    let domain = compute_domain(DOMAIN_BEACON_PROPOSER, fork_version, genesis_validators_root);
+    let signing_root = compute_signing_root(&object_root, &domain);
+
+    verify_one(proposer_pubkey, sig, &signing_root)
 }
 
-fn verify_signature(pubkey_bytes: &BLSPubkey, sig_bytes: &[u8], message: &B256) -> bool {
-    let pk = match PublicKey::from_bytes(pubkey_bytes) {
-        Ok(pk) => pk,
-        Err(_) => return false,
-    };
-    let sig = match Signature::from_bytes(sig_bytes) {
-        Ok(s) => s,
-        Err(_) => return false,
-    };
-    sig.verify(true, message, DST, &[], &pk, true) == BLST_ERROR::BLST_SUCCESS
+/// Verify a deposit proof-of-possession. Pubkey comes from the deposit
+/// data (not yet a registered validator) so we decompress inline.
+pub fn verify_deposit_signature(pubkey: &BLSPubkey, sig: &[u8; 96], signing_root: &B256) -> bool {
+    verify_one_compressed(pubkey, sig, signing_root)
+}
+
+/// Verify a single-attester `SingleAttestation` (gossip subnet form). Used
+/// on the gossip hot path; the body-included aggregate path goes through
+/// `state_transition::validate_attestations` + `SigBatch`.
+pub fn verify_single_attestation(
+    att: &[u8; SINGLE_ATT_SIZE],
+    attester_pubkey: &PublicKey,
+    fork_version: [u8; 4],
+    genesis_validators_root: &B256,
+    zh: &[B256],
+) -> bool {
+    let data = SingleAttestationView::data(att);
+    let sig = SingleAttestationView::signature(att);
+
+    let object_root = hash_attestation_data(data, zh);
+    let domain = compute_domain(DOMAIN_BEACON_ATTESTER, fork_version, genesis_validators_root);
+    let signing_root = compute_signing_root(&object_root, &domain);
+
+    verify_one(attester_pubkey, sig, &signing_root)
 }
 
 #[cfg(test)]
@@ -157,8 +344,7 @@ mod tests {
 
     use super::*;
 
-    // Spec test private keys (from
-    // consensus-specs/tests/core/.../bls/constants.py).
+    // Spec test private keys (consensus-specs/tests/core/.../bls/constants.py).
     const PRIVKEY_HEX: [&str; 3] = [
         "263dbd792f5b1be47ed85f8938c0f29586af0d3ac7b977f21c278fe1462040e3",
         "47b8192d77bf871b62e87859d653922725724a5c031afeabc60bcef5ff665138",
@@ -170,17 +356,12 @@ mod tests {
         SecretKey::from_bytes(&bytes).unwrap()
     }
 
-    fn pubkey(idx: usize) -> BLSPubkey {
-        let sk = privkey(idx);
-        let pk = sk.sk_to_pk();
-        let b = pk.to_bytes();
-        b
+    fn pubkey_pk(idx: usize) -> PublicKey {
+        privkey(idx).sk_to_pk()
     }
 
     fn sign(sk_idx: usize, message: &[u8]) -> [u8; 96] {
-        let sk = privkey(sk_idx);
-        let sig = sk.sign(message, DST, &[]);
-        sig.to_bytes()
+        privkey(sk_idx).sign(message, DST, &[]).to_bytes()
     }
 
     fn hex_to_bytes(hex: &str) -> [u8; 32] {
@@ -192,28 +373,64 @@ mod tests {
         out
     }
 
+    /// SigBatch eth-aggregate — empty participants accepted iff sig is
+    /// G2 infinity (sync-aggregate semantics).
     #[test]
-    fn single_signature_valid() {
-        let pk = pubkey(0);
-        let message = [0x00u8; 32];
-        let sig = sign(0, &message);
-
-        assert!(verify_signature(&pk, &sig, &message));
+    fn sig_batch_eth_aggregate_empty_infinity() {
+        let msg = [0u8; 32];
+        let mut batch = SigBatch::new();
+        let empty: [PublicKey; 0] = [];
+        batch.push_eth_aggregate(0, empty.iter(), &G2_POINT_AT_INFINITY, msg);
+        assert!(batch.verify_all());
     }
 
     #[test]
-    fn zero_signature_rejected() {
-        let pk = pubkey(0);
-        let message = [0x00u8; 32];
-        let zero_sig = [0u8; 96];
-        assert!(!verify_signature(&pk, &zero_sig, &message));
+    fn sig_batch_eth_aggregate_empty_nonzero_rejected() {
+        let msg = [0u8; 32];
+        let sig = sign(0, &msg);
+        let mut batch = SigBatch::new();
+        let empty: [PublicKey; 0] = [];
+        batch.push_eth_aggregate(0, empty.iter(), &sig, msg);
+        assert!(!batch.verify_all());
     }
 
+    /// Mixed batch with 3 distinct (pk, msg, sig) tuples — exercises the
+    /// `verify_multiple_aggregate_signatures` path. All valid → accept.
     #[test]
-    fn zero_pubkey_rejected() {
-        let zero_pk = [0u8; 48];
-        let message = [0x00u8; 32];
-        let sig = sign(0, &message);
-        assert!(!verify_signature(&zero_pk, &sig, &message));
+    fn sig_batch_multi_valid_accepts() {
+        let msg0 = [0x01u8; 32];
+        let msg1 = [0x02u8; 32];
+        let msg2 = [0x03u8; 32];
+        let sig0 = sign(0, &msg0);
+        let sig1 = sign(1, &msg1);
+        let sig2 = sign(2, &msg2);
+
+        let mut batch = SigBatch::new();
+        batch.push_one(&pubkey_pk(0), &sig0, msg0);
+        batch.push_one(&pubkey_pk(1), &sig1, msg1);
+        batch.push_one(&pubkey_pk(2), &sig2, msg2);
+        assert!(batch.verify_all());
+    }
+
+    /// Multi batch where one tuple's sig was signed under the wrong
+    /// message → batch must reject. Pins basic reject behaviour of the
+    /// `mul_n_aggregate` + `finalverify` path. (Does not specifically
+    /// probe rogue-aggregate resistance; that requires two crafted sigs
+    /// summing to cancel — left untested.)
+    #[test]
+    fn sig_batch_multi_one_bad_sig_rejects() {
+        let msg0 = [0x01u8; 32];
+        let msg1 = [0x02u8; 32];
+        let msg2 = [0x03u8; 32];
+        let sig0 = sign(0, &msg0);
+        // sig_for_msg0 signed under pk0 — wrong message context for tuple 1.
+        let bad_sig1 = sign(1, &msg0);
+        let sig2 = sign(2, &msg2);
+
+        let mut batch = SigBatch::new();
+        batch.push_one(&pubkey_pk(0), &sig0, msg0);
+        batch.push_one(&pubkey_pk(1), &bad_sig1, msg1);
+        batch.push_one(&pubkey_pk(2), &sig2, msg2);
+        assert!(!batch.verify_all());
     }
 }

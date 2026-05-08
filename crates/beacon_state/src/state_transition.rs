@@ -1,15 +1,28 @@
 use core::cmp::{max, min};
 
+use blst::min_pk::PublicKey;
+use silver_common::ssz_view::{
+    ATTESTATION_DATA_SIZE, AttestationDataView, AttestationView, BEACON_BLOCK_BODY_FIXED,
+    BEACON_BLOCK_HEADER_SIZE, BLOCK_SYNC_AGGREGATE_SIZE, BeaconBlockBodyView,
+    BeaconBlockHeaderView, CONSOLIDATION_REQUEST_SIZE, ConsolidationRequestView,
+    DEPOSIT_REQUEST_SIZE, DEPOSIT_SIZE, DepositDataView, DepositRequestView, DepositView,
+    Eth1DataView, ExecutionPayloadView, PROPOSER_SLASHING_SIZE, ProposerSlashingView,
+    SIGNED_BLS_CHANGE_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE, SignedBeaconBlockView,
+    SignedBlsToExecutionChangeView, SignedVoluntaryExitView, SyncAggregateView,
+    WITHDRAWAL_REQUEST_SIZE, WITHDRAWAL_SIZE, WithdrawalRequestView, WithdrawalView,
+};
+
 use crate::{
-    bls, epoch_transition,
+    bls::{self, SigBatch},
+    epoch_transition,
     shuffling::{self, DOMAIN_BEACON_ATTESTER},
     ssz_hash::{self, hash_tree_root_block_header, hash_tree_root_state},
     types::{
-        self, B256, BeaconBlockHeader, EPOCHS_PER_SLASHINGS_VECTOR, Epoch, EpochData, Eth1Data,
-        ExecutionPayloadHeader, HistoricalLongtail, Immutable, MAX_WITHDRAWALS_PER_PAYLOAD,
-        PendingConsolidation, PendingDeposit, PendingPartialWithdrawal, PendingQueues,
-        SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT, SYNC_COMMITTEE_SIZE, Slot, SlotData, SlotRoots,
-        ValidatorIdentity,
+        self, B256, BeaconBlockHeader, EPOCHS_PER_ETH1_VOTING_PERIOD, EPOCHS_PER_SLASHINGS_VECTOR,
+        Epoch, EpochData, Eth1Data, ExecutionPayloadHeader, HistoricalLongtail, Immutable,
+        MAX_WITHDRAWALS_PER_PAYLOAD, PendingConsolidation, PendingDeposit,
+        PendingPartialWithdrawal, PendingQueues, SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT,
+        SYNC_COMMITTEE_SIZE, Slot, SlotData, SlotRoots, ValidatorIdentity,
     },
     validate,
 };
@@ -52,6 +65,7 @@ pub fn apply_block(
     active_scratch: &mut Vec<u32>,
     postponed_scratch: &mut Vec<types::PendingDeposit>,
     attestation_votes: &mut Vec<(u32, B256, Epoch)>,
+    sig_batch: &mut SigBatch,
 ) -> bool {
     if block_slot <= sd.latest_block_header.slot {
         return false;
@@ -69,9 +83,6 @@ pub fn apply_block(
             return false;
         }
     }
-
-    // BLS signature verification is the caller's responsibility — see
-    // tile's `handle_block` (pre-COW) and `apply_signed_block_debug`.
 
     if block_slot > sd.slot {
         process_slots(
@@ -103,6 +114,8 @@ pub fn apply_block(
         roots,
         sd,
         pq,
+        active_scratch,
+        sig_batch,
         body,
         block_slot,
         proposer_index,
@@ -162,7 +175,7 @@ pub fn apply_signed_block_debug(
     if block_bytes.len() < 184 {
         return Err("block too short".into());
     }
-    let block_slot = u64::from_le_bytes(block_bytes[100..108].try_into().unwrap());
+    let block_slot = SignedBeaconBlockView::slot(block_bytes);
     if block_slot <= sd.latest_block_header.slot {
         return Err(format!(
             "block_slot <= latest_block_header.slot: block={block_slot} latest={}",
@@ -170,10 +183,10 @@ pub fn apply_signed_block_debug(
         ));
     }
 
-    let proposer_index = u64::from_le_bytes(block_bytes[108..116].try_into().unwrap());
-    let parent_root: B256 = block_bytes[116..148].try_into().unwrap();
-    let state_root: B256 = block_bytes[148..180].try_into().unwrap();
-    let body = &block_bytes[184..];
+    let proposer_index = SignedBeaconBlockView::proposer_index(block_bytes);
+    let parent_root: B256 = *SignedBeaconBlockView::parent_root(block_bytes);
+    let state_root: B256 = *SignedBeaconBlockView::state_root(block_bytes);
+    let body = SignedBeaconBlockView::body(block_bytes);
     let body_root = ssz_hash::hash_tree_root_body(body, zh);
 
     let mut active_scratch = Vec::new();
@@ -193,13 +206,23 @@ pub fn apply_signed_block_debug(
         }
     }
 
+    if proposer_index as usize >= vid.validator_cnt {
+        return Err(format!("proposer_index out of range: {proposer_index}"));
+    }
+    let block_epoch = block_slot / SLOTS_PER_EPOCH;
+    let fork_version = bls::fork_version_at_epoch(
+        imm.fork.epoch,
+        imm.fork.previous_version,
+        imm.fork.current_version,
+        block_epoch,
+    );
+    let proposer_pubkey = &vid.val_pubkey_decompressed[proposer_index as usize];
     if !bls::verify_block_signature(
-        imm,
-        vid,
         block_bytes,
-        block_slot,
-        proposer_index,
-        body_root,
+        proposer_pubkey,
+        &body_root,
+        fork_version,
+        &imm.genesis_validators_root,
         zh,
     ) {
         return Err(format!("BLS sig failed: slot={block_slot} proposer={proposer_index}"));
@@ -237,6 +260,7 @@ pub fn apply_signed_block_debug(
         previous_cps: prev_cps,
     };
     let mut votes_sink: Vec<(u32, B256, Epoch)> = Vec::new();
+    let mut sig_batch = SigBatch::new();
     if !process_block_body(
         imm,
         vid,
@@ -245,6 +269,8 @@ pub fn apply_signed_block_debug(
         roots,
         sd,
         pq,
+        &mut active_scratch,
+        &mut sig_batch,
         body,
         block_slot,
         proposer_index,
@@ -342,6 +368,11 @@ pub fn process_block_header(
     if proposer_index as usize >= vid.validator_cnt {
         return false;
     }
+
+    let expected_proposer = sd.proposer_lookahead[(block_slot % SLOTS_PER_EPOCH) as usize];
+    if proposer_index != expected_proposer {
+        return false;
+    }
     if epoch.val_slashed(proposer_index as usize) {
         return false;
     }
@@ -373,6 +404,64 @@ pub struct ShufflingRef<'a> {
     pub previous_cps: usize,
 }
 
+struct BodyOffsets<'a> {
+    body: &'a [u8],
+    exec_off: usize,
+    bls_changes_off: usize,
+    proposer_slashings_off: usize,
+    attester_slashings_off: usize,
+    attestations_off: usize,
+    deposits_off: usize,
+    voluntary_exits_off: usize,
+    blob_off: usize,
+    exec_requests_off: usize,
+}
+
+impl<'a> BodyOffsets<'a> {
+    fn new(body: &'a [u8]) -> Option<Self> {
+        if body.len() < BEACON_BLOCK_BODY_FIXED {
+            return None;
+        }
+        Some(Self {
+            body,
+            exec_off: BeaconBlockBodyView::execution_payload_offset(body) as usize,
+            bls_changes_off: BeaconBlockBodyView::bls_to_execution_changes_offset(body) as usize,
+            proposer_slashings_off: BeaconBlockBodyView::proposer_slashings_offset(body) as usize,
+            attester_slashings_off: BeaconBlockBodyView::attester_slashings_offset(body) as usize,
+            attestations_off: BeaconBlockBodyView::attestations_offset(body) as usize,
+            deposits_off: BeaconBlockBodyView::deposits_offset(body) as usize,
+            voluntary_exits_off: BeaconBlockBodyView::voluntary_exits_offset(body) as usize,
+            blob_off: BeaconBlockBodyView::blob_kzg_commitments_offset(body) as usize,
+            exec_requests_off: BeaconBlockBodyView::execution_requests_offset(body) as usize,
+        })
+    }
+    #[inline]
+    fn payload(&self) -> &'a [u8] {
+        if self.exec_off <= self.bls_changes_off && self.bls_changes_off <= self.body.len() {
+            &self.body[self.exec_off..self.bls_changes_off]
+        } else {
+            &[]
+        }
+    }
+    #[inline]
+    fn slice(&self, start: usize, end: usize) -> &'a [u8] {
+        if start <= end && end <= self.body.len() { &self.body[start..end] } else { &[] }
+    }
+}
+
+/// Two-pass block body processing.
+///
+/// Pass 1 — `collect_sigs_block_body` walks every op with a BLS signature and
+/// pushes `(pubkey, sig, signing_root)` tuples into `sig_batch`. The only
+/// state reads are validator pubkey lookups.
+///
+/// Verify — `sig_batch.verify_all()` runs one
+/// `Signature::verify_multiple_aggregate_signatures` over the whole block
+/// (except for deposits).
+///
+/// Pass 2 — `process_*` functions run in spec order. Each does its own
+/// data + state-dependent validation and mutation, returning false on any
+/// spec-assertion failure.
 #[allow(clippy::too_many_arguments)]
 pub fn process_block_body(
     imm: &Immutable,
@@ -382,6 +471,8 @@ pub fn process_block_body(
     roots: &SlotRoots,
     sd: &mut SlotData,
     pq: &mut PendingQueues,
+    active_scratch: &mut Vec<u32>,
+    sig_batch: &mut SigBatch,
     body: &[u8],
     block_slot: Slot,
     proposer_index: u64,
@@ -389,116 +480,257 @@ pub fn process_block_body(
     zh: &[B256],
     attestation_votes: &mut Vec<(u32, B256, Epoch)>,
 ) -> bool {
-    if body.len() < 396 {
-        return false;
-    }
-
     if !validate::validate_operation_counts(body) {
         return false;
     }
-
-    let offset = |pos: usize| -> usize {
-        u32::from_le_bytes(body[pos..pos + 4].try_into().unwrap()) as usize
-    };
-
-    let exec_off = offset(380);
-    let bls_off = offset(384);
-    let payload = if exec_off <= bls_off && bls_off <= body.len() {
-        &body[exec_off..bls_off]
-    } else {
-        &[] as &[u8]
-    };
-
-    if !validate::validate_execution_payload(imm, sd, payload, block_slot) {
+    let Some(offsets) = BodyOffsets::new(body) else { return false };
+    if (proposer_index as usize) >= vid.validator_cnt {
         return false;
     }
 
-    // Spec order: withdrawals, then execution_payload, then randao, then eth1.
-    // TODO(EL): before processing, send NewPayloadRequest to execution engine
-    // via Engine API (engine_newPayloadV4). This verifies the payload is valid
-    // and returns VALID/INVALID/SYNCING. On SYNCING, mark block as optimistic
-    // in fork choice. On INVALID, reject the block.
-    process_withdrawals(vid, epoch, sd, pq, payload);
+    sig_batch.clear();
+
+    // Pass 1 — sig collection.
+    if !collect_sigs_block_body(
+        imm,
+        vid,
+        longtail,
+        roots,
+        active_scratch,
+        sig_batch,
+        &offsets,
+        block_slot,
+        proposer_index,
+        shuffling,
+        zh,
+    ) {
+        return false;
+    }
+
+    // Verify all collected sigs at once (multi-pairing).
+    if !sig_batch.verify_all() {
+        return false;
+    }
+
+    // Pass 2 — spec-order data + state-dep validate + mutate.
+    let body = offsets.body;
+    let payload = offsets.payload();
+
+    if !process_withdrawals(vid, epoch, sd, pq, payload) {
+        return false;
+    }
     if !process_execution_payload(imm, sd, payload, block_slot, zh) {
         return false;
     }
-    process_randao(imm, vid, sd, body, block_slot, proposer_index, zh);
+    process_randao(body, sd);
     process_eth1_data(sd, body);
 
-    let proposer_slashings_off = offset(200);
-    let attester_slashings_off = offset(204);
-    let attestations_off = offset(208);
-    let deposits_off = offset(212);
-
-    if proposer_slashings_off <= attester_slashings_off && attester_slashings_off <= body.len() {
-        process_proposer_slashings(
+    if offsets.proposer_slashings_off <= offsets.attester_slashings_off &&
+        offsets.attester_slashings_off <= body.len() &&
+        !process_proposer_slashings(
             vid,
             epoch,
             sd,
-            &body[proposer_slashings_off..attester_slashings_off],
-        );
+            offsets.slice(offsets.proposer_slashings_off, offsets.attester_slashings_off),
+        )
+    {
+        return false;
     }
-    if attester_slashings_off <= attestations_off && attestations_off <= body.len() {
-        process_attester_slashings(vid, epoch, sd, &body[attester_slashings_off..attestations_off]);
+    if offsets.attester_slashings_off <= offsets.attestations_off &&
+        offsets.attestations_off <= body.len() &&
+        !process_attester_slashings(
+            vid,
+            epoch,
+            sd,
+            offsets.slice(offsets.attester_slashings_off, offsets.attestations_off),
+        )
+    {
+        return false;
     }
-    if attestations_off <= deposits_off && deposits_off <= body.len() {
-        process_attestations(
+    if offsets.attestations_off <= offsets.deposits_off &&
+        offsets.deposits_off <= body.len() &&
+        !process_attestations(
             vid,
             epoch,
             roots,
             sd,
-            &body[attestations_off..deposits_off],
+            offsets.slice(offsets.attestations_off, offsets.deposits_off),
             block_slot,
             proposer_index,
             shuffling,
             attestation_votes,
+            active_scratch,
+        )
+    {
+        return false;
+    }
+    if offsets.deposits_off <= offsets.voluntary_exits_off &&
+        offsets.voluntary_exits_off <= body.len()
+    {
+        process_deposits(
+            vid,
+            epoch,
+            sd,
+            pq,
+            offsets.slice(offsets.deposits_off, offsets.voluntary_exits_off),
+            zh,
         );
     }
-
-    let voluntary_exits_off = offset(216);
-    if deposits_off <= voluntary_exits_off && voluntary_exits_off <= body.len() {
-        process_deposits(vid, epoch, sd, pq, &body[deposits_off..voluntary_exits_off], zh);
+    if offsets.voluntary_exits_off <= offsets.exec_off &&
+        offsets.exec_off <= body.len() &&
+        !process_voluntary_exits(
+            vid,
+            epoch,
+            sd,
+            pq,
+            offsets.slice(offsets.voluntary_exits_off, offsets.exec_off),
+        )
+    {
+        return false;
+    }
+    if offsets.bls_changes_off <= offsets.blob_off &&
+        offsets.blob_off <= body.len() &&
+        !process_bls_to_execution_changes(
+            vid,
+            offsets.slice(offsets.bls_changes_off, offsets.blob_off),
+        )
+    {
+        return false;
     }
 
-    // voluntary_exits data runs from off(216) to off(380) (next variable field =
-    // exec payload).
-    if voluntary_exits_off <= exec_off && exec_off <= body.len() {
-        process_voluntary_exits(vid, epoch, sd, pq, &body[voluntary_exits_off..exec_off]);
+    if offsets.exec_requests_off <= body.len() {
+        process_execution_requests(vid, epoch, sd, pq, &body[offsets.exec_requests_off..]);
     }
-
-    let bls_changes_off = offset(384);
-    let blob_off = offset(388);
-    if bls_changes_off <= blob_off && blob_off <= body.len() {
-        process_bls_to_execution_changes(vid, sd, &body[bls_changes_off..blob_off]);
-    }
-
-    process_sync_aggregate(vid, longtail, epoch, sd, &body[220..380], proposer_index);
-
-    let exec_requests_off = offset(392);
-    if exec_requests_off <= body.len() {
-        process_execution_requests(vid, epoch, sd, pq, &body[exec_requests_off..]);
+    if !process_sync_aggregate(vid, longtail, epoch, sd, &body[220..380], proposer_index) {
+        return false;
     }
     true
 }
 
-/// XOR the hash of the randao reveal into the per-block mix accumulator.
-/// The accumulated mix lives in SlotData.randao_mix_current (per-fork).
-/// At epoch boundary, the tile copies it into the new EpochData.randao_mixes.
-fn process_randao(
+#[allow(clippy::too_many_arguments)]
+fn collect_sigs_block_body(
     imm: &Immutable,
     vid: &ValidatorIdentity,
-    sd: &mut SlotData,
-    body: &[u8],
+    longtail: &HistoricalLongtail,
+    roots: &SlotRoots,
+    active_scratch: &mut Vec<u32>,
+    sig_batch: &mut SigBatch,
+    offsets: &BodyOffsets<'_>,
     block_slot: Slot,
     proposer_index: u64,
+    shuffling: Option<&ShufflingRef<'_>>,
     zh: &[B256],
-) {
-    let reveal = &body[0..96];
+) -> bool {
+    let body = offsets.body;
 
-    if !bls::verify_randao_reveal(imm, vid, reveal, block_slot, proposer_index, zh) {
-        return; // invalid reveal — don't XOR
+    let proposer_pubkey = &vid.val_pubkey_decompressed[proposer_index as usize];
+    collect_sigs_randao(imm, body, block_slot, proposer_pubkey, sig_batch);
+
+    if offsets.proposer_slashings_off <= offsets.attester_slashings_off &&
+        offsets.attester_slashings_off <= body.len() &&
+        !collect_sigs_proposer_slashings(
+            imm,
+            vid,
+            offsets.slice(offsets.proposer_slashings_off, offsets.attester_slashings_off),
+            sig_batch,
+            zh,
+        )
+    {
+        return false;
     }
+    if offsets.attester_slashings_off <= offsets.attestations_off &&
+        offsets.attestations_off <= body.len() &&
+        !collect_sigs_attester_slashings(
+            imm,
+            vid,
+            offsets.slice(offsets.attester_slashings_off, offsets.attestations_off),
+            active_scratch,
+            sig_batch,
+            zh,
+        )
+    {
+        return false;
+    }
+    if offsets.attestations_off <= offsets.deposits_off &&
+        offsets.deposits_off <= body.len() &&
+        !collect_sigs_attestations(
+            imm,
+            vid,
+            offsets.slice(offsets.attestations_off, offsets.deposits_off),
+            block_slot,
+            shuffling,
+            active_scratch,
+            sig_batch,
+            zh,
+        )
+    {
+        return false;
+    }
+    // deposits skipped — these are verified inline in `apply_deposit`.
+    if offsets.voluntary_exits_off <= offsets.exec_off && offsets.exec_off <= body.len() {
+        collect_sigs_voluntary_exits(
+            imm,
+            vid,
+            offsets.slice(offsets.voluntary_exits_off, offsets.exec_off),
+            sig_batch,
+            zh,
+        );
+    }
+    if offsets.bls_changes_off <= offsets.blob_off &&
+        offsets.blob_off <= body.len() &&
+        !collect_sigs_bls_to_execution_changes(
+            imm,
+            vid,
+            offsets.slice(offsets.bls_changes_off, offsets.blob_off),
+            sig_batch,
+            zh,
+        )
+    {
+        return false;
+    }
+    collect_sigs_sync_aggregate(
+        imm,
+        vid,
+        longtail,
+        &body[220..380],
+        block_slot,
+        roots,
+        active_scratch,
+        sig_batch,
+    );
+    true
+}
 
+pub fn collect_sigs_randao(
+    imm: &Immutable,
+    body: &[u8],
+    block_slot: Slot,
+    proposer_pubkey: &PublicKey,
+    sig_batch: &mut SigBatch,
+) {
+    if body.len() < 96 {
+        return;
+    }
+    let reveal: &[u8; 96] = body[0..96].try_into().unwrap();
+    let block_epoch = block_slot / SLOTS_PER_EPOCH;
+    let fork_version = bls::fork_version_at_epoch(
+        imm.fork.epoch,
+        imm.fork.previous_version,
+        imm.fork.current_version,
+        block_epoch,
+    );
+    let mut epoch_chunk = [0u8; 32];
+    epoch_chunk[..8].copy_from_slice(&block_epoch.to_le_bytes());
+    let domain =
+        bls::compute_domain(bls::DOMAIN_RANDAO, fork_version, &imm.genesis_validators_root);
+    let signing_root = bls::compute_signing_root(&epoch_chunk, &domain);
+    sig_batch.push_one(proposer_pubkey, reveal, signing_root);
+}
+
+/// Pass 2 — XOR reveal hash into the mix accumulator. BLS already verified
+/// in pass 1; if it failed, we never reach here.
+fn process_randao(body: &[u8], sd: &mut SlotData) {
+    let reveal: &[u8; 96] = body[0..96].try_into().unwrap();
     let reveal_hash = ssz_hash::sha256(reveal);
     for (byte, &rh) in sd.randao_mix_current.iter_mut().zip(reveal_hash.iter()) {
         *byte ^= rh;
@@ -506,11 +738,11 @@ fn process_randao(
 }
 
 fn process_eth1_data(sd: &mut SlotData, body: &[u8]) {
-    // eth1_data at body[96..168]: deposit_root(32) + deposit_count(8) +
-    // block_hash(32)
-    let deposit_root: B256 = body[96..128].try_into().unwrap();
-    let deposit_count = u64::from_le_bytes(body[128..136].try_into().unwrap());
-    let block_hash: B256 = body[136..168].try_into().unwrap();
+    // BeaconBlockBody.eth1_data at body[96..168].
+    let eth1: &[u8; 72] = body[96..168].try_into().unwrap();
+    let deposit_root: B256 = *Eth1DataView::deposit_root(eth1);
+    let deposit_count = Eth1DataView::deposit_count(eth1);
+    let block_hash: B256 = *Eth1DataView::block_hash(eth1);
 
     let vote = Eth1Data { deposit_root, deposit_count, block_hash };
     sd.eth1_votes.push(vote);
@@ -526,12 +758,140 @@ fn process_eth1_data(sd: &mut SlotData, body: &[u8]) {
         }
     }
     // Majority = more than half of the voting period slots.
-    let slots_per_eth1_voting_period = 64 * SLOTS_PER_EPOCH; // EPOCHS_PER_ETH1_VOTING_PERIOD * SLOTS_PER_EPOCH
+    let slots_per_eth1_voting_period = EPOCHS_PER_ETH1_VOTING_PERIOD * SLOTS_PER_EPOCH;
     if count * 2 > slots_per_eth1_voting_period as usize {
         sd.eth1_data = vote;
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+pub fn collect_sigs_attestations(
+    imm: &Immutable,
+    vid: &ValidatorIdentity,
+    attestation_data: &[u8],
+    block_slot: Slot,
+    shuffling: Option<&ShufflingRef<'_>>,
+    active_scratch: &mut Vec<u32>,
+    sig_batch: &mut SigBatch,
+    zh: &[B256],
+) -> bool {
+    if attestation_data.is_empty() {
+        return true;
+    }
+    let first_offset =
+        u32::from_le_bytes(attestation_data[..4].try_into().unwrap_or([0; 4])) as usize;
+    if first_offset == 0 || !first_offset.is_multiple_of(4) || first_offset > attestation_data.len()
+    {
+        return true;
+    }
+    let count = first_offset / 4;
+    let current_epoch = block_slot / SLOTS_PER_EPOCH;
+    for i in 0..count {
+        let att_start =
+            u32::from_le_bytes(attestation_data[i * 4..(i + 1) * 4].try_into().unwrap()) as usize;
+        let att_end = if i + 1 < count {
+            u32::from_le_bytes(attestation_data[(i + 1) * 4..(i + 2) * 4].try_into().unwrap())
+                as usize
+        } else {
+            attestation_data.len()
+        };
+        if att_start >= att_end || att_end > attestation_data.len() {
+            return false;
+        }
+        let att = &attestation_data[att_start..att_end];
+        if !collect_sigs_single_attestation(
+            imm,
+            vid,
+            att,
+            current_epoch,
+            shuffling,
+            active_scratch,
+            sig_batch,
+            zh,
+        ) {
+            return false;
+        }
+    }
+    true
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn collect_sigs_single_attestation(
+    imm: &Immutable,
+    vid: &ValidatorIdentity,
+    att: &[u8],
+    current_epoch: Epoch,
+    shuffling: Option<&ShufflingRef<'_>>,
+    active_scratch: &mut Vec<u32>,
+    sig_batch: &mut SigBatch,
+    zh: &[B256],
+) -> bool {
+    let data = AttestationView::data(att);
+    let att_slot = AttestationDataView::slot(data);
+    let target_epoch = AttestationDataView::target_epoch(data);
+    let is_current = target_epoch == current_epoch;
+    let Some(shuffling) = shuffling else { return false };
+    let (shuffled, cps) = if is_current {
+        (shuffling.current_shuffled, shuffling.current_cps)
+    } else {
+        (shuffling.previous_shuffled, shuffling.previous_cps)
+    };
+    if shuffled.is_empty() || cps == 0 {
+        return false;
+    }
+    let committee_bits = u64::from_le_bytes(*AttestationView::committee_bits(att));
+    let agg_bits = AttestationView::aggregation_bits(att);
+    if committee_bits == 0 {
+        return false;
+    }
+
+    active_scratch.clear();
+    let mut agg_offset = 0usize;
+    for ci in 0..cps {
+        if committee_bits & (1u64 << ci) == 0 {
+            continue;
+        }
+        let committee = shuffling::get_beacon_committee(shuffled, att_slot, ci, cps);
+        for (j, &validator_idx) in committee.iter().enumerate() {
+            let bit_pos = agg_offset + j;
+            let byte_idx = bit_pos / 8;
+            let bit_idx = bit_pos % 8;
+            if byte_idx >= agg_bits.len() || agg_bits[byte_idx] & (1 << bit_idx) == 0 {
+                continue;
+            }
+            let vi = validator_idx as usize;
+            if vi >= vid.validator_cnt {
+                return false;
+            }
+            active_scratch.push(validator_idx);
+        }
+        agg_offset += committee.len();
+    }
+
+    let fork_version = bls::fork_version_at_epoch(
+        imm.fork.epoch,
+        imm.fork.previous_version,
+        imm.fork.current_version,
+        target_epoch,
+    );
+    let sig = AttestationView::signature(att);
+    let object_root = ssz_hash::hash_attestation_data(data, zh);
+    let domain = bls::compute_domain(
+        bls::DOMAIN_BEACON_ATTESTER,
+        fork_version,
+        &imm.genesis_validators_root,
+    );
+    let signing_root = bls::compute_signing_root(&object_root, &domain);
+    sig_batch.push_aggregate(
+        active_scratch.iter().map(|&vi| &vid.val_pubkey_decompressed[vi as usize]),
+        sig,
+        signing_root,
+    );
+    true
+}
+
+/// Pass 2 — full data + state-dep validation, apply participation flags +
+/// proposer rewards. BLS verified in pass 1.
 #[allow(clippy::too_many_arguments)]
 pub fn process_attestations(
     vid: &ValidatorIdentity,
@@ -543,29 +903,20 @@ pub fn process_attestations(
     proposer_index: u64,
     shuffling: Option<&ShufflingRef<'_>>,
     votes_sink: &mut Vec<(u32, B256, Epoch)>,
-) {
-    // Electra attestations are variable-size (have committee_bits).
-    // SSZ list of variable-size elements: first N*4 bytes are offsets.
+    active_scratch: &mut Vec<u32>,
+) -> bool {
     if attestation_data.is_empty() {
-        return;
+        return true;
     }
-
     let first_offset =
         u32::from_le_bytes(attestation_data[..4].try_into().unwrap_or([0; 4])) as usize;
     if first_offset == 0 || !first_offset.is_multiple_of(4) || first_offset > attestation_data.len()
     {
-        return;
+        return true;
     }
     let count = first_offset / 4;
-
     let current_epoch = block_slot / SLOTS_PER_EPOCH;
     let previous_epoch = current_epoch.saturating_sub(1);
-
-    // TODO(BLS): for each attestation, FastAggregateVerify the aggregate sig
-    // against the participants' pubkeys under DOMAIN_BEACON_ATTESTER. Without
-    // this, junk-signature attestations can set participation flags and earn
-    // rewards. Single-attestation gossip path (tile.rs handle_attestation) has
-    // the same gap.
     for i in 0..count {
         let att_start =
             u32::from_le_bytes(attestation_data[i * 4..(i + 1) * 4].try_into().unwrap()) as usize;
@@ -576,10 +927,10 @@ pub fn process_attestations(
             attestation_data.len()
         };
         if att_start >= att_end || att_end > attestation_data.len() {
-            continue;
+            return false;
         }
         let att = &attestation_data[att_start..att_end];
-        let reward = process_single_attestation(
+        let Some(reward) = process_single_attestation(
             vid,
             epoch,
             roots,
@@ -589,8 +940,10 @@ pub fn process_attestations(
             previous_epoch,
             shuffling,
             votes_sink,
-        );
-        // Proposer reward from newly-set participation flags.
+            active_scratch,
+        ) else {
+            return false;
+        };
         if reward > 0 && (proposer_index as usize) < vid.validator_cnt {
             const PROPOSER_WEIGHT: u64 = 8;
             const WEIGHT_DENOMINATOR: u64 = 64;
@@ -601,25 +954,12 @@ pub fn process_attestations(
                 sd.balances[proposer_index as usize].saturating_add(proposer_reward);
         }
     }
+    true
 }
 
-/// Process a single Electra attestation.
-/// Electra Attestation layout (variable):
-///   Fixed part:
-///     [0..4)    offset: aggregation_bits
-///     [4..132)  AttestationData (128B)
-///       [4..12)    slot
-///       [12..20)   index (always 0 post-Electra)
-///       [20..52)   beacon_block_root
-///       [52..60)   source.epoch
-///       [60..92)   source.root
-///       [92..100)  target.epoch
-///       [100..132) target.root
-///     [132..228)  signature (96B)
-///     [228..236)  committee_bits (8B for Electra)
-///     [236..)     aggregation_bits (variable)
-/// Returns proposer_reward_numerator (sum of base_reward * weight for newly set
-/// flags).
+/// Pass 2 single-attestation worker — full data + state-dep validation +
+/// participation flag updates. Returns the proposer reward numerator on
+/// success, or `None` on a spec-assertion failure.
 #[allow(clippy::too_many_arguments)]
 pub fn process_single_attestation(
     vid: &ValidatorIdentity,
@@ -631,84 +971,102 @@ pub fn process_single_attestation(
     previous_epoch: Epoch,
     shuffling: Option<&ShufflingRef<'_>>,
     votes_sink: &mut Vec<(u32, B256, Epoch)>,
-) -> u64 {
+    active_scratch: &mut Vec<u32>,
+) -> Option<u64> {
     if !validate::validate_attestation_data(att, sd.slot, current_epoch, previous_epoch) {
-        return 0;
+        return None;
     }
-
-    let att_slot = u64::from_le_bytes(att[4..12].try_into().unwrap());
-    let beacon_block_root: B256 = att[20..52].try_into().unwrap();
-    let source_epoch = u64::from_le_bytes(att[52..60].try_into().unwrap());
-    let source_root: B256 = att[60..92].try_into().unwrap();
-    let target_epoch = u64::from_le_bytes(att[92..100].try_into().unwrap());
-    let target_root: B256 = att[100..132].try_into().unwrap();
+    let data = AttestationView::data(att);
+    let att_slot = AttestationDataView::slot(data);
+    let beacon_block_root: B256 = *AttestationDataView::beacon_block_root(data);
+    let source_epoch = AttestationDataView::source_epoch(data);
+    let source_root: B256 = *AttestationDataView::source_root(data);
+    let target_epoch = AttestationDataView::target_epoch(data);
+    let target_root: B256 = *AttestationDataView::target_root(data);
 
     let is_current = target_epoch == current_epoch;
     if !is_current && target_epoch != previous_epoch {
-        return 0;
+        return None;
     }
-
-    // Verify source matches the justified checkpoint for the attestation's target
-    // epoch.
     let justified =
         if is_current { sd.current_justified_checkpoint } else { sd.previous_justified_checkpoint };
     if source_epoch != justified.epoch || source_root != justified.root {
-        return 0; // incorrect source
+        return None;
     }
 
     let expected_target_root = get_block_root_at_epoch(roots, target_epoch);
     let is_matching_target = target_root == expected_target_root;
-
     let expected_head_root = roots.block_roots[att_slot as usize % SLOTS_PER_HISTORICAL_ROOT];
     let is_matching_head = is_matching_target && beacon_block_root == expected_head_root;
-
-    // Participation flags.
     let inclusion_delay = sd.slot.saturating_sub(att_slot);
-    let mut flags = 0u8;
-    let mut flag_weights = [false; 3]; // track which flags are newly set
-
-    // TIMELY_SOURCE: inclusion_delay <= integer_sqrt(SLOTS_PER_EPOCH) = 5
+    let mut flag_weights = [false; 3];
     if inclusion_delay <= 5 {
-        flags |= 1 << 0;
         flag_weights[0] = true;
     }
-    // TIMELY_TARGET (Deneb+): no inclusion delay requirement
     if is_matching_target {
-        flags |= 1 << 1;
         flag_weights[1] = true;
     }
-    // TIMELY_HEAD: inclusion_delay == 1
     if is_matching_head && inclusion_delay == 1 {
-        flags |= 1 << 2;
         flag_weights[2] = true;
     }
 
-    if flags == 0 {
-        return 0;
-    }
-
-    let shuffling = match shuffling {
-        Some(s) => s,
-        None => return 0,
-    };
-
+    let shuffling = shuffling?;
     let (shuffled, cps) = if is_current {
         (shuffling.current_shuffled, shuffling.current_cps)
     } else {
         (shuffling.previous_shuffled, shuffling.previous_cps)
     };
     if shuffled.is_empty() || cps == 0 {
-        return 0;
+        return None;
+    }
+    let committee_bits = u64::from_le_bytes(*AttestationView::committee_bits(att));
+    let agg_bits = AttestationView::aggregation_bits(att);
+    if committee_bits == 0 {
+        return None;
+    }
+    if cps < 64 && (committee_bits >> cps) != 0 {
+        return None;
     }
 
-    let committee_bits = u64::from_le_bytes(att[228..236].try_into().unwrap());
-    let agg_bits = &att[236..];
+    active_scratch.clear();
+    let mut agg_offset = 0usize;
+    for ci in 0..cps {
+        if committee_bits & (1u64 << ci) == 0 {
+            continue;
+        }
+        let committee = shuffling::get_beacon_committee(shuffled, att_slot, ci, cps);
+        let before = active_scratch.len();
+        for (j, &validator_idx) in committee.iter().enumerate() {
+            let bit_pos = agg_offset + j;
+            let byte_idx = bit_pos / 8;
+            let bit_idx = bit_pos % 8;
+            if byte_idx >= agg_bits.len() || agg_bits[byte_idx] & (1 << bit_idx) == 0 {
+                continue;
+            }
+            let vi = validator_idx as usize;
+            if vi >= vid.validator_cnt {
+                return None;
+            }
+            active_scratch.push(validator_idx);
+        }
+        if active_scratch.len() == before {
+            return None;
+        }
+        agg_offset += committee.len();
+    }
+    if ssz_hash::bitlist_len(agg_bits) != agg_offset {
+        return None;
+    }
 
-    // TODO(perf): total_active_balance recomputed once per attestation (up to
-    // MAX_ATTESTATIONS_ELECTRA=8 per block) and again in process_sync_aggregate
-    // — O(n_validators) loops on the hot path. Cache once per epoch on
-    // EpochData and invalidate on stake-changing events.
-    // Base reward computation for proposer reward accumulation.
+    for &validator_idx in active_scratch.iter() {
+        votes_sink.push((validator_idx, beacon_block_root, target_epoch));
+    }
+
+    let any_flag = flag_weights[0] | flag_weights[1] | flag_weights[2];
+    if !any_flag {
+        return Some(0);
+    }
+
     let total_active = {
         let n = vid.validator_cnt;
         let mut t = 0u64;
@@ -722,62 +1080,39 @@ pub fn process_single_attestation(
         t.max(1_000_000_000)
     };
     let sqrt_total = epoch_transition::integer_sqrt(total_active);
-    let base_reward_per_increment = 1_000_000_000u64 * 64 / sqrt_total; // EBI * BASE_REWARD_FACTOR / sqrt
+    let base_reward_per_increment = 1_000_000_000u64 * 64 / sqrt_total;
 
-    const PARTICIPATION_WEIGHTS: [u64; 3] = [14, 26, 14]; // source, target, head
-
+    const PARTICIPATION_WEIGHTS: [u64; 3] = [14, 26, 14];
     let mut proposer_reward_numerator = 0u64;
-
-    let mut agg_offset = 0usize;
-    for ci in 0..cps {
-        if committee_bits & (1u64 << ci) == 0 {
-            continue;
-        }
-        let committee = shuffling::get_beacon_committee(shuffled, att_slot, ci, cps);
-
-        for (j, &validator_idx) in committee.iter().enumerate() {
-            let bit_pos = agg_offset + j;
-            let byte_idx = bit_pos / 8;
-            let bit_idx = bit_pos % 8;
-            if byte_idx >= agg_bits.len() || agg_bits[byte_idx] & (1 << bit_idx) == 0 {
-                continue;
-            }
-
-            let vi = validator_idx as usize;
-            // Feed LMD-GHOST: same vote that drives participation flags also
-            // updates the latest-message tracker (spec on_attestation contract).
-            // Tile-side `on_attestation` applies the monotonic-epoch guard.
-            votes_sink.push((validator_idx, beacon_block_root, target_epoch));
-            let participation = if is_current {
-                &mut sd.current_epoch_participation[vi]
-            } else {
-                &mut sd.previous_epoch_participation[vi]
-            };
-
-            let base_reward =
-                (epoch.val_effective_balance[vi] / 1_000_000_000) * base_reward_per_increment;
-
-            // Set flags and accumulate reward for newly set flags only.
-            for (fi, &weight) in PARTICIPATION_WEIGHTS.iter().enumerate() {
-                let flag_bit = 1u8 << fi;
-                if flag_weights[fi] && *participation & flag_bit == 0 {
-                    *participation |= flag_bit;
-                    proposer_reward_numerator += base_reward * weight;
-                }
+    let participation_arr = if is_current {
+        &mut sd.current_epoch_participation
+    } else {
+        &mut sd.previous_epoch_participation
+    };
+    for &validator_idx in active_scratch.iter() {
+        let vi = validator_idx as usize;
+        let participation = &mut participation_arr[vi];
+        let base_reward =
+            (epoch.val_effective_balance[vi] / 1_000_000_000) * base_reward_per_increment;
+        for (fi, &weight) in PARTICIPATION_WEIGHTS.iter().enumerate() {
+            let flag_bit = 1u8 << fi;
+            if flag_weights[fi] && *participation & flag_bit == 0 {
+                *participation |= flag_bit;
+                proposer_reward_numerator += base_reward * weight;
             }
         }
-        agg_offset += committee.len();
     }
-
-    proposer_reward_numerator
+    Some(proposer_reward_numerator)
 }
 
+#[inline]
 fn get_block_root_at_epoch(roots: &SlotRoots, epoch: Epoch) -> B256 {
     let slot = epoch * SLOTS_PER_EPOCH;
     roots.block_roots[slot as usize % SLOTS_PER_HISTORICAL_ROOT]
 }
 
-/// Cache the execution payload header into the beacon state.
+/// Validate header sanity then cache the execution payload header.
+/// No BLS sigs; everything happens in pass 2.
 pub fn process_execution_payload(
     imm: &Immutable,
     sd: &mut SlotData,
@@ -792,53 +1127,39 @@ pub fn process_execution_payload(
         return false;
     }
 
-    let b256 = |off: usize| -> B256 { payload_bytes[off..off + 32].try_into().unwrap() };
-    let u64le =
-        |off: usize| -> u64 { u64::from_le_bytes(payload_bytes[off..off + 8].try_into().unwrap()) };
-    let off32 = |pos: usize| -> usize {
-        u32::from_le_bytes(payload_bytes[pos..pos + 4].try_into().unwrap()) as usize
-    };
-
-    let extra_data_off = off32(436);
-    let transactions_off = off32(504);
-
+    let extra_data_off = ExecutionPayloadView::extra_data_offset(payload_bytes) as usize;
+    let transactions_off = ExecutionPayloadView::transactions_offset(payload_bytes) as usize;
     let extra_data_len = if extra_data_off < transactions_off {
         (transactions_off - extra_data_off).min(32)
     } else {
         0
     };
-
     let mut extra_data = [0u8; 32];
     if extra_data_len > 0 && extra_data_off + extra_data_len <= payload_bytes.len() {
         extra_data[..extra_data_len]
             .copy_from_slice(&payload_bytes[extra_data_off..extra_data_off + extra_data_len]);
     }
 
-    // Store the execution payload header.
-    // transactions_root and withdrawals_root are computed hashes, not stored
-    // directly. For a passive follower, we store the header fields for state
-    // hashing.
     sd.latest_execution_payload_header = ExecutionPayloadHeader {
-        parent_hash: b256(0),
-        fee_recipient: payload_bytes[32..52].try_into().unwrap(),
-        state_root: b256(52),
-        receipts_root: b256(84),
-        logs_bloom: payload_bytes[116..372].try_into().unwrap(),
-        prev_randao: b256(372),
-        block_number: u64le(404),
-        gas_limit: u64le(412),
-        gas_used: u64le(420),
-        timestamp: u64le(428),
+        parent_hash: *ExecutionPayloadView::parent_hash(payload_bytes),
+        fee_recipient: *ExecutionPayloadView::fee_recipient(payload_bytes),
+        state_root: *ExecutionPayloadView::state_root(payload_bytes),
+        receipts_root: *ExecutionPayloadView::receipts_root(payload_bytes),
+        logs_bloom: *ExecutionPayloadView::logs_bloom(payload_bytes),
+        prev_randao: *ExecutionPayloadView::prev_randao(payload_bytes),
+        block_number: ExecutionPayloadView::block_number(payload_bytes),
+        gas_limit: ExecutionPayloadView::gas_limit(payload_bytes),
+        gas_used: ExecutionPayloadView::gas_used(payload_bytes),
+        timestamp: ExecutionPayloadView::timestamp(payload_bytes),
         extra_data_len: extra_data_len as u8,
         extra_data,
-        base_fee_per_gas: b256(440),
-        block_hash: b256(472),
+        base_fee_per_gas: *ExecutionPayloadView::base_fee_per_gas(payload_bytes),
+        block_hash: *ExecutionPayloadView::block_hash(payload_bytes),
         transactions_root: ssz_hash::hash_transactions_from_payload(payload_bytes, zh),
         withdrawals_root: ssz_hash::hash_withdrawals_from_payload(payload_bytes, zh),
-        blob_gas_used: u64le(512),
-        excess_blob_gas: u64le(520),
+        blob_gas_used: ExecutionPayloadView::blob_gas_used(payload_bytes),
+        excess_blob_gas: ExecutionPayloadView::excess_blob_gas(payload_bytes),
     };
-
     true
 }
 
@@ -851,44 +1172,50 @@ pub fn process_withdrawals(
     sd: &mut SlotData,
     pq: &mut PendingQueues,
     payload_bytes: &[u8],
-) {
+) -> bool {
     if payload_bytes.len() < 528 {
-        return;
+        return false;
     }
-    let off32 = |pos: usize| -> usize {
-        u32::from_le_bytes(payload_bytes[pos..pos + 4].try_into().unwrap()) as usize
-    };
-    let withdrawals_off = off32(508);
+    let withdrawals_off = ExecutionPayloadView::withdrawals_offset(payload_bytes) as usize;
     if withdrawals_off > payload_bytes.len() {
-        return;
+        return false;
     }
     let withdrawals_data = &payload_bytes[withdrawals_off..];
 
-    const WITHDRAWAL_SIZE: usize = 44;
     const MAX_VALIDATORS_PER_WITHDRAWALS_SWEEP: u64 = 16384;
-    let count = withdrawals_data.len() / WITHDRAWAL_SIZE;
-    let n_validators = vid.validator_cnt as u64;
-
-    let current_epoch = sd.slot / SLOTS_PER_EPOCH;
     const MAX_PENDING_PARTIALS_PER_SWEEP: usize = 8;
+    let payload_count = withdrawals_data.len() / WITHDRAWAL_SIZE;
+    if payload_count > MAX_WITHDRAWALS_PER_PAYLOAD {
+        return false;
+    }
+    let n_validators = vid.validator_cnt as u64;
+    let current_epoch = sd.slot / SLOTS_PER_EPOCH;
 
-    // Replay get_pending_partial_withdrawals to find processed_count.
-    // Iterates pending queue, checking eligibility. All iterated entries
-    // count as processed (whether eligible or not). Stops at
-    // !is_withdrawable or withdrawal limit reached.
-    //
-    // Without subtracting prior selected, two partials against the same
-    // validator can both pass eligibility when only the first should — the
-    // queue then drains the wrong number of entries vs the proposer's
-    // selection and the state root diverges.
-    let withdrawals_limit = min(MAX_PENDING_PARTIALS_PER_SWEEP, MAX_WITHDRAWALS_PER_PAYLOAD - 1);
+    let check = |i: usize, w_idx: u64, v_idx: u64, address: &[u8; 20], amount: u64| -> bool {
+        if i >= payload_count {
+            return false;
+        }
+        let w: &[u8; WITHDRAWAL_SIZE] =
+            withdrawals_data[i * WITHDRAWAL_SIZE..(i + 1) * WITHDRAWAL_SIZE].try_into().unwrap();
+        WithdrawalView::index(w) == w_idx &&
+            WithdrawalView::validator_index(w) == v_idx &&
+            WithdrawalView::address(w) == address &&
+            WithdrawalView::amount(w) == amount
+    };
+
+    // Phase 1: pending partial withdrawals.
+    let partial_limit = min(MAX_PENDING_PARTIALS_PER_SWEEP, MAX_WITHDRAWALS_PER_PAYLOAD - 1);
     let mut processed_partial_count: usize = 0;
     let mut partials_emitted: usize = 0;
     let mut selected: [(u64, u64); MAX_PENDING_PARTIALS_PER_SWEEP] =
         [(0, 0); MAX_PENDING_PARTIALS_PER_SWEEP];
+    let mut expected_count = 0usize;
+    let mut withdrawal_index = sd.next_withdrawal_index;
+    let mut last_emitted_vi: u64 = 0;
+
     for qi in 0..pq.pending_partial_withdrawals.len() {
         let pw = &pq.pending_partial_withdrawals[qi];
-        if pw.withdrawable_epoch > current_epoch || partials_emitted >= withdrawals_limit {
+        if pw.withdrawable_epoch > current_epoch || partials_emitted >= partial_limit {
             break;
         }
         let vi = pw.index as usize;
@@ -904,47 +1231,167 @@ pub fn process_withdrawals(
                 epoch.val_effective_balance[vi] >= MIN_ACTIVATION_BALANCE &&
                 balance > MIN_ACTIVATION_BALANCE;
             if eligible {
-                let withdrawable = min(balance - MIN_ACTIVATION_BALANCE, pw.amount);
-                selected[partials_emitted] = (pw.index, withdrawable);
+                let amount = min(balance - MIN_ACTIVATION_BALANCE, pw.amount);
+                let address: &[u8; 20] =
+                    vid.val_withdrawal_credentials[vi][12..32].try_into().unwrap();
+                if !check(expected_count, withdrawal_index, pw.index, address, amount) {
+                    return false;
+                }
+                selected[partials_emitted] = (pw.index, amount);
                 partials_emitted += 1;
+                expected_count += 1;
+                withdrawal_index += 1;
+                last_emitted_vi = pw.index;
             }
         }
         processed_partial_count += 1;
     }
 
-    // apply_withdrawals: decrease balance (payout to execution layer).
-    for i in 0..count {
-        let w = &withdrawals_data[i * WITHDRAWAL_SIZE..(i + 1) * WITHDRAWAL_SIZE];
-        let validator_index = u64::from_le_bytes(w[8..16].try_into().unwrap()) as usize;
-        let amount = u64::from_le_bytes(w[36..44].try_into().unwrap());
-        if validator_index < vid.validator_cnt {
-            sd.balances[validator_index] = sd.balances[validator_index].saturating_sub(amount);
+    // Phase 2: validator sweep.
+    let mut sweep_validator_index = sd.next_withdrawal_validator_index;
+    if n_validators > 0 {
+        let bound = min(n_validators, MAX_VALIDATORS_PER_WITHDRAWALS_SWEEP);
+        for _ in 0..bound {
+            let vi = sweep_validator_index as usize;
+            if vi < vid.validator_cnt && has_execution_withdrawal_credential(vid, vi) {
+                let mut partial_drawn = 0u64;
+                for &(svi, samt) in &selected[..partials_emitted] {
+                    if svi == sweep_validator_index {
+                        partial_drawn = partial_drawn.saturating_add(samt);
+                    }
+                }
+                let balance = sd.balances[vi].saturating_sub(partial_drawn);
+                let max_eb = if has_compounding_credential(vid, vi) {
+                    2_048_000_000_000
+                } else {
+                    MIN_ACTIVATION_BALANCE
+                };
+                let address: &[u8; 20] =
+                    vid.val_withdrawal_credentials[vi][12..32].try_into().unwrap();
+                if epoch.val_withdrawable_epoch[vi] <= current_epoch && balance > 0 {
+                    if !check(
+                        expected_count,
+                        withdrawal_index,
+                        sweep_validator_index,
+                        address,
+                        balance,
+                    ) {
+                        return false;
+                    }
+                    expected_count += 1;
+                    withdrawal_index += 1;
+                    last_emitted_vi = sweep_validator_index;
+                } else if epoch.val_effective_balance[vi] == max_eb && balance > max_eb {
+                    let amount = balance - max_eb;
+                    if !check(
+                        expected_count,
+                        withdrawal_index,
+                        sweep_validator_index,
+                        address,
+                        amount,
+                    ) {
+                        return false;
+                    }
+                    expected_count += 1;
+                    withdrawal_index += 1;
+                    last_emitted_vi = sweep_validator_index;
+                }
+            }
+            if expected_count >= MAX_WITHDRAWALS_PER_PAYLOAD {
+                break;
+            }
+            sweep_validator_index = (sweep_validator_index + 1) % n_validators;
         }
     }
 
-    if count > 0 {
-        let last_w = &withdrawals_data[(count - 1) * WITHDRAWAL_SIZE..count * WITHDRAWAL_SIZE];
-        let last_index = u64::from_le_bytes(last_w[0..8].try_into().unwrap());
-        sd.next_withdrawal_index = last_index + 1;
+    if expected_count != payload_count {
+        return false;
     }
 
+    // Apply: debit balances + advance cursors.
+    for i in 0..payload_count {
+        let w: &[u8; WITHDRAWAL_SIZE] =
+            withdrawals_data[i * WITHDRAWAL_SIZE..(i + 1) * WITHDRAWAL_SIZE].try_into().unwrap();
+        let validator_index = WithdrawalView::validator_index(w) as usize;
+        let amount = WithdrawalView::amount(w);
+        debug_assert!(validator_index < vid.validator_cnt);
+        sd.balances[validator_index] = sd.balances[validator_index].saturating_sub(amount);
+    }
+    if expected_count > 0 {
+        sd.next_withdrawal_index = withdrawal_index;
+    }
     if processed_partial_count > 0 {
         pq.pending_partial_withdrawals.drain(..processed_partial_count);
     }
-
     if n_validators > 0 {
-        if count == MAX_WITHDRAWALS_PER_PAYLOAD {
-            let last_w = &withdrawals_data[(count - 1) * WITHDRAWAL_SIZE..count * WITHDRAWAL_SIZE];
-            let last_vi = u64::from_le_bytes(last_w[8..16].try_into().unwrap());
-            sd.next_withdrawal_validator_index = (last_vi + 1) % n_validators;
+        if expected_count == MAX_WITHDRAWALS_PER_PAYLOAD {
+            sd.next_withdrawal_validator_index = (last_emitted_vi + 1) % n_validators;
         } else {
             sd.next_withdrawal_validator_index = (sd.next_withdrawal_validator_index +
                 MAX_VALIDATORS_PER_WITHDRAWALS_SWEEP) %
                 n_validators;
         }
     }
+    true
 }
 
+/// Pass 1 — resolve sync committee participants from
+/// `sync_committee_indices` × bits, push aggregate sig (eth_aggregate
+/// semantics — empty + G2-∞ ok).
+#[allow(clippy::too_many_arguments)]
+pub fn collect_sigs_sync_aggregate(
+    imm: &Immutable,
+    vid: &ValidatorIdentity,
+    longtail: &HistoricalLongtail,
+    sync_agg: &[u8],
+    block_slot: Slot,
+    roots: &SlotRoots,
+    active_scratch: &mut Vec<u32>,
+    sig_batch: &mut SigBatch,
+) {
+    if sync_agg.len() < BLOCK_SYNC_AGGREGATE_SIZE {
+        return;
+    }
+    let sync_agg_fixed: &[u8; BLOCK_SYNC_AGGREGATE_SIZE] =
+        sync_agg[..BLOCK_SYNC_AGGREGATE_SIZE].try_into().unwrap();
+    let bits = SyncAggregateView::sync_committee_bits(sync_agg_fixed);
+    let sig = SyncAggregateView::sync_committee_signature(sync_agg_fixed);
+
+    let previous_slot = block_slot.saturating_sub(1);
+    let previous_block_root = roots.block_roots[previous_slot as usize % SLOTS_PER_HISTORICAL_ROOT];
+    let previous_epoch = previous_slot / SLOTS_PER_EPOCH;
+    let fork_version = bls::fork_version_at_epoch(
+        imm.fork.epoch,
+        imm.fork.previous_version,
+        imm.fork.current_version,
+        previous_epoch,
+    );
+
+    active_scratch.clear();
+    for i in 0..SYNC_COMMITTEE_SIZE {
+        let byte_idx = i / 8;
+        let bit_idx = i % 8;
+        if bits[byte_idx] & (1 << bit_idx) != 0 {
+            let vi = longtail.sync_committee_indices[i] as usize;
+            if vi >= vid.validator_cnt {
+                sig_batch.poison();
+                return;
+            }
+            active_scratch.push(longtail.sync_committee_indices[i]);
+        }
+    }
+    let domain =
+        bls::compute_domain(bls::DOMAIN_SYNC_COMMITTEE, fork_version, &imm.genesis_validators_root);
+    let signing_root = bls::compute_signing_root(&previous_block_root, &domain);
+    sig_batch.push_eth_aggregate(
+        active_scratch.len(),
+        active_scratch.iter().map(|&vi| &vid.val_pubkey_decompressed[vi as usize]),
+        sig,
+        signing_root,
+    );
+}
+
+/// Pass 2 — apply sync_aggregate balance updates. BLS verified in pass 1.
 pub fn process_sync_aggregate(
     vid: &ValidatorIdentity,
     longtail: &HistoricalLongtail,
@@ -952,18 +1399,17 @@ pub fn process_sync_aggregate(
     sd: &mut SlotData,
     sync_agg: &[u8],
     proposer_index: u64,
-) {
-    if sync_agg.len() < 160 {
-        return;
+) -> bool {
+    if sync_agg.len() < BLOCK_SYNC_AGGREGATE_SIZE {
+        return true;
     }
-    // TODO(BLS): eth_fast_aggregate_verify over previous-slot block root under
-    // DOMAIN_SYNC_COMMITTEE for the participating subset of
-    // current_sync_committee. Without this we apply rewards/penalties for a
-    // forged sync aggregate. Sig is at sync_agg[64..160].
+    if (proposer_index as usize) >= vid.validator_cnt {
+        return false;
+    }
+    let sync_agg_fixed: &[u8; BLOCK_SYNC_AGGREGATE_SIZE] =
+        sync_agg[..BLOCK_SYNC_AGGREGATE_SIZE].try_into().unwrap();
+    let bits = SyncAggregateView::sync_committee_bits(sync_agg_fixed);
 
-    let bits = &sync_agg[0..64];
-
-    // Compute total active balance + base reward per increment.
     let total_active = {
         let mut t = 0u64;
         let current_epoch = sd.slot / SLOTS_PER_EPOCH;
@@ -978,19 +1424,12 @@ pub fn process_sync_aggregate(
     };
     let sqrt_total = epoch_transition::integer_sqrt(total_active);
     let base_reward_per_increment = 1_000_000_000u64 * 64 / sqrt_total;
-
-    // total_active_increments = total_active_balance / EFFECTIVE_BALANCE_INCREMENT
     let total_active_increments = total_active / 1_000_000_000;
 
     const SYNC_REWARD_WEIGHT: u64 = 2;
     const WEIGHT_DENOMINATOR: u64 = 64;
     const PROPOSER_WEIGHT: u64 = 8;
 
-    // Uniform reward per participant per slot:
-    // total_base_rewards = base_reward_per_increment * total_active_increments
-    // max_participant_rewards = total_base_rewards * SYNC_REWARD_WEIGHT /
-    // WEIGHT_DENOMINATOR / SLOTS_PER_EPOCH participant_reward =
-    // max_participant_rewards / SYNC_COMMITTEE_SIZE
     let total_base_rewards = base_reward_per_increment * total_active_increments;
     let participant_reward = if total_active_increments > 0 {
         total_base_rewards * SYNC_REWARD_WEIGHT /
@@ -1004,17 +1443,14 @@ pub fn process_sync_aggregate(
         participant_reward * PROPOSER_WEIGHT / (WEIGHT_DENOMINATOR - PROPOSER_WEIGHT);
 
     let mut proposer_reward_sum = 0u64;
-
     for i in 0..SYNC_COMMITTEE_SIZE {
         let vi = longtail.sync_committee_indices[i] as usize;
         if vi >= vid.validator_cnt {
             continue;
         }
-
         let byte_idx = i / 8;
         let bit_idx = i % 8;
         let participated = bits[byte_idx] & (1 << bit_idx) != 0;
-
         if participated {
             sd.balances[vi] = sd.balances[vi].saturating_add(participant_reward);
             proposer_reward_sum += proposer_reward_per;
@@ -1022,38 +1458,77 @@ pub fn process_sync_aggregate(
             sd.balances[vi] = sd.balances[vi].saturating_sub(participant_reward);
         }
     }
+    sd.balances[proposer_index as usize] =
+        sd.balances[proposer_index as usize].saturating_add(proposer_reward_sum);
+    true
+}
 
-    if (proposer_index as usize) < vid.validator_cnt {
-        sd.balances[proposer_index as usize] =
-            sd.balances[proposer_index as usize].saturating_add(proposer_reward_sum);
+/// Pass 1 — push voluntary-exit sigs. Each exit's signing root is the
+/// `(epoch, validator_index)` pair under `DOMAIN_VOLUNTARY_EXIT` pinned to
+/// `CAPELLA_FORK_VERSION`. Returns false on out-of-range vi (early reject).
+pub fn collect_sigs_voluntary_exits(
+    imm: &Immutable,
+    vid: &ValidatorIdentity,
+    data: &[u8],
+    sig_batch: &mut SigBatch,
+    zh: &[B256],
+) {
+    let count = data.len() / SIGNED_VOLUNTARY_EXIT_SIZE;
+    for i in 0..count {
+        let exit: &[u8; SIGNED_VOLUNTARY_EXIT_SIZE] = data
+            [i * SIGNED_VOLUNTARY_EXIT_SIZE..(i + 1) * SIGNED_VOLUNTARY_EXIT_SIZE]
+            .try_into()
+            .unwrap();
+        let exit_epoch_msg = SignedVoluntaryExitView::epoch(exit);
+        let vi_u = SignedVoluntaryExitView::validator_index(exit);
+        let vi = vi_u as usize;
+        if vi >= vid.validator_cnt {
+            // Push a poison sig so verify_all fails — clearer than a side
+            // channel and keeps collect_sigs_* infallible.
+            sig_batch.poison();
+            return;
+        }
+        let object_root = ssz_hash::hash_tree_root_voluntary_exit(exit_epoch_msg, vi_u, zh);
+        let domain = bls::compute_domain(
+            bls::DOMAIN_VOLUNTARY_EXIT,
+            imm.capella_fork_version,
+            &imm.genesis_validators_root,
+        );
+        let signing_root = bls::compute_signing_root(&object_root, &domain);
+        let sig = SignedVoluntaryExitView::signature(exit);
+        sig_batch.push_one(&vid.val_pubkey_decompressed[vi], sig, signing_root);
     }
 }
 
+/// Pass 2 — validate state-dependent preconditions (post-block-mutation
+/// state evolution may change `is_slashable` / pending-balance), apply
+/// `initiate_validator_exit` per accepted entry. BLS already verified.
 pub fn process_voluntary_exits(
     vid: &ValidatorIdentity,
     epoch: &mut EpochData,
     sd: &mut SlotData,
     pq: &PendingQueues,
     data: &[u8],
-) {
-    // TODO(BLS): SignedVoluntaryExit signature missing — see validate.rs.
-    const EXIT_SIZE: usize = 112;
-    let count = data.len() / EXIT_SIZE;
+) -> bool {
+    let count = data.len() / SIGNED_VOLUNTARY_EXIT_SIZE;
     let current_epoch = sd.slot / SLOTS_PER_EPOCH;
-
+    let n = vid.validator_cnt;
     for i in 0..count {
-        let exit = &data[i * EXIT_SIZE..(i + 1) * EXIT_SIZE];
-        let exit_epoch_msg = u64::from_le_bytes(exit[0..8].try_into().unwrap());
-        let vi = u64::from_le_bytes(exit[8..16].try_into().unwrap()) as usize;
-
+        let exit: &[u8; SIGNED_VOLUNTARY_EXIT_SIZE] = data
+            [i * SIGNED_VOLUNTARY_EXIT_SIZE..(i + 1) * SIGNED_VOLUNTARY_EXIT_SIZE]
+            .try_into()
+            .unwrap();
+        let exit_epoch_msg = SignedVoluntaryExitView::epoch(exit);
+        let vi = SignedVoluntaryExitView::validator_index(exit) as usize;
         if !validate::validate_voluntary_exit(vid, epoch, vi, exit_epoch_msg, current_epoch) {
-            continue;
+            return false;
         }
         if get_pending_balance_to_withdraw(pq, vi) != 0 {
-            continue;
+            return false;
         }
-        initiate_validator_exit(epoch, sd, vid.validator_cnt, vi, current_epoch);
+        initiate_validator_exit(epoch, sd, n, vi, current_epoch);
     }
+    true
 }
 
 fn process_execution_requests(
@@ -1081,16 +1556,16 @@ fn process_execution_requests(
 }
 
 pub fn process_deposit_requests(sd: &mut SlotData, pq: &mut PendingQueues, data: &[u8]) {
-    const DEPOSIT_SIZE: usize = 192;
-    let count = data.len() / DEPOSIT_SIZE;
+    let count = data.len() / DEPOSIT_REQUEST_SIZE;
 
     for i in 0..count {
-        let d = &data[i * DEPOSIT_SIZE..(i + 1) * DEPOSIT_SIZE];
-        let pubkey: [u8; 48] = d[0..48].try_into().unwrap();
-        let credentials: B256 = d[48..80].try_into().unwrap();
-        let amount = u64::from_le_bytes(d[80..88].try_into().unwrap());
-        let signature: [u8; 96] = d[88..184].try_into().unwrap();
-        let index = u64::from_le_bytes(d[184..192].try_into().unwrap());
+        let d: &[u8; DEPOSIT_REQUEST_SIZE] =
+            data[i * DEPOSIT_REQUEST_SIZE..(i + 1) * DEPOSIT_REQUEST_SIZE].try_into().unwrap();
+        let pubkey = *DepositRequestView::pubkey(d);
+        let credentials: B256 = *DepositRequestView::withdrawal_credentials(d);
+        let amount = DepositRequestView::amount(d);
+        let signature = *DepositRequestView::signature(d);
+        let index = DepositRequestView::index(d);
 
         if sd.deposit_requests_start_index == UNSET_DEPOSIT_REQUESTS_START_INDEX {
             sd.deposit_requests_start_index = index;
@@ -1113,16 +1588,18 @@ pub fn process_withdrawal_requests(
     pq: &mut PendingQueues,
     data: &[u8],
 ) {
-    const REQUEST_SIZE: usize = 76;
-    let count = data.len() / REQUEST_SIZE;
+    let count = data.len() / WITHDRAWAL_REQUEST_SIZE;
     let current_epoch = sd.slot / SLOTS_PER_EPOCH;
     let n = vid.validator_cnt;
 
     for i in 0..count {
-        let r = &data[i * REQUEST_SIZE..(i + 1) * REQUEST_SIZE];
-        let source_address: &[u8; 20] = r[0..20].try_into().unwrap();
-        let validator_pubkey: &[u8; 48] = r[20..68].try_into().unwrap();
-        let amount = u64::from_le_bytes(r[68..76].try_into().unwrap());
+        let r: &[u8; WITHDRAWAL_REQUEST_SIZE] = data
+            [i * WITHDRAWAL_REQUEST_SIZE..(i + 1) * WITHDRAWAL_REQUEST_SIZE]
+            .try_into()
+            .unwrap();
+        let source_address = WithdrawalRequestView::source_address(r);
+        let validator_pubkey = WithdrawalRequestView::validator_pubkey(r);
+        let amount = WithdrawalRequestView::amount(r);
         let is_full_exit = amount == FULL_EXIT_REQUEST_AMOUNT;
 
         if pq.pending_partial_withdrawals.len() >= types::PENDING_PARTIAL_WITHDRAWALS_LIMIT &&
@@ -1170,7 +1647,7 @@ pub fn process_withdrawal_requests(
             let exit_queue_epoch =
                 compute_exit_epoch_and_update_churn(epoch, sd, n, to_withdraw, current_epoch);
             let withdrawable_epoch = exit_queue_epoch + MIN_VALIDATOR_WITHDRAWABILITY_DELAY;
-            pq.pending_partial_withdrawals.push(PendingPartialWithdrawal {
+            pq.pending_partial_withdrawals.push_back(PendingPartialWithdrawal {
                 index: vi as u64,
                 amount: to_withdraw,
                 withdrawable_epoch,
@@ -1186,16 +1663,18 @@ pub fn process_consolidation_requests(
     pq: &mut PendingQueues,
     data: &[u8],
 ) {
-    const REQUEST_SIZE: usize = 116;
-    let count = data.len() / REQUEST_SIZE;
+    let count = data.len() / CONSOLIDATION_REQUEST_SIZE;
     let current_epoch = sd.slot / SLOTS_PER_EPOCH;
     let n = vid.validator_cnt;
 
     for i in 0..count {
-        let r = &data[i * REQUEST_SIZE..(i + 1) * REQUEST_SIZE];
-        let source_address: &[u8; 20] = r[0..20].try_into().unwrap();
-        let source_pubkey: &[u8; 48] = r[20..68].try_into().unwrap();
-        let target_pubkey: &[u8; 48] = r[68..116].try_into().unwrap();
+        let r: &[u8; CONSOLIDATION_REQUEST_SIZE] = data
+            [i * CONSOLIDATION_REQUEST_SIZE..(i + 1) * CONSOLIDATION_REQUEST_SIZE]
+            .try_into()
+            .unwrap();
+        let source_address = ConsolidationRequestView::source_address(r);
+        let source_pubkey = ConsolidationRequestView::source_pubkey(r);
+        let target_pubkey = ConsolidationRequestView::target_pubkey(r);
 
         if source_pubkey == target_pubkey {
             if let Some(src) = find_validator_by_pubkey(vid, source_pubkey) {
@@ -1270,32 +1749,98 @@ pub fn process_consolidation_requests(
     }
 }
 
+/// Pass 1 — push both header sigs per slashing entry.
+pub fn collect_sigs_proposer_slashings(
+    imm: &Immutable,
+    vid: &ValidatorIdentity,
+    data: &[u8],
+    sig_batch: &mut SigBatch,
+    zh: &[B256],
+) -> bool {
+    let count = data.len() / PROPOSER_SLASHING_SIZE;
+    let n = vid.validator_cnt;
+    for i in 0..count {
+        let s: &[u8; PROPOSER_SLASHING_SIZE] =
+            data[i * PROPOSER_SLASHING_SIZE..(i + 1) * PROPOSER_SLASHING_SIZE].try_into().unwrap();
+        let vi = ProposerSlashingView::h1_proposer_index(s) as usize;
+        if vi >= n {
+            return false;
+        }
+        let h1_slot = ProposerSlashingView::h1_slot(s);
+        let h2_slot = ProposerSlashingView::h2_slot(s);
+        let fv1 = bls::fork_version_at_epoch(
+            imm.fork.epoch,
+            imm.fork.previous_version,
+            imm.fork.current_version,
+            h1_slot / SLOTS_PER_EPOCH,
+        );
+        let fv2 = bls::fork_version_at_epoch(
+            imm.fork.epoch,
+            imm.fork.previous_version,
+            imm.fork.current_version,
+            h2_slot / SLOTS_PER_EPOCH,
+        );
+        let sr1 = signing_root_for_block_header(&s[0..208], fv1, &imm.genesis_validators_root, zh);
+        let sr2 =
+            signing_root_for_block_header(&s[208..416], fv2, &imm.genesis_validators_root, zh);
+        let sig1 = ProposerSlashingView::h1_signature(s);
+        let sig2 = ProposerSlashingView::h2_signature(s);
+        sig_batch.push_one(&vid.val_pubkey_decompressed[vi], sig1, sr1);
+        sig_batch.push_one(&vid.val_pubkey_decompressed[vi], sig2, sr2);
+    }
+    true
+}
+
+/// Pass 2 — validate per-entry preconditions and slash. BLS already
+/// verified. `is_slashable_validator` re-check picks up within-block
+/// mutations (a same-vi double slashing rejects on the second entry
+/// because the first one already set the slashed flag).
 pub fn process_proposer_slashings(
     vid: &ValidatorIdentity,
     epoch: &mut EpochData,
     sd: &mut SlotData,
     data: &[u8],
-) {
-    const SLASHING_SIZE: usize = 416;
-    let count = data.len() / SLASHING_SIZE;
-    let proposer_index = get_beacon_proposer_index(sd);
+) -> bool {
+    let count = data.len() / PROPOSER_SLASHING_SIZE;
     let n = vid.validator_cnt;
-
-    // TODO(BLS): per-header BLS verification missing — see
-    // validate::validate_proposer_slashing. An attacker-crafted slashing with
-    // junk sigs would silently slash here.
+    let proposer_index = get_beacon_proposer_index(sd);
     let current_epoch = sd.slot / SLOTS_PER_EPOCH;
     for i in 0..count {
-        let s = &data[i * SLASHING_SIZE..(i + 1) * SLASHING_SIZE];
+        let s: &[u8; PROPOSER_SLASHING_SIZE] =
+            data[i * PROPOSER_SLASHING_SIZE..(i + 1) * PROPOSER_SLASHING_SIZE].try_into().unwrap();
         if !validate::validate_proposer_slashing(s) {
-            continue;
+            return false;
         }
-        let vi = u64::from_le_bytes(s[8..16].try_into().unwrap()) as usize;
+        let vi = ProposerSlashingView::h1_proposer_index(s) as usize;
         if vi >= n || !is_slashable_validator(epoch, vi, current_epoch) {
-            continue;
+            return false;
         }
         slash_validator(epoch, sd, n, vi, proposer_index);
     }
+    true
+}
+
+/// Compute signing root for a `BeaconBlockHeader` (208-byte SSZ): slot,
+/// proposer_index, parent_root, state_root, body_root.
+fn signing_root_for_block_header(
+    header: &[u8],
+    fork_version: [u8; 4],
+    genesis_validators_root: &B256,
+    zh: &[B256],
+) -> B256 {
+    let hb: &[u8; BEACON_BLOCK_HEADER_SIZE] =
+        header[..BEACON_BLOCK_HEADER_SIZE].try_into().unwrap();
+    let h = BeaconBlockHeader {
+        slot: BeaconBlockHeaderView::slot(hb),
+        proposer_index: BeaconBlockHeaderView::proposer_index(hb),
+        parent_root: *BeaconBlockHeaderView::parent_root(hb),
+        state_root: *BeaconBlockHeaderView::state_root(hb),
+        body_root: *BeaconBlockHeaderView::body_root(hb),
+    };
+    let object_root = hash_tree_root_block_header(&h, zh);
+    let domain =
+        bls::compute_domain(bls::DOMAIN_BEACON_PROPOSER, fork_version, genesis_validators_root);
+    bls::compute_signing_root(&object_root, &domain)
 }
 
 // TODO(spec): verify the 33-level Merkle branch against
@@ -1310,67 +1855,195 @@ pub fn process_deposits(
     data: &[u8],
     zh: &[B256],
 ) {
-    const DEPOSIT_SIZE: usize = 1240;
-    const PROOF_SIZE: usize = 33 * 32;
     let count = data.len() / DEPOSIT_SIZE;
 
     for i in 0..count {
-        let d = &data[i * DEPOSIT_SIZE..(i + 1) * DEPOSIT_SIZE];
-        let dd = &d[PROOF_SIZE..]; // DepositData starts after proof.
-        let pubkey: &[u8; 48] = dd[0..48].try_into().unwrap();
-        let credentials: B256 = dd[48..80].try_into().unwrap();
-        let amount = u64::from_le_bytes(dd[80..88].try_into().unwrap());
-        let signature: [u8; 96] = dd[88..184].try_into().unwrap();
+        let d: &[u8; DEPOSIT_SIZE] =
+            data[i * DEPOSIT_SIZE..(i + 1) * DEPOSIT_SIZE].try_into().unwrap();
+        let dd = DepositView::data(d);
+        let pubkey = DepositDataView::pubkey(dd);
+        let credentials: B256 = *DepositDataView::withdrawal_credentials(dd);
+        let amount = DepositDataView::amount(dd);
+        let signature = *DepositDataView::signature(dd);
 
         apply_deposit(vid, epoch, sd, pq, pubkey, &credentials, amount, &signature, zh);
         sd.eth1_deposit_index += 1;
     }
 }
 
-pub fn process_bls_to_execution_changes(
-    vid: &mut ValidatorIdentity,
-    _sd: &mut SlotData,
+/// Pass 1 — push bls_to_execution_change sigs. Signer is the validator's
+/// BLS withdrawal key (the `from_bls_pubkey` in the message itself) — not
+/// the signing key cached in `vid.val_pubkey_decompressed`, so we
+/// decompress inline.
+///
+/// Cred-prefix check (`creds[0] == 0x00 && creds[1..] == hash(from_pk)[1..]`)
+/// runs here BEFORE BLS — cheap (one sha256) and avoids burning a
+/// multi-pairing on a structurally-doomed block. Skipped when the validator
+/// doesn't exist yet. Pass
+/// 2's `process_bls_to_execution_changes` re-runs the full cred check
+/// against post-deposit / post-prior-change state, so a same-block
+/// duplicate still rejects.
+pub fn collect_sigs_bls_to_execution_changes(
+    imm: &Immutable,
+    vid: &ValidatorIdentity,
     data: &[u8],
-) {
-    // TODO(BLS): SignedBLSToExecutionChange signature missing — see validate.rs.
-    const CHANGE_SIZE: usize = 172;
-    let count = data.len() / CHANGE_SIZE;
-
+    sig_batch: &mut SigBatch,
+    zh: &[B256],
+) -> bool {
+    let count = data.len() / SIGNED_BLS_CHANGE_SIZE;
     for i in 0..count {
-        let c = &data[i * CHANGE_SIZE..(i + 1) * CHANGE_SIZE];
-        let validator_index = u64::from_le_bytes(c[0..8].try_into().unwrap()) as usize;
-        let from_bls_pubkey: &[u8; 48] = c[8..56].try_into().unwrap();
-        let to_execution_address: &[u8; 20] = c[56..76].try_into().unwrap();
+        let c: &[u8; SIGNED_BLS_CHANGE_SIZE] =
+            data[i * SIGNED_BLS_CHANGE_SIZE..(i + 1) * SIGNED_BLS_CHANGE_SIZE].try_into().unwrap();
+        let validator_index_u = SignedBlsToExecutionChangeView::validator_index(c);
+        let from_bls_pubkey = SignedBlsToExecutionChangeView::from_bls_pubkey(c);
+        let to_execution_address = SignedBlsToExecutionChangeView::to_execution_address(c);
+        let sig = SignedBlsToExecutionChangeView::signature(c);
 
-        if !validate::validate_bls_to_execution_change(vid, validator_index, from_bls_pubkey) {
-            continue;
+        if (validator_index_u as usize) < vid.validator_cnt &&
+            !validate::validate_bls_to_execution_change(
+                vid,
+                validator_index_u as usize,
+                from_bls_pubkey,
+            )
+        {
+            return false;
         }
 
+        let object_root = ssz_hash::hash_tree_root_bls_change(
+            validator_index_u,
+            from_bls_pubkey,
+            to_execution_address,
+            zh,
+        );
+        let domain = bls::compute_domain(
+            bls::DOMAIN_BLS_TO_EXECUTION_CHANGE,
+            imm.genesis_fork_version,
+            &imm.genesis_validators_root,
+        );
+        let signing_root = bls::compute_signing_root(&object_root, &domain);
+        let Ok(from_pk) = PublicKey::from_bytes(from_bls_pubkey) else {
+            return false;
+        };
+        sig_batch.push_one(&from_pk, sig, signing_root);
+    }
+    true
+}
+
+/// Pass 2 — validate creds-prefix invariant against current state and
+/// rewrite credentials. Same-block duplicate change for the same vi: the
+/// first one flips the prefix to 0x01, the second's `validate` call sees
+/// the now-non-BLS prefix and rejects → block invalid.
+pub fn process_bls_to_execution_changes(vid: &mut ValidatorIdentity, data: &[u8]) -> bool {
+    let count = data.len() / SIGNED_BLS_CHANGE_SIZE;
+    for i in 0..count {
+        let c: &[u8; SIGNED_BLS_CHANGE_SIZE] =
+            data[i * SIGNED_BLS_CHANGE_SIZE..(i + 1) * SIGNED_BLS_CHANGE_SIZE].try_into().unwrap();
+        let validator_index = SignedBlsToExecutionChangeView::validator_index(c) as usize;
+        let from_bls_pubkey = SignedBlsToExecutionChangeView::from_bls_pubkey(c);
+        let to_execution_address = SignedBlsToExecutionChangeView::to_execution_address(c);
+
+        if !validate::validate_bls_to_execution_change(vid, validator_index, from_bls_pubkey) {
+            return false;
+        }
         let cred = &mut vid.val_withdrawal_credentials[validator_index];
         cred[0] = ETH1_ADDRESS_WITHDRAWAL_PREFIX;
         cred[1..12].fill(0);
         cred[12..32].copy_from_slice(to_execution_address);
     }
+    true
 }
 
-// TODO(BLS): each IndexedAttestation needs a FastAggregateVerify under
-// DOMAIN_BEACON_ATTESTER for its target epoch (sig at offset 132..228).
+/// Pass 1 — push both IndexedAttestation aggregate sigs per slashing entry.
+pub fn collect_sigs_attester_slashings(
+    imm: &Immutable,
+    vid: &ValidatorIdentity,
+    data: &[u8],
+    active_scratch: &mut Vec<u32>,
+    sig_batch: &mut SigBatch,
+    zh: &[B256],
+) -> bool {
+    if data.is_empty() {
+        return true;
+    }
+    let first_offset = u32::from_le_bytes(data[..4].try_into().unwrap_or([0; 4])) as usize;
+    if first_offset == 0 || !first_offset.is_multiple_of(4) || first_offset > data.len() {
+        return true;
+    }
+    let count = first_offset / 4;
+    for i in 0..count {
+        let start = u32::from_le_bytes(data[i * 4..(i + 1) * 4].try_into().unwrap()) as usize;
+        let end = if i + 1 < count {
+            u32::from_le_bytes(data[(i + 1) * 4..(i + 2) * 4].try_into().unwrap()) as usize
+        } else {
+            data.len()
+        };
+        if start >= end || end > data.len() {
+            return false;
+        }
+        let slashing = &data[start..end];
+        if slashing.len() < 8 {
+            return false;
+        }
+        let off1 = u32::from_le_bytes(slashing[0..4].try_into().unwrap()) as usize;
+        let off2 = u32::from_le_bytes(slashing[4..8].try_into().unwrap()) as usize;
+        if off1 + 132 > slashing.len() || off2 + 132 > slashing.len() || off2 < off1 + 132 {
+            return false;
+        }
+        let i1 = attesting_indices_bytes(slashing, off1, off2);
+        let i2 = attesting_indices_bytes(slashing, off2, slashing.len());
+
+        for (ia_off, ia_end, indices) in [(off1, off2, i1), (off2, slashing.len(), i2)] {
+            let ia = &slashing[ia_off..ia_end];
+            let target_epoch = silver_common::ssz_view::IndexedAttestationView::target_epoch(ia);
+            let fv = bls::fork_version_at_epoch(
+                imm.fork.epoch,
+                imm.fork.previous_version,
+                imm.fork.current_version,
+                target_epoch,
+            );
+            active_scratch.clear();
+            let n_idx = indices.len() / 8;
+            for k in 0..n_idx {
+                let vi = u64::from_le_bytes(indices[k * 8..k * 8 + 8].try_into().unwrap());
+                if vi as usize >= vid.validator_cnt {
+                    return false;
+                }
+                active_scratch.push(vi as u32);
+            }
+            let data_chunk: &[u8; 128] = silver_common::ssz_view::IndexedAttestationView::data(ia);
+            let sig: &[u8; 96] = silver_common::ssz_view::IndexedAttestationView::signature(ia);
+            let object_root = ssz_hash::hash_attestation_data(data_chunk, zh);
+            let domain =
+                bls::compute_domain(bls::DOMAIN_BEACON_ATTESTER, fv, &imm.genesis_validators_root);
+            let signing_root = bls::compute_signing_root(&object_root, &domain);
+            sig_batch.push_aggregate(
+                active_scratch.iter().map(|&vi| &vid.val_pubkey_decompressed[vi as usize]),
+                sig,
+                signing_root,
+            );
+        }
+    }
+    true
+}
+
+/// Pass 2 — validate data + state, slash the intersection. BLS verified.
 pub fn process_attester_slashings(
     vid: &ValidatorIdentity,
     epoch: &mut EpochData,
     sd: &mut SlotData,
     data: &[u8],
-) {
+) -> bool {
     if data.is_empty() {
-        return;
+        return true;
     }
     let first_offset = u32::from_le_bytes(data[..4].try_into().unwrap_or([0; 4])) as usize;
     if first_offset == 0 || !first_offset.is_multiple_of(4) || first_offset > data.len() {
-        return;
+        return true;
     }
     let count = first_offset / 4;
     let proposer_index = get_beacon_proposer_index(sd);
     let n = vid.validator_cnt;
+    let current_epoch = sd.slot / SLOTS_PER_EPOCH;
 
     for i in 0..count {
         let start = u32::from_le_bytes(data[i * 4..(i + 1) * 4].try_into().unwrap()) as usize;
@@ -1380,71 +2053,61 @@ pub fn process_attester_slashings(
             data.len()
         };
         if start >= end || end > data.len() {
-            continue;
+            return false;
         }
-        process_single_attester_slashing(n, epoch, sd, &data[start..end], proposer_index);
-    }
-}
+        let slashing = &data[start..end];
+        if slashing.len() < 8 {
+            return false;
+        }
+        let off1 = u32::from_le_bytes(slashing[0..4].try_into().unwrap()) as usize;
+        let off2 = u32::from_le_bytes(slashing[4..8].try_into().unwrap()) as usize;
+        if off1 + 132 > slashing.len() || off2 + 132 > slashing.len() || off2 < off1 + 132 {
+            return false;
+        }
+        let d1 = &slashing[off1 + 4..off1 + 132];
+        let d2 = &slashing[off2 + 4..off2 + 132];
+        if !is_slashable_attestation_data(d1, d2) {
+            return false;
+        }
+        let i1 = attesting_indices_bytes(slashing, off1, off2);
+        let i2 = attesting_indices_bytes(slashing, off2, slashing.len());
+        if !indices_sorted_unique(i1) || !indices_sorted_unique(i2) {
+            return false;
+        }
 
-pub fn process_single_attester_slashing(
-    n: usize,
-    epoch: &mut EpochData,
-    sd: &mut SlotData,
-    slashing: &[u8],
-    proposer_index: usize,
-) {
-    if slashing.len() < 8 {
-        return;
-    }
-    let off1 = u32::from_le_bytes(slashing[0..4].try_into().unwrap()) as usize;
-    let off2 = u32::from_le_bytes(slashing[4..8].try_into().unwrap()) as usize;
-
-    // Spec is_slashable_attestation_data over the two IndexedAttestations'
-    // AttestationData regions. Reject the whole slashing if neither
-    // double-vote nor surround-vote.
-    if off1 + 132 > slashing.len() || off2 + 132 > slashing.len() || off2 < off1 + 132 {
-        return;
-    }
-    let d1 = &slashing[off1 + 4..off1 + 132];
-    let d2 = &slashing[off2 + 4..off2 + 132];
-    if !is_slashable_attestation_data(d1, d2) {
-        return;
-    }
-
-    let i1 = attesting_indices_bytes(slashing, off1, off2);
-    let i2 = attesting_indices_bytes(slashing, off2, slashing.len());
-
-    // SSZ List[uint64] invariant: strictly ascending. Reject if violated.
-    if !indices_sorted_unique(i1) || !indices_sorted_unique(i2) {
-        return;
-    }
-
-    let current_epoch = sd.slot / SLOTS_PER_EPOCH;
-
-    // Walk both sorted lists in lockstep for O(n+m) intersection.
-    let read = |s: &[u8], i: usize| u64::from_le_bytes(s[i * 8..i * 8 + 8].try_into().unwrap());
-    let (n1, n2) = (i1.len() / 8, i2.len() / 8);
-    let (mut a, mut b) = (0usize, 0usize);
-    while a < n1 && b < n2 {
-        let x = read(i1, a);
-        let y = read(i2, b);
-        match x.cmp(&y) {
-            core::cmp::Ordering::Less => a += 1,
-            core::cmp::Ordering::Greater => b += 1,
-            core::cmp::Ordering::Equal => {
-                let vi = x as usize;
-                if vi < n && is_slashable_validator(epoch, vi, current_epoch) {
-                    slash_validator(epoch, sd, n, vi, proposer_index);
+        // Walk both sorted lists in lockstep for O(n+m) intersection. Spec
+        // requires at least one slashable participant in the intersection.
+        let read = |s: &[u8], i: usize| u64::from_le_bytes(s[i * 8..i * 8 + 8].try_into().unwrap());
+        let (n1, n2) = (i1.len() / 8, i2.len() / 8);
+        let (mut a, mut b) = (0usize, 0usize);
+        let mut slashed_any = false;
+        while a < n1 && b < n2 {
+            let x = read(i1, a);
+            let y = read(i2, b);
+            match x.cmp(&y) {
+                core::cmp::Ordering::Less => a += 1,
+                core::cmp::Ordering::Greater => b += 1,
+                core::cmp::Ordering::Equal => {
+                    let vi = x as usize;
+                    if vi < n && is_slashable_validator(epoch, vi, current_epoch) {
+                        slash_validator(epoch, sd, n, vi, proposer_index);
+                        slashed_any = true;
+                    }
+                    a += 1;
+                    b += 1;
                 }
-                a += 1;
-                b += 1;
             }
         }
+        if !slashed_any {
+            return false;
+        }
     }
+    true
 }
 
 /// View an IndexedAttestation's attesting_indices SSZ bytes (skips the 228
 /// byte fixed part: indices_offset(4) + data(128) + sig(96)).
+#[inline]
 fn attesting_indices_bytes(data: &[u8], start: usize, end: usize) -> &[u8] {
     if start + 228 > end || end > data.len() {
         return &[];
@@ -1596,27 +2259,28 @@ fn get_pending_balance_to_withdraw(pq: &PendingQueues, vi: usize) -> u64 {
     total
 }
 
+#[inline]
 fn is_active(epoch: &EpochData, vi: usize, e: Epoch) -> bool {
     epoch.val_activation_epoch[vi] <= e && e < epoch.val_exit_epoch[vi]
 }
 
-/// Spec: not slashed AND activation_epoch <= epoch < withdrawable_epoch.
+#[inline]
 fn is_slashable_validator(epoch: &EpochData, vi: usize, e: Epoch) -> bool {
     !epoch.val_slashed(vi) &&
         epoch.val_activation_epoch[vi] <= e &&
         e < epoch.val_withdrawable_epoch[vi]
 }
 
-/// Spec: double-vote OR surround-vote. `data` slices are the 128-byte
-/// AttestationData regions of two IndexedAttestations.
 fn is_slashable_attestation_data(d1: &[u8], d2: &[u8]) -> bool {
-    if d1.len() < 128 || d2.len() < 128 {
+    if d1.len() < ATTESTATION_DATA_SIZE || d2.len() < ATTESTATION_DATA_SIZE {
         return false;
     }
-    let s1 = u64::from_le_bytes(d1[48..56].try_into().unwrap());
-    let t1 = u64::from_le_bytes(d1[88..96].try_into().unwrap());
-    let s2 = u64::from_le_bytes(d2[48..56].try_into().unwrap());
-    let t2 = u64::from_le_bytes(d2[88..96].try_into().unwrap());
+    let d1f: &[u8; ATTESTATION_DATA_SIZE] = d1[..ATTESTATION_DATA_SIZE].try_into().unwrap();
+    let d2f: &[u8; ATTESTATION_DATA_SIZE] = d2[..ATTESTATION_DATA_SIZE].try_into().unwrap();
+    let s1 = AttestationDataView::source_epoch(d1f);
+    let t1 = AttestationDataView::target_epoch(d1f);
+    let s2 = AttestationDataView::source_epoch(d2f);
+    let t2 = AttestationDataView::target_epoch(d2f);
 
     // Double vote: distinct data, same target epoch.
     if d1 != d2 && t1 == t2 {
@@ -1644,15 +2308,18 @@ fn indices_sorted_unique(indices: &[u8]) -> bool {
     true
 }
 
+#[inline]
 fn has_execution_withdrawal_credential(vid: &ValidatorIdentity, vi: usize) -> bool {
     let prefix = vid.val_withdrawal_credentials[vi][0];
     prefix == ETH1_ADDRESS_WITHDRAWAL_PREFIX || prefix == COMPOUNDING_WITHDRAWAL_PREFIX
 }
 
+#[inline]
 fn has_compounding_credential(vid: &ValidatorIdentity, vi: usize) -> bool {
     vid.val_withdrawal_credentials[vi][0] == COMPOUNDING_WITHDRAWAL_PREFIX
 }
 
+#[inline]
 fn get_beacon_proposer_index(sd: &SlotData) -> usize {
     sd.proposer_lookahead[(sd.slot % SLOTS_PER_EPOCH) as usize] as usize
 }
@@ -1679,8 +2346,8 @@ fn switch_to_compounding_validator(
     }
 }
 
-/// Electra apply_deposit: for new validators, BLS-verify then add to registry
-/// with 0 balance; always queue a PendingDeposit for the amount.
+/// Apply a single deposit: for new validators, BLS-verify then add to the
+/// registry with 0 balance; always queue a PendingDeposit for the amount.
 #[allow(clippy::too_many_arguments)]
 fn apply_deposit(
     vid: &mut ValidatorIdentity,
@@ -1702,6 +2369,7 @@ fn apply_deposit(
         // Add to registry with 0 effective balance and 0 actual balance.
         let idx = vid.validator_cnt;
         vid.val_pubkey[idx] = *pubkey;
+        vid.val_pubkey_decompressed[idx] = PublicKey::from_bytes(pubkey).unwrap_or_default();
         vid.val_withdrawal_credentials[idx] = *credentials;
         epoch.val_effective_balance[idx] = 0;
         epoch.set_val_slashed(idx, false);
