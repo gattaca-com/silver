@@ -5,15 +5,19 @@
 //! drive the harness from a single thread, ticking both stacks' `loop_body`.
 
 mod harness;
-mod inject;
+pub mod inject;
 mod stack;
 mod stats;
 
 #[cfg(feature = "lh-client")]
 pub mod lh_client;
+#[cfg(feature = "lh-client")]
+pub mod lh_gossip;
 
 pub use harness::TwoStackHarness;
 #[cfg(feature = "lh-client")]
 pub use lh_client::LhClient;
+#[cfg(feature = "lh-client")]
+pub use lh_gossip::LhGossipClient;
 pub use stack::{EchoStack, PublisherStack, keypair_from_seed};
 pub use stats::Stats;

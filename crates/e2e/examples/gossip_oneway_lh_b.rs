@@ -1,19 +1,20 @@
-//! One-way gossip latency: silver publisher → silver echo. Two
-//! `loop_body`-driven silver stacks in one process, one per thread:
-//! echo on a spawned thread; publisher on main. Each stack is mio-based
-//! and synchronous so threading just removes the alternation overhead
-//! from the timed path.
+//! One-way gossip latency: libp2p (rust-libp2p gossipsub) publisher →
+//! silver receiver. Variant B of the lh_gossip family.
 //!
-//! Same threading template as the lh_gossip variants:
-//!   - subscriber on spawned thread (`echo_thread`).
-//!   - mpsc for the echo's "ready" handshake and final `Stats`.
-//!   - `publisher_done: AtomicBool` plus `expected_count: AtomicU64` so the
-//!     receiver can early-exit once it's drained the expected unique count
-//!     without waiting the full drain timeout.
+//! Threaded layout (matches the original / A / C examples):
+//!   - silver echo on a spawned thread (`echo_thread`) running its tile
+//!     `loop_body`s continuously. The echo thread also injects
+//!     `PeerControl::P2pGossipSubscribe` on the first observed
+//!     `P2pNewConnection` event so libp2p sees silver as a topic peer (libp2p's
+//!     `publish` only forwards to peers whose `peer.topics` contains the topic,
+//!     even with `flood_publish` enabled).
+//!   - libp2p publisher on the main thread.
+//!   - mpsc for the echo's `addr` handshake and final `Stats`; `publisher_done:
+//!     AtomicBool` plus `expected_count: AtomicU64` for early-exit on drain.
 //!
 //! Usage:
-//!   cargo run -p silver_e2e --example gossip_oneway -- \
-//!     --duration 5 --rate 500 --payload-size 1024 --dup-pct 10
+//!   cargo run -p silver_e2e --features lh-client --example \
+//!     gossip_oneway_lh_b -- --duration 5 --rate 500 --payload-size 1024
 
 use std::{
     env, io,
@@ -29,21 +30,16 @@ use std::{
 };
 
 use flux::{tile::Tile, timing::Nanos};
-use rand::{Rng, RngCore};
+use rand::RngCore;
 use silver_common::{
-    GossipMsgOut, GossipTopic, Keypair, NewGossipMsg, P2pSend, PeerEvent, TRandomAccess,
+    GossipTopic, Keypair, NewGossipMsg, PeerControl, PeerEvent, PeerId, TRandomAccess,
 };
-use silver_e2e::{
-    EchoStack, PublisherStack, Stats,
-    inject::{build_publish_frame, snappy_compress},
-    keypair_from_seed,
-};
+use silver_e2e::{EchoStack, LhGossipClient, Stats, keypair_from_seed};
 use tempfile::TempDir;
 
 const DEFAULT_DURATION_S: u64 = 3;
 const DEFAULT_RATE_HZ: u64 = 500;
 const DEFAULT_PAYLOAD_SIZE: usize = 1024;
-const DEFAULT_DUP_PCT: u8 = 0;
 const FORK_DIGEST_HEX: &str = "abcd1234";
 const TOPIC: GossipTopic = GossipTopic::BeaconBlock;
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
@@ -54,13 +50,9 @@ fn main() {
     assert!(args.payload_size >= 8, "payload-size must be >= 8 for the timestamp prefix");
 
     let tempdir = TempDir::new().expect("tempdir");
-    let echo_addr = loopback_ephemeral();
-    let echo_disc_addr = loopback_ephemeral();
-    let pub_addr = loopback_ephemeral();
-    let pub_disc_addr = loopback_ephemeral();
-    let echo_kp = keypair_from_seed(2);
-    let pub_kp = keypair_from_seed(1);
-    let echo_peer_id = echo_kp.peer_id();
+    let echo_addr = loopback_ephemeral().expect("port");
+    let echo_disc_addr = loopback_ephemeral().expect("port");
+    let echo_kp = keypair_from_seed(12);
 
     let (ready_tx, ready_rx) = mpsc::channel::<()>();
     let (stats_tx, stats_rx) = mpsc::channel::<Stats>();
@@ -75,76 +67,57 @@ fn main() {
     });
     ready_rx.recv().expect("echo ready");
 
-    let mut publisher =
-        PublisherStack::new(tempdir.path(), "_pub", pub_addr, pub_disc_addr, pub_kp)
-            .expect("publisher stack");
-    publisher.controller.set_auto_ping(false);
-    publisher.network.p2p_mut().connect(echo_peer_id, echo_addr, Instant::now()).expect("connect");
+    let mut lh = LhGossipClient::new();
+    lh.subscribe(TOPIC, FORK_DIGEST_HEX).expect("pub subscribe");
+    lh.dial(echo_addr).expect("libp2p dial silver");
 
-    let mut handle: Option<usize> = None;
-    let connect_deadline = Instant::now() + Duration::from_secs(10);
-    while handle.is_none() && Instant::now() < connect_deadline {
-        spin_publisher(&mut publisher);
-        let h = &mut handle;
-        publisher.injector_adapter.consume::<PeerEvent, _>(|event, _p| {
-            if let PeerEvent::P2pNewConnection { p2p_peer_id, peer_id_full, .. } = event &&
-                peer_id_full == echo_peer_id
-            {
-                *h = Some(p2p_peer_id);
-            }
-        });
+    // Wait for libp2p to record silver as topic-subscribed. The echo
+    // thread auto-injects `PeerControl::P2pGossipSubscribe` on first
+    // `P2pNewConnection`, so this just blocks until silver's SUBSCRIBE
+    // RPC has been processed by libp2p.
+    let sub_deadline = Instant::now() + Duration::from_secs(10);
+    while lh.subscribed_peer_count(TOPIC, FORK_DIGEST_HEX) == 0 && Instant::now() < sub_deadline {
+        lh.tick(Duration::from_millis(1));
     }
-    let Some(handle) = handle else {
-        eprintln!("publisher failed to handshake with echo");
+    if lh.subscribed_peer_count(TOPIC, FORK_DIGEST_HEX) == 0 {
+        eprintln!("libp2p never observed silver as topic-subscribed");
         std::process::exit(1);
-    };
+    }
 
-    println!(
-        "connected; publishing for {}s at {} Hz, dup-pct={}",
-        args.duration_s, args.rate_hz, args.dup_pct
-    );
+    println!("connected; publishing for {}s at {} Hz", args.duration_s, args.rate_hz);
 
     let total_msgs = args.duration_s * args.rate_hz;
     let tick_interval = Duration::from_nanos(1_000_000_000 / args.rate_hz.max(1));
     let start = Instant::now();
-    let mut sent_new = 0u64;
-    let mut sent_dup = 0u64;
-    let mut last_msg: Option<GossipMsgOut> = None;
+    let mut sent = 0u64;
     let mut rng = rand::thread_rng();
     let mut payload = vec![0u8; args.payload_size];
-    let wire_topic = TOPIC.to_wire(FORK_DIGEST_HEX);
 
-    while sent_new + sent_dup < total_msgs {
-        let is_dup = args.dup_pct > 0 && rng.gen_range(0..100) < args.dup_pct as u32;
-        let msg = if is_dup && last_msg.is_some() {
-            sent_dup += 1;
-            last_msg.expect("just checked")
-        } else {
-            rng.fill_bytes(&mut payload);
-            payload[..8].copy_from_slice(&Nanos::now().0.to_le_bytes());
-            let snappy = snappy_compress(&payload);
-            let tcache = build_publish_frame(&mut publisher.mcache_producer, &wire_topic, &snappy)
-                .expect("publish frame");
-            let msg = GossipMsgOut { peer_id: handle, tcache };
-            last_msg = Some(msg);
-            sent_new += 1;
-            msg
-        };
-        publisher.injector_adapter.produce(P2pSend::Gossip(msg));
+    while sent < total_msgs {
+        rng.fill_bytes(&mut payload);
+        payload[..8].copy_from_slice(&Nanos::now().0.to_le_bytes());
+        match lh.publish(TOPIC, FORK_DIGEST_HEX, payload.clone()) {
+            Ok(_) => sent += 1,
+            Err(libp2p::gossipsub::PublishError::Duplicate) => sent += 1,
+            Err(e) => {
+                eprintln!("publish failed at {sent}: {e:?}");
+                break;
+            }
+        }
 
-        let next = start + tick_interval * (sent_new + sent_dup) as u32;
+        // Single-threaded executor on this side — between publishes,
+        // give tokio whatever wall-clock remains until the next publish
+        // to drive QUIC writes. `tick` returns early on a ready event.
+        let next = start + tick_interval * sent as u32;
         while Instant::now() < next {
-            spin_publisher(&mut publisher);
+            let remaining = next.saturating_duration_since(Instant::now());
+            lh.tick(remaining.min(Duration::from_millis(1)));
         }
     }
 
-    let sent_total = sent_new + sent_dup;
-    println!(
-        "sent {sent_total} msgs ({sent_new} new + {sent_dup} dup); draining for up to {:?}",
-        DRAIN_TIMEOUT
-    );
+    println!("sent {sent} msgs; draining for up to {:?}", DRAIN_TIMEOUT);
 
-    expected_count.store(sent_new, Ordering::Release);
+    expected_count.store(sent, Ordering::Release);
     publisher_done.store(true, Ordering::Release);
     echo_handle.join().expect("echo thread panicked");
     let stats = stats_rx.recv().expect("echo stats");
@@ -153,8 +126,7 @@ fn main() {
     let publish_window = args.duration_s as f64;
     println!("---");
     println!("elapsed:       {:.3}s (incl. drain)", elapsed.as_secs_f64());
-    println!("sent new:      {sent_new}");
-    println!("sent dup:      {sent_dup}");
+    println!("sent:          {sent}");
     println!("received:      {}", stats.gossip_received);
     println!("invalid:       {}", stats.invalid_msgs);
     println!("throughput:    {:.1} msg/s received", stats.gossip_received as f64 / publish_window);
@@ -167,20 +139,6 @@ fn main() {
         println!("  p90:         {:.1}", us(h.value_at_quantile(0.90)));
         println!("  p99:         {:.1}", us(h.value_at_quantile(0.99)));
     }
-    let h = &stats.receive_ns;
-    if h.len() > 0 {
-        let us = |ns: u64| ns as f64 / 1000.0;
-        println!("receive latency (μs):  samples={}", h.len());
-        println!("  p10:         {:.1}", us(h.value_at_quantile(0.10)));
-        println!("  p50:         {:.1}", us(h.value_at_quantile(0.50)));
-        println!("  p90:         {:.1}", us(h.value_at_quantile(0.90)));
-        println!("  p99:         {:.1}", us(h.value_at_quantile(0.99)));
-    }
-}
-
-fn spin_publisher(p: &mut PublisherStack) {
-    p.network.loop_body(&mut p.network_adapter);
-    p.controller.loop_body(&mut p.controller_adapter);
 }
 
 fn echo_thread(
@@ -193,15 +151,36 @@ fn echo_thread(
     publisher_done: Arc<AtomicBool>,
     expected_count: Arc<AtomicU64>,
 ) {
-    let mut echo = EchoStack::new(&path, "_echo", addr, disc_addr, kp, FORK_DIGEST_HEX.into())
-        .expect("echo stack");
+    let mut echo =
+        EchoStack::new(&path, "_lh_gossip_b", addr, disc_addr, kp, FORK_DIGEST_HEX.into())
+            .expect("echo stack");
     echo.controller.set_auto_ping(false);
     ready_tx.send(()).expect("ready");
 
+    let mut subscribed = false;
     let mut drain_deadline: Option<Instant> = None;
     loop {
         spin_echo(&mut echo);
         drain_echo_stats(&mut echo);
+
+        if !subscribed {
+            let mut new_handle: Option<(PeerId, usize)> = None;
+            let nh = &mut new_handle;
+            echo.injector_adapter.consume::<PeerEvent, _>(|event, _p| {
+                if let PeerEvent::P2pNewConnection { p2p_peer_id, peer_id_full, .. } = event {
+                    *nh = Some((peer_id_full, p2p_peer_id));
+                }
+            });
+            if let Some((p2p, p2p_connection)) = new_handle {
+                echo.injector_adapter.produce(PeerControl::P2pGossipSubscribe {
+                    p2p,
+                    p2p_connection,
+                    topic: TOPIC,
+                });
+                subscribed = true;
+            }
+        }
+
         if publisher_done.load(Ordering::Acquire) {
             let expected = expected_count.load(Ordering::Acquire);
             if expected != 0 && echo.stats.gossip_received >= expected {
@@ -250,8 +229,8 @@ fn record_latency(consumer: &mut TRandomAccess, msg: &NewGossipMsg, stats: &mut 
     }
 }
 
-fn loopback_ephemeral() -> SocketAddr {
-    SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), pick_free_port().expect("port"))
+fn loopback_ephemeral() -> io::Result<SocketAddr> {
+    Ok(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), pick_free_port()?))
 }
 
 fn pick_free_port() -> io::Result<u16> {
@@ -263,14 +242,12 @@ struct Args {
     duration_s: u64,
     rate_hz: u64,
     payload_size: usize,
-    dup_pct: u8,
 }
 
 fn parse_args() -> Args {
     let mut duration_s = DEFAULT_DURATION_S;
     let mut rate_hz = DEFAULT_RATE_HZ;
     let mut payload_size = DEFAULT_PAYLOAD_SIZE;
-    let mut dup_pct = DEFAULT_DUP_PCT;
 
     let argv: Vec<String> = env::args().skip(1).collect();
     let mut i = 0;
@@ -288,17 +265,11 @@ fn parse_args() -> Args {
                 payload_size = argv[i + 1].parse().expect("--payload-size: bytes");
                 i += 2;
             }
-            "--dup-pct" => {
-                let v: u32 = argv[i + 1].parse().expect("--dup-pct: u8 in 0..=100");
-                assert!(v <= 100, "--dup-pct must be in 0..=100");
-                dup_pct = v as u8;
-                i += 2;
-            }
             other => {
                 eprintln!("unknown arg: {other}");
                 std::process::exit(2);
             }
         }
     }
-    Args { duration_s, rate_hz, payload_size, dup_pct }
+    Args { duration_s, rate_hz, payload_size }
 }

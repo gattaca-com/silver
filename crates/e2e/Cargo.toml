@@ -31,6 +31,7 @@ libp2p = { version = "0.56", default-features = false, features = [
     "secp256k1",
     "macros",
     "request-response",
+    "gossipsub",
 ], optional = true }
 async-trait = { version = "0.1", optional = true }
 tokio = { version = "1", features = ["rt", "time", "macros"], optional = true }
@@ -45,6 +46,18 @@ tracing-subscriber.workspace = true
 
 [[example]]
 name = "gossip_oneway"
+
+[[example]]
+name = "gossip_oneway_lh"
+required-features = ["lh-client"]
+
+[[example]]
+name = "gossip_oneway_lh_b"
+required-features = ["lh-client"]
+
+[[example]]
+name = "gossip_oneway_lh_c"
+required-features = ["lh-client"]
 
 [[test]]
 name = "lh_handshake"

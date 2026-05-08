@@ -1,24 +1,21 @@
-//! One-way gossip latency: silver publisher → silver echo. Two
-//! `loop_body`-driven silver stacks in one process, one per thread:
-//! echo on a spawned thread; publisher on main. Each stack is mio-based
-//! and synchronous so threading just removes the alternation overhead
-//! from the timed path.
+//! One-way gossip latency: silver publisher → libp2p (rust-libp2p
+//! gossipsub) receiver. Variant A of the lh_gossip family.
 //!
-//! Same threading template as the lh_gossip variants:
-//!   - subscriber on spawned thread (`echo_thread`).
-//!   - mpsc for the echo's "ready" handshake and final `Stats`.
-//!   - `publisher_done: AtomicBool` plus `expected_count: AtomicU64` so the
-//!     receiver can early-exit once it's drained the expected unique count
-//!     without waiting the full drain timeout.
+//! Threaded layout (matches the original / B / C examples):
+//!   - subscriber on a spawned thread (`subscriber_thread`) running the libp2p
+//!     swarm continuously with its own tokio current_thread runtime.
+//!   - silver publisher on the main thread (mio-based, synchronous).
+//!   - mpsc for the subscriber's `(listen_addr, peer_id)` handshake and final
+//!     `Stats`; `publisher_done: AtomicBool` plus `expected_count: AtomicU64`
+//!     for early-exit on drain.
 //!
 //! Usage:
-//!   cargo run -p silver_e2e --example gossip_oneway -- \
-//!     --duration 5 --rate 500 --payload-size 1024 --dup-pct 10
+//!   cargo run -p silver_e2e --features lh-client --example \
+//!     gossip_oneway_lh -- --duration 5 --rate 500 --payload-size 1024
 
 use std::{
     env, io,
     net::{IpAddr, Ipv4Addr, SocketAddr},
-    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -30,11 +27,9 @@ use std::{
 
 use flux::{tile::Tile, timing::Nanos};
 use rand::{Rng, RngCore};
-use silver_common::{
-    GossipMsgOut, GossipTopic, Keypair, NewGossipMsg, P2pSend, PeerEvent, TRandomAccess,
-};
+use silver_common::{GossipMsgOut, GossipTopic, P2pSend, PeerEvent, PeerId};
 use silver_e2e::{
-    EchoStack, PublisherStack, Stats,
+    LhGossipClient, PublisherStack, Stats,
     inject::{build_publish_frame, snappy_compress},
     keypair_from_seed,
 };
@@ -53,33 +48,24 @@ fn main() {
     let args = parse_args();
     assert!(args.payload_size >= 8, "payload-size must be >= 8 for the timestamp prefix");
 
-    let tempdir = TempDir::new().expect("tempdir");
-    let echo_addr = loopback_ephemeral();
-    let echo_disc_addr = loopback_ephemeral();
-    let pub_addr = loopback_ephemeral();
-    let pub_disc_addr = loopback_ephemeral();
-    let echo_kp = keypair_from_seed(2);
-    let pub_kp = keypair_from_seed(1);
-    let echo_peer_id = echo_kp.peer_id();
-
-    let (ready_tx, ready_rx) = mpsc::channel::<()>();
+    let (addr_tx, addr_rx) = mpsc::channel::<(SocketAddr, libp2p::PeerId)>();
     let (stats_tx, stats_rx) = mpsc::channel::<Stats>();
     let publisher_done = Arc::new(AtomicBool::new(false));
     let expected_count = Arc::new(AtomicU64::new(0));
 
     let pd = publisher_done.clone();
     let ec = expected_count.clone();
-    let path = tempdir.path().to_path_buf();
-    let echo_handle = thread::spawn(move || {
-        echo_thread(path, echo_addr, echo_disc_addr, echo_kp, ready_tx, stats_tx, pd, ec);
-    });
-    ready_rx.recv().expect("echo ready");
+    let sub_handle = thread::spawn(move || subscriber_thread(addr_tx, stats_tx, pd, ec));
 
-    let mut publisher =
-        PublisherStack::new(tempdir.path(), "_pub", pub_addr, pub_disc_addr, pub_kp)
-            .expect("publisher stack");
-    publisher.controller.set_auto_ping(false);
-    publisher.network.p2p_mut().connect(echo_peer_id, echo_addr, Instant::now()).expect("connect");
+    let (sub_addr, sub_lp_pid) = addr_rx.recv().expect("subscriber listen_addr");
+    let sub_silver_pid = libp2p_to_silver_peer_id(sub_lp_pid);
+
+    let (mut publisher, _td) = build_silver_publisher().expect("silver publisher");
+    publisher
+        .network
+        .p2p_mut()
+        .connect(sub_silver_pid, sub_addr, Instant::now())
+        .expect("silver connect");
 
     let mut handle: Option<usize> = None;
     let connect_deadline = Instant::now() + Duration::from_secs(10);
@@ -87,15 +73,13 @@ fn main() {
         spin_publisher(&mut publisher);
         let h = &mut handle;
         publisher.injector_adapter.consume::<PeerEvent, _>(|event, _p| {
-            if let PeerEvent::P2pNewConnection { p2p_peer_id, peer_id_full, .. } = event &&
-                peer_id_full == echo_peer_id
-            {
+            if let PeerEvent::P2pNewConnection { p2p_peer_id, .. } = event {
                 *h = Some(p2p_peer_id);
             }
         });
     }
     let Some(handle) = handle else {
-        eprintln!("publisher failed to handshake with echo");
+        eprintln!("silver failed to handshake with libp2p");
         std::process::exit(1);
     };
 
@@ -146,8 +130,8 @@ fn main() {
 
     expected_count.store(sent_new, Ordering::Release);
     publisher_done.store(true, Ordering::Release);
-    echo_handle.join().expect("echo thread panicked");
-    let stats = stats_rx.recv().expect("echo stats");
+    sub_handle.join().expect("subscriber thread panicked");
+    let stats = stats_rx.recv().expect("subscriber stats");
 
     let elapsed = start.elapsed();
     let publish_window = args.duration_s as f64;
@@ -167,15 +151,6 @@ fn main() {
         println!("  p90:         {:.1}", us(h.value_at_quantile(0.90)));
         println!("  p99:         {:.1}", us(h.value_at_quantile(0.99)));
     }
-    let h = &stats.receive_ns;
-    if h.len() > 0 {
-        let us = |ns: u64| ns as f64 / 1000.0;
-        println!("receive latency (μs):  samples={}", h.len());
-        println!("  p10:         {:.1}", us(h.value_at_quantile(0.10)));
-        println!("  p50:         {:.1}", us(h.value_at_quantile(0.50)));
-        println!("  p90:         {:.1}", us(h.value_at_quantile(0.90)));
-        println!("  p99:         {:.1}", us(h.value_at_quantile(0.99)));
-    }
 }
 
 fn spin_publisher(p: &mut PublisherStack) {
@@ -183,28 +158,24 @@ fn spin_publisher(p: &mut PublisherStack) {
     p.controller.loop_body(&mut p.controller_adapter);
 }
 
-fn echo_thread(
-    path: PathBuf,
-    addr: SocketAddr,
-    disc_addr: SocketAddr,
-    kp: Keypair,
-    ready_tx: mpsc::Sender<()>,
+fn subscriber_thread(
+    addr_tx: mpsc::Sender<(SocketAddr, libp2p::PeerId)>,
     stats_tx: mpsc::Sender<Stats>,
     publisher_done: Arc<AtomicBool>,
     expected_count: Arc<AtomicU64>,
 ) {
-    let mut echo = EchoStack::new(&path, "_echo", addr, disc_addr, kp, FORK_DIGEST_HEX.into())
-        .expect("echo stack");
-    echo.controller.set_auto_ping(false);
-    ready_tx.send(()).expect("ready");
+    let mut sub = LhGossipClient::new();
+    sub.subscribe(TOPIC, FORK_DIGEST_HEX).expect("sub subscribe");
+    let addr = sub.listen_addr().expect("sub listener bound");
+    let pid = sub.local_peer_id();
+    addr_tx.send((addr, pid)).expect("send addr");
 
     let mut drain_deadline: Option<Instant> = None;
     loop {
-        spin_echo(&mut echo);
-        drain_echo_stats(&mut echo);
+        sub.tick(Duration::from_millis(10));
         if publisher_done.load(Ordering::Acquire) {
             let expected = expected_count.load(Ordering::Acquire);
-            if expected != 0 && echo.stats.gossip_received >= expected {
+            if expected != 0 && sub.stats.gossip_received >= expected {
                 break;
             }
             let dd = *drain_deadline.get_or_insert_with(|| Instant::now() + DRAIN_TIMEOUT);
@@ -213,50 +184,31 @@ fn echo_thread(
             }
         }
     }
-    stats_tx.send(echo.stats).expect("send stats");
+    stats_tx.send(sub.stats).expect("send stats");
 }
 
-fn spin_echo(e: &mut EchoStack) {
-    e.network.loop_body(&mut e.network_adapter);
-    e.compression.loop_body(&mut e.compression_adapter);
-    e.controller.loop_body(&mut e.controller_adapter);
+fn build_silver_publisher() -> io::Result<(PublisherStack, TempDir)> {
+    let tempdir = TempDir::new()?;
+    let addr = loopback_ephemeral()?;
+    let disc_addr = loopback_ephemeral()?;
+    let kp = keypair_from_seed(11);
+    let mut p = PublisherStack::new(tempdir.path(), "_lh_gossip", addr, disc_addr, kp)
+        .map_err(io::Error::other)?;
+    p.controller.set_auto_ping(false);
+    Ok((p, tempdir))
 }
 
-fn drain_echo_stats(e: &mut EchoStack) {
-    let stats = &mut e.stats;
-    let consumer = &mut e.ssz_consumer;
-    e.stats_adapter.consume::<NewGossipMsg, _>(|new_msg, _p| {
-        let _ = stats.receive_ns.record(new_msg.recv_ts.elapsed_saturating().0);
-        let now_wall = Instant::now();
-        stats.gossip_received += 1;
-        stats.first_seen_at.get_or_insert(now_wall);
-        stats.last_seen_at = Some(now_wall);
-        record_latency(consumer, &new_msg, stats);
-    });
-    e.stats_adapter.consume::<PeerEvent, _>(|event, _p| {
-        if let PeerEvent::P2pGossipInvalidMsg { .. } = event {
-            stats.invalid_msgs += 1;
-        }
-    });
-}
-
-fn record_latency(consumer: &mut TRandomAccess, msg: &NewGossipMsg, stats: &mut Stats) {
-    if let Ok((bytes, _)) = consumer.read_at(msg.ssz.seq()) {
-        stats.gossip_decompressed_bytes += bytes.len() as u64;
-        if bytes.len() >= 8 {
-            let sent_ns = u64::from_le_bytes(bytes[..8].try_into().expect("8 bytes"));
-            let _ = stats.latency_ns.record(Nanos(sent_ns).elapsed_saturating().0);
-        }
-    }
-}
-
-fn loopback_ephemeral() -> SocketAddr {
-    SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), pick_free_port().expect("port"))
+fn loopback_ephemeral() -> io::Result<SocketAddr> {
+    Ok(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), pick_free_port()?))
 }
 
 fn pick_free_port() -> io::Result<u16> {
     let s = std::net::UdpSocket::bind(("127.0.0.1", 0))?;
     s.local_addr().map(|a| a.port())
+}
+
+fn libp2p_to_silver_peer_id(pid: libp2p::PeerId) -> PeerId {
+    PeerId::from_multihash_bytes(&pid.to_bytes()).expect("multihash fits")
 }
 
 struct Args {

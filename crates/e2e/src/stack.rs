@@ -22,7 +22,12 @@ use crate::Stats;
 
 /// How much space each dedicated TCache gets. Kept small — tests are
 /// bounded in message count. Must be a power of two.
-const TCACHE_SIZE: usize = 1 << 25; // 4 MB per cache
+// 128 MB per cache. Sized for short-running benches at high rate; the
+// random-access consumers used here don't advance a tail, so cache slots
+// accumulate over the test duration. 1 KB payload at 10 kHz × 3 s ≈ 30 MB
+// just for one cache, plus protobuf/SSZ overhead, plus the symmetric
+// caches on the echo side. 32 MB was tight, 128 MB has headroom.
+const TCACHE_SIZE: usize = 1 << 27;
 
 /// Dummy tile marker types — only exist so flux can derive unique tile names
 /// (via `short_typename`) when building auxiliary `SpineAdapter`s.
@@ -69,6 +74,11 @@ pub struct EchoStack {
     pub network_adapter: SpineAdapter<SilverSpine>,
     pub compression_adapter: SpineAdapter<SilverSpine>,
     pub controller_adapter: SpineAdapter<SilverSpine>,
+    /// Auxiliary adapter for the harness to inject `PeerControl` events
+    /// (e.g. `P2pGossipSubscribe`) onto the spine. Required by lh_gossip
+    /// variant B, where the libp2p peer only publishes to silver after
+    /// observing silver's SUBSCRIBE for the topic.
+    pub injector_adapter: SpineAdapter<SilverSpine>,
     /// Adapter whose consumers cover `new_gossip` (Gossip) and `peer_events`
     /// (PeerEvent); ticked by the harness after each compression cycle to
     /// drain into `stats`.
@@ -264,6 +274,8 @@ impl EchoStack {
         let network_adapter = SpineAdapter::connect_tile(&network, &mut spine);
         let compression_adapter = SpineAdapter::connect_tile(&compression, &mut spine);
         let controller_adapter = SpineAdapter::connect_tile(&controller, &mut spine);
+        let injector_tile = Injector;
+        let injector_adapter = SpineAdapter::connect_tile(&injector_tile, &mut spine);
         let stats_tile = StatsSink;
         let stats_adapter = SpineAdapter::connect_tile(&stats_tile, &mut spine);
 
@@ -278,6 +290,7 @@ impl EchoStack {
             network_adapter,
             compression_adapter,
             controller_adapter,
+            injector_adapter,
             stats_adapter,
             stats: Stats::default(),
             received: AtomicUsize::default(),

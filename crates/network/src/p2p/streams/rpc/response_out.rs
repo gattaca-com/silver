@@ -10,7 +10,7 @@ use crate::p2p::{
 pub enum RpcWriteResponse {
     Idle,
     WritingPrefix { buf: [u8; 15], length: usize, written: usize, response: RpcResponse },
-    WritingResponse { encoder: SnappyEncoder, response: RpcResponse, written: usize },
+    WritingResponse { encoder: Box<SnappyEncoder>, response: RpcResponse, written: usize },
 }
 
 impl RpcWriteResponse {
@@ -68,7 +68,7 @@ impl RpcWriteResponse {
             RpcWriteResponse::WritingPrefix { buf, length, mut written, response } => {
                 written += io.write_to_stream(id.stream_id(), &buf[written..length])?;
                 if written == length {
-                    let encoder = SnappyEncoder::new();
+                    let encoder = Box::new(SnappyEncoder::new());
                     Ok(Spin::Next(Self::WritingResponse { encoder, response, written: 0 }))
                 } else {
                     Ok(Spin::Ok(Self::WritingPrefix { buf, length, written, response }))
