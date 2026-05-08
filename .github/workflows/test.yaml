@@ -37,3 +37,6 @@ jobs:
 
       - name: Run tests
         run: cargo test --features silver_beacon_state/ef_tests --no-fail-fast
+
+      - name: Run integration tests
+        run: cargo test -p silver_e2e --features lh-client  
