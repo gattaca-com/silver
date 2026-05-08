@@ -1,6 +1,6 @@
 use std::{
     io::Write,
-    sync::{Arc, atomic::AtomicBool},
+    sync::{atomic::{AtomicBool, Ordering}, Arc},
     thread,
     time::{Duration, Instant},
 };
@@ -163,7 +163,7 @@ pub fn broadcast(c: &mut Criterion) {
                         for (mut client, mut msgs) in clients {
                             let run = run.clone();
                             thread::spawn(move || {
-                                while run.load(std::sync::atomic::Ordering::Relaxed) {
+                                while run.load(Ordering::Relaxed) {
                                     let mut r_peer = None;
                                     client.spin(&mut |evt| match evt {
                                         NetworkTileEvent::P2pNet(net_event) => match net_event {
@@ -192,7 +192,7 @@ pub fn broadcast(c: &mut Criterion) {
                             std::thread::sleep(Duration::from_micros(100));
                         }
                         handle.join().unwrap();
-                        run.store(false, std::sync::atomic::Ordering::Relaxed);
+                        run.store(false, Ordering::Relaxed);
                     },
                     criterion_batch_size,
                 );

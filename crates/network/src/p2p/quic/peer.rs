@@ -291,7 +291,7 @@ impl Peer {
                     Some(stream) => match stream.spin(&mut self.connection, context, on_event) {
                         SpinResult::Ok => false,
                         SpinResult::Protocol(protocol) => {
-                            tracing::debug!(?id, ?protocol, "incoming stream negotatied");
+                            tracing::debug!(?id, ?protocol, "incoming stream negotiated");
                             if protocol == StreamProtocol::GossipSub {
                                 self.inbound_gossip.replace(id);
                             }
