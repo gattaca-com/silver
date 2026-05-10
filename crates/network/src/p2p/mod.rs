@@ -37,7 +37,6 @@ pub fn p2p_spin<F: FnMut(NetEvent)>(
 ) {
     p2p_socket.flush(poll);
     p2p_endpoint.poll(now, poll, p2p_socket, context, on_event);
-    p2p_endpoint.update_tail(context);
     p2p_socket.flush(poll);
 }
 
@@ -213,16 +212,28 @@ impl P2p {
         }
     }
 
-    pub fn enqueue_gossip(&mut self, msg: GossipMsgOut) -> SendResult {
+    pub fn enqueue_gossip(&mut self, msg: GossipMsgOut, context: &mut Context) -> SendResult {
         match self.peers.get_mut(&ConnectionHandle(msg.peer_id)) {
-            Some(peer) => peer.send_gossip(msg.into()),
+            Some(peer) => {
+                let result = peer.send_gossip(msg.into());
+                if result == SendResult::Ok {
+                    context.gossip_consumer.acquire(&msg.tcache);
+                }
+                result
+            },
             None => SendResult::UnknownPeer,
         }
     }
 
-    pub fn enqueue_rpc_out(&mut self, msg: RpcOutbound) -> SendResult {
+    pub fn enqueue_rpc_out(&mut self, msg: RpcOutbound, context: &mut Context) -> SendResult {
         match self.peers.get_mut(&ConnectionHandle(msg.peer_id())) {
-            Some(peer) => peer.send_rpc(msg),
+            Some(peer) => {
+                let result = peer.send_rpc(msg);
+                if result == SendResult::Ok && let Some(tcache) = msg.tcache_read() {
+                    context.rpc_consumer.acquire(tcache);
+                }
+                result
+            },
             None => SendResult::UnknownPeer,
         }
     }
@@ -231,26 +242,6 @@ impl P2p {
         match self.peers.get_mut(&ConnectionHandle(peer)) {
             Some(peer) => peer.send_identify(),
             None => SendResult::UnknownPeer,
-        }
-    }
-
-    pub fn update_tail(&self, context: &mut Context) {
-        let mut gossip_min = u64::MAX;
-        let mut rpc_min = u64::MAX;
-
-        for peer in self.peers.values() {
-            gossip_min = gossip_min.min(peer.gossip_tail());
-            rpc_min = rpc_min.min(peer.rpc_tail());
-        }
-
-        if gossip_min != u64::MAX {
-            context.gossip_consumer.set_tail(gossip_min);
-            context.gossip_consumer.free();
-        }
-
-        if rpc_min != u64::MAX {
-            context.rpc_consumer.set_tail(rpc_min);
-            context.rpc_consumer.free();
         }
     }
 

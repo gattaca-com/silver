@@ -66,7 +66,9 @@ impl RpcWriteResponse {
                 None => Ok(Spin::Ok(Self::Idle)),
             },
             RpcWriteResponse::WritingPrefix { buf, length, mut written, response } => {
-                written += io.write_to_stream(id.stream_id(), &buf[written..length])?;
+                written += io.write_to_stream(id.stream_id(), &buf[written..length]).inspect_err(|_| {
+                    release_response(&response, consumer);
+                })?;
                 if written == length {
                     let encoder = Box::new(SnappyEncoder::new());
                     Ok(Spin::Next(Self::WritingResponse { encoder, response, written: 0 }))
@@ -77,12 +79,17 @@ impl RpcWriteResponse {
             RpcWriteResponse::WritingResponse { mut encoder, response, mut written } => {
                 // write bytes -> encoder -> stream.
                 let buffer = response_buffer(&response, written, consumer)?;
+                let buffer_len = buffer.len();
 
                 let mut writer = StreamWriter(id.stream_id(), io);
-                let (wrote, pending) = encoder.compress(buffer, &mut writer)?;
+                let (wrote, pending) = encoder.compress(buffer, &mut writer).inspect_err(|_| {
+                    release_response(&response, consumer);
+                })?;
                 written += wrote;
 
-                if wrote == buffer.len() && pending == 0 {
+                if wrote == buffer_len && pending == 0 {
+                    release_response(&response, consumer);
+
                     // FIN the write side for any single-chunk response
                     // shape — receivers detect end-of-response from FIN,
                     // not from a sentinel chunk. Multi-chunk shapes
@@ -197,5 +204,13 @@ fn write_prefix(response: &RpcResponse, prefix: &mut [u8; 15]) -> Result<usize, 
             let offset = encode_varint(length as u64, &mut prefix[1..])?;
             Ok(offset + 1)
         }
+    }
+}
+
+fn release_response(response: &RpcResponse, consumer: &mut TRandomAccess) {
+    match response {
+        RpcResponse::BeaconBlock { fork_digest: _, ssz } => consumer.release(ssz),
+        RpcResponse::DataColumnSidecar { fork_digest: _, ssz } => consumer.release(ssz),
+        _ => {}
     }
 }

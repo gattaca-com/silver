@@ -56,7 +56,9 @@ impl RpcWriteRequest {
     ) -> Result<Spin, StreamError> {
         match self {
             RpcWriteRequest::WritingPrefix { app_id, buf, length, mut written, request } => {
-                written += io.write_to_stream(id.stream_id(), &buf[written..length])?;
+                written += io.write_to_stream(id.stream_id(), &buf[written..length]).inspect_err(|_| {
+                    release_request(&request, consumer);
+                })?;
                 if written == length {
                     let encoder = Box::new(SnappyEncoder::new());
                     Ok(Spin::Next(Self::WritingRequest { app_id, encoder, request, written: 0 }))
@@ -67,12 +69,16 @@ impl RpcWriteRequest {
             RpcWriteRequest::WritingRequest { app_id, mut encoder, request, mut written } => {
                 // write bytes -> encoder -> stream.
                 let buffer = request_buffer(&request, written, consumer)?;
+                let buffer_len = buffer.len();
 
                 let mut writer = StreamWriter(id.stream_id(), io);
-                let (wrote, pending) = encoder.compress(buffer, &mut writer)?;
+                let (wrote, pending) = encoder.compress(buffer, &mut writer).inspect_err(|_| {
+                    release_request(&request, consumer);
+                })?;
                 written += wrote;
 
-                if wrote == buffer.len() && pending == 0 {
+                if wrote == buffer_len && pending == 0 {
+                    release_request(&request, consumer);
                     Ok(Spin::Ok(Self::Complete(app_id)))
                 } else {
                     Ok(Spin::Ok(Self::WritingRequest { app_id, encoder, request, written }))
@@ -157,4 +163,12 @@ fn request_length(request: &RpcRequest) -> Result<usize, StreamError> {
         RpcRequest::DataColumnsByRoot(tcache_read) => tcache_read.len()?,
     };
     Ok(len)
+}
+
+fn release_request(request: &RpcRequest, consumer: &mut TRandomAccess) {
+    match request {
+        RpcRequest::BlockByRoot(tcache_read) => consumer.release(tcache_read),
+        RpcRequest::DataColumnsByRoot(tcache_read) => consumer.release(tcache_read),
+        _ => {}
+    }
 }

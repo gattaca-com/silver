@@ -129,6 +129,8 @@ impl TwoStackHarness {
             // timestamps: a `recv_ts` that somehow ends up in the future
             // yields 0 ns rather than panicking.
             tracing::debug!("new gossip!");
+            self.echo.ssz_consumer.acquire(&new_msg.ssz);
+
             let _ = self.echo.stats.receive_ns.record(new_msg.recv_ts.elapsed_saturating().0);
 
             let now_wall = Instant::now();
@@ -145,8 +147,10 @@ impl TwoStackHarness {
                     let _ =
                         self.echo.stats.latency_ns.record(Nanos(sent_ns).elapsed_saturating().0);
                 }
+                self.echo.ssz_consumer.release(&new_msg.ssz);
             }
         });
+        self.echo.ssz_consumer.free();
 
         self.echo.stats_adapter.consume::<PeerEvent, _>(|event, _p| {
             if let PeerEvent::P2pGossipInvalidMsg { .. } = event {

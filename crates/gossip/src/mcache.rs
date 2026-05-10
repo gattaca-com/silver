@@ -49,6 +49,7 @@ impl MessageCache {
     }
 
     pub(crate) fn insert(&mut self, id: MessageId, topic: GossipTopic, tcache: TCacheRead) {
+        self.cache_consumer.acquire(&tcache);
         let bucket = &mut self.buckets[self.current_bucket];
 
         // TODO could have a preallocated ring of max ihaves per gossip topic.
@@ -88,10 +89,12 @@ impl MessageCache {
     pub(crate) fn maybe_rotate(&mut self, now: Instant) {
         if self.last_rotation.elapsed() > ROTATION_INTERVAL {
             self.current_bucket = (self.current_bucket + 1) % BUCKETS;
+            let next_bucket = (self.current_bucket + 1) % BUCKETS;
+            self.cache_consumer.release_to(self.buckets[next_bucket].tcache_min_seq); 
+            self.cache_consumer.free();
 
             // oldest bucket has the min TCache seq
             let bucket = &mut self.buckets[self.current_bucket];
-            self.cache_consumer.set_tail(bucket.tcache_min_seq);
             bucket.tcache_min_seq = u64::MAX;
             bucket.messages.clear();
             bucket.ihaves.clear();

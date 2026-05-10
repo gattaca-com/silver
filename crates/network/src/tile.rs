@@ -8,13 +8,11 @@ use flux::{spine::SpineAdapter, tile::Tile, tracing};
 use mio::{Events, Poll, Token};
 use quinn_proto::Transmit;
 use secp256k1::PublicKey;
-use silver_common::{P2pSend, PeerControl, PeerEvent, SilverSpine};
+use silver_common::{GossipMsgOut, P2pSend, PeerControl, PeerEvent, RpcOutbound, SilverSpine};
 use silver_discovery::{DiscV5, Discovery, DiscoveryEvent};
 
 use crate::{
-    NetEvent,
-    p2p::{self, Context, P2p},
-    socket::Socket,
+    p2p::{self, Context, P2p}, socket::Socket, NetEvent, SendResult
 };
 
 const MAX_PENDING_OUTBOUND_GOSSIP_MSGS: usize = 1024;
@@ -151,14 +149,14 @@ impl Tile<SilverSpine> for NetworkTile {
                 let result = match msg {
                     P2pSend::Gossip(gossip_msg_out) => {
                         gossips += 1;
-                        self.inner.p2p_endpoint.enqueue_gossip(gossip_msg_out)
+                        self.inner.enqueue_gossip(gossip_msg_out)
                     },
                     P2pSend::Identify(peer) => {
                         self.inner.p2p_endpoint.enqueue_identify(peer)
                     }
                     P2pSend::Rpc(rpc_outbound) => {
                         rpcs += 1;
-                        self.inner.p2p_endpoint.enqueue_rpc_out(rpc_outbound)
+                        self.inner.enqueue_rpc_out(rpc_outbound)
                     },
                 };
                 match result {
@@ -239,6 +237,14 @@ where
         &mut self.context
     }
 
+    pub fn enqueue_gossip(&mut self, msg: GossipMsgOut) -> SendResult {
+        self.p2p_endpoint.enqueue_gossip(msg, &mut self.context)
+    }
+
+    pub fn enqueue_rpc_out(&mut self, msg: RpcOutbound) -> SendResult {
+        self.p2p_endpoint.enqueue_rpc_out(msg, &mut self.context)
+    }
+
     pub fn spin<E>(&mut self, on_event: &mut E)
     where
         E: FnMut(Event) + Send,
@@ -297,5 +303,8 @@ where
             }
             other => on_event(Event::Discovery(other)),
         });
+
+        self.context.gossip_consumer.free();
+        self.context.rpc_consumer.free();
     }
 }

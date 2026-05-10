@@ -160,6 +160,21 @@ impl RpcOutbound {
             RpcOutbound::Response(rsp) => rsp.stream_id.protocol(),
         }
     }
+
+    pub fn tcache_read(&self) -> Option<&TCacheRead> {
+        match self {
+            RpcOutbound::Request(req) => match &req.request {
+                RpcRequest::BlockByRoot(tcache_read) => Some(tcache_read),
+                RpcRequest::DataColumnsByRoot(tcache_read) => Some(tcache_read),
+                _ => None,
+            },
+            RpcOutbound::Response(rsp) => match &rsp.response {
+                RpcResponse::BeaconBlock { fork_digest: _, ssz } => Some(ssz),
+                RpcResponse::DataColumnSidecar { fork_digest: _, ssz } => Some(ssz),
+                _ => None,
+            },
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]

@@ -53,13 +53,17 @@ impl GossipWriteState {
             GossipWriteState::Idle => match io.gossip_next() {
                 Some(tcache) => {
                     let mut buffer = [0u8; 10];
-                    let limit = silver_common::encode_varint(tcache.len()? as u64, &mut buffer)?;
+                    let limit = silver_common::encode_varint(tcache.len()? as u64, &mut buffer).inspect_err(|_| {
+                        consumer.release(&tcache); 
+                    })?;
                     Ok(Spin::Next(Self::WritingLength { buffer, limit, written: 0, tcache }))
                 }
                 None => Ok(Spin::Ok(Self::Idle)),
             },
             GossipWriteState::WritingLength { buffer, limit, mut written, tcache } => {
-                written += io.write_to_stream(p2p_id.stream_id(), &buffer[written..limit])?;
+                written += io.write_to_stream(p2p_id.stream_id(), &buffer[written..limit]).inspect_err(|_| {
+                    consumer.release(&tcache); 
+                })?;
                 if written == limit {
                     return Ok(Spin::Next(Self::Writing {
                         offset: 0,
@@ -71,8 +75,11 @@ impl GossipWriteState {
             }
             GossipWriteState::Writing { mut offset, length, tcache } => {
                 let (buffer, _) = consumer.read_at(tcache.seq())?;
-                offset += io.write_to_stream(p2p_id.stream_id(), &buffer[offset..])?;
+                offset += io.write_to_stream(p2p_id.stream_id(), &buffer[offset..]).inspect_err(|_| {
+                    consumer.release(&tcache); 
+                })?;
                 if offset == length {
+                    consumer.release(&tcache); 
                     return Ok(Spin::Next(Self::Idle))
                 }
                 Ok(Spin::Ok(Self::Writing { offset, length, tcache }))
