@@ -8,7 +8,7 @@ use quinn_proto::{
     VarInt,
 };
 use silver_common::{
-    P2pStreamId, PeerId, RpcOutbound, RpcRequest, RpcResponse, StreamProtocol, TCacheRead,
+    P2pStreamId, PeerId, RpcOutbound, StreamProtocol, TCacheRead,
 };
 
 use crate::{
@@ -99,27 +99,6 @@ impl Peer {
             Some(_) => SendResult::Ok,
             None => SendResult::StreamCreationError,
         }
-    }
-
-    pub(crate) fn gossip_tail(&self) -> u64 {
-        let mut min = u64::MAX;
-        if let Some(stream) = self.inbound_gossip.as_ref().and_then(|id| self.streams.get(id)) {
-            min = min.min(stream.out_buffer.cache_tail());
-        }
-        if let Some(stream) = self.outbound_gossip.as_ref().and_then(|id| self.streams.get(id)) {
-            min = min.min(stream.out_buffer.cache_tail());
-        }
-        min
-    }
-
-    pub(crate) fn rpc_tail(&self) -> u64 {
-        let mut min = u64::MAX;
-        for stream in self.streams.values() {
-            if stream.p2p_id.protocol().is_request_response() {
-                min = min.min(stream.out_buffer.cache_tail());
-            }
-        }
-        min
     }
 
     pub(crate) fn has_pending_outbound(&self) -> bool {
@@ -433,14 +412,6 @@ pub(super) enum OutboundBuffer {
 }
 
 impl OutboundBuffer {
-    fn cache_tail(&self) -> u64 {
-        match self {
-            OutboundBuffer::Unset => u64::MAX,
-            OutboundBuffer::Gossip(out_buffer) => out_buffer.cache_tail,
-            OutboundBuffer::Rpc(out_buffer) => out_buffer.cache_tail,
-        }
-    }
-
     fn len(&self) -> usize {
         match self {
             OutboundBuffer::Unset => 0,
@@ -458,46 +429,17 @@ impl OutboundBuffer {
     }
 }
 
-pub(super) trait HasSeq {
-    fn seq(&self) -> u64;
-}
-
-impl HasSeq for TCacheRead {
-    fn seq(&self) -> u64 {
-        self.seq()
-    }
-}
-
-impl HasSeq for RpcOutbound {
-    fn seq(&self) -> u64 {
-        match self {
-            RpcOutbound::Request(req) => match &req.request {
-                RpcRequest::BlockByRoot(tcache_read) => tcache_read.seq(),
-                RpcRequest::DataColumnsByRoot(tcache_read) => tcache_read.seq(),
-                _ => u64::MAX,
-            },
-            RpcOutbound::Response(rsp) => match &rsp.response {
-                RpcResponse::BeaconBlock { fork_digest: _, ssz } => ssz.seq(),
-                RpcResponse::DataColumnSidecar { fork_digest: _, ssz } => ssz.seq(),
-                _ => u64::MAX,
-            },
-        }
-    }
-}
-
-pub(super) struct OutBuffer<T: HasSeq + Clone> {
-    cache_tail: u64,
+pub(super) struct OutBuffer<T: Clone> {
     msgs: Box<[Option<T>]>,
     len: usize,
     head: usize,
     tail: usize,
 }
 
-impl<T: HasSeq + Clone> OutBuffer<T> {
+impl<T: Clone> OutBuffer<T> {
     fn new(len: usize) -> Self {
         assert!(len.is_power_of_two());
         Self {
-            cache_tail: u64::MAX,
             msgs: vec![None; len].into_boxed_slice(),
             len,
             head: 0,
@@ -511,10 +453,6 @@ impl<T: HasSeq + Clone> OutBuffer<T> {
 
     /// Returns `true` if adding the new message overwrote an old message.
     fn add_msg(&mut self, msg: T) -> bool {
-        if self.cache_tail == u64::MAX {
-            self.cache_tail = msg.seq();
-        }
-
         let old_msg = self.msgs[self.pos(self.head)].replace(msg);
         self.head += 1;
         old_msg.is_some()
@@ -524,32 +462,10 @@ impl<T: HasSeq + Clone> OutBuffer<T> {
     pub(super) fn pop(&mut self) -> Option<T> {
         match self.msgs[self.pos(self.tail)].take() {
             Some(msg) => {
-                if msg.seq() != u64::MAX {
-                    self.cache_tail = msg.seq();
-                }
-                //println!("popped - cache tail is {}", self.cache_tail);
                 self.tail += 1;
                 Some(msg)
             }
-            None => {
-                //self.cache_tail = u64::MAX;
-                None
-            }
-        }
-    }
-
-    /// Moves the cache tail to the next message - if any
-    #[allow(dead_code)]
-    pub(super) fn send_complete(&mut self) {
-        match &self.msgs[self.pos(self.tail)] {
-            Some(msg) => {
-                if msg.seq() != u64::MAX {
-                    self.cache_tail = msg.seq();
-                }
-            }
-            None => {
-                self.cache_tail = u64::MAX;
-            }
+            None => None,
         }
     }
 

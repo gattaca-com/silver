@@ -71,7 +71,7 @@ impl StreamProtocol {
     pub const fn multiselect(&self) -> &[u8] {
         match self {
             StreamProtocol::Unset => panic!("should never call multiselect on negotiating stream"),
-            StreamProtocol::GossipSub => b"\x0f/meshsub/1.1.0\n",
+            StreamProtocol::GossipSub => b"\x0f/meshsub/1.2.0\n",
             StreamProtocol::Identity => b"\x0f/ipfs/id/1.0.0\n",
             StreamProtocol::StatusV1 => b"\x2b/eth2/beacon_chain/req/status/1/ssz_snappy\n",
             StreamProtocol::StatusV2 => b"\x2b/eth2/beacon_chain/req/status/2/ssz_snappy\n",
