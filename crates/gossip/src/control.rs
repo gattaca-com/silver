@@ -452,8 +452,9 @@ mod tests {
     use crate::generated::RPCView;
 
     fn read_bytes(tc: TCacheRead, producer: &silver_common::TProducer) -> Vec<u8> {
-        let consumer = producer.cache_ref().random_access().unwrap();
-        let (bytes, _) = consumer.read_at(tc.seq()).unwrap();
+        let mut consumer = producer.cache_ref().random_access().unwrap();
+        let read = consumer.acquire(tc);
+        let (bytes, _) = read.buffer().unwrap();
         bytes.to_vec()
     }
 

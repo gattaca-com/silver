@@ -179,6 +179,7 @@ mod tests {
     use silver_common::ALL_PROTOCOLS;
 
     use super::*;
+    use crate::p2p::streams::AcquiredRpcOutbound;
 
     /// In-memory `StreamIo` for driving the negotiation state machine.
     struct MockIo {
@@ -226,11 +227,11 @@ mod tests {
             Ok(())
         }
 
-        fn rpc_next(&mut self) -> Option<silver_common::RpcOutbound> {
+        fn rpc_next(&mut self) -> Option<AcquiredRpcOutbound> {
             None
         }
 
-        fn gossip_next(&mut self) -> Option<silver_common::TCacheRead> {
+        fn gossip_next(&mut self) -> Option<silver_common::TRead> {
             None
         }
         fn remote_addr(&self) -> std::net::SocketAddr {

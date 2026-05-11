@@ -12,7 +12,9 @@ use silver_common::{GossipMsgOut, P2pSend, PeerControl, PeerEvent, RpcOutbound, 
 use silver_discovery::{DiscV5, Discovery, DiscoveryEvent};
 
 use crate::{
-    p2p::{self, Context, P2p}, socket::Socket, NetEvent, SendResult
+    NetEvent, SendResult,
+    p2p::{self, Context, P2p},
+    socket::Socket,
 };
 
 const MAX_PENDING_OUTBOUND_GOSSIP_MSGS: usize = 1024;

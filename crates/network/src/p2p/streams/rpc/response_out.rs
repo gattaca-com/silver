@@ -1,20 +1,24 @@
-use silver_common::{P2pStreamId, RpcOutbound, RpcResponse, TRandomAccess, encode_varint};
+use silver_common::{P2pStreamId, encode_varint};
 
 use crate::p2p::{
     quic::StreamWriter,
-    streams::{StreamError, StreamIo, snappy::SnappyEncoder},
+    streams::{
+        StreamError, StreamIo,
+        rpc::{AcquiredRpcOutbound, AcquiredRpcResponse},
+        snappy::SnappyEncoder,
+    },
 };
 
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
 pub enum RpcWriteResponse {
     Idle,
-    WritingPrefix { buf: [u8; 15], length: usize, written: usize, response: RpcResponse },
-    WritingResponse { encoder: Box<SnappyEncoder>, response: RpcResponse, written: usize },
+    WritingPrefix { buf: [u8; 15], length: usize, written: usize, response: AcquiredRpcResponse },
+    WritingResponse { encoder: Box<SnappyEncoder>, response: AcquiredRpcResponse, written: usize },
 }
 
 impl RpcWriteResponse {
-    pub fn new(response: RpcResponse) -> Result<Self, StreamError> {
+    pub fn new(response: AcquiredRpcResponse) -> Result<Self, StreamError> {
         let mut buf = [0u8; 15];
         let length = write_prefix(&response, &mut buf)?;
         if length == 0 {
@@ -31,14 +35,9 @@ enum Spin {
 }
 
 impl RpcWriteResponse {
-    pub fn spin<S: StreamIo>(
-        mut self,
-        id: &P2pStreamId,
-        io: &mut S,
-        consumer: &mut TRandomAccess,
-    ) -> Result<Self, StreamError> {
+    pub fn spin<S: StreamIo>(mut self, id: &P2pStreamId, io: &mut S) -> Result<Self, StreamError> {
         loop {
-            match self.spin_inner(id, io, consumer)? {
+            match self.spin_inner(id, io)? {
                 Spin::Ok(rpc_write_response) => return Ok(rpc_write_response),
                 Spin::Next(rpc_write_response) => {
                     self = rpc_write_response;
@@ -47,16 +46,11 @@ impl RpcWriteResponse {
         }
     }
 
-    fn spin_inner<S: StreamIo>(
-        self,
-        id: &P2pStreamId,
-        io: &mut S,
-        consumer: &mut TRandomAccess,
-    ) -> Result<Spin, StreamError> {
+    fn spin_inner<S: StreamIo>(self, id: &P2pStreamId, io: &mut S) -> Result<Spin, StreamError> {
         match self {
             RpcWriteResponse::Idle => match io.rpc_next() {
-                Some(RpcOutbound::Response(rsp)) => match &rsp.response {
-                    RpcResponse::Complete => {
+                Some(AcquiredRpcOutbound::Response(rsp)) => match &rsp.response {
+                    AcquiredRpcResponse::Complete => {
                         io.close_write(id.stream_id())?;
                         Ok(Spin::Ok(Self::Idle))
                     }
@@ -66,9 +60,7 @@ impl RpcWriteResponse {
                 None => Ok(Spin::Ok(Self::Idle)),
             },
             RpcWriteResponse::WritingPrefix { buf, length, mut written, response } => {
-                written += io.write_to_stream(id.stream_id(), &buf[written..length]).inspect_err(|_| {
-                    release_response(&response, consumer);
-                })?;
+                written += io.write_to_stream(id.stream_id(), &buf[written..length])?;
                 if written == length {
                     let encoder = Box::new(SnappyEncoder::new());
                     Ok(Spin::Next(Self::WritingResponse { encoder, response, written: 0 }))
@@ -78,18 +70,14 @@ impl RpcWriteResponse {
             }
             RpcWriteResponse::WritingResponse { mut encoder, response, mut written } => {
                 // write bytes -> encoder -> stream.
-                let buffer = response_buffer(&response, written, consumer)?;
+                let buffer = response_buffer(&response, written)?;
                 let buffer_len = buffer.len();
 
                 let mut writer = StreamWriter(id.stream_id(), io);
-                let (wrote, pending) = encoder.compress(buffer, &mut writer).inspect_err(|_| {
-                    release_response(&response, consumer);
-                })?;
+                let (wrote, pending) = encoder.compress(buffer, &mut writer)?;
                 written += wrote;
 
                 if wrote == buffer_len && pending == 0 {
-                    release_response(&response, consumer);
-
                     // FIN the write side for any single-chunk response
                     // shape — receivers detect end-of-response from FIN,
                     // not from a sentinel chunk. Multi-chunk shapes
@@ -97,7 +85,8 @@ impl RpcWriteResponse {
                     // open until the explicit `Complete` sentinel.
                     if !matches!(
                         response,
-                        RpcResponse::BeaconBlock { .. } | RpcResponse::DataColumnSidecar { .. }
+                        AcquiredRpcResponse::BeaconBlock { .. } |
+                            AcquiredRpcResponse::DataColumnSidecar { .. }
                     ) {
                         io.close_write(id.stream_id())?;
                     }
@@ -110,107 +99,98 @@ impl RpcWriteResponse {
     }
 }
 
-fn response_buffer<'a, 'b: 'a>(
-    response: &'a RpcResponse,
-    offset: usize,
-    consumer: &'b mut TRandomAccess,
-) -> Result<&'a [u8], StreamError> {
+fn response_buffer(response: &AcquiredRpcResponse, offset: usize) -> Result<&[u8], StreamError> {
     let buf = match response {
-        RpcResponse::StatusV1(buf) => {
+        AcquiredRpcResponse::StatusV1(buf) => {
             if offset < buf.len() {
                 &buf[offset..]
             } else {
                 &[]
             }
         }
-        RpcResponse::StatusV2(buf) => {
+        AcquiredRpcResponse::StatusV2(buf) => {
             if offset < buf.len() {
                 &buf[offset..]
             } else {
                 &[]
             }
         }
-        RpcResponse::Ping(buf) => {
+        AcquiredRpcResponse::Ping(buf) => {
             if offset < buf.len() {
                 &buf[offset..]
             } else {
                 &[]
             }
         }
-        RpcResponse::MetaData(buf) => {
+        AcquiredRpcResponse::MetaData(buf) => {
             if offset < buf.len() {
                 &buf[offset..]
             } else {
                 &[]
             }
         }
-        RpcResponse::BeaconBlock { fork_digest: _, ssz } => {
-            let (buf, _) = consumer.read_at(ssz.seq())?;
+        AcquiredRpcResponse::BeaconBlock { fork_digest: _, ssz } => {
+            let (buf, _) = ssz.buffer()?;
             if offset < buf.len() { &buf[offset..] } else { &[] }
         }
-        RpcResponse::DataColumnSidecar { fork_digest: _, ssz } => {
-            let (buf, _) = consumer.read_at(ssz.seq())?;
+        AcquiredRpcResponse::DataColumnSidecar { fork_digest: _, ssz } => {
+            let (buf, _) = ssz.buffer()?;
             if offset < buf.len() { &buf[offset..] } else { &[] }
         }
-        RpcResponse::Error { error: _, msg, len } => {
+        AcquiredRpcResponse::Error { error: _, msg, len } => {
             if offset < *len {
                 &msg[offset..*len]
             } else {
                 &[]
             }
         }
-        RpcResponse::Complete => &[],
+        AcquiredRpcResponse::Complete => &[],
     };
     Ok(buf)
 }
 
-fn response_length(response: &RpcResponse) -> Result<usize, StreamError> {
+fn response_length(response: &AcquiredRpcResponse) -> Result<usize, StreamError> {
     let len = match response {
-        RpcResponse::StatusV1(b) => b.len(),
-        RpcResponse::StatusV2(b) => b.len(),
-        RpcResponse::Ping(b) => b.len(),
-        RpcResponse::MetaData(b) => b.len(),
-        RpcResponse::BeaconBlock { fork_digest: _, ssz } => ssz.len()?,
-        RpcResponse::DataColumnSidecar { fork_digest: _, ssz } => ssz.len()?,
-        RpcResponse::Error { error: _, msg: _, len } => *len,
-        RpcResponse::Complete => 0,
+        AcquiredRpcResponse::StatusV1(b) => b.len(),
+        AcquiredRpcResponse::StatusV2(b) => b.len(),
+        AcquiredRpcResponse::Ping(b) => b.len(),
+        AcquiredRpcResponse::MetaData(b) => b.len(),
+        AcquiredRpcResponse::BeaconBlock { fork_digest: _, ssz } => ssz.len()?,
+        AcquiredRpcResponse::DataColumnSidecar { fork_digest: _, ssz } => ssz.len()?,
+        AcquiredRpcResponse::Error { error: _, msg: _, len } => *len,
+        AcquiredRpcResponse::Complete => 0,
     };
     Ok(len)
 }
 
-fn write_prefix(response: &RpcResponse, prefix: &mut [u8; 15]) -> Result<usize, StreamError> {
+fn write_prefix(
+    response: &AcquiredRpcResponse,
+    prefix: &mut [u8; 15],
+) -> Result<usize, StreamError> {
     match response {
-        RpcResponse::BeaconBlock { fork_digest, ssz } => {
+        AcquiredRpcResponse::BeaconBlock { fork_digest, ssz } => {
             prefix[0] = 0;
             prefix[1..5].copy_from_slice(fork_digest);
             let offset = encode_varint(ssz.len()? as u64, &mut prefix[5..])?;
             Ok(offset + 5)
         }
-        RpcResponse::DataColumnSidecar { fork_digest, ssz } => {
+        AcquiredRpcResponse::DataColumnSidecar { fork_digest, ssz } => {
             prefix[0] = 0;
             prefix[1..5].copy_from_slice(fork_digest);
             let offset = encode_varint(ssz.len()? as u64, &mut prefix[5..])?;
             Ok(offset + 5)
         }
-        RpcResponse::Error { error, msg: _, len } => {
+        AcquiredRpcResponse::Error { error, msg: _, len } => {
             prefix[0] = *error;
             let offset = encode_varint(*len as u64, &mut prefix[1..])?;
             Ok(offset + 1)
         }
-        RpcResponse::Complete => Ok(0),
+        AcquiredRpcResponse::Complete => Ok(0),
         other => {
             let length = response_length(other)?;
             prefix[0] = 0;
             let offset = encode_varint(length as u64, &mut prefix[1..])?;
             Ok(offset + 1)
         }
-    }
-}
-
-fn release_response(response: &RpcResponse, consumer: &mut TRandomAccess) {
-    match response {
-        RpcResponse::BeaconBlock { fork_digest: _, ssz } => consumer.release(ssz),
-        RpcResponse::DataColumnSidecar { fork_digest: _, ssz } => consumer.release(ssz),
-        _ => {}
     }
 }

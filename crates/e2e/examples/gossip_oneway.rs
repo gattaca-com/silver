@@ -264,7 +264,8 @@ fn drain_compression_stats(c: &mut EchoCompressionHalf) {
 }
 
 fn record_latency(consumer: &mut TRandomAccess, msg: &NewGossipMsg, stats: &mut Stats) {
-    if let Ok((bytes, _)) = consumer.read_at(msg.ssz.seq()) {
+    let acquired = consumer.acquire(msg.ssz);
+    if let Ok((bytes, _)) = acquired.buffer() {
         stats.gossip_decompressed_bytes += bytes.len() as u64;
         if bytes.len() >= 8 {
             let sent_ns = u64::from_le_bytes(bytes[..8].try_into().expect("8 bytes"));

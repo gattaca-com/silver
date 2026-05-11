@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use silver_common::{GossipTopic, MessageId, MessageIdHasher, TCacheRead, TRandomAccess};
+use silver_common::{GossipTopic, MessageId, MessageIdHasher, TCacheRead, TRandomAccess, TRead};
 
 /// Another rotating bucket cache. Each bucket optionally maps a message id to
 /// TCacheRead. This cache maintains a tail of the TCache containing the cached
@@ -18,7 +18,7 @@ const IHAVE_GENERATION_INTERVAL: Duration = Duration::from_millis(500);
 
 #[derive(Clone)]
 struct Bucket {
-    messages: HashMap<MessageId, TCacheRead, BuildHasherDefault<MessageIdHasher>>,
+    messages: HashMap<MessageId, TRead, BuildHasherDefault<MessageIdHasher>>,
     ihaves: HashMap<GossipTopic, Vec<MessageId>>,
     tcache_min_seq: u64,
 }
@@ -49,13 +49,13 @@ impl MessageCache {
     }
 
     pub(crate) fn insert(&mut self, id: MessageId, topic: GossipTopic, tcache: TCacheRead) {
-        self.cache_consumer.acquire(&tcache);
+        let acquired = self.cache_consumer.acquire(tcache);
         let bucket = &mut self.buckets[self.current_bucket];
 
         // TODO could have a preallocated ring of max ihaves per gossip topic.
         bucket.ihaves.entry(topic).and_modify(|v| v.push(id)).or_insert_with(|| vec![id]);
-        bucket.tcache_min_seq = bucket.tcache_min_seq.min(tcache.seq());
-        bucket.messages.insert(id, tcache);
+        bucket.tcache_min_seq = bucket.tcache_min_seq.min(acquired.seq());
+        bucket.messages.insert(id, acquired);
     }
 
     pub(crate) fn has(&self, id: &MessageId) -> bool {
@@ -63,7 +63,7 @@ impl MessageCache {
     }
 
     pub(crate) fn get(&self, id: &MessageId) -> Option<TCacheRead> {
-        self.buckets.iter().find_map(|b| b.messages.get(id)).copied()
+        self.buckets.iter().find_map(|b| b.messages.get(id)).map(|a| &a.read).copied()
     }
 
     pub(crate) fn get_ihaves(
@@ -89,15 +89,13 @@ impl MessageCache {
     pub(crate) fn maybe_rotate(&mut self, now: Instant) {
         if self.last_rotation.elapsed() > ROTATION_INTERVAL {
             self.current_bucket = (self.current_bucket + 1) % BUCKETS;
-            let next_bucket = (self.current_bucket + 1) % BUCKETS;
-            self.cache_consumer.release_to(self.buckets[next_bucket].tcache_min_seq); 
-            self.cache_consumer.free();
 
             // oldest bucket has the min TCache seq
             let bucket = &mut self.buckets[self.current_bucket];
             bucket.tcache_min_seq = u64::MAX;
             bucket.messages.clear();
             bucket.ihaves.clear();
+            self.cache_consumer.free();
 
             self.last_rotation = now;
         }

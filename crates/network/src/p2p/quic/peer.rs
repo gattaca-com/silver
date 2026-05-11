@@ -7,9 +7,7 @@ use quinn_proto::{
     Connection, ConnectionEvent, ConnectionHandle, Dir, EndpointEvent, Side, StreamId, Transmit,
     VarInt,
 };
-use silver_common::{
-    P2pStreamId, PeerId, RpcOutbound, StreamProtocol, TCacheRead,
-};
+use silver_common::{P2pStreamId, PeerId, StreamProtocol, TRead};
 
 use crate::{
     RemotePeer,
@@ -17,7 +15,7 @@ use crate::{
         NetEvent,
         context::Context,
         quic::{SendResult, stream::StreamIoImpl},
-        streams::StreamState,
+        streams::{AcquiredRpcOutbound, StreamState},
         tls::peer_id_from_certificate,
     },
 };
@@ -59,7 +57,7 @@ impl Peer {
         self.connection.is_drained()
     }
 
-    pub(crate) fn send_gossip(&mut self, msg: TCacheRead) -> SendResult {
+    pub(crate) fn send_gossip(&mut self, msg: TRead) -> SendResult {
         if let Some(stream) = match &self.outbound_gossip {
             Some(id) => self.streams.get_mut(id),
             None => self.open_stream(StreamProtocol::GossipSub).and_then(|id| {
@@ -77,12 +75,12 @@ impl Peer {
         SendResult::StreamCreationError
     }
 
-    pub(crate) fn send_rpc(&mut self, msg: RpcOutbound) -> SendResult {
+    pub(crate) fn send_rpc(&mut self, msg: AcquiredRpcOutbound) -> SendResult {
         if let Some(stream) = match &msg {
-            RpcOutbound::Request(req) => {
+            AcquiredRpcOutbound::Request(req) => {
                 self.open_stream(req.request.protocol()).and_then(|id| self.streams.get_mut(&id))
             }
-            RpcOutbound::Response(rsp) => self.streams.get_mut(&rsp.stream_id.stream_id()),
+            AcquiredRpcOutbound::Response(rsp) => self.streams.get_mut(&rsp.stream_id.stream_id()),
         } {
             if let OutboundBuffer::Rpc(buffer) = &mut stream.out_buffer {
                 match buffer.add_msg(msg) {
@@ -407,8 +405,8 @@ impl Stream {
 
 pub(super) enum OutboundBuffer {
     Unset,
-    Gossip(OutBuffer<TCacheRead>),
-    Rpc(OutBuffer<RpcOutbound>),
+    Gossip(OutBuffer<TRead>),
+    Rpc(OutBuffer<AcquiredRpcOutbound>),
 }
 
 impl OutboundBuffer {
@@ -439,12 +437,7 @@ pub(super) struct OutBuffer<T: Clone> {
 impl<T: Clone> OutBuffer<T> {
     fn new(len: usize) -> Self {
         assert!(len.is_power_of_two());
-        Self {
-            msgs: vec![None; len].into_boxed_slice(),
-            len,
-            head: 0,
-            tail: 0,
-        }
+        Self { msgs: vec![None; len].into_boxed_slice(), len, head: 0, tail: 0 }
     }
 
     fn pos(&self, seq: usize) -> usize {
@@ -537,7 +530,8 @@ mod tests {
                 self.gossip_out_producer.reserve(payload.len(), true).expect("tcache full");
             res.write_all(payload).unwrap();
             assert!(res.is_committed());
-            peer.send_gossip(res.read());
+            let read = self.context.gossip_consumer.acquire(res.read());
+            peer.send_gossip(read);
         }
 
         /// Pull all newly-arrived inbound frames out of the consumer and

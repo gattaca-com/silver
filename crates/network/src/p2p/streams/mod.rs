@@ -2,7 +2,7 @@ use std::{array::TryFromSliceError, fmt, net::SocketAddr};
 
 use buffa::DecodeError;
 use quinn_proto::{FinishError, ReadError, ReadableError, StreamId, WriteError};
-use silver_common::{RpcOutbound, TCacheError, TCacheRead};
+use silver_common::{TCacheError, TRead};
 use thiserror::Error;
 
 use crate::p2p::streams::snappy::SnappyError;
@@ -16,6 +16,7 @@ mod rpc;
 mod snappy;
 mod state;
 
+pub(crate) use rpc::AcquiredRpcOutbound;
 pub use state::StreamState;
 
 #[derive(Debug, Error)]
@@ -48,7 +49,7 @@ pub trait StreamIo {
     fn write_to_stream(&mut self, id: StreamId, data: &[u8]) -> Result<usize, StreamError>;
     fn read_from_stream(&mut self, id: StreamId, data: &mut [u8]) -> Result<usize, StreamError>;
     fn close_write(&mut self, id: StreamId) -> Result<(), StreamError>;
-    fn rpc_next(&mut self) -> Option<RpcOutbound>;
-    fn gossip_next(&mut self) -> Option<TCacheRead>;
+    fn rpc_next(&mut self) -> Option<AcquiredRpcOutbound>;
+    fn gossip_next(&mut self) -> Option<TRead>;
     fn remote_addr(&self) -> SocketAddr;
 }

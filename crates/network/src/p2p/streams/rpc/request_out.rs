@@ -1,20 +1,31 @@
-use silver_common::{P2pStreamId, RpcRequest, TRandomAccess, encode_varint};
+use silver_common::{P2pStreamId, encode_varint};
 
 use crate::p2p::{
     quic::StreamWriter,
-    streams::{StreamError, StreamIo, snappy::SnappyEncoder},
+    streams::{StreamError, StreamIo, rpc::AcquiredRpcRequest, snappy::SnappyEncoder},
 };
 
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
 pub enum RpcWriteRequest {
-    WritingPrefix { app_id: u64, buf: [u8; 10], length: usize, written: usize, request: RpcRequest },
-    WritingRequest { app_id: u64, encoder: Box<SnappyEncoder>, request: RpcRequest, written: usize },
+    WritingPrefix {
+        app_id: u64,
+        buf: [u8; 10],
+        length: usize,
+        written: usize,
+        request: AcquiredRpcRequest,
+    },
+    WritingRequest {
+        app_id: u64,
+        encoder: Box<SnappyEncoder>,
+        request: AcquiredRpcRequest,
+        written: usize,
+    },
     Complete(u64),
 }
 
 impl RpcWriteRequest {
-    pub fn new(app_id: u64, request: RpcRequest) -> Result<Self, StreamError> {
+    pub fn new(app_id: u64, request: AcquiredRpcRequest) -> Result<Self, StreamError> {
         let len = request_length(&request)?;
         if len == 0 {
             Ok(Self::Complete(app_id))
@@ -32,14 +43,9 @@ enum Spin {
 }
 
 impl RpcWriteRequest {
-    pub fn spin<S: StreamIo>(
-        mut self,
-        id: &P2pStreamId,
-        io: &mut S,
-        consumer: &mut TRandomAccess,
-    ) -> Result<Self, StreamError> {
+    pub fn spin<S: StreamIo>(mut self, id: &P2pStreamId, io: &mut S) -> Result<Self, StreamError> {
         loop {
-            match self.spin_inner(id, io, consumer)? {
+            match self.spin_inner(id, io)? {
                 Spin::Ok(rpc_write_request) => return Ok(rpc_write_request),
                 Spin::Next(rpc_write_request) => {
                     self = rpc_write_request;
@@ -48,17 +54,10 @@ impl RpcWriteRequest {
         }
     }
 
-    fn spin_inner<S: StreamIo>(
-        self,
-        id: &P2pStreamId,
-        io: &mut S,
-        consumer: &mut TRandomAccess,
-    ) -> Result<Spin, StreamError> {
+    fn spin_inner<S: StreamIo>(self, id: &P2pStreamId, io: &mut S) -> Result<Spin, StreamError> {
         match self {
             RpcWriteRequest::WritingPrefix { app_id, buf, length, mut written, request } => {
-                written += io.write_to_stream(id.stream_id(), &buf[written..length]).inspect_err(|_| {
-                    release_request(&request, consumer);
-                })?;
+                written += io.write_to_stream(id.stream_id(), &buf[written..length])?;
                 if written == length {
                     let encoder = Box::new(SnappyEncoder::new());
                     Ok(Spin::Next(Self::WritingRequest { app_id, encoder, request, written: 0 }))
@@ -68,17 +67,14 @@ impl RpcWriteRequest {
             }
             RpcWriteRequest::WritingRequest { app_id, mut encoder, request, mut written } => {
                 // write bytes -> encoder -> stream.
-                let buffer = request_buffer(&request, written, consumer)?;
+                let buffer = request_buffer(&request, written)?;
                 let buffer_len = buffer.len();
 
                 let mut writer = StreamWriter(id.stream_id(), io);
-                let (wrote, pending) = encoder.compress(buffer, &mut writer).inspect_err(|_| {
-                    release_request(&request, consumer);
-                })?;
+                let (wrote, pending) = encoder.compress(buffer, &mut writer)?;
                 written += wrote;
 
                 if wrote == buffer_len && pending == 0 {
-                    release_request(&request, consumer);
                     Ok(Spin::Ok(Self::Complete(app_id)))
                 } else {
                     Ok(Spin::Ok(Self::WritingRequest { app_id, encoder, request, written }))
@@ -89,86 +85,74 @@ impl RpcWriteRequest {
     }
 }
 
-fn request_buffer<'a, 'b: 'a>(
-    request: &'a RpcRequest,
-    offset: usize,
-    consumer: &'b mut TRandomAccess,
-) -> Result<&'a [u8], StreamError> {
+fn request_buffer(request: &AcquiredRpcRequest, offset: usize) -> Result<&[u8], StreamError> {
     let buf = match request {
-        RpcRequest::StatusV1(buffer) => {
+        AcquiredRpcRequest::StatusV1(buffer) => {
             if offset < buffer.len() {
                 &buffer[offset..]
             } else {
                 &[]
             }
         }
-        RpcRequest::StatusV2(buffer) => {
+        AcquiredRpcRequest::StatusV2(buffer) => {
             if offset < buffer.len() {
                 &buffer[offset..]
             } else {
                 &[]
             }
         }
-        RpcRequest::Ping(buffer) => {
+        AcquiredRpcRequest::Ping(buffer) => {
             if offset < buffer.len() {
                 &buffer[offset..]
             } else {
                 &[]
             }
         }
-        RpcRequest::Goodbye(buffer) => {
+        AcquiredRpcRequest::Goodbye(buffer) => {
             if offset < buffer.len() {
                 &buffer[offset..]
             } else {
                 &[]
             }
         }
-        RpcRequest::MetaData => &[],
-        RpcRequest::BlocksByRange(buffer) => {
+        AcquiredRpcRequest::MetaData => &[],
+        AcquiredRpcRequest::BlocksByRange(buffer) => {
             if offset < buffer.len() {
                 &buffer[offset..]
             } else {
                 &[]
             }
         }
-        RpcRequest::BlockByRoot(tcache_read) => {
-            let (buf, _) = consumer.read_at(tcache_read.seq())?;
+        AcquiredRpcRequest::BlockByRoot(read) => {
+            let (buf, _) = read.buffer()?;
             if offset < buf.len() { &buf[offset..] } else { &[] }
         }
-        RpcRequest::DataColumnsByRange { ssz, len } => {
+        AcquiredRpcRequest::DataColumnsByRange { ssz, len } => {
             if offset < *len {
                 &ssz[offset..*len]
             } else {
                 &[]
             }
         }
-        RpcRequest::DataColumnsByRoot(tcache_read) => {
-            let (buf, _) = consumer.read_at(tcache_read.seq())?;
+        AcquiredRpcRequest::DataColumnsByRoot(read) => {
+            let (buf, _) = read.buffer()?;
             if offset < buf.len() { &buf[offset..] } else { &[] }
         }
     };
     Ok(buf)
 }
 
-fn request_length(request: &RpcRequest) -> Result<usize, StreamError> {
+fn request_length(request: &AcquiredRpcRequest) -> Result<usize, StreamError> {
     let len = match request {
-        RpcRequest::StatusV1(b) => b.len(),
-        RpcRequest::StatusV2(b) => b.len(),
-        RpcRequest::Ping(b) => b.len(),
-        RpcRequest::Goodbye(b) => b.len(),
-        RpcRequest::MetaData => 0,
-        RpcRequest::BlocksByRange(b) => b.len(),
-        RpcRequest::BlockByRoot(tcache_read) => tcache_read.len()?,
-        RpcRequest::DataColumnsByRange { ssz: _, len } => *len,
-        RpcRequest::DataColumnsByRoot(tcache_read) => tcache_read.len()?,
+        AcquiredRpcRequest::StatusV1(b) => b.len(),
+        AcquiredRpcRequest::StatusV2(b) => b.len(),
+        AcquiredRpcRequest::Ping(b) => b.len(),
+        AcquiredRpcRequest::Goodbye(b) => b.len(),
+        AcquiredRpcRequest::MetaData => 0,
+        AcquiredRpcRequest::BlocksByRange(b) => b.len(),
+        AcquiredRpcRequest::BlockByRoot(tcache_read) => tcache_read.len()?,
+        AcquiredRpcRequest::DataColumnsByRange { ssz: _, len } => *len,
+        AcquiredRpcRequest::DataColumnsByRoot(tcache_read) => tcache_read.len()?,
     };
     Ok(len)
-}
-
-fn release_request(request: &RpcRequest, consumer: &mut TRandomAccess) {
-    match request {
-        RpcRequest::BlockByRoot(tcache_read) => consumer.release(tcache_read),
-        RpcRequest::DataColumnsByRoot(tcache_read) => consumer.release(tcache_read),
-        _ => {}
-    }
 }

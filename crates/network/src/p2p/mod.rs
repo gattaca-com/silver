@@ -23,6 +23,7 @@ use silver_common::{
 
 use crate::{
     RemotePeer,
+    p2p::streams::AcquiredRpcOutbound,
     socket::{MAX_GSO_SEGMENTS, Socket},
 };
 
@@ -215,12 +216,9 @@ impl P2p {
     pub fn enqueue_gossip(&mut self, msg: GossipMsgOut, context: &mut Context) -> SendResult {
         match self.peers.get_mut(&ConnectionHandle(msg.peer_id)) {
             Some(peer) => {
-                let result = peer.send_gossip(msg.into());
-                if result == SendResult::Ok {
-                    context.gossip_consumer.acquire(&msg.tcache);
-                }
-                result
-            },
+                let acquired = context.gossip_consumer.acquire(msg.into());
+                peer.send_gossip(acquired)
+            }
             None => SendResult::UnknownPeer,
         }
     }
@@ -228,12 +226,9 @@ impl P2p {
     pub fn enqueue_rpc_out(&mut self, msg: RpcOutbound, context: &mut Context) -> SendResult {
         match self.peers.get_mut(&ConnectionHandle(msg.peer_id())) {
             Some(peer) => {
-                let result = peer.send_rpc(msg);
-                if result == SendResult::Ok && let Some(tcache) = msg.tcache_read() {
-                    context.rpc_consumer.acquire(tcache);
-                }
-                result
-            },
+                let acquired_msg = AcquiredRpcOutbound::from((msg, &mut context.rpc_consumer));
+                peer.send_rpc(acquired_msg)
+            }
             None => SendResult::UnknownPeer,
         }
     }
