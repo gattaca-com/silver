@@ -1821,29 +1821,6 @@ pub fn process_proposer_slashings(
     true
 }
 
-/// Compute signing root for a `BeaconBlockHeader` (208-byte SSZ): slot,
-/// proposer_index, parent_root, state_root, body_root.
-pub(crate) fn signing_root_for_block_header(
-    header: &[u8],
-    fork_version: [u8; 4],
-    genesis_validators_root: &B256,
-    zh: &[B256],
-) -> B256 {
-    let hb: &[u8; BEACON_BLOCK_HEADER_SIZE] =
-        header[..BEACON_BLOCK_HEADER_SIZE].try_into().unwrap();
-    let h = BeaconBlockHeader {
-        slot: BeaconBlockHeaderView::slot(hb),
-        proposer_index: BeaconBlockHeaderView::proposer_index(hb),
-        parent_root: *BeaconBlockHeaderView::parent_root(hb),
-        state_root: *BeaconBlockHeaderView::state_root(hb),
-        body_root: *BeaconBlockHeaderView::body_root(hb),
-    };
-    let object_root = hash_tree_root_block_header(&h, zh);
-    let domain =
-        bls::compute_domain(bls::DOMAIN_BEACON_PROPOSER, fork_version, genesis_validators_root);
-    bls::compute_signing_root(&object_root, &domain)
-}
-
 // TODO(spec): verify the 33-level Merkle branch against
 // state.eth1_data.deposit_root before queueing — currently skipped, so a junk
 // proof on a body-included Deposit would be accepted. (Lighthouse:
@@ -2118,16 +2095,38 @@ pub fn process_attester_slashings(
     true
 }
 
+/// Compute signing root for a `BeaconBlockHeader` (208-byte SSZ): slot,
+/// proposer_index, parent_root, state_root, body_root. Shared by the block
+/// path (proposer slashing in-block) and the gossip path.
+pub(crate) fn signing_root_for_block_header(
+    header: &[u8],
+    fork_version: [u8; 4],
+    genesis_validators_root: &B256,
+    zh: &[B256],
+) -> B256 {
+    let hb: &[u8; BEACON_BLOCK_HEADER_SIZE] =
+        header[..BEACON_BLOCK_HEADER_SIZE].try_into().unwrap();
+    let h = BeaconBlockHeader {
+        slot: BeaconBlockHeaderView::slot(hb),
+        proposer_index: BeaconBlockHeaderView::proposer_index(hb),
+        parent_root: *BeaconBlockHeaderView::parent_root(hb),
+        state_root: *BeaconBlockHeaderView::state_root(hb),
+        body_root: *BeaconBlockHeaderView::body_root(hb),
+    };
+    let object_root = hash_tree_root_block_header(&h, zh);
+    let domain =
+        bls::compute_domain(bls::DOMAIN_BEACON_PROPOSER, fork_version, genesis_validators_root);
+    bls::compute_signing_root(&object_root, &domain)
+}
+
 /// Gossip-side `AttesterSlashing` validator (single slashing, not the
 /// block-body list form).
-#[allow(clippy::too_many_arguments)]
 pub fn validate_attester_slashing_for_gossip(
     imm: &Immutable,
     vid: &ValidatorIdentity,
     epoch: &EpochData,
     sd: &SlotData,
     slashing: &[u8],
-    active_scratch: &mut Vec<u32>,
     sig_batch: &mut SigBatch,
     zh: &[B256],
 ) -> bool {
@@ -2146,6 +2145,11 @@ pub fn validate_attester_slashing_for_gossip(
     }
     let i1 = attesting_indices_bytes(slashing, off1, off2);
     let i2 = attesting_indices_bytes(slashing, off2, slashing.len());
+    if i1.len() / 8 > silver_common::ssz_view::MAX_ATTESTING_INDICES ||
+        i2.len() / 8 > silver_common::ssz_view::MAX_ATTESTING_INDICES
+    {
+        return false;
+    }
     if !indices_sorted_unique(i1) || !indices_sorted_unique(i2) {
         return false;
     }
@@ -2174,14 +2178,13 @@ pub fn validate_attester_slashing_for_gossip(
             imm.fork.current_version,
             target_epoch,
         );
-        active_scratch.clear();
         let n_idx = indices.len() / 8;
+        // Pre-validate bounds so the sig_batch closure can index unchecked.
         for k in 0..n_idx {
-            let vi = u64::from_le_bytes(indices[k * 8..k * 8 + 8].try_into().unwrap());
-            if vi as usize >= vid.validator_cnt {
+            let vi = u64::from_le_bytes(indices[k * 8..k * 8 + 8].try_into().unwrap()) as usize;
+            if vi >= vid.validator_cnt {
                 return false;
             }
-            active_scratch.push(vi as u32);
         }
         let data_chunk: &[u8; 128] = silver_common::ssz_view::IndexedAttestationView::data(ia);
         let sig: &[u8; 96] = silver_common::ssz_view::IndexedAttestationView::signature(ia);
@@ -2190,7 +2193,10 @@ pub fn validate_attester_slashing_for_gossip(
             bls::compute_domain(bls::DOMAIN_BEACON_ATTESTER, fv, &imm.genesis_validators_root);
         let signing_root = bls::compute_signing_root(&object_root, &domain);
         sig_batch.push_aggregate(
-            active_scratch.iter().map(|&vi| &vid.val_pubkey_decompressed[vi as usize]),
+            (0..n_idx).map(|k| {
+                let vi = u64::from_le_bytes(indices[k * 8..k * 8 + 8].try_into().unwrap()) as usize;
+                &vid.val_pubkey_decompressed[vi]
+            }),
             sig,
             signing_root,
         );

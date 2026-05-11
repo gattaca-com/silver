@@ -11,5 +11,8 @@ pub mod tile;
 pub mod types;
 mod validate;
 
+#[cfg(test)]
+pub(crate) mod test_signing;
+
 pub use ticker::SlotTicker;
 pub use tile::BeaconStateTile;

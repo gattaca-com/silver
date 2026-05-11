@@ -1130,6 +1130,7 @@ impl BeaconStateTile {
         let agg_data_index = SignedAggregateAndProofView::agg_data_index(data);
         let beacon_block_root = *SignedAggregateAndProofView::agg_beacon_block_root(data);
         let target_epoch = SignedAggregateAndProofView::agg_target_epoch(data);
+        let target_root = *SignedAggregateAndProofView::agg_target_root(data);
         let committee_bits =
             u64::from_le_bytes(*SignedAggregateAndProofView::agg_committee_bits(data));
         let agg_sig = SignedAggregateAndProofView::agg_signature(data);
@@ -1144,8 +1145,12 @@ impl BeaconStateTile {
         if target_epoch != att_epoch {
             return GossipFeedback::Reject;
         }
+        // Spec slot window: aggregate.slot <= current_slot <=
+        // aggregate.slot + ATTESTATION_PROPAGATION_SLOT_RANGE.
+        // TODO Sub-slot MAXIMUM_GOSSIP_CLOCK_DISPARITY tolerance not yet wired through
+        // the ticker.
         let wall = self.ticker.current_slot();
-        if agg_slot > wall + 1 || wall.saturating_sub(agg_slot) > 32 {
+        if agg_slot > wall || agg_slot.saturating_add(ATTESTATION_PROPAGATION_SLOT_RANGE) < wall {
             return GossipFeedback::Ignore;
         }
         // Fulu gossip rule: exactly one committee bit set.
@@ -1154,10 +1159,15 @@ impl BeaconStateTile {
         }
         let committee_index = committee_bits.trailing_zeros() as usize;
 
-        // Orphan tolerance — agg's block root must be in fork choice (which is
-        // rooted at the finalized block, so this implies descendant-of-finalized).
-        if self.fork_choice.find_node_idx(&beacon_block_root).is_none() {
-            return GossipFeedback::Ignore;
+        // beacon_block_root in fork choice + target.root is its ancestor at
+        // target-epoch's first slot. Implies descendant-of-finalized.
+        match self
+            .fork_choice
+            .get_checkpoint_block(&beacon_block_root, target_epoch * SLOTS_PER_EPOCH)
+        {
+            Some(r) if r == target_root => {}
+            Some(_) => return GossipFeedback::Reject,
+            None => return GossipFeedback::Ignore,
         }
 
         let head = self.head;
@@ -1167,18 +1177,14 @@ impl BeaconStateTile {
             return GossipFeedback::Ignore;
         }
 
-        // Resolve participants and check aggregator membership / non-empty
-        // aggregation.
-        let shuffled = {
-            let entry_idx = self
-                .shuffling_cache
-                .entries
-                .iter()
-                .position(|e| e.status == 1 && e.epoch == att_epoch);
-            match entry_idx {
-                Some(i) => self.shuffling_cache.entries[i].shuffled_indices.as_slice(),
-                None => return GossipFeedback::Ignore,
-            }
+        let shuffled = match self
+            .shuffling_cache
+            .entries
+            .iter()
+            .find(|e| e.status == 1 && e.epoch == att_epoch)
+        {
+            Some(e) => e.shuffled_indices.as_slice(),
+            None => return GossipFeedback::Ignore,
         };
         let cps = shuffling::committees_per_slot(shuffled.len());
         if committee_index >= cps {
@@ -1222,8 +1228,7 @@ impl BeaconStateTile {
         );
 
         // (1) selection_proof — signer = aggregator, msg = htr(uint64(slot)).
-        let mut slot_root = [0u8; 32];
-        slot_root[..8].copy_from_slice(&agg_slot.to_le_bytes());
+        let slot_root = ssz_hash::uint64_chunk(agg_slot);
         let domain_sp =
             bls::compute_domain(bls::DOMAIN_SELECTION_PROOF, fv, &imm.genesis_validators_root);
         let sr_sp = bls::compute_signing_root(&slot_root, &domain_sp);
@@ -1256,6 +1261,13 @@ impl BeaconStateTile {
         );
         if !self.sig_batch.verify_all() {
             return GossipFeedback::Reject;
+        }
+
+        // Fold per-participant votes via `on_attestation` so the spec's
+        // newer-epoch-only rule applies (same as the SingleAttestation path).
+        for i in 0..self.active_scratch.len() {
+            let vi = self.active_scratch[i] as usize;
+            self.on_attestation(vi, beacon_block_root, target_epoch);
         }
         GossipFeedback::Accept
     }
@@ -1383,7 +1395,6 @@ impl BeaconStateTile {
             epoch_data,
             sd,
             data,
-            &mut self.active_scratch,
             &mut self.sig_batch,
             &self.zero_hashes,
         ) {
@@ -1483,6 +1494,10 @@ impl Tile<SilverSpine> for BeaconStateTile {
     }
 }
 
+/// Spec gossip rule: `aggregate.slot + ATTESTATION_PROPAGATION_SLOT_RANGE >=
+/// current_slot >= aggregate.slot`.
+const ATTESTATION_PROPAGATION_SLOT_RANGE: u64 = 32;
+
 /// Spec `is_aggregator(state, slot, index, selection_proof)`.
 /// `modulo = max(1, len(committee) // TARGET_AGGREGATORS_PER_COMMITTEE)`;
 /// accept iff `bytes_to_uint64(sha256(selection_proof)[0..8]) % modulo == 0`.
@@ -1544,7 +1559,7 @@ fn body_mutation_hints(body: &[u8]) -> (bool, bool) {
 mod tests {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-    use silver_common::{TCache, TCacheProducer};
+    use silver_common::{TCache, TCacheProducer, ssz_view::SIGNED_AGG_PROOF_MIN};
 
     use super::*;
     use crate::types::Checkpoint;
@@ -1552,7 +1567,16 @@ mod tests {
     const MAX_EFFECTIVE_BALANCE: u64 = 32_000_000_000;
 
     fn make_tile() -> BeaconStateTile {
-        let genesis = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() - 12;
+        make_tile_at_wall_slot(1)
+    }
+
+    /// Construct a tile whose ticker reports `wall_slot` as the current slot.
+    /// Used by the aggregate Accept test to widen the slot-window check so it
+    /// covers wherever the committee for validator 0 lands.
+    fn make_tile_at_wall_slot(wall_slot: u64) -> BeaconStateTile {
+        let secs_per_slot = 12u64;
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let genesis = now.saturating_sub(wall_slot * secs_per_slot + 1);
         let ticker = SlotTicker::new(genesis, Duration::from_secs(12), Duration::from_secs(4));
         let gossip_p = TCache::producer(1 << 20);
         let event_p = TCache::producer(1 << 20);
@@ -1571,6 +1595,7 @@ mod tests {
             epoch.val_effective_balance[i] = MAX_EFFECTIVE_BALANCE;
             epoch.val_activation_epoch[i] = 0;
             epoch.val_exit_epoch[i] = u64::MAX;
+            epoch.val_withdrawable_epoch[i] = u64::MAX;
         }
 
         let sd = tile.arena.slot.get_mut(0);
@@ -1588,6 +1613,28 @@ mod tests {
         // Precompute shuffling for the start epoch.
         let start_epoch = start_slot / SLOTS_PER_EPOCH;
         tile.ensure_shuffling(start_epoch);
+    }
+
+    /// Like `seed_tile` but installs real BLS pubkeys for validators `0..n`
+    /// (sk_idx = i % PRIVKEY_HEX.len()). Sets BLS-prefix withdrawal credentials
+    /// so `validate_bls_to_execution_change` will accept the corresponding
+    /// `from_bls_pubkey`. Required for Accept-path tests of gossip handlers.
+    fn seed_tile_with_keys(tile: &mut BeaconStateTile, n: usize, start_slot: Slot) {
+        seed_tile(tile, n, start_slot);
+
+        let vid = tile.arena.vid.get_mut(0);
+        for i in 0..n {
+            let sk_idx = i % crate::test_signing::PRIVKEY_HEX.len();
+            let pk = crate::test_signing::pubkey_pk(sk_idx);
+            let pk_bytes = pk.to_bytes();
+            vid.val_pubkey[i] = pk_bytes;
+            vid.val_pubkey_decompressed[i] = pk;
+
+            // BLS-prefix withdrawal creds: creds[0]=0x00, creds[1..]=hash(pk)[1..].
+            let mut creds = ssz_hash::sha256(&pk_bytes);
+            creds[0] = 0x00;
+            vid.val_withdrawal_credentials[i] = creds;
+        }
     }
 
     #[test]
@@ -1747,6 +1794,377 @@ mod tests {
         // Block rejected (orphan), head unchanged.
         assert_eq!(tile.head.slot_idx, head_before.slot_idx);
         assert_eq!(tile.fork_choice.nodes.len(), 1); // only genesis
+    }
+
+    #[test]
+    fn ve_unknown_validator_ignored() {
+        let mut tile = make_tile();
+        seed_tile(&mut tile, 4, 0);
+        let mut buf = [0u8; SIGNED_VOLUNTARY_EXIT_SIZE];
+        buf[8..16].copy_from_slice(&999u64.to_le_bytes());
+        assert_eq!(tile.handle_voluntary_exit(&buf), GossipFeedback::Ignore);
+    }
+
+    #[test]
+    fn ve_accept() {
+        let mut tile = make_tile();
+        seed_tile_with_keys(&mut tile, 4, 256 * SLOTS_PER_EPOCH);
+
+        let imm = *tile.imm(&tile.head);
+        let buf = crate::test_signing::sign_voluntary_exit(0, 0, 0, &imm, &tile.zero_hashes);
+        assert_eq!(tile.handle_voluntary_exit(&buf), GossipFeedback::Accept);
+    }
+
+    #[test]
+    fn ps_identical_headers_rejected() {
+        let mut tile = make_tile();
+        seed_tile(&mut tile, 4, 0);
+        // 416B all-zero — h1 == h2, validate_proposer_slashing rejects.
+        let buf = [0u8; PROPOSER_SLASHING_SIZE];
+        assert_eq!(tile.handle_proposer_slashing(&buf), GossipFeedback::Reject);
+    }
+
+    #[test]
+    fn ps_unknown_proposer_ignored() {
+        let mut tile = make_tile();
+        seed_tile(&mut tile, 4, 0);
+        // Two distinct headers, same slot, same proposer (=999, OOR).
+        let mut buf = [0u8; PROPOSER_SLASHING_SIZE];
+        buf[8..16].copy_from_slice(&999u64.to_le_bytes());
+        buf[216..224].copy_from_slice(&999u64.to_le_bytes());
+        // Distinct body_root in second header.
+        buf[208 + 80] = 0xFF;
+        assert_eq!(tile.handle_proposer_slashing(&buf), GossipFeedback::Ignore);
+    }
+
+    #[test]
+    fn ps_accept() {
+        let mut tile = make_tile();
+        seed_tile_with_keys(&mut tile, 4, 0);
+        let imm = *tile.imm(&tile.head);
+        let buf = crate::test_signing::sign_proposer_slashing(0, 0, 0, &imm, &tile.zero_hashes);
+        assert_eq!(tile.handle_proposer_slashing(&buf), GossipFeedback::Accept);
+    }
+
+    #[test]
+    fn ps_mismatched_slot_rejected() {
+        let mut tile = make_tile();
+        seed_tile(&mut tile, 4, 0);
+        let mut buf = [0u8; PROPOSER_SLASHING_SIZE];
+        // Both proposers = 0 (default); slots differ → validate_proposer_slashing
+        // rejects.
+        buf[208] = 1; // h2.slot LE byte 0
+        assert_eq!(tile.handle_proposer_slashing(&buf), GossipFeedback::Reject);
+    }
+
+    #[test]
+    fn ps_mismatched_proposer_rejected() {
+        let mut tile = make_tile();
+        seed_tile(&mut tile, 4, 0);
+        let mut buf = [0u8; PROPOSER_SLASHING_SIZE];
+        // h1.proposer_index = 0, h2.proposer_index = 1 → reject.
+        buf[208 + 8] = 1;
+        assert_eq!(tile.handle_proposer_slashing(&buf), GossipFeedback::Reject);
+    }
+
+    #[test]
+    fn as_zero_intersection_rejected() {
+        // Build a structurally-valid slashing with disjoint attesting_indices
+        // (no intersection → no slashable validator).
+        let mut tile = make_tile();
+        seed_tile(&mut tile, 4, 0);
+        let imm = *tile.imm(&tile.head);
+        // ia1 signs from vi=0, ia2 from vi=1; double-vote on data (different
+        // beacon_block_root) but indices disjoint.
+        let ia1 = build_ia_with_indices(&imm, &tile.zero_hashes, 0, 0xAA, &[0]);
+        let ia2 = build_ia_with_indices(&imm, &tile.zero_hashes, 0, 0xBB, &[1]);
+        let buf = wrap_attester_slashing(&ia1, &ia2);
+        assert_eq!(tile.handle_attester_slashing(&buf), GossipFeedback::Reject);
+    }
+
+    #[test]
+    fn as_accept() {
+        let mut tile = make_tile();
+        seed_tile_with_keys(&mut tile, 4, 0);
+        let imm = *tile.imm(&tile.head);
+        // Both ia signed by sk_idx=0 covering vi=0 → double-vote, vi=0 is
+        // slashable in head state.
+        let buf = crate::test_signing::sign_attester_slashing_double_vote(
+            0,
+            0,
+            0,
+            0,
+            &imm,
+            &tile.zero_hashes,
+        );
+        assert_eq!(tile.handle_attester_slashing(&buf), GossipFeedback::Accept);
+    }
+
+    /// Disjoint attesting_indices but valid BLS sigs on each side — ensures the
+    /// intersection check fires before sig verify (and isn't masked by the
+    /// zero-sig variant's structural rejects).
+    #[test]
+    fn as_zero_intersection_with_valid_sigs_rejected() {
+        let mut tile = make_tile();
+        seed_tile_with_keys(&mut tile, 4, 0);
+        let imm = *tile.imm(&tile.head);
+        // ia1: sk=0/vi=0 ; ia2: sk=1/vi=1 → same target_epoch, different
+        // beacon_block_root (double-vote on data), but indices {0} ∩ {1} = ∅.
+        let ia1 = crate::test_signing::build_indexed_attestation(
+            0,
+            0,
+            0,
+            0,
+            0,
+            0xAA,
+            &imm,
+            &tile.zero_hashes,
+        );
+        let ia2 = crate::test_signing::build_indexed_attestation(
+            1,
+            1,
+            0,
+            0,
+            0,
+            0xBB,
+            &imm,
+            &tile.zero_hashes,
+        );
+        let buf = wrap_attester_slashing(&ia1, &ia2);
+        assert_eq!(tile.handle_attester_slashing(&buf), GossipFeedback::Reject);
+    }
+
+    /// Build an IndexedAttestation with attesting_indices = `indices`. Sig is
+    /// left zero — only used for structural / state-derived reject tests.
+    fn build_ia_with_indices(
+        _imm: &types::Immutable,
+        _zh: &[B256],
+        target_epoch: u64,
+        beacon_block_root_marker: u8,
+        indices: &[u64],
+    ) -> Vec<u8> {
+        let mut buf = vec![0u8; 228 + indices.len() * 8];
+        let indices_off: u32 = 228;
+        buf[0..4].copy_from_slice(&indices_off.to_le_bytes());
+        buf[20] = beacon_block_root_marker;
+        buf[92..100].copy_from_slice(&target_epoch.to_le_bytes());
+        for (i, &vi) in indices.iter().enumerate() {
+            buf[228 + i * 8..228 + (i + 1) * 8].copy_from_slice(&vi.to_le_bytes());
+        }
+        buf
+    }
+
+    fn wrap_attester_slashing(ia1: &[u8], ia2: &[u8]) -> Vec<u8> {
+        let off1: u32 = 8;
+        let off2: u32 = off1 + ia1.len() as u32;
+        let mut buf = Vec::with_capacity(8 + ia1.len() + ia2.len());
+        buf.extend_from_slice(&off1.to_le_bytes());
+        buf.extend_from_slice(&off2.to_le_bytes());
+        buf.extend_from_slice(ia1);
+        buf.extend_from_slice(ia2);
+        buf
+    }
+
+    #[test]
+    fn bls_change_unknown_validator_ignored() {
+        let mut tile = make_tile();
+        seed_tile(&mut tile, 4, 0);
+        let mut buf = [0u8; SIGNED_BLS_CHANGE_SIZE];
+        buf[0..8].copy_from_slice(&999u64.to_le_bytes());
+        assert_eq!(tile.handle_bls_to_execution_change(&buf), GossipFeedback::Ignore);
+    }
+
+    #[test]
+    fn bls_change_wrong_prefix_rejected() {
+        // Validator 0 with non-BLS withdrawal prefix → validate rejects.
+        let mut tile = make_tile();
+        seed_tile(&mut tile, 4, 0);
+        tile.arena.vid.get_mut(0).val_withdrawal_credentials[0][0] = 0x01; // ETH1 prefix
+        let buf = [0u8; SIGNED_BLS_CHANGE_SIZE]; // vi=0
+        assert_eq!(tile.handle_bls_to_execution_change(&buf), GossipFeedback::Reject);
+    }
+
+    #[test]
+    fn bls_change_accept() {
+        let mut tile = make_tile();
+        seed_tile_with_keys(&mut tile, 4, 0);
+        let imm = *tile.imm(&tile.head);
+        let to_addr = [0x42u8; 20];
+        let buf = crate::test_signing::sign_bls_to_execution_change(
+            0,
+            0,
+            &to_addr,
+            &imm,
+            &tile.zero_hashes,
+        );
+        assert_eq!(tile.handle_bls_to_execution_change(&buf), GossipFeedback::Accept);
+    }
+
+    #[test]
+    fn agg_multi_committee_bits_rejected() {
+        let mut tile = make_tile();
+        seed_tile(&mut tile, 4, 0);
+        let mut buf = vec![0u8; SIGNED_AGG_PROOF_MIN];
+        // committee_bits at [436..444); set two bits.
+        buf[436] = 0b0000_0011;
+        assert_eq!(tile.handle_aggregate_and_proof(&buf), GossipFeedback::Reject);
+    }
+
+    #[test]
+    fn agg_unknown_block_root_ignored() {
+        let mut tile = make_tile();
+        seed_tile(&mut tile, 4, 0);
+        let mut buf = vec![0u8; SIGNED_AGG_PROOF_MIN];
+        // Single committee bit so we pass the count_ones check.
+        buf[436] = 0b0000_0001;
+        // beacon_block_root at [228..260); pick a value not in fork choice.
+        buf[228] = 0xFF;
+        assert_eq!(tile.handle_aggregate_and_proof(&buf), GossipFeedback::Ignore);
+    }
+
+    /// Locate `(slot, committee_index, pos_in_committee, committee_size)` for
+    /// validator 0 in epoch 0.
+    fn find_committee_for_vi0(tile: &BeaconStateTile) -> (Slot, usize, usize, usize) {
+        let entry = tile.get_shuffling(0).expect("shuffling for epoch 0");
+        let cps = shuffling::committees_per_slot(entry.shuffled_indices.len());
+        for s in 0..SLOTS_PER_EPOCH {
+            for ci in 0..cps {
+                let c =
+                    shuffling::get_beacon_committee(entry.shuffled_indices.as_slice(), s, ci, cps);
+                if let Some(pos) = c.iter().position(|&v| v == 0) {
+                    return (s, ci, pos, c.len());
+                }
+            }
+        }
+        panic!("validator 0 in some committee")
+    }
+
+    /// Sign an accept-ready `SignedAggregateAndProof` for validator 0 against
+    /// the seeded tile state. `seed_tile` places genesis at start_slot with
+    /// `head_block_root` as the only fork-choice node, so the target-epoch
+    /// checkpoint block resolves back to `head_block_root`.
+    fn build_agg_for_vi0(tile: &BeaconStateTile) -> Vec<u8> {
+        let imm = *tile.imm(&tile.head);
+        let beacon_block_root = tile.head_block_root;
+        let target_root = tile.head_block_root;
+        let (slot, ci, pos, csize) = find_committee_for_vi0(tile);
+        crate::test_signing::sign_aggregate_and_proof(
+            0,
+            0,
+            slot,
+            slot / SLOTS_PER_EPOCH,
+            beacon_block_root,
+            target_root,
+            ci,
+            pos,
+            csize,
+            &imm,
+            &tile.zero_hashes,
+        )
+    }
+
+    #[test]
+    fn agg_accept() {
+        // Wall slot 31 → window covers all of epoch 0 (slots 0..31).
+        let mut tile = make_tile_at_wall_slot(31);
+        seed_tile_with_keys(&mut tile, 128, 0);
+        let buf = build_agg_for_vi0(&tile);
+        let beacon_block_root = tile.head_block_root;
+        let slot = SignedAggregateAndProofView::agg_slot(&buf);
+        assert_eq!(tile.handle_aggregate_and_proof(&buf), GossipFeedback::Accept);
+        // Single-participant aggregate (validator 0) must land in the vote
+        // tracker — same effect as the SingleAttestation gossip path.
+        assert_eq!(tile.vote_tracker.votes[0].next_root, beacon_block_root);
+        assert_eq!(tile.vote_tracker.votes[0].next_epoch, slot / SLOTS_PER_EPOCH);
+    }
+
+    #[test]
+    fn agg_respects_epoch_monotonicity() {
+        // Spec rule (shared with SingleAttestation): only strictly newer
+        // epochs overwrite. A pre-existing vote at epoch 1 must survive an
+        // accepted aggregate that targets epoch 0.
+        let mut tile = make_tile_at_wall_slot(31);
+        seed_tile_with_keys(&mut tile, 128, 0);
+
+        let preset_root = [0x99u8; 32];
+        tile.vote_tracker.votes[0].next_root = preset_root;
+        tile.vote_tracker.votes[0].next_epoch = 1;
+
+        let buf = build_agg_for_vi0(&tile);
+        assert_eq!(SignedAggregateAndProofView::agg_target_epoch(&buf), 0);
+        assert_eq!(tile.handle_aggregate_and_proof(&buf), GossipFeedback::Accept);
+
+        assert_eq!(tile.vote_tracker.votes[0].next_root, preset_root);
+        assert_eq!(tile.vote_tracker.votes[0].next_epoch, 1);
+    }
+
+    #[test]
+    fn agg_slot_too_old_ignored() {
+        // wall = 100, agg_slot = 31 → wall - slot = 69 > 32 → Ignore.
+        let mut tile = make_tile_at_wall_slot(100);
+        seed_tile_with_keys(&mut tile, 128, 0);
+        let buf = build_agg_for_vi0(&tile);
+        // Sanity: agg_slot < wall - 32.
+        assert!(
+            SignedAggregateAndProofView::agg_slot(&buf) < 100 - ATTESTATION_PROPAGATION_SLOT_RANGE
+        );
+        assert_eq!(tile.handle_aggregate_and_proof(&buf), GossipFeedback::Ignore);
+    }
+
+    #[test]
+    fn agg_slot_too_future_ignored() {
+        // Tile at wall slot 0; valid agg buffer for vi=0 → just rewrite the
+        // slot to wall+5 and the matching target_epoch. is_aggregator and sigs
+        // are bypassed because the slot-window check fires first.
+        let mut tile = make_tile_at_wall_slot(0);
+        seed_tile(&mut tile, 128, 0);
+        let mut buf = vec![0u8; SIGNED_AGG_PROOF_MIN];
+        // Pass count_ones check.
+        buf[436] = 0b0000_0001;
+        // slot at [212..220), target.epoch at [300..308). slot=5, target_epoch=0
+        // still matches `target.epoch == slot/SLOTS_PER_EPOCH`.
+        buf[212] = 5;
+        assert_eq!(tile.handle_aggregate_and_proof(&buf), GossipFeedback::Ignore);
+    }
+
+    #[test]
+    fn agg_committee_index_oor_rejected() {
+        // 128 validators → cps = 1, so committee_index = 1 is OOR.
+        let mut tile = make_tile_at_wall_slot(31);
+        seed_tile_with_keys(&mut tile, 128, 0);
+        let mut buf = build_agg_for_vi0(&tile);
+        // committee_bits at [436..444); clear all then set bit 1.
+        for i in 0..8 {
+            buf[436 + i] = 0;
+        }
+        buf[436] = 0b0000_0010;
+        assert_eq!(tile.handle_aggregate_and_proof(&buf), GossipFeedback::Reject);
+    }
+
+    #[test]
+    fn agg_is_aggregator_false_rejected() {
+        // 1024 validators → cps=1, committee_len=32, modulo=2. Mutate the
+        // selection_proof's first byte until is_aggregator returns false; the
+        // handler must reject before BLS sig verify fires.
+        let mut tile = make_tile_at_wall_slot(31);
+        seed_tile_with_keys(&mut tile, 1024, 0);
+        let mut buf = build_agg_for_vi0(&tile);
+        let (_, _, _, csize) = find_committee_for_vi0(&tile);
+        assert_eq!(csize, 32, "committee_len drives modulo");
+
+        let sp_off = 112usize;
+        let mut sig_arr: [u8; 96] = buf[sp_off..sp_off + 96].try_into().unwrap();
+        let mut b: u16 = 0;
+        loop {
+            sig_arr[0] = b as u8;
+            if !is_aggregator(csize, &sig_arr) {
+                break;
+            }
+            b += 1;
+            assert!(b < 256, "no parity-flipping byte found (impossible)");
+        }
+        buf[sp_off..sp_off + 96].copy_from_slice(&sig_arr);
+        assert_eq!(tile.handle_aggregate_and_proof(&buf), GossipFeedback::Reject);
     }
 
     #[test]

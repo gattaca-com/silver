@@ -23,7 +23,7 @@ pub(crate) fn hash_concat(a: &B256, b: &B256) -> B256 {
 }
 
 #[inline]
-fn uint64_chunk(v: u64) -> B256 {
+pub fn uint64_chunk(v: u64) -> B256 {
     let mut chunk = [0u8; 32];
     chunk[..8].copy_from_slice(&v.to_le_bytes());
     chunk
@@ -454,15 +454,9 @@ fn hash_attestation(d: &[u8], zh: &[B256]) -> B256 {
     merkleize(&[agg_root, data_root, sig_root, cb], zh)
 }
 
-/// SSZ root of an Attestation container (variable: has Bitlist
-/// `aggregation_bits`). Mirrors the block-body hashing path.
-pub fn hash_tree_root_attestation(d: &[u8], zh: &[B256]) -> B256 {
-    hash_attestation(d, zh)
-}
-
 /// SSZ root of `AggregateAndProof { aggregator_index, aggregate,
 /// selection_proof }`. 3-field container; the variable `aggregate`
-/// (Attestation) is hashed via `hash_tree_root_attestation`.
+/// is hashed via the internal `hash_attestation`.
 pub fn hash_tree_root_aggregate_and_proof(
     aggregator_index: u64,
     aggregate: &[u8],

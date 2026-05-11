@@ -195,6 +195,23 @@ impl ForkChoice {
         &self.nodes[idx]
     }
 
+    /// Spec `get_checkpoint_block(store, root, epoch)`: deepest ancestor of
+    /// `root` with `slot <= epoch_start_slot`. `None` if `root` isn't in fork
+    /// choice or no ancestor satisfies the bound (walked above tree root).
+    pub fn get_checkpoint_block(&self, root: &B256, epoch_start_slot: Slot) -> Option<B256> {
+        let mut idx = self.find_node_idx(root)?;
+        loop {
+            let n = &self.nodes[idx];
+            if n.slot <= epoch_start_slot {
+                return Some(n.block_root);
+            }
+            if n.parent == NULL {
+                return None;
+            }
+            idx = n.parent;
+        }
+    }
+
     #[inline]
     fn node_is_viable_for_head(&self, idx: usize) -> bool {
         let n = &self.nodes[idx];
