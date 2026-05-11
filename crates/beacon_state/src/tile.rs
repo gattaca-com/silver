@@ -6,8 +6,10 @@ use silver_common::{
     BeaconStateEvent, GossipTopic, NewGossipMsg, P2pStreamId, PeerEvent, PeerRpcIn, RpcMsg,
     RpcSeverity, SilverSpine, TCacheRead, TRandomAccess,
     ssz_view::{
-        BLOCKS_BY_RANGE_REQ_SIZE, SINGLE_ATT_SIZE, STATUS_V2_SIZE, SignedBeaconBlockView,
-        SingleAttestationView,
+        AttesterSlashingView, BLOCKS_BY_RANGE_REQ_SIZE, PROPOSER_SLASHING_SIZE,
+        ProposerSlashingView, SIGNED_BLS_CHANGE_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE,
+        STATUS_V2_SIZE, SignedAggregateAndProofView, SignedBeaconBlockView,
+        SignedBlsToExecutionChangeView, SignedVoluntaryExitView, SingleAttestationView,
     },
 };
 
@@ -25,6 +27,7 @@ use crate::{
         SLOTS_PER_HISTORICAL_ROOT, ShufflingCache, Slot, SlotData, ValidatorIdentity, VoteTracker,
         box_zeroed,
     },
+    validate,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -714,6 +717,11 @@ impl BeaconStateTile {
         let feedback = match m.topic {
             GossipTopic::BeaconBlock => Some(self.apply_block(data, m.ssz, producers)),
             GossipTopic::BeaconAttestation(_) => Some(self.handle_attestation(data)),
+            GossipTopic::BeaconAggregateAndProof => Some(self.handle_aggregate_and_proof(data)),
+            GossipTopic::VoluntaryExit => Some(self.handle_voluntary_exit(data)),
+            GossipTopic::ProposerSlashing => Some(self.handle_proposer_slashing(data)),
+            GossipTopic::AttesterSlashing => Some(self.handle_attester_slashing(data)),
+            GossipTopic::BlsToExecutionChange => Some(self.handle_bls_to_execution_change(data)),
             _ => None,
         };
         match feedback {
@@ -1109,6 +1117,319 @@ impl BeaconStateTile {
         self.on_attestation(attester_index, block_root, target_epoch);
         GossipFeedback::Accept
     }
+
+    fn handle_aggregate_and_proof(&mut self, data: &[u8]) -> GossipFeedback {
+        if !SignedAggregateAndProofView::check_size(data) {
+            return GossipFeedback::Reject;
+        }
+
+        let outer_sig = SignedAggregateAndProofView::signature(data);
+        let aggregator_index = SignedAggregateAndProofView::aggregator_index(data) as usize;
+        let selection_proof = SignedAggregateAndProofView::selection_proof(data);
+        let agg_slot = SignedAggregateAndProofView::agg_slot(data);
+        let agg_data_index = SignedAggregateAndProofView::agg_data_index(data);
+        let beacon_block_root = *SignedAggregateAndProofView::agg_beacon_block_root(data);
+        let target_epoch = SignedAggregateAndProofView::agg_target_epoch(data);
+        let committee_bits =
+            u64::from_le_bytes(*SignedAggregateAndProofView::agg_committee_bits(data));
+        let agg_sig = SignedAggregateAndProofView::agg_signature(data);
+        let agg_data = SignedAggregateAndProofView::agg_data(data);
+        let aggregation_bits = SignedAggregateAndProofView::agg_aggregation_bits(data);
+        let aggregate_bytes = SignedAggregateAndProofView::aggregate(data);
+
+        if agg_data_index != 0 {
+            return GossipFeedback::Reject;
+        }
+        let att_epoch = agg_slot / SLOTS_PER_EPOCH;
+        if target_epoch != att_epoch {
+            return GossipFeedback::Reject;
+        }
+        let wall = self.ticker.current_slot();
+        if agg_slot > wall + 1 || wall.saturating_sub(agg_slot) > 32 {
+            return GossipFeedback::Ignore;
+        }
+        // Fulu gossip rule: exactly one committee bit set.
+        if committee_bits.count_ones() != 1 {
+            return GossipFeedback::Reject;
+        }
+        let committee_index = committee_bits.trailing_zeros() as usize;
+
+        // Orphan tolerance — agg's block root must be in fork choice (which is
+        // rooted at the finalized block, so this implies descendant-of-finalized).
+        if self.fork_choice.find_node_idx(&beacon_block_root).is_none() {
+            return GossipFeedback::Ignore;
+        }
+
+        let head = self.head;
+        let imm = self.arena.imm.get(head.imm_idx as usize);
+        let vid = self.arena.vid.get_checked(head.vid_idx as usize, head.vid_gen);
+        if aggregator_index >= vid.validator_cnt {
+            return GossipFeedback::Ignore;
+        }
+
+        // Resolve participants and check aggregator membership / non-empty
+        // aggregation.
+        let shuffled = {
+            let entry_idx = self
+                .shuffling_cache
+                .entries
+                .iter()
+                .position(|e| e.status == 1 && e.epoch == att_epoch);
+            match entry_idx {
+                Some(i) => self.shuffling_cache.entries[i].shuffled_indices.as_slice(),
+                None => return GossipFeedback::Ignore,
+            }
+        };
+        let cps = shuffling::committees_per_slot(shuffled.len());
+        if committee_index >= cps {
+            return GossipFeedback::Reject;
+        }
+        let committee = shuffling::get_beacon_committee(shuffled, agg_slot, committee_index, cps);
+        if !committee.contains(&(aggregator_index as u32)) {
+            return GossipFeedback::Reject;
+        }
+        let committee_len = committee.len();
+
+        // Build participant index list from (committee, aggregation_bits).
+        self.active_scratch.clear();
+        for (j, &vi32) in committee.iter().enumerate() {
+            let byte_idx = j / 8;
+            let bit_idx = j % 8;
+            if byte_idx >= aggregation_bits.len() ||
+                aggregation_bits[byte_idx] & (1 << bit_idx) == 0
+            {
+                continue;
+            }
+            if vi32 as usize >= vid.validator_cnt {
+                return GossipFeedback::Reject;
+            }
+            self.active_scratch.push(vi32);
+        }
+        if self.active_scratch.is_empty() {
+            return GossipFeedback::Reject;
+        }
+
+        // is_aggregator: hash(selection_proof)[0..8] LE mod max(1, |C|/16) == 0.
+        if !is_aggregator(committee_len, selection_proof) {
+            return GossipFeedback::Reject;
+        }
+
+        let fv = bls::fork_version_at_epoch(
+            imm.fork.epoch,
+            imm.fork.previous_version,
+            imm.fork.current_version,
+            target_epoch,
+        );
+
+        // (1) selection_proof — signer = aggregator, msg = htr(uint64(slot)).
+        let mut slot_root = [0u8; 32];
+        slot_root[..8].copy_from_slice(&agg_slot.to_le_bytes());
+        let domain_sp =
+            bls::compute_domain(bls::DOMAIN_SELECTION_PROOF, fv, &imm.genesis_validators_root);
+        let sr_sp = bls::compute_signing_root(&slot_root, &domain_sp);
+
+        // (2) outer AggregateAndProof signature.
+        let agg_proof_root = ssz_hash::hash_tree_root_aggregate_and_proof(
+            aggregator_index as u64,
+            aggregate_bytes,
+            selection_proof,
+            &self.zero_hashes,
+        );
+        let domain_aap =
+            bls::compute_domain(bls::DOMAIN_AGGREGATE_AND_PROOF, fv, &imm.genesis_validators_root);
+        let sr_aap = bls::compute_signing_root(&agg_proof_root, &domain_aap);
+
+        // (3) inner aggregate signature over AttestationData.
+        let data_root = ssz_hash::hash_attestation_data(agg_data, &self.zero_hashes);
+        let domain_att =
+            bls::compute_domain(bls::DOMAIN_BEACON_ATTESTER, fv, &imm.genesis_validators_root);
+        let sr_att = bls::compute_signing_root(&data_root, &domain_att);
+
+        self.sig_batch.clear();
+        let aggregator_pk = &vid.val_pubkey_decompressed[aggregator_index];
+        self.sig_batch.push_one(aggregator_pk, selection_proof, sr_sp);
+        self.sig_batch.push_one(aggregator_pk, outer_sig, sr_aap);
+        self.sig_batch.push_aggregate(
+            self.active_scratch.iter().map(|&vi| &vid.val_pubkey_decompressed[vi as usize]),
+            agg_sig,
+            sr_att,
+        );
+        if !self.sig_batch.verify_all() {
+            return GossipFeedback::Reject;
+        }
+        GossipFeedback::Accept
+    }
+
+    fn handle_voluntary_exit(&mut self, data: &[u8]) -> GossipFeedback {
+        if data.len() != SIGNED_VOLUNTARY_EXIT_SIZE {
+            return GossipFeedback::Reject;
+        }
+        let buf: &[u8; SIGNED_VOLUNTARY_EXIT_SIZE] =
+            data[..SIGNED_VOLUNTARY_EXIT_SIZE].try_into().unwrap();
+        let exit_epoch = SignedVoluntaryExitView::epoch(buf);
+        let vi_u = SignedVoluntaryExitView::validator_index(buf);
+        let vi = vi_u as usize;
+
+        let head = self.head;
+        let imm = self.imm(&head);
+        let vid = self.vid(&head);
+        let epoch_data = self.epoch(&head);
+        let sd = self.slot(&head);
+        let pq = &self.pending_pool[head.pending_idx as usize];
+        let current_epoch = sd.slot / SLOTS_PER_EPOCH;
+
+        // Out-of-range index: state may be stale, defer.
+        if vi >= vid.validator_cnt {
+            return GossipFeedback::Ignore;
+        }
+        if !validate::validate_voluntary_exit(vid, epoch_data, vi, exit_epoch, current_epoch) {
+            return GossipFeedback::Reject;
+        }
+        if state_transition::get_pending_balance_to_withdraw(pq, vi) != 0 {
+            return GossipFeedback::Reject;
+        }
+
+        let object_root =
+            ssz_hash::hash_tree_root_voluntary_exit(exit_epoch, vi_u, &self.zero_hashes);
+        let domain = bls::compute_domain(
+            bls::DOMAIN_VOLUNTARY_EXIT,
+            imm.capella_fork_version,
+            &imm.genesis_validators_root,
+        );
+        let signing_root = bls::compute_signing_root(&object_root, &domain);
+        let sig = SignedVoluntaryExitView::signature(buf);
+        if !bls::verify_one(&vid.val_pubkey_decompressed[vi], sig, &signing_root) {
+            return GossipFeedback::Reject;
+        }
+        GossipFeedback::Accept
+    }
+
+    fn handle_proposer_slashing(&mut self, data: &[u8]) -> GossipFeedback {
+        if data.len() != PROPOSER_SLASHING_SIZE {
+            return GossipFeedback::Reject;
+        }
+        let buf: &[u8; PROPOSER_SLASHING_SIZE] = data[..PROPOSER_SLASHING_SIZE].try_into().unwrap();
+        if !validate::validate_proposer_slashing(buf) {
+            return GossipFeedback::Reject;
+        }
+
+        let head = self.head;
+        let imm = self.arena.imm.get(head.imm_idx as usize);
+        let vid = self.arena.vid.get_checked(head.vid_idx as usize, head.vid_gen);
+        let epoch_data = self.arena.epoch.get_checked(head.epoch_idx as usize, head.epoch_gen);
+        let sd = self.arena.slot.get_checked(head.slot_idx as usize, head.slot_gen);
+        let current_epoch = sd.slot / SLOTS_PER_EPOCH;
+
+        let proposer_index = ProposerSlashingView::h1_proposer_index(buf) as usize;
+        if proposer_index >= vid.validator_cnt {
+            return GossipFeedback::Ignore;
+        }
+        if !state_transition::is_slashable_validator(epoch_data, proposer_index, current_epoch) {
+            return GossipFeedback::Reject;
+        }
+
+        // Headers may straddle fork boundary; pick fork version per slot.
+        let h1_epoch = ProposerSlashingView::h1_slot(buf) / SLOTS_PER_EPOCH;
+        let h2_epoch = ProposerSlashingView::h2_slot(buf) / SLOTS_PER_EPOCH;
+        let fv1 = bls::fork_version_at_epoch(
+            imm.fork.epoch,
+            imm.fork.previous_version,
+            imm.fork.current_version,
+            h1_epoch,
+        );
+        let fv2 = bls::fork_version_at_epoch(
+            imm.fork.epoch,
+            imm.fork.previous_version,
+            imm.fork.current_version,
+            h2_epoch,
+        );
+        let sr1 = state_transition::signing_root_for_block_header(
+            &buf[0..208],
+            fv1,
+            &imm.genesis_validators_root,
+            &self.zero_hashes,
+        );
+        let sr2 = state_transition::signing_root_for_block_header(
+            &buf[208..416],
+            fv2,
+            &imm.genesis_validators_root,
+            &self.zero_hashes,
+        );
+        let sig1 = ProposerSlashingView::h1_signature(buf);
+        let sig2 = ProposerSlashingView::h2_signature(buf);
+        let pubkey = &vid.val_pubkey_decompressed[proposer_index];
+
+        self.sig_batch.clear();
+        self.sig_batch.push_one(pubkey, sig1, sr1);
+        self.sig_batch.push_one(pubkey, sig2, sr2);
+        if !self.sig_batch.verify_all() {
+            return GossipFeedback::Reject;
+        }
+        GossipFeedback::Accept
+    }
+
+    fn handle_attester_slashing(&mut self, data: &[u8]) -> GossipFeedback {
+        if !AttesterSlashingView::check_size(data) {
+            return GossipFeedback::Reject;
+        }
+        let head = self.head;
+        let imm = self.arena.imm.get(head.imm_idx as usize);
+        let vid = self.arena.vid.get_checked(head.vid_idx as usize, head.vid_gen);
+        let epoch_data = self.arena.epoch.get_checked(head.epoch_idx as usize, head.epoch_gen);
+        let sd = self.arena.slot.get_checked(head.slot_idx as usize, head.slot_gen);
+        if state_transition::validate_attester_slashing_for_gossip(
+            imm,
+            vid,
+            epoch_data,
+            sd,
+            data,
+            &mut self.active_scratch,
+            &mut self.sig_batch,
+            &self.zero_hashes,
+        ) {
+            GossipFeedback::Accept
+        } else {
+            GossipFeedback::Reject
+        }
+    }
+
+    fn handle_bls_to_execution_change(&mut self, data: &[u8]) -> GossipFeedback {
+        if data.len() != SIGNED_BLS_CHANGE_SIZE {
+            return GossipFeedback::Reject;
+        }
+        let buf: &[u8; SIGNED_BLS_CHANGE_SIZE] = data[..SIGNED_BLS_CHANGE_SIZE].try_into().unwrap();
+
+        let head = self.head;
+        let imm = self.imm(&head);
+        let vid = self.vid(&head);
+
+        let vi_u = SignedBlsToExecutionChangeView::validator_index(buf);
+        let vi = vi_u as usize;
+        if vi >= vid.validator_cnt {
+            return GossipFeedback::Ignore;
+        }
+        let from_pubkey = SignedBlsToExecutionChangeView::from_bls_pubkey(buf);
+        let to_address = SignedBlsToExecutionChangeView::to_execution_address(buf);
+        if !validate::validate_bls_to_execution_change(vid, vi, from_pubkey) {
+            return GossipFeedback::Reject;
+        }
+
+        let object_root =
+            ssz_hash::hash_tree_root_bls_change(vi_u, from_pubkey, to_address, &self.zero_hashes);
+        let domain = bls::compute_domain(
+            bls::DOMAIN_BLS_TO_EXECUTION_CHANGE,
+            imm.genesis_fork_version,
+            &imm.genesis_validators_root,
+        );
+        let signing_root = bls::compute_signing_root(&object_root, &domain);
+        let sig = SignedBlsToExecutionChangeView::signature(buf);
+        // Signer is the message's `from_bls_pubkey` — not the validator's
+        // cached signing key — so decompress inline.
+        if !bls::verify_one_compressed(from_pubkey, sig, &signing_root) {
+            return GossipFeedback::Reject;
+        }
+        GossipFeedback::Accept
+    }
 }
 
 impl Tile<SilverSpine> for BeaconStateTile {
@@ -1160,6 +1481,16 @@ impl Tile<SilverSpine> for BeaconStateTile {
             self.sync_step(adapter);
         }
     }
+}
+
+/// Spec `is_aggregator(state, slot, index, selection_proof)`.
+/// `modulo = max(1, len(committee) // TARGET_AGGREGATORS_PER_COMMITTEE)`;
+/// accept iff `bytes_to_uint64(sha256(selection_proof)[0..8]) % modulo == 0`.
+fn is_aggregator(committee_len: usize, selection_proof: &[u8; 96]) -> bool {
+    const TARGET_AGGREGATORS_PER_COMMITTEE: u64 = 16;
+    let modulo = (committee_len as u64 / TARGET_AGGREGATORS_PER_COMMITTEE).max(1);
+    let h = ssz_hash::sha256(selection_proof);
+    u64::from_le_bytes(h[0..8].try_into().unwrap()) % modulo == 0
 }
 
 /// `true` when crossing into `epoch` rotates the `HistoricalLongtail` tier:

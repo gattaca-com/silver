@@ -729,6 +729,12 @@ impl SignedAggregateAndProofView {
     pub fn agg_aggregation_bits(buf: &[u8]) -> &[u8] {
         &buf[444..]
     }
+    /// Inner Attestation SSZ slice (variable, runs to end-of-buf). Used as
+    /// input to the AggregateAndProof container hash tree root.
+    #[inline]
+    pub fn aggregate(buf: &[u8]) -> &[u8] {
+        &buf[208..]
+    }
     /// All accessors read compile-time fixed offsets plus `&buf[444..]`;
     /// a length bound suffices.
     #[inline]

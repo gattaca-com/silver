@@ -1823,7 +1823,7 @@ pub fn process_proposer_slashings(
 
 /// Compute signing root for a `BeaconBlockHeader` (208-byte SSZ): slot,
 /// proposer_index, parent_root, state_root, body_root.
-fn signing_root_for_block_header(
+pub(crate) fn signing_root_for_block_header(
     header: &[u8],
     fork_version: [u8; 4],
     genesis_validators_root: &B256,
@@ -2027,6 +2027,31 @@ pub fn collect_sigs_attester_slashings(
     true
 }
 
+/// Walk two strictly-ascending u64-LE-packed lists in lockstep, invoking
+/// `f(vi)` for each value present in both. O(n+m). Returning `true` from
+/// `f` short-circuits — used by the gossip path on first slashable match;
+/// the block path always returns `false` and traverses the full intersection.
+pub(crate) fn for_each_sorted_intersection(i1: &[u8], i2: &[u8], mut f: impl FnMut(usize) -> bool) {
+    let read = |s: &[u8], i: usize| u64::from_le_bytes(s[i * 8..i * 8 + 8].try_into().unwrap());
+    let (n1, n2) = (i1.len() / 8, i2.len() / 8);
+    let (mut a, mut b) = (0usize, 0usize);
+    while a < n1 && b < n2 {
+        let x = read(i1, a);
+        let y = read(i2, b);
+        match x.cmp(&y) {
+            core::cmp::Ordering::Less => a += 1,
+            core::cmp::Ordering::Greater => b += 1,
+            core::cmp::Ordering::Equal => {
+                if f(x as usize) {
+                    return;
+                }
+                a += 1;
+                b += 1;
+            }
+        }
+    }
+}
+
 /// Pass 2 — validate data + state, slash the intersection. BLS verified.
 pub fn process_attester_slashings(
     vid: &ValidatorIdentity,
@@ -2076,29 +2101,16 @@ pub fn process_attester_slashings(
             return false;
         }
 
-        // Walk both sorted lists in lockstep for O(n+m) intersection. Spec
-        // requires at least one slashable participant in the intersection.
-        let read = |s: &[u8], i: usize| u64::from_le_bytes(s[i * 8..i * 8 + 8].try_into().unwrap());
-        let (n1, n2) = (i1.len() / 8, i2.len() / 8);
-        let (mut a, mut b) = (0usize, 0usize);
+        // Spec requires ≥1 currently-slashable validator in the intersection;
+        // a no-op slashing makes the block invalid.
         let mut slashed_any = false;
-        while a < n1 && b < n2 {
-            let x = read(i1, a);
-            let y = read(i2, b);
-            match x.cmp(&y) {
-                core::cmp::Ordering::Less => a += 1,
-                core::cmp::Ordering::Greater => b += 1,
-                core::cmp::Ordering::Equal => {
-                    let vi = x as usize;
-                    if vi < n && is_slashable_validator(epoch, vi, current_epoch) {
-                        slash_validator(epoch, sd, n, vi, proposer_index);
-                        slashed_any = true;
-                    }
-                    a += 1;
-                    b += 1;
-                }
+        for_each_sorted_intersection(i1, i2, |vi| {
+            if vi < n && is_slashable_validator(epoch, vi, current_epoch) {
+                slash_validator(epoch, sd, n, vi, proposer_index);
+                slashed_any = true;
             }
-        }
+            false
+        });
         if !slashed_any {
             return false;
         }
@@ -2106,10 +2118,90 @@ pub fn process_attester_slashings(
     true
 }
 
+/// Gossip-side `AttesterSlashing` validator (single slashing, not the
+/// block-body list form).
+#[allow(clippy::too_many_arguments)]
+pub fn validate_attester_slashing_for_gossip(
+    imm: &Immutable,
+    vid: &ValidatorIdentity,
+    epoch: &EpochData,
+    sd: &SlotData,
+    slashing: &[u8],
+    active_scratch: &mut Vec<u32>,
+    sig_batch: &mut SigBatch,
+    zh: &[B256],
+) -> bool {
+    if slashing.len() < 8 {
+        return false;
+    }
+    let off1 = u32::from_le_bytes(slashing[0..4].try_into().unwrap()) as usize;
+    let off2 = u32::from_le_bytes(slashing[4..8].try_into().unwrap()) as usize;
+    if off1 + 132 > slashing.len() || off2 + 132 > slashing.len() || off2 < off1 + 132 {
+        return false;
+    }
+    let d1 = &slashing[off1 + 4..off1 + 132];
+    let d2 = &slashing[off2 + 4..off2 + 132];
+    if !is_slashable_attestation_data(d1, d2) {
+        return false;
+    }
+    let i1 = attesting_indices_bytes(slashing, off1, off2);
+    let i2 = attesting_indices_bytes(slashing, off2, slashing.len());
+    if !indices_sorted_unique(i1) || !indices_sorted_unique(i2) {
+        return false;
+    }
+
+    let current_epoch = sd.slot / SLOTS_PER_EPOCH;
+    let mut any_slashable = false;
+    for_each_sorted_intersection(i1, i2, |vi| {
+        if vi < vid.validator_cnt && is_slashable_validator(epoch, vi, current_epoch) {
+            any_slashable = true;
+            true
+        } else {
+            false
+        }
+    });
+    if !any_slashable {
+        return false;
+    }
+
+    sig_batch.clear();
+    for (ia_off, ia_end, indices) in [(off1, off2, i1), (off2, slashing.len(), i2)] {
+        let ia = &slashing[ia_off..ia_end];
+        let target_epoch = silver_common::ssz_view::IndexedAttestationView::target_epoch(ia);
+        let fv = bls::fork_version_at_epoch(
+            imm.fork.epoch,
+            imm.fork.previous_version,
+            imm.fork.current_version,
+            target_epoch,
+        );
+        active_scratch.clear();
+        let n_idx = indices.len() / 8;
+        for k in 0..n_idx {
+            let vi = u64::from_le_bytes(indices[k * 8..k * 8 + 8].try_into().unwrap());
+            if vi as usize >= vid.validator_cnt {
+                return false;
+            }
+            active_scratch.push(vi as u32);
+        }
+        let data_chunk: &[u8; 128] = silver_common::ssz_view::IndexedAttestationView::data(ia);
+        let sig: &[u8; 96] = silver_common::ssz_view::IndexedAttestationView::signature(ia);
+        let object_root = ssz_hash::hash_attestation_data(data_chunk, zh);
+        let domain =
+            bls::compute_domain(bls::DOMAIN_BEACON_ATTESTER, fv, &imm.genesis_validators_root);
+        let signing_root = bls::compute_signing_root(&object_root, &domain);
+        sig_batch.push_aggregate(
+            active_scratch.iter().map(|&vi| &vid.val_pubkey_decompressed[vi as usize]),
+            sig,
+            signing_root,
+        );
+    }
+    sig_batch.verify_all()
+}
+
 /// View an IndexedAttestation's attesting_indices SSZ bytes (skips the 228
 /// byte fixed part: indices_offset(4) + data(128) + sig(96)).
 #[inline]
-fn attesting_indices_bytes(data: &[u8], start: usize, end: usize) -> &[u8] {
+pub(crate) fn attesting_indices_bytes(data: &[u8], start: usize, end: usize) -> &[u8] {
     if start + 228 > end || end > data.len() {
         return &[];
     }
@@ -2250,7 +2342,7 @@ fn total_active_balance(epoch: &EpochData, n: usize, current_epoch: Epoch) -> u6
     total.max(EFFECTIVE_BALANCE_INCREMENT)
 }
 
-fn get_pending_balance_to_withdraw(pq: &PendingQueues, vi: usize) -> u64 {
+pub(crate) fn get_pending_balance_to_withdraw(pq: &PendingQueues, vi: usize) -> u64 {
     let mut total = 0u64;
     for pw in &pq.pending_partial_withdrawals {
         if pw.index == vi as u64 {
@@ -2266,13 +2358,13 @@ fn is_active(epoch: &EpochData, vi: usize, e: Epoch) -> bool {
 }
 
 #[inline]
-fn is_slashable_validator(epoch: &EpochData, vi: usize, e: Epoch) -> bool {
+pub(crate) fn is_slashable_validator(epoch: &EpochData, vi: usize, e: Epoch) -> bool {
     !epoch.val_slashed(vi) &&
         epoch.val_activation_epoch[vi] <= e &&
         e < epoch.val_withdrawable_epoch[vi]
 }
 
-fn is_slashable_attestation_data(d1: &[u8], d2: &[u8]) -> bool {
+pub(crate) fn is_slashable_attestation_data(d1: &[u8], d2: &[u8]) -> bool {
     if d1.len() < ATTESTATION_DATA_SIZE || d2.len() < ATTESTATION_DATA_SIZE {
         return false;
     }
@@ -2292,7 +2384,7 @@ fn is_slashable_attestation_data(d1: &[u8], d2: &[u8]) -> bool {
 }
 
 /// Spec: SSZ List[uint64] invariant — strictly ascending.
-fn indices_sorted_unique(indices: &[u8]) -> bool {
+pub(crate) fn indices_sorted_unique(indices: &[u8]) -> bool {
     let n = indices.len() / 8;
     if n < 2 {
         return true;

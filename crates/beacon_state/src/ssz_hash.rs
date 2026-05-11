@@ -454,6 +454,27 @@ fn hash_attestation(d: &[u8], zh: &[B256]) -> B256 {
     merkleize(&[agg_root, data_root, sig_root, cb], zh)
 }
 
+/// SSZ root of an Attestation container (variable: has Bitlist
+/// `aggregation_bits`). Mirrors the block-body hashing path.
+pub fn hash_tree_root_attestation(d: &[u8], zh: &[B256]) -> B256 {
+    hash_attestation(d, zh)
+}
+
+/// SSZ root of `AggregateAndProof { aggregator_index, aggregate,
+/// selection_proof }`. 3-field container; the variable `aggregate`
+/// (Attestation) is hashed via `hash_tree_root_attestation`.
+pub fn hash_tree_root_aggregate_and_proof(
+    aggregator_index: u64,
+    aggregate: &[u8],
+    selection_proof: &[u8; 96],
+    zh: &[B256],
+) -> B256 {
+    let idx_root = uint64_chunk(aggregator_index);
+    let agg_root = hash_attestation(aggregate, zh);
+    let sp_root = hash_fixed_bytes(selection_proof, zh);
+    merkleize(&[idx_root, agg_root, sp_root], zh)
+}
+
 /// SSZ root of the 128-byte AttestationData container. Used both for block
 /// hashing and for signature signing-roots (attestations + IndexedAttestations
 /// inside AttesterSlashing).
