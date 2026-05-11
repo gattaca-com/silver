@@ -23,7 +23,7 @@ const _: () = {
     assert!(align_of::<Signature>() == align_of::<blst_p2_affine>());
 };
 
-const DST: &[u8] = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_";
+pub const DST: &[u8] = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_";
 
 /// G2 point at infinity (compressed). Spec: a sync_aggregate over an empty
 /// participant set verifies iff the signature is this value.
@@ -225,6 +225,22 @@ impl SigBatch {
             }
             _ => self.verify_batch(),
         }
+    }
+
+    /// Verify each entry as an independent single-sig verify. Bench-only
+    /// baseline for comparing against multi-pairing `verify_all` — pre-batch
+    /// verification cost was N × ~1 ms; `verify_all` collapses that to one
+    /// final exponentiation. Don't use on the hot path.
+    pub fn verify_each_sequential(&self) -> bool {
+        if self.poisoned {
+            return false;
+        }
+        for ((pk, sig), msg) in self.pks.iter().zip(self.sigs.iter()).zip(self.msgs.iter()) {
+            if sig.verify(true, msg, DST, &[], pk, false) != BLST_ERROR::BLST_SUCCESS {
+                return false;
+            }
+        }
+        true
     }
 
     /// Multi-pairing batch verify with random 64-bit scalars per tuple.

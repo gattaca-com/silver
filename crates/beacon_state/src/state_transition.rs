@@ -15,7 +15,7 @@ use silver_common::ssz_view::{
 use crate::{
     bls::{self, SigBatch},
     epoch_transition,
-    shuffling::{self, DOMAIN_BEACON_ATTESTER},
+    shuffling::{self, DOMAIN_BEACON_ATTESTER, MAX_EFFECTIVE_BALANCE},
     ssz_hash::{self, hash_tree_root_block_header, hash_tree_root_state},
     types::{
         self, B256, BeaconBlockHeader, EPOCHS_PER_ETH1_VOTING_PERIOD, EPOCHS_PER_SLASHINGS_VECTOR,
@@ -479,6 +479,7 @@ pub fn process_block_body(
     shuffling: Option<&ShufflingRef<'_>>,
     zh: &[B256],
     attestation_votes: &mut Vec<(u32, B256, Epoch)>,
+    // TODO change to Result with a helpful error message
 ) -> bool {
     if !validate::validate_operation_counts(body) {
         return false;
@@ -1262,7 +1263,7 @@ pub fn process_withdrawals(
                 }
                 let balance = sd.balances[vi].saturating_sub(partial_drawn);
                 let max_eb = if has_compounding_credential(vid, vi) {
-                    2_048_000_000_000
+                    MAX_EFFECTIVE_BALANCE
                 } else {
                     MIN_ACTIVATION_BALANCE
                 };

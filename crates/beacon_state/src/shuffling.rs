@@ -157,7 +157,7 @@ pub struct WeightedSampler {
     cached_hash_block: usize,
 }
 
-const MAX_EFFECTIVE_BALANCE: u64 = 2_048_000_000_000;
+pub const MAX_EFFECTIVE_BALANCE: u64 = 2_048_000_000_000;
 const MAX_RANDOM_16: u64 = 0xFFFF;
 
 impl WeightedSampler {
