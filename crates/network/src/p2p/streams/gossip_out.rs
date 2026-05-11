@@ -1,4 +1,4 @@
-use silver_common::{P2pStreamId, TCacheRead, TRandomAccess};
+use silver_common::{P2pStreamId, TRead};
 
 use crate::p2p::streams::{StreamError, StreamIo};
 
@@ -11,14 +11,14 @@ pub(crate) enum GossipWriteState {
         buffer: [u8; 10],
         limit: usize,
         written: usize,
-        tcache: TCacheRead,
+        tcache: TRead,
     },
     /// Writing body. `offset`/`length` track progress into the current
     /// message; the handler provides body bytes via `send_data`.
     Writing {
         offset: usize,
         length: usize,
-        tcache: TCacheRead,
+        tcache: TRead,
     },
 }
 
@@ -32,10 +32,9 @@ impl GossipWriteState {
         mut self,
         io: &mut S,
         p2p_id: &P2pStreamId,
-        consumer: &mut TRandomAccess,
     ) -> Result<Self, StreamError> {
         loop {
-            match self.spin_inner(io, p2p_id, consumer)? {
+            match self.spin_inner(io, p2p_id)? {
                 Spin::Ok(gossip_write_state) => return Ok(gossip_write_state),
                 Spin::Next(gossip_write_state) => {
                     self = gossip_write_state;
@@ -47,7 +46,6 @@ impl GossipWriteState {
         self,
         io: &mut S,
         p2p_id: &P2pStreamId,
-        consumer: &mut TRandomAccess,
     ) -> Result<Spin, StreamError> {
         match self {
             GossipWriteState::Idle => match io.gossip_next() {
@@ -70,7 +68,7 @@ impl GossipWriteState {
                 Ok(Spin::Ok(Self::WritingLength { buffer, limit, written, tcache }))
             }
             GossipWriteState::Writing { mut offset, length, tcache } => {
-                let (buffer, _) = consumer.read_at(tcache.seq())?;
+                let (buffer, _) = tcache.buffer()?;
                 offset += io.write_to_stream(p2p_id.stream_id(), &buffer[offset..])?;
                 if offset == length {
                     return Ok(Spin::Next(Self::Idle))

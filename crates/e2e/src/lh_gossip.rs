@@ -1,7 +1,7 @@
 //! rust-libp2p gossipsub peer for end-to-end gossip latency benchmarks.
 //!
 //! Listener-only role for variant A: the silver publisher dials this peer,
-//! opens an outbound `/meshsub/1.1.0` stream, and pushes synthetic
+//! opens an outbound `/meshsub/1.2.0` stream, and pushes synthetic
 //! `RPC { publish[Message{topic, data: snappy(ssz)}] }` frames. This client
 //! subscribes to the same topic, runs gossipsub's `handle_received_message`
 //! path, and surfaces `Event::Message` carrying the snappy-decompressed
@@ -93,11 +93,6 @@ impl LhGossipClient {
                 .with_tokio()
                 .with_quic()
                 .with_behaviour(|_| {
-                    // Silver only speaks `/meshsub/1.1.0`. libp2p's default
-                    // protocol set advertises 1.2.0 first via multistream-
-                    // select; silver rejects unknown protocols and tears the
-                    // stream down without iterating fallbacks, so we pin a
-                    // single protocol id here.
                     // `flood_publish(true)`: variant B publishes to silver
                     // without expecting silver to GRAFT into our mesh —
                     // silver isn't a real gossipsub peer. flood_publish
@@ -106,7 +101,7 @@ impl LhGossipClient {
                     // `inject::build_subscribe_frame` provides on the
                     // silver side.
                     let config = gossipsub::ConfigBuilder::default()
-                        .protocol_id("/meshsub/1.1.0", Version::V1_1)
+                        .protocol_id("/meshsub/1.2.0", Version::V1_1)
                         .validation_mode(ValidationMode::Anonymous)
                         .message_id_fn(eth2_message_id)
                         .flood_publish(true)

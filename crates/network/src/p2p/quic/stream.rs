@@ -4,7 +4,7 @@ use quinn_proto::{Connection, StreamId, WriteError};
 
 use crate::p2p::{
     quic::peer::OutboundBuffer,
-    streams::{StreamError, StreamIo},
+    streams::{AcquiredRpcOutbound, StreamError, StreamIo},
 };
 
 pub struct StreamIoImpl<'a> {
@@ -45,14 +45,14 @@ impl<'a> StreamIo for StreamIoImpl<'a> {
         Ok(self.connection.send_stream(id).finish()?)
     }
 
-    fn rpc_next(&mut self) -> Option<silver_common::RpcOutbound> {
+    fn rpc_next(&mut self) -> Option<AcquiredRpcOutbound> {
         match self.outbound {
             OutboundBuffer::Rpc(out_buffer) => out_buffer.pop(),
             _ => None,
         }
     }
 
-    fn gossip_next(&mut self) -> Option<silver_common::TCacheRead> {
+    fn gossip_next(&mut self) -> Option<silver_common::TRead> {
         match self.outbound {
             OutboundBuffer::Gossip(out_buffer) => out_buffer.pop(),
             _ => None,

@@ -94,7 +94,7 @@ pub fn broadcast(c: &mut Criterion) {
                                         reservation
                                             .write_all(&read[size_of::<P2pStreamId>()..])
                                             .unwrap();
-                                        if server_tile.p2p_mut().enqueue_gossip(GossipMsgOut {
+                                        if server_tile.enqueue_gossip(GossipMsgOut {
                                             peer_id: id.peer(),
                                             tcache: reservation.read(),
                                         }) != SendResult::Ok
@@ -205,7 +205,7 @@ pub fn broadcast(c: &mut Criterion) {
                                 }
                             };
                             let msg = GossipMsgOut { peer_id: 0, tcache: reservation.read() };
-                            match client.p2p_mut().enqueue_gossip(msg) {
+                            match client.enqueue_gossip(msg) {
                                 SendResult::Ok => {}
                                 other => {
                                     println!("send failed! {other:?}");

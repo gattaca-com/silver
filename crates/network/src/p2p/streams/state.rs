@@ -1,7 +1,7 @@
 use buffa::Message;
 use silver_common::{
-    P2pStreamId, RpcInbound, RpcOutbound, RpcRequest, RpcRequestInbound, RpcResponseInbound,
-    StreamProtocol, encode_observed_addr,
+    P2pStreamId, RpcInbound, RpcRequest, RpcRequestInbound, RpcResponseInbound, StreamProtocol,
+    encode_observed_addr,
 };
 
 use super::{gossip_in::GossipReadState, gossip_out::GossipWriteState};
@@ -10,7 +10,7 @@ use crate::{
     p2p::{
         context::Context,
         streams::{
-            StreamError, StreamIo,
+            AcquiredRpcOutbound, StreamError, StreamIo,
             identify_in::WriteIdentifyResponse,
             identify_out::ReadIdentifyResponse,
             negotiate::NegotiateState,
@@ -110,7 +110,7 @@ impl StreamState {
                                     }
                                 } else {
                                     let (app_id, request) = match io.rpc_next() {
-                                        Some(RpcOutbound::Request(req)) => {
+                                        Some(AcquiredRpcOutbound::Request(req)) => {
                                             (req.application_id, req.request)
                                         }
                                         _ => return Err(StreamError::InvalidRpc),
@@ -127,7 +127,7 @@ impl StreamState {
             }
             StreamState::Gossip { mut read, mut write } => {
                 read = read.spin(io, &mut context.gossip_producer, id)?;
-                write = write.spin(io, id, &mut context.gossip_consumer)?;
+                write = write.spin(io, id)?;
                 Ok(Self::Gossip { read, write })
             }
             StreamState::IncomingRpc(rpc_in) => match rpc_in {
@@ -144,13 +144,13 @@ impl StreamState {
                     }
                 }
                 RpcIn::WriteResponse(mut write_response) => {
-                    write_response = write_response.spin(id, io, &mut context.rpc_consumer)?;
+                    write_response = write_response.spin(id, io)?;
                     Ok(Self::IncomingRpc(RpcIn::WriteResponse(write_response)))
                 }
             },
             StreamState::OutgoingRpc(rpc_out) => match rpc_out {
                 RpcOut::WriteRequest(write_request) => {
-                    match write_request.spin(id, io, &mut context.rpc_consumer)? {
+                    match write_request.spin(id, io)? {
                         RpcWriteRequest::Complete(app_id) => {
                             // close write side
                             io.close_write(id.stream_id())?;

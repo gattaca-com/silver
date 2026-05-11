@@ -1,4 +1,4 @@
-use std::sync::atomic::Ordering;
+use std::{ops::Deref, sync::atomic::Ordering};
 
 use flux::timing::Nanos;
 
@@ -79,29 +79,125 @@ impl Consumer {
 pub struct RandomAccessConsumer {
     pub(super) cache: TCacheRef,
     pub(super) index: usize,
-    pub(super) tail: u64,
+    // Mapping of active / enqueued sequence numbers and reader counts.
+    pub(super) active: Buckets,
 }
 
 impl RandomAccessConsumer {
-    /// Read buffer at specified offset.
-    pub fn read_at(&self, seq: u64) -> Result<(&[u8], Nanos), TCacheError> {
-        if seq < self.tail {
-            return Err(TCacheError::StaleSeq { seq, tail: self.tail });
-        }
-
-        self.cache.read(seq).map(|(data, _, ts)| (data, ts))
-    }
-
-    /// Called to set the tail value of the consumer. User of the consumer is
-    /// responsible for tracking the lowest in-use sequence and setting it
-    /// via this method.
-    pub fn set_tail(&mut self, seq: u64) {
-        self.tail = seq;
+    pub fn acquire(&mut self, read: TCacheRead) -> AcquiredRead {
+        self.active.acquire(read.seq);
+        AcquiredRead { consumer: self as *const Self, read }
     }
 
     /// Should be called periodically to publish the tail offset so it is
     /// visible to the Producer.
     pub fn free(&self) {
-        self.cache.head.tails[self.index].store(self.tail, Ordering::Release);
+        let tail = self.active.tail_seq;
+        self.cache.head.tails[self.index].store(tail, Ordering::Release);
+    }
+
+    fn release(&mut self, seq: u64) {
+        self.active.release(seq);
+    }
+}
+
+/// Automatically releases RandomConsumer seq on drop.
+/// SAFETY: `consumer` points into the owning tile, which keeps it alive
+/// for the lifetime of every `AcquiredRead` it hands out — guaranteed by
+/// drop-order discipline (see NetworkTile field ordering) - order containers
+/// of reads before consumer.
+#[derive(Clone, Debug)]
+pub struct AcquiredRead {
+    consumer: *const RandomAccessConsumer,
+    pub read: TCacheRead,
+}
+
+impl AcquiredRead {
+    pub fn buffer(&self) -> Result<(&[u8], Nanos), TCacheError> {
+        let consumer = unsafe { &*self.consumer };
+        if self.read.seq < consumer.active.tail_seq {
+            return Err(TCacheError::StaleSeq {
+                seq: self.read.seq,
+                tail: consumer.active.tail_seq,
+            });
+        }
+        consumer.cache.read(self.read.seq).map(|(data, _, ts)| (data, ts))
+    }
+}
+
+impl Deref for AcquiredRead {
+    type Target = TCacheRead;
+
+    fn deref(&self) -> &Self::Target {
+        &self.read
+    }
+}
+
+unsafe impl Send for AcquiredRead {}
+
+impl Drop for AcquiredRead {
+    fn drop(&mut self) {
+        // SAFETY: consumer outlives self by tile invariant.
+        // SAFETY: the consumer lives in a single tile and access across self and
+        // consumer is single threaded - so safe to coerce to mutable access.
+        unsafe {
+            (*(self.consumer as *mut RandomAccessConsumer)).release(self.read.seq());
+        }
+    }
+}
+
+pub(super) struct Buckets {
+    buckets: Box<[u16]>,
+    tail_seq: u64,
+    head_seq: u64,
+    bucket_size: u64,
+    bucket_shift: u64,
+}
+
+impl Buckets {
+    pub(super) fn new(bucket_size: u64, cache_capacity: u64) -> Self {
+        assert!(bucket_size.is_power_of_two());
+        let mut number_of_buckets = cache_capacity / bucket_size;
+        if !cache_capacity.is_multiple_of(bucket_size) || !number_of_buckets.is_power_of_two() {
+            number_of_buckets = number_of_buckets.next_power_of_two();
+        }
+        Self {
+            buckets: vec![0; number_of_buckets as usize].into_boxed_slice(),
+            tail_seq: u64::MAX,
+            head_seq: 0,
+            bucket_size,
+            bucket_shift: bucket_size.trailing_zeros() as u64,
+        }
+    }
+
+    fn acquire(&mut self, seq: u64) {
+        let bucket_idx = self.index(seq);
+        self.buckets[bucket_idx] += 1;
+
+        self.head_seq = self.head_seq.max(seq);
+
+        if self.tail_seq == u64::MAX {
+            self.tail_seq = seq & !(self.bucket_size - 1);
+        }
+    }
+
+    fn release(&mut self, seq: u64) {
+        let mut bucket_idx = self.index(seq);
+        self.buckets[bucket_idx] = self.buckets[bucket_idx].saturating_sub(1);
+
+        let mut bucket_tail_seq = seq & !(self.bucket_size - 1);
+        if bucket_tail_seq == self.tail_seq {
+            while self.buckets[bucket_idx] == 0 &&
+                (bucket_tail_seq + self.bucket_size) < self.head_seq
+            {
+                bucket_idx = (bucket_idx + 1) & (self.buckets.len() - 1);
+                bucket_tail_seq += self.bucket_size;
+            }
+            self.tail_seq = bucket_tail_seq;
+        }
+    }
+
+    fn index(&self, seq: u64) -> usize {
+        ((seq >> self.bucket_shift) as usize) & (self.buckets.len() - 1)
     }
 }

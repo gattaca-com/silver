@@ -1136,24 +1136,24 @@ impl Tile<SilverSpine> for BeaconStateTile {
         }
 
         adapter.consume(|m: NewGossipMsg, producers| {
-            let seq = m.ssz.seq();
             if following {
-                let data = self.gossip_consumer.read_at(seq).ok().map(|(d, _)| d as *const [u8]);
+                let acquired = self.gossip_consumer.acquire(m.ssz);
+                let data = acquired.buffer().ok().map(|(d, _)| d as *const [u8]);
                 if let Some(p) = data {
                     self.handle_gossip(m, unsafe { &*p }, producers);
                 }
             }
-            self.gossip_consumer.set_tail(seq);
         });
+        self.gossip_consumer.free();
 
         adapter.consume(|m: PeerRpcIn, producers| {
-            let seq = m.tcache.seq();
-            let data = self.rpc_consumer.read_at(seq).ok().map(|(d, _)| d as *const [u8]);
+            let acquired = self.rpc_consumer.acquire(m.tcache);
+            let data = acquired.buffer().ok().map(|(d, _)| d as *const [u8]);
             if let Some(p) = data {
                 self.handle_rpc(m.msg, m.sender, m.request_id, unsafe { &*p }, m.tcache, producers);
             }
-            self.rpc_consumer.set_tail(seq);
         });
+        self.rpc_consumer.free();
 
         // Sync: request more blocks.
         if self.mode == Mode::Syncing {

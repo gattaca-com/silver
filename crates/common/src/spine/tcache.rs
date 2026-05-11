@@ -8,10 +8,12 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-pub use consumer::{Consumer, RandomAccessConsumer, TCacheRead};
+pub use consumer::{AcquiredRead, Consumer, RandomAccessConsumer, TCacheRead};
 use flux::timing::Nanos;
 pub use producer::{MultiProducer, Producer, Reservation, TCacheProducer};
 use thiserror::Error;
+
+use crate::spine::tcache::consumer::Buckets;
 
 const MAGIC: [u8; 3] = [0xEA, 0x51, 0xEE];
 const MAX_CONSUMERS: usize = 64;
@@ -128,7 +130,7 @@ impl TCache {
         Ok(RandomAccessConsumer {
             cache: TCacheRef { cache: addr_of!(*self) as *const c_void },
             index,
-            tail: seq,
+            active: Buckets::new(32 * 1024, self.len as u64),
         })
     }
 
