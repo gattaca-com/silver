@@ -6,20 +6,20 @@
 //! Threading layout:
 //!   - main thread: silver publisher.
 //!   - echo "network" thread: `NetworkTile::loop_body` +
-//!     `Controller::loop_body`. Reads inbound QUIC, writes raw gossip
-//!     bytes into the gossip-in TCache.
-//!   - echo "compression" thread: `GossipHandler::loop_body`. Reads
-//!     gossip-in, decompresses, computes msg-id, dedupes, emits
-//!     `NewGossipMsg`. Drains stats locally on this thread.
+//!     `Controller::loop_body`. Reads inbound QUIC, writes raw gossip bytes
+//!     into the gossip-in TCache.
+//!   - echo "compression" thread: `GossipHandler::loop_body`. Reads gossip-in,
+//!     decompresses, computes msg-id, dedupes, emits `NewGossipMsg`. Drains
+//!     stats locally on this thread.
 //!
 //! mpsc + atomics:
 //!   - `stats_tx`: compression thread sends final `Stats` back to main.
 //!   - `publisher_done: AtomicBool`: set by main when publish loop done.
-//!   - `expected_count: AtomicU64`: set by main to the unique sent count
-//!     so the compression thread can early-exit after draining.
-//!   - `compression_done: AtomicBool`: set by compression thread when
-//!     it's about to exit; the network thread spins until this so QUIC
-//!     stays alive long enough to deliver the last bytes.
+//!   - `expected_count: AtomicU64`: set by main to the unique sent count so the
+//!     compression thread can early-exit after draining.
+//!   - `compression_done: AtomicBool`: set by compression thread when it's
+//!     about to exit; the network thread spins until this so QUIC stays alive
+//!     long enough to deliver the last bytes.
 //!
 //! Usage:
 //!   cargo run -p silver_e2e --example gossip_oneway -- \
@@ -39,9 +39,7 @@ use std::{
 
 use flux::{tile::Tile, timing::Nanos};
 use rand::{Rng, RngCore};
-use silver_common::{
-    GossipMsgOut, GossipTopic, NewGossipMsg, P2pSend, PeerEvent, TRandomAccess,
-};
+use silver_common::{GossipMsgOut, GossipTopic, NewGossipMsg, P2pSend, PeerEvent, TRandomAccess};
 use silver_e2e::{
     EchoCompressionHalf, EchoNetworkHalf, EchoStack, PublisherStack, Stats,
     inject::{build_publish_frame, snappy_compress},
@@ -100,8 +98,9 @@ fn main() {
     let comp_handle =
         thread::spawn(move || compression_thread(comp_half, pd_comp, ec_comp, cd_comp, stats_tx));
 
-    let mut publisher = PublisherStack::new(tempdir.path(), "_pub", pub_addr, pub_disc_addr, pub_kp)
-        .expect("publisher stack");
+    let mut publisher =
+        PublisherStack::new(tempdir.path(), "_pub", pub_addr, pub_disc_addr, pub_kp)
+            .expect("publisher stack");
     publisher.controller.set_auto_ping(false);
     publisher.network.p2p_mut().connect(echo_peer_id, echo_addr, Instant::now()).expect("connect");
 
