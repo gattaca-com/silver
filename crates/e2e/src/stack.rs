@@ -20,9 +20,8 @@ use silver_peer::PeerManager;
 
 use crate::Stats;
 
-/// How much space each dedicated TCache gets. Kept small — tests are
-/// bounded in message count. Must be a power of two.
-const TCACHE_SIZE: usize = 1 << 25; // 4 MB per cache
+/// How much space each dedicated TCache gets.
+const TCACHE_SIZE: usize = 1 << 25;
 
 /// Dummy tile marker types — only exist so flux can derive unique tile names
 /// (via `short_typename`) when building auxiliary `SpineAdapter`s.
@@ -69,6 +68,11 @@ pub struct EchoStack {
     pub network_adapter: SpineAdapter<SilverSpine>,
     pub compression_adapter: SpineAdapter<SilverSpine>,
     pub controller_adapter: SpineAdapter<SilverSpine>,
+    /// Auxiliary adapter for the harness to inject `PeerControl` events
+    /// (e.g. `P2pGossipSubscribe`) onto the spine. Required by lh_gossip
+    /// variant B, where the libp2p peer only publishes to silver after
+    /// observing silver's SUBSCRIBE for the topic.
+    pub injector_adapter: SpineAdapter<SilverSpine>,
     /// Adapter whose consumers cover `new_gossip` (Gossip) and `peer_events`
     /// (PeerEvent); ticked by the harness after each compression cycle to
     /// drain into `stats`.
@@ -76,6 +80,64 @@ pub struct EchoStack {
     pub received: AtomicUsize,
     pub stats: Stats,
     _keep_alive: StackKeepAlive,
+}
+
+/// Network-side half of a split `EchoStack`: network tile + controller +
+/// the injector adapter. Designed to run on its own thread; communicates
+/// with `EchoCompressionHalf` exclusively via the spine (lock-free
+/// queues) and TCaches (shmem-backed).
+pub struct EchoNetworkHalf {
+    pub addr: SocketAddr,
+    pub peer_id: PeerId,
+    pub network: NetworkTile,
+    pub controller: Controller,
+    pub network_adapter: SpineAdapter<SilverSpine>,
+    pub controller_adapter: SpineAdapter<SilverSpine>,
+    pub injector_adapter: SpineAdapter<SilverSpine>,
+    /// Held to keep the spine and ancillary TCache handles alive for the
+    /// lifetime of both threads.
+    _spine: SilverSpine,
+    _keep_alive: StackKeepAlive,
+}
+
+/// Compression-side half of a split `EchoStack`: gossip handler + ssz
+/// consumer + stats. The network half writes raw bytes to the gossip-in
+/// TCache; this half reads them, decodes/decompresses, emits
+/// `NewGossipMsg` onto the spine.
+pub struct EchoCompressionHalf {
+    pub compression: GossipHandler,
+    pub compression_adapter: SpineAdapter<SilverSpine>,
+    pub stats_adapter: SpineAdapter<SilverSpine>,
+    pub ssz_consumer: TRandomAccess,
+    pub stats: Stats,
+}
+
+impl EchoStack {
+    /// Move the network/controller and the compression tile onto separate
+    /// ownerships so callers can spawn each on its own thread. Spine
+    /// queues are lock-free MPMC, so cross-thread is safe.
+    pub fn split(self) -> (EchoNetworkHalf, EchoCompressionHalf) {
+        (
+            EchoNetworkHalf {
+                addr: self.addr,
+                peer_id: self.peer_id,
+                network: self.network,
+                controller: self.controller,
+                network_adapter: self.network_adapter,
+                controller_adapter: self.controller_adapter,
+                injector_adapter: self.injector_adapter,
+                _spine: self.spine,
+                _keep_alive: self._keep_alive,
+            },
+            EchoCompressionHalf {
+                compression: self.compression,
+                compression_adapter: self.compression_adapter,
+                stats_adapter: self.stats_adapter,
+                ssz_consumer: self.ssz_consumer,
+                stats: self.stats,
+            },
+        )
+    }
 }
 
 /// Holds TCache producers/consumers that the tiles reference but would
@@ -264,6 +326,8 @@ impl EchoStack {
         let network_adapter = SpineAdapter::connect_tile(&network, &mut spine);
         let compression_adapter = SpineAdapter::connect_tile(&compression, &mut spine);
         let controller_adapter = SpineAdapter::connect_tile(&controller, &mut spine);
+        let injector_tile = Injector;
+        let injector_adapter = SpineAdapter::connect_tile(&injector_tile, &mut spine);
         let stats_tile = StatsSink;
         let stats_adapter = SpineAdapter::connect_tile(&stats_tile, &mut spine);
 
@@ -278,6 +342,7 @@ impl EchoStack {
             network_adapter,
             compression_adapter,
             controller_adapter,
+            injector_adapter,
             stats_adapter,
             stats: Stats::default(),
             received: AtomicUsize::default(),

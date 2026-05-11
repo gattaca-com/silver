@@ -9,7 +9,7 @@ use crate::p2p::{
 #[allow(clippy::large_enum_variant)]
 pub enum RpcWriteRequest {
     WritingPrefix { app_id: u64, buf: [u8; 10], length: usize, written: usize, request: RpcRequest },
-    WritingRequest { app_id: u64, encoder: SnappyEncoder, request: RpcRequest, written: usize },
+    WritingRequest { app_id: u64, encoder: Box<SnappyEncoder>, request: RpcRequest, written: usize },
     Complete(u64),
 }
 
@@ -58,7 +58,7 @@ impl RpcWriteRequest {
             RpcWriteRequest::WritingPrefix { app_id, buf, length, mut written, request } => {
                 written += io.write_to_stream(id.stream_id(), &buf[written..length])?;
                 if written == length {
-                    let encoder = SnappyEncoder::new();
+                    let encoder = Box::new(SnappyEncoder::new());
                     Ok(Spin::Next(Self::WritingRequest { app_id, encoder, request, written: 0 }))
                 } else {
                     Ok(Spin::Ok(Self::WritingPrefix { app_id, buf, length, written, request }))

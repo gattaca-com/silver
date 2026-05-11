@@ -13,24 +13,24 @@ use crate::p2p::streams::{
 #[derive(Debug)]
 pub enum RpcReadRequest {
     /// Reading the varint length prefix of the SSZ chunk
-    ReadingLength { decoder: SnappyDecoder, buf: [u8; 10], read: usize },
+    ReadingLength { decoder: Box<SnappyDecoder>, buf: [u8; 10], read: usize },
     /// Alocating
     AllocBody {
-        decoder: SnappyDecoder,
+        decoder: Box<SnappyDecoder>,
         length: usize,
         buf: [u8; 10],
         buf_start: usize,
         buf_end: usize,
     },
     /// Stream Snappy decompressing the chunk payload into a handler buffer.
-    ReadingBody { decoder: SnappyDecoder, reservation: RpcReservation, remaining: usize },
+    ReadingBody { decoder: Box<SnappyDecoder>, reservation: RpcReservation, remaining: usize },
     /// Request read completed
     Complete { msg: RpcRequest },
 }
 
 impl Default for RpcReadRequest {
     fn default() -> Self {
-        Self::ReadingLength { decoder: SnappyDecoder::default(), buf: [0; 10], read: 0 }
+        Self::ReadingLength { decoder: Box::new(SnappyDecoder::default()), buf: [0; 10], read: 0 }
     }
 }
 
