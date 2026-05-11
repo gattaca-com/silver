@@ -20,14 +20,8 @@ use silver_peer::PeerManager;
 
 use crate::Stats;
 
-/// How much space each dedicated TCache gets. Kept small — tests are
-/// bounded in message count. Must be a power of two.
-// 128 MB per cache. Sized for short-running benches at high rate; the
-// random-access consumers used here don't advance a tail, so cache slots
-// accumulate over the test duration. 1 KB payload at 10 kHz × 3 s ≈ 30 MB
-// just for one cache, plus protobuf/SSZ overhead, plus the symmetric
-// caches on the echo side. 32 MB was tight, 128 MB has headroom.
-const TCACHE_SIZE: usize = 1 << 30;
+/// How much space each dedicated TCache gets. 
+const TCACHE_SIZE: usize = 1 << 25;
 
 /// Dummy tile marker types — only exist so flux can derive unique tile names
 /// (via `short_typename`) when building auxiliary `SpineAdapter`s.
