@@ -19,5 +19,7 @@ pub use harness::TwoStackHarness;
 pub use lh_client::LhClient;
 #[cfg(feature = "lh-client")]
 pub use lh_gossip::LhGossipClient;
-pub use stack::{EchoStack, PublisherStack, keypair_from_seed};
+pub use stack::{
+    EchoCompressionHalf, EchoNetworkHalf, EchoStack, PublisherStack, keypair_from_seed,
+};
 pub use stats::Stats;

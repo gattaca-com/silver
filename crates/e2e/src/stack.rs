@@ -27,7 +27,7 @@ use crate::Stats;
 // accumulate over the test duration. 1 KB payload at 10 kHz × 3 s ≈ 30 MB
 // just for one cache, plus protobuf/SSZ overhead, plus the symmetric
 // caches on the echo side. 32 MB was tight, 128 MB has headroom.
-const TCACHE_SIZE: usize = 1 << 27;
+const TCACHE_SIZE: usize = 1 << 30;
 
 /// Dummy tile marker types — only exist so flux can derive unique tile names
 /// (via `short_typename`) when building auxiliary `SpineAdapter`s.
@@ -86,6 +86,64 @@ pub struct EchoStack {
     pub received: AtomicUsize,
     pub stats: Stats,
     _keep_alive: StackKeepAlive,
+}
+
+/// Network-side half of a split `EchoStack`: network tile + controller +
+/// the injector adapter. Designed to run on its own thread; communicates
+/// with `EchoCompressionHalf` exclusively via the spine (lock-free
+/// queues) and TCaches (shmem-backed).
+pub struct EchoNetworkHalf {
+    pub addr: SocketAddr,
+    pub peer_id: PeerId,
+    pub network: NetworkTile,
+    pub controller: Controller,
+    pub network_adapter: SpineAdapter<SilverSpine>,
+    pub controller_adapter: SpineAdapter<SilverSpine>,
+    pub injector_adapter: SpineAdapter<SilverSpine>,
+    /// Held to keep the spine and ancillary TCache handles alive for the
+    /// lifetime of both threads.
+    _spine: SilverSpine,
+    _keep_alive: StackKeepAlive,
+}
+
+/// Compression-side half of a split `EchoStack`: gossip handler + ssz
+/// consumer + stats. The network half writes raw bytes to the gossip-in
+/// TCache; this half reads them, decodes/decompresses, emits
+/// `NewGossipMsg` onto the spine.
+pub struct EchoCompressionHalf {
+    pub compression: GossipHandler,
+    pub compression_adapter: SpineAdapter<SilverSpine>,
+    pub stats_adapter: SpineAdapter<SilverSpine>,
+    pub ssz_consumer: TRandomAccess,
+    pub stats: Stats,
+}
+
+impl EchoStack {
+    /// Move the network/controller and the compression tile onto separate
+    /// ownerships so callers can spawn each on its own thread. Spine
+    /// queues are lock-free MPMC, so cross-thread is safe.
+    pub fn split(self) -> (EchoNetworkHalf, EchoCompressionHalf) {
+        (
+            EchoNetworkHalf {
+                addr: self.addr,
+                peer_id: self.peer_id,
+                network: self.network,
+                controller: self.controller,
+                network_adapter: self.network_adapter,
+                controller_adapter: self.controller_adapter,
+                injector_adapter: self.injector_adapter,
+                _spine: self.spine,
+                _keep_alive: self._keep_alive,
+            },
+            EchoCompressionHalf {
+                compression: self.compression,
+                compression_adapter: self.compression_adapter,
+                stats_adapter: self.stats_adapter,
+                ssz_consumer: self.ssz_consumer,
+                stats: self.stats,
+            },
+        )
+    }
 }
 
 /// Holds TCache producers/consumers that the tiles reference but would
