@@ -20,7 +20,7 @@ use silver_peer::PeerManager;
 
 use crate::Stats;
 
-/// How much space each dedicated TCache gets. 
+/// How much space each dedicated TCache gets.
 const TCACHE_SIZE: usize = 1 << 25;
 
 /// Dummy tile marker types — only exist so flux can derive unique tile names
