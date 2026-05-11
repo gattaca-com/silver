@@ -344,6 +344,7 @@ fn compute_exit_epoch_and_update_churn(
     earliest
 }
 
+#[inline]
 fn is_eligible_for_activation_queue(epoch: &EpochData, i: usize) -> bool {
     epoch.val_activation_eligibility_epoch[i] == u64::MAX &&
         epoch.val_effective_balance[i] >= MIN_ACTIVATION_BALANCE
@@ -404,6 +405,7 @@ pub fn process_effective_balance_updates(
 }
 
 /// Compounding (0x02) validators can go up to 2048 ETH.
+#[inline]
 fn get_max_effective_balance(vid: &ValidatorIdentity, i: usize) -> u64 {
     if vid.val_withdrawal_credentials[i][0] == COMPOUNDING_WITHDRAWAL_PREFIX {
         MAX_EFFECTIVE_BALANCE
@@ -431,6 +433,7 @@ fn get_balance_churn_limit(epoch: &EpochData, n: usize, current_epoch: Epoch) ->
     churn - churn % EFFECTIVE_BALANCE_INCREMENT
 }
 
+#[inline]
 fn get_activation_exit_churn_limit(epoch: &EpochData, n: usize, current_epoch: Epoch) -> u64 {
     min(MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT, get_balance_churn_limit(epoch, n, current_epoch))
 }
@@ -574,6 +577,7 @@ pub fn is_valid_deposit_signature(
     bls::verify_deposit_signature(pubkey, signature, &signing_root)
 }
 
+#[inline]
 fn get_max_effective_balance_for_credentials(withdrawal_credentials: &B256) -> u64 {
     if withdrawal_credentials[0] == COMPOUNDING_WITHDRAWAL_PREFIX {
         MAX_EFFECTIVE_BALANCE

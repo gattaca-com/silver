@@ -146,6 +146,92 @@ impl SingleAttestationView {
     }
 }
 
+// -- IndexedAttestation (inside AttesterSlashing) ---------------------
+//
+// Variable (trailing `attesting_indices`). Fixed prefix 228B.
+//
+// IndexedAttestation: { attesting_indices: List[u64, MAX_ATTESTING_INDICES],
+//                       data: AttestationData(128), signature(96) }
+//
+//   [0..4)     offset to attesting_indices (== 228)
+//   [4..132)   data (AttestationData 128B)
+//     [4..12)    slot
+//     [12..20)   index
+//     [20..52)   beacon_block_root
+//     [52..60)   source.epoch
+//     [60..92)   source.root
+//     [92..100)  target.epoch
+//     [100..132) target.root
+//   [132..228) signature
+//   [228..)    attesting_indices (8 * n)
+
+pub const INDEXED_ATTESTATION_FIXED: usize = 228;
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[repr(C)]
+pub struct IndexedAttestationView;
+
+impl IndexedAttestationView {
+    #[inline]
+    pub fn data(buf: &[u8]) -> &[u8; 128] {
+        fixed(buf, 4)
+    }
+    #[inline]
+    pub fn signature(buf: &[u8]) -> &[u8; 96] {
+        fixed(buf, 132)
+    }
+    #[inline]
+    pub fn target_epoch(buf: &[u8]) -> u64 {
+        u64_le(buf, 92)
+    }
+    /// Raw attesting_indices bytes (length-prefix already consumed by the
+    /// container offset; trailing slice is `n * u64`).
+    #[inline]
+    pub fn attesting_indices(buf: &[u8]) -> &[u8] {
+        &buf[INDEXED_ATTESTATION_FIXED..]
+    }
+}
+
+// -- Attestation (block-body attestations list element, Fulu) -----
+//
+// Variable (trailing `aggregation_bits` Bitlist). Fixed prefix 236B.
+//
+// Attestation: { aggregation_bits: Bitlist[MAX_VALIDATORS_PER_COMMITTEE *
+//                  MAX_COMMITTEES_PER_SLOT],
+//                data: AttestationData(128), signature(96),
+//                committee_bits: Bitvector[MAX_COMMITTEES_PER_SLOT] (8B) }
+//
+//   [0..4)     offset to aggregation_bits (== 236)
+//   [4..132)   data (AttestationData 128B)
+//   [132..228) signature
+//   [228..236) committee_bits (8B)
+//   [236..)    aggregation_bits (Bitlist)
+
+pub const ATTESTATION_FIXED: usize = 236;
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[repr(C)]
+pub struct AttestationView;
+
+impl AttestationView {
+    #[inline]
+    pub fn data(buf: &[u8]) -> &[u8; 128] {
+        fixed(buf, 4)
+    }
+    #[inline]
+    pub fn signature(buf: &[u8]) -> &[u8; 96] {
+        fixed(buf, 132)
+    }
+    #[inline]
+    pub fn committee_bits(buf: &[u8]) -> &[u8; 8] {
+        fixed(buf, 228)
+    }
+    #[inline]
+    pub fn aggregation_bits(buf: &[u8]) -> &[u8] {
+        &buf[ATTESTATION_FIXED..]
+    }
+}
+
 // -- ProposerSlashing (proposer_slashing) ----------------------------
 //
 // All fixed, exactly 416B. Two SignedBeaconBlockHeaders (208B each).
@@ -465,6 +551,87 @@ impl SignedBeaconBlockView {
     }
 }
 
+// -- BeaconBlockBody --------------------------------------------------
+//
+// Variable. 13 fields, fixed part 396B; trailing variable region holds the
+// 9 offset-pointed lists / containers.
+//
+//   [0..96)    randao_reveal
+//   [96..168)  eth1_data (72B)
+//   [168..200) graffiti (32B)
+//   [200..204) offset: proposer_slashings
+//   [204..208) offset: attester_slashings
+//   [208..212) offset: attestations
+//   [212..216) offset: deposits
+//   [216..220) offset: voluntary_exits
+//   [220..380) sync_aggregate (160B)
+//   [380..384) offset: execution_payload
+//   [384..388) offset: bls_to_execution_changes
+//   [388..392) offset: blob_kzg_commitments
+//   [392..396) offset: execution_requests
+//   [396..)    variable region
+
+pub const BEACON_BLOCK_BODY_FIXED: usize = 396;
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[repr(C)]
+pub struct BeaconBlockBodyView;
+
+impl BeaconBlockBodyView {
+    #[inline]
+    pub fn randao_reveal(buf: &[u8]) -> &[u8; 96] {
+        fixed(buf, 0)
+    }
+    #[inline]
+    pub fn eth1_data(buf: &[u8]) -> &[u8; 72] {
+        fixed(buf, 96)
+    }
+    #[inline]
+    pub fn graffiti(buf: &[u8]) -> &[u8; 32] {
+        fixed(buf, 168)
+    }
+    #[inline]
+    pub fn proposer_slashings_offset(buf: &[u8]) -> u32 {
+        u32_le(buf, 200)
+    }
+    #[inline]
+    pub fn attester_slashings_offset(buf: &[u8]) -> u32 {
+        u32_le(buf, 204)
+    }
+    #[inline]
+    pub fn attestations_offset(buf: &[u8]) -> u32 {
+        u32_le(buf, 208)
+    }
+    #[inline]
+    pub fn deposits_offset(buf: &[u8]) -> u32 {
+        u32_le(buf, 212)
+    }
+    #[inline]
+    pub fn voluntary_exits_offset(buf: &[u8]) -> u32 {
+        u32_le(buf, 216)
+    }
+    #[inline]
+    pub fn sync_aggregate(buf: &[u8]) -> &[u8; BLOCK_SYNC_AGGREGATE_SIZE] {
+        fixed(buf, 220)
+    }
+    #[inline]
+    pub fn execution_payload_offset(buf: &[u8]) -> u32 {
+        u32_le(buf, 380)
+    }
+    #[inline]
+    pub fn bls_to_execution_changes_offset(buf: &[u8]) -> u32 {
+        u32_le(buf, 384)
+    }
+    #[inline]
+    pub fn blob_kzg_commitments_offset(buf: &[u8]) -> u32 {
+        u32_le(buf, 388)
+    }
+    #[inline]
+    pub fn execution_requests_offset(buf: &[u8]) -> u32 {
+        u32_le(buf, 392)
+    }
+}
+
 // -- SignedAggregateAndProof (beacon_aggregate_and_proof) -------------
 //
 // Variable (inner Attestation has Bitlist aggregation_bits).
@@ -572,7 +739,7 @@ impl SignedAggregateAndProofView {
 
 // -- AttesterSlashing (attester_slashing) -----------------------------
 //
-// Variable. Two Electra IndexedAttestations, each variable.
+// Variable. Two Fulu IndexedAttestations, each variable.
 // IndexedAttestation: { attesting_indices: List[ValidatorIndex](var),
 // data(128), sig(96) }   Fixed part: offset(4) + 128 + 96 = 228B
 //
@@ -1382,5 +1549,407 @@ impl DataColumnsByRootIdentifierView {
             return false;
         }
         (buf.len() - DC_BY_ROOT_ID_MIN).is_multiple_of(8)
+    }
+}
+
+// -- AttestationData (inner 128B; reused inside Attestation,
+// IndexedAttestation, SingleAttestation, AggregateAndProof)
+// -------------------------------
+//
+//   [0..8)    slot
+//   [8..16)   index (always 0 post-Electra)
+//   [16..48)  beacon_block_root
+//   [48..56)  source.epoch
+//   [56..88)  source.root
+//   [88..96)  target.epoch
+//   [96..128) target.root
+
+pub const ATTESTATION_DATA_SIZE: usize = 128;
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[repr(C)]
+pub struct AttestationDataView;
+
+impl AttestationDataView {
+    #[inline]
+    pub fn slot(buf: &[u8; ATTESTATION_DATA_SIZE]) -> u64 {
+        u64_le(buf, 0)
+    }
+    #[inline]
+    pub fn index(buf: &[u8; ATTESTATION_DATA_SIZE]) -> u64 {
+        u64_le(buf, 8)
+    }
+    #[inline]
+    pub fn beacon_block_root(buf: &[u8; ATTESTATION_DATA_SIZE]) -> &[u8; 32] {
+        fixed(buf, 16)
+    }
+    #[inline]
+    pub fn source_epoch(buf: &[u8; ATTESTATION_DATA_SIZE]) -> u64 {
+        u64_le(buf, 48)
+    }
+    #[inline]
+    pub fn source_root(buf: &[u8; ATTESTATION_DATA_SIZE]) -> &[u8; 32] {
+        fixed(buf, 56)
+    }
+    #[inline]
+    pub fn target_epoch(buf: &[u8; ATTESTATION_DATA_SIZE]) -> u64 {
+        u64_le(buf, 88)
+    }
+    #[inline]
+    pub fn target_root(buf: &[u8; ATTESTATION_DATA_SIZE]) -> &[u8; 32] {
+        fixed(buf, 96)
+    }
+}
+
+// -- BeaconBlockHeader (112B; nested inside SignedBeaconBlockHeader,
+// ProposerSlashing, LightClientHeader, BlobSidecar, DataColumnSidecar) -
+
+pub const BEACON_BLOCK_HEADER_SIZE: usize = 112;
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[repr(C)]
+pub struct BeaconBlockHeaderView;
+
+impl BeaconBlockHeaderView {
+    #[inline]
+    pub fn slot(buf: &[u8; BEACON_BLOCK_HEADER_SIZE]) -> u64 {
+        u64_le(buf, 0)
+    }
+    #[inline]
+    pub fn proposer_index(buf: &[u8; BEACON_BLOCK_HEADER_SIZE]) -> u64 {
+        u64_le(buf, 8)
+    }
+    #[inline]
+    pub fn parent_root(buf: &[u8; BEACON_BLOCK_HEADER_SIZE]) -> &[u8; 32] {
+        fixed(buf, 16)
+    }
+    #[inline]
+    pub fn state_root(buf: &[u8; BEACON_BLOCK_HEADER_SIZE]) -> &[u8; 32] {
+        fixed(buf, 48)
+    }
+    #[inline]
+    pub fn body_root(buf: &[u8; BEACON_BLOCK_HEADER_SIZE]) -> &[u8; 32] {
+        fixed(buf, 80)
+    }
+}
+
+// -- Eth1Data (72B; in BeaconBlockBody and BeaconState) ---------------
+//   [0..32)   deposit_root
+//   [32..40)  deposit_count
+//   [40..72)  block_hash
+
+pub const ETH1_DATA_SIZE: usize = 72;
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[repr(C)]
+pub struct Eth1DataView;
+
+impl Eth1DataView {
+    #[inline]
+    pub fn deposit_root(buf: &[u8; ETH1_DATA_SIZE]) -> &[u8; 32] {
+        fixed(buf, 0)
+    }
+    #[inline]
+    pub fn deposit_count(buf: &[u8; ETH1_DATA_SIZE]) -> u64 {
+        u64_le(buf, 32)
+    }
+    #[inline]
+    pub fn block_hash(buf: &[u8; ETH1_DATA_SIZE]) -> &[u8; 32] {
+        fixed(buf, 40)
+    }
+}
+
+// -- Withdrawal (44B; ExecutionPayload.withdrawals element) -----------
+//   [0..8)    index
+//   [8..16)   validator_index
+//   [16..36)  address
+//   [36..44)  amount
+
+pub const WITHDRAWAL_SIZE: usize = 44;
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[repr(C)]
+pub struct WithdrawalView;
+
+impl WithdrawalView {
+    #[inline]
+    pub fn index(buf: &[u8; WITHDRAWAL_SIZE]) -> u64 {
+        u64_le(buf, 0)
+    }
+    #[inline]
+    pub fn validator_index(buf: &[u8; WITHDRAWAL_SIZE]) -> u64 {
+        u64_le(buf, 8)
+    }
+    #[inline]
+    pub fn address(buf: &[u8; WITHDRAWAL_SIZE]) -> &[u8; 20] {
+        fixed(buf, 16)
+    }
+    #[inline]
+    pub fn amount(buf: &[u8; WITHDRAWAL_SIZE]) -> u64 {
+        u64_le(buf, 36)
+    }
+}
+
+// -- SyncAggregate (160B; in BeaconBlockBody) -------------------------
+//   [0..64)   sync_committee_bits (Bitvector[512] = 64B)
+//   [64..160) sync_committee_signature
+
+pub const BLOCK_SYNC_AGGREGATE_SIZE: usize = 160;
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[repr(C)]
+pub struct SyncAggregateView;
+
+impl SyncAggregateView {
+    #[inline]
+    pub fn sync_committee_bits(buf: &[u8; BLOCK_SYNC_AGGREGATE_SIZE]) -> &[u8; 64] {
+        fixed(buf, 0)
+    }
+    #[inline]
+    pub fn sync_committee_signature(buf: &[u8; BLOCK_SYNC_AGGREGATE_SIZE]) -> &[u8; 96] {
+        fixed(buf, 64)
+    }
+}
+
+// -- DepositData (184B; signed by depositor, hashed for deposit root) -
+//   [0..48)    pubkey
+//   [48..80)   withdrawal_credentials
+//   [80..88)   amount
+//   [88..184)  signature
+
+pub const DEPOSIT_DATA_SIZE: usize = 184;
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[repr(C)]
+pub struct DepositDataView;
+
+impl DepositDataView {
+    #[inline]
+    pub fn pubkey(buf: &[u8; DEPOSIT_DATA_SIZE]) -> &[u8; 48] {
+        fixed(buf, 0)
+    }
+    #[inline]
+    pub fn withdrawal_credentials(buf: &[u8; DEPOSIT_DATA_SIZE]) -> &[u8; 32] {
+        fixed(buf, 48)
+    }
+    #[inline]
+    pub fn amount(buf: &[u8; DEPOSIT_DATA_SIZE]) -> u64 {
+        u64_le(buf, 80)
+    }
+    #[inline]
+    pub fn signature(buf: &[u8; DEPOSIT_DATA_SIZE]) -> &[u8; 96] {
+        fixed(buf, 88)
+    }
+}
+
+// -- Deposit (1240B; BeaconBlockBody.deposits element) ----------------
+// proof: Vector[Bytes32, DEPOSIT_CONTRACT_TREE_DEPTH+1] = 33 * 32 = 1056B
+// data : DepositData (184B)
+//   [0..1056)    proof
+//   [1056..1240) data
+
+pub const DEPOSIT_SIZE: usize = 1240;
+pub const DEPOSIT_PROOF_SIZE: usize = 1056;
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[repr(C)]
+pub struct DepositView;
+
+impl DepositView {
+    #[inline]
+    pub fn proof(buf: &[u8; DEPOSIT_SIZE]) -> &[u8; DEPOSIT_PROOF_SIZE] {
+        fixed(buf, 0)
+    }
+    #[inline]
+    pub fn data(buf: &[u8; DEPOSIT_SIZE]) -> &[u8; DEPOSIT_DATA_SIZE] {
+        fixed(buf, DEPOSIT_PROOF_SIZE)
+    }
+}
+
+// -- DepositRequest (192B; ExecutionRequests.deposits element) --------
+//   [0..48)    pubkey
+//   [48..80)   withdrawal_credentials
+//   [80..88)   amount
+//   [88..184)  signature
+//   [184..192) index
+
+pub const DEPOSIT_REQUEST_SIZE: usize = 192;
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[repr(C)]
+pub struct DepositRequestView;
+
+impl DepositRequestView {
+    #[inline]
+    pub fn pubkey(buf: &[u8; DEPOSIT_REQUEST_SIZE]) -> &[u8; 48] {
+        fixed(buf, 0)
+    }
+    #[inline]
+    pub fn withdrawal_credentials(buf: &[u8; DEPOSIT_REQUEST_SIZE]) -> &[u8; 32] {
+        fixed(buf, 48)
+    }
+    #[inline]
+    pub fn amount(buf: &[u8; DEPOSIT_REQUEST_SIZE]) -> u64 {
+        u64_le(buf, 80)
+    }
+    #[inline]
+    pub fn signature(buf: &[u8; DEPOSIT_REQUEST_SIZE]) -> &[u8; 96] {
+        fixed(buf, 88)
+    }
+    #[inline]
+    pub fn index(buf: &[u8; DEPOSIT_REQUEST_SIZE]) -> u64 {
+        u64_le(buf, 184)
+    }
+}
+
+// -- WithdrawalRequest (76B; ExecutionRequests.withdrawals element) ---
+//   [0..20)    source_address
+//   [20..68)   validator_pubkey
+//   [68..76)   amount
+
+pub const WITHDRAWAL_REQUEST_SIZE: usize = 76;
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[repr(C)]
+pub struct WithdrawalRequestView;
+
+impl WithdrawalRequestView {
+    #[inline]
+    pub fn source_address(buf: &[u8; WITHDRAWAL_REQUEST_SIZE]) -> &[u8; 20] {
+        fixed(buf, 0)
+    }
+    #[inline]
+    pub fn validator_pubkey(buf: &[u8; WITHDRAWAL_REQUEST_SIZE]) -> &[u8; 48] {
+        fixed(buf, 20)
+    }
+    #[inline]
+    pub fn amount(buf: &[u8; WITHDRAWAL_REQUEST_SIZE]) -> u64 {
+        u64_le(buf, 68)
+    }
+}
+
+// -- ConsolidationRequest (116B; ExecutionRequests.consolidations element)
+//   [0..20)    source_address
+//   [20..68)   source_pubkey
+//   [68..116)  target_pubkey
+
+pub const CONSOLIDATION_REQUEST_SIZE: usize = 116;
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[repr(C)]
+pub struct ConsolidationRequestView;
+
+impl ConsolidationRequestView {
+    #[inline]
+    pub fn source_address(buf: &[u8; CONSOLIDATION_REQUEST_SIZE]) -> &[u8; 20] {
+        fixed(buf, 0)
+    }
+    #[inline]
+    pub fn source_pubkey(buf: &[u8; CONSOLIDATION_REQUEST_SIZE]) -> &[u8; 48] {
+        fixed(buf, 20)
+    }
+    #[inline]
+    pub fn target_pubkey(buf: &[u8; CONSOLIDATION_REQUEST_SIZE]) -> &[u8; 48] {
+        fixed(buf, 68)
+    }
+}
+
+// -- ExecutionPayload (variable; in BeaconBlockBody.execution_payload) -
+//
+// Fixed part 528B; trailing variable region holds extra_data, transactions,
+// withdrawals (each pointed to by a u32 offset in the fixed part).
+//   [0..32)    parent_hash
+//   [32..52)   fee_recipient
+//   [52..84)   state_root
+//   [84..116)  receipts_root
+//   [116..372) logs_bloom (256B)
+//   [372..404) prev_randao
+//   [404..412) block_number
+//   [412..420) gas_limit
+//   [420..428) gas_used
+//   [428..436) timestamp
+//   [436..440) offset to extra_data
+//   [440..472) base_fee_per_gas (Bytes32 LE)
+//   [472..504) block_hash
+//   [504..508) offset to transactions
+//   [508..512) offset to withdrawals
+//   [512..520) blob_gas_used
+//   [520..528) excess_blob_gas
+//   [528..)    extra_data | transactions | withdrawals
+
+pub const EXECUTION_PAYLOAD_FIXED: usize = 528;
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[repr(C)]
+pub struct ExecutionPayloadView;
+
+impl ExecutionPayloadView {
+    #[inline]
+    pub fn parent_hash(buf: &[u8]) -> &[u8; 32] {
+        fixed(buf, 0)
+    }
+    #[inline]
+    pub fn fee_recipient(buf: &[u8]) -> &[u8; 20] {
+        fixed(buf, 32)
+    }
+    #[inline]
+    pub fn state_root(buf: &[u8]) -> &[u8; 32] {
+        fixed(buf, 52)
+    }
+    #[inline]
+    pub fn receipts_root(buf: &[u8]) -> &[u8; 32] {
+        fixed(buf, 84)
+    }
+    #[inline]
+    pub fn logs_bloom(buf: &[u8]) -> &[u8; 256] {
+        fixed(buf, 116)
+    }
+    #[inline]
+    pub fn prev_randao(buf: &[u8]) -> &[u8; 32] {
+        fixed(buf, 372)
+    }
+    #[inline]
+    pub fn block_number(buf: &[u8]) -> u64 {
+        u64_le(buf, 404)
+    }
+    #[inline]
+    pub fn gas_limit(buf: &[u8]) -> u64 {
+        u64_le(buf, 412)
+    }
+    #[inline]
+    pub fn gas_used(buf: &[u8]) -> u64 {
+        u64_le(buf, 420)
+    }
+    #[inline]
+    pub fn timestamp(buf: &[u8]) -> u64 {
+        u64_le(buf, 428)
+    }
+    #[inline]
+    pub fn extra_data_offset(buf: &[u8]) -> u32 {
+        u32_le(buf, 436)
+    }
+    #[inline]
+    pub fn base_fee_per_gas(buf: &[u8]) -> &[u8; 32] {
+        fixed(buf, 440)
+    }
+    #[inline]
+    pub fn block_hash(buf: &[u8]) -> &[u8; 32] {
+        fixed(buf, 472)
+    }
+    #[inline]
+    pub fn transactions_offset(buf: &[u8]) -> u32 {
+        u32_le(buf, 504)
+    }
+    #[inline]
+    pub fn withdrawals_offset(buf: &[u8]) -> u32 {
+        u32_le(buf, 508)
+    }
+    #[inline]
+    pub fn blob_gas_used(buf: &[u8]) -> u64 {
+        u64_le(buf, 512)
+    }
+    #[inline]
+    pub fn excess_blob_gas(buf: &[u8]) -> u64 {
+        u64_le(buf, 520)
     }
 }

@@ -1,3 +1,5 @@
+use blst::min_pk::PublicKey;
+
 use crate::{
     epoch_transition, ssz_hash,
     types::{
@@ -147,6 +149,11 @@ pub fn decompose_beacon_state(
         epoch: u64_le(ssz, F3 + 8),
     };
 
+    // Spec-pinned fork versions for cross-fork-stable signatures.
+    // TODO(config): testnet support — currently hardcoded to mainnet values.
+    imm.genesis_fork_version = [0, 0, 0, 0];
+    imm.capella_fork_version = [3, 0, 0, 0];
+
     // randao_mixes: Vector[B256, 65536] (2 097 152B). B256 has alignment 1
     // (asserted in types.rs); bulk memcpy via raw-parts cast.
     let randao_src: &[B256] = unsafe {
@@ -228,6 +235,11 @@ pub fn decompose_beacon_state(
     for i in 0..n {
         let v = &val_bytes[i * VALIDATOR_SSZ_SIZE..];
         vid.val_pubkey[i].copy_from_slice(&v[..48]);
+        // Decompress + cache the pubkey for hot-path BLS verifies. Fall back
+        // to the zero point on malformed input — the corresponding compressed
+        // copy will fail later sigverifies the same way.
+        vid.val_pubkey_decompressed[i] =
+            PublicKey::from_bytes(&vid.val_pubkey[i]).unwrap_or_default();
         vid.val_withdrawal_credentials[i] = b256(v, 48);
         epoch.val_effective_balance[i] = u64_le(v, 80);
         epoch.set_val_slashed(i, v[88] != 0);
@@ -370,7 +382,7 @@ pub fn decompose_beacon_state(
     }
     for i in 0..pw_count {
         let w = &pw_bytes[i * PENDING_PARTIAL_WITHDRAWAL_SSZ_SIZE..];
-        pq.pending_partial_withdrawals.push(PendingPartialWithdrawal {
+        pq.pending_partial_withdrawals.push_back(PendingPartialWithdrawal {
             index: u64_le(w, 0),
             amount: u64_le(w, 8),
             withdrawable_epoch: u64_le(w, 16),

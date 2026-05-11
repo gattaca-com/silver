@@ -16,7 +16,12 @@ blst.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+criterion.workspace = true
 rand.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_yml = "0.0.12"
 snap = "0.1"
+
+[[bench]]
+harness = false
+name = "bls_verify"

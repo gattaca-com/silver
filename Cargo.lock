@@ -3889,6 +3889,7 @@ name = "silver_beacon_state"
 version = "0.0.1"
 dependencies = [
  "blst",
+ "criterion",
  "flux",
  "rand 0.8.6",
  "ring",

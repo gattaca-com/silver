@@ -88,12 +88,20 @@ pub struct BeaconStateTile {
     synced_emitted: bool,
 
     zero_hashes: [B256; ssz_hash::ZERO_HASHES_LEN],
-    active_scratch: Vec<u32>,
     postponed_scratch: Vec<types::PendingDeposit>,
     /// Per-block buffer of (validator_idx, beacon_block_root, target_epoch)
     /// emitted by `process_attestations` so the tile can fold them into the
     /// vote tracker after `apply_block` returns.
     attestation_votes_scratch: Vec<(u32, B256, Epoch)>,
+    /// Epoch transition uses this
+    /// for the active set (`process_sync_committee_updates` /
+    /// `process_proposer_lookahead`); pass 1 of `process_block_body` reuses
+    /// it for committee participants in `collect_sigs_*`; pass 2 reuses it
+    /// again for participating indices in `process_single_attestation`.
+    active_scratch: Vec<u32>,
+    /// Pre-validation pass collects every BLS sig in the block here, then
+    /// runs `verify_all` once before pass 2 mutates state.
+    sig_batch: bls::SigBatch,
 
     gossip_consumer: TRandomAccess,
     rpc_consumer: TRandomAccess,
@@ -184,10 +192,13 @@ impl BeaconStateTile {
             next_request_id: 1,
             synced_emitted: false,
             zero_hashes: ssz_hash::compute_zero_hashes(),
-            active_scratch: Vec::with_capacity(MAX_VALIDATORS),
+            active_scratch: Vec::with_capacity(
+                MAX_VALIDATORS.max(types::MAX_ATTESTERS_PER_AGGREGATE),
+            ),
             postponed_scratch: Vec::with_capacity(MAX_PENDING_DEPOSITS_PER_EPOCH),
             // Worst case: MAX_ATTESTATIONS_ELECTRA × full committee participation
             attestation_votes_scratch: Vec::with_capacity(16 * 1024),
+            sig_batch: bls::SigBatch::new(),
             gossip_consumer,
             rpc_consumer,
         };
@@ -850,6 +861,7 @@ impl BeaconStateTile {
             &mut self.active_scratch,
             &mut self.postponed_scratch,
             &mut self.attestation_votes_scratch,
+            &mut self.sig_batch,
         );
         if !ok {
             return GossipFeedback::Reject;
@@ -948,13 +960,25 @@ impl BeaconStateTile {
         let body = SignedBeaconBlockView::body(data);
         let body_root = ssz_hash::hash_tree_root_body(body, &self.zero_hashes);
 
+        let imm = self.imm(&head);
+        let vid = self.vid(&head);
+        if proposer_index as usize >= vid.validator_cnt {
+            return Err(GossipFeedback::Reject);
+        }
+        let block_epoch = block_slot / SLOTS_PER_EPOCH;
+        let fork_version = bls::fork_version_at_epoch(
+            imm.fork.epoch,
+            imm.fork.previous_version,
+            imm.fork.current_version,
+            block_epoch,
+        );
+        let proposer_pubkey = &vid.val_pubkey_decompressed[proposer_index as usize];
         if !bls::verify_block_signature(
-            self.imm(&head),
-            self.vid(&head),
             data,
-            block_slot,
-            proposer_index,
-            body_root,
+            proposer_pubkey,
+            &body_root,
+            fork_version,
+            &imm.genesis_validators_root,
             &self.zero_hashes,
         ) {
             return Err(GossipFeedback::Reject);
@@ -1060,10 +1084,27 @@ impl BeaconStateTile {
             return GossipFeedback::Reject;
         }
 
-        // TODO(BLS): verify the SingleAttestation signature against the
-        // attester pubkey under DOMAIN_BEACON_ATTESTER for target_epoch
-        // before updating the vote tracker. Ungated, any peer can spam votes
-        // for arbitrary block roots and skew fork choice weight.
+        let head = self.head;
+        let imm = self.imm(&head);
+        let vid = self.vid(&head);
+        if attester_index >= vid.validator_cnt {
+            return GossipFeedback::Reject;
+        }
+        let fork_version = bls::fork_version_at_epoch(
+            imm.fork.epoch,
+            imm.fork.previous_version,
+            imm.fork.current_version,
+            target_epoch,
+        );
+        if !bls::verify_single_attestation(
+            buf,
+            &vid.val_pubkey_decompressed[attester_index],
+            fork_version,
+            &imm.genesis_validators_root,
+            &self.zero_hashes,
+        ) {
+            return GossipFeedback::Reject;
+        }
 
         self.on_attestation(attester_index, block_root, target_epoch);
         GossipFeedback::Accept
@@ -1154,7 +1195,6 @@ fn body_mutation_hints(body: &[u8]) -> (bool, bool) {
 
     let has_proposer_slashings = as_ > ps;
     let has_attester_slashings = att > as_;
-    let _ = att;
     let has_deposits = ve > dep;
     let has_voluntary_exits = ep > ve;
     let has_bls_changes = blob > bls;
@@ -1265,50 +1305,6 @@ mod tests {
     }
 
     #[test]
-    fn attestation_updates_vote_tracker() {
-        let mut tile = make_tile();
-        let n = 128; // enough for non-empty committees
-        seed_tile(&mut tile, n, 0);
-
-        let attester: u32 = 5;
-
-        // Find which (slot, committee_index) contains validator 5.
-        let entry = tile.get_shuffling(0).unwrap();
-        let cps = shuffling::committees_per_slot(entry.shuffled_indices.len());
-        let mut att_slot = 0u64;
-        let mut att_ci = 0usize;
-        let mut found = false;
-        for s in 0..SLOTS_PER_EPOCH {
-            for ci in 0..cps {
-                let committee =
-                    shuffling::get_beacon_committee(entry.shuffled_indices.as_slice(), s, ci, cps);
-                if committee.contains(&attester) {
-                    att_slot = s;
-                    att_ci = ci;
-                    found = true;
-                    break;
-                }
-            }
-            if found {
-                break;
-            }
-        }
-        assert!(found, "validator {attester} should be in some committee");
-
-        let mut buf = [0u8; SINGLE_ATT_SIZE];
-        buf[0..8].copy_from_slice(&(att_ci as u64).to_le_bytes()); // committee_index
-        buf[8..16].copy_from_slice(&(attester as u64).to_le_bytes()); // attester_index
-        buf[16..24].copy_from_slice(&att_slot.to_le_bytes()); // slot
-        buf[32] = 0xAA; // beacon_block_root
-        buf[104..112].copy_from_slice(&0u64.to_le_bytes()); // target.epoch = 0
-
-        tile.handle_attestation(&buf);
-
-        assert_eq!(tile.vote_tracker.votes[attester as usize].next_root[0], 0xAA);
-        assert_eq!(tile.vote_tracker.votes[attester as usize].next_epoch, 0);
-    }
-
-    #[test]
     fn attestation_too_short_ignored() {
         let mut tile = make_tile();
         seed_tile(&mut tile, 4, 10);
@@ -1317,6 +1313,87 @@ mod tests {
         tile.handle_attestation(&buf);
         // No crash, no change.
         assert_eq!(tile.vote_tracker.votes[0].next_epoch, 0);
+    }
+
+    #[test]
+    fn attestation_updates_vote_tracker() {
+        use blst::min_pk::{PublicKey, SecretKey};
+        use silver_common::ssz_view::SINGLE_ATT_SIZE;
+
+        use crate::shuffling;
+
+        let mut tile = make_tile();
+        let n = 128;
+        seed_tile(&mut tile, n, 0);
+
+        let attester: u32 = 5;
+
+        // Spec test privkey 0; install both compressed + decompressed
+        // copies so the gossip path reads the cached pubkey.
+        const SK_BYTES: [u8; 32] = [
+            0x26, 0x3d, 0xbd, 0x79, 0x2f, 0x5b, 0x1b, 0xe4, 0x7e, 0xd8, 0x5f, 0x89, 0x38, 0xc0,
+            0xf2, 0x95, 0x86, 0xaf, 0x0d, 0x3a, 0xc7, 0xb9, 0x77, 0xf2, 0x1c, 0x27, 0x8f, 0xe1,
+            0x46, 0x20, 0x40, 0xe3,
+        ];
+        let sk = SecretKey::from_bytes(&SK_BYTES).unwrap();
+        let pk: PublicKey = sk.sk_to_pk();
+        let vid = tile.arena.vid.get_mut(0);
+        vid.val_pubkey[attester as usize] = pk.to_bytes();
+        vid.val_pubkey_decompressed[attester as usize] = pk;
+
+        // Find which (slot, committee_index) contains the attester.
+        let entry = tile.get_shuffling(0).unwrap();
+        let cps = shuffling::committees_per_slot(entry.shuffled_indices.len());
+        let mut att_slot = 0u64;
+        let mut att_ci = 0usize;
+        let mut found = false;
+        'outer: for s in 0..SLOTS_PER_EPOCH {
+            for ci in 0..cps {
+                let committee =
+                    shuffling::get_beacon_committee(entry.shuffled_indices.as_slice(), s, ci, cps);
+                if committee.contains(&attester) {
+                    att_slot = s;
+                    att_ci = ci;
+                    found = true;
+                    break 'outer;
+                }
+            }
+        }
+        assert!(found);
+
+        // Build SingleAttestation (240B, all fixed).
+        let mut buf = [0u8; SINGLE_ATT_SIZE];
+        buf[0..8].copy_from_slice(&(att_ci as u64).to_le_bytes()); // committee_index
+        buf[8..16].copy_from_slice(&(attester as u64).to_le_bytes()); // attester_index
+        buf[16..24].copy_from_slice(&att_slot.to_le_bytes()); // slot
+        buf[32] = 0xAA; // beacon_block_root[0]
+        // index, source, target left zero — handle_attestation does not
+        // validate AttestationData beyond what BLS verifies via signing root.
+
+        // Sign over the AttestationData signing root.
+        let imm = tile.imm(&tile.head);
+        let fork_version = bls::fork_version_at_epoch(
+            imm.fork.epoch,
+            imm.fork.previous_version,
+            imm.fork.current_version,
+            0, // target_epoch
+        );
+        let data: &[u8; 128] = buf[16..144].try_into().unwrap();
+        let object_root = ssz_hash::hash_attestation_data(data, &tile.zero_hashes);
+        let domain = bls::compute_domain(
+            bls::DOMAIN_BEACON_ATTESTER,
+            fork_version,
+            &imm.genesis_validators_root,
+        );
+        let signing_root = bls::compute_signing_root(&object_root, &domain);
+        let dst = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_";
+        let sig = sk.sign(&signing_root, dst, &[]).to_bytes();
+        buf[144..240].copy_from_slice(&sig);
+
+        let fb = tile.handle_attestation(&buf);
+        assert_eq!(fb, GossipFeedback::Accept);
+        assert_eq!(tile.vote_tracker.votes[attester as usize].next_root[0], 0xAA);
+        assert_eq!(tile.vote_tracker.votes[attester as usize].next_epoch, 0);
     }
 
     #[test]

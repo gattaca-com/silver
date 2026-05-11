@@ -55,6 +55,9 @@ impl ForkChoice {
     }
 
     /// Insert a block node into the proto-array.
+    // TODO(spec): cap-exhaustion strategy when `nodes.len() ==
+    // MAX_FORK_CHOICE_NODES`. Today the underlying `ArrayVec::push` panics
+    // on overflow.
     pub fn on_block(&mut self, b: &BlockImport) {
         if self.find_node_idx(&b.block_root).is_some() {
             return;
@@ -182,14 +185,17 @@ impl ForkChoice {
     // compute_deltas (worst case 2M × MAX_FORK_CHOICE_NODES on
     // apply_score_changes). Replace `indices` with HashMap<B256, u32> or sort
     // by root for binary search; both keep prune cost low.
+    #[inline]
     pub fn find_node_idx(&self, root: &B256) -> Option<usize> {
         self.indices.as_slice().iter().find(|e| &e.block_root == root).map(|e| e.node_idx)
     }
 
+    #[inline]
     pub fn node(&self, idx: usize) -> &ForkChoiceNode {
         &self.nodes[idx]
     }
 
+    #[inline]
     fn node_is_viable_for_head(&self, idx: usize) -> bool {
         let n = &self.nodes[idx];
         // Spec viability has three pieces silver does not implement:
@@ -207,6 +213,7 @@ impl ForkChoice {
             n.finalized_checkpoint.epoch <= self.finalized_checkpoint.epoch
     }
 
+    #[inline]
     fn leads_to_viable_head(&self, idx: usize) -> bool {
         let n = &self.nodes[idx];
         let best = if n.best_descendant != NULL { n.best_descendant } else { idx };
@@ -249,12 +256,14 @@ impl ForkChoice {
         self.nodes[parent_idx].best_descendant = new_desc;
     }
 
+    #[inline]
     fn is_heavier_or_eq(&self, a: usize, b: usize) -> bool {
         let na = &self.nodes[a];
         let nb = &self.nodes[b];
         (na.weight, na.block_root) >= (nb.weight, nb.block_root)
     }
 
+    #[inline]
     fn best_desc_or_self(&self, idx: usize) -> usize {
         let bd = self.nodes[idx].best_descendant;
         if bd != NULL { bd } else { idx }
@@ -306,10 +315,12 @@ pub fn compute_deltas(
     deltas
 }
 
+#[inline]
 fn find_idx(indices: &[ForkChoiceIndex], root: &B256) -> Option<usize> {
     indices.iter().find(|e| &e.block_root == root).map(|e| e.node_idx)
 }
 
+#[inline]
 fn offset_idx(idx: usize, offset: usize) -> usize {
     if idx == NULL || idx < offset { NULL } else { idx - offset }
 }

@@ -96,11 +96,13 @@ pub fn shuffle_list(indices: &mut [u32], seed: &B256) {
     }
 }
 
+#[inline]
 pub fn committees_per_slot(active_validator_count: usize) -> usize {
     let per_slot = active_validator_count / SLOTS_PER_EPOCH as usize / TARGET_COMMITTEE_SIZE;
     per_slot.clamp(1, MAX_COMMITTEES_PER_SLOT)
 }
 
+#[inline]
 pub fn get_beacon_committee(
     shuffled: &[u32],
     slot: u64,
@@ -155,7 +157,7 @@ pub struct WeightedSampler {
     cached_hash_block: usize,
 }
 
-const MAX_EFFECTIVE_BALANCE: u64 = 2_048_000_000_000;
+pub const MAX_EFFECTIVE_BALANCE: u64 = 2_048_000_000_000;
 const MAX_RANDOM_16: u64 = 0xFFFF;
 
 impl WeightedSampler {

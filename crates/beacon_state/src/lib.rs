@@ -1,5 +1,5 @@
 pub mod arena;
-mod bls;
+pub mod bls;
 pub mod decompose;
 pub mod epoch_transition;
 mod fork_choice;
