@@ -10,7 +10,7 @@ use std::{
 
 use silver_common::{
     Enr, GossipMsgOut, GossipTopic, IpBytes, MessageId, P2pSend, PeerControl, PeerEvent, PeerId,
-    RpcSeverity, ScoreParams, TCacheRead,
+    RpcSeverity, ScoreParams, StreamProtocol, TCacheRead,
 };
 
 use crate::{
@@ -155,6 +155,23 @@ impl PeerManager {
         self.peers.keys().copied()
     }
 
+    /// Pick the connected, protocol-supporting peer with the highest
+    /// cached score that also satisfies the caller-supplied `eligible`
+    /// predicate (e.g., "not at outstanding-request cap"). Returns `None`
+    /// when no peer matches. Unscored peers (first-heartbeat window) are
+    /// treated as -∞ so they lose to any scored peer.
+    pub fn best_peer_for(
+        &self,
+        protocol: StreamProtocol,
+        eligible: impl Fn(usize) -> bool,
+    ) -> Option<usize> {
+        self.database.live_peers_supporting(protocol).filter(|p| eligible(*p)).max_by(|a, b| {
+            let sa = self.score(*a).unwrap_or(f64::NEG_INFINITY);
+            let sb = self.score(*b).unwrap_or(f64::NEG_INFINITY);
+            sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
+        })
+    }
+
     /// Mesh size for a topic (for tests/introspection).
     #[allow(dead_code)]
     pub(crate) fn mesh_size(&self, topic: GossipTopic) -> usize {
@@ -185,6 +202,21 @@ impl PeerManager {
             PeerEvent::P2pCannotCreateStream { p2p_peer, .. } |
             PeerEvent::P2pOutboundMessageDropped { p2p_peer, .. } => {
                 self.add_behaviour_penalty(p2p_peer, 1.0);
+            }
+            PeerEvent::P2pStreamClosed { stream_id } => {
+                // Premature close on a request-response stream — the
+                // peer FIN'd or RST'd before the response terminator
+                // (`Complete`/`Error`) was observed. `MidTolerance`
+                // accumulates a signal without fast-banning over a
+                // single flaky session. Gossip / identity streams don't
+                // have the same completion model — no penalty. `Unset`
+                // means multistream-select hadn't negotiated yet, also
+                // skipped (the close there is a protocol-negotiation
+                // failure, distinct from a premature RPC termination).
+                let protocol = stream_id.protocol();
+                if protocol.is_request_response() && protocol != StreamProtocol::Unset {
+                    self.on_rpc_misbehaviour(stream_id.peer(), RpcSeverity::MidTolerance);
+                }
             }
             PeerEvent::P2pGossipTopicSubscribe { p2p_peer, topic } => {
                 self.on_subscribe(p2p_peer, topic, now, emit);

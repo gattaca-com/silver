@@ -294,15 +294,23 @@ impl Peer {
             }
             quinn_proto::StreamEvent::Finished { id } => {
                 tracing::debug!(?id, "stream finished");
-                if let Some(stream) = self.streams.remove(&id) {
-                    on_event(NetEvent::StreamClosed { stream: stream.p2p_id });
+                if let Some(mut stream) = self.streams.remove(&id) {
+                    if stream.is_complete() {
+                        stream.on_close(on_event);
+                    } else {
+                        on_event(NetEvent::StreamClosed { stream: stream.p2p_id });
+                    }
                 }
             }
             quinn_proto::StreamEvent::Stopped { id, error_code } => {
                 tracing::warn!(?id, ?error_code, "stream stopped");
-                if let Some(stream) = self.streams.remove(&id) {
+                if let Some(mut stream) = self.streams.remove(&id) {
                     // TODO include error
-                    on_event(NetEvent::StreamClosed { stream: stream.p2p_id });
+                    if stream.is_complete() {
+                        stream.on_close(on_event);
+                    } else {
+                        on_event(NetEvent::StreamClosed { stream: stream.p2p_id });
+                    }
                 }
             }
             quinn_proto::StreamEvent::Available { dir: _ } => {}
@@ -400,6 +408,17 @@ impl Stream {
                 SpinResult::End
             }
         }
+    }
+
+    fn on_close<F>(&mut self, emit: &mut F)
+    where
+        F: FnMut(NetEvent),
+    {
+        self.state.get_mut().on_close(&self.p2p_id, emit);
+    }
+
+    fn is_complete(&mut self) -> bool {
+        self.state.get_mut().is_complete()
     }
 }
 

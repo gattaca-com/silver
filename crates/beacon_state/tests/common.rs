@@ -19,12 +19,10 @@ use silver_beacon_state::{
     },
 };
 use silver_common::{
-    BeaconStateEvent, GossipTopic, MessageId, NewGossipMsg, P2pStreamId, PeerRpcIn, RpcMsg,
-    SilverSpine, StreamProtocol, TCache, TCacheProducer, TProducer, TRandomAccess,
-    ssz_view::{
-        BLOCKS_BY_RANGE_REQ_SIZE, BeaconBlocksByRangeRequestView, STATUS_V2_SIZE,
-        SignedBeaconBlockView, StatusView,
-    },
+    BeaconStateEvent, GossipTopic, MessageId, NewGossipMsg, P2pStreamId, RpcInbound,
+    RpcResponseInbound, SilverSpine, StreamProtocol, TCache, TCacheProducer, TProducer,
+    TRandomAccess,
+    ssz_view::{BLOCKS_BY_RANGE_REQ_SIZE, BeaconBlocksByRangeRequestView, STATUS_V2_SIZE},
 };
 
 fn null_stream_id() -> P2pStreamId {
@@ -237,12 +235,14 @@ impl Harness {
         let tcache = Self::inj_reserve(&mut self.rpc_in_producer, len, |buf| {
             buf[..len].copy_from_slice(ssz)
         });
-        self.inj_adapter.produce(PeerRpcIn {
-            msg: RpcMsg::BlocksRangeResp(SignedBeaconBlockView),
-            sender: null_stream_id(),
-            tcache,
-            request_id: self.last_request_id,
-        });
+        self.inj_adapter.produce(RpcInbound::Response(RpcResponseInbound {
+            application_id: self.last_request_id,
+            stream_id: null_stream_id(),
+            response: silver_common::RpcResponse::BeaconBlock {
+                fork_digest: [0, 0, 0, 0],
+                ssz: tcache,
+            },
+        }));
     }
 
     pub fn inject_status(
@@ -251,23 +251,19 @@ impl Harness {
         finalized_epoch: u64,
         finalized_root: [u8; 32],
     ) {
-        let tcache = Self::inj_reserve(&mut self.rpc_in_producer, STATUS_V2_SIZE, |buf| {
-            // fork_digest zero (will mismatch real tile digest — tile
-            // drops the body but still enqueues a pending status
-            // response).
-            buf[0..4].fill(0);
-            buf[4..36].copy_from_slice(&finalized_root);
-            buf[36..44].copy_from_slice(&finalized_epoch.to_le_bytes());
-            buf[44..76].fill(0);
-            buf[76..84].copy_from_slice(&head_slot.to_le_bytes());
-            buf[84..92].copy_from_slice(&(finalized_epoch * 32).to_le_bytes());
-        });
-        self.inj_adapter.produce(PeerRpcIn {
-            msg: RpcMsg::Status(StatusView),
-            sender: null_stream_id(),
-            tcache,
-            request_id: 0,
-        });
+        let mut buf = [0u8; STATUS_V2_SIZE];
+        buf[0..4].fill(0);
+        buf[4..36].copy_from_slice(&finalized_root);
+        buf[36..44].copy_from_slice(&finalized_epoch.to_le_bytes());
+        buf[44..76].fill(0);
+        buf[76..84].copy_from_slice(&head_slot.to_le_bytes());
+        buf[84..92].copy_from_slice(&(finalized_epoch * 32).to_le_bytes());
+
+        self.inj_adapter.produce(RpcInbound::Response(RpcResponseInbound {
+            application_id: 0,
+            stream_id: null_stream_id(),
+            response: silver_common::RpcResponse::StatusV2(buf),
+        }));
     }
 
     pub fn assert_state_root(&self, post_ssz: &[u8]) {

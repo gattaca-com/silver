@@ -5,13 +5,25 @@ pub use peer_score_params::ScoreParams;
 use secp256k1::PublicKey;
 use serde::{Deserialize, Serialize};
 
-use crate::{Enr, Error, GossipTopic, Identify, Keypair, NodeId, PeerId, StreamProtocol};
+use crate::{
+    Enr, Error, GossipTopic, Identify, Keypair, NodeId, PeerId, StreamProtocol,
+    config::chain_config::ChainConfig,
+};
 
+mod chain_config;
 mod discovery_config;
 mod peer_score_params;
 
 const fn default_usize<const N: usize>() -> usize {
     N
+}
+
+const fn default_u32<const V: u32>() -> u32 {
+    V
+}
+
+const fn default_u64<const V: u64>() -> u64 {
+    V
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -33,6 +45,8 @@ pub struct Config {
     supported_protocols: Vec<String>,
     #[serde(default)]
     gossip_topics: Vec<String>,
+    #[serde(default)]
+    chain_config: ChainConfig,
     #[serde(default)]
     discovery_config: DiscoveryConfig,
     #[serde(default)]
@@ -68,6 +82,7 @@ impl Config {
                 StreamProtocol::Metadata.multiselect_string(),
             ],
             gossip_topics: vec![GossipTopic::BeaconBlock.to_string()],
+            chain_config: ChainConfig::default(),
             discovery_config: DiscoveryConfig::default(),
             peer_score_params: ScoreParams::default(),
             incoming_gossip_tcache_size: 2 << 24,     // protobuf
@@ -153,6 +168,10 @@ impl Config {
             identify.udp_ipv6 = Some(SocketAddr::V6(SocketAddrV6::new(v6, qp, 0, 0)));
         }
         Ok(identify)
+    }
+
+    pub fn chain_config(&self) -> ChainConfig {
+        self.chain_config.clone()
     }
 
     pub fn discovery_config(&self) -> DiscoveryConfig {

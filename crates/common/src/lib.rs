@@ -15,7 +15,7 @@ pub use crate::{
         ALL_PROTOCOLS, AcquiredRead as TRead, BeaconStateEvent, Consumer as TConsumer,
         Error as TCacheError, GossipMsgOut, IpBytes, MULTISTREAM_V1,
         MultiProducer as TMultiProducer, NewGossipMsg, P2pSend, P2pStreamId, PeerControl,
-        PeerEvent, PeerRpcIn, PeerStatus, Producer as TProducer, REJECT_RESPONSE, RPC_PROTOCOLS,
+        PeerEvent, PeerStatus, Producer as TProducer, REJECT_RESPONSE, RPC_PROTOCOLS,
         RandomAccessConsumer as TRandomAccess, Reservation as TReservation, RpcInbound, RpcMsg,
         RpcOutbound, RpcRequest, RpcRequestInbound, RpcRequestOutbound, RpcResponse,
         RpcResponseInbound, RpcResponseOutbound, RpcSeverity, SilverSpine, SilverSpineProducers,
