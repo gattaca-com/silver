@@ -3,8 +3,8 @@ use std::time::Instant;
 use buffa::MessageView;
 use flux::tile::Tile;
 use silver_common::{
-    Error, GossipMsgOut, MessageId, P2pSend, P2pStreamId, PeerControl, PeerEvent, SilverSpine,
-    TCacheProducer, TConsumer, TProducer,
+    BeaconStateEvent, Error, GossipMsgOut, MessageId, P2pSend, P2pStreamId, PeerControl, PeerEvent,
+    SilverSpine, TCacheProducer, TConsumer, TProducer, ssz_view::StatusView,
 };
 
 use crate::{
@@ -231,6 +231,12 @@ impl Tile<SilverSpine> for GossipHandler {
                     producers.p2p_send.produce(&P2pSend::Gossip(gossip_msg_out).into());
                 }
             });
+        });
+        adapter.consume(|beacon_event: BeaconStateEvent, _producers| match beacon_event {
+            BeaconStateEvent::Synced(status) | BeaconStateEvent::Status(status) => {
+                self.fork_digest_hex = hex::encode(StatusView::fork_digest(&status));
+            }
+            _ => {}
         });
         self.spin(&mut |event| match event {
             GossipHandlerEvent::PeerEvent(peer_event) => adapter.produce(peer_event),

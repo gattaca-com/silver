@@ -196,6 +196,9 @@ pub enum PeerEvent {
         p2p_peer: usize,
         protocol: StreamProtocol,
     },
+    P2pStreamClosed {
+        stream_id: P2pStreamId,
+    },
     P2pOutboundMessageDropped {
         p2p_peer: usize,
         protocol: StreamProtocol,
@@ -457,17 +460,42 @@ pub enum RpcMsg {
     BlocksRootResp(SignedBeaconBlockView),
     DataColumnRangeResp(DataColumnSidecarView),
     DataColumnByRootResp(DataColumnSidecarView),
+    Empty,
 }
 
-#[derive(Clone, Copy, Debug)]
-#[repr(C)]
-pub struct PeerRpcIn {
-    pub msg: RpcMsg,
-    pub sender: P2pStreamId,
-    pub tcache: TCacheRead,
-    /// Request id this chunk belongs to. `0` = unsolicited (no matching
-    /// outgoing request).
-    pub request_id: u64,
+impl From<&RpcInbound> for RpcMsg {
+    fn from(value: &RpcInbound) -> Self {
+        match value {
+            RpcInbound::Request(req) => match req.request {
+                RpcRequest::StatusV1(_) => RpcMsg::Status(StatusView),
+                RpcRequest::StatusV2(_) => RpcMsg::Status(StatusView),
+                RpcRequest::Ping(_) => RpcMsg::Ping(PingView),
+                RpcRequest::Goodbye(_) => RpcMsg::Goodbye(GoodbyeView),
+                RpcRequest::MetaData => RpcMsg::Empty,
+                RpcRequest::BlocksByRange(_) => {
+                    RpcMsg::BlocksRangeReq(BeaconBlocksByRangeRequestView)
+                }
+                RpcRequest::BlockByRoot(_) => RpcMsg::BlocksRootReq(BeaconBlocksByRootRequestView),
+                RpcRequest::DataColumnsByRange { .. } => {
+                    RpcMsg::DataColumnRangeReq(DataColumnSidecarsByRangeRequestView)
+                }
+                RpcRequest::DataColumnsByRoot(_) => {
+                    RpcMsg::DataColumnByRoot(DataColumnsByRootIdentifierView)
+                }
+            },
+            RpcInbound::Response(rsp) => match rsp.response {
+                RpcResponse::StatusV1(_) => RpcMsg::Status(StatusView),
+                RpcResponse::StatusV2(_) => RpcMsg::Status(StatusView),
+                RpcResponse::Ping(_) => RpcMsg::Ping(PingView),
+                RpcResponse::MetaData(_) => RpcMsg::MetaData(MetadataView),
+                RpcResponse::BeaconBlock { .. } => RpcMsg::BlocksRangeResp(SignedBeaconBlockView),
+                RpcResponse::DataColumnSidecar { .. } => {
+                    RpcMsg::DataColumnByRootResp(DataColumnSidecarView)
+                }
+                _ => RpcMsg::Empty,
+            },
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]

@@ -1,7 +1,7 @@
 use buffa::Message;
 use silver_common::{
-    P2pStreamId, RpcInbound, RpcRequest, RpcRequestInbound, RpcResponseInbound, StreamProtocol,
-    encode_observed_addr,
+    P2pStreamId, RpcInbound, RpcRequest, RpcRequestInbound, RpcResponse, RpcResponseInbound,
+    StreamProtocol, encode_observed_addr,
 };
 
 use super::{gossip_in::GossipReadState, gossip_out::GossipWriteState};
@@ -44,6 +44,42 @@ impl StreamState {
 
     pub fn new_outbound(protocol: StreamProtocol) -> Self {
         Self::Negotiate(NegotiateState::new_outbound(protocol))
+    }
+
+    pub fn is_complete(&self) -> bool {
+        match self {
+            StreamState::Negotiate(_) => false,
+            StreamState::Gossip { read, write } => {
+                matches!(read, GossipReadState::ReadingLength { buf: _, read } if *read == 0) &&
+                    matches!(write, GossipWriteState::Idle)
+            }
+            StreamState::IncomingRpc(rpc_in) => {
+                matches!(rpc_in, RpcIn::WriteResponse(RpcWriteResponse::Idle))
+            }
+            StreamState::OutgoingRpc(rpc_out) => {
+                matches!(rpc_out, RpcOut::ReadResponse(RpcReadResponse::ReadingPrefix { read, .. }) if *read == 0)
+            }
+            StreamState::IncomingIdentify(write) => matches!(write, WriteIdentifyResponse::Done),
+            StreamState::OutgoingIdentify(_) => false,
+            StreamState::Finished => true,
+        }
+    }
+
+    pub fn on_close<F>(&self, p2p_id: &P2pStreamId, emit: &mut F)
+    where
+        F: FnMut(NetEvent),
+    {
+        if let StreamState::OutgoingRpc(RpcOut::ReadResponse(RpcReadResponse::ReadingPrefix {
+            app_id,
+            ..
+        })) = self
+        {
+            emit(NetEvent::RpcInbound(RpcInbound::Response(RpcResponseInbound {
+                application_id: *app_id,
+                stream_id: *p2p_id,
+                response: RpcResponse::Complete,
+            })))
+        }
     }
 
     /// Step the stream state.

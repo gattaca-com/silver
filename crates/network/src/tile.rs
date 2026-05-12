@@ -116,8 +116,8 @@ impl Tile<SilverSpine> for NetworkTile {
                 NetEvent::StreamReady { stream: _ } => {
                     // TODO notifiy new stream?
                 }
-                NetEvent::StreamClosed { stream: _ } => {
-                    // TODO notify stream end?
+                NetEvent::StreamClosed { stream } => {
+                    adapter.produce(PeerEvent::P2pStreamClosed { stream_id: stream });
                 }
                 NetEvent::RpcInbound(rpc_inbound) => {
                     adapter.produce(rpc_inbound);

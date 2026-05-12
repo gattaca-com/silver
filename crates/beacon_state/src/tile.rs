@@ -3,8 +3,8 @@ use flux::{
     tile::Tile,
 };
 use silver_common::{
-    BeaconStateEvent, GossipTopic, NewGossipMsg, P2pStreamId, PeerEvent, PeerRpcIn, RpcMsg,
-    RpcSeverity, SilverSpine, TCacheRead, TRandomAccess,
+    BeaconStateEvent, GossipTopic, NewGossipMsg, P2pStreamId, PeerEvent, RpcInbound, RpcMsg,
+    RpcResponse, RpcResponseInbound, RpcSeverity, SilverSpine, TCacheRead, TRandomAccess,
     ssz_view::{
         AttesterSlashingView, BLOCKS_BY_RANGE_REQ_SIZE, PROPOSER_SLASHING_SIZE,
         ProposerSlashingView, SIGNED_BLS_CHANGE_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE,
@@ -1483,12 +1483,25 @@ impl Tile<SilverSpine> for BeaconStateTile {
         });
         self.gossip_consumer.free();
 
-        adapter.consume(|m: PeerRpcIn, producers| {
-            let acquired = self.rpc_consumer.acquire(m.tcache);
-            let data = acquired.buffer().ok().map(|(d, _)| d as *const [u8]);
-            if let Some(p) = data {
-                self.handle_rpc(m.msg, m.sender, m.request_id, unsafe { &*p }, m.tcache, producers);
-            }
+        adapter.consume(|m: RpcInbound, producers| {
+            if let RpcInbound::Response(RpcResponseInbound {
+                application_id,
+                stream_id,
+                response,
+            }) = m && let RpcResponse::BeaconBlock { fork_digest: _, ssz } = response {
+                    let acquired = self.rpc_consumer.acquire(ssz);
+                    let data = acquired.buffer().ok().map(|(d, _)| d as *const [u8]);
+                    if let Some(p) = data {
+                        self.handle_rpc(
+                            RpcMsg::BlocksRangeResp(SignedBeaconBlockView),
+                            stream_id,
+                            application_id,
+                            unsafe { &*p },
+                            ssz,
+                            producers,
+                        );
+                    }
+                }
         });
         self.rpc_consumer.free();
 

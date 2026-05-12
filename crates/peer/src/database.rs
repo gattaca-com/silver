@@ -119,6 +119,20 @@ impl PeerDatabase {
             .and_then(|record| record.metadata.as_ref())
             .map(MetadataView::seq_number)
     }
+
+    /// Live connection ids whose identify advertises `protocol`. A peer is
+    /// "live" iff it has an active p2p_id mapping (i.e., currently
+    /// connected); the protocol set is populated when an `Identify` record
+    /// arrives.
+    pub fn live_peers_supporting(
+        &self,
+        protocol: StreamProtocol,
+    ) -> impl Iterator<Item = usize> + '_ {
+        let proto = self.by_protocol.get(&protocol);
+        self.by_p2p_id
+            .iter()
+            .filter_map(move |(p2p_id, idx)| proto?.contains(idx).then_some(*p2p_id))
+    }
 }
 
 #[derive(Debug, Default)]

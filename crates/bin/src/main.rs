@@ -6,6 +6,7 @@ use flux::{
 };
 use quinn_proto::{Endpoint, EndpointConfig};
 use rand::RngCore;
+use silver_beacon_state::{BeaconStateTile, SlotTicker};
 use silver_common::{Config, ProtoIdentify, SilverSpine, TCache, TCacheProducer};
 use silver_control::Controller;
 use silver_discovery::DiscV5;
@@ -38,9 +39,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     let incoming_gossip_producer = TCache::producer(config.incoming_gossip_tcache_size());
     let incoming_gossip_consumer = incoming_gossip_producer.cache_ref().consumer()?;
     let ssz_gossip_producer = TCache::producer(config.incoming_gossip_ssz_tcache_size());
-    let _ssz_gossip_consumer = ssz_gossip_producer.cache_ref().random_access()?;
+    let ssz_gossip_consumer = ssz_gossip_producer.cache_ref().random_access()?;
     let outgoing_gossip_producer = TCache::producer(config.outgoing_gossip_tcache_size());
     let incoming_rpc_producer = TCache::producer(config.incoming_rpc_tcache_size());
+    let incoming_rpc_consumer = incoming_rpc_producer.cache_ref().random_access()?;
+
+    // TODO rpc producers
     let outgoing_rpc_producer = TCache::multi_producer(config.outgoing_rpc_tcache_size());
 
     // Tiles.
@@ -82,6 +86,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     let control_tile =
         Controller::new(PeerManager::new(config.gossip_topics()?, config.peer_score_params()));
 
+    let chain_config = config.chain_config();
+    let ticker = SlotTicker::new(
+        chain_config.genesis_unix_secs,
+        chain_config.slot_duration(),
+        chain_config.playload_lookahead(),
+    );
+    let beacon_state_tile =
+        BeaconStateTile::new(ticker, ssz_gossip_consumer, incoming_rpc_consumer, &[]); // TODO empty checkpoint
+
     // Spine
     let spine = SilverSpine::new(None);
     // TODO panic handler
@@ -90,6 +103,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         attach_tile(control_tile, scoped_spine, TileConfig::new(1, ThreadPriority::OSDefault));
         attach_tile(gossip_tile, scoped_spine, TileConfig::new(2, ThreadPriority::OSDefault));
         attach_tile(network_tile, scoped_spine, TileConfig::new(3, ThreadPriority::OSDefault));
+        attach_tile(beacon_state_tile, scoped_spine, TileConfig::new(4, ThreadPriority::OSDefault));
     });
 
     Ok(())

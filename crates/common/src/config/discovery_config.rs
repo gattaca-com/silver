@@ -2,6 +2,8 @@ use std::{path::PathBuf, time::Duration};
 
 use serde::{Deserialize, Serialize};
 
+use super::{default_u32, default_u64, default_usize};
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DiscoveryConfig {
     #[serde(default = "default_u64::<1000>")]
@@ -94,16 +96,4 @@ impl Default for DiscoveryConfig {
             persisted_banned_nodes_path: None,
         }
     }
-}
-
-pub const fn default_u32<const V: u32>() -> u32 {
-    V
-}
-
-pub const fn default_u64<const V: u64>() -> u64 {
-    V
-}
-
-pub const fn default_usize<const V: usize>() -> usize {
-    V
 }
