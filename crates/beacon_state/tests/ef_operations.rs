@@ -95,11 +95,14 @@ fn proposer_slashing() {
     let zh = compute_zero_hashes();
     operations_handler("proposer_slashing", "proposer_slashing", true, move |s, op| {
         let mut batch = SigBatch::new();
-        if !state_transition::collect_sigs_proposer_slashings(&s.imm, &s.vid, op, &mut batch, &zh) {
+        if state_transition::collect_sigs_proposer_slashings(&s.imm, &s.vid, op, &mut batch, &zh)
+            .is_err()
+        {
             return false;
         }
         batch.verify_all() &&
             state_transition::process_proposer_slashings(&s.vid, &mut s.epoch, &mut s.sd, op)
+                .is_ok()
     });
 }
 
@@ -112,18 +115,21 @@ fn attester_slashing() {
         list.extend_from_slice(op);
         let mut active_scratch = Vec::new();
         let mut batch = SigBatch::new();
-        if !state_transition::collect_sigs_attester_slashings(
+        if state_transition::collect_sigs_attester_slashings(
             &s.imm,
             &s.vid,
             &list,
             &mut active_scratch,
             &mut batch,
             &zh,
-        ) {
+        )
+        .is_err()
+        {
             return false;
         }
         batch.verify_all() &&
             state_transition::process_attester_slashings(&s.vid, &mut s.epoch, &mut s.sd, &list)
+                .is_ok()
     });
 }
 
@@ -163,7 +169,7 @@ fn attestation() {
         let mut votes_sink = Vec::new();
         let mut active_scratch = Vec::new();
         let mut batch = SigBatch::new();
-        if !state_transition::collect_sigs_attestations(
+        if state_transition::collect_sigs_attestations(
             &s.imm,
             &s.vid,
             &list,
@@ -172,7 +178,9 @@ fn attestation() {
             &mut active_scratch,
             &mut batch,
             &zh,
-        ) {
+        )
+        .is_err()
+        {
             return false;
         }
         batch.verify_all() &&
@@ -188,15 +196,16 @@ fn attestation() {
                 &mut votes_sink,
                 &mut active_scratch,
             )
+            .is_ok()
     });
 }
 
 #[test]
 fn deposit() {
     let zh = compute_zero_hashes();
-    operations_handler("deposit", "deposit", false, move |s, op| {
-        state_transition::process_deposits(&mut s.vid, &mut s.epoch, &mut s.sd, &mut s.pq, op, &zh);
-        true
+    operations_handler("deposit", "deposit", true, move |s, op| {
+        state_transition::process_deposits(&mut s.vid, &mut s.epoch, &mut s.sd, &mut s.pq, op, &zh)
+            .is_ok()
     });
 }
 
@@ -208,6 +217,7 @@ fn voluntary_exit() {
         state_transition::collect_sigs_voluntary_exits(&s.imm, &s.vid, op, &mut batch, &zh);
         batch.verify_all() &&
             state_transition::process_voluntary_exits(&s.vid, &mut s.epoch, &mut s.sd, &s.pq, op)
+                .is_ok()
     });
 }
 
@@ -216,12 +226,15 @@ fn bls_to_execution_change() {
     let zh = compute_zero_hashes();
     operations_handler("bls_to_execution_change", "address_change", true, move |s, op| {
         let mut batch = SigBatch::new();
-        if !state_transition::collect_sigs_bls_to_execution_changes(
+        if state_transition::collect_sigs_bls_to_execution_changes(
             &s.imm, &s.vid, op, &mut batch, &zh,
-        ) {
+        )
+        .is_err()
+        {
             return false;
         }
-        batch.verify_all() && state_transition::process_bls_to_execution_changes(&mut s.vid, op)
+        batch.verify_all() &&
+            state_transition::process_bls_to_execution_changes(&mut s.vid, op).is_ok()
     });
 }
 
@@ -251,6 +264,7 @@ fn sync_aggregate() {
                 op,
                 proposer_index,
             )
+            .is_ok()
     });
 }
 
@@ -294,7 +308,7 @@ fn consolidation_request() {
 fn withdrawals() {
     // The withdrawals test provides an execution_payload, not the full block body.
     operations_handler("withdrawals", "execution_payload", true, |s, op| {
-        state_transition::process_withdrawals(&s.vid, &s.epoch, &mut s.sd, &mut s.pq, op)
+        state_transition::process_withdrawals(&s.vid, &s.epoch, &mut s.sd, &mut s.pq, op).is_ok()
     });
 }
 
@@ -311,10 +325,12 @@ fn execution_payload() {
         if exec_off < bls_off && bls_off <= op.len() {
             let payload = &op[exec_off..bls_off];
             let block_slot = s.sd.slot;
-            state_transition::process_execution_payload(
+            let _ = state_transition::process_execution_payload(
                 &s.imm, &mut s.sd, payload, block_slot, &zh,
             );
-            state_transition::process_withdrawals(&s.vid, &s.epoch, &mut s.sd, &mut s.pq, payload);
+            let _ = state_transition::process_withdrawals(
+                &s.vid, &s.epoch, &mut s.sd, &mut s.pq, payload,
+            );
         }
         true
     });
@@ -345,5 +361,6 @@ fn block_header() {
             body_root,
             &zh,
         )
+        .is_ok()
     });
 }

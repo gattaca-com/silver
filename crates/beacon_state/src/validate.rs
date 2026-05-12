@@ -3,7 +3,14 @@ use silver_common::ssz_view::{
     ExecutionPayloadView, PROPOSER_SLASHING_SIZE, ProposerSlashingView,
 };
 
-use crate::{ssz_hash, types::*};
+use crate::{
+    error::{
+        AttestationError, BlockError, BlsToExecutionChangeError, ExecutionPayloadError,
+        OperationKind, ProposerSlashingError, Result, VoluntaryExitError,
+    },
+    ssz_hash,
+    types::*,
+};
 
 const SECONDS_PER_SLOT: u64 = 12;
 
@@ -21,9 +28,9 @@ pub fn validate_attestation_data(
     state_slot: Slot,
     current_epoch: Epoch,
     previous_epoch: Epoch,
-) -> bool {
+) -> Result<(), AttestationError> {
     if att.len() < ATTESTATION_FIXED {
-        return false;
+        return Err(AttestationError::TooShort { len: att.len(), min: ATTESTATION_FIXED });
     }
 
     let data = AttestationView::data(att);
@@ -32,41 +39,52 @@ pub fn validate_attestation_data(
     let target_epoch = AttestationDataView::target_epoch(data);
 
     if att_slot >= state_slot {
-        return false;
+        return Err(AttestationError::SlotNotPast { att_slot, state_slot });
     }
 
     let att_epoch = att_slot / SLOTS_PER_EPOCH;
     if target_epoch != att_epoch {
-        return false;
+        return Err(AttestationError::TargetEpochMismatch { target: target_epoch, att: att_epoch });
     }
 
     if target_epoch != current_epoch && target_epoch != previous_epoch {
-        return false;
+        return Err(AttestationError::TargetEpochOutOfWindow {
+            target: target_epoch,
+            prev: previous_epoch,
+            cur: current_epoch,
+        });
     }
 
     if att_index != 0 {
-        return false;
+        return Err(AttestationError::IndexNonZero { idx: att_index });
     }
 
-    true
+    Ok(())
 }
 
-pub fn validate_proposer_slashing(data: &[u8]) -> bool {
+pub fn validate_proposer_slashing(data: &[u8]) -> Result<(), ProposerSlashingError> {
     if data.len() < PROPOSER_SLASHING_SIZE {
-        return false;
+        return Err(ProposerSlashingError::TooShort {
+            len: data.len(),
+            min: PROPOSER_SLASHING_SIZE,
+        });
     }
     let s: &[u8; PROPOSER_SLASHING_SIZE] = data[..PROPOSER_SLASHING_SIZE].try_into().unwrap();
-    if ProposerSlashingView::h1_proposer_index(s) != ProposerSlashingView::h2_proposer_index(s) {
-        return false;
+    let h1_idx = ProposerSlashingView::h1_proposer_index(s);
+    let h2_idx = ProposerSlashingView::h2_proposer_index(s);
+    if h1_idx != h2_idx {
+        return Err(ProposerSlashingError::ProposerIndexMismatch { h1: h1_idx, h2: h2_idx });
     }
-    if ProposerSlashingView::h1_slot(s) != ProposerSlashingView::h2_slot(s) {
-        return false;
+    let h1_slot = ProposerSlashingView::h1_slot(s);
+    let h2_slot = ProposerSlashingView::h2_slot(s);
+    if h1_slot != h2_slot {
+        return Err(ProposerSlashingError::SlotMismatch { h1: h1_slot, h2: h2_slot });
     }
     // Distinct headers — same SignedBeaconBlockHeader is not slashable.
     if data[0..112] == data[208..320] {
-        return false;
+        return Err(ProposerSlashingError::SameHeader);
     }
-    true
+    Ok(())
 }
 
 pub fn validate_voluntary_exit(
@@ -75,42 +93,57 @@ pub fn validate_voluntary_exit(
     vi: usize,
     exit_epoch: Epoch,
     current_epoch: Epoch,
-) -> bool {
+) -> Result<(), VoluntaryExitError> {
     if vi >= vid.validator_cnt {
-        return false;
+        return Err(VoluntaryExitError::ValidatorOutOfRange { vi, cnt: vid.validator_cnt });
     }
+    let pubkey = vid.val_pubkey[vi];
     if epoch.val_activation_epoch[vi] > current_epoch || current_epoch >= epoch.val_exit_epoch[vi] {
-        return false;
+        return Err(VoluntaryExitError::NotActive { vi, pubkey, epoch: current_epoch });
     }
     if epoch.val_exit_epoch[vi] != u64::MAX {
-        return false;
+        return Err(VoluntaryExitError::AlreadyExiting { vi, pubkey });
     }
     if current_epoch < exit_epoch {
-        return false;
+        return Err(VoluntaryExitError::ExitEpochInFuture {
+            current: current_epoch,
+            exit: exit_epoch,
+        });
     }
     const SHARD_COMMITTEE_PERIOD: u64 = 256;
     if current_epoch < epoch.val_activation_epoch[vi] + SHARD_COMMITTEE_PERIOD {
-        return false;
+        return Err(VoluntaryExitError::TooEarly { vi, pubkey });
     }
-    true
+    Ok(())
 }
 
 pub fn validate_bls_to_execution_change(
     vid: &ValidatorIdentity,
     vi: usize,
     from_pubkey: &[u8; 48],
-) -> bool {
+) -> Result<(), BlsToExecutionChangeError> {
     if vi >= vid.validator_cnt {
-        return false;
+        return Err(BlsToExecutionChangeError::ValidatorOutOfRange { vi, cnt: vid.validator_cnt });
     }
-    if vid.val_withdrawal_credentials[vi][0] != 0x00 {
-        return false;
+    let prefix = vid.val_withdrawal_credentials[vi][0];
+    if prefix != 0x00 {
+        return Err(BlsToExecutionChangeError::BadCredentialPrefix {
+            vi,
+            pubkey: vid.val_pubkey[vi],
+            prefix,
+        });
     }
     let pubkey_hash = ssz_hash::sha256(from_pubkey);
     if vid.val_withdrawal_credentials[vi][1..] != pubkey_hash[1..] {
-        return false;
+        let mut expected = [0u8; 32];
+        expected[1..].copy_from_slice(&vid.val_withdrawal_credentials[vi][1..]);
+        return Err(BlsToExecutionChangeError::PubkeyHashMismatch {
+            from_pubkey: *from_pubkey,
+            expected,
+            got: pubkey_hash,
+        });
     }
-    true
+    Ok(())
 }
 
 pub fn validate_execution_payload(
@@ -118,39 +151,53 @@ pub fn validate_execution_payload(
     sd: &SlotData,
     payload: &[u8],
     block_slot: Slot,
-) -> bool {
+) -> Result<(), ExecutionPayloadError> {
     if payload.len() < EXECUTION_PAYLOAD_FIXED {
-        return false;
+        return Err(ExecutionPayloadError::TooShort {
+            len: payload.len(),
+            min: EXECUTION_PAYLOAD_FIXED,
+        });
     }
 
     // parent_hash == state.latest_execution_payload_header.block_hash
-    if ExecutionPayloadView::parent_hash(payload) != &sd.latest_execution_payload_header.block_hash &&
-        sd.latest_execution_payload_header.block_number > 0
-    {
-        return false;
+    let got_parent = *ExecutionPayloadView::parent_hash(payload);
+    let expected_parent = sd.latest_execution_payload_header.block_hash;
+    if got_parent != expected_parent && sd.latest_execution_payload_header.block_number > 0 {
+        return Err(ExecutionPayloadError::ParentHashMismatch {
+            expected: expected_parent,
+            got: got_parent,
+        });
     }
 
     // Spec: timestamp == compute_timestamp_at_slot(state, block.slot).
     let expected_timestamp = imm.genesis_time + block_slot * SECONDS_PER_SLOT;
-    if ExecutionPayloadView::timestamp(payload) != expected_timestamp {
-        return false;
+    let got_timestamp = ExecutionPayloadView::timestamp(payload);
+    if got_timestamp != expected_timestamp {
+        return Err(ExecutionPayloadError::TimestampMismatch {
+            expected: expected_timestamp,
+            got: got_timestamp,
+        });
     }
 
     // Spec: prev_randao == get_randao_mix(state, current_epoch).
-    if ExecutionPayloadView::prev_randao(payload) != &sd.randao_mix_current {
-        return false;
+    let got_randao = *ExecutionPayloadView::prev_randao(payload);
+    if got_randao != sd.randao_mix_current {
+        return Err(ExecutionPayloadError::RandaoMismatch {
+            expected: sd.randao_mix_current,
+            got: got_randao,
+        });
     }
 
     // TODO(EL): full payload acceptance is determined by engine_newPayloadV4
     // (VALID/INVALID/SYNCING). See process_block_body — flag block as
     // optimistic on SYNCING, reject on INVALID.
 
-    true
+    Ok(())
 }
 
-pub fn validate_operation_counts(body: &[u8]) -> bool {
+pub fn validate_operation_counts(body: &[u8]) -> Result<(), BlockError> {
     if body.len() < 396 {
-        return false;
+        return Err(BlockError::BodyTooShort { len: body.len(), min: 396 });
     }
     let off = |pos: usize| u32::from_le_bytes(body[pos..pos + 4].try_into().unwrap()) as usize;
 
@@ -169,18 +216,26 @@ pub fn validate_operation_counts(body: &[u8]) -> bool {
         if end >= start && elem_size > 0 { (end - start) / elem_size } else { 0 }
     };
 
-    if safe_count(ps_off, as_off, 416) > MAX_PROPOSER_SLASHINGS {
-        return false;
-    }
-    if safe_count(dep_off, ve_off, 1240) > MAX_DEPOSITS {
-        return false;
-    }
-    if safe_count(ve_off, ep_off, 112) > MAX_VOLUNTARY_EXITS {
-        return false;
-    }
-    if safe_count(bls_off, blob_off, 172) > MAX_BLS_TO_EXECUTION_CHANGES {
-        return false;
-    }
+    let check = |op: OperationKind, count: usize, max: usize| -> Result<(), BlockError> {
+        if count > max {
+            Err(BlockError::OperationCountOutOfBounds { op, count, max })
+        } else {
+            Ok(())
+        }
+    };
+
+    check(
+        OperationKind::ProposerSlashings,
+        safe_count(ps_off, as_off, 416),
+        MAX_PROPOSER_SLASHINGS,
+    )?;
+    check(OperationKind::Deposits, safe_count(dep_off, ve_off, 1240), MAX_DEPOSITS)?;
+    check(OperationKind::VoluntaryExits, safe_count(ve_off, ep_off, 112), MAX_VOLUNTARY_EXITS)?;
+    check(
+        OperationKind::BlsToExecutionChanges,
+        safe_count(bls_off, blob_off, 172),
+        MAX_BLS_TO_EXECUTION_CHANGES,
+    )?;
 
     // Variable-size element counts from offset tables.
     let var_count = |start: usize, end: usize| -> usize {
@@ -195,12 +250,12 @@ pub fn validate_operation_counts(body: &[u8]) -> bool {
         if first > 0 && first.is_multiple_of(4) { first / 4 } else { 0 }
     };
 
-    if var_count(as_off, att_off) > MAX_ATTESTER_SLASHINGS_ELECTRA {
-        return false;
-    }
-    if var_count(att_off, dep_off) > MAX_ATTESTATIONS_ELECTRA {
-        return false;
-    }
+    check(
+        OperationKind::AttesterSlashings,
+        var_count(as_off, att_off),
+        MAX_ATTESTER_SLASHINGS_ELECTRA,
+    )?;
+    check(OperationKind::Attestations, var_count(att_off, dep_off), MAX_ATTESTATIONS_ELECTRA)?;
 
-    true
+    Ok(())
 }
