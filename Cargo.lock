@@ -3897,6 +3897,7 @@ dependencies = [
  "serde_yml",
  "silver_common",
  "snap 0.1.2",
+ "thiserror 1.0.69",
  "tracing",
 ]
 

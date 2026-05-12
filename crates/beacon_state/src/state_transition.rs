@@ -16,6 +16,11 @@ use silver_common::ssz_view::{
 use crate::{
     bls::{self, SigBatch},
     epoch_transition,
+    error::{
+        AttestationError, AttesterSlashingError, BlockError, BlsToExecutionChangeError, Error,
+        ExecutionPayloadError, ProposerSlashingError, Result, SyncAggregateError,
+        VoluntaryExitError, WithdrawalRecord, WithdrawalsError,
+    },
     shuffling::{self, DOMAIN_BEACON_ATTESTER, MAX_EFFECTIVE_BALANCE},
     ssz_hash::{self, hash_tree_root_block_header, hash_tree_root_state},
     types::{
@@ -67,9 +72,14 @@ pub fn apply_block(
     postponed_scratch: &mut Vec<types::PendingDeposit>,
     attestation_votes: &mut Vec<(u32, B256, Epoch)>,
     sig_batch: &mut SigBatch,
-) -> bool {
+) -> Result<()> {
+    let wrap = |kind: BlockError| Error::invalid_block(block_state_root, kind);
+
     if block_slot <= sd.latest_block_header.slot {
-        return false;
+        return Err(wrap(BlockError::SlotNotAfterHeader {
+            slot: block_slot,
+            latest: sd.latest_block_header.slot,
+        }));
     }
 
     // Proposer must match `proposer_lookahead` (Fulu, valid for
@@ -81,7 +91,10 @@ pub fn apply_block(
         if la_idx < types::PROPOSER_LOOKAHEAD_SIZE &&
             proposer_index != sd.proposer_lookahead[la_idx]
         {
-            return false;
+            return Err(wrap(BlockError::ProposerLookaheadMismatch {
+                got: proposer_index,
+                expected: sd.proposer_lookahead[la_idx],
+            }));
         }
     }
 
@@ -101,13 +114,11 @@ pub fn apply_block(
         );
     }
 
-    if !process_block_header(vid, epoch, sd, block_slot, proposer_index, parent_root, body_root, zh)
-    {
-        return false;
-    }
+    process_block_header(vid, epoch, sd, block_slot, proposer_index, parent_root, body_root, zh)
+        .map_err(wrap)?;
 
     let body = if block_bytes.len() > 184 { &block_bytes[184..] } else { &[] };
-    if !process_block_body(
+    process_block_body(
         imm,
         vid,
         longtail,
@@ -118,20 +129,22 @@ pub fn apply_block(
         active_scratch,
         sig_batch,
         body,
+        block_state_root,
         block_slot,
         proposer_index,
         shuffling,
         zh,
         attestation_votes,
-    ) {
-        return false;
-    }
+    )?;
 
     let actual = hash_tree_root_state(imm, vid, longtail, epoch, roots, sd, pq, zh);
     if actual != block_state_root {
-        return false;
+        return Err(wrap(BlockError::PostStateRootMismatch {
+            expected: block_state_root,
+            got: actual,
+        }));
     }
-    true
+    Ok(())
 }
 
 /// Shuffle active indices for current and previous epoch into the caller's
@@ -172,23 +185,27 @@ pub fn apply_signed_block_debug(
     pq: &mut PendingQueues,
     block_bytes: &[u8],
     zh: &[B256],
-) -> Result<(), String> {
+) -> Result<()> {
     if block_bytes.len() < 184 {
-        return Err("block too short".into());
+        return Err(Error::invalid_block([0; 32], BlockError::TooShort {
+            len: block_bytes.len(),
+            min: 184,
+        }));
     }
     let block_slot = SignedBeaconBlockView::slot(block_bytes);
-    if block_slot <= sd.latest_block_header.slot {
-        return Err(format!(
-            "block_slot <= latest_block_header.slot: block={block_slot} latest={}",
-            sd.latest_block_header.slot
-        ));
-    }
-
     let proposer_index = SignedBeaconBlockView::proposer_index(block_bytes);
     let parent_root: B256 = *SignedBeaconBlockView::parent_root(block_bytes);
     let state_root: B256 = *SignedBeaconBlockView::state_root(block_bytes);
     let body = SignedBeaconBlockView::body(block_bytes);
     let body_root = ssz_hash::hash_tree_root_body(body, zh);
+    let wrap = |kind: BlockError| Error::invalid_block(state_root, kind);
+
+    if block_slot <= sd.latest_block_header.slot {
+        return Err(wrap(BlockError::SlotNotAfterHeader {
+            slot: block_slot,
+            latest: sd.latest_block_header.slot,
+        }));
+    }
 
     let mut active_scratch = Vec::new();
     let mut postponed_scratch = Vec::new();
@@ -200,15 +217,18 @@ pub fn apply_signed_block_debug(
         if la_idx < types::PROPOSER_LOOKAHEAD_SIZE &&
             proposer_index != sd.proposer_lookahead[la_idx]
         {
-            return Err(format!(
-                "proposer_lookahead mismatch: got={proposer_index} expected={}",
-                sd.proposer_lookahead[la_idx]
-            ));
+            return Err(wrap(BlockError::ProposerLookaheadMismatch {
+                got: proposer_index,
+                expected: sd.proposer_lookahead[la_idx],
+            }));
         }
     }
 
     if proposer_index as usize >= vid.validator_cnt {
-        return Err(format!("proposer_index out of range: {proposer_index}"));
+        return Err(wrap(BlockError::ProposerOutOfRange {
+            idx: proposer_index,
+            cnt: vid.validator_cnt,
+        }));
     }
     let block_epoch = block_slot / SLOTS_PER_EPOCH;
     let fork_version = bls::fork_version_at_epoch(
@@ -226,7 +246,7 @@ pub fn apply_signed_block_debug(
         &imm.genesis_validators_root,
         zh,
     ) {
-        return Err(format!("BLS sig failed: slot={block_slot} proposer={proposer_index}"));
+        return Err(Error::InvalidBlockSig);
     }
 
     if block_slot > sd.slot {
@@ -244,10 +264,8 @@ pub fn apply_signed_block_debug(
             &mut postponed_scratch,
         );
     }
-    if !process_block_header(vid, epoch, sd, block_slot, proposer_index, parent_root, body_root, zh)
-    {
-        return Err("block_header check failed".into());
-    }
+    process_block_header(vid, epoch, sd, block_slot, proposer_index, parent_root, body_root, zh)
+        .map_err(wrap)?;
 
     let mut curr = Vec::new();
     let mut prev = Vec::new();
@@ -262,7 +280,7 @@ pub fn apply_signed_block_debug(
     };
     let mut votes_sink: Vec<(u32, B256, Epoch)> = Vec::new();
     let mut sig_batch = SigBatch::new();
-    if !process_block_body(
+    process_block_body(
         imm,
         vid,
         longtail,
@@ -273,18 +291,17 @@ pub fn apply_signed_block_debug(
         &mut active_scratch,
         &mut sig_batch,
         body,
+        state_root,
         block_slot,
         proposer_index,
         Some(&sref),
         zh,
         &mut votes_sink,
-    ) {
-        return Err("process_block_body rejected".into());
-    }
+    )?;
 
     let actual = hash_tree_root_state(imm, vid, longtail, epoch, roots, sd, pq, zh);
     if actual != state_root {
-        return Err("post-state root mismatch".into());
+        return Err(wrap(BlockError::PostStateRootMismatch { expected: state_root, got: actual }));
     }
     Ok(())
 }
@@ -359,28 +376,37 @@ pub fn process_block_header(
     parent_root: B256,
     body_root: B256,
     zh: &[B256],
-) -> bool {
+) -> Result<(), BlockError> {
     if block_slot != sd.slot {
-        return false;
+        return Err(BlockError::SlotStateMismatch { block: block_slot, state: sd.slot });
     }
     if block_slot <= sd.latest_block_header.slot {
-        return false;
+        return Err(BlockError::SlotNotAfterHeader {
+            slot: block_slot,
+            latest: sd.latest_block_header.slot,
+        });
     }
     if proposer_index as usize >= vid.validator_cnt {
-        return false;
+        return Err(BlockError::ProposerOutOfRange { idx: proposer_index, cnt: vid.validator_cnt });
     }
 
     let expected_proposer = sd.proposer_lookahead[(block_slot % SLOTS_PER_EPOCH) as usize];
     if proposer_index != expected_proposer {
-        return false;
+        return Err(BlockError::ProposerLookaheadMismatch {
+            got: proposer_index,
+            expected: expected_proposer,
+        });
     }
     if epoch.val_slashed(proposer_index as usize) {
-        return false;
+        return Err(BlockError::ProposerSlashed {
+            idx: proposer_index,
+            pubkey: vid.val_pubkey[proposer_index as usize],
+        });
     }
 
     let expected_parent = hash_tree_root_block_header(&sd.latest_block_header, zh);
     if parent_root != expected_parent {
-        return false;
+        return Err(BlockError::ParentRootMismatch { expected: expected_parent, got: parent_root });
     }
 
     sd.latest_block_header = BeaconBlockHeader {
@@ -391,7 +417,7 @@ pub fn process_block_header(
         body_root,
     };
 
-    true
+    Ok(())
 }
 
 /// Shuffled indices for current and previous epoch, needed for attestation
@@ -461,7 +487,7 @@ impl<'a> BodyOffsets<'a> {
 /// (except for deposits).
 ///
 /// Pass 2 — `process_*` functions run in spec order. Each does its own
-/// data + state-dependent validation and mutation, returning false on any
+/// data + state-dependent validation and mutation, returning `Err` on any
 /// spec-assertion failure.
 #[allow(clippy::too_many_arguments)]
 pub fn process_block_body(
@@ -475,25 +501,29 @@ pub fn process_block_body(
     active_scratch: &mut Vec<u32>,
     sig_batch: &mut SigBatch,
     body: &[u8],
+    state_root: B256,
     block_slot: Slot,
     proposer_index: u64,
     shuffling: Option<&ShufflingRef<'_>>,
     zh: &[B256],
     attestation_votes: &mut Vec<(u32, B256, Epoch)>,
-    // TODO change to Result with a helpful error message
-) -> bool {
-    if !validate::validate_operation_counts(body) {
-        return false;
-    }
-    let Some(offsets) = BodyOffsets::new(body) else { return false };
+) -> Result<()> {
+    let wrap = |kind: BlockError| Error::invalid_block(state_root, kind);
+    validate::validate_operation_counts(body).map_err(wrap)?;
+    let offsets = BodyOffsets::new(body).ok_or_else(|| {
+        wrap(BlockError::BodyTooShort { len: body.len(), min: BEACON_BLOCK_BODY_FIXED })
+    })?;
     if (proposer_index as usize) >= vid.validator_cnt {
-        return false;
+        return Err(wrap(BlockError::ProposerOutOfRange {
+            idx: proposer_index,
+            cnt: vid.validator_cnt,
+        }));
     }
 
     sig_batch.clear();
 
     // Pass 1 — sig collection.
-    if !collect_sigs_block_body(
+    collect_sigs_block_body(
         imm,
         vid,
         longtail,
@@ -505,53 +535,44 @@ pub fn process_block_body(
         proposer_index,
         shuffling,
         zh,
-    ) {
-        return false;
-    }
+    )?;
 
     // Verify all collected sigs at once (multi-pairing).
     if !sig_batch.verify_all() {
-        return false;
+        return Err(Error::SigBatchFailed);
     }
 
     // Pass 2 — spec-order data + state-dep validate + mutate.
     let body = offsets.body;
     let payload = offsets.payload();
 
-    if !process_withdrawals(vid, epoch, sd, pq, payload) {
-        return false;
-    }
-    if !process_execution_payload(imm, sd, payload, block_slot, zh) {
-        return false;
-    }
+    process_withdrawals(vid, epoch, sd, pq, payload)?;
+    process_execution_payload(imm, sd, payload, block_slot, zh)?;
     process_randao(body, sd);
     process_eth1_data(sd, body);
 
     if offsets.proposer_slashings_off <= offsets.attester_slashings_off &&
-        offsets.attester_slashings_off <= body.len() &&
-        !process_proposer_slashings(
+        offsets.attester_slashings_off <= body.len()
+    {
+        process_proposer_slashings(
             vid,
             epoch,
             sd,
             offsets.slice(offsets.proposer_slashings_off, offsets.attester_slashings_off),
-        )
-    {
-        return false;
+        )?;
     }
     if offsets.attester_slashings_off <= offsets.attestations_off &&
-        offsets.attestations_off <= body.len() &&
-        !process_attester_slashings(
+        offsets.attestations_off <= body.len()
+    {
+        process_attester_slashings(
             vid,
             epoch,
             sd,
             offsets.slice(offsets.attester_slashings_off, offsets.attestations_off),
-        )
-    {
-        return false;
+        )?;
     }
-    if offsets.attestations_off <= offsets.deposits_off &&
-        offsets.deposits_off <= body.len() &&
-        !process_attestations(
+    if offsets.attestations_off <= offsets.deposits_off && offsets.deposits_off <= body.len() {
+        process_attestations(
             vid,
             epoch,
             roots,
@@ -562,52 +583,41 @@ pub fn process_block_body(
             shuffling,
             attestation_votes,
             active_scratch,
-        )
-    {
-        return false;
+        )?;
     }
     if offsets.deposits_off <= offsets.voluntary_exits_off &&
-        offsets.voluntary_exits_off <= body.len() &&
-        !process_deposits(
+        offsets.voluntary_exits_off <= body.len()
+    {
+        process_deposits(
             vid,
             epoch,
             sd,
             pq,
             offsets.slice(offsets.deposits_off, offsets.voluntary_exits_off),
             zh,
-        )
-    {
-        return false;
+        )?;
     }
-    if offsets.voluntary_exits_off <= offsets.exec_off &&
-        offsets.exec_off <= body.len() &&
-        !process_voluntary_exits(
+    if offsets.voluntary_exits_off <= offsets.exec_off && offsets.exec_off <= body.len() {
+        process_voluntary_exits(
             vid,
             epoch,
             sd,
             pq,
             offsets.slice(offsets.voluntary_exits_off, offsets.exec_off),
-        )
-    {
-        return false;
+        )?;
     }
-    if offsets.bls_changes_off <= offsets.blob_off &&
-        offsets.blob_off <= body.len() &&
-        !process_bls_to_execution_changes(
+    if offsets.bls_changes_off <= offsets.blob_off && offsets.blob_off <= body.len() {
+        process_bls_to_execution_changes(
             vid,
             offsets.slice(offsets.bls_changes_off, offsets.blob_off),
-        )
-    {
-        return false;
+        )?;
     }
 
     if offsets.exec_requests_off <= body.len() {
         process_execution_requests(vid, epoch, sd, pq, &body[offsets.exec_requests_off..]);
     }
-    if !process_sync_aggregate(vid, longtail, epoch, sd, &body[220..380], proposer_index) {
-        return false;
-    }
-    true
+    process_sync_aggregate(vid, longtail, epoch, sd, &body[220..380], proposer_index)?;
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -623,40 +633,37 @@ fn collect_sigs_block_body(
     proposer_index: u64,
     shuffling: Option<&ShufflingRef<'_>>,
     zh: &[B256],
-) -> bool {
+) -> Result<()> {
     let body = offsets.body;
 
     let proposer_pubkey = &vid.val_pubkey_decompressed[proposer_index as usize];
     collect_sigs_randao(imm, body, block_slot, proposer_pubkey, sig_batch);
 
     if offsets.proposer_slashings_off <= offsets.attester_slashings_off &&
-        offsets.attester_slashings_off <= body.len() &&
-        !collect_sigs_proposer_slashings(
+        offsets.attester_slashings_off <= body.len()
+    {
+        collect_sigs_proposer_slashings(
             imm,
             vid,
             offsets.slice(offsets.proposer_slashings_off, offsets.attester_slashings_off),
             sig_batch,
             zh,
-        )
-    {
-        return false;
+        )?;
     }
     if offsets.attester_slashings_off <= offsets.attestations_off &&
-        offsets.attestations_off <= body.len() &&
-        !collect_sigs_attester_slashings(
+        offsets.attestations_off <= body.len()
+    {
+        collect_sigs_attester_slashings(
             imm,
             vid,
             offsets.slice(offsets.attester_slashings_off, offsets.attestations_off),
             active_scratch,
             sig_batch,
             zh,
-        )
-    {
-        return false;
+        )?;
     }
-    if offsets.attestations_off <= offsets.deposits_off &&
-        offsets.deposits_off <= body.len() &&
-        !collect_sigs_attestations(
+    if offsets.attestations_off <= offsets.deposits_off && offsets.deposits_off <= body.len() {
+        collect_sigs_attestations(
             imm,
             vid,
             offsets.slice(offsets.attestations_off, offsets.deposits_off),
@@ -665,9 +672,7 @@ fn collect_sigs_block_body(
             active_scratch,
             sig_batch,
             zh,
-        )
-    {
-        return false;
+        )?;
     }
     // deposits skipped — these are verified inline in `apply_deposit`.
     if offsets.voluntary_exits_off <= offsets.exec_off && offsets.exec_off <= body.len() {
@@ -679,17 +684,14 @@ fn collect_sigs_block_body(
             zh,
         );
     }
-    if offsets.bls_changes_off <= offsets.blob_off &&
-        offsets.blob_off <= body.len() &&
-        !collect_sigs_bls_to_execution_changes(
+    if offsets.bls_changes_off <= offsets.blob_off && offsets.blob_off <= body.len() {
+        collect_sigs_bls_to_execution_changes(
             imm,
             vid,
             offsets.slice(offsets.bls_changes_off, offsets.blob_off),
             sig_batch,
             zh,
-        )
-    {
-        return false;
+        )?;
     }
     collect_sigs_sync_aggregate(
         imm,
@@ -701,7 +703,7 @@ fn collect_sigs_block_body(
         active_scratch,
         sig_batch,
     );
-    true
+    Ok(())
 }
 
 pub fn collect_sigs_randao(
@@ -777,15 +779,15 @@ pub fn collect_sigs_attestations(
     active_scratch: &mut Vec<u32>,
     sig_batch: &mut SigBatch,
     zh: &[B256],
-) -> bool {
+) -> Result<(), AttestationError> {
     if attestation_data.is_empty() {
-        return true;
+        return Ok(());
     }
     let first_offset =
         u32::from_le_bytes(attestation_data[..4].try_into().unwrap_or([0; 4])) as usize;
     if first_offset == 0 || !first_offset.is_multiple_of(4) || first_offset > attestation_data.len()
     {
-        return true;
+        return Ok(());
     }
     let count = first_offset / 4;
     let current_epoch = block_slot / SLOTS_PER_EPOCH;
@@ -799,10 +801,14 @@ pub fn collect_sigs_attestations(
             attestation_data.len()
         };
         if att_start >= att_end || att_end > attestation_data.len() {
-            return false;
+            return Err(AttestationError::BadOffsets {
+                start: att_start,
+                end: att_end,
+                parent_len: attestation_data.len(),
+            });
         }
         let att = &attestation_data[att_start..att_end];
-        if !collect_sigs_single_attestation(
+        collect_sigs_single_attestation(
             imm,
             vid,
             att,
@@ -811,11 +817,9 @@ pub fn collect_sigs_attestations(
             active_scratch,
             sig_batch,
             zh,
-        ) {
-            return false;
-        }
+        )?;
     }
-    true
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -828,24 +832,24 @@ pub fn collect_sigs_single_attestation(
     active_scratch: &mut Vec<u32>,
     sig_batch: &mut SigBatch,
     zh: &[B256],
-) -> bool {
+) -> Result<(), AttestationError> {
     let data = AttestationView::data(att);
     let att_slot = AttestationDataView::slot(data);
     let target_epoch = AttestationDataView::target_epoch(data);
     let is_current = target_epoch == current_epoch;
-    let Some(shuffling) = shuffling else { return false };
+    let shuffling = shuffling.ok_or(AttestationError::MissingShuffling)?;
     let (shuffled, cps) = if is_current {
         (shuffling.current_shuffled, shuffling.current_cps)
     } else {
         (shuffling.previous_shuffled, shuffling.previous_cps)
     };
     if shuffled.is_empty() || cps == 0 {
-        return false;
+        return Err(AttestationError::EmptyShuffling);
     }
     let committee_bits = u64::from_le_bytes(*AttestationView::committee_bits(att));
     let agg_bits = AttestationView::aggregation_bits(att);
     if committee_bits == 0 {
-        return false;
+        return Err(AttestationError::EmptyCommitteeBits);
     }
 
     active_scratch.clear();
@@ -864,7 +868,7 @@ pub fn collect_sigs_single_attestation(
             }
             let vi = validator_idx as usize;
             if vi >= vid.validator_cnt {
-                return false;
+                return Err(AttestationError::ValidatorOutOfRange { vi, cnt: vid.validator_cnt });
             }
             active_scratch.push(validator_idx);
         }
@@ -890,7 +894,7 @@ pub fn collect_sigs_single_attestation(
         sig,
         signing_root,
     );
-    true
+    Ok(())
 }
 
 /// Pass 2 — full data + state-dep validation, apply participation flags +
@@ -907,15 +911,15 @@ pub fn process_attestations(
     shuffling: Option<&ShufflingRef<'_>>,
     votes_sink: &mut Vec<(u32, B256, Epoch)>,
     active_scratch: &mut Vec<u32>,
-) -> bool {
+) -> Result<(), AttestationError> {
     if attestation_data.is_empty() {
-        return true;
+        return Ok(());
     }
     let first_offset =
         u32::from_le_bytes(attestation_data[..4].try_into().unwrap_or([0; 4])) as usize;
     if first_offset == 0 || !first_offset.is_multiple_of(4) || first_offset > attestation_data.len()
     {
-        return true;
+        return Ok(());
     }
     let count = first_offset / 4;
     let current_epoch = block_slot / SLOTS_PER_EPOCH;
@@ -930,10 +934,14 @@ pub fn process_attestations(
             attestation_data.len()
         };
         if att_start >= att_end || att_end > attestation_data.len() {
-            return false;
+            return Err(AttestationError::BadOffsets {
+                start: att_start,
+                end: att_end,
+                parent_len: attestation_data.len(),
+            });
         }
         let att = &attestation_data[att_start..att_end];
-        let Some(reward) = process_single_attestation(
+        let reward = process_single_attestation(
             vid,
             epoch,
             roots,
@@ -944,9 +952,7 @@ pub fn process_attestations(
             shuffling,
             votes_sink,
             active_scratch,
-        ) else {
-            return false;
-        };
+        )?;
         if reward > 0 && (proposer_index as usize) < vid.validator_cnt {
             const PROPOSER_WEIGHT: u64 = 8;
             const WEIGHT_DENOMINATOR: u64 = 64;
@@ -957,12 +963,12 @@ pub fn process_attestations(
                 sd.balances[proposer_index as usize].saturating_add(proposer_reward);
         }
     }
-    true
+    Ok(())
 }
 
 /// Pass 2 single-attestation worker — full data + state-dep validation +
 /// participation flag updates. Returns the proposer reward numerator on
-/// success, or `None` on a spec-assertion failure.
+/// success.
 #[allow(clippy::too_many_arguments)]
 pub fn process_single_attestation(
     vid: &ValidatorIdentity,
@@ -975,10 +981,8 @@ pub fn process_single_attestation(
     shuffling: Option<&ShufflingRef<'_>>,
     votes_sink: &mut Vec<(u32, B256, Epoch)>,
     active_scratch: &mut Vec<u32>,
-) -> Option<u64> {
-    if !validate::validate_attestation_data(att, sd.slot, current_epoch, previous_epoch) {
-        return None;
-    }
+) -> Result<u64, AttestationError> {
+    validate::validate_attestation_data(att, sd.slot, current_epoch, previous_epoch)?;
     let data = AttestationView::data(att);
     let att_slot = AttestationDataView::slot(data);
     let beacon_block_root: B256 = *AttestationDataView::beacon_block_root(data);
@@ -989,12 +993,21 @@ pub fn process_single_attestation(
 
     let is_current = target_epoch == current_epoch;
     if !is_current && target_epoch != previous_epoch {
-        return None;
+        return Err(AttestationError::TargetEpochOutOfWindow {
+            target: target_epoch,
+            prev: previous_epoch,
+            cur: current_epoch,
+        });
     }
     let justified =
         if is_current { sd.current_justified_checkpoint } else { sd.previous_justified_checkpoint };
     if source_epoch != justified.epoch || source_root != justified.root {
-        return None;
+        return Err(AttestationError::SourceMismatch {
+            expected_epoch: justified.epoch,
+            expected_root: justified.root,
+            got_epoch: source_epoch,
+            got_root: source_root,
+        });
     }
 
     let expected_target_root = get_block_root_at_epoch(roots, target_epoch);
@@ -1013,22 +1026,22 @@ pub fn process_single_attestation(
         flag_weights[2] = true;
     }
 
-    let shuffling = shuffling?;
+    let shuffling = shuffling.ok_or(AttestationError::MissingShuffling)?;
     let (shuffled, cps) = if is_current {
         (shuffling.current_shuffled, shuffling.current_cps)
     } else {
         (shuffling.previous_shuffled, shuffling.previous_cps)
     };
     if shuffled.is_empty() || cps == 0 {
-        return None;
+        return Err(AttestationError::EmptyShuffling);
     }
     let committee_bits = u64::from_le_bytes(*AttestationView::committee_bits(att));
     let agg_bits = AttestationView::aggregation_bits(att);
     if committee_bits == 0 {
-        return None;
+        return Err(AttestationError::EmptyCommitteeBits);
     }
     if cps < 64 && (committee_bits >> cps) != 0 {
-        return None;
+        return Err(AttestationError::CommitteeBitsOverflow { cps, bits: committee_bits });
     }
 
     active_scratch.clear();
@@ -1048,17 +1061,18 @@ pub fn process_single_attestation(
             }
             let vi = validator_idx as usize;
             if vi >= vid.validator_cnt {
-                return None;
+                return Err(AttestationError::ValidatorOutOfRange { vi, cnt: vid.validator_cnt });
             }
             active_scratch.push(validator_idx);
         }
         if active_scratch.len() == before {
-            return None;
+            return Err(AttestationError::EmptyCommittee);
         }
         agg_offset += committee.len();
     }
-    if ssz_hash::bitlist_len(agg_bits) != agg_offset {
-        return None;
+    let bitlist_len = ssz_hash::bitlist_len(agg_bits);
+    if bitlist_len != agg_offset {
+        return Err(AttestationError::BitlistLenMismatch { expected: agg_offset, got: bitlist_len });
     }
 
     for &validator_idx in active_scratch.iter() {
@@ -1067,7 +1081,7 @@ pub fn process_single_attestation(
 
     let any_flag = flag_weights[0] | flag_weights[1] | flag_weights[2];
     if !any_flag {
-        return Some(0);
+        return Ok(0);
     }
 
     let total_active = {
@@ -1105,7 +1119,7 @@ pub fn process_single_attestation(
             }
         }
     }
-    Some(proposer_reward_numerator)
+    Ok(proposer_reward_numerator)
 }
 
 #[inline]
@@ -1122,13 +1136,11 @@ pub fn process_execution_payload(
     payload_bytes: &[u8],
     block_slot: Slot,
     zh: &[B256],
-) -> bool {
+) -> Result<(), ExecutionPayloadError> {
     if payload_bytes.len() < 528 {
-        return false;
+        return Err(ExecutionPayloadError::TooShort { len: payload_bytes.len(), min: 528 });
     }
-    if !validate::validate_execution_payload(imm, sd, payload_bytes, block_slot) {
-        return false;
-    }
+    validate::validate_execution_payload(imm, sd, payload_bytes, block_slot)?;
 
     let extra_data_off = ExecutionPayloadView::extra_data_offset(payload_bytes) as usize;
     let transactions_off = ExecutionPayloadView::transactions_offset(payload_bytes) as usize;
@@ -1163,7 +1175,7 @@ pub fn process_execution_payload(
         blob_gas_used: ExecutionPayloadView::blob_gas_used(payload_bytes),
         excess_blob_gas: ExecutionPayloadView::excess_blob_gas(payload_bytes),
     };
-    true
+    Ok(())
 }
 
 /// Process withdrawals from the execution payload.
@@ -1175,13 +1187,16 @@ pub fn process_withdrawals(
     sd: &mut SlotData,
     pq: &mut PendingQueues,
     payload_bytes: &[u8],
-) -> bool {
+) -> Result<(), WithdrawalsError> {
     if payload_bytes.len() < 528 {
-        return false;
+        return Err(WithdrawalsError::PayloadTooShort { len: payload_bytes.len(), min: 528 });
     }
     let withdrawals_off = ExecutionPayloadView::withdrawals_offset(payload_bytes) as usize;
     if withdrawals_off > payload_bytes.len() {
-        return false;
+        return Err(WithdrawalsError::BadOffsets {
+            withdrawals_off,
+            payload_len: payload_bytes.len(),
+        });
     }
     let withdrawals_data = &payload_bytes[withdrawals_off..];
 
@@ -1189,21 +1204,29 @@ pub fn process_withdrawals(
     const MAX_PENDING_PARTIALS_PER_SWEEP: usize = 8;
     let payload_count = withdrawals_data.len() / WITHDRAWAL_SIZE;
     if payload_count > MAX_WITHDRAWALS_PER_PAYLOAD {
-        return false;
+        return Err(WithdrawalsError::TooMany {
+            count: payload_count,
+            max: MAX_WITHDRAWALS_PER_PAYLOAD,
+        });
     }
     let n_validators = vid.validator_cnt as u64;
     let current_epoch = sd.slot / SLOTS_PER_EPOCH;
 
-    let check = |i: usize, w_idx: u64, v_idx: u64, address: &[u8; 20], amount: u64| -> bool {
+    let payload_at = |i: usize| -> WithdrawalRecord {
         if i >= payload_count {
-            return false;
+            return WithdrawalRecord::default();
         }
         let w: &[u8; WITHDRAWAL_SIZE] =
             withdrawals_data[i * WITHDRAWAL_SIZE..(i + 1) * WITHDRAWAL_SIZE].try_into().unwrap();
-        WithdrawalView::index(w) == w_idx &&
-            WithdrawalView::validator_index(w) == v_idx &&
-            WithdrawalView::address(w) == address &&
-            WithdrawalView::amount(w) == amount
+        WithdrawalRecord {
+            index: WithdrawalView::index(w),
+            validator_index: WithdrawalView::validator_index(w),
+            address: *WithdrawalView::address(w),
+            amount: WithdrawalView::amount(w),
+        }
+    };
+    let matches = |i: usize, expected: &WithdrawalRecord| -> bool {
+        i < payload_count && payload_at(i) == *expected
     };
 
     // Phase 1: pending partial withdrawals.
@@ -1237,8 +1260,18 @@ pub fn process_withdrawals(
                 let amount = min(balance - MIN_ACTIVATION_BALANCE, pw.amount);
                 let address: &[u8; 20] =
                     vid.val_withdrawal_credentials[vi][12..32].try_into().unwrap();
-                if !check(expected_count, withdrawal_index, pw.index, address, amount) {
-                    return false;
+                let expected = WithdrawalRecord {
+                    index: withdrawal_index,
+                    validator_index: pw.index,
+                    address: *address,
+                    amount,
+                };
+                if !matches(expected_count, &expected) {
+                    return Err(WithdrawalsError::PartialMismatch {
+                        payload_index: expected_count,
+                        expected,
+                        got: payload_at(expected_count),
+                    });
                 }
                 selected[partials_emitted] = (pw.index, amount);
                 partials_emitted += 1;
@@ -1272,28 +1305,38 @@ pub fn process_withdrawals(
                 let address: &[u8; 20] =
                     vid.val_withdrawal_credentials[vi][12..32].try_into().unwrap();
                 if epoch.val_withdrawable_epoch[vi] <= current_epoch && balance > 0 {
-                    if !check(
-                        expected_count,
-                        withdrawal_index,
-                        sweep_validator_index,
-                        address,
-                        balance,
-                    ) {
-                        return false;
+                    let expected = WithdrawalRecord {
+                        index: withdrawal_index,
+                        validator_index: sweep_validator_index,
+                        address: *address,
+                        amount: balance,
+                    };
+                    if !matches(expected_count, &expected) {
+                        return Err(WithdrawalsError::SweepMismatchFull {
+                            vi: sweep_validator_index,
+                            pubkey: vid.val_pubkey[vi],
+                            expected,
+                            got: payload_at(expected_count),
+                        });
                     }
                     expected_count += 1;
                     withdrawal_index += 1;
                     last_emitted_vi = sweep_validator_index;
                 } else if epoch.val_effective_balance[vi] == max_eb && balance > max_eb {
                     let amount = balance - max_eb;
-                    if !check(
-                        expected_count,
-                        withdrawal_index,
-                        sweep_validator_index,
-                        address,
+                    let expected = WithdrawalRecord {
+                        index: withdrawal_index,
+                        validator_index: sweep_validator_index,
+                        address: *address,
                         amount,
-                    ) {
-                        return false;
+                    };
+                    if !matches(expected_count, &expected) {
+                        return Err(WithdrawalsError::SweepMismatchExcess {
+                            vi: sweep_validator_index,
+                            pubkey: vid.val_pubkey[vi],
+                            expected,
+                            got: payload_at(expected_count),
+                        });
                     }
                     expected_count += 1;
                     withdrawal_index += 1;
@@ -1308,7 +1351,10 @@ pub fn process_withdrawals(
     }
 
     if expected_count != payload_count {
-        return false;
+        return Err(WithdrawalsError::CountMismatch {
+            expected: expected_count,
+            actual: payload_count,
+        });
     }
 
     // Apply: debit balances + advance cursors.
@@ -1335,7 +1381,7 @@ pub fn process_withdrawals(
                 n_validators;
         }
     }
-    true
+    Ok(())
 }
 
 /// Pass 1 — resolve sync committee participants from
@@ -1402,12 +1448,15 @@ pub fn process_sync_aggregate(
     sd: &mut SlotData,
     sync_agg: &[u8],
     proposer_index: u64,
-) -> bool {
+) -> Result<(), SyncAggregateError> {
     if sync_agg.len() < BLOCK_SYNC_AGGREGATE_SIZE {
-        return true;
+        return Ok(());
     }
     if (proposer_index as usize) >= vid.validator_cnt {
-        return false;
+        return Err(SyncAggregateError::ProposerOutOfRange {
+            idx: proposer_index,
+            cnt: vid.validator_cnt,
+        });
     }
     let sync_agg_fixed: &[u8; BLOCK_SYNC_AGGREGATE_SIZE] =
         sync_agg[..BLOCK_SYNC_AGGREGATE_SIZE].try_into().unwrap();
@@ -1463,7 +1512,7 @@ pub fn process_sync_aggregate(
     }
     sd.balances[proposer_index as usize] =
         sd.balances[proposer_index as usize].saturating_add(proposer_reward_sum);
-    true
+    Ok(())
 }
 
 /// Pass 1 — push voluntary-exit sigs. Each exit's signing root is the
@@ -1512,7 +1561,7 @@ pub fn process_voluntary_exits(
     sd: &mut SlotData,
     pq: &PendingQueues,
     data: &[u8],
-) -> bool {
+) -> Result<(), VoluntaryExitError> {
     let count = data.len() / SIGNED_VOLUNTARY_EXIT_SIZE;
     let current_epoch = sd.slot / SLOTS_PER_EPOCH;
     let n = vid.validator_cnt;
@@ -1523,15 +1572,13 @@ pub fn process_voluntary_exits(
             .unwrap();
         let exit_epoch_msg = SignedVoluntaryExitView::epoch(exit);
         let vi = SignedVoluntaryExitView::validator_index(exit) as usize;
-        if !validate::validate_voluntary_exit(vid, epoch, vi, exit_epoch_msg, current_epoch) {
-            return false;
-        }
+        validate::validate_voluntary_exit(vid, epoch, vi, exit_epoch_msg, current_epoch)?;
         if get_pending_balance_to_withdraw(pq, vi) != 0 {
-            return false;
+            return Err(VoluntaryExitError::HasPendingBalance { vi, pubkey: vid.val_pubkey[vi] });
         }
         initiate_validator_exit(epoch, sd, n, vi, current_epoch);
     }
-    true
+    Ok(())
 }
 
 fn process_execution_requests(
@@ -1759,7 +1806,7 @@ pub fn collect_sigs_proposer_slashings(
     data: &[u8],
     sig_batch: &mut SigBatch,
     zh: &[B256],
-) -> bool {
+) -> Result<(), ProposerSlashingError> {
     let count = data.len() / PROPOSER_SLASHING_SIZE;
     let n = vid.validator_cnt;
     for i in 0..count {
@@ -1767,7 +1814,7 @@ pub fn collect_sigs_proposer_slashings(
             data[i * PROPOSER_SLASHING_SIZE..(i + 1) * PROPOSER_SLASHING_SIZE].try_into().unwrap();
         let vi = ProposerSlashingView::h1_proposer_index(s) as usize;
         if vi >= n {
-            return false;
+            return Err(ProposerSlashingError::ValidatorOutOfRange { vi, cnt: n });
         }
         let h1_slot = ProposerSlashingView::h1_slot(s);
         let h2_slot = ProposerSlashingView::h2_slot(s);
@@ -1791,7 +1838,7 @@ pub fn collect_sigs_proposer_slashings(
         sig_batch.push_one(&vid.val_pubkey_decompressed[vi], sig1, sr1);
         sig_batch.push_one(&vid.val_pubkey_decompressed[vi], sig2, sr2);
     }
-    true
+    Ok(())
 }
 
 /// Pass 2 — validate per-entry preconditions and slash. BLS already
@@ -1803,7 +1850,7 @@ pub fn process_proposer_slashings(
     epoch: &mut EpochData,
     sd: &mut SlotData,
     data: &[u8],
-) -> bool {
+) -> Result<(), ProposerSlashingError> {
     let count = data.len() / PROPOSER_SLASHING_SIZE;
     let n = vid.validator_cnt;
     let proposer_index = get_beacon_proposer_index(sd);
@@ -1811,21 +1858,26 @@ pub fn process_proposer_slashings(
     for i in 0..count {
         let s: &[u8; PROPOSER_SLASHING_SIZE] =
             data[i * PROPOSER_SLASHING_SIZE..(i + 1) * PROPOSER_SLASHING_SIZE].try_into().unwrap();
-        if !validate::validate_proposer_slashing(s) {
-            return false;
-        }
+        validate::validate_proposer_slashing(s)?;
         let vi = ProposerSlashingView::h1_proposer_index(s) as usize;
-        if vi >= n || !is_slashable_validator(epoch, vi, current_epoch) {
-            return false;
+        if vi >= n {
+            return Err(ProposerSlashingError::ValidatorOutOfRange { vi, cnt: n });
+        }
+        if !is_slashable_validator(epoch, vi, current_epoch) {
+            return Err(ProposerSlashingError::NotSlashable {
+                vi,
+                pubkey: vid.val_pubkey[vi],
+                epoch: current_epoch,
+            });
         }
         slash_validator(epoch, sd, n, vi, proposer_index);
     }
-    true
+    Ok(())
 }
 
 /// Compute signing root for a `BeaconBlockHeader` (208-byte SSZ): slot,
 /// proposer_index, parent_root, state_root, body_root.
-fn signing_root_for_block_header(
+pub(crate) fn signing_root_for_block_header(
     header: &[u8],
     fork_version: [u8; 4],
     genesis_validators_root: &B256,
@@ -1856,7 +1908,7 @@ pub fn process_deposits(
     pq: &mut PendingQueues,
     data: &[u8],
     zh: &[B256],
-) -> bool {
+) -> Result<()> {
     let count = data.len() / DEPOSIT_SIZE;
 
     for i in 0..count {
@@ -1872,7 +1924,7 @@ pub fn process_deposits(
             sd.eth1_deposit_index,
             &sd.eth1_data.deposit_root,
         ) {
-            return false;
+            return Err(Error::InvalidDepositProof { index: sd.eth1_deposit_index });
         }
 
         let pubkey = DepositDataView::pubkey(dd);
@@ -1880,10 +1932,17 @@ pub fn process_deposits(
         let amount = DepositDataView::amount(dd);
         let signature = *DepositDataView::signature(dd);
 
-        apply_deposit(vid, epoch, sd, pq, pubkey, &credentials, amount, &signature, zh);
+        // apply_deposit is skippable on bad BLS sig — propagate fatal only.
+        if let Err(e) =
+            apply_deposit(vid, epoch, sd, pq, pubkey, &credentials, amount, &signature, zh)
+        {
+            if e.is_fatal() {
+                return Err(e);
+            }
+        }
         sd.eth1_deposit_index += 1;
     }
-    true
+    Ok(())
 }
 
 /// Pass 1 — push bls_to_execution_change sigs. Signer is the validator's
@@ -1904,7 +1963,7 @@ pub fn collect_sigs_bls_to_execution_changes(
     data: &[u8],
     sig_batch: &mut SigBatch,
     zh: &[B256],
-) -> bool {
+) -> Result<(), BlsToExecutionChangeError> {
     let count = data.len() / SIGNED_BLS_CHANGE_SIZE;
     for i in 0..count {
         let c: &[u8; SIGNED_BLS_CHANGE_SIZE] =
@@ -1914,14 +1973,12 @@ pub fn collect_sigs_bls_to_execution_changes(
         let to_execution_address = SignedBlsToExecutionChangeView::to_execution_address(c);
         let sig = SignedBlsToExecutionChangeView::signature(c);
 
-        if (validator_index_u as usize) < vid.validator_cnt &&
-            !validate::validate_bls_to_execution_change(
+        if (validator_index_u as usize) < vid.validator_cnt {
+            validate::validate_bls_to_execution_change(
                 vid,
                 validator_index_u as usize,
                 from_bls_pubkey,
-            )
-        {
-            return false;
+            )?;
         }
 
         let object_root = ssz_hash::hash_tree_root_bls_change(
@@ -1937,18 +1994,21 @@ pub fn collect_sigs_bls_to_execution_changes(
         );
         let signing_root = bls::compute_signing_root(&object_root, &domain);
         let Ok(from_pk) = PublicKey::from_bytes(from_bls_pubkey) else {
-            return false;
+            return Err(BlsToExecutionChangeError::BadPubkey { from_pubkey: *from_bls_pubkey });
         };
         sig_batch.push_one(&from_pk, sig, signing_root);
     }
-    true
+    Ok(())
 }
 
 /// Pass 2 — validate creds-prefix invariant against current state and
 /// rewrite credentials. Same-block duplicate change for the same vi: the
 /// first one flips the prefix to 0x01, the second's `validate` call sees
 /// the now-non-BLS prefix and rejects → block invalid.
-pub fn process_bls_to_execution_changes(vid: &mut ValidatorIdentity, data: &[u8]) -> bool {
+pub fn process_bls_to_execution_changes(
+    vid: &mut ValidatorIdentity,
+    data: &[u8],
+) -> Result<(), BlsToExecutionChangeError> {
     let count = data.len() / SIGNED_BLS_CHANGE_SIZE;
     for i in 0..count {
         let c: &[u8; SIGNED_BLS_CHANGE_SIZE] =
@@ -1957,15 +2017,13 @@ pub fn process_bls_to_execution_changes(vid: &mut ValidatorIdentity, data: &[u8]
         let from_bls_pubkey = SignedBlsToExecutionChangeView::from_bls_pubkey(c);
         let to_execution_address = SignedBlsToExecutionChangeView::to_execution_address(c);
 
-        if !validate::validate_bls_to_execution_change(vid, validator_index, from_bls_pubkey) {
-            return false;
-        }
+        validate::validate_bls_to_execution_change(vid, validator_index, from_bls_pubkey)?;
         let cred = &mut vid.val_withdrawal_credentials[validator_index];
         cred[0] = ETH1_ADDRESS_WITHDRAWAL_PREFIX;
         cred[1..12].fill(0);
         cred[12..32].copy_from_slice(to_execution_address);
     }
-    true
+    Ok(())
 }
 
 /// Pass 1 — push both IndexedAttestation aggregate sigs per slashing entry.
@@ -1976,13 +2034,13 @@ pub fn collect_sigs_attester_slashings(
     active_scratch: &mut Vec<u32>,
     sig_batch: &mut SigBatch,
     zh: &[B256],
-) -> bool {
+) -> Result<(), AttesterSlashingError> {
     if data.is_empty() {
-        return true;
+        return Ok(());
     }
     let first_offset = u32::from_le_bytes(data[..4].try_into().unwrap_or([0; 4])) as usize;
     if first_offset == 0 || !first_offset.is_multiple_of(4) || first_offset > data.len() {
-        return true;
+        return Ok(());
     }
     let count = first_offset / 4;
     for i in 0..count {
@@ -1993,16 +2051,20 @@ pub fn collect_sigs_attester_slashings(
             data.len()
         };
         if start >= end || end > data.len() {
-            return false;
+            return Err(AttesterSlashingError::BadOffsets { start, end, parent_len: data.len() });
         }
         let slashing = &data[start..end];
         if slashing.len() < 8 {
-            return false;
+            return Err(AttesterSlashingError::TooShort { len: slashing.len(), min: 8 });
         }
         let off1 = u32::from_le_bytes(slashing[0..4].try_into().unwrap()) as usize;
         let off2 = u32::from_le_bytes(slashing[4..8].try_into().unwrap()) as usize;
         if off1 + 132 > slashing.len() || off2 + 132 > slashing.len() || off2 < off1 + 132 {
-            return false;
+            return Err(AttesterSlashingError::BadInnerOffsets {
+                off1,
+                off2,
+                slashing_len: slashing.len(),
+            });
         }
         let i1 = attesting_indices_bytes(slashing, off1, off2);
         let i2 = attesting_indices_bytes(slashing, off2, slashing.len());
@@ -2021,7 +2083,10 @@ pub fn collect_sigs_attester_slashings(
             for k in 0..n_idx {
                 let vi = u64::from_le_bytes(indices[k * 8..k * 8 + 8].try_into().unwrap());
                 if vi as usize >= vid.validator_cnt {
-                    return false;
+                    return Err(AttesterSlashingError::ValidatorOutOfRange {
+                        vi: vi as usize,
+                        cnt: vid.validator_cnt,
+                    });
                 }
                 active_scratch.push(vi as u32);
             }
@@ -2038,7 +2103,7 @@ pub fn collect_sigs_attester_slashings(
             );
         }
     }
-    true
+    Ok(())
 }
 
 /// Walk two strictly-ascending u64-LE-packed lists in lockstep, invoking
@@ -2072,13 +2137,13 @@ pub fn process_attester_slashings(
     epoch: &mut EpochData,
     sd: &mut SlotData,
     data: &[u8],
-) -> bool {
+) -> Result<(), AttesterSlashingError> {
     if data.is_empty() {
-        return true;
+        return Ok(());
     }
     let first_offset = u32::from_le_bytes(data[..4].try_into().unwrap_or([0; 4])) as usize;
     if first_offset == 0 || !first_offset.is_multiple_of(4) || first_offset > data.len() {
-        return true;
+        return Ok(());
     }
     let count = first_offset / 4;
     let proposer_index = get_beacon_proposer_index(sd);
@@ -2093,26 +2158,30 @@ pub fn process_attester_slashings(
             data.len()
         };
         if start >= end || end > data.len() {
-            return false;
+            return Err(AttesterSlashingError::BadOffsets { start, end, parent_len: data.len() });
         }
         let slashing = &data[start..end];
         if slashing.len() < 8 {
-            return false;
+            return Err(AttesterSlashingError::TooShort { len: slashing.len(), min: 8 });
         }
         let off1 = u32::from_le_bytes(slashing[0..4].try_into().unwrap()) as usize;
         let off2 = u32::from_le_bytes(slashing[4..8].try_into().unwrap()) as usize;
         if off1 + 132 > slashing.len() || off2 + 132 > slashing.len() || off2 < off1 + 132 {
-            return false;
+            return Err(AttesterSlashingError::BadInnerOffsets {
+                off1,
+                off2,
+                slashing_len: slashing.len(),
+            });
         }
         let d1 = &slashing[off1 + 4..off1 + 132];
         let d2 = &slashing[off2 + 4..off2 + 132];
         if !is_slashable_attestation_data(d1, d2) {
-            return false;
+            return Err(AttesterSlashingError::NotSlashableData);
         }
         let i1 = attesting_indices_bytes(slashing, off1, off2);
         let i2 = attesting_indices_bytes(slashing, off2, slashing.len());
         if !indices_sorted_unique(i1) || !indices_sorted_unique(i2) {
-            return false;
+            return Err(AttesterSlashingError::IndicesNotSorted);
         }
 
         // Spec requires ≥1 currently-slashable validator in the intersection;
@@ -2126,10 +2195,10 @@ pub fn process_attester_slashings(
             false
         });
         if !slashed_any {
-            return false;
+            return Err(AttesterSlashingError::NoSlashedIntersection);
         }
     }
-    true
+    Ok(())
 }
 
 /// Gossip-side `AttesterSlashing` validator (single slashing, not the
@@ -2460,6 +2529,8 @@ fn switch_to_compounding_validator(
 
 /// Apply a single deposit: for new validators, BLS-verify then add to the
 /// registry with 0 balance; always queue a PendingDeposit for the amount.
+/// Returns the skippable `SkipDepositBadSig` when BLS fails for a new
+/// validator — per spec the deposit is dropped, the block continues.
 #[allow(clippy::too_many_arguments)]
 fn apply_deposit(
     vid: &mut ValidatorIdentity,
@@ -2471,12 +2542,12 @@ fn apply_deposit(
     amount: u64,
     signature: &[u8; 96],
     zh: &[B256],
-) {
+) -> Result<()> {
     let existing = find_validator_by_pubkey(vid, pubkey);
     if existing.is_none() {
         if !epoch_transition::is_valid_deposit_signature(pubkey, credentials, amount, signature, zh)
         {
-            return;
+            return Err(Error::SkipDepositBadSig { index: sd.eth1_deposit_index });
         }
         // Add to registry with 0 effective balance and 0 actual balance.
         let idx = vid.validator_cnt;
@@ -2503,6 +2574,7 @@ fn apply_deposit(
         signature: *signature,
         slot: 0, // GENESIS_SLOT — Eth1 bridge deposit.
     });
+    Ok(())
 }
 
 // TODO(perf): O(n_validators) scan per call. Hit on every deposit-request,
@@ -2599,7 +2671,8 @@ mod tests {
         sd.eth1_data.deposit_root = root;
         sd.eth1_deposit_index = 0;
 
-        assert!(process_deposits(&mut vid, &mut epoch, &mut sd, &mut pq, &deposit, &zh));
+        process_deposits(&mut vid, &mut epoch, &mut sd, &mut pq, &deposit, &zh)
+            .expect("valid proof must accept");
         assert_eq!(sd.eth1_deposit_index, 1);
     }
 
@@ -2619,7 +2692,10 @@ mod tests {
         sd.eth1_data.deposit_root = root;
         sd.eth1_deposit_index = 0;
 
-        assert!(!process_deposits(&mut vid, &mut epoch, &mut sd, &mut pq, &deposit, &zh));
+        let err =
+            process_deposits(&mut vid, &mut epoch, &mut sd, &mut pq, &deposit, &zh).unwrap_err();
+        assert!(err.is_fatal());
+        assert!(matches!(err, Error::InvalidDepositProof { index: 0 }));
         assert_eq!(sd.eth1_deposit_index, 0, "index must not advance on rejection");
         assert!(pq.pending_deposits.is_empty());
     }
@@ -2638,7 +2714,9 @@ mod tests {
         sd.eth1_data.deposit_root = root;
         sd.eth1_deposit_index = 0;
 
-        assert!(!process_deposits(&mut vid, &mut epoch, &mut sd, &mut pq, &deposit, &zh));
+        let err =
+            process_deposits(&mut vid, &mut epoch, &mut sd, &mut pq, &deposit, &zh).unwrap_err();
+        assert!(matches!(err, Error::InvalidDepositProof { .. }));
     }
 
     #[test]
@@ -2655,6 +2733,8 @@ mod tests {
         // Proof was built for index 0; claim index 1 instead → must fail.
         sd.eth1_deposit_index = 1;
 
-        assert!(!process_deposits(&mut vid, &mut epoch, &mut sd, &mut pq, &deposit, &zh));
+        let err =
+            process_deposits(&mut vid, &mut epoch, &mut sd, &mut pq, &deposit, &zh).unwrap_err();
+        assert!(matches!(err, Error::InvalidDepositProof { index: 1 }));
     }
 }

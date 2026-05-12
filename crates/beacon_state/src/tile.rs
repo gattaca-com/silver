@@ -850,7 +850,7 @@ impl BeaconStateTile {
         let sd = self.arena.slot.get_mut_checked(state_ref.slot_idx as usize, state_ref.slot_gen);
 
         self.attestation_votes_scratch.clear();
-        let ok = state_transition::apply_block(
+        if let Err(e) = state_transition::apply_block(
             imm,
             vid,
             longtail,
@@ -870,8 +870,8 @@ impl BeaconStateTile {
             &mut self.postponed_scratch,
             &mut self.attestation_votes_scratch,
             &mut self.sig_batch,
-        );
-        if !ok {
+        ) {
+            tracing::error!(error = %e, "block rejected");
             return GossipFeedback::Reject;
         }
 
@@ -1294,7 +1294,10 @@ impl BeaconStateTile {
         if vi >= vid.validator_cnt {
             return GossipFeedback::Ignore;
         }
-        if !validate::validate_voluntary_exit(vid, epoch_data, vi, exit_epoch, current_epoch) {
+        if let Err(e) =
+            validate::validate_voluntary_exit(vid, epoch_data, vi, exit_epoch, current_epoch)
+        {
+            tracing::debug!(error = %e, "voluntary_exit gossip rejected");
             return GossipFeedback::Reject;
         }
         if state_transition::get_pending_balance_to_withdraw(pq, vi) != 0 {
@@ -1321,7 +1324,8 @@ impl BeaconStateTile {
             return GossipFeedback::Reject;
         }
         let buf: &[u8; PROPOSER_SLASHING_SIZE] = data[..PROPOSER_SLASHING_SIZE].try_into().unwrap();
-        if !validate::validate_proposer_slashing(buf) {
+        if let Err(e) = validate::validate_proposer_slashing(buf) {
+            tracing::debug!(error = %e, "proposer_slashing gossip rejected");
             return GossipFeedback::Reject;
         }
 
@@ -1421,7 +1425,8 @@ impl BeaconStateTile {
         }
         let from_pubkey = SignedBlsToExecutionChangeView::from_bls_pubkey(buf);
         let to_address = SignedBlsToExecutionChangeView::to_execution_address(buf);
-        if !validate::validate_bls_to_execution_change(vid, vi, from_pubkey) {
+        if let Err(e) = validate::validate_bls_to_execution_change(vid, vi, from_pubkey) {
+            tracing::debug!(error = %e, "bls_to_execution_change gossip rejected");
             return GossipFeedback::Reject;
         }
 
