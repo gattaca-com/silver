@@ -5,11 +5,12 @@ use silver_common::ssz_view::{
     ATTESTATION_DATA_SIZE, AttestationDataView, AttestationView, BEACON_BLOCK_BODY_FIXED,
     BEACON_BLOCK_HEADER_SIZE, BLOCK_SYNC_AGGREGATE_SIZE, BeaconBlockBodyView,
     BeaconBlockHeaderView, CONSOLIDATION_REQUEST_SIZE, ConsolidationRequestView,
-    DEPOSIT_REQUEST_SIZE, DEPOSIT_SIZE, DepositDataView, DepositRequestView, DepositView,
-    Eth1DataView, ExecutionPayloadView, PROPOSER_SLASHING_SIZE, ProposerSlashingView,
-    SIGNED_BLS_CHANGE_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE, SignedBeaconBlockView,
-    SignedBlsToExecutionChangeView, SignedVoluntaryExitView, SyncAggregateView,
-    WITHDRAWAL_REQUEST_SIZE, WITHDRAWAL_SIZE, WithdrawalRequestView, WithdrawalView,
+    DEPOSIT_CONTRACT_TREE_DEPTH, DEPOSIT_REQUEST_SIZE, DEPOSIT_SIZE, DepositDataView,
+    DepositRequestView, DepositView, Eth1DataView, ExecutionPayloadView, PROPOSER_SLASHING_SIZE,
+    ProposerSlashingView, SIGNED_BLS_CHANGE_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE,
+    SignedBeaconBlockView, SignedBlsToExecutionChangeView, SignedVoluntaryExitView,
+    SyncAggregateView, WITHDRAWAL_REQUEST_SIZE, WITHDRAWAL_SIZE, WithdrawalRequestView,
+    WithdrawalView,
 };
 
 use crate::{
@@ -566,16 +567,17 @@ pub fn process_block_body(
         return false;
     }
     if offsets.deposits_off <= offsets.voluntary_exits_off &&
-        offsets.voluntary_exits_off <= body.len()
-    {
-        process_deposits(
+        offsets.voluntary_exits_off <= body.len() &&
+        !process_deposits(
             vid,
             epoch,
             sd,
             pq,
             offsets.slice(offsets.deposits_off, offsets.voluntary_exits_off),
             zh,
-        );
+        )
+    {
+        return false;
     }
     if offsets.voluntary_exits_off <= offsets.exec_off &&
         offsets.exec_off <= body.len() &&
@@ -1821,10 +1823,32 @@ pub fn process_proposer_slashings(
     true
 }
 
-// TODO(spec): verify the 33-level Merkle branch against
-// state.eth1_data.deposit_root before queueing — currently skipped, so a junk
-// proof on a body-included Deposit would be accepted. (Lighthouse:
-// is_valid_merkle_branch.)
+/// Compute signing root for a `BeaconBlockHeader` (208-byte SSZ): slot,
+/// proposer_index, parent_root, state_root, body_root.
+fn signing_root_for_block_header(
+    header: &[u8],
+    fork_version: [u8; 4],
+    genesis_validators_root: &B256,
+    zh: &[B256],
+) -> B256 {
+    let hb: &[u8; BEACON_BLOCK_HEADER_SIZE] =
+        header[..BEACON_BLOCK_HEADER_SIZE].try_into().unwrap();
+    let h = BeaconBlockHeader {
+        slot: BeaconBlockHeaderView::slot(hb),
+        proposer_index: BeaconBlockHeaderView::proposer_index(hb),
+        parent_root: *BeaconBlockHeaderView::parent_root(hb),
+        state_root: *BeaconBlockHeaderView::state_root(hb),
+        body_root: *BeaconBlockHeaderView::body_root(hb),
+    };
+    let object_root = hash_tree_root_block_header(&h, zh);
+    let domain =
+        bls::compute_domain(bls::DOMAIN_BEACON_PROPOSER, fork_version, genesis_validators_root);
+    bls::compute_signing_root(&object_root, &domain)
+}
+
+/// Spec: process_deposit. Verify each Deposit's 33-level Merkle branch
+/// against `state.eth1_data.deposit_root` at leaf index
+/// `state.eth1_deposit_index` before queueing. A bad proof fails the block.
 pub fn process_deposits(
     vid: &mut ValidatorIdentity,
     epoch: &mut EpochData,
@@ -1832,13 +1856,25 @@ pub fn process_deposits(
     pq: &mut PendingQueues,
     data: &[u8],
     zh: &[B256],
-) {
+) -> bool {
     let count = data.len() / DEPOSIT_SIZE;
 
     for i in 0..count {
         let d: &[u8; DEPOSIT_SIZE] =
             data[i * DEPOSIT_SIZE..(i + 1) * DEPOSIT_SIZE].try_into().unwrap();
         let dd = DepositView::data(d);
+        let proof = DepositView::proof(d);
+        let leaf = ssz_hash::hash_tree_root_deposit_data(dd, zh);
+        if !ssz_hash::is_valid_merkle_branch(
+            &leaf,
+            proof,
+            (DEPOSIT_CONTRACT_TREE_DEPTH as u32) + 1,
+            sd.eth1_deposit_index,
+            &sd.eth1_data.deposit_root,
+        ) {
+            return false;
+        }
+
         let pubkey = DepositDataView::pubkey(dd);
         let credentials: B256 = *DepositDataView::withdrawal_credentials(dd);
         let amount = DepositDataView::amount(dd);
@@ -1847,6 +1883,7 @@ pub fn process_deposits(
         apply_deposit(vid, epoch, sd, pq, pubkey, &credentials, amount, &signature, zh);
         sd.eth1_deposit_index += 1;
     }
+    true
 }
 
 /// Pass 1 — push bls_to_execution_change sigs. Signer is the validator's
@@ -2093,30 +2130,6 @@ pub fn process_attester_slashings(
         }
     }
     true
-}
-
-/// Compute signing root for a `BeaconBlockHeader` (208-byte SSZ): slot,
-/// proposer_index, parent_root, state_root, body_root. Shared by the block
-/// path (proposer slashing in-block) and the gossip path.
-pub(crate) fn signing_root_for_block_header(
-    header: &[u8],
-    fork_version: [u8; 4],
-    genesis_validators_root: &B256,
-    zh: &[B256],
-) -> B256 {
-    let hb: &[u8; BEACON_BLOCK_HEADER_SIZE] =
-        header[..BEACON_BLOCK_HEADER_SIZE].try_into().unwrap();
-    let h = BeaconBlockHeader {
-        slot: BeaconBlockHeaderView::slot(hb),
-        proposer_index: BeaconBlockHeaderView::proposer_index(hb),
-        parent_root: *BeaconBlockHeaderView::parent_root(hb),
-        state_root: *BeaconBlockHeaderView::state_root(hb),
-        body_root: *BeaconBlockHeaderView::body_root(hb),
-    };
-    let object_root = hash_tree_root_block_header(&h, zh);
-    let domain =
-        bls::compute_domain(bls::DOMAIN_BEACON_PROPOSER, fork_version, genesis_validators_root);
-    bls::compute_signing_root(&object_root, &domain)
 }
 
 /// Gossip-side `AttesterSlashing` validator (single slashing, not the
@@ -2534,5 +2547,114 @@ mod tests {
         }
         process_eth1_data(&mut sd, &body);
         assert_eq!(sd.eth1_data.deposit_root, deposit_root);
+    }
+
+    /// Build a single-deposit body element (1240 B) with the given DepositData
+    /// bytes and a zero-subtree proof for leaf index 0 (siblings = zh[0..33]).
+    /// Returns (deposit_bytes, expected_root) where `expected_root` is what
+    /// `state.eth1_data.deposit_root` must be for the proof to verify.
+    fn build_deposit_at_index0(dd_bytes: &[u8; 184], zh: &[B256]) -> (Vec<u8>, B256) {
+        let depth = (DEPOSIT_CONTRACT_TREE_DEPTH as u32) + 1;
+        let mut bytes = vec![0u8; DEPOSIT_SIZE];
+        // Proof: 33 siblings, sibling at level i is zh[i].
+        for i in 0..depth as usize {
+            bytes[i * 32..(i + 1) * 32].copy_from_slice(&zh[i]);
+        }
+        bytes[1056..1240].copy_from_slice(dd_bytes);
+
+        // Expected root: start from the deposit-data leaf, climb the all-zero
+        // siblings on the right.
+        let leaf = ssz_hash::hash_tree_root_deposit_data(dd_bytes, zh);
+        let mut value = leaf;
+        for i in 0..depth as usize {
+            let sib = zh[i];
+            // index=0 → always left, sibling on the right.
+            let mut buf = [0u8; 64];
+            buf[..32].copy_from_slice(&value);
+            buf[32..].copy_from_slice(&sib);
+            value = ssz_hash::sha256(&buf);
+        }
+        (bytes, value)
+    }
+
+    fn make_dd() -> [u8; 184] {
+        let mut dd = [0u8; 184];
+        dd[0] = 0xAB; // pubkey
+        dd[48] = 0x01; // withdrawal_credentials prefix
+        dd[80..88].copy_from_slice(&32_000_000_000u64.to_le_bytes()); // amount
+        dd[88] = 0xCD; // signature
+        dd
+    }
+
+    #[test]
+    fn process_deposits_accepts_valid_proof() {
+        let zh = ssz_hash::compute_zero_hashes();
+        let dd = make_dd();
+        let (deposit, root) = build_deposit_at_index0(&dd, &zh);
+
+        let mut vid: Box<ValidatorIdentity> = box_zeroed();
+        let mut epoch: Box<EpochData> = box_zeroed();
+        let mut sd: Box<SlotData> = box_zeroed();
+        let mut pq = PendingQueues::new();
+        sd.eth1_data.deposit_root = root;
+        sd.eth1_deposit_index = 0;
+
+        assert!(process_deposits(&mut vid, &mut epoch, &mut sd, &mut pq, &deposit, &zh));
+        assert_eq!(sd.eth1_deposit_index, 1);
+    }
+
+    #[test]
+    fn process_deposits_rejects_bad_proof() {
+        let zh = ssz_hash::compute_zero_hashes();
+        let dd = make_dd();
+        let (mut deposit, root) = build_deposit_at_index0(&dd, &zh);
+
+        // Flip a byte in the proof.
+        deposit[0] ^= 0x01;
+
+        let mut vid: Box<ValidatorIdentity> = box_zeroed();
+        let mut epoch: Box<EpochData> = box_zeroed();
+        let mut sd: Box<SlotData> = box_zeroed();
+        let mut pq = PendingQueues::new();
+        sd.eth1_data.deposit_root = root;
+        sd.eth1_deposit_index = 0;
+
+        assert!(!process_deposits(&mut vid, &mut epoch, &mut sd, &mut pq, &deposit, &zh));
+        assert_eq!(sd.eth1_deposit_index, 0, "index must not advance on rejection");
+        assert!(pq.pending_deposits.is_empty());
+    }
+
+    #[test]
+    fn process_deposits_rejects_wrong_root() {
+        let zh = ssz_hash::compute_zero_hashes();
+        let dd = make_dd();
+        let (deposit, mut root) = build_deposit_at_index0(&dd, &zh);
+        root[0] ^= 0xFF;
+
+        let mut vid: Box<ValidatorIdentity> = box_zeroed();
+        let mut epoch: Box<EpochData> = box_zeroed();
+        let mut sd: Box<SlotData> = box_zeroed();
+        let mut pq = PendingQueues::new();
+        sd.eth1_data.deposit_root = root;
+        sd.eth1_deposit_index = 0;
+
+        assert!(!process_deposits(&mut vid, &mut epoch, &mut sd, &mut pq, &deposit, &zh));
+    }
+
+    #[test]
+    fn process_deposits_rejects_wrong_index() {
+        let zh = ssz_hash::compute_zero_hashes();
+        let dd = make_dd();
+        let (deposit, root) = build_deposit_at_index0(&dd, &zh);
+
+        let mut vid: Box<ValidatorIdentity> = box_zeroed();
+        let mut epoch: Box<EpochData> = box_zeroed();
+        let mut sd: Box<SlotData> = box_zeroed();
+        let mut pq = PendingQueues::new();
+        sd.eth1_data.deposit_root = root;
+        // Proof was built for index 0; claim index 1 instead → must fail.
+        sd.eth1_deposit_index = 1;
+
+        assert!(!process_deposits(&mut vid, &mut epoch, &mut sd, &mut pq, &deposit, &zh));
     }
 }

@@ -22,6 +22,28 @@ pub(crate) fn hash_concat(a: &B256, b: &B256) -> B256 {
     sha256(&buf)
 }
 
+/// Spec: is_valid_merkle_branch. `branch` is `depth * 32` bytes of siblings,
+/// ascending from leaf-level. Bit `i` of `index` selects which side the
+/// running hash takes at level `i`.
+pub fn is_valid_merkle_branch(
+    leaf: &B256,
+    branch: &[u8],
+    depth: u32,
+    index: u64,
+    root: &B256,
+) -> bool {
+    if branch.len() < (depth as usize) * 32 {
+        return false;
+    }
+    let mut value = *leaf;
+    for i in 0..depth {
+        let sib: &B256 = branch[(i as usize) * 32..((i + 1) as usize) * 32].try_into().unwrap();
+        value =
+            if (index >> i) & 1 == 0 { hash_concat(&value, sib) } else { hash_concat(sib, &value) };
+    }
+    value == *root
+}
+
 #[inline]
 pub fn uint64_chunk(v: u64) -> B256 {
     let mut chunk = [0u8; 32];
@@ -392,6 +414,20 @@ fn hash_proposer_slashing(d: &[u8], zh: &[B256]) -> B256 {
     )
 }
 
+/// hash_tree_root(DepositData): merkleize 4 chunks
+/// [pubkey_root, withdrawal_credentials, amount_chunk, signature_root].
+pub fn hash_tree_root_deposit_data(dd: &[u8; 184], zh: &[B256]) -> B256 {
+    merkleize(
+        &[
+            hash_fixed_bytes(&dd[..48], zh),
+            <[u8; 32]>::try_from(&dd[48..80]).unwrap(),
+            uint64_chunk(u64::from_le_bytes(dd[80..88].try_into().unwrap())),
+            hash_fixed_bytes(&dd[88..184], zh),
+        ],
+        zh,
+    )
+}
+
 fn hash_deposit(d: &[u8], zh: &[B256]) -> B256 {
     let mut proof_stack = MerkleStack::new();
     for i in 0..33 {
@@ -400,16 +436,8 @@ fn hash_deposit(d: &[u8], zh: &[B256]) -> B256 {
     }
     let proof_root = merkle_finalize(proof_stack, 6, zh);
 
-    let data = &d[1056..];
-    let dd_root = merkleize(
-        &[
-            hash_fixed_bytes(&data[..48], zh),
-            <[u8; 32]>::try_from(&data[48..80]).unwrap(),
-            uint64_chunk(u64::from_le_bytes(data[80..88].try_into().unwrap())),
-            hash_fixed_bytes(&data[88..184], zh),
-        ],
-        zh,
-    );
+    let dd: &[u8; 184] = d[1056..1240].try_into().unwrap();
+    let dd_root = hash_tree_root_deposit_data(dd, zh);
     hash_concat(&proof_root, &dd_root)
 }
 
@@ -1186,5 +1214,95 @@ mod tests {
             let result = merkleize_padded(&chunks, limit_pow2, &zh);
             assert_eq!(result, *expected, "case {i}: count={count} limit={limit}");
         }
+    }
+
+    /// Build a depth-D balanced Merkle tree over `leaves` (zero-padded to
+    /// 2^D), returning (root, per-leaf-proof-bytes). Each proof is D*32 bytes
+    /// of siblings ascending from leaf level.
+    fn build_tree(leaves: &[B256], depth: u32) -> (B256, Vec<Vec<u8>>) {
+        let cap = 1usize << depth;
+        assert!(leaves.len() <= cap);
+        let mut level: Vec<B256> = leaves.to_vec();
+        level.resize(cap, ZERO_HASH);
+
+        let mut layers: Vec<Vec<B256>> = Vec::with_capacity(depth as usize + 1);
+        layers.push(level);
+        for _ in 0..depth {
+            let prev = layers.last().unwrap();
+            let mut next = Vec::with_capacity(prev.len() / 2);
+            for pair in prev.chunks_exact(2) {
+                next.push(hash_concat(&pair[0], &pair[1]));
+            }
+            layers.push(next);
+        }
+        let root = layers.last().unwrap()[0];
+
+        let mut proofs: Vec<Vec<u8>> = Vec::with_capacity(cap);
+        for idx in 0..cap {
+            let mut proof = Vec::with_capacity((depth as usize) * 32);
+            for d in 0..depth as usize {
+                let sib = (idx >> d) ^ 1;
+                proof.extend_from_slice(&layers[d][sib]);
+            }
+            proofs.push(proof);
+        }
+        (root, proofs)
+    }
+
+    #[test]
+    fn merkle_branch_valid_at_every_leaf() {
+        let depth: u32 = 4;
+        let cap = 1usize << depth;
+        let leaves: Vec<B256> = (0..cap as u32).map(e).collect();
+        let (root, proofs) = build_tree(&leaves, depth);
+        for i in 0..cap {
+            assert!(is_valid_merkle_branch(&leaves[i], &proofs[i], depth, i as u64, &root));
+        }
+    }
+
+    #[test]
+    fn merkle_branch_rejects_corrupted_proof() {
+        let depth: u32 = 5;
+        let leaves: Vec<B256> = (0..(1u32 << depth)).map(e).collect();
+        let (root, proofs) = build_tree(&leaves, depth);
+        let idx = 7usize;
+        let mut bad = proofs[idx].clone();
+        bad[0] ^= 0x01;
+        assert!(!is_valid_merkle_branch(&leaves[idx], &bad, depth, idx as u64, &root));
+    }
+
+    #[test]
+    fn merkle_branch_rejects_wrong_root() {
+        let depth: u32 = 3;
+        let leaves: Vec<B256> = (0..(1u32 << depth)).map(e).collect();
+        let (mut root, proofs) = build_tree(&leaves, depth);
+        let idx = 2usize;
+        root[0] ^= 0xFF;
+        assert!(!is_valid_merkle_branch(&leaves[idx], &proofs[idx], depth, idx as u64, &root));
+    }
+
+    #[test]
+    fn merkle_branch_index_sensitive() {
+        let depth: u32 = 3;
+        let leaves: Vec<B256> = (0..(1u32 << depth)).map(e).collect();
+        let (root, proofs) = build_tree(&leaves, depth);
+        let idx = 3usize;
+        // Valid at idx, must fail when claimed at idx+1 (sibling sides flip).
+        assert!(is_valid_merkle_branch(&leaves[idx], &proofs[idx], depth, idx as u64, &root));
+        assert!(!is_valid_merkle_branch(
+            &leaves[idx],
+            &proofs[idx],
+            depth,
+            (idx as u64) + 1,
+            &root
+        ));
+    }
+
+    #[test]
+    fn merkle_branch_rejects_short_branch() {
+        let depth: u32 = 4;
+        let leaf = e(0);
+        let branch = vec![0u8; (depth as usize - 1) * 32];
+        assert!(!is_valid_merkle_branch(&leaf, &branch, depth, 0, &ZERO_HASH));
     }
 }
