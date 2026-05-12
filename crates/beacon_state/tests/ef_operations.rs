@@ -203,16 +203,9 @@ fn attestation() {
 #[test]
 fn deposit() {
     let zh = compute_zero_hashes();
-    operations_handler("deposit", "deposit", false, move |s, op| {
-        let _ = state_transition::process_deposits(
-            &mut s.vid,
-            &mut s.epoch,
-            &mut s.sd,
-            &mut s.pq,
-            op,
-            &zh,
-        );
-        true
+    operations_handler("deposit", "deposit", true, move |s, op| {
+        state_transition::process_deposits(&mut s.vid, &mut s.epoch, &mut s.sd, &mut s.pq, op, &zh)
+            .is_ok()
     });
 }
 
