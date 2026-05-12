@@ -37,6 +37,8 @@ pub const DOMAIN_BEACON_PROPOSER: u32 = 0x0000_0000;
 pub const DOMAIN_BEACON_ATTESTER: u32 = 0x0000_0001;
 pub const DOMAIN_RANDAO: u32 = 0x0000_0002;
 pub const DOMAIN_VOLUNTARY_EXIT: u32 = 0x0000_0004;
+pub const DOMAIN_SELECTION_PROOF: u32 = 0x0000_0005;
+pub const DOMAIN_AGGREGATE_AND_PROOF: u32 = 0x0000_0006;
 pub const DOMAIN_SYNC_COMMITTEE: u32 = 0x0000_0007;
 pub const DOMAIN_BLS_TO_EXECUTION_CHANGE: u32 = 0x0000_000a;
 
@@ -356,38 +358,8 @@ pub fn verify_single_attestation(
 
 #[cfg(test)]
 mod tests {
-    use blst::min_pk::SecretKey;
-
     use super::*;
-
-    // Spec test private keys (consensus-specs/tests/core/.../bls/constants.py).
-    const PRIVKEY_HEX: [&str; 3] = [
-        "263dbd792f5b1be47ed85f8938c0f29586af0d3ac7b977f21c278fe1462040e3",
-        "47b8192d77bf871b62e87859d653922725724a5c031afeabc60bcef5ff665138",
-        "328388aff0d4a5b7dc9205abd374e7e98f3cd9f3418edb4eafda5fb16473d216",
-    ];
-
-    fn privkey(idx: usize) -> SecretKey {
-        let bytes = hex_to_bytes(PRIVKEY_HEX[idx]);
-        SecretKey::from_bytes(&bytes).unwrap()
-    }
-
-    fn pubkey_pk(idx: usize) -> PublicKey {
-        privkey(idx).sk_to_pk()
-    }
-
-    fn sign(sk_idx: usize, message: &[u8]) -> [u8; 96] {
-        privkey(sk_idx).sign(message, DST, &[]).to_bytes()
-    }
-
-    fn hex_to_bytes(hex: &str) -> [u8; 32] {
-        let mut out = [0u8; 32];
-        for (i, chunk) in hex.as_bytes().chunks(2).enumerate() {
-            let s = std::str::from_utf8(chunk).unwrap();
-            out[i] = u8::from_str_radix(s, 16).unwrap();
-        }
-        out
-    }
+    use crate::test_signing::{pubkey_pk, sign};
 
     /// SigBatch eth-aggregate — empty participants accepted iff sig is
     /// G2 infinity (sync-aggregate semantics).
