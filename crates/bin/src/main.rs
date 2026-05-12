@@ -1,4 +1,4 @@
-use std::{error::Error, sync::Arc};
+use std::{error::Error, path::Path, sync::Arc};
 
 use flux::{
     tile::{TileConfig, attach_tile},
@@ -33,7 +33,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     let fork_digest = [0u8; 4];
 
     // Config
-    let config = Config::new(secret, fork_digest).with_discovery_port(31133).with_quic_port(31123);
+    let mut config =
+        Config::new(secret, fork_digest).with_discovery_port(31133).with_quic_port(31123);
+    let args = std::env::args().collect::<Vec<_>>();
+    if args.len() > 1 {
+        config = config.with_checkpoint(args[1].clone());
+    }
 
     // TCaches
     let incoming_gossip_producer = TCache::producer(config.incoming_gossip_tcache_size());
@@ -92,8 +97,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         chain_config.slot_duration(),
         chain_config.playload_lookahead(),
     );
+
+    let checkpoint = match chain_config.checkpoint_file {
+        Some(file) => load_checkpoint(file)?,
+        None => vec![],
+    };
     let beacon_state_tile =
-        BeaconStateTile::new(ticker, ssz_gossip_consumer, incoming_rpc_consumer, &[]); // TODO empty checkpoint
+        BeaconStateTile::new(ticker, ssz_gossip_consumer, incoming_rpc_consumer, &checkpoint);
 
     // Spine
     let spine = SilverSpine::new(None);
@@ -107,4 +117,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     });
 
     Ok(())
+}
+
+fn load_checkpoint<P: AsRef<Path>>(file_path: P) -> Result<Vec<u8>, std::io::Error> {
+    std::fs::read(file_path)
 }

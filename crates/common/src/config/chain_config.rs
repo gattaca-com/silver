@@ -12,6 +12,8 @@ pub struct ChainConfig {
     pub slot_duration_millis: u64,
     #[serde(default = "default_u64::<4000>")]
     pub prepare_payload_lookahead_millis: u64,
+    #[serde(default)]
+    pub checkpoint_file: Option<String>,
 }
 
 impl Default for ChainConfig {
@@ -20,6 +22,7 @@ impl Default for ChainConfig {
             genesis_unix_secs: 1438269973,
             slot_duration_millis: 12000,
             prepare_payload_lookahead_millis: 4000,
+            checkpoint_file: None,
         }
     }
 }
