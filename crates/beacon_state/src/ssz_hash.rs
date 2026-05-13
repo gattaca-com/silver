@@ -220,6 +220,15 @@ pub fn hash_checkpoint(cp: &Checkpoint) -> B256 {
     hash_concat(&uint64_chunk(cp.epoch), &cp.root)
 }
 
+/// hash_tree_root(ForkData(current_version, genesis_validators_root)).
+/// 2-chunk container → single sha256 of the concatenated chunks (the
+/// 4-byte version is right-zero-padded into a 32-byte chunk per SSZ).
+pub fn hash_tree_root_fork_data(version: [u8; 4], genesis_validators_root: &B256) -> B256 {
+    let mut version_chunk = [0u8; 32];
+    version_chunk[..4].copy_from_slice(&version);
+    hash_concat(&version_chunk, genesis_validators_root)
+}
+
 pub fn hash_eth1_data(e: &Eth1Data, zh: &[B256]) -> B256 {
     let chunks = [e.deposit_root, uint64_chunk(e.deposit_count), e.block_hash];
     merkleize(&chunks, zh)
