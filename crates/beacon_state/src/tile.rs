@@ -89,6 +89,7 @@ pub struct BeaconStateTile {
     in_flight: Option<(u64, PendingRangeReq)>,
     next_request_id: u64,
     synced_emitted: bool,
+    initial_status_emitted: bool,
 
     zero_hashes: [B256; ssz_hash::ZERO_HASHES_LEN],
     postponed_scratch: Vec<types::PendingDeposit>,
@@ -194,6 +195,7 @@ impl BeaconStateTile {
             in_flight: None,
             next_request_id: 1,
             synced_emitted: false,
+            initial_status_emitted: false,
             zero_hashes: ssz_hash::compute_zero_hashes(),
             active_scratch: Vec::with_capacity(
                 MAX_VALIDATORS.max(types::MAX_ATTESTERS_PER_AGGREGATE),
@@ -1445,6 +1447,11 @@ impl BeaconStateTile {
 
 impl Tile<SilverSpine> for BeaconStateTile {
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
+        if !self.initial_status_emitted {
+            adapter.produce(BeaconStateEvent::Status(self.status_payload()));
+            self.initial_status_emitted = true;
+        }
+
         if self.mode == Mode::Following && !self.synced_emitted {
             adapter.produce(BeaconStateEvent::Synced(self.status_payload()));
             self.synced_emitted = true;
