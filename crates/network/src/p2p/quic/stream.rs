@@ -33,7 +33,11 @@ impl<'a> StreamIo for StreamIoImpl<'a> {
                     data[offset..offset + len].copy_from_slice(&chunk.bytes[..len]);
                     offset += len;
                 }
-                Ok(None) | Err(quinn_proto::ReadError::Blocked) => break,
+                Ok(None) => {
+                    // strem complete
+                    return Err(StreamError::StreamEOF);
+                }
+                Err(quinn_proto::ReadError::Blocked) => break,
                 Err(e) => return Err(e.into()),
             }
         }

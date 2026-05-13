@@ -73,6 +73,7 @@ impl SnappyDecoder {
         input: &[u8],
         out: &mut [u8],
     ) -> Result<(usize, usize), SnappyError> {
+        tracing::info!(input = input.len(), output = out.len(), "decompress");
         let mut in_pos = 0;
         let mut out_pos = 0;
 
@@ -140,6 +141,7 @@ impl SnappyDecoder {
                 let len =
                     snap::raw::decompress_len(compressed).map_err(|_| SnappyError::Decompress)?;
                 if len > MAX_UNCOMPRESSED_BLOCK || len > out.len() {
+                    tracing::error!(len, buffer = out.len(), "decompressed len too big!");
                     return Err(SnappyError::OutputTooSmall);
                 }
                 self.decoder
@@ -155,6 +157,11 @@ impl SnappyDecoder {
                 }
                 let data = &payload[CHECKSUM_LEN..];
                 if data.len() > MAX_UNCOMPRESSED_BLOCK || data.len() > out.len() {
+                    tracing::error!(
+                        len = data.len(),
+                        buffer = out.len(),
+                        "uncompressed len too big!"
+                    );
                     return Err(SnappyError::OutputTooSmall);
                 }
                 out[..data.len()].copy_from_slice(data);

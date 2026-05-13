@@ -224,6 +224,16 @@ impl RpcReservation {
                 _ => self.offset += written,
             },
         }
+        // The tcache reservation auto-commits when its offset hits the
+        // buffer length; after that the slot's seq is set and any
+        // further `cache.write()` call (including via `remaining_buffer`)
+        // would error with `WrongSeq`. Treat post-commit as
+        // write-complete and skip the probe.
+        if let Some(res) = self.tcache.as_ref() &&
+            res.is_committed()
+        {
+            return Ok(true);
+        }
         self.remaining_buffer().map(|b| b.is_empty())
     }
 

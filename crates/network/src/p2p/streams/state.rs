@@ -211,18 +211,29 @@ impl StreamState {
                 RpcOut::ReadResponse(read_response) => {
                     match read_response.spin(io, id, &mut context.rpc_producer)? {
                         RpcReadResponse::Complete { app_id, msg } => {
+                            // For multipart, `RpcResponse::Complete` is the
+                            // synthetic terminator emitted on recv-EOF — at
+                            // that point the stream is done from our side
+                            // and re-arming `ReadingPrefix` would just hit
+                            // `ClosedStream` on the next poll, tripping the
+                            // spin error path and a spurious
+                            // `P2pStreamClosed` peer-score hit. Re-arm only
+                            // for non-terminator chunks; transition to
+                            // `Finished` on `Complete`/`Error`.
+                            let terminal = !id.protocol().has_multipart_response() ||
+                                matches!(msg, RpcResponse::Complete | RpcResponse::Error { .. });
                             emit(NetEvent::RpcInbound(RpcInbound::Response(RpcResponseInbound {
                                 application_id: app_id,
                                 stream_id: *id,
                                 response: msg,
                             })));
-                            if id.protocol().has_multipart_response() {
+                            if terminal {
+                                io.close_write(id.stream_id())?;
+                                Ok(Self::Finished)
+                            } else {
                                 Ok(Self::OutgoingRpc(RpcOut::ReadResponse(RpcReadResponse::new(
                                     app_id,
                                 ))))
-                            } else {
-                                io.close_write(id.stream_id())?;
-                                Ok(Self::Finished)
                             }
                         }
                         other => Ok(Self::OutgoingRpc(RpcOut::ReadResponse(other))),

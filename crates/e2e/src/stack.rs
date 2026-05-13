@@ -51,6 +51,17 @@ pub struct PublisherStack {
     /// writes snappy-ready protobuf RPC frames here to get a `TCacheRead`
     /// which is then referenced by an outbound `GossipMsgOut`.
     pub mcache_producer: TProducer,
+    /// Producer for inbound RPC payload bytes (the network tile reserves
+    /// here as it decompresses chunks; the resulting `TCacheRead` rides
+    /// inside `RpcResponse::BeaconBlock`/`DataColumnSidecar`). Exposed for
+    /// the multipart-RPC tests that need a `TRandomAccess` peer of this
+    /// cache; production-time the field is owned by `Context.rpc_producer`.
+    pub rpc_in_ra: TRandomAccess,
+    /// Producer for outbound RPC payload bytes — multipart-RPC tests
+    /// reserve here, write SSZ, and reference the resulting `TCacheRead`
+    /// in `RpcOutbound::Response(BeaconBlock { ssz })`. The network tile
+    /// reads via the cache's `Context.rpc_consumer` random-access handle.
+    pub rpc_out_producer: TProducer,
     // Hold on to producers/consumers that would otherwise be dropped; they
     // keep their TCaches alive for the lifetime of the stack.
     _keep_alive: StackKeepAlive,
@@ -196,12 +207,17 @@ impl PublisherStack {
         let mcache_producer = TCache::producer(TCACHE_SIZE);
         let gossip_out_ra = mcache_producer.cache_ref().random_access().expect("random_access");
 
-        // rpc_in / rpc_out: not exercised; give dummy caches.
+        // rpc_in: network writes inbound RPC payload bytes here; tests
+        // (multipart-RPC) read via `rpc_in_ra`. Regular consumer also
+        // attached for keep-alive plus future controller use.
         let rpc_in_producer = TCache::producer(TCACHE_SIZE);
         let rpc_in_consumer = rpc_in_producer.cache_ref().consumer().ok();
-        let rpc_out_producer_keepalive = TCache::producer(TCACHE_SIZE);
-        let rpc_out_ra =
-            rpc_out_producer_keepalive.cache_ref().random_access().expect("random_access");
+        let rpc_in_ra = rpc_in_producer.cache_ref().random_access().expect("rpc_in random_access");
+        // rpc_out: tests reserve here to inject outbound BeaconBlock
+        // chunks; the network tile reads via the random-access handle
+        // wired into `Context.rpc_consumer`.
+        let rpc_out_producer = TCache::producer(TCACHE_SIZE);
+        let rpc_out_ra = rpc_out_producer.cache_ref().random_access().expect("random_access");
 
         // gossip_out handle given to network.
         let gossip_out_ra_for_network =
@@ -254,11 +270,13 @@ impl PublisherStack {
             controller_adapter,
             injector_adapter,
             mcache_producer,
+            rpc_in_ra,
+            rpc_out_producer,
             _keep_alive: StackKeepAlive {
                 ssz_consumer: None,
                 gossip_in_consumer,
                 rpc_in_consumer,
-                rpc_out_producer: Some(rpc_out_producer_keepalive),
+                rpc_out_producer: None,
                 gossip_out_ra: Some(gossip_out_ra),
             },
         })

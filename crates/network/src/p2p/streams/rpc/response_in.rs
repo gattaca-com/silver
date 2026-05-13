@@ -73,10 +73,18 @@ impl RpcReadResponse {
     ) -> Result<Spin, StreamError> {
         match self {
             RpcReadResponse::ReadingPrefix { app_id, decoder, mut buf, mut read } => {
-                read +=
-                    io.read_from_stream(p2p_id.stream_id(), &mut buf[read..]).inspect_err(|e| {
-                        tracing::error!(?p2p_id, ?e, "cannot read rpc response, read = {read}");
-                    })?;
+                match io.read_from_stream(p2p_id.stream_id(), &mut buf[read..]) {
+                    Ok(r) => read += r,
+                    Err(StreamError::StreamEOF)
+                        if read == 0 && p2p_id.protocol().has_multipart_response() =>
+                    {
+                        // Normal termination for a multipart response TODO if received > 1 response
+                        return Ok(Spin::Ok(Self::Complete { app_id, msg: RpcResponse::Complete }));
+                    }
+                    Err(e) => return Err(e),
+                }
+
+                read += io.read_from_stream(p2p_id.stream_id(), &mut buf[read..])?;
 
                 let prefix_length = rpc_response_context_length(p2p_id.protocol());
                 if read > prefix_length {
@@ -125,6 +133,20 @@ impl RpcReadResponse {
                     alloc_error_response(buf[0])
                 };
 
+                // Plumb the wire fork_digest from the prefix into the
+                // response's 4-byte fork_digest slot. `RpcReservation`
+                // models BeaconBlock / DataColumnSidecar with offset 0..4
+                // pointing at `fork_digest` and offset 4+ pointing at the
+                // tcache-backed SSZ payload; writing fork_digest here is
+                // the only path that populates it.
+                let prefix_length = rpc_response_context_length(p2p_id.protocol());
+                if buf[0] == 0 && prefix_length > 0 {
+                    let out_buf = reservation.remaining_buffer()?;
+                    let n = prefix_length.min(out_buf.len());
+                    out_buf[..n].copy_from_slice(&buf[1..1 + n]);
+                    reservation.increment_offset(n)?;
+                }
+
                 // write any remaining bytes to decoder -> output
                 let mut remaining = length;
                 if buf_end > buf_start {
@@ -157,8 +179,10 @@ impl RpcReadResponse {
                             remaining,
                         }));
                     }
-                    remaining -=
+                    let decoded =
                         decoder.decompress_written(written, reservation.remaining_buffer()?)?;
+                    reservation.increment_offset(decoded)?;
+                    remaining -= decoded;
                 }
                 if remaining == 0 {
                     match reservation.into_rpc() {
