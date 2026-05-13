@@ -968,14 +968,12 @@ impl Discovery for DiscV5 {
         let mut enr_raw: ArrayVec<u8, ENR_RECORD_MAX> = ArrayVec::new();
         enr.encode(&mut enr_raw);
 
-        let result = self.kbuckets.insert_or_update(
+        if let InsertResult::Failed(reason) = self.kbuckets.insert_or_update(
             &Key::from(enr.node_id()),
             NodeEntry { addr, enr_seq: enr.seq(), pubkey, enr_raw: Some(enr_raw) },
             now,
-        );
-
-        {
-            tracing::error!(?result, "add enr");
+        ) {
+            tracing::error!(?reason, "add enr failed");
         }
     }
 

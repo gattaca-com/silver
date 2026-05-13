@@ -46,16 +46,9 @@ impl<'a> StreamIo for StreamIoImpl<'a> {
     }
 
     fn close_write(&mut self, id: StreamId) -> Result<(), StreamError> {
-        // `FinishError::Stopped` = peer already sent STOP_SENDING (FIN is
-        // implicit; no further send data accepted). `ClosedStream` = send
-        // half already closed. Both are no-ops for us — we still want to
-        // drive the recv half. Surface other variants (none today, but
-        // future quinn-proto variants would be real errors).
-        match self.connection.send_stream(id).finish() {
-            Ok(()) |
-            Err(quinn_proto::FinishError::Stopped(_)) |
-            Err(quinn_proto::FinishError::ClosedStream) => Ok(()),
-        }
+        // Finish errors Stopped and Closed are no-ops.
+        let _ = self.connection.send_stream(id).finish();
+        Ok(())
     }
 
     fn rpc_next(&mut self) -> Option<AcquiredRpcOutbound> {
