@@ -344,6 +344,28 @@ pub struct Fork {
     pub epoch: Epoch,
 }
 
+/// Fulu BLOB_SCHEDULE entry (EIP-7892).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BlobParameters {
+    pub epoch: Epoch,
+    pub max_blobs_per_block: u64,
+}
+
+// Mainnet chain-spec constants.
+pub const FULU_FORK_VERSION: Version = [0x06, 0x00, 0x00, 0x00];
+pub const FULU_FORK_EPOCH: Epoch = 411392;
+pub const ELECTRA_FORK_EPOCH: Epoch = 364032;
+pub const MAX_BLOBS_PER_BLOCK_ELECTRA: u64 = 9;
+pub const BLOB_SCHEDULE: &[BlobParameters] =
+    &[BlobParameters { epoch: 412672, max_blobs_per_block: 15 }, BlobParameters {
+        epoch: 419072,
+        max_blobs_per_block: 21,
+    }];
+/// Spec default consumed by `get_blob_parameters` when no BLOB_SCHEDULE entry
+/// matches the queried epoch.
+pub const DEFAULT_BLOB_PARAMETERS: BlobParameters =
+    BlobParameters { epoch: ELECTRA_FORK_EPOCH, max_blobs_per_block: MAX_BLOBS_PER_BLOCK_ELECTRA };
+
 /// Execution layer payload header.
 /// 17 fields. extra_data is variable but bounded to 32 bytes.
 #[repr(C)]

@@ -22,10 +22,11 @@ use crate::{
     ssz_hash, state_transition,
     ticker::{SlotTicker, TickEvent},
     types::{
-        self, B256, BeaconStateRef, EPOCH_POOL_CAP, Epoch, EpochData, ForkChoice, MAX_VALIDATORS,
+        self, B256, BLOB_SCHEDULE, BeaconStateRef, BlobParameters, DEFAULT_BLOB_PARAMETERS,
+        EPOCH_POOL_CAP, Epoch, EpochData, FULU_FORK_VERSION, ForkChoice, MAX_VALIDATORS,
         PENDING_POOL_CAP, PendingQueues, ROOTS_POOL_CAP, SLOT_POOL_CAP, SLOTS_PER_EPOCH,
-        SLOTS_PER_HISTORICAL_ROOT, ShufflingCache, Slot, SlotData, ValidatorIdentity, VoteTracker,
-        box_zeroed,
+        SLOTS_PER_HISTORICAL_ROOT, ShufflingCache, Slot, SlotData, ValidatorIdentity, Version,
+        VoteTracker, box_zeroed,
     },
     validate,
 };
@@ -90,6 +91,7 @@ pub struct BeaconStateTile {
     next_request_id: u64,
     synced_emitted: bool,
     initial_status_emitted: bool,
+    cached_fork_digest: Option<(Epoch, [u8; 4])>,
 
     zero_hashes: [B256; ssz_hash::ZERO_HASHES_LEN],
     postponed_scratch: Vec<types::PendingDeposit>,
@@ -196,6 +198,7 @@ impl BeaconStateTile {
             next_request_id: 1,
             synced_emitted: false,
             initial_status_emitted: false,
+            cached_fork_digest: None,
             zero_hashes: ssz_hash::compute_zero_hashes(),
             active_scratch: Vec::with_capacity(
                 MAX_VALIDATORS.max(types::MAX_ATTESTERS_PER_AGGREGATE),
@@ -448,18 +451,27 @@ impl BeaconStateTile {
         }
     }
 
-    fn fork_digest(&self) -> [u8; 4] {
-        let imm = self.imm(&self.head);
-        let mut version_chunk = [0u8; 32];
-        version_chunk[..4].copy_from_slice(&imm.fork.current_version);
-        let root =
-            ssz_hash::merkleize(&[version_chunk, imm.genesis_validators_root], &self.zero_hashes);
-        root[..4].try_into().unwrap()
+    /// Spec `compute_fork_digest` (Fulu EIP-7892). Cached per epoch:
+    /// inputs (`FULU_FORK_VERSION`, gvr, active blob_parameters) only change
+    /// at epoch boundaries — schedule entries are epoch-aligned and `gvr` is
+    /// frozen. Reorg within an epoch keeps the cache valid.
+    fn fork_digest(&mut self) -> [u8; 4] {
+        let epoch = self.slot(&self.head).slot / SLOTS_PER_EPOCH;
+        if let Some((cached_epoch, d)) = self.cached_fork_digest &&
+            cached_epoch == epoch
+        {
+            return d;
+        }
+        let gvr = self.imm(&self.head).genesis_validators_root;
+        let bp = get_blob_parameters(epoch, BLOB_SCHEDULE, DEFAULT_BLOB_PARAMETERS);
+        let d = compute_fork_digest(FULU_FORK_VERSION, &gvr, Some(bp));
+        self.cached_fork_digest = Some((epoch, d));
+        d
     }
 
-    fn status_payload(&self) -> [u8; STATUS_V2_SIZE] {
-        let sd = self.slot(&self.head);
+    fn status_payload(&mut self) -> [u8; STATUS_V2_SIZE] {
         let fork_digest = self.fork_digest();
+        let sd = self.slot(&self.head);
         // Use the cached canonical block_root rather than rehashing
         // `latest_block_header` — the header's `state_root` is zero in the
         // window between block-apply and the next `process_slot`.
@@ -1580,6 +1592,40 @@ fn body_mutation_hints(body: &[u8]) -> (bool, bool) {
     (may_mut_vid, may_mut_epoch)
 }
 
+/// Spec `compute_fork_digest` (Fulu EIP-7892). `blob_parameters` is `None`
+/// pre-Fulu, `Some` from Fulu onward — the active BLOB_SCHEDULE entry.
+fn compute_fork_digest(
+    fork_version: Version,
+    genesis_validators_root: &B256,
+    blob_parameters: Option<BlobParameters>,
+) -> [u8; 4] {
+    let base = ssz_hash::hash_tree_root_fork_data(fork_version, genesis_validators_root);
+    let Some(bp) = blob_parameters else {
+        return base[..4].try_into().unwrap();
+    };
+    let mut input = [0u8; 16];
+    input[..8].copy_from_slice(&bp.epoch.to_le_bytes());
+    input[8..].copy_from_slice(&bp.max_blobs_per_block.to_le_bytes());
+    let mix = ssz_hash::sha256(&input);
+    [base[0] ^ mix[0], base[1] ^ mix[1], base[2] ^ mix[2], base[3] ^ mix[3]]
+}
+
+/// Spec `get_blob_parameters`. `schedule` must be sorted ascending by epoch;
+/// `default` is `BlobParameters(ELECTRA_FORK_EPOCH,
+/// MAX_BLOBS_PER_BLOCK_ELECTRA)`.
+fn get_blob_parameters(
+    epoch: Epoch,
+    schedule: &[BlobParameters],
+    default: BlobParameters,
+) -> BlobParameters {
+    for entry in schedule.iter().rev() {
+        if epoch >= entry.epoch {
+            return *entry;
+        }
+    }
+    default
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -2227,5 +2273,102 @@ mod tests {
 
         // Block is rejected by BLS signature verification (zeroed sig).
         assert_eq!(tile.fork_choice.nodes.len(), 1); // only genesis
+    }
+
+    fn fd_genesis_validators_root(b: u8) -> B256 {
+        [b; 32]
+    }
+
+    // EF test schedule (consensus-specs:
+    // tests/core/pyspec/eth_consensus_specs/test/fulu/validator/
+    // test_compute_fork_digest.py). FULU_FORK_EPOCH = 0 in the test, so all
+    // listed epochs are Fulu+.
+    fn fd_ef_schedule() -> [BlobParameters; 6] {
+        [
+            BlobParameters { epoch: 9, max_blobs_per_block: 9 },
+            BlobParameters { epoch: 100, max_blobs_per_block: 100 },
+            BlobParameters { epoch: 150, max_blobs_per_block: 175 },
+            BlobParameters { epoch: 200, max_blobs_per_block: 200 },
+            BlobParameters { epoch: 250, max_blobs_per_block: 275 },
+            BlobParameters { epoch: 300, max_blobs_per_block: 300 },
+        ]
+    }
+
+    // Sentinel default; the EF test cases all have epoch >= schedule[0].epoch,
+    // so the default is never consulted.
+    const FD_SENTINEL: BlobParameters = BlobParameters { epoch: u64::MAX, max_blobs_per_block: 0 };
+
+    fn fd_ef_digest(epoch: Epoch, fork_version: Version, gvr: &B256) -> [u8; 4] {
+        let schedule = fd_ef_schedule();
+        let bp = get_blob_parameters(epoch, &schedule, FD_SENTINEL);
+        compute_fork_digest(fork_version, gvr, Some(bp))
+    }
+
+    /// EF spec test vectors (FULU_FORK_EPOCH=0, fd_ef_schedule).
+    #[test]
+    fn ef_compute_fork_digest_vectors() {
+        let v6 = [0x06, 0x00, 0x00, 0x00];
+        let v61 = [0x06, 0x00, 0x00, 0x01];
+        let v7 = [0x07, 0x00, 0x00, 0x00];
+        let v71 = [0x07, 0x00, 0x00, 0x01];
+
+        let cases: &[(Epoch, Version, B256, [u8; 4])] = &[
+            // Different epochs and blob limits (schedule transitions):
+            (9, v6, fd_genesis_validators_root(0), [0xab, 0x3a, 0xe6, 0xc8]),
+            (10, v6, fd_genesis_validators_root(0), [0xab, 0x3a, 0xe6, 0xc8]),
+            (11, v6, fd_genesis_validators_root(0), [0xab, 0x3a, 0xe6, 0xc8]),
+            (99, v6, fd_genesis_validators_root(0), [0xab, 0x3a, 0xe6, 0xc8]),
+            (100, v6, fd_genesis_validators_root(0), [0xdf, 0x67, 0x55, 0x7b]),
+            (101, v6, fd_genesis_validators_root(0), [0xdf, 0x67, 0x55, 0x7b]),
+            (150, v6, fd_genesis_validators_root(0), [0x8a, 0xb3, 0x8b, 0x59]),
+            (199, v6, fd_genesis_validators_root(0), [0x8a, 0xb3, 0x8b, 0x59]),
+            (200, v6, fd_genesis_validators_root(0), [0xd9, 0xb8, 0x14, 0x38]),
+            (201, v6, fd_genesis_validators_root(0), [0xd9, 0xb8, 0x14, 0x38]),
+            (250, v6, fd_genesis_validators_root(0), [0x4e, 0xf3, 0x2a, 0x62]),
+            (299, v6, fd_genesis_validators_root(0), [0x4e, 0xf3, 0x2a, 0x62]),
+            (300, v6, fd_genesis_validators_root(0), [0xca, 0x10, 0x0d, 0x64]),
+            (301, v6, fd_genesis_validators_root(0), [0xca, 0x10, 0x0d, 0x64]),
+            // Different genesis_validators_root:
+            (9, v6, fd_genesis_validators_root(1), [0x89, 0x67, 0x11, 0x11]),
+            (9, v6, fd_genesis_validators_root(2), [0xf4, 0x9b, 0x0e, 0x24]),
+            (9, v6, fd_genesis_validators_root(3), [0x86, 0x54, 0x4e, 0x4f]),
+            (100, v6, fd_genesis_validators_root(1), [0xfd, 0x3a, 0xa2, 0xa2]),
+            (100, v6, fd_genesis_validators_root(2), [0x80, 0xc6, 0xbd, 0x97]),
+            (100, v6, fd_genesis_validators_root(3), [0xf2, 0x09, 0xfd, 0xfc]),
+            // Different fork versions:
+            (9, v61, fd_genesis_validators_root(0), [0x30, 0xf8, 0xc2, 0x5b]),
+            (9, v7, fd_genesis_validators_root(0), [0x04, 0x32, 0xf5, 0xa9]),
+            (9, v71, fd_genesis_validators_root(0), [0x6e, 0x69, 0xa6, 0x71]),
+            (100, v61, fd_genesis_validators_root(0), [0x44, 0xa5, 0x71, 0xe8]),
+            (100, v7, fd_genesis_validators_root(0), [0x70, 0x6f, 0x46, 0x1a]),
+            (100, v71, fd_genesis_validators_root(0), [0x1a, 0x34, 0x15, 0xc2]),
+        ];
+
+        for (epoch, fv, g, expected) in cases {
+            let got = fd_ef_digest(*epoch, *fv, g);
+            assert_eq!(
+                got, *expected,
+                "epoch={epoch} fv={fv:02x?} gvr[0]={:#04x}: got {got:02x?}, want {expected:02x?}",
+                g[0]
+            );
+        }
+    }
+
+    /// Mainnet Fulu fork digest at the second BLOB_SCHEDULE entry
+    /// (epoch >= 419072, MAX_BLOBS_PER_BLOCK=21).
+    #[test]
+    fn mainnet_fulu_fork_digest_419072() {
+        // mainnet genesis_validators_root:
+        // 0x4b363db94e286120d76eb905340fdd4e54bfe9f06bf33ff6cf5ad27f511bfe95
+        let mainnet_gvr: B256 = [
+            0x4b, 0x36, 0x3d, 0xb9, 0x4e, 0x28, 0x61, 0x20, 0xd7, 0x6e, 0xb9, 0x05, 0x34, 0x0f,
+            0xdd, 0x4e, 0x54, 0xbf, 0xe9, 0xf0, 0x6b, 0xf3, 0x3f, 0xf6, 0xcf, 0x5a, 0xd2, 0x7f,
+            0x51, 0x1b, 0xfe, 0x95,
+        ];
+        let bp = get_blob_parameters(419072, BLOB_SCHEDULE, DEFAULT_BLOB_PARAMETERS);
+        assert_eq!(bp, BlobParameters { epoch: 419072, max_blobs_per_block: 21 });
+
+        let digest = compute_fork_digest(FULU_FORK_VERSION, &mainnet_gvr, Some(bp));
+        assert_eq!(digest, [0x8c, 0x9f, 0x62, 0xfe]);
     }
 }

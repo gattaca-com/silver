@@ -47,9 +47,7 @@ pub fn compute_domain(
     fork_version: [u8; 4],
     genesis_validators_root: &B256,
 ) -> B256 {
-    let mut version_chunk = [0u8; 32];
-    version_chunk[..4].copy_from_slice(&fork_version);
-    let fork_data_root = ssz_hash::hash_concat(&version_chunk, genesis_validators_root);
+    let fork_data_root = ssz_hash::hash_tree_root_fork_data(fork_version, genesis_validators_root);
 
     let mut domain = [0u8; 32];
     domain[0..4].copy_from_slice(&domain_type.to_le_bytes());

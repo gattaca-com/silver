@@ -561,12 +561,10 @@ pub fn is_valid_deposit_signature(
     let deposit_msg_root =
         ssz_hash::merkleize(&[pubkey_root, *withdrawal_credentials, amount_chunk], zh);
 
-    // Fork-agnostic domain: DOMAIN_DEPOSIT(0x03), GENESIS_FORK_VERSION([0;4]), zero
-    // root.
+    // Fork-agnostic domain: DOMAIN_DEPOSIT(0x03), GENESIS_FORK_VERSION([0;4]),
+    // zero genesis_validators_root.
     let domain = {
-        let version_chunk = [0u8; 32];
-        // GENESIS_FORK_VERSION = 0x00000000, already zero.
-        let fork_data_root = ssz_hash::merkleize(&[version_chunk, [0u8; 32]], zh);
+        let fork_data_root = ssz_hash::hash_tree_root_fork_data([0; 4], &[0u8; 32]);
         let mut d = [0u8; 32];
         d[0..4].copy_from_slice(&0x03u32.to_le_bytes());
         d[4..32].copy_from_slice(&fork_data_root[..28]);
@@ -818,8 +816,7 @@ mod tests {
         amt[..8].copy_from_slice(&amount.to_le_bytes());
         let msg_root = ssz_hash::merkleize(&[pubkey_root, *wc, amt], zh);
 
-        let version_chunk = [0u8; 32];
-        let fork_data_root = ssz_hash::merkleize(&[version_chunk, [0u8; 32]], zh);
+        let fork_data_root = ssz_hash::hash_tree_root_fork_data([0; 4], &[0u8; 32]);
         let mut domain = [0u8; 32];
         domain[0..4].copy_from_slice(&0x03u32.to_le_bytes());
         domain[4..32].copy_from_slice(&fork_data_root[..28]);
