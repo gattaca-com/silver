@@ -424,7 +424,7 @@ fn encode_control_topics(
 
 fn gossip_topic(topic: &str, fork_digest_hex: &str) -> Result<GossipTopic, Error> {
     GossipTopic::from_wire(topic, fork_digest_hex).inspect_err(|_| {
-        tracing::warn!(topic, "invalid gossipsub topic");
+        tracing::warn!(topic, fork_digest_hex, "invalid gossipsub topic");
     })
 }
 

@@ -76,6 +76,8 @@ impl Peer {
     }
 
     pub(crate) fn send_rpc(&mut self, msg: AcquiredRpcOutbound) -> SendResult {
+        tracing::info!(id=?self.id, protocol=?msg.protocol(), "outbound rpc");
+
         if let Some(stream) = match &msg {
             AcquiredRpcOutbound::Request(req) => {
                 self.open_stream(req.request.protocol()).and_then(|id| self.streams.get_mut(&id))
@@ -293,25 +295,21 @@ impl Peer {
                 }
             }
             quinn_proto::StreamEvent::Finished { id } => {
-                tracing::debug!(?id, "stream finished");
-                if let Some(mut stream) = self.streams.remove(&id) {
-                    if stream.is_complete() {
-                        stream.on_close(on_event);
-                    } else {
-                        on_event(NetEvent::StreamClosed { stream: stream.p2p_id });
-                    }
-                }
+                // Send-side only per quinn-proto: our FIN was acked or
+                // the send was stopped. The recv half is independent and
+                // may still deliver bytes (e.g. identify response after
+                // we close_write on the dialer). Cleanup is driven by
+                // `SpinResult::End` once the state machine reaches
+                // `Self::Finished` or the spin error path.
+                tracing::debug!(?id, "send half finished");
             }
             quinn_proto::StreamEvent::Stopped { id, error_code } => {
-                tracing::warn!(?id, ?error_code, "stream stopped");
-                if let Some(mut stream) = self.streams.remove(&id) {
-                    // TODO include error
-                    if stream.is_complete() {
-                        stream.on_close(on_event);
-                    } else {
-                        on_event(NetEvent::StreamClosed { stream: stream.p2p_id });
-                    }
-                }
+                // Send-side only: peer sent STOP_SENDING. Same reasoning
+                // as `Finished` — recv half may still be active. libp2p's
+                // identify behaviour STOP_SENDINGs immediately after
+                // reading our (empty) request body, so tearing down here
+                // would lose the inbound identify response.
+                tracing::debug!(?id, ?error_code, "send half stopped");
             }
             quinn_proto::StreamEvent::Available { dir: _ } => {}
         }
@@ -410,6 +408,9 @@ impl Stream {
         }
     }
 
+    // Unused — see `StreamState::on_close` / `is_complete` for the
+    // pending recv-EOF hook these wrappers will be called from.
+    #[allow(dead_code)]
     fn on_close<F>(&mut self, emit: &mut F)
     where
         F: FnMut(NetEvent),
@@ -417,6 +418,7 @@ impl Stream {
         self.state.get_mut().on_close(&self.p2p_id, emit);
     }
 
+    #[allow(dead_code)]
     fn is_complete(&mut self) -> bool {
         self.state.get_mut().is_complete()
     }

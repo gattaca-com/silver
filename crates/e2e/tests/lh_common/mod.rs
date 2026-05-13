@@ -11,7 +11,7 @@ use std::{
 
 use flux::tile::Tile;
 use silver_common::{
-    P2pSend, PeerEvent, PeerId, RpcOutbound, RpcRequestOutbound,
+    Identify, P2pSend, PeerEvent, PeerId, RpcOutbound, RpcRequestOutbound,
     ssz_view::{METADATA_SIZE, STATUS_V2_SIZE},
 };
 use silver_e2e::{LhClient, PublisherStack, keypair_from_seed};
@@ -78,6 +78,31 @@ pub fn wait_for_silver_connect(
         handle.is_some()
     });
     handle
+}
+
+/// Wait until silver fires `PeerEvent::P2pPeerIdentity` for `peer` on its
+/// injector adapter, returning the captured `Identify`. The injector adapter
+/// shares the spine with the controller via flux's multi-consumer queues —
+/// reading here does not starve the controller.
+pub fn wait_for_silver_identify(
+    silver: &mut PublisherStack,
+    client: &mut LhClient,
+    peer: usize,
+    timeout: Duration,
+) -> Option<Identify> {
+    let mut captured: Option<Identify> = None;
+    drive_until(silver, client, timeout, |s, _| {
+        let cap = &mut captured;
+        s.injector_adapter.consume::<PeerEvent, _>(|event, _producers| {
+            if let PeerEvent::P2pPeerIdentity { p2p_peer, identify } = event &&
+                p2p_peer == peer
+            {
+                *cap = Some(identify);
+            }
+        });
+        captured.is_some()
+    });
+    captured
 }
 
 /// Convert a libp2p `PeerId` to silver's `PeerId` (both are libp2p

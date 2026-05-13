@@ -79,7 +79,12 @@ impl NegotiateState {
             }
             NegotiateState::OutReading { protocol, mut buf, mut read } => {
                 let total = MULTISTREAM_V1.len() + protocol.multiselect().len();
-                read += io.read_from_stream(id, &mut buf[read..])?;
+                // Cap read at `total` so we don't consume bytes that
+                // belong to the next protocol (e.g. an identify varint
+                // arriving in the same packet as the multistream
+                // response). Quinn buffers the surplus internally for
+                // the protocol-specific state to read.
+                read += io.read_from_stream(id, &mut buf[read..total])?;
 
                 // check for reject
                 if read >= MULTISTREAM_V1.len() + REJECT_RESPONSE.len() {

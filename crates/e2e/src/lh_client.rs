@@ -28,15 +28,21 @@ use std::{
 use async_trait::async_trait;
 use futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, StreamExt};
 use libp2p::{
-    Multiaddr, PeerId, StreamProtocol, Swarm,
+    Multiaddr, PeerId, StreamProtocol, Swarm, identify,
     identity::Keypair,
     multiaddr::Protocol,
     request_response::{
         self, Codec, InboundRequestId, Message, OutboundRequestId, ProtocolSupport, ResponseChannel,
     },
-    swarm::SwarmEvent,
+    swarm::{NetworkBehaviour, SwarmEvent},
 };
 use tokio::runtime::Runtime;
+
+/// Identify constants exposed for test assertions. `IDENTIFY_PROTOCOL_VERSION`
+/// must match `silver_common::PROTOCOL_VERSION` — silver's parser drops any
+/// peer whose `protocolVersion` field doesn't equal this exact string.
+pub const IDENTIFY_PROTOCOL_VERSION: &str = "eth2/1.0.0";
+pub const IDENTIFY_AGENT_VERSION: &str = "lh-test/0.1";
 
 /// Eth2 RPC protocol IDs we exercise. Mirrors `silver_common::StreamProtocol`
 /// for the request-response subset.
@@ -192,9 +198,26 @@ pub struct RecordedRequest {
     pub body: Vec<u8>,
 }
 
+/// Snapshot of an inbound identify message libp2p has accepted from a
+/// peer. Tests assert silver populated the expected fields.
+#[derive(Debug, Clone)]
+pub struct RecordedIdentify {
+    pub from: PeerId,
+    pub protocol_version: String,
+    pub agent_version: String,
+    pub listen_addrs: Vec<Multiaddr>,
+    pub protocols: Vec<StreamProtocol>,
+}
+
+#[derive(NetworkBehaviour)]
+pub struct LhBehaviour {
+    rpc: request_response::Behaviour<Eth2RpcCodec>,
+    identify: identify::Behaviour,
+}
+
 pub struct LhClient {
     runtime: Runtime,
-    swarm: Swarm<request_response::Behaviour<Eth2RpcCodec>>,
+    swarm: Swarm<LhBehaviour>,
     /// Local listening multiaddr (set after `listen_on` resolves and the
     /// runtime emits `NewListenAddr`). For listener-mode tests we surface
     /// `listen_addr()` to drive silver's dialer.
@@ -215,6 +238,10 @@ pub struct LhClient {
     /// `auto_response = true` mode. Result byte defaults to 0 (success).
     auto_response: bool,
     canned_responses: HashMap<String, (u8, Vec<u8>)>,
+    /// Identify info captured from peers via `identify::Event::Received`.
+    /// One entry per `Received` event — duplicates allowed across multiple
+    /// receipts from the same peer over the connection lifetime.
+    received_identifies: Vec<RecordedIdentify>,
 }
 
 impl LhClient {
@@ -226,16 +253,20 @@ impl LhClient {
             .expect("tokio runtime");
 
         let mut swarm = runtime.block_on(async {
-            libp2p::SwarmBuilder::with_existing_identity(keypair)
+            libp2p::SwarmBuilder::with_existing_identity(keypair.clone())
                 .with_tokio()
                 .with_quic()
-                .with_behaviour(|_| {
-                    request_response::Behaviour::<Eth2RpcCodec>::new(
+                .with_behaviour(|kp| LhBehaviour {
+                    rpc: request_response::Behaviour::<Eth2RpcCodec>::new(
                         protocols,
                         request_response::Config::default(),
-                    )
+                    ),
+                    identify: identify::Behaviour::new(
+                        identify::Config::new(IDENTIFY_PROTOCOL_VERSION.into(), kp.public())
+                            .with_agent_version(IDENTIFY_AGENT_VERSION.into()),
+                    ),
                 })
-                .expect("rr behaviour")
+                .expect("composite behaviour")
                 .build()
         });
 
@@ -259,6 +290,7 @@ impl LhClient {
             received_responses: HashMap::new(),
             auto_response: false,
             canned_responses: HashMap::new(),
+            received_identifies: Vec::new(),
         };
 
         if listen {
@@ -323,6 +355,7 @@ impl LhClient {
         let received_requests = &mut self.received_requests;
         let pending_channels = &mut self.pending_channels;
         let received_responses = &mut self.received_responses;
+        let received_identifies = &mut self.received_identifies;
         let swarm = &mut self.swarm;
         self.runtime.block_on(async {
             if let Ok(event) = tokio::time::timeout(timeout, swarm.select_next_some()).await {
@@ -335,11 +368,9 @@ impl LhClient {
                             *listen_addr = Some(addr);
                         }
                     }
-                    SwarmEvent::Behaviour(request_response::Event::Message {
-                        peer,
-                        message,
-                        ..
-                    }) => match message {
+                    SwarmEvent::Behaviour(LhBehaviourEvent::Rpc(
+                        request_response::Event::Message { peer, message, .. },
+                    )) => match message {
                         Message::Request { request_id, request, channel } => {
                             let recorded = RecordedRequest {
                                 from: peer,
@@ -354,6 +385,17 @@ impl LhClient {
                             received_responses.insert(request_id, response);
                         }
                     },
+                    SwarmEvent::Behaviour(LhBehaviourEvent::Identify(
+                        identify::Event::Received { peer_id, info, .. },
+                    )) => {
+                        received_identifies.push(RecordedIdentify {
+                            from: peer_id,
+                            protocol_version: info.protocol_version,
+                            agent_version: info.agent_version,
+                            listen_addrs: info.listen_addrs,
+                            protocols: info.protocols,
+                        });
+                    }
                     _ => {}
                 }
             }
@@ -382,7 +424,14 @@ impl LhClient {
         body: Vec<u8>,
     ) -> OutboundRequestId {
         let req = TaggedRequest { protocol: StreamProtocol::new(static_protocol(protocol)), body };
-        self.swarm.behaviour_mut().send_request(&peer, req)
+        self.swarm.behaviour_mut().rpc.send_request(&peer, req)
+    }
+
+    /// Identify info libp2p has received from peers. One entry per
+    /// `identify::Event::Received` — silver should emit one shortly
+    /// after each connection is established.
+    pub fn received_identifies(&self) -> &[RecordedIdentify] {
+        &self.received_identifies
     }
 
     /// Protocol-typed convenience wrappers — each picks the matching
@@ -418,7 +467,7 @@ impl LhClient {
                 .cloned()
                 .unwrap_or((0u8, Vec::new()));
             if let Some(channel) = self.pending_channels.remove(&id) {
-                let _ = self.swarm.behaviour_mut().send_response(channel, response);
+                let _ = self.swarm.behaviour_mut().rpc.send_response(channel, response);
             }
         }
     }

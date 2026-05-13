@@ -46,6 +46,15 @@ impl StreamState {
         Self::Negotiate(NegotiateState::new_outbound(protocol))
     }
 
+    // TODO `is_complete` + `on_close` are unused pending a recv-EOF
+    // hook. The multipart RPC terminator is "peer FIN on recv half";
+    // there is currently no event-driven trigger for that —
+    // `StreamEvent::{Finished,Stopped}` from quinn are send-half only.
+    // When recv-EOF detection lands, the caller should consult
+    // `is_complete` to decide between clean teardown and emitting
+    // `NetEvent::StreamClosed`, and call `on_close` to emit the
+    // synthetic `RpcResponse::Complete`.
+    #[allow(dead_code)]
     pub fn is_complete(&self) -> bool {
         match self {
             StreamState::Negotiate(_) => false,
@@ -65,6 +74,7 @@ impl StreamState {
         }
     }
 
+    #[allow(dead_code)]
     pub fn on_close<F>(&self, p2p_id: &P2pStreamId, emit: &mut F)
     where
         F: FnMut(NetEvent),
@@ -119,6 +129,7 @@ impl StreamState {
                                         identify_protobuf,
                                     )?))
                                 } else {
+                                    io.close_write(id.stream_id())?;
                                     Ok(Self::OutgoingIdentify(ReadIdentifyResponse::default()))
                                 }
                             }
@@ -210,6 +221,7 @@ impl StreamState {
                                     app_id,
                                 ))))
                             } else {
+                                io.close_write(id.stream_id())?;
                                 Ok(Self::Finished)
                             }
                         }
@@ -229,6 +241,7 @@ impl StreamState {
             StreamState::OutgoingIdentify(outgoing_identify) => {
                 match outgoing_identify.spin(io, id)? {
                     ReadIdentifyResponse::Complete { identify } => {
+                        io.close_write(id.stream_id())?;
                         emit(NetEvent::PeerIdentify { peer: id.peer(), identify });
                         Ok(Self::Finished)
                     }

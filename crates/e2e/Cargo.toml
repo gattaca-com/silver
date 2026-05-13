@@ -32,6 +32,7 @@ libp2p = { version = "0.56", default-features = false, features = [
     "macros",
     "request-response",
     "gossipsub",
+    "identify",
 ], optional = true }
 async-trait = { version = "0.1", optional = true }
 tokio = { version = "1", features = ["rt", "time", "macros"], optional = true }
@@ -65,6 +66,10 @@ required-features = ["lh-client"]
 
 [[test]]
 name = "lh_rpc"
+required-features = ["lh-client"]
+
+[[test]]
+name = "lh_identify"
 required-features = ["lh-client"]
 
 [lints]

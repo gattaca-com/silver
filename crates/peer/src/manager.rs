@@ -3,7 +3,7 @@
 //! mesh decisions live in `tick`.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     net::{IpAddr, SocketAddr},
     time::Instant,
 };
@@ -11,11 +11,12 @@ use std::{
 use silver_common::{
     Enr, GossipMsgOut, GossipTopic, IpBytes, MessageId, P2pSend, PeerControl, PeerEvent, PeerId,
     RpcRequestOutbound, RpcSeverity, ScoreParams, StreamProtocol, TCacheRead,
-    ssz_view::{METADATA_SIZE, STATUS_V2_SIZE},
+    ssz_view::{BLOCKS_BY_RANGE_REQ_SIZE, METADATA_SIZE, STATUS_V2_SIZE},
 };
 
 use crate::{
     database::PeerDatabase,
+    rpc::{OutboundCounts, PeerInboundState},
     scoring,
     state::{ArchivedState, IpPrefix, MsgIdMap, PeerState, TopicScore},
 };
@@ -106,6 +107,23 @@ pub struct PeerManager {
 
     /// Whether we are synced.
     is_synced: bool,
+
+    /// Outstanding outbound RPC requests per peer, broken down by
+    /// protocol. Incremented when we send a request, decremented when
+    /// the terminal response for that protocol arrives. Cleared on
+    /// peer disconnect. Indexed by `protocol.ordinal() as usize`.
+    pub(crate) outbound_in_flight: OutboundCounts,
+
+    /// Per-peer inbound rate-limit state — token bucket per protocol
+    /// using lighthouse defaults. Refill is lazy (credit on access).
+    /// Cleared on disconnect.
+    pub(crate) inbound_buckets: HashMap<usize, PeerInboundState>,
+
+    /// BlocksByRange requests that arrived with no eligible peer.
+    /// Drained by `drain_pending_outbound` once peers become available
+    /// (new connection, in-flight slot freed). Survives disconnects —
+    /// the cache is request-scoped, not peer-scoped.
+    pub(crate) pending_blocks_by_range: VecDeque<(u64, [u8; BLOCKS_BY_RANGE_REQ_SIZE])>,
 }
 
 impl PeerManager {
@@ -135,6 +153,9 @@ impl PeerManager {
             status: None,
             metadata: None,
             is_synced: false,
+            outbound_in_flight: OutboundCounts::with_capacity(PEERS_CAP),
+            inbound_buckets: HashMap::with_capacity(PEERS_CAP),
+            pending_blocks_by_range: VecDeque::new(),
         }
     }
 
@@ -459,6 +480,15 @@ impl PeerManager {
         });
 
         self.database.peer_disconnected(conn);
+
+        // Drop RPC bookkeeping for the gone connection. Outstanding
+        // responses can never arrive — leaving counters pinned would
+        // lock out future retries on reconnect. Rate-limit bucket reset
+        // so a reconnect starts fresh at full tokens (matches
+        // lighthouse). `pending_blocks_by_range` is request-scoped, not
+        // peer-scoped — left untouched.
+        self.outbound_in_flight.remove(&conn);
+        self.inbound_buckets.remove(&conn);
     }
 
     // ── Gossip event handlers ───────────────────────────────────────────
