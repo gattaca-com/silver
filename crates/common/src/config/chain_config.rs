@@ -3,6 +3,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use super::default_u64;
+use crate::Enr;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ChainConfig {
@@ -12,6 +13,10 @@ pub struct ChainConfig {
     pub slot_duration_millis: u64,
     #[serde(default = "default_u64::<4000>")]
     pub prepare_payload_lookahead_millis: u64,
+    #[serde(default)]
+    pub checkpoint_file: Option<String>,
+    #[serde(default)]
+    pub bootstrap_enrs: Vec<Enr>,
 }
 
 impl Default for ChainConfig {
@@ -20,6 +25,8 @@ impl Default for ChainConfig {
             genesis_unix_secs: 1438269973,
             slot_duration_millis: 12000,
             prepare_payload_lookahead_millis: 4000,
+            checkpoint_file: None,
+            bootstrap_enrs: vec![],
         }
     }
 }

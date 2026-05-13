@@ -3,18 +3,20 @@
 //! mesh decisions live in `tick`.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     net::{IpAddr, SocketAddr},
     time::Instant,
 };
 
 use silver_common::{
     Enr, GossipMsgOut, GossipTopic, IpBytes, MessageId, P2pSend, PeerControl, PeerEvent, PeerId,
-    RpcSeverity, ScoreParams, StreamProtocol, TCacheRead,
+    RpcRequestOutbound, RpcSeverity, ScoreParams, StreamProtocol, TCacheRead,
+    ssz_view::{BLOCKS_BY_RANGE_REQ_SIZE, METADATA_SIZE, STATUS_V2_SIZE},
 };
 
 use crate::{
     database::PeerDatabase,
+    rpc::{OutboundCounts, PeerInboundState},
     scoring,
     state::{ArchivedState, IpPrefix, MsgIdMap, PeerState, TopicScore},
 };
@@ -98,10 +100,34 @@ pub struct PeerManager {
 
     /// Database of peers
     database: PeerDatabase,
+
+    /// Our local beacon status and metadata.
+    status: Option<[u8; STATUS_V2_SIZE]>,
+    metadata: Option<[u8; METADATA_SIZE]>,
+
+    /// Whether we are synced.
+    is_synced: bool,
+
+    /// Outstanding outbound RPC requests per peer, broken down by
+    /// protocol. Incremented when we send a request, decremented when
+    /// the terminal response for that protocol arrives. Cleared on
+    /// peer disconnect. Indexed by `protocol.ordinal() as usize`.
+    pub(crate) outbound_in_flight: OutboundCounts,
+
+    /// Per-peer inbound rate-limit state — token bucket per protocol
+    /// using lighthouse defaults. Refill is lazy (credit on access).
+    /// Cleared on disconnect.
+    pub(crate) inbound_buckets: HashMap<usize, PeerInboundState>,
+
+    /// BlocksByRange requests that arrived with no eligible peer.
+    /// Drained by `drain_pending_outbound` once peers become available
+    /// (new connection, in-flight slot freed). Survives disconnects —
+    /// the cache is request-scoped, not peer-scoped.
+    pub(crate) pending_blocks_by_range: VecDeque<(u64, [u8; BLOCKS_BY_RANGE_REQ_SIZE])>,
 }
 
 impl PeerManager {
-    pub fn new(our_topics: Vec<GossipTopic>, params: ScoreParams) -> Self {
+    pub fn new(our_topics: Vec<GossipTopic>, params: ScoreParams, fork_digest: [u8; 4]) -> Self {
         let now = Instant::now();
         let mesh =
             our_topics.iter().map(|t| (*t, Vec::with_capacity(params.d_high as usize))).collect();
@@ -117,13 +143,19 @@ impl PeerManager {
             banned_ips: HashMap::with_capacity(64),
             ip_eviction_counts: HashMap::with_capacity(64),
             banned_peers: HashMap::with_capacity(128),
-            our_fork_digest: None,
+            our_fork_digest: Some(fork_digest),
             required_attnets,
             required_syncnets,
             params,
             last_heartbeat: now,
             last_discovery: now,
             database: PeerDatabase::default(),
+            status: None,
+            metadata: None,
+            is_synced: false,
+            outbound_in_flight: OutboundCounts::with_capacity(PEERS_CAP),
+            inbound_buckets: HashMap::with_capacity(PEERS_CAP),
+            pending_blocks_by_range: VecDeque::new(),
         }
     }
 
@@ -153,6 +185,30 @@ impl PeerManager {
     /// Iterator over live peer connection handles (for tests/introspection).
     pub fn live_peers(&self) -> impl Iterator<Item = usize> + '_ {
         self.peers.keys().copied()
+    }
+
+    pub fn status(&self) -> Option<&[u8; STATUS_V2_SIZE]> {
+        self.status.as_ref()
+    }
+
+    pub fn metadata(&self) -> Option<&[u8; METADATA_SIZE]> {
+        self.metadata.as_ref()
+    }
+
+    pub fn set_status(&mut self, status: [u8; STATUS_V2_SIZE]) {
+        self.status = Some(status);
+    }
+
+    pub fn set_metadata(&mut self, metadata: [u8; METADATA_SIZE]) {
+        self.metadata = Some(metadata);
+    }
+
+    pub fn is_synced(&self) -> bool {
+        self.is_synced
+    }
+
+    pub fn set_synced(&mut self, synced: bool) {
+        self.is_synced = synced;
     }
 
     /// Pick the connected, protocol-supporting peer with the highest
@@ -194,6 +250,7 @@ impl PeerManager {
     ) {
         match event {
             PeerEvent::P2pNewConnection { p2p_peer_id, peer_id_full, ip, port, local_dial } => {
+                tracing::info!("New p2p peer: {ip:?}:{port}, local dial? {local_dial}");
                 self.on_connected(p2p_peer_id, peer_id_full, ip, port, now, emit, local_dial);
             }
             PeerEvent::P2pDisconnect { p2p_peer } => {
@@ -275,9 +332,11 @@ impl PeerManager {
                 self.on_rpc_misbehaviour(p2p_peer, severity);
             }
             PeerEvent::P2pPeerStatus { p2p_peer, status_ssz } => {
+                tracing::info!(p2p_peer, "Got peer status");
                 self.database.p2p_status(p2p_peer, status_ssz)
             }
             PeerEvent::P2pPeerMetadata { p2p_peer, metadata_ssz } => {
+                tracing::info!(p2p_peer, "Got peer metadata");
                 self.database.p2p_metadata(p2p_peer, metadata_ssz)
             }
             PeerEvent::P2pPeerGoodbye { p2p_peer: _, status: _ } => {
@@ -285,6 +344,7 @@ impl PeerManager {
                 // TODO scoring based on status?
             }
             PeerEvent::P2pPeerIdentity { p2p_peer, identify } => {
+                tracing::info!(p2p_peer, ?identify, "Got peer identify");
                 self.database.add_p2p_identify(p2p_peer, identify)
             }
         }
@@ -355,13 +415,23 @@ impl PeerManager {
         self.peers.insert(conn, state);
         self.database.add_peer_id(peer_id, conn);
 
-        if local_dialler {
-            // TODO send rpc Status
+        emit(PeerControl::P2pSend(P2pSend::Identify(conn)));
+        if local_dialler && let Some(status) = self.status {
+            // Send rpc Status
+            emit(PeerControl::P2pSend(P2pSend::Rpc(silver_common::RpcOutbound::Request(
+                RpcRequestOutbound {
+                    application_id: 0,
+                    peer: conn,
+                    request: silver_common::RpcRequest::StatusV2(status),
+                },
+            ))));
         }
 
         // Announce our own topic subscriptions to this peer.
-        for &topic in &self.our_topics {
-            emit(PeerControl::P2pGossipSubscribe { p2p: peer_id, p2p_connection: conn, topic });
+        if self.is_synced {
+            for &topic in &self.our_topics {
+                emit(PeerControl::P2pGossipSubscribe { p2p: peer_id, p2p_connection: conn, topic });
+            }
         }
     }
 
@@ -410,6 +480,15 @@ impl PeerManager {
         });
 
         self.database.peer_disconnected(conn);
+
+        // Drop RPC bookkeeping for the gone connection. Outstanding
+        // responses can never arrive — leaving counters pinned would
+        // lock out future retries on reconnect. Rate-limit bucket reset
+        // so a reconnect starts fresh at full tokens (matches
+        // lighthouse). `pending_blocks_by_range` is request-scoped, not
+        // peer-scoped — left untouched.
+        self.outbound_in_flight.remove(&conn);
+        self.inbound_buckets.remove(&conn);
     }
 
     // ── Gossip event handlers ───────────────────────────────────────────
@@ -428,6 +507,11 @@ impl PeerManager {
             peer.topics.insert(topic);
             peer.peer_id
         };
+
+        if !self.is_synced {
+            return;
+        }
+
         let we_want = self.our_topics.contains(&topic);
 
         // Opportunistic graft: if this is a topic we care about and our mesh
@@ -671,6 +755,10 @@ impl PeerManager {
         tcache: TCacheRead,
         emit: &mut impl FnMut(PeerControl),
     ) {
+        if !self.is_synced {
+            // Never relay gossip before we are synced
+            return;
+        }
         let Some(meshed_peers) = self.mesh.get(&topic) else {
             return;
         };
@@ -703,9 +791,17 @@ impl PeerManager {
         // 1. Fork-digest gate. Spec-conformant CL nodes always advertise `eth2`;
         //    missing-or-mismatched is a drop (matches lighthouse).
         if let Some(my_digest) = self.our_fork_digest {
-            let Some(eth2) = enr.eth2() else { return };
-            if eth2[..4] != my_digest {
-                return;
+            match enr.eth2() {
+                Some(eth2) => {
+                    if eth2[..4] != my_digest {
+                        tracing::warn!(theirs=?eth2[..4], ours=?my_digest, "fork digest mismatch");
+                        return;
+                    }
+                }
+                None => {
+                    tracing::trace!("Not a beacon node, no eth2");
+                    return;
+                }
             }
         }
 
@@ -714,6 +810,7 @@ impl PeerManager {
         if let Some(ip) = ip &&
             self.banned_ips.contains_key(&ip)
         {
+            tracing::warn!(?ip, "peer with banned ip");
             return;
         }
 
@@ -721,14 +818,23 @@ impl PeerManager {
         let compressed = enr.public_key().serialize();
         let peer_id = PeerId::from_secp256k1_pubkey(&compressed);
         if self.banned_peers.contains_key(&peer_id) {
+            tracing::warn!(?peer_id, "banned peer id");
             return;
         }
         if self.peers.values().any(|p| p.peer_id == peer_id) {
+            tracing::warn!(?peer_id, "known peer id");
             return;
         }
         if self.archived.contains_key(&peer_id) {
+            tracing::warn!(?peer_id, "archived peer id");
             return;
         }
+        if enr.quic4_socket().is_none() && enr.quic6_socket().is_none() {
+            tracing::debug!(udp4=?enr.udp4(), udp6=enr.udp6(), tcp4=?enr.tcp4(), tcp6=enr.tcp6(), "Peer does not support quic");
+            return;
+        }
+
+        tracing::trace!(id=?enr.node_id(), ?enr, "new node");
 
         // Add to peer database.
         self.database.add_enr(enr);
@@ -742,6 +848,7 @@ impl PeerManager {
         let dial = connected < self.params.target_peers ||
             (priority && connected < self.params.max_priority_peers);
         if !dial {
+            tracing::debug!(connected, "not dialling");
             return;
         }
         emit(PeerControl::P2pDial { p2p: peer_id, enr });
@@ -1131,7 +1238,7 @@ mod tests {
     struct Captured(Vec<PeerControl>);
 
     fn fixture(our_topics: Vec<GossipTopic>, params: ScoreParams) -> (PeerManager, Captured) {
-        (PeerManager::new(our_topics, params), Captured::default())
+        (PeerManager::new(our_topics, params, [0u8; 4]), Captured::default())
     }
 
     fn peer_id(seed: u8) -> PeerId {
@@ -1155,12 +1262,19 @@ mod tests {
         );
     }
 
+    /// `on_connected` always emits a `P2pSend::Identify` event; filter
+    /// it out so subscribe-focused tests can assert on subscribe counts.
+    fn subscribe_events(cap: &Captured) -> Vec<&PeerControl> {
+        cap.0.iter().filter(|c| !matches!(c, PeerControl::P2pSend(P2pSend::Identify(_)))).collect()
+    }
+
     #[test]
     fn connect_with_no_topics_emits_nothing() {
         let now = Instant::now();
         let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        mgr.set_synced(true);
         connect(&mut mgr, &mut cap, 1, 1, now);
-        assert!(cap.0.is_empty());
+        assert!(subscribe_events(&cap).is_empty());
     }
 
     #[test]
@@ -1168,9 +1282,11 @@ mod tests {
         let now = Instant::now();
         let topics = vec![GossipTopic::BeaconBlock, GossipTopic::VoluntaryExit];
         let (mut mgr, mut cap) = fixture(topics.clone(), ScoreParams::default());
+        mgr.set_synced(true);
         connect(&mut mgr, &mut cap, 1, 1, now);
-        assert_eq!(cap.0.len(), 2);
-        for e in &cap.0 {
+        let subs = subscribe_events(&cap);
+        assert_eq!(subs.len(), 2);
+        for e in &subs {
             assert!(matches!(e, PeerControl::P2pGossipSubscribe { .. }));
         }
     }
@@ -1180,6 +1296,7 @@ mod tests {
         let now = Instant::now();
         let topics = vec![GossipTopic::BeaconBlock];
         let (mut mgr, mut cap) = fixture(topics, ScoreParams::default());
+        mgr.set_synced(true);
         connect(&mut mgr, &mut cap, 1, 1, now);
         cap.0.clear();
 
@@ -1526,6 +1643,7 @@ mod tests {
         params.d_lazy = 3;
         params.d_low = 1; // so the first subscriber grafts into mesh, rest stay non-mesh
         let (mut mgr, mut cap) = fixture(vec![GossipTopic::BeaconBlock], params);
+        mgr.set_synced(true);
 
         for i in 1..=4u8 {
             connect(&mut mgr, &mut cap, i as usize, i, now);
@@ -1813,6 +1931,7 @@ mod tests {
         params.d = 0;
         params.d_high = 8;
         let (mut mgr, mut cap) = fixture(vec![GossipTopic::BeaconBlock], params);
+        mgr.set_synced(true);
 
         for i in 1..=3u8 {
             connect(&mut mgr, &mut cap, i as usize, i, now);
@@ -1880,7 +1999,9 @@ mod tests {
         bytes[0] = seed;
         bytes[31] = 1;
         let kp = Keypair::from_secret(&bytes).unwrap();
-        silver_common::Enr::builder().ip4(ip).udp4(9000).build(kp.secret_key()).unwrap()
+        // QUIC port required — `on_disc_node_found` drops ENRs that don't
+        // advertise a quic4/quic6 socket.
+        silver_common::Enr::builder().ip4(ip).udp4(9000).quic4(9000).build(kp.secret_key()).unwrap()
     }
 
     /// Builder variant for fork-digest / subnet-bitfield tests. `eth2` is
@@ -1900,7 +2021,7 @@ mod tests {
         bytes[31] = 1;
         let kp = Keypair::from_secret(&bytes).unwrap();
         let mut b = silver_common::Enr::builder();
-        b.ip4(ip).udp4(9000);
+        b.ip4(ip).udp4(9000).quic4(9000);
         if let Some(e) = eth2 {
             b.eth2(e);
         }
@@ -1919,7 +2040,10 @@ mod tests {
         let mut params = ScoreParams::default();
         params.target_peers = 4;
         let (mut mgr, mut cap) = fixture(vec![], params);
-        let enr = test_enr(7, std::net::Ipv4Addr::new(10, 0, 0, 7));
+        // ENR must carry an `eth2` field matching the fixture's [0u8;4]
+        // fork digest now that `our_fork_digest` is always set.
+        let enr =
+            test_enr_with(7, std::net::Ipv4Addr::new(10, 0, 0, 7), Some([0u8; 16]), None, None);
 
         mgr.handle_event(PeerEvent::DiscNodeFound { enr }, now, &mut |c| cap.0.push(c));
 
@@ -2015,7 +2139,10 @@ mod tests {
 
         // Pre-TTL: discovery hit on banned IP is dropped.
         cap.0.clear();
-        let enr = test_enr(42, std::net::Ipv4Addr::new(10, 0, 0, 42));
+        // ENR must carry an `eth2` field matching the fixture's [0u8;4]
+        // fork digest (always-on filter since `our_fork_digest` is set).
+        let enr =
+            test_enr_with(42, std::net::Ipv4Addr::new(10, 0, 0, 42), Some([0u8; 16]), None, None);
         mgr.handle_event(PeerEvent::DiscNodeFound { enr }, now, &mut |c| cap.0.push(c));
         assert!(!cap.0.iter().any(|e| matches!(e, PeerControl::P2pDial { .. })));
 
@@ -2342,11 +2469,18 @@ mod tests {
         connect(&mut mgr, &mut cap, 2, 2, now);
         cap.0.clear();
 
-        // ENR advertises attnet 5 (byte 0, bit 5 = 0x20).
+        // ENR advertises attnet 5 (byte 0, bit 5 = 0x20). Also include an
+        // `eth2` matching the fixture's [0u8;4] fork digest — that filter
+        // is always on now.
         let mut attnets = [0u8; 8];
         attnets[0] = 0x20;
-        let enr =
-            test_enr_with(99, std::net::Ipv4Addr::new(10, 0, 0, 99), None, Some(attnets), None);
+        let enr = test_enr_with(
+            99,
+            std::net::Ipv4Addr::new(10, 0, 0, 99),
+            Some([0u8; 16]),
+            Some(attnets),
+            None,
+        );
         mgr.handle_event(PeerEvent::DiscNodeFound { enr }, now, &mut |c| cap.0.push(c));
 
         assert!(

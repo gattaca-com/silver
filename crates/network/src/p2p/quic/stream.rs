@@ -33,7 +33,11 @@ impl<'a> StreamIo for StreamIoImpl<'a> {
                     data[offset..offset + len].copy_from_slice(&chunk.bytes[..len]);
                     offset += len;
                 }
-                Ok(None) | Err(quinn_proto::ReadError::Blocked) => break,
+                Ok(None) => {
+                    // strem complete
+                    return Err(StreamError::StreamEOF);
+                }
+                Err(quinn_proto::ReadError::Blocked) => break,
                 Err(e) => return Err(e.into()),
             }
         }
@@ -42,7 +46,9 @@ impl<'a> StreamIo for StreamIoImpl<'a> {
     }
 
     fn close_write(&mut self, id: StreamId) -> Result<(), StreamError> {
-        Ok(self.connection.send_stream(id).finish()?)
+        // Finish errors Stopped and Closed are no-ops.
+        let _ = self.connection.send_stream(id).finish();
+        Ok(())
     }
 
     fn rpc_next(&mut self) -> Option<AcquiredRpcOutbound> {

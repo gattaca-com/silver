@@ -1,4 +1,4 @@
-use std::{error::Error, sync::Arc};
+use std::{error::Error, path::Path, str::FromStr, sync::Arc, time::Instant};
 
 use flux::{
     tile::{TileConfig, attach_tile},
@@ -7,9 +7,9 @@ use flux::{
 use quinn_proto::{Endpoint, EndpointConfig};
 use rand::RngCore;
 use silver_beacon_state::{BeaconStateTile, SlotTicker};
-use silver_common::{Config, ProtoIdentify, SilverSpine, TCache, TCacheProducer};
+use silver_common::{Config, Enr, ProtoIdentify, SilverSpine, TCache, TCacheProducer};
 use silver_control::Controller;
-use silver_discovery::DiscV5;
+use silver_discovery::{DiscV5, Discovery};
 use silver_gossip::GossipHandler;
 use silver_network::{Context, NetworkTile, P2p};
 use silver_peer::PeerManager;
@@ -30,10 +30,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     rand::thread_rng().fill_bytes(&mut secret);
 
     // TODO: fork digest
-    let fork_digest = [0u8; 4];
+    let fork_digest = [0x8c, 0x9f, 0x62, 0xfe];
+    let next_fork_version = [6, 0, 0, 0];
+    let next_fork_epoch = u64::MAX;
 
     // Config
-    let config = Config::new(secret, fork_digest).with_discovery_port(31133).with_quic_port(31123);
+    let mut config = Config::new(secret, fork_digest, next_fork_version, next_fork_epoch)
+        .with_discovery_port(31133)
+        .with_quic_port(31123);
+    let args = std::env::args().collect::<Vec<_>>();
+    if args.len() > 1 {
+        config = config.with_checkpoint(args[1].clone());
+    }
 
     // TCaches
     let incoming_gossip_producer = TCache::producer(config.incoming_gossip_tcache_size());
@@ -52,7 +60,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let discv5_addr = config.discovery_bind_addr().expect("no discovery port");
     let p2p_addr = config.p2p_bind_addr().expect("no p2p port");
-    let discv5 = DiscV5::new(
+    let mut discv5 = DiscV5::new(
         config.discovery_config(),
         *keypair.secret_key(),
         config.enr()?,
@@ -76,6 +84,20 @@ fn main() -> Result<(), Box<dyn Error>> {
         identify: Some(ProtoIdentify::from((&config.identify()?, &keypair))),
     };
 
+    let now = Instant::now();
+    let enr1 = Enr::from_str(
+        "enr:-Ku4QG-2_Md3sZIAUebGYT6g0SMskIml77l6yR-M_JXc-UdNHCmHQeOiMLbylPejyJsdAPsTHJyjJB2sYGDLe0dn8uYBh2F0dG5ldHOIAAAAAAAAAACEZXRoMpC1MD8qAAAAAP__________gmlkgnY0gmlwhBLY-NyJc2VjcDI1NmsxoQORcM6e19T1T9gi7jxEZjk_sjVLGFscUNqAY9obgZaxbIN1ZHCCIyg",
+    )?;
+    let enr2 = Enr::from_str(
+        "enr:-Le4QLHZDSvkLfqgEo8IWGG96h6mxwe_PsggC20CL3neLBjfXLGAQFOPSltZ7oP6ol54OvaNqO02Rnvb8YmDR274uq8ChGV0aDKQtTA_KgEAAAAAIgEAAAAAAIJpZIJ2NIJpcISLosQxg2lwNpAqAX4AAAAAAPA8kv_-ax65iXNlY3AyNTZrMaEDBJj7_dLFACaxBfaI8KZTh_SSJUjhyAyfshimvSqo22WDdWRwgiMohHVkcDaCI4I",
+    )?;
+    let enr3 = Enr::from_str(
+        "enr:-Ku4QP2xDnEtUXIjzJ_DhlCRN9SN99RYQPJL92TMlSv7U5C1YnYLjwOQHgZIUXw6c-BvRg2Yc2QsZxxoS_pPRVe0yK8Bh2F0dG5ldHOIAAAAAAAAAACEZXRoMpD1pf1CAAAAAP__________gmlkgnY0gmlwhBLf22SJc2VjcDI1NmsxoQMeFF5GrS7UZpAH2Ly84aLK-TyvH-dRo0JM1i8yygH50YN1ZHCCJxA",
+    )?;
+    discv5.add_enr(&enr1, now);
+    discv5.add_enr(&enr2, now);
+    discv5.add_enr(&enr3, now);
+
     let network_tile = NetworkTile::new(discv5_addr, discv5, p2p_addr, p2p_endpoint, p2p_context)?;
     let gossip_tile = GossipHandler::new(
         incoming_gossip_consumer,
@@ -83,8 +105,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         outgoing_gossip_producer,
         hex::encode(fork_digest),
     )?;
-    let control_tile =
-        Controller::new(PeerManager::new(config.gossip_topics()?, config.peer_score_params()));
+    let control_tile = Controller::new(PeerManager::new(
+        config.gossip_topics()?,
+        config.peer_score_params(),
+        config.fork_digest(),
+    ));
 
     let chain_config = config.chain_config();
     let ticker = SlotTicker::new(
@@ -92,8 +117,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         chain_config.slot_duration(),
         chain_config.playload_lookahead(),
     );
+
+    let checkpoint = match chain_config.checkpoint_file {
+        Some(file) => load_checkpoint(file)?,
+        None => vec![],
+    };
     let beacon_state_tile =
-        BeaconStateTile::new(ticker, ssz_gossip_consumer, incoming_rpc_consumer, &[]); // TODO empty checkpoint
+        BeaconStateTile::new(ticker, ssz_gossip_consumer, incoming_rpc_consumer, &checkpoint);
 
     // Spine
     let spine = SilverSpine::new(None);
@@ -107,4 +137,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     });
 
     Ok(())
+}
+
+fn load_checkpoint<P: AsRef<Path>>(file_path: P) -> Result<Vec<u8>, std::io::Error> {
+    std::fs::read(file_path)
 }

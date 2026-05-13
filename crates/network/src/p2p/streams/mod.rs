@@ -29,6 +29,7 @@ pub enum StreamError {
     InvalidRpc,
     StreamRejected,
     StreamClosed,
+    StreamEOF,
     InvalidMultiStreamProtocol,
     InternalError(#[from] silver_common::Error),
     IoError(#[from] std::io::Error),

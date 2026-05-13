@@ -56,6 +56,7 @@ pub(super) fn handle_grafts<'a>(
             let Ok(topic) = gossip_topic(topic, fork_digest_hex) else {
                 continue;
             };
+            tracing::debug!(?stream_id, ?topic, "GRAFT received");
             emit(GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipTopicGraft {
                 p2p_peer: stream_id.peer(),
                 topic,
@@ -75,6 +76,7 @@ pub(super) fn handle_prunes<'a>(
             let Ok(topic) = gossip_topic(topic, fork_digest_hex) else {
                 continue;
             };
+            tracing::debug!(?stream_id, ?topic, "PRUNE received");
             // TODO: prune.peers may contain list of signed peer records of alternate peers
             // but e.g. Lighthouse does not send peer records. So maybe just ignore?
             emit(GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipTopicPrune {
@@ -422,7 +424,7 @@ fn encode_control_topics(
 
 fn gossip_topic(topic: &str, fork_digest_hex: &str) -> Result<GossipTopic, Error> {
     GossipTopic::from_wire(topic, fork_digest_hex).inspect_err(|_| {
-        tracing::warn!(topic, "invalid gossipsub topic");
+        tracing::warn!(topic, fork_digest_hex, "invalid gossipsub topic");
     })
 }
 

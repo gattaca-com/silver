@@ -39,6 +39,15 @@ pub(crate) enum AcquiredRpcOutbound {
     Response(AcquiredRpcResponseOutbound),
 }
 
+impl AcquiredRpcOutbound {
+    pub fn protocol(&self) -> StreamProtocol {
+        match self {
+            Self::Request(req) => req.request.protocol(),
+            Self::Response(rsp) => rsp.stream_id.protocol(),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct AcquiredRpcRequestOutbound {
     pub(crate) application_id: u64,
