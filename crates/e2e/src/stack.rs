@@ -9,8 +9,8 @@ use std::{net::SocketAddr, sync::atomic::AtomicUsize};
 use flux::{spine::SpineAdapter, tile::Tile};
 use quinn_proto::Endpoint;
 use silver_common::{
-    DiscoveryConfig, Enr, Keypair, PeerId, ScoreParams, SilverSpine, TCache, TCacheProducer,
-    TConsumer, TProducer, TRandomAccess,
+    DiscoveryConfig, Enr, Identify, Keypair, PeerId, ProtoIdentify, ScoreParams, SilverSpine,
+    TCache, TCacheProducer, TConsumer, TProducer, TRandomAccess,
 };
 use silver_control::Controller;
 use silver_discovery::DiscV5;
@@ -212,7 +212,11 @@ impl PublisherStack {
             gossip_consumer: gossip_out_ra_for_network,
             rpc_producer: rpc_in_producer,
             rpc_consumer: rpc_out_ra,
-            identify: None,
+            // Build a fully-populated `ProtoIdentify` via the `Identify`
+            // -> protobuf conversion: a default-constructed protobuf has
+            // every field as `None`, including `protocolVersion`, which
+            // the receiver rejects with `IdentifyInvalidProtocol`.
+            identify: Some(ProtoIdentify::from((&Identify::default(), &keypair))),
         };
 
         let discovery = DiscV5::new(
@@ -230,7 +234,8 @@ impl PublisherStack {
         // Tests don't subscribe to gossip topics, so PeerManager runs with
         // an empty subscription set — meshes stay empty, score deltas
         // exercise only the connection / RPC paths.
-        let controller = Controller::new(PeerManager::new(Vec::new(), ScoreParams::default()));
+        let controller =
+            Controller::new(PeerManager::new(Vec::new(), ScoreParams::default(), [0u8; 4]));
 
         // Spine + per-tile adapters.
         let mut spine = SilverSpine::new_with_base_dir(base_dir, Some(path_suffix));
@@ -297,7 +302,11 @@ impl EchoStack {
             gossip_consumer: protobuf_ra_for_network,
             rpc_producer: rpc_in_producer,
             rpc_consumer: rpc_out_ra,
-            identify: None,
+            // Build a fully-populated `ProtoIdentify` via the `Identify`
+            // -> protobuf conversion: a default-constructed protobuf has
+            // every field as `None`, including `protocolVersion`, which
+            // the receiver rejects with `IdentifyInvalidProtocol`.
+            identify: Some(ProtoIdentify::from((&Identify::default(), &keypair))),
         };
 
         let discovery = DiscV5::new(
@@ -320,7 +329,8 @@ impl EchoStack {
         )
         .map_err(std::io::Error::other)?;
 
-        let controller = Controller::new(PeerManager::new(Vec::new(), ScoreParams::default()));
+        let controller =
+            Controller::new(PeerManager::new(Vec::new(), ScoreParams::default(), [0u8; 4]));
 
         let mut spine = SilverSpine::new_with_base_dir(base_dir, Some(path_suffix));
         let network_adapter = SpineAdapter::connect_tile(&network, &mut spine);

@@ -82,6 +82,7 @@ pub struct P2p {
     keypair: Keypair,
     endpoint: Endpoint,
     peers: FxHashMap<ConnectionHandle, Peer>,
+    dialled: FxHashSet<PeerId>,
     banned: FxHashSet<PeerId>,
     timeout: Option<Duration>,
     recv_count: usize,
@@ -93,6 +94,7 @@ impl P2p {
             keypair,
             endpoint,
             peers: FxHashMap::default(),
+            dialled: FxHashSet::default(),
             banned: FxHashSet::default(),
             timeout: Some(Duration::ZERO),
             recv_count: 0,
@@ -106,11 +108,13 @@ impl P2p {
         addr: SocketAddr,
         now: Instant,
     ) -> Result<(), Error> {
-        let client_config = create_client_config(&self.keypair, Some(peer_id))?;
-        let (handle, connection) =
-            self.endpoint.connect(now, client_config, addr, "x").map_err(Error::other)?;
-        let peer = Peer::new(handle, connection);
-        self.peers.insert(handle, peer);
+        if self.dialled.insert(peer_id) {
+            let client_config = create_client_config(&self.keypair, Some(peer_id))?;
+            let (handle, connection) =
+                self.endpoint.connect(now, client_config, addr, "x").map_err(Error::other)?;
+            let peer = Peer::new(handle, connection);
+            self.peers.insert(handle, peer);
+        }
         Ok(())
     }
 
@@ -203,13 +207,14 @@ impl P2p {
 
             if peer.is_drained() {
                 tracing::info!("peer is drained");
-                dead_peers.push(peer.id().connection);
+                dead_peers.push(peer.id().clone());
                 on_event(NetEvent::PeerDisconnected { peer: peer.id().clone() });
             }
         }
 
         for dead_peer in dead_peers {
-            self.peers.remove(&ConnectionHandle(dead_peer));
+            self.peers.remove(&ConnectionHandle(dead_peer.connection));
+            self.dialled.remove(&dead_peer.peer_id);
         }
     }
 

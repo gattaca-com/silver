@@ -4044,6 +4044,7 @@ dependencies = [
  "fxhash",
  "silver_common",
  "slab",
+ "tracing",
 ]
 
 [[package]]

@@ -111,10 +111,10 @@ fn severity_for_error_response(code: u8, protocol: StreamProtocol) -> Option<Rpc
 pub struct Controller {
     peer_manager: PeerManager,
     last_tick: Instant,
-    /// Latest beacon status - set on sync.
-    status: Option<[u8; STATUS_V2_SIZE]>,
-    metadata: [u8; METADATA_SIZE],
-    /// When false, the 700ms heartbeat skips the per-peer Ping fan-out.
+    last_ping: Instant,
+    last_status: Instant,
+
+    /// When false, the 17000ms heartbeat skips the per-peer Ping fan-out.
     /// Tests use this to keep the peer-state machine ticking without
     /// generating background Ping traffic that would interfere with
     /// targeted RPC assertions.
@@ -154,8 +154,8 @@ impl Controller {
         Self {
             peer_manager,
             last_tick: Instant::now(),
-            status: None,
-            metadata: [0u8; METADATA_SIZE],
+            last_ping: Instant::now(),
+            last_status: Instant::now(),
             auto_ping: true,
             pending_blocks_by_range: VecDeque::new(),
             outbound_in_flight: HashMap::new(),
@@ -164,11 +164,11 @@ impl Controller {
     }
 
     pub fn set_status(&mut self, status: [u8; STATUS_V2_SIZE]) {
-        self.status = Some(status);
+        self.peer_manager.set_status(status);
     }
 
     pub fn set_metadata(&mut self, metadata: [u8; METADATA_SIZE]) {
-        self.metadata = metadata;
+        self.peer_manager.set_metadata(metadata);
     }
 
     /// Toggle the heartbeat-driven outbound Ping fan-out. Default is on.
@@ -297,6 +297,8 @@ impl Tile<SilverSpine> for Controller {
                 };
             };
 
+            tracing::info!(?rpc, "received rpc inbound");
+
             match rpc {
                 RpcInbound::Request(RpcRequestInbound { stream_id, request }) => {
                     // Inbound rate-limit gate. The controller is the
@@ -344,7 +346,7 @@ impl Tile<SilverSpine> for Controller {
                             now,
                             &mut on_event,
                         );
-                        if let Some(status) = self.status.as_ref() {
+                        if let Some(status) = self.peer_manager.status() {
                             let status_v1 = StatusView::as_v1(status).try_into().unwrap();
                             producers.p2p_send.produce(
                                 &P2pSend::Rpc(RpcOutbound::Response(RpcResponseOutbound {
@@ -379,7 +381,7 @@ impl Tile<SilverSpine> for Controller {
                             now,
                             &mut on_event,
                         );
-                        if let Some(status) = self.status.as_ref() {
+                        if let Some(status) = self.peer_manager.status() {
                             producers.p2p_send.produce(
                                 &P2pSend::Rpc(RpcOutbound::Response(RpcResponseOutbound {
                                     stream_id,
@@ -408,12 +410,15 @@ impl Tile<SilverSpine> for Controller {
                         let current_peer_metadata_seq =
                             self.peer_manager.peer_metadata_seq(stream_id.peer());
                         let metadata_seq = u64::from_le_bytes(ping);
+
+                        let our_seq = self.peer_manager().metadata().map(|m| {
+                            MetadataView::seq_number(m).to_le_bytes()
+                        }).unwrap_or_default();
+
                         producers.p2p_send.produce(
                             &P2pSend::Rpc(RpcOutbound::Response(RpcResponseOutbound {
                                 stream_id,
-                                response: RpcResponse::Ping(
-                                    MetadataView::seq_number(&self.metadata).to_le_bytes(),
-                                ),
+                                response: RpcResponse::Ping(our_seq),
                             }))
                             .into(),
                         );
@@ -438,10 +443,11 @@ impl Tile<SilverSpine> for Controller {
                         &mut on_event,
                     ),
                     RpcRequest::MetaData => {
+                        let metadata = self.peer_manager.metadata().unwrap_or(&[0u8;25]);
                         producers.p2p_send.produce(
                             &P2pSend::Rpc(RpcOutbound::Response(RpcResponseOutbound {
                                 stream_id,
-                                response: RpcResponse::MetaData(self.metadata),
+                                response: RpcResponse::MetaData(*metadata),
                             }))
                             .into(),
                         );
@@ -547,8 +553,13 @@ impl Tile<SilverSpine> for Controller {
 
         adapter.consume(|beacon_event: BeaconStateEvent, producers| {
             match beacon_event {
-                BeaconStateEvent::Synced(status) | BeaconStateEvent::Status(status) => {
-                    self.status = Some(status);
+                BeaconStateEvent::Synced(status) => {
+                    // TODO trigger gossip subscriptions
+                    self.peer_manager.set_synced(true);
+                    self.peer_manager.set_status(status);
+                }
+                BeaconStateEvent::Status(status) => {
+                    self.peer_manager.set_status(status);
                 }
                 BeaconStateEvent::RequestBlocksByRange { request_id, ssz } => {
                     // Pick the highest-scoring connected peer that
@@ -639,13 +650,14 @@ impl Tile<SilverSpine> for Controller {
             });
 
             // send pings
-            if self.auto_ping {
-                let ping = RpcRequest::Ping(MetadataView::seq_number(&self.metadata).to_le_bytes());
-                // Collect first so we can mutate `outbound_in_flight` while
-                // iterating without holding an immutable borrow on
-                // `peer_manager`.
-                let live: Vec<usize> = self.peer_manager.live_peers().collect();
-                for peer in live {
+            if self.auto_ping &&
+                self.last_ping.elapsed() > Duration::from_secs(17) &&
+                let Some(metadata) = self.peer_manager.metadata()
+            {
+                self.last_ping = Instant::now();
+
+                let ping = RpcRequest::Ping(MetadataView::seq_number(metadata).to_le_bytes());
+                for peer in self.peer_manager.live_peers() {
                     record_outbound(&mut self.outbound_in_flight, peer, StreamProtocol::Ping);
                     adapter.produce(P2pSend::Rpc(RpcOutbound::Request(RpcRequestOutbound {
                         application_id: 0,
@@ -653,6 +665,19 @@ impl Tile<SilverSpine> for Controller {
                         request: ping,
                     })));
                 }
+            }
+        }
+
+        if self.last_status.elapsed() > Duration::from_secs(300) &&
+            let Some(status) = self.peer_manager.status()
+        {
+            let status = RpcRequest::StatusV2(*status);
+            for peer in self.peer_manager.live_peers() {
+                adapter.produce(P2pSend::Rpc(RpcOutbound::Request(RpcRequestOutbound {
+                    application_id: 0,
+                    peer,
+                    request: status,
+                })));
             }
         }
     }

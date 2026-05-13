@@ -152,7 +152,7 @@ impl GossipHandler {
         while let Ok((mut buffer, recv_ts)) = self.incoming_gossip.read() {
             // Incoming gossip messages are prefixed with P2pStreamId
             let stream_id: &P2pStreamId = buffer.into();
-            tracing::debug!(?stream_id, len = buffer.len(), "gossip protobuf recv");
+            tracing::trace!(?stream_id, len = buffer.len(), "gossip protobuf recv");
 
             buffer = &buffer[size_of::<P2pStreamId>()..];
 

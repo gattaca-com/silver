@@ -32,6 +32,9 @@ pub struct Config {
     secret_key: [u8; 32],
     #[serde(with = "hex::serde")]
     fork_digest: [u8; 4],
+    #[serde(with = "hex::serde")]
+    next_fork_version: [u8; 4],
+    next_fork_epoch: u64,
     #[serde(default)]
     external_ip_v4: Option<Ipv4Addr>,
     #[serde(default)]
@@ -64,10 +67,17 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn new(secret_key: [u8; 32], fork_digest: [u8; 4]) -> Self {
+    pub fn new(
+        secret_key: [u8; 32],
+        fork_digest: [u8; 4],
+        next_fork_version: [u8; 4],
+        next_fork_epoch: u64,
+    ) -> Self {
         Self {
             secret_key,
             fork_digest,
+            next_fork_version,
+            next_fork_epoch,
             external_ip_v4: None,
             external_ip_v6: None,
             discovery_port: None,
@@ -80,6 +90,7 @@ impl Config {
                 StreamProtocol::Ping.multiselect_string(),
                 StreamProtocol::Goodbye.multiselect_string(),
                 StreamProtocol::Metadata.multiselect_string(),
+                StreamProtocol::BeaconBlocksByRange.multiselect_string(),
             ],
             gossip_topics: vec![GossipTopic::BeaconBlock.to_string()],
             chain_config: ChainConfig::default(),
@@ -126,6 +137,13 @@ impl Config {
 
     pub fn enr(&self) -> Result<Enr, Error> {
         let mut builder = Enr::builder();
+        let mut eth2 = [0u8; 16];
+        eth2[..4].copy_from_slice(&self.fork_digest);
+        eth2[4..8].copy_from_slice(&self.next_fork_version);
+        eth2[8..].copy_from_slice(&self.next_fork_epoch.to_le_bytes());
+
+        builder.eth2(eth2);
+
         if let Some(ip) = self.external_ip_v4 {
             builder.ip4(ip);
         }

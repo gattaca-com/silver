@@ -752,6 +752,8 @@ impl DiscV5 {
     }
 
     fn do_lookup(&mut self) {
+        tracing::debug!("performing node lookup");
+
         // Probe all un-sessioned peers first (bootstrap / new additions).
         let without_session: ArrayVec<(NodeId, SocketAddr), 32> = self
             .kbuckets
@@ -966,11 +968,15 @@ impl Discovery for DiscV5 {
         let mut enr_raw: ArrayVec<u8, ENR_RECORD_MAX> = ArrayVec::new();
         enr.encode(&mut enr_raw);
 
-        let _ = self.kbuckets.insert_or_update(
+        let result = self.kbuckets.insert_or_update(
             &Key::from(enr.node_id()),
             NodeEntry { addr, enr_seq: enr.seq(), pubkey, enr_raw: Some(enr_raw) },
             now,
         );
+
+        {
+            tracing::error!(?result, "add enr");
+        }
     }
 
     fn find_nodes(&mut self) {

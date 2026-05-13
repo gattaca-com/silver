@@ -73,7 +73,10 @@ impl RpcReadResponse {
     ) -> Result<Spin, StreamError> {
         match self {
             RpcReadResponse::ReadingPrefix { app_id, decoder, mut buf, mut read } => {
-                read += io.read_from_stream(p2p_id.stream_id(), &mut buf[read..])?;
+                read +=
+                    io.read_from_stream(p2p_id.stream_id(), &mut buf[read..]).inspect_err(|e| {
+                        tracing::error!(?p2p_id, ?e, "cannot read rpc response, read = {read}");
+                    })?;
 
                 let prefix_length = rpc_response_context_length(p2p_id.protocol());
                 if read > prefix_length {
@@ -161,6 +164,7 @@ impl RpcReadResponse {
                     match reservation.into_rpc() {
                         Rpc::Request(_) => return Err(StreamError::InvalidRpc),
                         Rpc::Response(rpc_response) => {
+                            tracing::info!(?p2p_id, "response complete");
                             return Ok(Spin::Ok(Self::Complete { app_id, msg: rpc_response }))
                         }
                     }

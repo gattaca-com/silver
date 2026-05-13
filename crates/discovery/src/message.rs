@@ -303,6 +303,7 @@ impl<'a> Packet<'a> {
         cipher.apply_keystream(&mut static_header);
 
         if static_header[..6] != PROTOCOL_ID {
+            tracing::error!(id=?static_header[..6], "bad protocol id");
             return Err(PacketError::HeaderDecryptionFailed);
         }
         if static_header[6..8] != PROTOCOL_VERSION {

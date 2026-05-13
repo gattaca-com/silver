@@ -114,7 +114,7 @@ impl Peer {
     fn open_stream(&mut self, protocol: StreamProtocol) -> Option<StreamId> {
         // All streams are Bi — multistream-select requires bidirectional I/O
         // even for request-response protocols.
-        tracing::debug!(?protocol, "open outbound stream");
+        tracing::info!(?protocol, "open outbound stream");
 
         if protocol == StreamProtocol::GossipSub && self.outbound_gossip.is_some() {
             tracing::warn!(id=?self.id, "open stream: already have outbound gossip stream");
