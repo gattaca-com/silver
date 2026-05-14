@@ -21,7 +21,11 @@ pub type BLSSignature = [u8; 96];
 pub type Slot = u64;
 pub type Epoch = u64;
 
-pub const MAX_VALIDATORS: usize = 2 * 1024 * 1024;
+// Physical cap on validator-indexed columnar arrays. Spec limit is
+// `VALIDATOR_REGISTRY_LIMIT = 1 << 40`; we size for real registry growth.
+// Live count crossed 2.0M during 2025; 2.75 Mi = 2,883,584 sits just below 3M
+// and gives ~600k headroom (~26%) over the current registry.
+pub const MAX_VALIDATORS: usize = 11 << 18;
 pub const VALIDATOR_REGISTRY_LIMIT: usize = 1 << 40;
 pub const SLOTS_PER_HISTORICAL_ROOT: usize = 8192;
 pub const SLOTS_PER_EPOCH: u64 = 32;
@@ -119,8 +123,8 @@ pub struct Immutable {
 }
 
 /// Mutated rarely — new deposits, BLS-to-exec changes, compounding switch.
-/// ~352 MB at 2M validators (compressed pubkeys 96 MB, decompressed 192 MB,
-/// withdrawal credentials 64 MB).
+/// ~484 MB at MAX_VALIDATORS=2.75Mi (compressed pubkeys 132 MB, decompressed
+/// 264 MB, withdrawal credentials 88 MB).
 ///
 /// `val_pubkey_decompressed` is a parallel cache of `val_pubkey` populated at
 /// admission (`decompose` for the bootstrap state, `apply_deposit` for new
@@ -148,7 +152,8 @@ pub struct HistoricalLongtail {
 pub const VAL_SLASHED_BYTES: usize = MAX_VALIDATORS / 8;
 
 /// Mutated every epoch boundary.
-/// ~100 MB at 2M validators.
+/// ~134 MB at MAX_VALIDATORS=2.75Mi (6 × [u64; 2.75Mi] = 132 MB, val_slashed
+/// 352 KB, randao_mixes 2 MB, slashings 64 KB).
 #[repr(C)]
 pub struct EpochData {
     // hot — scanned by fork choice weight + committee shuffling
@@ -192,8 +197,8 @@ pub struct SlotRoots {
 }
 
 /// Per-slot mutable state. Owned per-fork, mutated in place.
-/// ~20 MB at 2M validators (balances 16MB + participation 4MB + scalars).
-/// Pending queues live in a separate PendingQueues tier.
+/// ~27 MB at MAX_VALIDATORS=2.75Mi (balances 22 MB + participation 5.5 MB +
+/// scalars). Pending queues live in a separate PendingQueues tier.
 #[repr(C)]
 pub struct SlotData {
     pub balances: [u64; MAX_VALIDATORS],
@@ -287,7 +292,8 @@ pub struct ForkChoiceNode {
     pub state: BeaconStateRef,
 }
 
-/// Per-validator latest LMD attestation. ~72 MB at 1M validators.
+/// Per-validator latest LMD attestation. ~198 MB at MAX_VALIDATORS=2.75Mi
+/// (72 B per Vote).
 #[repr(C)]
 pub struct VoteTracker {
     pub votes: [Vote; MAX_VALIDATORS],

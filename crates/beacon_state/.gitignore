@@ -1,2 +1,3 @@
 consensus-spec-tests/
 *.tar.gz
+tests/example_checkpoints/*.ssz

@@ -60,7 +60,7 @@ pub fn load_state(path: &Path, zh: &[B256]) -> LoadedState {
         &mut s.roots,
         &mut s.sd,
     )
-    .unwrap_or_else(|| panic!("{}: decompose failed", path.display()));
+    .unwrap_or_else(|e| panic!("{}: decompose failed: {e}", path.display()));
     s.pq = pq;
     s
 }
