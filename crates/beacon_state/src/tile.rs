@@ -828,7 +828,7 @@ impl BeaconStateTile {
             Err(fb) => {
                 tracing::warn!("block precheck failed");
                 return fb;
-            },
+            }
         };
 
         let block_epoch = parsed.block_slot / SLOTS_PER_EPOCH;
@@ -969,7 +969,11 @@ impl BeaconStateTile {
         // Future-slot blocks: spec gossip rule says IGNORE blocks whose slot
         // exceeds wall slot.
         if block_slot > self.ticker.current_slot() + 1 {
-            tracing::warn!(block_slot, ticker=(self.ticker.current_slot() + 1), "block ticker slot precheck failed");
+            tracing::warn!(
+                block_slot,
+                ticker = (self.ticker.current_slot() + 1),
+                "block ticker slot precheck failed"
+            );
             return Err(GossipFeedback::Ignore);
         }
 
@@ -997,7 +1001,11 @@ impl BeaconStateTile {
         let imm = self.imm(&head);
         let vid = self.vid(&head);
         if proposer_index as usize >= vid.validator_cnt {
-            tracing::warn!(proposer_index, vid=vid.validator_cnt, "block proposer index precheck failed");
+            tracing::warn!(
+                proposer_index,
+                vid = vid.validator_cnt,
+                "block proposer index precheck failed"
+            );
             return Err(GossipFeedback::Reject);
         }
         let block_epoch = block_slot / SLOTS_PER_EPOCH;
