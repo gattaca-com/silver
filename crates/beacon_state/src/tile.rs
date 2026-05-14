@@ -217,6 +217,18 @@ impl BeaconStateTile {
         tile
     }
 
+    pub fn head_block_root(&self) -> B256 {
+        self.head_block_root
+    }
+
+    pub fn fork_choice_head(&self) -> B256 {
+        self.fork_choice.find_head()
+    }
+
+    pub fn head_state_slot(&self) -> Slot {
+        self.slot(&self.head).slot
+    }
+
     /// SSZ `hash_tree_root` of the current head's full BeaconState. Used by
     /// integration tests to cross-check tile-applied STF output against EF
     /// post-state vectors.
@@ -249,6 +261,20 @@ impl BeaconStateTile {
         )
         .unwrap_or_else(|e| panic!("bootstrap: decompose failed: {e}"));
         self.pending_pool[0] = pq;
+
+        if self.arena.slot.get(0).latest_block_header.state_root == [0u8; 32] {
+            let state_root = ssz_hash::hash_tree_root_state(
+                self.arena.imm.get(0),
+                self.arena.vid.get(0),
+                self.arena.longtail.get(0),
+                self.arena.epoch.get(0),
+                self.arena.roots.get(0),
+                self.arena.slot.get(0),
+                &self.pending_pool[0],
+                &self.zero_hashes,
+            );
+            self.arena.slot.get_mut(0).latest_block_header.state_root = state_root;
+        }
 
         let sd = self.arena.slot.get(0);
 
