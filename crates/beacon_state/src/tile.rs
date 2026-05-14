@@ -255,6 +255,9 @@ impl BeaconStateTile {
         let slot = sd.slot;
         let block_root =
             ssz_hash::hash_tree_root_block_header(&sd.latest_block_header, &self.zero_hashes);
+
+        tracing::info!(?block_root, block_header=?sd.latest_block_header, "block root calculated");
+
         // Checkpoint-sync convention: the anchor is trusted, so both
         // finalized and justified checkpoints refer to the anchor block
         // itself. Using the pre-state's stored checkpoints would leave
@@ -516,6 +519,7 @@ impl BeaconStateTile {
 
         let f = self.handle_block(data);
         if f != GossipFeedback::Accept {
+            tracing::warn!("handle block failed");
             return f;
         }
 
@@ -819,7 +823,10 @@ impl BeaconStateTile {
     fn handle_block(&mut self, data: &[u8]) -> GossipFeedback {
         let parsed = match self.precheck_block(data) {
             Ok(p) => p,
-            Err(fb) => return fb,
+            Err(fb) => {
+                tracing::warn!("block precheck failed");
+                return fb;
+            }
         };
 
         let block_epoch = parsed.block_slot / SLOTS_PER_EPOCH;
@@ -934,6 +941,7 @@ impl BeaconStateTile {
     /// on accept; the GossipFeedback variant on reject/ignore.
     fn precheck_block<'a>(&self, data: &'a [u8]) -> Result<ParsedBlock<'a>, GossipFeedback> {
         if !SignedBeaconBlockView::check_size(data) {
+            tracing::warn!("block size precheck failed");
             return Err(GossipFeedback::Reject);
         }
         let block_slot = SignedBeaconBlockView::slot(data);
@@ -941,22 +949,29 @@ impl BeaconStateTile {
         let parent_root = *SignedBeaconBlockView::parent_root(data);
         let state_root = *SignedBeaconBlockView::state_root(data);
 
-        // Parent not yet imported — not the sender's fault.
-        if self.fork_choice.find_node_idx(&parent_root).is_none() {
-            return Err(GossipFeedback::Ignore);
-        }
-
         let head = self.head;
         let head_slot = self.slot(&head).slot;
 
+        // Parent not yet imported — not the sender's fault.
+        if self.fork_choice.find_node_idx(&parent_root).is_none() {
+            tracing::warn!(head_slot, block_slot, fc_head_block_root=?self.fork_choice.find_head(), ?parent_root, "block parent precheck failed");
+            return Err(GossipFeedback::Ignore);
+        }
+
         // Past-slot blocks: state has already advanced past their slot.
         if block_slot < head_slot {
+            tracing::warn!(block_slot, head_slot, "block head slot precheck failed");
             return Err(GossipFeedback::Ignore);
         }
 
         // Future-slot blocks: spec gossip rule says IGNORE blocks whose slot
         // exceeds wall slot.
         if block_slot > self.ticker.current_slot() + 1 {
+            tracing::warn!(
+                block_slot,
+                ticker = (self.ticker.current_slot() + 1),
+                "block ticker slot precheck failed"
+            );
             return Err(GossipFeedback::Ignore);
         }
 
@@ -971,6 +986,7 @@ impl BeaconStateTile {
             if la_idx < types::PROPOSER_LOOKAHEAD_SIZE &&
                 proposer_index != self.slot(&head).proposer_lookahead[la_idx]
             {
+                tracing::warn!("block proposer lookahead precheck failed");
                 return Err(GossipFeedback::Reject);
             }
         }
@@ -983,6 +999,11 @@ impl BeaconStateTile {
         let imm = self.imm(&head);
         let vid = self.vid(&head);
         if proposer_index as usize >= vid.validator_cnt {
+            tracing::warn!(
+                proposer_index,
+                vid = vid.validator_cnt,
+                "block proposer index precheck failed"
+            );
             return Err(GossipFeedback::Reject);
         }
         let block_epoch = block_slot / SLOTS_PER_EPOCH;
@@ -1001,6 +1022,7 @@ impl BeaconStateTile {
             &imm.genesis_validators_root,
             &self.zero_hashes,
         ) {
+            tracing::warn!("block signature precheck failed");
             return Err(GossipFeedback::Reject);
         }
 
@@ -1506,6 +1528,7 @@ impl Tile<SilverSpine> for BeaconStateTile {
                 stream_id,
                 response,
             }) = m && let RpcResponse::BeaconBlock { fork_digest: _, ssz } = response {
+                    tracing::info!(?stream_id, "received beacon block over rpc");
                     let acquired = self.rpc_consumer.acquire(ssz);
                     let data = acquired.buffer().ok().map(|(d, _)| d as *const [u8]);
                     if let Some(p) = data {

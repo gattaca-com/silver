@@ -13,6 +13,9 @@ pub(crate) enum GossipReadState {
     AllocBody { length: usize, buf: [u8; 10], buf_start: usize, buf_end: usize },
     /// Reading message body. `remaining` bytes left.
     ReadingBody { reservation: TReservation, remaining: usize },
+    /// It is possible for the incoming half of the stream to be closed and
+    /// stream still valid for an outbound gossip stream.
+    Closed,
 }
 
 impl Default for GossipReadState {
@@ -51,7 +54,13 @@ impl GossipReadState {
     ) -> Result<Spin, StreamError> {
         match self {
             GossipReadState::ReadingLength { mut buf, mut read } => {
-                read += io.read_from_stream(p2p_id.stream_id(), &mut buf[read..])?;
+                match io.read_from_stream(p2p_id.stream_id(), &mut buf[read..]) {
+                    Ok(len) => read += len,
+                    Err(StreamError::StreamEOF) if read == 0 => {
+                        return Ok(Spin::Ok(Self::Closed));
+                    }
+                    Err(e) => return Err(e),
+                }
 
                 for pos in 0..read {
                     if buf[pos] & 0x80 == 0 {
@@ -94,6 +103,7 @@ impl GossipReadState {
                 }
                 Ok(Spin::Ok(Self::ReadingBody { reservation, remaining }))
             }
+            GossipReadState::Closed => Ok(Spin::Ok(Self::Closed)),
         }
     }
 }

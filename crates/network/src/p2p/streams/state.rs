@@ -59,8 +59,7 @@ impl StreamState {
         match self {
             StreamState::Negotiate(_) => false,
             StreamState::Gossip { read, write } => {
-                matches!(read, GossipReadState::ReadingLength { buf: _, read } if *read == 0) &&
-                    matches!(write, GossipWriteState::Idle)
+                matches!(read, GossipReadState::Closed) && matches!(write, GossipWriteState::Idle)
             }
             StreamState::IncomingRpc(rpc_in) => {
                 matches!(rpc_in, RpcIn::WriteResponse(RpcWriteResponse::Idle))
@@ -74,15 +73,32 @@ impl StreamState {
         }
     }
 
+    pub fn is_receive_only(&self, protocol: StreamProtocol) -> bool {
+        match self {
+            StreamState::Negotiate(state) => matches!(state, NegotiateState::OutReading { .. }),
+            StreamState::Gossip { read, write } => {
+                matches!(write, GossipWriteState::Idle) && !matches!(read, GossipReadState::Closed)
+            }
+            StreamState::IncomingRpc(inc) => {
+                matches!(inc, RpcIn::ReadRequest(_)) && protocol == StreamProtocol::Goodbye
+            }
+            StreamState::OutgoingRpc(rpc_out) => matches!(rpc_out, RpcOut::ReadResponse(_)),
+            StreamState::IncomingIdentify(_) => false,
+            StreamState::OutgoingIdentify(_) => true,
+            StreamState::Finished => true,
+        }
+    }
+
     #[allow(dead_code)]
     pub fn on_close<F>(&self, p2p_id: &P2pStreamId, emit: &mut F)
     where
         F: FnMut(NetEvent),
     {
-        if let StreamState::OutgoingRpc(RpcOut::ReadResponse(RpcReadResponse::ReadingPrefix {
-            app_id,
-            ..
-        })) = self
+        if p2p_id.protocol().has_multipart_response() &&
+            let StreamState::OutgoingRpc(RpcOut::ReadResponse(RpcReadResponse::ReadingPrefix {
+                app_id,
+                ..
+            })) = self
         {
             emit(NetEvent::RpcInbound(RpcInbound::Response(RpcResponseInbound {
                 application_id: *app_id,
@@ -175,7 +191,13 @@ impl StreamState {
             StreamState::Gossip { mut read, mut write } => {
                 read = read.spin(io, &mut context.gossip_producer, id)?;
                 write = write.spin(io, id)?;
-                Ok(Self::Gossip { read, write })
+
+                if matches!(read, GossipReadState::Closed) && id.is_incoming() {
+                    // read closed on incoming gossip stream - terminate.
+                    Ok(Self::Finished)
+                } else {
+                    Ok(Self::Gossip { read, write })
+                }
             }
             StreamState::IncomingRpc(rpc_in) => match rpc_in {
                 RpcIn::ReadRequest(read_request) => {
