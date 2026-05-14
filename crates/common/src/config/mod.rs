@@ -18,6 +18,10 @@ const fn default_usize<const N: usize>() -> usize {
     N
 }
 
+const fn default_u8<const V: u8>() -> u8 {
+    V
+}
+
 const fn default_u32<const V: u32>() -> u32 {
     V
 }
@@ -43,6 +47,8 @@ pub struct Config {
     discovery_port: Option<u16>,
     #[serde(default)]
     quic_port: Option<u16>,
+    #[serde(default = "default_u8::<4>")]
+    data_column_custody_group_count: u8,
     /// Full multiselect protocol strings.
     #[serde(default)]
     supported_protocols: Vec<String>,
@@ -82,6 +88,7 @@ impl Config {
             external_ip_v6: None,
             discovery_port: None,
             quic_port: None,
+            data_column_custody_group_count: 4,
             supported_protocols: vec![
                 StreamProtocol::Identity.multiselect_string(),
                 StreamProtocol::GossipSub.multiselect_string(),
@@ -91,6 +98,7 @@ impl Config {
                 StreamProtocol::Goodbye.multiselect_string(),
                 StreamProtocol::Metadata.multiselect_string(),
                 StreamProtocol::BeaconBlocksByRange.multiselect_string(),
+                StreamProtocol::DataColumnSidecarsByRange.multiselect_string(),
             ],
             gossip_topics: vec![GossipTopic::BeaconBlock.to_string()],
             chain_config: ChainConfig::default(),
@@ -143,6 +151,7 @@ impl Config {
         eth2[8..].copy_from_slice(&self.next_fork_epoch.to_le_bytes());
 
         builder.eth2(eth2);
+        builder.cgc(self.data_column_custody_group_count as u64);
 
         if let Some(ip) = self.external_ip_v4 {
             builder.ip4(ip);

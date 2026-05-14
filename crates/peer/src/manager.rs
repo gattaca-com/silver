@@ -103,7 +103,7 @@ pub struct PeerManager {
 
     /// Our local beacon status and metadata.
     status: Option<[u8; STATUS_V2_SIZE]>,
-    metadata: Option<[u8; METADATA_SIZE]>,
+    metadata: [u8; METADATA_SIZE],
 
     /// Whether we are synced.
     is_synced: bool,
@@ -127,7 +127,7 @@ pub struct PeerManager {
 }
 
 impl PeerManager {
-    pub fn new(our_topics: Vec<GossipTopic>, params: ScoreParams, fork_digest: [u8; 4]) -> Self {
+    pub fn new(our_topics: Vec<GossipTopic>, params: ScoreParams, fork_digest: [u8; 4], metadata: [u8; METADATA_SIZE]) -> Self {
         let now = Instant::now();
         let mesh =
             our_topics.iter().map(|t| (*t, Vec::with_capacity(params.d_high as usize))).collect();
@@ -151,7 +151,7 @@ impl PeerManager {
             last_discovery: now,
             database: PeerDatabase::default(),
             status: None,
-            metadata: None,
+            metadata,
             is_synced: false,
             outbound_in_flight: OutboundCounts::with_capacity(PEERS_CAP),
             inbound_buckets: HashMap::with_capacity(PEERS_CAP),
@@ -191,8 +191,8 @@ impl PeerManager {
         self.status.as_ref()
     }
 
-    pub fn metadata(&self) -> Option<&[u8; METADATA_SIZE]> {
-        self.metadata.as_ref()
+    pub fn metadata(&self) -> &[u8; METADATA_SIZE] {
+        &self.metadata
     }
 
     pub fn set_status(&mut self, status: [u8; STATUS_V2_SIZE]) {
@@ -200,7 +200,7 @@ impl PeerManager {
     }
 
     pub fn set_metadata(&mut self, metadata: [u8; METADATA_SIZE]) {
-        self.metadata = Some(metadata);
+        self.metadata = metadata;
     }
 
     pub fn is_synced(&self) -> bool {
@@ -1238,7 +1238,7 @@ mod tests {
     struct Captured(Vec<PeerControl>);
 
     fn fixture(our_topics: Vec<GossipTopic>, params: ScoreParams) -> (PeerManager, Captured) {
-        (PeerManager::new(our_topics, params, [0u8; 4]), Captured::default())
+        (PeerManager::new(our_topics, params, [0u8; 4], [0u8; METADATA_SIZE]), Captured::default())
     }
 
     fn peer_id(seed: u8) -> PeerId {

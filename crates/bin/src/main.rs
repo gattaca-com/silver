@@ -57,13 +57,14 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Tiles.
     let keypair = config.keypair()?;
+    let local_enr = config.enr()?;
 
     let discv5_addr = config.discovery_bind_addr().expect("no discovery port");
     let p2p_addr = config.p2p_bind_addr().expect("no p2p port");
     let mut discv5 = DiscV5::new(
         config.discovery_config(),
         *keypair.secret_key(),
-        config.enr()?,
+        local_enr,
         config.fork_digest(),
     );
     let server_config = silver_network::create_server_config(&keypair)?;
@@ -109,6 +110,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         config.gossip_topics()?,
         config.peer_score_params(),
         config.fork_digest(),
+        local_enr.into(),
     ));
 
     let chain_config = config.chain_config();

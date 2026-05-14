@@ -3,7 +3,7 @@ members = [
   "crates/beacon_state", 
   "crates/bin",
   "crates/common",
-  "crates/control",
+  "crates/control", "crates/data_columns",
   "crates/discovery",
   "crates/e2e",
   "crates/gossip",

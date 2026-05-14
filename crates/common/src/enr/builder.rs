@@ -40,6 +40,7 @@ pub struct Builder {
     eth2: Option<[u8; 16]>,
     attnets: Option<[u8; 8]>,
     syncnets: Option<u8>,
+    cgc: Option<u64>,
 }
 
 impl Default for Builder {
@@ -57,6 +58,7 @@ impl Default for Builder {
             eth2: None,
             attnets: None,
             syncnets: None,
+            cgc: None,
         }
     }
 }
@@ -126,6 +128,11 @@ impl Builder {
 
     pub fn syncnets(&mut self, syncnets: u8) -> &mut Self {
         self.syncnets = Some(syncnets);
+        self
+    }
+
+    pub fn cgc(&mut self, cgc: u64) -> &mut Self {
+        self.cgc = Some(cgc);
         self
     }
 
@@ -212,6 +219,7 @@ impl Builder {
             eth2: self.eth2,
             attnets: self.attnets,
             syncnets: self.syncnets,
+            cgc: self.cgc,
             public_key,
             signature,
         };

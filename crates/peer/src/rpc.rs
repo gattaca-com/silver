@@ -325,10 +325,7 @@ impl PeerManager {
                         let current_peer_metadata_seq = self.peer_metadata_seq(stream_id.peer());
                         let metadata_seq = u64::from_le_bytes(ping);
 
-                        let our_seq = self
-                            .metadata()
-                            .map(|m| MetadataView::seq_number(m).to_le_bytes())
-                            .unwrap_or_default();
+                        let our_seq = MetadataView::seq_number(self.metadata()).to_le_bytes();
 
                         emit(PeerControl::P2pSend(P2pSend::Rpc(RpcOutbound::Response(
                             RpcResponseOutbound { stream_id, response: RpcResponse::Ping(our_seq) },
@@ -353,7 +350,7 @@ impl PeerManager {
                         emit,
                     ),
                     RpcRequest::MetaData => {
-                        let metadata = self.metadata().copied().unwrap_or([0u8; 25]);
+                        let metadata = *self.metadata();
                         emit(PeerControl::P2pSend(P2pSend::Rpc(RpcOutbound::Response(
                             RpcResponseOutbound {
                                 stream_id,
@@ -522,9 +519,7 @@ impl PeerManager {
     /// Each emission bumps the per-peer Ping in-flight counter; release
     /// happens in `on_rpc_inbound` on the response chunk.
     pub fn fan_out_ping(&mut self, emit: &mut impl FnMut(PeerControl)) {
-        let Some(metadata) = self.metadata() else {
-            return;
-        };
+        let metadata = self.metadata();
         let ping = RpcRequest::Ping(MetadataView::seq_number(metadata).to_le_bytes());
         let peers: Vec<usize> = self.live_peers().collect();
         for peer in peers {
