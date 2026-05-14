@@ -35,8 +35,8 @@ jobs:
       - name: Download consensus-spec-tests
         run: make -C crates/beacon_state ./consensus-spec-tests
 
-      - name: Download finalized state SSZ
-        run: make -C crates/beacon_state finalized-state
+      - name: Download checkpoint fixtures (state + next blocks)
+        run: make -C crates/beacon_state checkpoint-fixtures
 
       - name: Run tests
         run: cargo test --features "silver_beacon_state/ef_tests,silver_e2e/lh-client" --no-fail-fast
