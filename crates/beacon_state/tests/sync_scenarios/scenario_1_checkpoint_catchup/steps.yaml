@@ -1,5 +1,5 @@
-# Scenario 1: node boots from a checkpoint, learns it is behind, requests
-# and applies blocks via RPC range, ends up Following.
+# Scenario 1: node boots from a checkpoint, learns it is behind, applies
+# PM-driven block-by-range responses, then PM signals Following.
 #
 # Source material borrowed from EF's sanity/blocks/attestation case:
 # pre.ssz_snappy + blocks_0/1 form a valid 2-block chain.
@@ -7,16 +7,14 @@
 startup_checkpoint: tests/mainnet/fulu/sanity/blocks/pyspec_tests/attestation/pre.ssz_snappy
 # checkpoint is at slot 32; the attestation case's two blocks are slot 33
 # and 65. Harness floors `slots_missing` to 3 (must be > 2 for Syncing).
-# Final sync_target is checkpoint_slot+slots_missing = 65 — matches the slot
-# of the second EF block. The single in-flight range request asks for
-# [33, 65+1) which covers both blocks; head_slot+2=67 ≥ target=65 then flips
-# the tile to Following after the blocks apply.
 slots_missing: 33
 
 steps:
-  # Bootstrap put the tile in Syncing; first loop_body issues the range req.
-  - kind: check
-    outbound_has: [request_blocks_by_range]
+  # PM tells BS we're catching up. Drives BS into Mode::Syncing.
+  - kind: sync_target
+    target: syncing_head
+    target_slot: 65
+  - kind: step
 
   # Deliver the two chained blocks as RPC range-resp chunks.
   - kind: blocks_range_resp
@@ -29,11 +27,10 @@ steps:
   - kind: check
     outbound_has: [persist_block, status]
 
-  # Synced fires on the next loop_body after the mode flipped to Following
-  # inside sync_step.
+  # PM signals syncing complete. Mode flips Syncing→Following.
+  - kind: sync_target
+    target: following
   - kind: step
-  - kind: check
-    outbound_has: [synced]
 
   # Strictly stronger than the per-event
   # checks above — any field divergence diverges the root.

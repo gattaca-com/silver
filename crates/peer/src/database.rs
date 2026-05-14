@@ -106,6 +106,22 @@ impl PeerDatabase {
         }
     }
 
+    #[allow(dead_code)]
+    pub fn peer_status_bytes(&self, p2p_id: usize) -> Option<&[u8]> {
+        self.by_p2p_id
+            .get(&p2p_id)
+            .and_then(|idx| self.peers.get(*idx))
+            .and_then(|record| record.status.as_ref())
+            .map(status_bytes)
+    }
+
+    pub fn iter_live_status_bytes(&self) -> impl Iterator<Item = (usize, &[u8])> + '_ {
+        self.by_p2p_id.iter().filter_map(|(p2p_id, idx)| {
+            let record = self.peers.get(*idx)?;
+            Some((*p2p_id, status_bytes(record.status.as_ref()?)))
+        })
+    }
+
     pub fn p2p_metadata(&mut self, p2p_id: usize, metadata: [u8; METADATA_SIZE]) {
         if let Some(record) = self.by_p2p_id.get(&p2p_id).and_then(|idx| self.peers.get_mut(*idx)) {
             record.metadata.replace(metadata);
@@ -143,6 +159,13 @@ impl PeerDatabase {
         self.by_p2p_id
             .iter()
             .filter_map(move |(p2p_id, idx)| proto?.contains(idx).then_some(*p2p_id))
+    }
+}
+
+fn status_bytes(s: &PeerStatus) -> &[u8] {
+    match s {
+        PeerStatus::V1(b) => b.as_slice(),
+        PeerStatus::V2(b) => b.as_slice(),
     }
 }
 

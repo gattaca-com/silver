@@ -10,6 +10,7 @@
 //! randao mixes, fork).
 
 pub use silver_common::ssz_hash::*;
+use tracing::instrument;
 
 use crate::types::{
     self, BeaconBlockHeader, Checkpoint, EpochData, Eth1Data, HISTORICAL_ROOTS_LIMIT,
@@ -46,6 +47,7 @@ pub fn hash_eth1_data(e: &Eth1Data, zh: &[B256]) -> B256 {
 // per tier + a layered cache for: validators, balances, inactivity_scores,
 // randao_mixes (see hash_randao_mixes), participation lists.
 #[allow(clippy::too_many_arguments)]
+#[instrument(skip_all)]
 pub fn hash_tree_root_state(
     imm: &Immutable,
     vid: &ValidatorIdentity,

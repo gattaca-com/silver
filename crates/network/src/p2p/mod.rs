@@ -206,7 +206,7 @@ impl P2p {
             }
 
             if peer.is_drained() {
-                tracing::info!("peer is drained");
+                tracing::debug!("peer is drained");
                 dead_peers.push(peer.id().clone());
                 on_event(NetEvent::PeerDisconnected { peer: peer.id().clone() });
             }

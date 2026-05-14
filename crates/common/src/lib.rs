@@ -1,6 +1,6 @@
 pub use crate::{
     arena::{ArenaPtr, TierPool},
-    config::{Config, DiscoveryConfig, ScoreParams},
+    config::{Config, DiscoveryConfig, ScoreParams, SyncingConfig},
     error::Error,
     gossip::{
         GossipTopic, MESSAGE_ID_LEN, MessageId, MessageIdHasher, msg_id_invalid_snappy,
@@ -16,10 +16,11 @@ pub use crate::{
         DataColumnsAvailable, Error as TCacheError, GossipMsgOut, IpBytes, MULTISTREAM_V1,
         MultiProducer as TMultiProducer, NewGossipMsg, P2pSend, P2pStreamId, PeerControl,
         PeerEvent, PeerStatus, Producer as TProducer, REJECT_RESPONSE, RPC_PROTOCOLS,
-        RandomAccessConsumer as TRandomAccess, Reservation as TReservation, RpcInbound, RpcMsg,
-        RpcOutbound, RpcRequest, RpcRequestInbound, RpcRequestOutbound, RpcResponse,
-        RpcResponseInbound, RpcResponseOutbound, RpcSeverity, SilverSpine, SilverSpineProducers,
-        StreamProtocol, TCache, TCacheProducer, TCacheRead, TCacheRef,
+        RandomAccessConsumer as TRandomAccess, RejectSource, Reservation as TReservation,
+        RpcInbound, RpcMsg, RpcOutbound, RpcRequest, RpcRequestInbound, RpcRequestOutbound,
+        RpcResponse, RpcResponseInbound, RpcResponseOutbound, RpcSeverity, SilverSpine,
+        SilverSpineProducers, StreamProtocol, SyncUpdate, TCache, TCacheProducer, TCacheRead,
+        TCacheRef,
     },
     util::{create_self_signed_certificate, decode_varint, encode_varint},
     wheel::Wheel,

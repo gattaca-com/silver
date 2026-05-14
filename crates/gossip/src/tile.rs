@@ -236,11 +236,10 @@ impl Tile<SilverSpine> for GossipHandler {
                 }
             });
         });
-        adapter.consume(|beacon_event: BeaconStateEvent, _producers| match beacon_event {
-            BeaconStateEvent::Synced(status) | BeaconStateEvent::Status(status) => {
-                self.fork_digest_hex = hex::encode(StatusView::fork_digest(&status));
+        adapter.consume(|beacon_event: BeaconStateEvent, _producers| {
+            if let BeaconStateEvent::Status { ssz, wall_slot: _ } = beacon_event {
+                self.fork_digest_hex = hex::encode(StatusView::fork_digest(&ssz));
             }
-            _ => {}
         });
         self.spin(&mut |event| match event {
             GossipHandlerEvent::PeerEvent(peer_event) => adapter.produce(peer_event),

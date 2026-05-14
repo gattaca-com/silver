@@ -6,6 +6,7 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
+flux.workspace = true
 fxhash.workspace = true
 silver_common.workspace = true
 slab.workspace = true

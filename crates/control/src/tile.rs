@@ -40,8 +40,8 @@ impl Controller {
         }
     }
 
-    pub fn set_status(&mut self, status: [u8; STATUS_V2_SIZE]) {
-        self.peer_manager.set_status(status);
+    pub fn set_status(&mut self, status: [u8; STATUS_V2_SIZE], wall_slot: u64) {
+        self.peer_manager.set_status(status, wall_slot);
     }
 
     pub fn set_metadata(&mut self, metadata: [u8; METADATA_SIZE]) {
@@ -105,26 +105,46 @@ impl Tile<SilverSpine> for Controller {
             });
         });
 
-        adapter.consume(|beacon_event: BeaconStateEvent, producers| {
-            match beacon_event {
-                BeaconStateEvent::Synced(status) => {
-                    // TODO trigger gossip subscriptions
-                    self.peer_manager.set_synced(true);
-                    self.peer_manager.set_status(status);
-                }
-                BeaconStateEvent::Status(status) => {
-                    self.peer_manager.set_status(status);
-                }
-                BeaconStateEvent::RequestBlocksByRange { request_id, ssz } => {
-                    self.peer_manager.on_request_blocks_by_range(request_id, ssz, &mut |pc| {
-                        match pc {
-                            PeerControl::P2pSend(send) => producers.p2p_send.produce(&send.into()),
-                            other => producers.peer_control.produce(&other.into()),
-                        };
-                    });
-                }
-                _ => {}
+        adapter.consume(|beacon_event: BeaconStateEvent, _producers| match beacon_event {
+            BeaconStateEvent::Status { ssz, wall_slot } => {
+                self.peer_manager.set_status(ssz, wall_slot);
             }
+            BeaconStateEvent::BlockRejected { block_root, source } => {
+                self.peer_manager.record_block_rejected(block_root, source);
+            }
+            _ => {}
+        });
+
+        if let Some(target) = self.peer_manager.maybe_emit_sync_target() {
+            adapter.produce(target);
+        }
+
+        // Catchup → Following edge: blast a one-shot Status to every peer
+        // so they reciprocate with their fresh head — primes the head-sync
+        // set — and announce our topic subscriptions so peers connected
+        // during catch-up start gossiping to us. Subsequent Status fan-outs
+        // run on the periodic 300s heartbeat.
+        if self.peer_manager.take_just_synced() {
+            self.last_status = now;
+            self.peer_manager.fan_out_status(&mut |pc| {
+                match pc {
+                    PeerControl::P2pSend(send) => adapter.produce(send),
+                    other => adapter.produce(other),
+                };
+            });
+            self.peer_manager.fan_out_subscriptions(&mut |pc| {
+                match pc {
+                    PeerControl::P2pSend(send) => adapter.produce(send),
+                    other => adapter.produce(other),
+                };
+            });
+        }
+
+        self.peer_manager.maybe_issue_syncreq(now, &mut |pc| {
+            match pc {
+                PeerControl::P2pSend(send) => adapter.produce(send),
+                other => adapter.produce(other),
+            };
         });
 
         self.peer_manager.drain_pending_outbound(&mut |pc| {

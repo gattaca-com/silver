@@ -1,4 +1,10 @@
-use flux::communication::ShmemData;
+use flux::{
+    communication::ShmemData,
+    utils::{
+        directories::{local_share_dir, shmem_dir_data_with_base},
+        short_typename,
+    },
+};
 use silver_common::{TierPool, arena::open_or_create_shm};
 
 use crate::types::{
@@ -37,7 +43,15 @@ pub enum ArenaBacking {
 }
 
 impl ArenaBacking {
+    /// Open silver's `BeaconArena` shared-memory file, removing any stale
+    /// copy first. Silver always bootstraps from a checkpoint (no resume
+    /// flow yet), so reusing arena state across restarts is incorrect —
+    /// `decompose` pushes into bounded lists on slot 0 and overflows if
+    /// the previous run left them populated.
     pub fn open_shm(app_name: &str) -> Self {
+        let path = shmem_dir_data_with_base(local_share_dir(), app_name)
+            .join(short_typename::<BeaconArena>().as_str());
+        let _ = std::fs::remove_file(&path);
         Self::Shm(unsafe { open_or_create_shm::<BeaconArena>(app_name) })
     }
 

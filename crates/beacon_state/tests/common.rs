@@ -20,9 +20,8 @@ use silver_beacon_state::{
 };
 use silver_common::{
     BeaconStateEvent, GossipTopic, MessageId, NewGossipMsg, P2pStreamId, RpcInbound,
-    RpcResponseInbound, SilverSpine, StreamProtocol, TCache, TCacheProducer, TProducer,
-    TRandomAccess,
-    ssz_view::{BLOCKS_BY_RANGE_REQ_SIZE, BeaconBlocksByRangeRequestView, STATUS_V2_SIZE},
+    RpcResponseInbound, SilverSpine, StreamProtocol, SyncUpdate, TCache, TCacheProducer, TProducer,
+    TRandomAccess, ssz_view::STATUS_V2_SIZE,
 };
 
 fn null_stream_id() -> P2pStreamId {
@@ -55,6 +54,10 @@ pub enum Step {
     BlocksRangeResp { from: String },
     /// Inject an inbound Status from a peer.
     Status { head_slot: u64, finalized_epoch: u64, finalized_root: String },
+    /// Inject a `SyncUpdate` from peer-manager. `target` is one of:
+    /// `syncing_finalised`, `syncing_head`, `following`. Syncing variants
+    /// take `target_slot` (mapped to the appropriate enum payload).
+    SyncTarget { target: String, target_slot: Option<u64> },
     /// Assertions against observable state and accumulated outbound.
     Check(Checks),
     /// Assert the tile's current head state has `hash_tree_root` equal to the
@@ -66,8 +69,8 @@ pub enum Step {
 #[derive(Debug, Default, Deserialize)]
 pub struct Checks {
     /// `BeaconStateEvent` kinds that must have appeared since the previous
-    /// check (order-insensitive). Accepted values: `synced`, `status`,
-    /// `request_blocks_by_range`, `persist_block`.
+    /// check (order-insensitive). Accepted values: `status`,
+    /// `persist_block`, `block_rejected`.
     #[serde(default)]
     pub outbound_has: Vec<String>,
 }
@@ -86,39 +89,31 @@ pub struct Harness {
     gossip_in_producer: TProducer,
     rpc_in_producer: TProducer,
     outbound_log: Vec<OutboundKind>,
-    /// Latest `request_id` observed on a
-    /// `BeaconStateEvent::RequestBlocksByRange` event. Injected
-    /// `BlocksRangeResp` chunks tag themselves with this so the tile's
-    /// request-id correlation accepts them.
-    last_request_id: u64,
     _base_dir: PathBuf, // owned to keep temp files around for the run
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutboundKind {
-    Synced,
     Status,
-    RequestBlocksByRange,
     PersistBlock,
+    BlockRejected,
 }
 
 impl OutboundKind {
     fn from_str(s: &str) -> Option<Self> {
         Some(match s {
-            "synced" => Self::Synced,
             "status" => Self::Status,
-            "request_blocks_by_range" => Self::RequestBlocksByRange,
             "persist_block" => Self::PersistBlock,
+            "block_rejected" => Self::BlockRejected,
             _ => return None,
         })
     }
 
     fn classify(ev: &BeaconStateEvent) -> Self {
         match ev {
-            BeaconStateEvent::Synced(_) => Self::Synced,
-            BeaconStateEvent::Status(_) => Self::Status,
-            BeaconStateEvent::RequestBlocksByRange { .. } => Self::RequestBlocksByRange,
+            BeaconStateEvent::Status { .. } => Self::Status,
             BeaconStateEvent::PersistBlock(_) => Self::PersistBlock,
+            BeaconStateEvent::BlockRejected { .. } => Self::BlockRejected,
         }
     }
 }
@@ -180,7 +175,6 @@ impl Harness {
             gossip_in_producer,
             rpc_in_producer,
             outbound_log: Vec::new(),
-            last_request_id: 0,
             _base_dir: base,
         }
     }
@@ -192,11 +186,7 @@ impl Harness {
 
     fn drain_outbound(&mut self) {
         let log = &mut self.outbound_log;
-        let last_id = &mut self.last_request_id;
         self.inj_adapter.consume(|ev: BeaconStateEvent, _| {
-            if let BeaconStateEvent::RequestBlocksByRange { request_id, .. } = &ev {
-                *last_id = *request_id;
-            }
             log.push(OutboundKind::classify(&ev));
         });
     }
@@ -237,13 +227,17 @@ impl Harness {
             buf[..len].copy_from_slice(ssz)
         });
         self.inj_adapter.produce(RpcInbound::Response(RpcResponseInbound {
-            application_id: self.last_request_id,
+            application_id: 0,
             stream_id: null_stream_id(),
             response: silver_common::RpcResponse::BeaconBlock {
                 fork_digest: [0, 0, 0, 0],
                 ssz: tcache,
             },
         }));
+    }
+
+    pub fn inject_sync_target(&mut self, target: SyncUpdate) {
+        self.inj_adapter.produce(target);
     }
 
     pub fn inject_status(
@@ -311,13 +305,6 @@ impl Harness {
     }
 }
 
-// Kept to silence "unused import" for symbols only referenced by type.
-#[allow(dead_code)]
-fn _force_use() {
-    let _ = BLOCKS_BY_RANGE_REQ_SIZE;
-    let _: u64 = BeaconBlocksByRangeRequestView::start_slot(&[0u8; BLOCKS_BY_RANGE_REQ_SIZE]);
-}
-
 pub fn run_scenario(case_dir: &Path) {
     let transcript_yaml = fs::read_to_string(case_dir.join("steps.yaml")).expect("read steps.yaml");
     let t: Setup = serde_yml::from_str(&transcript_yaml).expect("parse steps.yaml");
@@ -374,6 +361,21 @@ pub fn run_scenario(case_dir: &Path) {
             }
             Step::Status { head_slot, finalized_epoch, finalized_root } => {
                 h.inject_status(*head_slot, *finalized_epoch, parse_b256(finalized_root));
+            }
+            Step::SyncTarget { target, target_slot } => {
+                let upd = match target.as_str() {
+                    "syncing_finalised" => SyncUpdate::SyncingFinalised {
+                        target_epoch: target_slot.expect("target_slot required") / 32,
+                        target_root: [0u8; 32],
+                    },
+                    "syncing_head" => SyncUpdate::SyncingHead {
+                        head_slot: target_slot.expect("target_slot required"),
+                        head_root: [0u8; 32],
+                    },
+                    "following" => SyncUpdate::Following,
+                    other => panic!("unknown sync target: {other}"),
+                };
+                h.inject_sync_target(upd);
             }
             Step::Check(c) => {
                 h.assert_checks(c);

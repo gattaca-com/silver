@@ -118,6 +118,11 @@ impl<T, const N: usize> TierPool<T, N> {
         // SAFETY: single-producer contract.
         unsafe { *self.next.get() = (idx % N) as u32 };
     }
+
+    pub fn cursor(&self) -> usize {
+        // SAFETY: single-producer contract.
+        unsafe { *self.next.get() as usize }
+    }
 }
 
 #[derive(Clone, Copy)]

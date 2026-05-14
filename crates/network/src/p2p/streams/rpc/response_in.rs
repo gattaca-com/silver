@@ -188,7 +188,7 @@ impl RpcReadResponse {
                     match reservation.into_rpc() {
                         Rpc::Request(_) => return Err(StreamError::InvalidRpc),
                         Rpc::Response(rpc_response) => {
-                            tracing::info!(?p2p_id, "response complete");
+                            tracing::trace!(?p2p_id, "response complete");
                             return Ok(Spin::Ok(Self::Complete { app_id, msg: rpc_response }))
                         }
                     }

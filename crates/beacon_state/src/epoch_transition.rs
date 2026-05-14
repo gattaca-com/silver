@@ -1,5 +1,7 @@
 use core::cmp::{max, min};
 
+use tracing::instrument;
+
 use crate::{
     bls,
     shuffling::{self, DOMAIN_BEACON_PROPOSER},
@@ -56,6 +58,7 @@ const HISTORICAL_SUMMARY_PERIOD: u64 = SLOTS_PER_HISTORICAL_ROOT as u64 / SLOTS_
 
 /// Run all epoch processing sub-functions in Fulu spec order.
 #[allow(clippy::too_many_arguments)]
+#[instrument(skip_all)]
 pub fn process_epoch(
     vid: &mut ValidatorIdentity,
     longtail: &mut HistoricalLongtail,
@@ -526,6 +529,8 @@ fn apply_pending_deposit(
         }
         let idx = vid.validator_cnt;
         vid.val_pubkey[idx] = deposit.pubkey;
+        vid.val_pubkey_decompressed[idx] =
+            blst::min_pk::PublicKey::from_bytes(&deposit.pubkey).unwrap_or_default();
         vid.val_withdrawal_credentials[idx] = deposit.withdrawal_credentials;
         epoch.val_effective_balance[idx] = min(
             deposit.amount - deposit.amount % EFFECTIVE_BALANCE_INCREMENT,
