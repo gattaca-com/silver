@@ -6,7 +6,7 @@ use super::{default_u32, default_u64, default_usize};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DiscoveryConfig {
-    #[serde(default = "default_u64::<1000>")]
+    #[serde(default = "default_u64::<3_600_000>")]
     pub lookup_interval_ms: u64,
     #[serde(default = "default_usize::<6>")]
     pub lookup_distances: usize,

@@ -43,7 +43,6 @@ impl fmt::Display for SnappyError {
 /// staging -> decompressed output).
 ///
 /// CRC-32C validation is skipped — QUIC/TLS already provides integrity.
-#[derive(Debug)]
 pub(crate) struct SnappyDecoder {
     buf: Box<[u8; BUF_CAP]>,
     buf_len: usize,
@@ -51,6 +50,17 @@ pub(crate) struct SnappyDecoder {
     need: usize,
     got_stream_id: bool,
     decoder: Decoder,
+}
+
+impl Debug for SnappyDecoder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SnappyDecoder")
+            .field("buf_len", &self.buf_len)
+            .field("need", &self.need)
+            .field("got_stream_id", &self.got_stream_id)
+            .field("decoder", &self.decoder)
+            .finish()
+    }
 }
 
 impl Default for SnappyDecoder {
@@ -73,7 +83,6 @@ impl SnappyDecoder {
         input: &[u8],
         out: &mut [u8],
     ) -> Result<(usize, usize), SnappyError> {
-        tracing::info!(input = input.len(), output = out.len(), "decompress");
         let mut in_pos = 0;
         let mut out_pos = 0;
 
@@ -244,7 +253,10 @@ pub(crate) struct SnappyEncoder {
 
 impl Debug for SnappyEncoder {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SnappyEncoder").finish()
+        f.debug_struct("SnappyEncoder")
+            .field("dst_len", &self.dst_len)
+            .field("dst_written", &self.dst_written)
+            .finish()
     }
 }
 

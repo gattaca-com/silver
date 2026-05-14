@@ -220,17 +220,7 @@ impl Peer {
             }
         }
         for id in to_remove {
-            if let Some(in_id) = self.inbound_gossip &&
-                in_id == id
-            {
-                self.inbound_gossip.take();
-            }
-            if let Some(in_id) = self.outbound_gossip &&
-                in_id == id
-            {
-                self.outbound_gossip.take();
-            }
-            self.streams.remove(&id);
+            self.remove_stream(id);
         }
 
         next_timeout
@@ -281,38 +271,50 @@ impl Peer {
                     None => false,
                 };
                 if remove {
-                    if let Some(in_id) = self.inbound_gossip &&
-                        in_id == id
-                    {
-                        self.inbound_gossip.take();
-                    }
-                    if let Some(in_id) = self.outbound_gossip &&
-                        in_id == id
-                    {
-                        self.outbound_gossip.take();
-                    }
-                    self.streams.remove(&id);
+                    self.remove_stream(id);
                 }
             }
             quinn_proto::StreamEvent::Finished { id } => {
-                // Send-side only per quinn-proto: our FIN was acked or
-                // the send was stopped. The recv half is independent and
-                // may still deliver bytes (e.g. identify response after
-                // we close_write on the dialer). Cleanup is driven by
-                // `SpinResult::End` once the state machine reaches
-                // `Self::Finished` or the spin error path.
+                // This event is emitted after we call 'finish()' on the send side of
+                // the stream. Indicates that data was sent and acked.
                 tracing::debug!(?id, "send half finished");
             }
             quinn_proto::StreamEvent::Stopped { id, error_code } => {
-                // Send-side only: peer sent STOP_SENDING. Same reasoning
-                // as `Finished` — recv half may still be active. libp2p's
-                // identify behaviour STOP_SENDINGs immediately after
-                // reading our (empty) request body, so tearing down here
-                // would lose the inbound identify response.
-                tracing::debug!(?id, ?error_code, "send half stopped");
+                if let Some(stream) = self.streams.get_mut(&id) {
+                    let p2p_id = stream.p2p_id;
+                    if let SpinResult::End =
+                        stream.stop_send(error_code, &mut self.connection, on_event)
+                    {
+                        // Remove the stream
+                        self.remove_stream(id);
+                    }
+
+                    if let Some(out_id) = self.outbound_gossip &&
+                        out_id == id
+                    {
+                        // peer has asked to stop receiving gossip
+                        self.remove_stream(id);
+                        self.outbound_gossip.take();
+                        on_event(NetEvent::StreamClosed { stream: p2p_id })
+                    }
+                }
             }
             quinn_proto::StreamEvent::Available { dir: _ } => {}
         }
+    }
+
+    fn remove_stream(&mut self, id: StreamId) {
+        if let Some(in_id) = self.inbound_gossip &&
+            in_id == id
+        {
+            self.inbound_gossip.take();
+        }
+        if let Some(in_id) = self.outbound_gossip &&
+            in_id == id
+        {
+            self.outbound_gossip.take();
+        }
+        self.streams.remove(&id);
     }
 }
 
@@ -406,6 +408,25 @@ impl Stream {
                 SpinResult::End
             }
         }
+    }
+
+    /// Remote peer has called 'stop' on their recv stream (our send side).
+    fn stop_send<E>(
+        &mut self,
+        error_code: VarInt,
+        connection: &mut Connection,
+        on_event: &mut E,
+    ) -> SpinResult
+    where
+        E: FnMut(crate::NetEvent),
+    {
+        let _ = connection.send_stream(self.p2p_id.stream_id()).reset(VarInt::from_u32(0));
+        if !self.state.get_mut().is_receive_only(self.p2p_id.protocol()) {
+            tracing::warn!(error_code=error_code.into_inner(), state=?self.state.get_mut(), "Stop send called in non-receive only state.");
+            on_event(NetEvent::StreamClosed { stream: self.p2p_id });
+            return SpinResult::End
+        }
+        SpinResult::Ok
     }
 
     // Unused — see `StreamState::on_close` / `is_complete` for the
