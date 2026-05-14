@@ -185,7 +185,7 @@ fn run_rewards_handler(handler_name: &str) {
                 &mut s.roots,
                 &mut s.sd,
             )
-            .is_none()
+            .is_err()
             {
                 continue;
             }

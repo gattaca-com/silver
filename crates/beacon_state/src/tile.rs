@@ -235,9 +235,9 @@ impl BeaconStateTile {
     }
 
     /// Load a checkpoint state SSZ blob. Decomposes into tiered storage at
-    /// slot 0 of each pool. Returns false if the SSZ is invalid.
-    fn bootstrap(&mut self, ssz: &[u8]) -> bool {
-        let Some(pq) = decompose::decompose_beacon_state(
+    /// slot 0 of each pool.
+    fn bootstrap(&mut self, ssz: &[u8]) {
+        let pq = decompose::decompose_beacon_state(
             ssz,
             &self.zero_hashes,
             self.arena.imm.get_mut(0),
@@ -246,9 +246,8 @@ impl BeaconStateTile {
             self.arena.epoch.get_mut(0),
             self.arena.roots.get_mut(0),
             self.arena.slot.get_mut(0),
-        ) else {
-            return false;
-        };
+        )
+        .unwrap_or_else(|e| panic!("bootstrap: decompose failed: {e}"));
         self.pending_pool[0] = pq;
 
         let sd = self.arena.slot.get(0);
@@ -288,7 +287,6 @@ impl BeaconStateTile {
         self.sync_cursor = slot + 1;
         self.sync_target = wall_slot;
         self.mode = if wall_slot > slot + 2 { Mode::Syncing } else { Mode::Following };
-        true
     }
 
     fn alloc_pending(&mut self) -> usize {

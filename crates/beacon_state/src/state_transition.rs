@@ -2579,9 +2579,10 @@ fn apply_deposit(
 
 // TODO(perf): O(n_validators) scan per call. Hit on every deposit-request,
 // withdrawal-request, consolidation-request, and apply_deposit, plus
-// rebuild_sync_committee_indices (512 × n). At 2M validators sync rotation is
-// ~1B comparisons. Replace with a per-VID-tier sorted Vec<(pubkey_hash, idx)>
-// or HashMap that COWs with the VID tier. (~24 MB sorted vs ~120 MB HashMap.)
+// rebuild_sync_committee_indices (512 × n). At MAX_VALIDATORS=2.75Mi sync
+// rotation is ~1.5B comparisons. Replace with a per-VID-tier sorted
+// Vec<(pubkey_hash, idx)> or HashMap that COWs with the VID tier.
+// (~33 MB sorted vs ~165 MB HashMap.)
 fn find_validator_by_pubkey(vid: &ValidatorIdentity, pubkey: &[u8; 48]) -> Option<usize> {
     vid.val_pubkey[..vid.validator_cnt].iter().position(|pk| pk == pubkey)
 }

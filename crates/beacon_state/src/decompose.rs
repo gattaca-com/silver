@@ -78,7 +78,68 @@ fn b256(s: &[u8], off: usize) -> B256 {
     s[off..off + 32].try_into().unwrap()
 }
 
-// On `None`, destinations may have been partially populated.
+#[derive(Debug, thiserror::Error)]
+pub enum DecomposeError {
+    #[error("ssz shorter than fixed part: len={len} need={need}")]
+    TruncatedFixedPart { len: usize, need: usize },
+    #[error("first variable-field offset {off} < FIXED_PART {fixed}")]
+    FirstOffsetBeforeFixedPart { off: usize, fixed: usize },
+    #[error("non-monotonic variable-field offsets at pair {i}: {a} > {b}")]
+    NonMonotonicOffsets { i: usize, a: usize, b: usize },
+    #[error("variable-field offset {off} past end {len}")]
+    OffsetPastEnd { off: usize, len: usize },
+    #[error("{which}_sync_committee out of bounds: off={off} end={end} len={len}")]
+    SyncCommitteeOutOfBounds { which: &'static str, off: usize, end: usize, len: usize },
+    #[error("validators bytes {len} not a multiple of {VALIDATOR_SSZ_SIZE}")]
+    ValidatorsLenNotMultiple { len: usize },
+    #[error("too many validators: {n} > MAX_VALIDATORS {max}")]
+    TooManyValidators { n: usize, max: usize },
+    #[error("balances bytes {bytes} doesn't match validator count {validators} (×8)")]
+    BalancesLenMismatch { bytes: usize, validators: usize },
+    #[error("previous_epoch_participation bytes {bytes} != validator count {validators}")]
+    PrevParticipationLenMismatch { bytes: usize, validators: usize },
+    #[error("current_epoch_participation bytes {bytes} != validator count {validators}")]
+    CurParticipationLenMismatch { bytes: usize, validators: usize },
+    #[error("inactivity_scores bytes {bytes} doesn't match validator count {validators} (×8)")]
+    InactivityLenMismatch { bytes: usize, validators: usize },
+    #[error("eth1_votes bytes {len} not a multiple of {ETH1_DATA_SSZ_SIZE}")]
+    Eth1VotesLenNotMultiple { len: usize },
+    #[error("too many eth1_votes: {n} > MAX_ETH1_VOTES {max}")]
+    TooManyEth1Votes { n: usize, max: usize },
+    #[error("historical_roots bytes {len} not a multiple of 32")]
+    HistoricalRootsLenNotMultiple { len: usize },
+    #[error("too many historical_roots: {n} > HISTORICAL_ROOTS_LIMIT {max}")]
+    TooManyHistoricalRoots { n: usize, max: usize },
+    #[error("historical_summaries bytes {len} not a multiple of {HISTORICAL_SUMMARY_SSZ_SIZE}")]
+    HistoricalSummariesLenNotMultiple { len: usize },
+    #[error("too many historical_summaries: {n} > HISTORICAL_SUMMARIES_CAP {max}")]
+    TooManyHistoricalSummaries { n: usize, max: usize },
+    #[error("pending_deposits bytes {len} not a multiple of {PENDING_DEPOSIT_SSZ_SIZE}")]
+    PendingDepositsLenNotMultiple { len: usize },
+    #[error("too many pending_deposits: {n} > PENDING_DEPOSITS_LIMIT {max}")]
+    TooManyPendingDeposits { n: usize, max: usize },
+    #[error(
+        "pending_partial_withdrawals bytes {len} not a multiple of {PENDING_PARTIAL_WITHDRAWAL_SSZ_SIZE}"
+    )]
+    PendingWithdrawalsLenNotMultiple { len: usize },
+    #[error("too many pending_partial_withdrawals: {n} > PENDING_PARTIAL_WITHDRAWALS_LIMIT {max}")]
+    TooManyPendingWithdrawals { n: usize, max: usize },
+    #[error(
+        "pending_consolidations bytes {len} not a multiple of {PENDING_CONSOLIDATION_SSZ_SIZE}"
+    )]
+    PendingConsolidationsLenNotMultiple { len: usize },
+    #[error("too many pending_consolidations: {n} > PENDING_CONSOLIDATIONS_LIMIT {max}")]
+    TooManyPendingConsolidations { n: usize, max: usize },
+    #[error("execution_payload_header truncated: len={len} need={need}")]
+    EphTruncated { len: usize, need: usize },
+    #[error(
+        "execution_payload_header extra_data offset invalid: off={off} fixed={fixed} len={len}"
+    )]
+    EphExtraDataOffsetInvalid { off: usize, fixed: usize, len: usize },
+    #[error("execution_payload_header extra_data too long: {len} > 32")]
+    EphExtraDataTooLong { len: usize },
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn decompose_beacon_state(
     ssz: &[u8],
@@ -89,9 +150,9 @@ pub fn decompose_beacon_state(
     epoch: &mut EpochData,
     roots: &mut SlotRoots,
     sd: &mut SlotData,
-) -> Option<PendingQueues> {
+) -> Result<PendingQueues, DecomposeError> {
     if ssz.len() < FIXED_PART {
-        return None;
+        return Err(DecomposeError::TruncatedFixedPart { len: ssz.len(), need: FIXED_PART });
     }
 
     // Read variable-field offsets.
@@ -126,15 +187,18 @@ pub fn decompose_beacon_state(
         off_pending_consolidations,
     ];
     if offsets[0] < FIXED_PART {
-        return None;
+        return Err(DecomposeError::FirstOffsetBeforeFixedPart {
+            off: offsets[0],
+            fixed: FIXED_PART,
+        });
     }
-    for w in offsets.windows(2) {
+    for (i, w) in offsets.windows(2).enumerate() {
         if w[0] > w[1] {
-            return None;
+            return Err(DecomposeError::NonMonotonicOffsets { i, a: w[0], b: w[1] });
         }
     }
     if *offsets.last().unwrap() > ssz.len() {
-        return None;
+        return Err(DecomposeError::OffsetPastEnd { off: *offsets.last().unwrap(), len: ssz.len() });
     }
 
     let mut pq = PendingQueues::new();
@@ -167,8 +231,8 @@ pub fn decompose_beacon_state(
     }
 
     // current_sync_committee, next_sync_committee (24 624B each)
-    read_sync_committee(ssz, F22, &mut longtail.current_sync_committee)?;
-    read_sync_committee(ssz, F23, &mut longtail.next_sync_committee)?;
+    read_sync_committee(ssz, F22, "current", &mut longtail.current_sync_committee)?;
+    read_sync_committee(ssz, F23, "next", &mut longtail.next_sync_committee)?;
 
     let block_src: &[B256] = unsafe {
         std::slice::from_raw_parts(ssz[F5..].as_ptr().cast::<B256>(), SLOTS_PER_HISTORICAL_ROOT)
@@ -225,11 +289,11 @@ pub fn decompose_beacon_state(
     // Validators → split across ValidatorIdentity + EpochData (columnar)
     let val_bytes = &ssz[off_validators..off_balances];
     if !val_bytes.len().is_multiple_of(VALIDATOR_SSZ_SIZE) {
-        return None;
+        return Err(DecomposeError::ValidatorsLenNotMultiple { len: val_bytes.len() });
     }
     let n = val_bytes.len() / VALIDATOR_SSZ_SIZE;
     if n > MAX_VALIDATORS {
-        return None;
+        return Err(DecomposeError::TooManyValidators { n, max: MAX_VALIDATORS });
     }
     vid.validator_cnt = n;
     for i in 0..n {
@@ -252,7 +316,7 @@ pub fn decompose_beacon_state(
     // Balances → SlotData
     let bal_bytes = &ssz[off_balances..off_prev_participation];
     if !bal_bytes.len().is_multiple_of(8) || bal_bytes.len() / 8 != n {
-        return None;
+        return Err(DecomposeError::BalancesLenMismatch { bytes: bal_bytes.len(), validators: n });
     }
     for i in 0..n {
         sd.balances[i] = u64_le(bal_bytes, i * 8);
@@ -261,7 +325,10 @@ pub fn decompose_beacon_state(
     // Previous/current epoch participation → SlotData
     let prev_part = &ssz[off_prev_participation..off_cur_participation];
     if prev_part.len() != n {
-        return None;
+        return Err(DecomposeError::PrevParticipationLenMismatch {
+            bytes: prev_part.len(),
+            validators: n,
+        });
     }
     sd.previous_epoch_participation[..n].copy_from_slice(prev_part);
 
@@ -276,14 +343,20 @@ pub fn decompose_beacon_state(
     // pending_withdrawals, pending_consolidations.
     let cur_part = &ssz[off_cur_participation..off_inactivity];
     if cur_part.len() != n {
-        return None;
+        return Err(DecomposeError::CurParticipationLenMismatch {
+            bytes: cur_part.len(),
+            validators: n,
+        });
     }
     sd.current_epoch_participation[..n].copy_from_slice(cur_part);
 
     // Inactivity scores → EpochData
     let inact_bytes = &ssz[off_inactivity..off_eph];
     if !inact_bytes.len().is_multiple_of(8) || inact_bytes.len() / 8 != n {
-        return None;
+        return Err(DecomposeError::InactivityLenMismatch {
+            bytes: inact_bytes.len(),
+            validators: n,
+        });
     }
     for i in 0..n {
         epoch.inactivity_scores[i] = u64_le(inact_bytes, i * 8);
@@ -300,11 +373,11 @@ pub fn decompose_beacon_state(
     // Eth1 data votes → SlotData
     let votes_bytes = &ssz[off_eth1_votes..off_validators];
     if !votes_bytes.len().is_multiple_of(ETH1_DATA_SSZ_SIZE) {
-        return None;
+        return Err(DecomposeError::Eth1VotesLenNotMultiple { len: votes_bytes.len() });
     }
     let vote_count = votes_bytes.len() / ETH1_DATA_SSZ_SIZE;
     if vote_count > MAX_ETH1_VOTES {
-        return None;
+        return Err(DecomposeError::TooManyEth1Votes { n: vote_count, max: MAX_ETH1_VOTES });
     }
     for i in 0..vote_count {
         let v = &votes_bytes[i * ETH1_DATA_SSZ_SIZE..];
@@ -318,11 +391,14 @@ pub fn decompose_beacon_state(
     // Historical roots → EpochData (compute hash, list is frozen)
     let hr_bytes = &ssz[off_historical_roots..off_eth1_votes];
     if !hr_bytes.len().is_multiple_of(32) {
-        return None;
+        return Err(DecomposeError::HistoricalRootsLenNotMultiple { len: hr_bytes.len() });
     }
     let hr_count = hr_bytes.len() / 32;
     if hr_count > HISTORICAL_ROOTS_LIMIT {
-        return None;
+        return Err(DecomposeError::TooManyHistoricalRoots {
+            n: hr_count,
+            max: HISTORICAL_ROOTS_LIMIT,
+        });
     }
     // Safe: B256 has alignment 1; hr_bytes length is a multiple of 32.
     let hr_chunks: &[B256] =
@@ -333,11 +409,14 @@ pub fn decompose_beacon_state(
     // Historical summaries → HistoricalLongtail
     let hs_bytes = &ssz[off_hist_summaries..off_pending_deposits];
     if !hs_bytes.len().is_multiple_of(HISTORICAL_SUMMARY_SSZ_SIZE) {
-        return None;
+        return Err(DecomposeError::HistoricalSummariesLenNotMultiple { len: hs_bytes.len() });
     }
     let hs_count = hs_bytes.len() / HISTORICAL_SUMMARY_SSZ_SIZE;
     if hs_count > HISTORICAL_SUMMARIES_CAP {
-        return None;
+        return Err(DecomposeError::TooManyHistoricalSummaries {
+            n: hs_count,
+            max: HISTORICAL_SUMMARIES_CAP,
+        });
     }
     for i in 0..hs_count {
         let s = &hs_bytes[i * HISTORICAL_SUMMARY_SSZ_SIZE..];
@@ -350,11 +429,14 @@ pub fn decompose_beacon_state(
     // Pending deposits → SlotData
     let pd_bytes = &ssz[off_pending_deposits..off_pending_withdrawals];
     if !pd_bytes.len().is_multiple_of(PENDING_DEPOSIT_SSZ_SIZE) {
-        return None;
+        return Err(DecomposeError::PendingDepositsLenNotMultiple { len: pd_bytes.len() });
     }
     let pd_count = pd_bytes.len() / PENDING_DEPOSIT_SSZ_SIZE;
     if pd_count > PENDING_DEPOSITS_LIMIT {
-        return None;
+        return Err(DecomposeError::TooManyPendingDeposits {
+            n: pd_count,
+            max: PENDING_DEPOSITS_LIMIT,
+        });
     }
     for i in 0..pd_count {
         let d = &pd_bytes[i * PENDING_DEPOSIT_SSZ_SIZE..];
@@ -374,11 +456,14 @@ pub fn decompose_beacon_state(
     // Pending partial withdrawals → SlotData
     let pw_bytes = &ssz[off_pending_withdrawals..off_pending_consolidations];
     if !pw_bytes.len().is_multiple_of(PENDING_PARTIAL_WITHDRAWAL_SSZ_SIZE) {
-        return None;
+        return Err(DecomposeError::PendingWithdrawalsLenNotMultiple { len: pw_bytes.len() });
     }
     let pw_count = pw_bytes.len() / PENDING_PARTIAL_WITHDRAWAL_SSZ_SIZE;
     if pw_count > PENDING_PARTIAL_WITHDRAWALS_LIMIT {
-        return None;
+        return Err(DecomposeError::TooManyPendingWithdrawals {
+            n: pw_count,
+            max: PENDING_PARTIAL_WITHDRAWALS_LIMIT,
+        });
     }
     for i in 0..pw_count {
         let w = &pw_bytes[i * PENDING_PARTIAL_WITHDRAWAL_SSZ_SIZE..];
@@ -392,11 +477,14 @@ pub fn decompose_beacon_state(
     // Pending consolidations → SlotData
     let pc_bytes = &ssz[off_pending_consolidations..];
     if !pc_bytes.len().is_multiple_of(PENDING_CONSOLIDATION_SSZ_SIZE) {
-        return None;
+        return Err(DecomposeError::PendingConsolidationsLenNotMultiple { len: pc_bytes.len() });
     }
     let pc_count = pc_bytes.len() / PENDING_CONSOLIDATION_SSZ_SIZE;
     if pc_count > PENDING_CONSOLIDATIONS_LIMIT {
-        return None;
+        return Err(DecomposeError::TooManyPendingConsolidations {
+            n: pc_count,
+            max: PENDING_CONSOLIDATIONS_LIMIT,
+        });
     }
     for i in 0..pc_count {
         let c = &pc_bytes[i * PENDING_CONSOLIDATION_SSZ_SIZE..];
@@ -406,22 +494,38 @@ pub fn decompose_beacon_state(
 
     epoch_transition::rebuild_sync_committee_indices(vid, longtail);
 
-    Some(pq)
+    Ok(pq)
 }
 
 fn read_checkpoint(s: &[u8], off: usize) -> Checkpoint {
     Checkpoint { epoch: u64_le(s, off), root: b256(s, off + 8) }
 }
 
-fn read_sync_committee(s: &[u8], off: usize, sc: &mut SyncCommittee) -> Option<()> {
+fn read_sync_committee(
+    s: &[u8],
+    off: usize,
+    which: &'static str,
+    sc: &mut SyncCommittee,
+) -> Result<(), DecomposeError> {
     const SC_SIZE: usize = SYNC_COMMITTEE_SIZE * 48 + 48;
-    let bytes = s.get(off..off.checked_add(SC_SIZE)?)?;
+    let end = off.checked_add(SC_SIZE).ok_or(DecomposeError::SyncCommitteeOutOfBounds {
+        which,
+        off,
+        end: 0,
+        len: s.len(),
+    })?;
+    let bytes = s.get(off..end).ok_or(DecomposeError::SyncCommitteeOutOfBounds {
+        which,
+        off,
+        end,
+        len: s.len(),
+    })?;
     for i in 0..SYNC_COMMITTEE_SIZE {
         sc.pubkeys[i].copy_from_slice(&bytes[i * 48..(i + 1) * 48]);
     }
     sc.aggregate_pubkey
         .copy_from_slice(&bytes[SYNC_COMMITTEE_SIZE * 48..SYNC_COMMITTEE_SIZE * 48 + 48]);
-    Some(())
+    Ok(())
 }
 
 fn read_execution_payload_header(
@@ -429,10 +533,10 @@ fn read_execution_payload_header(
     start: usize,
     end: usize,
     out: &mut ExecutionPayloadHeader,
-) -> Option<()> {
+) -> Result<(), DecomposeError> {
     let eph = &ssz[start..end];
     if eph.len() < EPH_FIXED_PART {
-        return None;
+        return Err(DecomposeError::EphTruncated { len: eph.len(), need: EPH_FIXED_PART });
     }
 
     out.parent_hash = b256(eph, 0);
@@ -456,14 +560,18 @@ fn read_execution_payload_header(
     // extra_data: variable part
     let extra_off = u32_le(eph, 436) as usize;
     if extra_off < EPH_FIXED_PART || extra_off > eph.len() {
-        return None;
+        return Err(DecomposeError::EphExtraDataOffsetInvalid {
+            off: extra_off,
+            fixed: EPH_FIXED_PART,
+            len: eph.len(),
+        });
     }
     let extra_len = eph.len() - extra_off;
     if extra_len > 32 {
-        return None;
+        return Err(DecomposeError::EphExtraDataTooLong { len: extra_len });
     }
     out.extra_data_len = extra_len as u8;
     out.extra_data[..extra_len].copy_from_slice(&eph[extra_off..]);
 
-    Some(())
+    Ok(())
 }
