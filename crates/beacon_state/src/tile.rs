@@ -212,9 +212,7 @@ impl BeaconStateTile {
         };
 
         if !checkpoint_state.is_empty() {
-            if !tile.bootstrap(checkpoint_state) {
-                panic!("failed to bootstrap from checkpoint");
-            }
+            tile.bootstrap(checkpoint_state);
         }
         tile
     }
