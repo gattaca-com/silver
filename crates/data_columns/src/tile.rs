@@ -6,7 +6,9 @@ use std::{
 use flux::{spine::SpineAdapter, tile::Tile, tracing};
 use fxhash::FxHashMap;
 use silver_common::{
-    ssz_view::{DataColumnSidecarView, SignedBeaconBlockView}, DataColumnsAvailable, NewGossipMsg, P2pStreamId, PeerEvent, RpcInbound, RpcSeverity, SilverSpine, TCacheProducer, TCacheRead, TMultiProducer, TRandomAccess, TRead, Wheel
+    DataColumnsAvailable, NewGossipMsg, P2pStreamId, PeerEvent, RpcInbound, RpcSeverity,
+    SilverSpine, TCacheProducer, TCacheRead, TMultiProducer, TRandomAccess, TRead, Wheel,
+    ssz_view::{DataColumnSidecarView, SignedBeaconBlockView},
 };
 
 use crate::util;
@@ -46,16 +48,22 @@ impl DataColumnTile {
         }
     }
 
-    fn column_request(&mut self, parent_root: [u8; 32], column_index: u64) -> Result<PeerEvent, io::Error> {
-        allocate_request_by_root(&mut self.rpc_producer, &parent_root, 1 << column_index).map(|ssz| {       
-            let id = self.request_id;
-            self.request_id += 1;
-            PeerEvent::SendDataColumnsByRootRequest {
-                request_id: id,
-                column: column_index,
-                ssz,
-            }
-        })
+    fn column_request(
+        &mut self,
+        parent_root: [u8; 32],
+        column_index: u64,
+    ) -> Result<PeerEvent, io::Error> {
+        allocate_request_by_root(&mut self.rpc_producer, &parent_root, 1 << column_index).map(
+            |ssz| {
+                let id = self.request_id;
+                self.request_id += 1;
+                PeerEvent::SendDataColumnsByRootRequest {
+                    request_id: id,
+                    column: column_index,
+                    ssz,
+                }
+            },
+        )
     }
 
     fn beacon_block<F>(&mut self, stream_id: P2pStreamId, block: TRead, emit: &mut F)
@@ -98,7 +106,12 @@ impl DataColumnTile {
         }
     }
 
-    fn data_columns<F>(&mut self, stream_id: P2pStreamId, sidecar: TRead, emit: &mut F) -> Option<([u8; 32], u128)>
+    fn data_columns<F>(
+        &mut self,
+        stream_id: P2pStreamId,
+        sidecar: TRead,
+        emit: &mut F,
+    ) -> Option<([u8; 32], u128)>
     where
         F: FnMut(DataColumnsAvailable),
     {
@@ -111,8 +124,8 @@ impl DataColumnTile {
         };
 
         let body_root = DataColumnSidecarView::body_root(buffer);
-        let column_bitmask = 1 << DataColumnSidecarView::index(buffer) as u128;
-        
+        let column_bitmask = 1u128 << DataColumnSidecarView::index(buffer);
+
         let requested = self.outstanding_requests.remove(body_root);
 
         if !util::verify_data_column_sidecar(buffer) {
@@ -165,11 +178,22 @@ impl Tile<SilverSpine> for DataColumnTile {
             }
             silver_common::GossipTopic::DataColumnSidecar(_custody_group) => {
                 let t_read = self.gossip_consumer.acquire(gossip.ssz);
-                if let Some((parent_root, columns)) = self.data_columns(gossip.stream_id, t_read, &mut |msg| { producers.data_columns.produce(&msg.into()); }) {
+                if let Some((parent_root, columns)) =
+                    self.data_columns(gossip.stream_id, t_read, &mut |msg| {
+                        producers.data_columns.produce(&msg.into());
+                    })
+                {
                     // Validation failed - score down the peer and retransmit
-                    producers.peer_events.produce(&PeerEvent::P2pGossipInvalidMsg { p2p_peer: gossip.stream_id.peer(), topic: gossip.topic, hash: gossip.msg_hash }.into());
+                    producers.peer_events.produce(
+                        &PeerEvent::P2pGossipInvalidMsg {
+                            p2p_peer: gossip.stream_id.peer(),
+                            topic: gossip.topic,
+                            hash: gossip.msg_hash,
+                        }
+                        .into(),
+                    );
 
-                    let column = (128 - columns.leading_zeros()) as u64;
+                    let column = columns.trailing_zeros() as u64;
                     if let Ok(evt) = self.column_request(parent_root, column) {
                         producers.peer_events.produce(&evt.into());
                     }
@@ -199,13 +223,21 @@ impl Tile<SilverSpine> for DataColumnTile {
                 silver_common::RpcResponse::DataColumnSidecar { fork_digest: _, ssz } => {
                     // TODO validate that originating peer has data column index in custody groups
                     let t_read = self.rpc_consumer.acquire(ssz);
-                    if let Some((parent_root, columns)) = self.data_columns(rsp.stream_id, t_read, &mut |msg| {
-                        producers.data_columns.produce(&msg.into());
-                    }) {
+                    if let Some((parent_root, columns)) =
+                        self.data_columns(rsp.stream_id, t_read, &mut |msg| {
+                            producers.data_columns.produce(&msg.into());
+                        })
+                    {
                         // Validation failed - score down the peer and retransmit
-                        producers.peer_events.produce(&PeerEvent::RpcMisbehaviour { p2p_peer: rsp.stream_id.peer(), severity: RpcSeverity::Fatal }.into());
+                        producers.peer_events.produce(
+                            &PeerEvent::RpcMisbehaviour {
+                                p2p_peer: rsp.stream_id.peer(),
+                                severity: RpcSeverity::Fatal,
+                            }
+                            .into(),
+                        );
 
-                        let column = (128 - columns.leading_zeros()) as u64;
+                        let column = columns.trailing_zeros() as u64;
                         if let Ok(evt) = self.column_request(parent_root, column) {
                             producers.peer_events.produce(&evt.into());
                         }
@@ -219,7 +251,7 @@ impl Tile<SilverSpine> for DataColumnTile {
         let mut reinsert = vec![];
         self.outstanding_requests.maybe_rotate(Instant::now(), &mut |root, columns| {
             for i in 0..128 {
-                let column_bit = (1 << i) as u128;
+                let column_bit = 1u128 << i;
                 if columns & (1 << i) != 0 {
                     match allocate_request_by_root(&mut self.rpc_producer, &root, column_bit) {
                         Ok(req) => {
@@ -271,9 +303,4 @@ fn allocate_request_by_root(
     }
     reservation.flush()?;
     Ok(reservation.read())
-}
-
-enum Emission {
-    PeerEvent(PeerEvent),
-    Availability(DataColumnsAvailable),
 }
