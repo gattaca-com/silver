@@ -6,9 +6,7 @@ use std::{
 use flux::{spine::SpineAdapter, tile::Tile, tracing};
 use fxhash::FxHashMap;
 use silver_common::{
-    DataColumnsAvailable, NewGossipMsg, P2pStreamId, PeerEvent, RpcInbound, SilverSpine,
-    TCacheProducer, TCacheRead, TMultiProducer, TRandomAccess, TRead, Wheel,
-    ssz_view::{DataColumnSidecarView, SignedBeaconBlockView},
+    ssz_view::{DataColumnSidecarView, SignedBeaconBlockView}, DataColumnsAvailable, NewGossipMsg, P2pStreamId, PeerEvent, RpcInbound, RpcSeverity, SilverSpine, TCacheProducer, TCacheRead, TMultiProducer, TRandomAccess, TRead, Wheel
 };
 
 use crate::util;
@@ -26,7 +24,7 @@ pub struct DataColumnTile {
     // keyed by block body root
     validated_columns: FxHashMap<[u8; 32], u128>,
     // outstanding requests - keyed by block body root
-    // 16 x 1 second buckets.
+    // 16 x 500 millisecond buckets.
     outstanding_requests: Wheel<[u8; 32], u128, 16>,
 }
 
@@ -44,8 +42,20 @@ impl DataColumnTile {
             rpc_consumer,
             rpc_producer,
             validated_columns: FxHashMap::default(),
-            outstanding_requests: Wheel::new(Duration::from_secs(1)),
+            outstanding_requests: Wheel::new(Duration::from_millis(500)),
         }
+    }
+
+    fn column_request(&mut self, parent_root: [u8; 32], column_index: u64) -> Result<PeerEvent, io::Error> {
+        allocate_request_by_root(&mut self.rpc_producer, &parent_root, 1 << column_index).map(|ssz| {       
+            let id = self.request_id;
+            self.request_id += 1;
+            PeerEvent::SendDataColumnsByRootRequest {
+                request_id: id,
+                column: column_index,
+                ssz,
+            }
+        })
     }
 
     fn beacon_block<F>(&mut self, stream_id: P2pStreamId, block: TRead, emit: &mut F)
@@ -79,25 +89,16 @@ impl DataColumnTile {
         self.outstanding_requests.insert(*parent_root, to_request);
 
         for i in 0..128 {
-            let column_bit = (1 << i) as u128;
             if to_request & (1 << i) != 0 {
-                match allocate_request_by_root(&mut self.rpc_producer, parent_root, column_bit) {
-                    Ok(req) => {
-                        let id = self.request_id;
-                        self.request_id += 1;
-                        emit(PeerEvent::SendDataColumnsByRootRequest {
-                            request_id: id,
-                            column: i,
-                            ssz: req,
-                        });
-                    }
+                match self.column_request(*parent_root, i) {
+                    Ok(evt) => emit(evt),
                     Err(e) => tracing::error!(?e, "failed to allocate data columns request"),
                 }
             }
         }
     }
 
-    fn data_columns<F>(&mut self, stream_id: P2pStreamId, sidecar: TRead, emit: &mut F)
+    fn data_columns<F>(&mut self, stream_id: P2pStreamId, sidecar: TRead, emit: &mut F) -> Option<([u8; 32], u128)>
     where
         F: FnMut(DataColumnsAvailable),
     {
@@ -105,22 +106,29 @@ impl DataColumnTile {
             Ok((buffer, _)) => buffer,
             Err(e) => {
                 tracing::error!(?e, ?stream_id, "failed to read data column sidecar cache buffer");
-                return;
+                return None;
             }
         };
 
+        let body_root = DataColumnSidecarView::body_root(buffer);
+        let column_bitmask = 1 << DataColumnSidecarView::index(buffer) as u128;
+        
+        let requested = self.outstanding_requests.remove(body_root);
+
         if !util::verify_data_column_sidecar(buffer) {
             tracing::warn!(?stream_id, "badly formed data column sidecar");
-            return;
+            return Some((*body_root, column_bitmask));
         }
         if !util::verify_data_column_sidecar_inclusion_proof(buffer) {
             tracing::warn!(?stream_id, "failed to verify sidecar inclusion proof");
-            return;
+            return Some((*body_root, column_bitmask));
+        }
+        if !util::verify_data_column_sidecar_kzg_proofs(buffer) {
+            tracing::warn!(?stream_id, "failed to verify sidecar kzg proof");
+            return Some((*body_root, column_bitmask));
         }
 
-        let body_root = DataColumnSidecarView::body_root(buffer);
-        let column_bitmask = 1 << DataColumnSidecarView::index(buffer) as u128;
-        if let Some(mut requested) = self.outstanding_requests.remove(body_root) {
+        if let Some(mut requested) = requested {
             requested &= !column_bitmask;
             if requested != 0 {
                 // more column responses pending
@@ -141,6 +149,7 @@ impl DataColumnTile {
                 signature: *DataColumnSidecarView::block_signature(buffer),
             })
         }
+        None
     }
 }
 
@@ -156,9 +165,15 @@ impl Tile<SilverSpine> for DataColumnTile {
             }
             silver_common::GossipTopic::DataColumnSidecar(_custody_group) => {
                 let t_read = self.gossip_consumer.acquire(gossip.ssz);
-                self.data_columns(gossip.stream_id, t_read, &mut |msg| {
-                    producers.data_columns.produce(&msg.into());
-                });
+                if let Some((parent_root, columns)) = self.data_columns(gossip.stream_id, t_read, &mut |msg| { producers.data_columns.produce(&msg.into()); }) {
+                    // Validation failed - score down the peer and retransmit
+                    producers.peer_events.produce(&PeerEvent::P2pGossipInvalidMsg { p2p_peer: gossip.stream_id.peer(), topic: gossip.topic, hash: gossip.msg_hash }.into());
+
+                    let column = (128 - columns.leading_zeros()) as u64;
+                    if let Ok(evt) = self.column_request(parent_root, column) {
+                        producers.peer_events.produce(&evt.into());
+                    }
+                }
             }
             _ => {}
         });
@@ -184,9 +199,17 @@ impl Tile<SilverSpine> for DataColumnTile {
                 silver_common::RpcResponse::DataColumnSidecar { fork_digest: _, ssz } => {
                     // TODO validate that originating peer has data column index in custody groups
                     let t_read = self.rpc_consumer.acquire(ssz);
-                    self.data_columns(rsp.stream_id, t_read, &mut |msg| {
+                    if let Some((parent_root, columns)) = self.data_columns(rsp.stream_id, t_read, &mut |msg| {
                         producers.data_columns.produce(&msg.into());
-                    });
+                    }) {
+                        // Validation failed - score down the peer and retransmit
+                        producers.peer_events.produce(&PeerEvent::RpcMisbehaviour { p2p_peer: rsp.stream_id.peer(), severity: RpcSeverity::Fatal }.into());
+
+                        let column = (128 - columns.leading_zeros()) as u64;
+                        if let Ok(evt) = self.column_request(parent_root, column) {
+                            producers.peer_events.produce(&evt.into());
+                        }
+                    }
                 }
                 _ => {}
             },
@@ -248,4 +271,9 @@ fn allocate_request_by_root(
     }
     reservation.flush()?;
     Ok(reservation.read())
+}
+
+enum Emission {
+    PeerEvent(PeerEvent),
+    Availability(DataColumnsAvailable),
 }
