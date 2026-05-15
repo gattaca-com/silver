@@ -17,7 +17,7 @@ use std::{
 use silver_common::{
     P2pSend, PeerControl, PeerEvent, PeerStatus, RpcInbound, RpcOutbound, RpcRequest,
     RpcRequestInbound, RpcRequestOutbound, RpcResponse, RpcResponseInbound, RpcResponseOutbound,
-    RpcSeverity, StreamProtocol, TCacheRead,
+    RpcSeverity, StreamProtocol,
     ssz_view::{
         BLOCKS_BY_RANGE_REQ_SIZE, BeaconBlocksByRangeRequestView, MetadataView, StatusView,
     },
@@ -210,6 +210,53 @@ fn try_admit_inbound(
 }
 
 impl PeerManager {
+    /// Pick a peer for a `DataColumnsByRoot`/`ByRange` request that wants
+    /// the columns in `columns`. Filters:
+    /// - peer advertises `protocol`,
+    /// - outbound in-flight on `protocol` is strictly below
+    ///   `MAX_RPC_PROTOCOL_IN_FLIGHT`,
+    /// - peer's custody set intersects `columns` (otherwise the peer has
+    ///   nothing to serve).
+    ///
+    /// Among eligible peers, ranks lexicographically by
+    /// `(overlap_count desc, rpc_score desc)` — preferring peers that
+    /// cover more of the request, breaking ties by score. Custody is
+    /// deterministic from node_id+CGC so the overlap signal is
+    /// immediately available even before scoring stabilises on a fresh
+    /// connection.
+    ///
+    /// Returns `(peer, overlap)`. `overlap` is the subset of `columns`
+    /// this peer can serve — callers may use it to trim the wire
+    /// request (the responder will omit columns it doesn't have
+    /// regardless, so this is just bandwidth optimisation).
+    pub fn best_peer_for_data_columns(
+        &self,
+        protocol: StreamProtocol,
+        columns: u128,
+    ) -> Option<(usize, u128)> {
+        self.database
+            .live_peers_supporting(protocol)
+            .filter_map(|p| {
+                if outbound_count(&self.outbound_in_flight, p, protocol) >=
+                    MAX_RPC_PROTOCOL_IN_FLIGHT
+                {
+                    return None;
+                }
+                let overlap = self.database.data_column_custody_groups_intersection(p, columns);
+                if overlap == 0 {
+                    return None;
+                }
+                let score = self.score(p).unwrap_or(f64::NEG_INFINITY);
+                Some((p, overlap, score))
+            })
+            .max_by(|a, b| {
+                a.1.count_ones()
+                    .cmp(&b.1.count_ones())
+                    .then_with(|| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
+            })
+            .map(|(p, overlap, _)| (p, overlap))
+    }
+
     /// Dispatch an inbound RPC event. For requests this gates on the
     /// per-peer rate limit, then handles Status/Ping/Goodbye/MetaData
     /// inline (response on `emit`); block/data-column requests are
@@ -512,33 +559,51 @@ impl PeerManager {
                 request: RpcRequest::BlocksByRange(ssz),
             }))));
         }
-        while !self.pending_data_columns_by_root.is_empty() {
-            // SAFETY: just checked no empty.
-            let column = self.pending_data_columns_by_root.front().map(|r| r.1).unwrap();
-
-            let peer = self.best_peer_for(StreamProtocol::DataColumnSidecarsByRoot, |p| {
-                outbound_count(
-                    &self.outbound_in_flight,
-                    p,
+        // For each pending DataColumnsByRoot entry, fan out across as
+        // many peers as needed to cover the remaining columns. If a
+        // front entry can't make any forward progress (no peer overlaps
+        // the remaining bits), stop draining — later peer events will
+        // re-enter this loop. Newly-uncovered remainders are written
+        // back in-place; fully-covered entries are popped.
+        while let Some(&(request_id, remaining_at_entry, block_root)) =
+            self.pending_data_columns_by_root.front()
+        {
+            let mut remaining = remaining_at_entry;
+            let mut progressed = false;
+            while remaining != 0 {
+                let Some((peer, overlap)) = self.best_peer_for_data_columns(
                     StreamProtocol::DataColumnSidecarsByRoot,
-                ) >= MAX_RPC_PROTOCOL_IN_FLIGHT &&
-                    self.database.has_data_column_custody_group(p, column)
-            });
-            let Some(peer) = peer else {
+                    remaining,
+                ) else {
+                    break;
+                };
+                record_outbound(
+                    &mut self.outbound_in_flight,
+                    peer,
+                    StreamProtocol::DataColumnSidecarsByRoot,
+                );
+                emit(PeerControl::P2pDataColumnsRequest {
+                    app_id: request_id,
+                    peer,
+                    block_root,
+                    columns: overlap,
+                });
+                remaining &= !overlap;
+                progressed = true;
+            }
+            if remaining == 0 {
+                self.pending_data_columns_by_root.pop_front();
+            } else {
+                if progressed {
+                    // Update the front entry in place with the
+                    // narrowed remainder so the next drain pass picks
+                    // up from the right spot.
+                    self.pending_data_columns_by_root.front_mut().unwrap().1 = remaining;
+                }
+                // No further progress possible against the front this
+                // pass — bail and let the next event re-enter.
                 break;
-            };
-            let (request_id, _, ssz) =
-                self.pending_data_columns_by_root.pop_front().expect("non-empty by loop guard");
-            record_outbound(
-                &mut self.outbound_in_flight,
-                peer,
-                StreamProtocol::DataColumnSidecarsByRoot,
-            );
-            emit(PeerControl::P2pSend(P2pSend::Rpc(RpcOutbound::Request(RpcRequestOutbound {
-                application_id: request_id,
-                peer,
-                request: RpcRequest::DataColumnsByRoot(ssz),
-            }))));
+            }
         }
     }
 
@@ -551,40 +616,39 @@ impl PeerManager {
     pub fn on_request_data_columns_by_root(
         &mut self,
         request_id: u64,
-        column: u64,
-        ssz: TCacheRead,
+        columns: u128,
+        block_root: [u8; 32],
         emit: &mut impl FnMut(PeerControl),
     ) {
-        let peer = self.best_peer_for(StreamProtocol::DataColumnSidecarsByRoot, |p| {
-            outbound_count(&self.outbound_in_flight, p, StreamProtocol::DataColumnSidecarsByRoot) >=
-                MAX_RPC_PROTOCOL_IN_FLIGHT &&
-                self.database.has_data_column_custody_group(p, column)
-        });
-        match peer {
-            Some(peer) => {
-                record_outbound(
-                    &mut self.outbound_in_flight,
-                    peer,
-                    StreamProtocol::DataColumnSidecarsByRoot,
-                );
-                emit(PeerControl::P2pSend(P2pSend::Rpc(RpcOutbound::Request(
-                    RpcRequestOutbound {
-                        application_id: request_id,
-                        peer,
-                        request: RpcRequest::DataColumnsByRoot(ssz),
-                    },
-                ))));
-            }
-            None => {
-                self.pending_data_columns_by_root.push_back((request_id, column, ssz));
-                emit(PeerControl::DiscoverNodes);
-                tracing::debug!(
-                    request_id,
-                    column,
-                    pending = self.pending_data_columns_by_root.len(),
-                    "no eligible peer for DataColumnsByRoot; cached + discovery kicked"
-                );
-            }
+        let mut remaining = columns;
+        while remaining != 0 {
+            let Some((peer, overlap)) = self
+                .best_peer_for_data_columns(StreamProtocol::DataColumnSidecarsByRoot, remaining)
+            else {
+                break;
+            };
+            record_outbound(
+                &mut self.outbound_in_flight,
+                peer,
+                StreamProtocol::DataColumnSidecarsByRoot,
+            );
+            emit(PeerControl::P2pDataColumnsRequest {
+                app_id: request_id,
+                peer,
+                block_root,
+                columns: overlap,
+            });
+            remaining &= !overlap;
+        }
+        if remaining != 0 {
+            self.pending_data_columns_by_root.push_back((request_id, remaining, block_root));
+            emit(PeerControl::DiscoverNodes);
+            tracing::debug!(
+                request_id,
+                remaining,
+                pending = self.pending_data_columns_by_root.len(),
+                "partial DataColumnsByRoot coverage; cached remainder + discovery kicked"
+            );
         }
     }
 

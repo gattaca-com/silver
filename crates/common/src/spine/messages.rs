@@ -317,8 +317,8 @@ pub enum PeerEvent {
     /// Sent by the data columns tile.
     SendDataColumnsByRootRequest {
         request_id: u64,
-        column: u64,
-        ssz: TCacheRead,
+        columns: u128,
+        block_root: [u8; 32],
     },
 }
 
@@ -416,6 +416,13 @@ pub enum PeerControl {
         enr: Enr,
     },
     P2pSend(P2pSend),
+    /// Generate a data columns by root request.
+    P2pDataColumnsRequest {
+        app_id: u64,
+        peer: usize,
+        block_root: [u8; 32],
+        columns: u128,
+    },
     /// Peer-level ban has timed out — counterpart to `Ban`. Network tile
     /// removes the peer from any deny-list / discv5 routing-table eviction
     /// state. Emitted from `tick` when the per-peer ban TTL expires.

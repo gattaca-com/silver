@@ -120,7 +120,7 @@ impl PeerDatabase {
             .map(MetadataView::seq_number)
     }
 
-    pub fn has_data_column_custody_group(&self, peer: usize, column_group: u64) -> bool {
+    pub fn data_column_custody_groups_intersection(&self, peer: usize, columns: u128) -> u128 {
         let custody_groups = self
             .by_p2p_id
             .get(&peer)
@@ -128,7 +128,7 @@ impl PeerDatabase {
             .and_then(|r| r.node_id.zip(r.enr.as_ref().and_then(|enr| enr.cgc())))
             .map(|(id, count)| id.custody_groups(count as u8))
             .unwrap_or_default();
-        custody_groups & 1 << column_group != 0
+        custody_groups & columns
     }
 
     /// Live connection ids whose identify advertises `protocol`. A peer is

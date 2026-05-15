@@ -5,11 +5,11 @@ use std::sync::OnceLock;
 use silver_common::{
     ssz_hash::{
         B256, ZERO_HASHES_LEN, compute_zero_hashes, hash_list_fixed_elements, hash_tree_root_body,
-        is_valid_merkle_branch,
+        is_valid_merkle_branch, merkleize, uint64_chunk,
     },
     ssz_view::{
         BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF, DataColumnSidecarView,
-        MAX_BLOB_COMMITMENTS_PER_BLOCK, NUMBER_OF_COLUMNS,
+        MAX_BLOB_COMMITMENTS_PER_BLOCK, NUMBER_OF_COLUMNS, SignedBeaconBlockView,
     },
 };
 
@@ -43,6 +43,43 @@ fn zero_hashes() -> &'static [B256; ZERO_HASHES_LEN] {
 /// `silver_common::ssz_hash::hash_tree_root_body`.
 pub fn body_root(body: &[u8]) -> B256 {
     hash_tree_root_body(body, zero_hashes())
+}
+
+/// SSZ `block_root` of a `BeaconBlockHeader` derived from a
+/// `SignedBeaconBlock` buffer. Identical to `hash_tree_root` of the inner
+/// `BeaconBlock`: both merkleize the same five leaves once the body is
+/// replaced by `body_root`. This is the value used as
+/// `DataColumnsByRootIdentifier.block_root` in DA RPC requests.
+pub fn block_root(signed_block: &[u8]) -> B256 {
+    let zh = zero_hashes();
+    let body_root = hash_tree_root_body(SignedBeaconBlockView::body(signed_block), zh);
+    merkleize(
+        &[
+            uint64_chunk(SignedBeaconBlockView::slot(signed_block)),
+            uint64_chunk(SignedBeaconBlockView::proposer_index(signed_block)),
+            *SignedBeaconBlockView::parent_root(signed_block),
+            *SignedBeaconBlockView::state_root(signed_block),
+            body_root,
+        ],
+        zh,
+    )
+}
+
+/// SSZ `block_root` reconstructed from a `DataColumnSidecar`'s embedded
+/// `signed_block_header`. The sidecar carries `body_root` directly, so no
+/// body hashing is required — just the 5-leaf merkleize.
+pub fn block_root_from_sidecar(sidecar: &[u8]) -> B256 {
+    let zh = zero_hashes();
+    merkleize(
+        &[
+            uint64_chunk(DataColumnSidecarView::slot(sidecar)),
+            uint64_chunk(DataColumnSidecarView::proposer_index(sidecar)),
+            *DataColumnSidecarView::parent_root(sidecar),
+            *DataColumnSidecarView::state_root(sidecar),
+            *DataColumnSidecarView::body_root(sidecar),
+        ],
+        zh,
+    )
 }
 
 /// Spec `verify_data_column_sidecar` — pure shape/sanity checks against

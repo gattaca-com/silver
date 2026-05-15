@@ -126,7 +126,7 @@ pub struct PeerManager {
     /// (new connection, in-flight slot freed). Survives disconnects —
     /// the cache is request-scoped, not peer-scoped.
     pub(crate) pending_blocks_by_range: VecDeque<(u64, [u8; BLOCKS_BY_RANGE_REQ_SIZE])>,
-    pub(crate) pending_data_columns_by_root: VecDeque<(u64, u64, TCacheRead)>,
+    pub(crate) pending_data_columns_by_root: VecDeque<(u64, u128, [u8; 32])>,
 }
 
 impl PeerManager {
@@ -356,8 +356,8 @@ impl PeerManager {
                 tracing::info!(p2p_peer, ?identify, "Got peer identify");
                 self.database.add_p2p_identify(p2p_peer, identify)
             }
-            PeerEvent::SendDataColumnsByRootRequest { request_id, column, ssz } => {
-                self.on_request_data_columns_by_root(request_id, column, ssz, emit);
+            PeerEvent::SendDataColumnsByRootRequest { request_id, columns, block_root } => {
+                self.on_request_data_columns_by_root(request_id, columns, block_root, emit);
             }
         }
     }
