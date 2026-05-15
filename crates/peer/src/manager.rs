@@ -16,10 +16,12 @@ use silver_common::{
 
 use crate::{
     database::PeerDatabase,
-    rpc::{OutboundCounts, PeerInboundState},
+    manager::rpc::{OutboundCounts, PeerInboundState},
     scoring,
     state::{ArchivedState, IpPrefix, MsgIdMap, PeerState, TopicScore},
 };
+
+mod rpc;
 
 /// Initial capacity hints — chosen so normal steady-state activity doesn't
 /// rehash. Undersizing is fine correctness-wise; this is a perf nudge.
@@ -124,10 +126,16 @@ pub struct PeerManager {
     /// (new connection, in-flight slot freed). Survives disconnects —
     /// the cache is request-scoped, not peer-scoped.
     pub(crate) pending_blocks_by_range: VecDeque<(u64, [u8; BLOCKS_BY_RANGE_REQ_SIZE])>,
+    pub(crate) pending_data_columns_by_root: VecDeque<(u64, u64, TCacheRead)>,
 }
 
 impl PeerManager {
-    pub fn new(our_topics: Vec<GossipTopic>, params: ScoreParams, fork_digest: [u8; 4], metadata: [u8; METADATA_SIZE]) -> Self {
+    pub fn new(
+        our_topics: Vec<GossipTopic>,
+        params: ScoreParams,
+        fork_digest: [u8; 4],
+        metadata: [u8; METADATA_SIZE],
+    ) -> Self {
         let now = Instant::now();
         let mesh =
             our_topics.iter().map(|t| (*t, Vec::with_capacity(params.d_high as usize))).collect();
@@ -156,6 +164,7 @@ impl PeerManager {
             outbound_in_flight: OutboundCounts::with_capacity(PEERS_CAP),
             inbound_buckets: HashMap::with_capacity(PEERS_CAP),
             pending_blocks_by_range: VecDeque::new(),
+            pending_data_columns_by_root: VecDeque::new(),
         }
     }
 
@@ -346,6 +355,9 @@ impl PeerManager {
             PeerEvent::P2pPeerIdentity { p2p_peer, identify } => {
                 tracing::info!(p2p_peer, ?identify, "Got peer identify");
                 self.database.add_p2p_identify(p2p_peer, identify)
+            }
+            PeerEvent::SendDataColumnsByRootRequest { request_id, column, ssz } => {
+                self.on_request_data_columns_by_root(request_id, column, ssz, emit);
             }
         }
     }

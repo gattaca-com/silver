@@ -1486,6 +1486,9 @@ impl BlobIdentifierView {
 
 pub const DC_BY_RANGE_REQ_MIN: usize = 20;
 
+// Data columns by root, requesting a single column.
+pub const DC_BY_ROOT_SINGLE_SIZE: usize = 48;
+
 // columns: List[ColumnIndex, NUMBER_OF_COLUMNS], ColumnIndex = u64.
 pub const DC_BY_RANGE_REQ_MAX: usize = DC_BY_RANGE_REQ_MIN + NUMBER_OF_COLUMNS * 8;
 

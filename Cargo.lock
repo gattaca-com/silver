@@ -583,6 +583,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
 
 [[package]]
+name = "c-kzg"
+version = "2.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6648ed1e4ea8e8a1a4a2c78e1cda29a3fd500bc622899c340d8525ea9a76b24a"
+dependencies = [
+ "blst",
+ "cc",
+ "glob",
+ "hex",
+ "libc",
+ "once_cell",
+]
+
+[[package]]
 name = "cast"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -967,6 +981,12 @@ dependencies = [
 [[package]]
 name = "data_columns"
 version = "0.0.1"
+dependencies = [
+ "c-kzg",
+ "flux",
+ "fxhash",
+ "silver_common",
+]
 
 [[package]]
 name = "debugid"
@@ -3940,6 +3960,7 @@ dependencies = [
  "bytes",
  "flux",
  "flux-utils",
+ "fxhash",
  "hex",
  "quinn-proto",
  "rand 0.8.6",

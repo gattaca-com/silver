@@ -120,6 +120,17 @@ impl PeerDatabase {
             .map(MetadataView::seq_number)
     }
 
+    pub fn has_data_column_custody_group(&self, peer: usize, column_group: u64) -> bool {
+        let custody_groups = self
+            .by_p2p_id
+            .get(&peer)
+            .and_then(|idx| self.peers.get(*idx))
+            .and_then(|r| r.node_id.zip(r.enr.as_ref().and_then(|enr| enr.cgc())))
+            .map(|(id, count)| id.custody_groups(count as u8))
+            .unwrap_or_default();
+        custody_groups & 1 << column_group != 0
+    }
+
     /// Live connection ids whose identify advertises `protocol`. A peer is
     /// "live" iff it has an active p2p_id mapping (i.e., currently
     /// connected); the protocol set is populated when an `Identify` record

@@ -17,7 +17,7 @@ use std::{
 use silver_common::{
     P2pSend, PeerControl, PeerEvent, PeerStatus, RpcInbound, RpcOutbound, RpcRequest,
     RpcRequestInbound, RpcRequestOutbound, RpcResponse, RpcResponseInbound, RpcResponseOutbound,
-    RpcSeverity, StreamProtocol,
+    RpcSeverity, StreamProtocol, TCacheRead,
     ssz_view::{
         BLOCKS_BY_RANGE_REQ_SIZE, BeaconBlocksByRangeRequestView, MetadataView, StatusView,
     },
@@ -25,9 +25,9 @@ use silver_common::{
 
 use crate::PeerManager;
 
-/// Per-peer cap on outstanding BlocksByRange requests. Bounds load on any
+/// Per-peer cap on outstanding RPC requests per protocol. Bounds load on any
 /// single peer and keeps fan-out useful when many ranges are pending.
-const MAX_BLOCKS_BY_RANGE_IN_FLIGHT: u32 = 2;
+const MAX_RPC_PROTOCOL_IN_FLIGHT: u32 = 2;
 
 /// Size of the `StreamProtocol` enum (incl. `Unset`). Used to allocate
 /// the per-protocol outbound counter array; index via
@@ -454,7 +454,7 @@ impl PeerManager {
     ) {
         let peer = self.best_peer_for(StreamProtocol::BeaconBlocksByRange, |p| {
             outbound_count(&self.outbound_in_flight, p, StreamProtocol::BeaconBlocksByRange) <
-                MAX_BLOCKS_BY_RANGE_IN_FLIGHT
+                MAX_RPC_PROTOCOL_IN_FLIGHT
         });
         match peer {
             Some(peer) => {
@@ -494,7 +494,7 @@ impl PeerManager {
         while !self.pending_blocks_by_range.is_empty() {
             let peer = self.best_peer_for(StreamProtocol::BeaconBlocksByRange, |p| {
                 outbound_count(&self.outbound_in_flight, p, StreamProtocol::BeaconBlocksByRange) <
-                    MAX_BLOCKS_BY_RANGE_IN_FLIGHT
+                    MAX_RPC_PROTOCOL_IN_FLIGHT
             });
             let Some(peer) = peer else {
                 break;
@@ -511,6 +511,80 @@ impl PeerManager {
                 peer,
                 request: RpcRequest::BlocksByRange(ssz),
             }))));
+        }
+        while !self.pending_data_columns_by_root.is_empty() {
+            // SAFETY: just checked no empty.
+            let column = self.pending_data_columns_by_root.front().map(|r| r.1).unwrap();
+
+            let peer = self.best_peer_for(StreamProtocol::DataColumnSidecarsByRoot, |p| {
+                outbound_count(
+                    &self.outbound_in_flight,
+                    p,
+                    StreamProtocol::DataColumnSidecarsByRoot,
+                ) >= MAX_RPC_PROTOCOL_IN_FLIGHT &&
+                    self.database.has_data_column_custody_group(p, column)
+            });
+            let Some(peer) = peer else {
+                break;
+            };
+            let (request_id, _, ssz) =
+                self.pending_data_columns_by_root.pop_front().expect("non-empty by loop guard");
+            record_outbound(
+                &mut self.outbound_in_flight,
+                peer,
+                StreamProtocol::DataColumnSidecarsByRoot,
+            );
+            emit(PeerControl::P2pSend(P2pSend::Rpc(RpcOutbound::Request(RpcRequestOutbound {
+                application_id: request_id,
+                peer,
+                request: RpcRequest::DataColumnsByRoot(ssz),
+            }))));
+        }
+    }
+
+    /// Dispatch a DataColumnsByRoot request to the highest-scoring connected
+    /// peer that advertises the protocol AND has the data column group AND has
+    /// spare in-flight capacity.
+    /// If no peer qualifies, cache the request and kick discovery — the
+    /// retry pass in `drain_pending_outbound` drains the cache as soon
+    /// as an eligible peer becomes available.
+    pub fn on_request_data_columns_by_root(
+        &mut self,
+        request_id: u64,
+        column: u64,
+        ssz: TCacheRead,
+        emit: &mut impl FnMut(PeerControl),
+    ) {
+        let peer = self.best_peer_for(StreamProtocol::DataColumnSidecarsByRoot, |p| {
+            outbound_count(&self.outbound_in_flight, p, StreamProtocol::DataColumnSidecarsByRoot) >=
+                MAX_RPC_PROTOCOL_IN_FLIGHT &&
+                self.database.has_data_column_custody_group(p, column)
+        });
+        match peer {
+            Some(peer) => {
+                record_outbound(
+                    &mut self.outbound_in_flight,
+                    peer,
+                    StreamProtocol::DataColumnSidecarsByRoot,
+                );
+                emit(PeerControl::P2pSend(P2pSend::Rpc(RpcOutbound::Request(
+                    RpcRequestOutbound {
+                        application_id: request_id,
+                        peer,
+                        request: RpcRequest::DataColumnsByRoot(ssz),
+                    },
+                ))));
+            }
+            None => {
+                self.pending_data_columns_by_root.push_back((request_id, column, ssz));
+                emit(PeerControl::DiscoverNodes);
+                tracing::debug!(
+                    request_id,
+                    column,
+                    pending = self.pending_data_columns_by_root.len(),
+                    "no eligible peer for DataColumnsByRoot; cached + discovery kicked"
+                );
+            }
         }
     }
 

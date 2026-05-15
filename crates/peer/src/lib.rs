@@ -1,6 +1,5 @@
 mod database;
 mod manager;
-mod rpc;
 mod scoring;
 mod state;
 
