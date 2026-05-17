@@ -97,15 +97,7 @@ impl DataColumnTile {
 
         let block_root = util::block_root_from_sidecar(buffer);
         let column_bitmask = 1u128 << DataColumnSidecarView::index(buffer);
-
         let requested = self.outstanding_requests.remove(&block_root);
-        if let Some((mut requested, retries)) = requested {
-            requested &= !column_bitmask;
-            if requested != 0 {
-                // more column responses pending
-                self.outstanding_requests.insert(block_root, (requested, retries));
-            }
-        }
 
         if self
             .validated_columns
@@ -127,6 +119,14 @@ impl DataColumnTile {
         if !util::verify_data_column_sidecar_kzg_proofs(buffer) {
             tracing::warn!(?stream_id, "failed to verify sidecar kzg proof");
             return Some((block_root, column_bitmask));
+        }
+
+        if let Some((mut requested, retries)) = requested {
+            requested &= !column_bitmask;
+            if requested != 0 {
+                // more column responses pending
+                self.outstanding_requests.insert(block_root, (requested, retries));
+            }
         }
 
         let validated = self.validated_columns.entry(block_root).or_default();
