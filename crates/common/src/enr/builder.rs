@@ -11,6 +11,7 @@ use super::{
     MAX_ENR_SIZE, NodeId, QUIC_ENR_KEY, QUIC6_ENR_KEY, SYNCNETS_ENR_KEY, TCP_ENR_KEY, TCP6_ENR_KEY,
     UDP_ENR_KEY, UDP6_ENR_KEY, keys,
 };
+use crate::enr::CGC_ENR_KEY;
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[allow(clippy::enum_variant_names)]
@@ -40,6 +41,7 @@ pub struct Builder {
     eth2: Option<[u8; 16]>,
     attnets: Option<[u8; 8]>,
     syncnets: Option<u8>,
+    cgc: Option<u64>,
 }
 
 impl Default for Builder {
@@ -57,6 +59,7 @@ impl Default for Builder {
             eth2: None,
             attnets: None,
             syncnets: None,
+            cgc: None,
         }
     }
 }
@@ -129,9 +132,14 @@ impl Builder {
         self
     }
 
+    pub fn cgc(&mut self, cgc: u64) -> &mut Self {
+        self.cgc = Some(cgc);
+        self
+    }
+
     // Keys in lexicographic order:
-    //   attnets < eth2 < id < ip < ip6 < quic < quic6 < secp256k1 < syncnets <
-    //   tcp < tcp6 < udp < udp6
+    //   attnets < cgc < eth2 < id < ip < ip6 < quic < quic6 < secp256k1 < syncnets
+    // <   tcp < tcp6 < udp < udp6
     fn rlp_content(&self, public_key: &secp256k1::PublicKey) -> BytesMut {
         let mut list = BytesMut::with_capacity(MAX_ENR_SIZE);
         self.seq.encode(&mut list);
@@ -139,6 +147,10 @@ impl Builder {
         if let Some(attnets) = self.attnets {
             ATTNETS_ENR_KEY.encode(&mut list);
             attnets.as_ref().encode(&mut list);
+        }
+        if let Some(cgc) = self.cgc {
+            CGC_ENR_KEY.encode(&mut list);
+            cgc.encode(&mut list);
         }
         if let Some(eth2) = self.eth2 {
             ETH2_ENR_KEY.encode(&mut list);
@@ -212,6 +224,7 @@ impl Builder {
             eth2: self.eth2,
             attnets: self.attnets,
             syncnets: self.syncnets,
+            cgc: self.cgc,
             public_key,
             signature,
         };

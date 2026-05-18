@@ -52,18 +52,19 @@ fn main() -> Result<(), Box<dyn Error>> {
     let incoming_rpc_producer = TCache::producer(config.incoming_rpc_tcache_size());
     let incoming_rpc_consumer = incoming_rpc_producer.cache_ref().random_access()?;
 
-    // TODO rpc producers
-    let outgoing_rpc_producer = TCache::multi_producer(config.outgoing_rpc_tcache_size());
+    // rpc producer
+    let outgoing_rpc_producer = TCache::producer(config.outgoing_rpc_tcache_size());
 
     // Tiles.
     let keypair = config.keypair()?;
+    let local_enr = config.enr()?;
 
     let discv5_addr = config.discovery_bind_addr().expect("no discovery port");
     let p2p_addr = config.p2p_bind_addr().expect("no p2p port");
     let mut discv5 = DiscV5::new(
         config.discovery_config(),
         *keypair.secret_key(),
-        config.enr()?,
+        local_enr,
         config.fork_digest(),
     );
     let server_config = silver_network::create_server_config(&keypair)?;
@@ -105,11 +106,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         outgoing_gossip_producer,
         hex::encode(fork_digest),
     )?;
-    let control_tile = Controller::new(PeerManager::new(
-        config.gossip_topics()?,
-        config.peer_score_params(),
-        config.fork_digest(),
-    ));
+    let control_tile = Controller::new(
+        PeerManager::new(
+            config.gossip_topics()?,
+            config.peer_score_params(),
+            config.fork_digest(),
+            local_enr.into(),
+        ),
+        outgoing_rpc_producer,
+    );
 
     let chain_config = config.chain_config();
     let ticker = SlotTicker::new(

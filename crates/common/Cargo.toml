@@ -12,6 +12,7 @@ buffa.workspace = true
 bytes.workspace = true
 flux.workspace = true
 flux-utils.workspace = true
+fxhash.workspace = true
 hex.workspace = true
 quinn-proto.workspace = true
 rand.workspace = true

@@ -10,7 +10,7 @@ use flux::{spine::SpineAdapter, tile::Tile};
 use quinn_proto::Endpoint;
 use silver_common::{
     DiscoveryConfig, Enr, Identify, Keypair, PeerId, ProtoIdentify, ScoreParams, SilverSpine,
-    TCache, TCacheProducer, TConsumer, TProducer, TRandomAccess,
+    TCache, TCacheProducer, TConsumer, TProducer, TRandomAccess, ssz_view::METADATA_SIZE,
 };
 use silver_control::Controller;
 use silver_discovery::DiscV5;
@@ -250,8 +250,10 @@ impl PublisherStack {
         // Tests don't subscribe to gossip topics, so PeerManager runs with
         // an empty subscription set — meshes stay empty, score deltas
         // exercise only the connection / RPC paths.
-        let controller =
-            Controller::new(PeerManager::new(Vec::new(), ScoreParams::default(), [0u8; 4]));
+        let controller = Controller::new(
+            PeerManager::new(Vec::new(), ScoreParams::default(), [0u8; 4], [0u8; METADATA_SIZE]),
+            TCache::producer(32), // dummpy rpc out
+        );
 
         // Spine + per-tile adapters.
         let mut spine = SilverSpine::new_with_base_dir(base_dir, Some(path_suffix));
@@ -347,8 +349,10 @@ impl EchoStack {
         )
         .map_err(std::io::Error::other)?;
 
-        let controller =
-            Controller::new(PeerManager::new(Vec::new(), ScoreParams::default(), [0u8; 4]));
+        let controller = Controller::new(
+            PeerManager::new(Vec::new(), ScoreParams::default(), [0u8; 4], [0u8; METADATA_SIZE]),
+            TCache::producer(32), // dummpy rpc out
+        );
 
         let mut spine = SilverSpine::new_with_base_dir(base_dir, Some(path_suffix));
         let network_adapter = SpineAdapter::connect_tile(&network, &mut spine);

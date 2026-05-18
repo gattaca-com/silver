@@ -313,6 +313,13 @@ pub enum PeerEvent {
         /// Identify information.
         identify: Identify,
     },
+    /// Request to send data column RPC request
+    /// Sent by the data columns tile.
+    SendDataColumnsByRootRequest {
+        request_id: u64,
+        columns: u128,
+        block_root: [u8; 32],
+    },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -409,6 +416,13 @@ pub enum PeerControl {
         enr: Enr,
     },
     P2pSend(P2pSend),
+    /// Generate a data columns by root request.
+    P2pDataColumnsRequest {
+        app_id: u64,
+        peer: usize,
+        block_root: [u8; 32],
+        columns: u128,
+    },
     /// Peer-level ban has timed out — counterpart to `Ban`. Network tile
     /// removes the peer from any deny-list / discv5 routing-table eviction
     /// state. Emitted from `tick` when the per-peer ban TTL expires.
@@ -517,4 +531,18 @@ impl BeaconStateEvent {
             Self::PersistBlock { .. } => SszView::SignedBeaconBlock(SignedBeaconBlockView {}),
         }
     }
+}
+
+/// Message sent by the data column tile when all block data columns have
+/// been received and validated. The proposer signature HAS NOT been validated.
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct DataColumnsAvailable {
+    pub slot: u64,
+    pub proposer_index: u64,
+    pub parent_root: [u8; 32],
+    pub state_root: [u8; 32],
+    pub body_root: [u8; 32],
+    // Proposer sugnature over the fields above.
+    pub signature: [u8; 96],
 }

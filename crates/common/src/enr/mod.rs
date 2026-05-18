@@ -18,6 +18,8 @@ use secp256k1::{PublicKey, SECP256K1, SecretKey};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 use sha3::{Digest, Keccak256};
 
+use crate::ssz_view::METADATA_SIZE;
+
 pub const MAX_ENR_SIZE: usize = 300;
 
 pub const ID_ENR_KEY: &[u8] = b"id";
@@ -33,6 +35,7 @@ pub const ATTNETS_ENR_KEY: &[u8] = b"attnets";
 pub const SYNCNETS_ENR_KEY: &[u8] = b"syncnets";
 pub const TCP_ENR_KEY: &[u8] = b"tcp";
 pub const TCP6_ENR_KEY: &[u8] = b"tcp6";
+pub const CGC_ENR_KEY: &[u8] = b"cgc";
 
 /// An ENR record with a verified signature.
 ///
@@ -57,6 +60,8 @@ pub struct Enr {
     attnets: Option<[u8; 8]>,
     /// Sync committee subnet bitfield (lower 4 bits, SSZ Bitvector[4]).
     syncnets: Option<u8>,
+    /// Data column custody group count
+    cgc: Option<u64>,
     public_key: PublicKey,
     signature: [u8; 64],
 }
@@ -143,6 +148,11 @@ impl Enr {
     #[inline]
     pub fn syncnets(&self) -> Option<u8> {
         self.syncnets
+    }
+
+    #[inline]
+    pub fn cgc(&self) -> Option<u64> {
+        self.cgc
     }
 
     pub fn set_eth2(&mut self, eth2: [u8; 16], key: &SecretKey) -> Result<(), Error> {
@@ -317,6 +327,10 @@ impl Enr {
             ATTNETS_ENR_KEY.encode(stream);
             attnets.as_ref().encode(stream);
         }
+        if let Some(cgc) = self.cgc {
+            CGC_ENR_KEY.encode(stream);
+            cgc.encode(stream);
+        }
         if let Some(eth2) = self.eth2 {
             ETH2_ENR_KEY.encode(stream);
             eth2.as_ref().encode(stream);
@@ -471,6 +485,7 @@ impl Decodable for Enr {
         let mut attnets: Option<[u8; 8]> = None;
         let mut syncnets: Option<u8> = None;
         let mut pk_bytes: Option<&[u8]> = None;
+        let mut cgc: Option<u64> = None;
 
         let mut prev: Option<&[u8]> = None;
         while !payload.is_empty() {
@@ -543,6 +558,10 @@ impl Decodable for Enr {
                     }
                     syncnets = Some(b[0]);
                 }
+                CGC_ENR_KEY => {
+                    let cgc_val = u64::decode(payload)?;
+                    cgc = Some(cgc_val);
+                }
                 _ => {
                     // Skip unknown fields (tcp, custom keys, etc.).
                     // Still include their raw bytes in content_list for signature verification.
@@ -588,6 +607,7 @@ impl Decodable for Enr {
             eth2,
             attnets,
             syncnets,
+            cgc,
             public_key,
             signature,
         })
@@ -598,6 +618,23 @@ pub fn digest(b: &[u8]) -> [u8; 32] {
     let mut output = [0_u8; 32];
     output.copy_from_slice(&Keccak256::digest(b));
     output
+}
+
+impl From<Enr> for [u8; METADATA_SIZE] {
+    fn from(value: Enr) -> Self {
+        let mut metadata = [0u8; METADATA_SIZE];
+        metadata[..8].copy_from_slice(&value.seq().to_le_bytes());
+        if let Some(attnets) = value.attnets().as_ref() {
+            metadata[8..16].copy_from_slice(attnets);
+        }
+        if let Some(syncnets) = value.syncnets().as_ref() {
+            metadata[16] = *syncnets;
+        }
+        if let Some(cgc) = value.cgc().as_ref() {
+            metadata[17..].copy_from_slice(&cgc.to_le_bytes());
+        }
+        metadata
+    }
 }
 
 #[cfg(test)]

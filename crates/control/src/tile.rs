@@ -1,14 +1,19 @@
-use std::time::{Duration, Instant};
+use std::{
+    io::{self, ErrorKind, Write},
+    time::{Duration, Instant},
+};
 
 use flux::tile::Tile;
 use silver_common::{
-    BeaconStateEvent, PeerControl, PeerEvent, RpcInbound, SilverSpine,
+    BeaconStateEvent, P2pSend, PeerControl, PeerEvent, RpcInbound, RpcOutbound, RpcRequestOutbound,
+    SilverSpine, TCacheProducer, TCacheRead, TProducer,
     ssz_view::{METADATA_SIZE, STATUS_V2_SIZE},
 };
 use silver_peer::PeerManager;
 
 pub struct Controller {
     peer_manager: PeerManager,
+    rpc_producer: TProducer,
     last_tick: Instant,
     last_ping: Instant,
     last_status: Instant,
@@ -24,9 +29,10 @@ impl Controller {
     /// Build a Controller with a fresh `PeerManager`. `status` and
     /// `metadata` start empty — callers update them via `set_status` /
     /// `set_metadata` once chain state is available.
-    pub fn new(peer_manager: PeerManager) -> Self {
+    pub fn new(peer_manager: PeerManager, rpc_producer: TProducer) -> Self {
         Self {
             peer_manager,
+            rpc_producer,
             last_tick: Instant::now(),
             last_ping: Instant::now(),
             last_status: Instant::now(),
@@ -66,8 +72,35 @@ impl Tile<SilverSpine> for Controller {
         adapter.consume(|rpc: RpcInbound, producers| {
             self.peer_manager.on_rpc_inbound(rpc, now, &mut |pc| {
                 match pc {
-                    PeerControl::P2pSend(send) => producers.p2p_send.produce(&send.into()),
-                    other => producers.peer_control.produce(&other.into()),
+                    PeerControl::P2pSend(send) => {
+                        producers.p2p_send.produce(&send.into());
+                    }
+                    PeerControl::P2pDataColumnsRequest { app_id, peer, block_root, columns } => {
+                        match allocate_data_columns_by_root(
+                            &mut self.rpc_producer,
+                            &block_root,
+                            columns,
+                        ) {
+                            Ok(tcache) => {
+                                producers.p2p_send.produce(
+                                    &P2pSend::Rpc(RpcOutbound::Request(RpcRequestOutbound {
+                                        application_id: app_id,
+                                        peer,
+                                        request: silver_common::RpcRequest::DataColumnsByRoot(
+                                            tcache,
+                                        ),
+                                    }))
+                                    .into(),
+                                );
+                            }
+                            Err(e) => {
+                                tracing::error!(?e, "failed to allocate data columns request");
+                            }
+                        };
+                    }
+                    other => {
+                        producers.peer_control.produce(&other.into());
+                    }
                 };
             });
         });
@@ -131,4 +164,34 @@ impl Tile<SilverSpine> for Controller {
             });
         }
     }
+}
+
+fn allocate_data_columns_by_root(
+    producer: &mut TProducer,
+    root: &[u8; 32],
+    columns: u128,
+) -> Result<TCacheRead, io::Error> {
+    // the data columns by root request is a list of `DataColumnsByRootIdentifier`.
+    // Each of those is the block root followed by the list of column
+    // indices. So the layout is: N x 4 byte offsets of list entries (little
+    // endian) (so first offset / 4 is list length) Then N times:
+    //   32 bytes block root
+    //   4  bytes columns data offset (always = 36, little endian)
+    //   8 bytes column index for each column, little endian
+    let number_of_columns = columns.count_ones() as usize;
+    let length = 4 + 32 + 4 + (8 * number_of_columns);
+    let Some(mut reservation) = producer.reserve(length, true) else {
+        tracing::warn!("Failed to allocate TCache buffer for data columns request");
+        return Err(ErrorKind::StorageFull.into());
+    };
+    reservation.write_all(&4u32.to_le_bytes())?;
+    reservation.write_all(root)?;
+    reservation.write_all(&36u32.to_le_bytes())?;
+    for i in 0..128 {
+        if columns & (1 << i) != 0 {
+            reservation.write_all(&(i as u64).to_le_bytes())?;
+        }
+    }
+    reservation.flush()?;
+    Ok(reservation.read())
 }

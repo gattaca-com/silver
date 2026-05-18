@@ -3,7 +3,8 @@ members = [
   "crates/beacon_state", 
   "crates/bin",
   "crates/common",
-  "crates/control",
+  "crates/control", 
+  "crates/data_columns",
   "crates/discovery",
   "crates/e2e",
   "crates/gossip",
@@ -68,6 +69,13 @@ alloy-rlp = { version = "0.3.12", default-features = false, features = ["derive"
 base64 = "0.22"
 blst = {version = "0.3", features = ["no-threads"]}
 buffa = "0.2.0"
+# `ethereum_kzg_settings` feature bundles the mainnet trusted setup as a static
+# so callers don't have to ship the ~880 KB JSON file. Default features pin
+# `blst/portable` which conflicts with our explicit `blst` selection above;
+# pull in c-kzg with default features off and re-enable just what we need.
+c-kzg = { version = "2.1", default-features = false, features = [
+    "ethereum_kzg_settings",
+] }
 bytes = "1.11.1"
 crc32c = "0.6"
 criterion = { version = "0.5.1", features = ["async_std", "async_tokio"] }

@@ -16,10 +16,12 @@ use silver_common::{
 
 use crate::{
     database::PeerDatabase,
-    rpc::{OutboundCounts, PeerInboundState},
+    manager::rpc::{OutboundCounts, PeerInboundState},
     scoring,
     state::{ArchivedState, IpPrefix, MsgIdMap, PeerState, TopicScore},
 };
+
+mod rpc;
 
 /// Initial capacity hints — chosen so normal steady-state activity doesn't
 /// rehash. Undersizing is fine correctness-wise; this is a perf nudge.
@@ -103,7 +105,7 @@ pub struct PeerManager {
 
     /// Our local beacon status and metadata.
     status: Option<[u8; STATUS_V2_SIZE]>,
-    metadata: Option<[u8; METADATA_SIZE]>,
+    metadata: [u8; METADATA_SIZE],
 
     /// Whether we are synced.
     is_synced: bool,
@@ -124,10 +126,16 @@ pub struct PeerManager {
     /// (new connection, in-flight slot freed). Survives disconnects —
     /// the cache is request-scoped, not peer-scoped.
     pub(crate) pending_blocks_by_range: VecDeque<(u64, [u8; BLOCKS_BY_RANGE_REQ_SIZE])>,
+    pub(crate) pending_data_columns_by_root: VecDeque<(u64, u128, [u8; 32])>,
 }
 
 impl PeerManager {
-    pub fn new(our_topics: Vec<GossipTopic>, params: ScoreParams, fork_digest: [u8; 4]) -> Self {
+    pub fn new(
+        our_topics: Vec<GossipTopic>,
+        params: ScoreParams,
+        fork_digest: [u8; 4],
+        metadata: [u8; METADATA_SIZE],
+    ) -> Self {
         let now = Instant::now();
         let mesh =
             our_topics.iter().map(|t| (*t, Vec::with_capacity(params.d_high as usize))).collect();
@@ -151,11 +159,12 @@ impl PeerManager {
             last_discovery: now,
             database: PeerDatabase::default(),
             status: None,
-            metadata: None,
+            metadata,
             is_synced: false,
             outbound_in_flight: OutboundCounts::with_capacity(PEERS_CAP),
             inbound_buckets: HashMap::with_capacity(PEERS_CAP),
             pending_blocks_by_range: VecDeque::new(),
+            pending_data_columns_by_root: VecDeque::new(),
         }
     }
 
@@ -191,8 +200,8 @@ impl PeerManager {
         self.status.as_ref()
     }
 
-    pub fn metadata(&self) -> Option<&[u8; METADATA_SIZE]> {
-        self.metadata.as_ref()
+    pub fn metadata(&self) -> &[u8; METADATA_SIZE] {
+        &self.metadata
     }
 
     pub fn set_status(&mut self, status: [u8; STATUS_V2_SIZE]) {
@@ -200,7 +209,7 @@ impl PeerManager {
     }
 
     pub fn set_metadata(&mut self, metadata: [u8; METADATA_SIZE]) {
-        self.metadata = Some(metadata);
+        self.metadata = metadata;
     }
 
     pub fn is_synced(&self) -> bool {
@@ -347,6 +356,9 @@ impl PeerManager {
                 tracing::info!(p2p_peer, ?identify, "Got peer identify");
                 self.database.add_p2p_identify(p2p_peer, identify)
             }
+            PeerEvent::SendDataColumnsByRootRequest { request_id, columns, block_root } => {
+                self.on_request_data_columns_by_root(request_id, columns, block_root, emit);
+            }
         }
     }
 
@@ -427,11 +439,14 @@ impl PeerManager {
             ))));
         }
 
+        if !self.is_synced {
+            // Never relay gossip before we are synced
+            return;
+        }
+
         // Announce our own topic subscriptions to this peer.
-        if self.is_synced {
-            for &topic in &self.our_topics {
-                emit(PeerControl::P2pGossipSubscribe { p2p: peer_id, p2p_connection: conn, topic });
-            }
+        for &topic in &self.our_topics {
+            emit(PeerControl::P2pGossipSubscribe { p2p: peer_id, p2p_connection: conn, topic });
         }
     }
 
@@ -508,10 +523,6 @@ impl PeerManager {
             peer.peer_id
         };
 
-        if !self.is_synced {
-            return;
-        }
-
         let we_want = self.our_topics.contains(&topic);
 
         // Opportunistic graft: if this is a topic we care about and our mesh
@@ -544,6 +555,10 @@ impl PeerManager {
             let Some(idx) = mesh_peers.iter().position(|c| *c == conn)
         {
             mesh_peers.swap_remove(idx);
+            if !self.is_synced {
+                // Never relay gossip before we are synced
+                return;
+            }
             emit(PeerControl::P2pGossipPrune { p2p: peer_id, p2p_connection: conn, topic });
         }
     }
@@ -622,6 +637,11 @@ impl PeerManager {
         tcache: TCacheRead,
         emit: &mut impl FnMut(PeerControl),
     ) {
+        if !self.is_synced {
+            // Never relay gossip before we are synced
+            return;
+        }
+
         let Some(peer) = self.peers.get_mut(&conn) else {
             return;
         };
@@ -673,6 +693,11 @@ impl PeerManager {
             }
         }
 
+        if !self.is_synced {
+            // Never relay gossip before we are synced
+            return;
+        }
+
         // Fan IDONTWANT out to mesh members (except sender) above threshold.
         let Some(mesh_peers) = self.mesh.get(&topic) else {
             return;
@@ -703,6 +728,10 @@ impl PeerManager {
         protobuf: TCacheRead,
         emit: &mut impl FnMut(PeerControl),
     ) {
+        if !self.is_synced {
+            // Never relay gossip before we are synced
+            return;
+        }
         let mesh_for_topic = self.mesh.get(&topic);
         let cap = self.params.d_lazy as usize;
         let mut emitted = 0usize;
@@ -738,6 +767,10 @@ impl PeerManager {
         tcache: TCacheRead,
         emit: &mut impl FnMut(PeerControl),
     ) {
+        if !self.is_synced {
+            // Never relay gossip before we are synced
+            return;
+        }
         let Some(peer) = self.peers.get(&conn) else {
             return;
         };
@@ -794,7 +827,7 @@ impl PeerManager {
             match enr.eth2() {
                 Some(eth2) => {
                     if eth2[..4] != my_digest {
-                        tracing::warn!(theirs=?eth2[..4], ours=?my_digest, "fork digest mismatch");
+                        tracing::warn!(theirs=?eth2[..4], ours=?my_digest, ?enr, "fork digest mismatch");
                         return;
                     }
                 }
@@ -912,6 +945,10 @@ impl PeerManager {
         now: Instant,
         emit: &mut impl FnMut(PeerControl),
     ) {
+        if !self.is_synced {
+            // Never relay gossip before we are synced
+            return;
+        }
         let mesh = self
             .mesh
             .entry(topic)
@@ -937,6 +974,10 @@ impl PeerManager {
         now: Instant,
         emit: &mut impl FnMut(PeerControl),
     ) {
+        if !self.is_synced {
+            // Never relay gossip before we are synced
+            return;
+        }
         if let Some(mesh) = self.mesh.get_mut(&topic) &&
             let Some(idx) = mesh.iter().position(|c| *c == conn)
         {
@@ -1238,7 +1279,7 @@ mod tests {
     struct Captured(Vec<PeerControl>);
 
     fn fixture(our_topics: Vec<GossipTopic>, params: ScoreParams) -> (PeerManager, Captured) {
-        (PeerManager::new(our_topics, params, [0u8; 4]), Captured::default())
+        (PeerManager::new(our_topics, params, [0u8; 4], [0u8; METADATA_SIZE]), Captured::default())
     }
 
     fn peer_id(seed: u8) -> PeerId {
@@ -1738,6 +1779,7 @@ mod tests {
         let now = Instant::now();
         let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
         connect(&mut mgr, &mut cap, 1, 1, now);
+        mgr.set_synced(true);
 
         let mut producer = TCache::producer(1 << 14);
         let mut reservation = producer.reserve(64, true).unwrap();
@@ -1810,6 +1852,7 @@ mod tests {
         params.d = 0;
         params.d_high = 8;
         let (mut mgr, mut cap) = fixture(vec![GossipTopic::BeaconBlock], params);
+        mgr.set_synced(true);
 
         for i in 1..=4u8 {
             connect(&mut mgr, &mut cap, i as usize, i, now);

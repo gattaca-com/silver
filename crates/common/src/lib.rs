@@ -13,7 +13,7 @@ pub use crate::{
     },
     spine::{
         ALL_PROTOCOLS, AcquiredRead as TRead, BeaconStateEvent, Consumer as TConsumer,
-        Error as TCacheError, GossipMsgOut, IpBytes, MULTISTREAM_V1,
+        DataColumnsAvailable, Error as TCacheError, GossipMsgOut, IpBytes, MULTISTREAM_V1,
         MultiProducer as TMultiProducer, NewGossipMsg, P2pSend, P2pStreamId, PeerControl,
         PeerEvent, PeerStatus, Producer as TProducer, REJECT_RESPONSE, RPC_PROTOCOLS,
         RandomAccessConsumer as TRandomAccess, Reservation as TReservation, RpcInbound, RpcMsg,
@@ -22,6 +22,7 @@ pub use crate::{
         StreamProtocol, TCache, TCacheProducer, TCacheRead, TCacheRef,
     },
     util::{create_self_signed_certificate, decode_varint, encode_varint},
+    wheel::Wheel,
     wither::{CountingWitherFilter, WitherFilter},
 };
 
@@ -37,8 +38,10 @@ mod gossip;
 mod id;
 mod identity;
 mod spine;
+pub mod ssz_hash;
 pub mod ssz_view;
 mod util;
+mod wheel;
 mod wither;
 
 pub use enr::{Enr, NodeId};

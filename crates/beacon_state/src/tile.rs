@@ -916,9 +916,15 @@ impl BeaconStateTile {
             &mut self.attestation_votes_scratch,
             &mut self.sig_batch,
         ) {
-            tracing::error!(error = %e, "block rejected");
+            tracing::error!(error = %e, block_slot=parsed.block_slot, head_slot=self.head_state_slot(),  "block rejected");
             return GossipFeedback::Reject;
         }
+
+        tracing::info!(
+            block_slot = parsed.block_slot,
+            head_slot = self.head_state_slot(),
+            "applied block"
+        );
 
         // Fold block-included attestations into the tracker.
         for i in 0..self.attestation_votes_scratch.len() {
