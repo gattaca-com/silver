@@ -12,6 +12,8 @@ use crate::util;
 const BASE_REQUEST_ID: u64 = 0xda5da5 << 40; // DAS prefix. 
 const MAX_RETRIES: u8 = 5;
 
+type BlockBodyRoot = [u8; 32];
+
 pub struct DataColumnTile {
     // bit set of our custody group columns.
     custody_group_columns: u128,
@@ -20,10 +22,10 @@ pub struct DataColumnTile {
     rpc_consumer: TRandomAccess,
 
     // keyed by block body root
-    validated_columns: FxHashMap<[u8; 32], u128>,
+    validated_columns: FxHashMap<BlockBodyRoot, u128>,
     // outstanding requests - keyed by block body root
     // 16 x 500 millisecond buckets.
-    outstanding_requests: Wheel<[u8; 32], (u128, u8), 16>,
+    outstanding_requests: Wheel<BlockBodyRoot, (u128, u8), 16>,
 }
 
 impl DataColumnTile {

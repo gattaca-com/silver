@@ -113,9 +113,11 @@ pub fn apply_block(
             postponed_scratch,
         );
     }
+    tracing::info!("processed slots");
 
     process_block_header(vid, epoch, sd, block_slot, proposer_index, parent_root, body_root, zh)
         .map_err(wrap)?;
+    tracing::info!("processed block header");
 
     let body = if block_bytes.len() > 184 { &block_bytes[184..] } else { &[] };
     process_block_body(
@@ -136,8 +138,10 @@ pub fn apply_block(
         zh,
         attestation_votes,
     )?;
+    tracing::info!("processed block body");
 
     let actual = hash_tree_root_state(imm, vid, longtail, epoch, roots, sd, pq, zh);
+    tracing::info!("got root status");
     if actual != block_state_root {
         return Err(wrap(BlockError::PostStateRootMismatch {
             expected: block_state_root,
