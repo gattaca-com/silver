@@ -439,11 +439,14 @@ impl PeerManager {
             ))));
         }
 
+        if !self.is_synced {
+            // Never relay gossip before we are synced
+            return;
+        }
+
         // Announce our own topic subscriptions to this peer.
-        if self.is_synced {
-            for &topic in &self.our_topics {
-                emit(PeerControl::P2pGossipSubscribe { p2p: peer_id, p2p_connection: conn, topic });
-            }
+        for &topic in &self.our_topics {
+            emit(PeerControl::P2pGossipSubscribe { p2p: peer_id, p2p_connection: conn, topic });
         }
     }
 
@@ -520,10 +523,6 @@ impl PeerManager {
             peer.peer_id
         };
 
-        if !self.is_synced {
-            return;
-        }
-
         let we_want = self.our_topics.contains(&topic);
 
         // Opportunistic graft: if this is a topic we care about and our mesh
@@ -556,6 +555,10 @@ impl PeerManager {
             let Some(idx) = mesh_peers.iter().position(|c| *c == conn)
         {
             mesh_peers.swap_remove(idx);
+            if !self.is_synced {
+                // Never relay gossip before we are synced
+                return;
+            }
             emit(PeerControl::P2pGossipPrune { p2p: peer_id, p2p_connection: conn, topic });
         }
     }
@@ -634,6 +637,11 @@ impl PeerManager {
         tcache: TCacheRead,
         emit: &mut impl FnMut(PeerControl),
     ) {
+        if !self.is_synced {
+            // Never relay gossip before we are synced
+            return;
+        }
+
         let Some(peer) = self.peers.get_mut(&conn) else {
             return;
         };
@@ -685,6 +693,11 @@ impl PeerManager {
             }
         }
 
+        if !self.is_synced {
+            // Never relay gossip before we are synced
+            return;
+        }
+
         // Fan IDONTWANT out to mesh members (except sender) above threshold.
         let Some(mesh_peers) = self.mesh.get(&topic) else {
             return;
@@ -715,6 +728,10 @@ impl PeerManager {
         protobuf: TCacheRead,
         emit: &mut impl FnMut(PeerControl),
     ) {
+        if !self.is_synced {
+            // Never relay gossip before we are synced
+            return;
+        }
         let mesh_for_topic = self.mesh.get(&topic);
         let cap = self.params.d_lazy as usize;
         let mut emitted = 0usize;
@@ -750,6 +767,10 @@ impl PeerManager {
         tcache: TCacheRead,
         emit: &mut impl FnMut(PeerControl),
     ) {
+        if !self.is_synced {
+            // Never relay gossip before we are synced
+            return;
+        }
         let Some(peer) = self.peers.get(&conn) else {
             return;
         };
@@ -806,7 +827,7 @@ impl PeerManager {
             match enr.eth2() {
                 Some(eth2) => {
                     if eth2[..4] != my_digest {
-                        tracing::warn!(theirs=?eth2[..4], ours=?my_digest, "fork digest mismatch");
+                        tracing::warn!(theirs=?eth2[..4], ours=?my_digest, ?enr, "fork digest mismatch");
                         return;
                     }
                 }
@@ -924,6 +945,10 @@ impl PeerManager {
         now: Instant,
         emit: &mut impl FnMut(PeerControl),
     ) {
+        if !self.is_synced {
+            // Never relay gossip before we are synced
+            return;
+        }
         let mesh = self
             .mesh
             .entry(topic)
@@ -949,6 +974,10 @@ impl PeerManager {
         now: Instant,
         emit: &mut impl FnMut(PeerControl),
     ) {
+        if !self.is_synced {
+            // Never relay gossip before we are synced
+            return;
+        }
         if let Some(mesh) = self.mesh.get_mut(&topic) &&
             let Some(idx) = mesh.iter().position(|c| *c == conn)
         {

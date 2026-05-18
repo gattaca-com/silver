@@ -6,6 +6,8 @@ use alloy_rlp::{Encodable, Header};
 use bytes::BytesMut;
 use secp256k1::{SECP256K1, SecretKey};
 
+use crate::enr::CGC_ENR_KEY;
+
 use super::{
     ATTNETS_ENR_KEY, ENR_VERSION, ETH2_ENR_KEY, Enr, ID_ENR_KEY, IP_ENR_KEY, IP6_ENR_KEY,
     MAX_ENR_SIZE, NodeId, QUIC_ENR_KEY, QUIC6_ENR_KEY, SYNCNETS_ENR_KEY, TCP_ENR_KEY, TCP6_ENR_KEY,
@@ -137,7 +139,7 @@ impl Builder {
     }
 
     // Keys in lexicographic order:
-    //   attnets < eth2 < id < ip < ip6 < quic < quic6 < secp256k1 < syncnets <
+    //   attnets < cgc < eth2 < id < ip < ip6 < quic < quic6 < secp256k1 < syncnets <
     //   tcp < tcp6 < udp < udp6
     fn rlp_content(&self, public_key: &secp256k1::PublicKey) -> BytesMut {
         let mut list = BytesMut::with_capacity(MAX_ENR_SIZE);
@@ -146,6 +148,10 @@ impl Builder {
         if let Some(attnets) = self.attnets {
             ATTNETS_ENR_KEY.encode(&mut list);
             attnets.as_ref().encode(&mut list);
+        }
+        if let Some(cgc) = self.cgc {
+            CGC_ENR_KEY.encode(&mut list);
+            cgc.encode(&mut list);
         }
         if let Some(eth2) = self.eth2 {
             ETH2_ENR_KEY.encode(&mut list);

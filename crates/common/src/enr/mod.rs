@@ -559,7 +559,8 @@ impl Decodable for Enr {
                     syncnets = Some(b[0]);
                 }
                 CGC_ENR_KEY => {
-                    cgc = Some(u64::decode(payload)?);
+                    let cgc_val = u64::decode(payload)?;
+                    cgc = Some(cgc_val);
                 }
                 _ => {
                     // Skip unknown fields (tcp, custom keys, etc.).
