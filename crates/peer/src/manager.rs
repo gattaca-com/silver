@@ -1779,6 +1779,7 @@ mod tests {
         let now = Instant::now();
         let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
         connect(&mut mgr, &mut cap, 1, 1, now);
+        mgr.set_synced(true);
 
         let mut producer = TCache::producer(1 << 14);
         let mut reservation = producer.reserve(64, true).unwrap();
@@ -1851,6 +1852,7 @@ mod tests {
         params.d = 0;
         params.d_high = 8;
         let (mut mgr, mut cap) = fixture(vec![GossipTopic::BeaconBlock], params);
+        mgr.set_synced(true);
 
         for i in 1..=4u8 {
             connect(&mut mgr, &mut cap, i as usize, i, now);
