@@ -544,11 +544,11 @@ mod tests {
             let gossip_in_p = TCache::producer(TCACHE_BYTES);
             let gossip_in_c = gossip_in_p.cache_ref().consumer().unwrap();
             let gossip_out_p = TCache::producer(TCACHE_BYTES);
-            let gossip_out_c = gossip_out_p.cache_ref().random_access().unwrap();
+            let gossip_out_c = gossip_out_p.cache_ref().random_access(false).unwrap();
 
             let rpc_in_p = TCache::producer(TCACHE_BYTES);
             let rpc_out_p = TCache::producer(TCACHE_BYTES);
-            let rpc_out_c = rpc_out_p.cache_ref().random_access().unwrap();
+            let rpc_out_c = rpc_out_p.cache_ref().random_access(false).unwrap();
 
             Self {
                 context: Context {

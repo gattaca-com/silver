@@ -49,7 +49,7 @@ impl GossipHandler {
         protobuf_gossip_publish: TProducer,
         fork_digest_hex: String,
     ) -> Result<Self, Error> {
-        let mcache_consumer = protobuf_gossip_publish.cache_ref().random_access()?;
+        let mcache_consumer = protobuf_gossip_publish.cache_ref().random_access(false)?;
         let mcache = MessageCache::new(mcache_consumer);
 
         Ok(Self {

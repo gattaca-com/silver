@@ -47,10 +47,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let incoming_gossip_producer = TCache::producer(config.incoming_gossip_tcache_size());
     let incoming_gossip_consumer = incoming_gossip_producer.cache_ref().consumer()?;
     let ssz_gossip_producer = TCache::producer(config.incoming_gossip_ssz_tcache_size());
-    let ssz_gossip_consumer = ssz_gossip_producer.cache_ref().random_access()?;
+    let ssz_gossip_consumer = ssz_gossip_producer.cache_ref().random_access(true)?;
     let outgoing_gossip_producer = TCache::producer(config.outgoing_gossip_tcache_size());
     let incoming_rpc_producer = TCache::producer(config.incoming_rpc_tcache_size());
-    let incoming_rpc_consumer = incoming_rpc_producer.cache_ref().random_access()?;
+    let incoming_rpc_consumer = incoming_rpc_producer.cache_ref().random_access(true)?;
 
     // rpc producer
     let outgoing_rpc_producer = TCache::producer(config.outgoing_rpc_tcache_size());
@@ -79,9 +79,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
     let p2p_context = Context {
         gossip_producer: incoming_gossip_producer,
-        gossip_consumer: outgoing_gossip_producer.cache_ref().random_access()?,
+        gossip_consumer: outgoing_gossip_producer.cache_ref().random_access(true)?,
         rpc_producer: incoming_rpc_producer,
-        rpc_consumer: outgoing_rpc_producer.cache_ref().random_access()?,
+        rpc_consumer: outgoing_rpc_producer.cache_ref().random_access(true)?,
         identify: Some(ProtoIdentify::from((&config.identify()?, &keypair))),
     };
 
