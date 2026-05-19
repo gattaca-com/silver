@@ -1,7 +1,7 @@
 use blst::min_pk::PublicKey;
 use rustc_hash::FxHashMap;
 
-use super::{credentials::Withdrawals, delta::ValidatorsDelta};
+use super::{delta::ValidatorsDelta, withdrawals::Withdrawals};
 use crate::types::{BLSPubkey, MAX_VALIDATORS, ValidatorsData, box_zeroed};
 
 pub type PubkeyIndex = FxHashMap<BLSPubkey, u32>;

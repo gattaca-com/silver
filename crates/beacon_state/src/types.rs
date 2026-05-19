@@ -82,7 +82,7 @@ pub const EPOCHS_PER_SYNC_COMMITTEE_PERIOD: u64 = 256;
 pub const MAX_FORK_CHOICE_NODES: usize = 256;
 // TODO(reorg): keyed by `epoch` only — a re-org across an epoch boundary
 // returns the stale shuffling for the new chain (different RANDAO mix →
-// different active set / seed). Key by `(epoch, vid_gen, epoch_gen)` and
+// different active set / seed). Key by `(epoch, epoch_gen)` and
 // size to fork-fanout × 2.
 pub const MAX_SHUFFLING_CACHE: usize = 4;
 /// Worst-case participants in a block-included Fulu `Attestation`:
@@ -100,7 +100,6 @@ pub const MAX_ATTESTERS_PER_AGGREGATE: usize = 64 * 2048;
 // list per pool, BeaconStateRef → !Copy with explicit clone/drop.
 
 pub const IMM_POOL_CAP: usize = 1;
-pub const VID_POOL_CAP: usize = 4;
 pub const LONGTAIL_POOL_CAP: usize = 2;
 pub const EPOCH_POOL_CAP: usize = 8;
 pub const ROOTS_POOL_CAP: usize = 32;
@@ -331,8 +330,9 @@ pub struct Vote {
 }
 
 /// Indices into each tier's pool. Every tier is arena-resident except
-/// `pending_idx` and `validators` (heap Vec — see `PendingQueues` and
-/// `ValidatorsState`).
+/// `pending_idx` (heap `Vec` — see `PendingQueues`) and `validators`
+/// (raw-pointer overlay onto the tile-owned `FinalizedValidators` plus an
+/// owned `ValidatorsDelta` — see `ValidatorsState`).
 #[repr(C)]
 #[derive(Clone, PartialEq)]
 #[cfg_attr(test, derive(Default))]

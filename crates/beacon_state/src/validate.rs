@@ -138,9 +138,9 @@ pub fn validate_bls_to_execution_change(
         });
     }
     let pubkey_hash = ssz_hash::sha256(from_pubkey);
-    if creds[1..] != pubkey_hash[1..] {
+    if creds.0[1..] != pubkey_hash[1..] {
         let mut expected = [0u8; 32];
-        expected[1..].copy_from_slice(&creds[1..]);
+        expected[1..].copy_from_slice(&creds.0[1..]);
         return Err(BlsToExecutionChangeError::PubkeyHashMismatch {
             from_pubkey: *from_pubkey,
             expected,

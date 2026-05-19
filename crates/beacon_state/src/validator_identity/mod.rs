@@ -9,15 +9,15 @@
 //! - [`ValidatorsDelta`] / [`AppendedValidator`] — the delta payload.
 //! - [`PubkeyIndex`] — the full-pubkey-keyed lookup cache.
 
-mod credentials;
 mod delta;
 mod finalized;
 mod state;
+mod withdrawals;
 
 #[cfg(test)]
 mod tests;
 
-pub use credentials::Withdrawals;
 pub use delta::{AppendedValidator, ValidatorsDelta};
 pub use finalized::{FinalizedValidators, PubkeyIndex};
 pub use state::ValidatorsState;
+pub use withdrawals::Withdrawals;

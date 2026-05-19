@@ -1,5 +1,3 @@
-use std::ops::Deref;
-
 use crate::types::B256;
 
 const COMPOUNDING_WITHDRAWAL_PREFIX: u8 = 0x02;
@@ -34,8 +32,7 @@ impl Withdrawals {
 
     #[inline]
     pub fn has_execution_credential(&self) -> bool {
-        let p = self.prefix();
-        p == ETH1_ADDRESS_WITHDRAWAL_PREFIX || p == COMPOUNDING_WITHDRAWAL_PREFIX
+        self.has_eth1_credential() || self.has_compounding_credential()
     }
 
     #[inline]
@@ -67,14 +64,6 @@ impl Withdrawals {
     #[inline]
     pub fn execution_address(&self) -> &[u8; 20] {
         (&self.0[12..32]).try_into().unwrap()
-    }
-}
-
-impl Deref for Withdrawals {
-    type Target = B256;
-    #[inline]
-    fn deref(&self) -> &B256 {
-        &self.0
     }
 }
 

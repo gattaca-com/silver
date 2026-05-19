@@ -1089,7 +1089,7 @@ impl BeaconStateTile {
             validators: parent.validators.clone(),
         };
 
-        // TODO(simpler): body_mutation_hints duplicates the SSZ offset parsing
+        // TODO(simpler): body_may_mutate_epoch duplicates the SSZ offset parsing
         // that process_block_body does. Combine both into one parse pass, or
         // drop hints and conservatively COW (profile to confirm cost).
         let may_mut_epoch = body_may_mutate_epoch(body);

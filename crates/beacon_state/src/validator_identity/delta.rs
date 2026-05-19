@@ -1,6 +1,6 @@
 use blst::min_pk::PublicKey;
 
-use super::{credentials::Withdrawals, finalized::FinalizedValidators};
+use super::{finalized::FinalizedValidators, withdrawals::Withdrawals};
 use crate::types::BLSPubkey;
 
 #[derive(Clone, PartialEq)]

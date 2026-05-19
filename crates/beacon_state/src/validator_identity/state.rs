@@ -1,6 +1,6 @@
 use blst::min_pk::PublicKey;
 
-use super::{credentials::Withdrawals, delta::ValidatorsDelta, finalized::FinalizedValidators};
+use super::{delta::ValidatorsDelta, finalized::FinalizedValidators, withdrawals::Withdrawals};
 use crate::types::BLSPubkey;
 
 /// Per-fork merged view: raw pointer to the tile-owned finalized base

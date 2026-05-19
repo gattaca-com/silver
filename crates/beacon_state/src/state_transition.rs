@@ -1686,10 +1686,7 @@ pub fn process_withdrawal_requests(
         let has_sufficient_eff = epoch.val_effective_balance[vi] >= MIN_ACTIVATION_BALANCE;
         let has_excess = sd.balances[vi] > MIN_ACTIVATION_BALANCE + pending_balance;
 
-        if vs.withdrawal_credentials(vi).has_compounding_credential() &&
-            has_sufficient_eff &&
-            has_excess
-        {
+        if creds.has_compounding_credential() && has_sufficient_eff && has_excess {
             let to_withdraw =
                 min(sd.balances[vi] - MIN_ACTIVATION_BALANCE - pending_balance, amount);
             let exit_queue_epoch =
@@ -1947,7 +1944,7 @@ pub fn process_deposits(
 
 /// Pass 1 — push bls_to_execution_change sigs. Signer is the validator's
 /// BLS withdrawal key (the `from_bls_pubkey` in the message itself) — not
-/// the signing key cached in `validators.val_pubkey_decompressed`, so we
+/// the signing key cached on `ValidatorsState` (`pubkey_decompressed`), so we
 /// decompress inline.
 ///
 /// Cred-prefix check (`creds[0] == 0x00 && creds[1..] == hash(from_pk)[1..]`)

@@ -24,7 +24,7 @@ impl ForkChoice {
         finalized_state_root: B256,
         state_ref: BeaconStateRef,
     ) -> Self {
-        let mut nodes: Vec<ForkChoiceNode> = Vec::with_capacity(MAX_FORK_CHOICE_NODES);
+        let mut nodes = Vec::with_capacity(MAX_FORK_CHOICE_NODES);
         let mut indices = ArrayVec::new();
 
         nodes.push(ForkChoiceNode {
