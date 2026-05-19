@@ -4020,6 +4020,7 @@ dependencies = [
  "libp2p",
  "quinn-proto",
  "rand 0.8.6",
+ "silver_beacon_state",
  "silver_common",
  "silver_control",
  "silver_discovery",
@@ -4089,6 +4090,7 @@ dependencies = [
 name = "silver_peer"
 version = "0.0.1"
 dependencies = [
+ "flux",
  "fxhash",
  "silver_common",
  "slab",

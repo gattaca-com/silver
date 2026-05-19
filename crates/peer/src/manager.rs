@@ -8,10 +8,13 @@ use std::{
     time::Instant,
 };
 
+use flux::utils::ArrayVec;
+use fxhash::{FxHashMap, FxHashSet};
 use silver_common::{
     Enr, GossipMsgOut, GossipTopic, IpBytes, MessageId, P2pSend, PeerControl, PeerEvent, PeerId,
-    RpcRequestOutbound, RpcSeverity, ScoreParams, StreamProtocol, TCacheRead,
-    ssz_view::{BLOCKS_BY_RANGE_REQ_SIZE, METADATA_SIZE, STATUS_V2_SIZE},
+    PeerStatus, RejectSource, RpcRequestOutbound, RpcSeverity, ScoreParams, StreamProtocol,
+    SyncUpdate, SyncingConfig, TCacheRead,
+    ssz_view::{METADATA_SIZE, STATUS_V2_SIZE, StatusView},
 };
 
 use crate::{
@@ -29,6 +32,7 @@ const PEERS_CAP: usize = 256;
 const MESH_CAP: usize = 96;
 const IP_COLOC_CAP: usize = 128;
 const ARCHIVE_CAP: usize = 512;
+const SYNC_AGG_CAP: usize = 64;
 
 pub struct PeerManager {
     /// Live peers keyed by connection handle.
@@ -62,6 +66,28 @@ pub struct PeerManager {
     /// on `DiscNodeFound` (useful for tests; production should always set
     /// it). Compared against the leading 4 bytes of an ENR's `eth2` field.
     our_fork_digest: Option<[u8; 4]>,
+
+    /// Wall slot sampled by BS alongside the last `Status` event. Paired
+    /// with `self.status` — read fields off `self.status` via
+    /// `StatusView::*`. `0` when no `Status` has arrived yet (status is
+    /// `None` in that case too).
+    local_wall_slot: u64,
+
+    /// Session-level blacklist of rejected block + finalized roots. Inserted
+    /// from beacon-state's `BlockRejected`; queried by Status validation
+    /// and target selection.
+    rejected: RejectedRoots,
+
+    /// Tunables for target selection + blacklist caps.
+    pub(crate) syncing: SyncingConfig,
+
+    /// Currently-pinned sync target. `Following` until enough peer Status
+    /// data + a `LocalStateUpdate` arrives to compute one.
+    current_target: SyncUpdate,
+    /// Set when something happened that may change the target (peer Status,
+    /// local state, blacklist, peer drop). `maybe_emit_sync_target` clears
+    /// it. Avoids recomputing per-event when nothing's pending.
+    target_dirty: bool,
 
     /// SSZ Bitvector[64] of attestation subnets we subscribe to, derived
     /// once from `our_topics`. Bit N set ↔ `BeaconAttestation(N) ∈
@@ -101,14 +127,21 @@ pub struct PeerManager {
     last_discovery: Instant,
 
     /// Database of peers
-    database: PeerDatabase,
+    pub(crate) database: PeerDatabase,
 
     /// Our local beacon status and metadata.
     status: Option<[u8; STATUS_V2_SIZE]>,
     metadata: [u8; METADATA_SIZE],
 
-    /// Whether we are synced.
+    /// True iff the last evaluated sync target was `Following`. Maintained
+    /// by `maybe_emit_sync_target`. Gates gossip relay/subscribe/graft.
     is_synced: bool,
+
+    /// One-shot edge: set inside `maybe_emit_sync_target` when `is_synced`
+    /// transitions false→true. Drained by `take_just_synced` so the
+    /// controller can fire a one-off Status fan-out without waiting for
+    /// the 300s periodic.
+    just_synced: bool,
 
     /// Outstanding outbound RPC requests per peer, broken down by
     /// protocol. Incremented when we send a request, decremented when
@@ -121,18 +154,78 @@ pub struct PeerManager {
     /// Cleared on disconnect.
     pub(crate) inbound_buckets: HashMap<usize, PeerInboundState>,
 
-    /// BlocksByRange requests that arrived with no eligible peer.
-    /// Drained by `drain_pending_outbound` once peers become available
-    /// (new connection, in-flight slot freed). Survives disconnects —
-    /// the cache is request-scoped, not peer-scoped.
-    pub(crate) pending_blocks_by_range: VecDeque<(u64, [u8; BLOCKS_BY_RANGE_REQ_SIZE])>,
+    /// Outstanding catch-up `BlocksByRange` request issued by the PM-owned
+    /// driver. At most one in flight per target. Cleared when the range is
+    /// fully delivered (BS head_slot has advanced through it), when the
+    /// target changes, or on progress timeout. Disconnect of `peer_id`
+    /// also clears (next tick re-issues against a new peer).
+    pub(crate) inflight_syncreq: Option<SyncReq>,
+
+    /// Peers burnt as backer candidates for the duration of the current
+    /// catchup. A peer lands here when it misbehaves on an RPC while it is
+    /// our active inflight backer — `pick_sync_peer` skips them so the next
+    /// `maybe_issue_syncreq` selects a different peer.
+    pub(crate) burnt_for_target: FxHashSet<usize>,
+
+    /// Incremental aggregate: live-peer count keyed by
+    /// `(finalized_epoch, finalized_root)`. Maintained on Status upsert
+    /// and on disconnect; query side (`select_target` / `count_finalized_
+    /// backers`) becomes O(map size) instead of O(n_peers). Map entries
+    /// are removed when count hits 0 to keep size bounded by the number
+    /// of distinct claimed targets.
+    finalized_counts: FxHashMap<(u64, [u8; 32]), u16>,
+
+    /// Incremental aggregate: live-peer count keyed by `head_root`, with
+    /// the maximum claimed `head_slot` observed for that root retained
+    /// (Status responses for a given head_root should agree on its
+    /// slot — we max to tolerate transient skew).
+    head_counts: FxHashMap<[u8; 32], HeadAgg>,
+
     pub(crate) pending_data_columns_by_root: VecDeque<(u64, u128, [u8; 32])>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct HeadAgg {
+    pub head_slot: u64,
+    pub peer_count: u16,
+}
+
+fn same_target_identity(a: SyncUpdate, b: SyncUpdate) -> bool {
+    match (a, b) {
+        (SyncUpdate::Following, SyncUpdate::Following) => true,
+        (
+            SyncUpdate::SyncingFinalised { target_epoch: e1, target_root: r1 },
+            SyncUpdate::SyncingFinalised { target_epoch: e2, target_root: r2 },
+        ) => e1 == e2 && r1 == r2,
+        (
+            SyncUpdate::SyncingHead { head_root: r1, .. },
+            SyncUpdate::SyncingHead { head_root: r2, .. },
+        ) => r1 == r2,
+        _ => false,
+    }
+}
+
+/// One in-flight `BlocksByRange` request for sync catch-up. PM-owned.
+#[derive(Debug, Clone, Copy)]
+pub struct SyncReq {
+    pub peer_id: usize,
+    pub start_slot: u64,
+    pub count: u64,
+    /// Local head_slot at the time of the most recent progress observation
+    /// (within `[start_slot, start_slot + count)`). Initialized at issuance
+    /// to the head_slot at that moment; bumped whenever a later observation
+    /// shows further advance into the requested range.
+    pub last_observed_head_slot: u64,
+    /// Time corresponding to `last_observed_head_slot`. Drives the
+    /// progress-timeout sweep in `tick`.
+    pub last_progress_at: Instant,
 }
 
 impl PeerManager {
     pub fn new(
         our_topics: Vec<GossipTopic>,
         params: ScoreParams,
+        syncing: SyncingConfig,
         fork_digest: [u8; 4],
         metadata: [u8; METADATA_SIZE],
     ) -> Self {
@@ -140,6 +233,7 @@ impl PeerManager {
         let mesh =
             our_topics.iter().map(|t| (*t, Vec::with_capacity(params.d_high as usize))).collect();
         let (required_attnets, required_syncnets) = build_subnet_masks(&our_topics);
+        let rejected = RejectedRoots::new(syncing.rejected_cap);
         Self {
             peers: HashMap::with_capacity(PEERS_CAP),
             archived: HashMap::with_capacity(ARCHIVE_CAP),
@@ -152,6 +246,11 @@ impl PeerManager {
             ip_eviction_counts: HashMap::with_capacity(64),
             banned_peers: HashMap::with_capacity(128),
             our_fork_digest: Some(fork_digest),
+            local_wall_slot: 0,
+            rejected,
+            syncing,
+            current_target: SyncUpdate::Following,
+            target_dirty: false,
             required_attnets,
             required_syncnets,
             params,
@@ -161,9 +260,14 @@ impl PeerManager {
             status: None,
             metadata,
             is_synced: false,
+            just_synced: false,
             outbound_in_flight: OutboundCounts::with_capacity(PEERS_CAP),
             inbound_buckets: HashMap::with_capacity(PEERS_CAP),
-            pending_blocks_by_range: VecDeque::new(),
+            inflight_syncreq: None,
+            burnt_for_target: FxHashSet::with_capacity_and_hasher(PEERS_CAP, Default::default()),
+            finalized_counts: FxHashMap::with_capacity_and_hasher(SYNC_AGG_CAP, Default::default()),
+            head_counts: FxHashMap::with_capacity_and_hasher(SYNC_AGG_CAP, Default::default()),
+            // TODO: prealloc?
             pending_data_columns_by_root: VecDeque::new(),
         }
     }
@@ -187,6 +291,275 @@ impl PeerManager {
         self.our_fork_digest = Some(digest);
     }
 
+    /// Update our cached chain position.
+    pub fn set_status(&mut self, ssz: [u8; STATUS_V2_SIZE], wall_slot: u64) {
+        self.our_fork_digest = Some(*StatusView::fork_digest(&ssz));
+        self.status = Some(ssz);
+        self.local_wall_slot = wall_slot;
+        self.target_dirty = true;
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn local_wall_slot(&self) -> u64 {
+        self.local_wall_slot
+    }
+
+    /// Consume `BeaconStateEvent::BlockRejected`. Always blacklists the
+    /// failed `block_root`. Chain-poisoning (blacklist `target_root` +
+    /// evict its backers) only fires for `RejectSource::Rpc`.
+    ///
+    /// `target_dirty` is flipped so the next `maybe_emit_sync_target` runs
+    /// the algorithm; the now-blacklisted target is filtered out and a
+    /// fresh target (or `Following`) is emitted.
+    pub fn record_block_rejected(&mut self, block_root: [u8; 32], source: RejectSource) {
+        self.rejected.mark(block_root);
+
+        if matches!(source, RejectSource::Rpc) &&
+            let SyncUpdate::SyncingFinalised { target_root, .. } = self.current_target
+        {
+            self.rejected.mark(target_root);
+
+            let to_evict: ArrayVec<usize, PEERS_CAP> = self
+                .database
+                .iter_live_status_bytes()
+                .filter(|(_, ssz)| *StatusView::finalized_root(ssz) == target_root)
+                .map(|(peer_id, _)| peer_id)
+                .collect();
+            for peer_id in to_evict {
+                self.on_rpc_misbehaviour(peer_id, RpcSeverity::Fatal);
+            }
+        }
+
+        self.target_dirty = true;
+    }
+
+    pub fn record_finalized_rejected(&mut self, root: [u8; 32]) {
+        self.rejected.mark(root);
+        self.target_dirty = true;
+    }
+
+    pub fn rejected(&self) -> &RejectedRoots {
+        &self.rejected
+    }
+
+    pub fn current_sync_target(&self) -> SyncUpdate {
+        self.current_target
+    }
+
+    /// If the identity (variant + root, ignoring head_slot) has changed
+    /// since the last call, return `Some(new_target)`.
+    pub fn maybe_emit_sync_target(&mut self) -> Option<SyncUpdate> {
+        if !self.target_dirty {
+            return None;
+        }
+        self.target_dirty = false;
+        let new_target = self.select_target();
+        let identity_changed = !same_target_identity(new_target, self.current_target);
+        let prev_target = self.current_target;
+        self.current_target = new_target;
+
+        let was_synced = self.is_synced;
+        self.is_synced = matches!(new_target, SyncUpdate::Following);
+
+        if self.is_synced && !was_synced {
+            tracing::info!("PM caught up: Syncing -> Synced");
+            self.just_synced = true;
+            self.burnt_for_target.clear();
+        } else if !self.is_synced && was_synced {
+            tracing::info!(target = ?new_target, "PM falling behind: Synced -> Syncing");
+        }
+
+        if !identity_changed {
+            return None;
+        }
+        tracing::info!(
+            from = ?prev_target,
+            to = ?new_target,
+            is_synced = self.is_synced,
+            "PM sync target changed"
+        );
+
+        self.inflight_syncreq = None;
+        Some(new_target)
+    }
+
+    /// Returns true exactly once after each catchup→Following edge. The
+    /// controller uses this to fire a one-off Status fan-out.
+    pub fn take_just_synced(&mut self) -> bool {
+        std::mem::take(&mut self.just_synced)
+    }
+
+    /// Compute the next sync target from the parsed-Status DB + local
+    /// state + blacklist. Pin invariant: keep the active target if it's
+    /// still viable.
+    ///
+    /// Selection order:
+    ///   1. Pinned SyncingFinalised target X — keep iff not reached, not
+    ///      blacklisted, and at least one peer still backs it.
+    ///   2. Pinned SyncingHead fork F — keep iff not reached, not blacklisted,
+    ///      and at least one peer still backs it.
+    ///   3. Highest-peer-count `(finalized_epoch, finalized_root)` whose epoch
+    ///      exceeds ours by at least
+    ///      `SyncingConfig::finalized_lag_threshold_epochs`, not blacklisted,
+    ///      not too-far-ahead wall-clock-wise.
+    ///   4. Else, highest-peer-count `head_root` whose `head_slot > our
+    ///      head_slot + SyncingConfig::head_lag_threshold_slots, not
+    ///      blacklisted.
+    ///   5. Else, `Following`.
+    fn select_target(&self) -> SyncUpdate {
+        let Some(local) = self.status.as_ref() else {
+            return SyncUpdate::Following;
+        };
+        let local_finalized_epoch = StatusView::finalized_epoch(local);
+        let local_finalized_root = *StatusView::finalized_root(local);
+        let local_head_slot = StatusView::head_slot(local);
+        let wall_slot = self.local_wall_slot;
+
+        // 1. Pinned SyncingFinalised viable?
+        if let SyncUpdate::SyncingFinalised { target_epoch, target_root } = self.current_target {
+            let reached =
+                local_finalized_epoch >= target_epoch && local_finalized_root == target_root;
+            let rejected = self.rejected.is_rejected(&target_root);
+            let usable = self.has_usable_finalized_backer(target_epoch, &target_root);
+            if !reached && !rejected && usable {
+                return SyncUpdate::SyncingFinalised { target_epoch, target_root };
+            }
+        }
+
+        // 2. Pinned SyncingHead viable?
+        if let SyncUpdate::SyncingHead { head_root, head_slot } = self.current_target {
+            let reached = local_head_slot >= head_slot;
+            let rejected = self.rejected.is_rejected(&head_root);
+            let usable = self.has_usable_head_backer(&head_root);
+            if !reached && !rejected && usable {
+                return SyncUpdate::SyncingHead { head_root, head_slot };
+            }
+        }
+
+        // 3. New SyncingFinalised target?
+        if let Some((epoch, root, _)) = self.best_finalized_target(local_finalized_epoch, wall_slot)
+        {
+            return SyncUpdate::SyncingFinalised { target_epoch: epoch, target_root: root };
+        }
+
+        // 4. New SyncingHead target?
+        if let Some((head_root, head_slot)) = self.best_head_target(local_head_slot, wall_slot) {
+            return SyncUpdate::SyncingHead { head_root, head_slot };
+        }
+
+        // 5. Following.
+        SyncUpdate::Following
+    }
+
+    /// Best `(finalized_epoch, finalized_root)` target: queries the
+    /// incremental aggregate, filtering on `epoch - our_epoch >=
+    /// finalized_lag_threshold_epochs`, not blacklisted, not past wall_clock
+    /// + tolerance (defensive). Max peer_count; ties broken by higher epoch,
+    ///   then lexicographic root.
+    fn best_finalized_target(
+        &self,
+        our_epoch: u64,
+        wall_slot: u64,
+    ) -> Option<(u64, [u8; 32], u16)> {
+        let trigger_epoch = our_epoch.saturating_add(self.syncing.finalized_lag_threshold_epochs);
+        self.finalized_counts
+            .iter()
+            .filter(|((epoch, root), _)| {
+                *epoch >= trigger_epoch &&
+                    !self.rejected.is_rejected(root) &&
+                    epoch.saturating_mul(self.syncing.slots_per_epoch) <=
+                        wall_slot + self.syncing.wall_clock_tolerance_slots &&
+                    self.has_usable_finalized_backer(*epoch, root)
+            })
+            .max_by(|a, b| {
+                a.1.cmp(b.1).then_with(|| a.0.0.cmp(&b.0.0)).then_with(|| a.0.1.cmp(&b.0.1))
+            })
+            .map(|(&(e, r), &c)| (e, r, c))
+    }
+
+    /// Best `head_root` target: queries the incremental aggregate,
+    /// filtering on `head_slot > our + head_lag_threshold`, not blacklisted,
+    /// not past wall_clock + tolerance. Max peer_count; ties broken by
+    /// higher slot then lexicographic root.
+    fn best_head_target(&self, our_head_slot: u64, wall_slot: u64) -> Option<([u8; 32], u64)> {
+        self.head_counts
+            .iter()
+            .filter(|(root, a)| {
+                a.head_slot > our_head_slot + self.syncing.head_lag_threshold_slots &&
+                    a.head_slot <= wall_slot + self.syncing.wall_clock_tolerance_slots &&
+                    !self.rejected.is_rejected(root) &&
+                    self.has_usable_head_backer(root)
+            })
+            .max_by(|a, b| {
+                a.1.peer_count
+                    .cmp(&b.1.peer_count)
+                    .then_with(|| a.1.head_slot.cmp(&b.1.head_slot))
+                    .then_with(|| a.0.cmp(b.0))
+            })
+            .map(|(&head_root, a)| (head_root, a.head_slot))
+    }
+
+    /// True iff at least one live peer backs `(epoch, root)` as their
+    /// finalized checkpoint *and* is not burnt for the current catchup.
+    /// Fast-path: empty burn set ⇒ aggregate lookup (zero-count entries
+    /// are removed by `agg_remove`, so `contains_key` ⇔ `count > 0`).
+    fn has_usable_finalized_backer(&self, epoch: u64, root: &[u8; 32]) -> bool {
+        if self.burnt_for_target.is_empty() {
+            return self.finalized_counts.contains_key(&(epoch, *root));
+        }
+        self.database.iter_live_status_bytes().any(|(peer, ssz)| {
+            !self.burnt_for_target.contains(&peer) &&
+                StatusView::finalized_epoch(ssz) == epoch &&
+                *StatusView::finalized_root(ssz) == *root
+        })
+    }
+
+    /// True iff at least one live peer backs `head_root` *and* is not burnt
+    /// for the current catchup. Fast-path mirrors the finalized variant.
+    fn has_usable_head_backer(&self, root: &[u8; 32]) -> bool {
+        if self.burnt_for_target.is_empty() {
+            return self.head_counts.contains_key(root);
+        }
+        self.database.iter_live_status_bytes().any(|(peer, ssz)| {
+            !self.burnt_for_target.contains(&peer) && *StatusView::head_root(ssz) == *root
+        })
+    }
+
+    /// Increment finalized + head aggregates.
+    fn agg_add(&mut self, fe: u64, fr: [u8; 32], hr: [u8; 32], hs: u64) {
+        *self.finalized_counts.entry((fe, fr)).or_insert(0) += 1;
+        self.head_counts
+            .entry(hr)
+            .and_modify(|a| {
+                a.peer_count = a.peer_count.saturating_add(1);
+                a.head_slot = a.head_slot.max(hs);
+            })
+            .or_insert(HeadAgg { head_slot: hs, peer_count: 1 });
+    }
+
+    /// Decrement finalized + head aggregates; removes zero-count buckets
+    /// to keep the maps sized by *distinct* claims, not history.
+    fn agg_remove(&mut self, fe: u64, fr: [u8; 32], hr: [u8; 32]) {
+        let drop_fin = if let Some(c) = self.finalized_counts.get_mut(&(fe, fr)) {
+            *c = c.saturating_sub(1);
+            *c == 0
+        } else {
+            false
+        };
+        if drop_fin {
+            self.finalized_counts.remove(&(fe, fr));
+        }
+        let drop_head = if let Some(a) = self.head_counts.get_mut(&hr) {
+            a.peer_count = a.peer_count.saturating_sub(1);
+            a.peer_count == 0
+        } else {
+            false
+        };
+        if drop_head {
+            self.head_counts.remove(&hr);
+        }
+    }
+
     pub fn peer_metadata_seq(&self, p2p_peer: usize) -> Option<u64> {
         self.database.p2p_metadata_seq(p2p_peer)
     }
@@ -194,6 +567,19 @@ impl PeerManager {
     /// Iterator over live peer connection handles (for tests/introspection).
     pub fn live_peers(&self) -> impl Iterator<Item = usize> + '_ {
         self.peers.keys().copied()
+    }
+
+    /// Announce our topic subscriptions to every currently-connected peer.
+    pub fn fan_out_subscriptions(&mut self, emit: &mut impl FnMut(PeerControl)) {
+        for (&conn, peer) in &self.peers {
+            for &topic in &self.our_topics {
+                emit(PeerControl::P2pGossipSubscribe {
+                    p2p: peer.peer_id,
+                    p2p_connection: conn,
+                    topic,
+                });
+            }
+        }
     }
 
     pub fn status(&self) -> Option<&[u8; STATUS_V2_SIZE]> {
@@ -204,10 +590,6 @@ impl PeerManager {
         &self.metadata
     }
 
-    pub fn set_status(&mut self, status: [u8; STATUS_V2_SIZE]) {
-        self.status = Some(status);
-    }
-
     pub fn set_metadata(&mut self, metadata: [u8; METADATA_SIZE]) {
         self.metadata = metadata;
     }
@@ -216,8 +598,15 @@ impl PeerManager {
         self.is_synced
     }
 
+    /// Test-only shortcut to put the manager into the synced state without
+    /// going through the target-selection loop. Real flow drives this via
+    /// `maybe_emit_sync_target`.
+    #[cfg(test)]
     pub fn set_synced(&mut self, synced: bool) {
         self.is_synced = synced;
+        if synced {
+            self.current_target = SyncUpdate::Following;
+        }
     }
 
     /// Pick the connected, protocol-supporting peer with the highest
@@ -341,11 +730,11 @@ impl PeerManager {
                 self.on_rpc_misbehaviour(p2p_peer, severity);
             }
             PeerEvent::P2pPeerStatus { p2p_peer, status_ssz } => {
-                tracing::info!(p2p_peer, "Got peer status");
-                self.database.p2p_status(p2p_peer, status_ssz)
+                tracing::trace!(p2p_peer, "Got peer status");
+                self.on_p2p_peer_status(p2p_peer, status_ssz);
             }
             PeerEvent::P2pPeerMetadata { p2p_peer, metadata_ssz } => {
-                tracing::info!(p2p_peer, "Got peer metadata");
+                tracing::trace!(p2p_peer, "Got peer metadata");
                 self.database.p2p_metadata(p2p_peer, metadata_ssz)
             }
             PeerEvent::P2pPeerGoodbye { p2p_peer: _, status: _ } => {
@@ -353,7 +742,7 @@ impl PeerManager {
                 // TODO scoring based on status?
             }
             PeerEvent::P2pPeerIdentity { p2p_peer, identify } => {
-                tracing::info!(p2p_peer, ?identify, "Got peer identify");
+                tracing::trace!(p2p_peer, ?identify, "Got peer identify");
                 self.database.add_p2p_identify(p2p_peer, identify)
             }
             PeerEvent::SendDataColumnsByRootRequest { request_id, columns, block_root } => {
@@ -439,11 +828,6 @@ impl PeerManager {
             ))));
         }
 
-        if !self.is_synced {
-            // Never relay gossip before we are synced
-            return;
-        }
-
         // Announce our own topic subscriptions to this peer.
         for &topic in &self.our_topics {
             emit(PeerControl::P2pGossipSubscribe { p2p: peer_id, p2p_connection: conn, topic });
@@ -494,14 +878,34 @@ impl PeerManager {
             archived_at: now,
         });
 
+        // Decrement aggregates while the peer's Status is still in the
+        // DB; then drop the DB record.
+        let prev = self.database.peer_status_bytes(conn).map(|prev| {
+            (
+                StatusView::finalized_epoch(prev),
+                *StatusView::finalized_root(prev),
+                *StatusView::head_root(prev),
+            )
+        });
+        if let Some((fe, fr, hr)) = prev {
+            self.agg_remove(fe, fr, hr);
+        }
         self.database.peer_disconnected(conn);
+        // A peer disappearing may unpin / change the target.
+        self.target_dirty = true;
+
+        // Clear inflight sync requests if it was assigned to this conn. Next
+        // `maybe_issue_syncreq` picks a different peer.
+        if let Some(inflight) = self.inflight_syncreq &&
+            inflight.peer_id == conn
+        {
+            self.inflight_syncreq = None;
+        }
 
         // Drop RPC bookkeeping for the gone connection. Outstanding
         // responses can never arrive — leaving counters pinned would
         // lock out future retries on reconnect. Rate-limit bucket reset
-        // so a reconnect starts fresh at full tokens (matches
-        // lighthouse). `pending_blocks_by_range` is request-scoped, not
-        // peer-scoped — left untouched.
+        // so a reconnect starts fresh at full tokens (matches lighthouse).
         self.outbound_in_flight.remove(&conn);
         self.inbound_buckets.remove(&conn);
     }
@@ -524,11 +928,13 @@ impl PeerManager {
         };
 
         let we_want = self.our_topics.contains(&topic);
+        let mesh_size = self.mesh.get(&topic).map(|m| m.len()).unwrap_or(0);
+        tracing::info!(p2p_peer = conn, ?topic, we_want, mesh_size, "PM peer subscribed");
 
         // Opportunistic graft: if this is a topic we care about and our mesh
         // is below d_low, pull the peer in.
         if we_want &&
-            self.mesh.get(&topic).map(|m| m.len()).unwrap_or(0) < self.params.d_low as usize &&
+            mesh_size < self.params.d_low as usize &&
             !self.is_backed_off((conn, topic), now)
         {
             self.do_graft(conn, peer_id, topic, now, emit);
@@ -550,15 +956,12 @@ impl PeerManager {
             }
             None => return,
         };
+        tracing::info!(p2p_peer = conn, ?topic, "PM peer unsubscribed");
         // If peer was in our mesh, remove them.
         if let Some(mesh_peers) = self.mesh.get_mut(&topic) &&
             let Some(idx) = mesh_peers.iter().position(|c| *c == conn)
         {
             mesh_peers.swap_remove(idx);
-            if !self.is_synced {
-                // Never relay gossip before we are synced
-                return;
-            }
             emit(PeerControl::P2pGossipPrune { p2p: peer_id, p2p_connection: conn, topic });
         }
     }
@@ -572,6 +975,7 @@ impl PeerManager {
             t.meshed_since = Some(now);
             t.mesh_active = false; // activates after grace window
         }
+        tracing::info!(p2p_peer = conn, ?topic, "PM peer GRAFTed us");
     }
 
     /// Peer pruned us. Record a backoff so we don't re-graft immediately,
@@ -589,6 +993,7 @@ impl PeerManager {
             t.mesh_active = false;
         }
         self.backoffs.insert((conn, topic), now + self.params.prune_backoff);
+        tracing::debug!(p2p_peer = conn, ?topic, "PM peer PRUNEd us");
     }
 
     fn on_ihave(&mut self, conn: usize, hash: MessageId, already_seen: bool, now: Instant) {
@@ -637,11 +1042,6 @@ impl PeerManager {
         tcache: TCacheRead,
         emit: &mut impl FnMut(PeerControl),
     ) {
-        if !self.is_synced {
-            // Never relay gossip before we are synced
-            return;
-        }
-
         let Some(peer) = self.peers.get_mut(&conn) else {
             return;
         };
@@ -693,11 +1093,6 @@ impl PeerManager {
             }
         }
 
-        if !self.is_synced {
-            // Never relay gossip before we are synced
-            return;
-        }
-
         // Fan IDONTWANT out to mesh members (except sender) above threshold.
         let Some(mesh_peers) = self.mesh.get(&topic) else {
             return;
@@ -728,10 +1123,6 @@ impl PeerManager {
         protobuf: TCacheRead,
         emit: &mut impl FnMut(PeerControl),
     ) {
-        if !self.is_synced {
-            // Never relay gossip before we are synced
-            return;
-        }
         let mesh_for_topic = self.mesh.get(&topic);
         let cap = self.params.d_lazy as usize;
         let mut emitted = 0usize;
@@ -767,10 +1158,6 @@ impl PeerManager {
         tcache: TCacheRead,
         emit: &mut impl FnMut(PeerControl),
     ) {
-        if !self.is_synced {
-            // Never relay gossip before we are synced
-            return;
-        }
         let Some(peer) = self.peers.get(&conn) else {
             return;
         };
@@ -788,10 +1175,6 @@ impl PeerManager {
         tcache: TCacheRead,
         emit: &mut impl FnMut(PeerControl),
     ) {
-        if !self.is_synced {
-            // Never relay gossip before we are synced
-            return;
-        }
         let Some(meshed_peers) = self.mesh.get(&topic) else {
             return;
         };
@@ -914,12 +1297,73 @@ impl PeerManager {
         }
     }
 
+    /// Validate an inbound Status RPC payload, then upsert the parsed
+    /// fields into the DB.
+    ///
+    /// 1. `fork_digest` mismatch — peer is on a different chain/fork.
+    /// 2. Same `finalized_epoch` as ours but different `finalized_root` — peer
+    ///    has finalized a competing branch.
+    /// 3. `finalized_root` is in our session blacklist — peer is backing a
+    ///    chain we already rejected.
+    fn on_p2p_peer_status(&mut self, p2p_peer: usize, status_ssz: PeerStatus) {
+        let buf: &[u8] = match &status_ssz {
+            PeerStatus::V1(b) => b.as_slice(),
+            PeerStatus::V2(b) => b.as_slice(),
+        };
+        if !StatusView::check_size(buf) {
+            self.on_rpc_misbehaviour(p2p_peer, RpcSeverity::LowTolerance);
+            return;
+        }
+        let fork_digest = *StatusView::fork_digest(buf);
+        let finalized_root = *StatusView::finalized_root(buf);
+        let finalized_epoch = StatusView::finalized_epoch(buf);
+
+        if let Some(our_fd) = self.our_fork_digest &&
+            fork_digest != our_fd
+        {
+            self.on_rpc_misbehaviour(p2p_peer, RpcSeverity::Fatal);
+            return;
+        }
+
+        if let Some(local_ssz) = self.status.as_ref() &&
+            finalized_epoch == StatusView::finalized_epoch(local_ssz) &&
+            finalized_root != *StatusView::finalized_root(local_ssz)
+        {
+            self.on_rpc_misbehaviour(p2p_peer, RpcSeverity::Fatal);
+            return;
+        }
+
+        if self.rejected.is_rejected(&finalized_root) {
+            self.on_rpc_misbehaviour(p2p_peer, RpcSeverity::Fatal);
+            return;
+        }
+
+        // Maintain incremental aggregates: read prior fields off the DB
+        // (V1/V2-agnostic via `StatusView`), decrement them, then upsert
+        // and increment using the just-validated `buf` we hold above.
+        let prev = self.database.peer_status_bytes(p2p_peer).map(|prev| {
+            (
+                StatusView::finalized_epoch(prev),
+                *StatusView::finalized_root(prev),
+                *StatusView::head_root(prev),
+            )
+        });
+        if let Some((fe, fr, hr)) = prev {
+            self.agg_remove(fe, fr, hr);
+        }
+        let head_slot = StatusView::head_slot(buf);
+        let head_root = *StatusView::head_root(buf);
+        self.database.p2p_status(p2p_peer, status_ssz);
+        self.agg_add(finalized_epoch, finalized_root, head_root, head_slot);
+        self.target_dirty = true;
+    }
+
     /// Translate RPC misbehaviour severity into a P5 application-score
     /// delta. Calibrated so a single `Fatal` report drops the peer below the
     /// default `graylist_threshold = -80`, triggering eviction on the next
     /// `tick`. Lighter severities accumulate over time until decay catches
     /// up — same recovery dynamics as gossipsub-domain behaviour penalty.
-    fn on_rpc_misbehaviour(&mut self, conn: usize, severity: RpcSeverity) {
+    pub(crate) fn on_rpc_misbehaviour(&mut self, conn: usize, severity: RpcSeverity) {
         let delta = match severity {
             RpcSeverity::Fatal => -200.0,
             RpcSeverity::LowTolerance => -10.0,
@@ -928,6 +1372,23 @@ impl PeerManager {
         };
         if let Some(peer) = self.peers.get_mut(&conn) {
             peer.application_score += delta;
+        }
+        // If this peer is our current sync backer, drop them and burn for
+        // the current catchup. Mark dirty so the very next
+        // `maybe_emit_sync_target` re-evaluates: if no un-burnt peer still
+        // backs the pinned target, viability falls through and we pick a
+        // new target in the same iteration. Burn set is cleared on the
+        // catchup→Following edge.
+        if self.inflight_syncreq.is_some_and(|i| i.peer_id == conn) {
+            tracing::warn!(
+                peer_id = conn,
+                ?severity,
+                target = ?self.current_target,
+                "PM dropping current sync backer on rpc misbehaviour"
+            );
+            self.inflight_syncreq = None;
+            self.burnt_for_target.insert(conn);
+            self.target_dirty = true;
         }
     }
 
@@ -945,10 +1406,6 @@ impl PeerManager {
         now: Instant,
         emit: &mut impl FnMut(PeerControl),
     ) {
-        if !self.is_synced {
-            // Never relay gossip before we are synced
-            return;
-        }
         let mesh = self
             .mesh
             .entry(topic)
@@ -974,10 +1431,6 @@ impl PeerManager {
         now: Instant,
         emit: &mut impl FnMut(PeerControl),
     ) {
-        if !self.is_synced {
-            // Never relay gossip before we are synced
-            return;
-        }
         if let Some(mesh) = self.mesh.get_mut(&topic) &&
             let Some(idx) = mesh.iter().position(|c| *c == conn)
         {
@@ -1205,6 +1658,42 @@ impl PeerManager {
     }
 }
 
+/// Session-level blacklist. Inserted into by beacon-state's `BlockRejected`
+/// emissions by target-rejection propagation. Queried by inbound
+/// Status validation by sync target selection. FIFO eviction.
+/// Capacity comes from `SyncingConfig`.
+#[derive(Debug)]
+pub struct RejectedRoots {
+    cap: usize,
+    order: VecDeque<[u8; 32]>,
+    set: FxHashSet<[u8; 32]>,
+}
+
+impl RejectedRoots {
+    pub fn new(cap: usize) -> Self {
+        Self { cap, order: VecDeque::new(), set: FxHashSet::default() }
+    }
+
+    pub fn mark(&mut self, root: [u8; 32]) {
+        if self.set.insert(root) {
+            self.order.push_back(root);
+            if self.order.len() > self.cap &&
+                let Some(old) = self.order.pop_front()
+            {
+                self.set.remove(&old);
+            }
+        }
+    }
+
+    pub fn is_rejected(&self, root: &[u8; 32]) -> bool {
+        self.set.contains(root)
+    }
+
+    pub fn count(&self) -> usize {
+        self.set.len()
+    }
+}
+
 /// Build SSZ Bitvector[64] / Bitvector[N≤8] masks from `our_topics`. Each
 /// `BeaconAttestation(N)` flips bit N in the 64-bit attnet mask; each
 /// `SyncCommittee(N)` flips bit N in the syncnet byte. Computed once at
@@ -1279,7 +1768,16 @@ mod tests {
     struct Captured(Vec<PeerControl>);
 
     fn fixture(our_topics: Vec<GossipTopic>, params: ScoreParams) -> (PeerManager, Captured) {
-        (PeerManager::new(our_topics, params, [0u8; 4], [0u8; METADATA_SIZE]), Captured::default())
+        (
+            PeerManager::new(
+                our_topics,
+                params,
+                SyncingConfig::default(),
+                [0u8; 4],
+                [0u8; METADATA_SIZE],
+            ),
+            Captured::default(),
+        )
     }
 
     fn peer_id(seed: u8) -> PeerId {
@@ -2653,5 +3151,445 @@ mod tests {
         }
         let s = mgr.score(1).unwrap();
         assert!(s.abs() < 1e-6, "expected score ≈ 0 after decay, got {s}");
+    }
+
+    fn status_v2_ssz(
+        fork_digest: [u8; 4],
+        finalized_root: [u8; 32],
+        finalized_epoch: u64,
+        head_root: [u8; 32],
+        head_slot: u64,
+    ) -> [u8; silver_common::ssz_view::STATUS_V2_SIZE] {
+        let mut b = [0u8; silver_common::ssz_view::STATUS_V2_SIZE];
+        b[0..4].copy_from_slice(&fork_digest);
+        b[4..36].copy_from_slice(&finalized_root);
+        b[36..44].copy_from_slice(&finalized_epoch.to_le_bytes());
+        b[44..76].copy_from_slice(&head_root);
+        b[76..84].copy_from_slice(&head_slot.to_le_bytes());
+        b
+    }
+
+    fn make_status_v2(
+        fork_digest: [u8; 4],
+        finalized_root: [u8; 32],
+        finalized_epoch: u64,
+        head_root: [u8; 32],
+        head_slot: u64,
+    ) -> PeerStatus {
+        PeerStatus::V2(status_v2_ssz(
+            fork_digest,
+            finalized_root,
+            finalized_epoch,
+            head_root,
+            head_slot,
+        ))
+    }
+
+    fn fork_a() -> [u8; 4] {
+        [0x01, 0x02, 0x03, 0x04]
+    }
+    fn fork_b() -> [u8; 4] {
+        [0x05, 0x06, 0x07, 0x08]
+    }
+
+    fn send_status(mgr: &mut PeerManager, cap: &mut Captured, peer: usize, status: PeerStatus) {
+        let now = Instant::now();
+        mgr.handle_event(
+            PeerEvent::P2pPeerStatus { p2p_peer: peer, status_ssz: status },
+            now,
+            &mut |c| cap.0.push(c),
+        );
+    }
+
+    #[test]
+    fn p2p_status_fork_digest_mismatch_evicts() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        connect(&mut mgr, &mut cap, 1, 1, now);
+        mgr.set_fork_digest(fork_a());
+        cap.0.clear();
+
+        send_status(&mut mgr, &mut cap, 1, make_status_v2(fork_b(), [0u8; 32], 0, [0u8; 32], 0));
+        mgr.tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
+
+        assert!(
+            cap.0.iter().any(|e| matches!(e, PeerControl::Ban { .. })),
+            "fork_digest mismatch must trigger Fatal eviction, got {:?}",
+            cap.0
+        );
+        assert!(mgr.score(1).is_none());
+    }
+
+    #[test]
+    fn p2p_status_matching_fork_digest_keeps_peer_and_parses_db() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        connect(&mut mgr, &mut cap, 1, 1, now);
+        mgr.set_fork_digest(fork_a());
+
+        send_status(&mut mgr, &mut cap, 1, make_status_v2(fork_a(), [0u8; 32], 10, [0u8; 32], 320));
+        mgr.tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
+
+        assert!(mgr.score(1).is_some(), "valid Status must not evict");
+        let ssz = mgr.database.peer_status_bytes(1).expect("status present");
+        assert_eq!(StatusView::fork_digest(ssz), &fork_a());
+        assert_eq!(StatusView::finalized_epoch(ssz), 10);
+        assert_eq!(StatusView::head_slot(ssz), 320);
+    }
+
+    #[test]
+    fn p2p_status_divergent_finalized_root_evicts() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        connect(&mut mgr, &mut cap, 1, 1, now);
+        mgr.set_status(
+            status_v2_ssz(fork_a(), [0xAA; 32], 42, [0xCC; 32], 42 * 32 + 5),
+            42 * 32 + 5,
+        );
+        cap.0.clear();
+
+        // Same epoch, DIFFERENT finalized root → permanent fork divergence.
+        send_status(
+            &mut mgr,
+            &mut cap,
+            1,
+            make_status_v2(fork_a(), [0xBB; 32], 42, [0xDD; 32], 42 * 32 + 5),
+        );
+        mgr.tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
+
+        assert!(
+            cap.0.iter().any(|e| matches!(e, PeerControl::Ban { .. })),
+            "divergent finalized root must trigger Fatal eviction, got {:?}",
+            cap.0
+        );
+        assert!(mgr.score(1).is_none());
+    }
+
+    #[test]
+    fn p2p_status_same_finalized_root_accepted() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        connect(&mut mgr, &mut cap, 1, 1, now);
+        mgr.set_status(
+            status_v2_ssz(fork_a(), [0xAA; 32], 42, [0xCC; 32], 42 * 32 + 5),
+            42 * 32 + 5,
+        );
+
+        send_status(
+            &mut mgr,
+            &mut cap,
+            1,
+            make_status_v2(fork_a(), [0xAA; 32], 42, [0xEE; 32], 42 * 32 + 9),
+        );
+        mgr.tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
+        assert!(mgr.score(1).is_some());
+    }
+
+    #[test]
+    fn p2p_status_rejected_finalized_root_evicts() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        connect(&mut mgr, &mut cap, 1, 1, now);
+        mgr.set_status(
+            status_v2_ssz(fork_a(), [0xAA; 32], 42, [0xCC; 32], 42 * 32 + 5),
+            42 * 32 + 5,
+        );
+        // Mark a competing finalized root as rejected. Any peer reporting
+        // it must be evicted on next inbound Status.
+        mgr.record_finalized_rejected([0xBB; 32]);
+        cap.0.clear();
+
+        // Peer is ahead in finality (so divergence rule doesn't fire), but
+        // their finalized_root is the blacklisted one.
+        send_status(
+            &mut mgr,
+            &mut cap,
+            1,
+            make_status_v2(fork_a(), [0xBB; 32], 50, [0xDD; 32], 50 * 32 + 1),
+        );
+        mgr.tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
+
+        assert!(
+            cap.0.iter().any(|e| matches!(e, PeerControl::Ban { .. })),
+            "blacklisted finalized_root must trigger Fatal eviction, got {:?}",
+            cap.0
+        );
+        assert!(mgr.score(1).is_none());
+    }
+
+    #[test]
+    fn set_status_syncs_fork_digest() {
+        // When BS publishes LocalStateUpdate, our_fork_digest moves in
+        // lockstep so ENR-discovery filter and inbound Status check never
+        // diverge.
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        connect(&mut mgr, &mut cap, 1, 1, now);
+
+        mgr.set_status(status_v2_ssz(fork_b(), [0; 32], 0, [0; 32], 0), 0);
+        send_status(&mut mgr, &mut cap, 1, make_status_v2(fork_b(), [0u8; 32], 0, [0u8; 32], 0));
+        mgr.tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
+        assert!(mgr.score(1).is_some());
+    }
+
+    fn snapshot(finalized_epoch: u64, head_slot: u64) -> ([u8; STATUS_V2_SIZE], u64) {
+        let ssz = status_v2_ssz(fork_a(), [0xAA; 32], finalized_epoch, [0xCC; 32], head_slot);
+        // wall_slot well ahead so the wall-clock filter doesn't trip.
+        (ssz, 100_000)
+    }
+
+    /// Convenience: apply `snapshot(...)` to a manager in one call.
+    fn set_snapshot(mgr: &mut PeerManager, finalized_epoch: u64, head_slot: u64) {
+        let (ssz, wall) = snapshot(finalized_epoch, head_slot);
+        mgr.set_status(ssz, wall);
+    }
+
+    #[test]
+    fn select_target_no_local_state_returns_following() {
+        let (mut mgr, _cap) = fixture(vec![], ScoreParams::default());
+        assert!(mgr.maybe_emit_sync_target().is_none(), "no dirty signal");
+        mgr.target_dirty = true;
+        // No local_state → can't decide; stays Following (and equals last
+        // emitted = Following, so still None).
+        assert!(mgr.maybe_emit_sync_target().is_none());
+    }
+
+    #[test]
+    fn select_target_picks_max_vote_finalized_target() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        set_snapshot(&mut mgr, /* finalized_epoch */ 10, /* head_slot */ 320);
+
+        // 2 peers back finalized (epoch=20, root=X); 1 peer backs (epoch=15, root=Y).
+        let x = [0xBB; 32];
+        let y = [0xCC; 32];
+        connect(&mut mgr, &mut cap, 1, 1, now);
+        connect(&mut mgr, &mut cap, 2, 2, now);
+        connect(&mut mgr, &mut cap, 3, 3, now);
+        send_status(&mut mgr, &mut cap, 1, make_status_v2(fork_a(), x, 20, [0; 32], 640));
+        send_status(&mut mgr, &mut cap, 2, make_status_v2(fork_a(), x, 20, [0; 32], 640));
+        send_status(&mut mgr, &mut cap, 3, make_status_v2(fork_a(), y, 15, [0; 32], 480));
+
+        let target = mgr.maybe_emit_sync_target().expect("should emit a target");
+        match target {
+            SyncUpdate::SyncingFinalised { target_epoch, target_root } => {
+                assert_eq!(target_epoch, 20);
+                assert_eq!(target_root, x);
+            }
+            other => panic!("expected SyncingFinalised(20, X), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn select_target_skips_blacklisted_finalized() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        set_snapshot(&mut mgr, 10, 320);
+
+        let x = [0xBB; 32];
+        let y = [0xCC; 32];
+        // X has more peers but is blacklisted.
+        mgr.record_finalized_rejected(x);
+        connect(&mut mgr, &mut cap, 1, 1, now);
+        connect(&mut mgr, &mut cap, 2, 2, now);
+        connect(&mut mgr, &mut cap, 3, 3, now);
+        send_status(&mut mgr, &mut cap, 1, make_status_v2(fork_a(), x, 20, [0; 32], 640));
+        send_status(&mut mgr, &mut cap, 2, make_status_v2(fork_a(), x, 20, [0; 32], 640));
+        // ^ these get evicted by the inbound rejected-finalized rule, so
+        // they don't even reach the DB.
+        send_status(&mut mgr, &mut cap, 3, make_status_v2(fork_a(), y, 15, [0; 32], 480));
+
+        let target = mgr.maybe_emit_sync_target().expect("should emit Y");
+        assert_eq!(target, SyncUpdate::SyncingFinalised { target_epoch: 15, target_root: y });
+    }
+
+    #[test]
+    fn select_target_pins_until_reached() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        set_snapshot(&mut mgr, 10, 320);
+
+        let x = [0xBB; 32];
+        connect(&mut mgr, &mut cap, 1, 1, now);
+        send_status(&mut mgr, &mut cap, 1, make_status_v2(fork_a(), x, 20, [0; 32], 640));
+        let target = mgr.maybe_emit_sync_target().expect("first emission");
+        assert!(matches!(target, SyncUpdate::SyncingFinalised { .. }));
+
+        // Even with another peer reporting a higher-epoch target, we stay
+        // pinned to X (1 backer is still enough to keep it).
+        let z = [0xEE; 32];
+        connect(&mut mgr, &mut cap, 2, 2, now);
+        send_status(&mut mgr, &mut cap, 2, make_status_v2(fork_a(), z, 30, [0; 32], 960));
+        // dirty was set; select_target should return same pinned X.
+        let again = {
+            mgr.target_dirty = true;
+            let t = mgr.select_target();
+            mgr.current_target = t;
+            t
+        };
+        assert_eq!(
+            again,
+            SyncUpdate::SyncingFinalised { target_epoch: 20, target_root: x },
+            "must stay pinned until X is reached or rejected"
+        );
+    }
+
+    #[test]
+    fn select_target_unpins_after_reaching_finalized() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        set_snapshot(&mut mgr, 10, 320);
+
+        let x = [0xBB; 32];
+        connect(&mut mgr, &mut cap, 1, 1, now);
+        send_status(&mut mgr, &mut cap, 1, make_status_v2(fork_a(), x, 20, [0; 32], 640));
+        let _ = mgr.maybe_emit_sync_target();
+
+        // Simulate BS finalising at the target.
+        mgr.set_status(status_v2_ssz(fork_a(), x, 20, [0; 32], 640), 640);
+        // The peer is still reporting epoch=20, but we've reached it →
+        // either re-pin to a higher target if one exists, or fall through
+        // to head/Following.
+        let next = mgr.maybe_emit_sync_target().expect("change emitted");
+        assert_ne!(next, SyncUpdate::SyncingFinalised { target_epoch: 20, target_root: x });
+    }
+
+    #[test]
+    fn select_target_falls_through_to_head_catchup() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        // Finalized is current; head is behind.
+        mgr.set_status(status_v2_ssz(fork_a(), [0xAA; 32], 100, [0xCC; 32], 3200), 100_000);
+
+        // Two peers ahead on head, same head_root, well past the lag
+        // threshold.
+        let advanced_head = [0xDE; 32];
+        connect(&mut mgr, &mut cap, 1, 1, now);
+        connect(&mut mgr, &mut cap, 2, 2, now);
+        send_status(
+            &mut mgr,
+            &mut cap,
+            1,
+            make_status_v2(fork_a(), [0xAA; 32], 100, advanced_head, 3500),
+        );
+        send_status(
+            &mut mgr,
+            &mut cap,
+            2,
+            make_status_v2(fork_a(), [0xAA; 32], 100, advanced_head, 3500),
+        );
+
+        let target = mgr.maybe_emit_sync_target().expect("emit");
+        match target {
+            SyncUpdate::SyncingHead { head_root, head_slot } => {
+                assert_eq!(head_root, advanced_head);
+                assert_eq!(head_slot, 3500);
+            }
+            other => panic!("expected SyncingHead, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn select_target_following_when_no_one_is_ahead() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        set_snapshot(&mut mgr, 100, 3200);
+
+        // Peer is at the same finalised + head; nothing to chase.
+        connect(&mut mgr, &mut cap, 1, 1, now);
+        send_status(
+            &mut mgr,
+            &mut cap,
+            1,
+            make_status_v2(fork_a(), [0xAA; 32], 100, [0xCC; 32], 3200),
+        );
+
+        assert_eq!(mgr.maybe_emit_sync_target(), None, "Following == last emitted");
+        assert_eq!(mgr.current_sync_target(), SyncUpdate::Following);
+    }
+
+    #[test]
+    fn select_target_emits_only_on_change() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        set_snapshot(&mut mgr, 10, 320);
+
+        let x = [0xBB; 32];
+        connect(&mut mgr, &mut cap, 1, 1, now);
+        send_status(&mut mgr, &mut cap, 1, make_status_v2(fork_a(), x, 20, [0; 32], 640));
+        let first = mgr.maybe_emit_sync_target();
+        assert!(matches!(first, Some(SyncUpdate::SyncingFinalised { .. })));
+
+        // Same status from another peer for the same target — pinned;
+        // target unchanged (peer_count only goes up but we don't carry it
+        // in the SyncingFinalised variant), no re-emission expected.
+        connect(&mut mgr, &mut cap, 2, 2, now);
+        send_status(&mut mgr, &mut cap, 2, make_status_v2(fork_a(), x, 20, [0; 32], 640));
+        assert_eq!(mgr.maybe_emit_sync_target(), None);
+    }
+
+    #[test]
+    fn block_rejected_in_finalized_catchup_blacklists_target_and_evicts_backers() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        set_snapshot(&mut mgr, 10, 320);
+
+        let bad_target = [0xBB; 32];
+        let good_target = [0xCC; 32];
+        connect(&mut mgr, &mut cap, 1, 1, now);
+        connect(&mut mgr, &mut cap, 2, 2, now);
+        connect(&mut mgr, &mut cap, 3, 3, now);
+        // Two peers back the bad target (epoch=20), one backs a good one
+        // (epoch=15). PM picks the bad target by majority.
+        send_status(&mut mgr, &mut cap, 1, make_status_v2(fork_a(), bad_target, 20, [0; 32], 640));
+        send_status(&mut mgr, &mut cap, 2, make_status_v2(fork_a(), bad_target, 20, [0; 32], 640));
+        send_status(&mut mgr, &mut cap, 3, make_status_v2(fork_a(), good_target, 15, [0; 32], 480));
+
+        assert!(matches!(
+            mgr.maybe_emit_sync_target(),
+            Some(SyncUpdate::SyncingFinalised { target_root, .. }) if target_root == bad_target
+        ));
+        cap.0.clear();
+
+        // BS rejects a block while chasing bad_target → poison the chain.
+        mgr.record_block_rejected([0xDE; 32], RejectSource::Rpc);
+        mgr.tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
+
+        // bad_target now blacklisted.
+        assert!(mgr.rejected().is_rejected(&bad_target));
+        // Backers (peers 1 & 2) are evicted.
+        assert!(mgr.score(1).is_none());
+        assert!(mgr.score(2).is_none());
+        // Non-backer (peer 3) survives.
+        assert!(mgr.score(3).is_some());
+
+        // Next selection switches to good_target.
+        match mgr.maybe_emit_sync_target() {
+            Some(SyncUpdate::SyncingFinalised { target_root, .. }) => {
+                assert_eq!(target_root, good_target);
+            }
+            other => panic!("expected switch to good_target, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn select_target_filters_too_far_ahead_finalized() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        mgr.set_status(status_v2_ssz(fork_a(), [0xAA; 32], 10, [0xCC; 32], 320), 320);
+
+        // Peer claims epoch=1000 (slot 32000) — way beyond our wall slot.
+        connect(&mut mgr, &mut cap, 1, 1, now);
+        send_status(
+            &mut mgr,
+            &mut cap,
+            1,
+            make_status_v2(fork_a(), [0xBB; 32], 1000, [0; 32], 32000),
+        );
+
+        // Should NOT pick the bogus target — falls through to Following
+        // (and that equals last_emitted, so None).
+        assert_eq!(mgr.maybe_emit_sync_target(), None);
+        assert_eq!(mgr.current_sync_target(), SyncUpdate::Following);
     }
 }

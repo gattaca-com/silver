@@ -322,6 +322,51 @@ pub enum PeerEvent {
     },
 }
 
+/// Sync target chosen by the peer manager.
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(C, u8)]
+pub enum SyncUpdate {
+    /// Chase a specific finalised checkpoint. Pinned until reached or
+    /// rejected.
+    SyncingFinalised {
+        target_epoch: u64,
+        target_root: [u8; 32],
+    },
+    /// Catch up on head slot.
+    SyncingHead {
+        head_root: [u8; 32],
+        head_slot: u64,
+    },
+    Following,
+}
+
+impl core::fmt::Debug for SyncUpdate {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        fn hex32(b: &[u8; 32]) -> String {
+            let mut s = String::with_capacity(64);
+            const HEX: &[u8; 16] = b"0123456789abcdef";
+            for &x in b {
+                s.push(HEX[(x >> 4) as usize] as char);
+                s.push(HEX[(x & 0x0f) as usize] as char);
+            }
+            s
+        }
+        match self {
+            Self::SyncingFinalised { target_epoch, target_root } => f
+                .debug_struct("SyncingFinalised")
+                .field("target_epoch", target_epoch)
+                .field("target_root", &format_args!("0x{}", hex32(target_root)))
+                .finish(),
+            Self::SyncingHead { head_root, head_slot } => f
+                .debug_struct("SyncingHead")
+                .field("head_slot", head_slot)
+                .field("head_root", &format_args!("0x{}", hex32(head_root)))
+                .finish(),
+            Self::Following => f.write_str("Following"),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 #[repr(C, u8)]
 pub enum PeerStatus {
@@ -512,23 +557,31 @@ impl From<&RpcInbound> for RpcMsg {
     }
 }
 
+/// Origin of a rejected block. PM treats RPC rejects as evidence that the
+/// active catchup target is bad (chain poisoning); gossip rejects are not
+/// chain-attributable and only blacklist the individual block_root.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum RejectSource {
+    Gossip,
+    Rpc,
+}
+
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub enum BeaconStateEvent {
-    Synced([u8; STATUS_V2_SIZE]),
-    RequestBlocksByRange { request_id: u64, ssz: [u8; BLOCKS_BY_RANGE_REQ_SIZE] },
-    Status([u8; STATUS_V2_SIZE]),
+    Status { ssz: [u8; STATUS_V2_SIZE], wall_slot: u64 },
     PersistBlock(TCacheRead),
+    BlockRejected { block_root: [u8; 32], source: RejectSource },
 }
 
 impl BeaconStateEvent {
     pub fn view(&self) -> SszView {
         match self {
-            Self::Synced { .. } | Self::Status { .. } => SszView::Status(StatusView {}),
-            Self::RequestBlocksByRange { .. } => {
-                SszView::BeaconBlocksByRangeRequest(BeaconBlocksByRangeRequestView {})
-            }
+            Self::Status { .. } => SszView::Status(StatusView {}),
             Self::PersistBlock { .. } => SszView::SignedBeaconBlock(SignedBeaconBlockView {}),
+            Self::BlockRejected { .. } => SszView::None,
         }
     }
 }

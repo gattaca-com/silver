@@ -22,3 +22,5 @@ target/
 .claude
 .local
 CLAUDE.md
+
+*.ssz

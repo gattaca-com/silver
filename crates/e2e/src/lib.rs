@@ -4,6 +4,7 @@
 //! flux `path_suffix` values so their shmem queue trees don't collide. Tests
 //! drive the harness from a single thread, ticking both stacks' `loop_body`.
 
+pub mod canonical;
 mod harness;
 pub mod inject;
 mod stack;

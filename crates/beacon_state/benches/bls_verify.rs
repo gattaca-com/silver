@@ -240,8 +240,8 @@ fn build_ef_block() -> SigBatch {
     let bls_ = BeaconBlockBodyView::bls_to_execution_changes_offset(body) as usize;
     let blob = BeaconBlockBodyView::blob_kzg_commitments_offset(body) as usize;
 
-    collect_sigs_proposer_slashings(&s.imm, &s.vid, &body[ps..at_s], &mut batch, &zh);
-    collect_sigs_attester_slashings(
+    let _ = collect_sigs_proposer_slashings(&s.imm, &s.vid, &body[ps..at_s], &mut batch, &zh);
+    let _ = collect_sigs_attester_slashings(
         &s.imm,
         &s.vid,
         &body[at_s..att],
@@ -249,7 +249,7 @@ fn build_ef_block() -> SigBatch {
         &mut batch,
         &zh,
     );
-    collect_sigs_attestations(
+    let _ = collect_sigs_attestations(
         &s.imm,
         &s.vid,
         &body[att..dep],
@@ -261,7 +261,8 @@ fn build_ef_block() -> SigBatch {
     );
     // deposits skipped — verified inline in apply_deposit.
     collect_sigs_voluntary_exits(&s.imm, &s.vid, &body[ve..exec], &mut batch, &zh);
-    collect_sigs_bls_to_execution_changes(&s.imm, &s.vid, &body[bls_..blob], &mut batch, &zh);
+    let _ =
+        collect_sigs_bls_to_execution_changes(&s.imm, &s.vid, &body[bls_..blob], &mut batch, &zh);
     collect_sigs_sync_aggregate(
         &s.imm,
         &s.vid,

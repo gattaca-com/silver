@@ -17,6 +17,6 @@ mod validate;
 #[cfg(test)]
 pub(crate) mod test_signing;
 
-pub use error::{Error, Result};
+pub use error::{Error, PrecheckError, Result};
 pub use ticker::SlotTicker;
 pub use tile::BeaconStateTile;

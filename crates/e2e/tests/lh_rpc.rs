@@ -63,7 +63,7 @@ fn silver_responds_to_status_v2() {
     let (mut silver, _td) = build_silver_listener(21);
     let mut canned = DUMMY_STATUS;
     canned[0] = 0xab;
-    silver.controller.set_status(canned);
+    silver.controller.set_status(canned, 0);
 
     let mut client = LhClient::new_dialer_for(STATUS_V2_PROTOCOL);
     client.dial(silver.addr).expect("dial");

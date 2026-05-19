@@ -24,6 +24,7 @@ pub enum SszView {
     BlobIdentifier(BlobIdentifierView),
     DataColumnSidecarsByRangeRequest(DataColumnSidecarsByRangeRequestView),
     DataColumnsByRootIdentifier(DataColumnsByRootIdentifierView),
+    None,
 }
 
 #[inline(always)]

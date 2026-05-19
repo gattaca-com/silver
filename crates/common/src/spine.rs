@@ -3,9 +3,9 @@
 use flux::{communication::ShmemData, spine::SpineQueue, spine_derive::from_spine, tile::TileInfo};
 pub use messages::{
     BeaconStateEvent, DataColumnsAvailable, GossipMsgOut, IpBytes, NewGossipMsg, P2pSend,
-    PeerControl, PeerEvent, PeerStatus, RpcInbound, RpcMsg, RpcOutbound, RpcRequest,
+    PeerControl, PeerEvent, PeerStatus, RejectSource, RpcInbound, RpcMsg, RpcOutbound, RpcRequest,
     RpcRequestInbound, RpcRequestOutbound, RpcResponse, RpcResponseInbound, RpcResponseOutbound,
-    RpcSeverity,
+    RpcSeverity, SyncUpdate,
 };
 pub use stream_id::P2pStreamId;
 pub use stream_protocol::{
@@ -43,4 +43,6 @@ pub struct SilverSpine {
     pub beacon_events: SpineQueue<BeaconStateEvent>,
     #[queue(size(2usize.pow(12)))]
     pub data_columns: SpineQueue<DataColumnsAvailable>,
+    #[queue(size(2usize.pow(10)))]
+    pub sync_target: SpineQueue<SyncUpdate>,
 }

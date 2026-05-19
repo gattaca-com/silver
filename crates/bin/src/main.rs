@@ -13,13 +13,14 @@ use silver_discovery::{DiscV5, Discovery};
 use silver_gossip::GossipHandler;
 use silver_network::{Context, NetworkTile, P2p};
 use silver_peer::PeerManager;
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{EnvFilter, fmt::format::FmtSpan};
 
 fn main() -> Result<(), Box<dyn Error>> {
     tracing_subscriber::fmt()
         .with_file(true)
         .with_line_number(true)
         .with_thread_names(true)
+        .with_span_events(FmtSpan::CLOSE)
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
@@ -110,6 +111,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         PeerManager::new(
             config.gossip_topics()?,
             config.peer_score_params(),
+            config.syncing(),
             config.fork_digest(),
             local_enr.into(),
         ),

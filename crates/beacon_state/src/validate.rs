@@ -210,6 +210,34 @@ pub fn validate_operation_counts(body: &[u8]) -> Result<(), BlockError> {
     let ep_off = off(380); // execution_payload (next variable after voluntary_exits)
     let bls_off = off(384); // bls_to_execution_changes
     let blob_off = off(388); // blob_kzg_commitments
+    let exec_req_off = off(392); // execution_requests
+
+    let offsets: &[(usize, &'static str, usize)] = &[
+        (200, "proposer_slashings", ps_off),
+        (204, "attester_slashings", as_off),
+        (208, "attestations", att_off),
+        (212, "deposits", dep_off),
+        (216, "voluntary_exits", ve_off),
+        (380, "execution_payload", ep_off),
+        (384, "bls_to_execution_changes", bls_off),
+        (388, "blob_kzg_commitments", blob_off),
+        (392, "execution_requests", exec_req_off),
+    ];
+    let body_len = body.len();
+    for (i, &(at, field, off_val)) in offsets.iter().enumerate() {
+        let next_off = offsets.get(i + 1).map(|(_, _, o)| *o);
+        let exceeds_body = off_val > body_len;
+        let non_monotone = next_off.is_some_and(|n| n < off_val);
+        if exceeds_body || non_monotone {
+            return Err(BlockError::BodyOffsetOutOfRange {
+                at,
+                field,
+                off: off_val,
+                next_off,
+                body_len,
+            });
+        }
+    }
 
     // Fixed-size element counts from region sizes.
     let safe_count = |start: usize, end: usize, elem_size: usize| -> usize {

@@ -76,7 +76,7 @@ impl Peer {
     }
 
     pub(crate) fn send_rpc(&mut self, msg: AcquiredRpcOutbound) -> SendResult {
-        tracing::info!(id=?self.id, protocol=?msg.protocol(), "outbound rpc");
+        tracing::debug!(id=?self.id, protocol=?msg.protocol(), "outbound rpc");
 
         if let Some(stream) = match &msg {
             AcquiredRpcOutbound::Request(req) => {
@@ -116,7 +116,7 @@ impl Peer {
     fn open_stream(&mut self, protocol: StreamProtocol) -> Option<StreamId> {
         // All streams are Bi — multistream-select requires bidirectional I/O
         // even for request-response protocols.
-        tracing::info!(?protocol, "open outbound stream");
+        tracing::debug!(?protocol, "open outbound stream");
 
         if protocol == StreamProtocol::GossipSub && self.outbound_gossip.is_some() {
             tracing::warn!(id=?self.id, "open stream: already have outbound gossip stream");
@@ -180,7 +180,7 @@ impl Peer {
                         }
                     };
                     self.id.peer_id = peer_id;
-                    tracing::info!(handle = ?self.handle, "connected");
+                    tracing::debug!(handle = ?self.handle, "connected");
                     on_event(NetEvent::PeerConnected {
                         peer: self.id.clone(),
                         addr: self.connection.remote_address(),
@@ -188,7 +188,7 @@ impl Peer {
                     });
                 }
                 quinn_proto::Event::ConnectionLost { reason } => {
-                    tracing::info!(handle = ?self.handle, ?reason, "connection lost");
+                    tracing::debug!(handle = ?self.handle, ?reason, "connection lost");
                 }
                 quinn_proto::Event::Stream(stream_event) => {
                     self.handle_stream_event(stream_event, context, on_event);

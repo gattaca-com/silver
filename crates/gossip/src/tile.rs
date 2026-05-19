@@ -160,7 +160,14 @@ impl GossipHandler {
 
             buffer = &buffer[size_of::<P2pStreamId>()..];
 
-            if let Ok(gossip_proto) = RPCView::decode_view(buffer) {
+            let gossip_proto = match RPCView::decode_view(buffer) {
+                Ok(p) => Some(p),
+                Err(e) => {
+                    tracing::warn!(?stream_id, len = buffer.len(), ?e, "RPC decode failed");
+                    None
+                }
+            };
+            if let Some(gossip_proto) = gossip_proto {
                 handle_subscriptions(
                     stream_id,
                     gossip_proto.subscriptions,
@@ -236,11 +243,10 @@ impl Tile<SilverSpine> for GossipHandler {
                 }
             });
         });
-        adapter.consume(|beacon_event: BeaconStateEvent, _producers| match beacon_event {
-            BeaconStateEvent::Synced(status) | BeaconStateEvent::Status(status) => {
-                self.fork_digest_hex = hex::encode(StatusView::fork_digest(&status));
+        adapter.consume(|beacon_event: BeaconStateEvent, _producers| {
+            if let BeaconStateEvent::Status { ssz, wall_slot: _ } = beacon_event {
+                self.fork_digest_hex = hex::encode(StatusView::fork_digest(&ssz));
             }
-            _ => {}
         });
         self.spin(&mut |event| match event {
             GossipHandlerEvent::PeerEvent(peer_event) => adapter.produce(peer_event),

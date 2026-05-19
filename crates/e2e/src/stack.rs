@@ -10,7 +10,8 @@ use flux::{spine::SpineAdapter, tile::Tile};
 use quinn_proto::Endpoint;
 use silver_common::{
     DiscoveryConfig, Enr, Identify, Keypair, PeerId, ProtoIdentify, ScoreParams, SilverSpine,
-    TCache, TCacheProducer, TConsumer, TProducer, TRandomAccess, ssz_view::METADATA_SIZE,
+    SyncingConfig, TCache, TCacheProducer, TConsumer, TProducer, TRandomAccess,
+    ssz_view::METADATA_SIZE,
 };
 use silver_control::Controller;
 use silver_discovery::DiscV5;
@@ -252,7 +253,13 @@ impl PublisherStack {
         // an empty subscription set — meshes stay empty, score deltas
         // exercise only the connection / RPC paths.
         let controller = Controller::new(
-            PeerManager::new(Vec::new(), ScoreParams::default(), [0u8; 4], [0u8; METADATA_SIZE]),
+            PeerManager::new(
+                Vec::new(),
+                ScoreParams::default(),
+                SyncingConfig::default(),
+                [0u8; 4],
+                [0u8; METADATA_SIZE],
+            ),
             TCache::producer(32), // dummpy rpc out
         );
 
@@ -351,7 +358,13 @@ impl EchoStack {
         .map_err(std::io::Error::other)?;
 
         let controller = Controller::new(
-            PeerManager::new(Vec::new(), ScoreParams::default(), [0u8; 4], [0u8; METADATA_SIZE]),
+            PeerManager::new(
+                Vec::new(),
+                ScoreParams::default(),
+                SyncingConfig::default(),
+                [0u8; 4],
+                [0u8; METADATA_SIZE],
+            ),
             TCache::producer(32), // dummpy rpc out
         );
 

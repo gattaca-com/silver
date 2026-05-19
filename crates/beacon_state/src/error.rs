@@ -1,6 +1,60 @@
 use thiserror::Error;
 
-use crate::types::{B256, BLSPubkey};
+use crate::{
+    tile::Feedback,
+    types::{B256, BLSPubkey, Slot},
+};
+
+#[derive(Clone, Copy, Debug, Error)]
+pub enum PrecheckError {
+    #[error("block size precheck failed: expected {expected_min}..={expected_max} got {got}")]
+    SizeMismatch { expected_min: usize, expected_max: usize, got: usize },
+    #[error(
+        "block parent precheck failed: parent_root=0x{} last_applied_slot={last_applied_slot} \
+         block_slot={block_slot}",
+        b256_hex(parent_root)
+    )]
+    ParentMissing { parent_root: B256, last_applied_slot: Slot, block_slot: Slot },
+    #[error("block past-slot precheck failed: block_slot={block_slot} parent_slot={parent_slot}")]
+    PastSlot { block_slot: Slot, parent_slot: Slot },
+    #[error(
+        "block ticker slot precheck failed: block_slot={block_slot} ticker={wall_slot_plus_one}"
+    )]
+    FutureSlot { block_slot: Slot, wall_slot_plus_one: Slot },
+    #[error(
+        "block proposer lookahead precheck failed: expected={expected} got={got} \
+         block_root=0x{}",
+        b256_hex(block_root)
+    )]
+    ProposerLookaheadMismatch { expected: u64, got: u64, block_root: B256 },
+    #[error(
+        "block proposer index precheck failed: got={got} validator_cnt={validator_cnt} \
+         block_root=0x{}",
+        b256_hex(block_root)
+    )]
+    ProposerIndexTooBig { got: u64, validator_cnt: usize, block_root: B256 },
+    #[error(
+        "block signature precheck failed: proposer_index={proposer_index} pubkey=0x{} \
+         block_root=0x{}",
+        pubkey_hex(pubkey),
+        b256_hex(block_root)
+    )]
+    InvalidBls { proposer_index: u64, pubkey: BLSPubkey, block_root: B256 },
+}
+
+impl PrecheckError {
+    pub fn feedback(self) -> Feedback {
+        match self {
+            Self::SizeMismatch { .. } => Feedback::Reject(None),
+            Self::ParentMissing { .. } | Self::PastSlot { .. } | Self::FutureSlot { .. } => {
+                Feedback::Ignore
+            }
+            Self::ProposerLookaheadMismatch { block_root, .. } |
+            Self::ProposerIndexTooBig { block_root, .. } |
+            Self::InvalidBls { block_root, .. } => Feedback::Reject(Some(block_root)),
+        }
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -75,6 +129,17 @@ pub enum BlockError {
     BodyTooShort { len: usize, min: usize },
     #[error("{op} count {count} exceeds max {max}")]
     OperationCountOutOfBounds { op: OperationKind, count: usize, max: usize },
+    #[error(
+        "body offsets malformed at fixed position {at}: {field} off={off} body_len={body_len} \
+         (next_field_off={next_off:?})"
+    )]
+    BodyOffsetOutOfRange {
+        at: usize,
+        field: &'static str,
+        off: usize,
+        next_off: Option<usize>,
+        body_len: usize,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

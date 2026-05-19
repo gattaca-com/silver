@@ -3,13 +3,14 @@ use flux::{
     tile::Tile,
 };
 use silver_common::{
-    BeaconStateEvent, GossipTopic, NewGossipMsg, P2pStreamId, PeerEvent, RpcInbound, RpcMsg,
-    RpcResponse, RpcResponseInbound, RpcSeverity, SilverSpine, TCacheRead, TRandomAccess,
+    BeaconStateEvent, GossipTopic, NewGossipMsg, P2pStreamId, PeerEvent, RejectSource, RpcInbound,
+    RpcMsg, RpcResponse, RpcResponseInbound, RpcSeverity, SilverSpine, SyncUpdate, TCacheRead,
+    TRandomAccess,
     ssz_view::{
-        AttesterSlashingView, BLOCKS_BY_RANGE_REQ_SIZE, PROPOSER_SLASHING_SIZE,
-        ProposerSlashingView, SIGNED_BLS_CHANGE_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE,
-        STATUS_V2_SIZE, SignedAggregateAndProofView, SignedBeaconBlockView,
-        SignedBlsToExecutionChangeView, SignedVoluntaryExitView, SingleAttestationView,
+        AttesterSlashingView, PROPOSER_SLASHING_SIZE, ProposerSlashingView, SIGNED_BLS_CHANGE_SIZE,
+        SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE, STATUS_V2_SIZE, SignedAggregateAndProofView,
+        SignedBeaconBlockView, SignedBlsToExecutionChangeView, SignedVoluntaryExitView,
+        SingleAttestationView,
     },
 };
 
@@ -17,6 +18,7 @@ use crate::{
     arena::ArenaBacking,
     bls, decompose,
     epoch_transition::{self, MAX_PENDING_DEPOSITS_PER_EPOCH},
+    error::PrecheckError,
     fork_choice::{BlockImport, compute_deltas},
     shuffling::{self, DOMAIN_BEACON_ATTESTER},
     ssz_hash, state_transition,
@@ -31,19 +33,52 @@ use crate::{
     validate,
 };
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Mode {
-    /// Catching up from checkpoint to chain head.
-    Syncing,
-    /// Tracking head via gossip.
-    Following,
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct LastApplied {
+    imm_idx: u8,
+    vid_idx: u8,
+    longtail_idx: u8,
+    epoch_idx: u8,
+    roots_idx: u8,
+    slot_idx: u8,
+    pending_idx: u8,
+}
+
+impl LastApplied {
+    fn from_ref(r: &BeaconStateRef) -> Self {
+        Self {
+            imm_idx: r.imm_idx,
+            vid_idx: r.vid_idx,
+            longtail_idx: r.longtail_idx,
+            epoch_idx: r.epoch_idx,
+            roots_idx: r.roots_idx,
+            slot_idx: r.slot_idx,
+            pending_idx: r.pending_idx,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum GossipFeedback {
+enum Mode {
+    Syncing,
+    Following,
+}
+
+impl Mode {
+    fn is_following(self) -> bool {
+        matches!(self, Self::Following)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Feedback {
     Accept,
     Ignore,
-    Reject,
+    /// Carries the failed `block_root` (only) when the reject came from a
+    /// post-`body_root`/STF path in block validation, so PM can blacklist
+    /// the chain. All other reject paths (attestation, exit, slashing,
+    /// pre-hash block fails) use `Reject(None)`.
+    Reject(Option<B256>),
 }
 
 struct ParsedBlock<'a> {
@@ -52,19 +87,9 @@ struct ParsedBlock<'a> {
     parent_root: B256,
     state_root: B256,
     body_root: B256,
+    block_root: B256,
     body: &'a [u8],
-}
-
-#[derive(Clone, Copy, Debug)]
-struct PendingRangeReq {
-    start_slot: Slot,
-    count: u64,
-    /// Last accepted chunk's slot. `0` until the first chunk lands; spec
-    /// requires strictly-increasing slots within a response.
-    last_seen_slot: Slot,
-    chunks_received: u32,
-    /// Wall slot at issue, used for the 2-slot timeout in `sync_step`.
-    issued_at_wall_slot: Slot,
+    parent_state: BeaconStateRef,
 }
 
 pub struct BeaconStateTile {
@@ -79,17 +104,9 @@ pub struct BeaconStateTile {
     vote_tracker: Box<VoteTracker>,
     shuffling_cache: Box<ShufflingCache>,
 
-    head: BeaconStateRef,
-    head_block_root: B256,
+    last_applied: LastApplied,
+    last_applied_block_root: B256,
 
-    // Sync state.
-    sync_cursor: Slot,
-    sync_target: Slot,
-    // Outstanding BlocksByRange request; cleared on completion, timeout, or head advancing past
-    // the requested range.
-    in_flight: Option<(u64, PendingRangeReq)>,
-    next_request_id: u64,
-    synced_emitted: bool,
     initial_status_emitted: bool,
     cached_fork_digest: Option<(Epoch, [u8; 4])>,
 
@@ -158,22 +175,10 @@ impl BeaconStateTile {
     ) -> Self {
         let pending_pool: Vec<PendingQueues> =
             (0..PENDING_POOL_CAP).map(|_| PendingQueues::new()).collect();
-        let head = BeaconStateRef {
-            imm_idx: 0,
-            vid_idx: 0,
-            vid_gen: arena.vid.gen_at(0),
-            longtail_idx: 0,
-            epoch_idx: 0,
-            epoch_gen: arena.epoch.gen_at(0),
-            roots_idx: 0,
-            roots_gen: arena.roots.gen_at(0),
-            slot_idx: 0,
-            slot_gen: arena.slot.gen_at(0),
-            pending_idx: 0,
-        };
+        let last_applied = LastApplied::default();
 
         // TierPool cursors start at 0; bump past slot 0 (reserved for the
-        // bootstrap state that `head` points at).
+        // bootstrap state that `last_applied` points at).
         arena.imm.set_cursor(0);
         arena.vid.set_cursor(1);
         arena.longtail.set_cursor(1);
@@ -182,6 +187,8 @@ impl BeaconStateTile {
         arena.slot.set_cursor(1);
 
         let mut tile = Self {
+            // Boot in Syncing. PM's first `SyncUpdate::Following` flips us
+            // once peer Status data confirms we're caught up.
             mode: Mode::Syncing,
             ticker,
             arena,
@@ -190,13 +197,8 @@ impl BeaconStateTile {
             fork_choice: ForkChoice::default(),
             vote_tracker: box_zeroed(),
             shuffling_cache: box_zeroed(),
-            head,
-            head_block_root: [0u8; 32],
-            sync_cursor: 0,
-            sync_target: 0,
-            in_flight: None,
-            next_request_id: 1,
-            synced_emitted: false,
+            last_applied,
+            last_applied_block_root: [0u8; 32],
             initial_status_emitted: false,
             cached_fork_digest: None,
             zero_hashes: ssz_hash::compute_zero_hashes(),
@@ -218,7 +220,7 @@ impl BeaconStateTile {
     }
 
     pub fn head_block_root(&self) -> B256 {
-        self.head_block_root
+        self.last_applied_block_root
     }
 
     pub fn fork_choice_head(&self) -> B256 {
@@ -226,26 +228,25 @@ impl BeaconStateTile {
     }
 
     pub fn head_state_slot(&self) -> Slot {
-        self.slot(&self.head).slot
+        Self::last_applied_slot(&self.arena, self.last_applied).slot
     }
 
-    pub fn try_apply_block(&mut self, data: &[u8]) -> GossipFeedback {
+    pub fn try_apply_block(&mut self, data: &[u8]) -> Feedback {
         self.handle_block(data)
     }
 
-    /// SSZ `hash_tree_root` of the current head's full BeaconState. Used by
-    /// integration tests to cross-check tile-applied STF output against EF
-    /// post-state vectors.
+    /// SSZ `hash_tree_root` of the most-recently-applied block's full
+    /// BeaconState. Used by integration tests to cross-check tile-applied
+    /// STF output against EF post-state vectors.
     pub fn head_state_root(&self) -> B256 {
-        let h = self.head;
         ssz_hash::hash_tree_root_state(
-            self.imm(&h),
-            self.vid(&h),
-            self.longtail(&h),
-            self.epoch(&h),
-            self.roots(&h),
-            self.slot(&h),
-            &self.pending_pool[h.pending_idx as usize],
+            Self::last_applied_imm(&self.arena, self.last_applied),
+            Self::last_applied_vid(&self.arena, self.last_applied),
+            Self::last_applied_longtail(&self.arena, self.last_applied),
+            Self::last_applied_epoch(&self.arena, self.last_applied),
+            Self::last_applied_roots(&self.arena, self.last_applied),
+            Self::last_applied_slot(&self.arena, self.last_applied),
+            &self.pending_pool[self.last_applied.pending_idx as usize],
             &self.zero_hashes,
         )
     }
@@ -291,7 +292,10 @@ impl BeaconStateTile {
         let trusted_cp = types::Checkpoint { epoch: slot / SLOTS_PER_EPOCH, root: block_root };
         let finalized = trusted_cp;
         let justified = trusted_cp;
-        self.head = BeaconStateRef {
+        self.last_applied = LastApplied::default();
+        self.last_applied_block_root = block_root;
+
+        let anchor_ref = BeaconStateRef {
             imm_idx: 0,
             vid_idx: 0,
             vid_gen: self.arena.vid.gen_at(0),
@@ -304,18 +308,11 @@ impl BeaconStateTile {
             slot_gen: self.arena.slot.gen_at(0),
             pending_idx: 0,
         };
-        self.head_block_root = block_root;
-
         self.fork_choice =
-            ForkChoice::init(finalized, justified, slot, block_root, block_root, self.head);
+            ForkChoice::init(finalized, justified, slot, block_root, block_root, anchor_ref);
 
         let current_epoch = slot / SLOTS_PER_EPOCH;
         self.ensure_shuffling_window(current_epoch);
-
-        let wall_slot = self.ticker.current_slot();
-        self.sync_cursor = slot + 1;
-        self.sync_target = wall_slot;
-        self.mode = if wall_slot > slot + 2 { Mode::Syncing } else { Mode::Following };
     }
 
     fn alloc_pending(&mut self) -> usize {
@@ -324,36 +321,93 @@ impl BeaconStateTile {
         idx
     }
 
-    fn imm(&self, r: &BeaconStateRef) -> &types::Immutable {
-        self.arena.imm.get(r.imm_idx as usize)
-    }
-
-    fn vid(&self, r: &BeaconStateRef) -> &ValidatorIdentity {
-        self.arena.vid.get_checked(r.vid_idx as usize, r.vid_gen)
-    }
-
-    fn longtail(&self, r: &BeaconStateRef) -> &types::HistoricalLongtail {
-        self.arena.longtail.get(r.longtail_idx as usize)
-    }
-
-    fn epoch(&self, r: &BeaconStateRef) -> &EpochData {
-        self.arena.epoch.get_checked(r.epoch_idx as usize, r.epoch_gen)
-    }
-
-    fn roots(&self, r: &BeaconStateRef) -> &types::SlotRoots {
-        self.arena.roots.get_checked(r.roots_idx as usize, r.roots_gen)
-    }
-
-    fn roots_mut(&self, r: &BeaconStateRef) -> &mut types::SlotRoots {
-        self.arena.roots.get_mut_checked(r.roots_idx as usize, r.roots_gen)
-    }
-
     fn slot(&self, r: &BeaconStateRef) -> &SlotData {
         self.arena.slot.get_checked(r.slot_idx as usize, r.slot_gen)
     }
 
-    fn slot_mut(&self, r: &BeaconStateRef) -> &mut SlotData {
-        self.arena.slot.get_mut_checked(r.slot_idx as usize, r.slot_gen)
+    fn imm_at(arena: &ArenaBacking, r: BeaconStateRef) -> &types::Immutable {
+        arena.imm.get(r.imm_idx as usize)
+    }
+
+    fn vid_at(arena: &ArenaBacking, r: BeaconStateRef) -> &ValidatorIdentity {
+        arena.vid.get_checked(r.vid_idx as usize, r.vid_gen)
+    }
+
+    fn epoch_at(arena: &ArenaBacking, r: BeaconStateRef) -> &EpochData {
+        arena.epoch.get_checked(r.epoch_idx as usize, r.epoch_gen)
+    }
+
+    fn slot_at(arena: &ArenaBacking, r: BeaconStateRef) -> &SlotData {
+        arena.slot.get_checked(r.slot_idx as usize, r.slot_gen)
+    }
+
+    /// `BeaconStateRef` of fork-choice's canonical tip. For gossip-object
+    /// validation per spec ("the head state").
+    fn canonical_state_ref(&self) -> BeaconStateRef {
+        let head_root = self.fork_choice.find_head();
+        let idx = self
+            .fork_choice
+            .find_node_idx(&head_root)
+            .expect("find_head returns a node-resident root");
+        self.fork_choice.node(idx).state
+    }
+
+    // ── Tier accessors via `last_applied`.
+
+    fn last_applied_imm(arena: &ArenaBacking, la: LastApplied) -> &types::Immutable {
+        arena.imm.get(la.imm_idx as usize)
+    }
+
+    fn last_applied_vid(arena: &ArenaBacking, la: LastApplied) -> &ValidatorIdentity {
+        arena.vid.get(la.vid_idx as usize)
+    }
+
+    fn last_applied_longtail(arena: &ArenaBacking, la: LastApplied) -> &types::HistoricalLongtail {
+        arena.longtail.get(la.longtail_idx as usize)
+    }
+
+    fn last_applied_epoch(arena: &ArenaBacking, la: LastApplied) -> &EpochData {
+        arena.epoch.get(la.epoch_idx as usize)
+    }
+
+    fn last_applied_roots(arena: &ArenaBacking, la: LastApplied) -> &types::SlotRoots {
+        arena.roots.get(la.roots_idx as usize)
+    }
+
+    #[allow(clippy::mut_from_ref)]
+    fn last_applied_roots_mut(arena: &ArenaBacking, la: LastApplied) -> &mut types::SlotRoots {
+        arena.roots.get_mut(la.roots_idx as usize)
+    }
+
+    fn last_applied_slot(arena: &ArenaBacking, la: LastApplied) -> &SlotData {
+        arena.slot.get(la.slot_idx as usize)
+    }
+
+    #[allow(clippy::mut_from_ref)]
+    fn last_applied_slot_mut(arena: &ArenaBacking, la: LastApplied) -> &mut SlotData {
+        arena.slot.get_mut(la.slot_idx as usize)
+    }
+
+    /// Build a `BeaconStateRef` pinned to `last_applied`'s indices with
+    /// arena gens snapshotted at call time. Only used to seed a
+    /// `ForkChoice` anchor node from tests — fork-choice nodes need the
+    /// long-lived gen-checked variant.
+    #[cfg(test)]
+    fn synth_anchor_ref(&self) -> BeaconStateRef {
+        let la = self.last_applied;
+        BeaconStateRef {
+            imm_idx: la.imm_idx,
+            vid_idx: la.vid_idx,
+            vid_gen: self.arena.vid.gen_at(la.vid_idx as usize),
+            longtail_idx: la.longtail_idx,
+            epoch_idx: la.epoch_idx,
+            epoch_gen: self.arena.epoch.gen_at(la.epoch_idx as usize),
+            roots_idx: la.roots_idx,
+            roots_gen: self.arena.roots.gen_at(la.roots_idx as usize),
+            slot_idx: la.slot_idx,
+            slot_gen: self.arena.slot.gen_at(la.slot_idx as usize),
+            pending_idx: la.pending_idx,
+        }
     }
 
     /// Compute and cache the shuffling for `epoch`. No-op if already cached.
@@ -378,9 +432,8 @@ impl BeaconStateTile {
             }
         }
 
-        let head = self.head;
-        let vid = self.arena.vid.get_checked(head.vid_idx as usize, head.vid_gen);
-        let epoch_data = self.arena.epoch.get_checked(head.epoch_idx as usize, head.epoch_gen);
+        let vid = Self::last_applied_vid(&self.arena, self.last_applied);
+        let epoch_data = Self::last_applied_epoch(&self.arena, self.last_applied);
 
         let seed = shuffling::get_seed(epoch_data, epoch, DOMAIN_BEACON_ATTESTER);
 
@@ -423,73 +476,18 @@ impl BeaconStateTile {
         self.shuffling_cache.entries.iter().find(|e| e.status == 1 && e.epoch == epoch)
     }
 
-    fn sync_step(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
-        let head = self.head;
-        let head_slot = self.slot(&head).slot;
-        let wall_slot = self.ticker.current_slot();
-
-        // Update cursor from processed blocks.
-        if head_slot >= self.sync_cursor {
-            self.sync_cursor = head_slot + 1;
-            // Reclaim pool entries for pruned fork choice nodes.
-            self.prune_fork_choice();
-        }
-
-        // Drop the in-flight bookkeeping if (a) the head has advanced past
-        // the requested range (further chunks would be redundant), or (b)
-        // the 2-wall-slot timeout has elapsed. After this, the request_id
-        // changes, so any straggler chunks for the prior id are rejected.
-        if let Some((_, req)) = &self.in_flight {
-            let past_range = head_slot >= req.start_slot + req.count;
-            let timed_out = wall_slot > req.issued_at_wall_slot + 2;
-            if past_range || timed_out {
-                self.in_flight = None;
-            }
-        }
-
-        self.sync_target = wall_slot;
-
-        // Check if caught up.
-        if head_slot + 2 >= self.sync_target {
-            if self.mode != Mode::Following {
-                self.mode = Mode::Following;
-                self.synced_emitted = false; // re-emit on next loop_body tick
-            }
-            let epoch = head_slot / SLOTS_PER_EPOCH;
-            self.ensure_shuffling_window(epoch);
-            return;
-        }
-
-        // Request next batch.
-        if self.in_flight.is_none() && self.sync_cursor <= self.sync_target {
-            let start_slot = self.sync_cursor;
-            let count = (self.sync_target - self.sync_cursor + 1).min(64);
-            let request_id = self.next_request_id;
-            let event = self.build_request_blocks_by_range(request_id, start_slot, count);
-            adapter.produce(event);
-            self.next_request_id += 1;
-            self.in_flight = Some((request_id, PendingRangeReq {
-                start_slot,
-                count,
-                last_seen_slot: 0,
-                chunks_received: 0,
-                issued_at_wall_slot: wall_slot,
-            }));
-        }
-    }
-
     /// Spec `compute_fork_digest` (Fulu EIP-7892). Cached per epoch:
     /// inputs (`FULU_FORK_VERSION`, gvr, active blob_parameters) only change
     /// at epoch boundaries — schedule entries are epoch-aligned and `gvr` is
     /// frozen. Reorg within an epoch keeps the cache valid.
     fn fork_digest(&mut self) -> [u8; 4] {
-        let epoch = self.slot(&self.head).slot / SLOTS_PER_EPOCH;
+        let epoch = Self::last_applied_slot(&self.arena, self.last_applied).slot / SLOTS_PER_EPOCH;
         if let Some((cached_epoch, d)) = self.cached_fork_digest &&
             cached_epoch == epoch
         {
             return d;
         }
-        let gvr = self.imm(&self.head).genesis_validators_root;
+        let gvr = Self::last_applied_imm(&self.arena, self.last_applied).genesis_validators_root;
         let bp = get_blob_parameters(epoch, BLOB_SCHEDULE, DEFAULT_BLOB_PARAMETERS);
         let d = compute_fork_digest(FULU_FORK_VERSION, &gvr, Some(bp));
         self.cached_fork_digest = Some((epoch, d));
@@ -498,13 +496,20 @@ impl BeaconStateTile {
 
     fn status_payload(&mut self) -> [u8; STATUS_V2_SIZE] {
         let fork_digest = self.fork_digest();
-        let sd = self.slot(&self.head);
+        let sd = Self::last_applied_slot(&self.arena, self.last_applied);
         // Use the cached canonical block_root rather than rehashing
         // `latest_block_header` — the header's `state_root` is zero in the
         // window between block-apply and the next `process_slot`.
-        let head_root = self.head_block_root;
+        let head_root = self.last_applied_block_root;
         let finalized = sd.finalized_checkpoint;
-        let slot = sd.slot;
+        // Spec: `head_slot` is the slot of the latest block known to us,
+        // **excluding empty slots**. `sd.slot` advances every wall slot via
+        // `process_slots` in Following mode — reporting it would make us
+        // appear caught up to wall clock even when no new block has applied
+        // since the last catchup ended, and SH would never re-trigger.
+        // `latest_block_header.slot` stays pinned to the last applied
+        // block's slot until the next `apply_block`.
+        let slot = sd.latest_block_header.slot;
         let earliest = finalized.epoch * SLOTS_PER_EPOCH;
 
         let mut buf = [0u8; STATUS_V2_SIZE];
@@ -517,18 +522,11 @@ impl BeaconStateTile {
         buf
     }
 
-    fn build_request_blocks_by_range(
-        &mut self,
-        request_id: u64,
-        start_slot: Slot,
-        count: u64,
-    ) -> BeaconStateEvent {
-        let mut ssz = [0u8; BLOCKS_BY_RANGE_REQ_SIZE];
-        ssz[0..8].copy_from_slice(&start_slot.to_le_bytes());
-        ssz[8..16].copy_from_slice(&count.to_le_bytes());
-        ssz[16..24].copy_from_slice(&1u64.to_le_bytes());
-
-        BeaconStateEvent::RequestBlocksByRange { request_id, ssz }
+    fn status_event(&mut self) -> BeaconStateEvent {
+        BeaconStateEvent::Status {
+            ssz: self.status_payload(),
+            wall_slot: self.ticker.current_slot(),
+        }
     }
 
     /// Post-import emission: PersistBlock (for storage) + Status (head and
@@ -538,24 +536,37 @@ impl BeaconStateTile {
         &mut self,
         data: &[u8],
         data_tcache: TCacheRead,
+        source: RejectSource,
         producers: &mut Producers,
-    ) -> GossipFeedback {
-        let prev_head = self.head;
-        let prev_finalized = self.slot(&prev_head).finalized_checkpoint;
+    ) -> Feedback {
+        let block_slot = SignedBeaconBlockView::slot(data);
+        let prev_last_applied = self.last_applied;
+        let prev_finalized =
+            Self::last_applied_slot(&self.arena, self.last_applied).finalized_checkpoint;
 
         let f = self.handle_block(data);
-        if f != GossipFeedback::Accept {
-            tracing::warn!("handle block failed");
+        if let Feedback::Reject(Some(block_root)) = f {
+            producers.produce(BeaconStateEvent::BlockRejected { block_root, source });
+        }
+        tracing::info!(
+            ?source,
+            head_slot = Self::last_applied_slot(&self.arena, self.last_applied).slot,
+            block_slot,
+            "applied block: {:?}",
+            f
+        );
+        if f != Feedback::Accept {
             return f;
         }
 
         producers.produce(BeaconStateEvent::PersistBlock(data_tcache));
 
-        let head_changed = self.head != prev_head;
-        let new_finalized = self.slot(&self.head).finalized_checkpoint;
+        let head_changed = self.last_applied != prev_last_applied;
+        let new_finalized =
+            Self::last_applied_slot(&self.arena, self.last_applied).finalized_checkpoint;
         let finalized_changed = new_finalized != prev_finalized;
         if head_changed || finalized_changed {
-            producers.produce(BeaconStateEvent::Status(self.status_payload()));
+            producers.produce(self.status_event());
         }
         f
     }
@@ -564,31 +575,33 @@ impl BeaconStateTile {
     /// definitely advanced, and finalized may have advanced via an epoch
     /// transition along the way).
     fn on_slot_start(&mut self, target_slot: Slot) -> bool {
-        if target_slot <= self.slot(&self.head).slot {
+        if target_slot <= Self::last_applied_slot(&self.arena, self.last_applied).slot {
             return false;
         }
 
         // Spec process_slots: per slot, run process_slot (root snapshot),
-        // then epoch transition at boundary, then bump sd.slot. Re-read head
-        // each iteration since epoch_transition may CoW VID/epoch/longtail.
-        while self.slot(&self.head).slot < target_slot {
-            let head = self.head;
-            let s = self.slot(&head).slot;
+        // then epoch transition at boundary, then bump sd.slot.
+        // `epoch_transition` may CoW VID/epoch/longtail and update
+        // `last_applied`'s indices in place; the la_* accessors below
+        // pick up the fresh slots automatically.
+        while Self::last_applied_slot(&self.arena, self.last_applied).slot < target_slot {
+            let s = Self::last_applied_slot(&self.arena, self.last_applied).slot;
+            let pending_idx = self.last_applied.pending_idx as usize;
             state_transition::process_slot(
-                self.imm(&head),
-                self.vid(&head),
-                self.longtail(&head),
-                self.epoch(&head),
-                self.roots_mut(&head),
-                self.slot_mut(&head),
-                &self.pending_pool[head.pending_idx as usize],
+                Self::last_applied_imm(&self.arena, self.last_applied),
+                Self::last_applied_vid(&self.arena, self.last_applied),
+                Self::last_applied_longtail(&self.arena, self.last_applied),
+                Self::last_applied_epoch(&self.arena, self.last_applied),
+                Self::last_applied_roots_mut(&self.arena, self.last_applied),
+                Self::last_applied_slot_mut(&self.arena, self.last_applied),
+                &self.pending_pool[pending_idx],
                 &self.zero_hashes,
             );
 
             if (s + 1).is_multiple_of(SLOTS_PER_EPOCH) {
                 self.epoch_transition();
             }
-            self.slot_mut(&self.head).slot += 1;
+            Self::last_applied_slot_mut(&self.arena, self.last_applied).slot += 1;
         }
 
         true
@@ -606,52 +619,49 @@ impl BeaconStateTile {
     }
 
     fn epoch_transition(&mut self) {
-        let head = self.head;
+        let la = self.last_applied;
 
         // Always COW EpochData (mutated every epoch).
-        let new_ei = self.arena.epoch.copy_from(head.epoch_idx as usize);
+        let new_ei = self.arena.epoch.copy_from(la.epoch_idx as usize);
 
         // COW ValidatorIdentity if deposits may add new validators this epoch.
-        let new_vid = if self.pending_pool[head.pending_idx as usize].pending_deposits.is_empty() {
-            head.vid_idx as usize
+        let new_vid = if self.pending_pool[la.pending_idx as usize].pending_deposits.is_empty() {
+            la.vid_idx as usize
         } else {
-            self.arena.vid.copy_from(head.vid_idx as usize)
+            self.arena.vid.copy_from(la.vid_idx as usize)
         };
 
-        let next_epoch = self.slot(&head).slot / SLOTS_PER_EPOCH + 1;
+        let next_epoch =
+            Self::last_applied_slot(&self.arena, self.last_applied).slot / SLOTS_PER_EPOCH + 1;
         let new_longtail = if longtail_rotates_at_epoch(next_epoch) {
-            self.arena.longtail.copy_from(head.longtail_idx as usize)
+            self.arena.longtail.copy_from(la.longtail_idx as usize)
         } else {
-            head.longtail_idx as usize
+            la.longtail_idx as usize
         };
 
         let vid = self.arena.vid.get_mut(new_vid);
         let longtail = self.arena.longtail.get_mut(new_longtail);
         let epoch = self.arena.epoch.get_mut(new_ei);
-        let sd = self.arena.slot.get_mut_checked(head.slot_idx as usize, head.slot_gen);
-        let roots = self.arena.roots.get_checked(head.roots_idx as usize, head.roots_gen);
+        let sd = self.arena.slot.get_mut(la.slot_idx as usize);
+        let roots = self.arena.roots.get(la.roots_idx as usize);
 
         epoch_transition::process_epoch(
             vid,
             longtail,
             epoch,
             sd,
-            &mut self.pending_pool[head.pending_idx as usize],
+            &mut self.pending_pool[la.pending_idx as usize],
             roots,
             &self.zero_hashes,
             &mut self.active_scratch,
             &mut self.postponed_scratch,
         );
 
-        self.head.epoch_idx = new_ei as u8;
-        self.head.epoch_gen = self.arena.epoch.gen_at(new_ei);
-        if new_vid != head.vid_idx as usize {
-            self.head.vid_idx = new_vid as u8;
-            self.head.vid_gen = self.arena.vid.gen_at(new_vid);
-        }
-        self.head.longtail_idx = new_longtail as u8;
+        self.last_applied.epoch_idx = new_ei as u8;
+        self.last_applied.vid_idx = new_vid as u8;
+        self.last_applied.longtail_idx = new_longtail as u8;
 
-        let sd = self.arena.slot.get_checked(head.slot_idx as usize, head.slot_gen);
+        let sd = Self::last_applied_slot(&self.arena, self.last_applied);
         let cp = (sd.current_justified_checkpoint, sd.finalized_checkpoint);
         let new_epoch = sd.slot / SLOTS_PER_EPOCH;
         self.fork_choice.justified_checkpoint = cp.0;
@@ -662,8 +672,7 @@ impl BeaconStateTile {
     }
 
     fn on_attestation(&mut self, validator_idx: usize, block_root: B256, epoch: Epoch) {
-        let head = self.head;
-        if validator_idx >= self.vid(&head).validator_cnt {
+        if validator_idx >= Self::last_applied_vid(&self.arena, self.last_applied).validator_cnt {
             return;
         }
         // Spec `update_latest_messages`: only newer-epoch votes overwrite.
@@ -680,9 +689,8 @@ impl BeaconStateTile {
     }
 
     fn recompute_head(&mut self) {
-        let head = self.head;
-        let vid = self.arena.vid.get_checked(head.vid_idx as usize, head.vid_gen);
-        let epoch = self.arena.epoch.get_checked(head.epoch_idx as usize, head.epoch_gen);
+        let vid = Self::last_applied_vid(&self.arena, self.last_applied);
+        let epoch = Self::last_applied_epoch(&self.arena, self.last_applied);
         let n = vid.validator_cnt;
 
         let mut deltas = compute_deltas(
@@ -699,7 +707,7 @@ impl BeaconStateTile {
         // `find_head` walks from an unknown root and falls through.
         // During sync the block's post-state often names checkpoints from
         // much earlier blocks we never imported; skip those updates.
-        let sd = self.arena.slot.get_checked(head.slot_idx as usize, head.slot_gen);
+        let sd = Self::last_applied_slot(&self.arena, self.last_applied);
         let j = sd.current_justified_checkpoint;
         let f = sd.finalized_checkpoint;
         if j.epoch > self.fork_choice.justified_checkpoint.epoch &&
@@ -720,23 +728,18 @@ impl BeaconStateTile {
             return;
         }
 
-        // Collect indices still referenced by surviving nodes + head.
+        // Collect indices still referenced by surviving nodes + last_applied.
         let mut live_epoch = [false; EPOCH_POOL_CAP];
         let mut live_roots = [false; ROOTS_POOL_CAP];
         let mut live_slot = [false; SLOT_POOL_CAP];
 
-        let mark = |s: &BeaconStateRef,
-                    le: &mut [bool; EPOCH_POOL_CAP],
-                    lw: &mut [bool; ROOTS_POOL_CAP],
-                    ls: &mut [bool; SLOT_POOL_CAP]| {
-            le[s.epoch_idx as usize] = true;
-            lw[s.roots_idx as usize] = true;
-            ls[s.slot_idx as usize] = true;
-        };
-
-        mark(&self.head, &mut live_epoch, &mut live_roots, &mut live_slot);
+        live_epoch[self.last_applied.epoch_idx as usize] = true;
+        live_roots[self.last_applied.roots_idx as usize] = true;
+        live_slot[self.last_applied.slot_idx as usize] = true;
         for node in self.fork_choice.nodes.as_slice() {
-            mark(&node.state, &mut live_epoch, &mut live_roots, &mut live_slot);
+            live_epoch[node.state.epoch_idx as usize] = true;
+            live_roots[node.state.roots_idx as usize] = true;
+            live_slot[node.state.slot_idx as usize] = true;
         }
 
         // Reset allocator cursors to freed entries so they get reused first.
@@ -757,7 +760,9 @@ impl BeaconStateTile {
 
     fn handle_gossip(&mut self, m: NewGossipMsg, data: &[u8], producers: &mut Producers) {
         let feedback = match m.topic {
-            GossipTopic::BeaconBlock => Some(self.apply_block(data, m.ssz, producers)),
+            GossipTopic::BeaconBlock => {
+                Some(self.apply_block(data, m.ssz, RejectSource::Gossip, producers))
+            }
             GossipTopic::BeaconAttestation(_) => Some(self.handle_attestation(data)),
             GossipTopic::BeaconAggregateAndProof => Some(self.handle_aggregate_and_proof(data)),
             GossipTopic::VoluntaryExit => Some(self.handle_voluntary_exit(data)),
@@ -767,19 +772,19 @@ impl BeaconStateTile {
             _ => None,
         };
         match feedback {
-            Some(GossipFeedback::Reject) => producers.produce(PeerEvent::P2pGossipInvalidMsg {
+            Some(Feedback::Reject(_)) => producers.produce(PeerEvent::P2pGossipInvalidMsg {
                 p2p_peer: m.stream_id.peer(),
                 topic: m.topic,
                 hash: m.msg_hash,
             }),
-            Some(GossipFeedback::Accept) => producers.produce(PeerEvent::SendGossip {
+            Some(Feedback::Accept) => producers.produce(PeerEvent::SendGossip {
                 originator_stream_id: m.stream_id,
                 topic: m.topic,
                 msg_hash: m.msg_hash,
                 recv_ts: m.recv_ts,
                 protobuf: m.protobuf,
             }),
-            Some(GossipFeedback::Ignore) | None => {}
+            Some(Feedback::Ignore) | None => {}
         }
     }
 
@@ -787,89 +792,60 @@ impl BeaconStateTile {
         &mut self,
         msg: RpcMsg,
         sender: P2pStreamId,
-        request_id: u64,
         data: &[u8],
         data_tcache: TCacheRead,
         producers: &mut Producers,
     ) {
         if let RpcMsg::BlocksRangeResp(_) = msg {
-            match self.accept_blocks_range_chunk(request_id, data) {
-                Ok(()) => {}
-                Err(None) => return,
-                Err(Some(severity)) => {
-                    producers
-                        .produce(PeerEvent::RpcMisbehaviour { p2p_peer: sender.peer(), severity });
-                    return;
-                }
+            if !SignedBeaconBlockView::check_size(data) {
+                producers.produce(PeerEvent::RpcMisbehaviour {
+                    p2p_peer: sender.peer(),
+                    severity: RpcSeverity::LowTolerance,
+                });
+                return;
             }
-            match self.apply_block(data, data_tcache, producers) {
-                GossipFeedback::Accept => {
-                    if let Some((_, req)) = self.in_flight.as_mut() {
-                        req.last_seen_slot = SignedBeaconBlockView::slot(data);
-                        req.chunks_received += 1;
-                        if req.chunks_received as u64 >= req.count {
-                            self.in_flight = None;
-                        }
-                    }
-                }
-                GossipFeedback::Reject => producers.produce(PeerEvent::RpcMisbehaviour {
+            let f = self.apply_block(data, data_tcache, RejectSource::Rpc, producers);
+            match f {
+                Feedback::Accept | Feedback::Ignore => {}
+                Feedback::Reject(_) => producers.produce(PeerEvent::RpcMisbehaviour {
                     p2p_peer: sender.peer(),
                     severity: RpcSeverity::Fatal,
                 }),
-                GossipFeedback::Ignore => {}
             }
         }
     }
 
-    fn accept_blocks_range_chunk(
-        &self,
-        request_id: u64,
-        data: &[u8],
-    ) -> Result<(), Option<RpcSeverity>> {
-        let Some((id, req)) = &self.in_flight else { return Err(None) };
-        if request_id != *id {
-            return Err(None);
-        }
-        if !SignedBeaconBlockView::check_size(data) {
-            return Err(Some(RpcSeverity::LowTolerance));
-        }
-        let slot = SignedBeaconBlockView::slot(data);
-        if slot < req.start_slot || slot >= req.start_slot + req.count {
-            return Err(Some(RpcSeverity::LowTolerance));
-        }
-        if req.last_seen_slot != 0 && slot <= req.last_seen_slot {
-            return Err(Some(RpcSeverity::LowTolerance));
-        }
-        if req.chunks_received as u64 >= req.count {
-            return Err(Some(RpcSeverity::LowTolerance));
-        }
-        Ok(())
-    }
-
-    fn handle_block(&mut self, data: &[u8]) -> GossipFeedback {
+    fn handle_block(&mut self, data: &[u8]) -> Feedback {
         let parsed = match self.precheck_block(data) {
             Ok(p) => p,
-            Err(fb) => {
-                tracing::warn!("block precheck failed");
-                return fb;
+            Err(err) => {
+                tracing::warn!(head_slot = self.head_state_slot(), "{err}");
+                return err.feedback();
             }
         };
 
         let block_epoch = parsed.block_slot / SLOTS_PER_EPOCH;
         self.ensure_shuffling_window(block_epoch);
 
-        let state_ref = self.cow_state_for_block(parsed.body, block_epoch);
+        // On Reject, restore the cursors
+        // so the freed slots are reused next time.
+        let pre_slot = self.arena.slot.cursor();
+        let pre_roots = self.arena.roots.cursor();
+        let pre_vid = self.arena.vid.cursor();
+        let pre_epoch = self.arena.epoch.cursor();
+        let pre_longtail = self.arena.longtail.cursor();
+        let pre_pending = self.pending_pool_next;
+
+        let state_ref = self.cow_state_for_block(parsed.parent_state, parsed.body, block_epoch);
 
         // Build shuffling reference for attestation processing.
-        // Access shuffling cache fields directly to avoid borrow conflict
-        // with the mutable borrows on the arena below.
         let prev_epoch = block_epoch.saturating_sub(1);
         let find_entry = |epoch: Epoch| -> Option<usize> {
             self.shuffling_cache.entries.iter().position(|e| e.status == 1 && e.epoch == epoch)
         };
-        let cur_idx = find_entry(block_epoch);
+        let curr_idx = find_entry(block_epoch);
         let prev_idx = find_entry(prev_epoch);
-        let shuffling_ref = match (cur_idx, prev_idx) {
+        let shuffling_ref = match (curr_idx, prev_idx) {
             (Some(ci), Some(pi)) => {
                 let c = &self.shuffling_cache.entries[ci];
                 let p = &self.shuffling_cache.entries[pi];
@@ -916,30 +892,23 @@ impl BeaconStateTile {
             &mut self.attestation_votes_scratch,
             &mut self.sig_batch,
         ) {
-            tracing::error!(error = %e, block_slot=parsed.block_slot, head_slot=self.head_state_slot(),  "block rejected");
-            return GossipFeedback::Reject;
-        }
+            // Roll back the speculative COW allocs.
+            self.arena.slot.set_cursor(pre_slot);
+            self.arena.roots.set_cursor(pre_roots);
+            self.arena.vid.set_cursor(pre_vid);
+            self.arena.epoch.set_cursor(pre_epoch);
+            self.arena.longtail.set_cursor(pre_longtail);
+            self.pending_pool_next = pre_pending;
 
-        tracing::info!(
-            block_slot = parsed.block_slot,
-            head_slot = self.head_state_slot(),
-            "applied block"
-        );
+            tracing::error!(error = %e, block_slot = %parsed.block_slot, head_slot=self.head_state_slot(), "block rejected");
+            return Feedback::Reject(Some(parsed.block_root));
+        }
 
         // Fold block-included attestations into the tracker.
         for i in 0..self.attestation_votes_scratch.len() {
             let (vi, root, ep) = self.attestation_votes_scratch[i];
             self.on_attestation(vi as usize, root, ep);
         }
-
-        let block_header = types::BeaconBlockHeader {
-            slot: parsed.block_slot,
-            proposer_index: parsed.proposer_index,
-            parent_root: parsed.parent_root,
-            state_root: parsed.state_root,
-            body_root: parsed.body_root,
-        };
-        let block_root = ssz_hash::hash_tree_root_block_header(&block_header, &self.zero_hashes);
 
         let sd = self.slot(&state_ref);
         // TODO(EL): extract execution_block_hash from the execution payload
@@ -950,7 +919,7 @@ impl BeaconStateTile {
         // INVALID, or SYNCING (optimistic).
         self.fork_choice.on_block(&BlockImport {
             slot: parsed.block_slot,
-            block_root,
+            block_root: parsed.block_root,
             parent_root: parsed.parent_root,
             state_root: parsed.state_root,
             execution_block_hash: [0u8; 32],
@@ -960,85 +929,88 @@ impl BeaconStateTile {
         });
 
         self.recompute_head();
-        let new_head = self.fork_choice.find_head();
-        if let Some(idx) = self.fork_choice.find_node_idx(&new_head) {
-            self.head = self.fork_choice.node(idx).state;
-            self.head_block_root = new_head;
-        }
-        GossipFeedback::Accept
+
+        self.last_applied = LastApplied::from_ref(&state_ref);
+        self.last_applied_block_root = parsed.block_root;
+        Feedback::Accept
     }
 
     /// Pre-COW block validation: parse, parent-known, past-slot, proposer
     /// lookahead, BLS sig. Cheap, no state mutation. Returns parsed fields
-    /// on accept; the GossipFeedback variant on reject/ignore.
-    fn precheck_block<'a>(&self, data: &'a [u8]) -> Result<ParsedBlock<'a>, GossipFeedback> {
+    /// on accept; a structured `PrecheckError` on reject/ignore. Caller
+    /// projects via `err.feedback()`.
+    fn precheck_block<'a>(&self, data: &'a [u8]) -> Result<ParsedBlock<'a>, PrecheckError> {
         if !SignedBeaconBlockView::check_size(data) {
-            tracing::warn!("block size precheck failed");
-            return Err(GossipFeedback::Reject);
+            return Err(PrecheckError::SizeMismatch {
+                expected_min: silver_common::ssz_view::SIGNED_BEACON_BLOCK_MIN,
+                expected_max: silver_common::ssz_view::SIGNED_BEACON_BLOCK_MAX,
+                got: data.len(),
+            });
         }
         let block_slot = SignedBeaconBlockView::slot(data);
         let proposer_index = SignedBeaconBlockView::proposer_index(data);
         let parent_root = *SignedBeaconBlockView::parent_root(data);
         let state_root = *SignedBeaconBlockView::state_root(data);
 
-        let head = self.head;
-        let head_slot = self.slot(&head).slot;
+        let Some(parent_idx) = self.fork_choice.find_node_idx(&parent_root) else {
+            let last_applied_slot = Self::last_applied_slot(&self.arena, self.last_applied).slot;
+            return Err(PrecheckError::ParentMissing { parent_root, last_applied_slot, block_slot });
+        };
+        let parent_state = self.fork_choice.node(parent_idx).state;
+        let parent_slot = Self::slot_at(&self.arena, parent_state).slot;
 
-        // Parent not yet imported — not the sender's fault.
-        if self.fork_choice.find_node_idx(&parent_root).is_none() {
-            tracing::warn!(head_slot, block_slot, fc_head_block_root=?self.fork_choice.find_head(), ?parent_root, "block parent precheck failed");
-            return Err(GossipFeedback::Ignore);
-        }
-
-        // Past-slot blocks: state has already advanced past their slot.
-        if block_slot < head_slot {
-            tracing::warn!(block_slot, head_slot, "block head slot precheck failed");
-            return Err(GossipFeedback::Ignore);
+        // Past-slot blocks: a block must strictly extend its parent's slot.
+        if block_slot <= parent_slot {
+            return Err(PrecheckError::PastSlot { block_slot, parent_slot });
         }
 
         // Future-slot blocks: spec gossip rule says IGNORE blocks whose slot
         // exceeds wall slot.
-        if block_slot > self.ticker.current_slot() + 1 {
-            tracing::warn!(
-                block_slot,
-                ticker = (self.ticker.current_slot() + 1),
-                "block ticker slot precheck failed"
-            );
-            return Err(GossipFeedback::Ignore);
+        let wall_slot_plus_one = self.ticker.current_slot() + 1;
+        if block_slot > wall_slot_plus_one {
+            return Err(PrecheckError::FutureSlot { block_slot, wall_slot_plus_one });
         }
 
+        let body = SignedBeaconBlockView::body(data);
+        let body_root = ssz_hash::hash_tree_root_body(body, &self.zero_hashes);
+        let block_header = types::BeaconBlockHeader {
+            slot: block_slot,
+            proposer_index,
+            parent_root,
+            state_root,
+            body_root,
+        };
+        let block_root = ssz_hash::hash_tree_root_block_header(&block_header, &self.zero_hashes);
+
         let block_epoch = block_slot / SLOTS_PER_EPOCH;
-        let head_epoch = head_slot / SLOTS_PER_EPOCH;
+        let parent_epoch = parent_slot / SLOTS_PER_EPOCH;
         // Fulu canonicalises proposer selection via `proposer_lookahead`
-        // (spans current + next epoch, 64 slots). Avoids recomputing from
-        // (epoch_data, seed), which can diverge mid-epoch because the
-        // lookahead was fixed at the prior epoch boundary.
-        if block_epoch == head_epoch || block_epoch == head_epoch + 1 {
-            let la_idx = (block_slot - head_epoch * SLOTS_PER_EPOCH) as usize;
-            if la_idx < types::PROPOSER_LOOKAHEAD_SIZE &&
-                proposer_index != self.slot(&head).proposer_lookahead[la_idx]
-            {
-                tracing::warn!("block proposer lookahead precheck failed");
-                return Err(GossipFeedback::Reject);
+        // (spans current + next epoch, 64 slots). The lookahead is a field
+        // of the parent's `SlotData`, fixed at the parent's prior epoch
+        // boundary — read it from the parent, not `last_applied`.
+        if block_epoch == parent_epoch || block_epoch == parent_epoch + 1 {
+            let la_idx = (block_slot - parent_epoch * SLOTS_PER_EPOCH) as usize;
+            if la_idx < types::PROPOSER_LOOKAHEAD_SIZE {
+                let expected = Self::slot_at(&self.arena, parent_state).proposer_lookahead[la_idx];
+                if proposer_index != expected {
+                    return Err(PrecheckError::ProposerLookaheadMismatch {
+                        expected,
+                        got: proposer_index,
+                        block_root,
+                    });
+                }
             }
         }
 
-        // body_root needed for BLS now and for the new latest_block_header
-        // set in process_block_header later. Compute once.
-        let body = SignedBeaconBlockView::body(data);
-        let body_root = ssz_hash::hash_tree_root_body(body, &self.zero_hashes);
-
-        let imm = self.imm(&head);
-        let vid = self.vid(&head);
+        let imm = Self::imm_at(&self.arena, parent_state);
+        let vid = Self::vid_at(&self.arena, parent_state);
         if proposer_index as usize >= vid.validator_cnt {
-            tracing::warn!(
-                proposer_index,
-                vid = vid.validator_cnt,
-                "block proposer index precheck failed"
-            );
-            return Err(GossipFeedback::Reject);
+            return Err(PrecheckError::ProposerIndexTooBig {
+                got: proposer_index,
+                validator_cnt: vid.validator_cnt,
+                block_root,
+            });
         }
-        let block_epoch = block_slot / SLOTS_PER_EPOCH;
         let fork_version = bls::fork_version_at_epoch(
             imm.fork.epoch,
             imm.fork.previous_version,
@@ -1054,30 +1026,44 @@ impl BeaconStateTile {
             &imm.genesis_validators_root,
             &self.zero_hashes,
         ) {
-            tracing::warn!("block signature precheck failed");
-            return Err(GossipFeedback::Reject);
+            return Err(PrecheckError::InvalidBls {
+                proposer_index,
+                pubkey: vid.val_pubkey[proposer_index as usize],
+                block_root,
+            });
         }
 
-        Ok(ParsedBlock { block_slot, proposer_index, parent_root, state_root, body_root, body })
+        Ok(ParsedBlock {
+            block_slot,
+            proposer_index,
+            parent_root,
+            state_root,
+            body_root,
+            block_root,
+            body,
+            parent_state,
+        })
     }
 
-    /// Allocate fresh tier indices for the new block's post-state.
-    fn cow_state_for_block(&mut self, body: &[u8], block_epoch: Epoch) -> BeaconStateRef {
-        let head = self.head;
-
-        let new_slot_idx = self.arena.slot.copy_from(head.slot_idx as usize);
+    fn cow_state_for_block(
+        &mut self,
+        parent: BeaconStateRef,
+        body: &[u8],
+        block_epoch: Epoch,
+    ) -> BeaconStateRef {
+        let new_slot_idx = self.arena.slot.copy_from(parent.slot_idx as usize);
         let new_slot_gen = self.arena.slot.gen_at(new_slot_idx);
-        let new_roots_idx = self.arena.roots.copy_from(head.roots_idx as usize);
+        let new_roots_idx = self.arena.roots.copy_from(parent.roots_idx as usize);
         let new_roots_gen = self.arena.roots.gen_at(new_roots_idx);
         let new_pending_idx = self.alloc_pending();
-        debug_assert_ne!(new_pending_idx, head.pending_idx as usize);
+        debug_assert_ne!(new_pending_idx, parent.pending_idx as usize);
         // Split borrow because src and dst index the same `pending_pool`.
         let pool = self.pending_pool.as_mut_slice();
-        let (src, dst) = if (head.pending_idx as usize) < new_pending_idx {
+        let (src, dst) = if (parent.pending_idx as usize) < new_pending_idx {
             let (lo, hi) = pool.split_at_mut(new_pending_idx);
-            (&lo[head.pending_idx as usize], &mut hi[0])
+            (&lo[parent.pending_idx as usize], &mut hi[0])
         } else {
-            let (lo, hi) = pool.split_at_mut(head.pending_idx as usize);
+            let (lo, hi) = pool.split_at_mut(parent.pending_idx as usize);
             (&hi[0], &mut lo[new_pending_idx])
         };
         dst.pending_deposits.clone_from(&src.pending_deposits);
@@ -1085,12 +1071,12 @@ impl BeaconStateTile {
         dst.pending_consolidations.clone_from(&src.pending_consolidations);
 
         let mut state_ref = BeaconStateRef {
-            imm_idx: head.imm_idx,
-            vid_idx: head.vid_idx,
-            vid_gen: head.vid_gen,
-            longtail_idx: head.longtail_idx,
-            epoch_idx: head.epoch_idx,
-            epoch_gen: head.epoch_gen,
+            imm_idx: parent.imm_idx,
+            vid_idx: parent.vid_idx,
+            vid_gen: parent.vid_gen,
+            longtail_idx: parent.longtail_idx,
+            epoch_idx: parent.epoch_idx,
+            epoch_gen: parent.epoch_gen,
             roots_idx: new_roots_idx as u8,
             roots_gen: new_roots_gen,
             slot_idx: new_slot_idx as u8,
@@ -1102,8 +1088,8 @@ impl BeaconStateTile {
         // that process_block_body does. Combine both into one parse pass, or
         // drop hints and conservatively COW (profile to confirm cost).
         let (may_mut_vid, may_mut_epoch) = body_mutation_hints(body);
-        let head_epoch = self.slot(&state_ref).slot / SLOTS_PER_EPOCH;
-        let crosses_epoch = block_epoch != head_epoch;
+        let parent_epoch = self.slot(&state_ref).slot / SLOTS_PER_EPOCH;
+        let crosses_epoch = block_epoch != parent_epoch;
 
         if may_mut_vid {
             state_ref.vid_idx = self.arena.vid.copy_from(state_ref.vid_idx as usize) as u8;
@@ -1124,9 +1110,9 @@ impl BeaconStateTile {
         state_ref
     }
 
-    fn handle_attestation(&mut self, data: &[u8]) -> GossipFeedback {
+    fn handle_attestation(&mut self, data: &[u8]) -> Feedback {
         if data.len() < SINGLE_ATT_SIZE {
-            return GossipFeedback::Reject;
+            return Feedback::Reject(None);
         }
         let buf: &[u8; SINGLE_ATT_SIZE] = data[..SINGLE_ATT_SIZE].try_into().unwrap();
 
@@ -1140,12 +1126,12 @@ impl BeaconStateTile {
         let att_epoch = att_slot / SLOTS_PER_EPOCH;
         let entry = match self.get_shuffling(att_epoch) {
             Some(e) => e,
-            None => return GossipFeedback::Ignore,
+            None => return Feedback::Ignore,
         };
 
         let cps = shuffling::committees_per_slot(entry.shuffled_indices.len());
         if committee_index >= cps {
-            return GossipFeedback::Reject;
+            return Feedback::Reject(None);
         }
         let committee = shuffling::get_beacon_committee(
             entry.shuffled_indices.as_slice(),
@@ -1155,14 +1141,14 @@ impl BeaconStateTile {
         );
 
         if !committee.contains(&(attester_index as u32)) {
-            return GossipFeedback::Reject;
+            return Feedback::Reject(None);
         }
 
-        let head = self.head;
-        let imm = self.imm(&head);
-        let vid = self.vid(&head);
+        let canon = self.canonical_state_ref();
+        let imm = Self::imm_at(&self.arena, canon);
+        let vid = Self::vid_at(&self.arena, canon);
         if attester_index >= vid.validator_cnt {
-            return GossipFeedback::Reject;
+            return Feedback::Reject(None);
         }
         let fork_version = bls::fork_version_at_epoch(
             imm.fork.epoch,
@@ -1177,16 +1163,16 @@ impl BeaconStateTile {
             &imm.genesis_validators_root,
             &self.zero_hashes,
         ) {
-            return GossipFeedback::Reject;
+            return Feedback::Reject(None);
         }
 
         self.on_attestation(attester_index, block_root, target_epoch);
-        GossipFeedback::Accept
+        Feedback::Accept
     }
 
-    fn handle_aggregate_and_proof(&mut self, data: &[u8]) -> GossipFeedback {
+    fn handle_aggregate_and_proof(&mut self, data: &[u8]) -> Feedback {
         if !SignedAggregateAndProofView::check_size(data) {
-            return GossipFeedback::Reject;
+            return Feedback::Reject(None);
         }
 
         let outer_sig = SignedAggregateAndProofView::signature(data);
@@ -1205,11 +1191,11 @@ impl BeaconStateTile {
         let aggregate_bytes = SignedAggregateAndProofView::aggregate(data);
 
         if agg_data_index != 0 {
-            return GossipFeedback::Reject;
+            return Feedback::Reject(None);
         }
         let att_epoch = agg_slot / SLOTS_PER_EPOCH;
         if target_epoch != att_epoch {
-            return GossipFeedback::Reject;
+            return Feedback::Reject(None);
         }
         // Spec slot window: aggregate.slot <= current_slot <=
         // aggregate.slot + ATTESTATION_PROPAGATION_SLOT_RANGE.
@@ -1217,11 +1203,11 @@ impl BeaconStateTile {
         // the ticker.
         let wall = self.ticker.current_slot();
         if agg_slot > wall || agg_slot.saturating_add(ATTESTATION_PROPAGATION_SLOT_RANGE) < wall {
-            return GossipFeedback::Ignore;
+            return Feedback::Ignore;
         }
         // Fulu gossip rule: exactly one committee bit set.
         if committee_bits.count_ones() != 1 {
-            return GossipFeedback::Reject;
+            return Feedback::Reject(None);
         }
         let committee_index = committee_bits.trailing_zeros() as usize;
 
@@ -1232,15 +1218,15 @@ impl BeaconStateTile {
             .get_checkpoint_block(&beacon_block_root, target_epoch * SLOTS_PER_EPOCH)
         {
             Some(r) if r == target_root => {}
-            Some(_) => return GossipFeedback::Reject,
-            None => return GossipFeedback::Ignore,
+            Some(_) => return Feedback::Reject(None),
+            None => return Feedback::Ignore,
         }
 
-        let head = self.head;
-        let imm = self.arena.imm.get(head.imm_idx as usize);
-        let vid = self.arena.vid.get_checked(head.vid_idx as usize, head.vid_gen);
+        let canon = self.canonical_state_ref();
+        let imm = Self::imm_at(&self.arena, canon);
+        let vid = Self::vid_at(&self.arena, canon);
         if aggregator_index >= vid.validator_cnt {
-            return GossipFeedback::Ignore;
+            return Feedback::Ignore;
         }
 
         let shuffled = match self
@@ -1250,15 +1236,15 @@ impl BeaconStateTile {
             .find(|e| e.status == 1 && e.epoch == att_epoch)
         {
             Some(e) => e.shuffled_indices.as_slice(),
-            None => return GossipFeedback::Ignore,
+            None => return Feedback::Ignore,
         };
         let cps = shuffling::committees_per_slot(shuffled.len());
         if committee_index >= cps {
-            return GossipFeedback::Reject;
+            return Feedback::Reject(None);
         }
         let committee = shuffling::get_beacon_committee(shuffled, agg_slot, committee_index, cps);
         if !committee.contains(&(aggregator_index as u32)) {
-            return GossipFeedback::Reject;
+            return Feedback::Reject(None);
         }
         let committee_len = committee.len();
 
@@ -1273,17 +1259,17 @@ impl BeaconStateTile {
                 continue;
             }
             if vi32 as usize >= vid.validator_cnt {
-                return GossipFeedback::Reject;
+                return Feedback::Reject(None);
             }
             self.active_scratch.push(vi32);
         }
         if self.active_scratch.is_empty() {
-            return GossipFeedback::Reject;
+            return Feedback::Reject(None);
         }
 
         // is_aggregator: hash(selection_proof)[0..8] LE mod max(1, |C|/16) == 0.
         if !is_aggregator(committee_len, selection_proof) {
-            return GossipFeedback::Reject;
+            return Feedback::Reject(None);
         }
 
         let fv = bls::fork_version_at_epoch(
@@ -1326,7 +1312,7 @@ impl BeaconStateTile {
             sr_att,
         );
         if !self.sig_batch.verify_all() {
-            return GossipFeedback::Reject;
+            return Feedback::Reject(None);
         }
 
         // Fold per-participant votes via `on_attestation` so the spec's
@@ -1335,12 +1321,12 @@ impl BeaconStateTile {
             let vi = self.active_scratch[i] as usize;
             self.on_attestation(vi, beacon_block_root, target_epoch);
         }
-        GossipFeedback::Accept
+        Feedback::Accept
     }
 
-    fn handle_voluntary_exit(&mut self, data: &[u8]) -> GossipFeedback {
+    fn handle_voluntary_exit(&mut self, data: &[u8]) -> Feedback {
         if data.len() != SIGNED_VOLUNTARY_EXIT_SIZE {
-            return GossipFeedback::Reject;
+            return Feedback::Reject(None);
         }
         let buf: &[u8; SIGNED_VOLUNTARY_EXIT_SIZE] =
             data[..SIGNED_VOLUNTARY_EXIT_SIZE].try_into().unwrap();
@@ -1348,26 +1334,26 @@ impl BeaconStateTile {
         let vi_u = SignedVoluntaryExitView::validator_index(buf);
         let vi = vi_u as usize;
 
-        let head = self.head;
-        let imm = self.imm(&head);
-        let vid = self.vid(&head);
-        let epoch_data = self.epoch(&head);
-        let sd = self.slot(&head);
-        let pq = &self.pending_pool[head.pending_idx as usize];
+        let canon = self.canonical_state_ref();
+        let imm = Self::imm_at(&self.arena, canon);
+        let vid = Self::vid_at(&self.arena, canon);
+        let epoch_data = Self::epoch_at(&self.arena, canon);
+        let sd = Self::slot_at(&self.arena, canon);
+        let pq = &self.pending_pool[canon.pending_idx as usize];
         let current_epoch = sd.slot / SLOTS_PER_EPOCH;
 
         // Out-of-range index: state may be stale, defer.
         if vi >= vid.validator_cnt {
-            return GossipFeedback::Ignore;
+            return Feedback::Ignore;
         }
         if let Err(e) =
             validate::validate_voluntary_exit(vid, epoch_data, vi, exit_epoch, current_epoch)
         {
             tracing::debug!(error = %e, "voluntary_exit gossip rejected");
-            return GossipFeedback::Reject;
+            return Feedback::Reject(None);
         }
         if state_transition::get_pending_balance_to_withdraw(pq, vi) != 0 {
-            return GossipFeedback::Reject;
+            return Feedback::Reject(None);
         }
 
         let object_root =
@@ -1380,34 +1366,34 @@ impl BeaconStateTile {
         let signing_root = bls::compute_signing_root(&object_root, &domain);
         let sig = SignedVoluntaryExitView::signature(buf);
         if !bls::verify_one(&vid.val_pubkey_decompressed[vi], sig, &signing_root) {
-            return GossipFeedback::Reject;
+            return Feedback::Reject(None);
         }
-        GossipFeedback::Accept
+        Feedback::Accept
     }
 
-    fn handle_proposer_slashing(&mut self, data: &[u8]) -> GossipFeedback {
+    fn handle_proposer_slashing(&mut self, data: &[u8]) -> Feedback {
         if data.len() != PROPOSER_SLASHING_SIZE {
-            return GossipFeedback::Reject;
+            return Feedback::Reject(None);
         }
         let buf: &[u8; PROPOSER_SLASHING_SIZE] = data[..PROPOSER_SLASHING_SIZE].try_into().unwrap();
         if let Err(e) = validate::validate_proposer_slashing(buf) {
             tracing::debug!(error = %e, "proposer_slashing gossip rejected");
-            return GossipFeedback::Reject;
+            return Feedback::Reject(None);
         }
 
-        let head = self.head;
-        let imm = self.arena.imm.get(head.imm_idx as usize);
-        let vid = self.arena.vid.get_checked(head.vid_idx as usize, head.vid_gen);
-        let epoch_data = self.arena.epoch.get_checked(head.epoch_idx as usize, head.epoch_gen);
-        let sd = self.arena.slot.get_checked(head.slot_idx as usize, head.slot_gen);
+        let canon = self.canonical_state_ref();
+        let imm = Self::imm_at(&self.arena, canon);
+        let vid = Self::vid_at(&self.arena, canon);
+        let epoch_data = Self::epoch_at(&self.arena, canon);
+        let sd = Self::slot_at(&self.arena, canon);
         let current_epoch = sd.slot / SLOTS_PER_EPOCH;
 
         let proposer_index = ProposerSlashingView::h1_proposer_index(buf) as usize;
         if proposer_index >= vid.validator_cnt {
-            return GossipFeedback::Ignore;
+            return Feedback::Ignore;
         }
         if !state_transition::is_slashable_validator(epoch_data, proposer_index, current_epoch) {
-            return GossipFeedback::Reject;
+            return Feedback::Reject(None);
         }
 
         // Headers may straddle fork boundary; pick fork version per slot.
@@ -1445,20 +1431,20 @@ impl BeaconStateTile {
         self.sig_batch.push_one(pubkey, sig1, sr1);
         self.sig_batch.push_one(pubkey, sig2, sr2);
         if !self.sig_batch.verify_all() {
-            return GossipFeedback::Reject;
+            return Feedback::Reject(None);
         }
-        GossipFeedback::Accept
+        Feedback::Accept
     }
 
-    fn handle_attester_slashing(&mut self, data: &[u8]) -> GossipFeedback {
+    fn handle_attester_slashing(&mut self, data: &[u8]) -> Feedback {
         if !AttesterSlashingView::check_size(data) {
-            return GossipFeedback::Reject;
+            return Feedback::Reject(None);
         }
-        let head = self.head;
-        let imm = self.arena.imm.get(head.imm_idx as usize);
-        let vid = self.arena.vid.get_checked(head.vid_idx as usize, head.vid_gen);
-        let epoch_data = self.arena.epoch.get_checked(head.epoch_idx as usize, head.epoch_gen);
-        let sd = self.arena.slot.get_checked(head.slot_idx as usize, head.slot_gen);
+        let canon = self.canonical_state_ref();
+        let imm = Self::imm_at(&self.arena, canon);
+        let vid = Self::vid_at(&self.arena, canon);
+        let epoch_data = Self::epoch_at(&self.arena, canon);
+        let sd = Self::slot_at(&self.arena, canon);
         if state_transition::validate_attester_slashing_for_gossip(
             imm,
             vid,
@@ -1468,32 +1454,32 @@ impl BeaconStateTile {
             &mut self.sig_batch,
             &self.zero_hashes,
         ) {
-            GossipFeedback::Accept
+            Feedback::Accept
         } else {
-            GossipFeedback::Reject
+            Feedback::Reject(None)
         }
     }
 
-    fn handle_bls_to_execution_change(&mut self, data: &[u8]) -> GossipFeedback {
+    fn handle_bls_to_execution_change(&mut self, data: &[u8]) -> Feedback {
         if data.len() != SIGNED_BLS_CHANGE_SIZE {
-            return GossipFeedback::Reject;
+            return Feedback::Reject(None);
         }
         let buf: &[u8; SIGNED_BLS_CHANGE_SIZE] = data[..SIGNED_BLS_CHANGE_SIZE].try_into().unwrap();
 
-        let head = self.head;
-        let imm = self.imm(&head);
-        let vid = self.vid(&head);
+        let canon = self.canonical_state_ref();
+        let imm = Self::imm_at(&self.arena, canon);
+        let vid = Self::vid_at(&self.arena, canon);
 
         let vi_u = SignedBlsToExecutionChangeView::validator_index(buf);
         let vi = vi_u as usize;
         if vi >= vid.validator_cnt {
-            return GossipFeedback::Ignore;
+            return Feedback::Ignore;
         }
         let from_pubkey = SignedBlsToExecutionChangeView::from_bls_pubkey(buf);
         let to_address = SignedBlsToExecutionChangeView::to_execution_address(buf);
         if let Err(e) = validate::validate_bls_to_execution_change(vid, vi, from_pubkey) {
             tracing::debug!(error = %e, "bls_to_execution_change gossip rejected");
-            return GossipFeedback::Reject;
+            return Feedback::Reject(None);
         }
 
         let object_root =
@@ -1508,30 +1494,25 @@ impl BeaconStateTile {
         // Signer is the message's `from_bls_pubkey` — not the validator's
         // cached signing key — so decompress inline.
         if !bls::verify_one_compressed(from_pubkey, sig, &signing_root) {
-            return GossipFeedback::Reject;
+            return Feedback::Reject(None);
         }
-        GossipFeedback::Accept
+        Feedback::Accept
     }
 }
 
 impl Tile<SilverSpine> for BeaconStateTile {
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         if !self.initial_status_emitted {
-            adapter.produce(BeaconStateEvent::Status(self.status_payload()));
+            adapter.produce(self.status_event());
             self.initial_status_emitted = true;
         }
 
-        if self.mode == Mode::Following && !self.synced_emitted {
-            adapter.produce(BeaconStateEvent::Synced(self.status_payload()));
-            self.synced_emitted = true;
-        }
-
-        let following = self.mode == Mode::Following;
+        let following = self.mode.is_following();
         if following {
             match self.ticker.tick() {
                 TickEvent::SlotStart(slot) => {
                     if self.on_slot_start(slot) {
-                        adapter.produce(BeaconStateEvent::Status(self.status_payload()));
+                        adapter.produce(self.status_event());
                     }
                 }
                 TickEvent::StateAdvance(slot) => self.on_state_advance(slot),
@@ -1550,37 +1531,61 @@ impl Tile<SilverSpine> for BeaconStateTile {
                 if let Some(p) = data {
                     self.handle_gossip(m, unsafe { &*p }, producers);
                 }
+            } else {
+                tracing::warn!(
+                    topic = ?m.topic,
+                    p2p_peer = m.stream_id.peer(),
+                    "gossip dropped: BeaconState in Syncing mode"
+                );
             }
         });
         self.gossip_consumer.free();
 
+        // PM drives sync. Mirror the latest target into `mode`, used only
+        // to gate gossip/slot-tick processing. Stale events in the queue
+        // collapse — only the latest wins.
+        adapter.consume(|target: SyncUpdate, _producers| {
+            let new_sync = match target {
+                SyncUpdate::SyncingFinalised { .. } | SyncUpdate::SyncingHead { .. } => {
+                    Mode::Syncing
+                }
+                SyncUpdate::Following => Mode::Following,
+            };
+            if new_sync != self.mode {
+                tracing::info!(
+                    head_slot = Self::last_applied_slot(&self.arena, self.last_applied).slot,
+                    from = ?self.mode,
+                    to = ?new_sync,
+                    ?target,
+                    "BeaconState mode transition"
+                );
+                self.mode = new_sync;
+            }
+        });
+
         adapter.consume(|m: RpcInbound, producers| {
             if let RpcInbound::Response(RpcResponseInbound {
-                application_id,
+                application_id: _,
                 stream_id,
                 response,
-            }) = m && let RpcResponse::BeaconBlock { fork_digest: _, ssz } = response {
-                    tracing::info!(?stream_id, "received beacon block over rpc");
-                    let acquired = self.rpc_consumer.acquire(ssz);
-                    let data = acquired.buffer().ok().map(|(d, _)| d as *const [u8]);
-                    if let Some(p) = data {
-                        self.handle_rpc(
-                            RpcMsg::BlocksRangeResp(SignedBeaconBlockView),
-                            stream_id,
-                            application_id,
-                            unsafe { &*p },
-                            ssz,
-                            producers,
-                        );
-                    }
+            }) = m &&
+                let RpcResponse::BeaconBlock { fork_digest: _, ssz } = response
+            {
+                tracing::debug!(?stream_id, "received beacon block over rpc");
+                let acquired = self.rpc_consumer.acquire(ssz);
+                let data = acquired.buffer().ok().map(|(d, _)| d as *const [u8]);
+                if let Some(p) = data {
+                    self.handle_rpc(
+                        RpcMsg::BlocksRangeResp(SignedBeaconBlockView),
+                        stream_id,
+                        unsafe { &*p },
+                        ssz,
+                        producers,
+                    );
                 }
+            }
         });
         self.rpc_consumer.free();
-
-        // Sync: request more blocks.
-        if self.mode == Mode::Syncing {
-            self.sync_step(adapter);
-        }
     }
 }
 
@@ -1588,9 +1593,6 @@ impl Tile<SilverSpine> for BeaconStateTile {
 /// current_slot >= aggregate.slot`.
 const ATTESTATION_PROPAGATION_SLOT_RANGE: u64 = 32;
 
-/// Spec `is_aggregator(state, slot, index, selection_proof)`.
-/// `modulo = max(1, len(committee) // TARGET_AGGREGATORS_PER_COMMITTEE)`;
-/// accept iff `bytes_to_uint64(sha256(selection_proof)[0..8]) % modulo == 0`.
 fn is_aggregator(committee_len: usize, selection_proof: &[u8; 96]) -> bool {
     const TARGET_AGGREGATORS_PER_COMMITTEE: u64 = 16;
     let modulo = (committee_len as u64 / TARGET_AGGREGATORS_PER_COMMITTEE).max(1);
@@ -1730,8 +1732,9 @@ mod tests {
             sd.balances[i] = MAX_EFFECTIVE_BALANCE;
         }
 
-        tile.fork_choice = ForkChoice::init(cp, cp, start_slot, root, root, tile.head);
-        tile.head_block_root = root;
+        let anchor_ref = tile.synth_anchor_ref();
+        tile.fork_choice = ForkChoice::init(cp, cp, start_slot, root, root, anchor_ref);
+        tile.last_applied_block_root = root;
         tile.mode = Mode::Following;
 
         // Precompute shuffling for the start epoch.
@@ -1767,7 +1770,7 @@ mod tests {
         seed_tile(&mut tile, 4, 10);
 
         tile.on_slot_start(15);
-        assert_eq!(tile.slot(&tile.head).slot, 15);
+        assert_eq!(BeaconStateTile::last_applied_slot(&tile.arena, tile.last_applied).slot, 15);
     }
 
     #[test]
@@ -1776,7 +1779,7 @@ mod tests {
         seed_tile(&mut tile, 4, 10);
 
         tile.on_slot_start(5);
-        assert_eq!(tile.slot(&tile.head).slot, 10);
+        assert_eq!(BeaconStateTile::last_applied_slot(&tile.arena, tile.last_applied).slot, 10);
     }
 
     #[test]
@@ -1786,12 +1789,12 @@ mod tests {
         // Epoch transition should fire at end of slot 31 (since (31+1) % 32 == 0).
         seed_tile(&mut tile, 4, 30);
 
-        let old_epoch_idx = tile.head.epoch_idx;
+        let old_epoch_idx = tile.last_applied.epoch_idx;
         tile.on_slot_start(34);
 
-        assert_eq!(tile.slot(&tile.head).slot, 34);
+        assert_eq!(BeaconStateTile::last_applied_slot(&tile.arena, tile.last_applied).slot, 34);
         // Epoch transition allocated a new EpochData.
-        assert_ne!(tile.head.epoch_idx, old_epoch_idx);
+        assert_ne!(tile.last_applied.epoch_idx, old_epoch_idx);
     }
 
     #[test]
@@ -1803,7 +1806,7 @@ mod tests {
 
         tile.on_slot_start(66);
 
-        assert_eq!(tile.slot(&tile.head).slot, 66);
+        assert_eq!(BeaconStateTile::last_applied_slot(&tile.arena, tile.last_applied).slot, 66);
     }
 
     #[test]
@@ -1873,7 +1876,7 @@ mod tests {
         // validate AttestationData beyond what BLS verifies via signing root.
 
         // Sign over the AttestationData signing root.
-        let imm = tile.imm(&tile.head);
+        let imm = BeaconStateTile::last_applied_imm(&tile.arena, tile.last_applied);
         let fork_version = bls::fork_version_at_epoch(
             imm.fork.epoch,
             imm.fork.previous_version,
@@ -1893,7 +1896,7 @@ mod tests {
         buf[144..240].copy_from_slice(&sig);
 
         let fb = tile.handle_attestation(&buf);
-        assert_eq!(fb, GossipFeedback::Accept);
+        assert_eq!(fb, Feedback::Accept);
         assert_eq!(tile.vote_tracker.votes[attester as usize].next_root[0], 0xAA);
         assert_eq!(tile.vote_tracker.votes[attester as usize].next_epoch, 0);
     }
@@ -1912,11 +1915,11 @@ mod tests {
         // parent_root at offset 116 — unknown root.
         buf[116] = 0xFF;
 
-        let head_before = tile.head;
+        let head_before = tile.last_applied;
         tile.handle_block(&buf);
 
         // Block rejected (orphan), head unchanged.
-        assert_eq!(tile.head.slot_idx, head_before.slot_idx);
+        assert_eq!(tile.last_applied.slot_idx, head_before.slot_idx);
         assert_eq!(tile.fork_choice.nodes.len(), 1); // only genesis
     }
 
@@ -1926,7 +1929,7 @@ mod tests {
         seed_tile(&mut tile, 4, 0);
         let mut buf = [0u8; SIGNED_VOLUNTARY_EXIT_SIZE];
         buf[8..16].copy_from_slice(&999u64.to_le_bytes());
-        assert_eq!(tile.handle_voluntary_exit(&buf), GossipFeedback::Ignore);
+        assert_eq!(tile.handle_voluntary_exit(&buf), Feedback::Ignore);
     }
 
     #[test]
@@ -1934,9 +1937,9 @@ mod tests {
         let mut tile = make_tile();
         seed_tile_with_keys(&mut tile, 4, 256 * SLOTS_PER_EPOCH);
 
-        let imm = *tile.imm(&tile.head);
+        let imm = *BeaconStateTile::last_applied_imm(&tile.arena, tile.last_applied);
         let buf = crate::test_signing::sign_voluntary_exit(0, 0, 0, &imm, &tile.zero_hashes);
-        assert_eq!(tile.handle_voluntary_exit(&buf), GossipFeedback::Accept);
+        assert_eq!(tile.handle_voluntary_exit(&buf), Feedback::Accept);
     }
 
     #[test]
@@ -1945,7 +1948,7 @@ mod tests {
         seed_tile(&mut tile, 4, 0);
         // 416B all-zero — h1 == h2, validate_proposer_slashing rejects.
         let buf = [0u8; PROPOSER_SLASHING_SIZE];
-        assert_eq!(tile.handle_proposer_slashing(&buf), GossipFeedback::Reject);
+        assert_eq!(tile.handle_proposer_slashing(&buf), Feedback::Reject(None));
     }
 
     #[test]
@@ -1958,16 +1961,16 @@ mod tests {
         buf[216..224].copy_from_slice(&999u64.to_le_bytes());
         // Distinct body_root in second header.
         buf[208 + 80] = 0xFF;
-        assert_eq!(tile.handle_proposer_slashing(&buf), GossipFeedback::Ignore);
+        assert_eq!(tile.handle_proposer_slashing(&buf), Feedback::Ignore);
     }
 
     #[test]
     fn ps_accept() {
         let mut tile = make_tile();
         seed_tile_with_keys(&mut tile, 4, 0);
-        let imm = *tile.imm(&tile.head);
+        let imm = *BeaconStateTile::last_applied_imm(&tile.arena, tile.last_applied);
         let buf = crate::test_signing::sign_proposer_slashing(0, 0, 0, &imm, &tile.zero_hashes);
-        assert_eq!(tile.handle_proposer_slashing(&buf), GossipFeedback::Accept);
+        assert_eq!(tile.handle_proposer_slashing(&buf), Feedback::Accept);
     }
 
     #[test]
@@ -1978,7 +1981,7 @@ mod tests {
         // Both proposers = 0 (default); slots differ → validate_proposer_slashing
         // rejects.
         buf[208] = 1; // h2.slot LE byte 0
-        assert_eq!(tile.handle_proposer_slashing(&buf), GossipFeedback::Reject);
+        assert_eq!(tile.handle_proposer_slashing(&buf), Feedback::Reject(None));
     }
 
     #[test]
@@ -1988,7 +1991,7 @@ mod tests {
         let mut buf = [0u8; PROPOSER_SLASHING_SIZE];
         // h1.proposer_index = 0, h2.proposer_index = 1 → reject.
         buf[208 + 8] = 1;
-        assert_eq!(tile.handle_proposer_slashing(&buf), GossipFeedback::Reject);
+        assert_eq!(tile.handle_proposer_slashing(&buf), Feedback::Reject(None));
     }
 
     #[test]
@@ -1997,20 +2000,20 @@ mod tests {
         // (no intersection → no slashable validator).
         let mut tile = make_tile();
         seed_tile(&mut tile, 4, 0);
-        let imm = *tile.imm(&tile.head);
+        let imm = *BeaconStateTile::last_applied_imm(&tile.arena, tile.last_applied);
         // ia1 signs from vi=0, ia2 from vi=1; double-vote on data (different
         // beacon_block_root) but indices disjoint.
         let ia1 = build_ia_with_indices(&imm, &tile.zero_hashes, 0, 0xAA, &[0]);
         let ia2 = build_ia_with_indices(&imm, &tile.zero_hashes, 0, 0xBB, &[1]);
         let buf = wrap_attester_slashing(&ia1, &ia2);
-        assert_eq!(tile.handle_attester_slashing(&buf), GossipFeedback::Reject);
+        assert_eq!(tile.handle_attester_slashing(&buf), Feedback::Reject(None));
     }
 
     #[test]
     fn as_accept() {
         let mut tile = make_tile();
         seed_tile_with_keys(&mut tile, 4, 0);
-        let imm = *tile.imm(&tile.head);
+        let imm = *BeaconStateTile::last_applied_imm(&tile.arena, tile.last_applied);
         // Both ia signed by sk_idx=0 covering vi=0 → double-vote, vi=0 is
         // slashable in head state.
         let buf = crate::test_signing::sign_attester_slashing_double_vote(
@@ -2021,7 +2024,7 @@ mod tests {
             &imm,
             &tile.zero_hashes,
         );
-        assert_eq!(tile.handle_attester_slashing(&buf), GossipFeedback::Accept);
+        assert_eq!(tile.handle_attester_slashing(&buf), Feedback::Accept);
     }
 
     /// Disjoint attesting_indices but valid BLS sigs on each side — ensures the
@@ -2031,7 +2034,7 @@ mod tests {
     fn as_zero_intersection_with_valid_sigs_rejected() {
         let mut tile = make_tile();
         seed_tile_with_keys(&mut tile, 4, 0);
-        let imm = *tile.imm(&tile.head);
+        let imm = *BeaconStateTile::last_applied_imm(&tile.arena, tile.last_applied);
         // ia1: sk=0/vi=0 ; ia2: sk=1/vi=1 → same target_epoch, different
         // beacon_block_root (double-vote on data), but indices {0} ∩ {1} = ∅.
         let ia1 = crate::test_signing::build_indexed_attestation(
@@ -2055,7 +2058,7 @@ mod tests {
             &tile.zero_hashes,
         );
         let buf = wrap_attester_slashing(&ia1, &ia2);
-        assert_eq!(tile.handle_attester_slashing(&buf), GossipFeedback::Reject);
+        assert_eq!(tile.handle_attester_slashing(&buf), Feedback::Reject(None));
     }
 
     /// Build an IndexedAttestation with attesting_indices = `indices`. Sig is
@@ -2095,7 +2098,7 @@ mod tests {
         seed_tile(&mut tile, 4, 0);
         let mut buf = [0u8; SIGNED_BLS_CHANGE_SIZE];
         buf[0..8].copy_from_slice(&999u64.to_le_bytes());
-        assert_eq!(tile.handle_bls_to_execution_change(&buf), GossipFeedback::Ignore);
+        assert_eq!(tile.handle_bls_to_execution_change(&buf), Feedback::Ignore);
     }
 
     #[test]
@@ -2105,14 +2108,14 @@ mod tests {
         seed_tile(&mut tile, 4, 0);
         tile.arena.vid.get_mut(0).val_withdrawal_credentials[0][0] = 0x01; // ETH1 prefix
         let buf = [0u8; SIGNED_BLS_CHANGE_SIZE]; // vi=0
-        assert_eq!(tile.handle_bls_to_execution_change(&buf), GossipFeedback::Reject);
+        assert_eq!(tile.handle_bls_to_execution_change(&buf), Feedback::Reject(None));
     }
 
     #[test]
     fn bls_change_accept() {
         let mut tile = make_tile();
         seed_tile_with_keys(&mut tile, 4, 0);
-        let imm = *tile.imm(&tile.head);
+        let imm = *BeaconStateTile::last_applied_imm(&tile.arena, tile.last_applied);
         let to_addr = [0x42u8; 20];
         let buf = crate::test_signing::sign_bls_to_execution_change(
             0,
@@ -2121,7 +2124,7 @@ mod tests {
             &imm,
             &tile.zero_hashes,
         );
-        assert_eq!(tile.handle_bls_to_execution_change(&buf), GossipFeedback::Accept);
+        assert_eq!(tile.handle_bls_to_execution_change(&buf), Feedback::Accept);
     }
 
     #[test]
@@ -2131,7 +2134,7 @@ mod tests {
         let mut buf = vec![0u8; SIGNED_AGG_PROOF_MIN];
         // committee_bits at [436..444); set two bits.
         buf[436] = 0b0000_0011;
-        assert_eq!(tile.handle_aggregate_and_proof(&buf), GossipFeedback::Reject);
+        assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Reject(None));
     }
 
     #[test]
@@ -2143,7 +2146,7 @@ mod tests {
         buf[436] = 0b0000_0001;
         // beacon_block_root at [228..260); pick a value not in fork choice.
         buf[228] = 0xFF;
-        assert_eq!(tile.handle_aggregate_and_proof(&buf), GossipFeedback::Ignore);
+        assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Ignore);
     }
 
     /// Locate `(slot, committee_index, pos_in_committee, committee_size)` for
@@ -2168,9 +2171,9 @@ mod tests {
     /// `head_block_root` as the only fork-choice node, so the target-epoch
     /// checkpoint block resolves back to `head_block_root`.
     fn build_agg_for_vi0(tile: &BeaconStateTile) -> Vec<u8> {
-        let imm = *tile.imm(&tile.head);
-        let beacon_block_root = tile.head_block_root;
-        let target_root = tile.head_block_root;
+        let imm = *BeaconStateTile::last_applied_imm(&tile.arena, tile.last_applied);
+        let beacon_block_root = tile.last_applied_block_root;
+        let target_root = tile.last_applied_block_root;
         let (slot, ci, pos, csize) = find_committee_for_vi0(tile);
         crate::test_signing::sign_aggregate_and_proof(
             0,
@@ -2193,9 +2196,9 @@ mod tests {
         let mut tile = make_tile_at_wall_slot(31);
         seed_tile_with_keys(&mut tile, 128, 0);
         let buf = build_agg_for_vi0(&tile);
-        let beacon_block_root = tile.head_block_root;
+        let beacon_block_root = tile.last_applied_block_root;
         let slot = SignedAggregateAndProofView::agg_slot(&buf);
-        assert_eq!(tile.handle_aggregate_and_proof(&buf), GossipFeedback::Accept);
+        assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Accept);
         // Single-participant aggregate (validator 0) must land in the vote
         // tracker — same effect as the SingleAttestation gossip path.
         assert_eq!(tile.vote_tracker.votes[0].next_root, beacon_block_root);
@@ -2216,7 +2219,7 @@ mod tests {
 
         let buf = build_agg_for_vi0(&tile);
         assert_eq!(SignedAggregateAndProofView::agg_target_epoch(&buf), 0);
-        assert_eq!(tile.handle_aggregate_and_proof(&buf), GossipFeedback::Accept);
+        assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Accept);
 
         assert_eq!(tile.vote_tracker.votes[0].next_root, preset_root);
         assert_eq!(tile.vote_tracker.votes[0].next_epoch, 1);
@@ -2232,7 +2235,7 @@ mod tests {
         assert!(
             SignedAggregateAndProofView::agg_slot(&buf) < 100 - ATTESTATION_PROPAGATION_SLOT_RANGE
         );
-        assert_eq!(tile.handle_aggregate_and_proof(&buf), GossipFeedback::Ignore);
+        assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Ignore);
     }
 
     #[test]
@@ -2248,7 +2251,7 @@ mod tests {
         // slot at [212..220), target.epoch at [300..308). slot=5, target_epoch=0
         // still matches `target.epoch == slot/SLOTS_PER_EPOCH`.
         buf[212] = 5;
-        assert_eq!(tile.handle_aggregate_and_proof(&buf), GossipFeedback::Ignore);
+        assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Ignore);
     }
 
     #[test]
@@ -2262,7 +2265,7 @@ mod tests {
             buf[436 + i] = 0;
         }
         buf[436] = 0b0000_0010;
-        assert_eq!(tile.handle_aggregate_and_proof(&buf), GossipFeedback::Reject);
+        assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Reject(None));
     }
 
     #[test]
@@ -2288,7 +2291,7 @@ mod tests {
             assert!(b < 256, "no parity-flipping byte found (impossible)");
         }
         buf[sp_off..sp_off + 96].copy_from_slice(&sig_arr);
-        assert_eq!(tile.handle_aggregate_and_proof(&buf), GossipFeedback::Reject);
+        assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Reject(None));
     }
 
     #[test]
@@ -2313,8 +2316,9 @@ mod tests {
 
         // Fork choice genesis must use this root too.
         let cp = Checkpoint { epoch: 0, root: parent_root };
-        tile.fork_choice = ForkChoice::init(cp, cp, 10, parent_root, parent_root, tile.head);
-        tile.head_block_root = parent_root;
+        let anchor_ref = tile.synth_anchor_ref();
+        tile.fork_choice = ForkChoice::init(cp, cp, 10, parent_root, parent_root, anchor_ref);
+        tile.last_applied_block_root = parent_root;
 
         // Construct a block with valid structure but zeroed BLS signature.
         let mut buf = vec![0u8; 200];

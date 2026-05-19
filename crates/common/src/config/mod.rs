@@ -4,6 +4,7 @@ pub use discovery_config::DiscoveryConfig;
 pub use peer_score_params::ScoreParams;
 use secp256k1::PublicKey;
 use serde::{Deserialize, Serialize};
+pub use syncing_config::SyncingConfig;
 
 use crate::{
     Enr, Error, GossipTopic, Identify, Keypair, NodeId, PeerId, StreamProtocol,
@@ -13,6 +14,7 @@ use crate::{
 mod chain_config;
 mod discovery_config;
 mod peer_score_params;
+mod syncing_config;
 
 const fn default_usize<const N: usize>() -> usize {
     N
@@ -60,6 +62,8 @@ pub struct Config {
     discovery_config: DiscoveryConfig,
     #[serde(default)]
     peer_score_params: ScoreParams,
+    #[serde(default)]
+    syncing: SyncingConfig,
     #[serde(default = "default_usize::<33554432>")] // 2 << 24
     incoming_gossip_tcache_size: usize,
     #[serde(default = "default_usize::<33554432>")] // 2 << 24
@@ -104,6 +108,7 @@ impl Config {
             chain_config: ChainConfig::default(),
             discovery_config: DiscoveryConfig::default(),
             peer_score_params: ScoreParams::default(),
+            syncing: SyncingConfig::default(),
             incoming_gossip_tcache_size: 2 << 24,     // protobuf
             outgoing_gossip_tcache_size: 2 << 24,     // protobuf
             incoming_gossip_ssz_tcache_size: 2 << 24, // ssz
@@ -212,6 +217,10 @@ impl Config {
 
     pub fn peer_score_params(&self) -> ScoreParams {
         self.peer_score_params.clone()
+    }
+
+    pub fn syncing(&self) -> SyncingConfig {
+        self.syncing.clone()
     }
 
     pub fn discovery_bind_addr(&self) -> Option<SocketAddr> {

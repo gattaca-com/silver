@@ -4,7 +4,7 @@
 //! — fetch them locally with:
 //!
 //! ```sh
-//! make -C crates/beacon_state checkpoint-fixtures
+//! make -C crates/e2e checkpoint-fixtures
 //! ```
 //!
 //! Files land in `tests/example_checkpoints/`: `finalized_state.ssz` plus
@@ -17,13 +17,14 @@ use silver_beacon_state::{
     decompose::decompose_beacon_state,
     ssz_hash::{compute_zero_hashes, hash_tree_root_block_header},
     ticker::SlotTicker,
-    tile::{BeaconStateTile, GossipFeedback},
+    tile::{BeaconStateTile, Feedback},
     types::{
         EpochData, HistoricalLongtail, Immutable, SlotData, SlotRoots, ValidatorIdentity,
         box_zeroed,
     },
 };
 use silver_common::{TCache, TCacheProducer};
+use silver_e2e::canonical::fetch_canonical_state_root;
 
 const FIXTURES: &str = "tests/example_checkpoints";
 const BLOCK_PREFIX: &str = "next_block_";
@@ -35,7 +36,7 @@ fn finalized_state_loads() {
     let state_path = dir.join("finalized_state.ssz");
     let Ok(ssz) = std::fs::read(&state_path) else {
         eprintln!(
-            "skipping: {} not present (run `make -C crates/beacon_state checkpoint-fixtures`)",
+            "skipping: {} not present (run `make -C crates/e2e checkpoint-fixtures`)",
             state_path.display()
         );
         return;
@@ -118,7 +119,7 @@ fn finalized_state_loads() {
         let feedback = tile.try_apply_block(&block_ssz);
         assert_eq!(
             feedback,
-            GossipFeedback::Accept,
+            Feedback::Accept,
             "block at slot {block_slot} not accepted (got {feedback:?})",
         );
         assert!(
@@ -127,6 +128,29 @@ fn finalized_state_loads() {
         );
 
         prev_head = tile.head_block_root();
+    }
+
+    // External-truth cross-check: the canonical post-state root for the
+    // most recently applied block's slot, fetched from a public beacon
+    // API. Skipped silently if the network or API is unavailable —
+    // offline runs still cover STF correctness via the per-block Accept
+    // assertion above.
+    let final_slot = tile.head_state_slot();
+    match fetch_canonical_state_root(final_slot) {
+        Some(expected) => {
+            let got = tile.head_state_root();
+            assert_eq!(
+                got,
+                expected,
+                "head_state_root mismatch at slot {final_slot}: tile 0x{} vs canonical 0x{}",
+                hex(&got),
+                hex(&expected),
+            );
+        }
+        None => eprintln!(
+            "skipping canonical head_state_root cross-check at slot {final_slot} \
+             (network unavailable)"
+        ),
     }
 }
 
