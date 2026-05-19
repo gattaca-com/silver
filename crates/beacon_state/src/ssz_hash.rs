@@ -137,12 +137,7 @@ pub fn hash_validators(vs: &ValidatorsState, epoch: &EpochData, zh: &[B256]) -> 
     mix_in_length(&root, n)
 }
 
-fn hash_single_validator(
-    vs: &ValidatorsState,
-    epoch: &EpochData,
-    i: usize,
-    zh: &[B256],
-) -> B256 {
+fn hash_single_validator(vs: &ValidatorsState, epoch: &EpochData, i: usize, zh: &[B256]) -> B256 {
     let pubkey_hash = hash_fixed_bytes(vs.pubkey(i), zh);
     let chunks = [
         pubkey_hash,

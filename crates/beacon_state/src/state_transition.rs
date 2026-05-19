@@ -160,18 +160,8 @@ fn build_shuffling(
     let prev_epoch = current_epoch.saturating_sub(1);
     let cur_seed = shuffling::get_seed(epoch, current_epoch, DOMAIN_BEACON_ATTESTER);
     let prev_seed = shuffling::get_seed(epoch, prev_epoch, DOMAIN_BEACON_ATTESTER);
-    shuffling::get_active_validator_indices_into(
-        epoch,
-        vs.validator_cnt(),
-        current_epoch,
-        cur,
-    );
-    shuffling::get_active_validator_indices_into(
-        epoch,
-        vs.validator_cnt(),
-        prev_epoch,
-        prev,
-    );
+    shuffling::get_active_validator_indices_into(epoch, vs.validator_cnt(), current_epoch, cur);
+    shuffling::get_active_validator_indices_into(epoch, vs.validator_cnt(), prev_epoch, prev);
     let cur_cps = shuffling::committees_per_slot(cur.len());
     let prev_cps = shuffling::committees_per_slot(prev.len());
     shuffling::shuffle_list(cur, &cur_seed);
@@ -1578,10 +1568,7 @@ pub fn process_voluntary_exits(
         let vi = SignedVoluntaryExitView::validator_index(exit) as usize;
         validate::validate_voluntary_exit(vs, epoch, vi, exit_epoch_msg, current_epoch)?;
         if get_pending_balance_to_withdraw(pq, vi) != 0 {
-            return Err(VoluntaryExitError::HasPendingBalance {
-                vi,
-                pubkey: *vs.pubkey(vi),
-            });
+            return Err(VoluntaryExitError::HasPendingBalance { vi, pubkey: *vs.pubkey(vi) });
         }
         initiate_validator_exit(epoch, sd, n, vi, current_epoch);
     }
