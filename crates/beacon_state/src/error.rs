@@ -10,13 +10,13 @@ pub enum PrecheckError {
     #[error("block size precheck failed: expected {expected_min}..={expected_max} got {got}")]
     SizeMismatch { expected_min: usize, expected_max: usize, got: usize },
     #[error(
-        "block parent precheck failed: parent_root=0x{} head_slot={head_slot} \
+        "block parent precheck failed: parent_root=0x{} last_applied_slot={last_applied_slot} \
          block_slot={block_slot}",
         b256_hex(parent_root)
     )]
-    ParentMissing { parent_root: B256, head_slot: Slot, block_slot: Slot },
-    #[error("block head slot precheck failed: block_slot={block_slot} head_slot={head_slot}")]
-    PastSlot { block_slot: Slot, head_slot: Slot },
+    ParentMissing { parent_root: B256, last_applied_slot: Slot, block_slot: Slot },
+    #[error("block past-slot precheck failed: block_slot={block_slot} parent_slot={parent_slot}")]
+    PastSlot { block_slot: Slot, parent_slot: Slot },
     #[error(
         "block ticker slot precheck failed: block_slot={block_slot} ticker={wall_slot_plus_one}"
     )]
