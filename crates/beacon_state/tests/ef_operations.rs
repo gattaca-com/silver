@@ -95,13 +95,13 @@ fn proposer_slashing() {
     let zh = compute_zero_hashes();
     operations_handler("proposer_slashing", "proposer_slashing", true, move |s, op| {
         let mut batch = SigBatch::new();
-        if state_transition::collect_sigs_proposer_slashings(&s.imm, &s.vid, op, &mut batch, &zh)
+        if state_transition::collect_sigs_proposer_slashings(&s.imm, &s.vs, op, &mut batch, &zh)
             .is_err()
         {
             return false;
         }
         batch.verify_all() &&
-            state_transition::process_proposer_slashings(&s.vid, &mut s.epoch, &mut s.sd, op)
+            state_transition::process_proposer_slashings(&s.vs, &mut s.epoch, &mut s.sd, op)
                 .is_ok()
     });
 }
@@ -117,7 +117,7 @@ fn attester_slashing() {
         let mut batch = SigBatch::new();
         if state_transition::collect_sigs_attester_slashings(
             &s.imm,
-            &s.vid,
+            &s.vs,
             &list,
             &mut active_scratch,
             &mut batch,
@@ -128,7 +128,7 @@ fn attester_slashing() {
             return false;
         }
         batch.verify_all() &&
-            state_transition::process_attester_slashings(&s.vid, &mut s.epoch, &mut s.sd, &list)
+            state_transition::process_attester_slashings(&s.vs, &mut s.epoch, &mut s.sd, &list)
                 .is_ok()
     });
 }
@@ -144,7 +144,7 @@ fn attestation() {
         let proposer_index = s.sd.proposer_lookahead[(s.sd.slot % SLOTS_PER_EPOCH) as usize];
         let current_epoch = block_slot / SLOTS_PER_EPOCH;
         let prev_epoch = current_epoch.saturating_sub(1);
-        let n = s.vid.validator_cnt;
+        let n = s.vs.validator_cnt();
 
         use silver_beacon_state::shuffling;
         let cur_seed = shuffling::get_seed(&s.epoch, current_epoch, 1); // DOMAIN_BEACON_ATTESTER
@@ -171,7 +171,7 @@ fn attestation() {
         let mut batch = SigBatch::new();
         if state_transition::collect_sigs_attestations(
             &s.imm,
-            &s.vid,
+            &s.vs,
             &list,
             block_slot,
             Some(&sref),
@@ -185,7 +185,7 @@ fn attestation() {
         }
         batch.verify_all() &&
             state_transition::process_attestations(
-                &s.vid,
+                &s.vs,
                 &s.epoch,
                 &s.roots,
                 &mut s.sd,
@@ -204,7 +204,7 @@ fn attestation() {
 fn deposit() {
     let zh = compute_zero_hashes();
     operations_handler("deposit", "deposit", true, move |s, op| {
-        state_transition::process_deposits(&mut s.vid, &mut s.epoch, &mut s.sd, &mut s.pq, op, &zh)
+        state_transition::process_deposits(&mut s.vs, &mut s.epoch, &mut s.sd, &mut s.pq, op, &zh)
             .is_ok()
     });
 }
@@ -214,9 +214,9 @@ fn voluntary_exit() {
     let zh = compute_zero_hashes();
     operations_handler("voluntary_exit", "voluntary_exit", true, move |s, op| {
         let mut batch = SigBatch::new();
-        state_transition::collect_sigs_voluntary_exits(&s.imm, &s.vid, op, &mut batch, &zh);
+        state_transition::collect_sigs_voluntary_exits(&s.imm, &s.vs, op, &mut batch, &zh);
         batch.verify_all() &&
-            state_transition::process_voluntary_exits(&s.vid, &mut s.epoch, &mut s.sd, &s.pq, op)
+            state_transition::process_voluntary_exits(&s.vs, &mut s.epoch, &mut s.sd, &s.pq, op)
                 .is_ok()
     });
 }
@@ -227,14 +227,14 @@ fn bls_to_execution_change() {
     operations_handler("bls_to_execution_change", "address_change", true, move |s, op| {
         let mut batch = SigBatch::new();
         if state_transition::collect_sigs_bls_to_execution_changes(
-            &s.imm, &s.vid, op, &mut batch, &zh,
+            &s.imm, &s.vs, op, &mut batch, &zh,
         )
         .is_err()
         {
             return false;
         }
         batch.verify_all() &&
-            state_transition::process_bls_to_execution_changes(&mut s.vid, op).is_ok()
+            state_transition::process_bls_to_execution_changes(&mut s.vs, op).is_ok()
     });
 }
 
@@ -247,7 +247,7 @@ fn sync_aggregate() {
         let mut batch = SigBatch::new();
         state_transition::collect_sigs_sync_aggregate(
             &s.imm,
-            &s.vid,
+            &s.vs,
             &s.longtail,
             op,
             block_slot,
@@ -257,7 +257,7 @@ fn sync_aggregate() {
         );
         batch.verify_all() &&
             state_transition::process_sync_aggregate(
-                &s.vid,
+                &s.vs,
                 &s.longtail,
                 &s.epoch,
                 &mut s.sd,
@@ -280,7 +280,7 @@ fn deposit_request() {
 fn withdrawal_request() {
     operations_handler("withdrawal_request", "withdrawal_request", false, |s, op| {
         state_transition::process_withdrawal_requests(
-            &s.vid,
+            &s.vs,
             &mut s.epoch,
             &mut s.sd,
             &mut s.pq,
@@ -294,7 +294,7 @@ fn withdrawal_request() {
 fn consolidation_request() {
     operations_handler("consolidation_request", "consolidation_request", false, |s, op| {
         state_transition::process_consolidation_requests(
-            &mut s.vid,
+            &mut s.vs,
             &mut s.epoch,
             &mut s.sd,
             &mut s.pq,
@@ -308,7 +308,7 @@ fn consolidation_request() {
 fn withdrawals() {
     // The withdrawals test provides an execution_payload, not the full block body.
     operations_handler("withdrawals", "execution_payload", true, |s, op| {
-        state_transition::process_withdrawals(&s.vid, &s.epoch, &mut s.sd, &mut s.pq, op).is_ok()
+        state_transition::process_withdrawals(&s.vs, &s.epoch, &mut s.sd, &mut s.pq, op).is_ok()
     });
 }
 
@@ -329,7 +329,7 @@ fn execution_payload() {
                 &s.imm, &mut s.sd, payload, block_slot, &zh,
             );
             let _ = state_transition::process_withdrawals(
-                &s.vid, &s.epoch, &mut s.sd, &mut s.pq, payload,
+                &s.vs, &s.epoch, &mut s.sd, &mut s.pq, payload,
             );
         }
         true
@@ -352,7 +352,7 @@ fn block_header() {
         let body = if body_off <= op.len() { &op[body_off..] } else { &[] };
         let body_root = silver_beacon_state::ssz_hash::hash_tree_root_body(body, &zh);
         state_transition::process_block_header(
-            &s.vid,
+            &s.vs,
             &s.epoch,
             &mut s.sd,
             slot,

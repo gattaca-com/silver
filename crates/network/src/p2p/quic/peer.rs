@@ -424,7 +424,7 @@ impl Stream {
         if !self.state.get_mut().is_receive_only(self.p2p_id.protocol()) {
             tracing::warn!(error_code=error_code.into_inner(), state=?self.state.get_mut(), "Stop send called in non-receive only state.");
             on_event(NetEvent::StreamClosed { stream: self.p2p_id });
-            return SpinResult::End
+            return SpinResult::End;
         }
         SpinResult::Ok
     }

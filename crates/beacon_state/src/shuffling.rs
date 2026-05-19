@@ -240,7 +240,7 @@ fn compute_shuffled_index_with_pivots(
 }
 
 /// Append active validator indices for `epoch` into `out` (does not clear
-/// first — caller-controlled). `n` is `ValidatorIdentity.validator_cnt`.
+/// first — caller-controlled). `n` is `ValidatorsData.validator_cnt`.
 pub fn get_active_validator_indices_into(
     epoch_data: &EpochData,
     n: usize,

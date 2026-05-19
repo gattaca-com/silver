@@ -63,7 +63,7 @@ impl GossipWriteState {
                         offset: 0,
                         length: tcache.len()?,
                         tcache,
-                    }))
+                    }));
                 }
                 Ok(Spin::Ok(Self::WritingLength { buffer, limit, written, tcache }))
             }
@@ -71,7 +71,7 @@ impl GossipWriteState {
                 let (buffer, _) = tcache.buffer()?;
                 offset += io.write_to_stream(p2p_id.stream_id(), &buffer[offset..])?;
                 if offset == length {
-                    return Ok(Spin::Next(Self::Idle))
+                    return Ok(Spin::Next(Self::Idle));
                 }
                 Ok(Spin::Ok(Self::Writing { offset, length, tcache }))
             }

@@ -120,7 +120,7 @@ impl RpcReadRequest {
                 if remaining == 0 {
                     match reservation.into_rpc() {
                         Rpc::Request(rpc_request) => {
-                            return Ok(Spin::Ok(Self::Complete { msg: rpc_request }))
+                            return Ok(Spin::Ok(Self::Complete { msg: rpc_request }));
                         }
                         Rpc::Response(_) => return Err(StreamError::InvalidRpc),
                     }

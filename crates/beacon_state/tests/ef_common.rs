@@ -11,8 +11,9 @@ use silver_beacon_state::{
     ssz_hash::hash_tree_root_state,
     types::{
         B256, EpochData, HistoricalLongtail, Immutable, PendingQueues, SlotData, SlotRoots,
-        ValidatorIdentity, box_zeroed,
+        box_zeroed,
     },
+    validator_identity::{FinalizedValidators, ValidatorsState},
 };
 
 /// Snappy-decompress a file.
@@ -25,7 +26,10 @@ pub fn snappy_decode(path: &Path) -> Vec<u8> {
 
 pub struct LoadedState {
     pub imm: Box<Immutable>,
-    pub vid: Box<ValidatorIdentity>,
+    // Order matters: `vs` holds a raw pointer into `fv`'s heap allocation;
+    // `fv` must outlive `vs`. Box keeps the address stable across moves.
+    pub fv: Box<FinalizedValidators>,
+    pub vs: ValidatorsState,
     pub longtail: Box<HistoricalLongtail>,
     pub epoch: Box<EpochData>,
     pub roots: Box<SlotRoots>,
@@ -35,9 +39,12 @@ pub struct LoadedState {
 
 impl LoadedState {
     pub fn blank_pub() -> Self {
+        let fv = Box::new(FinalizedValidators::new_empty());
+        let vs = ValidatorsState::with_empty_delta(&fv);
         Self {
             imm: box_zeroed(),
-            vid: box_zeroed(),
+            fv,
+            vs,
             longtail: box_zeroed(),
             epoch: box_zeroed(),
             roots: box_zeroed(),
@@ -54,7 +61,7 @@ pub fn load_state(path: &Path, zh: &[B256]) -> LoadedState {
         &ssz,
         zh,
         &mut s.imm,
-        &mut s.vid,
+        &mut s.fv,
         &mut s.longtail,
         &mut s.epoch,
         &mut s.roots,
@@ -62,6 +69,8 @@ pub fn load_state(path: &Path, zh: &[B256]) -> LoadedState {
     )
     .unwrap_or_else(|e| panic!("{}: decompose failed: {e}", path.display()));
     s.pq = pq;
+    // Re-anchor the empty delta against the populated finalized base.
+    s.vs = ValidatorsState::with_empty_delta(&s.fv);
     s
 }
 
@@ -69,9 +78,9 @@ pub fn compare_states(label: &str, a: &LoadedState, b: &LoadedState, zh: &[B256]
     let mut diffs = Vec::new();
 
     let root_a =
-        hash_tree_root_state(&a.imm, &a.vid, &a.longtail, &a.epoch, &a.roots, &a.sd, &a.pq, zh);
+        hash_tree_root_state(&a.imm, &a.vs, &a.longtail, &a.epoch, &a.roots, &a.sd, &a.pq, zh);
     let root_b =
-        hash_tree_root_state(&b.imm, &b.vid, &b.longtail, &b.epoch, &b.roots, &b.sd, &b.pq, zh);
+        hash_tree_root_state(&b.imm, &b.vs, &b.longtail, &b.epoch, &b.roots, &b.sd, &b.pq, zh);
     if root_a != root_b {
         diffs.push(format!(
             "{label}: state root mismatch: got {}, expected {}",
@@ -82,10 +91,11 @@ pub fn compare_states(label: &str, a: &LoadedState, b: &LoadedState, zh: &[B256]
         if a.sd.slot != b.sd.slot {
             diffs.push(format!("  slot: {} vs {}", a.sd.slot, b.sd.slot));
         }
-        if a.vid.validator_cnt != b.vid.validator_cnt {
+        if a.vs.validator_cnt() != b.vs.validator_cnt() {
             diffs.push(format!(
                 "  validator_cnt: {} vs {}",
-                a.vid.validator_cnt, b.vid.validator_cnt
+                a.vs.validator_cnt(),
+                b.vs.validator_cnt()
             ));
         }
         if a.sd.justification_bits != b.sd.justification_bits {
@@ -134,7 +144,7 @@ pub fn compare_states(label: &str, a: &LoadedState, b: &LoadedState, zh: &[B256]
             }
         }
 
-        let n = a.vid.validator_cnt.min(b.vid.validator_cnt);
+        let n = a.vs.validator_cnt().min(b.vs.validator_cnt());
         for i in 0..n {
             if a.sd.balances[i] != b.sd.balances[i] {
                 diffs.push(format!("  balance[{i}]: {} vs {}", a.sd.balances[i], b.sd.balances[i]));

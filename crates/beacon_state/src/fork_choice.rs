@@ -1,6 +1,6 @@
 use flux::utils::ArrayVec;
 
-use crate::types::*;
+use crate::{types::*, validator_identity::FinalizedValidators};
 
 const NULL: usize = usize::MAX;
 
@@ -24,7 +24,7 @@ impl ForkChoice {
         finalized_state_root: B256,
         state_ref: BeaconStateRef,
     ) -> Self {
-        let mut nodes = ArrayVec::new();
+        let mut nodes = Vec::with_capacity(MAX_FORK_CHOICE_NODES);
         let mut indices = ArrayVec::new();
 
         nodes.push(ForkChoiceNode {
@@ -55,10 +55,7 @@ impl ForkChoice {
     }
 
     /// Insert a block node into the proto-array.
-    // TODO(spec): cap-exhaustion strategy when `nodes.len() ==
-    // MAX_FORK_CHOICE_NODES`. Today the underlying `ArrayVec::push` panics
-    // on overflow.
-    pub fn on_block(&mut self, b: &BlockImport) {
+    pub fn on_block(&mut self, b: BlockImport) {
         if self.find_node_idx(&b.block_root).is_some() {
             return;
         }
@@ -146,30 +143,22 @@ impl ForkChoice {
     /// Remove all nodes below the current finalized root.
     /// Returns state refs of pruned nodes so the caller can release pool
     /// entries.
-    pub fn prune(&mut self) -> ArrayVec<BeaconStateRef, MAX_FORK_CHOICE_NODES> {
-        let mut pruned = ArrayVec::new();
-
+    pub fn prune(&mut self) -> Vec<BeaconStateRef> {
         let fin_idx = match self.find_node_idx(&self.finalized_checkpoint.root) {
             Some(idx) => idx,
-            None => return pruned,
+            None => return Vec::new(),
         };
         if fin_idx == 0 {
-            return pruned;
+            return Vec::new();
         }
 
-        for i in 0..fin_idx {
-            pruned.push(self.nodes[i].state);
-        }
+        let pruned = self.nodes.drain(..fin_idx).map(|n| n.state).collect();
 
-        let surviving = self.nodes.len() - fin_idx;
-        for i in 0..surviving {
-            self.nodes[i] = self.nodes[fin_idx + i];
-            let n = &mut self.nodes[i];
+        for n in self.nodes.iter_mut() {
             n.parent = offset_idx(n.parent, fin_idx);
             n.best_child = offset_idx(n.best_child, fin_idx);
             n.best_descendant = offset_idx(n.best_descendant, fin_idx);
         }
-        self.nodes.truncate(surviving);
 
         self.indices.clear();
         for i in 0..self.nodes.len() {
@@ -193,6 +182,13 @@ impl ForkChoice {
     #[inline]
     pub fn node(&self, idx: usize) -> &ForkChoiceNode {
         &self.nodes[idx]
+    }
+
+    pub fn finalize_node(&mut self, idx: usize, base: &mut FinalizedValidators) {
+        self.nodes[idx].state.validators.promote_into_base(base);
+        for node in self.nodes.iter_mut() {
+            node.state.validators.prune_to_base(base);
+        }
     }
 
     /// Spec `get_checkpoint_block(store, root, epoch)`: deepest ancestor of
@@ -386,8 +382,8 @@ mod tests {
         let jus = cp(0, 1);
         let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), default_sref());
 
-        fc.on_block(&blk(1, root(2), root(1), jus, fin));
-        fc.on_block(&blk(2, root(3), root(2), jus, fin));
+        fc.on_block(blk(1, root(2), root(1), jus, fin));
+        fc.on_block(blk(2, root(3), root(2), jus, fin));
 
         assert_eq!(fc.find_head(), root(3));
     }
@@ -398,8 +394,8 @@ mod tests {
         let jus = cp(0, 1);
         let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), default_sref());
 
-        fc.on_block(&blk(1, root(2), root(1), jus, fin));
-        fc.on_block(&blk(1, root(3), root(1), jus, fin));
+        fc.on_block(blk(1, root(2), root(1), jus, fin));
+        fc.on_block(blk(1, root(3), root(1), jus, fin));
 
         let mut deltas = [0i64; MAX_FORK_CHOICE_NODES];
         deltas[2] = 100; // root(3) is node index 2
@@ -418,8 +414,8 @@ mod tests {
         let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), default_sref());
 
         // root(1) → root(2) [idx 1] and root(3) [idx 2]
-        fc.on_block(&blk(1, root(2), root(1), jus, fin));
-        fc.on_block(&blk(1, root(3), root(1), jus, fin));
+        fc.on_block(blk(1, root(2), root(1), jus, fin));
+        fc.on_block(blk(1, root(3), root(1), jus, fin));
 
         // Give root(2) initial weight.
         let mut deltas = [0i64; MAX_FORK_CHOICE_NODES];
@@ -441,8 +437,8 @@ mod tests {
         let jus = cp(0, 1);
         let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), default_sref());
 
-        fc.on_block(&blk(1, root(2), root(1), jus, fin));
-        fc.on_block(&blk(2, root(3), root(2), jus, fin));
+        fc.on_block(blk(1, root(2), root(1), jus, fin));
+        fc.on_block(blk(2, root(3), root(2), jus, fin));
         assert_eq!(fc.nodes.len(), 3);
 
         fc.finalized_checkpoint = cp(1, 2);
@@ -460,7 +456,7 @@ mod tests {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
         let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), default_sref());
-        fc.on_block(&blk(1, root(2), root(1), jus, fin));
+        fc.on_block(blk(1, root(2), root(1), jus, fin));
 
         let mut votes: Box<[Vote; MAX_VALIDATORS]> = box_zeroed();
         let mut balances: Box<[u64; MAX_VALIDATORS]> = box_zeroed();
@@ -490,7 +486,7 @@ mod tests {
         let mut fc = ForkChoice::init(fin, jus, 0, root(100), root(100), default_sref());
 
         for i in 1..=16u8 {
-            fc.on_block(&blk(i as u64, root(i), root(100), jus, fin));
+            fc.on_block(blk(i as u64, root(i), root(100), jus, fin));
         }
 
         let mut votes: Box<[Vote; MAX_VALIDATORS]> = box_zeroed();
@@ -538,7 +534,7 @@ mod tests {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
         let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), default_sref());
-        fc.on_block(&blk(1, root(2), root(1), jus, fin));
+        fc.on_block(blk(1, root(2), root(1), jus, fin));
 
         let mut votes: Box<[Vote; MAX_VALIDATORS]> = box_zeroed();
         let mut old_bal: Box<[u64; MAX_VALIDATORS]> = box_zeroed();
@@ -588,8 +584,8 @@ mod tests {
         let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), default_sref());
 
         // Two blocks at slot 1 forking from genesis. root(2) < root(3).
-        fc.on_block(&blk(1, root(2), root(1), jus, fin));
-        fc.on_block(&blk(1, root(3), root(1), jus, fin));
+        fc.on_block(blk(1, root(2), root(1), jus, fin));
+        fc.on_block(blk(1, root(3), root(1), jus, fin));
 
         // No weight applied → both have weight 0. Higher root wins.
         assert_eq!(fc.find_head(), root(3));
@@ -603,12 +599,12 @@ mod tests {
         let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), default_sref());
 
         // Long chain: root(1) → root(2) → root(3) → root(4).
-        fc.on_block(&blk(1, root(2), root(1), jus, fin));
-        fc.on_block(&blk(2, root(3), root(2), jus, fin));
-        fc.on_block(&blk(3, root(4), root(3), jus, fin));
+        fc.on_block(blk(1, root(2), root(1), jus, fin));
+        fc.on_block(blk(2, root(3), root(2), jus, fin));
+        fc.on_block(blk(3, root(4), root(3), jus, fin));
 
         // Short chain: root(1) → root(5).
-        fc.on_block(&blk(1, root(5), root(1), jus, fin));
+        fc.on_block(blk(1, root(5), root(1), jus, fin));
 
         // Without weight, long chain wins (deeper best_descendant, higher root
         // tiebreak). Give root(5) more weight to flip.
@@ -626,10 +622,10 @@ mod tests {
         let jus = cp(0, 1);
         let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), default_sref());
 
-        fc.on_block(&blk(1, root(2), root(1), jus, fin));
+        fc.on_block(blk(1, root(2), root(1), jus, fin));
         assert_eq!(fc.nodes.len(), 2);
 
-        fc.on_block(&blk(1, root(2), root(1), jus, fin));
+        fc.on_block(blk(1, root(2), root(1), jus, fin));
         assert_eq!(fc.nodes.len(), 2); // no change
     }
 
@@ -641,7 +637,7 @@ mod tests {
         let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), default_sref());
 
         // root(99) is not known.
-        fc.on_block(&blk(1, root(2), root(99), jus, fin));
+        fc.on_block(blk(1, root(2), root(99), jus, fin));
         assert_eq!(fc.nodes.len(), 2);
         assert_eq!(fc.nodes[1].parent, NULL);
     }

@@ -10,6 +10,7 @@ use crate::{
     },
     ssz_hash,
     types::*,
+    validator_identity::ValidatorsState,
 };
 
 const SECONDS_PER_SLOT: u64 = 12;
@@ -88,16 +89,17 @@ pub fn validate_proposer_slashing(data: &[u8]) -> Result<(), ProposerSlashingErr
 }
 
 pub fn validate_voluntary_exit(
-    vid: &ValidatorIdentity,
+    vs: &ValidatorsState,
     epoch: &EpochData,
     vi: usize,
     exit_epoch: Epoch,
     current_epoch: Epoch,
 ) -> Result<(), VoluntaryExitError> {
-    if vi >= vid.validator_cnt {
-        return Err(VoluntaryExitError::ValidatorOutOfRange { vi, cnt: vid.validator_cnt });
+    let cnt = vs.validator_cnt();
+    if vi >= cnt {
+        return Err(VoluntaryExitError::ValidatorOutOfRange { vi, cnt });
     }
-    let pubkey = vid.val_pubkey[vi];
+    let pubkey = *vs.pubkey(vi);
     if epoch.val_activation_epoch[vi] > current_epoch || current_epoch >= epoch.val_exit_epoch[vi] {
         return Err(VoluntaryExitError::NotActive { vi, pubkey, epoch: current_epoch });
     }
@@ -118,25 +120,27 @@ pub fn validate_voluntary_exit(
 }
 
 pub fn validate_bls_to_execution_change(
-    vid: &ValidatorIdentity,
+    vs: &ValidatorsState,
     vi: usize,
     from_pubkey: &[u8; 48],
 ) -> Result<(), BlsToExecutionChangeError> {
-    if vi >= vid.validator_cnt {
-        return Err(BlsToExecutionChangeError::ValidatorOutOfRange { vi, cnt: vid.validator_cnt });
+    let cnt = vs.validator_cnt();
+    if vi >= cnt {
+        return Err(BlsToExecutionChangeError::ValidatorOutOfRange { vi, cnt });
     }
-    let prefix = vid.val_withdrawal_credentials[vi][0];
+    let creds = vs.withdrawal_credentials(vi);
+    let prefix = creds.prefix();
     if prefix != 0x00 {
         return Err(BlsToExecutionChangeError::BadCredentialPrefix {
             vi,
-            pubkey: vid.val_pubkey[vi],
+            pubkey: *vs.pubkey(vi),
             prefix,
         });
     }
     let pubkey_hash = ssz_hash::sha256(from_pubkey);
-    if vid.val_withdrawal_credentials[vi][1..] != pubkey_hash[1..] {
+    if creds.0[1..] != pubkey_hash[1..] {
         let mut expected = [0u8; 32];
-        expected[1..].copy_from_slice(&vid.val_withdrawal_credentials[vi][1..]);
+        expected[1..].copy_from_slice(&creds.0[1..]);
         return Err(BlsToExecutionChangeError::PubkeyHashMismatch {
             from_pubkey: *from_pubkey,
             expected,

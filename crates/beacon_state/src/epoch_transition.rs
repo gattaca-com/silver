@@ -10,8 +10,9 @@ use crate::{
         self, B256, Checkpoint, EPOCHS_PER_HISTORICAL_VECTOR, EPOCHS_PER_SLASHINGS_VECTOR, Epoch,
         EpochData, HistoricalLongtail, HistoricalSummary, MIN_SEED_LOOKAHEAD,
         PROPOSER_LOOKAHEAD_SIZE, PendingQueues, SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT,
-        SlotData, SlotRoots, ValidatorIdentity,
+        SlotData, SlotRoots,
     },
+    validator_identity::{ValidatorsState, Withdrawals},
 };
 
 // Participation flag bits and weights (Altair+).
@@ -25,7 +26,6 @@ const WEIGHT_DENOMINATOR: u64 = 64;
 
 // Balance constants (gwei).
 const EFFECTIVE_BALANCE_INCREMENT: u64 = 1_000_000_000;
-const MAX_EFFECTIVE_BALANCE: u64 = 2048 * EFFECTIVE_BALANCE_INCREMENT;
 const MIN_ACTIVATION_BALANCE: u64 = 32 * EFFECTIVE_BALANCE_INCREMENT;
 const HYSTERESIS_QUOTIENT: u64 = 4;
 const HYSTERESIS_DOWNWARD_MULTIPLIER: u64 = 1;
@@ -51,7 +51,6 @@ const MIN_PER_EPOCH_CHURN_LIMIT: u64 = 128_000_000_000; // 128 ETH
 const MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT: u64 = 256_000_000_000; // 256 ETH
 pub const MAX_PENDING_DEPOSITS_PER_EPOCH: usize = 16;
 const MIN_VALIDATOR_WITHDRAWABILITY_DELAY: u64 = 256;
-const COMPOUNDING_WITHDRAWAL_PREFIX: u8 = 0x02;
 
 // Historical summaries emitted every this many epochs.
 const HISTORICAL_SUMMARY_PERIOD: u64 = SLOTS_PER_HISTORICAL_ROOT as u64 / SLOTS_PER_EPOCH;
@@ -60,7 +59,7 @@ const HISTORICAL_SUMMARY_PERIOD: u64 = SLOTS_PER_HISTORICAL_ROOT as u64 / SLOTS_
 #[allow(clippy::too_many_arguments)]
 #[instrument(skip_all)]
 pub fn process_epoch(
-    vid: &mut ValidatorIdentity,
+    vs: &mut ValidatorsState,
     longtail: &mut HistoricalLongtail,
     epoch: &mut EpochData,
     sd: &mut SlotData,
@@ -71,7 +70,7 @@ pub fn process_epoch(
     postponed_scratch: &mut Vec<types::PendingDeposit>,
 ) {
     let current_epoch = sd.slot / SLOTS_PER_EPOCH;
-    let n = vid.validator_cnt;
+    let n = vs.validator_cnt();
 
     process_justification_and_finalization(epoch, sd, roots, n, current_epoch);
     process_inactivity_updates(epoch, sd, n, current_epoch);
@@ -79,15 +78,15 @@ pub fn process_epoch(
     process_registry_updates(epoch, sd, n, current_epoch);
     process_slashings(epoch, sd, n, current_epoch);
     process_eth1_data_reset(sd, current_epoch);
-    process_pending_deposits(vid, epoch, sd, pq, zh, postponed_scratch);
+    process_pending_deposits(vs, epoch, sd, pq, zh, postponed_scratch);
     process_pending_consolidations(epoch, sd, pq);
-    process_effective_balance_updates(vid, epoch, sd);
+    process_effective_balance_updates(vs, epoch, sd);
     process_slashings_reset(epoch, current_epoch);
     process_randao_mixes_reset(epoch, sd, current_epoch);
     process_historical_summaries_update(longtail, roots, current_epoch, zh);
-    process_participation_flag_updates(sd, vid.validator_cnt);
-    process_sync_committee_updates(vid, longtail, epoch, current_epoch, active_scratch);
-    process_proposer_lookahead(vid, epoch, sd, current_epoch, active_scratch);
+    process_participation_flag_updates(sd, n);
+    process_sync_committee_updates(vs, longtail, epoch, current_epoch, active_scratch);
+    process_proposer_lookahead(vs, epoch, sd, current_epoch, active_scratch);
 }
 
 pub fn process_justification_and_finalization(
@@ -385,11 +384,11 @@ pub fn process_slashings_reset(epoch: &mut EpochData, current_epoch: Epoch) {
 }
 
 pub fn process_effective_balance_updates(
-    vid: &ValidatorIdentity,
+    vs: &ValidatorsState,
     epoch: &mut EpochData,
     sd: &SlotData,
 ) {
-    let n = vid.validator_cnt;
+    let n = vs.validator_cnt();
     let hysteresis_down =
         EFFECTIVE_BALANCE_INCREMENT * HYSTERESIS_DOWNWARD_MULTIPLIER / HYSTERESIS_QUOTIENT;
     let hysteresis_up =
@@ -398,22 +397,12 @@ pub fn process_effective_balance_updates(
     for i in 0..n {
         let balance = sd.balances[i];
         let eff = epoch.val_effective_balance[i];
-        let max_eff = get_max_effective_balance(vid, i);
+        let max_eff = vs.withdrawal_credentials(i).max_effective_balance();
 
         if balance + hysteresis_down < eff || eff + hysteresis_up < balance {
             let new_eff = (balance - balance % EFFECTIVE_BALANCE_INCREMENT).min(max_eff);
             epoch.val_effective_balance[i] = new_eff;
         }
-    }
-}
-
-/// Compounding (0x02) validators can go up to 2048 ETH.
-#[inline]
-fn get_max_effective_balance(vid: &ValidatorIdentity, i: usize) -> u64 {
-    if vid.val_withdrawal_credentials[i][0] == COMPOUNDING_WITHDRAWAL_PREFIX {
-        MAX_EFFECTIVE_BALANCE
-    } else {
-        MIN_ACTIVATION_BALANCE
     }
 }
 
@@ -442,7 +431,7 @@ fn get_activation_exit_churn_limit(epoch: &EpochData, n: usize, current_epoch: E
 }
 
 pub fn process_pending_deposits(
-    vid: &mut ValidatorIdentity,
+    vs: &mut ValidatorsState,
     epoch: &mut EpochData,
     sd: &mut SlotData,
     pq: &mut PendingQueues,
@@ -451,7 +440,7 @@ pub fn process_pending_deposits(
 ) {
     let current_epoch = sd.slot / SLOTS_PER_EPOCH;
     let next_epoch = current_epoch + 1;
-    let n = vid.validator_cnt;
+    let n = vs.validator_cnt();
     let available =
         sd.deposit_balance_to_consume + get_activation_exit_churn_limit(epoch, n, current_epoch);
     let mut processed_amount: u64 = 0;
@@ -476,12 +465,12 @@ pub fn process_pending_deposits(
             break;
         }
 
-        let vi = find_validator_by_pubkey(vid, &deposit.pubkey);
+        let vi = vs.find_by_pubkey(&deposit.pubkey);
         let is_exited = vi.is_some_and(|v| epoch.val_exit_epoch[v] != u64::MAX);
         let is_withdrawn = vi.is_some_and(|v| epoch.val_withdrawable_epoch[v] < next_epoch);
 
         if is_withdrawn {
-            apply_pending_deposit(vid, epoch, sd, &deposit, zh);
+            apply_pending_deposit(vs, epoch, sd, &deposit, zh);
         } else if is_exited {
             postponed.push(deposit);
         } else {
@@ -490,7 +479,7 @@ pub fn process_pending_deposits(
                 break;
             }
             processed_amount += deposit.amount;
-            apply_pending_deposit(vid, epoch, sd, &deposit, zh);
+            apply_pending_deposit(vs, epoch, sd, &deposit, zh);
         }
         next_deposit_index += 1;
     }
@@ -507,13 +496,13 @@ pub fn process_pending_deposits(
 }
 
 fn apply_pending_deposit(
-    vid: &mut ValidatorIdentity,
+    vs: &mut ValidatorsState,
     epoch: &mut EpochData,
     sd: &mut SlotData,
     deposit: &types::PendingDeposit,
     zh: &[B256],
 ) {
-    let vi = find_validator_by_pubkey(vid, &deposit.pubkey);
+    let vi = vs.find_by_pubkey(&deposit.pubkey);
     if let Some(v) = vi {
         sd.balances[v] = sd.balances[v].saturating_add(deposit.amount);
     } else {
@@ -527,14 +516,10 @@ fn apply_pending_deposit(
         ) {
             return;
         }
-        let idx = vid.validator_cnt;
-        vid.val_pubkey[idx] = deposit.pubkey;
-        vid.val_pubkey_decompressed[idx] =
-            blst::min_pk::PublicKey::from_bytes(&deposit.pubkey).unwrap_or_default();
-        vid.val_withdrawal_credentials[idx] = deposit.withdrawal_credentials;
+        let idx = vs.append(&deposit.pubkey, &deposit.withdrawal_credentials) as usize;
         epoch.val_effective_balance[idx] = min(
             deposit.amount - deposit.amount % EFFECTIVE_BALANCE_INCREMENT,
-            get_max_effective_balance_for_credentials(&deposit.withdrawal_credentials),
+            deposit.withdrawal_credentials.max_effective_balance(),
         );
         epoch.set_val_slashed(idx, false);
         epoch.val_activation_eligibility_epoch[idx] = u64::MAX;
@@ -545,13 +530,12 @@ fn apply_pending_deposit(
         sd.balances[idx] = deposit.amount;
         sd.previous_epoch_participation[idx] = 0;
         sd.current_epoch_participation[idx] = 0;
-        vid.validator_cnt = idx + 1;
     }
 }
 
 pub fn is_valid_deposit_signature(
     pubkey: &[u8; 48],
-    withdrawal_credentials: &B256,
+    withdrawal_credentials: &Withdrawals,
     amount: u64,
     signature: &[u8; 96],
     zh: &[B256],
@@ -564,7 +548,7 @@ pub fn is_valid_deposit_signature(
     let mut amount_chunk = [0u8; 32];
     amount_chunk[..8].copy_from_slice(&amount.to_le_bytes());
     let deposit_msg_root =
-        ssz_hash::merkleize(&[pubkey_root, *withdrawal_credentials, amount_chunk], zh);
+        ssz_hash::merkleize(&[pubkey_root, withdrawal_credentials.0, amount_chunk], zh);
 
     // Fork-agnostic domain: DOMAIN_DEPOSIT(0x03), GENESIS_FORK_VERSION([0;4]),
     // zero genesis_validators_root.
@@ -578,19 +562,6 @@ pub fn is_valid_deposit_signature(
     let signing_root = ssz_hash::merkleize(&[deposit_msg_root, domain], zh);
 
     bls::verify_deposit_signature(pubkey, signature, &signing_root)
-}
-
-#[inline]
-fn get_max_effective_balance_for_credentials(withdrawal_credentials: &B256) -> u64 {
-    if withdrawal_credentials[0] == COMPOUNDING_WITHDRAWAL_PREFIX {
-        MAX_EFFECTIVE_BALANCE
-    } else {
-        MIN_ACTIVATION_BALANCE
-    }
-}
-
-fn find_validator_by_pubkey(vid: &ValidatorIdentity, pubkey: &[u8; 48]) -> Option<usize> {
-    vid.val_pubkey[..vid.validator_cnt].iter().position(|pk| pk == pubkey)
 }
 
 pub fn process_pending_consolidations(
@@ -656,7 +627,7 @@ pub fn process_randao_mixes_reset(epoch: &mut EpochData, sd: &SlotData, current_
 }
 
 pub fn process_sync_committee_updates(
-    vid: &ValidatorIdentity,
+    vs: &ValidatorsState,
     longtail: &mut HistoricalLongtail,
     epoch: &EpochData,
     current_epoch: Epoch,
@@ -674,7 +645,7 @@ pub fn process_sync_committee_updates(
     let seed = shuffling::get_seed(epoch, sync_epoch, 7); // DOMAIN_SYNC_COMMITTEE
     shuffling::get_active_validator_indices_into(
         epoch,
-        vid.validator_cnt,
+        vs.validator_cnt(),
         sync_epoch,
         active_scratch,
     );
@@ -689,7 +660,7 @@ pub fn process_sync_committee_updates(
     while selected < types::SYNC_COMMITTEE_SIZE {
         let (candidate, accepted) = sampler.next(active_scratch, &epoch.val_effective_balance);
         if accepted {
-            new_committee.pubkeys[selected] = vid.val_pubkey[candidate];
+            new_committee.pubkeys[selected] = *vs.pubkey(candidate);
             selected += 1;
         }
     }
@@ -700,29 +671,11 @@ pub fn process_sync_committee_updates(
     longtail.next_sync_committee = new_committee;
 
     // Rebuild sync_committee_indices for the new current committee.
-    rebuild_sync_committee_indices(vid, longtail);
-}
-
-/// Rebuild the sync_committee_indices cache from current_sync_committee
-/// pubkeys.
-// TODO(perf): O(SYNC_COMMITTEE_SIZE × n_validators) — 512 × 2M = 1B
-// comparisons per sync rotation. Use the per-VID-tier pubkey index proposed
-// at find_validator_by_pubkey for O(committee × log n) or O(committee).
-pub fn rebuild_sync_committee_indices(vid: &ValidatorIdentity, longtail: &mut HistoricalLongtail) {
-    for i in 0..types::SYNC_COMMITTEE_SIZE {
-        let target_pk = &longtail.current_sync_committee.pubkeys[i];
-        longtail.sync_committee_indices[i] = u32::MAX; // sentinel: not found
-        for vi in 0..vid.validator_cnt {
-            if &vid.val_pubkey[vi] == target_pk {
-                longtail.sync_committee_indices[i] = vi as u32;
-                break;
-            }
-        }
-    }
+    longtail.rebuild_sync_committee_indices(vs.finalized());
 }
 
 pub fn process_proposer_lookahead(
-    vid: &ValidatorIdentity,
+    vs: &ValidatorsState,
     epoch: &EpochData,
     sd: &mut SlotData,
     current_epoch: Epoch,
@@ -738,7 +691,7 @@ pub fn process_proposer_lookahead(
     let target_epoch = current_epoch + MIN_SEED_LOOKAHEAD + 1;
     shuffling::get_active_validator_indices_into(
         epoch,
-        vid.validator_cnt,
+        vs.validator_cnt(),
         target_epoch,
         active_scratch,
     );
@@ -801,8 +754,13 @@ fn get_block_root_at_epoch(roots: &SlotRoots, epoch: Epoch) -> B256 {
 
 #[cfg(test)]
 mod tests {
+    use blst::min_pk::SecretKey;
+
     use super::*;
-    use crate::types::box_zeroed;
+    use crate::{
+        types::box_zeroed,
+        validator_identity::{FinalizedValidators, ValidatorsState, Withdrawals},
+    };
 
     const MAX_EFFECTIVE_BALANCE: u64 = 32 * EFFECTIVE_BALANCE_INCREMENT;
 
@@ -813,13 +771,13 @@ mod tests {
     }
 
     /// Build the deposit signing root for a (pubkey, wc, amount) triple.
-    fn deposit_signing_root(pubkey: &[u8; 48], wc: &B256, amount: u64, zh: &[B256]) -> B256 {
+    fn deposit_signing_root(pubkey: &[u8; 48], wc: &Withdrawals, amount: u64, zh: &[B256]) -> B256 {
         let mut pk_chunk = [0u8; 64];
         pk_chunk[..48].copy_from_slice(pubkey);
         let pubkey_root = ssz_hash::sha256(&pk_chunk);
         let mut amt = [0u8; 32];
         amt[..8].copy_from_slice(&amount.to_le_bytes());
-        let msg_root = ssz_hash::merkleize(&[pubkey_root, *wc, amt], zh);
+        let msg_root = ssz_hash::merkleize(&[pubkey_root, wc.0, amt], zh);
 
         let fork_data_root = ssz_hash::hash_tree_root_fork_data([0; 4], &[0u8; 32]);
         let mut domain = [0u8; 32];
@@ -830,9 +788,7 @@ mod tests {
 
     #[test]
     fn pending_deposit_valid_sig_adds_validator() {
-        use blst::min_pk::SecretKey;
-
-        let mut vid: Box<ValidatorIdentity> = box_zeroed();
+        let fv = FinalizedValidators::new_empty();
         let mut e: Box<EpochData> = box_zeroed();
         let mut sd: Box<SlotData> = box_zeroed();
         let mut pq = PendingQueues::new();
@@ -840,7 +796,6 @@ mod tests {
         let current_epoch = 10u64;
         sd.slot = current_epoch * SLOTS_PER_EPOCH;
         sd.finalized_checkpoint = checkpoint(current_epoch, 0x01);
-        vid.validator_cnt = 0;
 
         // Build a deposit with a valid BLS signature.
         let sk_bytes: [u8; 32] = [
@@ -850,7 +805,7 @@ mod tests {
         ];
         let sk = SecretKey::from_bytes(&sk_bytes).unwrap();
         let pk = sk.sk_to_pk().to_bytes();
-        let wc = [0xAAu8; 32];
+        let wc = Withdrawals([0xAAu8; 32]);
         let amount = 32_000_000_000u64;
 
         let zh = ssz_hash::compute_zero_hashes();
@@ -866,17 +821,25 @@ mod tests {
             slot: 0, // genesis deposit
         });
 
-        process_pending_deposits(&mut vid, &mut e, &mut sd, &mut pq, &zh, &mut Vec::new());
+        let mut validators_state = ValidatorsState::with_empty_delta(&fv);
+        process_pending_deposits(
+            &mut validators_state,
+            &mut e,
+            &mut sd,
+            &mut pq,
+            &zh,
+            &mut Vec::new(),
+        );
 
-        assert_eq!(vid.validator_cnt, 1);
-        assert_eq!(vid.val_pubkey[0], pk);
+        assert_eq!(validators_state.validator_cnt(), 1);
+        assert_eq!(*validators_state.pubkey(0), pk);
         assert_eq!(sd.balances[0], amount);
         assert_eq!(pq.pending_deposits.len(), 0);
     }
 
     #[test]
     fn pending_deposit_invalid_sig_rejected() {
-        let mut vid: Box<ValidatorIdentity> = box_zeroed();
+        let fv = FinalizedValidators::new_empty();
         let mut e: Box<EpochData> = box_zeroed();
         let mut sd: Box<SlotData> = box_zeroed();
         let mut pq = PendingQueues::new();
@@ -884,31 +847,29 @@ mod tests {
         let current_epoch = 10u64;
         sd.slot = current_epoch * SLOTS_PER_EPOCH;
         sd.finalized_checkpoint = checkpoint(current_epoch, 0x01);
-        vid.validator_cnt = 0;
 
         // Deposit with zeroed (invalid) signature.
         let zh = ssz_hash::compute_zero_hashes();
         let pk = [0x01u8; 48]; // invalid pubkey too, but sig check comes first via blst
         pq.pending_deposits.push(types::PendingDeposit {
             pubkey: pk,
-            withdrawal_credentials: [0u8; 32],
+            withdrawal_credentials: Withdrawals::ZERO,
             amount: 32_000_000_000,
             signature: [0u8; 96],
             slot: 0,
         });
 
-        process_pending_deposits(&mut vid, &mut e, &mut sd, &mut pq, &zh, &mut Vec::new());
+        let mut view = ValidatorsState::with_empty_delta(&fv);
+        process_pending_deposits(&mut view, &mut e, &mut sd, &mut pq, &zh, &mut Vec::new());
 
         // Deposit consumed from queue but validator NOT added.
-        assert_eq!(vid.validator_cnt, 0);
+        assert_eq!(view.validator_cnt(), 0);
         assert_eq!(pq.pending_deposits.len(), 0);
     }
 
     #[test]
     fn pending_deposit_existing_validator_no_sig_check() {
-        use blst::min_pk::SecretKey;
-
-        let mut vid: Box<ValidatorIdentity> = box_zeroed();
+        let mut fv = FinalizedValidators::new_empty();
         let mut e: Box<EpochData> = box_zeroed();
         let mut sd: Box<SlotData> = box_zeroed();
         let mut pq = PendingQueues::new();
@@ -926,27 +887,27 @@ mod tests {
         let sk = SecretKey::from_bytes(&sk_bytes).unwrap();
         let pk = sk.sk_to_pk().to_bytes();
 
-        vid.val_pubkey[0] = pk;
+        fv.append(&pk, &Withdrawals::ZERO);
         e.val_activation_epoch[0] = 0;
         e.val_exit_epoch[0] = u64::MAX;
         e.val_effective_balance[0] = MAX_EFFECTIVE_BALANCE;
         sd.balances[0] = MAX_EFFECTIVE_BALANCE;
-        vid.validator_cnt = 1;
 
         // Deposit to existing validator — signature is ignored per spec.
         let zh = ssz_hash::compute_zero_hashes();
         let top_up = 1_000_000_000u64;
         pq.pending_deposits.push(types::PendingDeposit {
             pubkey: pk,
-            withdrawal_credentials: [0u8; 32],
+            withdrawal_credentials: Withdrawals::ZERO,
             amount: top_up,
             signature: [0u8; 96], // invalid sig, doesn't matter
             slot: 0,
         });
 
-        process_pending_deposits(&mut vid, &mut e, &mut sd, &mut pq, &zh, &mut Vec::new());
+        let mut view = ValidatorsState::with_empty_delta(&fv);
+        process_pending_deposits(&mut view, &mut e, &mut sd, &mut pq, &zh, &mut Vec::new());
 
-        assert_eq!(vid.validator_cnt, 1);
+        assert_eq!(view.validator_cnt(), 1);
         assert_eq!(sd.balances[0], MAX_EFFECTIVE_BALANCE + top_up);
         assert_eq!(pq.pending_deposits.len(), 0);
     }

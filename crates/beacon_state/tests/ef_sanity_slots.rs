@@ -41,7 +41,7 @@ fn sanity_slots() {
         let mut postponed = Vec::new();
         state_transition::process_slots(
             &pre.imm,
-            &mut pre.vid,
+            &mut pre.vs,
             &mut pre.longtail,
             &mut pre.epoch,
             &mut pre.roots,

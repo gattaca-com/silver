@@ -99,7 +99,7 @@ impl NegotiateState {
                                 return Ok(Spin::Next(Self::OutWriting {
                                     protocol: next_protocol,
                                     written: MULTISTREAM_V1.len(),
-                                }))
+                                }));
                             }
                             None => return Err(StreamError::StreamRejected),
                         }
