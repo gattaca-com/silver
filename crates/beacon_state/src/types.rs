@@ -6,6 +6,8 @@ use std::{
 use blst::min_pk::PublicKey;
 use flux::utils::ArrayVec;
 
+use crate::validator_identity::{ValidatorsState, Withdrawals};
+
 pub fn box_zeroed<T>() -> Box<T> {
     let layout = Layout::new::<T>();
     unsafe {
@@ -21,11 +23,18 @@ pub type BLSSignature = [u8; 96];
 pub type Slot = u64;
 pub type Epoch = u64;
 
+#[cfg(not(test))]
 // Physical cap on validator-indexed columnar arrays. Spec limit is
 // `VALIDATOR_REGISTRY_LIMIT = 1 << 40`; we size for real registry growth.
 // Live count crossed 2.0M during 2025; 2.75 Mi = 2,883,584 sits just below 3M
 // and gives ~600k headroom (~26%) over the current registry.
 pub const MAX_VALIDATORS: usize = 11 << 18;
+#[cfg(test)]
+// Mainnet caps ~2M validators. Tests don't need that much and parallel
+// `cargo test` would otherwise OOM (~3–4 GB per `BeaconStateTile::new_heap`
+// at full cap × N parallel test threads). EF spec test fixtures use ≤ a few
+// hundred validators each, well within the test-time cap.
+pub const MAX_VALIDATORS: usize = 64 * 1024;
 pub const VALIDATOR_REGISTRY_LIMIT: usize = 1 << 40;
 pub const SLOTS_PER_HISTORICAL_ROOT: usize = 8192;
 pub const SLOTS_PER_EPOCH: u64 = 32;
@@ -131,11 +140,11 @@ pub struct Immutable {
 /// validators). All hot-path BLS verifies use the cache; the compressed copy
 /// is retained for SSZ hashing, gossip messages, and rare cold paths.
 #[repr(C)]
-pub struct ValidatorIdentity {
+pub struct ValidatorsData {
     pub validator_cnt: usize,
     pub val_pubkey: [BLSPubkey; MAX_VALIDATORS],
     pub val_pubkey_decompressed: [PublicKey; MAX_VALIDATORS],
-    pub val_withdrawal_credentials: [B256; MAX_VALIDATORS],
+    pub val_withdrawal_credentials: [Withdrawals; MAX_VALIDATORS],
 }
 
 /// Mutated every 256 epochs (~27h) on sync committee rotation and every
@@ -249,10 +258,9 @@ impl PendingQueues {
     }
 }
 
-#[repr(C)]
 #[derive(Default)]
 pub struct ForkChoice {
-    pub nodes: ArrayVec<ForkChoiceNode, MAX_FORK_CHOICE_NODES>,
+    pub nodes: Vec<ForkChoiceNode>,
     pub indices: ArrayVec<ForkChoiceIndex, MAX_FORK_CHOICE_NODES>,
     pub finalized_checkpoint: Checkpoint,
     pub justified_checkpoint: Checkpoint,
@@ -267,8 +275,7 @@ pub struct ForkChoiceIndex {
     pub node_idx: usize,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone)]
 pub struct ForkChoiceNode {
     pub slot: Slot,
     pub block_root: B256,
@@ -308,13 +315,13 @@ pub struct Vote {
 }
 
 /// Indices into each tier's pool. Every tier is arena-resident except
-/// `pending_idx` (heap Vec — see `PendingQueues`).
+/// `pending_idx` and `validators` (heap Vec — see `PendingQueues` and
+/// `ValidatorsState`).
 #[repr(C)]
-#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq)]
+#[cfg_attr(test, derive(Default))]
 pub struct BeaconStateRef {
     pub imm_idx: u8,
-    pub vid_idx: u8,
-    pub vid_gen: u32,
     pub longtail_idx: u8,
     pub epoch_idx: u8,
     pub epoch_gen: u32,
@@ -323,6 +330,7 @@ pub struct BeaconStateRef {
     pub slot_idx: u8,
     pub slot_gen: u32,
     pub pending_idx: u8,
+    pub validators: ValidatorsState,
 }
 
 #[repr(C)]
@@ -401,7 +409,7 @@ pub struct ExecutionPayloadHeader {
 #[derive(Clone, Copy)]
 pub struct PendingDeposit {
     pub pubkey: BLSPubkey,
-    pub withdrawal_credentials: B256,
+    pub withdrawal_credentials: Withdrawals,
     pub amount: u64,
     pub signature: BLSSignature,
     pub slot: Slot,
@@ -463,7 +471,7 @@ const _: () = {
     assert!(size_of::<Immutable>() == 8 + 32 + 32 + size_of::<Fork>() + 4 + 4);
 
     assert!(
-        size_of::<ValidatorIdentity>() ==
+        size_of::<ValidatorsData>() ==
             size_of::<usize>() +
                 size_of::<BLSPubkey>() * MAX_VALIDATORS +
                 size_of::<PublicKey>() * MAX_VALIDATORS +

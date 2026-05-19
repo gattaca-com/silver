@@ -12,11 +12,9 @@
 pub use silver_common::ssz_hash::*;
 use tracing::instrument;
 
-use crate::types::{
-    self, BeaconBlockHeader, Checkpoint, EpochData, Eth1Data, HISTORICAL_ROOTS_LIMIT,
-    HistoricalLongtail, Immutable, PendingQueues, SYNC_COMMITTEE_SIZE, SlotData, SlotRoots,
-    VALIDATOR_REGISTRY_LIMIT, ValidatorIdentity,
-};
+use crate::{types::{
+    self, BeaconBlockHeader, Checkpoint, EpochData, Eth1Data, HistoricalLongtail, Immutable, PendingQueues, SlotData, SlotRoots, HISTORICAL_ROOTS_LIMIT, SYNC_COMMITTEE_SIZE, VALIDATOR_REGISTRY_LIMIT
+}, validator_identity::ValidatorsState};
 
 pub fn hash_tree_root_block_header(hdr: &BeaconBlockHeader, zh: &[B256]) -> B256 {
     let chunks = [
@@ -50,7 +48,7 @@ pub fn hash_eth1_data(e: &Eth1Data, zh: &[B256]) -> B256 {
 #[instrument(skip_all)]
 pub fn hash_tree_root_state(
     imm: &Immutable,
-    vid: &ValidatorIdentity,
+    vid: &ValidatorsState,
     longtail: &HistoricalLongtail,
     epoch: &EpochData,
     roots: &SlotRoots,
@@ -58,7 +56,7 @@ pub fn hash_tree_root_state(
     pq: &PendingQueues,
     zh: &[B256],
 ) -> B256 {
-    let n = vid.validator_cnt;
+    let n = vid.validator_cnt();
 
     let fields: [B256; 38] = [
         uint64_chunk(imm.genesis_time),
@@ -123,8 +121,8 @@ pub fn hash_randao_mixes(epoch: &EpochData, sd: &SlotData, zh: &[B256]) -> B256 
     merkle_finalize(stack, target_depth, zh)
 }
 
-pub fn hash_validators(vid: &ValidatorIdentity, epoch: &EpochData, zh: &[B256]) -> B256 {
-    let n = vid.validator_cnt;
+pub fn hash_validators(vid: &ValidatorsState, epoch: &EpochData, zh: &[B256]) -> B256 {
+    let n = vid.validator_cnt();
     let target_depth = VALIDATOR_REGISTRY_LIMIT.next_power_of_two().trailing_zeros() as u8;
     let mut stack = MerkleStack::new();
     for i in 0..n {
@@ -134,16 +132,11 @@ pub fn hash_validators(vid: &ValidatorIdentity, epoch: &EpochData, zh: &[B256]) 
     mix_in_length(&root, n)
 }
 
-fn hash_single_validator(
-    vid: &ValidatorIdentity,
-    epoch: &EpochData,
-    i: usize,
-    zh: &[B256],
-) -> B256 {
-    let pubkey_hash = hash_fixed_bytes(&vid.val_pubkey[i], zh);
+fn hash_single_validator(vid: &ValidatorsState, epoch: &EpochData, i: usize, zh: &[B256]) -> B256 {
+    let pubkey_hash = hash_fixed_bytes(vid.pubkey(i), zh);
     let chunks = [
         pubkey_hash,
-        vid.val_withdrawal_credentials[i],
+        vid.withdrawal_credentials(i).0,
         uint64_chunk(epoch.val_effective_balance[i]),
         uint64_chunk(epoch.val_slashed(i) as u64),
         uint64_chunk(epoch.val_activation_eligibility_epoch[i]),
@@ -225,7 +218,7 @@ pub fn hash_pending_deposits(pq: &PendingQueues, zh: &[B256]) -> B256 {
         let d = &pq.pending_deposits[i];
         let chunks = [
             hash_fixed_bytes(&d.pubkey, zh),
-            d.withdrawal_credentials,
+            d.withdrawal_credentials.0,
             uint64_chunk(d.amount),
             hash_fixed_bytes(&d.signature, zh),
             uint64_chunk(d.slot),

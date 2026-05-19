@@ -13,6 +13,7 @@ pub mod ticker;
 pub mod tile;
 pub mod types;
 mod validate;
+pub mod validator_identity;
 
 #[cfg(test)]
 pub(crate) mod test_signing;

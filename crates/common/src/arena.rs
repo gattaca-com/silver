@@ -56,7 +56,7 @@ impl<T, const N: usize> TierPool<T, N> {
     }
 
     // TODO(perf): whole-tier memcpy blows L3 — at mainnet scale `SlotData` is
-    // ~20 MB, `EpochData` ~100 MB, `ValidatorIdentity` ~160 MB. Every accepted
+    // ~20 MB, `EpochData` ~100 MB, `ValidatorsData` ~160 MB. Every accepted
     // block does at least the SlotData copy; epoch boundaries do EpochData;
     // any deposit/BLS-change-bearing block does VID. Either move to a
     // proto-array fork tree with snapshot-on-finalize (no per-fork tier copy),

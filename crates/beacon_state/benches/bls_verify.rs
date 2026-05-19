@@ -22,8 +22,9 @@ use silver_beacon_state::{
     },
     types::{
         B256, Epoch, EpochData, HistoricalLongtail, Immutable, PendingQueues, SLOTS_PER_EPOCH,
-        SlotData, SlotRoots, ValidatorIdentity, box_zeroed,
+        SlotData, SlotRoots, box_zeroed,
     },
+    validator_identity::{FinalizedValidators, ValidatorsState},
 };
 use silver_common::ssz_view::{
     BLOCK_SYNC_AGGREGATE_SIZE, BeaconBlockBodyView, SINGLE_ATT_SIZE, SignedBeaconBlockView,
@@ -134,7 +135,7 @@ fn snappy_decode(path: &Path) -> Vec<u8> {
 
 struct LoadedState {
     imm: Box<Immutable>,
-    vid: Box<ValidatorIdentity>,
+    fv: FinalizedValidators,
     longtail: Box<HistoricalLongtail>,
     epoch: Box<EpochData>,
     roots: Box<SlotRoots>,
@@ -147,7 +148,7 @@ fn load_pre_at(dir: &Path) -> LoadedState {
     let pre_ssz = snappy_decode(&dir.join("pre.ssz_snappy"));
     let mut s = LoadedState {
         imm: box_zeroed(),
-        vid: box_zeroed(),
+        fv: FinalizedValidators::new_empty(),
         longtail: box_zeroed(),
         epoch: box_zeroed(),
         roots: box_zeroed(),
@@ -158,7 +159,7 @@ fn load_pre_at(dir: &Path) -> LoadedState {
         &pre_ssz,
         &zh,
         &mut s.imm,
-        &mut s.vid,
+        &mut s.fv,
         &mut s.longtail,
         &mut s.epoch,
         &mut s.roots,
@@ -191,9 +192,10 @@ fn build_ef_block() -> SigBatch {
     let mut active = Vec::new();
     let mut postponed = Vec::new();
     if block_slot > s.sd.slot {
+        let mut view = ValidatorsState::with_empty_delta(&s.fv);
         state_transition::process_slots(
             &s.imm,
-            &mut s.vid,
+            &mut view,
             &mut s.longtail,
             &mut s.epoch,
             &mut s.roots,
@@ -208,7 +210,7 @@ fn build_ef_block() -> SigBatch {
 
     let current_epoch = block_slot / SLOTS_PER_EPOCH;
     let prev_epoch = current_epoch.saturating_sub(1);
-    let n = s.vid.validator_cnt;
+    let n = s.fv.validator_cnt();
     let (cur_shuffled, cur_cps) = shuffle_for_epoch(&s.epoch, n, current_epoch);
     let (prev_shuffled, prev_cps) = shuffle_for_epoch(&s.epoch, n, prev_epoch);
     let sref = ShufflingRef {
@@ -227,7 +229,7 @@ fn build_ef_block() -> SigBatch {
         &s.imm,
         body,
         block_slot,
-        &s.vid.val_pubkey_decompressed[proposer_index as usize],
+        s.fv.pubkey_decompressed(proposer_index as usize),
         &mut batch,
     );
 
@@ -240,10 +242,11 @@ fn build_ef_block() -> SigBatch {
     let bls_ = BeaconBlockBodyView::bls_to_execution_changes_offset(body) as usize;
     let blob = BeaconBlockBodyView::blob_kzg_commitments_offset(body) as usize;
 
-    let _ = collect_sigs_proposer_slashings(&s.imm, &s.vid, &body[ps..at_s], &mut batch, &zh);
+    let view = ValidatorsState::with_empty_delta(&s.fv);
+    let _ = collect_sigs_proposer_slashings(&s.imm, &view, &body[ps..at_s], &mut batch, &zh);
     let _ = collect_sigs_attester_slashings(
         &s.imm,
-        &s.vid,
+        &view,
         &body[at_s..att],
         &mut scratch,
         &mut batch,
@@ -251,7 +254,7 @@ fn build_ef_block() -> SigBatch {
     );
     let _ = collect_sigs_attestations(
         &s.imm,
-        &s.vid,
+        &view,
         &body[att..dep],
         block_slot,
         Some(&sref),
@@ -260,12 +263,12 @@ fn build_ef_block() -> SigBatch {
         &zh,
     );
     // deposits skipped — verified inline in apply_deposit.
-    collect_sigs_voluntary_exits(&s.imm, &s.vid, &body[ve..exec], &mut batch, &zh);
+    collect_sigs_voluntary_exits(&s.imm, &view, &body[ve..exec], &mut batch, &zh);
     let _ =
-        collect_sigs_bls_to_execution_changes(&s.imm, &s.vid, &body[bls_..blob], &mut batch, &zh);
+        collect_sigs_bls_to_execution_changes(&s.imm, &view, &body[bls_..blob], &mut batch, &zh);
     collect_sigs_sync_aggregate(
         &s.imm,
-        &s.vid,
+        &view,
         &s.longtail,
         &body[220..220 + BLOCK_SYNC_AGGREGATE_SIZE],
         block_slot,

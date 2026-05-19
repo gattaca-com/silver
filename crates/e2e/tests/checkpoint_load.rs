@@ -19,9 +19,8 @@ use silver_beacon_state::{
     ticker::SlotTicker,
     tile::{BeaconStateTile, Feedback},
     types::{
-        EpochData, HistoricalLongtail, Immutable, SlotData, SlotRoots, ValidatorIdentity,
-        box_zeroed,
-    },
+        box_zeroed, EpochData, HistoricalLongtail, Immutable, SlotData, SlotRoots
+    }, validator_identity::FinalizedValidators,
 };
 use silver_common::{TCache, TCacheProducer};
 use silver_e2e::canonical::fetch_canonical_state_root;
@@ -63,7 +62,7 @@ fn finalized_state_loads() {
     // hash; verify that didn't happen.
     let zh = compute_zero_hashes();
     let mut imm: Box<Immutable> = box_zeroed();
-    let mut vid: Box<ValidatorIdentity> = box_zeroed();
+    let mut vid: Box<FinalizedValidators> = Box::new(FinalizedValidators::new_empty());
     let mut longtail: Box<HistoricalLongtail> = box_zeroed();
     let mut epoch: Box<EpochData> = box_zeroed();
     let mut roots: Box<SlotRoots> = box_zeroed();

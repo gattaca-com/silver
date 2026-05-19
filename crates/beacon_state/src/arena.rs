@@ -9,14 +9,12 @@ use silver_common::{TierPool, arena::open_or_create_shm};
 
 use crate::types::{
     EPOCH_POOL_CAP, EpochData, HistoricalLongtail, IMM_POOL_CAP, Immutable, LONGTAIL_POOL_CAP,
-    ROOTS_POOL_CAP, SLOT_POOL_CAP, SlotData, SlotRoots, VID_POOL_CAP, ValidatorIdentity,
-    box_zeroed,
+    ROOTS_POOL_CAP, SLOT_POOL_CAP, SlotData, SlotRoots, box_zeroed,
 };
 
 #[repr(C)]
 pub struct BeaconArena {
     pub imm: TierPool<Immutable, IMM_POOL_CAP>,
-    pub vid: TierPool<ValidatorIdentity, VID_POOL_CAP>,
     pub longtail: TierPool<HistoricalLongtail, LONGTAIL_POOL_CAP>,
     pub epoch: TierPool<EpochData, EPOCH_POOL_CAP>,
     pub roots: TierPool<SlotRoots, ROOTS_POOL_CAP>,

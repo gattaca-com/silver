@@ -3941,6 +3941,7 @@ dependencies = [
  "flux",
  "rand 0.8.6",
  "ring",
+ "rustc-hash",
  "serde",
  "serde_yml",
  "silver_common",

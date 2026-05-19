@@ -144,7 +144,7 @@ fn attestation() {
         let proposer_index = s.sd.proposer_lookahead[(s.sd.slot % SLOTS_PER_EPOCH) as usize];
         let current_epoch = block_slot / SLOTS_PER_EPOCH;
         let prev_epoch = current_epoch.saturating_sub(1);
-        let n = s.vid.validator_cnt;
+        let n = s.vid.validator_cnt();
 
         use silver_beacon_state::shuffling;
         let cur_seed = shuffling::get_seed(&s.epoch, current_epoch, 1); // DOMAIN_BEACON_ATTESTER
@@ -216,8 +216,14 @@ fn voluntary_exit() {
         let mut batch = SigBatch::new();
         state_transition::collect_sigs_voluntary_exits(&s.imm, &s.vid, op, &mut batch, &zh);
         batch.verify_all() &&
-            state_transition::process_voluntary_exits(&s.vid, &mut s.epoch, &mut s.sd, &s.pq, op)
-                .is_ok()
+            state_transition::process_voluntary_exits(
+                &s.vid,
+                &mut s.epoch,
+                &mut s.sd,
+                &s.pq,
+                op,
+            )
+            .is_ok()
     });
 }
 

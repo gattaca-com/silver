@@ -1,16 +1,15 @@
-use blst::min_pk::PublicKey;
-
 use crate::{
     epoch_transition, ssz_hash,
     types::{
-        B256, Checkpoint, EPOCHS_PER_HISTORICAL_VECTOR, EPOCHS_PER_SLASHINGS_VECTOR, EpochData,
-        Eth1Data, ExecutionPayloadHeader, Fork, HISTORICAL_ROOTS_LIMIT, HISTORICAL_SUMMARIES_CAP,
-        HistoricalLongtail, HistoricalSummary, Immutable, MAX_ETH1_VOTES, MAX_VALIDATORS,
-        PENDING_CONSOLIDATIONS_LIMIT, PENDING_DEPOSITS_LIMIT, PENDING_PARTIAL_WITHDRAWALS_LIMIT,
-        PendingConsolidation, PendingDeposit, PendingPartialWithdrawal, PendingQueues,
-        SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT, SYNC_COMMITTEE_SIZE, SlotData, SlotRoots,
-        SyncCommittee, ValidatorIdentity,
+        B256, BLSPubkey, Checkpoint, EPOCHS_PER_HISTORICAL_VECTOR, EPOCHS_PER_SLASHINGS_VECTOR,
+        EpochData, Eth1Data, ExecutionPayloadHeader, Fork, HISTORICAL_ROOTS_LIMIT,
+        HISTORICAL_SUMMARIES_CAP, HistoricalLongtail, HistoricalSummary, Immutable, MAX_ETH1_VOTES,
+        MAX_VALIDATORS, PENDING_CONSOLIDATIONS_LIMIT, PENDING_DEPOSITS_LIMIT,
+        PENDING_PARTIAL_WITHDRAWALS_LIMIT, PendingConsolidation, PendingDeposit,
+        PendingPartialWithdrawal, PendingQueues, SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT,
+        SYNC_COMMITTEE_SIZE, SlotData, SlotRoots, SyncCommittee,
     },
+    validator_identity::{FinalizedValidators, Withdrawals},
 };
 
 // SSZ Validator: pubkey(48) + withdrawal_credentials(32) + effective_balance(8)
@@ -145,7 +144,7 @@ pub fn decompose_beacon_state(
     ssz: &[u8],
     zh: &[B256],
     imm: &mut Immutable,
-    vid: &mut ValidatorIdentity,
+    fv: &mut FinalizedValidators,
     longtail: &mut HistoricalLongtail,
     epoch: &mut EpochData,
     roots: &mut SlotRoots,
@@ -286,7 +285,10 @@ pub fn decompose_beacon_state(
     let mix_idx = current_epoch as usize % EPOCHS_PER_HISTORICAL_VECTOR;
     sd.randao_mix_current = epoch.randao_mixes[mix_idx];
 
-    // Validators → split across ValidatorIdentity + EpochData (columnar)
+    // Validators → split across `FinalisedValidators` (pubkey/creds +
+    // index) and `EpochData` (per-validator scalars). `fv.append`
+    // writes the validator into the base and inserts into the pubkey
+    // index in lockstep; the epoch-data fields go in directly.
     let val_bytes = &ssz[off_validators..off_balances];
     if !val_bytes.len().is_multiple_of(VALIDATOR_SSZ_SIZE) {
         return Err(DecomposeError::ValidatorsLenNotMultiple { len: val_bytes.len() });
@@ -295,16 +297,14 @@ pub fn decompose_beacon_state(
     if n > MAX_VALIDATORS {
         return Err(DecomposeError::TooManyValidators { n, max: MAX_VALIDATORS });
     }
-    vid.validator_cnt = n;
     for i in 0..n {
         let v = &val_bytes[i * VALIDATOR_SSZ_SIZE..];
-        vid.val_pubkey[i].copy_from_slice(&v[..48]);
-        // Decompress + cache the pubkey for hot-path BLS verifies. Fall back
-        // to the zero point on malformed input — the corresponding compressed
-        // copy will fail later sigverifies the same way.
-        vid.val_pubkey_decompressed[i] =
-            PublicKey::from_bytes(&vid.val_pubkey[i]).unwrap_or_default();
-        vid.val_withdrawal_credentials[i] = b256(v, 48);
+        let pubkey: BLSPubkey = v[..48].try_into().unwrap();
+        let credentials = Withdrawals(b256(v, 48));
+        // `append` derives `pubkey_decompressed` internally (falls back
+        // to the zero point on malformed compressed input — sigverifies
+        // for that validator will then fail the same way).
+        fv.append(&pubkey, &credentials);
         epoch.val_effective_balance[i] = u64_le(v, 80);
         epoch.set_val_slashed(i, v[88] != 0);
         epoch.val_activation_eligibility_epoch[i] = u64_le(v, 89);
@@ -446,7 +446,7 @@ pub fn decompose_beacon_state(
         signature.copy_from_slice(&d[88..184]);
         pq.pending_deposits.push(PendingDeposit {
             pubkey,
-            withdrawal_credentials: b256(d, 48),
+            withdrawal_credentials: Withdrawals(b256(d, 48)),
             amount: u64_le(d, 80),
             signature,
             slot: u64_le(d, 184),
@@ -492,7 +492,7 @@ pub fn decompose_beacon_state(
             .push(PendingConsolidation { source_index: u64_le(c, 0), target_index: u64_le(c, 8) });
     }
 
-    epoch_transition::rebuild_sync_committee_indices(vid, longtail);
+    epoch_transition::rebuild_sync_committee_indices(fv, longtail);
 
     Ok(pq)
 }

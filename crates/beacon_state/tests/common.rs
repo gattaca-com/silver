@@ -13,10 +13,8 @@ use silver_beacon_state::{
     ssz_hash::{compute_zero_hashes, hash_tree_root_state},
     ticker::SlotTicker,
     tile::BeaconStateTile,
-    types::{
-        EpochData, HistoricalLongtail, Immutable, SlotData, SlotRoots, ValidatorIdentity,
-        box_zeroed,
-    },
+    types::{EpochData, HistoricalLongtail, Immutable, SlotData, SlotRoots, box_zeroed},
+    validator_identity::{FinalizedValidators, ValidatorsState},
 };
 use silver_common::{
     BeaconStateEvent, GossipTopic, MessageId, NewGossipMsg, P2pStreamId, RpcInbound,
@@ -264,7 +262,7 @@ impl Harness {
     pub fn assert_state_root(&self, post_ssz: &[u8]) {
         let zh = compute_zero_hashes();
         let mut imm: Box<Immutable> = box_zeroed();
-        let mut vid: Box<ValidatorIdentity> = box_zeroed();
+        let mut fv = FinalizedValidators::new_empty();
         let mut longtail: Box<HistoricalLongtail> = box_zeroed();
         let mut epoch: Box<EpochData> = box_zeroed();
         let mut roots: Box<SlotRoots> = box_zeroed();
@@ -273,14 +271,16 @@ impl Harness {
             post_ssz,
             &zh,
             &mut imm,
-            &mut vid,
+            &mut fv,
             &mut longtail,
             &mut epoch,
             &mut roots,
             &mut sd,
         )
         .expect("decompose post.ssz");
-        let expected = hash_tree_root_state(&imm, &vid, &longtail, &epoch, &roots, &sd, &pq, &zh);
+        let vid_view = ValidatorsState::with_empty_delta(&fv);
+        let expected =
+            hash_tree_root_state(&imm, &vid_view, &longtail, &epoch, &roots, &sd, &pq, &zh);
         let got = self.tile.head_state_root();
         assert_eq!(
             got,

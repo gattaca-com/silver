@@ -6,7 +6,11 @@ mod ef_common;
 
 use ef_common::{snappy_decode, spec_tests_dir};
 use silver_beacon_state::{
-    decompose::decompose_beacon_state, epoch_transition, ssz_hash::compute_zero_hashes, types::*,
+    decompose::decompose_beacon_state,
+    epoch_transition,
+    ssz_hash::compute_zero_hashes,
+    types::*,
+    validator_identity::ValidatorsState,
 };
 
 // Mirror the constants from epoch_transition.
@@ -39,12 +43,12 @@ fn is_in_inactivity_leak(sd: &SlotData) -> bool {
 
 /// Compute per-flag reward/penalty deltas for all validators.
 fn compute_flag_deltas(
-    vid: &ValidatorIdentity,
+    vid: &ValidatorsState,
     e: &EpochData,
     sd: &SlotData,
     flag_index: usize,
 ) -> (Vec<u64>, Vec<u64>) {
-    let n = vid.validator_cnt;
+    let n = vid.validator_cnt();
     let current_epoch = sd.slot / SLOTS_PER_EPOCH;
     let previous_epoch = current_epoch.saturating_sub(1);
 
@@ -98,11 +102,11 @@ fn compute_flag_deltas(
 }
 
 fn compute_inactivity_deltas(
-    vid: &ValidatorIdentity,
+    vid: &ValidatorsState,
     e: &EpochData,
     sd: &SlotData,
 ) -> (Vec<u64>, Vec<u64>) {
-    let n = vid.validator_cnt;
+    let n = vid.validator_cnt();
     let current_epoch = sd.slot / SLOTS_PER_EPOCH;
     let rewards = vec![0u64; n];
     let mut penalties = vec![0u64; n];
@@ -179,7 +183,7 @@ fn run_rewards_handler(handler_name: &str) {
                 &ssz,
                 &zh,
                 &mut s.imm,
-                &mut s.vid,
+                &mut s.fv,
                 &mut s.longtail,
                 &mut s.epoch,
                 &mut s.roots,
@@ -189,7 +193,11 @@ fn run_rewards_handler(handler_name: &str) {
             {
                 continue;
             }
-            let (vid, e, sd) = (s.vid, s.epoch, s.sd);
+            // Rebuild the overlay so `base_cnt` matches the populated base.
+            s.vid = ValidatorsState::with_empty_delta(&s.fv);
+            let vid = &s.vid;
+            let e = &s.epoch;
+            let sd = &s.sd;
 
             let check = |label: &str, ours: &(Vec<u64>, Vec<u64>), expected_path: &Path| -> bool {
                 if !expected_path.exists() {
@@ -221,10 +229,10 @@ fn run_rewards_handler(handler_name: &str) {
                 ok
             };
 
-            let source = compute_flag_deltas(&vid, &e, &sd, 0);
-            let target = compute_flag_deltas(&vid, &e, &sd, 1);
-            let head = compute_flag_deltas(&vid, &e, &sd, 2);
-            let inactivity = compute_inactivity_deltas(&vid, &e, &sd);
+            let source = compute_flag_deltas(vid, e, sd, 0);
+            let target = compute_flag_deltas(vid, e, sd, 1);
+            let head = compute_flag_deltas(vid, e, sd, 2);
+            let inactivity = compute_inactivity_deltas(vid, e, sd);
 
             let ok = check("source", &source, &dir.join("source_deltas.ssz_snappy")) &
                 check("target", &target, &dir.join("target_deltas.ssz_snappy")) &
