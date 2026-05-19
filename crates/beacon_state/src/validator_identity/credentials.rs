@@ -27,15 +27,6 @@ impl Withdrawals {
         Self(bytes)
     }
 
-    /// Reinterpret a `&[u8; 32]` borrowed from an SSZ view as
-    /// `&WithdrawalCredentials`. Used at the wire boundary in
-    /// `state_transition` where deposit views return raw bytes.
-    #[inline]
-    pub fn from_ref(b: &B256) -> &Self {
-        // SAFETY: `#[repr(transparent)]` over `B256`.
-        unsafe { &*(b as *const B256 as *const Self) }
-    }
-
     #[inline]
     pub fn prefix(&self) -> u8 {
         self.0[0]

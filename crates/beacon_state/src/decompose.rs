@@ -286,9 +286,7 @@ pub fn decompose_beacon_state(
     sd.randao_mix_current = epoch.randao_mixes[mix_idx];
 
     // Validators → split across `FinalisedValidators` (pubkey/creds +
-    // index) and `EpochData` (per-validator scalars). `fv.append`
-    // writes the validator into the base and inserts into the pubkey
-    // index in lockstep; the epoch-data fields go in directly.
+    // index) and `EpochData` (per-validator scalars)
     let val_bytes = &ssz[off_validators..off_balances];
     if !val_bytes.len().is_multiple_of(VALIDATOR_SSZ_SIZE) {
         return Err(DecomposeError::ValidatorsLenNotMultiple { len: val_bytes.len() });

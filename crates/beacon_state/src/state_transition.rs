@@ -223,11 +223,9 @@ pub fn apply_signed_block_debug(
         }
     }
 
-    if proposer_index as usize >= vid.validator_cnt() {
-        return Err(wrap(BlockError::ProposerOutOfRange {
-            idx: proposer_index,
-            cnt: vid.validator_cnt(),
-        }));
+    let cnt = vid.validator_cnt();
+    if proposer_index as usize >= cnt {
+        return Err(wrap(BlockError::ProposerOutOfRange { idx: proposer_index, cnt }));
     }
     let block_epoch = block_slot / SLOTS_PER_EPOCH;
     let fork_version = bls::fork_version_at_epoch(
@@ -513,11 +511,9 @@ pub fn process_block_body(
     let offsets = BodyOffsets::new(body).ok_or_else(|| {
         wrap(BlockError::BodyTooShort { len: body.len(), min: BEACON_BLOCK_BODY_FIXED })
     })?;
-    if (proposer_index as usize) >= vid.validator_cnt() {
-        return Err(wrap(BlockError::ProposerOutOfRange {
-            idx: proposer_index,
-            cnt: vid.validator_cnt(),
-        }));
+    let cnt = vid.validator_cnt();
+    if (proposer_index as usize) >= cnt {
+        return Err(wrap(BlockError::ProposerOutOfRange { idx: proposer_index, cnt }));
     }
 
     sig_batch.clear();
@@ -867,8 +863,9 @@ pub fn collect_sigs_single_attestation(
                 continue;
             }
             let vi = validator_idx as usize;
-            if vi >= vid.validator_cnt() {
-                return Err(AttestationError::ValidatorOutOfRange { vi, cnt: vid.validator_cnt() });
+            let cnt = vid.validator_cnt();
+            if vi >= cnt {
+                return Err(AttestationError::ValidatorOutOfRange { vi, cnt });
             }
             active_scratch.push(validator_idx);
         }
@@ -1060,8 +1057,9 @@ pub fn process_single_attestation(
                 continue;
             }
             let vi = validator_idx as usize;
-            if vi >= vid.validator_cnt() {
-                return Err(AttestationError::ValidatorOutOfRange { vi, cnt: vid.validator_cnt() });
+            let cnt = vid.validator_cnt();
+            if vi >= cnt {
+                return Err(AttestationError::ValidatorOutOfRange { vi, cnt });
             }
             active_scratch.push(validator_idx);
         }
@@ -1290,6 +1288,7 @@ pub fn process_withdrawals(
             let vi = sweep_validator_index as usize;
             if vi < vid.validator_cnt() && vid.withdrawal_credentials(vi).has_execution_credential()
             {
+                let creds = vid.withdrawal_credentials(vi);
                 let mut partial_drawn = 0u64;
                 for &(svi, samt) in &selected[..partials_emitted] {
                     if svi == sweep_validator_index {
@@ -1297,8 +1296,8 @@ pub fn process_withdrawals(
                     }
                 }
                 let balance = sd.balances[vi].saturating_sub(partial_drawn);
-                let max_eb = vid.withdrawal_credentials(vi).max_effective_balance();
-                let address = vid.withdrawal_credentials(vi).execution_address();
+                let max_eb = creds.max_effective_balance();
+                let address = creds.execution_address();
                 if epoch.val_withdrawable_epoch[vi] <= current_epoch && balance > 0 {
                     let expected = WithdrawalRecord {
                         index: withdrawal_index,
@@ -1447,11 +1446,9 @@ pub fn process_sync_aggregate(
     if sync_agg.len() < BLOCK_SYNC_AGGREGATE_SIZE {
         return Ok(());
     }
-    if (proposer_index as usize) >= vid.validator_cnt() {
-        return Err(SyncAggregateError::ProposerOutOfRange {
-            idx: proposer_index,
-            cnt: vid.validator_cnt(),
-        });
+    let cnt = vid.validator_cnt();
+    if (proposer_index as usize) >= cnt {
+        return Err(SyncAggregateError::ProposerOutOfRange { idx: proposer_index, cnt });
     }
     let sync_agg_fixed: &[u8; BLOCK_SYNC_AGGREGATE_SIZE] =
         sync_agg[..BLOCK_SYNC_AGGREGATE_SIZE].try_into().unwrap();
@@ -2080,11 +2077,9 @@ pub fn collect_sigs_attester_slashings(
             let n_idx = indices.len() / 8;
             for k in 0..n_idx {
                 let vi = u64::from_le_bytes(indices[k * 8..k * 8 + 8].try_into().unwrap());
-                if vi as usize >= vid.validator_cnt() {
-                    return Err(AttesterSlashingError::ValidatorOutOfRange {
-                        vi: vi as usize,
-                        cnt: vid.validator_cnt(),
-                    });
+                let cnt = vid.validator_cnt();
+                if vi as usize >= cnt {
+                    return Err(AttesterSlashingError::ValidatorOutOfRange { vi: vi as usize, cnt });
                 }
                 active_scratch.push(vi as u32);
             }
