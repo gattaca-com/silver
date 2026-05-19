@@ -119,7 +119,13 @@ impl OutboundKind {
 impl Harness {
     pub fn new(wall_slot: u64, checkpoint_ssz: &[u8]) -> Self {
         Self::build(wall_slot, |ticker, gc, rc| {
-            BeaconStateTile::new_heap(ticker, gc, rc, checkpoint_ssz)
+            BeaconStateTile::new_heap(
+                ticker,
+                silver_common::SpecConfig::mainnet(),
+                gc,
+                rc,
+                checkpoint_ssz,
+            )
         })
     }
 

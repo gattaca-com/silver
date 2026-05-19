@@ -50,7 +50,13 @@ fn finalized_state_loads() {
     let gossip_c = gossip_p.cache_ref().random_access(false).unwrap();
     let rpc_c = rpc_p.cache_ref().random_access(false).unwrap();
 
-    let mut tile = BeaconStateTile::new_heap(ticker, gossip_c, rpc_c, &ssz);
+    let mut tile = BeaconStateTile::new_heap(
+        ticker,
+        silver_common::SpecConfig::mainnet(),
+        gossip_c,
+        rpc_c,
+        &ssz,
+    );
 
     let head = tile.head_block_root();
     assert_ne!(head, [0u8; 32], "head_block_root is zero after bootstrap");

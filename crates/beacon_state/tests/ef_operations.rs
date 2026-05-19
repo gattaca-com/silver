@@ -100,9 +100,16 @@ fn proposer_slashing() {
         {
             return false;
         }
+        let cfg = silver_common::SpecConfig::mainnet();
         batch.verify_all() &&
-            state_transition::process_proposer_slashings(&s.vs, &mut s.epoch, &mut s.sd, op)
-                .is_ok()
+            state_transition::process_proposer_slashings(
+                &cfg,
+                &s.vs,
+                &mut s.epoch,
+                &mut s.sd,
+                op,
+            )
+            .is_ok()
     });
 }
 
@@ -127,9 +134,16 @@ fn attester_slashing() {
         {
             return false;
         }
+        let cfg = silver_common::SpecConfig::mainnet();
         batch.verify_all() &&
-            state_transition::process_attester_slashings(&s.vs, &mut s.epoch, &mut s.sd, &list)
-                .is_ok()
+            state_transition::process_attester_slashings(
+                &cfg,
+                &s.vs,
+                &mut s.epoch,
+                &mut s.sd,
+                &list,
+            )
+            .is_ok()
     });
 }
 
@@ -215,9 +229,17 @@ fn voluntary_exit() {
     operations_handler("voluntary_exit", "voluntary_exit", true, move |s, op| {
         let mut batch = SigBatch::new();
         state_transition::collect_sigs_voluntary_exits(&s.imm, &s.vs, op, &mut batch, &zh);
+        let cfg = silver_common::SpecConfig::mainnet();
         batch.verify_all() &&
-            state_transition::process_voluntary_exits(&s.vs, &mut s.epoch, &mut s.sd, &s.pq, op)
-                .is_ok()
+            state_transition::process_voluntary_exits(
+                &cfg,
+                &s.vs,
+                &mut s.epoch,
+                &mut s.sd,
+                &s.pq,
+                op,
+            )
+            .is_ok()
     });
 }
 
@@ -278,8 +300,10 @@ fn deposit_request() {
 
 #[test]
 fn withdrawal_request() {
-    operations_handler("withdrawal_request", "withdrawal_request", false, |s, op| {
+    let cfg = silver_common::SpecConfig::mainnet();
+    operations_handler("withdrawal_request", "withdrawal_request", false, move |s, op| {
         state_transition::process_withdrawal_requests(
+            &cfg,
             &s.vs,
             &mut s.epoch,
             &mut s.sd,
@@ -292,8 +316,10 @@ fn withdrawal_request() {
 
 #[test]
 fn consolidation_request() {
-    operations_handler("consolidation_request", "consolidation_request", false, |s, op| {
+    let cfg = silver_common::SpecConfig::mainnet();
+    operations_handler("consolidation_request", "consolidation_request", false, move |s, op| {
         state_transition::process_consolidation_requests(
+            &cfg,
             &mut s.vs,
             &mut s.epoch,
             &mut s.sd,
@@ -315,6 +341,7 @@ fn withdrawals() {
 #[test]
 fn execution_payload() {
     let zh = compute_zero_hashes();
+    let cfg = silver_common::SpecConfig::mainnet();
     operations_handler("execution_payload", "body", false, move |s, op| {
         if op.len() < 396 {
             return true;
@@ -326,7 +353,7 @@ fn execution_payload() {
             let payload = &op[exec_off..bls_off];
             let block_slot = s.sd.slot;
             let _ = state_transition::process_execution_payload(
-                &s.imm, &mut s.sd, payload, block_slot, &zh,
+                &cfg, &s.imm, &mut s.sd, payload, block_slot, &zh,
             );
             let _ = state_transition::process_withdrawals(
                 &s.vs, &s.epoch, &mut s.sd, &mut s.pq, payload,

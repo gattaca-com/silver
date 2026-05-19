@@ -164,7 +164,13 @@ fn pm_drives_single_big_batch_against_real_checkpoint() {
     let gossip_c = gossip_p.cache_ref().random_access(true).expect("gossip ra");
     let rpc_c = rpc_p.cache_ref().random_access(true).expect("rpc ra");
 
-    let mut bs = BeaconStateTile::new_heap(ticker, gossip_c, rpc_c, &checkpoint);
+    let mut bs = BeaconStateTile::new_heap(
+        ticker,
+        silver_common::SpecConfig::mainnet(),
+        gossip_c,
+        rpc_c,
+        &checkpoint,
+    );
     let mut bs_a = SpineAdapter::connect_tile(&bs, &mut spine);
 
     // One batch covers everything.

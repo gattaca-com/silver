@@ -4,6 +4,7 @@ pub use discovery_config::DiscoveryConfig;
 pub use peer_score_params::ScoreParams;
 use secp256k1::PublicKey;
 use serde::{Deserialize, Serialize};
+pub use spec_config::{BlobParameters, SpecConfig};
 pub use syncing_config::SyncingConfig;
 
 use crate::{
@@ -14,6 +15,7 @@ use crate::{
 mod chain_config;
 mod discovery_config;
 mod peer_score_params;
+mod spec_config;
 mod syncing_config;
 
 const fn default_usize<const N: usize>() -> usize {

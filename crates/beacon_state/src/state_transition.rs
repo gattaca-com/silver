@@ -1,16 +1,19 @@
 use core::cmp::{max, min};
 
 use blst::min_pk::PublicKey;
-use silver_common::ssz_view::{
-    ATTESTATION_DATA_SIZE, AttestationDataView, AttestationView, BEACON_BLOCK_BODY_FIXED,
-    BEACON_BLOCK_HEADER_SIZE, BLOCK_SYNC_AGGREGATE_SIZE, BeaconBlockBodyView,
-    BeaconBlockHeaderView, CONSOLIDATION_REQUEST_SIZE, ConsolidationRequestView,
-    DEPOSIT_CONTRACT_TREE_DEPTH, DEPOSIT_REQUEST_SIZE, DEPOSIT_SIZE, DepositDataView,
-    DepositRequestView, DepositView, Eth1DataView, ExecutionPayloadView, PROPOSER_SLASHING_SIZE,
-    ProposerSlashingView, SIGNED_BLS_CHANGE_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE,
-    SignedBeaconBlockView, SignedBlsToExecutionChangeView, SignedVoluntaryExitView,
-    SyncAggregateView, WITHDRAWAL_REQUEST_SIZE, WITHDRAWAL_SIZE, WithdrawalRequestView,
-    WithdrawalView,
+use silver_common::{
+    SpecConfig,
+    ssz_view::{
+        ATTESTATION_DATA_SIZE, AttestationDataView, AttestationView, BEACON_BLOCK_BODY_FIXED,
+        BEACON_BLOCK_HEADER_SIZE, BLOCK_SYNC_AGGREGATE_SIZE, BeaconBlockBodyView,
+        BeaconBlockHeaderView, CONSOLIDATION_REQUEST_SIZE, ConsolidationRequestView,
+        DEPOSIT_CONTRACT_TREE_DEPTH, DEPOSIT_REQUEST_SIZE, DEPOSIT_SIZE, DepositDataView,
+        DepositRequestView, DepositView, Eth1DataView, ExecutionPayloadView,
+        PROPOSER_SLASHING_SIZE, ProposerSlashingView, SIGNED_BLS_CHANGE_SIZE,
+        SIGNED_VOLUNTARY_EXIT_SIZE, SignedBeaconBlockView, SignedBlsToExecutionChangeView,
+        SignedVoluntaryExitView, SyncAggregateView, WITHDRAWAL_REQUEST_SIZE, WITHDRAWAL_SIZE,
+        WithdrawalRequestView, WithdrawalView,
+    },
 };
 
 use crate::{
@@ -35,12 +38,8 @@ use crate::{
 };
 
 const WHISTLEBLOWER_REWARD_QUOTIENT: u64 = 4096;
-const MIN_SLASHING_PENALTY_QUOTIENT: u64 = 4096;
 const FULL_EXIT_REQUEST_AMOUNT: u64 = 0;
-const SHARD_COMMITTEE_PERIOD: u64 = 256;
 const MIN_ACTIVATION_BALANCE: u64 = 32_000_000_000;
-const MAX_SEED_LOOKAHEAD: u64 = 4;
-const MIN_VALIDATOR_WITHDRAWABILITY_DELAY: u64 = 256;
 const UNSET_DEPOSIT_REQUESTS_START_INDEX: u64 = u64::MAX;
 const EFFECTIVE_BALANCE_INCREMENT: u64 = 1_000_000_000;
 // BLS G2 point at infinity (compressed): 0xc0 followed by 95 zero bytes.
@@ -52,6 +51,7 @@ const G2_POINT_AT_INFINITY: [u8; 96] = {
 
 #[allow(clippy::too_many_arguments)]
 pub fn apply_block(
+    cfg: &SpecConfig,
     imm: &Immutable,
     vs: &mut ValidatorsState,
     longtail: &mut HistoricalLongtail,
@@ -99,6 +99,7 @@ pub fn apply_block(
 
     if block_slot > sd.slot {
         process_slots(
+            cfg,
             imm,
             vs,
             longtail,
@@ -118,6 +119,7 @@ pub fn apply_block(
 
     let body = if block_bytes.len() > 184 { &block_bytes[184..] } else { &[] };
     process_block_body(
+        cfg,
         imm,
         vs,
         longtail,
@@ -176,6 +178,7 @@ fn build_shuffling(
 /// and pooled scratch buffers).
 #[allow(clippy::too_many_arguments)]
 pub fn apply_signed_block_debug(
+    cfg: &SpecConfig,
     imm: &Immutable,
     vs: &mut ValidatorsState,
     longtail: &mut HistoricalLongtail,
@@ -249,6 +252,7 @@ pub fn apply_signed_block_debug(
 
     if block_slot > sd.slot {
         process_slots(
+            cfg,
             imm,
             vs,
             longtail,
@@ -279,6 +283,7 @@ pub fn apply_signed_block_debug(
     let mut votes_sink: Vec<(u32, B256, Epoch)> = Vec::new();
     let mut sig_batch = SigBatch::new();
     process_block_body(
+        cfg,
         imm,
         vs,
         longtail,
@@ -309,6 +314,7 @@ pub fn apply_signed_block_debug(
 /// `(state.slot + 1) % SLOTS_PER_EPOCH == 0`).
 #[allow(clippy::too_many_arguments)]
 pub fn process_slots(
+    cfg: &SpecConfig,
     imm: &Immutable,
     vs: &mut ValidatorsState,
     longtail: &mut HistoricalLongtail,
@@ -325,6 +331,7 @@ pub fn process_slots(
         process_slot(imm, vs, longtail, epoch, roots, sd, pq, zh);
         if (sd.slot + 1).is_multiple_of(SLOTS_PER_EPOCH) {
             epoch_transition::process_epoch(
+                cfg,
                 vs,
                 longtail,
                 epoch,
@@ -490,6 +497,7 @@ impl<'a> BodyOffsets<'a> {
 /// spec-assertion failure.
 #[allow(clippy::too_many_arguments)]
 pub fn process_block_body(
+    cfg: &SpecConfig,
     imm: &Immutable,
     vs: &mut ValidatorsState,
     longtail: &HistoricalLongtail,
@@ -544,7 +552,7 @@ pub fn process_block_body(
     let payload = offsets.payload();
 
     process_withdrawals(vs, epoch, sd, pq, payload)?;
-    process_execution_payload(imm, sd, payload, block_slot, zh)?;
+    process_execution_payload(cfg, imm, sd, payload, block_slot, zh)?;
     process_randao(body, sd);
     process_eth1_data(sd, body);
 
@@ -552,6 +560,7 @@ pub fn process_block_body(
         offsets.attester_slashings_off <= body.len()
     {
         process_proposer_slashings(
+            cfg,
             vs,
             epoch,
             sd,
@@ -562,6 +571,7 @@ pub fn process_block_body(
         offsets.attestations_off <= body.len()
     {
         process_attester_slashings(
+            cfg,
             vs,
             epoch,
             sd,
@@ -596,6 +606,7 @@ pub fn process_block_body(
     }
     if offsets.voluntary_exits_off <= offsets.exec_off && offsets.exec_off <= body.len() {
         process_voluntary_exits(
+            cfg,
             vs,
             epoch,
             sd,
@@ -611,7 +622,7 @@ pub fn process_block_body(
     }
 
     if offsets.exec_requests_off <= body.len() {
-        process_execution_requests(vs, epoch, sd, pq, &body[offsets.exec_requests_off..]);
+        process_execution_requests(cfg, vs, epoch, sd, pq, &body[offsets.exec_requests_off..]);
     }
     process_sync_aggregate(vs, longtail, epoch, sd, &body[220..380], proposer_index)?;
     Ok(())
@@ -1130,6 +1141,7 @@ fn get_block_root_at_epoch(roots: &SlotRoots, epoch: Epoch) -> B256 {
 /// Validate header sanity then cache the execution payload header.
 /// No BLS sigs; everything happens in pass 2.
 pub fn process_execution_payload(
+    cfg: &SpecConfig,
     imm: &Immutable,
     sd: &mut SlotData,
     payload_bytes: &[u8],
@@ -1139,7 +1151,7 @@ pub fn process_execution_payload(
     if payload_bytes.len() < 528 {
         return Err(ExecutionPayloadError::TooShort { len: payload_bytes.len(), min: 528 });
     }
-    validate::validate_execution_payload(imm, sd, payload_bytes, block_slot)?;
+    validate::validate_execution_payload(cfg, imm, sd, payload_bytes, block_slot)?;
 
     let extra_data_off = ExecutionPayloadView::extra_data_offset(payload_bytes) as usize;
     let transactions_off = ExecutionPayloadView::transactions_offset(payload_bytes) as usize;
@@ -1550,6 +1562,7 @@ pub fn collect_sigs_voluntary_exits(
 /// state evolution may change `is_slashable` / pending-balance), apply
 /// `initiate_validator_exit` per accepted entry. BLS already verified.
 pub fn process_voluntary_exits(
+    cfg: &SpecConfig,
     vs: &ValidatorsState,
     epoch: &mut EpochData,
     sd: &mut SlotData,
@@ -1566,16 +1579,17 @@ pub fn process_voluntary_exits(
             .unwrap();
         let exit_epoch_msg = SignedVoluntaryExitView::epoch(exit);
         let vi = SignedVoluntaryExitView::validator_index(exit) as usize;
-        validate::validate_voluntary_exit(vs, epoch, vi, exit_epoch_msg, current_epoch)?;
+        validate::validate_voluntary_exit(cfg, vs, epoch, vi, exit_epoch_msg, current_epoch)?;
         if get_pending_balance_to_withdraw(pq, vi) != 0 {
             return Err(VoluntaryExitError::HasPendingBalance { vi, pubkey: *vs.pubkey(vi) });
         }
-        initiate_validator_exit(epoch, sd, n, vi, current_epoch);
+        initiate_validator_exit(cfg, epoch, sd, n, vi, current_epoch);
     }
     Ok(())
 }
 
 fn process_execution_requests(
+    cfg: &SpecConfig,
     vs: &mut ValidatorsState,
     epoch: &mut EpochData,
     sd: &mut SlotData,
@@ -1595,8 +1609,8 @@ fn process_execution_requests(
         if start <= end && end <= data.len() { &data[start..end] } else { &[] }
     };
     process_deposit_requests(sd, pq, field(0));
-    process_withdrawal_requests(vs, epoch, sd, pq, field(1));
-    process_consolidation_requests(vs, epoch, sd, pq, field(2));
+    process_withdrawal_requests(cfg, vs, epoch, sd, pq, field(1));
+    process_consolidation_requests(cfg, vs, epoch, sd, pq, field(2));
 }
 
 pub fn process_deposit_requests(sd: &mut SlotData, pq: &mut PendingQueues, data: &[u8]) {
@@ -1626,6 +1640,7 @@ pub fn process_deposit_requests(sd: &mut SlotData, pq: &mut PendingQueues, data:
 }
 
 pub fn process_withdrawal_requests(
+    cfg: &SpecConfig,
     vs: &ValidatorsState,
     epoch: &mut EpochData,
     sd: &mut SlotData,
@@ -1670,7 +1685,7 @@ pub fn process_withdrawal_requests(
         if epoch.val_exit_epoch[vi] != u64::MAX {
             continue;
         }
-        if current_epoch < epoch.val_activation_epoch[vi] + SHARD_COMMITTEE_PERIOD {
+        if current_epoch < epoch.val_activation_epoch[vi] + cfg.shard_committee_period {
             continue;
         }
 
@@ -1678,7 +1693,7 @@ pub fn process_withdrawal_requests(
 
         if is_full_exit {
             if pending_balance == 0 {
-                initiate_validator_exit(epoch, sd, n, vi, current_epoch);
+                initiate_validator_exit(cfg, epoch, sd, n, vi, current_epoch);
             }
             continue;
         }
@@ -1690,8 +1705,8 @@ pub fn process_withdrawal_requests(
             let to_withdraw =
                 min(sd.balances[vi] - MIN_ACTIVATION_BALANCE - pending_balance, amount);
             let exit_queue_epoch =
-                compute_exit_epoch_and_update_churn(epoch, sd, n, to_withdraw, current_epoch);
-            let withdrawable_epoch = exit_queue_epoch + MIN_VALIDATOR_WITHDRAWABILITY_DELAY;
+                compute_exit_epoch_and_update_churn(cfg, epoch, sd, n, to_withdraw, current_epoch);
+            let withdrawable_epoch = exit_queue_epoch + cfg.min_validator_withdrawability_delay;
             pq.pending_partial_withdrawals.push_back(PendingPartialWithdrawal {
                 index: vi as u64,
                 amount: to_withdraw,
@@ -1702,6 +1717,7 @@ pub fn process_withdrawal_requests(
 }
 
 pub fn process_consolidation_requests(
+    cfg: &SpecConfig,
     vs: &mut ValidatorsState,
     epoch: &mut EpochData,
     sd: &mut SlotData,
@@ -1739,7 +1755,7 @@ pub fn process_consolidation_requests(
         if pq.pending_consolidations.len() >= types::PENDING_CONSOLIDATIONS_LIMIT {
             continue;
         }
-        let churn_limit = get_consolidation_churn_limit(epoch, n, current_epoch);
+        let churn_limit = get_consolidation_churn_limit(cfg, epoch, n, current_epoch);
         if churn_limit <= MIN_ACTIVATION_BALANCE {
             continue;
         }
@@ -1773,7 +1789,7 @@ pub fn process_consolidation_requests(
         {
             continue;
         }
-        if current_epoch < epoch.val_activation_epoch[source_idx] + SHARD_COMMITTEE_PERIOD {
+        if current_epoch < epoch.val_activation_epoch[source_idx] + cfg.shard_committee_period {
             continue;
         }
         if get_pending_balance_to_withdraw(pq, source_idx) > 0 {
@@ -1781,6 +1797,7 @@ pub fn process_consolidation_requests(
         }
 
         let exit_epoch = compute_consolidation_epoch_and_update_churn(
+            cfg,
             epoch,
             sd,
             n,
@@ -1788,7 +1805,8 @@ pub fn process_consolidation_requests(
             current_epoch,
         );
         epoch.val_exit_epoch[source_idx] = exit_epoch;
-        epoch.val_withdrawable_epoch[source_idx] = exit_epoch + MIN_VALIDATOR_WITHDRAWABILITY_DELAY;
+        epoch.val_withdrawable_epoch[source_idx] =
+            exit_epoch + cfg.min_validator_withdrawability_delay;
         pq.pending_consolidations.push(PendingConsolidation {
             source_index: source_idx as u64,
             target_index: target_idx as u64,
@@ -1843,6 +1861,7 @@ pub fn collect_sigs_proposer_slashings(
 /// mutations (a same-vi double slashing rejects on the second entry
 /// because the first one already set the slashed flag).
 pub fn process_proposer_slashings(
+    cfg: &SpecConfig,
     vs: &ValidatorsState,
     epoch: &mut EpochData,
     sd: &mut SlotData,
@@ -1867,7 +1886,7 @@ pub fn process_proposer_slashings(
                 epoch: current_epoch,
             });
         }
-        slash_validator(epoch, sd, n, vi, proposer_index);
+        slash_validator(cfg, epoch, sd, n, vi, proposer_index);
     }
     Ok(())
 }
@@ -2125,6 +2144,7 @@ pub(crate) fn for_each_sorted_intersection(i1: &[u8], i2: &[u8], mut f: impl FnM
 
 /// Pass 2 — validate data + state, slash the intersection. BLS verified.
 pub fn process_attester_slashings(
+    cfg: &SpecConfig,
     vs: &ValidatorsState,
     epoch: &mut EpochData,
     sd: &mut SlotData,
@@ -2181,7 +2201,7 @@ pub fn process_attester_slashings(
         let mut slashed_any = false;
         for_each_sorted_intersection(i1, i2, |vi| {
             if vi < n && is_slashable_validator(epoch, vi, current_epoch) {
-                slash_validator(epoch, sd, n, vi, proposer_index);
+                slash_validator(cfg, epoch, sd, n, vi, proposer_index);
                 slashed_any = true;
             }
             false
@@ -2291,6 +2311,7 @@ pub(crate) fn attesting_indices_bytes(data: &[u8], start: usize, end: usize) -> 
 }
 
 fn slash_validator(
+    cfg: &SpecConfig,
     epoch: &mut EpochData,
     sd: &mut SlotData,
     n: usize,
@@ -2299,14 +2320,14 @@ fn slash_validator(
 ) {
     let current_epoch = sd.slot / SLOTS_PER_EPOCH;
 
-    initiate_validator_exit(epoch, sd, n, vi, current_epoch);
+    initiate_validator_exit(cfg, epoch, sd, n, vi, current_epoch);
     epoch.set_val_slashed(vi, true);
     epoch.val_withdrawable_epoch[vi] =
         max(epoch.val_withdrawable_epoch[vi], current_epoch + EPOCHS_PER_SLASHINGS_VECTOR as u64);
     epoch.slashings[current_epoch as usize % EPOCHS_PER_SLASHINGS_VECTOR] +=
         epoch.val_effective_balance[vi];
 
-    let penalty = epoch.val_effective_balance[vi] / MIN_SLASHING_PENALTY_QUOTIENT;
+    let penalty = epoch.val_effective_balance[vi] / cfg.min_slashing_penalty_quotient;
     sd.balances[vi] = sd.balances[vi].saturating_sub(penalty);
 
     // Spec: increase_balance(proposer, proposer_reward); increase_balance(
@@ -2319,6 +2340,7 @@ fn slash_validator(
 }
 
 fn initiate_validator_exit(
+    cfg: &SpecConfig,
     epoch: &mut EpochData,
     sd: &mut SlotData,
     n: usize,
@@ -2329,6 +2351,7 @@ fn initiate_validator_exit(
         return;
     }
     let exit_epoch = compute_exit_epoch_and_update_churn(
+        cfg,
         epoch,
         sd,
         n,
@@ -2336,19 +2359,20 @@ fn initiate_validator_exit(
         current_epoch,
     );
     epoch.val_exit_epoch[vi] = exit_epoch;
-    epoch.val_withdrawable_epoch[vi] = exit_epoch + MIN_VALIDATOR_WITHDRAWABILITY_DELAY;
+    epoch.val_withdrawable_epoch[vi] = exit_epoch + cfg.min_validator_withdrawability_delay;
 }
 
 fn compute_exit_epoch_and_update_churn(
+    cfg: &SpecConfig,
     epoch: &EpochData,
     sd: &mut SlotData,
     n: usize,
     exit_balance: u64,
     current_epoch: Epoch,
 ) -> Epoch {
-    let activation_exit_epoch = current_epoch + 1 + MAX_SEED_LOOKAHEAD;
+    let activation_exit_epoch = current_epoch + 1 + cfg.max_seed_lookahead;
     let mut earliest = max(sd.earliest_exit_epoch, activation_exit_epoch);
-    let per_epoch_churn = get_activation_exit_churn_limit(epoch, n, current_epoch);
+    let per_epoch_churn = get_activation_exit_churn_limit(cfg, epoch, n, current_epoch);
 
     let mut balance_to_consume = if sd.earliest_exit_epoch < earliest {
         per_epoch_churn
@@ -2369,15 +2393,16 @@ fn compute_exit_epoch_and_update_churn(
 }
 
 fn compute_consolidation_epoch_and_update_churn(
+    cfg: &SpecConfig,
     epoch: &EpochData,
     sd: &mut SlotData,
     n: usize,
     consolidation_balance: u64,
     current_epoch: Epoch,
 ) -> Epoch {
-    let activation_exit_epoch = current_epoch + 1 + MAX_SEED_LOOKAHEAD;
+    let activation_exit_epoch = current_epoch + 1 + cfg.max_seed_lookahead;
     let mut earliest = max(sd.earliest_consolidation_epoch, activation_exit_epoch);
-    let per_epoch_churn = get_consolidation_churn_limit(epoch, n, current_epoch);
+    let per_epoch_churn = get_consolidation_churn_limit(cfg, epoch, n, current_epoch);
 
     let mut balance_to_consume = if sd.earliest_consolidation_epoch < earliest {
         per_epoch_churn
@@ -2397,19 +2422,37 @@ fn compute_consolidation_epoch_and_update_churn(
     earliest
 }
 
-fn get_balance_churn_limit(epoch: &EpochData, n: usize, current_epoch: Epoch) -> u64 {
+fn get_balance_churn_limit(
+    cfg: &SpecConfig,
+    epoch: &EpochData,
+    n: usize,
+    current_epoch: Epoch,
+) -> u64 {
     let total = total_active_balance(epoch, n, current_epoch);
-    let churn = max(128_000_000_000u64, total / (1u64 << 16));
+    let churn = max(cfg.min_per_epoch_churn_limit, total / cfg.churn_limit_quotient);
     churn - churn % EFFECTIVE_BALANCE_INCREMENT
 }
 
-fn get_activation_exit_churn_limit(epoch: &EpochData, n: usize, current_epoch: Epoch) -> u64 {
-    min(256_000_000_000u64, get_balance_churn_limit(epoch, n, current_epoch))
+fn get_activation_exit_churn_limit(
+    cfg: &SpecConfig,
+    epoch: &EpochData,
+    n: usize,
+    current_epoch: Epoch,
+) -> u64 {
+    min(
+        cfg.max_per_epoch_activation_exit_churn_limit,
+        get_balance_churn_limit(cfg, epoch, n, current_epoch),
+    )
 }
 
-fn get_consolidation_churn_limit(epoch: &EpochData, n: usize, current_epoch: Epoch) -> u64 {
-    get_balance_churn_limit(epoch, n, current_epoch) -
-        get_activation_exit_churn_limit(epoch, n, current_epoch)
+fn get_consolidation_churn_limit(
+    cfg: &SpecConfig,
+    epoch: &EpochData,
+    n: usize,
+    current_epoch: Epoch,
+) -> u64 {
+    get_balance_churn_limit(cfg, epoch, n, current_epoch) -
+        get_activation_exit_churn_limit(cfg, epoch, n, current_epoch)
 }
 
 fn total_active_balance(epoch: &EpochData, n: usize, current_epoch: Epoch) -> u64 {

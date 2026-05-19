@@ -68,25 +68,25 @@ fn justification_and_finalization() {
 
 #[test]
 fn inactivity_updates() {
-    epoch_handler("inactivity_updates", |s| {
+    let cfg = silver_common::SpecConfig::mainnet();
+    epoch_handler("inactivity_updates", move |s| {
         let current_epoch = s.sd.slot / SLOTS_PER_EPOCH;
-        epoch_transition::process_inactivity_updates(
-            &mut s.epoch,
-            &s.sd,
-            s.vs.validator_cnt(),
-            current_epoch,
-        );
+        let n = s.vs.validator_cnt();
+        epoch_transition::process_inactivity_updates(&cfg, &mut s.epoch, &s.sd, n, current_epoch);
     });
 }
 
 #[test]
 fn rewards_and_penalties() {
-    epoch_handler("rewards_and_penalties", |s| {
+    let cfg = silver_common::SpecConfig::mainnet();
+    epoch_handler("rewards_and_penalties", move |s| {
         let current_epoch = s.sd.slot / SLOTS_PER_EPOCH;
+        let n = s.vs.validator_cnt();
         epoch_transition::process_rewards_and_penalties(
+            &cfg,
             &s.epoch,
             &mut s.sd,
-            s.vs.validator_cnt(),
+            n,
             current_epoch,
         );
     });
@@ -94,27 +94,21 @@ fn rewards_and_penalties() {
 
 #[test]
 fn registry_updates() {
-    epoch_handler("registry_updates", |s| {
+    let cfg = silver_common::SpecConfig::mainnet();
+    epoch_handler("registry_updates", move |s| {
         let current_epoch = s.sd.slot / SLOTS_PER_EPOCH;
-        epoch_transition::process_registry_updates(
-            &mut s.epoch,
-            &mut s.sd,
-            s.vs.validator_cnt(),
-            current_epoch,
-        );
+        let n = s.vs.validator_cnt();
+        epoch_transition::process_registry_updates(&cfg, &mut s.epoch, &mut s.sd, n, current_epoch);
     });
 }
 
 #[test]
 fn slashings() {
-    epoch_handler("slashings", |s| {
+    let cfg = silver_common::SpecConfig::mainnet();
+    epoch_handler("slashings", move |s| {
         let current_epoch = s.sd.slot / SLOTS_PER_EPOCH;
-        epoch_transition::process_slashings(
-            &s.epoch,
-            &mut s.sd,
-            s.vs.validator_cnt(),
-            current_epoch,
-        );
+        let n = s.vs.validator_cnt();
+        epoch_transition::process_slashings(&cfg, &s.epoch, &mut s.sd, n, current_epoch);
     });
 }
 
@@ -129,8 +123,10 @@ fn eth1_data_reset() {
 #[test]
 fn pending_deposits() {
     let zh = compute_zero_hashes();
+    let cfg = silver_common::SpecConfig::mainnet();
     epoch_handler("pending_deposits", move |s| {
         epoch_transition::process_pending_deposits(
+            &cfg,
             &mut s.vs,
             &mut s.epoch,
             &mut s.sd,
