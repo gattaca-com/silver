@@ -12,7 +12,7 @@ use crate::{
         PROPOSER_LOOKAHEAD_SIZE, PendingQueues, SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT,
         SlotData, SlotRoots,
     },
-    validator_identity::{FinalizedValidators, ValidatorsState, Withdrawals},
+    validator_identity::{ValidatorsState, Withdrawals},
 };
 
 // Participation flag bits and weights (Altair+).
@@ -59,7 +59,7 @@ const HISTORICAL_SUMMARY_PERIOD: u64 = SLOTS_PER_HISTORICAL_ROOT as u64 / SLOTS_
 #[allow(clippy::too_many_arguments)]
 #[instrument(skip_all)]
 pub fn process_epoch(
-    vid: &mut ValidatorsState,
+    vs: &mut ValidatorsState,
     longtail: &mut HistoricalLongtail,
     epoch: &mut EpochData,
     sd: &mut SlotData,
@@ -70,7 +70,7 @@ pub fn process_epoch(
     postponed_scratch: &mut Vec<types::PendingDeposit>,
 ) {
     let current_epoch = sd.slot / SLOTS_PER_EPOCH;
-    let n = vid.validator_cnt();
+    let n = vs.validator_cnt();
 
     process_justification_and_finalization(epoch, sd, roots, n, current_epoch);
     process_inactivity_updates(epoch, sd, n, current_epoch);
@@ -78,15 +78,15 @@ pub fn process_epoch(
     process_registry_updates(epoch, sd, n, current_epoch);
     process_slashings(epoch, sd, n, current_epoch);
     process_eth1_data_reset(sd, current_epoch);
-    process_pending_deposits(vid, epoch, sd, pq, zh, postponed_scratch);
+    process_pending_deposits(vs, epoch, sd, pq, zh, postponed_scratch);
     process_pending_consolidations(epoch, sd, pq);
-    process_effective_balance_updates(vid, epoch, sd);
+    process_effective_balance_updates(vs, epoch, sd);
     process_slashings_reset(epoch, current_epoch);
     process_randao_mixes_reset(epoch, sd, current_epoch);
     process_historical_summaries_update(longtail, roots, current_epoch, zh);
-    process_participation_flag_updates(sd, vid.validator_cnt());
-    process_sync_committee_updates(vid, longtail, epoch, current_epoch, active_scratch);
-    process_proposer_lookahead(vid, epoch, sd, current_epoch, active_scratch);
+    process_participation_flag_updates(sd, n);
+    process_sync_committee_updates(vs, longtail, epoch, current_epoch, active_scratch);
+    process_proposer_lookahead(vs, epoch, sd, current_epoch, active_scratch);
 }
 
 pub fn process_justification_and_finalization(
@@ -384,11 +384,11 @@ pub fn process_slashings_reset(epoch: &mut EpochData, current_epoch: Epoch) {
 }
 
 pub fn process_effective_balance_updates(
-    vid: &ValidatorsState,
+    vs: &ValidatorsState,
     epoch: &mut EpochData,
     sd: &SlotData,
 ) {
-    let n = vid.validator_cnt();
+    let n = vs.validator_cnt();
     let hysteresis_down =
         EFFECTIVE_BALANCE_INCREMENT * HYSTERESIS_DOWNWARD_MULTIPLIER / HYSTERESIS_QUOTIENT;
     let hysteresis_up =
@@ -397,7 +397,7 @@ pub fn process_effective_balance_updates(
     for i in 0..n {
         let balance = sd.balances[i];
         let eff = epoch.val_effective_balance[i];
-        let max_eff = vid.withdrawal_credentials(i).max_effective_balance();
+        let max_eff = vs.withdrawal_credentials(i).max_effective_balance();
 
         if balance + hysteresis_down < eff || eff + hysteresis_up < balance {
             let new_eff = (balance - balance % EFFECTIVE_BALANCE_INCREMENT).min(max_eff);
@@ -431,7 +431,7 @@ fn get_activation_exit_churn_limit(epoch: &EpochData, n: usize, current_epoch: E
 }
 
 pub fn process_pending_deposits(
-    vid: &mut ValidatorsState,
+    vs: &mut ValidatorsState,
     epoch: &mut EpochData,
     sd: &mut SlotData,
     pq: &mut PendingQueues,
@@ -440,7 +440,7 @@ pub fn process_pending_deposits(
 ) {
     let current_epoch = sd.slot / SLOTS_PER_EPOCH;
     let next_epoch = current_epoch + 1;
-    let n = vid.validator_cnt();
+    let n = vs.validator_cnt();
     let available =
         sd.deposit_balance_to_consume + get_activation_exit_churn_limit(epoch, n, current_epoch);
     let mut processed_amount: u64 = 0;
@@ -465,12 +465,12 @@ pub fn process_pending_deposits(
             break;
         }
 
-        let vi = vid.find_by_pubkey(&deposit.pubkey);
+        let vi = vs.find_by_pubkey(&deposit.pubkey);
         let is_exited = vi.is_some_and(|v| epoch.val_exit_epoch[v] != u64::MAX);
         let is_withdrawn = vi.is_some_and(|v| epoch.val_withdrawable_epoch[v] < next_epoch);
 
         if is_withdrawn {
-            apply_pending_deposit(vid, epoch, sd, &deposit, zh);
+            apply_pending_deposit(vs, epoch, sd, &deposit, zh);
         } else if is_exited {
             postponed.push(deposit);
         } else {
@@ -479,7 +479,7 @@ pub fn process_pending_deposits(
                 break;
             }
             processed_amount += deposit.amount;
-            apply_pending_deposit(vid, epoch, sd, &deposit, zh);
+            apply_pending_deposit(vs, epoch, sd, &deposit, zh);
         }
         next_deposit_index += 1;
     }
@@ -496,13 +496,13 @@ pub fn process_pending_deposits(
 }
 
 fn apply_pending_deposit(
-    vid: &mut ValidatorsState,
+    vs: &mut ValidatorsState,
     epoch: &mut EpochData,
     sd: &mut SlotData,
     deposit: &types::PendingDeposit,
     zh: &[B256],
 ) {
-    let vi = vid.find_by_pubkey(&deposit.pubkey);
+    let vi = vs.find_by_pubkey(&deposit.pubkey);
     if let Some(v) = vi {
         sd.balances[v] = sd.balances[v].saturating_add(deposit.amount);
     } else {
@@ -516,7 +516,7 @@ fn apply_pending_deposit(
         ) {
             return;
         }
-        let idx = vid.append(&deposit.pubkey, &deposit.withdrawal_credentials) as usize;
+        let idx = vs.append(&deposit.pubkey, &deposit.withdrawal_credentials) as usize;
         epoch.val_effective_balance[idx] = min(
             deposit.amount - deposit.amount % EFFECTIVE_BALANCE_INCREMENT,
             deposit.withdrawal_credentials.max_effective_balance(),
@@ -627,7 +627,7 @@ pub fn process_randao_mixes_reset(epoch: &mut EpochData, sd: &SlotData, current_
 }
 
 pub fn process_sync_committee_updates(
-    vid: &ValidatorsState,
+    vs: &ValidatorsState,
     longtail: &mut HistoricalLongtail,
     epoch: &EpochData,
     current_epoch: Epoch,
@@ -645,7 +645,7 @@ pub fn process_sync_committee_updates(
     let seed = shuffling::get_seed(epoch, sync_epoch, 7); // DOMAIN_SYNC_COMMITTEE
     shuffling::get_active_validator_indices_into(
         epoch,
-        vid.validator_cnt(),
+        vs.validator_cnt(),
         sync_epoch,
         active_scratch,
     );
@@ -660,7 +660,7 @@ pub fn process_sync_committee_updates(
     while selected < types::SYNC_COMMITTEE_SIZE {
         let (candidate, accepted) = sampler.next(active_scratch, &epoch.val_effective_balance);
         if accepted {
-            new_committee.pubkeys[selected] = *vid.pubkey(candidate);
+            new_committee.pubkeys[selected] = *vs.pubkey(candidate);
             selected += 1;
         }
     }
@@ -671,25 +671,11 @@ pub fn process_sync_committee_updates(
     longtail.next_sync_committee = new_committee;
 
     // Rebuild sync_committee_indices for the new current committee.
-    rebuild_sync_committee_indices(vid.finalized(), longtail);
-}
-
-/// Rebuild the sync_committee_indices cache from current_sync_committee
-/// pubkeys. Resolves against the finalised base only — sync committee
-/// rotation happens at epoch boundaries, so the pubkeys always exist in
-/// `FinalisedValidators` at the time of lookup.
-pub fn rebuild_sync_committee_indices(fv: &FinalizedValidators, longtail: &mut HistoricalLongtail) {
-    for i in 0..types::SYNC_COMMITTEE_SIZE {
-        let target_pk = &longtail.current_sync_committee.pubkeys[i];
-        longtail.sync_committee_indices[i] = match fv.find_by_pubkey(target_pk) {
-            Some(idx) => idx as u32,
-            None => u32::MAX, // sentinel: not found
-        };
-    }
+    longtail.rebuild_sync_committee_indices(vs.finalized());
 }
 
 pub fn process_proposer_lookahead(
-    vid: &ValidatorsState,
+    vs: &ValidatorsState,
     epoch: &EpochData,
     sd: &mut SlotData,
     current_epoch: Epoch,
@@ -705,7 +691,7 @@ pub fn process_proposer_lookahead(
     let target_epoch = current_epoch + MIN_SEED_LOOKAHEAD + 1;
     shuffling::get_active_validator_indices_into(
         epoch,
-        vid.validator_cnt(),
+        vs.validator_cnt(),
         target_epoch,
         active_scratch,
     );

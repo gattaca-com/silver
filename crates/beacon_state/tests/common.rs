@@ -278,9 +278,9 @@ impl Harness {
             &mut sd,
         )
         .expect("decompose post.ssz");
-        let vid_view = ValidatorsState::with_empty_delta(&fv);
+        let validators = ValidatorsState::with_empty_delta(&fv);
         let expected =
-            hash_tree_root_state(&imm, &vid_view, &longtail, &epoch, &roots, &sd, &pq, &zh);
+            hash_tree_root_state(&imm, &validators, &longtail, &epoch, &roots, &sd, &pq, &zh);
         let got = self.tile.head_state_root();
         assert_eq!(
             got,

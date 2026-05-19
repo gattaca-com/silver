@@ -31,7 +31,7 @@ impl Default for ValidatorsState {
     /// `BeaconStateRef` via `Default` and never read `validators`.
     /// Reading pubkey/credentials/index on a defaulted state derefs null.
     fn default() -> Self {
-        Self { finalized: std::ptr::null(), delta: ValidatorsDelta::new() }
+        Self { finalized: std::ptr::null(), delta: ValidatorsDelta::default() }
     }
 }
 
@@ -82,7 +82,7 @@ impl ValidatorsState {
 
     #[inline]
     pub fn withdrawal_credentials(&self, i: usize) -> &Withdrawals {
-        if let Some(creds) = self.delta.get_cred_edit(i as u32) {
+        if let Some(creds) = self.delta.get_credentials_edit(i as u32) {
             return creds;
         }
         let base = self.finalized();
@@ -103,7 +103,7 @@ impl ValidatorsState {
     }
 
     pub fn set_withdrawal_credentials(&mut self, i: usize, v: Withdrawals) {
-        self.delta.set_cred(i as u32, v);
+        self.delta.set_credentials_edit(i as u32, v);
     }
 
     /// Fold this fork's delta into `base` and re-anchor the (now empty)

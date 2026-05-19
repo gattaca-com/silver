@@ -56,12 +56,11 @@ fn epoch_handler(handler_name: &str, run: impl Fn(&mut LoadedState)) {
 fn justification_and_finalization() {
     epoch_handler("justification_and_finalization", |s| {
         let current_epoch = s.sd.slot / SLOTS_PER_EPOCH;
-        let n = s.vid.validator_cnt();
         epoch_transition::process_justification_and_finalization(
             &s.epoch,
             &mut s.sd,
             &s.roots,
-            n,
+            s.vs.validator_cnt(),
             current_epoch,
         );
     });
@@ -71,8 +70,12 @@ fn justification_and_finalization() {
 fn inactivity_updates() {
     epoch_handler("inactivity_updates", |s| {
         let current_epoch = s.sd.slot / SLOTS_PER_EPOCH;
-        let n = s.vid.validator_cnt();
-        epoch_transition::process_inactivity_updates(&mut s.epoch, &s.sd, n, current_epoch);
+        epoch_transition::process_inactivity_updates(
+            &mut s.epoch,
+            &s.sd,
+            s.vs.validator_cnt(),
+            current_epoch,
+        );
     });
 }
 
@@ -80,8 +83,12 @@ fn inactivity_updates() {
 fn rewards_and_penalties() {
     epoch_handler("rewards_and_penalties", |s| {
         let current_epoch = s.sd.slot / SLOTS_PER_EPOCH;
-        let n = s.vid.validator_cnt();
-        epoch_transition::process_rewards_and_penalties(&s.epoch, &mut s.sd, n, current_epoch);
+        epoch_transition::process_rewards_and_penalties(
+            &s.epoch,
+            &mut s.sd,
+            s.vs.validator_cnt(),
+            current_epoch,
+        );
     });
 }
 
@@ -89,8 +96,12 @@ fn rewards_and_penalties() {
 fn registry_updates() {
     epoch_handler("registry_updates", |s| {
         let current_epoch = s.sd.slot / SLOTS_PER_EPOCH;
-        let n = s.vid.validator_cnt();
-        epoch_transition::process_registry_updates(&mut s.epoch, &mut s.sd, n, current_epoch);
+        epoch_transition::process_registry_updates(
+            &mut s.epoch,
+            &mut s.sd,
+            s.vs.validator_cnt(),
+            current_epoch,
+        );
     });
 }
 
@@ -98,8 +109,12 @@ fn registry_updates() {
 fn slashings() {
     epoch_handler("slashings", |s| {
         let current_epoch = s.sd.slot / SLOTS_PER_EPOCH;
-        let n = s.vid.validator_cnt();
-        epoch_transition::process_slashings(&s.epoch, &mut s.sd, n, current_epoch);
+        epoch_transition::process_slashings(
+            &s.epoch,
+            &mut s.sd,
+            s.vs.validator_cnt(),
+            current_epoch,
+        );
     });
 }
 
@@ -116,7 +131,7 @@ fn pending_deposits() {
     let zh = compute_zero_hashes();
     epoch_handler("pending_deposits", move |s| {
         epoch_transition::process_pending_deposits(
-            &mut s.vid,
+            &mut s.vs,
             &mut s.epoch,
             &mut s.sd,
             &mut s.pq,
@@ -136,7 +151,7 @@ fn pending_consolidations() {
 #[test]
 fn effective_balance_updates() {
     epoch_handler("effective_balance_updates", |s| {
-        epoch_transition::process_effective_balance_updates(&s.vid, &mut s.epoch, &s.sd);
+        epoch_transition::process_effective_balance_updates(&s.vs, &mut s.epoch, &s.sd);
     });
 }
 
@@ -173,7 +188,7 @@ fn historical_summaries_update() {
 #[test]
 fn participation_flag_updates() {
     epoch_handler("participation_flag_updates", |s| {
-        epoch_transition::process_participation_flag_updates(&mut s.sd, s.vid.validator_cnt());
+        epoch_transition::process_participation_flag_updates(&mut s.sd, s.vs.validator_cnt());
     });
 }
 
@@ -183,7 +198,7 @@ fn sync_committee_updates() {
         let current_epoch = s.sd.slot / SLOTS_PER_EPOCH;
         let mut scratch = Vec::new();
         epoch_transition::process_sync_committee_updates(
-            &s.vid,
+            &s.vs,
             &mut s.longtail,
             &s.epoch,
             current_epoch,
@@ -198,7 +213,7 @@ fn proposer_lookahead() {
         let current_epoch = s.sd.slot / SLOTS_PER_EPOCH;
         let mut scratch = Vec::new();
         epoch_transition::process_proposer_lookahead(
-            &s.vid,
+            &s.vs,
             &s.epoch,
             &mut s.sd,
             current_epoch,

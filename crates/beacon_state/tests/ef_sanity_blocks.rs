@@ -48,7 +48,7 @@ fn sanity_blocks() {
             let block_ssz = snappy_decode(&dir.join(format!("blocks_{i}.ssz_snappy")));
             if let Err(reason) = state_transition::apply_signed_block_debug(
                 &pre.imm,
-                &mut pre.vid,
+                &mut pre.vs,
                 &mut pre.longtail,
                 &mut pre.epoch,
                 &mut pre.roots,

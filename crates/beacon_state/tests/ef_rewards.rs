@@ -40,12 +40,12 @@ fn is_in_inactivity_leak(sd: &SlotData) -> bool {
 
 /// Compute per-flag reward/penalty deltas for all validators.
 fn compute_flag_deltas(
-    vid: &ValidatorsState,
+    vs: &ValidatorsState,
     e: &EpochData,
     sd: &SlotData,
     flag_index: usize,
 ) -> (Vec<u64>, Vec<u64>) {
-    let n = vid.validator_cnt();
+    let n = vs.validator_cnt();
     let current_epoch = sd.slot / SLOTS_PER_EPOCH;
     let previous_epoch = current_epoch.saturating_sub(1);
 
@@ -99,11 +99,11 @@ fn compute_flag_deltas(
 }
 
 fn compute_inactivity_deltas(
-    vid: &ValidatorsState,
+    vs: &ValidatorsState,
     e: &EpochData,
     sd: &SlotData,
 ) -> (Vec<u64>, Vec<u64>) {
-    let n = vid.validator_cnt();
+    let n = vs.validator_cnt();
     let current_epoch = sd.slot / SLOTS_PER_EPOCH;
     let rewards = vec![0u64; n];
     let mut penalties = vec![0u64; n];
@@ -191,8 +191,8 @@ fn run_rewards_handler(handler_name: &str) {
                 continue;
             }
             // Rebuild the overlay so `base_cnt` matches the populated base.
-            s.vid = ValidatorsState::with_empty_delta(&s.fv);
-            let vid = &s.vid;
+            s.vs = ValidatorsState::with_empty_delta(&s.fv);
+            let vs = &s.vs;
             let e = &s.epoch;
             let sd = &s.sd;
 
@@ -226,10 +226,10 @@ fn run_rewards_handler(handler_name: &str) {
                 ok
             };
 
-            let source = compute_flag_deltas(vid, e, sd, 0);
-            let target = compute_flag_deltas(vid, e, sd, 1);
-            let head = compute_flag_deltas(vid, e, sd, 2);
-            let inactivity = compute_inactivity_deltas(vid, e, sd);
+            let source = compute_flag_deltas(vs, e, sd, 0);
+            let target = compute_flag_deltas(vs, e, sd, 1);
+            let head = compute_flag_deltas(vs, e, sd, 2);
+            let inactivity = compute_inactivity_deltas(vs, e, sd);
 
             let ok = check("source", &source, &dir.join("source_deltas.ssz_snappy")) &
                 check("target", &target, &dir.join("target_deltas.ssz_snappy")) &

@@ -80,7 +80,7 @@ impl Deref for Withdrawals {
 
 impl std::fmt::Debug for Withdrawals {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "WithdrawalCredentials(0x")?;
+        write!(f, "Withdrawals(0x")?;
         for b in &self.0 {
             write!(f, "{b:02x}")?;
         }

@@ -21,10 +21,6 @@ pub struct ValidatorsDelta {
 }
 
 impl ValidatorsDelta {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     pub fn new_at(base_cnt: usize) -> Self {
         Self { base_cnt, appended: Vec::new(), credentials_edits: Vec::new() }
     }
@@ -42,12 +38,11 @@ impl ValidatorsDelta {
         self.appended.iter().position(|a| &a.pubkey == pubkey).map(|p| self.base_cnt + p)
     }
 
-    pub fn get_cred_edit(&self, idx: u32) -> Option<&Withdrawals> {
+    pub fn get_credentials_edit(&self, idx: u32) -> Option<&Withdrawals> {
         self.credentials_edits.iter().find_map(|(i, v)| (*i == idx).then_some(v))
     }
 
     /// Append a validator and return its absolute index
-    /// (`base_cnt + appended.len() - 1` after the push).
     pub(crate) fn append(&mut self, pubkey: &BLSPubkey, credentials: &Withdrawals) -> u32 {
         let idx = (self.base_cnt + self.appended.len()) as u32;
         self.appended.push(AppendedValidator {
@@ -61,12 +56,14 @@ impl ValidatorsDelta {
     /// Replace-by-index semantics: spec operations read the latest
     /// credentials within a block, so the newest write must shadow any
     /// earlier one for the same validator.
-    pub(crate) fn set_cred(&mut self, idx: u32, new_creds: Withdrawals) {
-        if let Some((_, old_creds)) = self.credentials_edits.iter_mut().find(|(i, _)| *i == idx) {
-            *old_creds = new_creds;
+    pub(crate) fn set_credentials_edit(&mut self, idx: u32, new_credentials: Withdrawals) {
+        if let Some((_, old_credentials)) =
+            self.credentials_edits.iter_mut().find(|(i, _)| *i == idx)
+        {
+            *old_credentials = new_credentials;
             return;
         }
-        self.credentials_edits.push((idx, new_creds));
+        self.credentials_edits.push((idx, new_credentials));
     }
 
     /// Reconcile with an advanced `base`: drain the promoted prefix of

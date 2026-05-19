@@ -1,5 +1,5 @@
 use crate::{
-    epoch_transition, ssz_hash,
+    ssz_hash,
     types::{
         B256, BLSPubkey, Checkpoint, EPOCHS_PER_HISTORICAL_VECTOR, EPOCHS_PER_SLASHINGS_VECTOR,
         EpochData, Eth1Data, ExecutionPayloadHeader, Fork, HISTORICAL_ROOTS_LIMIT,
@@ -490,7 +490,7 @@ pub fn decompose_beacon_state(
             .push(PendingConsolidation { source_index: u64_le(c, 0), target_index: u64_le(c, 8) });
     }
 
-    epoch_transition::rebuild_sync_committee_indices(fv, longtail);
+    longtail.rebuild_sync_committee_indices(fv);
 
     Ok(pq)
 }

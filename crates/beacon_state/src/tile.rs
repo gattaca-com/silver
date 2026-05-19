@@ -423,7 +423,7 @@ impl BeaconStateTile {
 
     // TODO(reorg): cache hit is keyed on `epoch` only; a re-org across an
     // epoch boundary into a fork with different RANDAO history serves the
-    // stale entry. Include the head's `vid_gen`/`epoch_gen` (or seed) in the
+    // stale entry. Include the head's `epoch_gen` (or seed) in the
     // key. See MAX_SHUFFLING_CACHE.
     fn ensure_shuffling(&mut self, epoch: Epoch) {
         for entry in self.shuffling_cache.entries.iter() {
@@ -1226,7 +1226,8 @@ impl BeaconStateTile {
         let canon = self.canonical_state_ref();
         let imm = Self::imm_at(&self.arena, &canon);
         let validators = &canon.validators;
-        if aggregator_index >= validators.validator_cnt() {
+        let cnt = validators.validator_cnt();
+        if aggregator_index >= cnt {
             return Feedback::Ignore;
         }
 
@@ -1259,7 +1260,7 @@ impl BeaconStateTile {
             {
                 continue;
             }
-            if vi32 as usize >= validators.validator_cnt() {
+            if vi32 as usize >= cnt {
                 return Feedback::Reject(None);
             }
             self.active_scratch.push(vi32);
@@ -1614,11 +1615,10 @@ fn longtail_rotates_at_epoch(epoch: Epoch) -> bool {
     epoch.is_multiple_of(types::EPOCHS_PER_SYNC_COMMITTEE_PERIOD) || epoch.is_multiple_of(hs_period)
 }
 
-/// Cheap offset-based inspection of a BeaconBlockBody to decide which tiers
-/// may be mutated by block processing. Returns (may_mut_vid, may_mut_epoch).
-/// Conservative: returns true whenever the corresponding operation list is
-/// non-empty. Variable-length lists are detected by end > start; fixed-size
-/// element lists count bytes.
+/// Cheap offset-based inspection of a BeaconBlockBody to decide whether the
+/// epoch tier may be mutated by block processing. Returns true whenever any
+/// epoch-mutating operation list is non-empty. Variable-length lists are
+/// detected by end > start; fixed-size element lists count bytes.
 fn body_may_mutate_epoch(body: &[u8]) -> bool {
     if body.len() < 396 {
         return true;

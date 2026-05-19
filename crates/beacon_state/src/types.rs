@@ -6,7 +6,7 @@ use std::{
 use blst::min_pk::PublicKey;
 use flux::utils::ArrayVec;
 
-use crate::validator_identity::{ValidatorsState, Withdrawals};
+use crate::validator_identity::{FinalizedValidators, ValidatorsState, Withdrawals};
 
 pub fn box_zeroed<T>() -> Box<T> {
     let layout = Layout::new::<T>();
@@ -194,6 +194,22 @@ impl EpochData {
             self.val_slashed[i / 8] |= mask;
         } else {
             self.val_slashed[i / 8] &= !mask;
+        }
+    }
+}
+
+impl HistoricalLongtail {
+    /// Rebuild the sync_committee_indices cache from current_sync_committee
+    /// pubkeys. Resolves against the finalised base only — sync committee
+    /// rotation happens at epoch boundaries, so the pubkeys always exist in
+    /// `FinalisedValidators` at the time of lookup.
+    pub fn rebuild_sync_committee_indices(&mut self, fv: &FinalizedValidators) {
+        for i in 0..SYNC_COMMITTEE_SIZE {
+            let target_pk = &self.current_sync_committee.pubkeys[i];
+            self.sync_committee_indices[i] = match fv.find_by_pubkey(target_pk) {
+                Some(idx) => idx as u32,
+                None => u32::MAX,
+            };
         }
     }
 }

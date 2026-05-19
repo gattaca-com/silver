@@ -47,18 +47,18 @@ fn find_by_pubkey_existing_returns_index() {
 #[test]
 fn find_by_pubkey_missing_returns_none() {
     let fv = FinalizedValidators::new_empty();
-    let reg = ValidatorsState::with_empty_delta(&fv);
-    assert_eq!(reg.find_by_pubkey(&pk(42)), None);
+    let state = ValidatorsState::with_empty_delta(&fv);
+    assert_eq!(state.find_by_pubkey(&pk(42)), None);
 }
 
 #[test]
 fn find_by_pubkey_after_many_appends_returns_correct_index() {
     let fv = populated_base(100);
-    let reg = ValidatorsState::with_empty_delta(&fv);
+    let state = ValidatorsState::with_empty_delta(&fv);
     for i in 0..100u8 {
-        assert_eq!(reg.find_by_pubkey(&pk(i)), Some(i as usize));
+        assert_eq!(state.find_by_pubkey(&pk(i)), Some(i as usize));
     }
-    assert_eq!(reg.find_by_pubkey(&pk(200)), None);
+    assert_eq!(state.find_by_pubkey(&pk(200)), None);
 }
 
 #[test]
@@ -74,34 +74,34 @@ fn find_by_pubkey_after_populated_base_finds_every_validator() {
 #[test]
 fn append_in_delta_visible_via_find() {
     let fv = FinalizedValidators::new_empty();
-    let mut delta = ValidatorsDelta::new();
+    let mut delta = ValidatorsDelta::default();
     delta.appended.push(make_appended(9, 0));
 
-    let reg = ValidatorsState::new(&fv, delta);
-    assert_eq!(reg.find_by_pubkey(&pk(9)), Some(0));
-    assert_eq!(reg.validator_cnt(), 1);
-    assert_eq!(reg.pubkey(0), &pk(9));
+    let state = ValidatorsState::new(&fv, delta);
+    assert_eq!(state.find_by_pubkey(&pk(9)), Some(0));
+    assert_eq!(state.validator_cnt(), 1);
+    assert_eq!(state.pubkey(0), &pk(9));
 }
 
 #[test]
 fn append_in_delta_then_finalize_visible_via_base() {
     let mut fv = FinalizedValidators::new_empty();
-    let mut delta = ValidatorsDelta::new();
+    let mut delta = ValidatorsDelta::default();
     delta.appended.push(make_appended(9, 0));
 
     // Lookup hits delta path.
     {
-        let reg = ValidatorsState::new(&fv, delta.clone());
-        assert_eq!(reg.find_by_pubkey(&pk(9)), Some(0));
+        let state = ValidatorsState::new(&fv, delta.clone());
+        assert_eq!(state.find_by_pubkey(&pk(9)), Some(0));
     }
 
     // Finalize folds delta into base.
     fv.apply_delta(&delta);
-    let reg_post = ValidatorsState::with_empty_delta(&fv);
+    let state_post = ValidatorsState::with_empty_delta(&fv);
 
     // Same answer, now via the base index.
-    assert_eq!(reg_post.find_by_pubkey(&pk(9)), Some(0));
-    assert_eq!(reg_post.validator_cnt(), 1);
+    assert_eq!(state_post.find_by_pubkey(&pk(9)), Some(0));
+    assert_eq!(state_post.validator_cnt(), 1);
     assert_eq!(fv.validator_cnt(), 1);
 }
 
@@ -112,20 +112,20 @@ fn validator_cnt_includes_delta() {
     delta.appended.push(make_appended(50, 0));
     delta.appended.push(make_appended(51, 0));
 
-    let reg = ValidatorsState::new(&fv, delta);
-    assert_eq!(reg.validator_cnt(), 5);
+    let state = ValidatorsState::new(&fv, delta);
+    assert_eq!(state.validator_cnt(), 5);
 }
 
 #[test]
 fn pubkey_decompressed_overlay_returns_delta_entry() {
     let fv = FinalizedValidators::new_empty();
-    let mut delta = ValidatorsDelta::new();
+    let mut delta = ValidatorsDelta::default();
     delta.appended.push(make_appended(9, 0));
 
-    let reg = ValidatorsState::new(&fv, delta);
+    let state = ValidatorsState::new(&fv, delta);
     // Default PublicKey isn't comparable, but the call should not
     // panic and must address the delta entry (idx 0 >= base_cnt 0).
-    let _ = reg.pubkey_decompressed(0);
+    let _ = state.pubkey_decompressed(0);
 }
 
 #[test]
@@ -137,8 +137,8 @@ fn withdrawal_credentials_cred_edit_overrides_base() {
     let overridden = wc(0xCC);
     delta.credentials_edits.push((1, overridden));
 
-    let reg = ValidatorsState::new(&fv, delta);
-    assert_eq!(reg.withdrawal_credentials(1), &overridden);
+    let state = ValidatorsState::new(&fv, delta);
+    assert_eq!(state.withdrawal_credentials(1), &overridden);
     // Base untouched.
     assert_eq!(fv.withdrawal_credentials(1), &Withdrawals([0xAA; 32]));
 }
@@ -149,34 +149,34 @@ fn withdrawal_credentials_repeated_edits_keep_newest() {
     let mut delta = ValidatorsDelta::new_at(fv.validator_cnt());
     let a = wc(0xAA);
     let b = wc(0xBB);
-    delta.set_cred(0, a);
-    delta.set_cred(0, b);
+    delta.set_credentials_edit(0, a);
+    delta.set_credentials_edit(0, b);
 
-    let reg = ValidatorsState::new(&fv, delta);
-    assert_eq!(reg.withdrawal_credentials(0), &b);
+    let state = ValidatorsState::new(&fv, delta);
+    assert_eq!(state.withdrawal_credentials(0), &b);
     // Replace-by-index: only one entry per idx.
-    assert_eq!(reg.delta().credentials_edits.len(), 1);
+    assert_eq!(state.delta().credentials_edits.len(), 1);
 }
 
 #[test]
 fn cred_edit_on_appended_validator_logs_to_cred_edits() {
     let fv = FinalizedValidators::new_empty();
-    let mut reg = ValidatorsState::with_empty_delta(&fv);
+    let mut state = ValidatorsState::with_empty_delta(&fv);
 
     let pk0 = pk(7);
-    let idx = reg.append(&pk0, &Withdrawals::ZERO);
+    let idx = state.append(&pk0, &Withdrawals::ZERO);
     assert_eq!(idx, 0);
 
     let new_creds = wc(0x02);
-    reg.set_withdrawal_credentials(idx as usize, new_creds);
+    state.set_withdrawal_credentials(idx as usize, new_creds);
 
     // Edit goes to cred_edits — the appended entry's at-append
     // credentials are preserved.
-    assert_eq!(reg.delta().credentials_edits.len(), 1);
-    assert_eq!(reg.delta().credentials_edits[0], (0, new_creds));
-    assert_eq!(reg.delta().appended[0].credentials, Withdrawals::ZERO);
+    assert_eq!(state.delta().credentials_edits.len(), 1);
+    assert_eq!(state.delta().credentials_edits[0], (0, new_creds));
+    assert_eq!(state.delta().appended[0].credentials, Withdrawals::ZERO);
     // Reader merges cred_edits over appended → new value wins.
-    assert_eq!(reg.withdrawal_credentials(0), &new_creds);
+    assert_eq!(state.withdrawal_credentials(0), &new_creds);
 }
 
 // Group C — fork divergence
@@ -192,13 +192,13 @@ fn two_forks_different_appended_return_different_indices() {
     let mut fork_b = ValidatorsDelta::new_at(base_cnt);
     fork_b.appended.push(make_appended(31, 0));
 
-    let reg_a = ValidatorsState::new(&fv, fork_a);
-    let reg_b = ValidatorsState::new(&fv, fork_b);
+    let state_a = ValidatorsState::new(&fv, fork_a);
+    let state_b = ValidatorsState::new(&fv, fork_b);
 
-    assert_eq!(reg_a.find_by_pubkey(&pk(30)), Some(3));
-    assert_eq!(reg_a.find_by_pubkey(&pk(31)), None);
-    assert_eq!(reg_b.find_by_pubkey(&pk(30)), None);
-    assert_eq!(reg_b.find_by_pubkey(&pk(31)), Some(3));
+    assert_eq!(state_a.find_by_pubkey(&pk(30)), Some(3));
+    assert_eq!(state_a.find_by_pubkey(&pk(31)), None);
+    assert_eq!(state_b.find_by_pubkey(&pk(30)), None);
+    assert_eq!(state_b.find_by_pubkey(&pk(31)), Some(3));
 }
 
 // Group F — overflow & robustness
@@ -212,11 +212,11 @@ fn delta_grows_beyond_initial_capacity() {
         delta.appended.push(make_appended(i, 0));
     }
 
-    let reg = ValidatorsState::new(&fv, delta);
+    let state = ValidatorsState::new(&fv, delta);
     for i in 0..128u8 {
-        assert_eq!(reg.find_by_pubkey(&pk(i)), Some(i as usize));
+        assert_eq!(state.find_by_pubkey(&pk(i)), Some(i as usize));
     }
-    assert_eq!(reg.validator_cnt(), 128);
+    assert_eq!(state.validator_cnt(), 128);
 }
 
 #[test]
@@ -247,17 +247,17 @@ fn pubkeys_with_identical_prefix_bytes_stored_separately() {
 #[test]
 fn append_via_view_grows_delta_not_base() {
     let fv = FinalizedValidators::new_empty();
-    let mut reg = ValidatorsState::with_empty_delta(&fv);
+    let mut state = ValidatorsState::with_empty_delta(&fv);
 
-    reg.append(&pk(11), &Withdrawals::ZERO);
-    reg.append(&pk(12), &Withdrawals::ZERO);
+    state.append(&pk(11), &Withdrawals::ZERO);
+    state.append(&pk(12), &Withdrawals::ZERO);
 
     assert_eq!(fv.validator_cnt(), 0); // base untouched
-    assert_eq!(reg.delta().base_cnt, 0);
-    assert_eq!(reg.delta().appended.len(), 2);
+    assert_eq!(state.delta().base_cnt, 0);
+    assert_eq!(state.delta().appended.len(), 2);
     // Absolute indices implicit: base_cnt + position → 0 and 1.
-    assert_eq!(reg.find_by_pubkey(&pk(11)), Some(0));
-    assert_eq!(reg.find_by_pubkey(&pk(12)), Some(1));
+    assert_eq!(state.find_by_pubkey(&pk(11)), Some(0));
+    assert_eq!(state.find_by_pubkey(&pk(12)), Some(1));
 }
 
 // Group D — hash invariance under rebase
@@ -293,14 +293,14 @@ fn hash_validators_invariant_under_rebase() {
 
     // Hash with delta in play.
     let root_pre = {
-        let reg = ValidatorsState::new(&fv, delta.clone());
-        hash_validators(&reg, &epoch, &zh)
+        let state = ValidatorsState::new(&fv, delta.clone());
+        hash_validators(&state, &epoch, &zh)
     };
 
     // Rebase: fold delta into base.
     fv.apply_delta(&delta);
-    let reg_post = ValidatorsState::with_empty_delta(&fv);
-    let root_post = hash_validators(&reg_post, &epoch, &zh);
+    let state_post = ValidatorsState::with_empty_delta(&fv);
+    let root_post = hash_validators(&state_post, &epoch, &zh);
 
     assert_eq!(root_pre, root_post, "hash_validators must be invariant under rebase");
 }
@@ -308,17 +308,17 @@ fn hash_validators_invariant_under_rebase() {
 #[test]
 fn owned_registry_chains_through_append() {
     let fv = FinalizedValidators::new_empty();
-    let mut reg = ValidatorsState::with_empty_delta(&fv);
+    let mut state = ValidatorsState::with_empty_delta(&fv);
     let pk0 = pk(7);
 
-    assert_eq!(reg.validator_cnt(), 0);
-    reg.append(&pk0, &Withdrawals::ZERO);
+    assert_eq!(state.validator_cnt(), 0);
+    state.append(&pk0, &Withdrawals::ZERO);
 
-    assert_eq!(reg.validator_cnt(), 1);
-    assert_eq!(reg.find_by_pubkey(&pk0), Some(0));
+    assert_eq!(state.validator_cnt(), 1);
+    assert_eq!(state.find_by_pubkey(&pk0), Some(0));
     // Mutation landed in the delta, not the base.
     assert_eq!(fv.validator_cnt(), 0);
-    assert_eq!(reg.delta().appended.len(), 1);
+    assert_eq!(state.delta().appended.len(), 1);
 }
 
 #[test]
