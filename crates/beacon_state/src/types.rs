@@ -80,10 +80,13 @@ pub const EPOCHS_PER_SYNC_COMMITTEE_PERIOD: u64 = 256;
 // 2023 incident lasted ~25 epochs. Either grow + paginate the node table or
 // drop lowest-weight subtrees under pressure.
 pub const MAX_FORK_CHOICE_NODES: usize = 256;
-// TODO(reorg): keyed by `epoch` only — a re-org across an epoch boundary
-// returns the stale shuffling for the new chain (different RANDAO mix →
-// different active set / seed). Key by `(epoch, epoch_gen)` and
-// size to fork-fanout × 2.
+// Per-fork cache, keyed by `(epoch, randao_mix_used_for_seed)`. The mix is
+// the byte at `randao_mixes[(epoch + HV - 1 - MIN_SEED_LOOKAHEAD) % HV]`
+// which is frozen at the end of `epoch - 2`. Same mix ⇒ same active set ⇒
+// same shuffle output regardless of how many mid-epoch CoWs the fork went
+// through; different pre-(epoch-2) fork ⇒ different mix ⇒ no false hit.
+// 4 slots covers current+prev for two simultaneous forks; LRU-by-epoch past
+// that. Each entry holds `ArrayVec<u32, MAX_VALIDATORS>` (~11 MB) — 4×11 MB.
 pub const MAX_SHUFFLING_CACHE: usize = 4;
 /// Worst-case participants in a block-included Fulu `Attestation`:
 /// `MAX_COMMITTEES_PER_SLOT (64) * MAX_VALIDATORS_PER_COMMITTEE (2048)`.
@@ -349,15 +352,13 @@ pub struct BeaconStateRef {
     pub validators: ValidatorsState,
 }
 
-#[repr(C)]
 pub struct ShufflingCache {
     pub entries: [ShufflingEntry; MAX_SHUFFLING_CACHE],
 }
 
-#[repr(C)]
 pub struct ShufflingEntry {
     pub epoch: Epoch,
-    pub seed: B256,
+    pub mix: B256,
     /// 0=empty, 1=valid
     pub status: u64,
     pub shuffled_indices: ArrayVec<u32, MAX_VALIDATORS>,

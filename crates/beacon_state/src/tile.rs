@@ -25,10 +25,10 @@ use crate::{
     ticker::{SlotTicker, TickEvent},
     types::{
         self, B256, BLOB_SCHEDULE, BeaconStateRef, BlobParameters, DEFAULT_BLOB_PARAMETERS,
-        EPOCH_POOL_CAP, Epoch, EpochData, FULU_FORK_VERSION, ForkChoice, MAX_VALIDATORS,
-        PENDING_POOL_CAP, PendingQueues, ROOTS_POOL_CAP, SLOT_POOL_CAP, SLOTS_PER_EPOCH,
-        SLOTS_PER_HISTORICAL_ROOT, ShufflingCache, Slot, SlotData, Version, VoteTracker,
-        box_zeroed,
+        EPOCH_POOL_CAP, EPOCHS_PER_HISTORICAL_VECTOR, Epoch, EpochData, FULU_FORK_VERSION,
+        ForkChoice, MAX_VALIDATORS, MIN_SEED_LOOKAHEAD, PENDING_POOL_CAP, PendingQueues,
+        ROOTS_POOL_CAP, SLOT_POOL_CAP, SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT, ShufflingCache,
+        Slot, SlotData, Version, VoteTracker, box_zeroed,
     },
     validate,
     validator_identity::{FinalizedValidators, ValidatorsState},
@@ -305,23 +305,11 @@ impl BeaconStateTile {
         self.last_applied_validators =
             ValidatorsState::with_empty_delta(&self.finalized_validators);
 
-        let anchor_ref = BeaconStateRef {
-            imm_idx: 0,
-            longtail_idx: 0,
-            epoch_idx: 0,
-            epoch_gen: self.arena.epoch.gen_at(0),
-            roots_idx: 0,
-            roots_gen: self.arena.roots.gen_at(0),
-            slot_idx: 0,
-            slot_gen: self.arena.slot.gen_at(0),
-            pending_idx: 0,
-            validators,
-        };
+        let anchor_ref = self.anchor_ref();
+        let current_epoch = slot / SLOTS_PER_EPOCH;
+        self.ensure_shuffling_window(current_epoch, &anchor_ref);
         self.fork_choice =
             ForkChoice::init(finalized, justified, slot, block_root, block_root, anchor_ref);
-
-        let current_epoch = slot / SLOTS_PER_EPOCH;
-        self.ensure_shuffling_window(current_epoch);
     }
 
     fn alloc_pending(&mut self) -> usize {
@@ -390,11 +378,9 @@ impl BeaconStateTile {
     }
 
     /// Build a `BeaconStateRef` pinned to `last_applied`'s indices with
-    /// arena gens snapshotted at call time. Only used to seed a
-    /// `ForkChoice` anchor node from tests — fork-choice nodes need the
-    /// long-lived gen-checked variant.
-    #[cfg(test)]
-    fn synth_anchor_ref(&self) -> BeaconStateRef {
+    /// arena gens snapshotted at call time. Used to seed shuffling-cache
+    /// lookups and the checkpoint-sync fork-choice anchor.
+    fn anchor_ref(&self) -> BeaconStateRef {
         let la = self.last_applied;
         BeaconStateRef {
             imm_idx: la.imm_idx,
@@ -410,30 +396,28 @@ impl BeaconStateTile {
         }
     }
 
-    /// Compute and cache the shuffling for `epoch`. No-op if already cached.
-    /// Maintain the 2-epoch attester window: attestations with
-    /// `target_epoch ∈ {epoch, epoch - 1}` resolve their committee against
-    /// both.
-    fn ensure_shuffling_window(&mut self, epoch: Epoch) {
-        self.ensure_shuffling(epoch);
+    /// Compute and cache the shuffling for `epoch` against `src`. No-op if
+    /// already cached. Maintain the 2-epoch attester window: attestations
+    /// with `target_epoch ∈ {epoch, epoch - 1}` resolve their committee
+    /// against both.
+    fn ensure_shuffling_window(&mut self, epoch: Epoch, src: &BeaconStateRef) {
+        self.ensure_shuffling(epoch, src);
         if epoch > 0 {
-            self.ensure_shuffling(epoch - 1);
+            self.ensure_shuffling(epoch - 1, src);
         }
     }
 
-    // TODO(reorg): cache hit is keyed on `epoch` only; a re-org across an
-    // epoch boundary into a fork with different RANDAO history serves the
-    // stale entry. Include the head's `epoch_gen` (or seed) in the
-    // key. See MAX_SHUFFLING_CACHE.
-    fn ensure_shuffling(&mut self, epoch: Epoch) {
+    fn ensure_shuffling(&mut self, epoch: Epoch, src: &BeaconStateRef) {
+        let epoch_data = Self::epoch_at(&self.arena, src);
+        let mix = *randao_mix_for_seed(epoch_data, epoch);
+
         for entry in self.shuffling_cache.entries.iter() {
-            if entry.status == 1 && entry.epoch == epoch {
+            if entry.status == 1 && entry.epoch == epoch && entry.mix == mix {
                 return;
             }
         }
 
-        let validators = &self.last_applied_validators;
-        let epoch_data = Self::last_applied_epoch(&self.arena, self.last_applied);
+        let validators = &src.validators;
 
         let seed = shuffling::get_seed(epoch_data, epoch, DOMAIN_BEACON_ATTESTER);
 
@@ -445,10 +429,10 @@ impl BeaconStateTile {
         );
         shuffling::shuffle_list(&mut self.active_scratch, &seed);
 
-        let slot = self.find_shuffling_slot(epoch);
+        let slot = self.find_shuffling_slot();
         let entry = &mut self.shuffling_cache.entries[slot];
         entry.epoch = epoch;
-        entry.seed = seed;
+        entry.mix = mix;
         entry.status = 1;
         entry.shuffled_indices.clear();
         for &idx in self.active_scratch.iter() {
@@ -456,24 +440,33 @@ impl BeaconStateTile {
         }
     }
 
-    fn find_shuffling_slot(&self, _epoch: Epoch) -> usize {
-        // Prefer empty slot, otherwise evict lowest epoch.
-        let mut best = 0;
-        let mut best_epoch = u64::MAX;
+    /// Empty slot first, otherwise lowest-epoch among live entries. Mix is
+    /// frozen data not tied to any arena slot, so there's no "dead gen"
+    /// staleness to check — entries simply become uninteresting once the
+    /// chain advances past their epoch.
+    fn find_shuffling_slot(&self) -> usize {
+        let mut best_live = 0;
+        let mut best_live_epoch = u64::MAX;
         for (i, entry) in self.shuffling_cache.entries.iter().enumerate() {
             if entry.status == 0 {
                 return i;
             }
-            if entry.epoch < best_epoch {
-                best_epoch = entry.epoch;
-                best = i;
+            if entry.epoch < best_live_epoch {
+                best_live_epoch = entry.epoch;
+                best_live = i;
             }
         }
-        best
+        best_live
     }
 
-    fn get_shuffling(&self, epoch: Epoch) -> Option<&types::ShufflingEntry> {
-        self.shuffling_cache.entries.iter().find(|e| e.status == 1 && e.epoch == epoch)
+    fn get_shuffling<'a>(
+        cache: &'a ShufflingCache,
+        arena: &ArenaBacking,
+        epoch: Epoch,
+        src: &BeaconStateRef,
+    ) -> Option<&'a types::ShufflingEntry> {
+        let mix = randao_mix_for_seed(Self::epoch_at(arena, src), epoch);
+        cache.entries.iter().find(|e| e.status == 1 && e.epoch == epoch && e.mix == *mix)
     }
 
     /// Spec `compute_fork_digest` (Fulu EIP-7892). Cached per epoch:
@@ -666,7 +659,9 @@ impl BeaconStateTile {
         }
 
         self.prune_fork_choice();
-        self.ensure_shuffling_window(new_epoch);
+
+        let anchor = self.anchor_ref();
+        self.ensure_shuffling_window(new_epoch, &anchor);
     }
 
     fn on_attestation(&mut self, validator_idx: usize, block_root: B256, epoch: Epoch) {
@@ -822,7 +817,7 @@ impl BeaconStateTile {
         };
 
         let block_epoch = parsed.block_slot / SLOTS_PER_EPOCH;
-        self.ensure_shuffling_window(block_epoch);
+        self.ensure_shuffling_window(block_epoch, &parsed.parent_state);
 
         // On Reject, restore the cursors
         // so the freed slots are reused next time.
@@ -832,15 +827,24 @@ impl BeaconStateTile {
         let pre_longtail = self.arena.longtail.cursor();
         let pre_pending = self.pending_pool_next;
 
+        // Capture parent_state's (epoch, randao mix) keys before COW moves it.
+        let prev_epoch = block_epoch.saturating_sub(1);
+        let parent_epoch_data = Self::epoch_at(&self.arena, &parsed.parent_state);
+        let curr_mix = *randao_mix_for_seed(parent_epoch_data, block_epoch);
+        let prev_mix = *randao_mix_for_seed(parent_epoch_data, prev_epoch);
+
         let mut state_ref = self.cow_state_for_block(parsed.parent_state, parsed.body, block_epoch);
 
-        // Build shuffling reference for attestation processing.
-        let prev_epoch = block_epoch.saturating_sub(1);
-        let find_entry = |epoch: Epoch| -> Option<usize> {
-            self.shuffling_cache.entries.iter().position(|e| e.status == 1 && e.epoch == epoch)
+        // Cache entries were seeded against `parent_state` above, so look
+        // them up by the captured (epoch, mix) pair.
+        let find_entry = |epoch: Epoch, mix: B256| -> Option<usize> {
+            self.shuffling_cache
+                .entries
+                .iter()
+                .position(|e| e.status == 1 && e.epoch == epoch && e.mix == mix)
         };
-        let curr_idx = find_entry(block_epoch);
-        let prev_idx = find_entry(prev_epoch);
+        let curr_idx = find_entry(block_epoch, curr_mix);
+        let prev_idx = find_entry(prev_epoch, prev_mix);
         let shuffling_ref = match (curr_idx, prev_idx) {
             (Some(ci), Some(pi)) => {
                 let c = &self.shuffling_cache.entries[ci];
@@ -1122,9 +1126,12 @@ impl BeaconStateTile {
         let att_slot = SingleAttestationView::slot(buf);
         let committee_index = SingleAttestationView::committee_index(buf) as usize;
 
-        // Validate committee membership via ShufflingCache.
+        // Validate committee membership via ShufflingCache, keyed against
+        // the canonical head's view.
+        let canon = self.canonical_state_ref();
         let att_epoch = att_slot / SLOTS_PER_EPOCH;
-        let entry = match self.get_shuffling(att_epoch) {
+        let entry = match Self::get_shuffling(&self.shuffling_cache, &self.arena, att_epoch, &canon)
+        {
             Some(e) => e,
             None => return Feedback::Ignore,
         };
@@ -1144,7 +1151,6 @@ impl BeaconStateTile {
             return Feedback::Reject(None);
         }
 
-        let canon = self.canonical_state_ref();
         let imm = Self::imm_at(&self.arena, &canon);
         let validators = &canon.validators;
         if attester_index >= validators.validator_cnt() {
@@ -1230,15 +1236,11 @@ impl BeaconStateTile {
             return Feedback::Ignore;
         }
 
-        let shuffled = match self
-            .shuffling_cache
-            .entries
-            .iter()
-            .find(|e| e.status == 1 && e.epoch == att_epoch)
-        {
-            Some(e) => e.shuffled_indices.as_slice(),
-            None => return Feedback::Ignore,
-        };
+        let shuffled =
+            match Self::get_shuffling(&self.shuffling_cache, &self.arena, att_epoch, &canon) {
+                Some(e) => e.shuffled_indices.as_slice(),
+                None => return Feedback::Ignore,
+            };
         let cps = shuffling::committees_per_slot(shuffled.len());
         if committee_index >= cps {
             return Feedback::Reject(None);
@@ -1610,6 +1612,13 @@ fn longtail_rotates_at_epoch(epoch: Epoch) -> bool {
     epoch.is_multiple_of(types::EPOCHS_PER_SYNC_COMMITTEE_PERIOD) || epoch.is_multiple_of(hs_period)
 }
 
+/// The single `randao_mixes[]` byte that drives `get_seed(state, epoch,
+/// DOMAIN_BEACON_ATTESTER)`.
+fn randao_mix_for_seed(epoch_data: &EpochData, epoch: Epoch) -> &B256 {
+    let mix_epoch = epoch + EPOCHS_PER_HISTORICAL_VECTOR as u64 - MIN_SEED_LOOKAHEAD - 1;
+    &epoch_data.randao_mixes[mix_epoch as usize % EPOCHS_PER_HISTORICAL_VECTOR]
+}
+
 /// Cheap offset-based inspection of a BeaconBlockBody to decide whether the
 /// epoch tier may be mutated by block processing. Returns true whenever any
 /// epoch-mutating operation list is non-empty. Variable-length lists are
@@ -1765,14 +1774,15 @@ mod tests {
             sd.balances[i] = MAX_EFFECTIVE_BALANCE;
         }
 
-        let anchor_ref = tile.synth_anchor_ref();
+        let anchor_ref = tile.anchor_ref();
         tile.fork_choice = ForkChoice::init(cp, cp, start_slot, root, root, anchor_ref);
         tile.last_applied_block_root = root;
         tile.mode = Mode::Following;
 
         // Precompute shuffling for the start epoch.
         let start_epoch = start_slot / SLOTS_PER_EPOCH;
-        tile.ensure_shuffling(start_epoch);
+        let anchor = tile.anchor_ref();
+        tile.ensure_shuffling(start_epoch, &anchor);
     }
 
     #[test]
@@ -1861,7 +1871,9 @@ mod tests {
         seed_tile_post_append(&mut tile, n, 0);
 
         // Find which (slot, committee_index) contains the attester.
-        let entry = tile.get_shuffling(0).unwrap();
+        let anchor = tile.anchor_ref();
+        let entry =
+            BeaconStateTile::get_shuffling(&tile.shuffling_cache, &tile.arena, 0, &anchor).unwrap();
         let cps = shuffling::committees_per_slot(entry.shuffled_indices.len());
         let mut att_slot = 0u64;
         let mut att_ci = 0usize;
@@ -2174,7 +2186,9 @@ mod tests {
     /// Locate `(slot, committee_index, pos_in_committee, committee_size)` for
     /// validator 0 in epoch 0.
     fn find_committee_for_vi0(tile: &BeaconStateTile) -> (Slot, usize, usize, usize) {
-        let entry = tile.get_shuffling(0).expect("shuffling for epoch 0");
+        let anchor = tile.anchor_ref();
+        let entry = BeaconStateTile::get_shuffling(&tile.shuffling_cache, &tile.arena, 0, &anchor)
+            .expect("shuffling for epoch 0");
         let cps = shuffling::committees_per_slot(entry.shuffled_indices.len());
         for s in 0..SLOTS_PER_EPOCH {
             for ci in 0..cps {
@@ -2338,7 +2352,7 @@ mod tests {
 
         // Fork choice genesis must use this root too.
         let cp = Checkpoint { epoch: 0, root: parent_root };
-        let anchor_ref = tile.synth_anchor_ref();
+        let anchor_ref = tile.anchor_ref();
         tile.fork_choice = ForkChoice::init(cp, cp, 10, parent_root, parent_root, anchor_ref);
         tile.last_applied_block_root = parent_root;
 
