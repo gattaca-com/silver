@@ -996,8 +996,7 @@ impl BeaconStateTile {
         if block_epoch == parent_epoch || block_epoch == parent_epoch + 1 {
             let la_idx = (block_slot - parent_epoch * SLOTS_PER_EPOCH) as usize;
             if la_idx < types::PROPOSER_LOOKAHEAD_SIZE {
-                let expected =
-                    Self::slot_at(&self.arena, &parent_state).proposer_lookahead[la_idx];
+                let expected = Self::slot_at(&self.arena, &parent_state).proposer_lookahead[la_idx];
                 if proposer_index != expected {
                     return Err(PrecheckError::ProposerLookaheadMismatch {
                         expected,
@@ -1348,13 +1347,9 @@ impl BeaconStateTile {
         if vi >= validators.validator_cnt() {
             return Feedback::Ignore;
         }
-        if let Err(e) = validate::validate_voluntary_exit(
-            validators,
-            epoch_data,
-            vi,
-            exit_epoch,
-            current_epoch,
-        ) {
+        if let Err(e) =
+            validate::validate_voluntary_exit(validators, epoch_data, vi, exit_epoch, current_epoch)
+        {
             tracing::debug!(error = %e, "voluntary_exit gossip rejected");
             return Feedback::Reject(None);
         }
@@ -2133,10 +2128,7 @@ mod tests {
         tile.last_applied_validators.set_withdrawal_credentials(0, eth1_creds);
         let head_root = tile.fork_choice.find_head();
         let head_idx = tile.fork_choice.find_node_idx(&head_root).unwrap();
-        tile.fork_choice.nodes[head_idx]
-            .state
-            .validators
-            .set_withdrawal_credentials(0, eth1_creds);
+        tile.fork_choice.nodes[head_idx].state.validators.set_withdrawal_credentials(0, eth1_creds);
         let buf = [0u8; SIGNED_BLS_CHANGE_SIZE]; // vi=0
         assert_eq!(tile.handle_bls_to_execution_change(&buf), Feedback::Reject(None));
     }

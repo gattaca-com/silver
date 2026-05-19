@@ -140,7 +140,7 @@ impl<'a> Iterator for IHaveIterator<'a> {
             match self.iter.as_mut().and_then(|i| i.next()) {
                 Some(id) if self.count < MAX_IHAVES_PER_TOPIC => {
                     self.count += 1;
-                    return Some(id)
+                    return Some(id);
                 }
                 Some(_) => return None,
                 None if self.buckets_left == 0 => return None,

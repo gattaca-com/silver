@@ -189,7 +189,7 @@ impl RpcReadResponse {
                         Rpc::Request(_) => return Err(StreamError::InvalidRpc),
                         Rpc::Response(rpc_response) => {
                             tracing::trace!(?p2p_id, "response complete");
-                            return Ok(Spin::Ok(Self::Complete { app_id, msg: rpc_response }))
+                            return Ok(Spin::Ok(Self::Complete { app_id, msg: rpc_response }));
                         }
                     }
                 }

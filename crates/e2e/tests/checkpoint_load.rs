@@ -114,7 +114,7 @@ fn finalized_state_loads() {
             hex(&prev_head),
         );
 
-        let feedback = tile.handle_block(&block_ssz);
+        let feedback = tile.try_apply_block(&block_ssz);
         assert_eq!(
             feedback,
             Feedback::Accept,
