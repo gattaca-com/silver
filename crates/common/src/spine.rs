@@ -2,10 +2,15 @@
 
 use flux::{communication::ShmemData, spine::SpineQueue, spine_derive::from_spine, tile::TileInfo};
 pub use messages::{
-    BeaconStateEvent, DataColumnsAvailable, GossipMsgOut, IpBytes, NewGossipMsg, P2pSend,
-    PeerControl, PeerEvent, PeerStatus, RejectSource, RpcInbound, RpcMsg, RpcOutbound, RpcRequest,
-    RpcRequestInbound, RpcRequestOutbound, RpcResponse, RpcResponseInbound, RpcResponseOutbound,
-    RpcSeverity, SyncUpdate,
+    BeaconStateEvent, DataColumnsAvailable, ELSyncStatus, EngineFcuReq, EngineFcuResp,
+    EngineGetBlobsReq, EngineGetBlobsResp, EngineGetPayloadBodiesByHashReq,
+    EngineGetPayloadBodiesByRangeReq, EngineGetPayloadBodiesResp, EngineGetPayloadReq,
+    EngineGetPayloadResp, EngineHealthEvent, EngineNewPayloadReq, EngineNewPayloadResp,
+    EngineRawReq, EngineRawResp, EngineReq, EngineResp, GossipMsgOut, IpBytes,
+    MAX_BLOBS_PER_BLOCK, NewGossipMsg, P2pSend, PayloadValidationStatus, PeerControl, PeerEvent,
+    PeerStatus, RejectSource, RpcInbound, RpcMsg, RpcOutbound, RpcRequest, RpcRequestInbound,
+    RpcRequestOutbound, RpcResponse, RpcResponseInbound, RpcResponseOutbound, RpcSeverity,
+    SyncUpdate,
 };
 pub use stream_id::P2pStreamId;
 pub use stream_protocol::{
@@ -45,4 +50,11 @@ pub struct SilverSpine {
     pub data_columns: SpineQueue<DataColumnsAvailable>,
     #[queue(size(2usize.pow(10)))]
     pub sync_target: SpineQueue<SyncUpdate>,
+
+    #[queue(size(2usize.pow(10)))]
+    pub engine_reqs: SpineQueue<EngineReq>,
+    #[queue(size(2usize.pow(10)))]
+    pub engine_resps: SpineQueue<EngineResp>,
+    #[queue(size(2usize.pow(8)))]
+    pub engine_health: SpineQueue<EngineHealthEvent>,
 }

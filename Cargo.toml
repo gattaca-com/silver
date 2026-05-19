@@ -9,6 +9,7 @@ members = [
   "crates/discovery",
   "crates/e2e",
   "crates/gossip",
+  "crates/engine",
   "crates/network",
   "crates/peer",
   "crates/surfer",
