@@ -155,7 +155,9 @@ impl Drop for AcquiredRead {
         unsafe {
             let consumer = &mut *(self.consumer as *mut RandomAccessConsumer);
             consumer.release(self.read.seq());
-            consumer.free();
+            if consumer.auto_free {
+                consumer.free();
+            }
         }
     }
 }
