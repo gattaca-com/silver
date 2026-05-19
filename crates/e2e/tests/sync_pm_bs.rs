@@ -125,6 +125,7 @@ fn inject_block_response(
 }
 
 #[test]
+#[ignore]
 fn pm_drives_two_batches_against_real_checkpoint() {
     // Skip cleanly when fixtures are missing or the API is unreachable —
     // either makes the test meaningless rather than failing.

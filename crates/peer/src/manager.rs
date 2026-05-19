@@ -828,11 +828,6 @@ impl PeerManager {
             ))));
         }
 
-        if !self.is_synced {
-            // Never relay gossip before we are synced
-            return;
-        }
-
         // Announce our own topic subscriptions to this peer.
         for &topic in &self.our_topics {
             emit(PeerControl::P2pGossipSubscribe { p2p: peer_id, p2p_connection: conn, topic });
@@ -967,10 +962,6 @@ impl PeerManager {
             let Some(idx) = mesh_peers.iter().position(|c| *c == conn)
         {
             mesh_peers.swap_remove(idx);
-            if !self.is_synced {
-                // Never relay gossip before we are synced
-                return;
-            }
             emit(PeerControl::P2pGossipPrune { p2p: peer_id, p2p_connection: conn, topic });
         }
     }
@@ -1051,11 +1042,6 @@ impl PeerManager {
         tcache: TCacheRead,
         emit: &mut impl FnMut(PeerControl),
     ) {
-        if !self.is_synced {
-            // Never relay gossip before we are synced
-            return;
-        }
-
         let Some(peer) = self.peers.get_mut(&conn) else {
             return;
         };
@@ -1107,11 +1093,6 @@ impl PeerManager {
             }
         }
 
-        if !self.is_synced {
-            // Never relay gossip before we are synced
-            return;
-        }
-
         // Fan IDONTWANT out to mesh members (except sender) above threshold.
         let Some(mesh_peers) = self.mesh.get(&topic) else {
             return;
@@ -1142,10 +1123,6 @@ impl PeerManager {
         protobuf: TCacheRead,
         emit: &mut impl FnMut(PeerControl),
     ) {
-        if !self.is_synced {
-            // Never relay gossip before we are synced
-            return;
-        }
         let mesh_for_topic = self.mesh.get(&topic);
         let cap = self.params.d_lazy as usize;
         let mut emitted = 0usize;
@@ -1181,10 +1158,6 @@ impl PeerManager {
         tcache: TCacheRead,
         emit: &mut impl FnMut(PeerControl),
     ) {
-        if !self.is_synced {
-            // Never relay gossip before we are synced
-            return;
-        }
         let Some(peer) = self.peers.get(&conn) else {
             return;
         };
@@ -1202,10 +1175,6 @@ impl PeerManager {
         tcache: TCacheRead,
         emit: &mut impl FnMut(PeerControl),
     ) {
-        if !self.is_synced {
-            // Never relay gossip before we are synced
-            return;
-        }
         let Some(meshed_peers) = self.mesh.get(&topic) else {
             return;
         };
@@ -1437,10 +1406,6 @@ impl PeerManager {
         now: Instant,
         emit: &mut impl FnMut(PeerControl),
     ) {
-        if !self.is_synced {
-            // Never relay gossip before we are synced
-            return;
-        }
         let mesh = self
             .mesh
             .entry(topic)
@@ -1466,10 +1431,6 @@ impl PeerManager {
         now: Instant,
         emit: &mut impl FnMut(PeerControl),
     ) {
-        if !self.is_synced {
-            // Never relay gossip before we are synced
-            return;
-        }
         if let Some(mesh) = self.mesh.get_mut(&topic) &&
             let Some(idx) = mesh.iter().position(|c| *c == conn)
         {

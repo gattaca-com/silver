@@ -560,6 +560,13 @@ impl PeerManager {
         }
 
         let Some(peer_id) = self.pick_sync_peer() else {
+            tracing::warn!(
+                target = ?self.current_sync_target(),
+                live_peers = self.database.iter_live_status_bytes().count(),
+                "no good sync peer for pinned target; dropping pin"
+            );
+            self.current_target = SyncUpdate::Following;
+            self.target_dirty = true;
             return;
         };
 
@@ -702,6 +709,7 @@ impl PeerManager {
         let mut best: Option<(usize, f64)> = None;
         for (peer, ssz) in self.database.iter_live_status_bytes() {
             if self.burnt_for_target.contains(&peer) {
+                tracing::warn!(peer, ?target, "pick_sync_peer skipping burnt peer");
                 continue;
             }
             let matches = match target {
@@ -715,11 +723,21 @@ impl PeerManager {
                 SyncUpdate::Following => return None,
             };
             if !matches {
+                tracing::warn!(
+                    peer,
+                    ?target,
+                    peer_finalized_epoch = StatusView::finalized_epoch(ssz),
+                    peer_finalized_root = ?StatusView::finalized_root(ssz),
+                    peer_head_slot = StatusView::head_slot(ssz),
+                    peer_head_root = ?StatusView::head_root(ssz),
+                    "pick_sync_peer peer status does not match pinned target"
+                );
                 continue;
             }
             if outbound_count(&self.outbound_in_flight, peer, StreamProtocol::BeaconBlocksByRange) >=
                 MAX_RPC_PROTOCOL_IN_FLIGHT
             {
+                tracing::warn!("too many rpcs in flight already");
                 continue;
             }
             let s = self.score(peer).unwrap_or(f64::NEG_INFINITY);

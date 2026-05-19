@@ -160,7 +160,14 @@ impl GossipHandler {
 
             buffer = &buffer[size_of::<P2pStreamId>()..];
 
-            if let Ok(gossip_proto) = RPCView::decode_view(buffer) {
+            let gossip_proto = match RPCView::decode_view(buffer) {
+                Ok(p) => Some(p),
+                Err(e) => {
+                    tracing::warn!(?stream_id, len = buffer.len(), ?e, "RPC decode failed");
+                    None
+                }
+            };
+            if let Some(gossip_proto) = gossip_proto {
                 handle_subscriptions(
                     stream_id,
                     gossip_proto.subscriptions,

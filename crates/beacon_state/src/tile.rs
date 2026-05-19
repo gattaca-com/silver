@@ -502,7 +502,14 @@ impl BeaconStateTile {
         // window between block-apply and the next `process_slot`.
         let head_root = self.last_applied_block_root;
         let finalized = sd.finalized_checkpoint;
-        let slot = sd.slot;
+        // Spec: `head_slot` is the slot of the latest block known to us,
+        // **excluding empty slots**. `sd.slot` advances every wall slot via
+        // `process_slots` in Following mode — reporting it would make us
+        // appear caught up to wall clock even when no new block has applied
+        // since the last catchup ended, and SH would never re-trigger.
+        // `latest_block_header.slot` stays pinned to the last applied
+        // block's slot until the next `apply_block`.
+        let slot = sd.latest_block_header.slot;
         let earliest = finalized.epoch * SLOTS_PER_EPOCH;
 
         let mut buf = [0u8; STATUS_V2_SIZE];
@@ -543,10 +550,10 @@ impl BeaconStateTile {
         }
         tracing::info!(
             ?source,
-            block_slot,
             head_slot = Self::last_applied_slot(&self.arena, self.last_applied).slot,
-            feedback = ?f,
-            "block apply"
+            block_slot,
+            "applied block: {:?}",
+            f
         );
         if f != Feedback::Accept {
             return f;
@@ -896,12 +903,6 @@ impl BeaconStateTile {
             tracing::error!(error = %e, block_slot = %parsed.block_slot, head_slot=self.head_state_slot(), "block rejected");
             return Feedback::Reject(Some(parsed.block_root));
         }
-
-        tracing::info!(
-            block_slot = parsed.block_slot,
-            head_slot = self.head_state_slot(),
-            "applied block"
-        );
 
         // Fold block-included attestations into the tracker.
         for i in 0..self.attestation_votes_scratch.len() {
@@ -1530,6 +1531,12 @@ impl Tile<SilverSpine> for BeaconStateTile {
                 if let Some(p) = data {
                     self.handle_gossip(m, unsafe { &*p }, producers);
                 }
+            } else {
+                tracing::warn!(
+                    topic = ?m.topic,
+                    p2p_peer = m.stream_id.peer(),
+                    "gossip dropped: BeaconState in Syncing mode"
+                );
             }
         });
         self.gossip_consumer.free();
