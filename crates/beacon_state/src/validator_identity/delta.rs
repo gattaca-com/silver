@@ -25,14 +25,6 @@ impl ValidatorsDelta {
         Self { base_cnt, appended: Vec::new(), credentials_edits: Vec::new() }
     }
 
-    pub fn with_capacity(base_cnt: usize, appended: usize, cred_edits: usize) -> Self {
-        Self {
-            base_cnt,
-            appended: Vec::with_capacity(appended),
-            credentials_edits: Vec::with_capacity(cred_edits),
-        }
-    }
-
     /// Absolute index of an appended validator matching `pubkey`.
     pub fn find_by_pubkey(&self, pubkey: &BLSPubkey) -> Option<usize> {
         self.appended.iter().position(|a| &a.pubkey == pubkey).map(|p| self.base_cnt + p)

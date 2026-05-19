@@ -206,7 +206,7 @@ fn two_forks_different_appended_return_different_indices() {
 #[test]
 fn delta_grows_beyond_initial_capacity() {
     let fv = FinalizedValidators::new_empty();
-    let mut delta = ValidatorsDelta::with_capacity(0, 4, 4); // tiny initial
+    let mut delta = ValidatorsDelta::default();
 
     for i in 0..128u8 {
         delta.appended.push(make_appended(i, 0));

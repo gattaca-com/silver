@@ -106,12 +106,11 @@ impl ValidatorsState {
         self.delta.set_credentials_edit(i as u32, v);
     }
 
-    /// Fold this fork's delta into `base` and re-anchor the (now empty)
-    /// delta, so `delta.base_cnt == base.validator_cnt()` holds for
-    /// descendants inheriting from this state.
-    pub fn promote_into_base(&mut self, base: &mut FinalizedValidators) {
+    /// Fold this fork's delta into `base`. The caller is expected to
+    /// follow up with `prune_to_base` on every fork (including this one)
+    /// so deltas get re-anchored to the advanced base.
+    pub fn promote_into_base(&self, base: &mut FinalizedValidators) {
         base.apply_delta(&self.delta);
-        self.delta = ValidatorsDelta::new_at(base.validator_cnt());
     }
 
     pub fn prune_to_base(&mut self, base: &FinalizedValidators) {
