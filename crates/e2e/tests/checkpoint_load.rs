@@ -18,9 +18,8 @@ use silver_beacon_state::{
     ssz_hash::{compute_zero_hashes, hash_tree_root_block_header},
     ticker::SlotTicker,
     tile::{BeaconStateTile, Feedback},
-    types::{
-        box_zeroed, EpochData, HistoricalLongtail, Immutable, SlotData, SlotRoots
-    }, validator_identity::FinalizedValidators,
+    types::{EpochData, HistoricalLongtail, Immutable, SlotData, SlotRoots, box_zeroed},
+    validator_identity::FinalizedValidators,
 };
 use silver_common::{TCache, TCacheProducer};
 use silver_e2e::canonical::fetch_canonical_state_root;

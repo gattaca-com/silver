@@ -12,9 +12,14 @@
 pub use silver_common::ssz_hash::*;
 use tracing::instrument;
 
-use crate::{types::{
-    self, BeaconBlockHeader, Checkpoint, EpochData, Eth1Data, HistoricalLongtail, Immutable, PendingQueues, SlotData, SlotRoots, HISTORICAL_ROOTS_LIMIT, SYNC_COMMITTEE_SIZE, VALIDATOR_REGISTRY_LIMIT
-}, validator_identity::ValidatorsState};
+use crate::{
+    types::{
+        self, BeaconBlockHeader, Checkpoint, EpochData, Eth1Data, HISTORICAL_ROOTS_LIMIT,
+        HistoricalLongtail, Immutable, PendingQueues, SYNC_COMMITTEE_SIZE, SlotData, SlotRoots,
+        VALIDATOR_REGISTRY_LIMIT,
+    },
+    validator_identity::ValidatorsState,
+};
 
 pub fn hash_tree_root_block_header(hdr: &BeaconBlockHeader, zh: &[B256]) -> B256 {
     let chunks = [

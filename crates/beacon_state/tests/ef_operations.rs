@@ -216,14 +216,8 @@ fn voluntary_exit() {
         let mut batch = SigBatch::new();
         state_transition::collect_sigs_voluntary_exits(&s.imm, &s.vid, op, &mut batch, &zh);
         batch.verify_all() &&
-            state_transition::process_voluntary_exits(
-                &s.vid,
-                &mut s.epoch,
-                &mut s.sd,
-                &s.pq,
-                op,
-            )
-            .is_ok()
+            state_transition::process_voluntary_exits(&s.vid, &mut s.epoch, &mut s.sd, &s.pq, op)
+                .is_ok()
     });
 }
 
