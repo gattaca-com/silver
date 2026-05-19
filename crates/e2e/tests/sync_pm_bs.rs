@@ -11,7 +11,10 @@ use silver_common::{
     BeaconStateEvent, IpBytes, Keypair, P2pSend, P2pStreamId, PeerEvent, RpcInbound, RpcOutbound,
     RpcRequest, RpcRequestOutbound, RpcResponse, RpcResponseInbound, ScoreParams, SilverSpine,
     StreamProtocol, SyncingConfig, TCache, TCacheProducer, TProducer,
-    ssz_view::{BeaconBlocksByRangeRequestView, STATUS_V2_SIZE, SignedBeaconBlockView, StatusView},
+    ssz_view::{
+        BeaconBlocksByRangeRequestView, METADATA_SIZE, STATUS_V2_SIZE, SignedBeaconBlockView,
+        StatusView,
+    },
 };
 use silver_control::Controller;
 use silver_e2e::canonical::fetch_canonical_state_root;
@@ -146,8 +149,8 @@ fn pm_drives_two_batches_against_real_checkpoint() {
 
     let gossip_p = TCache::producer(1 << 20);
     let mut rpc_p = TCache::producer(1 << 22); // largest mainnet block ~250KB × 4
-    let gossip_c = gossip_p.cache_ref().random_access().expect("gossip ra");
-    let rpc_c = rpc_p.cache_ref().random_access().expect("rpc ra");
+    let gossip_c = gossip_p.cache_ref().random_access(true).expect("gossip ra");
+    let rpc_c = rpc_p.cache_ref().random_access(true).expect("rpc ra");
 
     let mut bs = BeaconStateTile::new_heap(ticker, gossip_c, rpc_c, &checkpoint);
     let mut bs_a = SpineAdapter::connect_tile(&bs, &mut spine);
@@ -163,8 +166,10 @@ fn pm_drives_two_batches_against_real_checkpoint() {
             ..SyncingConfig::default()
         },
         [0u8; 4], // overwritten via set_status from BS's first emission
+        [0u8; METADATA_SIZE],
     );
-    let mut ctl = Controller::new(pm);
+    let rpc_out_p = TCache::producer(32); // dummy rpc out for Controller
+    let mut ctl = Controller::new(pm, rpc_out_p);
     let mut ctl_a = SpineAdapter::connect_tile(&ctl, &mut spine);
 
     let mut inj_a = SpineAdapter::connect_tile(&Injector, &mut spine);

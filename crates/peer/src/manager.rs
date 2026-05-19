@@ -398,8 +398,10 @@ impl PeerManager {
     ///      blacklisted, and at least one peer still backs it.
     ///   2. Pinned SyncingHead fork F — keep iff not reached, not blacklisted,
     ///      and at least one peer still backs it.
-    ///   3. Highest-peer-count `(finalized_epoch, finalized_root)` ahead of
-    ///      ours, not blacklisted, not too-far-ahead wall-clock-wise.
+    ///   3. Highest-peer-count `(finalized_epoch, finalized_root)` whose epoch
+    ///      exceeds ours by at least
+    ///      `SyncingConfig::finalized_lag_threshold_epochs`, not blacklisted,
+    ///      not too-far-ahead wall-clock-wise.
     ///   4. Else, highest-peer-count `head_root` whose `head_slot > our
     ///      head_slot + SyncingConfig::head_lag_threshold_slots, not
     ///      blacklisted.
@@ -450,18 +452,20 @@ impl PeerManager {
     }
 
     /// Best `(finalized_epoch, finalized_root)` target: queries the
-    /// incremental aggregate, filtering on `epoch > our_epoch`, not
-    /// blacklisted, not past wall_clock + tolerance (defensive). Max
-    /// peer_count; ties broken by higher epoch then lexicographic root.
+    /// incremental aggregate, filtering on `epoch - our_epoch >=
+    /// finalized_lag_threshold_epochs`, not blacklisted, not past wall_clock
+    /// + tolerance (defensive). Max peer_count; ties broken by higher epoch,
+    ///   then lexicographic root.
     fn best_finalized_target(
         &self,
         our_epoch: u64,
         wall_slot: u64,
     ) -> Option<(u64, [u8; 32], u16)> {
+        let trigger_epoch = our_epoch.saturating_add(self.syncing.finalized_lag_threshold_epochs);
         self.finalized_counts
             .iter()
             .filter(|((epoch, root), _)| {
-                *epoch > our_epoch &&
+                *epoch >= trigger_epoch &&
                     !self.rejected.is_rejected(root) &&
                     epoch.saturating_mul(self.syncing.slots_per_epoch) <=
                         wall_slot + self.syncing.wall_clock_tolerance_slots &&
@@ -929,11 +933,13 @@ impl PeerManager {
         };
 
         let we_want = self.our_topics.contains(&topic);
+        let mesh_size = self.mesh.get(&topic).map(|m| m.len()).unwrap_or(0);
+        tracing::info!(p2p_peer = conn, ?topic, we_want, mesh_size, "PM peer subscribed");
 
         // Opportunistic graft: if this is a topic we care about and our mesh
         // is below d_low, pull the peer in.
         if we_want &&
-            self.mesh.get(&topic).map(|m| m.len()).unwrap_or(0) < self.params.d_low as usize &&
+            mesh_size < self.params.d_low as usize &&
             !self.is_backed_off((conn, topic), now)
         {
             self.do_graft(conn, peer_id, topic, now, emit);
@@ -955,6 +961,7 @@ impl PeerManager {
             }
             None => return,
         };
+        tracing::info!(p2p_peer = conn, ?topic, "PM peer unsubscribed");
         // If peer was in our mesh, remove them.
         if let Some(mesh_peers) = self.mesh.get_mut(&topic) &&
             let Some(idx) = mesh_peers.iter().position(|c| *c == conn)
@@ -977,6 +984,7 @@ impl PeerManager {
             t.meshed_since = Some(now);
             t.mesh_active = false; // activates after grace window
         }
+        tracing::info!(p2p_peer = conn, ?topic, "PM peer GRAFTed us");
     }
 
     /// Peer pruned us. Record a backoff so we don't re-graft immediately,
@@ -994,6 +1002,7 @@ impl PeerManager {
             t.mesh_active = false;
         }
         self.backoffs.insert((conn, topic), now + self.params.prune_backoff);
+        tracing::debug!(p2p_peer = conn, ?topic, "PM peer PRUNEd us");
     }
 
     fn on_ihave(&mut self, conn: usize, hash: MessageId, already_seen: bool, now: Instant) {

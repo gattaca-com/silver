@@ -532,6 +532,7 @@ impl BeaconStateTile {
         source: RejectSource,
         producers: &mut Producers,
     ) -> Feedback {
+        let block_slot = SignedBeaconBlockView::slot(data);
         let prev_last_applied = self.last_applied;
         let prev_finalized =
             Self::last_applied_slot(&self.arena, self.last_applied).finalized_checkpoint;
@@ -540,8 +541,14 @@ impl BeaconStateTile {
         if let Feedback::Reject(Some(block_root)) = f {
             producers.produce(BeaconStateEvent::BlockRejected { block_root, source });
         }
+        tracing::info!(
+            ?source,
+            block_slot,
+            head_slot = Self::last_applied_slot(&self.arena, self.last_applied).slot,
+            feedback = ?f,
+            "block apply"
+        );
         if f != Feedback::Accept {
-            tracing::warn!("handle block failed");
             return f;
         }
 
@@ -790,14 +797,7 @@ impl BeaconStateTile {
                 });
                 return;
             }
-            let block_slot = SignedBeaconBlockView::slot(data);
             let f = self.apply_block(data, data_tcache, RejectSource::Rpc, producers);
-            tracing::info!(
-                block_slot,
-                head_slot = self.head_state_slot(),
-                "rpc block chunk applied: {:?}",
-                f
-            );
             match f {
                 Feedback::Accept | Feedback::Ignore => {}
                 Feedback::Reject(_) => producers.produce(PeerEvent::RpcMisbehaviour {

@@ -16,6 +16,13 @@ pub struct SyncingConfig {
     /// finalized-sync tail quickly.
     #[serde(default = "default_u64::<8>")]
     pub head_lag_threshold_slots: u64,
+    /// SyncingFinalised trigger: enter SyncingFinalised only when a peer's
+    /// `finalized_epoch` exceeds ours by at least this many epochs. Mainnet
+    /// FFG lags head by ~2 epochs, and peer Statuses snapshot before they
+    /// finalise their own next epoch — a 1-epoch drift between peers and us
+    /// is the steady-state, not a sign we're behind.
+    #[serde(default = "default_u64::<2>")]
+    pub finalized_lag_threshold_epochs: u64,
     /// Defensive ceiling on peers' claimed finalised / head slot vs our
     /// wall slot. Beyond this, the claim is rejected as bogus.
     #[serde(default = "default_u64::<32>")]
@@ -46,6 +53,7 @@ impl Default for SyncingConfig {
         Self {
             rejected_cap: 256,
             head_lag_threshold_slots: 8,
+            finalized_lag_threshold_epochs: 2,
             wall_clock_tolerance_slots: 32,
             slots_per_epoch: 32,
             max_blocks_by_range_batch: 128,
