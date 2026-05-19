@@ -59,10 +59,17 @@ pub struct Consumer {
 impl Consumer {
     /// Read next data in the buffer with write timestamp.
     pub fn read(&mut self) -> Result<(&[u8], Nanos), TCacheError> {
-        self.cache.read(self.seq).map(|(data, inc, ts)| {
-            self.next_seq = self.seq + inc;
-            (data, ts)
-        })
+        loop {
+            let (data, ts) = self.cache.read(self.seq).map(|(data, inc, ts)| {
+                self.next_seq = self.seq + inc;
+                (data, ts)
+            })?;
+
+            if !data.is_empty() {
+                return Ok((data, ts));
+            }
+            self.seq = self.next_seq;
+        }
     }
 
     /// Release all data read so far. Should be called often, not necessarily
@@ -81,6 +88,9 @@ pub struct RandomAccessConsumer {
     pub(super) index: usize,
     // Mapping of active / enqueued sequence numbers and reader counts.
     pub(super) active: Buckets,
+    // If set `free` is called on drop of every acquired read, ensuring the
+    // consumer tail is published.
+    pub(super) auto_free: bool,
 }
 
 impl RandomAccessConsumer {
@@ -143,7 +153,9 @@ impl Drop for AcquiredRead {
         // SAFETY: the consumer lives in a single tile and access across self and
         // consumer is single threaded - so safe to coerce to mutable access.
         unsafe {
-            (*(self.consumer as *mut RandomAccessConsumer)).release(self.read.seq());
+            let consumer = &mut *(self.consumer as *mut RandomAccessConsumer);
+            consumer.release(self.read.seq());
+            consumer.free();
         }
     }
 }
@@ -315,7 +327,7 @@ mod tests {
     #[test]
     fn acquire_release_cycle_reads_buffer() {
         let mut producer = TCache::producer(1 << 16);
-        let mut consumer = producer.cache_ref().random_access().unwrap();
+        let mut consumer = producer.cache_ref().random_access(false).unwrap();
         producer.publish_head();
 
         let reads: Vec<TCacheRead> =
@@ -345,7 +357,7 @@ mod tests {
         const TOTAL: usize = 1000;
 
         let mut producer = TCache::producer(CACHE);
-        let mut consumer = producer.cache_ref().random_access().unwrap();
+        let mut consumer = producer.cache_ref().random_access(false).unwrap();
         producer.publish_head();
 
         let mut held: Vec<AcquiredRead> = Vec::new();
@@ -381,7 +393,7 @@ mod tests {
         const MSG_LEN: usize = 8 * 1024;
 
         let mut producer = TCache::producer(CACHE);
-        let mut consumer = producer.cache_ref().random_access().unwrap();
+        let mut consumer = producer.cache_ref().random_access(false).unwrap();
         producer.publish_head();
 
         // The "victim" — held across heavy downstream production.

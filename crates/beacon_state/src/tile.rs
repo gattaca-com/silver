@@ -1704,8 +1704,8 @@ mod tests {
         let ticker = SlotTicker::new(genesis, Duration::from_secs(12), Duration::from_secs(4));
         let gossip_p = TCache::producer(1 << 20);
         let event_p = TCache::producer(1 << 20);
-        let gossip_c = gossip_p.cache_ref().random_access().unwrap();
-        let rpc_c = event_p.cache_ref().random_access().unwrap();
+        let gossip_c = gossip_p.cache_ref().random_access(true).unwrap();
+        let rpc_c = event_p.cache_ref().random_access(true).unwrap();
         BeaconStateTile::new_heap(ticker, gossip_c, rpc_c, &[])
     }
 

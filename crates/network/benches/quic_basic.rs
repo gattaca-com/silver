@@ -42,9 +42,9 @@ pub fn broadcast(c: &mut Criterion) {
                         let gi_producer = TCache::producer(2 << 24);
                         let mut gi_consumer = gi_producer.cache_ref().consumer().unwrap();
                         let go_producer = TCache::producer(32);
-                        let go_consumer = go_producer.cache_ref().random_access().unwrap();
+                        let go_consumer = go_producer.cache_ref().random_access(true).unwrap();
                         let rpc_in = TCache::producer(32);
-                        let rpc_out = rpc_in.cache_ref().random_access().unwrap();
+                        let rpc_out = rpc_in.cache_ref().random_access(true).unwrap();
 
                         let (mut server_tile, server_id) = {
                             let secret = secp256k1::SecretKey::new(&mut rng);
@@ -114,9 +114,9 @@ pub fn broadcast(c: &mut Criterion) {
 
                             let gi_producer = TCache::producer(32);
                             let mut go_producer = TCache::producer(2 << 28);
-                            let go_consumer = go_producer.cache_ref().random_access().unwrap();
+                            let go_consumer = go_producer.cache_ref().random_access(true).unwrap();
                             let rpc_in = TCache::producer(32);
-                            let rpc_out = rpc_in.cache_ref().random_access().unwrap();
+                            let rpc_out = rpc_in.cache_ref().random_access(false).unwrap();
 
                             let context = Context {
                                 gossip_producer: gi_producer,

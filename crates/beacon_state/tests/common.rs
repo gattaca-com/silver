@@ -154,8 +154,9 @@ impl Harness {
 
         let gossip_in_producer = TCache::producer(1 << 24);
         let rpc_in_producer = TCache::producer(1 << 24);
-        let gossip_consumer = gossip_in_producer.cache_ref().random_access().expect("gossip ra");
-        let rpc_consumer = rpc_in_producer.cache_ref().random_access().expect("rpc ra");
+        let gossip_consumer =
+            gossip_in_producer.cache_ref().random_access(true).expect("gossip ra");
+        let rpc_consumer = rpc_in_producer.cache_ref().random_access(true).expect("rpc ra");
 
         let tile = build_tile(ticker, gossip_consumer, rpc_consumer);
 

@@ -54,16 +54,6 @@ impl Deref for TCacheRef {
     }
 }
 
-impl TCacheRef {
-    pub fn consumer(&self) -> Result<Consumer, Error> {
-        self.deref().consumer()
-    }
-
-    pub fn random_access(&self) -> Result<RandomAccessConsumer, Error> {
-        self.deref().random_access_consumer()
-    }
-}
-
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("missing magic bytes")]
@@ -114,7 +104,7 @@ impl TCache {
         })
     }
 
-    pub fn random_access_consumer(&self) -> Result<RandomAccessConsumer, Error> {
+    pub fn random_access(&self, auto_free: bool) -> Result<RandomAccessConsumer, Error> {
         // find start seq
         let seq = self.head.seq.load(Ordering::Acquire);
 
@@ -131,6 +121,7 @@ impl TCache {
             cache: TCacheRef { cache: addr_of!(*self) as *const c_void },
             index,
             active: Buckets::new(32 * 1024, self.len as u64),
+            auto_free,
         })
     }
 
