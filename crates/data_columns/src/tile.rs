@@ -112,6 +112,7 @@ impl DataColumnTile {
         };
 
         let block_root = util::block_root_from_sidecar(buffer);
+        let slot = DataColumnSidecarView::slot(buffer);
         let column_index = DataColumnSidecarView::index(buffer);
         let column_bitmask = 1u128 << column_index;
         let requested = self.outstanding_requests.remove(&block_root);
@@ -149,7 +150,7 @@ impl DataColumnTile {
         let validated = self.validated_columns.entry(block_root).or_default();
         *validated |= column_bitmask;
 
-        if *validated == self.custody_group_columns {
+        if *validated & self.custody_group_columns == self.custody_group_columns {
             // have all validated data columns for the block.
             emit(DataColumnsAvailable {
                 slot: DataColumnSidecarView::slot(buffer),
@@ -161,8 +162,16 @@ impl DataColumnTile {
             })
         }
 
-        // Add to store.
-        self.store.add(block_root, column_index, sidecar);
+        if column_bitmask & self.custody_group_columns != 0 {
+            // Add to store.
+            self.store.add(
+                block_root,
+                column_index,
+                sidecar,
+                slot,
+                stream_id.protocol().is_request_response(),
+            );
+        }
 
         None
     }
@@ -241,14 +250,13 @@ impl Tile<SilverSpine> for DataColumnTile {
             },
         });
 
-        adapter.consume(|beacon_event: BeaconStateEvent, _| match beacon_event {
-            BeaconStateEvent::Synced(status) | BeaconStateEvent::Status(status) => {
-                let slot = StatusView::head_slot(&status);
-                let canonical_root = StatusView::head_root(&status);
-                self.fork_digest = *StatusView::fork_digest(&status);
+        adapter.consume(|beacon_event: BeaconStateEvent, _| {
+            if let BeaconStateEvent::Status { ssz, wall_slot: _ } = beacon_event {
+                let slot = StatusView::head_slot(&ssz);
+                let canonical_root = StatusView::head_root(&ssz);
+                self.fork_digest = *StatusView::fork_digest(&ssz);
                 self.store.set_canonical(slot, *canonical_root);
             }
-            _ => {}
         });
 
         // Timeout any pending requests and re-issue

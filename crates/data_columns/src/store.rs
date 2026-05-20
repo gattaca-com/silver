@@ -30,6 +30,7 @@ pub(super) struct Store {
     root_index: FxHashMap<[u8; 32], u64>,
 
     // Data columns for the current slot indexed by the block root.
+    // TODO alternative to vec values? 
     current_slot: FxHashMap<[u8; 32], Vec<(u64, TRead)>>,
     write_queue: VecDeque<PendingWrite>,
     query_queue: VecDeque<(P2pStreamId, u64, u64)>,
@@ -65,11 +66,27 @@ impl Store {
         })
     }
 
-    pub(super) fn add(&mut self, block_root: [u8; 32], column_index: u64, sidecar_ssz: TRead) {
-        self.current_slot
-            .entry(block_root)
-            .and_modify(|v| v.push((column_index, sidecar_ssz.clone())))
-            .or_insert_with(|| vec![(column_index, sidecar_ssz)]);
+    pub(super) fn add(
+        &mut self,
+        block_root: [u8; 32],
+        column_index: u64,
+        sidecar_ssz: TRead,
+        slot: u64,
+        backfilling: bool,
+    ) {
+        if backfilling {
+            self.write_queue.push_back(PendingWrite::Column {
+                slot,
+                column: column_index,
+                ssz: sidecar_ssz,
+            });
+            self.write_queue.push_back(PendingWrite::Index { block_root, slot });
+        } else {
+            self.current_slot
+                .entry(block_root)
+                .and_modify(|v| v.push((column_index, sidecar_ssz.clone())))
+                .or_insert_with(|| vec![(column_index, sidecar_ssz)]);
+        }
     }
 
     pub(super) fn set_canonical(&mut self, slot: u64, canonical_root: [u8; 32]) {
@@ -93,14 +110,13 @@ impl Store {
                 if DataColumnSidecarsByRangeRequestView::check_size(&ssz[..len]) {
                     let start = DataColumnSidecarsByRangeRequestView::start_slot(&ssz[..len]);
                     let count = DataColumnSidecarsByRangeRequestView::count(&ssz[..len]);
-                    let columns: Vec<u64> =
-                        DataColumnSidecarsByRangeRequestView::columns(&ssz[..len])
-                            .chunks_exact(8)
-                            .map(|chunk| u64::from_le_bytes(chunk.try_into().unwrap()))
-                            .collect();
-                    for slot in start..start + count {
-                        for column in &columns {
-                            self.query_queue.push_back((request.stream_id, slot, *column));
+                    let columns = DataColumnSidecarsByRangeRequestView::columns(&ssz[..len])
+                        .chunks_exact(8)
+                        .map(|chunk| u64::from_le_bytes(chunk.try_into().unwrap()));
+
+                    for column in columns {
+                        for slot in start..start + count {
+                            self.query_queue.push_back((request.stream_id, slot, column));
                         }
                     }
                 }
@@ -305,12 +321,5 @@ mod tests {
         for h in handles {
             h.join().unwrap();
         }
-    }
-
-    #[test]
-    fn drain() {
-        let mut vec = vec![1, 2, 3, 4, 5];
-        vec.drain(..3);
-        println!("{vec:?}");
     }
 }
