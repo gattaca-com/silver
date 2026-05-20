@@ -30,7 +30,7 @@ pub(super) struct Store {
     root_index: FxHashMap<[u8; 32], u64>,
 
     // Data columns for the current slot indexed by the block root.
-    // TODO alternative to vec values? 
+    // TODO alternative to vec values?
     current_slot: FxHashMap<[u8; 32], Vec<(u64, TRead)>>,
     write_queue: VecDeque<PendingWrite>,
     query_queue: VecDeque<(P2pStreamId, u64, u64)>,
