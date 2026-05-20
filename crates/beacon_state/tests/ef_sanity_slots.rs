@@ -40,6 +40,7 @@ fn sanity_slots() {
         let mut scratch = Vec::new();
         let mut postponed = Vec::new();
         state_transition::process_slots(
+            &silver_common::SpecConfig::mainnet(),
             &pre.imm,
             &mut pre.vs,
             &mut pre.longtail,

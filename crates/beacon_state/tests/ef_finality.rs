@@ -48,6 +48,7 @@ fn finality() {
         for i in 0..block_count {
             let block_ssz = snappy_decode(&dir.join(format!("blocks_{i}.ssz_snappy")));
             if let Err(reason) = state_transition::apply_signed_block_debug(
+                &silver_common::SpecConfig::mainnet(),
                 &pre.imm,
                 &mut pre.vs,
                 &mut pre.longtail,

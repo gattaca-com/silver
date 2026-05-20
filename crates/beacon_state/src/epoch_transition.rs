@@ -1,5 +1,6 @@
 use core::cmp::{max, min};
 
+use silver_common::SpecConfig;
 use tracing::instrument;
 
 use crate::{
@@ -34,23 +35,8 @@ const HYSTERESIS_UPWARD_MULTIPLIER: u64 = 5;
 // Rewards.
 const BASE_REWARD_FACTOR: u64 = 64;
 
-// Inactivity.
-const INACTIVITY_SCORE_BIAS: u64 = 4;
-const INACTIVITY_SCORE_RECOVERY_RATE: u64 = 16;
-const INACTIVITY_PENALTY_QUOTIENT: u64 = 1 << 24;
-const MIN_EPOCHS_TO_INACTIVITY_PENALTY: u64 = 4;
-
-// Slashing.
-const PROPORTIONAL_SLASHING_MULTIPLIER: u64 = 3;
-
 // Registry.
-const EJECTION_BALANCE: u64 = 16 * EFFECTIVE_BALANCE_INCREMENT;
-const MAX_SEED_LOOKAHEAD: u64 = 4;
-const CHURN_LIMIT_QUOTIENT: u64 = 1 << 16;
-const MIN_PER_EPOCH_CHURN_LIMIT: u64 = 128_000_000_000; // 128 ETH
-const MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT: u64 = 256_000_000_000; // 256 ETH
 pub const MAX_PENDING_DEPOSITS_PER_EPOCH: usize = 16;
-const MIN_VALIDATOR_WITHDRAWABILITY_DELAY: u64 = 256;
 
 // Historical summaries emitted every this many epochs.
 const HISTORICAL_SUMMARY_PERIOD: u64 = SLOTS_PER_HISTORICAL_ROOT as u64 / SLOTS_PER_EPOCH;
@@ -59,6 +45,7 @@ const HISTORICAL_SUMMARY_PERIOD: u64 = SLOTS_PER_HISTORICAL_ROOT as u64 / SLOTS_
 #[allow(clippy::too_many_arguments)]
 #[instrument(skip_all)]
 pub fn process_epoch(
+    cfg: &SpecConfig,
     vs: &mut ValidatorsState,
     longtail: &mut HistoricalLongtail,
     epoch: &mut EpochData,
@@ -73,12 +60,12 @@ pub fn process_epoch(
     let n = vs.validator_cnt();
 
     process_justification_and_finalization(epoch, sd, roots, n, current_epoch);
-    process_inactivity_updates(epoch, sd, n, current_epoch);
-    process_rewards_and_penalties(epoch, sd, n, current_epoch);
-    process_registry_updates(epoch, sd, n, current_epoch);
-    process_slashings(epoch, sd, n, current_epoch);
+    process_inactivity_updates(cfg, epoch, sd, n, current_epoch);
+    process_rewards_and_penalties(cfg, epoch, sd, n, current_epoch);
+    process_registry_updates(cfg, epoch, sd, n, current_epoch);
+    process_slashings(cfg, epoch, sd, n, current_epoch);
     process_eth1_data_reset(sd, current_epoch);
-    process_pending_deposits(vs, epoch, sd, pq, zh, postponed_scratch);
+    process_pending_deposits(cfg, vs, epoch, sd, pq, zh, postponed_scratch);
     process_pending_consolidations(epoch, sd, pq);
     process_effective_balance_updates(vs, epoch, sd);
     process_slashings_reset(epoch, current_epoch);
@@ -167,6 +154,7 @@ pub fn process_justification_and_finalization(
 }
 
 pub fn process_inactivity_updates(
+    cfg: &SpecConfig,
     epoch: &mut EpochData,
     sd: &SlotData,
     n: usize,
@@ -175,7 +163,7 @@ pub fn process_inactivity_updates(
     if current_epoch == 0 {
         return;
     }
-    let is_leak = is_in_inactivity_leak(sd);
+    let is_leak = is_in_inactivity_leak(cfg, sd);
 
     for i in 0..n {
         if !is_eligible(epoch, sd, i, current_epoch) {
@@ -187,17 +175,18 @@ pub fn process_inactivity_updates(
                 epoch.inactivity_scores[i] -= 1;
             }
         } else {
-            epoch.inactivity_scores[i] += INACTIVITY_SCORE_BIAS;
+            epoch.inactivity_scores[i] += cfg.inactivity_score_bias;
         }
 
         if !is_leak {
-            let deduction = min(INACTIVITY_SCORE_RECOVERY_RATE, epoch.inactivity_scores[i]);
+            let deduction = min(cfg.inactivity_score_recovery_rate, epoch.inactivity_scores[i]);
             epoch.inactivity_scores[i] -= deduction;
         }
     }
 }
 
 pub fn process_rewards_and_penalties(
+    cfg: &SpecConfig,
     epoch: &EpochData,
     sd: &mut SlotData,
     n: usize,
@@ -209,7 +198,7 @@ pub fn process_rewards_and_penalties(
     let total_active = total_active_balance(epoch, n, current_epoch);
     let sqrt_total = integer_sqrt(total_active);
     let base_reward_per_increment = EFFECTIVE_BALANCE_INCREMENT * BASE_REWARD_FACTOR / sqrt_total;
-    let is_leak = is_in_inactivity_leak(sd);
+    let is_leak = is_in_inactivity_leak(cfg, sd);
 
     // Pre-compute unslashed participating increments per flag.
     // Uses previous_epoch for active check since participation is from previous
@@ -262,7 +251,7 @@ pub fn process_rewards_and_penalties(
             is_unslashed && sd.previous_epoch_participation[i] & TIMELY_TARGET_FLAG != 0;
         if !target_ok {
             let pen_num = epoch.val_effective_balance[i] * epoch.inactivity_scores[i];
-            penalty += pen_num / (INACTIVITY_SCORE_BIAS * INACTIVITY_PENALTY_QUOTIENT);
+            penalty += pen_num / (cfg.inactivity_score_bias * cfg.inactivity_penalty_quotient);
         }
 
         sd.balances[i] = sd.balances[i].saturating_add(reward).saturating_sub(penalty);
@@ -270,12 +259,13 @@ pub fn process_rewards_and_penalties(
 }
 
 pub fn process_registry_updates(
+    cfg: &SpecConfig,
     epoch: &mut EpochData,
     sd: &mut SlotData,
     n: usize,
     current_epoch: Epoch,
 ) {
-    let activation_epoch = current_epoch + 1 + MAX_SEED_LOOKAHEAD;
+    let activation_epoch = current_epoch + 1 + cfg.max_seed_lookahead;
     let finalized_epoch = sd.finalized_checkpoint.epoch;
 
     // Single loop: eligibility, ejection, activation.
@@ -283,9 +273,9 @@ pub fn process_registry_updates(
         if is_eligible_for_activation_queue(epoch, i) {
             epoch.val_activation_eligibility_epoch[i] = current_epoch + 1;
         } else if is_active(epoch, i, current_epoch) &&
-            epoch.val_effective_balance[i] <= EJECTION_BALANCE
+            epoch.val_effective_balance[i] <= cfg.ejection_balance
         {
-            initiate_validator_exit(epoch, sd, n, i, current_epoch);
+            initiate_validator_exit(cfg, epoch, sd, n, i, current_epoch);
         } else if epoch.val_activation_eligibility_epoch[i] <= finalized_epoch &&
             epoch.val_activation_epoch[i] == u64::MAX
         {
@@ -296,6 +286,7 @@ pub fn process_registry_updates(
 
 /// Churn-limited exit queue.
 fn initiate_validator_exit(
+    cfg: &SpecConfig,
     epoch: &mut EpochData,
     sd: &mut SlotData,
     n: usize,
@@ -306,6 +297,7 @@ fn initiate_validator_exit(
         return;
     }
     let exit_epoch = compute_exit_epoch_and_update_churn(
+        cfg,
         epoch,
         sd,
         n,
@@ -313,20 +305,21 @@ fn initiate_validator_exit(
         current_epoch,
     );
     epoch.val_exit_epoch[index] = exit_epoch;
-    epoch.val_withdrawable_epoch[index] = exit_epoch + MIN_VALIDATOR_WITHDRAWABILITY_DELAY;
+    epoch.val_withdrawable_epoch[index] = exit_epoch + cfg.min_validator_withdrawability_delay;
 }
 
 /// Compute the exit epoch for a validator and update churn bookkeeping.
 fn compute_exit_epoch_and_update_churn(
+    cfg: &SpecConfig,
     epoch: &EpochData,
     sd: &mut SlotData,
     n: usize,
     exit_balance: u64,
     current_epoch: Epoch,
 ) -> Epoch {
-    let activation_exit_epoch = current_epoch + 1 + MAX_SEED_LOOKAHEAD;
+    let activation_exit_epoch = current_epoch + 1 + cfg.max_seed_lookahead;
     let mut earliest = max(sd.earliest_exit_epoch, activation_exit_epoch);
-    let per_epoch_churn = get_activation_exit_churn_limit(epoch, n, current_epoch);
+    let per_epoch_churn = get_activation_exit_churn_limit(cfg, epoch, n, current_epoch);
 
     let mut exit_balance_to_consume = if sd.earliest_exit_epoch < earliest {
         per_epoch_churn
@@ -352,12 +345,18 @@ fn is_eligible_for_activation_queue(epoch: &EpochData, i: usize) -> bool {
         epoch.val_effective_balance[i] >= MIN_ACTIVATION_BALANCE
 }
 
-pub fn process_slashings(epoch: &EpochData, sd: &mut SlotData, n: usize, current_epoch: Epoch) {
+pub fn process_slashings(
+    cfg: &SpecConfig,
+    epoch: &EpochData,
+    sd: &mut SlotData,
+    n: usize,
+    current_epoch: Epoch,
+) {
     let total_balance = total_active_balance(epoch, n, current_epoch);
 
     let sum_slashings: u64 = epoch.slashings.iter().sum();
     let adjusted_total_slashings =
-        sum_slashings.saturating_mul(PROPORTIONAL_SLASHING_MULTIPLIER).min(total_balance);
+        sum_slashings.saturating_mul(cfg.proportional_slashing_multiplier).min(total_balance);
 
     let target_withdrawable = current_epoch + EPOCHS_PER_SLASHINGS_VECTOR as u64 / 2;
 
@@ -419,18 +418,32 @@ pub fn process_eth1_data_reset(sd: &mut SlotData, current_epoch: Epoch) {
     }
 }
 
-fn get_balance_churn_limit(epoch: &EpochData, n: usize, current_epoch: Epoch) -> u64 {
+fn get_balance_churn_limit(
+    cfg: &SpecConfig,
+    epoch: &EpochData,
+    n: usize,
+    current_epoch: Epoch,
+) -> u64 {
     let total = total_active_balance(epoch, n, current_epoch);
-    let churn = max(MIN_PER_EPOCH_CHURN_LIMIT, total / CHURN_LIMIT_QUOTIENT);
+    let churn = max(cfg.min_per_epoch_churn_limit, total / cfg.churn_limit_quotient);
     churn - churn % EFFECTIVE_BALANCE_INCREMENT
 }
 
 #[inline]
-fn get_activation_exit_churn_limit(epoch: &EpochData, n: usize, current_epoch: Epoch) -> u64 {
-    min(MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT, get_balance_churn_limit(epoch, n, current_epoch))
+fn get_activation_exit_churn_limit(
+    cfg: &SpecConfig,
+    epoch: &EpochData,
+    n: usize,
+    current_epoch: Epoch,
+) -> u64 {
+    min(
+        cfg.max_per_epoch_activation_exit_churn_limit,
+        get_balance_churn_limit(cfg, epoch, n, current_epoch),
+    )
 }
 
 pub fn process_pending_deposits(
+    cfg: &SpecConfig,
     vs: &mut ValidatorsState,
     epoch: &mut EpochData,
     sd: &mut SlotData,
@@ -441,8 +454,8 @@ pub fn process_pending_deposits(
     let current_epoch = sd.slot / SLOTS_PER_EPOCH;
     let next_epoch = current_epoch + 1;
     let n = vs.validator_cnt();
-    let available =
-        sd.deposit_balance_to_consume + get_activation_exit_churn_limit(epoch, n, current_epoch);
+    let available = sd.deposit_balance_to_consume +
+        get_activation_exit_churn_limit(cfg, epoch, n, current_epoch);
     let mut processed_amount: u64 = 0;
     let mut next_deposit_index: usize = 0;
     let mut churn_limit_reached = false;
@@ -717,11 +730,12 @@ fn is_eligible(epoch: &EpochData, _sd: &SlotData, i: usize, current_epoch: Epoch
         (epoch.val_slashed(i) && current_epoch < epoch.val_withdrawable_epoch[i])
 }
 
-fn is_in_inactivity_leak(sd: &SlotData) -> bool {
+fn is_in_inactivity_leak(cfg: &SpecConfig, sd: &SlotData) -> bool {
     let current_epoch = sd.slot / SLOTS_PER_EPOCH;
     let previous_epoch = current_epoch.saturating_sub(1);
-    // Spec: previous_epoch - finalized > MIN_EPOCHS_TO_INACTIVITY_PENALTY (4).
-    previous_epoch.saturating_sub(sd.finalized_checkpoint.epoch) > MIN_EPOCHS_TO_INACTIVITY_PENALTY
+    // Spec: previous_epoch - finalized > min_epochs_to_inactivity_penalty (4).
+    previous_epoch.saturating_sub(sd.finalized_checkpoint.epoch) >
+        cfg.min_epochs_to_inactivity_penalty
 }
 
 fn total_active_balance(epoch: &EpochData, n: usize, current_epoch: Epoch) -> u64 {
@@ -823,6 +837,7 @@ mod tests {
 
         let mut validators_state = ValidatorsState::with_empty_delta(&fv);
         process_pending_deposits(
+            &silver_common::SpecConfig::mainnet(),
             &mut validators_state,
             &mut e,
             &mut sd,
@@ -860,7 +875,15 @@ mod tests {
         });
 
         let mut view = ValidatorsState::with_empty_delta(&fv);
-        process_pending_deposits(&mut view, &mut e, &mut sd, &mut pq, &zh, &mut Vec::new());
+        process_pending_deposits(
+            &silver_common::SpecConfig::mainnet(),
+            &mut view,
+            &mut e,
+            &mut sd,
+            &mut pq,
+            &zh,
+            &mut Vec::new(),
+        );
 
         // Deposit consumed from queue but validator NOT added.
         assert_eq!(view.validator_cnt(), 0);
@@ -905,7 +928,15 @@ mod tests {
         });
 
         let mut view = ValidatorsState::with_empty_delta(&fv);
-        process_pending_deposits(&mut view, &mut e, &mut sd, &mut pq, &zh, &mut Vec::new());
+        process_pending_deposits(
+            &silver_common::SpecConfig::mainnet(),
+            &mut view,
+            &mut e,
+            &mut sd,
+            &mut pq,
+            &zh,
+            &mut Vec::new(),
+        );
 
         assert_eq!(view.validator_cnt(), 1);
         assert_eq!(sd.balances[0], MAX_EFFECTIVE_BALANCE + top_up);

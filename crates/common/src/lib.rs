@@ -1,6 +1,6 @@
 pub use crate::{
     arena::{ArenaPtr, TierPool},
-    config::{Config, DiscoveryConfig, ScoreParams, SyncingConfig},
+    config::{BlobParameters, Config, DiscoveryConfig, ScoreParams, SpecConfig, SyncingConfig},
     error::Error,
     gossip::{
         GossipTopic, MESSAGE_ID_LEN, MessageId, MessageIdHasher, msg_id_invalid_snappy,

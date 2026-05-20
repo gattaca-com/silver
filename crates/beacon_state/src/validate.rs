@@ -1,6 +1,9 @@
-use silver_common::ssz_view::{
-    ATTESTATION_FIXED, AttestationDataView, AttestationView, EXECUTION_PAYLOAD_FIXED,
-    ExecutionPayloadView, PROPOSER_SLASHING_SIZE, ProposerSlashingView,
+use silver_common::{
+    SpecConfig,
+    ssz_view::{
+        ATTESTATION_FIXED, AttestationDataView, AttestationView, EXECUTION_PAYLOAD_FIXED,
+        ExecutionPayloadView, PROPOSER_SLASHING_SIZE, ProposerSlashingView,
+    },
 };
 
 use crate::{
@@ -12,8 +15,6 @@ use crate::{
     types::*,
     validator_identity::ValidatorsState,
 };
-
-const SECONDS_PER_SLOT: u64 = 12;
 
 // Spec operation limits — `_ELECTRA` suffixed constants retain the spec
 // name; values are unchanged in Fulu.
@@ -89,6 +90,7 @@ pub fn validate_proposer_slashing(data: &[u8]) -> Result<(), ProposerSlashingErr
 }
 
 pub fn validate_voluntary_exit(
+    cfg: &SpecConfig,
     vs: &ValidatorsState,
     epoch: &EpochData,
     vi: usize,
@@ -112,8 +114,7 @@ pub fn validate_voluntary_exit(
             exit: exit_epoch,
         });
     }
-    const SHARD_COMMITTEE_PERIOD: u64 = 256;
-    if current_epoch < epoch.val_activation_epoch[vi] + SHARD_COMMITTEE_PERIOD {
+    if current_epoch < epoch.val_activation_epoch[vi] + cfg.shard_committee_period {
         return Err(VoluntaryExitError::TooEarly { vi, pubkey });
     }
     Ok(())
@@ -151,6 +152,7 @@ pub fn validate_bls_to_execution_change(
 }
 
 pub fn validate_execution_payload(
+    cfg: &SpecConfig,
     imm: &Immutable,
     sd: &SlotData,
     payload: &[u8],
@@ -174,7 +176,7 @@ pub fn validate_execution_payload(
     }
 
     // Spec: timestamp == compute_timestamp_at_slot(state, block.slot).
-    let expected_timestamp = imm.genesis_time + block_slot * SECONDS_PER_SLOT;
+    let expected_timestamp = imm.genesis_time + block_slot * cfg.seconds_per_slot;
     let got_timestamp = ExecutionPayloadView::timestamp(payload);
     if got_timestamp != expected_timestamp {
         return Err(ExecutionPayloadError::TimestampMismatch {

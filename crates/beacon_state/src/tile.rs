@@ -4,8 +4,8 @@ use flux::{
 };
 use silver_common::{
     BeaconStateEvent, GossipTopic, NewGossipMsg, P2pStreamId, PeerEvent, RejectSource, RpcInbound,
-    RpcMsg, RpcResponse, RpcResponseInbound, RpcSeverity, SilverSpine, SyncUpdate, TCacheRead,
-    TRandomAccess,
+    RpcMsg, RpcResponse, RpcResponseInbound, RpcSeverity, SilverSpine, SpecConfig, SyncUpdate,
+    TCacheRead, TRandomAccess,
     ssz_view::{
         AttesterSlashingView, PROPOSER_SLASHING_SIZE, ProposerSlashingView, SIGNED_BLS_CHANGE_SIZE,
         SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE, STATUS_V2_SIZE, SignedAggregateAndProofView,
@@ -24,11 +24,10 @@ use crate::{
     ssz_hash, state_transition,
     ticker::{SlotTicker, TickEvent},
     types::{
-        self, B256, BLOB_SCHEDULE, BeaconStateRef, BlobParameters, DEFAULT_BLOB_PARAMETERS,
-        EPOCH_POOL_CAP, EPOCHS_PER_HISTORICAL_VECTOR, Epoch, EpochData, FULU_FORK_VERSION,
-        ForkChoice, MAX_VALIDATORS, MIN_SEED_LOOKAHEAD, PENDING_POOL_CAP, PendingQueues,
-        ROOTS_POOL_CAP, SLOT_POOL_CAP, SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT, ShufflingCache,
-        Slot, SlotData, Version, VoteTracker, box_zeroed,
+        self, B256, BeaconStateRef, BlobParameters, EPOCH_POOL_CAP, EPOCHS_PER_HISTORICAL_VECTOR,
+        Epoch, EpochData, ForkChoice, MAX_VALIDATORS, MIN_SEED_LOOKAHEAD, PENDING_POOL_CAP,
+        PendingQueues, ROOTS_POOL_CAP, SLOT_POOL_CAP, SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT,
+        ShufflingCache, Slot, SlotData, Version, VoteTracker, box_zeroed,
     },
     validate,
     validator_identity::{FinalizedValidators, ValidatorsState},
@@ -95,6 +94,8 @@ pub struct BeaconStateTile {
     mode: Mode,
     ticker: SlotTicker,
 
+    spec: SpecConfig,
+
     arena: ArenaBacking,
     finalized_validators: Box<FinalizedValidators>,
     pending_pool: Vec<PendingQueues>,
@@ -139,12 +140,14 @@ type Producers = <SilverSpine as FluxSpine>::Producers;
 impl BeaconStateTile {
     pub fn new(
         ticker: SlotTicker,
+        spec: SpecConfig,
         gossip_consumer: TRandomAccess,
         rpc_consumer: TRandomAccess,
         checkpoint_state: &[u8],
     ) -> Self {
         Self::with_arena(
             ticker,
+            spec,
             gossip_consumer,
             rpc_consumer,
             ArenaBacking::open_shm("silver"),
@@ -154,12 +157,14 @@ impl BeaconStateTile {
 
     pub fn new_heap(
         ticker: SlotTicker,
+        spec: SpecConfig,
         gossip_consumer: TRandomAccess,
         rpc_consumer: TRandomAccess,
         checkpoint_state: &[u8],
     ) -> Self {
         Self::with_arena(
             ticker,
+            spec,
             gossip_consumer,
             rpc_consumer,
             ArenaBacking::heap(),
@@ -172,6 +177,7 @@ impl BeaconStateTile {
     /// `Mode::Following` (call `bootstrap` before the loop for real use).
     fn with_arena(
         ticker: SlotTicker,
+        spec: SpecConfig,
         gossip_consumer: TRandomAccess,
         rpc_consumer: TRandomAccess,
         arena: ArenaBacking,
@@ -196,6 +202,7 @@ impl BeaconStateTile {
             // once peer Status data confirms we're caught up.
             mode: Mode::Syncing,
             ticker,
+            spec,
             arena,
             finalized_validators,
             pending_pool,
@@ -469,10 +476,10 @@ impl BeaconStateTile {
         cache.entries.iter().find(|e| e.status == 1 && e.epoch == epoch && e.mix == *mix)
     }
 
-    /// Spec `compute_fork_digest` (Fulu EIP-7892). Cached per epoch:
-    /// inputs (`FULU_FORK_VERSION`, gvr, active blob_parameters) only change
-    /// at epoch boundaries — schedule entries are epoch-aligned and `gvr` is
-    /// frozen. Reorg within an epoch keeps the cache valid.
+    /// Spec `compute_fork_digest` (Fulu EIP-7892). Cached per epoch: inputs
+    /// (Fulu fork version, gvr, active blob_parameters) only change at epoch
+    /// boundaries — schedule entries are epoch-aligned and `gvr` is frozen.
+    /// Reorg within an epoch keeps the cache valid.
     fn fork_digest(&mut self) -> [u8; 4] {
         let epoch = Self::last_applied_slot(&self.arena, self.last_applied).slot / SLOTS_PER_EPOCH;
         if let Some((cached_epoch, d)) = self.cached_fork_digest &&
@@ -481,8 +488,9 @@ impl BeaconStateTile {
             return d;
         }
         let gvr = Self::last_applied_imm(&self.arena, self.last_applied).genesis_validators_root;
-        let bp = get_blob_parameters(epoch, BLOB_SCHEDULE, DEFAULT_BLOB_PARAMETERS);
-        let d = compute_fork_digest(FULU_FORK_VERSION, &gvr, Some(bp));
+        let bp =
+            get_blob_parameters(epoch, &self.spec.blob_schedule, self.spec.default_blob_params());
+        let d = compute_fork_digest(self.spec.fulu_fork_version, &gvr, Some(bp));
         self.cached_fork_digest = Some((epoch, d));
         d
     }
@@ -631,6 +639,7 @@ impl BeaconStateTile {
         let roots = self.arena.roots.get(la.roots_idx as usize);
 
         epoch_transition::process_epoch(
+            &self.spec,
             &mut self.last_applied_validators,
             longtail,
             epoch,
@@ -871,6 +880,7 @@ impl BeaconStateTile {
 
         self.attestation_votes_scratch.clear();
         if let Err(e) = state_transition::apply_block(
+            &self.spec,
             imm,
             &mut state_ref.validators,
             longtail,
@@ -1349,9 +1359,14 @@ impl BeaconStateTile {
         if vi >= validators.validator_cnt() {
             return Feedback::Ignore;
         }
-        if let Err(e) =
-            validate::validate_voluntary_exit(validators, epoch_data, vi, exit_epoch, current_epoch)
-        {
+        if let Err(e) = validate::validate_voluntary_exit(
+            &self.spec,
+            validators,
+            epoch_data,
+            vi,
+            exit_epoch,
+            current_epoch,
+        ) {
             tracing::debug!(error = %e, "voluntary_exit gossip rejected");
             return Feedback::Reject(None);
         }
@@ -1712,7 +1727,7 @@ mod tests {
         let event_p = TCache::producer(1 << 20);
         let gossip_c = gossip_p.cache_ref().random_access(true).unwrap();
         let rpc_c = event_p.cache_ref().random_access(true).unwrap();
-        BeaconStateTile::new_heap(ticker, gossip_c, rpc_c, &[])
+        BeaconStateTile::new_heap(ticker, SpecConfig::mainnet(), gossip_c, rpc_c, &[])
     }
 
     /// Synthetic, collision-free pubkey for tests that don't care about
@@ -2458,10 +2473,11 @@ mod tests {
             0xdd, 0x4e, 0x54, 0xbf, 0xe9, 0xf0, 0x6b, 0xf3, 0x3f, 0xf6, 0xcf, 0x5a, 0xd2, 0x7f,
             0x51, 0x1b, 0xfe, 0x95,
         ];
-        let bp = get_blob_parameters(419072, BLOB_SCHEDULE, DEFAULT_BLOB_PARAMETERS);
+        let spec = SpecConfig::mainnet();
+        let bp = get_blob_parameters(419072, &spec.blob_schedule, spec.default_blob_params());
         assert_eq!(bp, BlobParameters { epoch: 419072, max_blobs_per_block: 21 });
 
-        let digest = compute_fork_digest(FULU_FORK_VERSION, &mainnet_gvr, Some(bp));
+        let digest = compute_fork_digest(spec.fulu_fork_version, &mainnet_gvr, Some(bp));
         assert_eq!(digest, [0x8c, 0x9f, 0x62, 0xfe]);
     }
 

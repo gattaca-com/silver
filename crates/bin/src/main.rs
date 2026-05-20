@@ -129,8 +129,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         Some(file) => load_checkpoint(file)?,
         None => vec![],
     };
-    let beacon_state_tile =
-        BeaconStateTile::new(ticker, ssz_gossip_consumer, incoming_rpc_consumer, &checkpoint);
+    let beacon_state_tile = BeaconStateTile::new(
+        ticker,
+        chain_config.spec.clone(),
+        ssz_gossip_consumer,
+        incoming_rpc_consumer,
+        &checkpoint,
+    );
 
     // Spine
     let spine = SilverSpine::new(None);

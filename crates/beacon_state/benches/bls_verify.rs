@@ -26,8 +26,11 @@ use silver_beacon_state::{
     },
     validator_identity::{FinalizedValidators, ValidatorsState},
 };
-use silver_common::ssz_view::{
-    BLOCK_SYNC_AGGREGATE_SIZE, BeaconBlockBodyView, SINGLE_ATT_SIZE, SignedBeaconBlockView,
+use silver_common::{
+    SpecConfig,
+    ssz_view::{
+        BLOCK_SYNC_AGGREGATE_SIZE, BeaconBlockBodyView, SINGLE_ATT_SIZE, SignedBeaconBlockView,
+    },
 };
 
 fn keypair(seed: u64) -> (SecretKey, PublicKey) {
@@ -193,7 +196,9 @@ fn build_ef_block() -> SigBatch {
     let mut postponed = Vec::new();
     if block_slot > s.sd.slot {
         let mut view = ValidatorsState::with_empty_delta(&s.fv);
+        let cfg = SpecConfig::mainnet();
         state_transition::process_slots(
+            &cfg,
             &s.imm,
             &mut view,
             &mut s.longtail,
