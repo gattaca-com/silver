@@ -3,16 +3,21 @@ use std::time::{Duration, Instant};
 use flux::{spine::SpineAdapter, tile::Tile, tracing};
 use fxhash::FxHashMap;
 use silver_common::{
-    DataColumnsAvailable, NewGossipMsg, P2pStreamId, PeerEvent, RpcInbound, RpcSeverity,
-    SilverSpine, TRandomAccess, TRead, Wheel, ssz_view::DataColumnSidecarView,
+    BeaconStateEvent, DataColumnsAvailable, NewGossipMsg, P2pStreamId, PeerEvent, RpcInbound,
+    RpcSeverity, SilverSpine, TMultiProducer, TRandomAccess, TRead, Wheel,
+    ssz_view::{DataColumnSidecarView, StatusView},
 };
 
-use crate::util;
+use crate::{store::Store, util};
 
 const BASE_REQUEST_ID: u64 = 0xda5da5 << 40; // DAS prefix. 
 const MAX_RETRIES: u8 = 5;
 
-type BlockBodyRoot = [u8; 32];
+/// SSZ `hash_tree_root(BeaconBlockHeader)` — the same value carried as
+/// `head_root` in Status RPC and `block_root` in
+/// `DataColumnsByRootIdentifier`. Keys `validated_columns` so ByRoot
+/// lookups and head-update integration are direct lookups.
+type BlockRoot = [u8; 32];
 
 pub struct DataColumnTile {
     // bit set of our custody group columns.
@@ -20,25 +25,34 @@ pub struct DataColumnTile {
     request_id: u64,
     gossip_consumer: TRandomAccess,
     rpc_consumer: TRandomAccess,
+    rpc_producer: TMultiProducer,
+    store: Store,
+    fork_digest: [u8; 4], // fork digest
 
     // keyed by block body root
-    validated_columns: FxHashMap<BlockBodyRoot, u128>,
+    validated_columns: FxHashMap<BlockRoot, u128>,
     // outstanding requests - keyed by block body root
     // 16 x 500 millisecond buckets.
-    outstanding_requests: Wheel<BlockBodyRoot, (u128, u8), 16>,
+    outstanding_requests: Wheel<BlockRoot, (u128, u8), 16>,
 }
 
 impl DataColumnTile {
     pub fn new(
         gossip_consumer: TRandomAccess,
         rpc_consumer: TRandomAccess,
+        rpc_producer: TMultiProducer,
         custody_group_columns: u128,
+        fork_digest: [u8; 4],
+        data_store_dir: String,
     ) -> Self {
         Self {
             custody_group_columns,
             request_id: BASE_REQUEST_ID,
             gossip_consumer,
             rpc_consumer,
+            rpc_producer,
+            store: Store::load(data_store_dir).expect("failed to load data columns store"),
+            fork_digest,
             validated_columns: FxHashMap::default(),
             outstanding_requests: Wheel::new(Duration::from_millis(500)),
         }
@@ -98,7 +112,8 @@ impl DataColumnTile {
         };
 
         let block_root = util::block_root_from_sidecar(buffer);
-        let column_bitmask = 1u128 << DataColumnSidecarView::index(buffer);
+        let column_index = DataColumnSidecarView::index(buffer);
+        let column_bitmask = 1u128 << column_index;
         let requested = self.outstanding_requests.remove(&block_root);
 
         if self
@@ -145,6 +160,10 @@ impl DataColumnTile {
                 signature: *DataColumnSidecarView::block_signature(buffer),
             })
         }
+
+        // Add to store.
+        self.store.add(block_root, column_index, sidecar);
+
         None
     }
 }
@@ -187,15 +206,9 @@ impl Tile<SilverSpine> for DataColumnTile {
 
         // Check for data columns and incoming blocks via RPC.
         adapter.consume(|rpc: RpcInbound, producers| match rpc {
-            RpcInbound::Request(req) => match req.request {
-                silver_common::RpcRequest::DataColumnsByRange { ssz: _, len: _ } => {
-                    todo!("serve data column requests")
-                }
-                silver_common::RpcRequest::DataColumnsByRoot(_tcache_read) => {
-                    todo!("serve data column requests")
-                }
-                _ => {}
-            },
+            RpcInbound::Request(req) => {
+                self.store.rpc_request(&mut self.rpc_consumer, req);
+            }
             RpcInbound::Response(rsp) => match rsp.response {
                 silver_common::RpcResponse::BeaconBlock { fork_digest: _, ssz } => {
                     let t_read = self.rpc_consumer.acquire(ssz);
@@ -228,6 +241,16 @@ impl Tile<SilverSpine> for DataColumnTile {
             },
         });
 
+        adapter.consume(|beacon_event: BeaconStateEvent, _| match beacon_event {
+            BeaconStateEvent::Synced(status) | BeaconStateEvent::Status(status) => {
+                let slot = StatusView::head_slot(&status);
+                let canonical_root = StatusView::head_root(&status);
+                self.fork_digest = *StatusView::fork_digest(&status);
+                self.store.set_canonical(slot, *canonical_root);
+            }
+            _ => {}
+        });
+
         // Timeout any pending requests and re-issue
         let mut reinsert = vec![];
         self.outstanding_requests.maybe_rotate(
@@ -249,5 +272,14 @@ impl Tile<SilverSpine> for DataColumnTile {
         reinsert.into_iter().for_each(|(k, v)| {
             self.outstanding_requests.insert(k, v);
         });
+
+        // Run store file i/o
+        if let Err(e) =
+            self.store.file_io(&self.fork_digest, &mut self.rpc_producer, &mut |p2p_send| {
+                adapter.produce(p2p_send)
+            })
+        {
+            tracing::error!(?e, "data store file i/o failed");
+        }
     }
 }

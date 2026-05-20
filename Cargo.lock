@@ -985,6 +985,7 @@ dependencies = [
  "c-kzg",
  "flux",
  "fxhash",
+ "libc",
  "silver_common",
 ]
 
