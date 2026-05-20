@@ -9,6 +9,7 @@ version.workspace = true
 c-kzg.workspace = true
 flux.workspace = true
 fxhash.workspace = true
+libc.workspace = true
 silver_common.workspace = true
 
 [lints]
