@@ -23,3 +23,6 @@ tracing-subscriber.workspace = true
 
 [lints]
 workspace = true
+
+[features]
+alloc-profile = ["silver_common/alloc-profile"]

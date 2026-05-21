@@ -3956,6 +3956,7 @@ name = "silver_common"
 version = "0.0.1"
 dependencies = [
  "alloy-rlp",
+ "backtrace",
  "base64 0.22.1",
  "buffa",
  "buffa-build",
@@ -3964,6 +3965,7 @@ dependencies = [
  "flux-utils",
  "fxhash",
  "hex",
+ "libc",
  "quinn-proto",
  "rand 0.8.6",
  "rcgen 0.14.7",

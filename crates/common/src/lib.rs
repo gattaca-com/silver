@@ -27,6 +27,7 @@ pub use crate::{
     wither::{CountingWitherFilter, WitherFilter},
 };
 
+pub mod allocator;
 pub mod arena;
 mod config;
 mod enr;

@@ -1,0 +1,197 @@
+#[cfg(feature = "alloc-profile")]
+mod profile_impl {
+    use std::{
+        alloc::{GlobalAlloc, Layout, System},
+        collections::HashMap,
+        sync::{Mutex, OnceLock},
+    };
+
+    #[derive(Debug, Clone, Hash, Eq, PartialEq)]
+    pub struct CallPoint {
+        pub file: String,
+        pub line: u32,
+        pub function: Option<String>,
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct AllocStats {
+        pub count: u64,
+        pub bytes: u64,
+    }
+
+    static ALLOC_STATS: OnceLock<Mutex<HashMap<CallPoint, AllocStats>>> = OnceLock::new();
+    static TLS_KEY: OnceLock<libc::pthread_key_t> = OnceLock::new();
+
+    fn get_stats() -> &'static Mutex<HashMap<CallPoint, AllocStats>> {
+        ALLOC_STATS.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    fn get_tls_key() -> libc::pthread_key_t {
+        *TLS_KEY.get_or_init(|| {
+            let mut key = 0;
+            unsafe {
+                libc::pthread_key_create(&mut key, None);
+            }
+            key
+        })
+    }
+
+    pub fn is_reentrant() -> bool {
+        let key = get_tls_key();
+        unsafe {
+            let ptr = libc::pthread_getspecific(key);
+            !ptr.is_null()
+        }
+    }
+
+    pub fn set_reentrant(val: bool) {
+        let key = get_tls_key();
+        unsafe {
+            if val {
+                libc::pthread_setspecific(key, std::ptr::dangling::<libc::c_void>());
+            } else {
+                libc::pthread_setspecific(key, std::ptr::null());
+            }
+        }
+    }
+
+    fn is_silver_path(path_str: &str) -> bool {
+        (path_str.contains("silver/crates/") ||
+            path_str.starts_with("crates/") ||
+            path_str.contains("/crates/")) &&
+            !path_str.contains("allocator.rs") &&
+            !path_str.contains(".cargo") &&
+            !path_str.contains(".rustup")
+    }
+
+    fn record_allocation(size: usize) {
+        if is_reentrant() {
+            return;
+        }
+        set_reentrant(true);
+
+        backtrace::trace(|frame| {
+            let mut found = false;
+            backtrace::resolve_frame(frame, |symbol| {
+                if let Some(filename) = symbol.filename() {
+                    if let Some(path_str) = filename.to_str() {
+                        if is_silver_path(path_str) {
+                            let file = path_str.to_string();
+                            let line = symbol.lineno().unwrap_or(0);
+                            let function = symbol.name().map(|n| format!("{:#}", n));
+
+                            let call_point = CallPoint { file, line, function };
+
+                            let stats = get_stats();
+                            if let Ok(mut map) = stats.lock() {
+                                let entry = map
+                                    .entry(call_point)
+                                    .or_insert(AllocStats { count: 0, bytes: 0 });
+                                entry.count += 1;
+                                entry.bytes += size as u64;
+                            }
+                            found = true;
+                        }
+                    }
+                }
+            });
+            !found
+        });
+
+        set_reentrant(false);
+    }
+
+    pub struct ProfilingAllocator;
+
+    unsafe impl GlobalAlloc for ProfilingAllocator {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            let ptr = unsafe { System.alloc(layout) };
+            if !ptr.is_null() {
+                record_allocation(layout.size());
+            }
+            ptr
+        }
+
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            unsafe { System.dealloc(ptr, layout) };
+        }
+
+        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+            let ptr = unsafe { System.alloc_zeroed(layout) };
+            if !ptr.is_null() {
+                record_allocation(layout.size());
+            }
+            ptr
+        }
+
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            let ptr = unsafe { System.realloc(ptr, layout, new_size) };
+            if !ptr.is_null() {
+                record_allocation(new_size);
+            }
+            ptr
+        }
+    }
+
+    #[global_allocator]
+    static ALLOCATOR: ProfilingAllocator = ProfilingAllocator;
+
+    pub fn print_allocations() {
+        if is_reentrant() {
+            return;
+        }
+        set_reentrant(true);
+
+        let stats = get_stats();
+        if let Ok(map) = stats.lock() {
+            if map.is_empty() {
+                println!("\n=== Memory Profiler: No allocations recorded in silver code ===");
+            } else {
+                println!("\n=== Memory Profiler: Allocation Report ===");
+                let mut list: Vec<(&CallPoint, &AllocStats)> = map.iter().collect();
+                list.sort_by(|a, b| {
+                    b.1.bytes.cmp(&a.1.bytes).then_with(|| b.1.count.cmp(&a.1.count))
+                });
+
+                println!(
+                    "{:<60} | {:<12} | {:<15}",
+                    "Call Point", "Invocations", "Bytes Allocated"
+                );
+                println!("{}", "-".repeat(95));
+                for (cp, stat) in list {
+                    let func_name = cp.function.as_deref().unwrap_or("<unknown>");
+                    let display_file = if let Some(idx) = cp.file.find("crates/") {
+                        &cp.file[idx..]
+                    } else {
+                        &cp.file
+                    };
+                    let call_str = format!("{} ({}:{})", func_name, display_file, cp.line);
+                    println!("{:<60} | {:<12} | {:<15}", call_str, stat.count, stat.bytes);
+                }
+                println!("==========================================\n");
+            }
+        }
+
+        set_reentrant(false);
+    }
+
+    pub struct AllocProfileGuard;
+
+    impl Drop for AllocProfileGuard {
+        fn drop(&mut self) {
+            print_allocations();
+        }
+    }
+
+    pub fn init_allocator_trace() -> AllocProfileGuard {
+        AllocProfileGuard
+    }
+}
+
+#[cfg(feature = "alloc-profile")]
+pub use profile_impl::{AllocProfileGuard, init_allocator_trace, print_allocations};
+
+#[cfg(not(feature = "alloc-profile"))]
+pub fn print_allocations() {
+    // No-op
+}

@@ -63,6 +63,7 @@ flux = { git = "https://github.com/gattaca-com/flux", rev = "f902769fe25915d8e58
 flux-utils = { git = "https://github.com/gattaca-com/flux", rev = "f902769fe25915d8e58b50469f4a8b76f6045870", features = ["bytes"]}
 
 # External
+backtrace = "0.3"
 aes = "0.8"
 aes-gcm = "0.10"
 alloy-rlp = { version = "0.3.12", default-features = false, features = ["derive", "std"] }
