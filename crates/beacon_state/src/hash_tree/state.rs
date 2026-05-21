@@ -22,8 +22,6 @@ impl HashTreeState {
 
     #[inline]
     pub fn finalized(&self) -> &FinalizedHashTree {
-        // Safety: pointer is set from a live tile-owned reference at
-        // construction; tile outlives every state.
         unsafe { &*self.finalized }
     }
 

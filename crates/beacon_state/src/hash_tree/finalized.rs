@@ -23,12 +23,6 @@
 //! Reads are O(1). The base never exposes a single-leaf `set` that
 //! recomputes the path upward — that operation belongs on the delta,
 //! where the cached hashes feed the next promotion.
-//!
-//! Length tracking lives in the caller (e.g. `ValidatorsState::
-//! validator_cnt`). The tree only knows its `max_elements`. nodes
-//! above the caller's logical length stay at zero hashes and
-//! propagate upward as zero subtrees — correct by construction
-//! without any length bookkeeping here.
 
 use silver_common::ssz_hash::hash_concat;
 
@@ -50,19 +44,16 @@ pub struct FinalizedHashTree {
 }
 
 impl FinalizedHashTree {
-    /// Root node in the 1-indexed segment-tree layout.
     #[inline]
     pub const fn root() -> u32 {
         1
     }
 
-    /// Left child node in the 1-indexed segment-tree layout.
     #[inline]
     pub const fn left(node: u32) -> u32 {
         2 * node
     }
 
-    /// Right child node in the 1-indexed segment-tree layout.
     #[inline]
     pub const fn right(node: u32) -> u32 {
         2 * node + 1
@@ -76,9 +67,6 @@ impl FinalizedHashTree {
     /// Bottom-up O(N) build
     pub fn new(leaves: Vec<B256>) -> Self {
         let max_elements = leaves.len().next_power_of_two().max(1);
-        debug_assert!(max_elements.is_power_of_two());
-        debug_assert!(max_elements >= 1);
-        debug_assert!(leaves.len() <= max_elements);
 
         let mut nodes: Box<[B256]> = vec![[0u8; 32]; 2 * max_elements].into_boxed_slice();
         for (i, leaf) in leaves.into_iter().enumerate() {

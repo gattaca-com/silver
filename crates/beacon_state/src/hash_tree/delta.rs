@@ -42,7 +42,6 @@ pub enum DeltaHashTree {
 }
 
 impl DeltaHashTree {
-    /// Anchor a fresh empty delta at `base`'s current root.
     pub fn new_at(_base: &FinalizedHashTree) -> Self {
         Self::Base(FinalizedHashTree::root())
     }
@@ -55,11 +54,7 @@ pub struct DeltaNode {
     pub right: DeltaHashTree,
 }
 
-/// delta-aware operations on the base. Live in `delta.rs` so `finalized.rs`
-/// stays oblivious to [`DeltaHashTree`].
 impl FinalizedHashTree {
-    /// Effective root hash of `delta` viewed against this base. `delta` must
-    /// be the delta anchored on this base.
     #[inline]
     pub(super) fn resolve_delta_hash(&self, delta: &DeltaHashTree) -> B256 {
         match delta {
@@ -69,11 +64,7 @@ impl FinalizedHashTree {
         }
     }
 
-    /// Recursive set-leaf descent. `[subtree_left, subtree_right)` is the
-    /// leaf-index range covered by `delta`; descend into the half containing
-    /// `index`. Each allocated `DeltaNode.hash` is kept equal to
-    /// `SHA256(left || right)` so `promote_delta_at` can copy without
-    /// re-hashing.
+    /// `[subtree_left, subtree_right)` is the leaf-index range covered by node subtree.
     pub(super) fn set_delta_leaf_in_range(
         &self,
         delta: &DeltaHashTree,
@@ -114,7 +105,6 @@ impl FinalizedHashTree {
         DeltaHashTree::Node(Arc::new(DeltaNode { hash, left: left_node, right: right_node }))
     }
 
-    /// Memory compaction; semantics-preserving (resolved hash unchanged).
     pub(super) fn prune_delta_at(&self, delta: &mut DeltaHashTree, node: u32) {
         match delta {
             DeltaHashTree::Base(_) => {}
