@@ -6,6 +6,7 @@ pub mod decompose;
 pub mod epoch_transition;
 pub mod error;
 mod fork_choice;
+pub mod hash_tree;
 pub mod shuffling;
 pub mod ssz_hash;
 pub mod state_transition;
