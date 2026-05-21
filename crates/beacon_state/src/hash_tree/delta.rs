@@ -64,7 +64,8 @@ impl FinalizedHashTree {
         }
     }
 
-    /// `[subtree_left, subtree_right)` is the leaf-index range covered by node subtree.
+    /// `[subtree_left, subtree_right)` is the leaf-index range covered by node
+    /// subtree.
     pub(super) fn set_delta_leaf_in_range(
         &self,
         delta: &DeltaHashTree,
