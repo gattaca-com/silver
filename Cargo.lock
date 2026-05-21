@@ -3956,6 +3956,7 @@ version = "0.0.1"
 dependencies = [
  "alloy-rlp",
  "base64 0.22.1",
+ "blst",
  "buffa",
  "buffa-build",
  "bytes",
@@ -3967,6 +3968,7 @@ dependencies = [
  "rand 0.8.6",
  "rcgen 0.14.7",
  "ring",
+ "rustc-hash",
  "rustls",
  "secp256k1",
  "serde",

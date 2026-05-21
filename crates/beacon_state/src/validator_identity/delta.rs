@@ -13,7 +13,7 @@ pub struct AppendedValidator {
 /// Per-fork delta on top of the finalized base. `appended[p]`'s
 /// absolute validator index is `base_cnt + p`; `cred_edits` carry an
 /// explicit absolute index (may target a base or appended validator).
-#[derive(Default, Clone, PartialEq)]
+#[derive(Default, Clone)]
 pub struct ValidatorsDelta {
     pub base_cnt: usize,
     pub appended: Vec<AppendedValidator>,
