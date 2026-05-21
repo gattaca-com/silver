@@ -16,6 +16,9 @@ use silver_peer::PeerManager;
 use tracing_subscriber::{EnvFilter, fmt::format::FmtSpan};
 
 fn main() -> Result<(), Box<dyn Error>> {
+    #[cfg(feature = "alloc-profile")]
+    let _alloc_profile_guard = silver_common::allocator::init_allocator_trace();
+
     tracing_subscriber::fmt()
         .with_file(true)
         .with_line_number(true)
