@@ -154,8 +154,8 @@ mod profile_impl {
                 });
 
                 println!(
-                    "{:<60} | {:<12} | {:<15}",
-                    "Call Point", "Invocations", "Bytes Allocated"
+                    "{:<12} | {:<15} | {:<60} ",
+                    "Invocations", "Bytes Allocated", "Call Point"
                 );
                 println!("{}", "-".repeat(95));
                 for (cp, stat) in list {
@@ -166,7 +166,7 @@ mod profile_impl {
                         &cp.file
                     };
                     let call_str = format!("{} ({}:{})", func_name, display_file, cp.line);
-                    println!("{:<60} | {:<12} | {:<15}", call_str, stat.count, stat.bytes);
+                    println!("{:<12} | {:<15} | {:<60}", stat.count, stat.bytes, call_str);
                 }
                 println!("==========================================\n");
             }
