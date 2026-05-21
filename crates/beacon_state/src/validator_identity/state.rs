@@ -6,7 +6,6 @@ use crate::types::BLSPubkey;
 /// Per-fork merged view: raw pointer to the tile-owned finalized base
 /// + owned `ValidatorsDelta`. Safety: pointee is boxed (stable address) and
 ///   outlives the state; only `delta` is mutated through this struct.
-#[derive(PartialEq)]
 pub struct ValidatorsState {
     finalized: *const FinalizedValidators,
     delta: ValidatorsDelta,

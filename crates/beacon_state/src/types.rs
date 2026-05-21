@@ -337,7 +337,7 @@ pub struct Vote {
 /// (raw-pointer overlay onto the tile-owned `FinalizedValidators` plus an
 /// owned `ValidatorsDelta` — see `ValidatorsState`).
 #[repr(C)]
-#[derive(Clone, PartialEq)]
+#[derive(Clone)]
 #[cfg_attr(test, derive(Default))]
 pub struct BeaconStateRef {
     pub imm_idx: u8,

@@ -1,5 +1,6 @@
 pub use crate::{
     arena::{ArenaPtr, TierPool},
+    beacon_state::types::*,
     config::{BlobParameters, Config, DiscoveryConfig, ScoreParams, SpecConfig, SyncingConfig},
     error::Error,
     gossip::{
@@ -29,6 +30,7 @@ pub use crate::{
 
 pub mod allocator;
 pub mod arena;
+mod beacon_state;
 mod config;
 mod enr;
 mod error;
