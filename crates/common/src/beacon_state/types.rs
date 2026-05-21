@@ -55,15 +55,12 @@ pub struct Finalised {
     pub pending: PendingQueues,
     pub validators: FinalizedValidators,
     pub epoch: FinalisedEpoch,
-    pub slot: SlotDelta,
+    pub slot: FinalisedSlot,
 }
 
-pub struct StateDelta<'a> {
-    // one for 256 epochs
-    // both of these could reference the fields in finalised state if equal
-    // TODO move into arcs? then the finalised state has to have arcs too
-    pub longtail: &'a HistoricalLongtail,
-    pub epoch: &'a EpochDelta,
+pub struct StateDelta {
+    pub epoch_idx: u32,
+    pub longtail_idx: u32,
     pub pending: PendingQueuesDelta,
     pub validators: ValidatorsDelta,
     pub slot: SlotDelta,
@@ -105,22 +102,6 @@ pub struct EpochDelta {
     pub historical_summaries_appended: Vec<HistoricalSummary>,
 }
 
-impl Default for EpochDelta {
-    fn default() -> Self {
-        Self {
-            randao_mixes: Vec::new(),
-            slashings: Vec::new(),
-            proposer_lookahead: [0u64; PROPOSER_LOOKAHEAD_SIZE],
-            justification_bits: 0,
-            previous_justified_checkpoint: Checkpoint::default(),
-            current_justified_checkpoint: Checkpoint::default(),
-            finalized_checkpoint: Checkpoint::default(),
-            deposit_balance_to_consume: 0,
-            historical_summaries_appended: Vec::new(),
-        }
-    }
-}
-
 /// Per-fork delta on `PendingQueues`. Each queue: drop the first
 /// `drain_offset` entries of the base, then read the remainder followed by
 /// `appended`.
@@ -146,6 +127,30 @@ pub struct FinalisedEpoch {
     pub historical_summaries: Vec<HistoricalSummary>,
 }
 
+/// Canonical slot-tier state. Holds the full circular buffers plus all
+/// non-per-validator scalars previously in `SlotData`. The slot-tier delta
+/// (`SlotDelta`) carries linear-vec edits since finalisation that overlay
+/// on top of these.
+pub struct FinalisedSlot {
+    pub block_roots: [B256; SLOTS_PER_HISTORICAL_ROOT],
+    pub state_roots: [B256; SLOTS_PER_HISTORICAL_ROOT],
+
+    pub randao_mix_current: B256,
+    pub eth1_data: Eth1Data,
+    pub eth1_votes: ArrayVec<Eth1Data, MAX_ETH1_VOTES>,
+    pub eth1_deposit_index: u64,
+    pub slot: Slot,
+    pub latest_block_header: BeaconBlockHeader,
+    pub latest_execution_payload_header: ExecutionPayloadHeader,
+    pub next_withdrawal_index: u64,
+    pub next_withdrawal_validator_index: u64,
+    pub deposit_requests_start_index: u64,
+    pub exit_balance_to_consume: u64,
+    pub earliest_exit_epoch: Epoch,
+    pub consolidation_balance_to_consume: u64,
+    pub earliest_consolidation_epoch: Epoch,
+}
+
 /// Per-fork delta on top of the finalized base. `appended[p]`'s absolute
 /// validator index is `base_cnt + p`; the `_edits` vectors are sparse,
 /// keyed by absolute validator index.
@@ -165,6 +170,12 @@ pub struct ValidatorsDelta {
     pub withdrawable_epoch_edits: Vec<(u32, Epoch)>,
     pub slashed_edits: Vec<(u32, bool)>,
     pub inactivity_score_edits: Vec<(u32, u64)>,
+}
+
+impl ValidatorsDelta {
+    pub fn new_at(base_cnt: usize) -> Self {
+        Self { base_cnt, ..Self::default() }
+    }
 }
 
 #[repr(C)]
@@ -273,18 +284,24 @@ pub struct SyncCommittee {
     pub aggregate_pubkey: BLSPubkey,
 }
 
-/// 32-byte validator withdrawal credentials. `#[repr(transparent)]` over
-/// `B256` so `[Withdrawals; N]` shares the layout of `[B256; N]`.
 #[repr(transparent)]
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub struct Withdrawals(pub B256);
 
-#[repr(C)]
 pub struct ValidatorsData {
-    pub validator_cnt: usize,
     pub val_pubkey: Vec<BLSPubkey>,
     pub val_pubkey_decompressed: Vec<PublicKey>,
     pub val_withdrawal_credentials: Vec<Withdrawals>,
+    pub balances: Vec<u64>,
+    pub current_epoch_participation: Vec<u8>,
+    pub previous_epoch_participation: Vec<u8>,
+    pub effective_balance: Vec<u64>,
+    pub activation_epoch: Vec<Epoch>,
+    pub exit_epoch: Vec<Epoch>,
+    pub activation_eligibility_epoch: Vec<Epoch>,
+    pub withdrawable_epoch: Vec<Epoch>,
+    pub inactivity_scores: Vec<u64>,
+    pub slashed: Vec<bool>,
 }
 
 pub type PubkeyIndex = FxHashMap<BLSPubkey, u32>;
@@ -301,6 +318,7 @@ pub struct AppendedValidator {
     pub credentials: Withdrawals,
 }
 
+#[derive(Clone)]
 pub struct HistoricalLongtail {
     pub current_sync_committee: SyncCommittee,
     pub next_sync_committee: SyncCommittee,
