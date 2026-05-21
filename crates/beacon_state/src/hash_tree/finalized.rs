@@ -12,11 +12,13 @@
 //! Lifecycle:
 //!
 //! - **Build once** via `new(leaves)` (O(N) bottom-up build at checkpoint load;
-//!   `leaves.len()` is rounded up to the next power of two and uses that as the max_elements.
-//! - **Mutate only via delta promotion on finalization.** `FinalizedHashTree::promote_delta`
-//!   walks its delta and calls `write_node(node, hash)` per dirty internal
-//!   node, copying the delta's precomputed hashes straight into the flat array
-//!   — no SHA-256 work at the base layer during promotion.
+//!   `leaves.len()` is rounded up to the next power of two and uses that as the
+//!   max_elements.
+//! - **Mutate only via delta promotion on finalization.**
+//!   `FinalizedHashTree::promote_delta` walks its delta and calls
+//!   `write_node(node, hash)` per dirty internal node, copying the delta's
+//!   precomputed hashes straight into the flat array — no SHA-256 work at the
+//!   base layer during promotion.
 //!
 //! Reads are O(1). The base never exposes a single-leaf `set` that
 //! recomputes the path upward — that operation belongs on the delta,
@@ -39,8 +41,9 @@ use crate::types::B256;
 /// power-of-two large enough to cover the worst-case populated count.
 pub struct FinalizedHashTree {
     /// 1-indexed flat tree. `nodes[0]` is unused. `nodes[1]` is the
-    /// root of the physical tree. Leaves occupy `nodes[max_elements..2*max_elements]`. 
-    /// Length is exactly `2 * max_elements`.
+    /// root of the physical tree. Leaves occupy
+    /// `nodes[max_elements..2*max_elements]`. Length is exactly `2 *
+    /// max_elements`.
     nodes: Box<[B256]>,
     /// Power-of-two leaf capacity.
     max_elements: usize,
