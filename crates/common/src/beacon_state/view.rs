@@ -9,6 +9,14 @@ pub struct ViewControl {
     inner: Seqlock<ControlInner>,
 }
 
+// SAFETY: `state_ptr` aliases the `BeaconState` heap allocation owned by the
+// writer thread. The writer must keep that allocation live for the lifetime
+// of every `ViewControl` clone, and mutate the state only through the
+// publish-offsets / write-guard protocol below. With those invariants, the
+// pointer is safe to share and to dereference from any thread.
+unsafe impl Send for ViewControl {}
+unsafe impl Sync for ViewControl {}
+
 impl ViewControl {
     pub fn new(state_ptr: *const BeaconState) -> Self {
         Self { state_ptr, inner: Seqlock::new(ControlInner::default()) }
