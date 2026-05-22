@@ -310,6 +310,7 @@ pub fn decompose_beacon_state(
         epoch.val_exit_epoch[i] = u64_le(v, 105);
         epoch.val_withdrawable_epoch[i] = u64_le(v, 113);
     }
+    fv.rebuild_hash();
 
     // Balances → SlotData
     let bal_bytes = &ssz[off_balances..off_prev_participation];

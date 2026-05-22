@@ -338,7 +338,6 @@ pub struct Vote {
 /// owned `ValidatorsDelta` — see `ValidatorsState`).
 #[repr(C)]
 #[derive(Clone)]
-#[cfg_attr(test, derive(Default))]
 pub struct BeaconStateRef {
     pub imm_idx: u8,
     pub longtail_idx: u8,

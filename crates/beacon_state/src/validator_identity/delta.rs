@@ -58,6 +58,22 @@ impl ValidatorsDelta {
         self.credentials_edits.push((idx, new_credentials));
     }
 
+    pub fn promote_into_base(&self, base: &mut FinalizedValidators) {
+        debug_assert_eq!(
+            base.validator_cnt(),
+            self.base_cnt,
+            "promote_into_base: delta.base_cnt must match the current base count",
+        );
+
+        for a in &self.appended {
+            base.append(&a.pubkey, &a.credentials);
+        }
+
+        for &(idx, v) in &self.credentials_edits {
+            base.set_withdrawal_credentials_at(idx as usize, v);
+        }
+    }
+
     /// Reconcile with an advanced `base`: drain the promoted prefix of
     /// `appended`, roll `base_cnt` forward, and drop cred_edits that now
     /// match base. Base only grows in finalized progression, so a
