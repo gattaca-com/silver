@@ -147,21 +147,7 @@ impl Default for SlotStateFinalised {
 
 impl Reset for SlotStateDelta {
     fn reset(&mut self) {
-        self.slot.randao_mix_current = B256::default();
-        self.slot.current_epoch_slashings = 0;
-        self.slot.eth1_data = Eth1Data::default();
-        self.slot.eth1_votes.clear();
-        self.slot.eth1_deposit_index = 0;
-        self.slot.slot = 0;
-        self.slot.latest_block_header = BeaconBlockHeader::default();
-        self.slot.latest_execution_payload_header = ExecutionPayloadHeader::default();
-        self.slot.next_withdrawal_index = 0;
-        self.slot.next_withdrawal_validator_index = 0;
-        self.slot.deposit_requests_start_index = 0;
-        self.slot.exit_balance_to_consume = 0;
-        self.slot.earliest_exit_epoch = 0;
-        self.slot.consolidation_balance_to_consume = 0;
-        self.slot.earliest_consolidation_epoch = 0;
+        self.slot = Default::default();
         self.block_roots.clear();
         self.state_roots.clear();
     }
@@ -169,20 +155,7 @@ impl Reset for SlotStateDelta {
     fn reset_from(&mut self, other: &Self) {
         self.slot.randao_mix_current = other.slot.randao_mix_current;
         self.slot.current_epoch_slashings = other.slot.current_epoch_slashings;
-        self.slot.eth1_data = other.slot.eth1_data;
-        self.slot.eth1_votes.clear();
-        self.slot.eth1_votes.extend(other.slot.eth1_votes.iter().cloned()); // TODO need to clone these?
-        self.slot.eth1_deposit_index = other.slot.eth1_deposit_index;
-        self.slot.slot = other.slot.slot;
-        self.slot.latest_block_header = other.slot.latest_block_header; // TODO actual need to copy this?
-        self.slot.latest_execution_payload_header = other.slot.latest_execution_payload_header; // TODO need to copy this?
-        self.slot.next_withdrawal_index = other.slot.next_withdrawal_index;
-        self.slot.next_withdrawal_validator_index = other.slot.next_withdrawal_validator_index;
-        self.slot.deposit_requests_start_index = other.slot.deposit_requests_start_index;
-        self.slot.exit_balance_to_consume = other.slot.exit_balance_to_consume;
-        self.slot.earliest_exit_epoch = other.slot.earliest_exit_epoch;
-        self.slot.consolidation_balance_to_consume = other.slot.consolidation_balance_to_consume;
-        self.slot.earliest_consolidation_epoch = other.slot.earliest_consolidation_epoch;
+        self.slot = other.slot.clone();
         self.block_roots.clone_from(&other.block_roots);
         self.state_roots.clone_from(&other.state_roots);
     }
