@@ -8,9 +8,9 @@ use crate::{hash_tree::HashTreeState, types::BLSPubkey};
 
 /// Per-fork merged view: raw pointer to the tile-owned finalized base
 /// + owned `ValidatorsDelta` + owned per-fork hash overlay
-/// (`HashTreeState`). Safety: pointee is boxed (stable address) and
-/// outlives the state; only `delta` and `hash` are mutated through this
-/// struct.
+///   (`HashTreeState`). Safety: pointee is boxed (stable address) and
+///   outlives the state; only `delta` and `hash` are mutated through this
+///   struct.
 pub struct ValidatorsState {
     finalized: *const FinalizedValidators,
     delta: ValidatorsDelta,

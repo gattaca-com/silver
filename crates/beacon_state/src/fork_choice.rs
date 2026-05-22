@@ -362,7 +362,7 @@ mod tests {
 
     impl BlockGen {
         fn new() -> Self {
-            Self { fv: FinalizedValidators::new_empty() }
+            Self { fv: FinalizedValidators::new(&[], &[]) }
         }
 
         fn sref(&self) -> BeaconStateRef {

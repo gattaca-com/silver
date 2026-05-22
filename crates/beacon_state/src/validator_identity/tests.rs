@@ -19,11 +19,9 @@ fn wc(first_byte: u8) -> Withdrawals {
 
 /// N pre-existing validators with `pk(0)..pk(N-1)`.
 fn populated_base(n: u32) -> FinalizedValidators {
-    let mut fv = FinalizedValidators::new_empty();
-    for i in 0..n {
-        fv.append(&pk(i as u8), &Withdrawals::ZERO);
-    }
-    fv
+    let pubkeys: Vec<BLSPubkey> = (0..n).map(|i| pk(i as u8)).collect();
+    let credentials = vec![Withdrawals::ZERO; n as usize];
+    FinalizedValidators::new(&pubkeys, &credentials)
 }
 
 // Group A — find_by_pubkey
@@ -36,7 +34,7 @@ fn find_by_pubkey_existing_returns_index() {
 
 #[test]
 fn find_by_pubkey_missing_returns_none() {
-    let fv = FinalizedValidators::new_empty();
+    let fv = FinalizedValidators::new(&[], &[]);
     let state = ValidatorsState::with_empty_delta(&fv);
     assert_eq!(state.find_by_pubkey(&pk(42)), None);
 }
@@ -63,7 +61,7 @@ fn find_by_pubkey_after_populated_base_finds_every_validator() {
 
 #[test]
 fn append_in_delta_visible_via_find() {
-    let fv = FinalizedValidators::new_empty();
+    let fv = FinalizedValidators::new(&[], &[]);
     let mut state = ValidatorsState::with_empty_delta(&fv);
     state.append(&pk(9), &Withdrawals::ZERO);
 
@@ -74,7 +72,7 @@ fn append_in_delta_visible_via_find() {
 
 #[test]
 fn append_in_delta_then_finalize_visible_via_base() {
-    let mut fv = FinalizedValidators::new_empty();
+    let mut fv = FinalizedValidators::new(&[], &[]);
 
     let mut state = ValidatorsState::with_empty_delta(&fv);
     state.append(&pk(9), &Withdrawals::ZERO);
@@ -103,7 +101,7 @@ fn validator_cnt_includes_delta() {
 
 #[test]
 fn pubkey_decompressed_overlay_returns_delta_entry() {
-    let fv = FinalizedValidators::new_empty();
+    let fv = FinalizedValidators::new(&[], &[]);
     let mut state = ValidatorsState::with_empty_delta(&fv);
     state.append(&pk(9), &Withdrawals::ZERO);
 
@@ -114,9 +112,10 @@ fn pubkey_decompressed_overlay_returns_delta_entry() {
 
 #[test]
 fn withdrawal_credentials_cred_edit_overrides_base() {
-    let mut fv = FinalizedValidators::new_empty();
-    fv.append(&pk(0), &Withdrawals::ZERO);
-    fv.append(&pk(1), &Withdrawals([0xAA; 32]));
+    let fv = FinalizedValidators::new(
+        &[pk(0), pk(1)],
+        &[Withdrawals::ZERO, Withdrawals([0xAA; 32])],
+    );
 
     let overridden = wc(0xCC);
     let mut state = ValidatorsState::with_empty_delta(&fv);
@@ -144,7 +143,7 @@ fn withdrawal_credentials_repeated_edits_keep_newest() {
 
 #[test]
 fn cred_edit_on_appended_validator_logs_to_cred_edits() {
-    let fv = FinalizedValidators::new_empty();
+    let fv = FinalizedValidators::new(&[], &[]);
     let mut state = ValidatorsState::with_empty_delta(&fv);
 
     let pk0 = pk(7);
@@ -185,7 +184,7 @@ fn two_forks_different_appended_return_different_indices() {
 
 #[test]
 fn delta_grows_beyond_initial_capacity() {
-    let fv = FinalizedValidators::new_empty();
+    let fv = FinalizedValidators::new(&[], &[]);
     let mut state = ValidatorsState::with_empty_delta(&fv);
 
     for i in 0..128u8 {
@@ -213,9 +212,7 @@ fn pubkeys_with_identical_prefix_bytes_stored_separately() {
     b[40] = 0xBB;
     assert_ne!(a, b);
 
-    let mut fv = FinalizedValidators::new_empty();
-    fv.append(&a, &Withdrawals::ZERO);
-    fv.append(&b, &Withdrawals::ZERO);
+    let fv = FinalizedValidators::new(&[a, b], &[Withdrawals::ZERO, Withdrawals::ZERO]);
 
     assert_eq!(fv.find_by_pubkey(&a), Some(0));
     assert_eq!(fv.find_by_pubkey(&b), Some(1));
@@ -225,7 +222,7 @@ fn pubkeys_with_identical_prefix_bytes_stored_separately() {
 
 #[test]
 fn append_via_view_grows_delta_not_base() {
-    let fv = FinalizedValidators::new_empty();
+    let fv = FinalizedValidators::new(&[], &[]);
     let mut state = ValidatorsState::with_empty_delta(&fv);
 
     state.append(&pk(11), &Withdrawals::ZERO);
@@ -250,12 +247,11 @@ fn hash_validators_invariant_under_rebase() {
 
     let zh = compute_zero_hashes();
 
-    let mut fv = FinalizedValidators::new_empty();
-    let mut epoch: Box<EpochData> = box_zeroed();
     let eth1_creds = wc(0x01);
-    for i in 0..8u32 {
-        fv.append(&pk(i as u8), &eth1_creds);
-    }
+    let init_pubkeys: Vec<BLSPubkey> = (0..8u32).map(|i| pk(i as u8)).collect();
+    let init_creds = vec![eth1_creds; 8];
+    let mut fv = FinalizedValidators::new(&init_pubkeys, &init_creds);
+    let mut epoch: Box<EpochData> = box_zeroed();
     for i in 0..8u32 {
         epoch.val_effective_balance[i as usize] = (i as u64 + 1) * 1_000_000_000;
         epoch.val_activation_epoch[i as usize] = 1;
@@ -284,7 +280,7 @@ fn hash_validators_invariant_under_rebase() {
 
 #[test]
 fn owned_registry_chains_through_append() {
-    let fv = FinalizedValidators::new_empty();
+    let fv = FinalizedValidators::new(&[], &[]);
     let mut state = ValidatorsState::with_empty_delta(&fv);
     let pk0 = pk(7);
 
@@ -300,9 +296,10 @@ fn owned_registry_chains_through_append() {
 
 #[test]
 fn finalize_into_base_promotes_appended_and_cred_edits() {
-    let mut fv = FinalizedValidators::new_empty();
-    fv.append(&pk(0), &Withdrawals::ZERO);
-    fv.append(&pk(1), &Withdrawals([0xAA; 32]));
+    let mut fv = FinalizedValidators::new(
+        &[pk(0), pk(1)],
+        &[Withdrawals::ZERO, Withdrawals([0xAA; 32])],
+    );
 
     let new_creds = wc(0xBB);
     let mut state = ValidatorsState::with_empty_delta(&fv);

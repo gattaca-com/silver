@@ -802,7 +802,7 @@ mod tests {
 
     #[test]
     fn pending_deposit_valid_sig_adds_validator() {
-        let fv = FinalizedValidators::new_empty();
+        let fv = FinalizedValidators::new(&[], &[]);
         let mut e: Box<EpochData> = box_zeroed();
         let mut sd: Box<SlotData> = box_zeroed();
         let mut pq = PendingQueues::new();
@@ -854,7 +854,7 @@ mod tests {
 
     #[test]
     fn pending_deposit_invalid_sig_rejected() {
-        let fv = FinalizedValidators::new_empty();
+        let fv = FinalizedValidators::new(&[], &[]);
         let mut e: Box<EpochData> = box_zeroed();
         let mut sd: Box<SlotData> = box_zeroed();
         let mut pq = PendingQueues::new();
@@ -892,7 +892,6 @@ mod tests {
 
     #[test]
     fn pending_deposit_existing_validator_no_sig_check() {
-        let mut fv = FinalizedValidators::new_empty();
         let mut e: Box<EpochData> = box_zeroed();
         let mut sd: Box<SlotData> = box_zeroed();
         let mut pq = PendingQueues::new();
@@ -910,7 +909,7 @@ mod tests {
         let sk = SecretKey::from_bytes(&sk_bytes).unwrap();
         let pk = sk.sk_to_pk().to_bytes();
 
-        fv.append(&pk, &Withdrawals::ZERO);
+        let fv = FinalizedValidators::new(&[pk], &[Withdrawals::ZERO]);
         e.val_activation_epoch[0] = 0;
         e.val_exit_epoch[0] = u64::MAX;
         e.val_effective_balance[0] = MAX_EFFECTIVE_BALANCE;

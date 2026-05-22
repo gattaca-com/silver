@@ -15,15 +15,33 @@ pub struct FinalizedValidators {
     hash: FinalizedHashTree,
 }
 
+impl ValidatorsData {
+    fn append(&mut self, pubkey: &BLSPubkey, credentials: &Withdrawals) -> u32 {
+        let idx = self.validator_cnt;
+        self.val_pubkey[idx] = *pubkey;
+        self.val_pubkey_decompressed[idx] = PublicKey::from_bytes(pubkey).unwrap_or_default();
+        self.val_withdrawal_credentials[idx] = *credentials;
+        self.validator_cnt = idx + 1;
+        idx as u32
+    }
+}
+
 impl FinalizedValidators {
-    pub fn new_empty() -> Self {
-        Self {
-            data: box_zeroed(),
-            index: PubkeyIndex::with_capacity_and_hasher(MAX_VALIDATORS, Default::default()),
-            // TODO: change functions so the whole data will be provided in constructor instead of
-            // rebuild_hash
-            hash: FinalizedHashTree::new(Vec::new()),
+    pub fn new(pubkeys: &[BLSPubkey], credentials: &[Withdrawals]) -> Self {
+        debug_assert_eq!(pubkeys.len(), credentials.len());
+        debug_assert!(pubkeys.len() <= MAX_VALIDATORS);
+
+        let mut data: Box<ValidatorsData> = box_zeroed();
+        let mut index = PubkeyIndex::with_capacity_and_hasher(MAX_VALIDATORS, Default::default());
+        let mut leaf_hashes = vec![[0u8; 32]; MAX_VALIDATORS];
+
+        for (pubkey, creds) in pubkeys.iter().zip(credentials.iter()) {
+            let idx = data.append(pubkey, creds);
+            index.insert(*pubkey, idx);
+            leaf_hashes[idx as usize] = validator_hash(pubkey, creds);
         }
+
+        Self { data, index, hash: FinalizedHashTree::new(leaf_hashes) }
     }
 
     #[inline]
@@ -36,27 +54,10 @@ impl FinalizedValidators {
         &mut self.hash
     }
 
-    /// Rebuild the hash tree from current `data` used only at bootstrap.
-    pub fn rebuild_hash(&mut self) {
-        let mut leaves = vec![[0u8; 32]; MAX_VALIDATORS];
-        for i in 0..self.data.validator_cnt {
-            leaves[i] =
-                validator_hash(&self.data.val_pubkey[i], &self.data.val_withdrawal_credentials[i]);
-        }
-        self.hash = FinalizedHashTree::new(leaves);
-    }
-
-    pub fn append(&mut self, pubkey: &BLSPubkey, credentials: &Withdrawals) -> u32 {
-        let idx = self.data.validator_cnt;
-
-        self.data.val_pubkey[idx] = *pubkey;
-        self.data.val_pubkey_decompressed[idx] = PublicKey::from_bytes(pubkey).unwrap_or_default();
-        self.data.val_withdrawal_credentials[idx] = *credentials;
-
-        self.data.validator_cnt = idx + 1;
-        self.index.insert(*pubkey, idx as u32);
-
-        idx as u32
+    pub(super) fn append(&mut self, pubkey: &BLSPubkey, credentials: &Withdrawals) -> u32 {
+        let idx = self.data.append(pubkey, credentials);
+        self.index.insert(*pubkey, idx);
+        idx
     }
 
     #[inline]

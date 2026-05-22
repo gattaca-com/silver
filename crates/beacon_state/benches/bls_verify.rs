@@ -151,7 +151,7 @@ fn load_pre_at(dir: &Path) -> LoadedState {
     let pre_ssz = snappy_decode(&dir.join("pre.ssz_snappy"));
     let mut s = LoadedState {
         imm: box_zeroed(),
-        fv: FinalizedValidators::new_empty(),
+        fv: FinalizedValidators::new(&[], &[]),
         longtail: box_zeroed(),
         epoch: box_zeroed(),
         roots: box_zeroed(),
