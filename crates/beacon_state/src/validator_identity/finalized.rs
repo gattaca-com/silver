@@ -33,7 +33,7 @@ impl FinalizedValidators {
 
         let mut data: Box<ValidatorsData> = box_zeroed();
         let mut index = PubkeyIndex::with_capacity_and_hasher(MAX_VALIDATORS, Default::default());
-        let mut leaf_hashes = vec![[0u8; 32]; MAX_VALIDATORS];
+        let mut leaf_hashes = vec![[0u8; 32]; pubkeys.len()];
 
         for (pubkey, creds) in pubkeys.iter().zip(credentials.iter()) {
             let idx = data.append(pubkey, creds);
@@ -41,7 +41,7 @@ impl FinalizedValidators {
             leaf_hashes[idx as usize] = validator_hash(pubkey, creds);
         }
 
-        Self { data, index, hash: FinalizedHashTree::new(leaf_hashes) }
+        Self { data, index, hash: FinalizedHashTree::new(&leaf_hashes, MAX_VALIDATORS) }
     }
 
     #[inline]

@@ -47,9 +47,9 @@ fn ssz_list_root(physical_root: &B256, max_elements: usize, spec_depth: u8, len:
 fn test_finilized_hash_tree() {
     let mut rng = StdRng::seed_from_u64(0xF1);
 
-    for &n in &[0_usize, 1, 7, 8, 9, 1024] {
+    for &n in &[0_usize, 1, 7, 8, 9, 1024, 1999, 2047] {
         let leaves: Vec<B256> = (0..n).map(|_| random_leaf(&mut rng)).collect();
-        let tree = FinalizedHashTree::new(leaves.clone());
+        let tree = FinalizedHashTree::new(&leaves, leaves.len());
         let got = ssz_list_root(tree.root_hash(), tree.max_elements(), SPEC_DEPTH, leaves.len());
         let want = reference_root(&leaves, SPEC_DEPTH);
         assert_eq!(got, want, "mismatch at n={n}");
@@ -61,7 +61,7 @@ fn test_deltas_hash_tree() {
     let n = 256_usize;
     let m = 200_usize; // number of updates
 
-    let base = FinalizedHashTree::new(vec![[0u8; 32]; n]);
+    let base = FinalizedHashTree::new(&vec![[0u8; 32]; n], n);
     let mut state = HashTreeState::with_empty_delta(&base);
     let mut real_data = vec![[0u8; 32]; n];
 
@@ -83,7 +83,7 @@ fn test_promote_and_prune() {
     let n = 256_usize;
     let writes_per_fork = 32_usize;
 
-    let mut base = FinalizedHashTree::new(vec![[0u8; 32]; n]);
+    let mut base = FinalizedHashTree::new(&vec![[0u8; 32]; n], n);
     let mut real_data = vec![[0u8; 32]; n];
     let mut rng = StdRng::seed_from_u64(0x9A);
 
@@ -150,7 +150,7 @@ fn fuzz_random_ops_hash_tree() {
     }
 
     let mut forks = HashMap::new();
-    let mut base = FinalizedHashTree::new(vec![[0u8; 32]; max_leafs]);
+    let mut base = FinalizedHashTree::new(&vec![[0u8; 32]; max_leafs], max_leafs);
     forks.insert(0, Fork {
         state: HashTreeState::with_empty_delta(&base),
         real_data: Vec::new(),
