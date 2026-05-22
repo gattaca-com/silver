@@ -1,23 +1,42 @@
-use std::sync::{self, Arc, atomic::Ordering};
+use std::{
+    ops::{Deref, DerefMut},
+    sync::{self, Arc, atomic::Ordering},
+};
 
 use flux::communication::Seqlock;
 
-use crate::{EpochStateDelta, FinalisedView, StateDelta, beacon_state::BeaconState};
+use crate::{
+    DeltaBuffer, EpochStateDelta, FinalisedView, LongtailState, StateDelta,
+    beacon_state::BeaconState,
+};
 
 /// Beacon state writer control.
 /// Single writer.
 pub struct BeaconStateOwner {
+    state: Box<BeaconState>,
     state_ptr: *const BeaconState,
     inner: Arc<Seqlock<ControlInner>>,
 }
 
 impl BeaconStateOwner {
-    pub fn new(state: BeaconState) -> (Self, Box<BeaconState>) {
+    pub fn new(state: BeaconState) -> Self {
         let mut box_state = Box::new(state);
         let state_mut_ptr = Box::into_raw(box_state);
         let state_ptr = state_mut_ptr as *const BeaconState;
         box_state = unsafe { Box::from_raw(state_mut_ptr) };
-        (Self { state_ptr, inner: Arc::new(Seqlock::new(ControlInner::default())) }, box_state)
+        Self { state: box_state, state_ptr, inner: Arc::new(Seqlock::new(ControlInner::default())) }
+    }
+
+    pub fn longtails(&mut self) -> &mut DeltaBuffer<LongtailState, 2> {
+        &mut self.state.longtails
+    }
+
+    pub fn epochs(&mut self) -> &mut DeltaBuffer<EpochStateDelta, 8> {
+        &mut self.state.epochs
+    }
+
+    pub fn slots(&mut self) -> &mut DeltaBuffer<StateDelta, 256> {
+        &mut self.state.slots
     }
 
     /// Called by the state owner to publish new delta buffer offsets - should
@@ -49,7 +68,12 @@ impl BeaconStateOwner {
         // Set version to even value that will be written when the guard is dropped.
         value.version += 1;
 
-        WriteGuard { value, version: self.inner.version(), inner: &self.inner }
+        WriteGuard {
+            beacon_state: &mut self.state,
+            value,
+            version: self.inner.version(),
+            inner: &self.inner,
+        }
     }
 
     pub fn reader(&mut self) -> BeaconStateReader {
@@ -106,9 +130,24 @@ impl BeaconStateReader {
 }
 
 pub struct WriteGuard<'a> {
+    beacon_state: &'a mut BeaconState,
     value: ControlInner,
     version: u64,
     inner: &'a Seqlock<ControlInner>,
+}
+
+impl<'a> Deref for WriteGuard<'a> {
+    type Target = BeaconState;
+
+    fn deref(&self) -> &Self::Target {
+        self.beacon_state
+    }
+}
+
+impl<'a> DerefMut for WriteGuard<'a> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.beacon_state
+    }
 }
 
 impl<'a> Drop for WriteGuard<'a> {

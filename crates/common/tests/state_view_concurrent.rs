@@ -4,9 +4,12 @@
 //! `ViewControl::read` and asserts every observed snapshot is internally
 //! consistent.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+use std::{
+    ops::DerefMut,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
 };
 
 use silver_common::{B256, BeaconState, BeaconStateOwner};
@@ -24,7 +27,7 @@ fn slot_tag(slot: u64) -> B256 {
 
 #[test]
 fn concurrent_reads_observe_consistent_state() {
-    let (mut control, mut state) = BeaconStateOwner::new(BeaconState::default());
+    let mut control = BeaconStateOwner::new(BeaconState::default());
 
     let done = Arc::new(AtomicBool::new(false));
     let reads = Arc::new(AtomicUsize::new(0));
@@ -86,9 +89,10 @@ fn concurrent_reads_observe_consistent_state() {
     // Writer = main thread.
     for s in 0..ITERATIONS {
         // Roll forward; mutate the new slot in place.
-        state.slots.roll(state.slots.head());
-        let head = state.slots.head().expect("just rolled");
-        let delta = state.slots.get_mut(head);
+        let previous = control.slots().head();
+        control.slots().roll(previous);
+        let head = control.slots().head().expect("just rolled");
+        let delta = control.slots().get_mut(head);
         delta.slot.slot.slot = s;
         delta.slot.block_roots.clear();
         delta.slot.block_roots.push(slot_tag(s));
@@ -99,9 +103,9 @@ fn concurrent_reads_observe_consistent_state() {
         // Periodically advance finalised. Both fields are set under the
         // same write guard.
         if s % 4 == 3 {
-            let _g = control.write();
-            state.finalised.slot.slot.slot = s;
-            state.finalised.slot.slot.latest_block_header.slot = s;
+            let mut g = control.write();
+            g.deref_mut().finalised.slot.slot.slot = s;
+            g.deref_mut().finalised.slot.slot.latest_block_header.slot = s;
         }
 
         // Encourage interleaving.
