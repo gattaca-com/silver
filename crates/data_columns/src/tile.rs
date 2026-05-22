@@ -11,8 +11,12 @@ use silver_common::{
 
 use crate::{store::Store, util};
 
-const BASE_REQUEST_ID: u64 = 0xda5da5 << 40; // DAS prefix. 
+const BASE_REQUEST_ID: u64 = 0xda5da5 << 40; // DAS prefix.
 const MAX_RETRIES: u8 = 5;
+
+/// Mainnet epoch: 32 slots × 12s. Wheel bucket width for the
+/// block-level validation cache.
+const EPOCH_DURATION: Duration = Duration::from_secs(32 * 12);
 
 /// SSZ `hash_tree_root(BeaconBlockHeader)` — the same value carried as
 /// `head_root` in Status RPC and `block_root` in
@@ -33,6 +37,15 @@ pub struct DataColumnTile {
 
     // keyed by block body root
     validated_columns: FxHashMap<BlockRoot, u128>,
+    // BLS verify memo: block_root → previously-validated 96-byte
+    // proposer signature. On a subsequent sidecar with the same
+    // block_root AND matching signature bytes we skip the ~1 ms BLS
+    // verify; with a different signature we re-verify. block_root
+    // alone is not safe to cache by — it does not cover the
+    // signature, kzg_commitments, or inclusion proof, all of which
+    // remain verified on every sidecar. Time-bounded: 4 buckets × 1
+    // epoch ⇒ entries age out after 3–4 epochs.
+    validated_blocks: Wheel<BlockRoot, [u8; 96], 4>,
     // outstanding requests - keyed by block body root
     // 16 x 500 millisecond buckets.
     outstanding_requests: Wheel<BlockRoot, (u128, u8), 16>,
@@ -58,6 +71,7 @@ impl DataColumnTile {
             store: Store::load(data_store_dir).expect("failed to load data columns store"),
             fork_digest,
             validated_columns: FxHashMap::default(),
+            validated_blocks: Wheel::new(EPOCH_DURATION),
             outstanding_requests: Wheel::new(Duration::from_millis(500)),
         }
     }
@@ -134,12 +148,16 @@ impl DataColumnTile {
             tracing::warn!(?stream_id, "badly formed data column sidecar");
             return Some((block_root, column_bitmask));
         }
-        if !util::verify_data_column_sidecar_inclusion_proof(buffer) {
-            tracing::warn!(?stream_id, "failed to verify sidecar inclusion proof");
-            return Some((block_root, column_bitmask));
-        }
         if !util::verify_data_column_sidecar_kzg_proofs(buffer) {
             tracing::warn!(?stream_id, "failed to verify sidecar kzg proof");
+            return Some((block_root, column_bitmask));
+        }
+
+        // Inclusion proof binds the sidecar's `kzg_commitments` to the
+        // block's `body_root` — neither input is pinned by block_root, so
+        // it must run on every sidecar.
+        if !util::verify_data_column_sidecar_inclusion_proof(buffer) {
+            tracing::warn!(?stream_id, "failed to verify sidecar inclusion proof");
             return Some((block_root, column_bitmask));
         }
 
@@ -203,13 +221,22 @@ impl DataColumnTile {
             tracing::warn!(?stream_id, "sidecar proposer_index mismatch");
             return Some((block_root, column_bitmask));
         }
-        let Some(pubkey) = pubkey else {
-            tracing::warn!(?stream_id, "sidecar proposer_index out of range");
-            return Some((block_root, column_bitmask));
-        };
-        if !util::verify_proposer_signature(buffer, &pubkey, fork_version, &gvr) {
-            tracing::warn!(?stream_id, "sidecar proposer signature invalid");
-            return Some((block_root, column_bitmask));
+
+        // BLS verify cache: skip the ~1 ms verify iff the sidecar's
+        // signature bytes match a previously-validated signature for
+        // this block_root. block_root does not pin the signature, so
+        // bytes-equality is required.
+        let sig_bytes = *DataColumnSidecarView::block_signature(buffer);
+        if self.validated_blocks.get(&block_root) != Some(&sig_bytes) {
+            let Some(pubkey) = pubkey else {
+                tracing::warn!(?stream_id, "sidecar proposer_index out of range");
+                return Some((block_root, column_bitmask));
+            };
+            if !util::verify_proposer_signature(buffer, &pubkey, fork_version, &gvr) {
+                tracing::warn!(?stream_id, "sidecar proposer signature invalid");
+                return Some((block_root, column_bitmask));
+            }
+            self.validated_blocks.insert(block_root, sig_bytes);
         }
 
         if let Some((mut requested, retries)) = requested {
@@ -332,24 +359,26 @@ impl Tile<SilverSpine> for DataColumnTile {
             }
         });
 
+        let now = Instant::now();
+
+        // Age out per-block validation memo.
+        self.validated_blocks.maybe_rotate(now, &mut |_, _| {});
+
         // Timeout any pending requests and re-issue
         let mut reinsert = vec![];
-        self.outstanding_requests.maybe_rotate(
-            Instant::now(),
-            &mut |block_root, (columns, retries)| {
-                if retries > 0 {
-                    let id = self.request_id;
-                    self.request_id += 1;
-                    adapter.produce(PeerEvent::SendDataColumnsByRootRequest {
-                        request_id: id,
-                        columns,
-                        block_root,
-                    });
+        self.outstanding_requests.maybe_rotate(now, &mut |block_root, (columns, retries)| {
+            if retries > 0 {
+                let id = self.request_id;
+                self.request_id += 1;
+                adapter.produce(PeerEvent::SendDataColumnsByRootRequest {
+                    request_id: id,
+                    columns,
+                    block_root,
+                });
 
-                    reinsert.push((block_root, (columns, retries - 1)));
-                }
-            },
-        );
+                reinsert.push((block_root, (columns, retries - 1)));
+            }
+        });
         reinsert.into_iter().for_each(|(k, v)| {
             self.outstanding_requests.insert(k, v);
         });

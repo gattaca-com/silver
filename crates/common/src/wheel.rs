@@ -30,6 +30,7 @@ impl<K: Hash + Eq, V, const N: usize> Wheel<K, V, N> {
         F: FnMut(K, V),
     {
         if self.last_rotation + self.interval < now {
+            self.last_rotation = now;
             self.head = (self.head + 1) & (N - 1);
             self.buckets[self.head].drain().for_each(|(k, v)| on_expired(k, v));
         }
@@ -43,6 +44,19 @@ impl<K: Hash + Eq, V, const N: usize> Wheel<K, V, N> {
         self.buckets.iter().any(|b| b.contains_key(key))
     }
 
+    pub fn get(&self, key: &K) -> Option<&V> {
+        // tail first iteration
+        let mut i = (self.head + 1) & (N - 1);
+        while i != self.head {
+            let val = self.buckets[i].get(key);
+            if val.is_some() {
+                return val;
+            }
+            i = (i + 1) & (N - 1);
+        }
+        self.buckets[self.head].get(key)
+    }
+
     pub fn remove(&mut self, key: &K) -> Option<V> {
         // tail first iteration
         let mut i = (self.head + 1) & (N - 1);
@@ -51,7 +65,7 @@ impl<K: Hash + Eq, V, const N: usize> Wheel<K, V, N> {
             if removed.is_some() {
                 return removed;
             }
-            i = (self.head + 1) & (N - 1);
+            i = (i + 1) & (N - 1);
         }
         self.buckets[self.head].remove(key)
     }
