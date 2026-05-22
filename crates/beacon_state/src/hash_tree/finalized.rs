@@ -24,7 +24,7 @@
 //! recomputes the path upward — that operation belongs on the delta,
 //! where the cached hashes feed the next promotion.
 
-use silver_common::ssz_hash::hash_concat;
+use silver_common::ssz_hash::{ZERO_HASHES, hash_concat};
 
 use crate::types::B256;
 
@@ -65,16 +65,27 @@ impl FinalizedHashTree {
     /// as zero subtrees).
     ///
     /// Bottom-up O(N) build
-    pub fn new(leaves: Vec<B256>) -> Self {
-        let max_elements = leaves.len().next_power_of_two().max(1);
+    pub fn new(leaves: &[B256], capacity_hint: usize) -> Self {
+        let max_elements = capacity_hint.next_power_of_two().max(1);
+        debug_assert!(leaves.len() <= max_elements);
 
         let mut nodes: Box<[B256]> = vec![[0u8; 32]; 2 * max_elements].into_boxed_slice();
-        for (i, leaf) in leaves.into_iter().enumerate() {
-            nodes[max_elements + i] = leaf;
+        for (i, leaf) in leaves.iter().enumerate() {
+            nodes[max_elements + i] = *leaf;
         }
 
+        let elements_count = leaves.len();
+        let depth = max_elements.trailing_zeros() as usize;
         for node in (1..max_elements).rev() {
-            nodes[node] = hash_concat(&nodes[2 * node], &nodes[2 * node + 1]);
+            // Leaves are level 0; root (node=1) sits at level `depth`. Node n at
+            // level L covers leaves `[(n << L) - max_elements, (n+1 << L) - max_elements)`.
+            let node_level = depth - node.ilog2() as usize;
+            let subtree_first_leaf = (node << node_level) - max_elements;
+            if subtree_first_leaf >= elements_count {
+                nodes[node] = ZERO_HASHES[node_level];
+            } else {
+                nodes[node] = hash_concat(&nodes[2 * node], &nodes[2 * node + 1]);
+            }
         }
 
         Self { nodes, max_elements }
