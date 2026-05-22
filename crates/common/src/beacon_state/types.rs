@@ -175,8 +175,7 @@ impl Reset for SlotStateDelta {
         self.slot.eth1_deposit_index = other.slot.eth1_deposit_index;
         self.slot.slot = other.slot.slot;
         self.slot.latest_block_header = other.slot.latest_block_header; // TODO actual need to copy this?
-        self.slot.latest_execution_payload_header =
-            other.slot.latest_execution_payload_header; // TODO need to copy this?
+        self.slot.latest_execution_payload_header = other.slot.latest_execution_payload_header; // TODO need to copy this?
         self.slot.next_withdrawal_index = other.slot.next_withdrawal_index;
         self.slot.next_withdrawal_validator_index = other.slot.next_withdrawal_validator_index;
         self.slot.deposit_requests_start_index = other.slot.deposit_requests_start_index;
