@@ -2,6 +2,8 @@ use blst::min_pk::PublicKey;
 use flux::utils::ArrayVec;
 use rustc_hash::FxHashMap;
 
+use crate::beacon_state::buffer::Reset;
+
 pub type B256 = [u8; 32];
 pub type BLSPubkey = [u8; 48];
 pub type BLSSignature = [u8; 96];
@@ -9,6 +11,27 @@ pub type Slot = u64;
 pub type Epoch = u64;
 pub type Version = [u8; 4];
 pub type ExecutionAddress = [u8; 20];
+
+#[cfg(not(test))]
+// Physical cap on validator-indexed columnar arrays. Spec limit is
+// `VALIDATOR_REGISTRY_LIMIT = 1 << 40`; we size for real registry growth.
+// Live count crossed 2.0M during 2025; 2.75 Mi = 2,883,584 sits just below 3M
+// and gives ~600k headroom (~26%) over the current registry.
+pub const MAX_VALIDATORS: usize = 11 << 18;
+#[cfg(test)]
+// Mainnet caps ~2M validators. Tests don't need that much and parallel
+// `cargo test` would otherwise OOM (~3–4 GB per `BeaconStateTile::new_heap`
+// at full cap × N parallel test threads). EF spec test fixtures use ≤ a few
+// hundred validators each, well within the test-time cap.
+pub const MAX_VALIDATORS: usize = 64 * 1024;
+pub const VALIDATOR_REGISTRY_LIMIT: usize = 1 << 40;
+pub const SLOTS_PER_HISTORICAL_ROOT: usize = 8192;
+pub const EPOCHS_PER_HISTORICAL_VECTOR: usize = 65536;
+pub const EPOCHS_PER_SLASHINGS_VECTOR: usize = 8192;
+/// In-memory cap for the `historical_summaries` list. Mainnet grows by 1 entry
+/// per 256 epochs (~27h); 8192 covers ~25 years.
+pub const HISTORICAL_SUMMARIES_CAP: usize = 8192;
+pub const HISTORICAL_ROOTS_LIMIT: usize = 1 << 24;
 
 pub const SLOTS_PER_EPOCH: u64 = 32;
 pub const SYNC_COMMITTEE_SIZE: usize = 512;
@@ -19,22 +42,59 @@ pub const PROPOSER_LOOKAHEAD_SIZE: usize =
 pub const BYTES_PER_LOGS_BLOOM: usize = 256;
 pub const MAX_EXTRA_DATA_BYTES: usize = 32;
 
+#[derive(Default)]
 pub struct Finalised {
     pub immutable: Immutable,
     pub longtail: LongtailState,
     pub pending: PendingQueues,
     pub validators: Validators,
-    pub epoch: EpochState,
-    pub slot: SlotState,
+    pub epoch: EpochStateFinalised,
+    pub slot: SlotStateFinalised,
+}
+
+impl Finalised {
+    pub fn view(&self) -> FinalisedView<'_> {
+        FinalisedView {
+            immutable: &self.immutable,
+            validators: &self.validators,
+            epoch: &self.epoch,
+            slot: &self.slot,
+        }
+    }
+}
+
+pub struct FinalisedView<'a> {
+    pub immutable: &'a Immutable,
+    pub validators: &'a Validators,
+    pub epoch: &'a EpochStateFinalised,
+    pub slot: &'a SlotStateFinalised,
 }
 
 #[derive(Clone, Default)]
 pub struct StateDelta {
-    pub epoch_idx: Option<u32>,
-    pub longtail_idx: Option<u32>,
+    pub epoch_idx: Option<usize>,
+    pub longtail_idx: Option<usize>,
     pub pending: PendingQueuesDelta,
     pub validators: ValidatorsDelta,
-    pub slot: SlotState,
+    pub slot: SlotStateDelta,
+}
+
+impl Reset for StateDelta {
+    fn reset(&mut self) {
+        self.epoch_idx = None;
+        self.longtail_idx = None;
+        self.pending.reset();
+        self.validators.reset();
+        self.slot.reset();
+    }
+
+    fn reset_from(&mut self, other: &Self) {
+        self.epoch_idx = other.epoch_idx;
+        self.longtail_idx = other.longtail_idx;
+        self.pending.reset_from(&other.pending);
+        self.validators.reset_from(&other.validators);
+        self.slot.reset_from(&other.slot);
+    }
 }
 
 #[derive(Clone, Default)]
@@ -54,7 +114,12 @@ pub struct SlotState {
     pub earliest_exit_epoch: Epoch,
     pub consolidation_balance_to_consume: u64,
     pub earliest_consolidation_epoch: Epoch,
-    // For deltas: appended root since finalisation
+}
+
+#[derive(Clone, Default)]
+pub struct SlotStateDelta {
+    pub slot: SlotState,
+    // Appended roots since finalisation
     // For finalised: last SLOTS_PER_HISTORICAL_ROOT (8192) (circular buffer indexed by
     // `slot % HR`)
     pub block_roots: Vec<B256>,
@@ -62,19 +127,145 @@ pub struct SlotState {
 }
 
 #[derive(Clone)]
+pub struct SlotStateFinalised {
+    pub slot: SlotState,
+    // Finalised: last SLOTS_PER_HISTORICAL_ROOT (8192) (circular buffer indexed by
+    // `slot % HR`)
+    pub block_roots: Box<[B256]>,
+    pub state_roots: Box<[B256]>,
+}
+
+impl Default for SlotStateFinalised {
+    fn default() -> Self {
+        Self {
+            slot: Default::default(),
+            block_roots: vec![[0u8; 32]; SLOTS_PER_HISTORICAL_ROOT].into_boxed_slice(),
+            state_roots: vec![[0u8; 32]; SLOTS_PER_HISTORICAL_ROOT].into_boxed_slice(),
+        }
+    }
+}
+
+impl Reset for SlotStateDelta {
+    fn reset(&mut self) {
+        self.slot.randao_mix_current = B256::default();
+        self.slot.current_epoch_slashings = 0;
+        self.slot.eth1_data = Eth1Data::default();
+        self.slot.eth1_votes.clear();
+        self.slot.eth1_deposit_index = 0;
+        self.slot.slot = 0;
+        self.slot.latest_block_header = BeaconBlockHeader::default();
+        self.slot.latest_execution_payload_header = ExecutionPayloadHeader::default();
+        self.slot.next_withdrawal_index = 0;
+        self.slot.next_withdrawal_validator_index = 0;
+        self.slot.deposit_requests_start_index = 0;
+        self.slot.exit_balance_to_consume = 0;
+        self.slot.earliest_exit_epoch = 0;
+        self.slot.consolidation_balance_to_consume = 0;
+        self.slot.earliest_consolidation_epoch = 0;
+        self.block_roots.clear();
+        self.state_roots.clear();
+    }
+
+    fn reset_from(&mut self, other: &Self) {
+        self.slot.randao_mix_current = other.slot.randao_mix_current;
+        self.slot.current_epoch_slashings = other.slot.current_epoch_slashings;
+        self.slot.eth1_data = other.slot.eth1_data;
+        self.slot.eth1_votes.clear();
+        self.slot.eth1_votes.extend(other.slot.eth1_votes.iter().cloned()); // TODO need to clone these?
+        self.slot.eth1_deposit_index = other.slot.eth1_deposit_index;
+        self.slot.slot = other.slot.slot;
+        self.slot.latest_block_header = other.slot.latest_block_header; // TODO actual need to copy this?
+        self.slot.latest_execution_payload_header =
+            other.slot.latest_execution_payload_header; // TODO need to copy this?
+        self.slot.next_withdrawal_index = other.slot.next_withdrawal_index;
+        self.slot.next_withdrawal_validator_index = other.slot.next_withdrawal_validator_index;
+        self.slot.deposit_requests_start_index = other.slot.deposit_requests_start_index;
+        self.slot.exit_balance_to_consume = other.slot.exit_balance_to_consume;
+        self.slot.earliest_exit_epoch = other.slot.earliest_exit_epoch;
+        self.slot.consolidation_balance_to_consume = other.slot.consolidation_balance_to_consume;
+        self.slot.earliest_consolidation_epoch = other.slot.earliest_consolidation_epoch;
+        self.block_roots.clear();
+        self.block_roots.extend_from_slice(&other.block_roots);
+        self.state_roots.clear();
+        self.state_roots.extend_from_slice(&other.state_roots);
+    }
+}
+
+#[derive(Clone)]
 pub struct EpochState {
-    // For deltas: appended
-    // For finalised: last EPOCHS_PER_HISTORICAL_VECTOR (circular buffer indexed by `epoch % HV`)
-    pub randao_mixes: Vec<B256>,
-    // For deltas: one entry per completed epoch since finalisation
-    // For finalised: last EPOCHS_PER_SLASHINGS_VECTOR (circular buffer indexed by `epoch % SV`)
-    pub slashings: Vec<u64>,
     pub proposer_lookahead: [u64; PROPOSER_LOOKAHEAD_SIZE],
     pub justification_bits: u8,
     pub previous_justified_checkpoint: Checkpoint,
     pub current_justified_checkpoint: Checkpoint,
     pub finalized_checkpoint: Checkpoint,
     pub deposit_balance_to_consume: u64,
+}
+
+impl Default for EpochState {
+    fn default() -> Self {
+        Self {
+            proposer_lookahead: [0u64; PROPOSER_LOOKAHEAD_SIZE],
+            justification_bits: Default::default(),
+            previous_justified_checkpoint: Default::default(),
+            current_justified_checkpoint: Default::default(),
+            finalized_checkpoint: Default::default(),
+            deposit_balance_to_consume: Default::default(),
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct EpochStateDelta {
+    // For deltas: appended
+    pub randao_mixes: Vec<B256>,
+    // For deltas: one entry per completed epoch since finalisation
+    pub slashings: Vec<u64>,
+    pub state: EpochState,
+}
+
+impl Reset for EpochStateDelta {
+    fn reset(&mut self) {
+        self.randao_mixes.clear();
+        self.slashings.clear();
+        self.state.proposer_lookahead.fill(0);
+        self.state.justification_bits = 0;
+        self.state.previous_justified_checkpoint = Checkpoint::default();
+        self.state.current_justified_checkpoint = Checkpoint::default();
+        self.state.finalized_checkpoint = Checkpoint::default();
+        self.state.deposit_balance_to_consume = 0;
+    }
+
+    fn reset_from(&mut self, other: &Self) {
+        self.randao_mixes.clear();
+        self.randao_mixes.extend_from_slice(&other.randao_mixes);
+        self.slashings.clear();
+        self.slashings.extend_from_slice(&other.slashings);
+        self.state.proposer_lookahead = other.state.proposer_lookahead;
+        self.state.justification_bits = other.state.justification_bits;
+        self.state.previous_justified_checkpoint = other.state.previous_justified_checkpoint;
+        self.state.current_justified_checkpoint = other.state.current_justified_checkpoint;
+        self.state.finalized_checkpoint = other.state.finalized_checkpoint;
+        self.state.deposit_balance_to_consume = other.state.deposit_balance_to_consume;
+    }
+}
+
+#[derive(Clone)]
+pub struct EpochStateFinalised {
+    // For finalised: last EPOCHS_PER_HISTORICAL_VECTOR (circular buffer indexed by `epoch % HV`)
+    pub randao_mixes: Box<[B256]>,
+    // For finalised: last EPOCHS_PER_SLASHINGS_VECTOR (circular buffer indexed by `epoch % SV`)
+    pub slashings: Box<[u64]>,
+    pub state: EpochState,
+}
+
+impl Default for EpochStateFinalised {
+    fn default() -> Self {
+        Self {
+            randao_mixes: vec![[0u8; 32]; EPOCHS_PER_HISTORICAL_VECTOR].into_boxed_slice(),
+            slashings: vec![0; EPOCHS_PER_SLASHINGS_VECTOR].into_boxed_slice(),
+            state: Default::default(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -85,6 +276,34 @@ pub struct LongtailState {
     // For deltas: entries appended since finalisation
     // For finalised: full list
     pub historical_summaries: Vec<HistoricalSummary>,
+}
+
+impl Default for LongtailState {
+    fn default() -> Self {
+        Self {
+            current_sync_committee: Default::default(),
+            next_sync_committee: Default::default(),
+            sync_committee_indices: [0u32; SYNC_COMMITTEE_SIZE],
+            historical_summaries: Default::default(),
+        }
+    }
+}
+
+impl Reset for LongtailState {
+    fn reset(&mut self) {
+        self.current_sync_committee = SyncCommittee::default();
+        self.next_sync_committee = SyncCommittee::default();
+        self.sync_committee_indices = [0u32; SYNC_COMMITTEE_SIZE];
+        self.historical_summaries.clear();
+    }
+
+    fn reset_from(&mut self, other: &Self) {
+        self.current_sync_committee = other.current_sync_committee;
+        self.next_sync_committee = other.next_sync_committee;
+        self.sync_committee_indices = other.sync_committee_indices;
+        self.historical_summaries.clear();
+        self.historical_summaries.copy_from_slice(&other.historical_summaries);
+    }
 }
 
 #[derive(Clone, Default)]
@@ -107,24 +326,72 @@ pub struct PendingQueuesDelta {
     pub consolidations_appended: Vec<PendingConsolidation>,
 }
 
+impl Reset for PendingQueuesDelta {
+    fn reset(&mut self) {
+        self.deposits_drain_offset = 0;
+        self.deposits_appended.clear();
+        self.partial_withdrawals_drain_offset = 0;
+        self.partial_withdrawals_appended.clear();
+        self.consolidations_drain_offset = 0;
+        self.consolidations_appended.clear();
+    }
+
+    fn reset_from(&mut self, other: &Self) {
+        self.deposits_drain_offset = other.deposits_drain_offset;
+        self.deposits_appended.clear();
+        self.deposits_appended.extend_from_slice(&other.deposits_appended);
+        self.partial_withdrawals_drain_offset = other.partial_withdrawals_drain_offset;
+        self.partial_withdrawals_appended.clear();
+        self.partial_withdrawals_appended.extend_from_slice(&other.partial_withdrawals_appended);
+        self.consolidations_drain_offset = other.consolidations_drain_offset;
+        self.consolidations_appended.clear();
+        self.consolidations_appended.extend_from_slice(&other.consolidations_appended);
+    }
+}
+
+/// All slices are MAX_VALIDATORS long
 pub struct ValidatorsData {
-    pub val_pubkey: Vec<BLSPubkey>,
-    pub val_pubkey_decompressed: Vec<PublicKey>,
-    pub val_withdrawal_credentials: Vec<Withdrawals>,
-    pub balances: Vec<u64>,
-    pub current_epoch_participation: Vec<u8>,
-    pub previous_epoch_participation: Vec<u8>,
-    pub effective_balance: Vec<u64>,
-    pub activation_epoch: Vec<Epoch>,
-    pub exit_epoch: Vec<Epoch>,
-    pub activation_eligibility_epoch: Vec<Epoch>,
-    pub withdrawable_epoch: Vec<Epoch>,
-    pub inactivity_scores: Vec<u64>,
-    pub slashed: Vec<bool>,
+    pub val_pubkey: Box<[BLSPubkey]>,
+    pub val_pubkey_decompressed: Box<[PublicKey]>,
+    pub val_withdrawal_credentials: Box<[Withdrawals]>,
+    pub balances: Box<[u64]>,
+    pub current_epoch_participation: Box<[u8]>,
+    pub previous_epoch_participation: Box<[u8]>,
+    pub effective_balance: Box<[u64]>,
+    pub activation_epoch: Box<[Epoch]>,
+    pub exit_epoch: Box<[Epoch]>,
+    pub activation_eligibility_epoch: Box<[Epoch]>,
+    pub withdrawable_epoch: Box<[Epoch]>,
+    pub inactivity_scores: Box<[u64]>,
+    pub slashed: Box<[bool]>,
+}
+
+impl Default for ValidatorsData {
+    fn default() -> Self {
+        Self {
+            val_pubkey: vec![[0u8; 48]; MAX_VALIDATORS].into_boxed_slice(),
+            val_pubkey_decompressed: vec![Default::default(); MAX_VALIDATORS].into_boxed_slice(),
+            val_withdrawal_credentials: vec![Default::default(); MAX_VALIDATORS].into_boxed_slice(),
+            balances: vec![Default::default(); MAX_VALIDATORS].into_boxed_slice(),
+            current_epoch_participation: vec![Default::default(); MAX_VALIDATORS]
+                .into_boxed_slice(),
+            previous_epoch_participation: vec![Default::default(); MAX_VALIDATORS]
+                .into_boxed_slice(),
+            effective_balance: vec![Default::default(); MAX_VALIDATORS].into_boxed_slice(),
+            activation_epoch: vec![Default::default(); MAX_VALIDATORS].into_boxed_slice(),
+            exit_epoch: vec![Default::default(); MAX_VALIDATORS].into_boxed_slice(),
+            activation_eligibility_epoch: vec![Default::default(); MAX_VALIDATORS]
+                .into_boxed_slice(),
+            withdrawable_epoch: vec![Default::default(); MAX_VALIDATORS].into_boxed_slice(),
+            inactivity_scores: vec![Default::default(); MAX_VALIDATORS].into_boxed_slice(),
+            slashed: vec![Default::default(); MAX_VALIDATORS].into_boxed_slice(),
+        }
+    }
 }
 
 pub type PubkeyIndex = FxHashMap<BLSPubkey, u32>;
 
+#[derive(Default)]
 pub struct Validators {
     pub data: ValidatorsData,
     pub index: PubkeyIndex,
@@ -170,6 +437,53 @@ pub struct ValidatorsDelta {
 impl ValidatorsDelta {
     pub fn new_at(base_cnt: usize) -> Self {
         Self { base_cnt, ..Self::default() }
+    }
+}
+
+impl Reset for ValidatorsDelta {
+    fn reset(&mut self) {
+        self.base_cnt = 0;
+        self.appended.clear();
+        self.credentials_edits.clear();
+        self.balance_edits.clear();
+        self.current_participation_edits.clear();
+        self.previous_participation_edits.clear();
+        self.effective_balance_edits.clear();
+        self.activation_epoch_edits.clear();
+        self.exit_epoch_edits.clear();
+        self.activation_eligibility_epoch_edits.clear();
+        self.withdrawable_epoch_edits.clear();
+        self.slashed_edits.clear();
+        self.inactivity_score_edits.clear();
+    }
+
+    fn reset_from(&mut self, other: &Self) {
+        self.base_cnt = other.base_cnt;
+        self.appended.clear();
+        self.appended.extend_from_slice(&other.appended);
+        self.credentials_edits.clear();
+        self.credentials_edits.extend_from_slice(&other.credentials_edits);
+        self.balance_edits.clear();
+        self.balance_edits.extend_from_slice(&other.balance_edits);
+        self.current_participation_edits.clear();
+        self.current_participation_edits.extend_from_slice(&other.current_participation_edits);
+        self.previous_participation_edits.clear();
+        self.previous_participation_edits.extend_from_slice(&other.previous_participation_edits);
+        self.effective_balance_edits.clear();
+        self.effective_balance_edits.extend_from_slice(&other.effective_balance_edits);
+        self.activation_epoch_edits.clear();
+        self.activation_epoch_edits.extend_from_slice(&other.activation_epoch_edits);
+        self.exit_epoch_edits.clear();
+        self.exit_epoch_edits.extend_from_slice(&other.exit_epoch_edits);
+        self.activation_eligibility_epoch_edits.clear();
+        self.activation_eligibility_epoch_edits
+            .extend_from_slice(&other.activation_eligibility_epoch_edits);
+        self.withdrawable_epoch_edits.clear();
+        self.withdrawable_epoch_edits.extend_from_slice(&other.withdrawable_epoch_edits);
+        self.slashed_edits.clear();
+        self.slashed_edits.extend_from_slice(&other.slashed_edits);
+        self.inactivity_score_edits.clear();
+        self.inactivity_score_edits.extend_from_slice(&other.inactivity_score_edits);
     }
 }
 
@@ -281,6 +595,12 @@ pub struct HistoricalSummary {
 pub struct SyncCommittee {
     pub pubkeys: [BLSPubkey; SYNC_COMMITTEE_SIZE],
     pub aggregate_pubkey: BLSPubkey,
+}
+
+impl Default for SyncCommittee {
+    fn default() -> Self {
+        Self { pubkeys: [[0u8; 48]; SYNC_COMMITTEE_SIZE], aggregate_pubkey: [0u8; 48] }
+    }
 }
 
 #[repr(transparent)]

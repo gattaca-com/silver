@@ -1,6 +1,6 @@
 pub use crate::{
     arena::{ArenaPtr, TierPool},
-    beacon_state::types::*,
+    beacon_state::{DeltaBuffer, ViewControl, types::*},
     config::{BlobParameters, Config, DiscoveryConfig, ScoreParams, SpecConfig, SyncingConfig},
     error::Error,
     gossip::{
