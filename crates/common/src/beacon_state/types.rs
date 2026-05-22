@@ -97,7 +97,7 @@ impl Reset for StateDelta {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Copy, Default)]
 pub struct SlotState {
     pub randao_mix_current: B256,
     pub current_epoch_slashings: u64,
@@ -155,13 +155,13 @@ impl Reset for SlotStateDelta {
     fn reset_from(&mut self, other: &Self) {
         self.slot.randao_mix_current = other.slot.randao_mix_current;
         self.slot.current_epoch_slashings = other.slot.current_epoch_slashings;
-        self.slot = other.slot.clone();
+        self.slot = other.slot;
         self.block_roots.clone_from(&other.block_roots);
         self.state_roots.clone_from(&other.state_roots);
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub struct EpochState {
     pub proposer_lookahead: [u64; PROPOSER_LOOKAHEAD_SIZE],
     pub justification_bits: u8,
@@ -203,7 +203,7 @@ impl Reset for EpochStateDelta {
     fn reset_from(&mut self, other: &Self) {
         self.randao_mixes.clone_from(&other.randao_mixes);
         self.slashings.clone_from(&other.slashings);
-        self.state = other.state.clone();
+        self.state = other.state;
     }
 }
 
