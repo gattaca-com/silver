@@ -39,7 +39,7 @@ pub struct LoadedState {
 
 impl LoadedState {
     pub fn blank_pub() -> Self {
-        let fv = Box::new(FinalizedValidators::new_empty());
+        let fv = Box::new(FinalizedValidators::new(&[], &[]));
         let vs = ValidatorsState::with_empty_delta(&fv);
         Self {
             imm: box_zeroed(),

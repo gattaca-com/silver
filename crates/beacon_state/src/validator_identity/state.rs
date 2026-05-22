@@ -1,14 +1,19 @@
 use blst::min_pk::PublicKey;
 
-use super::{delta::ValidatorsDelta, finalized::FinalizedValidators, withdrawals::Withdrawals};
-use crate::types::BLSPubkey;
+use super::{
+    delta::ValidatorsDelta, finalized::FinalizedValidators, validator_hash,
+    withdrawals::Withdrawals,
+};
+use crate::{hash_tree::HashTreeState, types::BLSPubkey};
 
 /// Per-fork merged view: raw pointer to the tile-owned finalized base
-/// + owned `ValidatorsDelta`. Safety: pointee is boxed (stable address) and
-///   outlives the state; only `delta` is mutated through this struct.
+/// + owned `ValidatorsDelta` + owned per-fork hash overlay (`HashTreeState`).
+///   Safety: pointee is boxed (stable address) and outlives the state; only
+///   `delta` and `hash` are mutated through this struct.
 pub struct ValidatorsState {
     finalized: *const FinalizedValidators,
     delta: ValidatorsDelta,
+    hash: HashTreeState,
 }
 
 // Safety: pointer is to tile-owned data; the writer tile is
@@ -20,28 +25,17 @@ unsafe impl Sync for ValidatorsState {}
 
 impl Clone for ValidatorsState {
     fn clone(&self) -> Self {
-        Self { finalized: self.finalized, delta: self.delta.clone() }
-    }
-}
-
-#[cfg(test)]
-impl Default for ValidatorsState {
-    /// Null-pointer sentinel for fork-choice tests that build a
-    /// `BeaconStateRef` via `Default` and never read `validators`.
-    /// Reading pubkey/credentials/index on a defaulted state derefs null.
-    fn default() -> Self {
-        Self { finalized: std::ptr::null(), delta: ValidatorsDelta::default() }
+        Self { finalized: self.finalized, delta: self.delta.clone(), hash: self.hash.clone() }
     }
 }
 
 impl ValidatorsState {
-    pub fn new(finalized: &FinalizedValidators, delta: ValidatorsDelta) -> Self {
-        Self { finalized: finalized as *const _, delta }
-    }
-
     pub fn with_empty_delta(finalized: &FinalizedValidators) -> Self {
-        let base_cnt = finalized.validator_cnt();
-        Self::new(finalized, ValidatorsDelta::new_at(base_cnt))
+        Self {
+            finalized: finalized as *const _,
+            delta: ValidatorsDelta::new_at(finalized.validator_cnt()),
+            hash: HashTreeState::with_empty_delta(finalized.hash()),
+        }
     }
 
     #[inline]
@@ -98,21 +92,26 @@ impl ValidatorsState {
     }
 
     pub fn append(&mut self, pubkey: &BLSPubkey, credentials: &Withdrawals) -> u32 {
-        self.delta.append(pubkey, credentials)
+        let idx = self.delta.append(pubkey, credentials);
+        self.hash.set_leaf(idx as usize, validator_hash(pubkey, credentials));
+        idx
     }
 
-    pub fn set_withdrawal_credentials(&mut self, i: usize, v: Withdrawals) {
-        self.delta.set_credentials_edit(i as u32, v);
+    pub fn set_withdrawal_credentials(&mut self, i: usize, credentials: Withdrawals) {
+        self.delta.set_credentials_edit(i as u32, credentials);
+        self.hash.set_leaf(i, validator_hash(self.pubkey(i), &credentials));
     }
 
     /// Fold this fork's delta into `base`. The caller is expected to
     /// follow up with `prune_to_base` on every fork (including this one)
     /// so deltas get re-anchored to the advanced base.
     pub fn promote_into_base(&self, base: &mut FinalizedValidators) {
-        base.apply_delta(&self.delta);
+        self.delta.promote_into_base(base);
+        self.hash.promote_into_base(base.hash_mut());
     }
 
     pub fn prune_to_base(&mut self, base: &FinalizedValidators) {
         self.delta.prune_to_base(base);
+        self.hash.prune_to_base(base.hash());
     }
 }

@@ -75,7 +75,7 @@ pub fn hash_tree_root_state(
         hash_eth1_data(&sd.eth1_data, zh),
         hash_eth1_votes(sd, zh),
         uint64_chunk(sd.eth1_deposit_index),
-        hash_validators(vs, epoch, zh),
+        hash_validators(vs, epoch, zh), // TODO: change to use validator identity layer hashing
         hash_uint64_list(&sd.balances, n, VALIDATOR_REGISTRY_LIMIT, zh),
         hash_randao_mixes(epoch, sd, zh),
         hash_uint64_vector(&epoch.slashings, zh),

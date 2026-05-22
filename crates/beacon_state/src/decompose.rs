@@ -295,14 +295,12 @@ pub fn decompose_beacon_state(
     if n > MAX_VALIDATORS {
         return Err(DecomposeError::TooManyValidators { n, max: MAX_VALIDATORS });
     }
+    let mut pubkeys: Vec<BLSPubkey> = Vec::with_capacity(n);
+    let mut credentials: Vec<Withdrawals> = Vec::with_capacity(n);
     for i in 0..n {
         let v = &val_bytes[i * VALIDATOR_SSZ_SIZE..];
-        let pubkey: BLSPubkey = v[..48].try_into().unwrap();
-        let credentials = Withdrawals(b256(v, 48));
-        // `append` derives `pubkey_decompressed` internally (falls back
-        // to the zero point on malformed compressed input — sigverifies
-        // for that validator will then fail the same way).
-        fv.append(&pubkey, &credentials);
+        pubkeys.push(v[..48].try_into().unwrap());
+        credentials.push(Withdrawals(b256(v, 48)));
         epoch.val_effective_balance[i] = u64_le(v, 80);
         epoch.set_val_slashed(i, v[88] != 0);
         epoch.val_activation_eligibility_epoch[i] = u64_le(v, 89);
@@ -310,6 +308,7 @@ pub fn decompose_beacon_state(
         epoch.val_exit_epoch[i] = u64_le(v, 105);
         epoch.val_withdrawable_epoch[i] = u64_le(v, 113);
     }
+    *fv = FinalizedValidators::new(&pubkeys, &credentials);
 
     // Balances → SlotData
     let bal_bytes = &ssz[off_balances..off_prev_participation];

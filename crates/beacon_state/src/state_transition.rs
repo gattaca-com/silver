@@ -2677,7 +2677,7 @@ mod tests {
         let dd = make_dd();
         let (deposit, root) = build_deposit_at_index0(&dd, &zh);
 
-        let fv = FinalizedValidators::new_empty();
+        let fv = FinalizedValidators::new(&[], &[]);
         let mut epoch: Box<EpochData> = box_zeroed();
         let mut sd: Box<SlotData> = box_zeroed();
         let mut pq = PendingQueues::new();
@@ -2705,7 +2705,7 @@ mod tests {
         // Flip a byte in the proof.
         deposit[0] ^= 0x01;
 
-        let fv = FinalizedValidators::new_empty();
+        let fv = FinalizedValidators::new(&[], &[]);
         let mut epoch: Box<EpochData> = box_zeroed();
         let mut sd: Box<SlotData> = box_zeroed();
         let mut pq = PendingQueues::new();
@@ -2734,7 +2734,7 @@ mod tests {
         let (deposit, mut root) = build_deposit_at_index0(&dd, &zh);
         root[0] ^= 0xFF;
 
-        let fv = FinalizedValidators::new_empty();
+        let fv = FinalizedValidators::new(&[], &[]);
         let mut epoch: Box<EpochData> = box_zeroed();
         let mut sd: Box<SlotData> = box_zeroed();
         let mut pq = PendingQueues::new();
@@ -2759,7 +2759,7 @@ mod tests {
         let dd = make_dd();
         let (deposit, root) = build_deposit_at_index0(&dd, &zh);
 
-        let fv = FinalizedValidators::new_empty();
+        let fv = FinalizedValidators::new(&[], &[]);
         let mut epoch: Box<EpochData> = box_zeroed();
         let mut sd: Box<SlotData> = box_zeroed();
         let mut pq = PendingQueues::new();

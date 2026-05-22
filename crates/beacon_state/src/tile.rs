@@ -186,7 +186,7 @@ impl BeaconStateTile {
         let pending_pool: Vec<PendingQueues> =
             (0..PENDING_POOL_CAP).map(|_| PendingQueues::new()).collect();
         let last_applied = LastApplied::default();
-        let finalized_validators = Box::new(FinalizedValidators::new_empty());
+        let finalized_validators = Box::new(FinalizedValidators::new(&[], &[]));
         let last_applied_validators = ValidatorsState::with_empty_delta(&finalized_validators);
 
         // TierPool cursors start at 0; bump past slot 0 (reserved for the
@@ -1741,9 +1741,9 @@ mod tests {
     fn seed_tile(tile: &mut BeaconStateTile, n: usize, start_slot: Slot) {
         // Seed the finalised base with `n` placeholder validators;
         // tests that need real keys use `seed_tile_with_keys`.
-        for i in 0..n {
-            tile.finalized_validators.append(&placeholder_pubkey(i), &Withdrawals::ZERO);
-        }
+        let pubkeys: Vec<types::BLSPubkey> = (0..n).map(placeholder_pubkey).collect();
+        let creds = vec![Withdrawals::ZERO; n];
+        *tile.finalized_validators = FinalizedValidators::new(&pubkeys, &creds);
         seed_tile_post_append(tile, n, start_slot);
     }
 
@@ -1752,6 +1752,8 @@ mod tests {
     /// so `validate_bls_to_execution_change` will accept the corresponding
     /// `from_bls_pubkey`. Required for Accept-path tests of gossip handlers.
     fn seed_tile_with_keys(tile: &mut BeaconStateTile, n: usize, start_slot: Slot) {
+        let mut pubkeys: Vec<types::BLSPubkey> = Vec::with_capacity(n);
+        let mut creds_vec: Vec<Withdrawals> = Vec::with_capacity(n);
         for i in 0..n {
             let sk_idx = i % crate::test_signing::PRIVKEY_HEX.len();
             let pk = crate::test_signing::pubkey_pk(sk_idx);
@@ -1759,8 +1761,10 @@ mod tests {
             // BLS-prefix withdrawal creds: creds[0]=0x00, creds[1..]=hash(pk)[1..].
             let mut creds = Withdrawals(ssz_hash::sha256(&pk_bytes));
             creds.0[0] = 0x00;
-            tile.finalized_validators.append(&pk_bytes, &creds);
+            pubkeys.push(pk_bytes);
+            creds_vec.push(creds);
         }
+        *tile.finalized_validators = FinalizedValidators::new(&pubkeys, &creds_vec);
         seed_tile_post_append(tile, n, start_slot);
     }
 
@@ -1878,11 +1882,11 @@ mod tests {
         let pk: PublicKey = sk.sk_to_pk();
         let attester_pk_bytes = pk.to_bytes();
 
-        for i in 0..n {
-            let pk_bytes =
-                if i as u32 == attester { attester_pk_bytes } else { placeholder_pubkey(i) };
-            tile.finalized_validators.append(&pk_bytes, &Withdrawals::ZERO);
-        }
+        let pubkeys: Vec<types::BLSPubkey> = (0..n)
+            .map(|i| if i as u32 == attester { attester_pk_bytes } else { placeholder_pubkey(i) })
+            .collect();
+        let creds = vec![Withdrawals::ZERO; n];
+        *tile.finalized_validators = FinalizedValidators::new(&pubkeys, &creds);
         seed_tile_post_append(&mut tile, n, 0);
 
         // Find which (slot, committee_index) contains the attester.

@@ -268,7 +268,7 @@ impl Harness {
     pub fn assert_state_root(&self, post_ssz: &[u8]) {
         let zh = compute_zero_hashes();
         let mut imm: Box<Immutable> = box_zeroed();
-        let mut fv = FinalizedValidators::new_empty();
+        let mut fv = FinalizedValidators::new(&[], &[]);
         let mut longtail: Box<HistoricalLongtail> = box_zeroed();
         let mut epoch: Box<EpochData> = box_zeroed();
         let mut roots: Box<SlotRoots> = box_zeroed();

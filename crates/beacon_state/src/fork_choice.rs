@@ -341,7 +341,10 @@ fn offset_idx(idx: usize, offset: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::box_zeroed;
+    use crate::{
+        types::box_zeroed,
+        validator_identity::{FinalizedValidators, ValidatorsState},
+    };
 
     fn root(b: u8) -> B256 {
         let mut r = [0u8; 32];
@@ -353,37 +356,60 @@ mod tests {
         Checkpoint { epoch, root: root(b) }
     }
 
-    fn blk(
-        slot: Slot,
-        block_root: B256,
-        parent_root: B256,
-        jus: Checkpoint,
-        fin: Checkpoint,
-    ) -> BlockImport {
-        BlockImport {
-            slot,
-            block_root,
-            parent_root,
-            state_root: block_root,
-            execution_block_hash: [0u8; 32],
-            justified: jus,
-            finalized: fin,
-            state_ref: BeaconStateRef::default(),
-        }
+    struct BlockGen {
+        fv: FinalizedValidators,
     }
 
-    fn default_sref() -> BeaconStateRef {
-        BeaconStateRef::default()
+    impl BlockGen {
+        fn new() -> Self {
+            Self { fv: FinalizedValidators::new(&[], &[]) }
+        }
+
+        fn state_ref(&self) -> BeaconStateRef {
+            BeaconStateRef {
+                imm_idx: 0,
+                longtail_idx: 0,
+                epoch_idx: 0,
+                epoch_gen: 0,
+                roots_idx: 0,
+                roots_gen: 0,
+                slot_idx: 0,
+                slot_gen: 0,
+                pending_idx: 0,
+                validators: ValidatorsState::with_empty_delta(&self.fv),
+            }
+        }
+
+        fn blk(
+            &self,
+            slot: Slot,
+            block_root: B256,
+            parent_root: B256,
+            jus: Checkpoint,
+            fin: Checkpoint,
+        ) -> BlockImport {
+            BlockImport {
+                slot,
+                block_root,
+                parent_root,
+                state_root: block_root,
+                execution_block_hash: [0u8; 32],
+                justified: jus,
+                finalized: fin,
+                state_ref: self.state_ref(),
+            }
+        }
     }
 
     #[test]
     fn single_chain_head() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), default_sref());
+        let bg = BlockGen::new();
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), bg.state_ref());
 
-        fc.on_block(blk(1, root(2), root(1), jus, fin));
-        fc.on_block(blk(2, root(3), root(2), jus, fin));
+        fc.on_block(bg.blk(1, root(2), root(1), jus, fin));
+        fc.on_block(bg.blk(2, root(3), root(2), jus, fin));
 
         assert_eq!(fc.find_head(), root(3));
     }
@@ -392,10 +418,11 @@ mod tests {
     fn fork_heavier_wins() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), default_sref());
+        let bg = BlockGen::new();
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), bg.state_ref());
 
-        fc.on_block(blk(1, root(2), root(1), jus, fin));
-        fc.on_block(blk(1, root(3), root(1), jus, fin));
+        fc.on_block(bg.blk(1, root(2), root(1), jus, fin));
+        fc.on_block(bg.blk(1, root(3), root(1), jus, fin));
 
         let mut deltas = [0i64; MAX_FORK_CHOICE_NODES];
         deltas[2] = 100; // root(3) is node index 2
@@ -411,11 +438,12 @@ mod tests {
         // sibling loses weight.
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), default_sref());
+        let bg = BlockGen::new();
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), bg.state_ref());
 
         // root(1) → root(2) [idx 1] and root(3) [idx 2]
-        fc.on_block(blk(1, root(2), root(1), jus, fin));
-        fc.on_block(blk(1, root(3), root(1), jus, fin));
+        fc.on_block(bg.blk(1, root(2), root(1), jus, fin));
+        fc.on_block(bg.blk(1, root(3), root(1), jus, fin));
 
         // Give root(2) initial weight.
         let mut deltas = [0i64; MAX_FORK_CHOICE_NODES];
@@ -435,10 +463,11 @@ mod tests {
     fn prune_below_finalized() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), default_sref());
+        let bg = BlockGen::new();
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), bg.state_ref());
 
-        fc.on_block(blk(1, root(2), root(1), jus, fin));
-        fc.on_block(blk(2, root(3), root(2), jus, fin));
+        fc.on_block(bg.blk(1, root(2), root(1), jus, fin));
+        fc.on_block(bg.blk(2, root(3), root(2), jus, fin));
         assert_eq!(fc.nodes.len(), 3);
 
         fc.finalized_checkpoint = cp(1, 2);
@@ -455,8 +484,9 @@ mod tests {
     fn deltas_moving_votes() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), default_sref());
-        fc.on_block(blk(1, root(2), root(1), jus, fin));
+        let bg = BlockGen::new();
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), bg.state_ref());
+        fc.on_block(bg.blk(1, root(2), root(1), jus, fin));
 
         let mut votes: Box<[Vote; MAX_VALIDATORS]> = box_zeroed();
         let mut balances: Box<[u64; MAX_VALIDATORS]> = box_zeroed();
@@ -483,10 +513,11 @@ mod tests {
         // Each validator votes for a different block.
         let fin = cp(0, 100);
         let jus = cp(0, 100);
-        let mut fc = ForkChoice::init(fin, jus, 0, root(100), root(100), default_sref());
+        let bg = BlockGen::new();
+        let mut fc = ForkChoice::init(fin, jus, 0, root(100), root(100), bg.state_ref());
 
         for i in 1..=16u8 {
-            fc.on_block(blk(i as u64, root(i), root(100), jus, fin));
+            fc.on_block(bg.blk(i as u64, root(i), root(100), jus, fin));
         }
 
         let mut votes: Box<[Vote; MAX_VALIDATORS]> = box_zeroed();
@@ -510,7 +541,8 @@ mod tests {
     fn deltas_move_out_of_tree() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let fc = ForkChoice::init(fin, jus, 0, root(1), root(1), default_sref());
+        let bg = BlockGen::new();
+        let fc = ForkChoice::init(fin, jus, 0, root(1), root(1), bg.state_ref());
 
         let mut votes: Box<[Vote; MAX_VALIDATORS]> = box_zeroed();
         let mut balances: Box<[u64; MAX_VALIDATORS]> = box_zeroed();
@@ -533,8 +565,9 @@ mod tests {
     fn deltas_changing_balances() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), default_sref());
-        fc.on_block(blk(1, root(2), root(1), jus, fin));
+        let bg = BlockGen::new();
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), bg.state_ref());
+        fc.on_block(bg.blk(1, root(2), root(1), jus, fin));
 
         let mut votes: Box<[Vote; MAX_VALIDATORS]> = box_zeroed();
         let mut old_bal: Box<[u64; MAX_VALIDATORS]> = box_zeroed();
@@ -559,7 +592,8 @@ mod tests {
         // Balances change but votes don't — still need deltas.
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let fc = ForkChoice::init(fin, jus, 0, root(1), root(1), default_sref());
+        let bg = BlockGen::new();
+        let fc = ForkChoice::init(fin, jus, 0, root(1), root(1), bg.state_ref());
 
         let mut votes: Box<[Vote; MAX_VALIDATORS]> = box_zeroed();
         let mut old_bal: Box<[u64; MAX_VALIDATORS]> = box_zeroed();
@@ -581,11 +615,12 @@ mod tests {
     fn split_tie_breaker_no_attestations() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), default_sref());
+        let bg = BlockGen::new();
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), bg.state_ref());
 
         // Two blocks at slot 1 forking from genesis. root(2) < root(3).
-        fc.on_block(blk(1, root(2), root(1), jus, fin));
-        fc.on_block(blk(1, root(3), root(1), jus, fin));
+        fc.on_block(bg.blk(1, root(2), root(1), jus, fin));
+        fc.on_block(bg.blk(1, root(3), root(1), jus, fin));
 
         // No weight applied → both have weight 0. Higher root wins.
         assert_eq!(fc.find_head(), root(3));
@@ -596,15 +631,16 @@ mod tests {
     fn shorter_chain_but_heavier_weight() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), default_sref());
+        let bg = BlockGen::new();
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), bg.state_ref());
 
         // Long chain: root(1) → root(2) → root(3) → root(4).
-        fc.on_block(blk(1, root(2), root(1), jus, fin));
-        fc.on_block(blk(2, root(3), root(2), jus, fin));
-        fc.on_block(blk(3, root(4), root(3), jus, fin));
+        fc.on_block(bg.blk(1, root(2), root(1), jus, fin));
+        fc.on_block(bg.blk(2, root(3), root(2), jus, fin));
+        fc.on_block(bg.blk(3, root(4), root(3), jus, fin));
 
         // Short chain: root(1) → root(5).
-        fc.on_block(blk(1, root(5), root(1), jus, fin));
+        fc.on_block(bg.blk(1, root(5), root(1), jus, fin));
 
         // Without weight, long chain wins (deeper best_descendant, higher root
         // tiebreak). Give root(5) more weight to flip.
@@ -620,12 +656,13 @@ mod tests {
     fn on_block_duplicate() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), default_sref());
+        let bg = BlockGen::new();
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), bg.state_ref());
 
-        fc.on_block(blk(1, root(2), root(1), jus, fin));
+        fc.on_block(bg.blk(1, root(2), root(1), jus, fin));
         assert_eq!(fc.nodes.len(), 2);
 
-        fc.on_block(blk(1, root(2), root(1), jus, fin));
+        fc.on_block(bg.blk(1, root(2), root(1), jus, fin));
         assert_eq!(fc.nodes.len(), 2); // no change
     }
 
@@ -634,10 +671,11 @@ mod tests {
     fn on_block_unknown_parent() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), default_sref());
+        let bg = BlockGen::new();
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), bg.state_ref());
 
         // root(99) is not known.
-        fc.on_block(blk(1, root(2), root(99), jus, fin));
+        fc.on_block(bg.blk(1, root(2), root(99), jus, fin));
         assert_eq!(fc.nodes.len(), 2);
         assert_eq!(fc.nodes[1].parent, NULL);
     }

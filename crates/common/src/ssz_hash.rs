@@ -129,14 +129,23 @@ pub fn merkle_finalize(mut stack: MerkleStack, target_depth: u8, zh: &[B256]) ->
     cur
 }
 
-/// zh[0] = ZERO_HASH; zh[i+1] = hash(zh[i] || zh[i]). Precompute once; pass
-/// as a slice into the hash functions.
-pub fn compute_zero_hashes() -> [B256; ZERO_HASHES_LEN] {
+pub const ZERO_HASHES: [B256; ZERO_HASHES_LEN] = {
     let mut zh = [ZERO_HASH; ZERO_HASHES_LEN];
-    for i in 1..ZERO_HASHES_LEN {
-        zh[i] = hash_concat(&zh[i - 1], &zh[i - 1]);
+    let mut i = 1;
+    while i < ZERO_HASHES_LEN {
+        zh[i] = const_hash_concat(&zh[i - 1], &zh[i - 1]);
+        i += 1;
     }
     zh
+};
+
+const fn const_hash_concat(a: &B256, b: &B256) -> B256 {
+    sha2_const_stable::Sha256::new().update(a).update(b).finalize()
+}
+
+#[inline]
+pub fn compute_zero_hashes() -> [B256; ZERO_HASHES_LEN] {
+    ZERO_HASHES
 }
 
 /// Push raw bytes packed as 32-byte chunks (tail zero-padded). The aligned

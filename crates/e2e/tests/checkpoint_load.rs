@@ -67,7 +67,7 @@ fn finalized_state_loads() {
     // hash; verify that didn't happen.
     let zh = compute_zero_hashes();
     let mut imm: Box<Immutable> = box_zeroed();
-    let mut validators: Box<FinalizedValidators> = Box::new(FinalizedValidators::new_empty());
+    let mut validators: Box<FinalizedValidators> = Box::new(FinalizedValidators::new(&[], &[]));
     let mut longtail: Box<HistoricalLongtail> = box_zeroed();
     let mut epoch: Box<EpochData> = box_zeroed();
     let mut roots: Box<SlotRoots> = box_zeroed();

@@ -1,56 +1,68 @@
 use blst::min_pk::PublicKey;
 use rustc_hash::FxHashMap;
 
-use super::{delta::ValidatorsDelta, withdrawals::Withdrawals};
-use crate::types::{BLSPubkey, MAX_VALIDATORS, ValidatorsData, box_zeroed};
+use super::{validator_hash, withdrawals::Withdrawals};
+use crate::{
+    hash_tree::FinalizedHashTree,
+    types::{BLSPubkey, MAX_VALIDATORS, ValidatorsData, box_zeroed},
+};
 
 pub type PubkeyIndex = FxHashMap<BLSPubkey, u32>;
 
-/// Canonical finalized validator registry: boxed `ValidatorsData` +
-/// inline `PubkeyIndex`. Per-fork mutations live in `ValidatorsDelta`
-/// overlaid via `ValidatorsState`.
 pub struct FinalizedValidators {
     data: Box<ValidatorsData>,
     index: PubkeyIndex,
+    hash: FinalizedHashTree,
+}
+
+impl ValidatorsData {
+    fn append(&mut self, pubkey: &BLSPubkey, credentials: &Withdrawals) -> u32 {
+        let idx = self.validator_cnt;
+        self.val_pubkey[idx] = *pubkey;
+        self.val_pubkey_decompressed[idx] = PublicKey::from_bytes(pubkey).unwrap_or_default();
+        self.val_withdrawal_credentials[idx] = *credentials;
+        self.validator_cnt = idx + 1;
+        idx as u32
+    }
 }
 
 impl FinalizedValidators {
-    pub fn new_empty() -> Self {
-        Self {
-            data: box_zeroed(),
-            index: PubkeyIndex::with_capacity_and_hasher(MAX_VALIDATORS, Default::default()),
+    pub fn new(pubkeys: &[BLSPubkey], credentials: &[Withdrawals]) -> Self {
+        debug_assert_eq!(pubkeys.len(), credentials.len());
+        debug_assert!(pubkeys.len() <= MAX_VALIDATORS);
+
+        let mut data: Box<ValidatorsData> = box_zeroed();
+        let mut index = PubkeyIndex::with_capacity_and_hasher(MAX_VALIDATORS, Default::default());
+        let mut leaf_hashes = vec![[0u8; 32]; MAX_VALIDATORS];
+
+        for (pubkey, creds) in pubkeys.iter().zip(credentials.iter()) {
+            let idx = data.append(pubkey, creds);
+            index.insert(*pubkey, idx);
+            leaf_hashes[idx as usize] = validator_hash(pubkey, creds);
         }
+
+        Self { data, index, hash: FinalizedHashTree::new(leaf_hashes) }
     }
 
-    pub fn append(&mut self, pubkey: &BLSPubkey, credentials: &Withdrawals) -> u32 {
-        let idx = self.data.validator_cnt;
-
-        self.data.val_pubkey[idx] = *pubkey;
-        self.data.val_pubkey_decompressed[idx] = PublicKey::from_bytes(pubkey).unwrap_or_default();
-        self.data.val_withdrawal_credentials[idx] = *credentials;
-
-        self.data.validator_cnt = idx + 1;
-        self.index.insert(*pubkey, idx as u32);
-
-        idx as u32
+    #[inline]
+    pub fn hash(&self) -> &FinalizedHashTree {
+        &self.hash
     }
 
-    /// Fold a finalized fork's `delta` into the base. Appended entries
-    /// land at `validator_cnt..`; invariant `validator_cnt ==
-    /// delta.base_cnt` is upheld by callers (`ForkChoice::finalize_node`).
-    pub fn apply_delta(&mut self, delta: &ValidatorsDelta) {
-        debug_assert_eq!(
-            self.data.validator_cnt, delta.base_cnt,
-            "apply_delta: delta.base_cnt must match the current base count",
-        );
+    #[inline]
+    pub fn hash_mut(&mut self) -> &mut FinalizedHashTree {
+        &mut self.hash
+    }
 
-        for a in &delta.appended {
-            self.append(&a.pubkey, &a.credentials);
-        }
+    pub(super) fn append(&mut self, pubkey: &BLSPubkey, credentials: &Withdrawals) -> u32 {
+        let idx = self.data.append(pubkey, credentials);
+        self.index.insert(*pubkey, idx);
+        idx
+    }
 
-        for &(idx, v) in &delta.credentials_edits {
-            self.data.val_withdrawal_credentials[idx as usize] = v;
-        }
+    #[inline]
+    pub(super) fn set_withdrawal_credentials_at(&mut self, idx: usize, credentials: Withdrawals) {
+        self.data.val_withdrawal_credentials[idx] = credentials;
     }
 
     #[inline]
