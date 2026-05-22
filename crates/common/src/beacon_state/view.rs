@@ -27,6 +27,10 @@ impl BeaconStateOwner {
         Self { state: box_state, state_ptr, inner: Arc::new(Seqlock::new(ControlInner::default())) }
     }
 
+    pub fn state(&self) -> &BeaconState {
+        &self.state
+    }
+
     pub fn longtails(&mut self) -> &mut DeltaBuffer<LongtailState, 2> {
         &mut self.state.longtails
     }
