@@ -20,7 +20,8 @@ impl FinalizedValidators {
         Self {
             data: box_zeroed(),
             index: PubkeyIndex::with_capacity_and_hasher(MAX_VALIDATORS, Default::default()),
-            // TODO: change functions so the whole data will be provided in constructor instead of rebuild_hash
+            // TODO: change functions so the whole data will be provided in constructor instead of
+            // rebuild_hash
             hash: FinalizedHashTree::new(Vec::new()),
         }
     }
@@ -39,10 +40,8 @@ impl FinalizedValidators {
     pub fn rebuild_hash(&mut self) {
         let mut leaves = vec![[0u8; 32]; MAX_VALIDATORS];
         for i in 0..self.data.validator_cnt {
-            leaves[i] = validator_hash(
-                &self.data.val_pubkey[i],
-                &self.data.val_withdrawal_credentials[i],
-            );
+            leaves[i] =
+                validator_hash(&self.data.val_pubkey[i], &self.data.val_withdrawal_credentials[i]);
         }
         self.hash = FinalizedHashTree::new(leaves);
     }

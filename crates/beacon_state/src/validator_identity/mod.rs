@@ -6,10 +6,9 @@ mod withdrawals;
 #[cfg(test)]
 mod tests;
 
-use silver_common::ssz_hash::{ZERO_HASHES, hash_fixed_bytes, merkleize};
-
 pub use delta::{AppendedValidator, ValidatorsDelta};
 pub use finalized::{FinalizedValidators, PubkeyIndex};
+use silver_common::ssz_hash::{ZERO_HASHES, hash_fixed_bytes, merkleize};
 pub use state::ValidatorsState;
 pub use withdrawals::Withdrawals;
 

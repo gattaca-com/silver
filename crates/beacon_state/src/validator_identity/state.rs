@@ -1,7 +1,8 @@
 use blst::min_pk::PublicKey;
 
 use super::{
-    delta::ValidatorsDelta, finalized::FinalizedValidators, validator_hash, withdrawals::Withdrawals,
+    delta::ValidatorsDelta, finalized::FinalizedValidators, validator_hash,
+    withdrawals::Withdrawals,
 };
 use crate::{hash_tree::HashTreeState, types::BLSPubkey};
 
