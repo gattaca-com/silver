@@ -183,10 +183,8 @@ impl Reset for SlotStateDelta {
         self.slot.earliest_exit_epoch = other.slot.earliest_exit_epoch;
         self.slot.consolidation_balance_to_consume = other.slot.consolidation_balance_to_consume;
         self.slot.earliest_consolidation_epoch = other.slot.earliest_consolidation_epoch;
-        self.block_roots.clear();
-        self.block_roots.extend_from_slice(&other.block_roots);
-        self.state_roots.clear();
-        self.state_roots.extend_from_slice(&other.state_roots);
+        self.block_roots.clone_from(&other.block_roots);
+        self.state_roots.clone_from(&other.state_roots);
     }
 }
 
@@ -230,10 +228,8 @@ impl Reset for EpochStateDelta {
     }
 
     fn reset_from(&mut self, other: &Self) {
-        self.randao_mixes.clear();
-        self.randao_mixes.extend_from_slice(&other.randao_mixes);
-        self.slashings.clear();
-        self.slashings.extend_from_slice(&other.slashings);
+        self.randao_mixes.clone_from(&other.randao_mixes);
+        self.slashings.clone_from(&other.slashings);
         self.state = other.state.clone();
     }
 }
@@ -290,8 +286,7 @@ impl Reset for LongtailState {
         self.current_sync_committee = other.current_sync_committee;
         self.next_sync_committee = other.next_sync_committee;
         self.sync_committee_indices = other.sync_committee_indices;
-        self.historical_summaries.clear();
-        self.historical_summaries.copy_from_slice(&other.historical_summaries);
+        self.historical_summaries.clone_from(&other.historical_summaries);
     }
 }
 
@@ -327,14 +322,11 @@ impl Reset for PendingQueuesDelta {
 
     fn reset_from(&mut self, other: &Self) {
         self.deposits_drain_offset = other.deposits_drain_offset;
-        self.deposits_appended.clear();
-        self.deposits_appended.extend_from_slice(&other.deposits_appended);
+        self.deposits_appended.clone_from(&other.deposits_appended);
         self.partial_withdrawals_drain_offset = other.partial_withdrawals_drain_offset;
-        self.partial_withdrawals_appended.clear();
-        self.partial_withdrawals_appended.extend_from_slice(&other.partial_withdrawals_appended);
+        self.partial_withdrawals_appended.clone_from(&other.partial_withdrawals_appended);
         self.consolidations_drain_offset = other.consolidations_drain_offset;
-        self.consolidations_appended.clear();
-        self.consolidations_appended.extend_from_slice(&other.consolidations_appended);
+        self.consolidations_appended.clone_from(&other.consolidations_appended);
     }
 }
 
@@ -450,31 +442,19 @@ impl Reset for ValidatorsDelta {
 
     fn reset_from(&mut self, other: &Self) {
         self.base_cnt = other.base_cnt;
-        self.appended.clear();
-        self.appended.extend_from_slice(&other.appended);
-        self.credentials_edits.clear();
-        self.credentials_edits.extend_from_slice(&other.credentials_edits);
-        self.balance_edits.clear();
-        self.balance_edits.extend_from_slice(&other.balance_edits);
-        self.current_participation_edits.clear();
-        self.current_participation_edits.extend_from_slice(&other.current_participation_edits);
-        self.previous_participation_edits.clear();
-        self.previous_participation_edits.extend_from_slice(&other.previous_participation_edits);
-        self.effective_balance_edits.clear();
-        self.effective_balance_edits.extend_from_slice(&other.effective_balance_edits);
-        self.activation_epoch_edits.clear();
-        self.activation_epoch_edits.extend_from_slice(&other.activation_epoch_edits);
-        self.exit_epoch_edits.clear();
-        self.exit_epoch_edits.extend_from_slice(&other.exit_epoch_edits);
-        self.activation_eligibility_epoch_edits.clear();
+        self.appended.clone_from(&other.appended);
+        self.credentials_edits.clone_from(&other.credentials_edits);
+        self.balance_edits.clone_from(&other.balance_edits);
+        self.current_participation_edits.clone_from(&other.current_participation_edits);
+        self.previous_participation_edits.clone_from(&other.previous_participation_edits);
+        self.effective_balance_edits.clone_from(&other.effective_balance_edits);
+        self.activation_epoch_edits.clone_from(&other.activation_epoch_edits);
+        self.exit_epoch_edits.clone_from(&other.exit_epoch_edits);
         self.activation_eligibility_epoch_edits
-            .extend_from_slice(&other.activation_eligibility_epoch_edits);
-        self.withdrawable_epoch_edits.clear();
-        self.withdrawable_epoch_edits.extend_from_slice(&other.withdrawable_epoch_edits);
-        self.slashed_edits.clear();
-        self.slashed_edits.extend_from_slice(&other.slashed_edits);
-        self.inactivity_score_edits.clear();
-        self.inactivity_score_edits.extend_from_slice(&other.inactivity_score_edits);
+            .clone_from(&other.activation_eligibility_epoch_edits);
+        self.withdrawable_epoch_edits.clone_from(&other.withdrawable_epoch_edits);
+        self.slashed_edits.clone_from(&other.slashed_edits);
+        self.inactivity_score_edits.clone_from(&other.inactivity_score_edits);
     }
 }
 
