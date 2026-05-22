@@ -226,12 +226,7 @@ impl Reset for EpochStateDelta {
     fn reset(&mut self) {
         self.randao_mixes.clear();
         self.slashings.clear();
-        self.state.proposer_lookahead.fill(0);
-        self.state.justification_bits = 0;
-        self.state.previous_justified_checkpoint = Checkpoint::default();
-        self.state.current_justified_checkpoint = Checkpoint::default();
-        self.state.finalized_checkpoint = Checkpoint::default();
-        self.state.deposit_balance_to_consume = 0;
+        self.state = Default::default();
     }
 
     fn reset_from(&mut self, other: &Self) {
@@ -239,12 +234,7 @@ impl Reset for EpochStateDelta {
         self.randao_mixes.extend_from_slice(&other.randao_mixes);
         self.slashings.clear();
         self.slashings.extend_from_slice(&other.slashings);
-        self.state.proposer_lookahead = other.state.proposer_lookahead;
-        self.state.justification_bits = other.state.justification_bits;
-        self.state.previous_justified_checkpoint = other.state.previous_justified_checkpoint;
-        self.state.current_justified_checkpoint = other.state.current_justified_checkpoint;
-        self.state.finalized_checkpoint = other.state.finalized_checkpoint;
-        self.state.deposit_balance_to_consume = other.state.deposit_balance_to_consume;
+        self.state = other.state.clone();
     }
 }
 
