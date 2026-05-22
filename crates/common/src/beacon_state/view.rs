@@ -1,31 +1,29 @@
-use std::sync::{self, atomic::Ordering};
+use std::sync::{self, Arc, atomic::Ordering};
 
 use flux::communication::Seqlock;
 
 use crate::{EpochStateDelta, FinalisedView, StateDelta, beacon_state::BeaconState};
 
-pub struct ViewControl {
+/// Beacon state writer control.
+/// Single writer.
+pub struct BeaconStateOwner {
     state_ptr: *const BeaconState,
-    inner: Seqlock<ControlInner>,
+    inner: Arc<Seqlock<ControlInner>>,
 }
 
-// SAFETY: `state_ptr` aliases the `BeaconState` heap allocation owned by the
-// writer thread. The writer must keep that allocation live for the lifetime
-// of every `ViewControl` clone, and mutate the state only through the
-// publish-offsets / write-guard protocol below. With those invariants, the
-// pointer is safe to share and to dereference from any thread.
-unsafe impl Send for ViewControl {}
-unsafe impl Sync for ViewControl {}
-
-impl ViewControl {
-    pub fn new(state_ptr: *const BeaconState) -> Self {
-        Self { state_ptr, inner: Seqlock::new(ControlInner::default()) }
+impl BeaconStateOwner {
+    pub fn new(state: BeaconState) -> (Self, Box<BeaconState>) {
+        let mut box_state = Box::new(state);
+        let state_mut_ptr = Box::into_raw(box_state);
+        let state_ptr = state_mut_ptr as *const BeaconState;
+        box_state = unsafe { Box::from_raw(state_mut_ptr) };
+        (Self { state_ptr, inner: Arc::new(Seqlock::new(ControlInner::default())) }, box_state)
     }
 
     /// Called by the state owner to publish new delta buffer offsets - should
     /// only be published once the corresponding buffer slot will no longer
     /// be mutated.
-    pub fn publish_offsets(&self, epochs: Option<usize>, slots: Option<usize>) {
+    pub fn publish_offsets(&mut self, epochs: Option<usize>, slots: Option<usize>) {
         let (mut inner, version) = self.inner.read_copy().expect("should never be empty");
         if inner.version & 1 == 1 {
             panic!("attempting to update offsets while a state write is in progress");
@@ -40,7 +38,7 @@ impl ViewControl {
     }
 
     /// Should be called when finalized state is being updated.
-    pub fn write(&self) -> WriteGuard<'_> {
+    pub fn write(&mut self) -> WriteGuard<'_> {
         let (mut value, version) =
             self.inner.read_copy().expect("control inner should nbever be empty");
 
@@ -54,6 +52,25 @@ impl ViewControl {
         WriteGuard { value, version: self.inner.version(), inner: &self.inner }
     }
 
+    pub fn reader(&mut self) -> BeaconStateReader {
+        BeaconStateReader { state_ptr: self.state_ptr, inner: self.inner.clone() }
+    }
+}
+
+pub struct BeaconStateReader {
+    state_ptr: *const BeaconState,
+    inner: Arc<Seqlock<ControlInner>>,
+}
+
+// SAFETY: `state_ptr` aliases the `BeaconState` heap allocation owned by the
+// writer thread. The writer must keep that allocation live for the lifetime
+// of every `ViewControl` clone, and mutate the state only through the
+// publish-offsets / write-guard protocol below. With those invariants, the
+// pointer is safe to share and to dereference from any thread.
+unsafe impl Send for BeaconStateReader {}
+unsafe impl Sync for BeaconStateReader {}
+
+impl BeaconStateReader {
     /// Performs optimistic reads from the beacon state, this will loop if the
     /// finalised state is updated during a read.
     pub fn read<F, R>(&self, reader: &F) -> R

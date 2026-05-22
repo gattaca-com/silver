@@ -350,6 +350,7 @@ impl Reset for PendingQueuesDelta {
 
 /// All slices are MAX_VALIDATORS long
 pub struct ValidatorsData {
+    pub validator_count: usize,
     pub val_pubkey: Box<[BLSPubkey]>,
     pub val_pubkey_decompressed: Box<[PublicKey]>,
     pub val_withdrawal_credentials: Box<[Withdrawals]>,
@@ -368,6 +369,7 @@ pub struct ValidatorsData {
 impl Default for ValidatorsData {
     fn default() -> Self {
         Self {
+            validator_count: 0,
             val_pubkey: vec![[0u8; 48]; MAX_VALIDATORS].into_boxed_slice(),
             val_pubkey_decompressed: vec![Default::default(); MAX_VALIDATORS].into_boxed_slice(),
             val_withdrawal_credentials: vec![Default::default(); MAX_VALIDATORS].into_boxed_slice(),

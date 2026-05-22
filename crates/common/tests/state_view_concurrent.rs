@@ -9,7 +9,7 @@ use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
-use silver_common::{B256, BeaconState};
+use silver_common::{B256, BeaconState, BeaconStateOwner};
 
 // Strictly below the slots `DeltaBuffer` capacity (256). The publish-offset
 // protocol does NOT guard against wrap-around: rolling past N would
@@ -24,7 +24,7 @@ fn slot_tag(slot: u64) -> B256 {
 
 #[test]
 fn concurrent_reads_observe_consistent_state() {
-    let (mut state, control) = BeaconState::new();
+    let (mut control, mut state) = BeaconStateOwner::new(BeaconState::default());
 
     let done = Arc::new(AtomicBool::new(false));
     let reads = Arc::new(AtomicUsize::new(0));
@@ -33,7 +33,7 @@ fn concurrent_reads_observe_consistent_state() {
     let saw_finalised_advance = Arc::new(AtomicBool::new(false));
 
     let reader = {
-        let r_control = Arc::clone(&control);
+        let r_control = control.reader();
         let r_done = Arc::clone(&done);
         let r_reads = Arc::clone(&reads);
         let r_bad = Arc::clone(&bad);
