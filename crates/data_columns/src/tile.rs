@@ -3,8 +3,9 @@ use std::time::{Duration, Instant};
 use flux::{spine::SpineAdapter, tile::Tile, tracing};
 use fxhash::FxHashMap;
 use silver_common::{
-    BeaconStateEvent, DataColumnsAvailable, NewGossipMsg, P2pStreamId, PeerEvent, RpcInbound,
-    RpcSeverity, SilverSpine, TMultiProducer, TRandomAccess, TRead, Wheel,
+    B256, BeaconStateEvent, BeaconStateReader, DataColumnsAvailable, NewGossipMsg, P2pStreamId,
+    PeerEvent, RpcInbound, RpcSeverity, SLOTS_PER_EPOCH, SilverSpine, TMultiProducer,
+    TRandomAccess, TRead, Wheel,
     ssz_view::{DataColumnSidecarView, StatusView},
 };
 
@@ -26,6 +27,7 @@ pub struct DataColumnTile {
     gossip_consumer: TRandomAccess,
     rpc_consumer: TRandomAccess,
     rpc_producer: TMultiProducer,
+    beacon_state: BeaconStateReader,
     store: Store,
     fork_digest: [u8; 4], // fork digest
 
@@ -41,6 +43,7 @@ impl DataColumnTile {
         gossip_consumer: TRandomAccess,
         rpc_consumer: TRandomAccess,
         rpc_producer: TMultiProducer,
+        beacon_state: BeaconStateReader,
         custody_group_columns: u128,
         fork_digest: [u8; 4],
         data_store_dir: String,
@@ -51,6 +54,7 @@ impl DataColumnTile {
             gossip_consumer,
             rpc_consumer,
             rpc_producer,
+            beacon_state,
             store: Store::load(data_store_dir).expect("failed to load data columns store"),
             fork_digest,
             validated_columns: FxHashMap::default(),
@@ -136,6 +140,75 @@ impl DataColumnTile {
         }
         if !util::verify_data_column_sidecar_kzg_proofs(buffer) {
             tracing::warn!(?stream_id, "failed to verify sidecar kzg proof");
+            return Some((block_root, column_bitmask));
+        }
+
+        // State-driven validations: pull every input in one seqlock pass.
+        // BLS verify runs OUTSIDE the closure (slow; would hold the
+        // notional read lock too long otherwise).
+        let block_slot = DataColumnSidecarView::slot(buffer);
+        let claimed_proposer_index = DataColumnSidecarView::proposer_index(buffer);
+        let checks = self.beacon_state.read(&|f, slot_d, epoch_d| {
+            let epoch_state = epoch_d.map_or(&f.epoch.state, |e| &e.state);
+            let state_slot = slot_d.map_or(f.slot.slot.slot, |d| d.slot.slot.slot);
+            let state_epoch = state_slot / SLOTS_PER_EPOCH;
+
+            // proposer_lookahead is anchored to `state_epoch` and covers
+            // current+next epochs (PROPOSER_LOOKAHEAD_SIZE = 64). Slots
+            // outside that window we cannot resolve here.
+            let lookahead_idx = block_slot.wrapping_sub(state_epoch * SLOTS_PER_EPOCH) as usize;
+            let expected_proposer = epoch_state.proposer_lookahead.get(lookahead_idx).copied();
+            let proposer_matches = expected_proposer == Some(claimed_proposer_index);
+
+            // pubkey lookup: indices < base_cnt are in the finalised registry;
+            // the rest are in the slot delta's appended slice.
+            let idx = claimed_proposer_index as usize;
+            let pubkey = if let Some(d) = slot_d {
+                if idx < d.validators.base_cnt {
+                    f.validators.data.val_pubkey_decompressed.get(idx).copied()
+                } else {
+                    d.validators
+                        .appended
+                        .get(idx - d.validators.base_cnt)
+                        .map(|v| v.pubkey_decompressed)
+                }
+            } else {
+                f.validators.data.val_pubkey_decompressed.get(idx).copied()
+            };
+
+            let fin_roots: &[B256] = &f.slot.block_roots[..];
+            let delta_roots: &[B256] = slot_d.map_or(&[][..], |d| &d.slot.block_roots[..]);
+
+            (
+                util::is_above_finalized(buffer, epoch_state.finalized_checkpoint.epoch),
+                util::parent_validated(buffer, fin_roots, delta_roots),
+                proposer_matches,
+                pubkey,
+                f.immutable.fork.current_version,
+                f.immutable.genesis_validators_root,
+            )
+        });
+        let (above_finalized, parent_validated, proposer_matches, pubkey, fork_version, gvr) =
+            checks;
+
+        if !above_finalized {
+            tracing::warn!(?stream_id, "sidecar slot at or below finalised");
+            return Some((block_root, column_bitmask));
+        }
+        if !parent_validated {
+            tracing::warn!(?stream_id, "sidecar parent_root not in validated set");
+            return Some((block_root, column_bitmask));
+        }
+        if !proposer_matches {
+            tracing::warn!(?stream_id, "sidecar proposer_index mismatch");
+            return Some((block_root, column_bitmask));
+        }
+        let Some(pubkey) = pubkey else {
+            tracing::warn!(?stream_id, "sidecar proposer_index out of range");
+            return Some((block_root, column_bitmask));
+        };
+        if !util::verify_proposer_signature(buffer, &pubkey, fork_version, &gvr) {
+            tracing::warn!(?stream_id, "sidecar proposer signature invalid");
             return Some((block_root, column_bitmask));
         }
 
