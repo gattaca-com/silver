@@ -112,10 +112,8 @@ fn pubkey_decompressed_overlay_returns_delta_entry() {
 
 #[test]
 fn withdrawal_credentials_cred_edit_overrides_base() {
-    let fv = FinalizedValidators::new(
-        &[pk(0), pk(1)],
-        &[Withdrawals::ZERO, Withdrawals([0xAA; 32])],
-    );
+    let fv =
+        FinalizedValidators::new(&[pk(0), pk(1)], &[Withdrawals::ZERO, Withdrawals([0xAA; 32])]);
 
     let overridden = wc(0xCC);
     let mut state = ValidatorsState::with_empty_delta(&fv);
@@ -296,10 +294,8 @@ fn owned_registry_chains_through_append() {
 
 #[test]
 fn finalize_into_base_promotes_appended_and_cred_edits() {
-    let mut fv = FinalizedValidators::new(
-        &[pk(0), pk(1)],
-        &[Withdrawals::ZERO, Withdrawals([0xAA; 32])],
-    );
+    let mut fv =
+        FinalizedValidators::new(&[pk(0), pk(1)], &[Withdrawals::ZERO, Withdrawals([0xAA; 32])]);
 
     let new_creds = wc(0xBB);
     let mut state = ValidatorsState::with_empty_delta(&fv);
