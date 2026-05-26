@@ -27,3 +27,7 @@ snap = "0.1"
 [[bench]]
 harness = false
 name = "bls_verify"
+
+[[bench]]
+harness = false
+name = "hash_tree_build"

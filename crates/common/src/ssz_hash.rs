@@ -20,8 +20,17 @@
 //! live in `silver_beacon_state::ssz_hash` and reuse the primitives
 //! re-exported from here.
 
+use std::sync::LazyLock;
+
 use flux::utils::ArrayVec;
 use ring::digest;
+
+/// One-time hashtree backend selection (SHA-NI / AVX-512 / AVX2 / SSE).
+/// Forced on the first `hash_concat` call; result is `1` on success.
+static HASHTREE_READY: LazyLock<()> = LazyLock::new(|| {
+    let rc = hashtree_rs::init();
+    debug_assert_eq!(rc, 1, "hashtree_rs::init() failed");
+});
 
 use crate::ssz_view::{
     MAX_BYTES_PER_TRANSACTION, MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD,
@@ -38,12 +47,33 @@ pub fn sha256(data: &[u8]) -> B256 {
     out
 }
 
+/// SHA-256 of `a || b` (the SSZ Merkle internal-node primitive). Routed
+/// through `hashtree`, which picks SHA-NI / AVX-512 / AVX2 / SSE at startup
+/// and is ~2× faster than `ring` on this 64-byte-only workload.
 #[inline]
 pub fn hash_concat(a: &B256, b: &B256) -> B256 {
+    LazyLock::force(&HASHTREE_READY);
     let mut buf = [0u8; 64];
     buf[..32].copy_from_slice(a);
     buf[32..].copy_from_slice(b);
-    sha256(&buf)
+    let mut out = [0u8; 32];
+    hashtree_rs::hash(&mut out, &buf, 1);
+    out
+}
+
+/// Batched form of [`hash_concat`]: hashes `out.len()` consecutive 64-byte
+/// pairs in a single FFI call. `pairs` is `2 * out.len()` `B256`s laid out
+/// `[left_0, right_0, left_1, right_1, ...]`; `out[i] = SHA256(pairs[2*i] ||
+/// pairs[2*i+1])`. Amortises the per-call setup that dominates short-message
+/// SHA-256.
+#[inline]
+pub fn hash_concat_many(out: &mut [B256], pairs: &[B256]) {
+    debug_assert_eq!(pairs.len(), 2 * out.len());
+    LazyLock::force(&HASHTREE_READY);
+    let n = out.len();
+    let out_bytes = unsafe { std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u8, n * 32) };
+    let in_bytes = unsafe { std::slice::from_raw_parts(pairs.as_ptr() as *const u8, n * 64) };
+    hashtree_rs::hash(out_bytes, in_bytes, n);
 }
 
 /// Spec: is_valid_merkle_branch. `branch` is `depth * 32` bytes of siblings,
