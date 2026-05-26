@@ -78,7 +78,7 @@ impl FinalizedHashTree {
         let mut left_level_node = max_elements;
         let mut right_level_node = 2 * max_elements;
         let mut right_real_level_node = max_elements + leaves.len();
-        for level in 1..=depth {
+        for zero_hash in ZERO_HASHES.iter().take(depth + 1).skip(1) {
             left_level_node >>= 1;
             right_level_node >>= 1;
             right_real_level_node = right_real_level_node.div_ceil(2);
@@ -96,7 +96,7 @@ impl FinalizedHashTree {
                     &in_side[..2 * real_count],
                 );
             }
-            nodes[right_real_level_node..right_level_node].fill(ZERO_HASHES[level]);
+            nodes[right_real_level_node..right_level_node].fill(*zero_hash);
         }
 
         Self { nodes, max_elements }
