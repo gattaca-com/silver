@@ -49,7 +49,92 @@ impl Default for FinalisedValidators {
     }
 }
 
+/// Single validator's Validator-container fields plus the cached decompressed
+/// pubkey. Yielded one-at-a-time by `FinalisedValidators::try_new`'s row
+/// producer so callers (e.g., SSZ decompose) don't have to materialise a
+/// `Vec<T>` per column up front.
+#[derive(Clone)]
+pub struct ValidatorRow {
+    pub pubkey: BLSPubkey,
+    pub pubkey_decompressed: PublicKey,
+    pub credentials: Withdrawals,
+    pub effective_balance: u64,
+    pub slashed: bool,
+    pub activation_eligibility_epoch: Epoch,
+    pub activation_epoch: Epoch,
+    pub exit_epoch: Epoch,
+    pub withdrawable_epoch: Epoch,
+}
+
 impl FinalisedValidators {
+    /// Allocate MAX_VALIDATORS-sized columnar boxes + spec defaults and
+    /// populate the first `n` slots by calling `row(i)` for `i in 0..n`.
+    /// Builds the pubkey index and the validator-list hash tree leaves in
+    /// the same pass. Slots past `n` carry the spec default
+    /// (`FAR_FUTURE_EPOCH` for epoch fields, `0` / `false` elsewhere).
+    /// Errors short-circuit and propagate from the closure.
+    pub fn try_new<F, E>(n: usize, mut row: F) -> Result<Self, E>
+    where
+        F: FnMut(usize) -> Result<ValidatorRow, E>,
+    {
+        debug_assert!(n <= MAX_VALIDATORS);
+
+        let mut val_pubkey = vec![[0u8; 48]; MAX_VALIDATORS].into_boxed_slice();
+        let mut val_pubkey_decompressed =
+            vec![PublicKey::default(); MAX_VALIDATORS].into_boxed_slice();
+        let mut val_withdrawal_credentials =
+            vec![Withdrawals::default(); MAX_VALIDATORS].into_boxed_slice();
+        let mut eff = vec![0u64; MAX_VALIDATORS].into_boxed_slice();
+        let mut slashed_bits = vec![0u8; VAL_SLASHED_BYTES].into_boxed_slice();
+        let mut act_elig = vec![FAR_FUTURE_EPOCH; MAX_VALIDATORS].into_boxed_slice();
+        let mut act = vec![FAR_FUTURE_EPOCH; MAX_VALIDATORS].into_boxed_slice();
+        let mut exit = vec![FAR_FUTURE_EPOCH; MAX_VALIDATORS].into_boxed_slice();
+        let mut withdr = vec![FAR_FUTURE_EPOCH; MAX_VALIDATORS].into_boxed_slice();
+        let mut index = PubkeyIndex::with_capacity_and_hasher(n, Default::default());
+        let mut leaf_hashes = vec![[0u8; 32]; n];
+
+        for i in 0..n {
+            let r = row(i)?;
+            val_pubkey[i] = r.pubkey;
+            val_pubkey_decompressed[i] = r.pubkey_decompressed;
+            val_withdrawal_credentials[i] = r.credentials;
+            eff[i] = r.effective_balance;
+            if r.slashed {
+                slashed_bits[i / 8] |= 1u8 << (i % 8);
+            }
+            act_elig[i] = r.activation_eligibility_epoch;
+            act[i] = r.activation_epoch;
+            exit[i] = r.exit_epoch;
+            withdr[i] = r.withdrawable_epoch;
+            index.insert(r.pubkey, i as u32);
+            leaf_hashes[i] = validator_hash(
+                &r.pubkey,
+                &r.credentials,
+                r.effective_balance,
+                r.slashed,
+                r.activation_eligibility_epoch,
+                r.activation_epoch,
+                r.exit_epoch,
+                r.withdrawable_epoch,
+            );
+        }
+
+        Ok(Self {
+            val_pubkey,
+            val_pubkey_decompressed,
+            val_withdrawal_credentials,
+            effective_balance: eff,
+            slashed: slashed_bits,
+            activation_eligibility_epoch: act_elig,
+            activation_epoch: act,
+            exit_epoch: exit,
+            withdrawable_epoch: withdr,
+            validator_cnt: n,
+            index,
+            hash: FinalisedHashTree::new(&leaf_hashes, MAX_VALIDATORS),
+        })
+    }
+
     #[inline]
     pub fn validator_cnt(&self) -> usize {
         self.validator_cnt

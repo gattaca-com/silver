@@ -45,6 +45,14 @@ impl BeaconStateOwner {
 
     pub fn delta_view(&mut self, slot_seq: usize) -> StateDeltaView<'_> {
         let s = &mut *self.state;
+        // Production state-transition path: finalised base must be populated
+        // (decompose from genesis SSZ or a checkpoint). The zero-validator
+        // `Finalised::default()` is the unanchored stub used only by tests
+        // and the pre-bootstrap owner.
+        assert!(
+            s.finalised.validators.validator_cnt() > 0,
+            "delta_view: operating on empty finalised state",
+        );
         StateDeltaView::new(
             &s.finalised,
             s.slots.get_mut(slot_seq),

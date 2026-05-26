@@ -2,12 +2,15 @@ use blst::min_pk::PublicKey;
 
 use crate::{
     SpecConfig,
-    beacon_state::types::{
-        B256, BLSPubkey, Checkpoint, EPOCHS_PER_HISTORICAL_VECTOR, EPOCHS_PER_SLASHINGS_VECTOR,
-        EpochStateDelta, Eth1Data, ExecutionPayloadHeader, Finalised, HistoricalSummary,
-        LongtailState, MAX_ETH1_VOTES, PROPOSER_LOOKAHEAD_SIZE, PendingConsolidation,
-        PendingDeposit, PendingPartialWithdrawal, SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT,
-        SYNC_COMMITTEE_SIZE, StateDelta, SyncCommittee, Withdrawals,
+    beacon_state::{
+        FinalisedValidators, ValidatorRow,
+        types::{
+            B256, BLSPubkey, Checkpoint, EPOCHS_PER_HISTORICAL_VECTOR, EPOCHS_PER_SLASHINGS_VECTOR,
+            EpochStateDelta, Eth1Data, ExecutionPayloadHeader, Finalised, HistoricalSummary,
+            LongtailState, MAX_ETH1_VOTES, PROPOSER_LOOKAHEAD_SIZE, PendingConsolidation,
+            PendingDeposit, PendingPartialWithdrawal, SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT,
+            SYNC_COMMITTEE_SIZE, StateDelta, SyncCommittee, Withdrawals,
+        },
     },
     ssz_hash,
 };
@@ -289,7 +292,6 @@ impl Finalised {
         self.pending.pending_deposits.clear();
         self.pending.pending_partial_withdrawals.clear();
         self.pending.pending_consolidations.clear();
-        self.validators.index_mut().clear();
 
         // ── Immutable ─────────────────────────────────────────────────
         self.immutable.genesis_time = u64_le(ssz, F0);
@@ -372,38 +374,23 @@ impl Finalised {
             return Err(DecomposeError::ValidatorsLenNotMultiple { len: val_bytes.len() });
         }
         let n = val_bytes.len() / VALIDATOR_SSZ_SIZE;
-        self.validators.index_mut().reserve(n);
-        {
-            let pk_slice = self.validators.pubkey_slice_mut();
-            // Populate pubkey first so the index inserts succeed (insert
-            // borrows pubkey by reference).
-            for i in 0..n {
-                let v = &val_bytes[i * VALIDATOR_SSZ_SIZE..];
-                pk_slice[i] = v[..48].try_into().unwrap();
-            }
-        }
-        for i in 0..n {
+        self.validators = FinalisedValidators::try_new(n, |i| {
             let v = &val_bytes[i * VALIDATOR_SSZ_SIZE..];
             let pubkey: BLSPubkey = v[..48].try_into().unwrap();
-            let credentials = Withdrawals(b256(v, 48));
-            let decompressed = PublicKey::from_bytes(&pubkey)
+            let pubkey_decompressed = PublicKey::from_bytes(&pubkey)
                 .map_err(|_| DecomposeError::InvalidValidatorPubkey { idx: i })?;
-            self.validators.pubkey_decompressed_slice_mut()[i] = decompressed;
-            self.validators.withdrawal_credentials_slice_mut()[i] = credentials;
-            self.validators.effective_balance_slice_mut()[i] = u64_le(v, 80);
-            let bitset = self.validators.slashed_bitset_mut();
-            if v[88] != 0 {
-                bitset[i / 8] |= 1u8 << (i % 8);
-            } else {
-                bitset[i / 8] &= !(1u8 << (i % 8));
-            }
-            self.validators.activation_eligibility_epoch_slice_mut()[i] = u64_le(v, 89);
-            self.validators.activation_epoch_slice_mut()[i] = u64_le(v, 97);
-            self.validators.exit_epoch_slice_mut()[i] = u64_le(v, 105);
-            self.validators.withdrawable_epoch_slice_mut()[i] = u64_le(v, 113);
-            self.validators.index_mut().insert(pubkey, i as u32);
-        }
-        self.validators.set_validator_cnt(n);
+            Ok(ValidatorRow {
+                pubkey,
+                pubkey_decompressed,
+                credentials: Withdrawals(b256(v, 48)),
+                effective_balance: u64_le(v, 80),
+                slashed: v[88] != 0,
+                activation_eligibility_epoch: u64_le(v, 89),
+                activation_epoch: u64_le(v, 97),
+                exit_epoch: u64_le(v, 105),
+                withdrawable_epoch: u64_le(v, 113),
+            })
+        })?;
 
         // Balances (sibling layer).
         let bal_bytes = &ssz[off_balances..off_prev_participation];
@@ -593,10 +580,6 @@ impl Finalised {
             self.longtail.sync_committee_indices[i] =
                 self.validators.find_by_pubkey(pk).map(|i| i as u32).unwrap_or(u32::MAX);
         }
-
-        // Build the validator-list hash tree from the populated columns.
-        // Must happen after `set_validator_cnt`.
-        self.validators.rebuild_hash_tree();
 
         Ok(())
     }

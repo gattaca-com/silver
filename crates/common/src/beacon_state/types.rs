@@ -100,6 +100,19 @@ pub struct StateDelta {
     pub slot: SlotStateDelta,
 }
 
+impl StateDelta {
+    pub fn prune_to_base(&mut self, base: &Finalised, promoted: &StateDelta) {
+        let new_base_cnt = base.validators.validator_cnt();
+        self.validators.prune_to_base(&base.validators);
+        self.balances.prune_to_base(&base.balances, new_base_cnt);
+        self.previous_participation.prune_to_base(&base.previous_participation, new_base_cnt);
+        self.current_participation.prune_to_base(&base.current_participation, new_base_cnt);
+        self.inactivity_scores.prune_to_base(&base.inactivity_scores, new_base_cnt);
+        self.pending.prune_to_base(&base.pending, &promoted.pending);
+        self.slot.prune_to_base(&promoted.slot);
+    }
+}
+
 impl Reset for StateDelta {
     fn reset(&mut self) {
         self.epoch_idx = None;
@@ -178,6 +191,15 @@ impl Default for SlotStateFinalised {
     }
 }
 
+impl SlotStateDelta {
+    pub fn prune_to_base(&mut self, promoted: &SlotStateDelta) {
+        let drop_b = promoted.block_roots.len().min(self.block_roots.len());
+        self.block_roots.drain(..drop_b);
+        let drop_s = promoted.state_roots.len().min(self.state_roots.len());
+        self.state_roots.drain(..drop_s);
+    }
+}
+
 impl Reset for SlotStateDelta {
     fn reset(&mut self) {
         self.slot = Default::default();
@@ -226,6 +248,15 @@ pub struct EpochStateDelta {
     // For deltas: one entry per completed epoch since finalisation
     pub slashings: Vec<u64>,
     pub state: EpochState,
+}
+
+impl EpochStateDelta {
+    pub fn prune_to_base(&mut self, promoted: &EpochStateDelta) {
+        let drop_r = promoted.randao_mixes.len().min(self.randao_mixes.len());
+        self.randao_mixes.drain(..drop_r);
+        let drop_s = promoted.slashings.len().min(self.slashings.len());
+        self.slashings.drain(..drop_s);
+    }
 }
 
 impl Reset for EpochStateDelta {
@@ -323,6 +354,60 @@ pub struct PendingQueuesDelta {
     pub consolidations_appended: Vec<PendingConsolidation>,
 }
 
+impl PendingQueuesDelta {
+    pub fn prune_to_base(&mut self, base: &PendingQueues, promoted: &PendingQueuesDelta) {
+        prune_queue_delta(
+            &mut self.deposits_drain_offset,
+            &mut self.deposits_appended,
+            base.pending_deposits.len(),
+            promoted.deposits_drain_offset,
+            promoted.deposits_appended.len(),
+        );
+        prune_queue_delta(
+            &mut self.partial_withdrawals_drain_offset,
+            &mut self.partial_withdrawals_appended,
+            base.pending_partial_withdrawals.len(),
+            promoted.partial_withdrawals_drain_offset,
+            promoted.partial_withdrawals_appended.len(),
+        );
+        prune_queue_delta(
+            &mut self.consolidations_drain_offset,
+            &mut self.consolidations_appended,
+            base.pending_consolidations.len(),
+            promoted.consolidations_drain_offset,
+            promoted.consolidations_appended.len(),
+        );
+    }
+}
+
+/// Per-queue prune helper. `new_base_len` is post-promote
+/// (= `old_base.len() - promoted_drain + promoted_app_len`); we backsolve
+/// the pre-promote base length to figure out how much of `self.appended`
+/// got drained out of the promoted-appended prefix before pruning.
+fn prune_queue_delta<T>(
+    drain_offset: &mut u32,
+    appended: &mut Vec<T>,
+    new_base_len: usize,
+    promoted_drain: u32,
+    promoted_app_len: usize,
+) {
+    debug_assert!(
+        *drain_offset >= promoted_drain,
+        "descendant must not drain less than the promoted delta",
+    );
+    let cur_drain = *drain_offset as usize;
+    let pf_drain = promoted_drain as usize;
+    // old_base.len() = new_base.len() + drain_F - appended_F.len()
+    let old_base_len = (new_base_len + pf_drain).saturating_sub(promoted_app_len);
+    // How many appended_F entries the descendant already drained out of its
+    // own `appended` front: only the drains past the old base count.
+    let drained_from_pf = cur_drain.saturating_sub(old_base_len).min(promoted_app_len);
+    let drop_n = (promoted_app_len - drained_from_pf).min(appended.len());
+    appended.drain(..drop_n);
+    let raw_new_drain = cur_drain - pf_drain;
+    *drain_offset = raw_new_drain.min(new_base_len) as u32;
+}
+
 impl Reset for PendingQueuesDelta {
     fn reset(&mut self) {
         self.deposits_drain_offset = 0;
@@ -379,6 +464,13 @@ pub struct BalancesDelta {
     pub edits: Vec<(u32, u64)>,
 }
 
+impl BalancesDelta {
+    pub fn prune_to_base(&mut self, base: &FinalisedBalances, new_base_cnt: usize) {
+        self.edits
+            .retain(|(idx, v)| (*idx as usize) >= new_base_cnt || base.get(*idx as usize) != *v);
+    }
+}
+
 impl Reset for BalancesDelta {
     fn reset(&mut self) {
         self.edits.clear();
@@ -415,6 +507,13 @@ impl FinalisedPreviousParticipation {
 #[derive(Default, Clone)]
 pub struct PreviousParticipationDelta {
     pub edits: Vec<(u32, u8)>,
+}
+
+impl PreviousParticipationDelta {
+    pub fn prune_to_base(&mut self, base: &FinalisedPreviousParticipation, new_base_cnt: usize) {
+        self.edits
+            .retain(|(idx, v)| (*idx as usize) >= new_base_cnt || base.get(*idx as usize) != *v);
+    }
 }
 
 impl Reset for PreviousParticipationDelta {
@@ -455,6 +554,13 @@ pub struct CurrentParticipationDelta {
     pub edits: Vec<(u32, u8)>,
 }
 
+impl CurrentParticipationDelta {
+    pub fn prune_to_base(&mut self, base: &FinalisedCurrentParticipation, new_base_cnt: usize) {
+        self.edits
+            .retain(|(idx, v)| (*idx as usize) >= new_base_cnt || base.get(*idx as usize) != *v);
+    }
+}
+
 impl Reset for CurrentParticipationDelta {
     fn reset(&mut self) {
         self.edits.clear();
@@ -490,6 +596,13 @@ impl FinalisedInactivityScores {
 #[derive(Default, Clone)]
 pub struct InactivityScoresDelta {
     pub edits: Vec<(u32, u64)>,
+}
+
+impl InactivityScoresDelta {
+    pub fn prune_to_base(&mut self, base: &FinalisedInactivityScores, new_base_cnt: usize) {
+        self.edits
+            .retain(|(idx, v)| (*idx as usize) >= new_base_cnt || base.get(*idx as usize) != *v);
+    }
 }
 
 impl Reset for InactivityScoresDelta {
