@@ -47,9 +47,6 @@ pub fn sha256(data: &[u8]) -> B256 {
     out
 }
 
-/// SHA-256 of `a || b` (the SSZ Merkle internal-node primitive). Routed
-/// through `hashtree`, which picks SHA-NI / AVX-512 / AVX2 / SSE at startup
-/// and is ~2× faster than `ring` on this 64-byte-only workload.
 #[inline]
 pub fn hash_concat(a: &B256, b: &B256) -> B256 {
     LazyLock::force(&HASHTREE_READY);
@@ -61,11 +58,6 @@ pub fn hash_concat(a: &B256, b: &B256) -> B256 {
     out
 }
 
-/// Batched form of [`hash_concat`]: hashes `out.len()` consecutive 64-byte
-/// pairs in a single FFI call. `pairs` is `2 * out.len()` `B256`s laid out
-/// `[left_0, right_0, left_1, right_1, ...]`; `out[i] = SHA256(pairs[2*i] ||
-/// pairs[2*i+1])`. Amortises the per-call setup that dominates short-message
-/// SHA-256.
 #[inline]
 pub fn hash_concat_many(out: &mut [B256], pairs: &[B256]) {
     debug_assert_eq!(pairs.len(), 2 * out.len());
