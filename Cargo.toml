@@ -1,15 +1,17 @@
 [workspace]
 members = [
-  "crates/beacon_state", 
+  "crates/beacon_state",
   "crates/bin",
   "crates/common",
-  "crates/control", 
+  "crates/common_macros",
+  "crates/control",
   "crates/data_columns",
   "crates/discovery",
   "crates/e2e",
   "crates/gossip",
-  "crates/network", 
-  "crates/peer", 
+  "crates/network",
+  "crates/peer",
+  "crates/surfer",
 ]
 resolver = "2"
 
@@ -59,6 +61,8 @@ silver_discovery = {path = "crates/discovery" }
 silver_gossip = {path = "crates/gossip" }
 silver_network = {path = "crates/network" }
 silver_peer = {path = "crates/peer" }
+silver_common_macros = { path = "crates/common_macros" }
+data_columns = { path = "crates/data_columns" }
 flux = { git = "https://github.com/gattaca-com/flux", rev = "f902769fe25915d8e58b50469f4a8b76f6045870"}
 flux-utils = { git = "https://github.com/gattaca-com/flux", rev = "f902769fe25915d8e58b50469f4a8b76f6045870", features = ["bytes"]}
 
@@ -80,6 +84,7 @@ c-kzg = { version = "2.1", default-features = false, features = [
 bytes = "1.11.1"
 crc32c = "0.6"
 criterion = { version = "0.5.1", features = ["async_std", "async_tokio"] }
+crossterm = "0.28"
 ctr = "0.9"
 fxhash = "0.2.1"
 hdrhistogram = "7.5.4"
@@ -88,7 +93,10 @@ hkdf = "0.12"
 libc = "0.2"
 mio = { version = "1.0.4", features = ["net", "os-poll"] }
 pprof = { version = "0.13", features = ["criterion", "flamegraph"] }
+proc-macro2 = "1"
 quinn-proto = "0.11.14"
+quote = "1"
+ratatui = "0.29"
 rand = "0.8.5"
 rand_core = "0.6.4"
 rcgen = "0.14.7"
@@ -102,6 +110,7 @@ sha2-const-stable = "0.1"
 sha3 = "0.10"
 slab = "0.4.12"
 snap = "1.1.1"
+syn = { version = "2", features = ["full"] }
 thiserror = "1.0.58"
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

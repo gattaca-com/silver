@@ -3,6 +3,7 @@ use std::{
     io,
 };
 
+use silver_common::metrics::timed;
 use snap::raw::{Decoder, Encoder};
 use thiserror::Error;
 
@@ -78,6 +79,7 @@ impl Default for SnappyDecoder {
 impl SnappyDecoder {
     /// Feed compressed bytes, decompress complete frames into `out`.
     /// Returns `(bytes_consumed, bytes_written)`.
+    #[timed]
     pub fn decompress(
         &mut self,
         input: &[u8],
@@ -280,6 +282,7 @@ impl SnappyEncoder {
     /// Returns `(input_consumed, output_pending)`. `output_pending` is the
     /// count of bytes still buffered in `dst` awaiting drain. `input_consumed`
     /// is bytes of `buf` fully encoded into `dst` (drained or not).
+    #[timed]
     pub fn compress<W: io::Write>(
         &mut self,
         buf: &[u8],
