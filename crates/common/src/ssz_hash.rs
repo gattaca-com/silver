@@ -309,14 +309,11 @@ pub fn hash_tree_root_body(body: &[u8]) -> B256 {
         if start <= end && end <= body.len() { &body[start..end] } else { &[] }
     };
 
-    let proposer_slashings =
-        hash_list_containers(var_field(0), 416, 16, hash_proposer_slashing);
-    let attester_slashings =
-        hash_list_variable_containers(var_field(1), 1, hash_attester_slashing);
+    let proposer_slashings = hash_list_containers(var_field(0), 416, 16, hash_proposer_slashing);
+    let attester_slashings = hash_list_variable_containers(var_field(1), 1, hash_attester_slashing);
     let attestations = hash_list_variable_containers(var_field(2), 8, hash_attestation);
     let deposits = hash_list_containers(var_field(3), 1240, 16, hash_deposit);
-    let voluntary_exits =
-        hash_list_containers(var_field(4), 112, 16, hash_signed_voluntary_exit);
+    let voluntary_exits = hash_list_containers(var_field(4), 112, 16, hash_signed_voluntary_exit);
     let execution_payload = hash_execution_payload(var_field(5));
     let bls_changes = hash_list_containers(var_field(6), 172, 16, hash_signed_bls_change);
     let blob_commitments = hash_list_fixed_elements(var_field(7), 48, 4096);
@@ -434,11 +431,8 @@ pub fn hash_list_variable_containers(
         } else {
             data.len()
         };
-        let elem = if start <= end && end <= data.len() {
-            hash_fn(&data[start..end])
-        } else {
-            ZERO_HASH
-        };
+        let elem =
+            if start <= end && end <= data.len() { hash_fn(&data[start..end]) } else { ZERO_HASH };
         merkle_push(&mut stack, elem);
     }
     let root = merkle_finalize(stack, target_depth);
@@ -467,14 +461,12 @@ pub fn hash_proposer_slashing(d: &[u8]) -> B256 {
 /// hash_tree_root(DepositData): merkleize 4 chunks
 /// [pubkey_root, withdrawal_credentials, amount_chunk, signature_root].
 pub fn hash_tree_root_deposit_data(dd: &[u8; 184]) -> B256 {
-    merkleize(
-        &[
-            hash_fixed_bytes(&dd[..48]),
-            <[u8; 32]>::try_from(&dd[48..80]).unwrap(),
-            uint64_chunk(u64::from_le_bytes(dd[80..88].try_into().unwrap())),
-            hash_fixed_bytes(&dd[88..184]),
-        ],
-    )
+    merkleize(&[
+        hash_fixed_bytes(&dd[..48]),
+        <[u8; 32]>::try_from(&dd[48..80]).unwrap(),
+        uint64_chunk(u64::from_le_bytes(dd[80..88].try_into().unwrap())),
+        hash_fixed_bytes(&dd[88..184]),
+    ])
 }
 
 pub fn hash_deposit(d: &[u8]) -> B256 {
@@ -501,13 +493,11 @@ pub fn hash_signed_voluntary_exit(d: &[u8]) -> B256 {
 pub fn hash_signed_bls_change(d: &[u8]) -> B256 {
     let mut addr = ZERO_HASH;
     addr[..20].copy_from_slice(&d[56..76]);
-    let msg = merkleize(
-        &[
-            uint64_chunk(u64::from_le_bytes(d[0..8].try_into().unwrap())),
-            hash_fixed_bytes(&d[8..56]),
-            addr,
-        ],
-    );
+    let msg = merkleize(&[
+        uint64_chunk(u64::from_le_bytes(d[0..8].try_into().unwrap())),
+        hash_fixed_bytes(&d[8..56]),
+        addr,
+    ]);
     hash_concat(&msg, &hash_fixed_bytes(&d[76..172]))
 }
 
@@ -673,27 +663,23 @@ pub fn bitlist_len(data: &[u8]) -> usize {
 }
 
 pub fn hash_deposit_request(d: &[u8]) -> B256 {
-    merkleize(
-        &[
-            hash_fixed_bytes(&d[..48]),
-            <[u8; 32]>::try_from(&d[48..80]).unwrap(),
-            uint64_chunk(u64::from_le_bytes(d[80..88].try_into().unwrap())),
-            hash_fixed_bytes(&d[88..184]),
-            uint64_chunk(u64::from_le_bytes(d[184..192].try_into().unwrap())),
-        ],
-    )
+    merkleize(&[
+        hash_fixed_bytes(&d[..48]),
+        <[u8; 32]>::try_from(&d[48..80]).unwrap(),
+        uint64_chunk(u64::from_le_bytes(d[80..88].try_into().unwrap())),
+        hash_fixed_bytes(&d[88..184]),
+        uint64_chunk(u64::from_le_bytes(d[184..192].try_into().unwrap())),
+    ])
 }
 
 pub fn hash_withdrawal_request(d: &[u8]) -> B256 {
     let mut addr = ZERO_HASH;
     addr[..20].copy_from_slice(&d[..20]);
-    merkleize(
-        &[
-            addr,
-            hash_fixed_bytes(&d[20..68]),
-            uint64_chunk(u64::from_le_bytes(d[68..76].try_into().unwrap())),
-        ],
-    )
+    merkleize(&[
+        addr,
+        hash_fixed_bytes(&d[20..68]),
+        uint64_chunk(u64::from_le_bytes(d[68..76].try_into().unwrap())),
+    ])
 }
 
 pub fn hash_consolidation_request(d: &[u8]) -> B256 {
@@ -702,11 +688,7 @@ pub fn hash_consolidation_request(d: &[u8]) -> B256 {
     merkleize(&[addr, hash_fixed_bytes(&d[20..68]), hash_fixed_bytes(&d[68..116])])
 }
 
-pub fn hash_list_fixed_elements(
-    data: &[u8],
-    element_size: usize,
-    limit: usize,
-) -> B256 {
+pub fn hash_list_fixed_elements(data: &[u8], element_size: usize, limit: usize) -> B256 {
     if element_size == 0 {
         return mix_in_length(&ZERO_HASH, 0);
     }

@@ -238,11 +238,7 @@ fn append_via_view_grows_delta_not_base() {
 
 #[test]
 fn hash_validators_invariant_under_rebase() {
-    use crate::{
-        ssz_hash::{hash_validators},
-        types::EpochData,
-    };
-
+    use crate::{ssz_hash::hash_validators, types::EpochData};
 
     let eth1_creds = wc(0x01);
     let init_pubkeys: Vec<BLSPubkey> = (0..8u32).map(|i| pk(i as u8)).collect();

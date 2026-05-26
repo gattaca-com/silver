@@ -1820,8 +1820,7 @@ pub fn collect_sigs_proposer_slashings(
             h2_slot / SLOTS_PER_EPOCH,
         );
         let sr1 = signing_root_for_block_header(&s[0..208], fv1, &imm.genesis_validators_root);
-        let sr2 =
-            signing_root_for_block_header(&s[208..416], fv2, &imm.genesis_validators_root);
+        let sr2 = signing_root_for_block_header(&s[208..416], fv2, &imm.genesis_validators_root);
         let sig1 = ProposerSlashingView::h1_signature(s);
         let sig2 = ProposerSlashingView::h2_signature(s);
         sig_batch.push_one(vs.pubkey_decompressed(vi), sig1, sr1);
@@ -1921,9 +1920,7 @@ pub fn process_deposits(
         let signature = *DepositDataView::signature(dd);
 
         // apply_deposit is skippable on bad BLS sig — propagate fatal only.
-        if let Err(e) =
-            apply_deposit(vs, epoch, sd, pq, pubkey, &credentials, amount, &signature)
-        {
+        if let Err(e) = apply_deposit(vs, epoch, sd, pq, pubkey, &credentials, amount, &signature) {
             if e.is_fatal() {
                 return Err(e);
             }
@@ -2538,8 +2535,7 @@ fn apply_deposit(
 ) -> Result<()> {
     let existing = vs.find_by_pubkey(pubkey);
     if existing.is_none() {
-        if !epoch_transition::is_valid_deposit_signature(pubkey, credentials, amount, signature)
-        {
+        if !epoch_transition::is_valid_deposit_signature(pubkey, credentials, amount, signature) {
             return Err(Error::SkipDepositBadSig { index: sd.eth1_deposit_index });
         }
         // Add to registry with 0 effective balance and 0 actual balance.

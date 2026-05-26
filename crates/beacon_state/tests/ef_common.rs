@@ -76,10 +76,8 @@ pub fn load_state(path: &Path) -> LoadedState {
 pub fn compare_states(label: &str, a: &LoadedState, b: &LoadedState) -> Vec<String> {
     let mut diffs = Vec::new();
 
-    let root_a =
-        hash_tree_root_state(&a.imm, &a.vs, &a.longtail, &a.epoch, &a.roots, &a.sd, &a.pq);
-    let root_b =
-        hash_tree_root_state(&b.imm, &b.vs, &b.longtail, &b.epoch, &b.roots, &b.sd, &b.pq);
+    let root_a = hash_tree_root_state(&a.imm, &a.vs, &a.longtail, &a.epoch, &a.roots, &a.sd, &a.pq);
+    let root_b = hash_tree_root_state(&b.imm, &b.vs, &b.longtail, &b.epoch, &b.roots, &b.sd, &b.pq);
     if root_a != root_b {
         diffs.push(format!(
             "{label}: state root mismatch: got {}, expected {}",

@@ -1363,8 +1363,7 @@ impl BeaconStateTile {
             return Feedback::Reject(None);
         }
 
-        let object_root =
-            ssz_hash::hash_tree_root_voluntary_exit(exit_epoch, vi_u);
+        let object_root = ssz_hash::hash_tree_root_voluntary_exit(exit_epoch, vi_u);
         let domain = bls::compute_domain(
             bls::DOMAIN_VOLUNTARY_EXIT,
             imm.capella_fork_version,
@@ -1486,8 +1485,7 @@ impl BeaconStateTile {
             return Feedback::Reject(None);
         }
 
-        let object_root =
-            ssz_hash::hash_tree_root_bls_change(vi_u, from_pubkey, to_address);
+        let object_root = ssz_hash::hash_tree_root_bls_change(vi_u, from_pubkey, to_address);
         let domain = bls::compute_domain(
             bls::DOMAIN_BLS_TO_EXECUTION_CHANGE,
             imm.genesis_fork_version,
@@ -2047,13 +2045,7 @@ mod tests {
         let imm = *BeaconStateTile::last_applied_imm(&tile.arena, tile.last_applied);
         // Both ia signed by sk_idx=0 covering vi=0 → double-vote, vi=0 is
         // slashable in head state.
-        let buf = crate::test_signing::sign_attester_slashing_double_vote(
-            0,
-            0,
-            0,
-            0,
-            &imm,
-        );
+        let buf = crate::test_signing::sign_attester_slashing_double_vote(0, 0, 0, 0, &imm);
         assert_eq!(tile.handle_attester_slashing(&buf), Feedback::Accept);
     }
 
@@ -2067,24 +2059,8 @@ mod tests {
         let imm = *BeaconStateTile::last_applied_imm(&tile.arena, tile.last_applied);
         // ia1: sk=0/vi=0 ; ia2: sk=1/vi=1 → same target_epoch, different
         // beacon_block_root (double-vote on data), but indices {0} ∩ {1} = ∅.
-        let ia1 = crate::test_signing::build_indexed_attestation(
-            0,
-            0,
-            0,
-            0,
-            0,
-            0xAA,
-            &imm,
-        );
-        let ia2 = crate::test_signing::build_indexed_attestation(
-            1,
-            1,
-            0,
-            0,
-            0,
-            0xBB,
-            &imm,
-        );
+        let ia1 = crate::test_signing::build_indexed_attestation(0, 0, 0, 0, 0, 0xAA, &imm);
+        let ia2 = crate::test_signing::build_indexed_attestation(1, 1, 0, 0, 0, 0xBB, &imm);
         let buf = wrap_attester_slashing(&ia1, &ia2);
         assert_eq!(tile.handle_attester_slashing(&buf), Feedback::Reject(None));
     }
@@ -2152,12 +2128,7 @@ mod tests {
         seed_tile_with_keys(&mut tile, 4, 0);
         let imm = *BeaconStateTile::last_applied_imm(&tile.arena, tile.last_applied);
         let to_addr = [0x42u8; 20];
-        let buf = crate::test_signing::sign_bls_to_execution_change(
-            0,
-            0,
-            &to_addr,
-            &imm,
-        );
+        let buf = crate::test_signing::sign_bls_to_execution_change(0, 0, &to_addr, &imm);
         assert_eq!(tile.handle_bls_to_execution_change(&buf), Feedback::Accept);
     }
 
@@ -2476,9 +2447,11 @@ mod tests {
         let amount = 32_000_000_000u64;
 
         // hash_tree_root(DepositMessage { pubkey, wc, amount }) → signed.
-        let msg_root = ssz_hash::merkleize(
-            &[ssz_hash::hash_fixed_bytes(&pk), wc.0, ssz_hash::uint64_chunk(amount)],
-        );
+        let msg_root = ssz_hash::merkleize(&[
+            ssz_hash::hash_fixed_bytes(&pk),
+            wc.0,
+            ssz_hash::uint64_chunk(amount),
+        ]);
         let domain = bls::compute_domain(DOMAIN_DEPOSIT, [0; 4], &[0u8; 32]);
         let signing_root = bls::compute_signing_root(&msg_root, &domain);
         let sig = sk.sign(&signing_root, bls::DST, &[]).to_bytes();

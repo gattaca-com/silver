@@ -3,9 +3,7 @@
 mod ef_common;
 
 use ef_common::{LoadedState, compare_states, iter_test_cases, load_state, spec_tests_dir};
-use silver_beacon_state::{
-    epoch_transition, ssz_hash::types::SLOTS_PER_EPOCH,
-};
+use silver_beacon_state::{epoch_transition, ssz_hash::types::SLOTS_PER_EPOCH};
 
 fn epoch_handler(handler_name: &str, run: impl Fn(&mut LoadedState)) {
     let base = spec_tests_dir()

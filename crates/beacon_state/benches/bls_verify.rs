@@ -14,7 +14,7 @@ use silver_beacon_state::{
     bls::{self, DOMAIN_BEACON_ATTESTER, DST, SigBatch},
     decompose::decompose_beacon_state,
     shuffling,
-    ssz_hash::{hash_attestation_data},
+    ssz_hash::hash_attestation_data,
     state_transition::{
         self, ShufflingRef, collect_sigs_attestations, collect_sigs_attester_slashings,
         collect_sigs_bls_to_execution_changes, collect_sigs_proposer_slashings,
@@ -244,13 +244,8 @@ fn build_ef_block() -> SigBatch {
 
     let view = ValidatorsState::with_empty_delta(&s.fv);
     let _ = collect_sigs_proposer_slashings(&s.imm, &view, &body[ps..at_s], &mut batch);
-    let _ = collect_sigs_attester_slashings(
-        &s.imm,
-        &view,
-        &body[at_s..att],
-        &mut scratch,
-        &mut batch,
-    );
+    let _ =
+        collect_sigs_attester_slashings(&s.imm, &view, &body[at_s..att], &mut scratch, &mut batch);
     let _ = collect_sigs_attestations(
         &s.imm,
         &view,
@@ -262,8 +257,7 @@ fn build_ef_block() -> SigBatch {
     );
     // deposits skipped — verified inline in apply_deposit.
     collect_sigs_voluntary_exits(&s.imm, &view, &body[ve..exec], &mut batch);
-    let _ =
-        collect_sigs_bls_to_execution_changes(&s.imm, &view, &body[bls_..blob], &mut batch);
+    let _ = collect_sigs_bls_to_execution_changes(&s.imm, &view, &body[bls_..blob], &mut batch);
     collect_sigs_sync_aggregate(
         &s.imm,
         &view,

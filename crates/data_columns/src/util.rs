@@ -4,8 +4,8 @@ use blst::{BLST_ERROR, min_pk::PublicKey};
 use silver_common::{
     SLOTS_PER_EPOCH,
     ssz_hash::{
-        B256, hash_concat, hash_list_fixed_elements, hash_tree_root_body,
-        hash_tree_root_fork_data, is_valid_merkle_branch, merkleize, uint64_chunk,
+        B256, hash_concat, hash_list_fixed_elements, hash_tree_root_body, hash_tree_root_fork_data,
+        is_valid_merkle_branch, merkleize, uint64_chunk,
     },
     ssz_view::{
         BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF, DataColumnSidecarView,
@@ -41,30 +41,26 @@ pub fn body_root(body: &[u8]) -> B256 {
 /// `DataColumnsByRootIdentifier.block_root` in DA RPC requests.
 pub fn block_root(signed_block: &[u8]) -> B256 {
     let body_root = hash_tree_root_body(SignedBeaconBlockView::body(signed_block));
-    merkleize(
-        &[
-            uint64_chunk(SignedBeaconBlockView::slot(signed_block)),
-            uint64_chunk(SignedBeaconBlockView::proposer_index(signed_block)),
-            *SignedBeaconBlockView::parent_root(signed_block),
-            *SignedBeaconBlockView::state_root(signed_block),
-            body_root,
-        ],
-    )
+    merkleize(&[
+        uint64_chunk(SignedBeaconBlockView::slot(signed_block)),
+        uint64_chunk(SignedBeaconBlockView::proposer_index(signed_block)),
+        *SignedBeaconBlockView::parent_root(signed_block),
+        *SignedBeaconBlockView::state_root(signed_block),
+        body_root,
+    ])
 }
 
 /// SSZ `block_root` reconstructed from a `DataColumnSidecar`'s embedded
 /// `signed_block_header`. The sidecar carries `body_root` directly, so no
 /// body hashing is required — just the 5-leaf merkleize.
 pub fn block_root_from_sidecar(sidecar: &[u8]) -> B256 {
-    merkleize(
-        &[
-            uint64_chunk(DataColumnSidecarView::slot(sidecar)),
-            uint64_chunk(DataColumnSidecarView::proposer_index(sidecar)),
-            *DataColumnSidecarView::parent_root(sidecar),
-            *DataColumnSidecarView::state_root(sidecar),
-            *DataColumnSidecarView::body_root(sidecar),
-        ],
-    )
+    merkleize(&[
+        uint64_chunk(DataColumnSidecarView::slot(sidecar)),
+        uint64_chunk(DataColumnSidecarView::proposer_index(sidecar)),
+        *DataColumnSidecarView::parent_root(sidecar),
+        *DataColumnSidecarView::state_root(sidecar),
+        *DataColumnSidecarView::body_root(sidecar),
+    ])
 }
 
 /// Spec `verify_data_column_sidecar` — pure shape/sanity checks against

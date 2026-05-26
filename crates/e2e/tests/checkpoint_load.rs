@@ -15,7 +15,7 @@ use std::{path::PathBuf, time::Duration};
 
 use silver_beacon_state::{
     decompose::decompose_beacon_state,
-    ssz_hash::{hash_tree_root_block_header},
+    ssz_hash::hash_tree_root_block_header,
     ticker::SlotTicker,
     tile::{BeaconStateTile, Feedback},
     types::{EpochData, HistoricalLongtail, Immutable, SlotData, SlotRoots, box_zeroed},

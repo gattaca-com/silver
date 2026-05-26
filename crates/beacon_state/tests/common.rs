@@ -10,7 +10,7 @@ use flux::{spine::SpineAdapter, tile::Tile, timing::Nanos};
 use serde::Deserialize;
 use silver_beacon_state::{
     decompose::decompose_beacon_state,
-    ssz_hash::{hash_tree_root_state},
+    ssz_hash::hash_tree_root_state,
     ticker::SlotTicker,
     tile::BeaconStateTile,
     types::{EpochData, HistoricalLongtail, Immutable, SlotData, SlotRoots, box_zeroed},
@@ -283,8 +283,7 @@ impl Harness {
         )
         .expect("decompose post.ssz");
         let validators = ValidatorsState::with_empty_delta(&fv);
-        let expected =
-            hash_tree_root_state(&imm, &validators, &longtail, &epoch, &roots, &sd, &pq);
+        let expected = hash_tree_root_state(&imm, &validators, &longtail, &epoch, &roots, &sd, &pq);
         let got = self.tile.head_state_root();
         assert_eq!(
             got,

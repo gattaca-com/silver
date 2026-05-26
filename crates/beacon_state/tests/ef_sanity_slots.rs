@@ -5,7 +5,7 @@ use std::fs;
 mod ef_common;
 
 use ef_common::{compare_states, iter_test_cases, load_state, spec_tests_dir};
-use silver_beacon_state::{ssz_hash::state_transition};
+use silver_beacon_state::ssz_hash::state_transition;
 
 #[test]
 fn sanity_slots() {

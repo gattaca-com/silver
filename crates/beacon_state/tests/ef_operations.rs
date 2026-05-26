@@ -92,8 +92,7 @@ fn operations_handler(
 fn proposer_slashing() {
     operations_handler("proposer_slashing", "proposer_slashing", true, move |s, op| {
         let mut batch = SigBatch::new();
-        if state_transition::collect_sigs_proposer_slashings(&s.imm, &s.vs, op, &mut batch)
-            .is_err()
+        if state_transition::collect_sigs_proposer_slashings(&s.imm, &s.vs, op, &mut batch).is_err()
         {
             return false;
         }
@@ -238,10 +237,8 @@ fn voluntary_exit() {
 fn bls_to_execution_change() {
     operations_handler("bls_to_execution_change", "address_change", true, move |s, op| {
         let mut batch = SigBatch::new();
-        if state_transition::collect_sigs_bls_to_execution_changes(
-            &s.imm, &s.vs, op, &mut batch,
-        )
-        .is_err()
+        if state_transition::collect_sigs_bls_to_execution_changes(&s.imm, &s.vs, op, &mut batch)
+            .is_err()
         {
             return false;
         }
