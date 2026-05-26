@@ -1,13 +1,19 @@
 use blst::min_pk::PublicKey;
 
-use crate::beacon_state::{
-    buffer::{DeltaBuffer, RollResult},
-    types::{
-        AppendedValidator, B256, BLSPubkey, BeaconBlockHeader, EPOCHS_RING_N, Epoch, EpochState,
-        EpochStateDelta, EpochStateFinalised, Eth1Data, ExecutionPayloadHeader, Finalised,
-        HistoricalSummary, LONGTAILS_RING_N, LongtailState, PendingConsolidation, PendingDeposit,
-        PendingPartialWithdrawal, SLOTS_PER_EPOCH, Slot, StateDelta, Validators, ValidatorsDelta,
-        Withdrawals,
+use crate::{
+    Withdrawals,
+    beacon_state::{
+        buffer::{DeltaBuffer, RollResult},
+        types::{
+            B256, BLSPubkey, BalancesDelta, BeaconBlockHeader, CurrentParticipationDelta,
+            EPOCHS_RING_N, Epoch, EpochState, EpochStateDelta, EpochStateFinalised, Eth1Data,
+            ExecutionPayloadHeader, FAR_FUTURE_EPOCH, Finalised, FinalisedBalances,
+            FinalisedCurrentParticipation, FinalisedInactivityScores,
+            FinalisedPreviousParticipation, HistoricalSummary, InactivityScoresDelta,
+            LONGTAILS_RING_N, LongtailState, PendingConsolidation, PendingDeposit,
+            PendingPartialWithdrawal, PreviousParticipationDelta, SLOTS_PER_EPOCH, Slot,
+            StateDelta,
+        },
     },
 };
 
@@ -50,8 +56,9 @@ impl<'a> StateDeltaView<'a> {
         longtails: &'a mut DeltaBuffer<LongtailState, LONGTAILS_RING_N>,
     ) -> Self {
         debug_assert_eq!(
-            delta.validators.base_cnt, fin.validators.data.validator_count,
-            "delta.base_cnt must mirror fin.validator_count",
+            delta.validators.base_cnt,
+            fin.validators.validator_cnt(),
+            "delta.base_cnt must mirror fin.validator_cnt",
         );
         Self { fin, delta, epochs, longtails }
     }
@@ -190,7 +197,7 @@ impl<'a> StateDeltaView<'a> {
     /// lookup is intentionally scoped to the finalised registry.
     #[inline]
     pub fn validator_by_finalised_pubkey(&self, pk: &BLSPubkey) -> Option<u32> {
-        self.fin.validators.index.get(pk).copied()
+        self.fin.validators.find_by_pubkey(pk).map(|i| i as u32)
     }
 
     #[inline]
@@ -292,157 +299,97 @@ impl<'a> StateDeltaView<'a> {
 
     #[inline]
     pub fn validator_by_pubkey(&self, pk: &BLSPubkey) -> Option<u32> {
-        let delta = &self.delta.validators;
-        let fin = &self.fin.validators;
-        if let Some(&i) = fin.index.get(pk) {
-            return Some(i);
+        if let Some(i) = self.fin.validators.find_by_pubkey(pk) {
+            return Some(i as u32);
         }
         // Linear scan: `appended` only holds validators added since
         // finalisation (≤ MAX_DEPOSITS_PER_BLOCK × delta-span slots).
-        delta.appended.iter().position(|v| &v.pubkey == pk).map(|p| (delta.base_cnt + p) as u32)
+        self.delta.validators.find_by_pubkey(pk).map(|i| i as u32)
     }
 
     #[inline]
     pub fn validator_pubkey(&self, ix: usize) -> BLSPubkey {
-        let delta_validators = &self.delta.validators;
-        if ix < delta_validators.base_cnt {
-            self.fin.validators.data.val_pubkey[ix]
-        } else {
-            delta_validators.appended[ix - delta_validators.base_cnt].pubkey
-        }
+        *self.delta.validators.effective_pubkey(&self.fin.validators, ix as u32)
     }
 
     #[inline]
     pub fn validator_pubkey_decompressed(&self, ix: usize) -> &PublicKey {
-        let delta = &self.delta.validators;
-        if ix < delta.base_cnt {
-            &self.fin.validators.data.val_pubkey_decompressed[ix]
-        } else {
-            &delta.appended[ix - delta.base_cnt].pubkey_decompressed
-        }
+        self.delta.validators.effective_pubkey_decompressed(&self.fin.validators, ix as u32)
     }
 
     #[inline]
     pub fn validator_credentials(&self, ix: usize) -> Withdrawals {
-        let delta = &self.delta.validators;
-        if let Some(v) = lookup_sparse(&delta.credentials_edits, ix as u32) {
-            return v;
-        }
-        if ix < delta.base_cnt {
-            self.fin.validators.data.val_withdrawal_credentials[ix]
-        } else {
-            delta.appended[ix - delta.base_cnt].credentials
-        }
-    }
-
-    #[inline]
-    pub fn validator_balance(&self, ix: usize) -> u64 {
-        let delta = &self.delta.validators;
-        if let Some(v) = lookup_sparse(&delta.balance_edits, ix as u32) {
-            return v;
-        }
-        if ix < delta.base_cnt { self.fin.validators.data.balances[ix] } else { 0 }
-    }
-
-    #[inline]
-    pub fn current_epoch_participation(&self, ix: usize) -> u8 {
-        let delta = &self.delta.validators;
-        if let Some(v) = lookup_sparse(&delta.current_participation_edits, ix as u32) {
-            return v;
-        }
-        if ix < delta.base_cnt {
-            self.fin.validators.data.current_epoch_participation[ix]
-        } else {
-            0
-        }
-    }
-
-    #[inline]
-    pub fn previous_epoch_participation(&self, ix: usize) -> u8 {
-        let delta = &self.delta.validators;
-        if let Some(v) = lookup_sparse(&delta.previous_participation_edits, ix as u32) {
-            return v;
-        }
-        if ix < delta.base_cnt {
-            self.fin.validators.data.previous_epoch_participation[ix]
-        } else {
-            0
-        }
+        *self.delta.validators.effective_credentials(&self.fin.validators, ix as u32)
     }
 
     #[inline]
     pub fn validator_effective_balance(&self, ix: usize) -> u64 {
-        let delta = &self.delta.validators;
-        if let Some(v) = lookup_sparse(&delta.effective_balance_edits, ix as u32) {
-            return v;
-        }
-        if ix < delta.base_cnt { self.fin.validators.data.effective_balance[ix] } else { 0 }
+        self.delta.validators.effective_balance(&self.fin.validators, ix as u32)
     }
 
     #[inline]
     pub fn validator_activation_epoch(&self, ix: usize) -> Epoch {
-        let delta = &self.delta.validators;
-        if let Some(v) = lookup_sparse(&delta.activation_epoch_edits, ix as u32) {
-            return v;
-        }
-        if ix < delta.base_cnt {
-            self.fin.validators.data.activation_epoch[ix]
-        } else {
-            FAR_FUTURE_EPOCH
-        }
+        self.delta.validators.activation_epoch(&self.fin.validators, ix as u32)
     }
 
     #[inline]
     pub fn validator_exit_epoch(&self, ix: usize) -> Epoch {
-        let delta = &self.delta.validators;
-        if let Some(v) = lookup_sparse(&delta.exit_epoch_edits, ix as u32) {
-            return v;
-        }
-        if ix < delta.base_cnt { self.fin.validators.data.exit_epoch[ix] } else { FAR_FUTURE_EPOCH }
+        self.delta.validators.exit_epoch(&self.fin.validators, ix as u32)
     }
 
     #[inline]
     pub fn validator_activation_eligibility_epoch(&self, ix: usize) -> Epoch {
-        let delta = &self.delta.validators;
-        if let Some(v) = lookup_sparse(&delta.activation_eligibility_epoch_edits, ix as u32) {
-            return v;
-        }
-        if ix < delta.base_cnt {
-            self.fin.validators.data.activation_eligibility_epoch[ix]
-        } else {
-            FAR_FUTURE_EPOCH
-        }
+        self.delta.validators.activation_eligibility_epoch(&self.fin.validators, ix as u32)
     }
 
     #[inline]
     pub fn validator_withdrawable_epoch(&self, ix: usize) -> Epoch {
-        let delta = &self.delta.validators;
-        if let Some(v) = lookup_sparse(&delta.withdrawable_epoch_edits, ix as u32) {
-            return v;
-        }
-        if ix < delta.base_cnt {
-            self.fin.validators.data.withdrawable_epoch[ix]
-        } else {
-            FAR_FUTURE_EPOCH
-        }
+        self.delta.validators.withdrawable_epoch(&self.fin.validators, ix as u32)
     }
 
     #[inline]
     pub fn is_validator_slashed(&self, ix: usize) -> bool {
-        let delta = &self.delta.validators;
-        if let Some(v) = lookup_sparse(&delta.slashed_edits, ix as u32) {
+        self.delta.validators.is_slashed(&self.fin.validators, ix as u32)
+    }
+
+    #[inline]
+    pub fn validator_balance(&self, ix: usize) -> u64 {
+        let base_cnt = self.delta.validators.base_cnt;
+        let bd = &self.delta.balances;
+        if let Some(v) = lookup_sparse(&bd.edits, ix as u32) {
             return v;
         }
-        if ix < delta.base_cnt { self.fin.validators.data.slashed[ix] } else { false }
+        if ix < base_cnt { self.fin.balances.get(ix) } else { 0 }
+    }
+
+    #[inline]
+    pub fn current_epoch_participation(&self, ix: usize) -> u8 {
+        let base_cnt = self.delta.validators.base_cnt;
+        let pd = &self.delta.current_participation;
+        if let Some(v) = lookup_sparse(&pd.edits, ix as u32) {
+            return v;
+        }
+        if ix < base_cnt { self.fin.current_participation.get(ix) } else { 0 }
+    }
+
+    #[inline]
+    pub fn previous_epoch_participation(&self, ix: usize) -> u8 {
+        let base_cnt = self.delta.validators.base_cnt;
+        let pd = &self.delta.previous_participation;
+        if let Some(v) = lookup_sparse(&pd.edits, ix as u32) {
+            return v;
+        }
+        if ix < base_cnt { self.fin.previous_participation.get(ix) } else { 0 }
     }
 
     #[inline]
     pub fn validator_inactivity_score(&self, ix: usize) -> u64 {
-        let delta = &self.delta.validators;
-        if let Some(v) = lookup_sparse(&delta.inactivity_score_edits, ix as u32) {
+        let base_cnt = self.delta.validators.base_cnt;
+        let id = &self.delta.inactivity_scores;
+        if let Some(v) = lookup_sparse(&id.edits, ix as u32) {
             return v;
         }
-        if ix < delta.base_cnt { self.fin.validators.data.inactivity_scores[ix] } else { 0 }
+        if ix < base_cnt { self.fin.inactivity_scores.get(ix) } else { 0 }
     }
 
     #[inline]
@@ -512,129 +459,126 @@ impl<'a> StateDeltaView<'a> {
         fin.pending_consolidations.len().saturating_sub(drain) + delta.consolidations_appended.len()
     }
 
-    // The `iter_*` family below slices the finalised base to `[..base_cnt]`
-    // before handing it to `sweep`. The `Box<[T]>` fields are sized to
-    // `MAX_VALIDATORS`; without slicing, `sweep` would read zero-init slots
-    // for indices in `[base_cnt, base_cnt + appended.len())` instead of
-    // returning `appended_default`.
-
     pub fn iter_validator_balances(&self) -> impl Iterator<Item = u64> + '_ {
-        let delta = &self.delta.validators;
-        let fin = &self.fin.validators;
+        let base_cnt = self.delta.validators.base_cnt;
         Self::sweep(
-            &delta.balance_edits,
-            &fin.data.balances[..delta.base_cnt],
+            &self.delta.balances.edits,
+            &self.fin.balances.data[..base_cnt],
             0,
             self.validators_count(),
         )
     }
 
     pub fn iter_validator_effective_balances(&self) -> impl Iterator<Item = u64> + '_ {
-        let delta = &self.delta.validators;
-        let fin = &self.fin.validators;
+        let base_cnt = self.delta.validators.base_cnt;
         Self::sweep(
-            &delta.effective_balance_edits,
-            &fin.data.effective_balance[..delta.base_cnt],
+            &self.delta.validators.effective_balance_edits,
+            &self.fin.validators.effective_balance_slice()[..base_cnt],
             0,
             self.validators_count(),
         )
     }
 
     pub fn iter_current_epoch_participants(&self) -> impl Iterator<Item = u8> + '_ {
-        let delta = &self.delta.validators;
-        let fin = &self.fin.validators;
+        let base_cnt = self.delta.validators.base_cnt;
         Self::sweep(
-            &delta.current_participation_edits,
-            &fin.data.current_epoch_participation[..delta.base_cnt],
+            &self.delta.current_participation.edits,
+            &self.fin.current_participation.data[..base_cnt],
             0,
             self.validators_count(),
         )
     }
 
     pub fn iter_previous_epoch_participants(&self) -> impl Iterator<Item = u8> + '_ {
-        let delta = &self.delta.validators;
-        let fin = &self.fin.validators;
+        let base_cnt = self.delta.validators.base_cnt;
         Self::sweep(
-            &delta.previous_participation_edits,
-            &fin.data.previous_epoch_participation[..delta.base_cnt],
+            &self.delta.previous_participation.edits,
+            &self.fin.previous_participation.data[..base_cnt],
             0,
             self.validators_count(),
         )
     }
 
     pub fn iter_inactivity_scores(&self) -> impl Iterator<Item = u64> + '_ {
-        let delta = &self.delta.validators;
-        let fin = &self.fin.validators;
+        let base_cnt = self.delta.validators.base_cnt;
         Self::sweep(
-            &delta.inactivity_score_edits,
-            &fin.data.inactivity_scores[..delta.base_cnt],
+            &self.delta.inactivity_scores.edits,
+            &self.fin.inactivity_scores.data[..base_cnt],
             0,
             self.validators_count(),
         )
     }
 
     pub fn iter_activation_epochs(&self) -> impl Iterator<Item = Epoch> + '_ {
-        let delta = &self.delta.validators;
-        let fin = &self.fin.validators;
+        let base_cnt = self.delta.validators.base_cnt;
         Self::sweep(
-            &delta.activation_epoch_edits,
-            &fin.data.activation_epoch[..delta.base_cnt],
+            &self.delta.validators.activation_epoch_edits,
+            &self.fin.validators.activation_epoch_slice()[..base_cnt],
             FAR_FUTURE_EPOCH,
             self.validators_count(),
         )
     }
 
     pub fn iter_exit_epochs(&self) -> impl Iterator<Item = Epoch> + '_ {
-        let delta = &self.delta.validators;
-        let fin = &self.fin.validators;
+        let base_cnt = self.delta.validators.base_cnt;
         Self::sweep(
-            &delta.exit_epoch_edits,
-            &fin.data.exit_epoch[..delta.base_cnt],
+            &self.delta.validators.exit_epoch_edits,
+            &self.fin.validators.exit_epoch_slice()[..base_cnt],
             FAR_FUTURE_EPOCH,
             self.validators_count(),
         )
     }
 
+    /// Slashed iterator — the finalised base stores `slashed` as a packed
+    /// bitset (1 bit/validator), so this can't share `sweep`'s slice-indexed
+    /// path. Edits + bitset + appended-record values are walked explicitly.
     pub fn iter_slashed(&self) -> impl Iterator<Item = bool> + '_ {
-        let delta = &self.delta.validators;
-        let fin = &self.fin.validators;
-        Self::sweep(
-            &delta.slashed_edits,
-            &fin.data.slashed[..delta.base_cnt],
-            false,
-            self.validators_count(),
-        )
+        let base_cnt = self.delta.validators.base_cnt;
+        let total = self.validators_count();
+        let edits = &self.delta.validators.slashed_edits;
+        let bitset = self.fin.validators.slashed_bitset();
+        let appended = &self.delta.validators.appended;
+        let mut cursor = 0usize;
+        (0..total).map(move |i| {
+            if cursor < edits.len() && (edits[cursor].0 as usize) == i {
+                let v = edits[cursor].1;
+                cursor += 1;
+                v
+            } else if i < base_cnt {
+                bitset[i / 8] & (1u8 << (i % 8)) != 0
+            } else {
+                appended[i - base_cnt].slashed
+            }
+        })
     }
 
     pub fn iter_withdrawable_epochs(&self) -> impl Iterator<Item = Epoch> + '_ {
-        let delta = &self.delta.validators;
-        let fin = &self.fin.validators;
+        let base_cnt = self.delta.validators.base_cnt;
         Self::sweep(
-            &delta.withdrawable_epoch_edits,
-            &fin.data.withdrawable_epoch[..delta.base_cnt],
+            &self.delta.validators.withdrawable_epoch_edits,
+            &self.fin.validators.withdrawable_epoch_slice()[..base_cnt],
             FAR_FUTURE_EPOCH,
             self.validators_count(),
         )
     }
 
     pub fn iter_activation_eligibility_epochs(&self) -> impl Iterator<Item = Epoch> + '_ {
-        let delta = &self.delta.validators;
-        let fin = &self.fin.validators;
+        let base_cnt = self.delta.validators.base_cnt;
         Self::sweep(
-            &delta.activation_eligibility_epoch_edits,
-            &fin.data.activation_eligibility_epoch[..delta.base_cnt],
+            &self.delta.validators.activation_eligibility_epoch_edits,
+            &self.fin.validators.activation_eligibility_epoch_slice()[..base_cnt],
             FAR_FUTURE_EPOCH,
             self.validators_count(),
         )
     }
 
-    /// Appended validators' credentials live in `delta.appended[i].credentials`
-    /// rather than at a constant default, so this can't reuse `sweep`.
+    /// Appended validators' credentials live in
+    /// `delta.appended[i].credentials` rather than at a constant default,
+    /// so this can't reuse `sweep`.
     pub fn iter_validator_credentials(&self) -> impl Iterator<Item = Withdrawals> + '_ {
         let delta = &self.delta.validators;
-        let fin = &self.fin.validators;
         let edits = &delta.credentials_edits;
-        let base = &fin.data.val_withdrawal_credentials;
+        let base = self.fin.validators.withdrawal_credentials_slice();
         let appended = &delta.appended;
         let base_cnt = delta.base_cnt;
         let total = base_cnt + appended.len();
@@ -685,8 +629,6 @@ impl<'a> StateDeltaView<'a> {
 }
 
 impl<'a> StateDeltaView<'a> {
-    // ── Slot tier writes ────────────────────────────────────────────────
-
     #[inline]
     pub fn set_slot(&mut self, s: Slot) {
         self.delta.slot.slot.slot = s;
@@ -908,112 +850,39 @@ impl<'a> StateDeltaView<'a> {
         self.longtails.get_mut(seq).historical_summaries.push(h);
     }
 
-    // Validator writes (sparse-edit sets)
-
-    #[inline]
-    pub fn set_balance(&mut self, idx: u32, v: u64) {
-        set_balance(&mut self.delta.validators, &self.fin.validators, idx, v);
-    }
-
     #[inline]
     pub fn set_credentials(&mut self, idx: u32, v: Withdrawals) {
-        set_credentials(&mut self.delta.validators, &self.fin.validators, idx, v);
-    }
-
-    #[inline]
-    pub fn set_current_participation(&mut self, idx: u32, v: u8) {
-        set_current_participation(&mut self.delta.validators, &self.fin.validators, idx, v);
-    }
-
-    #[inline]
-    pub fn set_previous_participation(&mut self, idx: u32, v: u8) {
-        set_previous_participation(&mut self.delta.validators, &self.fin.validators, idx, v);
+        self.delta.validators.set_credentials(&self.fin.validators, idx, v);
     }
 
     #[inline]
     pub fn set_effective_balance(&mut self, idx: u32, v: u64) {
-        set_effective_balance(&mut self.delta.validators, &self.fin.validators, idx, v);
+        self.delta.validators.set_effective_balance(&self.fin.validators, idx, v);
     }
 
     #[inline]
     pub fn set_activation_epoch(&mut self, idx: u32, v: Epoch) {
-        set_activation_epoch(&mut self.delta.validators, &self.fin.validators, idx, v);
+        self.delta.validators.set_activation_epoch(&self.fin.validators, idx, v);
     }
 
     #[inline]
     pub fn set_exit_epoch(&mut self, idx: u32, v: Epoch) {
-        set_exit_epoch(&mut self.delta.validators, &self.fin.validators, idx, v);
+        self.delta.validators.set_exit_epoch(&self.fin.validators, idx, v);
     }
 
     #[inline]
     pub fn set_activation_eligibility_epoch(&mut self, idx: u32, v: Epoch) {
-        set_activation_eligibility_epoch(&mut self.delta.validators, &self.fin.validators, idx, v);
+        self.delta.validators.set_activation_eligibility_epoch(&self.fin.validators, idx, v);
     }
 
     #[inline]
     pub fn set_withdrawable_epoch(&mut self, idx: u32, v: Epoch) {
-        set_withdrawable_epoch(&mut self.delta.validators, &self.fin.validators, idx, v);
+        self.delta.validators.set_withdrawable_epoch(&self.fin.validators, idx, v);
     }
 
     #[inline]
     pub fn set_slashed(&mut self, idx: u32, v: bool) {
-        set_slashed(&mut self.delta.validators, &self.fin.validators, idx, v);
-    }
-
-    #[inline]
-    pub fn set_inactivity_score(&mut self, idx: u32, v: u64) {
-        set_inactivity_score(&mut self.delta.validators, &self.fin.validators, idx, v);
-    }
-
-    // Bulk replace (dense epoch-boundary rewrites)
-    #[inline]
-    pub fn replace_balances<F: FnMut(usize, u64) -> u64>(
-        &mut self,
-        scratch: &mut Vec<(u32, u64)>,
-        f: F,
-    ) {
-        replace_balances(&mut self.delta.validators, &self.fin.validators, scratch, f);
-    }
-
-    #[inline]
-    pub fn replace_effective_balance<F: FnMut(usize, u64) -> u64>(
-        &mut self,
-        scratch: &mut Vec<(u32, u64)>,
-        f: F,
-    ) {
-        replace_effective_balance(&mut self.delta.validators, &self.fin.validators, scratch, f);
-    }
-
-    #[inline]
-    pub fn replace_inactivity_scores<F: FnMut(usize, u64) -> u64>(
-        &mut self,
-        scratch: &mut Vec<(u32, u64)>,
-        f: F,
-    ) {
-        replace_inactivity_scores(&mut self.delta.validators, &self.fin.validators, scratch, f);
-    }
-
-    #[inline]
-    pub fn replace_current_participation<F: FnMut(usize, u8) -> u8>(
-        &mut self,
-        scratch: &mut Vec<(u32, u8)>,
-        f: F,
-    ) {
-        replace_current_participation(&mut self.delta.validators, &self.fin.validators, scratch, f);
-    }
-
-    #[inline]
-    pub fn replace_previous_participation<F: FnMut(usize, u8) -> u8>(
-        &mut self,
-        scratch: &mut Vec<(u32, u8)>,
-        f: F,
-    ) {
-        replace_previous_participation(
-            &mut self.delta.validators,
-            &self.fin.validators,
-            scratch,
-            f,
-        );
+        self.delta.validators.set_slashed(&self.fin.validators, idx, v);
     }
 
     #[inline]
@@ -1023,11 +892,118 @@ impl<'a> StateDeltaView<'a> {
         pubkey_decompressed: PublicKey,
         credentials: Withdrawals,
     ) -> u32 {
-        append_validator(&mut self.delta.validators, pubkey, pubkey_decompressed, credentials)
+        self.delta.validators.append(&self.fin.validators, pubkey, pubkey_decompressed, credentials)
+    }
+
+    #[inline]
+    pub fn set_balance(&mut self, idx: u32, v: u64) {
+        let base_cnt = self.delta.validators.base_cnt;
+        set_balance(&mut self.delta.balances, &self.fin.balances, base_cnt, idx, v);
+    }
+
+    #[inline]
+    pub fn set_current_participation(&mut self, idx: u32, v: u8) {
+        let base_cnt = self.delta.validators.base_cnt;
+        set_current_participation(
+            &mut self.delta.current_participation,
+            &self.fin.current_participation,
+            base_cnt,
+            idx,
+            v,
+        );
+    }
+
+    #[inline]
+    pub fn set_previous_participation(&mut self, idx: u32, v: u8) {
+        let base_cnt = self.delta.validators.base_cnt;
+        set_previous_participation(
+            &mut self.delta.previous_participation,
+            &self.fin.previous_participation,
+            base_cnt,
+            idx,
+            v,
+        );
+    }
+
+    #[inline]
+    pub fn set_inactivity_score(&mut self, idx: u32, v: u64) {
+        let base_cnt = self.delta.validators.base_cnt;
+        set_inactivity_score(
+            &mut self.delta.inactivity_scores,
+            &self.fin.inactivity_scores,
+            base_cnt,
+            idx,
+            v,
+        );
+    }
+
+    // ── Bulk replace (sibling layers only — dense epoch-boundary passes)
+
+    #[inline]
+    pub fn replace_balances<F: FnMut(usize, u64) -> u64>(
+        &mut self,
+        scratch: &mut Vec<(u32, u64)>,
+        f: F,
+    ) {
+        let base_cnt = self.delta.validators.base_cnt;
+        let total = base_cnt + self.delta.validators.appended.len();
+        replace_balances(&mut self.delta.balances, &self.fin.balances, base_cnt, total, scratch, f);
+    }
+
+    #[inline]
+    pub fn replace_inactivity_scores<F: FnMut(usize, u64) -> u64>(
+        &mut self,
+        scratch: &mut Vec<(u32, u64)>,
+        f: F,
+    ) {
+        let base_cnt = self.delta.validators.base_cnt;
+        let total = base_cnt + self.delta.validators.appended.len();
+        replace_inactivity_scores(
+            &mut self.delta.inactivity_scores,
+            &self.fin.inactivity_scores,
+            base_cnt,
+            total,
+            scratch,
+            f,
+        );
+    }
+
+    #[inline]
+    pub fn replace_current_participation<F: FnMut(usize, u8) -> u8>(
+        &mut self,
+        scratch: &mut Vec<(u32, u8)>,
+        f: F,
+    ) {
+        let base_cnt = self.delta.validators.base_cnt;
+        let total = base_cnt + self.delta.validators.appended.len();
+        replace_current_participation(
+            &mut self.delta.current_participation,
+            &self.fin.current_participation,
+            base_cnt,
+            total,
+            scratch,
+            f,
+        );
+    }
+
+    #[inline]
+    pub fn replace_previous_participation<F: FnMut(usize, u8) -> u8>(
+        &mut self,
+        scratch: &mut Vec<(u32, u8)>,
+        f: F,
+    ) {
+        let base_cnt = self.delta.validators.base_cnt;
+        let total = base_cnt + self.delta.validators.appended.len();
+        replace_previous_participation(
+            &mut self.delta.previous_participation,
+            &self.fin.previous_participation,
+            base_cnt,
+            total,
+            scratch,
+            f,
+        );
     }
 }
-
-const FAR_FUTURE_EPOCH: Epoch = u64::MAX;
 
 #[inline]
 fn lookup_sparse<T: Copy>(edits: &[(u32, T)], idx: u32) -> Option<T> {
@@ -1083,12 +1059,38 @@ impl StateDelta {
     }
 }
 
-// Bulk overwrite — single forward sweep that rebuilds a sparse edit vec.
-// Required for dense epoch-boundary passes (process_rewards_and_penalties,
-// process_inactivity_updates, process_participation_flag_updates). Naive
-// per-validator `set_xxx(i, v)` would be O(N log N) due to binary-search
-// inserts; the sweep is O(N + |edits_old|).
-fn replace_field_with_scratch<T, F>(
+/// Sparse-vec setter — maintains the sorted-by-idx invariant. Elides
+/// entries that match the base (and removes any stale edit at that idx),
+/// so `sparse_set(i, base_val, base_val)` removes any prior edit at i.
+#[inline]
+fn sparse_set<T>(edits: &mut Vec<(u32, T)>, idx: u32, v: T, base_val: T)
+where
+    T: Copy + PartialEq,
+{
+    match edits.binary_search_by_key(&idx, |(k, _)| *k) {
+        Ok(p) => {
+            if v == base_val {
+                edits.remove(p);
+            } else {
+                edits[p].1 = v;
+            }
+        }
+        Err(p) => {
+            if v != base_val {
+                edits.insert(p, (idx, v));
+            }
+        }
+    }
+}
+
+/// Bulk overwrite — single forward sweep that rebuilds a sparse edit vec
+/// using a caller-supplied scratch (reused across calls; no allocation
+/// after warmup). For dense epoch-boundary passes
+/// (process_rewards_and_penalties, process_inactivity_updates,
+/// process_participation_flag_updates). Naive per-i `sparse_set` would
+/// be O(N log N) due to binary-search inserts; the sweep is
+/// O(N + |edits_old|).
+fn sparse_replace_with_scratch<T, F>(
     edits: &mut Vec<(u32, T)>,
     scratch: &mut Vec<(u32, T)>,
     base_slice: &[T],
@@ -1119,261 +1121,119 @@ fn replace_field_with_scratch<T, F>(
             scratch.push((i as u32, new));
         }
     }
-    // `edits` now carries the new set; `scratch` holds the old data and will
-    // be cleared (capacity retained) on the next call.
     std::mem::swap(edits, scratch);
 }
 
 #[inline]
+pub fn set_balance(
+    delta: &mut BalancesDelta,
+    base: &FinalisedBalances,
+    base_cnt: usize,
+    idx: u32,
+    v: u64,
+) {
+    let base_val = if (idx as usize) < base_cnt { base.get(idx as usize) } else { 0 };
+    sparse_set(&mut delta.edits, idx, v, base_val);
+}
+
+#[inline]
+pub fn set_previous_participation(
+    delta: &mut PreviousParticipationDelta,
+    base: &FinalisedPreviousParticipation,
+    base_cnt: usize,
+    idx: u32,
+    v: u8,
+) {
+    let base_val = if (idx as usize) < base_cnt { base.get(idx as usize) } else { 0 };
+    sparse_set(&mut delta.edits, idx, v, base_val);
+}
+
+#[inline]
+pub fn set_current_participation(
+    delta: &mut CurrentParticipationDelta,
+    base: &FinalisedCurrentParticipation,
+    base_cnt: usize,
+    idx: u32,
+    v: u8,
+) {
+    let base_val = if (idx as usize) < base_cnt { base.get(idx as usize) } else { 0 };
+    sparse_set(&mut delta.edits, idx, v, base_val);
+}
+
+#[inline]
+pub fn set_inactivity_score(
+    delta: &mut InactivityScoresDelta,
+    base: &FinalisedInactivityScores,
+    base_cnt: usize,
+    idx: u32,
+    v: u64,
+) {
+    let base_val = if (idx as usize) < base_cnt { base.get(idx as usize) } else { 0 };
+    sparse_set(&mut delta.edits, idx, v, base_val);
+}
+
+#[inline]
 pub fn replace_balances<F>(
-    delta: &mut ValidatorsDelta,
-    base: &Validators,
+    delta: &mut BalancesDelta,
+    base: &FinalisedBalances,
+    base_cnt: usize,
+    total: usize,
     scratch: &mut Vec<(u32, u64)>,
     f: F,
 ) where
     F: FnMut(usize, u64) -> u64,
 {
-    let total = delta.base_cnt + delta.appended.len();
-    let base_cnt = delta.base_cnt;
-    replace_field_with_scratch(
-        &mut delta.balance_edits,
-        scratch,
-        &base.data.balances[..base_cnt],
-        0,
-        total,
-        f,
-    );
-}
-
-#[inline]
-pub fn replace_effective_balance<F>(
-    delta: &mut ValidatorsDelta,
-    base: &Validators,
-    scratch: &mut Vec<(u32, u64)>,
-    f: F,
-) where
-    F: FnMut(usize, u64) -> u64,
-{
-    let total = delta.base_cnt + delta.appended.len();
-    let base_cnt = delta.base_cnt;
-    replace_field_with_scratch(
-        &mut delta.effective_balance_edits,
-        scratch,
-        &base.data.effective_balance[..base_cnt],
-        0,
-        total,
-        f,
-    );
-}
-
-#[inline]
-pub fn replace_inactivity_scores<F>(
-    delta: &mut ValidatorsDelta,
-    base: &Validators,
-    scratch: &mut Vec<(u32, u64)>,
-    f: F,
-) where
-    F: FnMut(usize, u64) -> u64,
-{
-    let total = delta.base_cnt + delta.appended.len();
-    let base_cnt = delta.base_cnt;
-    replace_field_with_scratch(
-        &mut delta.inactivity_score_edits,
-        scratch,
-        &base.data.inactivity_scores[..base_cnt],
-        0,
-        total,
-        f,
-    );
-}
-
-#[inline]
-pub fn replace_current_participation<F>(
-    delta: &mut ValidatorsDelta,
-    base: &Validators,
-    scratch: &mut Vec<(u32, u8)>,
-    f: F,
-) where
-    F: FnMut(usize, u8) -> u8,
-{
-    let total = delta.base_cnt + delta.appended.len();
-    let base_cnt = delta.base_cnt;
-    replace_field_with_scratch(
-        &mut delta.current_participation_edits,
-        scratch,
-        &base.data.current_epoch_participation[..base_cnt],
-        0,
-        total,
-        f,
-    );
+    sparse_replace_with_scratch(&mut delta.edits, scratch, &base.data[..base_cnt], 0, total, f);
 }
 
 #[inline]
 pub fn replace_previous_participation<F>(
-    delta: &mut ValidatorsDelta,
-    base: &Validators,
+    delta: &mut PreviousParticipationDelta,
+    base: &FinalisedPreviousParticipation,
+    base_cnt: usize,
+    total: usize,
     scratch: &mut Vec<(u32, u8)>,
     f: F,
 ) where
     F: FnMut(usize, u8) -> u8,
 {
-    let total = delta.base_cnt + delta.appended.len();
-    let base_cnt = delta.base_cnt;
-    replace_field_with_scratch(
-        &mut delta.previous_participation_edits,
-        scratch,
-        &base.data.previous_epoch_participation[..base_cnt],
-        0,
-        total,
-        f,
-    );
+    sparse_replace_with_scratch(&mut delta.edits, scratch, &base.data[..base_cnt], 0, total, f);
 }
 
-// Sparse-vec setters — maintain the sorted-by-idx invariant on edit vecs.
-// Same shape as the readers: `set_X(delta, base, idx, value)`. Elides
-// entries that match the base (and removes any stale edit at that idx),
-// so `set_X(i, base_val)` is equivalent to "no edit at i". Per-call cost
-// is O(log |edits|) for the search plus O(|edits|) worst-case for
-// insert/remove shifts; fine for the per-block sparse writes (~tens of
-// validators per block). Dense epoch-boundary rewrites should use the
-// `replace_*` bulk helpers above instead.
-
 #[inline]
-fn set_field<T>(edits: &mut Vec<(u32, T)>, base_slice: &[T], appended_default: T, idx: u32, v: T)
-where
-    T: Copy + PartialEq,
+pub fn replace_current_participation<F>(
+    delta: &mut CurrentParticipationDelta,
+    base: &FinalisedCurrentParticipation,
+    base_cnt: usize,
+    total: usize,
+    scratch: &mut Vec<(u32, u8)>,
+    f: F,
+) where
+    F: FnMut(usize, u8) -> u8,
 {
-    let i = idx as usize;
-    let base_val = if i < base_slice.len() { base_slice[i] } else { appended_default };
-    match edits.binary_search_by_key(&idx, |(k, _)| *k) {
-        Ok(p) => {
-            if v == base_val {
-                edits.remove(p);
-            } else {
-                edits[p].1 = v;
-            }
-        }
-        Err(p) => {
-            if v != base_val {
-                edits.insert(p, (idx, v));
-            }
-        }
-    }
+    sparse_replace_with_scratch(&mut delta.edits, scratch, &base.data[..base_cnt], 0, total, f);
 }
 
 #[inline]
-pub fn set_credentials(delta: &mut ValidatorsDelta, base: &Validators, idx: u32, v: Withdrawals) {
-    set_field(
-        &mut delta.credentials_edits,
-        &base.data.val_withdrawal_credentials,
-        Withdrawals::default(),
-        idx,
-        v,
-    );
-}
-
-#[inline]
-pub fn set_balance(delta: &mut ValidatorsDelta, base: &Validators, idx: u32, v: u64) {
-    set_field(&mut delta.balance_edits, &base.data.balances, 0, idx, v);
-}
-
-#[inline]
-pub fn set_current_participation(delta: &mut ValidatorsDelta, base: &Validators, idx: u32, v: u8) {
-    set_field(
-        &mut delta.current_participation_edits,
-        &base.data.current_epoch_participation,
-        0,
-        idx,
-        v,
-    );
-}
-
-#[inline]
-pub fn set_previous_participation(delta: &mut ValidatorsDelta, base: &Validators, idx: u32, v: u8) {
-    set_field(
-        &mut delta.previous_participation_edits,
-        &base.data.previous_epoch_participation,
-        0,
-        idx,
-        v,
-    );
-}
-
-#[inline]
-pub fn set_effective_balance(delta: &mut ValidatorsDelta, base: &Validators, idx: u32, v: u64) {
-    set_field(&mut delta.effective_balance_edits, &base.data.effective_balance, 0, idx, v);
-}
-
-#[inline]
-pub fn set_activation_epoch(delta: &mut ValidatorsDelta, base: &Validators, idx: u32, v: Epoch) {
-    set_field(
-        &mut delta.activation_epoch_edits,
-        &base.data.activation_epoch,
-        FAR_FUTURE_EPOCH,
-        idx,
-        v,
-    );
-}
-
-#[inline]
-pub fn set_exit_epoch(delta: &mut ValidatorsDelta, base: &Validators, idx: u32, v: Epoch) {
-    set_field(&mut delta.exit_epoch_edits, &base.data.exit_epoch, FAR_FUTURE_EPOCH, idx, v);
-}
-
-#[inline]
-pub fn set_activation_eligibility_epoch(
-    delta: &mut ValidatorsDelta,
-    base: &Validators,
-    idx: u32,
-    v: Epoch,
-) {
-    set_field(
-        &mut delta.activation_eligibility_epoch_edits,
-        &base.data.activation_eligibility_epoch,
-        FAR_FUTURE_EPOCH,
-        idx,
-        v,
-    );
-}
-
-#[inline]
-pub fn set_withdrawable_epoch(delta: &mut ValidatorsDelta, base: &Validators, idx: u32, v: Epoch) {
-    set_field(
-        &mut delta.withdrawable_epoch_edits,
-        &base.data.withdrawable_epoch,
-        FAR_FUTURE_EPOCH,
-        idx,
-        v,
-    );
-}
-
-#[inline]
-pub fn set_slashed(delta: &mut ValidatorsDelta, base: &Validators, idx: u32, v: bool) {
-    set_field(&mut delta.slashed_edits, &base.data.slashed, false, idx, v);
-}
-
-#[inline]
-pub fn set_inactivity_score(delta: &mut ValidatorsDelta, base: &Validators, idx: u32, v: u64) {
-    set_field(&mut delta.inactivity_score_edits, &base.data.inactivity_scores, 0, idx, v);
-}
-
-#[inline]
-pub fn append_validator(
-    delta: &mut ValidatorsDelta,
-    pubkey: BLSPubkey,
-    pubkey_decompressed: PublicKey,
-    credentials: Withdrawals,
-) -> u32 {
-    let idx = (delta.base_cnt + delta.appended.len()) as u32;
-    delta.appended.push(AppendedValidator { pubkey, pubkey_decompressed, credentials });
-    idx
+pub fn replace_inactivity_scores<F>(
+    delta: &mut InactivityScoresDelta,
+    base: &FinalisedInactivityScores,
+    base_cnt: usize,
+    total: usize,
+    scratch: &mut Vec<(u32, u64)>,
+    f: F,
+) where
+    F: FnMut(usize, u64) -> u64,
+{
+    sparse_replace_with_scratch(&mut delta.edits, scratch, &base.data[..base_cnt], 0, total, f);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::beacon_state::types::{
-        HistoricalSummary, PendingDeposit, SlotState, SlotStateDelta,
+    use crate::beacon_state::{
+        types::{HistoricalSummary, PendingDeposit, SlotState, SlotStateDelta},
+        validator_identity::ValidatorsDelta,
     };
 
     fn fresh_finalised() -> Box<Finalised> {
@@ -1384,7 +1244,7 @@ mod tests {
 
     fn anchored_delta(f: &Finalised) -> StateDelta {
         StateDelta {
-            validators: ValidatorsDelta::new_at(f.validators.data.validator_count),
+            validators: ValidatorsDelta::new_at(f.validators.validator_cnt()),
             slot: SlotStateDelta {
                 slot: SlotState { slot: f.slot.slot.slot, ..SlotState::default() },
                 ..Default::default()
@@ -1428,22 +1288,16 @@ mod tests {
     }
 
     fn push_default_validator(f: &mut Finalised, balance_v: u64) {
-        let d = &mut f.validators.data;
-        let i = d.validator_count;
-        d.val_pubkey[i] = [0; 48];
-        d.val_pubkey_decompressed[i] = Default::default();
-        d.val_withdrawal_credentials[i] = Default::default();
-        d.balances[i] = balance_v;
-        d.current_epoch_participation[i] = 0;
-        d.previous_epoch_participation[i] = 0;
-        d.effective_balance[i] = 0;
-        d.activation_epoch[i] = u64::MAX;
-        d.exit_epoch[i] = u64::MAX;
-        d.activation_eligibility_epoch[i] = u64::MAX;
-        d.withdrawable_epoch[i] = u64::MAX;
-        d.inactivity_scores[i] = 0;
-        d.slashed[i] = false;
-        d.validator_count += 1;
+        let i = f.validators.validator_cnt();
+        // Identity layer columns. `FinalisedValidators::default()` already
+        // seeds `[FAR_FUTURE_EPOCH; MAX]` for the four epochs and zeros
+        // elsewhere, so we only need to set the slot and bump the count.
+        f.validators.pubkey_slice_mut()[i] = [0; 48];
+        f.validators.pubkey_decompressed_slice_mut()[i] = Default::default();
+        f.validators.withdrawal_credentials_slice_mut()[i] = Default::default();
+        f.validators.set_validator_cnt(i + 1);
+        // Sibling layers — only balance needs an explicit value.
+        f.balances.slice_mut()[i] = balance_v;
     }
 
     #[test]
@@ -1576,7 +1430,7 @@ mod tests {
             assert_eq!(view.validator_balance(0), 1_000);
         }
 
-        d.validators.balance_edits.push((0, 2_500));
+        d.balances.edits.push((0, 2_500));
         let view = StateDeltaView::new(&f, &mut d, &mut epochs, &mut longtails);
         assert_eq!(view.validator_balance(0), 2_500);
     }
@@ -1595,7 +1449,7 @@ mod tests {
         let mut d = anchored_delta(&f);
         let pk = [7u8; 48];
         let creds = Withdrawals([0x42; 32]);
-        append_validator(&mut d.validators, pk, Default::default(), creds);
+        d.validators.append(&f.validators, pk, Default::default(), creds);
 
         fresh_rings!(epochs, longtails);
         let view = StateDeltaView::new(&f, &mut d, &mut epochs, &mut longtails);
@@ -1629,8 +1483,8 @@ mod tests {
         }
 
         let mut d = anchored_delta(&f);
-        d.validators.balance_edits.push((1, 999));
-        d.validators.balance_edits.push((3, 333));
+        d.balances.edits.push((1, 999));
+        d.balances.edits.push((3, 333));
         fresh_rings!(epochs, longtails);
         let view = StateDeltaView::new(&f, &mut d, &mut epochs, &mut longtails);
         let got: Vec<u64> = view.iter_validator_balances().collect();
@@ -1672,16 +1526,21 @@ mod tests {
         let mut f = fresh_finalised();
         let pk_a = [0xA; 48];
         let pk_b = [0xB; 48];
-        push_default_validator(&mut f, 0);
-        f.validators.data.val_pubkey[0] = pk_a;
-        f.validators.index.insert(pk_a, 0);
+        // Insert pk_a into the finalised base directly via append.
+        f.validators.append(
+            &pk_a,
+            &Default::default(),
+            &Default::default(),
+            0,
+            false,
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+        );
 
         let mut d = anchored_delta(&f);
-        d.validators.appended.push(AppendedValidator {
-            pubkey: pk_b,
-            pubkey_decompressed: Default::default(),
-            credentials: Default::default(),
-        });
+        d.validators.append(&f.validators, pk_b, Default::default(), Default::default());
 
         fresh_rings!(epochs, longtails);
         let view = StateDeltaView::new(&f, &mut d, &mut epochs, &mut longtails);
@@ -1716,11 +1575,13 @@ mod tests {
 
         let mut d = anchored_delta(&f);
         let mut scratch: Vec<(u32, u64)> = Vec::new();
+        let base_cnt = f.validators.validator_cnt();
+        let total = base_cnt; // no appended in this test
         // Even idx → base value (elided); odd idx → +1000 (kept).
-        replace_balances(&mut d.validators, &f.validators, &mut scratch, |i, cur| {
+        replace_balances(&mut d.balances, &f.balances, base_cnt, total, &mut scratch, |i, cur| {
             if i % 2 == 0 { cur } else { cur + 1000 }
         });
-        assert_eq!(d.validators.balance_edits, vec![(1, 1010), (3, 1030)]);
+        assert_eq!(d.balances.edits, vec![(1, 1010), (3, 1030)]);
     }
 
     #[test]
@@ -1741,18 +1602,14 @@ mod tests {
         let mut f = fresh_finalised();
         let mut d = anchored_delta(&f);
         let pk = [0xFE; 48];
-        d.validators.appended.push(AppendedValidator {
-            pubkey: pk,
-            pubkey_decompressed: Default::default(),
-            credentials: Default::default(),
-        });
-        d.validators.balance_edits.push((0, 32_000_000_000));
+        d.validators.append(&f.validators, pk, Default::default(), Default::default());
+        d.balances.edits.push((0, 32_000_000_000));
 
         f.apply_delta(&d, None, None);
-        assert_eq!(f.validators.data.validator_count, 1);
-        assert_eq!(f.validators.data.balances[0], 32_000_000_000);
-        assert_eq!(f.validators.data.activation_epoch[0], u64::MAX);
-        assert_eq!(f.validators.index.get(&pk), Some(&0));
+        assert_eq!(f.validators.validator_cnt(), 1);
+        assert_eq!(f.balances.get(0), 32_000_000_000);
+        assert_eq!(f.validators.activation_epoch(0), u64::MAX);
+        assert_eq!(f.validators.find_by_pubkey(&pk), Some(0));
     }
 
     #[test]
@@ -1763,21 +1620,23 @@ mod tests {
         }
         let mut d = anchored_delta(&f);
 
+        let base_cnt = f.validators.validator_cnt();
+
         // Insert at idx 2.
-        set_balance(&mut d.validators, &f.validators, 2, 2_500);
-        assert_eq!(d.validators.balance_edits, vec![(2, 2_500)]);
+        set_balance(&mut d.balances, &f.balances, base_cnt, 2, 2_500);
+        assert_eq!(d.balances.edits, vec![(2, 2_500)]);
 
         // Insert at idx 0 — must land before idx 2 to keep sorted.
-        set_balance(&mut d.validators, &f.validators, 0, 4_000);
-        assert_eq!(d.validators.balance_edits, vec![(0, 4_000), (2, 2_500)]);
+        set_balance(&mut d.balances, &f.balances, base_cnt, 0, 4_000);
+        assert_eq!(d.balances.edits, vec![(0, 4_000), (2, 2_500)]);
 
         // Update in place.
-        set_balance(&mut d.validators, &f.validators, 0, 5_000);
-        assert_eq!(d.validators.balance_edits, vec![(0, 5_000), (2, 2_500)]);
+        set_balance(&mut d.balances, &f.balances, base_cnt, 0, 5_000);
+        assert_eq!(d.balances.edits, vec![(0, 5_000), (2, 2_500)]);
 
         // Setting back to base value elides the edit.
-        set_balance(&mut d.validators, &f.validators, 0, 1_000);
-        assert_eq!(d.validators.balance_edits, vec![(2, 2_500)]);
+        set_balance(&mut d.balances, &f.balances, base_cnt, 0, 1_000);
+        assert_eq!(d.balances.edits, vec![(2, 2_500)]);
     }
 
     #[test]
@@ -1791,14 +1650,14 @@ mod tests {
             let view = StateDeltaView::new(&f, &mut d, &mut epochs, &mut longtails);
             assert!(!view.is_validator_slashed(0));
         }
-        set_slashed(&mut d.validators, &f.validators, 0, true);
+        d.validators.set_slashed(&f.validators, 0, true);
         {
             let view = StateDeltaView::new(&f, &mut d, &mut epochs, &mut longtails);
             assert!(view.is_validator_slashed(0));
         }
         assert_eq!(d.validators.slashed_edits, vec![(0, true)]);
 
-        set_slashed(&mut d.validators, &f.validators, 0, false);
+        d.validators.set_slashed(&f.validators, 0, false);
         assert!(d.validators.slashed_edits.is_empty());
     }
 
@@ -1816,7 +1675,7 @@ mod tests {
         }
         let pk = [0xFA; 48];
         let new_idx =
-            append_validator(&mut d.validators, pk, Default::default(), Default::default());
+            d.validators.append(&f.validators, pk, Default::default(), Default::default());
         assert_eq!(new_idx, 2);
         {
             let view = StateDeltaView::new(&f, &mut d, &mut epochs, &mut longtails);
@@ -1824,10 +1683,10 @@ mod tests {
             assert_eq!(view.validator_pubkey(2), pk);
         }
 
-        set_activation_epoch(&mut d.validators, &f.validators, 2, 7);
+        d.validators.set_activation_epoch(&f.validators, 2, 7);
         f.apply_delta(&d, None, None);
-        assert_eq!(f.validators.data.validator_count, 3);
-        assert_eq!(f.validators.data.activation_epoch[2], 7);
+        assert_eq!(f.validators.validator_cnt(), 3);
+        assert_eq!(f.validators.activation_epoch(2), 7);
     }
 
     /// Regression test for the `iter_*` slicing fix. The four epoch iterators
@@ -1847,8 +1706,8 @@ mod tests {
 
         // Append two validators with no follow-up set_*. They should appear
         // in the iterators with FAR_FUTURE_EPOCH for all four epoch fields.
-        append_validator(&mut d.validators, [0x11; 48], Default::default(), Default::default());
-        append_validator(&mut d.validators, [0x22; 48], Default::default(), Default::default());
+        d.validators.append(&f.validators, [0x11; 48], Default::default(), Default::default());
+        d.validators.append(&f.validators, [0x22; 48], Default::default(), Default::default());
 
         fresh_rings!(epochs, longtails);
         let view = StateDeltaView::new(&f, &mut d, &mut epochs, &mut longtails);
@@ -1890,23 +1749,23 @@ mod tests {
         let base_creds_0 = Withdrawals([0xA1; 32]);
         let base_creds_1 = Withdrawals([0xA2; 32]);
         push_default_validator(&mut f, 0);
-        f.validators.data.val_withdrawal_credentials[0] = base_creds_0;
+        f.validators.withdrawal_credentials_slice_mut()[0] = base_creds_0;
         push_default_validator(&mut f, 0);
-        f.validators.data.val_withdrawal_credentials[1] = base_creds_1;
+        f.validators.withdrawal_credentials_slice_mut()[1] = base_creds_1;
 
         let mut d = anchored_delta(&f);
 
         // Append two with distinct credentials at construction.
         let appended_creds_0 = Withdrawals([0xB1; 32]);
         let appended_creds_1 = Withdrawals([0xB2; 32]);
-        append_validator(&mut d.validators, [0x11; 48], Default::default(), appended_creds_0);
-        append_validator(&mut d.validators, [0x22; 48], Default::default(), appended_creds_1);
+        d.validators.append(&f.validators, [0x11; 48], Default::default(), appended_creds_0);
+        d.validators.append(&f.validators, [0x22; 48], Default::default(), appended_creds_1);
 
         // Edit base[1] and appended[3] (absolute idx 3).
         let edited_base = Withdrawals([0xCC; 32]);
         let edited_appended = Withdrawals([0xDD; 32]);
-        set_credentials(&mut d.validators, &f.validators, 1, edited_base);
-        set_credentials(&mut d.validators, &f.validators, 3, edited_appended);
+        d.validators.set_credentials(&f.validators, 1, edited_base);
+        d.validators.set_credentials(&f.validators, 3, edited_appended);
 
         fresh_rings!(epochs, longtails);
         let view = StateDeltaView::new(&f, &mut d, &mut epochs, &mut longtails);

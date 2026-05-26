@@ -1,5 +1,9 @@
 pub use buffer::DeltaBuffer;
 pub use delta_view::StateDeltaView;
+pub use hash_tree::{DeltaHashTree, FinalisedHashTree};
+pub use validator_identity::{
+    AppendedValidator, FinalisedValidators, ValidatorsDelta, validator_hash,
+};
 pub use view::{BeaconStateOwner, BeaconStateReader};
 
 use crate::{
@@ -7,10 +11,12 @@ use crate::{
     beacon_state::types::{EPOCHS_RING_N, LONGTAILS_RING_N, SLOTS_RING_N},
 };
 
-mod buffer;
+pub mod buffer;
 mod decompose;
 mod delta_view;
+mod hash_tree;
 pub mod types;
+mod validator_identity;
 mod view;
 
 #[derive(Default)]

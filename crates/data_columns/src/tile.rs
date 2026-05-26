@@ -183,7 +183,8 @@ impl DataColumnTile {
             let idx = claimed_proposer_index as usize;
             let pubkey = if let Some(d) = slot_d {
                 if idx < d.validators.base_cnt {
-                    f.validators.data.val_pubkey_decompressed.get(idx).copied()
+                    (idx < f.validators.validator_cnt())
+                        .then(|| *f.validators.pubkey_decompressed(idx))
                 } else {
                     d.validators
                         .appended
@@ -191,7 +192,7 @@ impl DataColumnTile {
                         .map(|v| v.pubkey_decompressed)
                 }
             } else {
-                f.validators.data.val_pubkey_decompressed.get(idx).copied()
+                (idx < f.validators.validator_cnt()).then(|| *f.validators.pubkey_decompressed(idx))
             };
 
             let fin_roots: &[B256] = &f.slot.block_roots[..];

@@ -6,8 +6,7 @@ use std::{
 use flux::communication::Seqlock;
 
 use crate::{
-    DeltaBuffer, EpochStateDelta, FinalisedView, LongtailState, StateDelta,
-    beacon_state::BeaconState,
+    DeltaBuffer, EpochStateDelta, Finalised, LongtailState, StateDelta, beacon_state::BeaconState,
 };
 
 /// Beacon state writer control.
@@ -60,7 +59,7 @@ impl BeaconStateOwner {
         }
     }
 
-    /// Should be called when finalized state is being updated.
+    /// Should be called when finalised state is being updated.
     pub fn write(&mut self) -> WriteGuard<'_> {
         let (mut value, version) =
             self.inner.read_copy().expect("control inner should nbever be empty");
@@ -103,7 +102,7 @@ impl BeaconStateReader {
     /// finalised state is updated during a read.
     pub fn read<F, R>(&self, reader: &F) -> R
     where
-        F: Fn(FinalisedView<'_>, Option<&StateDelta>, Option<&EpochStateDelta>) -> R,
+        F: Fn(&Finalised, Option<&StateDelta>, Option<&EpochStateDelta>) -> R,
     {
         loop {
             let (control, _) = self.inner.read_copy().expect("should never be empty");
@@ -117,13 +116,12 @@ impl BeaconStateReader {
             let version = control.version;
             let state = unsafe { &*self.state_ptr };
 
-            let finalised_view = state.finalised.view();
             let slot_delta = control.slots.map(|i| state.slots.get(i));
             let epoch_delta = control.epochs.map(|i| state.epochs.get(i));
 
-            let result = reader(finalised_view, slot_delta, epoch_delta);
+            let result = reader(&state.finalised, slot_delta, epoch_delta);
 
-            // check that finalized state was not changed whilst reading.
+            // check that finalised state was not changed whilst reading.
             sync::atomic::compiler_fence(Ordering::Acquire);
             let (post, _) = self.inner.read_copy().expect("should never be empty");
             if post.version == version {
@@ -164,7 +162,7 @@ impl<'a> Drop for WriteGuard<'a> {
 
 #[derive(Clone, Copy, Default)]
 struct ControlInner {
-    /// Finalized version - an odd version indicates that finalized state is
+    /// Finalised version - an odd version indicates that finalised state is
     /// being written.
     version: usize,
     epochs: Option<usize>,

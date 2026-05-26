@@ -289,7 +289,7 @@ impl Finalised {
         self.pending.pending_deposits.clear();
         self.pending.pending_partial_withdrawals.clear();
         self.pending.pending_consolidations.clear();
-        self.validators.index.clear();
+        self.validators.index_mut().clear();
 
         // ── Immutable ─────────────────────────────────────────────────
         self.immutable.genesis_time = u64_le(ssz, F0);
@@ -366,34 +366,46 @@ impl Finalised {
         read_sync_committee(ssz, F22, "current", &mut self.longtail.current_sync_committee)?;
         read_sync_committee(ssz, F23, "next", &mut self.longtail.next_sync_committee)?;
 
-        // ── Validators (identity + per-validator scalars) ─────────────
+        // ── Validators identity layer (8 spec fields + decompressed cache)
         let val_bytes = &ssz[off_validators..off_balances];
         if !val_bytes.len().is_multiple_of(VALIDATOR_SSZ_SIZE) {
             return Err(DecomposeError::ValidatorsLenNotMultiple { len: val_bytes.len() });
         }
         let n = val_bytes.len() / VALIDATOR_SSZ_SIZE;
-        self.validators.index.reserve(n);
+        self.validators.index_mut().reserve(n);
+        {
+            let pk_slice = self.validators.pubkey_slice_mut();
+            // Populate pubkey first so the index inserts succeed (insert
+            // borrows pubkey by reference).
+            for i in 0..n {
+                let v = &val_bytes[i * VALIDATOR_SSZ_SIZE..];
+                pk_slice[i] = v[..48].try_into().unwrap();
+            }
+        }
         for i in 0..n {
             let v = &val_bytes[i * VALIDATOR_SSZ_SIZE..];
             let pubkey: BLSPubkey = v[..48].try_into().unwrap();
             let credentials = Withdrawals(b256(v, 48));
             let decompressed = PublicKey::from_bytes(&pubkey)
                 .map_err(|_| DecomposeError::InvalidValidatorPubkey { idx: i })?;
-            let d = &mut self.validators.data;
-            d.val_pubkey[i] = pubkey;
-            d.val_pubkey_decompressed[i] = decompressed;
-            d.val_withdrawal_credentials[i] = credentials;
-            d.effective_balance[i] = u64_le(v, 80);
-            d.slashed[i] = v[88] != 0;
-            d.activation_eligibility_epoch[i] = u64_le(v, 89);
-            d.activation_epoch[i] = u64_le(v, 97);
-            d.exit_epoch[i] = u64_le(v, 105);
-            d.withdrawable_epoch[i] = u64_le(v, 113);
-            self.validators.index.insert(pubkey, i as u32);
+            self.validators.pubkey_decompressed_slice_mut()[i] = decompressed;
+            self.validators.withdrawal_credentials_slice_mut()[i] = credentials;
+            self.validators.effective_balance_slice_mut()[i] = u64_le(v, 80);
+            let bitset = self.validators.slashed_bitset_mut();
+            if v[88] != 0 {
+                bitset[i / 8] |= 1u8 << (i % 8);
+            } else {
+                bitset[i / 8] &= !(1u8 << (i % 8));
+            }
+            self.validators.activation_eligibility_epoch_slice_mut()[i] = u64_le(v, 89);
+            self.validators.activation_epoch_slice_mut()[i] = u64_le(v, 97);
+            self.validators.exit_epoch_slice_mut()[i] = u64_le(v, 105);
+            self.validators.withdrawable_epoch_slice_mut()[i] = u64_le(v, 113);
+            self.validators.index_mut().insert(pubkey, i as u32);
         }
-        self.validators.data.validator_count = n;
+        self.validators.set_validator_cnt(n);
 
-        // Balances.
+        // Balances (sibling layer).
         let bal_bytes = &ssz[off_balances..off_prev_participation];
         if !bal_bytes.len().is_multiple_of(8) || bal_bytes.len() / 8 != n {
             return Err(DecomposeError::BalancesLenMismatch {
@@ -401,11 +413,14 @@ impl Finalised {
                 validators: n,
             });
         }
-        for i in 0..n {
-            self.validators.data.balances[i] = u64_le(bal_bytes, i * 8);
+        {
+            let balances = self.balances.slice_mut();
+            for (i, b) in balances.iter_mut().enumerate().take(n) {
+                *b = u64_le(bal_bytes, i * 8);
+            }
         }
 
-        // Participation.
+        // Participation (two sibling layers).
         let prev_part = &ssz[off_prev_participation..off_cur_participation];
         if prev_part.len() != n {
             return Err(DecomposeError::PrevParticipationLenMismatch {
@@ -413,7 +428,7 @@ impl Finalised {
                 validators: n,
             });
         }
-        self.validators.data.previous_epoch_participation[..n].copy_from_slice(prev_part);
+        self.previous_participation.slice_mut()[..n].copy_from_slice(prev_part);
 
         let cur_part = &ssz[off_cur_participation..off_inactivity];
         if cur_part.len() != n {
@@ -422,9 +437,9 @@ impl Finalised {
                 validators: n,
             });
         }
-        self.validators.data.current_epoch_participation[..n].copy_from_slice(cur_part);
+        self.current_participation.slice_mut()[..n].copy_from_slice(cur_part);
 
-        // Inactivity scores.
+        // Inactivity scores (sibling layer).
         let inact_bytes = &ssz[off_inactivity..off_eph];
         if !inact_bytes.len().is_multiple_of(8) || inact_bytes.len() / 8 != n {
             return Err(DecomposeError::InactivityLenMismatch {
@@ -432,8 +447,11 @@ impl Finalised {
                 validators: n,
             });
         }
-        for i in 0..n {
-            self.validators.data.inactivity_scores[i] = u64_le(inact_bytes, i * 8);
+        {
+            let inact = self.inactivity_scores.slice_mut();
+            for (i, s) in inact.iter_mut().enumerate().take(n) {
+                *s = u64_le(inact_bytes, i * 8);
+            }
         }
 
         // ── Execution payload header ──────────────────────────────────
@@ -574,8 +592,12 @@ impl Finalised {
         // Map each current_sync_committee pubkey to its validator index.
         for (i, pk) in self.longtail.current_sync_committee.pubkeys.iter().enumerate() {
             self.longtail.sync_committee_indices[i] =
-                self.validators.index.get(pk).copied().unwrap_or(u32::MAX);
+                self.validators.find_by_pubkey(pk).map(|i| i as u32).unwrap_or(u32::MAX);
         }
+
+        // Build the validator-list hash tree from the populated columns.
+        // Must happen after `set_validator_cnt`.
+        self.validators.rebuild_hash_tree();
 
         Ok(())
     }
@@ -656,63 +678,24 @@ impl Finalised {
             self.longtail.historical_summaries.extend_from_slice(&lt.historical_summaries);
         }
 
-        // -- validators tier (append new identities, then apply sparse edits) --
-        let v = &delta.validators;
-        let data = &mut self.validators.data;
-        let index = &mut self.validators.index;
-        for a in &v.appended {
-            let new_idx = data.validator_count;
-            data.val_pubkey[new_idx] = a.pubkey;
-            data.val_pubkey_decompressed[new_idx] = a.pubkey_decompressed;
-            data.val_withdrawal_credentials[new_idx] = a.credentials;
-            // Spec-default initial state; sparse edits below overwrite for
-            // fields the state-transition code actually wrote.
-            data.balances[new_idx] = 0;
-            data.current_epoch_participation[new_idx] = 0;
-            data.previous_epoch_participation[new_idx] = 0;
-            data.effective_balance[new_idx] = 0;
-            data.activation_epoch[new_idx] = u64::MAX;
-            data.exit_epoch[new_idx] = u64::MAX;
-            data.activation_eligibility_epoch[new_idx] = u64::MAX;
-            data.withdrawable_epoch[new_idx] = u64::MAX;
-            data.inactivity_scores[new_idx] = 0;
-            data.slashed[new_idx] = false;
-            data.validator_count += 1;
-            index.insert(a.pubkey, new_idx as u32);
-        }
+        // -- validators identity layer (append + sparse edits + hash overlay) --
+        // Delegates to ValidatorsDelta::promote_into_base which folds the
+        // appended records, applies the per-field edits, and promotes the
+        // delta hash overlay into FinalisedHashTree.
+        delta.validators.promote_into_base(&mut self.validators);
 
-        for &(idx, val) in &v.credentials_edits {
-            data.val_withdrawal_credentials[idx as usize] = val;
+        // -- sibling validator-data layers (sparse edits only) --
+        for &(idx, val) in &delta.balances.edits {
+            self.balances.slice_mut()[idx as usize] = val;
         }
-        for &(idx, val) in &v.balance_edits {
-            data.balances[idx as usize] = val;
+        for &(idx, val) in &delta.previous_participation.edits {
+            self.previous_participation.slice_mut()[idx as usize] = val;
         }
-        for &(idx, val) in &v.current_participation_edits {
-            data.current_epoch_participation[idx as usize] = val;
+        for &(idx, val) in &delta.current_participation.edits {
+            self.current_participation.slice_mut()[idx as usize] = val;
         }
-        for &(idx, val) in &v.previous_participation_edits {
-            data.previous_epoch_participation[idx as usize] = val;
-        }
-        for &(idx, val) in &v.effective_balance_edits {
-            data.effective_balance[idx as usize] = val;
-        }
-        for &(idx, val) in &v.activation_epoch_edits {
-            data.activation_epoch[idx as usize] = val;
-        }
-        for &(idx, val) in &v.exit_epoch_edits {
-            data.exit_epoch[idx as usize] = val;
-        }
-        for &(idx, val) in &v.activation_eligibility_epoch_edits {
-            data.activation_eligibility_epoch[idx as usize] = val;
-        }
-        for &(idx, val) in &v.withdrawable_epoch_edits {
-            data.withdrawable_epoch[idx as usize] = val;
-        }
-        for &(idx, val) in &v.slashed_edits {
-            data.slashed[idx as usize] = val;
-        }
-        for &(idx, val) in &v.inactivity_score_edits {
-            data.inactivity_scores[idx as usize] = val;
+        for &(idx, val) in &delta.inactivity_scores.edits {
+            self.inactivity_scores.slice_mut()[idx as usize] = val;
         }
 
         // -- pending queues (drain promoted prefix, append new entries) --
@@ -770,11 +753,11 @@ mod tests {
         let cur_epoch = raw_slot / SLOTS_PER_EPOCH;
 
         // Validator columnar arrays should be populated and consistent.
-        let n = fin.validators.data.validator_count;
+        let n = fin.validators.validator_cnt();
         assert!(n > 0, "no validators decoded");
-        assert_eq!(fin.validators.index.len(), n);
+        assert_eq!(fin.validators.index_len(), n);
 
-        // Spec invariant: finalized ≤ previous_justified ≤ current_justified
+        // Spec invariant: finalised ≤ previous_justified ≤ current_justified
         //                          ≤ current_epoch.
         let est = &fin.epoch.state;
         assert!(est.finalized_checkpoint.epoch <= est.previous_justified_checkpoint.epoch);
@@ -799,7 +782,7 @@ mod tests {
             if *idx != u32::MAX {
                 assert!((*idx as usize) < n);
                 let pk = &fin.longtail.current_sync_committee.pubkeys[i];
-                assert_eq!(fin.validators.index.get(pk).copied(), Some(*idx));
+                assert_eq!(fin.validators.find_by_pubkey(pk).map(|i| i as u32), Some(*idx));
             }
         }
 
@@ -807,7 +790,7 @@ mod tests {
         let mut fin2 = Box::<Finalised>::default();
         fin2.decompose(&ssz, &cfg).expect("decompose 2");
         assert_eq!(fin2.slot.slot.slot, fin.slot.slot.slot);
-        assert_eq!(fin2.validators.data.validator_count, n);
+        assert_eq!(fin2.validators.validator_cnt(), n);
         assert_eq!(fin2.immutable.genesis_validators_root, fin.immutable.genesis_validators_root);
         assert_eq!(fin2.immutable.historical_roots_hash, fin.immutable.historical_roots_hash);
     }

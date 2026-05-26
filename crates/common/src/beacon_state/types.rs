@@ -1,8 +1,9 @@
-use blst::min_pk::PublicKey;
 use flux::utils::ArrayVec;
-use rustc_hash::FxHashMap;
 
-use crate::beacon_state::buffer::Reset;
+use crate::beacon_state::{
+    buffer::Reset,
+    validator_identity::{FinalisedValidators, ValidatorsDelta},
+};
 
 pub type B256 = [u8; 32];
 pub type BLSPubkey = [u8; 48];
@@ -25,6 +26,10 @@ pub const MAX_VALIDATORS: usize = 11 << 18;
 // hundred validators each, well within the test-time cap.
 pub const MAX_VALIDATORS: usize = 64 * 1024;
 pub const VALIDATOR_REGISTRY_LIMIT: usize = 1 << 40;
+/// SSZ spec sentinel for "not yet activated / exited / withdrawable".
+pub const FAR_FUTURE_EPOCH: Epoch = u64::MAX;
+/// `slashed` bitset byte count — one bit per validator.
+pub const VAL_SLASHED_BYTES: usize = MAX_VALIDATORS / 8;
 pub const SLOTS_PER_HISTORICAL_ROOT: usize = 8192;
 pub const EPOCHS_PER_HISTORICAL_VECTOR: usize = 65536;
 pub const EPOCHS_PER_SLASHINGS_VECTOR: usize = 8192;
@@ -47,14 +52,21 @@ pub const EPOCHS_RING_N: usize = 8;
 pub const SLOTS_RING_N: usize = 256;
 
 // size: ~195 KB stack (slot 145 KB + longtail 50 KB + rest); heap at default-
-// init ~2.6 MB (slot+epoch rings) and ~640 MB at MAX_VALIDATORS production
-// cap (ValidatorsData Box<[T]> fields, dominated by val_pubkey_decompressed).
+// init ~2.6 MB (slot+epoch rings); identity validators layer + 3 sibling
+// layers together allocate ~640 MB at production MAX_VALIDATORS plus
+// ~150 MB pubkey index plus ~256 MB validator hash tree (2 * 2^22 leaves
+// × 32 B). The hash tree is the dominant overhead among the validator
+// layers.
 #[derive(Default)]
 pub struct Finalised {
     pub immutable: Immutable,
     pub longtail: LongtailState,
     pub pending: PendingQueues,
-    pub validators: Validators,
+    pub validators: FinalisedValidators,
+    pub balances: FinalisedBalances,
+    pub previous_participation: FinalisedPreviousParticipation,
+    pub current_participation: FinalisedCurrentParticipation,
+    pub inactivity_scores: FinalisedInactivityScores,
     pub epoch: EpochStateFinalised,
     pub slot: SlotStateFinalised,
 }
@@ -64,22 +76,12 @@ impl Finalised {
     pub fn epoch(&self) -> Epoch {
         self.slot.slot.slot / SLOTS_PER_EPOCH
     }
-
-    #[inline]
-    pub fn view(&self) -> FinalisedView<'_> {
-        FinalisedView {
-            immutable: &self.immutable,
-            validators: &self.validators,
-            epoch: &self.epoch,
-            slot: &self.slot,
-        }
-    }
 }
 
 // size: 32 B (4 × pointer)
 pub struct FinalisedView<'a> {
     pub immutable: &'a Immutable,
-    pub validators: &'a Validators,
+    pub validators: &'a FinalisedValidators,
     pub epoch: &'a EpochStateFinalised,
     pub slot: &'a SlotStateFinalised,
 }
@@ -91,6 +93,10 @@ pub struct StateDelta {
     pub longtail_idx: Option<usize>,
     pub pending: PendingQueuesDelta,
     pub validators: ValidatorsDelta,
+    pub balances: BalancesDelta,
+    pub previous_participation: PreviousParticipationDelta,
+    pub current_participation: CurrentParticipationDelta,
+    pub inactivity_scores: InactivityScoresDelta,
     pub slot: SlotStateDelta,
 }
 
@@ -100,6 +106,10 @@ impl Reset for StateDelta {
         self.longtail_idx = None;
         self.pending.reset();
         self.validators.reset();
+        self.balances.reset();
+        self.previous_participation.reset();
+        self.current_participation.reset();
+        self.inactivity_scores.reset();
         self.slot.reset();
     }
 
@@ -108,6 +118,10 @@ impl Reset for StateDelta {
         self.longtail_idx = other.longtail_idx;
         self.pending.reset_from(&other.pending);
         self.validators.reset_from(&other.validators);
+        self.balances.reset_from(&other.balances);
+        self.previous_participation.reset_from(&other.previous_participation);
+        self.current_participation.reset_from(&other.current_participation);
+        self.inactivity_scores.reset_from(&other.inactivity_scores);
         self.slot.reset_from(&other.slot);
     }
 }
@@ -329,68 +343,162 @@ impl Reset for PendingQueuesDelta {
     }
 }
 
-/// All slices are MAX_VALIDATORS long.
-// size: ~216 B stack (13 × Box<[T]> header + validator_count); heap at
-// default-init ~640 MB at production MAX_VALIDATORS = 11<<18 (val_pubkey
-// 132 MB, val_pubkey_decompressed 264 MB, val_withdrawal_credentials 88 MB,
-// 7 × Box<[u64]> ≈ 154 MB, 2 × Box<[u8]> + slashed ≈ 8 MB).
-pub struct ValidatorsData {
-    pub validator_count: usize,
-    pub val_pubkey: Box<[BLSPubkey]>,
-    pub val_pubkey_decompressed: Box<[PublicKey]>,
-    pub val_withdrawal_credentials: Box<[Withdrawals]>,
-    pub balances: Box<[u64]>,
-    pub current_epoch_participation: Box<[u8]>,
-    pub previous_epoch_participation: Box<[u8]>,
-    pub effective_balance: Box<[u64]>,
-    pub activation_epoch: Box<[Epoch]>,
-    pub exit_epoch: Box<[Epoch]>,
-    pub activation_eligibility_epoch: Box<[Epoch]>,
-    pub withdrawable_epoch: Box<[Epoch]>,
-    pub inactivity_scores: Box<[u64]>,
-    pub slashed: Box<[bool]>,
+// Spec parallel SSZ lists (`balances`, `previous/current_epoch_participation`,
+// `inactivity_scores`). Each is its own `List[T, VALIDATOR_REGISTRY_LIMIT]`
+// in the BeaconState and will eventually carry its own hash tree (not yet
+// implemented). Length is whatever the validators layer reports; reading
+// past `base_cnt` with no edit returns the spec default (0 / false). The
+// `validators` identity layer (with hash overlay) lives in
+// `beacon_state::validator_identity`.
+
+/// `balances: List[Gwei, VALIDATOR_REGISTRY_LIMIT]` — finalised side.
+pub struct FinalisedBalances {
+    pub data: Box<[u64]>,
 }
 
-impl Default for ValidatorsData {
+impl Default for FinalisedBalances {
     fn default() -> Self {
-        Self {
-            validator_count: 0,
-            val_pubkey: vec![[0u8; 48]; MAX_VALIDATORS].into_boxed_slice(),
-            val_pubkey_decompressed: vec![Default::default(); MAX_VALIDATORS].into_boxed_slice(),
-            val_withdrawal_credentials: vec![Default::default(); MAX_VALIDATORS].into_boxed_slice(),
-            balances: vec![Default::default(); MAX_VALIDATORS].into_boxed_slice(),
-            current_epoch_participation: vec![Default::default(); MAX_VALIDATORS]
-                .into_boxed_slice(),
-            previous_epoch_participation: vec![Default::default(); MAX_VALIDATORS]
-                .into_boxed_slice(),
-            effective_balance: vec![Default::default(); MAX_VALIDATORS].into_boxed_slice(),
-            activation_epoch: vec![Default::default(); MAX_VALIDATORS].into_boxed_slice(),
-            exit_epoch: vec![Default::default(); MAX_VALIDATORS].into_boxed_slice(),
-            activation_eligibility_epoch: vec![Default::default(); MAX_VALIDATORS]
-                .into_boxed_slice(),
-            withdrawable_epoch: vec![Default::default(); MAX_VALIDATORS].into_boxed_slice(),
-            inactivity_scores: vec![Default::default(); MAX_VALIDATORS].into_boxed_slice(),
-            slashed: vec![Default::default(); MAX_VALIDATORS].into_boxed_slice(),
-        }
+        Self { data: vec![0u64; MAX_VALIDATORS].into_boxed_slice() }
     }
 }
 
-pub type PubkeyIndex = FxHashMap<BLSPubkey, u32>;
+impl FinalisedBalances {
+    #[inline]
+    pub fn get(&self, i: usize) -> u64 {
+        self.data[i]
+    }
 
-// size: ~264 B stack (ValidatorsData ~216 B + PubkeyIndex ~48 B); heap at full
-// MAX_VALIDATORS ~800 MB (data ~640 MB + index ~150 MB + slack).
-#[derive(Default)]
-pub struct Validators {
-    pub data: ValidatorsData,
-    pub index: PubkeyIndex,
+    #[inline]
+    pub fn slice_mut(&mut self) -> &mut [u64] {
+        &mut self.data
+    }
 }
 
-// size: ~176 B (PublicKey 96 + pubkey 48 + credentials 32)
-#[derive(Clone)]
-pub struct AppendedValidator {
-    pub pubkey: BLSPubkey,
-    pub pubkey_decompressed: PublicKey,
-    pub credentials: Withdrawals,
+#[derive(Default, Clone)]
+pub struct BalancesDelta {
+    pub edits: Vec<(u32, u64)>,
+}
+
+impl Reset for BalancesDelta {
+    fn reset(&mut self) {
+        self.edits.clear();
+    }
+    fn reset_from(&mut self, other: &Self) {
+        self.edits.clone_from(&other.edits);
+    }
+}
+
+/// `previous_epoch_participation: List[ParticipationFlags,
+/// VALIDATOR_REGISTRY_LIMIT]`.
+pub struct FinalisedPreviousParticipation {
+    pub data: Box<[u8]>,
+}
+
+impl Default for FinalisedPreviousParticipation {
+    fn default() -> Self {
+        Self { data: vec![0u8; MAX_VALIDATORS].into_boxed_slice() }
+    }
+}
+
+impl FinalisedPreviousParticipation {
+    #[inline]
+    pub fn get(&self, i: usize) -> u8 {
+        self.data[i]
+    }
+
+    #[inline]
+    pub fn slice_mut(&mut self) -> &mut [u8] {
+        &mut self.data
+    }
+}
+
+#[derive(Default, Clone)]
+pub struct PreviousParticipationDelta {
+    pub edits: Vec<(u32, u8)>,
+}
+
+impl Reset for PreviousParticipationDelta {
+    fn reset(&mut self) {
+        self.edits.clear();
+    }
+    fn reset_from(&mut self, other: &Self) {
+        self.edits.clone_from(&other.edits);
+    }
+}
+
+/// `current_epoch_participation: List[ParticipationFlags,
+/// VALIDATOR_REGISTRY_LIMIT]`.
+pub struct FinalisedCurrentParticipation {
+    pub data: Box<[u8]>,
+}
+
+impl Default for FinalisedCurrentParticipation {
+    fn default() -> Self {
+        Self { data: vec![0u8; MAX_VALIDATORS].into_boxed_slice() }
+    }
+}
+
+impl FinalisedCurrentParticipation {
+    #[inline]
+    pub fn get(&self, i: usize) -> u8 {
+        self.data[i]
+    }
+
+    #[inline]
+    pub fn slice_mut(&mut self) -> &mut [u8] {
+        &mut self.data
+    }
+}
+
+#[derive(Default, Clone)]
+pub struct CurrentParticipationDelta {
+    pub edits: Vec<(u32, u8)>,
+}
+
+impl Reset for CurrentParticipationDelta {
+    fn reset(&mut self) {
+        self.edits.clear();
+    }
+    fn reset_from(&mut self, other: &Self) {
+        self.edits.clone_from(&other.edits);
+    }
+}
+
+/// `inactivity_scores: List[u64, VALIDATOR_REGISTRY_LIMIT]`.
+pub struct FinalisedInactivityScores {
+    pub data: Box<[u64]>,
+}
+
+impl Default for FinalisedInactivityScores {
+    fn default() -> Self {
+        Self { data: vec![0u64; MAX_VALIDATORS].into_boxed_slice() }
+    }
+}
+
+impl FinalisedInactivityScores {
+    #[inline]
+    pub fn get(&self, i: usize) -> u64 {
+        self.data[i]
+    }
+
+    #[inline]
+    pub fn slice_mut(&mut self) -> &mut [u64] {
+        &mut self.data
+    }
+}
+
+#[derive(Default, Clone)]
+pub struct InactivityScoresDelta {
+    pub edits: Vec<(u32, u64)>,
+}
+
+impl Reset for InactivityScoresDelta {
+    fn reset(&mut self) {
+        self.edits.clear();
+    }
+    fn reset_from(&mut self, other: &Self) {
+        self.edits.clone_from(&other.edits);
+    }
 }
 
 // size: ~96 B
@@ -402,69 +510,6 @@ pub struct Immutable {
     pub fork: Fork,
     pub genesis_fork_version: Version,
     pub capella_fork_version: Version,
-}
-
-/// Per-fork delta on top of the finalized base. `appended[p]`'s absolute
-/// validator index is `base_cnt + p`; the `_edits` vectors are sparse,
-/// keyed by absolute validator index.
-// size: ~296 B (base_cnt + 12 × Vec header)
-#[derive(Default, Clone)]
-pub struct ValidatorsDelta {
-    pub base_cnt: usize,
-    pub appended: Vec<AppendedValidator>,
-    pub credentials_edits: Vec<(u32, Withdrawals)>,
-    pub balance_edits: Vec<(u32, u64)>,
-    pub current_participation_edits: Vec<(u32, u8)>,
-    pub previous_participation_edits: Vec<(u32, u8)>,
-    pub effective_balance_edits: Vec<(u32, u64)>,
-    pub activation_epoch_edits: Vec<(u32, Epoch)>,
-    pub exit_epoch_edits: Vec<(u32, Epoch)>,
-    pub activation_eligibility_epoch_edits: Vec<(u32, Epoch)>,
-    pub withdrawable_epoch_edits: Vec<(u32, Epoch)>,
-    pub slashed_edits: Vec<(u32, bool)>,
-    pub inactivity_score_edits: Vec<(u32, u64)>,
-}
-
-impl ValidatorsDelta {
-    #[inline]
-    pub fn new_at(base_cnt: usize) -> Self {
-        Self { base_cnt, ..Self::default() }
-    }
-}
-
-impl Reset for ValidatorsDelta {
-    fn reset(&mut self) {
-        self.base_cnt = 0;
-        self.appended.clear();
-        self.credentials_edits.clear();
-        self.balance_edits.clear();
-        self.current_participation_edits.clear();
-        self.previous_participation_edits.clear();
-        self.effective_balance_edits.clear();
-        self.activation_epoch_edits.clear();
-        self.exit_epoch_edits.clear();
-        self.activation_eligibility_epoch_edits.clear();
-        self.withdrawable_epoch_edits.clear();
-        self.slashed_edits.clear();
-        self.inactivity_score_edits.clear();
-    }
-
-    fn reset_from(&mut self, other: &Self) {
-        self.base_cnt = other.base_cnt;
-        self.appended.clone_from(&other.appended);
-        self.credentials_edits.clone_from(&other.credentials_edits);
-        self.balance_edits.clone_from(&other.balance_edits);
-        self.current_participation_edits.clone_from(&other.current_participation_edits);
-        self.previous_participation_edits.clone_from(&other.previous_participation_edits);
-        self.effective_balance_edits.clone_from(&other.effective_balance_edits);
-        self.activation_epoch_edits.clone_from(&other.activation_epoch_edits);
-        self.exit_epoch_edits.clone_from(&other.exit_epoch_edits);
-        self.activation_eligibility_epoch_edits
-            .clone_from(&other.activation_eligibility_epoch_edits);
-        self.withdrawable_epoch_edits.clone_from(&other.withdrawable_epoch_edits);
-        self.slashed_edits.clone_from(&other.slashed_edits);
-        self.inactivity_score_edits.clone_from(&other.inactivity_score_edits);
-    }
 }
 
 // size: ~40 B
