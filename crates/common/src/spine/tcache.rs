@@ -9,7 +9,7 @@ use std::{
 };
 
 pub use consumer::{AcquiredRead, Consumer, RandomAccessConsumer, TCacheRead};
-use flux::timing::Nanos;
+use flux::{timing::Nanos, tracing};
 pub use producer::{MultiProducer, Producer, Reservation, TCacheProducer};
 use thiserror::Error;
 
@@ -20,7 +20,10 @@ const MAX_CONSUMERS: usize = 64;
 const ALIGN: usize = size_of::<Slot>();
 
 mod consumer;
+mod metrics;
 mod producer;
+
+use metrics::TCacheMetrics;
 
 /// Single or multi producer, multi consumer cache buffer with a Tail
 ///
@@ -39,6 +42,9 @@ pub struct TCache {
     head: TCacheHead,
     len: u32,
     data: Box<[u8]>,
+    /// `None` when name is empty, or if mmap'ing the metrics file
+    /// fails (tile continues to function without surfer visibility).
+    metrics: Option<TCacheMetrics>,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -107,6 +113,10 @@ impl TCache {
             })
             .ok_or(Error::MaxConsumers)?;
 
+        // Publish a baseline tail so surfer's chart has a value to plot
+        // before the consumer has actually called free.
+        self.record_tail(index, seq);
+
         Ok(Consumer {
             cache: TCacheRef { cache: addr_of!(*self) as *const c_void },
             index,
@@ -127,6 +137,8 @@ impl TCache {
                 t.compare_exchange(u64::MAX, seq, Ordering::Release, Ordering::Relaxed).is_ok()
             })
             .ok_or(Error::MaxConsumers)?;
+
+        self.record_tail(index, seq);
 
         Ok(RandomAccessConsumer {
             cache: TCacheRef { cache: addr_of!(*self) as *const c_void },
@@ -286,7 +298,13 @@ impl TCache {
         if success {
             slot.skip = 0;
         }
+        let new_head = seq + slot.reservation_len as u64;
         slot.seq = AtomicU64::new(seq);
+        // Track the producer's actual progress for the metrics layer.
+        // `head.seq` (visible to joining consumers) is only updated by
+        // `publish_head` on out-of-space, but surfer wants the live
+        // production cursor.
+        self.record_head(new_head);
     }
 
     fn alloc_tache(name: &'static str, size: usize) -> Box<Self> {
@@ -295,6 +313,15 @@ impl TCache {
             "n is not mutiple of {ALIGN}"
         );
         let layout = Layout::from_size_align(size, ALIGN).unwrap();
+        let metrics = if name.is_empty() {
+            None
+        } else {
+            // MAX_CONSUMERS — overcount is fine for the file size; surfer
+            // ignores never-set tails (they stay at u64::MAX sentinel).
+            TCacheMetrics::new(name, MAX_CONSUMERS, size as u64)
+                .map_err(|e| tracing::warn!(?name, ?e, "TCacheMetrics::new failed"))
+                .ok()
+        };
         unsafe {
             let ptr = alloc::alloc_zeroed(layout);
             if ptr.is_null() {
@@ -309,7 +336,29 @@ impl TCache {
                 },
                 len: data.len() as u32,
                 data,
+                metrics,
             })
+        }
+    }
+
+    #[inline]
+    pub(super) fn record_head(&self, seq: u64) {
+        if let Some(m) = &self.metrics {
+            m.set_head_seq(seq);
+        }
+    }
+
+    /// Record a consumer's tail seq into the per-tcache metrics slot.
+    /// A seq of 0 is interpreted as "no real progress" and is mapped
+    /// to the `u64::MAX` sentinel — surfer then treats it as
+    /// "tail == head" rather than dragging `min_tail` to 0. The
+    /// in-memory `head.tails[idx]` is unaffected; this is purely the
+    /// metrics view.
+    #[inline]
+    pub(super) fn record_tail(&self, idx: usize, seq: u64) {
+        if let Some(m) = &self.metrics {
+            let v = if seq == 0 { u64::MAX } else { seq };
+            m.set_tail_seq(idx, v);
         }
     }
 }

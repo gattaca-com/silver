@@ -5,7 +5,7 @@ use flux::{
 use silver_common::{
     BeaconStateEvent, GossipTopic, NewGossipMsg, P2pStreamId, PeerEvent, RejectSource, RpcInbound,
     RpcMsg, RpcResponse, RpcResponseInbound, RpcSeverity, SilverSpine, SpecConfig, SyncUpdate,
-    TCacheRead, TRandomAccess,
+    TRandomAccess, TRead,
     ssz_view::{
         AttesterSlashingView, PROPOSER_SLASHING_SIZE, ProposerSlashingView, SIGNED_BLS_CHANGE_SIZE,
         SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE, STATUS_V2_SIZE, SignedAggregateAndProofView,
@@ -531,7 +531,7 @@ impl BeaconStateTile {
     fn apply_block(
         &mut self,
         data: &[u8],
-        data_tcache: TCacheRead,
+        data_tcache: TRead,
         source: RejectSource,
         producers: &mut Producers,
     ) -> Feedback {
@@ -555,7 +555,7 @@ impl BeaconStateTile {
             return f;
         }
 
-        producers.produce(BeaconStateEvent::PersistBlock(data_tcache));
+        producers.produce(BeaconStateEvent::PersistBlock(data_tcache.read));
 
         let head_changed = self.last_applied != prev_last_applied;
         let new_finalized =
@@ -755,7 +755,8 @@ impl BeaconStateTile {
     fn handle_gossip(&mut self, m: NewGossipMsg, data: &[u8], producers: &mut Producers) {
         let feedback = match m.topic {
             GossipTopic::BeaconBlock => {
-                Some(self.apply_block(data, m.ssz, RejectSource::Gossip, producers))
+                let acquired = self.gossip_consumer.acquire(m.ssz);
+                Some(self.apply_block(data, acquired, RejectSource::Gossip, producers))
             }
             GossipTopic::BeaconAttestation(_) => Some(self.handle_attestation(data)),
             GossipTopic::BeaconAggregateAndProof => Some(self.handle_aggregate_and_proof(data)),
@@ -787,7 +788,7 @@ impl BeaconStateTile {
         msg: RpcMsg,
         sender: P2pStreamId,
         data: &[u8],
-        data_tcache: TCacheRead,
+        data_tcache: TRead,
         producers: &mut Producers,
     ) {
         if let RpcMsg::BlocksRangeResp(_) = msg {
@@ -1565,7 +1566,7 @@ impl Tile<SilverSpine> for BeaconStateTile {
             }
         });
 
-        adapter.consume(|m: RpcInbound, producers| {
+        adapter.consume_one(|m: RpcInbound, producers| {
             if let RpcInbound::Response(RpcResponseInbound {
                 application_id: _,
                 stream_id,
@@ -1581,7 +1582,7 @@ impl Tile<SilverSpine> for BeaconStateTile {
                         RpcMsg::BlocksRangeResp(SignedBeaconBlockView),
                         stream_id,
                         unsafe { &*p },
-                        ssz,
+                        acquired,
                         producers,
                     );
                 }

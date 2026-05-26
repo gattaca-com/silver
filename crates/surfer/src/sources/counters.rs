@@ -42,6 +42,11 @@ pub struct CounterSet {
     bucket_start: Vec<u64>,
     /// Per-slot ring of completed-bucket deltas (newest at back).
     pub history: Vec<VecDeque<u64>>,
+    /// `false` until the first `sample()` call. The first sample
+    /// primes `previous` and `bucket_start` so initial deltas start
+    /// at 0 rather than a wraparound (matters for slots initialised
+    /// to non-zero sentinels like `u64::MAX`).
+    primed: bool,
 }
 
 // SAFETY: `base` points at an mmap'd shmem file; the underlying memory
@@ -70,6 +75,7 @@ impl CounterSet {
             previous: vec![0; slot_count],
             bucket_start: vec![0; slot_count],
             history: (0..slot_count).map(|_| VecDeque::with_capacity(BUCKET_HISTORY_LEN)).collect(),
+            primed: false,
         })
     }
 
@@ -82,19 +88,39 @@ impl CounterSet {
         for i in 0..self.slot_count {
             self.current[i] = unsafe { (*self.base.add(i)).load(Ordering::Relaxed) };
         }
+        if !self.primed {
+            // Prime previous/bucket_start to the first observed values
+            // so deltas start at 0. Slots initialised to non-zero
+            // sentinels (e.g. tcache tails = u64::MAX) would otherwise
+            // produce a wraparound delta on the first roll.
+            self.previous.copy_from_slice(&self.current);
+            self.bucket_start.copy_from_slice(&self.current);
+            self.primed = true;
+        }
     }
 
     pub fn slot_count(&self) -> usize {
         self.slot_count
     }
 
-    /// Close the current 12 s bucket: for each slot, compute
+    /// Close the current bucket: for each slot, compute
     /// `current - bucket_start` and push to the per-slot history ring
     /// (drop oldest when full). Then snapshot `current` into
     /// `bucket_start` so the next bucket starts accumulating from now.
+    ///
+    /// Sentinel handling: when either endpoint of the delta is
+    /// `u64::MAX` (TCache tail "unused-slot" sentinel; not a real
+    /// metric value anywhere else), the delta is recorded as 0. This
+    /// suppresses garbage spikes when a slot transitions to/from
+    /// sentinel state — common at startup if the mmap file was reused
+    /// from a previous run.
     pub fn roll_bucket(&mut self) {
         for i in 0..self.slot_count {
-            let delta = self.current[i].wrapping_sub(self.bucket_start[i]);
+            let delta = if self.current[i] == u64::MAX || self.bucket_start[i] == u64::MAX {
+                0
+            } else {
+                self.current[i].wrapping_sub(self.bucket_start[i])
+            };
             let h = &mut self.history[i];
             if h.len() == BUCKET_HISTORY_LEN {
                 h.pop_front();

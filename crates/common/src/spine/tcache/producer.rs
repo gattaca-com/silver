@@ -11,7 +11,9 @@ pub trait TCacheProducer: SealedProducer {
     /// Publish the head sequence for joining consumers.
     fn publish_head(&self) {
         let tcache = unsafe { &*self.tcache() };
-        tcache.head.seq.store(self.seq(), Ordering::Release);
+        let seq = self.seq();
+        tcache.head.seq.store(seq, Ordering::Release);
+        tcache.record_head(seq);
     }
 
     fn cache_ref(&self) -> TCacheRef {
