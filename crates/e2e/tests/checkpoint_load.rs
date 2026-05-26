@@ -19,7 +19,7 @@ use silver_beacon_state::{
     ticker::SlotTicker,
     tile::{BeaconStateTile, Feedback},
     types::{EpochData, HistoricalLongtail, Immutable, SlotData, SlotRoots, box_zeroed},
-    validator_identity::FinalisedValidators,
+    validator_identity::FinalizedValidators,
 };
 use silver_common::{TCache, TCacheProducer};
 use silver_e2e::canonical::fetch_canonical_state_root;
@@ -66,7 +66,7 @@ fn finalized_state_loads() {
     // `latest_block_header.state_root` would have produced the raw-header
     // hash; verify that didn't happen.
     let mut imm: Box<Immutable> = box_zeroed();
-    let mut validators: Box<FinalisedValidators> = Box::new(FinalisedValidators::new(&[], &[]));
+    let mut validators: Box<FinalizedValidators> = Box::new(FinalizedValidators::new(&[], &[]));
     let mut longtail: Box<HistoricalLongtail> = box_zeroed();
     let mut epoch: Box<EpochData> = box_zeroed();
     let mut roots: Box<SlotRoots> = box_zeroed();
