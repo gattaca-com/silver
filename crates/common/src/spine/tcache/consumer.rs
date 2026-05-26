@@ -104,8 +104,12 @@ impl RandomAccessConsumer {
     /// visible to the Producer.
     pub fn free(&self) {
         let tail = self.active.tail_seq;
-        self.cache.head.tails[self.index].store(tail, Ordering::Release);
-        self.cache.record_tail(self.index, tail);
+
+        if tail != u64::MAX {
+            //tracing::warn!("Random consumer free {tail}");
+            self.cache.head.tails[self.index].store(tail, Ordering::Release);
+            self.cache.record_tail(self.index, tail);
+        }
     }
 
     fn release(&mut self, seq: u64) {
@@ -170,6 +174,7 @@ pub(super) struct Buckets {
     head_seq: u64,
     bucket_size: u64,
     bucket_shift: u64,
+    bucket_mask: u64,
     // max difference between head and tail, before 'forced' eviction
     lag_threshold: u64,
 }
@@ -190,55 +195,54 @@ impl Buckets {
             head_seq: 0,
             bucket_size,
             bucket_shift: bucket_size.trailing_zeros() as u64,
+            bucket_mask: !(bucket_size - 1),
             lag_threshold: (LAG_PERCENT * (cache_capacity as f64)) as u64,
         }
     }
 
     fn acquire(&mut self, seq: u64) {
-        let bucket_idx = self.index(seq);
+        let bucket_idx = self.bucket_index(seq);
         self.buckets[bucket_idx] += 1;
 
         self.head_seq = self.head_seq.max(seq);
 
         if self.tail_seq == u64::MAX {
-            self.tail_seq = seq & !(self.bucket_size - 1);
+            self.tail_seq = self.bucket_start_seq(seq);
         }
 
-        // check lagging
-        if self.head_seq - self.tail_seq > self.lag_threshold {
-            let mut tail_idx = self.index(self.tail_seq);
-            self.buckets[tail_idx] = 0;
-
-            while self.buckets[tail_idx] == 0 && (self.tail_seq + self.bucket_size) < self.head_seq
-            {
-                tail_idx = (tail_idx + 1) & (self.buckets.len() - 1);
-                self.tail_seq += self.bucket_size;
+        // rollup tail for completed buckets
+        let head_bucket_seq = self.bucket_start_seq(seq);
+        while head_bucket_seq > self.tail_seq {
+            let tail_bucket = self.bucket_index(self.tail_seq);
+            if self.head_seq - self.tail_seq > self.lag_threshold {
+                tracing::warn!("unfreed lagging consumers dropped!");
+                self.buckets[tail_bucket] = 0;
             }
+            if self.buckets[tail_bucket] != 0 {
+                break;
+            }
+            self.tail_seq += self.bucket_size;
         }
     }
 
     fn release(&mut self, seq: u64) {
         if seq < self.tail_seq {
+            tracing::warn!("tried to release: {seq} which is < {}", self.tail_seq);
             return;
         }
 
-        let mut bucket_idx = self.index(seq);
+        let bucket_idx = self.bucket_index(seq);
         self.buckets[bucket_idx] = self.buckets[bucket_idx].saturating_sub(1);
-
-        let mut bucket_tail_seq = seq & !(self.bucket_size - 1);
-        if bucket_tail_seq == self.tail_seq {
-            while self.buckets[bucket_idx] == 0 &&
-                (bucket_tail_seq + self.bucket_size) < self.head_seq
-            {
-                bucket_idx = (bucket_idx + 1) & (self.buckets.len() - 1);
-                bucket_tail_seq += self.bucket_size;
-            }
-            self.tail_seq = bucket_tail_seq;
-        }
     }
 
-    fn index(&self, seq: u64) -> usize {
+    #[inline]
+    fn bucket_index(&self, seq: u64) -> usize {
         ((seq >> self.bucket_shift) as usize) & (self.buckets.len() - 1)
+    }
+
+    #[inline]
+    fn bucket_start_seq(&self, seq: u64) -> u64 {
+        seq & self.bucket_mask
     }
 }
 
@@ -270,6 +274,7 @@ mod tests {
         b.acquire(200); // bucket 3, head = 200
         assert_eq!(b.tail_seq, 0);
         b.release(0); // bucket 0 empties; head far enough ahead to advance
+        b.acquire(300);
         assert!(b.tail_seq > 0, "tail did not advance: {}", b.tail_seq);
         assert!(b.tail_seq <= 200);
     }
@@ -285,6 +290,7 @@ mod tests {
         assert_eq!(b.tail_seq, 0, "tail moved while bucket 0 still held");
         // Release the head; tail jumps past bucket 0 and bucket 1 (both empty)
         b.release(0);
+        b.acquire(350);
         assert!(b.tail_seq >= 128, "tail did not jump: {}", b.tail_seq);
     }
 

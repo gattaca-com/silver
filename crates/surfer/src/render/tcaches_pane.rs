@@ -228,18 +228,24 @@ impl<'a> TCacheView<'a> {
     fn from(set: &'a CounterSet) -> Self {
         let capacity = set.current.first().copied().unwrap_or(0);
         let head_seq = set.current.get(1).copied().unwrap_or(0);
-        // u64::MAX is the "no consumer in this slot" sentinel — treat
-        // as tail == head (caught up). Real registered consumers
-        // write their tail (possibly 0 if registered before any
-        // production).
-        let min_tail_seq = set
-            .current
-            .iter()
-            .skip(2)
-            .copied()
-            .map(|t| if t == u64::MAX { head_seq } else { t })
-            .min()
-            .unwrap_or(head_seq);
+        // Distinguish "no real consumer" from "consumer caught up":
+        // - At least one real (non-sentinel) tail → use the minimum. Sentinel slots are
+        //   unused; treat them as `head_seq` so they don't drag the minimum.
+        // - All tails are sentinel → no consumer has ever published progress on this
+        //   TCache. Show the ring contents as the producer sees them: from `head -
+        //   capacity` up to `head` (clamped at 0 for pre-wrap producers).
+        let any_real = set.current.iter().skip(2).any(|&t| t != u64::MAX);
+        let min_tail_seq = if any_real {
+            set.current
+                .iter()
+                .skip(2)
+                .copied()
+                .map(|t| if t == u64::MAX { head_seq } else { t })
+                .min()
+                .unwrap_or(head_seq)
+        } else {
+            head_seq.saturating_sub(capacity)
+        };
         Self { name: &set.name, capacity, head_seq, min_tail_seq }
     }
 
@@ -267,10 +273,17 @@ fn bar_line(capacity: u64, head_seq: u64, min_tail_seq: u64, width: usize) -> Li
     let tail_pos = min_tail_seq & mask;
 
     // Map a byte offset → bar character index.
-    let to_char =
+    // tail_c uses floor (the byte sits inside char `tail_c`), head_c
+    // uses ceil so any non-zero backlog always spans at least one
+    // visible char even when head_pos and tail_pos round to the same
+    // floor.
+    let to_char_floor =
         |bytes: u64| -> usize { ((bytes as u128 * inner as u128) / capacity as u128) as usize };
-    let head_c = to_char(head_pos);
-    let tail_c = to_char(tail_pos);
+    let to_char_ceil = |bytes: u64| -> usize {
+        ((bytes as u128 * inner as u128).div_ceil(capacity as u128)) as usize
+    };
+    let head_c = to_char_ceil(head_pos);
+    let tail_c = to_char_floor(tail_pos);
     let length = head_seq.saturating_sub(min_tail_seq);
     let full = length >= capacity;
 
