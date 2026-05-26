@@ -1,14 +1,11 @@
 //! Utility helpers for data-column construction and verification.
 
-use std::sync::OnceLock;
-
 use blst::{BLST_ERROR, min_pk::PublicKey};
 use silver_common::{
     SLOTS_PER_EPOCH,
     ssz_hash::{
-        B256, ZERO_HASHES_LEN, compute_zero_hashes, hash_concat, hash_list_fixed_elements,
-        hash_tree_root_body, hash_tree_root_fork_data, is_valid_merkle_branch, merkleize,
-        uint64_chunk,
+        B256, hash_concat, hash_list_fixed_elements, hash_tree_root_body, hash_tree_root_fork_data,
+        is_valid_merkle_branch, merkleize, uint64_chunk,
     },
     ssz_view::{
         BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF, DataColumnSidecarView,
@@ -29,23 +26,12 @@ const KZG_COMMITMENTS_INCLUSION_PROOF_DEPTH: u32 = 4;
 /// `gindex % 2^depth = 27 % 16 = 11`.
 const KZG_COMMITMENTS_SUBTREE_INDEX: u64 = 11;
 
-/// Cached SSZ zero-hash table — built once and shared by every
-/// `body_root` call. `compute_zero_hashes` is cheap (~48 sha256s) but
-/// uncached calls would still dwarf the actual body-root work for small
-/// blocks, so we cache once and re-use.
-static ZERO_HASHES: OnceLock<[B256; ZERO_HASHES_LEN]> = OnceLock::new();
-
-#[inline]
-fn zero_hashes() -> &'static [B256; ZERO_HASHES_LEN] {
-    ZERO_HASHES.get_or_init(compute_zero_hashes)
-}
-
 /// SSZ `body_root` of a `BeaconBlockBody` given its raw SSZ bytes.
 /// Returns `[0u8; 32]` if `body.len()` is below the post-Electra fixed
 /// prefix size — mirrors the spec-compliant fallback in
 /// `silver_common::ssz_hash::hash_tree_root_body`.
 pub fn body_root(body: &[u8]) -> B256 {
-    hash_tree_root_body(body, zero_hashes())
+    hash_tree_root_body(body)
 }
 
 /// SSZ `block_root` of a `BeaconBlockHeader` derived from a
@@ -54,35 +40,27 @@ pub fn body_root(body: &[u8]) -> B256 {
 /// replaced by `body_root`. This is the value used as
 /// `DataColumnsByRootIdentifier.block_root` in DA RPC requests.
 pub fn block_root(signed_block: &[u8]) -> B256 {
-    let zh = zero_hashes();
-    let body_root = hash_tree_root_body(SignedBeaconBlockView::body(signed_block), zh);
-    merkleize(
-        &[
-            uint64_chunk(SignedBeaconBlockView::slot(signed_block)),
-            uint64_chunk(SignedBeaconBlockView::proposer_index(signed_block)),
-            *SignedBeaconBlockView::parent_root(signed_block),
-            *SignedBeaconBlockView::state_root(signed_block),
-            body_root,
-        ],
-        zh,
-    )
+    let body_root = hash_tree_root_body(SignedBeaconBlockView::body(signed_block));
+    merkleize(&[
+        uint64_chunk(SignedBeaconBlockView::slot(signed_block)),
+        uint64_chunk(SignedBeaconBlockView::proposer_index(signed_block)),
+        *SignedBeaconBlockView::parent_root(signed_block),
+        *SignedBeaconBlockView::state_root(signed_block),
+        body_root,
+    ])
 }
 
 /// SSZ `block_root` reconstructed from a `DataColumnSidecar`'s embedded
 /// `signed_block_header`. The sidecar carries `body_root` directly, so no
 /// body hashing is required — just the 5-leaf merkleize.
 pub fn block_root_from_sidecar(sidecar: &[u8]) -> B256 {
-    let zh = zero_hashes();
-    merkleize(
-        &[
-            uint64_chunk(DataColumnSidecarView::slot(sidecar)),
-            uint64_chunk(DataColumnSidecarView::proposer_index(sidecar)),
-            *DataColumnSidecarView::parent_root(sidecar),
-            *DataColumnSidecarView::state_root(sidecar),
-            *DataColumnSidecarView::body_root(sidecar),
-        ],
-        zh,
-    )
+    merkleize(&[
+        uint64_chunk(DataColumnSidecarView::slot(sidecar)),
+        uint64_chunk(DataColumnSidecarView::proposer_index(sidecar)),
+        *DataColumnSidecarView::parent_root(sidecar),
+        *DataColumnSidecarView::state_root(sidecar),
+        *DataColumnSidecarView::body_root(sidecar),
+    ])
 }
 
 /// Spec `verify_data_column_sidecar` — pure shape/sanity checks against
@@ -131,13 +109,11 @@ pub fn verify_data_column_sidecar(sidecar: &[u8]) -> bool {
 /// (relies on the size invariants for `kzg_commitments` and the
 /// inclusion-proof bytes).
 pub fn verify_data_column_sidecar_inclusion_proof(sidecar: &[u8]) -> bool {
-    let zh = zero_hashes();
     let commitments = DataColumnSidecarView::kzg_commitments(sidecar);
     let leaf = hash_list_fixed_elements(
         commitments,
         BYTES_PER_KZG_COMMITMENT,
         MAX_BLOB_COMMITMENTS_PER_BLOCK,
-        zh,
     );
     let branch = DataColumnSidecarView::inclusion_proof(sidecar);
     let body_root = DataColumnSidecarView::body_root(sidecar);
@@ -288,8 +264,6 @@ mod tests {
 
     #[test]
     fn body_root_is_deterministic() {
-        // Same bytes → same root, across two calls (also verifies the
-        // OnceLock-cached zero-hash table is reusable).
         let body = [0u8; 396];
         assert_eq!(body_root(&body), body_root(&body));
     }

@@ -14,7 +14,7 @@ use silver_beacon_state::{
     bls::{self, DOMAIN_BEACON_ATTESTER, DST, SigBatch},
     decompose::decompose_beacon_state,
     shuffling,
-    ssz_hash::{compute_zero_hashes, hash_attestation_data},
+    ssz_hash::hash_attestation_data,
     state_transition::{
         self, ShufflingRef, collect_sigs_attestations, collect_sigs_attester_slashings,
         collect_sigs_bls_to_execution_changes, collect_sigs_proposer_slashings,
@@ -46,7 +46,6 @@ fn keypair(seed: u64) -> (SecretKey, PublicKey) {
 
 fn bench_verify_single_attestation(c: &mut Criterion) {
     let (sk, pk) = keypair(0);
-    let zh = compute_zero_hashes();
     let gvr: B256 = [0u8; 32];
     let fork_version = [0u8; 4];
 
@@ -54,13 +53,13 @@ fn bench_verify_single_attestation(c: &mut Criterion) {
     buf[16..24].copy_from_slice(&100u64.to_le_bytes()); // slot
     buf[32] = 0xAA; // beacon_block_root[0]
     let data: &[u8; 128] = buf[16..144].try_into().unwrap();
-    let object_root = hash_attestation_data(data, &zh);
+    let object_root = hash_attestation_data(data);
     let domain = bls::compute_domain(DOMAIN_BEACON_ATTESTER, fork_version, &gvr);
     let signing_root = bls::compute_signing_root(&object_root, &domain);
     buf[144..240].copy_from_slice(&sk.sign(&signing_root, DST, &[]).to_bytes());
 
     c.bench_function("verify_single_attestation", |b| {
-        b.iter(|| bls::verify_single_attestation(&buf, &pk, fork_version, &gvr, &zh))
+        b.iter(|| bls::verify_single_attestation(&buf, &pk, fork_version, &gvr))
     });
 }
 
@@ -147,7 +146,6 @@ struct LoadedState {
 }
 
 fn load_pre_at(dir: &Path) -> LoadedState {
-    let zh = compute_zero_hashes();
     let pre_ssz = snappy_decode(&dir.join("pre.ssz_snappy"));
     let mut s = LoadedState {
         imm: box_zeroed(),
@@ -160,7 +158,6 @@ fn load_pre_at(dir: &Path) -> LoadedState {
     };
     s.pq = decompose_beacon_state(
         &pre_ssz,
-        &zh,
         &mut s.imm,
         &mut s.fv,
         &mut s.longtail,
@@ -185,7 +182,6 @@ fn shuffle_for_epoch(e: &EpochData, n: usize, epoch: Epoch) -> (Vec<u32>, usize)
 fn build_ef_block() -> SigBatch {
     let dir = spec_tests_dir().join("tests/mainnet/fulu/sanity/blocks/pyspec_tests/attestation");
     let mut s = load_pre_at(&dir);
-    let zh = compute_zero_hashes();
     let block = snappy_decode(&dir.join("blocks_0.ssz_snappy"));
 
     let block_slot = SignedBeaconBlockView::slot(&block);
@@ -207,7 +203,6 @@ fn build_ef_block() -> SigBatch {
             &mut s.sd,
             &mut s.pq,
             block_slot,
-            &zh,
             &mut active,
             &mut postponed,
         );
@@ -248,15 +243,9 @@ fn build_ef_block() -> SigBatch {
     let blob = BeaconBlockBodyView::blob_kzg_commitments_offset(body) as usize;
 
     let view = ValidatorsState::with_empty_delta(&s.fv);
-    let _ = collect_sigs_proposer_slashings(&s.imm, &view, &body[ps..at_s], &mut batch, &zh);
-    let _ = collect_sigs_attester_slashings(
-        &s.imm,
-        &view,
-        &body[at_s..att],
-        &mut scratch,
-        &mut batch,
-        &zh,
-    );
+    let _ = collect_sigs_proposer_slashings(&s.imm, &view, &body[ps..at_s], &mut batch);
+    let _ =
+        collect_sigs_attester_slashings(&s.imm, &view, &body[at_s..att], &mut scratch, &mut batch);
     let _ = collect_sigs_attestations(
         &s.imm,
         &view,
@@ -265,12 +254,10 @@ fn build_ef_block() -> SigBatch {
         Some(&sref),
         &mut scratch,
         &mut batch,
-        &zh,
     );
     // deposits skipped — verified inline in apply_deposit.
-    collect_sigs_voluntary_exits(&s.imm, &view, &body[ve..exec], &mut batch, &zh);
-    let _ =
-        collect_sigs_bls_to_execution_changes(&s.imm, &view, &body[bls_..blob], &mut batch, &zh);
+    collect_sigs_voluntary_exits(&s.imm, &view, &body[ve..exec], &mut batch);
+    let _ = collect_sigs_bls_to_execution_changes(&s.imm, &view, &body[bls_..blob], &mut batch);
     collect_sigs_sync_aggregate(
         &s.imm,
         &view,

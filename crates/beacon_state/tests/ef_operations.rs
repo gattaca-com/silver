@@ -7,7 +7,6 @@ use ef_common::{
 };
 use silver_beacon_state::{
     bls::SigBatch,
-    ssz_hash::compute_zero_hashes,
     state_transition::{self, ShufflingRef},
     types::SLOTS_PER_EPOCH,
 };
@@ -25,7 +24,6 @@ fn operations_handler(
         return;
     }
 
-    let zh = compute_zero_hashes();
     let mut pass = 0;
     let mut fail = 0;
     let mut skip = 0;
@@ -39,7 +37,7 @@ fn operations_handler(
             continue;
         }
 
-        let mut pre = load_state(&pre_path, &zh);
+        let mut pre = load_state(&pre_path);
         let op_ssz = snappy_decode(&op_path);
 
         if !post_path.exists() {
@@ -49,14 +47,14 @@ fn operations_handler(
             }
             // Expected-reject case: op must be rejected and pre-state
             // must not be mutated past the rejection point.
-            let pre_snapshot = load_state(&pre_path, &zh);
+            let pre_snapshot = load_state(&pre_path);
             let accepted = run(&mut pre, &op_ssz);
             if accepted {
                 fail += 1;
                 eprintln!("{name}: expected reject, but op was accepted");
                 continue;
             }
-            let diffs = compare_states(name, &pre, &pre_snapshot, &zh);
+            let diffs = compare_states(name, &pre, &pre_snapshot);
             if diffs.is_empty() {
                 pass += 1;
             } else {
@@ -75,8 +73,8 @@ fn operations_handler(
             eprintln!("{name}: expected accept, but op was rejected");
             continue;
         }
-        let post = load_state(&post_path, &zh);
-        let diffs = compare_states(name, &pre, &post, &zh);
+        let post = load_state(&post_path);
+        let diffs = compare_states(name, &pre, &post);
         if diffs.is_empty() {
             pass += 1;
         } else {
@@ -92,11 +90,9 @@ fn operations_handler(
 
 #[test]
 fn proposer_slashing() {
-    let zh = compute_zero_hashes();
     operations_handler("proposer_slashing", "proposer_slashing", true, move |s, op| {
         let mut batch = SigBatch::new();
-        if state_transition::collect_sigs_proposer_slashings(&s.imm, &s.vs, op, &mut batch, &zh)
-            .is_err()
+        if state_transition::collect_sigs_proposer_slashings(&s.imm, &s.vs, op, &mut batch).is_err()
         {
             return false;
         }
@@ -115,7 +111,6 @@ fn proposer_slashing() {
 
 #[test]
 fn attester_slashing() {
-    let zh = compute_zero_hashes();
     operations_handler("attester_slashing", "attester_slashing", true, move |s, op| {
         let mut list = Vec::with_capacity(4 + op.len());
         list.extend_from_slice(&4u32.to_le_bytes());
@@ -128,7 +123,6 @@ fn attester_slashing() {
             &list,
             &mut active_scratch,
             &mut batch,
-            &zh,
         )
         .is_err()
         {
@@ -149,7 +143,6 @@ fn attester_slashing() {
 
 #[test]
 fn attestation() {
-    let zh = compute_zero_hashes();
     operations_handler("attestation", "attestation", true, move |s, op| {
         let mut list = Vec::with_capacity(4 + op.len());
         list.extend_from_slice(&4u32.to_le_bytes());
@@ -191,7 +184,6 @@ fn attestation() {
             Some(&sref),
             &mut active_scratch,
             &mut batch,
-            &zh,
         )
         .is_err()
         {
@@ -216,19 +208,17 @@ fn attestation() {
 
 #[test]
 fn deposit() {
-    let zh = compute_zero_hashes();
     operations_handler("deposit", "deposit", true, move |s, op| {
-        state_transition::process_deposits(&mut s.vs, &mut s.epoch, &mut s.sd, &mut s.pq, op, &zh)
+        state_transition::process_deposits(&mut s.vs, &mut s.epoch, &mut s.sd, &mut s.pq, op)
             .is_ok()
     });
 }
 
 #[test]
 fn voluntary_exit() {
-    let zh = compute_zero_hashes();
     operations_handler("voluntary_exit", "voluntary_exit", true, move |s, op| {
         let mut batch = SigBatch::new();
-        state_transition::collect_sigs_voluntary_exits(&s.imm, &s.vs, op, &mut batch, &zh);
+        state_transition::collect_sigs_voluntary_exits(&s.imm, &s.vs, op, &mut batch);
         let cfg = silver_common::SpecConfig::mainnet();
         batch.verify_all() &&
             state_transition::process_voluntary_exits(
@@ -245,13 +235,10 @@ fn voluntary_exit() {
 
 #[test]
 fn bls_to_execution_change() {
-    let zh = compute_zero_hashes();
     operations_handler("bls_to_execution_change", "address_change", true, move |s, op| {
         let mut batch = SigBatch::new();
-        if state_transition::collect_sigs_bls_to_execution_changes(
-            &s.imm, &s.vs, op, &mut batch, &zh,
-        )
-        .is_err()
+        if state_transition::collect_sigs_bls_to_execution_changes(&s.imm, &s.vs, op, &mut batch)
+            .is_err()
         {
             return false;
         }
@@ -340,7 +327,6 @@ fn withdrawals() {
 
 #[test]
 fn execution_payload() {
-    let zh = compute_zero_hashes();
     let cfg = silver_common::SpecConfig::mainnet();
     operations_handler("execution_payload", "body", false, move |s, op| {
         if op.len() < 396 {
@@ -353,7 +339,7 @@ fn execution_payload() {
             let payload = &op[exec_off..bls_off];
             let block_slot = s.sd.slot;
             let _ = state_transition::process_execution_payload(
-                &cfg, &s.imm, &mut s.sd, payload, block_slot, &zh,
+                &cfg, &s.imm, &mut s.sd, payload, block_slot,
             );
             let _ = state_transition::process_withdrawals(
                 &s.vs, &s.epoch, &mut s.sd, &mut s.pq, payload,
@@ -365,7 +351,6 @@ fn execution_payload() {
 
 #[test]
 fn block_header() {
-    let zh = compute_zero_hashes();
     operations_handler("block_header", "block", true, move |s, op| {
         // op is a BeaconBlock SSZ: slot(8) + proposer_index(8) + parent_root(32) +
         // state_root(32) + body_offset(4) + body(...)
@@ -377,7 +362,7 @@ fn block_header() {
         let parent_root = op[16..48].try_into().unwrap();
         let body_off = u32::from_le_bytes(op[80..84].try_into().unwrap()) as usize;
         let body = if body_off <= op.len() { &op[body_off..] } else { &[] };
-        let body_root = silver_beacon_state::ssz_hash::hash_tree_root_body(body, &zh);
+        let body_root = silver_beacon_state::ssz_hash::hash_tree_root_body(body);
         state_transition::process_block_header(
             &s.vs,
             &s.epoch,
@@ -386,7 +371,6 @@ fn block_header() {
             proposer_index,
             parent_root,
             body_root,
-            &zh,
         )
         .is_ok()
     });

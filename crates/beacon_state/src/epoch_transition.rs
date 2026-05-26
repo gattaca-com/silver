@@ -52,7 +52,6 @@ pub fn process_epoch(
     sd: &mut SlotData,
     pq: &mut PendingQueues,
     roots: &SlotRoots,
-    zh: &[B256],
     active_scratch: &mut Vec<u32>,
     postponed_scratch: &mut Vec<types::PendingDeposit>,
 ) {
@@ -65,12 +64,12 @@ pub fn process_epoch(
     process_registry_updates(cfg, epoch, sd, n, current_epoch);
     process_slashings(cfg, epoch, sd, n, current_epoch);
     process_eth1_data_reset(sd, current_epoch);
-    process_pending_deposits(cfg, vs, epoch, sd, pq, zh, postponed_scratch);
+    process_pending_deposits(cfg, vs, epoch, sd, pq, postponed_scratch);
     process_pending_consolidations(epoch, sd, pq);
     process_effective_balance_updates(vs, epoch, sd);
     process_slashings_reset(epoch, current_epoch);
     process_randao_mixes_reset(epoch, sd, current_epoch);
-    process_historical_summaries_update(longtail, roots, current_epoch, zh);
+    process_historical_summaries_update(longtail, roots, current_epoch);
     process_participation_flag_updates(sd, n);
     process_sync_committee_updates(vs, longtail, epoch, current_epoch, active_scratch);
     process_proposer_lookahead(vs, epoch, sd, current_epoch, active_scratch);
@@ -448,7 +447,6 @@ pub fn process_pending_deposits(
     epoch: &mut EpochData,
     sd: &mut SlotData,
     pq: &mut PendingQueues,
-    zh: &[B256],
     postponed: &mut Vec<types::PendingDeposit>,
 ) {
     let current_epoch = sd.slot / SLOTS_PER_EPOCH;
@@ -483,7 +481,7 @@ pub fn process_pending_deposits(
         let is_withdrawn = vi.is_some_and(|v| epoch.val_withdrawable_epoch[v] < next_epoch);
 
         if is_withdrawn {
-            apply_pending_deposit(vs, epoch, sd, &deposit, zh);
+            apply_pending_deposit(vs, epoch, sd, &deposit);
         } else if is_exited {
             postponed.push(deposit);
         } else {
@@ -492,7 +490,7 @@ pub fn process_pending_deposits(
                 break;
             }
             processed_amount += deposit.amount;
-            apply_pending_deposit(vs, epoch, sd, &deposit, zh);
+            apply_pending_deposit(vs, epoch, sd, &deposit);
         }
         next_deposit_index += 1;
     }
@@ -513,7 +511,6 @@ fn apply_pending_deposit(
     epoch: &mut EpochData,
     sd: &mut SlotData,
     deposit: &types::PendingDeposit,
-    zh: &[B256],
 ) {
     let vi = vs.find_by_pubkey(&deposit.pubkey);
     if let Some(v) = vi {
@@ -525,7 +522,6 @@ fn apply_pending_deposit(
             &deposit.withdrawal_credentials,
             deposit.amount,
             &deposit.signature,
-            zh,
         ) {
             return;
         }
@@ -551,7 +547,6 @@ pub fn is_valid_deposit_signature(
     withdrawal_credentials: &Withdrawals,
     amount: u64,
     signature: &[u8; 96],
-    zh: &[B256],
 ) -> bool {
     // DepositMessage = {pubkey(48), withdrawal_credentials(32), amount(uint64)}.
     // SSZ hash: merkleize([pubkey_root, wc, amount_chunk]).
@@ -561,7 +556,7 @@ pub fn is_valid_deposit_signature(
     let mut amount_chunk = [0u8; 32];
     amount_chunk[..8].copy_from_slice(&amount.to_le_bytes());
     let deposit_msg_root =
-        ssz_hash::merkleize(&[pubkey_root, withdrawal_credentials.0, amount_chunk], zh);
+        ssz_hash::merkleize(&[pubkey_root, withdrawal_credentials.0, amount_chunk]);
 
     // Fork-agnostic domain: DOMAIN_DEPOSIT(0x03), GENESIS_FORK_VERSION([0;4]),
     // zero genesis_validators_root.
@@ -572,7 +567,7 @@ pub fn is_valid_deposit_signature(
         d[4..32].copy_from_slice(&fork_data_root[..28]);
         d
     };
-    let signing_root = ssz_hash::merkleize(&[deposit_msg_root, domain], zh);
+    let signing_root = ssz_hash::merkleize(&[deposit_msg_root, domain]);
 
     bls::verify_deposit_signature(pubkey, signature, &signing_root)
 }
@@ -614,16 +609,15 @@ pub fn process_historical_summaries_update(
     longtail: &mut HistoricalLongtail,
     roots: &SlotRoots,
     current_epoch: Epoch,
-    zh: &[B256],
 ) {
     let next_epoch = current_epoch + 1;
     if !next_epoch.is_multiple_of(HISTORICAL_SUMMARY_PERIOD) {
         return;
     }
     let block_summary_root =
-        ssz_hash::merkleize_padded(&roots.block_roots, SLOTS_PER_HISTORICAL_ROOT, zh);
+        ssz_hash::merkleize_padded(&roots.block_roots, SLOTS_PER_HISTORICAL_ROOT);
     let state_summary_root =
-        ssz_hash::merkleize_padded(&roots.state_roots, SLOTS_PER_HISTORICAL_ROOT, zh);
+        ssz_hash::merkleize_padded(&roots.state_roots, SLOTS_PER_HISTORICAL_ROOT);
     longtail
         .historical_summaries
         .push(HistoricalSummary { block_summary_root, state_summary_root });
@@ -785,19 +779,19 @@ mod tests {
     }
 
     /// Build the deposit signing root for a (pubkey, wc, amount) triple.
-    fn deposit_signing_root(pubkey: &[u8; 48], wc: &Withdrawals, amount: u64, zh: &[B256]) -> B256 {
+    fn deposit_signing_root(pubkey: &[u8; 48], wc: &Withdrawals, amount: u64) -> B256 {
         let mut pk_chunk = [0u8; 64];
         pk_chunk[..48].copy_from_slice(pubkey);
         let pubkey_root = ssz_hash::sha256(&pk_chunk);
         let mut amt = [0u8; 32];
         amt[..8].copy_from_slice(&amount.to_le_bytes());
-        let msg_root = ssz_hash::merkleize(&[pubkey_root, wc.0, amt], zh);
+        let msg_root = ssz_hash::merkleize(&[pubkey_root, wc.0, amt]);
 
         let fork_data_root = ssz_hash::hash_tree_root_fork_data([0; 4], &[0u8; 32]);
         let mut domain = [0u8; 32];
         domain[0..4].copy_from_slice(&0x03u32.to_le_bytes());
         domain[4..32].copy_from_slice(&fork_data_root[..28]);
-        ssz_hash::merkleize(&[msg_root, domain], zh)
+        ssz_hash::merkleize(&[msg_root, domain])
     }
 
     #[test]
@@ -822,8 +816,7 @@ mod tests {
         let wc = Withdrawals([0xAAu8; 32]);
         let amount = 32_000_000_000u64;
 
-        let zh = ssz_hash::compute_zero_hashes();
-        let signing_root = deposit_signing_root(&pk, &wc, amount, &zh);
+        let signing_root = deposit_signing_root(&pk, &wc, amount);
         let dst = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_";
         let sig = sk.sign(&signing_root, dst, &[]).to_bytes();
 
@@ -842,7 +835,6 @@ mod tests {
             &mut e,
             &mut sd,
             &mut pq,
-            &zh,
             &mut Vec::new(),
         );
 
@@ -864,7 +856,6 @@ mod tests {
         sd.finalized_checkpoint = checkpoint(current_epoch, 0x01);
 
         // Deposit with zeroed (invalid) signature.
-        let zh = ssz_hash::compute_zero_hashes();
         let pk = [0x01u8; 48]; // invalid pubkey too, but sig check comes first via blst
         pq.pending_deposits.push(types::PendingDeposit {
             pubkey: pk,
@@ -881,7 +872,6 @@ mod tests {
             &mut e,
             &mut sd,
             &mut pq,
-            &zh,
             &mut Vec::new(),
         );
 
@@ -916,7 +906,6 @@ mod tests {
         sd.balances[0] = MAX_EFFECTIVE_BALANCE;
 
         // Deposit to existing validator — signature is ignored per spec.
-        let zh = ssz_hash::compute_zero_hashes();
         let top_up = 1_000_000_000u64;
         pq.pending_deposits.push(types::PendingDeposit {
             pubkey: pk,
@@ -933,7 +922,6 @@ mod tests {
             &mut e,
             &mut sd,
             &mut pq,
-            &zh,
             &mut Vec::new(),
         );
 

@@ -10,7 +10,7 @@ use flux::{spine::SpineAdapter, tile::Tile, timing::Nanos};
 use serde::Deserialize;
 use silver_beacon_state::{
     decompose::decompose_beacon_state,
-    ssz_hash::{compute_zero_hashes, hash_tree_root_state},
+    ssz_hash::hash_tree_root_state,
     ticker::SlotTicker,
     tile::BeaconStateTile,
     types::{EpochData, HistoricalLongtail, Immutable, SlotData, SlotRoots, box_zeroed},
@@ -266,7 +266,6 @@ impl Harness {
     }
 
     pub fn assert_state_root(&self, post_ssz: &[u8]) {
-        let zh = compute_zero_hashes();
         let mut imm: Box<Immutable> = box_zeroed();
         let mut fv = FinalizedValidators::new(&[], &[]);
         let mut longtail: Box<HistoricalLongtail> = box_zeroed();
@@ -275,7 +274,6 @@ impl Harness {
         let mut sd: Box<SlotData> = box_zeroed();
         let pq = decompose_beacon_state(
             post_ssz,
-            &zh,
             &mut imm,
             &mut fv,
             &mut longtail,
@@ -285,8 +283,7 @@ impl Harness {
         )
         .expect("decompose post.ssz");
         let validators = ValidatorsState::with_empty_delta(&fv);
-        let expected =
-            hash_tree_root_state(&imm, &validators, &longtail, &epoch, &roots, &sd, &pq, &zh);
+        let expected = hash_tree_root_state(&imm, &validators, &longtail, &epoch, &roots, &sd, &pq);
         let got = self.tile.head_state_root();
         assert_eq!(
             got,
