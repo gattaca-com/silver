@@ -1,10 +1,16 @@
+use std::collections::HashSet;
+
 use ratatui::widgets::TableState;
 
-use crate::sources::{counters::CounterSet, tilemetrics::TileMetricsSet, timings::TimingSet};
+use crate::{
+    discovery::DiscoveredSources,
+    sources::{counters::CounterSet, tilemetrics::TileMetricsSet, timings::TimingSet},
+};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Pane {
     Counters,
+    TCaches,
     Timings,
     Tiles,
 }
@@ -13,6 +19,7 @@ impl Pane {
     pub fn label(self) -> &'static str {
         match self {
             Pane::Counters => "Counters",
+            Pane::TCaches => "TCaches",
             Pane::Timings => "Timings",
             Pane::Tiles => "Tiles",
         }
@@ -20,7 +27,8 @@ impl Pane {
 
     pub fn next(self) -> Self {
         match self {
-            Pane::Counters => Pane::Timings,
+            Pane::Counters => Pane::TCaches,
+            Pane::TCaches => Pane::Timings,
             Pane::Timings => Pane::Tiles,
             Pane::Tiles => Pane::Counters,
         }
@@ -32,6 +40,8 @@ pub struct App {
     pub counters: Vec<CounterSet>,
     /// Currently selected (counter_set_idx, slot_idx) inside the counters pane.
     pub counters_selection: (usize, usize),
+    pub tcaches: Vec<CounterSet>,
+    pub tcaches_selection: usize,
     pub timings: Vec<TimingSet>,
     /// Selected timing-set index inside the timings pane.
     pub timings_selection: usize,
@@ -50,6 +60,7 @@ pub struct App {
     /// pane's selection each frame and ratatui keeps the offset in
     /// view.
     pub counters_table_state: TableState,
+    pub tcaches_table_state: TableState,
     pub timings_table_state: TableState,
     pub tiles_table_state: TableState,
     pub quit: bool,
@@ -63,6 +74,7 @@ const SPLIT_STEP: i32 = 5;
 impl App {
     pub fn new(
         counters: Vec<CounterSet>,
+        tcaches: Vec<CounterSet>,
         timings: Vec<TimingSet>,
         tilemetrics: Vec<TileMetricsSet>,
     ) -> Self {
@@ -70,6 +82,8 @@ impl App {
             pane: Pane::Counters,
             counters,
             counters_selection: (0, 0),
+            tcaches,
+            tcaches_selection: 0,
             timings,
             timings_selection: 0,
             tilemetrics,
@@ -77,6 +91,7 @@ impl App {
             drilled_in: false,
             split_pct: SPLIT_DEFAULT,
             counters_table_state: TableState::default(),
+            tcaches_table_state: TableState::default(),
             timings_table_state: TableState::default(),
             tiles_table_state: TableState::default(),
             quit: false,
@@ -106,8 +121,85 @@ impl App {
         self.split_pct = new as u16;
     }
 
+    /// Absorb any sources that appeared since the last discovery.
+    /// Insertion-only — existing handles keep their mmaps and history
+    /// rings. Selections are restored by name across the sort so a
+    /// newly-inserted source doesn't shift the user's highlight.
+    pub fn merge_new_sources(&mut self, sources: DiscoveredSources) {
+        // Counters.
+        let sel_name = self.counters.get(self.counters_selection.0).map(|c| c.name.clone());
+        let existing: HashSet<String> = self.counters.iter().map(|c| c.name.clone()).collect();
+        for f in &sources.counters {
+            if !existing.contains(&f.name) {
+                if let Ok(c) = CounterSet::open(f) {
+                    self.counters.push(c);
+                }
+            }
+        }
+        self.counters.sort_by(|a, b| a.name.cmp(&b.name));
+        if let Some(n) = sel_name {
+            if let Some(idx) = self.counters.iter().position(|c| c.name == n) {
+                self.counters_selection.0 = idx;
+            }
+        }
+
+        // TCaches.
+        let sel_name = self.tcaches.get(self.tcaches_selection).map(|c| c.name.clone());
+        let existing: HashSet<String> = self.tcaches.iter().map(|c| c.name.clone()).collect();
+        for f in &sources.tcaches {
+            if !existing.contains(&f.name) {
+                if let Ok(c) = CounterSet::open(f) {
+                    self.tcaches.push(c);
+                }
+            }
+        }
+        self.tcaches.sort_by(|a, b| a.name.cmp(&b.name));
+        if let Some(n) = sel_name {
+            if let Some(idx) = self.tcaches.iter().position(|c| c.name == n) {
+                self.tcaches_selection = idx;
+            }
+        }
+
+        // Timings.
+        let sel_name = self.timings.get(self.timings_selection).map(|t| t.name.clone());
+        let existing: HashSet<String> = self.timings.iter().map(|t| t.name.clone()).collect();
+        for f in &sources.timings {
+            if !existing.contains(&f.name) {
+                if let Ok(t) = TimingSet::open(f) {
+                    self.timings.push(t);
+                }
+            }
+        }
+        self.timings.sort_by(|a, b| a.name.cmp(&b.name));
+        if let Some(n) = sel_name {
+            if let Some(idx) = self.timings.iter().position(|t| t.name == n) {
+                self.timings_selection = idx;
+            }
+        }
+
+        // Tile metrics.
+        let sel_name = self.tilemetrics.get(self.tiles_selection).map(|t| t.name.clone());
+        let existing: HashSet<String> = self.tilemetrics.iter().map(|t| t.name.clone()).collect();
+        for f in &sources.tilemetrics {
+            if !existing.contains(&f.name) {
+                if let Ok(t) = TileMetricsSet::open(f) {
+                    self.tilemetrics.push(t);
+                }
+            }
+        }
+        self.tilemetrics.sort_by(|a, b| a.name.cmp(&b.name));
+        if let Some(n) = sel_name {
+            if let Some(idx) = self.tilemetrics.iter().position(|t| t.name == n) {
+                self.tiles_selection = idx;
+            }
+        }
+    }
+
     pub fn sample(&mut self) {
         for c in &mut self.counters {
+            c.sample();
+        }
+        for c in &mut self.tcaches {
             c.sample();
         }
         for t in &mut self.timings {
@@ -122,6 +214,12 @@ impl App {
         for c in &mut self.counters {
             c.roll_bucket();
         }
+        for c in &mut self.tcaches {
+            // For tcaches the per-slot delta IS the metric — head/tail
+            // values are monotonically-increasing seq cursors so a 1 s
+            // delta gives bytes/sec produced or consumed.
+            c.roll_bucket();
+        }
         for t in &mut self.timings {
             t.roll_bucket();
         }
@@ -133,9 +231,19 @@ impl App {
     pub fn move_selection(&mut self, dir: i32) {
         match self.pane {
             Pane::Counters => self.move_counter_selection(dir),
+            Pane::TCaches => self.move_tcache_selection(dir),
             Pane::Timings => self.move_timing_selection(dir),
             Pane::Tiles => self.move_tile_selection(dir),
         }
+    }
+
+    fn move_tcache_selection(&mut self, dir: i32) {
+        if self.tcaches.is_empty() {
+            return;
+        }
+        let n = self.tcaches.len() as i32;
+        let new = (self.tcaches_selection as i32 + dir).rem_euclid(n);
+        self.tcaches_selection = new as usize;
     }
 
     fn move_tile_selection(&mut self, dir: i32) {

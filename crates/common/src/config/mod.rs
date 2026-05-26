@@ -72,7 +72,7 @@ pub struct Config {
     outgoing_gossip_tcache_size: usize,
     #[serde(default = "default_usize::<33554432>")] // 2 << 24
     incoming_gossip_ssz_tcache_size: usize,
-    #[serde(default = "default_usize::<33554432>")] // 2 << 24
+    #[serde(default = "default_usize::<67108864>")] // 2 << 25
     incoming_rpc_tcache_size: usize,
     #[serde(default = "default_usize::<33554432>")] // 2 << 24
     outgoing_rpc_tcache_size: usize,
@@ -114,7 +114,7 @@ impl Config {
             incoming_gossip_tcache_size: 2 << 24,     // protobuf
             outgoing_gossip_tcache_size: 2 << 24,     // protobuf
             incoming_gossip_ssz_tcache_size: 2 << 24, // ssz
-            incoming_rpc_tcache_size: 2 << 24,        // ssz
+            incoming_rpc_tcache_size: 2 << 25,        // ssz
             outgoing_rpc_tcache_size: 2 << 24,        // ssz
         }
     }

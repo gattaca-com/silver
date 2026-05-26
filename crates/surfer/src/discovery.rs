@@ -12,6 +12,7 @@ use std::{fs, io, path::PathBuf};
 
 pub struct DiscoveredSources {
     pub counters: Vec<CounterFile>,
+    pub tcaches: Vec<CounterFile>,
     pub timings: Vec<TimingFile>,
     pub tilemetrics: Vec<TileMetricsFile>,
 }
@@ -39,6 +40,7 @@ pub struct TileMetricsFile {
 
 pub fn discover(base_dir: &std::path::Path, app_name: &str) -> io::Result<DiscoveredSources> {
     let mut counters = Vec::new();
+    let mut tcaches = Vec::new();
     let mut timings = Vec::new();
     let mut tilemetrics = Vec::new();
 
@@ -49,7 +51,12 @@ pub fn discover(base_dir: &std::path::Path, app_name: &str) -> io::Result<Discov
             let Some(fname) = path.file_name().and_then(|n| n.to_str()) else { continue };
             if let Some(name) = fname.strip_prefix("counters-") {
                 let size_bytes = entry.metadata().map(|m| m.len()).unwrap_or(0);
-                counters.push(CounterFile { name: name.to_string(), path, size_bytes });
+                let file = CounterFile { name: name.to_string(), path, size_bytes };
+                if file.name.starts_with("tcache-") {
+                    tcaches.push(file);
+                } else {
+                    counters.push(file);
+                }
             } else if let Some(name) = fname.strip_prefix("timing-") {
                 timings.push(TimingFile { name: name.to_string(), path });
             } else if let Some(name) = fname.strip_prefix("tilemetrics-") {
@@ -59,7 +66,8 @@ pub fn discover(base_dir: &std::path::Path, app_name: &str) -> io::Result<Discov
     }
 
     counters.sort_by(|a, b| a.name.cmp(&b.name));
+    tcaches.sort_by(|a, b| a.name.cmp(&b.name));
     timings.sort_by(|a, b| a.name.cmp(&b.name));
     tilemetrics.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(DiscoveredSources { counters, timings, tilemetrics })
+    Ok(DiscoveredSources { counters, tcaches, timings, tilemetrics })
 }

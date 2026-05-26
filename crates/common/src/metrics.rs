@@ -73,27 +73,16 @@ impl Drop for TimerGuard {
 }
 
 /// Open / create the counters file, ftruncate to `bytes`, mmap shared,
-/// and publish the base pointer to `target`. No-op if `target` is
-/// already non-null (idempotent across repeat `init()` calls).
-///
-/// Counter files land in flux's standard shmem-queues directory —
-/// `{base_dir}/{app_name}/shmem/queues/counters-{file_name}` — so a
-/// single observer-side scan picks up both flux queues and counter
-/// files in one walk.
-///
-/// Called by macro-generated `init()` functions; not intended for
-/// direct use.
-pub fn map_counters(
+/// and return the base pointer. Counter files land in flux's standard
+/// shmem-queues directory —
+/// `{base_dir}/{app_name}/shmem/queues/counters-{file_name}` — so a single
+/// observer-side scan picks up both flux queues and counter files in one walk.
+pub fn mmap_counters_file(
     base_dir: &Path,
     app_name: &str,
     file_name: &str,
     bytes: usize,
-    target: &AtomicPtr<AtomicU64>,
-) -> io::Result<()> {
-    if !target.load(Ordering::Relaxed).is_null() {
-        return Ok(());
-    }
-
+) -> io::Result<*mut AtomicU64> {
     let dir = flux::utils::directories::shmem_dir_queues_with_base(base_dir, app_name);
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(format!("counters-{file_name}"));
@@ -116,7 +105,24 @@ pub fn map_counters(
         return Err(io::Error::last_os_error());
     }
 
-    target.store(ptr.cast::<AtomicU64>(), Ordering::Release);
+    Ok(ptr.cast::<AtomicU64>())
+}
+
+/// As `mmap_counters_file` but publishes the result into a
+/// `AtomicPtr` target — used by the static-pointer pattern emitted by
+/// `declare_counters!`. No-op if `target` is already non-null.
+pub fn map_counters(
+    base_dir: &Path,
+    app_name: &str,
+    file_name: &str,
+    bytes: usize,
+    target: &AtomicPtr<AtomicU64>,
+) -> io::Result<()> {
+    if !target.load(Ordering::Relaxed).is_null() {
+        return Ok(());
+    }
+    let ptr = mmap_counters_file(base_dir, app_name, file_name, bytes)?;
+    target.store(ptr, Ordering::Release);
     Ok(())
 }
 

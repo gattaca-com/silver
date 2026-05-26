@@ -34,6 +34,9 @@ use crate::{
 
 const TICK: Duration = Duration::from_millis(100);
 const BUCKET: Duration = Duration::from_secs(sources::counters::BUCKET_SECS);
+/// How often to rescan the discovery directory for new sources.
+/// Insertion-only — existing handles never close mid-run.
+const DISCOVER: Duration = Duration::from_secs(10);
 
 fn main() -> io::Result<()> {
     let mut args = std::env::args().skip(1);
@@ -54,6 +57,21 @@ fn main() -> io::Result<()> {
         })
         .collect();
     for c in &mut counter_sets {
+        c.sample();
+    }
+
+    let mut tcache_sets: Vec<CounterSet> = sources
+        .tcaches
+        .iter()
+        .filter_map(|f| match CounterSet::open(f) {
+            Ok(c) => Some(c),
+            Err(e) => {
+                eprintln!("surfer: skipping {}: {e}", f.path.display());
+                None
+            }
+        })
+        .collect();
+    for c in &mut tcache_sets {
         c.sample();
     }
 
@@ -86,7 +104,7 @@ fn main() -> io::Result<()> {
     for t in &mut tile_sets {
         t.drain();
     }
-    let mut app = App::new(counter_sets, timing_sets, tile_sets);
+    let mut app = App::new(counter_sets, tcache_sets, timing_sets, tile_sets);
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -94,7 +112,7 @@ fn main() -> io::Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut term = Terminal::new(backend)?;
 
-    let result = run(&mut term, &mut app);
+    let result = run(&mut term, &mut app, &base_dir, &app_name);
 
     disable_raw_mode()?;
     execute!(term.backend_mut(), LeaveAlternateScreen)?;
@@ -103,9 +121,15 @@ fn main() -> io::Result<()> {
     result
 }
 
-fn run<B: ratatui::backend::Backend>(term: &mut Terminal<B>, app: &mut App) -> io::Result<()> {
+fn run<B: ratatui::backend::Backend>(
+    term: &mut Terminal<B>,
+    app: &mut App,
+    base_dir: &std::path::Path,
+    app_name: &str,
+) -> io::Result<()> {
     let mut last_tick = Instant::now();
     let mut last_bucket = Instant::now();
+    let mut last_discover = Instant::now();
     loop {
         term.draw(|f| render::draw(f, app))?;
 
@@ -124,6 +148,12 @@ fn run<B: ratatui::backend::Backend>(term: &mut Terminal<B>, app: &mut App) -> i
         if last_bucket.elapsed() >= BUCKET {
             app.roll_bucket();
             last_bucket = Instant::now();
+        }
+        if last_discover.elapsed() >= DISCOVER {
+            if let Ok(s) = discovery::discover(base_dir, app_name) {
+                app.merge_new_sources(s);
+            }
+            last_discover = Instant::now();
         }
         if app.quit {
             return Ok(());

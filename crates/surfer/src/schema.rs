@@ -21,5 +21,13 @@ pub fn names_for(file_name: &str, slot_count: usize) -> (Vec<String>, bool) {
     if let Some(arr) = lookup(file_name) {
         return (arr.iter().map(|s| s.to_string()).collect(), true);
     }
+    // TCache files have a fixed semantic layout decoded from slot count.
+    if file_name.starts_with("tcache-") && slot_count >= 2 {
+        let mut names = vec!["capacity".to_string(), "head_seq".to_string()];
+        for i in 0..(slot_count - 2) {
+            names.push(format!("tail_{i}"));
+        }
+        return (names, true);
+    }
     ((0..slot_count).map(|i| format!("slot_{i}")).collect(), false)
 }

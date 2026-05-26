@@ -78,6 +78,7 @@ impl Consumer {
         //tracing::warn!("consumer free: {}", self.seq);
         self.seq = self.next_seq;
         self.cache.head.tails[self.index].store(self.seq, Ordering::Release);
+        self.cache.record_tail(self.index, self.seq);
     }
 }
 
@@ -104,6 +105,7 @@ impl RandomAccessConsumer {
     pub fn free(&self) {
         let tail = self.active.tail_seq;
         self.cache.head.tails[self.index].store(tail, Ordering::Release);
+        self.cache.record_tail(self.index, tail);
     }
 
     fn release(&mut self, seq: u64) {
