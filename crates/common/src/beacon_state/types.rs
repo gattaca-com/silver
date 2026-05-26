@@ -42,6 +42,13 @@ pub const PROPOSER_LOOKAHEAD_SIZE: usize =
 pub const BYTES_PER_LOGS_BLOOM: usize = 256;
 pub const MAX_EXTRA_DATA_BYTES: usize = 32;
 
+pub const LONGTAILS_RING_N: usize = 2;
+pub const EPOCHS_RING_N: usize = 8;
+pub const SLOTS_RING_N: usize = 256;
+
+// size: ~195 KB stack (slot 145 KB + longtail 50 KB + rest); heap at default-
+// init ~2.6 MB (slot+epoch rings) and ~640 MB at MAX_VALIDATORS production
+// cap (ValidatorsData Box<[T]> fields, dominated by val_pubkey_decompressed).
 #[derive(Default)]
 pub struct Finalised {
     pub immutable: Immutable,
@@ -53,6 +60,12 @@ pub struct Finalised {
 }
 
 impl Finalised {
+    #[inline]
+    pub fn epoch(&self) -> Epoch {
+        self.slot.slot.slot / SLOTS_PER_EPOCH
+    }
+
+    #[inline]
     pub fn view(&self) -> FinalisedView<'_> {
         FinalisedView {
             immutable: &self.immutable,
@@ -63,6 +76,7 @@ impl Finalised {
     }
 }
 
+// size: 32 B (4 × pointer)
 pub struct FinalisedView<'a> {
     pub immutable: &'a Immutable,
     pub validators: &'a Validators,
@@ -70,6 +84,7 @@ pub struct FinalisedView<'a> {
     pub slot: &'a SlotStateFinalised,
 }
 
+// size: ~145 KB (dominated by SlotState)
 #[derive(Clone, Default)]
 pub struct StateDelta {
     pub epoch_idx: Option<usize>,
@@ -97,6 +112,7 @@ impl Reset for StateDelta {
     }
 }
 
+// size: ~145 KB — eth1_votes ArrayVec is inline 72 B × 2048 (~144 KB)
 #[derive(Clone, Copy, Default)]
 pub struct SlotState {
     pub randao_mix_current: B256,
@@ -116,6 +132,7 @@ pub struct SlotState {
     pub earliest_consolidation_epoch: Epoch,
 }
 
+// size: ~145 KB (SlotState 145 KB + 2 × Vec header)
 #[derive(Clone, Default)]
 pub struct SlotStateDelta {
     pub slot: SlotState,
@@ -126,6 +143,8 @@ pub struct SlotStateDelta {
     pub state_roots: Vec<B256>,
 }
 
+// size: ~145 KB stack (SlotState inline); heap 512 KB at default-init
+// (2 × SLOTS_PER_HISTORICAL_ROOT × 32 B rings).
 #[derive(Clone)]
 pub struct SlotStateFinalised {
     pub slot: SlotState,
@@ -161,6 +180,7 @@ impl Reset for SlotStateDelta {
     }
 }
 
+// size: ~648 B (proposer_lookahead 512 + 3 × Checkpoint 120 + scalars + pad)
 #[derive(Clone, Copy)]
 pub struct EpochState {
     pub proposer_lookahead: [u64; PROPOSER_LOOKAHEAD_SIZE],
@@ -184,6 +204,7 @@ impl Default for EpochState {
     }
 }
 
+// size: ~696 B stack (2 × Vec header + EpochState ~648 B)
 #[derive(Clone, Default)]
 pub struct EpochStateDelta {
     // For deltas: appended
@@ -207,6 +228,8 @@ impl Reset for EpochStateDelta {
     }
 }
 
+// size: ~680 B stack (2 × Box<[T]> header + EpochState); heap at default-init
+// ~2.064 MB (randao_mixes 2 MB + slashings 64 KB rings).
 #[derive(Clone)]
 pub struct EpochStateFinalised {
     // For finalised: last EPOCHS_PER_HISTORICAL_VECTOR (circular buffer indexed by `epoch % HV`)
@@ -226,6 +249,7 @@ impl Default for EpochStateFinalised {
     }
 }
 
+// size: ~50 KB (two SyncCommittees + sync_committee_indices)
 #[derive(Clone)]
 pub struct LongtailState {
     pub current_sync_committee: SyncCommittee,
@@ -263,6 +287,7 @@ impl Reset for LongtailState {
     }
 }
 
+// size: ~72 B (3 × Vec header)
 #[derive(Clone, Default)]
 pub struct PendingQueues {
     pub pending_deposits: Vec<PendingDeposit>,
@@ -273,6 +298,7 @@ pub struct PendingQueues {
 /// Per-fork delta on `PendingQueues`. Each queue: drop the first
 /// `drain_offset` entries of the base, then read the remainder followed by
 /// `appended`.
+// size: ~88 B
 #[derive(Clone, Default)]
 pub struct PendingQueuesDelta {
     pub deposits_drain_offset: u32,
@@ -303,7 +329,11 @@ impl Reset for PendingQueuesDelta {
     }
 }
 
-/// All slices are MAX_VALIDATORS long
+/// All slices are MAX_VALIDATORS long.
+// size: ~216 B stack (13 × Box<[T]> header + validator_count); heap at
+// default-init ~640 MB at production MAX_VALIDATORS = 11<<18 (val_pubkey
+// 132 MB, val_pubkey_decompressed 264 MB, val_withdrawal_credentials 88 MB,
+// 7 × Box<[u64]> ≈ 154 MB, 2 × Box<[u8]> + slashed ≈ 8 MB).
 pub struct ValidatorsData {
     pub validator_count: usize,
     pub val_pubkey: Box<[BLSPubkey]>,
@@ -347,12 +377,15 @@ impl Default for ValidatorsData {
 
 pub type PubkeyIndex = FxHashMap<BLSPubkey, u32>;
 
+// size: ~264 B stack (ValidatorsData ~216 B + PubkeyIndex ~48 B); heap at full
+// MAX_VALIDATORS ~800 MB (data ~640 MB + index ~150 MB + slack).
 #[derive(Default)]
 pub struct Validators {
     pub data: ValidatorsData,
     pub index: PubkeyIndex,
 }
 
+// size: ~176 B (PublicKey 96 + pubkey 48 + credentials 32)
 #[derive(Clone)]
 pub struct AppendedValidator {
     pub pubkey: BLSPubkey,
@@ -360,6 +393,7 @@ pub struct AppendedValidator {
     pub credentials: Withdrawals,
 }
 
+// size: ~96 B
 #[derive(Clone, Copy, Default)]
 pub struct Immutable {
     pub genesis_time: u64,
@@ -373,6 +407,7 @@ pub struct Immutable {
 /// Per-fork delta on top of the finalized base. `appended[p]`'s absolute
 /// validator index is `base_cnt + p`; the `_edits` vectors are sparse,
 /// keyed by absolute validator index.
+// size: ~296 B (base_cnt + 12 × Vec header)
 #[derive(Default, Clone)]
 pub struct ValidatorsDelta {
     pub base_cnt: usize,
@@ -391,6 +426,7 @@ pub struct ValidatorsDelta {
 }
 
 impl ValidatorsDelta {
+    #[inline]
     pub fn new_at(base_cnt: usize) -> Self {
         Self { base_cnt, ..Self::default() }
     }
@@ -431,12 +467,14 @@ impl Reset for ValidatorsDelta {
     }
 }
 
+// size: ~40 B
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub struct Checkpoint {
     pub epoch: Epoch,
     pub root: B256,
 }
 
+// size: ~16 B
 #[derive(Clone, Copy, Default)]
 pub struct Fork {
     pub previous_version: Version,
@@ -444,6 +482,7 @@ pub struct Fork {
     pub epoch: Epoch,
 }
 
+// size: ~72 B
 #[derive(Clone, Copy, Default)]
 pub struct Eth1Data {
     pub deposit_root: B256,
@@ -451,6 +490,7 @@ pub struct Eth1Data {
     pub block_hash: B256,
 }
 
+// size: ~112 B
 #[derive(Clone, Copy, Default, Debug)]
 pub struct BeaconBlockHeader {
     pub slot: Slot,
@@ -460,6 +500,7 @@ pub struct BeaconBlockHeader {
     pub body_root: B256,
 }
 
+// size: ~616 B (logs_bloom 256 + base_fee 32 + roots/hashes)
 #[derive(Clone, Copy)]
 pub struct ExecutionPayloadHeader {
     pub parent_hash: B256,
@@ -507,6 +548,7 @@ impl Default for ExecutionPayloadHeader {
     }
 }
 
+// size: ~192 B (sig 96 + pubkey 48 + creds 32 + 2 × u64)
 #[derive(Clone, Copy)]
 pub struct PendingDeposit {
     pub pubkey: BLSPubkey,
@@ -516,6 +558,7 @@ pub struct PendingDeposit {
     pub slot: Slot,
 }
 
+// size: ~24 B
 #[derive(Clone, Copy, Default)]
 pub struct PendingPartialWithdrawal {
     pub index: u64,
@@ -523,18 +566,21 @@ pub struct PendingPartialWithdrawal {
     pub withdrawable_epoch: Epoch,
 }
 
+// size: ~16 B
 #[derive(Clone, Copy, Default)]
 pub struct PendingConsolidation {
     pub source_index: u64,
     pub target_index: u64,
 }
 
+// size: ~64 B
 #[derive(Clone, Copy, Default)]
 pub struct HistoricalSummary {
     pub block_summary_root: B256,
     pub state_summary_root: B256,
 }
 
+// size: ~24 KB (48 B × 512 + 48 B)
 #[derive(Clone, Copy)]
 pub struct SyncCommittee {
     pub pubkeys: [BLSPubkey; SYNC_COMMITTEE_SIZE],
@@ -547,6 +593,66 @@ impl Default for SyncCommittee {
     }
 }
 
+// size: ~32 B
 #[repr(transparent)]
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub struct Withdrawals(pub B256);
+
+impl Withdrawals {
+    pub const ZERO: Self = Self([0u8; 32]);
+    pub const ETH1_ADDRESS_PREFIX: u8 = 0x01;
+    pub const COMPOUNDING_PREFIX: u8 = 0x02;
+
+    /// Build eth1-prefixed credentials (`0x01 || 11 zero bytes || addr`).
+    #[inline]
+    pub fn eth1(execution_address: &[u8; 20]) -> Self {
+        let mut bytes = [0u8; 32];
+        bytes[0] = Self::ETH1_ADDRESS_PREFIX;
+        bytes[12..32].copy_from_slice(execution_address);
+        Self(bytes)
+    }
+
+    #[inline]
+    pub fn prefix(&self) -> u8 {
+        self.0[0]
+    }
+
+    #[inline]
+    pub fn has_eth1_credential(&self) -> bool {
+        self.prefix() == Self::ETH1_ADDRESS_PREFIX
+    }
+
+    #[inline]
+    pub fn has_compounding_credential(&self) -> bool {
+        self.prefix() == Self::COMPOUNDING_PREFIX
+    }
+
+    #[inline]
+    pub fn has_execution_credential(&self) -> bool {
+        self.has_eth1_credential() || self.has_compounding_credential()
+    }
+
+    #[inline]
+    pub fn set_compounding_prefix(&mut self) {
+        self.0[0] = Self::COMPOUNDING_PREFIX;
+    }
+
+    /// Bytes [12..32] — the 20-byte execution address for `0x01` / `0x02`.
+    #[inline]
+    pub fn execution_address(&self) -> &[u8; 20] {
+        (&self.0[12..32]).try_into().unwrap()
+    }
+
+    /// Spec MAX_EFFECTIVE_BALANCE depends on credential type: compounding
+    /// caps at 2048 ETH, eth1/bls cap at 32 ETH.
+    #[inline]
+    pub fn max_effective_balance(&self) -> u64 {
+        const MIN_ACTIVATION_BALANCE: u64 = 32_000_000_000;
+        const MAX_EFFECTIVE_BALANCE_COMPOUNDING: u64 = 2048 * 1_000_000_000;
+        if self.has_compounding_credential() {
+            MAX_EFFECTIVE_BALANCE_COMPOUNDING
+        } else {
+            MIN_ACTIVATION_BALANCE
+        }
+    }
+}

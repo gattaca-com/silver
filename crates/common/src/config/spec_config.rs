@@ -20,6 +20,15 @@ pub struct BlobParameters {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub struct SpecConfig {
+    /// Genesis (phase-0) fork version. Used as the `current_version` in the
+    /// genesis fork-data root, which is the domain mixed into deposit
+    /// signatures (`DOMAIN_DEPOSIT`). 0x00000000 mainnet, 0x10000910 Hoodi.
+    #[serde(default = "default_genesis_fork_version", with = "hex_0x")]
+    pub genesis_fork_version: [u8; 4],
+    /// Capella fork version. Withdrawal-credential domain on Capella+.
+    /// 0x03000000 mainnet, 0x40000910 Hoodi.
+    #[serde(default = "default_capella_fork_version", with = "hex_0x")]
+    pub capella_fork_version: [u8; 4],
     /// Fulu fork version. Mixed into every Fulu
     /// fork digest. We target Fulu only — no `FULU_FORK_EPOCH` field
     /// because no code path gates on "is current epoch ≥ Fulu activation?":
@@ -91,6 +100,14 @@ pub struct SpecConfig {
     pub ejection_balance: u64,
 }
 
+fn default_genesis_fork_version() -> [u8; 4] {
+    [0x00, 0x00, 0x00, 0x00]
+}
+
+fn default_capella_fork_version() -> [u8; 4] {
+    [0x03, 0x00, 0x00, 0x00]
+}
+
 fn default_fulu_fork_version() -> [u8; 4] {
     [0x06, 0x00, 0x00, 0x00]
 }
@@ -146,7 +163,9 @@ impl SpecConfig {
     ///     against the upstream config file before long-running use.
     pub fn hoodi() -> Self {
         Self {
-            // Hoodi `FULU_FORK_VERSION = 0x70000910`.
+            // Hoodi fork-version pattern is `0xN0000910`.
+            genesis_fork_version: [0x10, 0x00, 0x09, 0x10],
+            capella_fork_version: [0x40, 0x00, 0x09, 0x10],
             fulu_fork_version: [0x70, 0x00, 0x09, 0x10],
             // No BPO entries spec'd on Hoodi at time of writing. Empty ⇒
             // always fall back to (`electra_fork_epoch`,
@@ -174,6 +193,8 @@ impl SpecConfig {
 
     pub fn mainnet() -> Self {
         Self {
+            genesis_fork_version: default_genesis_fork_version(),
+            capella_fork_version: default_capella_fork_version(),
             fulu_fork_version: default_fulu_fork_version(),
             blob_schedule: default_blob_schedule(),
             electra_fork_epoch: 364032,
