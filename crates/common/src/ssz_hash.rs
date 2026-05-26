@@ -23,7 +23,7 @@
 use std::sync::LazyLock;
 
 use flux::utils::ArrayVec;
-use ring::digest;
+use sha2::{Digest, Sha256};
 
 /// One-time hashtree backend selection (SHA-NI / AVX-512 / AVX2 / SSE).
 /// Forced on the first `hash_concat` call; result is `1` on success.
@@ -40,11 +40,9 @@ use crate::ssz_view::{
 
 pub type B256 = [u8; 32];
 
+#[inline]
 pub fn sha256(data: &[u8]) -> B256 {
-    let d = digest::digest(&digest::SHA256, data);
-    let mut out = [0u8; 32];
-    out.copy_from_slice(d.as_ref());
-    out
+    Sha256::digest(data).into()
 }
 
 #[inline]

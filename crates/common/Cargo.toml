@@ -22,6 +22,7 @@ rand.workspace = true
 rcgen.workspace = true
 ring.workspace = true
 rustc-hash.workspace = true
+sha2.workspace = true
 rustls.workspace = true
 secp256k1.workspace = true
 silver_common_macros.workspace = true

@@ -4187,6 +4187,7 @@ dependencies = [
  "secp256k1",
  "serde",
  "serde_json",
+ "sha2",
  "sha2-const-stable",
  "sha3",
  "silver_common_macros",

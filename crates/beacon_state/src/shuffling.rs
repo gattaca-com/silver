@@ -1,4 +1,4 @@
-use ring::digest;
+use silver_common::ssz_hash::sha256;
 
 use crate::types::{B256, EPOCHS_PER_HISTORICAL_VECTOR, Epoch, EpochData, SLOTS_PER_EPOCH};
 
@@ -12,13 +12,6 @@ pub const DOMAIN_SYNC_COMMITTEE: u32 = 7;
 const TARGET_COMMITTEE_SIZE: usize = 128;
 const MAX_COMMITTEES_PER_SLOT: usize = 64;
 const MIN_SEED_LOOKAHEAD: u64 = 1;
-
-fn sha256(data: &[u8]) -> [u8; 32] {
-    let d = digest::digest(&digest::SHA256, data);
-    let mut out = [0u8; 32];
-    out.copy_from_slice(d.as_ref());
-    out
-}
 
 /// seed = SHA256(domain_bytes || epoch_bytes || randao_mix)
 pub fn get_seed(epoch: &EpochData, e: Epoch, domain: u32) -> B256 {
