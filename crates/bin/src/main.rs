@@ -48,16 +48,19 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // TCaches
-    let incoming_gossip_producer = TCache::producer(config.incoming_gossip_tcache_size());
+    let incoming_gossip_producer =
+        TCache::producer("incoming_gossip", config.incoming_gossip_tcache_size());
     let incoming_gossip_consumer = incoming_gossip_producer.cache_ref().consumer()?;
-    let ssz_gossip_producer = TCache::producer(config.incoming_gossip_ssz_tcache_size());
+    let ssz_gossip_producer =
+        TCache::producer("ssz_gossip", config.incoming_gossip_ssz_tcache_size());
     let ssz_gossip_consumer = ssz_gossip_producer.cache_ref().random_access(true)?;
-    let outgoing_gossip_producer = TCache::producer(config.outgoing_gossip_tcache_size());
-    let incoming_rpc_producer = TCache::producer(config.incoming_rpc_tcache_size());
+    let outgoing_gossip_producer =
+        TCache::producer("outgoing_gossip", config.outgoing_gossip_tcache_size());
+    let incoming_rpc_producer = TCache::producer("incoming_rpc", config.incoming_rpc_tcache_size());
     let incoming_rpc_consumer = incoming_rpc_producer.cache_ref().random_access(true)?;
 
     // rpc producer
-    let outgoing_rpc_producer = TCache::producer(config.outgoing_rpc_tcache_size());
+    let outgoing_rpc_producer = TCache::producer("outgoing_rpc", config.outgoing_rpc_tcache_size());
 
     // Tiles.
     let keypair = config.keypair()?;

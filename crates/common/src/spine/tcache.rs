@@ -31,6 +31,11 @@ mod producer;
 ///  (___/-(____) _    
 ///               
 pub struct TCache {
+    /// Descriptive label for this TCache instance — used as the
+    /// `{name}` in `counters-tcache-{name}` for the metrics layer,
+    /// and useful for tracing. Stable for the lifetime of the
+    /// allocation.
+    name: &'static str,
     head: TCacheHead,
     len: u32,
     data: Box<[u8]>,
@@ -69,18 +74,24 @@ pub enum Error {
 }
 
 impl TCache {
-    /// Create a single producer t-cache.
-    pub fn producer(n: usize) -> Producer {
-        let tcache = Self::alloc_tache(n);
+    /// Create a single producer t-cache. `name` is a stable label
+    /// (e.g. `"gossip_in"`); the metrics layer uses it to produce
+    /// `counters-tcache-{name}`.
+    pub fn producer(name: &'static str, n: usize) -> Producer {
+        let tcache = Self::alloc_tache(name, n);
         let space = tcache.len;
         Producer { cache: Box::into_raw(tcache), seq: 0, space }
     }
 
     /// Create a multi-producer t-cache.
-    pub fn multi_producer(n: usize) -> MultiProducer {
-        let tcache = Self::alloc_tache(n);
+    pub fn multi_producer(name: &'static str, n: usize) -> MultiProducer {
+        let tcache = Self::alloc_tache(name, n);
         let len = tcache.len;
         MultiProducer::new(Box::into_raw(tcache), len)
+    }
+
+    pub fn name(&self) -> &'static str {
+        self.name
     }
 
     pub fn consumer(&self) -> Result<Consumer, Error> {
@@ -278,7 +289,7 @@ impl TCache {
         slot.seq = AtomicU64::new(seq);
     }
 
-    fn alloc_tache(size: usize) -> Box<Self> {
+    fn alloc_tache(name: &'static str, size: usize) -> Box<Self> {
         assert!(
             size.is_power_of_two() && size.is_multiple_of(ALIGN),
             "n is not mutiple of {ALIGN}"
@@ -291,6 +302,7 @@ impl TCache {
             }
             let data = Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, size));
             Box::new(Self {
+                name,
                 head: TCacheHead {
                     seq: AtomicU64::new(0),
                     tails: array::from_fn(|_| AtomicU64::new(u64::MAX)),
@@ -560,7 +572,7 @@ mod tests {
         const CONSUMERS: usize = 4;
         const MSGS: u32 = 4096;
 
-        let mut producer = TCache::producer(TCACHE_SIZE);
+        let mut producer = TCache::producer("test_tcache", TCACHE_SIZE);
         let mut consumers: Vec<Consumer> =
             (0..CONSUMERS).map(|_| producer.cache_ref().consumer().unwrap()).collect();
 
@@ -614,7 +626,7 @@ mod tests {
         const CONSUMERS: usize = 4;
         const MSGS_PER_PRODUCER: u32 = 4096;
 
-        let mp = TCache::multi_producer(TCACHE_SIZE);
+        let mp = TCache::multi_producer("test_mp", TCACHE_SIZE);
         let mut consumers: Vec<Consumer> =
             (0..CONSUMERS).map(|_| mp.cache_ref().consumer().unwrap()).collect();
 
@@ -677,7 +689,7 @@ mod tests {
 
     #[test]
     fn produce_consume() {
-        let mut producer = TCache::producer(2 << 14);
+        let mut producer = TCache::producer("test_buckets", 2 << 14);
         let mut consumer = producer.cache_ref().consumer().unwrap();
 
         let prod = std::thread::spawn(move || {

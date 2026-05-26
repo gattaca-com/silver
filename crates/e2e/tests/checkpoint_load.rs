@@ -45,8 +45,8 @@ fn finalized_state_loads() {
     // `precheck_block` ignores the following blocks as "future slot".
     let genesis_time = u64::from_le_bytes(ssz[0..8].try_into().unwrap());
     let ticker = SlotTicker::new(genesis_time, Duration::from_secs(12), Duration::from_secs(4));
-    let gossip_p = TCache::producer(1 << 20);
-    let rpc_p = TCache::producer(1 << 20);
+    let gossip_p = TCache::producer("gossip_in", 1 << 20);
+    let rpc_p = TCache::producer("rpc_in", 1 << 20);
     let gossip_c = gossip_p.cache_ref().random_access(false).unwrap();
     let rpc_c = rpc_p.cache_ref().random_access(false).unwrap();
 

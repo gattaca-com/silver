@@ -2036,7 +2036,7 @@ mod tests {
     }
 
     fn mk_tcache_read() -> silver_common::TCacheRead {
-        let mut producer = silver_common::TCache::producer(1 << 14);
+        let mut producer = silver_common::TCache::producer("test_peer", 1 << 14);
         let mut reservation = producer.reserve(64, true).unwrap();
         use std::io::Write as _;
         reservation.write_all(&[0u8; 64]).unwrap();
@@ -2279,7 +2279,7 @@ mod tests {
         connect(&mut mgr, &mut cap, 1, 1, now);
         mgr.set_synced(true);
 
-        let mut producer = TCache::producer(1 << 14);
+        let mut producer = TCache::producer("test_peer", 1 << 14);
         let mut reservation = producer.reserve(64, true).unwrap();
         use std::io::Write as _;
         reservation.write_all(&[0u8; 64]).unwrap();
@@ -2319,7 +2319,7 @@ mod tests {
         mgr.tick(now + Duration::from_millis(10), &mut |c| cap.0.push(c));
         assert!(mgr.score(1).unwrap() < -1.0);
 
-        let mut producer = TCache::producer(1 << 14);
+        let mut producer = TCache::producer("test_peer", 1 << 14);
         let mut reservation = producer.reserve(64, true).unwrap();
         use std::io::Write as _;
         reservation.write_all(&[0u8; 64]).unwrap();

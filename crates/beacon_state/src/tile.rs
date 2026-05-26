@@ -1723,8 +1723,8 @@ mod tests {
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
         let genesis = now.saturating_sub(wall_slot * secs_per_slot + 1);
         let ticker = SlotTicker::new(genesis, Duration::from_secs(12), Duration::from_secs(4));
-        let gossip_p = TCache::producer(1 << 20);
-        let event_p = TCache::producer(1 << 20);
+        let gossip_p = TCache::producer("test_gossip", 1 << 20);
+        let event_p = TCache::producer("test_event", 1 << 20);
         let gossip_c = gossip_p.cache_ref().random_access(true).unwrap();
         let rpc_c = event_p.cache_ref().random_access(true).unwrap();
         BeaconStateTile::new_heap(ticker, SpecConfig::mainnet(), gossip_c, rpc_c, &[])

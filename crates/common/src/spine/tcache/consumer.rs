@@ -328,7 +328,7 @@ mod tests {
     /// the guard's Drop calls release without panicking.
     #[test]
     fn acquire_release_cycle_reads_buffer() {
-        let mut producer = TCache::producer(1 << 16);
+        let mut producer = TCache::producer("test_consumer", 1 << 16);
         let mut consumer = producer.cache_ref().random_access(false).unwrap();
         producer.publish_head();
 
@@ -358,7 +358,7 @@ mod tests {
         // block at ~slot 128 forever.
         const TOTAL: usize = 1000;
 
-        let mut producer = TCache::producer(CACHE);
+        let mut producer = TCache::producer("test_consumer", CACHE);
         let mut consumer = producer.cache_ref().random_access(false).unwrap();
         producer.publish_head();
 
@@ -394,7 +394,7 @@ mod tests {
         const CACHE: usize = 1 << 20;
         const MSG_LEN: usize = 8 * 1024;
 
-        let mut producer = TCache::producer(CACHE);
+        let mut producer = TCache::producer("test_consumer", CACHE);
         let mut consumer = producer.cache_ref().random_access(false).unwrap();
         producer.publish_head();
 

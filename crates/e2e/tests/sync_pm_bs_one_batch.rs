@@ -156,11 +156,11 @@ fn pm_drives_single_big_batch_against_real_checkpoint() {
     let genesis_time = u64::from_le_bytes(checkpoint[0..8].try_into().unwrap());
     let ticker = SlotTicker::new(genesis_time, Duration::from_secs(12), Duration::from_secs(4));
 
-    let gossip_p = TCache::producer(1 << 20);
+    let gossip_p = TCache::producer("gossip_in", 1 << 20);
     // ~250KB per mainnet block × N blocks, plus headroom for any
     // tcache-internal accounting.
     let rpc_cap_bytes = ((n_blocks as usize) * 300 * 1024).next_power_of_two();
-    let mut rpc_p = TCache::producer(rpc_cap_bytes);
+    let mut rpc_p = TCache::producer("rpc_in", rpc_cap_bytes);
     let gossip_c = gossip_p.cache_ref().random_access(true).expect("gossip ra");
     let rpc_c = rpc_p.cache_ref().random_access(true).expect("rpc ra");
 
@@ -185,7 +185,7 @@ fn pm_drives_single_big_batch_against_real_checkpoint() {
         [0u8; 4],
         [0u8; METADATA_SIZE],
     );
-    let rpc_out_p = TCache::producer(32); // dummy rpc out for Controller
+    let rpc_out_p = TCache::producer("rpc_out_dummy", 32); // dummy rpc out for Controller
     let mut ctl = Controller::new(pm, rpc_out_p);
     let mut ctl_a = SpineAdapter::connect_tile(&ctl, &mut spine);
 
