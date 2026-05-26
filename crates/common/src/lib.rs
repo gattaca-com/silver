@@ -3,8 +3,7 @@ extern crate self as silver_common;
 pub use crate::{
     arena::{ArenaPtr, TierPool},
     beacon_state::{
-        BeaconState, BeaconStateOwner, BeaconStateReader, DeltaBuffer, StateDeltaView,
-        StateDeltaViewMut, types::*,
+        BeaconState, BeaconStateOwner, BeaconStateReader, DeltaBuffer, StateDeltaView, types::*,
     },
     config::{BlobParameters, Config, DiscoveryConfig, ScoreParams, SpecConfig, SyncingConfig},
     error::Error,

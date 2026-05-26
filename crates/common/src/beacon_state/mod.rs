@@ -1,5 +1,5 @@
 pub use buffer::DeltaBuffer;
-pub use delta_view::{StateDeltaView, StateDeltaViewMut};
+pub use delta_view::StateDeltaView;
 pub use view::{BeaconStateOwner, BeaconStateReader};
 
 use crate::{

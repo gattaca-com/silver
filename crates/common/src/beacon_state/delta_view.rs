@@ -29,21 +29,25 @@ impl StateDelta {
     }
 }
 
+/// Merged read + write handle on a per-fork delta against the finalised
+/// base. Read methods take `&self`; write methods take `&mut self`. Field
+/// disjointness lets the borrow checker thread reads through &mut borrows
+/// without an intermediate `view()` reborrow.
 pub struct StateDeltaView<'a> {
-    delta: &'a StateDelta,
+    delta: &'a mut StateDelta,
     fin: &'a Finalised,
 
-    epochs: &'a DeltaBuffer<EpochStateDelta, EPOCHS_RING_N>,
-    longtails: &'a DeltaBuffer<LongtailState, LONGTAILS_RING_N>,
+    epochs: &'a mut DeltaBuffer<EpochStateDelta, EPOCHS_RING_N>,
+    longtails: &'a mut DeltaBuffer<LongtailState, LONGTAILS_RING_N>,
 }
 
 impl<'a> StateDeltaView<'a> {
     #[inline]
     pub fn new(
         fin: &'a Finalised,
-        delta: &'a StateDelta,
-        epochs: &'a DeltaBuffer<EpochStateDelta, EPOCHS_RING_N>,
-        longtails: &'a DeltaBuffer<LongtailState, LONGTAILS_RING_N>,
+        delta: &'a mut StateDelta,
+        epochs: &'a mut DeltaBuffer<EpochStateDelta, EPOCHS_RING_N>,
+        longtails: &'a mut DeltaBuffer<LongtailState, LONGTAILS_RING_N>,
     ) -> Self {
         debug_assert_eq!(
             delta.validators.base_cnt, fin.validators.data.validator_count,
@@ -73,7 +77,7 @@ impl<'a> StateDeltaView<'a> {
     }
 
     #[inline]
-    pub fn epoch_state(&self) -> &'a EpochState {
+    pub fn epoch_state(&self) -> &EpochState {
         self.delta_epoch().map(|d| &d.state).unwrap_or(&self.fin.epoch.state)
     }
 
@@ -309,7 +313,7 @@ impl<'a> StateDeltaView<'a> {
     }
 
     #[inline]
-    pub fn validator_pubkey_decompressed(&self, ix: usize) -> &'a PublicKey {
+    pub fn validator_pubkey_decompressed(&self, ix: usize) -> &PublicKey {
         let delta = &self.delta.validators;
         if ix < delta.base_cnt {
             &self.fin.validators.data.val_pubkey_decompressed[ix]
@@ -442,7 +446,7 @@ impl<'a> StateDeltaView<'a> {
     }
 
     #[inline]
-    pub fn pending_deposit(&self, ix: usize) -> &'a PendingDeposit {
+    pub fn pending_deposit(&self, ix: usize) -> &PendingDeposit {
         let delta = &self.delta.pending;
         let fin = &self.fin.pending;
 
@@ -464,7 +468,7 @@ impl<'a> StateDeltaView<'a> {
     }
 
     #[inline]
-    pub fn pending_partial_withdrawal(&self, ix: usize) -> &'a PendingPartialWithdrawal {
+    pub fn pending_partial_withdrawal(&self, ix: usize) -> &PendingPartialWithdrawal {
         let delta = &self.delta.pending;
         let fin = &self.fin.pending;
 
@@ -487,7 +491,7 @@ impl<'a> StateDeltaView<'a> {
     }
 
     #[inline]
-    pub fn pending_consolidation(&self, ix: usize) -> &'a PendingConsolidation {
+    pub fn pending_consolidation(&self, ix: usize) -> &PendingConsolidation {
         let delta = &self.delta.pending;
         let fin = &self.fin.pending;
 
@@ -514,7 +518,7 @@ impl<'a> StateDeltaView<'a> {
     // for indices in `[base_cnt, base_cnt + appended.len())` instead of
     // returning `appended_default`.
 
-    pub fn iter_validator_balances(&self) -> impl Iterator<Item = u64> + 'a {
+    pub fn iter_validator_balances(&self) -> impl Iterator<Item = u64> + '_ {
         let delta = &self.delta.validators;
         let fin = &self.fin.validators;
         Self::sweep(
@@ -525,7 +529,7 @@ impl<'a> StateDeltaView<'a> {
         )
     }
 
-    pub fn iter_validator_effective_balances(&self) -> impl Iterator<Item = u64> + 'a {
+    pub fn iter_validator_effective_balances(&self) -> impl Iterator<Item = u64> + '_ {
         let delta = &self.delta.validators;
         let fin = &self.fin.validators;
         Self::sweep(
@@ -536,7 +540,7 @@ impl<'a> StateDeltaView<'a> {
         )
     }
 
-    pub fn iter_current_epoch_participants(&self) -> impl Iterator<Item = u8> + 'a {
+    pub fn iter_current_epoch_participants(&self) -> impl Iterator<Item = u8> + '_ {
         let delta = &self.delta.validators;
         let fin = &self.fin.validators;
         Self::sweep(
@@ -547,7 +551,7 @@ impl<'a> StateDeltaView<'a> {
         )
     }
 
-    pub fn iter_previous_epoch_participants(&self) -> impl Iterator<Item = u8> + 'a {
+    pub fn iter_previous_epoch_participants(&self) -> impl Iterator<Item = u8> + '_ {
         let delta = &self.delta.validators;
         let fin = &self.fin.validators;
         Self::sweep(
@@ -558,7 +562,7 @@ impl<'a> StateDeltaView<'a> {
         )
     }
 
-    pub fn iter_inactivity_scores(&self) -> impl Iterator<Item = u64> + 'a {
+    pub fn iter_inactivity_scores(&self) -> impl Iterator<Item = u64> + '_ {
         let delta = &self.delta.validators;
         let fin = &self.fin.validators;
         Self::sweep(
@@ -569,7 +573,7 @@ impl<'a> StateDeltaView<'a> {
         )
     }
 
-    pub fn iter_activation_epochs(&self) -> impl Iterator<Item = Epoch> + 'a {
+    pub fn iter_activation_epochs(&self) -> impl Iterator<Item = Epoch> + '_ {
         let delta = &self.delta.validators;
         let fin = &self.fin.validators;
         Self::sweep(
@@ -580,7 +584,7 @@ impl<'a> StateDeltaView<'a> {
         )
     }
 
-    pub fn iter_exit_epochs(&self) -> impl Iterator<Item = Epoch> + 'a {
+    pub fn iter_exit_epochs(&self) -> impl Iterator<Item = Epoch> + '_ {
         let delta = &self.delta.validators;
         let fin = &self.fin.validators;
         Self::sweep(
@@ -591,7 +595,7 @@ impl<'a> StateDeltaView<'a> {
         )
     }
 
-    pub fn iter_slashed(&self) -> impl Iterator<Item = bool> + 'a {
+    pub fn iter_slashed(&self) -> impl Iterator<Item = bool> + '_ {
         let delta = &self.delta.validators;
         let fin = &self.fin.validators;
         Self::sweep(
@@ -602,7 +606,7 @@ impl<'a> StateDeltaView<'a> {
         )
     }
 
-    pub fn iter_withdrawable_epochs(&self) -> impl Iterator<Item = Epoch> + 'a {
+    pub fn iter_withdrawable_epochs(&self) -> impl Iterator<Item = Epoch> + '_ {
         let delta = &self.delta.validators;
         let fin = &self.fin.validators;
         Self::sweep(
@@ -613,7 +617,7 @@ impl<'a> StateDeltaView<'a> {
         )
     }
 
-    pub fn iter_activation_eligibility_epochs(&self) -> impl Iterator<Item = Epoch> + 'a {
+    pub fn iter_activation_eligibility_epochs(&self) -> impl Iterator<Item = Epoch> + '_ {
         let delta = &self.delta.validators;
         let fin = &self.fin.validators;
         Self::sweep(
@@ -626,7 +630,7 @@ impl<'a> StateDeltaView<'a> {
 
     /// Appended validators' credentials live in `delta.appended[i].credentials`
     /// rather than at a constant default, so this can't reuse `sweep`.
-    pub fn iter_validator_credentials(&self) -> impl Iterator<Item = Withdrawals> + 'a {
+    pub fn iter_validator_credentials(&self) -> impl Iterator<Item = Withdrawals> + '_ {
         let delta = &self.delta.validators;
         let fin = &self.fin.validators;
         let edits = &delta.credentials_edits;
@@ -671,42 +675,17 @@ impl<'a> StateDeltaView<'a> {
         })
     }
 
-    fn delta_longtail(&self) -> Option<&'a LongtailState> {
+    fn delta_longtail(&self) -> Option<&LongtailState> {
         self.delta.longtail_idx.map(|seq| self.longtails.get(seq))
     }
 
-    fn delta_epoch(&self) -> Option<&'a EpochStateDelta> {
+    fn delta_epoch(&self) -> Option<&EpochStateDelta> {
         self.delta.epoch_idx.map(|seq| self.epochs.get(seq))
     }
 }
 
-pub struct StateDeltaViewMut<'a> {
-    fin: &'a Finalised,
-    delta: &'a mut StateDelta,
-    epochs: &'a mut DeltaBuffer<EpochStateDelta, EPOCHS_RING_N>,
-    longtails: &'a mut DeltaBuffer<LongtailState, LONGTAILS_RING_N>,
-}
-
-impl<'a> StateDeltaViewMut<'a> {
-    #[inline]
-    pub fn new(
-        fin: &'a Finalised,
-        delta: &'a mut StateDelta,
-        epochs: &'a mut DeltaBuffer<EpochStateDelta, EPOCHS_RING_N>,
-        longtails: &'a mut DeltaBuffer<LongtailState, LONGTAILS_RING_N>,
-    ) -> Self {
-        Self { fin, delta, epochs, longtails }
-    }
-
-    #[inline]
-    pub fn view(&self) -> StateDeltaView<'_> {
-        StateDeltaView::new(self.fin, self.delta, self.epochs, self.longtails)
-    }
-
-    #[inline]
-    pub fn slot(&self) -> Slot {
-        self.delta.slot.slot.slot
-    }
+impl<'a> StateDeltaView<'a> {
+    // ── Slot tier writes ────────────────────────────────────────────────
 
     #[inline]
     pub fn set_slot(&mut self, s: Slot) {
@@ -716,11 +695,6 @@ impl<'a> StateDeltaViewMut<'a> {
     #[inline]
     pub fn advance_slot(&mut self) {
         self.delta.slot.slot.slot += 1;
-    }
-
-    #[inline]
-    pub fn randao_mix_current(&self) -> B256 {
-        self.delta.slot.slot.randao_mix_current
     }
 
     #[inline]
@@ -737,11 +711,6 @@ impl<'a> StateDeltaViewMut<'a> {
     }
 
     #[inline]
-    pub fn current_epoch_slashings(&self) -> u64 {
-        self.delta.slot.slot.current_epoch_slashings
-    }
-
-    #[inline]
     pub fn add_current_epoch_slashings(&mut self, amount: u64) {
         self.delta.slot.slot.current_epoch_slashings =
             self.delta.slot.slot.current_epoch_slashings.saturating_add(amount);
@@ -753,18 +722,8 @@ impl<'a> StateDeltaViewMut<'a> {
     }
 
     #[inline]
-    pub fn eth1_data(&self) -> Eth1Data {
-        self.delta.slot.slot.eth1_data
-    }
-
-    #[inline]
     pub fn set_eth1_data(&mut self, d: Eth1Data) {
         self.delta.slot.slot.eth1_data = d;
-    }
-
-    #[inline]
-    pub fn eth1_votes(&self) -> &[Eth1Data] {
-        self.delta.slot.slot.eth1_votes.as_slice()
     }
 
     #[inline]
@@ -778,18 +737,8 @@ impl<'a> StateDeltaViewMut<'a> {
     }
 
     #[inline]
-    pub fn eth1_deposit_index(&self) -> u64 {
-        self.delta.slot.slot.eth1_deposit_index
-    }
-
-    #[inline]
     pub fn advance_eth1_deposit_index(&mut self) {
         self.delta.slot.slot.eth1_deposit_index += 1;
-    }
-
-    #[inline]
-    pub fn latest_block_header(&self) -> BeaconBlockHeader {
-        self.delta.slot.slot.latest_block_header
     }
 
     #[inline]
@@ -807,18 +756,8 @@ impl<'a> StateDeltaViewMut<'a> {
     }
 
     #[inline]
-    pub fn latest_execution_payload_header(&self) -> &ExecutionPayloadHeader {
-        &self.delta.slot.slot.latest_execution_payload_header
-    }
-
-    #[inline]
     pub fn set_latest_execution_payload_header(&mut self, h: ExecutionPayloadHeader) {
         self.delta.slot.slot.latest_execution_payload_header = h;
-    }
-
-    #[inline]
-    pub fn next_withdrawal_index(&self) -> u64 {
-        self.delta.slot.slot.next_withdrawal_index
     }
 
     #[inline]
@@ -827,18 +766,8 @@ impl<'a> StateDeltaViewMut<'a> {
     }
 
     #[inline]
-    pub fn next_withdrawal_validator_index(&self) -> u64 {
-        self.delta.slot.slot.next_withdrawal_validator_index
-    }
-
-    #[inline]
     pub fn set_next_withdrawal_validator_index(&mut self, x: u64) {
         self.delta.slot.slot.next_withdrawal_validator_index = x;
-    }
-
-    #[inline]
-    pub fn deposit_requests_start_index(&self) -> u64 {
-        self.delta.slot.slot.deposit_requests_start_index
     }
 
     #[inline]
@@ -847,18 +776,8 @@ impl<'a> StateDeltaViewMut<'a> {
     }
 
     #[inline]
-    pub fn exit_balance_to_consume(&self) -> u64 {
-        self.delta.slot.slot.exit_balance_to_consume
-    }
-
-    #[inline]
     pub fn set_exit_balance_to_consume(&mut self, x: u64) {
         self.delta.slot.slot.exit_balance_to_consume = x;
-    }
-
-    #[inline]
-    pub fn earliest_exit_epoch(&self) -> Epoch {
-        self.delta.slot.slot.earliest_exit_epoch
     }
 
     #[inline]
@@ -867,18 +786,8 @@ impl<'a> StateDeltaViewMut<'a> {
     }
 
     #[inline]
-    pub fn consolidation_balance_to_consume(&self) -> u64 {
-        self.delta.slot.slot.consolidation_balance_to_consume
-    }
-
-    #[inline]
     pub fn set_consolidation_balance_to_consume(&mut self, x: u64) {
         self.delta.slot.slot.consolidation_balance_to_consume = x;
-    }
-
-    #[inline]
-    pub fn earliest_consolidation_epoch(&self) -> Epoch {
-        self.delta.slot.slot.earliest_consolidation_epoch
     }
 
     #[inline]
@@ -1484,18 +1393,14 @@ mod tests {
         }
     }
 
-    // OnceLock so tests can share a borrow to an empty ring without each
-    // call site needing a let-binding.
-    fn empty_epochs() -> &'static DeltaBuffer<EpochStateDelta, EPOCHS_RING_N> {
-        static B: std::sync::OnceLock<DeltaBuffer<EpochStateDelta, EPOCHS_RING_N>> =
-            std::sync::OnceLock::new();
-        B.get_or_init(DeltaBuffer::default)
-    }
-
-    fn empty_longtails() -> &'static DeltaBuffer<LongtailState, LONGTAILS_RING_N> {
-        static B: std::sync::OnceLock<DeltaBuffer<LongtailState, LONGTAILS_RING_N>> =
-            std::sync::OnceLock::new();
-        B.get_or_init(DeltaBuffer::default)
+    /// Stack-allocate two fresh DeltaBuffer rings as `let mut` bindings.
+    /// Merged `StateDeltaView` takes `&mut` on rings so the OnceLock-based
+    /// shared static no longer works — each test needs its own.
+    macro_rules! fresh_rings {
+        ($e:ident, $l:ident) => {
+            let mut $e: DeltaBuffer<EpochStateDelta, EPOCHS_RING_N> = DeltaBuffer::default();
+            let mut $l: DeltaBuffer<LongtailState, LONGTAILS_RING_N> = DeltaBuffer::default();
+        };
     }
 
     /// Roll a fresh epoch ring slot and overwrite it with `entry`.
@@ -1548,8 +1453,9 @@ mod tests {
         let idx = target_epoch as usize % f.epoch.randao_mixes.len();
         f.epoch.randao_mixes[idx] = [0xAB; 32];
 
-        let delta = anchored_delta(&f);
-        let view = StateDeltaView::new(&f, &delta, empty_epochs(), empty_longtails());
+        let mut delta = anchored_delta(&f);
+        fresh_rings!(epochs, longtails);
+        let view = StateDeltaView::new(&f, &mut delta, &mut epochs, &mut longtails);
         assert_eq!(view.randao_mix_at_epoch(target_epoch), [0xAB; 32]);
     }
 
@@ -1564,6 +1470,8 @@ mod tests {
 
         // Diverged ring entry with one log entry covering base_epoch.
         let mut tile_epochs: DeltaBuffer<EpochStateDelta, EPOCHS_RING_N> = DeltaBuffer::default();
+        let mut tile_longtails: DeltaBuffer<LongtailState, LONGTAILS_RING_N> =
+            DeltaBuffer::default();
         let seq = populate_one_epoch(&mut tile_epochs, EpochStateDelta {
             randao_mixes: vec![[0xCC; 32]],
             slashings: Vec::new(),
@@ -1572,7 +1480,7 @@ mod tests {
         let mut delta = anchored_delta(&f);
         delta.epoch_idx = Some(seq);
 
-        let view = StateDeltaView::new(&f, &delta, &tile_epochs, empty_longtails());
+        let view = StateDeltaView::new(&f, &mut delta, &mut tile_epochs, &mut tile_longtails);
         // base_epoch → delta hit
         assert_eq!(view.randao_mix_at_epoch(base_epoch), [0xCC; 32]);
         // base_epoch+1 → falls through to base
@@ -1586,8 +1494,9 @@ mod tests {
         let idx = target_slot as usize % f.slot.block_roots.len();
         f.slot.block_roots[idx] = [0xEE; 32];
 
-        let delta = anchored_delta(&f);
-        let view = StateDeltaView::new(&f, &delta, empty_epochs(), empty_longtails());
+        let mut delta = anchored_delta(&f);
+        fresh_rings!(epochs, longtails);
+        let view = StateDeltaView::new(&f, &mut delta, &mut epochs, &mut longtails);
         assert_eq!(view.block_root_at_slot(target_slot), [0xEE; 32]);
     }
 
@@ -1602,7 +1511,8 @@ mod tests {
         let mut delta = anchored_delta(&f);
         delta.slot.block_roots.push([0xDD; 32]); // entry 0 = slot fin_slot
 
-        let view = StateDeltaView::new(&f, &delta, empty_epochs(), empty_longtails());
+        fresh_rings!(epochs, longtails);
+        let view = StateDeltaView::new(&f, &mut delta, &mut epochs, &mut longtails);
         assert_eq!(view.block_root_at_slot(fin_slot), [0xDD; 32]);
         assert_eq!(view.block_root_at_slot(fin_slot + 1), [0x22; 32]);
     }
@@ -1617,8 +1527,9 @@ mod tests {
             .historical_summaries
             .push(HistoricalSummary { block_summary_root: [2; 32], state_summary_root: [2; 32] });
 
-        let delta = anchored_delta(&f);
-        let view = StateDeltaView::new(&f, &delta, empty_epochs(), empty_longtails());
+        let mut delta = anchored_delta(&f);
+        fresh_rings!(epochs, longtails);
+        let view = StateDeltaView::new(&f, &mut delta, &mut epochs, &mut longtails);
         assert_eq!(view.historical_summary(0).unwrap().block_summary_root, [1; 32]);
         assert_eq!(view.historical_summary(1).unwrap().block_summary_root, [2; 32]);
         assert!(view.historical_summary(2).is_none());
@@ -1634,6 +1545,7 @@ mod tests {
 
         let mut tile_longtails: DeltaBuffer<LongtailState, LONGTAILS_RING_N> =
             DeltaBuffer::default();
+        let mut tile_epochs: DeltaBuffer<EpochStateDelta, EPOCHS_RING_N> = DeltaBuffer::default();
         let seq = populate_one_longtail(&mut tile_longtails, LongtailState {
             current_sync_committee: f.longtail.current_sync_committee,
             next_sync_committee: f.longtail.next_sync_committee,
@@ -1646,7 +1558,7 @@ mod tests {
         let mut delta = anchored_delta(&f);
         delta.longtail_idx = Some(seq);
 
-        let view = StateDeltaView::new(&f, &delta, empty_epochs(), &tile_longtails);
+        let view = StateDeltaView::new(&f, &mut delta, &mut tile_epochs, &mut tile_longtails);
         assert_eq!(view.historical_summaries_len(), 2);
         assert_eq!(view.historical_summary(0).unwrap().block_summary_root, [1; 32]);
         assert_eq!(view.historical_summary(1).unwrap().block_summary_root, [3; 32]);
@@ -1658,25 +1570,25 @@ mod tests {
         push_default_validator(&mut f, 1_000);
 
         let mut d = anchored_delta(&f);
+        fresh_rings!(epochs, longtails);
         {
-            let view = StateDeltaView::new(&f, &d, empty_epochs(), empty_longtails());
+            let view = StateDeltaView::new(&f, &mut d, &mut epochs, &mut longtails);
             assert_eq!(view.validator_balance(0), 1_000);
         }
 
         d.validators.balance_edits.push((0, 2_500));
-        let view = StateDeltaView::new(&f, &d, empty_epochs(), empty_longtails());
+        let view = StateDeltaView::new(&f, &mut d, &mut epochs, &mut longtails);
         assert_eq!(view.validator_balance(0), 2_500);
     }
 
-    /// Spec defaults for a freshly-registered validator
-    /// (pre-deposit-processing, i.e. after `append_validator` but before
-    /// STF set_* follow-ups). Per consensus-spec
-    /// `get_validator_from_deposit`:
-    ///   - balance / effective_balance / inactivity_score / participation: 0
-    ///   - {activation, exit, activation_eligibility, withdrawable}_epoch:
-    ///     FAR_FUTURE_EPOCH
-    ///   - slashed: false
-    /// pubkey / withdrawal_credentials come from the appended record.
+    // Spec defaults for a freshly-registered validator
+    // (pre-deposit-processing, i.e. after `append_validator` but before
+    // STF set_* follow-ups). Per consensus-spec `get_validator_from_deposit`:
+    //   - balance / effective_balance / inactivity_score / participation: 0
+    //   - {activation, exit, activation_eligibility, withdrawable}_epoch:
+    //     FAR_FUTURE_EPOCH
+    //   - slashed: false
+    //   - pubkey / withdrawal_credentials come from the appended record.
     #[test]
     fn appended_validator_uses_delta_pubkey_and_defaults() {
         let f = fresh_finalised();
@@ -1685,7 +1597,8 @@ mod tests {
         let creds = Withdrawals([0x42; 32]);
         append_validator(&mut d.validators, pk, Default::default(), creds);
 
-        let view = StateDeltaView::new(&f, &d, empty_epochs(), empty_longtails());
+        fresh_rings!(epochs, longtails);
+        let view = StateDeltaView::new(&f, &mut d, &mut epochs, &mut longtails);
 
         // identity (from the appended record)
         assert_eq!(view.validator_pubkey(0), pk);
@@ -1718,7 +1631,8 @@ mod tests {
         let mut d = anchored_delta(&f);
         d.validators.balance_edits.push((1, 999));
         d.validators.balance_edits.push((3, 333));
-        let view = StateDeltaView::new(&f, &d, empty_epochs(), empty_longtails());
+        fresh_rings!(epochs, longtails);
+        let view = StateDeltaView::new(&f, &mut d, &mut epochs, &mut longtails);
         let got: Vec<u64> = view.iter_validator_balances().collect();
         assert_eq!(got, vec![0, 999, 200, 333, 400]);
     }
@@ -1745,7 +1659,8 @@ mod tests {
             slot: 0,
         });
 
-        let view = StateDeltaView::new(&f, &d, empty_epochs(), empty_longtails());
+        fresh_rings!(epochs, longtails);
+        let view = StateDeltaView::new(&f, &mut d, &mut epochs, &mut longtails);
         assert_eq!(view.pending_deposits_len(), 3);
         assert_eq!(view.pending_deposit(0).amount, 1);
         assert_eq!(view.pending_deposit(1).amount, 2);
@@ -1768,7 +1683,8 @@ mod tests {
             credentials: Default::default(),
         });
 
-        let view = StateDeltaView::new(&f, &d, empty_epochs(), empty_longtails());
+        fresh_rings!(epochs, longtails);
+        let view = StateDeltaView::new(&f, &mut d, &mut epochs, &mut longtails);
         assert_eq!(view.validator_by_pubkey(&pk_a), Some(0));
         assert_eq!(view.validator_by_pubkey(&pk_b), Some(1));
         assert_eq!(view.validator_by_pubkey(&[0xC; 48]), None);
@@ -1869,14 +1785,15 @@ mod tests {
         let mut f = fresh_finalised();
         push_default_validator(&mut f, 0);
         let mut d = anchored_delta(&f);
+        fresh_rings!(epochs, longtails);
 
         {
-            let view = StateDeltaView::new(&f, &d, empty_epochs(), empty_longtails());
+            let view = StateDeltaView::new(&f, &mut d, &mut epochs, &mut longtails);
             assert!(!view.is_validator_slashed(0));
         }
         set_slashed(&mut d.validators, &f.validators, 0, true);
         {
-            let view = StateDeltaView::new(&f, &d, empty_epochs(), empty_longtails());
+            let view = StateDeltaView::new(&f, &mut d, &mut epochs, &mut longtails);
             assert!(view.is_validator_slashed(0));
         }
         assert_eq!(d.validators.slashed_edits, vec![(0, true)]);
@@ -1891,9 +1808,10 @@ mod tests {
         push_default_validator(&mut f, 0);
         push_default_validator(&mut f, 0);
         let mut d = anchored_delta(&f);
+        fresh_rings!(epochs, longtails);
 
         {
-            let view = StateDeltaView::new(&f, &d, empty_epochs(), empty_longtails());
+            let view = StateDeltaView::new(&f, &mut d, &mut epochs, &mut longtails);
             assert_eq!(view.validators_count(), 2);
         }
         let pk = [0xFA; 48];
@@ -1901,7 +1819,7 @@ mod tests {
             append_validator(&mut d.validators, pk, Default::default(), Default::default());
         assert_eq!(new_idx, 2);
         {
-            let view = StateDeltaView::new(&f, &d, empty_epochs(), empty_longtails());
+            let view = StateDeltaView::new(&f, &mut d, &mut epochs, &mut longtails);
             assert_eq!(view.validators_count(), 3);
             assert_eq!(view.validator_pubkey(2), pk);
         }
@@ -1932,7 +1850,8 @@ mod tests {
         append_validator(&mut d.validators, [0x11; 48], Default::default(), Default::default());
         append_validator(&mut d.validators, [0x22; 48], Default::default(), Default::default());
 
-        let view = StateDeltaView::new(&f, &d, empty_epochs(), empty_longtails());
+        fresh_rings!(epochs, longtails);
+        let view = StateDeltaView::new(&f, &mut d, &mut epochs, &mut longtails);
         assert_eq!(view.validators_count(), 4);
 
         let acts: Vec<u64> = view.iter_activation_epochs().collect();
@@ -1989,7 +1908,8 @@ mod tests {
         set_credentials(&mut d.validators, &f.validators, 1, edited_base);
         set_credentials(&mut d.validators, &f.validators, 3, edited_appended);
 
-        let view = StateDeltaView::new(&f, &d, empty_epochs(), empty_longtails());
+        fresh_rings!(epochs, longtails);
+        let view = StateDeltaView::new(&f, &mut d, &mut epochs, &mut longtails);
         let got: Vec<Withdrawals> = view.iter_validator_credentials().collect();
         assert_eq!(got, vec![base_creds_0, edited_base, appended_creds_0, edited_appended]);
     }
