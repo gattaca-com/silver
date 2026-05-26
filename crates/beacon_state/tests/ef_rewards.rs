@@ -6,7 +6,7 @@ mod ef_common;
 
 use ef_common::{snappy_decode, spec_tests_dir};
 use silver_beacon_state::{
-    decompose::decompose_beacon_state, epoch_transition, ssz_hash::types::*,
+    decompose::decompose_beacon_state, epoch_transition, types::*,
     validator_identity::ValidatorsState,
 };
 

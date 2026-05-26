@@ -10,8 +10,7 @@ use silver_beacon_state::{
     decompose::decompose_beacon_state,
     ssz_hash::hash_tree_root_state,
     types::{
-        B256, EpochData, HistoricalLongtail, Immutable, PendingQueues, SlotData, SlotRoots,
-        box_zeroed,
+        EpochData, HistoricalLongtail, Immutable, PendingQueues, SlotData, SlotRoots, box_zeroed,
     },
     validator_identity::{FinalizedValidators, ValidatorsState},
 };

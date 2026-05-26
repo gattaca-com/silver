@@ -7,7 +7,7 @@ use ef_common::{
 };
 use silver_beacon_state::{
     bls::SigBatch,
-    ssz_hash::state_transition::{self, ShufflingRef},
+    state_transition::{self, ShufflingRef},
     types::SLOTS_PER_EPOCH,
 };
 

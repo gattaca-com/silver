@@ -5,7 +5,7 @@ use std::fs;
 mod ef_common;
 
 use ef_common::{compare_states, iter_test_cases, load_state, snappy_decode, spec_tests_dir};
-use silver_beacon_state::ssz_hash::state_transition;
+use silver_beacon_state::state_transition;
 
 #[test]
 fn finality() {
