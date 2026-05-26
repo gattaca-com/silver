@@ -6,6 +6,7 @@ use flux::{
 };
 use quinn_proto::{Endpoint, EndpointConfig};
 use rand::RngCore;
+use silver_beacon_api::BeaconApiTile;
 use silver_beacon_state::{BeaconStateTile, SlotTicker};
 use silver_beacon_state_data::{BeaconState, BeaconStateOwner};
 use silver_common::{Enr, ProtoIdentify, SilverSpine, TCache, TCacheProducer};
@@ -114,6 +115,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             None,
         ),
     );
+    let identify = config.identify()?;
     let p2p_context = Context {
         gossip_producer: incoming_gossip_producer,
         gossip_consumer: outgoing_gossip_producer
@@ -121,7 +123,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             .random_access("p2p_outgoing_gossip", true)?,
         rpc_producer: incoming_rpc_producer,
         rpc_consumer: outgoing_rpc_producer.cache_ref().random_access("p2p_outgoing_rpc", true)?,
-        identify: Some(ProtoIdentify::from((&config.identify()?, &keypair))),
+        identify: Some(ProtoIdentify::from((&identify, &keypair))),
     };
 
     let now = Instant::now();
@@ -146,6 +148,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         discv5.add_enr(enr, now);
     }
 
+    let beacon_api_tile = BeaconApiTile::new(&keypair, local_enr, &identify);
     let network_tile = NetworkTile::new(discv5_addr, discv5, p2p_addr, p2p_endpoint, p2p_context)?;
     let gossip_tile = GossipHandler::new(
         incoming_gossip_consumer,
@@ -215,6 +218,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         attach_tile(network_tile, scoped_spine, TileConfig::new(3, ThreadPriority::OSDefault));
         attach_tile(beacon_state_tile, scoped_spine, TileConfig::new(4, ThreadPriority::OSDefault));
         attach_tile(storage_tile, scoped_spine, TileConfig::new(5, ThreadPriority::OSDefault));
+        attach_tile(beacon_api_tile, scoped_spine, TileConfig::new(6, ThreadPriority::OSDefault));
     });
 
     Ok(())

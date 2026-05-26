@@ -1,5 +1,6 @@
 [workspace]
 members = [
+  "crates/beacon_api",
   "crates/beacon_state/data",
   "crates/beacon_state/tile",
   "crates/bin",
@@ -60,6 +61,7 @@ inherits = "dev"
 opt-level = 3
 
 [workspace.dependencies]
+silver_beacon_api = { path = "crates/beacon_api" }
 silver_beacon_state = { path = "crates/beacon_state/tile" }
 silver_beacon_state_data = { path = "crates/beacon_state/data" }
 silver_chain_spec = { path = "crates/config/chain_spec" }

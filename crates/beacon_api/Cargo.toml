@@ -1,0 +1,19 @@
+[package]
+name = "silver_beacon_api"
+edition.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+flux.workspace = true
+hex.workspace = true
+mio.workspace = true
+silver_common.workspace = true
+serde.workspace = true
+tracing.workspace = true
+serde_json = "1.0.149"
+httparse = "1.10.1"
+
+[lints]
+workspace = true

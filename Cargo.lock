@@ -4323,6 +4323,7 @@ dependencies = [
  "mimalloc",
  "quinn-proto",
  "rand 0.8.6",
+ "silver_beacon_api",
  "silver_beacon_state",
  "silver_beacon_state_data",
  "silver_common",
@@ -4335,6 +4336,20 @@ dependencies = [
  "silver_storage",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "silver_beacon_api"
+version = "0.0.1"
+dependencies = [
+ "flux",
+ "hex",
+ "httparse",
+ "mio",
+ "serde",
+ "serde_json",
+ "silver_common",
+ "tracing",
 ]
 
 [[package]]
