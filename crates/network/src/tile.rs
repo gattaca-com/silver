@@ -196,11 +196,6 @@ impl Tile<SilverSpine> for NetworkTile {
             };
         }
     }
-
-    fn try_init(&mut self, _adapter: &mut SpineAdapter<SilverSpine>) -> bool {
-        NetworkCounters::init("silver").expect("metrics init failed");
-        true
-    }
 }
 
 pub struct NetworkTileInner<D>

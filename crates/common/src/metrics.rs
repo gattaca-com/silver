@@ -137,11 +137,15 @@ pub fn map_counters(
 ///     }
 /// }
 ///
-/// // Standard startup — uses `flux::utils::directories::local_share_dir()`.
-/// GossipCounters::init("silver")?;
+/// // No init needed for the common path — the first counter op
+/// // auto-inits under `local_share_dir() / "silver" / shmem / queues`.
 /// GossipCounters::MsgsReceived.inc();
 ///
-/// // Tests / custom deployments override the base.
+/// // Optional: explicit init at startup surfaces mmap errors early.
+/// GossipCounters::init()?;
+///
+/// // Override the app name or base for tests / custom deployments.
+/// GossipCounters::init_with_app("custom_app")?;
 /// GossipCounters::init_with_base("/tmp/my_test", "silver")?;
 /// ```
 #[macro_export]
@@ -178,19 +182,31 @@ macro_rules! declare_counters {
                 &SHMEM
             }
 
+            /// Default app name used by `init()` and auto-init on
+            /// first counter access. Override via `init_with_app` /
+            /// `init_with_base` if you need a different namespace.
+            pub const DEFAULT_APP_NAME: &'static str = "silver";
+
             /// mmap the backing file under flux's default data
-            /// directory (`local_share_dir()`). Call once per process
-            /// at startup. Idempotent — repeat calls return Ok
-            /// immediately.
-            pub fn init(app_name: &str) -> ::std::io::Result<()> {
+            /// directory (`local_share_dir()`) with app name
+            /// `DEFAULT_APP_NAME` (silver). Call at process startup
+            /// to surface mmap errors early; otherwise the first
+            /// `inc`/`get`/etc. will auto-init the same way (panic
+            /// on failure).
+            pub fn init() -> ::std::io::Result<()> {
+                Self::init_with_app(Self::DEFAULT_APP_NAME)
+            }
+
+            /// As `init` but with an explicit app name.
+            pub fn init_with_app(app_name: &str) -> ::std::io::Result<()> {
                 Self::init_with_base(
                     ::flux::utils::directories::local_share_dir(),
                     app_name,
                 )
             }
 
-            /// As `init` but takes an explicit base directory.
-            /// Primarily for tests / custom deployments.
+            /// As `init` but takes an explicit base directory and app
+            /// name. Primarily for tests / custom deployments.
             pub fn init_with_base<P: ::core::convert::AsRef<::std::path::Path>>(
                 base_dir: P,
                 app_name: &str,
@@ -206,9 +222,23 @@ macro_rules! declare_counters {
 
             #[inline]
             fn slot(self) -> &'static ::core::sync::atomic::AtomicU64 {
-                let p = Self::shmem().load(::core::sync::atomic::Ordering::Relaxed);
-                debug_assert!(!p.is_null(), concat!(stringify!($name), "::init() not called"));
+                let mut p = Self::shmem().load(::core::sync::atomic::Ordering::Relaxed);
+                if p.is_null() {
+                    p = Self::lazy_init();
+                }
                 unsafe { &*p.add(self as usize) }
+            }
+
+            #[cold]
+            #[inline(never)]
+            fn lazy_init() -> *mut ::core::sync::atomic::AtomicU64 {
+                Self::init().unwrap_or_else(|e| {
+                    panic!(
+                        "{}::init() failed: {e}",
+                        ::core::stringify!($name),
+                    )
+                });
+                Self::shmem().load(::core::sync::atomic::Ordering::Relaxed)
             }
 
             #[inline]
