@@ -5,7 +5,7 @@ use std::fs;
 mod ef_common;
 
 use ef_common::{snappy_decode, spec_tests_dir};
-use silver_beacon_state::ssz_hash::{self, compute_zero_hashes};
+use silver_beacon_state::ssz_hash::{self};
 
 fn run_ssz_static(type_name: &str, hash_fn: impl Fn(&[u8]) -> [u8; 32]) {
     let base = spec_tests_dir().join("tests/mainnet/fulu/ssz_static").join(type_name);
@@ -75,13 +75,11 @@ fn hex(b: &[u8; 32]) -> String {
 
 #[test]
 fn beacon_block_body() {
-    let zh = compute_zero_hashes();
-    run_ssz_static("BeaconBlockBody", move |ssz| ssz_hash::hash_tree_root_body(ssz, &zh));
+    run_ssz_static("BeaconBlockBody", move |ssz| ssz_hash::hash_tree_root_body(ssz));
 }
 
 #[test]
 fn beacon_block_header() {
-    let zh = compute_zero_hashes();
     run_ssz_static("BeaconBlockHeader", move |ssz| {
         let h = silver_beacon_state::types::BeaconBlockHeader {
             slot: u64::from_le_bytes(ssz[0..8].try_into().unwrap()),
@@ -90,6 +88,6 @@ fn beacon_block_header() {
             state_root: ssz[48..80].try_into().unwrap(),
             body_root: ssz[80..112].try_into().unwrap(),
         };
-        ssz_hash::hash_tree_root_block_header(&h, &zh)
+        ssz_hash::hash_tree_root_block_header(&h)
     });
 }

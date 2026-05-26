@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use rand::{RngCore, SeedableRng, rngs::StdRng};
 use silver_common::ssz_hash::{
-    MerkleStack, compute_zero_hashes, hash_concat, merkle_finalize, merkle_push, mix_in_length,
+    MerkleStack, ZERO_HASHES, hash_concat, merkle_finalize, merkle_push, mix_in_length,
 };
 
 use super::{FinalizedHashTree, HashTreeState};
@@ -20,12 +20,11 @@ fn random_leaf(rng: &mut StdRng) -> B256 {
 
 /// Reference SSZ `List<B256, 1<<spec_depth>` root via the existing primitives.
 fn reference_root(leaves: &[B256], spec_depth: u8) -> B256 {
-    let zh = compute_zero_hashes();
     let mut stack = MerkleStack::new();
     for l in leaves {
         merkle_push(&mut stack, *l);
     }
-    let root = merkle_finalize(stack, spec_depth, &zh);
+    let root = merkle_finalize(stack, spec_depth);
     mix_in_length(&root, leaves.len())
 }
 
@@ -33,12 +32,11 @@ fn reference_root(leaves: &[B256], spec_depth: u8) -> B256 {
 /// tree's physical depth up to `spec_depth`, then `mix_in_length(len)`.
 /// Models the wrapping a real consumer (e.g. validators field) will do.
 fn ssz_list_root(physical_root: &B256, max_elements: usize, spec_depth: u8, len: usize) -> B256 {
-    let zh = compute_zero_hashes();
     let phys_depth = max_elements.trailing_zeros() as u8;
     debug_assert!(spec_depth >= phys_depth);
     let mut acc = *physical_root;
     for d in phys_depth..spec_depth {
-        acc = hash_concat(&acc, &zh[d as usize]);
+        acc = hash_concat(&acc, &ZERO_HASHES[d as usize]);
     }
     mix_in_length(&acc, len)
 }

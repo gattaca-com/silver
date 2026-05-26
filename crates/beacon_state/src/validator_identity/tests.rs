@@ -239,11 +239,10 @@ fn append_via_view_grows_delta_not_base() {
 #[test]
 fn hash_validators_invariant_under_rebase() {
     use crate::{
-        ssz_hash::{compute_zero_hashes, hash_validators},
+        ssz_hash::{hash_validators},
         types::EpochData,
     };
 
-    let zh = compute_zero_hashes();
 
     let eth1_creds = wc(0x01);
     let init_pubkeys: Vec<BLSPubkey> = (0..8u32).map(|i| pk(i as u8)).collect();
@@ -266,12 +265,12 @@ fn hash_validators_invariant_under_rebase() {
     let mut state = ValidatorsState::with_empty_delta(&fv);
     state.append(&pk(100), &wc(0x02));
     state.set_withdrawal_credentials(3, new_creds);
-    let root_pre = hash_validators(&state, &epoch, &zh);
+    let root_pre = hash_validators(&state, &epoch);
 
     // Rebase: fold delta into base.
     state.promote_into_base(&mut fv);
     let state_post = ValidatorsState::with_empty_delta(&fv);
-    let root_post = hash_validators(&state_post, &epoch, &zh);
+    let root_post = hash_validators(&state_post, &epoch);
 
     assert_eq!(root_pre, root_post, "hash_validators must be invariant under rebase");
 }

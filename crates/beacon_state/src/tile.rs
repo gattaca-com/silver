@@ -115,7 +115,6 @@ pub struct BeaconStateTile {
     initial_status_emitted: bool,
     cached_fork_digest: Option<(Epoch, [u8; 4])>,
 
-    zero_hashes: [B256; ssz_hash::ZERO_HASHES_LEN],
     postponed_scratch: Vec<types::PendingDeposit>,
     /// Per-block buffer of (validator_idx, beacon_block_root, target_epoch)
     /// emitted by `process_attestations` so the tile can fold them into the
@@ -215,7 +214,6 @@ impl BeaconStateTile {
             last_applied_validators,
             initial_status_emitted: false,
             cached_fork_digest: None,
-            zero_hashes: ssz_hash::compute_zero_hashes(),
             active_scratch: Vec::with_capacity(
                 MAX_VALIDATORS.max(types::MAX_ATTESTERS_PER_AGGREGATE),
             ),
@@ -261,7 +259,6 @@ impl BeaconStateTile {
             Self::last_applied_roots(&self.arena, self.last_applied),
             Self::last_applied_slot(&self.arena, self.last_applied),
             &self.pending_pool[self.last_applied.pending_idx as usize],
-            &self.zero_hashes,
         )
     }
 
@@ -270,7 +267,6 @@ impl BeaconStateTile {
     fn bootstrap(&mut self, ssz: &[u8]) {
         let pq = decompose::decompose_beacon_state(
             ssz,
-            &self.zero_hashes,
             self.arena.imm.get_mut(0),
             &mut self.finalized_validators,
             self.arena.longtail.get_mut(0),
@@ -295,10 +291,9 @@ impl BeaconStateTile {
                 self.arena.roots.get(0),
                 sd,
                 &self.pending_pool[0],
-                &self.zero_hashes,
             );
         }
-        let block_root = ssz_hash::hash_tree_root_block_header(&anchor_header, &self.zero_hashes);
+        let block_root = ssz_hash::hash_tree_root_block_header(&anchor_header);
 
         // Checkpoint-sync convention: the anchor is trusted, so both
         // finalized and justified checkpoints refer to the anchor block
@@ -596,7 +591,6 @@ impl BeaconStateTile {
                 Self::last_applied_roots_mut(&self.arena, self.last_applied),
                 Self::last_applied_slot_mut(&self.arena, self.last_applied),
                 &self.pending_pool[pending_idx],
-                &self.zero_hashes,
             );
 
             if (s + 1).is_multiple_of(SLOTS_PER_EPOCH) {
@@ -646,7 +640,6 @@ impl BeaconStateTile {
             sd,
             &mut self.pending_pool[la.pending_idx as usize],
             roots,
-            &self.zero_hashes,
             &mut self.active_scratch,
             &mut self.postponed_scratch,
         );
@@ -895,7 +888,6 @@ impl BeaconStateTile {
             parsed.body_root,
             parsed.state_root,
             shuffling_ref.as_ref(),
-            &self.zero_hashes,
             &mut self.active_scratch,
             &mut self.postponed_scratch,
             &mut self.attestation_votes_scratch,
@@ -991,7 +983,7 @@ impl BeaconStateTile {
         }
 
         let body = SignedBeaconBlockView::body(data);
-        let body_root = ssz_hash::hash_tree_root_body(body, &self.zero_hashes);
+        let body_root = ssz_hash::hash_tree_root_body(body);
         let block_header = types::BeaconBlockHeader {
             slot: block_slot,
             proposer_index,
@@ -999,7 +991,7 @@ impl BeaconStateTile {
             state_root,
             body_root,
         };
-        let block_root = ssz_hash::hash_tree_root_block_header(&block_header, &self.zero_hashes);
+        let block_root = ssz_hash::hash_tree_root_block_header(&block_header);
 
         let block_epoch = block_slot / SLOTS_PER_EPOCH;
         let parent_epoch = parent_slot / SLOTS_PER_EPOCH;
@@ -1043,7 +1035,6 @@ impl BeaconStateTile {
             &body_root,
             fork_version,
             &imm.genesis_validators_root,
-            &self.zero_hashes,
         ) {
             return Err(PrecheckError::InvalidBls {
                 proposer_index,
@@ -1177,7 +1168,6 @@ impl BeaconStateTile {
             validators.pubkey_decompressed(attester_index),
             fork_version,
             &imm.genesis_validators_root,
-            &self.zero_hashes,
         ) {
             return Feedback::Reject(None);
         }
@@ -1303,14 +1293,13 @@ impl BeaconStateTile {
             aggregator_index as u64,
             aggregate_bytes,
             selection_proof,
-            &self.zero_hashes,
         );
         let domain_aap =
             bls::compute_domain(bls::DOMAIN_AGGREGATE_AND_PROOF, fv, &imm.genesis_validators_root);
         let sr_aap = bls::compute_signing_root(&agg_proof_root, &domain_aap);
 
         // (3) inner aggregate signature over AttestationData.
-        let data_root = ssz_hash::hash_attestation_data(agg_data, &self.zero_hashes);
+        let data_root = ssz_hash::hash_attestation_data(agg_data);
         let domain_att =
             bls::compute_domain(bls::DOMAIN_BEACON_ATTESTER, fv, &imm.genesis_validators_root);
         let sr_att = bls::compute_signing_root(&data_root, &domain_att);
@@ -1375,7 +1364,7 @@ impl BeaconStateTile {
         }
 
         let object_root =
-            ssz_hash::hash_tree_root_voluntary_exit(exit_epoch, vi_u, &self.zero_hashes);
+            ssz_hash::hash_tree_root_voluntary_exit(exit_epoch, vi_u);
         let domain = bls::compute_domain(
             bls::DOMAIN_VOLUNTARY_EXIT,
             imm.capella_fork_version,
@@ -1433,13 +1422,11 @@ impl BeaconStateTile {
             &buf[0..208],
             fv1,
             &imm.genesis_validators_root,
-            &self.zero_hashes,
         );
         let sr2 = state_transition::signing_root_for_block_header(
             &buf[208..416],
             fv2,
             &imm.genesis_validators_root,
-            &self.zero_hashes,
         );
         let sig1 = ProposerSlashingView::h1_signature(buf);
         let sig2 = ProposerSlashingView::h2_signature(buf);
@@ -1470,7 +1457,6 @@ impl BeaconStateTile {
             sd,
             data,
             &mut self.sig_batch,
-            &self.zero_hashes,
         ) {
             Feedback::Accept
         } else {
@@ -1501,7 +1487,7 @@ impl BeaconStateTile {
         }
 
         let object_root =
-            ssz_hash::hash_tree_root_bls_change(vi_u, from_pubkey, to_address, &self.zero_hashes);
+            ssz_hash::hash_tree_root_bls_change(vi_u, from_pubkey, to_address);
         let domain = bls::compute_domain(
             bls::DOMAIN_BLS_TO_EXECUTION_CHANGE,
             imm.genesis_fork_version,
@@ -1929,7 +1915,7 @@ mod tests {
             0, // target_epoch
         );
         let data: &[u8; 128] = buf[16..144].try_into().unwrap();
-        let object_root = ssz_hash::hash_attestation_data(data, &tile.zero_hashes);
+        let object_root = ssz_hash::hash_attestation_data(data);
         let domain = bls::compute_domain(
             bls::DOMAIN_BEACON_ATTESTER,
             fork_version,
@@ -1983,7 +1969,7 @@ mod tests {
         seed_tile_with_keys(&mut tile, 4, 256 * SLOTS_PER_EPOCH);
 
         let imm = *BeaconStateTile::last_applied_imm(&tile.arena, tile.last_applied);
-        let buf = crate::test_signing::sign_voluntary_exit(0, 0, 0, &imm, &tile.zero_hashes);
+        let buf = crate::test_signing::sign_voluntary_exit(0, 0, 0, &imm);
         assert_eq!(tile.handle_voluntary_exit(&buf), Feedback::Accept);
     }
 
@@ -2014,7 +2000,7 @@ mod tests {
         let mut tile = make_tile();
         seed_tile_with_keys(&mut tile, 4, 0);
         let imm = *BeaconStateTile::last_applied_imm(&tile.arena, tile.last_applied);
-        let buf = crate::test_signing::sign_proposer_slashing(0, 0, 0, &imm, &tile.zero_hashes);
+        let buf = crate::test_signing::sign_proposer_slashing(0, 0, 0, &imm);
         assert_eq!(tile.handle_proposer_slashing(&buf), Feedback::Accept);
     }
 
@@ -2048,8 +2034,8 @@ mod tests {
         let imm = *BeaconStateTile::last_applied_imm(&tile.arena, tile.last_applied);
         // ia1 signs from vi=0, ia2 from vi=1; double-vote on data (different
         // beacon_block_root) but indices disjoint.
-        let ia1 = build_ia_with_indices(&imm, &tile.zero_hashes, 0, 0xAA, &[0]);
-        let ia2 = build_ia_with_indices(&imm, &tile.zero_hashes, 0, 0xBB, &[1]);
+        let ia1 = build_ia_with_indices(&imm, 0, 0xAA, &[0]);
+        let ia2 = build_ia_with_indices(&imm, 0, 0xBB, &[1]);
         let buf = wrap_attester_slashing(&ia1, &ia2);
         assert_eq!(tile.handle_attester_slashing(&buf), Feedback::Reject(None));
     }
@@ -2067,7 +2053,6 @@ mod tests {
             0,
             0,
             &imm,
-            &tile.zero_hashes,
         );
         assert_eq!(tile.handle_attester_slashing(&buf), Feedback::Accept);
     }
@@ -2090,7 +2075,6 @@ mod tests {
             0,
             0xAA,
             &imm,
-            &tile.zero_hashes,
         );
         let ia2 = crate::test_signing::build_indexed_attestation(
             1,
@@ -2100,7 +2084,6 @@ mod tests {
             0,
             0xBB,
             &imm,
-            &tile.zero_hashes,
         );
         let buf = wrap_attester_slashing(&ia1, &ia2);
         assert_eq!(tile.handle_attester_slashing(&buf), Feedback::Reject(None));
@@ -2110,7 +2093,6 @@ mod tests {
     /// left zero — only used for structural / state-derived reject tests.
     fn build_ia_with_indices(
         _imm: &types::Immutable,
-        _zh: &[B256],
         target_epoch: u64,
         beacon_block_root_marker: u8,
         indices: &[u64],
@@ -2175,7 +2157,6 @@ mod tests {
             0,
             &to_addr,
             &imm,
-            &tile.zero_hashes,
         );
         assert_eq!(tile.handle_bls_to_execution_change(&buf), Feedback::Accept);
     }
@@ -2241,7 +2222,6 @@ mod tests {
             pos,
             csize,
             &imm,
-            &tile.zero_hashes,
         )
     }
 
@@ -2367,7 +2347,7 @@ mod tests {
         tile.arena.slot.get_mut(0).latest_block_header = genesis_header;
 
         // parent_root = hash of current latest_block_header.
-        let parent_root = hash_tree_root_block_header(&genesis_header, &tile.zero_hashes);
+        let parent_root = hash_tree_root_block_header(&genesis_header);
 
         // Fork choice genesis must use this root too.
         let cp = Checkpoint { epoch: 0, root: parent_root };
@@ -2496,10 +2476,8 @@ mod tests {
         let amount = 32_000_000_000u64;
 
         // hash_tree_root(DepositMessage { pubkey, wc, amount }) → signed.
-        let zh = ssz_hash::compute_zero_hashes();
         let msg_root = ssz_hash::merkleize(
-            &[ssz_hash::hash_fixed_bytes(&pk, &zh), wc.0, ssz_hash::uint64_chunk(amount)],
-            &zh,
+            &[ssz_hash::hash_fixed_bytes(&pk), wc.0, ssz_hash::uint64_chunk(amount)],
         );
         let domain = bls::compute_domain(DOMAIN_DEPOSIT, [0; 4], &[0u8; 32]);
         let signing_root = bls::compute_signing_root(&msg_root, &domain);

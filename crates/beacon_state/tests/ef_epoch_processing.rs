@@ -4,7 +4,7 @@ mod ef_common;
 
 use ef_common::{LoadedState, compare_states, iter_test_cases, load_state, spec_tests_dir};
 use silver_beacon_state::{
-    epoch_transition, ssz_hash::compute_zero_hashes, types::SLOTS_PER_EPOCH,
+    epoch_transition, ssz_hash::types::SLOTS_PER_EPOCH,
 };
 
 fn epoch_handler(handler_name: &str, run: impl Fn(&mut LoadedState)) {
@@ -20,7 +20,6 @@ fn epoch_handler(handler_name: &str, run: impl Fn(&mut LoadedState)) {
         return;
     }
 
-    let zh = compute_zero_hashes();
     let mut pass = 0;
     let mut fail = 0;
     for (name, dir) in &cases {
@@ -31,11 +30,11 @@ fn epoch_handler(handler_name: &str, run: impl Fn(&mut LoadedState)) {
             continue;
         }
 
-        let mut pre = load_state(&pre_path, &zh);
+        let mut pre = load_state(&pre_path);
         run(&mut pre);
-        let post = load_state(&post_path, &zh);
+        let post = load_state(&post_path);
 
-        let diffs = compare_states(name, &pre, &post, &zh);
+        let diffs = compare_states(name, &pre, &post);
         if diffs.is_empty() {
             pass += 1;
         } else {
@@ -122,7 +121,6 @@ fn eth1_data_reset() {
 
 #[test]
 fn pending_deposits() {
-    let zh = compute_zero_hashes();
     let cfg = silver_common::SpecConfig::mainnet();
     epoch_handler("pending_deposits", move |s| {
         epoch_transition::process_pending_deposits(
@@ -131,7 +129,6 @@ fn pending_deposits() {
             &mut s.epoch,
             &mut s.sd,
             &mut s.pq,
-            &zh,
             &mut Vec::new(),
         );
     });
@@ -169,14 +166,12 @@ fn randao_mixes_reset() {
 
 #[test]
 fn historical_summaries_update() {
-    let zh = compute_zero_hashes();
     epoch_handler("historical_summaries_update", move |s| {
         let current_epoch = s.sd.slot / SLOTS_PER_EPOCH;
         epoch_transition::process_historical_summaries_update(
             &mut s.longtail,
             &s.roots,
             current_epoch,
-            &zh,
         );
     });
 }

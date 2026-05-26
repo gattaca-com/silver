@@ -5,7 +5,7 @@ use std::fs;
 mod ef_common;
 
 use ef_common::{snappy_decode, spec_tests_dir};
-use silver_beacon_state::ssz_hash::{self, compute_zero_hashes, sha256};
+use silver_beacon_state::ssz_hash::{self, sha256};
 
 #[test]
 fn single_merkle_proof() {
@@ -33,8 +33,7 @@ fn single_merkle_proof() {
 
         // Load object and compute its hash_tree_root.
         let body_ssz = snappy_decode(&object_path);
-        let zh = compute_zero_hashes();
-        let object_root = ssz_hash::hash_tree_root_body(&body_ssz, &zh);
+        let object_root = ssz_hash::hash_tree_root_body(&body_ssz);
 
         // Parse proof.yaml.
         let proof_yaml = fs::read_to_string(&proof_path).unwrap();

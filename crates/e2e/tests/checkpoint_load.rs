@@ -15,7 +15,7 @@ use std::{path::PathBuf, time::Duration};
 
 use silver_beacon_state::{
     decompose::decompose_beacon_state,
-    ssz_hash::{compute_zero_hashes, hash_tree_root_block_header},
+    ssz_hash::{hash_tree_root_block_header},
     ticker::SlotTicker,
     tile::{BeaconStateTile, Feedback},
     types::{EpochData, HistoricalLongtail, Immutable, SlotData, SlotRoots, box_zeroed},
@@ -65,7 +65,6 @@ fn finalized_state_loads() {
     // Offline regression assertion: a bootstrap that forgets to patch
     // `latest_block_header.state_root` would have produced the raw-header
     // hash; verify that didn't happen.
-    let zh = compute_zero_hashes();
     let mut imm: Box<Immutable> = box_zeroed();
     let mut validators: Box<FinalizedValidators> = Box::new(FinalizedValidators::new(&[], &[]));
     let mut longtail: Box<HistoricalLongtail> = box_zeroed();
@@ -74,7 +73,6 @@ fn finalized_state_loads() {
     let mut sd: Box<SlotData> = box_zeroed();
     decompose_beacon_state(
         &ssz,
-        &zh,
         &mut imm,
         &mut validators,
         &mut longtail,
@@ -84,7 +82,7 @@ fn finalized_state_loads() {
     )
     .expect("re-decompose");
     if sd.latest_block_header.state_root == [0u8; 32] {
-        let raw_root = hash_tree_root_block_header(&sd.latest_block_header, &zh);
+        let raw_root = hash_tree_root_block_header(&sd.latest_block_header);
         assert_ne!(
             head, raw_root,
             "bootstrap returned the raw-header hash; it should patch state_root first",

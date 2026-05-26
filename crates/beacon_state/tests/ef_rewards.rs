@@ -6,7 +6,7 @@ mod ef_common;
 
 use ef_common::{snappy_decode, spec_tests_dir};
 use silver_beacon_state::{
-    decompose::decompose_beacon_state, epoch_transition, ssz_hash::compute_zero_hashes, types::*,
+    decompose::decompose_beacon_state, epoch_transition, ssz_hash::types::*,
     validator_identity::ValidatorsState,
 };
 
@@ -174,11 +174,9 @@ fn run_rewards_handler(handler_name: &str) {
             }
 
             let ssz = snappy_decode(&pre_path);
-            let zh = compute_zero_hashes();
             let mut s = ef_common::LoadedState::blank_pub();
             if decompose_beacon_state(
                 &ssz,
-                &zh,
                 &mut s.imm,
                 &mut s.fv,
                 &mut s.longtail,

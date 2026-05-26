@@ -4,7 +4,7 @@
 //!
 //! Functions split into three layers:
 //! 1. Primitives: `sha256`, `hash_concat`, `uint64_chunk`, `merkleize*`,
-//!    `mix_in_length`, `compute_zero_hashes`, `is_valid_merkle_branch`.
+//!    `mix_in_length`, `ZERO_HASHES`, `is_valid_merkle_branch`.
 //! 2. Generic list/vector hashers over byte slices: `hash_fixed_bytes`,
 //!    `hash_uint64_list/vector`, `hash_uint8_list`, `hash_b256_vector`,
 //!    `hash_list_containers`, `hash_list_variable_containers`,
@@ -127,9 +127,9 @@ pub fn merkle_push(stack: &mut MerkleStack, leaf: B256) {
 
 /// Walk the parked stack up to `target_depth`, padding with zero subtrees
 /// where no right-sibling is available.
-pub fn merkle_finalize(mut stack: MerkleStack, target_depth: u8, zh: &[B256]) -> B256 {
+pub fn merkle_finalize(mut stack: MerkleStack, target_depth: u8) -> B256 {
     if stack.is_empty() {
-        return zh[target_depth as usize];
+        return ZERO_HASHES[target_depth as usize];
     }
     let (first_h, first_root) = stack.pop().unwrap();
     let mut cur = first_root;
@@ -141,7 +141,7 @@ pub fn merkle_finalize(mut stack: MerkleStack, target_depth: u8, zh: &[B256]) ->
                 cur = hash_concat(&top_root, &cur);
             }
             _ => {
-                cur = hash_concat(&cur, &zh[h as usize]);
+                cur = hash_concat(&cur, &ZERO_HASHES[h as usize]);
             }
         }
         h += 1;
@@ -163,11 +163,6 @@ const fn const_hash_concat(a: &B256, b: &B256) -> B256 {
     sha2_const_stable::Sha256::new().update(a).update(b).finalize()
 }
 
-#[inline]
-pub fn compute_zero_hashes() -> [B256; ZERO_HASHES_LEN] {
-    ZERO_HASHES
-}
-
 /// Push raw bytes packed as 32-byte chunks (tail zero-padded). The aligned
 /// prefix is cast as `&[B256]` (B256 has alignment 1, safe for any byte ptr).
 pub fn push_bytes_as_chunks(data: &[u8], stack: &mut MerkleStack) {
@@ -186,13 +181,13 @@ pub fn push_bytes_as_chunks(data: &[u8], stack: &mut MerkleStack) {
 }
 
 /// Merkleize a slice of 32-byte chunks, padding to the next power of two.
-pub fn merkleize(chunks: &[B256], zh: &[B256]) -> B256 {
+pub fn merkleize(chunks: &[B256]) -> B256 {
     let n = chunks.len().next_power_of_two().max(1);
-    merkleize_padded(chunks, n, zh)
+    merkleize_padded(chunks, n)
 }
 
 /// Merkleize with a fixed leaf count (power of two, for list limits).
-pub fn merkleize_padded(chunks: &[B256], leaf_count: usize, zh: &[B256]) -> B256 {
+pub fn merkleize_padded(chunks: &[B256], leaf_count: usize) -> B256 {
     debug_assert!(leaf_count.is_power_of_two());
     debug_assert!(chunks.len() <= leaf_count);
 
@@ -201,7 +196,7 @@ pub fn merkleize_padded(chunks: &[B256], leaf_count: usize, zh: &[B256]) -> B256
     for c in chunks {
         merkle_push(&mut stack, *c);
     }
-    merkle_finalize(stack, target_depth, zh)
+    merkle_finalize(stack, target_depth)
 }
 
 #[inline]
@@ -210,7 +205,7 @@ pub fn mix_in_length(root: &B256, length: usize) -> B256 {
 }
 
 /// hash_tree_root of a fixed-size byte vector (e.g. BLSSignature, Bitvector).
-pub fn hash_fixed_bytes(data: &[u8], zh: &[B256]) -> B256 {
+pub fn hash_fixed_bytes(data: &[u8]) -> B256 {
     if data.is_empty() {
         return ZERO_HASH;
     }
@@ -218,10 +213,10 @@ pub fn hash_fixed_bytes(data: &[u8], zh: &[B256]) -> B256 {
     let target_depth = chunk_count.next_power_of_two().trailing_zeros() as u8;
     let mut stack = MerkleStack::new();
     push_bytes_as_chunks(data, &mut stack);
-    merkle_finalize(stack, target_depth, zh)
+    merkle_finalize(stack, target_depth)
 }
 
-pub fn hash_uint64_list(values: &[u64], count: usize, limit: usize, zh: &[B256]) -> B256 {
+pub fn hash_uint64_list(values: &[u64], count: usize, limit: usize) -> B256 {
     let limit_chunks = limit.div_ceil(4);
     let target_depth = limit_chunks.next_power_of_two().trailing_zeros() as u8;
 
@@ -241,24 +236,24 @@ pub fn hash_uint64_list(values: &[u64], count: usize, limit: usize, zh: &[B256])
     if slot != 0 {
         merkle_push(&mut stack, chunk);
     }
-    let root = merkle_finalize(stack, target_depth, zh);
+    let root = merkle_finalize(stack, target_depth);
     mix_in_length(&root, count)
 }
 
-pub fn hash_uint8_list(values: &[u8], count: usize, limit: usize, zh: &[B256]) -> B256 {
+pub fn hash_uint8_list(values: &[u8], count: usize, limit: usize) -> B256 {
     let limit_chunks = limit.div_ceil(32);
     let target_depth = limit_chunks.next_power_of_two().trailing_zeros() as u8;
     let mut stack = MerkleStack::new();
     push_bytes_as_chunks(&values[..count], &mut stack);
-    let root = merkle_finalize(stack, target_depth, zh);
+    let root = merkle_finalize(stack, target_depth);
     mix_in_length(&root, count)
 }
 
-pub fn hash_b256_vector(values: &[B256], zh: &[B256]) -> B256 {
-    merkleize(values, zh)
+pub fn hash_b256_vector(values: &[B256]) -> B256 {
+    merkleize(values)
 }
 
-pub fn hash_uint64_vector(values: &[u64], zh: &[B256]) -> B256 {
+pub fn hash_uint64_vector(values: &[u64]) -> B256 {
     let chunk_count = values.len().div_ceil(4);
     let target_depth = chunk_count.next_power_of_two().trailing_zeros() as u8;
     let mut stack = MerkleStack::new();
@@ -277,7 +272,7 @@ pub fn hash_uint64_vector(values: &[u64], zh: &[B256]) -> B256 {
     if slot != 0 {
         merkle_push(&mut stack, chunk);
     }
-    merkle_finalize(stack, target_depth, zh)
+    merkle_finalize(stack, target_depth)
 }
 
 /// hash_tree_root(ForkData(current_version, genesis_validators_root)).
@@ -291,15 +286,15 @@ pub fn hash_tree_root_fork_data(version: [u8; 4], genesis_validators_root: &B256
 
 /// Compute hash_tree_root of a BeaconBlockBody from raw SSZ bytes.
 /// Fulu layout: 13 fields → 16 leaves.
-pub fn hash_tree_root_body(body: &[u8], zh: &[B256]) -> B256 {
+pub fn hash_tree_root_body(body: &[u8]) -> B256 {
     if body.len() < 396 {
         return ZERO_HASH;
     }
 
-    let randao = hash_fixed_bytes(&body[0..96], zh);
-    let eth1 = hash_eth1_data_bytes(&body[96..168], zh);
+    let randao = hash_fixed_bytes(&body[0..96]);
+    let eth1 = hash_eth1_data_bytes(&body[96..168]);
     let graffiti: B256 = body[168..200].try_into().unwrap();
-    let sync_agg = hash_sync_aggregate(&body[220..380], zh);
+    let sync_agg = hash_sync_aggregate(&body[220..380]);
 
     let off = |pos: usize| -> usize {
         u32::from_le_bytes(body[pos..pos + 4].try_into().unwrap()) as usize
@@ -315,17 +310,17 @@ pub fn hash_tree_root_body(body: &[u8], zh: &[B256]) -> B256 {
     };
 
     let proposer_slashings =
-        hash_list_containers(var_field(0), 416, 16, hash_proposer_slashing, zh);
+        hash_list_containers(var_field(0), 416, 16, hash_proposer_slashing);
     let attester_slashings =
-        hash_list_variable_containers(var_field(1), 1, hash_attester_slashing, zh);
-    let attestations = hash_list_variable_containers(var_field(2), 8, hash_attestation, zh);
-    let deposits = hash_list_containers(var_field(3), 1240, 16, hash_deposit, zh);
+        hash_list_variable_containers(var_field(1), 1, hash_attester_slashing);
+    let attestations = hash_list_variable_containers(var_field(2), 8, hash_attestation);
+    let deposits = hash_list_containers(var_field(3), 1240, 16, hash_deposit);
     let voluntary_exits =
-        hash_list_containers(var_field(4), 112, 16, hash_signed_voluntary_exit, zh);
-    let execution_payload = hash_execution_payload(var_field(5), zh);
-    let bls_changes = hash_list_containers(var_field(6), 172, 16, hash_signed_bls_change, zh);
-    let blob_commitments = hash_list_fixed_elements(var_field(7), 48, 4096, zh);
-    let execution_requests = hash_execution_requests(var_field(8), zh);
+        hash_list_containers(var_field(4), 112, 16, hash_signed_voluntary_exit);
+    let execution_payload = hash_execution_payload(var_field(5));
+    let bls_changes = hash_list_containers(var_field(6), 172, 16, hash_signed_bls_change);
+    let blob_commitments = hash_list_fixed_elements(var_field(7), 48, 4096);
+    let execution_requests = hash_execution_requests(var_field(8));
 
     let field_hashes = [
         randao,
@@ -343,12 +338,12 @@ pub fn hash_tree_root_body(body: &[u8], zh: &[B256]) -> B256 {
         execution_requests,
     ];
 
-    merkleize(&field_hashes, zh)
+    merkleize(&field_hashes)
 }
 
-pub fn hash_execution_requests(data: &[u8], zh: &[B256]) -> B256 {
+pub fn hash_execution_requests(data: &[u8]) -> B256 {
     if data.len() < 12 {
-        return merkleize(&[ZERO_HASH, ZERO_HASH, ZERO_HASH], zh);
+        return merkleize(&[ZERO_HASH, ZERO_HASH, ZERO_HASH]);
     }
     let off = |pos: usize| -> usize {
         u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize
@@ -365,37 +360,34 @@ pub fn hash_execution_requests(data: &[u8], zh: &[B256]) -> B256 {
         192,
         MAX_DEPOSIT_REQUESTS_PER_PAYLOAD,
         hash_deposit_request,
-        zh,
     );
     let withdrawal_requests = hash_list_containers(
         var_field(1),
         76,
         MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD,
         hash_withdrawal_request,
-        zh,
     );
     let consolidation_requests = hash_list_containers(
         var_field(2),
         116,
         MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD,
         hash_consolidation_request,
-        zh,
     );
 
-    merkleize(&[deposit_requests, withdrawal_requests, consolidation_requests], zh)
+    merkleize(&[deposit_requests, withdrawal_requests, consolidation_requests])
 }
 
-pub fn hash_eth1_data_bytes(data: &[u8], zh: &[B256]) -> B256 {
+pub fn hash_eth1_data_bytes(data: &[u8]) -> B256 {
     let deposit_root: B256 = data[0..32].try_into().unwrap();
     let deposit_count = u64::from_le_bytes(data[32..40].try_into().unwrap());
     let block_hash: B256 = data[40..72].try_into().unwrap();
     let chunks = [deposit_root, uint64_chunk(deposit_count), block_hash];
-    merkleize(&chunks, zh)
+    merkleize(&chunks)
 }
 
-pub fn hash_sync_aggregate(data: &[u8], zh: &[B256]) -> B256 {
-    let bits_hash = hash_fixed_bytes(&data[0..64], zh);
-    let sig_hash = hash_fixed_bytes(&data[64..160], zh);
+pub fn hash_sync_aggregate(data: &[u8]) -> B256 {
+    let bits_hash = hash_fixed_bytes(&data[0..64]);
+    let sig_hash = hash_fixed_bytes(&data[64..160]);
     hash_concat(&bits_hash, &sig_hash)
 }
 
@@ -403,8 +395,7 @@ pub fn hash_list_containers(
     data: &[u8],
     element_size: usize,
     limit: usize,
-    hash_fn: fn(&[u8], &[B256]) -> B256,
-    zh: &[B256],
+    hash_fn: fn(&[u8]) -> B256,
 ) -> B256 {
     if element_size == 0 {
         return mix_in_length(&ZERO_HASH, 0);
@@ -414,25 +405,24 @@ pub fn hash_list_containers(
 
     let mut stack = MerkleStack::new();
     for i in 0..count {
-        merkle_push(&mut stack, hash_fn(&data[i * element_size..(i + 1) * element_size], zh));
+        merkle_push(&mut stack, hash_fn(&data[i * element_size..(i + 1) * element_size]));
     }
-    let root = merkle_finalize(stack, target_depth, zh);
+    let root = merkle_finalize(stack, target_depth);
     mix_in_length(&root, count)
 }
 
 pub fn hash_list_variable_containers(
     data: &[u8],
     limit: usize,
-    hash_fn: fn(&[u8], &[B256]) -> B256,
-    zh: &[B256],
+    hash_fn: fn(&[u8]) -> B256,
 ) -> B256 {
     let target_depth = limit.next_power_of_two().trailing_zeros() as u8;
     if data.is_empty() {
-        return mix_in_length(&merkle_finalize(MerkleStack::new(), target_depth, zh), 0);
+        return mix_in_length(&merkle_finalize(MerkleStack::new(), target_depth), 0);
     }
     let first_offset = u32::from_le_bytes(data[0..4].try_into().unwrap_or([0; 4])) as usize;
     if first_offset == 0 || !first_offset.is_multiple_of(4) {
-        return mix_in_length(&merkle_finalize(MerkleStack::new(), target_depth, zh), 0);
+        return mix_in_length(&merkle_finalize(MerkleStack::new(), target_depth), 0);
     }
     let count = first_offset / 4;
 
@@ -445,85 +435,83 @@ pub fn hash_list_variable_containers(
             data.len()
         };
         let elem = if start <= end && end <= data.len() {
-            hash_fn(&data[start..end], zh)
+            hash_fn(&data[start..end])
         } else {
             ZERO_HASH
         };
         merkle_push(&mut stack, elem);
     }
-    let root = merkle_finalize(stack, target_depth, zh);
+    let root = merkle_finalize(stack, target_depth);
     mix_in_length(&root, count)
 }
 
-pub fn hash_signed_beacon_block_header(d: &[u8], zh: &[B256]) -> B256 {
-    let msg = hash_beacon_block_header_bytes(&d[..112], zh);
-    let sig = hash_fixed_bytes(&d[112..208], zh);
+pub fn hash_signed_beacon_block_header(d: &[u8]) -> B256 {
+    let msg = hash_beacon_block_header_bytes(&d[..112]);
+    let sig = hash_fixed_bytes(&d[112..208]);
     hash_concat(&msg, &sig)
 }
 
-pub fn hash_beacon_block_header_bytes(d: &[u8], zh: &[B256]) -> B256 {
+pub fn hash_beacon_block_header_bytes(d: &[u8]) -> B256 {
     let u64c = |off: usize| uint64_chunk(u64::from_le_bytes(d[off..off + 8].try_into().unwrap()));
     let b = |off: usize| -> B256 { d[off..off + 32].try_into().unwrap() };
-    merkleize(&[u64c(0), u64c(8), b(16), b(48), b(80)], zh)
+    merkleize(&[u64c(0), u64c(8), b(16), b(48), b(80)])
 }
 
-pub fn hash_proposer_slashing(d: &[u8], zh: &[B256]) -> B256 {
+pub fn hash_proposer_slashing(d: &[u8]) -> B256 {
     hash_concat(
-        &hash_signed_beacon_block_header(&d[..208], zh),
-        &hash_signed_beacon_block_header(&d[208..416], zh),
+        &hash_signed_beacon_block_header(&d[..208]),
+        &hash_signed_beacon_block_header(&d[208..416]),
     )
 }
 
 /// hash_tree_root(DepositData): merkleize 4 chunks
 /// [pubkey_root, withdrawal_credentials, amount_chunk, signature_root].
-pub fn hash_tree_root_deposit_data(dd: &[u8; 184], zh: &[B256]) -> B256 {
+pub fn hash_tree_root_deposit_data(dd: &[u8; 184]) -> B256 {
     merkleize(
         &[
-            hash_fixed_bytes(&dd[..48], zh),
+            hash_fixed_bytes(&dd[..48]),
             <[u8; 32]>::try_from(&dd[48..80]).unwrap(),
             uint64_chunk(u64::from_le_bytes(dd[80..88].try_into().unwrap())),
-            hash_fixed_bytes(&dd[88..184], zh),
+            hash_fixed_bytes(&dd[88..184]),
         ],
-        zh,
     )
 }
 
-pub fn hash_deposit(d: &[u8], zh: &[B256]) -> B256 {
+pub fn hash_deposit(d: &[u8]) -> B256 {
     let mut proof_stack = MerkleStack::new();
     for i in 0..33 {
         let chunk: B256 = d[i * 32..(i + 1) * 32].try_into().unwrap();
         merkle_push(&mut proof_stack, chunk);
     }
-    let proof_root = merkle_finalize(proof_stack, 6, zh);
+    let proof_root = merkle_finalize(proof_stack, 6);
 
     let dd: &[u8; 184] = d[1056..1240].try_into().unwrap();
-    let dd_root = hash_tree_root_deposit_data(dd, zh);
+    let dd_root = hash_tree_root_deposit_data(dd);
     hash_concat(&proof_root, &dd_root)
 }
 
-pub fn hash_signed_voluntary_exit(d: &[u8], zh: &[B256]) -> B256 {
+pub fn hash_signed_voluntary_exit(d: &[u8]) -> B256 {
     let msg = hash_concat(
         &uint64_chunk(u64::from_le_bytes(d[0..8].try_into().unwrap())),
         &uint64_chunk(u64::from_le_bytes(d[8..16].try_into().unwrap())),
     );
-    hash_concat(&msg, &hash_fixed_bytes(&d[16..112], zh))
+    hash_concat(&msg, &hash_fixed_bytes(&d[16..112]))
 }
 
-pub fn hash_signed_bls_change(d: &[u8], zh: &[B256]) -> B256 {
+pub fn hash_signed_bls_change(d: &[u8]) -> B256 {
     let mut addr = ZERO_HASH;
     addr[..20].copy_from_slice(&d[56..76]);
     let msg = merkleize(
         &[
             uint64_chunk(u64::from_le_bytes(d[0..8].try_into().unwrap())),
-            hash_fixed_bytes(&d[8..56], zh),
+            hash_fixed_bytes(&d[8..56]),
             addr,
         ],
-        zh,
     );
-    hash_concat(&msg, &hash_fixed_bytes(&d[76..172], zh))
+    hash_concat(&msg, &hash_fixed_bytes(&d[76..172]))
 }
 
-pub fn hash_attestation(d: &[u8], zh: &[B256]) -> B256 {
+pub fn hash_attestation(d: &[u8]) -> B256 {
     if d.len() < 236 {
         return ZERO_HASH;
     }
@@ -532,14 +520,14 @@ pub fn hash_attestation(d: &[u8], zh: &[B256]) -> B256 {
 
     let max_bits: usize = 64 * 2048;
     let bit_len = bitlist_len(agg_bits);
-    let agg_root = hash_bitlist(agg_bits, bit_len, max_bits, zh);
+    let agg_root = hash_bitlist(agg_bits, bit_len, max_bits);
 
-    let data_root = hash_attestation_data(&d[4..132], zh);
-    let sig_root = hash_fixed_bytes(&d[132..228], zh);
+    let data_root = hash_attestation_data(&d[4..132]);
+    let sig_root = hash_fixed_bytes(&d[132..228]);
     let mut cb = ZERO_HASH;
     cb[..8].copy_from_slice(&d[228..236]);
 
-    merkleize(&[agg_root, data_root, sig_root, cb], zh)
+    merkleize(&[agg_root, data_root, sig_root, cb])
 }
 
 /// SSZ root of `AggregateAndProof { aggregator_index, aggregate,
@@ -549,28 +537,27 @@ pub fn hash_tree_root_aggregate_and_proof(
     aggregator_index: u64,
     aggregate: &[u8],
     selection_proof: &[u8; 96],
-    zh: &[B256],
 ) -> B256 {
     let idx_root = uint64_chunk(aggregator_index);
-    let agg_root = hash_attestation(aggregate, zh);
-    let sp_root = hash_fixed_bytes(selection_proof, zh);
-    merkleize(&[idx_root, agg_root, sp_root], zh)
+    let agg_root = hash_attestation(aggregate);
+    let sp_root = hash_fixed_bytes(selection_proof);
+    merkleize(&[idx_root, agg_root, sp_root])
 }
 
 /// SSZ root of the 128-byte AttestationData container. Used both for block
 /// hashing and for signature signing-roots (attestations + IndexedAttestations
 /// inside AttesterSlashing).
-pub fn hash_attestation_data(d: &[u8], zh: &[B256]) -> B256 {
+pub fn hash_attestation_data(d: &[u8]) -> B256 {
     let u64c = |off: usize| uint64_chunk(u64::from_le_bytes(d[off..off + 8].try_into().unwrap()));
     let b = |off: usize| -> B256 { d[off..off + 32].try_into().unwrap() };
     let cp = |off: usize| hash_concat(&u64c(off), &b(off + 8));
-    merkleize(&[u64c(0), u64c(8), b(16), cp(48), cp(88)], zh)
+    merkleize(&[u64c(0), u64c(8), b(16), cp(48), cp(88)])
 }
 
 /// SSZ root of `VoluntaryExit { epoch, validator_index }`. Two uint64 fields
 /// merkleized in order.
-pub fn hash_tree_root_voluntary_exit(epoch: u64, validator_index: u64, zh: &[B256]) -> B256 {
-    merkleize(&[uint64_chunk(epoch), uint64_chunk(validator_index)], zh)
+pub fn hash_tree_root_voluntary_exit(epoch: u64, validator_index: u64) -> B256 {
+    merkleize(&[uint64_chunk(epoch), uint64_chunk(validator_index)])
 }
 
 /// SSZ root of `BLSToExecutionChange { validator_index, from_bls_pubkey,
@@ -581,7 +568,6 @@ pub fn hash_tree_root_bls_change(
     validator_index: u64,
     from_pubkey: &[u8; 48],
     to_address: &[u8; 20],
-    zh: &[B256],
 ) -> B256 {
     let mut pk_chunk = [0u8; 64];
     pk_chunk[..48].copy_from_slice(from_pubkey);
@@ -590,18 +576,18 @@ pub fn hash_tree_root_bls_change(
     let mut addr_chunk = [0u8; 32];
     addr_chunk[..20].copy_from_slice(to_address);
 
-    merkleize(&[uint64_chunk(validator_index), pk_root, addr_chunk], zh)
+    merkleize(&[uint64_chunk(validator_index), pk_root, addr_chunk])
 }
 
-pub fn hash_indexed_attestation(d: &[u8], zh: &[B256]) -> B256 {
+pub fn hash_indexed_attestation(d: &[u8]) -> B256 {
     let max_indices: usize = 64 * 2048;
     let target_depth = max_indices.div_ceil(4).next_power_of_two().trailing_zeros() as u8;
     if d.len() < 228 {
         // Empty IA: zero attesting_indices, zero AttestationData, zero sig.
-        let indices_root = mix_in_length(&zh[target_depth as usize], 0);
-        let data_root = hash_attestation_data(&[0u8; 128], zh);
-        let sig_root = hash_fixed_bytes(&[0u8; 96], zh);
-        return merkleize(&[indices_root, data_root, sig_root], zh);
+        let indices_root = mix_in_length(&ZERO_HASHES[target_depth as usize], 0);
+        let data_root = hash_attestation_data(&[0u8; 128]);
+        let sig_root = hash_fixed_bytes(&[0u8; 96]);
+        return merkleize(&[indices_root, data_root, sig_root]);
     }
     let indices_off = u32::from_le_bytes(d[0..4].try_into().unwrap()) as usize;
     let indices_data = if indices_off <= d.len() { &d[indices_off..] } else { &[] };
@@ -623,33 +609,33 @@ pub fn hash_indexed_attestation(d: &[u8], zh: &[B256]) -> B256 {
     if slot != 0 {
         merkle_push(&mut stack, chunk);
     }
-    let indices_root = mix_in_length(&merkle_finalize(stack, target_depth, zh), idx_count);
+    let indices_root = mix_in_length(&merkle_finalize(stack, target_depth), idx_count);
 
-    let data_root = hash_attestation_data(&d[4..132], zh);
-    let sig_root = hash_fixed_bytes(&d[132..228], zh);
-    merkleize(&[indices_root, data_root, sig_root], zh)
+    let data_root = hash_attestation_data(&d[4..132]);
+    let sig_root = hash_fixed_bytes(&d[132..228]);
+    merkleize(&[indices_root, data_root, sig_root])
 }
 
-pub fn hash_attester_slashing(d: &[u8], zh: &[B256]) -> B256 {
+pub fn hash_attester_slashing(d: &[u8]) -> B256 {
     if d.len() < 8 {
         // Empty AttesterSlashing root: two empty-IA roots concatenated.
-        let empty_ia = hash_indexed_attestation(&[], zh);
+        let empty_ia = hash_indexed_attestation(&[]);
         return hash_concat(&empty_ia, &empty_ia);
     }
     let off1 = u32::from_le_bytes(d[0..4].try_into().unwrap()) as usize;
     let off2 = u32::from_le_bytes(d[4..8].try_into().unwrap()) as usize;
     let ia1 = if off1 <= off2 && off2 <= d.len() { &d[off1..off2] } else { &[] };
     let ia2 = if off2 <= d.len() { &d[off2..] } else { &[] };
-    hash_concat(&hash_indexed_attestation(ia1, zh), &hash_indexed_attestation(ia2, zh))
+    hash_concat(&hash_indexed_attestation(ia1), &hash_indexed_attestation(ia2))
 }
 
 /// hash_tree_root for a Bitlist. Streams content bytes into 32-byte chunks,
 /// masking the delimiter bit on the last content byte.
-pub fn hash_bitlist(data: &[u8], bit_len: usize, max_bits: usize, zh: &[B256]) -> B256 {
+pub fn hash_bitlist(data: &[u8], bit_len: usize, max_bits: usize) -> B256 {
     let limit_chunks = max_bits.div_ceil(256).next_power_of_two();
     let target_depth = limit_chunks.trailing_zeros() as u8;
     if bit_len == 0 {
-        return mix_in_length(&merkle_finalize(MerkleStack::new(), target_depth, zh), 0);
+        return mix_in_length(&merkle_finalize(MerkleStack::new(), target_depth), 0);
     }
     let content_bytes = bit_len.div_ceil(8);
     let delim_byte = bit_len / 8;
@@ -671,7 +657,7 @@ pub fn hash_bitlist(data: &[u8], bit_len: usize, max_bits: usize, zh: &[B256]) -
     if slot != 0 {
         merkle_push(&mut stack, chunk);
     }
-    mix_in_length(&merkle_finalize(stack, target_depth, zh), bit_len)
+    mix_in_length(&merkle_finalize(stack, target_depth), bit_len)
 }
 
 pub fn bitlist_len(data: &[u8]) -> usize {
@@ -686,43 +672,40 @@ pub fn bitlist_len(data: &[u8]) -> usize {
     bits_before_last + 7 - last.leading_zeros() as usize
 }
 
-pub fn hash_deposit_request(d: &[u8], zh: &[B256]) -> B256 {
+pub fn hash_deposit_request(d: &[u8]) -> B256 {
     merkleize(
         &[
-            hash_fixed_bytes(&d[..48], zh),
+            hash_fixed_bytes(&d[..48]),
             <[u8; 32]>::try_from(&d[48..80]).unwrap(),
             uint64_chunk(u64::from_le_bytes(d[80..88].try_into().unwrap())),
-            hash_fixed_bytes(&d[88..184], zh),
+            hash_fixed_bytes(&d[88..184]),
             uint64_chunk(u64::from_le_bytes(d[184..192].try_into().unwrap())),
         ],
-        zh,
     )
 }
 
-pub fn hash_withdrawal_request(d: &[u8], zh: &[B256]) -> B256 {
+pub fn hash_withdrawal_request(d: &[u8]) -> B256 {
     let mut addr = ZERO_HASH;
     addr[..20].copy_from_slice(&d[..20]);
     merkleize(
         &[
             addr,
-            hash_fixed_bytes(&d[20..68], zh),
+            hash_fixed_bytes(&d[20..68]),
             uint64_chunk(u64::from_le_bytes(d[68..76].try_into().unwrap())),
         ],
-        zh,
     )
 }
 
-pub fn hash_consolidation_request(d: &[u8], zh: &[B256]) -> B256 {
+pub fn hash_consolidation_request(d: &[u8]) -> B256 {
     let mut addr = ZERO_HASH;
     addr[..20].copy_from_slice(&d[..20]);
-    merkleize(&[addr, hash_fixed_bytes(&d[20..68], zh), hash_fixed_bytes(&d[68..116], zh)], zh)
+    merkleize(&[addr, hash_fixed_bytes(&d[20..68]), hash_fixed_bytes(&d[68..116])])
 }
 
 pub fn hash_list_fixed_elements(
     data: &[u8],
     element_size: usize,
     limit: usize,
-    zh: &[B256],
 ) -> B256 {
     if element_size == 0 {
         return mix_in_length(&ZERO_HASH, 0);
@@ -732,15 +715,15 @@ pub fn hash_list_fixed_elements(
     let mut stack = MerkleStack::new();
     for i in 0..count {
         let elem = &data[i * element_size..(i + 1) * element_size];
-        merkle_push(&mut stack, hash_fixed_bytes(elem, zh));
+        merkle_push(&mut stack, hash_fixed_bytes(elem));
     }
-    let root = merkle_finalize(stack, target_depth, zh);
+    let root = merkle_finalize(stack, target_depth);
     mix_in_length(&root, count)
 }
 
 /// hash_tree_root for ExecutionPayload from raw SSZ bytes.
 /// 17 fields → 32 leaves.
-pub fn hash_execution_payload(data: &[u8], zh: &[B256]) -> B256 {
+pub fn hash_execution_payload(data: &[u8]) -> B256 {
     if data.len() < 528 {
         return ZERO_HASH;
     }
@@ -767,7 +750,7 @@ pub fn hash_execution_payload(data: &[u8], zh: &[B256]) -> B256 {
         // ByteList[32] → max 1 chunk.
         let mut stack = MerkleStack::new();
         push_bytes_as_chunks(extra_data_bytes, &mut stack);
-        let root = merkle_finalize(stack, 0, zh);
+        let root = merkle_finalize(stack, 0);
         mix_in_length(&root, extra_data_bytes.len())
     };
 
@@ -776,18 +759,18 @@ pub fn hash_execution_payload(data: &[u8], zh: &[B256]) -> B256 {
     } else {
         &[]
     };
-    let transactions_root = hash_transactions(txns_bytes, zh);
+    let transactions_root = hash_transactions(txns_bytes);
 
     let withdrawals_bytes =
         if withdrawals_off <= data.len() { &data[withdrawals_off..] } else { &[] };
-    let withdrawals_root = hash_withdrawals(withdrawals_bytes, zh);
+    let withdrawals_root = hash_withdrawals(withdrawals_bytes);
 
     let fields: [B256; 17] = [
         b256(0),
         fee_recipient,
         b256(52),
         b256(84),
-        hash_fixed_bytes(&data[116..372], zh),
+        hash_fixed_bytes(&data[116..372]),
         b256(372),
         uint64_chunk(u64le(404)),
         uint64_chunk(u64le(412)),
@@ -801,22 +784,22 @@ pub fn hash_execution_payload(data: &[u8], zh: &[B256]) -> B256 {
         uint64_chunk(u64le(512)),
         uint64_chunk(u64le(520)),
     ];
-    merkleize(&fields, zh)
+    merkleize(&fields)
 }
 
 /// hash_tree_root for List[Transaction, MAX_TRANSACTIONS_PER_PAYLOAD].
-pub fn hash_transactions(data: &[u8], zh: &[B256]) -> B256 {
+pub fn hash_transactions(data: &[u8]) -> B256 {
     let outer_depth = MAX_TRANSACTIONS_PER_PAYLOAD.next_power_of_two().trailing_zeros() as u8;
     let tx_chunk_limit = MAX_BYTES_PER_TRANSACTION.div_ceil(32).next_power_of_two();
     let tx_chunk_depth = tx_chunk_limit.trailing_zeros() as u8;
 
     if data.is_empty() {
-        return mix_in_length(&merkle_finalize(MerkleStack::new(), outer_depth, zh), 0);
+        return mix_in_length(&merkle_finalize(MerkleStack::new(), outer_depth), 0);
     }
 
     let first_off = u32::from_le_bytes(data[..4].try_into().unwrap_or([0; 4])) as usize;
     if first_off == 0 || !first_off.is_multiple_of(4) || first_off > data.len() {
-        return mix_in_length(&merkle_finalize(MerkleStack::new(), outer_depth, zh), 0);
+        return mix_in_length(&merkle_finalize(MerkleStack::new(), outer_depth), 0);
     }
     let count = first_off / 4;
 
@@ -835,16 +818,16 @@ pub fn hash_transactions(data: &[u8], zh: &[B256]) -> B256 {
         };
         let mut inner = MerkleStack::new();
         push_bytes_as_chunks(tx_bytes, &mut inner);
-        let tx_root = mix_in_length(&merkle_finalize(inner, tx_chunk_depth, zh), tx_bytes.len());
+        let tx_root = mix_in_length(&merkle_finalize(inner, tx_chunk_depth), tx_bytes.len());
         merkle_push(&mut outer, tx_root);
     }
 
-    let root = merkle_finalize(outer, outer_depth, zh);
+    let root = merkle_finalize(outer, outer_depth);
     mix_in_length(&root, count)
 }
 
 /// hash_tree_root for List[Withdrawal, 16]. Withdrawal fixed 44 bytes.
-pub fn hash_withdrawals(data: &[u8], zh: &[B256]) -> B256 {
+pub fn hash_withdrawals(data: &[u8]) -> B256 {
     const WITHDRAWAL_SIZE: usize = 44;
 
     let count = data.len() / WITHDRAWAL_SIZE;
@@ -857,14 +840,14 @@ pub fn hash_withdrawals(data: &[u8], zh: &[B256]) -> B256 {
         addr[..20].copy_from_slice(&w[16..36]);
         let chunks =
             [uint64_chunk(u64at(0)), uint64_chunk(u64at(8)), addr, uint64_chunk(u64at(36))];
-        merkle_push(&mut stack, merkleize(&chunks, zh));
+        merkle_push(&mut stack, merkleize(&chunks));
     }
-    let root = merkle_finalize(stack, target_depth, zh);
+    let root = merkle_finalize(stack, target_depth);
     mix_in_length(&root, count)
 }
 
 /// Extract and hash transactions from ExecutionPayload SSZ bytes.
-pub fn hash_transactions_from_payload(payload: &[u8], zh: &[B256]) -> B256 {
+pub fn hash_transactions_from_payload(payload: &[u8]) -> B256 {
     if payload.len() < 528 {
         return ZERO_HASH;
     }
@@ -874,14 +857,14 @@ pub fn hash_transactions_from_payload(payload: &[u8], zh: &[B256]) -> B256 {
     let txns_off = off32(504);
     let withdrawals_off = off32(508);
     if txns_off <= withdrawals_off && withdrawals_off <= payload.len() {
-        hash_transactions(&payload[txns_off..withdrawals_off], zh)
+        hash_transactions(&payload[txns_off..withdrawals_off])
     } else {
         ZERO_HASH
     }
 }
 
 /// Extract and hash withdrawals from ExecutionPayload SSZ bytes.
-pub fn hash_withdrawals_from_payload(payload: &[u8], zh: &[B256]) -> B256 {
+pub fn hash_withdrawals_from_payload(payload: &[u8]) -> B256 {
     if payload.len() < 528 {
         return ZERO_HASH;
     }
@@ -890,7 +873,7 @@ pub fn hash_withdrawals_from_payload(payload: &[u8], zh: &[B256]) -> B256 {
     };
     let withdrawals_off = off32(508);
     if withdrawals_off <= payload.len() {
-        hash_withdrawals(&payload[withdrawals_off..], zh)
+        hash_withdrawals(&payload[withdrawals_off..])
     } else {
         ZERO_HASH
     }
@@ -899,10 +882,6 @@ pub fn hash_withdrawals_from_payload(payload: &[u8], zh: &[B256]) -> B256 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn zh_table() -> [B256; ZERO_HASHES_LEN] {
-        compute_zero_hashes()
-    }
 
     fn hex_b32(s: &str) -> B256 {
         assert_eq!(s.len(), 64);
@@ -924,8 +903,7 @@ mod tests {
     /// Anchor against the spec-published zero-subtree roots.
     #[test]
     fn zero_hashes_match_spec() {
-        let zh = compute_zero_hashes();
-        assert_eq!(zh[0], [0u8; 32]);
+        assert_eq!(ZERO_HASHES[0], [0u8; 32]);
         let expected: &[(usize, &str)] = &[
             (1, "f5a5fd42d16a20302798ef6ed309979b43003d2320d9f0e8ea9831a92759fb4b"),
             (2, "db56114e00fdd4c1f85c892bf35ac9a89289aaecb1ebd0a96cde606a748b5d71"),
@@ -939,7 +917,7 @@ mod tests {
             (10, "ffff0ad7e659772f9534c195c815efc4014ef1e1daed4404c06385d11192e92b"),
         ];
         for &(i, hex) in expected {
-            assert_eq!(zh[i], hex_b32(hex), "zh[{i}]");
+            assert_eq!(ZERO_HASHES[i], hex_b32(hex), "zh[{i}]");
         }
     }
 
@@ -959,7 +937,7 @@ mod tests {
     }
 
     fn z(i: usize) -> B256 {
-        compute_zero_hashes()[i]
+        ZERO_HASHES[i]
     }
 
     fn h(a: B256, b: B256) -> B256 {
@@ -968,7 +946,6 @@ mod tests {
 
     #[test]
     fn spec_merkleize_vectors() {
-        let zh = zh_table();
         let cases: Vec<(usize, usize, B256)> = vec![
             (0, 0, z(0)),
             (0, 1, z(0)),
@@ -1006,7 +983,7 @@ mod tests {
         for (i, (count, limit, expected)) in cases.iter().enumerate() {
             let chunks: Vec<B256> = (0..*count as u32).map(e).collect();
             let limit_pow2 = if *limit == 0 { 1 } else { limit.next_power_of_two() };
-            let result = merkleize_padded(&chunks, limit_pow2, &zh);
+            let result = merkleize_padded(&chunks, limit_pow2);
             assert_eq!(result, *expected, "case {i}: count={count} limit={limit}");
         }
     }

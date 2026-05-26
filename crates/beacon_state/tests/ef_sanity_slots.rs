@@ -5,7 +5,7 @@ use std::fs;
 mod ef_common;
 
 use ef_common::{compare_states, iter_test_cases, load_state, spec_tests_dir};
-use silver_beacon_state::{ssz_hash::compute_zero_hashes, state_transition};
+use silver_beacon_state::{ssz_hash::state_transition};
 
 #[test]
 fn sanity_slots() {
@@ -17,7 +17,6 @@ fn sanity_slots() {
         return;
     }
 
-    let zh = compute_zero_hashes();
     let mut pass = 0;
     let mut fail = 0;
     for (name, dir) in &cases {
@@ -35,7 +34,7 @@ fn sanity_slots() {
             .parse()
             .unwrap_or_else(|e| panic!("{name}: bad slots value '{slots_str}': {e}"));
 
-        let mut pre = load_state(&pre_path, &zh);
+        let mut pre = load_state(&pre_path);
         let target_slot = pre.sd.slot + target_slots;
         let mut scratch = Vec::new();
         let mut postponed = Vec::new();
@@ -49,13 +48,12 @@ fn sanity_slots() {
             &mut pre.sd,
             &mut pre.pq,
             target_slot,
-            &zh,
             &mut scratch,
             &mut postponed,
         );
-        let post = load_state(&post_path, &zh);
+        let post = load_state(&post_path);
 
-        let diffs = compare_states(name, &pre, &post, &zh);
+        let diffs = compare_states(name, &pre, &post);
         if diffs.is_empty() {
             pass += 1;
         } else {

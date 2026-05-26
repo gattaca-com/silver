@@ -5,7 +5,7 @@ use std::fs;
 mod ef_common;
 
 use ef_common::{compare_states, iter_test_cases, load_state, snappy_decode, spec_tests_dir};
-use silver_beacon_state::{ssz_hash::compute_zero_hashes, state_transition};
+use silver_beacon_state::{ssz_hash::state_transition};
 
 #[test]
 fn sanity_blocks() {
@@ -16,7 +16,6 @@ fn sanity_blocks() {
         return;
     }
 
-    let zh = compute_zero_hashes();
     let mut pass = 0;
     let mut fail = 0;
     let skip = 0;
@@ -41,7 +40,7 @@ fn sanity_blocks() {
             }
         }
 
-        let mut pre = load_state(&pre_path, &zh);
+        let mut pre = load_state(&pre_path);
 
         let mut block_rejected = false;
         for i in 0..block_count {
@@ -56,7 +55,6 @@ fn sanity_blocks() {
                 &mut pre.sd,
                 &mut pre.pq,
                 &block_ssz,
-                &zh,
             ) {
                 if !expect_failure {
                     eprintln!("{name}: block {i}: {reason}");
@@ -81,8 +79,8 @@ fn sanity_blocks() {
             continue;
         }
 
-        let post = load_state(&post_path, &zh);
-        let diffs = compare_states(name, &pre, &post, &zh);
+        let post = load_state(&post_path);
+        let diffs = compare_states(name, &pre, &post);
         if diffs.is_empty() {
             pass += 1;
         } else {

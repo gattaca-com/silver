@@ -66,7 +66,6 @@ pub fn apply_block(
     body_root: B256,
     block_state_root: B256,
     shuffling: Option<&ShufflingRef<'_>>,
-    zh: &[B256],
     active_scratch: &mut Vec<u32>,
     postponed_scratch: &mut Vec<types::PendingDeposit>,
     attestation_votes: &mut Vec<(u32, B256, Epoch)>,
@@ -108,13 +107,12 @@ pub fn apply_block(
             sd,
             pq,
             block_slot,
-            zh,
             active_scratch,
             postponed_scratch,
         );
     }
 
-    process_block_header(vs, epoch, sd, block_slot, proposer_index, parent_root, body_root, zh)
+    process_block_header(vs, epoch, sd, block_slot, proposer_index, parent_root, body_root)
         .map_err(wrap)?;
 
     let body = if block_bytes.len() > 184 { &block_bytes[184..] } else { &[] };
@@ -134,11 +132,10 @@ pub fn apply_block(
         block_slot,
         proposer_index,
         shuffling,
-        zh,
         attestation_votes,
     )?;
 
-    let actual = hash_tree_root_state(imm, vs, longtail, epoch, roots, sd, pq, zh);
+    let actual = hash_tree_root_state(imm, vs, longtail, epoch, roots, sd, pq);
     tracing::info!("got root status");
     if actual != block_state_root {
         return Err(wrap(BlockError::PostStateRootMismatch {
@@ -187,7 +184,6 @@ pub fn apply_signed_block_debug(
     sd: &mut SlotData,
     pq: &mut PendingQueues,
     block_bytes: &[u8],
-    zh: &[B256],
 ) -> Result<()> {
     if block_bytes.len() < 184 {
         return Err(Error::invalid_block([0; 32], BlockError::TooShort {
@@ -200,7 +196,7 @@ pub fn apply_signed_block_debug(
     let parent_root: B256 = *SignedBeaconBlockView::parent_root(block_bytes);
     let state_root: B256 = *SignedBeaconBlockView::state_root(block_bytes);
     let body = SignedBeaconBlockView::body(block_bytes);
-    let body_root = ssz_hash::hash_tree_root_body(body, zh);
+    let body_root = ssz_hash::hash_tree_root_body(body);
     let wrap = |kind: BlockError| Error::invalid_block(state_root, kind);
 
     if block_slot <= sd.latest_block_header.slot {
@@ -245,7 +241,6 @@ pub fn apply_signed_block_debug(
         &body_root,
         fork_version,
         &imm.genesis_validators_root,
-        zh,
     ) {
         return Err(Error::InvalidBlockSig);
     }
@@ -261,12 +256,11 @@ pub fn apply_signed_block_debug(
             sd,
             pq,
             block_slot,
-            zh,
             &mut active_scratch,
             &mut postponed_scratch,
         );
     }
-    process_block_header(vs, epoch, sd, block_slot, proposer_index, parent_root, body_root, zh)
+    process_block_header(vs, epoch, sd, block_slot, proposer_index, parent_root, body_root)
         .map_err(wrap)?;
 
     let mut curr = Vec::new();
@@ -298,11 +292,10 @@ pub fn apply_signed_block_debug(
         block_slot,
         proposer_index,
         Some(&sref),
-        zh,
         &mut votes_sink,
     )?;
 
-    let actual = hash_tree_root_state(imm, vs, longtail, epoch, roots, sd, pq, zh);
+    let actual = hash_tree_root_state(imm, vs, longtail, epoch, roots, sd, pq);
     if actual != state_root {
         return Err(wrap(BlockError::PostStateRootMismatch { expected: state_root, got: actual }));
     }
@@ -323,12 +316,11 @@ pub fn process_slots(
     sd: &mut SlotData,
     pq: &mut PendingQueues,
     target_slot: Slot,
-    zh: &[B256],
     active_scratch: &mut Vec<u32>,
     postponed_scratch: &mut Vec<types::PendingDeposit>,
 ) {
     while sd.slot < target_slot {
-        process_slot(imm, vs, longtail, epoch, roots, sd, pq, zh);
+        process_slot(imm, vs, longtail, epoch, roots, sd, pq);
         if (sd.slot + 1).is_multiple_of(SLOTS_PER_EPOCH) {
             epoch_transition::process_epoch(
                 cfg,
@@ -338,7 +330,6 @@ pub fn process_slots(
                 sd,
                 pq,
                 roots,
-                zh,
                 active_scratch,
                 postponed_scratch,
             );
@@ -356,18 +347,17 @@ pub fn process_slot(
     roots: &mut SlotRoots,
     sd: &mut SlotData,
     pq: &PendingQueues,
-    zh: &[B256],
 ) {
     let idx = sd.slot as usize % SLOTS_PER_HISTORICAL_ROOT;
 
-    let prev_state_root = hash_tree_root_state(imm, vs, longtail, epoch, roots, sd, pq, zh);
+    let prev_state_root = hash_tree_root_state(imm, vs, longtail, epoch, roots, sd, pq);
     roots.state_roots[idx] = prev_state_root;
 
     if sd.latest_block_header.state_root == [0u8; 32] {
         sd.latest_block_header.state_root = prev_state_root;
     }
 
-    let block_root = hash_tree_root_block_header(&sd.latest_block_header, zh);
+    let block_root = hash_tree_root_block_header(&sd.latest_block_header);
     roots.block_roots[idx] = block_root;
 }
 
@@ -380,7 +370,6 @@ pub fn process_block_header(
     proposer_index: u64,
     parent_root: B256,
     body_root: B256,
-    zh: &[B256],
 ) -> Result<(), BlockError> {
     if block_slot != sd.slot {
         return Err(BlockError::SlotStateMismatch { block: block_slot, state: sd.slot });
@@ -410,7 +399,7 @@ pub fn process_block_header(
         });
     }
 
-    let expected_parent = hash_tree_root_block_header(&sd.latest_block_header, zh);
+    let expected_parent = hash_tree_root_block_header(&sd.latest_block_header);
     if parent_root != expected_parent {
         return Err(BlockError::ParentRootMismatch { expected: expected_parent, got: parent_root });
     }
@@ -512,7 +501,6 @@ pub fn process_block_body(
     block_slot: Slot,
     proposer_index: u64,
     shuffling: Option<&ShufflingRef<'_>>,
-    zh: &[B256],
     attestation_votes: &mut Vec<(u32, B256, Epoch)>,
 ) -> Result<()> {
     let wrap = |kind: BlockError| Error::invalid_block(state_root, kind);
@@ -539,7 +527,6 @@ pub fn process_block_body(
         block_slot,
         proposer_index,
         shuffling,
-        zh,
     )?;
 
     // Verify all collected sigs at once (multi-pairing).
@@ -552,7 +539,7 @@ pub fn process_block_body(
     let payload = offsets.payload();
 
     process_withdrawals(vs, epoch, sd, pq, payload)?;
-    process_execution_payload(cfg, imm, sd, payload, block_slot, zh)?;
+    process_execution_payload(cfg, imm, sd, payload, block_slot)?;
     process_randao(body, sd);
     process_eth1_data(sd, body);
 
@@ -601,7 +588,6 @@ pub fn process_block_body(
             sd,
             pq,
             offsets.slice(offsets.deposits_off, offsets.voluntary_exits_off),
-            zh,
         )?;
     }
     if offsets.voluntary_exits_off <= offsets.exec_off && offsets.exec_off <= body.len() {
@@ -640,7 +626,6 @@ fn collect_sigs_block_body(
     block_slot: Slot,
     proposer_index: u64,
     shuffling: Option<&ShufflingRef<'_>>,
-    zh: &[B256],
 ) -> Result<()> {
     let body = offsets.body;
 
@@ -655,7 +640,6 @@ fn collect_sigs_block_body(
             vs,
             offsets.slice(offsets.proposer_slashings_off, offsets.attester_slashings_off),
             sig_batch,
-            zh,
         )?;
     }
     if offsets.attester_slashings_off <= offsets.attestations_off &&
@@ -667,7 +651,6 @@ fn collect_sigs_block_body(
             offsets.slice(offsets.attester_slashings_off, offsets.attestations_off),
             active_scratch,
             sig_batch,
-            zh,
         )?;
     }
     if offsets.attestations_off <= offsets.deposits_off && offsets.deposits_off <= body.len() {
@@ -679,7 +662,6 @@ fn collect_sigs_block_body(
             shuffling,
             active_scratch,
             sig_batch,
-            zh,
         )?;
     }
     // deposits skipped — these are verified inline in `apply_deposit`.
@@ -689,7 +671,6 @@ fn collect_sigs_block_body(
             vs,
             offsets.slice(offsets.voluntary_exits_off, offsets.exec_off),
             sig_batch,
-            zh,
         );
     }
     if offsets.bls_changes_off <= offsets.blob_off && offsets.blob_off <= body.len() {
@@ -698,7 +679,6 @@ fn collect_sigs_block_body(
             vs,
             offsets.slice(offsets.bls_changes_off, offsets.blob_off),
             sig_batch,
-            zh,
         )?;
     }
     collect_sigs_sync_aggregate(
@@ -786,7 +766,6 @@ pub fn collect_sigs_attestations(
     shuffling: Option<&ShufflingRef<'_>>,
     active_scratch: &mut Vec<u32>,
     sig_batch: &mut SigBatch,
-    zh: &[B256],
 ) -> Result<(), AttestationError> {
     if attestation_data.is_empty() {
         return Ok(());
@@ -824,7 +803,6 @@ pub fn collect_sigs_attestations(
             shuffling,
             active_scratch,
             sig_batch,
-            zh,
         )?;
     }
     Ok(())
@@ -839,7 +817,6 @@ pub fn collect_sigs_single_attestation(
     shuffling: Option<&ShufflingRef<'_>>,
     active_scratch: &mut Vec<u32>,
     sig_batch: &mut SigBatch,
-    zh: &[B256],
 ) -> Result<(), AttestationError> {
     let data = AttestationView::data(att);
     let att_slot = AttestationDataView::slot(data);
@@ -891,7 +868,7 @@ pub fn collect_sigs_single_attestation(
         target_epoch,
     );
     let sig = AttestationView::signature(att);
-    let object_root = ssz_hash::hash_attestation_data(data, zh);
+    let object_root = ssz_hash::hash_attestation_data(data);
     let domain = bls::compute_domain(
         bls::DOMAIN_BEACON_ATTESTER,
         fork_version,
@@ -1146,7 +1123,6 @@ pub fn process_execution_payload(
     sd: &mut SlotData,
     payload_bytes: &[u8],
     block_slot: Slot,
-    zh: &[B256],
 ) -> Result<(), ExecutionPayloadError> {
     if payload_bytes.len() < 528 {
         return Err(ExecutionPayloadError::TooShort { len: payload_bytes.len(), min: 528 });
@@ -1181,8 +1157,8 @@ pub fn process_execution_payload(
         extra_data,
         base_fee_per_gas: *ExecutionPayloadView::base_fee_per_gas(payload_bytes),
         block_hash: *ExecutionPayloadView::block_hash(payload_bytes),
-        transactions_root: ssz_hash::hash_transactions_from_payload(payload_bytes, zh),
-        withdrawals_root: ssz_hash::hash_withdrawals_from_payload(payload_bytes, zh),
+        transactions_root: ssz_hash::hash_transactions_from_payload(payload_bytes),
+        withdrawals_root: ssz_hash::hash_withdrawals_from_payload(payload_bytes),
         blob_gas_used: ExecutionPayloadView::blob_gas_used(payload_bytes),
         excess_blob_gas: ExecutionPayloadView::excess_blob_gas(payload_bytes),
     };
@@ -1529,7 +1505,6 @@ pub fn collect_sigs_voluntary_exits(
     vs: &ValidatorsState,
     data: &[u8],
     sig_batch: &mut SigBatch,
-    zh: &[B256],
 ) {
     let count = data.len() / SIGNED_VOLUNTARY_EXIT_SIZE;
     for i in 0..count {
@@ -1546,7 +1521,7 @@ pub fn collect_sigs_voluntary_exits(
             sig_batch.poison();
             return;
         }
-        let object_root = ssz_hash::hash_tree_root_voluntary_exit(exit_epoch_msg, vi_u, zh);
+        let object_root = ssz_hash::hash_tree_root_voluntary_exit(exit_epoch_msg, vi_u);
         let domain = bls::compute_domain(
             bls::DOMAIN_VOLUNTARY_EXIT,
             imm.capella_fork_version,
@@ -1820,7 +1795,6 @@ pub fn collect_sigs_proposer_slashings(
     vs: &ValidatorsState,
     data: &[u8],
     sig_batch: &mut SigBatch,
-    zh: &[B256],
 ) -> Result<(), ProposerSlashingError> {
     let count = data.len() / PROPOSER_SLASHING_SIZE;
     let n = vs.validator_cnt();
@@ -1845,9 +1819,9 @@ pub fn collect_sigs_proposer_slashings(
             imm.fork.current_version,
             h2_slot / SLOTS_PER_EPOCH,
         );
-        let sr1 = signing_root_for_block_header(&s[0..208], fv1, &imm.genesis_validators_root, zh);
+        let sr1 = signing_root_for_block_header(&s[0..208], fv1, &imm.genesis_validators_root);
         let sr2 =
-            signing_root_for_block_header(&s[208..416], fv2, &imm.genesis_validators_root, zh);
+            signing_root_for_block_header(&s[208..416], fv2, &imm.genesis_validators_root);
         let sig1 = ProposerSlashingView::h1_signature(s);
         let sig2 = ProposerSlashingView::h2_signature(s);
         sig_batch.push_one(vs.pubkey_decompressed(vi), sig1, sr1);
@@ -1897,7 +1871,6 @@ pub(crate) fn signing_root_for_block_header(
     header: &[u8],
     fork_version: [u8; 4],
     genesis_validators_root: &B256,
-    zh: &[B256],
 ) -> B256 {
     let hb: &[u8; BEACON_BLOCK_HEADER_SIZE] =
         header[..BEACON_BLOCK_HEADER_SIZE].try_into().unwrap();
@@ -1908,7 +1881,7 @@ pub(crate) fn signing_root_for_block_header(
         state_root: *BeaconBlockHeaderView::state_root(hb),
         body_root: *BeaconBlockHeaderView::body_root(hb),
     };
-    let object_root = hash_tree_root_block_header(&h, zh);
+    let object_root = hash_tree_root_block_header(&h);
     let domain =
         bls::compute_domain(bls::DOMAIN_BEACON_PROPOSER, fork_version, genesis_validators_root);
     bls::compute_signing_root(&object_root, &domain)
@@ -1923,7 +1896,6 @@ pub fn process_deposits(
     sd: &mut SlotData,
     pq: &mut PendingQueues,
     data: &[u8],
-    zh: &[B256],
 ) -> Result<()> {
     let count = data.len() / DEPOSIT_SIZE;
 
@@ -1932,7 +1904,7 @@ pub fn process_deposits(
             data[i * DEPOSIT_SIZE..(i + 1) * DEPOSIT_SIZE].try_into().unwrap();
         let dd = DepositView::data(d);
         let proof = DepositView::proof(d);
-        let leaf = ssz_hash::hash_tree_root_deposit_data(dd, zh);
+        let leaf = ssz_hash::hash_tree_root_deposit_data(dd);
         if !ssz_hash::is_valid_merkle_branch(
             &leaf,
             proof,
@@ -1950,7 +1922,7 @@ pub fn process_deposits(
 
         // apply_deposit is skippable on bad BLS sig — propagate fatal only.
         if let Err(e) =
-            apply_deposit(vs, epoch, sd, pq, pubkey, &credentials, amount, &signature, zh)
+            apply_deposit(vs, epoch, sd, pq, pubkey, &credentials, amount, &signature)
         {
             if e.is_fatal() {
                 return Err(e);
@@ -1978,7 +1950,6 @@ pub fn collect_sigs_bls_to_execution_changes(
     vs: &ValidatorsState,
     data: &[u8],
     sig_batch: &mut SigBatch,
-    zh: &[B256],
 ) -> Result<(), BlsToExecutionChangeError> {
     let count = data.len() / SIGNED_BLS_CHANGE_SIZE;
     for i in 0..count {
@@ -2001,7 +1972,6 @@ pub fn collect_sigs_bls_to_execution_changes(
             validator_index_u,
             from_bls_pubkey,
             to_execution_address,
-            zh,
         );
         let domain = bls::compute_domain(
             bls::DOMAIN_BLS_TO_EXECUTION_CHANGE,
@@ -2046,7 +2016,6 @@ pub fn collect_sigs_attester_slashings(
     data: &[u8],
     active_scratch: &mut Vec<u32>,
     sig_batch: &mut SigBatch,
-    zh: &[B256],
 ) -> Result<(), AttesterSlashingError> {
     if data.is_empty() {
         return Ok(());
@@ -2103,7 +2072,7 @@ pub fn collect_sigs_attester_slashings(
             }
             let data_chunk: &[u8; 128] = silver_common::ssz_view::IndexedAttestationView::data(ia);
             let sig: &[u8; 96] = silver_common::ssz_view::IndexedAttestationView::signature(ia);
-            let object_root = ssz_hash::hash_attestation_data(data_chunk, zh);
+            let object_root = ssz_hash::hash_attestation_data(data_chunk);
             let domain =
                 bls::compute_domain(bls::DOMAIN_BEACON_ATTESTER, fv, &imm.genesis_validators_root);
             let signing_root = bls::compute_signing_root(&object_root, &domain);
@@ -2222,7 +2191,6 @@ pub fn validate_attester_slashing_for_gossip(
     sd: &SlotData,
     slashing: &[u8],
     sig_batch: &mut SigBatch,
-    zh: &[B256],
 ) -> bool {
     if slashing.len() < 8 {
         return false;
@@ -2282,7 +2250,7 @@ pub fn validate_attester_slashing_for_gossip(
         }
         let data_chunk: &[u8; 128] = silver_common::ssz_view::IndexedAttestationView::data(ia);
         let sig: &[u8; 96] = silver_common::ssz_view::IndexedAttestationView::signature(ia);
-        let object_root = ssz_hash::hash_attestation_data(data_chunk, zh);
+        let object_root = ssz_hash::hash_attestation_data(data_chunk);
         let domain =
             bls::compute_domain(bls::DOMAIN_BEACON_ATTESTER, fv, &imm.genesis_validators_root);
         let signing_root = bls::compute_signing_root(&object_root, &domain);
@@ -2567,11 +2535,10 @@ fn apply_deposit(
     credentials: &Withdrawals,
     amount: u64,
     signature: &[u8; 96],
-    zh: &[B256],
 ) -> Result<()> {
     let existing = vs.find_by_pubkey(pubkey);
     if existing.is_none() {
-        if !epoch_transition::is_valid_deposit_signature(pubkey, credentials, amount, signature, zh)
+        if !epoch_transition::is_valid_deposit_signature(pubkey, credentials, amount, signature)
         {
             return Err(Error::SkipDepositBadSig { index: sd.eth1_deposit_index });
         }
@@ -2638,21 +2605,21 @@ mod tests {
     /// bytes and a zero-subtree proof for leaf index 0 (siblings = zh[0..33]).
     /// Returns (deposit_bytes, expected_root) where `expected_root` is what
     /// `state.eth1_data.deposit_root` must be for the proof to verify.
-    fn build_deposit_at_index0(dd_bytes: &[u8; 184], zh: &[B256]) -> (Vec<u8>, B256) {
+    fn build_deposit_at_index0(dd_bytes: &[u8; 184]) -> (Vec<u8>, B256) {
         let depth = (DEPOSIT_CONTRACT_TREE_DEPTH as u32) + 1;
         let mut bytes = vec![0u8; DEPOSIT_SIZE];
         // Proof: 33 siblings, sibling at level i is zh[i].
         for i in 0..depth as usize {
-            bytes[i * 32..(i + 1) * 32].copy_from_slice(&zh[i]);
+            bytes[i * 32..(i + 1) * 32].copy_from_slice(&ssz_hash::ZERO_HASHES[i]);
         }
         bytes[1056..1240].copy_from_slice(dd_bytes);
 
         // Expected root: start from the deposit-data leaf, climb the all-zero
         // siblings on the right.
-        let leaf = ssz_hash::hash_tree_root_deposit_data(dd_bytes, zh);
+        let leaf = ssz_hash::hash_tree_root_deposit_data(dd_bytes);
         let mut value = leaf;
         for i in 0..depth as usize {
-            let sib = zh[i];
+            let sib = ssz_hash::ZERO_HASHES[i];
             // index=0 → always left, sibling on the right.
             let mut buf = [0u8; 64];
             buf[..32].copy_from_slice(&value);
@@ -2673,9 +2640,8 @@ mod tests {
 
     #[test]
     fn process_deposits_accepts_valid_proof() {
-        let zh = ssz_hash::compute_zero_hashes();
         let dd = make_dd();
-        let (deposit, root) = build_deposit_at_index0(&dd, &zh);
+        let (deposit, root) = build_deposit_at_index0(&dd);
 
         let fv = FinalizedValidators::new(&[], &[]);
         let mut epoch: Box<EpochData> = box_zeroed();
@@ -2690,7 +2656,6 @@ mod tests {
             &mut sd,
             &mut pq,
             &deposit,
-            &zh,
         )
         .expect("valid proof must accept");
         assert_eq!(sd.eth1_deposit_index, 1);
@@ -2698,9 +2663,8 @@ mod tests {
 
     #[test]
     fn process_deposits_rejects_bad_proof() {
-        let zh = ssz_hash::compute_zero_hashes();
         let dd = make_dd();
-        let (mut deposit, root) = build_deposit_at_index0(&dd, &zh);
+        let (mut deposit, root) = build_deposit_at_index0(&dd);
 
         // Flip a byte in the proof.
         deposit[0] ^= 0x01;
@@ -2718,7 +2682,6 @@ mod tests {
             &mut sd,
             &mut pq,
             &deposit,
-            &zh,
         )
         .unwrap_err();
         assert!(err.is_fatal());
@@ -2729,9 +2692,8 @@ mod tests {
 
     #[test]
     fn process_deposits_rejects_wrong_root() {
-        let zh = ssz_hash::compute_zero_hashes();
         let dd = make_dd();
-        let (deposit, mut root) = build_deposit_at_index0(&dd, &zh);
+        let (deposit, mut root) = build_deposit_at_index0(&dd);
         root[0] ^= 0xFF;
 
         let fv = FinalizedValidators::new(&[], &[]);
@@ -2747,7 +2709,6 @@ mod tests {
             &mut sd,
             &mut pq,
             &deposit,
-            &zh,
         )
         .unwrap_err();
         assert!(matches!(err, Error::InvalidDepositProof { .. }));
@@ -2755,9 +2716,8 @@ mod tests {
 
     #[test]
     fn process_deposits_rejects_wrong_index() {
-        let zh = ssz_hash::compute_zero_hashes();
         let dd = make_dd();
-        let (deposit, root) = build_deposit_at_index0(&dd, &zh);
+        let (deposit, root) = build_deposit_at_index0(&dd);
 
         let fv = FinalizedValidators::new(&[], &[]);
         let mut epoch: Box<EpochData> = box_zeroed();
@@ -2773,7 +2733,6 @@ mod tests {
             &mut sd,
             &mut pq,
             &deposit,
-            &zh,
         )
         .unwrap_err();
         assert!(matches!(err, Error::InvalidDepositProof { index: 1 }));

@@ -61,13 +61,12 @@ pub fn sign_voluntary_exit(
     exit_epoch: u64,
     vi: u64,
     imm: &Immutable,
-    zh: &[B256],
 ) -> [u8; SIGNED_VOLUNTARY_EXIT_SIZE] {
     let mut buf = [0u8; SIGNED_VOLUNTARY_EXIT_SIZE];
     buf[0..8].copy_from_slice(&exit_epoch.to_le_bytes());
     buf[8..16].copy_from_slice(&vi.to_le_bytes());
 
-    let object_root = ssz_hash::hash_tree_root_voluntary_exit(exit_epoch, vi, zh);
+    let object_root = ssz_hash::hash_tree_root_voluntary_exit(exit_epoch, vi);
     let domain = bls::compute_domain(
         bls::DOMAIN_VOLUNTARY_EXIT,
         imm.capella_fork_version,
@@ -87,7 +86,6 @@ pub fn sign_proposer_slashing(
     vi: u64,
     slot: u64,
     imm: &Immutable,
-    zh: &[B256],
 ) -> [u8; PROPOSER_SLASHING_SIZE] {
     let mk_header = |body_root: B256| BeaconBlockHeader {
         slot,
@@ -106,8 +104,8 @@ pub fn sign_proposer_slashing(
         slot / SLOTS_PER_EPOCH,
     );
     let domain = bls::compute_domain(bls::DOMAIN_BEACON_PROPOSER, fv, &imm.genesis_validators_root);
-    let sr1 = bls::compute_signing_root(&hash_tree_root_block_header(&h1, zh), &domain);
-    let sr2 = bls::compute_signing_root(&hash_tree_root_block_header(&h2, zh), &domain);
+    let sr1 = bls::compute_signing_root(&hash_tree_root_block_header(&h1), &domain);
+    let sr2 = bls::compute_signing_root(&hash_tree_root_block_header(&h2), &domain);
     let sig1 = sign(sk_idx, &sr1);
     let sig2 = sign(sk_idx, &sr2);
 
@@ -137,10 +135,9 @@ pub fn sign_bls_to_execution_change(
     vi: u64,
     to_address: &[u8; 20],
     imm: &Immutable,
-    zh: &[B256],
 ) -> [u8; SIGNED_BLS_CHANGE_SIZE] {
     let from_pubkey = pubkey_bytes(sk_idx);
-    let object_root = ssz_hash::hash_tree_root_bls_change(vi, &from_pubkey, to_address, zh);
+    let object_root = ssz_hash::hash_tree_root_bls_change(vi, &from_pubkey, to_address);
     let domain = bls::compute_domain(
         bls::DOMAIN_BLS_TO_EXECUTION_CHANGE,
         imm.genesis_fork_version,
@@ -169,7 +166,6 @@ pub fn build_indexed_attestation(
     source_epoch: u64,
     beacon_block_root_marker: u8,
     imm: &Immutable,
-    zh: &[B256],
 ) -> Vec<u8> {
     // IndexedAttestation: { offset(4) to attesting_indices(var),
     //   data(128), sig(96), attesting_indices(var) }
@@ -194,7 +190,7 @@ pub fn build_indexed_attestation(
         target_epoch,
     );
     let data: &[u8; 128] = buf[4..132].try_into().unwrap();
-    let object_root = ssz_hash::hash_attestation_data(data, zh);
+    let object_root = ssz_hash::hash_attestation_data(data);
     let domain = bls::compute_domain(bls::DOMAIN_BEACON_ATTESTER, fv, &imm.genesis_validators_root);
     let signing_root = bls::compute_signing_root(&object_root, &domain);
     let sig = sign(sk_idx, &signing_root);
@@ -217,10 +213,9 @@ pub fn sign_attester_slashing_double_vote(
     slot: u64,
     target_epoch: u64,
     imm: &Immutable,
-    zh: &[B256],
 ) -> Vec<u8> {
-    let ia1 = build_indexed_attestation(sk_idx, vi, slot, target_epoch, 0, 0xAA, imm, zh);
-    let ia2 = build_indexed_attestation(sk_idx, vi, slot, target_epoch, 0, 0xBB, imm, zh);
+    let ia1 = build_indexed_attestation(sk_idx, vi, slot, target_epoch, 0, 0xAA, imm);
+    let ia2 = build_indexed_attestation(sk_idx, vi, slot, target_epoch, 0, 0xBB, imm);
 
     // AttesterSlashing: { offset(4) to att_1, offset(4) to att_2,
     //   att_1(var), att_2(var) }
@@ -245,7 +240,6 @@ pub fn sign_single_attestation(
     beacon_block_root: B256,
     target_epoch: u64,
     imm: &Immutable,
-    zh: &[B256],
 ) -> [u8; SINGLE_ATT_SIZE] {
     let mut buf = [0u8; SINGLE_ATT_SIZE];
     buf[0..8].copy_from_slice(&committee_index.to_le_bytes());
@@ -263,7 +257,7 @@ pub fn sign_single_attestation(
         target_epoch,
     );
     let data: &[u8; 128] = buf[16..144].try_into().unwrap();
-    let object_root = ssz_hash::hash_attestation_data(data, zh);
+    let object_root = ssz_hash::hash_attestation_data(data);
     let domain = bls::compute_domain(bls::DOMAIN_BEACON_ATTESTER, fv, &imm.genesis_validators_root);
     let signing_root = bls::compute_signing_root(&object_root, &domain);
     let sig = sign(sk_idx, &signing_root);
@@ -289,7 +283,6 @@ pub fn sign_aggregate_and_proof(
     aggregator_pos_in_committee: usize,
     committee_size: usize,
     imm: &Immutable,
-    zh: &[B256],
 ) -> Vec<u8> {
     // Bitlist[committee_size] with a single set bit at pos
     // `aggregator_pos_in_committee`, plus terminator bit at position
@@ -338,7 +331,7 @@ pub fn sign_aggregate_and_proof(
         target_epoch,
     );
     let data: &[u8; 128] = buf[212..340].try_into().unwrap();
-    let data_root = ssz_hash::hash_attestation_data(data, zh);
+    let data_root = ssz_hash::hash_attestation_data(data);
     let domain_att =
         bls::compute_domain(bls::DOMAIN_BEACON_ATTESTER, fv, &imm.genesis_validators_root);
     let sr_att = bls::compute_signing_root(&data_root, &domain_att);
@@ -359,7 +352,6 @@ pub fn sign_aggregate_and_proof(
         aggregator_index,
         aggregate_bytes,
         &selection_proof,
-        zh,
     );
     let domain_aap =
         bls::compute_domain(bls::DOMAIN_AGGREGATE_AND_PROOF, fv, &imm.genesis_validators_root);

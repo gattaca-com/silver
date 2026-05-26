@@ -54,12 +54,11 @@ impl LoadedState {
     }
 }
 
-pub fn load_state(path: &Path, zh: &[B256]) -> LoadedState {
+pub fn load_state(path: &Path) -> LoadedState {
     let ssz = snappy_decode(path);
     let mut s = LoadedState::blank_pub();
     let pq = decompose_beacon_state(
         &ssz,
-        zh,
         &mut s.imm,
         &mut s.fv,
         &mut s.longtail,
@@ -74,13 +73,13 @@ pub fn load_state(path: &Path, zh: &[B256]) -> LoadedState {
     s
 }
 
-pub fn compare_states(label: &str, a: &LoadedState, b: &LoadedState, zh: &[B256]) -> Vec<String> {
+pub fn compare_states(label: &str, a: &LoadedState, b: &LoadedState) -> Vec<String> {
     let mut diffs = Vec::new();
 
     let root_a =
-        hash_tree_root_state(&a.imm, &a.vs, &a.longtail, &a.epoch, &a.roots, &a.sd, &a.pq, zh);
+        hash_tree_root_state(&a.imm, &a.vs, &a.longtail, &a.epoch, &a.roots, &a.sd, &a.pq);
     let root_b =
-        hash_tree_root_state(&b.imm, &b.vs, &b.longtail, &b.epoch, &b.roots, &b.sd, &b.pq, zh);
+        hash_tree_root_state(&b.imm, &b.vs, &b.longtail, &b.epoch, &b.roots, &b.sd, &b.pq);
     if root_a != root_b {
         diffs.push(format!(
             "{label}: state root mismatch: got {}, expected {}",

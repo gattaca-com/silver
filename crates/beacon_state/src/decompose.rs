@@ -142,7 +142,6 @@ pub enum DecomposeError {
 #[allow(clippy::too_many_arguments)]
 pub fn decompose_beacon_state(
     ssz: &[u8],
-    zh: &[B256],
     imm: &mut Immutable,
     fv: &mut FinalizedValidators,
     longtail: &mut HistoricalLongtail,
@@ -400,7 +399,7 @@ pub fn decompose_beacon_state(
     // Safe: B256 has alignment 1; hr_bytes length is a multiple of 32.
     let hr_chunks: &[B256] =
         unsafe { std::slice::from_raw_parts(hr_bytes.as_ptr().cast::<B256>(), hr_count) };
-    let hr_root = ssz_hash::merkleize_padded(hr_chunks, HISTORICAL_ROOTS_LIMIT, zh);
+    let hr_root = ssz_hash::merkleize_padded(hr_chunks, HISTORICAL_ROOTS_LIMIT);
     imm.historical_roots_hash = ssz_hash::mix_in_length(&hr_root, hr_count);
 
     // Historical summaries → HistoricalLongtail
