@@ -2,10 +2,13 @@
 
 use std::sync::OnceLock;
 
+use blst::{BLST_ERROR, min_pk::PublicKey};
 use silver_common::{
+    SLOTS_PER_EPOCH,
     ssz_hash::{
-        B256, ZERO_HASHES_LEN, compute_zero_hashes, hash_list_fixed_elements, hash_tree_root_body,
-        is_valid_merkle_branch, merkleize, uint64_chunk,
+        B256, ZERO_HASHES_LEN, compute_zero_hashes, hash_concat, hash_list_fixed_elements,
+        hash_tree_root_body, hash_tree_root_fork_data, is_valid_merkle_branch, merkleize,
+        uint64_chunk,
     },
     ssz_view::{
         BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF, DataColumnSidecarView,
@@ -194,6 +197,81 @@ pub fn verify_data_column_sidecar_kzg_proofs(sidecar: &[u8]) -> bool {
         settings.verify_cell_kzg_proof_batch(commitments, &cell_indices, cells, kzg_proofs),
         Ok(true)
     )
+}
+
+/// Spec `DOMAIN_BEACON_PROPOSER = bytes4(0x00000000)`.
+const DOMAIN_BEACON_PROPOSER: [u8; 4] = [0u8; 4];
+
+/// BLS12-381 G2 hash-to-curve DST for proof-of-possession signatures
+/// (eth2 ciphersuite: `BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_`).
+const BLS_DST: &[u8] = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_";
+
+/// Validation: sidecar's slot is strictly above the finalised slot.
+/// `finalized_epoch` is `state.epoch.finalized_checkpoint.epoch`.
+pub fn is_above_finalized(sidecar: &[u8], finalized_epoch: u64) -> bool {
+    DataColumnSidecarView::slot(sidecar) > finalized_epoch * SLOTS_PER_EPOCH
+}
+
+/// Validation: sidecar's `proposer_index` matches the expected proposer
+/// for `sidecar.slot`. Caller resolves the expectation via
+/// `state.epoch.proposer_lookahead` for the slot's epoch.
+pub fn check_proposer_index(sidecar: &[u8], expected_proposer_index: u64) -> bool {
+    DataColumnSidecarView::proposer_index(sidecar) == expected_proposer_index
+}
+
+/// Validations 4 + 5: sidecar's `parent_root` has been seen AND validated.
+///
+/// Silver's design pushes a block root into the slot delta's
+/// `block_roots` only after fork choice has validated the block, so
+/// membership in the union of (finalised canonical block_roots) ∪
+/// (post-finalisation delta block_roots) is equivalent to "seen and
+/// validated". `not present` means either not-yet-seen or invalid; the
+/// caller resolves IGNORE vs REJECT severity from external context.
+///
+/// `finalised_block_roots` is the slot-indexed circular buffer (length
+/// `SLOTS_PER_HISTORICAL_ROOT`). `delta_block_roots` is the appended
+/// post-finalisation set. Delta is checked first — virtually every live
+/// sidecar's parent resolves there; the finalised scan is a defensive
+/// fall-through.
+pub fn parent_validated(
+    sidecar: &[u8],
+    finalised_block_roots: &[B256],
+    delta_block_roots: &[B256],
+) -> bool {
+    let parent_root = DataColumnSidecarView::parent_root(sidecar);
+    delta_block_roots.iter().any(|r| r == parent_root) ||
+        finalised_block_roots.iter().any(|r| r == parent_root)
+}
+
+/// Validation: BLS signature on the embedded `signed_block_header` is
+/// valid under the proposer pubkey.
+///
+/// signing_root = sha256(hash_tree_root(BeaconBlockHeader) || domain)
+/// domain       = DOMAIN_BEACON_PROPOSER || hash_tree_root(ForkData)[..28]
+///
+/// `fork_version` is the active version at `sidecar.slot`'s epoch; the
+/// caller resolves it from the fork schedule. `proposer_pubkey` is the
+/// already-decompressed registry entry (no extra subgroup check).
+pub fn verify_proposer_signature(
+    sidecar: &[u8],
+    proposer_pubkey: &PublicKey,
+    fork_version: [u8; 4],
+    genesis_validators_root: &B256,
+) -> bool {
+    let fork_data_root = hash_tree_root_fork_data(fork_version, genesis_validators_root);
+    let mut domain = [0u8; 32];
+    domain[..4].copy_from_slice(&DOMAIN_BEACON_PROPOSER);
+    domain[4..].copy_from_slice(&fork_data_root[..28]);
+
+    let header_root = block_root_from_sidecar(sidecar);
+    let signing_root = hash_concat(&header_root, &domain);
+
+    let sig_bytes = DataColumnSidecarView::block_signature(sidecar);
+    let Ok(signature) = blst::min_pk::Signature::from_bytes(sig_bytes) else {
+        return false;
+    };
+    signature.verify(true, &signing_root, BLS_DST, &[], proposer_pubkey, false) ==
+        BLST_ERROR::BLST_SUCCESS
 }
 
 #[cfg(test)]

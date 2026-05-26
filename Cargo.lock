@@ -982,6 +982,7 @@ dependencies = [
 name = "data_columns"
 version = "0.0.1"
 dependencies = [
+ "blst",
  "c-kzg",
  "flux",
  "fxhash",
