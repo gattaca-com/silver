@@ -221,6 +221,8 @@ impl P2p {
             self.peers.remove(&ConnectionHandle(dead_peer.connection));
             self.dialled.remove(&dead_peer.peer_id);
         }
+
+        NetworkCounters::P2pConnections.set(self.peers.len() as u64);
     }
 
     pub fn enqueue_gossip(&mut self, msg: GossipMsgOut, context: &mut Context) -> SendResult {

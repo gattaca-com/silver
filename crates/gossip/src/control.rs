@@ -462,7 +462,7 @@ mod tests {
 
     #[test]
     fn subscribes_round_trip() {
-        let mut producer = TCache::producer(1 << 14);
+        let mut producer = TCache::producer("control_test", 1 << 14);
         let topics = ["beacon_block", "voluntary_exit"];
         let topic_refs: Vec<&str> = topics.iter().copied().collect();
         let tc = copy_subscribes_to_protobuf_output(&mut producer, &topic_refs).unwrap();
@@ -479,7 +479,7 @@ mod tests {
 
     #[test]
     fn unsubscribes_round_trip() {
-        let mut producer = TCache::producer(1 << 14);
+        let mut producer = TCache::producer("control_test", 1 << 14);
         let topic_refs: Vec<&str> = vec!["beacon_block"];
         let tc = copy_unsubscribes_to_protobuf_output(&mut producer, &topic_refs).unwrap();
 
@@ -493,7 +493,7 @@ mod tests {
 
     #[test]
     fn grafts_round_trip() {
-        let mut producer = TCache::producer(1 << 14);
+        let mut producer = TCache::producer("control_test", 1 << 14);
         let topic_refs: Vec<&str> = vec!["beacon_block", "sync_committee_3"];
         let tc = copy_grafts_to_protobuf_output(&mut producer, &topic_refs).unwrap();
 
@@ -510,7 +510,7 @@ mod tests {
 
     #[test]
     fn prunes_round_trip() {
-        let mut producer = TCache::producer(1 << 14);
+        let mut producer = TCache::producer("control_test", 1 << 14);
         let topic_refs: Vec<&str> = vec!["data_column_sidecar_42"];
         let tc = copy_prunes_to_protobuf_output(&mut producer, &topic_refs).unwrap();
 

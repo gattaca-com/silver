@@ -101,7 +101,6 @@ impl Tile<SilverSpine> for NetworkTile {
         let mut on_event = |event| match event {
             Event::P2pNet(net_event) => match net_event {
                 NetEvent::PeerConnected { peer, addr, local_dialler } => {
-                    NetworkCounters::P2pConnections.inc();
                     let port = addr.port();
                     adapter.produce(PeerEvent::P2pNewConnection {
                         p2p_peer_id: peer.connection,
@@ -115,7 +114,6 @@ impl Tile<SilverSpine> for NetworkTile {
                     adapter.produce(PeerEvent::P2pPeerIdentity { p2p_peer: peer, identify });
                 }
                 NetEvent::PeerDisconnected { peer } => {
-                    NetworkCounters::P2pConnections.dec();
                     adapter.produce(PeerEvent::P2pDisconnect { p2p_peer: peer.connection });
                 }
                 NetEvent::StreamReady { stream: _ } => {

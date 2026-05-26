@@ -151,8 +151,8 @@ impl Harness {
         let genesis = now.saturating_sub(wall_slot * 12);
         let ticker = SlotTicker::new(genesis, Duration::from_secs(12), Duration::from_secs(4));
 
-        let gossip_in_producer = TCache::producer(1 << 24);
-        let rpc_in_producer = TCache::producer(1 << 24);
+        let gossip_in_producer = TCache::producer("gossip_in", 1 << 24);
+        let rpc_in_producer = TCache::producer("rpc_in", 1 << 24);
         let gossip_consumer =
             gossip_in_producer.cache_ref().random_access(true).expect("gossip ra");
         let rpc_consumer = rpc_in_producer.cache_ref().random_access(true).expect("rpc ra");
