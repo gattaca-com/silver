@@ -6,7 +6,8 @@ use std::{
 use flux::communication::Seqlock;
 
 use crate::{
-    DeltaBuffer, EpochStateDelta, Finalised, LongtailState, StateDelta, beacon_state::BeaconState,
+    DeltaBuffer, EpochStateDelta, LongtailState, StateDelta,
+    beacon_state::{BeaconState, StateDeltaReadView, StateDeltaView},
 };
 
 /// Beacon state writer control.
@@ -40,6 +41,16 @@ impl BeaconStateOwner {
 
     pub fn slots(&mut self) -> &mut DeltaBuffer<StateDelta, 256> {
         &mut self.state.slots
+    }
+
+    pub fn delta_view(&mut self, slot_seq: usize) -> StateDeltaView<'_> {
+        let s = &mut *self.state;
+        StateDeltaView::new(
+            &s.finalised,
+            s.slots.get_mut(slot_seq),
+            &mut s.epochs,
+            &mut s.longtails,
+        )
     }
 
     /// Called by the state owner to publish new delta buffer offsets - should
@@ -102,7 +113,7 @@ impl BeaconStateReader {
     /// finalised state is updated during a read.
     pub fn read<F, R>(&self, reader: &F) -> R
     where
-        F: Fn(&Finalised, Option<&StateDelta>, Option<&EpochStateDelta>) -> R,
+        F: Fn(StateDeltaReadView<'_>) -> R,
     {
         loop {
             let (control, _) = self.inner.read_copy().expect("should never be empty");
@@ -119,7 +130,7 @@ impl BeaconStateReader {
             let slot_delta = control.slots.map(|i| state.slots.get(i));
             let epoch_delta = control.epochs.map(|i| state.epochs.get(i));
 
-            let result = reader(&state.finalised, slot_delta, epoch_delta);
+            let result = reader(StateDeltaReadView::new(&state.finalised, slot_delta, epoch_delta));
 
             // check that finalised state was not changed whilst reading.
             sync::atomic::compiler_fence(Ordering::Acquire);

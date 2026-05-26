@@ -1,5 +1,5 @@
 pub use buffer::DeltaBuffer;
-pub use delta_view::StateDeltaView;
+pub use delta_view::{StateDeltaReadView, StateDeltaView};
 pub use hash_tree::{DeltaHashTree, FinalisedHashTree};
 pub use validator_identity::{
     AppendedValidator, FinalisedValidators, ValidatorsDelta, validator_hash,

@@ -10,7 +10,7 @@ pub use finalised::FinalisedValidators;
 use crate::{
     Withdrawals,
     beacon_state::types::{B256, BLSPubkey, Epoch},
-    ssz_hash::{ZERO_HASHES, hash_fixed_bytes, merkleize, uint64_chunk},
+    ssz_hash::{hash_fixed_bytes, merkleize, uint64_chunk},
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -29,7 +29,7 @@ pub fn validator_hash(
     slashed_chunk[0] = u8::from(slashed);
 
     let chunks = [
-        hash_fixed_bytes(pubkey, &ZERO_HASHES),
+        hash_fixed_bytes(pubkey),
         credentials.0,
         uint64_chunk(effective_balance),
         slashed_chunk,
@@ -38,5 +38,5 @@ pub fn validator_hash(
         uint64_chunk(exit_epoch),
         uint64_chunk(withdrawable_epoch),
     ];
-    merkleize(&chunks, &ZERO_HASHES)
+    merkleize(&chunks)
 }

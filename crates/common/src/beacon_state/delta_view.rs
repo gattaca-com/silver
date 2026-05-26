@@ -35,6 +35,79 @@ impl StateDelta {
     }
 }
 
+/// Read-only siblings of [`StateDeltaView`].
+#[derive(Clone, Copy)]
+pub struct StateDeltaReadView<'a> {
+    fin: &'a Finalised,
+    slot_delta: Option<&'a StateDelta>,
+    epoch_delta: Option<&'a EpochStateDelta>,
+}
+
+impl<'a> StateDeltaReadView<'a> {
+    #[inline]
+    pub fn new(
+        fin: &'a Finalised,
+        slot_delta: Option<&'a StateDelta>,
+        epoch_delta: Option<&'a EpochStateDelta>,
+    ) -> Self {
+        Self { fin, slot_delta, epoch_delta }
+    }
+
+    #[inline]
+    pub fn slot(&self) -> Slot {
+        self.slot_delta.map_or(self.fin.slot.slot.slot, |d| d.slot.slot.slot)
+    }
+
+    #[inline]
+    pub fn epoch(&self) -> Epoch {
+        self.slot() / SLOTS_PER_EPOCH
+    }
+
+    #[inline]
+    pub fn epoch_state(&self) -> &'a EpochState {
+        self.epoch_delta.map_or(&self.fin.epoch.state, |e| &e.state)
+    }
+
+    #[inline]
+    pub fn validators_count(&self) -> usize {
+        self.slot_delta.map_or(self.fin.validators.validator_cnt(), |d| {
+            d.validators.base_cnt + d.validators.appended.len()
+        })
+    }
+
+    #[inline]
+    pub fn validator_pubkey_decompressed(&self, ix: usize) -> &'a PublicKey {
+        match self.slot_delta {
+            Some(d) => d.validators.effective_pubkey_decompressed(&self.fin.validators, ix as u32),
+            None => self.fin.validators.pubkey_decompressed(ix),
+        }
+    }
+
+    /// Slot-indexed circular buffer of block roots in the finalised base
+    /// (length `SLOTS_PER_HISTORICAL_ROOT`).
+    #[inline]
+    pub fn finalised_block_roots(&self) -> &'a [B256] {
+        &self.fin.slot.block_roots[..]
+    }
+
+    /// Block roots appended on the slot delta (empty if no slot delta is
+    /// published).
+    #[inline]
+    pub fn delta_block_roots(&self) -> &'a [B256] {
+        self.slot_delta.map_or(&[][..], |d| &d.slot.block_roots[..])
+    }
+
+    #[inline]
+    pub fn genesis_validators_root(&self) -> B256 {
+        self.fin.immutable.genesis_validators_root
+    }
+
+    #[inline]
+    pub fn fork_current_version(&self) -> [u8; 4] {
+        self.fin.immutable.fork.current_version
+    }
+}
+
 /// Merged read + write handle on a per-fork delta against the finalised
 /// base. Read methods take `&self`; write methods take `&mut self`. Field
 /// disjointness lets the borrow checker thread reads through &mut borrows

@@ -494,8 +494,7 @@ impl Finalised {
         }
         let hr_chunks: &[B256] =
             unsafe { std::slice::from_raw_parts(hr_bytes.as_ptr().cast::<B256>(), hr_count) };
-        let hr_root =
-            ssz_hash::merkleize_padded(hr_chunks, HISTORICAL_ROOTS_LIMIT, &ssz_hash::ZERO_HASHES);
+        let hr_root = ssz_hash::merkleize_padded(hr_chunks, HISTORICAL_ROOTS_LIMIT);
         self.immutable.historical_roots_hash = ssz_hash::mix_in_length(&hr_root, hr_count);
 
         // ── Historical summaries → LongtailState ──────────────────────

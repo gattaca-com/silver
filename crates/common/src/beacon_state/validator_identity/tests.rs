@@ -4,7 +4,7 @@ use super::{FinalisedValidators, ValidatorsDelta, validator_hash};
 use crate::{
     Withdrawals,
     beacon_state::types::{BLSPubkey, FAR_FUTURE_EPOCH, MAX_VALIDATORS},
-    ssz_hash::{ZERO_HASHES, hash_concat, hash_fixed_bytes, merkleize, uint64_chunk},
+    ssz_hash::{hash_concat, hash_fixed_bytes, merkleize, uint64_chunk},
 };
 
 fn pk(b: u8) -> BLSPubkey {
@@ -106,21 +106,18 @@ fn validator_hash_uses_pubkey_two_chunk_layout() {
     let want_pk_field = hash_concat(&[0xFF; 32], &chunk2);
 
     // Cross-check against the ssz_hash primitive.
-    assert_eq!(want_pk_field, hash_fixed_bytes(&pk_all_ff, &ZERO_HASHES));
+    assert_eq!(want_pk_field, hash_fixed_bytes(&pk_all_ff));
 
-    let want_leaf = merkleize(
-        &[
-            want_pk_field,
-            other, // credentials
-            uint64_chunk(0),
-            other, // slashed
-            uint64_chunk(0),
-            uint64_chunk(0),
-            uint64_chunk(0),
-            uint64_chunk(0),
-        ],
-        &ZERO_HASHES,
-    );
+    let want_leaf = merkleize(&[
+        want_pk_field,
+        other, // credentials
+        uint64_chunk(0),
+        other, // slashed
+        uint64_chunk(0),
+        uint64_chunk(0),
+        uint64_chunk(0),
+        uint64_chunk(0),
+    ]);
     let got = validator_hash(&pk_all_ff, &Withdrawals(other), 0, false, 0, 0, 0, 0);
     assert_eq!(got, want_leaf);
 }
