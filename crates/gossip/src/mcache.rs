@@ -171,7 +171,7 @@ mod tests {
 
     fn mk_mcache() -> (MessageCache, silver_common::TProducer) {
         let producer = TCache::producer("mcache_test", 1 << 14);
-        let consumer = producer.cache_ref().random_access(false).unwrap();
+        let consumer = producer.cache_ref().random_access("test", false).unwrap();
         (MessageCache::new(consumer), producer)
     }
 

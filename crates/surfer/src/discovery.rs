@@ -8,7 +8,7 @@
 //! - `timing-{name}` / `latency-{name}` — flux MPMC `TimingMessage` queues.
 //! - `tilemetrics-{name}` — flux SPMC `TileSample` queue.
 
-use std::{fs, io, path::PathBuf};
+use std::{collections::HashMap, fs, io, path::PathBuf};
 
 pub struct DiscoveredSources {
     pub counters: Vec<CounterFile>,
@@ -27,9 +27,12 @@ pub struct CounterFile {
 }
 
 pub struct TimingFile {
-    /// The `{name}` suffix from `timing-{name}`.
+    /// The `{name}` shared by `timing-{name}` and `latency-{name}`.
     pub name: String,
-    pub path: PathBuf,
+    /// Path to `timing-{name}` if the file exists.
+    pub timing_path: Option<PathBuf>,
+    /// Path to `latency-{name}` if the file exists.
+    pub latency_path: Option<PathBuf>,
 }
 
 pub struct TileMetricsFile {
@@ -41,7 +44,9 @@ pub struct TileMetricsFile {
 pub fn discover(base_dir: &std::path::Path, app_name: &str) -> io::Result<DiscoveredSources> {
     let mut counters = Vec::new();
     let mut tcaches = Vec::new();
-    let mut timings = Vec::new();
+    // timing-{name} and latency-{name} are flux Timer file pairs.
+    // Group by name so a single TimingFile carries both paths.
+    let mut timing_map: HashMap<String, TimingFile> = HashMap::new();
     let mut tilemetrics = Vec::new();
 
     let dir = flux::utils::directories::shmem_dir_queues_with_base(base_dir, app_name);
@@ -58,13 +63,28 @@ pub fn discover(base_dir: &std::path::Path, app_name: &str) -> io::Result<Discov
                     counters.push(file);
                 }
             } else if let Some(name) = fname.strip_prefix("timing-") {
-                timings.push(TimingFile { name: name.to_string(), path });
+                let key = name.to_string();
+                let entry = timing_map.entry(key.clone()).or_insert_with(|| TimingFile {
+                    name: key,
+                    timing_path: None,
+                    latency_path: None,
+                });
+                entry.timing_path = Some(path);
+            } else if let Some(name) = fname.strip_prefix("latency-") {
+                let key = name.to_string();
+                let entry = timing_map.entry(key.clone()).or_insert_with(|| TimingFile {
+                    name: key,
+                    timing_path: None,
+                    latency_path: None,
+                });
+                entry.latency_path = Some(path);
             } else if let Some(name) = fname.strip_prefix("tilemetrics-") {
                 tilemetrics.push(TileMetricsFile { name: name.to_string(), path });
             }
         }
     }
 
+    let mut timings: Vec<TimingFile> = timing_map.into_values().collect();
     counters.sort_by(|a, b| a.name.cmp(&b.name));
     tcaches.sort_by(|a, b| a.name.cmp(&b.name));
     timings.sort_by(|a, b| a.name.cmp(&b.name));

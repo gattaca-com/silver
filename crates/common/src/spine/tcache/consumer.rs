@@ -1,6 +1,6 @@
 use std::{ops::Deref, sync::atomic::Ordering};
 
-use flux::timing::Nanos;
+use flux::{Timer, timing::Nanos};
 
 use crate::{GossipMsgOut, TCacheError, TCacheRef};
 
@@ -54,6 +54,11 @@ pub struct Consumer {
     pub(super) index: usize,
     pub(super) seq: u64,
     pub(super) next_seq: u64,
+    /// Per-consumer flux Timer emitting `latency-tcache-{tcache}-{name}`
+    /// — measures elapsed from `slot.reserve_ns` to first read.
+    /// `None` if the TCache wasn't named or the Timer queue couldn't
+    /// be opened.
+    pub(super) timer: Option<Timer>,
 }
 
 impl Consumer {
@@ -66,6 +71,9 @@ impl Consumer {
             })?;
 
             if !data.is_empty() {
+                if let Some(timer) = &mut self.timer {
+                    timer.emit_latency_from_nanos(ts, Nanos::now());
+                }
                 return Ok((data, ts));
             }
             self.seq = self.next_seq;
@@ -83,7 +91,7 @@ impl Consumer {
 }
 
 /// Consumer that supports random access to messages between its tail and buffer
-/// head. Tail is tracked externally.  
+/// head. Tail is tracked externally.
 pub struct RandomAccessConsumer {
     pub(super) cache: TCacheRef,
     pub(super) index: usize,
@@ -92,11 +100,19 @@ pub struct RandomAccessConsumer {
     // If set `free` is called on drop of every acquired read, ensuring the
     // consumer tail is published.
     pub(super) auto_free: bool,
+    /// Per-consumer flux Timer emitting `latency-tcache-{tcache}-{name}`
+    /// — measures elapsed from `slot.reserve_ns` at acquire time.
+    pub(super) timer: Option<Timer>,
 }
 
 impl RandomAccessConsumer {
     pub fn acquire(&mut self, read: TCacheRead) -> AcquiredRead {
         self.active.acquire(read.seq);
+        if let Some(timer) = &mut self.timer {
+            if let Ok(reserve_ns) = read.cache_ts() {
+                timer.emit_latency_from_nanos(reserve_ns, Nanos::now());
+            }
+        }
         AcquiredRead { consumer: self as *const Self, read }
     }
 
@@ -337,7 +353,7 @@ mod tests {
     #[test]
     fn acquire_release_cycle_reads_buffer() {
         let mut producer = TCache::producer("test_consumer", 1 << 16);
-        let mut consumer = producer.cache_ref().random_access(false).unwrap();
+        let mut consumer = producer.cache_ref().random_access("test", false).unwrap();
         producer.publish_head();
 
         let reads: Vec<TCacheRead> =
@@ -367,7 +383,7 @@ mod tests {
         const TOTAL: usize = 1000;
 
         let mut producer = TCache::producer("test_consumer", CACHE);
-        let mut consumer = producer.cache_ref().random_access(false).unwrap();
+        let mut consumer = producer.cache_ref().random_access("test", false).unwrap();
         producer.publish_head();
 
         let mut held: Vec<AcquiredRead> = Vec::new();
@@ -403,7 +419,7 @@ mod tests {
         const MSG_LEN: usize = 8 * 1024;
 
         let mut producer = TCache::producer("test_consumer", CACHE);
-        let mut consumer = producer.cache_ref().random_access(false).unwrap();
+        let mut consumer = producer.cache_ref().random_access("test", false).unwrap();
         producer.publish_head();
 
         // The "victim" — held across heavy downstream production.

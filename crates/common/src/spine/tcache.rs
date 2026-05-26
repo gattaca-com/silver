@@ -100,7 +100,7 @@ impl TCache {
         self.name
     }
 
-    pub fn consumer(&self) -> Result<Consumer, Error> {
+    pub fn consumer(&self, name: &'static str) -> Result<Consumer, Error> {
         // find start seq
         let seq = self.head.seq.load(Ordering::Acquire);
 
@@ -116,16 +116,22 @@ impl TCache {
         // Publish a baseline tail so surfer's chart has a value to plot
         // before the consumer has actually called free.
         self.record_tail(index, seq);
+        self.record_consumer_name(index, name);
 
         Ok(Consumer {
             cache: TCacheRef { cache: addr_of!(*self) as *const c_void },
             index,
             seq,
             next_seq: seq,
+            timer: self.create_consumer_timer(name),
         })
     }
 
-    pub fn random_access(&self, auto_free: bool) -> Result<RandomAccessConsumer, Error> {
+    pub fn random_access(
+        &self,
+        name: &'static str,
+        auto_free: bool,
+    ) -> Result<RandomAccessConsumer, Error> {
         // find start seq
         let seq = self.head.seq.load(Ordering::Acquire);
 
@@ -139,13 +145,38 @@ impl TCache {
             .ok_or(Error::MaxConsumers)?;
 
         self.record_tail(index, seq);
+        self.record_consumer_name(index, name);
 
         Ok(RandomAccessConsumer {
             cache: TCacheRef { cache: addr_of!(*self) as *const c_void },
             index,
             active: Buckets::new(32 * 1024, self.len as u64),
             auto_free,
+            timer: self.create_consumer_timer(name),
         })
+    }
+
+    #[inline]
+    fn record_consumer_name(&self, idx: usize, name: &'static str) {
+        if let Some(m) = &self.metrics {
+            m.set_consumer_name(idx, name);
+        }
+    }
+
+    /// Build a per-consumer flux Timer named
+    /// `tcache-{tcache_name}-{consumer_name}`. Result file paths are
+    /// `timing-tcache-{tcache_name}-{consumer_name}` and
+    /// `latency-tcache-{tcache_name}-{consumer_name}` under flux's
+    /// `shmem/queues` directory — surfer picks up the latency queue
+    /// via the existing timings discovery.
+    ///
+    /// Returns `None` when this TCache has no metrics (unnamed or
+    /// metrics file open failed) so the consumer's read path is a
+    /// no-op for latency.
+    fn create_consumer_timer(&self, consumer_name: &'static str) -> Option<flux::Timer> {
+        self.metrics.as_ref()?;
+        let label = format!("tcache-{}-{}", self.name, consumer_name);
+        Some(flux::Timer::new("silver", &label))
     }
 
     fn index(&self, seq: u64) -> usize {
@@ -623,7 +654,7 @@ mod tests {
 
         let mut producer = TCache::producer("test_tcache", TCACHE_SIZE);
         let mut consumers: Vec<Consumer> =
-            (0..CONSUMERS).map(|_| producer.cache_ref().consumer().unwrap()).collect();
+            (0..CONSUMERS).map(|_| producer.cache_ref().consumer("test").unwrap()).collect();
 
         let done = Arc::new(AtomicBool::new(false));
 
@@ -677,7 +708,7 @@ mod tests {
 
         let mp = TCache::multi_producer("test_mp", TCACHE_SIZE);
         let mut consumers: Vec<Consumer> =
-            (0..CONSUMERS).map(|_| mp.cache_ref().consumer().unwrap()).collect();
+            (0..CONSUMERS).map(|_| mp.cache_ref().consumer("test").unwrap()).collect();
 
         // Spawn consumers BEFORE producers so they observe the full stream
         // from seq 0 and don't miss early commits.
@@ -739,7 +770,7 @@ mod tests {
     #[test]
     fn produce_consume() {
         let mut producer = TCache::producer("test_buckets", 2 << 14);
-        let mut consumer = producer.cache_ref().consumer().unwrap();
+        let mut consumer = producer.cache_ref().consumer("test").unwrap();
 
         let prod = std::thread::spawn(move || {
             let mut rng = rand::thread_rng();

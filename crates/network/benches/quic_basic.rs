@@ -40,11 +40,12 @@ pub fn broadcast(c: &mut Criterion) {
                 x.iter_batched(
                     || {
                         let gi_producer = TCache::producer("bench_gi", 2 << 24);
-                        let mut gi_consumer = gi_producer.cache_ref().consumer().unwrap();
+                        let mut gi_consumer = gi_producer.cache_ref().consumer("bench").unwrap();
                         let go_producer = TCache::producer("bench_small", 32);
-                        let go_consumer = go_producer.cache_ref().random_access(true).unwrap();
+                        let go_consumer =
+                            go_producer.cache_ref().random_access("bench", true).unwrap();
                         let rpc_in = TCache::producer("bench_small", 32);
-                        let rpc_out = rpc_in.cache_ref().random_access(true).unwrap();
+                        let rpc_out = rpc_in.cache_ref().random_access("bench", true).unwrap();
 
                         let (mut server_tile, server_id) = {
                             let secret = secp256k1::SecretKey::new(&mut rng);
@@ -114,9 +115,10 @@ pub fn broadcast(c: &mut Criterion) {
 
                             let gi_producer = TCache::producer("bench_small", 32);
                             let mut go_producer = TCache::producer("bench_go", 2 << 28);
-                            let go_consumer = go_producer.cache_ref().random_access(true).unwrap();
+                            let go_consumer =
+                                go_producer.cache_ref().random_access("bench", true).unwrap();
                             let rpc_in = TCache::producer("bench_small", 32);
-                            let rpc_out = rpc_in.cache_ref().random_access(false).unwrap();
+                            let rpc_out = rpc_in.cache_ref().random_access("bench", false).unwrap();
 
                             let context = Context {
                                 gossip_producer: gi_producer,

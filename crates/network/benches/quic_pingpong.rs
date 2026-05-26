@@ -40,11 +40,12 @@ pub fn broadcast(c: &mut Criterion) {
                 || {
                     let running = Arc::new(AtomicBool::new(true));
                     let gi_producer = TCache::producer("bench_q", 2 << 24);
-                    let mut gi_consumer = gi_producer.cache_ref().consumer().unwrap();
+                    let mut gi_consumer = gi_producer.cache_ref().consumer("bench").unwrap();
                     let mut go_producer = TCache::producer("bench_q", 2 << 24);
-                    let go_consumer = go_producer.cache_ref().random_access(false).unwrap();
+                    let go_consumer =
+                        go_producer.cache_ref().random_access("bench", false).unwrap();
                     let rpc_in = TCache::producer("bench_q_small", 32);
-                    let rpc_out = rpc_in.cache_ref().random_access(false).unwrap();
+                    let rpc_out = rpc_in.cache_ref().random_access("bench", false).unwrap();
 
                     let (mut server_tile, server_id) = {
                         let secret = secp256k1::SecretKey::new(&mut rng);
@@ -119,11 +120,12 @@ pub fn broadcast(c: &mut Criterion) {
                         Endpoint::new(Arc::new(EndpointConfig::default()), None, false, None);
 
                     let gi_producer = TCache::producer("bench_q", 2 << 24);
-                    let gi_consumer = gi_producer.cache_ref().consumer().unwrap();
+                    let gi_consumer = gi_producer.cache_ref().consumer("bench").unwrap();
                     let go_producer = TCache::producer("bench_q_go", 2 << 28);
-                    let go_consumer = go_producer.cache_ref().random_access(false).unwrap();
+                    let go_consumer =
+                        go_producer.cache_ref().random_access("bench", false).unwrap();
                     let rpc_in = TCache::producer("bench_q_small", 32);
-                    let rpc_out = rpc_in.cache_ref().random_access(false).unwrap();
+                    let rpc_out = rpc_in.cache_ref().random_access("bench", false).unwrap();
 
                     let context = Context {
                         gossip_producer: gi_producer,

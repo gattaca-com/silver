@@ -161,8 +161,8 @@ fn pm_drives_single_big_batch_against_real_checkpoint() {
     // tcache-internal accounting.
     let rpc_cap_bytes = ((n_blocks as usize) * 300 * 1024).next_power_of_two();
     let mut rpc_p = TCache::producer("rpc_in", rpc_cap_bytes);
-    let gossip_c = gossip_p.cache_ref().random_access(true).expect("gossip ra");
-    let rpc_c = rpc_p.cache_ref().random_access(true).expect("rpc ra");
+    let gossip_c = gossip_p.cache_ref().random_access("test", true).expect("gossip ra");
+    let rpc_c = rpc_p.cache_ref().random_access("test", true).expect("rpc ra");
 
     let mut bs = BeaconStateTile::new_heap(
         ticker,

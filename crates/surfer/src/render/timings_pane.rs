@@ -7,7 +7,10 @@ use ratatui::{
     widgets::{Axis, Block, Borders, Cell, Chart, Dataset, GraphType, Paragraph, Row, Table},
 };
 
-use crate::{app::App, sources::timings::TimingBucket};
+use crate::{
+    app::App,
+    sources::timings::{TimingChannel, TimingSet},
+};
 
 pub fn draw(f: &mut Frame, area: Rect, app: &mut App) {
     if app.timings.is_empty() {
@@ -23,7 +26,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &mut App) {
     }
 
     if app.drilled_in {
-        draw_chart(f, area, app);
+        draw_charts(f, area, app);
         return;
     }
     let rows = Layout::default()
@@ -35,13 +38,14 @@ pub fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         .split(area);
 
     draw_table(f, rows[0], app);
-    draw_chart(f, rows[1], app);
+    draw_charts(f, rows[1], app);
 }
 
 fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
     let block = Block::default().borders(Borders::ALL).title(" timings ");
     let header = Row::new(vec![
         Cell::from("timer"),
+        Cell::from("kind"),
         Cell::from("last"),
         Cell::from("p50 (last bucket)"),
         Cell::from("p99 (last bucket)"),
@@ -55,7 +59,10 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
         .iter()
         .enumerate()
         .map(|(i, t)| {
-            let last = t.last_bucket().unwrap_or_default();
+            let kind = kind_marker(t);
+            let primary = t.primary();
+            let last_bucket = primary.and_then(|c| c.last_bucket()).unwrap_or_default();
+            let last_ns = primary.map(|c| c.last_ns).unwrap_or(0);
             let style = if i == app.timings_selection {
                 Style::default().bg(Color::DarkGray).fg(Color::White).add_modifier(Modifier::BOLD)
             } else {
@@ -63,17 +70,19 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
             };
             Row::new(vec![
                 Cell::from(Span::styled(t.name.clone(), style)),
-                Cell::from(format_ns(t.last_ns)),
-                Cell::from(format_ns(last.p50_ns)),
-                Cell::from(format_ns(last.p99_ns)),
-                Cell::from(format!("{:>10}", last.count)),
+                Cell::from(kind),
+                Cell::from(format_ns(last_ns)),
+                Cell::from(format_ns(last_bucket.p50_ns)),
+                Cell::from(format_ns(last_bucket.p99_ns)),
+                Cell::from(format!("{:>10}", last_bucket.count)),
             ])
             .height(1)
         })
         .collect();
 
     let widths = [
-        Constraint::Percentage(30),
+        Constraint::Percentage(35),
+        Constraint::Length(6),
         Constraint::Length(12),
         Constraint::Length(18),
         Constraint::Length(18),
@@ -84,35 +93,101 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
     f.render_stateful_widget(table, area, &mut app.timings_table_state);
 }
 
-fn draw_chart(f: &mut Frame, area: Rect, app: &mut App) {
+fn kind_marker(t: &TimingSet) -> &'static str {
+    let has_t = t.timing.as_ref().is_some_and(TimingChannel::has_data);
+    let has_l = t.latency.as_ref().is_some_and(TimingChannel::has_data);
+    match (has_t, has_l) {
+        (true, true) => "T+L",
+        (true, false) => "T",
+        (false, true) => "L",
+        (false, false) => "·",
+    }
+}
+
+fn draw_charts(f: &mut Frame, area: Rect, app: &App) {
     let Some(timer) = app.timings.get(app.timings_selection) else {
         f.render_widget(Block::default().borders(Borders::ALL).title(" history "), area);
         return;
     };
+
+    let has_t = timer.timing.as_ref().is_some_and(TimingChannel::has_data);
+    let has_l = timer.latency.as_ref().is_some_and(TimingChannel::has_data);
+    match (has_t, has_l) {
+        (true, true) => {
+            let rows = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .split(area);
+            draw_channel_chart(
+                f,
+                rows[0],
+                &timer.name,
+                "processing",
+                Color::Cyan,
+                timer.timing.as_ref().unwrap(),
+            );
+            draw_channel_chart(
+                f,
+                rows[1],
+                &timer.name,
+                "latency",
+                Color::Magenta,
+                timer.latency.as_ref().unwrap(),
+            );
+        }
+        (true, false) => draw_channel_chart(
+            f,
+            area,
+            &timer.name,
+            "processing",
+            Color::Cyan,
+            timer.timing.as_ref().unwrap(),
+        ),
+        (false, true) => draw_channel_chart(
+            f,
+            area,
+            &timer.name,
+            "latency",
+            Color::Magenta,
+            timer.latency.as_ref().unwrap(),
+        ),
+        (false, false) => {
+            let block = Block::default().borders(Borders::ALL).title(format!(" {} ", timer.name));
+            let inner = block.inner(area);
+            f.render_widget(block, area);
+            f.render_widget(
+                Paragraph::new("no events drained yet").style(Style::default().fg(Color::DarkGray)),
+                inner,
+            );
+        }
+    }
+}
+
+fn draw_channel_chart(
+    f: &mut Frame,
+    area: Rect,
+    name: &str,
+    kind: &str,
+    p50_color: Color,
+    ch: &TimingChannel,
+) {
     let title = format!(
-        " {} — p50 / p99 over {}s buckets ",
-        timer.name,
+        " {name} — {kind} p50 / p99 over {}s buckets ",
         crate::sources::counters::BUCKET_SECS
     );
     let block = Block::default().borders(Borders::ALL).title(title);
 
-    let buckets: &std::collections::VecDeque<TimingBucket> = &timer.history;
-    let live = timer.current_bucket();
+    let buckets = &ch.history;
+    let live = ch.current_bucket();
     if buckets.is_empty() && live.is_none() {
         f.render_widget(block, area);
         return;
     }
 
-    let mut p50: Vec<(f64, f64)> = buckets
-        .iter()
-        .enumerate()
-        .map(|(i, b)| (i as f64, b.p50_ns as f64 / 1_000.0)) // microseconds
-        .collect();
+    let mut p50: Vec<(f64, f64)> =
+        buckets.iter().enumerate().map(|(i, b)| (i as f64, b.p50_ns as f64 / 1_000.0)).collect();
     let mut p99: Vec<(f64, f64)> =
         buckets.iter().enumerate().map(|(i, b)| (i as f64, b.p99_ns as f64 / 1_000.0)).collect();
-
-    // Append the live in-progress bucket as the rightmost point so the
-    // chart updates on every UI tick rather than only on bucket roll.
     if let Some(live) = live {
         let x = buckets.len() as f64;
         p50.push((x, live.p50_ns as f64 / 1_000.0));
@@ -127,13 +202,13 @@ fn draw_chart(f: &mut Frame, area: Rect, app: &mut App) {
         Dataset::default()
             .name("p50 µs")
             .marker(symbols::Marker::Braille)
-            .style(Style::default().fg(Color::Cyan))
+            .style(Style::default().fg(p50_color))
             .graph_type(GraphType::Line)
             .data(&p50),
         Dataset::default()
             .name("p99 µs")
             .marker(symbols::Marker::Braille)
-            .style(Style::default().fg(Color::Magenta))
+            .style(Style::default().fg(Color::Yellow))
             .graph_type(GraphType::Line)
             .data(&p99),
     ];
@@ -155,7 +230,7 @@ fn draw_chart(f: &mut Frame, area: Rect, app: &mut App) {
         .y_axis(
             Axis::default()
                 .bounds([0.0, y_max * 1.1])
-                .labels(vec![Line::from("0"), Line::from(format!("{:.0}µs", y_max))])
+                .labels(vec![Line::from("0"), Line::from(format!("{y_max:.0}µs"))])
                 .style(Style::default().fg(Color::DarkGray)),
         );
     f.render_widget(chart, area);

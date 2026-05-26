@@ -81,7 +81,7 @@ fn main() -> io::Result<()> {
         .filter_map(|f| match TimingSet::open(f) {
             Ok(t) => Some(t),
             Err(e) => {
-                eprintln!("surfer: skipping {}: {e}", f.path.display());
+                eprintln!("surfer: skipping {}: {e}", f.name);
                 None
             }
         })
