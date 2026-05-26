@@ -12,7 +12,7 @@ use silver_common::{GossipMsgOut, P2pSend, PeerControl, PeerEvent, RpcOutbound, 
 use silver_discovery::{DiscV5, Discovery, DiscoveryEvent};
 
 use crate::{
-    NetEvent, SendResult,
+    NetEvent, NetworkCounters, SendResult,
     p2p::{self, Context, P2p},
     socket::Socket,
 };
@@ -101,6 +101,7 @@ impl Tile<SilverSpine> for NetworkTile {
         let mut on_event = |event| match event {
             Event::P2pNet(net_event) => match net_event {
                 NetEvent::PeerConnected { peer, addr, local_dialler } => {
+                    NetworkCounters::P2pConnections.inc();
                     let port = addr.port();
                     adapter.produce(PeerEvent::P2pNewConnection {
                         p2p_peer_id: peer.connection,
@@ -114,6 +115,7 @@ impl Tile<SilverSpine> for NetworkTile {
                     adapter.produce(PeerEvent::P2pPeerIdentity { p2p_peer: peer, identify });
                 }
                 NetEvent::PeerDisconnected { peer } => {
+                    NetworkCounters::P2pConnections.dec();
                     adapter.produce(PeerEvent::P2pDisconnect { p2p_peer: peer.connection });
                 }
                 NetEvent::StreamReady { stream: _ } => {
@@ -272,11 +274,13 @@ where
         for evt in &self.events {
             if evt.token() == DISC_SOCKET_TOKEN && evt.is_readable() {
                 self.disc_socket.recv(|data, remote, _scratch, _socket| {
+                    NetworkCounters::DiscBytesRecv.add(data.len() as u64);
                     self.discovery.handle(remote, &data[..], now);
                     true
                 });
             } else if evt.token() == P2P_SOCKET_TOKEN && evt.is_readable() {
                 self.p2p_socket.recv(|data, remote, scratch, socket| {
+                    NetworkCounters::P2pBytesRecv.add(data.len() as u64);
                     self.p2p_endpoint.recv(now, data, remote, scratch, socket)
                 });
             }
@@ -285,6 +289,7 @@ where
         self.disc_socket.flush(&self.poll);
         self.discovery.poll(|disc_event| match disc_event {
             DiscoveryEvent::SendMessage { to, data } => {
+                NetworkCounters::DiscBytesSent.add(data.len() as u64);
                 self.disc_socket.send(&self.poll, |buffer| {
                     buffer.extend_from_slice(&data);
                     Some(Transmit {

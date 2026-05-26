@@ -22,7 +22,7 @@ use silver_common::{
 };
 
 use crate::{
-    RemotePeer,
+    NetworkCounters, RemotePeer,
     p2p::streams::AcquiredRpcOutbound,
     socket::{MAX_GSO_SEGMENTS, Socket},
 };
@@ -196,7 +196,12 @@ impl P2p {
         for peer in self.peers.values_mut() {
             // N.B. peer transmit MUST be called before peer.spin();
             while !socket.is_blocked() &&
-                socket.send(poll, |buf| peer.transmit(now, MAX_GSO_SEGMENTS, buf))
+                socket.send(poll, |buf| {
+                    let transmit = peer.transmit(now, MAX_GSO_SEGMENTS, buf);
+                    NetworkCounters::P2pBytesSent
+                        .add(transmit.as_ref().map(|t| t.size as u64).unwrap_or_default());
+                    transmit
+                })
             {}
 
             let next_timeout = peer.spin(now, &mut ep_callback, context, on_event, &self.banned);

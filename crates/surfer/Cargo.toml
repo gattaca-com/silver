@@ -1,0 +1,19 @@
+[package]
+name = "silver_surfer"
+edition.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+crossterm.workspace = true
+data_columns.workspace = true
+flux.workspace = true
+hdrhistogram.workspace = true
+libc.workspace = true
+ratatui.workspace = true
+silver_common.workspace = true
+silver_network.workspace = true
+
+[lints]
+workspace = true
