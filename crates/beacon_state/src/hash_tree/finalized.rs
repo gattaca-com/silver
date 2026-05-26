@@ -24,7 +24,7 @@
 //! recomputes the path upward — that operation belongs on the delta,
 //! where the cached hashes feed the next promotion.
 
-use silver_common::ssz_hash::{ZERO_HASHES, hash_concat};
+use silver_common::ssz_hash::{ZERO_HASHES, hash_concat_many};
 
 use crate::types::B256;
 
@@ -74,18 +74,29 @@ impl FinalizedHashTree {
             nodes[max_elements + i] = *leaf;
         }
 
-        let elements_count = leaves.len();
         let depth = max_elements.trailing_zeros() as usize;
-        for node in (1..max_elements).rev() {
-            // Leaves are level 0; root (node=1) sits at level `depth`. Node n at
-            // level L covers leaves `[(n << L) - max_elements, (n+1 << L) - max_elements)`.
-            let node_level = depth - node.ilog2() as usize;
-            let subtree_first_leaf = (node << node_level) - max_elements;
-            if subtree_first_leaf >= elements_count {
-                nodes[node] = ZERO_HASHES[node_level];
-            } else {
-                nodes[node] = hash_concat(&nodes[2 * node], &nodes[2 * node + 1]);
+        let mut left_level_node = max_elements;
+        let mut right_level_node = 2 * max_elements;
+        let mut right_real_level_node = max_elements + leaves.len();
+        for zero_hash in ZERO_HASHES.iter().take(depth + 1).skip(1) {
+            left_level_node >>= 1;
+            right_level_node >>= 1;
+            right_real_level_node = right_real_level_node.div_ceil(2);
+            let real_count = right_real_level_node - left_level_node;
+
+            // `real_count == 0` when `leaves.is_empty()` — skip the call so we
+            // don't hand `hashtree_rs::hash` a count of 0 with empty slices.
+            if real_count > 0 {
+                // children at `[2*left .. 2*right_real)`, output at `[left .. right_real)`;
+                // the two ranges are disjoint, so split_at_mut isolates them for borrow
+                // checker.
+                let (out_side, in_side) = nodes.split_at_mut(2 * left_level_node);
+                hash_concat_many(
+                    &mut out_side[left_level_node..right_real_level_node],
+                    &in_side[..2 * real_count],
+                );
             }
+            nodes[right_real_level_node..right_level_node].fill(*zero_hash);
         }
 
         Self { nodes, max_elements }

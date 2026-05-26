@@ -1792,6 +1792,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "hashtree-rs"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "581dba7aacbf2c203c72f3d977f8b46bf83491a58bf908a335c7efc5d0604f74"
+dependencies = [
+ "cc",
+ "libc",
+]
+
+[[package]]
 name = "hdrhistogram"
 version = "7.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4165,6 +4175,7 @@ dependencies = [
  "flux",
  "flux-utils",
  "fxhash",
+ "hashtree-rs",
  "hex",
  "libc",
  "quinn-proto",
@@ -4176,6 +4187,7 @@ dependencies = [
  "secp256k1",
  "serde",
  "serde_json",
+ "sha2",
  "sha2-const-stable",
  "sha3",
  "silver_common_macros",
