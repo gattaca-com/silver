@@ -22,6 +22,8 @@ pub(crate) const TOPICS_PER_PEER_CAP: usize = 96;
 
 pub(crate) type MsgIdBuild = BuildHasherDefault<MessageIdHasher>;
 
+use crate::manager::rpc::{N_STREAM_PROTOCOLS, PeerInboundState};
+
 /// One live peer's state.
 pub(crate) struct PeerState {
     // Identity — `PeerId` + connection handle are both needed to emit any
@@ -54,6 +56,15 @@ pub(crate) struct PeerState {
     pub ihaves_received: u16, // gates P7 via max_ihave_messages
     pub iwant_ids_sent: u16,  // gates P7 via max_ihave_length
 
+    // Inbound protocol rate-limit state
+    pub inbound_state: PeerInboundState,
+
+    // Outbound requests in flight count per protocol
+    pub outbound_in_flight: [u32; N_STREAM_PROTOCOLS],
+
+    // Prune backoff deadlines per topic
+    pub backoffs: HashMap<GossipTopic, Instant>,
+
     // Cached score value + recomputation timestamp.
     pub cached_score: f64,
     pub score_valid_at: Instant,
@@ -72,6 +83,9 @@ impl PeerState {
             behaviour_penalty: 0.0,
             ihaves_received: 0,
             iwant_ids_sent: 0,
+            inbound_state: PeerInboundState::default(),
+            outbound_in_flight: [0; N_STREAM_PROTOCOLS],
+            backoffs: HashMap::new(),
             cached_score: 0.0,
             score_valid_at: now,
         }

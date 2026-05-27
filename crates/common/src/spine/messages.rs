@@ -191,6 +191,7 @@ pub enum PeerEvent {
     },
     P2pDisconnect {
         p2p_peer: usize,
+        peer_id: PeerId,
     },
     P2pCannotCreateStream {
         p2p_peer: usize,

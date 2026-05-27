@@ -9,7 +9,6 @@
 //! controller tile that drives the spine remains a thin shell.
 
 use std::{
-    collections::HashMap,
     ops::Deref,
     time::{Duration, Instant},
 };
@@ -83,8 +82,6 @@ pub(crate) struct PeerInboundState {
     last_refill: [Option<Instant>; N_STREAM_PROTOCOLS],
 }
 
-pub(crate) type OutboundCounts = HashMap<usize, [u32; N_STREAM_PROTOCOLS]>;
-
 /// Map a received `RpcResponse::Error` to an `RpcSeverity`. Returns `None`
 /// when the error is informational and shouldn't impact peer score (notably
 /// `ResourceUnavailable` for blob/column-by-root, where missing data is
@@ -126,28 +123,6 @@ fn severity_for_error_response(code: u8, protocol: StreamProtocol) -> Option<Rpc
     }
 }
 
-fn outbound_count(counts: &OutboundCounts, peer: usize, protocol: StreamProtocol) -> u32 {
-    counts.get(&peer).map_or(0, |c| c[protocol.ordinal() as usize])
-}
-
-fn record_outbound(counts: &mut OutboundCounts, peer: usize, protocol: StreamProtocol) {
-    let entry = counts.entry(peer).or_insert([0; N_STREAM_PROTOCOLS]);
-    entry[protocol.ordinal() as usize] += 1;
-}
-
-/// Decrement the outbound slot for `(peer, protocol)`; drop the peer's
-/// entry when every protocol's count is zero so the map stays small in
-/// steady state.
-fn release_outbound(counts: &mut OutboundCounts, peer: usize, protocol: StreamProtocol) {
-    if let Some(c) = counts.get_mut(&peer) {
-        let slot = &mut c[protocol.ordinal() as usize];
-        *slot = slot.saturating_sub(1);
-        if c.iter().all(|&v| v == 0) {
-            counts.remove(&peer);
-        }
-    }
-}
-
 /// Does this `response` terminate an outbound RPC stream we initiated?
 /// Single-chunk protocols (Status/Ping/MetaData/Goodbye) have no `Complete`
 /// sentinel — the one response chunk is the terminator. Multi-chunk
@@ -167,17 +142,11 @@ fn is_terminal_response(protocol: StreamProtocol, response: &RpcResponse) -> boo
 /// Protocols with no quota in `INBOUND_QUOTAS` (gossip/identity) are
 /// always admitted. First contact seeds the bucket at `max_tokens`,
 /// matching lighthouse's burst-allowed semantics.
-fn try_admit_inbound(
-    buckets: &mut HashMap<usize, PeerInboundState>,
-    peer: usize,
-    protocol: StreamProtocol,
-    now: Instant,
-) -> bool {
+fn try_admit_inbound(state: &mut PeerInboundState, protocol: StreamProtocol, now: Instant) -> bool {
     let idx = protocol.ordinal() as usize;
     let Some(quota) = INBOUND_QUOTAS[idx].as_ref() else {
         return true;
     };
-    let state = buckets.entry(peer).or_default();
 
     if state.last_refill[idx].is_none() {
         state.tokens[idx] = quota.max_tokens;
@@ -235,7 +204,8 @@ impl PeerManager {
         self.database
             .live_peers_supporting(protocol)
             .filter_map(|p| {
-                if outbound_count(&self.outbound_in_flight, p, protocol) >=
+                let peer = self.peers.get(&p)?;
+                if peer.outbound_in_flight[protocol.ordinal() as usize] >=
                     MAX_RPC_PROTOCOL_IN_FLIGHT
                 {
                     return None;
@@ -244,7 +214,7 @@ impl PeerManager {
                 if overlap == 0 {
                     return None;
                 }
-                let score = self.score(p).unwrap_or(f64::NEG_INFINITY);
+                let score = peer.cached_score;
                 Some((p, overlap, score))
             })
             .max_by(|a, b| {
@@ -279,7 +249,10 @@ impl PeerManager {
                 // unconditionally for the unquota'd protocols
                 // (gossip/identity).
                 let protocol = request.protocol();
-                if !try_admit_inbound(&mut self.inbound_buckets, stream_id.peer(), protocol, now) {
+                let Some(peer) = self.peers.get_mut(&stream_id.peer()) else {
+                    return;
+                };
+                if !try_admit_inbound(&mut peer.inbound_state, protocol, now) {
                     // Goodbye expects no response — silently drop;
                     // anything else gets the standard rate-limit
                     // error chunk.
@@ -438,11 +411,10 @@ impl PeerManager {
                         let current_peer_metadata_seq = self.peer_metadata_seq(stream_id.peer());
                         let metadata_seq = u64::from_le_bytes(ping);
                         if !matches!(current_peer_metadata_seq, Some(seq) if seq == metadata_seq) {
-                            record_outbound(
-                                &mut self.outbound_in_flight,
-                                stream_id.peer(),
-                                StreamProtocol::Metadata,
-                            );
+                            if let Some(peer) = self.peers.get_mut(&stream_id.peer()) {
+                                peer.outbound_in_flight
+                                    [StreamProtocol::Metadata.ordinal() as usize] += 1;
+                            }
                             emit(PeerControl::P2pSend(P2pSend::Rpc(RpcOutbound::Request(
                                 RpcRequestOutbound {
                                     application_id: 0,
@@ -480,7 +452,10 @@ impl PeerManager {
                     _ => {}
                 }
                 if let Some(protocol) = terminal_protocol {
-                    release_outbound(&mut self.outbound_in_flight, stream_id.peer(), protocol);
+                    if let Some(peer) = self.peers.get_mut(&stream_id.peer()) {
+                        peer.outbound_in_flight[protocol.ordinal() as usize] =
+                            peer.outbound_in_flight[protocol.ordinal() as usize].saturating_sub(1);
+                    }
                 }
             }
         }
@@ -578,7 +553,9 @@ impl PeerManager {
         // application_id is peer-local; use start_slot as a unique correlator.
         let application_id = start_slot;
 
-        record_outbound(&mut self.outbound_in_flight, peer_id, StreamProtocol::BeaconBlocksByRange);
+        if let Some(peer) = self.peers.get_mut(&peer_id) {
+            peer.outbound_in_flight[StreamProtocol::BeaconBlocksByRange.ordinal() as usize] += 1;
+        }
         tracing::info!(
             peer_id,
             start_slot,
@@ -626,11 +603,10 @@ impl PeerManager {
                 ) else {
                     break;
                 };
-                record_outbound(
-                    &mut self.outbound_in_flight,
-                    peer,
-                    StreamProtocol::DataColumnSidecarsByRoot,
-                );
+                if let Some(p_state) = self.peers.get_mut(&peer) {
+                    p_state.outbound_in_flight
+                        [StreamProtocol::DataColumnSidecarsByRoot.ordinal() as usize] += 1;
+                }
                 emit(PeerControl::P2pDataColumnsRequest {
                     app_id: request_id,
                     peer,
@@ -676,11 +652,10 @@ impl PeerManager {
             else {
                 break;
             };
-            record_outbound(
-                &mut self.outbound_in_flight,
-                peer,
-                StreamProtocol::DataColumnSidecarsByRoot,
-            );
+            if let Some(p_state) = self.peers.get_mut(&peer) {
+                p_state.outbound_in_flight
+                    [StreamProtocol::DataColumnSidecarsByRoot.ordinal() as usize] += 1;
+            }
             emit(PeerControl::P2pDataColumnsRequest {
                 app_id: request_id,
                 peer,
@@ -734,13 +709,16 @@ impl PeerManager {
                 );
                 continue;
             }
-            if outbound_count(&self.outbound_in_flight, peer, StreamProtocol::BeaconBlocksByRange) >=
+            let Some(peer_state) = self.peers.get(&peer) else {
+                continue;
+            };
+            if peer_state.outbound_in_flight[StreamProtocol::BeaconBlocksByRange.ordinal() as usize] >=
                 MAX_RPC_PROTOCOL_IN_FLIGHT
             {
                 tracing::warn!("too many rpcs in flight already");
                 continue;
             }
-            let s = self.score(peer).unwrap_or(f64::NEG_INFINITY);
+            let s = peer_state.cached_score;
             if best.is_none_or(|(_, bs)| s > bs) {
                 best = Some((peer, s));
             }
@@ -757,7 +735,9 @@ impl PeerManager {
         let ping = RpcRequest::Ping(MetadataView::seq_number(metadata).to_le_bytes());
         let peers: Vec<usize> = self.live_peers().collect();
         for peer in peers {
-            record_outbound(&mut self.outbound_in_flight, peer, StreamProtocol::Ping);
+            if let Some(p_state) = self.peers.get_mut(&peer) {
+                p_state.outbound_in_flight[StreamProtocol::Ping.ordinal() as usize] += 1;
+            }
             emit(PeerControl::P2pSend(P2pSend::Rpc(RpcOutbound::Request(RpcRequestOutbound {
                 application_id: 0,
                 peer,
@@ -896,69 +876,68 @@ mod tests {
     #[test]
     fn inbound_unlimited_protocols_always_admit() {
         // Gossip + Identity have no quota → permit unconditionally.
-        let mut buckets = HashMap::new();
+        let mut state = PeerInboundState::default();
         let now = Instant::now();
         for _ in 0..1000 {
-            assert!(try_admit_inbound(&mut buckets, 7, StreamProtocol::GossipSub, now));
-            assert!(try_admit_inbound(&mut buckets, 7, StreamProtocol::Identity, now));
+            assert!(try_admit_inbound(&mut state, StreamProtocol::GossipSub, now));
+            assert!(try_admit_inbound(&mut state, StreamProtocol::Identity, now));
         }
-        // No state should be allocated for unquota'd protocols.
-        assert!(buckets.is_empty());
     }
 
     #[test]
     fn inbound_burst_up_to_max_then_denies() {
-        let mut buckets = HashMap::new();
+        let mut state = PeerInboundState::default();
         let now = Instant::now();
         // Ping quota = 2 / 10 s. First two admits succeed, the third
         // hits an empty bucket (no time has passed → no refill).
-        assert!(try_admit_inbound(&mut buckets, 1, StreamProtocol::Ping, now));
-        assert!(try_admit_inbound(&mut buckets, 1, StreamProtocol::Ping, now));
-        assert!(!try_admit_inbound(&mut buckets, 1, StreamProtocol::Ping, now));
-        assert!(!try_admit_inbound(&mut buckets, 1, StreamProtocol::Ping, now));
+        assert!(try_admit_inbound(&mut state, StreamProtocol::Ping, now));
+        assert!(try_admit_inbound(&mut state, StreamProtocol::Ping, now));
+        assert!(!try_admit_inbound(&mut state, StreamProtocol::Ping, now));
+        assert!(!try_admit_inbound(&mut state, StreamProtocol::Ping, now));
     }
 
     #[test]
     fn inbound_refills_after_period() {
-        let mut buckets = HashMap::new();
+        let mut state = PeerInboundState::default();
         let t0 = Instant::now();
         // Drain Ping bucket (2 tokens).
-        assert!(try_admit_inbound(&mut buckets, 1, StreamProtocol::Ping, t0));
-        assert!(try_admit_inbound(&mut buckets, 1, StreamProtocol::Ping, t0));
-        assert!(!try_admit_inbound(&mut buckets, 1, StreamProtocol::Ping, t0));
+        assert!(try_admit_inbound(&mut state, StreamProtocol::Ping, t0));
+        assert!(try_admit_inbound(&mut state, StreamProtocol::Ping, t0));
+        assert!(!try_admit_inbound(&mut state, StreamProtocol::Ping, t0));
         // After a full period (10 s) the bucket is full again.
         let t1 = t0 + Duration::from_secs(10);
-        assert!(try_admit_inbound(&mut buckets, 1, StreamProtocol::Ping, t1));
-        assert!(try_admit_inbound(&mut buckets, 1, StreamProtocol::Ping, t1));
-        assert!(!try_admit_inbound(&mut buckets, 1, StreamProtocol::Ping, t1));
+        assert!(try_admit_inbound(&mut state, StreamProtocol::Ping, t1));
+        assert!(try_admit_inbound(&mut state, StreamProtocol::Ping, t1));
+        assert!(!try_admit_inbound(&mut state, StreamProtocol::Ping, t1));
     }
 
     #[test]
     fn inbound_continuous_refill_partial() {
         // BlocksByRange = 128 / 10 s ⇒ one token per ~78 ms.
         // Drain then wait 200 ms — expect ~2 tokens to have been credited.
-        let mut buckets = HashMap::new();
+        let mut state = PeerInboundState::default();
         let t0 = Instant::now();
         for _ in 0..128 {
-            assert!(try_admit_inbound(&mut buckets, 5, StreamProtocol::BeaconBlocksByRange, t0));
+            assert!(try_admit_inbound(&mut state, StreamProtocol::BeaconBlocksByRange, t0));
         }
-        assert!(!try_admit_inbound(&mut buckets, 5, StreamProtocol::BeaconBlocksByRange, t0));
+        assert!(!try_admit_inbound(&mut state, StreamProtocol::BeaconBlocksByRange, t0));
         let t1 = t0 + Duration::from_millis(200);
-        assert!(try_admit_inbound(&mut buckets, 5, StreamProtocol::BeaconBlocksByRange, t1));
-        assert!(try_admit_inbound(&mut buckets, 5, StreamProtocol::BeaconBlocksByRange, t1));
+        assert!(try_admit_inbound(&mut state, StreamProtocol::BeaconBlocksByRange, t1));
+        assert!(try_admit_inbound(&mut state, StreamProtocol::BeaconBlocksByRange, t1));
         // ~2 tokens credited; the third call at the same instant should fail.
-        assert!(!try_admit_inbound(&mut buckets, 5, StreamProtocol::BeaconBlocksByRange, t1));
+        assert!(!try_admit_inbound(&mut state, StreamProtocol::BeaconBlocksByRange, t1));
     }
 
     #[test]
     fn inbound_per_peer_independent() {
         // Draining peer A's bucket must not affect peer B.
-        let mut buckets = HashMap::new();
+        let mut state_a = PeerInboundState::default();
+        let mut state_b = PeerInboundState::default();
         let now = Instant::now();
-        assert!(try_admit_inbound(&mut buckets, 1, StreamProtocol::Ping, now));
-        assert!(try_admit_inbound(&mut buckets, 1, StreamProtocol::Ping, now));
-        assert!(!try_admit_inbound(&mut buckets, 1, StreamProtocol::Ping, now));
-        assert!(try_admit_inbound(&mut buckets, 2, StreamProtocol::Ping, now));
-        assert!(try_admit_inbound(&mut buckets, 2, StreamProtocol::Ping, now));
+        assert!(try_admit_inbound(&mut state_a, StreamProtocol::Ping, now));
+        assert!(try_admit_inbound(&mut state_a, StreamProtocol::Ping, now));
+        assert!(!try_admit_inbound(&mut state_a, StreamProtocol::Ping, now));
+        assert!(try_admit_inbound(&mut state_b, StreamProtocol::Ping, now));
+        assert!(try_admit_inbound(&mut state_b, StreamProtocol::Ping, now));
     }
 }
