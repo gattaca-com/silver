@@ -44,6 +44,9 @@ const TOPIC: GossipTopic = GossipTopic::BeaconBlock;
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 
 fn main() {
+     #[cfg(feature = "alloc-profile")]
+    let _alloc_profile_guard = silver_common::allocator::init_allocator_trace();
+    
     tracing_subscriber::fmt().with_max_level(tracing::Level::WARN).try_init().ok();
     let args = parse_args();
     assert!(args.payload_size >= 8, "payload-size must be >= 8 for the timestamp prefix");

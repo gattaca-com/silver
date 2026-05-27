@@ -263,14 +263,6 @@ where
         }
 
         let now = Instant::now();
-        p2p::p2p_spin(
-            &self.poll,
-            &mut self.p2p_endpoint,
-            &mut self.p2p_socket,
-            &mut self.context,
-            now,
-            &mut |evt| on_event(Event::P2pNet(evt)),
-        );
 
         for evt in &self.events {
             if evt.token() == DISC_SOCKET_TOKEN && evt.is_readable() {
@@ -286,6 +278,15 @@ where
                 });
             }
         }
+
+        p2p::p2p_spin(
+            &self.poll,
+            &mut self.p2p_endpoint,
+            &mut self.p2p_socket,
+            &mut self.context,
+            now,
+            &mut |evt| on_event(Event::P2pNet(evt)),
+        );
 
         self.disc_socket.flush(&self.poll);
         self.discovery.poll(|disc_event| match disc_event {
