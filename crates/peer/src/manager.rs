@@ -141,8 +141,6 @@ pub struct PeerManager {
     /// the 300s periodic.
     just_synced: bool,
 
-
-
     /// Outstanding catch-up `BlocksByRange` request issued by the PM-owned
     /// driver. At most one in flight per target. Cleared when the range is
     /// fully delivered (BS head_slot has advanced through it), when the
@@ -893,8 +891,6 @@ impl PeerManager {
         {
             self.inflight_syncreq = None;
         }
-
-
     }
 
     // ── Gossip event handlers ───────────────────────────────────────────
@@ -969,7 +965,9 @@ impl PeerManager {
         if let Some(peer) = self.peers.get_mut(&conn) {
             if let Some(t) = peer.topic_stats.get_mut(&topic) {
                 // Carry any active deficit into the failure penalty.
-                if t.mesh_active && t.mesh_deliveries < self.params.mesh_message_deliveries_threshold {
+                if t.mesh_active &&
+                    t.mesh_deliveries < self.params.mesh_message_deliveries_threshold
+                {
                     t.mesh_failure_penalty +=
                         self.params.mesh_message_deliveries_threshold - t.mesh_deliveries;
                 }
@@ -1385,10 +1383,7 @@ impl PeerManager {
     // ── Internal helpers ────────────────────────────────────────────────
 
     fn is_backed_off(&self, conn: usize, topic: GossipTopic, now: Instant) -> bool {
-        self.peers
-            .get(&conn)
-            .and_then(|p| p.backoffs.get(&topic))
-            .is_some_and(|d| now < *d)
+        self.peers.get(&conn).and_then(|p| p.backoffs.get(&topic)).is_some_and(|d| now < *d)
     }
 
     fn do_graft(

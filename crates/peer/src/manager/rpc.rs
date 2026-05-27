@@ -82,8 +82,6 @@ pub(crate) struct PeerInboundState {
     last_refill: [Option<Instant>; N_STREAM_PROTOCOLS],
 }
 
-
-
 /// Map a received `RpcResponse::Error` to an `RpcSeverity`. Returns `None`
 /// when the error is informational and shouldn't impact peer score (notably
 /// `ResourceUnavailable` for blob/column-by-root, where missing data is
@@ -125,8 +123,6 @@ fn severity_for_error_response(code: u8, protocol: StreamProtocol) -> Option<Rpc
     }
 }
 
-
-
 /// Does this `response` terminate an outbound RPC stream we initiated?
 /// Single-chunk protocols (Status/Ping/MetaData/Goodbye) have no `Complete`
 /// sentinel — the one response chunk is the terminator. Multi-chunk
@@ -146,11 +142,7 @@ fn is_terminal_response(protocol: StreamProtocol, response: &RpcResponse) -> boo
 /// Protocols with no quota in `INBOUND_QUOTAS` (gossip/identity) are
 /// always admitted. First contact seeds the bucket at `max_tokens`,
 /// matching lighthouse's burst-allowed semantics.
-fn try_admit_inbound(
-    state: &mut PeerInboundState,
-    protocol: StreamProtocol,
-    now: Instant,
-) -> bool {
+fn try_admit_inbound(state: &mut PeerInboundState, protocol: StreamProtocol, now: Instant) -> bool {
     let idx = protocol.ordinal() as usize;
     let Some(quota) = INBOUND_QUOTAS[idx].as_ref() else {
         return true;
@@ -420,7 +412,8 @@ impl PeerManager {
                         let metadata_seq = u64::from_le_bytes(ping);
                         if !matches!(current_peer_metadata_seq, Some(seq) if seq == metadata_seq) {
                             if let Some(peer) = self.peers.get_mut(&stream_id.peer()) {
-                                peer.outbound_in_flight[StreamProtocol::Metadata.ordinal() as usize] += 1;
+                                peer.outbound_in_flight
+                                    [StreamProtocol::Metadata.ordinal() as usize] += 1;
                             }
                             emit(PeerControl::P2pSend(P2pSend::Rpc(RpcOutbound::Request(
                                 RpcRequestOutbound {
@@ -611,7 +604,8 @@ impl PeerManager {
                     break;
                 };
                 if let Some(p_state) = self.peers.get_mut(&peer) {
-                    p_state.outbound_in_flight[StreamProtocol::DataColumnSidecarsByRoot.ordinal() as usize] += 1;
+                    p_state.outbound_in_flight
+                        [StreamProtocol::DataColumnSidecarsByRoot.ordinal() as usize] += 1;
                 }
                 emit(PeerControl::P2pDataColumnsRequest {
                     app_id: request_id,
@@ -659,7 +653,8 @@ impl PeerManager {
                 break;
             };
             if let Some(p_state) = self.peers.get_mut(&peer) {
-                p_state.outbound_in_flight[StreamProtocol::DataColumnSidecarsByRoot.ordinal() as usize] += 1;
+                p_state.outbound_in_flight
+                    [StreamProtocol::DataColumnSidecarsByRoot.ordinal() as usize] += 1;
             }
             emit(PeerControl::P2pDataColumnsRequest {
                 app_id: request_id,
