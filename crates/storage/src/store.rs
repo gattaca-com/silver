@@ -321,35 +321,15 @@ impl Store {
 
         // Prune orphaned forks: anything left at/below finality cannot be
         // canonical (finality forbids a reorg below it).
-        let mut orphans = Vec::new();
-        self.unfinalized.retain(|block_root, block| {
-            if block.slot <= finalized_slot {
-                orphans.push((*block_root, block.slot, block.parent_root));
-                false
-            } else {
-                true
-            }
-        });
-        for (block_root, slot, parent_root) in orphans {
-            self.write_queue.push_back(PendingWrite::Prune { slot, parent_root, block_root });
-        }
+        prune_orphaned_blocks(finalized_slot, &mut self.unfinalized, &mut self.write_queue);
 
         // Prune orphaned columns: any column set left at/below finality whose
         // block did not promote above.
-        let mut col_orphans = Vec::new();
-        self.unfinalized_columns.retain(|block_root, (slot, bitmask)| {
-            if *slot <= finalized_slot {
-                for column in columns_of(*bitmask) {
-                    col_orphans.push((*slot, *block_root, column));
-                }
-                false
-            } else {
-                true
-            }
-        });
-        for (slot, block_root, column) in col_orphans {
-            self.write_queue.push_back(PendingWrite::PruneColumn { slot, block_root, column });
-        }
+        prune_orphaned_columns(
+            finalized_slot,
+            &mut self.unfinalized_columns,
+            &mut self.write_queue,
+        );
     }
 
     pub(super) fn rpc_request(
@@ -525,6 +505,46 @@ impl Store {
 /// Set bit positions of a column bitmask, ascending.
 fn columns_of(bitmask: u128) -> impl Iterator<Item = u64> {
     (0..128u64).filter(move |c| bitmask & (1u128 << c) != 0)
+}
+
+fn prune_orphaned_columns(
+    finalized_slot: u64,
+    unfinalized_columns: &mut FxHashMap<[u8; 32], (u64, u128)>,
+    write_queue: &mut VecDeque<PendingWrite>,
+) {
+    unfinalized_columns.retain(|block_root, (slot, bitmask)| {
+        if *slot <= finalized_slot {
+            for column in columns_of(*bitmask) {
+                write_queue.push_back(PendingWrite::PruneColumn {
+                    slot: *slot,
+                    block_root: *block_root,
+                    column,
+                })
+            }
+            false
+        } else {
+            true
+        }
+    });
+}
+
+fn prune_orphaned_blocks(
+    finalized_slot: u64,
+    unfinalized: &mut FxHashMap<[u8; 32], UnfinalizedBlock>,
+    write_queue: &mut VecDeque<PendingWrite>,
+) {
+    unfinalized.retain(|block_root, block| {
+        if block.slot <= finalized_slot {
+            write_queue.push_back(PendingWrite::Prune {
+                slot: block.slot,
+                parent_root: block.parent_root,
+                block_root: *block_root,
+            });
+            false
+        } else {
+            true
+        }
+    });
 }
 
 #[cfg(test)]
