@@ -28,6 +28,7 @@ impl RxBatch {
     pub(crate) fn recv(&mut self, socket: &UdpSocket) -> usize {
         // Reclaim only slots that were used last round.
         for &(buf_idx, _len, _addr) in &self.datagrams {
+            self.bufs[buf_idx].clear();
             if !self.bufs[buf_idx].try_reclaim(RX_BUF_SIZE) {
                 self.bufs[buf_idx] = BytesMut::with_capacity(RX_BUF_SIZE);
             }

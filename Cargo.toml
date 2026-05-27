@@ -92,6 +92,7 @@ hdrhistogram = "7.5.4"
 hex = { version = "0.4", features = ["serde"] }
 hkdf = "0.12"
 libc = "0.2"
+mimalloc = "0.1.52"
 mio = { version = "1.0.4", features = ["net", "os-poll"] }
 pprof = { version = "0.13", features = ["criterion", "flamegraph"] }
 proc-macro2 = "1"

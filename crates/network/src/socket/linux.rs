@@ -71,6 +71,7 @@ impl RxBatch {
         // `self.count` weren't `take()`d last round — they still have
         // valid iovec pointers and RX_BUF_SIZE len.
         for i in 0..self.count {
+            self.bufs[i].clear();
             if !self.bufs[i].try_reclaim(RX_BUF_SIZE) {
                 self.bufs[i] = BytesMut::with_capacity(RX_BUF_SIZE);
             }

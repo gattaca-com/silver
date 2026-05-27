@@ -38,6 +38,7 @@ use std::{
 };
 
 use flux::{tile::Tile, timing::Nanos};
+use mimalloc::MiMalloc;
 use rand::{Rng, RngCore};
 use silver_common::{GossipMsgOut, GossipTopic, NewGossipMsg, P2pSend, PeerEvent, TRandomAccess};
 use silver_e2e::{
@@ -55,7 +56,14 @@ const FORK_DIGEST_HEX: &str = "abcd1234";
 const TOPIC: GossipTopic = GossipTopic::BeaconBlock;
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 
+#[cfg(not(feature = "alloc-profile"))]
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
+
 fn main() {
+    #[cfg(feature = "alloc-profile")]
+    let _alloc_profile_guard = silver_common::allocator::init_allocator_trace();
+
     tracing_subscriber::fmt().with_max_level(tracing::Level::WARN).try_init().ok();
     let args = parse_args();
     assert!(args.payload_size >= 8, "payload-size must be >= 8 for the timestamp prefix");
