@@ -3,4 +3,4 @@ mod store;
 pub mod tile;
 pub mod util;
 
-pub use counters::DataColumnCounters;
+pub use counters::StorageCounters;

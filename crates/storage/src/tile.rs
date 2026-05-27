@@ -24,7 +24,7 @@ const EPOCH_DURATION: Duration = Duration::from_secs(32 * 12);
 /// lookups and head-update integration are direct lookups.
 type BlockRoot = [u8; 32];
 
-pub struct DataColumnTile {
+pub struct StorageTile {
     // bit set of our custody group columns.
     custody_group_columns: u128,
     request_id: u64,
@@ -51,7 +51,7 @@ pub struct DataColumnTile {
     outstanding_requests: Wheel<BlockRoot, (u128, u8), 16>,
 }
 
-impl DataColumnTile {
+impl StorageTile {
     pub fn new(
         gossip_consumer: TRandomAccess,
         rpc_consumer: TRandomAccess,
@@ -68,7 +68,7 @@ impl DataColumnTile {
             rpc_consumer,
             rpc_producer,
             beacon_state,
-            store: Store::load(data_store_dir).expect("failed to load data columns store"),
+            store: Store::load(data_store_dir).expect("failed to load storage store"),
             fork_digest,
             validated_columns: FxHashMap::default(),
             validated_blocks: Wheel::new(EPOCH_DURATION),
@@ -261,7 +261,7 @@ impl DataColumnTile {
     }
 }
 
-impl Tile<SilverSpine> for DataColumnTile {
+impl Tile<SilverSpine> for StorageTile {
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         self.gossip_consumer.free();
         self.rpc_consumer.free();
@@ -334,13 +334,22 @@ impl Tile<SilverSpine> for DataColumnTile {
             },
         });
 
-        adapter.consume(|beacon_event: BeaconStateEvent, _| {
-            if let BeaconStateEvent::Status { ssz, wall_slot: _ } = beacon_event {
+        adapter.consume(|beacon_event: BeaconStateEvent, _| match beacon_event {
+            BeaconStateEvent::Status { ssz, wall_slot: _ } => {
                 let slot = StatusView::head_slot(&ssz);
                 let canonical_root = StatusView::head_root(&ssz);
                 self.fork_digest = *StatusView::fork_digest(&ssz);
                 self.store.set_canonical(slot, *canonical_root);
             }
+            BeaconStateEvent::PersistBlock(tcache_read) => {
+                let t_read = self.gossip_consumer.acquire(tcache_read);
+                if let Ok((buf, _)) = t_read.buffer() {
+                    let slot = silver_common::ssz_view::SignedBeaconBlockView::slot(buf);
+                    let block_root = util::block_root(buf);
+                    self.store.add_block(block_root, t_read, slot);
+                }
+            }
+            _ => {}
         });
 
         let now = Instant::now();
@@ -373,7 +382,7 @@ impl Tile<SilverSpine> for DataColumnTile {
                 adapter.produce(p2p_send)
             })
         {
-            tracing::error!(?e, "data store file i/o failed");
+            tracing::error!(?e, "storage store file i/o failed");
         }
     }
 }
