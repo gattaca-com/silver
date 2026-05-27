@@ -1,22 +1,19 @@
 use std::{
     collections::{VecDeque, hash_map::Entry},
-    fs::File,
-    io::{Error, ErrorKind, Read, Write},
+    io::{Error, Read},
     path::{Path, PathBuf},
 };
 
 use fxhash::FxHashMap;
 use silver_common::{
-    P2pSend, P2pStreamId, RpcOutbound, RpcRequestInbound, RpcResponse, RpcResponseOutbound,
-    TCacheProducer, TCacheRead, TMultiProducer, TRandomAccess, TRead,
+    P2pStreamId, RpcRequestInbound, TRandomAccess, TRead,
     ssz_view::{
         BeaconBlocksByRangeRequestView, BeaconBlocksByRootRequestView,
         DataColumnSidecarsByRangeRequestView, DataColumnsByRootIdentifierView,
     },
 };
 
-const MAX_WRITES_PER_LOOP: usize = 10;
-const MAX_READS_PER_LOOP: usize = 10;
+mod io;
 
 /// Spec range-request caps (consensus-specs). A peer-supplied `count`
 /// is clamped before expanding into per-slot queries, to bound
@@ -27,6 +24,12 @@ const MAX_REQUEST_BLOCKS: u64 = 1024;
 /// `count * NUMBER_OF_COLUMNS <= MAX_REQUEST_DATA_COLUMN_SIDECARS`
 /// (16384), i.e. `count <= MAX_REQUEST_BLOCKS_DENEB`.
 const MAX_REQUEST_BLOCKS_DENEB: u64 = 128;
+
+/// Cap on concurrent in-flight read requests. Past this, a new request is
+/// answered with an empty (Complete-only) response — sheds load under a peer
+/// flood and bounds the count of unit-bearing `query_queue` entries (each
+/// entry's `units` is already capped by the range limits above).
+const MAX_INFLIGHT_QUERIES: usize = 256;
 
 /// Slots per on-disk group directory (`slot & !(SLOTS_PER_DIR - 1)`).
 /// 128 keeps per-directory file counts (~128 slots × (block + columns))
@@ -101,32 +104,24 @@ enum PendingWrite {
     },
 }
 
-#[derive(Clone, Copy, Debug)]
-enum PendingQuery {
-    Column {
-        stream_id: P2pStreamId,
-        slot: u64,
-        column: u64,
-    },
-    Block {
-        stream_id: P2pStreamId,
-        slot: u64,
-    },
-    UnfinalizedBlock {
-        stream_id: P2pStreamId,
-        slot: u64,
-        parent_root: [u8; 32],
-        block_root: [u8; 32],
-    },
-    UnfinalizedColumn {
-        stream_id: P2pStreamId,
-        slot: u64,
-        block_root: [u8; 32],
-        column: u64,
-    },
-    Complete {
-        stream_id: P2pStreamId,
-    },
+/// One served file = one response chunk. The unit's resolution (canonical
+/// vs flat store) is decided up-front in `rpc_request`.
+#[derive(Debug)]
+enum QueryUnit {
+    Block { slot: u64 },
+    UnfinalizedBlock { slot: u64, parent_root: [u8; 32], block_root: [u8; 32] },
+    Column { slot: u64, column: u64 },
+    UnfinalizedColumn { slot: u64, block_root: [u8; 32], column: u64 },
+}
+
+/// An in-flight read request: the stream and the ordered chunks still to
+/// serve for it. `file_io` serves one unit per turn then rotates the
+/// request to the back of `query_queue` (head-of-line fairness across
+/// streams), emitting `Complete` once `units` drains.
+#[derive(Debug)]
+struct PendingQuery {
+    stream_id: P2pStreamId,
+    units: VecDeque<QueryUnit>,
 }
 
 /// Unified blocks and data columns disk store.
@@ -162,7 +157,7 @@ impl Store {
 
         for sub_dir in std::fs::read_dir(&store_dir)? {
             let index_path = sub_dir?.path().join("block_index.bin");
-            if let Ok(mut index_file) = open_file_read(index_path) {
+            if let Ok(mut index_file) = io::open_file_read(index_path) {
                 let mut buffer = [0u8; 40];
                 while index_file.read_exact(&mut buffer).is_ok() {
                     let block_root: [u8; 32] = buffer[..32].try_into().unwrap();
@@ -178,7 +173,7 @@ impl Store {
         if let Ok(entries) = std::fs::read_dir(Path::new(&store_dir).join(UNFINALIZED_DIR)) {
             for entry in entries {
                 if let Some(name) = entry?.file_name().to_str() &&
-                    let Some((block_root, block)) = parse_unfinalized_name(name)
+                    let Some((block_root, block)) = io::parse_unfinalized_name(name)
                 {
                     unfinalized.insert(block_root, block);
                 }
@@ -192,7 +187,8 @@ impl Store {
         {
             for entry in entries {
                 if let Some(name) = entry?.file_name().to_str() &&
-                    let Some((block_root, slot, column)) = parse_unfinalized_column_name(name)
+                    let Some((block_root, slot, column)) =
+                        io::parse_unfinalized_column_name(name)
                 {
                     let e = unfinalized_columns.entry(block_root).or_insert((slot, 0));
                     e.1 |= 1u128 << column;
@@ -361,6 +357,19 @@ impl Store {
         rpc_consumer: &mut TRandomAccess,
         request: RpcRequestInbound,
     ) {
+        let stream_id = request.stream_id;
+        // Shed load past the in-flight cap: an empty `units` drains straight to
+        // a `Complete`, giving the peer a clean empty response without letting
+        // the unit-bearing `query_queue` entries grow without bound.
+        if self.query_queue.len() >= MAX_INFLIGHT_QUERIES {
+            self.query_queue.push_back(PendingQuery { stream_id, units: VecDeque::new() });
+            return;
+        }
+
+        // Resolve each requested chunk to a `QueryUnit` up-front (canonical vs
+        // flat decided against the head snapshot). `file_io` then serves them
+        // one at a time, interleaved fairly with other requests.
+        let mut units = VecDeque::new();
         match request.request {
             silver_common::RpcRequest::DataColumnsByRange { ssz, len } => {
                 if DataColumnSidecarsByRangeRequestView::check_size(&ssz[..len]) {
@@ -368,91 +377,76 @@ impl Store {
                     let count = DataColumnSidecarsByRangeRequestView::count(&ssz[..len])
                         .min(MAX_REQUEST_BLOCKS_DENEB);
                     let end = start.saturating_add(count);
-                    // Per (slot, column): serve the canonical block's column
-                    // from the unfinalized store, else the finalized flat store.
                     let canonical = self.canonical_chain_in_range(start, end);
-                    let columns = DataColumnSidecarsByRangeRequestView::columns(&ssz[..len])
-                        .chunks_exact(8)
-                        .map(|chunk| u64::from_le_bytes(chunk.try_into().unwrap()));
-
-                    for column in columns {
-                        for slot in start..end {
+                    let columns: Vec<u64> =
+                        DataColumnSidecarsByRangeRequestView::columns(&ssz[..len])
+                            .chunks_exact(8)
+                            .map(|chunk| u64::from_le_bytes(chunk.try_into().unwrap()))
+                            .collect();
+                    // `(slot, column)` order per fulu p2p-interface: outer slot,
+                    // inner column. Serve the canonical block's column from the
+                    // unfinalized store, else the finalized flat store.
+                    for slot in start..end {
+                        for &column in &columns {
                             if let Some(&(_parent_root, block_root)) = canonical.get(&slot) {
-                                self.query_queue.push_back(PendingQuery::UnfinalizedColumn {
-                                    stream_id: request.stream_id,
+                                units.push_back(QueryUnit::UnfinalizedColumn {
                                     slot,
                                     block_root,
                                     column,
                                 });
                             } else {
-                                self.query_queue.push_back(PendingQuery::Column {
-                                    stream_id: request.stream_id,
-                                    slot,
-                                    column,
-                                });
+                                units.push_back(QueryUnit::Column { slot, column });
                             }
                         }
                     }
                 }
-                self.query_queue.push_back(PendingQuery::Complete { stream_id: request.stream_id });
             }
             silver_common::RpcRequest::DataColumnsByRoot(tcache_read) => {
                 let read = rpc_consumer.acquire(tcache_read);
                 if let Ok((buf, _)) = read.buffer() {
                     if DataColumnsByRootIdentifierView::check_size(buf) {
                         let root = DataColumnsByRootIdentifierView::block_root(buf);
-                        let columns = DataColumnsByRootIdentifierView::columns(buf)
+                        let request_columns = DataColumnsByRootIdentifierView::columns(buf)
                             .chunks_exact(8)
                             .map(|chunk| u64::from_le_bytes(chunk.try_into().unwrap()));
                         // Serve a specific block's columns regardless of
                         // canonicity: unfinalized (by block_root) first, else
                         // the finalized flat store.
                         if let Some(&(slot, _bitmask)) = self.unfinalized_columns.get(root) {
-                            for column in columns {
-                                self.query_queue.push_back(PendingQuery::UnfinalizedColumn {
-                                    stream_id: request.stream_id,
+                            for column in request_columns {
+                                units.push_back(QueryUnit::UnfinalizedColumn {
                                     slot,
                                     block_root: *root,
                                     column,
                                 });
                             }
                         } else if let Some(&slot) = self.root_index.get(root) {
-                            for column in columns {
-                                self.query_queue.push_back(PendingQuery::Column {
-                                    stream_id: request.stream_id,
-                                    slot,
-                                    column,
-                                });
+                            for column in request_columns {
+                                units.push_back(QueryUnit::Column { slot, column });
                             }
                         }
                     }
                 }
-                self.query_queue.push_back(PendingQuery::Complete { stream_id: request.stream_id });
             }
             silver_common::RpcRequest::BlocksByRange(req_bytes) => {
                 let start = BeaconBlocksByRangeRequestView::start_slot(&req_bytes);
                 let count =
                     BeaconBlocksByRangeRequestView::count(&req_bytes).min(MAX_REQUEST_BLOCKS);
                 let end = start.saturating_add(count);
-                // Resolve the canonical chain in range once by walking
-                // ancestors of head. Per slot: serve the unfinalized canonical
-                // block if present, else fall back to the finalized flat store
-                // (which `serve_file` skips if the slot is absent).
+                // Per slot: the unfinalized canonical block if present, else the
+                // finalized flat store (`serve_file` skips an absent slot).
                 let canonical = self.canonical_chain_in_range(start, end);
                 for slot in start..end {
                     if let Some(&(parent_root, block_root)) = canonical.get(&slot) {
-                        self.query_queue.push_back(PendingQuery::UnfinalizedBlock {
-                            stream_id: request.stream_id,
+                        units.push_back(QueryUnit::UnfinalizedBlock {
                             slot,
                             parent_root,
                             block_root,
                         });
                     } else {
-                        self.query_queue
-                            .push_back(PendingQuery::Block { stream_id: request.stream_id, slot });
+                        units.push_back(QueryUnit::Block { slot });
                     }
                 }
-                self.query_queue.push_back(PendingQuery::Complete { stream_id: request.stream_id });
             }
             silver_common::RpcRequest::BlockByRoot(tcache_read) => {
                 let read = rpc_consumer.acquire(tcache_read);
@@ -467,25 +461,22 @@ impl Store {
                             if let Some(&UnfinalizedBlock { slot, parent_root }) =
                                 self.unfinalized.get(root)
                             {
-                                self.query_queue.push_back(PendingQuery::UnfinalizedBlock {
-                                    stream_id: request.stream_id,
+                                units.push_back(QueryUnit::UnfinalizedBlock {
                                     slot,
                                     parent_root,
                                     block_root: *root,
                                 });
-                            } else if let Some(slot) = self.root_index.get(root) {
-                                self.query_queue.push_back(PendingQuery::Block {
-                                    stream_id: request.stream_id,
-                                    slot: *slot,
-                                });
+                            } else if let Some(&slot) = self.root_index.get(root) {
+                                units.push_back(QueryUnit::Block { slot });
                             }
                         }
                     }
                 }
-                self.query_queue.push_back(PendingQuery::Complete { stream_id: request.stream_id });
             }
-            _ => {}
+            // Unhandled request kind: no response (matches prior behaviour).
+            _ => return,
         }
+        self.query_queue.push_back(PendingQuery { stream_id, units });
     }
 
     /// Canonical chain blocks with slot in `[start, end)`, found by walking
@@ -517,246 +508,6 @@ impl Store {
         chain
     }
 
-    pub(super) fn file_io<F>(
-        &mut self,
-        fork_digest: &[u8; 4],
-        producer: &mut TMultiProducer,
-        emit: &mut F,
-    ) -> Result<(), Error>
-    where
-        F: FnMut(P2pSend),
-    {
-        // Pending writes. Disk I/O on regular files is synchronous —
-        // O_NONBLOCK has no effect there — so each op blocks the tile
-        // until done. `MAX_WRITES_PER_LOOP` bounds the count (not the
-        // wall-clock) per loop iteration.
-        let mut writes = 0;
-        while writes < MAX_WRITES_PER_LOOP &&
-            let Some(pending) = self.write_queue.front()
-        {
-            writes += 1;
-
-            match pending {
-                PendingWrite::Index { block_root, slot } => {
-                    let dir = self.slot_dir(*slot);
-                    std::fs::create_dir_all(&dir)?;
-                    let path = dir.join("block_index.bin");
-                    let mut file = open_file_write(path, true)?;
-                    // Pack the 40-byte record and write atomically — a
-                    // partial append would misalign every subsequent
-                    // fixed-width record on retry.
-                    let mut record = [0u8; 40];
-                    record[..32].copy_from_slice(block_root);
-                    record[32..].copy_from_slice(&slot.to_le_bytes());
-                    file.write_all(&record)?;
-                    self.write_queue.pop_front();
-                }
-                PendingWrite::Column { slot, column, ssz } => {
-                    let dir = self.slot_dir(*slot);
-                    std::fs::create_dir_all(&dir)?;
-                    let path = dir.join(format!("{slot}_{column}.ssz"));
-                    let (buffer, _) = ssz.buffer().map_err(Error::other)?;
-                    open_file_write(path, false)?.write_all(buffer)?;
-                    self.write_queue.pop_front();
-                }
-                PendingWrite::UnfinalizedBlock { slot, parent_root, block_root, ssz } => {
-                    let dir = self.unfinalized_dir();
-                    std::fs::create_dir_all(&dir)?;
-                    let path = dir.join(unfinalized_name(*slot, parent_root, block_root));
-                    let (buffer, _) = ssz.buffer().map_err(Error::other)?;
-                    open_file_write(path, false)?.write_all(buffer)?;
-                    self.write_queue.pop_front();
-                }
-                PendingWrite::Promote { slot, parent_root, block_root } => {
-                    let dir = self.slot_dir(*slot);
-                    std::fs::create_dir_all(&dir)?;
-                    let from = self.unfinalized_dir().join(unfinalized_name(
-                        *slot,
-                        parent_root,
-                        block_root,
-                    ));
-                    // Rename is atomic; data before index. A NotFound means the
-                    // file was already moved/pruned — treat the move as done.
-                    match std::fs::rename(&from, dir.join(format!("{slot}_block.ssz"))) {
-                        Ok(()) => {}
-                        Err(e) if e.kind() == ErrorKind::NotFound => {}
-                        Err(e) => return Err(e),
-                    }
-                    let mut record = [0u8; 40];
-                    record[..32].copy_from_slice(block_root);
-                    record[32..].copy_from_slice(&slot.to_le_bytes());
-                    open_file_write(dir.join("block_index.bin"), true)?.write_all(&record)?;
-                    self.write_queue.pop_front();
-                }
-                PendingWrite::Prune { slot, parent_root, block_root } => {
-                    let path = self.unfinalized_dir().join(unfinalized_name(
-                        *slot,
-                        parent_root,
-                        block_root,
-                    ));
-                    match std::fs::remove_file(path) {
-                        Ok(()) => {}
-                        Err(e) if e.kind() == ErrorKind::NotFound => {}
-                        Err(e) => return Err(e),
-                    }
-                    self.write_queue.pop_front();
-                }
-                PendingWrite::UnfinalizedColumn { slot, block_root, column, ssz } => {
-                    let dir = self.unfinalized_columns_dir();
-                    std::fs::create_dir_all(&dir)?;
-                    let path = dir.join(unfinalized_column_name(*slot, block_root, *column));
-                    let (buffer, _) = ssz.buffer().map_err(Error::other)?;
-                    open_file_write(path, false)?.write_all(buffer)?;
-                    self.write_queue.pop_front();
-                }
-                PendingWrite::PromoteColumn { slot, block_root, column } => {
-                    let dir = self.slot_dir(*slot);
-                    std::fs::create_dir_all(&dir)?;
-                    let from = self
-                        .unfinalized_columns_dir()
-                        .join(unfinalized_column_name(*slot, block_root, *column));
-                    // Rename is atomic; NotFound means already moved/pruned.
-                    match std::fs::rename(&from, dir.join(format!("{slot}_{column}.ssz"))) {
-                        Ok(()) => {}
-                        Err(e) if e.kind() == ErrorKind::NotFound => {}
-                        Err(e) => return Err(e),
-                    }
-                    self.write_queue.pop_front();
-                }
-                PendingWrite::PruneColumn { slot, block_root, column } => {
-                    let path = self
-                        .unfinalized_columns_dir()
-                        .join(unfinalized_column_name(*slot, block_root, *column));
-                    match std::fs::remove_file(path) {
-                        Ok(()) => {}
-                        Err(e) if e.kind() == ErrorKind::NotFound => {}
-                        Err(e) => return Err(e),
-                    }
-                    self.write_queue.pop_front();
-                }
-            }
-        }
-
-        // Pending reads.
-        let mut reads = 0;
-        while reads < MAX_READS_PER_LOOP &&
-            let Some(pending_query) = self.query_queue.front()
-        {
-            reads += 1;
-
-            match pending_query {
-                PendingQuery::Column { stream_id, slot, column } => {
-                    let path = self.slot_dir(*slot).join(format!("{slot}_{column}.ssz"));
-                    match Self::serve_file(&path, producer)? {
-                        ServeResult::Sent(read) => {
-                            emit(P2pSend::Rpc(RpcOutbound::Response(RpcResponseOutbound {
-                                stream_id: *stream_id,
-                                response: RpcResponse::DataColumnSidecar {
-                                    fork_digest: *fork_digest,
-                                    ssz: read,
-                                },
-                            })));
-                            self.query_queue.pop_front();
-                        }
-                        ServeResult::Missing => {
-                            self.query_queue.pop_front();
-                        }
-                        ServeResult::ProducerFull => break,
-                    }
-                }
-                PendingQuery::Block { stream_id, slot } => {
-                    let path = self.slot_dir(*slot).join(format!("{slot}_block.ssz"));
-                    match Self::serve_file(&path, producer)? {
-                        ServeResult::Sent(read) => {
-                            emit(P2pSend::Rpc(RpcOutbound::Response(RpcResponseOutbound {
-                                stream_id: *stream_id,
-                                response: RpcResponse::BeaconBlock {
-                                    fork_digest: *fork_digest,
-                                    ssz: read,
-                                },
-                            })));
-                            self.query_queue.pop_front();
-                        }
-                        ServeResult::Missing => {
-                            self.query_queue.pop_front();
-                        }
-                        ServeResult::ProducerFull => break,
-                    }
-                }
-                PendingQuery::UnfinalizedBlock { stream_id, slot, parent_root, block_root } => {
-                    let path = self.unfinalized_dir().join(unfinalized_name(
-                        *slot,
-                        parent_root,
-                        block_root,
-                    ));
-                    match Self::serve_file(&path, producer)? {
-                        ServeResult::Sent(read) => {
-                            emit(P2pSend::Rpc(RpcOutbound::Response(RpcResponseOutbound {
-                                stream_id: *stream_id,
-                                response: RpcResponse::BeaconBlock {
-                                    fork_digest: *fork_digest,
-                                    ssz: read,
-                                },
-                            })));
-                            self.query_queue.pop_front();
-                        }
-                        ServeResult::Missing => {
-                            self.query_queue.pop_front();
-                        }
-                        ServeResult::ProducerFull => break,
-                    }
-                }
-                PendingQuery::UnfinalizedColumn { stream_id, slot, block_root, column } => {
-                    let path = self
-                        .unfinalized_columns_dir()
-                        .join(unfinalized_column_name(*slot, block_root, *column));
-                    match Self::serve_file(&path, producer)? {
-                        ServeResult::Sent(read) => {
-                            emit(P2pSend::Rpc(RpcOutbound::Response(RpcResponseOutbound {
-                                stream_id: *stream_id,
-                                response: RpcResponse::DataColumnSidecar {
-                                    fork_digest: *fork_digest,
-                                    ssz: read,
-                                },
-                            })));
-                            self.query_queue.pop_front();
-                        }
-                        ServeResult::Missing => {
-                            self.query_queue.pop_front();
-                        }
-                        ServeResult::ProducerFull => break,
-                    }
-                }
-                PendingQuery::Complete { stream_id } => {
-                    emit(P2pSend::Rpc(RpcOutbound::Response(RpcResponseOutbound {
-                        stream_id: *stream_id,
-                        response: RpcResponse::Complete,
-                    })));
-                    self.query_queue.pop_front();
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Read the whole file at `path` into a freshly-reserved tcache
-    /// slot. `Missing` if the file doesn't exist (skip the query),
-    /// `ProducerFull` if the tcache has no room (retry next loop).
-    fn serve_file(path: &Path, producer: &mut TMultiProducer) -> Result<ServeResult, Error> {
-        let mut file = match open_file_read(path) {
-            Ok(f) => f,
-            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(ServeResult::Missing),
-            Err(e) => return Err(e),
-        };
-        let ssz_len = file.metadata()?.len() as usize;
-        let Some(mut reservation) = producer.reserve(ssz_len, true) else {
-            return Ok(ServeResult::ProducerFull);
-        };
-        file.read_exact(&mut reservation.buffer()?[..ssz_len])?;
-        reservation.increment_offset(ssz_len);
-        Ok(ServeResult::Sent(reservation.read()))
-    }
-
     fn slot_dir(&self, slot: u64) -> PathBuf {
         let group_dir = slot & !(SLOTS_PER_DIR - 1);
         PathBuf::new().join(&self.store_dir).join(group_dir.to_string())
@@ -776,85 +527,6 @@ fn columns_of(bitmask: u128) -> impl Iterator<Item = u64> {
     (0..128u64).filter(move |c| bitmask & (1u128 << c) != 0)
 }
 
-enum ServeResult {
-    Sent(TCacheRead),
-    Missing,
-    ProducerFull,
-}
-
-fn open_file_read<P: AsRef<Path>>(path: P) -> Result<File, Error> {
-    File::open(path)
-}
-
-fn open_file_write<P: AsRef<Path>>(path: P, append: bool) -> Result<File, Error> {
-    if append {
-        File::options().append(true).create(true).open(path)
-    } else {
-        File::options().write(true).create(true).truncate(true).open(path)
-    }
-}
-
-/// `<slot>_<parent_root>_<block_root>.ssz` — the unfinalized fork-tree
-/// filename, which durably encodes the tree edge.
-fn unfinalized_name(slot: u64, parent_root: &[u8; 32], block_root: &[u8; 32]) -> String {
-    format!("{slot}_{}_{}.ssz", hex32(parent_root), hex32(block_root))
-}
-
-/// Inverse of `unfinalized_name`. `None` on any malformed name so a stray
-/// file in `unfinalized/` is skipped rather than aborting the load scan.
-fn parse_unfinalized_name(name: &str) -> Option<([u8; 32], UnfinalizedBlock)> {
-    let stem = name.strip_suffix(".ssz")?;
-    let mut parts = stem.split('_');
-    let slot: u64 = parts.next()?.parse().ok()?;
-    let parent_root = parse_hex32(parts.next()?)?;
-    let block_root = parse_hex32(parts.next()?)?;
-    if parts.next().is_some() {
-        return None;
-    }
-    Some((block_root, UnfinalizedBlock { slot, parent_root }))
-}
-
-/// `<slot>_<block_root>_<column>.ssz` — the unfinalized column filename.
-fn unfinalized_column_name(slot: u64, block_root: &[u8; 32], column: u64) -> String {
-    format!("{slot}_{}_{column}.ssz", hex32(block_root))
-}
-
-/// Inverse of `unfinalized_column_name`, returning `(block_root, slot,
-/// column)`. `None` on a malformed name so a stray file is skipped on load.
-fn parse_unfinalized_column_name(name: &str) -> Option<([u8; 32], u64, u64)> {
-    let stem = name.strip_suffix(".ssz")?;
-    let mut parts = stem.split('_');
-    let slot: u64 = parts.next()?.parse().ok()?;
-    let block_root = parse_hex32(parts.next()?)?;
-    let column: u64 = parts.next()?.parse().ok()?;
-    if parts.next().is_some() {
-        return None;
-    }
-    Some((block_root, slot, column))
-}
-
-fn hex32(bytes: &[u8; 32]) -> String {
-    let mut s = String::with_capacity(64);
-    for b in bytes {
-        s.push(char::from_digit((b >> 4) as u32, 16).unwrap());
-        s.push(char::from_digit((b & 0xf) as u32, 16).unwrap());
-    }
-    s
-}
-
-fn parse_hex32(s: &str) -> Option<[u8; 32]> {
-    if s.len() != 64 {
-        return None;
-    }
-    let mut out = [0u8; 32];
-    for (i, pair) in s.as_bytes().chunks_exact(2).enumerate() {
-        let hi = (pair[0] as char).to_digit(16)?;
-        let lo = (pair[1] as char).to_digit(16)?;
-        out[i] = ((hi << 4) | lo) as u8;
-    }
-    Some(out)
-}
-
 #[cfg(test)]
 mod tests {
     // NOTE: tests that stage reads via `add_block`/`add_data_column` must drain
@@ -871,7 +543,7 @@ mod tests {
     fn concurrent_read_write() {
         let path = format!("/tmp/silver_storage_rw_{}.txt", rand::random::<u32>());
         let _ = std::fs::remove_file(&path);
-        let mut file = super::open_file_write(&path, false).unwrap();
+        let mut file = super::io::open_file_write(&path, false).unwrap();
 
         let mut handles = vec![];
         for i in 0..10 {
@@ -879,7 +551,7 @@ mod tests {
             let h = thread::spawn(move || {
                 std::thread::sleep(Duration::from_millis(1));
                 let start = Instant::now();
-                let mut file = super::open_file_read(&path).unwrap();
+                let mut file = super::io::open_file_read(&path).unwrap();
                 let mut data = vec![0u8; 128 * 1024];
                 let mut read = 0;
                 for _ in 0..400 {
@@ -967,9 +639,9 @@ mod tests {
         store.file_io(&fork_digest, &mut producer, &mut |_| {}).unwrap();
 
         let path_a =
-            store.unfinalized_dir().join(super::unfinalized_name(slot, &parent_root, &root_a));
+            store.unfinalized_dir().join(super::io::unfinalized_name(slot, &parent_root, &root_a));
         let path_b =
-            store.unfinalized_dir().join(super::unfinalized_name(slot, &parent_root, &root_b));
+            store.unfinalized_dir().join(super::io::unfinalized_name(slot, &parent_root, &root_b));
         assert!(path_a.exists());
         assert!(path_b.exists());
 
@@ -1160,9 +832,9 @@ mod tests {
         let producer_cache = TCache::multi_producer("colfork_rpc_in", 1 << 20);
         let mut producer = producer_cache.clone();
         store.file_io(&fork_digest, &mut producer, &mut |_| {}).unwrap();
-        assert!(ucol_dir.join(super::unfinalized_column_name(slot, &root_a, 3)).exists());
-        assert!(ucol_dir.join(super::unfinalized_column_name(slot, &root_a, 7)).exists());
-        assert!(ucol_dir.join(super::unfinalized_column_name(slot, &root_b, 3)).exists());
+        assert!(ucol_dir.join(super::io::unfinalized_column_name(slot, &root_a, 3)).exists());
+        assert!(ucol_dir.join(super::io::unfinalized_column_name(slot, &root_a, 7)).exists());
+        assert!(ucol_dir.join(super::io::unfinalized_column_name(slot, &root_b, 3)).exists());
 
         let mut read_consumer =
             producer_cache.cache_ref().random_access("colfork_read", true).unwrap();
@@ -1228,8 +900,8 @@ mod tests {
         store.file_io(&fork_digest, &mut producer, &mut |_| {}).unwrap();
         assert!(flat_dir.join(format!("{slot}_3.ssz")).exists());
         assert!(flat_dir.join(format!("{slot}_7.ssz")).exists());
-        assert!(!ucol_dir.join(super::unfinalized_column_name(slot, &root_a, 3)).exists());
-        assert!(!ucol_dir.join(super::unfinalized_column_name(slot, &root_b, 3)).exists());
+        assert!(!ucol_dir.join(super::io::unfinalized_column_name(slot, &root_a, 3)).exists());
+        assert!(!ucol_dir.join(super::io::unfinalized_column_name(slot, &root_b, 3)).exists());
 
         // Range still serves A's columns, now from the flat finalized store.
         store.rpc_request(&mut req_consumer, RpcRequestInbound {
@@ -1246,6 +918,90 @@ mod tests {
         let reloaded = super::Store::load(store_path.clone()).unwrap();
         assert!(reloaded.unfinalized_columns.is_empty());
         assert_eq!(reloaded.root_index.get(&root_a), Some(&slot));
+
+        let _ = std::fs::remove_dir_all(&store_path);
+    }
+
+    // Two concurrent range requests must interleave chunk-by-chunk, not
+    // serialize (head-of-line fairness).
+    #[test]
+    fn range_queries_interleave_fairly() {
+        use silver_common::{
+            P2pSend, P2pStreamId, RpcOutbound, RpcRequest, RpcRequestInbound, RpcResponse,
+            RpcResponseOutbound, StreamProtocol, TCache, TCacheProducer,
+        };
+
+        let store_path = format!("/tmp/test_store_fair_{}", rand::random::<u32>());
+        let _ = std::fs::remove_dir_all(&store_path);
+        let mut store = super::Store::load(store_path.clone()).unwrap();
+
+        // Chain of two unfinalized blocks: slot 10 (parent CC) ← slot 11.
+        let parent = [0xCC; 32];
+        let root_10 = [0x10; 32];
+        let root_11 = [0x11; 32];
+        let mut blocks = TCache::producer("fair_blocks", 1 << 20);
+        let mut stage = |bytes: &[u8]| {
+            let mut r = blocks.reserve(bytes.len(), true).unwrap();
+            r.write_all(bytes).unwrap();
+            r.flush().unwrap();
+            r.read()
+        };
+        let ssz_10 = stage(&[0x10u8; 50]);
+        let ssz_11 = stage(&[0x11u8; 50]);
+        let mut consumer = blocks.cache_ref().random_access("fair_cons", true).unwrap();
+        store.add_block(root_10, consumer.acquire(ssz_10), 10, parent);
+        store.add_block(root_11, consumer.acquire(ssz_11), 11, root_10);
+        store.update_head(11, root_11, 0, [0u8; 32]);
+
+        let fork_digest = [0u8; 4];
+        let producer_cache = TCache::multi_producer("fair_rpc_in", 1 << 20);
+        let mut producer = producer_cache.clone();
+        store.file_io(&fork_digest, &mut producer, &mut |_| {}).unwrap(); // flush block writes
+
+        // Two BlocksByRange [10,12) on distinct streams, queued before draining.
+        let mut range = [0u8; 24];
+        range[0..8].copy_from_slice(&10u64.to_le_bytes());
+        range[8..16].copy_from_slice(&2u64.to_le_bytes());
+        range[16..24].copy_from_slice(&1u64.to_le_bytes());
+        let stream_a = P2pStreamId::new(1, 1, StreamProtocol::BeaconBlocksByRange, false);
+        let stream_b = P2pStreamId::new(2, 2, StreamProtocol::BeaconBlocksByRange, false);
+        let req_producer = TCache::producer("fair_req", 1 << 20);
+        let mut req_consumer =
+            req_producer.cache_ref().random_access("fair_req_cons", true).unwrap();
+        store.rpc_request(&mut req_consumer, RpcRequestInbound {
+            stream_id: stream_a,
+            request: RpcRequest::BlocksByRange(range),
+        });
+        store.rpc_request(&mut req_consumer, RpcRequestInbound {
+            stream_id: stream_b,
+            request: RpcRequest::BlocksByRange(range),
+        });
+
+        let mut responses = vec![];
+        store.file_io(&fork_digest, &mut producer, &mut |s| responses.push(s)).unwrap();
+
+        // Expect A10, B10, A11, B11, A-Complete, B-Complete — strict round-robin.
+        let ids: Vec<_> = responses
+            .iter()
+            .map(|s| {
+                let P2pSend::Rpc(RpcOutbound::Response(RpcResponseOutbound { stream_id, .. })) = s
+                else {
+                    panic!("expected RPC response, got {s:?}");
+                };
+                stream_id.stream_id()
+            })
+            .collect();
+        let (a, b) = (stream_a.stream_id(), stream_b.stream_id());
+        assert_ne!(a, b);
+        assert_eq!(responses.len(), 6);
+        assert_eq!(ids, vec![a, b, a, b, a, b], "responses must interleave across streams");
+        for resp in &responses[4..] {
+            let P2pSend::Rpc(RpcOutbound::Response(RpcResponseOutbound { response, .. })) = resp
+            else {
+                panic!("expected RPC response");
+            };
+            assert!(matches!(response, RpcResponse::Complete));
+        }
 
         let _ = std::fs::remove_dir_all(&store_path);
     }
