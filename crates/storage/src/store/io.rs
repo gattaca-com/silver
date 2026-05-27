@@ -75,7 +75,6 @@ impl Store {
                 }
                 PendingWrite::UnfinalizedBlock { slot, parent_root, block_root, ssz } => {
                     let dir = self.unfinalized_dir();
-                    std::fs::create_dir_all(&dir)?;
                     let path = dir.join(unfinalized_name(*slot, parent_root, block_root));
                     let (buffer, _) = ssz.buffer().map_err(Error::other)?;
                     open_file_write(path, false)?.write_all(buffer)?;
@@ -117,7 +116,6 @@ impl Store {
                 }
                 PendingWrite::UnfinalizedColumn { slot, block_root, column, ssz } => {
                     let dir = self.unfinalized_columns_dir();
-                    std::fs::create_dir_all(&dir)?;
                     let path = dir.join(unfinalized_column_name(*slot, block_root, *column));
                     let (buffer, _) = ssz.buffer().map_err(Error::other)?;
                     open_file_write(path, false)?.write_all(buffer)?;

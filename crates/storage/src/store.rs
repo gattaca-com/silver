@@ -169,8 +169,11 @@ impl Store {
 
         // Rebuild the unfinalized fork tree from filenames — the edges are
         // encoded in the names, so no block bodies are read.
+        let unfinalized_dir = Path::new(&store_dir).join(UNFINALIZED_DIR);
+        std::fs::create_dir_all(&unfinalized_dir)?;
+
         let mut unfinalized = FxHashMap::default();
-        if let Ok(entries) = std::fs::read_dir(Path::new(&store_dir).join(UNFINALIZED_DIR)) {
+        if let Ok(entries) = std::fs::read_dir(unfinalized_dir) {
             for entry in entries {
                 if let Some(name) = entry?.file_name().to_str() &&
                     let Some((block_root, block)) = io::parse_unfinalized_name(name)
@@ -182,9 +185,11 @@ impl Store {
 
         // Rebuild the unfinalized column index from filenames (slot + owning
         // block_root + column index), no bodies read.
+        let unfinalized_columns_dir = Path::new(&store_dir).join(UNFINALIZED_COLUMNS_DIR);
+        std::fs::create_dir_all(&unfinalized_columns_dir)?;
+
         let mut unfinalized_columns: FxHashMap<[u8; 32], (u64, u128)> = FxHashMap::default();
-        if let Ok(entries) = std::fs::read_dir(Path::new(&store_dir).join(UNFINALIZED_COLUMNS_DIR))
-        {
+        if let Ok(entries) = std::fs::read_dir(unfinalized_columns_dir) {
             for entry in entries {
                 if let Some(name) = entry?.file_name().to_str() &&
                     let Some((block_root, slot, column)) =
