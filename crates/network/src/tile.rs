@@ -114,7 +114,10 @@ impl Tile<SilverSpine> for NetworkTile {
                     adapter.produce(PeerEvent::P2pPeerIdentity { p2p_peer: peer, identify });
                 }
                 NetEvent::PeerDisconnected { peer } => {
-                    adapter.produce(PeerEvent::P2pDisconnect { p2p_peer: peer.connection });
+                    adapter.produce(PeerEvent::P2pDisconnect {
+                        p2p_peer: peer.connection,
+                        peer_id: peer.peer_id,
+                    });
                 }
                 NetEvent::StreamReady { stream: _ } => {
                     // TODO notifiy new stream?
