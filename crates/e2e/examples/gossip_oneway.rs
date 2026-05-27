@@ -38,8 +38,8 @@ use std::{
 };
 
 use flux::{tile::Tile, timing::Nanos};
-use rand::{Rng, RngCore};
 use mimalloc::MiMalloc;
+use rand::{Rng, RngCore};
 use silver_common::{GossipMsgOut, GossipTopic, NewGossipMsg, P2pSend, PeerEvent, TRandomAccess};
 use silver_e2e::{
     EchoCompressionHalf, EchoNetworkHalf, EchoStack, PublisherStack, Stats,
@@ -61,7 +61,7 @@ const DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 static GLOBAL: MiMalloc = MiMalloc;
 
 fn main() {
-     #[cfg(feature = "alloc-profile")]
+    #[cfg(feature = "alloc-profile")]
     let _alloc_profile_guard = silver_common::allocator::init_allocator_trace();
 
     tracing_subscriber::fmt().with_max_level(tracing::Level::WARN).try_init().ok();

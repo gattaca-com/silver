@@ -4,7 +4,6 @@ use flux::{
     tile::{TileConfig, attach_tile},
     utils::ThreadPriority,
 };
-use mimalloc::MiMalloc;
 use quinn_proto::{Endpoint, EndpointConfig};
 use rand::RngCore;
 use silver_beacon_state::{BeaconStateTile, SlotTicker};
@@ -18,7 +17,7 @@ use tracing_subscriber::{EnvFilter, fmt::format::FmtSpan};
 
 #[cfg(not(feature = "alloc-profile"))]
 #[global_allocator]
-static GLOBAL: MiMalloc = MiMalloc;
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() -> Result<(), Box<dyn Error>> {
     #[cfg(feature = "alloc-profile")]
