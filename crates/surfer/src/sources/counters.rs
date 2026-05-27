@@ -23,6 +23,9 @@ use crate::discovery::CounterFile;
 pub const BUCKET_SECS: u64 = 1;
 /// 1 s bucket × 240 = 4 minutes of history.
 pub const BUCKET_HISTORY_LEN: usize = 240;
+/// Per-consumer name buffer size (matches
+/// `silver_common::spine::tcache::metrics::NAME_LEN`).
+const CONSUMER_NAME_LEN: usize = 32;
 
 pub struct CounterSet {
     pub name: String,
@@ -31,6 +34,12 @@ pub struct CounterSet {
     /// are positional fallbacks because no schema was wired up
     /// (`false`).
     pub schema_registered: bool,
+    /// Companion read-only mmap into `tcache-names-{name}` when the
+    /// CounterSet is a tcache. `n_consumers × 32` bytes of zero-padded
+    /// UTF-8. `None` for non-tcache counters and for tcaches whose
+    /// names file couldn't be opened.
+    consumer_names_base: *const u8,
+    consumer_names_bytes: usize,
     base: *const AtomicU64,
     slot_count: usize,
     map_bytes: usize,
@@ -64,10 +73,33 @@ impl CounterSet {
         let map_bytes = slot_count * 8;
         let base = mmap_readonly(&file.path, map_bytes)?;
         let (slot_names, schema_registered) = crate::schema::names_for(&file.name, slot_count);
+
+        // For tcache counters, try to open the companion names file
+        // `tcache-names-{tcache_name}`. Failure is non-fatal — surfer
+        // continues to render with positional labels.
+        let (consumer_names_base, consumer_names_bytes) =
+            if let Some(tc_name) = file.name.strip_prefix("tcache-") {
+                let n_consumers = slot_count.saturating_sub(2);
+                let names_bytes = n_consumers * CONSUMER_NAME_LEN;
+                let names_path = file
+                    .path
+                    .parent()
+                    .map(|d| d.join(format!("tcache-names-{tc_name}")))
+                    .unwrap_or_default();
+                match mmap_readonly_bytes(&names_path, names_bytes) {
+                    Ok(p) => (p, names_bytes),
+                    Err(_) => (std::ptr::null(), 0),
+                }
+            } else {
+                (std::ptr::null(), 0)
+            };
+
         Ok(Self {
             name: file.name.clone(),
             slot_names,
             schema_registered,
+            consumer_names_base,
+            consumer_names_bytes,
             base,
             slot_count,
             map_bytes,
@@ -77,6 +109,26 @@ impl CounterSet {
             history: (0..slot_count).map(|_| VecDeque::with_capacity(BUCKET_HISTORY_LEN)).collect(),
             primed: false,
         })
+    }
+
+    /// Return the consumer name string for tail slot `consumer_idx`
+    /// (= slot index minus 2 for tcaches). Empty string when the
+    /// names file isn't open or the slot is uninitialised.
+    pub fn consumer_name(&self, consumer_idx: usize) -> &str {
+        if self.consumer_names_base.is_null() {
+            return "";
+        }
+        let off = consumer_idx * CONSUMER_NAME_LEN;
+        if off + CONSUMER_NAME_LEN > self.consumer_names_bytes {
+            return "";
+        }
+        // SAFETY: bounds checked above; bytes are written by the
+        // producer side under a zero-padded UTF-8 convention.
+        let bytes = unsafe {
+            std::slice::from_raw_parts(self.consumer_names_base.add(off), CONSUMER_NAME_LEN)
+        };
+        let end = bytes.iter().position(|&b| b == 0).unwrap_or(CONSUMER_NAME_LEN);
+        std::str::from_utf8(&bytes[..end]).unwrap_or("")
     }
 
     /// Read all slots into `current`, after copying the previous tick's
@@ -139,13 +191,37 @@ impl CounterSet {
 
 impl Drop for CounterSet {
     fn drop(&mut self) {
-        // SAFETY: `base` was returned by mmap with `map_bytes`; nothing
-        // else holds a reference into it (we hand out only borrowed
-        // slices via accessors that don't outlive `&self`).
+        // SAFETY: both pointers came from `mmap` with the recorded sizes;
+        // nothing else holds references into them (we hand out only
+        // borrowed slices via accessors that don't outlive `&self`).
         unsafe {
             libc::munmap(self.base as *mut libc::c_void, self.map_bytes);
+            if !self.consumer_names_base.is_null() {
+                libc::munmap(
+                    self.consumer_names_base as *mut libc::c_void,
+                    self.consumer_names_bytes,
+                );
+            }
         }
     }
+}
+
+fn mmap_readonly_bytes(path: &Path, bytes: usize) -> io::Result<*const u8> {
+    let file = OpenOptions::new().read(true).open(path)?;
+    let ptr = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            bytes,
+            libc::PROT_READ,
+            libc::MAP_SHARED,
+            file.as_raw_fd(),
+            0,
+        )
+    };
+    if ptr == libc::MAP_FAILED {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(ptr.cast::<u8>())
 }
 
 #[cfg(test)]

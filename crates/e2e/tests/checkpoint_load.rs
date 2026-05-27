@@ -47,8 +47,8 @@ fn finalized_state_loads() {
     let ticker = SlotTicker::new(genesis_time, Duration::from_secs(12), Duration::from_secs(4));
     let gossip_p = TCache::producer("gossip_in", 1 << 20);
     let rpc_p = TCache::producer("rpc_in", 1 << 20);
-    let gossip_c = gossip_p.cache_ref().random_access(false).unwrap();
-    let rpc_c = rpc_p.cache_ref().random_access(false).unwrap();
+    let gossip_c = gossip_p.cache_ref().random_access("test", false).unwrap();
+    let rpc_c = rpc_p.cache_ref().random_access("test", false).unwrap();
 
     let mut tile = BeaconStateTile::new_heap(
         ticker,

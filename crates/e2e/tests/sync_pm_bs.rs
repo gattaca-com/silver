@@ -150,8 +150,8 @@ fn pm_drives_two_batches_against_real_checkpoint() {
 
     let gossip_p = TCache::producer("gossip_in", 1 << 20);
     let mut rpc_p = TCache::producer("rpc_in", 1 << 22); // largest mainnet block ~250KB × 4
-    let gossip_c = gossip_p.cache_ref().random_access(true).expect("gossip ra");
-    let rpc_c = rpc_p.cache_ref().random_access(true).expect("rpc ra");
+    let gossip_c = gossip_p.cache_ref().random_access("test", true).expect("gossip ra");
+    let rpc_c = rpc_p.cache_ref().random_access("test", true).expect("rpc ra");
 
     let mut bs = BeaconStateTile::new_heap(
         ticker,

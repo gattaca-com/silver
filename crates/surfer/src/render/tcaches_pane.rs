@@ -156,7 +156,9 @@ fn draw_chart(f: &mut Frame, area: Rect, app: &App) {
         let color = TAIL_COLORS[consumer_idx % TAIL_COLORS.len()];
         let data: Vec<(f64, f64)> =
             hist.iter().enumerate().map(|(i, &v)| (i as f64, v as f64)).collect();
-        series.push(ChartSeries { name: format!("tail_{consumer_idx}"), color, data });
+        let name = set.consumer_name(consumer_idx);
+        let label = if name.is_empty() { format!("tail_{consumer_idx}") } else { name.to_string() };
+        series.push(ChartSeries { name: label, color, data });
     }
 
     let title = format!(" {} — 1s deltas (bytes/s) ", view.display_name());

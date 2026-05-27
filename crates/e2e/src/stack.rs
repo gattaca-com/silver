@@ -201,29 +201,31 @@ impl PublisherStack {
         // TCaches needed by the network tile on the publisher side.
         // gossip_in: network writes raw inbound gossip here; nobody reads.
         let gossip_in_producer = TCache::producer("e2e_stack", TCACHE_SIZE);
-        let gossip_in_consumer = gossip_in_producer.cache_ref().consumer().ok();
+        let gossip_in_consumer = gossip_in_producer.cache_ref().consumer("e2e").ok();
 
         // gossip_out: network reads outbound bytes from here via random-access.
         // The publisher's mcache TCache IS the gossip_out source — same cache.
         let mcache_producer = TCache::producer("e2e_stack", TCACHE_SIZE);
-        let gossip_out_ra = mcache_producer.cache_ref().random_access(true).expect("random_access");
+        let gossip_out_ra =
+            mcache_producer.cache_ref().random_access("e2e", true).expect("random_access");
 
         // rpc_in: network writes inbound RPC payload bytes here; tests
         // (multipart-RPC) read via `rpc_in_ra`. Regular consumer also
         // attached for keep-alive plus future controller use.
         let rpc_in_producer = TCache::producer("e2e_stack", TCACHE_SIZE);
-        let rpc_in_consumer = rpc_in_producer.cache_ref().consumer().ok();
+        let rpc_in_consumer = rpc_in_producer.cache_ref().consumer("e2e").ok();
         let rpc_in_ra =
-            rpc_in_producer.cache_ref().random_access(true).expect("rpc_in random_access");
+            rpc_in_producer.cache_ref().random_access("e2e", true).expect("rpc_in random_access");
         // rpc_out: tests reserve here to inject outbound BeaconBlock
         // chunks; the network tile reads via the random-access handle
         // wired into `Context.rpc_consumer`.
         let rpc_out_producer = TCache::producer("e2e_stack", TCACHE_SIZE);
-        let rpc_out_ra = rpc_out_producer.cache_ref().random_access(true).expect("random_access");
+        let rpc_out_ra =
+            rpc_out_producer.cache_ref().random_access("e2e", true).expect("random_access");
 
         // gossip_out handle given to network.
         let gossip_out_ra_for_network =
-            mcache_producer.cache_ref().random_access(true).expect("random_access");
+            mcache_producer.cache_ref().random_access("e2e", true).expect("random_access");
 
         let context = Context {
             gossip_producer: gossip_in_producer,
@@ -306,24 +308,25 @@ impl EchoStack {
 
         // Inbound gossip raw bytes: network writes, compression consumes.
         let gossip_in_producer = TCache::producer("e2e_stack", TCACHE_SIZE);
-        let gossip_in_consumer = gossip_in_producer.cache_ref().consumer().expect("consumer");
+        let gossip_in_consumer = gossip_in_producer.cache_ref().consumer("e2e").expect("consumer");
 
         // SSZ output: compression writes, stats-sink reads.
         let ssz_producer = TCache::producer("e2e_stack", TCACHE_SIZE);
-        let ssz_consumer = ssz_producer.cache_ref().random_access(true).expect("consumer");
+        let ssz_consumer = ssz_producer.cache_ref().random_access("e2e", true).expect("consumer");
 
         // Protobuf mcache: compression writes; network reads via random_access
         // when re-forwarding. Not exercised in one-way test but wiring must
         // exist.
         let protobuf_producer = TCache::producer("e2e_stack", TCACHE_SIZE);
         let protobuf_ra_for_network =
-            protobuf_producer.cache_ref().random_access(true).expect("random_access");
+            protobuf_producer.cache_ref().random_access("e2e", true).expect("random_access");
 
         // RPC caches: dummy.
         let rpc_in_producer = TCache::producer("e2e_stack", TCACHE_SIZE);
-        let rpc_in_consumer = rpc_in_producer.cache_ref().consumer().ok();
+        let rpc_in_consumer = rpc_in_producer.cache_ref().consumer("e2e").ok();
         let rpc_out_producer = TCache::producer("e2e_stack", TCACHE_SIZE);
-        let rpc_out_ra = rpc_out_producer.cache_ref().random_access(true).expect("random_access");
+        let rpc_out_ra =
+            rpc_out_producer.cache_ref().random_access("e2e", true).expect("random_access");
 
         let context = Context {
             gossip_producer: gossip_in_producer,

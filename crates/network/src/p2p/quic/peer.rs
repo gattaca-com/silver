@@ -542,13 +542,14 @@ mod tests {
     impl PeerHarness {
         fn new() -> Self {
             let gossip_in_p = TCache::producer("gossip_in", TCACHE_BYTES);
-            let gossip_in_c = gossip_in_p.cache_ref().consumer().unwrap();
+            let gossip_in_c = gossip_in_p.cache_ref().consumer("peer_gossip_in").unwrap();
             let gossip_out_p = TCache::producer("gossip_out", TCACHE_BYTES);
-            let gossip_out_c = gossip_out_p.cache_ref().random_access(false).unwrap();
+            let gossip_out_c =
+                gossip_out_p.cache_ref().random_access("peer_gossip_out", false).unwrap();
 
             let rpc_in_p = TCache::producer("rpc_in", TCACHE_BYTES);
             let rpc_out_p = TCache::producer("rpc_out", TCACHE_BYTES);
-            let rpc_out_c = rpc_out_p.cache_ref().random_access(false).unwrap();
+            let rpc_out_c = rpc_out_p.cache_ref().random_access("peer_rpc_out", false).unwrap();
 
             Self {
                 context: Context {
