@@ -12,26 +12,28 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use rand::{RngCore, SeedableRng, rngs::StdRng};
 use silver_beacon_state::{
     bls::{self, DOMAIN_BEACON_ATTESTER, DST, SigBatch},
-    decompose::decompose_beacon_state,
     shuffling,
-    ssz_hash::hash_attestation_data,
+    ssz_hash::{StateHashScratch, hash_attestation_data},
     state_transition::{
         self, ShufflingRef, collect_sigs_attestations, collect_sigs_attester_slashings,
         collect_sigs_bls_to_execution_changes, collect_sigs_proposer_slashings,
         collect_sigs_randao, collect_sigs_sync_aggregate, collect_sigs_voluntary_exits,
     },
-    types::{
-        B256, Epoch, EpochData, HistoricalLongtail, Immutable, PendingQueues, SLOTS_PER_EPOCH,
-        SlotData, SlotRoots, box_zeroed,
-    },
-    validator_identity::{FinalizedValidators, ValidatorsState},
 };
 use silver_common::{
-    SpecConfig,
+    B256, DeltaBuffer, Epoch, EpochStateDelta, Finalized, LongtailState, SLOTS_PER_EPOCH,
+    SlotStateDelta, SpecConfig, StateDelta, StateDeltaView,
+    beacon_state::{
+        ValidatorsDelta,
+        types::{EPOCHS_RING_N, LONGTAILS_RING_N},
+    },
     ssz_view::{
         BLOCK_SYNC_AGGREGATE_SIZE, BeaconBlockBodyView, SINGLE_ATT_SIZE, SignedBeaconBlockView,
     },
 };
+
+type EpochRing = DeltaBuffer<EpochStateDelta, EPOCHS_RING_N>;
+type LongtailRing = DeltaBuffer<LongtailState, LONGTAILS_RING_N>;
 
 fn keypair(seed: u64) -> (SecretKey, PublicKey) {
     let mut rng = StdRng::seed_from_u64(seed);
@@ -136,47 +138,41 @@ fn snappy_decode(path: &Path) -> Vec<u8> {
 }
 
 struct LoadedState {
-    imm: Box<Immutable>,
-    fv: FinalizedValidators,
-    longtail: Box<HistoricalLongtail>,
-    epoch: Box<EpochData>,
-    roots: Box<SlotRoots>,
-    sd: Box<SlotData>,
-    pq: PendingQueues,
+    finalized: Box<Finalized>,
+    delta: StateDelta,
+    epochs: EpochRing,
+    longtails: LongtailRing,
+}
+
+fn anchored_delta(f: &Finalized) -> StateDelta {
+    StateDelta {
+        validators: ValidatorsDelta::new_at(&f.validators),
+        slot: SlotStateDelta { slot: f.slot.slot, ..Default::default() },
+        ..StateDelta::default()
+    }
 }
 
 fn load_pre_at(dir: &Path) -> LoadedState {
     let pre_ssz = snappy_decode(&dir.join("pre.ssz_snappy"));
-    let mut s = LoadedState {
-        imm: box_zeroed(),
-        fv: FinalizedValidators::new(&[], &[]),
-        longtail: box_zeroed(),
-        epoch: box_zeroed(),
-        roots: box_zeroed(),
-        sd: box_zeroed(),
-        pq: PendingQueues::new(),
-    };
-    s.pq = decompose_beacon_state(
-        &pre_ssz,
-        &mut s.imm,
-        &mut s.fv,
-        &mut s.longtail,
-        &mut s.epoch,
-        &mut s.roots,
-        &mut s.sd,
-    )
-    .expect("decompose");
-    s
+    let cfg = SpecConfig::mainnet();
+    let mut finalized = Box::new(Finalized::default());
+    finalized.decompose(&pre_ssz, &cfg).expect("decompose");
+    let delta = anchored_delta(&finalized);
+    LoadedState {
+        finalized,
+        delta,
+        epochs: DeltaBuffer::default(),
+        longtails: DeltaBuffer::default(),
+    }
 }
 
-fn shuffle_for_epoch(e: &EpochData, n: usize, epoch: Epoch) -> (Vec<u32>, usize) {
-    const DOMAIN_BEACON_ATTESTER_U32: u32 = 1;
-    let seed = shuffling::get_seed(e, epoch, DOMAIN_BEACON_ATTESTER_U32);
+fn shuffle_for_epoch(view: &StateDeltaView, epoch: Epoch) -> (Vec<u32>, usize) {
+    let seed = shuffling::get_seed_from_state(view, epoch, shuffling::DOMAIN_BEACON_ATTESTER);
     let mut active = Vec::new();
-    shuffling::get_active_validator_indices_into(e, n, epoch, &mut active);
-    let cps = shuffling::committees_per_slot(active.len());
+    shuffling::get_active_validator_indices_into(view, epoch, &mut active);
+    let committees_per_slot = shuffling::committees_per_slot(active.len());
     shuffling::shuffle_list(&mut active, &seed);
-    (active, cps)
+    (active, committees_per_slot)
 }
 
 fn build_ef_block() -> SigBatch {
@@ -188,50 +184,41 @@ fn build_ef_block() -> SigBatch {
     let proposer_index = SignedBeaconBlockView::proposer_index(&block);
     let body = SignedBeaconBlockView::body(&block);
 
+    let cfg = SpecConfig::mainnet();
+    let mut view = StateDeltaView::new(&s.finalized, &mut s.delta, &mut s.epochs, &mut s.longtails);
+
     let mut active = Vec::new();
     let mut postponed = Vec::new();
-    if block_slot > s.sd.slot {
-        let mut view = ValidatorsState::with_empty_delta(&s.fv);
-        let cfg = SpecConfig::mainnet();
+    let mut replace_u64 = Vec::new();
+    let mut replace_u8 = Vec::new();
+    let mut eff = Vec::new();
+    let mut state_hash = StateHashScratch::new();
+    if block_slot > view.slot() {
         state_transition::process_slots(
             &cfg,
-            &s.imm,
             &mut view,
-            &mut s.longtail,
-            &mut s.epoch,
-            &mut s.roots,
-            &mut s.sd,
-            &mut s.pq,
             block_slot,
             &mut active,
             &mut postponed,
+            &mut replace_u64,
+            &mut replace_u8,
+            &mut eff,
+            &mut state_hash,
         );
     }
 
-    let current_epoch = block_slot / SLOTS_PER_EPOCH;
-    let prev_epoch = current_epoch.saturating_sub(1);
-    let n = s.fv.validator_cnt();
-    let (cur_shuffled, cur_cps) = shuffle_for_epoch(&s.epoch, n, current_epoch);
-    let (prev_shuffled, prev_cps) = shuffle_for_epoch(&s.epoch, n, prev_epoch);
+    let curr_epoch = block_slot / SLOTS_PER_EPOCH;
+    let prev_epoch = curr_epoch.saturating_sub(1);
+    let (curr_shuffled, curr_committees_per_slot) = shuffle_for_epoch(&view, curr_epoch);
+    let (prev_shuffled, prev_committees_per_slot) = shuffle_for_epoch(&view, prev_epoch);
     let sref = ShufflingRef {
-        current_epoch,
-        current_shuffled: &cur_shuffled,
-        current_cps: cur_cps,
-        previous_epoch: prev_epoch,
-        previous_shuffled: &prev_shuffled,
-        previous_cps: prev_cps,
+        curr_epoch,
+        curr_shuffled: &curr_shuffled,
+        curr_committees_per_slot,
+        prev_epoch,
+        prev_shuffled: &prev_shuffled,
+        prev_committees_per_slot,
     };
-
-    let mut batch = SigBatch::new();
-    let mut scratch = Vec::new();
-
-    collect_sigs_randao(
-        &s.imm,
-        body,
-        block_slot,
-        s.fv.pubkey_decompressed(proposer_index as usize),
-        &mut batch,
-    );
 
     let ps = BeaconBlockBodyView::proposer_slashings_offset(body) as usize;
     let at_s = BeaconBlockBodyView::attester_slashings_offset(body) as usize;
@@ -242,12 +229,14 @@ fn build_ef_block() -> SigBatch {
     let bls_ = BeaconBlockBodyView::bls_to_execution_changes_offset(body) as usize;
     let blob = BeaconBlockBodyView::blob_kzg_commitments_offset(body) as usize;
 
-    let view = ValidatorsState::with_empty_delta(&s.fv);
-    let _ = collect_sigs_proposer_slashings(&s.imm, &view, &body[ps..at_s], &mut batch);
-    let _ =
-        collect_sigs_attester_slashings(&s.imm, &view, &body[at_s..att], &mut scratch, &mut batch);
+    let mut batch = SigBatch::new();
+    let mut scratch = Vec::new();
+    let proposer_pk = view.validator_pubkey_decompressed(proposer_index as usize);
+
+    collect_sigs_randao(&view, body, block_slot, proposer_pk, &mut batch);
+    let _ = collect_sigs_proposer_slashings(&view, &body[ps..at_s], &mut batch);
+    let _ = collect_sigs_attester_slashings(&view, &body[at_s..att], &mut scratch, &mut batch);
     let _ = collect_sigs_attestations(
-        &s.imm,
         &view,
         &body[att..dep],
         block_slot,
@@ -256,15 +245,12 @@ fn build_ef_block() -> SigBatch {
         &mut batch,
     );
     // deposits skipped — verified inline in apply_deposit.
-    collect_sigs_voluntary_exits(&s.imm, &view, &body[ve..exec], &mut batch);
-    let _ = collect_sigs_bls_to_execution_changes(&s.imm, &view, &body[bls_..blob], &mut batch);
+    collect_sigs_voluntary_exits(&view, &body[ve..exec], &mut batch);
+    let _ = collect_sigs_bls_to_execution_changes(&view, &body[bls_..blob], &mut batch);
     collect_sigs_sync_aggregate(
-        &s.imm,
         &view,
-        &s.longtail,
         &body[220..220 + BLOCK_SYNC_AGGREGATE_SIZE],
         block_slot,
-        &s.roots,
         &mut scratch,
         &mut batch,
     );

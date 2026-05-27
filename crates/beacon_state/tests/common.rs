@@ -9,12 +9,9 @@ use std::{
 use flux::{spine::SpineAdapter, tile::Tile, timing::Nanos};
 use serde::Deserialize;
 use silver_beacon_state::{
-    decompose::decompose_beacon_state,
-    ssz_hash::hash_tree_root_state,
+    ssz_hash::{StateHashScratch, hash_tree_root_state},
     ticker::SlotTicker,
     tile::BeaconStateTile,
-    types::{EpochData, HistoricalLongtail, Immutable, SlotData, SlotRoots, box_zeroed},
-    validator_identity::{FinalizedValidators, ValidatorsState},
 };
 use silver_common::{
     BeaconStateEvent, GossipTopic, MessageId, NewGossipMsg, P2pStreamId, RpcInbound,
@@ -53,7 +50,7 @@ pub enum Step {
     /// Inject an inbound Status from a peer.
     Status { head_slot: u64, finalized_epoch: u64, finalized_root: String },
     /// Inject a `SyncUpdate` from peer-manager. `target` is one of:
-    /// `syncing_finalised`, `syncing_head`, `following`. Syncing variants
+    /// `syncing_finalized`, `syncing_head`, `following`. Syncing variants
     /// take `target_slot` (mapped to the appropriate enum payload).
     SyncTarget { target: String, target_slot: Option<u64> },
     /// Assertions against observable state and accumulated outbound.
@@ -119,7 +116,7 @@ impl OutboundKind {
 impl Harness {
     pub fn new(wall_slot: u64, checkpoint_ssz: &[u8]) -> Self {
         Self::build(wall_slot, |ticker, gc, rc| {
-            BeaconStateTile::new_heap(
+            BeaconStateTile::new(
                 ticker,
                 silver_common::SpecConfig::mainnet(),
                 gc,
@@ -265,25 +262,29 @@ impl Harness {
         }));
     }
 
-    pub fn assert_state_root(&self, post_ssz: &[u8]) {
-        let mut imm: Box<Immutable> = box_zeroed();
-        let mut fv = FinalizedValidators::new(&[], &[]);
-        let mut longtail: Box<HistoricalLongtail> = box_zeroed();
-        let mut epoch: Box<EpochData> = box_zeroed();
-        let mut roots: Box<SlotRoots> = box_zeroed();
-        let mut sd: Box<SlotData> = box_zeroed();
-        let pq = decompose_beacon_state(
-            post_ssz,
-            &mut imm,
-            &mut fv,
-            &mut longtail,
-            &mut epoch,
-            &mut roots,
-            &mut sd,
-        )
-        .expect("decompose post.ssz");
-        let validators = ValidatorsState::with_empty_delta(&fv);
-        let expected = hash_tree_root_state(&imm, &validators, &longtail, &epoch, &roots, &sd, &pq);
+    pub fn assert_state_root(&mut self, post_ssz: &[u8]) {
+        // Decompose the EF post-state into a `Finalized` snapshot with an empty
+        // anchored delta, then hash via `StateDeltaView` (mirrors ef_common).
+        let mut finalized = Box::new(silver_common::Finalized::default());
+        finalized
+            .decompose(post_ssz, &silver_common::SpecConfig::mainnet())
+            .expect("decompose post.ssz");
+
+        let mut delta = silver_common::StateDelta {
+            validators: silver_common::beacon_state::ValidatorsDelta::new_at(&finalized.validators),
+            slot: silver_common::SlotStateDelta { slot: finalized.slot.slot, ..Default::default() },
+            ..Default::default()
+        };
+
+        let mut epochs = silver_common::DeltaBuffer::default();
+        let mut longtails = silver_common::DeltaBuffer::default();
+
+        let view =
+            silver_common::StateDeltaView::new(&finalized, &mut delta, &mut epochs, &mut longtails);
+
+        let mut scratch = StateHashScratch::new();
+
+        let expected = hash_tree_root_state(&view, &mut scratch);
         let got = self.tile.head_state_root();
         assert_eq!(
             got,
@@ -367,7 +368,7 @@ pub fn run_scenario(case_dir: &Path) {
             }
             Step::SyncTarget { target, target_slot } => {
                 let upd = match target.as_str() {
-                    "syncing_finalised" => SyncUpdate::SyncingFinalised {
+                    "syncing_finalized" => SyncUpdate::SyncingFinalized {
                         target_epoch: target_slot.expect("target_slot required") / 32,
                         target_root: [0u8; 32],
                     },

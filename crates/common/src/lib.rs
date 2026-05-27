@@ -1,10 +1,9 @@
 extern crate self as silver_common;
 
 pub use crate::{
-    arena::{ArenaPtr, TierPool},
     beacon_state::{
         BeaconState, BeaconStateOwner, BeaconStateReader, DeltaBuffer, StateDeltaReadView,
-        StateDeltaView, types::*,
+        StateDeltaView, ValidatorRow, types::*,
     },
     config::{BlobParameters, Config, DiscoveryConfig, ScoreParams, SpecConfig, SyncingConfig},
     error::Error,
@@ -34,7 +33,6 @@ pub use crate::{
 };
 
 pub mod allocator;
-pub mod arena;
 pub mod beacon_state;
 mod config;
 mod enr;

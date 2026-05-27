@@ -1,9 +1,81 @@
 use flux::utils::ArrayVec;
-use silver_common::metrics::timed;
+use silver_common::{B256, Checkpoint, Epoch, Slot, metrics::timed};
 
-use crate::{types::*, validator_identity::FinalizedValidators};
+use crate::MAX_VALIDATORS;
+
+// TODO(stalls): ~8 epochs of unpruned mainnet activity hits 256. The May
+// 2023 incident lasted ~25 epochs. Either grow + paginate the node table or
+// drop lowest-weight subtrees under pressure.
+pub const MAX_FORK_CHOICE_NODES: usize = 256;
 
 const NULL: usize = usize::MAX;
+
+#[derive(Default)]
+pub struct ForkChoice {
+    pub nodes: Vec<ForkChoiceNode>,
+    pub indices: ArrayVec<ForkChoiceIndex, MAX_FORK_CHOICE_NODES>,
+    pub finalized_checkpoint: Checkpoint,
+    pub justified_checkpoint: Checkpoint,
+    // Spec proposer boost — not yet applied in `apply_score_changes`.
+    #[allow(dead_code)]
+    pub proposer_boost_root: B256,
+    #[allow(dead_code)]
+    pub proposer_boost_score: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct ForkChoiceIndex {
+    pub block_root: B256,
+    pub node_idx: usize,
+}
+
+#[derive(Clone)]
+pub struct ForkChoiceNode {
+    pub slot: Slot,
+    pub block_root: B256,
+    // Stored for the eventual EL/engine API (`engine_forkchoiceUpdatedV3`)
+    // and slashing-status checks; not consumed by current fork-choice logic.
+    #[allow(dead_code)]
+    pub state_root: B256,
+    #[allow(dead_code)]
+    pub parent_root: B256,
+    #[allow(dead_code)]
+    pub execution_block_hash: B256,
+
+    /// Index into nodes array. usize::MAX = null.
+    pub parent: usize,
+    pub best_child: usize,
+    pub best_descendant: usize,
+
+    pub weight: u64,
+
+    pub justified_checkpoint: Checkpoint,
+    pub finalized_checkpoint: Checkpoint,
+
+    /// 0=irrelevant, 1=optimistic, 2=valid, 3=invalid. Wired by EL plumbing.
+    #[allow(dead_code)]
+    pub execution_status: u8,
+
+    /// Seq into the slots `DeltaBuffer` ring holding this block's post-state
+    /// `StateDelta`. `usize::MAX` = no associated delta (e.g. anchor).
+    pub state_seq: usize,
+}
+
+/// Per-validator latest LMD attestation. ~198 MB at MAX_VALIDATORS=2.75Mi
+/// (72 B per Vote).
+#[repr(C)]
+pub struct VoteTracker {
+    pub votes: [Vote; MAX_VALIDATORS],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct Vote {
+    pub current_root: B256,
+    pub next_root: B256,
+    pub next_epoch: Epoch,
+}
 
 pub struct BlockImport {
     pub slot: Slot,
@@ -13,7 +85,8 @@ pub struct BlockImport {
     pub execution_block_hash: B256,
     pub justified: Checkpoint,
     pub finalized: Checkpoint,
-    pub state_ref: BeaconStateRef,
+    /// Seq into the slots ring for this block's post-state delta.
+    pub state_seq: usize,
 }
 
 impl ForkChoice {
@@ -23,7 +96,7 @@ impl ForkChoice {
         finalized_slot: Slot,
         finalized_block_root: B256,
         finalized_state_root: B256,
-        state_ref: BeaconStateRef,
+        state_seq: usize,
     ) -> Self {
         let mut nodes = Vec::with_capacity(MAX_FORK_CHOICE_NODES);
         let mut indices = ArrayVec::new();
@@ -41,7 +114,7 @@ impl ForkChoice {
             justified_checkpoint,
             finalized_checkpoint,
             execution_status: 2, // valid
-            state: state_ref,
+            state_seq,
         });
         indices.push(ForkChoiceIndex { block_root: finalized_block_root, node_idx: 0 });
 
@@ -81,7 +154,7 @@ impl ForkChoice {
             // back to flip this to 2 (valid) or 3 (invalid) and drop invalid
             // descendants from the head choice.
             execution_status: 1, // optimistic
-            state: b.state_ref,
+            state_seq: b.state_seq,
         });
         self.indices.push(ForkChoiceIndex { block_root: b.block_root, node_idx });
 
@@ -141,19 +214,17 @@ impl ForkChoice {
         self.nodes[justified_idx].block_root
     }
 
-    /// Remove all nodes below the current finalized root.
-    /// Returns state refs of pruned nodes so the caller can release pool
-    /// entries.
-    pub fn prune(&mut self) -> Vec<BeaconStateRef> {
-        let fin_idx = match self.find_node_idx(&self.finalized_checkpoint.root) {
-            Some(idx) => idx,
-            None => return Vec::new(),
+    /// Remove all nodes below the current finalized root. Callers reclaim
+    /// ring slots via `live_state_seqs` after pruning.
+    pub fn prune(&mut self) {
+        let Some(fin_idx) = self.find_node_idx(&self.finalized_checkpoint.root) else {
+            return;
         };
         if fin_idx == 0 {
-            return Vec::new();
+            return;
         }
 
-        let pruned = self.nodes.drain(..fin_idx).map(|n| n.state).collect();
+        self.nodes.drain(..fin_idx);
 
         for n in self.nodes.iter_mut() {
             n.parent = offset_idx(n.parent, fin_idx);
@@ -166,8 +237,6 @@ impl ForkChoice {
             self.indices
                 .push(ForkChoiceIndex { block_root: self.nodes[i].block_root, node_idx: i });
         }
-
-        pruned
     }
 
     // TODO(perf): O(n_nodes) scan. Hit per on_block (parent lookup), per
@@ -185,11 +254,17 @@ impl ForkChoice {
         &self.nodes[idx]
     }
 
-    pub fn finalize_node(&mut self, idx: usize, base: &mut FinalizedValidators) {
-        self.nodes[idx].state.validators.promote_into_base(base);
-        for node in self.nodes.iter_mut() {
-            node.state.validators.prune_to_base(base);
-        }
+    /// Slot-ring seq of the node being finalized. The caller promotes that
+    /// `StateDelta` into the owner's `Finalized` base and prunes surviving
+    /// ring deltas against the new base.
+    pub fn finalize_node(&self, idx: usize) -> usize {
+        self.nodes[idx].state_seq
+    }
+
+    /// Slot-ring seqs of all currently-live nodes — the caller prunes their
+    /// `StateDelta`s against the freshly promoted base after `finalize_node`.
+    pub fn live_state_seqs(&self) -> impl Iterator<Item = usize> + '_ {
+        self.nodes.iter().map(|n| n.state_seq)
     }
 
     /// Spec `get_checkpoint_block(store, root, epoch)`: deepest ancestor of
@@ -292,32 +367,32 @@ pub fn compute_deltas(
     votes: &mut [Vote; MAX_VALIDATORS],
     validator_count: usize,
     indices: &[ForkChoiceIndex],
-    old_balances: &[u64; MAX_VALIDATORS],
-    new_balances: &[u64; MAX_VALIDATORS],
+    old_balances: &[u64],
+    new_balances: &[u64],
 ) -> [i64; MAX_FORK_CHOICE_NODES] {
     let mut deltas = [0i64; MAX_FORK_CHOICE_NODES];
 
-    for vi in 0..validator_count {
-        let vote = &mut votes[vi];
+    for (vi, vote) in votes.iter_mut().enumerate().take(validator_count) {
+        // `old_balances` (previous recompute) may be shorter than the current
+        // validator set; validators added since then carry no prior weight.
+        let old_balance = old_balances.get(vi).copied().unwrap_or(0);
+        let new_balance = new_balances.get(vi).copied().unwrap_or(0);
 
-        let old_bal = old_balances[vi];
-        let new_bal = new_balances[vi];
-
-        if vote.current_root == vote.next_root && old_bal == new_bal {
+        if vote.current_root == vote.next_root && old_balance == new_balance {
             continue;
         }
 
         if vote.current_root != [0u8; 32] &&
             let Some(old_idx) = find_idx(indices, &vote.current_root)
         {
-            deltas[old_idx] -= old_bal as i64;
+            deltas[old_idx] -= old_balance as i64;
         }
 
         // Add new balance to new target.
         if vote.next_root != [0u8; 32] &&
             let Some(new_idx) = find_idx(indices, &vote.next_root)
         {
-            deltas[new_idx] += new_bal as i64;
+            deltas[new_idx] += new_balance as i64;
         }
 
         // Note: if next_root is non-zero but unknown (pruned/never-imported),
@@ -343,10 +418,7 @@ fn offset_idx(idx: usize, offset: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        types::box_zeroed,
-        validator_identity::{FinalizedValidators, ValidatorsState},
-    };
+    use crate::box_zeroed;
 
     fn root(b: u8) -> B256 {
         let mut r = [0u8; 32];
@@ -358,48 +430,24 @@ mod tests {
         Checkpoint { epoch, root: root(b) }
     }
 
-    struct BlockGen {
-        fv: FinalizedValidators,
-    }
-
-    impl BlockGen {
-        fn new() -> Self {
-            Self { fv: FinalizedValidators::new(&[], &[]) }
-        }
-
-        fn state_ref(&self) -> BeaconStateRef {
-            BeaconStateRef {
-                imm_idx: 0,
-                longtail_idx: 0,
-                epoch_idx: 0,
-                epoch_gen: 0,
-                roots_idx: 0,
-                roots_gen: 0,
-                slot_idx: 0,
-                slot_gen: 0,
-                pending_idx: 0,
-                validators: ValidatorsState::with_empty_delta(&self.fv),
-            }
-        }
-
-        fn blk(
-            &self,
-            slot: Slot,
-            block_root: B256,
-            parent_root: B256,
-            jus: Checkpoint,
-            fin: Checkpoint,
-        ) -> BlockImport {
-            BlockImport {
-                slot,
-                block_root,
-                parent_root,
-                state_root: block_root,
-                execution_block_hash: [0u8; 32],
-                justified: jus,
-                finalized: fin,
-                state_ref: self.state_ref(),
-            }
+    // Fork choice keys blocks by their post-state ring seq; the topology /
+    // weight tests don't read state, so a constant seq is fine.
+    fn block(
+        slot: Slot,
+        block_root: B256,
+        parent_root: B256,
+        jus: Checkpoint,
+        fin: Checkpoint,
+    ) -> BlockImport {
+        BlockImport {
+            slot,
+            block_root,
+            parent_root,
+            state_root: block_root,
+            execution_block_hash: [0u8; 32],
+            justified: jus,
+            finalized: fin,
+            state_seq: 0,
         }
     }
 
@@ -407,11 +455,10 @@ mod tests {
     fn single_chain_head() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let bg = BlockGen::new();
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), bg.state_ref());
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), 0);
 
-        fc.on_block(bg.blk(1, root(2), root(1), jus, fin));
-        fc.on_block(bg.blk(2, root(3), root(2), jus, fin));
+        fc.on_block(block(1, root(2), root(1), jus, fin));
+        fc.on_block(block(2, root(3), root(2), jus, fin));
 
         assert_eq!(fc.find_head(), root(3));
     }
@@ -420,11 +467,10 @@ mod tests {
     fn fork_heavier_wins() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let bg = BlockGen::new();
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), bg.state_ref());
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), 0);
 
-        fc.on_block(bg.blk(1, root(2), root(1), jus, fin));
-        fc.on_block(bg.blk(1, root(3), root(1), jus, fin));
+        fc.on_block(block(1, root(2), root(1), jus, fin));
+        fc.on_block(block(1, root(3), root(1), jus, fin));
 
         let mut deltas = [0i64; MAX_FORK_CHOICE_NODES];
         deltas[2] = 100; // root(3) is node index 2
@@ -440,12 +486,11 @@ mod tests {
         // sibling loses weight.
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let bg = BlockGen::new();
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), bg.state_ref());
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), 0);
 
         // root(1) → root(2) [idx 1] and root(3) [idx 2]
-        fc.on_block(bg.blk(1, root(2), root(1), jus, fin));
-        fc.on_block(bg.blk(1, root(3), root(1), jus, fin));
+        fc.on_block(block(1, root(2), root(1), jus, fin));
+        fc.on_block(block(1, root(3), root(1), jus, fin));
 
         // Give root(2) initial weight.
         let mut deltas = [0i64; MAX_FORK_CHOICE_NODES];
@@ -465,17 +510,15 @@ mod tests {
     fn prune_below_finalized() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let bg = BlockGen::new();
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), bg.state_ref());
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), 0);
 
-        fc.on_block(bg.blk(1, root(2), root(1), jus, fin));
-        fc.on_block(bg.blk(2, root(3), root(2), jus, fin));
+        fc.on_block(block(1, root(2), root(1), jus, fin));
+        fc.on_block(block(2, root(3), root(2), jus, fin));
         assert_eq!(fc.nodes.len(), 3);
 
         fc.finalized_checkpoint = cp(1, 2);
-        let pruned = fc.prune();
+        fc.prune();
 
-        assert_eq!(pruned.len(), 1);
         assert_eq!(fc.nodes.len(), 2);
         assert_eq!(fc.nodes[0].block_root, root(2));
         assert_eq!(fc.nodes[0].parent, NULL);
@@ -486,9 +529,8 @@ mod tests {
     fn deltas_moving_votes() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let bg = BlockGen::new();
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), bg.state_ref());
-        fc.on_block(bg.blk(1, root(2), root(1), jus, fin));
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), 0);
+        fc.on_block(block(1, root(2), root(1), jus, fin));
 
         let mut votes: Box<[Vote; MAX_VALIDATORS]> = box_zeroed();
         let mut balances: Box<[u64; MAX_VALIDATORS]> = box_zeroed();
@@ -499,7 +541,8 @@ mod tests {
             balances[i] = 42;
         }
 
-        let deltas = compute_deltas(&mut votes, 16, fc.indices.as_slice(), &balances, &balances);
+        let deltas =
+            compute_deltas(&mut votes, 16, fc.indices.as_slice(), &balances[..], &balances[..]);
 
         let total = 42i64 * 16;
         assert_eq!(deltas[0], -total);
@@ -515,11 +558,10 @@ mod tests {
         // Each validator votes for a different block.
         let fin = cp(0, 100);
         let jus = cp(0, 100);
-        let bg = BlockGen::new();
-        let mut fc = ForkChoice::init(fin, jus, 0, root(100), root(100), bg.state_ref());
+        let mut fc = ForkChoice::init(fin, jus, 0, root(100), root(100), 0);
 
         for i in 1..=16u8 {
-            fc.on_block(bg.blk(i as u64, root(i), root(100), jus, fin));
+            fc.on_block(block(i as u64, root(i), root(100), jus, fin));
         }
 
         let mut votes: Box<[Vote; MAX_VALIDATORS]> = box_zeroed();
@@ -531,7 +573,8 @@ mod tests {
             balances[i] = 42;
         }
 
-        let deltas = compute_deltas(&mut votes, 16, fc.indices.as_slice(), &balances, &balances);
+        let deltas =
+            compute_deltas(&mut votes, 16, fc.indices.as_slice(), &balances[..], &balances[..]);
 
         // Each block should get exactly one validator's balance.
         for i in 1..=16 {
@@ -543,8 +586,7 @@ mod tests {
     fn deltas_move_out_of_tree() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let bg = BlockGen::new();
-        let fc = ForkChoice::init(fin, jus, 0, root(1), root(1), bg.state_ref());
+        let fc = ForkChoice::init(fin, jus, 0, root(1), root(1), 0);
 
         let mut votes: Box<[Vote; MAX_VALIDATORS]> = box_zeroed();
         let mut balances: Box<[u64; MAX_VALIDATORS]> = box_zeroed();
@@ -557,7 +599,8 @@ mod tests {
         votes[1] = Vote { current_root: root(1), next_root: root(99), next_epoch: 0 };
         balances[1] = 42;
 
-        let deltas = compute_deltas(&mut votes, 2, fc.indices.as_slice(), &balances, &balances);
+        let deltas =
+            compute_deltas(&mut votes, 2, fc.indices.as_slice(), &balances[..], &balances[..]);
 
         // root(1) should lose both balances.
         assert_eq!(deltas[0], -(42 * 2));
@@ -567,9 +610,8 @@ mod tests {
     fn deltas_changing_balances() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let bg = BlockGen::new();
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), bg.state_ref());
-        fc.on_block(bg.blk(1, root(2), root(1), jus, fin));
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), 0);
+        fc.on_block(block(1, root(2), root(1), jus, fin));
 
         let mut votes: Box<[Vote; MAX_VALIDATORS]> = box_zeroed();
         let mut old_bal: Box<[u64; MAX_VALIDATORS]> = box_zeroed();
@@ -582,7 +624,8 @@ mod tests {
             new_bal[i] = 84;
         }
 
-        let deltas = compute_deltas(&mut votes, 16, fc.indices.as_slice(), &old_bal, &new_bal);
+        let deltas =
+            compute_deltas(&mut votes, 16, fc.indices.as_slice(), &old_bal[..], &new_bal[..]);
 
         // Old balance subtracted from old target, new balance added to new.
         assert_eq!(deltas[0], -(42i64 * 16));
@@ -594,8 +637,7 @@ mod tests {
         // Balances change but votes don't — still need deltas.
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let bg = BlockGen::new();
-        let fc = ForkChoice::init(fin, jus, 0, root(1), root(1), bg.state_ref());
+        let fc = ForkChoice::init(fin, jus, 0, root(1), root(1), 0);
 
         let mut votes: Box<[Vote; MAX_VALIDATORS]> = box_zeroed();
         let mut old_bal: Box<[u64; MAX_VALIDATORS]> = box_zeroed();
@@ -606,7 +648,8 @@ mod tests {
         old_bal[0] = 42;
         new_bal[0] = 84;
 
-        let deltas = compute_deltas(&mut votes, 1, fc.indices.as_slice(), &old_bal, &new_bal);
+        let deltas =
+            compute_deltas(&mut votes, 1, fc.indices.as_slice(), &old_bal[..], &new_bal[..]);
 
         // Net delta = new - old = +42.
         assert_eq!(deltas[0], 42);
@@ -617,12 +660,11 @@ mod tests {
     fn split_tie_breaker_no_attestations() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let bg = BlockGen::new();
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), bg.state_ref());
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), 0);
 
         // Two blocks at slot 1 forking from genesis. root(2) < root(3).
-        fc.on_block(bg.blk(1, root(2), root(1), jus, fin));
-        fc.on_block(bg.blk(1, root(3), root(1), jus, fin));
+        fc.on_block(block(1, root(2), root(1), jus, fin));
+        fc.on_block(block(1, root(3), root(1), jus, fin));
 
         // No weight applied → both have weight 0. Higher root wins.
         assert_eq!(fc.find_head(), root(3));
@@ -633,16 +675,15 @@ mod tests {
     fn shorter_chain_but_heavier_weight() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let bg = BlockGen::new();
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), bg.state_ref());
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), 0);
 
         // Long chain: root(1) → root(2) → root(3) → root(4).
-        fc.on_block(bg.blk(1, root(2), root(1), jus, fin));
-        fc.on_block(bg.blk(2, root(3), root(2), jus, fin));
-        fc.on_block(bg.blk(3, root(4), root(3), jus, fin));
+        fc.on_block(block(1, root(2), root(1), jus, fin));
+        fc.on_block(block(2, root(3), root(2), jus, fin));
+        fc.on_block(block(3, root(4), root(3), jus, fin));
 
         // Short chain: root(1) → root(5).
-        fc.on_block(bg.blk(1, root(5), root(1), jus, fin));
+        fc.on_block(block(1, root(5), root(1), jus, fin));
 
         // Without weight, long chain wins (deeper best_descendant, higher root
         // tiebreak). Give root(5) more weight to flip.
@@ -658,13 +699,12 @@ mod tests {
     fn on_block_duplicate() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let bg = BlockGen::new();
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), bg.state_ref());
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), 0);
 
-        fc.on_block(bg.blk(1, root(2), root(1), jus, fin));
+        fc.on_block(block(1, root(2), root(1), jus, fin));
         assert_eq!(fc.nodes.len(), 2);
 
-        fc.on_block(bg.blk(1, root(2), root(1), jus, fin));
+        fc.on_block(block(1, root(2), root(1), jus, fin));
         assert_eq!(fc.nodes.len(), 2); // no change
     }
 
@@ -673,11 +713,10 @@ mod tests {
     fn on_block_unknown_parent() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let bg = BlockGen::new();
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), bg.state_ref());
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), 0);
 
         // root(99) is not known.
-        fc.on_block(bg.blk(1, root(2), root(99), jus, fin));
+        fc.on_block(block(1, root(2), root(99), jus, fin));
         assert_eq!(fc.nodes.len(), 2);
         assert_eq!(fc.nodes[1].parent, NULL);
     }

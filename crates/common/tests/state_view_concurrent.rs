@@ -1,12 +1,12 @@
 //! Concurrent reader / single writer stress for `BeaconStateOwner` +
-//! `DeltaBuffer`. Exercises the seqlock protecting finalised writes and
+//! `DeltaBuffer`. Exercises the seqlock protecting finalized writes and
 //! the publish-offsets protocol for slot-delta visibility, using only
 //! the public `StateDeltaReadView` surface — no test-only escape
 //! hatches.
 //!
-//! Seqlock test (finalised tier): writer updates two adjacent cells of
-//! `finalised.slot.block_roots` to the SAME slot-tag under one
-//! `WriteGuard`. Reader reads both via `finalised_block_roots()` and
+//! Seqlock test (finalized tier): writer updates two adjacent cells of
+//! `finalized.slot.block_roots` to the SAME slot-tag under one
+//! `WriteGuard`. Reader reads both via `finalized_block_roots()` and
 //! asserts they match — a tear would surface as `old != new`.
 //!
 //! Delta-publish test (slot tier): writer plants `slot_tag(s)` at
@@ -28,7 +28,7 @@ use silver_common::{B256, BeaconState, BeaconStateOwner};
 // overwrite a slot the reader may still be inspecting.
 const ITERATIONS: u64 = 200;
 
-// Two adjacent cells in the finalised `block_roots` circular buffer.
+// Two adjacent cells in the finalized `block_roots` circular buffer.
 // Writer paints them with the same tag inside one `WriteGuard`; reader
 // asserts they match. Chosen high enough that the slot-delta path
 // (which writes `block_roots[0]`) cannot collide.
@@ -49,7 +49,7 @@ fn concurrent_reads_observe_consistent_state() {
     let reads = Arc::new(AtomicUsize::new(0));
     let bad = Arc::new(AtomicUsize::new(0));
     let saw_delta = Arc::new(AtomicBool::new(false));
-    let saw_finalised_advance = Arc::new(AtomicBool::new(false));
+    let saw_finalized_advance = Arc::new(AtomicBool::new(false));
 
     let reader = {
         let r_control = control.reader();
@@ -57,11 +57,11 @@ fn concurrent_reads_observe_consistent_state() {
         let r_reads = Arc::clone(&reads);
         let r_bad = Arc::clone(&bad);
         let r_saw_delta = Arc::clone(&saw_delta);
-        let r_saw_finalised_advance = Arc::clone(&saw_finalised_advance);
+        let r_saw_finalized_advance = Arc::clone(&saw_finalized_advance);
         std::thread::spawn(move || {
             while !r_done.load(Ordering::Relaxed) {
                 let (fin_a, fin_b, merged_slot, delta_root0, has_delta) = r_control.read(&|v| {
-                    let fin_roots = v.finalised_block_roots();
+                    let fin_roots = v.finalized_block_roots();
                     let fin_a = fin_roots[FIN_TAG_A];
                     let fin_b = fin_roots[FIN_TAG_B];
                     let merged_slot = v.slot();
@@ -89,7 +89,7 @@ fn concurrent_reads_observe_consistent_state() {
                     }
                 }
                 if fin_a != [0u8; 32] {
-                    r_saw_finalised_advance.store(true, Ordering::Relaxed);
+                    r_saw_finalized_advance.store(true, Ordering::Relaxed);
                 }
 
                 r_bad.fetch_add(errs, Ordering::Relaxed);
@@ -112,14 +112,14 @@ fn concurrent_reads_observe_consistent_state() {
         // Now visible to readers.
         control.publish_offsets(None, Some(head));
 
-        // Periodically advance finalised. Both cells written under the
+        // Periodically advance finalized. Both cells written under the
         // same `WriteGuard`, to the same tag — readers must see them
         // matched on every snapshot or the seqlock is broken.
         if s % 4 == 3 {
             let mut g = control.write();
             let tag = slot_tag(s);
-            g.deref_mut().finalised.slot.block_roots[FIN_TAG_A] = tag;
-            g.deref_mut().finalised.slot.block_roots[FIN_TAG_B] = tag;
+            g.deref_mut().finalized.slot.block_roots[FIN_TAG_A] = tag;
+            g.deref_mut().finalized.slot.block_roots[FIN_TAG_B] = tag;
         }
 
         // Encourage interleaving.
@@ -134,8 +134,8 @@ fn concurrent_reads_observe_consistent_state() {
     assert!(r > 0, "reader did not get to run");
     assert!(saw_delta.load(Ordering::Relaxed), "reader never observed a published slot delta");
     assert!(
-        saw_finalised_advance.load(Ordering::Relaxed),
-        "reader never observed finalised advance"
+        saw_finalized_advance.load(Ordering::Relaxed),
+        "reader never observed finalized advance"
     );
     assert_eq!(b, 0, "{b} of {r} reads observed inconsistent state");
 }

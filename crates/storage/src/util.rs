@@ -182,7 +182,7 @@ const DOMAIN_BEACON_PROPOSER: [u8; 4] = [0u8; 4];
 /// (eth2 ciphersuite: `BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_`).
 const BLS_DST: &[u8] = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_";
 
-/// Validation: sidecar's slot is strictly above the finalised slot.
+/// Validation: sidecar's slot is strictly above the finalized slot.
 /// `finalized_epoch` is `state.epoch.finalized_checkpoint.epoch`.
 pub fn is_above_finalized(sidecar: &[u8], finalized_epoch: u64) -> bool {
     DataColumnSidecarView::slot(sidecar) > finalized_epoch * SLOTS_PER_EPOCH
@@ -199,24 +199,24 @@ pub fn check_proposer_index(sidecar: &[u8], expected_proposer_index: u64) -> boo
 ///
 /// Silver's design pushes a block root into the slot delta's
 /// `block_roots` only after fork choice has validated the block, so
-/// membership in the union of (finalised canonical block_roots) ∪
-/// (post-finalisation delta block_roots) is equivalent to "seen and
+/// membership in the union of (finalized canonical block_roots) ∪
+/// (post-finalization delta block_roots) is equivalent to "seen and
 /// validated". `not present` means either not-yet-seen or invalid; the
 /// caller resolves IGNORE vs REJECT severity from external context.
 ///
-/// `finalised_block_roots` is the slot-indexed circular buffer (length
+/// `finalized_block_roots` is the slot-indexed circular buffer (length
 /// `SLOTS_PER_HISTORICAL_ROOT`). `delta_block_roots` is the appended
-/// post-finalisation set. Delta is checked first — virtually every live
-/// sidecar's parent resolves there; the finalised scan is a defensive
+/// post-finalization set. Delta is checked first — virtually every live
+/// sidecar's parent resolves there; the finalized scan is a defensive
 /// fall-through.
 pub fn parent_validated(
     sidecar: &[u8],
-    finalised_block_roots: &[B256],
+    finalized_block_roots: &[B256],
     delta_block_roots: &[B256],
 ) -> bool {
     let parent_root = DataColumnSidecarView::parent_root(sidecar);
     delta_block_roots.iter().any(|r| r == parent_root) ||
-        finalised_block_roots.iter().any(|r| r == parent_root)
+        finalized_block_roots.iter().any(|r| r == parent_root)
 }
 
 /// Validation: BLS signature on the embedded `signed_block_header` is

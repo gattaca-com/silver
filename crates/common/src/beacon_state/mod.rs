@@ -1,13 +1,13 @@
 pub use buffer::DeltaBuffer;
-pub use delta_view::{StateDeltaReadView, StateDeltaView};
-pub use hash_tree::{DeltaHashTree, FinalisedHashTree};
+pub use delta_view::{StateDeltaReadView, StateDeltaView, ValidatorRow};
+pub use hash_tree::{DeltaHashTree, FinalizedHashTree};
 pub use validators::{
-    AppendedValidator, FinalisedValidators, ValidatorsDecodeError, ValidatorsDelta, validator_hash,
+    AppendedValidator, FinalizedValidators, ValidatorsDecodeError, ValidatorsDelta, validator_hash,
 };
 pub use view::{BeaconStateOwner, BeaconStateReader};
 
 use crate::{
-    EpochStateDelta, Finalised, LongtailState, StateDelta,
+    EpochStateDelta, Finalized, LongtailState, StateDelta,
     beacon_state::types::{EPOCHS_RING_N, LONGTAILS_RING_N, SLOTS_RING_N},
 };
 
@@ -21,7 +21,7 @@ mod view;
 
 #[derive(Default)]
 pub struct BeaconState {
-    pub finalised: Finalised,
+    pub finalized: Finalized,
     pub longtails: DeltaBuffer<LongtailState, LONGTAILS_RING_N>,
     pub epochs: DeltaBuffer<EpochStateDelta, EPOCHS_RING_N>,
     pub slots: DeltaBuffer<StateDelta, SLOTS_RING_N>,

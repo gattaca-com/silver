@@ -181,8 +181,8 @@ fn same_target_identity(a: SyncUpdate, b: SyncUpdate) -> bool {
     match (a, b) {
         (SyncUpdate::Following, SyncUpdate::Following) => true,
         (
-            SyncUpdate::SyncingFinalised { target_epoch: e1, target_root: r1 },
-            SyncUpdate::SyncingFinalised { target_epoch: e2, target_root: r2 },
+            SyncUpdate::SyncingFinalized { target_epoch: e1, target_root: r1 },
+            SyncUpdate::SyncingFinalized { target_epoch: e2, target_root: r2 },
         ) => e1 == e2 && r1 == r2,
         (
             SyncUpdate::SyncingHead { head_root: r1, .. },
@@ -300,7 +300,7 @@ impl PeerManager {
         self.rejected.mark(block_root);
 
         if matches!(source, RejectSource::Rpc) &&
-            let SyncUpdate::SyncingFinalised { target_root, .. } = self.current_target
+            let SyncUpdate::SyncingFinalized { target_root, .. } = self.current_target
         {
             self.rejected.mark(target_root);
 
@@ -379,7 +379,7 @@ impl PeerManager {
     /// still viable.
     ///
     /// Selection order:
-    ///   1. Pinned SyncingFinalised target X — keep iff not reached, not
+    ///   1. Pinned SyncingFinalized target X — keep iff not reached, not
     ///      blacklisted, and at least one peer still backs it.
     ///   2. Pinned SyncingHead fork F — keep iff not reached, not blacklisted,
     ///      and at least one peer still backs it.
@@ -400,14 +400,14 @@ impl PeerManager {
         let local_head_slot = StatusView::head_slot(local);
         let wall_slot = self.local_wall_slot;
 
-        // 1. Pinned SyncingFinalised viable?
-        if let SyncUpdate::SyncingFinalised { target_epoch, target_root } = self.current_target {
+        // 1. Pinned SyncingFinalized viable?
+        if let SyncUpdate::SyncingFinalized { target_epoch, target_root } = self.current_target {
             let reached =
                 local_finalized_epoch >= target_epoch && local_finalized_root == target_root;
             let rejected = self.rejected.is_rejected(&target_root);
             let usable = self.has_usable_finalized_backer(target_epoch, &target_root);
             if !reached && !rejected && usable {
-                return SyncUpdate::SyncingFinalised { target_epoch, target_root };
+                return SyncUpdate::SyncingFinalized { target_epoch, target_root };
             }
         }
 
@@ -421,10 +421,10 @@ impl PeerManager {
             }
         }
 
-        // 3. New SyncingFinalised target?
+        // 3. New SyncingFinalized target?
         if let Some((epoch, root, _)) = self.best_finalized_target(local_finalized_epoch, wall_slot)
         {
-            return SyncUpdate::SyncingFinalised { target_epoch: epoch, target_root: root };
+            return SyncUpdate::SyncingFinalized { target_epoch: epoch, target_root: root };
         }
 
         // 4. New SyncingHead target?
@@ -3368,11 +3368,11 @@ mod tests {
 
         let target = mgr.maybe_emit_sync_target().expect("should emit a target");
         match target {
-            SyncUpdate::SyncingFinalised { target_epoch, target_root } => {
+            SyncUpdate::SyncingFinalized { target_epoch, target_root } => {
                 assert_eq!(target_epoch, 20);
                 assert_eq!(target_root, x);
             }
-            other => panic!("expected SyncingFinalised(20, X), got {other:?}"),
+            other => panic!("expected SyncingFinalized(20, X), got {other:?}"),
         }
     }
 
@@ -3396,7 +3396,7 @@ mod tests {
         send_status(&mut mgr, &mut cap, 3, make_status_v2(fork_a(), y, 15, [0; 32], 480));
 
         let target = mgr.maybe_emit_sync_target().expect("should emit Y");
-        assert_eq!(target, SyncUpdate::SyncingFinalised { target_epoch: 15, target_root: y });
+        assert_eq!(target, SyncUpdate::SyncingFinalized { target_epoch: 15, target_root: y });
     }
 
     #[test]
@@ -3409,7 +3409,7 @@ mod tests {
         connect(&mut mgr, &mut cap, 1, 1, now);
         send_status(&mut mgr, &mut cap, 1, make_status_v2(fork_a(), x, 20, [0; 32], 640));
         let target = mgr.maybe_emit_sync_target().expect("first emission");
-        assert!(matches!(target, SyncUpdate::SyncingFinalised { .. }));
+        assert!(matches!(target, SyncUpdate::SyncingFinalized { .. }));
 
         // Even with another peer reporting a higher-epoch target, we stay
         // pinned to X (1 backer is still enough to keep it).
@@ -3425,7 +3425,7 @@ mod tests {
         };
         assert_eq!(
             again,
-            SyncUpdate::SyncingFinalised { target_epoch: 20, target_root: x },
+            SyncUpdate::SyncingFinalized { target_epoch: 20, target_root: x },
             "must stay pinned until X is reached or rejected"
         );
     }
@@ -3441,13 +3441,13 @@ mod tests {
         send_status(&mut mgr, &mut cap, 1, make_status_v2(fork_a(), x, 20, [0; 32], 640));
         let _ = mgr.maybe_emit_sync_target();
 
-        // Simulate BS finalising at the target.
+        // Simulate BS finalizing at the target.
         mgr.set_status(status_v2_ssz(fork_a(), x, 20, [0; 32], 640), 640);
         // The peer is still reporting epoch=20, but we've reached it →
         // either re-pin to a higher target if one exists, or fall through
         // to head/Following.
         let next = mgr.maybe_emit_sync_target().expect("change emitted");
-        assert_ne!(next, SyncUpdate::SyncingFinalised { target_epoch: 20, target_root: x });
+        assert_ne!(next, SyncUpdate::SyncingFinalized { target_epoch: 20, target_root: x });
     }
 
     #[test]
@@ -3491,7 +3491,7 @@ mod tests {
         let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
         set_snapshot(&mut mgr, 100, 3200);
 
-        // Peer is at the same finalised + head; nothing to chase.
+        // Peer is at the same finalized + head; nothing to chase.
         connect(&mut mgr, &mut cap, 1, 1, now);
         send_status(
             &mut mgr,
@@ -3514,11 +3514,11 @@ mod tests {
         connect(&mut mgr, &mut cap, 1, 1, now);
         send_status(&mut mgr, &mut cap, 1, make_status_v2(fork_a(), x, 20, [0; 32], 640));
         let first = mgr.maybe_emit_sync_target();
-        assert!(matches!(first, Some(SyncUpdate::SyncingFinalised { .. })));
+        assert!(matches!(first, Some(SyncUpdate::SyncingFinalized { .. })));
 
         // Same status from another peer for the same target — pinned;
         // target unchanged (peer_count only goes up but we don't carry it
-        // in the SyncingFinalised variant), no re-emission expected.
+        // in the SyncingFinalized variant), no re-emission expected.
         connect(&mut mgr, &mut cap, 2, 2, now);
         send_status(&mut mgr, &mut cap, 2, make_status_v2(fork_a(), x, 20, [0; 32], 640));
         assert_eq!(mgr.maybe_emit_sync_target(), None);
@@ -3543,7 +3543,7 @@ mod tests {
 
         assert!(matches!(
             mgr.maybe_emit_sync_target(),
-            Some(SyncUpdate::SyncingFinalised { target_root, .. }) if target_root == bad_target
+            Some(SyncUpdate::SyncingFinalized { target_root, .. }) if target_root == bad_target
         ));
         cap.0.clear();
 
@@ -3561,7 +3561,7 @@ mod tests {
 
         // Next selection switches to good_target.
         match mgr.maybe_emit_sync_target() {
-            Some(SyncUpdate::SyncingFinalised { target_root, .. }) => {
+            Some(SyncUpdate::SyncingFinalized { target_root, .. }) => {
                 assert_eq!(target_root, good_target);
             }
             other => panic!("expected switch to good_target, got {other:?}"),

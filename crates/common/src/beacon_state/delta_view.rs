@@ -6,12 +6,12 @@ use crate::{
         buffer::{DeltaBuffer, RollResult},
         types::{
             B256, BLSPubkey, BalancesDelta, BeaconBlockHeader, CurrentParticipationDelta,
-            EPOCHS_RING_N, Epoch, EpochState, EpochStateDelta, EpochStateFinalised, Eth1Data,
-            ExecutionPayloadHeader, FAR_FUTURE_EPOCH, Finalised, FinalisedBalances,
-            FinalisedCurrentParticipation, FinalisedInactivityScores,
-            FinalisedPreviousParticipation, HistoricalSummary, InactivityScoresDelta,
+            EPOCHS_RING_N, Epoch, EpochState, EpochStateDelta, EpochStateFinalized, Eth1Data,
+            ExecutionPayloadHeader, FAR_FUTURE_EPOCH, Finalized, FinalizedBalances,
+            FinalizedCurrentParticipation, FinalizedInactivityScores,
+            FinalizedPreviousParticipation, HistoricalSummary, Immutable, InactivityScoresDelta,
             LONGTAILS_RING_N, LongtailState, PendingConsolidation, PendingDeposit,
-            PendingPartialWithdrawal, PreviousParticipationDelta, SLOTS_PER_EPOCH, Slot,
+            PendingPartialWithdrawal, PreviousParticipationDelta, SLOTS_PER_EPOCH, Slot, SlotState,
             StateDelta,
         },
     },
@@ -35,7 +35,7 @@ impl StateDelta {
 /// Read-only siblings of [`StateDeltaView`].
 #[derive(Clone, Copy)]
 pub struct StateDeltaReadView<'a> {
-    fin: &'a Finalised,
+    fin: &'a Finalized,
     slot_delta: Option<&'a StateDelta>,
     epoch_delta: Option<&'a EpochStateDelta>,
 }
@@ -43,7 +43,7 @@ pub struct StateDeltaReadView<'a> {
 impl<'a> StateDeltaReadView<'a> {
     #[inline]
     pub fn new(
-        fin: &'a Finalised,
+        fin: &'a Finalized,
         slot_delta: Option<&'a StateDelta>,
         epoch_delta: Option<&'a EpochStateDelta>,
     ) -> Self {
@@ -53,6 +53,11 @@ impl<'a> StateDeltaReadView<'a> {
     #[inline]
     pub fn slot(&self) -> Slot {
         self.slot_delta.map_or(self.fin.slot.slot.slot, |d| d.slot.slot.slot)
+    }
+
+    #[inline]
+    pub fn fork_version_at(&self, block_epoch: Epoch) -> ([u8; 4], B256) {
+        self.fin.immutable.fork_version_at(block_epoch)
     }
 
     #[inline]
@@ -67,8 +72,8 @@ impl<'a> StateDeltaReadView<'a> {
 
     #[inline]
     pub fn validators_count(&self) -> usize {
-        self.slot_delta.map_or(self.fin.validators.validator_cnt(), |d| {
-            d.validators.base_cnt + d.validators.appended.len()
+        self.slot_delta.map_or(self.fin.validators.validator_count(), |d| {
+            d.validators.base_count + d.validators.appended.len()
         })
     }
 
@@ -80,10 +85,18 @@ impl<'a> StateDeltaReadView<'a> {
         }
     }
 
-    /// Slot-indexed circular buffer of block roots in the finalised base
+    #[inline]
+    pub fn validator_pubkey(&self, ix: usize) -> BLSPubkey {
+        match self.slot_delta {
+            Some(d) => *d.validators.effective_pubkey(&self.fin.validators, ix as u32),
+            None => *self.fin.validators.pubkey(ix),
+        }
+    }
+
+    /// Slot-indexed circular buffer of block roots in the finalized base
     /// (length `SLOTS_PER_HISTORICAL_ROOT`).
     #[inline]
-    pub fn finalised_block_roots(&self) -> &'a [B256] {
+    pub fn finalized_block_roots(&self) -> &'a [B256] {
         &self.fin.slot.block_roots[..]
     }
 
@@ -105,13 +118,30 @@ impl<'a> StateDeltaReadView<'a> {
     }
 }
 
-/// Merged read + write handle on a per-fork delta against the finalised
+/// All scalar per-validator columns merged at one index, yielded by
+/// [`StateDeltaView::iter_validator_rows`]. Passes read only the fields they
+/// need; the unused ones cost a cursor advance, no allocation.
+#[derive(Clone, Copy)]
+pub struct ValidatorRow {
+    pub effective_balance: u64,
+    pub balance: u64,
+    pub activation_eligibility_epoch: Epoch,
+    pub activation_epoch: Epoch,
+    pub exit_epoch: Epoch,
+    pub withdrawable_epoch: Epoch,
+    pub slashed: bool,
+    pub previous_participation: u8,
+    pub current_participation: u8,
+    pub inactivity_score: u64,
+}
+
+/// Merged read + write handle on a per-fork delta against the finalized
 /// base. Read methods take `&self`; write methods take `&mut self`. Field
 /// disjointness lets the borrow checker thread reads through &mut borrows
 /// without an intermediate `view()` reborrow.
 pub struct StateDeltaView<'a> {
     delta: &'a mut StateDelta,
-    fin: &'a Finalised,
+    fin: &'a Finalized,
 
     epochs: &'a mut EpochRing,
     longtails: &'a mut LongtailRing,
@@ -120,15 +150,15 @@ pub struct StateDeltaView<'a> {
 impl<'a> StateDeltaView<'a> {
     #[inline]
     pub fn new(
-        fin: &'a Finalised,
+        fin: &'a Finalized,
         delta: &'a mut StateDelta,
         epochs: &'a mut EpochRing,
         longtails: &'a mut LongtailRing,
     ) -> Self {
         debug_assert_eq!(
-            delta.validators.base_cnt,
-            fin.validators.validator_cnt(),
-            "delta.base_cnt must mirror fin.validator_cnt",
+            delta.validators.base_count,
+            fin.validators.validator_count(),
+            "delta.base_count must mirror fin.validator_count",
         );
         Self { fin, delta, epochs, longtails }
     }
@@ -144,12 +174,12 @@ impl<'a> StateDeltaView<'a> {
     }
 
     #[inline]
-    pub fn finalised_slot(&self) -> Slot {
+    pub fn finalized_slot(&self) -> Slot {
         self.fin.slot.slot.slot
     }
 
     #[inline]
-    pub fn finalised_epoch(&self) -> Epoch {
+    pub fn finalized_epoch(&self) -> Epoch {
         self.fin.slot.slot.slot / SLOTS_PER_EPOCH
     }
 
@@ -236,6 +266,13 @@ impl<'a> StateDeltaView<'a> {
         (f.epoch, f.previous_version, f.current_version, self.fin.immutable.genesis_validators_root)
     }
 
+    /// Resolved 4-byte fork version at `block_epoch` plus the genesis
+    /// validators root — the pair every BLS signing-root computation needs.
+    #[inline]
+    pub fn fork_version_at(&self, block_epoch: Epoch) -> ([u8; 4], B256) {
+        self.fin.immutable.fork_version_at(block_epoch)
+    }
+
     #[inline]
     pub fn genesis_time(&self) -> u64 {
         self.fin.immutable.genesis_time
@@ -261,43 +298,43 @@ impl<'a> StateDeltaView<'a> {
         self.fin.immutable.historical_roots_hash
     }
 
-    /// Look up a validator index in the *finalised* pubkey index only,
+    /// Look up a validator index in the *finalized* pubkey index only,
     /// ignoring `delta.appended`. Used by sync-committee rebuild: the
     /// committee's pubkeys were committed at a prior boundary so the
-    /// lookup is intentionally scoped to the finalised registry.
+    /// lookup is intentionally scoped to the finalized registry.
     #[inline]
-    pub fn validator_by_finalised_pubkey(&self, pk: &BLSPubkey) -> Option<u32> {
+    pub fn validator_by_finalized_pubkey(&self, pk: &BLSPubkey) -> Option<u32> {
         self.fin.validators.find_by_pubkey(pk).map(|i| i as u32)
     }
 
     #[inline]
     pub fn block_root_at_slot(&self, slot: Slot) -> B256 {
         let slot_delta = &self.delta.slot;
-        let slot_finalised = &self.fin.slot;
+        let slot_finalized = &self.fin.slot;
 
-        let fin_slot = slot_finalised.slot.slot;
+        let fin_slot = slot_finalized.slot.slot;
         if slot >= fin_slot {
             let i = (slot - fin_slot) as usize;
             if i < slot_delta.block_roots.len() {
                 return slot_delta.block_roots[i];
             }
         }
-        slot_finalised.block_roots[slot as usize % slot_finalised.block_roots.len()]
+        slot_finalized.block_roots[slot as usize % slot_finalized.block_roots.len()]
     }
 
     #[inline]
     pub fn state_root_at_slot(&self, slot: Slot) -> B256 {
         let slot_delta = &self.delta.slot;
-        let slot_finalised = &self.fin.slot;
+        let slot_finalized = &self.fin.slot;
 
-        let fin_slot = slot_finalised.slot.slot;
+        let fin_slot = slot_finalized.slot.slot;
         if slot >= fin_slot {
             let i = (slot - fin_slot) as usize;
             if i < slot_delta.state_roots.len() {
                 return slot_delta.state_roots[i];
             }
         }
-        slot_finalised.state_roots[slot as usize % slot_finalised.state_roots.len()]
+        slot_finalized.state_roots[slot as usize % slot_finalized.state_roots.len()]
     }
 
     /// `randao_mix(epoch)` with delta overlay. Convention: delta entry `k` is
@@ -361,10 +398,108 @@ impl<'a> StateDeltaView<'a> {
             delta.map_or(0, |seq| self.longtails.get(seq).historical_summaries.len())
     }
 
+    /// Effective longtail tier — the per-fork delta entry if this fork owns
+    /// one, else the finalized base. Exposes sync-committee scalars
+    /// (`current/next_sync_committee`, `sync_committee_indices`). Note:
+    /// `historical_summaries` on the returned value is delta-appended-only
+    /// when a delta exists; use [`Self::historical_summary`] for the merged
+    /// view of that list.
+    #[inline]
+    pub fn longtail_state(&self) -> &LongtailState {
+        self.longtail_delta().unwrap_or(&self.fin.longtail)
+    }
+
+    // ── Full-state hashing support ──────────────────────────────────────
+    // `hash_tree_root_state` needs the immutable block, the effective slot
+    // scalars, and the merged circular buffers. These keep the raw tier
+    // layout encapsulated; the merge logic lives here where the view owns
+    // the finalized base + delta + rings.
+
+    #[inline]
+    pub fn immutable(&self) -> &Immutable {
+        &self.fin.immutable
+    }
+
+    /// Effective slot-tier scalars (the working delta's `SlotState`).
+    #[inline]
+    pub fn slot_state(&self) -> &SlotState {
+        &self.delta.slot.slot
+    }
+
+    /// Merged `block_roots` ring (finalized base + delta-appended roots
+    /// overlaid by slot).
+    pub fn effective_block_roots_into(&self, out: &mut Vec<B256>) {
+        out.clear();
+        out.extend_from_slice(&self.fin.slot.block_roots);
+        let cap = out.len();
+        let fin_slot = self.fin.slot.slot.slot as usize;
+        for (k, r) in self.delta.slot.block_roots.iter().enumerate() {
+            out[(fin_slot + k) % cap] = *r;
+        }
+    }
+
+    /// Merged `state_roots` ring.
+    pub fn effective_state_roots_into(&self, out: &mut Vec<B256>) {
+        out.clear();
+        out.extend_from_slice(&self.fin.slot.state_roots);
+        let cap = out.len();
+        let fin_slot = self.fin.slot.slot.slot as usize;
+        for (k, r) in self.delta.slot.state_roots.iter().enumerate() {
+            out[(fin_slot + k) % cap] = *r;
+        }
+    }
+
+    /// Merged `randao_mixes` ring. Overlays per-completed-epoch delta entries
+    /// (written to both `e % EHV` and `(e+1) % EHV`), then substitutes the
+    /// per-block accumulator at the current epoch's bucket.
+    pub fn effective_randao_mixes_into(&self, out: &mut Vec<B256>) {
+        out.clear();
+        out.extend_from_slice(&self.fin.epoch.randao_mixes);
+        let cap = out.len();
+        let fin_epoch = (self.fin.slot.slot.slot / SLOTS_PER_EPOCH) as usize;
+        if let Some(de) = self.epoch_delta() {
+            for (k, m) in de.randao_mixes.iter().enumerate() {
+                let e = fin_epoch + k;
+                out[e % cap] = *m;
+                out[(e + 1) % cap] = *m;
+            }
+        }
+        let current_idx = (self.delta.slot.slot.slot / SLOTS_PER_EPOCH) as usize % cap;
+        out[current_idx] = self.delta.slot.slot.randao_mix_current;
+    }
+
+    /// Merged `slashings` ring. Overlays per-completed-epoch delta entries
+    /// (`e % SV` = running total, `(e+1) % SV` = 0 reset), then folds the
+    /// in-progress epoch's accumulator at the current bucket.
+    pub fn effective_slashings_into(&self, out: &mut Vec<u64>) {
+        out.clear();
+        out.extend_from_slice(&self.fin.epoch.slashings);
+        let cap = out.len();
+        let fin_epoch = self.fin.epoch() as usize;
+        if let Some(de) = self.epoch_delta() {
+            for (k, s) in de.slashings.iter().enumerate() {
+                let e = fin_epoch + k;
+                out[e % cap] = *s;
+                out[(e + 1) % cap] = 0;
+            }
+        }
+        // `current_epoch_slashings` caches the *full* current-bucket value
+        // (decompose seeds it `= slashings[current]`; slash_validator keeps it
+        // live), so it replaces the bucket rather than adding to the stale
+        // finalized snapshot — mirroring `randao_mix_current` above.
+        let current = (self.delta.slot.slot.slot / SLOTS_PER_EPOCH) as usize % cap;
+        out[current] = self.delta.slot.slot.current_epoch_slashings;
+    }
+
     #[inline]
     pub fn validators_count(&self) -> usize {
         let delta = &self.delta.validators;
-        delta.base_cnt + delta.appended.len()
+        delta.base_count + delta.appended.len()
+    }
+
+    #[inline]
+    pub fn validators_root(&self) -> B256 {
+        self.delta.validators.list_root(&self.fin.validators)
     }
 
     #[inline]
@@ -373,7 +508,7 @@ impl<'a> StateDeltaView<'a> {
             return Some(i as u32);
         }
         // Linear scan: `appended` only holds validators added since
-        // finalisation (≤ MAX_DEPOSITS_PER_BLOCK × delta-span slots).
+        // finalization (≤ MAX_DEPOSITS_PER_BLOCK × delta-span slots).
         self.delta.validators.find_by_pubkey(pk).map(|i| i as u32)
     }
 
@@ -424,38 +559,38 @@ impl<'a> StateDeltaView<'a> {
 
     #[inline]
     pub fn validator_balance(&self, ix: usize) -> u64 {
-        let base_cnt = self.delta.validators.base_cnt;
+        let base_count = self.delta.validators.base_count;
         if let Some(v) = lookup_sparse(&self.delta.balances.edits, ix as u32) {
             return v;
         }
-        if ix < base_cnt { self.fin.balances.get(ix) } else { 0 }
+        if ix < base_count { self.fin.balances.get(ix) } else { 0 }
     }
 
     #[inline]
     pub fn current_epoch_participation(&self, ix: usize) -> u8 {
-        let base_cnt = self.delta.validators.base_cnt;
+        let base_count = self.delta.validators.base_count;
         if let Some(v) = lookup_sparse(&self.delta.current_participation.edits, ix as u32) {
             return v;
         }
-        if ix < base_cnt { self.fin.current_participation.get(ix) } else { 0 }
+        if ix < base_count { self.fin.current_participation.get(ix) } else { 0 }
     }
 
     #[inline]
     pub fn previous_epoch_participation(&self, ix: usize) -> u8 {
-        let base_cnt = self.delta.validators.base_cnt;
+        let base_count = self.delta.validators.base_count;
         if let Some(v) = lookup_sparse(&self.delta.previous_participation.edits, ix as u32) {
             return v;
         }
-        if ix < base_cnt { self.fin.previous_participation.get(ix) } else { 0 }
+        if ix < base_count { self.fin.previous_participation.get(ix) } else { 0 }
     }
 
     #[inline]
     pub fn validator_inactivity_score(&self, ix: usize) -> u64 {
-        let base_cnt = self.delta.validators.base_cnt;
+        let base_count = self.delta.validators.base_count;
         if let Some(v) = lookup_sparse(&self.delta.inactivity_scores.edits, ix as u32) {
             return v;
         }
-        if ix < base_cnt { self.fin.inactivity_scores.get(ix) } else { 0 }
+        if ix < base_count { self.fin.inactivity_scores.get(ix) } else { 0 }
     }
 
     #[inline]
@@ -526,80 +661,80 @@ impl<'a> StateDeltaView<'a> {
     }
 
     pub fn iter_validator_balances(&self) -> impl Iterator<Item = u64> + '_ {
-        let base_cnt = self.delta.validators.base_cnt;
+        let base_count = self.delta.validators.base_count;
         Self::sweep(
             &self.delta.balances.edits,
-            &self.fin.balances.data[..base_cnt],
+            &self.fin.balances.data[..base_count],
             0,
             self.validators_count(),
         )
     }
 
     pub fn iter_validator_effective_balances(&self) -> impl Iterator<Item = u64> + '_ {
-        let base_cnt = self.delta.validators.base_cnt;
+        let base_count = self.delta.validators.base_count;
         Self::sweep(
             &self.delta.validators.effective_balance_edits,
-            &self.fin.validators.effective_balance_slice()[..base_cnt],
+            &self.fin.validators.effective_balance_slice()[..base_count],
             0,
             self.validators_count(),
         )
     }
 
     pub fn iter_current_epoch_participants(&self) -> impl Iterator<Item = u8> + '_ {
-        let base_cnt = self.delta.validators.base_cnt;
+        let base_count = self.delta.validators.base_count;
         Self::sweep(
             &self.delta.current_participation.edits,
-            &self.fin.current_participation.data[..base_cnt],
+            &self.fin.current_participation.data[..base_count],
             0,
             self.validators_count(),
         )
     }
 
     pub fn iter_previous_epoch_participants(&self) -> impl Iterator<Item = u8> + '_ {
-        let base_cnt = self.delta.validators.base_cnt;
+        let base_count = self.delta.validators.base_count;
         Self::sweep(
             &self.delta.previous_participation.edits,
-            &self.fin.previous_participation.data[..base_cnt],
+            &self.fin.previous_participation.data[..base_count],
             0,
             self.validators_count(),
         )
     }
 
     pub fn iter_inactivity_scores(&self) -> impl Iterator<Item = u64> + '_ {
-        let base_cnt = self.delta.validators.base_cnt;
+        let base_count = self.delta.validators.base_count;
         Self::sweep(
             &self.delta.inactivity_scores.edits,
-            &self.fin.inactivity_scores.data[..base_cnt],
+            &self.fin.inactivity_scores.data[..base_count],
             0,
             self.validators_count(),
         )
     }
 
     pub fn iter_activation_epochs(&self) -> impl Iterator<Item = Epoch> + '_ {
-        let base_cnt = self.delta.validators.base_cnt;
+        let base_count = self.delta.validators.base_count;
         Self::sweep(
             &self.delta.validators.activation_epoch_edits,
-            &self.fin.validators.activation_epoch_slice()[..base_cnt],
+            &self.fin.validators.activation_epoch_slice()[..base_count],
             FAR_FUTURE_EPOCH,
             self.validators_count(),
         )
     }
 
     pub fn iter_exit_epochs(&self) -> impl Iterator<Item = Epoch> + '_ {
-        let base_cnt = self.delta.validators.base_cnt;
+        let base_count = self.delta.validators.base_count;
         Self::sweep(
             &self.delta.validators.exit_epoch_edits,
-            &self.fin.validators.exit_epoch_slice()[..base_cnt],
+            &self.fin.validators.exit_epoch_slice()[..base_count],
             FAR_FUTURE_EPOCH,
             self.validators_count(),
         )
     }
 
-    /// Slashed iterator — the finalised base stores `slashed` as a packed
+    /// Slashed iterator — the finalized base stores `slashed` as a packed
     /// bitset (1 bit/validator), so this can't share `sweep`'s slice-indexed
     /// path. Edits + bitset + appended-record values are walked explicitly.
     pub fn iter_slashed(&self) -> impl Iterator<Item = bool> + '_ {
-        let base_cnt = self.delta.validators.base_cnt;
+        let base_count = self.delta.validators.base_count;
         let total = self.validators_count();
         let edits = &self.delta.validators.slashed_edits;
         let bitset = self.fin.validators.slashed_bitset();
@@ -610,29 +745,29 @@ impl<'a> StateDeltaView<'a> {
                 let v = edits[cursor].1;
                 cursor += 1;
                 v
-            } else if i < base_cnt {
+            } else if i < base_count {
                 bitset[i / 8] & (1u8 << (i % 8)) != 0
             } else {
-                appended[i - base_cnt].slashed
+                appended[i - base_count].slashed
             }
         })
     }
 
     pub fn iter_withdrawable_epochs(&self) -> impl Iterator<Item = Epoch> + '_ {
-        let base_cnt = self.delta.validators.base_cnt;
+        let base_count = self.delta.validators.base_count;
         Self::sweep(
             &self.delta.validators.withdrawable_epoch_edits,
-            &self.fin.validators.withdrawable_epoch_slice()[..base_cnt],
+            &self.fin.validators.withdrawable_epoch_slice()[..base_count],
             FAR_FUTURE_EPOCH,
             self.validators_count(),
         )
     }
 
     pub fn iter_activation_eligibility_epochs(&self) -> impl Iterator<Item = Epoch> + '_ {
-        let base_cnt = self.delta.validators.base_cnt;
+        let base_count = self.delta.validators.base_count;
         Self::sweep(
             &self.delta.validators.activation_eligibility_epoch_edits,
-            &self.fin.validators.activation_eligibility_epoch_slice()[..base_cnt],
+            &self.fin.validators.activation_eligibility_epoch_slice()[..base_count],
             FAR_FUTURE_EPOCH,
             self.validators_count(),
         )
@@ -646,19 +781,49 @@ impl<'a> StateDeltaView<'a> {
         let edits = &delta.credentials_edits;
         let base = self.fin.validators.withdrawal_credentials_slice();
         let appended = &delta.appended;
-        let base_cnt = delta.base_cnt;
-        let total = base_cnt + appended.len();
+        let base_count = delta.base_count;
+        let total = base_count + appended.len();
         let mut cursor = 0usize;
         (0..total).map(move |i| {
             if cursor < edits.len() && (edits[cursor].0 as usize) == i {
                 let v = edits[cursor].1;
                 cursor += 1;
                 v
-            } else if i < base_cnt {
+            } else if i < base_count {
                 base[i]
             } else {
-                appended[i - base_cnt].credentials
+                appended[i - base_count].credentials
             }
+        })
+    }
+
+    /// Merged per-validator row over all scalar columns, yielded in
+    /// validator-index order by zipping the individual `iter_*` sweeps. Lets
+    /// epoch-transition passes consume `for row in view.iter_validator_rows()`
+    /// instead of advancing six-plus iterators by hand. Zero-alloc.
+    pub fn iter_validator_rows(&self) -> impl Iterator<Item = ValidatorRow> + '_ {
+        let total = self.validators_count();
+        let mut effective_balance = self.iter_validator_effective_balances();
+        let mut balance = self.iter_validator_balances();
+        let mut elig = self.iter_activation_eligibility_epochs();
+        let mut act = self.iter_activation_epochs();
+        let mut exit = self.iter_exit_epochs();
+        let mut withdr = self.iter_withdrawable_epochs();
+        let mut slashed = self.iter_slashed();
+        let mut prev_p = self.iter_previous_epoch_participants();
+        let mut curr_p = self.iter_current_epoch_participants();
+        let mut inact = self.iter_inactivity_scores();
+        (0..total).map(move |_| ValidatorRow {
+            effective_balance: effective_balance.next().unwrap(),
+            balance: balance.next().unwrap(),
+            activation_eligibility_epoch: elig.next().unwrap(),
+            activation_epoch: act.next().unwrap(),
+            exit_epoch: exit.next().unwrap(),
+            withdrawable_epoch: withdr.next().unwrap(),
+            slashed: slashed.next().unwrap(),
+            previous_participation: prev_p.next().unwrap(),
+            current_participation: curr_p.next().unwrap(),
+            inactivity_score: inact.next().unwrap(),
         })
     }
 
@@ -834,10 +999,8 @@ impl<'a> StateDeltaView<'a> {
     pub fn drain_pending_deposits(&mut self, n: usize) {
         let base_len = self.fin.pending.pending_deposits.len();
         let already = self.delta.pending.deposits_drain_offset as usize;
-        let base_remaining = base_len.saturating_sub(already);
-        let from_base = n.min(base_remaining);
-        self.delta.pending.deposits_drain_offset += from_base as u32;
-        let from_appended = n - from_base;
+        let from_appended = n.saturating_sub(base_len.saturating_sub(already));
+        self.delta.pending.deposits_drain_offset += (n - from_appended) as u32;
         if from_appended > 0 {
             self.delta.pending.deposits_appended.drain(..from_appended);
         }
@@ -847,10 +1010,8 @@ impl<'a> StateDeltaView<'a> {
     pub fn drain_pending_partial_withdrawals(&mut self, n: usize) {
         let base_len = self.fin.pending.pending_partial_withdrawals.len();
         let already = self.delta.pending.partial_withdrawals_drain_offset as usize;
-        let base_remaining = base_len.saturating_sub(already);
-        let from_base = n.min(base_remaining);
-        self.delta.pending.partial_withdrawals_drain_offset += from_base as u32;
-        let from_appended = n - from_base;
+        let from_appended = n.saturating_sub(base_len.saturating_sub(already));
+        self.delta.pending.partial_withdrawals_drain_offset += (n - from_appended) as u32;
         if from_appended > 0 {
             self.delta.pending.partial_withdrawals_appended.drain(..from_appended);
         }
@@ -860,10 +1021,8 @@ impl<'a> StateDeltaView<'a> {
     pub fn drain_pending_consolidations(&mut self, n: usize) {
         let base_len = self.fin.pending.pending_consolidations.len();
         let already = self.delta.pending.consolidations_drain_offset as usize;
-        let base_remaining = base_len.saturating_sub(already);
-        let from_base = n.min(base_remaining);
-        self.delta.pending.consolidations_drain_offset += from_base as u32;
-        let from_appended = n - from_base;
+        let from_appended = n.saturating_sub(base_len.saturating_sub(already));
+        self.delta.pending.consolidations_drain_offset += (n - from_appended) as u32;
         if from_appended > 0 {
             self.delta.pending.consolidations_appended.drain(..from_appended);
         }
@@ -903,6 +1062,14 @@ impl<'a> StateDeltaView<'a> {
     #[inline]
     pub fn ensure_longtail_delta(&mut self) -> usize {
         self.delta.ensure_longtail_delta(self.longtails, &self.fin.longtail)
+    }
+
+    /// Mutable handle to the per-fork longtail tier (sync committees +
+    /// indices). Requires `ensure_longtail_delta` first.
+    #[inline]
+    pub fn longtail_state_mut(&mut self) -> &mut LongtailState {
+        let seq = self.delta.longtail_idx.expect("ensure_longtail_delta first");
+        self.longtails.get_mut(seq)
     }
 
     #[inline]
@@ -958,17 +1125,17 @@ impl<'a> StateDeltaView<'a> {
 
     #[inline]
     pub fn set_balance(&mut self, idx: u32, v: u64) {
-        let base_cnt = self.delta.validators.base_cnt;
-        set_against(&mut self.delta.balances, &self.fin.balances, base_cnt, idx, v);
+        let base_count = self.delta.validators.base_count;
+        set_against(&mut self.delta.balances, &self.fin.balances, base_count, idx, v);
     }
 
     #[inline]
     pub fn set_current_participation(&mut self, idx: u32, v: u8) {
-        let base_cnt = self.delta.validators.base_cnt;
+        let base_count = self.delta.validators.base_count;
         set_against(
             &mut self.delta.current_participation,
             &self.fin.current_participation,
-            base_cnt,
+            base_count,
             idx,
             v,
         );
@@ -976,11 +1143,11 @@ impl<'a> StateDeltaView<'a> {
 
     #[inline]
     pub fn set_previous_participation(&mut self, idx: u32, v: u8) {
-        let base_cnt = self.delta.validators.base_cnt;
+        let base_count = self.delta.validators.base_count;
         set_against(
             &mut self.delta.previous_participation,
             &self.fin.previous_participation,
-            base_cnt,
+            base_count,
             idx,
             v,
         );
@@ -988,13 +1155,77 @@ impl<'a> StateDeltaView<'a> {
 
     #[inline]
     pub fn set_inactivity_score(&mut self, idx: u32, v: u64) {
-        let base_cnt = self.delta.validators.base_cnt;
+        let base_count = self.delta.validators.base_count;
         set_against(
             &mut self.delta.inactivity_scores,
             &self.fin.inactivity_scores,
-            base_cnt,
+            base_count,
             idx,
             v,
+        );
+    }
+
+    /// Bulk-recompute the identity-layer effective balances. Unlike the
+    /// sibling `replace_*` below, effective_balance is a hashed
+    /// Validator-container field, so writes route through
+    /// `set_effective_balance` (which maintains the hash overlay). The spec
+    /// only moves effective_balance across a hysteresis band, so in practice
+    /// few validators change — the guard keeps this sparse, no scratch.
+    ///
+    /// The closure receives `(i, effective_balance, balance, credentials)` —
+    /// all read internally per index so callers don't materialise those
+    /// columns up front.
+    #[inline]
+    pub fn replace_effective_balance<F>(&mut self, mut f: F)
+    where
+        F: FnMut(usize, u64, u64, Withdrawals) -> u64,
+    {
+        let total = self.validators_count();
+        for i in 0..total {
+            let curr = self.validator_effective_balance(i);
+            let balance = self.validator_balance(i);
+            let creds = self.validator_credentials(i);
+            let new = f(i, curr, balance, creds);
+            if new != curr {
+                self.set_effective_balance(i as u32, new);
+            }
+        }
+    }
+
+    // ── Dense install (zero-alloc epoch-boundary rewrites) ───────────────
+    //
+    // The caller fills `dense` with `(i, new_value)` for `i in 0..total` in
+    // ascending order (computed via a zipped read-iterator sweep — no
+    // per-column `collect`), then hands it here. We elide entries equal to
+    // the finalized base and swap it into the layer's edit vec, reusing the
+    // caller's buffer (it comes back holding the prior edits, ready to be
+    // cleared and refilled next pass).
+
+    #[inline]
+    pub fn install_balances(&mut self, dense: &mut Vec<(u32, u64)>) {
+        let base_count = self.delta.validators.base_count;
+        install_against(&mut self.delta.balances, &self.fin.balances, base_count, dense);
+    }
+
+    #[inline]
+    pub fn install_inactivity_scores(&mut self, dense: &mut Vec<(u32, u64)>) {
+        let base_count = self.delta.validators.base_count;
+        install_against(
+            &mut self.delta.inactivity_scores,
+            &self.fin.inactivity_scores,
+            base_count,
+            dense,
+        );
+    }
+
+    #[inline]
+    pub fn install_previous_participation(&mut self, dense: &mut Vec<(u32, u8)>) {
+        let base_count = self.delta.validators.base_count;
+        install_against(
+            &mut self.delta.previous_participation,
+            &self.fin.previous_participation,
+            base_count,
+            dense,
         );
     }
 
@@ -1006,9 +1237,16 @@ impl<'a> StateDeltaView<'a> {
         scratch: &mut Vec<(u32, u64)>,
         f: F,
     ) {
-        let base_cnt = self.delta.validators.base_cnt;
-        let total = base_cnt + self.delta.validators.appended.len();
-        replace_against(&mut self.delta.balances, &self.fin.balances, base_cnt, total, scratch, f);
+        let base_count = self.delta.validators.base_count;
+        let total = base_count + self.delta.validators.appended.len();
+        replace_against(
+            &mut self.delta.balances,
+            &self.fin.balances,
+            base_count,
+            total,
+            scratch,
+            f,
+        );
     }
 
     #[inline]
@@ -1017,12 +1255,12 @@ impl<'a> StateDeltaView<'a> {
         scratch: &mut Vec<(u32, u64)>,
         f: F,
     ) {
-        let base_cnt = self.delta.validators.base_cnt;
-        let total = base_cnt + self.delta.validators.appended.len();
+        let base_count = self.delta.validators.base_count;
+        let total = base_count + self.delta.validators.appended.len();
         replace_against(
             &mut self.delta.inactivity_scores,
             &self.fin.inactivity_scores,
-            base_cnt,
+            base_count,
             total,
             scratch,
             f,
@@ -1035,12 +1273,12 @@ impl<'a> StateDeltaView<'a> {
         scratch: &mut Vec<(u32, u8)>,
         f: F,
     ) {
-        let base_cnt = self.delta.validators.base_cnt;
-        let total = base_cnt + self.delta.validators.appended.len();
+        let base_count = self.delta.validators.base_count;
+        let total = base_count + self.delta.validators.appended.len();
         replace_against(
             &mut self.delta.current_participation,
             &self.fin.current_participation,
-            base_cnt,
+            base_count,
             total,
             scratch,
             f,
@@ -1053,12 +1291,12 @@ impl<'a> StateDeltaView<'a> {
         scratch: &mut Vec<(u32, u8)>,
         f: F,
     ) {
-        let base_cnt = self.delta.validators.base_cnt;
-        let total = base_cnt + self.delta.validators.appended.len();
+        let base_count = self.delta.validators.base_count;
+        let total = base_count + self.delta.validators.appended.len();
         replace_against(
             &mut self.delta.previous_participation,
             &self.fin.previous_participation,
-            base_cnt,
+            base_count,
             total,
             scratch,
             f,
@@ -1075,14 +1313,14 @@ impl StateDelta {
     /// Allocate a fresh epoch ring slot for this fork iff one isn't already
     /// owned. `epoch_idx` becomes the new seq. The fresh entry has empty
     /// `randao_mixes`/`slashings` logs and inherits the scalar state from
-    /// the finalised epoch.
+    /// the finalized epoch.
     ///
     /// Caller is responsible for ensuring this fork's `epoch_idx` does not
     /// alias a parent fork's entry that the parent still needs.
     pub fn ensure_epoch_delta(
         &mut self,
         epochs: &mut EpochRing,
-        finalised_epoch: &EpochStateFinalised,
+        finalized_epoch: &EpochStateFinalized,
     ) -> usize {
         if let Some(seq) = self.epoch_idx {
             return seq;
@@ -1092,9 +1330,9 @@ impl StateDelta {
         };
         // `roll(None)` already invoked `EpochStateDelta::reset()` which clears
         // both Vec logs and resets scalars to default. Overwrite the scalar
-        // tier from the finalised base; logs stay empty.
+        // tier from the finalized base; logs stay empty.
         let e = epochs.get_mut(seq);
-        e.state = finalised_epoch.state;
+        e.state = finalized_epoch.state;
         self.epoch_idx = Some(seq);
         seq
     }
@@ -1102,7 +1340,7 @@ impl StateDelta {
     pub fn ensure_longtail_delta(
         &mut self,
         longtails: &mut LongtailRing,
-        finalised_longtail: &LongtailState,
+        finalized_longtail: &LongtailState,
     ) -> usize {
         if let Some(seq) = self.longtail_idx {
             return seq;
@@ -1111,9 +1349,9 @@ impl StateDelta {
             RollResult::Reset(s) | RollResult::Rolled(s) => s,
         };
         let lt = longtails.get_mut(seq);
-        lt.current_sync_committee = finalised_longtail.current_sync_committee;
-        lt.next_sync_committee = finalised_longtail.next_sync_committee;
-        lt.sync_committee_indices = finalised_longtail.sync_committee_indices;
+        lt.current_sync_committee = finalized_longtail.current_sync_committee;
+        lt.next_sync_committee = finalized_longtail.next_sync_committee;
+        lt.sync_committee_indices = finalized_longtail.sync_committee_indices;
         // historical_summaries cleared by reset().
         self.longtail_idx = Some(seq);
         seq
@@ -1185,7 +1423,7 @@ fn sparse_replace_with_scratch<T, F>(
     std::mem::swap(edits, scratch);
 }
 
-/// One sibling sparse layer (delta + its finalised base) viewed uniformly,
+/// One sibling sparse layer (delta + its finalized base) viewed uniformly,
 /// so `set_against`/`replace_against` need only one substitution point.
 trait SparseLayer {
     type Base;
@@ -1200,11 +1438,11 @@ trait SparseLayer {
 fn set_against<L: SparseLayer>(
     delta: &mut L,
     base: &L::Base,
-    base_cnt: usize,
+    base_count: usize,
     idx: u32,
     v: L::Val,
 ) {
-    let base_val = if (idx as usize) < base_cnt {
+    let base_val = if (idx as usize) < base_count {
         L::base_get(base, idx as usize)
     } else {
         L::APPENDED_DEFAULT
@@ -1216,7 +1454,7 @@ fn set_against<L: SparseLayer>(
 fn replace_against<L: SparseLayer, F>(
     delta: &mut L,
     base: &L::Base,
-    base_cnt: usize,
+    base_count: usize,
     total: usize,
     scratch: &mut Vec<(u32, L::Val)>,
     f: F,
@@ -1226,69 +1464,90 @@ fn replace_against<L: SparseLayer, F>(
     sparse_replace_with_scratch(
         delta.edits_mut(),
         scratch,
-        &L::base_data(base)[..base_cnt],
+        &L::base_data(base)[..base_count],
         L::APPENDED_DEFAULT,
         total,
         f,
     );
 }
 
+/// Install a caller-computed dense `(idx, new)` list (ascending `idx`) as the
+/// layer's edit vec: elide entries equal to the finalized base, then swap.
+/// Reuses `dense` (returns the prior edits in it).
+#[inline]
+fn install_against<L: SparseLayer>(
+    delta: &mut L,
+    base: &L::Base,
+    base_count: usize,
+    dense: &mut Vec<(u32, L::Val)>,
+) {
+    dense.retain(|(idx, v)| {
+        let base_val = if (*idx as usize) < base_count {
+            L::base_get(base, *idx as usize)
+        } else {
+            L::APPENDED_DEFAULT
+        };
+        *v != base_val
+    });
+    std::mem::swap(delta.edits_mut(), dense);
+}
+
 impl SparseLayer for BalancesDelta {
-    type Base = FinalisedBalances;
+    type Base = FinalizedBalances;
     type Val = u64;
     const APPENDED_DEFAULT: u64 = 0;
     fn edits_mut(&mut self) -> &mut Vec<(u32, u64)> {
         &mut self.edits
     }
-    fn base_get(base: &FinalisedBalances, i: usize) -> u64 {
+    fn base_get(base: &FinalizedBalances, i: usize) -> u64 {
         base.get(i)
     }
-    fn base_data(base: &FinalisedBalances) -> &[u64] {
+    fn base_data(base: &FinalizedBalances) -> &[u64] {
         &base.data
     }
 }
 
 impl SparseLayer for PreviousParticipationDelta {
-    type Base = FinalisedPreviousParticipation;
+    type Base = FinalizedPreviousParticipation;
     type Val = u8;
     const APPENDED_DEFAULT: u8 = 0;
     fn edits_mut(&mut self) -> &mut Vec<(u32, u8)> {
         &mut self.edits
     }
-    fn base_get(base: &FinalisedPreviousParticipation, i: usize) -> u8 {
+    fn base_get(base: &FinalizedPreviousParticipation, i: usize) -> u8 {
         base.get(i)
     }
-    fn base_data(base: &FinalisedPreviousParticipation) -> &[u8] {
+    fn base_data(base: &FinalizedPreviousParticipation) -> &[u8] {
         &base.data
     }
 }
 
 impl SparseLayer for CurrentParticipationDelta {
-    type Base = FinalisedCurrentParticipation;
+    type Base = FinalizedCurrentParticipation;
     type Val = u8;
     const APPENDED_DEFAULT: u8 = 0;
     fn edits_mut(&mut self) -> &mut Vec<(u32, u8)> {
         &mut self.edits
     }
-    fn base_get(base: &FinalisedCurrentParticipation, i: usize) -> u8 {
+    fn base_get(base: &FinalizedCurrentParticipation, i: usize) -> u8 {
         base.get(i)
     }
-    fn base_data(base: &FinalisedCurrentParticipation) -> &[u8] {
+    fn base_data(base: &FinalizedCurrentParticipation) -> &[u8] {
         &base.data
     }
 }
 
 impl SparseLayer for InactivityScoresDelta {
-    type Base = FinalisedInactivityScores;
+    type Base = FinalizedInactivityScores;
     type Val = u64;
     const APPENDED_DEFAULT: u64 = 0;
     fn edits_mut(&mut self) -> &mut Vec<(u32, u64)> {
         &mut self.edits
     }
-    fn base_get(base: &FinalisedInactivityScores, i: usize) -> u64 {
+    fn base_get(base: &FinalizedInactivityScores, i: usize) -> u64 {
         base.get(i)
     }
-    fn base_data(base: &FinalisedInactivityScores) -> &[u64] {
+    fn base_data(base: &FinalizedInactivityScores) -> &[u64] {
         &base.data
     }
 }
@@ -1301,13 +1560,13 @@ mod tests {
         validators::ValidatorsDelta,
     };
 
-    fn fresh_finalised() -> Box<Finalised> {
-        let mut f = Box::new(Finalised::default());
+    fn fresh_finalized() -> Box<Finalized> {
+        let mut f = Box::new(Finalized::default());
         f.slot.slot.slot = 100; // arbitrary post-genesis fin slot
         f
     }
 
-    fn anchored_delta(f: &Finalised) -> StateDelta {
+    fn anchored_delta(f: &Finalized) -> StateDelta {
         StateDelta {
             validators: ValidatorsDelta::new_at(&f.validators),
             slot: SlotStateDelta {
@@ -1346,9 +1605,9 @@ mod tests {
         seq
     }
 
-    fn push_default_validator(f: &mut Finalised, balance_v: u64) {
-        let i = f.validators.validator_cnt();
-        // Identity layer columns. `FinalisedValidators::default()` already
+    fn push_default_validator(f: &mut Finalized, balance_v: u64) {
+        let i = f.validators.validator_count();
+        // Identity layer columns. `FinalizedValidators::default()` already
         // seeds `[FAR_FUTURE_EPOCH; MAX]` for the four epochs and zeros
         // elsewhere, so we only need to set the slot and bump the count.
         f.validators.pubkey_slice_mut()[i] = [0; 48];
@@ -1361,7 +1620,7 @@ mod tests {
 
     #[test]
     fn randao_anchored_reads_base() {
-        let mut f = fresh_finalised();
+        let mut f = fresh_finalized();
         let target_epoch = 4;
         let idx = target_epoch as usize % f.epoch.randao_mixes.len();
         f.epoch.randao_mixes[idx] = [0xAB; 32];
@@ -1374,10 +1633,10 @@ mod tests {
 
     #[test]
     fn randao_diverged_hits_delta_then_base() {
-        let mut f = fresh_finalised();
+        let mut f = fresh_finalized();
         let base_epoch = f.epoch();
 
-        // Base value for base_epoch+1; would normally have wrapped via finalisation.
+        // Base value for base_epoch+1; would normally have wrapped via finalization.
         let post_idx = (base_epoch + 1) as usize % f.epoch.randao_mixes.len();
         f.epoch.randao_mixes[post_idx] = [0x11; 32];
 
@@ -1401,7 +1660,7 @@ mod tests {
 
     #[test]
     fn block_root_anchored_reads_base() {
-        let mut f = fresh_finalised();
+        let mut f = fresh_finalized();
         let target_slot = 50;
         let idx = target_slot as usize % f.slot.block_roots.len();
         f.slot.block_roots[idx] = [0xEE; 32];
@@ -1414,7 +1673,7 @@ mod tests {
 
     #[test]
     fn block_root_diverged_hits_delta_then_base() {
-        let mut f = fresh_finalised();
+        let mut f = fresh_finalized();
         let fin_slot = f.slot.slot.slot;
 
         let post_idx = (fin_slot + 1) as usize % f.slot.block_roots.len();
@@ -1431,7 +1690,7 @@ mod tests {
 
     #[test]
     fn historical_summary_base_then_delta() {
-        let mut f = fresh_finalised();
+        let mut f = fresh_finalized();
         f.longtail
             .historical_summaries
             .push(HistoricalSummary { block_summary_root: [1; 32], state_summary_root: [1; 32] });
@@ -1450,7 +1709,7 @@ mod tests {
 
     #[test]
     fn historical_summary_diverged_extends_past_base() {
-        let mut f = fresh_finalised();
+        let mut f = fresh_finalized();
         f.longtail
             .historical_summaries
             .push(HistoricalSummary { block_summary_root: [1; 32], state_summary_root: [1; 32] });
@@ -1477,7 +1736,7 @@ mod tests {
 
     #[test]
     fn balance_edit_overrides_base() {
-        let mut f = fresh_finalised();
+        let mut f = fresh_finalized();
         push_default_validator(&mut f, 1_000);
 
         let mut d = anchored_delta(&f);
@@ -1502,7 +1761,7 @@ mod tests {
     //   - pubkey / withdrawal_credentials come from the appended record.
     #[test]
     fn appended_validator_uses_delta_pubkey_and_defaults() {
-        let f = fresh_finalised();
+        let f = fresh_finalized();
         let mut d = anchored_delta(&f);
         let pk = [7u8; 48];
         let creds = Withdrawals([0x42; 32]);
@@ -1534,7 +1793,7 @@ mod tests {
 
     #[test]
     fn iter_balances_merges_in_order() {
-        let mut f = fresh_finalised();
+        let mut f = fresh_finalized();
         for i in 0..5u64 {
             push_default_validator(&mut f, i * 100);
         }
@@ -1550,7 +1809,7 @@ mod tests {
 
     #[test]
     fn pending_deposits_drain_then_appended() {
-        let mut f = fresh_finalised();
+        let mut f = fresh_finalized();
         for i in 0..3u64 {
             f.pending.pending_deposits.push(PendingDeposit {
                 pubkey: [0; 48],
@@ -1580,10 +1839,10 @@ mod tests {
 
     #[test]
     fn find_by_pubkey_hits_base_index_then_appended() {
-        let mut f = fresh_finalised();
+        let mut f = fresh_finalized();
         let pk_a = [0xA; 48];
         let pk_b = [0xB; 48];
-        // Insert pk_a into the finalised base directly via append.
+        // Insert pk_a into the finalized base directly via append.
         f.validators.append(
             &pk_a,
             &Default::default(),
@@ -1608,7 +1867,7 @@ mod tests {
 
     #[test]
     fn ensure_epoch_delta_is_idempotent() {
-        let f = fresh_finalised();
+        let f = fresh_finalized();
         let mut tile_epochs: EpochRing = DeltaBuffer::default();
         let mut d = anchored_delta(&f);
 
@@ -1625,25 +1884,25 @@ mod tests {
 
     #[test]
     fn replace_balances_elides_same_as_base() {
-        let mut f = fresh_finalised();
+        let mut f = fresh_finalized();
         for i in 0..4u64 {
             push_default_validator(&mut f, i * 10);
         }
 
         let mut d = anchored_delta(&f);
         let mut scratch: Vec<(u32, u64)> = Vec::new();
-        let base_cnt = f.validators.validator_cnt();
-        let total = base_cnt; // no appended in this test
+        let base_count = f.validators.validator_count();
+        let total = base_count; // no appended in this test
         // Even idx → base value (elided); odd idx → +1000 (kept).
-        replace_against(&mut d.balances, &f.balances, base_cnt, total, &mut scratch, |i, cur| {
+        replace_against(&mut d.balances, &f.balances, base_count, total, &mut scratch, |i, cur| {
             if i % 2 == 0 { cur } else { cur + 1000 }
         });
         assert_eq!(d.balances.edits, vec![(1, 1010), (3, 1030)]);
     }
 
     #[test]
-    fn apply_delta_advances_finalised_slot() {
-        let mut f = fresh_finalised();
+    fn apply_delta_advances_finalized_slot() {
+        let mut f = fresh_finalized();
         let mut d = anchored_delta(&f);
         d.slot.slot.slot = 105;
         d.slot.block_roots.push([0x55; 32]);
@@ -1656,14 +1915,14 @@ mod tests {
 
     #[test]
     fn apply_delta_appends_validator_to_base() {
-        let mut f = fresh_finalised();
+        let mut f = fresh_finalized();
         let mut d = anchored_delta(&f);
         let pk = [0xFE; 48];
         d.validators.append(&f.validators, pk, Default::default(), Default::default());
         d.balances.edits.push((0, 32_000_000_000));
 
         f.apply_delta(&d, None, None);
-        assert_eq!(f.validators.validator_cnt(), 1);
+        assert_eq!(f.validators.validator_count(), 1);
         assert_eq!(f.balances.get(0), 32_000_000_000);
         assert_eq!(f.validators.activation_epoch(0), u64::MAX);
         assert_eq!(f.validators.find_by_pubkey(&pk), Some(0));
@@ -1671,34 +1930,34 @@ mod tests {
 
     #[test]
     fn set_balance_inserts_then_updates_then_elides() {
-        let mut f = fresh_finalised();
+        let mut f = fresh_finalized();
         for _ in 0..3 {
             push_default_validator(&mut f, 1_000);
         }
         let mut d = anchored_delta(&f);
 
-        let base_cnt = f.validators.validator_cnt();
+        let base_count = f.validators.validator_count();
 
         // Insert at idx 2.
-        set_against(&mut d.balances, &f.balances, base_cnt, 2, 2_500);
+        set_against(&mut d.balances, &f.balances, base_count, 2, 2_500);
         assert_eq!(d.balances.edits, vec![(2, 2_500)]);
 
         // Insert at idx 0 — must land before idx 2 to keep sorted.
-        set_against(&mut d.balances, &f.balances, base_cnt, 0, 4_000);
+        set_against(&mut d.balances, &f.balances, base_count, 0, 4_000);
         assert_eq!(d.balances.edits, vec![(0, 4_000), (2, 2_500)]);
 
         // Update in place.
-        set_against(&mut d.balances, &f.balances, base_cnt, 0, 5_000);
+        set_against(&mut d.balances, &f.balances, base_count, 0, 5_000);
         assert_eq!(d.balances.edits, vec![(0, 5_000), (2, 2_500)]);
 
         // Setting back to base value elides the edit.
-        set_against(&mut d.balances, &f.balances, base_cnt, 0, 1_000);
+        set_against(&mut d.balances, &f.balances, base_count, 0, 1_000);
         assert_eq!(d.balances.edits, vec![(2, 2_500)]);
     }
 
     #[test]
     fn set_slashed_round_trips() {
-        let mut f = fresh_finalised();
+        let mut f = fresh_finalized();
         push_default_validator(&mut f, 0);
         let mut d = anchored_delta(&f);
         fresh_rings!(epochs, longtails);
@@ -1720,7 +1979,7 @@ mod tests {
 
     #[test]
     fn append_validator_returns_idx_and_grows_count() {
-        let mut f = fresh_finalised();
+        let mut f = fresh_finalized();
         push_default_validator(&mut f, 0);
         push_default_validator(&mut f, 0);
         let mut d = anchored_delta(&f);
@@ -1742,7 +2001,7 @@ mod tests {
 
         d.validators.set_activation_epoch(&f.validators, 2, 7);
         f.apply_delta(&d, None, None);
-        assert_eq!(f.validators.validator_cnt(), 3);
+        assert_eq!(f.validators.validator_count(), 3);
         assert_eq!(f.validators.activation_epoch(2), 7);
     }
 
@@ -1756,7 +2015,7 @@ mod tests {
     /// slicing breaks, those return 0.
     #[test]
     fn iter_epoch_fields_yield_far_future_for_appended_no_edit() {
-        let mut f = fresh_finalised();
+        let mut f = fresh_finalized();
         push_default_validator(&mut f, 0);
         push_default_validator(&mut f, 0);
         let mut d = anchored_delta(&f);
@@ -1801,7 +2060,7 @@ mod tests {
     ///   - appended validator, with edit → the edit value
     #[test]
     fn iter_validator_credentials_covers_all_cases() {
-        let mut f = fresh_finalised();
+        let mut f = fresh_finalized();
         // Two base validators with distinct credentials.
         let base_creds_0 = Withdrawals([0xA1; 32]);
         let base_creds_1 = Withdrawals([0xA2; 32]);
@@ -1831,14 +2090,14 @@ mod tests {
     }
 
     /// `apply_delta` with an epoch_entry must:
-    ///   - overlay `randao_mixes[k]` into the finalised ring at `(old_fin_epoch
+    ///   - overlay `randao_mixes[k]` into the finalized ring at `(old_fin_epoch
     ///     + k) % EPOCHS_PER_HISTORICAL_VECTOR`
-    ///   - overlay `slashings[k]` into the finalised slashings ring at
+    ///   - overlay `slashings[k]` into the finalized slashings ring at
     ///     `(old_fin_epoch + k) % EPOCHS_PER_SLASHINGS_VECTOR`
     ///   - replace `epoch.state` with the entry's `state` scalar block
     #[test]
     fn apply_delta_overlays_epoch_tier() {
-        let mut f = fresh_finalised();
+        let mut f = fresh_finalized();
         let old_fin_slot = f.slot.slot.slot;
         let old_fin_epoch = old_fin_slot / SLOTS_PER_EPOCH;
         let hv = f.epoch.randao_mixes.len();
@@ -1883,11 +2142,11 @@ mod tests {
 
     /// `apply_delta` with a longtail_entry must rotate sync committees and
     /// **extend** historical_summaries (not replace — the entry holds only
-    /// the post-finalisation appends).
+    /// the post-finalization appends).
     #[test]
     fn apply_delta_overlays_longtail_tier() {
-        let mut f = fresh_finalised();
-        // Pre-existing historical summary on the finalised base.
+        let mut f = fresh_finalized();
+        // Pre-existing historical summary on the finalized base.
         f.longtail
             .historical_summaries
             .push(HistoricalSummary { block_summary_root: [1; 32], state_summary_root: [1; 32] });

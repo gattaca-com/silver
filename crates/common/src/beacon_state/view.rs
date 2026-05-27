@@ -21,6 +21,14 @@ pub struct BeaconStateOwner {
     inner: Arc<Seqlock<ControlInner>>,
 }
 
+// SAFETY: `state_ptr` aliases the owner's own `Box<BeaconState>` heap
+// allocation, which is stable across a move (only the `Box` pointer moves,
+// not the heap data). The owner is the single writer and is pinned to one
+// thread after construction; cross-thread readers go through
+// `BeaconStateReader` (its own `unsafe impl`). Sending the owner to its tile
+// thread once is therefore sound.
+unsafe impl Send for BeaconStateOwner {}
+
 impl BeaconStateOwner {
     pub fn new(state: BeaconState) -> Self {
         let mut box_state = Box::new(state);
@@ -48,16 +56,16 @@ impl BeaconStateOwner {
 
     pub fn delta_view(&mut self, slot_seq: usize) -> StateDeltaView<'_> {
         let s = &mut *self.state;
-        // Production state-transition path: finalised base must be populated
+        // Production state-transition path: finalized base must be populated
         // (decompose from genesis SSZ or a checkpoint). The zero-validator
-        // `Finalised::default()` is the unanchored stub used only by tests
+        // `Finalized::default()` is the unanchored stub used only by tests
         // and the pre-bootstrap owner.
         assert!(
-            s.finalised.validators.validator_cnt() > 0,
-            "delta_view: operating on empty finalised state",
+            s.finalized.validators.validator_count() > 0,
+            "delta_view: operating on empty finalized state",
         );
         StateDeltaView::new(
-            &s.finalised,
+            &s.finalized,
             s.slots.get_mut(slot_seq),
             &mut s.epochs,
             &mut s.longtails,
@@ -81,7 +89,7 @@ impl BeaconStateOwner {
         }
     }
 
-    /// Should be called when finalised state is being updated.
+    /// Should be called when finalized state is being updated.
     pub fn write(&mut self) -> WriteGuard<'_> {
         let (mut value, version) =
             self.inner.read_copy().expect("control inner should nbever be empty");
@@ -121,7 +129,7 @@ unsafe impl Sync for BeaconStateReader {}
 
 impl BeaconStateReader {
     /// Performs optimistic reads from the beacon state, this will loop if the
-    /// finalised state is updated during a read.
+    /// finalized state is updated during a read.
     pub fn read<F, R>(&self, reader: &F) -> R
     where
         F: Fn(StateDeltaReadView<'_>) -> R,
@@ -141,9 +149,9 @@ impl BeaconStateReader {
             let slot_delta = control.slots.map(|i| state.slots.get(i));
             let epoch_delta = control.epochs.map(|i| state.epochs.get(i));
 
-            let result = reader(StateDeltaReadView::new(&state.finalised, slot_delta, epoch_delta));
+            let result = reader(StateDeltaReadView::new(&state.finalized, slot_delta, epoch_delta));
 
-            // check that finalised state was not changed whilst reading.
+            // check that finalized state was not changed whilst reading.
             sync::atomic::compiler_fence(Ordering::Acquire);
             let (post, _) = self.inner.read_copy().expect("should never be empty");
             if post.version == version {
@@ -184,7 +192,7 @@ impl<'a> Drop for WriteGuard<'a> {
 
 #[derive(Clone, Copy, Default)]
 struct ControlInner {
-    /// Finalised version - an odd version indicates that finalised state is
+    /// Finalized version - an odd version indicates that finalized state is
     /// being written.
     version: usize,
     epochs: Option<usize>,

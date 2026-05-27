@@ -216,14 +216,17 @@ pub fn hash_fixed_bytes(data: &[u8]) -> B256 {
     merkle_finalize(stack, target_depth)
 }
 
-pub fn hash_uint64_list(values: &[u64], count: usize, limit: usize) -> B256 {
+/// Hash `List[uint64, limit]`. `values` yields exactly `count` items (the
+/// list length); taking an iterator lets callers stream a delta-merged
+/// column without materialising it.
+pub fn hash_uint64_list(values: impl Iterator<Item = u64>, count: usize, limit: usize) -> B256 {
     let limit_chunks = limit.div_ceil(4);
     let target_depth = limit_chunks.next_power_of_two().trailing_zeros() as u8;
 
     let mut stack = MerkleStack::new();
     let mut chunk = [0u8; 32];
     let mut slot = 0usize;
-    for &v in &values[..count] {
+    for v in values {
         let off = slot * 8;
         chunk[off..off + 8].copy_from_slice(&v.to_le_bytes());
         slot += 1;
@@ -240,11 +243,25 @@ pub fn hash_uint64_list(values: &[u64], count: usize, limit: usize) -> B256 {
     mix_in_length(&root, count)
 }
 
-pub fn hash_uint8_list(values: &[u8], count: usize, limit: usize) -> B256 {
+/// Hash `List[uint8, limit]` (e.g. participation flags) from an iterator.
+pub fn hash_uint8_list(values: impl Iterator<Item = u8>, count: usize, limit: usize) -> B256 {
     let limit_chunks = limit.div_ceil(32);
     let target_depth = limit_chunks.next_power_of_two().trailing_zeros() as u8;
     let mut stack = MerkleStack::new();
-    push_bytes_as_chunks(&values[..count], &mut stack);
+    let mut chunk = [0u8; 32];
+    let mut slot = 0usize;
+    for b in values {
+        chunk[slot] = b;
+        slot += 1;
+        if slot == 32 {
+            merkle_push(&mut stack, chunk);
+            chunk = [0u8; 32];
+            slot = 0;
+        }
+    }
+    if slot != 0 {
+        merkle_push(&mut stack, chunk);
+    }
     let root = merkle_finalize(stack, target_depth);
     mix_in_length(&root, count)
 }

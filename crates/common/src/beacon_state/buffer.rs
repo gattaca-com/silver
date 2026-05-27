@@ -64,10 +64,12 @@ impl<T: Reset, const N: usize> DeltaBuffer<T, N> {
         result
     }
 
-    /// Free the specifed number of entries from the tail.
+    /// Advance the tail forward to `to_seq` (the new oldest live seq); entries
+    /// older than `to_seq` are reclaimed and the wrap check relaxes
+    /// accordingly. No-op if the tail is already at or past `to_seq`.
     pub fn free(&mut self, to_seq: usize) {
         if let Some(tail_seq) = self.tail_seq &&
-            tail_seq > to_seq
+            to_seq > tail_seq
         {
             self.tail_seq = Some(to_seq);
         }

@@ -513,11 +513,11 @@ impl PeerManager {
         };
         let local_head_slot = StatusView::head_slot(local);
 
-        // For SyncingFinalised, drive past `(target_epoch + 2) * SLOTS_PER_EPOCH`:
+        // For SyncingFinalized, drive past `(target_epoch + 2) * SLOTS_PER_EPOCH`:
         // Casper FFG needs two more epochs of justification/finalization before
         // local `finalized_checkpoint.epoch` can reach `target_epoch`.
         let target_end_slot = match self.current_sync_target() {
-            SyncUpdate::SyncingFinalised { target_epoch, .. } => {
+            SyncUpdate::SyncingFinalized { target_epoch, .. } => {
                 target_epoch.saturating_add(2).saturating_mul(self.syncing.slots_per_epoch)
             }
             SyncUpdate::SyncingHead { head_slot, .. } => head_slot,
@@ -688,7 +688,7 @@ impl PeerManager {
                 continue;
             }
             let matches = match target {
-                SyncUpdate::SyncingFinalised { target_epoch, target_root } => {
+                SyncUpdate::SyncingFinalized { target_epoch, target_root } => {
                     StatusView::finalized_epoch(ssz) == target_epoch &&
                         *StatusView::finalized_root(ssz) == target_root
                 }

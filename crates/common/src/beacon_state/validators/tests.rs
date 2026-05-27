@@ -1,6 +1,6 @@
 use blst::min_pk::PublicKey;
 
-use super::{FinalisedValidators, ValidatorsDelta, validator_hash};
+use super::{FinalizedValidators, ValidatorsDelta, validator_hash};
 use crate::{
     Withdrawals,
     beacon_state::types::{BLSPubkey, FAR_FUTURE_EPOCH, MAX_VALIDATORS},
@@ -84,9 +84,12 @@ fn validator_hash_matches_reference_impl() {
             u64::MAX,
         ),
     ];
-    for (i, &(pk, cr, eff, slashed, elig, act, exit, withdr)) in cases.iter().enumerate() {
-        let got = validator_hash(&pk, &cr, eff, slashed, elig, act, exit, withdr);
-        let want = reference_validator_hash(&pk, &cr, eff, slashed, elig, act, exit, withdr);
+    for (i, &(pk, cr, effective_balance, slashed, elig, act, exit, withdr)) in
+        cases.iter().enumerate()
+    {
+        let got = validator_hash(&pk, &cr, effective_balance, slashed, elig, act, exit, withdr);
+        let want =
+            reference_validator_hash(&pk, &cr, effective_balance, slashed, elig, act, exit, withdr);
         assert_eq!(got, want, "case {i}");
     }
 }
@@ -137,9 +140,9 @@ fn validator_hash_each_field_distinguishable() {
 }
 
 #[test]
-fn finalised_default_is_empty_and_well_formed() {
-    let f = FinalisedValidators::default();
-    assert_eq!(f.validator_cnt(), 0);
+fn finalized_default_is_empty_and_well_formed() {
+    let f = FinalizedValidators::default();
+    assert_eq!(f.validator_count(), 0);
     assert!(f.find_by_pubkey(&pk(7)).is_none());
     assert_eq!(f.hash().max_elements(), MAX_VALIDATORS);
     // Default-init: slashed bitset is all zeros, epochs are FAR_FUTURE.
@@ -149,7 +152,7 @@ fn finalised_default_is_empty_and_well_formed() {
 
 #[test]
 fn append_then_read_returns_baked_defaults() {
-    let f = FinalisedValidators::default();
+    let f = FinalizedValidators::default();
     let mut d = ValidatorsDelta::new_at(&f);
     let pk = pk(7);
     let creds = creds(0x42);
@@ -171,7 +174,7 @@ fn append_then_read_returns_baked_defaults() {
 
 #[test]
 fn set_credentials_inserts_then_updates_then_elides() {
-    let f = FinalisedValidators::default();
+    let f = FinalizedValidators::default();
     let mut d = ValidatorsDelta::new_at(&f);
     d.append(&f, pk(0), PublicKey::default(), creds(1));
     d.append(&f, pk(1), PublicKey::default(), creds(2));
@@ -196,7 +199,7 @@ fn set_credentials_inserts_then_updates_then_elides() {
 
 #[test]
 fn set_slashed_round_trips() {
-    let f = FinalisedValidators::default();
+    let f = FinalizedValidators::default();
     let mut d = ValidatorsDelta::new_at(&f);
     d.append(&f, pk(0), PublicKey::default(), creds(0));
 
@@ -214,7 +217,7 @@ fn set_slashed_round_trips() {
 fn set_effective_balance_updates_hash_overlay() {
     // Sanity check: a set_* on a Validator-container field must update
     // both the edit vec AND the hash overlay's leaf for that idx.
-    let f = FinalisedValidators::default();
+    let f = FinalizedValidators::default();
     let mut d = ValidatorsDelta::new_at(&f);
     d.append(&f, pk(0), PublicKey::default(), creds(0));
 
@@ -240,7 +243,7 @@ fn set_effective_balance_updates_hash_overlay() {
 
 #[test]
 fn promote_then_prune_reanchors_delta() {
-    let mut f = FinalisedValidators::default();
+    let mut f = FinalizedValidators::default();
     let mut d = ValidatorsDelta::new_at(&f);
     let pk_a = pk(0xAA);
     d.append(&f, pk_a, PublicKey::default(), creds(0xA1));
@@ -250,7 +253,7 @@ fn promote_then_prune_reanchors_delta() {
     let root_pre = f.hash().delta_root(&d.hash_overlay);
 
     d.promote_into_base(&mut f);
-    assert_eq!(f.validator_cnt(), 1);
+    assert_eq!(f.validator_count(), 1);
     assert_eq!(*f.pubkey(0), pk_a);
     assert_eq!(f.effective_balance(0), 100_000_000);
     assert_eq!(f.activation_epoch(0), 7);
@@ -259,7 +262,7 @@ fn promote_then_prune_reanchors_delta() {
     assert_eq!(f.hash().root_hash(), &root_pre);
 
     d.prune_to_base(&f);
-    assert_eq!(d.base_cnt, 1);
+    assert_eq!(d.base_count, 1);
     assert!(d.appended.is_empty());
     assert!(d.effective_balance_edits.is_empty(), "edit matches base after promote");
     assert!(d.activation_epoch_edits.is_empty(), "edit matches base after promote");
@@ -272,7 +275,7 @@ fn descendant_view_survives_promote_via_prune() {
     // Standard fork-tree topology: parent → child. Promote parent's delta
     // into base; child re-anchors via prune and its merged view stays
     // identical to its pre-promote root.
-    let mut f = FinalisedValidators::default();
+    let mut f = FinalizedValidators::default();
     let mut parent = ValidatorsDelta::new_at(&f);
     parent.append(&f, pk(1), PublicKey::default(), creds(1));
     parent.set_effective_balance(&f, 0, 1_000);
@@ -286,7 +289,7 @@ fn descendant_view_survives_promote_via_prune() {
     parent.prune_to_base(&f);
     child.prune_to_base(&f);
 
-    assert_eq!(child.base_cnt, 1);
+    assert_eq!(child.base_count, 1);
     // Child should still see activation_epoch = 42 (its own divergence
     // from parent's promoted state).
     assert_eq!(child.activation_epoch(&f, 0), 42);

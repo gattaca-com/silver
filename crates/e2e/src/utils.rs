@@ -116,8 +116,8 @@ impl PmBsHarness {
         let rpc_c = rpc_p.cache_ref().random_access("test", true).expect("rpc ra");
 
         let mut bs =
-            BeaconStateTile::new_heap(ticker, SpecConfig::mainnet(), gossip_c, rpc_c, checkpoint);
-        let mut bs_a = SpineAdapter::connect_tile(&bs, &mut spine);
+            BeaconStateTile::new(ticker, SpecConfig::mainnet(), gossip_c, rpc_c, checkpoint);
+        let mut bs_a = SpineAdapter::connect_tile(&bs, &mut *spine);
 
         let pm = PeerManager::new(
             Vec::new(),
@@ -255,7 +255,7 @@ impl PmBsHarness {
         self.bs.head_state_slot()
     }
 
-    pub fn head_state_root(&self) -> [u8; 32] {
+    pub fn head_state_root(&mut self) -> [u8; 32] {
         self.bs.head_state_root()
     }
 

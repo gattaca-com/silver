@@ -1,11 +1,12 @@
 use blst::min_pk::PublicKey;
 use rustc_hash::FxHashMap;
+use silver_common_macros::timed;
 
 use super::validator_hash;
 use crate::{
     Withdrawals,
     beacon_state::{
-        hash_tree::FinalisedHashTree,
+        hash_tree::FinalizedHashTree,
         types::{BLSPubkey, Epoch, FAR_FUTURE_EPOCH, MAX_VALIDATORS, VAL_SLASHED_BYTES},
     },
 };
@@ -28,7 +29,7 @@ fn u64_at(s: &[u8], off: usize) -> u64 {
     u64::from_le_bytes(s[off..off + 8].try_into().unwrap())
 }
 
-pub struct FinalisedValidators {
+pub struct FinalizedValidators {
     pub(super) val_pubkey: Box<[BLSPubkey]>,
     pub(super) val_pubkey_decompressed: Box<[PublicKey]>,
     pub(super) val_withdrawal_credentials: Box<[Withdrawals]>,
@@ -40,12 +41,12 @@ pub struct FinalisedValidators {
     pub(super) activation_epoch: Box<[Epoch]>,
     pub(super) exit_epoch: Box<[Epoch]>,
     pub(super) withdrawable_epoch: Box<[Epoch]>,
-    pub(super) validator_cnt: usize,
+    pub(super) validator_count: usize,
     pub(super) index: PubkeyIndex,
-    pub(super) hash: FinalisedHashTree,
+    pub(super) hash: FinalizedHashTree,
 }
 
-impl Default for FinalisedValidators {
+impl Default for FinalizedValidators {
     fn default() -> Self {
         Self {
             val_pubkey: vec![[0u8; 48]; MAX_VALIDATORS].into_boxed_slice(),
@@ -58,14 +59,15 @@ impl Default for FinalisedValidators {
             activation_epoch: vec![FAR_FUTURE_EPOCH; MAX_VALIDATORS].into_boxed_slice(),
             exit_epoch: vec![FAR_FUTURE_EPOCH; MAX_VALIDATORS].into_boxed_slice(),
             withdrawable_epoch: vec![FAR_FUTURE_EPOCH; MAX_VALIDATORS].into_boxed_slice(),
-            validator_cnt: 0,
+            validator_count: 0,
             index: PubkeyIndex::default(),
-            hash: FinalisedHashTree::new(&[], MAX_VALIDATORS),
+            hash: FinalizedHashTree::new(&[], MAX_VALIDATORS),
         }
     }
 }
 
-impl FinalisedValidators {
+impl FinalizedValidators {
+    #[timed]
     pub fn try_new(val_bytes: &[u8]) -> Result<Self, ValidatorsDecodeError> {
         if !val_bytes.len().is_multiple_of(VALIDATOR_SSZ_SIZE) {
             return Err(ValidatorsDecodeError::LenNotMultiple { len: val_bytes.len() });
@@ -78,12 +80,13 @@ impl FinalisedValidators {
             vec![PublicKey::default(); MAX_VALIDATORS].into_boxed_slice();
         let mut val_withdrawal_credentials =
             vec![Withdrawals::default(); MAX_VALIDATORS].into_boxed_slice();
-        let mut eff = vec![0u64; MAX_VALIDATORS].into_boxed_slice();
+        let mut effective_balances = vec![0u64; MAX_VALIDATORS].into_boxed_slice();
         let mut slashed_bits = vec![0u8; VAL_SLASHED_BYTES].into_boxed_slice();
-        let mut act_elig = vec![FAR_FUTURE_EPOCH; MAX_VALIDATORS].into_boxed_slice();
-        let mut act = vec![FAR_FUTURE_EPOCH; MAX_VALIDATORS].into_boxed_slice();
-        let mut exit = vec![FAR_FUTURE_EPOCH; MAX_VALIDATORS].into_boxed_slice();
-        let mut withdr = vec![FAR_FUTURE_EPOCH; MAX_VALIDATORS].into_boxed_slice();
+        let mut activation_eligibility_epochs =
+            vec![FAR_FUTURE_EPOCH; MAX_VALIDATORS].into_boxed_slice();
+        let mut activation_epochs = vec![FAR_FUTURE_EPOCH; MAX_VALIDATORS].into_boxed_slice();
+        let mut exit_epochs = vec![FAR_FUTURE_EPOCH; MAX_VALIDATORS].into_boxed_slice();
+        let mut withdrawable_epochs = vec![FAR_FUTURE_EPOCH; MAX_VALIDATORS].into_boxed_slice();
         let mut index = PubkeyIndex::with_capacity_and_hasher(n, Default::default());
         let mut leaf_hashes = vec![[0u8; 32]; n];
 
@@ -105,14 +108,14 @@ impl FinalisedValidators {
             val_pubkey[i] = pubkey;
             val_pubkey_decompressed[i] = pubkey_decompressed;
             val_withdrawal_credentials[i] = credentials;
-            eff[i] = effective_balance;
+            effective_balances[i] = effective_balance;
             if slashed {
                 slashed_bits[i / 8] |= 1u8 << (i % 8);
             }
-            act_elig[i] = activation_eligibility_epoch;
-            act[i] = activation_epoch;
-            exit[i] = exit_epoch;
-            withdr[i] = withdrawable_epoch;
+            activation_eligibility_epochs[i] = activation_eligibility_epoch;
+            activation_epochs[i] = activation_epoch;
+            exit_epochs[i] = exit_epoch;
+            withdrawable_epochs[i] = withdrawable_epoch;
             index.insert(pubkey, i as u32);
             leaf_hashes[i] = validator_hash(
                 &pubkey,
@@ -130,21 +133,21 @@ impl FinalisedValidators {
             val_pubkey,
             val_pubkey_decompressed,
             val_withdrawal_credentials,
-            effective_balance: eff,
+            effective_balance: effective_balances,
             slashed: slashed_bits,
-            activation_eligibility_epoch: act_elig,
-            activation_epoch: act,
-            exit_epoch: exit,
-            withdrawable_epoch: withdr,
-            validator_cnt: n,
+            activation_eligibility_epoch: activation_eligibility_epochs,
+            activation_epoch: activation_epochs,
+            exit_epoch: exit_epochs,
+            withdrawable_epoch: withdrawable_epochs,
+            validator_count: n,
             index,
-            hash: FinalisedHashTree::new(&leaf_hashes, MAX_VALIDATORS),
+            hash: FinalizedHashTree::new(&leaf_hashes, MAX_VALIDATORS),
         })
     }
 
     #[inline]
-    pub fn validator_cnt(&self) -> usize {
-        self.validator_cnt
+    pub fn validator_count(&self) -> usize {
+        self.validator_count
     }
 
     #[inline]
@@ -198,19 +201,19 @@ impl FinalisedValidators {
     }
 
     /// Number of entries in the pubkey → idx index. Should equal
-    /// `validator_cnt` post-`decompose` / `promote_into_base`.
+    /// `validator_count` post-`decompose` / `promote_into_base`.
     #[inline]
     pub fn index_len(&self) -> usize {
         self.index.len()
     }
 
     #[inline]
-    pub fn hash(&self) -> &FinalisedHashTree {
+    pub fn hash(&self) -> &FinalizedHashTree {
         &self.hash
     }
 
     #[inline]
-    pub fn hash_mut(&mut self) -> &mut FinalisedHashTree {
+    pub fn hash_mut(&mut self) -> &mut FinalizedHashTree {
         &mut self.hash
     }
 
@@ -301,10 +304,10 @@ impl FinalisedValidators {
 
     #[inline]
     pub fn set_validator_cnt(&mut self, n: usize) {
-        self.validator_cnt = n;
+        self.validator_count = n;
     }
 
-    /// Append a validator to the finalised base with caller-supplied
+    /// Append a validator to the finalized base with caller-supplied
     /// Validator-container field values. Updates the pubkey index but NOT
     /// the hash tree.
     #[allow(clippy::too_many_arguments)]
@@ -320,7 +323,7 @@ impl FinalisedValidators {
         exit_epoch: Epoch,
         withdrawable_epoch: Epoch,
     ) -> u32 {
-        let idx = self.validator_cnt;
+        let idx = self.validator_count;
         debug_assert!(idx < MAX_VALIDATORS);
         self.val_pubkey[idx] = *pubkey;
         self.val_pubkey_decompressed[idx] = *pubkey_decompressed;
@@ -334,7 +337,7 @@ impl FinalisedValidators {
         self.exit_epoch[idx] = exit_epoch;
         self.withdrawable_epoch[idx] = withdrawable_epoch;
         self.index.insert(*pubkey, idx as u32);
-        self.validator_cnt = idx + 1;
+        self.validator_count = idx + 1;
         idx as u32
     }
 
