@@ -74,6 +74,14 @@ impl Finalised {
     }
 }
 
+// size: 32 B (4 × pointer)
+pub struct FinalisedView<'a> {
+    pub immutable: &'a Immutable,
+    pub validators: &'a FinalisedValidators,
+    pub epoch: &'a EpochStateFinalised,
+    pub slot: &'a SlotStateFinalised,
+}
+
 // size: ~145 KB (dominated by SlotState)
 #[derive(Clone, Default)]
 pub struct StateDelta {

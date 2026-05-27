@@ -1,11 +1,9 @@
-use blst::min_pk::PublicKey;
-
 use crate::{
     SpecConfig,
     beacon_state::{
-        FinalisedValidators, ValidatorRow,
+        FinalisedValidators, ValidatorsDecodeError,
         types::{
-            B256, BLSPubkey, Checkpoint, EPOCHS_PER_HISTORICAL_VECTOR, EPOCHS_PER_SLASHINGS_VECTOR,
+            B256, Checkpoint, EPOCHS_PER_HISTORICAL_VECTOR, EPOCHS_PER_SLASHINGS_VECTOR,
             EpochStateDelta, Eth1Data, ExecutionPayloadHeader, Finalised, HistoricalSummary,
             LongtailState, MAX_ETH1_VOTES, PROPOSER_LOOKAHEAD_SIZE, PendingConsolidation,
             PendingDeposit, PendingPartialWithdrawal, SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT,
@@ -21,7 +19,6 @@ use crate::{
 // the fixed part; their bodies sit contiguously past `FIXED_PART` in
 // SSZ-declared order.
 
-const VALIDATOR_SSZ_SIZE: usize = 121;
 const ETH1_DATA_SSZ_SIZE: usize = 72;
 const HISTORICAL_SUMMARY_SSZ_SIZE: usize = 64;
 const PENDING_DEPOSIT_SSZ_SIZE: usize = 192;
@@ -93,8 +90,8 @@ pub enum DecomposeError {
     OffsetPastEnd { off: usize, len: usize },
     #[error("{which}_sync_committee out of bounds: off={off} end={end} len={len}")]
     SyncCommitteeOutOfBounds { which: &'static str, off: usize, end: usize, len: usize },
-    #[error("validators bytes {len} not a multiple of {VALIDATOR_SSZ_SIZE}")]
-    ValidatorsLenNotMultiple { len: usize },
+    #[error(transparent)]
+    Validators(#[from] ValidatorsDecodeError),
     #[error("balances bytes {bytes} doesn't match validator count {validators} (×8)")]
     BalancesLenMismatch { bytes: usize, validators: usize },
     #[error("previous_epoch_participation bytes {bytes} != validator count {validators}")]
@@ -139,8 +136,6 @@ pub enum DecomposeError {
     EphExtraDataOffsetInvalid { off: usize, fixed: usize, len: usize },
     #[error("execution_payload_header extra_data too long: {len} > 32")]
     EphExtraDataTooLong { len: usize },
-    #[error("validator {idx} pubkey failed BLS decompression")]
-    InvalidValidatorPubkey { idx: usize },
 }
 
 #[inline]
@@ -369,28 +364,8 @@ impl Finalised {
         read_sync_committee(ssz, F23, "next", &mut self.longtail.next_sync_committee)?;
 
         // ── Validators identity layer (8 spec fields + decompressed cache)
-        let val_bytes = &ssz[off_validators..off_balances];
-        if !val_bytes.len().is_multiple_of(VALIDATOR_SSZ_SIZE) {
-            return Err(DecomposeError::ValidatorsLenNotMultiple { len: val_bytes.len() });
-        }
-        let n = val_bytes.len() / VALIDATOR_SSZ_SIZE;
-        self.validators = FinalisedValidators::try_new(n, |i| {
-            let v = &val_bytes[i * VALIDATOR_SSZ_SIZE..];
-            let pubkey: BLSPubkey = v[..48].try_into().unwrap();
-            let pubkey_decompressed = PublicKey::from_bytes(&pubkey)
-                .map_err(|_| DecomposeError::InvalidValidatorPubkey { idx: i })?;
-            Ok(ValidatorRow {
-                pubkey,
-                pubkey_decompressed,
-                credentials: Withdrawals(b256(v, 48)),
-                effective_balance: u64_le(v, 80),
-                slashed: v[88] != 0,
-                activation_eligibility_epoch: u64_le(v, 89),
-                activation_epoch: u64_le(v, 97),
-                exit_epoch: u64_le(v, 105),
-                withdrawable_epoch: u64_le(v, 113),
-            })
-        })?;
+        self.validators = FinalisedValidators::try_new(&ssz[off_validators..off_balances])?;
+        let n = self.validators.validator_cnt();
 
         // Balances (sibling layer).
         let bal_bytes = &ssz[off_balances..off_prev_participation];

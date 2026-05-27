@@ -12,6 +12,22 @@ use crate::{
 
 pub type PubkeyIndex = FxHashMap<BLSPubkey, u32>;
 
+/// SSZ-serialised size of a single `Validator` container (Fulu).
+const VALIDATOR_SSZ_SIZE: usize = 121;
+
+#[derive(Debug, thiserror::Error)]
+pub enum ValidatorsDecodeError {
+    #[error("validators bytes {len} not a multiple of {VALIDATOR_SSZ_SIZE}")]
+    LenNotMultiple { len: usize },
+    #[error("validator {idx} pubkey failed BLS decompression")]
+    InvalidPubkey { idx: usize },
+}
+
+#[inline]
+fn u64_at(s: &[u8], off: usize) -> u64 {
+    u64::from_le_bytes(s[off..off + 8].try_into().unwrap())
+}
+
 pub struct FinalisedValidators {
     pub(super) val_pubkey: Box<[BLSPubkey]>,
     pub(super) val_pubkey_decompressed: Box<[PublicKey]>,
@@ -49,34 +65,12 @@ impl Default for FinalisedValidators {
     }
 }
 
-/// Single validator's Validator-container fields plus the cached decompressed
-/// pubkey. Yielded one-at-a-time by `FinalisedValidators::try_new`'s row
-/// producer so callers (e.g., SSZ decompose) don't have to materialise a
-/// `Vec<T>` per column up front.
-#[derive(Clone)]
-pub struct ValidatorRow {
-    pub pubkey: BLSPubkey,
-    pub pubkey_decompressed: PublicKey,
-    pub credentials: Withdrawals,
-    pub effective_balance: u64,
-    pub slashed: bool,
-    pub activation_eligibility_epoch: Epoch,
-    pub activation_epoch: Epoch,
-    pub exit_epoch: Epoch,
-    pub withdrawable_epoch: Epoch,
-}
-
 impl FinalisedValidators {
-    /// Allocate MAX_VALIDATORS-sized columnar boxes + spec defaults and
-    /// populate the first `n` slots by calling `row(i)` for `i in 0..n`.
-    /// Builds the pubkey index and the validator-list hash tree leaves in
-    /// the same pass. Slots past `n` carry the spec default
-    /// (`FAR_FUTURE_EPOCH` for epoch fields, `0` / `false` elsewhere).
-    /// Errors short-circuit and propagate from the closure.
-    pub fn try_new<F, E>(n: usize, mut row: F) -> Result<Self, E>
-    where
-        F: FnMut(usize) -> Result<ValidatorRow, E>,
-    {
+    pub fn try_new(val_bytes: &[u8]) -> Result<Self, ValidatorsDecodeError> {
+        if !val_bytes.len().is_multiple_of(VALIDATOR_SSZ_SIZE) {
+            return Err(ValidatorsDecodeError::LenNotMultiple { len: val_bytes.len() });
+        }
+        let n = val_bytes.len() / VALIDATOR_SSZ_SIZE;
         debug_assert!(n <= MAX_VALIDATORS);
 
         let mut val_pubkey = vec![[0u8; 48]; MAX_VALIDATORS].into_boxed_slice();
@@ -93,29 +87,42 @@ impl FinalisedValidators {
         let mut index = PubkeyIndex::with_capacity_and_hasher(n, Default::default());
         let mut leaf_hashes = vec![[0u8; 32]; n];
 
+        // Validator container layout: pubkey[48] | withdrawal_credentials[32]
+        // | effective_balance:u64[8] | slashed:bool[1] | 4 × epoch:u64.
         for i in 0..n {
-            let r = row(i)?;
-            val_pubkey[i] = r.pubkey;
-            val_pubkey_decompressed[i] = r.pubkey_decompressed;
-            val_withdrawal_credentials[i] = r.credentials;
-            eff[i] = r.effective_balance;
-            if r.slashed {
+            let v = &val_bytes[i * VALIDATOR_SSZ_SIZE..];
+            let pubkey: BLSPubkey = v[..48].try_into().unwrap();
+            let pubkey_decompressed = PublicKey::from_bytes(&pubkey)
+                .map_err(|_| ValidatorsDecodeError::InvalidPubkey { idx: i })?;
+            let credentials = Withdrawals(v[48..80].try_into().unwrap());
+            let effective_balance = u64_at(v, 80);
+            let slashed = v[88] != 0;
+            let activation_eligibility_epoch = u64_at(v, 89);
+            let activation_epoch = u64_at(v, 97);
+            let exit_epoch = u64_at(v, 105);
+            let withdrawable_epoch = u64_at(v, 113);
+
+            val_pubkey[i] = pubkey;
+            val_pubkey_decompressed[i] = pubkey_decompressed;
+            val_withdrawal_credentials[i] = credentials;
+            eff[i] = effective_balance;
+            if slashed {
                 slashed_bits[i / 8] |= 1u8 << (i % 8);
             }
-            act_elig[i] = r.activation_eligibility_epoch;
-            act[i] = r.activation_epoch;
-            exit[i] = r.exit_epoch;
-            withdr[i] = r.withdrawable_epoch;
-            index.insert(r.pubkey, i as u32);
+            act_elig[i] = activation_eligibility_epoch;
+            act[i] = activation_epoch;
+            exit[i] = exit_epoch;
+            withdr[i] = withdrawable_epoch;
+            index.insert(pubkey, i as u32);
             leaf_hashes[i] = validator_hash(
-                &r.pubkey,
-                &r.credentials,
-                r.effective_balance,
-                r.slashed,
-                r.activation_eligibility_epoch,
-                r.activation_epoch,
-                r.exit_epoch,
-                r.withdrawable_epoch,
+                &pubkey,
+                &credentials,
+                effective_balance,
+                slashed,
+                activation_eligibility_epoch,
+                activation_epoch,
+                exit_epoch,
+                withdrawable_epoch,
             );
         }
 

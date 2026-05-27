@@ -5,7 +5,7 @@ mod finalised;
 mod tests;
 
 pub use delta::{AppendedValidator, ValidatorsDelta};
-pub use finalised::{FinalisedValidators, ValidatorRow};
+pub use finalised::{FinalisedValidators, ValidatorsDecodeError};
 
 use crate::{
     Withdrawals,
