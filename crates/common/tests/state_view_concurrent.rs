@@ -1,8 +1,17 @@
-//! Concurrent reader / single writer stress for `ViewControl` +
-//! `DeltaBuffer`. Writer mutates the `BeaconState` directly (slot deltas
-//! without a lock, finalised state under a write guard). Reader uses
-//! `ViewControl::read` and asserts every observed snapshot is internally
-//! consistent.
+//! Concurrent reader / single writer stress for `BeaconStateOwner` +
+//! `DeltaBuffer`. Exercises the seqlock protecting finalised writes and
+//! the publish-offsets protocol for slot-delta visibility, using only
+//! the public `StateDeltaReadView` surface — no test-only escape
+//! hatches.
+//!
+//! Seqlock test (finalised tier): writer updates two adjacent cells of
+//! `finalised.slot.block_roots` to the SAME slot-tag under one
+//! `WriteGuard`. Reader reads both via `finalised_block_roots()` and
+//! asserts they match — a tear would surface as `old != new`.
+//!
+//! Delta-publish test (slot tier): writer plants `slot_tag(s)` at
+//! `block_roots[0]` of the slot delta, then `publish_offsets`. Reader
+//! sees `delta_block_roots()[0] == slot_tag(view.slot())`.
 
 use std::{
     ops::DerefMut,
@@ -18,6 +27,13 @@ use silver_common::{B256, BeaconState, BeaconStateOwner};
 // protocol does NOT guard against wrap-around: rolling past N would
 // overwrite a slot the reader may still be inspecting.
 const ITERATIONS: u64 = 200;
+
+// Two adjacent cells in the finalised `block_roots` circular buffer.
+// Writer paints them with the same tag inside one `WriteGuard`; reader
+// asserts they match. Chosen high enough that the slot-delta path
+// (which writes `block_roots[0]`) cannot collide.
+const FIN_TAG_A: usize = 4000;
+const FIN_TAG_B: usize = 4001;
 
 fn slot_tag(slot: u64) -> B256 {
     let mut tag = [0u8; 32];
@@ -44,39 +60,35 @@ fn concurrent_reads_observe_consistent_state() {
         let r_saw_finalised_advance = Arc::clone(&saw_finalised_advance);
         std::thread::spawn(move || {
             while !r_done.load(Ordering::Relaxed) {
-                let (f_slot, f_header, delta) =
-                    r_control.read(&|finalised, slot_delta, _epoch_delta| {
-                        let f_slot = finalised.slot.slot.slot;
-                        let f_header = finalised.slot.slot.latest_block_header.slot;
-                        let delta = slot_delta
-                            .map(|d| (d.slot.slot.slot, d.slot.block_roots.first().copied()));
-                        (f_slot, f_header, delta)
-                    });
+                let (fin_a, fin_b, merged_slot, delta_root0, has_delta) = r_control.read(&|v| {
+                    let fin_roots = v.finalised_block_roots();
+                    let fin_a = fin_roots[FIN_TAG_A];
+                    let fin_b = fin_roots[FIN_TAG_B];
+                    let merged_slot = v.slot();
+                    let delta_roots = v.delta_block_roots();
+                    let delta_root0 = delta_roots.first().copied();
+                    let has_delta = !delta_roots.is_empty();
+                    (fin_a, fin_b, merged_slot, delta_root0, has_delta)
+                });
 
                 let mut errs = 0usize;
 
-                // The writer assigns these two finalised fields inside a
-                // single write guard. A consistent reader must see them
-                // matched.
-                if f_slot != f_header {
+                // Seqlock invariant: writer paints both cells to the same
+                // tag inside one guard. Reader must see them matched.
+                if fin_a != fin_b {
                     errs += 1;
                 }
 
-                if let Some((d_slot, d_root)) = delta {
+                if has_delta {
                     r_saw_delta.store(true, Ordering::Relaxed);
-                    // Slot delta is self-consistent: `block_roots[0]` tags
-                    // `slot.slot`. The writer publishes the offset only
-                    // after both fields are written.
-                    if d_root != Some(slot_tag(d_slot)) {
-                        errs += 1;
-                    }
-                    // Writer never publishes a delta whose slot precedes the
-                    // finalised slot at publish time.
-                    if d_slot < f_slot {
+                    // Slot-delta self-consistency: `block_roots[0]` tags
+                    // the delta's slot, which is what `view.slot()`
+                    // returns when a delta is present.
+                    if delta_root0 != Some(slot_tag(merged_slot)) {
                         errs += 1;
                     }
                 }
-                if f_slot > 0 {
+                if fin_a != [0u8; 32] {
                     r_saw_finalised_advance.store(true, Ordering::Relaxed);
                 }
 
@@ -100,12 +112,14 @@ fn concurrent_reads_observe_consistent_state() {
         // Now visible to readers.
         control.publish_offsets(None, Some(head));
 
-        // Periodically advance finalised. Both fields are set under the
-        // same write guard.
+        // Periodically advance finalised. Both cells written under the
+        // same `WriteGuard`, to the same tag — readers must see them
+        // matched on every snapshot or the seqlock is broken.
         if s % 4 == 3 {
             let mut g = control.write();
-            g.deref_mut().finalised.slot.slot.slot = s;
-            g.deref_mut().finalised.slot.slot.latest_block_header.slot = s;
+            let tag = slot_tag(s);
+            g.deref_mut().finalised.slot.block_roots[FIN_TAG_A] = tag;
+            g.deref_mut().finalised.slot.block_roots[FIN_TAG_B] = tag;
         }
 
         // Encourage interleaving.
@@ -123,5 +137,5 @@ fn concurrent_reads_observe_consistent_state() {
         saw_finalised_advance.load(Ordering::Relaxed),
         "reader never observed finalised advance"
     );
-    assert_eq!(b, 0, "{} of {} reads observed inconsistent state", b, r);
+    assert_eq!(b, 0, "{b} of {r} reads observed inconsistent state");
 }

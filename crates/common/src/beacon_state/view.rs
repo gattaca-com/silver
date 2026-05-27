@@ -6,8 +6,11 @@ use std::{
 use flux::communication::Seqlock;
 
 use crate::{
-    DeltaBuffer, EpochStateDelta, FinalisedView, LongtailState, StateDelta,
-    beacon_state::BeaconState,
+    DeltaBuffer, EpochStateDelta, LongtailState, StateDelta,
+    beacon_state::{
+        BeaconState, StateDeltaReadView, StateDeltaView,
+        types::{EPOCHS_RING_N, LONGTAILS_RING_N, SLOTS_RING_N},
+    },
 };
 
 /// Beacon state writer control.
@@ -31,16 +34,34 @@ impl BeaconStateOwner {
         &self.state
     }
 
-    pub fn longtails(&mut self) -> &mut DeltaBuffer<LongtailState, 2> {
+    pub fn longtails(&mut self) -> &mut DeltaBuffer<LongtailState, LONGTAILS_RING_N> {
         &mut self.state.longtails
     }
 
-    pub fn epochs(&mut self) -> &mut DeltaBuffer<EpochStateDelta, 8> {
+    pub fn epochs(&mut self) -> &mut DeltaBuffer<EpochStateDelta, EPOCHS_RING_N> {
         &mut self.state.epochs
     }
 
-    pub fn slots(&mut self) -> &mut DeltaBuffer<StateDelta, 256> {
+    pub fn slots(&mut self) -> &mut DeltaBuffer<StateDelta, SLOTS_RING_N> {
         &mut self.state.slots
+    }
+
+    pub fn delta_view(&mut self, slot_seq: usize) -> StateDeltaView<'_> {
+        let s = &mut *self.state;
+        // Production state-transition path: finalised base must be populated
+        // (decompose from genesis SSZ or a checkpoint). The zero-validator
+        // `Finalised::default()` is the unanchored stub used only by tests
+        // and the pre-bootstrap owner.
+        assert!(
+            s.finalised.validators.validator_cnt() > 0,
+            "delta_view: operating on empty finalised state",
+        );
+        StateDeltaView::new(
+            &s.finalised,
+            s.slots.get_mut(slot_seq),
+            &mut s.epochs,
+            &mut s.longtails,
+        )
     }
 
     /// Called by the state owner to publish new delta buffer offsets - should
@@ -60,7 +81,7 @@ impl BeaconStateOwner {
         }
     }
 
-    /// Should be called when finalized state is being updated.
+    /// Should be called when finalised state is being updated.
     pub fn write(&mut self) -> WriteGuard<'_> {
         let (mut value, version) =
             self.inner.read_copy().expect("control inner should nbever be empty");
@@ -103,7 +124,7 @@ impl BeaconStateReader {
     /// finalised state is updated during a read.
     pub fn read<F, R>(&self, reader: &F) -> R
     where
-        F: Fn(FinalisedView<'_>, Option<&StateDelta>, Option<&EpochStateDelta>) -> R,
+        F: Fn(StateDeltaReadView<'_>) -> R,
     {
         loop {
             let (control, _) = self.inner.read_copy().expect("should never be empty");
@@ -117,13 +138,12 @@ impl BeaconStateReader {
             let version = control.version;
             let state = unsafe { &*self.state_ptr };
 
-            let finalised_view = state.finalised.view();
             let slot_delta = control.slots.map(|i| state.slots.get(i));
             let epoch_delta = control.epochs.map(|i| state.epochs.get(i));
 
-            let result = reader(finalised_view, slot_delta, epoch_delta);
+            let result = reader(StateDeltaReadView::new(&state.finalised, slot_delta, epoch_delta));
 
-            // check that finalized state was not changed whilst reading.
+            // check that finalised state was not changed whilst reading.
             sync::atomic::compiler_fence(Ordering::Acquire);
             let (post, _) = self.inner.read_copy().expect("should never be empty");
             if post.version == version {
@@ -164,7 +184,7 @@ impl<'a> Drop for WriteGuard<'a> {
 
 #[derive(Clone, Copy, Default)]
 struct ControlInner {
-    /// Finalized version - an odd version indicates that finalized state is
+    /// Finalised version - an odd version indicates that finalised state is
     /// being written.
     version: usize,
     epochs: Option<usize>,

@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use flux::{spine::SpineAdapter, tile::Tile, tracing};
 use fxhash::FxHashMap;
 use silver_common::{
-    B256, BeaconStateEvent, BeaconStateReader, DataColumnsAvailable, NewGossipMsg, P2pStreamId,
+    BeaconStateEvent, BeaconStateReader, DataColumnsAvailable, NewGossipMsg, P2pStreamId,
     PeerEvent, RpcInbound, RpcSeverity, SLOTS_PER_EPOCH, SilverSpine, TMultiProducer,
     TRandomAccess, TRead, Wheel,
     ssz_view::{DataColumnSidecarView, StatusView},
@@ -166,10 +166,9 @@ impl DataColumnTile {
         // notional read lock too long otherwise).
         let block_slot = DataColumnSidecarView::slot(buffer);
         let claimed_proposer_index = DataColumnSidecarView::proposer_index(buffer);
-        let checks = self.beacon_state.read(&|f, slot_d, epoch_d| {
-            let epoch_state = epoch_d.map_or(&f.epoch.state, |e| &e.state);
-            let state_slot = slot_d.map_or(f.slot.slot.slot, |d| d.slot.slot.slot);
-            let state_epoch = state_slot / SLOTS_PER_EPOCH;
+        let checks = self.beacon_state.read(&|v| {
+            let epoch_state = v.epoch_state();
+            let state_epoch = v.epoch();
 
             // proposer_lookahead is anchored to `state_epoch` and covers
             // current+next epochs (PROPOSER_LOOKAHEAD_SIZE = 64). Slots
@@ -178,32 +177,17 @@ impl DataColumnTile {
             let expected_proposer = epoch_state.proposer_lookahead.get(lookahead_idx).copied();
             let proposer_matches = expected_proposer == Some(claimed_proposer_index);
 
-            // pubkey lookup: indices < base_cnt are in the finalised registry;
-            // the rest are in the slot delta's appended slice.
             let idx = claimed_proposer_index as usize;
-            let pubkey = if let Some(d) = slot_d {
-                if idx < d.validators.base_cnt {
-                    f.validators.data.val_pubkey_decompressed.get(idx).copied()
-                } else {
-                    d.validators
-                        .appended
-                        .get(idx - d.validators.base_cnt)
-                        .map(|v| v.pubkey_decompressed)
-                }
-            } else {
-                f.validators.data.val_pubkey_decompressed.get(idx).copied()
-            };
-
-            let fin_roots: &[B256] = &f.slot.block_roots[..];
-            let delta_roots: &[B256] = slot_d.map_or(&[][..], |d| &d.slot.block_roots[..]);
+            let pubkey =
+                (idx < v.validators_count()).then(|| *v.validator_pubkey_decompressed(idx));
 
             (
                 util::is_above_finalized(buffer, epoch_state.finalized_checkpoint.epoch),
-                util::parent_validated(buffer, fin_roots, delta_roots),
+                util::parent_validated(buffer, v.finalised_block_roots(), v.delta_block_roots()),
                 proposer_matches,
                 pubkey,
-                f.immutable.fork.current_version,
-                f.immutable.genesis_validators_root,
+                v.fork_current_version(),
+                v.genesis_validators_root(),
             )
         });
         let (above_finalized, parent_validated, proposer_matches, pubkey, fork_version, gvr) =
