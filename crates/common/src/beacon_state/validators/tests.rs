@@ -150,7 +150,7 @@ fn finalised_default_is_empty_and_well_formed() {
 #[test]
 fn append_then_read_returns_baked_defaults() {
     let f = FinalisedValidators::default();
-    let mut d = ValidatorsDelta::new_at(f.validator_cnt());
+    let mut d = ValidatorsDelta::new_at(&f);
     let pk = pk(7);
     let creds = creds(0x42);
     let idx = d.append(&f, pk, PublicKey::default(), creds);
@@ -172,7 +172,7 @@ fn append_then_read_returns_baked_defaults() {
 #[test]
 fn set_credentials_inserts_then_updates_then_elides() {
     let f = FinalisedValidators::default();
-    let mut d = ValidatorsDelta::new_at(f.validator_cnt());
+    let mut d = ValidatorsDelta::new_at(&f);
     d.append(&f, pk(0), PublicKey::default(), creds(1));
     d.append(&f, pk(1), PublicKey::default(), creds(2));
 
@@ -197,7 +197,7 @@ fn set_credentials_inserts_then_updates_then_elides() {
 #[test]
 fn set_slashed_round_trips() {
     let f = FinalisedValidators::default();
-    let mut d = ValidatorsDelta::new_at(f.validator_cnt());
+    let mut d = ValidatorsDelta::new_at(&f);
     d.append(&f, pk(0), PublicKey::default(), creds(0));
 
     assert!(!d.is_slashed(&f, 0));
@@ -215,7 +215,7 @@ fn set_effective_balance_updates_hash_overlay() {
     // Sanity check: a set_* on a Validator-container field must update
     // both the edit vec AND the hash overlay's leaf for that idx.
     let f = FinalisedValidators::default();
-    let mut d = ValidatorsDelta::new_at(f.validator_cnt());
+    let mut d = ValidatorsDelta::new_at(&f);
     d.append(&f, pk(0), PublicKey::default(), creds(0));
 
     let root_before = f.hash().delta_root(&d.hash_overlay);
@@ -241,7 +241,7 @@ fn set_effective_balance_updates_hash_overlay() {
 #[test]
 fn promote_then_prune_reanchors_delta() {
     let mut f = FinalisedValidators::default();
-    let mut d = ValidatorsDelta::new_at(f.validator_cnt());
+    let mut d = ValidatorsDelta::new_at(&f);
     let pk_a = pk(0xAA);
     d.append(&f, pk_a, PublicKey::default(), creds(0xA1));
     d.set_effective_balance(&f, 0, 100_000_000);
@@ -273,7 +273,7 @@ fn descendant_view_survives_promote_via_prune() {
     // into base; child re-anchors via prune and its merged view stays
     // identical to its pre-promote root.
     let mut f = FinalisedValidators::default();
-    let mut parent = ValidatorsDelta::new_at(f.validator_cnt());
+    let mut parent = ValidatorsDelta::new_at(&f);
     parent.append(&f, pk(1), PublicKey::default(), creds(1));
     parent.set_effective_balance(&f, 0, 1_000);
 

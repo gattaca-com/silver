@@ -2,7 +2,7 @@ use flux::utils::ArrayVec;
 
 use crate::beacon_state::{
     buffer::Reset,
-    validator_identity::{FinalisedValidators, ValidatorsDelta},
+    validators::{FinalisedValidators, ValidatorsDelta},
 };
 
 pub type B256 = [u8; 32];
@@ -52,11 +52,7 @@ pub const EPOCHS_RING_N: usize = 8;
 pub const SLOTS_RING_N: usize = 256;
 
 // size: ~195 KB stack (slot 145 KB + longtail 50 KB + rest); heap at default-
-// init ~2.6 MB (slot+epoch rings); identity validators layer + 3 sibling
-// layers together allocate ~640 MB at production MAX_VALIDATORS plus
-// ~150 MB pubkey index plus ~256 MB validator hash tree (2 * 2^22 leaves
-// × 32 B). The hash tree is the dominant overhead among the validator
-// layers.
+// init ~2.6 MB (slot+epoch rings).
 #[derive(Default)]
 pub struct Finalised {
     pub immutable: Immutable,
@@ -76,14 +72,6 @@ impl Finalised {
     pub fn epoch(&self) -> Epoch {
         self.slot.slot.slot / SLOTS_PER_EPOCH
     }
-}
-
-// size: 32 B (4 × pointer)
-pub struct FinalisedView<'a> {
-    pub immutable: &'a Immutable,
-    pub validators: &'a FinalisedValidators,
-    pub epoch: &'a EpochStateFinalised,
-    pub slot: &'a SlotStateFinalised,
 }
 
 // size: ~145 KB (dominated by SlotState)
@@ -432,9 +420,7 @@ impl Reset for PendingQueuesDelta {
 // `inactivity_scores`). Each is its own `List[T, VALIDATOR_REGISTRY_LIMIT]`
 // in the BeaconState and will eventually carry its own hash tree (not yet
 // implemented). Length is whatever the validators layer reports; reading
-// past `base_cnt` with no edit returns the spec default (0 / false). The
-// `validators` identity layer (with hash overlay) lives in
-// `beacon_state::validator_identity`.
+// past `base_cnt` with no edit returns the spec default (0 / false).
 
 /// `balances: List[Gwei, VALIDATOR_REGISTRY_LIMIT]` — finalised side.
 pub struct FinalisedBalances {

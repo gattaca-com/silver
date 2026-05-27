@@ -1,7 +1,7 @@
 pub use buffer::DeltaBuffer;
 pub use delta_view::{StateDeltaReadView, StateDeltaView};
 pub use hash_tree::{DeltaHashTree, FinalisedHashTree};
-pub use validator_identity::{
+pub use validators::{
     AppendedValidator, FinalisedValidators, ValidatorRow, ValidatorsDelta, validator_hash,
 };
 pub use view::{BeaconStateOwner, BeaconStateReader};
@@ -16,7 +16,7 @@ mod decompose;
 mod delta_view;
 mod hash_tree;
 pub mod types;
-mod validator_identity;
+mod validators;
 mod view;
 
 #[derive(Default)]

@@ -7,7 +7,10 @@ use flux::communication::Seqlock;
 
 use crate::{
     DeltaBuffer, EpochStateDelta, LongtailState, StateDelta,
-    beacon_state::{BeaconState, StateDeltaReadView, StateDeltaView},
+    beacon_state::{
+        BeaconState, StateDeltaReadView, StateDeltaView,
+        types::{EPOCHS_RING_N, LONGTAILS_RING_N, SLOTS_RING_N},
+    },
 };
 
 /// Beacon state writer control.
@@ -31,15 +34,15 @@ impl BeaconStateOwner {
         &self.state
     }
 
-    pub fn longtails(&mut self) -> &mut DeltaBuffer<LongtailState, 2> {
+    pub fn longtails(&mut self) -> &mut DeltaBuffer<LongtailState, LONGTAILS_RING_N> {
         &mut self.state.longtails
     }
 
-    pub fn epochs(&mut self) -> &mut DeltaBuffer<EpochStateDelta, 8> {
+    pub fn epochs(&mut self) -> &mut DeltaBuffer<EpochStateDelta, EPOCHS_RING_N> {
         &mut self.state.epochs
     }
 
-    pub fn slots(&mut self) -> &mut DeltaBuffer<StateDelta, 256> {
+    pub fn slots(&mut self) -> &mut DeltaBuffer<StateDelta, SLOTS_RING_N> {
         &mut self.state.slots
     }
 

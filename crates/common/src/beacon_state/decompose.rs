@@ -661,9 +661,6 @@ impl Finalised {
         }
 
         // -- validators identity layer (append + sparse edits + hash overlay) --
-        // Delegates to ValidatorsDelta::promote_into_base which folds the
-        // appended records, applies the per-field edits, and promotes the
-        // delta hash overlay into FinalisedHashTree.
         delta.validators.promote_into_base(&mut self.validators);
 
         // -- sibling validator-data layers (sparse edits only) --

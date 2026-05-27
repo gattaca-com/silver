@@ -297,32 +297,9 @@ impl FinalisedValidators {
         self.validator_cnt = n;
     }
 
-    /// Rebuild the leaf-hash row from the current populated state. Caller
-    /// uses this after a bulk `decompose` populate to align the hash
-    /// tree with the columnar data.
-    pub fn rebuild_hash_tree(&mut self) {
-        let n = self.validator_cnt;
-        let mut leaves = vec![[0u8; 32]; n];
-        for (i, leaf) in leaves.iter_mut().enumerate().take(n) {
-            *leaf = validator_hash(
-                &self.val_pubkey[i],
-                &self.val_withdrawal_credentials[i],
-                self.effective_balance[i],
-                self.is_slashed(i),
-                self.activation_eligibility_epoch[i],
-                self.activation_epoch[i],
-                self.exit_epoch[i],
-                self.withdrawable_epoch[i],
-            );
-        }
-        self.hash = FinalisedHashTree::new(&leaves, MAX_VALIDATORS);
-    }
-
     /// Append a validator to the finalised base with caller-supplied
     /// Validator-container field values. Updates the pubkey index but NOT
-    /// the hash tree — caller is responsible for `rebuild_hash_tree` after
-    /// a bulk populate, or use it via `ValidatorsDelta::promote_into_base`
-    /// which propagates the hash overlay separately.
+    /// the hash tree.
     #[allow(clippy::too_many_arguments)]
     pub fn append(
         &mut self,

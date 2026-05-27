@@ -11,9 +11,7 @@
 //!
 //! Lifecycle:
 //!
-//! - **Build once** via `new(leaves)` (O(N) bottom-up build at checkpoint load;
-//!   `leaves.len()` is rounded up to the next power of two and uses that as the
-//!   max_elements.
+//! - **Build once** (O(N) bottom-up build at checkpoint load
 //! - **Mutate only via delta promotion on finalization.**
 //!   `FinalisedHashTree::promote_delta` walks its delta and calls
 //!   `write_node(node, hash)` per dirty internal node, copying the delta's
@@ -61,7 +59,7 @@ impl FinalisedHashTree {
     }
 
     /// Allocate and populate a tree from `leaves`. The leaf capacity is
-    /// derived as `max(1, leaves.len().next_power_of_two())`; trailing
+    /// derived as `max(1, capacity_hint.next_power_of_two())`; trailing
     /// nodes up to that capacity stay at the zero hash (and propagate
     /// as zero subtrees).
     ///
@@ -77,6 +75,7 @@ impl FinalisedHashTree {
 
         let elements_count = leaves.len();
         let depth = max_elements.trailing_zeros() as usize;
+
         for node in (1..max_elements).rev() {
             // Leaves are level 0; root (node=1) sits at level `depth`. Node n at
             // level L covers leaves `[(n << L) - max_elements, (n+1 << L) - max_elements)`.
@@ -115,14 +114,15 @@ impl FinalisedHashTree {
         &self.nodes[node as usize]
     }
 
-    /// Root hash of the tree — equivalent to `self.node(Self::root())`. Caller
-    /// wraps with `mix_in_length` / extra zero-hash folding for SSZ semantics.
+    /// Root hash of the tree — equivalent to `self.node_hash(Self::root())`.
+    /// Caller wraps with `mix_in_length` / extra zero-hash folding for SSZ
+    /// semantics.
     pub fn root_hash(&self) -> &B256 {
         &self.nodes[Self::root() as usize]
     }
 
     /// Write `hash` into the flat-array node `node` *without* propagating
-    /// upward. Used by `HashTreeState::promote_delta` to copy the
+    /// upward. Used by `FinalisedHashTree::promote_delta` to copy the
     /// delta's precomputed internal-node hashes straight into the base
     pub fn write_node(&mut self, node: u32, hash: B256) {
         self.debug_assert_node(node);

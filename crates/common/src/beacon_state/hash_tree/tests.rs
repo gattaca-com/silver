@@ -229,8 +229,7 @@ fn fuzz_random_ops_hash_tree() {
                 }
             }
 
-            let promote_delta = forks[&idx].delta.clone();
-            base.promote_delta(&promote_delta);
+            base.promote_delta(&forks[&idx].delta.clone());
             for &j in &survivors {
                 base.prune_delta(&mut forks.get_mut(&j).unwrap().delta);
                 verify(&forks, &base, j, &format!("at step={step}, finalize"));

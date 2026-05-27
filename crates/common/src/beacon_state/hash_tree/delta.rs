@@ -32,7 +32,7 @@ use crate::{
 /// - `Node(Arc<DeltaNode>)`: a delta internal node with cached hash + children.
 ///
 /// `Clone` is O(1): `Base` copies a u32, `Leaf` copies 32 B, `Node` bumps
-/// the `Arc` refcount. Used by `Reset::reset_from` and `StateDelta::child_of`
+/// the `Arc` refcount. Used by `Reset::reset_from`
 /// so per-slot ring rolls don't deep-copy the dirty overlay.
 ///
 /// TODO(perf): replace `Arc<DeltaNode>` with a `TierPool`-style slab

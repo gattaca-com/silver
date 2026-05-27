@@ -66,11 +66,10 @@ pub struct ValidatorsDelta {
 }
 
 impl ValidatorsDelta {
-    /// Empty delta anchored at a base of size `base_cnt`. The hash overlay
-    /// starts pointing into the finalised tree (root = `Base(1)`).
-    pub fn new_at(base_cnt: usize) -> Self {
+    /// Empty delta over `base`.
+    pub fn new_at(base: &FinalisedValidators) -> Self {
         Self {
-            base_cnt,
+            base_cnt: base.validator_cnt(),
             appended: Vec::new(),
             credentials_edits: Vec::new(),
             effective_balance_edits: Vec::new(),
@@ -79,7 +78,7 @@ impl ValidatorsDelta {
             activation_epoch_edits: Vec::new(),
             exit_epoch_edits: Vec::new(),
             withdrawable_epoch_edits: Vec::new(),
-            hash_overlay: DeltaHashTree::default(),
+            hash_overlay: DeltaHashTree::new_at(base.hash()),
         }
     }
 
@@ -131,82 +130,98 @@ impl ValidatorsDelta {
         }
     }
 
+    /// Effective value of a `Copy` field at `idx`: base column when
+    /// `idx < base_cnt`, otherwise the appended record's field.
     #[inline]
-    pub fn effective_balance(&self, base: &FinalisedValidators, idx: u32) -> u64 {
-        if let Some(v) = lookup_copy(&self.effective_balance_edits, idx) {
-            return v;
-        }
+    fn base_field<T>(
+        &self,
+        base: &FinalisedValidators,
+        idx: u32,
+        from_base: impl Fn(&FinalisedValidators, usize) -> T,
+        from_appended: impl Fn(&AppendedValidator) -> T,
+    ) -> T {
         let i = idx as usize;
         if i < self.base_cnt {
-            base.effective_balance(i)
+            from_base(base, i)
         } else {
-            self.appended[i - self.base_cnt].effective_balance
+            from_appended(&self.appended[i - self.base_cnt])
         }
+    }
+
+    #[inline]
+    pub fn effective_balance(&self, base: &FinalisedValidators, idx: u32) -> u64 {
+        lookup_copy(&self.effective_balance_edits, idx)
+            .unwrap_or_else(|| self.base_effective_balance(base, idx))
     }
 
     #[inline]
     pub fn is_slashed(&self, base: &FinalisedValidators, idx: u32) -> bool {
-        if let Some(v) = lookup_copy(&self.slashed_edits, idx) {
-            return v;
-        }
-        let i = idx as usize;
-        if i < self.base_cnt {
-            base.is_slashed(i)
-        } else {
-            self.appended[i - self.base_cnt].slashed
-        }
+        lookup_copy(&self.slashed_edits, idx).unwrap_or_else(|| self.base_slashed(base, idx))
     }
 
     #[inline]
     pub fn activation_eligibility_epoch(&self, base: &FinalisedValidators, idx: u32) -> Epoch {
-        if let Some(v) = lookup_copy(&self.activation_eligibility_epoch_edits, idx) {
-            return v;
-        }
-        let i = idx as usize;
-        if i < self.base_cnt {
-            base.activation_eligibility_epoch(i)
-        } else {
-            self.appended[i - self.base_cnt].activation_eligibility_epoch
-        }
+        lookup_copy(&self.activation_eligibility_epoch_edits, idx)
+            .unwrap_or_else(|| self.base_activation_eligibility_epoch(base, idx))
     }
 
     #[inline]
     pub fn activation_epoch(&self, base: &FinalisedValidators, idx: u32) -> Epoch {
-        if let Some(v) = lookup_copy(&self.activation_epoch_edits, idx) {
-            return v;
-        }
-        let i = idx as usize;
-        if i < self.base_cnt {
-            base.activation_epoch(i)
-        } else {
-            self.appended[i - self.base_cnt].activation_epoch
-        }
+        lookup_copy(&self.activation_epoch_edits, idx)
+            .unwrap_or_else(|| self.base_activation_epoch(base, idx))
     }
 
     #[inline]
     pub fn exit_epoch(&self, base: &FinalisedValidators, idx: u32) -> Epoch {
-        if let Some(v) = lookup_copy(&self.exit_epoch_edits, idx) {
-            return v;
-        }
-        let i = idx as usize;
-        if i < self.base_cnt {
-            base.exit_epoch(i)
-        } else {
-            self.appended[i - self.base_cnt].exit_epoch
-        }
+        lookup_copy(&self.exit_epoch_edits, idx).unwrap_or_else(|| self.base_exit_epoch(base, idx))
     }
 
     #[inline]
     pub fn withdrawable_epoch(&self, base: &FinalisedValidators, idx: u32) -> Epoch {
-        if let Some(v) = lookup_copy(&self.withdrawable_epoch_edits, idx) {
-            return v;
-        }
-        let i = idx as usize;
-        if i < self.base_cnt {
-            base.withdrawable_epoch(i)
-        } else {
-            self.appended[i - self.base_cnt].withdrawable_epoch
-        }
+        lookup_copy(&self.withdrawable_epoch_edits, idx)
+            .unwrap_or_else(|| self.base_withdrawable_epoch(base, idx))
+    }
+
+    // Skipping the edits lookup is intentional — we want the *base* value to
+    // know whether the new edit elides back to default.
+    #[inline]
+    fn base_credentials(&self, base: &FinalisedValidators, idx: u32) -> Withdrawals {
+        self.base_field(base, idx, |b, i| *b.withdrawal_credentials(i), |a| a.credentials)
+    }
+
+    #[inline]
+    fn base_effective_balance(&self, base: &FinalisedValidators, idx: u32) -> u64 {
+        self.base_field(base, idx, |b, i| b.effective_balance(i), |a| a.effective_balance)
+    }
+
+    #[inline]
+    fn base_slashed(&self, base: &FinalisedValidators, idx: u32) -> bool {
+        self.base_field(base, idx, |b, i| b.is_slashed(i), |a| a.slashed)
+    }
+
+    #[inline]
+    fn base_activation_eligibility_epoch(&self, base: &FinalisedValidators, idx: u32) -> Epoch {
+        self.base_field(
+            base,
+            idx,
+            |b, i| b.activation_eligibility_epoch(i),
+            |a| a.activation_eligibility_epoch,
+        )
+    }
+
+    #[inline]
+    fn base_activation_epoch(&self, base: &FinalisedValidators, idx: u32) -> Epoch {
+        self.base_field(base, idx, |b, i| b.activation_epoch(i), |a| a.activation_epoch)
+    }
+
+    #[inline]
+    fn base_exit_epoch(&self, base: &FinalisedValidators, idx: u32) -> Epoch {
+        self.base_field(base, idx, |b, i| b.exit_epoch(i), |a| a.exit_epoch)
+    }
+
+    #[inline]
+    fn base_withdrawable_epoch(&self, base: &FinalisedValidators, idx: u32) -> Epoch {
+        self.base_field(base, idx, |b, i| b.withdrawable_epoch(i), |a| a.withdrawable_epoch)
     }
 
     /// Recompute the Validator-container hash leaf for `idx` from the
@@ -236,40 +251,29 @@ impl ValidatorsDelta {
     ) -> u32 {
         let idx = (self.base_cnt + self.appended.len()) as u32;
         self.appended.push(AppendedValidator::new(pubkey, pubkey_decompressed, credentials));
+
         let leaf = self.recompute_leaf(base, idx);
         base.hash().set_delta_leaf(&mut self.hash_overlay, idx as usize, leaf);
         idx
     }
 
     pub fn set_credentials(&mut self, base: &FinalisedValidators, idx: u32, v: Withdrawals) {
-        write_or_elide(
-            &mut self.credentials_edits,
-            idx,
-            v,
-            base_credentials(base, &self.appended, self.base_cnt, idx),
-        );
+        let base_val = self.base_credentials(base, idx);
+        write_or_elide(&mut self.credentials_edits, idx, v, base_val);
         let leaf = self.recompute_leaf(base, idx);
         base.hash().set_delta_leaf(&mut self.hash_overlay, idx as usize, leaf);
     }
 
     pub fn set_effective_balance(&mut self, base: &FinalisedValidators, idx: u32, v: u64) {
-        write_or_elide(
-            &mut self.effective_balance_edits,
-            idx,
-            v,
-            base_effective_balance(base, &self.appended, self.base_cnt, idx),
-        );
+        let base_val = self.base_effective_balance(base, idx);
+        write_or_elide(&mut self.effective_balance_edits, idx, v, base_val);
         let leaf = self.recompute_leaf(base, idx);
         base.hash().set_delta_leaf(&mut self.hash_overlay, idx as usize, leaf);
     }
 
     pub fn set_slashed(&mut self, base: &FinalisedValidators, idx: u32, v: bool) {
-        write_or_elide(
-            &mut self.slashed_edits,
-            idx,
-            v,
-            base_slashed(base, &self.appended, self.base_cnt, idx),
-        );
+        let base_val = self.base_slashed(base, idx);
+        write_or_elide(&mut self.slashed_edits, idx, v, base_val);
         let leaf = self.recompute_leaf(base, idx);
         base.hash().set_delta_leaf(&mut self.hash_overlay, idx as usize, leaf);
     }
@@ -280,53 +284,36 @@ impl ValidatorsDelta {
         idx: u32,
         v: Epoch,
     ) {
-        write_or_elide(
-            &mut self.activation_eligibility_epoch_edits,
-            idx,
-            v,
-            base_activation_eligibility_epoch(base, &self.appended, self.base_cnt, idx),
-        );
+        let base_val = self.base_activation_eligibility_epoch(base, idx);
+        write_or_elide(&mut self.activation_eligibility_epoch_edits, idx, v, base_val);
         let leaf = self.recompute_leaf(base, idx);
         base.hash().set_delta_leaf(&mut self.hash_overlay, idx as usize, leaf);
     }
 
     pub fn set_activation_epoch(&mut self, base: &FinalisedValidators, idx: u32, v: Epoch) {
-        write_or_elide(
-            &mut self.activation_epoch_edits,
-            idx,
-            v,
-            base_activation_epoch(base, &self.appended, self.base_cnt, idx),
-        );
+        let base_val = self.base_activation_epoch(base, idx);
+        write_or_elide(&mut self.activation_epoch_edits, idx, v, base_val);
         let leaf = self.recompute_leaf(base, idx);
         base.hash().set_delta_leaf(&mut self.hash_overlay, idx as usize, leaf);
     }
 
     pub fn set_exit_epoch(&mut self, base: &FinalisedValidators, idx: u32, v: Epoch) {
-        write_or_elide(
-            &mut self.exit_epoch_edits,
-            idx,
-            v,
-            base_exit_epoch(base, &self.appended, self.base_cnt, idx),
-        );
+        let base_val = self.base_exit_epoch(base, idx);
+        write_or_elide(&mut self.exit_epoch_edits, idx, v, base_val);
         let leaf = self.recompute_leaf(base, idx);
         base.hash().set_delta_leaf(&mut self.hash_overlay, idx as usize, leaf);
     }
 
     pub fn set_withdrawable_epoch(&mut self, base: &FinalisedValidators, idx: u32, v: Epoch) {
-        write_or_elide(
-            &mut self.withdrawable_epoch_edits,
-            idx,
-            v,
-            base_withdrawable_epoch(base, &self.appended, self.base_cnt, idx),
-        );
+        let base_val = self.base_withdrawable_epoch(base, idx);
+        write_or_elide(&mut self.withdrawable_epoch_edits, idx, v, base_val);
         let leaf = self.recompute_leaf(base, idx);
         base.hash().set_delta_leaf(&mut self.hash_overlay, idx as usize, leaf);
     }
 
     /// Fold this delta into `base`. Appended records advance
     /// `base.validator_cnt`; per-field edits land at their absolute
-    /// indices. The hash tree is promoted afterwards via
-    /// `base.hash_mut().promote_delta(&self.hash_overlay)`.
+    /// indices.
     pub fn promote_into_base(&self, base: &mut FinalisedValidators) {
         debug_assert_eq!(
             base.validator_cnt(),
@@ -473,94 +460,5 @@ fn write_or_elide<T: Copy + PartialEq>(edits: &mut Vec<(u32, T)>, idx: u32, v: T
                 edits.insert(p, (idx, v));
             }
         }
-    }
-}
-
-// Per-field "what is the base value" helpers, used by write_or_elide.
-// Skipping the edits lookup is intentional — we want the *base* value to
-// know whether the new edit elides back to default.
-
-#[inline]
-fn base_credentials<'a>(
-    base: &'a FinalisedValidators,
-    appended: &'a [AppendedValidator],
-    base_cnt: usize,
-    idx: u32,
-) -> Withdrawals {
-    let i = idx as usize;
-    if i < base_cnt { *base.withdrawal_credentials(i) } else { appended[i - base_cnt].credentials }
-}
-
-#[inline]
-fn base_effective_balance(
-    base: &FinalisedValidators,
-    appended: &[AppendedValidator],
-    base_cnt: usize,
-    idx: u32,
-) -> u64 {
-    let i = idx as usize;
-    if i < base_cnt { base.effective_balance(i) } else { appended[i - base_cnt].effective_balance }
-}
-
-#[inline]
-fn base_slashed(
-    base: &FinalisedValidators,
-    appended: &[AppendedValidator],
-    base_cnt: usize,
-    idx: u32,
-) -> bool {
-    let i = idx as usize;
-    if i < base_cnt { base.is_slashed(i) } else { appended[i - base_cnt].slashed }
-}
-
-#[inline]
-fn base_activation_eligibility_epoch(
-    base: &FinalisedValidators,
-    appended: &[AppendedValidator],
-    base_cnt: usize,
-    idx: u32,
-) -> Epoch {
-    let i = idx as usize;
-    if i < base_cnt {
-        base.activation_eligibility_epoch(i)
-    } else {
-        appended[i - base_cnt].activation_eligibility_epoch
-    }
-}
-
-#[inline]
-fn base_activation_epoch(
-    base: &FinalisedValidators,
-    appended: &[AppendedValidator],
-    base_cnt: usize,
-    idx: u32,
-) -> Epoch {
-    let i = idx as usize;
-    if i < base_cnt { base.activation_epoch(i) } else { appended[i - base_cnt].activation_epoch }
-}
-
-#[inline]
-fn base_exit_epoch(
-    base: &FinalisedValidators,
-    appended: &[AppendedValidator],
-    base_cnt: usize,
-    idx: u32,
-) -> Epoch {
-    let i = idx as usize;
-    if i < base_cnt { base.exit_epoch(i) } else { appended[i - base_cnt].exit_epoch }
-}
-
-#[inline]
-fn base_withdrawable_epoch(
-    base: &FinalisedValidators,
-    appended: &[AppendedValidator],
-    base_cnt: usize,
-    idx: u32,
-) -> Epoch {
-    let i = idx as usize;
-    if i < base_cnt {
-        base.withdrawable_epoch(i)
-    } else {
-        appended[i - base_cnt].withdrawable_epoch
     }
 }
