@@ -247,14 +247,9 @@ impl StorageTile {
         }
 
         if column_bitmask & self.custody_group_columns != 0 {
-            // Add to store.
-            self.store.add(
-                block_root,
-                column_index,
-                sidecar,
-                slot,
-                stream_id.protocol().is_request_response(),
-            );
+            // Add to store. Keyed by block_root while unfinalized; the store
+            // routes to the flat finalized layout once slot <= finalized.
+            self.store.add_data_column(block_root, column_index, sidecar, slot);
         }
 
         None
@@ -336,17 +331,21 @@ impl Tile<SilverSpine> for StorageTile {
 
         adapter.consume(|beacon_event: BeaconStateEvent, _| match beacon_event {
             BeaconStateEvent::Status { ssz, wall_slot: _ } => {
-                let slot = StatusView::head_slot(&ssz);
-                let canonical_root = StatusView::head_root(&ssz);
+                let head_slot = StatusView::head_slot(&ssz);
+                let head_root = *StatusView::head_root(&ssz);
+                let finalized_slot = StatusView::finalized_epoch(&ssz) * SLOTS_PER_EPOCH;
+                let finalized_root = *StatusView::finalized_root(&ssz);
                 self.fork_digest = *StatusView::fork_digest(&ssz);
-                self.store.set_canonical(slot, *canonical_root);
+                self.store.update_head(head_slot, head_root, finalized_slot, finalized_root);
             }
             BeaconStateEvent::PersistBlock(tcache_read) => {
                 let t_read = self.gossip_consumer.acquire(tcache_read);
                 if let Ok((buf, _)) = t_read.buffer() {
-                    let slot = silver_common::ssz_view::SignedBeaconBlockView::slot(buf);
+                    use silver_common::ssz_view::SignedBeaconBlockView;
+                    let slot = SignedBeaconBlockView::slot(buf);
+                    let parent_root = *SignedBeaconBlockView::parent_root(buf);
                     let block_root = util::block_root(buf);
-                    self.store.add_block(block_root, t_read, slot);
+                    self.store.add_block(block_root, t_read, slot, parent_root);
                 }
             }
             _ => {}

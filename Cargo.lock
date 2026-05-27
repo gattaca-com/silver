@@ -4335,6 +4335,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "silver_storage"
+version = "0.0.1"
+dependencies = [
+ "blst",
+ "c-kzg",
+ "flux",
+ "fxhash",
+ "libc",
+ "rand 0.8.6",
+ "silver_common",
+]
+
+[[package]]
 name = "silver_surfer"
 version = "0.0.1"
 dependencies = [
@@ -4345,7 +4358,7 @@ dependencies = [
  "ratatui",
  "silver_common",
  "silver_network",
- "storage",
+ "silver_storage",
 ]
 
 [[package]]
@@ -4457,19 +4470,6 @@ name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
-
-[[package]]
-name = "storage"
-version = "0.0.1"
-dependencies = [
- "blst",
- "c-kzg",
- "flux",
- "fxhash",
- "libc",
- "rand 0.8.6",
- "silver_common",
-]
 
 [[package]]
 name = "str_stack"

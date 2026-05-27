@@ -1,5 +1,5 @@
 [package]
-name = "storage"
+name = "silver_storage"
 edition.workspace = true
 repository.workspace = true
 rust-version.workspace = true
