@@ -22,6 +22,8 @@ use silver_control::Controller;
 use silver_peer::PeerManager;
 use tempfile::TempDir;
 
+use crate::perf::cache::FixturesDir;
+
 type StatusBytes = [u8; STATUS_V2_SIZE];
 type SpineConn = SpineAdapter<SilverSpine>;
 
@@ -38,11 +40,8 @@ pub fn scan_checkpoint_fixtures(
 ) -> Option<(Vec<u8>, Vec<Vec<u8>>)> {
     let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(fixtures_subdir);
     let cp = std::fs::read(dir.join("finalized_state.ssz")).ok()?;
-    let blocks: Vec<Vec<u8>> = crate::perf::cache::FixtureCacheDir(&dir)
-        .read_sorted_next_blocks()
-        .into_iter()
-        .map(|(_, b)| b)
-        .collect();
+    let blocks: Vec<Vec<u8>> =
+        FixturesDir(&dir).read_sorted_next_blocks().into_iter().map(|(_, b)| b).collect();
     (blocks.len() >= min_blocks).then_some((cp, blocks))
 }
 

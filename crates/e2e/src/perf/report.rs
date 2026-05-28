@@ -10,14 +10,14 @@ use crate::perf::{BlockWorkload, Fixtures, replay::ReplayOutcome};
 pub struct PerfReport {
     outcome: ReplayOutcome,
     workloads: Vec<BlockWorkload>,
-    anchor_slot: u64,
+    finalized_slot: u64,
     out_dir: PathBuf,
 }
 
 impl PerfReport {
     pub fn new(outcome: ReplayOutcome, fixtures: &Fixtures, out_dir: PathBuf) -> Self {
         let workloads = fixtures.blocks.iter().map(|b| BlockWorkload::from_block_ssz(b)).collect();
-        Self { outcome, workloads, anchor_slot: fixtures.anchor_slot, out_dir }
+        Self { outcome, workloads, finalized_slot: fixtures.finalized_slot, out_dir }
     }
 
     pub fn emit(&self) {
@@ -42,13 +42,14 @@ impl PerfReport {
         );
     }
 
-    /// The anchor moves run-to-run, so record the work the timings were paid
-    /// against; per-block averages let CI compare across moving anchors.
+    /// The finalized slot moves run-to-run, so record the work the timings
+    /// were paid against; per-block averages let CI compare across moving
+    /// finalized slots.
     fn print_workload(&self) {
         let n_blocks = self.workloads.len();
         let sum = |f: fn(&BlockWorkload) -> usize| self.workloads.iter().map(f).sum::<usize>();
         let per_block = |total: usize| total as f64 / n_blocks as f64;
-        eprintln!("Workload (anchor slot {}, {n_blocks} blocks):", self.anchor_slot);
+        eprintln!("Workload (finalized slot {}, {n_blocks} blocks):", self.finalized_slot);
         eprintln!("  validators (head)         {}", self.outcome.validator_count);
         eprintln!("  attestations              {:.1}/block", per_block(sum(|w| w.attestations)));
         eprintln!(
@@ -57,7 +58,7 @@ impl PerfReport {
         );
     }
 
-    /// Cost normalised by work — stable across moving anchors, so the
+    /// Cost normalised by work — stable across moving finalized slots, so the
     /// headline regression signal. `hash_validators` fires from several call
     /// sites and dominates, so sum it across every path.
     fn print_hash_validators_cost(&self) {
@@ -75,7 +76,7 @@ impl PerfReport {
     }
 
     fn write_artifacts(&self) {
-        let label = format!("anchor_{}_blocks_{}", self.anchor_slot, self.n_blocks());
+        let label = format!("finalized_{}_blocks_{}", self.finalized_slot, self.n_blocks());
         let _ = std::fs::create_dir_all(&self.out_dir);
         let json_path = self.out_dir.join(format!("perf-{label}.json"));
         std::fs::write(&json_path, self.outcome.stats.to_json(&label)).expect("write perf JSON");

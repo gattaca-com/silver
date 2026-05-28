@@ -32,3 +32,14 @@ checkpoint-fixtures:
 # first if you don't have the fixtures locally.
 test:
   cargo test --workspace --features "silver_beacon_state/ef_tests,silver_e2e/lh-client" --release --no-fail-fast 2>&1
+
+# Run the perf-regression harness on the committed mainnet fixtures.
+# Release-only; reads crates/e2e/data/perf (git-lfs). CI runs this too.
+perf-local:
+  cargo test --release -p silver_e2e --test sync_pm_bs_perf -- --ignored --nocapture
+
+# Refresh crates/e2e/data/perf from mainnet (~13 min for the default 128
+# blocks at lodestar's ~1 req / 6 s cap). Commit the result via git-lfs.
+# Pass `--continue` (and/or `--blocks N`) to resume after a network blip.
+perf-update-fixtures *args='--blocks 128':
+  cargo run --release -p silver_e2e --bin perf_update_fixtures -- {{args}}

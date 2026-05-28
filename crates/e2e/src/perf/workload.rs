@@ -3,7 +3,7 @@ use silver_common::ssz_view::{BeaconBlockBodyView, SignedBeaconBlockView};
 const SYNC_COMMITTEE_BITS_BYTES: usize = 512 / 8;
 
 /// Per-block workload the STF cost scales with, recorded alongside
-/// timings so perf stays interpretable across moving anchors. Only the
+/// timings so perf stays interpretable across moving finalized slots. Only the
 /// two knobs that vary on mainnet — attestation count and sync-committee
 /// participation; the other body ops are ~always empty.
 #[derive(Debug, Clone, Copy, Default)]

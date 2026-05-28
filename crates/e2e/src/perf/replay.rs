@@ -9,7 +9,6 @@ use silver_common::{
 };
 
 use crate::{
-    mainnet_api::fetch_canonical_state_root,
     perf::Fixtures,
     utils::{PEER, PmBsHarness, block_slot},
 };
@@ -75,22 +74,12 @@ pub fn replay(fixtures: &Fixtures) -> ReplayOutcome {
     );
 
     let head_state_root = h.head_state_root();
-    // canonical-root assertion lives inside `replay`, not as a separate stage.
-    // Canonical state-root check is best-effort: when the slot isn't
-    // reachable on a public archive (typical for old fixtures) we still
-    // want the perf numbers.
-    match fetch_canonical_state_root(final_slot) {
-        Some(expected_root) => {
-            assert_eq!(
-                head_state_root, expected_root,
-                "post-catchup head_state_root must match canonical mainnet"
-            );
-            eprintln!("perf: state_root matches canonical mainnet ✓");
-        }
-        None => eprintln!(
-            "perf: canonical state_root unavailable for slot {final_slot} — skipping correctness check"
-        ),
-    }
+    assert_eq!(
+        head_state_root, fixtures.expected_head_state_root,
+        "post-catchup head_state_root must match expected.json (regenerate fixtures \
+         if STF logic legitimately changed)"
+    );
+    eprintln!("perf: state_root matches expected ✓");
 
     ReplayOutcome {
         stats: TimingStats::collect(),
