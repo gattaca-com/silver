@@ -9,6 +9,7 @@
 //! validators, payload header, pending queues, historical summaries,
 //! randao mixes, fork).
 
+use silver_common::metrics::timed;
 pub use silver_common::ssz_hash::*;
 use tracing::instrument;
 
@@ -49,6 +50,7 @@ pub fn hash_eth1_data(e: &Eth1Data) -> B256 {
 // persistent trees that only re-hash dirty subtrees. Add per-leaf dirty bits
 // per tier + a layered cache for: validators, balances, inactivity_scores,
 // randao_mixes (see hash_randao_mixes), participation lists.
+#[timed]
 #[allow(clippy::too_many_arguments)]
 #[instrument(skip_all)]
 pub fn hash_tree_root_state(
@@ -111,6 +113,7 @@ pub fn hash_tree_root_state(
 // Only one leaf changes per slot (current_idx); cache 2N-1 nodes (~4 MB) on
 // EpochData and update the log2(N)=16 path on mutation. Replay must rebuild
 // the cache from leaves on load.
+#[timed]
 pub fn hash_randao_mixes(epoch: &EpochData, sd: &SlotData) -> B256 {
     use types::{EPOCHS_PER_HISTORICAL_VECTOR, SLOTS_PER_EPOCH};
     let current_epoch = sd.slot / SLOTS_PER_EPOCH;
@@ -125,6 +128,7 @@ pub fn hash_randao_mixes(epoch: &EpochData, sd: &SlotData) -> B256 {
     merkle_finalize(stack, target_depth)
 }
 
+#[timed]
 pub fn hash_validators(vs: &ValidatorsState, epoch: &EpochData) -> B256 {
     let n = vs.validator_cnt();
     let target_depth = VALIDATOR_REGISTRY_LIMIT.next_power_of_two().trailing_zeros() as u8;
@@ -214,6 +218,7 @@ pub fn hash_execution_payload_header(h: &types::ExecutionPayloadHeader) -> B256 
     merkleize(&fields)
 }
 
+#[timed]
 pub fn hash_pending_deposits(pq: &PendingQueues) -> B256 {
     let n = pq.pending_deposits.len();
     let target_depth = types::PENDING_DEPOSITS_LIMIT.next_power_of_two().trailing_zeros() as u8;
@@ -233,6 +238,7 @@ pub fn hash_pending_deposits(pq: &PendingQueues) -> B256 {
     mix_in_length(&root, n)
 }
 
+#[timed]
 pub fn hash_pending_partial_withdrawals(pq: &PendingQueues) -> B256 {
     let n = pq.pending_partial_withdrawals.len();
     let target_depth =
@@ -248,6 +254,7 @@ pub fn hash_pending_partial_withdrawals(pq: &PendingQueues) -> B256 {
     mix_in_length(&root, n)
 }
 
+#[timed]
 pub fn hash_pending_consolidations(pq: &PendingQueues) -> B256 {
     let n = pq.pending_consolidations.len();
     let target_depth =
@@ -264,6 +271,7 @@ pub fn hash_pending_consolidations(pq: &PendingQueues) -> B256 {
     mix_in_length(&root, n)
 }
 
+#[timed]
 pub fn hash_historical_summaries(longtail: &HistoricalLongtail) -> B256 {
     let n = longtail.historical_summaries.len();
     let target_depth = HISTORICAL_ROOTS_LIMIT.trailing_zeros() as u8;

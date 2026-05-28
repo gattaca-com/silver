@@ -1,4 +1,5 @@
 use flux::utils::ArrayVec;
+use silver_common::metrics::timed;
 
 use crate::{types::*, validator_identity::FinalizedValidators};
 
@@ -286,6 +287,7 @@ impl ForkChoice {
 /// Compute weight deltas from vote changes and balance changes.
 /// For each validator whose vote or balance changed, subtract old balance
 /// from old target and add new balance to new target.
+#[timed]
 pub fn compute_deltas(
     votes: &mut [Vote; MAX_VALIDATORS],
     validator_count: usize,

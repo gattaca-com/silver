@@ -22,7 +22,7 @@ use silver_beacon_state::{
     validator_identity::FinalizedValidators,
 };
 use silver_common::{TCache, TCacheProducer};
-use silver_e2e::canonical::fetch_canonical_state_root;
+use silver_e2e::mainnet_api::fetch_canonical_state_root;
 
 const FIXTURES: &str = "tests/example_checkpoints";
 const BLOCK_PREFIX: &str = "next_block_";

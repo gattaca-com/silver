@@ -243,6 +243,10 @@ impl BeaconStateTile {
         Self::last_applied_slot(&self.arena, self.last_applied).slot
     }
 
+    pub fn head_validator_count(&self) -> usize {
+        self.last_applied_validators.validator_cnt()
+    }
+
     pub fn try_apply_block(&mut self, data: &[u8]) -> Feedback {
         self.handle_block(data)
     }

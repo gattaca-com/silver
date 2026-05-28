@@ -26,6 +26,8 @@ use std::{
 use flux::{Timer, timing::Instant};
 pub use silver_common_macros::timed;
 
+use crate::flamegraph_timer;
+
 /// App name used as the parent directory for per-function `Timer`
 /// shmem queues. Falls back to `"silver"` if `init_app` is not called.
 static APP_NAME: OnceLock<String> = OnceLock::new();
@@ -57,12 +59,20 @@ pub struct TimerGuard {
 impl TimerGuard {
     #[inline]
     pub fn new(key: &'static LocalKey<RefCell<Option<Timer>>>, name: &'static str) -> Self {
-        Self { key, name, start: Instant::now() }
+        let start = Instant::now();
+        flamegraph_timer::stack_enter(name, start);
+        Self { key, name, start }
     }
 }
 
 impl Drop for TimerGuard {
     fn drop(&mut self) {
+        // Bench/test mode replaces flux emission: record the call tree and
+        // skip the shmem write entirely.
+        if flamegraph_timer::is_enabled() {
+            flamegraph_timer::stack_exit();
+            return;
+        }
         self.key.with(|cell| {
             let mut opt = cell.borrow_mut();
             let timer = opt.get_or_insert_with(|| new_timer(self.name));
