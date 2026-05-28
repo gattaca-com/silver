@@ -15,12 +15,46 @@ struct ExpectedJson {
     head_state_root: [u8; 32],
 }
 
-/// Perf-regression ceilings; `None` disables that ceiling.
+/// Per-frame perf thresholds; field names match `#[timed]` frame labels,
+/// `_mean` = average across all calls of that frame in the run.
 #[derive(Default, Clone, Copy, serde::Deserialize)]
 #[serde(default)]
 pub struct Thresholds {
-    pub max_ns_per_block: Option<u64>,
-    pub max_hash_validators_ns_per_validator: Option<u64>,
+    /// One-shot cost of `decompose_beacon_state` at harness boot.
+    #[serde(deserialize_with = "de_duration_ns")]
+    pub max_decompose_beacon_state: Option<u64>,
+    #[serde(deserialize_with = "de_duration_ns")]
+    pub max_apply_block_mean: Option<u64>,
+    /// Average wall time of one `hash_tree_root_state` call (sum across all
+    /// call sites — `process_slots` and direct).
+    #[serde(deserialize_with = "de_duration_ns")]
+    pub max_hash_tree_root_state_mean: Option<u64>,
+}
+
+/// Accepts `"2.5s" | "500ms" | "100us" | "100µs" | "100ns"` (or `null`).
+/// Rejects bare numbers — the unit is mandatory so the file stays
+/// self-documenting.
+fn de_duration_ns<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
+    use serde::Deserialize;
+    let s: Option<String> = Option::deserialize(d)?;
+    s.map(|s| parse_duration_ns(s.as_str()).map_err(serde::de::Error::custom)).transpose()
+}
+
+fn parse_duration_ns(s: &str) -> Result<u64, String> {
+    let s = s.trim();
+    let split = s
+        .find(|c: char| c.is_alphabetic() || c == 'µ')
+        .filter(|&i| i > 0)
+        .ok_or_else(|| format!("missing unit in {s:?} (expected e.g. \"2.5s\")"))?;
+    let n: f64 = s[..split].trim().parse().map_err(|e| format!("number in {s:?}: {e}"))?;
+    let mult: f64 = match s[split..].trim() {
+        "ns" => 1.0,
+        "us" | "µs" => 1_000.0,
+        "ms" => 1_000_000.0,
+        "s" => 1_000_000_000.0,
+        u => return Err(format!("unknown unit {u:?} in {s:?} (expected ns|us|ms|s)")),
+    };
+    Ok((n * mult).round() as u64)
 }
 
 pub struct FixturesDir<'a>(pub &'a Path);

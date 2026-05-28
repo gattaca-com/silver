@@ -30,40 +30,56 @@ impl PerfReport {
     pub fn emit(&self) {
         self.print_replay_timing();
         self.print_workload();
-        self.print_hash_validators_cost();
+        self.print_key_metrics();
         self.print_call_tree();
         self.write_artifacts();
     }
 
-    /// `Err` lists every breached ceiling; `None` ceilings are report-only.
+    /// `Err` lists every breached threshold; `None` thresholds are report-only.
     pub fn check_thresholds(&self) -> Result<(), String> {
-        let mut breaches: Vec<String> = Vec::new();
-        if let Some(max) = self.thresholds.max_ns_per_block {
-            let per_block = self.outcome.wall_elapsed.as_nanos() as u64 / self.n_blocks();
-            if per_block > max {
-                breaches.push(format!(
-                    "ns/block {} > ceiling {} (max_ns_per_block)",
-                    Nanos(per_block),
-                    Nanos(max),
-                ));
-            }
+        let breaches: Vec<Gauge> = self.gauges().into_iter().filter(|g| g.breached()).collect();
+        if breaches.is_empty() {
+            return Ok(());
         }
-        if let Some(max) = self.thresholds.max_hash_validators_ns_per_validator &&
-            let Some(actual) = self.hash_validators_ns_per_validator() &&
-            actual > max
-        {
-            breaches.push(format!(
-                "hash_validators ns/validator {actual} > ceiling {max} \
-                 (max_hash_validators_ns_per_validator)",
-            ));
+        let mut out = String::from("thresholds breached:\n");
+        for g in &breaches {
+            out.push_str(&g.render_breach());
+            out.push('\n');
         }
-        if breaches.is_empty() { Ok(()) } else { Err(breaches.join("; ")) }
+        Err(out)
     }
 
-    fn hash_validators_ns_per_validator(&self) -> Option<u64> {
-        let (sum, count) = self.outcome.stats.aggregate_leaf("hash_validators");
-        let validators = self.outcome.validator_count as u64;
-        (count > 0 && validators > 0).then(|| sum / count / validators)
+    /// Shared by `print_key_metrics` and `check_thresholds` so both views
+    /// agree on the same set of metrics in the same order.
+    fn gauges(&self) -> Vec<Gauge> {
+        let t = &self.thresholds;
+        vec![
+            Gauge {
+                label: "decompose_beacon_state",
+                actual: self.frame_total_ns("decompose_beacon_state"),
+                threshold: t.max_decompose_beacon_state,
+            },
+            Gauge {
+                label: "apply_block (mean)",
+                actual: self.frame_mean_ns("apply_block"),
+                threshold: t.max_apply_block_mean,
+            },
+            Gauge {
+                label: "hash_tree_root_state (mean)",
+                actual: self.frame_mean_ns("hash_tree_root_state"),
+                threshold: t.max_hash_tree_root_state_mean,
+            },
+        ]
+    }
+
+    fn frame_total_ns(&self, frame: &str) -> Option<u64> {
+        let (sum, count) = self.outcome.stats.aggregate_leaf(frame);
+        (count > 0).then_some(sum)
+    }
+
+    fn frame_mean_ns(&self, frame: &str) -> Option<u64> {
+        let (sum, count) = self.outcome.stats.aggregate_leaf(frame);
+        (count > 0).then(|| sum / count)
     }
 
     fn n_blocks(&self) -> u64 {
@@ -95,34 +111,66 @@ impl PerfReport {
         );
     }
 
-    /// `hash_validators` summed across all call paths — the headline regression
-    /// signal.
-    fn print_hash_validators_cost(&self) {
-        let (hv_sum, hv_count) = self.outcome.stats.aggregate_leaf("hash_validators");
-        if hv_count > 0 && self.outcome.validator_count > 0 {
-            eprintln!(
-                "\n  hash_validators   {:.1} ns/validator ({hv_count} calls)",
-                (hv_sum / hv_count) as f64 / self.outcome.validator_count as f64,
-            );
+    /// Renders the same gauge set `check_thresholds` panics on, so success
+    /// runs and failures show the same numbers.
+    fn print_key_metrics(&self) {
+        eprintln!("\nKey metrics (thresholded):");
+        for g in self.gauges() {
+            eprintln!("  {}", g.render_row());
         }
     }
 
     fn print_call_tree(&self) {
+        eprintln!("\nCall tree:");
         eprint!("{}", self.outcome.stats.call_tree());
     }
 
+    /// Writes the structured per-path JSON only. Folded stacks aren't
+    /// persisted: each path's `total_untracked_ns` lives in the JSON, so a
+    /// flamegraph can be regenerated on demand with e.g.
+    /// `jq -r '.paths[] | "\(.path) \(.total_untracked_ns)"' perf-*.json`.
     fn write_artifacts(&self) {
         let label = format!("finalized_{}_blocks_{}", self.finalized_slot, self.n_blocks());
         let _ = std::fs::create_dir_all(&self.out_dir);
-        let json_path = self.out_dir.join(format!("perf-{label}.json"));
+        let dir = std::fs::canonicalize(&self.out_dir).unwrap_or_else(|_| self.out_dir.clone());
+        let json_path = dir.join(format!("perf-{label}.json"));
         std::fs::write(&json_path, self.outcome.stats.to_json(&label)).expect("write perf JSON");
-        let folded_path = self.out_dir.join(format!("perf-{label}.folded"));
-        std::fs::write(&folded_path, self.outcome.stats.flamegraph_stacks())
-            .expect("write folded stacks");
-        eprintln!(
-            "\nperf: JSON {}\nperf: flamegraph stacks {}",
-            json_path.display(),
-            folded_path.display()
-        );
+        eprintln!("\nperf: JSON {}", json_path.display());
+    }
+}
+
+struct Gauge {
+    label: &'static str,
+    actual: Option<u64>,
+    threshold: Option<u64>,
+}
+
+impl Gauge {
+    fn breached(&self) -> bool {
+        matches!((self.actual, self.threshold), (Some(a), Some(c)) if a > c)
+    }
+
+    fn render_row(&self) -> String {
+        let actual = self.actual.map(|v| Nanos(v).to_string()).unwrap_or_else(|| "n/a".into());
+        let (threshold, status) = match (self.actual, self.threshold) {
+            (_, None) => ("—".to_string(), "(no threshold)"),
+            (Some(a), Some(c)) if a > c => (Nanos(c).to_string(), "BREACH"),
+            (_, Some(c)) => (Nanos(c).to_string(), "ok"),
+        };
+        format!(
+            "{label:<32}  actual {actual:>10}   threshold {threshold:>10}   {status}",
+            label = self.label,
+        )
+    }
+
+    /// Breach-panic row — same layout as `render_row`, sans the status
+    /// suffix (every row in the panic is a breach by construction).
+    fn render_breach(&self) -> String {
+        let actual = self.actual.map(|v| Nanos(v).to_string()).unwrap_or_else(|| "n/a".into());
+        let threshold = self.threshold.map(|v| Nanos(v).to_string()).unwrap_or_else(|| "—".into());
+        format!(
+            "  {label:<32}  actual {actual:>10}   threshold {threshold:>10}",
+            label = self.label,
+        )
     }
 }
