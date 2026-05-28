@@ -1,13 +1,13 @@
 //! Per-tile counters exposed via `silver_common`'s shmem-mapped
-//! atomic-counter primitive. Surfer maps `counters-data_columns` into
-//! its TUI by registering [`DataColumnCounters::NAMES`] in its schema
+//! atomic-counter primitive. Surfer maps `counters-storage` into
+//! its TUI by registering [`StorageCounters::NAMES`] in its schema
 //! table.
 //!
 //! Counters are interpreted by position — append before `_Count`, do
 //! not reorder.
 
 silver_common::declare_counters! {
-    pub DataColumnCounters => "data_columns" {
+    pub StorageCounters => "storage" {
         // gossip ingest
         GossipSidecarsReceived,
         GossipSidecarsRejected,

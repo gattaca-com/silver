@@ -7,13 +7,13 @@ version.workspace = true
 
 [dependencies]
 crossterm.workspace = true
-data_columns.workspace = true
 flux.workspace = true
 hdrhistogram.workspace = true
 libc.workspace = true
 ratatui.workspace = true
 silver_common.workspace = true
 silver_network.workspace = true
+silver_storage.workspace = true
 
 [lints]
 workspace = true

@@ -1073,18 +1073,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "data_columns"
-version = "0.0.1"
-dependencies = [
- "blst",
- "c-kzg",
- "flux",
- "fxhash",
- "libc",
- "silver_common",
-]
-
-[[package]]
 name = "debugid"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4347,17 +4335,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "silver_storage"
+version = "0.0.1"
+dependencies = [
+ "blst",
+ "c-kzg",
+ "flux",
+ "fxhash",
+ "libc",
+ "rand 0.8.6",
+ "silver_common",
+]
+
+[[package]]
 name = "silver_surfer"
 version = "0.0.1"
 dependencies = [
  "crossterm",
- "data_columns",
  "flux",
  "hdrhistogram",
  "libc",
  "ratatui",
  "silver_common",
  "silver_network",
+ "silver_storage",
 ]
 
 [[package]]

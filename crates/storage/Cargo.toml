@@ -1,5 +1,5 @@
 [package]
-name = "data_columns"
+name = "silver_storage"
 edition.workspace = true
 repository.workspace = true
 rust-version.workspace = true
@@ -15,3 +15,6 @@ silver_common.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+rand.workspace = true

@@ -5,7 +5,7 @@ members = [
   "crates/common",
   "crates/common_macros",
   "crates/control",
-  "crates/data_columns",
+  "crates/storage",
   "crates/discovery",
   "crates/e2e",
   "crates/gossip",
@@ -62,7 +62,7 @@ silver_gossip = {path = "crates/gossip" }
 silver_network = {path = "crates/network" }
 silver_peer = {path = "crates/peer" }
 silver_common_macros = { path = "crates/common_macros" }
-data_columns = { path = "crates/data_columns" }
+silver_storage = { path = "crates/storage" }
 flux = { git = "https://github.com/gattaca-com/flux", rev = "f902769fe25915d8e58b50469f4a8b76f6045870"}
 flux-utils = { git = "https://github.com/gattaca-com/flux", rev = "f902769fe25915d8e58b50469f4a8b76f6045870", features = ["bytes"]}
 

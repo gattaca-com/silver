@@ -8,7 +8,7 @@
 /// enums via `silver_common::declare_counters!`.
 pub fn lookup(file_name: &str) -> Option<&'static [&'static str]> {
     match file_name {
-        "data_columns" => Some(data_columns::DataColumnCounters::NAMES),
+        "storage" => Some(silver_storage::StorageCounters::NAMES),
         "network" => Some(silver_network::NetworkCounters::NAMES),
         _ => None,
     }
