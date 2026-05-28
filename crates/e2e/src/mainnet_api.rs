@@ -28,11 +28,7 @@ pub fn fetch_canonical_state_root(slot: u64) -> Option<[u8; 32]> {
         start += 2;
     }
     let hex = body.get(start..start + 64)?;
-    parse_state_root_hex(hex)
-}
-
-fn parse_state_root_hex(hex_no_0x: &str) -> Option<[u8; 32]> {
     let mut root = [0u8; 32];
-    hex::decode_to_slice(hex_no_0x, &mut root).ok()?;
+    hex::decode_to_slice(hex, &mut root).ok()?;
     Some(root)
 }

@@ -20,7 +20,10 @@ impl BlockWorkload {
         Self {
             slot: SignedBeaconBlockView::slot(block),
             attestations: ssz_list_len(body, attestations_offset, deposits_offset),
-            sync_bits_set: sync.get(..SYNC_COMMITTEE_BITS_BYTES).map(popcount).unwrap_or(0),
+            sync_bits_set: sync
+                .get(..SYNC_COMMITTEE_BITS_BYTES)
+                .map(|bs| bs.iter().map(|b| b.count_ones() as usize).sum())
+                .unwrap_or(0),
         }
     }
 }
@@ -33,8 +36,4 @@ fn ssz_list_len(body: &[u8], start: usize, end: usize) -> usize {
     }
     let first = u32::from_le_bytes(body[start..start + 4].try_into().unwrap()) as usize;
     if first == 0 { 0 } else { first / 4 }
-}
-
-fn popcount(bytes: &[u8]) -> usize {
-    bytes.iter().map(|b| b.count_ones() as usize).sum()
 }

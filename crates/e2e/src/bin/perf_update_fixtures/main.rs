@@ -128,8 +128,7 @@ fn fetch_following_blocks(
     n_blocks: usize,
 ) -> Result<usize, String> {
     let lookahead = (n_blocks as u64 * 3 / 2).max(8);
-    let mut got =
-        (1..=lookahead).filter(|p| fixtures.block_path(finalized_slot + p).exists()).count();
+    let mut got = 0usize;
     for probe in 1..=lookahead {
         if got >= n_blocks {
             break;
@@ -137,6 +136,7 @@ fn fetch_following_blocks(
         let slot = finalized_slot + probe;
         let out = fixtures.block_path(slot);
         if out.exists() {
+            got += 1;
             continue;
         }
         match fetch_one_block_with_backoff(&out, slot)? {
@@ -152,19 +152,22 @@ fn fetch_following_blocks(
 }
 
 fn fetch_one_block_with_backoff(out: &Path, slot: u64) -> Result<bool, String> {
-    for attempt in 1..=BLOCK_MAX_RETRIES {
+    for attempt in 1..BLOCK_MAX_RETRIES {
         match http::fetch_block_ssz_to(out, slot)? {
             BlockFetch::Present => return Ok(true),
             BlockFetch::Empty => return Ok(false),
             BlockFetch::RateLimited => {
-                if attempt >= BLOCK_MAX_RETRIES {
-                    return Err(format!("slot {slot}: still 429 after {attempt} tries"));
-                }
                 let backoff = BLOCK_REQUEST_SPACING * attempt;
                 eprintln!("fixtures: slot {slot}: 429, backing off {backoff:?}");
                 thread::sleep(backoff);
             }
         }
     }
-    unreachable!("loop returns or errs on the final attempt")
+    match http::fetch_block_ssz_to(out, slot)? {
+        BlockFetch::Present => Ok(true),
+        BlockFetch::Empty => Ok(false),
+        BlockFetch::RateLimited => {
+            Err(format!("slot {slot}: still 429 after {BLOCK_MAX_RETRIES} tries"))
+        }
+    }
 }

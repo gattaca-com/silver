@@ -28,7 +28,7 @@ pub struct TimingStats(Vec<PathStat>);
 
 impl TimingStats {
     pub fn collect() -> Self {
-        let paths = drain()
+        let mut paths: Vec<_> = drain()
             .into_iter()
             .map(|timing| {
                 let mut samples = timing.samples.tracked_ns;
@@ -45,6 +45,7 @@ impl TimingStats {
                 }
             })
             .collect();
+        paths.sort_by(|a, b| a.path.cmp(&b.path));
         Self(paths)
     }
 
@@ -54,7 +55,7 @@ impl TimingStats {
     pub fn aggregate_leaf(&self, leaf: &str) -> (u64, u64) {
         self.0
             .iter()
-            .filter(|s| s.path.last().is_some_and(|n| n.ends_with(leaf)))
+            .filter(|s| s.path.last().is_some_and(|n| leaf_name(n) == leaf))
             .fold((0, 0), |(sum, cnt), s| (sum + s.tracked_sum_ns, cnt + s.count))
     }
 

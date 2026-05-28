@@ -131,11 +131,11 @@ impl PerfReport {
     /// `jq -r '.paths[] | "\(.path) \(.total_untracked_ns)"' perf-*.json`.
     fn write_artifacts(&self) {
         let label = format!("finalized_{}_blocks_{}", self.finalized_slot, self.n_blocks());
-        let _ = std::fs::create_dir_all(&self.out_dir);
-        let dir = std::fs::canonicalize(&self.out_dir).unwrap_or_else(|_| self.out_dir.clone());
-        let json_path = dir.join(format!("perf-{label}.json"));
+        std::fs::create_dir_all(&self.out_dir).expect("create perf output dir");
+        let json_path = self.out_dir.join(format!("perf-{label}.json"));
         std::fs::write(&json_path, self.outcome.stats.to_json(&label)).expect("write perf JSON");
-        eprintln!("\nperf: JSON {}", json_path.display());
+        let display = std::fs::canonicalize(&json_path).unwrap_or_else(|_| json_path.clone());
+        eprintln!("\nperf: JSON {}", display.display());
     }
 }
 
