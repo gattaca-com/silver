@@ -1,12 +1,7 @@
-//! Mainnet perf-regression pipeline. Fixtures (finalized state + N following
-//! blocks + expected post-state root) live committed under
-//! `crates/e2e/data/perf` via git-lfs; `Fixtures::load` reads them, then
-//! `replay → timing collect → report` runs hermetically.
-//!
-//! Refresh the fixtures with the `perf-update-fixtures` bin; the test
-//! never touches the network.
+//! Perf-regression pipeline over committed mainnet fixtures
+//! (`crates/e2e/data/perf`).
 
-pub mod cache;
+pub mod fixtures_dir;
 pub mod replay;
 pub mod report;
 pub mod workload;
@@ -22,12 +17,13 @@ pub struct Fixtures {
     pub state_ssz: Vec<u8>,
     pub blocks: Vec<Vec<u8>>,
     pub expected_head_state_root: [u8; 32],
+    pub thresholds: fixtures_dir::Thresholds,
 }
 
 impl Fixtures {
     /// `Err` if a fixture file is missing — usually `git lfs pull` wasn't run.
     pub fn load(dir: &Path) -> Result<Self, String> {
-        let fixtures = cache::FixturesDir(dir);
+        let fixtures = fixtures_dir::FixturesDir(dir);
         let (state_ssz, finalized_slot) = fixtures
             .read_finalized_state()
             .map_err(|e| format!("{e} — run `git lfs pull` or `just perf-update-fixtures`"))?;
@@ -43,7 +39,8 @@ impl Fixtures {
         }
 
         let expected_head_state_root = fixtures.read_expected()?;
-        Ok(Self { finalized_slot, state_ssz, blocks, expected_head_state_root })
+        let thresholds = fixtures.read_thresholds()?;
+        Ok(Self { finalized_slot, state_ssz, blocks, expected_head_state_root, thresholds })
     }
 }
 
@@ -52,8 +49,6 @@ pub struct PerfConfig {
     pub output_dir: PathBuf,
 }
 
-/// `Err` on missing fixtures — run `git lfs pull` or `just
-/// perf-update-fixtures`.
 pub fn run_perf_pipeline(cfg: PerfConfig) -> Result<PerfReport, String> {
     let fixtures = Fixtures::load(&cfg.fixtures_dir)?;
     eprintln!("perf: finalized slot {}", fixtures.finalized_slot);

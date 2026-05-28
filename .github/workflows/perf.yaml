@@ -1,0 +1,50 @@
+name: perf
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  perf:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # SSZ fixtures under crates/e2e/data/perf live in git-lfs.
+          lfs: true
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          key: ${{ runner.os }}-cargo-perf-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2025-06-01
+
+      - name: Setup just
+        uses: extractions/setup-just@v2
+        with:
+          just-version: 1.5.0
+
+      - name: Run perf-regression harness
+        run: just perf-local
+
+      - name: Upload perf artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-${{ github.run_id }}
+          path: |
+            target/perf-*.json
+            target/perf-*.folded
+          if-no-files-found: warn
+          retention-days: 30

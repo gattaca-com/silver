@@ -1,8 +1,4 @@
-//! Shared wiring for the `sync_pm_bs*` integration tests: a no-op
-//! injector tile plus helpers to mint a synthetic peer, stage blocks in
-//! a tcache, read the PeerManager's next `BlocksByRange` request, and
-//! inject block responses. All three tests drive a `PeerManager` +
-//! `BeaconStateTile` on one spine against the synthetic peer [`PEER`].
+//! Shared PM + BS harness for the `sync_pm_bs*` integration tests.
 
 use std::time::Duration;
 
@@ -22,13 +18,12 @@ use silver_control::Controller;
 use silver_peer::PeerManager;
 use tempfile::TempDir;
 
-use crate::perf::cache::FixturesDir;
+use crate::perf::fixtures_dir::FixturesDir;
 
 type StatusBytes = [u8; STATUS_V2_SIZE];
 type SpineConn = SpineAdapter<SilverSpine>;
 
-/// Synthetic peer's p2p connection id.
-pub const PEER: usize = 1;
+pub const SYNTH_PEER_CONN_ID: usize = 1;
 
 pub fn block_slot(ssz: &[u8]) -> u64 {
     SignedBeaconBlockView::slot(ssz)
@@ -83,9 +78,9 @@ fn tcache_write(producer: &mut TProducer, bytes: &[u8]) -> TCacheRead {
 }
 
 /// A `PeerManager` + `BeaconStateTile` wired on one spine against the
-/// synthetic peer [`PEER`], bootstrapped from a checkpoint and run through
-/// the initial Status handshake. Owns every piece the `sync_pm_bs*` tests
-/// drive.
+/// synthetic peer [`SYNTH_PEER_CONN_ID`], bootstrapped from a checkpoint and
+/// run through the initial Status handshake. Owns every piece the `sync_pm_bs*`
+/// tests drive.
 pub struct PmBsHarness {
     // Declaration order is drop order: the spine connections and the BS tile
     // must drop before the spine and the producers backing their caches.
@@ -184,7 +179,7 @@ impl PmBsHarness {
     /// then let BS + Controller react.
     pub fn connect_peer(&mut self, peer_head_slot: u64) {
         self.inj_a.produce(PeerEvent::P2pNewConnection {
-            p2p_peer_id: PEER,
+            p2p_peer_id: SYNTH_PEER_CONN_ID,
             peer_id_full: synth_peer_id(),
             ip: IpBytes::V4([127, 0, 0, 1]),
             port: 9000,
@@ -193,7 +188,7 @@ impl PmBsHarness {
         let status = peer_status(&self.local, peer_head_slot);
         self.inj_a.produce(RpcInbound::Response(RpcResponseInbound {
             application_id: 0,
-            stream_id: P2pStreamId::new(PEER, 0, StreamProtocol::StatusV2, true),
+            stream_id: P2pStreamId::new(SYNTH_PEER_CONN_ID, 0, StreamProtocol::StatusV2, true),
             response: RpcResponse::StatusV2(status),
         }));
         self.pump_bs();
@@ -227,7 +222,12 @@ impl PmBsHarness {
         let ssz = tcache_write(&mut self.rpc_p, block);
         self.inj_a.produce(RpcInbound::Response(RpcResponseInbound {
             application_id: start_slot,
-            stream_id: P2pStreamId::new(PEER, 0, StreamProtocol::BeaconBlocksByRange, true),
+            stream_id: P2pStreamId::new(
+                SYNTH_PEER_CONN_ID,
+                0,
+                StreamProtocol::BeaconBlocksByRange,
+                true,
+            ),
             response: RpcResponse::BeaconBlock { fork_digest: self.fork_digest, ssz },
         }));
     }
@@ -236,7 +236,7 @@ impl PmBsHarness {
     /// count)`, feed all `blocks`, and pump BS once.
     pub fn drive_batch(&mut self, expected: (u64, u64), blocks: &[Vec<u8>]) {
         let (start, count, peer) = self.next_range_request();
-        assert_eq!((start, count, peer), (expected.0, expected.1, PEER));
+        assert_eq!((start, count, peer), (expected.0, expected.1, SYNTH_PEER_CONN_ID));
         for b in blocks {
             self.inject_block(start, b);
         }

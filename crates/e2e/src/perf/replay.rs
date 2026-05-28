@@ -10,7 +10,7 @@ use silver_common::{
 
 use crate::{
     perf::Fixtures,
-    utils::{PEER, PmBsHarness, block_slot},
+    utils::{PmBsHarness, SYNTH_PEER_CONN_ID, block_slot},
 };
 
 pub struct ReplayOutcome {
@@ -32,48 +32,44 @@ pub fn replay(fixtures: &Fixtures) -> ReplayOutcome {
     let final_slot = block_slot(blocks.last().expect("non-empty blocks"));
     eprintln!("perf: applying {n_blocks} blocks up to slot {final_slot}");
 
-    // Start collecting #[timed] samples BEFORE any STF code runs —
-    // `BeaconStateTile::new_heap` calls `decompose_beacon_state`.
+    // Enable before harness construction — `new_heap` already runs `#[timed]` STF
+    // code.
     enable();
 
-    let mut h = PmBsHarness::new(&fixtures.state_ssz, n_blocks, blocks.len());
+    let mut harness = PmBsHarness::new(&fixtures.state_ssz, n_blocks, blocks.len());
     let first_block_slot = block_slot(&blocks[0]);
-    assert_eq!(StatusView::head_slot(h.local_status()) + 1, first_block_slot);
+    assert_eq!(StatusView::head_slot(harness.local_status()) + 1, first_block_slot);
 
-    h.connect_peer(final_slot);
+    harness.connect_peer(final_slot);
 
-    let (start, count, peer) = h.next_range_request();
-    assert_eq!((start, count, peer), (first_block_slot, n_blocks, PEER));
+    let (start, count, peer) = harness.next_range_request();
+    assert_eq!((start, count, peer), (first_block_slot, n_blocks, SYNTH_PEER_CONN_ID));
     for b in blocks {
-        h.inject_block(start, b);
+        harness.inject_block(start, b);
     }
 
-    // BS applies one block per `loop_body` (`adapter.consume_one`), so pump
-    // until the head reaches the final block. We deliberately do NOT tick the
-    // Controller here: an emitted `SyncUpdate::Following` would flip BS to
-    // Following mode and let `ticker.tick()` advance state over wall-clock
-    // time, diverging the head_state_root from the canonical value. Staying
-    // in Syncing keeps the replay deterministic. Cap iterations so a stuck
-    // replay fails loudly instead of hanging.
+    // Stay in Syncing (no Controller tick) — Following mode would let
+    // `ticker.tick()` advance head_state_root over wall-clock time and
+    // diverge from canonical.
     let wall_start = Instant::now();
     let max_passes = n_blocks * 2 + 8;
     let mut passes = 0;
     loop {
-        h.pump_bs();
+        harness.pump_bs();
         passes += 1;
-        if h.head_state_slot() >= final_slot || passes >= max_passes {
+        if harness.head_state_slot() >= final_slot || passes >= max_passes {
             break;
         }
     }
     let wall_elapsed = wall_start.elapsed();
 
     assert!(
-        h.head_state_slot() >= final_slot,
+        harness.head_state_slot() >= final_slot,
         "BS head should reach final block slot {final_slot}; got {}",
-        h.head_state_slot(),
+        harness.head_state_slot(),
     );
 
-    let head_state_root = h.head_state_root();
+    let head_state_root = harness.head_state_root();
     assert_eq!(
         head_state_root, fixtures.expected_head_state_root,
         "post-catchup head_state_root must match expected.json (regenerate fixtures \
@@ -83,7 +79,7 @@ pub fn replay(fixtures: &Fixtures) -> ReplayOutcome {
 
     ReplayOutcome {
         stats: TimingStats::collect(),
-        validator_count: h.head_validator_count(),
+        validator_count: harness.head_validator_count(),
         wall_elapsed,
         final_slot,
         head_state_root,

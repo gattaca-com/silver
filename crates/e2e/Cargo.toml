@@ -47,10 +47,6 @@ default = []
 lh-client = ["dep:futures", "dep:libp2p", "dep:tokio", "dep:async-trait"]
 alloc-profile = ["silver_common/alloc-profile"]
 
-[dev-dependencies]
-tracing.workspace = true
-tracing-subscriber.workspace = true
-
 [[example]]
 name = "gossip_oneway"
 

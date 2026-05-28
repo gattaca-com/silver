@@ -4,8 +4,6 @@
 
 use std::process::Command;
 
-use crate::perf::cache::parse_state_root_hex;
-
 const BLOCK_URL_BASE: &str = "https://lodestar-mainnet.chainsafe.io/eth/v2/beacon/blocks";
 
 /// Fetch the canonical post-state root for the block at `slot`. The
@@ -31,4 +29,10 @@ pub fn fetch_canonical_state_root(slot: u64) -> Option<[u8; 32]> {
     }
     let hex = body.get(start..start + 64)?;
     parse_state_root_hex(hex)
+}
+
+fn parse_state_root_hex(hex_no_0x: &str) -> Option<[u8; 32]> {
+    let mut root = [0u8; 32];
+    hex::decode_to_slice(hex_no_0x, &mut root).ok()?;
+    Some(root)
 }

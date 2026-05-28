@@ -58,14 +58,9 @@ impl TimingStats {
             .fold((0, 0), |(sum, cnt), s| (sum + s.tracked_sum_ns, cnt + s.count))
     }
 
-    /// Indented call tree: each row is `<fn>  <tracked mean per call>
-    /// ×<calls/parent>  (<total> total)`, where the second column collapses
-    /// to plain `×<calls>` if the child is called exactly once per parent
-    /// invocation (or for the top-level row). Siblings are ordered by
-    /// total time descending. A parent's untracked time (tracked minus
-    /// timed children) is emitted as a synthetic `untracked` sibling,
-    /// sorted and folded under the same coverage rule as the real
-    /// children, so they together sum to the parent's tracked time.
+    /// Indented call tree. A parent's untracked time is emitted as a
+    /// synthetic `untracked` sibling so children sum to the parent's
+    /// tracked time; low-coverage tail folded under `COVERAGE_PCT`.
     pub fn call_tree(&self) -> String {
         let mut root = Node::default();
         for s in &self.0 {
@@ -95,9 +90,8 @@ impl TimingStats {
         out
     }
 
-    /// Deterministic JSON keyed by call path: `{"label": "...", "paths":
-    /// [{"path": "a;b;c", "count", "tracked_mean_ns", "tracked_p99_ns",
-    /// "tracked_sum_ns", "total_untracked_ns"}, ...]}`.
+    /// Deterministic JSON `{label, paths}` — see `PathStat` for the per-path
+    /// schema.
     pub fn to_json(&self, label: &str) -> String {
         serde_json::json!({ "label": label, "paths": &self.0 }).to_string()
     }
@@ -133,10 +127,7 @@ impl Node {
         if self.children.is_empty() {
             return;
         }
-        // Build the row list: real timed children + (if this is a timed
-        // frame) a synthetic `untracked` sibling carrying the work the
-        // parent did outside any `#[timed]` callee.
-        let mut kids: Vec<Row> = self
+        let mut rows: Vec<Row> = self
             .children
             .iter()
             .map(|(name, c)| Row {
@@ -147,21 +138,21 @@ impl Node {
             })
             .collect();
         if self.count > 0 {
-            kids.push(Row {
+            rows.push(Row {
                 label: "untracked",
                 sum_ns: self.total_untracked_ns,
                 count: self.count,
                 child: None,
             });
         }
-        kids.sort_by(|a, b| b.sum_ns.cmp(&a.sum_ns));
+        rows.sort_by(|a, b| b.sum_ns.cmp(&a.sum_ns));
 
-        let total: u64 = kids.iter().map(|r| r.sum_ns).sum();
+        let total: u64 = rows.iter().map(|r| r.sum_ns).sum();
         let threshold = (total as u128 * COVERAGE_PCT as u128 / 100) as u64;
 
         let mut covered = 0u64;
-        let mut cut = kids.len();
-        for (i, r) in kids.iter().enumerate() {
+        let mut cut = rows.len();
+        for (i, r) in rows.iter().enumerate() {
             if covered >= threshold {
                 cut = i;
                 break;
@@ -169,25 +160,24 @@ impl Node {
             covered += r.sum_ns;
         }
         // Folding a single row saves no space — only fold 2+.
-        if kids.len() - cut < 2 {
-            cut = kids.len();
+        if rows.len() - cut < 2 {
+            cut = rows.len();
         }
 
         let indent = depth * 2;
-        let width = 38usize.saturating_sub(indent);
-        for r in &kids[..cut] {
+        for r in &rows[..cut] {
             let mean = r.sum_ns / r.count.max(1);
             let count = Some(CallCount { total: r.count, per_parent: self.count });
-            emit_row(out, indent, width, r.label, mean, count);
+            emit_row(out, indent, r.label, mean, count);
             if let Some(child) = r.child {
                 child.render_children(depth + 1, out);
             }
         }
-        if cut < kids.len() {
-            let rem_sum: u64 = kids[cut..].iter().map(|r| r.sum_ns).sum();
+        if cut < rows.len() {
+            let rem_sum: u64 = rows[cut..].iter().map(|r| r.sum_ns).sum();
             let rem_mean = rem_sum / self.count.max(1);
-            let label = format!("... ({} more)", kids.len() - cut);
-            emit_row(out, indent, width, &label, rem_mean, None);
+            let label = format!("... ({} more)", rows.len() - cut);
+            emit_row(out, indent, &label, rem_mean, None);
         }
     }
 }
@@ -200,22 +190,14 @@ struct Row<'a> {
     child: Option<&'a Node>,
 }
 
-/// Call-count breakdown for a row: `total` over the whole run vs. the
-/// average per parent invocation. The two differ for a child called >1×
-/// per parent call; `per_parent == 0` means no parent context (root row).
+/// `per_parent == 0` ⇒ no parent context (root row).
 struct CallCount {
     total: u64,
     per_parent: u64,
 }
 
-fn emit_row(
-    out: &mut String,
-    indent: usize,
-    width: usize,
-    label: &str,
-    mean_ns: u64,
-    count: Option<CallCount>,
-) {
+fn emit_row(out: &mut String, indent: usize, label: &str, mean_ns: u64, count: Option<CallCount>) {
+    let width = 38usize.saturating_sub(indent);
     // `Nanos` Display ignores formatter width, so stringify then pad.
     let mean = Nanos(mean_ns).to_string();
     let suffix = match count {

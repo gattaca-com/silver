@@ -1,0 +1,5 @@
+{
+  "_comment": "Perf-regression ceilings — single source of truth for `just perf-local` and CI; no env overrides on purpose, tune by editing this file in a PR. Either field can be null to disable that check. Initial values are deliberately generous: dev hardware sees ~2.4 s/block and ~480 ns/validator; ubuntu-latest runners are typically 2-3x slower.",
+  "max_ns_per_block": 8000000000,
+  "max_hash_validators_ns_per_validator": 2500
+}

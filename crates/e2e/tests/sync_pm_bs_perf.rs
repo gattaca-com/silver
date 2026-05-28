@@ -1,18 +1,5 @@
-//! Local + CI perf-regression harness. Reads committed mainnet fixtures
-//! from `crates/e2e/data/perf` (finalized state + N following blocks +
-//! expected.json, all git-lfs tracked), replays them through
-//! `BeaconStateTile` + the `PeerManager`, asserts the head_state_root
-//! matches `expected.json`, and reports per-function `#[timed]` cost +
-//! workload to stderr / `target/perf-*.{json,folded}`.
-//!
-//! Pipeline lives under `silver_e2e::perf`:
-//! `Fixtures::load → replay → TimingStats::collect → PerfReport`.
-//! To refresh fixtures from mainnet, run `just perf-update-fixtures`.
-//!
-//! Run: `just perf-local`, or:
-//! ```text
-//! cargo test --release -p silver_e2e --test sync_pm_bs_perf -- --ignored --nocapture
-//! ```
+//! Perf-regression harness over `crates/e2e/data/perf` fixtures.
+//! Run: `just perf-local` (see `data/perf/README.md`).
 
 use std::path::PathBuf;
 
@@ -37,5 +24,9 @@ fn sync_pm_bs_perf() {
         output_dir: manifest.join("../../target"),
     };
 
-    run_perf_pipeline(cfg).expect("perf pipeline");
+    let report = run_perf_pipeline(cfg).expect("perf pipeline");
+
+    if let Err(e) = report.check_thresholds() {
+        panic!("perf regression: {e}");
+    }
 }

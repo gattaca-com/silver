@@ -10,9 +10,8 @@ const STATE_BY_ID_BASE: &str =
 const BLOCK_URL_BASE: &str = "https://lodestar-mainnet.chainsafe.io/eth/v2/beacon/blocks";
 const FINALIZED_HEADER_URL: &str =
     "https://ethereum-beacon-api.publicnode.com/eth/v1/beacon/headers/finalized";
-/// A `SignedBeaconBlock` SSZ begins with the 4-byte offset to its single
-/// variable field (`message`), always `4 + sizeof(signature=96) = 100`.
-const SIGNED_BLOCK_MESSAGE_OFFSET: u32 = 100;
+// 4-byte offset to `message` + signature(96).
+const SIGNED_BLOCK_MESSAGE_OFFSET: u32 = 4 + 96;
 
 pub(super) enum BlockFetch {
     Present,

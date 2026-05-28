@@ -1,23 +1,30 @@
 //! Pretty-print one perf run to stderr and dump JSON + flamegraph-folded
 //! artifacts to disk.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use silver_common::Nanos;
 
-use crate::perf::{BlockWorkload, Fixtures, replay::ReplayOutcome};
+use crate::perf::{BlockWorkload, Fixtures, fixtures_dir::Thresholds, replay::ReplayOutcome};
 
 pub struct PerfReport {
     outcome: ReplayOutcome,
     workloads: Vec<BlockWorkload>,
     finalized_slot: u64,
     out_dir: PathBuf,
+    thresholds: Thresholds,
 }
 
 impl PerfReport {
     pub fn new(outcome: ReplayOutcome, fixtures: &Fixtures, out_dir: PathBuf) -> Self {
         let workloads = fixtures.blocks.iter().map(|b| BlockWorkload::from_block_ssz(b)).collect();
-        Self { outcome, workloads, finalized_slot: fixtures.finalized_slot, out_dir }
+        Self {
+            outcome,
+            workloads,
+            finalized_slot: fixtures.finalized_slot,
+            out_dir,
+            thresholds: fixtures.thresholds,
+        }
     }
 
     pub fn emit(&self) {
@@ -26,6 +33,37 @@ impl PerfReport {
         self.print_hash_validators_cost();
         self.print_call_tree();
         self.write_artifacts();
+    }
+
+    /// `Err` lists every breached ceiling; `None` ceilings are report-only.
+    pub fn check_thresholds(&self) -> Result<(), String> {
+        let mut breaches: Vec<String> = Vec::new();
+        if let Some(max) = self.thresholds.max_ns_per_block {
+            let per_block = self.outcome.wall_elapsed.as_nanos() as u64 / self.n_blocks();
+            if per_block > max {
+                breaches.push(format!(
+                    "ns/block {} > ceiling {} (max_ns_per_block)",
+                    Nanos(per_block),
+                    Nanos(max),
+                ));
+            }
+        }
+        if let Some(max) = self.thresholds.max_hash_validators_ns_per_validator &&
+            let Some(actual) = self.hash_validators_ns_per_validator() &&
+            actual > max
+        {
+            breaches.push(format!(
+                "hash_validators ns/validator {actual} > ceiling {max} \
+                 (max_hash_validators_ns_per_validator)",
+            ));
+        }
+        if breaches.is_empty() { Ok(()) } else { Err(breaches.join("; ")) }
+    }
+
+    fn hash_validators_ns_per_validator(&self) -> Option<u64> {
+        let (sum, count) = self.outcome.stats.aggregate_leaf("hash_validators");
+        let validators = self.outcome.validator_count as u64;
+        (count > 0 && validators > 0).then(|| sum / count / validators)
     }
 
     fn n_blocks(&self) -> u64 {
@@ -42,9 +80,8 @@ impl PerfReport {
         );
     }
 
-    /// The finalized slot moves run-to-run, so record the work the timings
-    /// were paid against; per-block averages let CI compare across moving
-    /// finalized slots.
+    /// Per-block averages — workload normalises timings as the finalized slot
+    /// moves.
     fn print_workload(&self) {
         let n_blocks = self.workloads.len();
         let sum = |f: fn(&BlockWorkload) -> usize| self.workloads.iter().map(f).sum::<usize>();
@@ -58,9 +95,8 @@ impl PerfReport {
         );
     }
 
-    /// Cost normalised by work — stable across moving finalized slots, so the
-    /// headline regression signal. `hash_validators` fires from several call
-    /// sites and dominates, so sum it across every path.
+    /// `hash_validators` summed across all call paths — the headline regression
+    /// signal.
     fn print_hash_validators_cost(&self) {
         let (hv_sum, hv_count) = self.outcome.stats.aggregate_leaf("hash_validators");
         if hv_count > 0 && self.outcome.validator_count > 0 {
@@ -88,16 +124,5 @@ impl PerfReport {
             json_path.display(),
             folded_path.display()
         );
-    }
-}
-
-/// Resolve the artifact directory from the user-supplied JSON path env
-/// (defaults to the workspace `target/`).
-pub fn default_output_dir(json_env: Option<&str>, fallback: &Path) -> PathBuf {
-    match json_env {
-        Some(v) => {
-            PathBuf::from(v).parent().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))
-        }
-        None => fallback.to_path_buf(),
     }
 }

@@ -1,5 +1,4 @@
-//! On-disk fixture layout for the perf harness: one finalized_state.ssz + one
-//! next_block_<slot>.ssz per following block.
+//! On-disk fixture layout for the perf harness.
 
 use std::{
     fs,
@@ -14,6 +13,14 @@ struct ExpectedJson {
     final_slot: u64,
     #[serde(with = "hex::serde")]
     head_state_root: [u8; 32],
+}
+
+/// Perf-regression ceilings; `None` disables that ceiling.
+#[derive(Default, Clone, Copy, serde::Deserialize)]
+#[serde(default)]
+pub struct Thresholds {
+    pub max_ns_per_block: Option<u64>,
+    pub max_hash_validators_ns_per_validator: Option<u64>,
 }
 
 pub struct FixturesDir<'a>(pub &'a Path);
@@ -31,9 +38,22 @@ impl<'a> FixturesDir<'a> {
         self.0.join("expected.json")
     }
 
-    /// All `next_block_<slot>.ssz` files in the dir, parsed and sorted by
-    /// slot. Used by perf (post-finalized) and by
-    /// `utils::scan_checkpoint_fixtures` (make-managed `example_checkpoints/`).
+    pub fn thresholds_path(&self) -> PathBuf {
+        self.0.join("thresholds.json")
+    }
+
+    /// Missing file → `Thresholds::default()` (all ceilings disabled).
+    pub fn read_thresholds(&self) -> Result<Thresholds, String> {
+        let path = self.thresholds_path();
+        let body = match fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Thresholds::default()),
+            Err(e) => return Err(format!("read {}: {e}", path.display())),
+        };
+        serde_json::from_str(&body).map_err(|e| format!("{}: {e}", path.display()))
+    }
+
+    /// Slot-sorted `next_block_<slot>.ssz` contents.
     pub fn read_sorted_next_blocks(&self) -> Vec<(u64, Vec<u8>)> {
         let mut found: Vec<(u64, Vec<u8>)> = fs::read_dir(self.0)
             .into_iter()
@@ -57,8 +77,8 @@ impl<'a> FixturesDir<'a> {
         Ok((bytes, slot))
     }
 
-    /// Slot-only read — opens the file and reads just the slot field
-    /// (offset 40), avoiding the ~300 MB full read used by perf load.
+    /// Avoids the ~300 MB read of `read_finalized_state` — used by
+    /// `--continue`.
     pub fn read_finalized_slot(&self) -> Result<u64, String> {
         use std::io::{Read, Seek, SeekFrom};
         let path = self.finalized_state_path();
@@ -80,8 +100,6 @@ impl<'a> FixturesDir<'a> {
         }
     }
 
-    /// Other `expected.json` fields (`finalized_slot`, `final_slot`) are
-    /// informational.
     pub fn read_expected(&self) -> Result<[u8; 32], String> {
         let path = self.expected_path();
         let body =
@@ -112,10 +130,4 @@ fn read_state_slot(ssz: &[u8]) -> Result<u64, String> {
     ssz.get(STATE_SLOT_OFFSET..STATE_SLOT_OFFSET + 8)
         .map(|b| u64::from_le_bytes(b.try_into().unwrap()))
         .ok_or_else(|| "state SSZ shorter than slot offset".to_string())
-}
-
-pub fn parse_state_root_hex(hex_no_0x: &str) -> Option<[u8; 32]> {
-    let mut root = [0u8; 32];
-    hex::decode_to_slice(hex_no_0x, &mut root).ok()?;
-    Some(root)
 }
