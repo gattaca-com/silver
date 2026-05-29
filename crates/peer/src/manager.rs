@@ -3158,7 +3158,7 @@ mod tests {
         });
 
         for _ in 0..30 {
-            now += Duration::from_secs(1);
+            now += Duration::from_secs(12);
             mgr.tick(now, &mut |c| cap.0.push(c));
         }
         let s = mgr.score(1).unwrap();
