@@ -248,11 +248,16 @@ impl PeerManager {
                 // `INBOUND_QUOTAS`; the gate returns admit=true
                 // unconditionally for the unquota'd protocols
                 // (gossip/identity).
+                tracing::debug!(?stream_id, "inbound rpc request");
+
                 let protocol = request.protocol();
                 let Some(peer) = self.peers.get_mut(&stream_id.peer()) else {
+                    tracing::warn!("no peer found with connection id: {}", stream_id.peer());
                     return;
                 };
                 if !try_admit_inbound(&mut peer.inbound_state, protocol, now) {
+                    tracing::debug!(?stream_id, "inbound rpc request not admitted");
+
                     // Goodbye expects no response — silently drop;
                     // anything else gets the standard rate-limit
                     // error chunk.
@@ -345,6 +350,7 @@ impl PeerManager {
 
                         let our_seq = MetadataView::seq_number(self.metadata()).to_le_bytes();
 
+                        tracing::debug!(?stream_id, "P2pSend ping response");
                         emit(PeerControl::P2pSend(P2pSend::Rpc(RpcOutbound::Response(
                             RpcResponseOutbound { stream_id, response: RpcResponse::Ping(our_seq) },
                         ))));
@@ -359,14 +365,20 @@ impl PeerManager {
                             ))));
                         }
                     }
-                    RpcRequest::Goodbye(goodbye) => self.handle_event(
-                        PeerEvent::P2pPeerGoodbye {
-                            p2p_peer: stream_id.peer(),
-                            status: u64::from_le_bytes(goodbye),
-                        },
-                        now,
-                        emit,
-                    ),
+                    RpcRequest::Goodbye(goodbye) => {
+                        tracing::warn!(
+                            "recevied goodbye with reason: {}",
+                            u64::from_le_bytes(goodbye)
+                        );
+                        self.handle_event(
+                            PeerEvent::P2pPeerGoodbye {
+                                p2p_peer: stream_id.peer(),
+                                status: u64::from_le_bytes(goodbye),
+                            },
+                            now,
+                            emit,
+                        )
+                    }
                     RpcRequest::MetaData => {
                         let metadata = *self.metadata();
                         emit(PeerControl::P2pSend(P2pSend::Rpc(RpcOutbound::Response(
@@ -541,7 +553,7 @@ impl PeerManager {
                 "no good sync peer for pinned target; dropping pin"
             );
             self.current_target = SyncUpdate::Following;
-            self.target_dirty = true;
+            // TODO self.target_dirty = true; // setting dirty flag causes spin
             return;
         };
 

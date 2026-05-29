@@ -120,6 +120,11 @@ pub struct PeerManager {
     /// heartbeat_interval`, per-heartbeat counters reset + mesh revised.
     last_heartbeat: Instant,
 
+    /// Last score-decay application. Gated to `score_decay_interval` (one
+    /// slot) so the gossipsub-canonical `*_decay` constants apply at their
+    /// calibrated cadence.
+    last_decay: Instant,
+
     /// Last `DiscoverNodes` emission. Throttles repeat queries while we're
     /// under target.
     last_discovery: Instant,
@@ -242,6 +247,7 @@ impl PeerManager {
             required_syncnets,
             params,
             last_heartbeat: now,
+            last_decay: now,
             last_discovery: now,
             database: PeerDatabase::default(),
             status: None,
@@ -656,6 +662,7 @@ impl PeerManager {
                 // failure, distinct from a premature RPC termination).
                 let protocol = stream_id.protocol();
                 if protocol.is_request_response() && protocol != StreamProtocol::Unset {
+                    tracing::warn!(?protocol, "stream close misbehaviour");
                     self.on_rpc_misbehaviour(stream_id.peer(), RpcSeverity::MidTolerance);
                 }
             }
@@ -749,9 +756,13 @@ impl PeerManager {
         // 2) Activate P3 tracking for peers whose grace window has elapsed.
         self.activate_p3_where_due(now);
 
-        // 3) Decay all counters.
-        for p in self.peers.values_mut() {
-            scoring::decay(p, &self.params);
+        // 3) Decay all counters — gated to `score_decay_interval` (one slot), the
+        //    cadence the `*_decay` constants are calibrated for.
+        if now.saturating_duration_since(self.last_decay) >= self.params.score_decay_interval {
+            for p in self.peers.values_mut() {
+                scoring::decay(p, &self.params);
+            }
+            self.last_decay = now;
         }
 
         // 4) Recompute scores for every peer.
@@ -806,6 +817,7 @@ impl PeerManager {
             .or_insert_with(|| Vec::with_capacity(4))
             .push(conn);
 
+        tracing::info!("adding peer with p2p connection: {conn}");
         self.peers.insert(conn, state);
         self.database.add_peer_id(peer_id, conn);
 
@@ -828,6 +840,7 @@ impl PeerManager {
     }
 
     fn on_disconnected(&mut self, conn: usize, now: Instant, emit: &mut impl FnMut(PeerControl)) {
+        tracing::debug!("removing disconnected peer: {conn}");
         let Some(mut state) = self.peers.remove(&conn) else {
             return;
         };
@@ -1237,7 +1250,7 @@ impl PeerManager {
             return;
         }
 
-        tracing::trace!(id=?enr.node_id(), ?enr, "new node");
+        tracing::debug!(id=?enr.node_id(), ?enr, "new node");
 
         // Add to peer database.
         self.database.add_enr(enr);
@@ -1317,6 +1330,7 @@ impl PeerManager {
             finalized_epoch == StatusView::finalized_epoch(local_ssz) &&
             finalized_root != *StatusView::finalized_root(local_ssz)
         {
+            tracing::warn!("FATAL: finalized root and epoch mismatch");
             self.on_rpc_misbehaviour(p2p_peer, RpcSeverity::Fatal);
             return;
         }
@@ -1360,6 +1374,7 @@ impl PeerManager {
         };
         if let Some(peer) = self.peers.get_mut(&conn) {
             peer.application_score += delta;
+            tracing::warn!(delta, score = peer.application_score, "rpc misbehaviour");
         }
         // If this peer is our current sync backer, drop them and burn for
         // the current catchup. Mark dirty so the very next
@@ -1500,6 +1515,7 @@ impl PeerManager {
         let mut evict: Vec<(usize, PeerId, IpAddr)> = Vec::new();
         for (conn, peer) in &self.peers {
             if peer.cached_score < threshold {
+                tracing::warn!(topics=?peer.topic_stats, peer.behaviour_penalty, peer.application_score, "evicting greylisted peer: {conn}");
                 evict.push((*conn, peer.peer_id, peer.addr.ip()));
             }
         }
@@ -1521,7 +1537,7 @@ impl PeerManager {
                 self.banned_ips.insert(ip, now);
             }
             // Archived copy is written on the normal disconnect path fired
-            // downstream once the Ban takes effect; here we just drop live.
+            // downstream once the Ban takes ffect; here we just drop live.
             self.peers.remove(&conn);
         }
     }
@@ -3142,7 +3158,7 @@ mod tests {
         });
 
         for _ in 0..30 {
-            now += Duration::from_secs(1);
+            now += Duration::from_secs(12);
             mgr.tick(now, &mut |c| cap.0.push(c));
         }
         let s = mgr.score(1).unwrap();

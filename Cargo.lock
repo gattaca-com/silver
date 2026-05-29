@@ -4345,7 +4345,6 @@ dependencies = [
  "c-kzg",
  "flux",
  "fxhash",
- "libc",
  "rand 0.8.6",
  "silver_common",
 ]

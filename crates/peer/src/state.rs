@@ -111,7 +111,7 @@ impl PeerState {
 
 /// Per-topic scoring counters. One per (peer, topic) pair the peer has
 /// interacted with on a topic we care about.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub(crate) struct TopicScore {
     // P1
     pub meshed_since: Option<Instant>,
