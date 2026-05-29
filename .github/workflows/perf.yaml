@@ -32,6 +32,11 @@ jobs:
         with:
           toolchain: nightly-2025-06-01
 
+      - name: Install buf
+        uses: bufbuild/buf-action@v1
+        with:
+          setup_only: true
+
       - name: Setup just
         uses: extractions/setup-just@v2
         with:
