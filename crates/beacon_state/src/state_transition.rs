@@ -3,6 +3,7 @@ use core::cmp::{max, min};
 use blst::min_pk::PublicKey;
 use silver_common::{
     SpecConfig,
+    metrics::timed,
     ssz_view::{
         ATTESTATION_DATA_SIZE, AttestationDataView, AttestationView, BEACON_BLOCK_BODY_FIXED,
         BEACON_BLOCK_HEADER_SIZE, BLOCK_SYNC_AGGREGATE_SIZE, BeaconBlockBodyView,
@@ -49,6 +50,7 @@ const G2_POINT_AT_INFINITY: [u8; 96] = {
     buf
 };
 
+#[timed]
 #[allow(clippy::too_many_arguments)]
 pub fn apply_block(
     cfg: &SpecConfig,
@@ -173,6 +175,7 @@ fn build_shuffling(
 /// post-state root against the block's `state_root`. Production path is
 /// `apply_block` (called from the tile, which supplies cached shufflings
 /// and pooled scratch buffers).
+#[timed]
 #[allow(clippy::too_many_arguments)]
 pub fn apply_signed_block_debug(
     cfg: &SpecConfig,
@@ -305,6 +308,7 @@ pub fn apply_signed_block_debug(
 /// Advance state from `sd.slot` to `target_slot`, processing empty slots.
 /// Handles epoch transitions at boundaries (spec: process_epoch runs when
 /// `(state.slot + 1) % SLOTS_PER_EPOCH == 0`).
+#[timed]
 #[allow(clippy::too_many_arguments)]
 pub fn process_slots(
     cfg: &SpecConfig,
@@ -484,6 +488,7 @@ impl<'a> BodyOffsets<'a> {
 /// Pass 2 — `process_*` functions run in spec order. Each does its own
 /// data + state-dependent validation and mutation, returning `Err` on any
 /// spec-assertion failure.
+#[timed]
 #[allow(clippy::too_many_arguments)]
 pub fn process_block_body(
     cfg: &SpecConfig,
@@ -614,6 +619,7 @@ pub fn process_block_body(
     Ok(())
 }
 
+#[timed]
 #[allow(clippy::too_many_arguments)]
 fn collect_sigs_block_body(
     imm: &Immutable,
@@ -885,6 +891,7 @@ pub fn collect_sigs_single_attestation(
 
 /// Pass 2 — full data + state-dep validation, apply participation flags +
 /// proposer rewards. BLS verified in pass 1.
+#[timed]
 #[allow(clippy::too_many_arguments)]
 pub fn process_attestations(
     vs: &ValidatorsState,
@@ -1425,6 +1432,7 @@ pub fn collect_sigs_sync_aggregate(
 }
 
 /// Pass 2 — apply sync_aggregate balance updates. BLS verified in pass 1.
+#[timed]
 pub fn process_sync_aggregate(
     vs: &ValidatorsState,
     longtail: &HistoricalLongtail,

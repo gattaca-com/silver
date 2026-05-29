@@ -4,11 +4,13 @@
 //! flux `path_suffix` values so their shmem queue trees don't collide. Tests
 //! drive the harness from a single thread, ticking both stacks' `loop_body`.
 
-pub mod canonical;
 mod harness;
 pub mod inject;
+pub mod mainnet_api;
+pub mod perf;
 mod stack;
 mod stats;
+pub mod utils;
 
 #[cfg(feature = "lh-client")]
 pub mod lh_client;

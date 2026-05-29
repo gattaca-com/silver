@@ -3,8 +3,11 @@ use blst::{
     min_pk::{AggregatePublicKey, PublicKey, Signature},
 };
 use ring::rand::{SecureRandom, SystemRandom};
-use silver_common::ssz_view::{
-    SIGNED_BEACON_BLOCK_MIN, SINGLE_ATT_SIZE, SignedBeaconBlockView, SingleAttestationView,
+use silver_common::{
+    metrics::timed,
+    ssz_view::{
+        SIGNED_BEACON_BLOCK_MIN, SINGLE_ATT_SIZE, SignedBeaconBlockView, SingleAttestationView,
+    },
 };
 
 use crate::{
@@ -209,6 +212,7 @@ impl SigBatch {
     /// - 2+ entries → one multi-Miller-loop with random per-tuple scalars to
     ///   prevent rogue-key attacks. Roughly 10–30× faster than the per-tuple
     ///   loop for a busy block.
+    #[timed]
     pub fn verify_all(&mut self) -> bool {
         if self.poisoned {
             return false;

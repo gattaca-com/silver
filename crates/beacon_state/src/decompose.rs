@@ -1,3 +1,5 @@
+use silver_common::metrics::timed;
+
 use crate::{
     ssz_hash,
     types::{
@@ -139,6 +141,7 @@ pub enum DecomposeError {
     EphExtraDataTooLong { len: usize },
 }
 
+#[timed]
 #[allow(clippy::too_many_arguments)]
 pub fn decompose_beacon_state(
     ssz: &[u8],

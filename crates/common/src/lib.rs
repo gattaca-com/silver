@@ -39,6 +39,7 @@ pub mod beacon_state;
 mod config;
 mod enr;
 mod error;
+pub mod flamegraph_timer;
 pub mod metrics;
 #[path = "generated/protobuf.identify.rs"]
 #[allow(clippy::all, dead_code, non_snake_case)]

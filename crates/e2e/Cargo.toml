@@ -10,8 +10,11 @@ buffa.workspace = true
 flux.workspace = true
 hdrhistogram.workspace = true
 mimalloc.workspace = true
+hex.workspace = true
 quinn-proto.workspace = true
 rand.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
 silver_beacon_state.workspace = true
 silver_common.workspace = true
 silver_control.workspace = true
@@ -43,10 +46,6 @@ tokio = { version = "1", features = ["rt", "time", "macros"], optional = true }
 default = []
 lh-client = ["dep:futures", "dep:libp2p", "dep:tokio", "dep:async-trait"]
 alloc-profile = ["silver_common/alloc-profile"]
-
-[dev-dependencies]
-tracing.workspace = true
-tracing-subscriber.workspace = true
 
 [[example]]
 name = "gossip_oneway"
