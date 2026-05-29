@@ -10,7 +10,9 @@ env:
 
 jobs:
   perf:
-    runs-on: silver
+    runs-on:
+      group:
+        silver
     timeout-minutes: 45
 
     steps:
