@@ -11,10 +11,10 @@ struct PathStat {
     #[serde(serialize_with = "join_path")]
     path: Vec<String>,
     count: u64,
-    tracked_mean_ns: u64,
-    tracked_p99_ns: u64,
-    tracked_sum_ns: u64,
-    total_untracked_ns: u64,
+    tracked_avg_ns: Nanos,
+    tracked_p99_ns: Nanos,
+    tracked_sum_ns: Nanos,
+    total_untracked_ns: Nanos,
 }
 
 fn join_path<S: serde::Serializer>(path: &[String], s: S) -> Result<S::Ok, S::Error> {
@@ -38,10 +38,14 @@ impl TimingStats {
                 PathStat {
                     path: timing.call_stack.iter().map(|name| name.to_string()).collect(),
                     count,
-                    tracked_mean_ns: if count > 0 { (sum / count as u128) as u64 } else { 0 },
-                    tracked_p99_ns: percentile(&samples, 0.99),
-                    tracked_sum_ns: u64::try_from(sum).unwrap_or(u64::MAX),
-                    total_untracked_ns: timing.samples.total_untracked_ns,
+                    tracked_avg_ns: if count > 0 {
+                        Nanos((sum / count as u128) as u64)
+                    } else {
+                        Nanos::ZERO
+                    },
+                    tracked_p99_ns: Nanos(percentile(&samples, 0.99)),
+                    tracked_sum_ns: Nanos(u64::try_from(sum).unwrap_or(u64::MAX)),
+                    total_untracked_ns: Nanos(timing.samples.total_untracked_ns),
                 }
             })
             .collect();
@@ -52,11 +56,11 @@ impl TimingStats {
     /// Sum tracked time + call count across every path whose leaf is
     /// `leaf` — for normalising a cross-cutting function (e.g.
     /// `hash_validators`) against a workload unit regardless of call site.
-    pub fn aggregate_leaf(&self, leaf: &str) -> (u64, u64) {
+    pub fn aggregate_leaf(&self, leaf: &str) -> (Nanos, u64) {
         self.0
             .iter()
             .filter(|s| s.path.last().is_some_and(|n| leaf_name(n) == leaf))
-            .fold((0, 0), |(sum, cnt), s| (sum + s.tracked_sum_ns, cnt + s.count))
+            .fold((Nanos::ZERO, 0), |(sum, cnt), s| (sum + s.tracked_sum_ns, cnt + s.count))
     }
 
     /// Indented call tree. A parent's untracked time is emitted as a
@@ -86,7 +90,8 @@ impl TimingStats {
         let mut out = String::new();
         for s in &self.0 {
             let joined = s.path.iter().map(|n| leaf_name(n)).collect::<Vec<_>>().join(";");
-            writeln!(out, "{joined} {}", s.total_untracked_ns).unwrap();
+            // Folded-stack weight must be a bare integer, not `Nanos` Display.
+            writeln!(out, "{joined} {}", s.total_untracked_ns.0).unwrap();
         }
         out
     }
@@ -113,15 +118,15 @@ fn percentile(sorted: &[u64], q: f64) -> u64 {
 #[derive(Default)]
 struct Node {
     count: u64,
-    total_untracked_ns: u64,
-    tracked_sum_ns: u64,
+    total_untracked_ns: Nanos,
+    tracked_sum_ns: Nanos,
     children: HashMap<String, Node>,
 }
 
 /// Children accounting for less than this fraction of a node's time are
 /// folded into a single `...` row, keeping the tree focused on the
 /// dominant costs.
-const COVERAGE_PCT: u64 = 95;
+const COVERAGE_PCT: u64 = 99;
 
 impl Node {
     fn render_children(&self, depth: usize, out: &mut String) {
@@ -148,10 +153,10 @@ impl Node {
         }
         rows.sort_by(|a, b| b.sum_ns.cmp(&a.sum_ns));
 
-        let total: u64 = rows.iter().map(|r| r.sum_ns).sum();
-        let threshold = (total as u128 * COVERAGE_PCT as u128 / 100) as u64;
+        let total: Nanos = rows.iter().map(|r| r.sum_ns).sum();
+        let threshold = Nanos((total.0 as u128 * COVERAGE_PCT as u128 / 100) as u64);
 
-        let mut covered = 0u64;
+        let mut covered = Nanos::ZERO;
         let mut cut = rows.len();
         for (i, r) in rows.iter().enumerate() {
             if covered >= threshold {
@@ -167,25 +172,25 @@ impl Node {
 
         let indent = depth * 2;
         for r in &rows[..cut] {
-            let mean = r.sum_ns / r.count.max(1);
+            let avg = r.sum_ns / r.count.max(1);
             let count = Some(CallCount { total: r.count, per_parent: self.count });
-            emit_row(out, indent, r.label, mean, count);
+            emit_row(out, indent, r.label, avg, count);
             if let Some(child) = r.child {
                 child.render_children(depth + 1, out);
             }
         }
         if cut < rows.len() {
-            let rem_sum: u64 = rows[cut..].iter().map(|r| r.sum_ns).sum();
-            let rem_mean = rem_sum / self.count.max(1);
+            let rem_sum: Nanos = rows[cut..].iter().map(|r| r.sum_ns).sum();
+            let rem_avg = rem_sum / self.count.max(1);
             let label = format!("... ({} more)", rows.len() - cut);
-            emit_row(out, indent, &label, rem_mean, None);
+            emit_row(out, indent, &label, rem_avg, None);
         }
     }
 }
 
 struct Row<'a> {
     label: &'a str,
-    sum_ns: u64,
+    sum_ns: Nanos,
     count: u64,
     /// `None` for the synthetic `untracked` row (no subtree to recurse into).
     child: Option<&'a Node>,
@@ -197,10 +202,10 @@ struct CallCount {
     per_parent: u64,
 }
 
-fn emit_row(out: &mut String, indent: usize, label: &str, mean_ns: u64, count: Option<CallCount>) {
+fn emit_row(out: &mut String, indent: usize, label: &str, avg: Nanos, count: Option<CallCount>) {
     let width = 38usize.saturating_sub(indent);
     // `Nanos` Display ignores formatter width, so stringify then pad.
-    let mean = Nanos(mean_ns).to_string();
+    let avg_str = avg.to_string();
     let suffix = match count {
         None => String::new(),
         // No parent (root) or parent ran once → avg == total; show plain count.
@@ -215,7 +220,7 @@ fn emit_row(out: &mut String, indent: usize, label: &str, mean_ns: u64, count: O
             format!("  ×{avg}  ({} total)", c.total)
         }
     };
-    writeln!(out, "{pad:indent$}{label:<width$}  {mean:>10}{suffix}", pad = "").unwrap();
+    writeln!(out, "{pad:indent$}{label:<width$}  {avg_str:>10}{suffix}", pad = "").unwrap();
 }
 
 #[cfg(test)]

@@ -5,6 +5,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use silver_common::Nanos;
+
 const STATE_SLOT_OFFSET: usize = 8 + 32; // genesis_time(u64) + genesis_validators_root(B256)
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -16,28 +18,30 @@ struct ExpectedJson {
 }
 
 /// Per-frame perf thresholds; field names match `#[timed]` frame labels,
-/// `_mean` = average across all calls of that frame in the run.
+/// `_avg` = average across all calls of that frame in the run.
 #[derive(Default, Clone, Copy, serde::Deserialize)]
 #[serde(default)]
 pub struct Thresholds {
     /// One-shot cost of `decompose_beacon_state` at harness boot.
-    #[serde(deserialize_with = "de_duration_ns")]
-    pub max_decompose_beacon_state: Option<u64>,
-    #[serde(deserialize_with = "de_duration_ns")]
-    pub max_apply_block_mean: Option<u64>,
+    #[serde(deserialize_with = "de_duration")]
+    pub max_decompose_beacon_state: Option<Nanos>,
+    #[serde(deserialize_with = "de_duration")]
+    pub max_apply_block_avg: Option<Nanos>,
     /// Average wall time of one `hash_tree_root_state` call (sum across all
     /// call sites — `process_slots` and direct).
-    #[serde(deserialize_with = "de_duration_ns")]
-    pub max_hash_tree_root_state_mean: Option<u64>,
+    #[serde(deserialize_with = "de_duration")]
+    pub max_hash_tree_root_state_avg: Option<Nanos>,
 }
 
 /// Accepts `"2.5s" | "500ms" | "100us" | "100µs" | "100ns"` (or `null`).
 /// Rejects bare numbers — the unit is mandatory so the file stays
-/// self-documenting.
-fn de_duration_ns<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
+/// self-documenting (`Nanos`' own deserializer would silently read a bare
+/// number as nanoseconds, so we keep this stricter parser).
+fn de_duration<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Nanos>, D::Error> {
     use serde::Deserialize;
     let s: Option<String> = Option::deserialize(d)?;
-    s.map(|s| parse_duration_ns(s.as_str()).map_err(serde::de::Error::custom)).transpose()
+    s.map(|s| parse_duration_ns(s.as_str()).map(Nanos).map_err(serde::de::Error::custom))
+        .transpose()
 }
 
 fn parse_duration_ns(s: &str) -> Result<u64, String> {

@@ -101,7 +101,7 @@ fn run(dir: &Path, args: Args) -> Result<(), String> {
         dir.display()
     );
     eprintln!();
-    eprintln!("Next: commit via git-lfs — see crates/e2e/data/perf/README.md");
+    eprintln!("Next: commit via git-lfs — see docs/perf-regression-test.md");
     Ok(())
 }
 

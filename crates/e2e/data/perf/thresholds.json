@@ -1,5 +1,5 @@
 {
   "max_decompose_beacon_state": "19s",
-  "max_apply_block_mean": "2.5s",
-  "max_hash_tree_root_state_mean": "1.2s"
+  "max_apply_block_avg": "2.5s",
+  "max_hash_tree_root_state_avg": "1.2s"
 }

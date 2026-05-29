@@ -1,5 +1,5 @@
 //! Perf-regression harness over `crates/e2e/data/perf` fixtures.
-//! Run: `just perf-local` (see `data/perf/README.md`).
+//! Run: `just perf-local` (see `docs/perf-regression-test.md`).
 
 use std::path::PathBuf;
 

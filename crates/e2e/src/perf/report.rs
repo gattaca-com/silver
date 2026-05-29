@@ -60,24 +60,24 @@ impl PerfReport {
                 threshold: t.max_decompose_beacon_state,
             },
             Gauge {
-                label: "apply_block (mean)",
-                actual: self.frame_mean_ns("apply_block"),
-                threshold: t.max_apply_block_mean,
+                label: "apply_block (avg)",
+                actual: self.frame_avg_ns("apply_block"),
+                threshold: t.max_apply_block_avg,
             },
             Gauge {
-                label: "hash_tree_root_state (mean)",
-                actual: self.frame_mean_ns("hash_tree_root_state"),
-                threshold: t.max_hash_tree_root_state_mean,
+                label: "hash_tree_root_state (avg)",
+                actual: self.frame_avg_ns("hash_tree_root_state"),
+                threshold: t.max_hash_tree_root_state_avg,
             },
         ]
     }
 
-    fn frame_total_ns(&self, frame: &str) -> Option<u64> {
+    fn frame_total_ns(&self, frame: &str) -> Option<Nanos> {
         let (sum, count) = self.outcome.stats.aggregate_leaf(frame);
         (count > 0).then_some(sum)
     }
 
-    fn frame_mean_ns(&self, frame: &str) -> Option<u64> {
+    fn frame_avg_ns(&self, frame: &str) -> Option<Nanos> {
         let (sum, count) = self.outcome.stats.aggregate_leaf(frame);
         (count > 0).then(|| sum / count)
     }
@@ -141,8 +141,8 @@ impl PerfReport {
 
 struct Gauge {
     label: &'static str,
-    actual: Option<u64>,
-    threshold: Option<u64>,
+    actual: Option<Nanos>,
+    threshold: Option<Nanos>,
 }
 
 impl Gauge {
@@ -151,11 +151,11 @@ impl Gauge {
     }
 
     fn render_row(&self) -> String {
-        let actual = self.actual.map(|v| Nanos(v).to_string()).unwrap_or_else(|| "n/a".into());
+        let actual = self.actual.map(|v| v.to_string()).unwrap_or_else(|| "n/a".into());
         let (threshold, status) = match (self.actual, self.threshold) {
             (_, None) => ("—".to_string(), "(no threshold)"),
-            (Some(a), Some(c)) if a > c => (Nanos(c).to_string(), "BREACH"),
-            (_, Some(c)) => (Nanos(c).to_string(), "ok"),
+            (Some(a), Some(c)) if a > c => (c.to_string(), "BREACH"),
+            (_, Some(c)) => (c.to_string(), "ok"),
         };
         format!(
             "{label:<32}  actual {actual:>10}   threshold {threshold:>10}   {status}",
@@ -166,8 +166,8 @@ impl Gauge {
     /// Breach-panic row — same layout as `render_row`, sans the status
     /// suffix (every row in the panic is a breach by construction).
     fn render_breach(&self) -> String {
-        let actual = self.actual.map(|v| Nanos(v).to_string()).unwrap_or_else(|| "n/a".into());
-        let threshold = self.threshold.map(|v| Nanos(v).to_string()).unwrap_or_else(|| "—".into());
+        let actual = self.actual.map(|v| v.to_string()).unwrap_or_else(|| "n/a".into());
+        let threshold = self.threshold.map(|v| v.to_string()).unwrap_or_else(|| "—".into());
         format!(
             "  {label:<32}  actual {actual:>10}   threshold {threshold:>10}",
             label = self.label,
