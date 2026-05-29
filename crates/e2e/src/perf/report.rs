@@ -1,5 +1,4 @@
-//! Pretty-print one perf run to stderr and dump JSON + flamegraph-folded
-//! artifacts to disk.
+//! Pretty-print one perf run to stderr and dump the JSON artifact to disk.
 
 use std::path::PathBuf;
 

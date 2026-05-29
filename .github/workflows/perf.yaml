@@ -52,6 +52,5 @@ jobs:
           name: perf-${{ github.run_id }}
           path: |
             target/perf-*.json
-            target/perf-*.folded
           if-no-files-found: warn
           retention-days: 30

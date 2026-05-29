@@ -1,5 +1,5 @@
-//! Capture #[timed] call trees in-process and render them as call-tree /
-//! folded-stacks / JSON.
+//! Capture #[timed] call trees in-process and render them as a call tree or
+//! JSON.
 
 pub mod collect;
 pub mod report;

@@ -22,8 +22,7 @@ fn join_path<S: serde::Serializer>(path: &[String], s: S) -> Result<S::Ok, S::Er
 }
 
 /// Summarised `#[timed]` call paths for one run. Build with
-/// [`TimingStats::collect`], then render to a call tree, flamegraph
-/// stacks, or JSON.
+/// [`TimingStats::collect`], then render to a call tree or JSON.
 pub struct TimingStats(Vec<PathStat>);
 
 impl TimingStats {
@@ -80,19 +79,6 @@ impl TimingStats {
 
         let mut out = String::new();
         root.render_children(0, &mut out);
-        out
-    }
-
-    /// Flamegraph folded stacks (`root;child;leaf <total_untracked_ns>`),
-    /// one per path — the inferno / flamegraph.pl input format. Untracked
-    /// ns is the sample weight so the renderer's bar widths sum correctly.
-    pub fn flamegraph_stacks(&self) -> String {
-        let mut out = String::new();
-        for s in &self.0 {
-            let joined = s.path.iter().map(|n| leaf_name(n)).collect::<Vec<_>>().join(";");
-            // Folded-stack weight must be a bare integer, not `Nanos` Display.
-            writeln!(out, "{joined} {}", s.total_untracked_ns.0).unwrap();
-        }
         out
     }
 
@@ -267,8 +253,6 @@ mod tests {
         // Parent's untracked time excludes the children it called.
         assert!(parent.total_untracked_ns < parent.tracked_sum_ns);
 
-        let folded = stats.flamegraph_stacks();
-        assert!(folded.contains("parent_work;leaf_work "));
         let json = stats.to_json("test");
         assert!(json.contains("\"label\":\"test\""));
 
