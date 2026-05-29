@@ -8,7 +8,9 @@ use flux::{spine::SpineAdapter, tile::Tile, tracing};
 use mio::{Events, Poll, Token};
 use quinn_proto::Transmit;
 use secp256k1::PublicKey;
-use silver_common::{GossipMsgOut, P2pSend, PeerControl, PeerEvent, RpcOutbound, SilverSpine};
+use silver_common::{
+    GossipMsgOut, P2pSend, PeerControl, PeerEvent, RpcInbound, RpcOutbound, SilverSpine,
+};
 use silver_discovery::{DiscV5, Discovery, DiscoveryEvent};
 
 use crate::{
@@ -126,6 +128,11 @@ impl Tile<SilverSpine> for NetworkTile {
                     adapter.produce(PeerEvent::P2pStreamClosed { stream_id: stream });
                 }
                 NetEvent::RpcInbound(rpc_inbound) => {
+                    let stream_id = match &rpc_inbound {
+                        RpcInbound::Request(req) => req.stream_id,
+                        RpcInbound::Response(rsp) => rsp.stream_id,
+                    };
+                    tracing::debug!(?stream_id, "network: incoming rpc");
                     adapter.produce(rpc_inbound);
                 }
                 NetEvent::RpcMisbehaviour { p2p_peer, severity } => {

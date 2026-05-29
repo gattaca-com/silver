@@ -98,7 +98,7 @@ impl GossipHandler {
                         &topic.to_wire(&self.fork_digest_hex)
                     ])
                 {
-                    tracing::info!(p2p_connection, ?topic, "Emit new gossip subscribe");
+                    tracing::debug!(p2p_connection, ?topic, "Emit new gossip subscribe");
                     emit(GossipHandlerEvent::SendGossip(GossipMsgOut {
                         peer_id: p2p_connection,
                         tcache,
@@ -111,7 +111,7 @@ impl GossipHandler {
                         &topic.to_wire(&self.fork_digest_hex),
                     ])
                 {
-                    tracing::info!(p2p_connection, ?topic, "Emit new gossip unsubscribe");
+                    tracing::debug!(p2p_connection, ?topic, "Emit new gossip unsubscribe");
                     emit(GossipHandlerEvent::SendGossip(GossipMsgOut {
                         peer_id: p2p_connection,
                         tcache,
@@ -124,7 +124,7 @@ impl GossipHandler {
                         &topic.to_wire(&self.fork_digest_hex)
                     ])
                 {
-                    tracing::info!(p2p_connection, ?topic, "Emit new gossip graft");
+                    tracing::debug!(p2p_connection, ?topic, "Emit new gossip graft");
                     emit(GossipHandlerEvent::SendGossip(GossipMsgOut {
                         peer_id: p2p_connection,
                         tcache,
@@ -137,7 +137,7 @@ impl GossipHandler {
                         &topic.to_wire(&self.fork_digest_hex)
                     ])
                 {
-                    tracing::info!(p2p_connection, ?topic, "Emit new gossip prune");
+                    tracing::debug!(p2p_connection, ?topic, "Emit new gossip prune");
                     emit(GossipHandlerEvent::SendGossip(GossipMsgOut {
                         peer_id: p2p_connection,
                         tcache,

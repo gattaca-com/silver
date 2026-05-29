@@ -6,6 +6,7 @@ use flux::{
 };
 use quinn_proto::{Endpoint, EndpointConfig};
 use rand::RngCore;
+use secp256k1::SecretKey;
 use silver_beacon_state::{BeaconStateTile, SlotTicker};
 use silver_common::{Config, Enr, ProtoIdentify, SilverSpine, TCache, TCacheProducer};
 use silver_control::Controller;
@@ -102,18 +103,27 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
 
     let now = Instant::now();
-    let enr1 = Enr::from_str(
-        "enr:-Ku4QG-2_Md3sZIAUebGYT6g0SMskIml77l6yR-M_JXc-UdNHCmHQeOiMLbylPejyJsdAPsTHJyjJB2sYGDLe0dn8uYBh2F0dG5ldHOIAAAAAAAAAACEZXRoMpC1MD8qAAAAAP__________gmlkgnY0gmlwhBLY-NyJc2VjcDI1NmsxoQORcM6e19T1T9gi7jxEZjk_sjVLGFscUNqAY9obgZaxbIN1ZHCCIyg",
+    let mut lh_enr = Enr::from_str(
+        "enr:-Oy4QBW4KHthwegG3eG5yEMpT8PrUX4J-wkFcLB5E0dxBrBwVn2qozZzy9lqjDXUkakyBE64ieznpzi1noGk86Ei1fuB4odhdHRuZXRziAAAAAAAAAAYg2NnYwSGY2xpZW500YpMaWdodGhvdXNlhTguMS4zhGV0aDKQjJ9i_gYAAAD__________4JpZIJ2NIJpcIQjsgPZg25mZISMn2L-hHF1aWOCIymJc2VjcDI1NmsxoQPj2RBmZwQedmzCAAi_DzlwU12DALt7jkmkwx5ZD7AUgYhzeW5jbmV0cwCDdGNwgiMog3VkcIIjKA",
     )?;
-    let enr2 = Enr::from_str(
-        "enr:-Le4QLHZDSvkLfqgEo8IWGG96h6mxwe_PsggC20CL3neLBjfXLGAQFOPSltZ7oP6ol54OvaNqO02Rnvb8YmDR274uq8ChGV0aDKQtTA_KgEAAAAAIgEAAAAAAIJpZIJ2NIJpcISLosQxg2lwNpAqAX4AAAAAAPA8kv_-ax65iXNlY3AyNTZrMaEDBJj7_dLFACaxBfaI8KZTh_SSJUjhyAyfshimvSqo22WDdWRwgiMohHVkcDaCI4I",
-    )?;
-    let enr3 = Enr::from_str(
-        "enr:-Ku4QP2xDnEtUXIjzJ_DhlCRN9SN99RYQPJL92TMlSv7U5C1YnYLjwOQHgZIUXw6c-BvRg2Yc2QsZxxoS_pPRVe0yK8Bh2F0dG5ldHOIAAAAAAAAAACEZXRoMpD1pf1CAAAAAP__________gmlkgnY0gmlwhBLf22SJc2VjcDI1NmsxoQMeFF5GrS7UZpAH2Ly84aLK-TyvH-dRo0JM1i8yygH50YN1ZHCCJxA",
-    )?;
-    discv5.add_enr(&enr1, now);
-    discv5.add_enr(&enr2, now);
-    discv5.add_enr(&enr3, now);
+    let lh_key =
+        SecretKey::from_str("93d455080de93a505ec6ce452a3f9061f9955de47b7d3c1a3cc9c12cbc7c9248")
+            .unwrap();
+    lh_enr.set_ip("127.0.0.1".parse().unwrap(), &lh_key).unwrap();
+    tracing::info!("lh ebnr: {}", lh_enr.to_string());
+    discv5.add_enr(&lh_enr, now);
+    // let enr1 = Enr::from_str(
+    //     "enr:-Ku4QG-2_Md3sZIAUebGYT6g0SMskIml77l6yR-M_JXc-UdNHCmHQeOiMLbylPejyJsdAPsTHJyjJB2sYGDLe0dn8uYBh2F0dG5ldHOIAAAAAAAAAACEZXRoMpC1MD8qAAAAAP__________gmlkgnY0gmlwhBLY-NyJc2VjcDI1NmsxoQORcM6e19T1T9gi7jxEZjk_sjVLGFscUNqAY9obgZaxbIN1ZHCCIyg",
+    // )?;
+    // let enr2 = Enr::from_str(
+    //     "enr:-Le4QLHZDSvkLfqgEo8IWGG96h6mxwe_PsggC20CL3neLBjfXLGAQFOPSltZ7oP6ol54OvaNqO02Rnvb8YmDR274uq8ChGV0aDKQtTA_KgEAAAAAIgEAAAAAAIJpZIJ2NIJpcISLosQxg2lwNpAqAX4AAAAAAPA8kv_-ax65iXNlY3AyNTZrMaEDBJj7_dLFACaxBfaI8KZTh_SSJUjhyAyfshimvSqo22WDdWRwgiMohHVkcDaCI4I",
+    // )?;
+    // let enr3 = Enr::from_str(
+    //     "enr:-Ku4QP2xDnEtUXIjzJ_DhlCRN9SN99RYQPJL92TMlSv7U5C1YnYLjwOQHgZIUXw6c-BvRg2Yc2QsZxxoS_pPRVe0yK8Bh2F0dG5ldHOIAAAAAAAAAACEZXRoMpD1pf1CAAAAAP__________gmlkgnY0gmlwhBLf22SJc2VjcDI1NmsxoQMeFF5GrS7UZpAH2Ly84aLK-TyvH-dRo0JM1i8yygH50YN1ZHCCJxA",
+    // )?;
+    // discv5.add_enr(&enr1, now);
+    // discv5.add_enr(&enr2, now);
+    // discv5.add_enr(&enr3, now);
 
     let network_tile = NetworkTile::new(discv5_addr, discv5, p2p_addr, p2p_endpoint, p2p_context)?;
     let gossip_tile = GossipHandler::new(

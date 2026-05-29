@@ -57,6 +57,11 @@ pub struct ScoreParams {
     // ── Misc ────────────────────────────────────────────────────────────
     /// Counter values below this clamp to 0 after decay.
     pub decay_to_zero: f64,
+    /// Interval at which per-counter score decay is applied. The `*_decay`
+    /// constants are gossipsub-canonical values calibrated for one
+    /// application per slot (the spec's `decay_interval`), so decay is
+    /// gated to this cadence rather than the tick. Mainnet slot = 12s.
+    pub score_decay_interval: Duration,
     /// How long to retain an archived peer's counters after disconnect.
     pub archived_ttl: Duration,
     /// Re-score cache TTL. Scores older than this get recomputed.
@@ -128,11 +133,18 @@ impl Default for ScoreParams {
             first_message_deliveries_weight: 1.0,
             first_message_deliveries_decay: 0.998,
 
-            // P3 — deficit below expected delivery rate, squared
-            mesh_message_deliveries_threshold: 20.0,
+            // P3 — deficit below expected delivery rate, squared.
+            // Disabled (threshold 0). Canonical eth2 value is ~0.685 for
+            // topics with expected_message_rate ≈ 1/slot (block + all Fulu
+            // data-column subnets — silver's whole subscription set). Enable
+            // only once a healthy multi-peer mesh exists; in a 1-2 peer mesh
+            // legit peers deliver via first, not mesh, deliveries.
+            mesh_message_deliveries_threshold: 0.0,
             mesh_message_deliveries_weight: -1.0,
             mesh_message_deliveries_decay: 0.971,
-            mesh_message_deliveries_activation_s: 30.0,
+            // 1 epoch grace after graft before P3 activates (matches
+            // lighthouse).
+            mesh_message_deliveries_activation_s: 384.0,
 
             // P3b — carries deficit forward across re-graft
             mesh_failure_penalty_weight: -1.0,
@@ -152,6 +164,9 @@ impl Default for ScoreParams {
             behaviour_penalty_decay: 0.999,
 
             decay_to_zero: 0.01,
+            // One mainnet slot — the cadence the `*_decay` constants are
+            // calibrated for. Gated separately from the 700ms tick.
+            score_decay_interval: Duration::from_secs(12),
             archived_ttl: Duration::from_secs(384), // 1 eth2 epoch
             score_cache_ttl: Duration::from_millis(700),
 

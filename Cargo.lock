@@ -4139,6 +4139,7 @@ dependencies = [
  "mimalloc",
  "quinn-proto",
  "rand 0.8.6",
+ "secp256k1",
  "silver_beacon_state",
  "silver_common",
  "silver_control",
