@@ -13,13 +13,13 @@ pub type Epoch = u64;
 pub type Version = [u8; 4];
 pub type ExecutionAddress = [u8; 20];
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "small-validator-cap")))]
 // Physical cap on validator-indexed columnar arrays. Spec limit is
 // `VALIDATOR_REGISTRY_LIMIT = 1 << 40`; we size for real registry growth.
 // Live count crossed 2.0M during 2025; 2.75 Mi = 2,883,584 sits just below 3M
 // and gives ~600k headroom (~26%) over the current registry.
 pub const MAX_VALIDATORS: usize = 11 << 18;
-#[cfg(test)]
+#[cfg(any(test, feature = "small-validator-cap"))]
 // Mainnet caps ~2M validators. Tests don't need that much and parallel
 // `cargo test` would otherwise OOM (~3–4 GB per `BeaconStateTile::new_heap`
 // at full cap × N parallel test threads). EF spec test fixtures use ≤ a few

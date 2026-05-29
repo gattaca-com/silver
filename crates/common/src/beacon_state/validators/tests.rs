@@ -15,6 +15,131 @@ fn creds(b: u8) -> Withdrawals {
     Withdrawals([b; 32])
 }
 
+// ── Base-swap invariance harness ────────────────────────────────────────────
+//
+// Migration target (design-base-swap-invariant-deltas): a delta `d` that
+// descends from a finalized delta `Δ` must read identically against the old
+// base `f1` and the new base `f2 = f1 + Δ`, so finalization can swap the base
+// under a survivor without re-anchoring it. These tests exercise that property
+// directly on `ValidatorsDelta`, ahead of the read path being decoupled from
+// `base_count == fin.validator_count()`.
+
+/// Every mutable effective_* field at one index, bundled for f1-vs-f2 compare.
+#[derive(PartialEq, Debug)]
+struct ValRead {
+    pubkey: BLSPubkey,
+    credentials: Withdrawals,
+    effective_balance: u64,
+    slashed: bool,
+    activation_eligibility_epoch: u64,
+    activation_epoch: u64,
+    exit_epoch: u64,
+    withdrawable_epoch: u64,
+}
+
+fn read_all(d: &ValidatorsDelta, base: &FinalizedValidators, idx: u32) -> ValRead {
+    ValRead {
+        pubkey: *d.effective_pubkey(base, idx),
+        credentials: *d.effective_credentials(base, idx),
+        effective_balance: d.effective_balance(base, idx),
+        slashed: d.is_slashed(base, idx),
+        activation_eligibility_epoch: d.activation_eligibility_epoch(base, idx),
+        activation_epoch: d.activation_epoch(base, idx),
+        exit_epoch: d.exit_epoch(base, idx),
+        withdrawable_epoch: d.withdrawable_epoch(base, idx),
+    }
+}
+
+/// Append `n` deterministic validators. Same sequence each call, so two
+/// independently-built bases are byte-identical.
+fn seed_base(base: &mut FinalizedValidators, n: u8) {
+    for i in 0..n {
+        base.append(
+            &pk(i),
+            &PublicKey::default(),
+            &creds(i),
+            32_000_000_000 + i as u64,
+            false,
+            i as u64,
+            i as u64 + 1,
+            FAR_FUTURE_EPOCH,
+            FAR_FUTURE_EPOCH,
+        );
+    }
+}
+
+/// Assert `read(d, f1, idx) == read(d, f2, idx)` for every logical index.
+fn assert_base_swap_invariant(
+    d: &ValidatorsDelta,
+    f1: &FinalizedValidators,
+    f2: &FinalizedValidators,
+) {
+    let count = d.base_count + d.appended.len();
+    for idx in 0..count as u32 {
+        assert_eq!(read_all(d, f1, idx), read_all(d, f2, idx), "base-swap mismatch at idx {idx}");
+    }
+}
+
+#[test]
+fn descendant_reads_are_base_swap_invariant_common_case() {
+    // f1 and f2 start identical; Δ is promoted into f2.
+    let mut f1 = FinalizedValidators::default();
+    let mut f2 = FinalizedValidators::default();
+    seed_base(&mut f1, 4);
+    seed_base(&mut f2, 4);
+
+    // Δ: append a validator, edit it, edit a base validator.
+    let mut delta = ValidatorsDelta::new_at(&f1);
+    delta.append(&f1, pk(10), PublicKey::default(), creds(10)); // idx 4
+    delta.set_effective_balance(&f1, 4, 50_000);
+    delta.set_exit_epoch(&f1, 1, 7);
+
+    // D descends from Δ: append more, diverge on its own indices — but never
+    // sets a field back to f1's base value (no elision-to-base; see the
+    // ignored test for that case).
+    let mut d = delta.clone();
+    d.append(&f1, pk(11), PublicKey::default(), creds(11)); // idx 5
+    d.set_activation_epoch(&f1, 4, 9);
+    d.set_effective_balance(&f1, 2, 123);
+
+    delta.promote_into_base(&mut f2);
+    assert_eq!(f2.validator_count(), 5);
+
+    assert_base_swap_invariant(&d, &f1, &f2);
+}
+
+#[test]
+#[ignore = "RED until base-swap migration: write_or_elide elides against the \
+            mutable base, so a descendant that sets a field back to f1's value \
+            drops the edit and then reads f2's promoted value. Fix: keep \
+            base-targeting edits as absolute overrides. See \
+            design-base-swap-invariant-deltas."]
+fn elision_to_base_value_violates_base_swap_invariance() {
+    let mut f1 = FinalizedValidators::default();
+    let mut f2 = FinalizedValidators::default();
+    seed_base(&mut f1, 4);
+    seed_base(&mut f2, 4);
+    let f1_eb0 = f1.effective_balance(0); // 32_000_000_000
+
+    // Δ changes base validator 0's effective_balance.
+    let mut delta = ValidatorsDelta::new_at(&f1);
+    delta.set_effective_balance(&f1, 0, 99);
+
+    // D descends from Δ but, on its own branch, sets idx 0 back to f1's
+    // original value. write_or_elide sees v == base_val(f1) and drops the
+    // edit, so D now relies on base == f1.
+    let mut d = delta.clone();
+    d.set_effective_balance(&f1, 0, f1_eb0);
+    assert!(d.effective_balance_edits.is_empty(), "edit elided against f1");
+
+    delta.promote_into_base(&mut f2); // f2.effective_balance[0] = 99
+
+    // D's branch value for idx 0 is f1_eb0; the invariant requires the read to
+    // be independent of which base we swap in. Today it is NOT: over f2 the
+    // elided delta reads 99.
+    assert_base_swap_invariant(&d, &f1, &f2);
+}
+
 /// Independent reference impl of `validator_hash`: merkleize 8 chunks
 /// following SSZ Validator container layout. This duplicates `merkleize`
 /// but builds the chunks inline (no shared chunk helpers) so it catches

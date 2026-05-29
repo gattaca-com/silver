@@ -37,6 +37,7 @@ backtrace = { workspace = true, optional = true }
 
 [features]
 alloc-profile = ["dep:backtrace"]
+small-validator-cap = []
 
 [build-dependencies]
 buffa-build = "0.2.0"
