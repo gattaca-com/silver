@@ -7,6 +7,7 @@ use silver_common::{
     StateDeltaView, SyncCommittee, VALIDATOR_REGISTRY_LIMIT, metrics::timed,
 };
 
+#[timed]
 pub fn hash_tree_root_block_header(hdr: &BeaconBlockHeader) -> B256 {
     let chunks = [
         uint64_chunk(hdr.slot),
@@ -143,6 +144,7 @@ pub fn hash_eth1_votes(slot: &common::SlotState) -> B256 {
     mix_in_length(&root, n)
 }
 
+#[timed]
 pub fn hash_fork(f: &Fork) -> B256 {
     let mut pv = ZERO_HASH;
     pv[..4].copy_from_slice(&f.previous_version);

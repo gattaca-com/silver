@@ -1,4 +1,5 @@
 use blst::min_pk::PublicKey;
+use silver_common_macros::timed;
 
 use crate::{
     Withdrawals,
@@ -428,6 +429,7 @@ impl<'a> StateDeltaView<'a> {
 
     /// Merged `block_roots` ring (finalized base + delta-appended roots
     /// overlaid by slot).
+    #[timed]
     pub fn effective_block_roots_into(&self, out: &mut Vec<B256>) {
         out.clear();
         out.extend_from_slice(&self.fin.slot.block_roots);
@@ -439,6 +441,7 @@ impl<'a> StateDeltaView<'a> {
     }
 
     /// Merged `state_roots` ring.
+    #[timed]
     pub fn effective_state_roots_into(&self, out: &mut Vec<B256>) {
         out.clear();
         out.extend_from_slice(&self.fin.slot.state_roots);
@@ -452,6 +455,7 @@ impl<'a> StateDeltaView<'a> {
     /// Merged `randao_mixes` ring. Overlays per-completed-epoch delta entries
     /// (written to both `e % EHV` and `(e+1) % EHV`), then substitutes the
     /// per-block accumulator at the current epoch's bucket.
+    #[timed]
     pub fn effective_randao_mixes_into(&self, out: &mut Vec<B256>) {
         out.clear();
         out.extend_from_slice(&self.fin.epoch.randao_mixes);
@@ -471,6 +475,7 @@ impl<'a> StateDeltaView<'a> {
     /// Merged `slashings` ring. Overlays per-completed-epoch delta entries
     /// (`e % SV` = running total, `(e+1) % SV` = 0 reset), then folds the
     /// in-progress epoch's accumulator at the current bucket.
+    #[timed]
     pub fn effective_slashings_into(&self, out: &mut Vec<u64>) {
         out.clear();
         out.extend_from_slice(&self.fin.epoch.slashings);
