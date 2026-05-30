@@ -157,6 +157,7 @@ impl P2p {
             DatagramEvent::NewConnection(incoming) => {
                 match self.endpoint.accept(incoming, now, scratch, None) {
                     Ok((handle, conn)) => {
+                        crate::NetworkCounters::InboundAccepted.inc();
                         let peer = Peer::new(handle, conn);
 
                         self.peers.insert(handle, peer);
@@ -211,7 +212,7 @@ impl P2p {
             }
 
             if peer.is_drained() {
-                tracing::debug!("peer is drained");
+                tracing::debug!(peer_id=?peer.id().peer_id, addr=?peer.id().addr, "peer is drained");
                 dead_peers.push(peer.id().clone());
                 on_event(NetEvent::PeerDisconnected { peer: peer.id().clone() });
             }

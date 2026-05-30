@@ -28,6 +28,7 @@ secp256k1.workspace = true
 silver_common_macros.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+toml.workspace = true
 sha2-const-stable.workspace = true
 sha3.workspace = true
 snap.workspace = true

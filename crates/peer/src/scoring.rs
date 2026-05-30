@@ -11,6 +11,22 @@ use silver_common::ScoreParams;
 
 use crate::state::PeerState;
 
+/// Per-component score contributions. P1–P4 are summed across topics; total
+/// is the sum of all fields and matches `compute_score`. Used for eviction
+/// diagnostics so the dominant negative component is visible.
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct ScoreBreakdown {
+    pub p1_time_in_mesh: f64,
+    pub p2_first_deliveries: f64,
+    pub p3_mesh_deficit: f64,
+    pub p3b_mesh_failure: f64,
+    pub p4_invalid: f64,
+    pub p5_application: f64,
+    pub p6_ip_colocation: f64,
+    pub p7_behaviour: f64,
+    pub total: f64,
+}
+
 /// Compute the current peer score.
 ///
 /// `ip_colocation_peers` is the count of currently-connected peers sharing
@@ -22,45 +38,64 @@ pub(crate) fn compute_score(
     ip_colocation_peers: usize,
     now: Instant,
 ) -> f64 {
-    let mut s = 0.0;
+    score_breakdown(state, params, ip_colocation_peers, now).total
+}
+
+/// Per-component score breakdown. `compute_score` delegates to this.
+pub(crate) fn score_breakdown(
+    state: &PeerState,
+    params: &ScoreParams,
+    ip_colocation_peers: usize,
+    now: Instant,
+) -> ScoreBreakdown {
+    let mut b = ScoreBreakdown::default();
 
     for t in state.topic_stats.values() {
         // P1 — time in mesh (linear, capped).
         if let Some(since) = t.meshed_since {
             let age = now.saturating_duration_since(since).as_secs_f64();
-            s += age.min(params.time_in_mesh_cap_s) * params.time_in_mesh_weight;
+            b.p1_time_in_mesh += age.min(params.time_in_mesh_cap_s) * params.time_in_mesh_weight;
         }
         // P2 — first-message deliveries (linear, capped).
-        s += t.first_deliveries.min(params.first_message_deliveries_cap) *
+        b.p2_first_deliveries += t.first_deliveries.min(params.first_message_deliveries_cap) *
             params.first_message_deliveries_weight;
         // P3 — mesh delivery deficit, squared. Only active after the grace
         // window, and only penalises below threshold (weight is negative).
         if t.mesh_active && t.mesh_deliveries < params.mesh_message_deliveries_threshold {
             let deficit = params.mesh_message_deliveries_threshold - t.mesh_deliveries;
-            s += deficit * deficit * params.mesh_message_deliveries_weight;
+            b.p3_mesh_deficit += deficit * deficit * params.mesh_message_deliveries_weight;
         }
         // P3b — carried forward from prior mesh pruning.
-        s += t.mesh_failure_penalty * params.mesh_failure_penalty_weight;
+        b.p3b_mesh_failure += t.mesh_failure_penalty * params.mesh_failure_penalty_weight;
         // P4 — invalid-message deliveries, squared (weight negative).
-        s += t.invalid_deliveries * t.invalid_deliveries * params.invalid_message_deliveries_weight;
+        b.p4_invalid +=
+            t.invalid_deliveries * t.invalid_deliveries * params.invalid_message_deliveries_weight;
     }
 
     // P5 — application-specific score.
-    s += state.application_score;
+    b.p5_application = state.application_score;
 
     // P6 — IP colocation, squared excess over threshold.
     if ip_colocation_peers > params.ip_colocation_threshold {
         let excess = (ip_colocation_peers - params.ip_colocation_threshold) as f64;
-        s += excess * excess * params.ip_colocation_weight;
+        b.p6_ip_colocation = excess * excess * params.ip_colocation_weight;
     }
 
     // P7 — behaviour penalty, squared excess over threshold.
     if state.behaviour_penalty > params.behaviour_penalty_threshold {
         let excess = state.behaviour_penalty - params.behaviour_penalty_threshold;
-        s += excess * excess * params.behaviour_penalty_weight;
+        b.p7_behaviour = excess * excess * params.behaviour_penalty_weight;
     }
 
-    s
+    b.total = b.p1_time_in_mesh +
+        b.p2_first_deliveries +
+        b.p3_mesh_deficit +
+        b.p3b_mesh_failure +
+        b.p4_invalid +
+        b.p5_application +
+        b.p6_ip_colocation +
+        b.p7_behaviour;
+    b
 }
 
 /// Apply per-tick decay to all counters on a peer. Counters below
@@ -219,6 +254,30 @@ mod tests {
         t.mesh_deliveries = 0.0;
         state.topic_stats.insert(GossipTopic::BeaconBlock, t);
         assert_eq!(compute_score(&state, &params, 1, now), 0.0);
+    }
+
+    #[test]
+    fn breakdown_total_matches_compute_score() {
+        let mut params = ScoreParams::default();
+        params.time_in_mesh_cap_s = 10.0;
+        params.time_in_mesh_weight = 1.0;
+        params.ip_colocation_threshold = 2;
+        params.ip_colocation_weight = -1.0;
+        let now = Instant::now();
+        let mut state = mk_state(now);
+        state.behaviour_penalty = 5.0;
+        state.application_score = -7.0;
+        let mut t = TopicScore::default();
+        t.meshed_since = Some(now - Duration::from_secs(100));
+        t.first_deliveries = 4.0;
+        t.invalid_deliveries = 2.0;
+        t.mesh_active = true;
+        t.mesh_deliveries = 1.0;
+        state.topic_stats.insert(GossipTopic::BeaconBlock, t);
+
+        let b = score_breakdown(&state, &params, 5, now);
+        let s = compute_score(&state, &params, 5, now);
+        assert!((b.total - s).abs() < 1e-9, "breakdown {} vs compute {}", b.total, s);
     }
 
     #[test]

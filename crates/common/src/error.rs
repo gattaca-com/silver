@@ -21,6 +21,8 @@ pub enum Error {
     ParseTopicError,
     InvalidSnappy,
     IoError(#[from] std::io::Error),
+    JsonError(#[from] serde_json::Error),
+    TomlError(#[from] toml::de::Error),
     TCacheError(#[from] TCacheError),
     SnappyError(#[from] snap::Error),
     InvalidStreamState,

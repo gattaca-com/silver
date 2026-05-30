@@ -123,6 +123,20 @@ fn severity_for_error_response(code: u8, protocol: StreamProtocol) -> Option<Rpc
     }
 }
 
+/// Human label for a Goodbye reason code (per eth2 spec).
+fn goodbye_reason(code: u64) -> &'static str {
+    match code {
+        1 => "ClientShutdown",
+        2 => "IrrelevantNetwork",
+        3 => "Error",
+        128 => "Banned",
+        129 => "BannedIP",
+        250 => "ScoreTooLow",
+        251 => "Fault",
+        _ => "Unknown",
+    }
+}
+
 /// Does this `response` terminate an outbound RPC stream we initiated?
 /// Single-chunk protocols (Status/Ping/MetaData/Goodbye) have no `Complete`
 /// sentinel — the one response chunk is the terminator. Multi-chunk
@@ -366,9 +380,13 @@ impl PeerManager {
                         }
                     }
                     RpcRequest::Goodbye(goodbye) => {
-                        tracing::warn!(
-                            "recevied goodbye with reason: {}",
-                            u64::from_le_bytes(goodbye)
+                        let code = u64::from_le_bytes(goodbye);
+                        crate::PeerCounters::GoodbyeReceived.inc();
+                        tracing::info!(
+                            peer = stream_id.peer(),
+                            code,
+                            reason = goodbye_reason(code),
+                            "received goodbye"
                         );
                         self.handle_event(
                             PeerEvent::P2pPeerGoodbye {

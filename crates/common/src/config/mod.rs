@@ -34,6 +34,26 @@ const fn default_u64<const V: u64>() -> u64 {
     V
 }
 
+fn default_supported_protocols() -> Vec<String> {
+    vec![
+        StreamProtocol::Identity.multiselect_string(),
+        StreamProtocol::GossipSub.multiselect_string(),
+        StreamProtocol::StatusV1.multiselect_string(),
+        StreamProtocol::StatusV2.multiselect_string(),
+        StreamProtocol::Ping.multiselect_string(),
+        StreamProtocol::Goodbye.multiselect_string(),
+        StreamProtocol::Metadata.multiselect_string(),
+        StreamProtocol::BeaconBlocksByRange.multiselect_string(),
+        StreamProtocol::DataColumnSidecarsByRange.multiselect_string(),
+        StreamProtocol::BeaconBlocksByRoot.multiselect_string(),
+        StreamProtocol::DataColumnSidecarsByRoot.multiselect_string(),
+    ]
+}
+
+fn default_gossip_topics() -> Vec<String> {
+    vec![GossipTopic::BeaconBlock.to_string()]
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Config {
     #[serde(with = "hex::serde")]
@@ -42,6 +62,9 @@ pub struct Config {
     fork_digest: [u8; 4],
     #[serde(with = "hex::serde")]
     next_fork_version: [u8; 4],
+    // FAR_FUTURE (u64::MAX) by default — exceeds TOML's i64 range, so configs
+    // for a network with no scheduled next fork simply omit it.
+    #[serde(default = "default_u64::<18446744073709551615>")]
     next_fork_epoch: u64,
     #[serde(default)]
     external_ip_v4: Option<Ipv4Addr>,
@@ -54,9 +77,9 @@ pub struct Config {
     #[serde(default = "default_u8::<4>")]
     data_column_custody_group_count: u8,
     /// Full multiselect protocol strings.
-    #[serde(default)]
+    #[serde(default = "default_supported_protocols")]
     supported_protocols: Vec<String>,
-    #[serde(default)]
+    #[serde(default = "default_gossip_topics")]
     gossip_topics: Vec<String>,
     #[serde(default)]
     chain_config: ChainConfig,
@@ -95,18 +118,8 @@ impl Config {
             discovery_port: None,
             quic_port: None,
             data_column_custody_group_count: 4,
-            supported_protocols: vec![
-                StreamProtocol::Identity.multiselect_string(),
-                StreamProtocol::GossipSub.multiselect_string(),
-                StreamProtocol::StatusV1.multiselect_string(),
-                StreamProtocol::StatusV2.multiselect_string(),
-                StreamProtocol::Ping.multiselect_string(),
-                StreamProtocol::Goodbye.multiselect_string(),
-                StreamProtocol::Metadata.multiselect_string(),
-                StreamProtocol::BeaconBlocksByRange.multiselect_string(),
-                StreamProtocol::DataColumnSidecarsByRange.multiselect_string(),
-            ],
-            gossip_topics: vec![GossipTopic::BeaconBlock.to_string()],
+            supported_protocols: default_supported_protocols(),
+            gossip_topics: default_gossip_topics(),
             chain_config: ChainConfig::default(),
             discovery_config: DiscoveryConfig::default(),
             peer_score_params: ScoreParams::default(),
@@ -119,8 +132,26 @@ impl Config {
         }
     }
 
+    /// Load a full `Config` from a TOML file. Devnet runs supply every
+    /// network-specific value (fork_digest, genesis, bootstrap ENRs,
+    /// external IP, ports, secret key) here, so no source edits are needed.
+    pub fn from_file<P: AsRef<std::path::Path>>(path: P) -> Result<Self, Error> {
+        let text = std::fs::read_to_string(path)?;
+        Ok(toml::from_str(&text)?)
+    }
+
     pub fn with_discovery_port(mut self, port: u16) -> Self {
         self.discovery_port = Some(port);
+        self
+    }
+
+    pub fn with_external_ip_v4(mut self, ip: Ipv4Addr) -> Self {
+        self.external_ip_v4 = Some(ip);
+        self
+    }
+
+    pub fn with_genesis_unix_secs(mut self, secs: u64) -> Self {
+        self.chain_config.genesis_unix_secs = secs;
         self
     }
 
@@ -251,5 +282,37 @@ impl Config {
 
     pub fn outgoing_rpc_tcache_size(&self) -> usize {
         self.outgoing_rpc_tcache_size
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn minimal_toml_populates_defaults() {
+        // Only fork_digest / next_fork_version / secret_key are required;
+        // next_fork_epoch defaults to FAR_FUTURE and the lists fall back to
+        // the same values `Config::new` sets (else a file config silently
+        // advertises zero protocols/topics).
+        let toml_str = r#"
+            secret_key = "1111111111111111111111111111111111111111111111111111111111111111"
+            fork_digest = "8c9f62fe"
+            next_fork_version = "06000000"
+        "#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.fork_digest(), [0x8c, 0x9f, 0x62, 0xfe]);
+        assert_eq!(cfg.next_fork_epoch, u64::MAX);
+        assert_eq!(cfg.supported_protocols().unwrap().len(), 11);
+        assert_eq!(cfg.gossip_topics().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn builders_set_external_ip_and_genesis() {
+        let cfg = Config::new([1u8; 32], [0u8; 4], [0u8; 4], 0)
+            .with_external_ip_v4(Ipv4Addr::new(172, 16, 0, 1))
+            .with_genesis_unix_secs(1234);
+        assert_eq!(cfg.external_ip_v4, Some(Ipv4Addr::new(172, 16, 0, 1)));
+        assert_eq!(cfg.chain_config().genesis_unix_secs, 1234);
     }
 }
