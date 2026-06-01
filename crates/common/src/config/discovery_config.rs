@@ -6,7 +6,7 @@ use super::{default_u32, default_u64, default_usize};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DiscoveryConfig {
-    #[serde(default = "default_u64::<3_600_000>")]
+    #[serde(default = "default_u64::<60_000>")]
     pub lookup_interval_ms: u64,
     #[serde(default = "default_usize::<6>")]
     pub lookup_distances: usize,
@@ -77,7 +77,7 @@ impl DiscoveryConfig {
 impl Default for DiscoveryConfig {
     fn default() -> Self {
         Self {
-            lookup_interval_ms: 500, //3_600_000,
+            lookup_interval_ms: 60_000,
             lookup_distances: 6,
             target_sessions: 128,
             ping_frequency_s: 5,
