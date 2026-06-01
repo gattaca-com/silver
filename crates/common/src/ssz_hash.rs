@@ -113,7 +113,6 @@ pub type MerkleStack = ArrayVec<(u8, B256), ZERO_HASHES_LEN>;
 
 /// Absorb a leaf, combining upward with any left-sibling already parked at
 /// the same height.
-#[timed]
 pub fn merkle_push(stack: &mut MerkleStack, leaf: B256) {
     let mut cur = leaf;
     let mut h: u8 = 0;
@@ -130,7 +129,6 @@ pub fn merkle_push(stack: &mut MerkleStack, leaf: B256) {
 
 /// Walk the parked stack up to `target_depth`, padding with zero subtrees
 /// where no right-sibling is available.
-#[timed]
 pub fn merkle_finalize(mut stack: MerkleStack, target_depth: u8) -> B256 {
     if stack.is_empty() {
         return ZERO_HASHES[target_depth as usize];
@@ -169,7 +167,6 @@ const fn const_hash_concat(a: &B256, b: &B256) -> B256 {
 
 /// Push raw bytes packed as 32-byte chunks (tail zero-padded). The aligned
 /// prefix is cast as `&[B256]` (B256 has alignment 1, safe for any byte ptr).
-#[timed]
 pub fn push_bytes_as_chunks(data: &[u8], stack: &mut MerkleStack) {
     let aligned = data.len() & !31;
     let chunks: &[B256] =
@@ -185,11 +182,48 @@ pub fn push_bytes_as_chunks(data: &[u8], stack: &mut MerkleStack) {
     }
 }
 
+/// Upper bound for `merkleize`'s stack-based fast path (covers small fixed
+/// containers like the 8-field `Validator`).
+const MERKLE_INLINE_CHUNKS: usize = 32;
+
 /// Merkleize a slice of 32-byte chunks, padding to the next power of two.
 #[timed]
+#[inline]
 pub fn merkleize(chunks: &[B256]) -> B256 {
-    let n = chunks.len().next_power_of_two().max(1);
-    merkleize_padded(chunks, n)
+    let leaf_count = chunks.len().next_power_of_two().max(1);
+    if leaf_count <= MERKLE_INLINE_CHUNKS {
+        merkleize_inline(chunks, leaf_count)
+    } else {
+        merkleize_padded(chunks, leaf_count)
+    }
+}
+
+/// Merkleize `chunks` into a `leaf_count`-leaf tree, zero-padding missing
+/// leaves and reducing a layer at a time with batched hashing. Ping-pongs `a`
+/// and `b` so each `hash_concat_many` has disjoint in/out.
+#[inline]
+pub fn merkleize_inline(chunks: &[B256], leaf_count: usize) -> B256 {
+    debug_assert!(leaf_count.is_power_of_two() && leaf_count <= MERKLE_INLINE_CHUNKS);
+    debug_assert!(chunks.len() <= leaf_count);
+    let mut a = [ZERO_HASH; MERKLE_INLINE_CHUNKS];
+    a[..chunks.len()].copy_from_slice(chunks);
+    if leaf_count == 1 {
+        return a[0];
+    }
+    let mut b = [ZERO_HASH; MERKLE_INLINE_CHUNKS / 2];
+    let mut width = leaf_count;
+    let mut in_a = true; // current layer lives in `a` (else `b`)
+    while width > 1 {
+        let half = width / 2;
+        if in_a {
+            hash_concat_many(&mut b[..half], &a[..width]);
+        } else {
+            hash_concat_many(&mut a[..half], &b[..width]);
+        }
+        in_a = !in_a;
+        width = half;
+    }
+    if in_a { a[0] } else { b[0] }
 }
 
 /// Merkleize with a fixed leaf count (power of two, for list limits).
@@ -958,6 +992,18 @@ mod tests {
         ];
         for &(i, hex) in expected {
             assert_eq!(ZERO_HASHES[i], hex_b32(hex), "zh[{i}]");
+        }
+    }
+
+    /// The inline fast path must match the general stack-machine merkleize for
+    /// every chunk count it handles (full power-of-two and padded alike).
+    #[test]
+    fn merkleize_inline_matches_stack_machine() {
+        for n in 0..=40usize {
+            let chunks: Vec<B256> = (0..n).map(|i| uint64_chunk(i as u64 + 1)).collect();
+            let leaf_count = n.next_power_of_two().max(1);
+            let expected = merkleize_padded(&chunks, leaf_count);
+            assert_eq!(merkleize(&chunks), expected, "n={n}");
         }
     }
 
