@@ -28,7 +28,8 @@ pub struct BeaconState {
 }
 
 impl BeaconState {
-    /// Zero-validator pre-bootstrap state. No `Default` — see [`Finalized::empty`].
+    /// Zero-validator pre-bootstrap state. No `Default` — see
+    /// [`Finalized::empty`].
     pub fn empty() -> Self {
         Self {
             finalized: Finalized::empty(),

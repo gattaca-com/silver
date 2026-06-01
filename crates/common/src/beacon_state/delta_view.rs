@@ -1610,7 +1610,8 @@ mod tests {
         seq
     }
 
-    /// Grow the base via the sanctioned path: delta append + `promote_into_base`.
+    /// Grow the base via the sanctioned path: delta append +
+    /// `promote_into_base`.
     fn push_validator_pk(
         f: &mut Finalized,
         pubkey: [u8; 48],
