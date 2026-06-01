@@ -22,9 +22,9 @@ struct ExpectedJson {
 #[derive(Default, Clone, Copy, serde::Deserialize)]
 #[serde(default)]
 pub struct Thresholds {
-    /// One-shot cost of `decompose_beacon_state` at harness boot.
+    /// One-shot cost of `decompose` at harness boot.
     #[serde(deserialize_with = "de_duration")]
-    pub max_decompose_beacon_state: Option<Nanos>,
+    pub max_decompose: Option<Nanos>,
     #[serde(deserialize_with = "de_duration")]
     pub max_apply_block_avg: Option<Nanos>,
     /// Average wall time of one `hash_tree_root_state` call (sum across all
