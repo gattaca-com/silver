@@ -60,12 +60,10 @@ impl NetworkTile {
                 self.inner.p2p_endpoint.unban_peer(p2p);
             }
             PeerControl::BanIp { ip } => {
-                self.inner.discovery.ban_ip(ip, None);
                 self.inner.p2p_socket.ban(ip);
                 self.inner.disc_socket.ban(ip);
             }
             PeerControl::UnbanIp { ip } => {
-                self.inner.discovery.unban_ip(ip);
                 self.inner.p2p_socket.unban(ip);
                 self.inner.disc_socket.unban(ip);
             }

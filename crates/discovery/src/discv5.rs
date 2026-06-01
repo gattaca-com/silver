@@ -1,7 +1,7 @@
 use std::{
     io::{BufRead, BufWriter, Write},
     net::{IpAddr, SocketAddr},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use alloy_rlp::{Decodable, Encodable};
@@ -49,7 +49,6 @@ pub struct DiscV5 {
     ip_vote_counts: FxHashMap<(IpAddr, u16), u32>,
 
     banned_nodes: FxHashSet<NodeId>,
-    banned_ips: FxHashMap<IpAddr, Option<Instant>>,
 
     whoareyou_per_ip: FxHashMap<IpAddr, (u32, Instant)>,
     whoareyou_global: (u32, Instant),
@@ -106,10 +105,6 @@ impl DiscV5 {
                 BANNED_NODES_CAPACITY,
                 Default::default(),
             ),
-            banned_ips: FxHashMap::with_capacity_and_hasher(
-                BANNED_NODES_CAPACITY,
-                Default::default(),
-            ),
             whoareyou_per_ip: FxHashMap::with_capacity_and_hasher(target, Default::default()),
             whoareyou_global: (0, Instant::now()),
             next_request_id: 0,
@@ -125,20 +120,9 @@ impl DiscV5 {
         disc
     }
 
-    fn is_banned(
-        banned_nodes: &mut FxHashSet<NodeId>,
-        banned_ips: &mut FxHashMap<IpAddr, Option<Instant>>,
-        id: &NodeId,
-        ip: IpAddr,
-    ) -> bool {
+    fn is_banned(banned_nodes: &mut FxHashSet<NodeId>, id: &NodeId) -> bool {
         if banned_nodes.contains(id) {
             return true;
-        }
-        if let Some(expires) = banned_ips.get(&ip) {
-            if expires.is_none_or(|t| Instant::now() < t) {
-                return true;
-            }
-            banned_ips.remove(&ip);
         }
         false
     }
@@ -762,12 +746,7 @@ impl DiscV5 {
                 let id = n.key.preimage();
                 !self.sessions.contains_key(id) &&
                     !self.pending_findnodes.contains_key(id) &&
-                    !Self::is_banned(
-                        &mut self.banned_nodes,
-                        &mut self.banned_ips,
-                        id,
-                        n.value.addr.ip(),
-                    )
+                    !Self::is_banned(&mut self.banned_nodes, id)
             })
             .take(self.config.probes_per_lookup)
             .map(|n| (*n.key.preimage(), n.value.addr))
@@ -787,12 +766,7 @@ impl DiscV5 {
                 .iter_ref()
                 .filter(|n| {
                     self.sessions.contains_key(n.key.preimage()) &&
-                        !Self::is_banned(
-                            &mut self.banned_nodes,
-                            &mut self.banned_ips,
-                            n.key.preimage(),
-                            n.value.addr.ip(),
-                        )
+                        !Self::is_banned(&mut self.banned_nodes, n.key.preimage())
                 })
                 .take(self.config.probes_per_lookup)
                 .map(|n| (*n.key.preimage(), n.value.addr))
@@ -849,17 +823,9 @@ impl DiscV5 {
                     }
 
                     let mut parts = line.split_whitespace();
-                    let (Some(kind), Some(key), Some(secs_str)) =
-                        (parts.next(), parts.next(), parts.next())
+                    let (Some(kind), Some(key), _) = (parts.next(), parts.next(), parts.next())
                     else {
                         continue;
-                    };
-
-                    let Ok(secs) = secs_str.parse::<u64>() else { continue };
-                    let expires = if secs == 0 {
-                        None
-                    } else {
-                        Some(Instant::now() + Duration::from_secs(secs))
                     };
 
                     match kind {
@@ -869,10 +835,6 @@ impl DiscV5 {
                                 continue;
                             };
                             self.banned_nodes.insert(NodeId::new(&arr));
-                        }
-                        "ip" => {
-                            let Ok(ip) = key.parse::<IpAddr>() else { continue };
-                            self.banned_ips.insert(ip, expires);
                         }
                         _ => continue,
                     }
@@ -909,18 +871,8 @@ impl DiscV5 {
         };
 
         let mut w = BufWriter::new(file);
-        let now = Instant::now();
         for id in &self.banned_nodes {
             let _ = writeln!(w, "node {} 0", hex::encode(id.raw()));
-        }
-
-        for (ip, expires) in &self.banned_ips {
-            let secs = match expires {
-                None => 0,
-                Some(t) if *t > now => (*t - now).as_secs(),
-                Some(_) => continue,
-            };
-            let _ = writeln!(w, "ip {ip} {secs}");
         }
     }
 
@@ -939,8 +891,6 @@ impl DiscV5 {
 
         let whoareyou_window = self.config.whoareyou_window();
         self.whoareyou_per_ip.retain(|_, (_, t)| t.elapsed() < whoareyou_window);
-
-        self.banned_ips.retain(|_, exp| exp.is_none_or(|t| now < t));
 
         self.metrics.active_sessions = self.sessions.len();
         self.metrics.pending_challenges = self.challenges.len();
@@ -988,17 +938,8 @@ impl Discovery for DiscV5 {
         self.pending_probe_nonces.remove(&id);
     }
 
-    fn ban_ip(&mut self, ip: IpAddr, duration: Option<Duration>) {
-        let expires = duration.map(|d| Instant::now() + d);
-        self.banned_ips.insert(ip, expires);
-    }
-
     fn unban_node(&mut self, id: NodeId) {
         self.banned_nodes.remove(&id);
-    }
-
-    fn unban_ip(&mut self, ip: IpAddr) {
-        self.banned_ips.remove(&ip);
     }
 
     fn teardown(&self) {
@@ -1033,12 +974,7 @@ impl Discovery for DiscV5 {
                 visited += 1;
                 let node_id = *node.key.preimage();
                 let addr = node.value.addr;
-                if Self::is_banned(
-                    &mut self.banned_nodes,
-                    &mut self.banned_ips,
-                    &node_id,
-                    addr.ip(),
-                ) {
+                if Self::is_banned(&mut self.banned_nodes, &node_id) {
                     continue;
                 }
                 if let Some(s) = self.sessions.get(&node_id) &&
@@ -1092,7 +1028,7 @@ impl Discovery for DiscV5 {
         let src_id = packet.src_id;
         let nonce = packet.nonce;
 
-        if Self::is_banned(&mut self.banned_nodes, &mut self.banned_ips, &src_id, src_addr.ip()) {
+        if Self::is_banned(&mut self.banned_nodes, &src_id) {
             trace!(
                 "dropping message from the banned node with node_id = {} and ip = {}",
                 src_id,
@@ -1229,7 +1165,7 @@ pub struct NodeEntry {
 mod tests {
     use std::{
         net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
-        time::Instant,
+        time::{Duration, Instant},
     };
 
     use silver_common::{Enr, NodeId};
@@ -1851,33 +1787,6 @@ mod tests {
         let a_sends = collect_sends(&mut a);
         let to_b: Vec<_> = a_sends.iter().filter(|(to, _)| *to == b_addr).collect();
         assert!(to_b.is_empty(), "banned node's messages should be dropped");
-    }
-
-    #[test]
-    fn test_ban_ip_drops_messages() {
-        let now = Instant::now();
-        let (mut a, a_addr) = make_node(19121);
-        let (mut b, b_addr) = make_node(19122);
-
-        do_handshake(&mut a, a_addr, &mut b, b_addr, now);
-
-        // Ban B's IP (permanent).
-        a.ban_ip(b_addr.ip(), None);
-
-        // B sends a probe — A should silently drop it.
-        let data = {
-            let s = b.sessions.get(&a.local_id).unwrap();
-            Packet::encode_message(b.local_id, a.local_id, &s.enc, Message::Ping {
-                request_id: 0,
-                enr_seq: 1,
-            })
-            .unwrap()
-        };
-        a.handle(b_addr, &data, now);
-
-        let a_sends = collect_sends(&mut a);
-        let to_b: Vec<_> = a_sends.iter().filter(|(to, _)| *to == b_addr).collect();
-        assert!(to_b.is_empty(), "banned IP's messages should be dropped");
     }
 
     #[test]
