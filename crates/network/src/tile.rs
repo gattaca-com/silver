@@ -163,6 +163,7 @@ impl Tile<SilverSpine> for NetworkTile {
                 let result = match msg {
                     P2pSend::Gossip(gossip_msg_out) => {
                         gossips += 1;
+                        tracing::debug!(peer=gossip_msg_out.peer_id, "send gossip");
                         self.inner.enqueue_gossip(gossip_msg_out)
                     },
                     P2pSend::Identify(peer) => {

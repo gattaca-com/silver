@@ -191,7 +191,7 @@ impl Tile<SilverSpine> for Controller {
             }
         }
 
-        if self.last_status.elapsed() > Duration::from_secs(300) {
+        if self.last_status.elapsed() > Duration::from_secs(30) {
             self.last_status = Instant::now();
             self.peer_manager.fan_out_status(&mut |pc| {
                 match pc {

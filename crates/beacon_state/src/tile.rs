@@ -3,6 +3,7 @@ use flux::{
     tile::Tile,
     utils::ArrayVec,
 };
+use rustc_hash::FxHashMap;
 use silver_common::{
     B256, BeaconBlockHeader, BeaconState, BeaconStateEvent, BeaconStateOwner, BlobParameters,
     Checkpoint, EPOCHS_PER_HISTORICAL_VECTOR, Epoch, GossipTopic, MIN_SEED_LOOKAHEAD, NewGossipMsg,
@@ -50,13 +51,16 @@ impl Mode {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Feedback {
-    Accept,
+    /// Contains the accepted block root.
+    Accept(Option<B256>),
     Ignore,
     /// Carries the failed `block_root` (only) when the reject came from a
     /// post-`body_root`/STF path in block validation, so PM can blacklist
     /// the chain. All other reject paths (attestation, exit, slashing,
     /// pre-hash block fails) use `Reject(None)`.
     Reject(Option<B256>),
+    /// The parent block is missing and must be requested.
+    RequestParent(B256),
 }
 
 struct ParsedBlock {
@@ -155,6 +159,9 @@ pub struct BeaconStateTile {
     /// Reusable merged-ring buffers for `hash_tree_root_state` (block/state
     /// roots, randao, slashings) — avoids re-allocating the rings per slot.
     state_hash_scratch: ssz_hash::StateHashScratch,
+    /// Pending blocks - blocks we have received for which we do not have a
+    /// parent block. Keyed by the parent block_hash.
+    pending_blocks: FxHashMap<B256, Vec<NewGossipMsg>>,
 
     gossip_consumer: TRandomAccess,
     rpc_consumer: TRandomAccess,
@@ -200,6 +207,7 @@ impl BeaconStateTile {
             prev_eff_balances: Vec::with_capacity(val_cap),
             sig_batch: bls::SigBatch::new(),
             state_hash_scratch: ssz_hash::StateHashScratch::new(),
+            pending_blocks: FxHashMap::default(),
             gossip_consumer,
             rpc_consumer,
         };
@@ -518,7 +526,7 @@ impl BeaconStateTile {
             "applied block: {:?}",
             f
         );
-        if f != Feedback::Accept {
+        if !matches!(f, Feedback::Accept(_)) {
             return f;
         }
 
@@ -778,14 +786,46 @@ impl BeaconStateTile {
                 topic: m.topic,
                 hash: m.msg_hash,
             }),
-            Some(Feedback::Accept) => producers.produce(PeerEvent::SendGossip {
-                originator_stream_id: m.stream_id,
-                topic: m.topic,
-                msg_hash: m.msg_hash,
-                recv_ts: m.recv_ts,
-                protobuf: m.protobuf,
-            }),
-            Some(Feedback::Ignore) | None => {}
+            Some(Feedback::Accept(block_root)) => {
+                producers.produce(PeerEvent::SendGossip {
+                    originator_stream_id: m.stream_id,
+                    topic: m.topic,
+                    msg_hash: m.msg_hash,
+                    recv_ts: m.recv_ts,
+                    protobuf: m.protobuf,
+                });
+
+                // Try to apply any pending blocks for which this one was the parent.
+                if let Some(root) = block_root {
+                    self.apply_pending_blocks(root, producers);
+                }
+            }
+            Some(Feedback::RequestParent(parent_root)) if self.mode.is_following() => {
+                self.pending_blocks
+                    .entry(parent_root)
+                    .and_modify(|v| v.push(m))
+                    .or_insert_with(|| vec![m]);
+                producers.produce(PeerEvent::SendBlocksByRootRequest {
+                    request_id: 0,
+                    p2p_peer: Some(m.stream_id.peer()),
+                    block_root: parent_root,
+                })
+            }
+            Some(Feedback::RequestParent(_)) | Some(Feedback::Ignore) | None => {}
+        }
+    }
+
+    fn apply_pending_blocks(&mut self, parent_root: B256, producers: &mut Producers) {
+        if let Some(pending) = self.pending_blocks.remove(&parent_root) {
+            // Have one or more pending child blocks.
+            for msg in pending {
+                let acquired = self.gossip_consumer.acquire(msg.ssz);
+                let data = acquired.buffer().ok().map(|(d, _)| d as *const [u8]);
+                if let Some(p) = data {
+                    // This will recursively apply any chained pending blocks
+                    self.handle_gossip(msg, unsafe { &*p }, producers);
+                }
+            }
         }
     }
 
@@ -807,7 +847,7 @@ impl BeaconStateTile {
             }
             let f = self.apply_block(data, data_tcache, RejectSource::Rpc, producers);
             match f {
-                Feedback::Accept | Feedback::Ignore => {}
+                Feedback::Accept(_) | Feedback::Ignore | Feedback::RequestParent(_) => {}
                 Feedback::Reject(_) => producers.produce(PeerEvent::RpcMisbehaviour {
                     p2p_peer: sender.peer(),
                     severity: RpcSeverity::Fatal,
@@ -889,7 +929,7 @@ impl BeaconStateTile {
         };
 
         self.publish_applied_block(&parsed, new_seq, justified, finalized);
-        Feedback::Accept
+        Feedback::Accept(Some(parsed.block_root))
     }
 
     fn publish_applied_block(
@@ -1116,7 +1156,7 @@ impl BeaconStateTile {
         }
 
         self.on_attestation(attester_index, block_root, target_epoch);
-        Feedback::Accept
+        Feedback::Accept(None)
     }
 
     fn handle_aggregate_and_proof(&mut self, data: &[u8]) -> Feedback {
@@ -1213,7 +1253,7 @@ impl BeaconStateTile {
             let vi = self.active_scratch[i] as usize;
             self.on_attestation(vi, parsed.beacon_block_root, parsed.target_epoch);
         }
-        Feedback::Accept
+        Feedback::Accept(None)
     }
 
     fn verify_aggregate_and_proof_sigs(
@@ -1298,7 +1338,7 @@ impl BeaconStateTile {
         if !bls::verify_one(view.validator_pubkey_decompressed(vi), sig, &signing_root) {
             return Feedback::Reject(None);
         }
-        Feedback::Accept
+        Feedback::Accept(None)
     }
 
     fn handle_proposer_slashing(&mut self, data: &[u8]) -> Feedback {
@@ -1338,7 +1378,7 @@ impl BeaconStateTile {
         if !self.sig_batch.verify_all() {
             return Feedback::Reject(None);
         }
-        Feedback::Accept
+        Feedback::Accept(None)
     }
 
     fn handle_attester_slashing(&mut self, data: &[u8]) -> Feedback {
@@ -1349,7 +1389,7 @@ impl BeaconStateTile {
         let view = self.state.delta_view(canon_seq);
         if state_transition::validate_attester_slashing_for_gossip(&view, data, &mut self.sig_batch)
         {
-            Feedback::Accept
+            Feedback::Accept(None)
         } else {
             Feedback::Reject(None)
         }
@@ -1390,7 +1430,7 @@ impl BeaconStateTile {
         if !bls::verify_one_compressed(from_pubkey, sig, &signing_root) {
             return Feedback::Reject(None);
         }
-        Feedback::Accept
+        Feedback::Accept(None)
     }
 }
 
@@ -1957,7 +1997,7 @@ mod tests {
         seed_tile_with_keys(&mut tile, 4, 256 * SLOTS_PER_EPOCH);
         let imm = seed_immutable(&tile);
         let buf = crate::test_signing::sign_voluntary_exit(0, 0, 0, &imm);
-        assert_eq!(tile.handle_voluntary_exit(&buf), Feedback::Accept);
+        assert_eq!(tile.handle_voluntary_exit(&buf), Feedback::Accept(None));
     }
 
     #[test]
@@ -1985,7 +2025,7 @@ mod tests {
         seed_tile_with_keys(&mut tile, 4, 0);
         let imm = seed_immutable(&tile);
         let buf = crate::test_signing::sign_proposer_slashing(0, 0, 0, &imm);
-        assert_eq!(tile.handle_proposer_slashing(&buf), Feedback::Accept);
+        assert_eq!(tile.handle_proposer_slashing(&buf), Feedback::Accept(None));
     }
 
     #[test]
@@ -2046,7 +2086,7 @@ mod tests {
         seed_tile_with_keys(&mut tile, 4, 0);
         let imm = seed_immutable(&tile);
         let buf = crate::test_signing::sign_attester_slashing_double_vote(0, 0, 0, 0, &imm);
-        assert_eq!(tile.handle_attester_slashing(&buf), Feedback::Accept);
+        assert_eq!(tile.handle_attester_slashing(&buf), Feedback::Accept(None));
     }
 
     #[test]
@@ -2102,7 +2142,7 @@ mod tests {
         let imm = seed_immutable(&tile);
         let to_addr = [0x42u8; 20];
         let buf = crate::test_signing::sign_bls_to_execution_change(0, 0, &to_addr, &imm);
-        assert_eq!(tile.handle_bls_to_execution_change(&buf), Feedback::Accept);
+        assert_eq!(tile.handle_bls_to_execution_change(&buf), Feedback::Accept(None));
     }
 
     #[test]
@@ -2210,7 +2250,7 @@ mod tests {
         // the offsets), verifying the vote fold self-consistently.
         let want_root = *SingleAttestationView::beacon_block_root(&buf);
         let want_epoch = SingleAttestationView::target_epoch(&buf);
-        assert_eq!(tile.handle_attestation(&buf), Feedback::Accept);
+        assert_eq!(tile.handle_attestation(&buf), Feedback::Accept(None));
         assert_eq!(tile.vote_tracker.votes[0].next_root, want_root);
         assert_eq!(tile.vote_tracker.votes[0].next_epoch, want_epoch);
     }
@@ -2241,7 +2281,7 @@ mod tests {
         let buf = build_agg_for_vi0(&tile);
         let beacon_block_root = tile.last_applied_block_root;
         let slot = SignedAggregateAndProofView::agg_slot(&buf);
-        assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Accept);
+        assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Accept(None));
         assert_eq!(tile.vote_tracker.votes[0].next_root, beacon_block_root);
         assert_eq!(tile.vote_tracker.votes[0].next_epoch, slot / SLOTS_PER_EPOCH);
     }
@@ -2257,7 +2297,7 @@ mod tests {
 
         let buf = build_agg_for_vi0(&tile);
         assert_eq!(SignedAggregateAndProofView::agg_target_epoch(&buf), 0);
-        assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Accept);
+        assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Accept(None));
 
         // Older-epoch aggregate must not overwrite the newer vote.
         assert_eq!(tile.vote_tracker.votes[0].next_root, preset_root);

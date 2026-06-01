@@ -44,9 +44,8 @@ impl PrecheckError {
     pub fn feedback(self) -> Feedback {
         match self {
             Self::SizeMismatch { .. } => Feedback::Reject(None),
-            Self::ParentMissing { .. } | Self::PastSlot { .. } | Self::FutureSlot { .. } => {
-                Feedback::Ignore
-            }
+            Self::ParentMissing { parent_root, .. } => Feedback::RequestParent(parent_root),
+            Self::PastSlot { .. } | Self::FutureSlot { .. } => Feedback::Ignore,
             Self::ProposerLookaheadMismatch { block_root, .. } |
             Self::ProposerIndexTooBig { block_root, .. } |
             Self::InvalidBls { block_root, .. } => Feedback::Reject(Some(block_root)),
