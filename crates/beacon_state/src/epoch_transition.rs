@@ -708,7 +708,7 @@ mod tests {
     use blst::min_pk::SecretKey;
     use silver_common::{
         B256, DeltaBuffer, EpochStateDelta, Finalized, LongtailState, PendingDeposit, SlotState,
-        SlotStateDelta, StateDelta, StateDeltaView, Withdrawals,
+        SlotStateDelta, StateDelta, StateDeltaView, ValSeed, Withdrawals,
         beacon_state::{
             ValidatorsDelta,
             types::{EPOCHS_RING_N, LONGTAILS_RING_N},
@@ -744,30 +744,15 @@ mod tests {
         ssz_hash::merkleize(&[msg_root, domain])
     }
 
-    /// One pre-seeded finalized validator: (pubkey, credentials, effective
-    /// balance, balance, activation_epoch, exit_epoch).
-    type ValSeed = ([u8; 48], Withdrawals, u64, u64, Epoch, Epoch);
-
     /// Finalized base anchored at `current_epoch` with `finalized_checkpoint`
     /// pinned there and a generous `deposit_balance_to_consume` so the churn
     /// gate never masks the signature-handling assertions. Optional
     /// pre-seeded validators populate the identity + balance layers.
     fn fresh(current_epoch: u64, validators: &[ValSeed]) -> Box<Finalized> {
-        let mut f = Box::new(Finalized::default());
+        let mut f = Finalized::new(validators);
         f.slot.slot.slot = current_epoch * SLOTS_PER_EPOCH;
         f.epoch.state.finalized_checkpoint = checkpoint(current_epoch, 0x01);
         f.epoch.state.deposit_balance_to_consume = u64::MAX / 2;
-        for (i, (pk, creds, effective_balance, balance, act, exit)) in validators.iter().enumerate()
-        {
-            f.validators.pubkey_slice_mut()[i] = *pk;
-            f.validators.withdrawal_credentials_slice_mut()[i] = *creds;
-            f.validators.effective_balance_slice_mut()[i] = *effective_balance;
-            f.validators.activation_epoch_slice_mut()[i] = *act;
-            f.validators.exit_epoch_slice_mut()[i] = *exit;
-            f.validators.index_mut().insert(*pk, i as u32);
-            f.balances.slice_mut()[i] = *balance;
-        }
-        f.validators.set_validator_cnt(validators.len());
         f
     }
 
@@ -878,14 +863,14 @@ mod tests {
     fn pending_deposit_existing_validator_no_sig_check() {
         let (_sk, pk) = test_keypair();
         // Pre-existing active validator at max effective balance.
-        let fin = fresh(10, &[(
-            pk,
-            Withdrawals::ZERO,
-            MAX_EFFECTIVE_BALANCE,
-            MAX_EFFECTIVE_BALANCE,
-            0,
-            u64::MAX,
-        )]);
+        let fin = fresh(10, &[ValSeed {
+            pubkey: pk,
+            withdrawal_credentials: Withdrawals::ZERO,
+            effective_balance: MAX_EFFECTIVE_BALANCE,
+            balance: MAX_EFFECTIVE_BALANCE,
+            activation_epoch: 0,
+            exit_epoch: u64::MAX,
+        }]);
         let mut delta = anchored_delta(&fin);
         let mut epochs: EpochRing = DeltaBuffer::default();
         let mut longtails: LongtailRing = DeltaBuffer::default();

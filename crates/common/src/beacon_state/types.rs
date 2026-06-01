@@ -2,7 +2,7 @@ use flux::utils::ArrayVec;
 
 use crate::beacon_state::{
     buffer::Reset,
-    validators::{FinalizedValidators, ValidatorsDelta},
+    validators::{FinalizedValidators, ValSeed, ValidatorsDelta},
 };
 
 pub type B256 = [u8; 32];
@@ -75,6 +75,16 @@ impl Finalized {
     #[inline]
     pub fn epoch(&self) -> Epoch {
         self.slot.slot.slot / SLOTS_PER_EPOCH
+    }
+
+    pub fn new(seeds: &[ValSeed]) -> Box<Self> {
+        let mut f = Box::new(Self::default());
+        f.validators = FinalizedValidators::with_validators(seeds);
+        let balances = f.balances.slice_mut();
+        for (i, s) in seeds.iter().enumerate() {
+            balances[i] = s.balance;
+        }
+        f
     }
 }
 

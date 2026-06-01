@@ -7,7 +7,9 @@ use flux::{
 use quinn_proto::{Endpoint, EndpointConfig};
 use rand::RngCore;
 use silver_beacon_state::{BeaconStateTile, SlotTicker};
-use silver_common::{Config, Enr, ProtoIdentify, SilverSpine, TCache, TCacheProducer};
+use silver_common::{
+    BeaconState, BeaconStateOwner, Config, Enr, ProtoIdentify, SilverSpine, TCache, TCacheProducer,
+};
 use silver_control::Controller;
 use silver_discovery::{DiscV5, Discovery};
 use silver_gossip::GossipHandler;
@@ -144,9 +146,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         Some(file) => load_checkpoint(file)?,
         None => vec![],
     };
+
+    let state = BeaconStateOwner::new(BeaconState::default());
     let beacon_state_tile = BeaconStateTile::new(
         ticker,
         chain_config.spec.clone(),
+        state,
         ssz_gossip_consumer,
         incoming_rpc_consumer,
         &checkpoint,

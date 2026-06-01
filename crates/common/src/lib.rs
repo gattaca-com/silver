@@ -3,7 +3,7 @@ extern crate self as silver_common;
 pub use crate::{
     beacon_state::{
         BeaconState, BeaconStateOwner, BeaconStateReader, DeltaBuffer, StateDeltaReadView,
-        StateDeltaView, ValidatorRow, types::*,
+        StateDeltaView, ValSeed, ValidatorRow, types::*,
     },
     config::{BlobParameters, Config, DiscoveryConfig, ScoreParams, SpecConfig, SyncingConfig},
     error::Error,

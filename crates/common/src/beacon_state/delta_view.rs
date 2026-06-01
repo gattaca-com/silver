@@ -1610,17 +1610,23 @@ mod tests {
         seq
     }
 
-    fn push_default_validator(f: &mut Finalized, balance_v: u64) {
-        let i = f.validators.validator_count();
-        // Identity layer columns. `FinalizedValidators::default()` already
-        // seeds `[FAR_FUTURE_EPOCH; MAX]` for the four epochs and zeros
-        // elsewhere, so we only need to set the slot and bump the count.
-        f.validators.pubkey_slice_mut()[i] = [0; 48];
-        f.validators.pubkey_decompressed_slice_mut()[i] = Default::default();
-        f.validators.withdrawal_credentials_slice_mut()[i] = Default::default();
-        f.validators.set_validator_cnt(i + 1);
-        // Sibling layers — only balance needs an explicit value.
+    fn push_validator(f: &mut Finalized, credentials: Withdrawals, balance_v: u64) {
+        let i = f.validators.append(
+            &[0u8; 48],
+            &blst::min_pk::PublicKey::default(),
+            &credentials,
+            0,
+            false,
+            FAR_FUTURE_EPOCH,
+            FAR_FUTURE_EPOCH,
+            FAR_FUTURE_EPOCH,
+            FAR_FUTURE_EPOCH,
+        ) as usize;
         f.balances.slice_mut()[i] = balance_v;
+    }
+
+    fn push_default_validator(f: &mut Finalized, balance_v: u64) {
+        push_validator(f, Withdrawals::default(), balance_v);
     }
 
     #[test]
@@ -2069,10 +2075,8 @@ mod tests {
         // Two base validators with distinct credentials.
         let base_creds_0 = Withdrawals([0xA1; 32]);
         let base_creds_1 = Withdrawals([0xA2; 32]);
-        push_default_validator(&mut f, 0);
-        f.validators.withdrawal_credentials_slice_mut()[0] = base_creds_0;
-        push_default_validator(&mut f, 0);
-        f.validators.withdrawal_credentials_slice_mut()[1] = base_creds_1;
+        push_validator(&mut f, base_creds_0, 0);
+        push_validator(&mut f, base_creds_1, 0);
 
         let mut d = anchored_delta(&f);
 

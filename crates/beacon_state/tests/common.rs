@@ -14,9 +14,9 @@ use silver_beacon_state::{
     tile::BeaconStateTile,
 };
 use silver_common::{
-    BeaconStateEvent, GossipTopic, MessageId, NewGossipMsg, P2pStreamId, RpcInbound,
-    RpcResponseInbound, SilverSpine, StreamProtocol, SyncUpdate, TCache, TCacheProducer, TProducer,
-    TRandomAccess, ssz_view::STATUS_V2_SIZE,
+    BeaconState, BeaconStateEvent, BeaconStateOwner, GossipTopic, MessageId, NewGossipMsg,
+    P2pStreamId, RpcInbound, RpcResponseInbound, SilverSpine, StreamProtocol, SyncUpdate, TCache,
+    TCacheProducer, TProducer, TRandomAccess, ssz_view::STATUS_V2_SIZE,
 };
 
 fn null_stream_id() -> P2pStreamId {
@@ -116,9 +116,11 @@ impl OutboundKind {
 impl Harness {
     pub fn new(wall_slot: u64, checkpoint_ssz: &[u8]) -> Self {
         Self::build(wall_slot, |ticker, gc, rc| {
+            let state = BeaconStateOwner::new(BeaconState::default());
             BeaconStateTile::new(
                 ticker,
                 silver_common::SpecConfig::mainnet(),
+                state,
                 gc,
                 rc,
                 checkpoint_ssz,

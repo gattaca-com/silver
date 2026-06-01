@@ -150,6 +150,7 @@ impl BeaconStateTile {
     pub fn new(
         ticker: SlotTicker,
         spec: SpecConfig,
+        state: BeaconStateOwner,
         gossip_consumer: TRandomAccess,
         rpc_consumer: TRandomAccess,
         checkpoint_state: &[u8],
@@ -160,7 +161,7 @@ impl BeaconStateTile {
             mode: Mode::Syncing,
             ticker,
             spec,
-            state: BeaconStateOwner::new(BeaconState::default()),
+            state,
             fork_choice: ForkChoice::default(),
             vote_tracker: box_zeroed(),
             shuffling_cache: box_zeroed(),
@@ -1707,7 +1708,7 @@ mod tests {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use silver_common::{
-        BLSPubkey, Finalized, Immutable, TCache, TCacheProducer, Withdrawals,
+        BLSPubkey, Finalized, Immutable, TCache, TCacheProducer, ValSeed, Withdrawals,
         ssz_view::SIGNED_AGG_PROOF_MIN,
     };
 
@@ -1730,7 +1731,8 @@ mod tests {
         let event_p = TCache::producer("test_event", 1 << 20);
         let gossip_c = gossip_p.cache_ref().random_access("test_gossip", true).unwrap();
         let rpc_c = event_p.cache_ref().random_access("test_event", true).unwrap();
-        BeaconStateTile::new(ticker, SpecConfig::mainnet(), gossip_c, rpc_c, &[])
+        let state = BeaconStateOwner::new(BeaconState::default());
+        BeaconStateTile::new(ticker, SpecConfig::mainnet(), state, gossip_c, rpc_c, &[])
     }
 
     fn placeholder_pubkey(i: usize) -> BLSPubkey {
@@ -1741,38 +1743,34 @@ mod tests {
 
     /// Build a `Finalized` base with `n` active validators (MAX effective
     /// balance, activation epoch 0, exit FAR_FUTURE) at `start_slot`. With
-    /// `real_keys`, install spec BLS test pubkeys (+ decompressed + BLS-prefix
-    /// withdrawal creds) so signature-checking handlers accept; otherwise
-    /// collision-free placeholder pubkeys.
+    /// `real_keys`, install spec BLS test pubkeys (+ BLS-prefix withdrawal
+    /// creds) so signature-checking handlers accept; otherwise collision-
+    /// free placeholder pubkeys.
     fn build_seed_finalized(n: usize, start_slot: Slot, real_keys: bool) -> Box<Finalized> {
         let cp_fin = silver_common::Checkpoint { epoch: 0, root: ANCHOR_ROOT };
-        let mut fin = Box::new(Finalized::default());
-        {
-            let v = &mut fin.validators;
-            for i in 0..n {
-                if real_keys {
+        let seeds: Vec<ValSeed> = (0..n)
+            .map(|i| {
+                let (pubkey, withdrawal_credentials) = if real_keys {
                     let sk_idx = i % crate::test_signing::PRIVKEY_HEX.len();
-                    let pk = crate::test_signing::pubkey_pk(sk_idx);
-                    let pk_bytes = pk.to_bytes();
-                    v.pubkey_slice_mut()[i] = pk_bytes;
-                    v.pubkey_decompressed_slice_mut()[i] = pk;
+                    let pk_bytes = crate::test_signing::pubkey_pk(sk_idx).to_bytes();
                     // BLS-prefix creds: [0]=0x00, [1..]=hash(pk)[1..].
                     let mut creds = Withdrawals(ssz_hash::sha256(&pk_bytes));
                     creds.0[0] = 0x00;
-                    v.withdrawal_credentials_slice_mut()[i] = creds;
+                    (pk_bytes, creds)
                 } else {
-                    v.pubkey_slice_mut()[i] = placeholder_pubkey(i);
+                    (placeholder_pubkey(i), Withdrawals::default())
+                };
+                ValSeed {
+                    pubkey,
+                    withdrawal_credentials,
+                    effective_balance: MAX_EFFECTIVE_BALANCE,
+                    balance: MAX_EFFECTIVE_BALANCE,
+                    activation_epoch: 0,
+                    ..Default::default()
                 }
-                v.effective_balance_slice_mut()[i] = MAX_EFFECTIVE_BALANCE;
-                v.activation_epoch_slice_mut()[i] = 0;
-                // activation_eligibility / exit / withdrawable default
-                // FAR_FUTURE.
-            }
-            v.set_validator_cnt(n);
-        }
-        for b in fin.balances.slice_mut().iter_mut().take(n) {
-            *b = MAX_EFFECTIVE_BALANCE;
-        }
+            })
+            .collect();
+        let mut fin = Finalized::new(&seeds);
         fin.slot.slot.slot = start_slot;
         fin.epoch.state.current_justified_checkpoint = cp_fin;
         fin.epoch.state.finalized_checkpoint = cp_fin;
@@ -2023,15 +2021,25 @@ mod tests {
     #[test]
     fn bls_change_wrong_prefix_rejected() {
         let mut tile = make_tile();
-        seed_tile(&mut tile, 4, 0);
-        // Give validator 0 an ETH1-prefixed credential in the base; the
+        // Validator 0 has ETH1-prefixed credentials in the base; the
         // canonical head (anchor over the base) then rejects the change.
         let mut eth1 = Withdrawals([0u8; 32]);
         eth1.0[0] = 0x01;
-        {
-            let mut g = tile.state.write();
-            g.finalized.validators.withdrawal_credentials_slice_mut()[0] = eth1;
-        }
+        let seeds: Vec<ValSeed> = (0..4)
+            .map(|i| ValSeed {
+                pubkey: placeholder_pubkey(i),
+                withdrawal_credentials: if i == 0 { eth1 } else { Withdrawals::default() },
+                effective_balance: MAX_EFFECTIVE_BALANCE,
+                balance: MAX_EFFECTIVE_BALANCE,
+                activation_epoch: 0,
+                ..Default::default()
+            })
+            .collect();
+        let cp = Checkpoint { epoch: 0, root: ANCHOR_ROOT };
+        let mut fin = Finalized::new(&seeds);
+        fin.epoch.state.current_justified_checkpoint = cp;
+        fin.epoch.state.finalized_checkpoint = cp;
+        arm_tile(&mut tile, fin, 0);
         let buf = [0u8; SIGNED_BLS_CHANGE_SIZE]; // vi = 0
         assert_eq!(tile.handle_bls_to_execution_change(&buf), Feedback::Reject(None));
     }

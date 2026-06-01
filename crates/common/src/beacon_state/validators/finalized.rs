@@ -13,6 +13,29 @@ use crate::{
 
 pub type PubkeyIndex = FxHashMap<BLSPubkey, u32>;
 
+/// Initial values for one validator passed to `Finalized::new`.
+pub struct ValSeed {
+    pub pubkey: BLSPubkey,
+    pub withdrawal_credentials: Withdrawals,
+    pub effective_balance: u64,
+    pub balance: u64,
+    pub activation_epoch: Epoch,
+    pub exit_epoch: Epoch,
+}
+
+impl Default for ValSeed {
+    fn default() -> Self {
+        Self {
+            pubkey: [0u8; 48],
+            withdrawal_credentials: Withdrawals::default(),
+            effective_balance: 0,
+            balance: 0,
+            activation_epoch: FAR_FUTURE_EPOCH,
+            exit_epoch: FAR_FUTURE_EPOCH,
+        }
+    }
+}
+
 /// SSZ-serialised size of a single `Validator` container (Fulu).
 const VALIDATOR_SSZ_SIZE: usize = 121;
 
@@ -252,59 +275,23 @@ impl FinalizedValidators {
         &self.slashed
     }
 
-    #[inline]
-    pub fn pubkey_slice_mut(&mut self) -> &mut [BLSPubkey] {
-        &mut self.val_pubkey
-    }
-
-    #[inline]
-    pub fn pubkey_decompressed_slice_mut(&mut self) -> &mut [PublicKey] {
-        &mut self.val_pubkey_decompressed
-    }
-
-    #[inline]
-    pub fn withdrawal_credentials_slice_mut(&mut self) -> &mut [Withdrawals] {
-        &mut self.val_withdrawal_credentials
-    }
-
-    #[inline]
-    pub fn effective_balance_slice_mut(&mut self) -> &mut [u64] {
-        &mut self.effective_balance
-    }
-
-    #[inline]
-    pub fn activation_eligibility_epoch_slice_mut(&mut self) -> &mut [Epoch] {
-        &mut self.activation_eligibility_epoch
-    }
-
-    #[inline]
-    pub fn activation_epoch_slice_mut(&mut self) -> &mut [Epoch] {
-        &mut self.activation_epoch
-    }
-
-    #[inline]
-    pub fn exit_epoch_slice_mut(&mut self) -> &mut [Epoch] {
-        &mut self.exit_epoch
-    }
-
-    #[inline]
-    pub fn withdrawable_epoch_slice_mut(&mut self) -> &mut [Epoch] {
-        &mut self.withdrawable_epoch
-    }
-
-    #[inline]
-    pub fn slashed_bitset_mut(&mut self) -> &mut [u8] {
-        &mut self.slashed
-    }
-
-    #[inline]
-    pub fn index_mut(&mut self) -> &mut PubkeyIndex {
-        &mut self.index
-    }
-
-    #[inline]
-    pub fn set_validator_cnt(&mut self, n: usize) {
-        self.validator_count = n;
+    pub fn with_validators(seeds: &[ValSeed]) -> Self {
+        let mut v = Self::default();
+        for s in seeds {
+            let decompressed = PublicKey::from_bytes(&s.pubkey).unwrap_or_default();
+            v.append(
+                &s.pubkey,
+                &decompressed,
+                &s.withdrawal_credentials,
+                s.effective_balance,
+                false,
+                FAR_FUTURE_EPOCH,
+                s.activation_epoch,
+                s.exit_epoch,
+                FAR_FUTURE_EPOCH,
+            );
+        }
+        v
     }
 
     /// Append a validator to the finalized base with caller-supplied

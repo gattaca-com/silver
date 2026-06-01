@@ -2,7 +2,8 @@ pub use buffer::DeltaBuffer;
 pub use delta_view::{StateDeltaReadView, StateDeltaView, ValidatorRow};
 pub use hash_tree::{DeltaHashTree, FinalizedHashTree};
 pub use validators::{
-    AppendedValidator, FinalizedValidators, ValidatorsDecodeError, ValidatorsDelta, validator_hash,
+    AppendedValidator, FinalizedValidators, ValSeed, ValidatorsDecodeError, ValidatorsDelta,
+    validator_hash,
 };
 pub use view::{BeaconStateOwner, BeaconStateReader};
 
