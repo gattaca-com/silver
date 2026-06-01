@@ -1159,7 +1159,8 @@ impl<'a> StateDeltaView<'a> {
     }
 
     /// Bulk-apply a sorted, distinct `(idx, flags)` batch to the current-epoch
-    /// participation in one O(|edits| + |batch|) merge. See [`sparse_merge_into`].
+    /// participation in one O(|edits| + |batch|) merge. See
+    /// [`sparse_merge_into`].
     pub fn merge_current_participation(&mut self, sorted: &[(u32, u8)]) {
         sparse_merge_into(&mut self.delta.current_participation.edits, sorted);
     }
