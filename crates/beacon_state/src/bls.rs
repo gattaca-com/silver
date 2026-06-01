@@ -4,16 +4,14 @@ use blst::{
 };
 use ring::rand::{SecureRandom, SystemRandom};
 use silver_common::{
+    B256, BLSPubkey, BeaconBlockHeader, SYNC_COMMITTEE_SIZE,
     metrics::timed,
     ssz_view::{
         SIGNED_BEACON_BLOCK_MIN, SINGLE_ATT_SIZE, SignedBeaconBlockView, SingleAttestationView,
     },
 };
 
-use crate::{
-    ssz_hash::{self, hash_attestation_data, hash_tree_root_block_header},
-    types::{B256, BLSPubkey, BeaconBlockHeader, SYNC_COMMITTEE_SIZE},
-};
+use crate::ssz_hash::{self, hash_attestation_data, hash_tree_root_block_header};
 
 // `verify_batch` casts `&PublicKey -> &blst_p1_affine` and
 // `&Signature -> &blst_p2_affine`. blst-rs declares both as

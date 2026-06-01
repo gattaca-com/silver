@@ -4,13 +4,10 @@ use std::{fs, path::Path};
 
 mod ef_common;
 
-use ef_common::{snappy_decode, spec_tests_dir};
-use silver_beacon_state::{
-    decompose::decompose_beacon_state, epoch_transition, types::*,
-    validator_identity::ValidatorsState,
-};
+use ef_common::{load_state, snappy_decode, spec_tests_dir};
+use silver_beacon_state::epoch_transition;
+use silver_common::{Epoch, StateDeltaView};
 
-// Mirror the constants from epoch_transition.
 const TIMELY_SOURCE_FLAG: u8 = 1 << 0;
 const TIMELY_TARGET_FLAG: u8 = 1 << 1;
 const TIMELY_HEAD_FLAG: u8 = 1 << 2;
@@ -23,54 +20,48 @@ const INACTIVITY_SCORE_BIAS: u64 = 4;
 const INACTIVITY_PENALTY_QUOTIENT: u64 = 1 << 24;
 const MIN_EPOCHS_TO_INACTIVITY_PENALTY: u64 = 4;
 
-fn is_active(e: &EpochData, i: usize, epoch: Epoch) -> bool {
-    e.val_activation_epoch[i] <= epoch && epoch < e.val_exit_epoch[i]
-}
-
-fn is_eligible(e: &EpochData, i: usize, current_epoch: Epoch) -> bool {
-    let prev = current_epoch.saturating_sub(1);
-    is_active(e, i, prev) || (e.val_slashed(i) && current_epoch < e.val_withdrawable_epoch[i])
-}
-
-fn is_in_inactivity_leak(sd: &SlotData) -> bool {
-    let current_epoch = sd.slot / SLOTS_PER_EPOCH;
+fn is_in_inactivity_leak(view: &StateDeltaView) -> bool {
+    let current_epoch = view.current_epoch();
     let previous_epoch = current_epoch.saturating_sub(1);
-    previous_epoch.saturating_sub(sd.finalized_checkpoint.epoch) > MIN_EPOCHS_TO_INACTIVITY_PENALTY
+    let finalized = view.epoch_state().finalized_checkpoint.epoch;
+    previous_epoch.saturating_sub(finalized) > MIN_EPOCHS_TO_INACTIVITY_PENALTY
 }
 
 /// Compute per-flag reward/penalty deltas for all validators.
-fn compute_flag_deltas(
-    vs: &ValidatorsState,
-    e: &EpochData,
-    sd: &SlotData,
-    flag_index: usize,
-) -> (Vec<u64>, Vec<u64>) {
-    let n = vs.validator_cnt();
-    let current_epoch = sd.slot / SLOTS_PER_EPOCH;
+fn compute_flag_deltas(view: &StateDeltaView, flag_index: usize) -> (Vec<u64>, Vec<u64>) {
+    let n = view.validators_count();
+    let current_epoch = view.current_epoch();
     let previous_epoch = current_epoch.saturating_sub(1);
+
+    let act: Vec<Epoch> = view.iter_activation_epochs().collect();
+    let exit: Vec<Epoch> = view.iter_exit_epochs().collect();
+    let slashed: Vec<bool> = view.iter_slashed().collect();
+    let eff: Vec<u64> = view.iter_validator_effective_balances().collect();
+    let withdr: Vec<u64> = (0..n).map(|i| view.validator_withdrawable_epoch(i)).collect();
+    let prev_p: Vec<u8> = view.iter_previous_epoch_participants().collect();
 
     let mut total_active = 0u64;
     for i in 0..n {
-        if is_active(e, i, current_epoch) {
-            total_active += e.val_effective_balance[i];
+        if act[i] <= current_epoch && current_epoch < exit[i] {
+            total_active += eff[i];
         }
     }
     total_active = total_active.max(EFFECTIVE_BALANCE_INCREMENT);
     let sqrt_total = epoch_transition::integer_sqrt(total_active);
     let base_reward_per_increment = EFFECTIVE_BALANCE_INCREMENT * BASE_REWARD_FACTOR / sqrt_total;
-    let is_leak = is_in_inactivity_leak(sd);
+    let is_leak = is_in_inactivity_leak(view);
 
     let flag = PARTICIPATION_FLAGS[flag_index];
     let weight = PARTICIPATION_WEIGHTS[flag_index];
 
-    // Compute unslashed participating increments for this flag.
     let mut flag_increments = 0u64;
     for i in 0..n {
-        if !is_active(e, i, previous_epoch) || e.val_slashed(i) {
+        let active_prev = act[i] <= previous_epoch && previous_epoch < exit[i];
+        if !active_prev || slashed[i] {
             continue;
         }
-        if sd.previous_epoch_participation[i] & flag != 0 {
-            flag_increments += e.val_effective_balance[i] / EFFECTIVE_BALANCE_INCREMENT;
+        if prev_p[i] & flag != 0 {
+            flag_increments += eff[i] / EFFECTIVE_BALANCE_INCREMENT;
         }
     }
     let active_increments = total_active / EFFECTIVE_BALANCE_INCREMENT;
@@ -79,53 +70,59 @@ fn compute_flag_deltas(
     let mut penalties = vec![0u64; n];
 
     for i in 0..n {
-        if !is_eligible(e, i, current_epoch) {
+        let eligible = (act[i] <= previous_epoch && previous_epoch < exit[i]) ||
+            (slashed[i] && current_epoch < withdr[i]);
+        if !eligible {
             continue;
         }
-        let base_reward =
-            (e.val_effective_balance[i] / EFFECTIVE_BALANCE_INCREMENT) * base_reward_per_increment;
-        let is_unslashed = !e.val_slashed(i);
-        let participating = is_unslashed && sd.previous_epoch_participation[i] & flag != 0;
+        let base_reward = (eff[i] / EFFECTIVE_BALANCE_INCREMENT) * base_reward_per_increment;
+        let is_unslashed = !slashed[i];
+        let participating = is_unslashed && prev_p[i] & flag != 0;
 
         if participating && !is_leak {
             rewards[i] =
                 base_reward * weight * flag_increments / (active_increments * WEIGHT_DENOMINATOR);
         } else if !participating && flag_index != 2 {
-            // Head flag (index 2) doesn't penalize.
             penalties[i] = base_reward * weight / WEIGHT_DENOMINATOR;
         }
     }
     (rewards, penalties)
 }
 
-fn compute_inactivity_deltas(
-    vs: &ValidatorsState,
-    e: &EpochData,
-    sd: &SlotData,
-) -> (Vec<u64>, Vec<u64>) {
-    let n = vs.validator_cnt();
-    let current_epoch = sd.slot / SLOTS_PER_EPOCH;
+fn compute_inactivity_deltas(view: &StateDeltaView) -> (Vec<u64>, Vec<u64>) {
+    let n = view.validators_count();
+    let current_epoch = view.current_epoch();
+    let previous_epoch = current_epoch.saturating_sub(1);
+
+    let act: Vec<Epoch> = view.iter_activation_epochs().collect();
+    let exit: Vec<Epoch> = view.iter_exit_epochs().collect();
+    let slashed: Vec<bool> = view.iter_slashed().collect();
+    let eff: Vec<u64> = view.iter_validator_effective_balances().collect();
+    let withdr: Vec<u64> = (0..n).map(|i| view.validator_withdrawable_epoch(i)).collect();
+    let prev_p: Vec<u8> = view.iter_previous_epoch_participants().collect();
+    let inact: Vec<u64> = view.iter_inactivity_scores().collect();
+
     let rewards = vec![0u64; n];
     let mut penalties = vec![0u64; n];
 
     for i in 0..n {
-        if !is_eligible(e, i, current_epoch) {
+        let eligible = (act[i] <= previous_epoch && previous_epoch < exit[i]) ||
+            (slashed[i] && current_epoch < withdr[i]);
+        if !eligible {
             continue;
         }
-        let is_unslashed = !e.val_slashed(i);
-        let target_ok =
-            is_unslashed && sd.previous_epoch_participation[i] & TIMELY_TARGET_FLAG != 0;
+        let is_unslashed = !slashed[i];
+        let target_ok = is_unslashed && prev_p[i] & TIMELY_TARGET_FLAG != 0;
         if !target_ok {
-            penalties[i] = e.val_effective_balance[i] * e.inactivity_scores[i] /
-                (INACTIVITY_SCORE_BIAS * INACTIVITY_PENALTY_QUOTIENT);
+            penalties[i] =
+                eff[i] * inact[i] / (INACTIVITY_SCORE_BIAS * INACTIVITY_PENALTY_QUOTIENT);
         }
     }
     (rewards, penalties)
 }
 
 /// Decode a Deltas SSZ: Container{rewards: List[uint64, N], penalties:
-/// List[uint64, N]}. Fixed part: 2 offsets (8 bytes). Variable: two packed
-/// uint64 lists.
+/// List[uint64, N]}. Fixed part: 2 offsets (8 bytes).
 fn decode_deltas(ssz: &[u8]) -> (Vec<u64>, Vec<u64>) {
     if ssz.len() < 8 {
         return (vec![], vec![]);
@@ -173,26 +170,7 @@ fn run_rewards_handler(handler_name: &str) {
                 continue;
             }
 
-            let ssz = snappy_decode(&pre_path);
-            let mut s = ef_common::LoadedState::blank_pub();
-            if decompose_beacon_state(
-                &ssz,
-                &mut s.imm,
-                &mut s.fv,
-                &mut s.longtail,
-                &mut s.epoch,
-                &mut s.roots,
-                &mut s.sd,
-            )
-            .is_err()
-            {
-                continue;
-            }
-            // Rebuild the overlay so `base_cnt` matches the populated base.
-            s.vs = ValidatorsState::with_empty_delta(&s.fv);
-            let vs = &s.vs;
-            let e = &s.epoch;
-            let sd = &s.sd;
+            let mut s = load_state(&pre_path);
 
             let check = |label: &str, ours: &(Vec<u64>, Vec<u64>), expected_path: &Path| -> bool {
                 if !expected_path.exists() {
@@ -224,10 +202,11 @@ fn run_rewards_handler(handler_name: &str) {
                 ok
             };
 
-            let source = compute_flag_deltas(vs, e, sd, 0);
-            let target = compute_flag_deltas(vs, e, sd, 1);
-            let head = compute_flag_deltas(vs, e, sd, 2);
-            let inactivity = compute_inactivity_deltas(vs, e, sd);
+            let view = s.view();
+            let source = compute_flag_deltas(&view, 0);
+            let target = compute_flag_deltas(&view, 1);
+            let head = compute_flag_deltas(&view, 2);
+            let inactivity = compute_inactivity_deltas(&view);
 
             let ok = check("source", &source, &dir.join("source_deltas.ssz_snappy")) &
                 check("target", &target, &dir.join("target_deltas.ssz_snappy")) &

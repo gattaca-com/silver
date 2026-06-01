@@ -45,15 +45,10 @@ fn sanity_blocks() {
         let mut block_rejected = false;
         for i in 0..block_count {
             let block_ssz = snappy_decode(&dir.join(format!("blocks_{i}.ssz_snappy")));
+            let mut view = pre.view();
             if let Err(reason) = state_transition::apply_signed_block_debug(
                 &silver_common::SpecConfig::mainnet(),
-                &pre.imm,
-                &mut pre.vs,
-                &mut pre.longtail,
-                &mut pre.epoch,
-                &mut pre.roots,
-                &mut pre.sd,
-                &mut pre.pq,
+                &mut view,
                 &block_ssz,
             ) {
                 if !expect_failure {
@@ -79,8 +74,8 @@ fn sanity_blocks() {
             continue;
         }
 
-        let post = load_state(&post_path);
-        let diffs = compare_states(name, &pre, &post);
+        let mut post = load_state(&post_path);
+        let diffs = compare_states(name, &mut pre, &mut post);
         if diffs.is_empty() {
             pass += 1;
         } else {

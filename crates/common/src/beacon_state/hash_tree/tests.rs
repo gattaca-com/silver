@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use rand::{RngCore, SeedableRng, rngs::StdRng};
 
-use super::{DeltaHashTree, FinalisedHashTree};
+use super::{DeltaHashTree, FinalizedHashTree};
 use crate::{
     beacon_state::types::B256,
     ssz_hash::{
@@ -44,12 +44,12 @@ fn ssz_list_root(physical_root: &B256, max_elements: usize, spec_depth: u8, len:
 }
 
 #[test]
-fn test_finalised_hash_tree() {
+fn test_finalized_hash_tree() {
     let mut rng = StdRng::seed_from_u64(0xF1);
 
     for &n in &[0_usize, 1, 7, 8, 9, 1024, 1999, 2047] {
         let leaves: Vec<B256> = (0..n).map(|_| random_leaf(&mut rng)).collect();
-        let tree = FinalisedHashTree::new(&leaves, leaves.len());
+        let tree = FinalizedHashTree::new(&leaves, leaves.len());
         let got = ssz_list_root(tree.root_hash(), tree.max_elements(), SPEC_DEPTH, leaves.len());
         let want = reference_root(&leaves, SPEC_DEPTH);
         assert_eq!(got, want, "mismatch at n={n}");
@@ -61,7 +61,7 @@ fn test_deltas_hash_tree() {
     let n = 256_usize;
     let m = 200_usize; // number of updates
 
-    let base = FinalisedHashTree::new(&vec![[0u8; 32]; n], n);
+    let base = FinalizedHashTree::new(&vec![[0u8; 32]; n], n);
     let mut delta = DeltaHashTree::new_at(&base);
     let mut real_data = vec![[0u8; 32]; n];
 
@@ -84,7 +84,7 @@ fn test_promote_and_prune() {
     let n = 256_usize;
     let writes_per_fork = 32_usize;
 
-    let mut base = FinalisedHashTree::new(&vec![[0u8; 32]; n], n);
+    let mut base = FinalizedHashTree::new(&vec![[0u8; 32]; n], n);
     let mut real_data = vec![[0u8; 32]; n];
     let mut rng = StdRng::seed_from_u64(0x9A);
 
@@ -115,7 +115,7 @@ fn test_promote_and_prune() {
 
     let pre_root = base.delta_root(&fork_c);
 
-    // Finalise on the middle fork. Ancestor fork_a is dropped (its history is
+    // Finalize on the middle fork. Ancestor fork_a is dropped (its history is
     // absorbed via fork_b); fork_b's delta is folded into base; both fork_b
     // and the surviving descendant fork_c re-anchor by pruning.
     drop(fork_a);
@@ -152,7 +152,7 @@ fn fuzz_random_ops_hash_tree() {
     }
 
     let mut forks = HashMap::new();
-    let mut base = FinalisedHashTree::new(&vec![[0u8; 32]; max_leafs], max_leafs);
+    let mut base = FinalizedHashTree::new(&vec![[0u8; 32]; max_leafs], max_leafs);
     forks.insert(0, Fork {
         delta: DeltaHashTree::new_at(&base),
         real_data: Vec::new(),
@@ -162,7 +162,7 @@ fn fuzz_random_ops_hash_tree() {
     let mut next_id: usize = 1;
     let mut alive: Vec<usize> = vec![0];
 
-    let verify = |forks: &HashMap<usize, Fork>, base: &FinalisedHashTree, j: usize, ctx: &str| {
+    let verify = |forks: &HashMap<usize, Fork>, base: &FinalizedHashTree, j: usize, ctx: &str| {
         let f = &forks[&j];
         let got = ssz_list_root(
             &base.delta_root(&f.delta),
@@ -207,7 +207,7 @@ fn fuzz_random_ops_hash_tree() {
             verify(&forks, &base, next_id, &format!("at step={step}, advance"));
             next_id += 1;
         } else {
-            // Finalise the chosen fork.
+            // Finalize the chosen fork.
             let mut survivors: Vec<usize> = vec![idx];
             for &j in &alive {
                 if j == idx {

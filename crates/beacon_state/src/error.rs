@@ -1,9 +1,7 @@
+use silver_common::{B256, BLSPubkey, Slot};
 use thiserror::Error;
 
-use crate::{
-    tile::Feedback,
-    types::{B256, BLSPubkey, Slot},
-};
+use crate::tile::Feedback;
 
 #[derive(Clone, Copy, Debug, Error)]
 pub enum PrecheckError {
@@ -28,11 +26,11 @@ pub enum PrecheckError {
     )]
     ProposerLookaheadMismatch { expected: u64, got: u64, block_root: B256 },
     #[error(
-        "block proposer index precheck failed: got={got} validator_cnt={validator_cnt} \
+        "block proposer index precheck failed: got={got} validator_count={validator_count} \
          block_root=0x{}",
         b256_hex(block_root)
     )]
-    ProposerIndexTooBig { got: u64, validator_cnt: usize, block_root: B256 },
+    ProposerIndexTooBig { got: u64, validator_count: usize, block_root: B256 },
     #[error(
         "block signature precheck failed: proposer_index={proposer_index} pubkey=0x{} \
          block_root=0x{}",
@@ -117,8 +115,8 @@ pub enum BlockError {
     SlotStateMismatch { block: u64, state: u64 },
     #[error("proposer lookahead mismatch: got={got} expected={expected}")]
     ProposerLookaheadMismatch { got: u64, expected: u64 },
-    #[error("proposer_index {idx} >= validator_cnt {cnt}")]
-    ProposerOutOfRange { idx: u64, cnt: usize },
+    #[error("proposer_index {idx} >= validator_count {count}")]
+    ProposerOutOfRange { idx: u64, count: usize },
     #[error("proposer slashed: index={idx} pubkey=0x{}", pubkey_hex(pubkey))]
     ProposerSlashed { idx: u64, pubkey: BLSPubkey },
     #[error("parent root mismatch: expected=0x{} got=0x{}", b256_hex(expected), b256_hex(got))]
@@ -174,8 +172,8 @@ pub enum AttestationError {
     SlotNotPast { att_slot: u64, state_slot: u64 },
     #[error("target_epoch mismatch: expected={att} got={target}")]
     TargetEpochMismatch { target: u64, att: u64 },
-    #[error("target_epoch {target} not in [prev={prev}, cur={cur}]")]
-    TargetEpochOutOfWindow { target: u64, prev: u64, cur: u64 },
+    #[error("target_epoch {target} not in [prev={prev}, curr={curr}]")]
+    TargetEpochOutOfWindow { target: u64, prev: u64, curr: u64 },
     #[error("attestation index {idx} != 0")]
     IndexNonZero { idx: u64 },
     #[error("attestations list bad offsets: start={start} end={end} parent_len={parent_len}")]
@@ -186,10 +184,10 @@ pub enum AttestationError {
     EmptyShuffling,
     #[error("committee_bits == 0")]
     EmptyCommitteeBits,
-    #[error("committee_bits {bits:#x} overflow committees_per_slot {cps}")]
-    CommitteeBitsOverflow { cps: usize, bits: u64 },
-    #[error("validator index {vi} >= validator_cnt {cnt}")]
-    ValidatorOutOfRange { vi: usize, cnt: usize },
+    #[error("committee_bits {bits:#x} overflow committees_per_slot {committees_per_slot}")]
+    CommitteeBitsOverflow { committees_per_slot: usize, bits: u64 },
+    #[error("validator index {vi} >= validator_count {count}")]
+    ValidatorOutOfRange { vi: usize, count: usize },
     #[error(
         "source mismatch: expected (epoch={expected_epoch}, root=0x{}) got (epoch={got_epoch}, root=0x{})",
         b256_hex(expected_root),
@@ -212,8 +210,8 @@ pub enum ProposerSlashingError {
     SlotMismatch { h1: u64, h2: u64 },
     #[error("h1 and h2 are the same signed header (not slashable)")]
     SameHeader,
-    #[error("validator index {vi} >= validator_cnt {cnt}")]
-    ValidatorOutOfRange { vi: usize, cnt: usize },
+    #[error("validator index {vi} >= validator_count {count}")]
+    ValidatorOutOfRange { vi: usize, count: usize },
     #[error("validator {vi} (pubkey=0x{}) not slashable in epoch {epoch}", pubkey_hex(pubkey))]
     NotSlashable { vi: usize, pubkey: BLSPubkey, epoch: u64 },
 }
@@ -228,8 +226,8 @@ pub enum AttesterSlashingError {
         "bad inner IndexedAttestation offsets: off1={off1} off2={off2} slashing_len={slashing_len}"
     )]
     BadInnerOffsets { off1: usize, off2: usize, slashing_len: usize },
-    #[error("validator index {vi} >= validator_cnt {cnt}")]
-    ValidatorOutOfRange { vi: usize, cnt: usize },
+    #[error("validator index {vi} >= validator_count {count}")]
+    ValidatorOutOfRange { vi: usize, count: usize },
     #[error("attestation data pair is not slashable")]
     NotSlashableData,
     #[error("attesting_indices not strictly ascending")]
@@ -240,8 +238,8 @@ pub enum AttesterSlashingError {
 
 #[derive(Debug, Error)]
 pub enum VoluntaryExitError {
-    #[error("validator index {vi} >= validator_cnt {cnt}")]
-    ValidatorOutOfRange { vi: usize, cnt: usize },
+    #[error("validator index {vi} >= validator_count {count}")]
+    ValidatorOutOfRange { vi: usize, count: usize },
     #[error("validator {vi} (pubkey=0x{}) not active in epoch {epoch}", pubkey_hex(pubkey))]
     NotActive { vi: usize, pubkey: BLSPubkey, epoch: u64 },
     #[error("validator {vi} (pubkey=0x{}) already exiting", pubkey_hex(pubkey))]
@@ -259,8 +257,8 @@ pub enum VoluntaryExitError {
 
 #[derive(Debug, Error)]
 pub enum BlsToExecutionChangeError {
-    #[error("validator index {vi} >= validator_cnt {cnt}")]
-    ValidatorOutOfRange { vi: usize, cnt: usize },
+    #[error("validator index {vi} >= validator_count {count}")]
+    ValidatorOutOfRange { vi: usize, count: usize },
     #[error(
         "validator {vi} (pubkey=0x{}) credentials prefix is not BLS_WITHDRAWAL (got {prefix:#x})",
         pubkey_hex(pubkey)
@@ -279,8 +277,8 @@ pub enum BlsToExecutionChangeError {
 
 #[derive(Debug, Error)]
 pub enum SyncAggregateError {
-    #[error("proposer index {idx} >= validator_cnt {cnt}")]
-    ProposerOutOfRange { idx: u64, cnt: usize },
+    #[error("proposer index {idx} >= validator_count {count}")]
+    ProposerOutOfRange { idx: u64, count: usize },
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

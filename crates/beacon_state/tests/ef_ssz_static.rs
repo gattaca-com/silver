@@ -81,7 +81,7 @@ fn beacon_block_body() {
 #[test]
 fn beacon_block_header() {
     run_ssz_static("BeaconBlockHeader", move |ssz| {
-        let h = silver_beacon_state::types::BeaconBlockHeader {
+        let h = silver_common::BeaconBlockHeader {
             slot: u64::from_le_bytes(ssz[0..8].try_into().unwrap()),
             proposer_index: u64::from_le_bytes(ssz[8..16].try_into().unwrap()),
             parent_root: ssz[16..48].try_into().unwrap(),

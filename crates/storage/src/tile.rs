@@ -183,7 +183,7 @@ impl StorageTile {
 
             (
                 util::is_above_finalized(buffer, epoch_state.finalized_checkpoint.epoch),
-                util::parent_validated(buffer, v.finalised_block_roots(), v.delta_block_roots()),
+                util::parent_validated(buffer, v.finalized_block_roots(), v.delta_block_roots()),
                 proposer_matches,
                 pubkey,
                 v.fork_current_version(),
@@ -194,7 +194,7 @@ impl StorageTile {
             checks;
 
         if !above_finalized {
-            tracing::warn!(?stream_id, "sidecar slot at or below finalised");
+            tracing::warn!(?stream_id, "sidecar slot at or below finalized");
             return Some((block_root, column_bitmask));
         }
         if !parent_validated {

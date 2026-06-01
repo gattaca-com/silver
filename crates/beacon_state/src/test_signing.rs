@@ -1,23 +1,23 @@
-//! Test-only BLS signing kit. Holds the spec test private keys and per-
-//! message builders that emit fully signed SSZ buffers for the gossip
-//! handlers. Lives behind `cfg(test)` and is `pub(crate)` so unit tests in
-//! any module can drive Accept-path coverage without duplicating sig math.
+//! Test-only BLS signing kit emitting signed SSZ buffers for the gossip
+//! handlers.
 
 #![allow(dead_code)]
 #![allow(clippy::too_many_arguments)]
 
 use blst::min_pk::{PublicKey, SecretKey};
-use silver_common::ssz_view::{
-    AttestationDataView, IndexedAttestationView, PROPOSER_SLASHING_SIZE, ProposerSlashingView,
-    SIGNED_AGG_PROOF_MIN, SIGNED_BLS_CHANGE_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE,
-    SignedAggregateAndProofView, SignedBlsToExecutionChangeView, SignedVoluntaryExitView,
-    SingleAttestationView,
+use silver_common::{
+    B256, BLSPubkey, BeaconBlockHeader, Immutable, SLOTS_PER_EPOCH,
+    ssz_view::{
+        AttestationDataView, IndexedAttestationView, PROPOSER_SLASHING_SIZE, ProposerSlashingView,
+        SIGNED_AGG_PROOF_MIN, SIGNED_BLS_CHANGE_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE,
+        SignedAggregateAndProofView, SignedBlsToExecutionChangeView, SignedVoluntaryExitView,
+        SingleAttestationView,
+    },
 };
 
 use crate::{
     bls,
     ssz_hash::{self, hash_tree_root_block_header},
-    types::{B256, BLSPubkey, BeaconBlockHeader, Immutable, SLOTS_PER_EPOCH},
 };
 
 const DST: &[u8] = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_";

@@ -1,33 +1,22 @@
-//! Delta layer — persistent delta over a `FinalisedHashTree`.
+//! Persistent delta over `FinalizedHashTree`. Mutation clones a fresh
+//! `Arc<DeltaNode>` along the path to the touched leaf; sibling subtrees
+//! stay as `Base(n)` pointers into the finalized array.
 //!
-//! Mutation clones a fresh `Arc<DeltaNode>` along the path to the touched
-//! leaf; sibling subtrees stay as `Base(node)` pointers into the finalised
-//! array. Reads walk the delta path and fall through to the base on the
-//! first clean subtree.
-//!
-//! ## Promotion safety
-//!
-//! When fork F promotes into base, every surviving fork is a *descendant*
-//! of F (consensus kills siblings), built by cloning F's delta. So each
-//! descendant's view at any node equals base's new view:
-//! - subtrees F didn't touch are `Base(n)` and unchanged in base;
-//! - subtrees F modified live in base with hash equal to the cached
-//!   `DeltaNode.hash` on the descendant's shared `Arc<DeltaNode>` chain.
-//!
-//! Descendants stay correct with no rewrite. As an optimisation,
-//! `prune_delta_at` then collapses any `Arc<DeltaNode>` whose cached hash
-//! matches base back into `Base(n)`, freeing the now-redundant chains.
+//! Promotion safety: every survivor is a descendant of the promoted fork,
+//! so unchanged subtrees still point at base and modified ones already
+//! cache the post-promotion hash. `prune_delta_at` collapses redundant
+//! `Arc<DeltaNode>` chains whose cached hash matches base.
 
 use std::sync::Arc;
 
-use super::finalised::FinalisedHashTree;
+use super::finalized::FinalizedHashTree;
 use crate::{
     beacon_state::{buffer::Reset, types::B256},
     ssz_hash::hash_concat,
 };
 
-/// Per-fork delta on top of a [`FinalisedHashTree`]. Three states:
-/// - `Base(node)`: subtree lives in the finalised base at `node`.
+/// Per-fork delta on top of a [`FinalizedHashTree`]. Three states:
+/// - `Base(node)`: subtree lives in the finalized base at `node`.
 /// - `Leaf(value)`: a delta leaf (depth = leaf row); `value` IS the hash.
 /// - `Node(Arc<DeltaNode>)`: a delta internal node with cached hash + children.
 ///
@@ -47,21 +36,21 @@ pub enum DeltaHashTree {
 }
 
 impl DeltaHashTree {
-    pub fn new_at(_base: &FinalisedHashTree) -> Self {
-        Self::Base(FinalisedHashTree::root())
+    pub fn new_at(_base: &FinalizedHashTree) -> Self {
+        Self::Base(FinalizedHashTree::root())
     }
 }
 
 impl Default for DeltaHashTree {
     fn default() -> Self {
         // The root node is index 1 (1-indexed segment tree).
-        Self::Base(FinalisedHashTree::root())
+        Self::Base(FinalizedHashTree::root())
     }
 }
 
 impl Reset for DeltaHashTree {
     fn reset(&mut self) {
-        *self = Self::Base(FinalisedHashTree::root());
+        *self = Self::Base(FinalizedHashTree::root());
     }
 
     fn reset_from(&mut self, other: &Self) {
@@ -77,7 +66,7 @@ pub struct DeltaNode {
     pub right: DeltaHashTree,
 }
 
-impl FinalisedHashTree {
+impl FinalizedHashTree {
     #[inline]
     pub(super) fn resolve_delta_hash(&self, delta: &DeltaHashTree) -> B256 {
         match delta {

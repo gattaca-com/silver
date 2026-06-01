@@ -1,27 +1,15 @@
-//! Loads a real mainnet finalized state SSZ from disk, bootstraps a
-//! `BeaconStateTile` from it, and applies the next N canonical blocks. Both
-//! the state blob and the following-block fixtures are large and gitignored
-//! — fetch them locally with:
-//!
-//! ```sh
-//! make -C crates/e2e checkpoint-fixtures
-//! ```
-//!
-//! Files land in `tests/example_checkpoints/`: `finalized_state.ssz` plus
-//! one `next_block_<slot>.ssz` per following block. The test scans for
-//! `next_block_*.ssz`, sorts by slot, and applies them in order.
+//! Bootstraps `BeaconStateTile` from a real mainnet finalized state and
+//! applies the following blocks. Fixtures are gitignored; fetch with
+//! `make -C crates/e2e checkpoint-fixtures`.
 
 use std::{path::PathBuf, time::Duration};
 
 use silver_beacon_state::{
-    decompose::decompose_beacon_state,
     ssz_hash::hash_tree_root_block_header,
     ticker::SlotTicker,
     tile::{BeaconStateTile, Feedback},
-    types::{EpochData, HistoricalLongtail, Immutable, SlotData, SlotRoots, box_zeroed},
-    validator_identity::FinalizedValidators,
 };
-use silver_common::{TCache, TCacheProducer};
+use silver_common::{BeaconState, BeaconStateOwner, Finalized, SpecConfig, TCache, TCacheProducer};
 use silver_e2e::mainnet_api::fetch_canonical_state_root;
 
 const FIXTURES: &str = "tests/example_checkpoints";
@@ -40,9 +28,8 @@ fn finalized_state_loads() {
         return;
     };
 
-    // Position the ticker against the SSZ's own genesis_time (byte 0, u64 LE)
-    // so `current_slot()` returns the real mainnet slot — otherwise
-    // `precheck_block` ignores the following blocks as "future slot".
+    // Ticker against the SSZ's genesis_time so `current_slot()` returns the
+    // real mainnet slot — otherwise `precheck_block` ignores blocks as future.
     let genesis_time = u64::from_le_bytes(ssz[0..8].try_into().unwrap());
     let ticker = SlotTicker::new(genesis_time, Duration::from_secs(12), Duration::from_secs(4));
     let gossip_p = TCache::producer("gossip_in", 1 << 20);
@@ -50,9 +37,11 @@ fn finalized_state_loads() {
     let gossip_c = gossip_p.cache_ref().random_access("test", false).unwrap();
     let rpc_c = rpc_p.cache_ref().random_access("test", false).unwrap();
 
-    let mut tile = BeaconStateTile::new_heap(
+    let state = BeaconStateOwner::new(BeaconState::empty());
+    let mut tile = BeaconStateTile::new(
         ticker,
         silver_common::SpecConfig::mainnet(),
+        state,
         gossip_c,
         rpc_c,
         &ssz,
@@ -62,27 +51,13 @@ fn finalized_state_loads() {
     assert_ne!(head, [0u8; 32], "head_block_root is zero after bootstrap");
     assert_eq!(tile.fork_choice_head(), head, "find_head should return head_block_root");
 
-    // Offline regression assertion: a bootstrap that forgets to patch
-    // `latest_block_header.state_root` would have produced the raw-header
-    // hash; verify that didn't happen.
-    let mut imm: Box<Immutable> = box_zeroed();
-    let mut validators: Box<FinalizedValidators> = Box::new(FinalizedValidators::new(&[], &[]));
-    let mut longtail: Box<HistoricalLongtail> = box_zeroed();
-    let mut epoch: Box<EpochData> = box_zeroed();
-    let mut roots: Box<SlotRoots> = box_zeroed();
-    let mut sd: Box<SlotData> = box_zeroed();
-    decompose_beacon_state(
-        &ssz,
-        &mut imm,
-        &mut validators,
-        &mut longtail,
-        &mut epoch,
-        &mut roots,
-        &mut sd,
-    )
-    .expect("re-decompose");
-    if sd.latest_block_header.state_root == [0u8; 32] {
-        let raw_root = hash_tree_root_block_header(&sd.latest_block_header);
+    // Regression: bootstrap must patch `latest_block_header.state_root` before
+    // hashing, otherwise the head root is the raw-header hash.
+    let mut fin = Box::new(Finalized::empty());
+    fin.decompose(&ssz, &SpecConfig::mainnet()).expect("decompose");
+    let raw_header = fin.slot.slot.latest_block_header;
+    if raw_header.state_root == [0u8; 32] {
+        let raw_root = hash_tree_root_block_header(&raw_header);
         assert_ne!(
             head, raw_root,
             "bootstrap returned the raw-header hash; it should patch state_root first",
@@ -99,16 +74,9 @@ fn finalized_state_loads() {
         return;
     }
 
-    // Apply each in order. Each block's parent_root must equal the previous
-    // head_block_root (or, for the first one, the bootstrap anchor root —
-    // unless empty slots separate them, in which case `process_slots`
-    // advances over them and the chain still descends from the same anchor
-    // by transitivity, so this assertion still holds for the very next
-    // non-empty block whose parent is the anchor).
     let mut prev_head = head;
     for (block_slot, block_ssz) in blocks.drain(..) {
-        // SignedBeaconBlock: sig(96) + BeaconBlock{ slot@100, prop@108,
-        // parent_root@116, state_root@148, body_off@180 }.
+        // parent_root sits at offset 116 in SignedBeaconBlock SSZ.
         let parent_root: [u8; 32] = block_ssz[116..148].try_into().unwrap();
         assert_eq!(
             parent_root,
@@ -132,11 +100,8 @@ fn finalized_state_loads() {
         prev_head = tile.head_block_root();
     }
 
-    // External-truth cross-check: the canonical post-state root for the
-    // most recently applied block's slot, fetched from a public beacon
-    // API. Skipped silently if the network or API is unavailable —
-    // offline runs still cover STF correctness via the per-block Accept
-    // assertion above.
+    // Cross-check the final post-state root against a canonical beacon API.
+    // Silent skip when offline — STF correctness is still covered above.
     let final_slot = tile.head_state_slot();
     match fetch_canonical_state_root(final_slot) {
         Some(expected) => {
@@ -184,4 +149,53 @@ fn list_block_fixtures(dir: &std::path::Path) -> Vec<(u64, Vec<u8>)> {
 
 fn hex(b: &[u8; 32]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+/// Bootstrap from an EF pre-state and apply its first block via the tile.
+/// If this rejects, the bug is in the tile's bootstrap/apply (not in STF).
+#[test]
+fn tile_apply_block_ef_fixture() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../beacon_state/consensus-spec-tests/tests/mainnet/fulu/sanity/blocks/pyspec_tests/attestation");
+    let pre_path = dir.join("pre.ssz_snappy");
+    let block_path = dir.join("blocks_0.ssz_snappy");
+    if !pre_path.exists() || !block_path.exists() {
+        eprintln!("skipping: EF fixture not present at {}", dir.display());
+        return;
+    }
+    let pre_ssz = snap::raw::Decoder::new()
+        .decompress_vec(&std::fs::read(&pre_path).unwrap())
+        .expect("snappy pre");
+    let block_ssz = snap::raw::Decoder::new()
+        .decompress_vec(&std::fs::read(&block_path).unwrap())
+        .expect("snappy block");
+
+    // Offset genesis_time so wall_slot is far ahead of the small EF slot.
+    let genesis_time = u64::from_le_bytes(pre_ssz[0..8].try_into().unwrap());
+    let ticker = SlotTicker::new(
+        genesis_time.saturating_sub(60 * 60 * 24 * 365),
+        Duration::from_secs(12),
+        Duration::from_secs(4),
+    );
+    let gossip_p = TCache::producer("gossip_ef", 1 << 20);
+    let rpc_p = TCache::producer("rpc_ef", 1 << 20);
+    let gossip_c = gossip_p.cache_ref().random_access("test", false).unwrap();
+    let rpc_c = rpc_p.cache_ref().random_access("test", false).unwrap();
+
+    let state = BeaconStateOwner::new(BeaconState::empty());
+    let mut tile = BeaconStateTile::new(
+        ticker,
+        silver_common::SpecConfig::mainnet(),
+        state,
+        gossip_c,
+        rpc_c,
+        &pre_ssz,
+    );
+
+    let fb = tile.try_apply_block(&block_ssz);
+    assert_eq!(
+        fb,
+        Feedback::Accept,
+        "EF block rejected through tile (bootstrap or apply path is buggy, independent of mainnet scale)",
+    );
 }

@@ -28,6 +28,7 @@ are skipped.
 | `checkpoint_load.rs` | Boot `BeaconStateTile` from `finalized_state.ssz`, apply the `next_block_*.ssz` blocks in order, cross-check post-state root against lodestar. |
 | `sync_pm_bs.rs` | PM + BS on one spine, synthetic peer; PM issues two `BlocksByRange` batches (`max_batch=2`) covering 4 blocks; final `head_state_root` cross-checked against lodestar. |
 | `sync_pm_bs_one_batch.rs` | Same wiring, one big batch over all fetched blocks. Skips unless ≥ 64 blocks on disk (`make checkpoint-fixtures-large`). Stresses sustained STF + body parser. |
+| `sync_pm_bs_perf.rs` | Perf-regression harness over `data/perf` fixtures (`#[ignore]`d; run via `just perf-local`, see `docs/perf-regression-test.md`). |
 | `lh_handshake.rs` | QUIC handshake silver ↔ rust-libp2p (both directions). `lh-client`. |
 | `lh_identify.rs` | `/ipfs/id/1.0.0` round-trip vs rust-libp2p. `lh-client`. |
 | `lh_rpc.rs` | Eth2 RPC round-trips (Ping / StatusV2 / MetaData) vs rust-libp2p. `lh-client`. |

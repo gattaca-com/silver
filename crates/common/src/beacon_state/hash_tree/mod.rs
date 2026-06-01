@@ -1,32 +1,24 @@
-//! Two-layer persistent hash tree for SSZ `List[T, N]` fields where N is
-//! large (e.g. `VALIDATOR_REGISTRY_LIMIT = 1 << 40`).
-//!
-//! - [`FinalisedHashTree`] — flat segment tree owned by the finalised base.
-//! - [`DeltaHashTree`] — per-fork sparse overlay riding on `Arc<DeltaNode>`.
-//!   Cheap to clone (Arc bump); cheap to roll into a `DeltaBuffer` ring slot
-//!   (`Reset::reset_from` is an `Arc::clone`).
-//!
-//! Callers compose the two via [`FinalisedHashTree`]'s `set_delta_leaf` /
-//! `delta_root` / `promote_delta` / `prune_delta` helpers. There is no
-//! persistent merged wrapper — the view layer combines `&FinalisedHashTree`
-//! + `&mut DeltaHashTree` ephemerally.
+//! Two-layer persistent hash tree for big SSZ `List[T, N]` fields:
+//! `FinalizedHashTree` (flat segment tree on the finalized base) +
+//! `DeltaHashTree` (per-fork sparse `Arc<DeltaNode>` overlay). The view
+//! layer composes them ephemerally via the helpers below.
 
 mod delta;
-mod finalised;
+mod finalized;
 
 #[cfg(test)]
 mod tests;
 
 pub use delta::DeltaHashTree;
-pub use finalised::FinalisedHashTree;
+pub use finalized::FinalizedHashTree;
 
 use crate::beacon_state::types::B256;
 
-impl FinalisedHashTree {
+impl FinalizedHashTree {
     /// Write `leaf` to position `i` of the delta. Sparse: only the path
     /// from leaf `i` up to the root is materialised on the delta; sibling
     /// subtrees remain `DeltaHashTree::Base(...)` pointers into the
-    /// finalised array.
+    /// finalized array.
     #[inline]
     pub fn set_delta_leaf(&self, delta: &mut DeltaHashTree, i: usize, leaf: B256) {
         debug_assert!(
@@ -37,13 +29,13 @@ impl FinalisedHashTree {
         *delta = self.set_delta_leaf_in_range(delta, i as u32, 0, self.max_elements() as u32, leaf);
     }
 
-    /// Effective root of the (finalised + delta) merged tree.
+    /// Effective root of the (finalized + delta) merged tree.
     #[inline]
     pub fn delta_root(&self, delta: &DeltaHashTree) -> B256 {
         self.resolve_delta_hash(delta)
     }
 
-    /// Fold `delta`'s precomputed internal-node hashes into the finalised
+    /// Fold `delta`'s precomputed internal-node hashes into the finalized
     /// flat array (no SHA-256 work). Caller is expected to follow up with
     /// `prune_delta` on every surviving descendant so unused chains drop.
     #[inline]

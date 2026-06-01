@@ -1,6 +1,7 @@
-use silver_common::ssz_hash::sha256;
-
-use crate::types::{B256, EPOCHS_PER_HISTORICAL_VECTOR, Epoch, EpochData, SLOTS_PER_EPOCH};
+use silver_common::{
+    B256, EPOCHS_PER_HISTORICAL_VECTOR, Epoch, MIN_SEED_LOOKAHEAD, SLOTS_PER_EPOCH, StateDeltaView,
+    ssz_hash::sha256,
+};
 
 const SHUFFLE_ROUND_COUNT: u8 = 90;
 
@@ -11,20 +12,25 @@ pub const DOMAIN_SYNC_COMMITTEE: u32 = 7;
 
 const TARGET_COMMITTEE_SIZE: usize = 128;
 const MAX_COMMITTEES_PER_SLOT: usize = 64;
-const MIN_SEED_LOOKAHEAD: u64 = 1;
 
-/// seed = SHA256(domain_bytes || epoch_bytes || randao_mix)
-pub fn get_seed(epoch: &EpochData, e: Epoch, domain: u32) -> B256 {
-    let mix_epoch = e + EPOCHS_PER_HISTORICAL_VECTOR as u64 - MIN_SEED_LOOKAHEAD - 1;
-    let mix_idx = mix_epoch as usize % EPOCHS_PER_HISTORICAL_VECTOR;
-    let mix = &epoch.randao_mixes[mix_idx];
-
+/// seed = SHA256(domain_bytes || epoch_bytes || randao_mix). Caller supplies
+/// the already-resolved randao mix for `e + EPOCHS_PER_HISTORICAL_VECTOR -
+/// MIN_SEED_LOOKAHEAD - 1`.
+pub fn get_seed(mix: &B256, e: Epoch, domain: u32) -> B256 {
     let mut preimage = [0u8; 4 + 8 + 32];
     preimage[0..4].copy_from_slice(&domain.to_le_bytes());
     preimage[4..12].copy_from_slice(&e.to_le_bytes());
     preimage[12..44].copy_from_slice(mix);
 
     sha256(&preimage)
+}
+
+/// Convenience for callers holding a state view: resolves the seed-epoch's
+/// randao mix via the view layer.
+pub fn get_seed_from_state(view: &StateDeltaView, e: Epoch, domain: u32) -> B256 {
+    let mix_epoch = e + EPOCHS_PER_HISTORICAL_VECTOR as u64 - MIN_SEED_LOOKAHEAD - 1;
+    let mix = view.randao_mix_at_epoch(mix_epoch);
+    get_seed(&mix, e, domain)
 }
 
 /// Shuffle a list of indices in place using the swap-or-not algorithm.
@@ -112,9 +118,11 @@ pub fn get_beacon_committee(
     &shuffled[start..end]
 }
 
+/// `effective_balances[vi]` must be indexable for every `vi` that appears in
+/// `active_indices` (i.e. supply the materialised per-validator column).
 pub fn compute_proposer_index(
-    epoch_data: &EpochData,
     active_indices: &[u32],
+    effective_balances: &[u64],
     slot: u64,
     seed: &B256,
 ) -> usize {
@@ -130,7 +138,7 @@ pub fn compute_proposer_index(
 
     let mut sampler = WeightedSampler::new(&proposer_seed, active_indices.len());
     loop {
-        let (candidate, accepted) = sampler.next(active_indices, &epoch_data.val_effective_balance);
+        let (candidate, accepted) = sampler.next(active_indices, effective_balances);
         if accepted {
             return candidate;
         }
@@ -232,17 +240,17 @@ fn compute_shuffled_index_with_pivots(
     index
 }
 
-/// Append active validator indices for `epoch` into `out` (does not clear
-/// first — caller-controlled). `n` is `ValidatorsData.validator_cnt`.
-pub fn get_active_validator_indices_into(
-    epoch_data: &EpochData,
-    n: usize,
-    epoch: Epoch,
-    out: &mut Vec<u32>,
-) {
+/// Append active validator indices for `epoch` into `out`. Single sweep over
+/// activation/exit epoch columns — O(N + |edits|).
+pub fn get_active_validator_indices_into(view: &StateDeltaView, epoch: Epoch, out: &mut Vec<u32>) {
     out.clear();
+    let n = view.validators_count();
+    let mut act = view.iter_activation_epochs();
+    let mut exit = view.iter_exit_epochs();
     for i in 0..n {
-        if epoch_data.val_activation_epoch[i] <= epoch && epoch < epoch_data.val_exit_epoch[i] {
+        let a = act.next().unwrap();
+        let x = exit.next().unwrap();
+        if a <= epoch && epoch < x {
             out.push(i as u32);
         }
     }
@@ -273,16 +281,16 @@ mod tests {
     #[test]
     fn committee_slicing() {
         let shuffled: Vec<u32> = (0..640).collect();
-        let cps = 2;
+        let committees_per_slot = 2;
 
-        let c = get_beacon_committee(&shuffled, 0, 0, cps);
+        let c = get_beacon_committee(&shuffled, 0, 0, committees_per_slot);
         assert_eq!(c.len(), 10);
 
-        let c1 = get_beacon_committee(&shuffled, 0, 1, cps);
+        let c1 = get_beacon_committee(&shuffled, 0, 1, committees_per_slot);
         assert_eq!(c1.len(), 10);
         assert_ne!(c[0], c1[0]);
 
-        let c_last = get_beacon_committee(&shuffled, 31, 1, cps);
+        let c_last = get_beacon_committee(&shuffled, 31, 1, committees_per_slot);
         assert_eq!(c_last.len(), 10);
     }
 

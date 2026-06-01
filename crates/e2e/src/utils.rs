@@ -5,10 +5,10 @@ use std::time::Duration;
 use flux::{spine::SpineAdapter, tile::Tile};
 use silver_beacon_state::{ticker::SlotTicker, tile::BeaconStateTile};
 use silver_common::{
-    BeaconStateEvent, IpBytes, Keypair, P2pSend, P2pStreamId, PeerControl, PeerEvent, PeerId,
-    RpcInbound, RpcOutbound, RpcRequest, RpcRequestOutbound, RpcResponse, RpcResponseInbound,
-    ScoreParams, SilverSpine, SpecConfig, StreamProtocol, SyncingConfig, TCache, TCacheProducer,
-    TCacheRead, TProducer,
+    BeaconState, BeaconStateEvent, BeaconStateOwner, IpBytes, Keypair, P2pSend, P2pStreamId,
+    PeerControl, PeerEvent, PeerId, RpcInbound, RpcOutbound, RpcRequest, RpcRequestOutbound,
+    RpcResponse, RpcResponseInbound, ScoreParams, SilverSpine, SpecConfig, StreamProtocol,
+    SyncingConfig, TCache, TCacheProducer, TCacheRead, TProducer,
     ssz_view::{
         BeaconBlocksByRangeRequestView, METADATA_SIZE, STATUS_V2_SIZE, SignedBeaconBlockView,
         StatusView,
@@ -115,9 +115,10 @@ impl PmBsHarness {
         let gossip_c = gossip_p.cache_ref().random_access("test", true).expect("gossip ra");
         let rpc_c = rpc_p.cache_ref().random_access("test", true).expect("rpc ra");
 
+        let state = BeaconStateOwner::new(BeaconState::empty());
         let mut bs =
-            BeaconStateTile::new_heap(ticker, SpecConfig::mainnet(), gossip_c, rpc_c, checkpoint);
-        let mut bs_a = SpineAdapter::connect_tile(&bs, &mut spine);
+            BeaconStateTile::new(ticker, SpecConfig::mainnet(), state, gossip_c, rpc_c, checkpoint);
+        let mut bs_a = SpineAdapter::connect_tile(&bs, &mut *spine);
 
         let pm = PeerManager::new(
             Vec::new(),
@@ -255,7 +256,7 @@ impl PmBsHarness {
         self.bs.head_state_slot()
     }
 
-    pub fn head_state_root(&self) -> [u8; 32] {
+    pub fn head_state_root(&mut self) -> [u8; 32] {
         self.bs.head_state_root()
     }
 
