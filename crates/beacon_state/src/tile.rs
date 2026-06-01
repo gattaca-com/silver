@@ -26,7 +26,7 @@ use silver_common::{
 };
 
 use crate::{
-    MAX_VALIDATORS, bls, box_zeroed,
+    bls,
     epoch_transition::{EPOCHS_PER_SYNC_COMMITTEE_PERIOD, MAX_PENDING_DEPOSITS_PER_EPOCH},
     error::PrecheckError,
     fork_choice::{BlockImport, ForkChoice, VoteTracker, compute_deltas},
@@ -81,12 +81,25 @@ pub struct ShufflingCache {
     pub entries: [ShufflingEntry; MAX_SHUFFLING_CACHE],
 }
 
+impl ShufflingCache {
+    pub fn with_capacity(capacity: usize) -> Box<Self> {
+        Box::new(Self {
+            entries: std::array::from_fn(|_| ShufflingEntry {
+                epoch: 0,
+                mix: [0u8; 32],
+                status: 0,
+                shuffled_indices: Vec::with_capacity(capacity),
+            }),
+        })
+    }
+}
+
 pub struct ShufflingEntry {
     pub epoch: Epoch,
     pub mix: B256,
     /// 0=empty, 1=valid
     pub status: u64,
-    pub shuffled_indices: flux::utils::ArrayVec<u32, MAX_VALIDATORS>,
+    pub shuffled_indices: Vec<u32>,
 }
 
 pub struct BeaconStateTile {
@@ -155,6 +168,7 @@ impl BeaconStateTile {
         rpc_consumer: TRandomAccess,
         checkpoint_state: &[u8],
     ) -> Self {
+        let val_cap = state.state().finalized.validators.capacity();
         let mut tile = Self {
             // Boot in Syncing. PM's first `SyncUpdate::Following` flips us
             // once peer Status data confirms we're caught up.
@@ -163,21 +177,21 @@ impl BeaconStateTile {
             spec,
             state,
             fork_choice: ForkChoice::default(),
-            vote_tracker: box_zeroed(),
-            shuffling_cache: box_zeroed(),
+            vote_tracker: VoteTracker::with_capacity(val_cap),
+            shuffling_cache: ShufflingCache::with_capacity(val_cap),
             last_applied: 0,
             last_applied_block_root: [0u8; 32],
             initial_status_emitted: false,
             cached_fork_digest: None,
-            active_scratch: Vec::with_capacity(MAX_VALIDATORS.max(MAX_ATTESTING_INDICES)),
+            active_scratch: Vec::with_capacity(val_cap.max(MAX_ATTESTING_INDICES)),
             postponed_scratch: Vec::with_capacity(MAX_PENDING_DEPOSITS_PER_EPOCH),
             attestation_votes_scratch: Vec::with_capacity(
                 MAX_ATTESTATIONS_ELECTRA * MAX_ATTESTING_INDICES,
             ),
-            replace_u64_scratch: Vec::with_capacity(MAX_VALIDATORS),
-            replace_u8_scratch: Vec::with_capacity(MAX_VALIDATORS),
-            eff_scratch: Vec::with_capacity(MAX_VALIDATORS),
-            prev_eff_balances: Vec::with_capacity(MAX_VALIDATORS),
+            replace_u64_scratch: Vec::with_capacity(val_cap),
+            replace_u8_scratch: Vec::with_capacity(val_cap),
+            eff_scratch: Vec::with_capacity(val_cap),
+            prev_eff_balances: Vec::with_capacity(val_cap),
             sig_batch: bls::SigBatch::new(),
             state_hash_scratch: ssz_hash::StateHashScratch::new(),
             gossip_consumer,
@@ -261,6 +275,11 @@ impl BeaconStateTile {
             sd.validators = validators;
             sd.slot = SlotStateDelta { slot: bs.finalized.slot.slot, ..Default::default() };
         }
+
+        // Fresh state is correct here — nothing predates the anchor.
+        let cap = self.state.state().finalized.validators.capacity();
+        self.vote_tracker = VoteTracker::with_capacity(cap);
+        self.shuffling_cache = ShufflingCache::with_capacity(cap);
 
         // Anchor block root. Compute on a local header copy so the state's
         // `latest_block_header.state_root` stays `[0;32]` — the first
@@ -1731,7 +1750,7 @@ mod tests {
         let event_p = TCache::producer("test_event", 1 << 20);
         let gossip_c = gossip_p.cache_ref().random_access("test_gossip", true).unwrap();
         let rpc_c = event_p.cache_ref().random_access("test_event", true).unwrap();
-        let state = BeaconStateOwner::new(BeaconState::default());
+        let state = BeaconStateOwner::new(BeaconState::empty());
         BeaconStateTile::new(ticker, SpecConfig::mainnet(), state, gossip_c, rpc_c, &[])
     }
 
@@ -1781,7 +1800,7 @@ mod tests {
     /// with the finalized slot scalars, and arm fork choice + the start-epoch
     /// attester shuffling at the anchor.
     fn arm_tile(tile: &mut BeaconStateTile, fin: Box<Finalized>, start_slot: Slot) {
-        let mut bs = BeaconState::default();
+        let mut bs = BeaconState::empty();
         bs.finalized = *fin;
         let mut owner = BeaconStateOwner::new(bs);
 

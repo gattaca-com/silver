@@ -6,11 +6,13 @@ use crate::{
         FinalizedValidators, ValidatorsDecodeError,
         types::{
             B256, Checkpoint, EPOCHS_PER_HISTORICAL_VECTOR, EPOCHS_PER_SLASHINGS_VECTOR,
-            EpochStateDelta, Eth1Data, ExecutionPayloadHeader, Finalized, HISTORICAL_ROOTS_LIMIT,
-            HistoricalSummary, LongtailState, MAX_ETH1_VOTES, PENDING_CONSOLIDATIONS_LIMIT,
-            PENDING_DEPOSITS_LIMIT, PENDING_PARTIAL_WITHDRAWALS_LIMIT, PROPOSER_LOOKAHEAD_SIZE,
-            PendingConsolidation, PendingDeposit, PendingPartialWithdrawal, SLOTS_PER_EPOCH,
-            SLOTS_PER_HISTORICAL_ROOT, SYNC_COMMITTEE_SIZE, StateDelta, SyncCommittee, Withdrawals,
+            EpochStateDelta, Eth1Data, ExecutionPayloadHeader, Finalized, FinalizedBalances,
+            FinalizedCurrentParticipation, FinalizedInactivityScores,
+            FinalizedPreviousParticipation, HISTORICAL_ROOTS_LIMIT, HistoricalSummary,
+            LongtailState, MAX_ETH1_VOTES, PENDING_CONSOLIDATIONS_LIMIT, PENDING_DEPOSITS_LIMIT,
+            PENDING_PARTIAL_WITHDRAWALS_LIMIT, PROPOSER_LOOKAHEAD_SIZE, PendingConsolidation,
+            PendingDeposit, PendingPartialWithdrawal, SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT,
+            SYNC_COMMITTEE_SIZE, StateDelta, SyncCommittee, Withdrawals,
         },
     },
     ssz_hash,
@@ -432,6 +434,13 @@ impl Finalized {
         self.validators = FinalizedValidators::try_new(&ssz[o.validators..o.balances])?;
         let n = self.validators.validator_count();
 
+        // Match the validators' capacity so per-validator columns stay aligned.
+        let cap = self.validators.capacity();
+        self.balances = FinalizedBalances::with_capacity(cap);
+        self.previous_participation = FinalizedPreviousParticipation::with_capacity(cap);
+        self.current_participation = FinalizedCurrentParticipation::with_capacity(cap);
+        self.inactivity_scores = FinalizedInactivityScores::with_capacity(cap);
+
         let bal_bytes = &ssz[o.balances..o.prev_participation];
         if !bal_bytes.len().is_multiple_of(8) || bal_bytes.len() / 8 != n {
             return Err(DecomposeError::BalancesLenMismatch {
@@ -812,7 +821,7 @@ mod tests {
         assert!(ssz.len() >= FIXED_PART);
 
         let cfg = SpecConfig::mainnet();
-        let mut fin = Box::<Finalized>::default();
+        let mut fin = Box::new(Finalized::empty());
         fin.decompose(&ssz, &cfg).expect("decompose");
 
         // Re-read the raw slot from the SSZ fixed part to cross-check.
@@ -855,7 +864,7 @@ mod tests {
         }
 
         // Decompose is deterministic.
-        let mut fin2 = Box::<Finalized>::default();
+        let mut fin2 = Box::new(Finalized::empty());
         fin2.decompose(&ssz, &cfg).expect("decompose 2");
         assert_eq!(fin2.slot.slot.slot, fin.slot.slot.slot);
         assert_eq!(fin2.validators.validator_count(), n);

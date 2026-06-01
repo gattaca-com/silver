@@ -1,3 +1,5 @@
+use std::convert::Infallible;
+
 use blst::min_pk::PublicKey;
 use rustc_hash::FxHashMap;
 use silver_common_macros::timed;
@@ -7,7 +9,7 @@ use crate::{
     Withdrawals,
     beacon_state::{
         hash_tree::FinalizedHashTree,
-        types::{BLSPubkey, Epoch, FAR_FUTURE_EPOCH, MAX_VALIDATORS, VAL_SLASHED_BYTES},
+        types::{BLSPubkey, Epoch, FAR_FUTURE_EPOCH, validator_capacity},
     },
 };
 
@@ -58,7 +60,7 @@ pub struct FinalizedValidators {
     pub(super) val_withdrawal_credentials: Box<[Withdrawals]>,
     pub(super) effective_balance: Box<[u64]>,
     /// Bitset: validator `i` is slashed iff
-    /// `slashed[i / 8] & (1 << (i % 8)) != 0`. Length = MAX_VALIDATORS / 8.
+    /// `slashed[i / 8] & (1 << (i % 8)) != 0`. Length = `capacity / 8`.
     pub(super) slashed: Box<[u8]>,
     pub(super) activation_eligibility_epoch: Box<[Epoch]>,
     pub(super) activation_epoch: Box<[Epoch]>,
@@ -69,23 +71,86 @@ pub struct FinalizedValidators {
     pub(super) hash: FinalizedHashTree,
 }
 
-impl Default for FinalizedValidators {
-    fn default() -> Self {
-        Self {
-            val_pubkey: vec![[0u8; 48]; MAX_VALIDATORS].into_boxed_slice(),
-            val_pubkey_decompressed: vec![PublicKey::default(); MAX_VALIDATORS].into_boxed_slice(),
-            val_withdrawal_credentials: vec![Withdrawals::default(); MAX_VALIDATORS]
-                .into_boxed_slice(),
-            effective_balance: vec![0u64; MAX_VALIDATORS].into_boxed_slice(),
-            slashed: vec![0u8; VAL_SLASHED_BYTES].into_boxed_slice(),
-            activation_eligibility_epoch: vec![FAR_FUTURE_EPOCH; MAX_VALIDATORS].into_boxed_slice(),
-            activation_epoch: vec![FAR_FUTURE_EPOCH; MAX_VALIDATORS].into_boxed_slice(),
-            exit_epoch: vec![FAR_FUTURE_EPOCH; MAX_VALIDATORS].into_boxed_slice(),
-            withdrawable_epoch: vec![FAR_FUTURE_EPOCH; MAX_VALIDATORS].into_boxed_slice(),
-            validator_count: 0,
-            index: PubkeyIndex::default(),
-            hash: FinalizedHashTree::new(&[], MAX_VALIDATORS),
+/// One validator's `Validator`-container fields.
+struct ValidatorFields {
+    pubkey: BLSPubkey,
+    pubkey_decompressed: PublicKey,
+    credentials: Withdrawals,
+    effective_balance: u64,
+    slashed: bool,
+    activation_eligibility_epoch: Epoch,
+    activation_epoch: Epoch,
+    exit_epoch: Epoch,
+    withdrawable_epoch: Epoch,
+}
+
+impl FinalizedValidators {
+    fn build<E>(
+        capacity: usize,
+        n: usize,
+        mut field_at: impl FnMut(usize) -> Result<ValidatorFields, E>,
+    ) -> Result<Self, E> {
+        debug_assert!(n <= capacity);
+        let mut val_pubkey = vec![[0u8; 48]; capacity].into_boxed_slice();
+        let mut val_pubkey_decompressed = vec![PublicKey::default(); capacity].into_boxed_slice();
+        let mut val_withdrawal_credentials =
+            vec![Withdrawals::default(); capacity].into_boxed_slice();
+        let mut effective_balance = vec![0u64; capacity].into_boxed_slice();
+        let mut slashed = vec![0u8; capacity.div_ceil(8)].into_boxed_slice();
+        let mut activation_eligibility_epoch = vec![FAR_FUTURE_EPOCH; capacity].into_boxed_slice();
+        let mut activation_epoch = vec![FAR_FUTURE_EPOCH; capacity].into_boxed_slice();
+        let mut exit_epoch = vec![FAR_FUTURE_EPOCH; capacity].into_boxed_slice();
+        let mut withdrawable_epoch = vec![FAR_FUTURE_EPOCH; capacity].into_boxed_slice();
+        let mut index = PubkeyIndex::with_capacity_and_hasher(n, Default::default());
+        let mut leaf_hashes = vec![[0u8; 32]; n];
+
+        for i in 0..n {
+            let f = field_at(i)?;
+            val_pubkey[i] = f.pubkey;
+            val_pubkey_decompressed[i] = f.pubkey_decompressed;
+            val_withdrawal_credentials[i] = f.credentials;
+            effective_balance[i] = f.effective_balance;
+            if f.slashed {
+                slashed[i / 8] |= 1u8 << (i % 8);
+            }
+            activation_eligibility_epoch[i] = f.activation_eligibility_epoch;
+            activation_epoch[i] = f.activation_epoch;
+            exit_epoch[i] = f.exit_epoch;
+            withdrawable_epoch[i] = f.withdrawable_epoch;
+            index.insert(f.pubkey, i as u32);
+            leaf_hashes[i] = validator_hash(
+                &f.pubkey,
+                &f.credentials,
+                f.effective_balance,
+                f.slashed,
+                f.activation_eligibility_epoch,
+                f.activation_epoch,
+                f.exit_epoch,
+                f.withdrawable_epoch,
+            );
         }
+
+        Ok(Self {
+            val_pubkey,
+            val_pubkey_decompressed,
+            val_withdrawal_credentials,
+            effective_balance,
+            slashed,
+            activation_eligibility_epoch,
+            activation_epoch,
+            exit_epoch,
+            withdrawable_epoch,
+            validator_count: n,
+            index,
+            hash: FinalizedHashTree::new(&leaf_hashes, capacity),
+        })
+    }
+
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self::build(capacity, 0, |_| -> Result<ValidatorFields, Infallible> {
+            unreachable!("n = 0: field_at is never called")
+        })
+        .unwrap()
     }
 }
 
@@ -96,81 +161,36 @@ impl FinalizedValidators {
             return Err(ValidatorsDecodeError::LenNotMultiple { len: val_bytes.len() });
         }
         let n = val_bytes.len() / VALIDATOR_SSZ_SIZE;
-        debug_assert!(n <= MAX_VALIDATORS);
-
-        let mut val_pubkey = vec![[0u8; 48]; MAX_VALIDATORS].into_boxed_slice();
-        let mut val_pubkey_decompressed =
-            vec![PublicKey::default(); MAX_VALIDATORS].into_boxed_slice();
-        let mut val_withdrawal_credentials =
-            vec![Withdrawals::default(); MAX_VALIDATORS].into_boxed_slice();
-        let mut effective_balances = vec![0u64; MAX_VALIDATORS].into_boxed_slice();
-        let mut slashed_bits = vec![0u8; VAL_SLASHED_BYTES].into_boxed_slice();
-        let mut activation_eligibility_epochs =
-            vec![FAR_FUTURE_EPOCH; MAX_VALIDATORS].into_boxed_slice();
-        let mut activation_epochs = vec![FAR_FUTURE_EPOCH; MAX_VALIDATORS].into_boxed_slice();
-        let mut exit_epochs = vec![FAR_FUTURE_EPOCH; MAX_VALIDATORS].into_boxed_slice();
-        let mut withdrawable_epochs = vec![FAR_FUTURE_EPOCH; MAX_VALIDATORS].into_boxed_slice();
-        let mut index = PubkeyIndex::with_capacity_and_hasher(n, Default::default());
-        let mut leaf_hashes = vec![[0u8; 32]; n];
 
         // Validator container layout: pubkey[48] | withdrawal_credentials[32]
         // | effective_balance:u64[8] | slashed:bool[1] | 4 × epoch:u64.
-        for i in 0..n {
+        Self::build(validator_capacity(n), n, |i| {
             let v = &val_bytes[i * VALIDATOR_SSZ_SIZE..];
             let pubkey: BLSPubkey = v[..48].try_into().unwrap();
             let pubkey_decompressed = PublicKey::from_bytes(&pubkey)
                 .map_err(|_| ValidatorsDecodeError::InvalidPubkey { idx: i })?;
-            let credentials = Withdrawals(v[48..80].try_into().unwrap());
-            let effective_balance = u64_at(v, 80);
-            let slashed = v[88] != 0;
-            let activation_eligibility_epoch = u64_at(v, 89);
-            let activation_epoch = u64_at(v, 97);
-            let exit_epoch = u64_at(v, 105);
-            let withdrawable_epoch = u64_at(v, 113);
-
-            val_pubkey[i] = pubkey;
-            val_pubkey_decompressed[i] = pubkey_decompressed;
-            val_withdrawal_credentials[i] = credentials;
-            effective_balances[i] = effective_balance;
-            if slashed {
-                slashed_bits[i / 8] |= 1u8 << (i % 8);
-            }
-            activation_eligibility_epochs[i] = activation_eligibility_epoch;
-            activation_epochs[i] = activation_epoch;
-            exit_epochs[i] = exit_epoch;
-            withdrawable_epochs[i] = withdrawable_epoch;
-            index.insert(pubkey, i as u32);
-            leaf_hashes[i] = validator_hash(
-                &pubkey,
-                &credentials,
-                effective_balance,
-                slashed,
-                activation_eligibility_epoch,
-                activation_epoch,
-                exit_epoch,
-                withdrawable_epoch,
-            );
-        }
-
-        Ok(Self {
-            val_pubkey,
-            val_pubkey_decompressed,
-            val_withdrawal_credentials,
-            effective_balance: effective_balances,
-            slashed: slashed_bits,
-            activation_eligibility_epoch: activation_eligibility_epochs,
-            activation_epoch: activation_epochs,
-            exit_epoch: exit_epochs,
-            withdrawable_epoch: withdrawable_epochs,
-            validator_count: n,
-            index,
-            hash: FinalizedHashTree::new(&leaf_hashes, MAX_VALIDATORS),
+            Ok(ValidatorFields {
+                pubkey,
+                pubkey_decompressed,
+                credentials: Withdrawals(v[48..80].try_into().unwrap()),
+                effective_balance: u64_at(v, 80),
+                slashed: v[88] != 0,
+                activation_eligibility_epoch: u64_at(v, 89),
+                activation_epoch: u64_at(v, 97),
+                exit_epoch: u64_at(v, 105),
+                withdrawable_epoch: u64_at(v, 113),
+            })
         })
     }
 
     #[inline]
     pub fn validator_count(&self) -> usize {
         self.validator_count
+    }
+
+    #[inline]
+    pub fn capacity(&self) -> usize {
+        self.val_pubkey.len()
     }
 
     #[inline]
@@ -236,7 +256,7 @@ impl FinalizedValidators {
     }
 
     #[inline]
-    pub fn hash_mut(&mut self) -> &mut FinalizedHashTree {
+    pub(super) fn hash_mut(&mut self) -> &mut FinalizedHashTree {
         &mut self.hash
     }
 
@@ -276,29 +296,28 @@ impl FinalizedValidators {
     }
 
     pub fn with_validators(seeds: &[ValSeed]) -> Self {
-        let mut v = Self::default();
-        for s in seeds {
-            let decompressed = PublicKey::from_bytes(&s.pubkey).unwrap_or_default();
-            v.append(
-                &s.pubkey,
-                &decompressed,
-                &s.withdrawal_credentials,
-                s.effective_balance,
-                false,
-                FAR_FUTURE_EPOCH,
-                s.activation_epoch,
-                s.exit_epoch,
-                FAR_FUTURE_EPOCH,
-            );
-        }
-        v
+        Self::build(validator_capacity(seeds.len()), seeds.len(), |i| {
+            let s = &seeds[i];
+            Ok::<_, Infallible>(ValidatorFields {
+                pubkey: s.pubkey,
+                pubkey_decompressed: PublicKey::from_bytes(&s.pubkey).unwrap_or_default(),
+                credentials: s.withdrawal_credentials,
+                effective_balance: s.effective_balance,
+                slashed: false,
+                activation_eligibility_epoch: FAR_FUTURE_EPOCH,
+                activation_epoch: s.activation_epoch,
+                exit_epoch: s.exit_epoch,
+                withdrawable_epoch: FAR_FUTURE_EPOCH,
+            })
+        })
+        .unwrap()
     }
 
     /// Append a validator to the finalized base with caller-supplied
     /// Validator-container field values. Updates the pubkey index but NOT
     /// the hash tree.
     #[allow(clippy::too_many_arguments)]
-    pub fn append(
+    pub(super) fn append(
         &mut self,
         pubkey: &BLSPubkey,
         pubkey_decompressed: &PublicKey,
@@ -311,7 +330,7 @@ impl FinalizedValidators {
         withdrawable_epoch: Epoch,
     ) -> u32 {
         let idx = self.validator_count;
-        debug_assert!(idx < MAX_VALIDATORS);
+        debug_assert!(idx < self.capacity(), "append past validator capacity {}", self.capacity());
         self.val_pubkey[idx] = *pubkey;
         self.val_pubkey_decompressed[idx] = *pubkey_decompressed;
         self.val_withdrawal_credentials[idx] = *credentials;

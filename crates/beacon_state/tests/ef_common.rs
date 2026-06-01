@@ -60,7 +60,7 @@ impl LoadedState {
 
 pub fn load_state(path: &Path) -> LoadedState {
     let ssz = snappy_decode(path);
-    let mut finalized = Box::new(Finalized::default());
+    let mut finalized = Box::new(Finalized::empty());
     finalized
         .decompose(&ssz, &SpecConfig::mainnet())
         .unwrap_or_else(|e| panic!("{}: decompose failed: {e}", path.display()));

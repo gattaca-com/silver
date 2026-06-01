@@ -13,23 +13,17 @@ pub type Epoch = u64;
 pub type Version = [u8; 4];
 pub type ExecutionAddress = [u8; 20];
 
-#[cfg(not(any(test, feature = "small-validator-cap")))]
-// Physical cap on validator-indexed columnar arrays. Spec limit is
-// `VALIDATOR_REGISTRY_LIMIT = 1 << 40`; we size for real registry growth.
-// Live count crossed 2.0M during 2025; 2.75 Mi = 2,883,584 sits just below 3M
-// and gives ~600k headroom (~26%) over the current registry.
-pub const MAX_VALIDATORS: usize = 11 << 18;
-#[cfg(any(test, feature = "small-validator-cap"))]
-// Mainnet caps ~2M validators. Tests don't need that much and parallel
-// `cargo test` would otherwise OOM (~3–4 GB per `BeaconStateTile::new_heap`
-// at full cap × N parallel test threads). EF spec test fixtures use ≤ a few
-// hundred validators each, well within the test-time cap.
-pub const MAX_VALIDATORS: usize = 64 * 1024;
 pub const VALIDATOR_REGISTRY_LIMIT: usize = 1 << 40;
+
+pub const MIN_VALIDATOR_HEADROOM: usize = 64 * 1024;
+
+pub fn validator_capacity(count: usize) -> usize {
+    let headroom = (count / 5).max(MIN_VALIDATOR_HEADROOM);
+    count + headroom
+}
+
 /// SSZ spec sentinel for "not yet activated / exited / withdrawable".
 pub const FAR_FUTURE_EPOCH: Epoch = u64::MAX;
-/// `slashed` bitset byte count — one bit per validator.
-pub const VAL_SLASHED_BYTES: usize = MAX_VALIDATORS / 8;
 pub const SLOTS_PER_HISTORICAL_ROOT: usize = 8192;
 pub const EPOCHS_PER_HISTORICAL_VECTOR: usize = 65536;
 pub const EPOCHS_PER_SLASHINGS_VECTOR: usize = 8192;
@@ -57,7 +51,6 @@ pub const SLOTS_RING_N: usize = 256;
 
 // size: ~195 KB stack (slot 145 KB + longtail 50 KB + rest); heap at default-
 // init ~2.6 MB (slot+epoch rings).
-#[derive(Default)]
 pub struct Finalized {
     pub immutable: Immutable,
     pub longtail: LongtailState,
@@ -72,13 +65,33 @@ pub struct Finalized {
 }
 
 impl Finalized {
+    /// Zero-validator stub at floor capacity (pre-bootstrap / tests); no
+    /// `Default`, so the base's capacity is always a conscious choice.
+    pub fn empty() -> Self {
+        let cap = validator_capacity(0);
+        Self {
+            immutable: Immutable::default(),
+            longtail: LongtailState::default(),
+            pending: PendingQueues::default(),
+            validators: FinalizedValidators::with_capacity(cap),
+            balances: FinalizedBalances::with_capacity(cap),
+            previous_participation: FinalizedPreviousParticipation::with_capacity(cap),
+            current_participation: FinalizedCurrentParticipation::with_capacity(cap),
+            inactivity_scores: FinalizedInactivityScores::with_capacity(cap),
+            epoch: EpochStateFinalized::default(),
+            slot: SlotStateFinalized::default(),
+        }
+    }
+}
+
+impl Finalized {
     #[inline]
     pub fn epoch(&self) -> Epoch {
         self.slot.slot.slot / SLOTS_PER_EPOCH
     }
 
     pub fn new(seeds: &[ValSeed]) -> Box<Self> {
-        let mut f = Box::new(Self::default());
+        let mut f = Box::new(Self::empty());
         f.validators = FinalizedValidators::with_validators(seeds);
         let balances = f.balances.slice_mut();
         for (i, s) in seeds.iter().enumerate() {
@@ -480,13 +493,11 @@ pub struct FinalizedBalances {
     pub data: Box<[u64]>,
 }
 
-impl Default for FinalizedBalances {
-    fn default() -> Self {
-        Self { data: vec![0u64; MAX_VALIDATORS].into_boxed_slice() }
-    }
-}
-
 impl FinalizedBalances {
+    pub fn with_capacity(cap: usize) -> Self {
+        Self { data: vec![0u64; cap].into_boxed_slice() }
+    }
+
     #[inline]
     pub fn get(&self, i: usize) -> u64 {
         self.data[i]
@@ -525,13 +536,11 @@ pub struct FinalizedPreviousParticipation {
     pub data: Box<[u8]>,
 }
 
-impl Default for FinalizedPreviousParticipation {
-    fn default() -> Self {
-        Self { data: vec![0u8; MAX_VALIDATORS].into_boxed_slice() }
-    }
-}
-
 impl FinalizedPreviousParticipation {
+    pub fn with_capacity(cap: usize) -> Self {
+        Self { data: vec![0u8; cap].into_boxed_slice() }
+    }
+
     #[inline]
     pub fn get(&self, i: usize) -> u8 {
         self.data[i]
@@ -570,13 +579,11 @@ pub struct FinalizedCurrentParticipation {
     pub data: Box<[u8]>,
 }
 
-impl Default for FinalizedCurrentParticipation {
-    fn default() -> Self {
-        Self { data: vec![0u8; MAX_VALIDATORS].into_boxed_slice() }
-    }
-}
-
 impl FinalizedCurrentParticipation {
+    pub fn with_capacity(cap: usize) -> Self {
+        Self { data: vec![0u8; cap].into_boxed_slice() }
+    }
+
     #[inline]
     pub fn get(&self, i: usize) -> u8 {
         self.data[i]
@@ -614,13 +621,11 @@ pub struct FinalizedInactivityScores {
     pub data: Box<[u64]>,
 }
 
-impl Default for FinalizedInactivityScores {
-    fn default() -> Self {
-        Self { data: vec![0u64; MAX_VALIDATORS].into_boxed_slice() }
-    }
-}
-
 impl FinalizedInactivityScores {
+    pub fn with_capacity(cap: usize) -> Self {
+        Self { data: vec![0u64; cap].into_boxed_slice() }
+    }
+
     #[inline]
     pub fn get(&self, i: usize) -> u64 {
         self.data[i]

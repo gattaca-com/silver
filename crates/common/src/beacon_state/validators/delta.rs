@@ -248,9 +248,9 @@ impl ValidatorsDelta {
     /// SSZ `hash_tree_root` of the validators registry
     /// (`List[Validator, VALIDATOR_REGISTRY_LIMIT]`) from the persistent hash
     /// overlay: finalized base tree + this fork's cached delta-node hashes,
-    /// zero work for untouched subtrees. The physical tree only spans
-    /// `MAX_VALIDATORS` leaves, so extend its root with zero subtrees up to the
-    /// registry-limit depth, then mix in the validator count.
+    /// zero work for untouched subtrees. The physical tree only spans the
+    /// registry capacity's leaves, so extend its root with zero subtrees up to
+    /// the registry-limit depth, then mix in the validator count.
     pub fn list_root(&self, base: &FinalizedValidators) -> crate::B256 {
         const LIST_DEPTH: u32 = VALIDATOR_REGISTRY_LIMIT.trailing_zeros();
         let tree = base.hash();

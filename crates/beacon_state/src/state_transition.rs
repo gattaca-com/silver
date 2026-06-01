@@ -2548,7 +2548,7 @@ mod tests {
     type LongtailRing = DeltaBuffer<LongtailState, LONGTAILS_RING_N>;
 
     fn fresh_state() -> (Box<Finalized>, StateDelta, EpochRing, LongtailRing) {
-        let f = Box::new(Finalized::default());
+        let f = Box::new(Finalized::empty());
         let delta = StateDelta {
             validators: ValidatorsDelta::new_at(&f.validators),
             slot: SlotStateDelta {

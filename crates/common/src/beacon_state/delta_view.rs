@@ -1566,7 +1566,7 @@ mod tests {
     };
 
     fn fresh_finalized() -> Box<Finalized> {
-        let mut f = Box::new(Finalized::default());
+        let mut f = Box::new(Finalized::empty());
         f.slot.slot.slot = 100; // arbitrary post-genesis fin slot
         f
     }
@@ -1610,19 +1610,22 @@ mod tests {
         seq
     }
 
-    fn push_validator(f: &mut Finalized, credentials: Withdrawals, balance_v: u64) {
-        let i = f.validators.append(
-            &[0u8; 48],
-            &blst::min_pk::PublicKey::default(),
-            &credentials,
-            0,
-            false,
-            FAR_FUTURE_EPOCH,
-            FAR_FUTURE_EPOCH,
-            FAR_FUTURE_EPOCH,
-            FAR_FUTURE_EPOCH,
-        ) as usize;
+    /// Grow the base via the sanctioned path: delta append + `promote_into_base`.
+    fn push_validator_pk(
+        f: &mut Finalized,
+        pubkey: [u8; 48],
+        credentials: Withdrawals,
+        balance_v: u64,
+    ) {
+        let mut d = ValidatorsDelta::new_at(&f.validators);
+        let i = d.append(&f.validators, pubkey, blst::min_pk::PublicKey::default(), credentials)
+            as usize;
+        d.promote_into_base(&mut f.validators);
         f.balances.slice_mut()[i] = balance_v;
+    }
+
+    fn push_validator(f: &mut Finalized, credentials: Withdrawals, balance_v: u64) {
+        push_validator_pk(f, [0u8; 48], credentials, balance_v);
     }
 
     fn push_default_validator(f: &mut Finalized, balance_v: u64) {
@@ -1853,18 +1856,7 @@ mod tests {
         let mut f = fresh_finalized();
         let pk_a = [0xA; 48];
         let pk_b = [0xB; 48];
-        // Insert pk_a into the finalized base directly via append.
-        f.validators.append(
-            &pk_a,
-            &Default::default(),
-            &Default::default(),
-            0,
-            false,
-            u64::MAX,
-            u64::MAX,
-            u64::MAX,
-            u64::MAX,
-        );
+        push_validator_pk(&mut f, pk_a, Withdrawals::default(), 0);
 
         let mut d = anchored_delta(&f);
         d.validators.append(&f.validators, pk_b, Default::default(), Default::default());
@@ -2018,7 +2010,7 @@ mod tests {
 
     /// Regression test for the `iter_*` slicing fix. The four epoch iterators
     /// must return `FAR_FUTURE_EPOCH` (u64::MAX) for an appended-no-edit
-    /// validator, not the zero-init slot from the `Box<[T; MAX_VALIDATORS]>`.
+    /// validator, not the zero-init slot from the base `Box<[T]>`.
     /// Earlier impl passed the full Box to `sweep`, so the `i < base.len()`
     /// branch always fired and read 0 instead of the `appended_default`.
     /// `iter_validator_balances` etc. happen to coincide (0 == default) but

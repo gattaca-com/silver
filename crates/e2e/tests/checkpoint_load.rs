@@ -37,7 +37,7 @@ fn finalized_state_loads() {
     let gossip_c = gossip_p.cache_ref().random_access("test", false).unwrap();
     let rpc_c = rpc_p.cache_ref().random_access("test", false).unwrap();
 
-    let state = BeaconStateOwner::new(BeaconState::default());
+    let state = BeaconStateOwner::new(BeaconState::empty());
     let mut tile = BeaconStateTile::new(
         ticker,
         silver_common::SpecConfig::mainnet(),
@@ -53,7 +53,7 @@ fn finalized_state_loads() {
 
     // Regression: bootstrap must patch `latest_block_header.state_root` before
     // hashing, otherwise the head root is the raw-header hash.
-    let mut fin = Box::new(Finalized::default());
+    let mut fin = Box::new(Finalized::empty());
     fin.decompose(&ssz, &SpecConfig::mainnet()).expect("decompose");
     let raw_header = fin.slot.slot.latest_block_header;
     if raw_header.state_root == [0u8; 32] {
@@ -182,7 +182,7 @@ fn tile_apply_block_ef_fixture() {
     let gossip_c = gossip_p.cache_ref().random_access("test", false).unwrap();
     let rpc_c = rpc_p.cache_ref().random_access("test", false).unwrap();
 
-    let state = BeaconStateOwner::new(BeaconState::default());
+    let state = BeaconStateOwner::new(BeaconState::empty());
     let mut tile = BeaconStateTile::new(
         ticker,
         silver_common::SpecConfig::mainnet(),

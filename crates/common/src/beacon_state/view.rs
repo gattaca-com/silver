@@ -58,7 +58,7 @@ impl BeaconStateOwner {
         let s = &mut *self.state;
         // Production state-transition path: finalized base must be populated
         // (decompose from genesis SSZ or a checkpoint). The zero-validator
-        // `Finalized::default()` is the unanchored stub used only by tests
+        // `Finalized::empty()` is the unanchored stub used only by tests
         // and the pre-bootstrap owner.
         assert!(
             s.finalized.validators.validator_count() > 0,

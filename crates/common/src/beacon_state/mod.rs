@@ -20,10 +20,21 @@ pub mod types;
 mod validators;
 mod view;
 
-#[derive(Default)]
 pub struct BeaconState {
     pub finalized: Finalized,
     pub longtails: DeltaBuffer<LongtailState, LONGTAILS_RING_N>,
     pub epochs: DeltaBuffer<EpochStateDelta, EPOCHS_RING_N>,
     pub slots: DeltaBuffer<StateDelta, SLOTS_RING_N>,
+}
+
+impl BeaconState {
+    /// Zero-validator pre-bootstrap state. No `Default` — see [`Finalized::empty`].
+    pub fn empty() -> Self {
+        Self {
+            finalized: Finalized::empty(),
+            longtails: DeltaBuffer::default(),
+            epochs: DeltaBuffer::default(),
+            slots: DeltaBuffer::default(),
+        }
+    }
 }

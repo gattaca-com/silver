@@ -155,7 +155,7 @@ fn anchored_delta(f: &Finalized) -> StateDelta {
 fn load_pre_at(dir: &Path) -> LoadedState {
     let pre_ssz = snappy_decode(&dir.join("pre.ssz_snappy"));
     let cfg = SpecConfig::mainnet();
-    let mut finalized = Box::new(Finalized::default());
+    let mut finalized = Box::new(Finalized::empty());
     finalized.decompose(&pre_ssz, &cfg).expect("decompose");
     let delta = anchored_delta(&finalized);
     LoadedState {

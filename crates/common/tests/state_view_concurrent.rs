@@ -43,7 +43,7 @@ fn slot_tag(slot: u64) -> B256 {
 
 #[test]
 fn concurrent_reads_observe_consistent_state() {
-    let mut control = BeaconStateOwner::new(BeaconState::default());
+    let mut control = BeaconStateOwner::new(BeaconState::empty());
 
     let done = Arc::new(AtomicBool::new(false));
     let reads = Arc::new(AtomicUsize::new(0));

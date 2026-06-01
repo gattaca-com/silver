@@ -147,7 +147,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         None => vec![],
     };
 
-    let state = BeaconStateOwner::new(BeaconState::default());
+    let state = BeaconStateOwner::new(BeaconState::empty());
     let beacon_state_tile = BeaconStateTile::new(
         ticker,
         chain_config.spec.clone(),

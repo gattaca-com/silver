@@ -22,9 +22,6 @@ rand.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
-[dev-dependencies]
-silver_common = { workspace = true, features = ["small-validator-cap"] }
-
 [lints]
 workspace = true
 

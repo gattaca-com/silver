@@ -116,7 +116,7 @@ impl OutboundKind {
 impl Harness {
     pub fn new(wall_slot: u64, checkpoint_ssz: &[u8]) -> Self {
         Self::build(wall_slot, |ticker, gc, rc| {
-            let state = BeaconStateOwner::new(BeaconState::default());
+            let state = BeaconStateOwner::new(BeaconState::empty());
             BeaconStateTile::new(
                 ticker,
                 silver_common::SpecConfig::mainnet(),
@@ -267,7 +267,7 @@ impl Harness {
     pub fn assert_state_root(&mut self, post_ssz: &[u8]) {
         // Decompose the EF post-state into a `Finalized` snapshot with an empty
         // anchored delta, then hash via `StateDeltaView` (mirrors ef_common).
-        let mut finalized = Box::new(silver_common::Finalized::default());
+        let mut finalized = Box::new(silver_common::Finalized::empty());
         finalized
             .decompose(post_ssz, &silver_common::SpecConfig::mainnet())
             .expect("decompose post.ssz");

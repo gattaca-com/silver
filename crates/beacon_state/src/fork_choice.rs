@@ -1,8 +1,6 @@
 use flux::utils::ArrayVec;
 use silver_common::{B256, Checkpoint, Epoch, Slot, metrics::timed};
 
-use crate::MAX_VALIDATORS;
-
 // TODO(stalls): ~8 epochs of unpruned mainnet activity hits 256. The May
 // 2023 incident lasted ~25 epochs. Either grow + paginate the node table or
 // drop lowest-weight subtrees under pressure.
@@ -62,11 +60,16 @@ pub struct ForkChoiceNode {
     pub state_seq: usize,
 }
 
-/// Per-validator latest LMD attestation. ~198 MB at MAX_VALIDATORS=2.75Mi
-/// (72 B per Vote).
+/// Per-validator latest LMD attestation, sized to the registry capacity.
 #[repr(C)]
 pub struct VoteTracker {
-    pub votes: [Vote; MAX_VALIDATORS],
+    pub votes: Box<[Vote]>,
+}
+
+impl VoteTracker {
+    pub fn with_capacity(capacity: usize) -> Box<Self> {
+        Box::new(Self { votes: vec![Vote::default(); capacity].into_boxed_slice() })
+    }
 }
 
 #[repr(C)]
@@ -364,7 +367,7 @@ impl ForkChoice {
 /// from old target and add new balance to new target.
 #[timed]
 pub fn compute_deltas(
-    votes: &mut [Vote; MAX_VALIDATORS],
+    votes: &mut [Vote],
     validator_count: usize,
     indices: &[ForkChoiceIndex],
     old_balances: &[u64],
@@ -418,7 +421,6 @@ fn offset_idx(idx: usize, offset: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::box_zeroed;
 
     fn root(b: u8) -> B256 {
         let mut r = [0u8; 32];
@@ -532,8 +534,8 @@ mod tests {
         let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), 0);
         fc.on_block(block(1, root(2), root(1), jus, fin));
 
-        let mut votes: Box<[Vote; MAX_VALIDATORS]> = box_zeroed();
-        let mut balances: Box<[u64; MAX_VALIDATORS]> = box_zeroed();
+        let mut votes = vec![Vote::default(); 16];
+        let mut balances = vec![0u64; 16];
 
         // 16 validators all move from root(1) to root(2).
         for i in 0..16 {
@@ -564,8 +566,8 @@ mod tests {
             fc.on_block(block(i as u64, root(i), root(100), jus, fin));
         }
 
-        let mut votes: Box<[Vote; MAX_VALIDATORS]> = box_zeroed();
-        let mut balances: Box<[u64; MAX_VALIDATORS]> = box_zeroed();
+        let mut votes = vec![Vote::default(); 16];
+        let mut balances = vec![0u64; 16];
 
         for i in 0..16 {
             votes[i] =
@@ -588,8 +590,8 @@ mod tests {
         let jus = cp(0, 1);
         let fc = ForkChoice::init(fin, jus, 0, root(1), root(1), 0);
 
-        let mut votes: Box<[Vote; MAX_VALIDATORS]> = box_zeroed();
-        let mut balances: Box<[u64; MAX_VALIDATORS]> = box_zeroed();
+        let mut votes = vec![Vote::default(); 16];
+        let mut balances = vec![0u64; 16];
 
         // Validator 0 moves from root(1) to zero hash (genesis alias).
         votes[0] = Vote { current_root: root(1), next_root: [0u8; 32], next_epoch: 0 };
@@ -613,9 +615,9 @@ mod tests {
         let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), 0);
         fc.on_block(block(1, root(2), root(1), jus, fin));
 
-        let mut votes: Box<[Vote; MAX_VALIDATORS]> = box_zeroed();
-        let mut old_bal: Box<[u64; MAX_VALIDATORS]> = box_zeroed();
-        let mut new_bal: Box<[u64; MAX_VALIDATORS]> = box_zeroed();
+        let mut votes = vec![Vote::default(); 16];
+        let mut old_bal = vec![0u64; 16];
+        let mut new_bal = vec![0u64; 16];
 
         // 16 validators move from root(1) to root(2), balance doubles.
         for i in 0..16 {
@@ -639,9 +641,9 @@ mod tests {
         let jus = cp(0, 1);
         let fc = ForkChoice::init(fin, jus, 0, root(1), root(1), 0);
 
-        let mut votes: Box<[Vote; MAX_VALIDATORS]> = box_zeroed();
-        let mut old_bal: Box<[u64; MAX_VALIDATORS]> = box_zeroed();
-        let mut new_bal: Box<[u64; MAX_VALIDATORS]> = box_zeroed();
+        let mut votes = vec![Vote::default(); 16];
+        let mut old_bal = vec![0u64; 16];
+        let mut new_bal = vec![0u64; 16];
 
         // Validator already voted for root(1), balance changes.
         votes[0] = Vote { current_root: root(1), next_root: root(1), next_epoch: 0 };
