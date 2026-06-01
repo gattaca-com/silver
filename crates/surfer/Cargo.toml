@@ -13,6 +13,7 @@ libc.workspace = true
 ratatui.workspace = true
 silver_common.workspace = true
 silver_network.workspace = true
+silver_peer.workspace = true
 silver_storage.workspace = true
 
 [lints]

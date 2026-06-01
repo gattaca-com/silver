@@ -71,7 +71,8 @@ impl NetworkTile {
             PeerControl::P2pDial { p2p, enr } => {
                 let addr = enr.quic4_socket().or(enr.quic6_socket());
                 if let Some(addr) = addr {
-                    tracing::debug!(?addr, "dialling p2p peer");
+                    crate::NetworkCounters::DialAttempts.inc();
+                    tracing::info!(peer_id=?p2p, ?addr, "dialling p2p peer");
                     if let Err(e) = self.inner.p2p_endpoint.connect(p2p, addr, now) {
                         tracing::error!(?e, ?p2p, ?addr, "failed to initiate p2p to peer");
                     }

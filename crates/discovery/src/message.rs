@@ -31,13 +31,67 @@ pub const NUM_DISTANCES_TO_REQUEST: usize = 16;
 
 pub type Distances = ArrayVec<u64, NUM_DISTANCES_TO_REQUEST>;
 
+/// discv5 request-id: an opaque RLP byte string of length ≤ 8 (per spec).
+/// Stored zero-padded with an explicit length so derived equality/hashing —
+/// used to match a response to its pending request — compares only the
+/// meaningful bytes, never the padding. Decoding it as a `u64` (the prior
+/// approach) rejected peers' non-minimal ids (leading zero bytes).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct RequestId {
+    buf: [u8; 8],
+    len: u8,
+}
+
+impl RequestId {
+    fn as_slice(&self) -> &[u8] {
+        &self.buf[..self.len as usize]
+    }
+}
+
+/// Mint a request-id from a counter — always 8 bytes on the wire.
+impl From<u64> for RequestId {
+    fn from(v: u64) -> Self {
+        Self { buf: v.to_le_bytes(), len: 8 }
+    }
+}
+
+impl Encodable for RequestId {
+    fn encode(&self, out: &mut dyn BufMut) {
+        self.as_slice().encode(out);
+    }
+
+    fn length(&self) -> usize {
+        self.as_slice().length()
+    }
+}
+
+impl Decodable for RequestId {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let header = Header::decode(buf)?;
+        if header.list {
+            return Err(alloy_rlp::Error::UnexpectedList);
+        }
+        if header.payload_length > 8 {
+            return Err(alloy_rlp::Error::Custom("request-id exceeds 8 bytes"));
+        }
+        if buf.len() < header.payload_length {
+            return Err(alloy_rlp::Error::InputTooShort);
+        }
+        let mut id = Self::default();
+        id.buf[..header.payload_length].copy_from_slice(&buf[..header.payload_length]);
+        id.len = header.payload_length as u8;
+        *buf = &buf[header.payload_length..];
+        Ok(id)
+    }
+}
+
 #[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
 pub enum Message {
-    Ping { request_id: u64, enr_seq: u64 },
-    Pong { request_id: u64, enr_seq: u64, ip: IpAddr, port: u16 },
-    FindNode { request_id: u64, distances: Distances },
-    Nodes { request_id: u64, total: u8, nodes: ArrayVec<ArrayVec<u8, ENR_RECORD_MAX>, 8> },
+    Ping { request_id: RequestId, enr_seq: u64 },
+    Pong { request_id: RequestId, enr_seq: u64, ip: IpAddr, port: u16 },
+    FindNode { request_id: RequestId, distances: Distances },
+    Nodes { request_id: RequestId, total: u8, nodes: ArrayVec<ArrayVec<u8, ENR_RECORD_MAX>, 8> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -157,12 +211,12 @@ impl Message {
 
         match type_byte {
             0x01 => {
-                let request_id = u64::decode(&mut payload).ok()?;
+                let request_id = RequestId::decode(&mut payload).ok()?;
                 let enr_seq = u64::decode(&mut payload).ok()?;
                 Some(Message::Ping { request_id, enr_seq })
             }
             0x02 => {
-                let request_id = u64::decode(&mut payload).ok()?;
+                let request_id = RequestId::decode(&mut payload).ok()?;
                 let enr_seq = u64::decode(&mut payload).ok()?;
                 let ip_bytes = bytes::Bytes::decode(&mut payload).ok()?;
                 let ip = match ip_bytes.len() {
@@ -174,7 +228,7 @@ impl Message {
                 Some(Message::Pong { request_id, enr_seq, ip, port })
             }
             0x03 => {
-                let request_id = u64::decode(&mut payload).ok()?;
+                let request_id = RequestId::decode(&mut payload).ok()?;
                 let dh = Header::decode(&mut payload).ok()?;
                 if !dh.list {
                     return None;
@@ -187,7 +241,7 @@ impl Message {
                 Some(Message::FindNode { request_id, distances })
             }
             0x04 => {
-                let request_id = u64::decode(&mut payload).ok()?;
+                let request_id = RequestId::decode(&mut payload).ok()?;
                 let total = u64::decode(&mut payload).ok()? as u8;
                 let nh = Header::decode(&mut payload).ok()?;
                 if !nh.list {
@@ -721,12 +775,12 @@ mod tests {
 
     #[test]
     fn test_ping_encode_decode() {
-        let msg = Message::Ping { request_id: 42, enr_seq: 7 };
+        let msg = Message::Ping { request_id: RequestId::from(42u64), enr_seq: 7 };
         let mut buf = Vec::new();
         msg.encode(&mut buf);
         match Message::decode(&buf).unwrap() {
             Message::Ping { request_id, enr_seq } => {
-                assert_eq!(request_id, 42);
+                assert_eq!(request_id, RequestId::from(42u64));
                 assert_eq!(enr_seq, 7);
             }
             _ => panic!("wrong variant"),
@@ -737,7 +791,7 @@ mod tests {
     fn test_pong_ipv4_encode_decode() {
         use std::net::{IpAddr, Ipv4Addr};
         let msg = Message::Pong {
-            request_id: 1,
+            request_id: RequestId::from(1u64),
             enr_seq: 3,
             ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
             port: 9000,
@@ -746,7 +800,7 @@ mod tests {
         msg.encode(&mut buf);
         match Message::decode(&buf).unwrap() {
             Message::Pong { request_id, enr_seq, ip, port } => {
-                assert_eq!(request_id, 1);
+                assert_eq!(request_id, RequestId::from(1u64));
                 assert_eq!(enr_seq, 3);
                 assert_eq!(ip, IpAddr::V4(Ipv4Addr::LOCALHOST));
                 assert_eq!(port, 9000);
@@ -759,7 +813,7 @@ mod tests {
     fn test_pong_ipv6_encode_decode() {
         use std::net::{IpAddr, Ipv6Addr};
         let msg = Message::Pong {
-            request_id: 2,
+            request_id: RequestId::from(2u64),
             enr_seq: 0,
             ip: IpAddr::V6(Ipv6Addr::LOCALHOST),
             port: 30303,
@@ -768,7 +822,7 @@ mod tests {
         msg.encode(&mut buf);
         match Message::decode(&buf).unwrap() {
             Message::Pong { request_id, enr_seq, ip, port } => {
-                assert_eq!(request_id, 2);
+                assert_eq!(request_id, RequestId::from(2u64));
                 assert_eq!(enr_seq, 0);
                 assert_eq!(ip, IpAddr::V6(Ipv6Addr::LOCALHOST));
                 assert_eq!(port, 30303);
@@ -783,12 +837,12 @@ mod tests {
         distances.push(256);
         distances.push(255);
         distances.push(1);
-        let msg = Message::FindNode { request_id: 99, distances };
+        let msg = Message::FindNode { request_id: RequestId::from(99u64), distances };
         let mut buf = Vec::new();
         msg.encode(&mut buf);
         match Message::decode(&buf).unwrap() {
             Message::FindNode { request_id, distances } => {
-                assert_eq!(request_id, 99);
+                assert_eq!(request_id, RequestId::from(99u64));
                 assert_eq!(distances.as_slice(), &[256u64, 255, 1]);
             }
             _ => panic!("wrong variant"),
@@ -810,12 +864,12 @@ mod tests {
         let mut nodes: ArrayVec<ArrayVec<u8, ENR_RECORD_MAX>, 8> = ArrayVec::new();
         nodes.push(enr_raw.clone());
 
-        let msg = Message::Nodes { request_id: 5, total: 1, nodes };
+        let msg = Message::Nodes { request_id: RequestId::from(5u64), total: 1, nodes };
         let mut buf = Vec::new();
         msg.encode(&mut buf);
         match Message::decode(&buf).unwrap() {
             Message::Nodes { request_id, total, nodes } => {
-                assert_eq!(request_id, 5);
+                assert_eq!(request_id, RequestId::from(5u64));
                 assert_eq!(total, 1);
                 assert_eq!(nodes.len(), 1);
                 assert_eq!(nodes[0].as_slice(), enr_raw.as_slice());

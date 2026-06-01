@@ -10,6 +10,7 @@ pub fn lookup(file_name: &str) -> Option<&'static [&'static str]> {
     match file_name {
         "storage" => Some(silver_storage::StorageCounters::NAMES),
         "network" => Some(silver_network::NetworkCounters::NAMES),
+        "peer" => Some(silver_peer::PeerCounters::NAMES),
         _ => None,
     }
 }

@@ -122,6 +122,11 @@ pub struct BeaconStateTile {
 
     initial_status_emitted: bool,
     cached_fork_digest: Option<(Epoch, [u8; 4])>,
+    /// Operator-configured fork digest. Used in lieu of a computed digest
+    /// while the state is uninitialized (no checkpoint, pre-sync → zero
+    /// `gvr`), so silver advertises the right digest instead of one derived
+    /// from an all-zero genesis-validators-root.
+    configured_fork_digest: Option<[u8; 4]>,
 
     postponed_scratch: Vec<silver_common::PendingDeposit>,
     /// Per-block buffer of (validator_idx, beacon_block_root, target_epoch)
@@ -184,6 +189,7 @@ impl BeaconStateTile {
             initial_status_emitted: false,
             cached_fork_digest: None,
             active_scratch: Vec::with_capacity(val_cap.max(MAX_ATTESTING_INDICES)),
+            configured_fork_digest: None,
             postponed_scratch: Vec::with_capacity(MAX_PENDING_DEPOSITS_PER_EPOCH),
             attestation_votes_scratch: Vec::with_capacity(
                 MAX_ATTESTATIONS_ELECTRA * MAX_ATTESTING_INDICES,
@@ -423,12 +429,28 @@ impl BeaconStateTile {
         {
             return d;
         }
+
         let gvr = self.state.state().finalized.immutable.genesis_validators_root;
+        // Uninitialized state (no checkpoint, pre-sync): a digest computed
+        // from a zero gvr is bogus. Fall back to the operator-configured
+        // digest until a real state lands. Not cached — recompute once gvr
+        // is set so fork transitions still take effect.
+        if gvr == [0u8; 32] &&
+            let Some(d) = self.configured_fork_digest
+        {
+            return d;
+        }
         let bp =
             get_blob_parameters(epoch, &self.spec.blob_schedule, self.spec.default_blob_params());
         let d = compute_fork_digest(self.spec.fulu_fork_version, &gvr, Some(bp));
         self.cached_fork_digest = Some((epoch, d));
         d
+    }
+
+    /// Set the operator-configured fork digest (bootstrap value used while the
+    /// state is uninitialized). Call once after construction.
+    pub fn set_configured_fork_digest(&mut self, digest: [u8; 4]) {
+        self.configured_fork_digest = Some(digest);
     }
 
     fn status_payload(&mut self) -> [u8; STATUS_V2_SIZE] {
@@ -439,7 +461,17 @@ impl BeaconStateTile {
 
         // `head_slot` excludes empty slots (spec): pin to the latest applied
         // block's slot, not the wall-advanced delta slot.
-        let finalized = self.head_finalized_checkpoint();
+        let mut finalized = self.head_finalized_checkpoint();
+
+        if finalized.root == [0u8; 32] {
+            // Genesis placeholder: the head state's finalized root is zero until
+            // the first finalization, but peers (lighthouse/prysm) report the
+            // genesis *block* root from fork choice and reject a zero finalized
+            // root in Status validation. Mirror them — fork choice holds the
+            // trusted anchor root set at bootstrap.
+            finalized.root = self.fork_choice.finalized_checkpoint.root;
+        }
+
         let slot =
             self.state.state().slots.get(self.last_applied).slot.slot.latest_block_header.slot;
         let earliest = finalized.epoch * SLOTS_PER_EPOCH;

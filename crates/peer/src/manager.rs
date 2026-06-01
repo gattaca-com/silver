@@ -285,6 +285,10 @@ impl PeerManager {
     /// Update our cached chain position.
     pub fn set_status(&mut self, ssz: [u8; STATUS_V2_SIZE], wall_slot: u64) {
         self.our_fork_digest = Some(*StatusView::fork_digest(&ssz));
+        tracing::info!(
+            "Set fork digest from status to: {}",
+            hex::encode(self.our_fork_digest.unwrap())
+        );
         self.status = Some(ssz);
         self.local_wall_slot = wall_slot;
         self.target_dirty = true;
@@ -688,10 +692,15 @@ impl PeerManager {
                 self.on_idontwant_received(p2p_peer, hash);
             }
             PeerEvent::P2pGossipInvalidMsg { p2p_peer, topic, hash: _ } => {
+                crate::PeerCounters::GossipInvalidMsg.inc();
                 self.add_invalid_delivery(p2p_peer, topic);
             }
-            PeerEvent::P2pGossipInvalidControl { p2p_peer } |
+            PeerEvent::P2pGossipInvalidControl { p2p_peer } => {
+                crate::PeerCounters::GossipInvalidControl.inc();
+                self.add_behaviour_penalty(p2p_peer, 1.0);
+            }
             PeerEvent::P2pGossipInvalidFrame { p2p_peer } => {
+                crate::PeerCounters::GossipInvalidFrame.inc();
                 self.add_behaviour_penalty(p2p_peer, 1.0);
             }
             PeerEvent::DiscNodeFound { enr } => {
@@ -786,6 +795,8 @@ impl PeerManager {
         self.dialing.retain(|_, &mut time| {
             now.saturating_duration_since(time) < std::time::Duration::from_secs(15)
         });
+
+        crate::PeerCounters::PeersConnected.set(self.peers.len() as u64);
     }
 
     // ── Lifecycle ───────────────────────────────────────────────────────
@@ -1206,11 +1217,13 @@ impl PeerManager {
             match enr.eth2() {
                 Some(eth2) => {
                     if eth2[..4] != my_digest {
+                        crate::PeerCounters::DiscDroppedForkDigest.inc();
                         tracing::warn!(theirs=?eth2[..4], ours=?my_digest, ?enr, "fork digest mismatch");
                         return;
                     }
                 }
                 None => {
+                    crate::PeerCounters::DiscDroppedForkDigest.inc();
                     tracing::trace!("Not a beacon node, no eth2");
                     return;
                 }
@@ -1222,6 +1235,7 @@ impl PeerManager {
         if let Some(ip) = ip &&
             self.banned_ips.contains_key(&ip)
         {
+            crate::PeerCounters::DiscDroppedBanned.inc();
             tracing::warn!(?ip, "peer with banned ip");
             return;
         }
@@ -1230,19 +1244,22 @@ impl PeerManager {
         let compressed = enr.public_key().serialize();
         let peer_id = PeerId::from_secp256k1_pubkey(&compressed);
         if self.banned_peers.contains_key(&peer_id) {
+            crate::PeerCounters::DiscDroppedBanned.inc();
             tracing::warn!(?peer_id, "banned peer id");
             return;
         }
         if self.peers.values().any(|p| p.peer_id == peer_id) {
-            tracing::warn!(?peer_id, "known peer id");
+            // Normal high-frequency case: discovery re-surfaces connected peers
+            // every poll cycle. trace, not warn — else it floods the log.
+            tracing::trace!(?peer_id, "known peer id");
             return;
         }
         if self.dialing.contains_key(&peer_id) {
-            tracing::warn!(?peer_id, "already dialing peer id");
+            tracing::trace!(?peer_id, "already dialing peer id");
             return;
         }
         if self.archived.contains_key(&peer_id) {
-            tracing::warn!(?peer_id, "archived peer id");
+            tracing::trace!(?peer_id, "archived peer id");
             return;
         }
         if enr.quic4_socket().is_none() && enr.quic6_socket().is_none() {
@@ -1326,7 +1343,12 @@ impl PeerManager {
             return;
         }
 
+        // Only meaningful once something is actually finalized. At epoch 0 the
+        // "finalized root" is a pre-finalization placeholder whose convention
+        // differs across clients (zero vs genesis block root), so comparing it
+        // would fatally evict every peer on a fresh chain.
         if let Some(local_ssz) = self.status.as_ref() &&
+            finalized_epoch > 0 &&
             finalized_epoch == StatusView::finalized_epoch(local_ssz) &&
             finalized_root != *StatusView::finalized_root(local_ssz)
         {
@@ -1372,9 +1394,16 @@ impl PeerManager {
             RpcSeverity::MidTolerance => -5.0,
             RpcSeverity::HighTolerance => -2.0,
         };
+        crate::PeerCounters::RpcMisbehaviour.inc();
         if let Some(peer) = self.peers.get_mut(&conn) {
             peer.application_score += delta;
-            tracing::warn!(delta, score = peer.application_score, "rpc misbehaviour");
+            tracing::warn!(
+                peer_id = conn,
+                ?severity,
+                delta,
+                score = peer.application_score,
+                "rpc misbehaviour"
+            );
         }
         // If this peer is our current sync backer, drop them and burn for
         // the current catchup. Mark dirty so the very next
@@ -1515,12 +1544,30 @@ impl PeerManager {
         let mut evict: Vec<(usize, PeerId, IpAddr)> = Vec::new();
         for (conn, peer) in &self.peers {
             if peer.cached_score < threshold {
-                tracing::warn!(topics=?peer.topic_stats, peer.behaviour_penalty, peer.application_score, "evicting greylisted peer: {conn}");
+                let coloc = self.ip_colocations.get(&peer.ip_prefix).map(|v| v.len()).unwrap_or(1);
+                let b = scoring::score_breakdown(peer, &self.params, coloc, now);
+                tracing::warn!(
+                    peer_id = ?peer.peer_id,
+                    addr = ?peer.addr,
+                    total = b.total,
+                    threshold,
+                    p1_time_in_mesh = b.p1_time_in_mesh,
+                    p2_first_deliveries = b.p2_first_deliveries,
+                    p3_mesh_deficit = b.p3_mesh_deficit,
+                    p3b_mesh_failure = b.p3b_mesh_failure,
+                    p4_invalid = b.p4_invalid,
+                    p5_application = b.p5_application,
+                    p6_ip_colocation = b.p6_ip_colocation,
+                    p7_behaviour = b.p7_behaviour,
+                    "evicting greylisted peer: {conn}"
+                );
                 evict.push((*conn, peer.peer_id, peer.addr.ip()));
             }
         }
         for (conn, peer_id, ip) in evict {
             emit(PeerControl::Ban { p2p: peer_id, p2p_connection: conn });
+            crate::PeerCounters::PeersEvicted.inc();
+            crate::PeerCounters::PeersBanned.inc();
             self.banned_peers.insert(peer_id, now);
             // Bump the per-IP eviction count; only escalate to `BanIp`
             // once we've seen `ip_ban_threshold` peer-level graylists from
@@ -1533,7 +1580,9 @@ impl PeerManager {
                 entry.0
             };
             if count >= self.params.ip_ban_threshold {
+                tracing::info!(?ip, evictions = count, "banning ip");
                 emit(PeerControl::BanIp { ip });
+                crate::PeerCounters::IpsBanned.inc();
                 self.banned_ips.insert(ip, now);
             }
             // Archived copy is written on the normal disconnect path fired

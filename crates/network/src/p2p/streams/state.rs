@@ -46,6 +46,21 @@ impl StreamState {
         Self::Negotiate(NegotiateState::new_outbound(protocol))
     }
 
+    /// Cheap variant name for diagnostics (stream-error logging). Captured
+    /// before `spin` consumes the state so a teardown log can report which
+    /// phase the stream was in.
+    pub fn name(&self) -> &'static str {
+        match self {
+            StreamState::Negotiate(_) => "Negotiate",
+            StreamState::Gossip { .. } => "Gossip",
+            StreamState::IncomingRpc(_) => "IncomingRpc",
+            StreamState::OutgoingRpc(_) => "OutgoingRpc",
+            StreamState::IncomingIdentify(_) => "IncomingIdentify",
+            StreamState::OutgoingIdentify(_) => "OutgoingIdentify",
+            StreamState::Finished => "Finished",
+        }
+    }
+
     // TODO `is_complete` + `on_close` are unused pending a recv-EOF
     // hook. The multipart RPC terminator is "peer FIN on recv half";
     // there is currently no event-driven trigger for that —

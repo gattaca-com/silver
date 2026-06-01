@@ -19,7 +19,10 @@ use crate::{
     },
     discovery::{Discovery, DiscoveryEvent, DiscoveryMetrics},
     kbucket::{InsertResult, KBucketsTable, Key, MAX_NODES_PER_BUCKET},
-    message::{Distances, ENR_RECORD_MAX, Message, MessageKind, NUM_DISTANCES_TO_REQUEST, Packet},
+    message::{
+        Distances, ENR_RECORD_MAX, Message, MessageKind, NUM_DISTANCES_TO_REQUEST, Packet,
+        RequestId,
+    },
 };
 
 const NONCE_RING_SIZE: usize = 64;
@@ -42,7 +45,7 @@ pub struct DiscV5 {
     /// FINDNODE to send once a session with the given peer is established.
     pending_findnodes: FxHashMap<NodeId, (u64, Distances)>,
     pending_probe_nonces: FxHashMap<NodeId, [u8; 12]>,
-    pending_pings: FxHashMap<u64, (NodeId, Instant)>,
+    pending_pings: FxHashMap<RequestId, (NodeId, Instant)>,
     event_queue: Vec<DiscoveryEvent>,
 
     ip_votes: FxHashMap<NodeId, (IpAddr, u16)>,
@@ -138,7 +141,7 @@ impl DiscV5 {
             let Some(s) = self.sessions.get(&node_id) &&
             let Some(data) =
                 Packet::encode_message(self.local_id, node_id, &s.enc, Message::FindNode {
-                    request_id: rid,
+                    request_id: RequestId::from(rid),
                     distances,
                 })
         {
@@ -159,7 +162,7 @@ impl DiscV5 {
         let cipher = make_cipher(&rng_buf[28..].try_into().unwrap());
 
         let mut plain: ArrayVec<u8, 128> = ArrayVec::new();
-        Message::Ping { request_id: 0, enr_seq: 0 }.encode(&mut plain);
+        Message::Ping { request_id: RequestId::from(0u64), enr_seq: 0 }.encode(&mut plain);
 
         let tmp =
             Packet { iv, src_id: self.local_id, nonce, kind: MessageKind::Message, message: &[] };
@@ -242,7 +245,7 @@ impl DiscV5 {
         &mut self,
         src_id: NodeId,
         src_addr: SocketAddr,
-        request_id: u64,
+        request_id: RequestId,
         enr_seq: u64,
         stored_enr_seq: u64,
     ) {
@@ -266,7 +269,7 @@ impl DiscV5 {
             distances.push(0);
             if let Some(data) =
                 Packet::encode_message(self.local_id, src_id, &s.enc, Message::FindNode {
-                    request_id: rid,
+                    request_id: RequestId::from(rid),
                     distances,
                 })
             {
@@ -275,7 +278,7 @@ impl DiscV5 {
         }
     }
 
-    fn on_pong(&mut self, src_id: NodeId, request_id: u64, ip: IpAddr, port: u16) {
+    fn on_pong(&mut self, src_id: NodeId, request_id: RequestId, ip: IpAddr, port: u16) {
         match self.pending_pings.remove(&request_id) {
             Some((expected, _)) if expected == src_id => {}
             _ => return,
@@ -344,7 +347,7 @@ impl DiscV5 {
             let is_new = matches!(result, InsertResult::Inserted) || prev_raw != Some(*raw);
             if is_new {
                 self.metrics.nodes_discovered += 1;
-                self.event_queue.push(DiscoveryEvent::NodeFound(enr));
+                self.emit_node_found(enr);
             }
         }
     }
@@ -353,7 +356,7 @@ impl DiscV5 {
         &mut self,
         dst_id: NodeId,
         dst_addr: SocketAddr,
-        request_id: u64,
+        request_id: RequestId,
         distances: &Distances,
     ) {
         let mut enrs: ArrayVec<ArrayVec<u8, ENR_RECORD_MAX>, 16> = ArrayVec::new();
@@ -421,11 +424,22 @@ impl DiscV5 {
         }
     }
 
+    /// Surface a discovered node, dropping our own ENR. Peers echo our record
+    /// back in NODES/handshake responses; without this filter the dial layer
+    /// would try to connect to ourselves (every advertised address variant
+    /// shares our node id) → guaranteed handshake timeout / zombie.
+    fn emit_node_found(&mut self, enr: Enr) {
+        if enr.node_id() == self.local_id {
+            return;
+        }
+        self.event_queue.push(DiscoveryEvent::NodeFound(enr));
+    }
+
     fn handle_message(&mut self, src_id: NodeId, src_addr: SocketAddr, bytes: &[u8], now: Instant) {
         let msg = match Message::decode(bytes) {
             Some(o) => o,
             None => {
-                warn!(%src_id, %src_addr, len = bytes.len(), "failed to decode message payload");
+                warn!(%src_id, %src_addr, msg_type = ?bytes.first(), len = bytes.len(), "failed to decode message payload");
                 return;
             }
         };
@@ -560,7 +574,8 @@ impl DiscV5 {
         let enc_cipher = make_cipher(&enc_key);
         let ciphertext = if let Some((rid, dists)) = self.pending_findnodes.remove(&remote_id) {
             let mut plain: ArrayVec<u8, 128> = ArrayVec::new();
-            Message::FindNode { request_id: rid, distances: dists }.encode(&mut plain);
+            Message::FindNode { request_id: RequestId::from(rid), distances: dists }
+                .encode(&mut plain);
             encrypt_message(&enc_cipher, &handshake_nonce, &hs_aad, &plain)
         } else {
             None
@@ -579,7 +594,7 @@ impl DiscV5 {
 
         self.event_queue.push(DiscoveryEvent::SendMessage { to: src_addr, data: wire });
         if let Some(enr) = self.decode_enr_for(remote_id) {
-            self.event_queue.push(DiscoveryEvent::NodeFound(enr));
+            self.emit_node_found(enr);
         }
     }
 
@@ -711,7 +726,7 @@ impl DiscV5 {
         self.pending_probe_nonces.remove(&src_id);
 
         if let Some(enr) = self.decode_enr_for(src_id) {
-            self.event_queue.push(DiscoveryEvent::NodeFound(enr));
+            self.emit_node_found(enr);
         }
     }
 
@@ -782,7 +797,7 @@ impl DiscV5 {
                         self.local_id,
                         node_id,
                         &s.enc,
-                        Message::FindNode { request_id: rid, distances },
+                        Message::FindNode { request_id: RequestId::from(rid), distances },
                     )
                 {
                     self.event_queue.push(DiscoveryEvent::SendMessage { to: addr, data });
@@ -957,6 +972,11 @@ impl Discovery for DiscV5 {
 
         while let Some(applied) = self.kbuckets.take_applied_pending() {
             if let Some(enr) = self.decode_enr_for(*applied.inserted.preimage()) {
+                // Drop our own record (peers echo it back; promoting it here
+                // would otherwise surface us as a dial target → self-dial).
+                if enr.node_id() == self.local_id {
+                    continue;
+                }
                 self.metrics.nodes_discovered += 1;
                 f(DiscoveryEvent::NodeFound(enr));
             }
@@ -980,11 +1000,11 @@ impl Discovery for DiscV5 {
                 if let Some(s) = self.sessions.get(&node_id) &&
                     let Some(data) =
                         Packet::encode_message(self.local_id, node_id, &s.enc, Message::Ping {
-                            request_id: rid,
+                            request_id: RequestId::from(rid),
                             enr_seq: self.local_enr.seq(),
                         })
                 {
-                    self.pending_pings.insert(rid, (node_id, Instant::now()));
+                    self.pending_pings.insert(RequestId::from(rid), (node_id, Instant::now()));
                     rid = rid.wrapping_add(1);
                     f(DiscoveryEvent::SendMessage { to: addr, data });
                     sent += 1;
@@ -1275,8 +1295,14 @@ mod tests {
 
         // A sends Ping; B replies with Pong. Register the pending ping so A
         // accepts the PONG.
-        a.pending_pings.insert(1, (b.local_id, now));
-        inject_message(&mut a, &mut b, a_addr, Message::Ping { request_id: 1, enr_seq: 0 }, now);
+        a.pending_pings.insert(RequestId::from(1u64), (b.local_id, now));
+        inject_message(
+            &mut a,
+            &mut b,
+            a_addr,
+            Message::Ping { request_id: RequestId::from(1u64), enr_seq: 0 },
+            now,
+        );
         let b_sends = collect_sends(&mut b);
         for (to, data) in &b_sends {
             if *to == a_addr {
@@ -1304,7 +1330,7 @@ mod tests {
             &mut b,
             &mut a,
             b_addr,
-            Message::FindNode { request_id: 10, distances },
+            Message::FindNode { request_id: RequestId::from(10u64), distances },
             now,
         );
         let a_sends = collect_sends(&mut a);
@@ -1348,7 +1374,7 @@ mod tests {
             &mut b,
             &mut a,
             b_addr,
-            Message::FindNode { request_id: 11, distances },
+            Message::FindNode { request_id: RequestId::from(11u64), distances },
             now,
         );
         let a_sends = collect_sends(&mut a);
@@ -1384,29 +1410,29 @@ mod tests {
         let ipv6 = IpAddr::V6(Ipv6Addr::LOCALHOST);
         let port = 19041u16;
 
-        a.pending_pings.insert(100, (b.local_id, now));
-        a.pending_pings.insert(101, (c.local_id, now));
-        a.pending_pings.insert(102, (d.local_id, now));
+        a.pending_pings.insert(RequestId::from(100u64), (b.local_id, now));
+        a.pending_pings.insert(RequestId::from(101u64), (c.local_id, now));
+        a.pending_pings.insert(RequestId::from(102u64), (d.local_id, now));
 
         inject_message(
             &mut b,
             &mut a,
             b_addr,
-            Message::Pong { request_id: 100, enr_seq: 0, ip: ipv6, port },
+            Message::Pong { request_id: RequestId::from(100u64), enr_seq: 0, ip: ipv6, port },
             now,
         );
         inject_message(
             &mut c,
             &mut a,
             c_addr,
-            Message::Pong { request_id: 101, enr_seq: 0, ip: ipv6, port },
+            Message::Pong { request_id: RequestId::from(101u64), enr_seq: 0, ip: ipv6, port },
             now,
         );
         inject_message(
             &mut d,
             &mut a,
             d_addr,
-            Message::Pong { request_id: 102, enr_seq: 0, ip: ipv6, port },
+            Message::Pong { request_id: RequestId::from(102u64), enr_seq: 0, ip: ipv6, port },
             now,
         );
 
@@ -1459,7 +1485,7 @@ mod tests {
             &mut b,
             &mut a,
             b_addr,
-            Message::Nodes { request_id: 20, total: 1, nodes },
+            Message::Nodes { request_id: RequestId::from(20u64), total: 1, nodes },
             now,
         );
         collect_events(&mut a);
@@ -1524,7 +1550,7 @@ mod tests {
             &mut b,
             &mut a,
             b_addr,
-            Message::FindNode { request_id: 50, distances },
+            Message::FindNode { request_id: RequestId::from(50u64), distances },
             now,
         );
 
@@ -1586,7 +1612,7 @@ mod tests {
             &mut b,
             &mut a,
             b_addr,
-            Message::FindNode { request_id: 60, distances },
+            Message::FindNode { request_id: RequestId::from(60u64), distances },
             now,
         );
 
@@ -1628,7 +1654,7 @@ mod tests {
         let wire = {
             let s = a.sessions.get(&b.local_id).expect("no session a→b");
             Packet::encode_message(a.local_id, b.local_id, &s.enc, Message::Ping {
-                request_id: 42,
+                request_id: RequestId::from(42u64),
                 enr_seq: 0,
             })
             .expect("encode")
@@ -1713,7 +1739,7 @@ mod tests {
             &mut b,
             &mut a,
             b_addr,
-            Message::Ping { request_id: 100, enr_seq: new_seq },
+            Message::Ping { request_id: RequestId::from(100u64), enr_seq: new_seq },
             now,
         );
 
@@ -1776,7 +1802,7 @@ mod tests {
             // B still has its session with A, re-create one for encoding.
             let s = b.sessions.get(&a.local_id).unwrap();
             Packet::encode_message(b.local_id, a.local_id, &s.enc, Message::Ping {
-                request_id: rid,
+                request_id: RequestId::from(rid),
                 enr_seq: 1,
             })
             .unwrap()
@@ -1828,7 +1854,7 @@ mod tests {
             let garbage_key = crate::crypto::make_cipher(&[0xAA; 16]);
             if let Some(data) =
                 Packet::encode_message(src_id, a.local_id, &garbage_key, Message::Ping {
-                    request_id: i as u64,
+                    request_id: RequestId::from(i as u64),
                     enr_seq: 0,
                 })
             {
@@ -1857,7 +1883,7 @@ mod tests {
             let garbage_key = crate::crypto::make_cipher(&[0xBB; 16]);
             if let Some(data) =
                 Packet::encode_message(src_id, a.local_id, &garbage_key, Message::Ping {
-                    request_id: i as u64,
+                    request_id: RequestId::from(i as u64),
                     enr_seq: 0,
                 })
             {
