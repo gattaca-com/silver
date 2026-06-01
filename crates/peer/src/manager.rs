@@ -12,10 +12,11 @@ use flux::utils::ArrayVec;
 use fxhash::{FxHashMap, FxHashSet};
 use silver_common::{
     Enr, GossipMsgOut, GossipTopic, IpBytes, MessageId, P2pSend, PeerControl, PeerEvent, PeerId,
-    PeerStatus, RejectSource, RpcRequestOutbound, RpcSeverity, ScoreParams, StreamProtocol,
-    SyncUpdate, SyncingConfig, TCacheRead,
+    PeerStatus, RejectSource, RpcRequestOutbound, RpcSeverity, StreamProtocol, SyncUpdate,
+    TCacheRead,
     ssz_view::{METADATA_SIZE, STATUS_V2_SIZE, StatusView},
 };
+use silver_config::{ScoreParams, SyncingConfig};
 
 use crate::{
     database::PeerDatabase,

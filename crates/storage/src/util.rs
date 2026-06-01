@@ -1,8 +1,8 @@
 //! Utility helpers for data-column construction and verification.
 
 use blst::{BLST_ERROR, min_pk::PublicKey};
+use silver_beacon_state_data::SLOTS_PER_EPOCH;
 use silver_common::{
-    SLOTS_PER_EPOCH,
     ssz_hash::{
         B256, hash_concat, hash_list_fixed_elements, hash_tree_root_body, hash_tree_root_fork_data,
         is_valid_merkle_branch, merkleize, uint64_chunk,

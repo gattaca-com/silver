@@ -1,0 +1,13 @@
+[package]
+name = "silver_chain_spec"
+edition.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+serde.workspace = true
+hex.workspace = true
+
+[lints]
+workspace = true

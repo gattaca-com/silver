@@ -4,16 +4,17 @@ use std::time::Duration;
 
 use flux::{spine::SpineAdapter, tile::Tile};
 use silver_beacon_state::{ticker::SlotTicker, tile::BeaconStateTile};
+use silver_beacon_state_data::{BeaconState, BeaconStateOwner, SpecConfig};
 use silver_common::{
-    BeaconState, BeaconStateEvent, BeaconStateOwner, IpBytes, Keypair, P2pSend, P2pStreamId,
-    PeerControl, PeerEvent, PeerId, RpcInbound, RpcOutbound, RpcRequest, RpcRequestOutbound,
-    RpcResponse, RpcResponseInbound, ScoreParams, SilverSpine, SpecConfig, StreamProtocol,
-    SyncingConfig, TCache, TCacheProducer, TCacheRead, TProducer,
+    BeaconStateEvent, IpBytes, Keypair, P2pSend, P2pStreamId, PeerControl, PeerEvent, PeerId,
+    RpcInbound, RpcOutbound, RpcRequest, RpcRequestOutbound, RpcResponse, RpcResponseInbound,
+    SilverSpine, StreamProtocol, TCache, TCacheProducer, TCacheRead, TProducer,
     ssz_view::{
         BeaconBlocksByRangeRequestView, METADATA_SIZE, STATUS_V2_SIZE, SignedBeaconBlockView,
         StatusView,
     },
 };
+use silver_config::{ScoreParams, SyncingConfig};
 use silver_control::Controller;
 use silver_peer::PeerManager;
 use tempfile::TempDir;

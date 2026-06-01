@@ -1,0 +1,17 @@
+[package]
+name = "silver_ssz"
+edition.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+silver_common_macros.workspace = true
+silver_metrics.workspace = true
+flux.workspace = true
+sha2.workspace = true
+sha2-const-stable.workspace = true
+hashtree-rs.workspace = true
+
+[lints]
+workspace = true

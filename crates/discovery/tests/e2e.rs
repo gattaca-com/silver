@@ -4,7 +4,8 @@ use std::{
 };
 
 use secp256k1::SecretKey;
-use silver_common::{DiscoveryConfig, Enr, NodeId};
+use silver_common::{Enr, NodeId};
+use silver_config::DiscoveryConfig;
 use silver_discovery::{DiscV5, Discovery, DiscoveryEvent};
 
 struct TestNode {

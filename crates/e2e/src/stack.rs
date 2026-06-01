@@ -9,10 +9,10 @@ use std::{net::SocketAddr, sync::atomic::AtomicUsize};
 use flux::{spine::SpineAdapter, tile::Tile};
 use quinn_proto::Endpoint;
 use silver_common::{
-    DiscoveryConfig, Enr, Identify, Keypair, PeerId, ProtoIdentify, ScoreParams, SilverSpine,
-    SyncingConfig, TCache, TCacheProducer, TConsumer, TProducer, TRandomAccess,
-    ssz_view::METADATA_SIZE,
+    Enr, Identify, Keypair, PeerId, ProtoIdentify, SilverSpine, TCache, TCacheProducer, TConsumer,
+    TProducer, TRandomAccess, ssz_view::METADATA_SIZE,
 };
+use silver_config::{DiscoveryConfig, ScoreParams, SyncingConfig};
 use silver_control::Controller;
 use silver_discovery::DiscV5;
 use silver_gossip::GossipHandler;

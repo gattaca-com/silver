@@ -1,0 +1,36 @@
+[package]
+name = "silver_beacon_state"
+edition.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[features]
+ef_tests = []
+
+[dependencies]
+silver_common.workspace = true
+silver_beacon_state_data.workspace = true
+silver_metrics.workspace = true
+silver_ssz.workspace = true
+flux.workspace = true
+ring.workspace = true
+blst.workspace = true
+rustc-hash.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+rand.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_yml = "0.0.12"
+snap = "0.1"
+
+[[bench]]
+harness = false
+name = "bls_verify"
+
+[[bench]]
+harness = false
+name = "hash_tree_build"
