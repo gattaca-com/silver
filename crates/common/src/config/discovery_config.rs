@@ -77,7 +77,7 @@ impl DiscoveryConfig {
 impl Default for DiscoveryConfig {
     fn default() -> Self {
         Self {
-            lookup_interval_ms: 3_600_000,
+            lookup_interval_ms: 60_000,
             lookup_distances: 6,
             target_sessions: 128,
             ping_frequency_s: 5,
