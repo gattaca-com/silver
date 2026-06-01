@@ -34,18 +34,12 @@ impl PerfReport {
         self.write_artifacts();
     }
 
-    /// `Err` lists every breached threshold; `None` thresholds are report-only.
     pub fn check_thresholds(&self) -> Result<(), String> {
-        let breaches: Vec<Gauge> = self.gauges().into_iter().filter(|g| g.breached()).collect();
-        if breaches.is_empty() {
+        let failures: Vec<String> = self.gauges().iter().filter_map(Gauge::failure).collect();
+        if failures.is_empty() {
             return Ok(());
         }
-        let mut out = String::from("thresholds breached:\n");
-        for g in &breaches {
-            out.push_str(&g.render_breach());
-            out.push('\n');
-        }
-        Err(out)
+        Err(format!("perf gate failed:\n{}\n", failures.join("\n")))
     }
 
     /// Shared by `print_key_metrics` and `check_thresholds` so both views
@@ -54,9 +48,9 @@ impl PerfReport {
         let t = &self.thresholds;
         vec![
             Gauge {
-                label: "decompose_beacon_state",
-                actual: self.frame_total_ns("decompose_beacon_state"),
-                threshold: t.max_decompose_beacon_state,
+                label: "decompose",
+                actual: self.frame_total_ns("decompose"),
+                threshold: t.max_decompose,
             },
             Gauge {
                 label: "apply_block (avg)",
@@ -145,14 +139,23 @@ struct Gauge {
 }
 
 impl Gauge {
-    fn breached(&self) -> bool {
-        matches!((self.actual, self.threshold), (Some(a), Some(c)) if a > c)
+    fn failure(&self) -> Option<String> {
+        match (self.actual, self.threshold) {
+            (_, None) => None,
+            (None, Some(_)) => Some(format!(
+                "  {label:<32}  MISSING — `#[timed]` frame absent (renamed?)",
+                label = self.label,
+            )),
+            (Some(a), Some(c)) if a > c => Some(self.render_breach()),
+            (Some(_), Some(_)) => None,
+        }
     }
 
     fn render_row(&self) -> String {
         let actual = self.actual.map(|v| v.to_string()).unwrap_or_else(|| "n/a".into());
         let (threshold, status) = match (self.actual, self.threshold) {
             (_, None) => ("—".to_string(), "(no threshold)"),
+            (None, Some(c)) => (c.to_string(), "MISSING"),
             (Some(a), Some(c)) if a > c => (c.to_string(), "BREACH"),
             (_, Some(c)) => (c.to_string(), "ok"),
         };
