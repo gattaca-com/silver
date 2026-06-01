@@ -7,32 +7,32 @@ use mio::{Events, Interest, Poll, Token, net::TcpStream};
 
 use crate::{EngineError, JwtSecret};
 
-pub(crate) const POOL_SIZE: usize = 4;
+// Sized for the largest expected EL response: getPayload with a full blobsBundle
+// (~21 blobs × 256 KB hex-encoded + execution payload transactions).
+const READ_BUF_CAPACITY: usize = 10 * 1024 * 1024;
 
-#[derive(PartialEq)]
-enum State {
+enum Conn {
     Disconnected,
-    Connecting,
-    Connected,
+    Connecting(TcpStream),
+    Connected(TcpStream),
 }
 
-pub(crate) struct HttpConnection {
+struct HttpConnection {
     endpoint: String,
     host: String,
     jwt: JwtSecret,
     token: Token,
-    stream: Option<TcpStream>,
-    state: State,
+    conn: Conn,
     addr: Option<SocketAddr>,
+    in_flight: Option<u64>,
     pending: Option<(u64, Vec<u8>)>,
     write_pos: usize,
-    in_flight: Option<u64>,
     read_buf: Vec<u8>,
     read_offset: usize,
 }
 
 impl HttpConnection {
-    pub(crate) fn new(endpoint: String, jwt: JwtSecret, token: Token) -> Self {
+    fn new(endpoint: String, jwt: JwtSecret, token: Token) -> Self {
         let host = endpoint
             .trim_start_matches("http://")
             .split('/')
@@ -44,100 +44,117 @@ impl HttpConnection {
             host,
             jwt,
             token,
-            stream: None,
-            state: State::Disconnected,
+            conn: Conn::Disconnected,
             addr: None,
             pending: None,
             write_pos: 0,
             in_flight: None,
-            read_buf: Vec::new(),
+            read_buf: Vec::with_capacity(READ_BUF_CAPACITY),
             read_offset: 0,
         }
     }
 }
 
-pub(crate) fn http_is_free(t: &HttpConnection) -> bool {
+fn http_is_free(t: &HttpConnection) -> bool {
     t.in_flight.is_none() && t.pending.is_none()
 }
 
-pub(crate) fn http_enqueue(
-    t: &mut HttpConnection,
-    rpc_id: u64,
-    body: &serde_json::Value,
-    poll: &mut Poll,
-) {
-    let json = serde_json::to_vec(body).unwrap_or_default();
+fn http_enqueue(t: &mut HttpConnection, rpc_id: u64, body: &[u8], poll: &mut Poll) {
+    debug_assert!(t.in_flight.is_none() && t.pending.is_none(), "enqueue on busy connection");
     let bearer = t.jwt.bearer_token();
-    let bytes = build_request(&t.host, &json, bearer, true);
+    let bytes = build_request(&t.host, body, bearer, true);
     t.pending = Some((rpc_id, bytes));
 
-    match t.state {
-        State::Disconnected => http_connect(t, poll),
-        State::Connected => http_set_interest(t, poll, Interest::READABLE | Interest::WRITABLE),
-        State::Connecting => {}
+    // matches! borrows t.conn transiently, freeing it before the function call
+    // below.
+    if matches!(t.conn, Conn::Disconnected) {
+        http_connect(t, poll);
+    } else if matches!(t.conn, Conn::Connected(_)) {
+        http_set_interest(&mut t.conn, t.token, poll, Interest::READABLE | Interest::WRITABLE);
     }
 }
 
-pub(crate) fn http_poll<F>(
-    t: &mut HttpConnection,
-    events: &Events,
-    poll: &mut Poll,
-    on_complete: &mut F,
-) where
-    F: FnMut(u64, Result<serde_json::Value, EngineError>),
+fn http_poll<F>(t: &mut HttpConnection, events: &Events, poll: &mut Poll, on_complete: &mut F)
+where
+    F: FnMut(u64, Result<Vec<u8>, EngineError>),
 {
     for event in events.iter() {
         if event.token() != t.token {
             continue;
         }
-        match t.state {
-            State::Disconnected => {}
-            State::Connecting => {
-                if event.is_error() || event.is_read_closed() || event.is_write_closed() {
-                    http_on_error(t, poll, on_complete, "connect failed");
-                    break;
-                }
-                if event.is_writable() {
-                    let connected = t.stream.as_ref().and_then(|s| s.peer_addr().ok()).is_some();
-                    if connected {
-                        t.state = State::Connected;
-                        let interest = if t.pending.is_none() {
-                            Interest::READABLE
-                        } else {
-                            Interest::READABLE | Interest::WRITABLE
-                        };
-                        http_set_interest(t, poll, interest);
-                    } else {
-                        http_on_error(t, poll, on_complete, "connect failed");
-                        break;
-                    }
-                }
+        if matches!(t.conn, Conn::Connecting(_)) {
+            if event.is_error() || event.is_read_closed() || event.is_write_closed() {
+                http_on_error(t, poll, on_complete, "connect failed");
+                break;
             }
-            State::Connected => {
-                if event.is_error() || event.is_read_closed() {
-                    http_on_error(t, poll, on_complete, "connection lost");
-                    break;
-                }
-                if event.is_writable() {
-                    if let Err(e) = http_do_write(t) {
-                        let msg = e.to_string();
-                        http_on_error(t, poll, on_complete, &msg);
-                        break;
-                    }
+            if event.is_writable() {
+                // Take ownership to inspect peer_addr and transition state atomically.
+                let Conn::Connecting(stream) = std::mem::replace(&mut t.conn, Conn::Disconnected)
+                else {
+                    unreachable!()
+                };
+                if stream.peer_addr().is_ok() {
+                    t.conn = Conn::Connected(stream);
                     let interest = if t.pending.is_none() {
                         Interest::READABLE
                     } else {
                         Interest::READABLE | Interest::WRITABLE
                     };
-                    http_set_interest(t, poll, interest);
+                    http_set_interest(&mut t.conn, t.token, poll, interest);
+                } else {
+                    t.conn = Conn::Connecting(stream);
+                    http_on_error(t, poll, on_complete, "connect failed");
+                    break;
                 }
-                if event.is_readable() {
-                    if let Err(e) = http_do_read(t, on_complete) {
-                        let msg = e.to_string();
-                        http_on_error(t, poll, on_complete, &msg);
-                        break;
-                    }
+            }
+        } else if matches!(t.conn, Conn::Connected(_)) {
+            if event.is_error() {
+                http_on_error(t, poll, on_complete, "connection error");
+                break;
+            }
+            if event.is_writable() {
+                let result = {
+                    let Conn::Connected(stream) = &mut t.conn else { unreachable!() };
+                    http_do_write(stream, &mut t.pending, &mut t.write_pos, &mut t.in_flight)
+                };
+                if let Err(e) = result {
+                    let msg = e.to_string();
+                    http_on_error(t, poll, on_complete, &msg);
+                    break;
                 }
+                let interest = if t.pending.is_none() {
+                    Interest::READABLE
+                } else {
+                    Interest::READABLE | Interest::WRITABLE
+                };
+                http_set_interest(&mut t.conn, t.token, poll, interest);
+            }
+            if event.is_readable() {
+                // Drain data before checking is_read_closed: when the remote
+                // sends a response + FIN in one exchange (EPOLLIN|EPOLLRDHUP),
+                // we must read the response first. http_do_read returns Err on
+                // EOF, so the break below covers that close path too.
+                let result = {
+                    let Conn::Connected(stream) = &mut t.conn else { unreachable!() };
+                    http_do_read(
+                        stream,
+                        &mut t.in_flight,
+                        &mut t.read_buf,
+                        &mut t.read_offset,
+                        on_complete,
+                    )
+                };
+                if let Err(e) = result {
+                    let msg = e.to_string();
+                    http_on_error(t, poll, on_complete, &msg);
+                    break;
+                }
+            }
+            if event.is_read_closed() {
+                // Remote closed with no (more) data — in_flight will never get
+                // a response.
+                http_on_error(t, poll, on_complete, "connection closed");
+                break;
             }
         }
     }
@@ -153,7 +170,7 @@ fn http_connect(t: &mut HttpConnection, poll: &mut Poll) {
                 a
             }
             Err(e) => {
-                tracing::warn!("engine http: resolve failed for {}: {e}", t.endpoint);
+                tracing::warn!("resolve failed for {}: {e}", t.endpoint);
                 return;
             }
         }
@@ -161,26 +178,30 @@ fn http_connect(t: &mut HttpConnection, poll: &mut Poll) {
     match TcpStream::connect(addr) {
         Ok(mut stream) => {
             if poll.registry().register(&mut stream, t.token, Interest::WRITABLE).is_ok() {
-                t.stream = Some(stream);
-                t.state = State::Connecting;
+                t.conn = Conn::Connecting(stream);
             }
         }
-        Err(e) => tracing::warn!("engine http: connect error: {e}"),
+        Err(e) => tracing::warn!("connect error: {e}"),
     }
 }
 
-fn http_do_write(t: &mut HttpConnection) -> io::Result<()> {
-    if let Some((_, bytes)) = t.pending.as_ref() {
-        let stream = t.stream.as_mut().unwrap();
+fn http_do_write(
+    stream: &mut TcpStream,
+    pending: &mut Option<(u64, Vec<u8>)>,
+    write_pos: &mut usize,
+    in_flight: &mut Option<u64>,
+) -> io::Result<()> {
+    if let Some((_, bytes)) = pending.as_ref() {
         loop {
-            match stream.write(&bytes[t.write_pos..]) {
+            match stream.write(&bytes[*write_pos..]) {
                 Ok(0) => break,
                 Ok(n) => {
-                    t.write_pos += n;
-                    if t.write_pos == bytes.len() {
-                        let (rpc_id, _) = t.pending.take().unwrap();
-                        t.in_flight = Some(rpc_id);
-                        t.write_pos = 0;
+                    *write_pos += n;
+                    if *write_pos == bytes.len() {
+                        //SAFETY: can unwrap here because we're in pending is Some branch
+                        let (rpc_id, _) = pending.take().unwrap();
+                        *in_flight = Some(rpc_id);
+                        *write_pos = 0;
                         break;
                     }
                 }
@@ -192,35 +213,45 @@ fn http_do_write(t: &mut HttpConnection) -> io::Result<()> {
     Ok(())
 }
 
-fn http_do_read<F>(t: &mut HttpConnection, on_complete: &mut F) -> io::Result<()>
+fn http_do_read<F>(
+    stream: &mut TcpStream,
+    in_flight: &mut Option<u64>,
+    read_buf: &mut Vec<u8>,
+    read_offset: &mut usize,
+    on_complete: &mut F,
+) -> io::Result<()>
 where
-    F: FnMut(u64, Result<serde_json::Value, EngineError>),
+    F: FnMut(u64, Result<Vec<u8>, EngineError>),
 {
-    let stream = t.stream.as_mut().unwrap();
-    let mut buf = [0u8; 8192];
     loop {
-        match stream.read(&mut buf) {
-            Ok(0) => return Err(io::Error::new(io::ErrorKind::ConnectionReset, "eof")),
+        let base = read_buf.len();
+        read_buf.resize(base + READ_BUF_CAPACITY, 0);
+        match stream.read(&mut read_buf[base..]) {
+            Ok(0) => {
+                read_buf.truncate(base);
+                return Err(io::Error::new(io::ErrorKind::ConnectionReset, "eof"));
+            }
             Ok(n) => {
-                t.read_buf.extend_from_slice(&buf[..n]);
-                loop {
-                    match try_parse_response(&t.read_buf[t.read_offset..]) {
-                        Some((result, consumed)) => {
-                            t.read_offset += consumed;
-                            if let Some(rpc_id) = t.in_flight.take() {
-                                on_complete(rpc_id, result);
-                            }
-                        }
-                        None => break,
+                read_buf.truncate(base + n);
+                while let Some((result, consumed)) = try_parse_response(&read_buf[*read_offset..]) {
+                    *read_offset += consumed;
+                    if let Some(rpc_id) = in_flight.take() {
+                        on_complete(rpc_id, result);
                     }
                 }
-                if t.read_offset == t.read_buf.len() {
-                    t.read_buf.clear();
-                    t.read_offset = 0;
+                if *read_offset == read_buf.len() {
+                    read_buf.clear();
+                    *read_offset = 0;
                 }
             }
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
-            Err(e) => return Err(e),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                read_buf.truncate(base);
+                break;
+            }
+            Err(e) => {
+                read_buf.truncate(base);
+                return Err(e);
+            }
         }
     }
     Ok(())
@@ -228,9 +259,9 @@ where
 
 fn http_on_error<F>(t: &mut HttpConnection, poll: &mut Poll, on_complete: &mut F, msg: &str)
 where
-    F: FnMut(u64, Result<serde_json::Value, EngineError>),
+    F: FnMut(u64, Result<Vec<u8>, EngineError>),
 {
-    tracing::warn!("engine http: {msg}");
+    tracing::warn!("{msg}");
     let err = msg.to_string();
     if let Some(rpc_id) = t.in_flight.take() {
         on_complete(rpc_id, Err(EngineError::Http(err.clone())));
@@ -241,65 +272,21 @@ where
     t.write_pos = 0;
     t.read_buf.clear();
     t.read_offset = 0;
-    if let Some(mut stream) = t.stream.take() {
+    let old = std::mem::replace(&mut t.conn, Conn::Disconnected);
+    if let Conn::Connecting(mut stream) | Conn::Connected(mut stream) = old {
         let _ = poll.registry().deregister(&mut stream);
     }
-    t.state = State::Disconnected;
 }
 
-fn http_set_interest(t: &mut HttpConnection, poll: &mut Poll, interest: Interest) {
-    if let Some(stream) = t.stream.as_mut() {
-        let _ = poll.registry().reregister(stream, t.token, interest);
-    }
+fn http_set_interest(conn: &mut Conn, token: Token, poll: &mut Poll, interest: Interest) {
+    let stream = match conn {
+        Conn::Connecting(s) | Conn::Connected(s) => s,
+        Conn::Disconnected => return,
+    };
+    let _ = poll.registry().reregister(stream, token, interest);
 }
 
-pub(crate) struct HttpPool {
-    connections: Vec<HttpConnection>,
-    endpoint: String,
-    jwt: JwtSecret,
-}
-
-impl HttpPool {
-    pub(crate) fn new(endpoint: String, jwt: JwtSecret, size: usize) -> Self {
-        let connections = (0..size)
-            .map(|i| HttpConnection::new(endpoint.clone(), jwt.clone(), Token(i)))
-            .collect();
-        Self { connections, endpoint, jwt }
-    }
-}
-
-pub(crate) fn http_pool_enqueue(
-    pool: &mut HttpPool,
-    rpc_id: u64,
-    body: &serde_json::Value,
-    poll: &mut Poll,
-) {
-    if let Some(conn) = pool.connections.iter_mut().find(|c| http_is_free(c)) {
-        http_enqueue(conn, rpc_id, body, poll);
-    } else {
-        let mut new_conn = HttpConnection::new(
-            pool.endpoint.clone(),
-            pool.jwt.clone(),
-            Token(pool.connections.len()),
-        );
-        http_enqueue(&mut new_conn, rpc_id, body, poll);
-        pool.connections.push(new_conn);
-    }
-}
-
-pub(crate) fn poll_http_pool<F>(
-    pool: &mut HttpPool,
-    events: &Events,
-    poll: &mut Poll,
-    on_complete: &mut F,
-) where
-    F: FnMut(u64, Result<serde_json::Value, EngineError>),
-{
-    for conn in &mut pool.connections {
-        http_poll(conn, events, poll, on_complete);
-    }
-}
-
+// Connection helper functions
 fn build_request(host: &str, json: &[u8], bearer: &str, keep_alive: bool) -> Vec<u8> {
     let connection = if keep_alive { "keep-alive" } else { "close" };
     let header = format!(
@@ -320,9 +307,7 @@ fn parse_addr(endpoint: &str) -> io::Result<SocketAddr> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no address resolved"))
 }
 
-pub(crate) fn try_parse_response(
-    buf: &[u8],
-) -> Option<(Result<serde_json::Value, EngineError>, usize)> {
+fn try_parse_response(buf: &[u8]) -> Option<(Result<Vec<u8>, EngineError>, usize)> {
     let mut headers = [httparse::EMPTY_HEADER; 32];
     let mut resp = httparse::Response::new(&mut headers);
 
@@ -346,8 +331,47 @@ pub(crate) fn try_parse_response(
         return None;
     }
 
-    let body = &buf[header_end..total];
-    Some((serde_json::from_slice(body).map_err(EngineError::Json), total))
+    Some((Ok(buf[header_end..total].to_vec()), total))
+}
+
+pub(crate) struct HttpPool {
+    connections: Vec<HttpConnection>,
+    endpoint: String,
+    jwt: JwtSecret,
+}
+
+impl HttpPool {
+    pub(crate) fn new(endpoint: String, jwt: JwtSecret) -> Self {
+        let connections = vec![HttpConnection::new(endpoint.clone(), jwt.clone(), Token(0))];
+        Self { connections, endpoint, jwt }
+    }
+}
+
+pub(crate) fn http_pool_enqueue(pool: &mut HttpPool, rpc_id: u64, body: &[u8], poll: &mut Poll) {
+    if let Some(conn) = pool.connections.iter_mut().find(|c| http_is_free(c)) {
+        http_enqueue(conn, rpc_id, body, poll);
+    } else {
+        let mut new_conn = HttpConnection::new(
+            pool.endpoint.clone(),
+            pool.jwt.clone(),
+            Token(pool.connections.len()),
+        );
+        http_enqueue(&mut new_conn, rpc_id, body, poll);
+        pool.connections.push(new_conn);
+    }
+}
+
+pub(crate) fn poll_http_pool<F>(
+    pool: &mut HttpPool,
+    events: &Events,
+    poll: &mut Poll,
+    on_complete: &mut F,
+) where
+    F: FnMut(u64, Result<Vec<u8>, EngineError>),
+{
+    for conn in &mut pool.connections {
+        http_poll(conn, events, poll, on_complete);
+    }
 }
 
 #[cfg(test)]
@@ -410,12 +434,7 @@ mod tests {
 
     #[test]
     fn parse_large_body_correct_consumed_count() {
-        let body: Vec<u8> = (0u8..=255).cycle().take(4096).collect();
-        // wrap in a JSON string so serde accepts it
-        let json_body = serde_json::to_vec(&serde_json::Value::String(
-            String::from_utf8_lossy(&body).into_owned(),
-        ))
-        .unwrap();
+        let json_body: Vec<u8> = (0u8..=255).cycle().take(4096).collect();
         let buf = http_response(&json_body);
         let (result, consumed) = try_parse_response(&buf).unwrap();
         assert!(result.is_ok());

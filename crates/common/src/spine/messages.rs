@@ -598,7 +598,7 @@ pub enum BeaconStateEvent {
 
 /// Maximum blob commitments per block (Fulu target; increase as the spec
 /// evolves).
-pub const MAX_BLOBS_PER_BLOCK: usize = 9;
+pub const MAX_BLOBS_PER_BLOCK: usize = 21;
 
 /// Maximum number of block hashes in a single `getPayloadBodiesByHash` request.
 pub const MAX_PAYLOAD_BODIES_PER_REQ: usize = 128;
@@ -683,15 +683,16 @@ pub struct EngineNewPayloadResp {
     pub latest_valid_hash: [u8; 32],
 }
 
-/// `engine_getPayloadV4` request. The engine tile issues FCU-with-attrs
-/// internally, then follows up with getPayloadV4 using the returned payload_id.
-/// The caller sees a single request/response pair on the spine.
+
+/// The engine tile sends `engine_forkchoiceUpdatedV3` with payload attributes
+/// and returns the `payload_id` assigned by the EL. The caller should use.
+/// this to fetch the built payload.
 ///
 /// Field layout mirrors `EngineFcuReq` (attrs are always present for payload
 /// building).
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
-pub struct EngineGetPayloadReq {
+pub struct EnginePreparePayloadReq {
     pub id: u64,
     pub head_block_hash: [u8; 32],
     pub safe_block_hash: [u8; 32],
@@ -704,10 +705,16 @@ pub struct EngineGetPayloadReq {
     pub attrs_withdrawals: [WithdrawalInline; 16],
 }
 
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct EngineGetPayloadReq {
+    pub id: u64,
+    pub payload_id: [u8; 8],
+}
+
 /// Response to `EngineGetPayloadReq`.
-/// When `ok` is true, `data` is a TCache slot with the JSON-encoded EL
-/// response: `{executionPayload, blobsBundle, shouldOverrideBuilder,
-/// executionRequests}`.
+/// When `ok` is true, `data` is a TCache slot with the encoded EL payload:
+/// `{executionPayload, blobsBundle, shouldOverrideBuilder, executionRequests}`.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct EngineGetPayloadResp {
@@ -727,8 +734,9 @@ pub struct EngineGetBlobsReq {
 }
 
 /// Response to `EngineGetBlobsReq`.
-/// When `ok` is true, `data` is a TCache slot with the JSON-encoded array of
-/// `{blob, proofs}` objects (entries may be `null` for missing blobs).
+/// When `ok` is true, `data` is a TCache slot with binary-encoded blobs:
+/// `[u32 count] ([u8 present] [u8 proof_count] [48B proof]* [u32 blob_len] [blob bytes])*`
+/// `present == 0` means the entry is null (blob missing).
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct EngineGetBlobsResp {
@@ -757,31 +765,12 @@ pub struct EngineGetPayloadBodiesByRangeReq {
 }
 
 /// Response to either `getPayloadBodiesByHash` or `getPayloadBodiesByRange`.
-/// When `ok` is true, `data` is a TCache slot with the JSON-encoded array of
-/// payload body objects (entries may be `null` for missing blocks).
+/// When `ok` is true, `data` is a TCache slot with binary-encoded bodies:
+/// `[u32 count] ([u8 present] [u32 tx_count] ([u32 tx_len][tx bytes])* [u32 withdrawal_count] ([u32 index][u32 validator_index][20B address][u64 amount])*)*`
+/// `present == 0` means the entry is null (block missing).
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct EngineGetPayloadBodiesResp {
-    pub id: u64,
-    pub ok: bool,
-    pub data: TCacheRead,
-}
-
-/// Passthrough request for any engine/eth JSON-RPC method not handled inline.
-/// `body` is a TCache slot containing `{"method":"...","params":[...]}` JSON.
-#[derive(Clone, Copy, Debug)]
-#[repr(C)]
-pub struct EngineRawReq {
-    pub id: u64,
-    pub body: TCacheRead,
-}
-
-/// Response to an `EngineRawReq`.
-/// When `ok` is true, `data` is a TCache slot with the JSON-encoded result
-/// value.  When `ok` is false the slot is unused.
-#[derive(Clone, Copy, Debug)]
-#[repr(C)]
-pub struct EngineRawResp {
     pub id: u64,
     pub ok: bool,
     pub data: TCacheRead,
@@ -795,6 +784,7 @@ pub struct EngineRawResp {
 pub enum EngineReq {
     Fcu(EngineFcuReq),
     NewPayload(EngineNewPayloadReq),
+    PreparePayload(EnginePreparePayloadReq),
     GetPayload(EngineGetPayloadReq),
     GetBlobs(EngineGetBlobsReq),
     GetPayloadBodiesByHash(EngineGetPayloadBodiesByHashReq),

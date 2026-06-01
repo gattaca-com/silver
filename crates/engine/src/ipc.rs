@@ -8,6 +8,10 @@ use mio::{Events, Interest, Poll, Token, net::UnixStream};
 
 use crate::EngineError;
 
+// Sized for the largest expected EL response: getPayload with a full blobsBundle
+// (~21 blobs × 256 KB hex-encoded + execution payload transactions).
+const READ_BUF_CAPACITY: usize = 10 * 1024 * 1024;
+
 #[derive(PartialEq)]
 enum State {
     Disconnected,
@@ -37,7 +41,7 @@ impl IpcTransport {
             send_queue: VecDeque::new(),
             write_pos: 0,
             in_flight: None,
-            read_buf: Vec::new(),
+            read_buf: Vec::with_capacity(READ_BUF_CAPACITY),
             read_offset: 0,
         }
     }
@@ -47,13 +51,8 @@ pub(crate) fn ipc_is_free(t: &IpcTransport) -> bool {
     t.in_flight.is_none() && t.send_queue.is_empty()
 }
 
-pub(crate) fn ipc_enqueue(
-    t: &mut IpcTransport,
-    rpc_id: u64,
-    body: &serde_json::Value,
-    poll: &mut Poll,
-) {
-    let mut bytes = serde_json::to_vec(body).unwrap_or_default();
+pub(crate) fn ipc_enqueue(t: &mut IpcTransport, rpc_id: u64, body: &[u8], poll: &mut Poll) {
+    let mut bytes = body.to_vec();
     bytes.push(b'\n');
     t.send_queue.push_back((rpc_id, bytes));
 
@@ -70,7 +69,7 @@ pub(crate) fn ipc_poll<F>(
     poll: &mut Poll,
     on_complete: &mut F,
 ) where
-    F: FnMut(u64, Result<serde_json::Value, EngineError>),
+    F: FnMut(u64, Result<Vec<u8>, EngineError>),
 {
     for event in events.iter() {
         if event.token() != t.token {
@@ -79,12 +78,14 @@ pub(crate) fn ipc_poll<F>(
         match t.state {
             State::Disconnected => {}
             State::Connecting => {
-                if event.is_error() || event.is_read_closed() || event.is_write_closed() {
-                    ipc_on_error(t, poll, on_complete, "connect failed");
-                    break;
-                }
                 if event.is_writable() {
-                    // Unix socket connect completes on first WRITABLE event
+                    // is_error/is_write_closed flags are not reliable; use
+                    // take_error() (getsockopt SO_ERROR) as the authoritative check.
+                    let err = t.stream.as_ref().and_then(|s| s.take_error().ok()).flatten();
+                    if let Some(e) = err {
+                        ipc_on_error(t, poll, on_complete, &e.to_string());
+                        break;
+                    }
                     t.state = State::Connected;
                     let interest = if t.send_queue.is_empty() {
                         Interest::READABLE
@@ -132,7 +133,7 @@ fn ipc_connect(t: &mut IpcTransport, poll: &mut Poll) {
                 t.state = State::Connecting;
             }
         }
-        Err(e) => tracing::warn!("engine ipc: connect error: {e}"),
+        Err(e) => tracing::warn!("connect error: {e}"),
     }
 }
 
@@ -140,7 +141,7 @@ fn ipc_do_write(t: &mut IpcTransport) -> io::Result<()> {
     while let Some((_, bytes)) = t.send_queue.front() {
         let stream = t.stream.as_mut().unwrap();
         match stream.write(&bytes[t.write_pos..]) {
-            Ok(0) => break,
+            Ok(0) => return Err(io::Error::new(io::ErrorKind::WriteZero, "write returned 0")),
             Ok(n) => {
                 t.write_pos += n;
                 if t.write_pos == bytes.len() {
@@ -158,21 +159,23 @@ fn ipc_do_write(t: &mut IpcTransport) -> io::Result<()> {
 
 fn ipc_do_read<F>(t: &mut IpcTransport, on_complete: &mut F) -> io::Result<()>
 where
-    F: FnMut(u64, Result<serde_json::Value, EngineError>),
+    F: FnMut(u64, Result<Vec<u8>, EngineError>),
 {
     let stream = t.stream.as_mut().unwrap();
-    let mut buf = [0u8; 8192];
     loop {
-        match stream.read(&mut buf) {
-            Ok(0) => return Err(io::Error::new(io::ErrorKind::ConnectionReset, "eof")),
+        let base = t.read_buf.len();
+        t.read_buf.resize(base + READ_BUF_CAPACITY, 0);
+        match stream.read(&mut t.read_buf[base..]) {
+            Ok(0) => {
+                t.read_buf.truncate(base);
+                return Err(io::Error::new(io::ErrorKind::ConnectionReset, "eof"));
+            }
             Ok(n) => {
-                t.read_buf.extend_from_slice(&buf[..n]);
+                t.read_buf.truncate(base + n);
                 while let Some(rel) = t.read_buf[t.read_offset..].iter().position(|&b| b == b'\n') {
                     let end = t.read_offset + rel;
                     if let Some(rpc_id) = t.in_flight {
-                        let result = serde_json::from_slice(&t.read_buf[t.read_offset..end])
-                            .map_err(EngineError::Json);
-                        on_complete(rpc_id, result);
+                        on_complete(rpc_id, Ok(t.read_buf[t.read_offset..end].to_vec()));
                     }
                     t.read_offset = end + 1;
                 }
@@ -181,8 +184,14 @@ where
                     t.read_offset = 0;
                 }
             }
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
-            Err(e) => return Err(e),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                t.read_buf.truncate(base);
+                break;
+            }
+            Err(e) => {
+                t.read_buf.truncate(base);
+                return Err(e);
+            }
         }
     }
     Ok(())
@@ -190,7 +199,7 @@ where
 
 fn ipc_on_error<F>(t: &mut IpcTransport, poll: &mut Poll, on_complete: &mut F, msg: &str)
 where
-    F: FnMut(u64, Result<serde_json::Value, EngineError>),
+    F: FnMut(u64, Result<Vec<u8>, EngineError>),
 {
     tracing::warn!("engine ipc: {msg}");
     let err = msg.to_string();
@@ -221,18 +230,13 @@ pub(crate) struct IpcPool {
 }
 
 impl IpcPool {
-    pub(crate) fn new(path: String, size: usize) -> Self {
-        let connections = (0..size).map(|i| IpcTransport::new(path.clone(), Token(i))).collect();
+    pub(crate) fn new(path: String) -> Self {
+        let connections = vec![IpcTransport::new(path.clone(), Token(0))];
         Self { connections, path }
     }
 }
 
-pub(crate) fn ipc_pool_enqueue(
-    pool: &mut IpcPool,
-    rpc_id: u64,
-    body: &serde_json::Value,
-    poll: &mut Poll,
-) {
+pub(crate) fn ipc_pool_enqueue(pool: &mut IpcPool, rpc_id: u64, body: &[u8], poll: &mut Poll) {
     if let Some(conn) = pool.connections.iter_mut().find(|c| ipc_is_free(c)) {
         ipc_enqueue(conn, rpc_id, body, poll);
     } else {
@@ -248,7 +252,7 @@ pub(crate) fn poll_ipc_pool<F>(
     poll: &mut Poll,
     on_complete: &mut F,
 ) where
-    F: FnMut(u64, Result<serde_json::Value, EngineError>),
+    F: FnMut(u64, Result<Vec<u8>, EngineError>),
 {
     for conn in &mut pool.connections {
         ipc_poll(conn, events, poll, on_complete);

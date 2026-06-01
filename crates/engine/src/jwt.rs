@@ -56,6 +56,8 @@ impl JwtSecret {
 
 #[cfg(test)]
 mod tests {
+    use simd_json::prelude::ValueObjectAccess;
+
     use super::*;
 
     const ZERO_KEY: &str = "0000000000000000000000000000000000000000000000000000000000000000";
@@ -93,11 +95,11 @@ mod tests {
         assert_eq!(parts[0], HEADER_B64);
 
         // Payload must base64-decode to JSON containing "iat"
-        let payload_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        let mut payload_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .decode(parts[1])
             .expect("payload must be valid base64url");
-        let payload: serde_json::Value =
-            serde_json::from_slice(&payload_bytes).expect("payload must be valid JSON");
+        let payload: simd_json::OwnedValue =
+            simd_json::from_slice(&mut payload_bytes).expect("payload must be valid JSON");
         assert!(payload.get("iat").is_some(), "JWT payload must contain 'iat'");
     }
 

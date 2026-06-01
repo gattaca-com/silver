@@ -195,47 +195,6 @@ pub struct PayloadStatus {
     pub validation_error: Option<String>,
 }
 
-// --- getPayloadV4 response ---
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct GetPayloadV4Response {
-    pub execution_payload: ExecutionPayload,
-    pub blobs_bundle: BlobsBundle,
-    pub should_override_builder: bool,
-    #[serde(default, with = "wire::data_list")]
-    pub execution_requests: Vec<Vec<u8>>,
-}
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct BlobsBundle {
-    #[serde(with = "wire::data_list")]
-    pub commitments: Vec<Vec<u8>>,
-    #[serde(with = "wire::data_list")]
-    pub proofs: Vec<Vec<u8>>,
-    #[serde(with = "wire::data_list")]
-    pub blobs: Vec<Vec<u8>>,
-}
-
-// --- getBlobsV2 response ---
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct BlobAndProofV1 {
-    #[serde(with = "wire::data")]
-    pub blob: Vec<u8>,
-    #[serde(with = "wire::data")]
-    pub proof: Vec<u8>,
-}
-
-// --- getPayloadBodiesByHashV1 / ByRangeV1 response ---
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct ExecutionPayloadBodyV1 {
-    #[serde(with = "wire::data_list")]
-    pub transactions: Vec<Vec<u8>>,
-    pub withdrawals: Option<Vec<Withdrawal>>,
-}
-
 // --- newPayload ---
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -437,7 +396,7 @@ fn decode_transactions(data: &[u8]) -> Result<Vec<Vec<u8>>, crate::EngineError> 
         return Err(crate::EngineError::Ssz("transactions header too short".into()));
     }
     let first_off = u32::from_le_bytes(data[0..4].try_into().unwrap()) as usize;
-    if first_off.is_multiple_of(4) || first_off < 4 {
+    if !first_off.is_multiple_of(4) || first_off < 4 {
         return Err(crate::EngineError::Ssz("invalid transaction list offset".into()));
     }
     let n = first_off / 4;
@@ -474,7 +433,7 @@ fn encode_withdrawals(ws: &[Withdrawal]) -> Vec<u8> {
 }
 
 fn decode_withdrawals(data: &[u8]) -> Result<Vec<Withdrawal>, crate::EngineError> {
-    if data.len().is_multiple_of(44) {
+    if !data.len().is_multiple_of(44) {
         return Err(crate::EngineError::Ssz(format!(
             "withdrawals length {} is not a multiple of 44",
             data.len()
@@ -549,142 +508,364 @@ pub(crate) fn decode_new_payload_data(
 }
 
 // ---------------------------------------------------------------------------
-// TCache data framing for engine_getPayloadV4
+// Zero-alloc JSON → TCache frame converter for engine_getPayloadV4
 //
-// Layout:
-//   [u32 LE payload_ssz_len]
-//   [payload_ssz_len bytes: ExecutionPayload SSZ]
-//   [u8 blob_count]
-//   for each blob:
-//     [48 bytes commitment]
-//     [48 bytes proof]
-//     [u32 LE blob_len][blob_len bytes blob]
-//   [u8 should_override_builder]
-//   [u8 exec_req_count]
-//   for each exec request: [u32 LE len][len bytes]
+// Parses the raw HTTP response body (full JSON-RPC envelope) using
+// simd_json BorrowedValue so all string values borrow from the input
+// buffer with no intermediate allocations. Hex fields are decoded
+// directly into `out` with hex::decode_to_slice.
+//
+// `out` is cleared by the caller. On success it contains exactly the
+// TCache frame (same layout as encode_get_payload_data).
 // ---------------------------------------------------------------------------
 
-pub fn encode_get_payload_data(
-    payload_ssz: &[u8],
-    commitments: &[Vec<u8>],
-    proofs: &[Vec<u8>],
-    blobs: &[Vec<u8>],
-    should_override_builder: bool,
-    exec_requests: &[Vec<u8>],
-) -> Vec<u8> {
+fn hex_to_fixed<const N: usize>(s: &str) -> Result<[u8; N], crate::EngineError> {
+    let s = s.strip_prefix("0x").unwrap_or(s);
+    let mut out = [0u8; N];
+    hex::decode_to_slice(s, &mut out).map_err(|e| crate::EngineError::Ssz(e.to_string()))?;
+    Ok(out)
+}
+
+// Append decoded bytes of hex string `s` to `out`.
+fn hex_extend(s: &str, out: &mut Vec<u8>) -> Result<(), crate::EngineError> {
+    let s = s.strip_prefix("0x").unwrap_or(s);
+    let base = out.len();
+    out.resize(base + s.len() / 2, 0);
+    hex::decode_to_slice(s, &mut out[base..]).map_err(|e| crate::EngineError::Ssz(e.to_string()))
+}
+
+// Append exactly N bytes: decode up to N bytes from hex, zero-pad remainder.
+fn hex_extend_clamped<const N: usize>(
+    s: &str,
+    out: &mut Vec<u8>,
+) -> Result<(), crate::EngineError> {
+    let s = s.strip_prefix("0x").unwrap_or(s);
+    let n = (s.len() / 2).min(N);
+    let mut buf = [0u8; N];
+    if n > 0 {
+        hex::decode_to_slice(&s[..n * 2], &mut buf[..n])
+            .map_err(|e| crate::EngineError::Ssz(e.to_string()))?;
+    }
+    out.extend_from_slice(&buf);
+    Ok(())
+}
+
+fn parse_quantity(s: &str) -> Result<u64, crate::EngineError> {
+    let s = s.strip_prefix("0x").unwrap_or(s);
+    u64::from_str_radix(s, 16).map_err(|e| crate::EngineError::Ssz(e.to_string()))
+}
+
+// Parse Ethereum QUANTITY "0x..." to [u8; 32] little-endian (uint256).
+fn parse_u256_le(s: &str) -> Result<[u8; 32], crate::EngineError> {
+    let s = s.strip_prefix("0x").unwrap_or(s);
+    if s.len() > 64 {
+        return Err(crate::EngineError::Ssz("u256 too large".into()));
+    }
+    let mut padded = [b'0'; 64];
+    padded[64 - s.len()..].copy_from_slice(s.as_bytes());
+    let mut arr = [0u8; 32];
+    hex::decode_to_slice(padded, &mut arr).map_err(|e| crate::EngineError::Ssz(e.to_string()))?;
+    arr.reverse();
+    Ok(arr)
+}
+
+fn fstr<'a>(
+    v: &'a simd_json::BorrowedValue<'_>,
+    field: &str,
+) -> Result<&'a str, crate::EngineError> {
+    use simd_json::prelude::{ValueAsScalar, ValueObjectAccess};
+    v.get(field)
+        .and_then(|f| f.as_str())
+        .ok_or_else(|| crate::EngineError::Ssz(format!("missing field: {field}")))
+}
+
+// Write SSZ transaction list (offset header + tx bytes) from JSON hex-string
+// array.
+fn encode_txs_json(
+    arr: &[simd_json::BorrowedValue<'_>],
+    out: &mut Vec<u8>,
+) -> Result<(), crate::EngineError> {
+    use simd_json::prelude::ValueAsScalar;
+    if arr.is_empty() {
+        return Ok(());
+    }
+    let n = arr.len();
+    let header_base = out.len();
+    out.resize(header_base + n * 4, 0);
+    let mut offset = (n * 4) as u32;
+    for (i, tx) in arr.iter().enumerate() {
+        let s = tx.as_str().ok_or_else(|| crate::EngineError::Ssz("tx not a string".into()))?;
+        out[header_base + i * 4..header_base + i * 4 + 4].copy_from_slice(&offset.to_le_bytes());
+        offset += (s.strip_prefix("0x").unwrap_or(s).len() / 2) as u32;
+    }
+    for tx in arr {
+        let s = tx.as_str().ok_or_else(|| crate::EngineError::Ssz("tx not a string".into()))?;
+        hex_extend(s, out)?;
+    }
+    Ok(())
+}
+
+fn encode_withdrawals_json(
+    arr: &[simd_json::BorrowedValue<'_>],
+    out: &mut Vec<u8>,
+) -> Result<(), crate::EngineError> {
+    for w in arr {
+        out.extend_from_slice(&parse_quantity(fstr(w, "index")?)?.to_le_bytes());
+        out.extend_from_slice(&parse_quantity(fstr(w, "validatorIndex")?)?.to_le_bytes());
+        out.extend_from_slice(&hex_to_fixed::<20>(fstr(w, "address")?)?);
+        out.extend_from_slice(&parse_quantity(fstr(w, "amount")?)?.to_le_bytes());
+    }
+    Ok(())
+}
+
+/// Parse a raw `engine_getPayloadV4` JSON-RPC response body and write the
+/// TCache frame directly into `out` (same layout as `encode_get_payload_data`).
+///
+/// `raw` is mutated in-place by simd_json's SIMD parser. `out` must be empty
+/// on entry and is filled with exactly the frame bytes on success.
+///
+/// Eliminates all intermediate allocations vs the serde path:
+/// one `Vec<u8>` output, hex decoded directly from the borrowed JSON strings.
+pub fn json_get_payload_to_tcache(
+    raw: &mut [u8],
+    out: &mut Vec<u8>,
+) -> Result<(), crate::EngineError> {
+    use simd_json::prelude::{ValueAsArray, ValueAsScalar, ValueObjectAccess};
+
+    let root = simd_json::to_borrowed_value(raw).map_err(crate::EngineError::Json)?;
+
+    if root.get("error").is_some() {
+        return Err(crate::EngineError::Ssz("rpc error in getPayload response".into()));
+    }
+    let result = root.get("result").ok_or(crate::EngineError::MissingResult)?;
+
+    let ep = result
+        .get("executionPayload")
+        .ok_or_else(|| crate::EngineError::Ssz("missing executionPayload".into()))?;
+    let bb = result
+        .get("blobsBundle")
+        .ok_or_else(|| crate::EngineError::Ssz("missing blobsBundle".into()))?;
+    let should_override =
+        result.get("shouldOverrideBuilder").and_then(|v| v.as_bool()).unwrap_or(false);
+    let exec_requests = result
+        .get("executionRequests")
+        .and_then(|v| v.as_array())
+        .map(|a| a.as_slice())
+        .unwrap_or(&[]);
+
+    // TCache frame header: placeholder for payload SSZ length.
+    let tcache_hdr = out.len();
+    out.extend_from_slice(&[0u8; 4]);
+
+    // ExecutionPayload SSZ — fixed section (528 bytes).
+    let ssz_start = out.len();
+    let f = ssz_start;
+    out.resize(f + PAYLOAD_FIXED_LEN, 0);
+
+    out[f..f + 32].copy_from_slice(&hex_to_fixed::<32>(fstr(ep, "parentHash")?)?);
+    out[f + 32..f + 52].copy_from_slice(&hex_to_fixed::<20>(fstr(ep, "feeRecipient")?)?);
+    out[f + 52..f + 84].copy_from_slice(&hex_to_fixed::<32>(fstr(ep, "stateRoot")?)?);
+    out[f + 84..f + 116].copy_from_slice(&hex_to_fixed::<32>(fstr(ep, "receiptsRoot")?)?);
+    out[f + 116..f + 372].copy_from_slice(&hex_to_fixed::<256>(fstr(ep, "logsBloom")?)?);
+    out[f + 372..f + 404].copy_from_slice(&hex_to_fixed::<32>(fstr(ep, "prevRandao")?)?);
+    out[f + 404..f + 412].copy_from_slice(&parse_quantity(fstr(ep, "blockNumber")?)?.to_le_bytes());
+    out[f + 412..f + 420].copy_from_slice(&parse_quantity(fstr(ep, "gasLimit")?)?.to_le_bytes());
+    out[f + 420..f + 428].copy_from_slice(&parse_quantity(fstr(ep, "gasUsed")?)?.to_le_bytes());
+    out[f + 428..f + 436].copy_from_slice(&parse_quantity(fstr(ep, "timestamp")?)?.to_le_bytes());
+    // [f+436..f+440] extra_data offset — patched below
+    out[f + 440..f + 472].copy_from_slice(&parse_u256_le(fstr(ep, "baseFeePerGas")?)?);
+    out[f + 472..f + 504].copy_from_slice(&hex_to_fixed::<32>(fstr(ep, "blockHash")?)?);
+    // [f+504..f+508] transactions offset — patched below
+    // [f+508..f+512] withdrawals offset — patched below
+    out[f + 512..f + 520].copy_from_slice(&parse_quantity(fstr(ep, "blobGasUsed")?)?.to_le_bytes());
+    out[f + 520..f + 528]
+        .copy_from_slice(&parse_quantity(fstr(ep, "excessBlobGas")?)?.to_le_bytes());
+
+    // Variable fields — patch offsets into fixed section as we go.
+    let extra_off = (out.len() - ssz_start) as u32;
+    out[f + 436..f + 440].copy_from_slice(&extra_off.to_le_bytes());
+    hex_extend(fstr(ep, "extraData")?, out)?;
+
+    let txs_off = (out.len() - ssz_start) as u32;
+    out[f + 504..f + 508].copy_from_slice(&txs_off.to_le_bytes());
+    let txs = ep
+        .get("transactions")
+        .and_then(|v| v.as_array())
+        .map(|a| a.as_slice())
+        .ok_or_else(|| crate::EngineError::Ssz("missing transactions".into()))?;
+    encode_txs_json(txs, out)?;
+
+    let ws_off = (out.len() - ssz_start) as u32;
+    out[f + 508..f + 512].copy_from_slice(&ws_off.to_le_bytes());
+    let ws = ep
+        .get("withdrawals")
+        .and_then(|v| v.as_array())
+        .map(|a| a.as_slice())
+        .ok_or_else(|| crate::EngineError::Ssz("missing withdrawals".into()))?;
+    encode_withdrawals_json(ws, out)?;
+
+    // Patch payload SSZ length into TCache header.
+    let payload_ssz_len = (out.len() - ssz_start) as u32;
+    out[tcache_hdr..tcache_hdr + 4].copy_from_slice(&payload_ssz_len.to_le_bytes());
+
+    // Blobs bundle.
+    let commitments =
+        bb.get("commitments").and_then(|v| v.as_array()).map(|a| a.as_slice()).unwrap_or(&[]);
+    let proofs = bb.get("proofs").and_then(|v| v.as_array()).map(|a| a.as_slice()).unwrap_or(&[]);
+    let blobs = bb.get("blobs").and_then(|v| v.as_array()).map(|a| a.as_slice()).unwrap_or(&[]);
     let blob_count = commitments.len().min(proofs.len()).min(blobs.len()).min(255) as u8;
-    let exec_count = exec_requests.len().min(255) as u8;
-    let blob_data_size: usize = blobs.iter().take(blob_count as usize).map(|b| 4 + b.len()).sum();
-    let total = 4 +
-        payload_ssz.len() +
-        1 +
-        blob_count as usize * (48 + 48) +
-        blob_data_size +
-        2 +
-        exec_requests.iter().take(exec_count as usize).map(|r| 4 + r.len()).sum::<usize>();
-    let mut buf = Vec::with_capacity(total);
-    buf.extend_from_slice(&(payload_ssz.len() as u32).to_le_bytes());
-    buf.extend_from_slice(payload_ssz);
-    buf.push(blob_count);
+    out.push(blob_count);
+
     for i in 0..blob_count as usize {
-        let mut c48 = [0u8; 48];
-        let c = &commitments[i];
-        c48[..c.len().min(48)].copy_from_slice(&c[..c.len().min(48)]);
-        buf.extend_from_slice(&c48);
-        let mut p48 = [0u8; 48];
-        let p = &proofs[i];
-        p48[..p.len().min(48)].copy_from_slice(&p[..p.len().min(48)]);
-        buf.extend_from_slice(&p48);
-        buf.extend_from_slice(&(blobs[i].len() as u32).to_le_bytes());
-        buf.extend_from_slice(&blobs[i]);
+        hex_extend_clamped::<48>(commitments[i].as_str().unwrap_or("0x"), out)?;
+        hex_extend_clamped::<48>(proofs[i].as_str().unwrap_or("0x"), out)?;
+        let b_s = blobs[i].as_str().unwrap_or("0x");
+        let b_hex = b_s.strip_prefix("0x").unwrap_or(b_s);
+        out.extend_from_slice(&((b_hex.len() / 2) as u32).to_le_bytes());
+        hex_extend(b_s, out)?;
     }
-    buf.push(should_override_builder as u8);
-    buf.push(exec_count);
-    for r in exec_requests.iter().take(exec_count as usize) {
-        buf.extend_from_slice(&(r.len() as u32).to_le_bytes());
-        buf.extend_from_slice(r);
+
+    out.push(should_override as u8);
+
+    let exec_count = exec_requests.len().min(255) as u8;
+    out.push(exec_count);
+    for req in exec_requests.iter().take(exec_count as usize) {
+        let s = req.as_str().unwrap_or("0x");
+        let hex_s = s.strip_prefix("0x").unwrap_or(s);
+        out.extend_from_slice(&((hex_s.len() / 2) as u32).to_le_bytes());
+        hex_extend(s, out)?;
     }
-    buf
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
-// TCache data framing for engine_getBlobsV2
+// Zero-alloc JSON → TCache frame converter for engine_getBlobsV2
 //
-// Layout:
-//   [u32 LE count]
-//   for each item:
-//     [u8 present]  (0 = null)
-//     if present:
-//       [48 bytes proof]
-//       [u32 LE blob_len][blob_len bytes blob]
+// Same approach as json_get_payload_to_tcache: BorrowedValue borrows from the
+// input buffer; hex decoded directly into `out` with hex::decode_to_slice.
+// Wire layout: [u32 count] [u8 present] [u8 proof_count] [proof_count*48B] [u32 blob_len] [blob bytes]
 // ---------------------------------------------------------------------------
 
-pub fn encode_get_blobs_data(items: &[Option<BlobAndProofV1>]) -> Vec<u8> {
-    let mut buf = Vec::new();
-    buf.extend_from_slice(&(items.len() as u32).to_le_bytes());
+pub fn json_get_blobs_to_tcache(raw: &mut [u8], out: &mut Vec<u8>) -> Result<(), crate::EngineError> {
+    use simd_json::prelude::{TypedScalarValue, ValueAsArray, ValueAsScalar, ValueObjectAccess};
+
+    let root = simd_json::to_borrowed_value(raw).map_err(crate::EngineError::Json)?;
+    let result = root.get("result").ok_or(crate::EngineError::MissingResult)?;
+
+    if result.is_null() {
+        out.extend_from_slice(&0u32.to_le_bytes());
+        return Ok(());
+    }
+
+    let items = result.as_array().ok_or_else(|| crate::EngineError::Ssz("getBlobsV2 result not array".into()))?;
+    out.extend_from_slice(&(items.len() as u32).to_le_bytes());
+
     for item in items {
-        match item {
-            None => buf.push(0),
-            Some(bap) => {
-                buf.push(1);
-                let mut p48 = [0u8; 48];
-                let p = &bap.proof;
-                p48[..p.len().min(48)].copy_from_slice(&p[..p.len().min(48)]);
-                buf.extend_from_slice(&p48);
-                buf.extend_from_slice(&(bap.blob.len() as u32).to_le_bytes());
-                buf.extend_from_slice(&bap.blob);
-            }
+        if item.is_null() {
+            out.push(0);
+            continue;
         }
+        out.push(1);
+
+        let proofs = item
+            .get("proofs")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| crate::EngineError::Ssz("missing proofs".into()))?;
+        let proof_count = proofs.len().min(255) as u8;
+        out.push(proof_count);
+        for p in &proofs[..proof_count as usize] {
+            let s = p.as_str().ok_or_else(|| crate::EngineError::Ssz("proof not a string".into()))?;
+            hex_extend_clamped::<48>(s, out)?;
+        }
+
+        let blob_s = item
+            .get("blob")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| crate::EngineError::Ssz("missing blob".into()))?;
+        let blob_s = blob_s.strip_prefix("0x").unwrap_or(blob_s);
+        let blob_len = blob_s.len() / 2;
+        out.extend_from_slice(&(blob_len as u32).to_le_bytes());
+        let base = out.len();
+        out.resize(base + blob_len, 0);
+        hex::decode_to_slice(blob_s, &mut out[base..])
+            .map_err(|e| crate::EngineError::Ssz(e.to_string()))?;
     }
-    buf
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
-// TCache data framing for engine_getPayloadBodiesByHashV1 / ByRangeV1
+// Zero-alloc JSON → TCache frame converter for
+// engine_getPayloadBodiesByHashV1 / ByRangeV1
 //
-// Layout:
-//   [u32 LE count]
-//   for each body:
-//     [u8 present]  (0 = null)
-//     if present:
-//       [u32 LE tx_count]
-//       for each tx: [u32 LE len][bytes]
-//       [u32 LE withdrawal_count]
-//       for each withdrawal: 44 bytes (index u64 + validator_index u64 +
-//                                      address [u8;20] + amount u64)
+// Wire layout: [u32 count] [u8 present] [u32 tx_count] [u32 len][tx bytes]... [u32 withdrawal_count] [44B each]
 // ---------------------------------------------------------------------------
 
-pub fn encode_payload_bodies_data(bodies: &[Option<ExecutionPayloadBodyV1>]) -> Vec<u8> {
-    let mut buf = Vec::new();
-    buf.extend_from_slice(&(bodies.len() as u32).to_le_bytes());
-    for body in bodies {
-        match body {
-            None => buf.push(0),
-            Some(b) => {
-                buf.push(1);
-                buf.extend_from_slice(&(b.transactions.len() as u32).to_le_bytes());
-                for tx in &b.transactions {
-                    buf.extend_from_slice(&(tx.len() as u32).to_le_bytes());
-                    buf.extend_from_slice(tx);
-                }
-                let withdrawals = b.withdrawals.as_deref().unwrap_or(&[]);
-                buf.extend_from_slice(&(withdrawals.len() as u32).to_le_bytes());
-                for w in withdrawals {
-                    buf.extend_from_slice(&w.index.to_le_bytes());
-                    buf.extend_from_slice(&w.validator_index.to_le_bytes());
-                    buf.extend_from_slice(&w.address);
-                    buf.extend_from_slice(&w.amount.to_le_bytes());
-                }
-            }
+pub fn json_get_payload_bodies_to_tcache(
+    raw: &mut [u8],
+    out: &mut Vec<u8>,
+) -> Result<(), crate::EngineError> {
+    use simd_json::prelude::{TypedScalarValue, ValueAsArray, ValueAsScalar, ValueObjectAccess};
+
+    let root = simd_json::to_borrowed_value(raw).map_err(crate::EngineError::Json)?;
+    let items = root
+        .get("result")
+        .and_then(|v| v.as_array())
+        .ok_or(crate::EngineError::MissingResult)?;
+
+    out.extend_from_slice(&(items.len() as u32).to_le_bytes());
+
+    for item in items {
+        if item.is_null() {
+            out.push(0);
+            continue;
+        }
+        out.push(1);
+
+        let txs = item
+            .get("transactions")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| crate::EngineError::Ssz("missing transactions".into()))?;
+        out.extend_from_slice(&(txs.len() as u32).to_le_bytes());
+        for tx in txs {
+            let s = tx.as_str().ok_or_else(|| crate::EngineError::Ssz("tx not a string".into()))?;
+            let s = s.strip_prefix("0x").unwrap_or(s);
+            let len = s.len() / 2;
+            out.extend_from_slice(&(len as u32).to_le_bytes());
+            let base = out.len();
+            out.resize(base + len, 0);
+            hex::decode_to_slice(s, &mut out[base..])
+                .map_err(|e| crate::EngineError::Ssz(e.to_string()))?;
+        }
+
+        let withdrawals: &[simd_json::BorrowedValue<'_>] = item
+            .get("withdrawals")
+            .and_then(|v| v.as_array())
+            .map(|a| a.as_slice())
+            .unwrap_or(&[]);
+        out.extend_from_slice(&(withdrawals.len() as u32).to_le_bytes());
+        for w in withdrawals {
+            let index = parse_quantity(fstr(w, "index")?)?;
+            let validator_index = parse_quantity(fstr(w, "validatorIndex")?)?;
+            let address = hex_to_fixed::<20>(fstr(w, "address")?)?;
+            let amount = parse_quantity(fstr(w, "amount")?)?;
+            out.extend_from_slice(&index.to_le_bytes());
+            out.extend_from_slice(&validator_index.to_le_bytes());
+            out.extend_from_slice(&address);
+            out.extend_from_slice(&amount.to_le_bytes());
         }
     }
-    buf
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
+    use simd_json::{owned::to_value, prelude::ValueAsScalar, serde::from_owned_value};
+
     use super::*;
 
     fn sample_payload() -> ExecutionPayload {
@@ -855,8 +1036,10 @@ mod tests {
             safe_block_hash: [0x00; 32],
             finalized_block_hash: [0xff; 32],
         };
-        let json: ForkchoiceState =
-            serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
+        let json: ForkchoiceState = {
+            let mut bytes = simd_json::to_vec(&state).unwrap();
+            simd_json::from_slice(&mut bytes).unwrap()
+        };
         assert_eq!(state.head_block_hash, json.head_block_hash);
         assert_eq!(state.safe_block_hash, json.safe_block_hash);
         assert_eq!(state.finalized_block_hash, json.finalized_block_hash);
@@ -869,7 +1052,7 @@ mod tests {
             safe_block_hash: [0; 32],
             finalized_block_hash: [0; 32],
         };
-        let json = serde_json::to_value(&state).unwrap();
+        let json = to_value(&mut simd_json::to_vec(&state).unwrap()).unwrap();
         let hex = json["headBlockHash"].as_str().unwrap();
         assert!(hex.starts_with("0x"));
         assert_eq!(hex.len(), 2 + 64);
@@ -880,7 +1063,10 @@ mod tests {
     fn wire_quantity_round_trip() {
         // Withdrawal uses quantity for all numeric fields
         let w = Withdrawal { index: 0, validator_index: 0xdeadbeef, address: [0; 20], amount: 0 };
-        let json: Withdrawal = serde_json::from_str(&serde_json::to_string(&w).unwrap()).unwrap();
+        let json: Withdrawal = {
+            let mut bytes = simd_json::to_vec(&w).unwrap();
+            simd_json::from_slice(&mut bytes).unwrap()
+        };
         assert_eq!(w.validator_index, json.validator_index);
     }
 
@@ -888,9 +1074,9 @@ mod tests {
     fn wire_u256_le_zero_round_trip() {
         let mut p = sample_payload();
         p.base_fee_per_gas = [0u8; 32];
-        let json = serde_json::to_value(&p).unwrap();
+        let json = to_value(&mut simd_json::to_vec(&p).unwrap()).unwrap();
         assert_eq!(json["baseFeePerGas"].as_str().unwrap(), "0x0");
-        let decoded: ExecutionPayload = serde_json::from_value(json).unwrap();
+        let decoded: ExecutionPayload = from_owned_value(json).unwrap();
         assert_eq!(decoded.base_fee_per_gas, [0u8; 32]);
     }
 
@@ -899,31 +1085,117 @@ mod tests {
         let mut p = sample_payload();
         p.base_fee_per_gas = [0u8; 32];
         p.base_fee_per_gas[0] = 1; // LE: value = 1
-        let json = serde_json::to_value(&p).unwrap();
+        let json = to_value(&mut simd_json::to_vec(&p).unwrap()).unwrap();
         assert_eq!(json["baseFeePerGas"].as_str().unwrap(), "0x1");
-        let decoded: ExecutionPayload = serde_json::from_value(json).unwrap();
+        let decoded: ExecutionPayload = from_owned_value(json).unwrap();
         assert_eq!(decoded.base_fee_per_gas, p.base_fee_per_gas);
     }
 
     #[test]
     fn wire_opt_b256_none_round_trip() {
-        let v: PayloadStatus = serde_json::from_str(
-            r#"{"status":"VALID","latestValidHash":null,"validationError":null}"#,
-        )
-        .unwrap();
+        let v: PayloadStatus = {
+            let mut bytes =
+                br#"{"status":"VALID","latestValidHash":null,"validationError":null}"#.to_vec();
+            simd_json::from_slice(&mut bytes).unwrap()
+        };
         assert_eq!(v.latest_valid_hash, None);
-        let json = serde_json::to_string(&v).unwrap();
-        let v2: PayloadStatus = serde_json::from_str(&json).unwrap();
+        let v2: PayloadStatus = {
+            let mut bytes = simd_json::to_vec(&v).unwrap();
+            simd_json::from_slice(&mut bytes).unwrap()
+        };
         assert_eq!(v2.latest_valid_hash, None);
     }
 
     #[test]
     fn wire_opt_payload_id_round_trip() {
         let fcu_json = r#"{"payloadStatus":{"status":"VALID","latestValidHash":null,"validationError":null},"payloadId":"0x0102030405060708"}"#;
-        let fcu: ForkchoiceUpdatedResult = serde_json::from_str(fcu_json).unwrap();
+        let fcu: ForkchoiceUpdatedResult = {
+            let mut bytes = fcu_json.as_bytes().to_vec();
+            simd_json::from_slice(&mut bytes).unwrap()
+        };
         assert_eq!(fcu.payload_id, Some([0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]));
-        let roundtrip: ForkchoiceUpdatedResult =
-            serde_json::from_str(&serde_json::to_string(&fcu).unwrap()).unwrap();
+        let roundtrip: ForkchoiceUpdatedResult = {
+            let mut bytes = simd_json::to_vec(&fcu).unwrap();
+            simd_json::from_slice(&mut bytes).unwrap()
+        };
         assert_eq!(fcu.payload_id, roundtrip.payload_id);
+    }
+
+    // Verify json_get_payload_to_tcache produces identical bytes to the old
+    // serde path (ExecutionPayload → to_ssz → encode_get_payload_data).
+    #[test]
+    fn json_get_payload_to_tcache_matches_serde_path() {
+        let payload = sample_payload();
+        let commitments: Vec<Vec<u8>> = vec![vec![0xc0; 48], vec![0xc1; 48]];
+        let proofs: Vec<Vec<u8>> = vec![vec![0xd0; 48], vec![0xd1; 48]];
+        let blobs: Vec<Vec<u8>> = vec![vec![0xb0; 128], vec![0xb1; 64]];
+        let exec_requests: Vec<Vec<u8>> = vec![vec![0x01, 0x02], vec![0x03]];
+        let should_override = false;
+
+        // Reference output via the old serde path.
+        let payload_ssz = payload.to_ssz();
+        let blob_count = 2u8;
+        let exec_count = exec_requests.len().min(255) as u8;
+        let blob_data_size: usize = blobs.iter().map(|b| 4 + b.len()).sum();
+        let total = 4 +
+            payload_ssz.len() +
+            1 +
+            blob_count as usize * (48 + 48) +
+            blob_data_size +
+            2 +
+            exec_requests.iter().map(|r| 4 + r.len()).sum::<usize>();
+        let mut reference = Vec::with_capacity(total);
+        reference.extend_from_slice(&(payload_ssz.len() as u32).to_le_bytes());
+        reference.extend_from_slice(&payload_ssz);
+        reference.push(blob_count);
+        for i in 0..blob_count as usize {
+            let mut c48 = [0u8; 48];
+            let c = &commitments[i];
+            c48[..c.len().min(48)].copy_from_slice(&c[..c.len().min(48)]);
+            reference.extend_from_slice(&c48);
+            let mut p48 = [0u8; 48];
+            let p = &proofs[i];
+            p48[..p.len().min(48)].copy_from_slice(&p[..p.len().min(48)]);
+            reference.extend_from_slice(&p48);
+            reference.extend_from_slice(&(blobs[i].len() as u32).to_le_bytes());
+            reference.extend_from_slice(&blobs[i]);
+        }
+        reference.push(should_override as u8);
+        reference.push(exec_count);
+        for r in &exec_requests {
+            reference.extend_from_slice(&(r.len() as u32).to_le_bytes());
+            reference.extend_from_slice(r);
+        }
+
+        // Build the JSON-RPC response envelope that json_get_payload_to_tcache expects.
+        let commitments_hex: Vec<String> =
+            commitments.iter().map(|c| format!("0x{}", hex::encode(c))).collect();
+        let proofs_hex: Vec<String> =
+            proofs.iter().map(|p| format!("0x{}", hex::encode(p))).collect();
+        let blobs_hex: Vec<String> =
+            blobs.iter().map(|b| format!("0x{}", hex::encode(b))).collect();
+        let exec_hex: Vec<String> =
+            exec_requests.iter().map(|r| format!("0x{}", hex::encode(r))).collect();
+
+        let envelope = simd_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "executionPayload": payload,
+                "blobsBundle": {
+                    "commitments": commitments_hex,
+                    "proofs": proofs_hex,
+                    "blobs": blobs_hex,
+                },
+                "shouldOverrideBuilder": should_override,
+                "executionRequests": exec_hex,
+            }
+        });
+        let mut raw = simd_json::to_vec(&envelope).unwrap();
+
+        let mut out = Vec::new();
+        json_get_payload_to_tcache(&mut raw, &mut out).expect("json_get_payload_to_tcache failed");
+
+        assert_eq!(out, reference, "json path output differs from serde path");
     }
 }

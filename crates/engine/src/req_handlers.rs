@@ -1,15 +1,15 @@
 use flux::spine::FluxSpine;
 use silver_common::{
-    EngineFcuReq, EngineGetBlobsReq, EngineGetPayloadBodiesByHashReq,
-    EngineGetPayloadBodiesByRangeReq, EngineGetPayloadReq, EngineNewPayloadReq,
-    EngineNewPayloadResp, EngineReq, EngineResp, PayloadValidationStatus, SilverSpine,
+    EngineFcuReq, EngineGetPayloadReq, EngineGetBlobsReq, EngineGetPayloadBodiesByHashReq,
+    EngineGetPayloadBodiesByRangeReq, EngineNewPayloadReq, EngineNewPayloadResp,
+    EnginePreparePayloadReq, EngineReq, EngineResp, PayloadValidationStatus, SilverSpine,
     TRandomAccess,
 };
 
 use crate::{
     EngineClient,
     client::{
-        get_blobs, get_payload_bodies_by_hash, get_payload_bodies_by_range, send_fcu,
+        get_blobs, get_payload, get_payload_bodies_by_hash, get_payload_bodies_by_range, send_fcu,
         send_new_payload,
     },
     types::{ForkchoiceState, PayloadAttributesV3, Withdrawal, decode_new_payload_data},
@@ -25,15 +25,17 @@ pub(crate) fn handle_request(
     match req {
         EngineReq::Fcu(r) => handle_fcu(client, r),
         EngineReq::NewPayload(r) => handle_new_payload(client, req_consumer, r, producers),
+        EngineReq::PreparePayload(r) => handle_prepare_payload(client, *r),
+        EngineReq::GetPayload(r) => handle_get_payload(client, *r),
         EngineReq::GetBlobs(r) => handle_get_blobs(client, r),
         EngineReq::GetPayloadBodiesByHash(r) => handle_get_payload_bodies_by_hash(client, r),
         EngineReq::GetPayloadBodiesByRange(r) => handle_get_payload_bodies_by_range(client, r),
-        EngineReq::GetPayload(r) => handle_get_payload(client, *r),
     }
 }
 
 #[inline]
 fn handle_fcu(client: &mut EngineClient, r: &EngineFcuReq) {
+    tracing::info!(head = %hex::encode(&r.head_block_hash[..4]), id = r.id, "FCU ← spine");
     let state = ForkchoiceState {
         head_block_hash: r.head_block_hash,
         safe_block_hash: r.safe_block_hash,
@@ -53,7 +55,7 @@ fn handle_new_payload(
     let bytes = match acquired.buffer() {
         Ok((b, _)) => b.to_owned(),
         Err(e) => {
-            tracing::warn!("engine tile: failed to read payload data: {e}");
+            tracing::warn!("failed to read payload data: {e}");
             producers
                 .engine_resps
                 .produce(&EngineResp::NewPayload(invalid_new_payload_resp(r.id)).into());
@@ -64,7 +66,7 @@ fn handle_new_payload(
     let (payload, exec_requests) = match decode_new_payload_data(&bytes) {
         Ok(v) => v,
         Err(e) => {
-            tracing::warn!("engine tile: failed to decode payload: {e}");
+            tracing::warn!("failed to decode payload: {e}");
             producers
                 .engine_resps
                 .produce(&EngineResp::NewPayload(invalid_new_payload_resp(r.id)).into());
@@ -92,7 +94,7 @@ fn handle_get_blobs(client: &mut EngineClient, r: &EngineGetBlobsReq) {
     let n = r.hash_count as usize;
     let hashes: Vec<String> =
         r.hashes[..n].iter().map(|h| format!("0x{}", hex::encode(h))).collect();
-    get_blobs(client, serde_json::json!([hashes]), r.id);
+    get_blobs(client, simd_json::json!([hashes]), r.id);
 }
 
 #[inline]
@@ -103,7 +105,7 @@ fn handle_get_payload_bodies_by_hash(
     let n = r.hash_count as usize;
     let hashes: Vec<String> =
         r.hashes[..n].iter().map(|h| format!("0x{}", hex::encode(h))).collect();
-    get_payload_bodies_by_hash(client, serde_json::json!([hashes]), r.id);
+    get_payload_bodies_by_hash(client, simd_json::json!([hashes]), r.id);
 }
 
 #[inline]
@@ -113,11 +115,12 @@ fn handle_get_payload_bodies_by_range(
 ) {
     let start_hex = format!("0x{:x}", r.start);
     let count_hex = format!("0x{:x}", r.count);
-    get_payload_bodies_by_range(client, serde_json::json!([start_hex, count_hex]), r.id);
+    get_payload_bodies_by_range(client, simd_json::json!([start_hex, count_hex]), r.id);
 }
 
 #[inline]
-fn handle_get_payload(client: &mut EngineClient, r: EngineGetPayloadReq) {
+fn handle_prepare_payload(client: &mut EngineClient, r: EnginePreparePayloadReq) {
+    tracing::info!(head = %hex::encode(&r.head_block_hash[..4]), id = r.id, "preparePayload ← spine");
     let n = r.attrs_withdrawal_count as usize;
     let withdrawals = r.attrs_withdrawals[..n]
         .iter()
@@ -144,10 +147,18 @@ fn handle_get_payload(client: &mut EngineClient, r: EngineGetPayloadReq) {
 }
 
 #[inline]
+fn handle_get_payload(client: &mut EngineClient, r: EngineGetPayloadReq) {
+    tracing::info!(payload_id = %hex::encode(r.payload_id), id = r.id, "fetchPayload ← spine");
+    get_payload(client, r.payload_id, r.id);
+}
+
+#[inline]
 fn invalid_new_payload_resp(id: u64) -> EngineNewPayloadResp {
+    // Internal error (TCache read/decode failure) — use SYNCING, not INVALID.
+    // INVALID tells the CL the block is definitively bad; we don't know that here.
     EngineNewPayloadResp {
         id,
-        status: PayloadValidationStatus::Invalid,
+        status: PayloadValidationStatus::Syncing,
         latest_valid_hash: [0u8; 32],
     }
 }
@@ -160,7 +171,7 @@ mod tests {
     fn invalid_new_payload_resp_fields() {
         let resp = invalid_new_payload_resp(99);
         assert_eq!(resp.id, 99);
-        assert_eq!(resp.status, PayloadValidationStatus::Invalid);
+        assert_eq!(resp.status, PayloadValidationStatus::Syncing);
         assert_eq!(resp.latest_valid_hash, [0u8; 32]);
     }
 

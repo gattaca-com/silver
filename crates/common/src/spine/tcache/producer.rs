@@ -12,7 +12,7 @@ pub trait TCacheProducer: SealedProducer {
     fn publish_head(&self) {
         let tcache = unsafe { &*self.tcache() };
         let seq = self.seq();
-        tcache.head.seq.store(seq, Ordering::Release);
+        tcache.head().seq.store(seq, Ordering::Release);
         tcache.record_head(seq);
     }
 

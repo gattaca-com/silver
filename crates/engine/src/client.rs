@@ -2,19 +2,25 @@ use std::time::Duration;
 
 use mio::{Events, Poll};
 use rustc_hash::FxHashMap;
+use simd_json::prelude::ValueObjectAccess;
 
 use crate::{
     EngineError, JwtSecret,
-    http::{HttpPool, POOL_SIZE, http_pool_enqueue, poll_http_pool},
+    http::{HttpPool, http_pool_enqueue, poll_http_pool},
     ipc::{IpcPool, ipc_pool_enqueue, poll_ipc_pool},
     types::{B256, ExecutionPayload, ForkchoiceState, PayloadAttributesV3},
 };
 
 const EVENTS_CAPACITY: usize = 16;
 
+// Sized for the largest expected outgoing request: newPayload with a full block
+// (~30M gas of transactions, hex-encoded in JSON).
+const SCRATCH_CAPACITY: usize = 10 * 1024 * 1024;
+
 const OUR_CAPABILITIES: &[&str] = &[
     "engine_forkchoiceUpdatedV3",
     "engine_newPayloadV4",
+    "engine_getPayloadV3",
     "engine_getPayloadV4",
     "engine_getBlobsV2",
     "engine_getPayloadBodiesByHashV1",
@@ -29,7 +35,6 @@ pub enum ReqKind {
     Syncing,
     Fcu(u64),
     NewPayload(u64),
-    GetPayloadFcu(u64),
     GetPayloadFetch(u64),
     GetBlobs(u64),
     GetPayloadBodiesByHash(u64),
@@ -47,26 +52,32 @@ pub struct EngineClient {
     events: Events,
     id: u64,
     pending_requests: FxHashMap<u64, ReqKind>,
+    pub get_payload_method: &'static str,
+    scratch: Vec<u8>,
 }
 
 impl EngineClient {
     pub fn new(endpoint: impl Into<String>, jwt: JwtSecret) -> Self {
         Self {
-            transport: Transport::Http(HttpPool::new(endpoint.into(), jwt, POOL_SIZE)),
+            transport: Transport::Http(HttpPool::new(endpoint.into(), jwt)),
             poll: Poll::new().expect("mio Poll::new failed"),
             events: Events::with_capacity(EVENTS_CAPACITY),
             id: 1,
             pending_requests: FxHashMap::default(),
+            get_payload_method: "engine_getPayloadV3",
+            scratch: Vec::with_capacity(SCRATCH_CAPACITY),
         }
     }
 
     pub fn new_ipc(path: impl Into<String>) -> Self {
         Self {
-            transport: Transport::Ipc(IpcPool::new(path.into(), POOL_SIZE)),
+            transport: Transport::Ipc(IpcPool::new(path.into())),
             poll: Poll::new().expect("mio Poll::new failed"),
             events: Events::with_capacity(EVENTS_CAPACITY),
             id: 1,
             pending_requests: FxHashMap::default(),
+            get_payload_method: "engine_getPayloadV3",
+            scratch: Vec::with_capacity(SCRATCH_CAPACITY),
         }
     }
 }
@@ -80,10 +91,10 @@ fn next_id(id: &mut u64) -> u64 {
 fn make_rpc_body(
     id: &mut u64,
     method: &str,
-    params: serde_json::Value,
-) -> (u64, serde_json::Value) {
+    params: simd_json::OwnedValue,
+) -> (u64, simd_json::OwnedValue) {
     let rpc_id = next_id(id);
-    let body = serde_json::json!({
+    let body = simd_json::json!({
         "jsonrpc": "2.0",
         "method":  method,
         "params":  params,
@@ -92,10 +103,15 @@ fn make_rpc_body(
     (rpc_id, body)
 }
 
-fn enqueue(c: &mut EngineClient, rpc_id: u64, body: &serde_json::Value) {
+fn enqueue(c: &mut EngineClient, rpc_id: u64, body: &simd_json::OwnedValue) {
+    c.scratch.clear();
+    if let Err(e) = simd_json::to_writer(&mut c.scratch, body) {
+        tracing::warn!("failed to serialize RPC body: {e}");
+        return;
+    }
     match &mut c.transport {
-        Transport::Http(p) => http_pool_enqueue(p, rpc_id, body, &mut c.poll),
-        Transport::Ipc(p) => ipc_pool_enqueue(p, rpc_id, body, &mut c.poll),
+        Transport::Http(p) => http_pool_enqueue(p, rpc_id, &c.scratch, &mut c.poll),
+        Transport::Ipc(p) => ipc_pool_enqueue(p, rpc_id, &c.scratch, &mut c.poll),
     }
 }
 
@@ -106,13 +122,9 @@ pub fn send_fcu(
     req_id: u64,
 ) {
     let (id, body) =
-        make_rpc_body(&mut c.id, "engine_forkchoiceUpdatedV3", serde_json::json!([state, attrs]));
+        make_rpc_body(&mut c.id, "engine_forkchoiceUpdatedV3", simd_json::json!([state, attrs]));
     enqueue(c, id, &body);
-    if attrs.is_some() {
-        c.pending_requests.insert(id, ReqKind::Fcu(req_id));
-    } else {
-        c.pending_requests.insert(id, ReqKind::GetPayloadFcu(req_id));
-    }
+    c.pending_requests.insert(id, ReqKind::Fcu(req_id));
 }
 
 pub fn send_new_payload(
@@ -131,7 +143,7 @@ pub fn send_new_payload(
     let (id, body) = make_rpc_body(
         &mut c.id,
         "engine_newPayloadV4",
-        serde_json::json!([payload, hashes, parent, requests]),
+        simd_json::json!([payload, hashes, parent, requests]),
     );
     enqueue(c, id, &body);
     c.pending_requests.insert(id, ReqKind::NewPayload(req_id));
@@ -139,73 +151,93 @@ pub fn send_new_payload(
 
 pub fn get_payload(c: &mut EngineClient, payload_id: [u8; 8], req_id: u64) {
     let id_hex = format!("0x{}", hex::encode(payload_id));
-    let (id, body) = make_rpc_body(&mut c.id, "engine_getPayloadV4", serde_json::json!([id_hex]));
+    let (id, body) = make_rpc_body(&mut c.id, c.get_payload_method, simd_json::json!([id_hex]));
     enqueue(c, id, &body);
     c.pending_requests.insert(id, ReqKind::GetPayloadFetch(req_id));
 }
 
-pub fn get_blobs(c: &mut EngineClient, params: serde_json::Value, req_id: u64) {
+pub fn get_blobs(c: &mut EngineClient, params: simd_json::OwnedValue, req_id: u64) {
     let (id, body) = make_rpc_body(&mut c.id, "engine_getBlobsV2", params);
     enqueue(c, id, &body);
     c.pending_requests.insert(id, ReqKind::GetBlobs(req_id));
 }
 
-pub fn get_payload_bodies_by_hash(c: &mut EngineClient, params: serde_json::Value, req_id: u64) {
+pub fn get_payload_bodies_by_hash(
+    c: &mut EngineClient,
+    params: simd_json::OwnedValue,
+    req_id: u64,
+) {
     let (id, body) = make_rpc_body(&mut c.id, "engine_getPayloadBodiesByHashV1", params);
     enqueue(c, id, &body);
     c.pending_requests.insert(id, ReqKind::GetPayloadBodiesByHash(req_id));
 }
 
-pub fn get_payload_bodies_by_range(c: &mut EngineClient, params: serde_json::Value, req_id: u64) {
+pub fn get_payload_bodies_by_range(
+    c: &mut EngineClient,
+    params: simd_json::OwnedValue,
+    req_id: u64,
+) {
     let (id, body) = make_rpc_body(&mut c.id, "engine_getPayloadBodiesByRangeV1", params);
     enqueue(c, id, &body);
     c.pending_requests.insert(id, ReqKind::GetPayloadBodiesByRange(req_id));
 }
 
 pub fn get_sync_status(c: &mut EngineClient) {
-    let (id, body) = make_rpc_body(&mut c.id, "eth_syncing", serde_json::json!([]));
+    let (id, body) = make_rpc_body(&mut c.id, "eth_syncing", simd_json::json!([]));
     enqueue(c, id, &body);
     c.pending_requests.insert(id, ReqKind::Syncing);
 }
 
 pub fn exchange_capabilities(c: &mut EngineClient) {
+    // Spec: params = [capabilitiesArray] — the array is wrapped in an outer params
+    // array.
     let (id, body) = make_rpc_body(
         &mut c.id,
         "engine_exchangeCapabilities",
-        serde_json::json!(OUR_CAPABILITIES),
+        simd_json::json!([OUR_CAPABILITIES]),
     );
     enqueue(c, id, &body);
     c.pending_requests.insert(id, ReqKind::Capabilities);
 }
 
 pub fn get_client_version(c: &mut EngineClient) {
-    let (id, body) = make_rpc_body(&mut c.id, "engine_getClientVersionV1", serde_json::json!([{}]));
+    // Spec: params = [ClientVersionV1] with required fields
+    // code/name/version/commit.
+    let (id, body) = make_rpc_body(
+        &mut c.id,
+        "engine_getClientVersionV1",
+        simd_json::json!([{"code": "GE", "name": "silver", "version": "0.1.0", "commit": "00000000"}]),
+    );
     enqueue(c, id, &body);
     c.pending_requests.insert(id, ReqKind::ClientVersion);
 }
 
-/// Drive I/O, calling `on_complete(req_kind, response)` for each finished RPC.
+/// Drive I/O, calling `on_complete(req_kind, raw_body)` for each finished RPC.
+/// Raw bytes are the full HTTP/IPC response body; handlers parse them as
+/// needed.
 pub fn poll<F>(c: &mut EngineClient, mut on_complete: F)
 where
-    F: FnMut(ReqKind, Result<serde_json::Value, EngineError>),
+    F: FnMut(ReqKind, Result<Vec<u8>, EngineError>),
 {
     c.poll.poll(&mut c.events, Some(Duration::ZERO)).ok();
     let EngineClient { transport, events, poll, pending_requests, .. } = c;
     match transport {
         Transport::Http(p) => poll_http_pool(p, events, poll, &mut |rpc_id, res| {
             if let Some(req_kind) = pending_requests.remove(&rpc_id) {
-                on_complete(req_kind, res.and_then(extract_result));
+                on_complete(req_kind, res);
             }
         }),
         Transport::Ipc(p) => poll_ipc_pool(p, events, poll, &mut |rpc_id, res| {
             if let Some(req_kind) = pending_requests.remove(&rpc_id) {
-                on_complete(req_kind, res.and_then(extract_result));
+                on_complete(req_kind, res);
             }
         }),
     }
 }
 
-fn extract_result(resp: serde_json::Value) -> Result<serde_json::Value, EngineError> {
+pub(crate) fn extract_result(
+    resp: simd_json::OwnedValue,
+) -> Result<simd_json::OwnedValue, EngineError> {
     if let Some(err) = resp.get("error") {
         return Err(EngineError::Rpc(err.clone()));
     }
@@ -214,6 +246,8 @@ fn extract_result(resp: serde_json::Value) -> Result<serde_json::Value, EngineEr
 
 #[cfg(test)]
 mod tests {
+    use simd_json::prelude::{TypedScalarValue, ValueAsScalar};
+
     use super::*;
 
     #[test]
@@ -234,44 +268,44 @@ mod tests {
     #[test]
     fn make_rpc_body_has_correct_structure() {
         let mut id = 1u64;
-        let (rpc_id, body) = make_rpc_body(&mut id, "eth_test", serde_json::json!(["param"]));
+        let (rpc_id, body) = make_rpc_body(&mut id, "eth_test", simd_json::json!(["param"]));
         assert_eq!(rpc_id, 1);
         assert_eq!(id, 2);
-        assert_eq!(body["jsonrpc"], "2.0");
-        assert_eq!(body["method"], "eth_test");
-        assert_eq!(body["params"], serde_json::json!(["param"]));
-        assert_eq!(body["id"], 1);
+        assert_eq!(body["jsonrpc"].as_str(), Some("2.0"));
+        assert_eq!(body["method"].as_str(), Some("eth_test"));
+        assert_eq!(body["params"], simd_json::json!(["param"]));
+        assert_eq!(body["id"].as_u64(), Some(1));
     }
 
     #[test]
     fn make_rpc_body_ids_increase_across_calls() {
         let mut id = 5u64;
-        let (id1, body1) = make_rpc_body(&mut id, "m1", serde_json::json!([]));
-        let (id2, body2) = make_rpc_body(&mut id, "m2", serde_json::json!([]));
+        let (id1, body1) = make_rpc_body(&mut id, "m1", simd_json::json!([]));
+        let (id2, body2) = make_rpc_body(&mut id, "m2", simd_json::json!([]));
         assert_eq!(id1, 5);
         assert_eq!(id2, 6);
-        assert_eq!(body1["id"], 5);
-        assert_eq!(body2["id"], 6);
+        assert_eq!(body1["id"].as_u64(), Some(5));
+        assert_eq!(body2["id"].as_u64(), Some(6));
     }
 
     #[test]
     fn extract_result_returns_result_field() {
-        let resp = serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"key": "value"}});
-        assert_eq!(extract_result(resp).unwrap(), serde_json::json!({"key": "value"}));
+        let resp = simd_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"key": "value"}});
+        assert_eq!(extract_result(resp).unwrap(), simd_json::json!({"key": "value"}));
     }
 
     #[test]
     fn extract_result_returns_rpc_error_when_error_present() {
-        let resp = serde_json::json!({"jsonrpc": "2.0", "id": 1, "error": {"code": -32600, "message": "bad"}});
+        let resp = simd_json::json!({"jsonrpc": "2.0", "id": 1, "error": {"code": -32600, "message": "bad"}});
         assert!(matches!(extract_result(resp), Err(EngineError::Rpc(_))));
     }
 
     #[test]
     fn extract_result_error_contains_error_payload() {
-        let error_val = serde_json::json!({"code": -32700, "message": "parse error"});
-        let resp = serde_json::json!({"jsonrpc": "2.0", "id": 1, "error": error_val});
+        let error_val = simd_json::json!({"code": -32700, "message": "parse error"});
+        let resp = simd_json::json!({"jsonrpc": "2.0", "id": 1, "error": error_val});
         match extract_result(resp) {
-            Err(EngineError::Rpc(v)) => assert_eq!(v["code"], -32700),
+            Err(EngineError::Rpc(v)) => assert_eq!(v["code"].as_i64(), Some(-32700)),
             other => panic!("unexpected: {other:?}"),
         }
     }
@@ -279,19 +313,19 @@ mod tests {
     #[test]
     fn extract_result_error_takes_precedence_over_result() {
         let resp =
-            serde_json::json!({"jsonrpc": "2.0", "id": 1, "error": {"code": 1}, "result": "ok"});
+            simd_json::json!({"jsonrpc": "2.0", "id": 1, "error": {"code": 1}, "result": "ok"});
         assert!(matches!(extract_result(resp), Err(EngineError::Rpc(_))));
     }
 
     #[test]
     fn extract_result_missing_result_when_neither_field_present() {
-        let resp = serde_json::json!({"jsonrpc": "2.0", "id": 1});
+        let resp = simd_json::json!({"jsonrpc": "2.0", "id": 1});
         assert!(matches!(extract_result(resp), Err(EngineError::MissingResult)));
     }
 
     #[test]
     fn extract_result_null_result_is_ok() {
-        let resp = serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": null});
-        assert_eq!(extract_result(resp).unwrap(), serde_json::Value::Null);
+        let resp = simd_json::json!({"jsonrpc": "2.0", "id": 1, "result": null});
+        assert!(extract_result(resp).unwrap().is_null());
     }
 }

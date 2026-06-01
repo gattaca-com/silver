@@ -4,44 +4,63 @@ use silver_common::{
     EngineGetPayloadResp, EngineHealthEvent, EngineNewPayloadResp, EngineResp,
     PayloadValidationStatus, SilverSpine, TCacheProducer, TCacheRead, TProducer,
 };
+use simd_json::prelude::{ValueAsArray, ValueAsScalar, ValueObjectAccess};
 
 use crate::{
     EngineError,
+    client::extract_result,
     types::{
-        BlobAndProofV1, ExecutionPayloadBodyV1, ForkchoiceUpdatedResult, GetPayloadV4Response,
-        PayloadStatus, encode_get_blobs_data, encode_get_payload_data, encode_payload_bodies_data,
+        ForkchoiceUpdatedResult, PayloadStatus,
+        json_get_blobs_to_tcache, json_get_payload_bodies_to_tcache, json_get_payload_to_tcache,
     },
 };
 
+// Parse raw response bytes into an extracted OwnedValue result field.
+// Used by all handlers except getPayload, which uses the zero-alloc path.
 #[inline]
-pub(crate) fn handle_capabilities_response(response: Result<serde_json::Value, EngineError>) {
-    match response {
+fn parse_rpc_response(
+    raw: Result<Vec<u8>, EngineError>,
+) -> Result<simd_json::OwnedValue, EngineError> {
+    raw.and_then(|mut b| simd_json::from_slice(&mut b).map_err(EngineError::Json))
+        .and_then(extract_result)
+}
+
+#[inline]
+pub(crate) fn handle_capabilities_response(response: Result<Vec<u8>, EngineError>) -> &'static str {
+    match parse_rpc_response(response) {
         Ok(val) => {
             let arr = val.as_array().map(|a| a.as_slice()).unwrap_or_default();
             let has = |m: &str| arr.iter().any(|v| v.as_str() == Some(m));
             if !has("engine_forkchoiceUpdatedV3") {
-                tracing::warn!("engine tile: EL does not support engine_forkchoiceUpdatedV3");
+                tracing::warn!("EL does not support engine_forkchoiceUpdatedV3");
             }
             if !has("engine_newPayloadV4") {
-                tracing::warn!("engine tile: EL does not support engine_newPayloadV4");
+                tracing::warn!("EL does not support engine_newPayloadV4");
             }
             if !has("engine_getPayloadBodiesByHashV1") {
-                tracing::warn!("engine tile: EL does not support engine_getPayloadBodiesByHashV1");
+                tracing::warn!("EL does not support engine_getPayloadBodiesByHashV1");
             }
             if !has("engine_getPayloadBodiesByRangeV1") {
-                tracing::warn!("engine tile: EL does not support engine_getPayloadBodiesByRangeV1");
+                tracing::warn!("EL does not support engine_getPayloadBodiesByRangeV1");
             }
-            tracing::info!("engine tile: capabilities negotiated");
+            let method = if has("engine_getPayloadV4") {
+                "engine_getPayloadV4"
+            } else {
+                "engine_getPayloadV3"
+            };
+            tracing::info!("capabilities negotiated, using {method}");
+            method
         }
         Err(e) => {
-            tracing::warn!("engine tile: engine_exchangeCapabilities failed: {e}");
+            tracing::warn!("engine_exchangeCapabilities failed: {e}");
+            "engine_getPayloadV3"
         }
     }
 }
 
 #[inline]
-pub(crate) fn handle_client_version_response(response: Result<serde_json::Value, EngineError>) {
-    match response {
+pub(crate) fn handle_client_version_response(response: Result<Vec<u8>, EngineError>) {
+    match parse_rpc_response(response) {
         Ok(val) => {
             if let Some(client) = val.as_array().and_then(|a| a.first()) {
                 let name = client
@@ -50,35 +69,35 @@ pub(crate) fn handle_client_version_response(response: Result<serde_json::Value,
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown");
                 let version = client.get("version").and_then(|v| v.as_str()).unwrap_or("?");
-                tracing::info!("engine tile: EL client {name} {version}");
+                tracing::info!("EL client {name} {version}");
             }
         }
         Err(e) => {
-            tracing::warn!("engine tile: engine_getClientVersionV1 failed: {e}");
+            tracing::warn!("engine_getClientVersionV1 failed: {e}");
         }
     }
 }
 
 #[inline]
 pub(crate) fn handle_sync_response(
-    response: Result<serde_json::Value, EngineError>,
+    response: Result<Vec<u8>, EngineError>,
     adapter: &mut SpineAdapter<SilverSpine>,
     sync_status: &mut ELSyncStatus,
     healthcheck_pending: &mut bool,
 ) {
     *healthcheck_pending = false;
-    let new_status = parse_sync_status(response);
+    let new_status = parse_sync_status(parse_rpc_response(response));
     publish_health_if_changed(adapter, sync_status, new_status);
 }
 
 #[inline]
 pub(crate) fn handle_fcu_response(
     spine_id: u64,
-    response: Result<serde_json::Value, EngineError>,
+    response: Result<Vec<u8>, EngineError>,
     adapter: &mut SpineAdapter<SilverSpine>,
 ) {
-    let resp = match response.and_then(|v| {
-        serde_json::from_value::<ForkchoiceUpdatedResult>(v).map_err(EngineError::Json)
+    let resp = match parse_rpc_response(response).and_then(|v| {
+        simd_json::serde::from_owned_value::<ForkchoiceUpdatedResult>(v).map_err(EngineError::Json)
     }) {
         Ok(r) => {
             let status = status_from_str(&r.payload_status.status);
@@ -87,14 +106,23 @@ pub(crate) fn handle_fcu_response(
                 Some(id) => (true, id),
                 None => (false, [0u8; 8]),
             };
-            tracing::info!("engine tile: forkchoiceUpdated → {:?}", status);
+            tracing::info!(
+                status = %r.payload_status.status,
+                latest_valid_hash = %r.payload_status.latest_valid_hash
+                    .map(|h| hex::encode(&h[..4]))
+                    .unwrap_or_else(|| "null".into()),
+                id = spine_id,
+                "FCU → Reth"
+            );
             EngineFcuResp { id: spine_id, status, latest_valid_hash, has_payload_id, payload_id }
         }
         Err(e) => {
-            tracing::warn!("engine tile: forkchoiceUpdated error: {e}");
+            tracing::warn!("forkchoiceUpdated error: {e}");
+            // Transport/parse errors are not proof of invalidity — use SYNCING
+            // so the CL doesn't treat an unreachable EL as a bad block.
             EngineFcuResp {
                 id: spine_id,
-                status: PayloadValidationStatus::Invalid,
+                status: PayloadValidationStatus::Syncing,
                 latest_valid_hash: [0u8; 32],
                 has_payload_id: false,
                 payload_id: [0u8; 8],
@@ -107,23 +135,23 @@ pub(crate) fn handle_fcu_response(
 #[inline]
 pub(crate) fn handle_new_payload_response(
     spine_id: u64,
-    response: Result<serde_json::Value, EngineError>,
+    response: Result<Vec<u8>, EngineError>,
     adapter: &mut SpineAdapter<SilverSpine>,
 ) {
-    let resp = match response
-        .and_then(|v| serde_json::from_value::<PayloadStatus>(v).map_err(EngineError::Json))
-    {
+    let resp = match parse_rpc_response(response).and_then(|v| {
+        simd_json::serde::from_owned_value::<PayloadStatus>(v).map_err(EngineError::Json)
+    }) {
         Ok(ps) => {
             let status = status_from_str(&ps.status);
             let latest_valid_hash = ps.latest_valid_hash.unwrap_or([0u8; 32]);
-            tracing::info!("engine tile: newPayload → {:?}", status);
+            tracing::info!("newPayload → {:?}", status);
             EngineNewPayloadResp { id: spine_id, status, latest_valid_hash }
         }
         Err(e) => {
-            tracing::warn!("engine tile: newPayload error: {e}");
+            tracing::warn!("newPayload error: {e}");
             EngineNewPayloadResp {
                 id: spine_id,
-                status: PayloadValidationStatus::Invalid,
+                status: PayloadValidationStatus::Syncing,
                 latest_valid_hash: [0u8; 32],
             }
         }
@@ -132,65 +160,35 @@ pub(crate) fn handle_new_payload_response(
 }
 
 #[inline]
-pub(crate) fn handle_get_payload_fcu(
-    spine_id: u64,
-    response: Result<serde_json::Value, EngineError>,
-    adapter: &mut SpineAdapter<SilverSpine>,
-    pending_get_payload: &mut Option<([u8; 8], u64)>,
-) {
-    match response.and_then(|v| {
-        serde_json::from_value::<ForkchoiceUpdatedResult>(v).map_err(EngineError::Json)
-    }) {
-        Ok(fcu) => match fcu.payload_id {
-            Some(payload_id) => {
-                *pending_get_payload = Some((payload_id, spine_id));
-            }
-            None => {
-                tracing::warn!("engine tile: getPayload FCU returned no payload_id");
-                adapter.produce(EngineResp::GetPayload(get_payload_error(spine_id)));
-            }
-        },
-        Err(e) => {
-            tracing::warn!("engine tile: getPayload FCU error: {e}");
-            adapter.produce(EngineResp::GetPayload(get_payload_error(spine_id)));
-        }
-    }
-}
-
-#[inline]
 pub(crate) fn handle_get_payload_fetch(
     spine_id: u64,
-    response: Result<serde_json::Value, EngineError>,
+    response: Result<Vec<u8>, EngineError>,
     adapter: &mut SpineAdapter<SilverSpine>,
     resp_producer: &mut TProducer,
+    scratch: &mut Vec<u8>,
 ) {
     let resp = match response {
-        Ok(v) => match serde_json::from_value::<GetPayloadV4Response>(v) {
-            Ok(p) => {
-                let payload_ssz = p.execution_payload.to_ssz();
-                let data = encode_get_payload_data(
-                    &payload_ssz,
-                    &p.blobs_bundle.commitments,
-                    &p.blobs_bundle.proofs,
-                    &p.blobs_bundle.blobs,
-                    p.should_override_builder,
-                    &p.execution_requests,
-                );
-                match write_tcache(resp_producer, &data) {
-                    Some(data) => EngineGetPayloadResp { id: spine_id, ok: true, data },
+        Ok(mut raw) => {
+            scratch.clear();
+            match json_get_payload_to_tcache(&mut raw, scratch) {
+                Ok(()) => match write_tcache(resp_producer, scratch) {
+                    Some(data) => {
+                        tracing::info!(id = spine_id, "getPayload ok");
+                        EngineGetPayloadResp { id: spine_id, ok: true, data }
+                    }
                     None => {
-                        tracing::warn!("engine tile: getPayload TCache full");
+                        tracing::warn!("getPayload TCache full");
                         get_payload_error(spine_id)
                     }
+                },
+                Err(e) => {
+                    tracing::warn!("getPayload parse error: {e}");
+                    get_payload_error(spine_id)
                 }
             }
-            Err(e) => {
-                tracing::warn!("engine tile: getPayload parse error: {e}");
-                get_payload_error(spine_id)
-            }
-        },
+        }
         Err(e) => {
-            tracing::warn!("engine tile: getPayload error: {e}");
+            tracing::warn!("getPayload error: {e}");
             get_payload_error(spine_id)
         }
     };
@@ -200,30 +198,33 @@ pub(crate) fn handle_get_payload_fetch(
 #[inline]
 pub(crate) fn handle_get_blobs_response(
     spine_id: u64,
-    response: Result<serde_json::Value, EngineError>,
+    response: Result<Vec<u8>, EngineError>,
     adapter: &mut SpineAdapter<SilverSpine>,
     resp_producer: &mut TProducer,
+    scratch: &mut Vec<u8>,
 ) {
-    let items = match response {
-        Ok(v) => match serde_json::from_value::<Vec<Option<BlobAndProofV1>>>(v) {
-            Ok(items) => items,
-            Err(e) => {
-                tracing::warn!("engine tile: getBlobsV2 parse error: {e}");
-                adapter.produce(EngineResp::GetBlobs(get_blobs_error(spine_id)));
-                return;
+    let resp = match response {
+        Ok(mut raw) => {
+            scratch.clear();
+            match json_get_blobs_to_tcache(&mut raw, scratch) {
+                Ok(()) => match write_tcache(resp_producer, scratch) {
+                    Some(data) => {
+                        tracing::info!(id = spine_id, "getBlobsV2 ok");
+                        EngineGetBlobsResp { id: spine_id, ok: true, data }
+                    }
+                    None => {
+                        tracing::warn!("getBlobsV2 TCache full");
+                        get_blobs_error(spine_id)
+                    }
+                },
+                Err(e) => {
+                    tracing::warn!("getBlobsV2 parse error: {e}");
+                    get_blobs_error(spine_id)
+                }
             }
-        },
-        Err(e) => {
-            tracing::warn!("engine tile: getBlobsV2 error: {e}");
-            adapter.produce(EngineResp::GetBlobs(get_blobs_error(spine_id)));
-            return;
         }
-    };
-    let data = encode_get_blobs_data(&items);
-    let resp = match write_tcache(resp_producer, &data) {
-        Some(data) => EngineGetBlobsResp { id: spine_id, ok: true, data },
-        None => {
-            tracing::warn!("engine tile: getBlobsV2 TCache full");
+        Err(e) => {
+            tracing::warn!("getBlobsV2 error: {e}");
             get_blobs_error(spine_id)
         }
     };
@@ -233,30 +234,33 @@ pub(crate) fn handle_get_blobs_response(
 #[inline]
 pub(crate) fn handle_get_payload_bodies_response(
     spine_id: u64,
-    response: Result<serde_json::Value, EngineError>,
+    response: Result<Vec<u8>, EngineError>,
     adapter: &mut SpineAdapter<SilverSpine>,
     resp_producer: &mut TProducer,
+    scratch: &mut Vec<u8>,
 ) {
-    let bodies = match response {
-        Ok(v) => match serde_json::from_value::<Vec<Option<ExecutionPayloadBodyV1>>>(v) {
-            Ok(bodies) => bodies,
-            Err(e) => {
-                tracing::warn!("engine tile: getPayloadBodies parse error: {e}");
-                adapter.produce(EngineResp::GetPayloadBodies(get_payload_bodies_error(spine_id)));
-                return;
+    let resp = match response {
+        Ok(mut raw) => {
+            scratch.clear();
+            match json_get_payload_bodies_to_tcache(&mut raw, scratch) {
+                Ok(()) => match write_tcache(resp_producer, scratch) {
+                    Some(data) => {
+                        tracing::info!(id = spine_id, "getPayloadBodies ok");
+                        EngineGetPayloadBodiesResp { id: spine_id, ok: true, data }
+                    }
+                    None => {
+                        tracing::warn!("getPayloadBodies TCache full");
+                        get_payload_bodies_error(spine_id)
+                    }
+                },
+                Err(e) => {
+                    tracing::warn!("getPayloadBodies parse error: {e}");
+                    get_payload_bodies_error(spine_id)
+                }
             }
-        },
-        Err(e) => {
-            tracing::warn!("engine tile: getPayloadBodies error: {e}");
-            adapter.produce(EngineResp::GetPayloadBodies(get_payload_bodies_error(spine_id)));
-            return;
         }
-    };
-    let data = encode_payload_bodies_data(&bodies);
-    let resp = match write_tcache(resp_producer, &data) {
-        Some(data) => EngineGetPayloadBodiesResp { id: spine_id, ok: true, data },
-        None => {
-            tracing::warn!("engine tile: getPayloadBodies TCache full");
+        Err(e) => {
+            tracing::warn!("getPayloadBodies error: {e}");
             get_payload_bodies_error(spine_id)
         }
     };
@@ -272,23 +276,23 @@ fn publish_health_if_changed(
     if new_status != *sync_status {
         *sync_status = new_status;
         adapter.produce(EngineHealthEvent { sync_status: new_status });
-        tracing::info!("engine tile: EL health → {:?}", new_status);
+        tracing::info!("EL health → {:?}", new_status);
     }
 }
 
 #[inline]
-fn parse_sync_status(response: Result<serde_json::Value, EngineError>) -> ELSyncStatus {
+fn parse_sync_status(response: Result<simd_json::OwnedValue, EngineError>) -> ELSyncStatus {
     match response {
         Ok(val) if val.as_bool() == Some(false) => {
-            tracing::info!("engine tile: EL synced");
+            tracing::info!("EL synced");
             ELSyncStatus::Synced
         }
         Ok(_) => {
-            tracing::info!("engine tile: EL syncing");
+            tracing::info!("EL syncing");
             ELSyncStatus::Syncing
         }
         Err(e) => {
-            tracing::warn!("engine tile: eth_syncing failed: {e}");
+            tracing::warn!("eth_syncing failed: {e}");
             ELSyncStatus::Offline
         }
     }
@@ -358,12 +362,12 @@ mod tests {
 
     #[test]
     fn parse_sync_status_synced_on_false() {
-        assert_eq!(parse_sync_status(Ok(serde_json::Value::Bool(false))), ELSyncStatus::Synced);
+        assert_eq!(parse_sync_status(Ok(simd_json::json!(false))), ELSyncStatus::Synced);
     }
 
     #[test]
     fn parse_sync_status_syncing_on_object() {
-        let syncing_obj = serde_json::json!({
+        let syncing_obj = simd_json::json!({
             "startingBlock": "0x0",
             "currentBlock": "0x100",
             "highestBlock": "0x200"
@@ -373,7 +377,7 @@ mod tests {
 
     #[test]
     fn parse_sync_status_syncing_on_true() {
-        assert_eq!(parse_sync_status(Ok(serde_json::Value::Bool(true))), ELSyncStatus::Syncing);
+        assert_eq!(parse_sync_status(Ok(simd_json::json!(true))), ELSyncStatus::Syncing);
     }
 
     #[test]
