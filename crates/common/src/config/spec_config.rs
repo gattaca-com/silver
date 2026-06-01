@@ -13,7 +13,7 @@ pub struct BlobParameters {
 
 /// Per-network spec parameters that vary across mainnet / testnets / devnets.
 ///
-/// Compile-time array dimensions (`MAX_VALIDATORS`, `SLOTS_PER_EPOCH`,
+/// Compile-time array dimensions (`SLOTS_PER_EPOCH`,
 /// `SYNC_COMMITTEE_SIZE`, etc.) stay hardcoded — every real testnet uses
 /// the mainnet preset; only the spec "minimal" preset differs and we don't
 /// support running it.

@@ -268,9 +268,16 @@ impl TryFrom<ProtoIdentifyView<'_>> for Identify {
     type Error = Error;
 
     fn try_from(view: ProtoIdentifyView<'_>) -> Result<Self, Self::Error> {
-        view.protocolVersion
-            .filter(|p| *p == PROTOCOL_VERSION)
-            .ok_or(Error::IdentifyInvalidProtocol)?;
+        // `protocolVersion` is informational; Prysm advertises an empty string.
+        // Tolerate missing/empty (and the matching version); reject only a
+        // present, non-empty mismatch.
+        if let Some(p) = view.protocolVersion &&
+            !p.is_empty() &&
+            p != PROTOCOL_VERSION
+        {
+            tracing::error!("bad identify protocol: {view:?}");
+            return Err(Error::IdentifyInvalidProtocol);
+        }
         let agent = view.agentVersion.ok_or(Error::IdentifyMissingAgent)?;
 
         let mut identify = Identify::default();

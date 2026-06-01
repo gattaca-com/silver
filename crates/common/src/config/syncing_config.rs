@@ -5,7 +5,7 @@ use super::{default_u64, default_usize};
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SyncingConfig {
     /// Max remembered rejected roots (one set; failed block roots + the
-    /// poisoned target_root from `SyncingFinalised`-time rejects). Sized
+    /// poisoned target_root from `SyncingFinalized`-time rejects). Sized
     /// for "many bad blocks during one bad-chain catchup attempt" — 256
     /// covers ~8 epochs.
     #[serde(default = "default_usize::<256>")]
@@ -16,18 +16,18 @@ pub struct SyncingConfig {
     /// finalized-sync tail quickly.
     #[serde(default = "default_u64::<8>")]
     pub head_lag_threshold_slots: u64,
-    /// SyncingFinalised trigger: enter SyncingFinalised only when a peer's
+    /// SyncingFinalized trigger: enter SyncingFinalized only when a peer's
     /// `finalized_epoch` exceeds ours by at least this many epochs. Mainnet
     /// FFG lags head by ~2 epochs, and peer Statuses snapshot before they
-    /// finalise their own next epoch — a 1-epoch drift between peers and us
+    /// finalize their own next epoch — a 1-epoch drift between peers and us
     /// is the steady-state, not a sign we're behind.
     #[serde(default = "default_u64::<2>")]
     pub finalized_lag_threshold_epochs: u64,
-    /// Defensive ceiling on peers' claimed finalised / head slot vs our
+    /// Defensive ceiling on peers' claimed finalized / head slot vs our
     /// wall slot. Beyond this, the claim is rejected as bogus.
     #[serde(default = "default_u64::<32>")]
     pub wall_clock_tolerance_slots: u64,
-    /// Mainnet `SLOTS_PER_EPOCH`. Used by the finalised-target wall-clock
+    /// Mainnet `SLOTS_PER_EPOCH`. Used by the finalized-target wall-clock
     /// filter to convert `epoch * SLOTS_PER_EPOCH → start slot`. Spec
     /// constant, but kept here so tests / non-mainnet networks can
     /// override.

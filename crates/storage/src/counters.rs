@@ -19,7 +19,7 @@ silver_common::declare_counters! {
         InclusionProofFailures,
         KzgVerifyFailures,
         // block-level checks (state-driven)
-        BelowFinalised,
+        BelowFinalized,
         ParentUnknown,
         ProposerIndexMismatch,
         ProposerSignatureInvalid,

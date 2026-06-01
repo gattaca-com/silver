@@ -5,7 +5,7 @@ use std::fs;
 mod ef_common;
 
 use ef_common::{compare_states, iter_test_cases, load_state, spec_tests_dir};
-use silver_beacon_state::state_transition;
+use silver_beacon_state::{ssz_hash::StateHashScratch, state_transition};
 
 #[test]
 fn sanity_slots() {
@@ -35,25 +35,28 @@ fn sanity_slots() {
             .unwrap_or_else(|e| panic!("{name}: bad slots value '{slots_str}': {e}"));
 
         let mut pre = load_state(&pre_path);
-        let target_slot = pre.sd.slot + target_slots;
+        let target_slot = pre.delta.slot.slot.slot + target_slots;
         let mut scratch = Vec::new();
         let mut postponed = Vec::new();
+        let mut replace_u64 = Vec::new();
+        let mut replace_u8 = Vec::new();
+        let mut eff = Vec::new();
+        let mut state_hash = StateHashScratch::new();
+        let mut view = pre.view();
         state_transition::process_slots(
             &silver_common::SpecConfig::mainnet(),
-            &pre.imm,
-            &mut pre.vs,
-            &mut pre.longtail,
-            &mut pre.epoch,
-            &mut pre.roots,
-            &mut pre.sd,
-            &mut pre.pq,
+            &mut view,
             target_slot,
             &mut scratch,
             &mut postponed,
+            &mut replace_u64,
+            &mut replace_u8,
+            &mut eff,
+            &mut state_hash,
         );
-        let post = load_state(&post_path);
+        let mut post = load_state(&post_path);
 
-        let diffs = compare_states(name, &pre, &post);
+        let diffs = compare_states(name, &mut pre, &mut post);
         if diffs.is_empty() {
             pass += 1;
         } else {

@@ -8,7 +8,7 @@ use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use rand::{RngCore, SeedableRng, rngs::StdRng};
-use silver_beacon_state::{hash_tree::FinalizedHashTree, types::B256};
+use silver_common::{B256, beacon_state::FinalizedHashTree};
 
 fn random_leaves(n: usize, seed: u64) -> Vec<B256> {
     let mut rng = StdRng::seed_from_u64(seed);

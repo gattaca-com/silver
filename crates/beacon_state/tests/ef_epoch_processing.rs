@@ -3,7 +3,8 @@
 mod ef_common;
 
 use ef_common::{LoadedState, compare_states, iter_test_cases, load_state, spec_tests_dir};
-use silver_beacon_state::{epoch_transition, types::SLOTS_PER_EPOCH};
+use silver_beacon_state::{epoch_transition, ssz_hash::StateHashScratch};
+use silver_common::StateDeltaView;
 
 fn epoch_handler(handler_name: &str, run: impl Fn(&mut LoadedState)) {
     let base = spec_tests_dir()
@@ -24,15 +25,14 @@ fn epoch_handler(handler_name: &str, run: impl Fn(&mut LoadedState)) {
         let pre_path = dir.join("pre.ssz_snappy");
         let post_path = dir.join("post.ssz_snappy");
         if !post_path.exists() {
-            // No post state means the operation should fail — skip for now.
             continue;
         }
 
         let mut pre = load_state(&pre_path);
         run(&mut pre);
-        let post = load_state(&post_path);
+        let mut post = load_state(&post_path);
 
-        let diffs = compare_states(name, &pre, &post);
+        let diffs = compare_states(name, &mut pre, &mut post);
         if diffs.is_empty() {
             pass += 1;
         } else {
@@ -49,17 +49,17 @@ fn epoch_handler(handler_name: &str, run: impl Fn(&mut LoadedState)) {
     assert_eq!(fail, 0, "{handler_name}: {fail} test(s) failed");
 }
 
+fn view_mut(s: &mut LoadedState) -> StateDeltaView<'_> {
+    s.view()
+}
+
 #[test]
 fn justification_and_finalization() {
     epoch_handler("justification_and_finalization", |s| {
-        let current_epoch = s.sd.slot / SLOTS_PER_EPOCH;
-        epoch_transition::process_justification_and_finalization(
-            &s.epoch,
-            &mut s.sd,
-            &s.roots,
-            s.vs.validator_cnt(),
-            current_epoch,
-        );
+        let mut v = view_mut(s);
+        let current_epoch = v.current_epoch();
+        v.ensure_epoch_delta();
+        epoch_transition::process_justification_and_finalization(&mut v, current_epoch);
     });
 }
 
@@ -67,9 +67,10 @@ fn justification_and_finalization() {
 fn inactivity_updates() {
     let cfg = silver_common::SpecConfig::mainnet();
     epoch_handler("inactivity_updates", move |s| {
-        let current_epoch = s.sd.slot / SLOTS_PER_EPOCH;
-        let n = s.vs.validator_cnt();
-        epoch_transition::process_inactivity_updates(&cfg, &mut s.epoch, &s.sd, n, current_epoch);
+        let mut v = view_mut(s);
+        let current_epoch = v.current_epoch();
+        let mut scratch = Vec::new();
+        epoch_transition::process_inactivity_updates(&cfg, &mut v, current_epoch, &mut scratch);
     });
 }
 
@@ -77,15 +78,10 @@ fn inactivity_updates() {
 fn rewards_and_penalties() {
     let cfg = silver_common::SpecConfig::mainnet();
     epoch_handler("rewards_and_penalties", move |s| {
-        let current_epoch = s.sd.slot / SLOTS_PER_EPOCH;
-        let n = s.vs.validator_cnt();
-        epoch_transition::process_rewards_and_penalties(
-            &cfg,
-            &s.epoch,
-            &mut s.sd,
-            n,
-            current_epoch,
-        );
+        let mut v = view_mut(s);
+        let current_epoch = v.current_epoch();
+        let mut scratch = Vec::new();
+        epoch_transition::process_rewards_and_penalties(&cfg, &mut v, current_epoch, &mut scratch);
     });
 }
 
@@ -93,9 +89,9 @@ fn rewards_and_penalties() {
 fn registry_updates() {
     let cfg = silver_common::SpecConfig::mainnet();
     epoch_handler("registry_updates", move |s| {
-        let current_epoch = s.sd.slot / SLOTS_PER_EPOCH;
-        let n = s.vs.validator_cnt();
-        epoch_transition::process_registry_updates(&cfg, &mut s.epoch, &mut s.sd, n, current_epoch);
+        let mut v = view_mut(s);
+        let current_epoch = v.current_epoch();
+        epoch_transition::process_registry_updates(&cfg, &mut v, current_epoch);
     });
 }
 
@@ -103,17 +99,18 @@ fn registry_updates() {
 fn slashings() {
     let cfg = silver_common::SpecConfig::mainnet();
     epoch_handler("slashings", move |s| {
-        let current_epoch = s.sd.slot / SLOTS_PER_EPOCH;
-        let n = s.vs.validator_cnt();
-        epoch_transition::process_slashings(&cfg, &s.epoch, &mut s.sd, n, current_epoch);
+        let mut v = view_mut(s);
+        let current_epoch = v.current_epoch();
+        epoch_transition::process_slashings(&cfg, &mut v, current_epoch);
     });
 }
 
 #[test]
 fn eth1_data_reset() {
     epoch_handler("eth1_data_reset", |s| {
-        let current_epoch = s.sd.slot / SLOTS_PER_EPOCH;
-        epoch_transition::process_eth1_data_reset(&mut s.sd, current_epoch);
+        let mut v = view_mut(s);
+        let current_epoch = v.current_epoch();
+        epoch_transition::process_eth1_data_reset(&mut v, current_epoch);
     });
 }
 
@@ -121,77 +118,74 @@ fn eth1_data_reset() {
 fn pending_deposits() {
     let cfg = silver_common::SpecConfig::mainnet();
     epoch_handler("pending_deposits", move |s| {
-        epoch_transition::process_pending_deposits(
-            &cfg,
-            &mut s.vs,
-            &mut s.epoch,
-            &mut s.sd,
-            &mut s.pq,
-            &mut Vec::new(),
-        );
+        let mut v = view_mut(s);
+        epoch_transition::process_pending_deposits(&cfg, &mut v, &mut Vec::new());
     });
 }
 
 #[test]
 fn pending_consolidations() {
     epoch_handler("pending_consolidations", |s| {
-        epoch_transition::process_pending_consolidations(&mut s.epoch, &mut s.sd, &mut s.pq);
+        let mut v = view_mut(s);
+        epoch_transition::process_pending_consolidations(&mut v);
     });
 }
 
 #[test]
 fn effective_balance_updates() {
     epoch_handler("effective_balance_updates", |s| {
-        epoch_transition::process_effective_balance_updates(&s.vs, &mut s.epoch, &s.sd);
+        let mut v = view_mut(s);
+        epoch_transition::process_effective_balance_updates(&mut v);
     });
 }
 
 #[test]
 fn slashings_reset() {
     epoch_handler("slashings_reset", |s| {
-        let current_epoch = s.sd.slot / SLOTS_PER_EPOCH;
-        epoch_transition::process_slashings_reset(&mut s.epoch, current_epoch);
+        let mut v = view_mut(s);
+        epoch_transition::process_slashings_reset(&mut v);
     });
 }
 
 #[test]
 fn randao_mixes_reset() {
     epoch_handler("randao_mixes_reset", |s| {
-        let current_epoch = s.sd.slot / SLOTS_PER_EPOCH;
-        epoch_transition::process_randao_mixes_reset(&mut s.epoch, &s.sd, current_epoch);
+        let mut v = view_mut(s);
+        epoch_transition::process_randao_mixes_reset(&mut v);
     });
 }
 
 #[test]
 fn historical_summaries_update() {
     epoch_handler("historical_summaries_update", move |s| {
-        let current_epoch = s.sd.slot / SLOTS_PER_EPOCH;
-        epoch_transition::process_historical_summaries_update(
-            &mut s.longtail,
-            &s.roots,
-            current_epoch,
-        );
+        let mut v = view_mut(s);
+        let current_epoch = v.current_epoch();
+        let mut scratch = StateHashScratch::new();
+        epoch_transition::process_historical_summaries_update(&mut v, current_epoch, &mut scratch);
     });
 }
 
 #[test]
 fn participation_flag_updates() {
     epoch_handler("participation_flag_updates", |s| {
-        epoch_transition::process_participation_flag_updates(&mut s.sd, s.vs.validator_cnt());
+        let mut v = view_mut(s);
+        let mut scratch = Vec::new();
+        epoch_transition::process_participation_flag_updates(&mut v, &mut scratch);
     });
 }
 
 #[test]
 fn sync_committee_updates() {
     epoch_handler("sync_committee_updates", |s| {
-        let current_epoch = s.sd.slot / SLOTS_PER_EPOCH;
-        let mut scratch = Vec::new();
+        let mut v = view_mut(s);
+        let current_epoch = v.current_epoch();
+        let mut active = Vec::new();
+        let mut eff = Vec::new();
         epoch_transition::process_sync_committee_updates(
-            &s.vs,
-            &mut s.longtail,
-            &s.epoch,
+            &mut v,
             current_epoch,
-            &mut scratch,
+            &mut active,
+            &mut eff,
         );
     });
 }
@@ -199,14 +193,11 @@ fn sync_committee_updates() {
 #[test]
 fn proposer_lookahead() {
     epoch_handler("proposer_lookahead", |s| {
-        let current_epoch = s.sd.slot / SLOTS_PER_EPOCH;
+        let mut v = view_mut(s);
+        let current_epoch = v.current_epoch();
+        v.ensure_epoch_delta();
         let mut scratch = Vec::new();
-        epoch_transition::process_proposer_lookahead(
-            &s.vs,
-            &s.epoch,
-            &mut s.sd,
-            current_epoch,
-            &mut scratch,
-        );
+        let mut eff = Vec::new();
+        epoch_transition::process_proposer_lookahead(&mut v, current_epoch, &mut scratch, &mut eff);
     });
 }

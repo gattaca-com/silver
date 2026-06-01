@@ -1,5 +1,5 @@
 use silver_common::{
-    SpecConfig,
+    Epoch, SLOTS_PER_EPOCH, Slot, SpecConfig, StateDeltaView,
     ssz_view::{
         ATTESTATION_FIXED, AttestationDataView, AttestationView, EXECUTION_PAYLOAD_FIXED,
         ExecutionPayloadView, PROPOSER_SLASHING_SIZE, ProposerSlashingView,
@@ -12,8 +12,6 @@ use crate::{
         OperationKind, ProposerSlashingError, Result, VoluntaryExitError,
     },
     ssz_hash,
-    types::*,
-    validator_identity::ValidatorsState,
 };
 
 // Spec operation limits — `_ELECTRA` suffixed constants retain the spec
@@ -53,7 +51,7 @@ pub fn validate_attestation_data(
         return Err(AttestationError::TargetEpochOutOfWindow {
             target: target_epoch,
             prev: previous_epoch,
-            cur: current_epoch,
+            curr: current_epoch,
         });
     }
 
@@ -91,22 +89,23 @@ pub fn validate_proposer_slashing(data: &[u8]) -> Result<(), ProposerSlashingErr
 
 pub fn validate_voluntary_exit(
     cfg: &SpecConfig,
-    vs: &ValidatorsState,
-    epoch: &EpochData,
-    vi: usize,
+    view: &StateDeltaView,
+    vi: u32,
     exit_epoch: Epoch,
     current_epoch: Epoch,
 ) -> Result<(), VoluntaryExitError> {
-    let cnt = vs.validator_cnt();
-    if vi >= cnt {
-        return Err(VoluntaryExitError::ValidatorOutOfRange { vi, cnt });
+    let count = view.validators_count();
+    if (vi as usize) >= count {
+        return Err(VoluntaryExitError::ValidatorOutOfRange { vi: vi as usize, count });
     }
-    let pubkey = *vs.pubkey(vi);
-    if epoch.val_activation_epoch[vi] > current_epoch || current_epoch >= epoch.val_exit_epoch[vi] {
-        return Err(VoluntaryExitError::NotActive { vi, pubkey, epoch: current_epoch });
+    let pubkey = view.validator_pubkey(vi as usize);
+    let act = view.validator_activation_epoch(vi as usize);
+    let exit = view.validator_exit_epoch(vi as usize);
+    if act > current_epoch || current_epoch >= exit {
+        return Err(VoluntaryExitError::NotActive { vi: vi as usize, pubkey, epoch: current_epoch });
     }
-    if epoch.val_exit_epoch[vi] != u64::MAX {
-        return Err(VoluntaryExitError::AlreadyExiting { vi, pubkey });
+    if exit != u64::MAX {
+        return Err(VoluntaryExitError::AlreadyExiting { vi: vi as usize, pubkey });
     }
     if current_epoch < exit_epoch {
         return Err(VoluntaryExitError::ExitEpochInFuture {
@@ -114,27 +113,27 @@ pub fn validate_voluntary_exit(
             exit: exit_epoch,
         });
     }
-    if current_epoch < epoch.val_activation_epoch[vi] + cfg.shard_committee_period {
-        return Err(VoluntaryExitError::TooEarly { vi, pubkey });
+    if current_epoch < act + cfg.shard_committee_period {
+        return Err(VoluntaryExitError::TooEarly { vi: vi as usize, pubkey });
     }
     Ok(())
 }
 
 pub fn validate_bls_to_execution_change(
-    vs: &ValidatorsState,
-    vi: usize,
+    view: &StateDeltaView,
+    vi: u32,
     from_pubkey: &[u8; 48],
 ) -> Result<(), BlsToExecutionChangeError> {
-    let cnt = vs.validator_cnt();
-    if vi >= cnt {
-        return Err(BlsToExecutionChangeError::ValidatorOutOfRange { vi, cnt });
+    let count = view.validators_count();
+    if (vi as usize) >= count {
+        return Err(BlsToExecutionChangeError::ValidatorOutOfRange { vi: vi as usize, count });
     }
-    let creds = vs.withdrawal_credentials(vi);
-    let prefix = creds.prefix();
+    let creds = view.validator_credentials(vi as usize);
+    let prefix = creds.0[0];
     if prefix != 0x00 {
         return Err(BlsToExecutionChangeError::BadCredentialPrefix {
-            vi,
-            pubkey: *vs.pubkey(vi),
+            vi: vi as usize,
+            pubkey: view.validator_pubkey(vi as usize),
             prefix,
         });
     }
@@ -153,8 +152,7 @@ pub fn validate_bls_to_execution_change(
 
 pub fn validate_execution_payload(
     cfg: &SpecConfig,
-    imm: &Immutable,
-    sd: &SlotData,
+    view: &StateDeltaView,
     payload: &[u8],
     block_slot: Slot,
 ) -> Result<(), ExecutionPayloadError> {
@@ -164,19 +162,20 @@ pub fn validate_execution_payload(
             min: EXECUTION_PAYLOAD_FIXED,
         });
     }
+    let header = view.latest_execution_payload_header();
+    let genesis_time = view.genesis_time();
+    let randao_mix_current = view.randao_mix_current();
 
-    // parent_hash == state.latest_execution_payload_header.block_hash
     let got_parent = *ExecutionPayloadView::parent_hash(payload);
-    let expected_parent = sd.latest_execution_payload_header.block_hash;
-    if got_parent != expected_parent && sd.latest_execution_payload_header.block_number > 0 {
+    let expected_parent = header.block_hash;
+    if got_parent != expected_parent && header.block_number > 0 {
         return Err(ExecutionPayloadError::ParentHashMismatch {
             expected: expected_parent,
             got: got_parent,
         });
     }
 
-    // Spec: timestamp == compute_timestamp_at_slot(state, block.slot).
-    let expected_timestamp = imm.genesis_time + block_slot * cfg.seconds_per_slot;
+    let expected_timestamp = genesis_time + block_slot * cfg.seconds_per_slot;
     let got_timestamp = ExecutionPayloadView::timestamp(payload);
     if got_timestamp != expected_timestamp {
         return Err(ExecutionPayloadError::TimestampMismatch {
@@ -185,11 +184,10 @@ pub fn validate_execution_payload(
         });
     }
 
-    // Spec: prev_randao == get_randao_mix(state, current_epoch).
     let got_randao = *ExecutionPayloadView::prev_randao(payload);
-    if got_randao != sd.randao_mix_current {
+    if got_randao != randao_mix_current {
         return Err(ExecutionPayloadError::RandaoMismatch {
-            expected: sd.randao_mix_current,
+            expected: randao_mix_current,
             got: got_randao,
         });
     }

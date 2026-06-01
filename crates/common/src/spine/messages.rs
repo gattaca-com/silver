@@ -336,9 +336,9 @@ pub enum PeerEvent {
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(C, u8)]
 pub enum SyncUpdate {
-    /// Chase a specific finalised checkpoint. Pinned until reached or
+    /// Chase a specific finalized checkpoint. Pinned until reached or
     /// rejected.
-    SyncingFinalised {
+    SyncingFinalized {
         target_epoch: u64,
         target_root: [u8; 32],
     },
@@ -362,8 +362,8 @@ impl core::fmt::Debug for SyncUpdate {
             s
         }
         match self {
-            Self::SyncingFinalised { target_epoch, target_root } => f
-                .debug_struct("SyncingFinalised")
+            Self::SyncingFinalized { target_epoch, target_root } => f
+                .debug_struct("SyncingFinalized")
                 .field("target_epoch", target_epoch)
                 .field("target_root", &format_args!("0x{}", hex32(target_root)))
                 .finish(),
@@ -483,6 +483,10 @@ pub enum PeerControl {
         app_id: u64,
         peer: usize,
         block_root: [u8; 32],
+    },
+    P2pDisconnect {
+        p2p: PeerId,
+        p2p_connection: usize,
     },
     /// Peer-level ban has timed out — counterpart to `Ban`. Network tile
     /// removes the peer from any deny-list / discv5 routing-table eviction

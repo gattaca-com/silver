@@ -1,38 +1,20 @@
-//! Finalised layer — flat segment tree of `B256` leaves.
-//!
-//! 1-indexed segment-tree layout:
-//!
-//! ```text
-//!     nodes[0]                 unused
-//!     nodes[1]                 root
-//!     nodes[i]                 internal,   parent  = i / 2
-//!     nodes[leaves .. 2*leaves] leaves,    left(i) = 2i, right(i) = 2i+1
-//! ```
-//!
-//! Lifecycle:
-//!
-//! - **Build once** (O(N) bottom-up build at checkpoint load
-//! - **Mutate only via delta promotion on finalization.**
-//!   `FinalisedHashTree::promote_delta` walks its delta and calls
-//!   `write_node(node, hash)` per dirty internal node, copying the delta's
-//!   precomputed hashes straight into the flat array — no SHA-256 work at the
-//!   base layer during promotion.
-//!
-//! Reads are O(1). The base never exposes a single-leaf `set` that
-//! recomputes the path upward — that operation belongs on the delta,
-//! where the cached hashes feed the next promotion.
+//! Finalized layer — 1-indexed flat segment tree of `B256` leaves
+//! (`nodes[1]` root, `left(i) = 2i`, `right(i) = 2i+1`). Built once at
+//! checkpoint load, then mutated only via `promote_delta` copying the
+//! delta's precomputed hashes. Reads are O(1); per-leaf `set` belongs on
+//! the delta layer.
 
 use crate::{
     beacon_state::types::B256,
     ssz_hash::{ZERO_HASHES, hash_concat},
 };
 
-/// Generic finalised segment tree of `B256` leaves.
+/// Generic finalized segment tree of `B256` leaves.
 ///
 /// Owns a heap-allocated `Box<[B256]>` of length `2 * max_elements`.
 /// `max_elements` is fixed at construction; the caller picks a
 /// power-of-two large enough to cover the worst-case populated count.
-pub struct FinalisedHashTree {
+pub struct FinalizedHashTree {
     /// 1-indexed flat tree. `nodes[0]` is unused. `nodes[1]` is the
     /// root of the physical tree. Leaves occupy
     /// `nodes[max_elements..2*max_elements]`. Length is exactly `2 *
@@ -42,7 +24,7 @@ pub struct FinalisedHashTree {
     max_elements: usize,
 }
 
-impl FinalisedHashTree {
+impl FinalizedHashTree {
     #[inline]
     pub const fn root() -> u32 {
         1
@@ -122,7 +104,7 @@ impl FinalisedHashTree {
     }
 
     /// Write `hash` into the flat-array node `node` *without* propagating
-    /// upward. Used by `FinalisedHashTree::promote_delta` to copy the
+    /// upward. Used by `FinalizedHashTree::promote_delta` to copy the
     /// delta's precomputed internal-node hashes straight into the base
     pub fn write_node(&mut self, node: u32, hash: B256) {
         self.debug_assert_node(node);

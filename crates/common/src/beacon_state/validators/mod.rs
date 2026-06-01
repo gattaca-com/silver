@@ -1,11 +1,11 @@
 mod delta;
-mod finalised;
+mod finalized;
 
 #[cfg(test)]
 mod tests;
 
 pub use delta::{AppendedValidator, ValidatorsDelta};
-pub use finalised::{FinalisedValidators, ValidatorsDecodeError};
+pub use finalized::{FinalizedValidators, ValSeed, ValidatorsDecodeError};
 
 use crate::{
     Withdrawals,

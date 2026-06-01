@@ -15,6 +15,20 @@ silver_common::declare_counters! {
         P2pBytesRecv,
         P2pBytesSent,
         P2pConnections,
+        // Connection-lifecycle diagnostics.
+        DialAttempts,
+        DialHandshakeOk,
+        // Outbound dial that died before the QUIC handshake completed
+        // (the "zombie": peer never responded).
+        DialTimeoutZombie,
+        InboundAccepted,
+        InboundHandshakeOk,
+        // Disconnect reason buckets (ConnectionError variants).
+        DisconnectTimedOut,
+        DisconnectReset,
+        DisconnectAppClosed,
+        DisconnectLocal,
+        DisconnectOther,
     }
 }
 

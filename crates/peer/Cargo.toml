@@ -8,6 +8,7 @@ version.workspace = true
 [dependencies]
 flux.workspace = true
 fxhash.workspace = true
+hex.workspace = true
 silver_common.workspace = true
 slab.workspace = true
 tracing.workspace = true

@@ -27,6 +27,13 @@ pub(crate) struct Peer {
     streams: FxHashMap<StreamId, Stream>,
     inbound_gossip: Option<StreamId>,
     outbound_gossip: Option<StreamId>,
+    /// When the connection object was created (dial initiated / inbound
+    /// accepted). Used to report connection age on disconnect.
+    created_at: Instant,
+    /// Set true once the QUIC+TLS handshake completes (`Event::Connected`).
+    /// A connection that dies with this still false is a "zombie" — the
+    /// peer never responded to our handshake.
+    handshake_completed: bool,
 }
 
 impl Peer {
@@ -42,6 +49,8 @@ impl Peer {
             streams: FxHashMap::with_capacity_and_hasher(16, BuildHasherDefault::default()),
             inbound_gossip: None,
             outbound_gossip: None,
+            created_at: Instant::now(),
+            handshake_completed: false,
         }
     }
 
@@ -170,7 +179,21 @@ impl Peer {
                 quinn_proto::Event::Connected => {
                     let peer_id = match id_from_connection(&self.connection) {
                         Some(id) if !banned_peers.contains(&id) => id,
-                        _ => {
+                        Some(id) => {
+                            tracing::info!(
+                                handle = ?self.handle,
+                                peer_id = ?id,
+                                addr = ?self.connection.remote_address(),
+                                "closing connection: peer banned"
+                            );
+                            self.connection.close(
+                                now,
+                                VarInt::from_u32(400),
+                                Bytes::from_static(b"banned"),
+                            );
+                            continue;
+                        }
+                        None => {
                             self.connection.close(
                                 now,
                                 VarInt::from_u32(400),
@@ -180,15 +203,39 @@ impl Peer {
                         }
                     };
                     self.id.peer_id = peer_id;
-                    tracing::debug!(handle = ?self.handle, "connected");
+                    self.handshake_completed = true;
+                    let local_dialler = self.connection.side() == Side::Client;
+                    if local_dialler {
+                        crate::NetworkCounters::DialHandshakeOk.inc();
+                    } else {
+                        crate::NetworkCounters::InboundHandshakeOk.inc();
+                    }
+                    tracing::info!(
+                        handle = ?self.handle,
+                        peer_id = ?peer_id,
+                        addr = ?self.connection.remote_address(),
+                        local_dialler,
+                        "connected"
+                    );
                     on_event(NetEvent::PeerConnected {
                         peer: self.id.clone(),
                         addr: self.connection.remote_address(),
-                        local_dialler: self.connection.side() == Side::Client,
+                        local_dialler,
                     });
                 }
                 quinn_proto::Event::ConnectionLost { reason } => {
-                    tracing::debug!(handle = ?self.handle, ?reason, "connection lost");
+                    let zombie = !self.handshake_completed;
+                    bump_disconnect_counter(&reason, zombie);
+                    tracing::info!(
+                        handle = ?self.handle,
+                        peer_id = ?self.id.peer_id,
+                        addr = ?self.connection.remote_address(),
+                        ?reason,
+                        age_ms = self.created_at.elapsed().as_millis(),
+                        handshake_completed = self.handshake_completed,
+                        zombie,
+                        "connection lost"
+                    );
                 }
                 quinn_proto::Event::Stream(stream_event) => {
                     self.handle_stream_event(stream_event, context, on_event);
@@ -318,6 +365,24 @@ impl Peer {
     }
 }
 
+/// Bucket a `ConnectionLost` reason into the `NetworkCounters` disconnect
+/// histogram, and separately count pre-handshake deaths ("zombies").
+fn bump_disconnect_counter(reason: &quinn_proto::ConnectionError, zombie: bool) {
+    use quinn_proto::ConnectionError::*;
+    match reason {
+        TimedOut => crate::NetworkCounters::DisconnectTimedOut.inc(),
+        Reset => crate::NetworkCounters::DisconnectReset.inc(),
+        ApplicationClosed(_) | ConnectionClosed(_) => {
+            crate::NetworkCounters::DisconnectAppClosed.inc()
+        }
+        LocallyClosed => crate::NetworkCounters::DisconnectLocal.inc(),
+        _ => crate::NetworkCounters::DisconnectOther.inc(),
+    }
+    if zombie {
+        crate::NetworkCounters::DialTimeoutZombie.inc();
+    }
+}
+
 fn id_from_connection(conn: &Connection) -> Option<PeerId> {
     let identity = conn.crypto_session().peer_identity();
     let Some(certs): Option<Box<Vec<rustls::pki_types::CertificateDer>>> =
@@ -371,6 +436,9 @@ impl Stream {
         E: FnMut(crate::NetEvent),
     {
         let state = self.state.take();
+        // Capture the phase before `spin` consumes `state`, so a stream
+        // error/teardown log can report which protocol phase it failed in.
+        let state_name = state.name();
         let mut io = StreamIoImpl { connection, outbound: &mut self.out_buffer };
 
         match state.spin(&mut io, &mut self.p2p_id, context, on_event) {
@@ -398,7 +466,13 @@ impl Stream {
                 result
             }
             Err(e) => {
-                tracing::error!(id=?self.p2p_id, ?e, "stream error");
+                tracing::error!(
+                    id = ?self.p2p_id,
+                    protocol = ?self.p2p_id.protocol(),
+                    state = state_name,
+                    ?e,
+                    "stream error"
+                );
                 let id = self.p2p_id.stream_id();
                 let _ = connection.send_stream(id).finish();
                 let _ = connection.recv_stream(id).stop(VarInt::from_u32(1));
@@ -422,7 +496,12 @@ impl Stream {
     {
         let _ = connection.send_stream(self.p2p_id.stream_id()).reset(VarInt::from_u32(0));
         if !self.state.get_mut().is_receive_only(self.p2p_id.protocol()) {
-            tracing::warn!(error_code=error_code.into_inner(), state=?self.state.get_mut(), "Stop send called in non-receive only state.");
+            tracing::warn!(
+                error_code = error_code.into_inner(),
+                protocol = ?self.p2p_id.protocol(),
+                state = self.state.get_mut().name(),
+                "Stop send called in non-receive only state."
+            );
             on_event(NetEvent::StreamClosed { stream: self.p2p_id });
             return SpinResult::End;
         }
