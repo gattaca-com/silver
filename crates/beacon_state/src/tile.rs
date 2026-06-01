@@ -462,7 +462,7 @@ impl BeaconStateTile {
         // `head_slot` excludes empty slots (spec): pin to the latest applied
         // block's slot, not the wall-advanced delta slot.
         let mut finalized = self.head_finalized_checkpoint();
-        
+
         if finalized.root == [0u8; 32] {
             // Genesis placeholder: the head state's finalized root is zero until
             // the first finalization, but peers (lighthouse/prysm) report the
