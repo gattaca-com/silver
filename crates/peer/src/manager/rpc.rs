@@ -591,55 +591,26 @@ impl PeerManager {
         });
     }
 
-    /// Drain pending BlocksByRange requests onto any peer that's freshly
-    /// available (new connection, in-flight slot freed). Loop walks until
-    /// either the cache is empty or no eligible peer remains —
-    /// `best_peer_for` orders by cached score and respects the per-peer
-    /// cap.
+    /// Drain pending BlocksByRange and DataColumnsByRange requests onto any
+    /// peer that's freshly available (new connection, in-flight slot
+    /// freed).
     pub fn drain_pending_outbound(&mut self, emit: &mut impl FnMut(PeerControl)) {
-        // For each pending DataColumnsByRoot entry, fan out across as
-        // many peers as needed to cover the remaining columns. If a
-        // front entry can't make any forward progress (no peer overlaps
-        // the remaining bits), stop draining — later peer events will
-        // re-enter this loop. Newly-uncovered remainders are written
-        // back in-place; fully-covered entries are popped.
-        while let Some(&(request_id, remaining_at_entry, block_root)) =
-            self.pending_data_columns_by_root.front()
-        {
-            let mut remaining = remaining_at_entry;
-            let mut progressed = false;
-            while remaining != 0 {
-                let Some((peer, overlap)) = self.best_peer_for_data_columns(
-                    StreamProtocol::DataColumnSidecarsByRoot,
-                    remaining,
-                ) else {
-                    break;
-                };
-                if let Some(p_state) = self.peers.get_mut(&peer) {
-                    p_state.outbound_in_flight
-                        [StreamProtocol::DataColumnSidecarsByRoot.ordinal() as usize] += 1;
-                }
-                emit(PeerControl::P2pDataColumnsRequest {
-                    app_id: request_id,
-                    peer,
-                    block_root,
-                    columns: overlap,
-                });
-                remaining &= !overlap;
-                progressed = true;
+        let len = self.pending_data_columns_by_root.len();
+        for _ in 0..len {
+            if let Some((request_id, columns, block_root)) =
+                self.pending_data_columns_by_root.pop_front()
+            {
+                self.on_request_data_columns_by_root(request_id, columns, block_root, emit);
             }
-            if remaining == 0 {
-                self.pending_data_columns_by_root.pop_front();
-            } else {
-                if progressed {
-                    // Update the front entry in place with the
-                    // narrowed remainder so the next drain pass picks
-                    // up from the right spot.
-                    self.pending_data_columns_by_root.front_mut().unwrap().1 = remaining;
-                }
-                // No further progress possible against the front this
-                // pass — bail and let the next event re-enter.
-                break;
+        }
+
+        // Drain pending blocks by root
+        let len = self.pending_block_by_root.len();
+        for _ in 0..len {
+            if let Some((request_id, p2p_peer, block_root)) = self.pending_block_by_root.pop_front()
+            {
+                // requests that still cannot be sent will be re-added.
+                self.on_request_blocks_by_root(request_id, p2p_peer, block_root, emit);
             }
         }
     }
@@ -685,6 +656,48 @@ impl PeerManager {
                 pending = self.pending_data_columns_by_root.len(),
                 "partial DataColumnsByRoot coverage; cached remainder + discovery kicked"
             );
+        }
+    }
+
+    /// Dispatch a BlocksByRoot request to either the specified peer or the
+    /// highest-scoring connected peer that advertises the protocol AND has
+    /// spare in-flight capacity.
+    /// If no peer qualifies, cache the request and kick discovery — the
+    /// retry pass in `drain_pending_outbound` drains the cache as soon
+    /// as an eligible peer becomes available.
+    pub fn on_request_blocks_by_root(
+        &mut self,
+        request_id: u64,
+        p2p_peer: Option<usize>,
+        block_root: [u8; 32],
+        emit: &mut impl FnMut(PeerControl),
+    ) {
+        let has_capacity = |i: usize| {
+            self.peers
+                .get(&i)
+                .map(|p| {
+                    p.outbound_in_flight[StreamProtocol::BeaconBlocksByRoot.ordinal() as usize] < 2
+                })
+                .unwrap_or_default()
+        };
+
+        let peer = match p2p_peer {
+            Some(p) if has_capacity(p) => Some(p),
+            _ => self.best_peer_for(StreamProtocol::BeaconBlocksByRoot, has_capacity),
+        };
+
+        match peer {
+            Some(peer) => {
+                if let Some(p_state) = self.peers.get_mut(&peer) {
+                    p_state.outbound_in_flight
+                        [StreamProtocol::BeaconBlocksByRoot.ordinal() as usize] += 1;
+                }
+                emit(PeerControl::P2pBlockByRootRequest { app_id: request_id, peer, block_root });
+            }
+            None => {
+                self.pending_block_by_root.push_back((request_id, peer, block_root));
+                emit(PeerControl::DiscoverNodes);
+            }
         }
     }
 

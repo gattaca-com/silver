@@ -174,6 +174,7 @@ pub struct PeerManager {
     head_counts: FxHashMap<[u8; 32], HeadAgg>,
 
     pub(crate) pending_data_columns_by_root: VecDeque<(u64, u128, [u8; 32])>,
+    pub(crate) pending_block_by_root: VecDeque<(u64, Option<usize>, [u8; 32])>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -260,6 +261,7 @@ impl PeerManager {
             head_counts: FxHashMap::with_capacity_and_hasher(SYNC_AGG_CAP, Default::default()),
             // TODO: prealloc?
             pending_data_columns_by_root: VecDeque::new(),
+            pending_block_by_root: VecDeque::new(),
         }
     }
 
@@ -740,6 +742,9 @@ impl PeerManager {
             }
             PeerEvent::SendDataColumnsByRootRequest { request_id, columns, block_root } => {
                 self.on_request_data_columns_by_root(request_id, columns, block_root, emit);
+            }
+            PeerEvent::SendBlocksByRootRequest { request_id, p2p_peer, block_root } => {
+                self.on_request_blocks_by_root(request_id, p2p_peer, block_root, emit);
             }
         }
     }
