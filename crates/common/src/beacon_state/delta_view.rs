@@ -1158,6 +1158,17 @@ impl<'a> StateDeltaView<'a> {
         );
     }
 
+    /// Bulk-apply a sorted, distinct `(idx, flags)` batch to the current-epoch
+    /// participation in one O(|edits| + |batch|) merge. See [`sparse_merge_into`].
+    pub fn merge_current_participation(&mut self, sorted: &[(u32, u8)]) {
+        sparse_merge_into(&mut self.delta.current_participation.edits, sorted);
+    }
+
+    /// Previous-epoch counterpart of [`Self::merge_current_participation`].
+    pub fn merge_previous_participation(&mut self, sorted: &[(u32, u8)]) {
+        sparse_merge_into(&mut self.delta.previous_participation.edits, sorted);
+    }
+
     #[inline]
     pub fn set_inactivity_score(&mut self, idx: u32, v: u64) {
         let base_count = self.delta.validators.base_count;
@@ -1385,6 +1396,63 @@ where
             }
         }
     }
+}
+
+/// Merge `sorted_batch` (ascending, distinct `idx`) into the sorted `edits`
+/// vec in O(|edits| + |batch|), batch value winning on a shared `idx`.
+///
+/// Per-element `sparse_set` is O(|edits|) each (binary-search insert shifts the
+/// tail), so applying a committee's worth of edits one at a time is quadratic
+/// over an epoch's accumulated participation edits. Unlike `sparse_set` this
+/// keeps base-equal entries — the read sweep and `prune_to_base` both tolerate
+/// redundant edits, which lets the merge run in place from the back with no
+/// auxiliary buffer.
+#[inline]
+fn sparse_merge_into<T: Copy>(edits: &mut Vec<(u32, T)>, sorted_batch: &[(u32, T)]) {
+    if sorted_batch.is_empty() {
+        return;
+    }
+    debug_assert!(
+        sorted_batch.windows(2).all(|w| w[0].0 < w[1].0),
+        "batch must be ascending with distinct indices",
+    );
+
+    let old_len = edits.len();
+    let mut collisions = 0usize;
+    let (mut i, mut j) = (0usize, 0usize);
+    while i < old_len && j < sorted_batch.len() {
+        let (e, b) = (edits[i].0, sorted_batch[j].0);
+        if e < b {
+            i += 1;
+        } else if e > b {
+            j += 1;
+        } else {
+            collisions += 1;
+            i += 1;
+            j += 1;
+        }
+    }
+
+    let new_len = old_len + sorted_batch.len() - collisions;
+    edits.resize(new_len, sorted_batch[0]);
+
+    // Merge back-to-front: the write cursor `w` never trails the old-read
+    // cursor `o` (new_len ≥ old_len), so old entries are read before overwrite.
+    let (mut o, mut b, mut w) = (old_len, sorted_batch.len(), new_len);
+    while b > 0 {
+        if o > 0 && edits[o - 1].0 > sorted_batch[b - 1].0 {
+            edits[w - 1] = edits[o - 1];
+            o -= 1;
+        } else {
+            if o > 0 && edits[o - 1].0 == sorted_batch[b - 1].0 {
+                o -= 1;
+            }
+            edits[w - 1] = sorted_batch[b - 1];
+            b -= 1;
+        }
+        w -= 1;
+    }
+    debug_assert_eq!(w, o);
 }
 
 /// Bulk overwrite — single forward sweep that rebuilds a sparse edit vec

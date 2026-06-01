@@ -188,6 +188,7 @@ const MERKLE_INLINE_CHUNKS: usize = 32;
 
 /// Merkleize a slice of 32-byte chunks, padding to the next power of two.
 #[timed]
+#[inline]
 pub fn merkleize(chunks: &[B256]) -> B256 {
     let leaf_count = chunks.len().next_power_of_two().max(1);
     if leaf_count <= MERKLE_INLINE_CHUNKS {
@@ -200,7 +201,8 @@ pub fn merkleize(chunks: &[B256]) -> B256 {
 /// Merkleize `chunks` into a `leaf_count`-leaf tree, zero-padding missing
 /// leaves and reducing a layer at a time with batched hashing. Ping-pongs `a`
 /// and `b` so each `hash_concat_many` has disjoint in/out.
-fn merkleize_inline(chunks: &[B256], leaf_count: usize) -> B256 {
+#[inline]
+pub fn merkleize_inline(chunks: &[B256], leaf_count: usize) -> B256 {
     debug_assert!(leaf_count.is_power_of_two() && leaf_count <= MERKLE_INLINE_CHUNKS);
     debug_assert!(chunks.len() <= leaf_count);
     let mut a = [ZERO_HASH; MERKLE_INLINE_CHUNKS];

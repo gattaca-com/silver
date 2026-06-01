@@ -1059,6 +1059,11 @@ fn apply_attestation_participation_flags(
 
     const PARTICIPATION_WEIGHTS: [u64; 3] = [14, 26, 14];
     let mut proposer_reward_numerator = 0u64;
+    // Collect changed flags, then apply them in one sorted merge. A committee's
+    // participants are distinct validator indices, so the batch is dup-free; a
+    // per-validator `set_*_participation` would be O(|edits|) each (quadratic
+    // over an epoch's accumulated participation edits).
+    let mut updates: Vec<(u32, u8)> = Vec::with_capacity(active_scratch.len());
     for &vi in active_scratch {
         let prev_p = if is_current {
             view.current_epoch_participation(vi as usize)
@@ -1076,12 +1081,14 @@ fn apply_attestation_participation_flags(
             }
         }
         if p != prev_p {
-            if is_current {
-                view.set_current_participation(vi, p);
-            } else {
-                view.set_previous_participation(vi, p);
-            }
+            updates.push((vi, p));
         }
+    }
+    updates.sort_unstable_by_key(|(idx, _)| *idx);
+    if is_current {
+        view.merge_current_participation(&updates);
+    } else {
+        view.merge_previous_participation(&updates);
     }
     proposer_reward_numerator
 }
