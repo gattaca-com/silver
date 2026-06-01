@@ -113,7 +113,6 @@ pub type MerkleStack = ArrayVec<(u8, B256), ZERO_HASHES_LEN>;
 
 /// Absorb a leaf, combining upward with any left-sibling already parked at
 /// the same height.
-#[timed]
 pub fn merkle_push(stack: &mut MerkleStack, leaf: B256) {
     let mut cur = leaf;
     let mut h: u8 = 0;
@@ -130,7 +129,6 @@ pub fn merkle_push(stack: &mut MerkleStack, leaf: B256) {
 
 /// Walk the parked stack up to `target_depth`, padding with zero subtrees
 /// where no right-sibling is available.
-#[timed]
 pub fn merkle_finalize(mut stack: MerkleStack, target_depth: u8) -> B256 {
     if stack.is_empty() {
         return ZERO_HASHES[target_depth as usize];
@@ -169,7 +167,6 @@ const fn const_hash_concat(a: &B256, b: &B256) -> B256 {
 
 /// Push raw bytes packed as 32-byte chunks (tail zero-padded). The aligned
 /// prefix is cast as `&[B256]` (B256 has alignment 1, safe for any byte ptr).
-#[timed]
 pub fn push_bytes_as_chunks(data: &[u8], stack: &mut MerkleStack) {
     let aligned = data.len() & !31;
     let chunks: &[B256] =
