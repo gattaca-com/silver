@@ -661,6 +661,21 @@ impl BeaconStateTile {
         if let Some(&min_longtail) = longtail_idxs.as_slice().iter().min() {
             self.state.longtails().free(min_longtail);
         }
+
+        let fin_slot = self.fork_choice.finalized_checkpoint.epoch * SLOTS_PER_EPOCH;
+        self.clear_pending_blocks(fin_slot);
+    }
+
+    fn clear_pending_blocks(&mut self, finalized_slot: u64) {
+        self.pending_blocks.retain(|_, msgs| {
+            msgs.iter().all(|msg| {
+                let acquired = self.gossip_consumer.acquire(msg.ssz);
+                if let Ok((buffer, _)) = acquired.buffer() {
+                    return SignedBeaconBlockView::slot(buffer) > finalized_slot;
+                }
+                false
+            })
+        });
     }
 
     fn promote_and_rebase(
