@@ -98,6 +98,23 @@ impl Tile<SilverSpine> for Controller {
                             }
                         };
                     }
+                    PeerControl::P2pBlockByRootRequest { app_id, peer, block_root } => {
+                        match allocate_blocks_by_root(&mut self.rpc_producer, &block_root) {
+                            Ok(read) => {
+                                producers.p2p_send.produce(
+                                    &P2pSend::Rpc(RpcOutbound::Request(RpcRequestOutbound {
+                                        application_id: app_id,
+                                        peer,
+                                        request: silver_common::RpcRequest::BlockByRoot(read),
+                                    }))
+                                    .into(),
+                                );
+                            }
+                            Err(e) => {
+                                tracing::error!(?e, "failed to allocate blocks by root request");
+                            }
+                        }
+                    }
                     other => {
                         producers.peer_control.produce(&other.into());
                     }
@@ -212,6 +229,19 @@ fn allocate_data_columns_by_root(
             reservation.write_all(&(i as u64).to_le_bytes())?;
         }
     }
+    reservation.flush()?;
+    Ok(reservation.read())
+}
+
+fn allocate_blocks_by_root(
+    producer: &mut TProducer,
+    root: &[u8; 32],
+) -> Result<TCacheRead, io::Error> {
+    let Some(mut reservation) = producer.reserve(32, true) else {
+        tracing::warn!("Failed to allocate TCache buffer for blocks request");
+        return Err(ErrorKind::StorageFull.into());
+    };
+    reservation.write_all(root)?;
     reservation.flush()?;
     Ok(reservation.read())
 }

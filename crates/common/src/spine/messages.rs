@@ -315,10 +315,19 @@ pub enum PeerEvent {
         identify: Identify,
     },
     /// Request to send data column RPC request
-    /// Sent by the data columns tile.
+    /// Sent by the storage tile.
     SendDataColumnsByRootRequest {
         request_id: u64,
         columns: u128,
+        block_root: [u8; 32],
+    },
+    /// Request to send block RPC request
+    /// Sent by the beacon state tile.
+    SendBlocksByRootRequest {
+        request_id: u64,
+        /// Set if there is a peer that is more likely to have the block - i.e.
+        /// they attested to the child block.
+        p2p_peer: Option<usize>,
         block_root: [u8; 32],
     },
 }
@@ -468,6 +477,12 @@ pub enum PeerControl {
         peer: usize,
         block_root: [u8; 32],
         columns: u128,
+    },
+    /// Generate a blocks by root request.
+    P2pBlockByRootRequest {
+        app_id: u64,
+        peer: usize,
+        block_root: [u8; 32],
     },
     P2pDisconnect {
         p2p: PeerId,
