@@ -197,9 +197,9 @@ pub fn merkleize(chunks: &[B256]) -> B256 {
     }
 }
 
-/// Merkleize `chunks` into a `leaf_count`-leaf tree, zero-padding missing leaves
-/// and reducing a layer at a time with batched hashing. Ping-pongs `a` and `b`
-/// so each `hash_concat_many` has disjoint in/out.
+/// Merkleize `chunks` into a `leaf_count`-leaf tree, zero-padding missing
+/// leaves and reducing a layer at a time with batched hashing. Ping-pongs `a`
+/// and `b` so each `hash_concat_many` has disjoint in/out.
 fn merkleize_inline(chunks: &[B256], leaf_count: usize) -> B256 {
     debug_assert!(leaf_count.is_power_of_two() && leaf_count <= MERKLE_INLINE_CHUNKS);
     debug_assert!(chunks.len() <= leaf_count);
