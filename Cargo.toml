@@ -1,16 +1,21 @@
 [workspace]
 members = [
-  "crates/beacon_state",
+  "crates/beacon_state/data",
+  "crates/beacon_state/tile",
   "crates/bin",
   "crates/common",
+  "crates/config",
+  "crates/config/chain_spec",
   "crates/common_macros",
   "crates/control",
   "crates/storage",
   "crates/discovery",
   "crates/e2e",
   "crates/gossip",
+  "crates/metrics",
   "crates/network",
   "crates/peer",
+  "crates/ssz",
   "crates/surfer",
 ]
 resolver = "2"
@@ -54,8 +59,13 @@ inherits = "dev"
 opt-level = 3
 
 [workspace.dependencies]
-silver_beacon_state = { path = "crates/beacon_state" }
+silver_beacon_state = { path = "crates/beacon_state/tile" }
+silver_beacon_state_data = { path = "crates/beacon_state/data" }
+silver_chain_spec = { path = "crates/config/chain_spec" }
 silver_common = { path = "crates/common" }
+silver_config = { path = "crates/config" }
+silver_metrics = { path = "crates/metrics" }
+silver_ssz = { path = "crates/ssz" }
 silver_control = { path = "crates/control" }
 silver_discovery = {path = "crates/discovery" }
 silver_gossip = {path = "crates/gossip" }

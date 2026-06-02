@@ -1,0 +1,31 @@
+[package]
+name = "silver_beacon_state_data"
+edition.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+silver_chain_spec.workspace = true
+silver_common_macros.workspace = true
+silver_metrics.workspace = true
+silver_ssz.workspace = true
+flux.workspace = true
+blst.workspace = true
+rustc-hash.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+hex.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+rand.workspace = true
+snap.workspace = true
+
+[[bench]]
+harness = false
+name = "hash_tree_build"
+
+[lints]
+workspace = true

@@ -1,8 +1,8 @@
-//! Proc-macro support for `silver_common`. Currently exposes
+//! Proc-macro support for the silver crates. Currently exposes
 //! `#[timed]`, which wraps a function body in a thread-local flux
 //! `Timer` so processing time is emitted to a per-function shmem
 //! queue. Storage and Drop-side recording live in
-//! `silver_common::metrics`; this crate is only the attribute-macro
+//! `silver_metrics`; this crate is only the attribute-macro
 //! glue.
 
 use proc_macro::TokenStream;
@@ -43,7 +43,7 @@ pub fn timed(attr: TokenStream, item: TokenStream) -> TokenStream {
                     ::core::option::Option<::flux::Timer>
                 > = ::core::cell::RefCell::new(::core::option::Option::None);
             }
-            let __timed_guard = ::silver_common::metrics::TimerGuard::new(
+            let __timed_guard = ::silver_metrics::TimerGuard::new(
                 &__TIMED_TIMER,
                 #timer_name_expr,
             );

@@ -7,7 +7,7 @@
 
 use std::time::Instant;
 
-use silver_common::ScoreParams;
+use silver_config::ScoreParams;
 
 use crate::state::PeerState;
 

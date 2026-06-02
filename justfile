@@ -19,7 +19,7 @@ machete:
   cargo machete
 
 ef-tests-download:
-  make -C crates/beacon_state
+  make -C crates/beacon_state/tile
 
 # Fetches the mainnet finalized state + the next N canonical blocks used
 # by `checkpoint_load` and `sync_pm_bs`. Idempotent — already-cached

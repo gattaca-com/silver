@@ -10,6 +10,7 @@ blst.workspace = true
 c-kzg.workspace = true
 flux.workspace = true
 fxhash.workspace = true
+silver_beacon_state_data.workspace = true
 silver_common.workspace = true
 
 [lints]

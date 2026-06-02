@@ -4149,7 +4149,9 @@ dependencies = [
  "quinn-proto",
  "rand 0.8.6",
  "silver_beacon_state",
+ "silver_beacon_state_data",
  "silver_common",
+ "silver_config",
  "silver_control",
  "silver_discovery",
  "silver_gossip",
@@ -4171,10 +4173,41 @@ dependencies = [
  "rustc-hash",
  "serde",
  "serde_yml",
+ "silver_beacon_state_data",
  "silver_common",
+ "silver_metrics",
+ "silver_ssz",
  "snap 0.1.2",
  "thiserror 1.0.69",
  "tracing",
+]
+
+[[package]]
+name = "silver_beacon_state_data"
+version = "0.0.1"
+dependencies = [
+ "blst",
+ "criterion",
+ "flux",
+ "hex",
+ "rand 0.8.6",
+ "rustc-hash",
+ "serde",
+ "silver_chain_spec",
+ "silver_common_macros",
+ "silver_metrics",
+ "silver_ssz",
+ "snap 1.1.1",
+ "thiserror 1.0.69",
+ "tracing",
+]
+
+[[package]]
+name = "silver_chain_spec"
+version = "0.0.1"
+dependencies = [
+ "hex",
+ "serde",
 ]
 
 [[package]]
@@ -4191,7 +4224,6 @@ dependencies = [
  "flux",
  "flux-utils",
  "fxhash",
- "hashtree-rs",
  "hex",
  "libc",
  "quinn-proto",
@@ -4203,10 +4235,11 @@ dependencies = [
  "secp256k1",
  "serde",
  "serde_json",
- "sha2",
- "sha2-const-stable",
  "sha3",
+ "silver_chain_spec",
  "silver_common_macros",
+ "silver_metrics",
+ "silver_ssz",
  "snap 1.1.1",
  "thiserror 1.0.69",
  "toml",
@@ -4220,6 +4253,18 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "silver_config"
+version = "0.0.1"
+dependencies = [
+ "hex",
+ "secp256k1",
+ "serde",
+ "silver_chain_spec",
+ "silver_common",
+ "toml",
 ]
 
 [[package]]
@@ -4249,6 +4294,7 @@ dependencies = [
  "secp256k1",
  "sha2",
  "silver_common",
+ "silver_config",
  "thiserror 1.0.69",
  "tracing",
  "uint",
@@ -4271,10 +4317,13 @@ dependencies = [
  "serde",
  "serde_json",
  "silver_beacon_state",
+ "silver_beacon_state_data",
  "silver_common",
+ "silver_config",
  "silver_control",
  "silver_discovery",
  "silver_gossip",
+ "silver_metrics",
  "silver_network",
  "silver_peer",
  "snap 1.1.1",
@@ -4305,6 +4354,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "silver_metrics"
+version = "0.0.1"
+dependencies = [
+ "flux",
+ "libc",
+ "serde",
+ "serde_json",
+ "silver_common_macros",
+]
+
+[[package]]
 name = "silver_network"
 version = "0.0.1"
 dependencies = [
@@ -4328,6 +4388,7 @@ dependencies = [
  "secp256k1",
  "silver_common",
  "silver_discovery",
+ "silver_metrics",
  "snap 1.1.1",
  "thiserror 1.0.69",
  "tracing",
@@ -4344,8 +4405,21 @@ dependencies = [
  "fxhash",
  "hex",
  "silver_common",
+ "silver_config",
  "slab",
  "tracing",
+]
+
+[[package]]
+name = "silver_ssz"
+version = "0.0.1"
+dependencies = [
+ "flux",
+ "hashtree-rs",
+ "sha2",
+ "sha2-const-stable",
+ "silver_common_macros",
+ "silver_metrics",
 ]
 
 [[package]]
@@ -4357,6 +4431,7 @@ dependencies = [
  "flux",
  "fxhash",
  "rand 0.8.6",
+ "silver_beacon_state_data",
  "silver_common",
 ]
 
@@ -4370,6 +4445,7 @@ dependencies = [
  "libc",
  "ratatui",
  "silver_common",
+ "silver_metrics",
  "silver_network",
  "silver_peer",
  "silver_storage",
