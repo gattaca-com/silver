@@ -553,9 +553,16 @@ impl BeaconStateTile {
         // resolved lock-free by readers and must not be mutated in place.
         // `process_slots` runs the per-slot loop and any epoch transitions
         // crossed, recording the epoch-ring seq on the delta's `epoch_idx`.
-        let new_seq = match self.state.slots().roll(Some(self.last_applied)) {
-            RollResult::Reset(s) | RollResult::Rolled(s) => s,
-        };
+        //
+        // `cow_state_for_block` gives the child private epoch/longtail deltas
+        // when the advance crosses an epoch boundary. Mandatory: `process_epoch`
+        // shifts `proposer_lookahead` in place, and `self.last_applied` is a
+        // live fork-choice node that sibling blocks build on and the proposer
+        // precheck reads. Mutating its shared epoch delta would leave that node
+        // with a next-epoch `proposer_lookahead` shifted one epoch too far.
+        let curr_epoch = curr_slot / SLOTS_PER_EPOCH;
+        let target_epoch = target_slot / SLOTS_PER_EPOCH;
+        let new_seq = self.cow_state_for_block(self.last_applied, target_epoch, curr_epoch);
         {
             let mut view = self.state.delta_view(new_seq);
             state_transition::process_slots(
@@ -1083,10 +1090,11 @@ impl BeaconStateTile {
     }
 
     /// Roll an unpublished child slot delta off `parent_seq`. `reset_from`
-    /// copies the parent's `epoch_idx`/`longtail_idx`, so when the block
+    /// copies the parent's `epoch_idx`/`longtail_idx`, so when the child
     /// crosses an epoch boundary (where `process_epoch` writes those tiers)
-    /// the child is given private copies — otherwise it would corrupt sibling
-    /// forks sharing the parent's ring entries.
+    /// it is given private copies — otherwise it would corrupt sibling forks
+    /// sharing the parent's ring entries. Used both for block application and
+    /// for empty-slot head advance (`on_slot_start`).
     fn cow_state_for_block(
         &mut self,
         parent_seq: usize,
@@ -1962,6 +1970,40 @@ mod tests {
         seed_tile(&mut tile, 4, 30);
         tile.on_slot_start(66);
         assert_eq!(tile.head_state_slot(), 66);
+    }
+
+    /// Regression: advancing the head over an empty epoch-boundary slot must
+    /// COW the epoch tier, not shift the parent's shared `proposer_lookahead`
+    /// in place. The parent stays a live fork-choice node the proposer
+    /// precheck reads; an in-place shift left its next-epoch slice one epoch
+    /// too far, rejecting valid boundary blocks.
+    #[test]
+    fn empty_slot_advance_preserves_parent_lookahead() {
+        let mut tile = make_tile();
+        seed_tile(&mut tile, 4, 31); // anchor at epoch-0's last slot
+
+        // Give the anchor its own epoch delta with a recognizable lookahead.
+        let anchor = tile.last_applied;
+        {
+            let mut view = tile.state.delta_view(anchor);
+            view.ensure_epoch_delta();
+            let es = view.epoch_state_mut();
+            for i in 0..PROPOSER_LOOKAHEAD_SIZE {
+                es.proposer_lookahead[i] = i as u64;
+            }
+        }
+        let anchor_epoch_idx = tile.state.state().slots.get(anchor).epoch_idx.unwrap();
+        let before = tile.state.state().epochs.get(anchor_epoch_idx).state.proposer_lookahead;
+
+        // Advance across the epoch 0 -> 1 boundary on empty slots.
+        tile.on_slot_start(32);
+        assert_eq!(tile.head_state_slot(), 32);
+
+        // Head forked onto a private epoch delta; the anchor's is untouched.
+        let head_epoch_idx = tile.state.state().slots.get(tile.last_applied).epoch_idx.unwrap();
+        assert_ne!(head_epoch_idx, anchor_epoch_idx, "head must COW its epoch delta");
+        let after = tile.state.state().epochs.get(anchor_epoch_idx).state.proposer_lookahead;
+        assert_eq!(before, after, "parent proposer_lookahead shifted in place");
     }
 
     #[test]

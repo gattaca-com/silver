@@ -7,7 +7,7 @@ use crate::{Enr, config::SpecConfig};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ChainConfig {
-    #[serde(default = "default_u64::<1438269973>")]
+    #[serde(default = "default_u64::<1606824023>")]
     pub genesis_unix_secs: u64,
     #[serde(default = "default_u64::<4000>")]
     pub prepare_payload_lookahead_millis: u64,
@@ -22,7 +22,7 @@ pub struct ChainConfig {
 impl Default for ChainConfig {
     fn default() -> Self {
         Self {
-            genesis_unix_secs: 1438269973,
+            genesis_unix_secs: 1606824023,
             prepare_payload_lookahead_millis: 4000,
             checkpoint_file: None,
             bootstrap_enrs: vec![],
