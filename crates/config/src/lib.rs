@@ -31,7 +31,12 @@ const fn default_u64<const V: u64>() -> u64 {
 }
 
 fn default_data_dir() -> String {
-    String::from("/home/vlad/.local/silver")
+    std::env::home_dir()
+        .and_then(|mut b| {
+            b = b.join(".local").join("silver");
+            b.to_str().map(|s| s.to_owned())
+        })
+        .unwrap_or("/tmp/silver".into())
 }
 
 fn default_supported_protocols() -> Vec<String> {
@@ -295,6 +300,11 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_dir() {
+        println!("{}", default_data_dir());
+    }
 
     #[test]
     fn minimal_toml_populates_defaults() {
