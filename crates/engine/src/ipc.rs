@@ -20,7 +20,7 @@ enum State {
     Connected,
 }
 
-pub(crate) struct IpcTransport {
+struct IpcTransport {
     path: PathBuf,
     token: Token,
     stream: Option<UnixStream>,
@@ -48,11 +48,11 @@ impl IpcTransport {
     }
 }
 
-pub(crate) fn ipc_is_free(t: &IpcTransport) -> bool {
+fn ipc_is_free(t: &IpcTransport) -> bool {
     t.in_flight.is_none() && t.send_queue.is_empty()
 }
 
-pub(crate) fn ipc_enqueue(t: &mut IpcTransport, rpc_id: u64, body: &[u8], poll: &mut Poll) {
+fn ipc_enqueue(t: &mut IpcTransport, rpc_id: u64, body: &[u8], poll: &mut Poll) {
     let mut bytes = body.to_vec();
     bytes.push(b'\n');
     t.send_queue.push_back((rpc_id, bytes));
@@ -64,12 +64,8 @@ pub(crate) fn ipc_enqueue(t: &mut IpcTransport, rpc_id: u64, body: &[u8], poll: 
     }
 }
 
-pub(crate) fn ipc_poll<F>(
-    t: &mut IpcTransport,
-    events: &Events,
-    poll: &mut Poll,
-    on_complete: &mut F,
-) where
+fn ipc_poll<F>(t: &mut IpcTransport, events: &Events, poll: &mut Poll, on_complete: &mut F)
+where
     F: FnMut(u64, Result<Vec<u8>, EngineError>),
 {
     for event in events.iter() {

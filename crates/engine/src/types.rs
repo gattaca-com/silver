@@ -329,63 +329,6 @@ impl ExecutionPayload {
             excess_blob_gas: u64_at(520),
         })
     }
-
-    pub fn to_ssz(&self) -> Vec<u8> {
-        let tx_ssz = encode_transactions(&self.transactions);
-        let w_ssz = encode_withdrawals(&self.withdrawals);
-
-        let extra_data_off = PAYLOAD_FIXED_LEN as u32;
-        let transactions_off = extra_data_off + self.extra_data.len() as u32;
-        let withdrawals_off = transactions_off + tx_ssz.len() as u32;
-
-        let mut buf = Vec::with_capacity(
-            PAYLOAD_FIXED_LEN + self.extra_data.len() + tx_ssz.len() + w_ssz.len(),
-        );
-
-        buf.extend_from_slice(&self.parent_hash);
-        buf.extend_from_slice(&self.fee_recipient);
-        buf.extend_from_slice(&self.state_root);
-        buf.extend_from_slice(&self.receipts_root);
-        buf.extend_from_slice(&self.logs_bloom);
-        buf.extend_from_slice(&self.prev_randao);
-        buf.extend_from_slice(&self.block_number.to_le_bytes());
-        buf.extend_from_slice(&self.gas_limit.to_le_bytes());
-        buf.extend_from_slice(&self.gas_used.to_le_bytes());
-        buf.extend_from_slice(&self.timestamp.to_le_bytes());
-        buf.extend_from_slice(&extra_data_off.to_le_bytes());
-        buf.extend_from_slice(&self.base_fee_per_gas);
-        buf.extend_from_slice(&self.block_hash);
-        buf.extend_from_slice(&transactions_off.to_le_bytes());
-        buf.extend_from_slice(&withdrawals_off.to_le_bytes());
-        buf.extend_from_slice(&self.blob_gas_used.to_le_bytes());
-        buf.extend_from_slice(&self.excess_blob_gas.to_le_bytes());
-
-        buf.extend_from_slice(&self.extra_data);
-        buf.extend_from_slice(&tx_ssz);
-        buf.extend_from_slice(&w_ssz);
-        buf
-    }
-}
-
-/// Encodes transactions as SSZ `List<ByteList>`.  The first `n * 4` bytes are
-/// u32 LE offsets, each the absolute byte position of that transaction within
-/// this buffer.  Transaction bytes follow immediately after the offset header.
-/// The count is recoverable on decode as `first_offset / 4`.
-fn encode_transactions(txs: &[Vec<u8>]) -> Vec<u8> {
-    if txs.is_empty() {
-        return vec![];
-    }
-    let header_bytes = txs.len() * 4;
-    let mut offset = header_bytes as u32;
-    let mut buf = Vec::with_capacity(header_bytes + txs.iter().map(|t| t.len()).sum::<usize>());
-    for tx in txs {
-        buf.extend_from_slice(&offset.to_le_bytes());
-        offset += tx.len() as u32;
-    }
-    for tx in txs {
-        buf.extend_from_slice(tx);
-    }
-    buf
 }
 
 fn decode_transactions(data: &[u8]) -> Result<Vec<Vec<u8>>, crate::EngineError> {
@@ -417,19 +360,6 @@ fn decode_transactions(data: &[u8]) -> Result<Vec<Vec<u8>>, crate::EngineError> 
             Ok(data[start..end].to_vec())
         })
         .collect()
-}
-
-/// Each `Withdrawal` is 44 bytes: index u64, validator_index u64, address
-/// [u8;20], amount u64.
-fn encode_withdrawals(ws: &[Withdrawal]) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(ws.len() * 44);
-    for w in ws {
-        buf.extend_from_slice(&w.index.to_le_bytes());
-        buf.extend_from_slice(&w.validator_index.to_le_bytes());
-        buf.extend_from_slice(&w.address);
-        buf.extend_from_slice(&w.amount.to_le_bytes());
-    }
-    buf
 }
 
 fn decode_withdrawals(data: &[u8]) -> Result<Vec<Withdrawal>, crate::EngineError> {
@@ -903,11 +833,6 @@ mod tests {
     }
 
     #[test]
-    fn ssz_encode_sample_payload() {
-        assert_eq!(sample_payload().to_ssz(), SAMPLE_PAYLOAD_SSZ);
-    }
-
-    #[test]
     fn ssz_decode_sample_payload() {
         assert_eq!(ExecutionPayload::from_ssz(SAMPLE_PAYLOAD_SSZ).unwrap(), sample_payload());
     }
@@ -966,24 +891,25 @@ mod tests {
     // Transactions SSZ helpers
     // -----------------------------------------------------------------------
 
+    const TX_SINGLE: &[u8] = include_bytes!("../testdata/tx_single.bin");
+    const TX_MULTI: &[u8] = include_bytes!("../testdata/tx_multi.bin");
+    const WITHDRAWALS: &[u8] = include_bytes!("../testdata/withdrawals.bin");
+
     #[test]
-    fn transactions_empty_round_trip() {
-        let encoded = encode_transactions(&[]);
-        assert!(encoded.is_empty());
-        let decoded = decode_transactions(&encoded).unwrap();
-        assert!(decoded.is_empty());
+    fn transactions_empty_decodes_to_empty() {
+        assert!(decode_transactions(&[]).unwrap().is_empty());
     }
 
     #[test]
-    fn transactions_single_round_trip() {
+    fn transactions_single_decode() {
         let txs = vec![vec![0xde, 0xad, 0xbe, 0xef]];
-        assert_eq!(txs, decode_transactions(&encode_transactions(&txs)).unwrap());
+        assert_eq!(txs, decode_transactions(TX_SINGLE).unwrap());
     }
 
     #[test]
-    fn transactions_multi_varying_lengths_round_trip() {
+    fn transactions_multi_varying_lengths_decode() {
         let txs: Vec<Vec<u8>> = (1u8..=5).map(|i| vec![i; i as usize * 3]).collect();
-        assert_eq!(txs, decode_transactions(&encode_transactions(&txs)).unwrap());
+        assert_eq!(txs, decode_transactions(TX_MULTI).unwrap());
     }
 
     // -----------------------------------------------------------------------
@@ -991,13 +917,12 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn withdrawals_round_trip() {
+    fn withdrawals_decode() {
         let ws = vec![
             Withdrawal { index: 10, validator_index: 20, address: [0x01; 20], amount: 500 },
             Withdrawal { index: 11, validator_index: 21, address: [0x02; 20], amount: 600 },
         ];
-        let decoded = decode_withdrawals(&encode_withdrawals(&ws)).unwrap();
-        assert_eq!(ws, decoded);
+        assert_eq!(ws, decode_withdrawals(WITHDRAWALS).unwrap());
     }
 
     #[test]
