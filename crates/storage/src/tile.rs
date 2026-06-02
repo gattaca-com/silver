@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use flux::{spine::SpineAdapter, tile::Tile, tracing};
+use flux::{spine::SpineAdapter, tile::Tile};
 use fxhash::FxHashMap;
 use silver_beacon_state_data::{BeaconStateReader, SLOTS_PER_EPOCH};
 use silver_common::{
@@ -8,6 +8,7 @@ use silver_common::{
     RpcSeverity, SilverSpine, TMultiProducer, TRandomAccess, TRead, Wheel,
     ssz_view::{DataColumnSidecarView, StatusView},
 };
+use silver_metrics::timed;
 
 use crate::{store::Store, util};
 
@@ -82,6 +83,7 @@ impl StorageTile {
         PeerEvent::SendDataColumnsByRootRequest { request_id: id, columns, block_root }
     }
 
+    #[timed]
     fn beacon_block<F>(&mut self, stream_id: P2pStreamId, block: TRead, emit: &mut F)
     where
         F: FnMut(PeerEvent),
@@ -93,6 +95,10 @@ impl StorageTile {
                 return;
             }
         };
+
+        if !util::has_data_columns(buffer) {
+            return;
+        }
 
         let block_root = util::block_root(buffer);
 
@@ -112,6 +118,7 @@ impl StorageTile {
         emit(self.column_request(block_root, to_request));
     }
 
+    #[timed]
     fn data_columns<F>(
         &mut self,
         stream_id: P2pStreamId,
@@ -271,6 +278,8 @@ impl Tile<SilverSpine> for StorageTile {
             }
             silver_common::GossipTopic::DataColumnSidecar(_custody_group) => {
                 // TODO validate that topic group matches sidecar column index
+                tracing::debug!(_custody_group, "data column sidecar over gossip");
+
                 let t_read = self.gossip_consumer.acquire(gossip.ssz);
                 if let Some((block_root, columns)) =
                     self.data_columns(gossip.stream_id, t_read, &mut |msg| {
@@ -306,6 +315,7 @@ impl Tile<SilverSpine> for StorageTile {
                 }
                 silver_common::RpcResponse::DataColumnSidecar { fork_digest: _, ssz } => {
                     // TODO validate that originating peer has data column index in custody groups
+                    tracing::debug!("data column sidecar over rpc");
                     let t_read = self.rpc_consumer.acquire(ssz);
                     if let Some((block_root, columns)) =
                         self.data_columns(rsp.stream_id, t_read, &mut |msg| {
@@ -325,7 +335,13 @@ impl Tile<SilverSpine> for StorageTile {
                             .produce(&self.column_request(block_root, columns).into());
                     }
                 }
-                _ => {}
+                silver_common::RpcResponse::Error { error, msg, len } if rsp.application_id & BASE_REQUEST_ID == BASE_REQUEST_ID => {
+                    let err_msg = String::from_utf8_lossy(&msg[..len]).to_string();
+                    tracing::error!(error, err_msg, "rpc error response");
+                }
+                other => {
+                    tracing::trace!(?other, app_id=rsp.application_id, id=?rsp.stream_id, "ignoring rpc response");
+                }
             },
         });
 
@@ -362,6 +378,11 @@ impl Tile<SilverSpine> for StorageTile {
             if retries > 0 {
                 let id = self.request_id;
                 self.request_id += 1;
+                tracing::trace!(
+                    columns,
+                    block_root = hex::encode(block_root),
+                    "resending outstanding data column request"
+                );
                 adapter.produce(PeerEvent::SendDataColumnsByRootRequest {
                     request_id: id,
                     columns,

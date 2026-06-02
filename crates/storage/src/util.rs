@@ -8,8 +8,9 @@ use silver_common::{
         is_valid_merkle_branch, merkleize, uint64_chunk,
     },
     ssz_view::{
-        BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF, DataColumnSidecarView,
-        MAX_BLOB_COMMITMENTS_PER_BLOCK, NUMBER_OF_COLUMNS, SignedBeaconBlockView,
+        BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF, BeaconBlockBodyView,
+        DataColumnSidecarView, MAX_BLOB_COMMITMENTS_PER_BLOCK, NUMBER_OF_COLUMNS,
+        SignedBeaconBlockView,
     },
 };
 
@@ -48,6 +49,18 @@ pub fn block_root(signed_block: &[u8]) -> B256 {
         *SignedBeaconBlockView::state_root(signed_block),
         body_root,
     ])
+}
+
+pub fn has_data_columns(signed_block: &[u8]) -> bool {
+    let beacon_block_body = SignedBeaconBlockView::body(signed_block);
+    let kzg_commitments_offset =
+        BeaconBlockBodyView::blob_kzg_commitments_offset(beacon_block_body);
+    let execution_requests_offset =
+        BeaconBlockBodyView::execution_requests_offset(beacon_block_body);
+
+    tracing::debug!(kzg_commitments_offset, execution_requests_offset, "has data columns?");
+    (kzg_commitments_offset as usize) < beacon_block_body.len() &&
+        kzg_commitments_offset < execution_requests_offset
 }
 
 /// SSZ `block_root` reconstructed from a `DataColumnSidecar`'s embedded

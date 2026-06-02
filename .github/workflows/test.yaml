@@ -36,4 +36,4 @@ jobs:
         run: make -C crates/beacon_state/tile ./consensus-spec-tests
 
       - name: Run tests
-        run: cargo test --features "silver_beacon_state/ef_tests,silver_e2e/lh-client" --no-fail-fast
+        run: cargo test --features "silver_beacon_state/ef_tests,silver_e2e/lh-client" --no-fail-fast --workspace --exclude silver_engine

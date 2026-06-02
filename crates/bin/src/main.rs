@@ -15,6 +15,7 @@ use silver_discovery::{DiscV5, Discovery};
 use silver_gossip::GossipHandler;
 use silver_network::{Context, NetworkTile, P2p};
 use silver_peer::PeerManager;
+use silver_storage::tile::StorageTile;
 use tracing_subscriber::{EnvFilter, fmt::format::FmtSpan};
 
 #[cfg(not(feature = "alloc-profile"))]
@@ -73,14 +74,19 @@ fn main() -> Result<(), Box<dyn Error>> {
         TCache::producer("ssz_gossip", config.incoming_gossip_ssz_tcache_size());
     let ssz_gossip_consumer =
         ssz_gossip_producer.cache_ref().random_access("bs_ssz_gossip", true)?;
+    let ssz_gossip_consumer_ds =
+        ssz_gossip_producer.cache_ref().random_access("ds_ssz_gossip", true)?;
     let outgoing_gossip_producer =
         TCache::producer("outgoing_gossip", config.outgoing_gossip_tcache_size());
     let incoming_rpc_producer = TCache::producer("incoming_rpc", config.incoming_rpc_tcache_size());
     let incoming_rpc_consumer =
         incoming_rpc_producer.cache_ref().random_access("bs_incoming_rpc", true)?;
+    let incoming_rpc_consumer_ds =
+        incoming_rpc_producer.cache_ref().random_access("ds_incoming_rpc", true)?;
 
     // rpc producer
-    let outgoing_rpc_producer = TCache::producer("outgoing_rpc", config.outgoing_rpc_tcache_size());
+    let outgoing_rpc_producer =
+        TCache::multi_producer("outgoing_rpc", config.outgoing_rpc_tcache_size());
 
     // Tiles.
     let keypair = config.keypair()?;
@@ -151,7 +157,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             config.fork_digest(),
             local_enr.into(),
         ),
-        outgoing_rpc_producer,
+        outgoing_rpc_producer.clone(),
     );
 
     let chain_config = config.chain_config();
@@ -166,7 +172,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         None => vec![],
     };
 
-    let state = BeaconStateOwner::new(BeaconState::empty());
+    let mut state = BeaconStateOwner::new(BeaconState::empty());
+    let state_reader = state.reader();
+
     let mut beacon_state_tile = BeaconStateTile::new(
         ticker,
         chain_config.spec.clone(),
@@ -180,6 +188,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     // silver's Status doesn't clobber the PeerManager digest with a bogus value.
     beacon_state_tile.set_configured_fork_digest(config.fork_digest());
 
+    let storage_tile = StorageTile::new(
+        ssz_gossip_consumer_ds,
+        incoming_rpc_consumer_ds,
+        outgoing_rpc_producer,
+        state_reader,
+        local_enr.node_id().custody_groups(local_enr.cgc().unwrap_or(4) as u8),
+        config.fork_digest(),
+        config.data_storage_dir().into(),
+    );
+
     // Spine
     let spine = SilverSpine::new(None);
     // TODO panic handler
@@ -189,6 +207,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         attach_tile(gossip_tile, scoped_spine, TileConfig::new(2, ThreadPriority::OSDefault));
         attach_tile(network_tile, scoped_spine, TileConfig::new(3, ThreadPriority::OSDefault));
         attach_tile(beacon_state_tile, scoped_spine, TileConfig::new(4, ThreadPriority::OSDefault));
+        attach_tile(storage_tile, scoped_spine, TileConfig::new(5, ThreadPriority::OSDefault));
     });
 
     Ok(())

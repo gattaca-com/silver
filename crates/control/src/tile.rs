@@ -6,7 +6,7 @@ use std::{
 use flux::tile::Tile;
 use silver_common::{
     BeaconStateEvent, P2pSend, PeerControl, PeerEvent, RpcInbound, RpcOutbound, RpcRequestOutbound,
-    SilverSpine, TCacheProducer, TCacheRead, TProducer,
+    SilverSpine, TCacheProducer, TCacheRead, TMultiProducer,
     ssz_view::{METADATA_SIZE, STATUS_V2_SIZE},
 };
 use silver_peer::PeerManager;
@@ -15,7 +15,7 @@ const OUTBOUND_DRAIN_INTERVAL: Duration = Duration::from_secs(5);
 
 pub struct Controller {
     peer_manager: PeerManager,
-    rpc_producer: TProducer,
+    rpc_producer: TMultiProducer,
     last_tick: Instant,
     last_ping: Instant,
     last_status: Instant,
@@ -32,7 +32,7 @@ impl Controller {
     /// Build a Controller with a fresh `PeerManager`. `status` and
     /// `metadata` start empty — callers update them via `set_status` /
     /// `set_metadata` once chain state is available.
-    pub fn new(peer_manager: PeerManager, rpc_producer: TProducer) -> Self {
+    pub fn new(peer_manager: PeerManager, rpc_producer: TMultiProducer) -> Self {
         Self {
             peer_manager,
             rpc_producer,
@@ -88,18 +88,6 @@ impl Tile<SilverSpine> for Controller {
                             }
                         }
                     }
-                    other => {
-                        producers.peer_control.produce(&other.into());
-                    }
-                };
-            });
-        });
-        adapter.consume(|rpc: RpcInbound, producers| {
-            self.peer_manager.on_rpc_inbound(rpc, now, &mut |pc| {
-                match pc {
-                    PeerControl::P2pSend(send) => {
-                        producers.p2p_send.produce(&send.into());
-                    }
                     PeerControl::P2pDataColumnsRequest { app_id, peer, block_root, columns } => {
                         match allocate_data_columns_by_root(
                             &mut self.rpc_producer,
@@ -122,6 +110,18 @@ impl Tile<SilverSpine> for Controller {
                                 tracing::error!(?e, "failed to allocate data columns request");
                             }
                         };
+                    }
+                    other => {
+                        producers.peer_control.produce(&other.into());
+                    }
+                };
+            });
+        });
+        adapter.consume(|rpc: RpcInbound, producers| {
+            self.peer_manager.on_rpc_inbound(rpc, now, &mut |pc| {
+                match pc {
+                    PeerControl::P2pSend(send) => {
+                        producers.p2p_send.produce(&send.into());
                     }
                     other => {
                         producers.peer_control.produce(&other.into());
@@ -215,7 +215,7 @@ impl Tile<SilverSpine> for Controller {
 }
 
 fn allocate_data_columns_by_root(
-    producer: &mut TProducer,
+    producer: &mut TMultiProducer,
     root: &[u8; 32],
     columns: u128,
 ) -> Result<TCacheRead, io::Error> {
@@ -245,7 +245,7 @@ fn allocate_data_columns_by_root(
 }
 
 fn allocate_blocks_by_root(
-    producer: &mut TProducer,
+    producer: &mut TMultiProducer,
     root: &[u8; 32],
 ) -> Result<TCacheRead, io::Error> {
     let Some(mut reservation) = producer.reserve(32, true) else {
