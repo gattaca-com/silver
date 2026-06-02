@@ -10,8 +10,8 @@ use crate::{
     EngineError,
     client::extract_result,
     types::{
-        ForkchoiceUpdatedResult, PayloadStatus,
-        json_get_blobs_to_tcache, json_get_payload_bodies_to_tcache, json_get_payload_to_tcache,
+        ForkchoiceUpdatedResult, PayloadStatus, json_get_blobs_to_tcache,
+        json_get_payload_bodies_to_tcache, json_get_payload_to_tcache,
     },
 };
 

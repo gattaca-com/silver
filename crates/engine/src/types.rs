@@ -744,10 +744,14 @@ pub fn json_get_payload_to_tcache(
 //
 // Same approach as json_get_payload_to_tcache: BorrowedValue borrows from the
 // input buffer; hex decoded directly into `out` with hex::decode_to_slice.
-// Wire layout: [u32 count] [u8 present] [u8 proof_count] [proof_count*48B] [u32 blob_len] [blob bytes]
+// Wire layout: [u32 count] [u8 present] [u8 proof_count] [proof_count*48B] [u32
+// blob_len] [blob bytes]
 // ---------------------------------------------------------------------------
 
-pub fn json_get_blobs_to_tcache(raw: &mut [u8], out: &mut Vec<u8>) -> Result<(), crate::EngineError> {
+pub fn json_get_blobs_to_tcache(
+    raw: &mut [u8],
+    out: &mut Vec<u8>,
+) -> Result<(), crate::EngineError> {
     use simd_json::prelude::{TypedScalarValue, ValueAsArray, ValueAsScalar, ValueObjectAccess};
 
     let root = simd_json::to_borrowed_value(raw).map_err(crate::EngineError::Json)?;
@@ -758,7 +762,9 @@ pub fn json_get_blobs_to_tcache(raw: &mut [u8], out: &mut Vec<u8>) -> Result<(),
         return Ok(());
     }
 
-    let items = result.as_array().ok_or_else(|| crate::EngineError::Ssz("getBlobsV2 result not array".into()))?;
+    let items = result
+        .as_array()
+        .ok_or_else(|| crate::EngineError::Ssz("getBlobsV2 result not array".into()))?;
     out.extend_from_slice(&(items.len() as u32).to_le_bytes());
 
     for item in items {
@@ -775,7 +781,8 @@ pub fn json_get_blobs_to_tcache(raw: &mut [u8], out: &mut Vec<u8>) -> Result<(),
         let proof_count = proofs.len().min(255) as u8;
         out.push(proof_count);
         for p in &proofs[..proof_count as usize] {
-            let s = p.as_str().ok_or_else(|| crate::EngineError::Ssz("proof not a string".into()))?;
+            let s =
+                p.as_str().ok_or_else(|| crate::EngineError::Ssz("proof not a string".into()))?;
             hex_extend_clamped::<48>(s, out)?;
         }
 
@@ -799,7 +806,8 @@ pub fn json_get_blobs_to_tcache(raw: &mut [u8], out: &mut Vec<u8>) -> Result<(),
 // Zero-alloc JSON → TCache frame converter for
 // engine_getPayloadBodiesByHashV1 / ByRangeV1
 //
-// Wire layout: [u32 count] [u8 present] [u32 tx_count] [u32 len][tx bytes]... [u32 withdrawal_count] [44B each]
+// Wire layout: [u32 count] [u8 present] [u32 tx_count] [u32 len][tx bytes]...
+// [u32 withdrawal_count] [44B each]
 // ---------------------------------------------------------------------------
 
 pub fn json_get_payload_bodies_to_tcache(
@@ -809,10 +817,8 @@ pub fn json_get_payload_bodies_to_tcache(
     use simd_json::prelude::{TypedScalarValue, ValueAsArray, ValueAsScalar, ValueObjectAccess};
 
     let root = simd_json::to_borrowed_value(raw).map_err(crate::EngineError::Json)?;
-    let items = root
-        .get("result")
-        .and_then(|v| v.as_array())
-        .ok_or(crate::EngineError::MissingResult)?;
+    let items =
+        root.get("result").and_then(|v| v.as_array()).ok_or(crate::EngineError::MissingResult)?;
 
     out.extend_from_slice(&(items.len() as u32).to_le_bytes());
 
@@ -839,11 +845,8 @@ pub fn json_get_payload_bodies_to_tcache(
                 .map_err(|e| crate::EngineError::Ssz(e.to_string()))?;
         }
 
-        let withdrawals: &[simd_json::BorrowedValue<'_>] = item
-            .get("withdrawals")
-            .and_then(|v| v.as_array())
-            .map(|a| a.as_slice())
-            .unwrap_or(&[]);
+        let withdrawals: &[simd_json::BorrowedValue<'_>] =
+            item.get("withdrawals").and_then(|v| v.as_array()).map(|a| a.as_slice()).unwrap_or(&[]);
         out.extend_from_slice(&(withdrawals.len() as u32).to_le_bytes());
         for w in withdrawals {
             let index = parse_quantity(fstr(w, "index")?)?;

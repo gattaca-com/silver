@@ -683,7 +683,6 @@ pub struct EngineNewPayloadResp {
     pub latest_valid_hash: [u8; 32],
 }
 
-
 /// The engine tile sends `engine_forkchoiceUpdatedV3` with payload attributes
 /// and returns the `payload_id` assigned by the EL. The caller should use.
 /// this to fetch the built payload.
@@ -735,8 +734,8 @@ pub struct EngineGetBlobsReq {
 
 /// Response to `EngineGetBlobsReq`.
 /// When `ok` is true, `data` is a TCache slot with binary-encoded blobs:
-/// `[u32 count] ([u8 present] [u8 proof_count] [48B proof]* [u32 blob_len] [blob bytes])*`
-/// `present == 0` means the entry is null (blob missing).
+/// `[u32 count] ([u8 present] [u8 proof_count] [48B proof]* [u32 blob_len]
+/// [blob bytes])*` `present == 0` means the entry is null (blob missing).
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct EngineGetBlobsResp {
@@ -766,8 +765,9 @@ pub struct EngineGetPayloadBodiesByRangeReq {
 
 /// Response to either `getPayloadBodiesByHash` or `getPayloadBodiesByRange`.
 /// When `ok` is true, `data` is a TCache slot with binary-encoded bodies:
-/// `[u32 count] ([u8 present] [u32 tx_count] ([u32 tx_len][tx bytes])* [u32 withdrawal_count] ([u32 index][u32 validator_index][20B address][u64 amount])*)*`
-/// `present == 0` means the entry is null (block missing).
+/// `[u32 count] ([u8 present] [u32 tx_count] ([u32 tx_len][tx bytes])* [u32
+/// withdrawal_count] ([u32 index][u32 validator_index][20B address][u64
+/// amount])*)*` `present == 0` means the entry is null (block missing).
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct EngineGetPayloadBodiesResp {

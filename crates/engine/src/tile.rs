@@ -94,7 +94,11 @@ impl EngineTile {
                 ReqKind::GetPayloadBodiesByHash(spine_id) |
                 ReqKind::GetPayloadBodiesByRange(spine_id) => {
                     handle_get_payload_bodies_response(
-                        spine_id, response, adapter, resp_producer, scratch,
+                        spine_id,
+                        response,
+                        adapter,
+                        resp_producer,
+                        scratch,
                     );
                 }
             });

@@ -8,8 +8,9 @@ use mio::{Events, Interest, Poll, Token, net::UnixStream};
 
 use crate::EngineError;
 
-// Sized for the largest expected EL response: getPayload with a full blobsBundle
-// (~21 blobs × 256 KB hex-encoded + execution payload transactions).
+// Sized for the largest expected EL response: getPayload with a full
+// blobsBundle (~21 blobs × 256 KB hex-encoded + execution payload
+// transactions).
 const READ_BUF_CAPACITY: usize = 10 * 1024 * 1024;
 
 #[derive(PartialEq)]
