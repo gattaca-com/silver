@@ -202,7 +202,7 @@ fn ipc_on_error<F>(t: &mut IpcTransport, poll: &mut Poll, on_complete: &mut F, m
 where
     F: FnMut(u64, Result<Vec<u8>, EngineError>),
 {
-    tracing::warn!("engine ipc: {msg}");
+    tracing::warn!("{msg}");
     let err = msg.to_string();
     if let Some(rpc_id) = t.in_flight.take() {
         on_complete(rpc_id, Err(EngineError::Ipc(err.clone())));
