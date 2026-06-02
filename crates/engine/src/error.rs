@@ -3,7 +3,7 @@ pub enum EngineError {
     #[error("http: {0}")]
     Http(String),
     #[error("json-rpc error: {0}")]
-    Rpc(simd_json::OwnedValue),
+    Rpc(String),
     #[error("missing result field in response")]
     MissingResult,
     #[error("serde: {0}")]

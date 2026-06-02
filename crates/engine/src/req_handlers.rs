@@ -12,7 +12,7 @@ use crate::{
         get_blobs, get_payload, get_payload_bodies_by_hash, get_payload_bodies_by_range, send_fcu,
         send_new_payload,
     },
-    types::{ForkchoiceState, PayloadAttributesV3, Withdrawal, decode_new_payload_data},
+    types::{ForkchoiceState, PayloadAttributesV3, Withdrawal},
 };
 
 #[inline]
@@ -53,7 +53,7 @@ fn handle_new_payload(
 ) {
     let acquired = req_consumer.acquire(r.data);
     let bytes = match acquired.buffer() {
-        Ok((b, _)) => b.to_owned(),
+        Ok((b, _)) => b,
         Err(e) => {
             tracing::warn!("failed to read payload data: {e}");
             producers
@@ -63,30 +63,18 @@ fn handle_new_payload(
         }
     };
 
-    let (payload, exec_requests) = match decode_new_payload_data(&bytes) {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!("failed to decode payload: {e}");
-            producers
-                .engine_resps
-                .produce(&EngineResp::NewPayload(invalid_new_payload_resp(r.id)).into());
-            return;
-        }
-    };
+    let n = r.versioned_hash_count as usize;
+    if let Err(e) =
+        send_new_payload(client, bytes, &r.versioned_hashes[..n], &r.parent_beacon_block_root, r.id)
+    {
+        tracing::warn!("failed to encode payload: {e}");
+        producers
+            .engine_resps
+            .produce(&EngineResp::NewPayload(invalid_new_payload_resp(r.id)).into());
+    }
 
     drop(acquired);
     req_consumer.free();
-
-    let n = r.versioned_hash_count as usize;
-    let versioned_hashes = r.versioned_hashes[..n].to_vec();
-    send_new_payload(
-        client,
-        payload,
-        versioned_hashes,
-        r.parent_beacon_block_root,
-        exec_requests,
-        r.id,
-    );
 }
 
 #[inline]

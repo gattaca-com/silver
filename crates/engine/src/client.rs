@@ -2,13 +2,12 @@ use std::time::Duration;
 
 use mio::{Events, Poll};
 use rustc_hash::FxHashMap;
-use simd_json::prelude::ValueObjectAccess;
 
 use crate::{
     EngineError, JwtSecret,
     http::{HttpPool, http_pool_enqueue, poll_http_pool},
     ipc::{IpcPool, ipc_pool_enqueue, poll_ipc_pool},
-    types::{B256, ExecutionPayload, ForkchoiceState, PayloadAttributesV3},
+    types::{B256, ForkchoiceState, PayloadAttributesV3, write_new_payload_params},
 };
 
 const EVENTS_CAPACITY: usize = 16;
@@ -129,24 +128,41 @@ pub fn send_fcu(
 
 pub fn send_new_payload(
     c: &mut EngineClient,
-    payload: ExecutionPayload,
-    versioned_hashes: Vec<B256>,
-    parent_beacon_block_root: B256,
-    execution_requests: Vec<Vec<u8>>,
+    data: &[u8],
+    versioned_hashes: &[B256],
+    parent_beacon_block_root: &B256,
     req_id: u64,
-) {
-    let hashes: Vec<String> =
-        versioned_hashes.iter().map(|h| format!("0x{}", hex::encode(h))).collect();
-    let parent = format!("0x{}", hex::encode(parent_beacon_block_root));
-    let requests: Vec<String> =
-        execution_requests.iter().map(|r| format!("0x{}", hex::encode(r))).collect();
-    let (id, body) = make_rpc_body(
-        &mut c.id,
-        "engine_newPayloadV4",
-        simd_json::json!([payload, hashes, parent, requests]),
-    );
-    enqueue(c, id, &body);
-    c.pending_requests.insert(id, ReqKind::NewPayload(req_id));
+) -> Result<(), EngineError> {
+    let rpc_id = next_id(&mut c.id);
+    c.scratch.clear();
+    c.scratch
+        .extend_from_slice(b"{\"jsonrpc\":\"2.0\",\"method\":\"engine_newPayloadV4\",\"params\":");
+    write_new_payload_params(data, versioned_hashes, parent_beacon_block_root, &mut c.scratch)?;
+    c.scratch.extend_from_slice(b",\"id\":");
+    append_decimal_u64(rpc_id, &mut c.scratch);
+    c.scratch.push(b'}');
+    match &mut c.transport {
+        Transport::Http(p) => http_pool_enqueue(p, rpc_id, &c.scratch, &mut c.poll),
+        Transport::Ipc(p) => ipc_pool_enqueue(p, rpc_id, &c.scratch, &mut c.poll),
+    }
+    c.pending_requests.insert(rpc_id, ReqKind::NewPayload(req_id));
+    Ok(())
+}
+
+fn append_decimal_u64(v: u64, out: &mut Vec<u8>) {
+    if v == 0 {
+        out.push(b'0');
+        return;
+    }
+    let mut buf = [0u8; 20];
+    let mut n = 0usize;
+    let mut tmp = v;
+    while tmp > 0 {
+        buf[19 - n] = b'0' + (tmp % 10) as u8;
+        tmp /= 10;
+        n += 1;
+    }
+    out.extend_from_slice(&buf[20 - n..]);
 }
 
 pub fn get_payload(c: &mut EngineClient, payload_id: [u8; 8], req_id: u64) {
@@ -217,7 +233,7 @@ pub fn get_client_version(c: &mut EngineClient) {
 /// needed.
 pub fn poll<F>(c: &mut EngineClient, mut on_complete: F)
 where
-    F: FnMut(ReqKind, Result<Vec<u8>, EngineError>),
+    F: FnMut(ReqKind, Result<&mut [u8], EngineError>),
 {
     c.poll.poll(&mut c.events, Some(Duration::ZERO)).ok();
     let EngineClient { transport, events, poll, pending_requests, .. } = c;
@@ -235,18 +251,9 @@ where
     }
 }
 
-pub(crate) fn extract_result(
-    resp: simd_json::OwnedValue,
-) -> Result<simd_json::OwnedValue, EngineError> {
-    if let Some(err) = resp.get("error") {
-        return Err(EngineError::Rpc(err.clone()));
-    }
-    resp.get("result").cloned().ok_or(EngineError::MissingResult)
-}
-
 #[cfg(test)]
 mod tests {
-    use simd_json::prelude::{TypedScalarValue, ValueAsScalar};
+    use simd_json::prelude::ValueAsScalar;
 
     use super::*;
 
@@ -286,46 +293,5 @@ mod tests {
         assert_eq!(id2, 6);
         assert_eq!(body1["id"].as_u64(), Some(5));
         assert_eq!(body2["id"].as_u64(), Some(6));
-    }
-
-    #[test]
-    fn extract_result_returns_result_field() {
-        let resp = simd_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"key": "value"}});
-        assert_eq!(extract_result(resp).unwrap(), simd_json::json!({"key": "value"}));
-    }
-
-    #[test]
-    fn extract_result_returns_rpc_error_when_error_present() {
-        let resp = simd_json::json!({"jsonrpc": "2.0", "id": 1, "error": {"code": -32600, "message": "bad"}});
-        assert!(matches!(extract_result(resp), Err(EngineError::Rpc(_))));
-    }
-
-    #[test]
-    fn extract_result_error_contains_error_payload() {
-        let error_val = simd_json::json!({"code": -32700, "message": "parse error"});
-        let resp = simd_json::json!({"jsonrpc": "2.0", "id": 1, "error": error_val});
-        match extract_result(resp) {
-            Err(EngineError::Rpc(v)) => assert_eq!(v["code"].as_i64(), Some(-32700)),
-            other => panic!("unexpected: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn extract_result_error_takes_precedence_over_result() {
-        let resp =
-            simd_json::json!({"jsonrpc": "2.0", "id": 1, "error": {"code": 1}, "result": "ok"});
-        assert!(matches!(extract_result(resp), Err(EngineError::Rpc(_))));
-    }
-
-    #[test]
-    fn extract_result_missing_result_when_neither_field_present() {
-        let resp = simd_json::json!({"jsonrpc": "2.0", "id": 1});
-        assert!(matches!(extract_result(resp), Err(EngineError::MissingResult)));
-    }
-
-    #[test]
-    fn extract_result_null_result_is_ok() {
-        let resp = simd_json::json!({"jsonrpc": "2.0", "id": 1, "result": null});
-        assert!(extract_result(resp).unwrap().is_null());
     }
 }
