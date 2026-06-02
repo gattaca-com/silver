@@ -13,10 +13,10 @@ use silver_beacon_state_data::{
 };
 use silver_common::{
     BeaconStateEvent, GossipTopic, NewGossipMsg, P2pStreamId, PeerEvent, RejectSource, RpcInbound,
-    RpcMsg, RpcResponse, RpcResponseInbound, RpcSeverity, SilverSpine, SyncUpdate, TRandomAccess,
-    TRead, ssz_view,
+    RpcMsg, RpcResponse, RpcResponseInbound, RpcSeverity, SilverSpine, SyncUpdate, TCacheRead,
+    TRandomAccess, TRead,
     ssz_view::{
-        AttesterSlashingView, MAX_ATTESTATIONS_ELECTRA, MAX_ATTESTING_INDICES,
+        self, AttesterSlashingView, MAX_ATTESTATIONS_ELECTRA, MAX_ATTESTING_INDICES,
         PROPOSER_SLASHING_SIZE, ProposerSlashingView, SIGNED_BLS_CHANGE_SIZE,
         SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE, STATUS_V2_SIZE, SignedAggregateAndProofView,
         SignedBeaconBlockView, SignedBlsToExecutionChangeView, SignedVoluntaryExitView,
@@ -104,6 +104,11 @@ pub struct ShufflingEntry {
     pub shuffled_indices: Vec<u32>,
 }
 
+enum PendingBlock {
+    Gossip(NewGossipMsg),
+    Rpc(P2pStreamId, TCacheRead),
+}
+
 pub struct BeaconStateTile {
     mode: Mode,
     ticker: SlotTicker,
@@ -159,7 +164,7 @@ pub struct BeaconStateTile {
     state_hash_scratch: ssz_hash::StateHashScratch,
     /// Pending blocks - blocks we have received for which we do not have a
     /// parent block. Keyed by the parent block_hash.
-    pending_blocks: FxHashMap<B256, Vec<NewGossipMsg>>,
+    pending_blocks: FxHashMap<B256, Vec<PendingBlock>>,
 
     gossip_consumer: TRandomAccess,
     rpc_consumer: TRandomAccess,
@@ -672,9 +677,17 @@ impl BeaconStateTile {
     }
 
     fn clear_pending_blocks(&mut self, finalized_slot: u64) {
+        tracing::debug!(
+            pending_blocks = self.pending_blocks.len(),
+            finalized_slot,
+            "clear pending blocks at finalization"
+        );
         self.pending_blocks.retain(|_, msgs| {
             msgs.iter().all(|msg| {
-                let acquired = self.gossip_consumer.acquire(msg.ssz);
+                let acquired = match msg {
+                    PendingBlock::Gossip(g) => self.gossip_consumer.acquire(g.ssz),
+                    PendingBlock::Rpc(_, ssz) => self.rpc_consumer.acquire(*ssz),
+                };
                 if let Ok((buffer, _)) = acquired.buffer() {
                     return SignedBeaconBlockView::slot(buffer) > finalized_slot;
                 }
@@ -823,8 +836,8 @@ impl BeaconStateTile {
             Some(Feedback::RequestParent(parent_root)) if self.mode.is_following() => {
                 self.pending_blocks
                     .entry(parent_root)
-                    .and_modify(|v| v.push(m))
-                    .or_insert_with(|| vec![m]);
+                    .and_modify(|v| v.push(PendingBlock::Gossip(m)))
+                    .or_insert_with(|| vec![PendingBlock::Gossip(m)]);
                 producers.produce(PeerEvent::SendBlocksByRootRequest {
                     request_id: 0,
                     p2p_peer: Some(m.stream_id.peer()),
@@ -839,11 +852,29 @@ impl BeaconStateTile {
         if let Some(pending) = self.pending_blocks.remove(&parent_root) {
             // Have one or more pending child blocks.
             for msg in pending {
-                let acquired = self.gossip_consumer.acquire(msg.ssz);
-                let data = acquired.buffer().ok().map(|(d, _)| d as *const [u8]);
-                if let Some(p) = data {
-                    // This will recursively apply any chained pending blocks
-                    self.handle_gossip(msg, unsafe { &*p }, producers);
+                match msg {
+                    PendingBlock::Gossip(g) => {
+                        let acquired = self.gossip_consumer.acquire(g.ssz);
+                        let data = acquired.buffer().ok().map(|(d, _)| d as *const [u8]);
+                        if let Some(p) = data {
+                            // This will recursively apply any chained pending blocks
+                            self.handle_gossip(g, unsafe { &*p }, producers);
+                        }
+                    }
+                    PendingBlock::Rpc(stream_id, ssz) => {
+                        let acquired = self.rpc_consumer.acquire(ssz);
+                        let data = acquired.buffer().ok().map(|(d, _)| d as *const [u8]);
+                        if let Some(p) = data {
+                            // This will recursively apply any chained pending blocks
+                            self.handle_rpc(
+                                RpcMsg::BlocksRootResp(SignedBeaconBlockView),
+                                stream_id,
+                                unsafe { &*p },
+                                acquired,
+                                producers,
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -865,9 +896,27 @@ impl BeaconStateTile {
                 });
                 return;
             }
+            let tcache = data_tcache.read;
             let f = self.apply_block(data, data_tcache, RejectSource::Rpc, producers);
             match f {
-                Feedback::Accept(_) | Feedback::Ignore | Feedback::RequestParent(_) => {}
+                Feedback::Accept(block_root) => {
+                    // Try to apply any pending blocks for which this one was the parent.
+                    if let Some(root) = block_root {
+                        self.apply_pending_blocks(root, producers);
+                    }
+                }
+                Feedback::RequestParent(parent_root) if self.mode.is_following() => {
+                    self.pending_blocks
+                        .entry(parent_root)
+                        .and_modify(|v| v.push(PendingBlock::Rpc(sender, tcache)))
+                        .or_insert_with(|| vec![PendingBlock::Rpc(sender, tcache)]);
+                    producers.produce(PeerEvent::SendBlocksByRootRequest {
+                        request_id: 0,
+                        p2p_peer: Some(sender.peer()),
+                        block_root: parent_root,
+                    })
+                }
+                Feedback::Ignore | Feedback::RequestParent(_) => {}
                 Feedback::Reject(_) => producers.produce(PeerEvent::RpcMisbehaviour {
                     p2p_peer: sender.peer(),
                     severity: RpcSeverity::Fatal,
