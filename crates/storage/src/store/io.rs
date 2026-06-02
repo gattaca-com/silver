@@ -11,7 +11,8 @@ use std::{
 };
 
 use silver_common::{
-    metrics::timed, P2pSend, RpcOutbound, RpcResponse, RpcResponseOutbound, TCacheProducer, TCacheRead, TMultiProducer
+    P2pSend, RpcOutbound, RpcResponse, RpcResponseOutbound, TCacheProducer, TCacheRead,
+    TMultiProducer, metrics::timed,
 };
 
 use super::{PendingWrite, QueryUnit, Store, UnfinalizedBlock};

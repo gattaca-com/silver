@@ -378,7 +378,11 @@ impl Tile<SilverSpine> for StorageTile {
             if retries > 0 {
                 let id = self.request_id;
                 self.request_id += 1;
-                tracing::trace!(columns, block_root=hex::encode(&block_root), "resending outstanding data column request");
+                tracing::trace!(
+                    columns,
+                    block_root = hex::encode(block_root),
+                    "resending outstanding data column request"
+                );
                 adapter.produce(PeerEvent::SendDataColumnsByRootRequest {
                     request_id: id,
                     columns,

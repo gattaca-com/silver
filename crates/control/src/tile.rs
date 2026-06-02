@@ -5,7 +5,9 @@ use std::{
 
 use flux::tile::Tile;
 use silver_common::{
-    ssz_view::{METADATA_SIZE, STATUS_V2_SIZE}, BeaconStateEvent, P2pSend, PeerControl, PeerEvent, RpcInbound, RpcOutbound, RpcRequestOutbound, SilverSpine, TCacheProducer, TCacheRead, TMultiProducer, 
+    BeaconStateEvent, P2pSend, PeerControl, PeerEvent, RpcInbound, RpcOutbound, RpcRequestOutbound,
+    SilverSpine, TCacheProducer, TCacheRead, TMultiProducer,
+    ssz_view::{METADATA_SIZE, STATUS_V2_SIZE},
 };
 use silver_peer::PeerManager;
 

@@ -33,6 +33,11 @@ checkpoint-fixtures:
 test:
   cargo test --workspace --features "silver_beacon_state/ef_tests,silver_e2e/lh-client" --release --no-fail-fast 2>&1
 
+# As above but using `nextest`
+nextest:
+  cargo install --locked cargo-nextest && \
+  cargo nextest r --features "silver_beacon_state/ef_tests,silver_e2e/lh-client" --release --no-fail-fast --status-level skip
+
 # Run the perf-regression harness on the committed mainnet fixtures.
 # Release-only; reads crates/e2e/data/perf (git-lfs). CI runs this too.
 perf-local:

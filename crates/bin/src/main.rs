@@ -85,7 +85,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         incoming_rpc_producer.cache_ref().random_access("ds_incoming_rpc", true)?;
 
     // rpc producer
-    let outgoing_rpc_producer = TCache::multi_producer("outgoing_rpc", config.outgoing_rpc_tcache_size());
+    let outgoing_rpc_producer =
+        TCache::multi_producer("outgoing_rpc", config.outgoing_rpc_tcache_size());
 
     // Tiles.
     let keypair = config.keypair()?;
@@ -188,12 +189,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     beacon_state_tile.set_configured_fork_digest(config.fork_digest());
 
     let storage_tile = StorageTile::new(
-        ssz_gossip_consumer_ds, 
-        incoming_rpc_consumer_ds, 
-        outgoing_rpc_producer, 
-        state_reader, 
-        local_enr.node_id().custody_groups(local_enr.cgc().unwrap_or(4) as u8), 
-        config.fork_digest(), 
+        ssz_gossip_consumer_ds,
+        incoming_rpc_consumer_ds,
+        outgoing_rpc_producer,
+        state_reader,
+        local_enr.node_id().custody_groups(local_enr.cgc().unwrap_or(4) as u8),
+        config.fork_digest(),
         config.data_storage_dir().into(),
     );
 
