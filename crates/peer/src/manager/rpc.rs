@@ -699,6 +699,8 @@ impl PeerManager {
                 .unwrap_or_default()
         };
 
+        tracing::debug!(?p2p_peer, "request blocks by root");
+
         let peer = match p2p_peer {
             Some(p) if has_capacity(p) => Some(p),
             _ => self.best_peer_for(StreamProtocol::BeaconBlocksByRoot, has_capacity),
@@ -710,9 +712,11 @@ impl PeerManager {
                     p_state.outbound_in_flight
                         [StreamProtocol::BeaconBlocksByRoot.ordinal() as usize] += 1;
                 }
+                tracing::debug!("sending blocks by root request to {peer}");
                 emit(PeerControl::P2pBlockByRootRequest { app_id: request_id, peer, block_root });
             }
             None => {
+                tracing::warn!("no peer for blocks by root");
                 self.pending_block_by_root.push_back((request_id, peer, block_root));
                 emit(PeerControl::DiscoverNodes);
             }

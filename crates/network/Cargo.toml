@@ -19,6 +19,7 @@ ring.workspace = true
 secp256k1.workspace = true
 rustls.workspace = true
 silver_common.workspace = true
+silver_metrics.workspace = true
 silver_discovery.workspace = true
 snap.workspace = true
 thiserror.workspace = true

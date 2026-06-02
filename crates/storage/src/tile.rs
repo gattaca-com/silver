@@ -2,10 +2,10 @@ use std::time::{Duration, Instant};
 
 use flux::{spine::SpineAdapter, tile::Tile, tracing};
 use fxhash::FxHashMap;
+use silver_beacon_state_data::{BeaconStateReader, SLOTS_PER_EPOCH};
 use silver_common::{
-    BeaconStateEvent, BeaconStateReader, DataColumnsAvailable, NewGossipMsg, P2pStreamId,
-    PeerEvent, RpcInbound, RpcSeverity, SLOTS_PER_EPOCH, SilverSpine, TMultiProducer,
-    TRandomAccess, TRead, Wheel,
+    BeaconStateEvent, DataColumnsAvailable, NewGossipMsg, P2pStreamId, PeerEvent, RpcInbound,
+    RpcSeverity, SilverSpine, TMultiProducer, TRandomAccess, TRead, Wheel,
     ssz_view::{DataColumnSidecarView, StatusView},
 };
 

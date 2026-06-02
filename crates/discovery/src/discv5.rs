@@ -9,7 +9,8 @@ use flux::utils::ArrayVec;
 use rand::RngCore as _;
 use rustc_hash::{FxHashMap, FxHashSet};
 use secp256k1::{SECP256K1, SecretKey};
-use silver_common::{DiscoveryConfig, Enr, NodeId};
+use silver_common::{Enr, NodeId};
+use silver_config::DiscoveryConfig;
 use tracing::{info, trace, warn};
 
 use crate::{

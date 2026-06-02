@@ -9,7 +9,8 @@ use silver_beacon_state::{
     ticker::SlotTicker,
     tile::{BeaconStateTile, Feedback},
 };
-use silver_common::{BeaconState, BeaconStateOwner, Finalized, SpecConfig, TCache, TCacheProducer};
+use silver_beacon_state_data::{BeaconState, BeaconStateOwner, Finalized, SpecConfig};
+use silver_common::{TCache, TCacheProducer};
 use silver_e2e::mainnet_api::fetch_canonical_state_root;
 
 const FIXTURES: &str = "tests/example_checkpoints";
@@ -40,7 +41,7 @@ fn finalized_state_loads() {
     let state = BeaconStateOwner::new(BeaconState::empty());
     let mut tile = BeaconStateTile::new(
         ticker,
-        silver_common::SpecConfig::mainnet(),
+        silver_beacon_state_data::SpecConfig::mainnet(),
         state,
         gossip_c,
         rpc_c,
@@ -184,7 +185,7 @@ fn tile_apply_block_ef_fixture() {
     let state = BeaconStateOwner::new(BeaconState::empty());
     let mut tile = BeaconStateTile::new(
         ticker,
-        silver_common::SpecConfig::mainnet(),
+        silver_beacon_state_data::SpecConfig::mainnet(),
         state,
         gossip_c,
         rpc_c,

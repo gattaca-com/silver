@@ -1,11 +1,6 @@
 extern crate self as silver_common;
 
 pub use crate::{
-    beacon_state::{
-        BeaconState, BeaconStateOwner, BeaconStateReader, DeltaBuffer, StateDeltaReadView,
-        StateDeltaView, ValSeed, ValidatorRow, types::*,
-    },
-    config::{BlobParameters, Config, DiscoveryConfig, ScoreParams, SpecConfig, SyncingConfig},
     error::Error,
     gossip::{
         GossipTopic, MESSAGE_ID_LEN, MessageId, MessageIdHasher, msg_id_invalid_snappy,
@@ -38,12 +33,9 @@ pub use crate::{
 };
 
 pub mod allocator;
-pub mod beacon_state;
-mod config;
 mod enr;
 mod error;
-pub mod flamegraph_timer;
-pub mod metrics;
+pub use silver_metrics::{self as metrics, declare_counters, flamegraph_timer};
 #[path = "generated/protobuf.identify.rs"]
 #[allow(clippy::all, dead_code, non_snake_case)]
 #[rustfmt::skip]
@@ -52,8 +44,7 @@ mod gossip;
 mod id;
 mod identity;
 mod spine;
-pub mod ssz_hash;
-pub mod ssz_view;
+pub use silver_ssz::{ssz_hash, ssz_view};
 mod util;
 mod wheel;
 mod wither;
