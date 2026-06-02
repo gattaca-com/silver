@@ -1,6 +1,7 @@
 //! Benchmark `FinalizedHashTree::new` (the production constructor) across
 //! realistic leaf counts and capacities. The hash primitive is whatever
-//! `silver_beacon_state_data::ssz_hash::hash_concat` resolves to — currently `hashtree`.
+//! `silver_beacon_state_data::ssz_hash::hash_concat` resolves to — currently
+//! `hashtree`.
 //!
 //! Run: cargo bench -p silver_beacon_state_data --bench hash_tree_build
 
