@@ -4187,6 +4187,7 @@ name = "silver_beacon_state_data"
 version = "0.0.1"
 dependencies = [
  "blst",
+ "criterion",
  "flux",
  "hex",
  "rand 0.8.6",

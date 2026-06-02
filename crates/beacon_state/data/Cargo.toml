@@ -19,8 +19,13 @@ tracing.workspace = true
 hex.workspace = true
 
 [dev-dependencies]
+criterion.workspace = true
 rand.workspace = true
 snap.workspace = true
+
+[[bench]]
+harness = false
+name = "hash_tree_build"
 
 [lints]
 workspace = true
