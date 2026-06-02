@@ -11,12 +11,15 @@ use silver_common::{
 };
 use silver_peer::PeerManager;
 
+const OUTBOUND_DRAIN_INTERVAL: Duration = Duration::from_secs(5);
+
 pub struct Controller {
     peer_manager: PeerManager,
     rpc_producer: TProducer,
     last_tick: Instant,
     last_ping: Instant,
     last_status: Instant,
+    last_drain: Instant,
 
     /// When false, the 17000ms heartbeat skips the per-peer Ping fan-out.
     /// Tests use this to keep the peer-state machine ticking without
@@ -36,6 +39,7 @@ impl Controller {
             last_tick: Instant::now(),
             last_ping: Instant::now(),
             last_status: Instant::now(),
+            last_drain: Instant::now(),
             auto_ping: true,
         }
     }
@@ -64,8 +68,29 @@ impl Tile<SilverSpine> for Controller {
         adapter.consume(|event: PeerEvent, producers| {
             self.peer_manager.handle_event(event, now, &mut |pc| {
                 match pc {
-                    PeerControl::P2pSend(send) => producers.p2p_send.produce(&send.into()),
-                    other => producers.peer_control.produce(&other.into()),
+                    PeerControl::P2pSend(send) => {
+                        producers.p2p_send.produce(&send.into());
+                    }
+                    PeerControl::P2pBlockByRootRequest { app_id, peer, block_root } => {
+                        match allocate_blocks_by_root(&mut self.rpc_producer, &block_root) {
+                            Ok(read) => {
+                                producers.p2p_send.produce(
+                                    &P2pSend::Rpc(RpcOutbound::Request(RpcRequestOutbound {
+                                        application_id: app_id,
+                                        peer,
+                                        request: silver_common::RpcRequest::BlockByRoot(read),
+                                    }))
+                                    .into(),
+                                );
+                            }
+                            Err(e) => {
+                                tracing::error!(?e, "failed to allocate blocks by root request");
+                            }
+                        }
+                    }
+                    other => {
+                        producers.peer_control.produce(&other.into());
+                    }
                 };
             });
         });
@@ -97,23 +122,6 @@ impl Tile<SilverSpine> for Controller {
                                 tracing::error!(?e, "failed to allocate data columns request");
                             }
                         };
-                    }
-                    PeerControl::P2pBlockByRootRequest { app_id, peer, block_root } => {
-                        match allocate_blocks_by_root(&mut self.rpc_producer, &block_root) {
-                            Ok(read) => {
-                                producers.p2p_send.produce(
-                                    &P2pSend::Rpc(RpcOutbound::Request(RpcRequestOutbound {
-                                        application_id: app_id,
-                                        peer,
-                                        request: silver_common::RpcRequest::BlockByRoot(read),
-                                    }))
-                                    .into(),
-                                );
-                            }
-                            Err(e) => {
-                                tracing::error!(?e, "failed to allocate blocks by root request");
-                            }
-                        }
                     }
                     other => {
                         producers.peer_control.produce(&other.into());
@@ -164,12 +172,15 @@ impl Tile<SilverSpine> for Controller {
             };
         });
 
-        self.peer_manager.drain_pending_outbound(&mut |pc| {
-            match pc {
-                PeerControl::P2pSend(send) => adapter.produce(send),
-                other => adapter.produce(other),
-            };
-        });
+        if self.last_drain.elapsed() > OUTBOUND_DRAIN_INTERVAL {
+            self.last_drain = now;
+            self.peer_manager.drain_pending_outbound(&mut |pc| {
+                match pc {
+                    PeerControl::P2pSend(send) => adapter.produce(send),
+                    other => adapter.produce(other),
+                };
+            });
+        }
 
         if self.last_tick.elapsed() > Duration::from_millis(700) {
             self.last_tick = now;
