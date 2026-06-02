@@ -596,6 +596,232 @@ pub enum BeaconStateEvent {
     BlockRejected { block_root: [u8; 32], source: RejectSource },
 }
 
+/// Maximum blob commitments per block (Fulu target; increase as the spec
+/// evolves).
+pub const MAX_BLOBS_PER_BLOCK: usize = 21;
+
+/// Maximum number of block hashes in a single `getPayloadBodiesByHash` request.
+pub const MAX_PAYLOAD_BODIES_PER_REQ: usize = 128;
+
+/// Execution-payload validation result returned by the EL.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum PayloadValidationStatus {
+    Valid = 0,
+    Invalid = 1,
+    Syncing = 2,
+    Accepted = 3,
+}
+
+/// A single withdrawal, inlined into `EngineFcuReq` payload attributes.
+/// Field order avoids interior padding (all u64s first, then the 20-byte
+/// address).
+#[derive(Clone, Copy, Debug, Default)]
+#[repr(C)]
+pub struct WithdrawalInline {
+    pub index: u64,
+    pub validator_index: u64,
+    pub amount: u64,
+    pub address: [u8; 20],
+}
+
+/// `engine_forkchoiceUpdatedV3` request.  Fully inline — no TCache needed.
+///
+/// When `has_attrs` is false the `attrs_*` fields are ignored.
+/// `attrs_withdrawal_count` gives the number of valid entries in
+/// `attrs_withdrawals`; the remainder are zero-filled.
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct EngineFcuReq {
+    pub id: u64,
+    pub head_block_hash: [u8; 32],
+    pub safe_block_hash: [u8; 32],
+    pub finalized_block_hash: [u8; 32],
+}
+
+/// `engine_newPayloadV4` request.
+///
+/// `data` is a single TCache entry whose layout is:
+/// ```text
+/// [u32 LE payload_ssz_len] [payload_ssz_len bytes: ExecutionPayload SSZ]
+/// [u8 exec_req_count]      [for each: u32 LE len, then bytes]
+/// ```
+/// `versioned_hashes[..versioned_hash_count]` are the expected KZG commitment
+/// hashes for the blobs carried by this payload.
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct EngineNewPayloadReq {
+    pub id: u64,
+    pub data: TCacheRead,
+    pub parent_beacon_block_root: [u8; 32],
+    pub versioned_hash_count: u8,
+    pub versioned_hashes: [[u8; 32]; MAX_BLOBS_PER_BLOCK],
+}
+
+/// Response to `engine_forkchoiceUpdatedV3`.  Fully inline.
+///
+/// `latest_valid_hash` is all-zeros when the EL did not return one.
+/// `payload_id` is meaningful only when `has_payload_id` is true.
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct EngineFcuResp {
+    pub id: u64,
+    pub status: PayloadValidationStatus,
+    pub latest_valid_hash: [u8; 32],
+    pub has_payload_id: bool,
+    pub payload_id: [u8; 8],
+}
+
+/// Response to `engine_newPayloadV4`.  Fully inline.
+///
+/// `latest_valid_hash` is all-zeros when the EL did not return one.
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct EngineNewPayloadResp {
+    pub id: u64,
+    pub status: PayloadValidationStatus,
+    pub latest_valid_hash: [u8; 32],
+}
+
+/// The engine tile sends `engine_forkchoiceUpdatedV3` with payload attributes
+/// and returns the `payload_id` assigned by the EL. The caller should use.
+/// this to fetch the built payload.
+///
+/// Field layout mirrors `EngineFcuReq` (attrs are always present for payload
+/// building).
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct EnginePreparePayloadReq {
+    pub id: u64,
+    pub head_block_hash: [u8; 32],
+    pub safe_block_hash: [u8; 32],
+    pub finalized_block_hash: [u8; 32],
+    pub attrs_timestamp: u64,
+    pub attrs_prev_randao: [u8; 32],
+    pub attrs_fee_recipient: [u8; 20],
+    pub attrs_parent_beacon_block_root: [u8; 32],
+    pub attrs_withdrawal_count: u8,
+    pub attrs_withdrawals: [WithdrawalInline; 16],
+}
+
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct EngineGetPayloadReq {
+    pub id: u64,
+    pub payload_id: [u8; 8],
+}
+
+/// Response to `EngineGetPayloadReq`.
+/// When `ok` is true, `data` is a TCache slot with the encoded EL payload:
+/// `{executionPayload, blobsBundle, shouldOverrideBuilder, executionRequests}`.
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct EngineGetPayloadResp {
+    pub id: u64,
+    pub ok: bool,
+    pub data: TCacheRead,
+}
+
+/// `engine_getBlobsV2` request. `hashes[..hash_count]` are the versioned hashes
+/// derived from the block's KZG commitments.
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct EngineGetBlobsReq {
+    pub id: u64,
+    pub hash_count: u8,
+    pub hashes: [[u8; 32]; MAX_BLOBS_PER_BLOCK],
+}
+
+/// Response to `EngineGetBlobsReq`.
+/// When `ok` is true, `data` is a TCache slot with binary-encoded blobs:
+/// `[u32 count] ([u8 present] [u8 proof_count] [48B proof]* [u32 blob_len]
+/// [blob bytes])*` `present == 0` means the entry is null (blob missing).
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct EngineGetBlobsResp {
+    pub id: u64,
+    pub ok: bool,
+    pub data: TCacheRead,
+}
+
+/// `engine_getPayloadBodiesByHashV1` request.
+/// `hashes[..hash_count]` are the execution block hashes to fetch bodies for.
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct EngineGetPayloadBodiesByHashReq {
+    pub id: u64,
+    pub hash_count: u8,
+    pub hashes: [[u8; 32]; MAX_PAYLOAD_BODIES_PER_REQ],
+}
+
+/// `engine_getPayloadBodiesByRangeV1` request. Fully inline.
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct EngineGetPayloadBodiesByRangeReq {
+    pub id: u64,
+    pub start: u64,
+    pub count: u64,
+}
+
+/// Response to either `getPayloadBodiesByHash` or `getPayloadBodiesByRange`.
+/// When `ok` is true, `data` is a TCache slot with binary-encoded bodies:
+/// `[u32 count] ([u8 present] [u32 tx_count] ([u32 tx_len][tx bytes])* [u32
+/// withdrawal_count] ([u32 index][u32 validator_index][20B address][u64
+/// amount])*)*` `present == 0` means the entry is null (block missing).
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct EngineGetPayloadBodiesResp {
+    pub id: u64,
+    pub ok: bool,
+    pub data: TCacheRead,
+}
+
+/// Multiplexed engine request. A single spine queue carries FCU,
+/// new-payload, and raw passthrough requests, preserving strict FIFO ordering.
+#[derive(Clone, Copy, Debug)]
+#[repr(C, u8)]
+#[allow(clippy::large_enum_variant)]
+pub enum EngineReq {
+    Fcu(EngineFcuReq),
+    NewPayload(EngineNewPayloadReq),
+    PreparePayload(EnginePreparePayloadReq),
+    GetPayload(EngineGetPayloadReq),
+    GetBlobs(EngineGetBlobsReq),
+    GetPayloadBodiesByHash(EngineGetPayloadBodiesByHashReq),
+    GetPayloadBodiesByRange(EngineGetPayloadBodiesByRangeReq),
+}
+
+/// Multiplexed engine response.
+#[derive(Clone, Copy, Debug)]
+#[repr(C, u8)]
+#[allow(clippy::large_enum_variant)]
+pub enum EngineResp {
+    Fcu(EngineFcuResp),
+    NewPayload(EngineNewPayloadResp),
+    GetPayload(EngineGetPayloadResp),
+    GetBlobs(EngineGetBlobsResp),
+    GetPayloadBodies(EngineGetPayloadBodiesResp),
+}
+
+/// Sync status of the attached execution layer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ELSyncStatus {
+    Unknown = 0,
+    Syncing = 1,
+    Synced = 2,
+    Offline = 3,
+}
+
+/// Published to the `engine_health` spine queue whenever the EL sync status
+/// changes.  Other tiles subscribe to suppress block proposals during outages
+/// or to gate fork-choice updates on EL liveness.
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct EngineHealthEvent {
+    pub sync_status: ELSyncStatus,
+}
+
 impl BeaconStateEvent {
     pub fn view(&self) -> SszView {
         match self {

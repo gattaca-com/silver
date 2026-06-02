@@ -85,7 +85,7 @@ impl Consumer {
     pub fn free(&mut self) {
         //tracing::warn!("consumer free: {}", self.seq);
         self.seq = self.next_seq;
-        self.cache.head.tails[self.index].store(self.seq, Ordering::Release);
+        self.cache.head().tails[self.index].store(self.seq, Ordering::Release);
         self.cache.record_tail(self.index, self.seq);
     }
 }
@@ -123,7 +123,7 @@ impl RandomAccessConsumer {
 
         if tail != u64::MAX {
             //tracing::warn!("Random consumer free {tail}");
-            self.cache.head.tails[self.index].store(tail, Ordering::Release);
+            self.cache.head().tails[self.index].store(tail, Ordering::Release);
             self.cache.record_tail(self.index, tail);
         }
     }

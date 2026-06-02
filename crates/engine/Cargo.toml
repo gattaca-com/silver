@@ -1,0 +1,27 @@
+[package]
+name = "silver_engine"
+edition.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+base64.workspace = true
+flux.workspace = true
+hex.workspace = true
+hmac.workspace = true
+httparse.workspace = true
+mio.workspace = true
+rustc-hash.workspace = true
+serde.workspace = true
+simd-json.workspace = true
+sha2.workspace = true
+silver_common.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

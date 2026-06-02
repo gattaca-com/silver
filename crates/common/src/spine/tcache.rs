@@ -19,6 +19,13 @@ const MAGIC: [u8; 3] = [0xEA, 0x51, 0xEE];
 const MAX_CONSUMERS: usize = 64;
 const ALIGN: usize = size_of::<Slot>();
 
+// TCacheHead (528 B) rounded up to Slot alignment (32 B).
+const DATA_OFFSET: usize = const {
+    let h = size_of::<TCacheHead>();
+    let a = size_of::<Slot>();
+    (h + a - 1) & !(a - 1)
+};
+
 mod consumer;
 mod metrics;
 mod producer;
@@ -27,24 +34,56 @@ use metrics::TCacheMetrics;
 
 /// Single or multi producer, multi consumer cache buffer with a Tail
 ///
-/// _     /)---(\       
-/// \\   (/ . . \)    
-///  \\__)-\(*)/       
-///  \_       (_     
-///  (___/-(____) _    
-///               
+/// _     /)---(\
+/// \\   (/ . . \)
+///  \\__)-\(*)/
+///  \_       (_
+///  (___/-(____) _
 pub struct TCache {
-    /// Descriptive label for this TCache instance — used as the
-    /// `{name}` in `counters-tcache-{name}` for the metrics layer,
-    /// and useful for tracing. Stable for the lifetime of the
-    /// allocation.
     name: &'static str,
-    head: TCacheHead,
+    /// Flat buffer: [TCacheHead | padding | data…]
+    /// Aligned to ALIGN. DATA_OFFSET bytes precede the data region.
+    ptr: *mut u8,
+    /// Data capacity (excludes the header).
     len: u32,
-    data: Box<[u8]>,
+    backing: Backing,
     /// `None` when name is empty, or if mmap'ing the metrics file
     /// fails (tile continues to function without surfer visibility).
     metrics: Option<TCacheMetrics>,
+}
+
+unsafe impl Send for TCache {}
+unsafe impl Sync for TCache {}
+
+enum Backing {
+    Heap {
+        layout: Layout,
+    },
+    #[cfg(unix)]
+    Shmem {
+        fd: libc::c_int,
+        total_len: usize,
+        owner: bool,
+        name: std::ffi::CString,
+    },
+}
+
+impl Drop for TCache {
+    fn drop(&mut self) {
+        match &self.backing {
+            Backing::Heap { layout } => unsafe {
+                alloc::dealloc(self.ptr, *layout);
+            },
+            #[cfg(unix)]
+            Backing::Shmem { fd, total_len, owner, name } => unsafe {
+                libc::munmap(self.ptr as *mut libc::c_void, *total_len);
+                libc::close(*fd);
+                if *owner {
+                    libc::shm_unlink(name.as_ptr());
+                }
+            },
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -84,14 +123,14 @@ impl TCache {
     /// (e.g. `"gossip_in"`); the metrics layer uses it to produce
     /// `counters-tcache-{name}`.
     pub fn producer(name: &'static str, n: usize) -> Producer {
-        let tcache = Self::alloc_tache(name, n);
+        let tcache = Self::alloc_heap(name, n);
         let space = tcache.len;
         Producer { cache: Box::into_raw(tcache), seq: 0, space }
     }
 
     /// Create a multi-producer t-cache.
     pub fn multi_producer(name: &'static str, n: usize) -> MultiProducer {
-        let tcache = Self::alloc_tache(name, n);
+        let tcache = Self::alloc_heap(name, n);
         let len = tcache.len;
         MultiProducer::new(Box::into_raw(tcache), len)
     }
@@ -100,12 +139,32 @@ impl TCache {
         self.name
     }
 
+    /// Attach to a named shmem segment as a producer, creating it if needed.
+    /// Either side (producer or consumer) may start first. `n` must be
+    /// identical on both sides.
+    #[cfg(unix)]
+    pub fn shm_producer(name: &str, n: usize) -> Producer {
+        let tcache = Self::attach_shmem(name, n);
+        let space = tcache.len;
+        Producer { cache: Box::into_raw(tcache), seq: 0, space }
+    }
+
+    /// Attach to a named shmem segment as a random-access consumer, creating
+    /// it if needed. Either side (producer or consumer) may start first. `n`
+    /// must be identical on both sides.
+    #[cfg(unix)]
+    pub fn shm_consumer(name: &str, n: usize) -> Result<RandomAccessConsumer, Error> {
+        let tcache = Box::into_raw(Self::attach_shmem(name, n));
+        // SAFETY: tcache is a valid Box-allocated TCache; we intentionally
+        // leak it here (same pattern as producer/multi_producer).
+        unsafe { (*tcache).random_access("", true) }
+    }
+
     pub fn consumer(&self, name: &'static str) -> Result<Consumer, Error> {
-        // find start seq
-        let seq = self.head.seq.load(Ordering::Acquire);
+        let seq = self.head().seq.load(Ordering::Acquire);
 
         let index = self
-            .head
+            .head()
             .tails
             .iter()
             .position(|t| {
@@ -132,11 +191,10 @@ impl TCache {
         name: &'static str,
         auto_free: bool,
     ) -> Result<RandomAccessConsumer, Error> {
-        // find start seq
-        let seq = self.head.seq.load(Ordering::Acquire);
+        let seq = self.head().seq.load(Ordering::Acquire);
 
         let index = self
-            .head
+            .head()
             .tails
             .iter()
             .position(|t| {
@@ -195,7 +253,7 @@ impl TCache {
 
     fn min_tail(&self, seq: u64) -> u64 {
         let mut min = seq;
-        for tail in &self.head.tails {
+        for tail in &self.head().tails {
             min = min.min(tail.load(Ordering::Acquire));
         }
         min
@@ -203,7 +261,7 @@ impl TCache {
 
     fn read(&self, seq: u64) -> Result<(&[u8], u64, Nanos), Error> {
         let idx = self.index(seq);
-        let slot: &Slot = (&self.data[idx..]).into();
+        let slot: &Slot = self.slot_at(idx);
         if slot.magic != MAGIC {
             return Err(Error::NoMagic);
         }
@@ -217,7 +275,12 @@ impl TCache {
         }
 
         Ok((
-            &self.data[slot.data_start as usize..slot.data_end as usize],
+            unsafe {
+                slice::from_raw_parts(
+                    self.data_ptr().add(slot.data_start as usize),
+                    slot.data_end as usize - slot.data_start as usize,
+                )
+            },
             slot.reservation_len as u64,
             slot.reserve_ns,
         ))
@@ -225,7 +288,7 @@ impl TCache {
 
     fn slot_ts(&self, seq: u64) -> Result<Nanos, Error> {
         let idx = self.index(seq);
-        let slot: &Slot = (&self.data[idx..]).into();
+        let slot: &Slot = self.slot_at(idx);
         if slot.magic != MAGIC {
             return Err(Error::NoMagic);
         }
@@ -237,21 +300,16 @@ impl TCache {
         Ok(slot.reserve_ns)
     }
 
-    /// For a reservation at the requested seq and length, what reservation
-    /// length is required? Handles slot header and buffer wrapping.
     fn reserve_len(&self, seq: u64, requested_len: usize) -> usize {
         let mut data_len = requested_len + size_of::<Slot>();
 
-        let reserve_seq = seq;
-        let idx = self.index(reserve_seq);
+        let idx = self.index(seq);
 
         if idx + data_len > self.len as usize {
-            // would wrap, allocate at start of buffer to return contiguous slice
             let offset = self.len as usize - idx;
             data_len += offset;
         }
 
-        // Aligned so that contiguous `size_of::<Slot>()` always available
         align::<ALIGN>(data_len)
     }
 
@@ -262,7 +320,6 @@ impl TCache {
         let idx = self.index(reserve_seq);
 
         let data_offset = if idx + data_len > self.len as usize {
-            // would wrap, allocate at start of buffer to return contiguous slice
             let offset = self.len as usize - idx;
             data_len += offset;
             offset
@@ -270,7 +327,6 @@ impl TCache {
             size_of::<Slot>()
         };
 
-        // Aligned so that contiguous `size_of::<Slot>()` always available
         let reserve_len = align::<ALIGN>(data_len);
 
         (space >= reserve_len as u32).then(|| {
@@ -278,7 +334,7 @@ impl TCache {
             let end = start + len as usize;
 
             let slot: &mut Slot = unsafe {
-                let mut_ptr = self.data[idx..idx + size_of::<Slot>()].as_ptr() as *mut u8;
+                let mut_ptr = self.data_ptr().add(idx);
                 slice::from_raw_parts_mut(mut_ptr, size_of::<Slot>()).into()
             };
 
@@ -294,12 +350,12 @@ impl TCache {
         })
     }
 
-    /// SAFETY: This must only calleded by a single `Reservation` owner for a
+    /// SAFETY: This must only be called by a single `Reservation` owner for a
     /// given `seq`.
     #[allow(clippy::mut_from_ref)]
     fn write(&self, seq: u64) -> Result<&mut [u8], Error> {
         let idx = self.index(seq);
-        let slot: &Slot = (&self.data[idx..]).into();
+        let slot: &Slot = self.slot_at(idx);
         if slot.magic != MAGIC {
             return Err(Error::NoMagic);
         }
@@ -310,12 +366,8 @@ impl TCache {
         }
 
         unsafe {
-            let mut_ptr =
-                self.data[slot.data_start as usize..slot.data_end as usize].as_ptr() as *mut u8;
-            Ok(slice::from_raw_parts_mut(
-                mut_ptr,
-                slot.data_end as usize - slot.data_start as usize,
-            ))
+            let ptr = self.data_ptr().add(slot.data_start as usize);
+            Ok(slice::from_raw_parts_mut(ptr, slot.data_end as usize - slot.data_start as usize))
         }
     }
 
@@ -323,7 +375,7 @@ impl TCache {
         let idx = self.index(seq);
 
         let slot: &mut Slot = unsafe {
-            let mut_ptr = self.data[idx..idx + size_of::<Slot>()].as_ptr() as *mut u8;
+            let mut_ptr = self.data_ptr().add(idx);
             slice::from_raw_parts_mut(mut_ptr, size_of::<Slot>()).into()
         };
         if success {
@@ -338,37 +390,179 @@ impl TCache {
         self.record_head(new_head);
     }
 
-    fn alloc_tache(name: &'static str, size: usize) -> Box<Self> {
+    // --- backing accessors ---
+
+    #[inline]
+    pub(super) fn head(&self) -> &TCacheHead {
+        // SAFETY: ptr is always valid and aligned; TCacheHead is at offset 0.
+        unsafe { &*(self.ptr as *const TCacheHead) }
+    }
+
+    #[inline]
+    fn data_ptr(&self) -> *mut u8 {
+        // SAFETY: ptr + DATA_OFFSET is within the allocated buffer.
+        unsafe { self.ptr.add(DATA_OFFSET) }
+    }
+
+    #[inline]
+    fn slot_at(&self, idx: usize) -> &Slot {
+        unsafe {
+            let ptr = self.data_ptr().add(idx);
+            &*(slice::from_raw_parts(ptr, size_of::<Slot>()).as_ptr() as *const Slot)
+        }
+    }
+
+    // --- allocators ---
+
+    fn alloc_heap(name: &'static str, size: usize) -> Box<Self> {
         assert!(
             size.is_power_of_two() && size.is_multiple_of(ALIGN),
-            "n is not mutiple of {ALIGN}"
+            "n must be a power-of-two multiple of {ALIGN}"
         );
-        let layout = Layout::from_size_align(size, ALIGN).unwrap();
+        let total = DATA_OFFSET + size;
+        let layout = Layout::from_size_align(total, ALIGN).unwrap();
         let metrics = if name.is_empty() {
             None
         } else {
-            // MAX_CONSUMERS — overcount is fine for the file size; surfer
-            // ignores never-set tails (they stay at u64::MAX sentinel).
             TCacheMetrics::new(name, MAX_CONSUMERS, size as u64)
                 .map_err(|e| tracing::warn!(?name, ?e, "TCacheMetrics::new failed"))
                 .ok()
         };
-        unsafe {
-            let ptr = alloc::alloc_zeroed(layout);
-            if ptr.is_null() {
+        let ptr = unsafe {
+            let p = alloc::alloc_zeroed(layout);
+            if p.is_null() {
                 alloc::handle_alloc_error(layout);
             }
-            let data = Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, size));
+            p
+        };
+        Self::init_head(ptr);
+        Box::new(Self { name, ptr, len: size as u32, backing: Backing::Heap { layout }, metrics })
+    }
+
+    /// Attach to a named shmem segment, creating it if it doesn't exist yet.
+    /// Safe to call from multiple processes concurrently: `O_CREAT | O_EXCL`
+    /// is the atomic gate — exactly one caller becomes the creator (sizes +
+    /// inits the segment), all others wait until it is ready.
+    ///
+    /// Readiness is signalled by `ready == u64::MAX`, set as the last
+    /// store in `init_head`.
+    #[cfg(unix)]
+    fn attach_shmem(name: &str, size: usize) -> Box<Self> {
+        use std::ffi::CString;
+        assert!(
+            size.is_power_of_two() && size.is_multiple_of(ALIGN),
+            "n must be a power-of-two multiple of {ALIGN}"
+        );
+        let total = DATA_OFFSET + size;
+        let cname = CString::new(name).expect("shmem name must not contain null bytes");
+
+        // Race to create. Exactly one caller wins O_EXCL; losers open existing.
+        let fd = unsafe {
+            libc::shm_open(cname.as_ptr(), libc::O_CREAT | libc::O_EXCL | libc::O_RDWR, 0o600)
+        };
+
+        if fd >= 0 {
+            // Creator: size the segment, map it, init.
+            // On any failure, unlink so joiners don't spin forever on a zombie segment.
+            struct Cleanup(i32, *const libc::c_char);
+            impl Drop for Cleanup {
+                fn drop(&mut self) {
+                    unsafe { libc::shm_unlink(self.1) };
+                    unsafe { libc::close(self.0) };
+                }
+            }
+            let cleanup = Cleanup(fd, cname.as_ptr());
+
+            let rc = unsafe { libc::ftruncate(fd, total as libc::off_t) };
+            assert_eq!(rc, 0, "ftruncate({name}): {}", std::io::Error::last_os_error());
+
+            let ptr = unsafe {
+                libc::mmap(
+                    std::ptr::null_mut(),
+                    total,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_SHARED,
+                    fd,
+                    0,
+                )
+            };
+            assert_ne!(ptr, libc::MAP_FAILED, "mmap({name}): {}", std::io::Error::last_os_error());
+
+            let ptr = ptr as *mut u8;
+            // Sets ready = u64::MAX as the last store (release) in init_head.
+            Self::init_head(ptr);
+            std::mem::forget(cleanup); // init complete, segment is valid
             Box::new(Self {
-                name,
-                head: TCacheHead {
-                    seq: AtomicU64::new(0),
-                    tails: array::from_fn(|_| AtomicU64::new(u64::MAX)),
-                },
-                len: data.len() as u32,
-                data,
-                metrics,
+                name: "",
+                ptr,
+                len: size as u32,
+                backing: Backing::Shmem { fd, total_len: total, owner: true, name: cname },
+                metrics: None,
             })
+        } else {
+            // Joiner: open existing, wait for creator to finish sizing + init.
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::EEXIST),
+                "shm_open({name}): {}",
+                std::io::Error::last_os_error(),
+            );
+
+            let fd = loop {
+                let fd = unsafe { libc::shm_open(cname.as_ptr(), libc::O_RDWR, 0) };
+                if fd >= 0 {
+                    break fd;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            };
+
+            // Wait for ftruncate.
+            loop {
+                let mut st: libc::stat = unsafe { std::mem::zeroed() };
+                unsafe { libc::fstat(fd, &mut st) };
+                if st.st_size as usize >= total {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+
+            let ptr = unsafe {
+                libc::mmap(
+                    std::ptr::null_mut(),
+                    total,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_SHARED,
+                    fd,
+                    0,
+                )
+            };
+            assert_ne!(ptr, libc::MAP_FAILED, "mmap({name}): {}", std::io::Error::last_os_error());
+
+            // Wait for init_head (acquire load pairs with creator's release store on
+            // ready).
+            let head = unsafe { &*(ptr as *const TCacheHead) };
+            while head.ready.load(Ordering::Acquire) != u64::MAX {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+
+            Box::new(Self {
+                name: "",
+                ptr: ptr as *mut u8,
+                len: size as u32,
+                backing: Backing::Shmem { fd, total_len: total, owner: false, name: cname },
+                metrics: None,
+            })
+        }
+    }
+
+    fn init_head(ptr: *mut u8) {
+        // SAFETY: ptr is freshly allocated/mapped with at least DATA_OFFSET bytes.
+        unsafe {
+            let head = &mut *(ptr as *mut TCacheHead);
+            head.seq = AtomicU64::new(0);
+            head.tails = array::from_fn(|_| AtomicU64::new(u64::MAX));
+            // Release store — pairs with the joiner's acquire load on ready.
+            head.ready.store(u64::MAX, Ordering::Release);
         }
     }
 
@@ -395,9 +589,12 @@ impl TCache {
 }
 
 #[repr(C)]
-struct TCacheHead {
+pub(super) struct TCacheHead {
     seq: AtomicU64,
     tails: [AtomicU64; MAX_CONSUMERS],
+    /// Written last in init_head as the readiness signal; never modified after
+    /// init.
+    ready: AtomicU64,
 }
 
 #[repr(C)]
