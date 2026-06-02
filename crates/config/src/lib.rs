@@ -1,4 +1,4 @@
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
+use std::{net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6}};
 
 pub use discovery_config::DiscoveryConfig;
 pub use peer_score_params::ScoreParams;
@@ -28,6 +28,10 @@ const fn default_u32<const V: u32>() -> u32 {
 
 const fn default_u64<const V: u64>() -> u64 {
     V
+}
+
+fn default_data_dir() -> String {
+    String::from("/home/vlad/.local/silver")
 }
 
 fn default_supported_protocols() -> Vec<String> {
@@ -95,6 +99,8 @@ pub struct Config {
     incoming_rpc_tcache_size: usize,
     #[serde(default = "default_usize::<33554432>")] // 2 << 24
     outgoing_rpc_tcache_size: usize,
+    #[serde(default = "default_data_dir")]
+    data_storage_dir: String,
 }
 
 impl Config {
@@ -125,6 +131,7 @@ impl Config {
             incoming_gossip_ssz_tcache_size: 2 << 24, // ssz
             incoming_rpc_tcache_size: 2 << 25,        // ssz
             outgoing_rpc_tcache_size: 2 << 24,        // ssz
+            data_storage_dir: default_data_dir(),
         }
     }
 
@@ -278,6 +285,10 @@ impl Config {
 
     pub fn outgoing_rpc_tcache_size(&self) -> usize {
         self.outgoing_rpc_tcache_size
+    }
+
+    pub fn data_storage_dir(&self) -> &str {
+        &self.data_storage_dir
     }
 }
 

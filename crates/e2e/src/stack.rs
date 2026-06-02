@@ -262,7 +262,7 @@ impl PublisherStack {
                 [0u8; 4],
                 [0u8; METADATA_SIZE],
             ),
-            TCache::producer("dummy_rpc_out", 32), // dummpy rpc out
+            TCache::multi_producer("dummy_rpc_out", 32), // dummpy rpc out
         );
 
         // Spine + per-tile adapters.
@@ -368,7 +368,7 @@ impl EchoStack {
                 [0u8; 4],
                 [0u8; METADATA_SIZE],
             ),
-            TCache::producer("dummy_rpc_out", 32), // dummpy rpc out
+            TCache::multi_producer("dummy_rpc_out", 32), // dummpy rpc out
         );
 
         let mut spine = SilverSpine::new_with_base_dir(base_dir, Some(path_suffix));

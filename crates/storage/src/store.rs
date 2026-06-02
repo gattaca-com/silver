@@ -12,6 +12,7 @@ use silver_common::{
         DataColumnSidecarsByRangeRequestView, DataColumnsByRootIdentifierView,
     },
 };
+use silver_metrics::timed;
 
 mod io;
 
@@ -152,6 +153,7 @@ impl Store {
 
         // Try to create dirs if they do not exist.
         if !std::fs::exists(&store_dir)? {
+            tracing::info!(store_dir, "create data store");
             std::fs::create_dir_all(&store_dir)?;
         }
 
@@ -337,6 +339,7 @@ impl Store {
         );
     }
 
+    #[timed]
     pub(super) fn rpc_request(
         &mut self,
         rpc_consumer: &mut TRandomAccess,
