@@ -871,6 +871,12 @@ mod tests {
 
     use super::*;
 
+    const SAMPLE_PAYLOAD_SSZ: &[u8] = include_bytes!("../testdata/sample_payload.ssz");
+    const EMPTY_VAR_PAYLOAD_SSZ: &[u8] = include_bytes!("../testdata/empty_var_payload.ssz");
+    const LARGE_EXTRA_PAYLOAD_SSZ: &[u8] = include_bytes!("../testdata/large_extra_payload.ssz");
+    const MANY_TX_PAYLOAD_SSZ: &[u8] = include_bytes!("../testdata/many_tx_payload.ssz");
+    const GET_PAYLOAD_TCACHE: &[u8] = include_bytes!("../testdata/get_payload_tcache.bin");
+
     fn sample_payload() -> ExecutionPayload {
         ExecutionPayload {
             parent_hash: [0x11; 32],
@@ -897,33 +903,36 @@ mod tests {
     }
 
     #[test]
-    fn ssz_round_trip_with_all_fields() {
-        let original = sample_payload();
-        let decoded = ExecutionPayload::from_ssz(&original.to_ssz()).unwrap();
-        assert_eq!(original, decoded);
+    fn ssz_encode_sample_payload() {
+        assert_eq!(sample_payload().to_ssz(), SAMPLE_PAYLOAD_SSZ);
     }
 
     #[test]
-    fn ssz_round_trip_empty_variable_fields() {
+    fn ssz_decode_sample_payload() {
+        assert_eq!(ExecutionPayload::from_ssz(SAMPLE_PAYLOAD_SSZ).unwrap(), sample_payload());
+    }
+
+    #[test]
+    fn ssz_decode_empty_variable_fields() {
         let mut p = sample_payload();
         p.extra_data = vec![];
         p.transactions = vec![];
         p.withdrawals = vec![];
-        assert_eq!(p, ExecutionPayload::from_ssz(&p.to_ssz()).unwrap());
+        assert_eq!(ExecutionPayload::from_ssz(EMPTY_VAR_PAYLOAD_SSZ).unwrap(), p);
     }
 
     #[test]
-    fn ssz_round_trip_large_extra_data() {
+    fn ssz_decode_large_extra_data() {
         let mut p = sample_payload();
         p.extra_data = vec![0xffu8; 32];
-        assert_eq!(p, ExecutionPayload::from_ssz(&p.to_ssz()).unwrap());
+        assert_eq!(ExecutionPayload::from_ssz(LARGE_EXTRA_PAYLOAD_SSZ).unwrap(), p);
     }
 
     #[test]
-    fn ssz_round_trip_many_transactions() {
+    fn ssz_decode_many_transactions() {
         let mut p = sample_payload();
         p.transactions = (0u8..=20).map(|i| vec![i; i as usize + 1]).collect();
-        assert_eq!(p, ExecutionPayload::from_ssz(&p.to_ssz()).unwrap());
+        assert_eq!(ExecutionPayload::from_ssz(MANY_TX_PAYLOAD_SSZ).unwrap(), p);
     }
 
     #[test]
@@ -940,18 +949,17 @@ mod tests {
 
     #[test]
     fn ssz_variable_offsets_at_correct_positions() {
-        let p = sample_payload();
-        let ssz = p.to_ssz();
+        let ssz = SAMPLE_PAYLOAD_SSZ;
 
         let extra_off = u32::from_le_bytes(ssz[436..440].try_into().unwrap()) as usize;
         let tx_off = u32::from_le_bytes(ssz[504..508].try_into().unwrap()) as usize;
         let wd_off = u32::from_le_bytes(ssz[508..512].try_into().unwrap()) as usize;
 
         assert_eq!(extra_off, 528, "extra_data offset must point past fixed section");
-        assert_eq!(tx_off, 528 + p.extra_data.len());
+        assert_eq!(tx_off, 528 + 5); // extra_data = b"extra" (5 bytes)
         // withdrawals follow the SSZ transaction list
         assert!(wd_off > tx_off);
-        assert_eq!(wd_off, ssz.len() - p.withdrawals.len() * 44);
+        assert_eq!(wd_off, ssz.len() - 2 * 44); // 2 withdrawals × 44 bytes each
     }
 
     // -----------------------------------------------------------------------
@@ -1003,28 +1011,24 @@ mod tests {
 
     #[test]
     fn new_payload_framing_round_trip_no_exec_requests() {
-        let p = sample_payload();
-        let ssz = p.to_ssz();
-        let enc = encode_new_payload_data(&ssz, &[]);
+        let enc = encode_new_payload_data(SAMPLE_PAYLOAD_SSZ, &[]);
         let (decoded_p, decoded_reqs) = decode_new_payload_data(&enc).unwrap();
-        assert_eq!(p, decoded_p);
+        assert_eq!(sample_payload(), decoded_p);
         assert!(decoded_reqs.is_empty());
     }
 
     #[test]
     fn new_payload_framing_round_trip_with_exec_requests() {
-        let p = sample_payload();
-        let ssz = p.to_ssz();
         let reqs = vec![vec![1u8, 2, 3], vec![0xde, 0xad]];
-        let enc = encode_new_payload_data(&ssz, &reqs);
+        let enc = encode_new_payload_data(SAMPLE_PAYLOAD_SSZ, &reqs);
         let (decoded_p, decoded_reqs) = decode_new_payload_data(&enc).unwrap();
-        assert_eq!(p, decoded_p);
+        assert_eq!(sample_payload(), decoded_p);
         assert_eq!(reqs, decoded_reqs);
     }
 
     #[test]
     fn new_payload_framing_truncated_returns_error() {
-        let enc = encode_new_payload_data(&sample_payload().to_ssz(), &[]);
+        let enc = encode_new_payload_data(SAMPLE_PAYLOAD_SSZ, &[]);
         assert!(decode_new_payload_data(&enc[..4]).is_err());
     }
 
@@ -1124,62 +1128,25 @@ mod tests {
         assert_eq!(fcu.payload_id, roundtrip.payload_id);
     }
 
-    // Verify json_get_payload_to_tcache produces identical bytes to the old
-    // serde path (ExecutionPayload → to_ssz → encode_get_payload_data).
     #[test]
-    fn json_get_payload_to_tcache_matches_serde_path() {
+    fn json_get_payload_to_tcache_output() {
         let payload = sample_payload();
-        let commitments: Vec<Vec<u8>> = vec![vec![0xc0; 48], vec![0xc1; 48]];
-        let proofs: Vec<Vec<u8>> = vec![vec![0xd0; 48], vec![0xd1; 48]];
-        let blobs: Vec<Vec<u8>> = vec![vec![0xb0; 128], vec![0xb1; 64]];
-        let exec_requests: Vec<Vec<u8>> = vec![vec![0x01, 0x02], vec![0x03]];
-        let should_override = false;
-
-        // Reference output via the old serde path.
-        let payload_ssz = payload.to_ssz();
-        let blob_count = 2u8;
-        let exec_count = exec_requests.len().min(255) as u8;
-        let blob_data_size: usize = blobs.iter().map(|b| 4 + b.len()).sum();
-        let total = 4 +
-            payload_ssz.len() +
-            1 +
-            blob_count as usize * (48 + 48) +
-            blob_data_size +
-            2 +
-            exec_requests.iter().map(|r| 4 + r.len()).sum::<usize>();
-        let mut reference = Vec::with_capacity(total);
-        reference.extend_from_slice(&(payload_ssz.len() as u32).to_le_bytes());
-        reference.extend_from_slice(&payload_ssz);
-        reference.push(blob_count);
-        for i in 0..blob_count as usize {
-            let mut c48 = [0u8; 48];
-            let c = &commitments[i];
-            c48[..c.len().min(48)].copy_from_slice(&c[..c.len().min(48)]);
-            reference.extend_from_slice(&c48);
-            let mut p48 = [0u8; 48];
-            let p = &proofs[i];
-            p48[..p.len().min(48)].copy_from_slice(&p[..p.len().min(48)]);
-            reference.extend_from_slice(&p48);
-            reference.extend_from_slice(&(blobs[i].len() as u32).to_le_bytes());
-            reference.extend_from_slice(&blobs[i]);
-        }
-        reference.push(should_override as u8);
-        reference.push(exec_count);
-        for r in &exec_requests {
-            reference.extend_from_slice(&(r.len() as u32).to_le_bytes());
-            reference.extend_from_slice(r);
-        }
-
-        // Build the JSON-RPC response envelope that json_get_payload_to_tcache expects.
-        let commitments_hex: Vec<String> =
-            commitments.iter().map(|c| format!("0x{}", hex::encode(c))).collect();
-        let proofs_hex: Vec<String> =
-            proofs.iter().map(|p| format!("0x{}", hex::encode(p))).collect();
-        let blobs_hex: Vec<String> =
-            blobs.iter().map(|b| format!("0x{}", hex::encode(b))).collect();
-        let exec_hex: Vec<String> =
-            exec_requests.iter().map(|r| format!("0x{}", hex::encode(r))).collect();
-
+        let commitments_hex: Vec<String> = vec![[0xc0u8; 48], [0xc1u8; 48]]
+            .iter()
+            .map(|c| format!("0x{}", hex::encode(c)))
+            .collect();
+        let proofs_hex: Vec<String> = vec![[0xd0u8; 48], [0xd1u8; 48]]
+            .iter()
+            .map(|p| format!("0x{}", hex::encode(p)))
+            .collect();
+        let blobs_hex: Vec<String> = vec![vec![0xb0u8; 128], vec![0xb1u8; 64]]
+            .iter()
+            .map(|b| format!("0x{}", hex::encode(b)))
+            .collect();
+        let exec_hex: Vec<String> = vec![vec![0x01u8, 0x02], vec![0x03u8]]
+            .iter()
+            .map(|r| format!("0x{}", hex::encode(r)))
+            .collect();
         let envelope = simd_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -1190,15 +1157,13 @@ mod tests {
                     "proofs": proofs_hex,
                     "blobs": blobs_hex,
                 },
-                "shouldOverrideBuilder": should_override,
+                "shouldOverrideBuilder": false,
                 "executionRequests": exec_hex,
             }
         });
         let mut raw = simd_json::to_vec(&envelope).unwrap();
-
         let mut out = Vec::new();
         json_get_payload_to_tcache(&mut raw, &mut out).expect("json_get_payload_to_tcache failed");
-
-        assert_eq!(out, reference, "json path output differs from serde path");
+        assert_eq!(out, GET_PAYLOAD_TCACHE);
     }
 }
