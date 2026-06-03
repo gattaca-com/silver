@@ -152,7 +152,8 @@ fn fuzz_random_ops_hash_tree() {
     }
 
     let mut forks = HashMap::new();
-    let mut base = FinalizedHashTree::from_leaves(std::iter::repeat_n([0u8; 32], max_leafs), max_leafs);
+    let mut base =
+        FinalizedHashTree::from_leaves(std::iter::repeat_n([0u8; 32], max_leafs), max_leafs);
     forks.insert(0, Fork {
         delta: DeltaHashTree::new_at(&base),
         real_data: Vec::new(),
