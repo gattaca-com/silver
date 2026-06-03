@@ -13,7 +13,9 @@ pub struct SyncingConfig {
     /// SyncingHead trigger: enter SyncingHead only when a peer's head_slot
     /// exceeds ours by at least this much. Avoids thrash on 1-slot
     /// wall-clock jitter but stays small enough to catch the post-
-    /// finalized-sync tail quickly.
+    /// finalized-sync tail quickly. Also gates the "refuse Following"
+    /// guard in `select_target` — beyond this lag vs wall_slot we won't
+    /// declare Following even with no viable peer target.
     #[serde(default = "default_u64::<8>")]
     pub head_lag_threshold_slots: u64,
     /// SyncingFinalized trigger: enter SyncingFinalized only when a peer's

@@ -6,11 +6,10 @@ use std::{path::PathBuf, time::Duration};
 
 use silver_beacon_state::{
     ssz_hash::hash_tree_root_block_header,
-    ticker::SlotTicker,
     tile::{BeaconStateTile, Feedback},
 };
 use silver_beacon_state_data::{BeaconState, BeaconStateOwner, Finalized, SpecConfig};
-use silver_common::{TCache, TCacheProducer};
+use silver_common::{TCache, TCacheProducer, ticker::SlotTicker};
 use silver_e2e::mainnet_api::fetch_canonical_state_root;
 
 const FIXTURES: &str = "tests/example_checkpoints";

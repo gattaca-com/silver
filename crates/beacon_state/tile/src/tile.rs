@@ -22,6 +22,7 @@ use silver_common::{
         SignedBeaconBlockView, SignedBlsToExecutionChangeView, SignedVoluntaryExitView,
         SingleAttestationView,
     },
+    ticker::{SlotTicker, TickEvent},
 };
 
 use crate::{
@@ -30,9 +31,7 @@ use crate::{
     error::PrecheckError,
     fork_choice::{BlockImport, ForkChoice, VoteTracker, compute_deltas},
     shuffling::{self, DOMAIN_BEACON_ATTESTER},
-    ssz_hash, state_transition,
-    ticker::{SlotTicker, TickEvent},
-    validate,
+    ssz_hash, state_transition, validate,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -302,20 +301,21 @@ impl BeaconStateTile {
         // `latest_block_header.state_root` stays `[0;32]` — the first
         // post-bootstrap `process_slot` hashes that canonical state and a
         // patched value would shift the result.
-        let block_root = {
+        let (block_root, anchor_state_root) = {
             let view = self.state.delta_view(seq);
+            let state_root = ssz_hash::hash_tree_root_state(&view, &mut self.state_hash_scratch);
             let mut header = view.latest_block_header();
             if header.state_root == [0u8; 32] {
-                header.state_root =
-                    ssz_hash::hash_tree_root_state(&view, &mut self.state_hash_scratch);
+                header.state_root = state_root;
             }
-            ssz_hash::hash_tree_root_block_header(&header)
+            (ssz_hash::hash_tree_root_block_header(&header), state_root)
         };
 
         let trusted = Checkpoint { epoch: slot / SLOTS_PER_EPOCH, root: block_root };
         self.last_applied = seq;
         self.last_applied_block_root = block_root;
-        self.fork_choice = ForkChoice::init(trusted, trusted, slot, block_root, block_root, seq);
+        self.fork_choice =
+            ForkChoice::init(trusted, trusted, slot, block_root, anchor_state_root, seq);
         self.state.publish_offsets(None, Some(seq));
     }
 
@@ -466,13 +466,18 @@ impl BeaconStateTile {
 
     fn status_payload(&mut self) -> [u8; STATUS_V2_SIZE] {
         let fork_digest = self.fork_digest();
-        // Cached canonical block_root — the header's `state_root` is zero in
-        // the window between block-apply and the next `process_slot`.
-        let head_root = self.last_applied_block_root;
 
-        // `head_slot` excludes empty slots (spec): pin to the latest applied
-        // block's slot, not the wall-advanced delta slot.
-        let mut finalized = self.head_finalized_checkpoint();
+        let head_root = self.fork_choice.find_head();
+        let (slot, mut finalized) = match self.fork_choice.find_node_idx(&head_root) {
+            Some(idx) => {
+                let n = self.fork_choice.node(idx);
+                (n.slot, n.finalized_checkpoint)
+            }
+            None => {
+                let d = self.state.state().slots.get(self.last_applied);
+                (d.slot.slot.latest_block_header.slot, self.head_finalized_checkpoint())
+            }
+        };
 
         if finalized.root == [0u8; 32] {
             // Genesis placeholder: the head state's finalized root is zero until
@@ -483,8 +488,6 @@ impl BeaconStateTile {
             finalized.root = self.fork_choice.finalized_checkpoint.root;
         }
 
-        let slot =
-            self.state.state().slots.get(self.last_applied).slot.slot.latest_block_header.slot;
         let earliest = finalized.epoch * SLOTS_PER_EPOCH;
 
         let mut buf = [0u8; STATUS_V2_SIZE];
@@ -497,10 +500,17 @@ impl BeaconStateTile {
         buf
     }
 
+    /// Slot of the highest block we've imported (`last_applied`), excluding
+    /// empty slots. Sync's request watermark keys off this, not the fork-choice
+    /// head in the Status SSZ (which can lag the imported tip).
+    fn last_applied_block_slot(&self) -> Slot {
+        self.state.state().slots.get(self.last_applied).slot.slot.latest_block_header.slot
+    }
+
     fn status_event(&mut self) -> BeaconStateEvent {
         BeaconStateEvent::Status {
             ssz: self.status_payload(),
-            wall_slot: self.ticker.current_slot(),
+            latest_block_slot: self.last_applied_block_slot(),
         }
     }
 
@@ -632,6 +642,19 @@ impl BeaconStateTile {
         self.fork_choice.prune();
         let mut survivors: ArrayVec<usize, SLOTS_RING_N> = ArrayVec::new();
         survivors.extend(self.fork_choice.live_state_seqs());
+
+        // `on_slot_start` advances the head across empty slots into a fresh
+        // ring slot that is never registered as a fork-choice node. It is
+        // still a live descendant of the finalized base, so it must be
+        // re-based too — otherwise its `base_count` goes stale and the next
+        // `delta_view` on it (or a roll from it) trips the base-mirror assert.
+        if !survivors.as_slice().contains(&self.last_applied) {
+            // Cannot overflow: live nodes occupy distinct ring slots, so a full
+            // `survivors` (== SLOTS_RING_N) means every slot is a node and
+            // `last_applied` would have matched above.
+            debug_assert!(survivors.len() < SLOTS_RING_N, "survivors full, last_applied absent");
+            survivors.push(self.last_applied);
+        }
 
         // Unique epoch / longtail ring entries referenced by survivors, so
         // each cumulative log is re-based exactly once when siblings share it.
@@ -904,6 +927,7 @@ impl BeaconStateTile {
                     if let Some(root) = block_root {
                         self.apply_pending_blocks(root, producers);
                     }
+                    producers.produce(self.status_event());
                 }
                 Feedback::RequestParent(parent_root) if self.mode.is_following() => {
                     self.pending_blocks
@@ -1050,15 +1074,36 @@ impl BeaconStateTile {
             });
         }
         let block_slot = SignedBeaconBlockView::slot(data);
+        let block_epoch = block_slot / SLOTS_PER_EPOCH;
+        let finalized_epoch = self.fork_choice.finalized_checkpoint.epoch;
+        if block_epoch < finalized_epoch {
+            return Err(PrecheckError::PreFinalized { block_epoch, finalized_epoch })
+        }
+
         let proposer_index = SignedBeaconBlockView::proposer_index(data);
         let parent_root = *SignedBeaconBlockView::parent_root(data);
         let state_root = *SignedBeaconBlockView::state_root(data);
+
+        let body = SignedBeaconBlockView::body(data);
+        let body_root = ssz_hash::hash_tree_root_body(body);
+        let block_header = BeaconBlockHeader {
+            slot: block_slot,
+            proposer_index,
+            parent_root,
+            state_root,
+            body_root,
+        };
+        let block_root = ssz_hash::hash_tree_root_block_header(&block_header);
+        if self.fork_choice.find_node_idx(&block_root).is_some() {
+            return Err(PrecheckError::AlreadyKnown { block_root });
+        }
 
         let Some(parent_idx) = self.fork_choice.find_node_idx(&parent_root) else {
             let last_applied_slot = self.head_state_slot();
             return Err(PrecheckError::ParentMissing { parent_root, last_applied_slot, block_slot });
         };
-        let parent_seq = self.fork_choice.node(parent_idx).state_seq;
+        let parent_node = self.fork_choice.node(parent_idx);
+        let parent_seq = parent_node.state_seq;
 
         // Immutable read view of the parent post-state.
         let bs = self.state.state();
@@ -1077,18 +1122,6 @@ impl BeaconStateTile {
             return Err(PrecheckError::FutureSlot { block_slot, wall_slot_plus_one });
         }
 
-        let body = SignedBeaconBlockView::body(data);
-        let body_root = ssz_hash::hash_tree_root_body(body);
-        let block_header = BeaconBlockHeader {
-            slot: block_slot,
-            proposer_index,
-            parent_root,
-            state_root,
-            body_root,
-        };
-        let block_root = ssz_hash::hash_tree_root_block_header(&block_header);
-
-        let block_epoch = block_slot / SLOTS_PER_EPOCH;
         let parent_epoch = parent_slot / SLOTS_PER_EPOCH;
         // Fulu proposer selection via `proposer_lookahead` (current + next
         // epoch, 64 slots), fixed at the parent's prior epoch boundary — read
@@ -1140,8 +1173,7 @@ impl BeaconStateTile {
     /// copies the parent's `epoch_idx`/`longtail_idx`, so when the child
     /// crosses an epoch boundary (where `process_epoch` writes those tiers)
     /// it is given private copies — otherwise it would corrupt sibling forks
-    /// sharing the parent's ring entries. Used both for block application and
-    /// for empty-slot head advance (`on_slot_start`).
+    /// sharing the parent's ring entries.
     fn cow_state_for_block(
         &mut self,
         parent_seq: usize,
@@ -2009,14 +2041,6 @@ mod tests {
         assert!(tile.state.state().slots.get(tile.last_applied).epoch_idx.is_some());
     }
 
-    #[test]
-    fn slot_advance_crosses_two_epoch_boundaries() {
-        let mut tile = make_tile();
-        seed_tile(&mut tile, 4, 30);
-        tile.on_slot_start(66);
-        assert_eq!(tile.head_state_slot(), 66);
-    }
-
     /// Regression: advancing the head over an empty epoch-boundary slot must
     /// COW the epoch tier, not shift the parent's shared `proposer_lookahead`
     /// in place. The parent stays a live fork-choice node the proposer
@@ -2049,6 +2073,14 @@ mod tests {
         assert_ne!(head_epoch_idx, anchor_epoch_idx, "head must COW its epoch delta");
         let after = tile.state.state().epochs.get(anchor_epoch_idx).state.proposer_lookahead;
         assert_eq!(before, after, "parent proposer_lookahead shifted in place");
+    }
+
+    #[test]
+    fn slot_advance_crosses_two_epoch_boundaries() {
+        let mut tile = make_tile();
+        seed_tile(&mut tile, 4, 30);
+        tile.on_slot_start(66);
+        assert_eq!(tile.head_state_slot(), 66);
     }
 
     #[test]

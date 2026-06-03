@@ -421,6 +421,7 @@ impl PeerManager {
             RpcInbound::Response(RpcResponseInbound { application_id, stream_id, response }) => {
                 let terminal_protocol = is_terminal_response(stream_id.protocol(), &response)
                     .then_some(stream_id.protocol());
+                let completed_ok = matches!(response, RpcResponse::Complete);
                 match response {
                     RpcResponse::StatusV1(status_v1) => self.handle_event(
                         PeerEvent::P2pPeerStatus {
@@ -487,6 +488,16 @@ impl PeerManager {
                         peer.outbound_in_flight[protocol.ordinal() as usize] =
                             peer.outbound_in_flight[protocol.ordinal() as usize].saturating_sub(1);
                     }
+                    // Stamp `responded` so the progress-timeout can separate
+                    // a peer stall from a local apply-lag.
+                    if protocol == StreamProtocol::BeaconBlocksByRange &&
+                        let Some(req) = self.inflight_syncreq.as_mut() &&
+                        req.peer_id == stream_id.peer() &&
+                        req.start_slot == application_id
+                    {
+                        req.responded = true;
+                        req.delivered |= completed_ok;
+                    }
                 }
             }
         }
@@ -508,29 +519,49 @@ impl PeerManager {
     ///    BlocksByRange capacity, build the SSZ request, emit it, and set
     ///    `inflight_syncreq`.
     pub fn maybe_issue_syncreq(&mut self, now: Instant, emit: &mut impl FnMut(PeerControl)) {
-        let head_slot = self.status().map(|s| StatusView::head_slot(s)).unwrap_or(0);
+        let head_slot = self.local_head_imported_slot;
 
-        // Phase 1 + 2: observe progress / sweep timeout.
+        // Phase 1 + 2: completion (terminator-driven) / progress / timeout.
         if let Some(inflight) = self.inflight_syncreq {
             let end_inclusive = inflight.start_slot + inflight.count - 1;
-            let advanced = head_slot > inflight.last_observed_head_slot;
-            let reached_end = head_slot >= end_inclusive;
 
-            if reached_end {
+            if inflight.delivered {
+                // `Complete`: peer served `[start, min(end, peer_head)]`. Cap by
+                // the serving peer's head — never claim slots past its tip /
+                // trailing empty slots. Under-capping on a stale Status is safe
+                // (re-fetch is idempotent); over-capping would skip real blocks.
+                let peer_head = self
+                    .database
+                    .peer_status_bytes(inflight.peer_id)
+                    .map(StatusView::head_slot)
+                    .unwrap_or(0);
+                self.synced_through = self.synced_through.max(end_inclusive.min(peer_head));
                 self.inflight_syncreq = None;
-            } else if advanced {
+            } else if inflight.responded {
+                // `Error` terminator: peer aborted without serving the full
+                // range. Retry; the served prefix is unknown so the watermark
+                // is left untouched (re-issue falls back to the applied head).
+                self.inflight_syncreq = None;
+            } else if head_slot > inflight.last_observed_head_slot {
                 let r = self.inflight_syncreq.as_mut().expect("checked above");
                 r.last_observed_head_slot = head_slot;
                 r.last_progress_at = now;
             } else {
                 let timeout = Duration::from_millis(self.syncing.inflight_progress_timeout_ms);
                 if now.saturating_duration_since(inflight.last_progress_at) >= timeout {
-                    // Penalize only if no progress was ever made into the
-                    // requested range; otherwise treat as benign drain-end.
+                    // No terminator and no progress. `head < start` ⇒ not a
+                    // single block landed ⇒ peer stall (score). Otherwise the
+                    // terminator was lost but the range applied (or apply-lag) —
+                    // drop without penalty, advancing the watermark if our head
+                    // already covered the range.
                     if head_slot < inflight.start_slot {
                         self.on_rpc_misbehaviour(inflight.peer_id, RpcSeverity::MidTolerance);
+                    } else {
+                        if head_slot >= end_inclusive {
+                            self.synced_through = self.synced_through.max(end_inclusive);
+                        }
+                        self.inflight_syncreq = None;
                     }
-                    self.inflight_syncreq = None;
                 }
             }
         }
@@ -539,10 +570,10 @@ impl PeerManager {
         if self.inflight_syncreq.is_some() {
             return;
         }
-        let Some(local) = self.status() else {
+        if self.status().is_none() {
             return;
-        };
-        let local_head_slot = StatusView::head_slot(local);
+        }
+        let local_head_slot = self.local_head_imported_slot;
 
         // For SyncingFinalized, drive past `(target_epoch + 2) * SLOTS_PER_EPOCH`:
         // Casper FFG needs two more epochs of justification/finalization before
@@ -558,21 +589,31 @@ impl PeerManager {
         if local_head_slot >= target_end_slot {
             return;
         }
-        let start_slot = local_head_slot + 1;
-        let remaining = target_end_slot.saturating_sub(local_head_slot);
+        // Continue past slots a peer already served this catch-up — never
+        // rewind into the delivered range while the (async) apply head lags.
+        let next_base = local_head_slot.max(self.synced_through);
+        if next_base >= target_end_slot {
+            return;
+        }
+        // Flow control: cap how far requests run ahead of the applied head so
+        // in-flight + BS-buffered blocks stay bounded (~one batch ahead).
+        if self.synced_through > local_head_slot + self.syncing.max_blocks_by_range_batch {
+            return;
+        }
+        let start_slot = next_base + 1;
+        let remaining = target_end_slot.saturating_sub(next_base);
         let count = remaining.min(self.syncing.max_blocks_by_range_batch);
         if count == 0 {
             return;
         }
 
         let Some(peer_id) = self.pick_sync_peer() else {
-            tracing::warn!(
+            // Keep the pin; self-heals when an in-flight slot frees or a backer drops.
+            tracing::debug!(
                 target = ?self.current_sync_target(),
                 live_peers = self.database.iter_live_status_bytes().count(),
-                "no good sync peer for pinned target; dropping pin"
+                "no issuable sync peer this iteration; keeping pin"
             );
-            self.current_target = SyncUpdate::Following;
-            // TODO self.target_dirty = true; // setting dirty flag causes spin
             return;
         };
 
@@ -607,6 +648,8 @@ impl PeerManager {
             count,
             last_observed_head_slot: local_head_slot,
             last_progress_at: now,
+            responded: false,
+            delivered: false,
         });
     }
 
@@ -733,7 +776,7 @@ impl PeerManager {
         let mut best: Option<(usize, f64)> = None;
         for (peer, ssz) in self.database.iter_live_status_bytes() {
             if self.burnt_for_target.contains(&peer) {
-                tracing::warn!(peer, ?target, "pick_sync_peer skipping burnt peer");
+                tracing::debug!(peer, ?target, "pick_sync_peer skipping burnt peer");
                 continue;
             }
             let matches = match target {
@@ -747,7 +790,7 @@ impl PeerManager {
                 SyncUpdate::Following => return None,
             };
             if !matches {
-                tracing::warn!(
+                tracing::debug!(
                     peer,
                     ?target,
                     peer_finalized_epoch = StatusView::finalized_epoch(ssz),
@@ -764,7 +807,9 @@ impl PeerManager {
             if peer_state.outbound_in_flight[StreamProtocol::BeaconBlocksByRange.ordinal() as usize] >=
                 MAX_RPC_PROTOCOL_IN_FLIGHT
             {
-                tracing::warn!("too many rpcs in flight already");
+                // Expected backpressure: this peer is at its range-stream cap.
+                // Skip it and try another backer.
+                tracing::debug!(peer, "sync peer at BlocksByRange in-flight cap");
                 continue;
             }
             let s = peer_state.cached_score;

@@ -10,14 +10,13 @@ use flux::{spine::SpineAdapter, tile::Tile, timing::Nanos};
 use serde::Deserialize;
 use silver_beacon_state::{
     ssz_hash::{StateHashScratch, hash_tree_root_state},
-    ticker::SlotTicker,
     tile::BeaconStateTile,
 };
 use silver_beacon_state_data::{BeaconState, BeaconStateOwner};
 use silver_common::{
     BeaconStateEvent, GossipTopic, MessageId, NewGossipMsg, P2pStreamId, RpcInbound,
     RpcResponseInbound, SilverSpine, StreamProtocol, SyncUpdate, TCache, TCacheProducer, TProducer,
-    TRandomAccess, ssz_view::STATUS_V2_SIZE,
+    TRandomAccess, ssz_view::STATUS_V2_SIZE, ticker::SlotTicker,
 };
 
 fn null_stream_id() -> P2pStreamId {

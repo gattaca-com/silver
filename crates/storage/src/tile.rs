@@ -346,7 +346,7 @@ impl Tile<SilverSpine> for StorageTile {
         });
 
         adapter.consume(|beacon_event: BeaconStateEvent, _| match beacon_event {
-            BeaconStateEvent::Status { ssz, wall_slot: _ } => {
+            BeaconStateEvent::Status { ssz, .. } => {
                 let head_slot = StatusView::head_slot(&ssz);
                 let head_root = *StatusView::head_root(&ssz);
                 let finalized_slot = StatusView::finalized_epoch(&ssz) * SLOTS_PER_EPOCH;
