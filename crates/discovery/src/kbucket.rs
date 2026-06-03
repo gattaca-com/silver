@@ -68,6 +68,14 @@ impl AsRef<Key> for Key {
 #[derive(Copy, Clone, PartialEq, Eq, Default, PartialOrd, Ord, Debug)]
 pub struct Distance(U256);
 
+#[cfg(test)]
+impl Distance {
+    /// log2 distance (FindNode bucket index, 1..=256); 0 for identical keys.
+    pub fn log2(&self) -> u64 {
+        NUM_BUCKETS as u64 - self.0.leading_zeros() as u64
+    }
+}
+
 pub const MAX_NODES_PER_BUCKET: usize = 16;
 
 /// A node in a k-bucket.

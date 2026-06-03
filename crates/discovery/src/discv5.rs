@@ -1396,11 +1396,9 @@ mod tests {
 
         do_handshake(&mut a, a_addr, &mut b, b_addr, now);
 
-        // B sends FindNode over all plausible distances; A should include C.
+        // B sends FindNode for C's exact bucket distance from A.
         let mut distances = Distances::new();
-        for d in 250u64..=256 {
-            distances.push(d);
-        }
+        distances.push(Key::from(a.local_id).distance(&Key::from(c_id)).log2());
         inject_message(
             &mut b,
             &mut a,
