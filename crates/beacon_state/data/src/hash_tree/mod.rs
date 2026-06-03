@@ -12,7 +12,10 @@ mod tests;
 pub use delta::DeltaHashTree;
 pub use finalized::FinalizedHashTree;
 
-use crate::types::B256;
+use crate::{
+    ssz_hash::{ZERO_HASHES, hash_concat, mix_in_length},
+    types::B256,
+};
 
 impl FinalizedHashTree {
     /// Write `leaf` to position `i` of the delta. Sparse: only the path
@@ -48,5 +51,17 @@ impl FinalizedHashTree {
     #[inline]
     pub fn prune_delta(&self, delta: &mut DeltaHashTree) {
         self.prune_delta_at(delta, Self::root());
+    }
+
+    /// SSZ `hash_tree_root` for a `List[T, 1<<list_depth]` backed by this
+    /// tree + `delta`. Pads the physical root with zero subtrees up to
+    /// `list_depth`, then mixes in `len`.
+    #[inline]
+    pub fn ssz_list_root(&self, delta: &DeltaHashTree, list_depth: u32, len: usize) -> B256 {
+        let mut root = self.delta_root(delta);
+        for h in self.max_elements().trailing_zeros()..list_depth {
+            root = hash_concat(&root, &ZERO_HASHES[h as usize]);
+        }
+        mix_in_length(&root, len)
     }
 }

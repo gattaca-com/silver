@@ -36,7 +36,7 @@ fn bench_build(c: &mut Criterion) {
         let leaves = random_leaves(n, 0xC0FFEE);
         group.throughput(Throughput::Elements(cap as u64));
         group.bench_with_input(BenchmarkId::from_parameter(label), &leaves, |b, l| {
-            b.iter(|| FinalizedHashTree::new(black_box(l), cap));
+            b.iter(|| FinalizedHashTree::from_leaves(black_box(l).iter().copied(), cap));
         });
     }
     group.finish();

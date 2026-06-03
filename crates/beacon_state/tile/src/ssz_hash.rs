@@ -83,7 +83,7 @@ pub fn hash_tree_root_state(view: &StateDeltaView, scratch: &mut StateHashScratc
         hash_eth1_votes(slot),
         uint64_chunk(slot.eth1_deposit_index),
         view.validators_root(),
-        hash_uint64_list(view.iter_validator_balances(), n, VALIDATOR_REGISTRY_LIMIT),
+        view.balances_root(),
         hash_b256_vector(randao_mixes),
         hash_uint64_vector(slashings),
         hash_uint8_list(view.iter_previous_epoch_participants(), n, VALIDATOR_REGISTRY_LIMIT),

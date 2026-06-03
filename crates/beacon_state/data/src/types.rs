@@ -1,6 +1,7 @@
 use flux::utils::ArrayVec;
 
 use crate::{
+    balances::{BalancesDelta, FinalizedBalances},
     buffer::Reset,
     validators::{FinalizedValidators, ValSeed, ValidatorsDelta},
 };
@@ -74,7 +75,7 @@ impl Finalized {
             longtail: LongtailState::default(),
             pending: PendingQueues::default(),
             validators: FinalizedValidators::with_capacity(cap),
-            balances: FinalizedBalances::with_capacity(cap),
+            balances: FinalizedBalances::with_seed_balances(cap, &[]),
             previous_participation: FinalizedPreviousParticipation::with_capacity(cap),
             current_participation: FinalizedCurrentParticipation::with_capacity(cap),
             inactivity_scores: FinalizedInactivityScores::with_capacity(cap),
@@ -90,13 +91,11 @@ impl Finalized {
         self.slot.slot.slot / SLOTS_PER_EPOCH
     }
 
-    pub fn new(seeds: &[ValSeed]) -> Box<Self> {
+    pub fn new_test(seeds: &[ValSeed]) -> Box<Self> {
         let mut f = Box::new(Self::empty());
         f.validators = FinalizedValidators::with_validators(seeds);
-        let balances = f.balances.slice_mut();
-        for (i, s) in seeds.iter().enumerate() {
-            balances[i] = s.balance;
-        }
+        let balances: Vec<u64> = seeds.iter().map(|s| s.balance).collect();
+        f.balances = FinalizedBalances::with_seed_balances(f.validators.capacity(), &balances);
         f
     }
 }
@@ -482,53 +481,12 @@ impl Reset for PendingQueuesDelta {
     }
 }
 
-// Spec parallel SSZ lists (`balances`, `previous/current_epoch_participation`,
-// `inactivity_scores`). Each is its own `List[T, VALIDATOR_REGISTRY_LIMIT]`
+// Spec parallel SSZ lists (`previous/current_epoch_participation`,
+// `inactivity_scores`; `balances` lives in the `balances` module). Each is its
+// own `List[T, VALIDATOR_REGISTRY_LIMIT]`
 // in the BeaconState and will eventually carry its own hash tree (not yet
 // implemented). Length is whatever the validators layer reports; reading
 // past `base_count` with no edit returns the spec default (0 / false).
-
-/// `balances: List[Gwei, VALIDATOR_REGISTRY_LIMIT]` — finalized side.
-pub struct FinalizedBalances {
-    pub data: Box<[u64]>,
-}
-
-impl FinalizedBalances {
-    pub fn with_capacity(cap: usize) -> Self {
-        Self { data: vec![0u64; cap].into_boxed_slice() }
-    }
-
-    #[inline]
-    pub fn get(&self, i: usize) -> u64 {
-        self.data[i]
-    }
-
-    #[inline]
-    pub fn slice_mut(&mut self) -> &mut [u64] {
-        &mut self.data
-    }
-}
-
-#[derive(Default, Clone)]
-pub struct BalancesDelta {
-    pub edits: Vec<(u32, u64)>,
-}
-
-impl BalancesDelta {
-    pub fn prune_to_base(&mut self, base: &FinalizedBalances, new_base_count: usize) {
-        self.edits
-            .retain(|(idx, v)| (*idx as usize) >= new_base_count || base.get(*idx as usize) != *v);
-    }
-}
-
-impl Reset for BalancesDelta {
-    fn reset(&mut self) {
-        self.edits.clear();
-    }
-    fn reset_from(&mut self, other: &Self) {
-        self.edits.clone_from(&other.edits);
-    }
-}
 
 /// `previous_epoch_participation: List[ParticipationFlags,
 /// VALIDATOR_REGISTRY_LIMIT]`.

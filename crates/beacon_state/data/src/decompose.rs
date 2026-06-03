@@ -1,10 +1,10 @@
 use silver_common_macros::timed;
 
 use crate::{
-    FinalizedValidators, SpecConfig, ValidatorsDecodeError, ssz_hash,
+    FinalizedBalances, FinalizedValidators, SpecConfig, ValidatorsDecodeError, ssz_hash,
     types::{
         B256, Checkpoint, EPOCHS_PER_HISTORICAL_VECTOR, EPOCHS_PER_SLASHINGS_VECTOR,
-        EpochStateDelta, Eth1Data, ExecutionPayloadHeader, Finalized, FinalizedBalances,
+        EpochStateDelta, Eth1Data, ExecutionPayloadHeader, Finalized,
         FinalizedCurrentParticipation, FinalizedInactivityScores, FinalizedPreviousParticipation,
         HISTORICAL_ROOTS_LIMIT, HistoricalSummary, LongtailState, MAX_ETH1_VOTES,
         PENDING_CONSOLIDATIONS_LIMIT, PENDING_DEPOSITS_LIMIT, PENDING_PARTIAL_WITHDRAWALS_LIMIT,
@@ -141,7 +141,7 @@ fn u32_le(s: &[u8], off: usize) -> u32 {
 }
 
 #[inline]
-fn u64_le(s: &[u8], off: usize) -> u64 {
+pub(crate) fn u64_le(s: &[u8], off: usize) -> u64 {
     u64::from_le_bytes(s[off..off + 8].try_into().unwrap())
 }
 
@@ -432,22 +432,11 @@ impl Finalized {
 
         // Match the validators' capacity so per-validator columns stay aligned.
         let cap = self.validators.capacity();
-        self.balances = FinalizedBalances::with_capacity(cap);
+        self.balances =
+            FinalizedBalances::from_ssz(cap, &ssz[o.balances..o.prev_participation], n)?;
         self.previous_participation = FinalizedPreviousParticipation::with_capacity(cap);
         self.current_participation = FinalizedCurrentParticipation::with_capacity(cap);
         self.inactivity_scores = FinalizedInactivityScores::with_capacity(cap);
-
-        let bal_bytes = &ssz[o.balances..o.prev_participation];
-        if !bal_bytes.len().is_multiple_of(8) || bal_bytes.len() / 8 != n {
-            return Err(DecomposeError::BalancesLenMismatch {
-                bytes: bal_bytes.len(),
-                validators: n,
-            });
-        }
-        let balances = self.balances.slice_mut();
-        for (i, b) in balances.iter_mut().enumerate().take(n) {
-            *b = u64_le(bal_bytes, i * 8);
-        }
 
         let prev_part = &ssz[o.prev_participation..o.cur_participation];
         if prev_part.len() != n {
@@ -754,9 +743,7 @@ impl Finalized {
         delta.validators.promote_into_base(&mut self.validators);
 
         // Sibling columns (sparse edits only).
-        for &(idx, val) in &delta.balances.edits {
-            self.balances.slice_mut()[idx as usize] = val;
-        }
+        delta.balances.promote_into_base(&mut self.balances);
         for &(idx, val) in &delta.previous_participation.edits {
             self.previous_participation.slice_mut()[idx as usize] = val;
         }

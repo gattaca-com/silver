@@ -5,13 +5,13 @@ use crate::{
     Withdrawals,
     buffer::{DeltaBuffer, RollResult},
     types::{
-        B256, BLSPubkey, BalancesDelta, BeaconBlockHeader, CurrentParticipationDelta,
-        EPOCHS_RING_N, Epoch, EpochState, EpochStateDelta, EpochStateFinalized, Eth1Data,
-        ExecutionPayloadHeader, FAR_FUTURE_EPOCH, Finalized, FinalizedBalances,
-        FinalizedCurrentParticipation, FinalizedInactivityScores, FinalizedPreviousParticipation,
-        HistoricalSummary, Immutable, InactivityScoresDelta, LONGTAILS_RING_N, LongtailState,
-        PendingConsolidation, PendingDeposit, PendingPartialWithdrawal, PreviousParticipationDelta,
-        SLOTS_PER_EPOCH, Slot, SlotState, StateDelta,
+        B256, BLSPubkey, BeaconBlockHeader, CurrentParticipationDelta, EPOCHS_RING_N, Epoch,
+        EpochState, EpochStateDelta, EpochStateFinalized, Eth1Data, ExecutionPayloadHeader,
+        FAR_FUTURE_EPOCH, Finalized, FinalizedCurrentParticipation, FinalizedInactivityScores,
+        FinalizedPreviousParticipation, HistoricalSummary, Immutable, InactivityScoresDelta,
+        LONGTAILS_RING_N, LongtailState, PendingConsolidation, PendingDeposit,
+        PendingPartialWithdrawal, PreviousParticipationDelta, SLOTS_PER_EPOCH, Slot, SlotState,
+        StateDelta,
     },
 };
 
@@ -505,6 +505,11 @@ impl<'a> StateDeltaView<'a> {
     }
 
     #[inline]
+    pub fn balances_root(&self) -> B256 {
+        self.delta.balances.list_root(&self.fin.balances, self.validators_count())
+    }
+
+    #[inline]
     pub fn validator_by_pubkey(&self, pk: &BLSPubkey) -> Option<u32> {
         if let Some(i) = self.fin.validators.find_by_pubkey(pk) {
             return Some(i as u32);
@@ -562,10 +567,7 @@ impl<'a> StateDeltaView<'a> {
     #[inline]
     pub fn validator_balance(&self, ix: usize) -> u64 {
         let base_count = self.delta.validators.base_count;
-        if let Some(v) = lookup_sparse(&self.delta.balances.edits, ix as u32) {
-            return v;
-        }
-        if ix < base_count { self.fin.balances.get(ix) } else { 0 }
+        self.delta.balances.effective_balance(&self.fin.balances, base_count, ix)
     }
 
     #[inline]
@@ -664,12 +666,7 @@ impl<'a> StateDeltaView<'a> {
 
     pub fn iter_validator_balances(&self) -> impl Iterator<Item = u64> + '_ {
         let base_count = self.delta.validators.base_count;
-        Self::sweep(
-            &self.delta.balances.edits,
-            &self.fin.balances.data[..base_count],
-            0,
-            self.validators_count(),
-        )
+        self.delta.balances.iter(&self.fin.balances, base_count, self.validators_count())
     }
 
     pub fn iter_validator_effective_balances(&self) -> impl Iterator<Item = u64> + '_ {
@@ -1127,8 +1124,7 @@ impl<'a> StateDeltaView<'a> {
 
     #[inline]
     pub fn set_balance(&mut self, idx: u32, v: u64) {
-        let base_count = self.delta.validators.base_count;
-        set_against(&mut self.delta.balances, &self.fin.balances, base_count, idx, v);
+        self.delta.balances.set(&self.fin.balances, idx, v);
     }
 
     #[inline]
@@ -1206,19 +1202,17 @@ impl<'a> StateDeltaView<'a> {
         }
     }
 
-    // ── Dense install (zero-alloc epoch-boundary rewrites) ───────────────
+    // ── Sparse install (epoch-boundary writes) ───────────────────────────
     //
-    // The caller fills `dense` with `(i, new_value)` for `i in 0..total` in
-    // ascending order (computed via a zipped read-iterator sweep — no
-    // per-column `collect`), then hands it here. We elide entries equal to
-    // the finalized base and swap it into the layer's edit vec, reusing the
-    // caller's buffer (it comes back holding the prior edits, ready to be
-    // cleared and refilled next pass).
+    // The caller fills `changes` with only the `(i, new_value)` pairs that
+    // actually changed (pre-filtered), in ascending order. Existing edits for
+    // untouched indices are preserved.
 
+    /// Sparse counterpart of [`Self::set_balance`]: apply pre-filtered balance
+    /// changes. See [`crate::BalancesDelta::set_many`].
     #[inline]
-    pub fn install_balances(&mut self, dense: &mut Vec<(u32, u64)>) {
-        let base_count = self.delta.validators.base_count;
-        install_against(&mut self.delta.balances, &self.fin.balances, base_count, dense);
+    pub fn set_many_balances(&mut self, changes: &[(u32, u64)]) {
+        self.delta.balances.set_many(&self.fin.balances, changes);
     }
 
     #[inline]
@@ -1244,24 +1238,6 @@ impl<'a> StateDeltaView<'a> {
     }
 
     // ── Bulk replace (sibling layers only — dense epoch-boundary passes)
-
-    #[inline]
-    pub fn replace_balances<F: FnMut(usize, u64) -> u64>(
-        &mut self,
-        scratch: &mut Vec<(u32, u64)>,
-        f: F,
-    ) {
-        let base_count = self.delta.validators.base_count;
-        let total = base_count + self.delta.validators.appended.len();
-        replace_against(
-            &mut self.delta.balances,
-            &self.fin.balances,
-            base_count,
-            total,
-            scratch,
-            f,
-        );
-    }
 
     #[inline]
     pub fn replace_inactivity_scores<F: FnMut(usize, u64) -> u64>(
@@ -1563,21 +1539,6 @@ fn install_against<L: SparseLayer>(
     std::mem::swap(delta.edits_mut(), dense);
 }
 
-impl SparseLayer for BalancesDelta {
-    type Base = FinalizedBalances;
-    type Val = u64;
-    const APPENDED_DEFAULT: u64 = 0;
-    fn edits_mut(&mut self) -> &mut Vec<(u32, u64)> {
-        &mut self.edits
-    }
-    fn base_get(base: &FinalizedBalances, i: usize) -> u64 {
-        base.get(i)
-    }
-    fn base_data(base: &FinalizedBalances) -> &[u64] {
-        &base.data
-    }
-}
-
 impl SparseLayer for PreviousParticipationDelta {
     type Base = FinalizedPreviousParticipation;
     type Val = u8;
@@ -1628,7 +1589,7 @@ mod tests {
     use super::*;
     use crate::{
         types::{HistoricalSummary, PendingDeposit, SlotState, SlotStateDelta},
-        validators::ValidatorsDelta,
+        validators::{ValSeed, ValidatorsDelta},
     };
 
     fn fresh_finalized() -> Box<Finalized> {
@@ -1674,29 +1635,6 @@ mod tests {
         };
         *buf.get_mut(seq) = entry;
         seq
-    }
-
-    /// Grow the base via the sanctioned path: delta append +
-    /// `promote_into_base`.
-    fn push_validator_pk(
-        f: &mut Finalized,
-        pubkey: [u8; 48],
-        credentials: Withdrawals,
-        balance_v: u64,
-    ) {
-        let mut d = ValidatorsDelta::new_at(&f.validators);
-        let i = d.append(&f.validators, pubkey, blst::min_pk::PublicKey::default(), credentials)
-            as usize;
-        d.promote_into_base(&mut f.validators);
-        f.balances.slice_mut()[i] = balance_v;
-    }
-
-    fn push_validator(f: &mut Finalized, credentials: Withdrawals, balance_v: u64) {
-        push_validator_pk(f, [0u8; 48], credentials, balance_v);
-    }
-
-    fn push_default_validator(f: &mut Finalized, balance_v: u64) {
-        push_validator(f, Withdrawals::default(), balance_v);
     }
 
     #[test]
@@ -1817,9 +1755,7 @@ mod tests {
 
     #[test]
     fn balance_edit_overrides_base() {
-        let mut f = fresh_finalized();
-        push_default_validator(&mut f, 1_000);
-
+        let f = Finalized::new_test(&[ValSeed { balance: 1_000, ..ValSeed::default() }]);
         let mut d = anchored_delta(&f);
         fresh_rings!(epochs, longtails);
         {
@@ -1827,7 +1763,7 @@ mod tests {
             assert_eq!(view.validator_balance(0), 1_000);
         }
 
-        d.balances.edits.push((0, 2_500));
+        d.balances.edits.merge_in_place(&[(0, 2_500)]);
         let view = StateDeltaView::new(&f, &mut d, &mut epochs, &mut longtails);
         assert_eq!(view.validator_balance(0), 2_500);
     }
@@ -1874,14 +1810,11 @@ mod tests {
 
     #[test]
     fn iter_balances_merges_in_order() {
-        let mut f = fresh_finalized();
-        for i in 0..5u64 {
-            push_default_validator(&mut f, i * 100);
-        }
-
+        let seeds: Vec<ValSeed> =
+            (0..5u64).map(|i| ValSeed { balance: i * 100, ..ValSeed::default() }).collect();
+        let f = Finalized::new_test(&seeds);
         let mut d = anchored_delta(&f);
-        d.balances.edits.push((1, 999));
-        d.balances.edits.push((3, 333));
+        d.balances.edits.merge_in_place(&[(1, 999), (3, 333)]);
         fresh_rings!(epochs, longtails);
         let view = StateDeltaView::new(&f, &mut d, &mut epochs, &mut longtails);
         let got: Vec<u64> = view.iter_validator_balances().collect();
@@ -1920,11 +1853,9 @@ mod tests {
 
     #[test]
     fn find_by_pubkey_hits_base_index_then_appended() {
-        let mut f = fresh_finalized();
         let pk_a = [0xA; 48];
         let pk_b = [0xB; 48];
-        push_validator_pk(&mut f, pk_a, Withdrawals::default(), 0);
-
+        let f = Finalized::new_test(&[ValSeed { pubkey: pk_a, ..ValSeed::default() }]);
         let mut d = anchored_delta(&f);
         d.validators.append(&f.validators, pk_b, Default::default(), Default::default());
 
@@ -1953,24 +1884,6 @@ mod tests {
     }
 
     #[test]
-    fn replace_balances_elides_same_as_base() {
-        let mut f = fresh_finalized();
-        for i in 0..4u64 {
-            push_default_validator(&mut f, i * 10);
-        }
-
-        let mut d = anchored_delta(&f);
-        let mut scratch: Vec<(u32, u64)> = Vec::new();
-        let base_count = f.validators.validator_count();
-        let total = base_count; // no appended in this test
-        // Even idx → base value (elided); odd idx → +1000 (kept).
-        replace_against(&mut d.balances, &f.balances, base_count, total, &mut scratch, |i, cur| {
-            if i % 2 == 0 { cur } else { cur + 1000 }
-        });
-        assert_eq!(d.balances.edits, vec![(1, 1010), (3, 1030)]);
-    }
-
-    #[test]
     fn apply_delta_advances_finalized_slot() {
         let mut f = fresh_finalized();
         let mut d = anchored_delta(&f);
@@ -1989,46 +1902,24 @@ mod tests {
         let mut d = anchored_delta(&f);
         let pk = [0xFE; 48];
         d.validators.append(&f.validators, pk, Default::default(), Default::default());
-        d.balances.edits.push((0, 32_000_000_000));
+        d.balances.edits.merge_in_place(&[(0, 32_000_000_000)]);
 
         f.apply_delta(&d, None, None);
         assert_eq!(f.validators.validator_count(), 1);
-        assert_eq!(f.balances.get(0), 32_000_000_000);
         assert_eq!(f.validators.activation_epoch(0), u64::MAX);
         assert_eq!(f.validators.find_by_pubkey(&pk), Some(0));
-    }
 
-    #[test]
-    fn set_balance_inserts_then_updates_then_elides() {
-        let mut f = fresh_finalized();
-        for _ in 0..3 {
-            push_default_validator(&mut f, 1_000);
-        }
-        let mut d = anchored_delta(&f);
-
-        let base_count = f.validators.validator_count();
-
-        // Insert at idx 2.
-        set_against(&mut d.balances, &f.balances, base_count, 2, 2_500);
-        assert_eq!(d.balances.edits, vec![(2, 2_500)]);
-
-        // Insert at idx 0 — must land before idx 2 to keep sorted.
-        set_against(&mut d.balances, &f.balances, base_count, 0, 4_000);
-        assert_eq!(d.balances.edits, vec![(0, 4_000), (2, 2_500)]);
-
-        // Update in place.
-        set_against(&mut d.balances, &f.balances, base_count, 0, 5_000);
-        assert_eq!(d.balances.edits, vec![(0, 5_000), (2, 2_500)]);
-
-        // Setting back to base value elides the edit.
-        set_against(&mut d.balances, &f.balances, base_count, 0, 1_000);
-        assert_eq!(d.balances.edits, vec![(2, 2_500)]);
+        // Promoted balance reads back through a fresh delta (the only read path
+        // into the base), confirming apply_delta folded it into the store.
+        fresh_rings!(epochs, longtails);
+        let mut d2 = anchored_delta(&f);
+        let view = StateDeltaView::new(&f, &mut d2, &mut epochs, &mut longtails);
+        assert_eq!(view.validator_balance(0), 32_000_000_000);
     }
 
     #[test]
     fn set_slashed_round_trips() {
-        let mut f = fresh_finalized();
-        push_default_validator(&mut f, 0);
+        let f = Finalized::new_test(&[ValSeed::default()]);
         let mut d = anchored_delta(&f);
         fresh_rings!(epochs, longtails);
 
@@ -2049,9 +1940,7 @@ mod tests {
 
     #[test]
     fn append_validator_returns_idx_and_grows_count() {
-        let mut f = fresh_finalized();
-        push_default_validator(&mut f, 0);
-        push_default_validator(&mut f, 0);
+        let mut f = Finalized::new_test(&[ValSeed::default(), ValSeed::default()]);
         let mut d = anchored_delta(&f);
         fresh_rings!(epochs, longtails);
 
@@ -2085,9 +1974,7 @@ mod tests {
     /// slicing breaks, those return 0.
     #[test]
     fn iter_epoch_fields_yield_far_future_for_appended_no_edit() {
-        let mut f = fresh_finalized();
-        push_default_validator(&mut f, 0);
-        push_default_validator(&mut f, 0);
+        let f = Finalized::new_test(&[ValSeed::default(), ValSeed::default()]);
         let mut d = anchored_delta(&f);
 
         // Append two validators with no follow-up set_*. They should appear
@@ -2104,7 +1991,6 @@ mod tests {
         let withdrs: Vec<u64> = view.iter_withdrawable_epochs().collect();
         let eligs: Vec<u64> = view.iter_activation_eligibility_epochs().collect();
 
-        // Base validators (pushed via push_default_validator with u64::MAX).
         assert_eq!(acts[..2], [u64::MAX, u64::MAX]);
         assert_eq!(exits[..2], [u64::MAX, u64::MAX]);
         assert_eq!(withdrs[..2], [u64::MAX, u64::MAX]);
@@ -2130,13 +2016,12 @@ mod tests {
     ///   - appended validator, with edit → the edit value
     #[test]
     fn iter_validator_credentials_covers_all_cases() {
-        let mut f = fresh_finalized();
-        // Two base validators with distinct credentials.
         let base_creds_0 = Withdrawals([0xA1; 32]);
         let base_creds_1 = Withdrawals([0xA2; 32]);
-        push_validator(&mut f, base_creds_0, 0);
-        push_validator(&mut f, base_creds_1, 0);
-
+        let f = Finalized::new_test(&[
+            ValSeed { withdrawal_credentials: base_creds_0, ..ValSeed::default() },
+            ValSeed { withdrawal_credentials: base_creds_1, ..ValSeed::default() },
+        ]);
         let mut d = anchored_delta(&f);
 
         // Append two with distinct credentials at construction.

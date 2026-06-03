@@ -5,7 +5,6 @@ use crate::{
     Withdrawals,
     buffer::Reset,
     hash_tree::DeltaHashTree,
-    ssz_hash::{ZERO_HASHES, hash_concat, mix_in_length},
     types::{BLSPubkey, Epoch, FAR_FUTURE_EPOCH, VALIDATOR_REGISTRY_LIMIT},
 };
 
@@ -251,12 +250,8 @@ impl ValidatorsDelta {
     /// the registry-limit depth, then mix in the validator count.
     pub fn list_root(&self, base: &FinalizedValidators) -> crate::B256 {
         const LIST_DEPTH: u32 = VALIDATOR_REGISTRY_LIMIT.trailing_zeros();
-        let tree = base.hash();
-        let mut root = tree.delta_root(&self.hash_overlay);
-        for h in tree.max_elements().trailing_zeros()..LIST_DEPTH {
-            root = hash_concat(&root, &ZERO_HASHES[h as usize]);
-        }
-        mix_in_length(&root, self.base_count + self.appended.len())
+        let len = self.base_count + self.appended.len();
+        base.hash().ssz_list_root(&self.hash_overlay, LIST_DEPTH, len)
     }
 
     /// Append a fresh validator with spec-default Validator-container

@@ -1,3 +1,4 @@
+pub use balances::{BalancesDelta, FinalizedBalances};
 pub use buffer::DeltaBuffer;
 pub use delta_view::{StateDeltaReadView, StateDeltaView, ValidatorRow};
 pub use hash_tree::{DeltaHashTree, FinalizedHashTree};
@@ -10,10 +11,12 @@ pub use validators::{
 };
 pub use view::{BeaconStateOwner, BeaconStateReader};
 
+mod balances;
 pub mod buffer;
 mod decompose;
 mod delta_view;
 mod hash_tree;
+pub(crate) mod sparse;
 pub mod types;
 mod validators;
 mod view;
