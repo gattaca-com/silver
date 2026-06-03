@@ -143,8 +143,8 @@ fn attester_slashing() {
             return false;
         }
         let mut vm = view_mut(s);
-        let mut scratch = Vec::new();
-        state_transition::process_attester_slashings(&cfg, &mut vm, &list, &mut scratch).is_ok()
+        state_transition::process_attester_slashings(&cfg, &mut vm, &list, &mut active_scratch)
+            .is_ok()
     });
 }
 

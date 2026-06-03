@@ -38,6 +38,7 @@ backtrace = { workspace = true, optional = true }
 
 [features]
 alloc-profile = ["dep:backtrace"]
+test-util = []
 
 [build-dependencies]
 buffa-build = "0.2.0"

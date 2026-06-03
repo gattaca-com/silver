@@ -149,6 +149,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         outgoing_gossip_producer,
         hex::encode(config.fork_digest()),
     )?;
+    let chain_config = config.chain_config();
+
+    let ticker = SlotTicker::new(
+        chain_config.genesis_unix_secs,
+        chain_config.slot_duration(),
+        chain_config.playload_lookahead(),
+    );
+
     let control_tile = Controller::new(
         PeerManager::new(
             config.gossip_topics()?,
@@ -158,6 +166,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             local_enr.into(),
         ),
         outgoing_rpc_producer.clone(),
+        ticker.clone(),
     );
 
     let chain_config = config.chain_config();

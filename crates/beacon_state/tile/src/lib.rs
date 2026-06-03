@@ -7,7 +7,6 @@ mod fork_choice;
 pub mod shuffling;
 pub mod ssz_hash;
 pub mod state_transition;
-pub mod ticker;
 pub mod tile;
 mod validate;
 
@@ -15,5 +14,5 @@ mod validate;
 pub(crate) mod test_signing;
 
 pub use error::{Error, PrecheckError, Result};
-pub use ticker::SlotTicker;
+pub use silver_common::ticker::SlotTicker;
 pub use tile::BeaconStateTile;

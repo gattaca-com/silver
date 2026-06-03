@@ -245,7 +245,7 @@ impl Tile<SilverSpine> for GossipHandler {
             });
         });
         adapter.consume(|beacon_event: BeaconStateEvent, _producers| {
-            if let BeaconStateEvent::Status { ssz, wall_slot: _ } = beacon_event {
+            if let BeaconStateEvent::Status { ssz, .. } = beacon_event {
                 self.fork_digest_hex = hex::encode(StatusView::fork_digest(&ssz));
             }
         });

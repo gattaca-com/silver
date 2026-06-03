@@ -41,6 +41,7 @@ impl Phase {
     }
 }
 
+#[derive(Clone)]
 pub struct SlotTicker {
     anchor: Instant,
     anchor_genesis_ms: u64,
@@ -64,7 +65,12 @@ impl SlotTicker {
             .expect("system clock before unix epoch")
             .as_millis() as u64;
         let genesis_ms = genesis_unix_secs * 1000;
-        assert!(now_unix_ms >= genesis_ms, "pre-genesis not supported");
+        assert!(
+            now_unix_ms >= genesis_ms,
+            "pre-genesis not supported: {} >= {}",
+            now_unix_ms,
+            genesis_ms
+        );
 
         let slot_ms = slot_duration.as_millis() as u64;
         let payload_off = slot_ms.saturating_sub(prepare_payload_lookahead.as_millis() as u64);
@@ -98,6 +104,15 @@ impl SlotTicker {
     /// Current wall-clock slot.
     pub fn current_slot(&self) -> u64 {
         self.since_genesis_ms() / self.slot_ms
+    }
+
+    /// Force `current_slot()` to return `slot` at this moment and reset
+    /// the in-slot phase state.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn set_current_slot(&mut self, slot: u64) {
+        self.anchor = Instant::now();
+        self.anchor_genesis_ms = slot * self.slot_ms;
+        self.last = None;
     }
 
     pub fn tick(&mut self) -> TickEvent {

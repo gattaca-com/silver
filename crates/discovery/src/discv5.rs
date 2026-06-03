@@ -30,6 +30,15 @@ const NONCE_RING_SIZE: usize = 64;
 const PENDING_PROBES_CAPACITY: usize = 64;
 const BANNED_NODES_CAPACITY: usize = 32;
 
+const PRE_FULU_FORK_DIGESTS: &[[u8; 4]] = &[
+    [0xb5, 0x30, 0x3f, 0x2a], // Phase 0
+    [0xaf, 0xca, 0xab, 0xa0], // Altair
+    [0x4a, 0x26, 0xc5, 0x8b], // Bellatrix
+    [0xbb, 0xa4, 0xda, 0x96], // Capella
+    [0x6a, 0x95, 0xa1, 0xa9], // Deneb
+    [0x9f, 0xed, 0x6b, 0x22], // Electra
+];
+
 pub struct DiscV5 {
     config: DiscoveryConfig,
     local_key: SecretKey,
@@ -325,7 +334,7 @@ impl DiscV5 {
     ) {
         for raw in nodes.iter() {
             let Ok(enr) = Enr::decode(&mut raw.as_slice()) else { continue };
-            if enr.eth2().map(|e| e[..4] != self.fork_digest).unwrap_or(false) {
+            if !self.keep_for_routing(&enr) {
                 continue;
             }
 
@@ -736,6 +745,22 @@ impl DiscV5 {
         Enr::decode(&mut raw.as_slice()).ok()
     }
 
+    fn keep_for_routing(&self, enr: &Enr) -> bool {
+        let Some(eth2) = enr.eth2() else {
+            return true;
+        };
+        let digest: [u8; 4] = eth2[..4].try_into().expect("eth2 field >= 4 bytes");
+        digest == self.fork_digest || PRE_FULU_FORK_DIGESTS.contains(&digest)
+    }
+
+    fn emit_to_pm(&self, enr: &Enr) -> bool {
+        let Some(eth2) = enr.eth2() else {
+            return true;
+        };
+        let digest: [u8; 4] = eth2[..4].try_into().expect("eth2 field >= 4 bytes");
+        digest == self.fork_digest
+    }
+
     fn random_distances(n: usize, include_self: bool) -> Distances {
         let n = n.min(NUM_DISTANCES_TO_REQUEST);
         let mut distances = Distances::new();
@@ -920,6 +945,9 @@ impl Discovery for DiscV5 {
     }
 
     fn add_enr(&mut self, enr: &Enr, now: Instant) {
+        if !self.keep_for_routing(enr) {
+            return;
+        }
         let addr = if let (Some(ip4), Some(udp4)) = (enr.ip4(), enr.udp4()) {
             SocketAddr::new(IpAddr::V4(ip4), udp4)
         } else if let (Some(ip6), Some(udp6)) = (enr.ip6(), enr.udp6()) {
@@ -979,7 +1007,9 @@ impl Discovery for DiscV5 {
                     continue;
                 }
                 self.metrics.nodes_discovered += 1;
-                f(DiscoveryEvent::NodeFound(enr));
+                if self.emit_to_pm(&enr) {
+                    f(DiscoveryEvent::NodeFound(enr));
+                }
             }
         }
 
@@ -1041,7 +1071,7 @@ impl Discovery for DiscV5 {
         let (packet, aad) = match Packet::decode(&self.local_id, data) {
             Ok(v) => v,
             Err(e) => {
-                warn!(%src_addr, %e, len = data.len(), "packet decode failed");
+                trace!(%src_addr, %e, len = data.len(), "packet decode failed");
                 return;
             }
         };

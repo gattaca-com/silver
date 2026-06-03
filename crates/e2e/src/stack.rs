@@ -10,7 +10,7 @@ use flux::{spine::SpineAdapter, tile::Tile};
 use quinn_proto::Endpoint;
 use silver_common::{
     Enr, Identify, Keypair, PeerId, ProtoIdentify, SilverSpine, TCache, TCacheProducer, TConsumer,
-    TProducer, TRandomAccess, ssz_view::METADATA_SIZE,
+    TProducer, TRandomAccess, ssz_view::METADATA_SIZE, ticker::SlotTicker,
 };
 use silver_config::{DiscoveryConfig, ScoreParams, SyncingConfig};
 use silver_control::Controller;
@@ -23,6 +23,17 @@ use crate::Stats;
 
 /// How much space each dedicated TCache gets.
 const TCACHE_SIZE: usize = 1 << 25;
+
+/// Dummy ticker for harness tests that don't exercise sync timing.
+/// Genesis = "now" so `current_slot()` starts near 0; tests that care
+/// about specific slots should override via `set_current_slot`.
+fn harness_ticker() -> SlotTicker {
+    SlotTicker::new(
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),
+        std::time::Duration::from_secs(12),
+        std::time::Duration::from_secs(4),
+    )
+}
 
 /// Dummy tile marker types — only exist so flux can derive unique tile names
 /// (via `short_typename`) when building auxiliary `SpineAdapter`s.
@@ -263,6 +274,7 @@ impl PublisherStack {
                 [0u8; METADATA_SIZE],
             ),
             TCache::multi_producer("dummy_rpc_out", 32), // dummpy rpc out
+            harness_ticker(),
         );
 
         // Spine + per-tile adapters.
@@ -369,6 +381,7 @@ impl EchoStack {
                 [0u8; METADATA_SIZE],
             ),
             TCache::multi_producer("dummy_rpc_out", 32), // dummpy rpc out
+            harness_ticker(),
         );
 
         let mut spine = SilverSpine::new_with_base_dir(base_dir, Some(path_suffix));

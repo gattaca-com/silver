@@ -8,6 +8,7 @@ use silver_common::{
     BeaconStateEvent, P2pSend, PeerControl, PeerEvent, RpcInbound, RpcOutbound, RpcRequestOutbound,
     SilverSpine, TCacheProducer, TCacheRead, TMultiProducer,
     ssz_view::{METADATA_SIZE, STATUS_V2_SIZE},
+    ticker::SlotTicker,
 };
 use silver_peer::PeerManager;
 
@@ -21,6 +22,8 @@ pub struct Controller {
     last_status: Instant,
     last_drain: Instant,
 
+    ticker: SlotTicker,
+
     /// When false, the 17000ms heartbeat skips the per-peer Ping fan-out.
     /// Tests use this to keep the peer-state machine ticking without
     /// generating background Ping traffic that would interfere with
@@ -29,10 +32,14 @@ pub struct Controller {
 }
 
 impl Controller {
-    /// Build a Controller with a fresh `PeerManager`. `status` and
-    /// `metadata` start empty — callers update them via `set_status` /
-    /// `set_metadata` once chain state is available.
-    pub fn new(peer_manager: PeerManager, rpc_producer: TMultiProducer) -> Self {
+    /// Build a Controller. `status` and `metadata` start empty — callers
+    /// update them via `set_status` / `set_metadata` once chain state is
+    /// available.
+    pub fn new(
+        peer_manager: PeerManager,
+        rpc_producer: TMultiProducer,
+        ticker: SlotTicker,
+    ) -> Self {
         Self {
             peer_manager,
             rpc_producer,
@@ -40,12 +47,13 @@ impl Controller {
             last_ping: Instant::now(),
             last_status: Instant::now(),
             last_drain: Instant::now(),
+            ticker,
             auto_ping: true,
         }
     }
 
-    pub fn set_status(&mut self, status: [u8; STATUS_V2_SIZE], wall_slot: u64) {
-        self.peer_manager.set_status(status, wall_slot);
+    pub fn set_status(&mut self, status: [u8; STATUS_V2_SIZE]) {
+        self.peer_manager.set_status(status);
     }
 
     pub fn set_metadata(&mut self, metadata: [u8; METADATA_SIZE]) {
@@ -131,14 +139,17 @@ impl Tile<SilverSpine> for Controller {
         });
 
         adapter.consume(|beacon_event: BeaconStateEvent, _producers| match beacon_event {
-            BeaconStateEvent::Status { ssz, wall_slot } => {
-                self.peer_manager.set_status(ssz, wall_slot);
+            BeaconStateEvent::Status { ssz, latest_block_slot } => {
+                self.peer_manager.set_status(ssz);
+                self.peer_manager.set_local_head_imported(latest_block_slot);
             }
             BeaconStateEvent::BlockRejected { block_root, source } => {
                 self.peer_manager.record_block_rejected(block_root, source);
             }
             _ => {}
         });
+
+        self.peer_manager.set_wall_slot(self.ticker.current_slot());
 
         if let Some(target) = self.peer_manager.maybe_emit_sync_target() {
             adapter.produce(target);
@@ -202,8 +213,14 @@ impl Tile<SilverSpine> for Controller {
             }
         }
 
-        if self.last_status.elapsed() > Duration::from_secs(30) {
-            self.last_status = Instant::now();
+        // Off-schedule Status fan-out on a silent fall-behind. Tight 1 s
+        // backoff: if we suddenly look behind wall_slot, peers either know
+        // a newer head or we need to learn we're stranded — either way,
+        // refresh sooner rather than waiting on the 5 min keepalive.
+        let fell_behind =
+            self.peer_manager.fell_behind() && self.last_status.elapsed() > Duration::from_secs(1);
+        if fell_behind || self.last_status.elapsed() > Duration::from_secs(30) {
+            self.last_status = now;
             self.peer_manager.fan_out_status(&mut |pc| {
                 match pc {
                     PeerControl::P2pSend(send) => adapter.produce(send),

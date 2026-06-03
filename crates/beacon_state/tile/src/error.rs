@@ -1,4 +1,4 @@
-use silver_beacon_state_data::{B256, BLSPubkey, Slot};
+use silver_beacon_state_data::{B256, BLSPubkey, Epoch, Slot};
 use thiserror::Error;
 
 use crate::tile::Feedback;
@@ -13,8 +13,12 @@ pub enum PrecheckError {
         b256_hex(parent_root)
     )]
     ParentMissing { parent_root: B256, last_applied_slot: Slot, block_slot: Slot },
+    #[error("past block: block_epoch={block_epoch} finalized_epoch={finalized_epoch}")]
+    PreFinalized { block_epoch: Epoch, finalized_epoch: Epoch },
     #[error("block past-slot precheck failed: block_slot={block_slot} parent_slot={parent_slot}")]
     PastSlot { block_slot: Slot, parent_slot: Slot },
+    #[error("block already imported: block_root=0x{}", b256_hex(block_root))]
+    AlreadyKnown { block_root: B256 },
     #[error(
         "block ticker slot precheck failed: block_slot={block_slot} ticker={wall_slot_plus_one}"
     )]
@@ -45,7 +49,10 @@ impl PrecheckError {
         match self {
             Self::SizeMismatch { .. } => Feedback::Reject(None),
             Self::ParentMissing { parent_root, .. } => Feedback::RequestParent(parent_root),
-            Self::PastSlot { .. } | Self::FutureSlot { .. } => Feedback::Ignore,
+            Self::PreFinalized { .. } |
+            Self::PastSlot { .. } |
+            Self::FutureSlot { .. } |
+            Self::AlreadyKnown { .. } => Feedback::Ignore,
             Self::ProposerLookaheadMismatch { block_root, .. } |
             Self::ProposerIndexTooBig { block_root, .. } |
             Self::InvalidBls { block_root, .. } => Feedback::Reject(Some(block_root)),

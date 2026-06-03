@@ -591,7 +591,7 @@ pub enum RejectSource {
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub enum BeaconStateEvent {
-    Status { ssz: [u8; STATUS_V2_SIZE], wall_slot: u64 },
+    Status { ssz: [u8; STATUS_V2_SIZE], latest_block_slot: u64 },
     PersistBlock(TCacheRead),
     BlockRejected { block_root: [u8; 32], source: RejectSource },
 }
