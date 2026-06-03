@@ -226,12 +226,17 @@ impl Buckets {
             self.tail_seq = self.bucket_start_seq(seq);
         }
 
-        // rollup tail for completed buckets
+        // rollup tail for completed buckets - maintain at least 1 bucket between
+        // head and tail to avoid any boundary cases where we might roll the tail before
+        // an entry is acquired.
         let head_bucket_seq = self.bucket_start_seq(seq);
-        while head_bucket_seq > self.tail_seq {
+        while head_bucket_seq > (self.tail_seq + self.bucket_size) {
             let tail_bucket = self.bucket_index(self.tail_seq);
             if self.head_seq - self.tail_seq > self.lag_threshold {
-                tracing::warn!("unfreed lagging consumers dropped!");
+                tracing::warn!(
+                    lagging = self.buckets[tail_bucket],
+                    "unfreed lagging consumers dropped!"
+                );
                 self.buckets[tail_bucket] = 0;
             }
             if self.buckets[tail_bucket] != 0 {
