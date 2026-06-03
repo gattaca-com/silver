@@ -255,7 +255,7 @@ impl BeaconStateTile {
     }
 
     pub fn try_apply_block(&mut self, data: &[u8]) -> Feedback {
-        self.handle_block(data)
+        self.apply_block_impl(data)
     }
 
     /// SSZ `hash_tree_root` of the most-recently-applied block's full
@@ -511,6 +511,7 @@ impl BeaconStateTile {
         BeaconStateEvent::Status {
             ssz: self.status_payload(),
             latest_block_slot: self.last_applied_block_slot(),
+            wall_slot: self.ticker.current_slot(),
         }
     }
 
@@ -525,10 +526,9 @@ impl BeaconStateTile {
         producers: &mut Producers,
     ) -> Feedback {
         let block_slot = SignedBeaconBlockView::slot(data);
-        let prev_last_applied = self.last_applied;
-        let prev_finalized = self.head_finalized_checkpoint();
 
-        let f = self.handle_block(data);
+        let f = self.apply_block_impl(data);
+
         if let Feedback::Reject(Some(block_root)) = f {
             producers.produce(BeaconStateEvent::BlockRejected { block_root, source });
         }
@@ -544,12 +544,6 @@ impl BeaconStateTile {
         }
 
         producers.produce(BeaconStateEvent::PersistBlock(*data_tcache));
-
-        let head_changed = self.last_applied != prev_last_applied;
-        let finalized_changed = self.head_finalized_checkpoint() != prev_finalized;
-        if head_changed || finalized_changed {
-            producers.produce(self.status_event());
-        }
         f
     }
 
@@ -855,6 +849,7 @@ impl BeaconStateTile {
                 if let Some(root) = block_root {
                     self.apply_pending_blocks(root, producers);
                 }
+                producers.produce(self.status_event());
             }
             Some(Feedback::RequestParent(parent_root)) if self.mode.is_following() => {
                 self.pending_blocks
@@ -949,7 +944,7 @@ impl BeaconStateTile {
         }
     }
 
-    fn handle_block(&mut self, data: &[u8]) -> Feedback {
+    fn apply_block_impl(&mut self, data: &[u8]) -> Feedback {
         let parsed = match self.precheck_block(data) {
             Ok(p) => p,
             Err(err) => {
@@ -2095,7 +2090,7 @@ mod tests {
 
         let head_before = tile.last_applied;
         let nodes_before = tile.fork_choice.nodes.len();
-        tile.handle_block(&buf);
+        tile.apply_block_impl(&buf);
 
         assert_eq!(tile.last_applied, head_before, "head must be unchanged");
         assert_eq!(tile.fork_choice.nodes.len(), nodes_before, "no node added");
@@ -2308,7 +2303,7 @@ mod tests {
         buf[108..116].copy_from_slice(&0u64.to_le_bytes()); // proposer_index
         buf[116..148].copy_from_slice(&parent_root); // parent_root
 
-        tile.handle_block(&buf);
+        tile.apply_block_impl(&buf);
         assert_eq!(tile.fork_choice.nodes.len(), 1);
     }
 

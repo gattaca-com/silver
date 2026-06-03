@@ -8,7 +8,6 @@ use silver_common::{
     BeaconStateEvent, P2pSend, PeerControl, PeerEvent, RpcInbound, RpcOutbound, RpcRequestOutbound,
     SilverSpine, TCacheProducer, TCacheRead, TMultiProducer,
     ssz_view::{METADATA_SIZE, STATUS_V2_SIZE},
-    ticker::SlotTicker,
 };
 use silver_peer::PeerManager;
 
@@ -22,8 +21,6 @@ pub struct Controller {
     last_status: Instant,
     last_drain: Instant,
 
-    ticker: SlotTicker,
-
     /// When false, the 17000ms heartbeat skips the per-peer Ping fan-out.
     /// Tests use this to keep the peer-state machine ticking without
     /// generating background Ping traffic that would interfere with
@@ -35,11 +32,7 @@ impl Controller {
     /// Build a Controller. `status` and `metadata` start empty — callers
     /// update them via `set_status` / `set_metadata` once chain state is
     /// available.
-    pub fn new(
-        peer_manager: PeerManager,
-        rpc_producer: TMultiProducer,
-        ticker: SlotTicker,
-    ) -> Self {
+    pub fn new(peer_manager: PeerManager, rpc_producer: TMultiProducer) -> Self {
         Self {
             peer_manager,
             rpc_producer,
@@ -47,7 +40,6 @@ impl Controller {
             last_ping: Instant::now(),
             last_status: Instant::now(),
             last_drain: Instant::now(),
-            ticker,
             auto_ping: true,
         }
     }
@@ -139,17 +131,16 @@ impl Tile<SilverSpine> for Controller {
         });
 
         adapter.consume(|beacon_event: BeaconStateEvent, _producers| match beacon_event {
-            BeaconStateEvent::Status { ssz, latest_block_slot } => {
+            BeaconStateEvent::Status { ssz, latest_block_slot, wall_slot } => {
                 self.peer_manager.set_status(ssz);
                 self.peer_manager.set_local_head_imported(latest_block_slot);
+                self.peer_manager.set_wall_slot(wall_slot);
             }
             BeaconStateEvent::BlockRejected { block_root, source } => {
                 self.peer_manager.record_block_rejected(block_root, source);
             }
             _ => {}
         });
-
-        self.peer_manager.set_wall_slot(self.ticker.current_slot());
 
         if let Some(target) = self.peer_manager.maybe_emit_sync_target() {
             adapter.produce(target);
