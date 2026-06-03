@@ -14,7 +14,7 @@ use silver_beacon_state_data::{
 use silver_common::{
     BeaconStateEvent, BlockSource, GossipTopic, NewGossipMsg, P2pStreamId, PeerEvent, RpcInbound,
     RpcMsg, RpcResponse, RpcResponseInbound, RpcSeverity, SilverSpine, SyncUpdate, TCacheRead,
-    TRandomAccess, TRead,
+    TRandomAccess, TRead, hex32,
     ssz_view::{
         self, AttesterSlashingView, MAX_ATTESTATIONS_ELECTRA, MAX_ATTESTING_INDICES,
         PROPOSER_SLASHING_SIZE, ProposerSlashingView, SIGNED_BLS_CHANGE_SIZE,
@@ -46,7 +46,7 @@ impl Mode {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Feedback {
     /// Contains the accepted block root.
     Accept(Option<B256>),
@@ -58,6 +58,21 @@ pub enum Feedback {
     Reject(Option<B256>),
     /// The parent block is missing and must be requested.
     RequestParent(B256),
+}
+
+// Manual Debug to hex-encode the `B256` roots (`B256 = [u8; 32]`, whose
+// derived Debug prints a raw byte array).
+impl core::fmt::Debug for Feedback {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Accept(Some(r)) => write!(f, "Accept(Some(0x{}))", hex32(r)),
+            Self::Accept(None) => f.write_str("Accept(None)"),
+            Self::Ignore => f.write_str("Ignore"),
+            Self::Reject(Some(r)) => write!(f, "Reject(Some(0x{}))", hex32(r)),
+            Self::Reject(None) => f.write_str("Reject(None)"),
+            Self::RequestParent(r) => write!(f, "RequestParent(0x{})", hex32(r)),
+        }
+    }
 }
 
 struct ParsedBlock {
@@ -741,7 +756,7 @@ impl BeaconStateTile {
         // `prune_queue_delta` needs the pre-apply_delta fin queue lengths
         // to recover how many of promoted's `*_appended` prefix each
         // survivor's cumulative `drain_offset` already consumed.
-        let old_pending_lens = PendingQueuesOldBaseLens::snapshot(&bs.finalized.pending);
+        let old_pending_lens = PendingQueuesOldBaseLens::snapshot(&bs.finalized.pending.read());
 
         bs.finalized.apply_delta(&promoted, promoted_epoch.as_ref(), promoted_longtail.as_ref());
 

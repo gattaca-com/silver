@@ -68,7 +68,8 @@ const F34_OFF: usize = 2_736_701; // pending_deposits offset
 const F35_OFF: usize = 2_736_705; // pending_partial_withdrawals offset
 const F36_OFF: usize = 2_736_709; // pending_consolidations offset
 const F37: usize = 2_736_713; // proposer_lookahead: 64 × 8 = 512
-const FIXED_PART: usize = 2_737_225;
+
+pub(crate) const FIXED_PART: usize = 2_737_225;
 
 // Compile-time sanity for the hand-rolled offset table and the alignment
 // assumption behind the `&[B256]` raw-slice casts below.
@@ -335,10 +336,11 @@ impl Finalized {
 
     fn clear_variable_buffers(&mut self) {
         self.slot.slot.eth1_votes.clear();
-        self.longtail.historical_summaries.clear();
-        self.pending.pending_deposits.clear();
-        self.pending.pending_partial_withdrawals.clear();
-        self.pending.pending_consolidations.clear();
+        self.longtail.historical_summaries.write().clear();
+        let mut pending = self.pending.write();
+        pending.pending_deposits.clear();
+        pending.pending_partial_withdrawals.clear();
+        pending.pending_consolidations.clear();
     }
 
     #[timed]
@@ -509,6 +511,8 @@ impl Finalized {
             unsafe { std::slice::from_raw_parts(hr_bytes.as_ptr().cast::<B256>(), hr_count) };
         let hr_root = ssz_hash::merkleize_padded(hr_chunks, HISTORICAL_ROOTS_LIMIT);
         self.immutable.historical_roots_hash = ssz_hash::mix_in_length(&hr_root, hr_count);
+        // Retain the raw list for canonical re-encode (frozen post-Capella).
+        self.immutable.historical_roots = hr_chunks.to_vec().into_boxed_slice();
         Ok(())
     }
 
@@ -525,10 +529,11 @@ impl Finalized {
                 max: HISTORICAL_SUMMARIES_LIMIT,
             });
         }
-        self.longtail.historical_summaries.reserve_exact(hs_count);
+        let mut summaries = self.longtail.historical_summaries.write();
+        summaries.reserve_exact(hs_count);
         for i in 0..hs_count {
             let s = &hs_bytes[i * HISTORICAL_SUMMARY_SSZ_SIZE..];
-            self.longtail.historical_summaries.push(HistoricalSummary {
+            summaries.push(HistoricalSummary {
                 block_summary_root: b256(s, 0),
                 state_summary_root: b256(s, 32),
             });
@@ -549,10 +554,11 @@ impl Finalized {
                 max: PENDING_DEPOSITS_LIMIT,
             });
         }
-        self.pending.pending_deposits.reserve_exact(pd_count);
+        let mut pending = self.pending.write();
+        pending.pending_deposits.reserve_exact(pd_count);
         for i in 0..pd_count {
             let d = &pd_bytes[i * PENDING_DEPOSIT_SSZ_SIZE..];
-            self.pending.pending_deposits.push(read_pending_deposit(d));
+            pending.pending_deposits.push(read_pending_deposit(d));
         }
         Ok(())
     }
@@ -574,10 +580,11 @@ impl Finalized {
                 max: PENDING_PARTIAL_WITHDRAWALS_LIMIT,
             });
         }
-        self.pending.pending_partial_withdrawals.reserve_exact(pw_count);
+        let mut pending = self.pending.write();
+        pending.pending_partial_withdrawals.reserve_exact(pw_count);
         for i in 0..pw_count {
             let w = &pw_bytes[i * PENDING_PARTIAL_WITHDRAWAL_SSZ_SIZE..];
-            self.pending.pending_partial_withdrawals.push(PendingPartialWithdrawal {
+            pending.pending_partial_withdrawals.push(PendingPartialWithdrawal {
                 index: u64_le(w, 0),
                 amount: u64_le(w, 8),
                 withdrawable_epoch: u64_le(w, 16),
@@ -603,10 +610,11 @@ impl Finalized {
                 max: PENDING_CONSOLIDATIONS_LIMIT,
             });
         }
-        self.pending.pending_consolidations.reserve_exact(pc_count);
+        let mut pending = self.pending.write();
+        pending.pending_consolidations.reserve_exact(pc_count);
         for i in 0..pc_count {
             let c = &pc_bytes[i * PENDING_CONSOLIDATION_SSZ_SIZE..];
-            self.pending.pending_consolidations.push(PendingConsolidation {
+            pending.pending_consolidations.push(PendingConsolidation {
                 source_index: u64_le(c, 0),
                 target_index: u64_le(c, 8),
             });
@@ -734,7 +742,9 @@ impl Finalized {
         self.longtail.current_sync_committee = lt.current_sync_committee;
         self.longtail.next_sync_committee = lt.next_sync_committee;
         self.longtail.sync_committee_indices = lt.sync_committee_indices;
-        self.longtail.historical_summaries.extend_from_slice(&lt.historical_summaries);
+
+        let appended = lt.historical_summaries.read();
+        self.longtail.historical_summaries.write().extend_from_slice(&appended);
     }
 
     #[timed]
@@ -759,22 +769,20 @@ impl Finalized {
     #[timed]
     fn apply_pending_queues(&mut self, delta: &StateDelta) {
         let pq = &delta.pending;
+        let mut pending = self.pending.write();
 
-        let n = (pq.deposits_drain_offset as usize).min(self.pending.pending_deposits.len());
-        self.pending.pending_deposits.drain(..n);
-        self.pending.pending_deposits.extend_from_slice(&pq.deposits_appended);
+        let n = (pq.deposits_drain_offset as usize).min(pending.pending_deposits.len());
+        pending.pending_deposits.drain(..n);
+        pending.pending_deposits.extend_from_slice(&pq.deposits_appended);
 
         let n = (pq.partial_withdrawals_drain_offset as usize)
-            .min(self.pending.pending_partial_withdrawals.len());
-        self.pending.pending_partial_withdrawals.drain(..n);
-        self.pending
-            .pending_partial_withdrawals
-            .extend_from_slice(&pq.partial_withdrawals_appended);
+            .min(pending.pending_partial_withdrawals.len());
+        pending.pending_partial_withdrawals.drain(..n);
+        pending.pending_partial_withdrawals.extend_from_slice(&pq.partial_withdrawals_appended);
 
-        let n = (pq.consolidations_drain_offset as usize)
-            .min(self.pending.pending_consolidations.len());
-        self.pending.pending_consolidations.drain(..n);
-        self.pending.pending_consolidations.extend_from_slice(&pq.consolidations_appended);
+        let n = (pq.consolidations_drain_offset as usize).min(pending.pending_consolidations.len());
+        pending.pending_consolidations.drain(..n);
+        pending.pending_consolidations.extend_from_slice(&pq.consolidations_appended);
     }
 }
 

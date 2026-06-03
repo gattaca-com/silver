@@ -373,7 +373,7 @@ pub fn process_pending_deposits(
 
     let pending_len = view.pending_deposits_len();
     for di in 0..pending_len {
-        let deposit = *view.pending_deposit(di);
+        let deposit = view.pending_deposit(di);
 
         if deposit.slot > 0 && view.eth1_deposit_index() < view.deposit_requests_start_index() {
             break;
@@ -469,7 +469,7 @@ pub fn process_pending_consolidations(view: &mut StateDeltaView) {
 
     let pending_len = view.pending_consolidations_len();
     for ci in 0..pending_len {
-        let pc = *view.pending_consolidation(ci);
+        let pc = view.pending_consolidation(ci);
         let src = pc.source_index as u32;
         if view.is_validator_slashed(src as usize) {
             next_pending += 1;

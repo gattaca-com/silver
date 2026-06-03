@@ -16,6 +16,15 @@ const BASE_REQUEST_ID: u64 = 0xda5da5 << 32; // DAS prefix.
 pub(crate) const BACKFILL_REQUEST_ID: u64 = 0xbaccf111 << 32;
 const MAX_RETRIES: u8 = 5;
 
+/// Persist a finalized-state checkpoint only when within this many slots of
+/// the wall-clock head (i.e. not fast-syncing) — avoids stalling the writer
+/// and re-encoding every intermediate finalized epoch while catching up.
+const CAUGHT_UP_SLACK_SLOTS: u64 = 2 * SLOTS_PER_EPOCH;
+
+/// Initial capacity for the reused checkpoint encode buffer. A mainnet
+/// finalized state is ~312 MiB, we allocate 400 MiB.
+const CHECKPOINT_BUF_CAPACITY: usize = 400 * 1024 * 1024;
+
 /// Mainnet epoch: 32 slots × 12s. Wheel bucket width for the
 /// block-level validation cache.
 const EPOCH_DURATION: Duration = Duration::from_secs(32 * 12);
@@ -55,6 +64,17 @@ pub struct StorageTile {
     // outstanding requests - keyed by block body root
     // 16 x 500 millisecond buckets.
     outstanding_requests: Wheel<BlockRoot, (u128, u8), 16>,
+
+    // Highest Status finalized epoch we've scheduled a checkpoint for; dedups
+    // the trigger so we encode at most once per finalized-epoch advance.
+    // Advanced when a persist is queued; re-derived from disk on restart.
+    checkpointed_epoch: u64,
+    // Reused buffer for the finalized-state checkpoint SSZ (phase 1: whole
+    // state encoded in one batch, then written + atomically renamed).
+    checkpoint_buf: Vec<u8>,
+    // Set by a Status when finality advanced past the last persisted epoch and
+    // we are caught up to head; consumed (and cleared) in `loop_body`.
+    persist_pending: bool,
 }
 
 impl StorageTile {
@@ -70,6 +90,8 @@ impl StorageTile {
         fork_digest: [u8; 4],
         data_store_dir: String,
     ) -> Self {
+        let store = Store::load(data_store_dir).expect("failed to load storage store");
+        let checkpointed_epoch = store.last_persisted_finalized_slot() / SLOTS_PER_EPOCH;
         Self {
             custody_group_columns,
             request_id: BASE_REQUEST_ID,
@@ -79,11 +101,14 @@ impl StorageTile {
             persist_rpc_consumer,
             rpc_producer,
             beacon_state,
-            store: Store::load(data_store_dir).expect("failed to load storage store"),
+            store,
             fork_digest,
             validated_columns: Wheel::new(EPOCH_DURATION),
             validated_blocks: Wheel::new(EPOCH_DURATION),
             outstanding_requests: Wheel::new(Duration::from_millis(500)),
+            checkpointed_epoch,
+            checkpoint_buf: Vec::with_capacity(CHECKPOINT_BUF_CAPACITY),
+            persist_pending: false,
         }
     }
 
@@ -374,14 +399,25 @@ impl Tile<SilverSpine> for StorageTile {
         });
 
         adapter.consume(|beacon_event: BeaconStateEvent, _| match beacon_event {
-            BeaconStateEvent::Status { ssz, .. } => {
+            BeaconStateEvent::Status { ssz, wall_slot, .. } => {
                 let head_slot = StatusView::head_slot(&ssz);
                 let head_root = *StatusView::head_root(&ssz);
-                let finalized_slot = StatusView::finalized_epoch(&ssz) * SLOTS_PER_EPOCH;
+                let finalized_epoch = StatusView::finalized_epoch(&ssz);
                 let finalized_root = *StatusView::finalized_root(&ssz);
                 self.fork_digest = *StatusView::fork_digest(&ssz);
+                self.store.update_head(
+                    head_slot,
+                    head_root,
+                    finalized_epoch * SLOTS_PER_EPOCH,
+                    finalized_root,
+                );
 
-                self.store.update_head(head_slot, head_root, finalized_slot, finalized_root);
+                if finalized_epoch > self.checkpointed_epoch &&
+                    head_slot + CAUGHT_UP_SLACK_SLOTS >= wall_slot
+                {
+                    self.checkpointed_epoch = finalized_epoch;
+                    self.persist_pending = true;
+                }
             }
             BeaconStateEvent::PersistBlock {
                 ssz,
@@ -450,6 +486,19 @@ impl Tile<SilverSpine> for StorageTile {
             })
         {
             tracing::error!(?e, "storage store file i/o failed");
+        }
+
+        if self.persist_pending {
+            self.persist_pending = false;
+            let slot = self.beacon_state.encode_finalized_checkpoint(&mut self.checkpoint_buf);
+            match self.store.persist_finalized_checkpoint(slot, &self.checkpoint_buf) {
+                Ok(()) => tracing::info!(
+                    slot,
+                    bytes = self.checkpoint_buf.len(),
+                    "persisted finalized checkpoint"
+                ),
+                Err(e) => tracing::error!(?e, slot, "failed to persist finalized checkpoint"),
+            }
         }
     }
 }
