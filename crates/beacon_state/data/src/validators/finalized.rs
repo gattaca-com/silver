@@ -100,7 +100,6 @@ impl FinalizedValidators {
         let mut exit_epoch = vec![FAR_FUTURE_EPOCH; capacity].into_boxed_slice();
         let mut withdrawable_epoch = vec![FAR_FUTURE_EPOCH; capacity].into_boxed_slice();
         let mut index = PubkeyIndex::with_capacity_and_hasher(n, Default::default());
-        let mut leaf_hashes = vec![[0u8; 32]; n];
 
         for i in 0..n {
             let f = field_at(i)?;
@@ -116,17 +115,23 @@ impl FinalizedValidators {
             exit_epoch[i] = f.exit_epoch;
             withdrawable_epoch[i] = f.withdrawable_epoch;
             index.insert(f.pubkey, i as u32);
-            leaf_hashes[i] = validator_hash(
-                &f.pubkey,
-                &f.credentials,
-                f.effective_balance,
-                f.slashed,
-                f.activation_eligibility_epoch,
-                f.activation_epoch,
-                f.exit_epoch,
-                f.withdrawable_epoch,
-            );
         }
+
+        let hash = FinalizedHashTree::from_leaves(
+            (0..n).map(|i| {
+                validator_hash(
+                    &val_pubkey[i],
+                    &val_withdrawal_credentials[i],
+                    effective_balance[i],
+                    slashed[i / 8] & (1 << (i % 8)) != 0,
+                    activation_eligibility_epoch[i],
+                    activation_epoch[i],
+                    exit_epoch[i],
+                    withdrawable_epoch[i],
+                )
+            }),
+            capacity,
+        );
 
         Ok(Self {
             val_pubkey,
@@ -140,7 +145,7 @@ impl FinalizedValidators {
             withdrawable_epoch,
             validator_count: n,
             index,
-            hash: FinalizedHashTree::new(&leaf_hashes, capacity),
+            hash,
         })
     }
 

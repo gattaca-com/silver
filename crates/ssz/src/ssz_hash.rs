@@ -187,7 +187,6 @@ pub fn push_bytes_as_chunks(data: &[u8], stack: &mut MerkleStack) {
 const MERKLE_INLINE_CHUNKS: usize = 32;
 
 /// Merkleize a slice of 32-byte chunks, padding to the next power of two.
-#[timed]
 #[inline]
 pub fn merkleize(chunks: &[B256]) -> B256 {
     let leaf_count = chunks.len().next_power_of_two().max(1);

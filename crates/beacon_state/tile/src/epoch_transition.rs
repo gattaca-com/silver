@@ -205,37 +205,38 @@ pub fn process_rewards_and_penalties(
     }
     let active_increments = total_active / EFFECTIVE_BALANCE_INCREMENT;
 
-    // Pass 2: per-validator reward/penalty → new balances into scratch.
+    // Pass 2: per-validator reward/penalty → changed balances into scratch.
     scratch.clear();
     for (i, r) in view.iter_validator_rows().enumerate() {
-        let new = if !eligibility(&r, current_epoch) {
-            r.balance
-        } else {
-            let base_reward =
-                (r.effective_balance / EFFECTIVE_BALANCE_INCREMENT) * base_reward_per_increment;
-            let is_unslashed = !r.slashed;
-            let mut reward: u64 = 0;
-            let mut penalty: u64 = 0;
-            for (fi, &flag) in PARTICIPATION_FLAGS.iter().enumerate() {
-                let weight = PARTICIPATION_WEIGHTS[fi];
-                let participating = is_unslashed && r.previous_participation & flag != 0;
-                if participating && !is_leak {
-                    let num = base_reward * weight * flag_increments[fi];
-                    reward += num / (active_increments * WEIGHT_DENOMINATOR);
-                } else if !participating && fi != 2 {
-                    penalty += base_reward * weight / WEIGHT_DENOMINATOR;
-                }
+        if !eligibility(&r, current_epoch) {
+            continue;
+        }
+        let base_reward =
+            (r.effective_balance / EFFECTIVE_BALANCE_INCREMENT) * base_reward_per_increment;
+        let is_unslashed = !r.slashed;
+        let mut reward: u64 = 0;
+        let mut penalty: u64 = 0;
+        for (fi, &flag) in PARTICIPATION_FLAGS.iter().enumerate() {
+            let weight = PARTICIPATION_WEIGHTS[fi];
+            let participating = is_unslashed && r.previous_participation & flag != 0;
+            if participating && !is_leak {
+                let num = base_reward * weight * flag_increments[fi];
+                reward += num / (active_increments * WEIGHT_DENOMINATOR);
+            } else if !participating && fi != 2 {
+                penalty += base_reward * weight / WEIGHT_DENOMINATOR;
             }
-            let target_ok = is_unslashed && r.previous_participation & TIMELY_TARGET_FLAG != 0;
-            if !target_ok {
-                let pen_num = r.effective_balance * r.inactivity_score;
-                penalty += pen_num / (cfg.inactivity_score_bias * cfg.inactivity_penalty_quotient);
-            }
-            r.balance.saturating_add(reward).saturating_sub(penalty)
-        };
-        scratch.push((i as u32, new));
+        }
+        let target_ok = is_unslashed && r.previous_participation & TIMELY_TARGET_FLAG != 0;
+        if !target_ok {
+            let pen_num = r.effective_balance * r.inactivity_score;
+            penalty += pen_num / (cfg.inactivity_score_bias * cfg.inactivity_penalty_quotient);
+        }
+        let new = r.balance.saturating_add(reward).saturating_sub(penalty);
+        if new != r.balance {
+            scratch.push((i as u32, new));
+        }
     }
-    view.install_balances(scratch);
+    view.set_many_balances(scratch);
 }
 
 pub fn process_registry_updates(cfg: &SpecConfig, view: &mut StateDeltaView, current_epoch: Epoch) {
@@ -747,7 +748,7 @@ mod tests {
     /// gate never masks the signature-handling assertions. Optional
     /// pre-seeded validators populate the identity + balance layers.
     fn fresh(current_epoch: u64, validators: &[ValSeed]) -> Box<Finalized> {
-        let mut f = Finalized::new(validators);
+        let mut f = Finalized::new_test(validators);
         f.slot.slot.slot = current_epoch * SLOTS_PER_EPOCH;
         f.epoch.state.finalized_checkpoint = checkpoint(current_epoch, 0x01);
         f.epoch.state.deposit_balance_to_consume = u64::MAX / 2;

@@ -58,6 +58,11 @@ impl PerfReport {
                 threshold: t.max_apply_block_avg,
             },
             Gauge {
+                label: "apply_block (max)",
+                actual: self.outcome.stats.aggregate_leaf_max("apply_block"),
+                threshold: t.max_apply_block_max,
+            },
+            Gauge {
                 label: "hash_tree_root_state (avg)",
                 actual: self.frame_avg_ns("hash_tree_root_state"),
                 threshold: t.max_hash_tree_root_state_avg,

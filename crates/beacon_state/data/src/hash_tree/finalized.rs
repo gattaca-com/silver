@@ -42,26 +42,25 @@ impl FinalizedHashTree {
         2 * node + 1
     }
 
-    /// Allocate and populate a tree from `leaves`. The leaf capacity is
-    /// derived as `max(1, capacity_hint.next_power_of_two())`; trailing
-    /// nodes up to that capacity stay at the zero hash (and propagate
-    /// as zero subtrees).
-    ///
-    /// Bottom-up O(N) build
+    /// Bottom-up O(N) build. The leaf capacity is derived as
+    /// `max(1, capacity_hint.next_power_of_two())`; trailing nodes up to that
+    /// capacity stay at the zero hash (and propagate as zero subtrees).
     #[timed]
-    pub fn new(leaves: &[B256], capacity_hint: usize) -> Self {
+    #[inline]
+    pub fn from_leaves(leaves: impl ExactSizeIterator<Item = B256>, capacity_hint: usize) -> Self {
+        let leaf_count = leaves.len();
         let max_elements = capacity_hint.next_power_of_two().max(1);
-        debug_assert!(leaves.len() <= max_elements);
+        debug_assert!(leaf_count <= max_elements);
 
         let mut nodes: Box<[B256]> = vec![[0u8; 32]; 2 * max_elements].into_boxed_slice();
-        for (i, leaf) in leaves.iter().enumerate() {
-            nodes[max_elements + i] = *leaf;
+        for (slot, leaf) in nodes[max_elements..].iter_mut().zip(leaves) {
+            *slot = leaf;
         }
 
         let depth = max_elements.trailing_zeros() as usize;
         let mut left_level_node = max_elements;
         let mut right_level_node = 2 * max_elements;
-        let mut right_real_level_node = max_elements + leaves.len();
+        let mut right_real_level_node = max_elements + leaf_count;
         for zero_hash in ZERO_HASHES.iter().take(depth + 1).skip(1) {
             left_level_node >>= 1;
             right_level_node >>= 1;

@@ -1724,9 +1724,6 @@ fn snapshot_finalized_into_survivors(
             valid_below,
             |i| fin.current_participation.get(i),
         );
-        merge_finalized(&mut d.balances.edits, &promoted.balances.edits, valid_below, |i| {
-            fin.balances.get(i)
-        });
         merge_finalized(
             &mut d.inactivity_scores.edits,
             &promoted.inactivity_scores.edits,
@@ -1929,7 +1926,7 @@ mod tests {
                 }
             })
             .collect();
-        let mut fin = Finalized::new(&seeds);
+        let mut fin = Finalized::new_test(&seeds);
         fin.slot.slot.slot = start_slot;
         fin.epoch.state.current_justified_checkpoint = cp_fin;
         fin.epoch.state.finalized_checkpoint = cp_fin;
@@ -2229,7 +2226,7 @@ mod tests {
             })
             .collect();
         let cp = Checkpoint { epoch: 0, root: ANCHOR_ROOT };
-        let mut fin = Finalized::new(&seeds);
+        let mut fin = Finalized::new_test(&seeds);
         fin.epoch.state.current_justified_checkpoint = cp;
         fin.epoch.state.finalized_checkpoint = cp;
         arm_tile(&mut tile, fin, 0);
