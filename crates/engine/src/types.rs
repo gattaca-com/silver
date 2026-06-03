@@ -1,4 +1,4 @@
-use serde::{Deserialize, Deserializer, Serialize, Serializer, ser::SerializeSeq};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 pub type B256 = [u8; 32];
 pub type ExecutionAddress = [u8; 20];
@@ -13,10 +13,6 @@ mod wire {
         let mut out = [0u8; N];
         hex::decode_to_slice(s, &mut out).map_err(|e| e.to_string())?;
         Ok(out)
-    }
-
-    fn decode_hex(s: &str) -> Result<Vec<u8>, String> {
-        hex::decode(s.strip_prefix("0x").unwrap_or(s)).map_err(|e| e.to_string())
     }
 
     // 32-byte hash/root ↔ "0x<64 hex>"
@@ -68,68 +64,6 @@ mod wire {
             let s = String::deserialize(d)?;
             let s = s.strip_prefix("0x").unwrap_or(&s);
             u64::from_str_radix(s, 16).map_err(serde::de::Error::custom)
-        }
-    }
-
-    // [u8; 32] LE ↔ Ethereum QUANTITY (uint256, no leading zeros)
-    // Used for base_fee_per_gas, which beacon_state stores as 32-byte LE.
-    pub mod u256_le {
-        use super::*;
-        pub fn serialize<S: Serializer>(v: &[u8; 32], s: S) -> Result<S::Ok, S::Error> {
-            let mut be = *v;
-            be.reverse();
-            let h = hex::encode(be);
-            let trimmed = h.trim_start_matches('0');
-            s.serialize_str(&format!("0x{}", if trimmed.is_empty() { "0" } else { trimmed }))
-        }
-        pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<[u8; 32], D::Error> {
-            let s = String::deserialize(d)?;
-            let s = s.strip_prefix("0x").unwrap_or(&s);
-            let padded = format!("{:0>64}", s);
-            let mut out = [0u8; 32];
-            hex::decode_to_slice(&padded, &mut out).map_err(serde::de::Error::custom)?;
-            out.reverse();
-            Ok(out)
-        }
-    }
-
-    // [u8; 256] ↔ "0x<512 hex>" (logs_bloom)
-    pub mod bytes256 {
-        use super::*;
-        pub fn serialize<S: Serializer>(v: &[u8; 256], s: S) -> Result<S::Ok, S::Error> {
-            s.serialize_str(&format!("0x{}", hex::encode(v)))
-        }
-        pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<[u8; 256], D::Error> {
-            decode_hex_into::<256>(&String::deserialize(d)?).map_err(serde::de::Error::custom)
-        }
-    }
-
-    // Vec<u8> ↔ "0x<hex>" (extra_data, blobs, proofs, ...)
-    pub mod data {
-        use super::*;
-        pub fn serialize<S: Serializer>(v: &Vec<u8>, s: S) -> Result<S::Ok, S::Error> {
-            s.serialize_str(&format!("0x{}", hex::encode(v)))
-        }
-        pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
-            decode_hex(&String::deserialize(d)?).map_err(serde::de::Error::custom)
-        }
-    }
-
-    // Vec<Vec<u8>> ↔ array of "0x<hex>" (transactions, execution requests)
-    pub mod data_list {
-        use super::*;
-        pub fn serialize<S: Serializer>(v: &Vec<Vec<u8>>, s: S) -> Result<S::Ok, S::Error> {
-            let mut seq = s.serialize_seq(Some(v.len()))?;
-            for item in v {
-                seq.serialize_element(&format!("0x{}", hex::encode(item)))?;
-            }
-            seq.end()
-        }
-        pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Vec<u8>>, D::Error> {
-            Vec::<String>::deserialize(d)?
-                .iter()
-                .map(|s| decode_hex(s).map_err(serde::de::Error::custom))
-                .collect()
         }
     }
 
@@ -195,46 +129,6 @@ pub struct PayloadStatus {
     pub validation_error: Option<String>,
 }
 
-// --- newPayload ---
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ExecutionPayload {
-    #[serde(with = "wire::b256")]
-    pub parent_hash: B256,
-    #[serde(with = "wire::addr")]
-    pub fee_recipient: ExecutionAddress,
-    #[serde(with = "wire::b256")]
-    pub state_root: B256,
-    #[serde(with = "wire::b256")]
-    pub receipts_root: B256,
-    #[serde(with = "wire::bytes256")]
-    pub logs_bloom: [u8; 256],
-    #[serde(with = "wire::b256")]
-    pub prev_randao: B256,
-    #[serde(with = "wire::quantity")]
-    pub block_number: u64,
-    #[serde(with = "wire::quantity")]
-    pub gas_limit: u64,
-    #[serde(with = "wire::quantity")]
-    pub gas_used: u64,
-    #[serde(with = "wire::quantity")]
-    pub timestamp: u64,
-    #[serde(with = "wire::data")]
-    pub extra_data: Vec<u8>,
-    #[serde(with = "wire::u256_le")]
-    pub base_fee_per_gas: [u8; 32],
-    #[serde(with = "wire::b256")]
-    pub block_hash: B256,
-    #[serde(with = "wire::data_list")]
-    pub transactions: Vec<Vec<u8>>,
-    pub withdrawals: Vec<Withdrawal>,
-    #[serde(with = "wire::quantity")]
-    pub blob_gas_used: u64,
-    #[serde(with = "wire::quantity")]
-    pub excess_blob_gas: u64,
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Withdrawal {
@@ -248,168 +142,116 @@ pub struct Withdrawal {
     pub amount: u64,
 }
 
-// ---------------------------------------------------------------------------
-// SSZ encode / decode for ExecutionPayload
-//
-// Deneb/Pectra ExecutionPayload SSZ layout (field order per spec):
-//
-//   Fixed part (528 bytes):
-//     parent_hash        [u8;32]   0..32
-//     fee_recipient      [u8;20]   32..52
-//     state_root         [u8;32]   52..84
-//     receipts_root      [u8;32]   84..116
-//     logs_bloom         [u8;256]  116..372
-//     prev_randao        [u8;32]   372..404
-//     block_number       u64 LE    404..412
-//     gas_limit          u64 LE    412..420
-//     gas_used           u64 LE    420..428
-//     timestamp          u64 LE    428..436
-//     extra_data offset  u32 LE    436..440   (variable)
-//     base_fee_per_gas   [u8;32]   440..472   (uint256 LE)
-//     block_hash         [u8;32]   472..504
-//     transactions off   u32 LE    504..508   (variable)
-//     withdrawals off    u32 LE    508..512   (variable)
-//     blob_gas_used      u64 LE    512..520
-//     excess_blob_gas    u64 LE    520..528
-//
-//   Variable part (appended in declaration order):
-//     extra_data   bytes
-//     transactions SSZ List<ByteList>  (u32 offsets header + raw tx bytes)
-//     withdrawals  44-byte fixed chunks (index u64, validator_index u64,
-//                                        address [u8;20], amount u64)
-// ---------------------------------------------------------------------------
-
 const PAYLOAD_FIXED_LEN: usize = 528;
 
-impl ExecutionPayload {
-    pub fn from_ssz(ssz: &[u8]) -> Result<Self, crate::EngineError> {
-        if ssz.len() < PAYLOAD_FIXED_LEN {
-            return Err(crate::EngineError::Ssz(format!(
-                "payload too short: {} < {PAYLOAD_FIXED_LEN}",
-                ssz.len()
-            )));
-        }
-        let u32_at =
-            |off: usize| u32::from_le_bytes(ssz[off..off + 4].try_into().unwrap()) as usize;
-        let u64_at = |off: usize| u64::from_le_bytes(ssz[off..off + 8].try_into().unwrap());
+const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
 
-        let extra_data_off = u32_at(436);
-        let transactions_off = u32_at(504);
-        let withdrawals_off = u32_at(508);
-
-        if extra_data_off < PAYLOAD_FIXED_LEN ||
-            transactions_off < extra_data_off ||
-            withdrawals_off < transactions_off ||
-            ssz.len() < withdrawals_off
-        {
-            return Err(crate::EngineError::Ssz("invalid variable offsets".into()));
-        }
-
-        let extra_data = ssz[extra_data_off..transactions_off].to_vec();
-        let transactions = decode_transactions(&ssz[transactions_off..withdrawals_off])?;
-        let withdrawals = decode_withdrawals(&ssz[withdrawals_off..])?;
-
-        Ok(ExecutionPayload {
-            parent_hash: ssz[0..32].try_into().unwrap(),
-            fee_recipient: ssz[32..52].try_into().unwrap(),
-            state_root: ssz[52..84].try_into().unwrap(),
-            receipts_root: ssz[84..116].try_into().unwrap(),
-            logs_bloom: ssz[116..372].try_into().unwrap(),
-            prev_randao: ssz[372..404].try_into().unwrap(),
-            block_number: u64_at(404),
-            gas_limit: u64_at(412),
-            gas_used: u64_at(420),
-            timestamp: u64_at(428),
-            extra_data,
-            base_fee_per_gas: ssz[440..472].try_into().unwrap(),
-            block_hash: ssz[472..504].try_into().unwrap(),
-            transactions,
-            withdrawals,
-            blob_gas_used: u64_at(512),
-            excess_blob_gas: u64_at(520),
-        })
-    }
+fn append_hex(bytes: &[u8], out: &mut Vec<u8>) {
+    let base = out.len();
+    out.resize(base + bytes.len() * 2, 0);
+    hex::encode_to_slice(bytes, &mut out[base..]).expect("hex encode_to_slice");
 }
 
-fn decode_transactions(data: &[u8]) -> Result<Vec<Vec<u8>>, crate::EngineError> {
+fn append_quantity_u64(v: u64, out: &mut Vec<u8>) {
+    out.extend_from_slice(b"\"0x");
+    if v == 0 {
+        out.push(b'0');
+    } else {
+        let mut buf = [0u8; 16];
+        let mut n = 0usize;
+        let mut tmp = v;
+        while tmp > 0 {
+            buf[15 - n] = HEX_LOWER[(tmp & 0xf) as usize];
+            tmp >>= 4;
+            n += 1;
+        }
+        out.extend_from_slice(&buf[16 - n..]);
+    }
+    out.push(b'"');
+}
+
+fn append_u256_le_quantity(le: &[u8; 32], out: &mut Vec<u8>) {
+    let mut be = *le;
+    be.reverse();
+    let sig = be.iter().position(|&b| b != 0);
+    out.extend_from_slice(b"\"0x");
+    match sig {
+        None => out.push(b'0'),
+        Some(start) => {
+            let first = be[start];
+            if first >> 4 == 0 {
+                out.push(HEX_LOWER[(first & 0xf) as usize]);
+                append_hex(&be[start + 1..], out);
+            } else {
+                append_hex(&be[start..], out);
+            }
+        }
+    }
+    out.push(b'"');
+}
+
+fn write_txs_json(data: &[u8], out: &mut Vec<u8>) -> Result<(), crate::EngineError> {
     if data.is_empty() {
-        return Ok(vec![]);
+        return Ok(());
     }
     if data.len() < 4 {
-        return Err(crate::EngineError::Ssz("transactions header too short".into()));
+        return Err(crate::EngineError::Ssz("tx list header too short".into()));
     }
     let first_off = u32::from_le_bytes(data[0..4].try_into().unwrap()) as usize;
-    if !first_off.is_multiple_of(4) || first_off < 4 {
-        return Err(crate::EngineError::Ssz("invalid transaction list offset".into()));
+    if first_off < 4 || !first_off.is_multiple_of(4) {
+        return Err(crate::EngineError::Ssz("invalid tx first offset".into()));
     }
     let n = first_off / 4;
     if data.len() < n * 4 {
-        return Err(crate::EngineError::Ssz("transaction offsets exceed data".into()));
+        return Err(crate::EngineError::Ssz("tx offsets exceed data".into()));
     }
-    let offsets: Vec<usize> = (0..n)
-        .map(|i| u32::from_le_bytes(data[i * 4..i * 4 + 4].try_into().unwrap()) as usize)
-        .collect();
-    offsets
-        .iter()
-        .enumerate()
-        .map(|(i, &start)| {
-            let end = if i + 1 < n { offsets[i + 1] } else { data.len() };
-            if start > data.len() || end > data.len() || start > end {
-                return Err(crate::EngineError::Ssz("transaction slice out of bounds".into()));
-            }
-            Ok(data[start..end].to_vec())
-        })
-        .collect()
-}
-
-fn decode_withdrawals(data: &[u8]) -> Result<Vec<Withdrawal>, crate::EngineError> {
-    if !data.len().is_multiple_of(44) {
-        return Err(crate::EngineError::Ssz(format!(
-            "withdrawals length {} is not a multiple of 44",
+    for i in 0..n {
+        if i > 0 {
+            out.push(b',');
+        }
+        let start = u32::from_le_bytes(data[i * 4..i * 4 + 4].try_into().unwrap()) as usize;
+        let end = if i + 1 < n {
+            u32::from_le_bytes(data[(i + 1) * 4..(i + 1) * 4 + 4].try_into().unwrap()) as usize
+        } else {
             data.len()
-        )));
+        };
+        if start > data.len() || end > data.len() || start > end {
+            return Err(crate::EngineError::Ssz("tx slice out of bounds".into()));
+        }
+        out.extend_from_slice(b"\"0x");
+        append_hex(&data[start..end], out);
+        out.push(b'"');
     }
-    Ok(data
-        .chunks(44)
-        .map(|c| Withdrawal {
-            index: u64::from_le_bytes(c[0..8].try_into().unwrap()),
-            validator_index: u64::from_le_bytes(c[8..16].try_into().unwrap()),
-            address: c[16..36].try_into().unwrap(),
-            amount: u64::from_le_bytes(c[36..44].try_into().unwrap()),
-        })
-        .collect())
+    Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// TCache data framing for engine_newPayloadV4
-//
-// Layout of the single TCache entry written by the producer (BridgeTile or
-// BeaconStateTile) and read by EngineTile:
-//
-//   [u32 LE payload_ssz_len]
-//   [payload_ssz_len bytes: ExecutionPayload SSZ]
-//   [u8 exec_req_count]
-//   [for each exec request: u32 LE len, then len bytes]
-// ---------------------------------------------------------------------------
-
-pub fn encode_new_payload_data(payload_ssz: &[u8], exec_requests: &[Vec<u8>]) -> Vec<u8> {
-    let count = exec_requests.len().min(255) as u8;
-    let total =
-        4 + payload_ssz.len() + 1 + exec_requests.iter().map(|r| 4 + r.len()).sum::<usize>();
-    let mut buf = Vec::with_capacity(total);
-    buf.extend_from_slice(&(payload_ssz.len() as u32).to_le_bytes());
-    buf.extend_from_slice(payload_ssz);
-    buf.push(count);
-    for r in exec_requests.iter().take(count as usize) {
-        buf.extend_from_slice(&(r.len() as u32).to_le_bytes());
-        buf.extend_from_slice(r);
+fn write_withdrawals_json(data: &[u8], out: &mut Vec<u8>) -> Result<(), crate::EngineError> {
+    for (i, chunk) in data.chunks(44).enumerate() {
+        if chunk.len() != 44 {
+            return Err(crate::EngineError::Ssz("withdrawal chunk not 44 bytes".into()));
+        }
+        if i > 0 {
+            out.push(b',');
+        }
+        out.extend_from_slice(b"{\"index\":");
+        append_quantity_u64(u64::from_le_bytes(chunk[0..8].try_into().unwrap()), out);
+        out.extend_from_slice(b",\"validatorIndex\":");
+        append_quantity_u64(u64::from_le_bytes(chunk[8..16].try_into().unwrap()), out);
+        out.extend_from_slice(b",\"address\":\"0x");
+        append_hex(&chunk[16..36], out);
+        out.extend_from_slice(b"\",\"amount\":");
+        append_quantity_u64(u64::from_le_bytes(chunk[36..44].try_into().unwrap()), out);
+        out.push(b'}');
     }
-    buf
+    Ok(())
 }
 
-pub(crate) fn decode_new_payload_data(
+pub(crate) fn write_new_payload_params(
     data: &[u8],
-) -> Result<(ExecutionPayload, Vec<Vec<u8>>), crate::EngineError> {
+    versioned_hashes: &[[u8; 32]],
+    parent_beacon_block_root: &[u8; 32],
+    out: &mut Vec<u8>,
+) -> Result<(), crate::EngineError> {
     if data.len() < 5 {
         return Err(crate::EngineError::Ssz("new-payload data too short".into()));
     }
@@ -417,12 +259,15 @@ pub(crate) fn decode_new_payload_data(
     if data.len() < 4 + payload_len + 1 {
         return Err(crate::EngineError::Ssz("new-payload data truncated".into()));
     }
-    let payload = ExecutionPayload::from_ssz(&data[4..4 + payload_len])?;
+    let ssz = &data[4..4 + payload_len];
+
+    // Collect exec-request slices without allocating.
     let mut pos = 4 + payload_len;
-    let count = data[pos] as usize;
+    let req_count = data[pos] as usize;
     pos += 1;
-    let mut exec_requests = Vec::with_capacity(count);
-    for _ in 0..count {
+    // u8 count, so max 255; stack array of (start, end) indices into `data`.
+    let mut req_spans = [(0usize, 0usize); 256];
+    for span in req_spans.iter_mut().take(req_count) {
         if data.len() < pos + 4 {
             return Err(crate::EngineError::Ssz("exec-request length truncated".into()));
         }
@@ -431,10 +276,102 @@ pub(crate) fn decode_new_payload_data(
         if data.len() < pos + req_len {
             return Err(crate::EngineError::Ssz("exec-request body truncated".into()));
         }
-        exec_requests.push(data[pos..pos + req_len].to_vec());
+        *span = (pos, pos + req_len);
         pos += req_len;
     }
-    Ok((payload, exec_requests))
+
+    if ssz.len() < PAYLOAD_FIXED_LEN {
+        return Err(crate::EngineError::Ssz(format!(
+            "payload too short: {} < {PAYLOAD_FIXED_LEN}",
+            ssz.len()
+        )));
+    }
+    let extra_off = u32::from_le_bytes(ssz[436..440].try_into().unwrap()) as usize;
+    let txs_off = u32::from_le_bytes(ssz[504..508].try_into().unwrap()) as usize;
+    let wd_off = u32::from_le_bytes(ssz[508..512].try_into().unwrap()) as usize;
+    if extra_off < PAYLOAD_FIXED_LEN ||
+        txs_off < extra_off ||
+        wd_off < txs_off ||
+        ssz.len() < wd_off
+    {
+        return Err(crate::EngineError::Ssz("invalid variable offsets".into()));
+    }
+    let wd_data = &ssz[wd_off..];
+    if !wd_data.len().is_multiple_of(44) {
+        return Err(crate::EngineError::Ssz("withdrawals length not multiple of 44".into()));
+    }
+
+    // params array open
+    out.push(b'[');
+
+    // ExecutionPayload object — field order matches serde declaration order.
+    out.extend_from_slice(b"{\"parentHash\":\"0x");
+    append_hex(&ssz[0..32], out);
+    out.extend_from_slice(b"\",\"feeRecipient\":\"0x");
+    append_hex(&ssz[32..52], out);
+    out.extend_from_slice(b"\",\"stateRoot\":\"0x");
+    append_hex(&ssz[52..84], out);
+    out.extend_from_slice(b"\",\"receiptsRoot\":\"0x");
+    append_hex(&ssz[84..116], out);
+    out.extend_from_slice(b"\",\"logsBloom\":\"0x");
+    append_hex(&ssz[116..372], out);
+    out.extend_from_slice(b"\",\"prevRandao\":\"0x");
+    append_hex(&ssz[372..404], out);
+    out.extend_from_slice(b"\",\"blockNumber\":");
+    append_quantity_u64(u64::from_le_bytes(ssz[404..412].try_into().unwrap()), out);
+    out.extend_from_slice(b",\"gasLimit\":");
+    append_quantity_u64(u64::from_le_bytes(ssz[412..420].try_into().unwrap()), out);
+    out.extend_from_slice(b",\"gasUsed\":");
+    append_quantity_u64(u64::from_le_bytes(ssz[420..428].try_into().unwrap()), out);
+    out.extend_from_slice(b",\"timestamp\":");
+    append_quantity_u64(u64::from_le_bytes(ssz[428..436].try_into().unwrap()), out);
+    out.extend_from_slice(b",\"extraData\":\"0x");
+    append_hex(&ssz[extra_off..txs_off], out);
+    out.extend_from_slice(b"\",\"baseFeePerGas\":");
+    append_u256_le_quantity(ssz[440..472].try_into().unwrap(), out);
+    out.extend_from_slice(b",\"blockHash\":\"0x");
+    append_hex(&ssz[472..504], out);
+    out.extend_from_slice(b"\",\"transactions\":[");
+    write_txs_json(&ssz[txs_off..wd_off], out)?;
+    out.extend_from_slice(b"],\"withdrawals\":[");
+    write_withdrawals_json(wd_data, out)?;
+    out.extend_from_slice(b"],\"blobGasUsed\":");
+    append_quantity_u64(u64::from_le_bytes(ssz[512..520].try_into().unwrap()), out);
+    out.extend_from_slice(b",\"excessBlobGas\":");
+    append_quantity_u64(u64::from_le_bytes(ssz[520..528].try_into().unwrap()), out);
+    out.push(b'}');
+
+    // versionedHashes
+    out.extend_from_slice(b",[");
+    for (i, h) in versioned_hashes.iter().enumerate() {
+        if i > 0 {
+            out.push(b',');
+        }
+        out.extend_from_slice(b"\"0x");
+        append_hex(h, out);
+        out.push(b'"');
+    }
+    out.push(b']');
+
+    // parentBeaconBlockRoot
+    out.extend_from_slice(b",\"0x");
+    append_hex(parent_beacon_block_root, out);
+    out.push(b'"');
+
+    // executionRequests
+    out.extend_from_slice(b",[");
+    for (i, &(start, end)) in req_spans[..req_count].iter().enumerate() {
+        if i > 0 {
+            out.push(b',');
+        }
+        out.extend_from_slice(b"\"0x");
+        append_hex(&data[start..end], out);
+        out.push(b'"');
+    }
+    out.push(b']');
+
+    out.push(b']');
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -556,7 +493,7 @@ fn encode_withdrawals_json(
 ///
 /// Eliminates all intermediate allocations vs the serde path:
 /// one `Vec<u8>` output, hex decoded directly from the borrowed JSON strings.
-pub fn json_get_payload_to_tcache(
+pub(crate) fn json_get_payload_to_tcache(
     raw: &mut [u8],
     out: &mut Vec<u8>,
 ) -> Result<(), crate::EngineError> {
@@ -678,7 +615,7 @@ pub fn json_get_payload_to_tcache(
 // blob_len] [blob bytes]
 // ---------------------------------------------------------------------------
 
-pub fn json_get_blobs_to_tcache(
+pub(crate) fn json_get_blobs_to_tcache(
     raw: &mut [u8],
     out: &mut Vec<u8>,
 ) -> Result<(), crate::EngineError> {
@@ -740,7 +677,7 @@ pub fn json_get_blobs_to_tcache(
 // [u32 withdrawal_count] [44B each]
 // ---------------------------------------------------------------------------
 
-pub fn json_get_payload_bodies_to_tcache(
+pub(crate) fn json_get_payload_bodies_to_tcache(
     raw: &mut [u8],
     out: &mut Vec<u8>,
 ) -> Result<(), crate::EngineError> {
@@ -797,79 +734,47 @@ pub fn json_get_payload_bodies_to_tcache(
 
 #[cfg(test)]
 mod tests {
-    use simd_json::{owned::to_value, prelude::ValueAsScalar, serde::from_owned_value};
+    use simd_json::{
+        owned::to_value,
+        prelude::{ValueAsArray, ValueAsScalar, ValueObjectAccess},
+    };
 
     use super::*;
 
     const SAMPLE_PAYLOAD_SSZ: &[u8] = include_bytes!("../testdata/sample_payload.ssz");
     const EMPTY_VAR_PAYLOAD_SSZ: &[u8] = include_bytes!("../testdata/empty_var_payload.ssz");
-    const LARGE_EXTRA_PAYLOAD_SSZ: &[u8] = include_bytes!("../testdata/large_extra_payload.ssz");
     const MANY_TX_PAYLOAD_SSZ: &[u8] = include_bytes!("../testdata/many_tx_payload.ssz");
+    const TX_SINGLE: &[u8] = include_bytes!("../testdata/tx_single.bin");
+    const TX_MULTI: &[u8] = include_bytes!("../testdata/tx_multi.bin");
+    const WITHDRAWALS: &[u8] = include_bytes!("../testdata/withdrawals.bin");
     const GET_PAYLOAD_TCACHE: &[u8] = include_bytes!("../testdata/get_payload_tcache.bin");
 
-    fn sample_payload() -> ExecutionPayload {
-        ExecutionPayload {
-            parent_hash: [0x11; 32],
-            fee_recipient: [0x22; 20],
-            state_root: [0x33; 32],
-            receipts_root: [0x44; 32],
-            logs_bloom: [0x55; 256],
-            prev_randao: [0x66; 32],
-            block_number: 12_345,
-            gas_limit: 30_000_000,
-            gas_used: 21_000,
-            timestamp: 1_700_000_000,
-            extra_data: b"extra".to_vec(),
-            base_fee_per_gas: [0x77; 32],
-            block_hash: [0x88; 32],
-            transactions: vec![vec![1, 2, 3], vec![4, 5, 6, 7, 8]],
-            withdrawals: vec![
-                Withdrawal { index: 1, validator_index: 42, address: [0x99; 20], amount: 1000 },
-                Withdrawal { index: 2, validator_index: 43, address: [0xaa; 20], amount: 2000 },
-            ],
-            blob_gas_used: 131_072,
-            excess_blob_gas: 262_144,
+    fn make_new_payload_frame(ssz: &[u8], exec_reqs: &[&[u8]]) -> Vec<u8> {
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&(ssz.len() as u32).to_le_bytes());
+        frame.extend_from_slice(ssz);
+        frame.push(exec_reqs.len() as u8);
+        for req in exec_reqs {
+            frame.extend_from_slice(&(req.len() as u32).to_le_bytes());
+            frame.extend_from_slice(req);
         }
+        frame
     }
 
-    #[test]
-    fn ssz_decode_sample_payload() {
-        assert_eq!(ExecutionPayload::from_ssz(SAMPLE_PAYLOAD_SSZ).unwrap(), sample_payload());
-    }
-
-    #[test]
-    fn ssz_decode_empty_variable_fields() {
-        let mut p = sample_payload();
-        p.extra_data = vec![];
-        p.transactions = vec![];
-        p.withdrawals = vec![];
-        assert_eq!(ExecutionPayload::from_ssz(EMPTY_VAR_PAYLOAD_SSZ).unwrap(), p);
-    }
-
-    #[test]
-    fn ssz_decode_large_extra_data() {
-        let mut p = sample_payload();
-        p.extra_data = vec![0xffu8; 32];
-        assert_eq!(ExecutionPayload::from_ssz(LARGE_EXTRA_PAYLOAD_SSZ).unwrap(), p);
-    }
-
-    #[test]
-    fn ssz_decode_many_transactions() {
-        let mut p = sample_payload();
-        p.transactions = (0u8..=20).map(|i| vec![i; i as usize + 1]).collect();
-        assert_eq!(ExecutionPayload::from_ssz(MANY_TX_PAYLOAD_SSZ).unwrap(), p);
-    }
-
-    #[test]
-    fn ssz_too_short_returns_error() {
-        assert!(ExecutionPayload::from_ssz(&[0u8; 100]).is_err());
-    }
-
-    #[test]
-    fn ssz_exact_fixed_length_no_variable_data() {
-        // A 528-byte all-zero buffer has zero offsets, which fail the
-        // `extra_data_off >= PAYLOAD_FIXED_LEN` guard.
-        assert!(ExecutionPayload::from_ssz(&[0u8; 528]).is_err());
+    // Constructs the getPayload JSON whose TCache encoding is
+    // get_payload_tcache.bin.
+    fn get_payload_json() -> Vec<u8> {
+        let logs_bloom = "55".repeat(256);
+        let commitment0 = "c0".repeat(48);
+        let proof0 = "d0".repeat(48);
+        let blob0 = "b0".repeat(128);
+        let commitment1 = "c1".repeat(48);
+        let proof1 = "d1".repeat(48);
+        let blob1 = "b1".repeat(64);
+        format!(
+            r#"{{"jsonrpc":"2.0","id":1,"result":{{"executionPayload":{{"parentHash":"0x1111111111111111111111111111111111111111111111111111111111111111","feeRecipient":"0x2222222222222222222222222222222222222222","stateRoot":"0x3333333333333333333333333333333333333333333333333333333333333333","receiptsRoot":"0x4444444444444444444444444444444444444444444444444444444444444444","logsBloom":"0x{logs_bloom}","prevRandao":"0x6666666666666666666666666666666666666666666666666666666666666666","blockNumber":"0x3039","gasLimit":"0x1c9c380","gasUsed":"0x5208","timestamp":"0x6553f100","extraData":"0x6578747261","baseFeePerGas":"0x7777777777777777777777777777777777777777777777777777777777777777","blockHash":"0x8888888888888888888888888888888888888888888888888888888888888888","transactions":["0x010203","0x0405060708"],"withdrawals":[{{"index":"0x1","validatorIndex":"0x2a","address":"0x9999999999999999999999999999999999999999","amount":"0x3e8"}},{{"index":"0x2","validatorIndex":"0x2b","address":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","amount":"0x7d0"}}],"blobGasUsed":"0x20000","excessBlobGas":"0x40000"}},"blobsBundle":{{"commitments":["0x{commitment0}","0x{commitment1}"],"proofs":["0x{proof0}","0x{proof1}"],"blobs":["0x{blob0}","0x{blob1}"]}},"shouldOverrideBuilder":false,"executionRequests":["0x0102","0x03"]}}}}"#
+        )
+        .into_bytes()
     }
 
     #[test]
@@ -885,76 +790,6 @@ mod tests {
         // withdrawals follow the SSZ transaction list
         assert!(wd_off > tx_off);
         assert_eq!(wd_off, ssz.len() - 2 * 44); // 2 withdrawals × 44 bytes each
-    }
-
-    // -----------------------------------------------------------------------
-    // Transactions SSZ helpers
-    // -----------------------------------------------------------------------
-
-    const TX_SINGLE: &[u8] = include_bytes!("../testdata/tx_single.bin");
-    const TX_MULTI: &[u8] = include_bytes!("../testdata/tx_multi.bin");
-    const WITHDRAWALS: &[u8] = include_bytes!("../testdata/withdrawals.bin");
-
-    #[test]
-    fn transactions_empty_decodes_to_empty() {
-        assert!(decode_transactions(&[]).unwrap().is_empty());
-    }
-
-    #[test]
-    fn transactions_single_decode() {
-        let txs = vec![vec![0xde, 0xad, 0xbe, 0xef]];
-        assert_eq!(txs, decode_transactions(TX_SINGLE).unwrap());
-    }
-
-    #[test]
-    fn transactions_multi_varying_lengths_decode() {
-        let txs: Vec<Vec<u8>> = (1u8..=5).map(|i| vec![i; i as usize * 3]).collect();
-        assert_eq!(txs, decode_transactions(TX_MULTI).unwrap());
-    }
-
-    // -----------------------------------------------------------------------
-    // Withdrawals SSZ helpers
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn withdrawals_decode() {
-        let ws = vec![
-            Withdrawal { index: 10, validator_index: 20, address: [0x01; 20], amount: 500 },
-            Withdrawal { index: 11, validator_index: 21, address: [0x02; 20], amount: 600 },
-        ];
-        assert_eq!(ws, decode_withdrawals(WITHDRAWALS).unwrap());
-    }
-
-    #[test]
-    fn withdrawals_non_multiple_of_44_returns_error() {
-        assert!(decode_withdrawals(&[0u8; 45]).is_err());
-    }
-
-    // -----------------------------------------------------------------------
-    // TCache framing: encode_new_payload_data / decode_new_payload_data
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn new_payload_framing_round_trip_no_exec_requests() {
-        let enc = encode_new_payload_data(SAMPLE_PAYLOAD_SSZ, &[]);
-        let (decoded_p, decoded_reqs) = decode_new_payload_data(&enc).unwrap();
-        assert_eq!(sample_payload(), decoded_p);
-        assert!(decoded_reqs.is_empty());
-    }
-
-    #[test]
-    fn new_payload_framing_round_trip_with_exec_requests() {
-        let reqs = vec![vec![1u8, 2, 3], vec![0xde, 0xad]];
-        let enc = encode_new_payload_data(SAMPLE_PAYLOAD_SSZ, &reqs);
-        let (decoded_p, decoded_reqs) = decode_new_payload_data(&enc).unwrap();
-        assert_eq!(sample_payload(), decoded_p);
-        assert_eq!(reqs, decoded_reqs);
-    }
-
-    #[test]
-    fn new_payload_framing_truncated_returns_error() {
-        let enc = encode_new_payload_data(SAMPLE_PAYLOAD_SSZ, &[]);
-        assert!(decode_new_payload_data(&enc[..4]).is_err());
     }
 
     // -----------------------------------------------------------------------
@@ -1003,27 +838,6 @@ mod tests {
     }
 
     #[test]
-    fn wire_u256_le_zero_round_trip() {
-        let mut p = sample_payload();
-        p.base_fee_per_gas = [0u8; 32];
-        let json = to_value(&mut simd_json::to_vec(&p).unwrap()).unwrap();
-        assert_eq!(json["baseFeePerGas"].as_str().unwrap(), "0x0");
-        let decoded: ExecutionPayload = from_owned_value(json).unwrap();
-        assert_eq!(decoded.base_fee_per_gas, [0u8; 32]);
-    }
-
-    #[test]
-    fn wire_u256_le_nonzero_round_trip() {
-        let mut p = sample_payload();
-        p.base_fee_per_gas = [0u8; 32];
-        p.base_fee_per_gas[0] = 1; // LE: value = 1
-        let json = to_value(&mut simd_json::to_vec(&p).unwrap()).unwrap();
-        assert_eq!(json["baseFeePerGas"].as_str().unwrap(), "0x1");
-        let decoded: ExecutionPayload = from_owned_value(json).unwrap();
-        assert_eq!(decoded.base_fee_per_gas, p.base_fee_per_gas);
-    }
-
-    #[test]
     fn wire_opt_b256_none_round_trip() {
         let v: PayloadStatus = {
             let mut bytes =
@@ -1054,41 +868,459 @@ mod tests {
     }
 
     #[test]
-    fn json_get_payload_to_tcache_output() {
-        let payload = sample_payload();
-        let commitments_hex: Vec<String> = vec![[0xc0u8; 48], [0xc1u8; 48]]
-            .iter()
-            .map(|c| format!("0x{}", hex::encode(c)))
-            .collect();
-        let proofs_hex: Vec<String> = vec![[0xd0u8; 48], [0xd1u8; 48]]
-            .iter()
-            .map(|p| format!("0x{}", hex::encode(p)))
-            .collect();
-        let blobs_hex: Vec<String> = vec![vec![0xb0u8; 128], vec![0xb1u8; 64]]
-            .iter()
-            .map(|b| format!("0x{}", hex::encode(b)))
-            .collect();
-        let exec_hex: Vec<String> = vec![vec![0x01u8, 0x02], vec![0x03u8]]
-            .iter()
-            .map(|r| format!("0x{}", hex::encode(r)))
-            .collect();
-        let envelope = simd_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "result": {
-                "executionPayload": payload,
-                "blobsBundle": {
-                    "commitments": commitments_hex,
-                    "proofs": proofs_hex,
-                    "blobs": blobs_hex,
-                },
-                "shouldOverrideBuilder": false,
-                "executionRequests": exec_hex,
-            }
-        });
-        let mut raw = simd_json::to_vec(&envelope).unwrap();
+    fn wire_opt_b256_some_round_trip() {
+        let hash = "ab".repeat(32);
+        let mut bytes =
+            format!(r#"{{"status":"VALID","latestValidHash":"0x{hash}","validationError":null}}"#)
+                .into_bytes();
+        let v: PayloadStatus = simd_json::from_slice(&mut bytes).unwrap();
+        assert_eq!(v.latest_valid_hash, Some([0xab; 32]));
+    }
+
+    #[test]
+    fn wire_addr_round_trip() {
+        let w = Withdrawal { index: 1, validator_index: 2, address: [0xab; 20], amount: 3 };
+        let rt: Withdrawal = {
+            let mut bytes = simd_json::to_vec(&w).unwrap();
+            simd_json::from_slice(&mut bytes).unwrap()
+        };
+        assert_eq!(w.address, rt.address);
+        let json = to_value(&mut simd_json::to_vec(&w).unwrap()).unwrap();
+        let addr = json["address"].as_str().unwrap();
+        assert!(addr.starts_with("0x"));
+        assert_eq!(addr.len(), 2 + 40);
+        assert_eq!(&addr[2..4], "ab");
+    }
+
+    // ---------------------------------------------------------------------------
+    // append_hex
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn append_hex_empty() {
         let mut out = Vec::new();
-        json_get_payload_to_tcache(&mut raw, &mut out).expect("json_get_payload_to_tcache failed");
+        append_hex(&[], &mut out);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn append_hex_bytes() {
+        let mut out = Vec::new();
+        append_hex(&[0xde, 0xad, 0xbe, 0xef], &mut out);
+        assert_eq!(out, b"deadbeef");
+    }
+
+    #[test]
+    fn append_hex_appends_to_existing() {
+        let mut out = b"prefix".to_vec();
+        append_hex(&[0x01], &mut out);
+        assert_eq!(out, b"prefix01");
+    }
+
+    // ---------------------------------------------------------------------------
+    // append_quantity_u64
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn quantity_u64_zero() {
+        let mut out = Vec::new();
+        append_quantity_u64(0, &mut out);
+        assert_eq!(out, b"\"0x0\"");
+    }
+
+    #[test]
+    fn quantity_u64_small() {
+        let mut out = Vec::new();
+        append_quantity_u64(0xdeadbeef, &mut out);
+        assert_eq!(out, b"\"0xdeadbeef\"");
+    }
+
+    #[test]
+    fn quantity_u64_max() {
+        let mut out = Vec::new();
+        append_quantity_u64(u64::MAX, &mut out);
+        assert_eq!(out, b"\"0xffffffffffffffff\"");
+    }
+
+    #[test]
+    fn quantity_u64_single_nibble() {
+        let mut out = Vec::new();
+        append_quantity_u64(0xf, &mut out);
+        assert_eq!(out, b"\"0xf\"");
+    }
+
+    // ---------------------------------------------------------------------------
+    // append_u256_le_quantity
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn u256_le_zero() {
+        let mut out = Vec::new();
+        append_u256_le_quantity(&[0u8; 32], &mut out);
+        assert_eq!(out, b"\"0x0\"");
+    }
+
+    #[test]
+    fn u256_le_one() {
+        let mut le = [0u8; 32];
+        le[0] = 1;
+        let mut out = Vec::new();
+        append_u256_le_quantity(&le, &mut out);
+        assert_eq!(out, b"\"0x1\"");
+    }
+
+    #[test]
+    fn u256_le_single_byte() {
+        let mut le = [0u8; 32];
+        le[0] = 0xff;
+        let mut out = Vec::new();
+        append_u256_le_quantity(&le, &mut out);
+        assert_eq!(out, b"\"0xff\"");
+    }
+
+    #[test]
+    fn u256_le_leading_nibble_stripped() {
+        // 0x0a LE → BE has leading nibble 0, must be stripped → "0xa"
+        let mut le = [0u8; 32];
+        le[0] = 0x0a;
+        let mut out = Vec::new();
+        append_u256_le_quantity(&le, &mut out);
+        assert_eq!(out, b"\"0xa\"");
+    }
+
+    #[test]
+    fn u256_le_multi_byte() {
+        // le[0]=0x02, le[1]=0x01 → BE = 0x0102 → "0x102"
+        let mut le = [0u8; 32];
+        le[0] = 0x02;
+        le[1] = 0x01;
+        let mut out = Vec::new();
+        append_u256_le_quantity(&le, &mut out);
+        assert_eq!(out, b"\"0x102\"");
+    }
+
+    #[test]
+    fn u256_le_all_bytes_set() {
+        let le = [0x77u8; 32];
+        let mut out = Vec::new();
+        append_u256_le_quantity(&le, &mut out);
+        assert_eq!(out, b"\"0x7777777777777777777777777777777777777777777777777777777777777777\"");
+    }
+
+    // ---------------------------------------------------------------------------
+    // write_txs_json
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn write_txs_json_empty() {
+        let mut out = Vec::new();
+        write_txs_json(&[], &mut out).unwrap();
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn write_txs_json_single() {
+        // tx_single.bin: [u32 LE 4][deadbeef] → one tx: 0xdeadbeef
+        let mut out = Vec::new();
+        write_txs_json(TX_SINGLE, &mut out).unwrap();
+        assert_eq!(out, b"\"0xdeadbeef\"");
+    }
+
+    #[test]
+    fn write_txs_json_multi() {
+        // tx_multi.bin: 5 txs of increasing length
+        let mut out = Vec::new();
+        write_txs_json(TX_MULTI, &mut out).unwrap();
+        assert_eq!(
+            out,
+            b"\"0x010101\",\"0x020202020202\",\"0x030303030303030303\",\"0x040404040404040404040404\",\"0x050505050505050505050505050505\""
+        );
+    }
+
+    #[test]
+    fn write_txs_json_header_too_short() {
+        let mut out = Vec::new();
+        assert!(write_txs_json(&[0x01, 0x02], &mut out).is_err());
+    }
+
+    #[test]
+    fn write_txs_json_invalid_first_offset() {
+        // first_off=3: not a multiple of 4
+        let mut out = Vec::new();
+        assert!(write_txs_json(&[3, 0, 0, 0, 0xde, 0xad], &mut out).is_err());
+    }
+
+    // ---------------------------------------------------------------------------
+    // write_withdrawals_json
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn write_withdrawals_json_empty() {
+        let mut out = Vec::new();
+        write_withdrawals_json(&[], &mut out).unwrap();
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn write_withdrawals_json_two() {
+        // withdrawals.bin: [0] index=10 vi=20 addr=0101..01 amount=500
+        //                  [1] index=11 vi=21 addr=0202..02 amount=600
+        let mut out = Vec::new();
+        write_withdrawals_json(WITHDRAWALS, &mut out).unwrap();
+        let mut arr = format!("[{}]", std::str::from_utf8(&out).unwrap()).into_bytes();
+        let val = simd_json::to_borrowed_value(&mut arr).unwrap();
+        let items = val.as_array().unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].get("index").and_then(|v| v.as_str()), Some("0xa"));
+        assert_eq!(items[0].get("validatorIndex").and_then(|v| v.as_str()), Some("0x14"));
+        assert_eq!(
+            items[0].get("address").and_then(|v| v.as_str()),
+            Some("0x0101010101010101010101010101010101010101")
+        );
+        assert_eq!(items[0].get("amount").and_then(|v| v.as_str()), Some("0x1f4"));
+        assert_eq!(items[1].get("index").and_then(|v| v.as_str()), Some("0xb"));
+        assert_eq!(items[1].get("amount").and_then(|v| v.as_str()), Some("0x258"));
+    }
+
+    #[test]
+    fn write_withdrawals_json_bad_chunk() {
+        // 43 bytes: not a multiple of 44
+        let mut out = Vec::new();
+        assert!(write_withdrawals_json(&[0u8; 43], &mut out).is_err());
+    }
+
+    // ---------------------------------------------------------------------------
+    // write_new_payload_params
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn write_new_payload_params_sample_fields() {
+        let frame = make_new_payload_frame(SAMPLE_PAYLOAD_SSZ, &[]);
+        let vhashes = [[0xaau8; 32], [0xbbu8; 32]];
+        let pbbr = [0xccu8; 32];
+        let mut out = Vec::new();
+        write_new_payload_params(&frame, &vhashes, &pbbr, &mut out).unwrap();
+
+        let val = simd_json::to_borrowed_value(&mut out).unwrap();
+        let params = val.as_array().unwrap();
+        assert_eq!(params.len(), 4);
+
+        let ep = &params[0];
+        assert_eq!(
+            ep.get("parentHash").and_then(|v| v.as_str()),
+            Some("0x1111111111111111111111111111111111111111111111111111111111111111")
+        );
+        assert_eq!(ep.get("blockNumber").and_then(|v| v.as_str()), Some("0x3039"));
+        assert_eq!(ep.get("gasLimit").and_then(|v| v.as_str()), Some("0x1c9c380"));
+        assert_eq!(ep.get("gasUsed").and_then(|v| v.as_str()), Some("0x5208"));
+        assert_eq!(ep.get("timestamp").and_then(|v| v.as_str()), Some("0x6553f100"));
+        assert_eq!(ep.get("extraData").and_then(|v| v.as_str()), Some("0x6578747261"));
+        assert_eq!(
+            ep.get("baseFeePerGas").and_then(|v| v.as_str()),
+            Some("0x7777777777777777777777777777777777777777777777777777777777777777")
+        );
+        assert_eq!(ep.get("blobGasUsed").and_then(|v| v.as_str()), Some("0x20000"));
+        assert_eq!(ep.get("excessBlobGas").and_then(|v| v.as_str()), Some("0x40000"));
+
+        let txs = ep.get("transactions").and_then(|v| v.as_array()).unwrap();
+        assert_eq!(txs.len(), 2);
+        assert_eq!(txs[0].as_str(), Some("0x010203"));
+        assert_eq!(txs[1].as_str(), Some("0x0405060708"));
+
+        let wds = ep.get("withdrawals").and_then(|v| v.as_array()).unwrap();
+        assert_eq!(wds.len(), 2);
+        assert_eq!(wds[0].get("index").and_then(|v| v.as_str()), Some("0x1"));
+        assert_eq!(wds[0].get("amount").and_then(|v| v.as_str()), Some("0x3e8"));
+        assert_eq!(wds[1].get("index").and_then(|v| v.as_str()), Some("0x2"));
+        assert_eq!(wds[1].get("amount").and_then(|v| v.as_str()), Some("0x7d0"));
+
+        let vh = params[1].as_array().unwrap();
+        assert_eq!(vh.len(), 2);
+        assert_eq!(
+            vh[0].as_str(),
+            Some("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+        assert_eq!(
+            vh[1].as_str(),
+            Some("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+        );
+
+        assert_eq!(
+            params[2].as_str(),
+            Some("0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")
+        );
+
+        let reqs = params[3].as_array().unwrap();
+        assert!(reqs.is_empty());
+    }
+
+    #[test]
+    fn write_new_payload_params_exec_requests() {
+        let frame = make_new_payload_frame(SAMPLE_PAYLOAD_SSZ, &[&[0x01, 0x02], &[0x03]]);
+        let mut out = Vec::new();
+        write_new_payload_params(&frame, &[], &[0u8; 32], &mut out).unwrap();
+
+        let val = simd_json::to_borrowed_value(&mut out).unwrap();
+        let reqs = val.as_array().unwrap()[3].as_array().unwrap();
+        assert_eq!(reqs.len(), 2);
+        assert_eq!(reqs[0].as_str(), Some("0x0102"));
+        assert_eq!(reqs[1].as_str(), Some("0x03"));
+    }
+
+    #[test]
+    fn write_new_payload_params_empty_variable_fields() {
+        let frame = make_new_payload_frame(EMPTY_VAR_PAYLOAD_SSZ, &[]);
+        let mut out = Vec::new();
+        write_new_payload_params(&frame, &[], &[0u8; 32], &mut out).unwrap();
+
+        let val = simd_json::to_borrowed_value(&mut out).unwrap();
+        let ep = &val.as_array().unwrap()[0];
+        assert_eq!(ep.get("extraData").and_then(|v| v.as_str()), Some("0x"));
+        assert_eq!(ep.get("transactions").and_then(|v| v.as_array()).map(|a| a.len()), Some(0));
+        assert_eq!(ep.get("withdrawals").and_then(|v| v.as_array()).map(|a| a.len()), Some(0));
+    }
+
+    #[test]
+    fn write_new_payload_params_many_txs() {
+        let frame = make_new_payload_frame(MANY_TX_PAYLOAD_SSZ, &[]);
+        let mut out = Vec::new();
+        write_new_payload_params(&frame, &[], &[0u8; 32], &mut out).unwrap();
+
+        let val = simd_json::to_borrowed_value(&mut out).unwrap();
+        let txs =
+            val.as_array().unwrap()[0].get("transactions").and_then(|v| v.as_array()).unwrap();
+        assert_eq!(txs.len(), 21);
+        assert_eq!(txs[0].as_str(), Some("0x00"));
+        assert_eq!(txs[20].as_str(), Some("0x141414141414141414141414141414141414141414"));
+    }
+
+    #[test]
+    fn write_new_payload_params_too_short() {
+        assert!(write_new_payload_params(&[0u8; 4], &[], &[0u8; 32], &mut Vec::new()).is_err());
+    }
+
+    #[test]
+    fn write_new_payload_params_truncated_payload() {
+        // length claims 100 bytes but only 10 are available
+        let mut frame = vec![100u8, 0, 0, 0];
+        frame.extend_from_slice(&[0u8; 10]);
+        assert!(write_new_payload_params(&frame, &[], &[0u8; 32], &mut Vec::new()).is_err());
+    }
+
+    // ---------------------------------------------------------------------------
+    // json_get_payload_to_tcache
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn json_get_payload_to_tcache_matches_fixture() {
+        let mut json = get_payload_json();
+        let mut out = Vec::new();
+        json_get_payload_to_tcache(&mut json, &mut out).unwrap();
         assert_eq!(out, GET_PAYLOAD_TCACHE);
+    }
+
+    #[test]
+    fn json_get_payload_to_tcache_rpc_error() {
+        let mut json =
+            br#"{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"internal"}}"#.to_vec();
+        assert!(json_get_payload_to_tcache(&mut json, &mut Vec::new()).is_err());
+    }
+
+    #[test]
+    fn json_get_payload_to_tcache_missing_result() {
+        let mut json = br#"{"jsonrpc":"2.0","id":1}"#.to_vec();
+        assert!(json_get_payload_to_tcache(&mut json, &mut Vec::new()).is_err());
+    }
+
+    // ---------------------------------------------------------------------------
+    // json_get_blobs_to_tcache
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn json_get_blobs_null_result() {
+        let mut json = br#"{"jsonrpc":"2.0","id":1,"result":null}"#.to_vec();
+        let mut out = Vec::new();
+        json_get_blobs_to_tcache(&mut json, &mut out).unwrap();
+        assert_eq!(out, 0u32.to_le_bytes());
+    }
+
+    #[test]
+    fn json_get_blobs_with_items() {
+        let proof = "a0".repeat(48);
+        let blob_hex = "b0".repeat(32);
+        let mut json =
+            format!(r#"{{"result":[{{"proofs":["0x{proof}"],"blob":"0x{blob_hex}"}},null]}}"#)
+                .into_bytes();
+        let mut out = Vec::new();
+        json_get_blobs_to_tcache(&mut json, &mut out).unwrap();
+
+        assert_eq!(u32::from_le_bytes(out[0..4].try_into().unwrap()), 2);
+        // item 0: present=1, proof_count=1, 48 proof bytes, blob_len=32, 32 blob bytes
+        assert_eq!(out[4], 1);
+        assert_eq!(out[5], 1);
+        assert_eq!(&out[6..54], &[0xa0u8; 48]);
+        assert_eq!(u32::from_le_bytes(out[54..58].try_into().unwrap()), 32);
+        assert_eq!(&out[58..90], &[0xb0u8; 32]);
+        // item 1: null → present=0
+        assert_eq!(out[90], 0);
+    }
+
+    #[test]
+    fn json_get_blobs_missing_result() {
+        let mut json = br#"{"jsonrpc":"2.0","id":1}"#.to_vec();
+        assert!(json_get_blobs_to_tcache(&mut json, &mut Vec::new()).is_err());
+    }
+
+    // ---------------------------------------------------------------------------
+    // json_get_payload_bodies_to_tcache
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn json_get_payload_bodies_with_items() {
+        let mut json = br#"{"result":[{"transactions":["0xdeadbeef","0xcafe"],"withdrawals":[{"index":"0x1","validatorIndex":"0x2","address":"0x1234567890123456789012345678901234567890","amount":"0xa"}]},null]}"#.to_vec();
+        let mut out = Vec::new();
+        json_get_payload_bodies_to_tcache(&mut json, &mut out).unwrap();
+
+        let mut pos = 0usize;
+        assert_eq!(u32::from_le_bytes(out[pos..pos + 4].try_into().unwrap()), 2);
+        pos += 4;
+
+        // item 0
+        assert_eq!(out[pos], 1);
+        pos += 1;
+        assert_eq!(u32::from_le_bytes(out[pos..pos + 4].try_into().unwrap()), 2); // tx_count
+        pos += 4;
+        let tx0_len = u32::from_le_bytes(out[pos..pos + 4].try_into().unwrap()) as usize;
+        pos += 4;
+        assert_eq!(tx0_len, 4);
+        assert_eq!(&out[pos..pos + 4], &[0xde, 0xad, 0xbe, 0xef]);
+        pos += tx0_len;
+        let tx1_len = u32::from_le_bytes(out[pos..pos + 4].try_into().unwrap()) as usize;
+        pos += 4;
+        assert_eq!(tx1_len, 2);
+        assert_eq!(&out[pos..pos + 2], &[0xca, 0xfe]);
+        pos += tx1_len;
+        assert_eq!(u32::from_le_bytes(out[pos..pos + 4].try_into().unwrap()), 1); // wd_count
+        pos += 4;
+        assert_eq!(u64::from_le_bytes(out[pos..pos + 8].try_into().unwrap()), 1); // index
+        pos += 8;
+        assert_eq!(u64::from_le_bytes(out[pos..pos + 8].try_into().unwrap()), 2); // validator_index
+        pos += 8;
+        assert_eq!(
+            &out[pos..pos + 20],
+            hex::decode("1234567890123456789012345678901234567890").unwrap().as_slice()
+        );
+        pos += 20;
+        assert_eq!(u64::from_le_bytes(out[pos..pos + 8].try_into().unwrap()), 10); // amount
+        pos += 8;
+
+        // item 1: null
+        assert_eq!(out[pos], 0);
+    }
+
+    #[test]
+    fn json_get_payload_bodies_missing_result() {
+        let mut json = br#"{"jsonrpc":"2.0","id":1}"#.to_vec();
+        assert!(json_get_payload_bodies_to_tcache(&mut json, &mut Vec::new()).is_err());
     }
 }

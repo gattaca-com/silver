@@ -12,6 +12,10 @@ use crate::{EngineError, JwtSecret};
 // transactions).
 const READ_BUF_CAPACITY: usize = 10 * 1024 * 1024;
 
+// Sized for the largest expected outgoing request: newPayload with a full
+// block (~30M gas of transactions, hex-encoded in JSON) plus HTTP headers.
+const WRITE_BUF_CAPACITY: usize = 10 * 1024 * 1024;
+
 enum Conn {
     Disconnected,
     Connecting(TcpStream),
@@ -26,10 +30,14 @@ struct HttpConnection {
     conn: Conn,
     addr: Option<SocketAddr>,
     in_flight: Option<u64>,
-    pending: Option<(u64, Vec<u8>)>,
+    pending_id: Option<u64>,
+    write_buf: Vec<u8>,
     write_pos: usize,
     read_buf: Vec<u8>,
     read_offset: usize,
+    // Cached from the first read of the current response; zero = not yet parsed.
+    response_header_end: usize,
+    response_total: usize, // header_end + content_length
 }
 
 impl HttpConnection {
@@ -47,24 +55,28 @@ impl HttpConnection {
             token,
             conn: Conn::Disconnected,
             addr: None,
-            pending: None,
+            pending_id: None,
+            write_buf: Vec::with_capacity(WRITE_BUF_CAPACITY),
             write_pos: 0,
             in_flight: None,
             read_buf: Vec::with_capacity(READ_BUF_CAPACITY),
             read_offset: 0,
+            response_header_end: 0,
+            response_total: 0,
         }
     }
 }
 
 fn http_is_free(t: &HttpConnection) -> bool {
-    t.in_flight.is_none() && t.pending.is_none()
+    t.in_flight.is_none() && t.pending_id.is_none()
 }
 
 fn http_enqueue(t: &mut HttpConnection, rpc_id: u64, body: &[u8], poll: &mut Poll) {
-    debug_assert!(t.in_flight.is_none() && t.pending.is_none(), "enqueue on busy connection");
+    debug_assert!(t.in_flight.is_none() && t.pending_id.is_none(), "enqueue on busy connection");
     let bearer = t.jwt.bearer_token();
-    let bytes = build_request(&t.host, body, bearer, true);
-    t.pending = Some((rpc_id, bytes));
+    build_request_into(&mut t.write_buf, &t.host, body, bearer, true);
+    t.pending_id = Some(rpc_id);
+    t.write_pos = 0;
 
     // matches! borrows t.conn transiently, freeing it before the function call
     // below.
@@ -77,7 +89,7 @@ fn http_enqueue(t: &mut HttpConnection, rpc_id: u64, body: &[u8], poll: &mut Pol
 
 fn http_poll<F>(t: &mut HttpConnection, events: &Events, poll: &mut Poll, on_complete: &mut F)
 where
-    F: FnMut(u64, Result<Vec<u8>, EngineError>),
+    F: FnMut(u64, Result<&mut [u8], EngineError>),
 {
     for event in events.iter() {
         if event.token() != t.token {
@@ -96,7 +108,7 @@ where
                 };
                 if stream.peer_addr().is_ok() {
                     t.conn = Conn::Connected(stream);
-                    let interest = if t.pending.is_none() {
+                    let interest = if t.pending_id.is_none() {
                         Interest::READABLE
                     } else {
                         Interest::READABLE | Interest::WRITABLE
@@ -116,14 +128,20 @@ where
             if event.is_writable() {
                 let result = {
                     let Conn::Connected(stream) = &mut t.conn else { unreachable!() };
-                    http_do_write(stream, &mut t.pending, &mut t.write_pos, &mut t.in_flight)
+                    http_do_write(
+                        stream,
+                        &mut t.pending_id,
+                        &t.write_buf,
+                        &mut t.write_pos,
+                        &mut t.in_flight,
+                    )
                 };
                 if let Err(e) = result {
                     let msg = e.to_string();
                     http_on_error(t, poll, on_complete, &msg);
                     break;
                 }
-                let interest = if t.pending.is_none() {
+                let interest = if t.pending_id.is_none() {
                     Interest::READABLE
                 } else {
                     Interest::READABLE | Interest::WRITABLE
@@ -142,6 +160,8 @@ where
                         &mut t.in_flight,
                         &mut t.read_buf,
                         &mut t.read_offset,
+                        &mut t.response_header_end,
+                        &mut t.response_total,
                         on_complete,
                     )
                 };
@@ -188,20 +208,19 @@ fn http_connect(t: &mut HttpConnection, poll: &mut Poll) {
 
 fn http_do_write(
     stream: &mut TcpStream,
-    pending: &mut Option<(u64, Vec<u8>)>,
+    pending_id: &mut Option<u64>,
+    write_buf: &[u8],
     write_pos: &mut usize,
     in_flight: &mut Option<u64>,
 ) -> io::Result<()> {
-    if let Some((_, bytes)) = pending.as_ref() {
+    if pending_id.is_some() {
         loop {
-            match stream.write(&bytes[*write_pos..]) {
+            match stream.write(&write_buf[*write_pos..]) {
                 Ok(0) => break,
                 Ok(n) => {
                     *write_pos += n;
-                    if *write_pos == bytes.len() {
-                        //SAFETY: can unwrap here because we're in pending is Some branch
-                        let (rpc_id, _) = pending.take().unwrap();
-                        *in_flight = Some(rpc_id);
+                    if *write_pos == write_buf.len() {
+                        *in_flight = pending_id.take();
                         *write_pos = 0;
                         break;
                     }
@@ -219,30 +238,58 @@ fn http_do_read<F>(
     in_flight: &mut Option<u64>,
     read_buf: &mut Vec<u8>,
     read_offset: &mut usize,
+    response_header_end: &mut usize,
+    response_total: &mut usize,
     on_complete: &mut F,
 ) -> io::Result<()>
 where
-    F: FnMut(u64, Result<Vec<u8>, EngineError>),
+    F: FnMut(u64, Result<&mut [u8], EngineError>),
 {
     loop {
+        // Deliver if a complete response is already buffered.
+        if *response_total > 0 && read_buf.len() - *read_offset >= *response_total {
+            if let Some(rpc_id) = in_flight.take() {
+                let start = *read_offset + *response_header_end;
+                let end = *read_offset + *response_total;
+                on_complete(rpc_id, Ok(&mut read_buf[start..end]));
+            }
+            *read_offset += *response_total;
+            *response_header_end = 0;
+            *response_total = 0;
+            if *read_offset == read_buf.len() {
+                read_buf.clear();
+                *read_offset = 0;
+            }
+            continue;
+        }
+
+        let want = if *response_total > 0 {
+            // Know total size; read exactly the remaining bytes.
+            *response_total - (read_buf.len() - *read_offset)
+        } else {
+            // Headers not yet parsed; 4096 covers any realistic HTTP response header.
+            4096
+        };
+
         let base = read_buf.len();
-        read_buf.resize(base + READ_BUF_CAPACITY, 0);
+        read_buf.resize(base + want, 0);
         match stream.read(&mut read_buf[base..]) {
             Ok(0) => {
-                read_buf.truncate(base);
                 return Err(io::Error::new(io::ErrorKind::ConnectionReset, "eof"));
             }
             Ok(n) => {
                 read_buf.truncate(base + n);
-                while let Some((result, consumed)) = try_parse_response(&read_buf[*read_offset..]) {
-                    *read_offset += consumed;
-                    if let Some(rpc_id) = in_flight.take() {
-                        on_complete(rpc_id, result);
+                if *response_total == 0 {
+                    match try_parse_headers(&read_buf[*read_offset..]) {
+                        Ok(Some((hend, cl))) => {
+                            *response_header_end = hend;
+                            *response_total = hend + cl;
+                        }
+                        Ok(None) => {} // headers still incomplete
+                        Err(e) => {
+                            return Err(io::Error::new(io::ErrorKind::InvalidData, e.to_string()));
+                        }
                     }
-                }
-                if *read_offset == read_buf.len() {
-                    read_buf.clear();
-                    *read_offset = 0;
                 }
             }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
@@ -250,7 +297,6 @@ where
                 break;
             }
             Err(e) => {
-                read_buf.truncate(base);
                 return Err(e);
             }
         }
@@ -260,19 +306,21 @@ where
 
 fn http_on_error<F>(t: &mut HttpConnection, poll: &mut Poll, on_complete: &mut F, msg: &str)
 where
-    F: FnMut(u64, Result<Vec<u8>, EngineError>),
+    F: FnMut(u64, Result<&mut [u8], EngineError>),
 {
     tracing::warn!("{msg}");
     let err = msg.to_string();
     if let Some(rpc_id) = t.in_flight.take() {
         on_complete(rpc_id, Err(EngineError::Http(err.clone())));
     }
-    if let Some((rpc_id, _)) = t.pending.take() {
+    if let Some(rpc_id) = t.pending_id.take() {
         on_complete(rpc_id, Err(EngineError::Http(err.clone())));
     }
     t.write_pos = 0;
     t.read_buf.clear();
     t.read_offset = 0;
+    t.response_header_end = 0;
+    t.response_total = 0;
     let old = std::mem::replace(&mut t.conn, Conn::Disconnected);
     if let Conn::Connecting(mut stream) | Conn::Connected(mut stream) = old {
         let _ = poll.registry().deregister(&mut stream);
@@ -288,16 +336,19 @@ fn http_set_interest(conn: &mut Conn, token: Token, poll: &mut Poll, interest: I
 }
 
 // Connection helper functions
-fn build_request(host: &str, json: &[u8], bearer: &str, keep_alive: bool) -> Vec<u8> {
+fn build_request_into(buf: &mut Vec<u8>, host: &str, json: &[u8], bearer: &str, keep_alive: bool) {
+    use std::io::Write as _;
     let connection = if keep_alive { "keep-alive" } else { "close" };
-    let header = format!(
+    buf.clear();
+    // SAFETY: Vec<u8>'s io::Write impl is infallible.
+    write!(
+        buf,
         "POST / HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\n\
          Content-Length: {len}\r\nAuthorization: {bearer}\r\nConnection: {connection}\r\n\r\n",
         len = json.len(),
-    );
-    let mut bytes = header.into_bytes();
-    bytes.extend_from_slice(json);
-    bytes
+    )
+    .unwrap();
+    buf.extend_from_slice(json);
 }
 
 fn parse_addr(endpoint: &str) -> io::Result<SocketAddr> {
@@ -308,31 +359,24 @@ fn parse_addr(endpoint: &str) -> io::Result<SocketAddr> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no address resolved"))
 }
 
-fn try_parse_response(buf: &[u8]) -> Option<(Result<Vec<u8>, EngineError>, usize)> {
+// Returns (header_end, content_length) when headers are complete, None if
+// partial.
+fn try_parse_headers(buf: &[u8]) -> Result<Option<(usize, usize)>, EngineError> {
     let mut headers = [httparse::EMPTY_HEADER; 32];
     let mut resp = httparse::Response::new(&mut headers);
-
     let header_end = match resp.parse(buf) {
         Ok(httparse::Status::Complete(n)) => n,
-        Ok(httparse::Status::Partial) => return None,
-        Err(e) => {
-            return Some((Err(EngineError::Http(format!("httparse: {e}"))), buf.len()));
-        }
+        Ok(httparse::Status::Partial) => return Ok(None),
+        Err(e) => return Err(EngineError::Http(format!("httparse: {e}"))),
     };
-
-    let cl_bytes = headers.iter().find(|h| h.name.eq_ignore_ascii_case("content-length"))?.value;
-    if !cl_bytes.iter().all(|b| b.is_ascii_digit()) {
-        return Some((Err(EngineError::Http("invalid Content-Length".into())), buf.len()));
+    match headers.iter().find(|h| h.name.eq_ignore_ascii_case("content-length")) {
+        Some(h) if h.value.iter().all(|b| b.is_ascii_digit()) => {
+            let cl = h.value.iter().copied().fold(0usize, |acc, b| acc * 10 + (b - b'0') as usize);
+            Ok(Some((header_end, cl)))
+        }
+        Some(_) => Err(EngineError::Http("invalid Content-Length".into())),
+        None => Err(EngineError::Http("missing Content-Length".into())),
     }
-    let content_length: usize =
-        cl_bytes.iter().copied().fold(0usize, |acc, b| acc * 10 + (b - b'0') as usize);
-
-    let total = header_end + content_length;
-    if buf.len() < total {
-        return None;
-    }
-
-    Some((Ok(buf[header_end..total].to_vec()), total))
 }
 
 pub(crate) struct HttpPool {
@@ -368,7 +412,7 @@ pub(crate) fn poll_http_pool<F>(
     poll: &mut Poll,
     on_complete: &mut F,
 ) where
-    F: FnMut(u64, Result<Vec<u8>, EngineError>),
+    F: FnMut(u64, Result<&mut [u8], EngineError>),
 {
     for conn in &mut pool.connections {
         http_poll(conn, events, poll, on_complete);
@@ -379,7 +423,7 @@ pub(crate) fn poll_http_pool<F>(
 mod tests {
     use super::*;
 
-    fn http_response(body: &[u8]) -> Vec<u8> {
+    fn make_response(body: &[u8]) -> Vec<u8> {
         let header = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
             body.len()
@@ -390,55 +434,41 @@ mod tests {
     }
 
     #[test]
-    fn parse_complete_response() {
+    fn headers_complete_returns_offsets() {
         let body = br#"{"jsonrpc":"2.0","id":1,"result":true}"#;
-        let buf = http_response(body);
-        let (result, consumed) = try_parse_response(&buf).unwrap();
-        assert!(result.is_ok());
-        assert_eq!(consumed, buf.len());
+        let buf = make_response(body);
+        let (hend, cl) = try_parse_headers(&buf).unwrap().unwrap();
+        assert_eq!(cl, body.len());
+        assert_eq!(hend + cl, buf.len());
     }
 
     #[test]
-    fn parse_incomplete_headers_returns_none() {
+    fn headers_partial_returns_none() {
         let partial = b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n";
-        assert!(try_parse_response(partial).is_none());
+        assert!(try_parse_headers(partial).unwrap().is_none());
     }
 
     #[test]
-    fn parse_complete_headers_but_truncated_body_returns_none() {
+    fn headers_complete_body_incomplete_still_returns_offsets() {
+        // try_parse_headers only cares about headers; body completeness is the caller's
+        // job.
         let body = br#"{"result":1}"#;
-        let mut buf = http_response(body);
+        let mut buf = make_response(body);
         buf.truncate(buf.len() - 3);
-        assert!(try_parse_response(&buf).is_none());
+        let (hend, cl) = try_parse_headers(&buf).unwrap().unwrap();
+        assert_eq!(cl, body.len());
+        assert!(buf.len() < hend + cl);
     }
 
     #[test]
-    fn parse_two_responses_sequentially() {
-        let body = br#"{"id":1}"#;
-        let single = http_response(body);
-        let mut buf = single.clone();
-        buf.extend_from_slice(&single);
-
-        let (r1, n1) = try_parse_response(&buf).unwrap();
-        assert!(r1.is_ok());
-        let (r2, n2) = try_parse_response(&buf[n1..]).unwrap();
-        assert!(r2.is_ok());
-        assert_eq!(n1, n2, "both responses are the same size");
-        assert_eq!(n1 + n2, buf.len());
-    }
-
-    #[test]
-    fn parse_missing_content_length_returns_none() {
+    fn missing_content_length_is_error() {
         let buf = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{}";
-        assert!(try_parse_response(buf).is_none(), "no Content-Length header → None");
+        assert!(try_parse_headers(buf).is_err());
     }
 
     #[test]
-    fn parse_large_body_correct_consumed_count() {
-        let json_body: Vec<u8> = (0u8..=255).cycle().take(4096).collect();
-        let buf = http_response(&json_body);
-        let (result, consumed) = try_parse_response(&buf).unwrap();
-        assert!(result.is_ok());
-        assert_eq!(consumed, buf.len());
+    fn invalid_content_length_is_error() {
+        let buf = b"HTTP/1.1 200 OK\r\nContent-Length: abc\r\n\r\n{}";
+        assert!(try_parse_headers(buf).is_err());
     }
 }

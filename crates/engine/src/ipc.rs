@@ -1,5 +1,4 @@
 use std::{
-    collections::VecDeque,
     io::{self, Read, Write},
     path::PathBuf,
 };
@@ -13,6 +12,10 @@ use crate::EngineError;
 // transactions).
 const READ_BUF_CAPACITY: usize = 10 * 1024 * 1024;
 
+// Sized for the largest expected outgoing request: newPayload with a full
+// block (~30M gas of transactions, hex-encoded in JSON).
+const WRITE_BUF_CAPACITY: usize = 10 * 1024 * 1024;
+
 #[derive(PartialEq)]
 enum State {
     Disconnected,
@@ -25,7 +28,8 @@ struct IpcTransport {
     token: Token,
     stream: Option<UnixStream>,
     state: State,
-    send_queue: VecDeque<(u64, Vec<u8>)>,
+    pending_id: Option<u64>,
+    write_buf: Vec<u8>,
     write_pos: usize,
     in_flight: Option<u64>,
     read_buf: Vec<u8>,
@@ -39,7 +43,8 @@ impl IpcTransport {
             token,
             stream: None,
             state: State::Disconnected,
-            send_queue: VecDeque::new(),
+            pending_id: None,
+            write_buf: Vec::with_capacity(WRITE_BUF_CAPACITY),
             write_pos: 0,
             in_flight: None,
             read_buf: Vec::with_capacity(READ_BUF_CAPACITY),
@@ -49,13 +54,15 @@ impl IpcTransport {
 }
 
 fn ipc_is_free(t: &IpcTransport) -> bool {
-    t.in_flight.is_none() && t.send_queue.is_empty()
+    t.in_flight.is_none() && t.pending_id.is_none()
 }
 
 fn ipc_enqueue(t: &mut IpcTransport, rpc_id: u64, body: &[u8], poll: &mut Poll) {
-    let mut bytes = body.to_vec();
-    bytes.push(b'\n');
-    t.send_queue.push_back((rpc_id, bytes));
+    t.write_buf.clear();
+    t.write_buf.extend_from_slice(body);
+    t.write_buf.push(b'\n');
+    t.pending_id = Some(rpc_id);
+    t.write_pos = 0;
 
     match t.state {
         State::Disconnected => ipc_connect(t, poll),
@@ -66,7 +73,7 @@ fn ipc_enqueue(t: &mut IpcTransport, rpc_id: u64, body: &[u8], poll: &mut Poll) 
 
 fn ipc_poll<F>(t: &mut IpcTransport, events: &Events, poll: &mut Poll, on_complete: &mut F)
 where
-    F: FnMut(u64, Result<Vec<u8>, EngineError>),
+    F: FnMut(u64, Result<&mut [u8], EngineError>),
 {
     for event in events.iter() {
         if event.token() != t.token {
@@ -84,7 +91,7 @@ where
                         break;
                     }
                     t.state = State::Connected;
-                    let interest = if t.send_queue.is_empty() {
+                    let interest = if t.pending_id.is_none() {
                         Interest::READABLE
                     } else {
                         Interest::READABLE | Interest::WRITABLE
@@ -103,7 +110,7 @@ where
                         ipc_on_error(t, poll, on_complete, &msg);
                         break;
                     }
-                    let interest = if t.send_queue.is_empty() {
+                    let interest = if t.pending_id.is_none() {
                         Interest::READABLE
                     } else {
                         Interest::READABLE | Interest::WRITABLE
@@ -135,20 +142,22 @@ fn ipc_connect(t: &mut IpcTransport, poll: &mut Poll) {
 }
 
 fn ipc_do_write(t: &mut IpcTransport) -> io::Result<()> {
-    while let Some((_, bytes)) = t.send_queue.front() {
+    if t.pending_id.is_some() {
         let stream = t.stream.as_mut().unwrap();
-        match stream.write(&bytes[t.write_pos..]) {
-            Ok(0) => return Err(io::Error::new(io::ErrorKind::WriteZero, "write returned 0")),
-            Ok(n) => {
-                t.write_pos += n;
-                if t.write_pos == bytes.len() {
-                    let (rpc_id, _) = t.send_queue.pop_front().unwrap();
-                    t.in_flight = Some(rpc_id);
-                    t.write_pos = 0;
+        loop {
+            match stream.write(&t.write_buf[t.write_pos..]) {
+                Ok(0) => return Err(io::Error::new(io::ErrorKind::WriteZero, "write returned 0")),
+                Ok(n) => {
+                    t.write_pos += n;
+                    if t.write_pos == t.write_buf.len() {
+                        t.in_flight = t.pending_id.take();
+                        t.write_pos = 0;
+                        break;
+                    }
                 }
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                Err(e) => return Err(e),
             }
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
-            Err(e) => return Err(e),
         }
     }
     Ok(())
@@ -156,7 +165,7 @@ fn ipc_do_write(t: &mut IpcTransport) -> io::Result<()> {
 
 fn ipc_do_read<F>(t: &mut IpcTransport, on_complete: &mut F) -> io::Result<()>
 where
-    F: FnMut(u64, Result<Vec<u8>, EngineError>),
+    F: FnMut(u64, Result<&mut [u8], EngineError>),
 {
     let stream = t.stream.as_mut().unwrap();
     loop {
@@ -170,9 +179,10 @@ where
             Ok(n) => {
                 t.read_buf.truncate(base + n);
                 while let Some(rel) = t.read_buf[t.read_offset..].iter().position(|&b| b == b'\n') {
-                    let end = t.read_offset + rel;
+                    let offset = t.read_offset;
+                    let end = offset + rel;
                     if let Some(rpc_id) = t.in_flight {
-                        on_complete(rpc_id, Ok(t.read_buf[t.read_offset..end].to_vec()));
+                        on_complete(rpc_id, Ok(&mut t.read_buf[offset..end]));
                     }
                     t.read_offset = end + 1;
                 }
@@ -196,14 +206,14 @@ where
 
 fn ipc_on_error<F>(t: &mut IpcTransport, poll: &mut Poll, on_complete: &mut F, msg: &str)
 where
-    F: FnMut(u64, Result<Vec<u8>, EngineError>),
+    F: FnMut(u64, Result<&mut [u8], EngineError>),
 {
     tracing::warn!("{msg}");
     let err = msg.to_string();
     if let Some(rpc_id) = t.in_flight.take() {
         on_complete(rpc_id, Err(EngineError::Ipc(err.clone())));
     }
-    for (rpc_id, _) in t.send_queue.drain(..) {
+    if let Some(rpc_id) = t.pending_id.take() {
         on_complete(rpc_id, Err(EngineError::Ipc(err.clone())));
     }
     t.write_pos = 0;
@@ -249,7 +259,7 @@ pub(crate) fn poll_ipc_pool<F>(
     poll: &mut Poll,
     on_complete: &mut F,
 ) where
-    F: FnMut(u64, Result<Vec<u8>, EngineError>),
+    F: FnMut(u64, Result<&mut [u8], EngineError>),
 {
     for conn in &mut pool.connections {
         ipc_poll(conn, events, poll, on_complete);
