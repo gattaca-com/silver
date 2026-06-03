@@ -47,6 +47,12 @@ const UNFINALIZED_DIR: &str = "unfinalized";
 /// Files: `<slot>_<block_root>_<column>.ssz`.
 const UNFINALIZED_COLUMNS_DIR: &str = "unfinalized_columns";
 
+const BLOCKS_DIR: &str = "blocks";
+const COLUMNS_DIR: &str = "columns";
+
+const BLOCK_SLOTS_RETAINED: u64 = 33024 * 32;
+const COLUMN_SLOTS_RETAINED: u64 = 4096 * 32;
+
 /// One node of the unfinalized fork tree. The edge (`parent_root`) is
 /// durable in the on-disk filename; this is the in-memory index rebuilt
 /// from `readdir` on load for O(1) ancestor walks.
@@ -103,6 +109,12 @@ enum PendingWrite {
         block_root: [u8; 32],
         column: u64,
     },
+    TruncateBlockHistory {
+        finalized_slot: u64,
+    },
+    TruncateColumnHistory {
+        finalized_slot: u64,
+    },
 }
 
 /// One served file = one response chunk. The unit's resolution (canonical
@@ -157,7 +169,13 @@ impl Store {
             std::fs::create_dir_all(&store_dir)?;
         }
 
-        for sub_dir in std::fs::read_dir(&store_dir)? {
+        let blocks_dir = Path::new(&store_dir).join(BLOCKS_DIR);
+        std::fs::create_dir_all(&blocks_dir)?;
+
+        let columns_dir = Path::new(&store_dir).join(COLUMNS_DIR);
+        std::fs::create_dir_all(&columns_dir)?;
+
+        for sub_dir in std::fs::read_dir(&blocks_dir)? {
             let index_path = sub_dir?.path().join("block_index.bin");
             if let Ok(mut index_file) = io::open_file_read(index_path) {
                 let mut buffer = [0u8; 40];
@@ -337,6 +355,10 @@ impl Store {
             &mut self.unfinalized_columns,
             &mut self.write_queue,
         );
+
+        // Truncate history
+        self.write_queue.push_back(PendingWrite::TruncateBlockHistory { finalized_slot });
+        self.write_queue.push_back(PendingWrite::TruncateColumnHistory { finalized_slot });
     }
 
     #[timed]
@@ -496,9 +518,14 @@ impl Store {
         chain
     }
 
-    fn slot_dir(&self, slot: u64) -> PathBuf {
+    fn block_slot_dir(&self, slot: u64) -> PathBuf {
         let group_dir = slot & !(SLOTS_PER_DIR - 1);
-        PathBuf::new().join(&self.store_dir).join(group_dir.to_string())
+        PathBuf::new().join(&self.store_dir).join(BLOCKS_DIR).join(group_dir.to_string())
+    }
+
+    fn column_slot_dir(&self, slot: u64) -> PathBuf {
+        let group_dir = slot & !(SLOTS_PER_DIR - 1);
+        PathBuf::new().join(&self.store_dir).join(COLUMNS_DIR).join(group_dir.to_string())
     }
 
     fn unfinalized_dir(&self) -> PathBuf {
@@ -738,7 +765,7 @@ mod tests {
         assert!(!store.unfinalized.contains_key(&root_b));
 
         store.file_io(&fork_digest, &mut producer, &mut |_| {}).unwrap();
-        let flat_a = store.slot_dir(slot).join(format!("{slot}_block.ssz"));
+        let flat_a = store.block_slot_dir(slot).join(format!("{slot}_block.ssz"));
         assert!(flat_a.exists());
         assert!(!path_a.exists()); // moved to flat store
         assert!(!path_b.exists()); // orphan pruned
@@ -821,7 +848,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&store_path);
         let mut store = super::Store::load(store_path.clone()).unwrap();
         let ucol_dir = store.unfinalized_columns_dir();
-        let flat_dir = store.slot_dir(42);
+        let flat_dir = store.column_slot_dir(42);
 
         let parent_root = [0xCC; 32];
         let root_a = [0xAA; 32];

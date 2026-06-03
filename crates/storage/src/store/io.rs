@@ -16,6 +16,9 @@ use silver_common::{
 };
 
 use super::{PendingWrite, QueryUnit, Store, UnfinalizedBlock};
+use crate::store::{
+    BLOCK_SLOTS_RETAINED, BLOCKS_DIR, COLUMN_SLOTS_RETAINED, COLUMNS_DIR, SLOTS_PER_DIR,
+};
 
 /// Per-loop op budgets. Disk I/O on regular files is synchronous —
 /// O_NONBLOCK has no effect there — so each op blocks the tile until done;
@@ -53,7 +56,7 @@ impl Store {
 
             match pending {
                 PendingWrite::Index { block_root, slot } => {
-                    let dir = self.slot_dir(*slot);
+                    let dir = self.block_slot_dir(*slot);
                     std::fs::create_dir_all(&dir)?;
                     let path = dir.join("block_index.bin");
                     let mut file = open_file_write(path, true)?;
@@ -67,7 +70,7 @@ impl Store {
                     self.write_queue.pop_front();
                 }
                 PendingWrite::Column { slot, column, ssz } => {
-                    let dir = self.slot_dir(*slot);
+                    let dir = self.column_slot_dir(*slot);
                     std::fs::create_dir_all(&dir)?;
                     let path = dir.join(format!("{slot}_{column}.ssz"));
                     let (buffer, _) = ssz.buffer().map_err(Error::other)?;
@@ -82,7 +85,7 @@ impl Store {
                     self.write_queue.pop_front();
                 }
                 PendingWrite::Promote { slot, parent_root, block_root } => {
-                    let dir = self.slot_dir(*slot);
+                    let dir = self.block_slot_dir(*slot);
                     std::fs::create_dir_all(&dir)?;
                     let from = self.unfinalized_dir().join(unfinalized_name(
                         *slot,
@@ -123,7 +126,7 @@ impl Store {
                     self.write_queue.pop_front();
                 }
                 PendingWrite::PromoteColumn { slot, block_root, column } => {
-                    let dir = self.slot_dir(*slot);
+                    let dir = self.column_slot_dir(*slot);
                     std::fs::create_dir_all(&dir)?;
                     let from = self
                         .unfinalized_columns_dir()
@@ -146,6 +149,16 @@ impl Store {
                         Err(e) => return Err(e),
                     }
                     self.write_queue.pop_front();
+                }
+                PendingWrite::TruncateBlockHistory { finalized_slot } => {
+                    let earliest_slot = finalized_slot.saturating_sub(BLOCK_SLOTS_RETAINED);
+                    let dir = PathBuf::new().join(&self.store_dir).join(BLOCKS_DIR);
+                    remove_subdirs(dir, earliest_slot)?;
+                }
+                PendingWrite::TruncateColumnHistory { finalized_slot } => {
+                    let earliest_slot = finalized_slot.saturating_sub(COLUMN_SLOTS_RETAINED);
+                    let dir = PathBuf::new().join(&self.store_dir).join(COLUMNS_DIR);
+                    remove_subdirs(dir, earliest_slot)?;
                 }
             }
         }
@@ -206,12 +219,14 @@ impl Store {
 
     fn unit_path(&self, unit: &QueryUnit) -> PathBuf {
         match unit {
-            QueryUnit::Block { slot } => self.slot_dir(*slot).join(format!("{slot}_block.ssz")),
+            QueryUnit::Block { slot } => {
+                self.block_slot_dir(*slot).join(format!("{slot}_block.ssz"))
+            }
             QueryUnit::UnfinalizedBlock { slot, parent_root, block_root } => {
                 self.unfinalized_dir().join(unfinalized_name(*slot, parent_root, block_root))
             }
             QueryUnit::Column { slot, column } => {
-                self.slot_dir(*slot).join(format!("{slot}_{column}.ssz"))
+                self.column_slot_dir(*slot).join(format!("{slot}_{column}.ssz"))
             }
             QueryUnit::UnfinalizedColumn { slot, block_root, column } => self
                 .unfinalized_columns_dir()
@@ -309,4 +324,19 @@ fn parse_hex32(s: &str) -> Option<[u8; 32]> {
         out[i] = ((hi << 4) | lo) as u8;
     }
     Some(out)
+}
+
+fn remove_subdirs<P: AsRef<Path>>(dir: P, earliest_slot: u64) -> Result<(), Error> {
+    let contents = std::fs::read_dir(dir)?;
+    for entry in contents {
+        let dir_entry = entry?.file_name();
+        if let Ok(dir_number) =
+            dir_entry.to_str().ok_or(Error::other("unparsable dir name"))?.parse::<u64>()
+        {
+            if dir_number + SLOTS_PER_DIR < earliest_slot {
+                std::fs::remove_dir_all(dir_entry)?;
+            }
+        }
+    }
+    Ok(())
 }
