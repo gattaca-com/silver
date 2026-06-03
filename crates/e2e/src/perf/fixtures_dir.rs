@@ -27,6 +27,10 @@ pub struct Thresholds {
     pub max_decompose: Option<Nanos>,
     #[serde(deserialize_with = "de_duration")]
     pub max_apply_block_avg: Option<Nanos>,
+    /// Slowest single `apply_block` call in the run — guards worst-case
+    /// latency, not just the average.
+    #[serde(deserialize_with = "de_duration")]
+    pub max_apply_block_max: Option<Nanos>,
     /// Average wall time of one `hash_tree_root_state` call (sum across all
     /// call sites — `process_slots` and direct).
     #[serde(deserialize_with = "de_duration")]

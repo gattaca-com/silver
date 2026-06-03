@@ -15,6 +15,7 @@ struct PathStat {
     count: u64,
     tracked_avg_ns: Nanos,
     tracked_p99_ns: Nanos,
+    tracked_max_ns: Nanos,
     tracked_sum_ns: Nanos,
     total_untracked_ns: Nanos,
 }
@@ -45,6 +46,7 @@ impl TimingStats {
                         Nanos::ZERO
                     },
                     tracked_p99_ns: Nanos(percentile(&samples, 0.99)),
+                    tracked_max_ns: Nanos(samples.last().copied().unwrap_or(0)),
                     tracked_sum_ns: Nanos(u64::try_from(sum).unwrap_or(u64::MAX)),
                     total_untracked_ns: Nanos(timing.samples.total_untracked_ns),
                 }
@@ -62,6 +64,16 @@ impl TimingStats {
             .iter()
             .filter(|s| s.path.last().is_some_and(|n| leaf_name(n) == leaf))
             .fold((Nanos::ZERO, 0), |(sum, cnt), s| (sum + s.tracked_sum_ns, cnt + s.count))
+    }
+
+    /// Slowest single tracked sample across every path whose leaf is `leaf`
+    /// — the worst-case call, regardless of call site. `None` if no such path.
+    pub fn aggregate_leaf_max(&self, leaf: &str) -> Option<Nanos> {
+        self.0
+            .iter()
+            .filter(|s| s.path.last().is_some_and(|n| leaf_name(n) == leaf))
+            .map(|s| s.tracked_max_ns)
+            .max()
     }
 
     /// Indented call tree. A parent's untracked time is emitted as a
