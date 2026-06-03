@@ -4332,6 +4332,7 @@ dependencies = [
  "silver_gossip",
  "silver_network",
  "silver_peer",
+ "silver_storage",
  "tracing",
  "tracing-subscriber",
 ]
@@ -4625,9 +4626,13 @@ dependencies = [
  "c-kzg",
  "flux",
  "fxhash",
+ "hex",
  "rand 0.8.6",
  "silver_beacon_state_data",
  "silver_common",
+ "silver_common_macros",
+ "silver_metrics",
+ "tracing",
 ]
 
 [[package]]

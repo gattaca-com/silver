@@ -225,6 +225,7 @@ impl PeerManager {
                     return None;
                 }
                 let overlap = self.database.data_column_custody_groups_intersection(p, columns);
+                tracing::trace!(peer = p, overlap, columns, "peer data columns overlap");
                 if overlap == 0 {
                     return None;
                 }
@@ -664,6 +665,7 @@ impl PeerManager {
                 columns: overlap,
             });
             remaining &= !overlap;
+            tracing::trace!(peer, overlap, remaining, "sent data columns request");
         }
         if remaining != 0 {
             self.pending_data_columns_by_root.push_back((request_id, remaining, block_root));

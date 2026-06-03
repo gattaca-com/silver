@@ -15,6 +15,7 @@ silver_discovery.workspace = true
 silver_gossip.workspace = true
 silver_network.workspace = true
 silver_peer.workspace = true
+silver_storage.workspace = true
 
 clap.workspace = true
 flux.workspace = true

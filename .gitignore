@@ -28,6 +28,6 @@ CLAUDE.md
 # and crates/e2e/data/perf/README.md) — they need to escape the blanket
 # *.ssz ignore.
 !crates/e2e/data/perf/*.ssz
-!crates/beacon_state/consensus-spec-tests/*
+!crates/engine/testdata/*.ssz
 # kurtosis generated files
 kurtosis/silver-devnet.toml

@@ -30,6 +30,15 @@ const fn default_u64<const V: u64>() -> u64 {
     V
 }
 
+fn default_data_dir() -> String {
+    std::env::home_dir()
+        .and_then(|mut b| {
+            b = b.join(".local").join("silver");
+            b.to_str().map(|s| s.to_owned())
+        })
+        .unwrap_or("/tmp/silver".into())
+}
+
 fn default_supported_protocols() -> Vec<String> {
     vec![
         StreamProtocol::Identity.multiselect_string(),
@@ -95,6 +104,8 @@ pub struct Config {
     incoming_rpc_tcache_size: usize,
     #[serde(default = "default_usize::<33554432>")] // 2 << 24
     outgoing_rpc_tcache_size: usize,
+    #[serde(default = "default_data_dir")]
+    data_storage_dir: String,
 }
 
 impl Config {
@@ -125,6 +136,7 @@ impl Config {
             incoming_gossip_ssz_tcache_size: 2 << 24, // ssz
             incoming_rpc_tcache_size: 2 << 25,        // ssz
             outgoing_rpc_tcache_size: 2 << 24,        // ssz
+            data_storage_dir: default_data_dir(),
         }
     }
 
@@ -279,11 +291,20 @@ impl Config {
     pub fn outgoing_rpc_tcache_size(&self) -> usize {
         self.outgoing_rpc_tcache_size
     }
+
+    pub fn data_storage_dir(&self) -> &str {
+        &self.data_storage_dir
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_dir() {
+        println!("{}", default_data_dir());
+    }
 
     #[test]
     fn minimal_toml_populates_defaults() {

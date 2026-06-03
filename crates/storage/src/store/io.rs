@@ -12,7 +12,7 @@ use std::{
 
 use silver_common::{
     P2pSend, RpcOutbound, RpcResponse, RpcResponseOutbound, TCacheProducer, TCacheRead,
-    TMultiProducer,
+    TMultiProducer, metrics::timed,
 };
 
 use super::{PendingWrite, QueryUnit, Store, UnfinalizedBlock};
@@ -34,6 +34,7 @@ enum ServeResult {
 }
 
 impl Store {
+    #[timed]
     pub(crate) fn file_io<F>(
         &mut self,
         fork_digest: &[u8; 4],
