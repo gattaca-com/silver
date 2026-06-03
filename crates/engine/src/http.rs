@@ -275,7 +275,6 @@ where
         read_buf.resize(base + want, 0);
         match stream.read(&mut read_buf[base..]) {
             Ok(0) => {
-                read_buf.truncate(base);
                 return Err(io::Error::new(io::ErrorKind::ConnectionReset, "eof"));
             }
             Ok(n) => {
@@ -298,7 +297,6 @@ where
                 break;
             }
             Err(e) => {
-                read_buf.truncate(base);
                 return Err(e);
             }
         }
