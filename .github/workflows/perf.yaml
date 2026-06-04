@@ -19,7 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # SSZ fixtures under crates/e2e/data/perf live in git-lfs. 123
+          # SSZ fixtures under crates/e2e/data/perf live in git-lfs.
           lfs: true
 
       - name: Setup Rust cache
