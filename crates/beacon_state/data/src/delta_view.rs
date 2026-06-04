@@ -114,6 +114,11 @@ impl<'a> StateDeltaReadView<'a> {
     pub fn fork_current_version(&self) -> [u8; 4] {
         self.fin.immutable.fork.current_version
     }
+
+    #[inline]
+    pub fn finalized_slot_state(&self) -> &'a SlotState {
+        &self.fin.slot.slot
+    }
 }
 
 /// All scalar per-validator columns merged at one index, yielded by

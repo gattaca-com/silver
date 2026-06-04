@@ -179,6 +179,7 @@ impl RpcOutbound {
 
 #[derive(Clone, Copy, Debug)]
 #[repr(C, u8)]
+#[allow(clippy::large_enum_variant)]
 pub enum PeerEvent {
     /// Peer_id_full contains the secp256k1 pubkey and can be used to derive
     /// discovery id
@@ -329,6 +330,10 @@ pub enum PeerEvent {
         /// they attested to the child block.
         p2p_peer: Option<usize>,
         block_root: [u8; 32],
+    },
+    SendRpcRequest {
+        request_id: u64,
+        rpc: RpcRequest,
     },
 }
 

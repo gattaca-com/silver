@@ -11,8 +11,8 @@ use std::{
 use fxhash::{FxHashMap, FxHashSet};
 use silver_common::{
     Enr, GossipMsgOut, GossipTopic, IpBytes, MessageId, P2pSend, PeerControl, PeerEvent, PeerId,
-    PeerStatus, RejectSource, RpcRequestOutbound, RpcSeverity, StreamProtocol, SyncUpdate,
-    TCacheRead,
+    PeerStatus, RejectSource, RpcRequest, RpcRequestOutbound, RpcSeverity, StreamProtocol,
+    SyncUpdate, TCacheRead,
     ssz_view::{METADATA_SIZE, STATUS_V2_SIZE, StatusView},
 };
 use silver_config::{ScoreParams, SyncingConfig};
@@ -187,6 +187,7 @@ pub struct PeerManager {
 
     pub(crate) pending_data_columns_by_root: VecDeque<(u64, u128, [u8; 32])>,
     pub(crate) pending_block_by_root: VecDeque<(u64, Option<usize>, [u8; 32])>,
+    pub(crate) pending_rpc_request: VecDeque<(u64, RpcRequest)>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -283,6 +284,7 @@ impl PeerManager {
             // TODO: prealloc?
             pending_data_columns_by_root: VecDeque::new(),
             pending_block_by_root: VecDeque::new(),
+            pending_rpc_request: VecDeque::new(),
         }
     }
 
@@ -862,6 +864,9 @@ impl PeerManager {
             }
             PeerEvent::SendBlocksByRootRequest { request_id, p2p_peer, block_root } => {
                 self.on_request_blocks_by_root(request_id, p2p_peer, block_root, emit);
+            }
+            PeerEvent::SendRpcRequest { request_id, rpc } => {
+                self.on_rpc_request(request_id, rpc, emit);
             }
         }
     }

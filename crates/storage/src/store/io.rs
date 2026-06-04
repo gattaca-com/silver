@@ -12,12 +12,16 @@ use std::{
 
 use silver_common::{
     P2pSend, RpcOutbound, RpcResponse, RpcResponseOutbound, TCacheProducer, TCacheRead,
-    TMultiProducer, metrics::timed,
+    TMultiProducer, metrics::timed, ssz_hash::B256, ssz_view::SignedBeaconBlockView,
 };
 
 use super::{PendingWrite, QueryUnit, Store, UnfinalizedBlock};
-use crate::store::{
-    BLOCK_SLOTS_RETAINED, BLOCKS_DIR, COLUMN_SLOTS_RETAINED, COLUMNS_DIR, SLOTS_PER_DIR,
+use crate::{
+    store::{
+        BLOCK_SLOTS_RETAINED, BLOCKS_DIR, Backfill, COLUMN_SLOTS_RETAINED, COLUMNS_DIR,
+        SLOTS_PER_DIR,
+    },
+    tile::IoEvent,
 };
 
 /// Per-loop op budgets. Disk I/O on regular files is synchronous —
@@ -45,7 +49,7 @@ impl Store {
         emit: &mut F,
     ) -> Result<(), Error>
     where
-        F: FnMut(P2pSend),
+        F: FnMut(IoEvent),
     {
         // Pending writes.
         let mut writes = 0;
@@ -154,11 +158,41 @@ impl Store {
                     let earliest_slot = finalized_slot.saturating_sub(BLOCK_SLOTS_RETAINED);
                     let dir = PathBuf::new().join(&self.store_dir).join(BLOCKS_DIR);
                     remove_subdirs(dir, earliest_slot)?;
+                    self.write_queue.pop_front();
                 }
                 PendingWrite::TruncateColumnHistory { finalized_slot } => {
                     let earliest_slot = finalized_slot.saturating_sub(COLUMN_SLOTS_RETAINED);
                     let dir = PathBuf::new().join(&self.store_dir).join(COLUMNS_DIR);
                     remove_subdirs(dir, earliest_slot)?;
+                    self.write_queue.pop_front();
+                }
+                PendingWrite::Backfill { finalized_slot, finalized_root } => {
+                    let start_slot = finalized_slot.saturating_sub(BLOCK_SLOTS_RETAINED);
+                    let dir = PathBuf::new().join(&self.store_dir).join(BLOCKS_DIR);
+                    let range = match earliest_block(dir)? {
+                        Some((slot, parent_root)) if slot > start_slot => {
+                            Some((start_slot..slot.min(*finalized_slot), parent_root))
+                        }
+                        None => Some((start_slot..*finalized_slot + 1, *finalized_root)),
+                        _ => None,
+                    };
+                    if let Some((backfill_range, parent_root)) = range {
+                        self.backfill = Some(Backfill::new(backfill_range, parent_root));
+                        self.backfill
+                            .as_mut()
+                            .unwrap()
+                            .start(&mut |evt| emit(IoEvent::PeerEvent(evt)));
+                    }
+                    self.write_queue.pop_front();
+                }
+                PendingWrite::BackfillBlock { slot, ssz } => {
+                    let dir = self.block_slot_dir(*slot);
+                    std::fs::create_dir_all(&dir)?;
+                    let path = dir.join(format!("{slot}_block.ssz"));
+
+                    let (buffer, _) = ssz.buffer().map_err(Error::other)?;
+                    open_file_write(path, false)?.write_all(buffer)?;
+                    self.write_queue.pop_front();
                 }
             }
         }
@@ -178,10 +212,10 @@ impl Store {
             };
             let Some(unit) = query.units.pop_front() else {
                 // Request fully served — terminate the stream and drop it.
-                emit(P2pSend::Rpc(RpcOutbound::Response(RpcResponseOutbound {
+                emit(IoEvent::P2pSend(P2pSend::Rpc(RpcOutbound::Response(RpcResponseOutbound {
                     stream_id: query.stream_id,
                     response: RpcResponse::Complete,
-                })));
+                }))));
                 continue;
             };
             reads += 1;
@@ -196,10 +230,9 @@ impl Store {
                             RpcResponse::DataColumnSidecar { fork_digest: *fork_digest, ssz: read }
                         }
                     };
-                    emit(P2pSend::Rpc(RpcOutbound::Response(RpcResponseOutbound {
-                        stream_id: query.stream_id,
-                        response,
-                    })));
+                    emit(IoEvent::P2pSend(P2pSend::Rpc(RpcOutbound::Response(
+                        RpcResponseOutbound { stream_id: query.stream_id, response },
+                    ))));
                     self.query_queue.push_back(query);
                 }
                 ServeResult::Missing => {
@@ -214,6 +247,11 @@ impl Store {
                 }
             }
         }
+
+        if let Some(backfill) = self.backfill.as_mut() {
+            backfill.tick(&mut |evt| emit(IoEvent::PeerEvent(evt)));
+        }
+
         Ok(())
     }
 
@@ -304,6 +342,13 @@ pub(super) fn parse_unfinalized_column_name(name: &str) -> Option<([u8; 32], u64
     Some((block_root, slot, column))
 }
 
+fn parse_finalized_block_name(name: &str) -> Option<u64> {
+    let stem = name.strip_suffix(".ssz")?;
+    let mut parts = stem.split('_');
+    let slot: u64 = parts.next()?.parse().ok()?;
+    Some(slot)
+}
+
 fn hex32(bytes: &[u8; 32]) -> String {
     let mut s = String::with_capacity(64);
     for b in bytes {
@@ -339,4 +384,40 @@ fn remove_subdirs<P: AsRef<Path>>(dir: P, earliest_slot: u64) -> Result<(), Erro
         }
     }
     Ok(())
+}
+
+/// Returns the slot number and parent_root of the earliest block in on-disk
+/// history.
+fn earliest_block<P: AsRef<Path>>(dir: P) -> Result<Option<(u64, B256)>, Error> {
+    let contents = std::fs::read_dir(&dir)?;
+    let Some(min_dir) = contents
+        .filter_map(|entry| {
+            entry
+                .ok()
+                .and_then(|e| e.file_name().into_string().ok())
+                .and_then(|s| s.parse::<u64>().ok())
+        })
+        .min()
+    else {
+        return Ok(None)
+    };
+
+    let sub_dir = PathBuf::new().join(&dir).join(min_dir.to_string());
+    let sub_dir_contents = std::fs::read_dir(&sub_dir)?;
+    let Some(min_file) = sub_dir_contents
+        .filter_map(|entry| {
+            entry
+                .ok()
+                .and_then(|e| e.file_name().to_str().and_then(parse_finalized_block_name))
+        })
+        .min()
+    else {
+        return Ok(None);
+    };
+
+    let block_file = sub_dir.join(format!("{min_file}_block.ssz"));
+    let ssz = std::fs::read(&block_file)?; // one time allocation
+    let parent_root = SignedBeaconBlockView::parent_root(&ssz);
+
+    Ok(Some((min_file, *parent_root)))
 }

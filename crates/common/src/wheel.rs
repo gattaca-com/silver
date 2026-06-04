@@ -1,4 +1,5 @@
 use std::{
+    collections::hash_map::Entry,
     hash::Hash,
     time::{Duration, Instant},
 };
@@ -55,6 +56,29 @@ impl<K: Hash + Eq, V, const N: usize> Wheel<K, V, N> {
             i = (i + 1) & (N - 1);
         }
         self.buckets[self.head].get(key)
+    }
+
+    pub fn get_mut(&mut self, key: &K) -> Option<&mut V> {
+        // tail first iteration
+        let mut i = (self.head + 1) & (N - 1);
+        while i != self.head {
+            if self.buckets[i].contains_key(key) {
+                return self.buckets[i].get_mut(key);
+            }
+            i = (i + 1) & (N - 1);
+        }
+        self.buckets[self.head].get_mut(key)
+    }
+
+    pub fn entry(&mut self, key: K) -> Entry<'_, K, V> {
+        let mut i = (self.head + 1) & (N - 1);
+        while i != self.head {
+            if self.buckets[i].contains_key(&key) {
+                return self.buckets[i].entry(key);
+            }
+            i = (i + 1) & (N - 1);
+        }
+        self.buckets[self.head].entry(key)
     }
 
     pub fn remove(&mut self, key: &K) -> Option<V> {
