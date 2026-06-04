@@ -2,10 +2,8 @@
 //! `Arc<DeltaNode>` along the path to the touched leaf; sibling subtrees
 //! stay as `Base(n)` pointers into the finalized array.
 //!
-//! Promotion safety: every survivor is a descendant of the promoted fork,
-//! so unchanged subtrees still point at base and modified ones already
-//! cache the post-promotion hash. `prune_delta_at` collapses redundant
-//! `Arc<DeltaNode>` chains whose cached hash matches base.
+//! A `Base` symlink follows the base when it is promoted
+//! (see documentation for more details in `docs/delta-rebase-invariant.md`).
 
 use std::sync::Arc;
 
@@ -13,9 +11,13 @@ use super::finalized::FinalizedHashTree;
 use crate::{buffer::Reset, ssz_hash::hash_concat, types::B256};
 
 /// Per-fork delta on top of a [`FinalizedHashTree`]. Three states:
-/// - `Base(node)`: subtree lives in the finalized base at `node`.
-/// - `Leaf(value)`: a delta leaf (depth = leaf row); `value` IS the hash.
-/// - `Node(Arc<DeltaNode>)`: a delta internal node with cached hash + children.
+/// - `Base(node)`: a lazy **symlink** to the finalized base at `node` —
+///   resolves to the base's *current* value, so it follows the base when it
+///   moves (see the module-level promote hazard).
+/// - `Leaf(value)`: a *frozen* delta leaf (depth = leaf row); `value` IS the
+///   hash.
+/// - `Node(Arc<DeltaNode>)`: a *frozen* internal node with cached hash +
+///   children.
 ///
 /// `Clone` is O(1): `Base` copies a u32, `Leaf` copies 32 B, `Node` bumps
 /// the `Arc` refcount. Used by `Reset::reset_from`
@@ -35,6 +37,63 @@ pub enum DeltaHashTree {
 impl DeltaHashTree {
     pub fn new_at(_base: &FinalizedHashTree) -> Self {
         Self::Base(FinalizedHashTree::root())
+    }
+
+    fn same(&self, other: &DeltaHashTree) -> bool {
+        match (self, other) {
+            (DeltaHashTree::Base(x), DeltaHashTree::Base(y)) => x == y,
+            (DeltaHashTree::Leaf(x), DeltaHashTree::Leaf(y)) => x == y,
+            (DeltaHashTree::Node(x), DeltaHashTree::Node(y)) => Arc::ptr_eq(x, y),
+            _ => false,
+        }
+    }
+
+    /// Re-pin every leaf the `winner` overrides so the survivor's symlinks don't
+    /// follow the base when it moves. A `Base` entry is a *symlink*: it reads the
+    /// base's value live, so when the base changes under it, its value changes
+    /// too. One-leaf walk-through:
+    ///
+    /// ```text
+    /// start:  base leaf = A,  survivor overlay = Base   (symlink, reads A)
+    /// winner overwrites the leaf to B, then is promoted  ->  base leaf = B
+    ///   no rebase:  survivor still Base       -> now reads B   (wrong, wanted A)
+    ///   rebase:     survivor frozen to Leaf(A) -> still reads A (correct)
+    /// ```
+    ///
+    /// Full invariant: `docs/delta-rebase-invariant.md`.
+    pub(super) fn rebase(&mut self, base: &FinalizedHashTree, winner: &DeltaHashTree) {
+        self.rebase_at(base, winner, FinalizedHashTree::root())
+    }
+
+    fn rebase_at(&mut self, base: &FinalizedHashTree, winner: &DeltaHashTree, node: u32) {
+        // Survivor already equals the winner here → it matches the new base too,
+        // so no symlink can drift; nothing to pin.
+        if self.same(winner) {
+            return;
+        }
+
+        match winner {
+            // Base doesn't move here → the survivor's symlinks stay valid.
+            DeltaHashTree::Base(_) => return,
+            // Base moves here → freeze the survivor's value, else its symlink
+            // would follow the base to the winner's new value.
+            DeltaHashTree::Leaf(_) => *self = DeltaHashTree::Leaf(self.root(base)),
+            // Base moves below → descend to the symlinks at risk.
+            DeltaHashTree::Node(winner_node) => {
+                let (mut left, mut right) = match self {
+                    DeltaHashTree::Base(_) => (
+                        DeltaHashTree::Base(FinalizedHashTree::left(node)),
+                        DeltaHashTree::Base(FinalizedHashTree::right(node)),
+                    ),
+                    DeltaHashTree::Node(n) => (n.left.clone(), n.right.clone()),
+                    DeltaHashTree::Leaf(_) => unreachable!("Leaf only at a single-leaf range"),
+                };
+                left.rebase_at(base, &winner_node.left, FinalizedHashTree::left(node));
+                right.rebase_at(base, &winner_node.right, FinalizedHashTree::right(node));
+
+                *self = DeltaHashTree::Node(Arc::new(DeltaNode { hash: self.root(base), left, right }));
+            }
+        }
     }
 }
 
@@ -64,15 +123,6 @@ pub struct DeltaNode {
 }
 
 impl FinalizedHashTree {
-    #[inline]
-    pub(super) fn resolve_delta_hash(&self, delta: &DeltaHashTree) -> B256 {
-        match delta {
-            DeltaHashTree::Base(node) => *self.node_hash(*node),
-            DeltaHashTree::Leaf(hash) => *hash,
-            DeltaHashTree::Node(node) => node.hash,
-        }
-    }
-
     /// `[subtree_left, subtree_right)` is the leaf-index range covered by node
     /// subtree.
     pub(super) fn set_delta_leaf_in_range(
@@ -108,10 +158,7 @@ impl FinalizedHashTree {
                 self.set_delta_leaf_in_range(&right_node, index, subtree_mid, subtree_right, leaf);
         }
 
-        let hash = hash_concat(
-            &self.resolve_delta_hash(&left_node),
-            &self.resolve_delta_hash(&right_node),
-        );
+        let hash = hash_concat(&left_node.root(self), &right_node.root(self));
         DeltaHashTree::Node(Arc::new(DeltaNode { hash, left: left_node, right: right_node }))
     }
 

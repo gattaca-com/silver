@@ -225,9 +225,9 @@ fn set_effective_balance_updates_hash_overlay() {
     let mut d = ValidatorsDelta::new_at(&f);
     d.append(&f, pk(0), PublicKey::default(), creds(0));
 
-    let root_before = f.hash().delta_root(&d.hash_overlay);
+    let root_before = d.hash_overlay.root(f.hash());
     d.set_effective_balance(&f, 0, 32_000_000_000);
-    let root_after = f.hash().delta_root(&d.hash_overlay);
+    let root_after = d.hash_overlay.root(f.hash());
     assert_ne!(root_before, root_after, "writing effective_balance changes the merged root");
 
     // Match the value we'd get from recomputing the leaf by hand.
@@ -254,7 +254,7 @@ fn promote_then_prune_reanchors_delta() {
     d.set_effective_balance(&f, 0, 100_000_000);
     d.set_activation_epoch(&f, 0, 7);
 
-    let root_pre = f.hash().delta_root(&d.hash_overlay);
+    let root_pre = d.hash_overlay.root(f.hash());
 
     d.promote_into_base(&mut f);
     assert_eq!(f.validator_count(), 1);
@@ -271,7 +271,7 @@ fn promote_then_prune_reanchors_delta() {
     assert!(d.effective_balance_edits.is_empty(), "edit matches base after promote");
     assert!(d.activation_epoch_edits.is_empty(), "edit matches base after promote");
     // After prune, the overlay should be Base(root) — empty.
-    assert_eq!(f.hash().delta_root(&d.hash_overlay), root_pre);
+    assert_eq!(d.hash_overlay.root(f.hash()), root_pre);
 }
 
 #[test]
@@ -287,7 +287,7 @@ fn descendant_view_survives_promote_via_prune() {
     let mut child = parent.clone();
     child.set_activation_epoch(&f, 0, 42);
 
-    let child_root_pre = f.hash().delta_root(&child.hash_overlay);
+    let child_root_pre = child.hash_overlay.root(f.hash());
 
     parent.promote_into_base(&mut f);
     parent.prune_to_base(&f);
@@ -297,5 +297,5 @@ fn descendant_view_survives_promote_via_prune() {
     // Child should still see activation_epoch = 42 (its own divergence
     // from parent's promoted state).
     assert_eq!(child.activation_epoch(&f, 0), 42);
-    assert_eq!(f.hash().delta_root(&child.hash_overlay), child_root_pre);
+    assert_eq!(child.hash_overlay.root(f.hash()), child_root_pre);
 }
