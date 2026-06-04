@@ -74,7 +74,7 @@ impl DeltaHashTree {
 
         match winner {
             // Base doesn't move here → the survivor's symlinks stay valid.
-            DeltaHashTree::Base(_) => return,
+            DeltaHashTree::Base(_) => (),
             // Base moves here → freeze the survivor's value, else its symlink
             // would follow the base to the winner's new value.
             DeltaHashTree::Leaf(_) => *self = DeltaHashTree::Leaf(self.root(base)),
