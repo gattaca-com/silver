@@ -76,12 +76,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         ssz_gossip_producer.cache_ref().random_access("bs_ssz_gossip", true)?;
     let ssz_gossip_consumer_ds =
         ssz_gossip_producer.cache_ref().random_access("ds_ssz_gossip", true)?;
+    let ssz_persist_gossip_consumer_ds =
+        ssz_gossip_producer.cache_ref().random_access("ds_persist_ssz_gossip", true)?;
     let outgoing_gossip_producer =
         TCache::producer("outgoing_gossip", config.outgoing_gossip_tcache_size());
     let incoming_rpc_producer = TCache::producer("incoming_rpc", config.incoming_rpc_tcache_size());
     let incoming_rpc_consumer =
         incoming_rpc_producer.cache_ref().random_access("bs_incoming_rpc", true)?;
     let incoming_rpc_consumer_ds =
+        incoming_rpc_producer.cache_ref().random_access("ds_incoming_rpc", true)?;
+    let persist_rpc_consumer_ds =
         incoming_rpc_producer.cache_ref().random_access("ds_incoming_rpc", true)?;
 
     // rpc producer
@@ -191,7 +195,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let storage_tile = StorageTile::new(
         ssz_gossip_consumer_ds,
+        ssz_persist_gossip_consumer_ds,
         incoming_rpc_consumer_ds,
+        persist_rpc_consumer_ds,
         outgoing_rpc_producer,
         state_reader,
         local_enr.node_id().custody_groups(local_enr.cgc().unwrap_or(4) as u8),

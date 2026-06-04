@@ -10,9 +10,9 @@ use std::{
 
 use fxhash::{FxHashMap, FxHashSet};
 use silver_common::{
-    Enr, GossipMsgOut, GossipTopic, IpBytes, MessageId, P2pSend, PeerControl, PeerEvent, PeerId,
-    PeerStatus, RejectSource, RpcRequestOutbound, RpcSeverity, StreamProtocol, SyncUpdate,
-    TCacheRead,
+    BlockSource, Enr, GossipMsgOut, GossipTopic, IpBytes, MessageId, P2pSend, PeerControl,
+    PeerEvent, PeerId, PeerStatus, RpcRequest, RpcRequestOutbound, RpcSeverity, StreamProtocol,
+    SyncUpdate, TCacheRead,
     ssz_view::{METADATA_SIZE, STATUS_V2_SIZE, StatusView},
 };
 use silver_config::{ScoreParams, SyncingConfig};
@@ -135,6 +135,7 @@ pub struct PeerManager {
     /// Our local beacon status and metadata.
     status: Option<[u8; STATUS_V2_SIZE]>,
     metadata: [u8; METADATA_SIZE],
+    earliest_available_slot: u64,
 
     /// True iff the last evaluated sync target was `Following`. Maintained
     /// by `maybe_emit_sync_target`. Gates gossip relay/subscribe/graft.
@@ -187,6 +188,7 @@ pub struct PeerManager {
 
     pub(crate) pending_data_columns_by_root: VecDeque<(u64, u128, [u8; 32])>,
     pub(crate) pending_block_by_root: VecDeque<(u64, Option<usize>, [u8; 32])>,
+    pub(crate) pending_rpc_request: VecDeque<(u64, RpcRequest)>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -271,6 +273,7 @@ impl PeerManager {
             database: PeerDatabase::default(),
             status: None,
             metadata,
+            earliest_available_slot: u64::MAX,
             is_synced: false,
             was_ever_synced: false,
             just_synced: false,
@@ -283,6 +286,7 @@ impl PeerManager {
             // TODO: prealloc?
             pending_data_columns_by_root: VecDeque::new(),
             pending_block_by_root: VecDeque::new(),
+            pending_rpc_request: VecDeque::new(),
         }
     }
 
@@ -306,8 +310,13 @@ impl PeerManager {
     }
 
     /// Update our cached chain position.
-    pub fn set_status(&mut self, ssz: [u8; STATUS_V2_SIZE]) {
+    pub fn set_status(&mut self, mut ssz: [u8; STATUS_V2_SIZE]) {
         self.our_fork_digest = Some(*StatusView::fork_digest(&ssz));
+
+        if self.earliest_available_slot != u64::MAX {
+            ssz[84..].copy_from_slice(&self.earliest_available_slot.to_le_bytes());
+        }
+
         self.status = Some(ssz);
         self.target_dirty = true;
     }
@@ -335,10 +344,10 @@ impl PeerManager {
     /// `target_dirty` is flipped so the next `maybe_emit_sync_target` runs
     /// the algorithm; the now-blacklisted target is filtered out and a
     /// fresh target (or `Following`) is emitted.
-    pub fn record_block_rejected(&mut self, block_root: [u8; 32], source: RejectSource) {
+    pub fn record_block_rejected(&mut self, block_root: [u8; 32], source: BlockSource) {
         self.rejected.mark(block_root);
 
-        if matches!(source, RejectSource::Rpc) &&
+        if matches!(source, BlockSource::Rpc) &&
             let SyncUpdate::SyncingFinalized { target_root, .. } = self.current_target
         {
             self.rejected.mark(target_root);
@@ -862,6 +871,12 @@ impl PeerManager {
             }
             PeerEvent::SendBlocksByRootRequest { request_id, p2p_peer, block_root } => {
                 self.on_request_blocks_by_root(request_id, p2p_peer, block_root, emit);
+            }
+            PeerEvent::SendRpcRequest { request_id, rpc } => {
+                self.on_rpc_request(request_id, rpc, emit);
+            }
+            PeerEvent::EarliestSlot(slot) => {
+                self.earliest_available_slot = slot;
             }
         }
     }
@@ -3782,7 +3797,7 @@ mod tests {
         mgr.maybe_issue_syncreq(now, &mut |c| cap.0.push(c));
         assert!(mgr.inflight_syncreq.is_some(), "sync req issued");
 
-        mgr.record_block_rejected([0xDE; 32], RejectSource::Rpc);
+        mgr.record_block_rejected([0xDE; 32], BlockSource::Rpc);
         mgr.tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
 
         // Target poisoned and the delivered watermark reset.

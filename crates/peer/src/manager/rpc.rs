@@ -675,6 +675,15 @@ impl PeerManager {
                 self.on_request_blocks_by_root(request_id, p2p_peer, block_root, emit);
             }
         }
+
+        // Drain other pending rpc requests.
+        let len = self.pending_rpc_request.len();
+        for _ in 0..len {
+            if let Some((request_id, rpc)) = self.pending_rpc_request.pop_front() {
+                // requests that still cannot be sent will be re-added.
+                self.on_rpc_request(request_id, rpc, emit);
+            }
+        }
     }
 
     /// Dispatch a DataColumnsByRoot request to the highest-scoring connected
@@ -763,6 +772,40 @@ impl PeerManager {
             None => {
                 tracing::warn!("no peer for blocks by root");
                 self.pending_block_by_root.push_back((request_id, peer, block_root));
+                emit(PeerControl::DiscoverNodes);
+            }
+        }
+    }
+
+    pub fn on_rpc_request(
+        &mut self,
+        request_id: u64,
+        rpc: RpcRequest,
+        emit: &mut impl FnMut(PeerControl),
+    ) {
+        let protocol = rpc.protocol();
+        let has_capacity = |i: usize| {
+            self.peers
+                .get(&i)
+                .map(|p| p.outbound_in_flight[protocol.ordinal() as usize] < 2)
+                .unwrap_or_default()
+        };
+
+        let peer = self.best_peer_for(protocol, has_capacity);
+
+        match peer {
+            Some(peer) => {
+                if let Some(p_state) = self.peers.get_mut(&peer) {
+                    p_state.outbound_in_flight[protocol.ordinal() as usize] += 1;
+                }
+                tracing::debug!(?protocol, "sending rpc request to {peer}");
+                emit(PeerControl::P2pSend(P2pSend::Rpc(RpcOutbound::Request(
+                    RpcRequestOutbound { application_id: request_id, peer, request: rpc },
+                ))));
+            }
+            None => {
+                tracing::warn!(?protocol, "no peer for rpc request");
+                self.pending_rpc_request.push_back((request_id, rpc));
                 emit(PeerControl::DiscoverNodes);
             }
         }

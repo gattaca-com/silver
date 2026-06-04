@@ -1,18 +1,19 @@
 use std::time::{Duration, Instant};
 
 use flux::{spine::SpineAdapter, tile::Tile};
-use fxhash::FxHashMap;
 use silver_beacon_state_data::{BeaconStateReader, SLOTS_PER_EPOCH};
 use silver_common::{
-    BeaconStateEvent, DataColumnsAvailable, NewGossipMsg, P2pStreamId, PeerEvent, RpcInbound,
-    RpcSeverity, SilverSpine, TMultiProducer, TRandomAccess, TRead, Wheel,
+    BeaconStateEvent, DataColumnsAvailable, NewGossipMsg, P2pSend, P2pStreamId, PeerEvent,
+    RpcInbound, RpcResponseInbound, RpcSeverity, SilverSpine, SyncUpdate, TMultiProducer,
+    TRandomAccess, TRead, Wheel,
     ssz_view::{DataColumnSidecarView, StatusView},
 };
 use silver_metrics::timed;
 
 use crate::{store::Store, util};
 
-const BASE_REQUEST_ID: u64 = 0xda5da5 << 40; // DAS prefix.
+const BASE_REQUEST_ID: u64 = 0xda5da5 << 32; // DAS prefix.
+pub(crate) const BACKFILL_REQUEST_ID: u64 = 0xbaccf111 << 32;
 const MAX_RETRIES: u8 = 5;
 
 /// Mainnet epoch: 32 slots × 12s. Wheel bucket width for the
@@ -29,15 +30,19 @@ pub struct StorageTile {
     // bit set of our custody group columns.
     custody_group_columns: u128,
     request_id: u64,
+    // Gossip and rpc are read twice: 'live' and when we receive a request from
+    // beacon state to persist - this require 2 consumers.
     gossip_consumer: TRandomAccess,
+    persist_gossip_consumer: TRandomAccess,
     rpc_consumer: TRandomAccess,
+    persist_rpc_consumer: TRandomAccess,
     rpc_producer: TMultiProducer,
     beacon_state: BeaconStateReader,
     store: Store,
     fork_digest: [u8; 4], // fork digest
 
     // keyed by block body root
-    validated_columns: FxHashMap<BlockRoot, u128>,
+    validated_columns: Wheel<BlockRoot, u128, 4>,
     // BLS verify memo: block_root → previously-validated 96-byte
     // proposer signature. On a subsequent sidecar with the same
     // block_root AND matching signature bytes we skip the ~1 ms BLS
@@ -53,9 +58,12 @@ pub struct StorageTile {
 }
 
 impl StorageTile {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         gossip_consumer: TRandomAccess,
+        persist_gossip_consumer: TRandomAccess,
         rpc_consumer: TRandomAccess,
+        persist_rpc_consumer: TRandomAccess,
         rpc_producer: TMultiProducer,
         beacon_state: BeaconStateReader,
         custody_group_columns: u128,
@@ -66,12 +74,14 @@ impl StorageTile {
             custody_group_columns,
             request_id: BASE_REQUEST_ID,
             gossip_consumer,
+            persist_gossip_consumer,
             rpc_consumer,
+            persist_rpc_consumer,
             rpc_producer,
             beacon_state,
             store: Store::load(data_store_dir).expect("failed to load storage store"),
             fork_digest,
-            validated_columns: FxHashMap::default(),
+            validated_columns: Wheel::new(EPOCH_DURATION),
             validated_blocks: Wheel::new(EPOCH_DURATION),
             outstanding_requests: Wheel::new(Duration::from_millis(500)),
         }
@@ -267,6 +277,8 @@ impl Tile<SilverSpine> for StorageTile {
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         self.gossip_consumer.free();
         self.rpc_consumer.free();
+        self.persist_gossip_consumer.free();
+        self.persist_rpc_consumer.free();
 
         // Check for data columns and incoming blocks with data columns via gossip.
         adapter.consume(|gossip: NewGossipMsg, producers| match gossip.topic {
@@ -307,6 +319,10 @@ impl Tile<SilverSpine> for StorageTile {
                 self.store.rpc_request(&mut self.rpc_consumer, req);
             }
             RpcInbound::Response(rsp) => match rsp.response {
+                silver_common::RpcResponse::BeaconBlock { fork_digest: _, ssz } if is_backfill(&rsp) => {
+                    let t_read = self.rpc_consumer.acquire(ssz);
+                    self.store.backfill_block(t_read);
+                }
                 silver_common::RpcResponse::BeaconBlock { fork_digest: _, ssz } => {
                     let t_read = self.rpc_consumer.acquire(ssz);
                     self.beacon_block(rsp.stream_id, t_read, &mut |evt| {
@@ -335,9 +351,21 @@ impl Tile<SilverSpine> for StorageTile {
                             .produce(&self.column_request(block_root, columns).into());
                     }
                 }
+                silver_common::RpcResponse::Error { error, msg, len } if is_backfill(&rsp) => {
+                    let err_msg = String::from_utf8_lossy(&msg[..len]).to_string();
+                    tracing::error!(error, err_msg, "backfill rpc error response");
+                    self.store.backfill_request_complete(rsp.application_id, &mut |event| {
+                        producers.peer_events.produce(&event.into());
+                    });
+                }
                 silver_common::RpcResponse::Error { error, msg, len } if rsp.application_id & BASE_REQUEST_ID == BASE_REQUEST_ID => {
                     let err_msg = String::from_utf8_lossy(&msg[..len]).to_string();
                     tracing::error!(error, err_msg, "rpc error response");
+                }
+                silver_common::RpcResponse::Complete if is_backfill(&rsp) => {
+                    self.store.backfill_request_complete(rsp.application_id, &mut |event| {
+                        producers.peer_events.produce(&event.into());
+                    });
                 }
                 other => {
                     tracing::trace!(?other, app_id=rsp.application_id, id=?rsp.stream_id, "ignoring rpc response");
@@ -352,25 +380,43 @@ impl Tile<SilverSpine> for StorageTile {
                 let finalized_slot = StatusView::finalized_epoch(&ssz) * SLOTS_PER_EPOCH;
                 let finalized_root = *StatusView::finalized_root(&ssz);
                 self.fork_digest = *StatusView::fork_digest(&ssz);
+
                 self.store.update_head(head_slot, head_root, finalized_slot, finalized_root);
             }
-            BeaconStateEvent::PersistBlock(tcache_read) => {
-                let t_read = self.gossip_consumer.acquire(tcache_read);
-                if let Ok((buf, _)) = t_read.buffer() {
-                    use silver_common::ssz_view::SignedBeaconBlockView;
-                    let slot = SignedBeaconBlockView::slot(buf);
-                    let parent_root = *SignedBeaconBlockView::parent_root(buf);
-                    let block_root = util::block_root(buf);
-                    self.store.add_block(block_root, t_read, slot, parent_root);
+            BeaconStateEvent::PersistBlock {
+                ssz,
+                source,
+            } => {
+                let t_read = match source {
+                    silver_common::BlockSource::Gossip => self.persist_gossip_consumer.acquire(ssz),
+                    silver_common::BlockSource::Rpc => self.persist_rpc_consumer.acquire(ssz),
+                };
+
+                tracing::info!(seq=t_read.seq(), "persist block");
+                match t_read.buffer() {
+                    Ok((buf, _)) => {
+                        use silver_common::ssz_view::SignedBeaconBlockView;
+                        let slot = SignedBeaconBlockView::slot(buf);
+                        let parent_root = *SignedBeaconBlockView::parent_root(buf);
+                        let block_root = util::block_root(buf);
+                        self.store.add_block(block_root, t_read, slot, parent_root);
+                    }
+                    Err(e) => {
+                        tracing::error!(?e, seq=t_read.seq(), consumer=?self.persist_gossip_consumer, "persist consumer buffer acquire failed");
+                    }
                 }
             }
             _ => {}
         });
 
+        adapter.consume(|sync_update: SyncUpdate, _| self.store.sync_update(sync_update));
+
         let now = Instant::now();
 
         // Age out per-block validation memo.
         self.validated_blocks.maybe_rotate(now, &mut |_, _| {});
+        // Age out validated columns.
+        self.validated_columns.maybe_rotate(now, &mut |_, _| {});
 
         // Timeout any pending requests and re-issue
         let mut reinsert = vec![];
@@ -398,11 +444,21 @@ impl Tile<SilverSpine> for StorageTile {
 
         // Run store file i/o
         if let Err(e) =
-            self.store.file_io(&self.fork_digest, &mut self.rpc_producer, &mut |p2p_send| {
-                adapter.produce(p2p_send)
+            self.store.file_io(&self.fork_digest, &mut self.rpc_producer, &mut |io| match io {
+                IoEvent::P2pSend(p2p_send) => adapter.produce(p2p_send),
+                IoEvent::PeerEvent(peer_event) => adapter.produce(peer_event),
             })
         {
             tracing::error!(?e, "storage store file i/o failed");
         }
     }
+}
+
+pub(crate) enum IoEvent {
+    P2pSend(P2pSend),
+    PeerEvent(PeerEvent),
+}
+
+fn is_backfill(rsp: &RpcResponseInbound) -> bool {
+    rsp.application_id & BACKFILL_REQUEST_ID == BACKFILL_REQUEST_ID
 }

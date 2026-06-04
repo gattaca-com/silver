@@ -6,7 +6,8 @@ use std::{
 
 use fxhash::FxHashMap;
 use silver_common::{
-    P2pStreamId, RpcRequestInbound, TRandomAccess, TRead,
+    P2pStreamId, PeerEvent, RpcRequestInbound, SyncUpdate, TRandomAccess, TRead,
+    ssz_hash::B256,
     ssz_view::{
         BeaconBlocksByRangeRequestView, BeaconBlocksByRootRequestView,
         DataColumnSidecarsByRangeRequestView, DataColumnsByRootIdentifierView,
@@ -14,17 +15,15 @@ use silver_common::{
 };
 use silver_metrics::timed;
 
+use crate::store::backfill::Backfill;
+
+mod backfill;
 mod io;
 
-/// Spec range-request caps (consensus-specs). A peer-supplied `count`
-/// is clamped before expanding into per-slot queries, to bound
-/// `query_queue` growth and prevent a `start + count` overflow.
-/// `BeaconBlocksByRange` uses `MAX_REQUEST_BLOCKS`.
-const MAX_REQUEST_BLOCKS: u64 = 1024;
 /// `DataColumnSidecarsByRange` is bounded by
 /// `count * NUMBER_OF_COLUMNS <= MAX_REQUEST_DATA_COLUMN_SIDECARS`
 /// (16384), i.e. `count <= MAX_REQUEST_BLOCKS_DENEB`.
-const MAX_REQUEST_BLOCKS_DENEB: u64 = 128;
+const MAX_REQUEST_BLOCKS: u64 = 128;
 
 /// Cap on concurrent in-flight read requests. Past this, a new request is
 /// answered with an empty (Complete-only) response — sheds load under a peer
@@ -61,6 +60,7 @@ struct UnfinalizedBlock {
     parent_root: [u8; 32],
 }
 
+#[derive(Debug)]
 enum PendingWrite {
     Index {
         block_root: [u8; 32],
@@ -115,6 +115,14 @@ enum PendingWrite {
     TruncateColumnHistory {
         finalized_slot: u64,
     },
+    Backfill {
+        finalized_slot: u64,
+        finalized_root: B256,
+    },
+    BackfillBlock {
+        slot: u64,
+        ssz: TRead,
+    },
 }
 
 /// One served file = one response chunk. The unit's resolution (canonical
@@ -154,6 +162,10 @@ pub(super) struct Store {
     head_root: [u8; 32],
     head_slot: u64,
     finalized_slot: u64,
+    finalized_root: [u8; 32],
+    // Historical backfill.
+    first_sync: bool,
+    backfill: Option<Backfill>,
 
     write_queue: VecDeque<PendingWrite>,
     query_queue: VecDeque<PendingQuery>,
@@ -229,6 +241,9 @@ impl Store {
             head_root: [0u8; 32],
             head_slot: 0,
             finalized_slot: 0,
+            finalized_root: [0u8; 32],
+            backfill: None,
+            first_sync: false,
             write_queue: Default::default(),
             query_queue: Default::default(),
         })
@@ -292,6 +307,46 @@ impl Store {
         });
     }
 
+    pub(super) fn backfill_block(&mut self, ssz: TRead) {
+        match self.backfill.as_mut() {
+            Some(backfill) => backfill.add_block(ssz, &mut self.write_queue),
+            None => {
+                tracing::error!("recevied backfill lbock, but no active backfill!");
+            }
+        }
+    }
+
+    pub(super) fn backfill_request_complete<F>(&mut self, id: u64, emit: &mut F)
+    where
+        F: FnMut(PeerEvent),
+    {
+        match self.backfill.as_mut() {
+            Some(backfill) => {
+                if backfill.query_complete(id, emit) {
+                    // backfill is finished
+                    self.backfill = None;
+                }
+            }
+            None => {
+                tracing::error!("received backfill complete, but no active backfill!");
+            }
+        }
+    }
+
+    pub(super) fn sync_update(&mut self, sync_update: SyncUpdate) {
+        match sync_update {
+            SyncUpdate::Following if !self.first_sync => {
+                // First update - check whether we need to backfill history.
+                self.first_sync = true;
+                self.write_queue.push_back(PendingWrite::Backfill {
+                    finalized_slot: self.finalized_slot,
+                    finalized_root: self.finalized_root,
+                });
+            }
+            _ => {}
+        }
+    }
+
     /// Update fork-choice head and finalization watermark from a Status. On a
     /// finalization advance, promote the finalized chain (blocks and their
     /// columns) to the flat store and prune orphaned forks.
@@ -308,7 +363,9 @@ impl Store {
         if finalized_slot <= self.finalized_slot {
             return;
         }
+
         self.finalized_slot = finalized_slot;
+        self.finalized_root = finalized_root;
 
         // Promote the finalized chain: walk ancestors of `finalized_root`
         // through the tree, moving each block and its columns to the flat
@@ -385,7 +442,7 @@ impl Store {
                 if DataColumnSidecarsByRangeRequestView::check_size(&ssz[..len]) {
                     let start = DataColumnSidecarsByRangeRequestView::start_slot(&ssz[..len]);
                     let count = DataColumnSidecarsByRangeRequestView::count(&ssz[..len])
-                        .min(MAX_REQUEST_BLOCKS_DENEB);
+                        .min(MAX_REQUEST_BLOCKS);
                     let end = start.saturating_add(count);
                     let canonical = self.canonical_chain_in_range(start, end);
                     let columns: Vec<u64> =
@@ -594,6 +651,8 @@ mod tests {
         time::{Duration, Instant},
     };
 
+    use crate::tile::IoEvent;
+
     #[test]
     fn concurrent_read_write() {
         let path = format!("/tmp/silver_storage_rw_{}.txt", rand::random::<u32>());
@@ -737,7 +796,12 @@ mod tests {
             request: RpcRequest::BlocksByRange(range),
         });
         let mut responses = vec![];
-        store.file_io(&fork_digest, &mut producer, &mut |s| responses.push(s)).unwrap();
+        store
+            .file_io(&fork_digest, &mut producer, &mut |s| match s {
+                IoEvent::P2pSend(s) => responses.push(s),
+                _ => {}
+            })
+            .unwrap();
         assert_eq!(responses.len(), 2); // canonical block A + Complete
         assert_block(&responses[0], &bytes_a);
         assert!(matches!(
@@ -754,7 +818,12 @@ mod tests {
             request: RpcRequest::BlockByRoot(byroot_ssz),
         });
         let mut byroot = vec![];
-        store.file_io(&fork_digest, &mut producer, &mut |s| byroot.push(s)).unwrap();
+        store
+            .file_io(&fork_digest, &mut producer, &mut |s| match s {
+                IoEvent::P2pSend(s) => byroot.push(s),
+                _ => {}
+            })
+            .unwrap();
         assert_eq!(byroot.len(), 2);
         assert_block(&byroot[0], &bytes_b);
 
@@ -776,7 +845,12 @@ mod tests {
             request: RpcRequest::BlocksByRange(range),
         });
         let mut after = vec![];
-        store.file_io(&fork_digest, &mut producer, &mut |s| after.push(s)).unwrap();
+        store
+            .file_io(&fork_digest, &mut producer, &mut |s| match s {
+                IoEvent::P2pSend(s) => after.push(s),
+                _ => {}
+            })
+            .unwrap();
         assert_eq!(after.len(), 2);
         assert_block(&after[0], &bytes_a);
 
@@ -924,7 +998,12 @@ mod tests {
             request: RpcRequest::DataColumnsByRange { ssz: range, len: 36 },
         });
         let mut responses = vec![];
-        store.file_io(&fork_digest, &mut producer, &mut |s| responses.push(s)).unwrap();
+        store
+            .file_io(&fork_digest, &mut producer, &mut |s| match s {
+                IoEvent::P2pSend(s) => responses.push(s),
+                _ => {}
+            })
+            .unwrap();
         assert_eq!(responses.len(), 3); // canonical A columns 3 + 7, then Complete
         assert_col(&responses[0], &a3);
         assert_col(&responses[1], &a7);
@@ -944,7 +1023,12 @@ mod tests {
             request: RpcRequest::DataColumnsByRoot(byroot_ssz),
         });
         let mut br = vec![];
-        store.file_io(&fork_digest, &mut producer, &mut |s| br.push(s)).unwrap();
+        store
+            .file_io(&fork_digest, &mut producer, &mut |s| match s {
+                IoEvent::P2pSend(s) => br.push(s),
+                _ => {}
+            })
+            .unwrap();
         assert_eq!(br.len(), 2); // B column 3 + Complete
         assert_col(&br[0], &b3);
 
@@ -964,7 +1048,12 @@ mod tests {
             request: RpcRequest::DataColumnsByRange { ssz: range, len: 36 },
         });
         let mut after = vec![];
-        store.file_io(&fork_digest, &mut producer, &mut |s| after.push(s)).unwrap();
+        store
+            .file_io(&fork_digest, &mut producer, &mut |s| match s {
+                IoEvent::P2pSend(s) => after.push(s),
+                _ => {}
+            })
+            .unwrap();
         assert_eq!(after.len(), 3);
         assert_col(&after[0], &a3);
         assert_col(&after[1], &a7);
@@ -1033,7 +1122,12 @@ mod tests {
         });
 
         let mut responses = vec![];
-        store.file_io(&fork_digest, &mut producer, &mut |s| responses.push(s)).unwrap();
+        store
+            .file_io(&fork_digest, &mut producer, &mut |s| match s {
+                IoEvent::P2pSend(s) => responses.push(s),
+                _ => {}
+            })
+            .unwrap();
 
         // Expect A10, B10, A11, B11, A-Complete, B-Complete — strict round-robin.
         let ids: Vec<_> = responses
