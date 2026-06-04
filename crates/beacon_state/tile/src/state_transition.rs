@@ -1251,7 +1251,7 @@ fn process_partial_withdrawals(
     let ppw_len = view.pending_partial_withdrawals_len();
 
     for qi in 0..ppw_len {
-        let pw = *view.pending_partial_withdrawal(qi);
+        let pw = view.pending_partial_withdrawal(qi);
         if pw.withdrawable_epoch > current_epoch || cursor.partials_emitted >= partial_limit {
             break;
         }

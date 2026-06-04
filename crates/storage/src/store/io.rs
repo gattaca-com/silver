@@ -12,7 +12,7 @@ use std::{
 
 use silver_common::{
     P2pSend, PeerEvent, RpcOutbound, RpcResponse, RpcResponseOutbound, TCacheProducer, TCacheRead,
-    TMultiProducer, metrics::timed, ssz_hash::B256, ssz_view::SignedBeaconBlockView,
+    TMultiProducer, hex32, metrics::timed, ssz_hash::B256, ssz_view::SignedBeaconBlockView,
 };
 
 use super::{PendingWrite, QueryUnit, Store, UnfinalizedBlock};
@@ -348,15 +348,6 @@ fn parse_finalized_block_name(name: &str) -> Option<u64> {
     let mut parts = stem.split('_');
     let slot: u64 = parts.next()?.parse().ok()?;
     Some(slot)
-}
-
-fn hex32(bytes: &[u8; 32]) -> String {
-    let mut s = String::with_capacity(64);
-    for b in bytes {
-        s.push(char::from_digit((b >> 4) as u32, 16).unwrap());
-        s.push(char::from_digit((b & 0xf) as u32, 16).unwrap());
-    }
-    s
 }
 
 fn parse_hex32(s: &str) -> Option<[u8; 32]> {

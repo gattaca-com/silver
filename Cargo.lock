@@ -4366,6 +4366,7 @@ dependencies = [
  "criterion",
  "flux",
  "hex",
+ "parking_lot",
  "rand 0.8.6",
  "rustc-hash",
  "serde",

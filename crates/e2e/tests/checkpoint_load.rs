@@ -55,6 +55,21 @@ fn finalized_state_loads() {
     // hashing, otherwise the head root is the raw-header hash.
     let mut fin = Box::new(Finalized::empty());
     fin.decompose(&ssz, &SpecConfig::mainnet()).expect("decompose");
+
+    // Round-trip gate: re-encoding the decomposed state must reproduce the
+    // exact canonical SSZ bytes it came from.
+    let mut reencoded = Vec::with_capacity(fin.ssz_len());
+    fin.encode_ssz(&mut reencoded).expect("encode_ssz");
+    if reencoded != ssz {
+        let at = reencoded.iter().zip(&ssz).position(|(a, b)| a != b);
+        panic!(
+            "re-encoded SSZ differs from original: first mismatch at {:?} (lens {} vs {})",
+            at,
+            reencoded.len(),
+            ssz.len(),
+        );
+    }
+
     let raw_header = fin.slot.slot.latest_block_header;
     if raw_header.state_root == [0u8; 32] {
         let raw_root = hash_tree_root_block_header(&raw_header);

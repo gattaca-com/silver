@@ -1,4 +1,5 @@
 use flux::utils::ArrayVec;
+use parking_lot::RwLock;
 
 use crate::{
     balances::{BalancesDelta, FinalizedBalances},
@@ -55,7 +56,7 @@ pub const SLOTS_RING_N: usize = 256;
 pub struct Finalized {
     pub immutable: Immutable,
     pub longtail: LongtailState,
-    pub pending: PendingQueues,
+    pub pending: RwLock<PendingQueues>,
     pub validators: FinalizedValidators,
     pub balances: FinalizedBalances,
     pub previous_participation: FinalizedPreviousParticipation,
@@ -73,7 +74,7 @@ impl Finalized {
         Self {
             immutable: Immutable::default(),
             longtail: LongtailState::default(),
-            pending: PendingQueues::default(),
+            pending: RwLock::new(PendingQueues::default()),
             validators: FinalizedValidators::with_capacity(cap),
             balances: FinalizedBalances::with_seed_balances(cap, &[]),
             previous_participation: FinalizedPreviousParticipation::with_capacity(cap),
@@ -87,6 +88,11 @@ impl Finalized {
 
 impl Finalized {
     #[inline]
+    pub fn slot(&self) -> Slot {
+        self.slot.slot.slot
+    }
+
+    #[inline]
     pub fn epoch(&self) -> Epoch {
         self.slot.slot.slot / SLOTS_PER_EPOCH
     }
@@ -98,14 +104,6 @@ impl Finalized {
         f.balances = FinalizedBalances::with_seed_balances(f.validators.capacity(), &balances);
         f
     }
-}
-
-// size: 32 B (4 × pointer)
-pub struct FinalizedView<'a> {
-    pub immutable: &'a Immutable,
-    pub validators: &'a FinalizedValidators,
-    pub epoch: &'a EpochStateFinalized,
-    pub slot: &'a SlotStateFinalized,
 }
 
 // size: ~145 KB (dominated by SlotState)
@@ -135,7 +133,7 @@ impl StateDelta {
         self.previous_participation.prune_to_base(&base.previous_participation, new_base_count);
         self.current_participation.prune_to_base(&base.current_participation, new_base_count);
         self.inactivity_scores.prune_to_base(&base.inactivity_scores, new_base_count);
-        self.pending.prune_to_base(&base.pending, &promoted.pending, old_pending_lens);
+        self.pending.prune_to_base(&base.pending.read(), &promoted.pending, old_pending_lens);
         self.slot.prune_to_base(&promoted.slot);
     }
 }
@@ -322,14 +320,25 @@ impl Default for EpochStateFinalized {
 }
 
 // size: ~50 KB (two SyncCommittees + sync_committee_indices)
-#[derive(Clone)]
 pub struct LongtailState {
     pub current_sync_committee: SyncCommittee,
     pub next_sync_committee: SyncCommittee,
     pub sync_committee_indices: [u32; SYNC_COMMITTEE_SIZE],
-    // For deltas: entries appended since finalization
-    // For finalized: full list
-    pub historical_summaries: Vec<HistoricalSummary>,
+    // For deltas: entries appended since finalization.
+    // For finalized: full list.
+    pub historical_summaries: RwLock<Vec<HistoricalSummary>>,
+}
+
+// Manual: `RwLock` isn't `Clone`, but the longtail delta ring clones entries.
+impl Clone for LongtailState {
+    fn clone(&self) -> Self {
+        Self {
+            current_sync_committee: self.current_sync_committee,
+            next_sync_committee: self.next_sync_committee,
+            sync_committee_indices: self.sync_committee_indices,
+            historical_summaries: RwLock::new(self.historical_summaries.read().clone()),
+        }
+    }
 }
 
 impl Default for LongtailState {
@@ -338,7 +347,7 @@ impl Default for LongtailState {
             current_sync_committee: Default::default(),
             next_sync_committee: Default::default(),
             sync_committee_indices: [0u32; SYNC_COMMITTEE_SIZE],
-            historical_summaries: Default::default(),
+            historical_summaries: RwLock::new(Vec::new()),
         }
     }
 }
@@ -348,8 +357,10 @@ impl LongtailState {
     /// base. Sync committees are absolute (replace, no re-base); only the
     /// cumulative `historical_summaries` log drops the promoted prefix.
     pub fn prune_to_base(&mut self, promoted: &LongtailState) {
-        let drop = promoted.historical_summaries.len().min(self.historical_summaries.len());
-        self.historical_summaries.drain(..drop);
+        let promoted_len = promoted.historical_summaries.read().len();
+        let self_len = self.historical_summaries.read().len();
+        let drop = promoted_len.min(self_len);
+        self.historical_summaries.write().drain(..drop);
     }
 }
 
@@ -358,14 +369,14 @@ impl Reset for LongtailState {
         self.current_sync_committee = SyncCommittee::default();
         self.next_sync_committee = SyncCommittee::default();
         self.sync_committee_indices = [0u32; SYNC_COMMITTEE_SIZE];
-        self.historical_summaries.clear();
+        self.historical_summaries.write().clear();
     }
 
     fn reset_from(&mut self, other: &Self) {
         self.current_sync_committee = other.current_sync_committee;
         self.next_sync_committee = other.next_sync_committee;
         self.sync_committee_indices = other.sync_committee_indices;
-        self.historical_summaries.clone_from(&other.historical_summaries);
+        self.historical_summaries.write().clone_from(&other.historical_summaries.read());
     }
 }
 
@@ -616,12 +627,15 @@ impl Reset for InactivityScoresDelta {
     }
 }
 
-// size: ~96 B
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 pub struct Immutable {
     pub genesis_time: u64,
     pub genesis_validators_root: B256,
     pub historical_roots_hash: B256,
+    /// Raw `historical_roots` list. Frozen post-Capella (Fulu-only here), set
+    /// once at decompose. Retained verbatim so the state re-encodes to
+    /// canonical SSZ; `historical_roots_hash` is the hashing fast path.
+    pub historical_roots: Box<[B256]>,
     pub fork: Fork,
     pub genesis_fork_version: Version,
     pub capella_fork_version: Version,

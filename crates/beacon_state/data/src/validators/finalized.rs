@@ -1,6 +1,7 @@
 use std::convert::Infallible;
 
 use blst::min_pk::PublicKey;
+use parking_lot::RwLock;
 use rustc_hash::FxHashMap;
 use silver_common_macros::timed;
 
@@ -65,7 +66,7 @@ pub struct FinalizedValidators {
     pub(super) exit_epoch: Box<[Epoch]>,
     pub(super) withdrawable_epoch: Box<[Epoch]>,
     pub(super) validator_count: usize,
-    pub(super) index: PubkeyIndex,
+    pub(super) index: RwLock<PubkeyIndex>,
     pub(super) hash: FinalizedHashTree,
 }
 
@@ -144,7 +145,7 @@ impl FinalizedValidators {
             exit_epoch,
             withdrawable_epoch,
             validator_count: n,
-            index,
+            index: RwLock::new(index),
             hash,
         })
     }
@@ -243,14 +244,14 @@ impl FinalizedValidators {
 
     #[inline]
     pub fn find_by_pubkey(&self, pubkey: &BLSPubkey) -> Option<usize> {
-        self.index.get(pubkey).map(|&idx| idx as usize)
+        self.index.read().get(pubkey).map(|&idx| idx as usize)
     }
 
     /// Number of entries in the pubkey → idx index. Should equal
     /// `validator_count` post-`decompose` / `promote_into_base`.
     #[inline]
     pub fn index_len(&self) -> usize {
-        self.index.len()
+        self.index.read().len()
     }
 
     #[inline]
@@ -345,7 +346,7 @@ impl FinalizedValidators {
         self.activation_epoch[idx] = activation_epoch;
         self.exit_epoch[idx] = exit_epoch;
         self.withdrawable_epoch[idx] = withdrawable_epoch;
-        self.index.insert(*pubkey, idx as u32);
+        self.index.write().insert(*pubkey, idx as u32);
         self.validator_count = idx + 1;
         idx as u32
     }

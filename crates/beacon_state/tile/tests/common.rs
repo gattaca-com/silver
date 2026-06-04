@@ -16,7 +16,7 @@ use silver_beacon_state_data::{BeaconState, BeaconStateOwner};
 use silver_common::{
     BeaconStateEvent, GossipTopic, MessageId, NewGossipMsg, P2pStreamId, RpcInbound,
     RpcResponseInbound, SilverSpine, StreamProtocol, SyncUpdate, TCache, TCacheProducer, TProducer,
-    TRandomAccess, ssz_view::STATUS_V2_SIZE, ticker::SlotTicker,
+    TRandomAccess, hex32, ssz_view::STATUS_V2_SIZE, ticker::SlotTicker,
 };
 
 fn null_stream_id() -> P2pStreamId {
@@ -399,14 +399,6 @@ pub fn run_scenario(case_dir: &Path) {
             }
         }
     }
-}
-
-fn hex32(b: &[u8; 32]) -> String {
-    let mut s = String::with_capacity(64);
-    for x in b {
-        s.push_str(&format!("{x:02x}"));
-    }
-    s
 }
 
 fn parse_b256(s: &str) -> [u8; 32] {

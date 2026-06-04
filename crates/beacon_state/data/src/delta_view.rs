@@ -53,6 +53,16 @@ impl<'a> StateDeltaReadView<'a> {
         self.slot_delta.map_or(self.fin.slot.slot.slot, |d| d.slot.slot.slot)
     }
 
+    /// Encode the finalized base as canonical SSZ into `buf`, returning the
+    /// base slot the bytes correspond to. The caller's `read` loop rejects a
+    /// torn read via the version recheck.
+    pub fn encode_finalized(&self, buf: &mut Vec<u8>) -> u64 {
+        buf.clear();
+        // Writing into a `Vec` is infallible.
+        self.fin.encode_ssz(buf).expect("encode into Vec");
+        self.fin.slot()
+    }
+
     #[inline]
     pub fn fork_version_at(&self, block_epoch: Epoch) -> ([u8; 4], B256) {
         self.fin.immutable.fork_version_at(block_epoch)
@@ -383,22 +393,21 @@ impl<'a> StateDeltaView<'a> {
 
     #[inline]
     pub fn historical_summary(&self, ix: usize) -> Option<HistoricalSummary> {
-        let fin_summaries = &self.fin.longtail.historical_summaries;
+        let fin_summaries = self.fin.longtail.historical_summaries.read();
         if ix < fin_summaries.len() {
             return Some(fin_summaries[ix]);
         }
 
         let j = ix - fin_summaries.len();
 
-        self.longtail_delta().and_then(|d| d.historical_summaries.get(j).copied())
+        self.longtail_delta().and_then(|d| d.historical_summaries.read().get(j).copied())
     }
 
     #[inline]
     pub fn historical_summaries_len(&self) -> usize {
-        let fin = &self.fin.longtail;
         let delta = self.delta.longtail_idx;
-        fin.historical_summaries.len() +
-            delta.map_or(0, |seq| self.longtails.get(seq).historical_summaries.len())
+        self.fin.longtail.historical_summaries.read().len() +
+            delta.map_or(0, |seq| self.longtails.get(seq).historical_summaries.read().len())
     }
 
     /// Effective longtail tier — the per-fork delta entry if this fork owns
@@ -603,70 +612,69 @@ impl<'a> StateDeltaView<'a> {
     }
 
     #[inline]
-    pub fn pending_deposit(&self, ix: usize) -> &PendingDeposit {
+    pub fn pending_deposit(&self, ix: usize) -> PendingDeposit {
         let delta = &self.delta.pending;
-        let fin = &self.fin.pending;
+        let fin = self.fin.pending.read();
 
         let drain = delta.deposits_drain_offset as usize;
         let remaining = fin.pending_deposits.len().saturating_sub(drain);
         if ix < remaining {
-            &fin.pending_deposits[drain + ix]
+            fin.pending_deposits[drain + ix]
         } else {
-            &delta.deposits_appended[ix - remaining]
+            delta.deposits_appended[ix - remaining]
         }
     }
 
     #[inline]
     pub fn pending_deposits_len(&self) -> usize {
         let delta = &self.delta.pending;
-        let fin = &self.fin.pending;
         let drain = delta.deposits_drain_offset as usize;
-        fin.pending_deposits.len().saturating_sub(drain) + delta.deposits_appended.len()
+        self.fin.pending.read().pending_deposits.len().saturating_sub(drain) +
+            delta.deposits_appended.len()
     }
 
     #[inline]
-    pub fn pending_partial_withdrawal(&self, ix: usize) -> &PendingPartialWithdrawal {
+    pub fn pending_partial_withdrawal(&self, ix: usize) -> PendingPartialWithdrawal {
         let delta = &self.delta.pending;
-        let fin = &self.fin.pending;
+        let fin = self.fin.pending.read();
 
         let drain = delta.partial_withdrawals_drain_offset as usize;
         let remaining = fin.pending_partial_withdrawals.len().saturating_sub(drain);
         if ix < remaining {
-            &fin.pending_partial_withdrawals[drain + ix]
+            fin.pending_partial_withdrawals[drain + ix]
         } else {
-            &delta.partial_withdrawals_appended[ix - remaining]
+            delta.partial_withdrawals_appended[ix - remaining]
         }
     }
 
     #[inline]
     pub fn pending_partial_withdrawals_len(&self) -> usize {
         let delta = &self.delta.pending;
-        let fin = &self.fin.pending;
         let drain = delta.partial_withdrawals_drain_offset as usize;
-        fin.pending_partial_withdrawals.len().saturating_sub(drain) +
+        self.fin.pending.read().pending_partial_withdrawals.len().saturating_sub(drain) +
             delta.partial_withdrawals_appended.len()
     }
 
     #[inline]
-    pub fn pending_consolidation(&self, ix: usize) -> &PendingConsolidation {
+    pub fn pending_consolidation(&self, ix: usize) -> PendingConsolidation {
         let delta = &self.delta.pending;
-        let fin = &self.fin.pending;
+        let fin = self.fin.pending.read();
 
         let drain = delta.consolidations_drain_offset as usize;
         let remaining = fin.pending_consolidations.len().saturating_sub(drain);
         if ix < remaining {
-            &fin.pending_consolidations[drain + ix]
+            fin.pending_consolidations[drain + ix]
         } else {
-            &delta.consolidations_appended[ix - remaining]
+            delta.consolidations_appended[ix - remaining]
         }
     }
 
     #[inline]
     pub fn pending_consolidations_len(&self) -> usize {
         let delta = &self.delta.pending;
-        let fin = &self.fin.pending;
         let drain = delta.consolidations_drain_offset as usize;
-        fin.pending_consolidations.len().saturating_sub(drain) + delta.consolidations_appended.len()
+        self.fin.pending.read().pending_consolidations.len().saturating_sub(drain) +
+            delta.consolidations_appended.len()
     }
 
     pub fn iter_validator_balances(&self) -> impl Iterator<Item = u64> + '_ {
@@ -1001,7 +1009,7 @@ impl<'a> StateDeltaView<'a> {
     /// queue: bump drain_offset against the base, then trim appended.
     #[inline]
     pub fn drain_pending_deposits(&mut self, n: usize) {
-        let base_len = self.fin.pending.pending_deposits.len();
+        let base_len = self.fin.pending.read().pending_deposits.len();
         let already = self.delta.pending.deposits_drain_offset as usize;
         let from_appended = n.saturating_sub(base_len.saturating_sub(already));
         self.delta.pending.deposits_drain_offset += (n - from_appended) as u32;
@@ -1012,7 +1020,7 @@ impl<'a> StateDeltaView<'a> {
 
     #[inline]
     pub fn drain_pending_partial_withdrawals(&mut self, n: usize) {
-        let base_len = self.fin.pending.pending_partial_withdrawals.len();
+        let base_len = self.fin.pending.read().pending_partial_withdrawals.len();
         let already = self.delta.pending.partial_withdrawals_drain_offset as usize;
         let from_appended = n.saturating_sub(base_len.saturating_sub(already));
         self.delta.pending.partial_withdrawals_drain_offset += (n - from_appended) as u32;
@@ -1023,7 +1031,7 @@ impl<'a> StateDeltaView<'a> {
 
     #[inline]
     pub fn drain_pending_consolidations(&mut self, n: usize) {
-        let base_len = self.fin.pending.pending_consolidations.len();
+        let base_len = self.fin.pending.read().pending_consolidations.len();
         let already = self.delta.pending.consolidations_drain_offset as usize;
         let from_appended = n.saturating_sub(base_len.saturating_sub(already));
         self.delta.pending.consolidations_drain_offset += (n - from_appended) as u32;
@@ -1079,7 +1087,7 @@ impl<'a> StateDeltaView<'a> {
     #[inline]
     pub fn push_historical_summary(&mut self, h: HistoricalSummary) {
         let seq = self.delta.longtail_idx.expect("ensure_longtail_delta first");
-        self.longtails.get_mut(seq).historical_summaries.push(h);
+        self.longtails.get_mut(seq).historical_summaries.write().push(h);
     }
 
     #[inline]
@@ -1591,6 +1599,8 @@ impl SparseLayer for InactivityScoresDelta {
 
 #[cfg(test)]
 mod tests {
+    use parking_lot::RwLock;
+
     use super::*;
     use crate::{
         types::{HistoricalSummary, PendingDeposit, SlotState, SlotStateDelta},
@@ -1714,13 +1724,12 @@ mod tests {
 
     #[test]
     fn historical_summary_base_then_delta() {
-        let mut f = fresh_finalized();
-        f.longtail
-            .historical_summaries
-            .push(HistoricalSummary { block_summary_root: [1; 32], state_summary_root: [1; 32] });
-        f.longtail
-            .historical_summaries
-            .push(HistoricalSummary { block_summary_root: [2; 32], state_summary_root: [2; 32] });
+        let f = fresh_finalized();
+        {
+            let mut hs = f.longtail.historical_summaries.write();
+            hs.push(HistoricalSummary { block_summary_root: [1; 32], state_summary_root: [1; 32] });
+            hs.push(HistoricalSummary { block_summary_root: [2; 32], state_summary_root: [2; 32] });
+        }
 
         let mut delta = anchored_delta(&f);
         fresh_rings!(epochs, longtails);
@@ -1733,9 +1742,10 @@ mod tests {
 
     #[test]
     fn historical_summary_diverged_extends_past_base() {
-        let mut f = fresh_finalized();
+        let f = fresh_finalized();
         f.longtail
             .historical_summaries
+            .write()
             .push(HistoricalSummary { block_summary_root: [1; 32], state_summary_root: [1; 32] });
 
         let mut tile_longtails: LongtailRing = DeltaBuffer::default();
@@ -1744,10 +1754,10 @@ mod tests {
             current_sync_committee: f.longtail.current_sync_committee,
             next_sync_committee: f.longtail.next_sync_committee,
             sync_committee_indices: f.longtail.sync_committee_indices,
-            historical_summaries: vec![HistoricalSummary {
+            historical_summaries: RwLock::new(vec![HistoricalSummary {
                 block_summary_root: [3; 32],
                 state_summary_root: [3; 32],
-            }],
+            }]),
         });
         let mut delta = anchored_delta(&f);
         delta.longtail_idx = Some(seq);
@@ -1828,9 +1838,9 @@ mod tests {
 
     #[test]
     fn pending_deposits_drain_then_appended() {
-        let mut f = fresh_finalized();
+        let f = fresh_finalized();
         for i in 0..3u64 {
-            f.pending.pending_deposits.push(PendingDeposit {
+            f.pending.write().pending_deposits.push(PendingDeposit {
                 pubkey: [0; 48],
                 withdrawal_credentials: Default::default(),
                 amount: i,
@@ -2107,6 +2117,7 @@ mod tests {
         // Pre-existing historical summary on the finalized base.
         f.longtail
             .historical_summaries
+            .write()
             .push(HistoricalSummary { block_summary_root: [1; 32], state_summary_root: [1; 32] });
 
         let mut d = anchored_delta(&f);
@@ -2125,10 +2136,10 @@ mod tests {
             current_sync_committee: new_current,
             next_sync_committee: new_next,
             sync_committee_indices: indices,
-            historical_summaries: vec![HistoricalSummary {
+            historical_summaries: RwLock::new(vec![HistoricalSummary {
                 block_summary_root: [2; 32],
                 state_summary_root: [2; 32],
-            }],
+            }]),
         };
 
         f.apply_delta(&d, None, Some(&entry));
@@ -2139,8 +2150,9 @@ mod tests {
         assert_eq!(f.longtail.sync_committee_indices[0], 42);
 
         // Historical summaries extended (base entry kept, delta entry appended).
-        assert_eq!(f.longtail.historical_summaries.len(), 2);
-        assert_eq!(f.longtail.historical_summaries[0].block_summary_root, [1; 32]);
-        assert_eq!(f.longtail.historical_summaries[1].block_summary_root, [2; 32]);
+        let summaries = f.longtail.historical_summaries.read();
+        assert_eq!(summaries.len(), 2);
+        assert_eq!(summaries[0].block_summary_root, [1; 32]);
+        assert_eq!(summaries[1].block_summary_root, [2; 32]);
     }
 }

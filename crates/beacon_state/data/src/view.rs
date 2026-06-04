@@ -128,9 +128,9 @@ unsafe impl Sync for BeaconStateReader {}
 impl BeaconStateReader {
     /// Performs optimistic reads from the beacon state, this will loop if the
     /// finalized state is updated during a read.
-    pub fn read<F, R>(&self, reader: &F) -> R
+    pub fn read<F, R>(&self, reader: &mut F) -> R
     where
-        F: Fn(StateDeltaReadView<'_>) -> R,
+        F: FnMut(StateDeltaReadView<'_>) -> R,
     {
         loop {
             let (control, _) = self.inner.read_copy().expect("should never be empty");

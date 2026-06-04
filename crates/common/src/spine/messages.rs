@@ -358,15 +358,7 @@ pub enum SyncUpdate {
 
 impl core::fmt::Debug for SyncUpdate {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        fn hex32(b: &[u8; 32]) -> String {
-            let mut s = String::with_capacity(64);
-            const HEX: &[u8; 16] = b"0123456789abcdef";
-            for &x in b {
-                s.push(HEX[(x >> 4) as usize] as char);
-                s.push(HEX[(x & 0x0f) as usize] as char);
-            }
-            s
-        }
+        use crate::util::hex32;
         match self {
             Self::SyncingFinalized { target_epoch, target_root } => f
                 .debug_struct("SyncingFinalized")

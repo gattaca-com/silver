@@ -1346,7 +1346,12 @@ impl PeerManager {
                 Some(eth2) => {
                     if eth2[..4] != my_digest {
                         crate::PeerCounters::DiscDroppedForkDigest.inc();
-                        tracing::warn!(theirs=?eth2[..4], ours=?my_digest, ?enr, "fork digest mismatch");
+                        tracing::warn!(
+                            theirs = hex::encode(&eth2[..4]),
+                            ours = hex::encode(my_digest),
+                            ?enr,
+                            "fork digest mismatch"
+                        );
                         return;
                     }
                 }

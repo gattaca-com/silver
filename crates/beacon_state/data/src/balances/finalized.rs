@@ -57,6 +57,10 @@ impl FinalizedBalances {
         Self { data, hash }
     }
 
+    pub(crate) fn as_slice(&self) -> &[u64] {
+        &self.data
+    }
+
     pub(super) fn apply_edits(&mut self, edits: &[(u32, u64)]) {
         for &(idx, val) in edits {
             self.data[idx as usize] = val;

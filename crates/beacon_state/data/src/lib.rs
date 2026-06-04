@@ -1,6 +1,7 @@
 pub use balances::{BalancesDelta, FinalizedBalances};
 pub use buffer::DeltaBuffer;
 pub use delta_view::{StateDeltaReadView, StateDeltaView, ValidatorRow};
+pub use encode::VAR_SECTIONS;
 pub use hash_tree::{DeltaHashTree, FinalizedHashTree};
 pub use silver_chain_spec::{BlobParameters, SpecConfig};
 pub(crate) use silver_ssz::ssz_hash;
@@ -15,6 +16,7 @@ mod balances;
 pub mod buffer;
 mod decompose;
 mod delta_view;
+mod encode;
 mod hash_tree;
 pub(crate) mod sparse;
 pub mod types;

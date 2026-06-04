@@ -16,7 +16,7 @@ use std::{
 use silver_common::{
     P2pSend, PeerControl, PeerEvent, PeerStatus, RpcInbound, RpcOutbound, RpcRequest,
     RpcRequestInbound, RpcRequestOutbound, RpcResponse, RpcResponseInbound, RpcResponseOutbound,
-    RpcSeverity, StreamProtocol, SyncUpdate,
+    RpcSeverity, StreamProtocol, SyncUpdate, hex32,
     ssz_view::{BLOCKS_BY_RANGE_REQ_SIZE, MetadataView, StatusView},
 };
 
@@ -837,9 +837,9 @@ impl PeerManager {
                     peer,
                     ?target,
                     peer_finalized_epoch = StatusView::finalized_epoch(ssz),
-                    peer_finalized_root = ?StatusView::finalized_root(ssz),
+                    peer_finalized_root = hex32(StatusView::finalized_root(ssz)),
                     peer_head_slot = StatusView::head_slot(ssz),
-                    peer_head_root = ?StatusView::head_root(ssz),
+                    peer_head_root = hex32(StatusView::head_root(ssz)),
                     "pick_sync_peer peer status does not match pinned target"
                 );
                 continue;

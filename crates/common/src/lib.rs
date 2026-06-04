@@ -27,7 +27,7 @@ pub use crate::{
         StreamProtocol, SyncUpdate, TCache, TCacheProducer, TCacheRead, TCacheRef,
         WithdrawalInline,
     },
-    util::{create_self_signed_certificate, decode_varint, encode_varint},
+    util::{create_self_signed_certificate, decode_varint, encode_varint, hex32},
     wheel::Wheel,
     wither::{CountingWitherFilter, WitherFilter},
 };
