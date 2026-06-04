@@ -13,7 +13,7 @@ jobs:
   perf:
     runs-on:
       group:
-        silver
+        Silver
     timeout-minutes: 45
 
     steps:
