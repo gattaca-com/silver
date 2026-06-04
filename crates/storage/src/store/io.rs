@@ -406,9 +406,7 @@ fn earliest_block<P: AsRef<Path>>(dir: P) -> Result<Option<(u64, B256)>, Error> 
     let sub_dir_contents = std::fs::read_dir(&sub_dir)?;
     let Some(min_file) = sub_dir_contents
         .filter_map(|entry| {
-            entry
-                .ok()
-                .and_then(|e| e.file_name().to_str().and_then(parse_finalized_block_name))
+            entry.ok().and_then(|e| e.file_name().to_str().and_then(parse_finalized_block_name))
         })
         .min()
     else {
