@@ -10,8 +10,8 @@ use std::{
 
 use fxhash::{FxHashMap, FxHashSet};
 use silver_common::{
-    Enr, GossipMsgOut, GossipTopic, IpBytes, MessageId, P2pSend, PeerControl, PeerEvent, PeerId,
-    PeerStatus, BlockSource, RpcRequest, RpcRequestOutbound, RpcSeverity, StreamProtocol,
+    BlockSource, Enr, GossipMsgOut, GossipTopic, IpBytes, MessageId, P2pSend, PeerControl,
+    PeerEvent, PeerId, PeerStatus, RpcRequest, RpcRequestOutbound, RpcSeverity, StreamProtocol,
     SyncUpdate, TCacheRead,
     ssz_view::{METADATA_SIZE, STATUS_V2_SIZE, StatusView},
 };
@@ -310,7 +310,7 @@ impl PeerManager {
     }
 
     /// Update our cached chain position.
-    pub fn set_status(&mut self, mut ssz: [u8; STATUS_V2_SIZE], wall_slot: u64) {
+    pub fn set_status(&mut self, mut ssz: [u8; STATUS_V2_SIZE]) {
         self.our_fork_digest = Some(*StatusView::fork_digest(&ssz));
 
         if self.earliest_available_slot != u64::MAX {
@@ -762,122 +762,122 @@ impl PeerManager {
     ) {
         match event {
             PeerEvent::P2pNewConnection { p2p_peer_id, peer_id_full, ip, port, local_dial } => {
-                        tracing::info!("New p2p peer: {ip:?}:{port}, local dial? {local_dial}");
-                        self.on_connected(p2p_peer_id, peer_id_full, ip, port, now, emit, local_dial);
-                    }
+                tracing::info!("New p2p peer: {ip:?}:{port}, local dial? {local_dial}");
+                self.on_connected(p2p_peer_id, peer_id_full, ip, port, now, emit, local_dial);
+            }
             PeerEvent::P2pDisconnect { p2p_peer, peer_id } => {
-                        self.dialing.remove(&peer_id);
-                        self.on_disconnected(p2p_peer, now, emit);
-                    }
+                self.dialing.remove(&peer_id);
+                self.on_disconnected(p2p_peer, now, emit);
+            }
             PeerEvent::P2pCannotCreateStream { p2p_peer, .. } |
-                    PeerEvent::P2pOutboundMessageDropped { p2p_peer, .. } => {
-                        self.add_behaviour_penalty(p2p_peer, 1.0);
-                    }
+            PeerEvent::P2pOutboundMessageDropped { p2p_peer, .. } => {
+                self.add_behaviour_penalty(p2p_peer, 1.0);
+            }
             PeerEvent::P2pStreamClosed { stream_id } => {
-                        // Premature close on a request-response stream — the
-                        // peer FIN'd or RST'd before the response terminator
-                        // (`Complete`/`Error`) was observed. `MidTolerance`
-                        // accumulates a signal without fast-banning over a
-                        // single flaky session. Gossip / identity streams don't
-                        // have the same completion model — no penalty. `Unset`
-                        // means multistream-select hadn't negotiated yet, also
-                        // skipped (the close there is a protocol-negotiation
-                        // failure, distinct from a premature RPC termination).
-                        let protocol = stream_id.protocol();
-                        if protocol.is_request_response() && protocol != StreamProtocol::Unset {
-                            tracing::warn!(?protocol, "stream close misbehaviour");
-                            self.on_rpc_misbehaviour(stream_id.peer(), RpcSeverity::MidTolerance);
-                        }
-                    }
+                // Premature close on a request-response stream — the
+                // peer FIN'd or RST'd before the response terminator
+                // (`Complete`/`Error`) was observed. `MidTolerance`
+                // accumulates a signal without fast-banning over a
+                // single flaky session. Gossip / identity streams don't
+                // have the same completion model — no penalty. `Unset`
+                // means multistream-select hadn't negotiated yet, also
+                // skipped (the close there is a protocol-negotiation
+                // failure, distinct from a premature RPC termination).
+                let protocol = stream_id.protocol();
+                if protocol.is_request_response() && protocol != StreamProtocol::Unset {
+                    tracing::warn!(?protocol, "stream close misbehaviour");
+                    self.on_rpc_misbehaviour(stream_id.peer(), RpcSeverity::MidTolerance);
+                }
+            }
             PeerEvent::P2pGossipTopicSubscribe { p2p_peer, topic } => {
-                        self.on_subscribe(p2p_peer, topic, now, emit);
-                    }
+                self.on_subscribe(p2p_peer, topic, now, emit);
+            }
             PeerEvent::P2pGossipTopicUnsubscribe { p2p_peer, topic } => {
-                        self.on_unsubscribe(p2p_peer, topic, now, emit);
-                    }
+                self.on_unsubscribe(p2p_peer, topic, now, emit);
+            }
             PeerEvent::P2pGossipTopicGraft { p2p_peer, topic } => {
-                        self.on_remote_graft(p2p_peer, topic, now);
-                    }
+                self.on_remote_graft(p2p_peer, topic, now);
+            }
             PeerEvent::P2pGossipTopicPrune { p2p_peer, topic } => {
-                        self.on_remote_prune(p2p_peer, topic, now);
-                    }
+                self.on_remote_prune(p2p_peer, topic, now);
+            }
             PeerEvent::P2pGossipHave { p2p_peer, topic: _, hash, already_seen } => {
-                        self.on_ihave(p2p_peer, hash, already_seen, now);
-                    }
+                self.on_ihave(p2p_peer, hash, already_seen, now);
+            }
             PeerEvent::P2pGossipWant { p2p_peer, hash, tcache } => {
-                        self.on_iwant_received(p2p_peer, hash, tcache, emit);
-                    }
+                self.on_iwant_received(p2p_peer, hash, tcache, emit);
+            }
             PeerEvent::P2pGossipDontWant { p2p_peer, hash } => {
-                        self.on_idontwant_received(p2p_peer, hash);
-                    }
+                self.on_idontwant_received(p2p_peer, hash);
+            }
             PeerEvent::P2pGossipInvalidMsg { p2p_peer, topic, hash: _ } => {
-                        crate::PeerCounters::GossipInvalidMsg.inc();
-                        self.add_invalid_delivery(p2p_peer, topic);
-                    }
+                crate::PeerCounters::GossipInvalidMsg.inc();
+                self.add_invalid_delivery(p2p_peer, topic);
+            }
             PeerEvent::P2pGossipInvalidControl { p2p_peer } => {
-                        crate::PeerCounters::GossipInvalidControl.inc();
-                        self.add_behaviour_penalty(p2p_peer, 1.0);
-                    }
+                crate::PeerCounters::GossipInvalidControl.inc();
+                self.add_behaviour_penalty(p2p_peer, 1.0);
+            }
             PeerEvent::P2pGossipInvalidFrame { p2p_peer } => {
-                        crate::PeerCounters::GossipInvalidFrame.inc();
-                        self.add_behaviour_penalty(p2p_peer, 1.0);
-                    }
+                crate::PeerCounters::GossipInvalidFrame.inc();
+                self.add_behaviour_penalty(p2p_peer, 1.0);
+            }
             PeerEvent::DiscNodeFound { enr } => {
-                        self.on_disc_node_found(enr, now, emit);
-                    }
+                self.on_disc_node_found(enr, now, emit);
+            }
             PeerEvent::DiscExternalAddress { address: _ } => {
-                        // Informational — network tile handles advertisement.
-                    }
+                // Informational — network tile handles advertisement.
+            }
             PeerEvent::NewGossip { p2p_peer, topic, msg_hash, idontwant } => {
-                        self.on_new_gossip(p2p_peer, topic, msg_hash, idontwant, emit);
-                    }
+                self.on_new_gossip(p2p_peer, topic, msg_hash, idontwant, emit);
+            }
             PeerEvent::OutboundIHave { topic, msg_count: _, protobuf } => {
-                        self.on_outbound_ihave(topic, protobuf, emit);
-                    }
+                self.on_outbound_ihave(topic, protobuf, emit);
+            }
             PeerEvent::OutboundIWant { p2p_peer, iwant } => {
-                        self.on_outbound_iwant(p2p_peer, iwant, emit);
-                    }
+                self.on_outbound_iwant(p2p_peer, iwant, emit);
+            }
             PeerEvent::SendGossip {
-                        originator_stream_id,
-                        topic,
-                        msg_hash,
-                        recv_ts: _,
-                        protobuf,
-                    } => {
-                        // TODO recv_ts elapsed metric
-                        self.on_send_gossip(originator_stream_id.peer(), msg_hash, topic, protobuf, emit);
-                    }
+                originator_stream_id,
+                topic,
+                msg_hash,
+                recv_ts: _,
+                protobuf,
+            } => {
+                // TODO recv_ts elapsed metric
+                self.on_send_gossip(originator_stream_id.peer(), msg_hash, topic, protobuf, emit);
+            }
             PeerEvent::RpcMisbehaviour { p2p_peer, severity } => {
-                        self.on_rpc_misbehaviour(p2p_peer, severity);
-                    }
+                self.on_rpc_misbehaviour(p2p_peer, severity);
+            }
             PeerEvent::P2pPeerStatus { p2p_peer, status_ssz } => {
-                        tracing::trace!(p2p_peer, "Got peer status");
-                        self.on_p2p_peer_status(p2p_peer, status_ssz);
-                    }
+                tracing::trace!(p2p_peer, "Got peer status");
+                self.on_p2p_peer_status(p2p_peer, status_ssz);
+            }
             PeerEvent::P2pPeerMetadata { p2p_peer, metadata_ssz } => {
-                        tracing::trace!(p2p_peer, "Got peer metadata");
-                        self.database.p2p_metadata(p2p_peer, metadata_ssz)
-                    }
+                tracing::trace!(p2p_peer, "Got peer metadata");
+                self.database.p2p_metadata(p2p_peer, metadata_ssz)
+            }
             PeerEvent::P2pPeerGoodbye { p2p_peer: _, status: _ } => {
-                        // TODO send p2p disconnect
-                        // TODO scoring based on status?
-                    }
+                // TODO send p2p disconnect
+                // TODO scoring based on status?
+            }
             PeerEvent::P2pPeerIdentity { p2p_peer, identify } => {
-                        tracing::trace!(p2p_peer, ?identify, "Got peer identify");
-                        self.database.add_p2p_identify(p2p_peer, identify)
-                    }
+                tracing::trace!(p2p_peer, ?identify, "Got peer identify");
+                self.database.add_p2p_identify(p2p_peer, identify)
+            }
             PeerEvent::SendDataColumnsByRootRequest { request_id, columns, block_root } => {
-                        self.on_request_data_columns_by_root(request_id, columns, block_root, emit);
-                    }
+                self.on_request_data_columns_by_root(request_id, columns, block_root, emit);
+            }
             PeerEvent::SendBlocksByRootRequest { request_id, p2p_peer, block_root } => {
-                        self.on_request_blocks_by_root(request_id, p2p_peer, block_root, emit);
-                    }
+                self.on_request_blocks_by_root(request_id, p2p_peer, block_root, emit);
+            }
             PeerEvent::SendRpcRequest { request_id, rpc } => {
-                        self.on_rpc_request(request_id, rpc, emit);
-                    }
+                self.on_rpc_request(request_id, rpc, emit);
+            }
             PeerEvent::EarliestSlot(slot) => {
                 self.earliest_available_slot = slot;
-            },
+            }
         }
     }
 

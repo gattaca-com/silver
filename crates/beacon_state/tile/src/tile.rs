@@ -12,7 +12,7 @@ use silver_beacon_state_data::{
     ValidatorsDelta, Version, buffer::RollResult,
 };
 use silver_common::{
-    BeaconStateEvent, GossipTopic, NewGossipMsg, P2pStreamId, PeerEvent, BlockSource, RpcInbound,
+    BeaconStateEvent, BlockSource, GossipTopic, NewGossipMsg, P2pStreamId, PeerEvent, RpcInbound,
     RpcMsg, RpcResponse, RpcResponseInbound, RpcSeverity, SilverSpine, SyncUpdate, TCacheRead,
     TRandomAccess, TRead,
     ssz_view::{
@@ -526,12 +526,12 @@ impl BeaconStateTile {
         producers: &mut Producers,
     ) -> Feedback {
         let block_slot = SignedBeaconBlockView::slot(data);
-        if block_slot < (prev_finalized.epoch * SLOTS_PER_EPOCH) {
+        if block_slot < (self.head_finalized_checkpoint().epoch * SLOTS_PER_EPOCH) {
             // Pre-finalization block - either backfill or irrelevant.
             return Feedback::Ignore;
         }
         let f = self.apply_block_impl(data);
-        
+
         if let Feedback::Reject(Some(block_root)) = f {
             producers.produce(BeaconStateEvent::BlockRejected { block_root, source });
         }
@@ -546,10 +546,7 @@ impl BeaconStateTile {
             return f;
         }
 
-        producers.produce(BeaconStateEvent::PersistBlock {
-            ssz: *data_tcache,
-            source,
-        });
+        producers.produce(BeaconStateEvent::PersistBlock { ssz: *data_tcache, source });
 
         f
     }

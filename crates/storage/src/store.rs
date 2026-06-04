@@ -6,10 +6,12 @@ use std::{
 
 use fxhash::FxHashMap;
 use silver_common::{
-    ssz_hash::B256, ssz_view::{
+    P2pStreamId, PeerEvent, RpcRequestInbound, SyncUpdate, TRandomAccess, TRead,
+    ssz_hash::B256,
+    ssz_view::{
         BeaconBlocksByRangeRequestView, BeaconBlocksByRootRequestView,
         DataColumnSidecarsByRangeRequestView, DataColumnsByRootIdentifierView,
-    }, P2pStreamId, PeerEvent, RpcRequestInbound, SyncUpdate, TRandomAccess, TRead
+    },
 };
 use silver_metrics::timed;
 
@@ -336,8 +338,11 @@ impl Store {
             SyncUpdate::Following if !self.first_sync => {
                 // First update - check whether we need to backfill history.
                 self.first_sync = true;
-                self.write_queue.push_back(PendingWrite::Backfill { finalized_slot: self.finalized_slot, finalized_root: self.finalized_root });
-            },
+                self.write_queue.push_back(PendingWrite::Backfill {
+                    finalized_slot: self.finalized_slot,
+                    finalized_root: self.finalized_root,
+                });
+            }
             _ => {}
         }
     }

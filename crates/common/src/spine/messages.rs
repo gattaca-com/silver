@@ -598,10 +598,7 @@ pub enum BlockSource {
 #[repr(C)]
 pub enum BeaconStateEvent {
     Status { ssz: [u8; STATUS_V2_SIZE], latest_block_slot: u64, wall_slot: u64 },
-    PersistBlock {
-        ssz: TCacheRead,
-        source: BlockSource,
-    },
+    PersistBlock { ssz: TCacheRead, source: BlockSource },
     BlockRejected { block_root: [u8; 32], source: BlockSource },
 }
 

@@ -3,7 +3,10 @@ use std::time::{Duration, Instant};
 use flux::{spine::SpineAdapter, tile::Tile};
 use silver_beacon_state_data::{BeaconStateReader, SLOTS_PER_EPOCH};
 use silver_common::{
-    ssz_view::{DataColumnSidecarView, StatusView}, BeaconStateEvent, DataColumnsAvailable, NewGossipMsg, P2pSend, P2pStreamId, PeerEvent, RpcInbound, RpcResponseInbound, RpcSeverity, SilverSpine, SyncUpdate, TMultiProducer, TRandomAccess, TRead, Wheel
+    BeaconStateEvent, DataColumnsAvailable, NewGossipMsg, P2pSend, P2pStreamId, PeerEvent,
+    RpcInbound, RpcResponseInbound, RpcSeverity, SilverSpine, SyncUpdate, TMultiProducer,
+    TRandomAccess, TRead, Wheel,
+    ssz_view::{DataColumnSidecarView, StatusView},
 };
 use silver_metrics::timed;
 
@@ -55,6 +58,7 @@ pub struct StorageTile {
 }
 
 impl StorageTile {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         gossip_consumer: TRandomAccess,
         persist_gossip_consumer: TRandomAccess,
@@ -387,7 +391,7 @@ impl Tile<SilverSpine> for StorageTile {
                     silver_common::BlockSource::Gossip => self.persist_gossip_consumer.acquire(ssz),
                     silver_common::BlockSource::Rpc => self.persist_rpc_consumer.acquire(ssz),
                 };
-                
+
                 tracing::info!(seq=t_read.seq(), "persist block");
                 match t_read.buffer() {
                     Ok((buf, _)) => {

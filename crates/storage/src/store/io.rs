@@ -11,7 +11,8 @@ use std::{
 };
 
 use silver_common::{
-    metrics::timed, ssz_hash::B256, ssz_view::SignedBeaconBlockView, P2pSend, PeerEvent, RpcOutbound, RpcResponse, RpcResponseOutbound, TCacheProducer, TCacheRead, TMultiProducer
+    P2pSend, PeerEvent, RpcOutbound, RpcResponse, RpcResponseOutbound, TCacheProducer, TCacheRead,
+    TMultiProducer, metrics::timed, ssz_hash::B256, ssz_view::SignedBeaconBlockView,
 };
 
 use super::{PendingWrite, QueryUnit, Store, UnfinalizedBlock};
