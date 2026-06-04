@@ -1,5 +1,5 @@
 //! Benchmark the canonical SSZ encode of a mainnet `Finalized` checkpoint into
-//! a warm buffer — the CPU half of the tile's `encode_finalized_checkpoint`.
+//! a warm buffer — the CPU half of the tile's `encode_finalized`.
 //! The durable-write half lives in `silver_storage`'s
 //! `checkpoint_persist_bench`, which drives the real
 //! `Store::persist_finalized_checkpoint`.

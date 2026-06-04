@@ -208,7 +208,7 @@ impl StorageTile {
         // notional read lock too long otherwise).
         let block_slot = DataColumnSidecarView::slot(buffer);
         let claimed_proposer_index = DataColumnSidecarView::proposer_index(buffer);
-        let checks = self.beacon_state.read(&|v| {
+        let checks = self.beacon_state.read(&mut |v| {
             let epoch_state = v.epoch_state();
             let state_epoch = v.epoch();
 
@@ -490,7 +490,8 @@ impl Tile<SilverSpine> for StorageTile {
 
         if self.persist_pending {
             self.persist_pending = false;
-            let slot = self.beacon_state.encode_finalized_checkpoint(&mut self.checkpoint_buf);
+            let buf = &mut self.checkpoint_buf;
+            let slot = self.beacon_state.read(&mut |v| v.encode_finalized(buf));
             match self.store.persist_finalized_checkpoint(slot, &self.checkpoint_buf) {
                 Ok(()) => tracing::info!(
                     slot,

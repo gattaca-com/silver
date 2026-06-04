@@ -128,9 +128,9 @@ unsafe impl Sync for BeaconStateReader {}
 impl BeaconStateReader {
     /// Performs optimistic reads from the beacon state, this will loop if the
     /// finalized state is updated during a read.
-    pub fn read<F, R>(&self, reader: &F) -> R
+    pub fn read<F, R>(&self, reader: &mut F) -> R
     where
-        F: Fn(StateDeltaReadView<'_>) -> R,
+        F: FnMut(StateDeltaReadView<'_>) -> R,
     {
         loop {
             let (control, _) = self.inner.read_copy().expect("should never be empty");
@@ -154,34 +154,6 @@ impl BeaconStateReader {
             let (post, _) = self.inner.read_copy().expect("should never be empty");
             if post.version == version {
                 return result;
-            }
-        }
-    }
-
-    /// Encode the finalized base as canonical SSZ into `buf`, returning the
-    /// base slot the bytes correspond to.
-    pub fn encode_finalized_checkpoint(&self, buf: &mut Vec<u8>) -> u64 {
-        loop {
-            let (control, _) = self.inner.read_copy().expect("should never be empty");
-            sync::atomic::compiler_fence(Ordering::Acquire);
-            if control.version & 1 == 1 {
-                std::hint::spin_loop();
-                continue;
-            }
-            let version = control.version;
-            let finalized = &unsafe { &*self.state_ptr }.finalized;
-
-            buf.clear();
-            // Writing into a `Vec` is infallible. The wrapped `pending` /
-            // `historical_summaries` read-lock per access (no realloc-UAF); the
-            // version recheck below rejects a torn columns/fixed-part read.
-            finalized.encode_ssz(buf).expect("encode into Vec");
-            let slot = finalized.slot();
-
-            sync::atomic::compiler_fence(Ordering::Acquire);
-            let (post, _) = self.inner.read_copy().expect("should never be empty");
-            if post.version == version {
-                return slot;
             }
         }
     }

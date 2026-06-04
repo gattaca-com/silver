@@ -60,16 +60,17 @@ fn concurrent_reads_observe_consistent_state() {
         let r_saw_finalized_advance = Arc::clone(&saw_finalized_advance);
         std::thread::spawn(move || {
             while !r_done.load(Ordering::Relaxed) {
-                let (fin_a, fin_b, merged_slot, delta_root0, has_delta) = r_control.read(&|v| {
-                    let fin_roots = v.finalized_block_roots();
-                    let fin_a = fin_roots[FIN_TAG_A];
-                    let fin_b = fin_roots[FIN_TAG_B];
-                    let merged_slot = v.slot();
-                    let delta_roots = v.delta_block_roots();
-                    let delta_root0 = delta_roots.first().copied();
-                    let has_delta = !delta_roots.is_empty();
-                    (fin_a, fin_b, merged_slot, delta_root0, has_delta)
-                });
+                let (fin_a, fin_b, merged_slot, delta_root0, has_delta) =
+                    r_control.read(&mut |v| {
+                        let fin_roots = v.finalized_block_roots();
+                        let fin_a = fin_roots[FIN_TAG_A];
+                        let fin_b = fin_roots[FIN_TAG_B];
+                        let merged_slot = v.slot();
+                        let delta_roots = v.delta_block_roots();
+                        let delta_root0 = delta_roots.first().copied();
+                        let has_delta = !delta_roots.is_empty();
+                        (fin_a, fin_b, merged_slot, delta_root0, has_delta)
+                    });
 
                 let mut errs = 0usize;
 

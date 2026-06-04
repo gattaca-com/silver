@@ -53,6 +53,16 @@ impl<'a> StateDeltaReadView<'a> {
         self.slot_delta.map_or(self.fin.slot.slot.slot, |d| d.slot.slot.slot)
     }
 
+    /// Encode the finalized base as canonical SSZ into `buf`, returning the
+    /// base slot the bytes correspond to. The caller's `read` loop rejects a
+    /// torn read via the version recheck.
+    pub fn encode_finalized(&self, buf: &mut Vec<u8>) -> u64 {
+        buf.clear();
+        // Writing into a `Vec` is infallible.
+        self.fin.encode_ssz(buf).expect("encode into Vec");
+        self.fin.slot()
+    }
+
     #[inline]
     pub fn fork_version_at(&self, block_epoch: Epoch) -> ([u8; 4], B256) {
         self.fin.immutable.fork_version_at(block_epoch)
