@@ -56,10 +56,11 @@ impl DeltaHashTree {
 }
 
 impl FinalizedHashTree {
-    /// Advance the base to `winner`, re-anchoring every `survivor`. Bakes in the
-    /// only correct order — rebase each survivor, fold `winner` in, then prune —
-    /// so callers can't run the `pub(crate)` steps out of order. See
-    /// `DeltaHashTree::rebase` and `docs/delta-rebase-invariant.md`.
+    /// Advance the base to `winner`, re-anchoring every `survivor`. Bakes in
+    /// the only correct order — rebase each survivor, fold `winner` in,
+    /// then prune — so callers can't run the `pub(crate)` steps out of
+    /// order. See `DeltaHashTree::rebase` and
+    /// `docs/delta-rebase-invariant.md`.
     pub fn finalize(&mut self, winner: &DeltaHashTree, survivors: &mut [&mut DeltaHashTree]) {
         for survivor in survivors.iter_mut() {
             survivor.rebase(self, winner);

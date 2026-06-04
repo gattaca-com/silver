@@ -48,10 +48,10 @@ impl DeltaHashTree {
         }
     }
 
-    /// Re-pin every leaf the `winner` overrides so the survivor's symlinks don't
-    /// follow the base when it moves. A `Base` entry is a *symlink*: it reads the
-    /// base's value live, so when the base changes under it, its value changes
-    /// too. One-leaf walk-through:
+    /// Re-pin every leaf the `winner` overrides so the survivor's symlinks
+    /// don't follow the base when it moves. A `Base` entry is a *symlink*:
+    /// it reads the base's value live, so when the base changes under it,
+    /// its value changes too. One-leaf walk-through:
     ///
     /// ```text
     /// start:  base leaf = A,  survivor overlay = Base   (symlink, reads A)
@@ -91,7 +91,8 @@ impl DeltaHashTree {
                 left.rebase_at(base, &winner_node.left, FinalizedHashTree::left(node));
                 right.rebase_at(base, &winner_node.right, FinalizedHashTree::right(node));
 
-                *self = DeltaHashTree::Node(Arc::new(DeltaNode { hash: self.root(base), left, right }));
+                *self =
+                    DeltaHashTree::Node(Arc::new(DeltaNode { hash: self.root(base), left, right }));
             }
         }
     }

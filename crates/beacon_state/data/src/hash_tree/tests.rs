@@ -225,7 +225,8 @@ fn fuzz_random_ops_hash_tree() {
             }
 
             let winner = forks.remove(&idx).unwrap();
-            let mut survivor_deltas: Vec<&mut DeltaHashTree> = forks.values_mut().map(|fork| &mut fork.delta).collect();
+            let mut survivor_deltas: Vec<&mut DeltaHashTree> =
+                forks.values_mut().map(|fork| &mut fork.delta).collect();
             base.finalize(&winner.delta, &mut survivor_deltas.as_mut_slice());
 
             // Re-insert the winner as the new, empty base fork.
