@@ -8,7 +8,7 @@ pub use messages::{
     EngineGetPayloadResp, EngineHealthEvent, EngineNewPayloadReq, EngineNewPayloadResp,
     EnginePreparePayloadReq, EngineReq, EngineResp, GossipMsgOut, IpBytes, MAX_BLOBS_PER_BLOCK,
     MAX_PAYLOAD_BODIES_PER_REQ, NewGossipMsg, P2pSend, PayloadValidationStatus, PeerControl,
-    PeerEvent, PeerStatus, RejectSource, RpcInbound, RpcMsg, RpcOutbound, RpcRequest,
+    PeerEvent, PeerStatus, BlockSource, RpcInbound, RpcMsg, RpcOutbound, RpcRequest,
     RpcRequestInbound, RpcRequestOutbound, RpcResponse, RpcResponseInbound, RpcResponseOutbound,
     RpcSeverity, SyncUpdate, WithdrawalInline,
 };

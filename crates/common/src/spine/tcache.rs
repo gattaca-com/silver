@@ -115,7 +115,7 @@ pub enum Error {
     #[error("Unexpected cache ref")]
     UnexpectedCacheRef,
     #[error("stale seq: {seq} < {tail}")]
-    StaleSeq { seq: u64, tail: u64 },
+    StaleSeq { name: &'static str, seq: u64, tail: u64 },
 }
 
 impl TCache {
@@ -202,12 +202,15 @@ impl TCache {
             })
             .ok_or(Error::MaxConsumers)?;
 
+        tracing::info!(name, index, "new random access consumer with tail seq {seq}");
+
         self.record_tail(index, seq);
         self.record_consumer_name(index, name);
 
         Ok(RandomAccessConsumer {
             cache: TCacheRef { cache: addr_of!(*self) as *const c_void },
             index,
+            name,
             active: Buckets::new(32 * 1024, self.len as u64),
             auto_free,
             timer: self.create_consumer_timer(name),

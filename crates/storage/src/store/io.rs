@@ -11,8 +11,7 @@ use std::{
 };
 
 use silver_common::{
-    P2pSend, RpcOutbound, RpcResponse, RpcResponseOutbound, TCacheProducer, TCacheRead,
-    TMultiProducer, metrics::timed, ssz_hash::B256, ssz_view::SignedBeaconBlockView,
+    metrics::timed, ssz_hash::B256, ssz_view::SignedBeaconBlockView, P2pSend, PeerEvent, RpcOutbound, RpcResponse, RpcResponseOutbound, TCacheProducer, TCacheRead, TMultiProducer
 };
 
 use super::{PendingWrite, QueryUnit, Store, UnfinalizedBlock};
@@ -57,7 +56,7 @@ impl Store {
             let Some(pending) = self.write_queue.front()
         {
             writes += 1;
-
+            tracing::debug!(?pending, "process pending write");
             match pending {
                 PendingWrite::Index { block_root, slot } => {
                     let dir = self.block_slot_dir(*slot);
@@ -85,7 +84,7 @@ impl Store {
                     let dir = self.unfinalized_dir();
                     let path = dir.join(unfinalized_name(*slot, parent_root, block_root));
                     let (buffer, _) = ssz.buffer().map_err(Error::other)?;
-                    open_file_write(path, false)?.write_all(buffer)?;
+                    open_file_write(&path, false)?.write_all(buffer)?;
                     self.write_queue.pop_front();
                 }
                 PendingWrite::Promote { slot, parent_root, block_root } => {
@@ -177,6 +176,7 @@ impl Store {
                         _ => None,
                     };
                     if let Some((backfill_range, parent_root)) = range {
+                        emit(IoEvent::PeerEvent(PeerEvent::EarliestSlot(backfill_range.end)));
                         self.backfill = Some(Backfill::new(backfill_range, parent_root));
                         self.backfill
                             .as_mut()

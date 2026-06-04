@@ -95,6 +95,7 @@ impl Consumer {
 pub struct RandomAccessConsumer {
     pub(super) cache: TCacheRef,
     pub(super) index: usize,
+    pub(super) name: &'static str,
     // Mapping of active / enqueued sequence numbers and reader counts.
     pub(super) active: Buckets,
     // If set `free` is called on drop of every acquired read, ensuring the
@@ -129,7 +130,18 @@ impl RandomAccessConsumer {
     }
 
     fn release(&mut self, seq: u64) {
-        self.active.release(seq);
+        self.active.release(seq, self.name);
+    }
+}
+
+impl std::fmt::Debug for RandomAccessConsumer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RandomAccessConsumer")
+            .field("index", &self.index)
+            .field("name", &self.name)
+            .field("head", &self.active.head_seq)
+            .field("tail", &self.active.tail_seq)
+            .finish()
     }
 }
 
@@ -151,6 +163,7 @@ impl AcquiredRead {
         let consumer = unsafe { &*self.consumer };
         if self.read.seq < consumer.active.tail_seq {
             return Err(TCacheError::StaleSeq {
+                name: consumer.name,
                 seq: self.read.seq,
                 tail: consumer.active.tail_seq,
             });
@@ -246,9 +259,9 @@ impl Buckets {
         }
     }
 
-    fn release(&mut self, seq: u64) {
+    fn release(&mut self, seq: u64, name: &str) {
         if seq < self.tail_seq {
-            tracing::warn!("tried to release: {seq} which is < {}", self.tail_seq);
+            tracing::warn!(name, "tried to release: {seq} which is < {}", self.tail_seq);
             return;
         }
 
@@ -294,7 +307,7 @@ mod tests {
         b.acquire(0); // bucket 0, tail = 0
         b.acquire(200); // bucket 3, head = 200
         assert_eq!(b.tail_seq, 0);
-        b.release(0); // bucket 0 empties; head far enough ahead to advance
+        b.release(0, ""); // bucket 0 empties; head far enough ahead to advance
         b.acquire(300);
         assert!(b.tail_seq > 0, "tail did not advance: {}", b.tail_seq);
         assert!(b.tail_seq <= 200);
@@ -307,10 +320,10 @@ mod tests {
         b.acquire(100); // bucket 1
         b.acquire(300); // bucket 4
         // Release the middle first — bucket 1 empties but tail is still at 0
-        b.release(100);
+        b.release(100, "");
         assert_eq!(b.tail_seq, 0, "tail moved while bucket 0 still held");
         // Release the head; tail jumps past bucket 0 and bucket 1 (both empty)
-        b.release(0);
+        b.release(0, "");
         b.acquire(350);
         assert!(b.tail_seq >= 128, "tail did not jump: {}", b.tail_seq);
     }
@@ -336,7 +349,7 @@ mod tests {
         b.acquire(0);
         b.acquire(1000); // forces tail past bucket 0
         let tail_after_eviction = b.tail_seq;
-        b.release(0); // 0 is now below tail — must not corrupt state
+        b.release(0, ""); // 0 is now below tail — must not corrupt state
         assert_eq!(b.tail_seq, tail_after_eviction);
     }
 
@@ -453,8 +466,8 @@ mod tests {
         }
 
         match victim.buffer() {
-            Err(TCacheError::StaleSeq { seq, tail }) => {
-                assert!(seq < tail, "StaleSeq with seq {seq} not below tail {tail}");
+            Err(TCacheError::StaleSeq { name, seq, tail }) => {
+                assert!(seq < tail, "StaleSeq with seq {seq} not below tail {tail} for {name}");
             }
             other => panic!("expected StaleSeq, got {other:?}"),
         }

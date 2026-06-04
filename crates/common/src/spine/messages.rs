@@ -335,6 +335,7 @@ pub enum PeerEvent {
         request_id: u64,
         rpc: RpcRequest,
     },
+    EarliestSlot(u64),
 }
 
 /// Sync target chosen by the peer manager.
@@ -587,7 +588,7 @@ impl From<&RpcInbound> for RpcMsg {
 /// chain-attributable and only blacklist the individual block_root.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
-pub enum RejectSource {
+pub enum BlockSource {
     Gossip,
     Rpc,
 }
@@ -597,8 +598,11 @@ pub enum RejectSource {
 #[repr(C)]
 pub enum BeaconStateEvent {
     Status { ssz: [u8; STATUS_V2_SIZE], latest_block_slot: u64, wall_slot: u64 },
-    PersistBlock(TCacheRead),
-    BlockRejected { block_root: [u8; 32], source: RejectSource },
+    PersistBlock {
+        ssz: TCacheRead,
+        source: BlockSource,
+    },
+    BlockRejected { block_root: [u8; 32], source: BlockSource },
 }
 
 /// Maximum blob commitments per block (Fulu target; increase as the spec

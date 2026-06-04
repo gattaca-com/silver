@@ -21,7 +21,7 @@ pub use crate::{
         MAX_PAYLOAD_BODIES_PER_REQ, MULTISTREAM_V1, MultiProducer as TMultiProducer, NewGossipMsg,
         P2pSend, P2pStreamId, PayloadValidationStatus, PeerControl, PeerEvent, PeerStatus,
         Producer as TProducer, REJECT_RESPONSE, RPC_PROTOCOLS,
-        RandomAccessConsumer as TRandomAccess, RejectSource, Reservation as TReservation,
+        RandomAccessConsumer as TRandomAccess, BlockSource, Reservation as TReservation,
         RpcInbound, RpcMsg, RpcOutbound, RpcRequest, RpcRequestInbound, RpcRequestOutbound,
         RpcResponse, RpcResponseInbound, RpcResponseOutbound, RpcSeverity, SilverSpine,
         SilverSpineProducers, StreamProtocol, SyncUpdate, TCache, TCacheProducer, TCacheRead,

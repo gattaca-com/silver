@@ -83,6 +83,7 @@ impl Backfill {
             if self.earliest_written < in_flight.end {
                 // the previous request returned something,
                 self.range.end = self.earliest_written.max(in_flight.start);
+                emit(PeerEvent::EarliestSlot(self.earliest_written));
             }
         }
         if self.range.end == self.range.start {

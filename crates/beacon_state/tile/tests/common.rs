@@ -107,7 +107,7 @@ impl OutboundKind {
     fn classify(ev: &BeaconStateEvent) -> Self {
         match ev {
             BeaconStateEvent::Status { .. } => Self::Status,
-            BeaconStateEvent::PersistBlock(_) => Self::PersistBlock,
+            BeaconStateEvent::PersistBlock { .. } => Self::PersistBlock,
             BeaconStateEvent::BlockRejected { .. } => Self::BlockRejected,
         }
     }

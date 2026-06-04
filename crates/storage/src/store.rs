@@ -6,12 +6,10 @@ use std::{
 
 use fxhash::FxHashMap;
 use silver_common::{
-    P2pStreamId, PeerEvent, RpcRequestInbound, TRandomAccess, TRead,
-    ssz_hash::B256,
-    ssz_view::{
+    ssz_hash::B256, ssz_view::{
         BeaconBlocksByRangeRequestView, BeaconBlocksByRootRequestView,
         DataColumnSidecarsByRangeRequestView, DataColumnsByRootIdentifierView,
-    },
+    }, P2pStreamId, PeerEvent, RpcRequestInbound, SyncUpdate, TRandomAccess, TRead
 };
 use silver_metrics::timed;
 
@@ -60,6 +58,7 @@ struct UnfinalizedBlock {
     parent_root: [u8; 32],
 }
 
+#[derive(Debug)]
 enum PendingWrite {
     Index {
         block_root: [u8; 32],
@@ -161,7 +160,9 @@ pub(super) struct Store {
     head_root: [u8; 32],
     head_slot: u64,
     finalized_slot: u64,
+    finalized_root: [u8; 32],
     // Historical backfill.
+    first_sync: bool,
     backfill: Option<Backfill>,
 
     write_queue: VecDeque<PendingWrite>,
@@ -238,7 +239,9 @@ impl Store {
             head_root: [0u8; 32],
             head_slot: 0,
             finalized_slot: 0,
+            finalized_root: [0u8; 32],
             backfill: None,
+            first_sync: false,
             write_queue: Default::default(),
             query_queue: Default::default(),
         })
@@ -328,6 +331,17 @@ impl Store {
         }
     }
 
+    pub(super) fn sync_update(&mut self, sync_update: SyncUpdate) {
+        match sync_update {
+            SyncUpdate::Following if !self.first_sync => {
+                // First update - check whether we need to backfill history.
+                self.first_sync = true;
+                self.write_queue.push_back(PendingWrite::Backfill { finalized_slot: self.finalized_slot, finalized_root: self.finalized_root });
+            },
+            _ => {}
+        }
+    }
+
     /// Update fork-choice head and finalization watermark from a Status. On a
     /// finalization advance, promote the finalized chain (blocks and their
     /// columns) to the flat store and prune orphaned forks.
@@ -344,12 +358,9 @@ impl Store {
         if finalized_slot <= self.finalized_slot {
             return;
         }
-        if self.finalized_slot == 0 && finalized_slot != 0 {
-            // First update - check whether we need to backfill history.
-            self.write_queue.push_back(PendingWrite::Backfill { finalized_slot, finalized_root });
-        }
 
         self.finalized_slot = finalized_slot;
+        self.finalized_root = finalized_root;
 
         // Promote the finalized chain: walk ancestors of `finalized_root`
         // through the tree, moving each block and its columns to the flat

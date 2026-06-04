@@ -12,7 +12,7 @@ use silver_beacon_state_data::{
     ValidatorsDelta, Version, buffer::RollResult,
 };
 use silver_common::{
-    BeaconStateEvent, GossipTopic, NewGossipMsg, P2pStreamId, PeerEvent, RejectSource, RpcInbound,
+    BeaconStateEvent, GossipTopic, NewGossipMsg, P2pStreamId, PeerEvent, BlockSource, RpcInbound,
     RpcMsg, RpcResponse, RpcResponseInbound, RpcSeverity, SilverSpine, SyncUpdate, TCacheRead,
     TRandomAccess, TRead,
     ssz_view::{
@@ -522,13 +522,16 @@ impl BeaconStateTile {
         &mut self,
         data: &[u8],
         data_tcache: TRead,
-        source: RejectSource,
+        source: BlockSource,
         producers: &mut Producers,
     ) -> Feedback {
         let block_slot = SignedBeaconBlockView::slot(data);
-
+        if block_slot < (prev_finalized.epoch * SLOTS_PER_EPOCH) {
+            // Pre-finalization block - either backfill or irrelevant.
+            return Feedback::Ignore;
+        }
         let f = self.apply_block_impl(data);
-
+        
         if let Feedback::Reject(Some(block_root)) = f {
             producers.produce(BeaconStateEvent::BlockRejected { block_root, source });
         }
@@ -543,7 +546,11 @@ impl BeaconStateTile {
             return f;
         }
 
-        producers.produce(BeaconStateEvent::PersistBlock(*data_tcache));
+        producers.produce(BeaconStateEvent::PersistBlock {
+            ssz: *data_tcache,
+            source,
+        });
+
         f
     }
 
@@ -820,7 +827,7 @@ impl BeaconStateTile {
         let feedback = match m.topic {
             GossipTopic::BeaconBlock => {
                 let acquired = self.gossip_consumer.acquire(m.ssz);
-                Some(self.apply_block(data, acquired, RejectSource::Gossip, producers))
+                Some(self.apply_block(data, acquired, BlockSource::Gossip, producers))
             }
             GossipTopic::BeaconAttestation(_) => Some(self.handle_attestation(data)),
             GossipTopic::BeaconAggregateAndProof => Some(self.handle_aggregate_and_proof(data)),
@@ -915,7 +922,7 @@ impl BeaconStateTile {
                 return;
             }
             let tcache = data_tcache.read;
-            let f = self.apply_block(data, data_tcache, RejectSource::Rpc, producers);
+            let f = self.apply_block(data, data_tcache, BlockSource::Rpc, producers);
             match f {
                 Feedback::Accept(block_root) => {
                     // Try to apply any pending blocks for which this one was the parent.

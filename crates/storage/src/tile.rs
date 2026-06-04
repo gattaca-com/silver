@@ -3,10 +3,7 @@ use std::time::{Duration, Instant};
 use flux::{spine::SpineAdapter, tile::Tile};
 use silver_beacon_state_data::{BeaconStateReader, SLOTS_PER_EPOCH};
 use silver_common::{
-    BeaconStateEvent, DataColumnsAvailable, NewGossipMsg, P2pSend, P2pStreamId, PeerEvent,
-    RpcInbound, RpcResponseInbound, RpcSeverity, SilverSpine, TMultiProducer, TRandomAccess, TRead,
-    Wheel,
-    ssz_view::{DataColumnSidecarView, StatusView},
+    ssz_view::{DataColumnSidecarView, StatusView}, BeaconStateEvent, DataColumnsAvailable, NewGossipMsg, P2pSend, P2pStreamId, PeerEvent, RpcInbound, RpcResponseInbound, RpcSeverity, SilverSpine, SyncUpdate, TMultiProducer, TRandomAccess, TRead, Wheel
 };
 use silver_metrics::timed;
 
@@ -30,8 +27,12 @@ pub struct StorageTile {
     // bit set of our custody group columns.
     custody_group_columns: u128,
     request_id: u64,
+    // Gossip and rpc are read twice: 'live' and when we receive a request from
+    // beacon state to persist - this require 2 consumers.
     gossip_consumer: TRandomAccess,
+    persist_gossip_consumer: TRandomAccess,
     rpc_consumer: TRandomAccess,
+    persist_rpc_consumer: TRandomAccess,
     rpc_producer: TMultiProducer,
     beacon_state: BeaconStateReader,
     store: Store,
@@ -56,7 +57,9 @@ pub struct StorageTile {
 impl StorageTile {
     pub fn new(
         gossip_consumer: TRandomAccess,
+        persist_gossip_consumer: TRandomAccess,
         rpc_consumer: TRandomAccess,
+        persist_rpc_consumer: TRandomAccess,
         rpc_producer: TMultiProducer,
         beacon_state: BeaconStateReader,
         custody_group_columns: u128,
@@ -67,7 +70,9 @@ impl StorageTile {
             custody_group_columns,
             request_id: BASE_REQUEST_ID,
             gossip_consumer,
+            persist_gossip_consumer,
             rpc_consumer,
+            persist_rpc_consumer,
             rpc_producer,
             beacon_state,
             store: Store::load(data_store_dir).expect("failed to load storage store"),
@@ -268,6 +273,8 @@ impl Tile<SilverSpine> for StorageTile {
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         self.gossip_consumer.free();
         self.rpc_consumer.free();
+        self.persist_gossip_consumer.free();
+        self.persist_rpc_consumer.free();
 
         // Check for data columns and incoming blocks with data columns via gossip.
         adapter.consume(|gossip: NewGossipMsg, producers| match gossip.topic {
@@ -372,18 +379,33 @@ impl Tile<SilverSpine> for StorageTile {
 
                 self.store.update_head(head_slot, head_root, finalized_slot, finalized_root);
             }
-            BeaconStateEvent::PersistBlock(tcache_read) => {
-                let t_read = self.gossip_consumer.acquire(tcache_read);
-                if let Ok((buf, _)) = t_read.buffer() {
-                    use silver_common::ssz_view::SignedBeaconBlockView;
-                    let slot = SignedBeaconBlockView::slot(buf);
-                    let parent_root = *SignedBeaconBlockView::parent_root(buf);
-                    let block_root = util::block_root(buf);
-                    self.store.add_block(block_root, t_read, slot, parent_root);
+            BeaconStateEvent::PersistBlock {
+                ssz,
+                source,
+            } => {
+                let t_read = match source {
+                    silver_common::BlockSource::Gossip => self.persist_gossip_consumer.acquire(ssz),
+                    silver_common::BlockSource::Rpc => self.persist_rpc_consumer.acquire(ssz),
+                };
+                
+                tracing::info!(seq=t_read.seq(), "persist block");
+                match t_read.buffer() {
+                    Ok((buf, _)) => {
+                        use silver_common::ssz_view::SignedBeaconBlockView;
+                        let slot = SignedBeaconBlockView::slot(buf);
+                        let parent_root = *SignedBeaconBlockView::parent_root(buf);
+                        let block_root = util::block_root(buf);
+                        self.store.add_block(block_root, t_read, slot, parent_root);
+                    }
+                    Err(e) => {
+                        tracing::error!(?e, seq=t_read.seq(), consumer=?self.persist_gossip_consumer, "persist consumer buffer acquire failed");
+                    }
                 }
             }
             _ => {}
         });
+
+        adapter.consume(|sync_update: SyncUpdate, _| self.store.sync_update(sync_update));
 
         let now = Instant::now();
 
