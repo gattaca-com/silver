@@ -70,7 +70,7 @@ impl BalancesDelta {
     #[inline]
     pub fn list_root(&self, base: &FinalizedBalances, total: usize) -> B256 {
         const CHUNK_DEPTH: u32 = (VALIDATOR_REGISTRY_LIMIT / 4).trailing_zeros();
-        base.hash.ssz_list_root(&self.hash_overlay, CHUNK_DEPTH, total)
+        self.hash_overlay.ssz_list_root(&base.hash, CHUNK_DEPTH, total)
     }
 
     /// Fold this delta into `base`: edits into `data`, then promote the hash
@@ -94,7 +94,7 @@ impl BalancesDelta {
         for &(k, v) in self.edits[start..].iter().take_while(|(k, _)| (*k as usize) < b + 4) {
             vals[k as usize - b] = v;
         }
-        base.hash.set_delta_leaf(&mut self.hash_overlay, chunk as usize, pack_chunk(vals));
+        self.hash_overlay.set_leaf(&base.hash, chunk as usize, pack_chunk(vals));
     }
 }
 

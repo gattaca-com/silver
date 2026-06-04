@@ -251,7 +251,7 @@ impl ValidatorsDelta {
     pub fn list_root(&self, base: &FinalizedValidators) -> crate::B256 {
         const LIST_DEPTH: u32 = VALIDATOR_REGISTRY_LIMIT.trailing_zeros();
         let len = self.base_count + self.appended.len();
-        base.hash().ssz_list_root(&self.hash_overlay, LIST_DEPTH, len)
+        self.hash_overlay.ssz_list_root(base.hash(), LIST_DEPTH, len)
     }
 
     /// Append a fresh validator with spec-default Validator-container
@@ -267,7 +267,7 @@ impl ValidatorsDelta {
         self.appended.push(AppendedValidator::new(pubkey, pubkey_decompressed, credentials));
 
         let leaf = self.recompute_leaf(base, idx);
-        base.hash().set_delta_leaf(&mut self.hash_overlay, idx as usize, leaf);
+        self.hash_overlay.set_leaf(base.hash(), idx as usize, leaf);
         idx
     }
 
@@ -275,21 +275,21 @@ impl ValidatorsDelta {
         let base_val = self.base_credentials(base, idx);
         write_or_elide(&mut self.credentials_edits, idx, v, base_val);
         let leaf = self.recompute_leaf(base, idx);
-        base.hash().set_delta_leaf(&mut self.hash_overlay, idx as usize, leaf);
+        self.hash_overlay.set_leaf(base.hash(), idx as usize, leaf);
     }
 
     pub fn set_effective_balance(&mut self, base: &FinalizedValidators, idx: u32, v: u64) {
         let base_val = self.base_effective_balance(base, idx);
         write_or_elide(&mut self.effective_balance_edits, idx, v, base_val);
         let leaf = self.recompute_leaf(base, idx);
-        base.hash().set_delta_leaf(&mut self.hash_overlay, idx as usize, leaf);
+        self.hash_overlay.set_leaf(base.hash(), idx as usize, leaf);
     }
 
     pub fn set_slashed(&mut self, base: &FinalizedValidators, idx: u32, v: bool) {
         let base_val = self.base_slashed(base, idx);
         write_or_elide(&mut self.slashed_edits, idx, v, base_val);
         let leaf = self.recompute_leaf(base, idx);
-        base.hash().set_delta_leaf(&mut self.hash_overlay, idx as usize, leaf);
+        self.hash_overlay.set_leaf(base.hash(), idx as usize, leaf);
     }
 
     pub fn set_activation_eligibility_epoch(
@@ -301,28 +301,28 @@ impl ValidatorsDelta {
         let base_val = self.base_activation_eligibility_epoch(base, idx);
         write_or_elide(&mut self.activation_eligibility_epoch_edits, idx, v, base_val);
         let leaf = self.recompute_leaf(base, idx);
-        base.hash().set_delta_leaf(&mut self.hash_overlay, idx as usize, leaf);
+        self.hash_overlay.set_leaf(base.hash(), idx as usize, leaf);
     }
 
     pub fn set_activation_epoch(&mut self, base: &FinalizedValidators, idx: u32, v: Epoch) {
         let base_val = self.base_activation_epoch(base, idx);
         write_or_elide(&mut self.activation_epoch_edits, idx, v, base_val);
         let leaf = self.recompute_leaf(base, idx);
-        base.hash().set_delta_leaf(&mut self.hash_overlay, idx as usize, leaf);
+        self.hash_overlay.set_leaf(base.hash(), idx as usize, leaf);
     }
 
     pub fn set_exit_epoch(&mut self, base: &FinalizedValidators, idx: u32, v: Epoch) {
         let base_val = self.base_exit_epoch(base, idx);
         write_or_elide(&mut self.exit_epoch_edits, idx, v, base_val);
         let leaf = self.recompute_leaf(base, idx);
-        base.hash().set_delta_leaf(&mut self.hash_overlay, idx as usize, leaf);
+        self.hash_overlay.set_leaf(base.hash(), idx as usize, leaf);
     }
 
     pub fn set_withdrawable_epoch(&mut self, base: &FinalizedValidators, idx: u32, v: Epoch) {
         let base_val = self.base_withdrawable_epoch(base, idx);
         write_or_elide(&mut self.withdrawable_epoch_edits, idx, v, base_val);
         let leaf = self.recompute_leaf(base, idx);
-        base.hash().set_delta_leaf(&mut self.hash_overlay, idx as usize, leaf);
+        self.hash_overlay.set_leaf(base.hash(), idx as usize, leaf);
     }
 
     /// Fold this delta into `base`. Appended records advance

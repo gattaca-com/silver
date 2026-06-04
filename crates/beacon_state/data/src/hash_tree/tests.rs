@@ -69,12 +69,11 @@ fn test_deltas_hash_tree() {
     for _ in 0..m {
         let i = (rng.next_u32() as usize) % n;
         let leaf = random_leaf(&mut rng);
-        base.set_delta_leaf(&mut delta, i, leaf);
+        delta.set_leaf(&base, i, leaf);
         real_data[i] = leaf;
     }
 
-    let got =
-        ssz_list_root(&base.delta_root(&delta), base.max_elements(), SPEC_DEPTH, real_data.len());
+    let got = ssz_list_root(&delta.root(&base), base.max_elements(), SPEC_DEPTH, real_data.len());
     let want = reference_root(&real_data, SPEC_DEPTH);
     assert_eq!(got, want);
 }
@@ -93,7 +92,7 @@ fn test_promote_and_prune() {
     for _ in 0..writes_per_fork {
         let i = (rng.next_u32() as usize) % n;
         let leaf = random_leaf(&mut rng);
-        base.set_delta_leaf(&mut fork_a, i, leaf);
+        fork_a.set_leaf(&base, i, leaf);
         real_data[i] = leaf;
     }
 
@@ -101,7 +100,7 @@ fn test_promote_and_prune() {
     for _ in 0..writes_per_fork {
         let i = (rng.next_u32() as usize) % n;
         let leaf = random_leaf(&mut rng);
-        base.set_delta_leaf(&mut fork_b, i, leaf);
+        fork_b.set_leaf(&base, i, leaf);
         real_data[i] = leaf;
     }
 
@@ -109,11 +108,11 @@ fn test_promote_and_prune() {
     for _ in 0..writes_per_fork {
         let i = (rng.next_u32() as usize) % n;
         let leaf = random_leaf(&mut rng);
-        base.set_delta_leaf(&mut fork_c, i, leaf);
+        fork_c.set_leaf(&base, i, leaf);
         real_data[i] = leaf;
     }
 
-    let pre_root = base.delta_root(&fork_c);
+    let pre_root = fork_c.root(&base);
 
     // Finalize on the middle fork. Ancestor fork_a is dropped (its history is
     // absorbed via fork_b); fork_b's delta is folded into base; both fork_b
@@ -123,10 +122,9 @@ fn test_promote_and_prune() {
     base.prune_delta(&mut fork_b);
     base.prune_delta(&mut fork_c);
 
-    assert_eq!(base.delta_root(&fork_c), pre_root, "prune preserves descendant view");
+    assert_eq!(fork_c.root(&base), pre_root, "prune preserves descendant view");
 
-    let got =
-        ssz_list_root(&base.delta_root(&fork_c), base.max_elements(), SPEC_DEPTH, real_data.len());
+    let got = ssz_list_root(&fork_c.root(&base), base.max_elements(), SPEC_DEPTH, real_data.len());
     let want = reference_root(&real_data, SPEC_DEPTH);
     assert_eq!(got, want);
 }
@@ -165,12 +163,8 @@ fn fuzz_random_ops_hash_tree() {
 
     let verify = |forks: &HashMap<usize, Fork>, base: &FinalizedHashTree, j: usize, ctx: &str| {
         let f = &forks[&j];
-        let got = ssz_list_root(
-            &base.delta_root(&f.delta),
-            base.max_elements(),
-            SPEC_DEPTH,
-            f.real_data.len(),
-        );
+        let got =
+            ssz_list_root(&f.delta.root(&base), base.max_elements(), SPEC_DEPTH, f.real_data.len());
         let want = reference_root(&f.real_data, SPEC_DEPTH);
         assert_eq!(got, want, "mismatch {ctx} fork={j}");
     };
@@ -188,13 +182,13 @@ fn fuzz_random_ops_hash_tree() {
                 // Append a new leaf to the fork's real_data.
                 let leaf = random_leaf(&mut rng);
                 let i = new_data.len();
-                base.set_delta_leaf(&mut new_delta, i, leaf);
+                new_delta.set_leaf(&base, i, leaf);
                 new_data.push(leaf);
             } else {
                 // Modify a random leaf.
                 let i = (rng.next_u32() as usize) % new_data.len();
                 let leaf = random_leaf(&mut rng);
-                base.set_delta_leaf(&mut new_delta, i, leaf);
+                new_delta.set_leaf(&base, i, leaf);
                 new_data[i] = leaf;
             }
             forks.insert(next_id, Fork {
@@ -230,12 +224,49 @@ fn fuzz_random_ops_hash_tree() {
                 }
             }
 
-            base.promote_delta(&forks[&idx].delta.clone());
+            let winner = forks.remove(&idx).unwrap();
+            let mut survivor_deltas: Vec<&mut DeltaHashTree> =
+                forks.values_mut().map(|fork| &mut fork.delta).collect();
+            base.finalize(&winner.delta, &mut survivor_deltas.as_mut_slice());
+
+            // Re-insert the winner as the new, empty base fork.
+            forks.insert(idx, Fork {
+                delta: DeltaHashTree::new_at(&base),
+                real_data: winner.real_data,
+                parent: winner.parent,
+            });
             for &j in &survivors {
-                base.prune_delta(&mut forks.get_mut(&j).unwrap().delta);
                 verify(&forks, &base, j, &format!("at step={step}, finalize"));
             }
             alive = survivors;
         }
     }
+}
+
+#[test]
+fn finalize_preserves_survivor_across_aba() {
+    let a = [0xAA_u8; 32];
+    let b = [0xBB_u8; 32];
+
+    // Single-leaf tree; leaf 0 starts at zero.
+    let mut base = FinalizedHashTree::from_leaves(std::iter::once([0u8; 32]), 1);
+
+    // Fork chain by cloning the parent's delta:
+    //   D1 (leaf 0 = A)  <-  D2 (= B)  <-  D3 (reverts to A).
+    let mut d1 = DeltaHashTree::new_at(&base);
+    d1.set_leaf(&base, 0, a);
+    let mut d2 = d1.clone();
+    d2.set_leaf(&base, 0, b);
+    let mut d3 = d2.clone();
+    d3.set_leaf(&base, 0, a);
+
+    let want = d3.root(&base); // D3's view: leaf 0 = A
+
+    // Finalize D1, with D2 and D3 as the surviving descendants.
+    base.finalize(&d1, &mut [&mut d2, &mut d3]); // base leaf 0 = A
+    assert_eq!(d3.root(&base), want, "correct after the first finalize");
+
+    // Finalize D2 (now the winner); D3's reverted A is re-pinned before the swap.
+    base.finalize(&d2, &mut [&mut d3]); // base leaf 0 = B
+    assert_eq!(d3.root(&base), want, "D3 reverted to A; must not follow the base to B",);
 }

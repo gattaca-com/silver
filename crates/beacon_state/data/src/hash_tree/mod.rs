@@ -17,51 +17,73 @@ use crate::{
     types::B256,
 };
 
-impl FinalizedHashTree {
-    /// Write `leaf` to position `i` of the delta. Sparse: only the path
-    /// from leaf `i` up to the root is materialised on the delta; sibling
-    /// subtrees remain `DeltaHashTree::Base(...)` pointers into the
-    /// finalized array.
+impl DeltaHashTree {
+    /// Write `leaf` to position `i` of this overlay over `base`. Sparse: only
+    /// the path from leaf `i` up to the root is materialised; sibling subtrees
+    /// remain `Base(..)` pointers into the finalized array.
     #[inline]
-    pub fn set_delta_leaf(&self, delta: &mut DeltaHashTree, i: usize, leaf: B256) {
+    pub fn set_leaf(&mut self, base: &FinalizedHashTree, i: usize, leaf: B256) {
         debug_assert!(
-            i < self.max_elements(),
+            i < base.max_elements(),
             "leaf index out of range: i={i}, max_elements={}",
-            self.max_elements()
+            base.max_elements()
         );
-        *delta = self.set_delta_leaf_in_range(delta, i as u32, 0, self.max_elements() as u32, leaf);
+        *self = base.set_delta_leaf_in_range(self, i as u32, 0, base.max_elements() as u32, leaf);
     }
 
-    /// Effective root of the (finalized + delta) merged tree.
+    /// The hash this overlay resolves to over `base` — its merged root (for a
+    /// subtree node, that subtree's root).
     #[inline]
-    pub fn delta_root(&self, delta: &DeltaHashTree) -> B256 {
-        self.resolve_delta_hash(delta)
+    pub fn root(&self, base: &FinalizedHashTree) -> B256 {
+        match self {
+            DeltaHashTree::Base(node) => *base.node_hash(*node),
+            DeltaHashTree::Leaf(hash) => *hash,
+            DeltaHashTree::Node(node) => node.hash,
+        }
     }
 
-    /// Fold `delta`'s precomputed internal-node hashes into the finalized
-    /// flat array (no SHA-256 work). Caller is expected to follow up with
-    /// `prune_delta` on every surviving descendant so unused chains drop.
-    #[inline]
-    pub fn promote_delta(&mut self, delta: &DeltaHashTree) {
-        self.promote_delta_at(delta, Self::root());
-    }
-
-    /// Collapse `delta` nodes whose cached hash equals the new base hash
-    /// back to `Base(...)`. Frees the redundant `Arc<DeltaNode>` chains.
-    #[inline]
-    pub fn prune_delta(&self, delta: &mut DeltaHashTree) {
-        self.prune_delta_at(delta, Self::root());
-    }
-
-    /// SSZ `hash_tree_root` for a `List[T, 1<<list_depth]` backed by this
-    /// tree + `delta`. Pads the physical root with zero subtrees up to
+    /// SSZ `hash_tree_root` for a `List[T, 1<<list_depth]` backed by `base` +
+    /// this overlay. Pads the physical root with zero subtrees up to
     /// `list_depth`, then mixes in `len`.
     #[inline]
-    pub fn ssz_list_root(&self, delta: &DeltaHashTree, list_depth: u32, len: usize) -> B256 {
-        let mut root = self.delta_root(delta);
-        for h in self.max_elements().trailing_zeros()..list_depth {
+    pub fn ssz_list_root(&self, base: &FinalizedHashTree, list_depth: u32, len: usize) -> B256 {
+        let mut root = self.root(base);
+        for h in base.max_elements().trailing_zeros()..list_depth {
             root = hash_concat(&root, &ZERO_HASHES[h as usize]);
         }
         mix_in_length(&root, len)
+    }
+}
+
+impl FinalizedHashTree {
+    /// Advance the base to `winner`, re-anchoring every `survivor`. Bakes in
+    /// the only correct order — rebase each survivor, fold `winner` in,
+    /// then prune — so callers can't run the `pub(crate)` steps out of
+    /// order. See `DeltaHashTree::rebase` and
+    /// `docs/delta-rebase-invariant.md`.
+    pub fn finalize(&mut self, winner: &DeltaHashTree, survivors: &mut [&mut DeltaHashTree]) {
+        for survivor in survivors.iter_mut() {
+            survivor.rebase(self, winner);
+        }
+        self.promote_delta(winner);
+        for survivor in survivors.iter_mut() {
+            self.prune_delta(survivor);
+        }
+    }
+
+    /// Fold `delta`'s precomputed internal-node hashes into the finalized flat
+    /// array (no SHA-256 work). A finalization building block — drive it via
+    /// [`Self::finalize`], which rebases survivors first.
+    #[inline]
+    pub(crate) fn promote_delta(&mut self, delta: &DeltaHashTree) {
+        self.promote_delta_at(delta, Self::root());
+    }
+
+    /// Collapse `delta` nodes whose cached hash equals the new base hash back
+    /// to `Base(...)`, freeing redundant `Arc<DeltaNode>` chains. A
+    /// finalization building block — drive it via [`Self::finalize`].
+    #[inline]
+    pub(crate) fn prune_delta(&self, delta: &mut DeltaHashTree) {
+        self.prune_delta_at(delta, Self::root());
     }
 }
