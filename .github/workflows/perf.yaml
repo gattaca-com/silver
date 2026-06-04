@@ -11,7 +11,7 @@ env:
 
 jobs:
   perf:
-    runs-on: silver
+    runs-on: [self-hosted, silver]
     timeout-minutes: 45
 
     steps:
