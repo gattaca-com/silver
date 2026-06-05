@@ -75,6 +75,7 @@ impl RpcWriteRequest {
                 written += wrote;
 
                 if wrote == buffer_len && pending == 0 {
+                    tracing::debug!(?id, "wrote rpc request");
                     Ok(Spin::Ok(Self::Complete(app_id)))
                 } else {
                     Ok(Spin::Ok(Self::WritingRequest { app_id, encoder, request, written }))

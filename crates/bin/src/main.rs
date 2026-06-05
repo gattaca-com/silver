@@ -86,7 +86,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let incoming_rpc_consumer_ds =
         incoming_rpc_producer.cache_ref().random_access("ds_incoming_rpc", true)?;
     let persist_rpc_consumer_ds =
-        incoming_rpc_producer.cache_ref().random_access("ds_incoming_rpc", true)?;
+        incoming_rpc_producer.cache_ref().random_access("ds_persist_incoming_rpc", true)?;
 
     // rpc producer
     let outgoing_rpc_producer =

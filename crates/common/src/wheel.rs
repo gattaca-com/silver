@@ -26,14 +26,16 @@ impl<K: Hash + Eq, V, const N: usize> Wheel<K, V, N> {
         }
     }
 
+    /// If the provided `on_expired` returns `true` the entry is removed from
+    /// the map, otherwise it is reinserted.
     pub fn maybe_rotate<F>(&mut self, now: Instant, on_expired: &mut F)
     where
-        F: FnMut(K, V),
+        F: FnMut(&K, &mut V) -> bool,
     {
         if self.last_rotation + self.interval < now {
             self.last_rotation = now;
             self.head = (self.head + 1) & (N - 1);
-            self.buckets[self.head].drain().for_each(|(k, v)| on_expired(k, v));
+            let _ = self.buckets[self.head].extract_if(on_expired);
         }
     }
 

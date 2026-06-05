@@ -2,7 +2,10 @@ use std::{ops::Deref, sync::atomic::Ordering};
 
 use flux::{Timer, timing::Nanos};
 
-use crate::{GossipMsgOut, TCacheError, TCacheRef};
+use crate::{
+    GossipMsgOut, TCacheError, TCacheRef,
+    spine::tcache::{IDLE_INTERVAL_NS, lag_threshold},
+};
 
 /// Reader for a TCache msg
 #[derive(Clone, Copy, Debug)]
@@ -59,6 +62,9 @@ pub struct Consumer {
     /// `None` if the TCache wasn't named or the Timer queue couldn't
     /// be opened.
     pub(super) timer: Option<Timer>,
+    pub(super) last_read: Nanos,
+    pub(super) last_head: u64,
+    pub(super) lag_threshold: u64,
 }
 
 impl Consumer {
@@ -83,10 +89,29 @@ impl Consumer {
     /// Release all data read so far. Should be called often, not necessarily
     /// after each read.
     pub fn free(&mut self) {
-        //tracing::warn!("consumer free: {}", self.seq);
         self.seq = self.next_seq;
+
+        let cache_head = self.cache.head();
+        if self.last_read.elapsed() > IDLE_INTERVAL_NS {
+            // check lagging
+            let head = cache_head.seq.load(Ordering::Relaxed);
+            if head.saturating_sub(self.seq) > self.lag_threshold {
+                tracing::warn!(head, seq = self.seq, "force setting idle consumer tail");
+                self.seq = if self.last_head > self.seq { self.last_head } else { head };
+            }
+            self.last_head = head;
+            self.last_read = Nanos::now();
+        }
+
         self.cache.head().tails[self.index].store(self.seq, Ordering::Release);
         self.cache.record_tail(self.index, self.seq);
+    }
+}
+
+impl Drop for Consumer {
+    fn drop(&mut self) {
+        self.cache.head().tails[self.index].store(u64::MAX, Ordering::Release);
+        self.cache.record_tail(self.index, u64::MAX);
     }
 }
 
@@ -104,14 +129,20 @@ pub struct RandomAccessConsumer {
     /// Per-consumer flux Timer emitting `latency-tcache-{tcache}-{name}`
     /// — measures elapsed from `slot.reserve_ns` at acquire time.
     pub(super) timer: Option<Timer>,
+    pub(super) last_read: Nanos,
+    pub(super) last_head: u64,
+    pub(super) lag_threshold: u64,
 }
 
 impl RandomAccessConsumer {
     pub fn acquire(&mut self, read: TCacheRead) -> AcquiredRead {
+        let now = Nanos::now();
+        self.last_read = now;
+
         self.active.acquire(read.seq);
         if let Some(timer) = &mut self.timer {
             if let Ok(reserve_ns) = read.cache_ts() {
-                timer.emit_latency_from_nanos(reserve_ns, Nanos::now());
+                timer.emit_latency_from_nanos(reserve_ns, now);
             }
         }
         AcquiredRead { consumer: self as *const Self, read }
@@ -119,12 +150,28 @@ impl RandomAccessConsumer {
 
     /// Should be called periodically to publish the tail offset so it is
     /// visible to the Producer.
-    pub fn free(&self) {
-        let tail = self.active.tail_seq;
-
+    pub fn free(&mut self) {
+        let mut tail = self.active.tail_seq;
         if tail != u64::MAX {
-            //tracing::warn!("Random consumer free {tail}");
-            self.cache.head().tails[self.index].store(tail, Ordering::Release);
+            let cache_head = self.cache.head();
+            if self.last_read.elapsed() > IDLE_INTERVAL_NS {
+                // check lagging
+                let head = cache_head.seq.load(Ordering::Relaxed);
+                if head.saturating_sub(tail) > self.lag_threshold {
+                    tracing::warn!(
+                        head,
+                        tail,
+                        name = self.name,
+                        "force setting idle consumer tail"
+                    );
+                    tail = if self.last_head > tail { self.last_head } else { head };
+                    self.active.roll_to(tail);
+                }
+                self.last_head = head;
+                self.last_read = Nanos::now();
+            }
+
+            cache_head.tails[self.index].store(tail, Ordering::Release);
             self.cache.record_tail(self.index, tail);
         }
     }
@@ -142,6 +189,13 @@ impl std::fmt::Debug for RandomAccessConsumer {
             .field("head", &self.active.head_seq)
             .field("tail", &self.active.tail_seq)
             .finish()
+    }
+}
+
+impl Drop for RandomAccessConsumer {
+    fn drop(&mut self) {
+        self.cache.head().tails[self.index].store(u64::MAX, Ordering::Release);
+        self.cache.record_tail(self.index, u64::MAX);
     }
 }
 
@@ -210,9 +264,6 @@ pub(super) struct Buckets {
 
 impl Buckets {
     pub(super) fn new(bucket_size: u64, cache_capacity: u64) -> Self {
-        // % of capacity occupancy that triggers evictions
-        const LAG_PERCENT: f64 = 0.9;
-
         assert!(bucket_size.is_power_of_two());
         let mut number_of_buckets = cache_capacity / bucket_size;
         if !cache_capacity.is_multiple_of(bucket_size) || !number_of_buckets.is_power_of_two() {
@@ -225,7 +276,7 @@ impl Buckets {
             bucket_size,
             bucket_shift: bucket_size.trailing_zeros() as u64,
             bucket_mask: !(bucket_size - 1),
-            lag_threshold: (LAG_PERCENT * (cache_capacity as f64)) as u64,
+            lag_threshold: lag_threshold(cache_capacity as u32),
         }
     }
 
@@ -277,6 +328,15 @@ impl Buckets {
     #[inline]
     fn bucket_start_seq(&self, seq: u64) -> u64 {
         seq & self.bucket_mask
+    }
+
+    fn roll_to(&mut self, seq: u64) {
+        let head_bucket_seq = self.bucket_start_seq(seq);
+        while head_bucket_seq > (self.tail_seq + self.bucket_size) {
+            let tail_bucket = self.bucket_index(self.tail_seq);
+            self.buckets[tail_bucket] = 0;
+            self.tail_seq += self.bucket_size;
+        }
     }
 }
 

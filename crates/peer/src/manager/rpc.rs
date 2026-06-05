@@ -222,10 +222,11 @@ impl PeerManager {
                 if peer.outbound_in_flight[protocol.ordinal() as usize] >=
                     MAX_RPC_PROTOCOL_IN_FLIGHT
                 {
+                    tracing::debug!(peer = p, "too many outbound data columns requests");
                     return None;
                 }
                 let overlap = self.database.data_column_custody_groups_intersection(p, columns);
-                tracing::trace!(peer = p, overlap, columns, "peer data columns overlap");
+                tracing::debug!(peer = p, overlap, columns, "peer data columns overlap");
                 if overlap == 0 {
                     return None;
                 }
@@ -481,12 +482,21 @@ impl PeerManager {
                             );
                         }
                     }
+                    RpcResponse::Complete => {
+                        tracing::debug!("complete for {stream_id:?}");
+                    }
                     _ => {}
                 }
                 if let Some(protocol) = terminal_protocol {
                     if let Some(peer) = self.peers.get_mut(&stream_id.peer()) {
                         peer.outbound_in_flight[protocol.ordinal() as usize] =
                             peer.outbound_in_flight[protocol.ordinal() as usize].saturating_sub(1);
+
+                        tracing::debug!(
+                            ?stream_id,
+                            "peer count is now: {}",
+                            peer.outbound_in_flight[protocol.ordinal() as usize]
+                        );
                     }
                     // Stamp `responded` so the progress-timeout can separate
                     // a peer stall from a local apply-lag.
@@ -704,12 +714,14 @@ impl PeerManager {
             let Some((peer, overlap)) = self
                 .best_peer_for_data_columns(StreamProtocol::DataColumnSidecarsByRoot, remaining)
             else {
+                tracing::debug!("no peer has data columns: {remaining}");
                 break;
             };
             if let Some(p_state) = self.peers.get_mut(&peer) {
                 p_state.outbound_in_flight
                     [StreamProtocol::DataColumnSidecarsByRoot.ordinal() as usize] += 1;
             }
+            tracing::debug!(peer, overlap, "column request control event");
             emit(PeerControl::P2pDataColumnsRequest {
                 app_id: request_id,
                 peer,

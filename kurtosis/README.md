@@ -108,6 +108,23 @@ kurtosis service logs -f silver-dev cl-1-lighthouse-geth
 `dora` (block explorer URL printed by `setup.sh` / `kurtosis enclave inspect`)
 confirms the chain is producing and finalizing.
 
+## Data columns (PeerDAS)
+
+Data column sidecars only exist for blocks carrying blob commitments. A vanilla
+devnet produces none, so `net.yaml` runs `spamoor` with the `blobs` scenario to
+submit EIP-4844 blob txs continuously (`throughput`/`sidecars` knobs there).
+Verify columns are flowing:
+
+```bash
+# EL: blocks should show non-zero blobGasUsed
+kurtosis service logs -f silver-dev el-1-geth-lighthouse | grep -i blob
+# dora: per-block blob count in the explorer UI
+# silver: data-column gossip/RPC traffic once synced
+```
+
+For backfill testing let the spammer run a while pre-launch so history
+accumulates blob blocks (hence columns) to sync/validate against.
+
 ## Compatibility notes
 
 - **QUIC-only:** silver dials a peer only if its ENR advertises a `quic`

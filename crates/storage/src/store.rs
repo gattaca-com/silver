@@ -128,6 +128,7 @@ enum PendingWrite {
         finalized_root: B256,
     },
     BackfillBlock {
+        block_root: B256,
         slot: u64,
         ssz: TRead,
     },
@@ -344,6 +345,32 @@ impl Store {
             None => {
                 tracing::error!("recevied backfill lbock, but no active backfill!");
             }
+        }
+    }
+
+    pub(super) fn backfill_data_column<F>(&mut self, sidecar: TRead, emit: &mut F)
+    where
+        F: FnMut(PeerEvent),
+    {
+        let accepted = match self.backfill.as_mut() {
+            Some(backfill) => backfill.add_data_column(&sidecar, emit),
+            None => {
+                tracing::error!("received backfill data column, but no active backfill!");
+                None
+            }
+        };
+
+        if let Some(accepted) = accepted {
+            self.add_data_column(
+                accepted.block_root,
+                accepted.column_index,
+                sidecar,
+                accepted.slot,
+            );
+        }
+
+        if self.backfill.as_ref().map(Backfill::is_complete).unwrap_or_default() {
+            self.backfill = None;
         }
     }
 
@@ -961,7 +988,7 @@ mod tests {
         let fork_digest = [1, 2, 3, 4];
         let producer_cache = TCache::multi_producer("fork_rpc_in", 1024 * 1024);
         let mut producer = producer_cache.clone();
-        store.file_io(&fork_digest, &mut producer, &mut |_| {}).unwrap();
+        store.file_io(&fork_digest, 0, &mut producer, &mut |_| {}).unwrap();
 
         let path_a =
             store.unfinalized_dir().join(super::io::unfinalized_name(slot, &parent_root, &root_a));
@@ -1008,7 +1035,7 @@ mod tests {
         });
         let mut responses = vec![];
         store
-            .file_io(&fork_digest, &mut producer, &mut |s| match s {
+            .file_io(&fork_digest, 0, &mut producer, &mut |s| match s {
                 IoEvent::P2pSend(s) => responses.push(s),
                 _ => {}
             })
@@ -1030,7 +1057,7 @@ mod tests {
         });
         let mut byroot = vec![];
         store
-            .file_io(&fork_digest, &mut producer, &mut |s| match s {
+            .file_io(&fork_digest, 0, &mut producer, &mut |s| match s {
                 IoEvent::P2pSend(s) => byroot.push(s),
                 _ => {}
             })
@@ -1044,7 +1071,7 @@ mod tests {
         assert!(!store.unfinalized.contains_key(&root_a));
         assert!(!store.unfinalized.contains_key(&root_b));
 
-        store.file_io(&fork_digest, &mut producer, &mut |_| {}).unwrap();
+        store.file_io(&fork_digest, 0, &mut producer, &mut |_| {}).unwrap();
         let flat_a = store.block_slot_dir(slot).join(format!("{slot}_block.ssz"));
         assert!(flat_a.exists());
         assert!(!path_a.exists()); // moved to flat store
@@ -1057,7 +1084,7 @@ mod tests {
         });
         let mut after = vec![];
         store
-            .file_io(&fork_digest, &mut producer, &mut |s| match s {
+            .file_io(&fork_digest, 0, &mut producer, &mut |s| match s {
                 IoEvent::P2pSend(s) => after.push(s),
                 _ => {}
             })
@@ -1100,7 +1127,7 @@ mod tests {
         // Drain the staged write so the acquired read is released while its
         // consumer is still alive (`read` is parked in the write queue).
         let mut producer = TCache::multi_producer("cycle_rpc_in", 1024 * 1024).clone();
-        store.file_io(&[0u8; 4], &mut producer, &mut |_| {}).unwrap();
+        store.file_io(&[0u8; 4], 0, &mut producer, &mut |_| {}).unwrap();
 
         // A range spanning the self-loop slot must return rather than spin.
         let mut range = [0u8; 24];
@@ -1171,7 +1198,7 @@ mod tests {
         let fork_digest = [9, 9, 9, 9];
         let producer_cache = TCache::multi_producer("colfork_rpc_in", 1 << 20);
         let mut producer = producer_cache.clone();
-        store.file_io(&fork_digest, &mut producer, &mut |_| {}).unwrap();
+        store.file_io(&fork_digest, 0, &mut producer, &mut |_| {}).unwrap();
         assert!(ucol_dir.join(super::io::unfinalized_column_name(slot, &root_a, 3)).exists());
         assert!(ucol_dir.join(super::io::unfinalized_column_name(slot, &root_a, 7)).exists());
         assert!(ucol_dir.join(super::io::unfinalized_column_name(slot, &root_b, 3)).exists());
@@ -1210,7 +1237,7 @@ mod tests {
         });
         let mut responses = vec![];
         store
-            .file_io(&fork_digest, &mut producer, &mut |s| match s {
+            .file_io(&fork_digest, 0, &mut producer, &mut |s| match s {
                 IoEvent::P2pSend(s) => responses.push(s),
                 _ => {}
             })
@@ -1235,7 +1262,7 @@ mod tests {
         });
         let mut br = vec![];
         store
-            .file_io(&fork_digest, &mut producer, &mut |s| match s {
+            .file_io(&fork_digest, 0, &mut producer, &mut |s| match s {
                 IoEvent::P2pSend(s) => br.push(s),
                 _ => {}
             })
@@ -1247,7 +1274,7 @@ mod tests {
         store.update_head(slot, root_a, slot, root_a);
         assert!(store.unfinalized_columns.is_empty());
 
-        store.file_io(&fork_digest, &mut producer, &mut |_| {}).unwrap();
+        store.file_io(&fork_digest, 0, &mut producer, &mut |_| {}).unwrap();
         assert!(flat_dir.join(format!("{slot}_3.ssz")).exists());
         assert!(flat_dir.join(format!("{slot}_7.ssz")).exists());
         assert!(!ucol_dir.join(super::io::unfinalized_column_name(slot, &root_a, 3)).exists());
@@ -1260,7 +1287,7 @@ mod tests {
         });
         let mut after = vec![];
         store
-            .file_io(&fork_digest, &mut producer, &mut |s| match s {
+            .file_io(&fork_digest, 0, &mut producer, &mut |s| match s {
                 IoEvent::P2pSend(s) => after.push(s),
                 _ => {}
             })
@@ -1273,6 +1300,106 @@ mod tests {
         let reloaded = super::Store::load(store_path.clone()).unwrap();
         assert!(reloaded.unfinalized_columns.is_empty());
         assert_eq!(reloaded.root_index.get(&root_a), Some(&slot));
+
+        let _ = std::fs::remove_dir_all(&store_path);
+    }
+
+    #[test]
+    fn backfill_block_persists_root_index() {
+        use silver_common::{TCache, TCacheProducer};
+
+        let store_path = format!("/tmp/test_store_backfill_index_{}", rand::random::<u32>());
+        let _ = std::fs::remove_dir_all(&store_path);
+        let mut store = super::Store::load(store_path.clone()).unwrap();
+
+        let slot = 64u64;
+        let parent_root = [0x42; 32];
+        let state_root = [0x24; 32];
+        let mut block = vec![0u8; 184];
+        block[100..108].copy_from_slice(&slot.to_le_bytes());
+        block[108..116].copy_from_slice(&7u64.to_le_bytes());
+        block[116..148].copy_from_slice(&parent_root);
+        block[148..180].copy_from_slice(&state_root);
+        let block_root = crate::util::block_root(&block);
+
+        let mut blocks = TCache::producer("backfill_index_blocks", 1 << 20);
+        let mut res = blocks.reserve(block.len(), true).unwrap();
+        res.write_all(&block).unwrap();
+        res.flush().unwrap();
+        let ssz = res.read();
+        let mut consumer = blocks.cache_ref().random_access("backfill_index_cons", true).unwrap();
+
+        store.backfill = Some(super::Backfill::new(slot..slot + 1, block_root));
+        store.backfill_block(consumer.acquire(ssz));
+
+        let fork_digest = [0u8; 4];
+        let producer_cache = TCache::multi_producer("backfill_index_rpc", 1 << 20);
+        let mut producer = producer_cache.clone();
+        store.file_io(&fork_digest, 0, &mut producer, &mut |_| {}).unwrap();
+
+        assert_eq!(store.root_index.get(&block_root), Some(&slot));
+        assert!(store.block_slot_dir(slot).join(format!("{slot}_block.ssz")).exists());
+
+        let reloaded = super::Store::load(store_path.clone()).unwrap();
+        assert_eq!(reloaded.root_index.get(&block_root), Some(&slot));
+
+        let _ = std::fs::remove_dir_all(&store_path);
+    }
+
+    #[test]
+    fn persisted_backfill_block_requests_data_columns() {
+        use silver_common::{PeerEvent, TCache, TCacheProducer};
+
+        let store_path = format!("/tmp/test_store_column_backfill_{}", rand::random::<u32>());
+        let _ = std::fs::remove_dir_all(&store_path);
+        let mut store = super::Store::load(store_path.clone()).unwrap();
+
+        let slot = 96u64;
+        let parent_root = [0x31; 32];
+        let state_root = [0x13; 32];
+        let body_start = 184usize;
+        let body_len = 404usize;
+        let mut block = vec![0u8; body_start + body_len];
+        block[100..108].copy_from_slice(&slot.to_le_bytes());
+        block[108..116].copy_from_slice(&11u64.to_le_bytes());
+        block[116..148].copy_from_slice(&parent_root);
+        block[148..180].copy_from_slice(&state_root);
+        block[body_start + 388..body_start + 392].copy_from_slice(&396u32.to_le_bytes());
+        block[body_start + 392..body_start + 396].copy_from_slice(&404u32.to_le_bytes());
+        let block_root = crate::util::block_root(&block);
+
+        let mut blocks = TCache::producer("column_backfill_blocks", 1 << 20);
+        let mut res = blocks.reserve(block.len(), true).unwrap();
+        res.write_all(&block).unwrap();
+        res.flush().unwrap();
+        let ssz = res.read();
+        let mut consumer = blocks.cache_ref().random_access("column_backfill_cons", true).unwrap();
+
+        store.backfill = Some(super::Backfill::new(slot..slot + 1, block_root));
+        store.backfill_block(consumer.acquire(ssz));
+
+        let fork_digest = [0u8; 4];
+        let producer_cache = TCache::multi_producer("column_backfill_rpc", 1 << 20);
+        let mut producer = producer_cache.clone();
+        let custody_columns = (1u128 << 3) | (1u128 << 7);
+        let mut requests = Vec::new();
+        store
+            .file_io(&fork_digest, custody_columns, &mut producer, &mut |io| match io {
+                IoEvent::PeerEvent(PeerEvent::SendDataColumnsByRootRequest {
+                    request_id,
+                    columns,
+                    block_root,
+                }) => requests.push((request_id, columns, block_root)),
+                _ => {}
+            })
+            .unwrap();
+
+        assert_eq!(requests.len(), 1);
+        let (request_id, columns, requested_root) = requests[0];
+        assert_eq!(request_id & 0xffff_ffff_0000_0000, crate::tile::COLUMN_BACKFILL_REQUEST_ID);
+        assert_eq!(columns, custody_columns);
+        assert_eq!(requested_root, block_root);
+        assert_eq!(store.root_index.get(&block_root), Some(&slot));
 
         let _ = std::fs::remove_dir_all(&store_path);
     }
@@ -1311,7 +1438,7 @@ mod tests {
         let fork_digest = [0u8; 4];
         let producer_cache = TCache::multi_producer("fair_rpc_in", 1 << 20);
         let mut producer = producer_cache.clone();
-        store.file_io(&fork_digest, &mut producer, &mut |_| {}).unwrap(); // flush block writes
+        store.file_io(&fork_digest, 0, &mut producer, &mut |_| {}).unwrap(); // flush block writes
 
         // Two BlocksByRange [10,12) on distinct streams, queued before draining.
         let mut range = [0u8; 24];
@@ -1334,7 +1461,7 @@ mod tests {
 
         let mut responses = vec![];
         store
-            .file_io(&fork_digest, &mut producer, &mut |s| match s {
+            .file_io(&fork_digest, 0, &mut producer, &mut |s| match s {
                 IoEvent::P2pSend(s) => responses.push(s),
                 _ => {}
             })

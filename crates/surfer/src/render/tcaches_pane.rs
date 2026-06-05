@@ -75,14 +75,22 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
     let rows: Vec<Row> = app
         .tcaches
         .iter()
-        .map(|set| {
+        .enumerate()
+        .map(|(i, set)| {
             let view = TCacheView::from(set);
             let display_name = view.display_name();
 
             let bar_line = bar_line(view.capacity, view.head_seq, view.min_tail_seq, bar_w);
 
+            // Highlight the selected tcache's name, mirroring the timings pane.
+            let name_style = if i == app.tcaches_selection {
+                Style::default().bg(Color::DarkGray).fg(Color::White).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+
             Row::new(vec![
-                Cell::from(display_name),
+                Cell::from(Span::styled(display_name, name_style)),
                 Cell::from(bar_line),
                 Cell::from(Span::raw(format!("{:>10}", fmt_bytes(view.head_seq)))),
                 Cell::from(Span::raw(format!("{:>10}", fmt_bytes(view.min_tail_seq)))),
@@ -200,6 +208,10 @@ fn draw_chart(f: &mut Frame, area: Rect, app: &App) {
 
     let chart = Chart::new(datasets)
         .block(block)
+        // Consumer names (e.g. `p2p_outgoing_gossip`) overflow the default
+        // 1/4-width legend cap and get hidden/clipped. Allow the legend to
+        // size to the longest name so names render in full.
+        .hidden_legend_constraints((Constraint::Ratio(1, 1), Constraint::Ratio(1, 1)))
         .x_axis(
             Axis::default()
                 .bounds([0.0, x_max])
