@@ -6,7 +6,7 @@ use std::{
 use flux::tile::Tile;
 use silver_common::{
     BeaconStateEvent, P2pSend, PeerControl, PeerEvent, RpcInbound, RpcOutbound, RpcRequestOutbound,
-    SilverSpine, TCacheProducer, TCacheRead, TMultiProducer,
+    SilverSpine, SilverSpineProducers, TCacheProducer, TCacheRead, TMultiProducer,
     ssz_view::{METADATA_SIZE, STATUS_V2_SIZE},
 };
 use silver_peer::PeerManager;
@@ -65,69 +65,64 @@ impl Controller {
 impl Tile<SilverSpine> for Controller {
     fn loop_body(&mut self, adapter: &mut flux::spine::SpineAdapter<SilverSpine>) {
         let now = Instant::now();
-        adapter.consume(|event: PeerEvent, producers| {
-            self.peer_manager.handle_event(event, now, &mut |pc| {
-                match pc {
-                    PeerControl::P2pSend(send) => {
-                        producers.p2p_send.produce(&send.into());
-                    }
-                    PeerControl::P2pBlockByRootRequest { app_id, peer, block_root } => {
-                        match allocate_blocks_by_root(&mut self.rpc_producer, &block_root) {
-                            Ok(read) => {
-                                producers.p2p_send.produce(
-                                    &P2pSend::Rpc(RpcOutbound::Request(RpcRequestOutbound {
-                                        application_id: app_id,
-                                        peer,
-                                        request: silver_common::RpcRequest::BlockByRoot(read),
-                                    }))
-                                    .into(),
-                                );
-                            }
-                            Err(e) => {
-                                tracing::error!(?e, "failed to allocate blocks by root request");
-                            }
+
+        let mut handle_peer_control =
+            |pc: PeerControl, producers: &mut SilverSpineProducers| match pc {
+                PeerControl::P2pSend(send) => {
+                    producers.p2p_send.produce(&send.into());
+                }
+                PeerControl::P2pBlockByRootRequest { app_id, peer, block_root } => {
+                    match allocate_blocks_by_root(&mut self.rpc_producer, &block_root) {
+                        Ok(read) => {
+                            producers.p2p_send.produce(
+                                &P2pSend::Rpc(RpcOutbound::Request(RpcRequestOutbound {
+                                    application_id: app_id,
+                                    peer,
+                                    request: silver_common::RpcRequest::BlockByRoot(read),
+                                }))
+                                .into(),
+                            );
+                        }
+                        Err(e) => {
+                            tracing::error!(?e, "failed to allocate blocks by root request");
                         }
                     }
-                    PeerControl::P2pDataColumnsRequest { app_id, peer, block_root, columns } => {
-                        match allocate_data_columns_by_root(
-                            &mut self.rpc_producer,
-                            &block_root,
-                            columns,
-                        ) {
-                            Ok(tcache) => {
-                                producers.p2p_send.produce(
-                                    &P2pSend::Rpc(RpcOutbound::Request(RpcRequestOutbound {
-                                        application_id: app_id,
-                                        peer,
-                                        request: silver_common::RpcRequest::DataColumnsByRoot(
-                                            tcache,
-                                        ),
-                                    }))
-                                    .into(),
-                                );
-                            }
-                            Err(e) => {
-                                tracing::error!(?e, "failed to allocate data columns request");
-                            }
-                        };
-                    }
-                    other => {
-                        producers.peer_control.produce(&other.into());
-                    }
-                };
-            });
+                }
+                PeerControl::P2pDataColumnsRequest { app_id, peer, block_root, columns } => {
+                    tracing::debug!(peer, columns, "emit data columns P2pSend");
+                    match allocate_data_columns_by_root(
+                        &mut self.rpc_producer,
+                        &block_root,
+                        columns,
+                    ) {
+                        Ok(tcache) => {
+                            producers.p2p_send.produce(
+                                &P2pSend::Rpc(RpcOutbound::Request(RpcRequestOutbound {
+                                    application_id: app_id,
+                                    peer,
+                                    request: silver_common::RpcRequest::DataColumnsByRoot(tcache),
+                                }))
+                                .into(),
+                            );
+                        }
+                        Err(e) => {
+                            tracing::error!(?e, "failed to allocate data columns request");
+                        }
+                    };
+                }
+                other => {
+                    producers.peer_control.produce(&other.into());
+                }
+            };
+
+        adapter.consume(|event: PeerEvent, producers| {
+            self.peer_manager
+                .handle_event(event, now, &mut |evt| handle_peer_control(evt, producers));
         });
+
         adapter.consume(|rpc: RpcInbound, producers| {
-            self.peer_manager.on_rpc_inbound(rpc, now, &mut |pc| {
-                match pc {
-                    PeerControl::P2pSend(send) => {
-                        producers.p2p_send.produce(&send.into());
-                    }
-                    other => {
-                        producers.peer_control.produce(&other.into());
-                    }
-                };
-            });
+            self.peer_manager
+                .on_rpc_inbound(rpc, now, &mut |evt| handle_peer_control(evt, producers));
         });
 
         adapter.consume(|beacon_event: BeaconStateEvent, _producers| match beacon_event {
@@ -153,18 +148,10 @@ impl Tile<SilverSpine> for Controller {
         // run on the periodic 300s heartbeat.
         if self.peer_manager.take_just_synced() {
             self.last_status = now;
-            self.peer_manager.fan_out_status(&mut |pc| {
-                match pc {
-                    PeerControl::P2pSend(send) => adapter.produce(send),
-                    other => adapter.produce(other),
-                };
-            });
-            self.peer_manager.fan_out_subscriptions(&mut |pc| {
-                match pc {
-                    PeerControl::P2pSend(send) => adapter.produce(send),
-                    other => adapter.produce(other),
-                };
-            });
+            self.peer_manager
+                .fan_out_status(&mut |evt| handle_peer_control(evt, &mut adapter.producers));
+            self.peer_manager
+                .fan_out_subscriptions(&mut |evt| handle_peer_control(evt, &mut adapter.producers));
         }
 
         self.peer_manager.maybe_issue_syncreq(now, &mut |pc| {
@@ -176,31 +163,20 @@ impl Tile<SilverSpine> for Controller {
 
         if self.last_drain.elapsed() > OUTBOUND_DRAIN_INTERVAL {
             self.last_drain = now;
-            self.peer_manager.drain_pending_outbound(&mut |pc| {
-                match pc {
-                    PeerControl::P2pSend(send) => adapter.produce(send),
-                    other => adapter.produce(other),
-                };
+            self.peer_manager.drain_pending_outbound(&mut |evt| {
+                handle_peer_control(evt, &mut adapter.producers)
             });
         }
 
         if self.last_tick.elapsed() > Duration::from_millis(700) {
             self.last_tick = now;
-            self.peer_manager.tick(now, &mut |event| {
-                match event {
-                    PeerControl::P2pSend(send) => adapter.produce(send),
-                    other => adapter.produce(other),
-                };
-            });
+            self.peer_manager
+                .tick(now, &mut |evt| handle_peer_control(evt, &mut adapter.producers));
 
             if self.auto_ping && self.last_ping.elapsed() > Duration::from_secs(17) {
                 self.last_ping = now;
-                self.peer_manager.fan_out_ping(&mut |pc| {
-                    match pc {
-                        PeerControl::P2pSend(send) => adapter.produce(send),
-                        other => adapter.produce(other),
-                    };
-                });
+                self.peer_manager
+                    .fan_out_ping(&mut |evt| handle_peer_control(evt, &mut adapter.producers));
             }
         }
 
@@ -212,12 +188,8 @@ impl Tile<SilverSpine> for Controller {
             self.peer_manager.fell_behind() && self.last_status.elapsed() > Duration::from_secs(1);
         if fell_behind || self.last_status.elapsed() > Duration::from_secs(30) {
             self.last_status = now;
-            self.peer_manager.fan_out_status(&mut |pc| {
-                match pc {
-                    PeerControl::P2pSend(send) => adapter.produce(send),
-                    other => adapter.produce(other),
-                };
-            });
+            self.peer_manager
+                .fan_out_status(&mut |evt| handle_peer_control(evt, &mut adapter.producers));
         }
     }
 }

@@ -65,6 +65,23 @@ network_params:
 global_log_level: debug
 
 # dora = lightweight block explorer to confirm the chain is producing and
-# finalizing. Drop if you want a leaner enclave.
+# finalizing. spamoor = tx/blob spammer; the `blobs` scenario submits EIP-4844
+# blob transactions so blocks carry `kzg_commitments` -> CLs produce
+# DataColumnSidecars (PeerDAS). Without it a vanilla devnet has no blobs and
+# therefore no data columns to sync/backfill/validate.
 additional_services:
   - dora
+  - spamoor
+
+# Blob spammer config. NOTE: service name (`spamoor`), scenario (`blobs`), and
+# keys (`throughput`/`sidecars`) are verified against ethereum-package @6.1.0 +
+# spamoor; re-check if you bump the package. throughput = blob txs per slot,
+# sidecars = blobs per tx (devnet BLOB_SCHEDULE caps at max_blobs_per_block).
+# Uses the genesis-prefunded account automatically.
+spamoor_params:
+  spammers:
+    - scenario: blobs
+      name: blob-spammer
+      config:
+        throughput: 2
+        sidecars: 3

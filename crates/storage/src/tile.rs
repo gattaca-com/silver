@@ -4,8 +4,8 @@ use flux::{spine::SpineAdapter, tile::Tile};
 use silver_beacon_state_data::{BeaconStateReader, SLOTS_PER_EPOCH};
 use silver_common::{
     BeaconStateEvent, DataColumnsAvailable, NewGossipMsg, P2pSend, P2pStreamId, PeerEvent,
-    RpcInbound, RpcResponseInbound, RpcSeverity, SilverSpine, SyncUpdate, TMultiProducer,
-    TRandomAccess, TRead, Wheel,
+    RpcInbound, RpcResponseInbound, RpcSeverity, SilverSpine, StreamProtocol, SyncUpdate,
+    TMultiProducer, TRandomAccess, TRead, Wheel,
     ssz_view::{DataColumnSidecarView, StatusView},
 };
 use silver_metrics::timed;
@@ -149,10 +149,13 @@ impl StorageTile {
         };
 
         let block_root = util::block_root_from_sidecar(buffer);
+        let parent_root = DataColumnSidecarView::parent_root(buffer);
         let slot = DataColumnSidecarView::slot(buffer);
         let column_index = DataColumnSidecarView::index(buffer);
         let column_bitmask = 1u128 << column_index;
         let requested = self.outstanding_requests.remove(&block_root);
+
+        let do_parent_checks = stream_id.protocol() == StreamProtocol::GossipSub;
 
         if self
             .validated_columns
@@ -189,23 +192,39 @@ impl StorageTile {
             let epoch_state = v.epoch_state();
             let state_epoch = v.epoch();
 
-            // proposer_lookahead is anchored to `state_epoch` and covers
-            // current+next epochs (PROPOSER_LOOKAHEAD_SIZE = 64). Slots
-            // outside that window we cannot resolve here.
-            let lookahead_idx = block_slot.wrapping_sub(state_epoch * SLOTS_PER_EPOCH) as usize;
-            let expected_proposer = epoch_state.proposer_lookahead.get(lookahead_idx).copied();
-            let proposer_matches = expected_proposer == Some(claimed_proposer_index);
+            let (proposer_matches, parent_validated, is_above_finalized) = if do_parent_checks {
+                // proposer_lookahead is anchored to `state_epoch` and covers
+                // current+next epochs (PROPOSER_LOOKAHEAD_SIZE = 64). Slots
+                // outside that window we cannot resolve here.
+                let lookahead_idx = block_slot.wrapping_sub(state_epoch * SLOTS_PER_EPOCH) as usize;
+                let expected_proposer = epoch_state.proposer_lookahead.get(lookahead_idx).copied();
+                let parent_validated = util::parent_validated(
+                    buffer,
+                    v.finalized_block_roots(),
+                    v.delta_block_roots(),
+                );
+                let is_above_finalized =
+                    util::is_above_finalized(buffer, epoch_state.finalized_checkpoint.epoch);
+                (
+                    expected_proposer == Some(claimed_proposer_index),
+                    parent_validated,
+                    is_above_finalized,
+                )
+            } else {
+                // Sync / RPC blocks cannot validate proposer shuffling.
+                (true, true, true)
+            };
 
             let idx = claimed_proposer_index as usize;
             let pubkey =
                 (idx < v.validators_count()).then(|| *v.validator_pubkey_decompressed(idx));
 
             (
-                util::is_above_finalized(buffer, epoch_state.finalized_checkpoint.epoch),
-                util::parent_validated(buffer, v.finalized_block_roots(), v.delta_block_roots()),
+                is_above_finalized,
+                parent_validated,
                 proposer_matches,
                 pubkey,
-                v.fork_current_version(),
+                v.fork_current_version(), // TODO for backfill
                 v.genesis_validators_root(),
             )
         });
@@ -217,7 +236,12 @@ impl StorageTile {
             return Some((block_root, column_bitmask));
         }
         if !parent_validated {
-            tracing::warn!(?stream_id, "sidecar parent_root not in validated set");
+            tracing::warn!(
+                ?stream_id,
+                block_slot,
+                parent_root = hex::encode(parent_root),
+                "sidecar parent_root not in validated set"
+            );
             return Some((block_root, column_bitmask));
         }
         if !proposer_matches {

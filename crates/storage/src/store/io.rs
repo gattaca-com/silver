@@ -17,6 +17,7 @@ use silver_common::{
 
 use super::{PendingWrite, QueryUnit, Store, UnfinalizedBlock};
 use crate::{
+    StorageCounters,
     store::{
         BLOCK_SLOTS_RETAINED, BLOCKS_DIR, Backfill, COLUMN_SLOTS_RETAINED, COLUMNS_DIR,
         SLOTS_PER_DIR,
@@ -80,6 +81,7 @@ impl Store {
                     let path = dir.join(format!("{slot}_{column}.ssz"));
                     let (buffer, _) = ssz.buffer().map_err(Error::other)?;
                     open_file_write(path, false)?.write_all(buffer)?;
+                    StorageCounters::BackfillColumnsWritten.inc();
                     self.write_queue.pop_front();
                 }
                 PendingWrite::UnfinalizedBlock { slot, parent_root, block_root, ssz } => {
@@ -87,6 +89,7 @@ impl Store {
                     let path = dir.join(unfinalized_name(*slot, parent_root, block_root));
                     let (buffer, _) = ssz.buffer().map_err(Error::other)?;
                     open_file_write(&path, false)?.write_all(buffer)?;
+                    StorageCounters::UnfinalizedBlocksWritten.inc();
                     self.write_queue.pop_front();
                 }
                 PendingWrite::Promote { slot, parent_root, block_root } => {
@@ -108,6 +111,7 @@ impl Store {
                     record[..32].copy_from_slice(block_root);
                     record[32..].copy_from_slice(&slot.to_le_bytes());
                     open_file_write(dir.join("block_index.bin"), true)?.write_all(&record)?;
+                    StorageCounters::BlocksPromoted.inc();
                     self.write_queue.pop_front();
                 }
                 PendingWrite::Prune { slot, parent_root, block_root } => {
@@ -121,6 +125,7 @@ impl Store {
                         Err(e) if e.kind() == ErrorKind::NotFound => {}
                         Err(e) => return Err(e),
                     }
+                    StorageCounters::BlocksPruned.inc();
                     self.write_queue.pop_front();
                 }
                 PendingWrite::UnfinalizedColumn { slot, block_root, column, ssz } => {
@@ -128,6 +133,7 @@ impl Store {
                     let path = dir.join(unfinalized_column_name(*slot, block_root, *column));
                     let (buffer, _) = ssz.buffer().map_err(Error::other)?;
                     open_file_write(path, false)?.write_all(buffer)?;
+                    StorageCounters::UnfinalizedColumnsWritten.inc();
                     self.write_queue.pop_front();
                 }
                 PendingWrite::PromoteColumn { slot, block_root, column } => {
@@ -142,6 +148,7 @@ impl Store {
                         Err(e) if e.kind() == ErrorKind::NotFound => {}
                         Err(e) => return Err(e),
                     }
+                    StorageCounters::ColumnsPromoted.inc();
                     self.write_queue.pop_front();
                 }
                 PendingWrite::PruneColumn { slot, block_root, column } => {
@@ -153,6 +160,7 @@ impl Store {
                         Err(e) if e.kind() == ErrorKind::NotFound => {}
                         Err(e) => return Err(e),
                     }
+                    StorageCounters::ColumnsPruned.inc();
                     self.write_queue.pop_front();
                 }
                 PendingWrite::TruncateBlockHistory { finalized_slot } => {
@@ -210,6 +218,7 @@ impl Store {
                             &mut |evt| emit(IoEvent::PeerEvent(evt)),
                         );
                     }
+                    StorageCounters::BackfillBlocksWritten.inc();
                     self.write_queue.pop_front();
                 }
             }

@@ -40,6 +40,9 @@ SECRET_KEY="${SECRET_KEY:-111111111111111111111111111111111111111111111111111111
 DISCOVERY_PORT="${DISCOVERY_PORT:-31133}"
 QUIC_PORT="${QUIC_PORT:-31123}"
 NEXT_FORK_VERSION="${NEXT_FORK_VERSION:-06000000}"
+# Custody groups silver subscribes to / advertises (ENR cgc). 4 = the spec
+# minimum for a non-supernode; bump to sample more columns.
+CUSTODY_GROUP_COUNT="${CUSTODY_GROUP_COUNT:-4}"
 
 # Pin a known-good release — the bare locator pulls the default branch (HEAD),
 # which periodically breaks (e.g. the zkboost `GpuConfig` regression). Bump the
@@ -160,6 +163,7 @@ echo "spec: fulu_fork_version=$ffv"
   [ -n "$GATEWAY" ] && echo "external_ip_v4 = \"$GATEWAY\""
   echo "discovery_port = $DISCOVERY_PORT"
   echo "quic_port = $QUIC_PORT"
+  echo "data_column_custody_group_count = $CUSTODY_GROUP_COUNT"
   echo
   echo "[chain_config]"
   echo "genesis_unix_secs = $GENESIS"
