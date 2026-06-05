@@ -11,7 +11,8 @@ use silver_beacon_state_data::{
     Version, decode_checkpoint_pubkeys, randao_mix_at_epoch,
 };
 use silver_common::{
-    BeaconStateEvent, BlockSource, DataColumnsAvailable, GossipTopic, NewGossipMsg, P2pStreamId,
+    BeaconStateEvent, BlockSource, DataColumnsAvailable, EngineFcuReq, EngineNewPayloadReq,
+    EngineReq, EngineResp, GossipTopic, NewGossipMsg, P2pStreamId, PayloadValidationStatus,
     PeerEvent, RpcInbound, RpcResponse, RpcResponseInbound, RpcSeverity, SilverSpine, SyncUpdate,
     TCacheRead, TRandomAccess, TRead, hex32,
     ssz_view::{
@@ -187,6 +188,7 @@ pub struct BeaconStateTile {
 
     gossip_consumer: TRandomAccess,
     rpc_consumer: TRandomAccess,
+    incoming_engine_resp_consumer: TRandomAccess,
 }
 
 type Producers = <SilverSpine as FluxSpine>::Producers;
@@ -194,12 +196,14 @@ type Producers = <SilverSpine as FluxSpine>::Producers;
 impl BeaconStateTile {
     /// If `checkpoint_state` is non-empty, bootstraps immediately; otherwise
     /// starts inert in `Mode::Syncing` (call `bootstrap` before the loop).
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         ticker: SlotTicker,
         spec: SpecConfig,
         mut state: BeaconStateOwner,
         gossip_consumer: TRandomAccess,
         rpc_consumer: TRandomAccess,
+        incoming_engine_resp_consumer: TRandomAccess,
         checkpoint_state: &[u8],
         decompressed_pubkeys: &[u8],
     ) -> Self {
@@ -244,6 +248,7 @@ impl BeaconStateTile {
             ),
             gossip_consumer,
             rpc_consumer,
+            incoming_engine_resp_consumer,
         };
 
         if !checkpoint_state.is_empty() {
@@ -288,7 +293,7 @@ impl BeaconStateTile {
     }
 
     pub fn try_apply_block(&mut self, data: &[u8]) -> Feedback {
-        self.apply_block_impl(data, false)
+        self.apply_block_impl(data, false, |_block_root| {})
     }
 
     /// SSZ `hash_tree_root` of the most-recently-applied block's full
@@ -579,7 +584,13 @@ impl BeaconStateTile {
             // Pre-finalization block - either backfill or irrelevant.
             return Feedback::Ignore;
         }
-        let f = self.apply_block_impl(data, true);
+        let f = self.apply_block_impl(data, true, |root| {
+            producers.produce(EngineReq::NewPayload(EngineNewPayloadReq {
+                data: *data_tcache,
+                block_root: root,
+                block_source: source,
+            }));
+        });
 
         if let Feedback::Reject(Some(block_root)) = f {
             producers.produce(BeaconStateEvent::BlockRejected { block_root, source });
@@ -596,6 +607,14 @@ impl BeaconStateTile {
         }
 
         producers.produce(BeaconStateEvent::PersistBlock { ssz: *data_tcache, source });
+
+        let (head_root, head, safe, fin) = self.fork_choice.fcu_execution_hashes();
+        producers.produce(EngineReq::Fcu(EngineFcuReq {
+            block_root: head_root,
+            head_block_hash: head,
+            safe_block_hash: safe,
+            finalized_block_hash: fin,
+        }));
 
         f
     }
@@ -920,6 +939,48 @@ impl BeaconStateTile {
         });
     }
 
+    /// EL payload verdict, from either newPayload or an FCU response.
+    fn on_payload_verdict(
+        &mut self,
+        block_root: &B256,
+        latest_valid_hash: &B256,
+        status: PayloadValidationStatus,
+    ) {
+        match status {
+            PayloadValidationStatus::Valid => {
+                self.fork_choice.on_payload_valid(block_root);
+            }
+            PayloadValidationStatus::Invalid => {
+                self.fork_choice.on_payload_invalid(block_root, latest_valid_hash);
+                self.recompute_head();
+            }
+            // Optimistic: EL still syncing; verdict arrives on a later FCU.
+            PayloadValidationStatus::Syncing | PayloadValidationStatus::Accepted => {}
+        }
+    }
+
+    fn handle_engine_response(&mut self, eng_resp: EngineResp, _producers: &mut Producers) {
+        match eng_resp {
+            EngineResp::NewPayload(r) => {
+                self.on_payload_verdict(&r.block_root, &r.latest_valid_hash, r.status);
+            }
+            EngineResp::Fcu(r) => {
+                self.on_payload_verdict(&r.block_root, &r.latest_valid_hash, r.status);
+            }
+            // Proposal flow — silver doesn't propose yet, nothing requests
+            // payloads.
+            EngineResp::GetPayload(_) => {}
+            // EL-mempool blob fetch. Belongs to the storage tile (it owns
+            // column validation/availability), not here; see the TODO at its
+            // column-request path.
+            EngineResp::GetBlobs(_) => {}
+            // Payload-body reconstruction is unneeded: the store persists and
+            // serves full SignedBeaconBlocks, so there is nothing to rebuild
+            // from EL bodies.
+            EngineResp::GetPayloadBodies(_) => {}
+        }
+    }
+
     fn handle_gossip(
         &mut self,
         m: NewGossipMsg,
@@ -1106,7 +1167,12 @@ impl BeaconStateTile {
         self.sync_finalized_slot.max(self.fork_choice.finalized_checkpoint.epoch * SLOTS_PER_EPOCH)
     }
 
-    fn apply_block_impl(&mut self, data: &[u8], gate_da: bool) -> Feedback {
+    fn apply_block_impl<F: FnMut([u8; 32])>(
+        &mut self,
+        data: &[u8],
+        gate_da: bool,
+        mut notify_el: F,
+    ) -> Feedback {
         let parsed = match self.precheck_block(data) {
             Ok(p) => p,
             Err(err) => {
@@ -1123,6 +1189,12 @@ impl BeaconStateTile {
         {
             return Feedback::AwaitData(parsed.block_root);
         }
+
+        // Fire as early as possible so the EL round-trip overlaps with the
+        // state transition — mirrors Lighthouse's async payload notification.
+        // After the DA gate, so a block parked on AwaitData doesn't re-send
+        // newPayload on every retry.
+        notify_el(parsed.block_root);
 
         let block_epoch = parsed.block_slot / SLOTS_PER_EPOCH;
 
@@ -1173,14 +1245,16 @@ impl BeaconStateTile {
             Ok((epoch_idx, longtail_idx)) => {
                 let es = epoch.view_opt(epoch_idx).state();
                 let checkpoints = (es.current_justified_checkpoint, es.finalized_checkpoint);
-                Ok((view.commit(epoch_idx, longtail_idx), checkpoints))
+                let execution_block_hash =
+                    view.slot.state().latest_execution_payload_header.block_hash;
+                Ok((view.commit(epoch_idx, longtail_idx), checkpoints, execution_block_hash))
             }
             Err(e) => Err(e),
         };
         // `view`'s &mut self.state borrow ends here (`commit`/`drop` consumed
         // it); the fork-choice + publish work below needs &mut self.
 
-        let (new_id, (justified, finalized)) = match outcome {
+        let (new_id, (justified, finalized), execution_block_hash) = match outcome {
             Ok(committed) => committed,
             Err(e) => {
                 tracing::error!(
@@ -1193,7 +1267,7 @@ impl BeaconStateTile {
             }
         };
 
-        self.publish_applied_block(&parsed, new_id, justified, finalized);
+        self.publish_applied_block(&parsed, new_id, justified, finalized, execution_block_hash);
         Feedback::Accept(Some(parsed.block_root))
     }
 
@@ -1203,6 +1277,7 @@ impl BeaconStateTile {
         new_id: StateId,
         justified: Checkpoint,
         finalized: Checkpoint,
+        execution_block_hash: [u8; 32],
     ) {
         // Fold block-included attestations into the LMD vote tracker.
         for i in 0..self.attestation_votes_scratch.len() {
@@ -1210,14 +1285,12 @@ impl BeaconStateTile {
             self.on_attestation(v.validator as usize, v.block_root, v.target_epoch);
         }
 
-        // TODO(EL): pass the execution payload block hash to fork choice and
-        // drive engine_forkchoiceUpdatedV3 once the EL path is wired.
         self.fork_choice.on_block(BlockImport {
             slot: parsed.block_slot,
             block_root: parsed.block_root,
             parent_root: parsed.parent_root,
             state_root: parsed.state_root,
-            execution_block_hash: [0u8; 32],
+            execution_block_hash,
             justified,
             finalized,
             state_id: new_id,
@@ -1276,6 +1349,11 @@ impl BeaconStateTile {
             return Err(PrecheckError::ParentMissing { parent_root, last_applied_slot, block_slot });
         };
         let parent_node = self.fork_choice.node(parent_idx);
+        // EL declared the parent invalid — descendants are invalid by
+        // definition. Reject before the COW/EL round-trip.
+        if parent_node.execution_status == 3 {
+            return Err(PrecheckError::ParentInvalid { parent_root, block_root });
+        }
         let parent_state_id = parent_node.state_id;
 
         // Immutable read view of the parent post-state.
@@ -1810,6 +1888,11 @@ impl Tile<SilverSpine> for BeaconStateTile {
         adapter.consume(|m: DataColumnsAvailable, producers| {
             self.handle_data_columns_available(m, producers);
         });
+
+        adapter.consume(|eng_resp: EngineResp, producers| {
+            self.handle_engine_response(eng_resp, producers);
+        });
+        self.incoming_engine_resp_consumer.free();
     }
 }
 
@@ -1942,10 +2025,21 @@ mod tests {
         let ticker = SlotTicker::new(genesis, Duration::from_secs(12), Duration::from_secs(4));
         let gossip_p = TCache::producer("test_gossip", 1 << 20);
         let event_p = TCache::producer("test_event", 1 << 20);
+        let engine_p = TCache::producer("test_engine", 1 << 20);
         let gossip_c = gossip_p.cache_ref().random_access("test_gossip", true).unwrap();
         let rpc_c = event_p.cache_ref().random_access("test_event", true).unwrap();
+        let engine_c = engine_p.cache_ref().random_access("test_engine", true).unwrap();
         let state = BeaconStateOwner::pre_bootstrap();
-        BeaconStateTile::new(ticker, SpecConfig::mainnet(), state, gossip_c, rpc_c, &[], &[])
+        BeaconStateTile::new(
+            ticker,
+            SpecConfig::mainnet(),
+            state,
+            gossip_c,
+            rpc_c,
+            engine_c,
+            &[],
+            &[],
+        )
     }
 
     fn placeholder_pubkey(i: usize) -> BLSPubkey {
@@ -2161,7 +2255,7 @@ mod tests {
 
         let head_before = tile.last_applied;
         let nodes_before = tile.fork_choice.nodes.len();
-        tile.apply_block_impl(&buf, true);
+        tile.apply_block_impl(&buf, true, |_block_root| {});
 
         assert_eq!(tile.last_applied, head_before, "head must be unchanged");
         assert_eq!(tile.fork_choice.nodes.len(), nodes_before, "no node added");
@@ -2380,7 +2474,7 @@ mod tests {
         buf[108..116].copy_from_slice(&0u64.to_le_bytes()); // proposer_index
         buf[116..148].copy_from_slice(&parent_root); // parent_root
 
-        tile.apply_block_impl(&buf, true);
+        tile.apply_block_impl(&buf, true, |_block_root| {});
         assert_eq!(tile.fork_choice.nodes.len(), 1);
     }
 

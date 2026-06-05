@@ -124,15 +124,24 @@ impl OutboundKind {
 
 impl Harness {
     pub fn new(wall_slot: u64, checkpoint_ssz: &[u8]) -> Self {
-        Self::build(wall_slot, |ticker, gc, rc| {
+        Self::build(wall_slot, |ticker, gc, rc, ec| {
             let state = BeaconStateOwner::pre_bootstrap();
-            BeaconStateTile::new(ticker, SpecConfig::mainnet(), state, gc, rc, checkpoint_ssz, &[])
+            BeaconStateTile::new(
+                ticker,
+                SpecConfig::mainnet(),
+                state,
+                gc,
+                rc,
+                ec,
+                checkpoint_ssz,
+                &[],
+            )
         })
     }
 
     fn build<F>(wall_slot: u64, build_tile: F) -> Self
     where
-        F: FnOnce(SlotTicker, TRandomAccess, TRandomAccess) -> BeaconStateTile,
+        F: FnOnce(SlotTicker, TRandomAccess, TRandomAccess, TRandomAccess) -> BeaconStateTile,
     {
         static SEQ: AtomicU64 = AtomicU64::new(0);
         let seq = SEQ.fetch_add(1, Ordering::Relaxed);
@@ -154,11 +163,13 @@ impl Harness {
 
         let gossip_in_producer = TCache::producer("gossip_in", 1 << 24);
         let rpc_in_producer = TCache::producer("rpc_in", 1 << 24);
+        let engine_resp_producer = TCache::producer("engine_resp", 1 << 24);
         let gossip_consumer =
             gossip_in_producer.cache_ref().random_access("test", true).expect("gossip ra");
         let rpc_consumer = rpc_in_producer.cache_ref().random_access("test", true).expect("rpc ra");
-
-        let tile = build_tile(ticker, gossip_consumer, rpc_consumer);
+        let engine_resp_consumer =
+            engine_resp_producer.cache_ref().random_access("test", true).expect("engine resp ra");
+        let tile = build_tile(ticker, gossip_consumer, rpc_consumer, engine_resp_consumer);
 
         // Order matters: attach tile first so its tile_id stays 0 for the
         // real consumer of `inbound`; Injector gets tile_id 1.

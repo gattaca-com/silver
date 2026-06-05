@@ -2,6 +2,7 @@ use std::time::{Duration, Instant};
 
 use flux::{spine::SpineAdapter, tile::Tile};
 use silver_common::{ELSyncStatus, EngineReq, SilverSpine, TProducer, TRandomAccess};
+use silver_config::EngineConfig;
 
 use crate::{
     EngineClient,
@@ -14,7 +15,8 @@ const HEALTHCHECK_INTERVAL: Duration = Duration::from_secs(10);
 
 pub struct EngineTile {
     pub client: EngineClient,
-    pub req_consumer: TRandomAccess,
+    pub gossip_consumer: TRandomAccess,
+    pub rpc_consumer: TRandomAccess,
     pub resp_producer: TProducer,
 
     first_run: bool,
@@ -29,7 +31,13 @@ pub struct EngineTile {
 impl Tile<SilverSpine> for EngineTile {
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         adapter.consume(|req: EngineReq, producers| {
-            handle_request(&mut self.client, &mut self.req_consumer, &req, producers);
+            handle_request(
+                &mut self.client,
+                &mut self.gossip_consumer,
+                &mut self.rpc_consumer,
+                &req,
+                producers,
+            );
         });
         self.spin(adapter);
     }
@@ -37,13 +45,15 @@ impl Tile<SilverSpine> for EngineTile {
 
 impl EngineTile {
     pub fn new(
-        client: EngineClient,
-        req_consumer: TRandomAccess,
+        config: EngineConfig,
+        gossip_consumer: TRandomAccess,
+        rpc_consumer: TRandomAccess,
         resp_producer: TProducer,
     ) -> Self {
         Self {
-            client,
-            req_consumer,
+            client: EngineClient::new(&config.execution_endpoint, &config.jwt_secret),
+            gossip_consumer,
+            rpc_consumer,
             resp_producer,
 
             first_run: true,
@@ -81,9 +91,9 @@ impl EngineTile {
                 ReqKind::Syncing => {
                     handle_sync_response(response, adapter, sync_status, healthcheck_pending)
                 }
-                ReqKind::Fcu(spine_id) => handle_fcu_response(spine_id, response, adapter),
-                ReqKind::NewPayload(spine_id) => {
-                    handle_new_payload_response(spine_id, response, adapter)
+                ReqKind::Fcu(block_root) => handle_fcu_response(block_root, response, adapter),
+                ReqKind::NewPayload(block_root) => {
+                    handle_new_payload_response(block_root, response, adapter)
                 }
                 ReqKind::GetPayloadFetch(spine_id) => {
                     handle_get_payload_fetch(spine_id, response, adapter, resp_producer, scratch)

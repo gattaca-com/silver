@@ -1,6 +1,7 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 
 pub use discovery_config::DiscoveryConfig;
+pub use engine_config::EngineConfig;
 pub use peer_score_params::ScoreParams;
 use secp256k1::PublicKey;
 use serde::{Deserialize, Serialize};
@@ -11,6 +12,7 @@ use crate::chain_config::ChainConfig;
 
 mod chain_config;
 mod discovery_config;
+mod engine_config;
 mod peer_score_params;
 mod syncing_config;
 
@@ -106,6 +108,8 @@ pub struct Config {
     outgoing_rpc_tcache_size: usize,
     #[serde(default = "default_data_dir")]
     data_storage_dir: String,
+    #[serde(default)]
+    engine_config: EngineConfig,
 }
 
 impl Config {
@@ -137,6 +141,7 @@ impl Config {
             incoming_rpc_tcache_size: 2 << 27,        // ssz
             outgoing_rpc_tcache_size: 2 << 24,        // ssz
             data_storage_dir: default_data_dir(),
+            engine_config: Default::default(),
         }
     }
 
@@ -299,6 +304,10 @@ impl Config {
 
     pub fn data_storage_dir(&self) -> &str {
         &self.data_storage_dir
+    }
+
+    pub fn engine_config(&self) -> EngineConfig {
+        self.engine_config.clone()
     }
 }
 

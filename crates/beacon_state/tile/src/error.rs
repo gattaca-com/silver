@@ -13,6 +13,12 @@ pub enum PrecheckError {
         b256_hex(parent_root)
     )]
     ParentMissing { parent_root: B256, last_applied_slot: Slot, block_slot: Slot },
+    #[error(
+        "block parent invalid: parent_root=0x{} block_root=0x{}",
+        b256_hex(parent_root),
+        b256_hex(block_root)
+    )]
+    ParentInvalid { parent_root: B256, block_root: B256 },
     #[error("past block: block_epoch={block_epoch} finalized_epoch={finalized_epoch}")]
     PreFinalized { block_epoch: Epoch, finalized_epoch: Epoch },
     #[error("block past-slot precheck failed: block_slot={block_slot} parent_slot={parent_slot}")]
@@ -53,6 +59,7 @@ impl PrecheckError {
             Self::PastSlot { .. } |
             Self::FutureSlot { .. } |
             Self::AlreadyKnown { .. } => Feedback::Ignore,
+            Self::ParentInvalid { block_root, .. } |
             Self::ProposerLookaheadMismatch { block_root, .. } |
             Self::ProposerIndexTooBig { block_root, .. } |
             Self::InvalidBls { block_root, .. } => Feedback::Reject(Some(block_root)),

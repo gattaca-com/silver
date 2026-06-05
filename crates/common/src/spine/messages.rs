@@ -651,13 +651,13 @@ pub struct WithdrawalInline {
 
 /// `engine_forkchoiceUpdatedV3` request.  Fully inline — no TCache needed.
 ///
-/// When `has_attrs` is false the `attrs_*` fields are ignored.
-/// `attrs_withdrawal_count` gives the number of valid entries in
-/// `attrs_withdrawals`; the remainder are zero-filled.
+/// `block_root` is the beacon root of the `head_block_hash` block. The EL
+/// response carries no beacon identity, so the engine tile echoes it in
+/// `EngineFcuResp` to let fork choice apply the verdict.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct EngineFcuReq {
-    pub id: u64,
+    pub block_root: [u8; 32],
     pub head_block_hash: [u8; 32],
     pub safe_block_hash: [u8; 32],
     pub finalized_block_hash: [u8; 32],
@@ -675,21 +675,21 @@ pub struct EngineFcuReq {
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct EngineNewPayloadReq {
-    pub id: u64,
     pub data: TCacheRead,
-    pub parent_beacon_block_root: [u8; 32],
-    pub versioned_hash_count: u8,
-    pub versioned_hashes: [[u8; 32]; MAX_BLOBS_PER_BLOCK],
+    pub block_root: [u8; 32],
+    pub block_source: BlockSource,
 }
 
 /// Response to `engine_forkchoiceUpdatedV3`.  Fully inline.
 ///
-/// `latest_valid_hash` is all-zeros when the EL did not return one.
-/// `payload_id` is meaningful only when `has_payload_id` is true.
+/// `block_root` echoes the request's head beacon root (zeros for the
+/// prepare-payload path). `latest_valid_hash` is all-zeros when the EL did
+/// not return one. `payload_id` is meaningful only when `has_payload_id` is
+/// true.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct EngineFcuResp {
-    pub id: u64,
+    pub block_root: [u8; 32],
     pub status: PayloadValidationStatus,
     pub latest_valid_hash: [u8; 32],
     pub has_payload_id: bool,
@@ -702,7 +702,7 @@ pub struct EngineFcuResp {
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct EngineNewPayloadResp {
-    pub id: u64,
+    pub block_root: [u8; 32],
     pub status: PayloadValidationStatus,
     pub latest_valid_hash: [u8; 32],
 }
