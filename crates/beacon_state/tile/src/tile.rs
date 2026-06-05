@@ -9,7 +9,7 @@ use silver_beacon_state_data::{
     EPOCHS_PER_HISTORICAL_VECTOR, EPOCHS_RING_N, Epoch, LONGTAILS_RING_N, MIN_SEED_LOOKAHEAD,
     PROPOSER_LOOKAHEAD_SIZE, PendingQueuesOldBaseLens, SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT,
     SLOTS_RING_N, Slot, SlotStateDelta, SpecConfig, StateDelta, StateDeltaReadView, StateDeltaView,
-    ValidatorsDelta, Version, buffer::RollResult,
+    ValidatorsDelta, Version, buffer::RollResult, decode_checkpoint_pubkeys,
 };
 use silver_common::{
     BeaconStateEvent, BlockSource, GossipTopic, NewGossipMsg, P2pStreamId, PeerEvent, RpcInbound,
@@ -196,6 +196,7 @@ impl BeaconStateTile {
         gossip_consumer: TRandomAccess,
         rpc_consumer: TRandomAccess,
         checkpoint_state: &[u8],
+        decompressed_pubkeys: &[u8],
     ) -> Self {
         let val_cap = state.state().finalized.validators.capacity();
         let mut tile = Self {
@@ -230,7 +231,7 @@ impl BeaconStateTile {
         };
 
         if !checkpoint_state.is_empty() {
-            tile.bootstrap(checkpoint_state);
+            tile.bootstrap(checkpoint_state, decompressed_pubkeys);
         }
         tile
     }
@@ -286,15 +287,28 @@ impl BeaconStateTile {
     /// base, anchor a genesis slot delta on top (empty edits, full slot
     /// scalars seeded from the base), and seed fork choice with the trusted
     /// anchor checkpoint.
-    fn bootstrap(&mut self, ssz: &[u8]) {
+    pub fn bootstrap(&mut self, ssz: &[u8], decompressed_pubkeys: &[u8]) {
+        let pubkeys = (!decompressed_pubkeys.is_empty())
+            .then(|| decode_checkpoint_pubkeys(decompressed_pubkeys))
+            .transpose()
+            .unwrap_or_else(|e| {
+                tracing::warn!(?e, "checkpoint pubkey sidecar decode failed; decompressing");
+                None
+            });
+
         let seq;
         let slot;
         {
             let mut guard = self.state.write();
             let bs: &mut BeaconState = &mut guard;
-            bs.finalized
-                .decompose(ssz, &self.spec)
-                .unwrap_or_else(|e| panic!("bootstrap: decompose failed: {e}"));
+            let decoded = match pubkeys.as_deref() {
+                Some(pk) => bs.finalized.decompose_with_pubkeys(ssz, &self.spec, pk).or_else(|e| {
+                    tracing::warn!(%e, "checkpoint pubkey sidecar rejected; decompressing");
+                    bs.finalized.decompose(ssz, &self.spec)
+                }),
+                None => bs.finalized.decompose(ssz, &self.spec),
+            };
+            decoded.unwrap_or_else(|e| panic!("bootstrap: decompose failed: {e}"));
             slot = bs.finalized.slot.slot.slot;
 
             // Anchor an empty per-fork delta on the freshly decoded base.
@@ -1931,7 +1945,7 @@ mod tests {
         let gossip_c = gossip_p.cache_ref().random_access("test_gossip", true).unwrap();
         let rpc_c = event_p.cache_ref().random_access("test_event", true).unwrap();
         let state = BeaconStateOwner::new(BeaconState::empty());
-        BeaconStateTile::new(ticker, SpecConfig::mainnet(), state, gossip_c, rpc_c, &[])
+        BeaconStateTile::new(ticker, SpecConfig::mainnet(), state, gossip_c, rpc_c, &[], &[])
     }
 
     fn placeholder_pubkey(i: usize) -> BLSPubkey {

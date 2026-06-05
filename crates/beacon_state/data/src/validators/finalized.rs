@@ -46,6 +46,10 @@ pub enum ValidatorsDecodeError {
     LenNotMultiple { len: usize },
     #[error("validator {idx} pubkey failed BLS decompression")]
     InvalidPubkey { idx: usize },
+    #[error("pubkey sidecar count {sidecar} != validator count {validators}")]
+    PubkeyCountMismatch { sidecar: usize, validators: usize },
+    #[error("validator {idx} sidecar pubkey does not match the canonical compressed pubkey")]
+    PubkeyMismatch { idx: usize },
 }
 
 #[inline]
@@ -176,6 +180,44 @@ impl FinalizedValidators {
             Ok(ValidatorFields {
                 pubkey,
                 pubkey_decompressed,
+                credentials: Withdrawals(v[48..80].try_into().unwrap()),
+                effective_balance: u64_at(v, 80),
+                slashed: v[88] != 0,
+                activation_eligibility_epoch: u64_at(v, 89),
+                activation_epoch: u64_at(v, 97),
+                exit_epoch: u64_at(v, 105),
+                withdrawable_epoch: u64_at(v, 113),
+            })
+        })
+    }
+
+    #[timed]
+    pub fn try_new_with_pubkeys(
+        val_bytes: &[u8],
+        decompressed: &[PublicKey],
+    ) -> Result<Self, ValidatorsDecodeError> {
+        if !val_bytes.len().is_multiple_of(VALIDATOR_SSZ_SIZE) {
+            return Err(ValidatorsDecodeError::LenNotMultiple { len: val_bytes.len() });
+        }
+        let n = val_bytes.len() / VALIDATOR_SSZ_SIZE;
+        if decompressed.len() != n {
+            return Err(ValidatorsDecodeError::PubkeyCountMismatch {
+                sidecar: decompressed.len(),
+                validators: n,
+            });
+        }
+
+        Self::build(validator_capacity(n), n, |i| {
+            let v = &val_bytes[i * VALIDATOR_SSZ_SIZE..];
+            let pubkey: BLSPubkey = v[..48].try_into().unwrap();
+            // Bind the sidecar key to the canonical (state-root-covered)
+            // compressed pubkey.
+            if decompressed[i].compress() != pubkey {
+                return Err(ValidatorsDecodeError::PubkeyMismatch { idx: i });
+            }
+            Ok::<_, ValidatorsDecodeError>(ValidatorFields {
+                pubkey,
+                pubkey_decompressed: decompressed[i],
                 credentials: Withdrawals(v[48..80].try_into().unwrap()),
                 effective_balance: u64_at(v, 80),
                 slashed: v[88] != 0,

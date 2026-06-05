@@ -54,10 +54,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             let mut config = Config::new(secret, fork_digest, next_fork_version, next_fork_epoch)
                 .with_discovery_port(31133)
                 .with_quic_port(31123);
-            // Optional positional checkpoint (ignored when --config is used;
-            // file configs set it via chain_config.checkpoint_file).
+
             if let Some(ckpt) = args.get(1).filter(|a| !a.starts_with("--")) {
                 config = config.with_checkpoint(ckpt.to_string());
+                if let Some(pk) = args.get(2).filter(|a| !a.starts_with("--")) {
+                    config = config.with_checkpoint_pubkeys(pk.to_string());
+                }
             }
             config
         }
@@ -176,10 +178,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         Some(file) => load_checkpoint(file)?,
         None => vec![],
     };
+    // Pubkey sidecar only meaningful alongside a checkpoint.
+    let checkpoint_pubkeys = match chain_config.checkpoint_pubkeys_file {
+        Some(file) if !checkpoint.is_empty() => load_checkpoint(file)?,
+        _ => vec![],
+    };
 
     let mut state = BeaconStateOwner::new(BeaconState::empty());
     let state_reader = state.reader();
 
+    // Bootstrap explicitly (not via `new`) so the pubkey sidecar can be passed.
     let mut beacon_state_tile = BeaconStateTile::new(
         ticker,
         chain_config.spec.clone(),
@@ -187,7 +195,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         ssz_gossip_consumer,
         incoming_rpc_consumer,
         &checkpoint,
+        &checkpoint_pubkeys,
     );
+
     // Bootstrap digest: until a real state lands (checkpoint/sync), the tile
     // derives the fork digest from a zero gvr — use the configured one so
     // silver's Status doesn't clobber the PeerManager digest with a bogus value.

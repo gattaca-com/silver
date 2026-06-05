@@ -1,3 +1,4 @@
+use blst::min_pk::PublicKey;
 use silver_common_macros::timed;
 
 use crate::{
@@ -297,6 +298,25 @@ impl Finalized {
     /// Decompose a Fulu-encoded BeaconState SSZ blob into `self`.
     #[timed]
     pub fn decompose(&mut self, ssz: &[u8], cfg: &SpecConfig) -> Result<(), DecomposeError> {
+        self.decompose_inner(ssz, cfg, None)
+    }
+
+    #[timed]
+    pub fn decompose_with_pubkeys(
+        &mut self,
+        ssz: &[u8],
+        cfg: &SpecConfig,
+        pubkeys: &[PublicKey],
+    ) -> Result<(), DecomposeError> {
+        self.decompose_inner(ssz, cfg, Some(pubkeys))
+    }
+
+    fn decompose_inner(
+        &mut self,
+        ssz: &[u8],
+        cfg: &SpecConfig,
+        pubkeys: Option<&[PublicKey]>,
+    ) -> Result<(), DecomposeError> {
         if ssz.len() < FIXED_PART {
             return Err(DecomposeError::TruncatedFixedPart { len: ssz.len(), need: FIXED_PART });
         }
@@ -313,7 +333,7 @@ impl Finalized {
         read_sync_committee(ssz, F22, "current", &mut self.longtail.current_sync_committee)?;
         read_sync_committee(ssz, F23, "next", &mut self.longtail.next_sync_committee)?;
 
-        self.fill_validator_layers(ssz, &offsets)?;
+        self.fill_validator_layers(ssz, &offsets, pubkeys)?;
 
         read_execution_payload_header(
             ssz,
@@ -428,8 +448,17 @@ impl Finalized {
     }
 
     #[timed]
-    fn fill_validator_layers(&mut self, ssz: &[u8], o: &Offsets) -> Result<(), DecomposeError> {
-        self.validators = FinalizedValidators::try_new(&ssz[o.validators..o.balances])?;
+    fn fill_validator_layers(
+        &mut self,
+        ssz: &[u8],
+        o: &Offsets,
+        pubkeys: Option<&[PublicKey]>,
+    ) -> Result<(), DecomposeError> {
+        let val_bytes = &ssz[o.validators..o.balances];
+        self.validators = match pubkeys {
+            Some(pk) => FinalizedValidators::try_new_with_pubkeys(val_bytes, pk)?,
+            None => FinalizedValidators::try_new(val_bytes)?,
+        };
         let n = self.validators.validator_count();
 
         // Match the validators' capacity so per-validator columns stay aligned.

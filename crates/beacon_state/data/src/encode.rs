@@ -1,5 +1,7 @@
 use std::io::{self, Write};
 
+use blst::min_pk::PublicKey;
+
 use crate::{
     decompose::FIXED_PART,
     types::{B256, Checkpoint, Eth1Data, Finalized, SyncCommittee},
@@ -402,6 +404,32 @@ impl Finalized {
         w_u64(w, eph.excess_blob_gas)?; // [576..584]
         w.write_all(&eph.extra_data[..eph.extra_data_len as usize]) // [584..]
     }
+
+    // A `<slot>.pubkeys` file written next to `<slot>.ssz` holding the
+    // validators' decompressed pubkeys (96-B uncompressed G1 points). Reloading
+    // from it skips the per-validator decompression sqrt (`from_bytes` on the
+    // 48-B compressed form), the dominant cost of a checkpoint load. Layout:
+    // `PUBKEYS_HEADER` (magic + version + count) then `count × 96 B` in
+    // validator-index order.
+
+    pub fn pubkeys_sidecar_len(&self) -> usize {
+        PUBKEYS_HEADER + self.validators.validator_count() * PUBKEY_SER
+    }
+
+    pub fn write_pubkeys_chunk<W: Write>(&self, chunk: usize, w: &mut W) -> io::Result<bool> {
+        let n = self.validators.validator_count();
+        if chunk == 0 {
+            w.write_all(&PUBKEYS_MAGIC)?;
+            w_u32(w, PUBKEYS_VERSION)?;
+            w_u64(w, n as u64)?;
+        }
+        let start = chunk * PUBKEYS_PER_CHUNK;
+        let end = (start + PUBKEYS_PER_CHUNK).min(n);
+        for i in start..end {
+            w.write_all(&self.validators.pubkey_decompressed(i).serialize())?;
+        }
+        Ok(end >= n)
+    }
 }
 
 #[inline]
@@ -423,6 +451,54 @@ fn write_sync_committee<W: Write>(w: &mut W, sc: &SyncCommittee) -> io::Result<(
         w.write_all(pk)?;
     }
     w.write_all(&sc.aggregate_pubkey)
+}
+
+const PUBKEYS_MAGIC: [u8; 4] = *b"SVPK";
+const PUBKEYS_VERSION: u32 = 1;
+const PUBKEY_SER: usize = 96;
+/// Header: magic[4] + version: u32 + validator_count: u64.
+const PUBKEYS_HEADER: usize = 4 + 4 + 8;
+/// Records per sidecar chunk — aligned with the validators-section chunking so
+/// chunk `k` covers the same validator indices (~12.6 MiB at 96 B).
+const PUBKEYS_PER_CHUNK: usize = VALIDATORS_PER_CHUNK;
+
+#[derive(Debug, thiserror::Error)]
+pub enum PubkeysDecodeError {
+    #[error("pubkeys sidecar shorter than header: {len} < {PUBKEYS_HEADER}")]
+    Truncated { len: usize },
+    #[error("pubkeys sidecar bad magic")]
+    BadMagic,
+    #[error("pubkeys sidecar version {got} != {PUBKEYS_VERSION}")]
+    BadVersion { got: u32 },
+    #[error("pubkeys body {body} != count {count} × {PUBKEY_SER}")]
+    LenMismatch { body: usize, count: usize },
+    #[error("pubkey {idx} failed to deserialize (not on curve)")]
+    InvalidPubkey { idx: usize },
+}
+
+pub fn decode_checkpoint_pubkeys(bytes: &[u8]) -> Result<Vec<PublicKey>, PubkeysDecodeError> {
+    if bytes.len() < PUBKEYS_HEADER {
+        return Err(PubkeysDecodeError::Truncated { len: bytes.len() });
+    }
+    if bytes[..4] != PUBKEYS_MAGIC {
+        return Err(PubkeysDecodeError::BadMagic);
+    }
+    let version = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+    if version != PUBKEYS_VERSION {
+        return Err(PubkeysDecodeError::BadVersion { got: version });
+    }
+    let count = u64::from_le_bytes(bytes[8..16].try_into().unwrap()) as usize;
+    let body = &bytes[PUBKEYS_HEADER..];
+    if body.len() != count * PUBKEY_SER {
+        return Err(PubkeysDecodeError::LenMismatch { body: body.len(), count });
+    }
+    let mut out = Vec::with_capacity(count);
+    for i in 0..count {
+        let pk = PublicKey::deserialize(&body[i * PUBKEY_SER..][..PUBKEY_SER])
+            .map_err(|_| PubkeysDecodeError::InvalidPubkey { idx: i })?;
+        out.push(pk);
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -578,5 +654,56 @@ mod tests {
                 ssz.len(),
             );
         }
+    }
+
+    /// Write the decompressed-pubkey sidecar, decode it, rebuild the validators
+    /// from SSZ + sidecar, and confirm the pubkeys match. Also that a corrupted
+    /// sidecar is rejected (never silently accepted).
+    #[test]
+    fn pubkeys_sidecar_round_trip() {
+        let seeds: Vec<ValSeed> = (0..5u8)
+            .map(|i| ValSeed {
+                pubkey: valid_pubkey(i),
+                withdrawal_credentials: Withdrawals::eth1(&[i; 20]),
+                effective_balance: 32_000_000_000,
+                balance: 31_000_000_000,
+                activation_epoch: 0,
+                exit_epoch: FAR_FUTURE_EPOCH,
+            })
+            .collect();
+        let fin = Finalized::new_test(&seeds);
+
+        let mut sidecar = Vec::with_capacity(fin.pubkeys_sidecar_len());
+        let mut chunk = 0;
+        while !fin.write_pubkeys_chunk(chunk, &mut sidecar).unwrap() {
+            chunk += 1;
+        }
+        assert_eq!(sidecar.len(), fin.pubkeys_sidecar_len());
+
+        let decoded = super::decode_checkpoint_pubkeys(&sidecar).unwrap();
+        assert_eq!(decoded.len(), 5);
+
+        let offsets = fin.var_offsets();
+        let mut val_bytes = Vec::new();
+        fin.write_section(Section::Validators, &offsets, &mut val_bytes).unwrap();
+        let rebuilt =
+            crate::FinalizedValidators::try_new_with_pubkeys(&val_bytes, &decoded).unwrap();
+        for i in 0..5 {
+            assert_eq!(rebuilt.pubkey(i), fin.validators.pubkey(i));
+            assert_eq!(
+                rebuilt.pubkey_decompressed(i).compress(),
+                fin.validators.pubkey_decompressed(i).compress(),
+            );
+        }
+
+        // A flipped pubkey byte is rejected — by decode's on-curve check or the
+        // sample cross-check.
+        let mut bad = sidecar.clone();
+        bad[super::PUBKEYS_HEADER] ^= 0xff;
+        let rejected = match super::decode_checkpoint_pubkeys(&bad) {
+            Ok(d) => crate::FinalizedValidators::try_new_with_pubkeys(&val_bytes, &d).is_err(),
+            Err(_) => true,
+        };
+        assert!(rejected, "corrupted sidecar must be rejected");
     }
 }

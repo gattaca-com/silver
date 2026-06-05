@@ -1,7 +1,9 @@
 pub use balances::{BalancesDelta, FinalizedBalances};
 pub use buffer::DeltaBuffer;
 pub use delta_view::{StateDeltaReadView, StateDeltaView, ValidatorRow};
-pub use encode::{CHECKPOINT_SECTIONS, Section, VAR_LEN_SECTIONS};
+pub use encode::{
+    CHECKPOINT_SECTIONS, PubkeysDecodeError, Section, VAR_LEN_SECTIONS, decode_checkpoint_pubkeys,
+};
 pub use hash_tree::{DeltaHashTree, FinalizedHashTree};
 pub use silver_chain_spec::{BlobParameters, SpecConfig};
 pub(crate) use silver_ssz::ssz_hash;

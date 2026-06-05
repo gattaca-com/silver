@@ -124,6 +124,7 @@ impl Harness {
                 gc,
                 rc,
                 checkpoint_ssz,
+                &[],
             )
         })
     }
