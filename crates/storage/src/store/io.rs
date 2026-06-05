@@ -45,6 +45,7 @@ impl Store {
     pub(crate) fn file_io<F>(
         &mut self,
         fork_digest: &[u8; 4],
+        custody_group_columns: u128,
         producer: &mut TMultiProducer,
         emit: &mut F,
     ) -> Result<(), Error>
@@ -186,13 +187,29 @@ impl Store {
                     }
                     self.write_queue.pop_front();
                 }
-                PendingWrite::BackfillBlock { slot, ssz } => {
+                PendingWrite::BackfillBlock { block_root, slot, ssz } => {
                     let dir = self.block_slot_dir(*slot);
                     std::fs::create_dir_all(&dir)?;
                     let path = dir.join(format!("{slot}_block.ssz"));
 
                     let (buffer, _) = ssz.buffer().map_err(Error::other)?;
                     open_file_write(path, false)?.write_all(buffer)?;
+                    if !self.root_index.contains_key(block_root) {
+                        let mut record = [0u8; 40];
+                        record[..32].copy_from_slice(block_root);
+                        record[32..].copy_from_slice(&slot.to_le_bytes());
+                        open_file_write(dir.join("block_index.bin"), true)?.write_all(&record)?;
+                        self.root_index.insert(*block_root, *slot);
+                    }
+                    if let Some(backfill) = self.backfill.as_mut() {
+                        backfill.block_persisted(
+                            *block_root,
+                            *slot,
+                            buffer,
+                            custody_group_columns,
+                            &mut |evt| emit(IoEvent::PeerEvent(evt)),
+                        );
+                    }
                     self.write_queue.pop_front();
                 }
             }
@@ -251,6 +268,9 @@ impl Store {
 
         if let Some(backfill) = self.backfill.as_mut() {
             backfill.tick(&mut |evt| emit(IoEvent::PeerEvent(evt)));
+        }
+        if self.backfill.as_ref().map(Backfill::is_complete).unwrap_or_default() {
+            self.backfill = None;
         }
 
         Ok(())
@@ -400,7 +420,7 @@ fn earliest_block<P: AsRef<Path>>(dir: P) -> Result<Option<(u64, B256)>, Error> 
         })
         .min()
     else {
-        return Ok(None)
+        return Ok(None);
     };
 
     let sub_dir = PathBuf::new().join(&dir).join(min_dir.to_string());

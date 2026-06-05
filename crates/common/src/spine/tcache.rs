@@ -26,6 +26,14 @@ const DATA_OFFSET: usize = const {
     (h + a - 1) & !(a - 1)
 };
 
+// idle time that triggers an occupancy check
+const IDLE_INTERVAL_NS: Nanos = Nanos(5_000_000_000); // 5s
+
+// % of capacity occupancy that triggers evictions
+const fn lag_threshold(len: u32) -> u64 {
+    (len as u64 / 10) * 9
+}
+
 mod consumer;
 mod metrics;
 mod producer;
@@ -183,6 +191,9 @@ impl TCache {
             seq,
             next_seq: seq,
             timer: self.create_consumer_timer(name),
+            last_read: Nanos::now(),
+            last_head: seq,
+            lag_threshold: lag_threshold(self.len),
         })
     }
 
@@ -214,6 +225,9 @@ impl TCache {
             active: Buckets::new(32 * 1024, self.len as u64),
             auto_free,
             timer: self.create_consumer_timer(name),
+            last_read: Nanos::now(),
+            last_head: seq,
+            lag_threshold: lag_threshold(self.len),
         })
     }
 
