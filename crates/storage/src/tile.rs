@@ -16,6 +16,7 @@ const REQUEST_ID_PREFIX_MASK: u64 = 0xffff_ffff_0000_0000;
 const BASE_REQUEST_ID: u64 = 0x00da_5da5 << 32; // DAS prefix.
 pub(crate) const BACKFILL_REQUEST_ID: u64 = 0xbacc_f111 << 32;
 pub(crate) const COLUMN_BACKFILL_REQUEST_ID: u64 = 0xc01b_accf << 32;
+
 const MAX_RETRIES: u8 = 5;
 
 /// Persist a finalized-state checkpoint only when within this many slots of
@@ -363,7 +364,9 @@ impl Tile<SilverSpine> for StorageTile {
                 self.store.rpc_request(&mut self.rpc_consumer, req);
             }
             RpcInbound::Response(rsp) => match rsp.response {
-                silver_common::RpcResponse::BeaconBlock { fork_digest: _, ssz } if is_backfill(&rsp) => {
+                silver_common::RpcResponse::BeaconBlock { fork_digest: _, ssz }
+                    if rsp.is_backfill() =>
+                {
                     let t_read = self.rpc_consumer.acquire(ssz);
                     self.store.backfill_block(t_read);
                 }
@@ -406,7 +409,7 @@ impl Tile<SilverSpine> for StorageTile {
                     let err_msg = String::from_utf8_lossy(&msg[..len]).to_string();
                     tracing::error!(error, err_msg, "column backfill rpc error response");
                 }
-                silver_common::RpcResponse::Error { error, msg, len } if is_backfill(&rsp) => {
+                silver_common::RpcResponse::Error { error, msg, len } if rsp.is_backfill() => {
                     let err_msg = String::from_utf8_lossy(&msg[..len]).to_string();
                     tracing::error!(error, err_msg, "backfill rpc error response");
                     self.store.backfill_request_complete(rsp.application_id, &mut |event| {
@@ -418,7 +421,7 @@ impl Tile<SilverSpine> for StorageTile {
                     tracing::error!(error, err_msg, "rpc error response");
                 }
                 silver_common::RpcResponse::Complete if is_column_backfill(&rsp) => {}
-                silver_common::RpcResponse::Complete if is_backfill(&rsp) => {
+                silver_common::RpcResponse::Complete if rsp.is_backfill() => {
                     self.store.backfill_request_complete(rsp.application_id, &mut |event| {
                         producers.peer_events.produce(&event.into());
                     });
@@ -533,10 +536,6 @@ impl Tile<SilverSpine> for StorageTile {
 pub(crate) enum IoEvent {
     P2pSend(P2pSend),
     PeerEvent(PeerEvent),
-}
-
-fn is_backfill(rsp: &RpcResponseInbound) -> bool {
-    rsp.application_id & REQUEST_ID_PREFIX_MASK == BACKFILL_REQUEST_ID
 }
 
 fn is_column_backfill(rsp: &RpcResponseInbound) -> bool {

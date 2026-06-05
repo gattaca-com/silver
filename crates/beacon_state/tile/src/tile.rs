@@ -13,8 +13,8 @@ use silver_beacon_state_data::{
 };
 use silver_common::{
     BeaconStateEvent, BlockSource, GossipTopic, NewGossipMsg, P2pStreamId, PeerEvent, RpcInbound,
-    RpcMsg, RpcResponse, RpcResponseInbound, RpcSeverity, SilverSpine, SyncUpdate, TCacheRead,
-    TRandomAccess, TRead, hex32,
+    RpcMsg, RpcResponse, RpcSeverity, SilverSpine, SyncUpdate, TCacheRead, TRandomAccess, TRead,
+    hex32,
     ssz_view::{
         self, AttesterSlashingView, MAX_ATTESTATIONS_ELECTRA, MAX_ATTESTING_INDICES,
         PROPOSER_SLASHING_SIZE, ProposerSlashingView, SIGNED_BLS_CHANGE_SIZE,
@@ -1658,20 +1658,17 @@ impl Tile<SilverSpine> for BeaconStateTile {
         });
 
         adapter.consume(|m: RpcInbound, producers| {
-            if let RpcInbound::Response(RpcResponseInbound {
-                application_id: _,
-                stream_id,
-                response,
-            }) = m &&
-                let RpcResponse::BeaconBlock { fork_digest: _, ssz } = response
+            if let RpcInbound::Response(rsp) = m &&
+                !rsp.is_backfill() &&
+                let RpcResponse::BeaconBlock { fork_digest: _, ssz } = rsp.response
             {
-                tracing::debug!(?stream_id, "received beacon block over rpc");
+                tracing::debug!(stream_id = ?rsp.stream_id, "received beacon block over rpc");
                 let acquired = self.rpc_consumer.acquire(ssz);
                 let data = acquired.buffer().ok().map(|(d, _)| d as *const [u8]);
                 if let Some(p) = data {
                     self.handle_rpc(
                         RpcMsg::BlocksRangeResp(SignedBeaconBlockView),
-                        stream_id,
+                        rsp.stream_id,
                         unsafe { &*p },
                         acquired,
                         producers,

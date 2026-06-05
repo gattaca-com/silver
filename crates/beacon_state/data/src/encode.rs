@@ -119,6 +119,10 @@ impl Finalized {
         FIXED_PART + self.var_len_section_lens().iter().sum::<usize>()
     }
 
+    pub fn var_offsets(&self) -> [u32; VAR_LEN_SECTIONS] {
+        Self::offsets_from_lens(&self.var_len_section_lens())
+    }
+
     /// Encode the full canonical SSZ in one pass: the 2.74 MB fixed part, then
     /// the 12 variable bodies in SSZ-declared order.
     pub fn encode_ssz(&self, w: &mut Vec<u8>) -> io::Result<()> {
@@ -537,5 +541,42 @@ mod tests {
         assert_eq!(pending.pending_consolidations.len(), 1);
         assert_eq!(fin2.slot.slot.eth1_votes.len(), 1);
         assert_eq!(fin2.longtail.historical_summaries.read().len(), 1);
+    }
+
+    /// Decompose a real mainnet checkpoint, then re-encode it via the chunked
+    /// streaming path (the live persist's path — ~18 validators chunks at
+    /// mainnet scale) and assert byte-equality with the original SSZ.
+    #[test]
+    fn streamed_reencode_matches_mainnet_checkpoint() {
+        use std::path::PathBuf;
+
+        let path = std::env::var("SILVER_CHECKPOINT_SSZ").map(PathBuf::from).unwrap_or_else(|_| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../e2e/tests/example_checkpoints/finalized_state.ssz")
+        });
+        let Ok(ssz) = std::fs::read(&path) else {
+            eprintln!("skipping: fixture {} not present", path.display());
+            return;
+        };
+
+        let mut fin = Box::new(Finalized::empty());
+        fin.decompose(&ssz, &SpecConfig::mainnet()).expect("decompose");
+
+        let offsets = Finalized::offsets_from_lens(&fin.var_len_section_lens());
+        let mut out = Vec::with_capacity(fin.ssz_len());
+        for section in Section::ALL {
+            let mut chunk = 0;
+            while !fin.write_section_chunk(section, chunk, &offsets, &mut out).unwrap() {
+                chunk += 1;
+            }
+        }
+        if out != ssz {
+            let at = out.iter().zip(&ssz).position(|(a, b)| a != b);
+            panic!(
+                "streamed re-encode differs from original at byte {at:?} (lens {} vs {})",
+                out.len(),
+                ssz.len(),
+            );
+        }
     }
 }

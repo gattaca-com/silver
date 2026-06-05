@@ -182,7 +182,14 @@ impl Store {
                         Some((slot, parent_root)) if slot > start_slot => {
                             Some((start_slot..slot.min(*finalized_slot), parent_root))
                         }
-                        None => Some((start_slot..*finalized_slot + 1, *finalized_root)),
+                        // No blocks on disk: backfill `[start_slot, finalized_slot]`
+                        // anchored at the finalized block. Skip when nothing is
+                        // finalized yet — the zero `finalized_root` is not a real
+                        // block root, so the chain can never link and backfill
+                        // would respin on slot 0 (genesis is already the anchor).
+                        None if *finalized_root != [0u8; 32] => {
+                            Some((start_slot..*finalized_slot + 1, *finalized_root))
+                        }
                         _ => None,
                     };
                     if let Some((backfill_range, parent_root)) = range {

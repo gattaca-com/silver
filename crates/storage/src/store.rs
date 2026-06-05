@@ -120,7 +120,18 @@ impl CheckpointWriter {
 
     fn discard(self) {
         drop(self.writer);
-        let _ = std::fs::remove_file(&self.tmp_path);
+        remove_checkpoint_dir(&self.tmp_path);
+    }
+}
+
+fn remove_checkpoint_dir(tmp_path: &Path) {
+    match tmp_path.parent() {
+        Some(dir) => {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+        None => {
+            let _ = std::fs::remove_file(tmp_path);
+        }
     }
 }
 
@@ -789,6 +800,13 @@ impl Store {
         self.checkpoint.is_some()
     }
 
+    /// Section the next `file_io` turn will write (for the persist benchmark's
+    /// per-section breakdown). `None` when no checkpoint is in flight.
+    #[cfg(test)]
+    pub(super) fn checkpoint_section(&self) -> Option<Section> {
+        self.checkpoint.as_ref().map(|cw| Section::ALL[cw.cursor])
+    }
+
     pub(super) fn begin_checkpoint(&mut self, reader: BeaconStateReader) {
         if self.checkpoint.is_some() {
             return;
@@ -854,7 +872,7 @@ impl Store {
             Ok(f) => f,
             Err(e) => {
                 tracing::error!(err = ?e.into_error(), slot, "failed to flush checkpoint writer");
-                let _ = std::fs::remove_file(&tmp_path);
+                remove_checkpoint_dir(&tmp_path);
                 return;
             }
         };
@@ -862,7 +880,7 @@ impl Store {
             Ok(()) => tracing::info!(slot, "persisted finalized checkpoint"),
             Err(e) => {
                 tracing::error!(?e, slot, "failed to commit checkpoint");
-                let _ = std::fs::remove_file(&tmp_path);
+                remove_checkpoint_dir(&tmp_path);
             }
         }
     }
@@ -945,11 +963,19 @@ mod tests {
     use super::{FINALIZED_CHECKPOINTS_DIR, Store};
     use crate::tile::IoEvent;
 
-    /// Manual benchmark of the real `Store::persist_finalized_checkpoint` — the
-    /// durable-write half of the storage tile's checkpoint path. The SSZ encode
-    /// is benched separately in `silver_beacon_state_data`'s
-    /// `encode_checkpoint`. Ignored by default — needs the ~312 MiB mainnet
-    /// fixture and writes several GiB.
+    /// Manual benchmark comparing the storage tile's two checkpoint-persist
+    /// strategies on a real mainnet state, printing three medians:
+    ///   - `oneshot_write_only` — write a pre-encoded blob (encode excluded);
+    ///   - `oneshot_full`       — phase 1: encode into a buffer, then write it;
+    ///   - `streamed_full`      — phase 2: the real `begin_checkpoint` +
+    ///     `file_io` section loop (fused encode+write, version checks, commit).
+    /// The headline comparison is `oneshot_full` vs `streamed_full`. Note this
+    /// measures *total work* — it does not capture phase 2's wins (peak memory
+    /// ~1 MiB vs the phase-1 ~400 MiB buffer, and no single multi-hundred-ms
+    /// blocking write); streaming is expected to cost slightly more total.
+    ///
+    /// Ignored by default — needs the ~312 MiB mainnet fixture, writes tens of
+    /// GiB (retention caps resident disk at the newest N).
     ///
     ///   cargo test -p silver_storage --release checkpoint_persist_bench \
     ///       -- --ignored --nocapture
@@ -976,28 +1002,102 @@ mod tests {
         assert_eq!(len, ssz.len(), "round-trip length mismatch");
         println!("state: {len} bytes ({} MiB), base slot {base_slot}", len >> 20);
 
-        // Encode once up-front; the timed loop measures persist only.
-        let mut buf = Vec::with_capacity(len);
-        fin.encode_ssz(&mut buf).unwrap();
+        use silver_beacon_state_data::{
+            BeaconState, BeaconStateOwner, CHECKPOINT_SECTIONS, Section,
+        };
+        use silver_common::TCache;
 
-        // Real persist (atomic temp → fsync → rename → fsync dirs → retention) —
-        // the tile's `loop_body` write path. A fresh slot each iteration bypasses
+        // Real persist target (atomic temp → fsync → rename → fsync dirs →
+        // retention). A monotonically-increasing slot each iteration bypasses
         // the idempotency guard and exercises the per-slot mkdir + retention
         // prune; retention caps disk at the newest N. Unique subdir under
-        // SILVER_BENCH_DIR (default `/tmp`), removed at the end.
+        // SILVER_BENCH_DIR (default `/tmp`; point it at the data-store disk —
+        // tmpfs understates fsync). Removed at the end.
         let base = std::env::var("SILVER_BENCH_DIR").unwrap_or_else(|_| "/tmp".to_string());
         let dir = format!("{base}/silver_bench_persist_{}", rand::random::<u32>());
         let mut store = Store::load(dir.clone()).unwrap();
-        let mut persist = Vec::new();
-        for i in 0..23u64 {
+
+        const ITERS: u64 = 23;
+        const WARMUP: u64 = 3;
+        let mut slot = base_slot;
+
+        // Phase 1, write half only: write a pre-encoded blob (encode excluded).
+        let mut buf = Vec::with_capacity(len);
+        fin.encode_ssz(&mut buf).unwrap();
+        let mut write_only = Vec::new();
+        for i in 0..ITERS {
             let t = Instant::now();
-            store.persist_finalized_checkpoint(base_slot + i, &buf).unwrap();
+            store.persist_finalized_checkpoint(slot, &buf).unwrap();
             let elapsed = t.elapsed();
-            if i >= 3 {
-                persist.push(elapsed);
+            slot += 1;
+            if i >= WARMUP {
+                write_only.push(elapsed);
             }
         }
-        report("persist_finalized_checkpoint", &mut persist, len);
+        report("oneshot_write_only", &mut write_only, len);
+
+        // Phase 1, full: encode into the reused buffer, then write it.
+        let mut oneshot = Vec::new();
+        for i in 0..ITERS {
+            let t = Instant::now();
+            buf.clear();
+            fin.encode_ssz(&mut buf).unwrap();
+            store.persist_finalized_checkpoint(slot, &buf).unwrap();
+            let elapsed = t.elapsed();
+            slot += 1;
+            if i >= WARMUP {
+                oneshot.push(elapsed);
+            }
+        }
+        report("oneshot_full(encode+write)", &mut oneshot, len);
+
+        // Phase 2, streamed: the real `begin_checkpoint` + `file_io` section
+        // loop (fused encode+write through the BufWriter, version checks, commit,
+        // retention). Consumes `fin` into an owner so the reader can drive it.
+        let mut bs = BeaconState::empty();
+        bs.finalized = *fin;
+        let mut owner = BeaconStateOwner::new(bs);
+        let reader = owner.reader();
+        let mut producer = TCache::multi_producer("bench_persist_rpc", 1 << 20);
+        let mut streamed = Vec::new();
+        // Per-section total over the measured iterations (the per-turn `Instant`
+        // overhead is ~ns/turn, negligible vs the section writes it brackets).
+        let mut per_section = [Duration::ZERO; CHECKPOINT_SECTIONS];
+        let mut counted = 0u32;
+        for i in 0..ITERS {
+            // Advance the finalized slot so each persist targets a fresh slot
+            // (guard drops here → seqlock version even before the snapshot).
+            {
+                let mut g = owner.write();
+                g.finalized.slot.slot.slot = slot;
+            }
+            let t = Instant::now();
+            store.begin_checkpoint(reader.clone());
+            while store.checkpoint_in_flight() {
+                let section = store.checkpoint_section();
+                let ct = Instant::now();
+                store.file_io(&[0u8; 4], &mut producer, &mut |_: IoEvent| {}).unwrap();
+                let cdt = ct.elapsed();
+                // Validators spans several turns → all land in its bucket.
+                if i >= WARMUP &&
+                    let Some(s) = section
+                {
+                    per_section[s as usize] += cdt;
+                }
+            }
+            let elapsed = t.elapsed();
+            slot += 1;
+            if i >= WARMUP {
+                streamed.push(elapsed);
+                counted += 1;
+            }
+        }
+        report("streamed_full(encode+write)", &mut streamed, len);
+        println!("  streamed per-section (mean over {counted} persists):");
+        for (idx, total) in per_section.iter().enumerate() {
+            println!("    {:?}: {:?}", Section::ALL[idx], *total / counted);
+        }
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 

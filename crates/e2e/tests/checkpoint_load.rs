@@ -8,7 +8,7 @@ use silver_beacon_state::{
     ssz_hash::hash_tree_root_block_header,
     tile::{BeaconStateTile, Feedback},
 };
-use silver_beacon_state_data::{BeaconState, BeaconStateOwner, Finalized, SpecConfig};
+use silver_beacon_state_data::{BeaconState, BeaconStateOwner, Finalized, Section, SpecConfig};
 use silver_common::{TCache, TCacheProducer, ticker::SlotTicker};
 use silver_e2e::mainnet_api::fetch_canonical_state_root;
 
@@ -66,6 +66,27 @@ fn finalized_state_loads() {
             "re-encoded SSZ differs from original: first mismatch at {:?} (lens {} vs {})",
             at,
             reencoded.len(),
+            ssz.len(),
+        );
+    }
+
+    // Same gate via the chunked streaming path (the live persist's path —
+    // ~18 validators chunks at mainnet scale, vs the single chunk the
+    // synthetic unit test exercises). Must also reproduce the original bytes.
+    let offsets = fin.var_offsets();
+    let mut streamed = Vec::with_capacity(fin.ssz_len());
+    for section in Section::ALL {
+        let mut chunk = 0;
+        while !fin.write_section_chunk(section, chunk, &offsets, &mut streamed).expect("encode") {
+            chunk += 1;
+        }
+    }
+    if streamed != ssz {
+        let at = streamed.iter().zip(&ssz).position(|(a, b)| a != b);
+        panic!(
+            "chunk-streamed SSZ differs from original: first mismatch at {:?} (lens {} vs {})",
+            at,
+            streamed.len(),
             ssz.len(),
         );
     }
