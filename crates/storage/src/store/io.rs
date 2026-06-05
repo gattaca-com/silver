@@ -282,6 +282,8 @@ impl Store {
             self.backfill = None;
         }
 
+        self.step_checkpoint();
+
         Ok(())
     }
 

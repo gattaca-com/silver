@@ -1,4 +1,5 @@
 use std::{
+    io::{self, Write},
     ops::{Deref, DerefMut},
     sync::{self, Arc, atomic::Ordering},
 };
@@ -6,10 +7,17 @@ use std::{
 use flux::communication::Seqlock;
 
 use crate::{
-    BeaconState, DeltaBuffer, EpochStateDelta, LongtailState, StateDelta, StateDeltaReadView,
-    StateDeltaView,
+    BeaconState, DeltaBuffer, EpochStateDelta, Finalized, LongtailState, Section, StateDelta,
+    StateDeltaReadView, StateDeltaView, VAR_LEN_SECTIONS,
     types::{EPOCHS_RING_N, LONGTAILS_RING_N, SLOTS_RING_N},
 };
+
+#[derive(Clone, Copy)]
+pub struct CheckpointSnapshot {
+    pub version: usize,
+    pub slot: u64,
+    pub offsets: [u32; VAR_LEN_SECTIONS],
+}
 
 /// Beacon state writer control.
 /// Single writer.
@@ -112,6 +120,7 @@ impl BeaconStateOwner {
     }
 }
 
+#[derive(Clone)]
 pub struct BeaconStateReader {
     state_ptr: *const BeaconState,
     inner: Arc<Seqlock<ControlInner>>,
@@ -156,6 +165,45 @@ impl BeaconStateReader {
                 return result;
             }
         }
+    }
+
+    pub fn begin_checkpoint(&self) -> CheckpointSnapshot {
+        loop {
+            let (control, _) = self.inner.read_copy().expect("should never be empty");
+            sync::atomic::compiler_fence(Ordering::Acquire);
+            if control.version & 1 == 1 {
+                std::hint::spin_loop();
+                continue;
+            }
+            let version = control.version;
+            let finalized = &unsafe { &*self.state_ptr }.finalized;
+            let slot = finalized.slot.slot.slot;
+            let offsets = Finalized::offsets_from_lens(&finalized.var_len_section_lens());
+            sync::atomic::compiler_fence(Ordering::Acquire);
+            let (post, _) = self.inner.read_copy().expect("should never be empty");
+            if post.version == version {
+                return CheckpointSnapshot { version, slot, offsets };
+            }
+        }
+    }
+
+    pub fn write_checkpoint_chunk<W: Write>(
+        &self,
+        section: Section,
+        chunk: usize,
+        offsets: &[u32; VAR_LEN_SECTIONS],
+        w: &mut W,
+    ) -> io::Result<bool> {
+        let finalized = &unsafe { &*self.state_ptr }.finalized;
+        finalized.write_section_chunk(section, chunk, offsets, w)
+    }
+
+    /// True iff the seqlock version still matches the snapshot's — i.e. no
+    /// finalization has superseded the in-flight checkpoint.
+    pub fn checkpoint_version_matches(&self, version: usize) -> bool {
+        let (control, _) = self.inner.read_copy().expect("should never be empty");
+        sync::atomic::compiler_fence(Ordering::Acquire);
+        control.version == version
     }
 }
 

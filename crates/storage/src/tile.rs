@@ -23,10 +23,6 @@ const MAX_RETRIES: u8 = 5;
 /// and re-encoding every intermediate finalized epoch while catching up.
 const CAUGHT_UP_SLACK_SLOTS: u64 = 2 * SLOTS_PER_EPOCH;
 
-/// Initial capacity for the reused checkpoint encode buffer. A mainnet
-/// finalized state is ~312 MiB, we allocate 400 MiB.
-const CHECKPOINT_BUF_CAPACITY: usize = 400 * 1024 * 1024;
-
 /// Mainnet epoch: 32 slots × 12s. Wheel bucket width for the
 /// block-level validation cache.
 const EPOCH_DURATION: Duration = Duration::from_secs(32 * 12);
@@ -71,11 +67,9 @@ pub struct StorageTile {
     // the trigger so we encode at most once per finalized-epoch advance.
     // Advanced when a persist is queued; re-derived from disk on restart.
     checkpointed_epoch: u64,
-    // Reused buffer for the finalized-state checkpoint SSZ (phase 1: whole
-    // state encoded in one batch, then written + atomically renamed).
-    checkpoint_buf: Vec<u8>,
     // Set by a Status when finality advanced past the last persisted epoch and
-    // we are caught up to head; consumed (and cleared) in `loop_body`.
+    // we are caught up to head; consumed when a persist is started (the
+    // in-flight checkpoint then lives on the `Store`, driven by `file_io`).
     persist_pending: bool,
 }
 
@@ -109,7 +103,6 @@ impl StorageTile {
             validated_blocks: Wheel::new(EPOCH_DURATION),
             outstanding_requests: Wheel::new(Duration::from_millis(500)),
             checkpointed_epoch,
-            checkpoint_buf: Vec::with_capacity(CHECKPOINT_BUF_CAPACITY),
             persist_pending: false,
         }
     }
@@ -515,7 +508,14 @@ impl Tile<SilverSpine> for StorageTile {
         });
         self.request_id = request_id;
 
-        // Run store file i/o
+        // Start a checkpoint persist when one is pending and none is in flight;
+        // `file_io` then streams it one section per turn and commits at the end.
+        if self.persist_pending && !self.store.checkpoint_in_flight() {
+            self.persist_pending = false;
+            self.store.begin_checkpoint(self.beacon_state.clone());
+        }
+
+        // Run store file i/o (also advances any in-flight checkpoint persist).
         if let Err(e) = self.store.file_io(
             &self.fork_digest,
             self.custody_group_columns,
@@ -526,20 +526,6 @@ impl Tile<SilverSpine> for StorageTile {
             },
         ) {
             tracing::error!(?e, "storage store file i/o failed");
-        }
-
-        if self.persist_pending {
-            self.persist_pending = false;
-            let buf = &mut self.checkpoint_buf;
-            let slot = self.beacon_state.read(&mut |v| v.encode_finalized(buf));
-            match self.store.persist_finalized_checkpoint(slot, &self.checkpoint_buf) {
-                Ok(()) => tracing::info!(
-                    slot,
-                    bytes = self.checkpoint_buf.len(),
-                    "persisted finalized checkpoint"
-                ),
-                Err(e) => tracing::error!(?e, slot, "failed to persist finalized checkpoint"),
-            }
         }
     }
 }
