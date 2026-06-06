@@ -263,6 +263,35 @@ pub fn verify_proposer_signature(
         BLST_ERROR::BLST_SUCCESS
 }
 
+/// Randomly selects up to `limit` columns from the set of candidate columns.
+/// The candidate columns are represented by 1 bits in the `candidate_mask`.
+/// Returns a u128 bitmask of the selected columns.
+pub fn select_random_columns(mut candidate_mask: u128, limit: usize) -> u128 {
+    let mut selected = 0u128;
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    for _ in 0..limit {
+        let count = candidate_mask.count_ones();
+        if count == 0 {
+            break;
+        }
+        let r = rng.gen_range(0..count);
+        let mut seen = 0;
+        for i in 0..128 {
+            let bit = 1u128 << i;
+            if (candidate_mask & bit) != 0 {
+                if seen == r {
+                    selected |= bit;
+                    candidate_mask &= !bit;
+                    break;
+                }
+                seen += 1;
+            }
+        }
+    }
+    selected
+}
+
 #[cfg(test)]
 mod tests {
     use silver_common::ssz_view::DATA_COLUMN_SIDECAR_MIN;
@@ -357,5 +386,26 @@ mod tests {
         // error; we map every non-Ok(true) result to false.
         let buf = synth_sidecar(0, 1, 1, 1);
         assert!(!verify_data_column_sidecar_kzg_proofs(&buf));
+    }
+
+    #[test]
+    fn test_select_random_columns_limit() {
+        let mask = (1u128 << 5) | (1u128 << 10) | (1u128 << 100);
+        let selected = select_random_columns(mask, 2);
+        assert_eq!(selected.count_ones(), 2);
+        assert_eq!(selected & !mask, 0);
+    }
+
+    #[test]
+    fn test_select_random_columns_under_limit() {
+        let mask = (1u128 << 5) | (1u128 << 10);
+        let selected = select_random_columns(mask, 5);
+        assert_eq!(selected, mask);
+    }
+
+    #[test]
+    fn test_select_random_columns_empty() {
+        let selected = select_random_columns(0, 4);
+        assert_eq!(selected, 0);
     }
 }

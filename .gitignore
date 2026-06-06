@@ -31,3 +31,5 @@ CLAUDE.md
 !crates/engine/testdata/*.ssz
 # kurtosis generated files
 kurtosis/silver-devnet.toml
+# ethereum consensus-spec-tests
+crates/beacon_state/consensus-spec-tests/

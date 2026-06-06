@@ -15,6 +15,7 @@ silver_beacon_state_data.workspace = true
 silver_common.workspace = true
 silver_common_macros.workspace = true
 silver_metrics.workspace = true
+rand.workspace = true
 tracing.workspace = true
 
 [lints]

@@ -120,6 +120,7 @@ pub enum RpcResponse {
 pub const BACKFILL_REQUEST_ID: u64 = 0xbacc_f111 << 32;
 pub const COLUMN_BACKFILL_REQUEST_ID: u64 = 0xc01b_accf << 32;
 pub const BASE_REQUEST_ID: u64 = 0x00da_5da5 << 32; // DAS prefix.
+pub const REQUEST_ID_PREFIX_MASK: u64 = 0xffff_ffff_0000_0000;
 
 /// RPC response received from a peer.
 #[derive(Clone, Copy, Debug)]
@@ -129,8 +130,6 @@ pub struct RpcResponseInbound {
     pub stream_id: P2pStreamId,
     pub response: RpcResponse,
 }
-
-const REQUEST_ID_PREFIX_MASK: u64 = 0xffff_ffff_0000_0000;
 
 impl RpcResponseInbound {
     #[inline]
