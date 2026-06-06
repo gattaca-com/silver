@@ -7,7 +7,7 @@ use silver_common::{
 };
 use silver_metrics::timed;
 
-use crate::{store::Store, util, StorageCounters};
+use crate::{StorageCounters, store::Store, util};
 
 const MAX_RETRIES: u8 = 5;
 
@@ -537,10 +537,12 @@ pub(crate) enum IoEvent {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::io::Write;
+
     use silver_beacon_state_data::{BeaconState, BeaconStateOwner};
-    use silver_common::{TCache, StreamProtocol, P2pStreamId, TCacheProducer};
+    use silver_common::{P2pStreamId, StreamProtocol, TCache, TCacheProducer};
+
+    use super::*;
 
     #[test]
     fn test_beacon_block_gossip_requests_random_columns() {
@@ -551,15 +553,17 @@ mod tests {
 
         let gossip_tc = TCache::producer("gossip_blocks", 1024 * 1024);
         let gossip_consumer = gossip_tc.cache_ref().random_access("gossip_cons", true).unwrap();
-        
+
         let persist_gossip_tc = TCache::producer("persist_gossip_blocks", 1024 * 1024);
-        let persist_gossip_consumer = persist_gossip_tc.cache_ref().random_access("persist_gossip_cons", true).unwrap();
+        let persist_gossip_consumer =
+            persist_gossip_tc.cache_ref().random_access("persist_gossip_cons", true).unwrap();
 
         let rpc_tc = TCache::producer("rpc_blocks", 1024 * 1024);
         let rpc_consumer = rpc_tc.cache_ref().random_access("rpc_cons", true).unwrap();
 
         let persist_rpc_tc = TCache::producer("persist_rpc_blocks", 1024 * 1024);
-        let persist_rpc_consumer = persist_rpc_tc.cache_ref().random_access("persist_rpc_cons", true).unwrap();
+        let persist_rpc_consumer =
+            persist_rpc_tc.cache_ref().random_access("persist_rpc_cons", true).unwrap();
 
         let rpc_producer = TCache::multi_producer("rpc_out", 1024 * 1024);
 
@@ -584,7 +588,7 @@ mod tests {
         block_bytes[100..108].copy_from_slice(&42u64.to_le_bytes());
         // Body offset at [180..184) relative to 100: let's make it 84
         block_bytes[180..184].copy_from_slice(&84u32.to_le_bytes());
-        
+
         // Inside body (starts at 184):
         // blob_kzg_commitments_offset at body[388..392]
         block_bytes[184 + 388..184 + 392].copy_from_slice(&400u32.to_le_bytes());
@@ -596,7 +600,8 @@ mod tests {
         res.write_all(&block_bytes).unwrap();
         res.flush().unwrap();
         let ssz = res.read();
-        let mut blocks_consumer = producer.cache_ref().random_access("test_block_cons", true).unwrap();
+        let mut blocks_consumer =
+            producer.cache_ref().random_access("test_block_cons", true).unwrap();
         let read = blocks_consumer.acquire(ssz);
 
         let block_root = util::block_root(&block_bytes);
@@ -607,7 +612,9 @@ mod tests {
         tile.beacon_block(rpc_stream, read.clone(), &mut |evt| rpc_events.push(evt));
 
         assert_eq!(rpc_events.len(), 1);
-        if let PeerEvent::SendDataColumnsByRootRequest { columns, block_root: req_root, .. } = rpc_events[0] {
+        if let PeerEvent::SendDataColumnsByRootRequest { columns, block_root: req_root, .. } =
+            rpc_events[0]
+        {
             assert_eq!(columns, custody_columns);
             assert_eq!(req_root, block_root);
         } else {
@@ -623,7 +630,9 @@ mod tests {
         tile.beacon_block(gossip_stream, read, &mut |evt| gossip_events.push(evt));
 
         assert_eq!(gossip_events.len(), 1);
-        if let PeerEvent::SendDataColumnsByRootRequest { columns, block_root: req_root, .. } = gossip_events[0] {
+        if let PeerEvent::SendDataColumnsByRootRequest { columns, block_root: req_root, .. } =
+            gossip_events[0]
+        {
             assert_eq!(req_root, block_root);
             // Must contain custody columns
             assert_eq!(columns & custody_columns, custody_columns);
