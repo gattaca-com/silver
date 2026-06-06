@@ -38,13 +38,7 @@ pub fn timed(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let expanded = quote! {
         #(#attrs)* #vis #sig {
-            ::std::thread_local! {
-                static __TIMED_TIMER: ::core::cell::RefCell<
-                    ::core::option::Option<::flux::Timer>
-                > = ::core::cell::RefCell::new(::core::option::Option::None);
-            }
             let __timed_guard = ::silver_metrics::TimerGuard::new(
-                &__TIMED_TIMER,
                 #timer_name_expr,
             );
             #block

@@ -22,7 +22,6 @@ use std::{
         OnceLock,
         atomic::{AtomicPtr, AtomicU64, Ordering},
     },
-    thread::LocalKey,
 };
 
 use flux::{Timer, timing::Instant};
@@ -48,22 +47,25 @@ pub fn new_timer(name: &str) -> Timer {
     Timer::new(APP_NAME.get().map(String::as_str).unwrap_or("silver"), name)
 }
 
+::std::thread_local! {
+    static TIMERS: RefCell<std::collections::HashMap<&'static str, Timer>> = RefCell::new(std::collections::HashMap::new());
+}
+
 /// Drop-based timer scope used by the `#[timed]` macro expansion.
 /// Records processing time on every exit path — normal return, `?`,
 /// early `return`, panic-unwind.
 #[doc(hidden)]
 pub struct TimerGuard {
-    key: &'static LocalKey<RefCell<Option<Timer>>>,
     name: &'static str,
     start: Instant,
 }
 
 impl TimerGuard {
     #[inline]
-    pub fn new(key: &'static LocalKey<RefCell<Option<Timer>>>, name: &'static str) -> Self {
+    pub fn new(name: &'static str) -> Self {
         let start = Instant::now();
         flamegraph_timer::stack_enter(name, start);
-        Self { key, name, start }
+        Self { name, start }
     }
 }
 
@@ -75,9 +77,9 @@ impl Drop for TimerGuard {
             flamegraph_timer::stack_exit();
             return;
         }
-        self.key.with(|cell| {
-            let mut opt = cell.borrow_mut();
-            let timer = opt.get_or_insert_with(|| new_timer(self.name));
+        TIMERS.with(|cell| {
+            let mut map = cell.borrow_mut();
+            let timer = map.entry(self.name).or_insert_with(|| new_timer(self.name));
             timer.set_start(self.start);
             timer.record_processing();
         });
