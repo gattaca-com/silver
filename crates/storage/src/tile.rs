@@ -54,7 +54,7 @@ pub struct StorageTile {
     validated_blocks: Wheel<BlockRoot, [u8; 96], 4>,
     // outstanding requests - keyed by block body root
     // 16 x 500 millisecond buckets.
-    outstanding_requests: Wheel<BlockRoot, (u128, u8), 16>,
+    outstanding_requests: Wheel<BlockRoot, (u128, u128, u8), 16>,
 
     // Highest Status finalized epoch we've scheduled a checkpoint for; dedups
     // the trigger so we encode at most once per finalized-epoch advance.
@@ -94,7 +94,7 @@ impl StorageTile {
             fork_digest,
             validated_columns: Wheel::new(EPOCH_DURATION),
             validated_blocks: Wheel::new(EPOCH_DURATION),
-            outstanding_requests: Wheel::new(Duration::from_millis(500)),
+            outstanding_requests: Wheel::new(Duration::from_millis(100)),
             checkpointed_epoch,
             persist_pending: false,
         }
@@ -141,7 +141,12 @@ impl StorageTile {
         if to_request == 0 {
             return;
         }
-        self.outstanding_requests.insert(block_root, (to_request, MAX_RETRIES));
+        self.outstanding_requests.insert(block_root, (to_request, to_request, MAX_RETRIES));
+        tracing::trace!(
+            block = hex::encode(block_root),
+            ?stream_id,
+            "data columns by root request: {to_request:b}"
+        );
         emit(self.column_request(block_root, to_request));
     }
 
@@ -281,18 +286,21 @@ impl StorageTile {
             self.validated_blocks.insert(block_root, sig_bytes);
         }
 
-        if let Some((mut requested, retries)) = requested {
+        let mut completion_check = self.custody_group_columns;
+
+        if let Some((mut requested, full_set, retries)) = requested {
             requested &= !column_bitmask;
+            completion_check = full_set;
             if requested != 0 {
                 // more column responses pending
-                self.outstanding_requests.insert(block_root, (requested, retries));
+                self.outstanding_requests.insert(block_root, (requested, full_set, retries));
             }
         }
 
         let validated = self.validated_columns.entry(block_root).or_default();
         *validated |= column_bitmask;
 
-        if *validated & self.custody_group_columns == self.custody_group_columns {
+        if *validated & completion_check == completion_check {
             // have all validated data columns for the block.
             StorageCounters::DataColumnsAvailableEmitted.inc();
             emit(DataColumnsAvailable {
@@ -330,7 +338,9 @@ impl Tile<SilverSpine> for StorageTile {
                     producers.peer_events.produce(&evt.into());
                 });
             }
-            silver_common::GossipTopic::DataColumnSidecar(_custody_group) => {
+            silver_common::GossipTopic::DataColumnSidecar(_custody_group)
+                if self.store.is_synced() =>
+            {
                 // TODO validate that topic group matches sidecar column index
                 tracing::debug!(_custody_group, "data column sidecar over gossip");
 
@@ -487,15 +497,14 @@ impl Tile<SilverSpine> for StorageTile {
 
         // Timeout any pending requests and re-issue
         let mut request_id = self.request_id;
-        self.outstanding_requests.maybe_rotate(now, &mut |block_root, (columns, retries)| {
+        self.outstanding_requests.maybe_rotate(now, &mut |block_root, (columns, _, retries)| {
             if *retries == 0 {
                 return true; // remove
             }
             request_id += 1;
             tracing::trace!(
-                columns,
                 block_root = hex::encode(block_root),
-                "resending outstanding data column request"
+                "resending outstanding data column request: {columns:b}"
             );
             adapter.produce(PeerEvent::SendDataColumnsByRootRequest {
                 request_id,

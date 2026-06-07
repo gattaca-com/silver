@@ -148,6 +148,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         discv5.add_enr(enr, now);
     }
 
+    let das_custody_groups = local_enr.node_id().custody_groups(local_enr.cgc().unwrap_or(4) as u8);
+    let mut gossip_topics = config.gossip_topics()?;
+    for i in 0..128 {
+        if das_custody_groups & (1 << i) != 0 {
+            gossip_topics.push(silver_common::GossipTopic::DataColumnSidecar(i));
+        }
+    }
+
     let network_tile = NetworkTile::new(discv5_addr, discv5, p2p_addr, p2p_endpoint, p2p_context)?;
     let gossip_tile = GossipHandler::new(
         incoming_gossip_consumer,
@@ -158,7 +166,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let control_tile = Controller::new(
         PeerManager::new(
-            config.gossip_topics()?,
+            gossip_topics,
             config.peer_score_params(),
             config.syncing(),
             config.fork_digest(),
@@ -210,7 +218,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         persist_rpc_consumer_ds,
         outgoing_rpc_producer,
         state_reader,
-        local_enr.node_id().custody_groups(local_enr.cgc().unwrap_or(4) as u8),
+        das_custody_groups,
         config.fork_digest(),
         config.data_storage_dir().into(),
     );
