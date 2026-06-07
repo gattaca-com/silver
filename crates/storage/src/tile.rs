@@ -11,6 +11,7 @@ use crate::{StorageCounters, store::Store, util};
 
 const MAX_RETRIES: u8 = 5;
 
+
 /// Persist a finalized-state checkpoint only when within this many slots of
 /// the wall-clock head (i.e. not fast-syncing) — avoids stalling the writer
 /// and re-encoding every intermediate finalized epoch while catching up.

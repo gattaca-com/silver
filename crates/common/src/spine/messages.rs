@@ -869,3 +869,30 @@ pub struct DataColumnsAvailable {
     // Proposer sugnature over the fields above.
     pub signature: [u8; 96],
 }
+
+pub const REQUEST_ID_PREFIX_MASK: u64 = 0xffff_ffff_0000_0000;
+pub const BASE_REQUEST_ID: u64 = 0x00da_5da5 << 32;
+pub const BACKFILL_REQUEST_ID: u64 = 0xbacc_f111 << 32;
+pub const COLUMN_BACKFILL_REQUEST_ID: u64 = 0xc01b_accf << 32;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestCategory {
+    LiveSync,
+    BlockBackfill,
+    ColumnBackfill,
+}
+
+impl RequestCategory {
+    pub fn from_request_id(request_id: u64) -> Self {
+        match request_id & REQUEST_ID_PREFIX_MASK {
+            COLUMN_BACKFILL_REQUEST_ID => RequestCategory::ColumnBackfill,
+            BACKFILL_REQUEST_ID => RequestCategory::BlockBackfill,
+            _ => RequestCategory::LiveSync,
+        }
+    }
+
+    pub fn is_backfill(self) -> bool {
+        matches!(self, RequestCategory::ColumnBackfill | RequestCategory::BlockBackfill)
+    }
+}
+
