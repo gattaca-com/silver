@@ -895,4 +895,3 @@ impl RequestCategory {
         matches!(self, RequestCategory::ColumnBackfill | RequestCategory::BlockBackfill)
     }
 }
-

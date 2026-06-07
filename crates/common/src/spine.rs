@@ -9,10 +9,9 @@ pub use messages::{
     EngineGetPayloadResp, EngineHealthEvent, EngineNewPayloadReq, EngineNewPayloadResp,
     EnginePreparePayloadReq, EngineReq, EngineResp, GossipMsgOut, IpBytes, MAX_BLOBS_PER_BLOCK,
     MAX_PAYLOAD_BODIES_PER_REQ, NewGossipMsg, P2pSend, PayloadValidationStatus, PeerControl,
-    PeerEvent, PeerStatus, RpcInbound, RpcMsg, RpcOutbound, RpcRequest, RpcRequestInbound,
-    RpcRequestOutbound, RpcResponse, RpcResponseInbound, RpcResponseOutbound, RpcSeverity,
-    SyncUpdate, WithdrawalInline, RequestCategory, REQUEST_ID_PREFIX_MASK, BASE_REQUEST_ID,
-    BACKFILL_REQUEST_ID, COLUMN_BACKFILL_REQUEST_ID,
+    PeerEvent, PeerStatus, REQUEST_ID_PREFIX_MASK, RequestCategory, RpcInbound, RpcMsg,
+    RpcOutbound, RpcRequest, RpcRequestInbound, RpcRequestOutbound, RpcResponse,
+    RpcResponseInbound, RpcResponseOutbound, RpcSeverity, SyncUpdate, WithdrawalInline,
 };
 pub use stream_id::P2pStreamId;
 pub use stream_protocol::{

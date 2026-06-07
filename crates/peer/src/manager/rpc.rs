@@ -14,9 +14,9 @@ use std::{
 };
 
 use silver_common::{
-    P2pSend, PeerControl, PeerEvent, PeerStatus, RpcInbound, RpcOutbound, RpcRequest,
-    RpcRequestInbound, RpcRequestOutbound, RpcResponse, RpcResponseInbound, RpcResponseOutbound,
-    RpcSeverity, StreamProtocol, SyncUpdate, hex32, RequestCategory,
+    P2pSend, PeerControl, PeerEvent, PeerStatus, RequestCategory, RpcInbound, RpcOutbound,
+    RpcRequest, RpcRequestInbound, RpcRequestOutbound, RpcResponse, RpcResponseInbound,
+    RpcResponseOutbound, RpcSeverity, StreamProtocol, SyncUpdate, hex32,
     ssz_view::{BLOCKS_BY_RANGE_REQ_SIZE, MetadataView, StatusView},
 };
 
@@ -732,13 +732,11 @@ impl PeerManager {
     ) {
         let mut remaining = columns;
         while remaining != 0 {
-            let Some((peer, overlap)) = self
-                .best_peer_for_data_columns(
-                    StreamProtocol::DataColumnSidecarsByRoot,
-                    remaining,
-                    request_id,
-                )
-            else {
+            let Some((peer, overlap)) = self.best_peer_for_data_columns(
+                StreamProtocol::DataColumnSidecarsByRoot,
+                remaining,
+                request_id,
+            ) else {
                 tracing::debug!("no peer has data columns: {remaining}");
                 break;
             };
@@ -759,7 +757,8 @@ impl PeerManager {
         if remaining != 0 {
             let is_backfill = RequestCategory::from_request_id(request_id).is_backfill();
             if is_backfill {
-                self.pending_backfill_columns_by_root.push_back((request_id, remaining, block_root));
+                self.pending_backfill_columns_by_root
+                    .push_back((request_id, remaining, block_root));
             } else {
                 self.pending_live_columns_by_root.push_back((request_id, remaining, block_root));
             }
