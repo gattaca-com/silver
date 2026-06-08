@@ -42,11 +42,14 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
     let block = Block::default().borders(Borders::ALL).title(" tiles ");
     let header = Row::new(vec![
         Cell::from("tile"),
-        Cell::from("util %"),
+        Cell::from("util avg %"),
+        Cell::from("util peak %"),
         Cell::from("busy avg (ns)"),
         Cell::from("busy max (ns)"),
         Cell::from("loop_cnt"),
         Cell::from("samples"),
+        Cell::from("busy_total"),
+        Cell::from("ticks_total"),
     ])
     .style(Style::default().add_modifier(Modifier::BOLD).fg(Color::White))
     .height(1);
@@ -57,26 +60,33 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
         .enumerate()
         .map(|(i, t)| {
             let s = t.latest;
-            let util = s.utilisation();
+            // util over the retained 1 s-bucket window, not the latest
+            // 1024-iter sample: work is bursty (per-slot) and a raw sample
+            // window spans only ms. peak (busiest bucket) drives the colour.
+            let avg = t.util_avg();
+            let peak = t.util_peak();
             let row_style = if i == app.tiles_selection {
                 Style::default().bg(Color::DarkGray).fg(Color::White).add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
             };
-            let util_style = if util > 0.9 {
+            let util_style = if peak > 0.9 {
                 Style::default().fg(Color::Red)
-            } else if util > 0.75 {
+            } else if peak > 0.75 {
                 Style::default().fg(Color::Yellow)
             } else {
                 Style::default().fg(Color::Green)
             };
             Row::new(vec![
                 Cell::from(Span::styled(t.name.clone(), row_style)),
-                Cell::from(Span::styled(format!("{:>6.1}%", util * 100.0), util_style)),
-                Cell::from(format!("{:>12}", s.busy_avg())),
-                Cell::from(format!("{:>12}", s.busy_max)),
+                Cell::from(Span::styled(format!("{:>8.2}%", avg * 100.0), util_style)),
+                Cell::from(Span::styled(format!("{:>9.2}%", peak * 100.0), util_style)),
+                Cell::from(format!("{:>12}", t.busy_avg_ns())),
+                Cell::from(format!("{:>12}", t.busy_max_ns())),
                 Cell::from(format!("{:>10}", s.loop_count)),
                 Cell::from(format!("{:>10}", t.samples_seen)),
+                Cell::from(format!("{:>14}", t.total_busy)),
+                Cell::from(format!("{:>14}", t.total_ticks)),
             ])
             .height(1)
         })
@@ -84,11 +94,14 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
 
     let widths = [
         Constraint::Percentage(20),
-        Constraint::Length(10),
+        Constraint::Length(11),
+        Constraint::Length(11),
         Constraint::Length(15),
         Constraint::Length(15),
         Constraint::Length(12),
         Constraint::Length(12),
+        Constraint::Length(16),
+        Constraint::Length(16),
     ];
     let table = Table::new(rows, widths).header(header).block(block);
     app.tiles_table_state.select(Some(app.tiles_selection));
@@ -100,19 +113,17 @@ fn draw_spark(f: &mut Frame, area: Rect, app: &mut App) {
         f.render_widget(Block::default().borders(Borders::ALL).title(" util "), area);
         return;
     };
-    let n = t.utilisation_hist.len();
+    let n = t.history.len();
     let span_label = if n == 0 {
         "no samples yet".to_string()
     } else {
-        // Tile samples are emitted per 1024-iter window, not on the
-        // 12s bucket clock — so the time span is approximate. We
-        // show the sample count instead of a wall-clock duration.
-        format!("{n} samples — newest at right")
+        // One bucket per BUCKET_SECS (1 s), newest at right.
+        format!("{n}s — newest at right")
     };
     let title = format!(" {} — utilisation — {span_label} ", t.name);
     let block = Block::default().borders(Borders::ALL).title(title);
     // Sparkline takes u64s; scale 0..1 → 0..1000 for resolution.
-    let data: Vec<u64> = t.utilisation_hist.iter().map(|&u| (u * 1000.0) as u64).collect();
+    let data: Vec<u64> = t.history.iter().map(|e| (e.utilisation() * 1000.0) as u64).collect();
     let spark = Sparkline::default()
         .block(block)
         .data(&data)

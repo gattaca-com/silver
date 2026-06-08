@@ -35,10 +35,15 @@ pub fn p2p_spin<F: FnMut(NetEvent)>(
     context: &mut Context,
     now: Instant,
     on_event: &mut F,
-) {
+) -> bool {
     p2p_socket.flush(poll);
-    p2p_endpoint.poll(now, poll, p2p_socket, context, on_event);
+    let mut did_work = false;
+    did_work |= p2p_endpoint.poll(now, poll, p2p_socket, context, &mut |evt| {
+        did_work = true;
+        on_event(evt);
+    });
     p2p_socket.flush(poll);
+    did_work
 }
 
 /// Lifecycle events surfaced by the network layer during `poll()`. The
@@ -186,9 +191,11 @@ impl P2p {
         socket: &mut Socket,
         context: &mut Context,
         on_event: &mut E,
-    ) where
+    ) -> bool
+    where
         E: FnMut(NetEvent),
     {
+        let mut did_work = false;
         let mut ep_callback = |handle, ep_event| self.endpoint.handle_event(handle, ep_event);
 
         self.timeout = Some(Duration::ZERO);
@@ -198,6 +205,7 @@ impl P2p {
             // N.B. peer transmit MUST be called before peer.spin();
             while !socket.is_blocked() &&
                 socket.send(poll, |buf| {
+                    did_work = true;
                     let transmit = peer.transmit(now, MAX_GSO_SEGMENTS, buf);
                     NetworkCounters::P2pBytesSent
                         .add(transmit.as_ref().map(|t| t.size as u64).unwrap_or_default());
@@ -224,6 +232,7 @@ impl P2p {
         }
 
         NetworkCounters::P2pConnections.set(self.peers.len() as u64);
+        did_work
     }
 
     pub fn enqueue_gossip(&mut self, msg: GossipMsgOut, context: &mut Context) -> SendResult {

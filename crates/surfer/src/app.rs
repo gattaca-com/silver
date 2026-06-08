@@ -223,6 +223,9 @@ impl App {
         for t in &mut self.timings {
             t.roll_bucket();
         }
+        for t in &mut self.tilemetrics {
+            t.roll_bucket();
+        }
     }
 
     /// Scroll the selection within the active pane. `dir = +1`
