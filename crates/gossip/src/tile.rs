@@ -148,13 +148,16 @@ impl GossipHandler {
         }
     }
 
-    pub fn spin(&mut self, emit: &mut impl FnMut(GossipHandlerEvent)) {
+    pub fn spin(&mut self, emit: &mut impl FnMut(GossipHandlerEvent)) -> bool {
+        let mut did_work = false;
         let now = Instant::now();
         self.dedup_cache.maybe_rotate(now);
         self.mcache.maybe_rotate(now);
         self.generate_ihave_messages(now, emit);
 
         while let Ok((mut buffer, recv_ts)) = self.incoming_gossip.read() {
+            did_work = true;
+
             // Incoming gossip messages are prefixed with P2pStreamId
             let stream_id: &P2pStreamId = buffer.into();
             tracing::trace!(?stream_id, len = buffer.len(), "gossip protobuf recv");
@@ -231,6 +234,7 @@ impl GossipHandler {
             // Free read data.
             self.incoming_gossip.free();
         }
+        did_work
     }
 }
 
@@ -249,12 +253,14 @@ impl Tile<SilverSpine> for GossipHandler {
                 self.fork_digest_hex = hex::encode(StatusView::fork_digest(&ssz));
             }
         });
-        self.spin(&mut |event| match event {
+        if self.spin(&mut |event| match event {
             GossipHandlerEvent::PeerEvent(peer_event) => adapter.produce(peer_event),
             GossipHandlerEvent::NewGossip(new_gossip_msg) => adapter.produce(new_gossip_msg),
             GossipHandlerEvent::SendGossip(gossip_msg_out) => {
                 adapter.produce(P2pSend::Gossip(gossip_msg_out))
             }
-        })
+        }) {
+            adapter.mark_work();
+        }
     }
 }

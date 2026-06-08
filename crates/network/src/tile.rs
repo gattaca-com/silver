@@ -260,13 +260,15 @@ where
         self.p2p_endpoint.enqueue_rpc_out(msg, &mut self.context)
     }
 
-    pub fn spin<E>(&mut self, on_event: &mut E)
+    pub fn spin<E>(&mut self, on_event: &mut E) -> bool
     where
         E: FnMut(Event) + Send,
     {
+        let mut did_work = false;
+
         if let Err(e) = self.poll.poll(&mut self.events, Some(Duration::ZERO)) {
             tracing::error!(error=?e, "poll");
-            return;
+            return false;
         }
 
         let now = Instant::now();
@@ -274,19 +276,21 @@ where
         for evt in &self.events {
             if evt.token() == DISC_SOCKET_TOKEN && evt.is_readable() {
                 self.disc_socket.recv(|data, remote, _scratch, _socket| {
+                    did_work = true;
                     NetworkCounters::DiscBytesRecv.add(data.len() as u64);
                     self.discovery.handle(remote, &data[..], now);
                     true
                 });
             } else if evt.token() == P2P_SOCKET_TOKEN && evt.is_readable() {
                 self.p2p_socket.recv(|data, remote, scratch, socket| {
+                    did_work = true;
                     NetworkCounters::P2pBytesRecv.add(data.len() as u64);
                     self.p2p_endpoint.recv(now, data, remote, scratch, socket)
                 });
             }
         }
 
-        p2p::p2p_spin(
+        did_work |= p2p::p2p_spin(
             &self.poll,
             &mut self.p2p_endpoint,
             &mut self.p2p_socket,
@@ -298,6 +302,7 @@ where
         self.disc_socket.flush(&self.poll);
         self.discovery.poll(|disc_event| match disc_event {
             DiscoveryEvent::SendMessage { to, data } => {
+                did_work = true;
                 NetworkCounters::DiscBytesSent.add(data.len() as u64);
                 self.disc_socket.send(&self.poll, |buffer| {
                     buffer.extend_from_slice(&data);
@@ -311,6 +316,8 @@ where
                 });
             }
             DiscoveryEvent::ExternalAddrChanged(addr) => {
+                did_work = true;
+
                 if let Some(identify) = self.context.identify.as_mut() {
                     match self.p2p_endpoint.update_identify_record(identify, addr.ip()) {
                         Ok(new_identify) => *identify = new_identify,
@@ -325,5 +332,6 @@ where
 
         self.context.gossip_consumer.free();
         self.context.rpc_consumer.free();
+        did_work
     }
 }
