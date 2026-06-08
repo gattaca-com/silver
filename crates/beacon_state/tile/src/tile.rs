@@ -340,7 +340,7 @@ impl BeaconStateTile {
             (ssz_hash::hash_tree_root_block_header(&header), state_root)
         };
 
-        let trusted = Checkpoint { epoch: slot / SLOTS_PER_EPOCH, root: block_root };
+        let trusted = Checkpoint { epoch: slot.div_ceil(SLOTS_PER_EPOCH), root: block_root };
         self.last_applied = seq;
         self.last_applied_block_root = block_root;
         self.fork_choice =
@@ -2035,6 +2035,36 @@ mod tests {
     /// all zero → identical signing domains).
     fn seed_immutable(_tile: &BeaconStateTile) -> Immutable {
         Immutable::default()
+    }
+
+    /// Regression: the finalized base is frozen at the finalized *block*'s
+    /// slot, which underflows its epoch boundary when that boundary slot was
+    /// skipped. Bootstrap must round the anchor epoch up to the boundary the
+    /// block anchors — `slot/32` advertises an epoch one too low, and peers at
+    /// that epoch hold a different root, so the Status check fatal-evicts.
+    #[test]
+    fn bootstrap_anchor_epoch_rounds_up_to_boundary() {
+        // (block slot, expected anchor epoch): slot 91 is the boundary block
+        // for epoch 3 (slot 96 skipped) — `slot/32` = 2, FFG epoch is 3. The
+        // boundary-aligned slots confirm round-up never over-counts.
+        for (block_slot, want_epoch) in [(91u64, 3u64), (96, 3), (64, 2)] {
+            // Real BLS keys: decompose decompresses every validator pubkey.
+            let fin = build_seed_finalized(4, block_slot, true);
+            let mut ssz = Vec::new();
+            fin.encode_ssz(&mut ssz).expect("encode_ssz");
+
+            let mut tile = make_tile();
+            tile.bootstrap(&ssz, &[]);
+
+            assert_eq!(
+                tile.fork_choice.finalized_checkpoint.epoch, want_epoch,
+                "anchor epoch for block slot {block_slot}",
+            );
+            // The value Status actually advertises (epoch at bytes [36..44]).
+            let status = tile.status_payload();
+            let advertised = u64::from_le_bytes(status[36..44].try_into().unwrap());
+            assert_eq!(advertised, want_epoch, "advertised finalized epoch, slot {block_slot}");
+        }
     }
 
     #[test]
