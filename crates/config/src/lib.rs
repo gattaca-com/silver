@@ -134,7 +134,7 @@ impl Config {
             incoming_gossip_tcache_size: 2 << 24,     // protobuf
             outgoing_gossip_tcache_size: 2 << 24,     // protobuf
             incoming_gossip_ssz_tcache_size: 2 << 24, // ssz
-            incoming_rpc_tcache_size: 2 << 25,        // ssz
+            incoming_rpc_tcache_size: 2 << 27,        // ssz
             outgoing_rpc_tcache_size: 2 << 24,        // ssz
             data_storage_dir: default_data_dir(),
         }

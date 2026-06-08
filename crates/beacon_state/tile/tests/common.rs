@@ -9,14 +9,16 @@ use std::{
 use flux::{spine::SpineAdapter, tile::Tile, timing::Nanos};
 use serde::Deserialize;
 use silver_beacon_state::{
-    ssz_hash::{StateHashScratch, hash_tree_root_state},
+    ssz_hash::{StateHashScratch, hash_tree_root_body, hash_tree_root_state},
     tile::BeaconStateTile,
 };
 use silver_beacon_state_data::{BeaconState, BeaconStateOwner};
 use silver_common::{
-    BeaconStateEvent, GossipTopic, MessageId, NewGossipMsg, P2pStreamId, RpcInbound,
-    RpcResponseInbound, SilverSpine, StreamProtocol, SyncUpdate, TCache, TCacheProducer, TProducer,
-    TRandomAccess, hex32, ssz_view::STATUS_V2_SIZE, ticker::SlotTicker,
+    BeaconStateEvent, DataColumnsAvailable, GossipTopic, MessageId, NewGossipMsg, P2pStreamId,
+    RpcInbound, RpcResponseInbound, SilverSpine, StreamProtocol, SyncUpdate, TCache,
+    TCacheProducer, TProducer, TRandomAccess, hex32,
+    ssz_view::{STATUS_V2_SIZE, SignedBeaconBlockView},
+    ticker::SlotTicker,
 };
 
 fn null_stream_id() -> P2pStreamId {
@@ -47,6 +49,8 @@ pub enum Step {
     GossipBlock { from: String },
     /// Inject an RPC BlocksByRange response chunk.
     BlocksRangeResp { from: String },
+    /// Inject a `DataColumnsAvailable` for the block at `from`.
+    DataColumnsAvailable { from: String },
     /// Inject an inbound Status from a peer.
     Status { head_slot: u64, finalized_epoch: u64, finalized_root: String },
     /// Inject a `SyncUpdate` from peer-manager. `target` is one of:
@@ -63,11 +67,10 @@ pub enum Step {
 
 #[derive(Debug, Default, Deserialize)]
 pub struct Checks {
-    /// `BeaconStateEvent` kinds that must have appeared since the previous
-    /// check (order-insensitive). Accepted values: `status`,
-    /// `persist_block`, `block_rejected`.
     #[serde(default)]
     pub outbound_has: Vec<String>,
+    #[serde(default)]
+    pub outbound_lacks: Vec<String>,
 }
 
 struct Injector;
@@ -244,6 +247,18 @@ impl Harness {
         self.inj_adapter.produce(target);
     }
 
+    pub fn inject_data_columns_available(&mut self, block: &[u8]) {
+        let body_root = hash_tree_root_body(SignedBeaconBlockView::body(block));
+        self.inj_adapter.produce(DataColumnsAvailable {
+            slot: SignedBeaconBlockView::slot(block),
+            proposer_index: SignedBeaconBlockView::proposer_index(block),
+            parent_root: *SignedBeaconBlockView::parent_root(block),
+            state_root: *SignedBeaconBlockView::state_root(block),
+            body_root,
+            signature: *SignedBeaconBlockView::signature(block),
+        });
+    }
+
     pub fn inject_status(
         &mut self,
         head_slot: u64,
@@ -315,6 +330,15 @@ impl Harness {
                 self.outbound_log,
             );
         }
+        for want in &c.outbound_lacks {
+            let want = OutboundKind::from_str(want)
+                .unwrap_or_else(|| panic!("unknown outbound kind: {want}"));
+            assert!(
+                !self.outbound_log.contains(&want),
+                "unexpected outbound {want:?} in log {:?}",
+                self.outbound_log,
+            );
+        }
         self.outbound_log.clear();
     }
 }
@@ -333,6 +357,7 @@ pub fn run_scenario(case_dir: &Path) {
     for p in t.startup_checkpoint.iter().chain(t.steps.iter().filter_map(|s| match s {
         Step::GossipBlock { from } |
         Step::BlocksRangeResp { from } |
+        Step::DataColumnsAvailable { from } |
         Step::StateRootMatches { from } => Some(from),
         _ => None,
     })) {
@@ -372,6 +397,10 @@ pub fn run_scenario(case_dir: &Path) {
             Step::BlocksRangeResp { from } => {
                 let ssz = snappy_decode(&resolve(from));
                 h.inject_blocks_range_resp(&ssz);
+            }
+            Step::DataColumnsAvailable { from } => {
+                let ssz = snappy_decode(&resolve(from));
+                h.inject_data_columns_available(&ssz);
             }
             Step::Status { head_slot, finalized_epoch, finalized_root } => {
                 h.inject_status(*head_slot, *finalized_epoch, parse_b256(finalized_root));

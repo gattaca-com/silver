@@ -153,6 +153,11 @@ pub struct PeerManager {
     /// the 300s periodic.
     just_synced: bool,
 
+    /// Our data-column custody set (bitmask of column indices), derived from
+    /// node_id + CGC at startup. Used to fetch columns by range alongside
+    /// catch-up `BlocksByRange`.
+    pub(crate) custody_columns: u128,
+
     /// Outstanding catch-up `BlocksByRange` request issued by the PM-owned
     /// driver. At most one in flight per target.
     pub(crate) inflight_syncreq: Option<SyncReq>,
@@ -242,6 +247,7 @@ impl PeerManager {
         syncing: SyncingConfig,
         fork_digest: [u8; 4],
         metadata: [u8; METADATA_SIZE],
+        custody_columns: u128,
     ) -> Self {
         let now = Instant::now();
         let mesh =
@@ -278,6 +284,7 @@ impl PeerManager {
             is_synced: false,
             was_ever_synced: false,
             just_synced: false,
+            custody_columns,
             inflight_syncreq: None,
             synced_through: 0,
             local_head_imported_slot: 0,
@@ -1965,6 +1972,7 @@ mod tests {
                 SyncingConfig::default(),
                 [0u8; 4],
                 [0u8; METADATA_SIZE],
+                0,
             ),
             Captured::default(),
         )

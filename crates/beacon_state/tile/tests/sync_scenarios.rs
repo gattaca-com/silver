@@ -10,3 +10,8 @@ fn cases_dir() -> PathBuf {
 fn scenario_1_checkpoint_catchup() {
     common::run_scenario(&cases_dir().join("scenario_1_checkpoint_catchup"));
 }
+
+#[test]
+fn scenario_2_blob_block_awaits_data_columns() {
+    common::run_scenario(&cases_dir().join("scenario_2_blob_da"));
+}
