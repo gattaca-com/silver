@@ -3,19 +3,14 @@ use std::time::{Duration, Instant};
 use flux::{spine::SpineAdapter, tile::Tile};
 use silver_beacon_state_data::{BeaconStateReader, SLOTS_PER_EPOCH};
 use silver_common::{
-    BeaconStateEvent, DataColumnsAvailable, NewGossipMsg, P2pSend, P2pStreamId, PeerEvent,
-    RpcInbound, RpcResponseInbound, RpcSeverity, SilverSpine, StreamProtocol, SyncUpdate,
-    TMultiProducer, TRandomAccess, TRead, Wheel,
+    BASE_REQUEST_ID, BeaconStateEvent, DataColumnsAvailable, NewGossipMsg, P2pSend, P2pStreamId,
+    PeerEvent, RpcInbound, RpcSeverity, SilverSpine, StreamProtocol, SyncUpdate, TMultiProducer,
+    TRandomAccess, TRead, Wheel,
     ssz_view::{DataColumnSidecarView, StatusView},
 };
 use silver_metrics::timed;
 
 use crate::{store::Store, util};
-
-const REQUEST_ID_PREFIX_MASK: u64 = 0xffff_ffff_0000_0000;
-const BASE_REQUEST_ID: u64 = 0x00da_5da5 << 32; // DAS prefix.
-pub(crate) const BACKFILL_REQUEST_ID: u64 = 0xbacc_f111 << 32;
-pub(crate) const COLUMN_BACKFILL_REQUEST_ID: u64 = 0xc01b_accf << 32;
 
 const MAX_RETRIES: u8 = 5;
 
@@ -376,7 +371,7 @@ impl Tile<SilverSpine> for StorageTile {
                         producers.peer_events.produce(&evt.into());
                     });
                 }
-                silver_common::RpcResponse::DataColumnSidecar { fork_digest: _, ssz } if is_column_backfill(&rsp) => {
+                silver_common::RpcResponse::DataColumnSidecar { fork_digest: _, ssz } if rsp.is_column_backfill() => {
                     tracing::debug!("backfill data column sidecar over rpc");
                     let t_read = self.rpc_consumer.acquire(ssz);
                     self.store.backfill_data_column(t_read, &mut |event| {
@@ -405,7 +400,7 @@ impl Tile<SilverSpine> for StorageTile {
                             .produce(&self.column_request(block_root, columns).into());
                     }
                 }
-                silver_common::RpcResponse::Error { error, msg, len } if is_column_backfill(&rsp) => {
+                silver_common::RpcResponse::Error { error, msg, len } if rsp.is_column_backfill() => {
                     let err_msg = String::from_utf8_lossy(&msg[..len]).to_string();
                     tracing::error!(error, err_msg, "column backfill rpc error response");
                 }
@@ -416,11 +411,11 @@ impl Tile<SilverSpine> for StorageTile {
                         producers.peer_events.produce(&event.into());
                     });
                 }
-                silver_common::RpcResponse::Error { error, msg, len } if is_live_column_request(&rsp) => {
+                silver_common::RpcResponse::Error { error, msg, len } if rsp.is_live_column_request() => {
                     let err_msg = String::from_utf8_lossy(&msg[..len]).to_string();
                     tracing::error!(error, err_msg, "rpc error response");
                 }
-                silver_common::RpcResponse::Complete if is_column_backfill(&rsp) => {}
+                silver_common::RpcResponse::Complete if rsp.is_column_backfill() => {}
                 silver_common::RpcResponse::Complete if rsp.is_backfill() => {
                     self.store.backfill_request_complete(rsp.application_id, &mut |event| {
                         producers.peer_events.produce(&event.into());
@@ -536,12 +531,4 @@ impl Tile<SilverSpine> for StorageTile {
 pub(crate) enum IoEvent {
     P2pSend(P2pSend),
     PeerEvent(PeerEvent),
-}
-
-fn is_column_backfill(rsp: &RpcResponseInbound) -> bool {
-    rsp.application_id & REQUEST_ID_PREFIX_MASK == COLUMN_BACKFILL_REQUEST_ID
-}
-
-fn is_live_column_request(rsp: &RpcResponseInbound) -> bool {
-    rsp.application_id & REQUEST_ID_PREFIX_MASK == BASE_REQUEST_ID
 }

@@ -1198,7 +1198,7 @@ mod tests {
 
         assert_eq!(requests.len(), 1);
         let (request_id, columns, requested_root) = requests[0];
-        assert_eq!(request_id & 0xffff_ffff_0000_0000, crate::tile::COLUMN_BACKFILL_REQUEST_ID);
+        assert_eq!(request_id & 0xffff_ffff_0000_0000, silver_common::COLUMN_BACKFILL_REQUEST_ID);
         assert_eq!(columns, custody_columns);
         assert_eq!(requested_root, block_root);
         assert_eq!(store.root_index.get(&block_root), Some(&slot));

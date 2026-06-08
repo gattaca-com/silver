@@ -117,7 +117,9 @@ pub enum RpcResponse {
 /// tile's historical backfill. Block responses are broadcast to every tile, not
 /// routed by issuer, so non-storage tiles use this to recognise and skip
 /// backfill traffic.
-pub const BACKFILL_REQUEST_ID: u64 = 0xbaccf111 << 32;
+pub const BACKFILL_REQUEST_ID: u64 = 0xbacc_f111 << 32;
+pub const COLUMN_BACKFILL_REQUEST_ID: u64 = 0xc01b_accf << 32;
+pub const BASE_REQUEST_ID: u64 = 0x00da_5da5 << 32; // DAS prefix.
 
 /// RPC response received from a peer.
 #[derive(Clone, Copy, Debug)]
@@ -128,10 +130,22 @@ pub struct RpcResponseInbound {
     pub response: RpcResponse,
 }
 
+const REQUEST_ID_PREFIX_MASK: u64 = 0xffff_ffff_0000_0000;
+
 impl RpcResponseInbound {
     #[inline]
     pub fn is_backfill(&self) -> bool {
         self.application_id & BACKFILL_REQUEST_ID == BACKFILL_REQUEST_ID
+    }
+
+    #[inline]
+    pub fn is_column_backfill(&self) -> bool {
+        self.application_id & REQUEST_ID_PREFIX_MASK == COLUMN_BACKFILL_REQUEST_ID
+    }
+
+    #[inline]
+    pub fn is_live_column_request(&self) -> bool {
+        self.application_id & REQUEST_ID_PREFIX_MASK == BASE_REQUEST_ID
     }
 }
 
