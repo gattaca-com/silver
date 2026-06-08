@@ -3,29 +3,21 @@ use std::time::{Duration, Instant};
 use flux::{spine::SpineAdapter, tile::Tile};
 use silver_beacon_state_data::{BeaconStateReader, SLOTS_PER_EPOCH};
 use silver_common::{
-    BeaconStateEvent, DataColumnsAvailable, NewGossipMsg, P2pSend, P2pStreamId, PeerEvent,
-    RpcInbound, RpcResponseInbound, RpcSeverity, SilverSpine, StreamProtocol, SyncUpdate,
-    TMultiProducer, TRandomAccess, TRead, Wheel,
+    BASE_REQUEST_ID, BeaconStateEvent, DataColumnsAvailable, NewGossipMsg, P2pSend, P2pStreamId,
+    PeerEvent, RpcInbound, RpcSeverity, SilverSpine, StreamProtocol, SyncUpdate, TMultiProducer,
+    TRandomAccess, TRead, Wheel,
     ssz_view::{DataColumnSidecarView, StatusView},
 };
 use silver_metrics::timed;
 
 use crate::{store::Store, util};
 
-const REQUEST_ID_PREFIX_MASK: u64 = 0xffff_ffff_0000_0000;
-const BASE_REQUEST_ID: u64 = 0x00da_5da5 << 32; // DAS prefix.
-pub(crate) const BACKFILL_REQUEST_ID: u64 = 0xbacc_f111 << 32;
-pub(crate) const COLUMN_BACKFILL_REQUEST_ID: u64 = 0xc01b_accf << 32;
 const MAX_RETRIES: u8 = 5;
 
 /// Persist a finalized-state checkpoint only when within this many slots of
 /// the wall-clock head (i.e. not fast-syncing) — avoids stalling the writer
 /// and re-encoding every intermediate finalized epoch while catching up.
 const CAUGHT_UP_SLACK_SLOTS: u64 = 2 * SLOTS_PER_EPOCH;
-
-/// Initial capacity for the reused checkpoint encode buffer. A mainnet
-/// finalized state is ~312 MiB, we allocate 400 MiB.
-const CHECKPOINT_BUF_CAPACITY: usize = 400 * 1024 * 1024;
 
 /// Mainnet epoch: 32 slots × 12s. Wheel bucket width for the
 /// block-level validation cache.
@@ -71,11 +63,9 @@ pub struct StorageTile {
     // the trigger so we encode at most once per finalized-epoch advance.
     // Advanced when a persist is queued; re-derived from disk on restart.
     checkpointed_epoch: u64,
-    // Reused buffer for the finalized-state checkpoint SSZ (phase 1: whole
-    // state encoded in one batch, then written + atomically renamed).
-    checkpoint_buf: Vec<u8>,
     // Set by a Status when finality advanced past the last persisted epoch and
-    // we are caught up to head; consumed (and cleared) in `loop_body`.
+    // we are caught up to head; consumed when a persist is started (the
+    // in-flight checkpoint then lives on the `Store`, driven by `file_io`).
     persist_pending: bool,
 }
 
@@ -109,7 +99,6 @@ impl StorageTile {
             validated_blocks: Wheel::new(EPOCH_DURATION),
             outstanding_requests: Wheel::new(Duration::from_millis(500)),
             checkpointed_epoch,
-            checkpoint_buf: Vec::with_capacity(CHECKPOINT_BUF_CAPACITY),
             persist_pending: false,
         }
     }
@@ -370,7 +359,9 @@ impl Tile<SilverSpine> for StorageTile {
                 self.store.rpc_request(&mut self.rpc_consumer, req);
             }
             RpcInbound::Response(rsp) => match rsp.response {
-                silver_common::RpcResponse::BeaconBlock { fork_digest: _, ssz } if is_backfill(&rsp) => {
+                silver_common::RpcResponse::BeaconBlock { fork_digest: _, ssz }
+                    if rsp.is_backfill() =>
+                {
                     let t_read = self.rpc_consumer.acquire(ssz);
                     self.store.backfill_block(t_read);
                 }
@@ -380,7 +371,7 @@ impl Tile<SilverSpine> for StorageTile {
                         producers.peer_events.produce(&evt.into());
                     });
                 }
-                silver_common::RpcResponse::DataColumnSidecar { fork_digest: _, ssz } if is_column_backfill(&rsp) => {
+                silver_common::RpcResponse::DataColumnSidecar { fork_digest: _, ssz } if rsp.is_column_backfill() => {
                     tracing::debug!("backfill data column sidecar over rpc");
                     let t_read = self.rpc_consumer.acquire(ssz);
                     self.store.backfill_data_column(t_read, &mut |event| {
@@ -409,23 +400,23 @@ impl Tile<SilverSpine> for StorageTile {
                             .produce(&self.column_request(block_root, columns).into());
                     }
                 }
-                silver_common::RpcResponse::Error { error, msg, len } if is_column_backfill(&rsp) => {
+                silver_common::RpcResponse::Error { error, msg, len } if rsp.is_column_backfill() => {
                     let err_msg = String::from_utf8_lossy(&msg[..len]).to_string();
                     tracing::error!(error, err_msg, "column backfill rpc error response");
                 }
-                silver_common::RpcResponse::Error { error, msg, len } if is_backfill(&rsp) => {
+                silver_common::RpcResponse::Error { error, msg, len } if rsp.is_backfill() => {
                     let err_msg = String::from_utf8_lossy(&msg[..len]).to_string();
                     tracing::error!(error, err_msg, "backfill rpc error response");
                     self.store.backfill_request_complete(rsp.application_id, &mut |event| {
                         producers.peer_events.produce(&event.into());
                     });
                 }
-                silver_common::RpcResponse::Error { error, msg, len } if is_live_column_request(&rsp) => {
+                silver_common::RpcResponse::Error { error, msg, len } if rsp.is_live_column_request() => {
                     let err_msg = String::from_utf8_lossy(&msg[..len]).to_string();
                     tracing::error!(error, err_msg, "rpc error response");
                 }
-                silver_common::RpcResponse::Complete if is_column_backfill(&rsp) => {}
-                silver_common::RpcResponse::Complete if is_backfill(&rsp) => {
+                silver_common::RpcResponse::Complete if rsp.is_column_backfill() => {}
+                silver_common::RpcResponse::Complete if rsp.is_backfill() => {
                     self.store.backfill_request_complete(rsp.application_id, &mut |event| {
                         producers.peer_events.produce(&event.into());
                     });
@@ -515,7 +506,14 @@ impl Tile<SilverSpine> for StorageTile {
         });
         self.request_id = request_id;
 
-        // Run store file i/o
+        // Start a checkpoint persist when one is pending and none is in flight;
+        // `file_io` then streams it one section per turn and commits at the end.
+        if self.persist_pending && !self.store.checkpoint_in_flight() {
+            self.persist_pending = false;
+            self.store.begin_checkpoint(self.beacon_state.clone());
+        }
+
+        // Run store file i/o (also advances any in-flight checkpoint persist).
         if let Err(e) = self.store.file_io(
             &self.fork_digest,
             self.custody_group_columns,
@@ -527,36 +525,10 @@ impl Tile<SilverSpine> for StorageTile {
         ) {
             tracing::error!(?e, "storage store file i/o failed");
         }
-
-        if self.persist_pending {
-            self.persist_pending = false;
-            let buf = &mut self.checkpoint_buf;
-            let slot = self.beacon_state.read(&mut |v| v.encode_finalized(buf));
-            match self.store.persist_finalized_checkpoint(slot, &self.checkpoint_buf) {
-                Ok(()) => tracing::info!(
-                    slot,
-                    bytes = self.checkpoint_buf.len(),
-                    "persisted finalized checkpoint"
-                ),
-                Err(e) => tracing::error!(?e, slot, "failed to persist finalized checkpoint"),
-            }
-        }
     }
 }
 
 pub(crate) enum IoEvent {
     P2pSend(P2pSend),
     PeerEvent(PeerEvent),
-}
-
-fn is_backfill(rsp: &RpcResponseInbound) -> bool {
-    rsp.application_id & REQUEST_ID_PREFIX_MASK == BACKFILL_REQUEST_ID
-}
-
-fn is_column_backfill(rsp: &RpcResponseInbound) -> bool {
-    rsp.application_id & REQUEST_ID_PREFIX_MASK == COLUMN_BACKFILL_REQUEST_ID
-}
-
-fn is_live_column_request(rsp: &RpcResponseInbound) -> bool {
-    rsp.application_id & REQUEST_ID_PREFIX_MASK == BASE_REQUEST_ID
 }

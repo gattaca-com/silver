@@ -2,19 +2,124 @@
 //! applies the following blocks. Fixtures are gitignored; fetch with
 //! `make -C crates/e2e checkpoint-fixtures`.
 
-use std::{path::PathBuf, time::Duration};
+use std::{
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 use silver_beacon_state::{
     ssz_hash::hash_tree_root_block_header,
     tile::{BeaconStateTile, Feedback},
 };
-use silver_beacon_state_data::{BeaconState, BeaconStateOwner, Finalized, SpecConfig};
+use silver_beacon_state_data::{
+    BeaconState, BeaconStateOwner, Finalized, Section, SpecConfig, decode_checkpoint_pubkeys,
+};
 use silver_common::{TCache, TCacheProducer, ticker::SlotTicker};
 use silver_e2e::mainnet_api::fetch_canonical_state_root;
 
 const FIXTURES: &str = "tests/example_checkpoints";
 const BLOCK_PREFIX: &str = "next_block_";
 const BLOCK_SUFFIX: &str = ".ssz";
+
+#[test]
+fn checkpoint_with_pubkeys_loads() {
+    let Ok(home) = std::env::var("HOME") else {
+        eprintln!("skipping: HOME unset");
+        return;
+    };
+    let root = PathBuf::from(home).join(".local/silver/finalized_checkpoints");
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        eprintln!("skipping: {} absent", root.display());
+        return;
+    };
+
+    let mut seen = 0;
+    for entry in entries.flatten() {
+        let dir = entry.path();
+        let Some(slot) = dir.file_name().and_then(|s| s.to_str()).map(str::to_owned) else {
+            continue;
+        };
+        let Ok(ssz) = std::fs::read(dir.join(format!("{slot}.ssz"))) else {
+            continue;
+        };
+        seen += 1;
+
+        let mut fin = Box::new(Finalized::empty());
+        match std::fs::read(dir.join(format!("{slot}.pubkeys"))) {
+            Ok(raw) => {
+                let pubkeys = decode_checkpoint_pubkeys(&raw).expect("decode pubkeys");
+                fin.decompose_with_pubkeys(&ssz, &SpecConfig::mainnet(), &pubkeys)
+                    .expect("decompose_with_pubkeys");
+                eprintln!("slot {slot}: ok (with pubkeys)");
+            }
+            Err(_) => {
+                fin.decompose(&ssz, &SpecConfig::mainnet()).expect("decompose");
+                eprintln!("slot {slot}: ok (no pubkeys)");
+            }
+        }
+    }
+
+    if seen == 0 {
+        eprintln!("skipping: no checkpoints under {}", root.display());
+    }
+}
+
+/// Cold `decompose` (sqrt-decompress every 48-byte pubkey) vs
+/// `decompose_with_pubkeys` (deserialize the 96-byte sidecar, no sqrt) on the
+/// mainnet checkpoint at the workspace root. Ignored manual bench; the sidecar
+/// is built in-memory up front (decompose once → re-encode → decode) so no
+/// sidecar fixture is needed. `CHECKPOINT_SSZ` overrides the state path,
+/// `DECOMPOSE_BENCH_ITERS` the iteration count.
+#[test]
+#[ignore]
+fn decompose_pubkeys_bench() {
+    let ssz_path = std::env::var("CHECKPOINT_SSZ").map(PathBuf::from).unwrap_or_else(|_| {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../finalized_state.ssz")
+    });
+    let Ok(ssz) = std::fs::read(&ssz_path) else {
+        eprintln!("skipping: {} absent", ssz_path.display());
+        return;
+    };
+    let spec = SpecConfig::mainnet();
+    let iters: u32 =
+        std::env::var("DECOMPOSE_BENCH_ITERS").ok().and_then(|s| s.parse().ok()).unwrap_or(3);
+
+    // Prepare the decompressed-pubkey sidecar once (untimed): decompose, then
+    // re-encode the sidecar bytes and decode them back to `Vec<PublicKey>` —
+    // exactly the bytes the persist path would write/read.
+    let pubkeys = {
+        let mut fin = Box::new(Finalized::empty());
+        fin.decompose(&ssz, &spec).expect("prep decompose");
+        let mut buf = Vec::with_capacity(fin.pubkeys_sidecar_len());
+        let mut chunk = 0;
+        while !fin.write_pubkeys_chunk(chunk, &mut buf).expect("write pubkeys") {
+            chunk += 1;
+        }
+        decode_checkpoint_pubkeys(&buf).expect("decode pubkeys")
+    };
+    eprintln!("bench: {} validators, ssz {} MiB, {iters} iters", pubkeys.len(), ssz.len() >> 20,);
+
+    let bench = |with_pubkeys: bool| {
+        let mut total = Duration::ZERO;
+        for _ in 0..iters {
+            let mut fin = Box::new(Finalized::empty());
+            let t = Instant::now();
+            if with_pubkeys {
+                fin.decompose_with_pubkeys(&ssz, &spec, &pubkeys).expect("decompose_with_pubkeys");
+            } else {
+                fin.decompose(&ssz, &spec).expect("decompose");
+            }
+            total += t.elapsed();
+        }
+        total / iters
+    };
+
+    let cold = bench(false);
+    let warm = bench(true);
+    eprintln!("decompose                {cold:>12.2?}");
+    eprintln!("decompose_with_pubkeys   {warm:>12.2?}");
+    eprintln!("speedup                  {:>11.2}x", cold.as_secs_f64() / warm.as_secs_f64());
+}
 
 #[test]
 fn finalized_state_loads() {
@@ -45,6 +150,7 @@ fn finalized_state_loads() {
         gossip_c,
         rpc_c,
         &ssz,
+        &[],
     );
 
     let head = tile.head_block_root();
@@ -66,6 +172,27 @@ fn finalized_state_loads() {
             "re-encoded SSZ differs from original: first mismatch at {:?} (lens {} vs {})",
             at,
             reencoded.len(),
+            ssz.len(),
+        );
+    }
+
+    // Same gate via the chunked streaming path (the live persist's path —
+    // ~18 validators chunks at mainnet scale, vs the single chunk the
+    // synthetic unit test exercises). Must also reproduce the original bytes.
+    let offsets = fin.var_offsets();
+    let mut streamed = Vec::with_capacity(fin.ssz_len());
+    for section in Section::ALL {
+        let mut chunk = 0;
+        while !fin.write_section_chunk(section, chunk, &offsets, &mut streamed).expect("encode") {
+            chunk += 1;
+        }
+    }
+    if streamed != ssz {
+        let at = streamed.iter().zip(&ssz).position(|(a, b)| a != b);
+        panic!(
+            "chunk-streamed SSZ differs from original: first mismatch at {:?} (lens {} vs {})",
+            at,
+            streamed.len(),
             ssz.len(),
         );
     }
@@ -204,6 +331,7 @@ fn tile_apply_block_ef_fixture() {
         gossip_c,
         rpc_c,
         &pre_ssz,
+        &[],
     );
 
     let fb = tile.try_apply_block(&block_ssz);

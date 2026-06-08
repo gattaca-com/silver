@@ -2,7 +2,8 @@
 
 use flux::{communication::ShmemData, spine::SpineQueue, spine_derive::from_spine, tile::TileInfo};
 pub use messages::{
-    BeaconStateEvent, BlockSource, DataColumnsAvailable, ELSyncStatus, EngineFcuReq, EngineFcuResp,
+    BACKFILL_REQUEST_ID, BASE_REQUEST_ID, BeaconStateEvent, BlockSource,
+    COLUMN_BACKFILL_REQUEST_ID, DataColumnsAvailable, ELSyncStatus, EngineFcuReq, EngineFcuResp,
     EngineGetBlobsReq, EngineGetBlobsResp, EngineGetPayloadBodiesByHashReq,
     EngineGetPayloadBodiesByRangeReq, EngineGetPayloadBodiesResp, EngineGetPayloadReq,
     EngineGetPayloadResp, EngineHealthEvent, EngineNewPayloadReq, EngineNewPayloadResp,

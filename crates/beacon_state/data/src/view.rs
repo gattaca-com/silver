@@ -1,4 +1,5 @@
 use std::{
+    io::{self, Write},
     ops::{Deref, DerefMut},
     sync::{self, Arc, atomic::Ordering},
 };
@@ -6,10 +7,17 @@ use std::{
 use flux::communication::Seqlock;
 
 use crate::{
-    BeaconState, DeltaBuffer, EpochStateDelta, LongtailState, StateDelta, StateDeltaReadView,
-    StateDeltaView,
+    BeaconState, DeltaBuffer, EpochStateDelta, Finalized, LongtailState, Section, StateDelta,
+    StateDeltaReadView, StateDeltaView, VAR_LEN_SECTIONS,
     types::{EPOCHS_RING_N, LONGTAILS_RING_N, SLOTS_RING_N},
 };
+
+#[derive(Clone, Copy)]
+pub struct CheckpointSnapshot {
+    pub version: usize,
+    pub slot: u64,
+    pub offsets: [u32; VAR_LEN_SECTIONS],
+}
 
 /// Beacon state writer control.
 /// Single writer.
@@ -112,6 +120,7 @@ impl BeaconStateOwner {
     }
 }
 
+#[derive(Clone)]
 pub struct BeaconStateReader {
     state_ptr: *const BeaconState,
     inner: Arc<Seqlock<ControlInner>>,
@@ -126,12 +135,10 @@ unsafe impl Send for BeaconStateReader {}
 unsafe impl Sync for BeaconStateReader {}
 
 impl BeaconStateReader {
-    /// Performs optimistic reads from the beacon state, this will loop if the
-    /// finalized state is updated during a read.
-    pub fn read<F, R>(&self, reader: &mut F) -> R
-    where
-        F: FnMut(StateDeltaReadView<'_>) -> R,
-    {
+    /// Optimistic seqlocked read: runs `f` against a consistent state +
+    /// control snapshot, retrying if a finalized write lands mid-read. Returns
+    /// `f`'s result paired with the version it observed.
+    fn read_seqlocked<R>(&self, mut f: impl FnMut(&BeaconState, &ControlInner) -> R) -> (R, usize) {
         loop {
             let (control, _) = self.inner.read_copy().expect("should never be empty");
             sync::atomic::compiler_fence(Ordering::Acquire);
@@ -144,18 +151,67 @@ impl BeaconStateReader {
             let version = control.version;
             let state = unsafe { &*self.state_ptr };
 
-            let slot_delta = control.slots.map(|i| state.slots.get(i));
-            let epoch_delta = control.epochs.map(|i| state.epochs.get(i));
-
-            let result = reader(StateDeltaReadView::new(&state.finalized, slot_delta, epoch_delta));
+            let result = f(state, &control);
 
             // check that finalized state was not changed whilst reading.
             sync::atomic::compiler_fence(Ordering::Acquire);
             let (post, _) = self.inner.read_copy().expect("should never be empty");
             if post.version == version {
-                return result;
+                return (result, version);
             }
         }
+    }
+
+    /// Performs optimistic reads from the beacon state, this will loop if the
+    /// finalized state is updated during a read.
+    pub fn read<F, R>(&self, reader: &mut F) -> R
+    where
+        F: FnMut(StateDeltaReadView<'_>) -> R,
+    {
+        self.read_seqlocked(|state, control| {
+            let slot_delta = control.slots.map(|i| state.slots.get(i));
+            let epoch_delta = control.epochs.map(|i| state.epochs.get(i));
+            reader(StateDeltaReadView::new(&state.finalized, slot_delta, epoch_delta))
+        })
+        .0
+    }
+
+    pub fn begin_checkpoint(&self) -> CheckpointSnapshot {
+        let ((slot, offsets), version) = self.read_seqlocked(|state, _| {
+            let finalized = &state.finalized;
+            let slot = finalized.slot.slot.slot;
+            let offsets = Finalized::offsets_from_lens(&finalized.var_len_section_lens());
+            (slot, offsets)
+        });
+        CheckpointSnapshot { version, slot, offsets }
+    }
+
+    pub fn write_checkpoint_chunk<W: Write>(
+        &self,
+        section: Section,
+        chunk: usize,
+        offsets: &[u32; VAR_LEN_SECTIONS],
+        w: &mut W,
+    ) -> io::Result<bool> {
+        let finalized = &unsafe { &*self.state_ptr }.finalized;
+        finalized.write_section_chunk(section, chunk, offsets, w)
+    }
+
+    pub fn write_checkpoint_pubkeys_chunk<W: Write>(
+        &self,
+        chunk: usize,
+        w: &mut W,
+    ) -> io::Result<bool> {
+        let finalized = &unsafe { &*self.state_ptr }.finalized;
+        finalized.write_pubkeys_chunk(chunk, w)
+    }
+
+    /// True iff the seqlock version still matches the snapshot's — i.e. no
+    /// finalization has superseded the in-flight checkpoint.
+    pub fn checkpoint_version_matches(&self, version: usize) -> bool {
+        let (control, _) = self.inner.read_copy().expect("should never be empty");
+        sync::atomic::compiler_fence(Ordering::Acquire);
+        control.version == version
     }
 }
 

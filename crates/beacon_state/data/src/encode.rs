@@ -1,5 +1,7 @@
 use std::io::{self, Write};
 
+use blst::min_pk::PublicKey;
+
 use crate::{
     decompose::FIXED_PART,
     types::{B256, Checkpoint, Eth1Data, Finalized, SyncCommittee},
@@ -17,7 +19,50 @@ const PENDING_CONSOLIDATION_SSZ: usize = 16;
 const EPH_FIXED: usize = 584;
 
 /// Number of variable-length fields in the Fulu `BeaconState`.
-pub const VAR_SECTIONS: usize = 12;
+pub const VAR_LEN_SECTIONS: usize = 12;
+
+/// Number of checkpoint sections: the fixed part + the 12 variable bodies.
+pub const CHECKPOINT_SECTIONS: usize = 1 + VAR_LEN_SECTIONS;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Section {
+    FixedPart,
+    HistoricalRoots,
+    Eth1Votes,
+    Validators,
+    Balances,
+    PreviousParticipation,
+    CurrentParticipation,
+    InactivityScores,
+    ExecutionPayloadHeader,
+    HistoricalSummaries,
+    PendingDeposits,
+    PendingPartialWithdrawals,
+    PendingConsolidations,
+}
+
+impl Section {
+    pub const ALL: [Section; CHECKPOINT_SECTIONS] = [
+        Section::FixedPart,
+        Section::HistoricalRoots,
+        Section::Eth1Votes,
+        Section::Validators,
+        Section::Balances,
+        Section::PreviousParticipation,
+        Section::CurrentParticipation,
+        Section::InactivityScores,
+        Section::ExecutionPayloadHeader,
+        Section::HistoricalSummaries,
+        Section::PendingDeposits,
+        Section::PendingPartialWithdrawals,
+        Section::PendingConsolidations,
+    ];
+}
+
+/// Validators emitted per checkpoint chunk: `131_072 * 121 B ≈ 15 MiB`, on par
+/// with the largest single-turn sections (balances/inactivity), so the
+/// validators section no longer dominates a `file_io` turn.
+const VALIDATORS_PER_CHUNK: usize = 1 << 17;
 
 #[inline]
 fn w_u64<W: Write>(w: &mut W, v: u64) -> io::Result<()> {
@@ -40,7 +85,7 @@ fn w_b256_slice<W: Write>(w: &mut W, s: &[B256]) -> io::Result<()> {
 
 impl Finalized {
     /// Byte lengths of the 12 variable-length fields, in SSZ-declared order.
-    pub fn var_section_lens(&self) -> [usize; VAR_SECTIONS] {
+    pub fn var_len_section_lens(&self) -> [usize; VAR_LEN_SECTIONS] {
         let n = self.validators.validator_count();
         let pending = self.pending.read();
         [
@@ -61,8 +106,8 @@ impl Finalized {
 
     /// Absolute byte offsets of the 12 variable bodies (the values written into
     /// the fixed part's offset slots), derived from a section-length snapshot.
-    fn offsets_from_lens(lens: &[usize; VAR_SECTIONS]) -> [u32; VAR_SECTIONS] {
-        let mut offs = [0u32; VAR_SECTIONS];
+    pub(crate) fn offsets_from_lens(lens: &[usize; VAR_LEN_SECTIONS]) -> [u32; VAR_LEN_SECTIONS] {
+        let mut offs = [0u32; VAR_LEN_SECTIONS];
         let mut acc = FIXED_PART;
         for (o, len) in offs.iter_mut().zip(lens) {
             *o = u32::try_from(acc).expect("ssz variable offset exceeds u32");
@@ -73,72 +118,169 @@ impl Finalized {
 
     /// Total SSZ length of the encoded state.
     pub fn ssz_len(&self) -> usize {
-        FIXED_PART + self.var_section_lens().iter().sum::<usize>()
+        FIXED_PART + self.var_len_section_lens().iter().sum::<usize>()
+    }
+
+    pub fn var_offsets(&self) -> [u32; VAR_LEN_SECTIONS] {
+        Self::offsets_from_lens(&self.var_len_section_lens())
     }
 
     /// Encode the full canonical SSZ in one pass: the 2.74 MB fixed part, then
     /// the 12 variable bodies in SSZ-declared order.
     pub fn encode_ssz(&self, w: &mut Vec<u8>) -> io::Result<()> {
-        let lens = self.var_section_lens();
+        let lens = self.var_len_section_lens();
         w.reserve(FIXED_PART + lens.iter().sum::<usize>());
-        let n = self.validators.validator_count();
         self.write_fixed_part(w, &Self::offsets_from_lens(&lens))?;
+        self.write_historical_roots(w)?;
+        self.write_eth1_votes(w)?;
+        self.write_validators(w)?;
+        self.write_balances(w)?;
+        self.write_previous_participation(w)?;
+        self.write_current_participation(w)?;
+        self.write_inactivity_scores(w)?;
+        self.write_eph(w)?;
+        self.write_historical_summaries(w)?;
+        self.write_pending_deposits(w)?;
+        self.write_pending_partial_withdrawals(w)?;
+        self.write_pending_consolidations(w)?;
+        Ok(())
+    }
 
-        // historical_roots (frozen).
-        w_b256_slice(w, &self.immutable.historical_roots)?;
+    pub fn write_section<W: Write>(
+        &self,
+        section: Section,
+        offsets: &[u32; VAR_LEN_SECTIONS],
+        w: &mut W,
+    ) -> io::Result<()> {
+        match section {
+            Section::FixedPart => self.write_fixed_part(w, offsets),
+            Section::HistoricalRoots => self.write_historical_roots(w),
+            Section::Eth1Votes => self.write_eth1_votes(w),
+            Section::Validators => self.write_validators(w),
+            Section::Balances => self.write_balances(w),
+            Section::PreviousParticipation => self.write_previous_participation(w),
+            Section::CurrentParticipation => self.write_current_participation(w),
+            Section::InactivityScores => self.write_inactivity_scores(w),
+            Section::ExecutionPayloadHeader => self.write_eph(w),
+            Section::HistoricalSummaries => self.write_historical_summaries(w),
+            Section::PendingDeposits => self.write_pending_deposits(w),
+            Section::PendingPartialWithdrawals => self.write_pending_partial_withdrawals(w),
+            Section::PendingConsolidations => self.write_pending_consolidations(w),
+        }
+    }
 
-        // eth1_votes (inline ArrayVec).
+    /// Write chunk `chunk` of `section` to `w`, returning `true` when the
+    /// section is complete. Every section is single-chunk except
+    /// [`Section::Validators`] (~265 MB), which is split into
+    /// `VALIDATORS_PER_CHUNK`-record chunks so the streamed persist emits a
+    /// bounded slice per `file_io` turn.
+    pub fn write_section_chunk<W: Write>(
+        &self,
+        section: Section,
+        chunk: usize,
+        offsets: &[u32; VAR_LEN_SECTIONS],
+        w: &mut W,
+    ) -> io::Result<bool> {
+        if section == Section::Validators {
+            let n = self.validators.validator_count();
+            let start = chunk * VALIDATORS_PER_CHUNK;
+            let end = (start + VALIDATORS_PER_CHUNK).min(n);
+            self.write_validators_range(start, end, w)?;
+            Ok(end >= n)
+        } else {
+            debug_assert_eq!(chunk, 0, "only the validators section is chunked");
+            self.write_section(section, offsets, w)?;
+            Ok(true)
+        }
+    }
+
+    // historical_roots (frozen).
+    fn write_historical_roots<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        w_b256_slice(w, &self.immutable.historical_roots)
+    }
+
+    // eth1_votes (inline ArrayVec).
+    fn write_eth1_votes<W: Write>(&self, w: &mut W) -> io::Result<()> {
         for e in self.slot.slot.eth1_votes.iter() {
             write_eth1_data(w, e)?;
         }
+        Ok(())
+    }
 
-        // validators.
+    fn write_validators<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        self.write_validators_range(0, self.validators.validator_count(), w)
+    }
+
+    /// Encode validators `[start, end)` (one 121-B record at a time). The
+    /// streamed persist calls this in `VALIDATORS_PER_CHUNK` slices.
+    fn write_validators_range<W: Write>(
+        &self,
+        start: usize,
+        end: usize,
+        w: &mut W,
+    ) -> io::Result<()> {
         let mut val = [0u8; VALIDATOR_SSZ];
-        for i in 0..n {
+        for i in start..end {
             self.encode_validator(i, &mut val);
             w.write_all(&val)?;
         }
+        Ok(())
+    }
 
-        // balances.
-        for b in &self.balances.as_slice()[..n] {
+    fn write_balances<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        for b in &self.balances.as_slice()[..self.validators.validator_count()] {
             w_u64(w, *b)?;
         }
+        Ok(())
+    }
 
-        // previous / current epoch participation.
-        w.write_all(&self.previous_participation.data[..n])?;
-        w.write_all(&self.current_participation.data[..n])?;
+    fn write_previous_participation<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        w.write_all(&self.previous_participation.data[..self.validators.validator_count()])
+    }
 
-        // inactivity_scores.
-        for s in &self.inactivity_scores.data[..n] {
+    fn write_current_participation<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        w.write_all(&self.current_participation.data[..self.validators.validator_count()])
+    }
+
+    fn write_inactivity_scores<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        for s in &self.inactivity_scores.data[..self.validators.validator_count()] {
             w_u64(w, *s)?;
         }
+        Ok(())
+    }
 
-        // execution_payload_header (inline).
-        self.write_eph(w)?;
-
-        // historical_summaries.
+    fn write_historical_summaries<W: Write>(&self, w: &mut W) -> io::Result<()> {
         for hs in self.longtail.historical_summaries.read().iter() {
             w.write_all(&hs.block_summary_root)?;
             w.write_all(&hs.state_summary_root)?;
         }
+        Ok(())
+    }
 
-        // pending_{deposits, partial_withdrawals, consolidations}, one guard.
-        let pending = self.pending.read();
-        let mut deposit = [0u8; PENDING_DEPOSIT_SSZ];
-        for d in &pending.pending_deposits {
-            deposit[0..48].copy_from_slice(&d.pubkey);
-            deposit[48..80].copy_from_slice(&d.withdrawal_credentials.0);
-            deposit[80..88].copy_from_slice(&d.amount.to_le_bytes());
-            deposit[88..184].copy_from_slice(&d.signature);
-            deposit[184..192].copy_from_slice(&d.slot.to_le_bytes());
-            w.write_all(&deposit)?;
+    fn write_pending_deposits<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        let mut buf = [0u8; PENDING_DEPOSIT_SSZ];
+        for d in &self.pending.read().pending_deposits {
+            buf[0..48].copy_from_slice(&d.pubkey);
+            buf[48..80].copy_from_slice(&d.withdrawal_credentials.0);
+            buf[80..88].copy_from_slice(&d.amount.to_le_bytes());
+            buf[88..184].copy_from_slice(&d.signature);
+            buf[184..192].copy_from_slice(&d.slot.to_le_bytes());
+            w.write_all(&buf)?;
         }
-        for pw in &pending.pending_partial_withdrawals {
+        Ok(())
+    }
+
+    fn write_pending_partial_withdrawals<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        for pw in &self.pending.read().pending_partial_withdrawals {
             w_u64(w, pw.index)?;
             w_u64(w, pw.amount)?;
             w_u64(w, pw.withdrawable_epoch)?;
         }
-        for pc in &pending.pending_consolidations {
+        Ok(())
+    }
+
+    fn write_pending_consolidations<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        for pc in &self.pending.read().pending_consolidations {
             w_u64(w, pc.source_index)?;
             w_u64(w, pc.target_index)?;
         }
@@ -151,7 +293,7 @@ impl Finalized {
     pub fn write_fixed_part<W: Write>(
         &self,
         w: &mut W,
-        offs: &[u32; VAR_SECTIONS],
+        offs: &[u32; VAR_LEN_SECTIONS],
     ) -> io::Result<()> {
         let sl = &self.slot.slot;
         let est = &self.epoch.state;
@@ -262,6 +404,32 @@ impl Finalized {
         w_u64(w, eph.excess_blob_gas)?; // [576..584]
         w.write_all(&eph.extra_data[..eph.extra_data_len as usize]) // [584..]
     }
+
+    // A `<slot>.pubkeys` file written next to `<slot>.ssz` holding the
+    // validators' decompressed pubkeys (96-B uncompressed G1 points). Reloading
+    // from it skips the per-validator decompression sqrt (`from_bytes` on the
+    // 48-B compressed form), the dominant cost of a checkpoint load. Layout:
+    // `PUBKEYS_HEADER` (magic + version + count) then `count × 96 B` in
+    // validator-index order.
+
+    pub fn pubkeys_sidecar_len(&self) -> usize {
+        PUBKEYS_HEADER + self.validators.validator_count() * PUBKEY_SER
+    }
+
+    pub fn write_pubkeys_chunk<W: Write>(&self, chunk: usize, w: &mut W) -> io::Result<bool> {
+        let n = self.validators.validator_count();
+        if chunk == 0 {
+            w.write_all(&PUBKEYS_MAGIC)?;
+            w_u32(w, PUBKEYS_VERSION)?;
+            w_u64(w, n as u64)?;
+        }
+        let start = chunk * PUBKEYS_PER_CHUNK;
+        let end = (start + PUBKEYS_PER_CHUNK).min(n);
+        for i in start..end {
+            w.write_all(&self.validators.pubkey_decompressed(i).serialize())?;
+        }
+        Ok(end >= n)
+    }
 }
 
 #[inline]
@@ -285,12 +453,60 @@ fn write_sync_committee<W: Write>(w: &mut W, sc: &SyncCommittee) -> io::Result<(
     w.write_all(&sc.aggregate_pubkey)
 }
 
+const PUBKEYS_MAGIC: [u8; 4] = *b"SVPK";
+const PUBKEYS_VERSION: u32 = 1;
+const PUBKEY_SER: usize = 96;
+/// Header: magic[4] + version: u32 + validator_count: u64.
+const PUBKEYS_HEADER: usize = 4 + 4 + 8;
+/// Records per sidecar chunk — aligned with the validators-section chunking so
+/// chunk `k` covers the same validator indices (~12.6 MiB at 96 B).
+const PUBKEYS_PER_CHUNK: usize = VALIDATORS_PER_CHUNK;
+
+#[derive(Debug, thiserror::Error)]
+pub enum PubkeysDecodeError {
+    #[error("pubkeys sidecar shorter than header: {len} < {PUBKEYS_HEADER}")]
+    Truncated { len: usize },
+    #[error("pubkeys sidecar bad magic")]
+    BadMagic,
+    #[error("pubkeys sidecar version {got} != {PUBKEYS_VERSION}")]
+    BadVersion { got: u32 },
+    #[error("pubkeys body {body} != count {count} × {PUBKEY_SER}")]
+    LenMismatch { body: usize, count: usize },
+    #[error("pubkey {idx} failed to deserialize (not on curve)")]
+    InvalidPubkey { idx: usize },
+}
+
+pub fn decode_checkpoint_pubkeys(bytes: &[u8]) -> Result<Vec<PublicKey>, PubkeysDecodeError> {
+    if bytes.len() < PUBKEYS_HEADER {
+        return Err(PubkeysDecodeError::Truncated { len: bytes.len() });
+    }
+    if bytes[..4] != PUBKEYS_MAGIC {
+        return Err(PubkeysDecodeError::BadMagic);
+    }
+    let version = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+    if version != PUBKEYS_VERSION {
+        return Err(PubkeysDecodeError::BadVersion { got: version });
+    }
+    let count = u64::from_le_bytes(bytes[8..16].try_into().unwrap()) as usize;
+    let body = &bytes[PUBKEYS_HEADER..];
+    if body.len() != count * PUBKEY_SER {
+        return Err(PubkeysDecodeError::LenMismatch { body: body.len(), count });
+    }
+    let mut out = Vec::with_capacity(count);
+    for i in 0..count {
+        let pk = PublicKey::deserialize(&body[i * PUBKEY_SER..][..PUBKEY_SER])
+            .map_err(|_| PubkeysDecodeError::InvalidPubkey { idx: i })?;
+        out.push(pk);
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use blst::min_pk::SecretKey;
 
     use crate::{
-        SpecConfig, ValSeed,
+        Section, SpecConfig, ValSeed,
         types::{
             Checkpoint, Eth1Data, FAR_FUTURE_EPOCH, Finalized, HistoricalSummary,
             PendingConsolidation, PendingDeposit, PendingPartialWithdrawal, Withdrawals,
@@ -357,6 +573,34 @@ mod tests {
         fin.encode_ssz(&mut b1).unwrap();
         assert_eq!(b1.len(), fin.ssz_len());
 
+        // The streamed section-by-section path (Phase 2) must produce the
+        // exact same bytes as the one-shot encode.
+        let offsets = Finalized::offsets_from_lens(&fin.var_len_section_lens());
+        let mut streamed = Vec::new();
+        for section in Section::ALL {
+            fin.write_section(section, &offsets, &mut streamed).unwrap();
+        }
+        assert_eq!(streamed, b1, "section-streamed encode differs from one-shot");
+
+        // The chunked path (validators may span multiple turns) also matches.
+        let mut chunked = Vec::new();
+        for section in Section::ALL {
+            let mut chunk = 0;
+            while !fin.write_section_chunk(section, chunk, &offsets, &mut chunked).unwrap() {
+                chunk += 1;
+            }
+        }
+        assert_eq!(chunked, b1, "chunk-streamed encode differs from one-shot");
+
+        // Splitting the validators section at an arbitrary boundary is
+        // byte-identical to writing it whole.
+        let mut whole = Vec::new();
+        fin.write_validators(&mut whole).unwrap();
+        let mut split = Vec::new();
+        fin.write_validators_range(0, 2, &mut split).unwrap();
+        fin.write_validators_range(2, fin.validators.validator_count(), &mut split).unwrap();
+        assert_eq!(split, whole, "validator range split differs from whole section");
+
         let cfg = SpecConfig::mainnet();
         let mut fin2 = Box::new(Finalized::empty());
         fin2.decompose(&b1, &cfg).expect("decompose encoded synthetic state");
@@ -373,5 +617,93 @@ mod tests {
         assert_eq!(pending.pending_consolidations.len(), 1);
         assert_eq!(fin2.slot.slot.eth1_votes.len(), 1);
         assert_eq!(fin2.longtail.historical_summaries.read().len(), 1);
+    }
+
+    /// Decompose a real mainnet checkpoint, then re-encode it via the chunked
+    /// streaming path (the live persist's path — ~18 validators chunks at
+    /// mainnet scale) and assert byte-equality with the original SSZ.
+    #[test]
+    fn streamed_reencode_matches_mainnet_checkpoint() {
+        use std::path::PathBuf;
+
+        let path = std::env::var("SILVER_CHECKPOINT_SSZ").map(PathBuf::from).unwrap_or_else(|_| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../e2e/tests/example_checkpoints/finalized_state.ssz")
+        });
+        let Ok(ssz) = std::fs::read(&path) else {
+            eprintln!("skipping: fixture {} not present", path.display());
+            return;
+        };
+
+        let mut fin = Box::new(Finalized::empty());
+        fin.decompose(&ssz, &SpecConfig::mainnet()).expect("decompose");
+
+        let offsets = Finalized::offsets_from_lens(&fin.var_len_section_lens());
+        let mut out = Vec::with_capacity(fin.ssz_len());
+        for section in Section::ALL {
+            let mut chunk = 0;
+            while !fin.write_section_chunk(section, chunk, &offsets, &mut out).unwrap() {
+                chunk += 1;
+            }
+        }
+        if out != ssz {
+            let at = out.iter().zip(&ssz).position(|(a, b)| a != b);
+            panic!(
+                "streamed re-encode differs from original at byte {at:?} (lens {} vs {})",
+                out.len(),
+                ssz.len(),
+            );
+        }
+    }
+
+    /// Write the decompressed-pubkey sidecar, decode it, rebuild the validators
+    /// from SSZ + sidecar, and confirm the pubkeys match. Also that a corrupted
+    /// sidecar is rejected (never silently accepted).
+    #[test]
+    fn pubkeys_sidecar_round_trip() {
+        let seeds: Vec<ValSeed> = (0..5u8)
+            .map(|i| ValSeed {
+                pubkey: valid_pubkey(i),
+                withdrawal_credentials: Withdrawals::eth1(&[i; 20]),
+                effective_balance: 32_000_000_000,
+                balance: 31_000_000_000,
+                activation_epoch: 0,
+                exit_epoch: FAR_FUTURE_EPOCH,
+            })
+            .collect();
+        let fin = Finalized::new_test(&seeds);
+
+        let mut sidecar = Vec::with_capacity(fin.pubkeys_sidecar_len());
+        let mut chunk = 0;
+        while !fin.write_pubkeys_chunk(chunk, &mut sidecar).unwrap() {
+            chunk += 1;
+        }
+        assert_eq!(sidecar.len(), fin.pubkeys_sidecar_len());
+
+        let decoded = super::decode_checkpoint_pubkeys(&sidecar).unwrap();
+        assert_eq!(decoded.len(), 5);
+
+        let offsets = fin.var_offsets();
+        let mut val_bytes = Vec::new();
+        fin.write_section(Section::Validators, &offsets, &mut val_bytes).unwrap();
+        let rebuilt =
+            crate::FinalizedValidators::try_new_with_pubkeys(&val_bytes, &decoded).unwrap();
+        for i in 0..5 {
+            assert_eq!(rebuilt.pubkey(i), fin.validators.pubkey(i));
+            assert_eq!(
+                rebuilt.pubkey_decompressed(i).compress(),
+                fin.validators.pubkey_decompressed(i).compress(),
+            );
+        }
+
+        // A flipped pubkey byte is rejected — by decode's on-curve check or the
+        // sample cross-check.
+        let mut bad = sidecar.clone();
+        bad[super::PUBKEYS_HEADER] ^= 0xff;
+        let rejected = match super::decode_checkpoint_pubkeys(&bad) {
+            Ok(d) => crate::FinalizedValidators::try_new_with_pubkeys(&val_bytes, &d).is_err(),
+            Err(_) => true,
+        };
+        assert!(rejected, "corrupted sidecar must be rejected");
     }
 }

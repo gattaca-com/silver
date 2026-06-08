@@ -15,6 +15,8 @@ pub struct ChainConfig {
     #[serde(default)]
     pub checkpoint_file: Option<String>,
     #[serde(default)]
+    pub checkpoint_pubkeys_file: Option<String>,
+    #[serde(default)]
     pub bootstrap_enrs: Vec<Enr>,
     #[serde(default)]
     pub spec: SpecConfig,
@@ -26,6 +28,7 @@ impl Default for ChainConfig {
             genesis_unix_secs: 1606824023,
             prepare_payload_lookahead_millis: 4000,
             checkpoint_file: None,
+            checkpoint_pubkeys_file: None,
             bootstrap_enrs: vec![],
             spec: SpecConfig::mainnet(),
         }

@@ -1,7 +1,6 @@
 use std::{
     collections::{VecDeque, hash_map::Entry},
-    fs::File,
-    io::{Error, Read, Write},
+    io::{Error, Read},
     path::{Path, PathBuf},
 };
 
@@ -19,7 +18,10 @@ use silver_metrics::timed;
 use crate::store::backfill::Backfill;
 
 mod backfill;
+mod checkpoint;
 mod io;
+
+use checkpoint::CheckpointWriter;
 
 /// `DataColumnSidecarsByRange` is bounded by
 /// `count * NUMBER_OF_COLUMNS <= MAX_REQUEST_DATA_COLUMN_SIDECARS`
@@ -52,13 +54,6 @@ const COLUMNS_DIR: &str = "columns";
 
 const BLOCK_SLOTS_RETAINED: u64 = 33024 * 32;
 const COLUMN_SLOTS_RETAINED: u64 = 4096 * 32;
-/// Sub-directory holding finalized-state checkpoints, one dir per epoch:
-/// `finalized_checkpoints/<epoch>/<epoch>.ssz`.
-const FINALIZED_CHECKPOINTS_DIR: &str = "finalized_checkpoints";
-
-/// Newest finalized-state checkpoints to retain on disk; older dirs are
-/// unlinked after a successful commit.
-const MAX_FINALIZED_CHECKPOINTS: usize = 3;
 
 /// One node of the unfinalized fork tree. The edge (`parent_root`) is
 /// durable in the on-disk filename; this is the in-memory index rebuilt
@@ -177,6 +172,8 @@ pub(super) struct Store {
     backfill: Option<Backfill>,
     // Slot of the newest finalized-state checkpoint committed to disk.
     last_persisted_finalized_slot: u64,
+    // In-flight streamed checkpoint, advanced one section per `file_io` turn.
+    checkpoint: Option<CheckpointWriter>,
 
     write_queue: VecDeque<PendingWrite>,
     query_queue: VecDeque<PendingQuery>,
@@ -244,25 +241,9 @@ impl Store {
             }
         }
 
-        // Finalized-state checkpoints. Drop incomplete dirs (crashed mid-write,
-        // no committed `<slot>.ssz`), anchor `last_persisted` at the newest
-        // committed slot, and prune to the newest MAX_FINALIZED_CHECKPOINTS.
-        let checkpoints_dir = Path::new(&store_dir).join(FINALIZED_CHECKPOINTS_DIR);
-        std::fs::create_dir_all(&checkpoints_dir)?;
-        if let Ok(entries) = std::fs::read_dir(&checkpoints_dir) {
-            for entry in entries.flatten() {
-                if let Some(slot) = entry.file_name().to_str().and_then(|n| n.parse::<u64>().ok()) &&
-                    !entry.path().join(format!("{slot}.ssz")).exists()
-                {
-                    let _ = std::fs::remove_dir_all(entry.path());
-                }
-            }
-        }
-        let committed = Self::committed_checkpoint_slots(&checkpoints_dir);
-        let last_persisted_finalized_slot = committed.first().copied().unwrap_or(0);
-        for &old in committed.iter().skip(MAX_FINALIZED_CHECKPOINTS) {
-            let _ = std::fs::remove_dir_all(checkpoints_dir.join(old.to_string()));
-        }
+        // Finalized-state checkpoints: drop incomplete dirs, prune to the
+        // newest N, and anchor `last_persisted` at the newest committed slot.
+        let last_persisted_finalized_slot = checkpoint::init_checkpoints_dir(&store_dir)?;
 
         Ok(Self {
             store_dir,
@@ -276,6 +257,7 @@ impl Store {
             backfill: None,
             first_sync: false,
             last_persisted_finalized_slot,
+            checkpoint: None,
             write_queue: Default::default(),
             query_queue: Default::default(),
         })
@@ -650,74 +632,6 @@ impl Store {
     fn unfinalized_columns_dir(&self) -> PathBuf {
         Path::new(&self.store_dir).join(UNFINALIZED_COLUMNS_DIR)
     }
-
-    fn finalized_checkpoints_dir(&self) -> PathBuf {
-        Path::new(&self.store_dir).join(FINALIZED_CHECKPOINTS_DIR)
-    }
-
-    #[inline]
-    pub(super) fn last_persisted_finalized_slot(&self) -> u64 {
-        self.last_persisted_finalized_slot
-    }
-
-    /// Committed checkpoint slots (`<slot>/<slot>.ssz` present), newest first.
-    /// Malformed / incomplete dirs are skipped.
-    fn committed_checkpoint_slots(dir: &Path) -> Vec<u64> {
-        let mut slots = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                if let Some(slot) = entry.file_name().to_str().and_then(|n| n.parse::<u64>().ok()) &&
-                    entry.path().join(format!("{slot}.ssz")).exists()
-                {
-                    slots.push(slot);
-                }
-            }
-        }
-        slots.sort_unstable_by(|a, b| b.cmp(a));
-        slots
-    }
-
-    /// Atomically commit a finalized-state checkpoint: write `ssz` to a temp
-    /// file in the per-slot dir, fsync it, rename to `<slot>.ssz`, fsync the
-    /// dir, then prune to the newest MAX_FINALIZED_CHECKPOINTS. Blocks the tile
-    /// for the write. Idempotent — a no-op when `slot` is already committed.
-    pub(super) fn persist_finalized_checkpoint(
-        &mut self,
-        slot: u64,
-        ssz: &[u8],
-    ) -> Result<(), Error> {
-        if slot <= self.last_persisted_finalized_slot {
-            return Ok(());
-        }
-        let base = self.finalized_checkpoints_dir();
-        let dir = base.join(slot.to_string());
-        std::fs::create_dir_all(&dir)?;
-
-        let tmp = dir.join(format!("{slot}.ssz.tmp"));
-        {
-            let mut f = io::open_file_write(&tmp, false)?;
-            f.write_all(ssz)?;
-            f.sync_all()?;
-        }
-        std::fs::rename(&tmp, dir.join(format!("{slot}.ssz")))?;
-        // fsync up the tree: the per-slot dir so the rename is durable, then the
-        // parent so the freshly-created `<slot>/` entry itself survives a crash
-        // — without it the whole checkpoint dir can vanish on power loss.
-        if let Ok(d) = File::open(&dir) {
-            let _ = d.sync_all();
-        }
-        if let Ok(d) = File::open(&base) {
-            let _ = d.sync_all();
-        }
-
-        self.last_persisted_finalized_slot = self.last_persisted_finalized_slot.max(slot);
-
-        // Retention: unlink everything older than the newest N.
-        for &old in Self::committed_checkpoint_slots(&base).iter().skip(MAX_FINALIZED_CHECKPOINTS) {
-            let _ = std::fs::remove_dir_all(base.join(old.to_string()));
-        }
-        Ok(())
-    }
 }
 
 /// Set bit positions of a column bitmask, ascending.
@@ -773,123 +687,11 @@ mod tests {
     // consumer drops first, releasing them on drop is use-after-free.
     use std::{
         io::{ErrorKind, Read, Write},
-        path::{Path, PathBuf},
         thread,
         time::{Duration, Instant},
     };
 
-    use silver_beacon_state_data::{Finalized, SpecConfig};
-
-    use super::{FINALIZED_CHECKPOINTS_DIR, Store};
     use crate::tile::IoEvent;
-
-    /// Manual benchmark of the real `Store::persist_finalized_checkpoint` — the
-    /// durable-write half of the storage tile's checkpoint path. The SSZ encode
-    /// is benched separately in `silver_beacon_state_data`'s
-    /// `encode_checkpoint`. Ignored by default — needs the ~312 MiB mainnet
-    /// fixture and writes several GiB.
-    ///
-    ///   cargo test -p silver_storage --release checkpoint_persist_bench \
-    ///       -- --ignored --nocapture
-    ///
-    /// Override the state path with SILVER_CHECKPOINT_SSZ and the write target
-    /// with SILVER_BENCH_DIR (point it at the data-store disk; tmpfs / `/tmp`
-    /// understates the fsync cost).
-    #[test]
-    #[ignore = "manual benchmark; needs mainnet fixture, writes several GiB"]
-    fn checkpoint_persist_bench() {
-        let path = std::env::var("SILVER_CHECKPOINT_SSZ").map(PathBuf::from).unwrap_or_else(|_| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../e2e/tests/example_checkpoints/finalized_state.ssz")
-        });
-        let Ok(ssz) = std::fs::read(&path) else {
-            eprintln!("skipping: fixture {} not present", path.display());
-            return;
-        };
-
-        let mut fin = Box::new(Finalized::empty());
-        fin.decompose(&ssz, &SpecConfig::mainnet()).expect("decompose");
-        let base_slot = fin.slot();
-        let len = fin.ssz_len();
-        assert_eq!(len, ssz.len(), "round-trip length mismatch");
-        println!("state: {len} bytes ({} MiB), base slot {base_slot}", len >> 20);
-
-        // Encode once up-front; the timed loop measures persist only.
-        let mut buf = Vec::with_capacity(len);
-        fin.encode_ssz(&mut buf).unwrap();
-
-        // Real persist (atomic temp → fsync → rename → fsync dirs → retention) —
-        // the tile's `loop_body` write path. A fresh slot each iteration bypasses
-        // the idempotency guard and exercises the per-slot mkdir + retention
-        // prune; retention caps disk at the newest N. Unique subdir under
-        // SILVER_BENCH_DIR (default `/tmp`), removed at the end.
-        let base = std::env::var("SILVER_BENCH_DIR").unwrap_or_else(|_| "/tmp".to_string());
-        let dir = format!("{base}/silver_bench_persist_{}", rand::random::<u32>());
-        let mut store = Store::load(dir.clone()).unwrap();
-        let mut persist = Vec::new();
-        for i in 0..23u64 {
-            let t = Instant::now();
-            store.persist_finalized_checkpoint(base_slot + i, &buf).unwrap();
-            let elapsed = t.elapsed();
-            if i >= 3 {
-                persist.push(elapsed);
-            }
-        }
-        report("persist_finalized_checkpoint", &mut persist, len);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    fn report(name: &str, samples: &mut [Duration], bytes: usize) {
-        samples.sort_unstable();
-        let n = samples.len();
-        let mean = samples.iter().sum::<Duration>() / n as u32;
-        let median = samples[n / 2];
-        let gib = bytes as f64 / (1u64 << 30) as f64;
-        println!(
-            "{name}: min {:?} median {median:?} mean {mean:?} ({:.2} GiB/s median)",
-            samples[0],
-            gib / median.as_secs_f64(),
-        );
-    }
-
-    #[test]
-    fn checkpoint_persist_retention_and_load() {
-        let dir = format!("/tmp/silver_storage_cp_{}", rand::random::<u32>());
-        let _ = std::fs::remove_dir_all(&dir);
-
-        let mut store = Store::load(dir.clone()).unwrap();
-        assert_eq!(store.last_persisted_finalized_slot(), 0);
-
-        // Commit four slots; only the newest three survive.
-        for slot in [10u64, 11, 12, 13] {
-            store.persist_finalized_checkpoint(slot, format!("state-{slot}").as_bytes()).unwrap();
-            assert_eq!(store.last_persisted_finalized_slot(), slot);
-        }
-
-        let cp = Path::new(&dir).join(FINALIZED_CHECKPOINTS_DIR);
-        assert!(!cp.join("10").exists(), "oldest checkpoint must be unlinked");
-        for slot in [11u64, 12, 13] {
-            let f = cp.join(slot.to_string()).join(format!("{slot}.ssz"));
-            assert_eq!(std::fs::read(&f).unwrap(), format!("state-{slot}").as_bytes());
-            assert!(
-                !cp.join(slot.to_string()).join(format!("{slot}.ssz.tmp")).exists(),
-                "committed checkpoint must leave no temp file",
-            );
-        }
-
-        // A crashed mid-write dir (temp only, no committed `.ssz`) is dropped
-        // on load; `last_persisted` anchors at the newest committed slot.
-        let incomplete = cp.join("99");
-        std::fs::create_dir_all(&incomplete).unwrap();
-        std::fs::write(incomplete.join("99.ssz.tmp"), b"partial").unwrap();
-
-        let reloaded = Store::load(dir.clone()).unwrap();
-        assert_eq!(reloaded.last_persisted_finalized_slot(), 13);
-        assert!(!cp.join("99").exists(), "incomplete checkpoint dropped on load");
-        assert!(cp.join("13").exists());
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
 
     #[test]
     fn concurrent_read_write() {
@@ -1396,7 +1198,7 @@ mod tests {
 
         assert_eq!(requests.len(), 1);
         let (request_id, columns, requested_root) = requests[0];
-        assert_eq!(request_id & 0xffff_ffff_0000_0000, crate::tile::COLUMN_BACKFILL_REQUEST_ID);
+        assert_eq!(request_id & 0xffff_ffff_0000_0000, silver_common::COLUMN_BACKFILL_REQUEST_ID);
         assert_eq!(columns, custody_columns);
         assert_eq!(requested_root, block_root);
         assert_eq!(store.root_index.get(&block_root), Some(&slot));

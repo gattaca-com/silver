@@ -118,8 +118,15 @@ impl PmBsHarness {
         let rpc_c = rpc_p.cache_ref().random_access("test", true).expect("rpc ra");
 
         let state = BeaconStateOwner::new(BeaconState::empty());
-        let mut bs =
-            BeaconStateTile::new(ticker, SpecConfig::mainnet(), state, gossip_c, rpc_c, checkpoint);
+        let mut bs = BeaconStateTile::new(
+            ticker,
+            SpecConfig::mainnet(),
+            state,
+            gossip_c,
+            rpc_c,
+            checkpoint,
+            &[],
+        );
         let mut bs_a = SpineAdapter::connect_tile(&bs, &mut *spine);
 
         let pm = PeerManager::new(

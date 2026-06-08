@@ -173,6 +173,11 @@ impl Config {
         self
     }
 
+    pub fn with_checkpoint_pubkeys(mut self, path: String) -> Self {
+        self.chain_config.checkpoint_pubkeys_file = Some(path);
+        self
+    }
+
     pub fn keypair(&self) -> Result<Keypair, Error> {
         Keypair::from_secret(&self.secret_key)
     }

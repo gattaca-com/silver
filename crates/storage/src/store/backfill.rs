@@ -6,7 +6,7 @@ use std::{
 
 use fxhash::FxHashMap;
 use silver_common::{
-    PeerEvent,
+    BACKFILL_REQUEST_ID, COLUMN_BACKFILL_REQUEST_ID, PeerEvent,
     RpcRequest::BlocksByRange,
     TRead, Wheel,
     ssz_hash::B256,
@@ -18,7 +18,7 @@ use silver_common::{
 
 use crate::{
     store::{COLUMN_SLOTS_RETAINED, MAX_REQUEST_BLOCKS, PendingWrite},
-    tile::{BACKFILL_REQUEST_ID, COLUMN_BACKFILL_REQUEST_ID},
+    // common::{BACKFILL_REQUEST_ID, COLUMN_BACKFILL_REQUEST_ID},
     util,
 };
 

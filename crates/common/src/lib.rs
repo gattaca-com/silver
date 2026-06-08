@@ -12,7 +12,8 @@ pub use crate::{
         parse_eth2_multiaddr,
     },
     spine::{
-        ALL_PROTOCOLS, AcquiredRead as TRead, BeaconStateEvent, BlockSource, Consumer as TConsumer,
+        ALL_PROTOCOLS, AcquiredRead as TRead, BACKFILL_REQUEST_ID, BASE_REQUEST_ID,
+        BeaconStateEvent, BlockSource, COLUMN_BACKFILL_REQUEST_ID, Consumer as TConsumer,
         DataColumnsAvailable, ELSyncStatus, EngineFcuReq, EngineFcuResp, EngineGetBlobsReq,
         EngineGetBlobsResp, EngineGetPayloadBodiesByHashReq, EngineGetPayloadBodiesByRangeReq,
         EngineGetPayloadBodiesResp, EngineGetPayloadReq, EngineGetPayloadResp, EngineHealthEvent,
