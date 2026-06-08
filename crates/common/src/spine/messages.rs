@@ -870,11 +870,6 @@ pub struct DataColumnsAvailable {
     pub signature: [u8; 96],
 }
 
-pub const REQUEST_ID_PREFIX_MASK: u64 = 0xffff_ffff_0000_0000;
-pub const BASE_REQUEST_ID: u64 = 0x00da_5da5 << 32;
-pub const BACKFILL_REQUEST_ID: u64 = 0xbacc_f111 << 32;
-pub const COLUMN_BACKFILL_REQUEST_ID: u64 = 0xc01b_accf << 32;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RequestCategory {
     LiveSync,

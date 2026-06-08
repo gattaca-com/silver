@@ -2,11 +2,11 @@ use std::time::{Duration, Instant};
 
 use flux::{spine::SpineAdapter, tile::Tile};
 use silver_beacon_state_data::{BeaconStateReader, SLOTS_PER_EPOCH};
-pub(crate) use silver_common::{
-    BACKFILL_REQUEST_ID, BASE_REQUEST_ID, COLUMN_BACKFILL_REQUEST_ID, REQUEST_ID_PREFIX_MASK,
-};
 use silver_common::{
-    ssz_view::{DataColumnSidecarView, StatusView}, BeaconStateEvent, DataColumnsAvailable, NewGossipMsg, P2pSend, P2pStreamId, PeerEvent, RpcInbound, RpcSeverity, SilverSpine, StreamProtocol, SyncUpdate, TMultiProducer, TRandomAccess, TRead, Wheel, BASE_REQUEST_ID,
+    BASE_REQUEST_ID, BeaconStateEvent, DataColumnsAvailable, NewGossipMsg, P2pSend, P2pStreamId,
+    PeerEvent, RpcInbound, RpcSeverity, SilverSpine, StreamProtocol, SyncUpdate, TMultiProducer,
+    TRandomAccess, TRead, Wheel,
+    ssz_view::{DataColumnSidecarView, StatusView},
 };
 use silver_metrics::timed;
 
