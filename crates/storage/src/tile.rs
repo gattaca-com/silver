@@ -10,8 +10,7 @@ use silver_common::{
 };
 use silver_metrics::timed;
 
-use crate::{store::Store, util};
-
+use crate::{StorageCounters, store::Store, util};
 const MAX_RETRIES: u8 = 5;
 
 /// Persist a finalized-state checkpoint only when within this many slots of
@@ -57,7 +56,7 @@ pub struct StorageTile {
     validated_blocks: Wheel<BlockRoot, [u8; 96], 4>,
     // outstanding requests - keyed by block body root
     // 16 x 500 millisecond buckets.
-    outstanding_requests: Wheel<BlockRoot, (u128, u8), 16>,
+    outstanding_requests: Wheel<BlockRoot, (u128, u128, u8), 16>,
 
     // Highest Status finalized epoch we've scheduled a checkpoint for; dedups
     // the trigger so we encode at most once per finalized-epoch advance.
@@ -97,7 +96,7 @@ impl StorageTile {
             fork_digest,
             validated_columns: Wheel::new(EPOCH_DURATION),
             validated_blocks: Wheel::new(EPOCH_DURATION),
-            outstanding_requests: Wheel::new(Duration::from_millis(500)),
+            outstanding_requests: Wheel::new(Duration::from_millis(100)),
             checkpointed_epoch,
             persist_pending: false,
         }
@@ -133,14 +132,23 @@ impl StorageTile {
         }
 
         let mut to_request = self.custody_group_columns;
-        if let Some(validated) = self.validated_columns.get(&block_root) {
-            to_request &= !validated;
-            if to_request == 0 {
-                // already have all custody group columns
-                return;
-            }
+        let validated = self.validated_columns.get(&block_root).copied().unwrap_or(0);
+        to_request &= !validated;
+
+        if stream_id.protocol() == StreamProtocol::GossipSub {
+            let candidate_mask = !(self.custody_group_columns | validated);
+            to_request |= util::select_random_columns(candidate_mask, 4);
         }
-        self.outstanding_requests.insert(block_root, (to_request, MAX_RETRIES));
+
+        if to_request == 0 {
+            return;
+        }
+        self.outstanding_requests.insert(block_root, (to_request, to_request, MAX_RETRIES));
+        tracing::trace!(
+            block = hex::encode(block_root),
+            ?stream_id,
+            "data columns by root request: {to_request:b}"
+        );
         emit(self.column_request(block_root, to_request));
     }
 
@@ -280,19 +288,23 @@ impl StorageTile {
             self.validated_blocks.insert(block_root, sig_bytes);
         }
 
-        if let Some((mut requested, retries)) = requested {
+        let mut completion_check = self.custody_group_columns;
+
+        if let Some((mut requested, full_set, retries)) = requested {
             requested &= !column_bitmask;
+            completion_check = full_set;
             if requested != 0 {
                 // more column responses pending
-                self.outstanding_requests.insert(block_root, (requested, retries));
+                self.outstanding_requests.insert(block_root, (requested, full_set, retries));
             }
         }
 
         let validated = self.validated_columns.entry(block_root).or_default();
         *validated |= column_bitmask;
 
-        if *validated & self.custody_group_columns == self.custody_group_columns {
+        if *validated & completion_check == completion_check {
             // have all validated data columns for the block.
+            StorageCounters::DataColumnsAvailableEmitted.inc();
             emit(DataColumnsAvailable {
                 slot: DataColumnSidecarView::slot(buffer),
                 proposer_index: DataColumnSidecarView::proposer_index(buffer),
@@ -328,7 +340,9 @@ impl Tile<SilverSpine> for StorageTile {
                     producers.peer_events.produce(&evt.into());
                 });
             }
-            silver_common::GossipTopic::DataColumnSidecar(_custody_group) => {
+            silver_common::GossipTopic::DataColumnSidecar(_custody_group)
+                if self.store.is_synced() =>
+            {
                 // TODO validate that topic group matches sidecar column index
                 tracing::debug!(_custody_group, "data column sidecar over gossip");
 
@@ -485,15 +499,14 @@ impl Tile<SilverSpine> for StorageTile {
 
         // Timeout any pending requests and re-issue
         let mut request_id = self.request_id;
-        self.outstanding_requests.maybe_rotate(now, &mut |block_root, (columns, retries)| {
+        self.outstanding_requests.maybe_rotate(now, &mut |block_root, (columns, _, retries)| {
             if *retries == 0 {
                 return true; // remove
             }
             request_id += 1;
             tracing::trace!(
-                columns,
                 block_root = hex::encode(block_root),
-                "resending outstanding data column request"
+                "resending outstanding data column request: {columns:b}"
             );
             adapter.produce(PeerEvent::SendDataColumnsByRootRequest {
                 request_id,
@@ -531,4 +544,117 @@ impl Tile<SilverSpine> for StorageTile {
 pub(crate) enum IoEvent {
     P2pSend(P2pSend),
     PeerEvent(PeerEvent),
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+
+    use silver_beacon_state_data::{BeaconState, BeaconStateOwner};
+    use silver_common::{P2pStreamId, StreamProtocol, TCache, TCacheProducer};
+
+    use super::*;
+
+    #[test]
+    fn test_beacon_block_gossip_requests_random_columns() {
+        let store_dir = format!("/tmp/test_storage_tile_gossip_{}", rand::random::<u32>());
+        let _ = std::fs::remove_dir_all(&store_dir);
+
+        let custody_columns = (1u128 << 3) | (1u128 << 7);
+
+        let gossip_tc = TCache::producer("gossip_blocks", 1024 * 1024);
+        let gossip_consumer = gossip_tc.cache_ref().random_access("gossip_cons", true).unwrap();
+
+        let persist_gossip_tc = TCache::producer("persist_gossip_blocks", 1024 * 1024);
+        let persist_gossip_consumer =
+            persist_gossip_tc.cache_ref().random_access("persist_gossip_cons", true).unwrap();
+
+        let rpc_tc = TCache::producer("rpc_blocks", 1024 * 1024);
+        let rpc_consumer = rpc_tc.cache_ref().random_access("rpc_cons", true).unwrap();
+
+        let persist_rpc_tc = TCache::producer("persist_rpc_blocks", 1024 * 1024);
+        let persist_rpc_consumer =
+            persist_rpc_tc.cache_ref().random_access("persist_rpc_cons", true).unwrap();
+
+        let rpc_producer = TCache::multi_producer("rpc_out", 1024 * 1024);
+
+        let beacon_state = BeaconStateOwner::new(BeaconState::empty()).reader();
+
+        let mut tile = StorageTile::new(
+            gossip_consumer,
+            persist_gossip_consumer,
+            rpc_consumer,
+            persist_rpc_consumer,
+            rpc_producer,
+            beacon_state,
+            custody_columns,
+            [1, 2, 3, 4],
+            store_dir.clone(),
+        );
+
+        let mut block_bytes = vec![0u8; 784];
+        // Set message offset to 100
+        block_bytes[0..4].copy_from_slice(&100u32.to_le_bytes());
+        // Set slot to 42 at [100..108)
+        block_bytes[100..108].copy_from_slice(&42u64.to_le_bytes());
+        // Body offset at [180..184) relative to 100: let's make it 84
+        block_bytes[180..184].copy_from_slice(&84u32.to_le_bytes());
+
+        // Inside body (starts at 184):
+        // blob_kzg_commitments_offset at body[388..392]
+        block_bytes[184 + 388..184 + 392].copy_from_slice(&400u32.to_le_bytes());
+        // execution_requests_offset at body[392..396]
+        block_bytes[184 + 392..184 + 396].copy_from_slice(&500u32.to_le_bytes());
+
+        let mut producer = TCache::producer("test_block_prod", 1024 * 1024);
+        let mut res = producer.reserve(block_bytes.len(), true).unwrap();
+        res.write_all(&block_bytes).unwrap();
+        res.flush().unwrap();
+        let ssz = res.read();
+        let mut blocks_consumer =
+            producer.cache_ref().random_access("test_block_cons", true).unwrap();
+        let read = blocks_consumer.acquire(ssz);
+
+        let block_root = util::block_root(&block_bytes);
+
+        // 1. Check RPC block request (non-gossip stream)
+        let rpc_stream = P2pStreamId::new(2, 2, StreamProtocol::BeaconBlocksByRange, true);
+        let mut rpc_events = Vec::new();
+        tile.beacon_block(rpc_stream, read.clone(), &mut |evt| rpc_events.push(evt));
+
+        assert_eq!(rpc_events.len(), 1);
+        if let PeerEvent::SendDataColumnsByRootRequest { columns, block_root: req_root, .. } =
+            rpc_events[0]
+        {
+            assert_eq!(columns, custody_columns);
+            assert_eq!(req_root, block_root);
+        } else {
+            panic!("expected SendDataColumnsByRootRequest");
+        }
+
+        // Clean up outstanding request to allow requesting the same block root again
+        tile.outstanding_requests.remove(&block_root);
+
+        // 2. Check Gossip block request (gossip stream)
+        let gossip_stream = P2pStreamId::new(1, 1, StreamProtocol::GossipSub, true);
+        let mut gossip_events = Vec::new();
+        tile.beacon_block(gossip_stream, read, &mut |evt| gossip_events.push(evt));
+
+        assert_eq!(gossip_events.len(), 1);
+        if let PeerEvent::SendDataColumnsByRootRequest { columns, block_root: req_root, .. } =
+            gossip_events[0]
+        {
+            assert_eq!(req_root, block_root);
+            // Must contain custody columns
+            assert_eq!(columns & custody_columns, custody_columns);
+            // Must contain exactly 6 columns (2 custody + 4 random)
+            assert_eq!(columns.count_ones(), 6);
+            // Must contain 4 extra columns
+            assert_eq!((columns & !custody_columns).count_ones(), 4);
+        } else {
+            panic!("expected SendDataColumnsByRootRequest");
+        }
+
+        let _ = std::fs::remove_dir_all(&store_dir);
+    }
 }

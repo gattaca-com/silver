@@ -14,9 +14,9 @@ use std::{
 };
 
 use silver_common::{
-    P2pSend, PeerControl, PeerEvent, PeerStatus, RpcInbound, RpcOutbound, RpcRequest,
-    RpcRequestInbound, RpcRequestOutbound, RpcResponse, RpcResponseInbound, RpcResponseOutbound,
-    RpcSeverity, StreamProtocol, SyncUpdate, hex32,
+    P2pSend, PeerControl, PeerEvent, PeerStatus, RequestCategory, RpcInbound, RpcOutbound,
+    RpcRequest, RpcRequestInbound, RpcRequestOutbound, RpcResponse, RpcResponseInbound,
+    RpcResponseOutbound, RpcSeverity, StreamProtocol, SyncUpdate, hex32,
     ssz_view::{BLOCKS_BY_RANGE_REQ_SIZE, MetadataView, StatusView},
 };
 
@@ -214,15 +214,27 @@ impl PeerManager {
         &self,
         protocol: StreamProtocol,
         columns: u128,
+        request_id: u64,
     ) -> Option<(usize, u128)> {
+        let is_backfill = RequestCategory::from_request_id(request_id).is_backfill();
         self.database
             .live_peers_supporting(protocol)
             .filter_map(|p| {
                 let peer = self.peers.get(&p)?;
-                if peer.outbound_in_flight[protocol.ordinal() as usize] >=
+                let in_flight = peer.outbound_in_flight[protocol.ordinal() as usize];
+                let max_in_flight = if is_backfill {
+                    MAX_RPC_PROTOCOL_IN_FLIGHT / 2
+                } else {
                     MAX_RPC_PROTOCOL_IN_FLIGHT
-                {
-                    tracing::debug!(peer = p, "too many outbound data columns requests");
+                };
+                if in_flight >= max_in_flight {
+                    tracing::debug!(
+                        peer = p,
+                        in_flight,
+                        max_in_flight,
+                        is_backfill,
+                        "too many outbound data columns requests"
+                    );
                     return None;
                 }
                 let overlap = self.database.data_column_custody_groups_intersection(p, columns);
@@ -667,10 +679,19 @@ impl PeerManager {
     /// peer that's freshly available (new connection, in-flight slot
     /// freed).
     pub fn drain_pending_outbound(&mut self, emit: &mut impl FnMut(PeerControl)) {
-        let len = self.pending_data_columns_by_root.len();
+        let len = self.pending_live_columns_by_root.len();
         for _ in 0..len {
             if let Some((request_id, columns, block_root)) =
-                self.pending_data_columns_by_root.pop_front()
+                self.pending_live_columns_by_root.pop_front()
+            {
+                self.on_request_data_columns_by_root(request_id, columns, block_root, emit);
+            }
+        }
+
+        let len = self.pending_backfill_columns_by_root.len();
+        for _ in 0..len {
+            if let Some((request_id, columns, block_root)) =
+                self.pending_backfill_columns_by_root.pop_front()
             {
                 self.on_request_data_columns_by_root(request_id, columns, block_root, emit);
             }
@@ -711,9 +732,11 @@ impl PeerManager {
     ) {
         let mut remaining = columns;
         while remaining != 0 {
-            let Some((peer, overlap)) = self
-                .best_peer_for_data_columns(StreamProtocol::DataColumnSidecarsByRoot, remaining)
-            else {
+            let Some((peer, overlap)) = self.best_peer_for_data_columns(
+                StreamProtocol::DataColumnSidecarsByRoot,
+                remaining,
+                request_id,
+            ) else {
                 tracing::debug!("no peer has data columns: {remaining}");
                 break;
             };
@@ -732,12 +755,19 @@ impl PeerManager {
             tracing::trace!(peer, overlap, remaining, "sent data columns request");
         }
         if remaining != 0 {
-            self.pending_data_columns_by_root.push_back((request_id, remaining, block_root));
+            let is_backfill = RequestCategory::from_request_id(request_id).is_backfill();
+            if is_backfill {
+                self.pending_backfill_columns_by_root
+                    .push_back((request_id, remaining, block_root));
+            } else {
+                self.pending_live_columns_by_root.push_back((request_id, remaining, block_root));
+            }
             emit(PeerControl::DiscoverNodes);
             tracing::debug!(
                 request_id,
                 remaining,
-                pending = self.pending_data_columns_by_root.len(),
+                pending_live = self.pending_live_columns_by_root.len(),
+                pending_backfill = self.pending_backfill_columns_by_root.len(),
                 "partial DataColumnsByRoot coverage; cached remainder + discovery kicked"
             );
         }

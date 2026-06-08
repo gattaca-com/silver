@@ -120,6 +120,7 @@ pub enum RpcResponse {
 pub const BACKFILL_REQUEST_ID: u64 = 0xbacc_f111 << 32;
 pub const COLUMN_BACKFILL_REQUEST_ID: u64 = 0xc01b_accf << 32;
 pub const BASE_REQUEST_ID: u64 = 0x00da_5da5 << 32; // DAS prefix.
+pub const REQUEST_ID_PREFIX_MASK: u64 = 0xffff_ffff_0000_0000;
 
 /// RPC response received from a peer.
 #[derive(Clone, Copy, Debug)]
@@ -129,8 +130,6 @@ pub struct RpcResponseInbound {
     pub stream_id: P2pStreamId,
     pub response: RpcResponse,
 }
-
-const REQUEST_ID_PREFIX_MASK: u64 = 0xffff_ffff_0000_0000;
 
 impl RpcResponseInbound {
     #[inline]
@@ -869,4 +868,25 @@ pub struct DataColumnsAvailable {
     pub body_root: [u8; 32],
     // Proposer sugnature over the fields above.
     pub signature: [u8; 96],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestCategory {
+    LiveSync,
+    BlockBackfill,
+    ColumnBackfill,
+}
+
+impl RequestCategory {
+    pub fn from_request_id(request_id: u64) -> Self {
+        match request_id & REQUEST_ID_PREFIX_MASK {
+            COLUMN_BACKFILL_REQUEST_ID => RequestCategory::ColumnBackfill,
+            BACKFILL_REQUEST_ID => RequestCategory::BlockBackfill,
+            _ => RequestCategory::LiveSync,
+        }
+    }
+
+    pub fn is_backfill(self) -> bool {
+        matches!(self, RequestCategory::ColumnBackfill | RequestCategory::BlockBackfill)
+    }
 }

@@ -176,7 +176,7 @@ impl Store {
                     self.write_queue.pop_front();
                 }
                 PendingWrite::Backfill { finalized_slot, finalized_root } => {
-                    let start_slot = finalized_slot.saturating_sub(BLOCK_SLOTS_RETAINED);
+                    let start_slot = finalized_slot.saturating_sub(BLOCK_SLOTS_RETAINED).max(1);
                     let dir = PathBuf::new().join(&self.store_dir).join(BLOCKS_DIR);
                     let range = match earliest_block(dir)? {
                         Some((slot, parent_root)) if slot > start_slot => {

@@ -186,7 +186,8 @@ pub struct PeerManager {
     /// slot — we max to tolerate transient skew).
     head_counts: FxHashMap<[u8; 32], HeadAgg>,
 
-    pub(crate) pending_data_columns_by_root: VecDeque<(u64, u128, [u8; 32])>,
+    pub(crate) pending_live_columns_by_root: VecDeque<(u64, u128, [u8; 32])>,
+    pub(crate) pending_backfill_columns_by_root: VecDeque<(u64, u128, [u8; 32])>,
     pub(crate) pending_block_by_root: VecDeque<(u64, Option<usize>, [u8; 32])>,
     pub(crate) pending_rpc_request: VecDeque<(u64, RpcRequest)>,
 }
@@ -284,7 +285,8 @@ impl PeerManager {
             finalized_counts: FxHashMap::with_capacity_and_hasher(SYNC_AGG_CAP, Default::default()),
             head_counts: FxHashMap::with_capacity_and_hasher(SYNC_AGG_CAP, Default::default()),
             // TODO: prealloc?
-            pending_data_columns_by_root: VecDeque::new(),
+            pending_live_columns_by_root: VecDeque::new(),
+            pending_backfill_columns_by_root: VecDeque::new(),
             pending_block_by_root: VecDeque::new(),
             pending_rpc_request: VecDeque::new(),
         }
@@ -1943,7 +1945,9 @@ type _TopicScoreAlias = TopicScore;
 mod tests {
     use std::time::Duration;
 
-    use silver_common::{Keypair, TCacheProducer};
+    use silver_common::{
+        BASE_REQUEST_ID, COLUMN_BACKFILL_REQUEST_ID, Enr, Identify, Keypair, TCacheProducer,
+    };
 
     use super::*;
 
@@ -4105,5 +4109,216 @@ mod tests {
         // (and that equals last_emitted, so None).
         assert_eq!(mgr.maybe_emit_sync_target(), None);
         assert_eq!(mgr.current_sync_target(), SyncUpdate::Following);
+    }
+
+    #[test]
+    fn peer_data_columns_prioritization_and_slot_reservation() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+
+        // Connect and identify Peer 1
+        let kp1 = Keypair::from_secret(&[1u8; 32]).unwrap();
+        let enr1 = Enr::builder().cgc(4).build(kp1.secret_key()).unwrap();
+        mgr.database.add_enr(enr1);
+        mgr.handle_event(
+            PeerEvent::P2pNewConnection {
+                p2p_peer_id: 1,
+                peer_id_full: kp1.peer_id(),
+                ip: IpBytes::V4([10, 0, 0, 1]),
+                port: 4001,
+                local_dial: false,
+            },
+            now,
+            &mut |c| cap.0.push(c),
+        );
+        let mut identify1 = Identify::default();
+        identify1.protocols |= 1 << StreamProtocol::DataColumnSidecarsByRoot.ordinal();
+        mgr.handle_event(
+            PeerEvent::P2pPeerIdentity { p2p_peer: 1, identify: identify1 },
+            now,
+            &mut |c| cap.0.push(c),
+        );
+
+        // Connect and identify Peer 2
+        let kp2 = Keypair::from_secret(&[2u8; 32]).unwrap();
+        let enr2 = Enr::builder().cgc(4).build(kp2.secret_key()).unwrap();
+        mgr.database.add_enr(enr2);
+        mgr.handle_event(
+            PeerEvent::P2pNewConnection {
+                p2p_peer_id: 2,
+                peer_id_full: kp2.peer_id(),
+                ip: IpBytes::V4([10, 0, 0, 2]),
+                port: 4002,
+                local_dial: false,
+            },
+            now,
+            &mut |c| cap.0.push(c),
+        );
+        let mut identify2 = Identify::default();
+        identify2.protocols |= 1 << StreamProtocol::DataColumnSidecarsByRoot.ordinal();
+        mgr.handle_event(
+            PeerEvent::P2pPeerIdentity { p2p_peer: 2, identify: identify2 },
+            now,
+            &mut |c| cap.0.push(c),
+        );
+
+        let custody_mask1 = mgr.database.data_column_custody_groups_intersection(1, u128::MAX);
+        let custody_mask2 = mgr.database.data_column_custody_groups_intersection(2, u128::MAX);
+        assert!(custody_mask1 != 0);
+        assert!(custody_mask2 != 0);
+
+        let block_root = [0xAA; 32];
+
+        // 1) First backfill request: should be sent to Peer 1 (targets Peer 1's custody
+        //    mask)
+        mgr.handle_event(
+            PeerEvent::SendDataColumnsByRootRequest {
+                request_id: COLUMN_BACKFILL_REQUEST_ID | 1,
+                columns: custody_mask1,
+                block_root,
+            },
+            now,
+            &mut |c| cap.0.push(c),
+        );
+        assert_eq!(
+            mgr.peers.get(&1).unwrap().outbound_in_flight
+                [StreamProtocol::DataColumnSidecarsByRoot.ordinal() as usize],
+            1
+        );
+        assert_eq!(
+            mgr.peers.get(&2).unwrap().outbound_in_flight
+                [StreamProtocol::DataColumnSidecarsByRoot.ordinal() as usize],
+            0
+        );
+        assert_eq!(mgr.pending_backfill_columns_by_root.len(), 0);
+
+        // 2) Second backfill request: should be sent to Peer 2 (targets Peer 2's
+        //    custody mask)
+        mgr.handle_event(
+            PeerEvent::SendDataColumnsByRootRequest {
+                request_id: COLUMN_BACKFILL_REQUEST_ID | 2,
+                columns: custody_mask2,
+                block_root,
+            },
+            now,
+            &mut |c| cap.0.push(c),
+        );
+        assert_eq!(
+            mgr.peers.get(&1).unwrap().outbound_in_flight
+                [StreamProtocol::DataColumnSidecarsByRoot.ordinal() as usize],
+            1
+        );
+        assert_eq!(
+            mgr.peers.get(&2).unwrap().outbound_in_flight
+                [StreamProtocol::DataColumnSidecarsByRoot.ordinal() as usize],
+            1
+        );
+        assert_eq!(mgr.pending_backfill_columns_by_root.len(), 0);
+
+        // 3) Third backfill request: targets Peer 1's custody mask, Peer 1 is at
+        //    backfill capacity (1), so it must be queued
+        mgr.handle_event(
+            PeerEvent::SendDataColumnsByRootRequest {
+                request_id: COLUMN_BACKFILL_REQUEST_ID | 3,
+                columns: custody_mask1,
+                block_root,
+            },
+            now,
+            &mut |c| cap.0.push(c),
+        );
+        assert_eq!(
+            mgr.peers.get(&1).unwrap().outbound_in_flight
+                [StreamProtocol::DataColumnSidecarsByRoot.ordinal() as usize],
+            1
+        );
+        assert_eq!(
+            mgr.peers.get(&2).unwrap().outbound_in_flight
+                [StreamProtocol::DataColumnSidecarsByRoot.ordinal() as usize],
+            1
+        );
+        assert_eq!(mgr.pending_backfill_columns_by_root.len(), 1);
+
+        // 4) Live request: Peer 1 is at 1 in-flight (limit is 2 for live), targets Peer
+        //    1's custody, should be sent immediately to Peer 1
+        mgr.handle_event(
+            PeerEvent::SendDataColumnsByRootRequest {
+                request_id: BASE_REQUEST_ID | 4,
+                columns: custody_mask1,
+                block_root,
+            },
+            now,
+            &mut |c| cap.0.push(c),
+        );
+        assert_eq!(
+            mgr.peers.get(&1).unwrap().outbound_in_flight
+                [StreamProtocol::DataColumnSidecarsByRoot.ordinal() as usize],
+            2
+        );
+        assert_eq!(
+            mgr.peers.get(&2).unwrap().outbound_in_flight
+                [StreamProtocol::DataColumnSidecarsByRoot.ordinal() as usize],
+            1
+        );
+        assert_eq!(mgr.pending_live_columns_by_root.len(), 0);
+
+        // 5) Another live request: Peer 2 is at 1 in-flight, targets Peer 2's custody,
+        //    should be sent immediately to Peer 2
+        mgr.handle_event(
+            PeerEvent::SendDataColumnsByRootRequest {
+                request_id: BASE_REQUEST_ID | 5,
+                columns: custody_mask2,
+                block_root,
+            },
+            now,
+            &mut |c| cap.0.push(c),
+        );
+        assert_eq!(
+            mgr.peers.get(&1).unwrap().outbound_in_flight
+                [StreamProtocol::DataColumnSidecarsByRoot.ordinal() as usize],
+            2
+        );
+        assert_eq!(
+            mgr.peers.get(&2).unwrap().outbound_in_flight
+                [StreamProtocol::DataColumnSidecarsByRoot.ordinal() as usize],
+            2
+        );
+        assert_eq!(mgr.pending_live_columns_by_root.len(), 0);
+
+        // 6) A third live request: Peer 1 is at 2 in-flight (live capacity limit),
+        //    targets Peer 1's custody, must be queued
+        mgr.handle_event(
+            PeerEvent::SendDataColumnsByRootRequest {
+                request_id: BASE_REQUEST_ID | 6,
+                columns: custody_mask1,
+                block_root,
+            },
+            now,
+            &mut |c| cap.0.push(c),
+        );
+        assert_eq!(mgr.pending_live_columns_by_root.len(), 1);
+
+        // 7) Prioritization on drain:
+        // We have pending_live_columns_by_root = 1 (req 6),
+        // pending_backfill_columns_by_root = 1 (req 3). Let's release one slot
+        // on Peer 1 (simulating completed response).
+        if let Some(peer) = mgr.peers.get_mut(&1) {
+            peer.outbound_in_flight[StreamProtocol::DataColumnSidecarsByRoot.ordinal() as usize] =
+                1;
+        }
+        cap.0.clear();
+        mgr.drain_pending_outbound(&mut |c| cap.0.push(c));
+
+        // Draining must process the live request (req 6) first.
+        // Peer 1 is now back at 2 in-flight, req 6 is sent.
+        assert_eq!(
+            mgr.peers.get(&1).unwrap().outbound_in_flight
+                [StreamProtocol::DataColumnSidecarsByRoot.ordinal() as usize],
+            2
+        );
+        assert_eq!(mgr.pending_live_columns_by_root.len(), 0);
+
+        // The backfill request (req 3) is still pending because Peer 1 is at its limit
+        // (2) and Peer 2 does not have custody overlap.
+        assert_eq!(mgr.pending_backfill_columns_by_root.len(), 1);
     }
 }

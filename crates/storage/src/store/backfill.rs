@@ -181,6 +181,8 @@ impl Backfill {
         let request_id = self.request_id;
         self.request_id += 1;
 
+        tracing::debug!(next_start_slot, count, "backfill blocks by range");
+
         let mut request = [0u8; BLOCKS_BY_RANGE_REQ_SIZE];
         request[..8].copy_from_slice(&next_start_slot.to_le_bytes());
         request[8..16].copy_from_slice(&count.to_le_bytes());

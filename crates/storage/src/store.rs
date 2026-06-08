@@ -387,6 +387,10 @@ impl Store {
         }
     }
 
+    pub(super) fn is_synced(&self) -> bool {
+        self.first_sync
+    }
+
     /// Update fork-choice head and finalization watermark from a Status. On a
     /// finalization advance, promote the finalized chain (blocks and their
     /// columns) to the flat store and prune orphaned forks.

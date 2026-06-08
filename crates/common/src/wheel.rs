@@ -35,7 +35,7 @@ impl<K: Hash + Eq, V, const N: usize> Wheel<K, V, N> {
         if self.last_rotation + self.interval < now {
             self.last_rotation = now;
             self.head = (self.head + 1) & (N - 1);
-            let _ = self.buckets[self.head].extract_if(on_expired);
+            self.buckets[self.head].extract_if(on_expired).for_each(drop);
         }
     }
 
