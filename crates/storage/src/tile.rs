@@ -173,6 +173,13 @@ impl StorageTile {
         let block_root = util::block_root_from_sidecar(buffer);
         let parent_root = DataColumnSidecarView::parent_root(buffer);
         let slot = DataColumnSidecarView::slot(buffer);
+
+        if self.store.is_synced() && slot > self.store.head_slot() + 1 {
+            // received data columns with parent ahead of current head
+            // data column request will be retried
+            return None;
+        }
+
         let column_index = DataColumnSidecarView::index(buffer);
         let column_bitmask = 1u128 << column_index;
         let requested = self.outstanding_requests.remove(&block_root);
@@ -471,7 +478,6 @@ impl Tile<SilverSpine> for StorageTile {
                     silver_common::BlockSource::Rpc => self.persist_rpc_consumer.acquire(ssz),
                 };
 
-                tracing::info!(seq=t_read.seq(), "persist block");
                 match t_read.buffer() {
                     Ok((buf, _)) => {
                         use silver_common::ssz_view::SignedBeaconBlockView;
