@@ -593,6 +593,10 @@ impl PeerManager {
     ///    BlocksByRange capacity, build the SSZ request, emit it, and set
     ///    `inflight_syncreq`.
     pub fn maybe_issue_syncreq(&mut self, now: Instant, emit: &mut impl FnMut(PeerControl)) {
+        if self.awaiting_local_replay {
+            return;
+        }
+
         // Columns first, unconditionally: the early returns below (flow
         // control, target reached) must not starve the column driver —
         // with the DA check, missing columns are exactly what stalls the

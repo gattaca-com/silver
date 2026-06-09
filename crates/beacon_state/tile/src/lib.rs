@@ -9,6 +9,7 @@ pub mod ssz_hash;
 pub mod state_transition;
 pub mod tile;
 mod validate;
+mod weak_subjectivity;
 
 #[cfg(test)]
 pub(crate) mod test_signing;

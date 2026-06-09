@@ -22,6 +22,7 @@ mod checkpoint;
 mod io;
 
 use checkpoint::CheckpointWriter;
+pub use checkpoint::latest_local_checkpoint;
 
 /// `DataColumnSidecarsByRange` is bounded by
 /// `count * NUMBER_OF_COLUMNS <= MAX_REQUEST_DATA_COLUMN_SIDECARS`
@@ -474,6 +475,35 @@ impl Store {
 
     pub(super) fn head_root(&self) -> &[u8; 32] {
         &self.head_root
+    }
+
+    pub(super) fn replay_block_paths(&self, custody: u128) -> Vec<(u64, PathBuf, bool)> {
+        let checkpoint_slot = self.last_persisted_finalized_slot;
+        let mut paths = Vec::with_capacity(self.unfinalized.len());
+        for (block_root, block) in &self.unfinalized {
+            if block.slot > checkpoint_slot {
+                let mask = self.unfinalized_columns.get(block_root).map_or(0, |&(_, m)| m);
+                paths.push((
+                    block.slot,
+                    self.unfinalized_dir().join(io::unfinalized_name(
+                        block.slot,
+                        &block.parent_root,
+                        block_root,
+                    )),
+                    mask & custody == custody,
+                ));
+            }
+        }
+        for &slot in self.root_index.values() {
+            if slot > checkpoint_slot {
+                paths.push((
+                    slot,
+                    self.block_slot_dir(slot).join(format!("{slot}_block.ssz")),
+                    true,
+                ));
+            }
+        }
+        paths
     }
 
     #[timed]

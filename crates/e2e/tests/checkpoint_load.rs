@@ -153,8 +153,10 @@ fn finalized_state_loads() {
     let ticker = SlotTicker::new(genesis_time, Duration::from_secs(12), Duration::from_secs(4));
     let gossip_p = TCache::producer("gossip_in", 1 << 20);
     let rpc_p = TCache::producer("rpc_in", 1 << 20);
+    let replay_p = TCache::producer("replay_in", 1 << 20);
     let gossip_c = gossip_p.cache_ref().random_access("test", false).unwrap();
     let rpc_c = rpc_p.cache_ref().random_access("test", false).unwrap();
+    let replay_c = replay_p.cache_ref().random_access("test", false).unwrap();
 
     let state = BeaconStateOwner::pre_bootstrap();
     let mut tile = BeaconStateTile::new(
@@ -163,6 +165,8 @@ fn finalized_state_loads() {
         state,
         gossip_c,
         rpc_c,
+        replay_c,
+        true,
         &ssz,
         &[],
     );
@@ -318,17 +322,21 @@ fn tile_apply_block_ef_fixture() {
         .decompress_vec(&std::fs::read(&block_path).unwrap())
         .expect("snappy block");
 
-    // Offset genesis_time so wall_slot is far ahead of the small EF slot.
-    let genesis_time = u64::from_le_bytes(pre_ssz[0..8].try_into().unwrap());
+    // Wall just past the block: far enough that it isn't future-rejected, but
+    // close enough that the pre-state stays within its weak-subjectivity period.
+    let block_slot = silver_common::ssz_view::SignedBeaconBlockView::slot(&block_ssz);
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
     let ticker = SlotTicker::new(
-        genesis_time.saturating_sub(60 * 60 * 24 * 365),
+        now.saturating_sub((block_slot + 1) * 12),
         Duration::from_secs(12),
         Duration::from_secs(4),
     );
     let gossip_p = TCache::producer("gossip_ef", 1 << 20);
     let rpc_p = TCache::producer("rpc_ef", 1 << 20);
+    let replay_p = TCache::producer("replay_ef", 1 << 20);
     let gossip_c = gossip_p.cache_ref().random_access("test", false).unwrap();
     let rpc_c = rpc_p.cache_ref().random_access("test", false).unwrap();
+    let replay_c = replay_p.cache_ref().random_access("test", false).unwrap();
 
     let state = BeaconStateOwner::pre_bootstrap();
     let mut tile = BeaconStateTile::new(
@@ -337,6 +345,8 @@ fn tile_apply_block_ef_fixture() {
         state,
         gossip_c,
         rpc_c,
+        replay_c,
+        true,
         &pre_ssz,
         &[],
     );

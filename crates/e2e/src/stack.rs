@@ -262,6 +262,7 @@ impl PublisherStack {
                 [0u8; 4],
                 [0u8; METADATA_SIZE],
                 0,
+                false,
             ),
             TCache::multi_producer("dummy_rpc_out", 32), // dummpy rpc out
         );
@@ -369,6 +370,7 @@ impl EchoStack {
                 [0u8; 4],
                 [0u8; METADATA_SIZE],
                 0,
+                false,
             ),
             TCache::multi_producer("dummy_rpc_out", 32), // dummpy rpc out
         );

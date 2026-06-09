@@ -134,6 +134,9 @@ impl Tile<SilverSpine> for Controller {
             BeaconStateEvent::BlockRejected { block_root, source } => {
                 self.peer_manager.record_block_rejected(block_root, source);
             }
+            BeaconStateEvent::ReplayComplete => {
+                self.peer_manager.on_local_replay_complete();
+            }
             _ => {}
         });
 

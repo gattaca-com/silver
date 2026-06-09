@@ -90,6 +90,8 @@ pub struct Harness {
     inj_adapter: SpineAdapter<SilverSpine>,
     gossip_in_producer: TProducer,
     rpc_in_producer: TProducer,
+    // Kept alive to back the tile's replay consumer; unused by these tests.
+    _replay_in_producer: TProducer,
     outbound_log: Vec<OutboundKind>,
     _base_dir: PathBuf, // owned to keep temp files around for the run
 }
@@ -100,6 +102,7 @@ pub enum OutboundKind {
     PersistBlock,
     BlockRejected,
     SendGossip,
+    ReplayComplete,
 }
 
 impl OutboundKind {
@@ -109,6 +112,7 @@ impl OutboundKind {
             "persist_block" => Self::PersistBlock,
             "block_rejected" => Self::BlockRejected,
             "send_gossip" => Self::SendGossip,
+            "replay_complete" => Self::ReplayComplete,
             _ => return None,
         })
     }
@@ -118,21 +122,32 @@ impl OutboundKind {
             BeaconStateEvent::Status { .. } => Self::Status,
             BeaconStateEvent::PersistBlock { .. } => Self::PersistBlock,
             BeaconStateEvent::BlockRejected { .. } => Self::BlockRejected,
+            BeaconStateEvent::ReplayComplete => Self::ReplayComplete,
         }
     }
 }
 
 impl Harness {
     pub fn new(wall_slot: u64, checkpoint_ssz: &[u8]) -> Self {
-        Self::build(wall_slot, |ticker, gc, rc| {
+        Self::build(wall_slot, |ticker, gc, rc, repc| {
             let state = BeaconStateOwner::pre_bootstrap();
-            BeaconStateTile::new(ticker, SpecConfig::mainnet(), state, gc, rc, checkpoint_ssz, &[])
+            BeaconStateTile::new(
+                ticker,
+                silver_beacon_state_data::SpecConfig::mainnet(),
+                state,
+                gc,
+                rc,
+                repc,
+                true,
+                checkpoint_ssz,
+                &[],
+            )
         })
     }
 
     fn build<F>(wall_slot: u64, build_tile: F) -> Self
     where
-        F: FnOnce(SlotTicker, TRandomAccess, TRandomAccess) -> BeaconStateTile,
+        F: FnOnce(SlotTicker, TRandomAccess, TRandomAccess, TRandomAccess) -> BeaconStateTile,
     {
         static SEQ: AtomicU64 = AtomicU64::new(0);
         let seq = SEQ.fetch_add(1, Ordering::Relaxed);
@@ -154,11 +169,14 @@ impl Harness {
 
         let gossip_in_producer = TCache::producer("gossip_in", 1 << 24);
         let rpc_in_producer = TCache::producer("rpc_in", 1 << 24);
+        let replay_in_producer = TCache::producer("replay_in", 1 << 24);
         let gossip_consumer =
             gossip_in_producer.cache_ref().random_access("test", true).expect("gossip ra");
         let rpc_consumer = rpc_in_producer.cache_ref().random_access("test", true).expect("rpc ra");
+        let replay_consumer =
+            replay_in_producer.cache_ref().random_access("test", true).expect("replay ra");
 
-        let tile = build_tile(ticker, gossip_consumer, rpc_consumer);
+        let tile = build_tile(ticker, gossip_consumer, rpc_consumer, replay_consumer);
 
         // Order matters: attach tile first so its tile_id stays 0 for the
         // real consumer of `inbound`; Injector gets tile_id 1.
@@ -180,6 +198,7 @@ impl Harness {
             inj_adapter,
             gossip_in_producer,
             rpc_in_producer,
+            _replay_in_producer: replay_in_producer,
             outbound_log: Vec::new(),
             _base_dir: base,
         }

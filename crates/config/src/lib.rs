@@ -1,13 +1,12 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 
+use chain_config::ChainConfig;
 pub use discovery_config::DiscoveryConfig;
 pub use peer_score_params::ScoreParams;
 use secp256k1::PublicKey;
 use serde::{Deserialize, Serialize};
 use silver_common::{Enr, Error, GossipTopic, Identify, Keypair, NodeId, PeerId, StreamProtocol};
 pub use syncing_config::SyncingConfig;
-
-use crate::chain_config::ChainConfig;
 
 mod chain_config;
 mod discovery_config;
@@ -106,6 +105,8 @@ pub struct Config {
     outgoing_rpc_tcache_size: usize,
     #[serde(default = "default_data_dir")]
     data_storage_dir: String,
+    #[serde(default)]
+    disable_weak_subjectivity_check: bool,
 }
 
 impl Config {
@@ -137,6 +138,7 @@ impl Config {
             incoming_rpc_tcache_size: 2 << 27,        // ssz
             outgoing_rpc_tcache_size: 2 << 24,        // ssz
             data_storage_dir: default_data_dir(),
+            disable_weak_subjectivity_check: false,
         }
     }
 
@@ -175,6 +177,11 @@ impl Config {
 
     pub fn with_checkpoint_pubkeys(mut self, path: String) -> Self {
         self.chain_config.checkpoint_pubkeys_file = Some(path);
+        self
+    }
+
+    pub fn with_disable_weak_subjectivity_check(mut self, disable: bool) -> Self {
+        self.disable_weak_subjectivity_check = disable;
         self
     }
 
@@ -253,8 +260,8 @@ impl Config {
         Ok(identify)
     }
 
-    pub fn chain_config(&self) -> ChainConfig {
-        self.chain_config.clone()
+    pub fn chain_config(&self) -> &ChainConfig {
+        &self.chain_config
     }
 
     pub fn discovery_config(&self) -> DiscoveryConfig {
@@ -265,7 +272,7 @@ impl Config {
         self.peer_score_params.clone()
     }
 
-    pub fn syncing(&self) -> SyncingConfig {
+    pub fn syncing_config(&self) -> SyncingConfig {
         self.syncing.clone()
     }
 
@@ -299,6 +306,10 @@ impl Config {
 
     pub fn data_storage_dir(&self) -> &str {
         &self.data_storage_dir
+    }
+
+    pub fn disable_weak_subjectivity_check(&self) -> bool {
+        self.disable_weak_subjectivity_check
     }
 }
 
