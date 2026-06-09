@@ -478,7 +478,6 @@ impl Tile<SilverSpine> for StorageTile {
                     silver_common::BlockSource::Rpc => self.persist_rpc_consumer.acquire(ssz),
                 };
 
-                tracing::info!(seq=t_read.seq(), "persist block");
                 match t_read.buffer() {
                     Ok((buf, _)) => {
                         use silver_common::ssz_view::SignedBeaconBlockView;
