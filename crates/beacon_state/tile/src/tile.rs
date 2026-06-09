@@ -12,9 +12,9 @@ use silver_beacon_state_data::{
     ValidatorsDelta, Version, buffer::RollResult, decode_checkpoint_pubkeys,
 };
 use silver_common::{
-    BeaconStateEvent, BlockSource, GossipTopic, NewGossipMsg, P2pStreamId, PeerEvent, RpcInbound,
-    RpcMsg, RpcResponse, RpcSeverity, SilverSpine, SyncUpdate, TCacheRead, TRandomAccess, TRead,
-    hex32,
+    BeaconStateEvent, BlockSource, DataColumnsAvailable, GossipTopic, NewGossipMsg, P2pStreamId,
+    PeerEvent, RpcInbound, RpcResponse, RpcSeverity, SilverSpine, SyncUpdate, TCacheRead,
+    TRandomAccess, TRead, hex32,
     ssz_view::{
         self, AttesterSlashingView, MAX_ATTESTATIONS_ELECTRA, MAX_ATTESTING_INDICES,
         PROPOSER_SLASHING_SIZE, ProposerSlashingView, SIGNED_BLS_CHANGE_SIZE,
@@ -29,7 +29,7 @@ use crate::{
     bls,
     epoch_transition::{EPOCHS_PER_SYNC_COMMITTEE_PERIOD, MAX_PENDING_DEPOSITS_PER_EPOCH},
     error::PrecheckError,
-    fork_choice::{BlockImport, ForkChoice, VoteTracker, compute_deltas},
+    fork_choice::{BlockImport, ForkChoice, MAX_FORK_CHOICE_NODES, VoteTracker, compute_deltas},
     shuffling::{self, DOMAIN_BEACON_ATTESTER},
     ssz_hash, state_transition, validate,
 };
@@ -58,6 +58,9 @@ pub enum Feedback {
     Reject(Option<B256>),
     /// The parent block is missing and must be requested.
     RequestParent(B256),
+    /// The block is valid but carries blob commitments whose data columns are
+    /// not yet available.
+    AwaitData(B256),
 }
 
 // Manual Debug to hex-encode the `B256` roots (`B256 = [u8; 32]`, whose
@@ -71,6 +74,7 @@ impl core::fmt::Debug for Feedback {
             Self::Reject(Some(r)) => write!(f, "Reject(Some(0x{}))", hex32(r)),
             Self::Reject(None) => f.write_str("Reject(None)"),
             Self::RequestParent(r) => write!(f, "RequestParent(0x{})", hex32(r)),
+            Self::AwaitData(r) => write!(f, "AwaitData(0x{})", hex32(r)),
         }
     }
 }
@@ -82,6 +86,9 @@ struct ParsedBlock {
     state_root: B256,
     body_root: B256,
     block_root: B256,
+    /// `true` iff the block carries blob commitments, so its data columns must
+    /// be available (`DataColumnsAvailable`) before it can enter fork choice.
+    has_data_columns: bool,
     /// Slots-ring seq of the parent block's post-state delta.
     parent_seq: usize,
 }
@@ -127,10 +134,10 @@ pub struct BeaconStateTile {
     mode: Mode,
     ticker: SlotTicker,
 
+    sync_finalized_slot: Slot,
+
     spec: SpecConfig,
 
-    /// Canonical in-process state: finalized base + per-fork `StateDelta`
-    /// rings. Other tiles read via `state.reader()` (raw-ptr + seqlock).
     state: BeaconStateOwner,
 
     fork_choice: ForkChoice,
@@ -149,19 +156,10 @@ pub struct BeaconStateTile {
     /// from an all-zero genesis-validators-root.
     configured_fork_digest: Option<[u8; 4]>,
 
+    /// Reusable epoch-transition scratch buffers.
     postponed_scratch: Vec<silver_beacon_state_data::PendingDeposit>,
-    /// Per-block buffer of (validator_idx, beacon_block_root, target_epoch)
-    /// emitted by `process_attestations` so the tile can fold them into the
-    /// vote tracker after `apply_block` returns.
     attestation_votes_scratch: Vec<(u32, B256, Epoch)>,
-    /// Epoch transition uses this
-    /// for the active set (`process_sync_committee_updates` /
-    /// `process_proposer_lookahead`); pass 1 of `process_block_body` reuses
-    /// it for committee participants in `collect_sigs_*`; pass 2 reuses it
-    /// again for participating indices in `process_single_attestation`.
     active_scratch: Vec<u32>,
-    /// Reusable epoch-transition scratch buffers (sparse-edit rebuilds +
-    /// effective-balance column) — threaded into `process_epoch`.
     replace_u64_scratch: Vec<(u32, u64)>,
     replace_u8_scratch: Vec<(u32, u8)>,
     eff_scratch: Vec<u64>,
@@ -170,15 +168,18 @@ pub struct BeaconStateTile {
     /// (not just vote-root changes). Indexed by validator; new validators read
     /// as 0 (no prior weight).
     prev_eff_balances: Vec<u64>,
-    /// Pre-validation pass collects every BLS sig in the block here, then
-    /// runs `verify_all` once before pass 2 mutates state.
+
     sig_batch: bls::SigBatch,
     /// Reusable merged-ring buffers for `hash_tree_root_state` (block/state
     /// roots, randao, slashings) — avoids re-allocating the rings per slot.
     state_hash_scratch: ssz_hash::StateHashScratch,
-    /// Pending blocks - blocks we have received for which we do not have a
-    /// parent block. Keyed by the parent block_hash.
+    /// Pending blocks for which we are missing a parent block.
     pending_blocks: FxHashMap<B256, Vec<PendingBlock>>,
+    /// Blocks fully validated but withheld from fork choice until their data
+    /// columns are available.
+    dc_pending_blocks: FxHashMap<B256, PendingBlock>,
+    /// Block roots the storage tile has signalled data-available.
+    dc_available: FxHashMap<B256, Slot>,
 
     gossip_consumer: TRandomAccess,
     rpc_consumer: TRandomAccess,
@@ -204,6 +205,7 @@ impl BeaconStateTile {
             // once peer Status data confirms we're caught up.
             mode: Mode::Syncing,
             ticker,
+            sync_finalized_slot: 0,
             spec,
             state,
             fork_choice: ForkChoice::default(),
@@ -225,7 +227,18 @@ impl BeaconStateTile {
             prev_eff_balances: Vec::with_capacity(val_cap),
             sig_batch: bls::SigBatch::new(),
             state_hash_scratch: ssz_hash::StateHashScratch::new(),
-            pending_blocks: FxHashMap::default(),
+            pending_blocks: FxHashMap::with_capacity_and_hasher(
+                MAX_FORK_CHOICE_NODES,
+                Default::default(),
+            ),
+            dc_pending_blocks: FxHashMap::with_capacity_and_hasher(
+                MAX_FORK_CHOICE_NODES,
+                Default::default(),
+            ),
+            dc_available: FxHashMap::with_capacity_and_hasher(
+                MAX_FORK_CHOICE_NODES,
+                Default::default(),
+            ),
             gossip_consumer,
             rpc_consumer,
         };
@@ -271,7 +284,7 @@ impl BeaconStateTile {
     }
 
     pub fn try_apply_block(&mut self, data: &[u8]) -> Feedback {
-        self.apply_block_impl(data)
+        self.apply_block_impl(data, false)
     }
 
     /// SSZ `hash_tree_root` of the most-recently-applied block's full
@@ -559,7 +572,7 @@ impl BeaconStateTile {
             // Pre-finalization block - either backfill or irrelevant.
             return Feedback::Ignore;
         }
-        let f = self.apply_block_impl(data);
+        let f = self.apply_block_impl(data, true);
 
         if let Feedback::Reject(Some(block_root)) = f {
             producers.produce(BeaconStateEvent::BlockRejected { block_root, source });
@@ -744,6 +757,18 @@ impl BeaconStateTile {
                 false
             })
         });
+
+        self.dc_pending_blocks.retain(|_, msg| {
+            let acquired = match msg {
+                PendingBlock::Gossip(g) => self.gossip_consumer.acquire(g.ssz),
+                PendingBlock::Rpc(_, ssz) => self.rpc_consumer.acquire(*ssz),
+            };
+            if let Ok((buffer, _)) = acquired.buffer() {
+                return SignedBeaconBlockView::slot(buffer) > finalized_slot;
+            }
+            false
+        });
+        self.dc_available.retain(|_, slot| *slot > finalized_slot);
     }
 
     fn promote_and_rebase(
@@ -849,7 +874,23 @@ impl BeaconStateTile {
         }
     }
 
-    fn handle_gossip(&mut self, m: NewGossipMsg, data: &[u8], producers: &mut Producers) {
+    fn relay_gossip(m: &NewGossipMsg, producers: &mut Producers) {
+        producers.produce(PeerEvent::SendGossip {
+            originator_stream_id: m.stream_id,
+            topic: m.topic,
+            msg_hash: m.msg_hash,
+            recv_ts: m.recv_ts,
+            protobuf: m.protobuf,
+        });
+    }
+
+    fn handle_gossip(
+        &mut self,
+        m: NewGossipMsg,
+        data: &[u8],
+        do_relay: bool,
+        producers: &mut Producers,
+    ) {
         let feedback = match m.topic {
             GossipTopic::BeaconBlock => {
                 let acquired = self.gossip_consumer.acquire(m.ssz);
@@ -870,13 +911,9 @@ impl BeaconStateTile {
                 hash: m.msg_hash,
             }),
             Some(Feedback::Accept(block_root)) => {
-                producers.produce(PeerEvent::SendGossip {
-                    originator_stream_id: m.stream_id,
-                    topic: m.topic,
-                    msg_hash: m.msg_hash,
-                    recv_ts: m.recv_ts,
-                    protobuf: m.protobuf,
-                });
+                if do_relay {
+                    Self::relay_gossip(&m, producers);
+                }
 
                 // Try to apply any pending blocks for which this one was the parent.
                 if let Some(root) = block_root {
@@ -884,100 +921,149 @@ impl BeaconStateTile {
                 }
                 producers.produce(self.status_event());
             }
-            Some(Feedback::RequestParent(parent_root)) if self.mode.is_following() => {
+            Some(Feedback::RequestParent(parent_root)) => {
+                // Buffer the orphan on its parent; `apply_pending_blocks` retries
+                // it once the parent applies. Request the parent only when
+                // following and not already held awaiting columns — re-requesting
+                // a held block floods by-root, and during sync the range/DA path
+                // delivers it.
+                let request =
+                    self.mode.is_following() && !self.dc_pending_blocks.contains_key(&parent_root);
+                let peer = m.stream_id.peer();
                 self.pending_blocks
                     .entry(parent_root)
                     .and_modify(|v| v.push(PendingBlock::Gossip(m)))
                     .or_insert_with(|| vec![PendingBlock::Gossip(m)]);
-                producers.produce(PeerEvent::SendBlocksByRootRequest {
-                    request_id: 0,
-                    p2p_peer: Some(m.stream_id.peer()),
-                    block_root: parent_root,
-                })
+                if request {
+                    producers.produce(PeerEvent::SendBlocksByRootRequest {
+                        request_id: 0,
+                        p2p_peer: Some(peer),
+                        block_root: parent_root,
+                    })
+                }
             }
-            Some(Feedback::RequestParent(_)) | Some(Feedback::Ignore) | None => {}
+            Some(Feedback::AwaitData(block_root)) => {
+                if do_relay {
+                    Self::relay_gossip(&m, producers);
+                }
+                self.dc_pending_blocks.entry(block_root).or_insert(PendingBlock::Gossip(m));
+            }
+            Some(Feedback::Ignore) | None => {}
         }
     }
 
     fn apply_pending_blocks(&mut self, parent_root: B256, producers: &mut Producers) {
         if let Some(pending) = self.pending_blocks.remove(&parent_root) {
-            // Have one or more pending child blocks.
-            for msg in pending {
-                match msg {
-                    PendingBlock::Gossip(g) => {
-                        let acquired = self.gossip_consumer.acquire(g.ssz);
-                        let data = acquired.buffer().ok().map(|(d, _)| d as *const [u8]);
-                        if let Some(p) = data {
-                            // This will recursively apply any chained pending blocks
-                            self.handle_gossip(g, unsafe { &*p }, producers);
-                        }
-                    }
-                    PendingBlock::Rpc(stream_id, ssz) => {
-                        let acquired = self.rpc_consumer.acquire(ssz);
-                        let data = acquired.buffer().ok().map(|(d, _)| d as *const [u8]);
-                        if let Some(p) = data {
-                            // This will recursively apply any chained pending blocks
-                            self.handle_rpc(
-                                RpcMsg::BlocksRootResp(SignedBeaconBlockView),
-                                stream_id,
-                                unsafe { &*p },
-                                acquired,
-                                producers,
-                            );
-                        }
-                    }
+            for child in pending {
+                // First successful validation of an orphan held on a missing
+                // parent: relay it now.
+                self.replay_pending_block(child, true, producers);
+            }
+        }
+    }
+
+    fn replay_pending_block(
+        &mut self,
+        pending: PendingBlock,
+        do_relay: bool,
+        producers: &mut Producers,
+    ) {
+        match pending {
+            PendingBlock::Gossip(g) => {
+                let acquired = self.gossip_consumer.acquire(g.ssz);
+                if let Some(p) = acquired.buffer().ok().map(|(d, _)| d as *const [u8]) {
+                    self.handle_gossip(g, unsafe { &*p }, do_relay, producers);
+                }
+            }
+            PendingBlock::Rpc(stream_id, ssz) => {
+                let acquired = self.rpc_consumer.acquire(ssz);
+                if let Some(p) = acquired.buffer().ok().map(|(d, _)| d as *const [u8]) {
+                    self.handle_rpc_block(stream_id, unsafe { &*p }, acquired, producers);
                 }
             }
         }
     }
 
-    fn handle_rpc(
+    fn handle_data_columns_available(
         &mut self,
-        msg: RpcMsg,
+        m: DataColumnsAvailable,
+        producers: &mut Producers,
+    ) {
+        if m.slot > self.da_boundary() {
+            self.dc_available.insert(m.block_root, m.slot);
+        }
+        tracing::debug!(
+            block = hex32(&m.block_root),
+            slot = m.slot,
+            is_buffered = self.dc_pending_blocks.contains_key(&m.block_root),
+            dc_pending = self.dc_pending_blocks.len(),
+            "DataColumnsAvailable received"
+        );
+        if let Some(pending) = self.dc_pending_blocks.remove(&m.block_root) {
+            self.replay_pending_block(pending, false, producers);
+        }
+    }
+
+    fn handle_rpc_block(
+        &mut self,
         sender: P2pStreamId,
         data: &[u8],
         data_tcache: TRead,
         producers: &mut Producers,
     ) {
-        if let RpcMsg::BlocksRangeResp(_) = msg {
-            if !SignedBeaconBlockView::check_size(data) {
-                producers.produce(PeerEvent::RpcMisbehaviour {
-                    p2p_peer: sender.peer(),
-                    severity: RpcSeverity::LowTolerance,
-                });
-                return;
-            }
-            let tcache = data_tcache.read;
-            let f = self.apply_block(data, data_tcache, BlockSource::Rpc, producers);
-            match f {
-                Feedback::Accept(block_root) => {
-                    // Try to apply any pending blocks for which this one was the parent.
-                    if let Some(root) = block_root {
-                        self.apply_pending_blocks(root, producers);
-                    }
-                    producers.produce(self.status_event());
+        if !SignedBeaconBlockView::check_size(data) {
+            producers.produce(PeerEvent::RpcMisbehaviour {
+                p2p_peer: sender.peer(),
+                severity: RpcSeverity::LowTolerance,
+            });
+            return;
+        }
+        let tcache = data_tcache.read;
+        let f = self.apply_block(data, data_tcache, BlockSource::Rpc, producers);
+        match f {
+            Feedback::Accept(block_root) => {
+                // Try to apply any pending blocks for which this one was the parent.
+                if let Some(root) = block_root {
+                    self.apply_pending_blocks(root, producers);
                 }
-                Feedback::RequestParent(parent_root) if self.mode.is_following() => {
-                    self.pending_blocks
-                        .entry(parent_root)
-                        .and_modify(|v| v.push(PendingBlock::Rpc(sender, tcache)))
-                        .or_insert_with(|| vec![PendingBlock::Rpc(sender, tcache)]);
+                producers.produce(self.status_event());
+            }
+            Feedback::RequestParent(parent_root) => {
+                // Buffer the orphan on its parent; retried by
+                // `apply_pending_blocks` once the parent applies. Request it
+                // only when following and not already held awaiting columns.
+                let request =
+                    self.mode.is_following() && !self.dc_pending_blocks.contains_key(&parent_root);
+                self.pending_blocks
+                    .entry(parent_root)
+                    .and_modify(|v| v.push(PendingBlock::Rpc(sender, tcache)))
+                    .or_insert_with(|| vec![PendingBlock::Rpc(sender, tcache)]);
+                if request {
                     producers.produce(PeerEvent::SendBlocksByRootRequest {
                         request_id: 0,
                         p2p_peer: Some(sender.peer()),
                         block_root: parent_root,
                     })
                 }
-                Feedback::Ignore | Feedback::RequestParent(_) => {}
-                Feedback::Reject(_) => producers.produce(PeerEvent::RpcMisbehaviour {
-                    p2p_peer: sender.peer(),
-                    severity: RpcSeverity::Fatal,
-                }),
             }
+            Feedback::AwaitData(block_root) => {
+                self.dc_pending_blocks
+                    .entry(block_root)
+                    .or_insert(PendingBlock::Rpc(sender, tcache));
+            }
+            Feedback::Ignore => {}
+            Feedback::Reject(_) => producers.produce(PeerEvent::RpcMisbehaviour {
+                p2p_peer: sender.peer(),
+                severity: RpcSeverity::Fatal,
+            }),
         }
     }
 
-    fn apply_block_impl(&mut self, data: &[u8]) -> Feedback {
+    fn da_boundary(&self) -> Slot {
+        self.sync_finalized_slot.max(self.fork_choice.finalized_checkpoint.epoch * SLOTS_PER_EPOCH)
+    }
+
+    fn apply_block_impl(&mut self, data: &[u8], gate_da: bool) -> Feedback {
         let parsed = match self.precheck_block(data) {
             Ok(p) => p,
             Err(err) => {
@@ -985,6 +1071,15 @@ impl BeaconStateTile {
                 return err.feedback();
             }
         };
+
+        // Data availability is only required above the finalized boundary.
+        if gate_da &&
+            parsed.block_slot > self.da_boundary() &&
+            parsed.has_data_columns &&
+            !self.dc_available.contains_key(&parsed.block_root)
+        {
+            return Feedback::AwaitData(parsed.block_root);
+        }
 
         let block_epoch = parsed.block_slot / SLOTS_PER_EPOCH;
         let parent_slot = self.state.state().slots.get(parsed.parent_seq).slot.slot.slot;
@@ -1079,6 +1174,8 @@ impl BeaconStateTile {
             state_seq: new_seq,
         });
 
+        self.dc_available.remove(&parsed.block_root);
+
         self.recompute_head();
 
         self.last_applied = new_seq;
@@ -1113,6 +1210,7 @@ impl BeaconStateTile {
         let state_root = *SignedBeaconBlockView::state_root(data);
 
         let body = SignedBeaconBlockView::body(data);
+        let has_columns = SignedBeaconBlockView::has_data_columns(data);
         let body_root = ssz_hash::hash_tree_root_body(body);
         let block_header = BeaconBlockHeader {
             slot: block_slot,
@@ -1193,6 +1291,7 @@ impl BeaconStateTile {
             state_root,
             body_root,
             block_root,
+            has_data_columns: has_columns,
             parent_seq,
         })
     }
@@ -1638,13 +1737,15 @@ impl Tile<SilverSpine> for BeaconStateTile {
                 let acquired = self.gossip_consumer.acquire(m.ssz);
                 let data = acquired.buffer().ok().map(|(d, _)| d as *const [u8]);
                 if let Some(p) = data {
-                    self.handle_gossip(m, unsafe { &*p }, producers);
+                    self.handle_gossip(m, unsafe { &*p }, true, producers);
                 }
             } else {
-                tracing::warn!(
+                tracing::trace!(
                     topic = ?m.topic,
                     p2p_peer = m.stream_id.peer(),
-                    "gossip dropped: BeaconState in Syncing mode"
+                    dc_pending_len = self.dc_pending_blocks.len(),
+                    head_slot = self.head_state_slot(),
+                    "gossip dropped: BeaconState in Syncing mode",
                 );
             }
         });
@@ -1655,9 +1756,12 @@ impl Tile<SilverSpine> for BeaconStateTile {
         // collapse — only the latest wins.
         adapter.consume(|target: SyncUpdate, _producers| {
             let new_sync = match target {
-                SyncUpdate::SyncingFinalized { .. } | SyncUpdate::SyncingHead { .. } => {
+                SyncUpdate::SyncingFinalized { target_epoch, .. } => {
+                    self.sync_finalized_slot =
+                        self.sync_finalized_slot.max(target_epoch * SLOTS_PER_EPOCH);
                     Mode::Syncing
                 }
+                SyncUpdate::SyncingHead { .. } => Mode::Syncing,
                 SyncUpdate::Following => Mode::Following,
             };
             if new_sync != self.mode {
@@ -1680,17 +1784,15 @@ impl Tile<SilverSpine> for BeaconStateTile {
                 let acquired = self.rpc_consumer.acquire(ssz);
                 let data = acquired.buffer().ok().map(|(d, _)| d as *const [u8]);
                 if let Some(p) = data {
-                    self.handle_rpc(
-                        RpcMsg::BlocksRangeResp(SignedBeaconBlockView),
-                        rsp.stream_id,
-                        unsafe { &*p },
-                        acquired,
-                        producers,
-                    );
+                    self.handle_rpc_block(rsp.stream_id, unsafe { &*p }, acquired, producers);
                 }
             }
         });
         self.rpc_consumer.free();
+
+        adapter.consume(|m: DataColumnsAvailable, producers| {
+            self.handle_data_columns_available(m, producers);
+        });
     }
 }
 
@@ -2150,7 +2252,7 @@ mod tests {
 
         let head_before = tile.last_applied;
         let nodes_before = tile.fork_choice.nodes.len();
-        tile.apply_block_impl(&buf);
+        tile.apply_block_impl(&buf, true);
 
         assert_eq!(tile.last_applied, head_before, "head must be unchanged");
         assert_eq!(tile.fork_choice.nodes.len(), nodes_before, "no node added");
@@ -2363,7 +2465,7 @@ mod tests {
         buf[108..116].copy_from_slice(&0u64.to_le_bytes()); // proposer_index
         buf[116..148].copy_from_slice(&parent_root); // parent_root
 
-        tile.apply_block_impl(&buf);
+        tile.apply_block_impl(&buf, true);
         assert_eq!(tile.fork_choice.nodes.len(), 1);
     }
 

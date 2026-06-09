@@ -14,10 +14,10 @@ use std::{
 };
 
 use silver_common::{
-    P2pSend, PeerControl, PeerEvent, PeerStatus, RequestCategory, RpcInbound, RpcOutbound,
-    RpcRequest, RpcRequestInbound, RpcRequestOutbound, RpcResponse, RpcResponseInbound,
-    RpcResponseOutbound, RpcSeverity, StreamProtocol, SyncUpdate, hex32,
-    ssz_view::{BLOCKS_BY_RANGE_REQ_SIZE, MetadataView, StatusView},
+    BASE_REQUEST_ID, P2pSend, PeerControl, PeerEvent, PeerStatus, RequestCategory, RpcInbound,
+    RpcOutbound, RpcRequest, RpcRequestInbound, RpcRequestOutbound, RpcResponse,
+    RpcResponseInbound, RpcResponseOutbound, RpcSeverity, StreamProtocol, SyncUpdate, hex32,
+    ssz_view::{BLOCKS_BY_RANGE_REQ_SIZE, DC_BY_RANGE_REQ_MAX, MetadataView, StatusView},
 };
 
 use crate::{PeerManager, manager::SyncReq};
@@ -673,6 +673,82 @@ impl PeerManager {
             responded: false,
             delivered: false,
         });
+
+        // Pair a best-effort data-column-by-range fetch over our custody set
+        // for the same range, from the peer with the largest custody overlap.
+        // Paced by the block watermark; no separate retry. Columns the peer
+        // can't serve fall to the by-root straggler fallback. `BASE_REQUEST_ID`
+        // routes the response to storage's live `data_columns` path.
+        if self.custody_columns != 0 {
+            let col_app_id = BASE_REQUEST_ID | start_slot;
+            match self.best_peer_for_data_columns(
+                StreamProtocol::DataColumnSidecarsByRange,
+                self.custody_columns,
+                col_app_id,
+            ) {
+                Some((col_peer, overlap)) => {
+                    tracing::debug!(
+                        col_peer,
+                        start_slot,
+                        count,
+                        custody = self.custody_columns,
+                        overlap,
+                        "issuing DataColumnsByRange"
+                    );
+                    let (ssz, len) =
+                        Self::data_columns_by_range_ssz(start_slot, count, self.custody_columns);
+                    if let Some(peer) = self.peers.get_mut(&col_peer) {
+                        peer.outbound_in_flight
+                            [StreamProtocol::DataColumnSidecarsByRange.ordinal() as usize] += 1;
+                    }
+                    emit(PeerControl::P2pSend(P2pSend::Rpc(RpcOutbound::Request(
+                        RpcRequestOutbound {
+                            application_id: col_app_id,
+                            peer: col_peer,
+                            request: RpcRequest::DataColumnsByRange { ssz, len },
+                        },
+                    ))));
+                }
+                None => {
+                    // No peer to serve our custody columns by range — sync
+                    // falls back to the by-root wheel.
+                    tracing::debug!(
+                        start_slot,
+                        count,
+                        custody = self.custody_columns,
+                        supporting = self
+                            .database
+                            .live_peers_supporting(StreamProtocol::DataColumnSidecarsByRange)
+                            .count(),
+                        "no peer for DataColumnsByRange"
+                    );
+                }
+            }
+        } else {
+            tracing::debug!("custody_columns is 0 — no by-range column fetch");
+        }
+    }
+
+    /// `DataColumnsByRange` request body: `start_slot | count | offset(=20) |
+    /// column indices (u64 LE each)`, expanding the custody bitmask to its set
+    /// column indices.
+    fn data_columns_by_range_ssz(
+        start_slot: u64,
+        count: u64,
+        columns: u128,
+    ) -> ([u8; DC_BY_RANGE_REQ_MAX], usize) {
+        let mut ssz = [0u8; DC_BY_RANGE_REQ_MAX];
+        ssz[0..8].copy_from_slice(&start_slot.to_le_bytes());
+        ssz[8..16].copy_from_slice(&count.to_le_bytes());
+        ssz[16..20].copy_from_slice(&20u32.to_le_bytes());
+        let mut off = 20;
+        for i in 0..u128::BITS {
+            if columns & (1u128 << i) != 0 {
+                ssz[off..off + 8].copy_from_slice(&(i as u64).to_le_bytes());
+                off += 8;
+            }
+        }
+        (ssz, off)
     }
 
     /// Drain pending BlocksByRange and DataColumnsByRange requests onto any
@@ -952,6 +1028,25 @@ impl PeerManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn data_columns_by_range_ssz_layout() {
+        // Custody columns {3, 7} over [42, 42+5).
+        let columns = (1u128 << 3) | (1u128 << 7);
+        let (ssz, len) = PeerManager::data_columns_by_range_ssz(42, 5, columns);
+
+        // start_slot | count | offset(=20) | [3u64, 7u64]
+        assert_eq!(len, 20 + 2 * 8);
+        assert_eq!(u64::from_le_bytes(ssz[0..8].try_into().unwrap()), 42);
+        assert_eq!(u64::from_le_bytes(ssz[8..16].try_into().unwrap()), 5);
+        assert_eq!(u32::from_le_bytes(ssz[16..20].try_into().unwrap()), 20);
+        assert_eq!(u64::from_le_bytes(ssz[20..28].try_into().unwrap()), 3);
+        assert_eq!(u64::from_le_bytes(ssz[28..36].try_into().unwrap()), 7);
+
+        // Empty custody set → header only, no column list.
+        let (_, len) = PeerManager::data_columns_by_range_ssz(0, 1, 0);
+        assert_eq!(len, 20);
+    }
 
     #[test]
     fn invalid_request_is_low_tolerance() {

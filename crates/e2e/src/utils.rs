@@ -3,12 +3,15 @@
 use std::time::Duration;
 
 use flux::{spine::SpineAdapter, tile::Tile};
-use silver_beacon_state::tile::BeaconStateTile;
-use silver_beacon_state_data::{BeaconState, BeaconStateOwner, SpecConfig};
+use silver_beacon_state::{
+    ssz_hash::{hash_tree_root_block_header, hash_tree_root_body},
+    tile::BeaconStateTile,
+};
+use silver_beacon_state_data::{BeaconBlockHeader, BeaconState, BeaconStateOwner, SpecConfig};
 use silver_common::{
-    BeaconStateEvent, IpBytes, Keypair, P2pSend, P2pStreamId, PeerControl, PeerEvent, PeerId,
-    RpcInbound, RpcOutbound, RpcRequest, RpcRequestOutbound, RpcResponse, RpcResponseInbound,
-    SilverSpine, StreamProtocol, TCache, TCacheProducer, TCacheRead, TProducer,
+    BeaconStateEvent, DataColumnsAvailable, IpBytes, Keypair, P2pSend, P2pStreamId, PeerControl,
+    PeerEvent, PeerId, RpcInbound, RpcOutbound, RpcRequest, RpcRequestOutbound, RpcResponse,
+    RpcResponseInbound, SilverSpine, StreamProtocol, TCache, TCacheProducer, TCacheRead, TProducer,
     ssz_view::{
         BeaconBlocksByRangeRequestView, METADATA_SIZE, STATUS_V2_SIZE, SignedBeaconBlockView,
         StatusView,
@@ -29,6 +32,20 @@ pub const SYNTH_PEER_CONN_ID: usize = 1;
 
 pub fn block_slot(ssz: &[u8]) -> u64 {
     SignedBeaconBlockView::slot(ssz)
+}
+
+pub fn data_columns_available(block: &[u8]) -> Option<DataColumnsAvailable> {
+    if !SignedBeaconBlockView::has_data_columns(block) {
+        return None;
+    }
+    let block_root = hash_tree_root_block_header(&BeaconBlockHeader {
+        slot: SignedBeaconBlockView::slot(block),
+        proposer_index: SignedBeaconBlockView::proposer_index(block),
+        parent_root: *SignedBeaconBlockView::parent_root(block),
+        state_root: *SignedBeaconBlockView::state_root(block),
+        body_root: hash_tree_root_body(SignedBeaconBlockView::body(block)),
+    });
+    Some(DataColumnsAvailable { block_root, slot: SignedBeaconBlockView::slot(block) })
 }
 
 pub fn scan_checkpoint_fixtures(
@@ -139,6 +156,7 @@ impl PmBsHarness {
             },
             [0u8; 4], // overwritten via set_status from BS's first emission
             [0u8; METADATA_SIZE],
+            0,
         );
         let mut ctl = Controller::new(pm, TCache::multi_producer("rpc_out_dummy", 32));
         let mut ctl_a = SpineAdapter::connect_tile(&ctl, &mut spine);
@@ -240,6 +258,10 @@ impl PmBsHarness {
             ),
             response: RpcResponse::BeaconBlock { fork_digest: self.fork_digest, ssz },
         }));
+    }
+
+    pub fn emit_data_columns_available(&mut self, sig: DataColumnsAvailable) {
+        self.inj_a.produce(sig);
     }
 
     /// Assert the next `BlocksByRange` request matches `expected = (start,

@@ -550,6 +550,21 @@ impl SignedBeaconBlockView {
     pub fn check_size(buf: &[u8]) -> bool {
         buf.len() >= SIGNED_BEACON_BLOCK_MIN && buf.len() <= SIGNED_BEACON_BLOCK_MAX
     }
+
+    #[inline]
+    pub fn has_data_columns(buf: &[u8]) -> bool {
+        let beacon_block_body = Self::body(buf);
+        if beacon_block_body.len() < BEACON_BLOCK_BODY_FIXED {
+            return false;
+        }
+        let kzg_commitments_offset =
+            BeaconBlockBodyView::blob_kzg_commitments_offset(beacon_block_body);
+        let execution_requests_offset =
+            BeaconBlockBodyView::execution_requests_offset(beacon_block_body);
+
+        (kzg_commitments_offset as usize) < beacon_block_body.len() &&
+            kzg_commitments_offset < execution_requests_offset
+    }
 }
 
 // -- BeaconBlockBody --------------------------------------------------

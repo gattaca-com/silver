@@ -6,7 +6,7 @@ use silver_common::{
     BASE_REQUEST_ID, BeaconStateEvent, DataColumnsAvailable, NewGossipMsg, P2pSend, P2pStreamId,
     PeerEvent, RpcInbound, RpcSeverity, SilverSpine, StreamProtocol, SyncUpdate, TMultiProducer,
     TRandomAccess, TRead, Wheel,
-    ssz_view::{DataColumnSidecarView, StatusView},
+    ssz_view::{DataColumnSidecarView, SignedBeaconBlockView, StatusView},
 };
 use silver_metrics::timed;
 
@@ -121,7 +121,7 @@ impl StorageTile {
             }
         };
 
-        if !util::has_data_columns(buffer) {
+        if !SignedBeaconBlockView::has_data_columns(buffer) {
             return;
         }
 
@@ -149,7 +149,10 @@ impl StorageTile {
             ?stream_id,
             "data columns by root request: {to_request:b}"
         );
-        emit(self.column_request(block_root, to_request));
+        // While syncing, RPC-delivered blocks get their columns by range.
+        if self.store.is_synced() || stream_id.protocol() == StreamProtocol::GossipSub {
+            emit(self.column_request(block_root, to_request));
+        }
     }
 
     #[timed]
@@ -308,18 +311,17 @@ impl StorageTile {
 
         let validated = self.validated_columns.entry(block_root).or_default();
         *validated |= column_bitmask;
+        let validated = *validated;
 
-        if *validated & completion_check == completion_check {
+        if validated & completion_check == completion_check {
             // have all validated data columns for the block.
             StorageCounters::DataColumnsAvailableEmitted.inc();
-            emit(DataColumnsAvailable {
-                slot: DataColumnSidecarView::slot(buffer),
-                proposer_index: DataColumnSidecarView::proposer_index(buffer),
-                parent_root: *DataColumnSidecarView::parent_root(buffer),
-                state_root: *DataColumnSidecarView::state_root(buffer),
-                body_root: *DataColumnSidecarView::body_root(buffer),
-                signature: *DataColumnSidecarView::block_signature(buffer),
-            })
+            tracing::debug!(
+                block = hex::encode(block_root),
+                slot,
+                "DataColumnsAvailable: custody set complete"
+            );
+            emit(DataColumnsAvailable { block_root, slot })
         }
 
         if column_bitmask & self.custody_group_columns != 0 {
@@ -505,11 +507,13 @@ impl Tile<SilverSpine> for StorageTile {
 
         // Timeout any pending requests and re-issue
         let mut request_id = self.request_id;
+        let mut wheel_resent = 0usize;
         self.outstanding_requests.maybe_rotate(now, &mut |block_root, (columns, _, retries)| {
             if *retries == 0 {
                 return true; // remove
             }
             request_id += 1;
+            wheel_resent += 1;
             tracing::trace!(
                 block_root = hex::encode(block_root),
                 "resending outstanding data column request: {columns:b}"
@@ -524,6 +528,11 @@ impl Tile<SilverSpine> for StorageTile {
             false
         });
         self.request_id = request_id;
+        // by-root wheel re-request volume per rotation (a large sustained
+        // number is the ds_incoming_rpc flood source).
+        if wheel_resent > 0 {
+            tracing::debug!(wheel_resent, "by-root column wheel re-sent");
+        }
 
         // Start a checkpoint persist when one is pending and none is in flight;
         // `file_io` then streams it one section per turn and commits at the end.
@@ -623,11 +632,24 @@ mod tests {
 
         let block_root = util::block_root(&block_bytes);
 
-        // 1. Check RPC block request (non-gossip stream)
+        // 1a. RPC block while syncing: the immediate by-root request is
+        // suppressed (columns arrive via the PM by-range path), but the
+        // outstanding entry is still registered so the retry wheel can fall
+        // back to by-root for stragglers.
         let rpc_stream = P2pStreamId::new(2, 2, StreamProtocol::BeaconBlocksByRange, true);
         let mut rpc_events = Vec::new();
         tile.beacon_block(rpc_stream, read.clone(), &mut |evt| rpc_events.push(evt));
+        assert!(rpc_events.is_empty(), "RPC block while syncing must not emit immediately");
+        assert!(
+            tile.outstanding_requests.contains(&block_root),
+            "outstanding entry registered for the wheel fallback"
+        );
+        tile.outstanding_requests.remove(&block_root);
 
+        // 1b. Once synced, an RPC block requests its custody columns by root.
+        tile.store.sync_update(SyncUpdate::Following);
+        let mut rpc_events = Vec::new();
+        tile.beacon_block(rpc_stream, read.clone(), &mut |evt| rpc_events.push(evt));
         assert_eq!(rpc_events.len(), 1);
         if let PeerEvent::SendDataColumnsByRootRequest { columns, block_root: req_root, .. } =
             rpc_events[0]

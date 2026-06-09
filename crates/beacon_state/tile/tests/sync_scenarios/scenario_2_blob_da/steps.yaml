@@ -1,0 +1,40 @@
+# Scenario 2: a blob-carrying block is withheld from fork choice until its
+# data columns are available (spec `is_data_available`, fully synchronous).
+#
+# Source: EF's sanity/blocks/one_blob case — pre.ssz + a single block whose
+# body carries one blob_kzg_commitment.
+
+startup_checkpoint: tests/mainnet/fulu/sanity/blocks/pyspec_tests/one_blob/pre.ssz_snappy
+# checkpoint is at slot 32; the single block is slot 33. wall_slot = 65 keeps
+# us in Syncing and well ahead of the block slot.
+slots_missing: 33
+
+steps:
+  - kind: sync_target
+    target: syncing_head
+    target_slot: 65
+  - kind: step
+
+  # Deliver the blob block over RPC. It is fully valid (BLS, STF) but carries
+  # blob commitments whose columns are not yet available, so it is buffered —
+  # never enters fork choice, so no PersistBlock is emitted.
+  - kind: blocks_range_resp
+    from: tests/mainnet/fulu/sanity/blocks/pyspec_tests/one_blob/blocks_0.ssz_snappy
+  - kind: step
+  - kind: check
+    outbound_lacks: [persist_block]
+
+  # Storage tile reports the columns validated → the buffered block is released
+  # into fork choice, persisted, and the head advances.
+  - kind: data_columns_available
+    from: tests/mainnet/fulu/sanity/blocks/pyspec_tests/one_blob/blocks_0.ssz_snappy
+  - kind: step
+  - kind: check
+    outbound_has: [persist_block, status]
+
+  - kind: sync_target
+    target: following
+  - kind: step
+
+  - kind: state_root_matches
+    from: tests/mainnet/fulu/sanity/blocks/pyspec_tests/one_blob/post.ssz_snappy

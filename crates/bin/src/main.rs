@@ -171,6 +171,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             config.syncing(),
             config.fork_digest(),
             local_enr.into(),
+            das_custody_groups,
         ),
         outgoing_rpc_producer.clone(),
     );
