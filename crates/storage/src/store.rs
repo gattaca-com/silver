@@ -462,6 +462,10 @@ impl Store {
         self.write_queue.push_back(PendingWrite::TruncateColumnHistory { finalized_slot });
     }
 
+    pub(super) fn head_slot(&self) -> u64 {
+        self.head_slot
+    }
+
     #[timed]
     pub(super) fn rpc_request(
         &mut self,
