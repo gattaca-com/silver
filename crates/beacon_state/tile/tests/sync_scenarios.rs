@@ -15,3 +15,8 @@ fn scenario_1_checkpoint_catchup() {
 fn scenario_2_blob_block_awaits_data_columns() {
     common::run_scenario(&cases_dir().join("scenario_2_blob_da"));
 }
+
+#[test]
+fn scenario_3_blob_gossip_relayed_before_data_columns() {
+    common::run_scenario(&cases_dir().join("scenario_3_blob_gossip_relay"));
+}

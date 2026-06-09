@@ -9,13 +9,15 @@ use std::{
 use flux::{spine::SpineAdapter, tile::Tile, timing::Nanos};
 use serde::Deserialize;
 use silver_beacon_state::{
-    ssz_hash::{StateHashScratch, hash_tree_root_body, hash_tree_root_state},
+    ssz_hash::{
+        StateHashScratch, hash_tree_root_block_header, hash_tree_root_body, hash_tree_root_state,
+    },
     tile::BeaconStateTile,
 };
-use silver_beacon_state_data::{BeaconState, BeaconStateOwner};
+use silver_beacon_state_data::{BeaconBlockHeader, BeaconState, BeaconStateOwner};
 use silver_common::{
     BeaconStateEvent, DataColumnsAvailable, GossipTopic, MessageId, NewGossipMsg, P2pStreamId,
-    RpcInbound, RpcResponseInbound, SilverSpine, StreamProtocol, SyncUpdate, TCache,
+    PeerEvent, RpcInbound, RpcResponseInbound, SilverSpine, StreamProtocol, SyncUpdate, TCache,
     TCacheProducer, TProducer, TRandomAccess, hex32,
     ssz_view::{STATUS_V2_SIZE, SignedBeaconBlockView},
     ticker::SlotTicker,
@@ -95,6 +97,7 @@ pub enum OutboundKind {
     Status,
     PersistBlock,
     BlockRejected,
+    SendGossip,
 }
 
 impl OutboundKind {
@@ -103,6 +106,7 @@ impl OutboundKind {
             "status" => Self::Status,
             "persist_block" => Self::PersistBlock,
             "block_rejected" => Self::BlockRejected,
+            "send_gossip" => Self::SendGossip,
             _ => return None,
         })
     }
@@ -173,6 +177,7 @@ impl Harness {
         // the injector's cursors don't skip past messages produced by the
         // tile between now and the first `drain_outbound` call.
         inj_adapter.consume(|_: BeaconStateEvent, _| {});
+        inj_adapter.consume(|_: PeerEvent, _| {});
 
         Self {
             _spine: spine,
@@ -195,6 +200,11 @@ impl Harness {
         let log = &mut self.outbound_log;
         self.inj_adapter.consume(|ev: BeaconStateEvent, _| {
             log.push(OutboundKind::classify(&ev));
+        });
+        self.inj_adapter.consume(|ev: PeerEvent, _| {
+            if let PeerEvent::SendGossip { .. } = ev {
+                log.push(OutboundKind::SendGossip);
+            }
         });
     }
 
@@ -248,15 +258,15 @@ impl Harness {
     }
 
     pub fn inject_data_columns_available(&mut self, block: &[u8]) {
-        let body_root = hash_tree_root_body(SignedBeaconBlockView::body(block));
-        self.inj_adapter.produce(DataColumnsAvailable {
+        let block_root = hash_tree_root_block_header(&BeaconBlockHeader {
             slot: SignedBeaconBlockView::slot(block),
             proposer_index: SignedBeaconBlockView::proposer_index(block),
             parent_root: *SignedBeaconBlockView::parent_root(block),
             state_root: *SignedBeaconBlockView::state_root(block),
-            body_root,
-            signature: *SignedBeaconBlockView::signature(block),
+            body_root: hash_tree_root_body(SignedBeaconBlockView::body(block)),
         });
+        self.inj_adapter
+            .produce(DataColumnsAvailable { block_root, slot: SignedBeaconBlockView::slot(block) });
     }
 
     pub fn inject_status(

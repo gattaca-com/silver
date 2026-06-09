@@ -259,7 +259,9 @@ impl ColumnBackfill {
         if custody_columns == 0 || !self.range.contains(&slot) {
             return;
         }
-        if block.len() < 184 + BEACON_BLOCK_BODY_FIXED || !util::has_data_columns(block) {
+        if block.len() < 184 + BEACON_BLOCK_BODY_FIXED ||
+            !SignedBeaconBlockView::has_data_columns(block)
+        {
             return;
         }
         if self.pending.contains(&block_root) {

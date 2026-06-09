@@ -6,7 +6,7 @@ use silver_common::{
     BASE_REQUEST_ID, BeaconStateEvent, DataColumnsAvailable, NewGossipMsg, P2pSend, P2pStreamId,
     PeerEvent, RpcInbound, RpcSeverity, SilverSpine, StreamProtocol, SyncUpdate, TMultiProducer,
     TRandomAccess, TRead, Wheel,
-    ssz_view::{DataColumnSidecarView, StatusView},
+    ssz_view::{DataColumnSidecarView, SignedBeaconBlockView, StatusView},
 };
 use silver_metrics::timed;
 
@@ -121,7 +121,7 @@ impl StorageTile {
             }
         };
 
-        if !util::has_data_columns(buffer) {
+        if !SignedBeaconBlockView::has_data_columns(buffer) {
             return;
         }
 
@@ -314,14 +314,7 @@ impl StorageTile {
                 slot,
                 "DataColumnsAvailable: custody set complete"
             );
-            emit(DataColumnsAvailable {
-                slot: DataColumnSidecarView::slot(buffer),
-                proposer_index: DataColumnSidecarView::proposer_index(buffer),
-                parent_root: *DataColumnSidecarView::parent_root(buffer),
-                state_root: *DataColumnSidecarView::state_root(buffer),
-                body_root: *DataColumnSidecarView::body_root(buffer),
-                signature: *DataColumnSidecarView::block_signature(buffer),
-            })
+            emit(DataColumnsAvailable { block_root, slot })
         }
 
         if column_bitmask & self.custody_group_columns != 0 {

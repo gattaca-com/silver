@@ -10,7 +10,7 @@ use silver_common::{
 
 use crate::{
     perf::Fixtures,
-    utils::{PmBsHarness, SYNTH_PEER_CONN_ID, block_slot},
+    utils::{PmBsHarness, SYNTH_PEER_CONN_ID, block_slot, data_columns_available},
 };
 
 pub struct ReplayOutcome {
@@ -32,6 +32,8 @@ pub fn replay(fixtures: &Fixtures) -> ReplayOutcome {
     let final_slot = block_slot(blocks.last().expect("non-empty blocks"));
     eprintln!("perf: applying {n_blocks} blocks up to slot {final_slot}");
 
+    let da_events: Vec<_> = blocks.iter().filter_map(|b| data_columns_available(b)).collect();
+
     // Enable before harness construction — `new_heap` already runs `#[timed]` STF
     // code.
     enable();
@@ -44,6 +46,11 @@ pub fn replay(fixtures: &Fixtures) -> ReplayOutcome {
 
     let (start, count, peer) = harness.next_range_request();
     assert_eq!((start, count, peer), (first_block_slot, n_blocks, SYNTH_PEER_CONN_ID));
+
+    for event in &da_events {
+        harness.emit_data_columns_available(*event);
+    }
+    harness.pump_bs();
     for b in blocks {
         harness.inject_block(start, b);
     }

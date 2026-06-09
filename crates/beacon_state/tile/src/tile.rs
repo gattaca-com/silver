@@ -16,11 +16,11 @@ use silver_common::{
     PeerEvent, RpcInbound, RpcResponse, RpcSeverity, SilverSpine, SyncUpdate, TCacheRead,
     TRandomAccess, TRead, hex32,
     ssz_view::{
-        self, AttesterSlashingView, BEACON_BLOCK_BODY_FIXED, BeaconBlockBodyView,
-        MAX_ATTESTATIONS_ELECTRA, MAX_ATTESTING_INDICES, PROPOSER_SLASHING_SIZE,
-        ProposerSlashingView, SIGNED_BLS_CHANGE_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE,
-        STATUS_V2_SIZE, SignedAggregateAndProofView, SignedBeaconBlockView,
-        SignedBlsToExecutionChangeView, SignedVoluntaryExitView, SingleAttestationView,
+        self, AttesterSlashingView, MAX_ATTESTATIONS_ELECTRA, MAX_ATTESTING_INDICES,
+        PROPOSER_SLASHING_SIZE, ProposerSlashingView, SIGNED_BLS_CHANGE_SIZE,
+        SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE, STATUS_V2_SIZE, SignedAggregateAndProofView,
+        SignedBeaconBlockView, SignedBlsToExecutionChangeView, SignedVoluntaryExitView,
+        SingleAttestationView,
     },
     ticker::{SlotTicker, TickEvent},
 };
@@ -874,7 +874,23 @@ impl BeaconStateTile {
         }
     }
 
-    fn handle_gossip(&mut self, m: NewGossipMsg, data: &[u8], producers: &mut Producers) {
+    fn relay_gossip(m: &NewGossipMsg, producers: &mut Producers) {
+        producers.produce(PeerEvent::SendGossip {
+            originator_stream_id: m.stream_id,
+            topic: m.topic,
+            msg_hash: m.msg_hash,
+            recv_ts: m.recv_ts,
+            protobuf: m.protobuf,
+        });
+    }
+
+    fn handle_gossip(
+        &mut self,
+        m: NewGossipMsg,
+        data: &[u8],
+        do_relay: bool,
+        producers: &mut Producers,
+    ) {
         let feedback = match m.topic {
             GossipTopic::BeaconBlock => {
                 let acquired = self.gossip_consumer.acquire(m.ssz);
@@ -895,13 +911,9 @@ impl BeaconStateTile {
                 hash: m.msg_hash,
             }),
             Some(Feedback::Accept(block_root)) => {
-                producers.produce(PeerEvent::SendGossip {
-                    originator_stream_id: m.stream_id,
-                    topic: m.topic,
-                    msg_hash: m.msg_hash,
-                    recv_ts: m.recv_ts,
-                    protobuf: m.protobuf,
-                });
+                if do_relay {
+                    Self::relay_gossip(&m, producers);
+                }
 
                 // Try to apply any pending blocks for which this one was the parent.
                 if let Some(root) = block_root {
@@ -931,6 +943,9 @@ impl BeaconStateTile {
                 }
             }
             Some(Feedback::AwaitData(block_root)) => {
+                if do_relay {
+                    Self::relay_gossip(&m, producers);
+                }
                 self.dc_pending_blocks.entry(block_root).or_insert(PendingBlock::Gossip(m));
             }
             Some(Feedback::Ignore) | None => {}
@@ -940,17 +955,24 @@ impl BeaconStateTile {
     fn apply_pending_blocks(&mut self, parent_root: B256, producers: &mut Producers) {
         if let Some(pending) = self.pending_blocks.remove(&parent_root) {
             for child in pending {
-                self.replay_pending_block(child, producers);
+                // First successful validation of an orphan held on a missing
+                // parent: relay it now.
+                self.replay_pending_block(child, true, producers);
             }
         }
     }
 
-    fn replay_pending_block(&mut self, pending: PendingBlock, producers: &mut Producers) {
+    fn replay_pending_block(
+        &mut self,
+        pending: PendingBlock,
+        do_relay: bool,
+        producers: &mut Producers,
+    ) {
         match pending {
             PendingBlock::Gossip(g) => {
                 let acquired = self.gossip_consumer.acquire(g.ssz);
                 if let Some(p) = acquired.buffer().ok().map(|(d, _)| d as *const [u8]) {
-                    self.handle_gossip(g, unsafe { &*p }, producers);
+                    self.handle_gossip(g, unsafe { &*p }, do_relay, producers);
                 }
             }
             PendingBlock::Rpc(stream_id, ssz) => {
@@ -967,26 +989,18 @@ impl BeaconStateTile {
         m: DataColumnsAvailable,
         producers: &mut Producers,
     ) {
-        let header = BeaconBlockHeader {
-            slot: m.slot,
-            proposer_index: m.proposer_index,
-            parent_root: m.parent_root,
-            state_root: m.state_root,
-            body_root: m.body_root,
-        };
-        let block_root = ssz_hash::hash_tree_root_block_header(&header);
-        self.dc_available.insert(block_root, m.slot);
-        // `buffered=false` ⇒ no block held here (below the finalized boundary,
-        // or columns arrived before/without the block).
+        if m.slot > self.da_boundary() {
+            self.dc_available.insert(m.block_root, m.slot);
+        }
         tracing::debug!(
-            block = hex32(&block_root),
+            block = hex32(&m.block_root),
             slot = m.slot,
-            buffered = self.dc_pending_blocks.contains_key(&block_root),
+            is_buffered = self.dc_pending_blocks.contains_key(&m.block_root),
             dc_pending = self.dc_pending_blocks.len(),
             "DataColumnsAvailable received"
         );
-        if let Some(pending) = self.dc_pending_blocks.remove(&block_root) {
-            self.replay_pending_block(pending, producers);
+        if let Some(pending) = self.dc_pending_blocks.remove(&m.block_root) {
+            self.replay_pending_block(pending, false, producers);
         }
     }
 
@@ -1045,6 +1059,10 @@ impl BeaconStateTile {
         }
     }
 
+    fn da_boundary(&self) -> Slot {
+        self.sync_finalized_slot.max(self.fork_choice.finalized_checkpoint.epoch * SLOTS_PER_EPOCH)
+    }
+
     fn apply_block_impl(&mut self, data: &[u8], gate_da: bool) -> Feedback {
         let parsed = match self.precheck_block(data) {
             Ok(p) => p,
@@ -1055,11 +1073,8 @@ impl BeaconStateTile {
         };
 
         // Data availability is only required above the finalized boundary.
-        let da_boundary = self
-            .sync_finalized_slot
-            .max(self.fork_choice.finalized_checkpoint.epoch * SLOTS_PER_EPOCH);
         if gate_da &&
-            parsed.block_slot > da_boundary &&
+            parsed.block_slot > self.da_boundary() &&
             parsed.has_data_columns &&
             !self.dc_available.contains_key(&parsed.block_root)
         {
@@ -1195,7 +1210,7 @@ impl BeaconStateTile {
         let state_root = *SignedBeaconBlockView::state_root(data);
 
         let body = SignedBeaconBlockView::body(data);
-        let has_columns = has_data_columns(body);
+        let has_columns = SignedBeaconBlockView::has_data_columns(data);
         let body_root = ssz_hash::hash_tree_root_body(body);
         let block_header = BeaconBlockHeader {
             slot: block_slot,
@@ -1722,15 +1737,15 @@ impl Tile<SilverSpine> for BeaconStateTile {
                 let acquired = self.gossip_consumer.acquire(m.ssz);
                 let data = acquired.buffer().ok().map(|(d, _)| d as *const [u8]);
                 if let Some(p) = data {
-                    self.handle_gossip(m, unsafe { &*p }, producers);
+                    self.handle_gossip(m, unsafe { &*p }, true, producers);
                 }
             } else {
-                tracing::warn!(
+                tracing::trace!(
                     topic = ?m.topic,
                     p2p_peer = m.stream_id.peer(),
-                    "gossip dropped: BeaconState in Syncing mode, dc pending len: {}, head: {}",
-                    self.dc_pending_blocks.len(),
-                    self.head_state_slot(),
+                    dc_pending_len = self.dc_pending_blocks.len(),
+                    head_slot = self.head_state_slot(),
+                    "gossip dropped: BeaconState in Syncing mode",
                 );
             }
         });
@@ -1742,8 +1757,6 @@ impl Tile<SilverSpine> for BeaconStateTile {
         adapter.consume(|target: SyncUpdate, _producers| {
             let new_sync = match target {
                 SyncUpdate::SyncingFinalized { target_epoch, .. } => {
-                    // Network finalized boundary we're chasing: below it the
-                    // chain is trusted-finalized, so don't DA-gate it.
                     self.sync_finalized_slot =
                         self.sync_finalized_slot.max(target_epoch * SLOTS_PER_EPOCH);
                     Mode::Syncing
@@ -1786,20 +1799,6 @@ impl Tile<SilverSpine> for BeaconStateTile {
 /// Spec gossip rule: `aggregate.slot + ATTESTATION_PROPAGATION_SLOT_RANGE >=
 /// current_slot >= aggregate.slot`.
 const ATTESTATION_PROPAGATION_SLOT_RANGE: u64 = 32;
-
-/// `true` iff the block body carries a non-empty `blob_kzg_commitments` list.
-/// The list is empty
-/// exactly when its variable-length offset coincides with the next field's.
-/// `check_size` only bounds the 184-byte block prefix, so a malformed short
-/// body can reach here — guard the offset-table reads on its fixed length.
-fn has_data_columns(body: &[u8]) -> bool {
-    if body.len() < BEACON_BLOCK_BODY_FIXED {
-        return false;
-    }
-    let commitments_off = BeaconBlockBodyView::blob_kzg_commitments_offset(body);
-    let exec_requests_off = BeaconBlockBodyView::execution_requests_offset(body);
-    (commitments_off as usize) < body.len() && commitments_off < exec_requests_off
-}
 
 fn is_aggregator(committee_len: usize, selection_proof: &[u8; 96]) -> bool {
     const TARGET_AGGREGATORS_PER_COMMITTEE: u64 = 16;
@@ -2257,28 +2256,6 @@ mod tests {
 
         assert_eq!(tile.last_applied, head_before, "head must be unchanged");
         assert_eq!(tile.fork_choice.nodes.len(), nodes_before, "no node added");
-    }
-
-    #[test]
-    fn has_data_columns_detects_commitments() {
-        // Body shorter than the fixed part: treated as no columns (guard).
-        assert!(!has_data_columns(&[0u8; 16]));
-
-        // Empty `blob_kzg_commitments`: its offset equals the next field's
-        // (both point at the end of the fixed part).
-        let end = BEACON_BLOCK_BODY_FIXED as u32;
-        let mut body = vec![0u8; BEACON_BLOCK_BODY_FIXED];
-        body[388..392].copy_from_slice(&end.to_le_bytes());
-        body[392..396].copy_from_slice(&end.to_le_bytes());
-        assert!(!has_data_columns(&body));
-
-        // One 48-byte commitment: offset strictly precedes the next field and
-        // the body extends past it.
-        let commit_off = BEACON_BLOCK_BODY_FIXED as u32;
-        let mut body = vec![0u8; BEACON_BLOCK_BODY_FIXED + 48];
-        body[388..392].copy_from_slice(&commit_off.to_le_bytes());
-        body[392..396].copy_from_slice(&(commit_off + 48).to_le_bytes());
-        assert!(has_data_columns(&body));
     }
 
     // ── gossip handlers ──

@@ -856,18 +856,13 @@ impl BeaconStateEvent {
     }
 }
 
-/// Message sent by the data column tile when all block data columns have
-/// been received and validated. The proposer signature HAS NOT been validated.
+/// Message sent by the data column tile when all custody data columns for a
+/// block have been received and KZG-validated.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct DataColumnsAvailable {
+    pub block_root: [u8; 32],
     pub slot: u64,
-    pub proposer_index: u64,
-    pub parent_root: [u8; 32],
-    pub state_root: [u8; 32],
-    pub body_root: [u8; 32],
-    // Proposer sugnature over the fields above.
-    pub signature: [u8; 96],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
