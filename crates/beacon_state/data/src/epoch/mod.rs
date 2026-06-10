@@ -111,7 +111,7 @@ impl EpochGroup {
         let Self { base, forks } = self;
         base.promote(forks.get(winner), old_fin_epoch);
 
-        forks.free_oldest(&fresh);
+        forks.free_stale(&fresh);
 
         fresh
     }

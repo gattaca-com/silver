@@ -85,7 +85,7 @@ impl BalancesGroup {
         let Self { base, forks } = self;
         forks.get(winner).promote_into_base(base);
 
-        forks.free_oldest(&fresh);
+        forks.free_stale(&fresh);
 
         fresh
     }

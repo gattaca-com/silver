@@ -91,7 +91,7 @@ impl<M> ParticipationGroup<M> {
         let Self { base, forks, .. } = self;
         base.promote(forks.get(winner));
 
-        forks.free_oldest(&fresh);
+        forks.free_stale(&fresh);
 
         fresh
     }

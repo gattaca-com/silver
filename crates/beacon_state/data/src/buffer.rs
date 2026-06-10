@@ -247,9 +247,10 @@ impl<G, T: Reset, const N: usize> Ring<G, T, N> {
         }
     }
 
-    /// Free everything older than the oldest id in `fresh`.
-    pub fn free_oldest(&mut self, fresh: &[Id<G>]) {
-        if let Some(&oldest) = fresh.iter().min() {
+    /// Reclaim every fork older than the oldest id in `live`; the ids in
+    /// `live` themselves stay allocated (the oldest becomes the new tail).
+    pub fn free_stale(&mut self, live: &[Id<G>]) {
+        if let Some(&oldest) = live.iter().min() {
             self.free(oldest);
         }
     }
