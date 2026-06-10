@@ -185,6 +185,9 @@ impl BeaconStateTile {
         gossip_consumer: TRandomAccess,
         rpc_consumer: TRandomAccess,
         checkpoint_state: &[u8],
+        // TODO(checkpoint re-home): decode and pass to `bootstrap` so reload
+        // skips BLS decompression (origin/main PR #83 behaviour).
+        _decompressed_pubkeys: &[u8],
     ) -> Self {
         let val_cap = state.state().validators.base().capacity();
         // Pre-bootstrap placeholder head: honest per-tier entries rolled on
@@ -1809,7 +1812,7 @@ mod tests {
         let gossip_c = gossip_p.cache_ref().random_access("test_gossip", true).unwrap();
         let rpc_c = event_p.cache_ref().random_access("test_event", true).unwrap();
         let state = BeaconStateOwner::pre_bootstrap();
-        BeaconStateTile::new(ticker, SpecConfig::mainnet(), state, gossip_c, rpc_c, &[])
+        BeaconStateTile::new(ticker, SpecConfig::mainnet(), state, gossip_c, rpc_c, &[], &[])
     }
 
     fn placeholder_pubkey(i: usize) -> BLSPubkey {
