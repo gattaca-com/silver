@@ -1,3 +1,5 @@
+use std::io::{self, Write};
+
 use crate::{
     buffer::Reset,
     types::{HistoricalSummary, SYNC_COMMITTEE_SIZE, SyncCommittee},
@@ -30,6 +32,17 @@ impl Default for LongtailState {
 }
 
 impl LongtailState {
+    /// SSZ-encode the cumulative `historical_summaries` log — checkpoint
+    /// section body. Callers hold the group's promote barrier
+    /// (`with_base_locked`).
+    pub(crate) fn write_historical_summaries_ssz<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        for hs in self.historical_summaries.iter() {
+            w.write_all(&hs.block_summary_root)?;
+            w.write_all(&hs.state_summary_root)?;
+        }
+        Ok(())
+    }
+
     /// Fold a fork's delta into the base: sync committees + indices are
     /// absolute (replace), then **extend** the cumulative
     /// `historical_summaries` log with the delta's post-finalization

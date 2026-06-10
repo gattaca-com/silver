@@ -1,3 +1,5 @@
+use std::io::{self, Write};
+
 use crate::{ColumnLenMismatch, decompose::u64_le, hash_tree::FinalizedHashTree, sparse::Edits};
 
 /// Balances of validators: values plus the packed-chunk merkle tree over them.
@@ -44,6 +46,15 @@ impl FinalizedBalances {
     #[inline]
     pub fn count(&self) -> usize {
         self.count
+    }
+
+    /// SSZ-encode the finalized column (`count` little-endian `u64`s) —
+    /// the checkpoint persist's section body.
+    pub(crate) fn write_ssz<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        for b in &self.data[..self.count] {
+            w.write_all(&b.to_le_bytes())?;
+        }
+        Ok(())
     }
 
     pub(super) fn apply_edits(&mut self, edits: &Edits<u64>) {

@@ -25,6 +25,12 @@ pub struct InactivityScoresGroup {
 }
 
 impl InactivityScoresGroup {
+    /// The finalized base (checkpoint encoding).
+    #[inline]
+    pub(crate) fn base(&self) -> &FinalizedInactivityScores {
+        &self.base
+    }
+
     /// Group over a base decoded from the SSZ `inactivity_scores` byte range
     /// (little-endian `u64`s); `new(cap, &[])` is the empty group.
     pub fn new(cap: usize, count: usize, ssz_bytes: &[u8]) -> Result<Self, ColumnLenMismatch> {

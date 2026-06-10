@@ -14,6 +14,7 @@ mod tests;
 
 pub use delta::{LongtailView, LongtailWriteView};
 pub use finalized::LongtailState;
+use parking_lot::Mutex;
 
 use crate::{
     buffer::{Id, Reset, Ring},
@@ -26,11 +27,24 @@ pub type LongtailId = Id<LongtailGroup>;
 pub struct LongtailGroup {
     base: LongtailState,
     forks: Ring<Self, LongtailState, LONGTAILS_RING_N>,
+    /// Promote barrier: the base's `historical_summaries` log grows on
+    /// promote, so the checkpoint persist (storage thread) must not read it
+    /// mid-`finalize` (realloc would dangle the read). Writer-thread view
+    /// reads never race promote (same thread) and stay lock-free.
+    persist_lock: Mutex<()>,
 }
 
 impl LongtailGroup {
     pub fn new(base: LongtailState) -> Self {
-        Self { base, forks: Ring::default() }
+        Self { base, forks: Ring::default(), persist_lock: Mutex::new(()) }
+    }
+
+    /// Run `f` over the finalized base under the promote barrier — the
+    /// checkpoint encoder's (only) way in. Keep `f` to a bounded memcpy.
+    #[inline]
+    pub(crate) fn with_base_locked<R>(&self, f: impl FnOnce(&LongtailState) -> R) -> R {
+        let _g = self.persist_lock.lock();
+        f(&self.base)
     }
 
     #[inline]
@@ -64,7 +78,7 @@ impl LongtailGroup {
     /// new id on its slot delta.
     #[inline]
     pub fn roll_fresh(&mut self) -> LongtailWriteView<'_> {
-        let Self { base, forks } = self;
+        let Self { base, forks, .. } = self;
         let mut wv = LongtailWriteView::new(base, forks.roll_fresh());
         wv.seed_from_base();
         wv
@@ -72,7 +86,7 @@ impl LongtailGroup {
 
     #[inline]
     pub fn roll_from(&mut self, parent: LongtailId) -> LongtailWriteView<'_> {
-        let Self { base, forks } = self;
+        let Self { base, forks, .. } = self;
         LongtailWriteView::new(base, forks.roll_from(parent))
     }
 
@@ -80,7 +94,7 @@ impl LongtailGroup {
     /// `historical_summaries` prefix (pre-promotion). The survivor stays
     /// frozen — append-only.
     fn reanchor(&mut self, survivor: LongtailId, winner: LongtailId) -> LongtailWriteView<'_> {
-        let Self { base, forks } = self;
+        let Self { base, forks, .. } = self;
         let (mut fork, old, winner_delta) = forks.roll_fresh_deriving(survivor, winner);
         fork.reset_from(old);
         fork.prune_to_base(winner_delta);
@@ -100,8 +114,11 @@ impl LongtailGroup {
             fresh.push(new_id);
         }
 
-        let Self { base, forks } = self;
-        base.promote(forks.get(winner));
+        let Self { base, forks, persist_lock } = self;
+        {
+            let _g = persist_lock.lock();
+            base.promote(forks.get(winner));
+        }
 
         if let Some(&oldest) = fresh.iter().min() {
             forks.free(oldest);

@@ -7,7 +7,7 @@ use silver_beacon_state::{
     ssz_hash::{hash_tree_root_block_header, hash_tree_root_body},
     tile::BeaconStateTile,
 };
-use silver_beacon_state_data::{BeaconBlockHeader, BeaconState, BeaconStateOwner, SpecConfig};
+use silver_beacon_state_data::{BeaconBlockHeader, BeaconStateOwner, SpecConfig};
 use silver_common::{
     BeaconStateEvent, DataColumnsAvailable, IpBytes, Keypair, P2pSend, P2pStreamId, PeerControl,
     PeerEvent, PeerId, RpcInbound, RpcOutbound, RpcRequest, RpcRequestOutbound, RpcResponse,

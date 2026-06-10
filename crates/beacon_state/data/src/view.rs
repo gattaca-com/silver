@@ -1,12 +1,17 @@
 use std::{
     cell::UnsafeCell,
+    io,
     ops::{Deref, DerefMut},
     sync::{self, Arc, atomic::Ordering},
 };
 
 use flux::communication::Seqlock;
 
-use crate::{BeaconState, EpochGroup, LongtailGroup, StateId, StateReadView, StateWriterView};
+use crate::{
+    BeaconState, CHECKPOINT_SECTIONS, EpochGroup, LongtailGroup, StateId, StateReadView,
+    StateWriterView,
+    encode::{Section, VAR_LEN_SECTIONS},
+};
 
 /// The shared `BeaconState` allocation. Lifetime rides the `Arc` (a reader
 /// can never dangle, whatever the teardown order); ACCESS rides the seqlock
@@ -153,6 +158,7 @@ impl BeaconStateOwner {
 /// Cross-thread optimistic reader handle. `Send`/`Sync` fall out of
 /// `StateCell: Sync` — the `Arc` keeps the allocation alive for as long as
 /// any reader exists, so no teardown-order invariant remains.
+#[derive(Clone)]
 pub struct BeaconStateReader {
     state: Arc<StateCell>,
     inner: Arc<Seqlock<ControlInner>>,
@@ -188,6 +194,146 @@ impl BeaconStateReader {
                 return Some(result);
             }
         }
+    }
+
+    /// Open a checkpoint cursor over the finalized base. `None` until the
+    /// writer publishes its first snapshot (nothing to persist). Feed the
+    /// cursor to [`Self::checkpoint_chunk`] to pull the SSZ out part by part.
+    pub fn begin_checkpoint(&self) -> Option<CheckpointCursor> {
+        let (control, _) = self.inner.read_copy().ok()?;
+        control.state_id?;
+        let mut cursor = CheckpointCursor::default();
+        self.capture_checkpoint(&mut cursor);
+        Some(cursor)
+    }
+
+    /// Copy the next checkpoint part into `buf` (cleared first) and advance
+    /// the cursor. Synchronization is internal: the part is encoded, the
+    /// seqlock version is re-checked, and torn bytes are re-encoded — `buf`
+    /// only ever holds bytes consistent with the cursor's captured state. A
+    /// superseding finalize is waited out and reported as `Restarted` (cursor
+    /// back at the first part, on the NEWER finalized state) — the caller
+    /// drops what it wrote so far and keeps stepping.
+    pub fn checkpoint_chunk(
+        &self,
+        cursor: &mut CheckpointCursor,
+        buf: &mut Vec<u8>,
+    ) -> io::Result<CheckpointChunk> {
+        loop {
+            // A finalize landed (or its window is open): wait it out, restart.
+            if self.inner.version() != cursor.version {
+                self.capture_checkpoint(cursor);
+                return Ok(CheckpointChunk::Restarted);
+            }
+            if cursor.done {
+                return Ok(CheckpointChunk::Done);
+            }
+
+            let state = self.state.get();
+            buf.clear();
+            let pubkeys_stage = cursor.section >= CHECKPOINT_SECTIONS;
+            let complete = if pubkeys_stage {
+                state.write_pubkeys_chunk(cursor.chunk, buf)?
+            } else {
+                state.write_section_chunk(
+                    Section::ALL[cursor.section],
+                    cursor.chunk,
+                    &cursor.offsets,
+                    buf,
+                )?
+            };
+
+            // Validate before handing out: bytes encoded across a finalize
+            // are torn — loop (the version mismatch branch restarts).
+            sync::atomic::fence(Ordering::Acquire);
+            if self.inner.version() != cursor.version {
+                continue;
+            }
+
+            if pubkeys_stage {
+                cursor.done = complete;
+                cursor.chunk += 1;
+                return Ok(CheckpointChunk::Pubkeys);
+            }
+            if complete {
+                cursor.section += 1;
+                cursor.chunk = 0;
+            } else {
+                cursor.chunk += 1;
+            }
+            return Ok(CheckpointChunk::Ssz);
+        }
+    }
+
+    /// (Re)capture a consistent `(version, slot, offsets)` snapshot into the
+    /// cursor and reset its position. `read_copy` waits out an open finalize
+    /// window.
+    fn capture_checkpoint(&self, cursor: &mut CheckpointCursor) {
+        loop {
+            // Post-`begin_checkpoint` the control is always written.
+            let Ok((_, version)) = self.inner.read_copy() else { continue };
+            sync::atomic::fence(Ordering::Acquire);
+            let state = self.state.get();
+            let lens = state.var_len_section_lens();
+            let slot = state.slot_states.base().state().slot;
+            sync::atomic::fence(Ordering::Acquire);
+            if self.inner.version() == version {
+                *cursor = CheckpointCursor {
+                    version,
+                    slot,
+                    offsets: BeaconState::offsets_from_lens(&lens),
+                    section: 0,
+                    chunk: 0,
+                    done: false,
+                };
+                return;
+            }
+        }
+    }
+}
+
+/// Which part [`BeaconStateReader::checkpoint_chunk`] just produced.
+pub enum CheckpointChunk {
+    /// `buf` holds the next slice of the canonical state SSZ.
+    Ssz,
+    /// `buf` holds the next slice of the decompressed-pubkeys sidecar.
+    Pubkeys,
+    /// A finalize superseded the snapshot: `buf` is untouched, the cursor is
+    /// back at the first part (of the newer state) — drop the output written
+    /// so far and keep stepping.
+    Restarted,
+    /// Everything has been produced.
+    Done,
+}
+
+/// Position + consistency token for a chunked checkpoint read: which part
+/// comes next, and the seqlock version every produced byte must agree with.
+/// Plain data — all the synchronization lives in
+/// [`BeaconStateReader::checkpoint_chunk`].
+#[derive(Default)]
+pub struct CheckpointCursor {
+    version: u64,
+    slot: u64,
+    offsets: [u32; VAR_LEN_SECTIONS],
+    // Section index; pubkeys stage once past `CHECKPOINT_SECTIONS`.
+    section: usize,
+    // Chunk index within `section` — only validators/pubkeys span >1.
+    chunk: usize,
+    done: bool,
+}
+
+impl CheckpointCursor {
+    /// The finalized slot being persisted (names the output files). Advances
+    /// on `Restarted` — read it again at commit time.
+    pub fn slot(&self) -> u64 {
+        self.slot
+    }
+
+    /// Index of the section the next chunk comes from
+    /// (`0..CHECKPOINT_SECTIONS`, canonical SSZ order); `None` once in the
+    /// pubkeys stage. Diagnostics only.
+    pub fn section_index(&self) -> Option<usize> {
+        (self.section < CHECKPOINT_SECTIONS).then_some(self.section)
     }
 }
 

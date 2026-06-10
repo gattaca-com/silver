@@ -1,4 +1,7 @@
-use std::convert::Infallible;
+use std::{
+    convert::Infallible,
+    io::{self, Write},
+};
 
 use blst::min_pk::PublicKey;
 use parking_lot::RwLock;
@@ -226,6 +229,43 @@ impl FinalizedValidators {
     }
 
     #[inline]
+    /// SSZ-encode validators `[start, end)` (one 121-B record each) — the
+    /// checkpoint persist's section body, called in bounded slices.
+    pub(crate) fn write_ssz_range<W: Write>(
+        &self,
+        start: usize,
+        end: usize,
+        w: &mut W,
+    ) -> io::Result<()> {
+        let mut buf = [0u8; VALIDATOR_SSZ_SIZE];
+        for i in start..end {
+            buf[0..48].copy_from_slice(self.pubkey(i));
+            buf[48..80].copy_from_slice(&self.withdrawal_credentials(i).0);
+            buf[80..88].copy_from_slice(&self.effective_balance(i).to_le_bytes());
+            buf[88] = self.is_slashed(i) as u8;
+            buf[89..97].copy_from_slice(&self.activation_eligibility_epoch(i).to_le_bytes());
+            buf[97..105].copy_from_slice(&self.activation_epoch(i).to_le_bytes());
+            buf[105..113].copy_from_slice(&self.exit_epoch(i).to_le_bytes());
+            buf[113..121].copy_from_slice(&self.withdrawable_epoch(i).to_le_bytes());
+            w.write_all(&buf)?;
+        }
+        Ok(())
+    }
+
+    /// Write the decompressed (96-B serialized) pubkeys `[start, end)` — the
+    /// checkpoint sidecar's body, called in bounded slices.
+    pub(crate) fn write_pubkeys_range<W: Write>(
+        &self,
+        start: usize,
+        end: usize,
+        w: &mut W,
+    ) -> io::Result<()> {
+        for i in start..end {
+            w.write_all(&self.pubkey_decompressed(i).serialize())?;
+        }
+        Ok(())
+    }
+
     pub fn validator_count(&self) -> usize {
         self.validator_count
     }

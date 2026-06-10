@@ -82,7 +82,7 @@ pub struct StateId {
 // 144 KB stack frame. See [`crate::slot_state`]; `eth1_votes` is write-path +
 // checkpoint-persist only, never read on the seqlock path, so the heap buffer
 // is safe there.
-#[derive(Clone, Default)]
+#[derive(Default)]
 pub struct SlotState {
     pub randao_mix_current: B256,
     pub current_epoch_slashings: u64,
@@ -99,6 +99,37 @@ pub struct SlotState {
     pub earliest_exit_epoch: Epoch,
     pub consolidation_balance_to_consume: u64,
     pub earliest_consolidation_epoch: Epoch,
+}
+
+// Manual Clone: the derived impl would leave `clone_from` at its default
+// (`*self = src.clone()`), replacing the `eth1_votes` heap allocation. The
+// checkpoint persist reads the finalized base's `eth1_votes` cross-thread and
+// relies on `promote` keeping that allocation stable, so `clone_from` must
+// reuse it (`Vec::clone_from` does, given reserved capacity).
+impl Clone for SlotState {
+    fn clone(&self) -> Self {
+        let mut new = Self::default();
+        new.clone_from(self);
+        new
+    }
+
+    fn clone_from(&mut self, src: &Self) {
+        self.randao_mix_current = src.randao_mix_current;
+        self.current_epoch_slashings = src.current_epoch_slashings;
+        self.eth1_data = src.eth1_data;
+        self.eth1_votes.clone_from(&src.eth1_votes);
+        self.eth1_deposit_index = src.eth1_deposit_index;
+        self.slot = src.slot;
+        self.latest_block_header = src.latest_block_header;
+        self.latest_execution_payload_header = src.latest_execution_payload_header;
+        self.next_withdrawal_index = src.next_withdrawal_index;
+        self.next_withdrawal_validator_index = src.next_withdrawal_validator_index;
+        self.deposit_requests_start_index = src.deposit_requests_start_index;
+        self.exit_balance_to_consume = src.exit_balance_to_consume;
+        self.earliest_exit_epoch = src.earliest_exit_epoch;
+        self.consolidation_balance_to_consume = src.consolidation_balance_to_consume;
+        self.earliest_consolidation_epoch = src.earliest_consolidation_epoch;
+    }
 }
 
 // size: ~648 B (proposer_lookahead 512 + 3 × Checkpoint 120 + scalars + pad)
@@ -132,11 +163,14 @@ impl Default for EpochState {
 // implemented). Length is whatever the validators layer reports; reading
 // past `base_count` with no edit returns the spec default (0 / false).
 
-// size: ~96 B
-#[derive(Clone, Copy, Default)]
+// size: ~120 B inline + the frozen historical_roots heap block
+#[derive(Clone, Default)]
 pub struct Immutable {
     pub genesis_time: u64,
     pub genesis_validators_root: B256,
+    /// Frozen since Capella (appends go to `historical_summaries`); kept raw
+    /// for checkpoint re-encoding alongside the precomputed list hash below.
+    pub historical_roots: Box<[B256]>,
     pub historical_roots_hash: B256,
     pub fork: Fork,
     pub genesis_fork_version: Version,

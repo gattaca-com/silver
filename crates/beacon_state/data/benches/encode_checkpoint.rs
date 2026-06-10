@@ -1,5 +1,5 @@
-//! Benchmark the canonical SSZ encode of a mainnet `Finalized` checkpoint into
-//! a warm buffer — the CPU half of the tile's `encode_finalized`.
+//! Benchmark the canonical SSZ encode of a mainnet checkpoint state into a
+//! warm buffer — the CPU half of the streamed checkpoint persist.
 //! The durable-write half lives in `silver_storage`'s
 //! `checkpoint_persist_bench`, which drives the real
 //! `Store::persist_finalized_checkpoint`.
@@ -13,7 +13,7 @@
 use std::{fs, hint::black_box, path::PathBuf};
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
-use silver_beacon_state_data::{Finalized, SpecConfig};
+use silver_beacon_state_data::{BeaconState, SpecConfig};
 
 fn fixture_path() -> PathBuf {
     std::env::var("SILVER_CHECKPOINT_SSZ").map(PathBuf::from).unwrap_or_else(|_| {
@@ -32,9 +32,8 @@ fn bench(c: &mut Criterion) {
         return;
     };
 
-    let mut fin = Box::new(Finalized::empty());
-    fin.decompose(&ssz, &SpecConfig::mainnet()).expect("decompose");
-    let len = fin.ssz_len();
+    let bs = BeaconState::decompose(&ssz, &SpecConfig::mainnet(), None).expect("decompose");
+    let len = bs.ssz_len();
     assert_eq!(len, ssz.len(), "round-trip length mismatch");
     eprintln!("encoded size: {len} bytes ({} MiB)", len >> 20);
 
@@ -45,7 +44,7 @@ fn bench(c: &mut Criterion) {
     group.bench_function("encode_ssz", |b| {
         b.iter(|| {
             buf.clear();
-            fin.encode_ssz(&mut buf).unwrap();
+            bs.encode_ssz(&mut buf).unwrap();
             black_box(buf.len())
         });
     });

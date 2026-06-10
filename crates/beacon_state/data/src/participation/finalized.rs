@@ -1,3 +1,5 @@
+use std::io::{self, Write};
+
 use super::delta::ParticipationDelta;
 use crate::ColumnLenMismatch;
 
@@ -10,6 +12,12 @@ pub struct FinalizedParticipation {
 }
 
 impl FinalizedParticipation {
+    /// SSZ-encode the finalized column (one flag byte per validator) — the
+    /// checkpoint persist's section body.
+    pub(crate) fn write_ssz<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        w.write_all(&self.data[..self.count])
+    }
+
     /// Base decoded from the SSZ participation byte range (one flag byte per
     /// validator, `count` of them) over a `cap`-sized buffer; `new(cap, 0,
     /// &[])` is the empty base.

@@ -9,7 +9,7 @@ use silver_beacon_state_data::{
     CurrentParticipationId, EPOCHS_PER_HISTORICAL_VECTOR, EPOCHS_RING_N, Epoch, EpochId,
     InactivityId, LONGTAILS_RING_N, LongtailId, MIN_SEED_LOOKAHEAD, PendingId,
     PreviousParticipationId, SLOTS_PER_EPOCH, Slot, SlotState, SlotStateId, SpecConfig, StateId,
-    StateReadView, ValidatorsId, Version, randao_mix_at_epoch,
+    StateReadView, ValidatorsId, Version, decode_checkpoint_pubkeys, randao_mix_at_epoch,
 };
 use silver_common::{
     BeaconStateEvent, BlockSource, GossipTopic, NewGossipMsg, P2pStreamId, PeerEvent, RpcInbound,
@@ -185,9 +185,7 @@ impl BeaconStateTile {
         gossip_consumer: TRandomAccess,
         rpc_consumer: TRandomAccess,
         checkpoint_state: &[u8],
-        // TODO(checkpoint re-home): decode and pass to `bootstrap` so reload
-        // skips BLS decompression (origin/main PR #83 behaviour).
-        _decompressed_pubkeys: &[u8],
+        decompressed_pubkeys: &[u8],
     ) -> Self {
         let val_cap = state.state().validators.base().capacity();
         // Pre-bootstrap placeholder head: honest per-tier entries rolled on
@@ -226,7 +224,7 @@ impl BeaconStateTile {
         };
 
         if !checkpoint_state.is_empty() {
-            tile.bootstrap(checkpoint_state);
+            tile.bootstrap(checkpoint_state, decompressed_pubkeys);
         }
         tile
     }
@@ -281,8 +279,18 @@ impl BeaconStateTile {
     /// Load a checkpoint-state SSZ blob: decompose it into the finalized
     /// base, anchor a genesis slot delta on top (empty edits, full slot
     /// scalars seeded from the base), and seed fork choice with the trusted
-    /// anchor checkpoint.
-    fn bootstrap(&mut self, ssz: &[u8]) {
+    /// anchor checkpoint. `decompressed_pubkeys` is the optional sidecar of
+    /// pre-decompressed validator pubkeys; on any decode/verify failure we
+    /// fall back to decompressing from the SSZ itself.
+    pub fn bootstrap(&mut self, ssz: &[u8], decompressed_pubkeys: &[u8]) {
+        let pubkeys = (!decompressed_pubkeys.is_empty())
+            .then(|| decode_checkpoint_pubkeys(decompressed_pubkeys))
+            .transpose()
+            .unwrap_or_else(|e| {
+                tracing::warn!(?e, "checkpoint pubkey sidecar decode failed; decompressing");
+                None
+            });
+
         let anchor;
         let slot;
         {
@@ -290,8 +298,14 @@ impl BeaconStateTile {
             let bs: &mut BeaconState = &mut guard;
             // Replace the pre-bootstrap stub under the write window: readers
             // spin across the swap, the old stub drops inside it.
-            *bs = BeaconState::decompose(ssz, &self.spec)
-                .unwrap_or_else(|e| panic!("bootstrap: decompose failed: {e}"));
+            let decoded = match pubkeys.as_deref() {
+                Some(pk) => BeaconState::decompose(ssz, &self.spec, Some(pk)).or_else(|e| {
+                    tracing::warn!(%e, "checkpoint pubkey sidecar rejected; decompressing");
+                    BeaconState::decompose(ssz, &self.spec, None)
+                }),
+                None => BeaconState::decompose(ssz, &self.spec, None),
+            };
+            *bs = decoded.unwrap_or_else(|e| panic!("bootstrap: decompose failed: {e}"));
             slot = bs.slot_states.base_view().slot_number();
 
             // Anchor an empty per-fork delta on the freshly decoded base

@@ -297,6 +297,7 @@ impl Harness {
         let mut bs = silver_beacon_state_data::BeaconState::decompose(
             post_ssz,
             &silver_beacon_state_data::SpecConfig::mainnet(),
+            None,
         )
         .expect("decompose post.ssz");
 

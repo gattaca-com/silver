@@ -69,7 +69,7 @@ const F34_OFF: usize = 2_736_701; // pending_deposits offset
 const F35_OFF: usize = 2_736_705; // pending_partial_withdrawals offset
 const F36_OFF: usize = 2_736_709; // pending_consolidations offset
 const F37: usize = 2_736_713; // proposer_lookahead: 64 × 8 = 512
-const FIXED_PART: usize = 2_737_225;
+pub(crate) const FIXED_PART: usize = 2_737_225;
 
 // Compile-time sanity for the hand-rolled offset table and the alignment
 // assumption behind the `&[B256]` raw-slice casts below.
@@ -295,9 +295,15 @@ impl Offsets {
 
 impl BeaconState {
     /// Decompose a Fulu-encoded BeaconState SSZ blob — the one public way to
-    /// construct a real `BeaconState`.
+    /// construct a real `BeaconState`. `pubkeys` is the optional checkpoint
+    /// sidecar of pre-decompressed validator pubkeys (verified against the
+    /// canonical compressed keys); `None` decompresses from the SSZ.
     #[timed]
-    pub fn decompose(ssz: &[u8], cfg: &SpecConfig) -> Result<Self, DecomposeError> {
+    pub fn decompose(
+        ssz: &[u8],
+        cfg: &SpecConfig,
+        pubkeys: Option<&[blst::min_pk::PublicKey]>,
+    ) -> Result<Self, DecomposeError> {
         if ssz.len() < FIXED_PART {
             return Err(DecomposeError::TruncatedFixedPart { len: ssz.len(), need: FIXED_PART });
         }
@@ -315,9 +321,11 @@ impl BeaconState {
             SlotStateGroup::new(SlotStateFinalized::from_ssz(ssz, &offsets, state.epoch.base())?);
 
         // Validators live in their own group.
-        state.validators = ValidatorsGroup::new(FinalizedValidators::try_new(
-            &ssz[offsets.validators..offsets.balances],
-        )?);
+        let val_bytes = &ssz[offsets.validators..offsets.balances];
+        state.validators = ValidatorsGroup::new(match pubkeys {
+            Some(pk) => FinalizedValidators::try_new_with_pubkeys(val_bytes, pk)?,
+            None => FinalizedValidators::try_new(val_bytes)?,
+        });
 
         // All per-validator columns (balances, participation, inactivity) size
         // to the validators' capacity/count so they stay aligned with the rest.
@@ -396,6 +404,7 @@ impl Immutable {
         let hr_chunks: &[B256] =
             unsafe { std::slice::from_raw_parts(hr_bytes.as_ptr().cast::<B256>(), hr_count) };
         let hr_root = ssz_hash::merkleize_padded(hr_chunks, HISTORICAL_ROOTS_LIMIT);
+        self.historical_roots = hr_chunks.into();
         self.historical_roots_hash = ssz_hash::mix_in_length(&hr_root, hr_count);
         Ok(())
     }
@@ -666,7 +675,7 @@ mod tests {
         assert!(ssz.len() >= FIXED_PART);
 
         let cfg = SpecConfig::mainnet();
-        let bs = BeaconState::decompose(&ssz, &cfg).expect("decompose");
+        let bs = BeaconState::decompose(&ssz, &cfg, None).expect("decompose");
         let imm = &bs.immutable;
         let epoch = bs.epoch.base();
         let longtail = bs.longtail.base();
@@ -713,7 +722,7 @@ mod tests {
         }
 
         // Decompose is deterministic.
-        let bs2 = BeaconState::decompose(&ssz, &cfg).expect("decompose 2");
+        let bs2 = BeaconState::decompose(&ssz, &cfg, None).expect("decompose 2");
         let imm2 = &bs2.immutable;
         assert_eq!(bs2.slot_states.base_view().slot_number(), slot_view.slot_number());
         assert_eq!(bs2.validators.base().validator_count(), n);

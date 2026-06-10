@@ -2,11 +2,13 @@ pub use balances::{
     BalancesGroup, BalancesId, BalancesReader, BalancesView, BalancesWriteView, FinalizedBalances,
 };
 pub use buffer::{Id, Reset, Ring};
+pub use decompose::DecomposeError;
 pub use delta_view::{
     StateReadView, StateWriterView, ValidatorRow, append_validator, effective_block_roots_into,
     effective_randao_mixes_into, effective_slashings_into, effective_state_roots_into,
     iter_validator_rows, randao_mix_at_epoch,
 };
+pub use encode::{CHECKPOINT_SECTIONS, PubkeysDecodeError, decode_checkpoint_pubkeys};
 pub use epoch::{EpochGroup, EpochId, EpochStateFinalized, EpochView, EpochWriteView};
 pub use hash_tree::{DeltaHashTree, FinalizedHashTree};
 pub use inactivity::{
@@ -30,12 +32,13 @@ pub use validators::{
     AppendedValidator, FinalizedValidators, ValSeed, ValidatorsDecodeError, ValidatorsDelta,
     ValidatorsGroup, ValidatorsId, ValidatorsView, ValidatorsWriteView, validator_hash,
 };
-pub use view::{BeaconStateOwner, BeaconStateReader};
+pub use view::{BeaconStateOwner, BeaconStateReader, CheckpointChunk, CheckpointCursor};
 
 mod balances;
 pub mod buffer;
 mod decompose;
 mod delta_view;
+mod encode;
 mod epoch;
 mod hash_tree;
 mod inactivity;

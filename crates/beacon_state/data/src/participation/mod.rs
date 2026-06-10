@@ -36,6 +36,12 @@ pub struct ParticipationGroup<M> {
 }
 
 impl<M> ParticipationGroup<M> {
+    /// The finalized base (checkpoint encoding).
+    #[inline]
+    pub(crate) fn base(&self) -> &FinalizedParticipation {
+        &self.base
+    }
+
     /// Group over a base decoded from the SSZ participation byte range (one
     /// flag byte per validator); `new(cap, &[])` is the empty group.
     pub fn new(cap: usize, count: usize, ssz_bytes: &[u8]) -> Result<Self, ColumnLenMismatch> {

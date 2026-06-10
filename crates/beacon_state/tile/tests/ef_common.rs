@@ -53,7 +53,7 @@ impl LoadedState {
 
 pub fn load_state(path: &Path) -> LoadedState {
     let ssz = snappy_decode(path);
-    let mut bs = BeaconState::decompose(&ssz, &SpecConfig::mainnet())
+    let mut bs = BeaconState::decompose(&ssz, &SpecConfig::mainnet(), None)
         .unwrap_or_else(|e| panic!("{}: decompose failed: {e}", path.display()));
     // Anchor each working fork at the decoded base; epoch/longtail stay
     // unrolled (lazy — `None` idx reads the base).

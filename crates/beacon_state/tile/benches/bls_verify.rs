@@ -160,7 +160,7 @@ impl LoadedState {
 
 fn load_pre_at(dir: &Path) -> LoadedState {
     let pre_ssz = snappy_decode(&dir.join("pre.ssz_snappy"));
-    let mut bs = BeaconState::decompose(&pre_ssz, &SpecConfig::mainnet()).expect("decompose");
+    let mut bs = BeaconState::decompose(&pre_ssz, &SpecConfig::mainnet(), None).expect("decompose");
     let state_id = bs.roll_fresh();
     LoadedState { bs, state_id }
 }

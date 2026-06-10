@@ -27,6 +27,12 @@ pub struct SlotStateGroup {
 }
 
 impl SlotStateGroup {
+    /// The finalized base (checkpoint encoding).
+    #[inline]
+    pub(crate) fn base(&self) -> &SlotStateFinalized {
+        &self.base
+    }
+
     pub fn new(base: SlotStateFinalized) -> Self {
         Self { base, forks: Ring::default() }
     }

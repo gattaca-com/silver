@@ -39,6 +39,12 @@ pub struct BalancesGroup {
 }
 
 impl BalancesGroup {
+    /// The finalized base (checkpoint encoding).
+    #[inline]
+    pub(crate) fn base(&self) -> &FinalizedBalances {
+        &self.base
+    }
+
     /// Group over a base decoded from the SSZ `balances` byte range
     /// (little-endian `u64`s), merkle tree included; `new(cap, &[])` is the
     /// empty group.

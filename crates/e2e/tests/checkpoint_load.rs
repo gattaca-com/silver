@@ -12,12 +12,36 @@ use silver_beacon_state::{
     tile::{BeaconStateTile, Feedback},
 };
 use silver_beacon_state_data::{
-    BeaconState, BeaconStateOwner, Finalized, Section, SpecConfig, decode_checkpoint_pubkeys,
+    BeaconState, BeaconStateOwner, CheckpointChunk, SpecConfig, decode_checkpoint_pubkeys,
 };
 use silver_common::{TCache, TCacheProducer, ticker::SlotTicker};
 use silver_e2e::mainnet_api::fetch_canonical_state_root;
 
 const FIXTURES: &str = "tests/example_checkpoints";
+
+/// Pull the full checkpoint (state SSZ + pubkeys sidecar) out of `bs` through
+/// the production cursor path: publish an anchor so the reader has a
+/// snapshot, then step `checkpoint_chunk` to completion.
+fn checkpoint_via_cursor(bs: BeaconState) -> (Vec<u8>, Vec<u8>) {
+    let mut owner = BeaconStateOwner::new(bs);
+    let anchor = owner.roll_fresh();
+    owner.publish_state_id(anchor);
+    let reader = owner.reader();
+
+    let mut cursor = reader.begin_checkpoint().expect("snapshot published");
+    let (mut state_out, mut pubkeys_out, mut buf) = (Vec::new(), Vec::new(), Vec::new());
+    loop {
+        match reader.checkpoint_chunk(&mut cursor, &mut buf).expect("chunk") {
+            CheckpointChunk::Ssz => state_out.extend_from_slice(&buf),
+            CheckpointChunk::Pubkeys => pubkeys_out.extend_from_slice(&buf),
+            CheckpointChunk::Restarted => {
+                state_out.clear();
+                pubkeys_out.clear();
+            }
+            CheckpointChunk::Done => return (state_out, pubkeys_out),
+        }
+    }
+}
 const BLOCK_PREFIX: &str = "next_block_";
 const BLOCK_SUFFIX: &str = ".ssz";
 
@@ -44,16 +68,15 @@ fn checkpoint_with_pubkeys_loads() {
         };
         seen += 1;
 
-        let mut fin = Box::new(Finalized::empty());
         match std::fs::read(dir.join(format!("{slot}.pubkeys"))) {
             Ok(raw) => {
                 let pubkeys = decode_checkpoint_pubkeys(&raw).expect("decode pubkeys");
-                fin.decompose_with_pubkeys(&ssz, &SpecConfig::mainnet(), &pubkeys)
-                    .expect("decompose_with_pubkeys");
+                BeaconState::decompose(&ssz, &SpecConfig::mainnet(), Some(&pubkeys))
+                    .expect("decompose with pubkeys");
                 eprintln!("slot {slot}: ok (with pubkeys)");
             }
             Err(_) => {
-                fin.decompose(&ssz, &SpecConfig::mainnet()).expect("decompose");
+                BeaconState::decompose(&ssz, &SpecConfig::mainnet(), None).expect("decompose");
                 eprintln!("slot {slot}: ok (no pubkeys)");
             }
         }
@@ -85,30 +108,21 @@ fn decompose_pubkeys_bench() {
         std::env::var("DECOMPOSE_BENCH_ITERS").ok().and_then(|s| s.parse().ok()).unwrap_or(3);
 
     // Prepare the decompressed-pubkey sidecar once (untimed): decompose, then
-    // re-encode the sidecar bytes and decode them back to `Vec<PublicKey>` —
-    // exactly the bytes the persist path would write/read.
+    // pull the sidecar bytes back out through the checkpoint cursor and decode
+    // them — exactly the bytes the persist path would write/read.
     let pubkeys = {
-        let mut fin = Box::new(Finalized::empty());
-        fin.decompose(&ssz, &spec).expect("prep decompose");
-        let mut buf = Vec::with_capacity(fin.pubkeys_sidecar_len());
-        let mut chunk = 0;
-        while !fin.write_pubkeys_chunk(chunk, &mut buf).expect("write pubkeys") {
-            chunk += 1;
-        }
-        decode_checkpoint_pubkeys(&buf).expect("decode pubkeys")
+        let bs = BeaconState::decompose(&ssz, &spec, None).expect("prep decompose");
+        let (_, sidecar) = checkpoint_via_cursor(bs);
+        decode_checkpoint_pubkeys(&sidecar).expect("decode pubkeys")
     };
     eprintln!("bench: {} validators, ssz {} MiB, {iters} iters", pubkeys.len(), ssz.len() >> 20,);
 
     let bench = |with_pubkeys: bool| {
         let mut total = Duration::ZERO;
         for _ in 0..iters {
-            let mut fin = Box::new(Finalized::empty());
+            let sidecar = with_pubkeys.then_some(pubkeys.as_slice());
             let t = Instant::now();
-            if with_pubkeys {
-                fin.decompose_with_pubkeys(&ssz, &spec, &pubkeys).expect("decompose_with_pubkeys");
-            } else {
-                fin.decompose(&ssz, &spec).expect("decompose");
-            }
+            BeaconState::decompose(&ssz, &spec, sidecar).expect("decompose");
             total += t.elapsed();
         }
         total / iters
@@ -159,13 +173,12 @@ fn finalized_state_loads() {
 
     // Regression: bootstrap must patch `latest_block_header.state_root` before
     // hashing, otherwise the head root is the raw-header hash.
-    let mut fin = Box::new(Finalized::empty());
-    fin.decompose(&ssz, &SpecConfig::mainnet()).expect("decompose");
+    let bs = BeaconState::decompose(&ssz, &SpecConfig::mainnet(), None).expect("decompose");
 
     // Round-trip gate: re-encoding the decomposed state must reproduce the
     // exact canonical SSZ bytes it came from.
-    let mut reencoded = Vec::with_capacity(fin.ssz_len());
-    fin.encode_ssz(&mut reencoded).expect("encode_ssz");
+    let mut reencoded = Vec::with_capacity(bs.ssz_len());
+    bs.encode_ssz(&mut reencoded).expect("encode_ssz");
     if reencoded != ssz {
         let at = reencoded.iter().zip(&ssz).position(|(a, b)| a != b);
         panic!(
@@ -176,17 +189,12 @@ fn finalized_state_loads() {
         );
     }
 
-    // Same gate via the chunked streaming path (the live persist's path —
-    // ~18 validators chunks at mainnet scale, vs the single chunk the
-    // synthetic unit test exercises). Must also reproduce the original bytes.
-    let offsets = fin.var_offsets();
-    let mut streamed = Vec::with_capacity(fin.ssz_len());
-    for section in Section::ALL {
-        let mut chunk = 0;
-        while !fin.write_section_chunk(section, chunk, &offsets, &mut streamed).expect("encode") {
-            chunk += 1;
-        }
-    }
+    let raw_header = bs.slot_states.base_view().state().latest_block_header;
+
+    // Same gate via the chunked checkpoint-cursor path (the live persist's
+    // path — ~18 validators chunks at mainnet scale, plus the pubkeys
+    // sidecar stage). Must also reproduce the original bytes.
+    let (streamed, _) = checkpoint_via_cursor(bs);
     if streamed != ssz {
         let at = streamed.iter().zip(&ssz).position(|(a, b)| a != b);
         panic!(
@@ -197,7 +205,6 @@ fn finalized_state_loads() {
         );
     }
 
-    let raw_header = fin.slot.slot.latest_block_header;
     if raw_header.state_root == [0u8; 32] {
         let raw_root = hash_tree_root_block_header(&raw_header);
         assert_ne!(

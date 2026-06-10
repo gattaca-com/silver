@@ -1,3 +1,5 @@
+use std::io::{self, Write};
+
 use super::delta::InactivityScoresDelta;
 use crate::{ColumnLenMismatch, decompose::u64_le};
 
@@ -10,6 +12,15 @@ pub struct FinalizedInactivityScores {
 }
 
 impl FinalizedInactivityScores {
+    /// SSZ-encode the finalized column (`count` little-endian `u64`s) — the
+    /// checkpoint persist's section body.
+    pub(crate) fn write_ssz<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        for v in &self.data[..self.count] {
+            w.write_all(&v.to_le_bytes())?;
+        }
+        Ok(())
+    }
+
     /// Base decoded from the SSZ `inactivity_scores` byte range (little-endian
     /// `u64`s, `count` of them) over a `cap`-sized buffer; `new(cap, 0, &[])`
     /// is the empty base.
