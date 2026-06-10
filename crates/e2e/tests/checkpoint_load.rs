@@ -142,7 +142,7 @@ fn finalized_state_loads() {
     let gossip_c = gossip_p.cache_ref().random_access("test", false).unwrap();
     let rpc_c = rpc_p.cache_ref().random_access("test", false).unwrap();
 
-    let state = BeaconStateOwner::new(BeaconState::empty());
+    let state = BeaconStateOwner::pre_bootstrap();
     let mut tile = BeaconStateTile::new(
         ticker,
         silver_beacon_state_data::SpecConfig::mainnet(),
@@ -323,7 +323,7 @@ fn tile_apply_block_ef_fixture() {
     let gossip_c = gossip_p.cache_ref().random_access("test", false).unwrap();
     let rpc_c = rpc_p.cache_ref().random_access("test", false).unwrap();
 
-    let state = BeaconStateOwner::new(BeaconState::empty());
+    let state = BeaconStateOwner::pre_bootstrap();
     let mut tile = BeaconStateTile::new(
         ticker,
         silver_beacon_state_data::SpecConfig::mainnet(),

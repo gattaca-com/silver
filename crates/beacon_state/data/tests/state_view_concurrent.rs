@@ -1,39 +1,43 @@
 //! Concurrent reader / single writer stress for `BeaconStateOwner` +
-//! `DeltaBuffer`. Exercises the seqlock protecting finalized writes and
-//! the publish-offsets protocol for slot-delta visibility, using only
-//! the public `StateDeltaReadView` surface — no test-only escape
+//! the fork rings. Exercises the seqlock protecting finalized writes and
+//! the publish-state-id protocol for slot-delta visibility, using only
+//! the public `StateReadView` surface — no test-only escape
 //! hatches.
 //!
-//! Seqlock test (finalized tier): writer updates two adjacent cells of
-//! `finalized.slot.block_roots` to the SAME slot-tag under one
-//! `WriteGuard`. Reader reads both via `finalized_block_roots()` and
-//! asserts they match — a tear would surface as `old != new`.
+//! Seqlock test (finalized tier): writer promotes a slot fork carrying two
+//! block roots painted with the SAME tag into the slot group's base under one
+//! `WriteGuard` (via `SlotStateGroup::finalize`). The base slot is held at 0 so
+//! the promote always writes the same two adjacent cells (`FIN_TAG_A/B`).
+//! Reader reads both via `finalized_block_roots()` and asserts they match — a
+//! tear would surface as `old != new`.
 //!
-//! Delta-publish test (slot tier): writer plants `slot_tag(s)` at
-//! `block_roots[0]` of the slot delta, then `publish_offsets`. Reader
-//! sees `delta_block_roots()[0] == slot_tag(view.slot())`.
+//! Delta-publish test (slot tier): writer rolls a slot-group fork tagged
+//! `slot_tag(s)` (slot `s`, `block_roots[0] = slot_tag(s)`), records it on a
+//! fresh `StateId` bundle via `slot_idx`, then `publish_state_id`. Reader sees
+//! `delta_block_roots()[0] == slot_tag(view.slot())`.
 
 use std::{
     ops::DerefMut,
     sync::{
-        Arc,
+        Arc, Barrier,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
 
-use silver_beacon_state_data::{B256, BeaconState, BeaconStateOwner};
+use silver_beacon_state_data::{B256, BeaconStateOwner, StateId};
 
-// Strictly below the slots `DeltaBuffer` capacity (256). The publish-offset
-// protocol does NOT guard against wrap-around: rolling past N would
-// overwrite a slot the reader may still be inspecting.
+// Strictly below the slot-group ring capacity (256), which both the visibility
+// forks (one per iteration) and the finalize-winner forks (one per 8) draw
+// from. The publish-state-id protocol does NOT guard against wrap-around:
+// rolling past N would overwrite a slot the reader may still be inspecting.
 const ITERATIONS: u64 = 200;
 
-// Two adjacent cells in the finalized `block_roots` circular buffer.
-// Writer paints them with the same tag inside one `WriteGuard`; reader
-// asserts they match. Chosen high enough that the slot-delta path
-// (which writes `block_roots[0]`) cannot collide.
-const FIN_TAG_A: usize = 4000;
-const FIN_TAG_B: usize = 4001;
+// Two adjacent cells in the finalized `block_roots` circular buffer. The base
+// slot is held at 0, so `promote` always writes the delta's two roots to cells
+// 0 and 1 — both painted with the same tag inside one `WriteGuard`. The slot-
+// delta path writes the fork's own (separate) `block_roots`, so no collision.
+const FIN_TAG_A: usize = 0;
+const FIN_TAG_B: usize = 1;
 
 fn slot_tag(slot: u64) -> B256 {
     let mut tag = [0u8; 32];
@@ -43,9 +47,12 @@ fn slot_tag(slot: u64) -> B256 {
 
 #[test]
 fn concurrent_reads_observe_consistent_state() {
-    let mut control = BeaconStateOwner::new(BeaconState::empty());
+    let mut control = BeaconStateOwner::pre_bootstrap();
 
-    let done = Arc::new(AtomicBool::new(false));
+    // Reader and writer rendezvous here so the reader is live and reading while
+    // the writer mutates — the writer loop is microsecond-cheap on its own, so
+    // without this it can finish before the reader is even scheduled.
+    let start = Arc::new(Barrier::new(2));
     let reads = Arc::new(AtomicUsize::new(0));
     let bad = Arc::new(AtomicUsize::new(0));
     let saw_delta = Arc::new(AtomicBool::new(false));
@@ -53,24 +60,39 @@ fn concurrent_reads_observe_consistent_state() {
 
     let reader = {
         let r_control = control.reader();
-        let r_done = Arc::clone(&done);
+        let r_start = Arc::clone(&start);
         let r_reads = Arc::clone(&reads);
         let r_bad = Arc::clone(&bad);
         let r_saw_delta = Arc::clone(&saw_delta);
         let r_saw_finalized_advance = Arc::clone(&saw_finalized_advance);
         std::thread::spawn(move || {
-            while !r_done.load(Ordering::Relaxed) {
-                let (fin_a, fin_b, merged_slot, delta_root0, has_delta) =
-                    r_control.read(&mut |v| {
-                        let fin_roots = v.finalized_block_roots();
-                        let fin_a = fin_roots[FIN_TAG_A];
-                        let fin_b = fin_roots[FIN_TAG_B];
-                        let merged_slot = v.slot();
-                        let delta_roots = v.delta_block_roots();
-                        let delta_root0 = delta_roots.first().copied();
-                        let has_delta = !delta_roots.is_empty();
-                        (fin_a, fin_b, merged_slot, delta_root0, has_delta)
-                    });
+            // Pre-publish scenario, deterministic: the writer publishes only
+            // after the barrier, so this read must observe "no snapshot yet".
+            assert!(
+                r_control.read(&|_| ()).is_none(),
+                "read returned a view before the first publish"
+            );
+            r_start.wait();
+            // Read until every invariant the assertions check has been observed.
+            // This is guaranteed reachable: after the writer's first finalize
+            // (s=7) the base cell is non-zero, and every published state carries
+            // a head delta — and the final state is stable, so even a slow reader
+            // converges. No timing assumptions.
+            loop {
+                let read = r_control.read(&|v| {
+                    let fin_roots = v.slot.finalized_block_roots();
+                    let fin_a = fin_roots[FIN_TAG_A];
+                    let fin_b = fin_roots[FIN_TAG_B];
+                    let merged_slot = v.slot.slot_number();
+                    let delta_roots = v.slot.delta_block_roots();
+                    let delta_root0 = delta_roots.first().copied();
+                    let has_delta = !delta_roots.is_empty();
+                    (fin_a, fin_b, merged_slot, delta_root0, has_delta)
+                });
+                // `None` until the writer's first publish lands.
+                let Some((fin_a, fin_b, merged_slot, delta_root0, has_delta)) = read else {
+                    continue;
+                };
 
                 let mut errs = 0usize;
 
@@ -95,39 +117,62 @@ fn concurrent_reads_observe_consistent_state() {
 
                 r_bad.fetch_add(errs, Ordering::Relaxed);
                 r_reads.fetch_add(1, Ordering::Relaxed);
+
+                if r_saw_delta.load(Ordering::Relaxed) &&
+                    r_saw_finalized_advance.load(Ordering::Relaxed)
+                {
+                    break;
+                }
             }
         })
     };
 
-    // Writer = main thread.
+    // Real committed entries for the tiers this test never re-rolls — the
+    // bundle is assembled from honest per-tier ids, not defaults.
+    let anchor = control.roll_fresh();
+
+    // Writer = main thread. Release the reader so both run concurrently.
+    start.wait();
     for s in 0..ITERATIONS {
-        // Roll forward; mutate the new slot in place.
-        let previous = control.slots().head();
-        control.slots().roll(previous);
-        let head = control.slots().head().expect("just rolled");
-        let delta = control.slots().get_mut(head);
-        delta.slot.slot.slot = s;
-        delta.slot.block_roots.clear();
-        delta.slot.block_roots.push(slot_tag(s));
+        // Roll a slot-group fork tagged for slot `s`, then record it on the
+        // bundle via `slot_idx` — the index the reader resolves (the other
+        // tiers keep their setup-committed entries).
+        let slot_idx = {
+            let mut g = control.write();
+            let mut sv = g.slot_states.roll_fresh();
+            sv.state_mut().slot = s;
+            sv.push_block_root(slot_tag(s));
+            sv.commit()
+        };
 
         // Now visible to readers.
-        control.publish_offsets(None, Some(head));
+        control.publish_state_id(StateId { slot_idx, ..anchor });
 
-        // Periodically advance finalized. Both cells written under the
-        // same `WriteGuard`, to the same tag — readers must see them
-        // matched on every snapshot or the seqlock is broken.
-        if s % 4 == 3 {
-            let mut g = control.write();
+        // Periodically advance the finalized base by promoting a fork carrying
+        // two roots painted with the same tag (cells 0,1 — base slot stays 0).
+        // Both cells land under one `WriteGuard`; readers must see them matched
+        // on every snapshot or the seqlock is broken.
+        if s % 8 == 7 {
             let tag = slot_tag(s);
-            g.deref_mut().finalized.slot.block_roots[FIN_TAG_A] = tag;
-            g.deref_mut().finalized.slot.block_roots[FIN_TAG_B] = tag;
+            let winner = {
+                let mut g = control.write();
+                let mut sv = g.slot_states.roll_fresh();
+                sv.push_block_root(tag);
+                sv.push_block_root(tag);
+                sv.commit()
+            };
+            let mut g = control.write();
+            g.deref_mut().slot_states.finalize(winner, &[]);
         }
 
         // Encourage interleaving.
         std::thread::yield_now();
     }
 
-    done.store(true, Ordering::Relaxed);
+    // The reader self-terminates once it has observed both invariants; join
+    // blocks until then. The final published state is stable and satisfies them
+    // (last iter s=199 is a finalize: base cells 0,1 and the head delta all
+    // tagged slot_tag(199)), so this converges with no timing assumptions.
     reader.join().expect("reader thread panicked");
 
     let r = reads.load(Ordering::Relaxed);

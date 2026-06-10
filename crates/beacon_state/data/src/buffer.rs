@@ -1,3 +1,66 @@
+use std::{
+    cmp::Ordering,
+    fmt,
+    marker::PhantomData,
+    ops::{Deref, DerefMut},
+};
+
+/// Typed handle to a ring slot owned by group `G`. Minted only by [`Ring<G>`],
+/// so a slot id for one group can't be passed where another's is expected and
+/// can't be forged outside the allocator.
+pub struct Id<G> {
+    seq: usize,
+    _group: PhantomData<fn() -> G>,
+}
+
+impl<G> Id<G> {
+    // Private to this module: only `Ring<G>` (and `Default`) mint/unwrap ids.
+    #[inline]
+    fn new(seq: usize) -> Self {
+        Self { seq, _group: PhantomData }
+    }
+
+    #[inline]
+    fn index(self) -> usize {
+        self.seq
+    }
+}
+
+// Manual impls: deriving would spuriously bind `G: Trait`, but the id is a
+// plain seq regardless of the zero-sized phantom group marker.
+impl<G> Clone for Id<G> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<G> Copy for Id<G> {}
+impl<G> PartialEq for Id<G> {
+    fn eq(&self, other: &Self) -> bool {
+        self.seq == other.seq
+    }
+}
+impl<G> Eq for Id<G> {}
+impl<G> PartialOrd for Id<G> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl<G> Ord for Id<G> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.seq.cmp(&other.seq)
+    }
+}
+impl<G> Default for Id<G> {
+    fn default() -> Self {
+        Self::new(0)
+    }
+}
+impl<G> fmt::Debug for Id<G> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Id({})", self.seq)
+    }
+}
+
 pub trait Reset {
     /// Resets to defaults ready for reuse.
     fn reset(&mut self);
@@ -6,31 +69,66 @@ pub trait Reset {
     fn reset_from(&mut self, other: &Self);
 }
 
-pub struct DeltaBuffer<T, const N: usize> {
-    head_seq: Option<usize>,
-    tail_seq: Option<usize>,
-    entries: Box<[T]>,
+/// A mutable handle to a ring slot plus its [`Id<G>`]. The id is reachable
+/// **only** by [`commit`](Self::commit), which consumes the writer — so a
+/// caller can mutate the slot, but can't obtain (or leak) its id without first
+/// giving up write access. `Deref`/`DerefMut` expose the slot value.
+pub struct Slot<'a, G, T> {
+    value: &'a mut T,
+    id: Id<G>,
 }
 
-/// Returns the result of a call to `roll` the buffer.
-pub enum RollResult {
-    /// Previous head value rolled forward
-    Rolled(usize),
-    /// New head value reset to defaults
-    Reset(usize),
-}
-
-impl<T: Clone + Default, const N: usize> Default for DeltaBuffer<T, N> {
-    fn default() -> Self {
-        assert!(N.is_power_of_two());
-        Self { head_seq: None, tail_seq: None, entries: vec![T::default(); N].into_boxed_slice() }
+impl<G, T> Slot<'_, G, T> {
+    /// Consume the writer and surface the slot's id — the only way to get one.
+    #[inline]
+    pub fn commit(self) -> Id<G> {
+        self.id
     }
 }
 
-impl<T: Reset, const N: usize> DeltaBuffer<T, N> {
-    /// Roll the delta forward - if there is a previous entry it will be copied
-    /// forward, otherwise the new entry will be reset to default.
-    pub fn roll(&mut self, previous: Option<usize>) -> RollResult {
+impl<G, T> Deref for Slot<'_, G, T> {
+    type Target = T;
+    #[inline]
+    fn deref(&self) -> &T {
+        self.value
+    }
+}
+
+impl<G, T> DerefMut for Slot<'_, G, T> {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut T {
+        self.value
+    }
+}
+
+/// Per-group fork ring: N reusable delta slots addressed by typed [`Id<G>`].
+/// The ring is the **sole** minter of its ids — every roll hands back a
+/// [`Slot`] writer, and the id only falls out of `Slot::commit` — so a caller
+/// can never construct or pre-publish one. This is the boundary that makes a
+/// published id unforgeable.
+pub struct Ring<G, T, const N: usize> {
+    head_seq: Option<usize>,
+    tail_seq: Option<usize>,
+    entries: Box<[T]>,
+    _owner: PhantomData<fn() -> G>,
+}
+
+impl<G, T: Clone + Default, const N: usize> Default for Ring<G, T, N> {
+    fn default() -> Self {
+        assert!(N.is_power_of_two());
+        Self {
+            head_seq: None,
+            tail_seq: None,
+            entries: vec![T::default(); N].into_boxed_slice(),
+            _owner: PhantomData,
+        }
+    }
+}
+
+impl<G, T: Reset, const N: usize> Ring<G, T, N> {
+    /// Next head seq + its ring position, running the wrap guard. Does not
+    /// advance the head — the caller fills the slot first.
+    fn next_head(&self) -> (usize, usize) {
         let new_head = self.head_seq.map(|h| h + 1).unwrap_or_default();
         let new_head_pos = new_head & (N - 1);
 
@@ -42,50 +140,81 @@ impl<T: Reset, const N: usize> DeltaBuffer<T, N> {
             assert!(new_head_pos != tail_pos, "would trample head");
         }
 
-        let result = if let Some(parent) = previous {
-            let parent_pos = parent & (N - 1);
-            let parent_ptr = &self.entries[parent_pos] as *const T;
-            unsafe {
-                // SAFETY: the reference to the old head is local and we are not
-                // accessing it mutably.
-                let previous = &*parent_ptr;
-                self.entries[new_head_pos].reset_from(previous);
-            }
-            if self.tail_seq.is_none() {
-                self.tail_seq.replace(parent);
-            }
-            RollResult::Rolled(new_head)
-        } else {
-            self.entries[new_head_pos].reset();
-            RollResult::Reset(new_head)
-        };
-
-        self.head_seq.replace(new_head);
-        result
+        (new_head, new_head_pos)
     }
 
-    /// Advance the tail forward to `to_seq` (the new oldest live seq); entries
-    /// older than `to_seq` are reclaimed and the wrap check relaxes
-    /// accordingly. No-op if the tail is already at or past `to_seq`.
-    pub fn free(&mut self, to_seq: usize) {
-        if let Some(tail_seq) = self.tail_seq &&
-            to_seq > tail_seq
-        {
-            self.tail_seq = Some(to_seq);
+    #[inline]
+    pub fn get(&self, id: Id<G>) -> &T {
+        &self.entries[id.index() & (N - 1)]
+    }
+
+    /// Roll a fresh head reset to defaults.
+    pub fn roll_fresh(&mut self) -> Slot<'_, G, T> {
+        let (new_head, new_head_pos) = self.next_head();
+        self.entries[new_head_pos].reset();
+        self.head_seq.replace(new_head);
+        Slot { value: &mut self.entries[new_head_pos], id: Id::new(new_head) }
+    }
+
+    /// Roll a head COW-copied (`reset_from`) from `parent`. The first roll
+    /// seeds the tail at `parent`.
+    pub fn roll_from(&mut self, parent: Id<G>) -> Slot<'_, G, T> {
+        let (new_head, new_head_pos) = self.next_head();
+
+        let parent_pos = parent.index() & (N - 1);
+        let parent_ptr = &self.entries[parent_pos] as *const T;
+        unsafe {
+            // SAFETY: `parent_pos != new_head_pos` — the new head is a fresh seq
+            // above every live slot — so this shared read of the parent does not
+            // alias the `&mut` write to the new slot.
+            let previous = &*parent_ptr;
+            self.entries[new_head_pos].reset_from(previous);
+        }
+        if self.tail_seq.is_none() {
+            self.tail_seq.replace(parent.index());
+        }
+
+        self.head_seq.replace(new_head);
+        Slot { value: &mut self.entries[new_head_pos], id: Id::new(new_head) }
+    }
+
+    /// Roll a fresh head reset to defaults and hand it back as a writer
+    /// alongside shared handles to two existing slots `a`, `b` — for filling
+    /// the new slot in one pass from those sources without an intermediate
+    /// copy. `a` and `b` may be the same slot (both are shared); each must
+    /// be distinct from the fresh slot (guaranteed while the ring isn't
+    /// overflowing — see [`next_head`](Self::next_head)'s wrap guard).
+    pub fn roll_fresh_deriving(&mut self, a: Id<G>, b: Id<G>) -> (Slot<'_, G, T>, &T, &T) {
+        let (new_head, new_pos) = self.next_head();
+        self.head_seq.replace(new_head);
+        let id = Id::new(new_head);
+
+        let (a_pos, b_pos) = (a.index() & (N - 1), b.index() & (N - 1));
+        if a_pos == b_pos {
+            let [new, src] = self
+                .entries
+                .get_disjoint_mut([new_pos, a_pos])
+                .expect("fresh slot aliases a source");
+            new.reset();
+            (Slot { value: new, id }, &*src, &*src)
+        } else {
+            let [new, av, bv] = self
+                .entries
+                .get_disjoint_mut([new_pos, a_pos, b_pos])
+                .expect("fresh slot aliases a source");
+            new.reset();
+            (Slot { value: new, id }, &*av, &*bv)
         }
     }
 
-    pub fn get(&self, seq: usize) -> &T {
-        let i = seq & (N - 1);
-        &self.entries[i]
-    }
-
-    pub fn get_mut(&mut self, seq: usize) -> &mut T {
-        let i = seq & (N - 1);
-        &mut self.entries[i]
-    }
-
-    pub fn head(&self) -> Option<usize> {
-        self.head_seq
+    /// Advance the tail forward to `to` (the new oldest live slot); entries
+    /// older than it are reclaimed and the wrap check relaxes accordingly.
+    /// No-op if the tail is already at or past it.
+    pub fn free(&mut self, to: Id<G>) {
+        if let Some(tail_seq) = self.tail_seq &&
+            to.index() > tail_seq
+        {
+            self.tail_seq = Some(to.index());
+        }
     }
 }

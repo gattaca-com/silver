@@ -3,14 +3,15 @@
 mod ef_common;
 
 use ef_common::{
-    LoadedState, compare_states, iter_test_cases, load_state, snappy_decode, spec_tests_dir,
+    LoadedState, compare_states, iter_test_cases, load_state, slot_of, snappy_decode,
+    spec_tests_dir,
 };
 use silver_beacon_state::{
     bls::SigBatch,
     shuffling,
     state_transition::{self, ShufflingRef},
 };
-use silver_beacon_state_data::{SLOTS_PER_EPOCH, StateDeltaView};
+use silver_beacon_state_data::SLOTS_PER_EPOCH;
 
 fn operations_handler(
     handler_name: &str,
@@ -89,21 +90,20 @@ fn operations_handler(
     assert_eq!(fail, 0, "{handler_name}: {fail} test(s) failed");
 }
 
-fn view_mut(s: &mut LoadedState) -> StateDeltaView<'_> {
-    s.view()
-}
-
-fn view_ref(s: &mut LoadedState) -> StateDeltaView<'_> {
-    s.view()
-}
-
 #[test]
 fn proposer_slashing() {
     operations_handler("proposer_slashing", "proposer_slashing", true, move |s, op| {
         let mut batch = SigBatch::new();
         {
-            let v = view_ref(s);
-            if state_transition::collect_sigs_proposer_slashings(&v, op, &mut batch).is_err() {
+            let (p, _, _) = s.view();
+            if state_transition::collect_sigs_proposer_slashings(
+                p.imm,
+                &p.validators.reader(),
+                op,
+                &mut batch,
+            )
+            .is_err()
+            {
                 return false;
             }
         }
@@ -111,8 +111,13 @@ fn proposer_slashing() {
         if !batch.verify_all() {
             return false;
         }
-        let mut vm = view_mut(s);
-        state_transition::process_proposer_slashings(&cfg, &mut vm, op).is_ok()
+        let sid = s.state_id;
+        let (mut view, epoch, _) = s.view();
+        let epoch_view = epoch.view_opt(sid.epoch_idx);
+        let ok =
+            state_transition::process_proposer_slashings(&mut view, epoch_view, &cfg, op).is_ok();
+        s.state_id = view.commit(sid.epoch_idx, sid.longtail_idx);
+        ok
     });
 }
 
@@ -126,9 +131,10 @@ fn attester_slashing() {
         let mut active_scratch = Vec::new();
         let mut batch = SigBatch::new();
         {
-            let v = view_ref(s);
+            let (p, _, _) = s.view();
             if state_transition::collect_sigs_attester_slashings(
-                &v,
+                p.imm,
+                &p.validators.reader(),
                 &list,
                 &mut active_scratch,
                 &mut batch,
@@ -142,9 +148,19 @@ fn attester_slashing() {
         if !batch.verify_all() {
             return false;
         }
-        let mut vm = view_mut(s);
-        state_transition::process_attester_slashings(&cfg, &mut vm, &list, &mut active_scratch)
-            .is_ok()
+        let sid = s.state_id;
+        let (mut view, epoch, _) = s.view();
+        let epoch_view = epoch.view_opt(sid.epoch_idx);
+        let ok = state_transition::process_attester_slashings(
+            &mut view,
+            epoch_view,
+            &cfg,
+            &list,
+            &mut active_scratch,
+        )
+        .is_ok();
+        s.state_id = view.commit(sid.epoch_idx, sid.longtail_idx);
+        ok
     });
 }
 
@@ -154,7 +170,7 @@ fn attestation() {
         let mut list = Vec::with_capacity(4 + op.len());
         list.extend_from_slice(&4u32.to_le_bytes());
         list.extend_from_slice(op);
-        let block_slot = s.delta.slot.slot.slot;
+        let block_slot = slot_of(s);
         let curr_epoch = block_slot / SLOTS_PER_EPOCH;
         let prev_epoch = curr_epoch.saturating_sub(1);
 
@@ -164,15 +180,33 @@ fn attestation() {
         let mut curr_active = Vec::new();
         let mut prev_active = Vec::new();
         {
-            let v = view_ref(s);
+            let sid = s.state_id;
+            let (v, epoch, longtail) = s.view();
+            let rv = v.read(epoch.view_opt(sid.epoch_idx), longtail.view_opt(sid.longtail_idx));
             proposer_index =
-                v.epoch_state().proposer_lookahead[(block_slot % SLOTS_PER_EPOCH) as usize] as u32;
-            curr_seed =
-                shuffling::get_seed_from_state(&v, curr_epoch, shuffling::DOMAIN_BEACON_ATTESTER);
-            prev_seed =
-                shuffling::get_seed_from_state(&v, prev_epoch, shuffling::DOMAIN_BEACON_ATTESTER);
-            shuffling::get_active_validator_indices_into(&v, curr_epoch, &mut curr_active);
-            shuffling::get_active_validator_indices_into(&v, prev_epoch, &mut prev_active);
+                rv.epoch.proposer_at((block_slot % SLOTS_PER_EPOCH) as usize).unwrap() as u32;
+            curr_seed = shuffling::get_seed_from_state(
+                &rv.epoch,
+                &rv.slot,
+                curr_epoch,
+                shuffling::DOMAIN_BEACON_ATTESTER,
+            );
+            prev_seed = shuffling::get_seed_from_state(
+                &rv.epoch,
+                &rv.slot,
+                prev_epoch,
+                shuffling::DOMAIN_BEACON_ATTESTER,
+            );
+            shuffling::get_active_validator_indices_into(
+                &rv.validators,
+                curr_epoch,
+                &mut curr_active,
+            );
+            shuffling::get_active_validator_indices_into(
+                &rv.validators,
+                prev_epoch,
+                &mut prev_active,
+            );
         }
         let curr_committees_per_slot = shuffling::committees_per_slot(curr_active.len());
         let prev_committees_per_slot = shuffling::committees_per_slot(prev_active.len());
@@ -191,9 +225,10 @@ fn attestation() {
         let mut active_scratch = Vec::new();
         let mut batch = SigBatch::new();
         {
-            let v = view_ref(s);
+            let (p, _, _) = s.view();
             if state_transition::collect_sigs_attestations(
-                &v,
+                p.imm,
+                &p.validators.reader(),
                 &list,
                 block_slot,
                 Some(&sref),
@@ -208,9 +243,12 @@ fn attestation() {
         if !batch.verify_all() {
             return false;
         }
-        let mut vm = view_mut(s);
-        state_transition::process_attestations(
-            &mut vm,
+        let sid = s.state_id;
+        let (mut view, epoch, _) = s.view();
+        let epoch_view = epoch.view_opt(sid.epoch_idx);
+        let ok = state_transition::process_attestations(
+            &mut view,
+            epoch_view,
             &list,
             block_slot,
             proposer_index,
@@ -218,15 +256,20 @@ fn attestation() {
             &mut votes_sink,
             &mut active_scratch,
         )
-        .is_ok()
+        .is_ok();
+        s.state_id = view.commit(sid.epoch_idx, sid.longtail_idx);
+        ok
     });
 }
 
 #[test]
 fn deposit() {
     operations_handler("deposit", "deposit", true, move |s, op| {
-        let mut vm = view_mut(s);
-        state_transition::process_deposits(&mut vm, op).is_ok()
+        let sid = s.state_id;
+        let (mut view, _, _) = s.view();
+        let ok = state_transition::process_deposits(&mut view, op).is_ok();
+        s.state_id = view.commit(sid.epoch_idx, sid.longtail_idx);
+        ok
     });
 }
 
@@ -235,15 +278,23 @@ fn voluntary_exit() {
     operations_handler("voluntary_exit", "voluntary_exit", true, move |s, op| {
         let mut batch = SigBatch::new();
         {
-            let v = view_ref(s);
-            state_transition::collect_sigs_voluntary_exits(&v, op, &mut batch);
+            let (p, _, _) = s.view();
+            state_transition::collect_sigs_voluntary_exits(
+                p.imm,
+                &p.validators.reader(),
+                op,
+                &mut batch,
+            );
         }
         let cfg = silver_beacon_state_data::SpecConfig::mainnet();
         if !batch.verify_all() {
             return false;
         }
-        let mut vm = view_mut(s);
-        state_transition::process_voluntary_exits(&cfg, &mut vm, op).is_ok()
+        let sid = s.state_id;
+        let (mut view, _, _) = s.view();
+        let ok = state_transition::process_voluntary_exits(&mut view, &cfg, op).is_ok();
+        s.state_id = view.commit(sid.epoch_idx, sid.longtail_idx);
+        ok
     });
 }
 
@@ -252,8 +303,14 @@ fn bls_to_execution_change() {
     operations_handler("bls_to_execution_change", "address_change", true, move |s, op| {
         let mut batch = SigBatch::new();
         {
-            let v = view_ref(s);
-            if state_transition::collect_sigs_bls_to_execution_changes(&v, op, &mut batch).is_err()
+            let (p, _, _) = s.view();
+            if state_transition::collect_sigs_bls_to_execution_changes(
+                p.imm,
+                &p.validators.reader(),
+                op,
+                &mut batch,
+            )
+            .is_err()
             {
                 return false;
             }
@@ -261,24 +318,29 @@ fn bls_to_execution_change() {
         if !batch.verify_all() {
             return false;
         }
-        let mut vm = view_mut(s);
-        state_transition::process_bls_to_execution_changes(&mut vm, op).is_ok()
+        let sid = s.state_id;
+        let (mut p, _, _) = s.view();
+        let ok = state_transition::process_bls_to_execution_changes(&mut p.validators, op).is_ok();
+        s.state_id = p.commit(sid.epoch_idx, sid.longtail_idx);
+        ok
     });
 }
 
 #[test]
 fn sync_aggregate() {
     operations_handler("sync_aggregate", "sync_aggregate", true, move |s, op| {
-        let block_slot = s.delta.slot.slot.slot;
+        let block_slot = slot_of(s);
         let proposer_index;
         let mut active_scratch = Vec::new();
         let mut batch = SigBatch::new();
         {
-            let v = view_ref(s);
+            let sid = s.state_id;
+            let (p, epoch, longtail) = s.view();
+            let rv = p.read(epoch.view_opt(sid.epoch_idx), longtail.view_opt(sid.longtail_idx));
             proposer_index =
-                v.epoch_state().proposer_lookahead[(block_slot % SLOTS_PER_EPOCH) as usize] as u32;
+                rv.epoch.proposer_at((block_slot % SLOTS_PER_EPOCH) as usize).unwrap() as u32;
             state_transition::collect_sigs_sync_aggregate(
-                &v,
+                &rv,
                 op,
                 block_slot,
                 &mut active_scratch,
@@ -288,16 +350,24 @@ fn sync_aggregate() {
         if !batch.verify_all() {
             return false;
         }
-        let mut vm = view_mut(s);
-        state_transition::process_sync_aggregate(&mut vm, op, proposer_index).is_ok()
+        let sid = s.state_id;
+        let (mut view, _, longtail) = s.view();
+        let longtail_view = longtail.view_opt(sid.longtail_idx);
+        let ok =
+            state_transition::process_sync_aggregate(&mut view, longtail_view, op, proposer_index)
+                .is_ok();
+        s.state_id = view.commit(sid.epoch_idx, sid.longtail_idx);
+        ok
     });
 }
 
 #[test]
 fn deposit_request() {
     operations_handler("deposit_request", "deposit_request", false, |s, op| {
-        let mut vm = view_mut(s);
-        state_transition::process_deposit_requests(&mut vm, op);
+        let sid = s.state_id;
+        let (mut view, _, _) = s.view();
+        state_transition::process_deposit_requests(&mut view, op);
+        s.state_id = view.commit(sid.epoch_idx, sid.longtail_idx);
         true
     });
 }
@@ -306,8 +376,10 @@ fn deposit_request() {
 fn withdrawal_request() {
     let cfg = silver_beacon_state_data::SpecConfig::mainnet();
     operations_handler("withdrawal_request", "withdrawal_request", false, move |s, op| {
-        let mut vm = view_mut(s);
-        state_transition::process_withdrawal_requests(&cfg, &mut vm, op);
+        let sid = s.state_id;
+        let (mut view, _, _) = s.view();
+        state_transition::process_withdrawal_requests(&mut view, &cfg, op);
+        s.state_id = view.commit(sid.epoch_idx, sid.longtail_idx);
         true
     });
 }
@@ -316,8 +388,10 @@ fn withdrawal_request() {
 fn consolidation_request() {
     let cfg = silver_beacon_state_data::SpecConfig::mainnet();
     operations_handler("consolidation_request", "consolidation_request", false, move |s, op| {
-        let mut vm = view_mut(s);
-        state_transition::process_consolidation_requests(&cfg, &mut vm, op);
+        let sid = s.state_id;
+        let (mut view, _, _) = s.view();
+        state_transition::process_consolidation_requests(&mut view, &cfg, op);
+        s.state_id = view.commit(sid.epoch_idx, sid.longtail_idx);
         true
     });
 }
@@ -325,8 +399,11 @@ fn consolidation_request() {
 #[test]
 fn withdrawals() {
     operations_handler("withdrawals", "execution_payload", true, |s, op| {
-        let mut vm = view_mut(s);
-        state_transition::process_withdrawals(&mut vm, op).is_ok()
+        let sid = s.state_id;
+        let (mut view, _, _) = s.view();
+        let ok = state_transition::process_withdrawals(&mut view, op).is_ok();
+        s.state_id = view.commit(sid.epoch_idx, sid.longtail_idx);
+        ok
     });
 }
 
@@ -342,10 +419,13 @@ fn execution_payload() {
         let bls_off = off(384);
         if exec_off < bls_off && bls_off <= op.len() {
             let payload = &op[exec_off..bls_off];
-            let block_slot = s.delta.slot.slot.slot;
-            let mut vm = view_mut(s);
-            let _ = state_transition::process_execution_payload(&cfg, &mut vm, payload, block_slot);
-            let _ = state_transition::process_withdrawals(&mut vm, payload);
+            let block_slot = slot_of(s);
+            let sid = s.state_id;
+            let (mut view, _, _) = s.view();
+            let _ =
+                state_transition::process_execution_payload(&mut view, &cfg, payload, block_slot);
+            let _ = state_transition::process_withdrawals(&mut view, payload);
+            s.state_id = view.commit(sid.epoch_idx, sid.longtail_idx);
         }
         true
     });
@@ -365,14 +445,19 @@ fn block_header() {
         let body_off = u32::from_le_bytes(op[80..84].try_into().unwrap()) as usize;
         let body = if body_off <= op.len() { &op[body_off..] } else { &[] };
         let body_root = silver_beacon_state::ssz_hash::hash_tree_root_body(body);
-        let mut vm = view_mut(s);
-        state_transition::process_block_header(
-            &mut vm,
+        let sid = s.state_id;
+        let (mut view, epoch, _) = s.view();
+        let epoch_view = epoch.view_opt(sid.epoch_idx);
+        let ok = state_transition::process_block_header(
+            &mut view,
+            &epoch_view,
             slot,
             proposer_index,
             parent_root,
             body_root,
         )
-        .is_ok()
+        .is_ok();
+        s.state_id = view.commit(sid.epoch_idx, sid.longtail_idx);
+        ok
     });
 }

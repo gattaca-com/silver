@@ -593,7 +593,7 @@ mod tests {
 
         let rpc_producer = TCache::multi_producer("rpc_out", 1024 * 1024);
 
-        let beacon_state = BeaconStateOwner::new(BeaconState::empty()).reader();
+        let beacon_state = BeaconStateOwner::pre_bootstrap().reader();
 
         let mut tile = StorageTile::new(
             gossip_consumer,

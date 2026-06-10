@@ -134,7 +134,7 @@ impl PmBsHarness {
         let gossip_c = gossip_p.cache_ref().random_access("test", true).expect("gossip ra");
         let rpc_c = rpc_p.cache_ref().random_access("test", true).expect("rpc ra");
 
-        let state = BeaconStateOwner::new(BeaconState::empty());
+        let state = BeaconStateOwner::pre_bootstrap();
         let mut bs = BeaconStateTile::new(
             ticker,
             SpecConfig::mainnet(),

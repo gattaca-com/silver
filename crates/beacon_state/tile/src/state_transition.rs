@@ -2,9 +2,12 @@ use core::cmp::{max, min};
 
 use blst::min_pk::PublicKey;
 use silver_beacon_state_data::{
-    self as common, B256, EPOCHS_PER_SLASHINGS_VECTOR, Epoch, PENDING_CONSOLIDATIONS_LIMIT,
-    PENDING_PARTIAL_WITHDRAWALS_LIMIT, SLOTS_PER_EPOCH, SYNC_COMMITTEE_SIZE, Slot, SpecConfig,
-    StateDeltaView,
+    self as common, B256, BalancesWriteView, Current, EPOCHS_PER_SLASHINGS_VECTOR, Epoch,
+    EpochGroup, EpochId, EpochView, Immutable, LongtailGroup, LongtailId, LongtailView,
+    PENDING_CONSOLIDATIONS_LIMIT, PENDING_PARTIAL_WITHDRAWALS_LIMIT, ParticipationWriteView,
+    PendingView, PendingWriteView, Previous, SLOTS_PER_EPOCH, SYNC_COMMITTEE_SIZE, Slot,
+    SlotStateView, SlotStateWriteView, SpecConfig, StateId, StateReadView, StateWriterView,
+    ValidatorsView, ValidatorsWriteView, append_validator,
 };
 use silver_common::{
     metrics::timed,
@@ -54,7 +57,10 @@ const G2_POINT_AT_INFINITY: [u8; 96] = {
 #[allow(clippy::too_many_arguments)]
 pub fn apply_block(
     cfg: &SpecConfig,
-    view: &mut StateDeltaView,
+    view: &mut StateWriterView,
+    epoch: &mut EpochGroup,
+    longtail: &mut LongtailGroup,
+    parent: StateId,
     block_bytes: &[u8],
     block_slot: Slot,
     proposer_index: u32,
@@ -70,17 +76,26 @@ pub fn apply_block(
     state_hash_scratch: &mut ssz_hash::StateHashScratch,
     attestation_votes: &mut Vec<(u32, B256, Epoch)>,
     sig_batch: &mut SigBatch,
-) -> Result<()> {
+) -> Result<(Option<EpochId>, Option<LongtailId>)> {
     let wrap = |kind: BlockError| Error::invalid_block(block_state_root, kind);
 
-    check_slot_after_header(view, block_slot).map_err(wrap)?;
-    let head_slot = view.slot();
-    check_proposer_lookahead(view, block_slot, head_slot, proposer_index).map_err(wrap)?;
+    check_slot_after_header(&view.slot.reader(), block_slot).map_err(wrap)?;
+    let head_slot = view.slot.state().slot;
+    check_proposer_lookahead(
+        &epoch.view_opt(parent.epoch_idx),
+        block_slot,
+        head_slot,
+        proposer_index,
+    )
+    .map_err(wrap)?;
 
-    if block_slot > head_slot {
+    let (epoch_idx, longtail_idx) = if block_slot > head_slot {
         process_slots(
             cfg,
             view,
+            epoch,
+            longtail,
+            parent,
             block_slot,
             active_scratch,
             postponed_scratch,
@@ -88,16 +103,30 @@ pub fn apply_block(
             replace_u8_scratch,
             eff_scratch,
             state_hash_scratch,
-        );
-    }
-
-    process_block_header(view, block_slot, proposer_index as u64, parent_root, body_root)
-        .map_err(wrap)?;
+        )
+    } else {
+        (parent.epoch_idx, parent.longtail_idx)
+    };
 
     let body = if block_bytes.len() > 184 { &block_bytes[184..] } else { &[] };
+    // Resolve the boundary tiers AFTER process_slots (it may have rolled
+    // them). process_block can't change them, so the hash reuses these.
+    let epoch_view = epoch.view_opt(epoch_idx);
+    let longtail_view = longtail.view_opt(longtail_idx);
+    process_block_header(
+        view,
+        &epoch_view,
+        block_slot,
+        proposer_index as u64,
+        parent_root,
+        body_root,
+    )
+    .map_err(wrap)?;
     process_block_body(
         cfg,
         view,
+        &epoch_view,
+        &longtail_view,
         active_scratch,
         sig_batch,
         body,
@@ -108,14 +137,15 @@ pub fn apply_block(
         attestation_votes,
     )?;
 
-    let actual = ssz_hash::hash_tree_root_state(&*view, state_hash_scratch);
+    let rv = view.read(epoch_view, longtail_view);
+    let actual = ssz_hash::hash_tree_root_state(&rv, state_hash_scratch);
     if actual != block_state_root {
         return Err(wrap(BlockError::PostStateRootMismatch {
             expected: block_state_root,
             got: actual,
         }));
     }
-    Ok(())
+    Ok((epoch_idx, longtail_idx))
 }
 
 /// Test-only full-block apply: decompose, shuffle, STF, then check the
@@ -124,17 +154,20 @@ pub fn apply_block(
 #[allow(clippy::too_many_arguments)]
 pub fn apply_signed_block_debug(
     cfg: &SpecConfig,
-    view: &mut StateDeltaView,
+    view: &mut StateWriterView,
+    epoch: &mut EpochGroup,
+    longtail: &mut LongtailGroup,
+    parent: StateId,
     block_bytes: &[u8],
-) -> Result<()> {
+) -> Result<(Option<EpochId>, Option<LongtailId>)> {
     if block_bytes.len() < 184 {
         return Err(Error::invalid_block([0; 32], BlockError::TooShort {
             len: block_bytes.len(),
             min: 184,
         }));
     }
-    let head_slot = view.slot();
-    let head_block_header_slot = view.latest_block_header().slot;
+    let (head_slot, head_block_header_slot) =
+        (view.slot.state().slot, view.slot.state().latest_block_header.slot);
     let block_slot = SignedBeaconBlockView::slot(block_bytes);
     let proposer_index = SignedBeaconBlockView::proposer_index(block_bytes) as u32;
     let parent_root: B256 = *SignedBeaconBlockView::parent_root(block_bytes);
@@ -157,21 +190,37 @@ pub fn apply_signed_block_debug(
     let mut eff_scratch: Vec<u64> = Vec::new();
     let mut state_hash_scratch = ssz_hash::StateHashScratch::new();
 
-    check_proposer_lookahead(&*view, block_slot, head_slot, proposer_index).map_err(wrap)?;
+    check_proposer_lookahead(
+        &epoch.view_opt(parent.epoch_idx),
+        block_slot,
+        head_slot,
+        proposer_index,
+    )
+    .map_err(wrap)?;
 
-    let count = view.validators_count();
+    let count = view.validators.count();
     if proposer_index as usize >= count {
         return Err(wrap(BlockError::ProposerOutOfRange { idx: proposer_index as u64, count }));
     }
     let block_epoch = block_slot / SLOTS_PER_EPOCH;
-    if !verify_block_sig(&*view, block_bytes, &body_root, block_epoch, proposer_index) {
+    if !verify_block_sig(
+        view.imm,
+        &view.validators.reader(),
+        block_bytes,
+        &body_root,
+        block_epoch,
+        proposer_index,
+    ) {
         return Err(Error::InvalidBlockSig);
     }
 
-    if block_slot > head_slot {
+    let (epoch_idx, longtail_idx) = if block_slot > head_slot {
         process_slots(
             cfg,
             view,
+            epoch,
+            longtail,
+            parent,
             block_slot,
             &mut active_scratch,
             &mut postponed_scratch,
@@ -179,20 +228,36 @@ pub fn apply_signed_block_debug(
             &mut replace_u8_scratch,
             &mut eff_scratch,
             &mut state_hash_scratch,
-        );
-    }
-    process_block_header(view, block_slot, proposer_index as u64, parent_root, body_root)
-        .map_err(wrap)?;
+        )
+    } else {
+        (parent.epoch_idx, parent.longtail_idx)
+    };
+    // Resolve the boundary tiers AFTER process_slots (it may have rolled
+    // them). process_block can't change them, so the hash reuses these.
+    let epoch_view = epoch.view_opt(epoch_idx);
+    let longtail_view = longtail.view_opt(longtail_idx);
+    process_block_header(
+        view,
+        &epoch_view,
+        block_slot,
+        proposer_index as u64,
+        parent_root,
+        body_root,
+    )
+    .map_err(wrap)?;
 
     let mut curr = Vec::new();
     let mut prev = Vec::new();
-    let current_epoch = view.current_epoch();
-    let sref = ShufflingRef::build(&*view, current_epoch, &mut curr, &mut prev);
+    let current_epoch = view.slot.state().slot / SLOTS_PER_EPOCH;
+    let rv = view.read(epoch_view, longtail_view);
+    let sref = ShufflingRef::build(&rv, current_epoch, &mut curr, &mut prev);
     let mut votes_sink: Vec<(u32, B256, Epoch)> = Vec::new();
     let mut sig_batch = SigBatch::new();
     process_block_body(
         cfg,
         view,
+        &epoch_view,
+        &longtail_view,
         &mut active_scratch,
         &mut sig_batch,
         body,
@@ -203,18 +268,19 @@ pub fn apply_signed_block_debug(
         &mut votes_sink,
     )?;
 
-    let actual = ssz_hash::hash_tree_root_state(&*view, &mut state_hash_scratch);
+    let rv = view.read(epoch_view, longtail_view);
+    let actual = ssz_hash::hash_tree_root_state(&rv, &mut state_hash_scratch);
     if actual != state_root {
         return Err(wrap(BlockError::PostStateRootMismatch { expected: state_root, got: actual }));
     }
-    Ok(())
+    Ok((epoch_idx, longtail_idx))
 }
 
 fn check_slot_after_header(
-    view: &StateDeltaView,
+    slot: &SlotStateView,
     block_slot: Slot,
 ) -> std::result::Result<(), BlockError> {
-    let latest = view.latest_block_header().slot;
+    let latest = slot.state().latest_block_header.slot;
     if block_slot <= latest {
         Err(BlockError::SlotNotAfterHeader { slot: block_slot, latest })
     } else {
@@ -225,7 +291,7 @@ fn check_slot_after_header(
 /// Proposer must match `proposer_lookahead` (Fulu, valid for current_epoch
 /// and next_epoch — 64 slots from current_epoch start).
 fn check_proposer_lookahead(
-    view: &StateDeltaView,
+    epoch: &EpochView,
     block_slot: Slot,
     head_slot: Slot,
     proposer_index: u32,
@@ -236,10 +302,9 @@ fn check_proposer_lookahead(
         return Ok(());
     }
     let lookahead_idx = (block_slot - head_epoch * SLOTS_PER_EPOCH) as usize;
-    if lookahead_idx >= common::PROPOSER_LOOKAHEAD_SIZE {
+    let Some(expected) = epoch.proposer_at(lookahead_idx) else {
         return Ok(());
-    }
-    let expected = view.epoch_state().proposer_lookahead[lookahead_idx];
+    };
     if (proposer_index as u64) != expected {
         return Err(BlockError::ProposerLookaheadMismatch { got: proposer_index as u64, expected });
     }
@@ -247,25 +312,37 @@ fn check_proposer_lookahead(
 }
 
 fn verify_block_sig(
-    view: &StateDeltaView,
+    imm: &Immutable,
+    validators: &ValidatorsView,
     block_bytes: &[u8],
     body_root: &B256,
     block_epoch: Epoch,
     proposer_index: u32,
 ) -> bool {
-    let (fork_version, gvr) = view.fork_version_at(block_epoch);
-    let pk = view.validator_pubkey_decompressed(proposer_index as usize);
+    let (fork_version, gvr) = imm.fork_version_at(block_epoch);
+    let pk = validators.pubkey_decompressed(proposer_index as usize);
     bls::verify_block_signature(block_bytes, pk, body_root, fork_version, &gvr)
 }
 
-/// Advance state from `delta.slot.slot` to `target_slot`, processing empty
+/// Advance state from `view.slot`'s slot to `target_slot`, processing empty
 /// slots. Handles epoch transitions at boundaries (spec: process_epoch runs
-/// when `(state.slot + 1) % SLOTS_PER_EPOCH == 0`).
+/// when `(state.slot + 1) % SLOTS_PER_EPOCH == 0`). At the first boundary the
+/// fork's private epoch entry is rolled and the writer HELD for the rest of
+/// the advance — one ring entry per advance, mutated through the held writer
+/// at every later boundary; its commit at the end surfaces the id
+/// (publish-last). Takes the parent bundle's boundary-tier ids (not resolved
+/// views: a resolved view is a shared borrow of the group, and the boundary
+/// roll needs `&mut` of that same group — ids are the only currency that can
+/// cross a call that may still roll) and returns the updated pair for the
+/// caller's `commit`.
 #[allow(clippy::too_many_arguments)]
 #[timed]
 pub fn process_slots(
     cfg: &SpecConfig,
-    view: &mut StateDeltaView,
+    view: &mut StateWriterView,
+    epoch: &mut EpochGroup,
+    longtail: &mut LongtailGroup,
+    parent: StateId,
     target_slot: Slot,
     active_scratch: &mut Vec<u32>,
     postponed_scratch: &mut Vec<common::PendingDeposit>,
@@ -273,71 +350,113 @@ pub fn process_slots(
     replace_u8_scratch: &mut Vec<(u32, u8)>,
     eff_scratch: &mut Vec<u64>,
     state_hash_scratch: &mut ssz_hash::StateHashScratch,
-) {
-    while view.slot() < target_slot {
-        process_slot(view, state_hash_scratch);
-        if (view.slot() + 1).is_multiple_of(SLOTS_PER_EPOCH) {
-            epoch_transition::process_epoch(
-                cfg,
-                view,
-                active_scratch,
-                postponed_scratch,
-                replace_u64_scratch,
-                replace_u8_scratch,
-                eff_scratch,
-                state_hash_scratch,
-            );
+) -> (Option<EpochId>, Option<LongtailId>) {
+    let (epoch_idx, mut longtail_idx) = (parent.epoch_idx, parent.longtail_idx);
+    // Pre-boundary slots: epoch tier read straight off the group.
+    while view.slot.state().slot < target_slot {
+        let epoch_view = epoch.view_opt(epoch_idx);
+        process_slot(view, &epoch_view, longtail, longtail_idx, state_hash_scratch);
+        if (view.slot.state().slot + 1).is_multiple_of(SLOTS_PER_EPOCH) {
+            break;
         }
-        view.advance_slot();
+        view.slot.advance_slot();
+    }
+    if view.slot.state().slot >= target_slot {
+        return (epoch_idx, longtail_idx);
+    }
+
+    // First boundary: roll this fork's private epoch entry, derived from the
+    // inherited one (fresh off the base when no ancestor crossed a boundary).
+    let mut epoch_w = match epoch_idx {
+        Some(pe) => epoch.roll_from(pe),
+        None => epoch.roll_fresh(),
+    };
+
+    // Boundary-onward slots: epoch tier read through the held writer.
+    loop {
+        epoch_transition::process_epoch(
+            cfg,
+            view,
+            &mut epoch_w,
+            longtail,
+            &mut longtail_idx,
+            active_scratch,
+            postponed_scratch,
+            replace_u64_scratch,
+            replace_u8_scratch,
+            eff_scratch,
+            state_hash_scratch,
+        );
+        view.slot.advance_slot();
+        while view.slot.state().slot < target_slot {
+            process_slot(view, &epoch_w.reader(), longtail, longtail_idx, state_hash_scratch);
+            if (view.slot.state().slot + 1).is_multiple_of(SLOTS_PER_EPOCH) {
+                break;
+            }
+            view.slot.advance_slot();
+        }
+        if view.slot.state().slot >= target_slot {
+            return (Some(epoch_w.commit()), longtail_idx);
+        }
     }
 }
 
 pub fn process_slot(
-    view: &mut StateDeltaView,
+    view: &mut StateWriterView,
+    epoch: &EpochView,
+    longtail: &LongtailGroup,
+    longtail_idx: Option<LongtailId>,
     state_hash_scratch: &mut ssz_hash::StateHashScratch,
 ) {
-    let prev_state_root = ssz_hash::hash_tree_root_state(&*view, state_hash_scratch);
-    view.push_state_root(prev_state_root);
+    // Longtail resolved fresh each slot: a boundary `process_epoch` may roll
+    // the fork a new entry mid-`process_slots` (the caller threads the
+    // updated id). The epoch view comes from the caller (group resolution
+    // before the first boundary, the held boundary writer's reader after).
+    let rv = view.read(*epoch, longtail.view_opt(longtail_idx));
+    let prev_state_root = ssz_hash::hash_tree_root_state(&rv, state_hash_scratch);
+    let slot = &mut view.slot;
+    slot.push_state_root(prev_state_root);
 
-    view.fill_latest_block_header_state_root(prev_state_root);
-    let header = view.latest_block_header();
+    slot.fill_latest_block_header_state_root(prev_state_root);
+    let header = slot.state().latest_block_header;
     let block_root = hash_tree_root_block_header(&header);
-    view.push_block_root(block_root);
+    slot.push_block_root(block_root);
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn process_block_header(
-    view: &mut StateDeltaView,
+    view: &mut StateWriterView,
+    epoch: &EpochView,
     block_slot: Slot,
     proposer_index: u64,
     parent_root: B256,
     body_root: B256,
 ) -> Result<(), BlockError> {
-    let current_slot = view.slot();
+    let current_slot = view.slot.state().slot;
     if block_slot != current_slot {
         return Err(BlockError::SlotStateMismatch { block: block_slot, state: current_slot });
     }
-    let lbh = view.latest_block_header();
+    let lbh = view.slot.state().latest_block_header;
     if block_slot <= lbh.slot {
         return Err(BlockError::SlotNotAfterHeader { slot: block_slot, latest: lbh.slot });
     }
-    let count = view.validators_count();
+    let count = view.validators.count();
     if proposer_index as usize >= count {
         return Err(BlockError::ProposerOutOfRange { idx: proposer_index, count });
     }
 
-    let expected_proposer =
-        view.epoch_state().proposer_lookahead[(block_slot % SLOTS_PER_EPOCH) as usize];
+    let expected_proposer = epoch
+        .proposer_at((block_slot % SLOTS_PER_EPOCH) as usize)
+        .expect("slot-in-epoch is within the lookahead window");
     if proposer_index != expected_proposer {
         return Err(BlockError::ProposerLookaheadMismatch {
             got: proposer_index,
             expected: expected_proposer,
         });
     }
-    if view.is_validator_slashed(proposer_index as usize) {
+    if view.validators.is_slashed(proposer_index as usize) {
         return Err(BlockError::ProposerSlashed {
             idx: proposer_index,
-            pubkey: view.validator_pubkey(proposer_index as usize),
+            pubkey: *view.validators.pubkey(proposer_index as usize),
         });
     }
 
@@ -346,13 +465,13 @@ pub fn process_block_header(
         return Err(BlockError::ParentRootMismatch { expected: expected_parent, got: parent_root });
     }
 
-    view.set_latest_block_header(common::BeaconBlockHeader {
+    view.slot.state_mut().latest_block_header = common::BeaconBlockHeader {
         slot: block_slot,
         proposer_index,
         parent_root,
         state_root: [0u8; 32],
         body_root,
-    });
+    };
 
     Ok(())
 }
@@ -372,17 +491,19 @@ impl<'a> ShufflingRef<'a> {
     /// Populate `curr_buf`/`prev_buf` with the current+previous epoch's
     /// shuffled active-index lists, then bind them into a `ShufflingRef`.
     pub fn build(
-        view: &StateDeltaView,
+        rv: &StateReadView,
         current_epoch: Epoch,
         curr_buf: &'a mut Vec<u32>,
         prev_buf: &'a mut Vec<u32>,
     ) -> Self {
+        let (epoch, slot) = (&rv.epoch, &rv.slot);
         let previous_epoch = current_epoch.saturating_sub(1);
-        let curr_seed = shuffling::get_seed_from_state(view, current_epoch, DOMAIN_BEACON_ATTESTER);
+        let curr_seed =
+            shuffling::get_seed_from_state(epoch, slot, current_epoch, DOMAIN_BEACON_ATTESTER);
         let prev_seed =
-            shuffling::get_seed_from_state(view, previous_epoch, DOMAIN_BEACON_ATTESTER);
-        shuffling::get_active_validator_indices_into(view, current_epoch, curr_buf);
-        shuffling::get_active_validator_indices_into(view, previous_epoch, prev_buf);
+            shuffling::get_seed_from_state(epoch, slot, previous_epoch, DOMAIN_BEACON_ATTESTER);
+        shuffling::get_active_validator_indices_into(&rv.validators, current_epoch, curr_buf);
+        shuffling::get_active_validator_indices_into(&rv.validators, previous_epoch, prev_buf);
         shuffling::shuffle_list(curr_buf, &curr_seed);
         shuffling::shuffle_list(prev_buf, &prev_seed);
         let curr_committees_per_slot = shuffling::committees_per_slot(curr_buf.len());
@@ -467,7 +588,9 @@ impl<'a> BodyOffsets<'a> {
 #[allow(clippy::too_many_arguments)]
 pub fn process_block_body(
     cfg: &SpecConfig,
-    view: &mut StateDeltaView,
+    view: &mut StateWriterView,
+    epoch: &EpochView,
+    longtail: &LongtailView,
     active_scratch: &mut Vec<u32>,
     sig_batch: &mut SigBatch,
     body: &[u8],
@@ -482,14 +605,16 @@ pub fn process_block_body(
     let offsets = BodyOffsets::new(body).ok_or_else(|| {
         wrap(BlockError::BodyTooShort { len: body.len(), min: BEACON_BLOCK_BODY_FIXED })
     })?;
-    let count = view.validators_count();
+    let count = view.validators.count();
     if (proposer_index as usize) >= count {
         return Err(wrap(BlockError::ProposerOutOfRange { idx: proposer_index as u64, count }));
     }
 
     sig_batch.clear();
+    // Pass 1 is read-only: hand it the read-only sibling over the same fork.
+    let rv = view.read(*epoch, *longtail);
     collect_sigs_block_body(
-        &*view,
+        &rv,
         active_scratch,
         sig_batch,
         &offsets,
@@ -504,6 +629,8 @@ pub fn process_block_body(
     apply_block_body_pass2(
         cfg,
         view,
+        *epoch,
+        *longtail,
         active_scratch,
         &offsets,
         block_slot,
@@ -516,7 +643,9 @@ pub fn process_block_body(
 #[allow(clippy::too_many_arguments)]
 fn apply_block_body_pass2(
     cfg: &SpecConfig,
-    view: &mut StateDeltaView,
+    view: &mut StateWriterView,
+    epoch: EpochView,
+    longtail: LongtailView,
     active_scratch: &mut Vec<u32>,
     offsets: &BodyOffsets<'_>,
     block_slot: Slot,
@@ -527,24 +656,25 @@ fn apply_block_body_pass2(
     let body = offsets.body;
     let payload = offsets.payload();
 
-    process_withdrawals(view, payload)?;
-    process_execution_payload(cfg, view, payload, block_slot)?;
-    process_randao(view, body);
-    process_eth1_data(view, body);
+    process_withdrawals(&mut *view, payload)?;
+    process_execution_payload(&mut *view, cfg, payload, block_slot)?;
+    process_randao(&mut view.slot, body);
+    process_eth1_data(&mut view.slot, body);
 
     if let Some(section) =
         offsets.try_slice(offsets.proposer_slashings_off, offsets.attester_slashings_off)
     {
-        process_proposer_slashings(cfg, view, section)?;
+        process_proposer_slashings(&mut *view, epoch, cfg, section)?;
     }
     if let Some(section) =
         offsets.try_slice(offsets.attester_slashings_off, offsets.attestations_off)
     {
-        process_attester_slashings(cfg, view, section, active_scratch)?;
+        process_attester_slashings(&mut *view, epoch, cfg, section, active_scratch)?;
     }
     if let Some(section) = offsets.try_slice(offsets.attestations_off, offsets.deposits_off) {
         process_attestations(
-            view,
+            &mut *view,
+            epoch,
             section,
             block_slot,
             proposer_index,
@@ -554,25 +684,25 @@ fn apply_block_body_pass2(
         )?;
     }
     if let Some(section) = offsets.try_slice(offsets.deposits_off, offsets.voluntary_exits_off) {
-        process_deposits(view, section)?;
+        process_deposits(&mut *view, section)?;
     }
     if let Some(section) = offsets.try_slice(offsets.voluntary_exits_off, offsets.exec_off) {
-        process_voluntary_exits(cfg, view, section)?;
+        process_voluntary_exits(&mut *view, cfg, section)?;
     }
     if let Some(section) = offsets.try_slice(offsets.bls_changes_off, offsets.blob_off) {
-        process_bls_to_execution_changes(view, section)?;
+        process_bls_to_execution_changes(&mut view.validators, section)?;
     }
     if offsets.exec_requests_off <= body.len() {
-        process_execution_requests(cfg, view, &body[offsets.exec_requests_off..]);
+        process_execution_requests(&mut *view, cfg, &body[offsets.exec_requests_off..]);
     }
-    process_sync_aggregate(view, &body[220..380], proposer_index)?;
+    process_sync_aggregate(&mut *view, longtail, &body[220..380], proposer_index)?;
     Ok(())
 }
 
 #[timed]
 #[allow(clippy::too_many_arguments)]
 fn collect_sigs_block_body(
-    view: &StateDeltaView,
+    rv: &StateReadView,
     active_scratch: &mut Vec<u32>,
     sig_batch: &mut SigBatch,
     offsets: &BodyOffsets<'_>,
@@ -581,15 +711,18 @@ fn collect_sigs_block_body(
     shuffling: Option<&ShufflingRef<'_>>,
 ) -> Result<()> {
     let body = offsets.body;
+    let imm = rv.imm;
+    let validators = rv.validators;
 
-    let proposer_pubkey = view.validator_pubkey_decompressed(proposer_index as usize);
-    collect_sigs_randao(view, body, block_slot, proposer_pubkey, sig_batch);
+    let proposer_pubkey = validators.pubkey_decompressed(proposer_index as usize);
+    collect_sigs_randao(imm, body, block_slot, proposer_pubkey, sig_batch);
 
     if offsets.proposer_slashings_off <= offsets.attester_slashings_off &&
         offsets.attester_slashings_off <= body.len()
     {
         collect_sigs_proposer_slashings(
-            view,
+            imm,
+            &validators,
             offsets.slice(offsets.proposer_slashings_off, offsets.attester_slashings_off),
             sig_batch,
         )?;
@@ -598,7 +731,8 @@ fn collect_sigs_block_body(
         offsets.attestations_off <= body.len()
     {
         collect_sigs_attester_slashings(
-            view,
+            imm,
+            &validators,
             offsets.slice(offsets.attester_slashings_off, offsets.attestations_off),
             active_scratch,
             sig_batch,
@@ -606,7 +740,8 @@ fn collect_sigs_block_body(
     }
     if offsets.attestations_off <= offsets.deposits_off && offsets.deposits_off <= body.len() {
         collect_sigs_attestations(
-            view,
+            imm,
+            &validators,
             offsets.slice(offsets.attestations_off, offsets.deposits_off),
             block_slot,
             shuffling,
@@ -617,24 +752,26 @@ fn collect_sigs_block_body(
     // deposits skipped — these are verified inline in `apply_deposit`.
     if offsets.voluntary_exits_off <= offsets.exec_off && offsets.exec_off <= body.len() {
         collect_sigs_voluntary_exits(
-            view,
+            imm,
+            &validators,
             offsets.slice(offsets.voluntary_exits_off, offsets.exec_off),
             sig_batch,
         );
     }
     if offsets.bls_changes_off <= offsets.blob_off && offsets.blob_off <= body.len() {
         collect_sigs_bls_to_execution_changes(
-            view,
+            imm,
+            &validators,
             offsets.slice(offsets.bls_changes_off, offsets.blob_off),
             sig_batch,
         )?;
     }
-    collect_sigs_sync_aggregate(view, &body[220..380], block_slot, active_scratch, sig_batch);
+    collect_sigs_sync_aggregate(&rv, &body[220..380], block_slot, active_scratch, sig_batch);
     Ok(())
 }
 
 pub fn collect_sigs_randao(
-    view: &StateDeltaView,
+    imm: &Immutable,
     body: &[u8],
     block_slot: Slot,
     proposer_pubkey: &PublicKey,
@@ -645,7 +782,7 @@ pub fn collect_sigs_randao(
     }
     let reveal: &[u8; 96] = body[0..96].try_into().unwrap();
     let block_epoch = block_slot / SLOTS_PER_EPOCH;
-    let (fork_version, gvr) = view.fork_version_at(block_epoch);
+    let (fork_version, gvr) = imm.fork_version_at(block_epoch);
     let mut epoch_chunk = [0u8; 32];
     epoch_chunk[..8].copy_from_slice(&block_epoch.to_le_bytes());
     let domain = bls::compute_domain(bls::DOMAIN_RANDAO, fork_version, &gvr);
@@ -655,13 +792,16 @@ pub fn collect_sigs_randao(
 
 /// Pass 2 — XOR reveal hash into the mix accumulator. BLS already verified
 /// in pass 1; if it failed, we never reach here.
-fn process_randao(view: &mut StateDeltaView, body: &[u8]) {
+fn process_randao(slot: &mut SlotStateWriteView, body: &[u8]) {
     let reveal: &[u8; 96] = body[0..96].try_into().unwrap();
     let reveal_hash = ssz_hash::sha256(reveal);
-    view.xor_into_randao_mix(&reveal_hash);
+    let mix = &mut slot.state_mut().randao_mix_current;
+    for (b, &r) in mix.iter_mut().zip(reveal_hash.iter()) {
+        *b ^= r;
+    }
 }
 
-fn process_eth1_data(view: &mut StateDeltaView, body: &[u8]) {
+fn process_eth1_data(slot: &mut SlotStateWriteView, body: &[u8]) {
     // BeaconBlockBody.eth1_data at body[96..168].
     let eth1: &[u8; 72] = body[96..168].try_into().unwrap();
     let deposit_root: B256 = *Eth1DataView::deposit_root(eth1);
@@ -669,10 +809,16 @@ fn process_eth1_data(view: &mut StateDeltaView, body: &[u8]) {
     let block_hash: B256 = *Eth1DataView::block_hash(eth1);
 
     let vote = common::Eth1Data { deposit_root, deposit_count, block_hash };
-    view.push_eth1_vote(vote);
+    // One vote per slot, reset each voting period; the list never exceeds the
+    // period length (`process_eth1_data_reset`).
+    debug_assert!(
+        slot.state().eth1_votes.len() < common::MAX_ETH1_VOTES,
+        "eth1_votes exceeded MAX_ETH1_VOTES"
+    );
+    slot.state_mut().eth1_votes.push(vote);
 
     let mut count = 0usize;
-    for v in view.eth1_votes() {
+    for v in slot.state().eth1_votes.as_slice() {
         if v.deposit_root == deposit_root &&
             v.deposit_count == deposit_count &&
             v.block_hash == block_hash
@@ -682,13 +828,14 @@ fn process_eth1_data(view: &mut StateDeltaView, body: &[u8]) {
     }
     let slots_per_eth1_voting_period = EPOCHS_PER_ETH1_VOTING_PERIOD * SLOTS_PER_EPOCH;
     if count * 2 > slots_per_eth1_voting_period as usize {
-        view.set_eth1_data(vote);
+        slot.state_mut().eth1_data = vote;
     }
 }
 
 #[allow(clippy::too_many_arguments)]
 pub fn collect_sigs_attestations(
-    view: &StateDeltaView,
+    imm: &Immutable,
+    validators: &ValidatorsView,
     attestation_data: &[u8],
     block_slot: Slot,
     shuffling: Option<&ShufflingRef<'_>>,
@@ -724,7 +871,8 @@ pub fn collect_sigs_attestations(
         }
         let att = &attestation_data[att_start..att_end];
         collect_sigs_single_attestation(
-            view,
+            imm,
+            validators,
             att,
             current_epoch,
             shuffling,
@@ -737,14 +885,15 @@ pub fn collect_sigs_attestations(
 
 #[allow(clippy::too_many_arguments)]
 pub fn collect_sigs_single_attestation(
-    view: &StateDeltaView,
+    imm: &Immutable,
+    validators: &ValidatorsView,
     att: &[u8],
     current_epoch: Epoch,
     shuffling: Option<&ShufflingRef<'_>>,
     active_scratch: &mut Vec<u32>,
     sig_batch: &mut SigBatch,
 ) -> Result<(), AttestationError> {
-    let (fork_epoch, prev_v, curr_v, gvr) = view.fork_descriptor();
+    let (fork_epoch, prev_v, curr_v, gvr) = imm.fork_descriptor();
     let data = AttestationView::data(att);
     let att_slot = AttestationDataView::slot(data);
     let target_epoch = AttestationDataView::target_epoch(data);
@@ -766,7 +915,7 @@ pub fn collect_sigs_single_attestation(
 
     active_scratch.clear();
     let mut agg_offset = 0usize;
-    let count = view.validators_count();
+    let count = validators.count();
     for ci in 0..committees_per_slot {
         if committee_bits & (1u64 << ci) == 0 {
             continue;
@@ -795,7 +944,7 @@ pub fn collect_sigs_single_attestation(
     let domain = bls::compute_domain(bls::DOMAIN_BEACON_ATTESTER, fork_version, &gvr);
     let signing_root = bls::compute_signing_root(&object_root, &domain);
     sig_batch.push_aggregate(
-        active_scratch.iter().map(|&vi| view.validator_pubkey_decompressed(vi as usize)),
+        active_scratch.iter().map(|&vi| validators.pubkey_decompressed(vi as usize)),
         sig,
         signing_root,
     );
@@ -807,7 +956,8 @@ pub fn collect_sigs_single_attestation(
 #[timed]
 #[allow(clippy::too_many_arguments)]
 pub fn process_attestations(
-    view: &mut StateDeltaView,
+    view: &mut StateWriterView,
+    epoch: EpochView,
     attestation_data: &[u8],
     block_slot: Slot,
     proposer_index: u32,
@@ -815,6 +965,11 @@ pub fn process_attestations(
     votes_sink: &mut Vec<(u32, B256, Epoch)>,
     active_scratch: &mut Vec<u32>,
 ) -> Result<(), AttestationError> {
+    let slot = &view.slot;
+    let validators = &view.validators;
+    let balances = &mut view.balances;
+    let previous_participation = &mut view.previous_participation;
+    let current_participation = &mut view.current_participation;
     if attestation_data.is_empty() {
         return Ok(());
     }
@@ -828,7 +983,7 @@ pub fn process_attestations(
     let current_epoch = block_slot / SLOTS_PER_EPOCH;
     let previous_epoch = current_epoch.saturating_sub(1);
 
-    let total_active = total_active_balance(&*view, current_epoch);
+    let total_active = total_active_balance(&validators.reader(), current_epoch);
     for i in 0..count {
         let att_start =
             u32::from_le_bytes(attestation_data[i * 4..(i + 1) * 4].try_into().unwrap()) as usize;
@@ -847,7 +1002,11 @@ pub fn process_attestations(
         }
         let att = &attestation_data[att_start..att_end];
         let reward = process_single_attestation(
-            view,
+            slot,
+            validators,
+            previous_participation,
+            current_participation,
+            epoch,
             att,
             current_epoch,
             previous_epoch,
@@ -856,14 +1015,14 @@ pub fn process_attestations(
             votes_sink,
             active_scratch,
         )?;
-        if reward > 0 && (proposer_index as usize) < view.validators_count() {
+        if reward > 0 && (proposer_index as usize) < validators.count() {
             const PROPOSER_WEIGHT: u64 = 8;
             const WEIGHT_DENOMINATOR: u64 = 64;
             let proposer_reward_denominator =
                 (WEIGHT_DENOMINATOR - PROPOSER_WEIGHT) * WEIGHT_DENOMINATOR / PROPOSER_WEIGHT;
             let proposer_reward = reward / proposer_reward_denominator;
-            let balance = view.validator_balance(proposer_index as usize);
-            view.set_balance(proposer_index, balance.saturating_add(proposer_reward));
+            let balance = balances.get(proposer_index as usize);
+            balances.set(proposer_index, balance.saturating_add(proposer_reward));
         }
     }
     Ok(())
@@ -873,8 +1032,13 @@ pub fn process_attestations(
 /// participation flag updates. Returns the proposer reward numerator on
 /// success.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 pub fn process_single_attestation(
-    view: &mut StateDeltaView,
+    slot: &SlotStateWriteView,
+    validators: &ValidatorsWriteView,
+    previous_participation: &mut ParticipationWriteView<Previous>,
+    current_participation: &mut ParticipationWriteView<Current>,
+    epoch: EpochView,
     att: &[u8],
     current_epoch: Epoch,
     previous_epoch: Epoch,
@@ -883,17 +1047,24 @@ pub fn process_single_attestation(
     votes_sink: &mut Vec<(u32, B256, Epoch)>,
     active_scratch: &mut Vec<u32>,
 ) -> Result<u64, AttestationError> {
-    let current_slot = view.slot();
+    let current_slot = slot.state().slot;
     validate::validate_attestation_data(att, current_slot, current_epoch, previous_epoch)?;
 
     let parsed = ParsedAttestationData::from(att);
     let is_current =
         check_attestation_target_window(parsed.target_epoch, current_epoch, previous_epoch)?;
-    check_attestation_source(view, is_current, parsed.source_epoch, parsed.source_root)?;
+    check_attestation_source(epoch, is_current, parsed.source_epoch, parsed.source_root)?;
 
-    let flag_weights = compute_attestation_flags(view, &parsed, current_slot, is_current);
+    let flag_weights = compute_attestation_flags(slot, &parsed, current_slot, is_current);
 
-    collect_attestation_participants(view, att, shuffling, &parsed, is_current, active_scratch)?;
+    collect_attestation_participants(
+        &validators.reader(),
+        att,
+        shuffling,
+        &parsed,
+        is_current,
+        active_scratch,
+    )?;
 
     for &validator_idx in active_scratch.iter() {
         votes_sink.push((validator_idx, parsed.beacon_block_root, parsed.target_epoch));
@@ -903,7 +1074,9 @@ pub fn process_single_attestation(
         return Ok(0);
     }
     Ok(apply_attestation_participation_flags(
-        view,
+        validators,
+        previous_participation,
+        current_participation,
         active_scratch,
         total_active,
         is_current,
@@ -949,12 +1122,12 @@ fn check_attestation_target_window(
 }
 
 fn check_attestation_source(
-    view: &StateDeltaView,
+    epoch: EpochView,
     is_current: bool,
     source_epoch: Epoch,
     source_root: B256,
 ) -> Result<(), AttestationError> {
-    let es = view.epoch_state();
+    let es = epoch.state();
     let justified =
         if is_current { es.current_justified_checkpoint } else { es.previous_justified_checkpoint };
     if source_epoch != justified.epoch || source_root != justified.root {
@@ -969,14 +1142,14 @@ fn check_attestation_source(
 }
 
 fn compute_attestation_flags(
-    view: &StateDeltaView,
+    slot: &SlotStateWriteView,
     parsed: &ParsedAttestationData,
     current_slot: Slot,
     _is_current: bool,
 ) -> [bool; 3] {
-    let expected_target_root = view.block_root_at_slot(parsed.target_epoch * SLOTS_PER_EPOCH);
+    let expected_target_root = slot.block_root_at_slot(parsed.target_epoch * SLOTS_PER_EPOCH);
     let is_matching_target = parsed.target_root == expected_target_root;
-    let expected_head_root = view.block_root_at_slot(parsed.att_slot);
+    let expected_head_root = slot.block_root_at_slot(parsed.att_slot);
     let is_matching_head = is_matching_target && parsed.beacon_block_root == expected_head_root;
     let inclusion_delay = current_slot.saturating_sub(parsed.att_slot);
 
@@ -984,7 +1157,7 @@ fn compute_attestation_flags(
 }
 
 fn collect_attestation_participants(
-    view: &StateDeltaView,
+    validators: &ValidatorsView,
     att: &[u8],
     shuffling: Option<&ShufflingRef<'_>>,
     parsed: &ParsedAttestationData,
@@ -1014,7 +1187,7 @@ fn collect_attestation_participants(
     }
 
     active_scratch.clear();
-    let count = view.validators_count();
+    let count = validators.count();
     let mut agg_offset = 0usize;
     for ci in 0..committees_per_slot {
         if committee_bits & (1u64 << ci) == 0 {
@@ -1050,7 +1223,9 @@ fn collect_attestation_participants(
 }
 
 fn apply_attestation_participation_flags(
-    view: &mut StateDeltaView,
+    validators: &ValidatorsWriteView,
+    previous_participation: &mut ParticipationWriteView<Previous>,
+    current_participation: &mut ParticipationWriteView<Current>,
     active_scratch: &[u32],
     total_active: u64,
     is_current: bool,
@@ -1068,12 +1243,12 @@ fn apply_attestation_participation_flags(
     let mut updates: Vec<(u32, u8)> = Vec::with_capacity(active_scratch.len());
     for &vi in active_scratch {
         let prev_p = if is_current {
-            view.current_epoch_participation(vi as usize)
+            current_participation.get(vi as usize)
         } else {
-            view.previous_epoch_participation(vi as usize)
+            previous_participation.get(vi as usize)
         };
         let mut p = prev_p;
-        let effective_balance = view.validator_effective_balance(vi as usize);
+        let effective_balance = validators.effective_balance(vi as usize);
         let base_reward = (effective_balance / 1_000_000_000) * base_reward_per_increment;
         for (fi, &weight) in PARTICIPATION_WEIGHTS.iter().enumerate() {
             let flag_bit = 1u8 << fi;
@@ -1088,9 +1263,9 @@ fn apply_attestation_participation_flags(
     }
     updates.sort_unstable_by_key(|(idx, _)| *idx);
     if is_current {
-        view.merge_current_participation(&updates);
+        current_participation.merge(&updates);
     } else {
-        view.merge_previous_participation(&updates);
+        previous_participation.merge(&updates);
     }
     proposer_reward_numerator
 }
@@ -1098,15 +1273,23 @@ fn apply_attestation_participation_flags(
 /// Validate header sanity then cache the execution payload header.
 /// No BLS sigs; everything happens in pass 2.
 pub fn process_execution_payload(
+    view: &mut StateWriterView,
     cfg: &SpecConfig,
-    view: &mut StateDeltaView,
     payload_bytes: &[u8],
     block_slot: Slot,
 ) -> Result<(), ExecutionPayloadError> {
+    let imm = view.imm;
+    let slot = &mut view.slot;
     if payload_bytes.len() < 528 {
         return Err(ExecutionPayloadError::TooShort { len: payload_bytes.len(), min: 528 });
     }
-    validate::validate_execution_payload(cfg, &*view, payload_bytes, block_slot)?;
+    validate::validate_execution_payload(
+        cfg,
+        &slot.reader(),
+        imm.genesis_time,
+        payload_bytes,
+        block_slot,
+    )?;
 
     let extra_data_off = ExecutionPayloadView::extra_data_offset(payload_bytes) as usize;
     let transactions_off = ExecutionPayloadView::transactions_offset(payload_bytes) as usize;
@@ -1121,7 +1304,7 @@ pub fn process_execution_payload(
             .copy_from_slice(&payload_bytes[extra_data_off..extra_data_off + extra_data_len]);
     }
 
-    view.set_latest_execution_payload_header(common::ExecutionPayloadHeader {
+    slot.state_mut().latest_execution_payload_header = common::ExecutionPayloadHeader {
         parent_hash: *ExecutionPayloadView::parent_hash(payload_bytes),
         fee_recipient: *ExecutionPayloadView::fee_recipient(payload_bytes),
         state_root: *ExecutionPayloadView::state_root(payload_bytes),
@@ -1140,7 +1323,7 @@ pub fn process_execution_payload(
         withdrawals_root: ssz_hash::hash_withdrawals_from_payload(payload_bytes),
         blob_gas_used: ExecutionPayloadView::blob_gas_used(payload_bytes),
         excess_blob_gas: ExecutionPayloadView::excess_blob_gas(payload_bytes),
-    });
+    };
     Ok(())
 }
 
@@ -1191,9 +1374,13 @@ fn payload_record(withdrawals_data: &[u8], i: usize) -> WithdrawalRecord {
 /// Withdrawal SSZ: index(8) + validator_index(8) + address(20) + amount(8) = 44
 /// bytes.
 pub fn process_withdrawals(
-    view: &mut StateDeltaView,
+    view: &mut StateWriterView,
     payload_bytes: &[u8],
 ) -> Result<(), WithdrawalsError> {
+    let slot = &mut view.slot;
+    let validators = &view.validators;
+    let balances = &mut view.balances;
+    let pending = &mut view.pending;
     if payload_bytes.len() < 528 {
         return Err(WithdrawalsError::PayloadTooShort { len: payload_bytes.len(), min: 528 });
     }
@@ -1214,14 +1401,24 @@ pub fn process_withdrawals(
         });
     }
 
-    let count = view.validators_count();
+    let count = validators.count();
     let n_validators = count as u64;
-    let current_epoch = view.current_epoch();
-    let mut cursor = WithdrawalsCursor::new(view.next_withdrawal_index());
+    let current_epoch = slot.state().slot / SLOTS_PER_EPOCH;
+    let mut cursor = WithdrawalsCursor::new(slot.state().next_withdrawal_index);
 
-    process_partial_withdrawals(view, withdrawals_data, current_epoch, count, &mut cursor)?;
+    process_partial_withdrawals(
+        validators,
+        balances,
+        pending,
+        withdrawals_data,
+        current_epoch,
+        count,
+        &mut cursor,
+    )?;
     process_sweep_withdrawals(
-        view,
+        slot,
+        validators,
+        balances,
         withdrawals_data,
         current_epoch,
         count,
@@ -1236,22 +1433,34 @@ pub fn process_withdrawals(
         });
     }
 
-    apply_withdrawals(view, withdrawals_data, payload_count, count, n_validators, &cursor);
+    apply_withdrawals(
+        slot,
+        balances,
+        pending,
+        withdrawals_data,
+        payload_count,
+        count,
+        n_validators,
+        &cursor,
+    );
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn process_partial_withdrawals(
-    view: &mut StateDeltaView,
+    validators: &ValidatorsWriteView,
+    balances: &BalancesWriteView,
+    pending: &PendingWriteView,
     withdrawals_data: &[u8],
     current_epoch: u64,
     count: usize,
     cursor: &mut WithdrawalsCursor,
 ) -> Result<(), WithdrawalsError> {
     let partial_limit = min(MAX_PENDING_PARTIALS_PER_SWEEP, MAX_WITHDRAWALS_PER_PAYLOAD - 1);
-    let ppw_len = view.pending_partial_withdrawals_len();
+    let ppw_len = pending.pending_partial_withdrawals_len();
 
     for qi in 0..ppw_len {
-        let pw = view.pending_partial_withdrawal(qi);
+        let pw = *pending.pending_partial_withdrawal(qi);
         if pw.withdrawable_epoch > current_epoch || cursor.partials_emitted >= partial_limit {
             break;
         }
@@ -1259,13 +1468,13 @@ fn process_partial_withdrawals(
         if (vi as usize) < count {
             let total_withdrawn =
                 sum_selected_for(&cursor.selected[..cursor.partials_emitted], pw.index);
-            let balance = view.validator_balance(vi as usize).saturating_sub(total_withdrawn);
-            let eligible = view.validator_exit_epoch(vi as usize) == u64::MAX &&
-                view.validator_effective_balance(vi as usize) >= MIN_ACTIVATION_BALANCE &&
+            let balance = balances.get(vi as usize).saturating_sub(total_withdrawn);
+            let eligible = validators.exit_epoch(vi as usize) == u64::MAX &&
+                validators.effective_balance(vi as usize) >= MIN_ACTIVATION_BALANCE &&
                 balance > MIN_ACTIVATION_BALANCE;
             if eligible {
                 let amount = min(balance - MIN_ACTIVATION_BALANCE, pw.amount);
-                let creds = view.validator_credentials(vi as usize);
+                let creds = validators.credentials(vi as usize);
                 let expected = WithdrawalRecord {
                     index: cursor.withdrawal_index,
                     validator_index: pw.index,
@@ -1292,8 +1501,11 @@ fn process_partial_withdrawals(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn process_sweep_withdrawals(
-    view: &mut StateDeltaView,
+    slot: &SlotStateWriteView,
+    validators: &ValidatorsWriteView,
+    balances: &BalancesWriteView,
     withdrawals_data: &[u8],
     current_epoch: u64,
     count: usize,
@@ -1303,13 +1515,20 @@ fn process_sweep_withdrawals(
     if n_validators == 0 {
         return Ok(());
     }
-    let mut sweep_vi = view.next_withdrawal_validator_index();
+    let mut sweep_vi = slot.state().next_withdrawal_validator_index;
     let bound = min(n_validators, MAX_VALIDATORS_PER_WITHDRAWALS_SWEEP);
 
     for _ in 0..bound {
         let vi = sweep_vi as u32;
         if (vi as usize) < count {
-            sweep_one_validator(view, withdrawals_data, sweep_vi, current_epoch, cursor)?;
+            sweep_one_validator(
+                validators,
+                balances,
+                withdrawals_data,
+                sweep_vi,
+                current_epoch,
+                cursor,
+            )?;
         }
         if cursor.expected_count >= MAX_WITHDRAWALS_PER_PAYLOAD {
             break;
@@ -1320,24 +1539,25 @@ fn process_sweep_withdrawals(
 }
 
 fn sweep_one_validator(
-    view: &StateDeltaView,
+    validators: &ValidatorsWriteView,
+    balances: &BalancesWriteView,
     withdrawals_data: &[u8],
     sweep_vi: u64,
     current_epoch: u64,
     cursor: &mut WithdrawalsCursor,
 ) -> Result<(), WithdrawalsError> {
     let vi = sweep_vi as u32;
-    let creds = view.validator_credentials(vi as usize);
+    let creds = *validators.credentials(vi as usize);
     if !creds.has_execution_credential() {
         return Ok(());
     }
 
     let partial_drawn = sum_selected_for(&cursor.selected[..cursor.partials_emitted], sweep_vi);
-    let balance = view.validator_balance(vi as usize).saturating_sub(partial_drawn);
+    let balance = balances.get(vi as usize).saturating_sub(partial_drawn);
     let max_eb = creds.max_effective_balance();
     let address = *creds.execution_address();
-    let wd_epoch = view.validator_withdrawable_epoch(vi as usize);
-    let effective_balance = view.validator_effective_balance(vi as usize);
+    let wd_epoch = validators.withdrawable_epoch(vi as usize);
+    let effective_balance = validators.effective_balance(vi as usize);
 
     let (expected_amount, kind) = if wd_epoch <= current_epoch && balance > 0 {
         (balance, SweepKind::Full)
@@ -1355,7 +1575,7 @@ fn sweep_one_validator(
     };
     let got = payload_record(withdrawals_data, cursor.expected_count);
     if got != expected {
-        let pubkey = view.validator_pubkey(vi as usize);
+        let pubkey = *validators.pubkey(vi as usize);
         return Err(match kind {
             SweepKind::Full => {
                 WithdrawalsError::SweepMismatchFull { vi: sweep_vi, pubkey, expected, got }
@@ -1386,8 +1606,11 @@ fn sum_selected_for(selected: &[(u64, u64)], vi: u64) -> u64 {
     total
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_withdrawals(
-    view: &mut StateDeltaView,
+    slot: &mut SlotStateWriteView,
+    balances: &mut BalancesWriteView,
+    pending: &mut PendingWriteView,
     withdrawals_data: &[u8],
     payload_count: usize,
     count: usize,
@@ -1400,23 +1623,23 @@ fn apply_withdrawals(
         let validator_index = WithdrawalView::validator_index(w) as u32;
         let amount = WithdrawalView::amount(w);
         debug_assert!((validator_index as usize) < count);
-        let balance = view.validator_balance(validator_index as usize);
-        view.set_balance(validator_index, balance.saturating_sub(amount));
+        let balance = balances.get(validator_index as usize);
+        balances.set(validator_index, balance.saturating_sub(amount));
     }
     if cursor.expected_count > 0 {
-        view.set_next_withdrawal_index(cursor.withdrawal_index);
+        slot.state_mut().next_withdrawal_index = cursor.withdrawal_index;
     }
     if cursor.processed_partial_count > 0 {
-        view.drain_pending_partial_withdrawals(cursor.processed_partial_count);
+        pending.drain_pending_partial_withdrawals(cursor.processed_partial_count);
     }
     if n_validators > 0 {
         if cursor.expected_count == MAX_WITHDRAWALS_PER_PAYLOAD {
-            view.set_next_withdrawal_validator_index((cursor.last_emitted_vi + 1) % n_validators);
+            slot.state_mut().next_withdrawal_validator_index =
+                (cursor.last_emitted_vi + 1) % n_validators;
         } else {
-            let next_idx = view.next_withdrawal_validator_index();
-            view.set_next_withdrawal_validator_index(
-                (next_idx + MAX_VALIDATORS_PER_WITHDRAWALS_SWEEP) % n_validators,
-            );
+            let next_idx = slot.state().next_withdrawal_validator_index;
+            slot.state_mut().next_withdrawal_validator_index =
+                (next_idx + MAX_VALIDATORS_PER_WITHDRAWALS_SWEEP) % n_validators;
         }
     }
 }
@@ -1424,14 +1647,17 @@ fn apply_withdrawals(
 /// Pass 1 — resolve sync committee participants from
 /// `sync_committee_indices` × bits, push aggregate sig (eth_aggregate
 /// semantics — empty + G2-∞ ok).
-#[allow(clippy::too_many_arguments)]
 pub fn collect_sigs_sync_aggregate(
-    view: &StateDeltaView,
+    view: &StateReadView,
     sync_agg: &[u8],
     block_slot: Slot,
     active_scratch: &mut Vec<u32>,
     sig_batch: &mut SigBatch,
 ) {
+    let imm = view.imm;
+    let slot = &view.slot;
+    let validators = &view.validators;
+    let longtail = &view.longtail;
     if sync_agg.len() < BLOCK_SYNC_AGGREGATE_SIZE {
         return;
     }
@@ -1441,13 +1667,13 @@ pub fn collect_sigs_sync_aggregate(
     let sig = SyncAggregateView::sync_committee_signature(sync_agg_fixed);
 
     let previous_slot = block_slot.saturating_sub(1);
-    let previous_block_root = view.block_root_at_slot(previous_slot);
+    let previous_block_root = slot.block_root_at_slot(previous_slot);
     let previous_epoch = previous_slot / SLOTS_PER_EPOCH;
-    let (fork_version, gvr) = view.fork_version_at(previous_epoch);
+    let (fork_version, gvr) = imm.fork_version_at(previous_epoch);
 
     active_scratch.clear();
-    let count = view.validators_count();
-    let sync_indices = view.longtail_state().sync_committee_indices;
+    let count = validators.count();
+    let sync_indices = longtail.state().sync_committee_indices;
     for (i, &vi) in sync_indices.iter().enumerate() {
         let byte_idx = i / 8;
         let bit_idx = i % 8;
@@ -1463,7 +1689,7 @@ pub fn collect_sigs_sync_aggregate(
     let signing_root = bls::compute_signing_root(&previous_block_root, &domain);
     sig_batch.push_eth_aggregate(
         active_scratch.len(),
-        active_scratch.iter().map(|&vi| view.validator_pubkey_decompressed(vi as usize)),
+        active_scratch.iter().map(|&vi| validators.pubkey_decompressed(vi as usize)),
         sig,
         signing_root,
     );
@@ -1472,14 +1698,18 @@ pub fn collect_sigs_sync_aggregate(
 /// Pass 2 — apply sync_aggregate balance updates. BLS verified in pass 1.
 #[timed]
 pub fn process_sync_aggregate(
-    view: &mut StateDeltaView,
+    view: &mut StateWriterView,
+    longtail: LongtailView,
     sync_agg: &[u8],
     proposer_index: u32,
 ) -> Result<(), SyncAggregateError> {
+    let slot = &view.slot;
+    let validators = &view.validators;
+    let balances = &mut view.balances;
     if sync_agg.len() < BLOCK_SYNC_AGGREGATE_SIZE {
         return Ok(());
     }
-    let count = view.validators_count();
+    let count = validators.count();
     if (proposer_index as usize) >= count {
         return Err(SyncAggregateError::ProposerOutOfRange { idx: proposer_index as u64, count });
     }
@@ -1487,8 +1717,8 @@ pub fn process_sync_aggregate(
         sync_agg[..BLOCK_SYNC_AGGREGATE_SIZE].try_into().unwrap();
     let bits = SyncAggregateView::sync_committee_bits(sync_agg_fixed);
 
-    let current_epoch = view.current_epoch();
-    let total_active = total_active_balance(&*view, current_epoch);
+    let current_epoch = slot.state().slot / SLOTS_PER_EPOCH;
+    let total_active = total_active_balance(&validators.reader(), current_epoch);
     let sqrt_total = epoch_transition::integer_sqrt(total_active);
     let base_reward_per_increment = 1_000_000_000u64 * 64 / sqrt_total;
     let total_active_increments = total_active / 1_000_000_000;
@@ -1509,7 +1739,7 @@ pub fn process_sync_aggregate(
     let proposer_reward_per =
         participant_reward * PROPOSER_WEIGHT / (WEIGHT_DENOMINATOR - PROPOSER_WEIGHT);
 
-    let sync_indices: [u32; SYNC_COMMITTEE_SIZE] = view.longtail_state().sync_committee_indices;
+    let sync_indices: [u32; SYNC_COMMITTEE_SIZE] = longtail.state().sync_committee_indices;
 
     let mut proposer_reward_sum = 0u64;
     #[allow(clippy::needless_range_loop)]
@@ -1521,28 +1751,33 @@ pub fn process_sync_aggregate(
         let byte_idx = i / 8;
         let bit_idx = i % 8;
         let participated = bits[byte_idx] & (1 << bit_idx) != 0;
-        let balance = view.validator_balance(vi as usize);
+        let balance = balances.get(vi as usize);
         let new_bal = if participated {
             proposer_reward_sum += proposer_reward_per;
             balance.saturating_add(participant_reward)
         } else {
             balance.saturating_sub(participant_reward)
         };
-        view.set_balance(vi, new_bal);
+        balances.set(vi, new_bal);
     }
-    let bal_p = view.validator_balance(proposer_index as usize);
-    view.set_balance(proposer_index, bal_p.saturating_add(proposer_reward_sum));
+    let bal_p = balances.get(proposer_index as usize);
+    balances.set(proposer_index, bal_p.saturating_add(proposer_reward_sum));
     Ok(())
 }
 
 /// Pass 1 — push voluntary-exit sigs. Each exit's signing root is the
 /// `(epoch, validator_index)` pair under `DOMAIN_VOLUNTARY_EXIT` pinned to
 /// `CAPELLA_FORK_VERSION`. Returns false on out-of-range vi (early reject).
-pub fn collect_sigs_voluntary_exits(view: &StateDeltaView, data: &[u8], sig_batch: &mut SigBatch) {
-    let capella_fv = view.capella_fork_version();
-    let gvr = view.genesis_validators_root();
+pub fn collect_sigs_voluntary_exits(
+    imm: &Immutable,
+    validators: &ValidatorsView,
+    data: &[u8],
+    sig_batch: &mut SigBatch,
+) {
+    let capella_fv = imm.capella_fork_version;
+    let gvr = imm.genesis_validators_root;
     let count = data.len() / SIGNED_VOLUNTARY_EXIT_SIZE;
-    let validator_count = view.validators_count();
+    let validator_count = validators.count();
     for i in 0..count {
         let exit: &[u8; SIGNED_VOLUNTARY_EXIT_SIZE] = data
             [i * SIGNED_VOLUNTARY_EXIT_SIZE..(i + 1) * SIGNED_VOLUNTARY_EXIT_SIZE]
@@ -1559,7 +1794,7 @@ pub fn collect_sigs_voluntary_exits(view: &StateDeltaView, data: &[u8], sig_batc
         let domain = bls::compute_domain(bls::DOMAIN_VOLUNTARY_EXIT, capella_fv, &gvr);
         let signing_root = bls::compute_signing_root(&object_root, &domain);
         let sig = SignedVoluntaryExitView::signature(exit);
-        let pk = view.validator_pubkey_decompressed(vi as usize);
+        let pk = validators.pubkey_decompressed(vi as usize);
         sig_batch.push_one(pk, sig, signing_root);
     }
 }
@@ -1568,12 +1803,15 @@ pub fn collect_sigs_voluntary_exits(view: &StateDeltaView, data: &[u8], sig_batc
 /// state evolution may change `is_slashable` / pending-balance), apply
 /// `initiate_validator_exit` per accepted entry. BLS already verified.
 pub fn process_voluntary_exits(
+    view: &mut StateWriterView,
     cfg: &SpecConfig,
-    view: &mut StateDeltaView,
     data: &[u8],
 ) -> Result<(), VoluntaryExitError> {
+    let slot = &mut view.slot;
+    let validators = &mut view.validators;
+    let pending = &view.pending;
     let count = data.len() / SIGNED_VOLUNTARY_EXIT_SIZE;
-    let current_epoch = view.current_epoch();
+    let current_epoch = slot.state().slot / SLOTS_PER_EPOCH;
     for i in 0..count {
         let exit: &[u8; SIGNED_VOLUNTARY_EXIT_SIZE] = data
             [i * SIGNED_VOLUNTARY_EXIT_SIZE..(i + 1) * SIGNED_VOLUNTARY_EXIT_SIZE]
@@ -1581,19 +1819,25 @@ pub fn process_voluntary_exits(
             .unwrap();
         let exit_epoch_msg = SignedVoluntaryExitView::epoch(exit);
         let vi = SignedVoluntaryExitView::validator_index(exit) as u32;
-        validate::validate_voluntary_exit(cfg, &*view, vi, exit_epoch_msg, current_epoch)?;
-        if get_pending_balance_to_withdraw(&*view, vi) != 0 {
+        validate::validate_voluntary_exit(
+            cfg,
+            &validators.reader(),
+            vi,
+            exit_epoch_msg,
+            current_epoch,
+        )?;
+        if get_pending_balance_to_withdraw(&pending.reader(), vi) != 0 {
             return Err(VoluntaryExitError::HasPendingBalance {
                 vi: vi as usize,
-                pubkey: view.validator_pubkey(vi as usize),
+                pubkey: *validators.pubkey(vi as usize),
             });
         }
-        initiate_validator_exit(cfg, view, vi, current_epoch);
+        initiate_validator_exit(cfg, slot, validators, vi, current_epoch);
     }
     Ok(())
 }
 
-fn process_execution_requests(cfg: &SpecConfig, view: &mut StateDeltaView, data: &[u8]) {
+fn process_execution_requests(view: &mut StateWriterView, cfg: &SpecConfig, data: &[u8]) {
     if data.len() < 12 {
         return;
     }
@@ -1609,14 +1853,16 @@ fn process_execution_requests(cfg: &SpecConfig, view: &mut StateDeltaView, data:
     let f0 = field(0);
     let f1 = field(1);
     let f2 = field(2);
-    process_deposit_requests(view, f0);
-    process_withdrawal_requests(cfg, view, f1);
-    process_consolidation_requests(cfg, view, f2);
+    process_deposit_requests(&mut *view, f0);
+    process_withdrawal_requests(&mut *view, cfg, f1);
+    process_consolidation_requests(&mut *view, cfg, f2);
 }
 
-pub fn process_deposit_requests(view: &mut StateDeltaView, data: &[u8]) {
+pub fn process_deposit_requests(view: &mut StateWriterView, data: &[u8]) {
+    let slot = &mut view.slot;
+    let pending = &mut view.pending;
     let count = data.len() / DEPOSIT_REQUEST_SIZE;
-    let cur_slot = view.slot();
+    let cur_slot = slot.state().slot;
 
     for i in 0..count {
         let d: &[u8; DEPOSIT_REQUEST_SIZE] =
@@ -1627,11 +1873,11 @@ pub fn process_deposit_requests(view: &mut StateDeltaView, data: &[u8]) {
         let signature = *DepositRequestView::signature(d);
         let index = DepositRequestView::index(d);
 
-        if view.deposit_requests_start_index() == UNSET_DEPOSIT_REQUESTS_START_INDEX {
-            view.set_deposit_requests_start_index(index);
+        if slot.state().deposit_requests_start_index == UNSET_DEPOSIT_REQUESTS_START_INDEX {
+            slot.state_mut().deposit_requests_start_index = index;
         }
 
-        view.push_pending_deposit(common::PendingDeposit {
+        pending.push_pending_deposit(common::PendingDeposit {
             pubkey,
             withdrawal_credentials: credentials,
             amount,
@@ -1641,9 +1887,13 @@ pub fn process_deposit_requests(view: &mut StateDeltaView, data: &[u8]) {
     }
 }
 
-pub fn process_withdrawal_requests(cfg: &SpecConfig, view: &mut StateDeltaView, data: &[u8]) {
+pub fn process_withdrawal_requests(view: &mut StateWriterView, cfg: &SpecConfig, data: &[u8]) {
+    let slot = &mut view.slot;
+    let validators = &mut view.validators;
+    let balances = &view.balances;
+    let pending = &mut view.pending;
     let count = data.len() / WITHDRAWAL_REQUEST_SIZE;
-    let current_epoch = view.current_epoch();
+    let current_epoch = slot.state().slot / SLOTS_PER_EPOCH;
 
     for i in 0..count {
         let r: &[u8; WITHDRAWAL_REQUEST_SIZE] = data
@@ -1655,54 +1905,59 @@ pub fn process_withdrawal_requests(cfg: &SpecConfig, view: &mut StateDeltaView, 
         let amount = WithdrawalRequestView::amount(r);
         let is_full_exit = amount == FULL_EXIT_REQUEST_AMOUNT;
 
-        let ppw_len = view.pending_partial_withdrawals_len();
+        let ppw_len = pending.pending_partial_withdrawals_len();
         if ppw_len >= PENDING_PARTIAL_WITHDRAWALS_LIMIT && !is_full_exit {
             continue;
         }
 
-        let vi = match view.validator_by_pubkey(validator_pubkey) {
+        let vi = match validators.find_by_pubkey(validator_pubkey) {
             Some(idx) => idx,
             None => continue,
         };
 
-        let creds = view.validator_credentials(vi as usize);
+        let creds = *validators.credentials(vi as usize);
         if !creds.has_execution_credential() {
             continue;
         }
         if creds.execution_address() != source_address {
             continue;
         }
-        if !is_active(&*view, vi, current_epoch) {
+        if !is_active(&validators.reader(), vi, current_epoch) {
             continue;
         }
-        if view.validator_exit_epoch(vi as usize) != u64::MAX {
+        if validators.exit_epoch(vi as usize) != u64::MAX {
             continue;
         }
-        let act = view.validator_activation_epoch(vi as usize);
+        let act = validators.activation_epoch(vi as usize);
         if current_epoch < act + cfg.shard_committee_period {
             continue;
         }
 
-        let pending_balance = get_pending_balance_to_withdraw(&*view, vi);
+        let pending_balance = get_pending_balance_to_withdraw(&pending.reader(), vi);
 
         if is_full_exit {
             if pending_balance == 0 {
-                initiate_validator_exit(cfg, view, vi, current_epoch);
+                initiate_validator_exit(cfg, slot, validators, vi, current_epoch);
             }
             continue;
         }
 
-        let effective_balance = view.validator_effective_balance(vi as usize);
-        let balance = view.validator_balance(vi as usize);
+        let effective_balance = validators.effective_balance(vi as usize);
+        let balance = balances.get(vi as usize);
         let has_sufficient_eff = effective_balance >= MIN_ACTIVATION_BALANCE;
         let has_excess = balance > MIN_ACTIVATION_BALANCE + pending_balance;
 
         if creds.has_compounding_credential() && has_sufficient_eff && has_excess {
             let to_withdraw = min(balance - MIN_ACTIVATION_BALANCE - pending_balance, amount);
-            let exit_queue_epoch =
-                compute_exit_epoch_and_update_churn(cfg, view, to_withdraw, current_epoch);
+            let exit_queue_epoch = compute_exit_epoch_and_update_churn(
+                cfg,
+                slot,
+                &validators.reader(),
+                to_withdraw,
+                current_epoch,
+            );
             let withdrawable_epoch = exit_queue_epoch + cfg.min_validator_withdrawability_delay;
-            view.push_pending_partial_withdrawal(common::PendingPartialWithdrawal {
+            pending.push_pending_partial_withdrawal(common::PendingPartialWithdrawal {
                 index: vi as u64,
                 amount: to_withdraw,
                 withdrawable_epoch,
@@ -1711,9 +1966,13 @@ pub fn process_withdrawal_requests(cfg: &SpecConfig, view: &mut StateDeltaView, 
     }
 }
 
-pub fn process_consolidation_requests(cfg: &SpecConfig, view: &mut StateDeltaView, data: &[u8]) {
+pub fn process_consolidation_requests(view: &mut StateWriterView, cfg: &SpecConfig, data: &[u8]) {
+    let slot = &mut view.slot;
+    let validators = &mut view.validators;
+    let balances = &mut view.balances;
+    let pending = &mut view.pending;
     let count = data.len() / CONSOLIDATION_REQUEST_SIZE;
-    let current_epoch = view.current_epoch();
+    let current_epoch = slot.state().slot / SLOTS_PER_EPOCH;
 
     for i in 0..count {
         let r: &[u8; CONSOLIDATION_REQUEST_SIZE] = data
@@ -1725,75 +1984,80 @@ pub fn process_consolidation_requests(cfg: &SpecConfig, view: &mut StateDeltaVie
         let target_pubkey = ConsolidationRequestView::target_pubkey(r);
 
         if source_pubkey == target_pubkey {
-            if let Some(src) = view.validator_by_pubkey(source_pubkey) {
-                let creds = view.validator_credentials(src as usize);
+            if let Some(src) = validators.find_by_pubkey(source_pubkey) {
+                let creds = *validators.credentials(src as usize);
                 if creds.execution_address() == source_address &&
                     creds.has_eth1_credential() &&
-                    is_active(&*view, src, current_epoch) &&
-                    view.validator_exit_epoch(src as usize) == u64::MAX
+                    is_active(&validators.reader(), src, current_epoch) &&
+                    validators.exit_epoch(src as usize) == u64::MAX
                 {
-                    switch_to_compounding_validator(view, src);
+                    switch_to_compounding_validator(validators, balances, pending, src);
                 }
             }
             continue;
         }
 
         // Full consolidation.
-        let pc_len = view.pending_consolidations_len();
+        let pc_len = pending.pending_consolidations_len();
         if pc_len >= PENDING_CONSOLIDATIONS_LIMIT {
             continue;
         }
-        let churn_limit = get_consolidation_churn_limit(cfg, &*view, current_epoch);
+        let churn_limit = get_consolidation_churn_limit(cfg, &validators.reader(), current_epoch);
         if churn_limit <= MIN_ACTIVATION_BALANCE {
             continue;
         }
 
-        let source_idx = match view.validator_by_pubkey(source_pubkey) {
+        let source_idx = match validators.find_by_pubkey(source_pubkey) {
             Some(idx) => idx,
             None => continue,
         };
-        let target_idx = match view.validator_by_pubkey(target_pubkey) {
+        let target_idx = match validators.find_by_pubkey(target_pubkey) {
             Some(idx) => idx,
             None => continue,
         };
 
-        let source_creds = view.validator_credentials(source_idx as usize);
+        let source_creds = *validators.credentials(source_idx as usize);
         if !source_creds.has_execution_credential() {
             continue;
         }
         if source_creds.execution_address() != source_address {
             continue;
         }
-        if !view.validator_credentials(target_idx as usize).has_compounding_credential() {
+        if !validators.credentials(target_idx as usize).has_compounding_credential() {
             continue;
         }
-        if !is_active(&*view, source_idx, current_epoch) ||
-            !is_active(&*view, target_idx, current_epoch)
+        if !is_active(&validators.reader(), source_idx, current_epoch) ||
+            !is_active(&validators.reader(), target_idx, current_epoch)
         {
             continue;
         }
-        if view.validator_exit_epoch(source_idx as usize) != u64::MAX ||
-            view.validator_exit_epoch(target_idx as usize) != u64::MAX
+        if validators.exit_epoch(source_idx as usize) != u64::MAX ||
+            validators.exit_epoch(target_idx as usize) != u64::MAX
         {
             continue;
         }
-        let src_act = view.validator_activation_epoch(source_idx as usize);
+        let src_act = validators.activation_epoch(source_idx as usize);
         if current_epoch < src_act + cfg.shard_committee_period {
             continue;
         }
-        if get_pending_balance_to_withdraw(&*view, source_idx) > 0 {
+        if get_pending_balance_to_withdraw(&pending.reader(), source_idx) > 0 {
             continue;
         }
 
-        let src_eff = view.validator_effective_balance(source_idx as usize);
-        let exit_epoch =
-            compute_consolidation_epoch_and_update_churn(cfg, view, src_eff, current_epoch);
-        view.set_exit_epoch(source_idx, exit_epoch);
-        view.set_withdrawable_epoch(
+        let src_eff = validators.effective_balance(source_idx as usize);
+        let exit_epoch = compute_consolidation_epoch_and_update_churn(
+            cfg,
+            slot,
+            &validators.reader(),
+            src_eff,
+            current_epoch,
+        );
+        validators.set_exit_epoch(source_idx, exit_epoch);
+        validators.set_withdrawable_epoch(
             source_idx,
             exit_epoch + cfg.min_validator_withdrawability_delay,
         );
-        view.push_pending_consolidation(common::PendingConsolidation {
+        pending.push_pending_consolidation(common::PendingConsolidation {
             source_index: source_idx as u64,
             target_index: target_idx as u64,
         });
@@ -1802,13 +2066,14 @@ pub fn process_consolidation_requests(cfg: &SpecConfig, view: &mut StateDeltaVie
 
 /// Pass 1 — push both header sigs per slashing entry.
 pub fn collect_sigs_proposer_slashings(
-    view: &StateDeltaView,
+    imm: &Immutable,
+    validators: &ValidatorsView,
     data: &[u8],
     sig_batch: &mut SigBatch,
 ) -> Result<(), ProposerSlashingError> {
-    let (fork_epoch, prev_ver, cur_ver, gvr) = view.fork_descriptor();
+    let (fork_epoch, prev_ver, cur_ver, gvr) = imm.fork_descriptor();
     let count = data.len() / PROPOSER_SLASHING_SIZE;
-    let n = view.validators_count();
+    let n = validators.count();
     for i in 0..count {
         let s: &[u8; PROPOSER_SLASHING_SIZE] =
             data[i * PROPOSER_SLASHING_SIZE..(i + 1) * PROPOSER_SLASHING_SIZE].try_into().unwrap();
@@ -1826,7 +2091,7 @@ pub fn collect_sigs_proposer_slashings(
         let sr2 = signing_root_for_block_header(&s[208..416], fv2, &gvr);
         let sig1 = ProposerSlashingView::h1_signature(s);
         let sig2 = ProposerSlashingView::h2_signature(s);
-        let pk = view.validator_pubkey_decompressed(vi as usize);
+        let pk = validators.pubkey_decompressed(vi as usize);
         sig_batch.push_one(pk, sig1, sr1);
         sig_batch.push_one(pk, sig2, sr2);
     }
@@ -1838,14 +2103,18 @@ pub fn collect_sigs_proposer_slashings(
 /// mutations (a same-vi double slashing rejects on the second entry
 /// because the first one already set the slashed flag).
 pub fn process_proposer_slashings(
+    view: &mut StateWriterView,
+    epoch: EpochView,
     cfg: &SpecConfig,
-    view: &mut StateDeltaView,
     data: &[u8],
 ) -> Result<(), ProposerSlashingError> {
+    let slot = &mut view.slot;
+    let validators = &mut view.validators;
+    let balances = &mut view.balances;
     let count = data.len() / PROPOSER_SLASHING_SIZE;
-    let n = view.validators_count();
-    let proposer_index = get_beacon_proposer_index(&*view);
-    let current_epoch = view.current_epoch();
+    let n = validators.count();
+    let proposer_index = get_beacon_proposer_index(slot, epoch);
+    let current_epoch = slot.state().slot / SLOTS_PER_EPOCH;
     for i in 0..count {
         let s: &[u8; PROPOSER_SLASHING_SIZE] =
             data[i * PROPOSER_SLASHING_SIZE..(i + 1) * PROPOSER_SLASHING_SIZE].try_into().unwrap();
@@ -1854,14 +2123,14 @@ pub fn process_proposer_slashings(
         if (vi as usize) >= n {
             return Err(ProposerSlashingError::ValidatorOutOfRange { vi: vi as usize, count: n });
         }
-        if !is_slashable_validator(&*view, vi, current_epoch) {
+        if !is_slashable_validator(&validators.reader(), vi, current_epoch) {
             return Err(ProposerSlashingError::NotSlashable {
                 vi: vi as usize,
-                pubkey: view.validator_pubkey(vi as usize),
+                pubkey: *validators.pubkey(vi as usize),
                 epoch: current_epoch,
             });
         }
-        slash_validator(cfg, view, vi, proposer_index);
+        slash_validator(cfg, slot, validators, balances, vi, proposer_index);
     }
     Ok(())
 }
@@ -1891,7 +2160,7 @@ pub(crate) fn signing_root_for_block_header(
 /// Spec: process_deposit. Verify each Deposit's 33-level Merkle branch
 /// against `state.eth1_data.deposit_root` at leaf index
 /// `state.eth1_deposit_index` before queueing. A bad proof fails the block.
-pub fn process_deposits(view: &mut StateDeltaView, data: &[u8]) -> Result<()> {
+pub fn process_deposits(view: &mut StateWriterView, data: &[u8]) -> Result<()> {
     let count = data.len() / DEPOSIT_SIZE;
 
     for i in 0..count {
@@ -1900,8 +2169,8 @@ pub fn process_deposits(view: &mut StateDeltaView, data: &[u8]) -> Result<()> {
         let dd = DepositView::data(d);
         let proof = DepositView::proof(d);
         let leaf = ssz_hash::hash_tree_root_deposit_data(dd);
-        let deposit_index = view.eth1_deposit_index();
-        let deposit_root = view.eth1_data().deposit_root;
+        let deposit_index = view.slot.state().eth1_deposit_index;
+        let deposit_root = view.slot.state().eth1_data.deposit_root;
         if !ssz_hash::is_valid_merkle_branch(
             &leaf,
             proof,
@@ -1922,7 +2191,7 @@ pub fn process_deposits(view: &mut StateDeltaView, data: &[u8]) -> Result<()> {
                 return Err(e);
             }
         }
-        view.advance_eth1_deposit_index();
+        view.slot.state_mut().eth1_deposit_index += 1;
     }
     Ok(())
 }
@@ -1940,14 +2209,15 @@ pub fn process_deposits(view: &mut StateDeltaView, data: &[u8]) -> Result<()> {
 /// against post-deposit / post-prior-change state, so a same-block
 /// duplicate still rejects.
 pub fn collect_sigs_bls_to_execution_changes(
-    view: &StateDeltaView,
+    imm: &Immutable,
+    validators: &ValidatorsView,
     data: &[u8],
     sig_batch: &mut SigBatch,
 ) -> Result<(), BlsToExecutionChangeError> {
-    let genesis_fv = view.genesis_fork_version();
-    let gvr = view.genesis_validators_root();
+    let genesis_fv = imm.genesis_fork_version;
+    let gvr = imm.genesis_validators_root;
     let count = data.len() / SIGNED_BLS_CHANGE_SIZE;
-    let validator_count = view.validators_count();
+    let validator_count = validators.count();
     for i in 0..count {
         let c: &[u8; SIGNED_BLS_CHANGE_SIZE] =
             data[i * SIGNED_BLS_CHANGE_SIZE..(i + 1) * SIGNED_BLS_CHANGE_SIZE].try_into().unwrap();
@@ -1958,7 +2228,7 @@ pub fn collect_sigs_bls_to_execution_changes(
 
         if (validator_index_u as usize) < validator_count {
             validate::validate_bls_to_execution_change(
-                view,
+                validators,
                 validator_index_u as u32,
                 from_bls_pubkey,
             )?;
@@ -1984,7 +2254,7 @@ pub fn collect_sigs_bls_to_execution_changes(
 /// first one flips the prefix to 0x01, the second's `validate` call sees
 /// the now-non-BLS prefix and rejects → block invalid.
 pub fn process_bls_to_execution_changes(
-    view: &mut StateDeltaView,
+    validators: &mut ValidatorsWriteView,
     data: &[u8],
 ) -> Result<(), BlsToExecutionChangeError> {
     let count = data.len() / SIGNED_BLS_CHANGE_SIZE;
@@ -1995,21 +2265,26 @@ pub fn process_bls_to_execution_changes(
         let from_bls_pubkey = SignedBlsToExecutionChangeView::from_bls_pubkey(c);
         let to_execution_address = SignedBlsToExecutionChangeView::to_execution_address(c);
 
-        validate::validate_bls_to_execution_change(&*view, validator_index, from_bls_pubkey)?;
+        validate::validate_bls_to_execution_change(
+            &validators.reader(),
+            validator_index,
+            from_bls_pubkey,
+        )?;
         let creds = common::Withdrawals::eth1(to_execution_address);
-        view.set_credentials(validator_index, creds);
+        validators.set_credentials(validator_index, creds);
     }
     Ok(())
 }
 
 /// Pass 1 — push both IndexedAttestation aggregate sigs per slashing entry.
 pub fn collect_sigs_attester_slashings(
-    view: &StateDeltaView,
+    imm: &Immutable,
+    validators: &ValidatorsView,
     data: &[u8],
     active_scratch: &mut Vec<u32>,
     sig_batch: &mut SigBatch,
 ) -> Result<(), AttesterSlashingError> {
-    let (fork_epoch, prev_ver, cur_ver, gvr) = view.fork_descriptor();
+    let (fork_epoch, prev_ver, cur_ver, gvr) = imm.fork_descriptor();
     if data.is_empty() {
         return Ok(());
     }
@@ -2050,7 +2325,7 @@ pub fn collect_sigs_attester_slashings(
             let fv = bls::fork_version_at_epoch(fork_epoch, prev_ver, cur_ver, target_epoch);
             active_scratch.clear();
             let n_idx = indices.len() / 8;
-            let count = view.validators_count();
+            let count = validators.count();
             for k in 0..n_idx {
                 let vi = u64::from_le_bytes(indices[k * 8..k * 8 + 8].try_into().unwrap());
                 if vi as usize >= count {
@@ -2067,7 +2342,7 @@ pub fn collect_sigs_attester_slashings(
             let domain = bls::compute_domain(bls::DOMAIN_BEACON_ATTESTER, fv, &gvr);
             let signing_root = bls::compute_signing_root(&object_root, &domain);
             sig_batch.push_aggregate(
-                active_scratch.iter().map(|&vi| view.validator_pubkey_decompressed(vi as usize)),
+                active_scratch.iter().map(|&vi| validators.pubkey_decompressed(vi as usize)),
                 sig,
                 signing_root,
             );
@@ -2107,8 +2382,9 @@ pub(crate) fn for_each_sorted_intersection(i1: &[u8], i2: &[u8], mut f: impl FnM
 /// indices between read-phase and mutate-phase. Caller-provided so the
 /// allocation amortises; bounded by `MAX_ATTESTING_INDICES`.
 pub fn process_attester_slashings(
+    view: &mut StateWriterView,
+    epoch: EpochView,
     cfg: &SpecConfig,
-    view: &mut StateDeltaView,
     data: &[u8],
     scratch: &mut Vec<u32>,
 ) -> Result<(), AttesterSlashingError> {
@@ -2119,10 +2395,13 @@ pub fn process_attester_slashings(
     if first_offset == 0 || !first_offset.is_multiple_of(4) || first_offset > data.len() {
         return Ok(());
     }
+    let slot = &mut view.slot;
+    let validators = &mut view.validators;
+    let balances = &mut view.balances;
     let count = first_offset / 4;
-    let proposer_index = get_beacon_proposer_index(&*view);
-    let n = view.validators_count();
-    let current_epoch = view.current_epoch();
+    let proposer_index = get_beacon_proposer_index(slot, epoch);
+    let n = validators.count();
+    let current_epoch = slot.state().slot / SLOTS_PER_EPOCH;
 
     for i in 0..count {
         let start = u32::from_le_bytes(data[i * 4..(i + 1) * 4].try_into().unwrap()) as usize;
@@ -2165,10 +2444,10 @@ pub fn process_attester_slashings(
         // calling the mutating `slash_validator`.
         scratch.clear();
         {
-            let v = &*view;
+            let v = validators.reader();
             for_each_sorted_intersection(i1, i2, |vi| {
                 let vi32 = vi as u32;
-                if vi < n && is_slashable_validator(v, vi32, current_epoch) {
+                if vi < n && is_slashable_validator(&v, vi32, current_epoch) {
                     scratch.push(vi32);
                 }
                 false
@@ -2176,8 +2455,8 @@ pub fn process_attester_slashings(
         }
         for &vi in scratch.iter() {
             // Re-check slashability after each prior slash mutation in the loop.
-            if is_slashable_validator(&*view, vi, current_epoch) {
-                slash_validator(cfg, view, vi, proposer_index);
+            if is_slashable_validator(&validators.reader(), vi, current_epoch) {
+                slash_validator(cfg, slot, validators, balances, vi, proposer_index);
                 slashed_any = true;
             }
         }
@@ -2191,11 +2470,11 @@ pub fn process_attester_slashings(
 /// Gossip-side `AttesterSlashing` validator (single slashing, not the
 /// block-body list form).
 pub fn validate_attester_slashing_for_gossip(
-    view: &StateDeltaView,
+    view: &StateReadView,
     slashing: &[u8],
     sig_batch: &mut SigBatch,
 ) -> bool {
-    let (fork_epoch, prev_ver, cur_ver, gvr) = view.fork_descriptor();
+    let (fork_epoch, prev_ver, cur_ver, gvr) = view.imm.fork_descriptor();
     if slashing.len() < 8 {
         return false;
     }
@@ -2220,12 +2499,13 @@ pub fn validate_attester_slashing_for_gossip(
         return false;
     }
 
-    let current_epoch = view.current_epoch();
-    let count = view.validators_count();
+    let current_epoch = view.slot.current_epoch();
+    let count = view.validators.count();
+    let validators = view.validators;
     let mut any_slashable = false;
     for_each_sorted_intersection(i1, i2, |vi| {
         let vi32 = vi as u32;
-        if vi < count && is_slashable_validator(view, vi32, current_epoch) {
+        if vi < count && is_slashable_validator(&validators, vi32, current_epoch) {
             any_slashable = true;
             true
         } else {
@@ -2256,7 +2536,7 @@ pub fn validate_attester_slashing_for_gossip(
         sig_batch.push_aggregate(
             (0..n_idx).map(|k| {
                 let vi = u64::from_le_bytes(indices[k * 8..k * 8 + 8].try_into().unwrap()) as u32;
-                view.validator_pubkey_decompressed(vi as usize)
+                view.validators.pubkey_decompressed(vi as usize)
             }),
             sig,
             signing_root,
@@ -2277,23 +2557,31 @@ pub(crate) fn attesting_indices_bytes(data: &[u8], start: usize, end: usize) -> 
     &slice[..whole]
 }
 
-fn slash_validator(cfg: &SpecConfig, view: &mut StateDeltaView, vi: u32, proposer_index: u32) {
-    let current_epoch = view.current_epoch();
-    let effective_balance = view.validator_effective_balance(vi as usize);
+fn slash_validator(
+    cfg: &SpecConfig,
+    slot: &mut SlotStateWriteView,
+    validators: &mut ValidatorsWriteView,
+    balances: &mut BalancesWriteView,
+    vi: u32,
+    proposer_index: u32,
+) {
+    let current_epoch = slot.state().slot / SLOTS_PER_EPOCH;
+    let effective_balance = validators.effective_balance(vi as usize);
 
-    initiate_validator_exit(cfg, view, vi, current_epoch);
-    view.set_slashed(vi, true);
-    let prev_wd = view.validator_withdrawable_epoch(vi as usize);
+    initiate_validator_exit(cfg, slot, validators, vi, current_epoch);
+    validators.set_slashed(vi, true);
+    let prev_wd = validators.withdrawable_epoch(vi as usize);
     let new_wd = max(prev_wd, current_epoch + EPOCHS_PER_SLASHINGS_VECTOR as u64);
-    view.set_withdrawable_epoch(vi, new_wd);
+    validators.set_withdrawable_epoch(vi, new_wd);
 
     // Per-block accumulator for the in-progress epoch (flushed at the boundary
     // by process_slashings_reset into `epoch.slashings`).
-    view.add_current_epoch_slashings(effective_balance);
+    let acc = slot.state_mut().current_epoch_slashings.saturating_add(effective_balance);
+    slot.state_mut().current_epoch_slashings = acc;
 
     let penalty = effective_balance / cfg.min_slashing_penalty_quotient;
-    let bal_vi = view.validator_balance(vi as usize);
-    view.set_balance(vi, bal_vi.saturating_sub(penalty));
+    let bal_vi = balances.get(vi as usize);
+    balances.set(vi, bal_vi.saturating_sub(penalty));
 
     // Spec: increase_balance(proposer, proposer_reward); increase_balance(
     // whistleblower, whistleblower_reward - proposer_reward). With no
@@ -2301,39 +2589,49 @@ fn slash_validator(cfg: &SpecConfig, view: &mut StateDeltaView, vi: u32, propose
     // defaults to proposer_index, so the proposer receives the full
     // whistleblower_reward.
     let whistleblower_reward = effective_balance / WHISTLEBLOWER_REWARD_QUOTIENT;
-    let bal_pi = view.validator_balance(proposer_index as usize);
-    view.set_balance(proposer_index, bal_pi.saturating_add(whistleblower_reward));
+    let bal_pi = balances.get(proposer_index as usize);
+    balances.set(proposer_index, bal_pi.saturating_add(whistleblower_reward));
 }
 
 fn initiate_validator_exit(
     cfg: &SpecConfig,
-    view: &mut StateDeltaView,
+    slot: &mut SlotStateWriteView,
+    validators: &mut ValidatorsWriteView,
     vi: u32,
     current_epoch: Epoch,
 ) {
-    if view.validator_exit_epoch(vi as usize) != u64::MAX {
+    if validators.exit_epoch(vi as usize) != u64::MAX {
         return;
     }
-    let effective_balance = view.validator_effective_balance(vi as usize);
-    let exit_epoch =
-        compute_exit_epoch_and_update_churn(cfg, view, effective_balance, current_epoch);
-    view.set_exit_epoch(vi, exit_epoch);
-    view.set_withdrawable_epoch(vi, exit_epoch + cfg.min_validator_withdrawability_delay);
+    let effective_balance = validators.effective_balance(vi as usize);
+    let exit_epoch = compute_exit_epoch_and_update_churn(
+        cfg,
+        slot,
+        &validators.reader(),
+        effective_balance,
+        current_epoch,
+    );
+    validators.set_exit_epoch(vi, exit_epoch);
+    validators.set_withdrawable_epoch(vi, exit_epoch + cfg.min_validator_withdrawability_delay);
 }
 
 fn compute_exit_epoch_and_update_churn(
     cfg: &SpecConfig,
-    view: &mut StateDeltaView,
+    slot: &mut SlotStateWriteView,
+    validators: &ValidatorsView,
     exit_balance: u64,
     current_epoch: Epoch,
 ) -> Epoch {
     let activation_exit_epoch = current_epoch + 1 + cfg.max_seed_lookahead;
-    let prev_earliest = view.earliest_exit_epoch();
+    let prev_earliest = slot.state().earliest_exit_epoch;
     let mut earliest = max(prev_earliest, activation_exit_epoch);
-    let per_epoch_churn = get_activation_exit_churn_limit(cfg, &*view, current_epoch);
+    let per_epoch_churn = get_activation_exit_churn_limit(cfg, validators, current_epoch);
 
-    let mut balance_to_consume =
-        if prev_earliest < earliest { per_epoch_churn } else { view.exit_balance_to_consume() };
+    let mut balance_to_consume = if prev_earliest < earliest {
+        per_epoch_churn
+    } else {
+        slot.state().exit_balance_to_consume
+    };
 
     if exit_balance > balance_to_consume {
         let to_process = exit_balance - balance_to_consume;
@@ -2342,26 +2640,27 @@ fn compute_exit_epoch_and_update_churn(
         balance_to_consume += additional * per_epoch_churn;
     }
 
-    view.set_exit_balance_to_consume(balance_to_consume - exit_balance);
-    view.set_earliest_exit_epoch(earliest);
+    slot.state_mut().exit_balance_to_consume = balance_to_consume - exit_balance;
+    slot.state_mut().earliest_exit_epoch = earliest;
     earliest
 }
 
 fn compute_consolidation_epoch_and_update_churn(
     cfg: &SpecConfig,
-    view: &mut StateDeltaView,
+    slot: &mut SlotStateWriteView,
+    validators: &ValidatorsView,
     consolidation_balance: u64,
     current_epoch: Epoch,
 ) -> Epoch {
     let activation_exit_epoch = current_epoch + 1 + cfg.max_seed_lookahead;
-    let prev_earliest = view.earliest_consolidation_epoch();
+    let prev_earliest = slot.state().earliest_consolidation_epoch;
     let mut earliest = max(prev_earliest, activation_exit_epoch);
-    let per_epoch_churn = get_consolidation_churn_limit(cfg, &*view, current_epoch);
+    let per_epoch_churn = get_consolidation_churn_limit(cfg, validators, current_epoch);
 
     let mut balance_to_consume = if prev_earliest < earliest {
         per_epoch_churn
     } else {
-        view.consolidation_balance_to_consume()
+        slot.state().consolidation_balance_to_consume
     };
 
     if consolidation_balance > balance_to_consume {
@@ -2371,43 +2670,47 @@ fn compute_consolidation_epoch_and_update_churn(
         balance_to_consume += additional * per_epoch_churn;
     }
 
-    view.set_consolidation_balance_to_consume(balance_to_consume - consolidation_balance);
-    view.set_earliest_consolidation_epoch(earliest);
+    slot.state_mut().consolidation_balance_to_consume = balance_to_consume - consolidation_balance;
+    slot.state_mut().earliest_consolidation_epoch = earliest;
     earliest
 }
 
-fn get_balance_churn_limit(cfg: &SpecConfig, view: &StateDeltaView, current_epoch: Epoch) -> u64 {
-    let total = total_active_balance(view, current_epoch);
+fn get_balance_churn_limit(
+    cfg: &SpecConfig,
+    validators: &ValidatorsView,
+    current_epoch: Epoch,
+) -> u64 {
+    let total = total_active_balance(validators, current_epoch);
     let churn = max(cfg.min_per_epoch_churn_limit, total / cfg.churn_limit_quotient);
     churn - churn % EFFECTIVE_BALANCE_INCREMENT
 }
 
 fn get_activation_exit_churn_limit(
     cfg: &SpecConfig,
-    view: &StateDeltaView,
+    validators: &ValidatorsView,
     current_epoch: Epoch,
 ) -> u64 {
     min(
         cfg.max_per_epoch_activation_exit_churn_limit,
-        get_balance_churn_limit(cfg, view, current_epoch),
+        get_balance_churn_limit(cfg, validators, current_epoch),
     )
 }
 
 fn get_consolidation_churn_limit(
     cfg: &SpecConfig,
-    view: &StateDeltaView,
+    validators: &ValidatorsView,
     current_epoch: Epoch,
 ) -> u64 {
-    get_balance_churn_limit(cfg, view, current_epoch) -
-        get_activation_exit_churn_limit(cfg, view, current_epoch)
+    get_balance_churn_limit(cfg, validators, current_epoch) -
+        get_activation_exit_churn_limit(cfg, validators, current_epoch)
 }
 
 /// O(N + |edits|): single sweep over activation/exit/effective_balance columns.
-fn total_active_balance(view: &StateDeltaView, current_epoch: Epoch) -> u64 {
-    let n = view.validators_count();
-    let mut act = view.iter_activation_epochs();
-    let mut exit = view.iter_exit_epochs();
-    let mut effective_balance = view.iter_validator_effective_balances();
+fn total_active_balance(validators: &ValidatorsView, current_epoch: Epoch) -> u64 {
+    let n = validators.count();
+    let mut act = validators.iter_activation_epochs();
+    let mut exit = validators.iter_exit_epochs();
+    let mut effective_balance = validators.iter_effective_balances();
     let mut total: u64 = 0;
     for _ in 0..n {
         let a = act.next().unwrap();
@@ -2420,11 +2723,11 @@ fn total_active_balance(view: &StateDeltaView, current_epoch: Epoch) -> u64 {
     total.max(EFFECTIVE_BALANCE_INCREMENT)
 }
 
-pub(crate) fn get_pending_balance_to_withdraw(view: &StateDeltaView, vi: u32) -> u64 {
-    let n = view.pending_partial_withdrawals_len();
+pub(crate) fn get_pending_balance_to_withdraw(pending: &PendingView, vi: u32) -> u64 {
+    let n = pending.pending_partial_withdrawals_len();
     let mut total = 0u64;
     for i in 0..n {
-        let pw = view.pending_partial_withdrawal(i);
+        let pw = pending.pending_partial_withdrawal(i);
         if pw.index == vi as u64 {
             total += pw.amount;
         }
@@ -2433,15 +2736,15 @@ pub(crate) fn get_pending_balance_to_withdraw(view: &StateDeltaView, vi: u32) ->
 }
 
 #[inline]
-fn is_active(view: &StateDeltaView, vi: u32, e: Epoch) -> bool {
-    view.validator_activation_epoch(vi as usize) <= e && e < view.validator_exit_epoch(vi as usize)
+fn is_active(validators: &ValidatorsView, vi: u32, e: Epoch) -> bool {
+    validators.activation_epoch(vi as usize) <= e && e < validators.exit_epoch(vi as usize)
 }
 
 #[inline]
-pub(crate) fn is_slashable_validator(view: &StateDeltaView, vi: u32, e: Epoch) -> bool {
-    !view.is_validator_slashed(vi as usize) &&
-        view.validator_activation_epoch(vi as usize) <= e &&
-        e < view.validator_withdrawable_epoch(vi as usize)
+pub(crate) fn is_slashable_validator(validators: &ValidatorsView, vi: u32, e: Epoch) -> bool {
+    !validators.is_slashed(vi as usize) &&
+        validators.activation_epoch(vi as usize) <= e &&
+        e < validators.withdrawable_epoch(vi as usize)
 }
 
 pub(crate) fn is_slashable_attestation_data(d1: &[u8], d2: &[u8]) -> bool {
@@ -2482,23 +2785,30 @@ pub(crate) fn indices_sorted_unique(indices: &[u8]) -> bool {
 }
 
 #[inline]
-fn get_beacon_proposer_index(view: &StateDeltaView) -> u32 {
-    let slot = view.slot();
-    view.epoch_state().proposer_lookahead[(slot % SLOTS_PER_EPOCH) as usize] as u32
+fn get_beacon_proposer_index(slot: &SlotStateWriteView, epoch: EpochView) -> u32 {
+    let s = slot.state().slot;
+    epoch
+        .proposer_at((s % SLOTS_PER_EPOCH) as usize)
+        .expect("slot-in-epoch is within the lookahead window") as u32
 }
 
-fn switch_to_compounding_validator(view: &mut StateDeltaView, vi: u32) {
-    let mut bytes = view.validator_credentials(vi as usize).0;
+fn switch_to_compounding_validator(
+    validators: &mut ValidatorsWriteView,
+    balances: &mut BalancesWriteView,
+    pending: &mut PendingWriteView,
+    vi: u32,
+) {
+    let mut bytes = validators.credentials(vi as usize).0;
     bytes[0] = COMPOUNDING_WITHDRAWAL_PREFIX;
     let creds = common::Withdrawals(bytes);
-    view.set_credentials(vi, creds);
+    validators.set_credentials(vi, creds);
 
-    let balance = view.validator_balance(vi as usize);
+    let balance = balances.get(vi as usize);
     if balance > MIN_ACTIVATION_BALANCE {
         let excess = balance - MIN_ACTIVATION_BALANCE;
-        view.set_balance(vi, MIN_ACTIVATION_BALANCE);
-        let pubkey = view.validator_pubkey(vi as usize);
-        view.push_pending_deposit(common::PendingDeposit {
+        balances.set(vi, MIN_ACTIVATION_BALANCE);
+        let pubkey = *validators.pubkey(vi as usize);
+        pending.push_pending_deposit(common::PendingDeposit {
             pubkey,
             withdrawal_credentials: creds,
             amount: excess,
@@ -2515,22 +2825,22 @@ fn switch_to_compounding_validator(view: &mut StateDeltaView, vi: u32) {
 /// no explicit edits required. Returns `SkipDepositBadSig` when BLS fails for
 /// a new validator (per spec: drop deposit, continue block).
 fn apply_deposit(
-    view: &mut StateDeltaView,
+    view: &mut StateWriterView,
     pubkey: &[u8; 48],
     credentials: &common::Withdrawals,
     amount: u64,
     signature: &[u8; 96],
 ) -> Result<()> {
-    let existing = view.validator_by_pubkey(pubkey);
+    let existing = view.validators.find_by_pubkey(pubkey);
     if existing.is_none() {
         if !epoch_transition::is_valid_deposit_signature(pubkey, credentials, amount, signature) {
-            return Err(Error::SkipDepositBadSig { index: view.eth1_deposit_index() });
+            return Err(Error::SkipDepositBadSig { index: view.slot.state().eth1_deposit_index });
         }
         let pubkey_decompressed = PublicKey::from_bytes(pubkey).unwrap_or_default();
-        view.append_validator(*pubkey, pubkey_decompressed, *credentials);
+        append_validator(view, *pubkey, pubkey_decompressed, *credentials);
     }
 
-    view.push_pending_deposit(common::PendingDeposit {
+    view.pending.push_pending_deposit(common::PendingDeposit {
         pubkey: *pubkey,
         withdrawal_credentials: *credentials,
         amount,
@@ -2543,35 +2853,72 @@ fn apply_deposit(
 #[cfg(test)]
 mod tests {
     use silver_beacon_state_data::{
-        DeltaBuffer, EPOCHS_RING_N, EpochStateDelta, Finalized, LONGTAILS_RING_N, LongtailState,
-        SlotState, SlotStateDelta, StateDelta, StateDeltaView, ValidatorsDelta,
+        BalancesGroup, BeaconState, CurrentParticipationGroup, EpochGroup, EpochStateFinalized,
+        FinalizedValidators, InactivityScoresGroup, LongtailGroup, LongtailState, PendingGroup,
+        PendingQueues, PreviousParticipationGroup, SlotStateFinalized, SlotStateGroup, StateId,
+        ValidatorsGroup,
     };
 
     use super::*;
 
-    type EpochRing = DeltaBuffer<EpochStateDelta, EPOCHS_RING_N>;
-    type LongtailRing = DeltaBuffer<LongtailState, LONGTAILS_RING_N>;
+    /// `BeaconState` + its working bundle; `view()` rolls a fresh fork off
+    /// the bundle like production `apply_block_view` (not reusable here: it
+    /// asserts a non-empty validator set). Cross-view persistence needs
+    /// `commit` + `state_id` writeback.
+    struct TestState {
+        bs: BeaconState,
+        state_id: StateId,
+    }
 
-    fn fresh_state() -> (Box<Finalized>, StateDelta, EpochRing, LongtailRing) {
-        let f = Box::new(Finalized::empty());
-        let delta = StateDelta {
-            validators: ValidatorsDelta::new_at(&f.validators),
-            slot: SlotStateDelta {
-                slot: SlotState { slot: f.slot.slot.slot, ..SlotState::default() },
-                ..Default::default()
-            },
-            ..StateDelta::default()
+    impl TestState {
+        fn view(&mut self) -> (StateWriterView<'_>, &mut EpochGroup, &mut LongtailGroup) {
+            let sid = self.state_id;
+            let bs = &mut self.bs;
+            let view = StateWriterView::new(
+                &bs.immutable,
+                bs.balances.roll_from(sid.balances_idx),
+                bs.pending.roll_from(sid.pending_idx),
+                bs.previous_participation.roll_from(sid.previous_participation_idx),
+                bs.current_participation.roll_from(sid.current_participation_idx),
+                bs.inactivity.roll_from(sid.inactivity_idx),
+                bs.slot_states.roll_from(sid.slot_idx),
+                bs.validators.roll_from(sid.validators_idx),
+            );
+            (view, &mut bs.epoch, &mut bs.longtail)
+        }
+    }
+
+    fn fresh_state() -> TestState {
+        let validators = ValidatorsGroup::new(FinalizedValidators::with_validators(&[]));
+        let cap = validators.base().capacity();
+        let n = validators.base().validator_count();
+        // Sibling lists stay lockstep with the registry: n zero entries.
+        let zero_flags = vec![0u8; n];
+        let zero_scores = vec![0u8; n * 8];
+        let mut bs = BeaconState {
+            immutable: Immutable::default(),
+            validators,
+            balances: BalancesGroup::new(cap, n, &[]).unwrap(),
+            pending: PendingGroup::new(PendingQueues::default()),
+            previous_participation: PreviousParticipationGroup::new(cap, n, &zero_flags).unwrap(),
+            current_participation: CurrentParticipationGroup::new(cap, n, &zero_flags).unwrap(),
+            inactivity: InactivityScoresGroup::new(cap, n, &zero_scores).unwrap(),
+            // Slot tier anchored at the empty base's slot (0).
+            slot_states: SlotStateGroup::new(SlotStateFinalized::default()),
+            epoch: EpochGroup::new(EpochStateFinalized::default()),
+            longtail: LongtailGroup::new(LongtailState::default()),
         };
-        (f, delta, DeltaBuffer::default(), DeltaBuffer::default())
+        let state_id = bs.roll_fresh();
+        TestState { bs, state_id }
     }
 
     /// EF `sanity_blocks` doesn't exercise the eth1 majority threshold
     /// directly (its blocks vote at most a couple of times). Cover it here.
     #[test]
     fn eth1_data_vote_majority() {
-        let (fin, mut delta, mut tile_epochs, mut tile_longtails) = fresh_state();
-        delta.slot.slot.slot = 32;
-        let mut view = StateDeltaView::new(&fin, &mut delta, &mut tile_epochs, &mut tile_longtails);
+        let mut st = fresh_state();
+        let (mut view, _, _) = st.view();
+        view.slot.state_mut().slot = 32;
 
         // Build a body with eth1_data at [96..168).
         let mut body = vec![0u8; 396];
@@ -2581,19 +2928,19 @@ mod tests {
         body[136..168].copy_from_slice(&[0xBB; 32]);
 
         // slots_per_eth1_voting_period = 64 * 32 = 2048; need > 1024 votes.
-        process_eth1_data(&mut view, &body);
-        assert_eq!(view.eth1_votes().len(), 1);
-        assert_ne!(view.eth1_data().deposit_root, deposit_root);
+        process_eth1_data(&mut view.slot, &body);
+        assert_eq!(view.slot.state().eth1_votes.len(), 1);
+        assert_ne!(view.slot.state().eth1_data.deposit_root, deposit_root);
 
         for _ in 0..1024 {
-            view.push_eth1_vote(common::Eth1Data {
+            view.slot.state_mut().eth1_votes.push(common::Eth1Data {
                 deposit_root,
                 deposit_count: 42,
                 block_hash: [0xBB; 32],
             });
         }
-        process_eth1_data(&mut view, &body);
-        assert_eq!(view.eth1_data().deposit_root, deposit_root);
+        process_eth1_data(&mut view.slot, &body);
+        assert_eq!(view.slot.state().eth1_data.deposit_root, deposit_root);
     }
 
     /// Build a single-deposit body element (1240 B) with a zero-subtree proof
@@ -2623,6 +2970,10 @@ mod tests {
         (bytes, value)
     }
 
+    fn deposit_into(view: &mut StateWriterView, deposit: &[u8]) -> Result<()> {
+        process_deposits(view, deposit)
+    }
+
     fn make_dd() -> [u8; 184] {
         let mut dd = [0u8; 184];
         dd[0] = 0xAB;
@@ -2637,13 +2988,14 @@ mod tests {
         let dd = make_dd();
         let (deposit, root) = build_deposit_at_index0(&dd);
 
-        let (fin, mut delta, mut te, mut tl) = fresh_state();
-        delta.slot.slot.eth1_data.deposit_root = root;
-        delta.slot.slot.eth1_deposit_index = 0;
-        let mut view = StateDeltaView::new(&fin, &mut delta, &mut te, &mut tl);
+        let mut st = fresh_state();
+        let (mut view, _, _) = st.view();
+        view.slot.state_mut().eth1_data =
+            common::Eth1Data { deposit_root: root, ..Default::default() };
+        // eth1_deposit_index defaults to 0.
 
-        process_deposits(&mut view, &deposit).expect("valid proof must accept");
-        assert_eq!(view.eth1_deposit_index(), 1);
+        deposit_into(&mut view, &deposit).expect("valid proof must accept");
+        assert_eq!(view.slot.state().eth1_deposit_index, 1);
     }
 
     #[test]
@@ -2653,15 +3005,15 @@ mod tests {
 
         deposit[0] ^= 0x01;
 
-        let (fin, mut delta, mut te, mut tl) = fresh_state();
-        delta.slot.slot.eth1_data.deposit_root = root;
-        delta.slot.slot.eth1_deposit_index = 0;
-        let mut view = StateDeltaView::new(&fin, &mut delta, &mut te, &mut tl);
+        let mut st = fresh_state();
+        let (mut view, _, _) = st.view();
+        view.slot.state_mut().eth1_data =
+            common::Eth1Data { deposit_root: root, ..Default::default() };
 
-        let err = process_deposits(&mut view, &deposit).unwrap_err();
+        let err = deposit_into(&mut view, &deposit).unwrap_err();
         assert!(err.is_fatal());
         assert!(matches!(err, Error::InvalidDepositProof { index: 0 }));
-        assert_eq!(view.eth1_deposit_index(), 0, "index must not advance on rejection");
+        assert_eq!(view.slot.state().eth1_deposit_index, 0, "index must not advance on rejection");
     }
 
     #[test]
@@ -2670,12 +3022,12 @@ mod tests {
         let (deposit, mut root) = build_deposit_at_index0(&dd);
         root[0] ^= 0xFF;
 
-        let (fin, mut delta, mut te, mut tl) = fresh_state();
-        delta.slot.slot.eth1_data.deposit_root = root;
-        delta.slot.slot.eth1_deposit_index = 0;
-        let mut view = StateDeltaView::new(&fin, &mut delta, &mut te, &mut tl);
+        let mut st = fresh_state();
+        let (mut view, _, _) = st.view();
+        view.slot.state_mut().eth1_data =
+            common::Eth1Data { deposit_root: root, ..Default::default() };
 
-        let err = process_deposits(&mut view, &deposit).unwrap_err();
+        let err = deposit_into(&mut view, &deposit).unwrap_err();
         assert!(matches!(err, Error::InvalidDepositProof { .. }));
     }
 
@@ -2684,13 +3036,14 @@ mod tests {
         let dd = make_dd();
         let (deposit, root) = build_deposit_at_index0(&dd);
 
-        let (fin, mut delta, mut te, mut tl) = fresh_state();
-        delta.slot.slot.eth1_data.deposit_root = root;
+        let mut st = fresh_state();
+        let (mut view, _, _) = st.view();
+        view.slot.state_mut().eth1_data =
+            common::Eth1Data { deposit_root: root, ..Default::default() };
         // Proof was built for index 0; claim index 1 instead → must fail.
-        delta.slot.slot.eth1_deposit_index = 1;
-        let mut view = StateDeltaView::new(&fin, &mut delta, &mut te, &mut tl);
+        view.slot.state_mut().eth1_deposit_index += 1;
 
-        let err = process_deposits(&mut view, &deposit).unwrap_err();
+        let err = deposit_into(&mut view, &deposit).unwrap_err();
         assert!(matches!(err, Error::InvalidDepositProof { index: 1 }));
     }
 }

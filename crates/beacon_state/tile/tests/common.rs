@@ -14,7 +14,7 @@ use silver_beacon_state::{
     },
     tile::BeaconStateTile,
 };
-use silver_beacon_state_data::{BeaconBlockHeader, BeaconState, BeaconStateOwner};
+use silver_beacon_state_data::{BeaconBlockHeader, BeaconStateOwner};
 use silver_common::{
     BeaconStateEvent, DataColumnsAvailable, GossipTopic, MessageId, NewGossipMsg, P2pStreamId,
     PeerEvent, RpcInbound, RpcResponseInbound, SilverSpine, StreamProtocol, SyncUpdate, TCache,
@@ -123,7 +123,7 @@ impl OutboundKind {
 impl Harness {
     pub fn new(wall_slot: u64, checkpoint_ssz: &[u8]) -> Self {
         Self::build(wall_slot, |ticker, gc, rc| {
-            let state = BeaconStateOwner::new(BeaconState::empty());
+            let state = BeaconStateOwner::pre_bootstrap();
             BeaconStateTile::new(
                 ticker,
                 silver_beacon_state_data::SpecConfig::mainnet(),
@@ -291,35 +291,34 @@ impl Harness {
     }
 
     pub fn assert_state_root(&mut self, post_ssz: &[u8]) {
-        // Decompose the EF post-state into a `Finalized` snapshot with an empty
-        // anchored delta, then hash via `StateDeltaView` (mirrors ef_common).
-        let mut finalized = Box::new(silver_beacon_state_data::Finalized::empty());
-        finalized
-            .decompose(post_ssz, &silver_beacon_state_data::SpecConfig::mainnet())
-            .expect("decompose post.ssz");
+        // Decompose the EF post-state into per-tier finalized bases with an
+        // empty anchored delta, then hash via `StateWriterView` (mirrors
+        // ef_common).
+        let mut bs = silver_beacon_state_data::BeaconState::decompose(
+            post_ssz,
+            &silver_beacon_state_data::SpecConfig::mainnet(),
+        )
+        .expect("decompose post.ssz");
 
-        let mut delta = silver_beacon_state_data::StateDelta {
-            validators: silver_beacon_state_data::ValidatorsDelta::new_at(&finalized.validators),
-            slot: silver_beacon_state_data::SlotStateDelta {
-                slot: finalized.slot.slot,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-
-        let mut epochs = silver_beacon_state_data::DeltaBuffer::default();
-        let mut longtails = silver_beacon_state_data::DeltaBuffer::default();
-
-        let view = silver_beacon_state_data::StateDeltaView::new(
-            &finalized,
-            &mut delta,
-            &mut epochs,
-            &mut longtails,
+        // Hold a fresh fork's writers directly (`roll_fresh` anchors each at
+        // the decoded base); epoch/longtail stay lazy (`None` reads the base).
+        let view = silver_beacon_state_data::StateWriterView::new(
+            &bs.immutable,
+            bs.balances.roll_fresh(),
+            bs.pending.roll_fresh(),
+            bs.previous_participation.roll_fresh(),
+            bs.current_participation.roll_fresh(),
+            bs.inactivity.roll_fresh(),
+            bs.slot_states.roll_fresh(),
+            bs.validators.roll_fresh(),
         );
 
         let mut scratch = StateHashScratch::new();
 
-        let expected = hash_tree_root_state(&view, &mut scratch);
+        let expected = {
+            let rv = view.read(bs.epoch.view_opt(None), bs.longtail.view_opt(None));
+            hash_tree_root_state(&rv, &mut scratch)
+        };
         let got = self.tile.head_state_root();
         assert_eq!(
             got,

@@ -1,5 +1,5 @@
 use flux::utils::ArrayVec;
-use silver_beacon_state_data::{B256, Checkpoint, Epoch, Slot};
+use silver_beacon_state_data::{B256, Checkpoint, Epoch, Slot, StateId};
 use silver_common::metrics::timed;
 
 // TODO(stalls): ~8 epochs of unpruned mainnet activity hits 256. The May
@@ -56,9 +56,9 @@ pub struct ForkChoiceNode {
     #[allow(dead_code)]
     pub execution_status: u8,
 
-    /// Seq into the slots `DeltaBuffer` ring holding this block's post-state
-    /// `StateDelta`. `usize::MAX` = no associated delta (e.g. anchor).
-    pub state_seq: usize,
+    /// Per-tier index bundle of this block's post-state. Every node carries a
+    /// real rolled bundle (anchor included).
+    pub state_id: StateId,
 }
 
 /// Per-validator latest LMD attestation, sized to the registry capacity.
@@ -89,8 +89,8 @@ pub struct BlockImport {
     pub execution_block_hash: B256,
     pub justified: Checkpoint,
     pub finalized: Checkpoint,
-    /// Seq into the slots ring for this block's post-state delta.
-    pub state_seq: usize,
+    /// Per-tier index bundle of this block's post-state.
+    pub state_id: StateId,
 }
 
 impl ForkChoice {
@@ -100,7 +100,7 @@ impl ForkChoice {
         finalized_slot: Slot,
         finalized_block_root: B256,
         finalized_state_root: B256,
-        state_seq: usize,
+        state_id: StateId,
     ) -> Self {
         let mut nodes = Vec::with_capacity(MAX_FORK_CHOICE_NODES);
         let mut indices = ArrayVec::new();
@@ -118,7 +118,7 @@ impl ForkChoice {
             justified_checkpoint,
             finalized_checkpoint,
             execution_status: 2, // valid
-            state_seq,
+            state_id,
         });
         indices.push(ForkChoiceIndex { block_root: finalized_block_root, node_idx: 0 });
 
@@ -158,7 +158,7 @@ impl ForkChoice {
             // back to flip this to 2 (valid) or 3 (invalid) and drop invalid
             // descendants from the head choice.
             execution_status: 1, // optimistic
-            state_seq: b.state_seq,
+            state_id: b.state_id,
         });
         self.indices.push(ForkChoiceIndex { block_root: b.block_root, node_idx });
 
@@ -218,8 +218,8 @@ impl ForkChoice {
         self.nodes[justified_idx].block_root
     }
 
-    /// Remove all nodes below the current finalized root. Callers reclaim
-    /// ring slots via `live_state_seqs` after pruning.
+    /// Remove all nodes below the current finalized root. Callers re-anchor
+    /// the survivors via `live_state_ids` after pruning.
     pub fn prune(&mut self) {
         let Some(fin_idx) = self.find_node_idx(&self.finalized_checkpoint.root) else {
             return;
@@ -258,17 +258,17 @@ impl ForkChoice {
         &self.nodes[idx]
     }
 
-    /// Slot-ring seq of the node being finalized. The caller promotes that
-    /// `StateDelta` into the owner's `Finalized` base and prunes surviving
-    /// ring deltas against the new base.
-    pub fn finalize_node(&self, idx: usize) -> usize {
-        self.nodes[idx].state_seq
+    /// Index bundle of the node being finalized. The caller promotes that
+    /// `StateId`'s tiers into the finalized bases and re-anchors surviving
+    /// deltas against the new base.
+    pub fn finalize_node(&self, idx: usize) -> StateId {
+        self.nodes[idx].state_id
     }
 
-    /// Slot-ring seqs of all currently-live nodes — the caller prunes their
-    /// `StateDelta`s against the freshly promoted base after `finalize_node`.
-    pub fn live_state_seqs(&self) -> impl Iterator<Item = usize> + '_ {
-        self.nodes.iter().map(|n| n.state_seq)
+    /// Index bundles of all currently-live nodes — the caller re-anchors them
+    /// against the freshly promoted base after `finalize_node`.
+    pub fn live_state_ids(&self) -> impl Iterator<Item = StateId> + '_ {
+        self.nodes.iter().map(|n| n.state_id)
     }
 
     /// Spec `get_checkpoint_block(store, root, epoch)`: deepest ancestor of
@@ -423,6 +423,22 @@ fn offset_idx(idx: usize, offset: usize) -> usize {
 mod tests {
     use super::*;
 
+    /// Opaque per-tier bundle for topology/weight tests that never resolve
+    /// state. Built field-by-field — `StateId` deliberately has no `Default`.
+    fn test_state_id() -> StateId {
+        StateId {
+            epoch_idx: None,
+            longtail_idx: None,
+            balances_idx: Default::default(),
+            validators_idx: Default::default(),
+            pending_idx: Default::default(),
+            previous_participation_idx: Default::default(),
+            current_participation_idx: Default::default(),
+            inactivity_idx: Default::default(),
+            slot_idx: Default::default(),
+        }
+    }
+
     fn root(b: u8) -> B256 {
         let mut r = [0u8; 32];
         r[0] = b;
@@ -433,7 +449,7 @@ mod tests {
         Checkpoint { epoch, root: root(b) }
     }
 
-    // Fork choice keys blocks by their post-state ring seq; the topology /
+    // Fork choice nodes carry their post-state index bundle; the topology /
     // weight tests don't read state, so a constant seq is fine.
     fn block(
         slot: Slot,
@@ -450,7 +466,7 @@ mod tests {
             execution_block_hash: [0u8; 32],
             justified: jus,
             finalized: fin,
-            state_seq: 0,
+            state_id: test_state_id(),
         }
     }
 
@@ -458,7 +474,7 @@ mod tests {
     fn single_chain_head() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), 0);
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), test_state_id());
 
         fc.on_block(block(1, root(2), root(1), jus, fin));
         fc.on_block(block(2, root(3), root(2), jus, fin));
@@ -470,7 +486,7 @@ mod tests {
     fn fork_heavier_wins() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), 0);
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), test_state_id());
 
         fc.on_block(block(1, root(2), root(1), jus, fin));
         fc.on_block(block(1, root(3), root(1), jus, fin));
@@ -489,7 +505,7 @@ mod tests {
         // sibling loses weight.
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), 0);
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), test_state_id());
 
         // root(1) → root(2) [idx 1] and root(3) [idx 2]
         fc.on_block(block(1, root(2), root(1), jus, fin));
@@ -513,7 +529,7 @@ mod tests {
     fn prune_below_finalized() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), 0);
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), test_state_id());
 
         fc.on_block(block(1, root(2), root(1), jus, fin));
         fc.on_block(block(2, root(3), root(2), jus, fin));
@@ -532,7 +548,7 @@ mod tests {
     fn deltas_moving_votes() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), 0);
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), test_state_id());
         fc.on_block(block(1, root(2), root(1), jus, fin));
 
         let mut votes = vec![Vote::default(); 16];
@@ -561,7 +577,7 @@ mod tests {
         // Each validator votes for a different block.
         let fin = cp(0, 100);
         let jus = cp(0, 100);
-        let mut fc = ForkChoice::init(fin, jus, 0, root(100), root(100), 0);
+        let mut fc = ForkChoice::init(fin, jus, 0, root(100), root(100), test_state_id());
 
         for i in 1..=16u8 {
             fc.on_block(block(i as u64, root(i), root(100), jus, fin));
@@ -589,7 +605,7 @@ mod tests {
     fn deltas_move_out_of_tree() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let fc = ForkChoice::init(fin, jus, 0, root(1), root(1), 0);
+        let fc = ForkChoice::init(fin, jus, 0, root(1), root(1), test_state_id());
 
         let mut votes = vec![Vote::default(); 16];
         let mut balances = vec![0u64; 16];
@@ -613,7 +629,7 @@ mod tests {
     fn deltas_changing_balances() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), 0);
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), test_state_id());
         fc.on_block(block(1, root(2), root(1), jus, fin));
 
         let mut votes = vec![Vote::default(); 16];
@@ -640,7 +656,7 @@ mod tests {
         // Balances change but votes don't — still need deltas.
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let fc = ForkChoice::init(fin, jus, 0, root(1), root(1), 0);
+        let fc = ForkChoice::init(fin, jus, 0, root(1), root(1), test_state_id());
 
         let mut votes = vec![Vote::default(); 16];
         let mut old_bal = vec![0u64; 16];
@@ -663,7 +679,7 @@ mod tests {
     fn split_tie_breaker_no_attestations() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), 0);
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), test_state_id());
 
         // Two blocks at slot 1 forking from genesis. root(2) < root(3).
         fc.on_block(block(1, root(2), root(1), jus, fin));
@@ -678,7 +694,7 @@ mod tests {
     fn shorter_chain_but_heavier_weight() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), 0);
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), test_state_id());
 
         // Long chain: root(1) → root(2) → root(3) → root(4).
         fc.on_block(block(1, root(2), root(1), jus, fin));
@@ -702,7 +718,7 @@ mod tests {
     fn on_block_duplicate() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), 0);
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), test_state_id());
 
         fc.on_block(block(1, root(2), root(1), jus, fin));
         assert_eq!(fc.nodes.len(), 2);
@@ -716,7 +732,7 @@ mod tests {
     fn on_block_unknown_parent() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), 0);
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), test_state_id());
 
         // root(99) is not known.
         fc.on_block(block(1, root(2), root(99), jus, fin));

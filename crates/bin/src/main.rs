@@ -7,7 +7,7 @@ use flux::{
 use quinn_proto::{Endpoint, EndpointConfig};
 use rand::RngCore;
 use silver_beacon_state::{BeaconStateTile, SlotTicker};
-use silver_beacon_state_data::{BeaconState, BeaconStateOwner};
+use silver_beacon_state_data::BeaconStateOwner;
 use silver_common::{Enr, ProtoIdentify, SilverSpine, TCache, TCacheProducer};
 use silver_config::Config;
 use silver_control::Controller;
@@ -193,7 +193,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         _ => vec![],
     };
 
-    let mut state = BeaconStateOwner::new(BeaconState::empty());
+    let state = BeaconStateOwner::pre_bootstrap();
     let state_reader = state.reader();
 
     // Bootstrap explicitly (not via `new`) so the pubkey sidecar can be passed.

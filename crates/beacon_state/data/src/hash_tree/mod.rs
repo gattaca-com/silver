@@ -86,4 +86,13 @@ impl FinalizedHashTree {
     pub(crate) fn prune_delta(&self, delta: &mut DeltaHashTree) {
         self.prune_delta_at(delta, Self::root());
     }
+
+    /// Pre-promote counterpart of [`Self::prune_delta`]: collapse `delta` nodes
+    /// that already equal the **new** base — `self` with `winner` promoted into
+    /// it — letting a survivor finalize its hash overlay in one pass with
+    /// `rebase`, before `winner` is folded into the base.
+    #[inline]
+    pub(crate) fn prune_delta_against(&self, delta: &mut DeltaHashTree, winner: &DeltaHashTree) {
+        self.prune_delta_against_at(delta, winner, Self::root());
+    }
 }

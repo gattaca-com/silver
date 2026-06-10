@@ -1,5 +1,3 @@
-use std::ops::Deref;
-
 #[derive(Default, Clone, Debug, PartialEq, Eq)]
 pub struct Edits<V> {
     inner: Vec<(u32, V)>,
@@ -12,8 +10,113 @@ impl<V> Edits<V> {
     }
 
     #[inline]
-    pub fn retain(&mut self, keep: impl FnMut(&(u32, V)) -> bool) {
-        self.inner.retain(keep);
+    pub fn clone_from(&mut self, other: &Self)
+    where
+        V: Clone,
+    {
+        self.inner.clone_from(&other.inner);
+    }
+
+    #[inline]
+    pub fn iter(&self) -> std::slice::Iter<'_, (u32, V)> {
+        self.inner.iter()
+    }
+
+    #[inline]
+    pub fn partition_point(&self, pred: impl FnMut(&(u32, V)) -> bool) -> usize {
+        self.inner.partition_point(pred)
+    }
+
+    #[inline]
+    pub fn iter_from(&self, start: usize) -> std::slice::Iter<'_, (u32, V)> {
+        self.inner[start..].iter()
+    }
+
+    #[inline]
+    pub fn get(&self, idx: u32) -> Option<&V> {
+        self.inner.binary_search_by_key(&idx, |(k, _)| *k).ok().map(|p| &self.inner[p].1)
+    }
+
+    #[inline]
+    pub fn as_slice(&self) -> &[(u32, V)] {
+        &self.inner
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+
+    #[inline]
+    pub fn retain(&mut self, f: impl FnMut(&(u32, V)) -> bool) {
+        self.inner.retain(f);
+    }
+}
+
+impl<V: Copy + PartialEq> Edits<V> {
+    /// Finalize a survivor's edits against a promoted `winner` in a single
+    /// pass, returning a fresh vec — no clone of `self`, no in-place
+    /// shifting.
+    ///
+    /// Fuses two steps that were previously copy-then-rebase-then-prune:
+    /// - **rebase**: every index `< valid_below` that `winner` overrides and
+    ///   `self` does not is pinned to its *old* base value (`old_base_at`), so
+    ///   the survivor keeps reading the pre-promote value (ABA hazard).
+    /// - **prune**: any resulting entry `< new_count` that already matches the
+    ///   *new* base (`new_base_at`) is dropped as redundant.
+    ///
+    /// `self` and `winner` are both ascending; the output is the ascending
+    /// merge (self's value wins on a shared index — it overrides the base).
+    pub fn rebase_and_prune(
+        &self,
+        winner: &Self,
+        valid_below: u32,
+        new_count: u32,
+        old_base_at: impl Fn(u32) -> V,
+        new_base_at: impl Fn(u32) -> V,
+    ) -> Self {
+        let mut out: Vec<(u32, V)> = Vec::with_capacity(self.inner.len() + winner.inner.len());
+        let mut keep = |idx: u32, v: V| {
+            if idx >= new_count || new_base_at(idx) != v {
+                out.push((idx, v));
+            }
+        };
+
+        let (mut i, mut j) = (0, 0);
+        while i < self.inner.len() && j < winner.inner.len() {
+            let (si, sv) = self.inner[i];
+            let wi = winner.inner[j].0;
+            if wi >= valid_below {
+                break; // no winner index from here injects
+            }
+            if si < wi {
+                keep(si, sv);
+                i += 1;
+            } else if si == wi {
+                keep(si, sv); // self overrides the winner's pin
+                i += 1;
+                j += 1;
+            } else {
+                keep(wi, old_base_at(wi)); // pin the old base value
+                j += 1;
+            }
+        }
+        while j < winner.inner.len() && winner.inner[j].0 < valid_below {
+            let wi = winner.inner[j].0;
+            keep(wi, old_base_at(wi));
+            j += 1;
+        }
+        while i < self.inner.len() {
+            let (si, sv) = self.inner[i];
+            keep(si, sv);
+            i += 1;
+        }
+        Self { inner: out }
     }
 }
 
@@ -127,14 +230,5 @@ impl<V: Copy> Edits<V> {
             self.inner[write] = changes[change_idx];
         }
         debug_assert_eq!(write, edit_idx, "merge: write must converge to the unshifted prefix");
-    }
-}
-
-impl<V> Deref for Edits<V> {
-    type Target = [(u32, V)];
-
-    #[inline]
-    fn deref(&self) -> &[(u32, V)] {
-        &self.inner
     }
 }

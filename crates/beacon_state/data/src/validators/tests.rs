@@ -16,7 +16,7 @@ fn creds(b: u8) -> Withdrawals {
 }
 
 fn empty_validators() -> FinalizedValidators {
-    FinalizedValidators::with_capacity(validator_capacity(0))
+    FinalizedValidators::try_new(&[]).unwrap()
 }
 
 /// Independent reference impl of `validator_hash`: merkleize 8 chunks
@@ -177,7 +177,7 @@ fn append_then_read_returns_baked_defaults() {
 }
 
 #[test]
-fn set_credentials_inserts_then_updates_then_elides() {
+fn set_credentials_inserts_then_updates_in_place() {
     let f = empty_validators();
     let mut d = ValidatorsDelta::new_at(&f);
     d.append(&f, pk(0), PublicKey::default(), creds(1));
@@ -189,15 +189,17 @@ fn set_credentials_inserts_then_updates_then_elides() {
     assert_eq!(d.effective_credentials(&f, 0), &new_cr);
     assert_eq!(d.credentials_edits.len(), 1);
 
-    // Update in place.
+    // Update in place — still one edit.
     let newer = creds(0x55);
     d.set_credentials(&f, 0, newer);
     assert_eq!(d.effective_credentials(&f, 0), &newer);
     assert_eq!(d.credentials_edits.len(), 1);
 
-    // Setting back to the appended record's value elides the edit.
+    // Setting back to the appended record's value keeps the edit (no
+    // base-equal elision; correctness rides on merge_finalized + prune_to_base)
+    // but the effective read still reflects it.
     d.set_credentials(&f, 0, creds(1));
-    assert!(d.credentials_edits.is_empty());
+    assert_eq!(d.credentials_edits.len(), 1);
     assert_eq!(d.effective_credentials(&f, 0), &creds(1));
 }
 
@@ -210,11 +212,13 @@ fn set_slashed_round_trips() {
     assert!(!d.is_slashed(&f, 0));
     d.set_slashed(&f, 0, true);
     assert!(d.is_slashed(&f, 0));
-    assert_eq!(d.slashed_edits, vec![(0, true)]);
+    assert_eq!(d.slashed_edits.as_slice(), [(0, true)]);
 
+    // No base-equal elision: the edit is kept, but the effective read is back
+    // to the appended record's default.
     d.set_slashed(&f, 0, false);
     assert!(!d.is_slashed(&f, 0));
-    assert!(d.slashed_edits.is_empty(), "elides back to base default");
+    assert_eq!(d.slashed_edits.as_slice(), [(0, false)]);
 }
 
 #[test]

@@ -14,7 +14,8 @@ use crate::{
 
 pub type PubkeyIndex = FxHashMap<BLSPubkey, u32>;
 
-/// Initial values for one validator passed to `Finalized::new`.
+/// Initial values for one validator passed to
+/// [`FinalizedValidators::with_validators`].
 pub struct ValSeed {
     pub pubkey: BLSPubkey,
     pub withdrawal_credentials: Withdrawals,
@@ -153,16 +154,11 @@ impl FinalizedValidators {
             hash,
         })
     }
-
-    pub fn with_capacity(capacity: usize) -> Self {
-        Self::build(capacity, 0, |_| -> Result<ValidatorFields, Infallible> {
-            unreachable!("n = 0: field_at is never called")
-        })
-        .unwrap()
-    }
 }
 
 impl FinalizedValidators {
+    /// The one production constructor: decode the SSZ `validators` byte range
+    /// (capacity is derived from the count); `try_new(&[])` is the empty base.
     #[timed]
     pub fn try_new(val_bytes: &[u8]) -> Result<Self, ValidatorsDecodeError> {
         if !val_bytes.len().is_multiple_of(VALIDATOR_SSZ_SIZE) {
@@ -341,6 +337,9 @@ impl FinalizedValidators {
         &self.slashed
     }
 
+    /// Harness-seeding constructor: builds a registry from `ValSeed`s whose
+    /// pubkeys need not be valid BLS points (decompression falls back to
+    /// default), which `try_new` would reject. Test/bench use only.
     pub fn with_validators(seeds: &[ValSeed]) -> Self {
         Self::build(validator_capacity(seeds.len()), seeds.len(), |i| {
             let s = &seeds[i];
