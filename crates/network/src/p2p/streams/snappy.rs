@@ -230,27 +230,44 @@ impl SnappyDecoder {
 /// Combined chunk-header + max-payload buffer.
 const OUT_CAP: usize = FRAME_HDR_LEN + CHECKSUM_LEN + MAX_COMPRESS_BLOCK;
 
+/// Blocks emitted raw after a block fails the compression-pays test, before
+/// compression is retried. High-entropy payloads (KZG cells, blob data) never
+/// compress; without this every block pays a full compress pass whose output
+/// is then discarded and overwritten with the raw bytes.
+const SKIP_COMPRESS_BLOCKS: u8 = 7;
+
 /// Snappy-frames encoder for non-blocking sinks.
 ///
 /// Each `compress` call drains any frame bytes left over from the previous
-/// call, then encodes successive ≤64KB blocks of `buf` into `dst` and drains
-/// each before moving to the next. Returns `(input_consumed,
-/// output_pending)`. When the sink can't accept more, the encoder retains
-/// the partially-written frame in `dst` — re-call `compress` (with the
-/// unconsumed input tail or `&[]`) until `output_pending == 0` and all
-/// input is consumed.
+/// call, then encodes successive ≤64KB blocks of `buf` and drains each
+/// before moving to the next. Compressed frames are staged in `dst`; raw
+/// (`CHUNK_UNCOMPRESSED`) frames stage only the 8-byte header — the payload
+/// is written to the sink straight from `buf`, skipping the staging copy.
+/// Returns `(input_consumed, output_pending)`. When the sink can't accept
+/// more, re-call `compress` with the unconsumed input tail (or `&[]`) until
+/// `output_pending == 0` and all input is consumed. Input consumption is
+/// byte-granular for raw frames: a committed raw frame's unwritten payload
+/// is resumed from the head of the next call's `buf`.
 ///
 /// Stream identifier is staged into `dst` on the first call and drained
 /// through the same path as data frames.
 pub(crate) struct SnappyEncoder {
     enc: Encoder,
-    /// Header + payload pending write to the sink.
+    /// Headers + compressed payload pending write to the sink. Raw payloads
+    /// bypass this buffer.
     dst: Box<[u8; OUT_CAP]>,
     /// Total bytes in `dst[..dst_len]` to be written.
     dst_len: usize,
     /// Bytes of `dst[..dst_len]` already written to the sink.
     dst_written: usize,
     wrote_stream_id: bool,
+    /// Remaining blocks to emit as `CHUNK_UNCOMPRESSED` without attempting
+    /// compression. Set when a block fails the pays test.
+    skip_compress: u8,
+    /// Unwritten payload bytes of a committed raw frame. The header is on
+    /// the wire (or in `dst`); the payload tail is the head of the next
+    /// `compress` call's input.
+    raw_remaining: usize,
 }
 
 impl Debug for SnappyEncoder {
@@ -276,6 +293,8 @@ impl SnappyEncoder {
             dst_len: 0,
             dst_written: 0,
             wrote_stream_id: false,
+            skip_compress: 0,
+            raw_remaining: 0,
         }
     }
 
@@ -300,16 +319,53 @@ impl SnappyEncoder {
         }
 
         let mut consumed = 0;
+
+        // Resume a committed raw frame: its header is already drained, the
+        // unwritten payload tail is the head of `buf`.
+        if self.raw_remaining > 0 {
+            let n = self.raw_remaining.min(buf.len());
+            consumed += self.write_raw(&buf[..n], writer)?;
+            if self.raw_remaining > 0 {
+                return Ok((consumed, 0));
+            }
+        }
+
         while consumed < buf.len() {
             let n = (buf.len() - consumed).min(MAX_UNCOMPRESSED_BLOCK);
-            self.encode_block(&buf[consumed..consumed + n])?;
-            consumed += n;
-            if self.drain(writer)? > 0 {
-                return Ok((consumed, self.pending()));
+            let raw = self.encode_block(&buf[consumed..consumed + n])?;
+            if raw {
+                if self.drain(writer)? > 0 {
+                    return Ok((consumed, self.pending()));
+                }
+                consumed += self.write_raw(&buf[consumed..consumed + n], writer)?;
+                if self.raw_remaining > 0 {
+                    return Ok((consumed, 0));
+                }
+            } else {
+                consumed += n;
+                if self.drain(writer)? > 0 {
+                    return Ok((consumed, self.pending()));
+                }
             }
         }
 
         Ok((consumed, 0))
+    }
+
+    /// Write raw-frame payload to the sink straight from the caller's
+    /// buffer. Returns bytes written; decrements `raw_remaining`.
+    fn write_raw<W: io::Write>(&mut self, src: &[u8], writer: &mut W) -> io::Result<usize> {
+        debug_assert!(src.len() <= self.raw_remaining);
+        let mut written = 0;
+        while written < src.len() {
+            let n = writer.write(&src[written..])?;
+            if n == 0 {
+                break;
+            }
+            written += n;
+        }
+        self.raw_remaining -= written;
+        Ok(written)
     }
 
     fn pending(&self) -> usize {
@@ -331,27 +387,50 @@ impl SnappyEncoder {
         Ok(0)
     }
 
-    /// Encode a ≤64KB block into `dst` (header + crc + payload). Caller
-    /// must have fully drained `dst` before invoking.
-    fn encode_block(&mut self, src: &[u8]) -> io::Result<()> {
+    /// Encode a ≤64KB block. A compressed frame is staged fully in `dst`.
+    /// A raw frame stages only the header in `dst`, sets `raw_remaining`
+    /// and returns `true` — the caller writes the payload to the sink
+    /// straight from `src`. Caller must have fully drained `dst` before
+    /// invoking.
+    fn encode_block(&mut self, src: &[u8]) -> io::Result<bool> {
         debug_assert!(src.len() <= MAX_UNCOMPRESSED_BLOCK);
         debug_assert_eq!(self.dst_len, 0);
         debug_assert_eq!(self.dst_written, 0);
+        debug_assert_eq!(self.raw_remaining, 0);
 
         let crc = crc32c::crc32c(src);
         let masked = crc.rotate_right(15).wrapping_add(0xa282_ead8);
-
         let payload_off = FRAME_HDR_LEN + CHECKSUM_LEN;
-        let compressed_len = self.enc.compress(src, &mut self.dst[payload_off..])?;
-        // Compression must save at least 12.5% to be worth it.
-        let payload_len = if compressed_len >= src.len() - (src.len() / 8) {
-            // Compression didn't pay — overwrite with raw bytes.
-            self.dst[payload_off..payload_off + src.len()].copy_from_slice(src);
-            self.dst[0] = CHUNK_UNCOMPRESSED;
-            src.len()
+
+        let compressed_len = if self.skip_compress > 0 {
+            self.skip_compress -= 1;
+            None
         } else {
-            self.dst[0] = CHUNK_COMPRESSED;
-            compressed_len
+            let len = self.enc.compress(src, &mut self.dst[payload_off..])?;
+            // Compression must save at least 12.5% to be worth it.
+            if len >= src.len() - (src.len() / 8) {
+                // Didn't pay — emit raw, stop attempting for the next
+                // blocks; retry to catch mixed payloads. Probe output in
+                // `dst` is discarded.
+                self.skip_compress = SKIP_COMPRESS_BLOCKS;
+                None
+            } else {
+                Some(len)
+            }
+        };
+
+        let payload_len = match compressed_len {
+            Some(len) => {
+                self.dst[0] = CHUNK_COMPRESSED;
+                self.dst_len = payload_off + len;
+                len
+            }
+            None => {
+                self.dst[0] = CHUNK_UNCOMPRESSED;
+                self.dst_len = payload_off;
+                self.raw_remaining = src.len();
+                src.len()
+            }
         };
 
         let chunk_len = CHECKSUM_LEN + payload_len;
@@ -361,8 +440,7 @@ impl SnappyEncoder {
         self.dst[3] = ((chunk_len >> 16) & 0xff) as u8;
         self.dst[4..8].copy_from_slice(&masked.to_le_bytes());
 
-        self.dst_len = payload_off + payload_len;
-        Ok(())
+        Ok(compressed_len.is_none())
     }
 }
 
@@ -488,6 +566,34 @@ mod tests {
         assert_eq!(out, b"hello world");
     }
 
+    /// Incompressible first block arms skip_compress; later compressible
+    /// blocks must still roundtrip, and the periodic retry must re-enable
+    /// compression once past the skip window.
+    #[test]
+    fn encoder_skips_then_retries_compression() {
+        let mut rng = rand::thread_rng();
+        let mut raw = vec![0u8; 16 * MAX_UNCOMPRESSED_BLOCK];
+        // Block 0 random (doesn't pay), blocks 1.. zeros (compress well).
+        rng.fill_bytes(&mut raw[..MAX_UNCOMPRESSED_BLOCK]);
+
+        let mut encoder = SnappyEncoder::new();
+        let mut compressed = Vec::new();
+        let (consumed, pending) = encoder.compress(&raw, &mut compressed).unwrap();
+        assert_eq!(consumed, raw.len());
+        assert_eq!(pending, 0);
+
+        // Blocks 0..=7 are emitted raw (failed block + skip window); 8..
+        // retry and compress. If retry failed, all 16 blocks would be raw.
+        assert!(
+            compressed.len() < 9 * MAX_UNCOMPRESSED_BLOCK,
+            "retry did not re-enable compression"
+        );
+
+        let mut out = Vec::new();
+        snap::read::FrameDecoder::new(compressed.as_slice()).read_to_end(&mut out).unwrap();
+        assert_eq!(raw, out);
+    }
+
     /// `io::Write` adapter that returns at most `cap` bytes per `write` call.
     /// Bytes go to the inner Vec.
     struct CappedWriter<'a> {
@@ -546,6 +652,52 @@ mod tests {
 
         let mut out = Vec::new();
         snap::read::FrameDecoder::new(compressed.as_slice()).read_to_end(&mut out).unwrap();
+        assert_eq!(raw, out);
+    }
+
+    /// Sink with a per-round byte budget; returns `Ok(0)` (blocked) once
+    /// exhausted. Forces mid-header and mid-raw-payload suspends so the
+    /// committed-raw-frame resume path runs across `compress` calls.
+    struct ChokedWriter {
+        budget: usize,
+        out: Vec<u8>,
+    }
+
+    impl io::Write for ChokedWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            let n = buf.len().min(self.budget);
+            self.budget -= n;
+            self.out.extend_from_slice(&buf[..n]);
+            Ok(n)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn encoder_resumes_raw_frames_across_blocked_writes() {
+        let mut rng = rand::thread_rng();
+        // Random => every block fails the pays test => raw frames.
+        let mut raw = vec![0u8; 200 * 1024];
+        rng.fill_bytes(&mut raw);
+
+        let mut encoder = SnappyEncoder::new();
+        let mut w = ChokedWriter { budget: 0, out: Vec::new() };
+        let mut input = raw.as_slice();
+        loop {
+            // Odd refill to land suspends inside stream id, header, payload.
+            w.budget = 13;
+            let (consumed, pending) = encoder.compress(input, &mut w).unwrap();
+            input = &input[consumed..];
+            if input.is_empty() && pending == 0 {
+                break;
+            }
+        }
+
+        let mut out = Vec::new();
+        snap::read::FrameDecoder::new(w.out.as_slice()).read_to_end(&mut out).unwrap();
         assert_eq!(raw, out);
     }
 
