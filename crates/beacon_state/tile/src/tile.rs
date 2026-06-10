@@ -13,9 +13,8 @@ use silver_beacon_state_data::{
 };
 use silver_common::{
     BeaconStateEvent, BlockSource, DataColumnsAvailable, GossipTopic, NewGossipMsg, P2pStreamId,
-    PeerEvent, RpcInbound,
-    RpcResponse, RpcResponseInbound, RpcSeverity, SilverSpine, SyncUpdate, TCacheRead,
-    TRandomAccess, TRead, hex32,
+    PeerEvent, RpcInbound, RpcResponse, RpcResponseInbound, RpcSeverity, SilverSpine, SyncUpdate,
+    TCacheRead, TRandomAccess, TRead, hex32,
     ssz_view::{
         self, AttesterSlashingView, MAX_ATTESTATIONS_ELECTRA, MAX_ATTESTING_INDICES,
         PROPOSER_SLASHING_SIZE, ProposerSlashingView, SIGNED_BLS_CHANGE_SIZE,

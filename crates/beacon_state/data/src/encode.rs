@@ -332,7 +332,11 @@ impl BeaconState {
         PUBKEYS_HEADER + self.validators.base().validator_count() * PUBKEY_SER
     }
 
-    pub(crate) fn write_pubkeys_chunk<W: Write>(&self, chunk: usize, w: &mut W) -> io::Result<bool> {
+    pub(crate) fn write_pubkeys_chunk<W: Write>(
+        &self,
+        chunk: usize,
+        w: &mut W,
+    ) -> io::Result<bool> {
         let v = self.validators.base();
         let n = v.validator_count();
         if chunk == 0 {
