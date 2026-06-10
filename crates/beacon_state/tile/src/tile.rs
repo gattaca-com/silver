@@ -5,11 +5,10 @@ use flux::{
 };
 use rustc_hash::FxHashMap;
 use silver_beacon_state_data::{
-    B256, BalancesId, BeaconBlockHeader, BeaconState, BeaconStateOwner, BlobParameters, Checkpoint,
-    CurrentParticipationId, EPOCHS_PER_HISTORICAL_VECTOR, EPOCHS_RING_N, Epoch, EpochId,
-    InactivityId, LONGTAILS_RING_N, LongtailId, MIN_SEED_LOOKAHEAD, PendingId,
-    PreviousParticipationId, SLOTS_PER_EPOCH, Slot, SlotState, SlotStateId, SpecConfig, StateId,
-    StateReadView, ValidatorsId, Version, decode_checkpoint_pubkeys, randao_mix_at_epoch,
+    B256, BeaconBlockHeader, BeaconState, BeaconStateOwner, BlobParameters, Checkpoint,
+    EPOCHS_PER_HISTORICAL_VECTOR, EPOCHS_RING_N, Epoch, EpochId, LONGTAILS_RING_N, LongtailId,
+    MIN_SEED_LOOKAHEAD, SLOTS_PER_EPOCH, Slot, SlotState, SpecConfig, StateId, StateReadView,
+    Version, decode_checkpoint_pubkeys, randao_mix_at_epoch,
 };
 use silver_common::{
     BeaconStateEvent, BlockSource, DataColumnsAvailable, GossipTopic, NewGossipMsg, P2pStreamId,
@@ -27,7 +26,6 @@ use silver_common::{
 
 use crate::{
     bls,
-    epoch_transition::MAX_PENDING_DEPOSITS_PER_EPOCH,
     error::PrecheckError,
     fork_choice::{BlockImport, ForkChoice, MAX_FORK_CHOICE_NODES, VoteTracker, compute_deltas},
     shuffling::{self, DOMAIN_BEACON_ATTESTER},
@@ -164,22 +162,12 @@ pub struct BeaconStateTile {
     /// from an all-zero genesis-validators-root.
     configured_fork_digest: Option<[u8; 4]>,
 
-    postponed_scratch: Vec<silver_beacon_state_data::PendingDeposit>,
-    /// Per-block buffer of (validator_idx, beacon_block_root, target_epoch)
-    /// emitted by `process_attestations` so the tile can fold them into the
-    /// vote tracker after `apply_block` returns.
-    attestation_votes_scratch: Vec<(u32, B256, Epoch)>,
-    /// Epoch transition uses this
-    /// for the active set (`process_sync_committee_updates` /
-    /// `process_proposer_lookahead`); pass 1 of `process_block_body` reuses
-    /// it for committee participants in `collect_sigs_*`; pass 2 reuses it
-    /// again for participating indices in `process_single_attestation`.
-    active_scratch: Vec<u32>,
-    /// Reusable epoch-transition scratch buffers (sparse-edit rebuilds +
-    /// effective-balance column) — threaded into `process_epoch`.
-    replace_u64_scratch: Vec<(u32, u64)>,
-    replace_u8_scratch: Vec<(u32, u8)>,
-    eff_scratch: Vec<u64>,
+    /// Reusable state-transition scratch buffers, threaded into
+    /// `apply_block` / `process_slots`.
+    stf_scratch: state_transition::StfScratch,
+    /// Per-block buffer of votes emitted by `process_attestations` so the
+    /// tile can fold them into the vote tracker after `apply_block` returns.
+    attestation_votes_scratch: Vec<state_transition::AttestationVote>,
     /// Effective-balance column from the previous `recompute_head`, kept so
     /// `compute_deltas` can net per-validator balance changes onto LMD weights
     /// (not just vote-root changes). Indexed by validator; new validators read
@@ -188,9 +176,6 @@ pub struct BeaconStateTile {
     /// Pre-validation pass collects every BLS sig in the block here, then
     /// runs `verify_all` once before pass 2 mutates state.
     sig_batch: bls::SigBatch,
-    /// Reusable merged-ring buffers for `hash_tree_root_state` (block/state
-    /// roots, randao, slashings) — avoids re-allocating the rings per slot.
-    state_hash_scratch: ssz_hash::StateHashScratch,
     /// Pending blocks - blocks we have received for which we do not have a
     /// parent block. Keyed by the parent block_hash.
     pending_blocks: FxHashMap<B256, Vec<PendingBlock>>,
@@ -238,18 +223,13 @@ impl BeaconStateTile {
             last_applied_block_root: [0u8; 32],
             initial_status_emitted: false,
             cached_fork_digest: None,
-            active_scratch: Vec::with_capacity(val_cap.max(MAX_ATTESTING_INDICES)),
             configured_fork_digest: None,
-            postponed_scratch: Vec::with_capacity(MAX_PENDING_DEPOSITS_PER_EPOCH),
+            stf_scratch: state_transition::StfScratch::new(val_cap),
             attestation_votes_scratch: Vec::with_capacity(
                 MAX_ATTESTATIONS_ELECTRA * MAX_ATTESTING_INDICES,
             ),
-            replace_u64_scratch: Vec::with_capacity(val_cap),
-            replace_u8_scratch: Vec::with_capacity(val_cap),
-            eff_scratch: Vec::with_capacity(val_cap),
             prev_eff_balances: Vec::with_capacity(val_cap),
             sig_batch: bls::SigBatch::new(),
-            state_hash_scratch: ssz_hash::StateHashScratch::new(),
             pending_blocks: FxHashMap::with_capacity_and_hasher(
                 MAX_FORK_CHOICE_NODES,
                 Default::default(),
@@ -316,7 +296,7 @@ impl BeaconStateTile {
     /// STF output against EF post-state vectors.
     pub fn head_state_root(&mut self) -> B256 {
         let rv = self.state.read_view(self.last_applied);
-        ssz_hash::hash_tree_root_state(&rv, &mut self.state_hash_scratch)
+        ssz_hash::hash_tree_root_state(&rv, &mut self.stf_scratch.state_hash)
     }
 
     /// Load a checkpoint-state SSZ blob: decompose it into the finalized
@@ -368,7 +348,7 @@ impl BeaconStateTile {
         // patched value would shift the result.
         let (block_root, anchor_state_root) = {
             let rv = self.state.read_view(anchor);
-            let state_root = ssz_hash::hash_tree_root_state(&rv, &mut self.state_hash_scratch);
+            let state_root = ssz_hash::hash_tree_root_state(&rv, &mut self.stf_scratch.state_hash);
             let mut header = rv.slot.state().latest_block_header;
             if header.state_root == [0u8; 32] {
                 header.state_root = state_root;
@@ -427,17 +407,17 @@ impl BeaconStateTile {
             return;
         }
 
-        self.active_scratch.clear();
+        self.stf_scratch.active.clear();
         {
             let view = self.state.read_view(state_id);
             shuffling::get_active_validator_indices_into(
                 &view.validators,
                 epoch,
-                &mut self.active_scratch,
+                &mut self.stf_scratch.active,
             );
         }
         let seed = shuffling::get_seed(&mix, epoch, DOMAIN_BEACON_ATTESTER);
-        shuffling::shuffle_list(&mut self.active_scratch, &seed);
+        shuffling::shuffle_list(&mut self.stf_scratch.active, &seed);
 
         let slot = self.find_shuffling_slot();
         let entry = &mut self.shuffling_cache.entries[slot];
@@ -445,7 +425,7 @@ impl BeaconStateTile {
         entry.mix = mix;
         entry.status = 1;
         entry.shuffled_indices.clear();
-        for &idx in self.active_scratch.iter() {
+        for &idx in self.stf_scratch.active.iter() {
             entry.shuffled_indices.push(idx);
         }
     }
@@ -651,12 +631,7 @@ impl BeaconStateTile {
                 longtail,
                 parent,
                 target_slot,
-                &mut self.active_scratch,
-                &mut self.postponed_scratch,
-                &mut self.replace_u64_scratch,
-                &mut self.replace_u8_scratch,
-                &mut self.eff_scratch,
-                &mut self.state_hash_scratch,
+                &mut self.stf_scratch,
             );
             new_id = view.commit(epoch_idx, longtail_idx);
         }
@@ -705,7 +680,7 @@ impl BeaconStateTile {
         if fin_idx == 0 {
             return; // already the base
         }
-        let promoted = self.fork_choice.finalize_node(fin_idx);
+        let promoted = self.fork_choice.node(fin_idx).state_id;
 
         // Drop non-descendants of the finalized block; the survivors (node 0
         // is now the finalized block) are exactly the deltas to re-base.
@@ -772,28 +747,15 @@ impl BeaconStateTile {
             finalized_slot,
             "clear pending blocks at finalization"
         );
+        let (gossip_consumer, rpc_consumer) = (&mut self.gossip_consumer, &mut self.rpc_consumer);
         self.pending_blocks.retain(|_, msgs| {
             msgs.iter().all(|msg| {
-                let acquired = match msg {
-                    PendingBlock::Gossip(g) => self.gossip_consumer.acquire(g.ssz),
-                    PendingBlock::Rpc(_, ssz) => self.rpc_consumer.acquire(*ssz),
-                };
-                if let Ok((buffer, _)) = acquired.buffer() {
-                    return SignedBeaconBlockView::slot(buffer) > finalized_slot;
-                }
-                false
+                pending_block_outlives(gossip_consumer, rpc_consumer, msg, finalized_slot)
             })
         });
 
         self.dc_pending_blocks.retain(|_, msg| {
-            let acquired = match msg {
-                PendingBlock::Gossip(g) => self.gossip_consumer.acquire(g.ssz),
-                PendingBlock::Rpc(_, ssz) => self.rpc_consumer.acquire(*ssz),
-            };
-            if let Ok((buffer, _)) = acquired.buffer() {
-                return SignedBeaconBlockView::slot(buffer) > finalized_slot;
-            }
-            false
+            pending_block_outlives(gossip_consumer, rpc_consumer, msg, finalized_slot)
         });
         self.dc_available.retain(|_, slot| *slot > finalized_slot);
     }
@@ -818,73 +780,48 @@ impl BeaconStateTile {
         // base before its finalize.
         let old_fin_epoch = (bs.slot_states.base_view().slot_number() / SLOTS_PER_EPOCH) as usize;
 
-        // Validators finalize in their own group — re-anchor each survivor
-        // against the winner (pin pre-promote values + prune redundancy), then
-        // promote the winner into the base.
-        let survivor_validators: ArrayVec<ValidatorsId, MAX_SURVIVORS> =
-            survivors.iter().map(|s| s.validators_idx).collect();
-        let new_validators = bs.validators.finalize(promoted.validators_idx, &survivor_validators);
-        for (sid, &new_idx) in survivors.iter_mut().zip(&new_validators) {
-            sid.validators_idx = new_idx;
-        }
-
-        // Balances finalize in their own group (rebase old base → promote
-        // winner → prune new base); `apply_delta` left the balances base
-        // untouched, so it still holds the old count, which the group reads
-        // for the rebase bounds. Append-only finalize re-anchors survivors
-        // into fresh balances slots and returns their new seqs.
-        let survivor_balances: ArrayVec<BalancesId, MAX_SURVIVORS> =
-            survivors.iter().map(|s| s.balances_idx).collect();
-        let new_balances = bs.balances.finalize(promoted.balances_idx, &survivor_balances);
-        for (sid, &new_idx) in survivors.iter_mut().zip(&new_balances) {
-            sid.balances_idx = new_idx;
-        }
-
-        // Participation + inactivity finalize in their own groups — same shape
-        // as balances. `apply_delta` leaves their bases untouched, so each still
-        // holds the old count its group reads for the rebase bounds.
-        let survivor_prev: ArrayVec<PreviousParticipationId, MAX_SURVIVORS> =
-            survivors.iter().map(|s| s.previous_participation_idx).collect();
-        let new_prev =
-            bs.previous_participation.finalize(promoted.previous_participation_idx, &survivor_prev);
-        for (sid, &new_idx) in survivors.iter_mut().zip(&new_prev) {
-            sid.previous_participation_idx = new_idx;
-        }
-
-        let survivor_cur: ArrayVec<CurrentParticipationId, MAX_SURVIVORS> =
-            survivors.iter().map(|s| s.current_participation_idx).collect();
-        let new_cur =
-            bs.current_participation.finalize(promoted.current_participation_idx, &survivor_cur);
-        for (sid, &new_idx) in survivors.iter_mut().zip(&new_cur) {
-            sid.current_participation_idx = new_idx;
-        }
-
-        let survivor_inact: ArrayVec<InactivityId, MAX_SURVIVORS> =
-            survivors.iter().map(|s| s.inactivity_idx).collect();
-        let new_inact = bs.inactivity.finalize(promoted.inactivity_idx, &survivor_inact);
-        for (sid, &new_idx) in survivors.iter_mut().zip(&new_inact) {
-            sid.inactivity_idx = new_idx;
-        }
-
-        // Pending queues finalize in their own group — re-anchors survivors
-        // (drain-offset rebase) and promotes the winner; `old_base_lens` is
-        // snapshotted internally from the still-old base.
-        let survivor_pending: ArrayVec<PendingId, MAX_SURVIVORS> =
-            survivors.iter().map(|s| s.pending_idx).collect();
-        let new_pending = bs.pending.finalize(promoted.pending_idx, &survivor_pending);
-        for (sid, &new_idx) in survivors.iter_mut().zip(&new_pending) {
-            sid.pending_idx = new_idx;
-        }
-
-        // Slot tier finalize in its own group — promote folds the winner's slot
-        // scalars + root tails into the base; survivors re-anchor (root tails
-        // pruned of the promoted prefix) into fresh slots.
-        let survivor_slot: ArrayVec<SlotStateId, MAX_SURVIVORS> =
-            survivors.iter().map(|s| s.slot_idx).collect();
-        let new_slot = bs.slot_states.finalize(promoted.slot_idx, &survivor_slot);
-        for (sid, &new_idx) in survivors.iter_mut().zip(&new_slot) {
-            sid.slot_idx = new_idx;
-        }
+        // The always-rolled tiers finalize in their own groups — re-anchor
+        // each survivor against the winner (pin pre-promote values + prune
+        // redundancy), then promote the winner into the base. Each base is
+        // untouched until its own group's finalize, so it still holds the old
+        // count its rebase bounds read. Pending's drain-offset rebase
+        // snapshots `old_base_lens` internally from the still-old base; the
+        // slot tier prunes survivors' root tails of the promoted prefix.
+        rebase_tier(
+            survivors,
+            |s| &mut s.validators_idx,
+            |ids| bs.validators.finalize(promoted.validators_idx, ids),
+        );
+        rebase_tier(
+            survivors,
+            |s| &mut s.balances_idx,
+            |ids| bs.balances.finalize(promoted.balances_idx, ids),
+        );
+        rebase_tier(
+            survivors,
+            |s| &mut s.previous_participation_idx,
+            |ids| bs.previous_participation.finalize(promoted.previous_participation_idx, ids),
+        );
+        rebase_tier(
+            survivors,
+            |s| &mut s.current_participation_idx,
+            |ids| bs.current_participation.finalize(promoted.current_participation_idx, ids),
+        );
+        rebase_tier(
+            survivors,
+            |s| &mut s.inactivity_idx,
+            |ids| bs.inactivity.finalize(promoted.inactivity_idx, ids),
+        );
+        rebase_tier(
+            survivors,
+            |s| &mut s.pending_idx,
+            |ids| bs.pending.finalize(promoted.pending_idx, ids),
+        );
+        rebase_tier(
+            survivors,
+            |s| &mut s.slot_idx,
+            |ids| bs.slot_states.finalize(promoted.slot_idx, ids),
+        );
 
         // Epoch + longtail finalize in their own groups, but — unlike the
         // always-rolled tiers above — forks roll these lazily, so finalize only
@@ -893,24 +830,20 @@ impl BeaconStateTile {
         // it); the group returns the fresh ids 1:1, which we map old→new and
         // write back onto every bundle referencing the old entry.
         if let Some(winner_epoch) = promoted.epoch_idx {
-            let new_epoch = bs.epoch.finalize(winner_epoch, epoch_idxs, old_fin_epoch);
-            for sid in survivors.iter_mut() {
-                if let Some(old) = sid.epoch_idx &&
-                    let Some(pos) = epoch_idxs.iter().position(|&e| e == old)
-                {
-                    sid.epoch_idx = Some(new_epoch[pos]);
-                }
-            }
+            rebase_lazy_tier(
+                survivors,
+                epoch_idxs,
+                |s| &mut s.epoch_idx,
+                || bs.epoch.finalize(winner_epoch, epoch_idxs, old_fin_epoch),
+            );
         }
         if let Some(winner_longtail) = promoted.longtail_idx {
-            let new_longtail = bs.longtail.finalize(winner_longtail, longtail_idxs);
-            for sid in survivors.iter_mut() {
-                if let Some(old) = sid.longtail_idx &&
-                    let Some(pos) = longtail_idxs.iter().position(|&l| l == old)
-                {
-                    sid.longtail_idx = Some(new_longtail[pos]);
-                }
-            }
+            rebase_lazy_tier(
+                survivors,
+                longtail_idxs,
+                |s| &mut s.longtail_idx,
+                || bs.longtail.finalize(winner_longtail, longtail_idxs),
+            );
         }
 
         // Publish-with-the-guard: the head's rewritten bundle replaces the
@@ -939,8 +872,8 @@ impl BeaconStateTile {
         // scratch (compute_deltas weights LMD votes by effective balance).
         let n = {
             let validators = self.state.read_view(self.last_applied).validators;
-            self.eff_scratch.clear();
-            self.eff_scratch.extend(validators.iter_effective_balances());
+            self.stf_scratch.eff.clear();
+            self.stf_scratch.eff.extend(validators.iter_effective_balances());
             validators.count()
         };
 
@@ -949,12 +882,12 @@ impl BeaconStateTile {
             n,
             self.fork_choice.indices.as_slice(),
             &self.prev_eff_balances,
-            &self.eff_scratch,
+            &self.stf_scratch.eff,
         );
         self.fork_choice.apply_score_changes(&mut deltas);
         // Remember this recompute's balances so the next one can net the change.
         self.prev_eff_balances.clear();
-        self.prev_eff_balances.extend_from_slice(&self.eff_scratch);
+        self.prev_eff_balances.extend_from_slice(&self.stf_scratch.eff);
         self.lift_checkpoints();
     }
 
@@ -1023,31 +956,14 @@ impl BeaconStateTile {
                 producers.produce(self.status_event());
             }
             Some(Feedback::RequestParent(parent_root)) => {
-                // Buffer the orphan on its parent; `apply_pending_blocks`
-                // retries it once the parent applies. Request the parent only
-                // when following and not already held awaiting columns —
-                // re-requesting a held block floods by-root, and during sync
-                // the range/DA path delivers it.
-                let request =
-                    self.mode.is_following() && !self.dc_pending_blocks.contains_key(&parent_root);
                 let peer = m.stream_id.peer();
-                self.pending_blocks
-                    .entry(parent_root)
-                    .and_modify(|v| v.push(PendingBlock::Gossip(m)))
-                    .or_insert_with(|| vec![PendingBlock::Gossip(m)]);
-                if request {
-                    producers.produce(PeerEvent::SendBlocksByRootRequest {
-                        request_id: 0,
-                        p2p_peer: Some(peer),
-                        block_root: parent_root,
-                    })
-                }
+                self.buffer_orphan(parent_root, PendingBlock::Gossip(m), peer, producers);
             }
             Some(Feedback::AwaitData(block_root)) => {
                 if do_relay {
                     Self::relay_gossip(&m, producers);
                 }
-                self.dc_pending_blocks.entry(block_root).or_insert(PendingBlock::Gossip(m));
+                self.buffer_awaiting_columns(block_root, PendingBlock::Gossip(m));
             }
             Some(Feedback::Ignore) | None => {}
         }
@@ -1061,6 +977,34 @@ impl BeaconStateTile {
                 self.replay_pending_block(child, true, producers);
             }
         }
+    }
+
+    /// Buffer an orphan on its missing parent; `apply_pending_blocks`
+    /// retries it once the parent applies. Request the parent only when
+    /// following and not already held awaiting columns — re-requesting a held
+    /// block floods by-root, and during sync the range/DA path delivers it.
+    fn buffer_orphan(
+        &mut self,
+        parent_root: B256,
+        pending: PendingBlock,
+        peer: usize,
+        producers: &mut Producers,
+    ) {
+        let request =
+            self.mode.is_following() && !self.dc_pending_blocks.contains_key(&parent_root);
+        self.pending_blocks.entry(parent_root).or_default().push(pending);
+        if request {
+            producers.produce(PeerEvent::SendBlocksByRootRequest {
+                request_id: 0,
+                p2p_peer: Some(peer),
+                block_root: parent_root,
+            })
+        }
+    }
+
+    /// Hold a fully-prechecked block until its data columns are available.
+    fn buffer_awaiting_columns(&mut self, block_root: B256, pending: PendingBlock) {
+        self.dc_pending_blocks.entry(block_root).or_insert(pending);
     }
 
     fn replay_pending_block(
@@ -1132,28 +1076,16 @@ impl BeaconStateTile {
                     producers.produce(self.status_event());
                 }
                 Feedback::RequestParent(parent_root) => {
-                    // Buffer the orphan on its parent; retried by
-                    // `apply_pending_blocks` once the parent applies. Request
-                    // it only when following and not already held awaiting
-                    // columns.
-                    let request = self.mode.is_following() &&
-                        !self.dc_pending_blocks.contains_key(&parent_root);
-                    self.pending_blocks
-                        .entry(parent_root)
-                        .and_modify(|v| v.push(PendingBlock::Rpc(sender, tcache)))
-                        .or_insert_with(|| vec![PendingBlock::Rpc(sender, tcache)]);
-                    if request {
-                        producers.produce(PeerEvent::SendBlocksByRootRequest {
-                            request_id: 0,
-                            p2p_peer: Some(sender.peer()),
-                            block_root: parent_root,
-                        })
-                    }
+                    let peer = sender.peer();
+                    self.buffer_orphan(
+                        parent_root,
+                        PendingBlock::Rpc(sender, tcache),
+                        peer,
+                        producers,
+                    );
                 }
                 Feedback::AwaitData(block_root) => {
-                    self.dc_pending_blocks
-                        .entry(block_root)
-                        .or_insert(PendingBlock::Rpc(sender, tcache));
+                    self.buffer_awaiting_columns(block_root, PendingBlock::Rpc(sender, tcache));
                 }
                 Feedback::Ignore => {}
                 Feedback::Reject(_) => producers.produce(PeerEvent::RpcMisbehaviour {
@@ -1226,12 +1158,7 @@ impl BeaconStateTile {
             parsed.body_root,
             parsed.state_root,
             Some(&sref),
-            &mut self.active_scratch,
-            &mut self.postponed_scratch,
-            &mut self.replace_u64_scratch,
-            &mut self.replace_u8_scratch,
-            &mut self.eff_scratch,
-            &mut self.state_hash_scratch,
+            &mut self.stf_scratch,
             &mut self.attestation_votes_scratch,
             &mut self.sig_batch,
         );
@@ -1278,8 +1205,8 @@ impl BeaconStateTile {
     ) {
         // Fold block-included attestations into the LMD vote tracker.
         for i in 0..self.attestation_votes_scratch.len() {
-            let (vi, root, ep) = self.attestation_votes_scratch[i];
-            self.on_attestation(vi as usize, root, ep);
+            let v = self.attestation_votes_scratch[i];
+            self.on_attestation(v.validator as usize, v.block_root, v.target_epoch);
         }
 
         // TODO(EL): pass the execution payload block hash to fork choice and
@@ -1528,7 +1455,7 @@ impl BeaconStateTile {
         }
         let committee_len = committee.len();
 
-        self.active_scratch.clear();
+        self.stf_scratch.active.clear();
         for (j, &vi32) in committee.iter().enumerate() {
             let byte_idx = j / 8;
             let bit_idx = j % 8;
@@ -1540,9 +1467,9 @@ impl BeaconStateTile {
             if vi32 as usize >= count {
                 return Feedback::Reject(None);
             }
-            self.active_scratch.push(vi32);
+            self.stf_scratch.active.push(vi32);
         }
-        if self.active_scratch.is_empty() {
+        if self.stf_scratch.active.is_empty() {
             return Feedback::Reject(None);
         }
 
@@ -1553,14 +1480,14 @@ impl BeaconStateTile {
         if !Self::verify_aggregate_and_proof_sigs(
             &view,
             &parsed,
-            &self.active_scratch,
+            &self.stf_scratch.active,
             &mut self.sig_batch,
         ) {
             return Feedback::Reject(None);
         }
 
-        for i in 0..self.active_scratch.len() {
-            let vi = self.active_scratch[i] as usize;
+        for i in 0..self.stf_scratch.active.len() {
+            let vi = self.stf_scratch.active[i] as usize;
             self.on_attestation(vi, parsed.beacon_block_root, parsed.target_epoch);
         }
         Feedback::Accept(None)
@@ -1889,6 +1816,58 @@ impl Tile<SilverSpine> for BeaconStateTile {
 /// current_slot >= aggregate.slot`.
 const ATTESTATION_PROPAGATION_SLOT_RANGE: u64 = 32;
 
+/// Re-anchor one always-rolled tier: collect each survivor's id for the tier
+/// (`proj`), run the group's `finalize`, and write the fresh ids back 1:1.
+fn rebase_tier<I: Copy>(
+    survivors: &mut [StateId],
+    proj: impl Fn(&mut StateId) -> &mut I,
+    finalize: impl FnOnce(&ArrayVec<I, MAX_SURVIVORS>) -> Vec<I>,
+) {
+    let ids: ArrayVec<I, MAX_SURVIVORS> = survivors.iter_mut().map(|s| *proj(s)).collect();
+    let new = finalize(&ids);
+    for (sid, &n) in survivors.iter_mut().zip(&new) {
+        *proj(sid) = n;
+    }
+}
+
+/// Re-anchor a lazily-rolled tier: `old_idxs` is the pre-deduped set of live
+/// entries (one cumulative log re-based once when siblings share it); the
+/// group's `finalize` returns the fresh ids 1:1, mapped old→new onto every
+/// bundle referencing an old entry.
+fn rebase_lazy_tier<I: Copy + PartialEq>(
+    survivors: &mut [StateId],
+    old_idxs: &[I],
+    proj: impl Fn(&mut StateId) -> &mut Option<I>,
+    finalize: impl FnOnce() -> Vec<I>,
+) {
+    let new = finalize();
+    for sid in survivors.iter_mut() {
+        if let Some(old) = *proj(sid) &&
+            let Some(pos) = old_idxs.iter().position(|&e| e == old)
+        {
+            *proj(sid) = Some(new[pos]);
+        }
+    }
+}
+
+/// Resolve a pending block's SSZ via its source consumer; keep it iff its
+/// slot is above the finalized boundary (unreadable buffers are dropped).
+fn pending_block_outlives(
+    gossip_consumer: &mut TRandomAccess,
+    rpc_consumer: &mut TRandomAccess,
+    msg: &PendingBlock,
+    finalized_slot: u64,
+) -> bool {
+    let acquired = match msg {
+        PendingBlock::Gossip(g) => gossip_consumer.acquire(g.ssz),
+        PendingBlock::Rpc(_, ssz) => rpc_consumer.acquire(*ssz),
+    };
+    if let Ok((buffer, _)) = acquired.buffer() {
+        return SignedBeaconBlockView::slot(buffer) > finalized_slot;
+    }
+    false
+}
+
 fn is_aggregator(committee_len: usize, selection_proof: &[u8; 96]) -> bool {
     const TARGET_AGGREGATORS_PER_COMMITTEE: u64 = 16;
     let modulo = (committee_len as u64 / TARGET_AGGREGATORS_PER_COMMITTEE).max(1);
@@ -1937,13 +1916,15 @@ mod tests {
     use silver_beacon_state_data::{
         BLSPubkey, BalancesGroup, CurrentParticipationGroup, EPOCHS_PER_SLASHINGS_VECTOR,
         EpochGroup, EpochState, EpochStateFinalized, FinalizedValidators, Immutable,
-        InactivityScoresGroup, LongtailGroup, LongtailState, PROPOSER_LOOKAHEAD_SIZE, PendingGroup,
-        PendingQueues, PreviousParticipationGroup, SLOTS_PER_HISTORICAL_ROOT, SlotStateFinalized,
-        SlotStateGroup, ValSeed, ValidatorsGroup, Withdrawals, validator_capacity,
+        InactivityScoresGroup, LongtailGroup, LongtailState, PROPOSER_LOOKAHEAD_SIZE,
+        PendingDeposit, PendingGroup, PendingQueues, PreviousParticipationGroup,
+        SLOTS_PER_HISTORICAL_ROOT, SlotStateFinalized, SlotStateGroup, SlotStateId, ValSeed,
+        ValidatorsGroup, Withdrawals, validator_capacity,
     };
     use silver_common::{TCache, TCacheProducer, ssz_view::SIGNED_AGG_PROOF_MIN};
 
     use super::*;
+    use crate::test_signing;
 
     const MAX_EFFECTIVE_BALANCE: u64 = 32_000_000_000;
     const ANCHOR_ROOT: B256 = [0x01u8; 32];
@@ -1992,12 +1973,12 @@ mod tests {
     /// signature-checking handlers accept; otherwise collision-free
     /// placeholder pubkeys.
     fn build_seed_finalized(n: usize, real_keys: bool) -> (EpochStateFinalized, Vec<ValSeed>) {
-        let cp_fin = silver_beacon_state_data::Checkpoint { epoch: 0, root: ANCHOR_ROOT };
+        let cp_fin = Checkpoint { epoch: 0, root: ANCHOR_ROOT };
         let seeds: Vec<ValSeed> = (0..n)
             .map(|i| {
                 let (pubkey, withdrawal_credentials) = if real_keys {
-                    let sk_idx = i % crate::test_signing::PRIVKEY_HEX.len();
-                    let pk_bytes = crate::test_signing::pubkey_pk(sk_idx).to_bytes();
+                    let sk_idx = i % test_signing::PRIVKEY_HEX.len();
+                    let pk_bytes = test_signing::pubkey_pk(sk_idx).to_bytes();
                     // BLS-prefix creds: [0]=0x00, [1..]=hash(pk)[1..].
                     let mut creds = Withdrawals(ssz_hash::sha256(&pk_bytes));
                     creds.0[0] = 0x00;
@@ -2134,10 +2115,7 @@ mod tests {
         // this test never reads it).
         let anchor_epoch_idx = {
             let mut g = tile.state.write();
-            let mut w = match tile.last_applied.epoch_idx {
-                Some(pe) => g.epoch.roll_from(pe),
-                None => g.epoch.roll_fresh(),
-            };
+            let mut w = g.epoch.roll_inheriting(tile.last_applied.epoch_idx);
             let es = w.state_mut();
             for i in 0..PROPOSER_LOOKAHEAD_SIZE {
                 es.proposer_lookahead[i] = i as u64;
@@ -2213,7 +2191,7 @@ mod tests {
         // Past shard-committee-period so the exit is permitted.
         seed_tile_with_keys(&mut tile, 4, 256 * SLOTS_PER_EPOCH);
         let imm = seed_immutable(&tile);
-        let buf = crate::test_signing::sign_voluntary_exit(0, 0, 0, &imm);
+        let buf = test_signing::sign_voluntary_exit(0, 0, 0, &imm);
         assert_eq!(tile.handle_voluntary_exit(&buf), Feedback::Accept(None));
     }
 
@@ -2241,7 +2219,7 @@ mod tests {
         let mut tile = make_tile();
         seed_tile_with_keys(&mut tile, 4, 0);
         let imm = seed_immutable(&tile);
-        let buf = crate::test_signing::sign_proposer_slashing(0, 0, 0, &imm);
+        let buf = test_signing::sign_proposer_slashing(0, 0, 0, &imm);
         assert_eq!(tile.handle_proposer_slashing(&buf), Feedback::Accept(None));
     }
 
@@ -2302,7 +2280,7 @@ mod tests {
         let mut tile = make_tile();
         seed_tile_with_keys(&mut tile, 4, 0);
         let imm = seed_immutable(&tile);
-        let buf = crate::test_signing::sign_attester_slashing_double_vote(0, 0, 0, 0, &imm);
+        let buf = test_signing::sign_attester_slashing_double_vote(0, 0, 0, 0, &imm);
         assert_eq!(tile.handle_attester_slashing(&buf), Feedback::Accept(None));
     }
 
@@ -2311,8 +2289,8 @@ mod tests {
         let mut tile = make_tile();
         seed_tile_with_keys(&mut tile, 4, 0);
         let imm = seed_immutable(&tile);
-        let ia1 = crate::test_signing::build_indexed_attestation(0, 0, 0, 0, 0, 0xAA, &imm);
-        let ia2 = crate::test_signing::build_indexed_attestation(1, 1, 0, 0, 0, 0xBB, &imm);
+        let ia1 = test_signing::build_indexed_attestation(0, 0, 0, 0, 0, 0xAA, &imm);
+        let ia2 = test_signing::build_indexed_attestation(1, 1, 0, 0, 0, 0xBB, &imm);
         let buf = wrap_attester_slashing(&ia1, &ia2);
         assert_eq!(tile.handle_attester_slashing(&buf), Feedback::Reject(None));
     }
@@ -2356,7 +2334,7 @@ mod tests {
         seed_tile_with_keys(&mut tile, 4, 0);
         let imm = seed_immutable(&tile);
         let to_addr = [0x42u8; 20];
-        let buf = crate::test_signing::sign_bls_to_execution_change(0, 0, &to_addr, &imm);
+        let buf = test_signing::sign_bls_to_execution_change(0, 0, &to_addr, &imm);
         assert_eq!(tile.handle_bls_to_execution_change(&buf), Feedback::Accept(None));
     }
 
@@ -2437,7 +2415,7 @@ mod tests {
         let beacon_block_root = tile.last_applied_block_root;
         let target_root = tile.last_applied_block_root;
         let (slot, ci, pos, csize) = find_committee_for_vi0(tile);
-        crate::test_signing::sign_aggregate_and_proof(
+        test_signing::sign_aggregate_and_proof(
             0,
             0,
             slot,
@@ -2460,7 +2438,7 @@ mod tests {
         let (slot, ci, _, _) = find_committee_for_vi0(&tile);
         let imm = seed_immutable(&tile);
         let bbr = [0xAAu8; 32];
-        let buf = crate::test_signing::sign_single_attestation(
+        let buf = test_signing::sign_single_attestation(
             0,
             0,
             ci as u64,
@@ -2587,10 +2565,9 @@ mod tests {
 
     /// A `PendingDeposit` for a brand-new validator (spec key 0), signed under
     /// the genesis deposit domain (fork version + gvr both zero).
-    fn signed_new_validator_deposit()
-    -> (silver_beacon_state_data::BLSPubkey, silver_beacon_state_data::PendingDeposit) {
+    fn signed_new_validator_deposit() -> (BLSPubkey, PendingDeposit) {
         const DOMAIN_DEPOSIT: u32 = 0x03;
-        let pk = crate::test_signing::pubkey_bytes(0);
+        let pk = test_signing::pubkey_bytes(0);
         let wc = Withdrawals([0xAAu8; 32]);
         let amount = 32_000_000_000u64;
 
@@ -2601,9 +2578,9 @@ mod tests {
         ]);
         let domain = bls::compute_domain(DOMAIN_DEPOSIT, [0; 4], &[0u8; 32]);
         let signing_root = bls::compute_signing_root(&msg_root, &domain);
-        let sig = crate::test_signing::sign(0, &signing_root);
+        let sig = test_signing::sign(0, &signing_root);
 
-        (pk, silver_beacon_state_data::PendingDeposit {
+        (pk, PendingDeposit {
             pubkey: pk,
             withdrawal_credentials: wc,
             amount,

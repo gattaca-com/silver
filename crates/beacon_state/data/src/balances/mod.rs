@@ -16,7 +16,7 @@ pub use delta::{BalancesReader, BalancesView, BalancesWriteView};
 pub use finalized::FinalizedBalances;
 
 use crate::{
-    buffer::{Id, Ring},
+    buffer::{Id, Ring, reanchor_survivors},
     types::{B256, ColumnLenMismatch, SLOTS_RING_N},
 };
 
@@ -27,8 +27,8 @@ pub type BalancesId = Id<BalancesGroup>;
 /// granularity for `List[uint64]` (4 elements share one merkle leaf).
 fn pack_chunk(vals: [u64; 4]) -> B256 {
     let mut leaf = [0u8; 32];
-    for (slot, v) in vals.iter().enumerate() {
-        leaf[slot * 8..slot * 8 + 8].copy_from_slice(&v.to_le_bytes());
+    for (lane, v) in vals.iter().enumerate() {
+        leaf[lane * 8..lane * 8 + 8].copy_from_slice(&v.to_le_bytes());
     }
     leaf
 }
@@ -46,7 +46,7 @@ impl BalancesGroup {
     }
 
     /// Group over a base decoded from the SSZ `balances` byte range
-    /// (little-endian `u64`s), merkle tree included; `new(cap, &[])` is the
+    /// (little-endian `u64`s), merkle tree included; `new(cap, 0, &[])` is the
     /// empty group.
     pub fn new(cap: usize, count: usize, ssz_bytes: &[u8]) -> Result<Self, ColumnLenMismatch> {
         Ok(Self { base: FinalizedBalances::new(cap, count, ssz_bytes)?, forks: Ring::default() })
@@ -80,21 +80,12 @@ impl BalancesGroup {
     }
 
     pub fn finalize(&mut self, winner: BalancesId, survivors: &[BalancesId]) -> Vec<BalancesId> {
-        let mut fresh: Vec<BalancesId> = Vec::with_capacity(survivors.len());
-        for (i, &s) in survivors.iter().enumerate() {
-            let new_id = match survivors[..i].iter().position(|&p| p == s) {
-                Some(seen) => fresh[seen],
-                None => self.reanchor(s, winner).commit(),
-            };
-            fresh.push(new_id);
-        }
+        let fresh = reanchor_survivors(survivors, |s| self.reanchor(s, winner).commit());
 
         let Self { base, forks } = self;
         forks.get(winner).promote_into_base(base);
 
-        if let Some(&oldest) = fresh.iter().min() {
-            forks.free(oldest);
-        }
+        forks.free_oldest(&fresh);
 
         fresh
     }

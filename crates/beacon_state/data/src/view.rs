@@ -98,16 +98,20 @@ impl BeaconStateOwner {
         );
         // Hold the always-written tiers' writers (rolled from the parent's
         // idx); their ids surface only at `commit`.
-        let view = StateWriterView::new(
-            &s.immutable,
-            s.balances.roll_from(parent.balances_idx),
-            s.pending.roll_from(parent.pending_idx),
-            s.previous_participation.roll_from(parent.previous_participation_idx),
-            s.current_participation.roll_from(parent.current_participation_idx),
-            s.inactivity.roll_from(parent.inactivity_idx),
-            s.slot_states.roll_from(parent.slot_idx),
-            s.validators.roll_from(parent.validators_idx),
-        );
+        let view = StateWriterView {
+            imm: &s.immutable,
+            balances: s.balances.roll_from(parent.balances_idx),
+            pending: s.pending.roll_from(parent.pending_idx),
+            previous_participation: s
+                .previous_participation
+                .roll_from(parent.previous_participation_idx),
+            current_participation: s
+                .current_participation
+                .roll_from(parent.current_participation_idx),
+            inactivity: s.inactivity.roll_from(parent.inactivity_idx),
+            slot: s.slot_states.roll_from(parent.slot_idx),
+            validators: s.validators.roll_from(parent.validators_idx),
+        };
         (view, &mut s.epoch, &mut s.longtail)
     }
 

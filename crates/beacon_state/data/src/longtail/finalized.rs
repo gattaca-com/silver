@@ -1,7 +1,7 @@
 use std::io::{self, Write};
 
 use crate::{
-    buffer::Reset,
+    buffer::{Reset, drain_promoted_prefix},
     types::{HistoricalSummary, SYNC_COMMITTEE_SIZE, SyncCommittee},
 };
 
@@ -58,8 +58,7 @@ impl LongtailState {
     /// base. Sync committees are absolute (replace, no re-base); only the
     /// cumulative `historical_summaries` log drops the promoted prefix.
     pub(super) fn prune_to_base(&mut self, promoted: &LongtailState) {
-        let drop = promoted.historical_summaries.len().min(self.historical_summaries.len());
-        self.historical_summaries.drain(..drop);
+        drain_promoted_prefix(&mut self.historical_summaries, promoted.historical_summaries.len());
     }
 }
 

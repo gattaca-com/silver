@@ -2,7 +2,8 @@ use std::io::{self, Write};
 
 use super::delta::SlotStateDelta;
 use crate::{
-    encode::write_eth1_data,
+    buffer::write_ring_window,
+    encode::{write_b256_slice, write_eth1_data},
     types::{B256, MAX_ETH1_VOTES, SLOTS_PER_HISTORICAL_ROOT, SlotState},
 };
 
@@ -54,8 +55,8 @@ impl SlotStateFinalized {
     /// (consecutive fixed-part fields, spec index order) — checkpoint
     /// encoding.
     pub(crate) fn write_roots_ssz<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        crate::encode::write_b256_slice(w, &self.block_roots)?;
-        crate::encode::write_b256_slice(w, &self.state_roots)
+        write_b256_slice(w, &self.block_roots)?;
+        write_b256_slice(w, &self.state_roots)
     }
 
     /// SSZ-encode the `eth1_votes` list — checkpoint section body (the base
@@ -66,9 +67,7 @@ impl SlotStateFinalized {
         }
         Ok(())
     }
-}
 
-impl SlotStateFinalized {
     /// Fold a fork's delta into the base: adopt its `SlotState`, then write its
     /// appended block/state roots into the circular buffers at the slots they
     /// cover (`(old_fin_slot + i) % cap`). The data half of finalization.
@@ -84,15 +83,7 @@ impl SlotStateFinalized {
         );
         self.slot.clone_from(&delta.slot);
 
-        let block_cap = self.block_roots.len();
-        debug_assert!(delta.block_roots.len() <= block_cap, "delta block_roots exceeds ring cap");
-        for (i, r) in delta.block_roots.iter().enumerate() {
-            self.block_roots[(old_fin_slot + i) % block_cap] = *r;
-        }
-        let state_cap = self.state_roots.len();
-        debug_assert!(delta.state_roots.len() <= state_cap, "delta state_roots exceeds ring cap");
-        for (i, r) in delta.state_roots.iter().enumerate() {
-            self.state_roots[(old_fin_slot + i) % state_cap] = *r;
-        }
+        write_ring_window(&mut self.block_roots, old_fin_slot, &delta.block_roots);
+        write_ring_window(&mut self.state_roots, old_fin_slot, &delta.state_roots);
     }
 }

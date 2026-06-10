@@ -14,7 +14,9 @@ use silver_beacon_state::{
     },
     tile::BeaconStateTile,
 };
-use silver_beacon_state_data::{BeaconBlockHeader, BeaconStateOwner};
+use silver_beacon_state_data::{
+    BeaconBlockHeader, BeaconState, BeaconStateOwner, SpecConfig, StateWriterView,
+};
 use silver_common::{
     BeaconStateEvent, DataColumnsAvailable, GossipTopic, MessageId, NewGossipMsg, P2pStreamId,
     PeerEvent, RpcInbound, RpcResponseInbound, SilverSpine, StreamProtocol, SyncUpdate, TCache,
@@ -124,15 +126,7 @@ impl Harness {
     pub fn new(wall_slot: u64, checkpoint_ssz: &[u8]) -> Self {
         Self::build(wall_slot, |ticker, gc, rc| {
             let state = BeaconStateOwner::pre_bootstrap();
-            BeaconStateTile::new(
-                ticker,
-                silver_beacon_state_data::SpecConfig::mainnet(),
-                state,
-                gc,
-                rc,
-                checkpoint_ssz,
-                &[],
-            )
+            BeaconStateTile::new(ticker, SpecConfig::mainnet(), state, gc, rc, checkpoint_ssz, &[])
         })
     }
 
@@ -294,25 +288,21 @@ impl Harness {
         // Decompose the EF post-state into per-tier finalized bases with an
         // empty anchored delta, then hash via `StateWriterView` (mirrors
         // ef_common).
-        let mut bs = silver_beacon_state_data::BeaconState::decompose(
-            post_ssz,
-            &silver_beacon_state_data::SpecConfig::mainnet(),
-            None,
-        )
-        .expect("decompose post.ssz");
+        let mut bs = BeaconState::decompose(post_ssz, &SpecConfig::mainnet(), None)
+            .expect("decompose post.ssz");
 
         // Hold a fresh fork's writers directly (`roll_fresh` anchors each at
         // the decoded base); epoch/longtail stay lazy (`None` reads the base).
-        let view = silver_beacon_state_data::StateWriterView::new(
-            &bs.immutable,
-            bs.balances.roll_fresh(),
-            bs.pending.roll_fresh(),
-            bs.previous_participation.roll_fresh(),
-            bs.current_participation.roll_fresh(),
-            bs.inactivity.roll_fresh(),
-            bs.slot_states.roll_fresh(),
-            bs.validators.roll_fresh(),
-        );
+        let view = StateWriterView {
+            imm: &bs.immutable,
+            balances: bs.balances.roll_fresh(),
+            pending: bs.pending.roll_fresh(),
+            previous_participation: bs.previous_participation.roll_fresh(),
+            current_participation: bs.current_participation.roll_fresh(),
+            inactivity: bs.inactivity.roll_fresh(),
+            slot: bs.slot_states.roll_fresh(),
+            validators: bs.validators.roll_fresh(),
+        };
 
         let mut scratch = StateHashScratch::new();
 

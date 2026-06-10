@@ -42,7 +42,7 @@ fn randao_diverged_hits_delta_then_base() {
 
 /// Finalization overlays the winner fork's per-completed-epoch logs into the
 /// base circular buffers at `(old_fin_epoch + k) % cap` and replaces the scalar
-/// `EpochState`. (Was `apply_delta_overlays_epoch_tier`.)
+/// `EpochState`.
 #[test]
 fn finalize_overlays_rings_and_replaces_state() {
     let mut base = EpochStateFinalized::default();

@@ -18,16 +18,19 @@ use silver_common::{
         BeaconBlockHeaderView, CONSOLIDATION_REQUEST_SIZE, ConsolidationRequestView,
         DEPOSIT_CONTRACT_TREE_DEPTH, DEPOSIT_REQUEST_SIZE, DEPOSIT_SIZE, DepositDataView,
         DepositRequestView, DepositView, Eth1DataView, ExecutionPayloadView,
-        PROPOSER_SLASHING_SIZE, ProposerSlashingView, SIGNED_BLS_CHANGE_SIZE,
-        SIGNED_VOLUNTARY_EXIT_SIZE, SignedBeaconBlockView, SignedBlsToExecutionChangeView,
-        SignedVoluntaryExitView, SyncAggregateView, WITHDRAWAL_REQUEST_SIZE, WITHDRAWAL_SIZE,
-        WithdrawalRequestView, WithdrawalView,
+        PROPOSER_SLASHING_SIZE, ProposerSlashingView, SIGNED_BEACON_BLOCK_MIN,
+        SIGNED_BLS_CHANGE_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE, SignedBeaconBlockView,
+        SignedBlsToExecutionChangeView, SignedVoluntaryExitView, SyncAggregateView,
+        WITHDRAWAL_REQUEST_SIZE, WITHDRAWAL_SIZE, WithdrawalRequestView, WithdrawalView,
     },
 };
 
 use crate::{
     bls::{self, SigBatch},
-    epoch_transition::{self, EPOCHS_PER_ETH1_VOTING_PERIOD},
+    epoch_transition::{
+        self, BASE_REWARD_FACTOR, EFFECTIVE_BALANCE_INCREMENT, EPOCHS_PER_ETH1_VOTING_PERIOD,
+        PROPOSER_WEIGHT, WEIGHT_DENOMINATOR,
+    },
     error::{
         AttestationError, AttesterSlashingError, BlockError, BlsToExecutionChangeError, Error,
         ExecutionPayloadError, ProposerSlashingError, Result, SyncAggregateError,
@@ -44,7 +47,6 @@ const WHISTLEBLOWER_REWARD_QUOTIENT: u64 = 4096;
 const FULL_EXIT_REQUEST_AMOUNT: u64 = 0;
 const MIN_ACTIVATION_BALANCE: u64 = 32_000_000_000;
 const UNSET_DEPOSIT_REQUESTS_START_INDEX: u64 = u64::MAX;
-const EFFECTIVE_BALANCE_INCREMENT: u64 = 1_000_000_000;
 const COMPOUNDING_WITHDRAWAL_PREFIX: u8 = 0x02;
 // BLS G2 point at infinity (compressed): 0xc0 followed by 95 zero bytes.
 const G2_POINT_AT_INFINITY: [u8; 96] = {
@@ -52,6 +54,95 @@ const G2_POINT_AT_INFINITY: [u8; 96] = {
     buf[0] = 0xc0;
     buf
 };
+
+/// One attester's block-included vote, emitted by `process_attestations` for
+/// the tile to fold into the LMD vote tracker.
+#[derive(Clone, Copy)]
+pub struct AttestationVote {
+    pub validator: u32,
+    pub block_root: B256,
+    pub target_epoch: Epoch,
+}
+
+/// Reusable scratch buffers threaded together through the state transition
+/// (`apply_block` → `process_slots` → `process_epoch`).
+pub struct StfScratch {
+    /// Active set / committee participants / participating indices — reused
+    /// across the epoch-transition and block-body passes.
+    pub active: Vec<u32>,
+    pub postponed: Vec<common::PendingDeposit>,
+    /// Sparse-edit rebuild buffers + effective-balance column for the
+    /// epoch-transition passes.
+    pub replace_u64: Vec<(u32, u64)>,
+    pub replace_u8: Vec<(u32, u8)>,
+    pub eff: Vec<u64>,
+    /// Merged-ring buffers for `hash_tree_root_state`.
+    pub state_hash: ssz_hash::StateHashScratch,
+}
+
+impl StfScratch {
+    pub fn new(validator_cap: usize) -> Self {
+        Self {
+            active: Vec::with_capacity(validator_cap.max(ssz_view::MAX_ATTESTING_INDICES)),
+            postponed: Vec::with_capacity(epoch_transition::MAX_PENDING_DEPOSITS_PER_EPOCH),
+            replace_u64: Vec::with_capacity(validator_cap),
+            replace_u8: Vec::with_capacity(validator_cap),
+            eff: Vec::with_capacity(validator_cap),
+            state_hash: ssz_hash::StateHashScratch::new(),
+        }
+    }
+}
+
+/// Walk an SSZ variable-size list's offset table, calling `f(item)` per
+/// element. Empty or unparseable tables yield zero items; an inverted or
+/// out-of-bounds offset pair yields `bad_offsets(start, end)`.
+fn for_each_ssz_list_item<E>(
+    data: &[u8],
+    bad_offsets: impl Fn(usize, usize) -> E,
+    mut f: impl FnMut(&[u8]) -> std::result::Result<(), E>,
+) -> std::result::Result<(), E> {
+    if data.is_empty() {
+        return Ok(());
+    }
+    let first_offset = u32::from_le_bytes(data[..4].try_into().unwrap_or([0; 4])) as usize;
+    if first_offset == 0 || !first_offset.is_multiple_of(4) || first_offset > data.len() {
+        return Ok(());
+    }
+    let count = first_offset / 4;
+    for i in 0..count {
+        let start = u32::from_le_bytes(data[i * 4..(i + 1) * 4].try_into().unwrap()) as usize;
+        let end = if i + 1 < count {
+            u32::from_le_bytes(data[(i + 1) * 4..(i + 2) * 4].try_into().unwrap()) as usize
+        } else {
+            data.len()
+        };
+        if start >= end || end > data.len() {
+            return Err(bad_offsets(start, end));
+        }
+        f(&data[start..end])?;
+    }
+    Ok(())
+}
+
+/// Parse + validate an AttesterSlashing's two inner IndexedAttestation
+/// offsets.
+fn attester_slashing_inner_offsets(
+    slashing: &[u8],
+) -> std::result::Result<(usize, usize), AttesterSlashingError> {
+    if slashing.len() < 8 {
+        return Err(AttesterSlashingError::TooShort { len: slashing.len(), min: 8 });
+    }
+    let off1 = u32::from_le_bytes(slashing[0..4].try_into().unwrap()) as usize;
+    let off2 = u32::from_le_bytes(slashing[4..8].try_into().unwrap()) as usize;
+    if off1 + 132 > slashing.len() || off2 + 132 > slashing.len() || off2 < off1 + 132 {
+        return Err(AttesterSlashingError::BadInnerOffsets {
+            off1,
+            off2,
+            slashing_len: slashing.len(),
+        });
+    }
+    Ok((off1, off2))
+}
 
 #[timed]
 #[allow(clippy::too_many_arguments)]
@@ -68,13 +159,8 @@ pub fn apply_block(
     body_root: B256,
     block_state_root: B256,
     shuffling: Option<&ShufflingRef<'_>>,
-    active_scratch: &mut Vec<u32>,
-    postponed_scratch: &mut Vec<common::PendingDeposit>,
-    replace_u64_scratch: &mut Vec<(u32, u64)>,
-    replace_u8_scratch: &mut Vec<(u32, u8)>,
-    eff_scratch: &mut Vec<u64>,
-    state_hash_scratch: &mut ssz_hash::StateHashScratch,
-    attestation_votes: &mut Vec<(u32, B256, Epoch)>,
+    scratch: &mut StfScratch,
+    attestation_votes: &mut Vec<AttestationVote>,
     sig_batch: &mut SigBatch,
 ) -> Result<(Option<EpochId>, Option<LongtailId>)> {
     let wrap = |kind: BlockError| Error::invalid_block(block_state_root, kind);
@@ -90,25 +176,16 @@ pub fn apply_block(
     .map_err(wrap)?;
 
     let (epoch_idx, longtail_idx) = if block_slot > head_slot {
-        process_slots(
-            cfg,
-            view,
-            epoch,
-            longtail,
-            parent,
-            block_slot,
-            active_scratch,
-            postponed_scratch,
-            replace_u64_scratch,
-            replace_u8_scratch,
-            eff_scratch,
-            state_hash_scratch,
-        )
+        process_slots(cfg, view, epoch, longtail, parent, block_slot, scratch)
     } else {
         (parent.epoch_idx, parent.longtail_idx)
     };
 
-    let body = if block_bytes.len() > 184 { &block_bytes[184..] } else { &[] };
+    let body = if block_bytes.len() > SIGNED_BEACON_BLOCK_MIN {
+        SignedBeaconBlockView::body(block_bytes)
+    } else {
+        &[]
+    };
     // Resolve the boundary tiers AFTER process_slots (it may have rolled
     // them). process_block can't change them, so the hash reuses these.
     let epoch_view = epoch.view_opt(epoch_idx);
@@ -127,7 +204,7 @@ pub fn apply_block(
         view,
         &epoch_view,
         &longtail_view,
-        active_scratch,
+        &mut scratch.active,
         sig_batch,
         body,
         block_state_root,
@@ -138,7 +215,7 @@ pub fn apply_block(
     )?;
 
     let rv = view.read(epoch_view, longtail_view);
-    let actual = ssz_hash::hash_tree_root_state(&rv, state_hash_scratch);
+    let actual = ssz_hash::hash_tree_root_state(&rv, &mut scratch.state_hash);
     if actual != block_state_root {
         return Err(wrap(BlockError::PostStateRootMismatch {
             expected: block_state_root,
@@ -151,7 +228,6 @@ pub fn apply_block(
 /// Test-only full-block apply: decompose, shuffle, STF, then check the
 /// post-state root. Production path is `apply_block`.
 #[timed]
-#[allow(clippy::too_many_arguments)]
 pub fn apply_signed_block_debug(
     cfg: &SpecConfig,
     view: &mut StateWriterView,
@@ -160,10 +236,10 @@ pub fn apply_signed_block_debug(
     parent: StateId,
     block_bytes: &[u8],
 ) -> Result<(Option<EpochId>, Option<LongtailId>)> {
-    if block_bytes.len() < 184 {
+    if block_bytes.len() < SIGNED_BEACON_BLOCK_MIN {
         return Err(Error::invalid_block([0; 32], BlockError::TooShort {
             len: block_bytes.len(),
-            min: 184,
+            min: SIGNED_BEACON_BLOCK_MIN,
         }));
     }
     let (head_slot, head_block_header_slot) =
@@ -183,12 +259,7 @@ pub fn apply_signed_block_debug(
         }));
     }
 
-    let mut active_scratch = Vec::new();
-    let mut postponed_scratch: Vec<common::PendingDeposit> = Vec::new();
-    let mut replace_u64_scratch: Vec<(u32, u64)> = Vec::new();
-    let mut replace_u8_scratch: Vec<(u32, u8)> = Vec::new();
-    let mut eff_scratch: Vec<u64> = Vec::new();
-    let mut state_hash_scratch = ssz_hash::StateHashScratch::new();
+    let mut scratch = StfScratch::new(0);
 
     check_proposer_lookahead(
         &epoch.view_opt(parent.epoch_idx),
@@ -215,20 +286,7 @@ pub fn apply_signed_block_debug(
     }
 
     let (epoch_idx, longtail_idx) = if block_slot > head_slot {
-        process_slots(
-            cfg,
-            view,
-            epoch,
-            longtail,
-            parent,
-            block_slot,
-            &mut active_scratch,
-            &mut postponed_scratch,
-            &mut replace_u64_scratch,
-            &mut replace_u8_scratch,
-            &mut eff_scratch,
-            &mut state_hash_scratch,
-        )
+        process_slots(cfg, view, epoch, longtail, parent, block_slot, &mut scratch)
     } else {
         (parent.epoch_idx, parent.longtail_idx)
     };
@@ -251,14 +309,14 @@ pub fn apply_signed_block_debug(
     let current_epoch = view.slot.state().slot / SLOTS_PER_EPOCH;
     let rv = view.read(epoch_view, longtail_view);
     let sref = ShufflingRef::build(&rv, current_epoch, &mut curr, &mut prev);
-    let mut votes_sink: Vec<(u32, B256, Epoch)> = Vec::new();
+    let mut votes_sink: Vec<AttestationVote> = Vec::new();
     let mut sig_batch = SigBatch::new();
     process_block_body(
         cfg,
         view,
         &epoch_view,
         &longtail_view,
-        &mut active_scratch,
+        &mut scratch.active,
         &mut sig_batch,
         body,
         state_root,
@@ -269,7 +327,7 @@ pub fn apply_signed_block_debug(
     )?;
 
     let rv = view.read(epoch_view, longtail_view);
-    let actual = ssz_hash::hash_tree_root_state(&rv, &mut state_hash_scratch);
+    let actual = ssz_hash::hash_tree_root_state(&rv, &mut scratch.state_hash);
     if actual != state_root {
         return Err(wrap(BlockError::PostStateRootMismatch { expected: state_root, got: actual }));
     }
@@ -335,7 +393,6 @@ fn verify_block_sig(
 /// roll needs `&mut` of that same group — ids are the only currency that can
 /// cross a call that may still roll) and returns the updated pair for the
 /// caller's `commit`.
-#[allow(clippy::too_many_arguments)]
 #[timed]
 pub fn process_slots(
     cfg: &SpecConfig,
@@ -344,18 +401,13 @@ pub fn process_slots(
     longtail: &mut LongtailGroup,
     parent: StateId,
     target_slot: Slot,
-    active_scratch: &mut Vec<u32>,
-    postponed_scratch: &mut Vec<common::PendingDeposit>,
-    replace_u64_scratch: &mut Vec<(u32, u64)>,
-    replace_u8_scratch: &mut Vec<(u32, u8)>,
-    eff_scratch: &mut Vec<u64>,
-    state_hash_scratch: &mut ssz_hash::StateHashScratch,
+    scratch: &mut StfScratch,
 ) -> (Option<EpochId>, Option<LongtailId>) {
     let (epoch_idx, mut longtail_idx) = (parent.epoch_idx, parent.longtail_idx);
     // Pre-boundary slots: epoch tier read straight off the group.
     while view.slot.state().slot < target_slot {
         let epoch_view = epoch.view_opt(epoch_idx);
-        process_slot(view, &epoch_view, longtail, longtail_idx, state_hash_scratch);
+        process_slot(view, &epoch_view, longtail, longtail_idx, &mut scratch.state_hash);
         if (view.slot.state().slot + 1).is_multiple_of(SLOTS_PER_EPOCH) {
             break;
         }
@@ -367,10 +419,7 @@ pub fn process_slots(
 
     // First boundary: roll this fork's private epoch entry, derived from the
     // inherited one (fresh off the base when no ancestor crossed a boundary).
-    let mut epoch_w = match epoch_idx {
-        Some(pe) => epoch.roll_from(pe),
-        None => epoch.roll_fresh(),
-    };
+    let mut epoch_w = epoch.roll_inheriting(epoch_idx);
 
     // Boundary-onward slots: epoch tier read through the held writer.
     loop {
@@ -380,16 +429,11 @@ pub fn process_slots(
             &mut epoch_w,
             longtail,
             &mut longtail_idx,
-            active_scratch,
-            postponed_scratch,
-            replace_u64_scratch,
-            replace_u8_scratch,
-            eff_scratch,
-            state_hash_scratch,
+            scratch,
         );
         view.slot.advance_slot();
         while view.slot.state().slot < target_slot {
-            process_slot(view, &epoch_w.reader(), longtail, longtail_idx, state_hash_scratch);
+            process_slot(view, &epoch_w.reader(), longtail, longtail_idx, &mut scratch.state_hash);
             if (view.slot.state().slot + 1).is_multiple_of(SLOTS_PER_EPOCH) {
                 break;
             }
@@ -517,6 +561,16 @@ impl<'a> ShufflingRef<'a> {
             prev_committees_per_slot,
         }
     }
+
+    /// The (shuffled indices, committees-per-slot) pair for the current or
+    /// previous epoch.
+    fn epoch_slice(&self, is_current: bool) -> (&'a [u32], usize) {
+        if is_current {
+            (self.curr_shuffled, self.curr_committees_per_slot)
+        } else {
+            (self.prev_shuffled, self.prev_committees_per_slot)
+        }
+    }
 }
 
 struct BodyOffsets<'a> {
@@ -558,16 +612,17 @@ impl<'a> BodyOffsets<'a> {
             &[]
         }
     }
-    #[inline]
-    fn slice(&self, start: usize, end: usize) -> &'a [u8] {
-        if start <= end && end <= self.body.len() { &self.body[start..end] } else { &[] }
-    }
-
     /// In-bounds slice or `None` if the offsets don't bracket a valid range.
-    /// Used by Pass-2 to skip ops whose section is malformed.
     #[inline]
     fn try_slice(&self, start: usize, end: usize) -> Option<&'a [u8]> {
         if start <= end && end <= self.body.len() { Some(&self.body[start..end]) } else { None }
+    }
+
+    /// The sync-aggregate fixed region of the body. The offsets are
+    /// compile-time constants of the BeaconBlockBody fixed part.
+    #[inline]
+    fn sync_aggregate(&self) -> &'a [u8] {
+        &self.body[220..380]
     }
 }
 
@@ -598,7 +653,7 @@ pub fn process_block_body(
     block_slot: Slot,
     proposer_index: u32,
     shuffling: Option<&ShufflingRef<'_>>,
-    attestation_votes: &mut Vec<(u32, B256, Epoch)>,
+    attestation_votes: &mut Vec<AttestationVote>,
 ) -> Result<()> {
     let wrap = |kind: BlockError| Error::invalid_block(state_root, kind);
     validate::validate_operation_counts(body).map_err(wrap)?;
@@ -651,7 +706,7 @@ fn apply_block_body_pass2(
     block_slot: Slot,
     proposer_index: u32,
     shuffling: Option<&ShufflingRef<'_>>,
-    attestation_votes: &mut Vec<(u32, B256, Epoch)>,
+    attestation_votes: &mut Vec<AttestationVote>,
 ) -> Result<()> {
     let body = offsets.body;
     let payload = offsets.payload();
@@ -695,7 +750,7 @@ fn apply_block_body_pass2(
     if offsets.exec_requests_off <= body.len() {
         process_execution_requests(&mut *view, cfg, &body[offsets.exec_requests_off..]);
     }
-    process_sync_aggregate(&mut *view, longtail, &body[220..380], proposer_index)?;
+    process_sync_aggregate(&mut *view, longtail, offsets.sync_aggregate(), proposer_index)?;
     Ok(())
 }
 
@@ -717,32 +772,21 @@ fn collect_sigs_block_body(
     let proposer_pubkey = validators.pubkey_decompressed(proposer_index as usize);
     collect_sigs_randao(imm, body, block_slot, proposer_pubkey, sig_batch);
 
-    if offsets.proposer_slashings_off <= offsets.attester_slashings_off &&
-        offsets.attester_slashings_off <= body.len()
+    if let Some(section) =
+        offsets.try_slice(offsets.proposer_slashings_off, offsets.attester_slashings_off)
     {
-        collect_sigs_proposer_slashings(
-            imm,
-            &validators,
-            offsets.slice(offsets.proposer_slashings_off, offsets.attester_slashings_off),
-            sig_batch,
-        )?;
+        collect_sigs_proposer_slashings(imm, &validators, section, sig_batch)?;
     }
-    if offsets.attester_slashings_off <= offsets.attestations_off &&
-        offsets.attestations_off <= body.len()
+    if let Some(section) =
+        offsets.try_slice(offsets.attester_slashings_off, offsets.attestations_off)
     {
-        collect_sigs_attester_slashings(
-            imm,
-            &validators,
-            offsets.slice(offsets.attester_slashings_off, offsets.attestations_off),
-            active_scratch,
-            sig_batch,
-        )?;
+        collect_sigs_attester_slashings(imm, &validators, section, active_scratch, sig_batch)?;
     }
-    if offsets.attestations_off <= offsets.deposits_off && offsets.deposits_off <= body.len() {
+    if let Some(section) = offsets.try_slice(offsets.attestations_off, offsets.deposits_off) {
         collect_sigs_attestations(
             imm,
             &validators,
-            offsets.slice(offsets.attestations_off, offsets.deposits_off),
+            section,
             block_slot,
             shuffling,
             active_scratch,
@@ -750,23 +794,19 @@ fn collect_sigs_block_body(
         )?;
     }
     // deposits skipped — these are verified inline in `apply_deposit`.
-    if offsets.voluntary_exits_off <= offsets.exec_off && offsets.exec_off <= body.len() {
-        collect_sigs_voluntary_exits(
-            imm,
-            &validators,
-            offsets.slice(offsets.voluntary_exits_off, offsets.exec_off),
-            sig_batch,
-        );
+    if let Some(section) = offsets.try_slice(offsets.voluntary_exits_off, offsets.exec_off) {
+        collect_sigs_voluntary_exits(imm, &validators, section, sig_batch);
     }
-    if offsets.bls_changes_off <= offsets.blob_off && offsets.blob_off <= body.len() {
-        collect_sigs_bls_to_execution_changes(
-            imm,
-            &validators,
-            offsets.slice(offsets.bls_changes_off, offsets.blob_off),
-            sig_batch,
-        )?;
+    if let Some(section) = offsets.try_slice(offsets.bls_changes_off, offsets.blob_off) {
+        collect_sigs_bls_to_execution_changes(imm, &validators, section, sig_batch)?;
     }
-    collect_sigs_sync_aggregate(&rv, &body[220..380], block_slot, active_scratch, sig_batch);
+    collect_sigs_sync_aggregate(
+        &rv,
+        offsets.sync_aggregate(),
+        block_slot,
+        active_scratch,
+        sig_batch,
+    );
     Ok(())
 }
 
@@ -842,45 +882,26 @@ pub fn collect_sigs_attestations(
     active_scratch: &mut Vec<u32>,
     sig_batch: &mut SigBatch,
 ) -> Result<(), AttestationError> {
-    if attestation_data.is_empty() {
-        return Ok(());
-    }
-    let first_offset =
-        u32::from_le_bytes(attestation_data[..4].try_into().unwrap_or([0; 4])) as usize;
-    if first_offset == 0 || !first_offset.is_multiple_of(4) || first_offset > attestation_data.len()
-    {
-        return Ok(());
-    }
-    let count = first_offset / 4;
     let current_epoch = block_slot / SLOTS_PER_EPOCH;
-    for i in 0..count {
-        let att_start =
-            u32::from_le_bytes(attestation_data[i * 4..(i + 1) * 4].try_into().unwrap()) as usize;
-        let att_end = if i + 1 < count {
-            u32::from_le_bytes(attestation_data[(i + 1) * 4..(i + 2) * 4].try_into().unwrap())
-                as usize
-        } else {
-            attestation_data.len()
-        };
-        if att_start >= att_end || att_end > attestation_data.len() {
-            return Err(AttestationError::BadOffsets {
-                start: att_start,
-                end: att_end,
-                parent_len: attestation_data.len(),
-            });
-        }
-        let att = &attestation_data[att_start..att_end];
-        collect_sigs_single_attestation(
-            imm,
-            validators,
-            att,
-            current_epoch,
-            shuffling,
-            active_scratch,
-            sig_batch,
-        )?;
-    }
-    Ok(())
+    for_each_ssz_list_item(
+        attestation_data,
+        |start, end| AttestationError::BadOffsets {
+            start,
+            end,
+            parent_len: attestation_data.len(),
+        },
+        |att| {
+            collect_sigs_single_attestation(
+                imm,
+                validators,
+                att,
+                current_epoch,
+                shuffling,
+                active_scratch,
+                sig_batch,
+            )
+        },
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -899,11 +920,7 @@ pub fn collect_sigs_single_attestation(
     let target_epoch = AttestationDataView::target_epoch(data);
     let is_current = target_epoch == current_epoch;
     let shuffling = shuffling.ok_or(AttestationError::MissingShuffling)?;
-    let (shuffled, committees_per_slot) = if is_current {
-        (shuffling.curr_shuffled, shuffling.curr_committees_per_slot)
-    } else {
-        (shuffling.prev_shuffled, shuffling.prev_committees_per_slot)
-    };
+    let (shuffled, committees_per_slot) = shuffling.epoch_slice(is_current);
     if shuffled.is_empty() || committees_per_slot == 0 {
         return Err(AttestationError::EmptyShuffling);
     }
@@ -962,7 +979,7 @@ pub fn process_attestations(
     block_slot: Slot,
     proposer_index: u32,
     shuffling: Option<&ShufflingRef<'_>>,
-    votes_sink: &mut Vec<(u32, B256, Epoch)>,
+    votes_sink: &mut Vec<AttestationVote>,
     active_scratch: &mut Vec<u32>,
 ) -> Result<(), AttestationError> {
     let slot = &view.slot;
@@ -973,65 +990,47 @@ pub fn process_attestations(
     if attestation_data.is_empty() {
         return Ok(());
     }
-    let first_offset =
-        u32::from_le_bytes(attestation_data[..4].try_into().unwrap_or([0; 4])) as usize;
-    if first_offset == 0 || !first_offset.is_multiple_of(4) || first_offset > attestation_data.len()
-    {
-        return Ok(());
-    }
-    let count = first_offset / 4;
     let current_epoch = block_slot / SLOTS_PER_EPOCH;
     let previous_epoch = current_epoch.saturating_sub(1);
 
     let total_active = total_active_balance(&validators.reader(), current_epoch);
-    for i in 0..count {
-        let att_start =
-            u32::from_le_bytes(attestation_data[i * 4..(i + 1) * 4].try_into().unwrap()) as usize;
-        let att_end = if i + 1 < count {
-            u32::from_le_bytes(attestation_data[(i + 1) * 4..(i + 2) * 4].try_into().unwrap())
-                as usize
-        } else {
-            attestation_data.len()
-        };
-        if att_start >= att_end || att_end > attestation_data.len() {
-            return Err(AttestationError::BadOffsets {
-                start: att_start,
-                end: att_end,
-                parent_len: attestation_data.len(),
-            });
-        }
-        let att = &attestation_data[att_start..att_end];
-        let reward = process_single_attestation(
-            slot,
-            validators,
-            previous_participation,
-            current_participation,
-            epoch,
-            att,
-            current_epoch,
-            previous_epoch,
-            total_active,
-            shuffling,
-            votes_sink,
-            active_scratch,
-        )?;
-        if reward > 0 && (proposer_index as usize) < validators.count() {
-            const PROPOSER_WEIGHT: u64 = 8;
-            const WEIGHT_DENOMINATOR: u64 = 64;
-            let proposer_reward_denominator =
-                (WEIGHT_DENOMINATOR - PROPOSER_WEIGHT) * WEIGHT_DENOMINATOR / PROPOSER_WEIGHT;
-            let proposer_reward = reward / proposer_reward_denominator;
-            let balance = balances.get(proposer_index as usize);
-            balances.set(proposer_index, balance.saturating_add(proposer_reward));
-        }
-    }
-    Ok(())
+    for_each_ssz_list_item(
+        attestation_data,
+        |start, end| AttestationError::BadOffsets {
+            start,
+            end,
+            parent_len: attestation_data.len(),
+        },
+        |att| {
+            let reward = process_single_attestation(
+                slot,
+                validators,
+                previous_participation,
+                current_participation,
+                epoch,
+                att,
+                current_epoch,
+                previous_epoch,
+                total_active,
+                shuffling,
+                votes_sink,
+                active_scratch,
+            )?;
+            if reward > 0 && (proposer_index as usize) < validators.count() {
+                let proposer_reward_denominator =
+                    (WEIGHT_DENOMINATOR - PROPOSER_WEIGHT) * WEIGHT_DENOMINATOR / PROPOSER_WEIGHT;
+                let proposer_reward = reward / proposer_reward_denominator;
+                let balance = balances.get(proposer_index as usize);
+                balances.set(proposer_index, balance.saturating_add(proposer_reward));
+            }
+            Ok(())
+        },
+    )
 }
 
 /// Pass 2 single-attestation worker — full data + state-dep validation +
 /// participation flag updates. Returns the proposer reward numerator on
 /// success.
-#[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
 pub fn process_single_attestation(
     slot: &SlotStateWriteView,
@@ -1044,18 +1043,18 @@ pub fn process_single_attestation(
     previous_epoch: Epoch,
     total_active: u64,
     shuffling: Option<&ShufflingRef<'_>>,
-    votes_sink: &mut Vec<(u32, B256, Epoch)>,
+    votes_sink: &mut Vec<AttestationVote>,
     active_scratch: &mut Vec<u32>,
 ) -> Result<u64, AttestationError> {
     let current_slot = slot.state().slot;
     validate::validate_attestation_data(att, current_slot, current_epoch, previous_epoch)?;
 
-    let parsed = ParsedAttestationData::from(att);
+    let parsed = ParsedAttestationData::parse(att);
     let is_current =
         check_attestation_target_window(parsed.target_epoch, current_epoch, previous_epoch)?;
     check_attestation_source(epoch, is_current, parsed.source_epoch, parsed.source_root)?;
 
-    let flag_weights = compute_attestation_flags(slot, &parsed, current_slot, is_current);
+    let flag_weights = compute_attestation_flags(slot, &parsed, current_slot);
 
     collect_attestation_participants(
         &validators.reader(),
@@ -1067,7 +1066,11 @@ pub fn process_single_attestation(
     )?;
 
     for &validator_idx in active_scratch.iter() {
-        votes_sink.push((validator_idx, parsed.beacon_block_root, parsed.target_epoch));
+        votes_sink.push(AttestationVote {
+            validator: validator_idx,
+            block_root: parsed.beacon_block_root,
+            target_epoch: parsed.target_epoch,
+        });
     }
 
     if !flag_weights.iter().any(|&f| f) {
@@ -1094,7 +1097,7 @@ struct ParsedAttestationData {
 }
 
 impl ParsedAttestationData {
-    fn from(att: &[u8]) -> Self {
+    fn parse(att: &[u8]) -> Self {
         let data = AttestationView::data(att);
         Self {
             att_slot: AttestationDataView::slot(data),
@@ -1145,7 +1148,6 @@ fn compute_attestation_flags(
     slot: &SlotStateWriteView,
     parsed: &ParsedAttestationData,
     current_slot: Slot,
-    _is_current: bool,
 ) -> [bool; 3] {
     let expected_target_root = slot.block_root_at_slot(parsed.target_epoch * SLOTS_PER_EPOCH);
     let is_matching_target = parsed.target_root == expected_target_root;
@@ -1165,11 +1167,7 @@ fn collect_attestation_participants(
     active_scratch: &mut Vec<u32>,
 ) -> Result<(), AttestationError> {
     let shuffling = shuffling.ok_or(AttestationError::MissingShuffling)?;
-    let (shuffled, committees_per_slot) = if is_current {
-        (shuffling.curr_shuffled, shuffling.curr_committees_per_slot)
-    } else {
-        (shuffling.prev_shuffled, shuffling.prev_committees_per_slot)
-    };
+    let (shuffled, committees_per_slot) = shuffling.epoch_slice(is_current);
     if shuffled.is_empty() || committees_per_slot == 0 {
         return Err(AttestationError::EmptyShuffling);
     }
@@ -1232,7 +1230,7 @@ fn apply_attestation_participation_flags(
     flag_weights: [bool; 3],
 ) -> u64 {
     let sqrt_total = epoch_transition::integer_sqrt(total_active);
-    let base_reward_per_increment = 1_000_000_000u64 * 64 / sqrt_total;
+    let base_reward_per_increment = EFFECTIVE_BALANCE_INCREMENT * BASE_REWARD_FACTOR / sqrt_total;
 
     const PARTICIPATION_WEIGHTS: [u64; 3] = [14, 26, 14];
     let mut proposer_reward_numerator = 0u64;
@@ -1249,7 +1247,8 @@ fn apply_attestation_participation_flags(
         };
         let mut p = prev_p;
         let effective_balance = validators.effective_balance(vi as usize);
-        let base_reward = (effective_balance / 1_000_000_000) * base_reward_per_increment;
+        let base_reward =
+            (effective_balance / EFFECTIVE_BALANCE_INCREMENT) * base_reward_per_increment;
         for (fi, &weight) in PARTICIPATION_WEIGHTS.iter().enumerate() {
             let flag_bit = 1u8 << fi;
             if flag_weights[fi] && p & flag_bit == 0 {
@@ -1720,12 +1719,10 @@ pub fn process_sync_aggregate(
     let current_epoch = slot.state().slot / SLOTS_PER_EPOCH;
     let total_active = total_active_balance(&validators.reader(), current_epoch);
     let sqrt_total = epoch_transition::integer_sqrt(total_active);
-    let base_reward_per_increment = 1_000_000_000u64 * 64 / sqrt_total;
-    let total_active_increments = total_active / 1_000_000_000;
+    let base_reward_per_increment = EFFECTIVE_BALANCE_INCREMENT * BASE_REWARD_FACTOR / sqrt_total;
+    let total_active_increments = total_active / EFFECTIVE_BALANCE_INCREMENT;
 
     const SYNC_REWARD_WEIGHT: u64 = 2;
-    const WEIGHT_DENOMINATOR: u64 = 64;
-    const PROPOSER_WEIGHT: u64 = 8;
 
     let total_base_rewards = base_reward_per_increment * total_active_increments;
     let participant_reward = if total_active_increments > 0 {
@@ -2285,70 +2282,45 @@ pub fn collect_sigs_attester_slashings(
     sig_batch: &mut SigBatch,
 ) -> Result<(), AttesterSlashingError> {
     let (fork_epoch, prev_ver, cur_ver, gvr) = imm.fork_descriptor();
-    if data.is_empty() {
-        return Ok(());
-    }
-    let first_offset = u32::from_le_bytes(data[..4].try_into().unwrap_or([0; 4])) as usize;
-    if first_offset == 0 || !first_offset.is_multiple_of(4) || first_offset > data.len() {
-        return Ok(());
-    }
-    let count = first_offset / 4;
-    for i in 0..count {
-        let start = u32::from_le_bytes(data[i * 4..(i + 1) * 4].try_into().unwrap()) as usize;
-        let end = if i + 1 < count {
-            u32::from_le_bytes(data[(i + 1) * 4..(i + 2) * 4].try_into().unwrap()) as usize
-        } else {
-            data.len()
-        };
-        if start >= end || end > data.len() {
-            return Err(AttesterSlashingError::BadOffsets { start, end, parent_len: data.len() });
-        }
-        let slashing = &data[start..end];
-        if slashing.len() < 8 {
-            return Err(AttesterSlashingError::TooShort { len: slashing.len(), min: 8 });
-        }
-        let off1 = u32::from_le_bytes(slashing[0..4].try_into().unwrap()) as usize;
-        let off2 = u32::from_le_bytes(slashing[4..8].try_into().unwrap()) as usize;
-        if off1 + 132 > slashing.len() || off2 + 132 > slashing.len() || off2 < off1 + 132 {
-            return Err(AttesterSlashingError::BadInnerOffsets {
-                off1,
-                off2,
-                slashing_len: slashing.len(),
-            });
-        }
-        let i1 = attesting_indices_bytes(slashing, off1, off2);
-        let i2 = attesting_indices_bytes(slashing, off2, slashing.len());
+    for_each_ssz_list_item(
+        data,
+        |start, end| AttesterSlashingError::BadOffsets { start, end, parent_len: data.len() },
+        |slashing| {
+            let (off1, off2) = attester_slashing_inner_offsets(slashing)?;
+            let i1 = attesting_indices_bytes(slashing, off1, off2);
+            let i2 = attesting_indices_bytes(slashing, off2, slashing.len());
 
-        for (ia_off, ia_end, indices) in [(off1, off2, i1), (off2, slashing.len(), i2)] {
-            let ia = &slashing[ia_off..ia_end];
-            let target_epoch = ssz_view::IndexedAttestationView::target_epoch(ia);
-            let fv = bls::fork_version_at_epoch(fork_epoch, prev_ver, cur_ver, target_epoch);
-            active_scratch.clear();
-            let n_idx = indices.len() / 8;
-            let count = validators.count();
-            for k in 0..n_idx {
-                let vi = u64::from_le_bytes(indices[k * 8..k * 8 + 8].try_into().unwrap());
-                if vi as usize >= count {
-                    return Err(AttesterSlashingError::ValidatorOutOfRange {
-                        vi: vi as usize,
-                        count,
-                    });
+            for (ia_off, ia_end, indices) in [(off1, off2, i1), (off2, slashing.len(), i2)] {
+                let ia = &slashing[ia_off..ia_end];
+                let target_epoch = ssz_view::IndexedAttestationView::target_epoch(ia);
+                let fv = bls::fork_version_at_epoch(fork_epoch, prev_ver, cur_ver, target_epoch);
+                active_scratch.clear();
+                let n_idx = indices.len() / 8;
+                let count = validators.count();
+                for k in 0..n_idx {
+                    let vi = u64::from_le_bytes(indices[k * 8..k * 8 + 8].try_into().unwrap());
+                    if vi as usize >= count {
+                        return Err(AttesterSlashingError::ValidatorOutOfRange {
+                            vi: vi as usize,
+                            count,
+                        });
+                    }
+                    active_scratch.push(vi as u32);
                 }
-                active_scratch.push(vi as u32);
+                let data_chunk: &[u8; 128] = ssz_view::IndexedAttestationView::data(ia);
+                let sig: &[u8; 96] = ssz_view::IndexedAttestationView::signature(ia);
+                let object_root = ssz_hash::hash_attestation_data(data_chunk);
+                let domain = bls::compute_domain(bls::DOMAIN_BEACON_ATTESTER, fv, &gvr);
+                let signing_root = bls::compute_signing_root(&object_root, &domain);
+                sig_batch.push_aggregate(
+                    active_scratch.iter().map(|&vi| validators.pubkey_decompressed(vi as usize)),
+                    sig,
+                    signing_root,
+                );
             }
-            let data_chunk: &[u8; 128] = ssz_view::IndexedAttestationView::data(ia);
-            let sig: &[u8; 96] = ssz_view::IndexedAttestationView::signature(ia);
-            let object_root = ssz_hash::hash_attestation_data(data_chunk);
-            let domain = bls::compute_domain(bls::DOMAIN_BEACON_ATTESTER, fv, &gvr);
-            let signing_root = bls::compute_signing_root(&object_root, &domain);
-            sig_batch.push_aggregate(
-                active_scratch.iter().map(|&vi| validators.pubkey_decompressed(vi as usize)),
-                sig,
-                signing_root,
-            );
-        }
-    }
-    Ok(())
+            Ok(())
+        },
+    )
 }
 
 /// Walk two strictly-ascending u64-LE-packed lists in lockstep, invoking
@@ -2391,80 +2363,59 @@ pub fn process_attester_slashings(
     if data.is_empty() {
         return Ok(());
     }
-    let first_offset = u32::from_le_bytes(data[..4].try_into().unwrap_or([0; 4])) as usize;
-    if first_offset == 0 || !first_offset.is_multiple_of(4) || first_offset > data.len() {
-        return Ok(());
-    }
     let slot = &mut view.slot;
     let validators = &mut view.validators;
     let balances = &mut view.balances;
-    let count = first_offset / 4;
     let proposer_index = get_beacon_proposer_index(slot, epoch);
     let n = validators.count();
     let current_epoch = slot.state().slot / SLOTS_PER_EPOCH;
 
-    for i in 0..count {
-        let start = u32::from_le_bytes(data[i * 4..(i + 1) * 4].try_into().unwrap()) as usize;
-        let end = if i + 1 < count {
-            u32::from_le_bytes(data[(i + 1) * 4..(i + 2) * 4].try_into().unwrap()) as usize
-        } else {
-            data.len()
-        };
-        if start >= end || end > data.len() {
-            return Err(AttesterSlashingError::BadOffsets { start, end, parent_len: data.len() });
-        }
-        let slashing = &data[start..end];
-        if slashing.len() < 8 {
-            return Err(AttesterSlashingError::TooShort { len: slashing.len(), min: 8 });
-        }
-        let off1 = u32::from_le_bytes(slashing[0..4].try_into().unwrap()) as usize;
-        let off2 = u32::from_le_bytes(slashing[4..8].try_into().unwrap()) as usize;
-        if off1 + 132 > slashing.len() || off2 + 132 > slashing.len() || off2 < off1 + 132 {
-            return Err(AttesterSlashingError::BadInnerOffsets {
-                off1,
-                off2,
-                slashing_len: slashing.len(),
-            });
-        }
-        let d1 = &slashing[off1 + 4..off1 + 132];
-        let d2 = &slashing[off2 + 4..off2 + 132];
-        if !is_slashable_attestation_data(d1, d2) {
-            return Err(AttesterSlashingError::NotSlashableData);
-        }
-        let i1 = attesting_indices_bytes(slashing, off1, off2);
-        let i2 = attesting_indices_bytes(slashing, off2, slashing.len());
-        if !indices_sorted_unique(i1) || !indices_sorted_unique(i2) {
-            return Err(AttesterSlashingError::IndicesNotSorted);
-        }
-
-        // Spec requires ≥1 currently-slashable validator in the intersection;
-        // a no-op slashing makes the block invalid.
-        let mut slashed_any = false;
-        // Collect slashable indices first to avoid holding `view` while
-        // calling the mutating `slash_validator`.
-        scratch.clear();
-        {
-            let v = validators.reader();
-            for_each_sorted_intersection(i1, i2, |vi| {
-                let vi32 = vi as u32;
-                if vi < n && is_slashable_validator(&v, vi32, current_epoch) {
-                    scratch.push(vi32);
-                }
-                false
-            });
-        }
-        for &vi in scratch.iter() {
-            // Re-check slashability after each prior slash mutation in the loop.
-            if is_slashable_validator(&validators.reader(), vi, current_epoch) {
-                slash_validator(cfg, slot, validators, balances, vi, proposer_index);
-                slashed_any = true;
+    for_each_ssz_list_item(
+        data,
+        |start, end| AttesterSlashingError::BadOffsets { start, end, parent_len: data.len() },
+        |slashing| {
+            let (off1, off2) = attester_slashing_inner_offsets(slashing)?;
+            let d1 = &slashing[off1 + 4..off1 + 132];
+            let d2 = &slashing[off2 + 4..off2 + 132];
+            if !is_slashable_attestation_data(d1, d2) {
+                return Err(AttesterSlashingError::NotSlashableData);
             }
-        }
-        if !slashed_any {
-            return Err(AttesterSlashingError::NoSlashedIntersection);
-        }
-    }
-    Ok(())
+            let i1 = attesting_indices_bytes(slashing, off1, off2);
+            let i2 = attesting_indices_bytes(slashing, off2, slashing.len());
+            if !indices_sorted_unique(i1) || !indices_sorted_unique(i2) {
+                return Err(AttesterSlashingError::IndicesNotSorted);
+            }
+
+            // Spec requires ≥1 currently-slashable validator in the
+            // intersection; a no-op slashing makes the block invalid.
+            let mut slashed_any = false;
+            // Collect slashable indices first to avoid holding `view` while
+            // calling the mutating `slash_validator`.
+            scratch.clear();
+            {
+                let v = validators.reader();
+                for_each_sorted_intersection(i1, i2, |vi| {
+                    let vi32 = vi as u32;
+                    if vi < n && is_slashable_validator(&v, vi32, current_epoch) {
+                        scratch.push(vi32);
+                    }
+                    false
+                });
+            }
+            for &vi in scratch.iter() {
+                // Re-check slashability after each prior slash mutation in the
+                // loop.
+                if is_slashable_validator(&validators.reader(), vi, current_epoch) {
+                    slash_validator(cfg, slot, validators, balances, vi, proposer_index);
+                    slashed_any = true;
+                }
+            }
+            if !slashed_any {
+                return Err(AttesterSlashingError::NoSlashedIntersection);
+            }
+            Ok(())
+        },
+    )
 }
 
 /// Gossip-side `AttesterSlashing` validator (single slashing, not the
@@ -2475,14 +2426,9 @@ pub fn validate_attester_slashing_for_gossip(
     sig_batch: &mut SigBatch,
 ) -> bool {
     let (fork_epoch, prev_ver, cur_ver, gvr) = view.imm.fork_descriptor();
-    if slashing.len() < 8 {
+    let Ok((off1, off2)) = attester_slashing_inner_offsets(slashing) else {
         return false;
-    }
-    let off1 = u32::from_le_bytes(slashing[0..4].try_into().unwrap()) as usize;
-    let off2 = u32::from_le_bytes(slashing[4..8].try_into().unwrap()) as usize;
-    if off1 + 132 > slashing.len() || off2 + 132 > slashing.len() || off2 < off1 + 132 {
-        return false;
-    }
+    };
     let d1 = &slashing[off1 + 4..off1 + 132];
     let d2 = &slashing[off2 + 4..off2 + 132];
     if !is_slashable_attestation_data(d1, d2) {
@@ -2706,7 +2652,7 @@ fn get_consolidation_churn_limit(
 }
 
 /// O(N + |edits|): single sweep over activation/exit/effective_balance columns.
-fn total_active_balance(validators: &ValidatorsView, current_epoch: Epoch) -> u64 {
+pub(crate) fn total_active_balance(validators: &ValidatorsView, current_epoch: Epoch) -> u64 {
     let n = validators.count();
     let mut act = validators.iter_activation_epochs();
     let mut exit = validators.iter_exit_epochs();
@@ -2852,64 +2798,14 @@ fn apply_deposit(
 
 #[cfg(test)]
 mod tests {
-    use silver_beacon_state_data::{
-        BalancesGroup, BeaconState, CurrentParticipationGroup, EpochGroup, EpochStateFinalized,
-        FinalizedValidators, InactivityScoresGroup, LongtailGroup, LongtailState, PendingGroup,
-        PendingQueues, PreviousParticipationGroup, SlotStateFinalized, SlotStateGroup, StateId,
-        ValidatorsGroup,
-    };
+    use silver_beacon_state_data::EpochStateFinalized;
 
     use super::*;
-
-    /// `BeaconState` + its working bundle; `view()` rolls a fresh fork off
-    /// the bundle like production `apply_block_view` (not reusable here: it
-    /// asserts a non-empty validator set). Cross-view persistence needs
-    /// `commit` + `state_id` writeback.
-    struct TestState {
-        bs: BeaconState,
-        state_id: StateId,
-    }
-
-    impl TestState {
-        fn view(&mut self) -> (StateWriterView<'_>, &mut EpochGroup, &mut LongtailGroup) {
-            let sid = self.state_id;
-            let bs = &mut self.bs;
-            let view = StateWriterView::new(
-                &bs.immutable,
-                bs.balances.roll_from(sid.balances_idx),
-                bs.pending.roll_from(sid.pending_idx),
-                bs.previous_participation.roll_from(sid.previous_participation_idx),
-                bs.current_participation.roll_from(sid.current_participation_idx),
-                bs.inactivity.roll_from(sid.inactivity_idx),
-                bs.slot_states.roll_from(sid.slot_idx),
-                bs.validators.roll_from(sid.validators_idx),
-            );
-            (view, &mut bs.epoch, &mut bs.longtail)
-        }
-    }
+    use crate::test_state::TestState;
 
     fn fresh_state() -> TestState {
-        let validators = ValidatorsGroup::new(FinalizedValidators::with_validators(&[]));
-        let cap = validators.base().capacity();
-        let n = validators.base().validator_count();
-        // Sibling lists stay lockstep with the registry: n zero entries.
-        let zero_flags = vec![0u8; n];
-        let zero_scores = vec![0u8; n * 8];
-        let mut bs = BeaconState {
-            immutable: Immutable::default(),
-            validators,
-            balances: BalancesGroup::new(cap, n, &[]).unwrap(),
-            pending: PendingGroup::new(PendingQueues::default()),
-            previous_participation: PreviousParticipationGroup::new(cap, n, &zero_flags).unwrap(),
-            current_participation: CurrentParticipationGroup::new(cap, n, &zero_flags).unwrap(),
-            inactivity: InactivityScoresGroup::new(cap, n, &zero_scores).unwrap(),
-            // Slot tier anchored at the empty base's slot (0).
-            slot_states: SlotStateGroup::new(SlotStateFinalized::default()),
-            epoch: EpochGroup::new(EpochStateFinalized::default()),
-            longtail: LongtailGroup::new(LongtailState::default()),
-        };
-        let state_id = bs.roll_fresh();
-        TestState { bs, state_id }
+        // Empty registry; slot tier anchored at the empty base's slot (0).
+        TestState::new(EpochStateFinalized::default(), &[], &[])
     }
 
     /// EF `sanity_blocks` doesn't exercise the eth1 majority threshold

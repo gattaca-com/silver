@@ -14,7 +14,7 @@ pub use finalized::PendingQueues;
 use parking_lot::Mutex;
 
 use crate::{
-    buffer::{Id, Reset, Ring},
+    buffer::{Id, Reset, Ring, reanchor_survivors},
     types::SLOTS_RING_N,
 };
 
@@ -85,14 +85,8 @@ impl PendingGroup {
     pub fn finalize(&mut self, winner: PendingId, survivors: &[PendingId]) -> Vec<PendingId> {
         let old_base_lens = OldBaseLens::snapshot(&self.base);
 
-        let mut fresh: Vec<PendingId> = Vec::with_capacity(survivors.len());
-        for (i, &s) in survivors.iter().enumerate() {
-            let new_id = match survivors[..i].iter().position(|&p| p == s) {
-                Some(seen) => fresh[seen],
-                None => self.reanchor(s, winner, &old_base_lens).commit(),
-            };
-            fresh.push(new_id);
-        }
+        let fresh =
+            reanchor_survivors(survivors, |s| self.reanchor(s, winner, &old_base_lens).commit());
 
         let Self { base, forks, persist_lock } = self;
         {
@@ -100,9 +94,7 @@ impl PendingGroup {
             base.promote(forks.get(winner));
         }
 
-        if let Some(&oldest) = fresh.iter().min() {
-            forks.free(oldest);
-        }
+        forks.free_oldest(&fresh);
 
         fresh
     }

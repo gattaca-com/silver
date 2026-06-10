@@ -4,8 +4,7 @@ use silver_beacon_state_data::{
     self as common, Checkpoint, EPOCHS_PER_SLASHINGS_VECTOR, Epoch, EpochView, EpochWriteView,
     HistoricalSummary, LongtailGroup, LongtailId, LongtailWriteView, MIN_SEED_LOOKAHEAD,
     PROPOSER_LOOKAHEAD_SIZE, SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT, SYNC_COMMITTEE_SIZE,
-    SlotStateWriteView, SpecConfig, StateWriterView, effective_block_roots_into,
-    effective_state_roots_into, iter_validator_rows,
+    SlotStateWriteView, SpecConfig, StateWriterView, iter_validator_rows,
 };
 use silver_common::metrics::timed;
 
@@ -13,6 +12,7 @@ use crate::{
     bls,
     shuffling::{self, DOMAIN_BEACON_PROPOSER},
     ssz_hash,
+    state_transition::{StfScratch, total_active_balance},
 };
 
 pub const EPOCHS_PER_ETH1_VOTING_PERIOD: u64 = 64;
@@ -25,17 +25,18 @@ const TIMELY_HEAD_FLAG: u8 = 1 << 2;
 
 const PARTICIPATION_FLAGS: [u8; 3] = [TIMELY_SOURCE_FLAG, TIMELY_TARGET_FLAG, TIMELY_HEAD_FLAG];
 const PARTICIPATION_WEIGHTS: [u64; 3] = [14, 26, 14];
-const WEIGHT_DENOMINATOR: u64 = 64;
+pub(crate) const WEIGHT_DENOMINATOR: u64 = 64;
+pub(crate) const PROPOSER_WEIGHT: u64 = 8;
 
 // Balance constants (gwei).
-const EFFECTIVE_BALANCE_INCREMENT: u64 = 1_000_000_000;
+pub(crate) const EFFECTIVE_BALANCE_INCREMENT: u64 = 1_000_000_000;
 const MIN_ACTIVATION_BALANCE: u64 = 32 * EFFECTIVE_BALANCE_INCREMENT;
 const HYSTERESIS_QUOTIENT: u64 = 4;
 const HYSTERESIS_DOWNWARD_MULTIPLIER: u64 = 1;
 const HYSTERESIS_UPWARD_MULTIPLIER: u64 = 5;
 
 // Rewards.
-const BASE_REWARD_FACTOR: u64 = 64;
+pub(crate) const BASE_REWARD_FACTOR: u64 = 64;
 
 // Registry.
 pub const MAX_PENDING_DEPOSITS_PER_EPOCH: usize = 16;
@@ -50,7 +51,6 @@ pub const HISTORICAL_SUMMARY_PERIOD: u64 = SLOTS_PER_HISTORICAL_ROOT as u64 / SL
 /// fires and commits at the end, storing its id in `longtail_idx` — so a
 /// second boundary in the same advance derives from the first's committed
 /// entry (publish-last like the slot tiers).
-#[allow(clippy::too_many_arguments)]
 #[timed]
 pub fn process_epoch(
     cfg: &SpecConfig,
@@ -58,52 +58,51 @@ pub fn process_epoch(
     epoch: &mut EpochWriteView,
     longtail: &mut LongtailGroup,
     longtail_idx: &mut Option<LongtailId>,
-    active_scratch: &mut Vec<u32>,
-    postponed_scratch: &mut Vec<common::PendingDeposit>,
-    replace_u64_scratch: &mut Vec<(u32, u64)>,
-    replace_u8_scratch: &mut Vec<(u32, u8)>,
-    eff_scratch: &mut Vec<u64>,
-    state_hash_scratch: &mut ssz_hash::StateHashScratch,
+    scratch: &mut StfScratch,
 ) {
     let current_epoch = view.slot.state().slot / SLOTS_PER_EPOCH;
     // Longtail boundary roll: once iff either rotation gate fires, derived
     // from the inherited entry (fresh off the base when no ancestor rotated).
     let next_epoch = current_epoch + 1;
-    let needs_longtail = next_epoch.is_multiple_of(EPOCHS_PER_SYNC_COMMITTEE_PERIOD) ||
-        next_epoch.is_multiple_of(HISTORICAL_SUMMARY_PERIOD);
-    let mut longtail_w = needs_longtail.then(|| match *longtail_idx {
-        Some(pl) => longtail.roll_from(pl),
-        None => longtail.roll_fresh(),
-    });
+    let rotates_summary = next_epoch.is_multiple_of(HISTORICAL_SUMMARY_PERIOD);
+    let rotates_sync_committee = next_epoch.is_multiple_of(EPOCHS_PER_SYNC_COMMITTEE_PERIOD);
+    let needs_longtail = rotates_sync_committee || rotates_summary;
+    let mut longtail_w = needs_longtail.then(|| longtail.roll_inheriting(*longtail_idx));
 
     process_justification_and_finalization(view, epoch, current_epoch);
-    process_inactivity_updates(cfg, view, &epoch.reader(), current_epoch, replace_u64_scratch);
-    process_rewards_and_penalties(cfg, view, &epoch.reader(), current_epoch, replace_u64_scratch);
+    process_inactivity_updates(cfg, view, &epoch.reader(), current_epoch, &mut scratch.replace_u64);
+    process_rewards_and_penalties(
+        cfg,
+        view,
+        &epoch.reader(),
+        current_epoch,
+        &mut scratch.replace_u64,
+    );
     process_registry_updates(cfg, view, &epoch.reader(), current_epoch);
     process_slashings(cfg, view, &epoch.reader(), current_epoch);
     process_eth1_data_reset(&mut view.slot, current_epoch);
-    process_pending_deposits(cfg, view, epoch, postponed_scratch);
+    process_pending_deposits(cfg, view, epoch, &mut scratch.postponed);
     process_pending_consolidations(view);
     process_effective_balance_updates(view);
     process_slashings_reset(view, epoch);
     process_randao_mixes_reset(view, epoch);
-    if next_epoch.is_multiple_of(HISTORICAL_SUMMARY_PERIOD) {
+    if rotates_summary {
         let lt = longtail_w.as_mut().expect("longtail rolled at boundary");
-        process_historical_summaries_update(view, lt, state_hash_scratch);
+        process_historical_summaries_update(view, lt, &mut scratch.state_hash);
     }
-    process_participation_flag_updates(view, replace_u8_scratch);
-    if next_epoch.is_multiple_of(EPOCHS_PER_SYNC_COMMITTEE_PERIOD) {
+    process_participation_flag_updates(view, &mut scratch.replace_u8);
+    if rotates_sync_committee {
         let lt = longtail_w.as_mut().expect("longtail rolled at boundary");
         process_sync_committee_updates(
             view,
             &epoch.reader(),
             lt,
             current_epoch,
-            active_scratch,
-            eff_scratch,
+            &mut scratch.active,
+            &mut scratch.eff,
         );
     }
-    process_proposer_lookahead(view, epoch, current_epoch, active_scratch, eff_scratch);
+    process_proposer_lookahead(view, epoch, current_epoch, &mut scratch.active, &mut scratch.eff);
 
     // Commit the boundary-rolled longtail entry: its id surfaces only here,
     // after the rotation leaves are done mutating it.
@@ -125,13 +124,7 @@ pub fn process_justification_and_finalization(
 
     // Single zipped read sweep over merged validator rows.
     let (mut total_active, mut curr_target, mut prev_target) = (0u64, 0u64, 0u64);
-    for r in iter_validator_rows(
-        view.validators.reader(),
-        view.balances.reader(),
-        &view.previous_participation,
-        &view.current_participation,
-        &view.inactivity,
-    ) {
+    for r in validator_rows(view) {
         if r.activation_epoch <= current_epoch && current_epoch < r.exit_epoch {
             total_active += r.effective_balance;
             if !r.slashed && r.current_participation & TIMELY_TARGET_FLAG != 0 {
@@ -200,22 +193,10 @@ pub fn process_inactivity_updates(
     if current_epoch == 0 {
         return;
     }
-    let is_leak = {
-        let previous_epoch = current_epoch.saturating_sub(1);
-        let finalized = epoch.state().finalized_checkpoint.epoch;
-        previous_epoch.saturating_sub(finalized) > cfg.min_epochs_to_inactivity_penalty
-    };
+    let is_leak = is_inactivity_leak(cfg, epoch, current_epoch);
 
     scratch.clear();
-    for (i, r) in iter_validator_rows(
-        view.validators.reader(),
-        view.balances.reader(),
-        &view.previous_participation,
-        &view.current_participation,
-        &view.inactivity,
-    )
-    .enumerate()
-    {
+    for (i, r) in validator_rows(view).enumerate() {
         let new = if !eligibility(&r, current_epoch) {
             r.inactivity_score
         } else {
@@ -246,42 +227,16 @@ pub fn process_rewards_and_penalties(
     if current_epoch == 0 {
         return;
     }
-    let total_active = {
-        let validators = view.validators.reader();
-        let n = validators.count();
-        let mut act = validators.iter_activation_epochs();
-        let mut exit = validators.iter_exit_epochs();
-        let mut eff = validators.iter_effective_balances();
-        let mut total: u64 = 0;
-        for _ in 0..n {
-            let a = act.next().unwrap();
-            let x = exit.next().unwrap();
-            let b = eff.next().unwrap();
-            if a <= current_epoch && current_epoch < x {
-                total += b;
-            }
-        }
-        total.max(EFFECTIVE_BALANCE_INCREMENT)
-    };
+    let total_active = total_active_balance(&view.validators.reader(), current_epoch);
     let sqrt_total = integer_sqrt(total_active);
     let base_reward_per_increment = EFFECTIVE_BALANCE_INCREMENT * BASE_REWARD_FACTOR / sqrt_total;
-    let is_leak = {
-        let previous_epoch = current_epoch.saturating_sub(1);
-        let finalized = epoch.state().finalized_checkpoint.epoch;
-        previous_epoch.saturating_sub(finalized) > cfg.min_epochs_to_inactivity_penalty
-    };
+    let is_leak = is_inactivity_leak(cfg, epoch, current_epoch);
 
     let previous_epoch = current_epoch.saturating_sub(1);
 
     // Pass 1: flag-weighted active increments (pure read sweep).
     let mut flag_increments = [0u64; 3];
-    for r in iter_validator_rows(
-        view.validators.reader(),
-        view.balances.reader(),
-        &view.previous_participation,
-        &view.current_participation,
-        &view.inactivity,
-    ) {
+    for r in validator_rows(view) {
         if r.activation_epoch > previous_epoch || previous_epoch >= r.exit_epoch || r.slashed {
             continue;
         }
@@ -296,15 +251,7 @@ pub fn process_rewards_and_penalties(
 
     // Pass 2: per-validator reward/penalty → changed balances into scratch.
     scratch.clear();
-    for (i, r) in iter_validator_rows(
-        view.validators.reader(),
-        view.balances.reader(),
-        &view.previous_participation,
-        &view.current_participation,
-        &view.inactivity,
-    )
-    .enumerate()
-    {
+    for (i, r) in validator_rows(view).enumerate() {
         if !eligibility(&r, current_epoch) {
             continue;
         }
@@ -374,23 +321,7 @@ pub fn process_slashings(
     epoch: &EpochView,
     current_epoch: Epoch,
 ) {
-    let total_balance = {
-        let validators = view.validators.reader();
-        let n = validators.count();
-        let mut act = validators.iter_activation_epochs();
-        let mut exit = validators.iter_exit_epochs();
-        let mut eff = validators.iter_effective_balances();
-        let mut total: u64 = 0;
-        for _ in 0..n {
-            let a = act.next().unwrap();
-            let x = exit.next().unwrap();
-            let b = eff.next().unwrap();
-            if a <= current_epoch && current_epoch < x {
-                total += b;
-            }
-        }
-        total.max(EFFECTIVE_BALANCE_INCREMENT)
-    };
+    let total_balance = total_active_balance(&view.validators.reader(), current_epoch);
 
     let mut sum_slashings: u64 = 0;
     for off in 0..EPOCHS_PER_SLASHINGS_VECTOR as u64 {
@@ -648,8 +579,8 @@ pub fn process_historical_summaries_update(
     // Effective `block_roots` / `state_roots` circular vectors with delta
     // entries overlaid on the finalized ring (SLOTS_PER_HISTORICAL_ROOT = 8192
     // entries).
-    effective_block_roots_into(&view.slot.reader(), &mut scratch.block_roots);
-    effective_state_roots_into(&view.slot.reader(), &mut scratch.state_roots);
+    view.slot.reader().effective_block_roots_into(&mut scratch.block_roots);
+    view.slot.reader().effective_state_roots_into(&mut scratch.state_roots);
 
     let block_summary_root =
         ssz_hash::merkleize_padded(&scratch.block_roots, SLOTS_PER_HISTORICAL_ROOT);
@@ -820,21 +751,7 @@ fn compute_exit_epoch_and_update_churn(
 
 #[timed]
 fn get_balance_churn_limit(cfg: &SpecConfig, view: &StateWriterView, current_epoch: Epoch) -> u64 {
-    let validators = view.validators.reader();
-    let n = validators.count();
-    let mut act = validators.iter_activation_epochs();
-    let mut exit = validators.iter_exit_epochs();
-    let mut eff = validators.iter_effective_balances();
-    let mut total: u64 = 0;
-    for _ in 0..n {
-        let a = act.next().unwrap();
-        let x = exit.next().unwrap();
-        let b = eff.next().unwrap();
-        if a <= current_epoch && current_epoch < x {
-            total += b;
-        }
-    }
-    let total = total.max(EFFECTIVE_BALANCE_INCREMENT);
+    let total = total_active_balance(&view.validators.reader(), current_epoch);
     let churn = max(cfg.min_per_epoch_churn_limit, total / cfg.churn_limit_quotient);
     churn - churn % EFFECTIVE_BALANCE_INCREMENT
 }
@@ -849,6 +766,27 @@ fn get_activation_exit_churn_limit(
     min(
         cfg.max_per_epoch_activation_exit_churn_limit,
         get_balance_churn_limit(cfg, view, current_epoch),
+    )
+}
+
+/// Inactivity-leak predicate: the chain hasn't finalized for more than
+/// `min_epochs_to_inactivity_penalty` epochs before the previous one.
+fn is_inactivity_leak(cfg: &SpecConfig, epoch: &EpochView, current_epoch: Epoch) -> bool {
+    let previous_epoch = current_epoch.saturating_sub(1);
+    let finalized = epoch.state().finalized_checkpoint.epoch;
+    previous_epoch.saturating_sub(finalized) > cfg.min_epochs_to_inactivity_penalty
+}
+
+/// Merged validator-row iterator over the view's per-validator tiers.
+fn validator_rows<'a>(
+    view: &'a StateWriterView<'_>,
+) -> impl Iterator<Item = common::ValidatorRow> + 'a {
+    iter_validator_rows(
+        view.validators.reader(),
+        view.balances.reader(),
+        &view.previous_participation,
+        &view.current_participation,
+        &view.inactivity,
     )
 }
 
@@ -875,12 +813,7 @@ pub fn integer_sqrt(n: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use blst::min_pk::SecretKey;
-    use silver_beacon_state_data::{
-        B256, BalancesGroup, BeaconState, CurrentParticipationGroup, FinalizedValidators,
-        Immutable, InactivityScoresGroup, PendingDeposit, PendingGroup, PendingQueues,
-        PreviousParticipationGroup, SlotStateFinalized, SlotStateGroup, StateId, ValSeed,
-        ValidatorsGroup, Withdrawals,
-    };
+    use silver_beacon_state_data::{B256, PendingDeposit, ValSeed, Withdrawals};
 
     use super::*;
 
@@ -888,7 +821,6 @@ mod tests {
 
     use silver_beacon_state_data::{
         EPOCHS_PER_HISTORICAL_VECTOR, EpochGroup, EpochId, EpochState, EpochStateFinalized,
-        LongtailGroup, LongtailState,
     };
 
     fn checkpoint(epoch: Epoch, tag: u8) -> Checkpoint {
@@ -947,65 +879,7 @@ mod tests {
         epoch_w.commit()
     }
 
-    /// `BeaconState` + its working bundle; `view()` rolls a fresh fork off
-    /// the bundle like production `apply_block_view` (not reusable here: it
-    /// asserts a non-empty validator set). Cross-view persistence needs
-    /// `commit` + `state_id` writeback.
-    struct TestState {
-        bs: BeaconState,
-        state_id: StateId,
-    }
-
-    impl TestState {
-        fn new(epoch_base: EpochStateFinalized, seeds: &[ValSeed], seed_balances: &[u64]) -> Self {
-            let validators = ValidatorsGroup::new(FinalizedValidators::with_validators(seeds));
-            let cap = validators.base().capacity();
-            let n = validators.base().validator_count();
-            // Anchor slot = the finalized epoch boundary (`fresh` pins it there).
-            let anchor_slot = epoch_base.state().finalized_checkpoint.epoch * SLOTS_PER_EPOCH;
-            let balance_bytes: Vec<u8> =
-                seed_balances.iter().flat_map(|v| v.to_le_bytes()).collect();
-            // Sibling lists stay lockstep with the registry: n zero entries.
-            let zero_flags = vec![0u8; n];
-            let zero_scores = vec![0u8; n * 8];
-            let zero_roots = || vec![[0u8; 32]; SLOTS_PER_HISTORICAL_ROOT].into_boxed_slice();
-            let mut bs = BeaconState {
-                immutable: Immutable::default(),
-                validators,
-                balances: BalancesGroup::new(cap, n, &balance_bytes).unwrap(),
-                pending: PendingGroup::new(PendingQueues::default()),
-                previous_participation: PreviousParticipationGroup::new(cap, n, &zero_flags)
-                    .unwrap(),
-                current_participation: CurrentParticipationGroup::new(cap, n, &zero_flags).unwrap(),
-                inactivity: InactivityScoresGroup::new(cap, n, &zero_scores).unwrap(),
-                slot_states: SlotStateGroup::new(SlotStateFinalized::from_parts(
-                    common::SlotState { slot: anchor_slot, ..Default::default() },
-                    zero_roots(),
-                    zero_roots(),
-                )),
-                epoch: EpochGroup::new(epoch_base),
-                longtail: LongtailGroup::new(LongtailState::default()),
-            };
-            let state_id = bs.roll_fresh();
-            Self { bs, state_id }
-        }
-
-        fn view(&mut self) -> (StateWriterView<'_>, &mut EpochGroup, &mut LongtailGroup) {
-            let sid = self.state_id;
-            let bs = &mut self.bs;
-            let view = StateWriterView::new(
-                &bs.immutable,
-                bs.balances.roll_from(sid.balances_idx),
-                bs.pending.roll_from(sid.pending_idx),
-                bs.previous_participation.roll_from(sid.previous_participation_idx),
-                bs.current_participation.roll_from(sid.current_participation_idx),
-                bs.inactivity.roll_from(sid.inactivity_idx),
-                bs.slot_states.roll_from(sid.slot_idx),
-                bs.validators.roll_from(sid.validators_idx),
-            );
-            (view, &mut bs.epoch, &mut bs.longtail)
-        }
-    }
+    use crate::test_state::TestState;
 
     /// Fixed secret key reused across the valid-signature tests.
     fn test_keypair() -> (SecretKey, [u8; 48]) {

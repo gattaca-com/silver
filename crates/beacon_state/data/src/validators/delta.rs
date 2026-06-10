@@ -67,18 +67,9 @@ pub struct ValidatorsDelta {
 impl ValidatorsDelta {
     /// Empty delta over `base`.
     pub fn new_at(base: &FinalizedValidators) -> Self {
-        Self {
-            base_count: base.validator_count(),
-            appended: Vec::new(),
-            credentials_edits: Edits::default(),
-            effective_balance_edits: Edits::default(),
-            slashed_edits: Edits::default(),
-            activation_eligibility_epoch_edits: Edits::default(),
-            activation_epoch_edits: Edits::default(),
-            exit_epoch_edits: Edits::default(),
-            withdrawable_epoch_edits: Edits::default(),
-            hash_overlay: DeltaHashTree::new_at(base.hash()),
-        }
+        let mut d = Self::default();
+        d.anchor_at(base);
+        d
     }
 
     /// Absolute index of an appended validator matching `pubkey`.
@@ -153,85 +144,57 @@ impl ValidatorsDelta {
 
     #[inline]
     pub fn effective_balance(&self, base: &FinalizedValidators, idx: u32) -> u64 {
-        self.effective_balance_edits
-            .get(idx)
-            .copied()
-            .unwrap_or_else(|| self.base_effective_balance(base, idx))
+        self.effective_balance_edits.get(idx).copied().unwrap_or_else(|| {
+            self.base_field(base, idx, |b, i| b.effective_balance(i), |a| a.effective_balance)
+        })
     }
 
     #[inline]
     pub fn is_slashed(&self, base: &FinalizedValidators, idx: u32) -> bool {
-        self.slashed_edits.get(idx).copied().unwrap_or_else(|| self.base_slashed(base, idx))
+        self.slashed_edits
+            .get(idx)
+            .copied()
+            .unwrap_or_else(|| self.base_field(base, idx, |b, i| b.is_slashed(i), |a| a.slashed))
     }
 
     #[inline]
     pub fn activation_eligibility_epoch(&self, base: &FinalizedValidators, idx: u32) -> Epoch {
-        self.activation_eligibility_epoch_edits
-            .get(idx)
-            .copied()
-            .unwrap_or_else(|| self.base_activation_eligibility_epoch(base, idx))
+        self.activation_eligibility_epoch_edits.get(idx).copied().unwrap_or_else(|| {
+            self.base_field(
+                base,
+                idx,
+                |b, i| b.activation_eligibility_epoch(i),
+                |a| a.activation_eligibility_epoch,
+            )
+        })
     }
 
     #[inline]
     pub fn activation_epoch(&self, base: &FinalizedValidators, idx: u32) -> Epoch {
-        self.activation_epoch_edits
-            .get(idx)
-            .copied()
-            .unwrap_or_else(|| self.base_activation_epoch(base, idx))
+        self.activation_epoch_edits.get(idx).copied().unwrap_or_else(|| {
+            self.base_field(base, idx, |b, i| b.activation_epoch(i), |a| a.activation_epoch)
+        })
     }
 
     #[inline]
     pub fn exit_epoch(&self, base: &FinalizedValidators, idx: u32) -> Epoch {
-        self.exit_epoch_edits.get(idx).copied().unwrap_or_else(|| self.base_exit_epoch(base, idx))
+        self.exit_epoch_edits
+            .get(idx)
+            .copied()
+            .unwrap_or_else(|| self.base_field(base, idx, |b, i| b.exit_epoch(i), |a| a.exit_epoch))
     }
 
     #[inline]
     pub fn withdrawable_epoch(&self, base: &FinalizedValidators, idx: u32) -> Epoch {
-        self.withdrawable_epoch_edits
-            .get(idx)
-            .copied()
-            .unwrap_or_else(|| self.base_withdrawable_epoch(base, idx))
-    }
-
-    #[inline]
-    fn base_effective_balance(&self, base: &FinalizedValidators, idx: u32) -> u64 {
-        self.base_field(base, idx, |b, i| b.effective_balance(i), |a| a.effective_balance)
-    }
-
-    #[inline]
-    fn base_slashed(&self, base: &FinalizedValidators, idx: u32) -> bool {
-        self.base_field(base, idx, |b, i| b.is_slashed(i), |a| a.slashed)
-    }
-
-    #[inline]
-    fn base_activation_eligibility_epoch(&self, base: &FinalizedValidators, idx: u32) -> Epoch {
-        self.base_field(
-            base,
-            idx,
-            |b, i| b.activation_eligibility_epoch(i),
-            |a| a.activation_eligibility_epoch,
-        )
-    }
-
-    #[inline]
-    fn base_activation_epoch(&self, base: &FinalizedValidators, idx: u32) -> Epoch {
-        self.base_field(base, idx, |b, i| b.activation_epoch(i), |a| a.activation_epoch)
-    }
-
-    #[inline]
-    fn base_exit_epoch(&self, base: &FinalizedValidators, idx: u32) -> Epoch {
-        self.base_field(base, idx, |b, i| b.exit_epoch(i), |a| a.exit_epoch)
-    }
-
-    #[inline]
-    fn base_withdrawable_epoch(&self, base: &FinalizedValidators, idx: u32) -> Epoch {
-        self.base_field(base, idx, |b, i| b.withdrawable_epoch(i), |a| a.withdrawable_epoch)
+        self.withdrawable_epoch_edits.get(idx).copied().unwrap_or_else(|| {
+            self.base_field(base, idx, |b, i| b.withdrawable_epoch(i), |a| a.withdrawable_epoch)
+        })
     }
 
     /// Recompute the Validator-container hash leaf for `idx` from the
     /// current effective state (overlay + base). Used by every mutator
     /// to keep `hash_overlay` consistent with the field edits.
-    pub fn recompute_leaf(&self, base: &FinalizedValidators, idx: u32) -> crate::B256 {
+    pub fn recompute_leaf(&self, base: &FinalizedValidators, idx: u32) -> B256 {
         validator_hash(
             self.effective_pubkey(base, idx),
             self.effective_credentials(base, idx),
@@ -250,10 +213,17 @@ impl ValidatorsDelta {
     /// zero work for untouched subtrees. The physical tree only spans the
     /// registry capacity's leaves, so extend its root with zero subtrees up to
     /// the registry-limit depth, then mix in the validator count.
-    pub fn hash_root(&self, base: &FinalizedValidators) -> crate::B256 {
+    pub fn hash_root(&self, base: &FinalizedValidators) -> B256 {
         const LIST_DEPTH: u32 = VALIDATOR_REGISTRY_LIMIT.trailing_zeros();
         let len = self.base_count + self.appended.len();
         self.hash_overlay.ssz_list_root(base.hash(), LIST_DEPTH, len)
+    }
+
+    /// Recompute and store the hash leaf for `idx` — every field write calls
+    /// this to keep `hash_overlay` consistent with the edits.
+    fn refresh_leaf(&mut self, base: &FinalizedValidators, idx: u32) {
+        let leaf = self.recompute_leaf(base, idx);
+        self.hash_overlay.set_leaf(base.hash(), idx as usize, leaf);
     }
 
     /// Append a fresh validator with spec-default Validator-container
@@ -268,27 +238,23 @@ impl ValidatorsDelta {
         let idx = (self.base_count + self.appended.len()) as u32;
         self.appended.push(AppendedValidator::new(pubkey, pubkey_decompressed, credentials));
 
-        let leaf = self.recompute_leaf(base, idx);
-        self.hash_overlay.set_leaf(base.hash(), idx as usize, leaf);
+        self.refresh_leaf(base, idx);
         idx
     }
 
     pub fn set_credentials(&mut self, base: &FinalizedValidators, idx: u32, v: Withdrawals) {
         self.credentials_edits.merge_in_place(&[(idx, v)]);
-        let leaf = self.recompute_leaf(base, idx);
-        self.hash_overlay.set_leaf(base.hash(), idx as usize, leaf);
+        self.refresh_leaf(base, idx);
     }
 
     pub fn set_effective_balance(&mut self, base: &FinalizedValidators, idx: u32, v: u64) {
         self.effective_balance_edits.merge_in_place(&[(idx, v)]);
-        let leaf = self.recompute_leaf(base, idx);
-        self.hash_overlay.set_leaf(base.hash(), idx as usize, leaf);
+        self.refresh_leaf(base, idx);
     }
 
     pub fn set_slashed(&mut self, base: &FinalizedValidators, idx: u32, v: bool) {
         self.slashed_edits.merge_in_place(&[(idx, v)]);
-        let leaf = self.recompute_leaf(base, idx);
-        self.hash_overlay.set_leaf(base.hash(), idx as usize, leaf);
+        self.refresh_leaf(base, idx);
     }
 
     pub fn set_activation_eligibility_epoch(
@@ -298,26 +264,22 @@ impl ValidatorsDelta {
         v: Epoch,
     ) {
         self.activation_eligibility_epoch_edits.merge_in_place(&[(idx, v)]);
-        let leaf = self.recompute_leaf(base, idx);
-        self.hash_overlay.set_leaf(base.hash(), idx as usize, leaf);
+        self.refresh_leaf(base, idx);
     }
 
     pub fn set_activation_epoch(&mut self, base: &FinalizedValidators, idx: u32, v: Epoch) {
         self.activation_epoch_edits.merge_in_place(&[(idx, v)]);
-        let leaf = self.recompute_leaf(base, idx);
-        self.hash_overlay.set_leaf(base.hash(), idx as usize, leaf);
+        self.refresh_leaf(base, idx);
     }
 
     pub fn set_exit_epoch(&mut self, base: &FinalizedValidators, idx: u32, v: Epoch) {
         self.exit_epoch_edits.merge_in_place(&[(idx, v)]);
-        let leaf = self.recompute_leaf(base, idx);
-        self.hash_overlay.set_leaf(base.hash(), idx as usize, leaf);
+        self.refresh_leaf(base, idx);
     }
 
     pub fn set_withdrawable_epoch(&mut self, base: &FinalizedValidators, idx: u32, v: Epoch) {
         self.withdrawable_epoch_edits.merge_in_place(&[(idx, v)]);
-        let leaf = self.recompute_leaf(base, idx);
-        self.hash_overlay.set_leaf(base.hash(), idx as usize, leaf);
+        self.refresh_leaf(base, idx);
     }
 
     /// Fold this delta into `base`. Appended records advance
@@ -332,17 +294,7 @@ impl ValidatorsDelta {
 
         // 1. Append new identities (with their baked-in defaults).
         for a in &self.appended {
-            base.append(
-                &a.pubkey,
-                &a.pubkey_decompressed,
-                &a.credentials,
-                a.effective_balance,
-                a.slashed,
-                a.activation_eligibility_epoch,
-                a.activation_epoch,
-                a.exit_epoch,
-                a.withdrawable_epoch,
-            );
+            base.append(a);
         }
 
         // 2. Apply per-field edits in index order.
@@ -462,28 +414,15 @@ impl ValidatorsDelta {
         self.appended.drain(..promoted);
         self.base_count = new_base_count;
 
-        self.credentials_edits.retain(|(idx, v)| {
-            (*idx as usize) >= new_base_count || base.withdrawal_credentials(*idx as usize) != v
-        });
-        self.effective_balance_edits.retain(|(idx, v)| {
-            (*idx as usize) >= new_base_count || base.effective_balance(*idx as usize) != *v
-        });
-        self.slashed_edits.retain(|(idx, v)| {
-            (*idx as usize) >= new_base_count || base.is_slashed(*idx as usize) != *v
-        });
-        self.activation_eligibility_epoch_edits.retain(|(idx, v)| {
-            (*idx as usize) >= new_base_count ||
-                base.activation_eligibility_epoch(*idx as usize) != *v
-        });
-        self.activation_epoch_edits.retain(|(idx, v)| {
-            (*idx as usize) >= new_base_count || base.activation_epoch(*idx as usize) != *v
-        });
-        self.exit_epoch_edits.retain(|(idx, v)| {
-            (*idx as usize) >= new_base_count || base.exit_epoch(*idx as usize) != *v
-        });
-        self.withdrawable_epoch_edits.retain(|(idx, v)| {
-            (*idx as usize) >= new_base_count || base.withdrawable_epoch(*idx as usize) != *v
-        });
+        self.credentials_edits.retain_diverged(new_base_count, |i| *base.withdrawal_credentials(i));
+        self.effective_balance_edits.retain_diverged(new_base_count, |i| base.effective_balance(i));
+        self.slashed_edits.retain_diverged(new_base_count, |i| base.is_slashed(i));
+        self.activation_eligibility_epoch_edits
+            .retain_diverged(new_base_count, |i| base.activation_eligibility_epoch(i));
+        self.activation_epoch_edits.retain_diverged(new_base_count, |i| base.activation_epoch(i));
+        self.exit_epoch_edits.retain_diverged(new_base_count, |i| base.exit_epoch(i));
+        self.withdrawable_epoch_edits
+            .retain_diverged(new_base_count, |i| base.withdrawable_epoch(i));
 
         base.hash().prune_delta(&mut self.hash_overlay);
     }
@@ -637,129 +576,101 @@ impl<'a> ValidatorsView<'a> {
     }
 
     pub fn iter_activation_epochs(self) -> impl Iterator<Item = Epoch> + 'a {
-        let edits = self.delta.activation_epoch_edits.as_slice();
-        epoch_column_iter(
+        let base_slice = self.base.activation_epoch_slice();
+        column_iter(
             self.base_count(),
             self.count(),
-            edits,
-            self.base.activation_epoch_slice(),
+            self.delta.activation_epoch_edits.as_slice(),
+            move |i| base_slice[i],
             self.appended(),
             |a| a.activation_epoch,
         )
     }
 
     pub fn iter_exit_epochs(self) -> impl Iterator<Item = Epoch> + 'a {
-        let edits = self.delta.exit_epoch_edits.as_slice();
-        epoch_column_iter(
+        let base_slice = self.base.exit_epoch_slice();
+        column_iter(
             self.base_count(),
             self.count(),
-            edits,
-            self.base.exit_epoch_slice(),
+            self.delta.exit_epoch_edits.as_slice(),
+            move |i| base_slice[i],
             self.appended(),
             |a| a.exit_epoch,
         )
     }
 
     pub fn iter_withdrawable_epochs(self) -> impl Iterator<Item = Epoch> + 'a {
-        let edits = self.delta.withdrawable_epoch_edits.as_slice();
-        epoch_column_iter(
+        let base_slice = self.base.withdrawable_epoch_slice();
+        column_iter(
             self.base_count(),
             self.count(),
-            edits,
-            self.base.withdrawable_epoch_slice(),
+            self.delta.withdrawable_epoch_edits.as_slice(),
+            move |i| base_slice[i],
             self.appended(),
             |a| a.withdrawable_epoch,
         )
     }
 
     pub fn iter_activation_eligibility_epochs(self) -> impl Iterator<Item = Epoch> + 'a {
-        let edits = self.delta.activation_eligibility_epoch_edits.as_slice();
-        epoch_column_iter(
+        let base_slice = self.base.activation_eligibility_epoch_slice();
+        column_iter(
             self.base_count(),
             self.count(),
-            edits,
-            self.base.activation_eligibility_epoch_slice(),
+            self.delta.activation_eligibility_epoch_edits.as_slice(),
+            move |i| base_slice[i],
             self.appended(),
             |a| a.activation_eligibility_epoch,
         )
     }
 
     pub fn iter_effective_balances(self) -> impl Iterator<Item = u64> + 'a {
-        let base_count = self.base_count();
-        let total = self.count();
-        let edits = self.delta.effective_balance_edits.as_slice();
         let base_slice = self.base.effective_balance_slice();
-        let appended = self.appended();
-        let mut cursor = 0usize;
-        (0..total).map(move |i| {
-            if cursor < edits.len() && (edits[cursor].0 as usize) == i {
-                let v = edits[cursor].1;
-                cursor += 1;
-                v
-            } else if i < base_count {
-                base_slice[i]
-            } else {
-                appended[i - base_count].effective_balance
-            }
-        })
+        column_iter(
+            self.base_count(),
+            self.count(),
+            self.delta.effective_balance_edits.as_slice(),
+            move |i| base_slice[i],
+            self.appended(),
+            |a| a.effective_balance,
+        )
     }
 
-    /// `slashed` is a packed bitset in the base, so this can't share the
-    /// slice-indexed iterator path.
     pub fn iter_slashed(self) -> impl Iterator<Item = bool> + 'a {
-        let base_count = self.base_count();
-        let total = self.count();
-        let edits = self.delta.slashed_edits.as_slice();
         let bitset = self.base.slashed_bitset();
-        let appended = self.appended();
-        let mut cursor = 0usize;
-        (0..total).map(move |i| {
-            if cursor < edits.len() && (edits[cursor].0 as usize) == i {
-                let v = edits[cursor].1;
-                cursor += 1;
-                v
-            } else if i < base_count {
-                bitset[i / 8] & (1u8 << (i % 8)) != 0
-            } else {
-                appended[i - base_count].slashed
-            }
-        })
+        column_iter(
+            self.base_count(),
+            self.count(),
+            self.delta.slashed_edits.as_slice(),
+            move |i| bitset[i / 8] & (1u8 << (i % 8)) != 0,
+            self.appended(),
+            |a| a.slashed,
+        )
     }
 
-    /// Appended validators' credentials live in `appended[i].credentials`
-    /// rather than at a constant default, so this can't reuse a slice default.
     pub fn iter_credentials(self) -> impl Iterator<Item = Withdrawals> + 'a {
-        let base_count = self.base_count();
-        let total = self.count();
-        let edits = self.delta.credentials_edits.as_slice();
         let base_slice = self.base.withdrawal_credentials_slice();
-        let appended = self.appended();
-        let mut cursor = 0usize;
-        (0..total).map(move |i| {
-            if cursor < edits.len() && (edits[cursor].0 as usize) == i {
-                let v = edits[cursor].1;
-                cursor += 1;
-                v
-            } else if i < base_count {
-                base_slice[i]
-            } else {
-                appended[i - base_count].credentials
-            }
-        })
+        column_iter(
+            self.base_count(),
+            self.count(),
+            self.delta.credentials_edits.as_slice(),
+            move |i| base_slice[i],
+            self.appended(),
+            |a| a.credentials,
+        )
     }
 }
 
-/// Whole-column epoch iterator: base prefix overlaid by the sparse `edits`,
-/// then the fork's `appended` records. Free fn so it captures only `'a` slices
-/// (no `&self`), letting the write view build it over a transient view.
-fn epoch_column_iter<'a>(
+/// Whole-column iterator: base prefix overlaid by the sparse `edits`, then the
+/// fork's `appended` records. Free fn so it captures only `'a` borrows (no
+/// `&self`), letting the write view build it over a transient view.
+fn column_iter<'a, T: Copy + 'a>(
     base_count: usize,
     total: usize,
-    edits: &'a [(u32, Epoch)],
-    base_slice: &'a [Epoch],
+    edits: &'a [(u32, T)],
+    base_at: impl Fn(usize) -> T + 'a,
     appended: &'a [AppendedValidator],
-    from_appended: impl Fn(&AppendedValidator) -> Epoch + 'a,
-) -> impl Iterator<Item = Epoch> + 'a {
+    from_appended: impl Fn(&AppendedValidator) -> T + 'a,
+) -> impl Iterator<Item = T> + 'a {
     let mut cursor = 0usize;
     (0..total).map(move |i| {
         if cursor < edits.len() && (edits[cursor].0 as usize) == i {
@@ -767,7 +678,7 @@ fn epoch_column_iter<'a>(
             cursor += 1;
             v
         } else if i < base_count {
-            base_slice[i]
+            base_at(i)
         } else {
             from_appended(&appended[i - base_count])
         }
@@ -821,8 +732,8 @@ impl<'a> ValidatorsWriteView<'a> {
         self.fork.hash_root(self.base)
     }
 
-    // Per-validator reads delegate to the merged reader so the base+delta
-    // merge lives in one place (mirrors `BalancesWriteView::reader`).
+    // Per-validator reads go straight to the delta's `effective_*` merge
+    // methods — no view construction per call.
     #[inline]
     pub fn pubkey(&self, ix: usize) -> &BLSPubkey {
         self.fork.effective_pubkey(self.base, ix as u32)
@@ -868,40 +779,32 @@ impl<'a> ValidatorsWriteView<'a> {
         self.fork.withdrawable_epoch(self.base, ix as u32)
     }
 
-    /// View borrowing this write view's own base + fork, tied to `&self` so
-    /// the read-side iterators outlive the transient view value.
-    #[inline]
-    fn reader_for_iter(&self) -> ValidatorsView<'_> {
-        let fork: &ValidatorsDelta = &self.fork;
-        ValidatorsView::new(self.base, fork)
-    }
-
     pub fn iter_activation_epochs(&self) -> impl Iterator<Item = Epoch> + '_ {
-        self.reader_for_iter().iter_activation_epochs()
+        self.reader().iter_activation_epochs()
     }
 
     pub fn iter_exit_epochs(&self) -> impl Iterator<Item = Epoch> + '_ {
-        self.reader_for_iter().iter_exit_epochs()
+        self.reader().iter_exit_epochs()
     }
 
     pub fn iter_withdrawable_epochs(&self) -> impl Iterator<Item = Epoch> + '_ {
-        self.reader_for_iter().iter_withdrawable_epochs()
+        self.reader().iter_withdrawable_epochs()
     }
 
     pub fn iter_activation_eligibility_epochs(&self) -> impl Iterator<Item = Epoch> + '_ {
-        self.reader_for_iter().iter_activation_eligibility_epochs()
+        self.reader().iter_activation_eligibility_epochs()
     }
 
     pub fn iter_effective_balances(&self) -> impl Iterator<Item = u64> + '_ {
-        self.reader_for_iter().iter_effective_balances()
+        self.reader().iter_effective_balances()
     }
 
     pub fn iter_slashed(&self) -> impl Iterator<Item = bool> + '_ {
-        self.reader_for_iter().iter_slashed()
+        self.reader().iter_slashed()
     }
 
     pub fn iter_credentials(&self) -> impl Iterator<Item = Withdrawals> + '_ {
-        self.reader_for_iter().iter_credentials()
+        self.reader().iter_credentials()
     }
 
     #[inline]

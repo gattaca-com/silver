@@ -18,6 +18,8 @@ use silver_common::{TCache, TCacheProducer, ticker::SlotTicker};
 use silver_e2e::mainnet_api::fetch_canonical_state_root;
 
 const FIXTURES: &str = "tests/example_checkpoints";
+const BLOCK_PREFIX: &str = "next_block_";
+const BLOCK_SUFFIX: &str = ".ssz";
 
 /// Pull the full checkpoint (state SSZ + pubkeys sidecar) out of `bs` through
 /// the production cursor path: publish an anchor so the reader has a
@@ -42,8 +44,6 @@ fn checkpoint_via_cursor(bs: BeaconState) -> (Vec<u8>, Vec<u8>) {
         }
     }
 }
-const BLOCK_PREFIX: &str = "next_block_";
-const BLOCK_SUFFIX: &str = ".ssz";
 
 #[test]
 fn checkpoint_with_pubkeys_loads() {

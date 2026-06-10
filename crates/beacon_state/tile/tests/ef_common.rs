@@ -6,65 +6,67 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use silver_beacon_state::ssz_hash::{StateHashScratch, hash_tree_root_state};
+use silver_beacon_state::{
+    ssz_hash::{StateHashScratch, hash_tree_root_state},
+    state_transition,
+};
 use silver_beacon_state_data::{
-    BeaconState, EpochGroup, EpochView, LongtailGroup, SpecConfig, StateId, StateWriterView,
+    EpochGroup, EpochView, LongtailGroup, SpecConfig, StateId, StateWriterView,
     effective_randao_mixes_into, effective_slashings_into,
 };
 
-/// Snappy-decompress a file.
-pub fn snappy_decode(path: &Path) -> Vec<u8> {
-    let compressed = fs::read(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    snap::Decoder::new()
-        .decompress_vec(&compressed)
-        .unwrap_or_else(|e| panic!("{}: snappy: {e}", path.display()))
-}
-
-/// EF test state: per-tier finalized bases decoded from SSZ + the working
-/// fork bundle (`state_id`) anchored on top. State-transition runs mutate a
-/// rolled fork; post-state comparison hashes via `hash_tree_root_state` over
-/// a `StateWriterView`.
-pub struct LoadedState {
-    pub bs: BeaconState,
-    pub state_id: StateId,
-}
+#[path = "support/loaded_state.rs"]
+mod loaded_state;
+#[allow(unused_imports)]
+pub use loaded_state::{LoadedState, load_state, snappy_decode};
 
 impl LoadedState {
-    /// Roll a fresh fork off the bundle and hand back its writer view, with
-    /// the epoch/longtail groups alongside for boundary reads + rolls — the
-    /// production `apply_block_view` shape. Mutations persist only via
-    /// `s.state_id = view.commit(epoch_idx, longtail_idx)` writeback.
-    pub fn view(&mut self) -> (StateWriterView<'_>, &mut EpochGroup, &mut LongtailGroup) {
-        let sid = self.state_id;
-        let bs = &mut self.bs;
-        let view = StateWriterView::new(
-            &bs.immutable,
-            bs.balances.roll_from(sid.balances_idx),
-            bs.pending.roll_from(sid.pending_idx),
-            bs.previous_participation.roll_from(sid.previous_participation_idx),
-            bs.current_participation.roll_from(sid.current_participation_idx),
-            bs.inactivity.roll_from(sid.inactivity_idx),
-            bs.slot_states.roll_from(sid.slot_idx),
-            bs.validators.roll_from(sid.validators_idx),
-        );
-        (view, &mut bs.epoch, &mut bs.longtail)
+    /// The loaded state's working slot number (resolved through the slot
+    /// group, keyed by the bundle's `slot_idx`).
+    pub fn slot(&self) -> u64 {
+        self.bs.slot_states.view(self.state_id.slot_idx).slot_number()
     }
-}
 
-pub fn load_state(path: &Path) -> LoadedState {
-    let ssz = snappy_decode(path);
-    let mut bs = BeaconState::decompose(&ssz, &SpecConfig::mainnet(), None)
-        .unwrap_or_else(|e| panic!("{}: decompose failed: {e}", path.display()));
-    // Anchor each working fork at the decoded base; epoch/longtail stay
-    // unrolled (lazy — `None` idx reads the base).
-    let state_id = bs.roll_anchor();
-    LoadedState { bs, state_id }
-}
+    /// Roll a fork, run `f` over its writer view, then commit with the
+    /// inherited epoch/longtail ids and write the bundle back.
+    pub fn with_view<R>(&mut self, f: impl FnOnce(&mut StateWriterView<'_>) -> R) -> R {
+        let sid = self.state_id;
+        let (mut view, _, _) = self.view();
+        let r = f(&mut view);
+        self.state_id = view.commit(sid.epoch_idx, sid.longtail_idx);
+        r
+    }
 
-/// The loaded state's working slot number (resolved through the slot group,
-/// keyed by the bundle's `slot_idx`).
-pub fn slot_of(s: &LoadedState) -> u64 {
-    s.bs.slot_states.view(s.state_id.slot_idx).slot_number()
+    /// [`with_view`](Self::with_view) with the inherited epoch view resolved
+    /// alongside.
+    pub fn with_view_and_epoch<R>(
+        &mut self,
+        f: impl FnOnce(&mut StateWriterView<'_>, &EpochView<'_>) -> R,
+    ) -> R {
+        let sid = self.state_id;
+        let (mut view, epoch, _) = self.view();
+        let epoch_view = epoch.view_opt(sid.epoch_idx);
+        let r = f(&mut view, &epoch_view);
+        self.state_id = view.commit(sid.epoch_idx, sid.longtail_idx);
+        r
+    }
+
+    /// Roll a fork, apply a signed block (slot advance + STF), then commit
+    /// the (possibly epoch/longtail-rolled) bundle and write it back so the
+    /// next block / the post-state comparison sees it.
+    pub fn apply_block(&mut self, cfg: &SpecConfig, block_ssz: &[u8]) -> Result<(), String> {
+        let parent = self.state_id;
+        let (mut view, epoch, longtail) = self.view();
+        match state_transition::apply_signed_block_debug(
+            cfg, &mut view, epoch, longtail, parent, block_ssz,
+        ) {
+            Ok((epoch_idx, longtail_idx)) => {
+                self.state_id = view.commit(epoch_idx, longtail_idx);
+                Ok(())
+            }
+            Err(e) => Err(e.to_string()),
+        }
+    }
 }
 
 const MAX_DIFFS: usize = 150;

@@ -258,15 +258,8 @@ impl ForkChoice {
         &self.nodes[idx]
     }
 
-    /// Index bundle of the node being finalized. The caller promotes that
-    /// `StateId`'s tiers into the finalized bases and re-anchors surviving
-    /// deltas against the new base.
-    pub fn finalize_node(&self, idx: usize) -> StateId {
-        self.nodes[idx].state_id
-    }
-
     /// Index bundles of all currently-live nodes — the caller re-anchors them
-    /// against the freshly promoted base after `finalize_node`.
+    /// against the freshly promoted base at finalization.
     pub fn live_state_ids(&self) -> impl Iterator<Item = StateId> + '_ {
         self.nodes.iter().map(|n| n.state_id)
     }

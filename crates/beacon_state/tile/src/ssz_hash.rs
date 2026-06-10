@@ -3,8 +3,8 @@ use silver_beacon_state_data::{
     EPOCHS_PER_SLASHINGS_VECTOR, Eth1Data, ExecutionPayloadHeader, Fork, HISTORICAL_ROOTS_LIMIT,
     LongtailView, MAX_ETH1_VOTES, PENDING_CONSOLIDATIONS_LIMIT, PENDING_DEPOSITS_LIMIT,
     PENDING_PARTIAL_WITHDRAWALS_LIMIT, PendingView, SLOTS_PER_HISTORICAL_ROOT, SYNC_COMMITTEE_SIZE,
-    StateReadView, SyncCommittee, VALIDATOR_REGISTRY_LIMIT, effective_block_roots_into,
-    effective_randao_mixes_into, effective_slashings_into, effective_state_roots_into,
+    StateReadView, SyncCommittee, VALIDATOR_REGISTRY_LIMIT, effective_randao_mixes_into,
+    effective_slashings_into,
 };
 use silver_common::metrics::timed;
 pub use silver_common::ssz_hash::*;
@@ -64,8 +64,8 @@ pub fn hash_tree_root_state(rv: &StateReadView, scratch: &mut StateHashScratch) 
     let es = rv.epoch.state();
     let lt = rv.longtail.state();
 
-    effective_block_roots_into(&rv.slot, &mut scratch.block_roots);
-    effective_state_roots_into(&rv.slot, &mut scratch.state_roots);
+    rv.slot.effective_block_roots_into(&mut scratch.block_roots);
+    rv.slot.effective_state_roots_into(&mut scratch.state_roots);
     effective_randao_mixes_into(&rv.epoch, &rv.slot, &mut scratch.randao_mixes);
     effective_slashings_into(&rv.epoch, &rv.slot, &mut scratch.slashings);
     let block_roots = scratch.block_roots.as_slice();

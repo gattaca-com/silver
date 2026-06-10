@@ -2,7 +2,7 @@ use super::{BalancesGroup, BalancesId, finalized::FinalizedBalances, pack_chunk}
 use crate::{
     buffer::{Reset, Slot},
     hash_tree::DeltaHashTree,
-    sparse::Edits,
+    sparse::{Edits, sweep},
     types::{B256, VALIDATOR_REGISTRY_LIMIT},
 };
 
@@ -17,7 +17,7 @@ impl BalancesDelta {
     /// Anchor a freshly [`reset`](Reset::reset) delta at `base`'s finalized
     /// count, in place. Called right after a ring roll, so `edits`/`hash_delta`
     /// are already empty (and keep their allocated capacity for reuse); only
-    /// the length needs seeding. Mirrors `ValidatorsDelta::new_at`.
+    /// the length needs seeding. Mirrors `ValidatorsDelta::anchor_at`.
     pub(super) fn anchor_at(&mut self, base: &FinalizedBalances) {
         self.total = base.count();
     }
@@ -99,24 +99,15 @@ impl<'a> BalancesView<'a> {
     }
 
     pub fn iter(self) -> impl Iterator<Item = u64> + 'a {
-        let mut edit_iter = self.delta.edits.iter().peekable();
-        let base = &self.base.data[..self.base.count];
-        (0..self.delta.total).map(move |i| {
-            if edit_iter.peek().is_some_and(|(idx, _)| *idx as usize == i) {
-                edit_iter.next().unwrap().1
-            } else if i < base.len() {
-                base[i]
-            } else {
-                0
-            }
-        })
+        sweep(self.delta.edits.as_slice(), &self.base.data[..self.base.count], 0, self.delta.total)
     }
 }
 
 /// Reader handed out by the writer's view: the value reads of [`BalancesView`]
-/// **plus** the SSZ list root. `hash_root` reads the hash overlay, so this is
-/// writer-side only — the concurrent read path takes the value-only
-/// [`BalancesView`] (via [`values`](Self::values)) and can never reach it.
+/// **plus** the SSZ list root. The read view holds `BalancesReader` directly;
+/// [`values`](Self::values) is the value-only projection intended as the
+/// read-path hygiene seam, while `hash_root` reads the hash overlay and stays
+/// writer-only by convention.
 #[derive(Clone, Copy)]
 pub struct BalancesReader<'a> {
     view: BalancesView<'a>,

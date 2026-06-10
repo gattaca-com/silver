@@ -11,61 +11,22 @@ use crate::{
 /// Per-tier read-view bundle over a fork at a published slot id, for the
 /// **writer thread's own** reads (gossip validation, head recompute): no
 /// `&mut`, no seqlock (synchronous self-read; the cross-thread lock-free path
-/// is `BeaconStateReader::read`, which hands out the same type). Built by
-/// `BeaconStateOwner::read_view`
-/// (from a `StateId`) or by [`StateWriterView::read`]. Pure field holder —
-/// consumers read through the tier views directly.
+/// is `BeaconStateReader::read`, which hands out the same type). Pure field
+/// holder — consumers read through the tier views directly.
 pub struct StateReadView<'a> {
     pub imm: &'a Immutable,
-    /// The fork's balances tier (own ring) — writer-side reader (carries the
-    /// SSZ list root for full-state hashing).
+    /// Writer-side reader (carries the SSZ list root for full-state hashing).
     pub balances: BalancesReader<'a>,
-    /// The fork's epoch tier (own ring): base + the fork's delta when it owns
-    /// one, else `base_view`.
+    /// Base + the fork's delta when it owns one, else the lazy base view.
     pub epoch: EpochView<'a>,
-    /// The fork's longtail tier (own ring): same lazy resolution as `epoch`.
+    /// Same lazy resolution as `epoch`.
     pub longtail: LongtailView<'a>,
-    /// The fork's pending queues (its own ring).
     pub pending: PendingView<'a>,
-    /// The fork's participation columns (own rings).
     pub previous_participation: ParticipationView<'a, Previous>,
     pub current_participation: ParticipationView<'a, Current>,
-    /// The fork's inactivity-scores tier (own ring).
     pub inactivity: InactivityView<'a>,
-    /// The fork's slot tier (own ring).
     pub slot: SlotStateView<'a>,
-    /// The fork's validators tier (own ring).
     pub validators: ValidatorsView<'a>,
-}
-
-impl<'a> StateReadView<'a> {
-    #[inline]
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        imm: &'a Immutable,
-        balances: BalancesReader<'a>,
-        epoch: EpochView<'a>,
-        longtail: LongtailView<'a>,
-        pending: PendingView<'a>,
-        previous_participation: ParticipationView<'a, Previous>,
-        current_participation: ParticipationView<'a, Current>,
-        inactivity: InactivityView<'a>,
-        slot: SlotStateView<'a>,
-        validators: ValidatorsView<'a>,
-    ) -> Self {
-        Self {
-            imm,
-            balances,
-            epoch,
-            longtail,
-            pending,
-            previous_participation,
-            current_participation,
-            inactivity,
-            slot,
-            validators,
-        }
-    }
 }
 
 /// All scalar per-validator columns merged at one index, yielded by
@@ -123,29 +84,6 @@ pub fn iter_validator_rows<'v>(
         current_participation: curr_p.next().unwrap(),
         inactivity_score: inact.next().unwrap(),
     })
-}
-
-/// Merged `block_roots` ring (finalized base + delta-appended roots overlaid by
-/// slot). `slot` is the tier read view.
-pub fn effective_block_roots_into(slot: &SlotStateView<'_>, out: &mut Vec<B256>) {
-    out.clear();
-    out.extend_from_slice(slot.finalized_block_roots());
-    let cap = out.len();
-    let fin_slot = slot.base_state().slot as usize;
-    for (k, r) in slot.delta_block_roots().iter().enumerate() {
-        out[(fin_slot + k) % cap] = *r;
-    }
-}
-
-/// Merged `state_roots` ring.
-pub fn effective_state_roots_into(slot: &SlotStateView<'_>, out: &mut Vec<B256>) {
-    out.clear();
-    out.extend_from_slice(slot.finalized_state_roots());
-    let cap = out.len();
-    let fin_slot = slot.base_state().slot as usize;
-    for (k, r) in slot.delta_state_roots().iter().enumerate() {
-        out[(fin_slot + k) % cap] = *r;
-    }
 }
 
 /// Merged `randao_mixes` ring. Overlays per-completed-epoch delta entries
@@ -241,30 +179,6 @@ pub struct StateWriterView<'a> {
 }
 
 impl<'a> StateWriterView<'a> {
-    #[inline]
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        imm: &'a Immutable,
-        balances: BalancesWriteView<'a>,
-        pending: PendingWriteView<'a>,
-        previous_participation: ParticipationWriteView<'a, Previous>,
-        current_participation: ParticipationWriteView<'a, Current>,
-        inactivity: InactivityWriteView<'a>,
-        slot: SlotStateWriteView<'a>,
-        validators: ValidatorsWriteView<'a>,
-    ) -> Self {
-        Self {
-            imm,
-            balances,
-            pending,
-            previous_participation,
-            current_participation,
-            inactivity,
-            slot,
-            validators,
-        }
-    }
-
     /// Finish the block: consume every held writer and assemble the fork's
     /// index bundle (for `publish_state_id`) — ids exist only from here on,
     /// so publication happens publish-last. The boundary tiers' ids come from
@@ -294,18 +208,18 @@ impl<'a> StateWriterView<'a> {
         epoch: EpochView<'s>,
         longtail: LongtailView<'s>,
     ) -> StateReadView<'s> {
-        StateReadView::new(
-            self.imm,
-            self.balances.reader(),
+        StateReadView {
+            imm: self.imm,
+            balances: self.balances.reader(),
             epoch,
             longtail,
-            self.pending.reader(),
-            self.previous_participation.reader(),
-            self.current_participation.reader(),
-            self.inactivity.reader(),
-            self.slot.reader(),
-            self.validators.reader(),
-        )
+            pending: self.pending.reader(),
+            previous_participation: self.previous_participation.reader(),
+            current_participation: self.current_participation.reader(),
+            inactivity: self.inactivity.reader(),
+            slot: self.slot.reader(),
+            validators: self.validators.reader(),
+        }
     }
 }
 
@@ -337,22 +251,18 @@ mod tests {
     impl TestState {
         /// Anchored state with no validators and empty balances.
         fn new() -> Self {
-            Self::seeded_with(&[], &[])
+            Self::seeded(&[], &[])
         }
 
         /// Anchored state whose validator registry is seeded from `seeds` and
         /// balances are empty.
         fn with_validators(seeds: &[ValSeed]) -> Self {
-            Self::seeded_with(seeds, &[])
+            Self::seeded(seeds, &[])
         }
 
         /// Anchored state with the validator registry seeded from `seeds` and
         /// balances seeded to `balances` (sized to the validator capacity).
         fn seeded(seeds: &[ValSeed], balances: &[u64]) -> Self {
-            Self::seeded_with(seeds, balances)
-        }
-
-        fn seeded_with(seeds: &[ValSeed], balances: &[u64]) -> Self {
             let validators = ValidatorsGroup::new(FinalizedValidators::with_validators(seeds));
             let cap = validators.base().capacity();
             let n = seeds.len();
@@ -389,16 +299,20 @@ mod tests {
         fn view(&mut self) -> (StateWriterView<'_>, &mut EpochGroup, &mut LongtailGroup) {
             let sid = self.state_id;
             let bs = &mut self.bs;
-            let view = StateWriterView::new(
-                &bs.immutable,
-                bs.balances.roll_from(sid.balances_idx),
-                bs.pending.roll_from(sid.pending_idx),
-                bs.previous_participation.roll_from(sid.previous_participation_idx),
-                bs.current_participation.roll_from(sid.current_participation_idx),
-                bs.inactivity.roll_from(sid.inactivity_idx),
-                bs.slot_states.roll_from(sid.slot_idx),
-                bs.validators.roll_from(sid.validators_idx),
-            );
+            let view = StateWriterView {
+                imm: &bs.immutable,
+                balances: bs.balances.roll_from(sid.balances_idx),
+                pending: bs.pending.roll_from(sid.pending_idx),
+                previous_participation: bs
+                    .previous_participation
+                    .roll_from(sid.previous_participation_idx),
+                current_participation: bs
+                    .current_participation
+                    .roll_from(sid.current_participation_idx),
+                inactivity: bs.inactivity.roll_from(sid.inactivity_idx),
+                slot: bs.slot_states.roll_from(sid.slot_idx),
+                validators: bs.validators.roll_from(sid.validators_idx),
+            };
             (view, &mut bs.epoch, &mut bs.longtail)
         }
 
@@ -425,13 +339,6 @@ mod tests {
             idx
         }
     }
-
-    // `randao_mix_at_epoch` / `slashings_at` overlay logic now lives on
-    // `EpochView`; coverage moved to `epoch::tests`.
-    // `block_root_at_slot`/`state_root_at_slot` merge logic lives on
-    // `SlotStateView`; coverage in `slot_state::tests`.
-    // `historical_summary` base+delta merge lives on `LongtailView`; coverage
-    // moved to `longtail::tests`.
 
     #[test]
     fn balance_edit_overrides_base() {
@@ -535,13 +442,6 @@ mod tests {
         assert_eq!(v.validators.find_by_pubkey(&[0xC; 48]), None);
     }
 
-    // Slot-tier promotion (`SlotState` + block/state-root circular buffers) now
-    // lives in `SlotStateGroup::finalize`; coverage moved to `slot_state::tests`.
-
-    // Validator-tier promotion (append + per-field edits folded into the
-    // finalized base) now lives in `ValidatorsGroup::finalize` /
-    // `ValidatorsDelta::promote_into_base`; coverage moved to `validators::tests`.
-
     #[test]
     fn set_slashed_round_trips() {
         let mut state = TestState::with_validators(&[ValSeed::default()]);
@@ -633,9 +533,8 @@ mod tests {
     // ---- iter_validator_credentials ----
 
     /// `iter_validator_credentials` has a unique impl (not via `sweep`)
-    /// because appended validators' credentials live in
-    /// `state_id.appended[i].credentials`, not at a constant default. Verify
-    /// the four cases:
+    /// because appended validators' credentials live on the validators delta's
+    /// appended records, not at a constant default. Verify the four cases:
     ///   - base validator, no edit → fin's `val_withdrawal_credentials`
     ///   - base validator, with edit → the edit value
     ///   - appended validator, no edit → the appended record's credentials
@@ -672,11 +571,4 @@ mod tests {
             .collect();
         assert_eq!(got, vec![base_creds_0, edited_base, appended_creds_0, edited_appended]);
     }
-
-    // Epoch-tier promotion (randao/slashings circular-buffer overlay + scalar
-    // state replace) now lives in `EpochGroup::finalize` /
-    // `EpochStateFinalized::promote`; coverage moved to `epoch::tests`.
-    // Longtail-tier promotion (sync-committee replace + historical-summary
-    // extend) now lives in `LongtailGroup::finalize` /
-    // `LongtailState::promote`; coverage moved to `longtail::tests`.
 }

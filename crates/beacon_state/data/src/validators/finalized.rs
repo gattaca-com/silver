@@ -8,7 +8,7 @@ use parking_lot::RwLock;
 use rustc_hash::FxHashMap;
 use silver_common_macros::timed;
 
-use super::validator_hash;
+use super::{delta::AppendedValidator, validator_hash};
 use crate::{
     Withdrawals,
     hash_tree::FinalizedHashTree,
@@ -78,24 +78,11 @@ pub struct FinalizedValidators {
     pub(super) hash: FinalizedHashTree,
 }
 
-/// One validator's `Validator`-container fields.
-struct ValidatorFields {
-    pubkey: BLSPubkey,
-    pubkey_decompressed: PublicKey,
-    credentials: Withdrawals,
-    effective_balance: u64,
-    slashed: bool,
-    activation_eligibility_epoch: Epoch,
-    activation_epoch: Epoch,
-    exit_epoch: Epoch,
-    withdrawable_epoch: Epoch,
-}
-
 impl FinalizedValidators {
     fn build<E>(
         capacity: usize,
         n: usize,
-        mut field_at: impl FnMut(usize) -> Result<ValidatorFields, E>,
+        mut field_at: impl FnMut(usize) -> Result<AppendedValidator, E>,
     ) -> Result<Self, E> {
         debug_assert!(n <= capacity);
         let mut val_pubkey = vec![[0u8; 48]; capacity].into_boxed_slice();
@@ -176,7 +163,7 @@ impl FinalizedValidators {
             let pubkey: BLSPubkey = v[..48].try_into().unwrap();
             let pubkey_decompressed = PublicKey::from_bytes(&pubkey)
                 .map_err(|_| ValidatorsDecodeError::InvalidPubkey { idx: i })?;
-            Ok(ValidatorFields {
+            Ok(AppendedValidator {
                 pubkey,
                 pubkey_decompressed,
                 credentials: Withdrawals(v[48..80].try_into().unwrap()),
@@ -214,7 +201,7 @@ impl FinalizedValidators {
             if decompressed[i].compress() != pubkey {
                 return Err(ValidatorsDecodeError::PubkeyMismatch { idx: i });
             }
-            Ok::<_, ValidatorsDecodeError>(ValidatorFields {
+            Ok::<_, ValidatorsDecodeError>(AppendedValidator {
                 pubkey,
                 pubkey_decompressed: decompressed[i],
                 credentials: Withdrawals(v[48..80].try_into().unwrap()),
@@ -383,7 +370,7 @@ impl FinalizedValidators {
     pub fn with_validators(seeds: &[ValSeed]) -> Self {
         Self::build(validator_capacity(seeds.len()), seeds.len(), |i| {
             let s = &seeds[i];
-            Ok::<_, Infallible>(ValidatorFields {
+            Ok::<_, Infallible>(AppendedValidator {
                 pubkey: s.pubkey,
                 pubkey_decompressed: PublicKey::from_bytes(&s.pubkey).unwrap_or_default(),
                 credentials: s.withdrawal_credentials,
@@ -398,36 +385,23 @@ impl FinalizedValidators {
         .unwrap()
     }
 
-    /// Append a validator to the finalized base with caller-supplied
-    /// Validator-container field values. Updates the pubkey index but NOT
-    /// the hash tree.
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn append(
-        &mut self,
-        pubkey: &BLSPubkey,
-        pubkey_decompressed: &PublicKey,
-        credentials: &Withdrawals,
-        effective_balance: u64,
-        slashed: bool,
-        activation_eligibility_epoch: Epoch,
-        activation_epoch: Epoch,
-        exit_epoch: Epoch,
-        withdrawable_epoch: Epoch,
-    ) -> u32 {
+    /// Append a validator record to the finalized base. Updates the pubkey
+    /// index but NOT the hash tree.
+    pub(super) fn append(&mut self, a: &AppendedValidator) -> u32 {
         let idx = self.validator_count;
         debug_assert!(idx < self.capacity(), "append past validator capacity {}", self.capacity());
-        self.val_pubkey[idx] = *pubkey;
-        self.val_pubkey_decompressed[idx] = *pubkey_decompressed;
-        self.val_withdrawal_credentials[idx] = *credentials;
-        self.effective_balance[idx] = effective_balance;
-        if slashed {
+        self.val_pubkey[idx] = a.pubkey;
+        self.val_pubkey_decompressed[idx] = a.pubkey_decompressed;
+        self.val_withdrawal_credentials[idx] = a.credentials;
+        self.effective_balance[idx] = a.effective_balance;
+        if a.slashed {
             self.slashed[idx / 8] |= 1u8 << (idx % 8);
         }
-        self.activation_eligibility_epoch[idx] = activation_eligibility_epoch;
-        self.activation_epoch[idx] = activation_epoch;
-        self.exit_epoch[idx] = exit_epoch;
-        self.withdrawable_epoch[idx] = withdrawable_epoch;
-        self.index.write().insert(*pubkey, idx as u32);
+        self.activation_eligibility_epoch[idx] = a.activation_eligibility_epoch;
+        self.activation_epoch[idx] = a.activation_epoch;
+        self.exit_epoch[idx] = a.exit_epoch;
+        self.withdrawable_epoch[idx] = a.withdrawable_epoch;
+        self.index.write().insert(a.pubkey, idx as u32);
         self.validator_count = idx + 1;
         idx as u32
     }

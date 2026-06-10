@@ -43,7 +43,6 @@ fn historical_summary_diverged_extends_past_base() {
 
 /// Finalization rotates sync committees + indices (absolute replace) and
 /// **extends** the base historical-summary log with the winner's appends.
-/// (Was `apply_delta_overlays_longtail_tier`.)
 #[test]
 fn finalize_rotates_committees_and_extends_summaries() {
     let mut base = LongtailState::default();

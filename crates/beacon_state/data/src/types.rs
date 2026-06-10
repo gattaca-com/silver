@@ -58,15 +58,12 @@ pub const SLOTS_RING_N: usize = 256;
 pub struct StateId {
     pub epoch_idx: Option<EpochId>,
     pub longtail_idx: Option<LongtailId>,
-    /// Balances ring seq this fork reads. Unlike `epoch_idx`/`longtail_idx`,
-    /// balances change every slot, so this is always present — set by whoever
-    /// rolls the fork (mirrors how `epoch_idx` is set at an epoch boundary).
+    /// Per-tier ring seqs this fork reads (balances and below). Unlike
+    /// `epoch_idx`/`longtail_idx`, these tiers change every slot, so they are
+    /// always present — set by whoever rolls the fork (mirrors how `epoch_idx`
+    /// is set at an epoch boundary).
     pub balances_idx: BalancesId,
-    /// Validators ring seq this fork reads — always present, rolled every slot
-    /// like `balances_idx`.
     pub validators_idx: ValidatorsId,
-    /// Pending + participation + inactivity ring seqs this fork reads — always
-    /// present, rolled every slot like `balances_idx`.
     pub pending_idx: PendingId,
     pub previous_participation_idx: PreviousParticipationId,
     pub current_participation_idx: CurrentParticipationId,

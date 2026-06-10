@@ -20,6 +20,9 @@ use crate::{
 // Fulu BeaconState layout. Variable-length fields store a 4-byte offset in
 // the fixed part; their bodies sit contiguously past `FIXED_PART` in
 // SSZ-declared order.
+//
+// The per-group `from_ssz` constructors live here (not in their groups) so
+// the SSZ offsets/consts stay private to decompose.
 
 const ETH1_DATA_SSZ_SIZE: usize = 72;
 const HISTORICAL_SUMMARY_SSZ_SIZE: usize = 64;
@@ -309,64 +312,69 @@ impl BeaconState {
         }
         let offsets = Offsets::read_and_validate(ssz)?;
 
-        let mut state = Self::pre_bootstrap();
-        state.immutable.fill_from_ssz(ssz, cfg);
+        let mut immutable = Immutable::default();
+        immutable.fill_from_ssz(ssz, cfg);
 
-        // Epoch tier lives in its own group.
-        state.epoch = EpochGroup::new(EpochStateFinalized::from_ssz(ssz));
+        let epoch = EpochGroup::new(EpochStateFinalized::from_ssz(ssz));
 
-        // Slot tier lives in its own group; derives its
-        // per-block accumulators from the (just-built) epoch rings.
-        state.slot_states =
-            SlotStateGroup::new(SlotStateFinalized::from_ssz(ssz, &offsets, state.epoch.base())?);
+        // The slot tier derives its per-block accumulators from the
+        // (just-built) epoch rings.
+        let slot_states =
+            SlotStateGroup::new(SlotStateFinalized::from_ssz(ssz, &offsets, epoch.base())?);
 
-        // Validators live in their own group.
         let val_bytes = &ssz[offsets.validators..offsets.balances];
-        state.validators = ValidatorsGroup::new(match pubkeys {
+        let validators = ValidatorsGroup::new(match pubkeys {
             Some(pk) => FinalizedValidators::try_new_with_pubkeys(val_bytes, pk)?,
             None => FinalizedValidators::try_new(val_bytes)?,
         });
 
         // All per-validator columns (balances, participation, inactivity) size
         // to the validators' capacity/count so they stay aligned with the rest.
-        let (cap, n) =
-            (state.validators.base().capacity(), state.validators.base().validator_count());
+        let (cap, n) = (validators.base().capacity(), validators.base().validator_count());
 
-        // Balances lives in its own group; construction = decode, so only the
-        // Construction = validation: the constructors check the byte length
-        // against the validator count; map to the field-specific errors.
-        let balances = &ssz[offsets.balances..offsets.prev_participation];
-        state.balances = BalancesGroup::new(cap, n, balances)
+        // Construction = validation: the column constructors check byte length
+        // against the validator count; map to field-specific errors.
+        let balances_bytes = &ssz[offsets.balances..offsets.prev_participation];
+        let balances = BalancesGroup::new(cap, n, balances_bytes)
             .map_err(|e| DecomposeError::BalancesLenMismatch { bytes: e.bytes, validators: n })?;
 
-        // Participation + inactivity + pending also ride their own groups.
         let prev_part = &ssz[offsets.prev_participation..offsets.cur_participation];
-        state.previous_participation =
+        let previous_participation =
             PreviousParticipationGroup::new(cap, n, prev_part).map_err(|e| {
                 DecomposeError::PrevParticipationLenMismatch { bytes: e.bytes, validators: n }
             })?;
 
         let cur_part = &ssz[offsets.cur_participation..offsets.inactivity];
-        state.current_participation =
+        let current_participation =
             CurrentParticipationGroup::new(cap, n, cur_part).map_err(|e| {
                 DecomposeError::CurParticipationLenMismatch { bytes: e.bytes, validators: n }
             })?;
 
-        let inactivity = &ssz[offsets.inactivity..offsets.eph];
-        state.inactivity = InactivityScoresGroup::new(cap, n, inactivity)
+        let inactivity_bytes = &ssz[offsets.inactivity..offsets.eph];
+        let inactivity = InactivityScoresGroup::new(cap, n, inactivity_bytes)
             .map_err(|e| DecomposeError::InactivityLenMismatch { bytes: e.bytes, validators: n })?;
 
-        state.immutable.fill_historical_roots_hash(ssz, &offsets)?;
+        immutable.fill_historical_roots_hash(ssz, &offsets)?;
 
-        // Longtail tier lives in its own group. Its
-        // sync-committee → validator-index resolution reads the registry, which
-        // also rides its own group.
-        state.longtail =
-            LongtailGroup::new(LongtailState::from_ssz(ssz, &offsets, state.validators.base())?);
+        // Longtail's sync-committee → validator-index resolution reads the
+        // registry.
+        let longtail =
+            LongtailGroup::new(LongtailState::from_ssz(ssz, &offsets, validators.base())?);
 
-        state.pending = PendingGroup::new(PendingQueues::from_ssz(ssz, &offsets)?);
+        let pending = PendingGroup::new(PendingQueues::from_ssz(ssz, &offsets)?);
 
-        Ok(state)
+        Ok(Self {
+            immutable,
+            validators,
+            balances,
+            pending,
+            previous_participation,
+            current_participation,
+            inactivity,
+            slot_states,
+            epoch,
+            longtail,
+        })
     }
 }
 
@@ -410,8 +418,6 @@ impl Immutable {
     }
 }
 
-// The epoch tier lives in its own group; its `from_ssz`
-// constructor lives here so the SSZ offsets/consts stay private to decompose.
 impl EpochStateFinalized {
     #[timed]
     pub(crate) fn from_ssz(ssz: &[u8]) -> Self {
@@ -443,9 +449,7 @@ impl EpochStateFinalized {
     }
 }
 
-// The longtail tier lives in its own group; its
-// `from_ssz` constructor lives here so the SSZ offsets/consts stay private to
-// decompose. `validators` resolves the sync-committee → validator indices.
+// `validators` resolves the sync-committee → validator indices.
 impl LongtailState {
     #[timed]
     pub(crate) fn from_ssz(
@@ -492,8 +496,6 @@ fn read_eth1_data(s: &[u8]) -> Eth1Data {
     Eth1Data { deposit_root: b256(s, 0), deposit_count: u64_le(s, 32), block_hash: b256(s, 40) }
 }
 
-// The slot tier lives in its own group; its `from_ssz`
-// constructor lives here so the SSZ offsets/consts stay private to decompose.
 // `epoch` must already be filled — the derived `randao_mix_current` /
 // `current_epoch_slashings` read the current bucket from its rings.
 impl SlotStateFinalized {
@@ -566,9 +568,6 @@ impl SlotStateFinalized {
     }
 }
 
-// Pending queues live in their own group. The `from_ssz`
-// constructor lives here (not in the `pending` module) so the SSZ element
-// parsers + size consts stay private to decompose.
 impl PendingQueues {
     pub(crate) fn from_ssz(ssz: &[u8], o: &Offsets) -> Result<Self, DecomposeError> {
         let mut q = Self::default();

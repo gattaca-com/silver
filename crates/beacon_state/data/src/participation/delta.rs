@@ -78,6 +78,12 @@ impl SparseLayer for ParticipationDelta {
     fn base_data(base: &FinalizedParticipation) -> &[u8] {
         &base.data
     }
+    fn base_count(base: &FinalizedParticipation) -> usize {
+        base.count()
+    }
+    fn total(&self) -> usize {
+        self.total
+    }
 }
 
 /// Read-only view over one participation column's base + a frozen fork delta.
@@ -148,8 +154,7 @@ impl<'a, M> ParticipationWriteView<'a, M> {
 
     #[inline]
     pub fn set(&mut self, idx: u32, v: u8) {
-        let base_count = self.base.count();
-        set_against(&mut *self.fork, self.base, base_count, idx, v);
+        set_against(&mut *self.fork, self.base, idx, v);
     }
 
     /// Merge a sorted, distinct-index batch in O(|edits| + |batch|), keeping
@@ -161,15 +166,12 @@ impl<'a, M> ParticipationWriteView<'a, M> {
 
     #[inline]
     pub fn install(&mut self, dense: &mut Vec<(u32, u8)>) {
-        let base_count = self.base.count();
-        install_against(&mut *self.fork, self.base, base_count, dense);
+        install_against(&mut *self.fork, self.base, dense);
     }
 
     #[inline]
     pub fn replace<F: FnMut(usize, u8) -> u8>(&mut self, scratch: &mut Vec<(u32, u8)>, f: F) {
-        let base_count = self.base.count();
-        let total = self.fork.total;
-        replace_against(&mut *self.fork, self.base, base_count, total, scratch, f);
+        replace_against(&mut *self.fork, self.base, scratch, f);
     }
 
     /// Read-only view over the same base + fork — mirrors

@@ -3,8 +3,7 @@
 mod ef_common;
 
 use ef_common::{
-    LoadedState, compare_states, iter_test_cases, load_state, slot_of, snappy_decode,
-    spec_tests_dir,
+    LoadedState, compare_states, iter_test_cases, load_state, snappy_decode, spec_tests_dir,
 };
 use silver_beacon_state::{
     bls::SigBatch,
@@ -111,13 +110,9 @@ fn proposer_slashing() {
         if !batch.verify_all() {
             return false;
         }
-        let sid = s.state_id;
-        let (mut view, epoch, _) = s.view();
-        let epoch_view = epoch.view_opt(sid.epoch_idx);
-        let ok =
-            state_transition::process_proposer_slashings(&mut view, epoch_view, &cfg, op).is_ok();
-        s.state_id = view.commit(sid.epoch_idx, sid.longtail_idx);
-        ok
+        s.with_view_and_epoch(|view, e| {
+            state_transition::process_proposer_slashings(view, *e, &cfg, op).is_ok()
+        })
     });
 }
 
@@ -148,19 +143,10 @@ fn attester_slashing() {
         if !batch.verify_all() {
             return false;
         }
-        let sid = s.state_id;
-        let (mut view, epoch, _) = s.view();
-        let epoch_view = epoch.view_opt(sid.epoch_idx);
-        let ok = state_transition::process_attester_slashings(
-            &mut view,
-            epoch_view,
-            &cfg,
-            &list,
-            &mut active_scratch,
-        )
-        .is_ok();
-        s.state_id = view.commit(sid.epoch_idx, sid.longtail_idx);
-        ok
+        s.with_view_and_epoch(|view, e| {
+            state_transition::process_attester_slashings(view, *e, &cfg, &list, &mut active_scratch)
+                .is_ok()
+        })
     });
 }
 
@@ -170,7 +156,7 @@ fn attestation() {
         let mut list = Vec::with_capacity(4 + op.len());
         list.extend_from_slice(&4u32.to_le_bytes());
         list.extend_from_slice(op);
-        let block_slot = slot_of(s);
+        let block_slot = s.slot();
         let curr_epoch = block_slot / SLOTS_PER_EPOCH;
         let prev_epoch = curr_epoch.saturating_sub(1);
 
@@ -243,33 +229,26 @@ fn attestation() {
         if !batch.verify_all() {
             return false;
         }
-        let sid = s.state_id;
-        let (mut view, epoch, _) = s.view();
-        let epoch_view = epoch.view_opt(sid.epoch_idx);
-        let ok = state_transition::process_attestations(
-            &mut view,
-            epoch_view,
-            &list,
-            block_slot,
-            proposer_index,
-            Some(&sref),
-            &mut votes_sink,
-            &mut active_scratch,
-        )
-        .is_ok();
-        s.state_id = view.commit(sid.epoch_idx, sid.longtail_idx);
-        ok
+        s.with_view_and_epoch(|view, e| {
+            state_transition::process_attestations(
+                view,
+                *e,
+                &list,
+                block_slot,
+                proposer_index,
+                Some(&sref),
+                &mut votes_sink,
+                &mut active_scratch,
+            )
+            .is_ok()
+        })
     });
 }
 
 #[test]
 fn deposit() {
     operations_handler("deposit", "deposit", true, move |s, op| {
-        let sid = s.state_id;
-        let (mut view, _, _) = s.view();
-        let ok = state_transition::process_deposits(&mut view, op).is_ok();
-        s.state_id = view.commit(sid.epoch_idx, sid.longtail_idx);
-        ok
+        s.with_view(|view| state_transition::process_deposits(view, op).is_ok())
     });
 }
 
@@ -290,11 +269,7 @@ fn voluntary_exit() {
         if !batch.verify_all() {
             return false;
         }
-        let sid = s.state_id;
-        let (mut view, _, _) = s.view();
-        let ok = state_transition::process_voluntary_exits(&mut view, &cfg, op).is_ok();
-        s.state_id = view.commit(sid.epoch_idx, sid.longtail_idx);
-        ok
+        s.with_view(|view| state_transition::process_voluntary_exits(view, &cfg, op).is_ok())
     });
 }
 
@@ -318,18 +293,16 @@ fn bls_to_execution_change() {
         if !batch.verify_all() {
             return false;
         }
-        let sid = s.state_id;
-        let (mut p, _, _) = s.view();
-        let ok = state_transition::process_bls_to_execution_changes(&mut p.validators, op).is_ok();
-        s.state_id = p.commit(sid.epoch_idx, sid.longtail_idx);
-        ok
+        s.with_view(|p| {
+            state_transition::process_bls_to_execution_changes(&mut p.validators, op).is_ok()
+        })
     });
 }
 
 #[test]
 fn sync_aggregate() {
     operations_handler("sync_aggregate", "sync_aggregate", true, move |s, op| {
-        let block_slot = slot_of(s);
+        let block_slot = s.slot();
         let proposer_index;
         let mut active_scratch = Vec::new();
         let mut batch = SigBatch::new();
@@ -364,10 +337,7 @@ fn sync_aggregate() {
 #[test]
 fn deposit_request() {
     operations_handler("deposit_request", "deposit_request", false, |s, op| {
-        let sid = s.state_id;
-        let (mut view, _, _) = s.view();
-        state_transition::process_deposit_requests(&mut view, op);
-        s.state_id = view.commit(sid.epoch_idx, sid.longtail_idx);
+        s.with_view(|view| state_transition::process_deposit_requests(view, op));
         true
     });
 }
@@ -376,10 +346,7 @@ fn deposit_request() {
 fn withdrawal_request() {
     let cfg = silver_beacon_state_data::SpecConfig::mainnet();
     operations_handler("withdrawal_request", "withdrawal_request", false, move |s, op| {
-        let sid = s.state_id;
-        let (mut view, _, _) = s.view();
-        state_transition::process_withdrawal_requests(&mut view, &cfg, op);
-        s.state_id = view.commit(sid.epoch_idx, sid.longtail_idx);
+        s.with_view(|view| state_transition::process_withdrawal_requests(view, &cfg, op));
         true
     });
 }
@@ -388,10 +355,7 @@ fn withdrawal_request() {
 fn consolidation_request() {
     let cfg = silver_beacon_state_data::SpecConfig::mainnet();
     operations_handler("consolidation_request", "consolidation_request", false, move |s, op| {
-        let sid = s.state_id;
-        let (mut view, _, _) = s.view();
-        state_transition::process_consolidation_requests(&mut view, &cfg, op);
-        s.state_id = view.commit(sid.epoch_idx, sid.longtail_idx);
+        s.with_view(|view| state_transition::process_consolidation_requests(view, &cfg, op));
         true
     });
 }
@@ -399,11 +363,7 @@ fn consolidation_request() {
 #[test]
 fn withdrawals() {
     operations_handler("withdrawals", "execution_payload", true, |s, op| {
-        let sid = s.state_id;
-        let (mut view, _, _) = s.view();
-        let ok = state_transition::process_withdrawals(&mut view, op).is_ok();
-        s.state_id = view.commit(sid.epoch_idx, sid.longtail_idx);
-        ok
+        s.with_view(|view| state_transition::process_withdrawals(view, op).is_ok())
     });
 }
 
@@ -419,13 +379,12 @@ fn execution_payload() {
         let bls_off = off(384);
         if exec_off < bls_off && bls_off <= op.len() {
             let payload = &op[exec_off..bls_off];
-            let block_slot = slot_of(s);
-            let sid = s.state_id;
-            let (mut view, _, _) = s.view();
-            let _ =
-                state_transition::process_execution_payload(&mut view, &cfg, payload, block_slot);
-            let _ = state_transition::process_withdrawals(&mut view, payload);
-            s.state_id = view.commit(sid.epoch_idx, sid.longtail_idx);
+            let block_slot = s.slot();
+            s.with_view(|view| {
+                let _ =
+                    state_transition::process_execution_payload(view, &cfg, payload, block_slot);
+                let _ = state_transition::process_withdrawals(view, payload);
+            });
         }
         true
     });
@@ -445,19 +404,16 @@ fn block_header() {
         let body_off = u32::from_le_bytes(op[80..84].try_into().unwrap()) as usize;
         let body = if body_off <= op.len() { &op[body_off..] } else { &[] };
         let body_root = silver_beacon_state::ssz_hash::hash_tree_root_body(body);
-        let sid = s.state_id;
-        let (mut view, epoch, _) = s.view();
-        let epoch_view = epoch.view_opt(sid.epoch_idx);
-        let ok = state_transition::process_block_header(
-            &mut view,
-            &epoch_view,
-            slot,
-            proposer_index,
-            parent_root,
-            body_root,
-        )
-        .is_ok();
-        s.state_id = view.commit(sid.epoch_idx, sid.longtail_idx);
-        ok
+        s.with_view_and_epoch(|view, e| {
+            state_transition::process_block_header(
+                view,
+                e,
+                slot,
+                proposer_index,
+                parent_root,
+                body_root,
+            )
+            .is_ok()
+        })
     });
 }

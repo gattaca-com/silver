@@ -4,8 +4,8 @@ use std::fs;
 
 mod ef_common;
 
-use ef_common::{compare_states, iter_test_cases, load_state, slot_of, spec_tests_dir};
-use silver_beacon_state::{ssz_hash::StateHashScratch, state_transition};
+use ef_common::{compare_states, iter_test_cases, load_state, spec_tests_dir};
+use silver_beacon_state::state_transition;
 
 #[test]
 fn sanity_slots() {
@@ -35,13 +35,8 @@ fn sanity_slots() {
             .unwrap_or_else(|e| panic!("{name}: bad slots value '{slots_str}': {e}"));
 
         let mut pre = load_state(&pre_path);
-        let target_slot = slot_of(&pre) + target_slots;
-        let mut scratch = Vec::new();
-        let mut postponed = Vec::new();
-        let mut replace_u64 = Vec::new();
-        let mut replace_u8 = Vec::new();
-        let mut eff = Vec::new();
-        let mut state_hash = StateHashScratch::new();
+        let target_slot = pre.slot() + target_slots;
+        let mut scratch = state_transition::StfScratch::new(0);
         let sid = pre.state_id;
         let (mut v, epoch, longtail) = pre.view();
         let (epoch_idx, longtail_idx) = state_transition::process_slots(
@@ -52,11 +47,6 @@ fn sanity_slots() {
             sid,
             target_slot,
             &mut scratch,
-            &mut postponed,
-            &mut replace_u64,
-            &mut replace_u8,
-            &mut eff,
-            &mut state_hash,
         );
         // Write the (possibly epoch/longtail-rolled) bundle back for the
         // post-state comparison.

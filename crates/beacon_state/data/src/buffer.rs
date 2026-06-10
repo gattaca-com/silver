@@ -61,6 +61,40 @@ impl<G> fmt::Debug for Id<G> {
     }
 }
 
+/// Overlay a fork's append `log` onto a circular `ring`, entry `i` landing at
+/// position `(start + i) % ring.len()` (wrapping).
+pub(crate) fn write_ring_window<T: Copy>(ring: &mut [T], start: usize, log: &[T]) {
+    let cap = ring.len();
+    debug_assert!(log.len() <= cap, "delta log exceeds ring cap");
+    for (i, x) in log.iter().enumerate() {
+        ring[(start + i) % cap] = *x;
+    }
+}
+
+/// Drop the prefix of a per-fork append log that a promoted winner already
+/// folded into the base — the reanchor invariant for log-style deltas.
+pub(crate) fn drain_promoted_prefix<T>(log: &mut Vec<T>, promoted_len: usize) {
+    let drop = promoted_len.min(log.len());
+    log.drain(..drop);
+}
+
+/// Reanchor each distinct survivor exactly once: duplicate ids map to the id
+/// minted for their first occurrence, fresh ids come from `reanchor`.
+pub(crate) fn reanchor_survivors<I: Copy + PartialEq>(
+    survivors: &[I],
+    mut reanchor: impl FnMut(I) -> I,
+) -> Vec<I> {
+    let mut fresh = Vec::with_capacity(survivors.len());
+    for (i, &s) in survivors.iter().enumerate() {
+        let new_id = match survivors[..i].iter().position(|&p| p == s) {
+            Some(seen) => fresh[seen],
+            None => reanchor(s),
+        };
+        fresh.push(new_id);
+    }
+    fresh
+}
+
 pub trait Reset {
     /// Resets to defaults ready for reuse.
     fn reset(&mut self);
@@ -126,17 +160,23 @@ impl<G, T: Clone + Default, const N: usize> Default for Ring<G, T, N> {
 }
 
 impl<G, T: Reset, const N: usize> Ring<G, T, N> {
+    /// Ring position of a sequence number.
+    #[inline]
+    fn pos(seq: usize) -> usize {
+        seq & (N - 1)
+    }
+
     /// Next head seq + its ring position, running the wrap guard. Does not
     /// advance the head — the caller fills the slot first.
     fn next_head(&self) -> (usize, usize) {
         let new_head = self.head_seq.map(|h| h + 1).unwrap_or_default();
-        let new_head_pos = new_head & (N - 1);
+        let new_head_pos = Self::pos(new_head);
 
         if let Some(tail_seq) = self.tail_seq &&
             new_head - tail_seq >= N
         {
             tracing::warn!(new_head, tail_seq, N, "buffer is wrapping!!");
-            let tail_pos = tail_seq & (N - 1);
+            let tail_pos = Self::pos(tail_seq);
             assert!(new_head_pos != tail_pos, "would trample head");
         }
 
@@ -145,7 +185,7 @@ impl<G, T: Reset, const N: usize> Ring<G, T, N> {
 
     #[inline]
     pub fn get(&self, id: Id<G>) -> &T {
-        &self.entries[id.index() & (N - 1)]
+        &self.entries[Self::pos(id.index())]
     }
 
     /// Roll a fresh head reset to defaults.
@@ -161,7 +201,7 @@ impl<G, T: Reset, const N: usize> Ring<G, T, N> {
     pub fn roll_from(&mut self, parent: Id<G>) -> Slot<'_, G, T> {
         let (new_head, new_head_pos) = self.next_head();
 
-        let parent_pos = parent.index() & (N - 1);
+        let parent_pos = Self::pos(parent.index());
         let parent_ptr = &self.entries[parent_pos] as *const T;
         unsafe {
             // SAFETY: `parent_pos != new_head_pos` — the new head is a fresh seq
@@ -189,7 +229,7 @@ impl<G, T: Reset, const N: usize> Ring<G, T, N> {
         self.head_seq.replace(new_head);
         let id = Id::new(new_head);
 
-        let (a_pos, b_pos) = (a.index() & (N - 1), b.index() & (N - 1));
+        let (a_pos, b_pos) = (Self::pos(a.index()), Self::pos(b.index()));
         if a_pos == b_pos {
             let [new, src] = self
                 .entries
@@ -204,6 +244,13 @@ impl<G, T: Reset, const N: usize> Ring<G, T, N> {
                 .expect("fresh slot aliases a source");
             new.reset();
             (Slot { value: new, id }, &*av, &*bv)
+        }
+    }
+
+    /// Free everything older than the oldest id in `fresh`.
+    pub fn free_oldest(&mut self, fresh: &[Id<G>]) {
+        if let Some(&oldest) = fresh.iter().min() {
+            self.free(oldest);
         }
     }
 

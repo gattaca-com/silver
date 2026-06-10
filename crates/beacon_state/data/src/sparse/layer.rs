@@ -59,61 +59,128 @@ where
     }
 }
 
-/// Merge `sorted_batch` (ascending, distinct `idx`) into the sorted `edits`
-/// vec in O(|edits| + |batch|), batch value winning on a shared `idx`.
+/// Merge `changes` (ascending, distinct `idx`) into the sorted `edits` vec,
+/// batch value winning on a shared `idx`.
 ///
 /// Per-element `sparse_set` is O(|edits|) each (binary-search insert shifts the
 /// tail), so applying a committee's worth of edits one at a time is quadratic
 /// over an epoch's accumulated participation edits. Unlike `sparse_set` this
 /// keeps base-equal entries — the read sweep and `prune_to_base` both tolerate
-/// redundant edits, which lets the merge run in place from the back with no
-/// auxiliary buffer.
+/// redundant edits, which lets the merge run in place with no auxiliary buffer.
 #[inline]
-pub(crate) fn sparse_merge_into<T: Copy>(edits: &mut Vec<(u32, T)>, sorted_batch: &[(u32, T)]) {
-    if sorted_batch.is_empty() {
-        return;
-    }
+pub(crate) fn sparse_merge_into<T: Copy>(edits: &mut Vec<(u32, T)>, changes: &[(u32, T)]) {
     debug_assert!(
-        sorted_batch.windows(2).all(|w| w[0].0 < w[1].0),
+        changes.windows(2).all(|w| w[0].0 < w[1].0),
         "batch must be ascending with distinct indices",
     );
-
     let old_len = edits.len();
-    let mut collisions = 0usize;
-    let (mut i, mut j) = (0usize, 0usize);
-    while i < old_len && j < sorted_batch.len() {
-        let (e, b) = (edits[i].0, sorted_batch[j].0);
-        if e < b {
-            i += 1;
-        } else if e > b {
-            j += 1;
-        } else {
-            collisions += 1;
-            i += 1;
-            j += 1;
+    let insert_count = override_existing(edits, changes);
+    if insert_count == 0 {
+        return;
+    }
+    merge_insertions_phase(edits, changes, old_len, insert_count);
+}
+
+/// Phase 1 — overwrite override entries in `edits` in place and count the
+/// genuinely new (non-matching) changes, returned for phase 2 to insert.
+///
+/// Small batches use per-change binary search (O(m log n)); large batches
+/// use a linear merge (O(m + n)) seeded at the first change via
+/// `partition_point`.
+fn override_existing<T: Copy>(edits: &mut [(u32, T)], changes: &[(u32, T)]) -> usize {
+    let n = edits.len();
+    let m = changes.len();
+    if m == 0 {
+        return 0;
+    }
+    let log_n = usize::BITS as usize - n.max(1).leading_zeros() as usize;
+    if m.saturating_mul(log_n) <= m + n {
+        override_by_search(edits, changes)
+    } else {
+        override_by_scan(edits, changes)
+    }
+}
+
+/// O(m log n) — one binary search per change; best when `m ≪ n`.
+fn override_by_search<T: Copy>(edits: &mut [(u32, T)], changes: &[(u32, T)]) -> usize {
+    let mut inserts = 0;
+    for &(idx, val) in changes {
+        match edits.binary_search_by_key(&idx, |(k, _)| *k) {
+            Ok(p) => edits[p].1 = val,
+            Err(_) => inserts += 1,
         }
     }
+    inserts
+}
 
-    let new_len = old_len + sorted_batch.len() - collisions;
-    edits.resize(new_len, sorted_batch[0]);
+/// O(m + n) merge, starting at the first edit ≥ `changes[0].0`.
+fn override_by_scan<T: Copy>(edits: &mut [(u32, T)], changes: &[(u32, T)]) -> usize {
+    let old_len = edits.len();
+    let changes_len = changes.len();
 
-    // Merge back-to-front: the write cursor `w` never trails the old-read
-    // cursor `o` (new_len ≥ old_len), so old entries are read before overwrite.
-    let (mut o, mut b, mut w) = (old_len, sorted_batch.len(), new_len);
-    while b > 0 {
-        if o > 0 && edits[o - 1].0 > sorted_batch[b - 1].0 {
-            edits[w - 1] = edits[o - 1];
-            o -= 1;
+    let mut edit_idx = edits.partition_point(|(k, _)| *k < changes[0].0);
+    let mut change_idx = 0;
+    let mut inserts = 0;
+    while edit_idx < old_len && change_idx < changes_len {
+        let ek = edits[edit_idx].0;
+        let ck = changes[change_idx].0;
+        if ek < ck {
+            edit_idx += 1;
+        } else if ek == ck {
+            edits[edit_idx].1 = changes[change_idx].1;
+            edit_idx += 1;
+            change_idx += 1;
         } else {
-            if o > 0 && edits[o - 1].0 == sorted_batch[b - 1].0 {
-                o -= 1;
-            }
-            edits[w - 1] = sorted_batch[b - 1];
-            b -= 1;
+            inserts += 1;
+            change_idx += 1;
         }
-        w -= 1;
     }
-    debug_assert_eq!(w, o);
+    inserts + (changes_len - change_idx)
+}
+
+/// Phase 2 — right-to-left merge of the (already overridden) edits with the
+/// pure insertions from `changes`.
+#[allow(clippy::uninit_vec)]
+fn merge_insertions_phase<T: Copy>(
+    edits: &mut Vec<(u32, T)>,
+    changes: &[(u32, T)],
+    old_len: usize,
+    insert_count: usize,
+) {
+    edits.reserve(insert_count);
+    // SAFETY: every slot in `old_len..old_len + insert_count` is written
+    // before any read (write ≥ ei invariant below); (u32, T) is Copy.
+    unsafe { edits.set_len(old_len + insert_count) };
+
+    let mut edit_idx = old_len;
+    let mut change_idx = changes.len();
+    let mut write = old_len + insert_count;
+    while edit_idx > 0 && change_idx > 0 {
+        debug_assert!(write >= edit_idx, "merge: write must converge to the unshifted prefix");
+
+        let (ek, ev) = edits[edit_idx - 1];
+        let (ck, cv) = changes[change_idx - 1];
+        write -= 1;
+        if ek > ck {
+            edits[write] = (ek, ev);
+            edit_idx -= 1;
+        } else if ek == ck {
+            edits[write] = (ek, ev);
+            edit_idx -= 1;
+            change_idx -= 1;
+        } else {
+            edits[write] = (ck, cv);
+            change_idx -= 1;
+        }
+    }
+    // Remaining `changes` are pure insertions; remaining `edits` entries are
+    // already in their final slots (write == edit_idx).
+    while change_idx > 0 {
+        change_idx -= 1;
+        write -= 1;
+        edits[write] = changes[change_idx];
+    }
+    debug_assert_eq!(write, edit_idx, "merge: write must converge to the unshifted prefix");
 }
 
 /// Bulk overwrite — single forward sweep that rebuilds a sparse edit vec
@@ -135,19 +202,7 @@ pub(crate) fn sparse_replace_with_scratch<T, F>(
     F: FnMut(usize, T) -> T,
 {
     scratch.clear();
-    let mut cursor = 0usize;
-
-    for i in 0..total {
-        let cur = if cursor < edits.len() && (edits[cursor].0 as usize) == i {
-            let v = edits[cursor].1;
-            cursor += 1;
-            v
-        } else if i < base_slice.len() {
-            base_slice[i]
-        } else {
-            appended_default
-        };
-
+    for (i, cur) in sweep(edits, base_slice, appended_default, total).enumerate() {
         let new = f(i, cur);
         let base_val = if i < base_slice.len() { base_slice[i] } else { appended_default };
         if new != base_val {
@@ -158,17 +213,15 @@ pub(crate) fn sparse_replace_with_scratch<T, F>(
 }
 
 /// Finalize a survivor's sparse `edits` against a promoted `winner` in one
-/// pass, returning a fresh vec — the Vec-backed twin of
-/// [`Edits::rebase_and_prune`](crate::sparse::Edits), shared by the sibling
-/// sparse columns. Fuses:
+/// pass, returning a fresh vec. Fuses:
 /// - **rebase**: every index `< valid_below` that `winner` overrides and
 ///   `survivor` does not is pinned to its *old* base value (`old_base_at`), so
 ///   the survivor keeps reading the pre-promote value (ABA hazard).
 /// - **prune**: any resulting entry `< new_count` that already equals the *new*
 ///   base (`new_base_at`) is dropped as redundant.
 ///
-/// Both inputs are ascending; the output is the ascending merge (survivor's
-/// value wins on a shared index — it overrides the base).
+/// The output is the ascending merge (survivor's value wins on a shared index
+/// — it overrides the base).
 pub(crate) fn rebase_and_prune_sparse<V: Copy + PartialEq>(
     survivor: &[(u32, V)],
     winner: &[(u32, V)],
@@ -177,6 +230,14 @@ pub(crate) fn rebase_and_prune_sparse<V: Copy + PartialEq>(
     old_base_at: impl Fn(u32) -> V,
     new_base_at: impl Fn(u32) -> V,
 ) -> Vec<(u32, V)> {
+    debug_assert!(
+        survivor.windows(2).all(|w| w[0].0 < w[1].0),
+        "survivor must be ascending with distinct indices",
+    );
+    debug_assert!(
+        winner.windows(2).all(|w| w[0].0 < w[1].0),
+        "winner must be ascending with distinct indices",
+    );
     let mut out: Vec<(u32, V)> = Vec::with_capacity(survivor.len() + winner.len());
     let mut keep = |idx: u32, v: V| {
         if idx >= new_count || new_base_at(idx) != v {
@@ -225,17 +286,13 @@ pub(crate) trait SparseLayer {
     fn edits_mut(&mut self) -> &mut Vec<(u32, Self::Val)>;
     fn base_get(base: &Self::Base, i: usize) -> Self::Val;
     fn base_data(base: &Self::Base) -> &[Self::Val];
+    fn base_count(base: &Self::Base) -> usize;
+    fn total(&self) -> usize;
 }
 
 #[inline]
-pub(crate) fn set_against<L: SparseLayer>(
-    delta: &mut L,
-    base: &L::Base,
-    base_count: usize,
-    idx: u32,
-    v: L::Val,
-) {
-    let base_val = if (idx as usize) < base_count {
+pub(crate) fn set_against<L: SparseLayer>(delta: &mut L, base: &L::Base, idx: u32, v: L::Val) {
+    let base_val = if (idx as usize) < L::base_count(base) {
         L::base_get(base, idx as usize)
     } else {
         L::APPENDED_DEFAULT
@@ -247,17 +304,16 @@ pub(crate) fn set_against<L: SparseLayer>(
 pub(crate) fn replace_against<L: SparseLayer, F>(
     delta: &mut L,
     base: &L::Base,
-    base_count: usize,
-    total: usize,
     scratch: &mut Vec<(u32, L::Val)>,
     f: F,
 ) where
     F: FnMut(usize, L::Val) -> L::Val,
 {
+    let total = delta.total();
     sparse_replace_with_scratch(
         delta.edits_mut(),
         scratch,
-        &L::base_data(base)[..base_count],
+        &L::base_data(base)[..L::base_count(base)],
         L::APPENDED_DEFAULT,
         total,
         f,
@@ -271,11 +327,10 @@ pub(crate) fn replace_against<L: SparseLayer, F>(
 pub(crate) fn install_against<L: SparseLayer>(
     delta: &mut L,
     base: &L::Base,
-    base_count: usize,
     dense: &mut Vec<(u32, L::Val)>,
 ) {
     dense.retain(|(idx, v)| {
-        let base_val = if (*idx as usize) < base_count {
+        let base_val = if (*idx as usize) < L::base_count(base) {
             L::base_get(base, *idx as usize)
         } else {
             L::APPENDED_DEFAULT

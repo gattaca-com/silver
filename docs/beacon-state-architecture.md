@@ -182,14 +182,14 @@ wait-free (plus one ≤80-byte retry per publish).
 
 ## 6. Lifecycle: no state before the snapshot
 
-* `BeaconState::decompose(ssz, cfg) -> Result<Self>` is the only public
+* `BeaconState::decompose(ssz, cfg, pubkeys) -> Result<Self>` is the only public
   constructor — a state exists only from real data.
 * Before the snapshot arrives (checkpoint file or network sync), the owner
   holds a writer-private stub and the control seqlock is **unwritten**:
   `reader.read(..)` returns `None`. Nothing is observable until `bootstrap`
   decomposes the snapshot (replacing the stub under the write window) and
   publishes the anchor `StateId`.
-* `BeaconState::roll_anchor()` rolls one fresh fork per per-block tier and
+* `BeaconState::roll_fresh()` rolls one fresh fork per per-block tier and
   assembles the anchor bundle — used at bootstrap and as the pre-bootstrap
   placeholder head.
 

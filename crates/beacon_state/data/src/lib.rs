@@ -4,9 +4,8 @@ pub use balances::{
 pub use buffer::{Id, Reset, Ring};
 pub use decompose::DecomposeError;
 pub use delta_view::{
-    StateReadView, StateWriterView, ValidatorRow, append_validator, effective_block_roots_into,
-    effective_randao_mixes_into, effective_slashings_into, effective_state_roots_into,
-    iter_validator_rows, randao_mix_at_epoch,
+    StateReadView, StateWriterView, ValidatorRow, append_validator, effective_randao_mixes_into,
+    effective_slashings_into, iter_validator_rows, randao_mix_at_epoch,
 };
 pub use encode::{CHECKPOINT_SECTIONS, PubkeysDecodeError, decode_checkpoint_pubkeys};
 pub use epoch::{EpochGroup, EpochId, EpochStateFinalized, EpochView, EpochWriteView};
@@ -122,17 +121,21 @@ impl BeaconState {
     /// behind both the writer thread's `read_view` and the cross-thread
     /// optimistic reader.
     pub fn read_view(&self, state_id: StateId) -> StateReadView<'_> {
-        StateReadView::new(
-            &self.immutable,
-            self.balances.view(state_id.balances_idx),
-            self.epoch.view_opt(state_id.epoch_idx),
-            self.longtail.view_opt(state_id.longtail_idx),
-            self.pending.view(state_id.pending_idx),
-            self.previous_participation.view(state_id.previous_participation_idx),
-            self.current_participation.view(state_id.current_participation_idx),
-            self.inactivity.view(state_id.inactivity_idx),
-            self.slot_states.view(state_id.slot_idx),
-            self.validators.view(state_id.validators_idx),
-        )
+        StateReadView {
+            imm: &self.immutable,
+            balances: self.balances.view(state_id.balances_idx),
+            epoch: self.epoch.view_opt(state_id.epoch_idx),
+            longtail: self.longtail.view_opt(state_id.longtail_idx),
+            pending: self.pending.view(state_id.pending_idx),
+            previous_participation: self
+                .previous_participation
+                .view(state_id.previous_participation_idx),
+            current_participation: self
+                .current_participation
+                .view(state_id.current_participation_idx),
+            inactivity: self.inactivity.view(state_id.inactivity_idx),
+            slot: self.slot_states.view(state_id.slot_idx),
+            validators: self.validators.view(state_id.validators_idx),
+        }
     }
 }

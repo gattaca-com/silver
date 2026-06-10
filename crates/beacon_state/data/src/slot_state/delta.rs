@@ -1,7 +1,7 @@
 use super::{SlotStateGroup, SlotStateId, finalized::SlotStateFinalized};
 use crate::{
     SLOTS_PER_EPOCH,
-    buffer::{Reset, Slot as RingSlot},
+    buffer::{Reset, Slot as RingSlot, drain_promoted_prefix},
     types::{B256, Epoch, Slot, SlotState},
 };
 
@@ -20,10 +20,8 @@ impl SlotStateDelta {
     /// Drop the promoted prefix of the root tails (now folded into the base) —
     /// the reanchor half of finalization, run on a fresh copy of a survivor.
     pub(super) fn prune_to_base(&mut self, promoted: &SlotStateDelta) {
-        let drop_b = promoted.block_roots.len().min(self.block_roots.len());
-        self.block_roots.drain(..drop_b);
-        let drop_s = promoted.state_roots.len().min(self.state_roots.len());
-        self.state_roots.drain(..drop_s);
+        drain_promoted_prefix(&mut self.block_roots, promoted.block_roots.len());
+        drain_promoted_prefix(&mut self.state_roots, promoted.state_roots.len());
     }
 }
 
@@ -114,16 +112,6 @@ impl<'a> SlotStateView<'a> {
         )
     }
 
-    #[inline]
-    pub fn state_root_at_slot(&self, slot: Slot) -> B256 {
-        Self::root_at_slot(
-            self.base_state().slot,
-            self.delta_state_roots(),
-            self.finalized_state_roots(),
-            slot,
-        )
-    }
-
     fn root_at_slot(fin_slot: Slot, delta_roots: &[B256], fin_roots: &[B256], slot: Slot) -> B256 {
         if slot >= fin_slot {
             let i = (slot - fin_slot) as usize;
@@ -132,6 +120,27 @@ impl<'a> SlotStateView<'a> {
             }
         }
         fin_roots[slot as usize % fin_roots.len()]
+    }
+
+    /// Merged `block_roots` ring (finalized base + delta-appended roots
+    /// overlaid by slot) written into `out`.
+    pub fn effective_block_roots_into(&self, out: &mut Vec<B256>) {
+        self.overlay_ring_into(self.finalized_block_roots(), self.delta_block_roots(), out);
+    }
+
+    /// Merged `state_roots` ring written into `out`.
+    pub fn effective_state_roots_into(&self, out: &mut Vec<B256>) {
+        self.overlay_ring_into(self.finalized_state_roots(), self.delta_state_roots(), out);
+    }
+
+    fn overlay_ring_into(&self, fin: &[B256], delta: &[B256], out: &mut Vec<B256>) {
+        out.clear();
+        out.extend_from_slice(fin);
+        let cap = out.len();
+        let fin_slot = self.base_state().slot as usize;
+        for (k, r) in delta.iter().enumerate() {
+            out[(fin_slot + k) % cap] = *r;
+        }
     }
 }
 
@@ -214,10 +223,5 @@ impl<'a> SlotStateWriteView<'a> {
     #[inline]
     pub fn block_root_at_slot(&self, slot: Slot) -> B256 {
         self.reader().block_root_at_slot(slot)
-    }
-
-    #[inline]
-    pub fn state_root_at_slot(&self, slot: Slot) -> B256 {
-        self.reader().state_root_at_slot(slot)
     }
 }

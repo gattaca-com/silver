@@ -7,10 +7,6 @@ use silver_beacon_state::{
     epoch_transition::{self, EPOCHS_PER_SYNC_COMMITTEE_PERIOD, HISTORICAL_SUMMARY_PERIOD},
     ssz_hash::StateHashScratch,
 };
-use silver_beacon_state_data::{
-    EpochGroup, EpochId, EpochWriteView, LongtailGroup, LongtailId, LongtailWriteView,
-};
-
 fn epoch_handler(handler_name: &str, run: impl Fn(&mut LoadedState)) {
     let base = spec_tests_dir()
         .join("tests")
@@ -54,35 +50,13 @@ fn epoch_handler(handler_name: &str, run: impl Fn(&mut LoadedState)) {
     assert_eq!(fail, 0, "{handler_name}: {fail} test(s) failed");
 }
 
-/// Roll the boundary epoch writer off the inherited id — the harness analog
-/// of `process_epoch`'s roll before it drives a leaf. The id surfaces only
-/// from the writer's `commit`, fed into the view's `commit` writeback.
-fn roll_epoch(epoch: &mut EpochGroup, epoch_idx: Option<EpochId>) -> EpochWriteView<'_> {
-    match epoch_idx {
-        Some(pe) => epoch.roll_from(pe),
-        None => epoch.roll_fresh(),
-    }
-}
-
-/// Roll the boundary longtail writer off the inherited id — only called when
-/// a rotation gate fires, like `process_epoch`.
-fn roll_longtail(
-    longtail: &mut LongtailGroup,
-    longtail_idx: Option<LongtailId>,
-) -> LongtailWriteView<'_> {
-    match longtail_idx {
-        Some(pl) => longtail.roll_from(pl),
-        None => longtail.roll_fresh(),
-    }
-}
-
 #[test]
 fn justification_and_finalization() {
     epoch_handler("justification_and_finalization", |s| {
         let sid = s.state_id;
         let (mut view, epoch, _) = s.view();
         let current_epoch = view.slot.reader().current_epoch();
-        let mut epoch_w = roll_epoch(epoch, sid.epoch_idx);
+        let mut epoch_w = epoch.roll_inheriting(sid.epoch_idx);
         epoch_transition::process_justification_and_finalization(
             &mut view,
             &mut epoch_w,
@@ -96,19 +70,16 @@ fn justification_and_finalization() {
 fn inactivity_updates() {
     let cfg = silver_beacon_state_data::SpecConfig::mainnet();
     epoch_handler("inactivity_updates", move |s| {
-        let sid = s.state_id;
-        let (mut view, epoch, _) = s.view();
-        let current_epoch = view.slot.reader().current_epoch();
-        let epoch_view = epoch.view_opt(sid.epoch_idx);
-        let mut scratch = Vec::new();
-        epoch_transition::process_inactivity_updates(
-            &cfg,
-            &mut view,
-            &epoch_view,
-            current_epoch,
-            &mut scratch,
-        );
-        s.state_id = view.commit(sid.epoch_idx, sid.longtail_idx);
+        s.with_view_and_epoch(|view, e| {
+            let current_epoch = view.slot.reader().current_epoch();
+            epoch_transition::process_inactivity_updates(
+                &cfg,
+                view,
+                e,
+                current_epoch,
+                &mut Vec::new(),
+            );
+        });
     });
 }
 
@@ -116,19 +87,16 @@ fn inactivity_updates() {
 fn rewards_and_penalties() {
     let cfg = silver_beacon_state_data::SpecConfig::mainnet();
     epoch_handler("rewards_and_penalties", move |s| {
-        let sid = s.state_id;
-        let (mut view, epoch, _) = s.view();
-        let current_epoch = view.slot.reader().current_epoch();
-        let epoch_view = epoch.view_opt(sid.epoch_idx);
-        let mut scratch = Vec::new();
-        epoch_transition::process_rewards_and_penalties(
-            &cfg,
-            &mut view,
-            &epoch_view,
-            current_epoch,
-            &mut scratch,
-        );
-        s.state_id = view.commit(sid.epoch_idx, sid.longtail_idx);
+        s.with_view_and_epoch(|view, e| {
+            let current_epoch = view.slot.reader().current_epoch();
+            epoch_transition::process_rewards_and_penalties(
+                &cfg,
+                view,
+                e,
+                current_epoch,
+                &mut Vec::new(),
+            );
+        });
     });
 }
 
@@ -136,12 +104,10 @@ fn rewards_and_penalties() {
 fn registry_updates() {
     let cfg = silver_beacon_state_data::SpecConfig::mainnet();
     epoch_handler("registry_updates", move |s| {
-        let sid = s.state_id;
-        let (mut view, epoch, _) = s.view();
-        let current_epoch = view.slot.reader().current_epoch();
-        let epoch_view = epoch.view_opt(sid.epoch_idx);
-        epoch_transition::process_registry_updates(&cfg, &mut view, &epoch_view, current_epoch);
-        s.state_id = view.commit(sid.epoch_idx, sid.longtail_idx);
+        s.with_view_and_epoch(|view, e| {
+            let current_epoch = view.slot.reader().current_epoch();
+            epoch_transition::process_registry_updates(&cfg, view, e, current_epoch);
+        });
     });
 }
 
@@ -149,23 +115,20 @@ fn registry_updates() {
 fn slashings() {
     let cfg = silver_beacon_state_data::SpecConfig::mainnet();
     epoch_handler("slashings", move |s| {
-        let sid = s.state_id;
-        let (mut view, epoch, _) = s.view();
-        let current_epoch = view.slot.reader().current_epoch();
-        let epoch_view = epoch.view_opt(sid.epoch_idx);
-        epoch_transition::process_slashings(&cfg, &mut view, &epoch_view, current_epoch);
-        s.state_id = view.commit(sid.epoch_idx, sid.longtail_idx);
+        s.with_view_and_epoch(|view, e| {
+            let current_epoch = view.slot.reader().current_epoch();
+            epoch_transition::process_slashings(&cfg, view, e, current_epoch);
+        });
     });
 }
 
 #[test]
 fn eth1_data_reset() {
     epoch_handler("eth1_data_reset", |s| {
-        let sid = s.state_id;
-        let (mut view, _, _) = s.view();
-        let current_epoch = view.slot.reader().current_epoch();
-        epoch_transition::process_eth1_data_reset(&mut view.slot, current_epoch);
-        s.state_id = view.commit(sid.epoch_idx, sid.longtail_idx);
+        s.with_view(|view| {
+            let current_epoch = view.slot.reader().current_epoch();
+            epoch_transition::process_eth1_data_reset(&mut view.slot, current_epoch);
+        });
     });
 }
 
@@ -175,7 +138,7 @@ fn pending_deposits() {
     epoch_handler("pending_deposits", move |s| {
         let sid = s.state_id;
         let (mut view, epoch, _) = s.view();
-        let mut epoch_w = roll_epoch(epoch, sid.epoch_idx);
+        let mut epoch_w = epoch.roll_inheriting(sid.epoch_idx);
         epoch_transition::process_pending_deposits(&cfg, &mut view, &mut epoch_w, &mut Vec::new());
         s.state_id = view.commit(Some(epoch_w.commit()), sid.longtail_idx);
     });
@@ -184,20 +147,14 @@ fn pending_deposits() {
 #[test]
 fn pending_consolidations() {
     epoch_handler("pending_consolidations", |s| {
-        let sid = s.state_id;
-        let (mut view, _, _) = s.view();
-        epoch_transition::process_pending_consolidations(&mut view);
-        s.state_id = view.commit(sid.epoch_idx, sid.longtail_idx);
+        s.with_view(|view| epoch_transition::process_pending_consolidations(view));
     });
 }
 
 #[test]
 fn effective_balance_updates() {
     epoch_handler("effective_balance_updates", |s| {
-        let sid = s.state_id;
-        let (mut view, _, _) = s.view();
-        epoch_transition::process_effective_balance_updates(&mut view);
-        s.state_id = view.commit(sid.epoch_idx, sid.longtail_idx);
+        s.with_view(|view| epoch_transition::process_effective_balance_updates(view));
     });
 }
 
@@ -206,7 +163,7 @@ fn slashings_reset() {
     epoch_handler("slashings_reset", |s| {
         let sid = s.state_id;
         let (mut view, epoch, _) = s.view();
-        let mut epoch_w = roll_epoch(epoch, sid.epoch_idx);
+        let mut epoch_w = epoch.roll_inheriting(sid.epoch_idx);
         epoch_transition::process_slashings_reset(&mut view, &mut epoch_w);
         s.state_id = view.commit(Some(epoch_w.commit()), sid.longtail_idx);
     });
@@ -217,7 +174,7 @@ fn randao_mixes_reset() {
     epoch_handler("randao_mixes_reset", |s| {
         let sid = s.state_id;
         let (view, epoch, _) = s.view();
-        let mut epoch_w = roll_epoch(epoch, sid.epoch_idx);
+        let mut epoch_w = epoch.roll_inheriting(sid.epoch_idx);
         epoch_transition::process_randao_mixes_reset(&view, &mut epoch_w);
         s.state_id = view.commit(Some(epoch_w.commit()), sid.longtail_idx);
     });
@@ -233,7 +190,7 @@ fn historical_summaries_update() {
         if !(current_epoch + 1).is_multiple_of(HISTORICAL_SUMMARY_PERIOD) {
             return;
         }
-        let mut longtail_w = roll_longtail(longtail, sid.longtail_idx);
+        let mut longtail_w = longtail.roll_inheriting(sid.longtail_idx);
         let mut scratch = StateHashScratch::new();
         epoch_transition::process_historical_summaries_update(
             &mut view,
@@ -247,11 +204,9 @@ fn historical_summaries_update() {
 #[test]
 fn participation_flag_updates() {
     epoch_handler("participation_flag_updates", |s| {
-        let sid = s.state_id;
-        let (mut view, _, _) = s.view();
-        let mut scratch = Vec::new();
-        epoch_transition::process_participation_flag_updates(&mut view, &mut scratch);
-        s.state_id = view.commit(sid.epoch_idx, sid.longtail_idx);
+        s.with_view(|view| {
+            epoch_transition::process_participation_flag_updates(view, &mut Vec::new());
+        });
     });
 }
 
@@ -265,7 +220,7 @@ fn sync_committee_updates() {
         if !(current_epoch + 1).is_multiple_of(EPOCHS_PER_SYNC_COMMITTEE_PERIOD) {
             return;
         }
-        let mut longtail_w = roll_longtail(longtail, sid.longtail_idx);
+        let mut longtail_w = longtail.roll_inheriting(sid.longtail_idx);
         let epoch_view = epoch.view_opt(sid.epoch_idx);
         let mut active = Vec::new();
         let mut eff = Vec::new();
@@ -287,7 +242,7 @@ fn proposer_lookahead() {
         let sid = s.state_id;
         let (mut view, epoch, _) = s.view();
         let current_epoch = view.slot.reader().current_epoch();
-        let mut epoch_w = roll_epoch(epoch, sid.epoch_idx);
+        let mut epoch_w = epoch.roll_inheriting(sid.epoch_idx);
         let mut scratch = Vec::new();
         let mut eff = Vec::new();
         epoch_transition::process_proposer_lookahead(

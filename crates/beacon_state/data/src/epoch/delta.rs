@@ -1,6 +1,6 @@
 use super::{EpochGroup, EpochId, finalized::EpochStateFinalized};
 use crate::{
-    buffer::{Reset, Slot as RingSlot},
+    buffer::{Reset, Slot as RingSlot, drain_promoted_prefix},
     types::{B256, Epoch, EpochState},
 };
 
@@ -22,10 +22,8 @@ impl EpochStateDelta {
     /// into the base) — the reanchor half of finalization, run on a fresh copy
     /// of a survivor.
     pub(super) fn prune_to_base(&mut self, promoted: &EpochStateDelta) {
-        let drop_r = promoted.randao_mixes.len().min(self.randao_mixes.len());
-        self.randao_mixes.drain(..drop_r);
-        let drop_s = promoted.slashings.len().min(self.slashings.len());
-        self.slashings.drain(..drop_s);
+        drain_promoted_prefix(&mut self.randao_mixes, promoted.randao_mixes.len());
+        drain_promoted_prefix(&mut self.slashings, promoted.slashings.len());
     }
 }
 
@@ -100,39 +98,32 @@ impl<'a> EpochView<'a> {
         self.delta.map_or(&[][..], |d| &d.slashings)
     }
 
-    /// `randao_mix(epoch)` with the epoch-delta overlay (walked in reverse so a
-    /// wrapped position hits the most recent override). Convention: delta entry
-    /// `k` is the final mix for epoch `fin_epoch + k`, at circular-buffer
-    /// position `(fin_epoch + k) % HV`.
+    /// `randao_mix(epoch)` with the epoch-delta overlay (see
+    /// [`ring_overlay_at`]).
     pub fn randao_mix_at_epoch(&self, epoch: Epoch, fin_epoch: Epoch) -> B256 {
-        let cap = self.base.randao_mixes.len();
-        if let Some(delta) = self.delta {
-            let target_pos = epoch as usize % cap;
-            for (k, m) in delta.randao_mixes.iter().enumerate().rev() {
-                let pos = (fin_epoch as usize + k) % cap;
-                if pos == target_pos {
-                    return *m;
-                }
-            }
-        }
-        self.base.randao_mixes[epoch as usize % cap]
+        ring_overlay_at(&self.base.randao_mixes, self.delta_randao_mixes(), epoch, fin_epoch)
     }
 
-    /// Per-completed-epoch slashings sum, with the delta overlay (reverse-walk,
-    /// same convention as [`Self::randao_mix_at_epoch`]).
+    /// Per-completed-epoch slashings sum, with the delta overlay (see
+    /// [`ring_overlay_at`]).
     pub fn slashings_at(&self, epoch: Epoch, fin_epoch: Epoch) -> u64 {
-        let cap = self.base.slashings.len();
-        if let Some(delta) = self.delta {
-            let target_pos = epoch as usize % cap;
-            for (k, s) in delta.slashings.iter().enumerate().rev() {
-                let pos = (fin_epoch as usize + k) % cap;
-                if pos == target_pos {
-                    return *s;
-                }
-            }
-        }
-        self.base.slashings[epoch as usize % cap]
+        ring_overlay_at(&self.base.slashings, self.delta_slashings(), epoch, fin_epoch)
     }
+}
+
+/// Circular-buffer read at `epoch` with the fork-delta overlay, walked in
+/// reverse so a wrapped position hits the most recent override. Convention:
+/// delta entry `k` is the final value for epoch `fin_epoch + k`, at position
+/// `(fin_epoch + k) % cap`.
+fn ring_overlay_at<T: Copy>(base_ring: &[T], delta_log: &[T], epoch: Epoch, fin_epoch: Epoch) -> T {
+    let cap = base_ring.len();
+    let target_pos = epoch as usize % cap;
+    for (k, v) in delta_log.iter().enumerate().rev() {
+        if (fin_epoch as usize + k) % cap == target_pos {
+            return *v;
+        }
+    }
+    base_ring[target_pos]
 }
 
 pub struct EpochWriteView<'a> {

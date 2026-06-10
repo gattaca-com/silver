@@ -2,10 +2,7 @@
 //!
 //! Run: cargo bench -p silver_beacon_state --bench bls_verify
 
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 use blst::min_pk::{AggregatePublicKey, AggregateSignature, PublicKey, SecretKey, Signature};
 use criterion::{Criterion, criterion_group, criterion_main};
@@ -13,17 +10,14 @@ use rand::{RngCore, SeedableRng, rngs::StdRng};
 use silver_beacon_state::{
     bls::{self, DOMAIN_BEACON_ATTESTER, DST, SigBatch},
     shuffling,
-    ssz_hash::{StateHashScratch, hash_attestation_data},
+    ssz_hash::hash_attestation_data,
     state_transition::{
         self, ShufflingRef, collect_sigs_attestations, collect_sigs_attester_slashings,
         collect_sigs_bls_to_execution_changes, collect_sigs_proposer_slashings,
         collect_sigs_randao, collect_sigs_sync_aggregate, collect_sigs_voluntary_exits,
     },
 };
-use silver_beacon_state_data::{
-    B256, BeaconState, EpochGroup, LongtailGroup, SLOTS_PER_EPOCH, SpecConfig, StateId,
-    StateReadView, StateWriterView,
-};
+use silver_beacon_state_data::{B256, SLOTS_PER_EPOCH, SpecConfig, StateReadView};
 use silver_common::ssz_view::{
     BLOCK_SYNC_AGGREGATE_SIZE, BeaconBlockBodyView, SINGLE_ATT_SIZE, SignedBeaconBlockView,
 };
@@ -125,44 +119,12 @@ fn spec_tests_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("consensus-spec-tests")
 }
 
-fn snappy_decode(path: &Path) -> Vec<u8> {
-    let compressed = fs::read(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    snap::Decoder::new().decompress_vec(&compressed).expect("snappy")
-}
+#[path = "../tests/support/loaded_state.rs"]
+mod loaded_state;
+use loaded_state::{load_state, snappy_decode};
 
-/// Pre-state harness: decoded per-tier finalized bases + the working fork
-/// bundle (the `tests/ef_common.rs` shape).
-struct LoadedState {
-    bs: BeaconState,
-    state_id: StateId,
-}
-
-impl LoadedState {
-    /// Roll a fresh fork off the bundle and hand back its writer view — the
-    /// production `apply_block_view` shape. Mutations persist only via
-    /// `state_id = view.commit(..)` writeback.
-    fn view(&mut self) -> (StateWriterView<'_>, &mut EpochGroup, &mut LongtailGroup) {
-        let sid = self.state_id;
-        let bs = &mut self.bs;
-        let view = StateWriterView::new(
-            &bs.immutable,
-            bs.balances.roll_from(sid.balances_idx),
-            bs.pending.roll_from(sid.pending_idx),
-            bs.previous_participation.roll_from(sid.previous_participation_idx),
-            bs.current_participation.roll_from(sid.current_participation_idx),
-            bs.inactivity.roll_from(sid.inactivity_idx),
-            bs.slot_states.roll_from(sid.slot_idx),
-            bs.validators.roll_from(sid.validators_idx),
-        );
-        (view, &mut bs.epoch, &mut bs.longtail)
-    }
-}
-
-fn load_pre_at(dir: &Path) -> LoadedState {
-    let pre_ssz = snappy_decode(&dir.join("pre.ssz_snappy"));
-    let mut bs = BeaconState::decompose(&pre_ssz, &SpecConfig::mainnet(), None).expect("decompose");
-    let state_id = bs.roll_fresh();
-    LoadedState { bs, state_id }
+fn load_pre_at(dir: &Path) -> loaded_state::LoadedState {
+    load_state(&dir.join("pre.ssz_snappy"))
 }
 
 fn shuffle_for_epoch(view: &StateReadView, e: u64) -> (Vec<u32>, usize) {
@@ -192,12 +154,7 @@ fn build_ef_block() -> SigBatch {
     let sid = s.state_id;
     let (mut view, epoch_group, longtail_group) = s.view();
 
-    let mut active = Vec::new();
-    let mut postponed = Vec::new();
-    let mut replace_u64 = Vec::new();
-    let mut replace_u8 = Vec::new();
-    let mut eff = Vec::new();
-    let mut state_hash = StateHashScratch::new();
+    let mut scratch = state_transition::StfScratch::new(0);
     let (epoch_idx, longtail_idx) = if block_slot > view.slot.state().slot {
         state_transition::process_slots(
             &cfg,
@@ -206,12 +163,7 @@ fn build_ef_block() -> SigBatch {
             longtail_group,
             sid,
             block_slot,
-            &mut active,
-            &mut postponed,
-            &mut replace_u64,
-            &mut replace_u8,
-            &mut eff,
-            &mut state_hash,
+            &mut scratch,
         )
     } else {
         (sid.epoch_idx, sid.longtail_idx)

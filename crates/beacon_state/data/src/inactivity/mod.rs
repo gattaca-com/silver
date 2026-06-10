@@ -12,7 +12,7 @@ pub use delta::{InactivityView, InactivityWriteView};
 pub use finalized::FinalizedInactivityScores;
 
 use crate::{
-    buffer::{Id, Ring},
+    buffer::{Id, Ring, reanchor_survivors},
     types::{ColumnLenMismatch, SLOTS_RING_N},
 };
 
@@ -32,7 +32,7 @@ impl InactivityScoresGroup {
     }
 
     /// Group over a base decoded from the SSZ `inactivity_scores` byte range
-    /// (little-endian `u64`s); `new(cap, &[])` is the empty group.
+    /// (little-endian `u64`s); `new(cap, 0, &[])` is the empty group.
     pub fn new(cap: usize, count: usize, ssz_bytes: &[u8]) -> Result<Self, ColumnLenMismatch> {
         Ok(Self {
             base: FinalizedInactivityScores::new(cap, count, ssz_bytes)?,
@@ -82,21 +82,12 @@ impl InactivityScoresGroup {
         winner: InactivityId,
         survivors: &[InactivityId],
     ) -> Vec<InactivityId> {
-        let mut fresh: Vec<InactivityId> = Vec::with_capacity(survivors.len());
-        for (i, &s) in survivors.iter().enumerate() {
-            let new_id = match survivors[..i].iter().position(|&p| p == s) {
-                Some(seen) => fresh[seen],
-                None => self.reanchor(s, winner).commit(),
-            };
-            fresh.push(new_id);
-        }
+        let fresh = reanchor_survivors(survivors, |s| self.reanchor(s, winner).commit());
 
         let Self { base, forks } = self;
         base.promote(forks.get(winner));
 
-        if let Some(&oldest) = fresh.iter().min() {
-            forks.free(oldest);
-        }
+        forks.free_oldest(&fresh);
 
         fresh
     }

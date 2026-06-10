@@ -7,7 +7,7 @@
 //! Seqlock test (finalized tier): writer promotes a slot fork carrying two
 //! block roots painted with the SAME tag into the slot group's base under one
 //! `WriteGuard` (via `SlotStateGroup::finalize`). The base slot is held at 0 so
-//! the promote always writes the same two adjacent cells (`FIN_TAG_A/B`).
+//! the promote always writes the same two adjacent cells (`FIN_CELL_A/B`).
 //! Reader reads both via `finalized_block_roots()` and asserts they match — a
 //! tear would surface as `old != new`.
 //!
@@ -36,8 +36,8 @@ const ITERATIONS: u64 = 200;
 // slot is held at 0, so `promote` always writes the delta's two roots to cells
 // 0 and 1 — both painted with the same tag inside one `WriteGuard`. The slot-
 // delta path writes the fork's own (separate) `block_roots`, so no collision.
-const FIN_TAG_A: usize = 0;
-const FIN_TAG_B: usize = 1;
+const FIN_CELL_A: usize = 0;
+const FIN_CELL_B: usize = 1;
 
 fn slot_tag(slot: u64) -> B256 {
     let mut tag = [0u8; 32];
@@ -81,8 +81,8 @@ fn concurrent_reads_observe_consistent_state() {
             loop {
                 let read = r_control.read(&|v| {
                     let fin_roots = v.slot.finalized_block_roots();
-                    let fin_a = fin_roots[FIN_TAG_A];
-                    let fin_b = fin_roots[FIN_TAG_B];
+                    let fin_a = fin_roots[FIN_CELL_A];
+                    let fin_b = fin_roots[FIN_CELL_B];
                     let merged_slot = v.slot.slot_number();
                     let delta_roots = v.slot.delta_block_roots();
                     let delta_root0 = delta_roots.first().copied();

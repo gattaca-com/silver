@@ -9,7 +9,7 @@ pub use finalized::{FinalizedValidators, ValSeed, ValidatorsDecodeError};
 
 use crate::{
     Withdrawals,
-    buffer::{Id, Ring},
+    buffer::{Id, Ring, reanchor_survivors},
     ssz_hash::{hash_fixed_bytes, merkleize, uint64_chunk},
     types::{B256, BLSPubkey, Epoch, SLOTS_RING_N},
 };
@@ -22,7 +22,8 @@ pub type ValidatorsId = Id<ValidatorsGroup>;
 /// ([`ValidatorsDelta`]) ring. Logically identical to [`BalancesGroup`] — base
 /// columns + sparse edits + a hash overlay — so finalization uses the same
 /// reanchor-against-the-winner model. Read by both views; its base index/hash
-/// grow, so the #9 checkpoint-snapshot read must be lock-guarded.
+/// grow, so the checkpoint-persist snapshot read on the storage thread must be
+/// lock-guarded.
 ///
 /// [`BalancesGroup`]: crate::BalancesGroup
 pub struct ValidatorsGroup {
@@ -81,21 +82,12 @@ impl ValidatorsGroup {
         winner: ValidatorsId,
         survivors: &[ValidatorsId],
     ) -> Vec<ValidatorsId> {
-        let mut fresh: Vec<ValidatorsId> = Vec::with_capacity(survivors.len());
-        for (i, &s) in survivors.iter().enumerate() {
-            let new_id = match survivors[..i].iter().position(|&p| p == s) {
-                Some(seen) => fresh[seen],
-                None => self.reanchor(s, winner).commit(),
-            };
-            fresh.push(new_id);
-        }
+        let fresh = reanchor_survivors(survivors, |s| self.reanchor(s, winner).commit());
 
         let Self { base, forks } = self;
         forks.get(winner).promote_into_base(base);
 
-        if let Some(&oldest) = fresh.iter().min() {
-            forks.free(oldest);
-        }
+        forks.free_oldest(&fresh);
 
         fresh
     }

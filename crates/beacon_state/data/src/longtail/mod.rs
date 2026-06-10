@@ -17,7 +17,7 @@ pub use finalized::LongtailState;
 use parking_lot::Mutex;
 
 use crate::{
-    buffer::{Id, Reset, Ring},
+    buffer::{Id, Reset, Ring, reanchor_survivors},
     types::LONGTAILS_RING_N,
 };
 
@@ -90,6 +90,16 @@ impl LongtailGroup {
         LongtailWriteView::new(base, forks.roll_from(parent))
     }
 
+    /// Roll derived from the inherited `parent` entry, or fresh off the base
+    /// when no ancestor owns one.
+    #[inline]
+    pub fn roll_inheriting(&mut self, parent: Option<LongtailId>) -> LongtailWriteView<'_> {
+        match parent {
+            Some(p) => self.roll_from(p),
+            None => self.roll_fresh(),
+        }
+    }
+
     /// Copy a survivor into a fresh slot and drop the promoted
     /// `historical_summaries` prefix (pre-promotion). The survivor stays
     /// frozen — append-only.
@@ -105,14 +115,7 @@ impl LongtailGroup {
     /// (deduped), then promote the winner into the base. Mirrors
     /// [`SlotStateGroup::finalize`](crate::SlotStateGroup).
     pub fn finalize(&mut self, winner: LongtailId, survivors: &[LongtailId]) -> Vec<LongtailId> {
-        let mut fresh: Vec<LongtailId> = Vec::with_capacity(survivors.len());
-        for (i, &s) in survivors.iter().enumerate() {
-            let new_id = match survivors[..i].iter().position(|&p| p == s) {
-                Some(seen) => fresh[seen],
-                None => self.reanchor(s, winner).commit(),
-            };
-            fresh.push(new_id);
-        }
+        let fresh = reanchor_survivors(survivors, |s| self.reanchor(s, winner).commit());
 
         let Self { base, forks, persist_lock } = self;
         {
@@ -120,9 +123,7 @@ impl LongtailGroup {
             base.promote(forks.get(winner));
         }
 
-        if let Some(&oldest) = fresh.iter().min() {
-            forks.free(oldest);
-        }
+        forks.free_oldest(&fresh);
 
         fresh
     }

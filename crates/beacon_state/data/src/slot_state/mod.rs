@@ -14,7 +14,7 @@ pub use delta::{SlotStateView, SlotStateWriteView};
 pub use finalized::SlotStateFinalized;
 
 use crate::{
-    buffer::{Id, Reset, Ring},
+    buffer::{Id, Reset, Ring, reanchor_survivors},
     types::SLOTS_RING_N,
 };
 
@@ -82,21 +82,12 @@ impl SlotStateGroup {
     /// (deduped), then promote the winner into the base (circular-buffer
     /// write). Mirrors [`BalancesGroup::finalize`](crate::BalancesGroup).
     pub fn finalize(&mut self, winner: SlotStateId, survivors: &[SlotStateId]) -> Vec<SlotStateId> {
-        let mut fresh: Vec<SlotStateId> = Vec::with_capacity(survivors.len());
-        for (i, &s) in survivors.iter().enumerate() {
-            let new_id = match survivors[..i].iter().position(|&p| p == s) {
-                Some(seen) => fresh[seen],
-                None => self.reanchor(s, winner).commit(),
-            };
-            fresh.push(new_id);
-        }
+        let fresh = reanchor_survivors(survivors, |s| self.reanchor(s, winner).commit());
 
         let Self { base, forks } = self;
         base.promote(forks.get(winner));
 
-        if let Some(&oldest) = fresh.iter().min() {
-            forks.free(oldest);
-        }
+        forks.free_oldest(&fresh);
 
         fresh
     }

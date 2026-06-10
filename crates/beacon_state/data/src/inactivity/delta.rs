@@ -79,6 +79,12 @@ impl SparseLayer for InactivityScoresDelta {
     fn base_data(base: &FinalizedInactivityScores) -> &[u64] {
         &base.data
     }
+    fn base_count(base: &FinalizedInactivityScores) -> usize {
+        base.count()
+    }
+    fn total(&self) -> usize {
+        self.total
+    }
 }
 
 /// Read-only view over the inactivity base + a frozen fork delta.
@@ -145,21 +151,17 @@ impl<'a> InactivityWriteView<'a> {
 
     #[inline]
     pub fn set(&mut self, idx: u32, v: u64) {
-        let base_count = self.base.count();
-        set_against(&mut *self.fork, self.base, base_count, idx, v);
+        set_against(&mut *self.fork, self.base, idx, v);
     }
 
     #[inline]
     pub fn install(&mut self, dense: &mut Vec<(u32, u64)>) {
-        let base_count = self.base.count();
-        install_against(&mut *self.fork, self.base, base_count, dense);
+        install_against(&mut *self.fork, self.base, dense);
     }
 
     #[inline]
     pub fn replace<F: FnMut(usize, u64) -> u64>(&mut self, scratch: &mut Vec<(u32, u64)>, f: F) {
-        let base_count = self.base.count();
-        let total = self.fork.total;
-        replace_against(&mut *self.fork, self.base, base_count, total, scratch, f);
+        replace_against(&mut *self.fork, self.base, scratch, f);
     }
 
     /// Read-only view over the same base + fork — mirrors

@@ -38,7 +38,7 @@ fn block_root_diverged_hits_delta_then_base() {
 
 /// Finalization promotes the winner fork's `SlotState` into the base and writes
 /// its appended block roots into the circular buffer at the slots they cover
-/// (entry 0 → old finalized slot). (Was `apply_delta_advances_finalized_slot`.)
+/// (entry 0 → old finalized slot).
 #[test]
 fn finalize_advances_base_slot_and_writes_roots() {
     let mut g = SlotStateGroup::new(anchored_base());

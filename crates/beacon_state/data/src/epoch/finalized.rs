@@ -1,5 +1,8 @@
 use super::delta::EpochStateDelta;
-use crate::types::{B256, EPOCHS_PER_HISTORICAL_VECTOR, EPOCHS_PER_SLASHINGS_VECTOR, EpochState};
+use crate::{
+    buffer::write_ring_window,
+    types::{B256, EPOCHS_PER_HISTORICAL_VECTOR, EPOCHS_PER_SLASHINGS_VECTOR, EpochState},
+};
 
 /// Finalized base for the epoch tier: the canonical [`EpochState`] scalars plus
 /// the `randao_mixes`/`slashings` circular buffers (indexed by `epoch % HV` /
@@ -47,16 +50,8 @@ impl EpochStateFinalized {
     /// they cover (`(old_fin_epoch + i) % cap`), then adopt its scalar
     /// [`EpochState`]. The data half of finalization.
     pub(super) fn promote(&mut self, delta: &EpochStateDelta, old_fin_epoch: usize) {
-        let hv = self.randao_mixes.len();
-        debug_assert!(delta.randao_mixes.len() <= hv, "epoch randao_mixes exceeds ring cap");
-        for (i, m) in delta.randao_mixes.iter().enumerate() {
-            self.randao_mixes[(old_fin_epoch + i) % hv] = *m;
-        }
-        let sv = self.slashings.len();
-        debug_assert!(delta.slashings.len() <= sv, "epoch slashings exceeds ring cap");
-        for (i, sl) in delta.slashings.iter().enumerate() {
-            self.slashings[(old_fin_epoch + i) % sv] = *sl;
-        }
+        write_ring_window(&mut self.randao_mixes, old_fin_epoch, &delta.randao_mixes);
+        write_ring_window(&mut self.slashings, old_fin_epoch, &delta.slashings);
         self.state = delta.state;
     }
 }

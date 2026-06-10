@@ -4,7 +4,7 @@
 //! group's finalized base. Growth-prone Vec bases (pending, longtail
 //! `historical_summaries`) are read under their group's promote barrier; all
 //! other bases are allocation-stable and rely on the checkpoint version
-//! protocol (`CheckpointStream`) to discard torn bytes.
+//! protocol (`CheckpointCursor`) to discard torn bytes.
 
 use std::io::{self, Write};
 
@@ -138,6 +138,7 @@ impl BeaconState {
         FIXED_PART + self.var_len_section_lens().iter().sum::<usize>()
     }
 
+    #[cfg(test)]
     pub(crate) fn var_offsets(&self) -> [u32; VAR_LEN_SECTIONS] {
         Self::offsets_from_lens(&self.var_len_section_lens())
     }
@@ -328,6 +329,7 @@ impl BeaconState {
     // `PUBKEYS_HEADER` (magic + version + count) then `count × 96 B` in
     // validator-index order.
 
+    #[cfg(test)]
     pub(crate) fn pubkeys_sidecar_len(&self) -> usize {
         PUBKEYS_HEADER + self.validators.base().validator_count() * PUBKEY_SER
     }
