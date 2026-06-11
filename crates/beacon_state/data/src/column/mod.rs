@@ -1,11 +1,3 @@
-//! Sparse scalar-column groups: `previous_epoch_participation`,
-//! `current_epoch_participation` (`List[ParticipationFlags, …]`) and
-//! `inactivity_scores` (`List[uint64, …]`). All share one delta/base impl
-//! ([`ColumnDelta`]/[`FinalizedColumn`]); a zero-size [`ColumnSpec`] marker
-//! ([`Previous`]/[`Current`]/[`Inactivity`]) names the column's scalar type
-//! and keeps the rings' [`Id`]s distinct. Read/written only on the write
-//! path, so no lock-free reader split — mirrors the balances group.
-
 mod delta;
 mod finalized;
 

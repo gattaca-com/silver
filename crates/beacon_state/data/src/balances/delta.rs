@@ -22,22 +22,11 @@ impl BalancesDelta {
         self.total = base.count();
     }
 
-    /// Fill `out` (a fresh, just-rolled slot) with `self` (a survivor)
-    /// finalized against a promoted `winner`. `self` is only read — it
-    /// stays frozen for lock-free readers. Run against the still-**old**
-    /// `base`, before [`promote_into_base`](Self::promote_into_base). Both
-    /// halves rebase pins + prune redundancy in one pass against the
-    /// *logical* new base (the winner's override else the old base): values
-    /// via [`Edits::rebase_and_prune`], the hash overlay via `rebase`
-    /// (freeze winner-moved leaves) then `prune_delta_against` (collapse
-    /// leaves that already equal the new base).
-    ///
-    /// The two count bounds are intrinsic: `valid_below` (the indices that
-    /// existed in the pre-promote base, so a winner override there pins the old
-    /// value) is `base.count()`, still the old count since promotion is later;
-    /// the new count below which an edit is redundant is the winner's length,
-    /// which [`promote_into_base`](Self::promote_into_base) writes into the
-    /// base.
+    /// Finalize survivor `self` into fresh slot `out` against promoted
+    /// `winner`, rebasing pins and pruning redundancy onto the logical new base
+    /// (winner's override else old base). Must run before
+    /// [`promote_into_base`](Self::promote_into_base), while `base` still holds
+    /// the old count. `self` is read-only so lock-free readers stay unblocked.
     pub(super) fn rebase_and_prune(
         &self,
         out: &mut BalancesDelta,

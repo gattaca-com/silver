@@ -324,15 +324,12 @@ impl ValidatorsDelta {
         base.hash_mut().promote_delta(&self.hash_overlay);
     }
 
-    /// Re-anchor a SURVIVOR onto `out` against the promoted `winner`, all
-    /// PRE-promote — the mirror of [`BalancesDelta::rebase_and_prune`], since
-    /// validators is logically the same shape (base columns + sparse edits +
-    /// persistent hash overlay). Per column: pin the survivor's own pre-promote
-    /// value at base indices the winner overwrites, then drop edits already
-    /// matching the winner's effective value (the post-promote base).
-    /// `appended` the winner promoted is drained, `base_count` advances to
-    /// the winner's new count, and the hash overlay rebases + prunes
-    /// against the winner.
+    /// Mirror of [`BalancesDelta::rebase_and_prune`] for the multi-column
+    /// registry: finalize survivor `self` into `out` against promoted `winner`,
+    /// pre-promote and read-only so lock-free readers stay unblocked. The
+    /// winner-promoted prefix of `appended` is dropped; every column delegates
+    /// the rebase/prune to
+    /// [`rebase_and_prune_sparse`](crate::sparse::rebase_and_prune_sparse).
     pub(super) fn rebase_and_prune(
         &self,
         out: &mut ValidatorsDelta,

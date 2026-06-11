@@ -1,12 +1,3 @@
-//! Longtail-tier group: sync committees + their resolved validator indices +
-//! the cumulative `historical_summaries` log as one finalized base
-//! ([`LongtailState`]) plus a per-fork delta (the same [`LongtailState`] type,
-//! holding only the post-finalization `historical_summaries` appends), bundled
-//! with the ring. Read by both the writer-thread `StateReadView` and the
-//! cross-thread reader via [`LongtailView`]. Rolled lazily — only
-//! when a fork crosses a sync-committee / historical-summary rotation — so the
-//! slot id resolves to a fork delta or, when absent, the base.
-
 mod delta;
 mod finalized;
 #[cfg(test)]

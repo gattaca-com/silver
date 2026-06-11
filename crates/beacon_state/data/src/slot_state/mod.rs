@@ -1,9 +1,3 @@
-//! Slot-tier group: the canonical `SlotState` scalars + block/state-root
-//! circular buffers as one finalized base ([`SlotStateFinalized`]) plus a
-//! per-fork delta ([`SlotStateDelta`]), bundled with the ring. The heaviest
-//! tier (~145 KB `SlotState`); read by both the writer-thread `StateReadView`
-//! and the cross-thread reader via [`SlotStateView`].
-
 mod delta;
 mod finalized;
 #[cfg(test)]

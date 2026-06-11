@@ -1,10 +1,3 @@
-//! Pending-queues group: the three FIFO queues (`pending_deposits`,
-//! `pending_partial_withdrawals`, `pending_consolidations`) as one finalized
-//! base ([`PendingQueues`]) plus a per-fork delta ([`PendingQueuesDelta`]) of
-//! drain offsets + appended tails, bundled with the ring. Mirrors the balances
-//! group; read on the writer thread (`StateReadView`/`StateWriterView`) but not
-//! the cross-thread reader.
-
 mod delta;
 mod finalized;
 

@@ -1,11 +1,3 @@
-//! Epoch-tier group: the canonical [`EpochState`](crate::EpochState) scalars +
-//! the `randao_mixes`/`slashings` circular buffers as one finalized base
-//! ([`EpochStateFinalized`]) plus a per-fork delta ([`EpochStateDelta`]),
-//! bundled with the ring. Read by both the writer-thread `StateReadView` and
-//! the cross-thread reader via [`EpochView`]. Unlike the slot
-//! tier the fork is rolled lazily — only when a fork crosses an epoch boundary
-//! — so the slot id resolves to a fork delta or, when absent, the base.
-
 mod delta;
 mod finalized;
 #[cfg(test)]
