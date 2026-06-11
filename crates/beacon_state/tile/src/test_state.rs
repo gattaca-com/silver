@@ -27,8 +27,8 @@ impl TestState {
         seed_balances: &[u64],
     ) -> Self {
         let validators = ValidatorsGroup::new(FinalizedValidators::with_validators(seeds));
-        let cap = validators.base().capacity();
-        let n = validators.base().validator_count();
+        let cap = validators.finalized().capacity();
+        let n = validators.finalized().validator_count();
         // Anchor slot = the finalized epoch boundary.
         let anchor_slot = epoch_base.state().finalized_checkpoint.epoch * SLOTS_PER_EPOCH;
         let balance_bytes: Vec<u8> = seed_balances.iter().flat_map(|v| v.to_le_bytes()).collect();

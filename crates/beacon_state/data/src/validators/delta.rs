@@ -551,7 +551,7 @@ impl<'a> ValidatorsView<'a> {
 
     /// The finalized base (for callers that must read the pre-fork registry).
     #[inline]
-    pub fn base(&self) -> &'a FinalizedValidators {
+    pub fn finalized(&self) -> &'a FinalizedValidators {
         self.base
     }
 

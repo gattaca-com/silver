@@ -12,7 +12,7 @@ fn randao_anchored_reads_base() {
     base.randao_mixes[idx] = [0xAB; 32];
 
     let g = EpochGroup::new(base);
-    assert_eq!(g.base_view().randao_mix_at_epoch(target_epoch, FIN_EPOCH), [0xAB; 32]);
+    assert_eq!(g.finalized_view().randao_mix_at_epoch(target_epoch, FIN_EPOCH), [0xAB; 32]);
 }
 
 #[test]
@@ -61,9 +61,9 @@ fn finalize_overlays_rings_and_replaces_state() {
         wv.commit()
     };
 
-    g.finalize(winner, &[], old);
+    g.finalize(winner, &[winner], old);
 
-    let base = g.base();
+    let base = g.finalized();
     assert_eq!(base.randao_mixes[old % hv], [0xAA; 32]);
     assert_eq!(base.randao_mixes[(old + 1) % hv], [0xBB; 32]);
     assert_eq!(base.slashings[old % sv], 123);
@@ -78,25 +78,26 @@ fn finalize_overlays_rings_and_replaces_state() {
 fn finalize_reanchors_survivor_dropping_promoted_prefix() {
     let mut g = EpochGroup::new(EpochStateFinalized::default());
 
-    // Survivor: two completed-epoch randao mixes.
-    let survivor = {
-        let mut wv = g.roll_fresh();
-        wv.push_randao_mix([0xA; 32]);
-        wv.push_randao_mix([0xB; 32]);
-        wv.commit()
-    };
     // Winner promotes one completed-epoch mix (prefix len 1).
     let winner = {
         let mut wv = g.roll_fresh();
         wv.push_randao_mix([0xA; 32]);
         wv.commit()
     };
+    // Survivor: two completed-epoch randao mixes, rolled after the winner —
+    // survivors are the winner's descendants.
+    let survivor = {
+        let mut wv = g.roll_fresh();
+        wv.push_randao_mix([0xA; 32]);
+        wv.push_randao_mix([0xB; 32]);
+        wv.commit()
+    };
 
-    let fresh = g.finalize(winner, &[survivor], FIN_EPOCH as usize);
-    assert_eq!(fresh.len(), 1);
+    let fresh = g.finalize(winner, &[winner, survivor], FIN_EPOCH as usize);
+    assert_eq!(fresh.len(), 2);
     // The promoted winner had 1 randao mix, so the reanchored survivor drops
     // that prefix, keeping its second entry.
-    assert_eq!(g.view(fresh[0]).delta_randao_mixes(), &[[0xB; 32]]);
+    assert_eq!(g.view(fresh[1]).delta_randao_mixes(), &[[0xB; 32]]);
 }
 
 // Mirror of `EpochStateDelta`'s use in finalize: confirm `prune_to_base`

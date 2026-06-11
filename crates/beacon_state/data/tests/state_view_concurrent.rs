@@ -162,7 +162,7 @@ fn concurrent_reads_observe_consistent_state() {
                 sv.commit()
             };
             let mut g = control.write();
-            g.deref_mut().slot_states.finalize(winner, &[]);
+            g.deref_mut().slot_states.finalize(winner, &[winner]);
         }
 
         // Encourage interleaving.

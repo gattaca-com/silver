@@ -435,7 +435,7 @@ mod tests {
 
         const ITERS: u64 = 23;
         const WARMUP: u64 = 3;
-        let slot = bs.slot_states.base_view().slot_number();
+        let slot = bs.slot_states.finalized_view().slot_number();
 
         // Phase 1, write half only: write a pre-encoded blob (encode excluded).
         let mut buf = Vec::with_capacity(len);
@@ -605,7 +605,7 @@ mod tests {
         assert!(!slot_dir.join("64.pubkeys.tmp").exists(), "no pubkeys temp after commit");
         let ssz = std::fs::read(slot_dir.join("64.ssz")).unwrap();
         let bs = BeaconState::decompose(&ssz, &SpecConfig::mainnet(), None).unwrap();
-        assert_eq!(bs.slot_states.base_view().slot_number(), 64);
+        assert_eq!(bs.slot_states.finalized_view().slot_number(), 64);
 
         // Sidecar committed alongside; zero validators => empty pubkey vec.
         let pk = std::fs::read(slot_dir.join("64.pubkeys")).unwrap();

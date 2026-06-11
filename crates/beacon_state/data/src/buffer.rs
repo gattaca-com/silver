@@ -135,14 +135,17 @@ impl<G, T> DerefMut for Slot<'_, G, T> {
     }
 }
 
-/// Per-group fork ring: N reusable delta slots addressed by typed [`Id<G>`].
+/// Per-group delta ring: N reusable delta slots addressed by typed [`Id<G>`].
 /// The ring is the **sole** minter of its ids — every roll hands back a
 /// [`Slot`] writer, and the id only falls out of `Slot::commit` — so a caller
 /// can never construct or pre-publish one. This is the boundary that makes a
 /// published id unforgeable.
 pub struct Ring<G, T, const N: usize> {
-    head_seq: Option<usize>,
-    tail_seq: Option<usize>,
+    /// Next seq to mint (= rolls so far); the live head is `next_seq - 1`.
+    next_seq: usize,
+    /// Oldest live seq. Starts at 0 — the first seq ever minted — so the
+    /// wrap guard is armed from the first roll.
+    tail_seq: usize,
     entries: Box<[T]>,
     _owner: PhantomData<fn() -> G>,
 }
@@ -151,8 +154,8 @@ impl<G, T: Clone + Default, const N: usize> Default for Ring<G, T, N> {
     fn default() -> Self {
         assert!(N.is_power_of_two());
         Self {
-            head_seq: None,
-            tail_seq: None,
+            next_seq: 0,
+            tail_seq: 0,
             entries: vec![T::default(); N].into_boxed_slice(),
             _owner: PhantomData,
         }
@@ -169,14 +172,12 @@ impl<G, T: Reset, const N: usize> Ring<G, T, N> {
     /// Next head seq + its ring position, running the wrap guard. Does not
     /// advance the head — the caller fills the slot first.
     fn next_head(&self) -> (usize, usize) {
-        let new_head = self.head_seq.map(|h| h + 1).unwrap_or_default();
+        let new_head = self.next_seq;
         let new_head_pos = Self::pos(new_head);
 
-        if let Some(tail_seq) = self.tail_seq &&
-            new_head - tail_seq >= N
-        {
-            tracing::warn!(new_head, tail_seq, N, "buffer is wrapping!!");
-            let tail_pos = Self::pos(tail_seq);
+        if new_head - self.tail_seq >= N {
+            tracing::warn!(new_head, tail_seq = self.tail_seq, N, "buffer is wrapping!!");
+            let tail_pos = Self::pos(self.tail_seq);
             assert!(new_head_pos != tail_pos, "would trample head");
         }
 
@@ -192,29 +193,22 @@ impl<G, T: Reset, const N: usize> Ring<G, T, N> {
     pub fn roll_fresh(&mut self) -> Slot<'_, G, T> {
         let (new_head, new_head_pos) = self.next_head();
         self.entries[new_head_pos].reset();
-        self.head_seq.replace(new_head);
+        self.next_seq = new_head + 1;
         Slot { value: &mut self.entries[new_head_pos], id: Id::new(new_head) }
     }
 
-    /// Roll a head COW-copied (`reset_from`) from `parent`. The first roll
-    /// seeds the tail at `parent`.
+    /// Roll a head COW-copied (`reset_from`) from `parent`.
     pub fn roll_from(&mut self, parent: Id<G>) -> Slot<'_, G, T> {
         let (new_head, new_head_pos) = self.next_head();
 
         let parent_pos = Self::pos(parent.index());
-        let parent_ptr = &self.entries[parent_pos] as *const T;
-        unsafe {
-            // SAFETY: `parent_pos != new_head_pos` — the new head is a fresh seq
-            // above every live slot — so this shared read of the parent does not
-            // alias the `&mut` write to the new slot.
-            let previous = &*parent_ptr;
-            self.entries[new_head_pos].reset_from(previous);
-        }
-        if self.tail_seq.is_none() {
-            self.tail_seq.replace(parent.index());
-        }
+        let [new, src] = self
+            .entries
+            .get_disjoint_mut([new_head_pos, parent_pos])
+            .expect("fresh slot aliases a source");
+        new.reset_from(src);
 
-        self.head_seq.replace(new_head);
+        self.next_seq = new_head + 1;
         Slot { value: &mut self.entries[new_head_pos], id: Id::new(new_head) }
     }
 
@@ -226,7 +220,7 @@ impl<G, T: Reset, const N: usize> Ring<G, T, N> {
     /// overflowing — see [`next_head`](Self::next_head)'s wrap guard).
     pub fn roll_fresh_deriving(&mut self, a: Id<G>, b: Id<G>) -> (Slot<'_, G, T>, &T, &T) {
         let (new_head, new_pos) = self.next_head();
-        self.head_seq.replace(new_head);
+        self.next_seq = new_head + 1;
         let id = Id::new(new_head);
 
         let (a_pos, b_pos) = (Self::pos(a.index()), Self::pos(b.index()));
@@ -249,7 +243,7 @@ impl<G, T: Reset, const N: usize> Ring<G, T, N> {
 
     /// Reclaim every fork older than the oldest id in `live`; the ids in
     /// `live` themselves stay allocated (the oldest becomes the new tail).
-    pub fn free_stale(&mut self, live: &[Id<G>]) {
+    pub fn free_outdated(&mut self, live: &[Id<G>]) {
         if let Some(&oldest) = live.iter().min() {
             self.free(oldest);
         }
@@ -259,10 +253,50 @@ impl<G, T: Reset, const N: usize> Ring<G, T, N> {
     /// older than it are reclaimed and the wrap check relaxes accordingly.
     /// No-op if the tail is already at or past it.
     pub fn free(&mut self, to: Id<G>) {
-        if let Some(tail_seq) = self.tail_seq &&
-            to.index() > tail_seq
-        {
-            self.tail_seq = Some(to.index());
+        self.tail_seq = self.tail_seq.max(to.index());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    enum G {}
+
+    #[derive(Clone, Default)]
+    struct E(u64);
+
+    impl Reset for E {
+        fn reset(&mut self) {
+            self.0 = 0;
         }
+
+        fn reset_from(&mut self, other: &Self) {
+            self.0 = other.0;
+        }
+    }
+
+    /// Regression: `roll_fresh` used to leave the tail unseeded, disarming
+    /// the wrap guard — wrapping onto a live parentless entry silently
+    /// overwrote it instead of panicking.
+    #[test]
+    #[should_panic(expected = "would trample head")]
+    fn fresh_roll_arms_wrap_guard() {
+        let mut ring: Ring<G, E, 2> = Ring::default();
+        ring.roll_fresh();
+        ring.roll_fresh();
+        ring.roll_fresh(); // seq 2 wraps onto live seq 0
+    }
+
+    /// Freeing below the live set relaxes the wrap guard so reanchor rolls
+    /// fit; without it the same roll trips the guard.
+    #[test]
+    fn free_outdated_makes_room_for_reanchor_rolls() {
+        let mut ring: Ring<G, E, 2> = Ring::default();
+        let a = ring.roll_fresh().commit();
+        let b = ring.roll_from(a).commit();
+        ring.free_outdated(&[b]); // `a` is outdated; tail moves to `b`
+        let c = ring.roll_from(b).commit(); // reuses `a`'s slot
+        assert!(c > b);
     }
 }

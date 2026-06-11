@@ -47,9 +47,9 @@ fn finalize_advances_base_slot_and_writes_roots() {
         wv.push_block_root([0x55; 32]);
         wv.commit()
     };
-    g.finalize(winner, &[]);
+    g.finalize(winner, &[winner]);
 
-    let base = g.base_view();
+    let base = g.finalized_view();
     assert_eq!(base.slot_number(), 105);
     let roots = base.finalized_block_roots();
     assert_eq!(roots[FIN_SLOT as usize % roots.len()], [0x55; 32]);

@@ -93,7 +93,7 @@ impl BeaconStateOwner {
         // (decompose from genesis SSZ or a checkpoint). The zero-validator
         // pre-bootstrap stub never reaches the STF.
         assert!(
-            s.validators.base().validator_count() > 0,
+            s.validators.finalized().validator_count() > 0,
             "apply_block_view: operating on empty finalized state",
         );
         // Hold the always-written tiers' writers (rolled from the parent's
@@ -305,7 +305,7 @@ impl BeaconStateReader {
             sync::atomic::fence(Ordering::Acquire);
             let state = self.state.get();
             let lens = state.var_len_section_lens();
-            let slot = state.slot_states.base().state().slot;
+            let slot = state.slot_states.finalized().state().slot;
             sync::atomic::fence(Ordering::Acquire);
             if self.finalize_version() == Some(version) {
                 *cursor = CheckpointCursor {

@@ -33,7 +33,7 @@ impl Default for LongtailState {
 impl LongtailState {
     /// SSZ-encode the cumulative `historical_summaries` log — checkpoint
     /// section body. Callers hold the group's promote barrier
-    /// (`with_base_locked`).
+    /// (`with_finalized_locked`).
     pub(crate) fn write_historical_summaries_ssz<W: Write>(&self, w: &mut W) -> io::Result<()> {
         for hs in self.historical_summaries.iter() {
             w.write_all(&hs.block_summary_root)?;

@@ -320,7 +320,7 @@ impl BeaconState {
         // The slot tier derives its per-block accumulators from the
         // (just-built) epoch rings.
         let slot_states =
-            SlotStateGroup::new(SlotStateFinalized::from_ssz(ssz, &offsets, epoch.base())?);
+            SlotStateGroup::new(SlotStateFinalized::from_ssz(ssz, &offsets, epoch.finalized())?);
 
         let val_bytes = &ssz[offsets.validators..offsets.balances];
         let validators = ValidatorsGroup::new(match pubkeys {
@@ -330,7 +330,8 @@ impl BeaconState {
 
         // All per-validator columns (balances, participation, inactivity) size
         // to the validators' capacity/count so they stay aligned with the rest.
-        let (cap, n) = (validators.base().capacity(), validators.base().validator_count());
+        let (cap, n) =
+            (validators.finalized().capacity(), validators.finalized().validator_count());
 
         // Construction = validation: the column constructors check byte length
         // against the validator count; map to field-specific errors.
@@ -359,7 +360,7 @@ impl BeaconState {
         // Longtail's sync-committee → validator-index resolution reads the
         // registry.
         let longtail =
-            LongtailGroup::new(LongtailState::from_ssz(ssz, &offsets, validators.base())?);
+            LongtailGroup::new(LongtailState::from_ssz(ssz, &offsets, validators.finalized())?);
 
         let pending = PendingGroup::new(PendingQueues::from_ssz(ssz, &offsets)?);
 
@@ -680,13 +681,13 @@ mod tests {
         let cfg = SpecConfig::mainnet();
         let bs = BeaconState::decompose(&ssz, &cfg, None).expect("decompose");
         let imm = &bs.immutable;
-        let epoch = bs.epoch.base();
-        let longtail = bs.longtail.base();
-        let validators = bs.validators.base();
+        let epoch = bs.epoch.finalized();
+        let longtail = bs.longtail.finalized();
+        let validators = bs.validators.finalized();
 
         // Re-read the raw slot from the SSZ fixed part to cross-check.
         let raw_slot = u64_le(&ssz, F2);
-        let slot_view = bs.slot_states.base_view();
+        let slot_view = bs.slot_states.finalized_view();
         assert_eq!(slot_view.slot_number(), raw_slot);
         let cur_epoch = raw_slot / SLOTS_PER_EPOCH;
 
@@ -727,8 +728,8 @@ mod tests {
         // Decompose is deterministic.
         let bs2 = BeaconState::decompose(&ssz, &cfg, None).expect("decompose 2");
         let imm2 = &bs2.immutable;
-        assert_eq!(bs2.slot_states.base_view().slot_number(), slot_view.slot_number());
-        assert_eq!(bs2.validators.base().validator_count(), n);
+        assert_eq!(bs2.slot_states.finalized_view().slot_number(), slot_view.slot_number());
+        assert_eq!(bs2.validators.finalized().validator_count(), n);
         assert_eq!(imm2.genesis_validators_root, imm.genesis_validators_root);
         assert_eq!(imm2.historical_roots_hash, imm.historical_roots_hash);
     }

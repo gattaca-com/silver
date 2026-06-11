@@ -203,7 +203,7 @@ impl BeaconStateTile {
         checkpoint_state: &[u8],
         decompressed_pubkeys: &[u8],
     ) -> Self {
-        let val_cap = state.state().validators.base().capacity();
+        let val_cap = state.state().validators.finalized().capacity();
         // Pre-bootstrap placeholder head: honest per-tier entries rolled on
         // the (still empty) owner — a bundle never exists before its entries.
         // `bootstrap` installs the real anchor before any STF use.
@@ -329,7 +329,7 @@ impl BeaconStateTile {
                 None => BeaconState::decompose(ssz, &self.spec, None),
             };
             *bs = decoded.unwrap_or_else(|e| panic!("bootstrap: decompose failed: {e}"));
-            slot = bs.slot_states.base_view().slot_number();
+            slot = bs.slot_states.finalized_view().slot_number();
 
             // Anchor an empty per-fork delta on the freshly decoded base
             // (epoch/longtail stay lazy; `roll_fresh` anchors the slot fork's
@@ -338,7 +338,7 @@ impl BeaconStateTile {
         }
 
         // Fresh state is correct here — nothing predates the anchor.
-        let cap = self.state.state().validators.base().capacity();
+        let cap = self.state.state().validators.finalized().capacity();
         self.vote_tracker = VoteTracker::with_capacity(cap);
         self.shuffling_cache = ShufflingCache::with_capacity(cap);
 
@@ -778,7 +778,8 @@ impl BeaconStateTile {
         // Old finalized epoch — the epoch tier overlays its ring at
         // `(old_fin_epoch + k) % …`. Read from the (still-old) slot-group
         // base before its finalize.
-        let old_fin_epoch = (bs.slot_states.base_view().slot_number() / SLOTS_PER_EPOCH) as usize;
+        let old_fin_epoch =
+            (bs.slot_states.finalized_view().slot_number() / SLOTS_PER_EPOCH) as usize;
 
         // The always-rolled tiers finalize in their own groups — re-anchor
         // each survivor against the winner (pin pre-promote values + prune
@@ -2616,7 +2617,7 @@ mod tests {
 
         // Base unchanged; the new validator lives on the head fork's delta.
         assert_eq!(
-            tile.state.state().validators.base().validator_count(),
+            tile.state.state().validators.finalized().validator_count(),
             1,
             "base must wait for finality"
         );
@@ -2725,7 +2726,7 @@ mod tests {
         tile.state.publish_state_id(d_id);
 
         // Sanity: pre-finalize state.
-        assert_eq!(tile.state.state().slot_states.base_view().slot_number(), 0);
+        assert_eq!(tile.state.state().slot_states.finalized_view().slot_number(), 0);
         let d_slot_view = tile.state.state().slot_states.view(d_id.slot_idx);
         assert_eq!(d_slot_view.delta_block_roots(), [F_ROOT, D_ROOT]);
         assert!(tile.fork_choice.find_node_idx(&F2_ROOT).is_some());
@@ -2734,7 +2735,7 @@ mod tests {
 
         // (a) Base advanced to F's slot scalars; F's block_root landed in the
         //     circular buffer at the old finalized slot offset.
-        let base = tile.state.state().slot_states.base_view();
+        let base = tile.state.state().slot_states.finalized_view();
         assert_eq!(base.slot_number(), 1, "base slot promoted to F's slot");
         assert_eq!(
             base.finalized_block_roots()[0],

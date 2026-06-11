@@ -1,7 +1,8 @@
-//! Balances group: the value array + merkle tree are coupled in one base
-//! ([`FinalizedBalances`]) and one per-fork delta ([`BalancesDelta`]); the read
-//! view ([`BalancesView`]) exposes only the value side. [`BalancesGroup`] owns
-//! the base plus the per-fork ring — the isolated, slot-cadence balances unit.
+//! Balances group: the value array + merkle tree are coupled in one finalized
+//! state ([`FinalizedBalances`]) and one per-fork delta ([`BalancesDelta`]);
+//! the read view ([`BalancesView`]) exposes only the value side.
+//! [`BalancesGroup`] owns the finalized state plus the delta ring — the
+//! isolated, slot-cadence balances unit.
 
 mod delta;
 mod finalized;
@@ -34,58 +35,64 @@ fn pack_chunk(vals: [u64; 4]) -> B256 {
 }
 
 pub struct BalancesGroup {
-    base: FinalizedBalances,
-    forks: Ring<Self, BalancesDelta, SLOTS_RING_N>,
+    finalized: FinalizedBalances,
+    deltas: Ring<Self, BalancesDelta, SLOTS_RING_N>,
 }
 
 impl BalancesGroup {
-    /// The finalized base (checkpoint encoding).
+    /// The finalized state (checkpoint encoding).
     #[inline]
-    pub(crate) fn base(&self) -> &FinalizedBalances {
-        &self.base
+    pub(crate) fn finalized(&self) -> &FinalizedBalances {
+        &self.finalized
     }
 
-    /// Group over a base decoded from the SSZ `balances` byte range
+    /// Group over a finalized state decoded from the SSZ `balances` byte range
     /// (little-endian `u64`s), merkle tree included; `new(cap, 0, &[])` is the
     /// empty group.
     pub fn new(cap: usize, count: usize, ssz_bytes: &[u8]) -> Result<Self, ColumnLenMismatch> {
-        Ok(Self { base: FinalizedBalances::new(cap, count, ssz_bytes)?, forks: Ring::default() })
+        Ok(Self {
+            finalized: FinalizedBalances::new(cap, count, ssz_bytes)?,
+            deltas: Ring::default(),
+        })
     }
 
     /// Read-only (writer-side) view over a fork — for the read views.
     #[inline]
     pub fn view(&self, id: BalancesId) -> BalancesReader<'_> {
-        BalancesReader::new(&self.base, self.forks.get(id))
+        BalancesReader::new(&self.finalized, self.deltas.get(id))
     }
 
     #[inline]
     pub fn roll_fresh(&mut self) -> BalancesWriteView<'_> {
-        let Self { base, forks } = self;
-        let mut fork = forks.roll_fresh();
-        fork.anchor_at(base);
-        BalancesWriteView::new(base, fork)
+        let Self { finalized, deltas } = self;
+        let mut fork = deltas.roll_fresh();
+        fork.anchor_at(finalized);
+        BalancesWriteView::new(finalized, fork)
     }
 
     #[inline]
     pub fn roll_from(&mut self, parent: BalancesId) -> BalancesWriteView<'_> {
-        let Self { base, forks } = self;
-        BalancesWriteView::new(base, forks.roll_from(parent))
+        let Self { finalized, deltas } = self;
+        BalancesWriteView::new(finalized, deltas.roll_from(parent))
     }
 
     fn reanchor(&mut self, survivor: BalancesId, winner: BalancesId) -> BalancesWriteView<'_> {
-        let Self { base, forks } = self;
-        let (mut fork, old, winner_delta) = forks.roll_fresh_deriving(survivor, winner);
-        old.rebase_and_prune(&mut fork, base, winner_delta);
-        BalancesWriteView::new(base, fork)
+        let Self { finalized, deltas } = self;
+        let (mut fork, old, winner_delta) = deltas.roll_fresh_deriving(survivor, winner);
+        old.rebase_and_prune(&mut fork, finalized, winner_delta);
+        BalancesWriteView::new(finalized, fork)
     }
 
     pub fn finalize(&mut self, winner: BalancesId, survivors: &[BalancesId]) -> Vec<BalancesId> {
+        debug_assert!(survivors.contains(&winner), "winner must be among the survivors");
+        self.deltas.free_outdated(survivors);
+
         let fresh = reanchor_survivors(survivors, |s| self.reanchor(s, winner).commit());
 
-        let Self { base, forks } = self;
-        forks.get(winner).promote_into_base(base);
+        let Self { finalized, deltas } = self;
+        deltas.get(winner).promote_into_base(finalized);
 
-        forks.free_stale(&fresh);
+        deltas.free_outdated(&fresh);
 
         fresh
     }

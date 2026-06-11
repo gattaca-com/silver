@@ -100,10 +100,10 @@ fn finalize_preserves_survivor_reads_and_root() {
     let winner = wv.commit();
 
     let survivor = g.roll_from(winner).commit(); // inherits the winner's state
-    let live = g.finalize(winner, &[survivor]); // survivor re-anchored → new seq
+    let live = g.finalize(winner, &[winner, survivor]); // survivor re-anchored → new seq
 
     // Re-anchored slots are frozen; read them through a fresh fork.
-    let wv = g.roll_from(live[0]);
+    let wv = g.roll_from(live[1]);
     assert_eq!(wv.iter().collect::<Vec<_>>(), vec![1_000, 5_000, 0, 7_000]);
     assert_eq!(wv.hash_root(), before);
 }
@@ -122,13 +122,13 @@ fn finalize_dedupes_shared_survivor() {
     let shared = g.roll_from(winner).commit();
     let other = g.roll_from(winner).commit();
 
-    let live = g.finalize(winner, &[shared, shared, other]);
-    assert_eq!(live[0], live[1], "the repeated survivor id re-anchors to one slot");
-    assert_ne!(live[0], live[2], "the distinct survivor gets its own slot");
+    let live = g.finalize(winner, &[winner, shared, shared, other]);
+    assert_eq!(live[1], live[2], "the repeated survivor id re-anchors to one slot");
+    assert_ne!(live[1], live[3], "the distinct survivor gets its own slot");
 
     // Both ids still read the finalized state (through fresh forks).
-    assert_eq!(g.roll_from(live[0]).iter().collect::<Vec<_>>(), vec![111, 20, 30]);
-    assert_eq!(g.roll_from(live[2]).iter().collect::<Vec<_>>(), vec![111, 20, 30]);
+    assert_eq!(g.roll_from(live[1]).iter().collect::<Vec<_>>(), vec![111, 20, 30]);
+    assert_eq!(g.roll_from(live[3]).iter().collect::<Vec<_>>(), vec![111, 20, 30]);
 }
 
 #[test]
@@ -183,7 +183,7 @@ fn promote_reproduces_root_over_new_base() {
     let s = wv.commit();
 
     // Finalize promotes the fork's overlay into the base.
-    g.finalize(s, &[]);
+    g.finalize(s, &[s]);
 
     // A fresh fork over the promoted base reproduces the same root with zero SHA
     // work (cached-hash promote) and reads the promoted values.
@@ -215,12 +215,12 @@ fn aba_finalize_pins_reverted_value() {
 
     // Finalize D1 (winner s1): base[0] → A; survivors re-anchor into fresh
     // slots — finalize hands back their new seqs (old s2/s3 are now frozen).
-    let live = g.finalize(s1, &[s2, s3]); // [new D2, new D3]
-    assert_eq!(g.roll_from(live[1]).get(0), A);
+    let live = g.finalize(s1, &[s1, s2, s3]); // [new D1, new D2, new D3]
+    assert_eq!(g.roll_from(live[2]).get(0), A);
 
     // Finalize D2 (winner = new D2): base[0] → B; rebase pins D3's reverted A.
-    let live = g.finalize(live[0], &[live[1]]); // [newest D3]
-    let wv3 = g.roll_from(live[0]);
+    let live = g.finalize(live[1], &[live[1], live[2]]); // [newest D2, newest D3]
+    let wv3 = g.roll_from(live[1]);
     assert_eq!(wv3.get(0), A, "D3 must not inherit B");
     assert_root_matches(&wv3);
 }

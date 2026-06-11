@@ -95,16 +95,16 @@ pub(crate) fn write_b256_slice<W: Write>(w: &mut W, s: &[B256]) -> io::Result<()
 impl BeaconState {
     /// Byte lengths of the 12 variable-length fields, in SSZ-declared order.
     pub(crate) fn var_len_section_lens(&self) -> [usize; VAR_LEN_SECTIONS] {
-        let n = self.validators.base().validator_count();
-        let (dep, wdr, con) = self.pending.with_base_locked(|p| {
+        let n = self.validators.finalized().validator_count();
+        let (dep, wdr, con) = self.pending.with_finalized_locked(|p| {
             (
                 p.pending_deposits.len(),
                 p.pending_partial_withdrawals.len(),
                 p.pending_consolidations.len(),
             )
         });
-        let summaries = self.longtail.with_base_locked(|lt| lt.historical_summaries.len());
-        let sl = self.slot_states.base().state();
+        let summaries = self.longtail.with_finalized_locked(|lt| lt.historical_summaries.len());
+        let sl = self.slot_states.finalized().state();
         [
             self.immutable.historical_roots.len() * 32,
             sl.eth1_votes.len() * ETH1_DATA_SSZ,
@@ -164,25 +164,27 @@ impl BeaconState {
         match section {
             Section::FixedPart => self.write_fixed_part(w, offsets),
             Section::HistoricalRoots => write_b256_slice(w, &self.immutable.historical_roots),
-            Section::Eth1Votes => self.slot_states.base().write_eth1_votes_ssz(w),
+            Section::Eth1Votes => self.slot_states.finalized().write_eth1_votes_ssz(w),
             Section::Validators => {
-                let v = self.validators.base();
+                let v = self.validators.finalized();
                 v.write_ssz_range(0, v.validator_count(), w)
             }
-            Section::Balances => self.balances.base().write_ssz(w),
-            Section::PreviousParticipation => self.previous_participation.base().write_ssz(w),
-            Section::CurrentParticipation => self.current_participation.base().write_ssz(w),
-            Section::InactivityScores => self.inactivity.base().write_ssz(w),
+            Section::Balances => self.balances.finalized().write_ssz(w),
+            Section::PreviousParticipation => self.previous_participation.finalized().write_ssz(w),
+            Section::CurrentParticipation => self.current_participation.finalized().write_ssz(w),
+            Section::InactivityScores => self.inactivity.finalized().write_ssz(w),
             Section::ExecutionPayloadHeader => self.write_eph(w),
             Section::HistoricalSummaries => {
-                self.longtail.with_base_locked(|lt| lt.write_historical_summaries_ssz(w))
+                self.longtail.with_finalized_locked(|lt| lt.write_historical_summaries_ssz(w))
             }
-            Section::PendingDeposits => self.pending.with_base_locked(|p| p.write_deposits_ssz(w)),
+            Section::PendingDeposits => {
+                self.pending.with_finalized_locked(|p| p.write_deposits_ssz(w))
+            }
             Section::PendingPartialWithdrawals => {
-                self.pending.with_base_locked(|p| p.write_partial_withdrawals_ssz(w))
+                self.pending.with_finalized_locked(|p| p.write_partial_withdrawals_ssz(w))
             }
             Section::PendingConsolidations => {
-                self.pending.with_base_locked(|p| p.write_consolidations_ssz(w))
+                self.pending.with_finalized_locked(|p| p.write_consolidations_ssz(w))
             }
         }
     }
@@ -200,7 +202,7 @@ impl BeaconState {
         w: &mut W,
     ) -> io::Result<bool> {
         if section == Section::Validators {
-            let v = self.validators.base();
+            let v = self.validators.finalized();
             let n = v.validator_count();
             let start = chunk * VALIDATORS_PER_CHUNK;
             let end = (start + VALIDATORS_PER_CHUNK).min(n);
@@ -222,11 +224,11 @@ impl BeaconState {
         offs: &[u32; VAR_LEN_SECTIONS],
     ) -> io::Result<()> {
         let imm = &self.immutable;
-        let slot_base = self.slot_states.base();
+        let slot_base = self.slot_states.finalized();
         let sl = slot_base.state();
-        let epoch_base = self.epoch.base();
+        let epoch_base = self.epoch.finalized();
         let est = epoch_base.state();
-        let lt = self.longtail.base();
+        let lt = self.longtail.finalized();
 
         // F0..F4
         w_u64(w, imm.genesis_time)?;
@@ -301,7 +303,7 @@ impl BeaconState {
     }
 
     fn write_eph<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        let eph = &self.slot_states.base().state().latest_execution_payload_header;
+        let eph = &self.slot_states.finalized().state().latest_execution_payload_header;
         w.write_all(&eph.parent_hash)?; // [0..32]
         w.write_all(&eph.fee_recipient)?; // [32..52]
         w.write_all(&eph.state_root)?; // [52..84]
@@ -331,7 +333,7 @@ impl BeaconState {
 
     #[cfg(test)]
     pub(crate) fn pubkeys_sidecar_len(&self) -> usize {
-        PUBKEYS_HEADER + self.validators.base().validator_count() * PUBKEY_SER
+        PUBKEYS_HEADER + self.validators.finalized().validator_count() * PUBKEY_SER
     }
 
     pub(crate) fn write_pubkeys_chunk<W: Write>(
@@ -339,7 +341,7 @@ impl BeaconState {
         chunk: usize,
         w: &mut W,
     ) -> io::Result<bool> {
-        let v = self.validators.base();
+        let v = self.validators.finalized();
         let n = v.validator_count();
         if chunk == 0 {
             w.write_all(&PUBKEYS_MAGIC)?;
@@ -464,6 +466,6 @@ mod tests {
             chunk += 1;
         }
         let decoded = decode_checkpoint_pubkeys(&sidecar).expect("decode");
-        assert_eq!(decoded.len(), bs.validators.base().validator_count());
+        assert_eq!(decoded.len(), bs.validators.finalized().validator_count());
     }
 }

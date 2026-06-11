@@ -12,7 +12,7 @@ fn historical_summary_base_then_none() {
     base.historical_summaries.push(summary(2));
 
     let g = LongtailGroup::new(base);
-    let view = g.base_view();
+    let view = g.finalized_view();
     assert_eq!(view.historical_summary(0).unwrap().block_summary_root, [1; 32]);
     assert_eq!(view.historical_summary(1).unwrap().block_summary_root, [2; 32]);
     assert!(view.historical_summary(2).is_none());
@@ -52,9 +52,9 @@ fn finalize_rotates_committees_and_extends_summaries() {
         wv.commit()
     };
 
-    g.finalize(winner, &[]);
+    g.finalize(winner, &[winner]);
 
-    let base = g.base();
+    let base = g.finalized();
     assert_eq!(base.current_sync_committee.pubkeys[0], [0x77; 48]);
     assert_eq!(base.next_sync_committee.pubkeys[0], [0x88; 48]);
     assert_eq!(base.sync_committee_indices[0], 42);
@@ -63,10 +63,39 @@ fn finalize_rotates_committees_and_extends_summaries() {
     assert_eq!(base.historical_summaries[1].block_summary_root, [2; 32]);
 }
 
-/// `prune_to_base` drops the promoted historical-summary prefix (the survivor
-/// reanchor arithmetic; the full reanchor path is exercised by the tile's
-/// `multi_fork_finalize` and the slot-shaped epoch test — the 2-slot longtail
-/// ring can't hold survivor + winner + fresh simultaneously).
+/// Reanchor across rotations: finalize must hold the old ids plus one fresh
+/// slot per distinct survivor at once (regression: the 2-slot ring panicked
+/// "would trample head" at the first finalize after the second rotation).
+#[test]
+fn finalize_reanchors_survivors_across_rotation() {
+    let mut g = LongtailGroup::new(LongtailState::default());
+
+    // First rotation: a parentless fresh roll, finalized as winner.
+    let r1 = {
+        let mut wv = g.roll_fresh();
+        wv.push_historical_summary(summary(1));
+        wv.commit()
+    };
+    let pre = g.finalize(r1, &[r1])[0];
+
+    // Second rotation inherits; finalize on the pre-rotation winner with
+    // survivors spanning both entries.
+    let r2 = {
+        let mut wv = g.roll_from(pre);
+        wv.push_historical_summary(summary(2));
+        wv.commit()
+    };
+    let fresh = g.finalize(pre, &[pre, r2]);
+
+    assert_eq!(g.finalized().historical_summaries.len(), 1);
+    let survivor = g.view(fresh[1]);
+    assert_eq!(survivor.historical_summaries_len(), 2);
+    assert_eq!(survivor.historical_summary(1).unwrap().block_summary_root, [2; 32]);
+}
+
+/// `prune_to_base` drops the promoted historical-summary prefix — the
+/// survivor reanchor arithmetic in isolation (the full reanchor path is
+/// covered by `finalize_reanchors_survivors_across_rotation`).
 #[test]
 fn prune_to_base_drops_promoted_prefix() {
     let mut survivor = LongtailState::default();

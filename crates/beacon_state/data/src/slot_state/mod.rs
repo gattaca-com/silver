@@ -15,70 +15,74 @@ use crate::{
 pub type SlotStateId = Id<SlotStateGroup>;
 
 pub struct SlotStateGroup {
-    base: SlotStateFinalized,
-    forks: Ring<Self, SlotStateDelta, SLOTS_RING_N>,
+    finalized: SlotStateFinalized,
+    deltas: Ring<Self, SlotStateDelta, SLOTS_RING_N>,
 }
 
 impl SlotStateGroup {
     #[inline]
-    pub(crate) fn base(&self) -> &SlotStateFinalized {
-        &self.base
+    pub(crate) fn finalized(&self) -> &SlotStateFinalized {
+        &self.finalized
     }
 
-    pub fn new(base: SlotStateFinalized) -> Self {
-        Self { base, forks: Ring::default() }
+    pub fn new(finalized: SlotStateFinalized) -> Self {
+        Self { finalized, deltas: Ring::default() }
     }
 
     #[inline]
     pub fn view(&self, id: SlotStateId) -> SlotStateView<'_> {
-        SlotStateView::new(&self.base, Some(self.forks.get(id)))
+        SlotStateView::new(&self.finalized, Some(self.deltas.get(id)))
     }
 
-    /// Read-only view over the finalized base with no active fork — the
+    /// Read-only view over the finalized state with no active fork — the
     /// pre-fork surface (freshly decomposed / checkpoint-loaded state, and
     /// the cross-thread reader before any slot delta is published).
     #[inline]
-    pub fn base_view(&self) -> SlotStateView<'_> {
-        SlotStateView::new(&self.base, None)
+    pub fn finalized_view(&self) -> SlotStateView<'_> {
+        SlotStateView::new(&self.finalized, None)
     }
 
     #[inline]
     pub fn roll_fresh(&mut self) -> SlotStateWriteView<'_> {
-        let Self { base, forks } = self;
-        let mut fork = forks.roll_fresh();
-        // Anchor the fresh fork's full `SlotState` at the base. The slot delta
-        // is a full working copy (not a sparse overlay), so an un-seeded fork
-        // would shadow the base with zeros; block/state-root tails stay empty.
-        fork.slot.clone_from(&base.slot);
-        SlotStateWriteView::new(base, fork)
+        let Self { finalized, deltas } = self;
+        let mut fork = deltas.roll_fresh();
+        // Anchor the fresh fork's full `SlotState` at the finalized state. The slot
+        // delta is a full working copy (not a sparse overlay), so an un-seeded
+        // fork would shadow the finalized state with zeros; block/state-root
+        // tails stay empty.
+        fork.slot.clone_from(&finalized.slot);
+        SlotStateWriteView::new(finalized, fork)
     }
 
     #[inline]
     pub fn roll_from(&mut self, parent: SlotStateId) -> SlotStateWriteView<'_> {
-        let Self { base, forks } = self;
-        SlotStateWriteView::new(base, forks.roll_from(parent))
+        let Self { finalized, deltas } = self;
+        SlotStateWriteView::new(finalized, deltas.roll_from(parent))
     }
 
     /// Copy a survivor into a fresh slot and drop the promoted root prefix
     /// (pre-promotion). The survivor stays frozen — append-only.
     fn reanchor(&mut self, survivor: SlotStateId, winner: SlotStateId) -> SlotStateWriteView<'_> {
-        let Self { base, forks } = self;
-        let (mut fork, old, winner_delta) = forks.roll_fresh_deriving(survivor, winner);
+        let Self { finalized, deltas } = self;
+        let (mut fork, old, winner_delta) = deltas.roll_fresh_deriving(survivor, winner);
         fork.reset_from(old);
         fork.prune_to_base(winner_delta);
-        SlotStateWriteView::new(base, fork)
+        SlotStateWriteView::new(finalized, fork)
     }
 
     /// Re-anchor each survivor against the promoted `winner` into fresh slots
-    /// (deduped), then promote the winner into the base (circular-buffer
-    /// write).
+    /// (deduped), then promote the winner into the finalized state
+    /// (circular-buffer write).
     pub fn finalize(&mut self, winner: SlotStateId, survivors: &[SlotStateId]) -> Vec<SlotStateId> {
+        debug_assert!(survivors.contains(&winner), "winner must be among the survivors");
+        self.deltas.free_outdated(survivors);
+
         let fresh = reanchor_survivors(survivors, |s| self.reanchor(s, winner).commit());
 
-        let Self { base, forks } = self;
-        base.promote(forks.get(winner));
+        let Self { finalized, deltas } = self;
+        finalized.promote(deltas.get(winner));
 
-        forks.free_stale(&fresh);
+        deltas.free_outdated(&fresh);
 
         fresh
     }

@@ -264,7 +264,7 @@ mod tests {
         /// balances seeded to `balances` (sized to the validator capacity).
         fn seeded(seeds: &[ValSeed], balances: &[u64]) -> Self {
             let validators = ValidatorsGroup::new(FinalizedValidators::with_validators(seeds));
-            let cap = validators.base().capacity();
+            let cap = validators.finalized().capacity();
             let n = seeds.len();
             // The sibling lists stay lockstep with the validator registry, so
             // seed their finalized counts to `n` too (balances default to zero

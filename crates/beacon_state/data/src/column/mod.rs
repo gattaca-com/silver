@@ -15,7 +15,7 @@ use crate::{
 /// Scalar element of a column: a fixed-size little-endian SSZ value.
 pub trait ColumnVal: Copy + PartialEq + 'static {
     const SIZE: usize;
-    /// Value of a freshly-appended element (past the finalized base).
+    /// Value of a freshly-appended element (past the finalized state).
     const APPENDED_DEFAULT: Self;
 
     /// Decode `dst.len()` values from the little-endian SSZ byte range.
@@ -90,64 +90,68 @@ pub type InactivityWriteView<'a> = ColumnWriteView<'a, Inactivity>;
 pub type FinalizedInactivityScores = FinalizedColumn<u64>;
 
 pub struct ColumnGroup<C: ColumnSpec> {
-    base: FinalizedColumn<C::Val>,
-    forks: Ring<Self, ColumnDelta<C::Val>, SLOTS_RING_N>,
+    finalized: FinalizedColumn<C::Val>,
+    deltas: Ring<Self, ColumnDelta<C::Val>, SLOTS_RING_N>,
     _marker: PhantomData<fn() -> C>,
 }
 
 impl<C: ColumnSpec> ColumnGroup<C> {
     #[inline]
-    pub(crate) fn base(&self) -> &FinalizedColumn<C::Val> {
-        &self.base
+    pub(crate) fn finalized(&self) -> &FinalizedColumn<C::Val> {
+        &self.finalized
     }
 
-    /// Group over a base decoded from the column's SSZ byte range;
+    /// Group over a finalized state decoded from the column's SSZ byte range;
     /// `new(cap, 0, &[])` is the empty group.
     pub fn new(cap: usize, count: usize, ssz_bytes: &[u8]) -> Result<Self, ColumnLenMismatch> {
         Ok(Self {
-            base: FinalizedColumn::new(cap, count, ssz_bytes)?,
-            forks: Ring::default(),
+            finalized: FinalizedColumn::new(cap, count, ssz_bytes)?,
+            deltas: Ring::default(),
             _marker: PhantomData,
         })
     }
 
     #[inline]
     pub fn view(&self, id: Id<Self>) -> ColumnView<'_, C> {
-        ColumnView::new(&self.base, self.forks.get(id))
+        ColumnView::new(&self.finalized, self.deltas.get(id))
     }
 
     #[inline]
     pub fn roll_fresh(&mut self) -> ColumnWriteView<'_, C> {
-        let Self { base, forks, .. } = self;
-        let mut fork = forks.roll_fresh();
-        fork.anchor_at(base);
-        ColumnWriteView::new(base, fork)
+        let Self { finalized, deltas, .. } = self;
+        let mut fork = deltas.roll_fresh();
+        fork.anchor_at(finalized);
+        ColumnWriteView::new(finalized, fork)
     }
 
     #[inline]
     pub fn roll_from(&mut self, parent: Id<Self>) -> ColumnWriteView<'_, C> {
-        let Self { base, forks, .. } = self;
-        ColumnWriteView::new(base, forks.roll_from(parent))
+        let Self { finalized, deltas, .. } = self;
+        ColumnWriteView::new(finalized, deltas.roll_from(parent))
     }
 
     /// Re-anchor a survivor against the promoted `winner` into a fresh slot
     /// (pin + prune), pre-promotion. The survivor stays frozen — append-only.
     fn reanchor(&mut self, survivor: Id<Self>, winner: Id<Self>) -> ColumnWriteView<'_, C> {
-        let Self { base, forks, .. } = self;
-        let (mut fork, old, winner_delta) = forks.roll_fresh_deriving(survivor, winner);
-        old.rebase_and_prune(&mut fork, base, winner_delta);
-        ColumnWriteView::new(base, fork)
+        let Self { finalized, deltas, .. } = self;
+        let (mut fork, old, winner_delta) = deltas.roll_fresh_deriving(survivor, winner);
+        old.rebase_and_prune(&mut fork, finalized, winner_delta);
+        ColumnWriteView::new(finalized, fork)
     }
 
     /// Re-anchor each survivor against the promoted `winner` into fresh slots
-    /// (deduped for shared survivors), then promote the winner into the base.
+    /// (deduped for shared survivors), then promote the winner into the
+    /// finalized state.
     pub fn finalize(&mut self, winner: Id<Self>, survivors: &[Id<Self>]) -> Vec<Id<Self>> {
+        debug_assert!(survivors.contains(&winner), "winner must be among the survivors");
+        self.deltas.free_outdated(survivors);
+
         let fresh = reanchor_survivors(survivors, |s| self.reanchor(s, winner).commit());
 
-        let Self { base, forks, .. } = self;
-        base.promote(forks.get(winner));
+        let Self { finalized, deltas, .. } = self;
+        finalized.promote(deltas.get(winner));
 
-        forks.free_stale(&fresh);
+        deltas.free_outdated(&fresh);
 
         fresh
     }

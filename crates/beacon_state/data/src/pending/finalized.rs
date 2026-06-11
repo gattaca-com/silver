@@ -15,7 +15,7 @@ pub struct PendingQueues {
 
 impl PendingQueues {
     /// SSZ-encode the `pending_deposits` queue — checkpoint section body.
-    /// Callers hold the group's promote barrier (`with_base_locked`).
+    /// Callers hold the group's promote barrier (`with_finalized_locked`).
     pub(crate) fn write_deposits_ssz<W: Write>(&self, w: &mut W) -> io::Result<()> {
         let mut buf = [0u8; PENDING_DEPOSIT_SSZ];
         for d in &self.pending_deposits {
