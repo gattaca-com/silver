@@ -18,10 +18,11 @@ use crate::p2p::streams::{
 pub enum RpcReadResponse {
     /// Reading the response status, possible prefix and varint length of the
     /// SSZ chunk
-    ReadingPrefix { app_id: u64, decoder: SnappyDecoder, buf: [u8; 15], read: usize },
+    ReadingPrefix { app_id: u64, chunk: u32, decoder: SnappyDecoder, buf: [u8; 15], read: usize },
     /// Allocating
     AllocBody {
         app_id: u64,
+        chunk: u32,
         decoder: SnappyDecoder,
         length: usize,
         buf: [u8; 15],
@@ -31,12 +32,13 @@ pub enum RpcReadResponse {
     /// Stream Snappy decompressing the chunk payload into a handler buffer.
     ReadingBody {
         app_id: u64,
+        chunk: u32,
         decoder: SnappyDecoder,
         reservation: RpcReservation,
         remaining: usize,
     },
     /// Request read completed
-    Complete { app_id: u64, msg: RpcResponse },
+    Complete { app_id: u64, chunk: u32, msg: RpcResponse },
 }
 
 enum Spin {
@@ -45,8 +47,16 @@ enum Spin {
 }
 
 impl RpcReadResponse {
-    pub fn new(app_id: u64) -> Self {
-        Self::ReadingPrefix { app_id, decoder: SnappyDecoder::default(), buf: [0; 15], read: 0 }
+    /// `chunk` is the zero-based index within a multipart response, for
+    /// diagnostics.
+    pub fn new(app_id: u64, chunk: u32) -> Self {
+        Self::ReadingPrefix {
+            app_id,
+            chunk,
+            decoder: SnappyDecoder::default(),
+            buf: [0; 15],
+            read: 0,
+        }
     }
 
     pub fn spin<S: StreamIo>(
@@ -72,14 +82,18 @@ impl RpcReadResponse {
         producer: &mut TProducer,
     ) -> Result<Spin, StreamError> {
         match self {
-            RpcReadResponse::ReadingPrefix { app_id, decoder, mut buf, mut read } => {
+            RpcReadResponse::ReadingPrefix { app_id, chunk, decoder, mut buf, mut read } => {
                 match io.read_from_stream(p2p_id.stream_id(), &mut buf[read..]) {
                     Ok(r) => read += r,
                     Err(StreamError::StreamEOF)
                         if read == 0 && p2p_id.protocol().has_multipart_response() =>
                     {
                         // Normal termination for a multipart response TODO if received > 1 response
-                        return Ok(Spin::Ok(Self::Complete { app_id, msg: RpcResponse::Complete }));
+                        return Ok(Spin::Ok(Self::Complete {
+                            app_id,
+                            chunk,
+                            msg: RpcResponse::Complete,
+                        }));
                     }
                     Err(e) => return Err(e),
                 }
@@ -102,6 +116,7 @@ impl RpcReadResponse {
                             let (length, offset) = decode_varint(&buf[..read], start)?;
                             return Ok(Spin::Next(Self::AllocBody {
                                 app_id,
+                                chunk,
                                 decoder,
                                 length: length as usize,
                                 buf,
@@ -111,15 +126,34 @@ impl RpcReadResponse {
                         }
                     }
                 }
-                Ok(Spin::Ok(Self::ReadingPrefix { app_id, decoder, buf, read }))
+                Ok(Spin::Ok(Self::ReadingPrefix { app_id, chunk, decoder, buf, read }))
             }
-            RpcReadResponse::AllocBody { app_id, mut decoder, length, buf, buf_start, buf_end } => {
+            RpcReadResponse::AllocBody {
+                app_id,
+                chunk,
+                mut decoder,
+                length,
+                buf,
+                buf_start,
+                buf_end,
+            } => {
+                // Raw prefix capture: status byte, context bytes, varint and
+                // any body leftover, exactly as read off the wire.
+                tracing::debug!(
+                    ?p2p_id,
+                    chunk,
+                    length,
+                    buf_start,
+                    prefix = ?&buf[..buf_end],
+                    "rpc response chunk prefix"
+                );
                 let mut reservation = if buf[0] == 0 {
                     match alloc_incoming_rpc(producer, p2p_id, length) {
                         Ok(reservation) => reservation,
                         Err(e) if e.kind() == ErrorKind::FileTooLarge => {
                             return Ok(Spin::Ok(Self::AllocBody {
                                 app_id,
+                                chunk,
                                 decoder,
                                 length,
                                 buf,
@@ -130,7 +164,7 @@ impl RpcReadResponse {
                         Err(e) => return Err(e.into()),
                     }
                 } else {
-                    alloc_error_response(buf[0])
+                    alloc_error_response(buf[0], length)
                 };
 
                 // Plumb the wire fork_digest from the prefix into the
@@ -147,23 +181,27 @@ impl RpcReadResponse {
                     reservation.increment_offset(n)?;
                 }
 
-                // write any remaining bytes to decoder -> output
+                // Decode any body bytes read along with the prefix. Output
+                // must be the full remaining buffer: a short slice makes the
+                // decoder's output-full early-exit fire and silently drop
+                // buffered frame bytes (seen live: zero-length error
+                // reservations desynced the frame stream on rate-limited
+                // peers).
                 let mut remaining = length;
                 if buf_end > buf_start {
-                    let len = buf_end - buf_start;
                     let out_buf = reservation.remaining_buffer()?;
-                    let out_limit = len.min(out_buf.len());
                     let (_, decoded_bytes) =
-                        decoder.decompress(&buf[buf_start..buf_end], &mut out_buf[..out_limit])?;
+                        decoder.decompress(&buf[buf_start..buf_end], out_buf)?;
 
                     reservation.increment_offset(decoded_bytes)?;
                     remaining -= decoded_bytes;
                 }
 
-                Ok(Spin::Next(Self::ReadingBody { app_id, decoder, reservation, remaining }))
+                Ok(Spin::Next(Self::ReadingBody { app_id, chunk, decoder, reservation, remaining }))
             }
             RpcReadResponse::ReadingBody {
                 app_id,
+                chunk,
                 mut decoder,
                 mut reservation,
                 mut remaining,
@@ -174,13 +212,24 @@ impl RpcReadResponse {
                     if written == 0 {
                         return Ok(Spin::Ok(Self::ReadingBody {
                             app_id,
+                            chunk,
                             decoder,
                             reservation,
                             remaining,
                         }));
                     }
-                    let decoded =
-                        decoder.decompress_written(written, reservation.remaining_buffer()?)?;
+                    let decoded = decoder
+                        .decompress_written(written, reservation.remaining_buffer()?)
+                        .inspect_err(|e| {
+                            tracing::error!(
+                                ?e,
+                                ?p2p_id,
+                                chunk,
+                                remaining,
+                                ?decoder,
+                                "rpc response body decode failed"
+                            );
+                        })?;
                     reservation.increment_offset(decoded)?;
                     remaining -= decoded;
                 }
@@ -188,16 +237,116 @@ impl RpcReadResponse {
                     match reservation.into_rpc() {
                         Rpc::Request(_) => return Err(StreamError::InvalidRpc),
                         Rpc::Response(rpc_response) => {
-                            tracing::trace!(?p2p_id, "response complete");
-                            return Ok(Spin::Ok(Self::Complete { app_id, msg: rpc_response }));
+                            tracing::trace!(?p2p_id, chunk, "response complete");
+                            return Ok(Spin::Ok(Self::Complete {
+                                app_id,
+                                chunk,
+                                msg: rpc_response,
+                            }));
                         }
                     }
                 }
-                Ok(Spin::Next(Self::ReadingBody { app_id, decoder, reservation, remaining }))
+                Ok(Spin::Next(Self::ReadingBody { app_id, chunk, decoder, reservation, remaining }))
             }
-            RpcReadResponse::Complete { app_id, msg } => {
-                tracing::debug!(?p2p_id, "read response");
-                Ok(Spin::Ok(Self::Complete { app_id, msg }))
+            RpcReadResponse::Complete { app_id, chunk, msg } => {
+                tracing::debug!(?p2p_id, chunk, "read response");
+                Ok(Spin::Ok(Self::Complete { app_id, chunk, msg }))
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::SocketAddr;
+
+    use quinn_proto::StreamId;
+    use silver_common::{StreamProtocol, TCache, TRead};
+
+    use super::*;
+    use crate::p2p::streams::{rpc::AcquiredRpcOutbound, snappy::SnappyEncoder};
+
+    /// Serves a fixed byte stream in `cap`-sized reads; sinks writes.
+    struct WireIo {
+        data: Vec<u8>,
+        pos: usize,
+        cap: usize,
+    }
+
+    impl StreamIo for WireIo {
+        fn write_to_stream(&mut self, _id: StreamId, data: &[u8]) -> Result<usize, StreamError> {
+            Ok(data.len())
+        }
+
+        fn read_from_stream(
+            &mut self,
+            _id: StreamId,
+            out: &mut [u8],
+        ) -> Result<usize, StreamError> {
+            let n = out.len().min(self.cap).min(self.data.len() - self.pos);
+            out[..n].copy_from_slice(&self.data[self.pos..self.pos + n]);
+            self.pos += n;
+            Ok(n)
+        }
+
+        fn close_write(&mut self, _id: StreamId) -> Result<(), StreamError> {
+            Ok(())
+        }
+
+        fn rpc_next(&mut self) -> Option<AcquiredRpcOutbound> {
+            None
+        }
+
+        fn gossip_next(&mut self) -> Option<TRead> {
+            None
+        }
+
+        fn remote_addr(&self) -> SocketAddr {
+            "127.0.0.1:0".parse().unwrap()
+        }
+    }
+
+    /// Error chunk wire shape: `[code][varint len][snappy frames(msg)]` — no
+    /// context bytes. Regression: a rate-limiting lighthouse answers
+    /// columns-by-range with ResourceUnavailable(3); the zero-length error
+    /// reservation made the decoder's output-full early-exit drop buffered
+    /// frame bytes and desync (FrameTooLarge on the message CRC).
+    #[test]
+    fn error_chunk_roundtrip() {
+        let msg = b"data unavailable for range 123"; // 30 bytes, as seen live
+        let mut body = Vec::new();
+        let mut enc = SnappyEncoder::new();
+        let (consumed, pending) = enc.compress(msg, &mut body).unwrap();
+        assert_eq!(consumed, msg.len());
+        assert_eq!(pending, 0);
+
+        let mut wire = vec![3u8, msg.len() as u8];
+        wire.extend_from_slice(&body);
+
+        let mut producer = TCache::producer("test_rpc_error_chunk", 1 << 16);
+        let p2p_id = P2pStreamId::new(0, 16, StreamProtocol::DataColumnSidecarsByRange, false);
+
+        // Full-buffer reads (the live failure shape), byte-by-byte, and odd.
+        for cap in [usize::MAX, 1, 7] {
+            let mut io = WireIo { data: wire.clone(), pos: 0, cap };
+            let mut state = RpcReadResponse::new(7, 0);
+            let mut spins = 0;
+            let out = loop {
+                state = state.spin(&mut io, &p2p_id, &mut producer).unwrap();
+                if let RpcReadResponse::Complete { app_id, msg, .. } = state {
+                    assert_eq!(app_id, 7);
+                    break msg;
+                }
+                spins += 1;
+                assert!(spins < 1000, "cap {cap}: state machine did not complete");
+            };
+            match out {
+                RpcResponse::Error { error, msg: m, len } => {
+                    assert_eq!(error, 3, "cap {cap}");
+                    assert_eq!(len, msg.len(), "cap {cap}");
+                    assert_eq!(&m[..len], msg, "cap {cap}");
+                }
+                other => panic!("cap {cap}: expected error response, got {other:?}"),
             }
         }
     }

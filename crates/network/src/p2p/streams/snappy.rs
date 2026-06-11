@@ -51,6 +51,12 @@ pub(crate) struct SnappyDecoder {
     need: usize,
     got_stream_id: bool,
     decoder: Decoder,
+    /// Diagnostics: compressed bytes consumed / frames processed over the
+    /// decoder's lifetime (one chunk for RPC use). On a framing error these
+    /// locate the desync: small `consumed` = bad from chunk start, large =
+    /// mid-stream.
+    consumed: u64,
+    frames: u32,
 }
 
 impl Debug for SnappyDecoder {
@@ -59,6 +65,8 @@ impl Debug for SnappyDecoder {
             .field("buf_len", &self.buf_len)
             .field("need", &self.need)
             .field("got_stream_id", &self.got_stream_id)
+            .field("consumed", &self.consumed)
+            .field("frames", &self.frames)
             .field("decoder", &self.decoder)
             .finish()
     }
@@ -72,6 +80,8 @@ impl Default for SnappyDecoder {
             need: FRAME_HDR_LEN,
             got_stream_id: false,
             decoder: Decoder::new(),
+            consumed: 0,
+            frames: 0,
         }
     }
 }
@@ -95,6 +105,7 @@ impl SnappyDecoder {
                 .copy_from_slice(&input[in_pos..in_pos + take]);
             self.buf_len += take;
             in_pos += take;
+            self.consumed += take as u64;
 
             if self.buf_len < self.need {
                 break;
@@ -107,6 +118,14 @@ impl SnappyDecoder {
                     (self.buf[3] as usize) << 16;
 
                 if FRAME_HDR_LEN + payload_len > BUF_CAP {
+                    tracing::error!(
+                        payload_len,
+                        header = ?&self.buf[..FRAME_HDR_LEN],
+                        got_stream_id = self.got_stream_id,
+                        consumed = self.consumed,
+                        frames = self.frames,
+                        "snappy decompress frame too large on header read"
+                    );
                     return Err(SnappyError::FrameTooLarge);
                 }
                 self.need = FRAME_HDR_LEN + payload_len;
@@ -115,6 +134,7 @@ impl SnappyDecoder {
                 // Full frame in buf[0..self.need]. Process it.
                 let written = self.process_frame(&mut out[out_pos..])?;
                 out_pos += written;
+                self.frames += 1;
                 self.buf_len = 0;
                 self.need = FRAME_HDR_LEN;
 
@@ -136,6 +156,12 @@ impl SnappyDecoder {
         match chunk_type {
             CHUNK_STREAM_ID => {
                 if payload != STREAM_ID_BODY {
+                    tracing::error!(
+                        ?payload,
+                        consumed = self.consumed,
+                        frames = self.frames,
+                        "snappy bad stream id"
+                    );
                     return Err(SnappyError::BadStreamId);
                 }
                 self.got_stream_id = true;
@@ -143,6 +169,11 @@ impl SnappyDecoder {
             }
             CHUNK_COMPRESSED => {
                 if !self.got_stream_id {
+                    tracing::error!(
+                        chunk_type,
+                        consumed = self.consumed,
+                        "snappy missing stream id"
+                    );
                     return Err(SnappyError::MissingStreamId);
                 }
                 if payload.len() <= CHECKSUM_LEN {
@@ -152,15 +183,33 @@ impl SnappyDecoder {
                 let len =
                     snap::raw::decompress_len(compressed).map_err(|_| SnappyError::Decompress)?;
                 if len > MAX_UNCOMPRESSED_BLOCK || len > out.len() {
-                    tracing::error!(len, buffer = out.len(), "decompressed len too big!");
+                    tracing::error!(
+                        len,
+                        buffer = out.len(),
+                        consumed = self.consumed,
+                        frames = self.frames,
+                        "decompressed len too big!"
+                    );
                     return Err(SnappyError::OutputTooSmall);
                 }
-                self.decoder
-                    .decompress(compressed, &mut out[..len])
-                    .map_err(|_| SnappyError::Decompress)
+                self.decoder.decompress(compressed, &mut out[..len]).map_err(|e| {
+                    tracing::error!(
+                        ?e,
+                        compressed = compressed.len(),
+                        consumed = self.consumed,
+                        frames = self.frames,
+                        "snappy block decompress failed"
+                    );
+                    SnappyError::Decompress
+                })
             }
             CHUNK_UNCOMPRESSED => {
                 if !self.got_stream_id {
+                    tracing::error!(
+                        chunk_type,
+                        consumed = self.consumed,
+                        "snappy missing stream id"
+                    );
                     return Err(SnappyError::MissingStreamId);
                 }
                 if payload.len() <= CHECKSUM_LEN {
@@ -171,6 +220,8 @@ impl SnappyDecoder {
                     tracing::error!(
                         len = data.len(),
                         buffer = out.len(),
+                        consumed = self.consumed,
+                        frames = self.frames,
                         "uncompressed len too big!"
                     );
                     return Err(SnappyError::OutputTooSmall);
@@ -199,6 +250,7 @@ impl SnappyDecoder {
         out: &mut [u8],
     ) -> Result<usize, SnappyError> {
         self.buf_len += amount;
+        self.consumed += amount as u64;
         let mut out_pos = 0;
 
         if self.buf_len < self.need {
@@ -211,6 +263,14 @@ impl SnappyDecoder {
                 self.buf[1] as usize | (self.buf[2] as usize) << 8 | (self.buf[3] as usize) << 16;
 
             if FRAME_HDR_LEN + payload_len > BUF_CAP {
+                tracing::error!(
+                    payload_len,
+                    header = ?&self.buf[..FRAME_HDR_LEN],
+                    got_stream_id = self.got_stream_id,
+                    consumed = self.consumed,
+                    frames = self.frames,
+                    "snappy decompress_written frame too large"
+                );
                 return Err(SnappyError::FrameTooLarge);
             }
             self.need = FRAME_HDR_LEN + payload_len;
@@ -219,6 +279,7 @@ impl SnappyDecoder {
             // Full frame in buf[0..self.need]. Process it.
             let written = self.process_frame(&mut out[out_pos..])?;
             out_pos += written;
+            self.frames += 1;
             self.buf_len = 0;
             self.need = FRAME_HDR_LEN;
         }
@@ -699,6 +760,59 @@ mod tests {
         let mut out = Vec::new();
         snap::read::FrameDecoder::new(w.out.as_slice()).read_to_end(&mut out).unwrap();
         assert_eq!(raw, out);
+    }
+
+    /// End-to-end reproducer for the RPC paths: encode with the
+    /// `response_out` caller pattern (re-call with the unconsumed tail
+    /// through a choked sink), decode with the `response_in` pattern
+    /// (`decompress_buffer` + `decompress_written`, chunked stream reads).
+    /// High-entropy payload forces the raw-frame bypass.
+    #[test]
+    fn rpc_caller_pattern_roundtrip_choked_writer() {
+        let mut rng = rand::thread_rng();
+        for round in 0..200 {
+            let size = (rng.next_u32() as usize % (256 * 1024)) + 1;
+            let mut raw = vec![0u8; size];
+            rng.fill_bytes(&mut raw);
+
+            // Sender: response_out::WritingResponse loop.
+            let mut encoder = SnappyEncoder::new();
+            let mut w = ChokedWriter { budget: 0, out: Vec::new() };
+            let mut written = 0usize;
+            loop {
+                w.budget = (rng.next_u32() as usize % 8192) + 1;
+                let buffer = &raw[written..];
+                let buffer_len = buffer.len();
+                let (wrote, pending) = encoder.compress(buffer, &mut w).unwrap();
+                written += wrote;
+                if wrote == buffer_len && pending == 0 {
+                    break;
+                }
+            }
+            let compressed = w.out;
+
+            // Receiver: response_in::ReadingBody loop.
+            let mut decoder = SnappyDecoder::default();
+            let mut out = vec![0u8; size];
+            let mut remaining = size;
+            let mut stream_pos = 0usize;
+            while remaining > 0 {
+                let dbuf = decoder.decompress_buffer();
+                assert!(!dbuf.is_empty(), "round {round}: empty decompress_buffer");
+                // Simulated partial stream read.
+                let avail = compressed.len() - stream_pos;
+                assert!(avail > 0, "round {round}: stream exhausted, remaining={remaining}");
+                let n = dbuf.len().min((rng.next_u32() as usize % dbuf.len()) + 1).min(avail);
+                dbuf[..n].copy_from_slice(&compressed[stream_pos..stream_pos + n]);
+                stream_pos += n;
+                let decoded = decoder
+                    .decompress_written(n, &mut out[size - remaining..])
+                    .unwrap_or_else(|e| panic!("round {round}: {e:?}"));
+                remaining -= decoded;
+            }
+            assert_eq!(stream_pos, compressed.len(), "round {round}: trailing bytes");
+            assert_eq!(raw, out, "round {round}: payload mismatch");
+        }
     }
 
     #[test]

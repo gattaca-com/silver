@@ -1073,7 +1073,7 @@ impl PeerManager {
 
         let we_want = self.our_topics.contains(&topic);
         let mesh_size = self.mesh.get(&topic).map(|m| m.len()).unwrap_or(0);
-        tracing::info!(p2p_peer = conn, ?topic, we_want, mesh_size, "PM peer subscribed");
+        tracing::debug!(p2p_peer = conn, ?topic, we_want, mesh_size, "PM peer subscribed");
 
         // Opportunistic graft: if this is a topic we care about and our mesh
         // is below d_low, pull the peer in.
@@ -1100,7 +1100,7 @@ impl PeerManager {
             }
             None => return,
         };
-        tracing::info!(p2p_peer = conn, ?topic, "PM peer unsubscribed");
+        tracing::debug!(p2p_peer = conn, ?topic, "PM peer unsubscribed");
         // If peer was in our mesh, remove them.
         if let Some(mesh_peers) = self.mesh.get_mut(&topic) &&
             let Some(idx) = mesh_peers.iter().position(|c| *c == conn)

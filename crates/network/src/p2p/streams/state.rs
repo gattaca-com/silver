@@ -239,7 +239,7 @@ impl StreamState {
                             // close write side
                             io.close_write(id.stream_id())?;
                             Ok(Self::OutgoingRpc(RpcOut::ReadResponse(RpcReadResponse::new(
-                                app_id,
+                                app_id, 0,
                             ))))
                         }
                         other => Ok(Self::OutgoingRpc(RpcOut::WriteRequest(other))),
@@ -247,7 +247,7 @@ impl StreamState {
                 }
                 RpcOut::ReadResponse(read_response) => {
                     match read_response.spin(io, id, &mut context.rpc_producer)? {
-                        RpcReadResponse::Complete { app_id, msg } => {
+                        RpcReadResponse::Complete { app_id, chunk, msg } => {
                             // For multipart, `RpcResponse::Complete` is the
                             // synthetic terminator emitted on recv-EOF — at
                             // that point the stream is done from our side
@@ -270,6 +270,7 @@ impl StreamState {
                             } else {
                                 Ok(Self::OutgoingRpc(RpcOut::ReadResponse(RpcReadResponse::new(
                                     app_id,
+                                    chunk + 1,
                                 ))))
                             }
                         }
