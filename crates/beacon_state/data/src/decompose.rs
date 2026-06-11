@@ -504,26 +504,30 @@ impl SlotStateFinalized {
         o: &Offsets,
         epoch: &EpochStateFinalized,
     ) -> Result<Self, DecomposeError> {
-        let mut slot = SlotState::default();
-        slot.slot = u64_le(ssz, F2);
-        slot.latest_block_header.slot = u64_le(ssz, F4);
-        slot.latest_block_header.proposer_index = u64_le(ssz, F4 + 8);
-        slot.latest_block_header.parent_root = b256(ssz, F4 + 16);
-        slot.latest_block_header.state_root = b256(ssz, F4 + 48);
-        slot.latest_block_header.body_root = b256(ssz, F4 + 80);
-        slot.eth1_data = Eth1Data {
+        let mut slot = SlotState {
+        slot: u64_le(ssz, F2);
+        latest_block_header: BeaconBlockHeader {
+            slot: u64_le(ssz, F4),
+            proposer_index: u64_le(ssz, F4 + 8),
+            parent_root: b256(ssz, F4 + 16),
+            state_root: b256(ssz, F4 + 48),
+            body_root: b256(ssz, F4 + 80),
+        },
+        eth1_data: Eth1Data {
             deposit_root: b256(ssz, F8),
             deposit_count: u64_le(ssz, F8 + 32),
             block_hash: b256(ssz, F8 + 40),
-        };
-        slot.eth1_deposit_index = u64_le(ssz, F10);
-        slot.next_withdrawal_index = u64_le(ssz, F25);
-        slot.next_withdrawal_validator_index = u64_le(ssz, F26);
-        slot.deposit_requests_start_index = u64_le(ssz, F28);
-        slot.exit_balance_to_consume = u64_le(ssz, F30);
-        slot.earliest_exit_epoch = u64_le(ssz, F31);
-        slot.consolidation_balance_to_consume = u64_le(ssz, F32);
-        slot.earliest_consolidation_epoch = u64_le(ssz, F33);
+        },
+        eth1_deposit_index: u64_le(ssz, F10),
+        next_withdrawal_index: u64_le(ssz, F25),
+        next_withdrawal_validator_index: u64_le(ssz, F26),
+        deposit_requests_start_index: u64_le(ssz, F28),
+        exit_balance_to_consume: u64_le(ssz, F30),
+        earliest_exit_epoch: u64_le(ssz, F31),
+        consolidation_balance_to_consume: u64_le(ssz, F32),
+        earliest_consolidation_epoch: u64_le(ssz, F33),
+        ..Default::default()
+    };
 
         // eth1_votes (variable-length section).
         let votes_bytes = &ssz[o.eth1_votes..o.validators];
