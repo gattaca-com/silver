@@ -16,6 +16,7 @@ BeaconState
 │   per-block tiers (rolled for every block)
 ├── validators        ─┐
 ├── balances           │  Group = finalized base + Ring of per-fork deltas
+├── eth1               │
 ├── pending            │
 ├── previous_participation
 ├── current_participation
@@ -30,22 +31,22 @@ BeaconState
 Every group has the same shape:
 
 ```
-        Group
-┌─────────────────────┐      base  = the canonical FINALIZED state of this tier
-│ base: Finalized*    │              (mutated only during finalization)
-│                     │
-│ forks: Ring<G,Δ,N>  │      ring  = N reusable slots holding per-fork DELTAS
-│  ┌───┬───┬───┬───┐  │              (what this fork changed vs the base)
-│  │ Δ │ Δ │ Δ │ Δ │… │
-│  └───┴───┴───┴───┘  │      a fork's effective value = base ⊕ its delta
-└─────────────────────┘
+          Group
+┌───────────────────────┐    finalized = the canonical FINALIZED state of this
+│ finalized: Finalized* │                tier (mutated only during finalization)
+│                       │
+│ deltas: Ring<G,Δ,N>   │    ring      = N reusable slots holding per-fork
+│  ┌───┬───┬───┬───┐    │                DELTAS (what a fork changed vs the
+│  │ Δ │ Δ │ Δ │ Δ │…   │                finalized state)
+│  └───┴───┴───┴───┘    │
+└───────────────────────┘    a fork's effective value = finalized ⊕ its delta
 ```
 
 A **fork** (a block's post-state) is identified by a `StateId` — a ~72-byte
 `Copy` bundle of one typed ring id per tier:
 
 ```
-StateId { validators_idx, balances_idx, pending_idx, …, slot_idx,
+StateId { validators_idx, balances_idx, eth1_idx, pending_idx, …, slot_idx,
           epoch_idx: Option<EpochId>, longtail_idx: Option<LongtailId> }
 ```
 
@@ -57,7 +58,7 @@ by value; the published head's `StateId` lives inline in the control word
 ## 2. Append-only writes and `commit`
 
 The ring API is deliberately tiny — `get(id)`, `roll_fresh`, `roll_from`,
-`roll_fresh_deriving`, `free`:
+`roll_fresh_deriving`, `free`/`free_outdated`:
 
 * a **writer exists only by rolling** a new slot (fresh, or copy-on-write
   from a parent id). There is no way to re-open a slot by id for writing.
@@ -79,10 +80,10 @@ cannot exist before its entries do.
 parent: StateId
    │
    ▼
-apply_block_view(parent)              owner rolls the 7 per-block tiers
-   │   roll_from(parent.X_idx) ×7     and HOLDS the writers
+apply_block_view(parent)              owner rolls the 8 per-block tiers
+   │   roll_from(parent.X_idx) ×8     and HOLDS the writers
    ▼
-StateWriterView { validators, balances, pending, …, slot }   ← held writers
+StateWriterView { validators, balances, eth1, pending, …, slot }  ← held writers
    │
    ├─ process_slots(...)              epoch boundary? roll + HOLD the epoch
    │     └─ process_epoch(...)        writer; longtail iff its gate fires;
@@ -113,7 +114,7 @@ Notes:
 
 ## 4. The read paths
 
-One read currency: `StateReadView`, a `Copy`-field bundle of all nine tier
+One read currency: `StateReadView`, a `Copy`-field bundle of all ten tier
 read views (plus `imm`), resolved from a `StateId` by the single resolver
 `BeaconState::read_view`. Consumers read tier fields directly
 (`rv.validators.pubkey(i)`, `rv.epoch.proposer_at(idx)`, …).
@@ -133,15 +134,21 @@ seqlock read:
 ```
             writer                              reader
               │                                   │
- publish ───► │ control = Seqlock<{StateId}>      │ loop:
-              │   version: even = readable        │   (ctrl, v) = read_copy()   ── spins while odd
+ publish ───► │ control = Seqlock<{StateId,       │ loop:
+              │           finalize_version}>      │   ctrl = read_copy()
+              │   counter odd = finalize window   │     ── spins while the counter is odd
               │                                   │   fence(Acquire)
               │                                   │   rv = state.read_view(ctrl.state_id)
               │                                   │   … read tier data …
               │                                   │   fence(Acquire)
-              │                                   │   version still == v ?  → accept
-              │                                   │   else                 → retry
+              │                                   │   finalize_version unchanged? → accept
+              │                                   │   else                        → retry
 ```
+
+A publish rewrites `state_id` but carries the finalize counter unchanged —
+tiers are append-only between finalizations, so a publish never invalidates
+an in-flight read. Only the finalize window (which rebases and frees tier
+slots) bumps the counter.
 
 The state allocation is shared as `Arc<StateCell>` (an `UnsafeCell` newtype,
 the seqlock's one irreducible `unsafe`): a reader handle can never dangle,
@@ -149,9 +156,10 @@ whatever the teardown order. Reads cost a pointer deref — the `Arc` refcount
 is touched only at clone/drop.
 
 Caveat: the lock-free path must not read the *contents* of realloc-prone
-`Vec` bases (pending queues, longtail historical summaries, slot
-`eth1_votes`) — a finalize realloc can race them. Those reads belong on a
-lock-guarded path (planned for persistence).
+`Vec` bases (pending queues, longtail historical summaries) — a finalize
+realloc can race them; those reads go through the groups' promote barriers
+(`with_finalized_locked`). The fixed-size bases — including the inline
+fixed-capacity eth1 vote list — are safe to read optimistically.
 
 ## 5. Finalization — the only reader-blocking window
 
@@ -164,9 +172,10 @@ maybe_finalize:
   ┌─ write() ── version goes ODD ──────────────┐
   │  for each group:                            │    readers: spin
   │    finalize(winner, survivors):             │
+  │      free forks older than the winner       │
   │      reanchor survivors → FRESH slots       │   (append-only: survivors
   │      promote winner delta into base         │    get new ids, published
-  │      free everything older                  │    slots are not re-opened)
+  │      free the survivors' old slots          │    slots are not re-opened)
   │  rewrite survivor StateIds (locals)         │
   │  stage the head's rewritten StateId         │
   └─ guard drop ── control word + version even ─┘
@@ -198,7 +207,7 @@ wait-free (plus one ≤80-byte retry per publish).
 | operation            | who          | reader impact            |
 |----------------------|--------------|---------------------------|
 | roll / STF / commit  | block path   | none (unpublished slots)  |
-| `publish_state_id`   | block path   | ≤1 retry of an 80 B copy  |
+| `publish_state_id`   | block path   | none (in-flight reads stand) |
 | `write()` window     | finalize, bootstrap | spin for the window |
 | reading              | anyone       | wait-free, no refcounts   |
 

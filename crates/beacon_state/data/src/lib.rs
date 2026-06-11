@@ -16,6 +16,7 @@ pub use delta_view::{
 };
 pub use encode::{CHECKPOINT_SECTIONS, PubkeysDecodeError, decode_checkpoint_pubkeys};
 pub use epoch::{EpochGroup, EpochId, EpochStateFinalized, EpochView, EpochWriteView};
+pub use eth1::{Eth1Group, Eth1Id, Eth1View, Eth1Votes, Eth1WriteView};
 pub use hash_tree::{DeltaHashTree, FinalizedHashTree};
 pub use longtail::{LongtailGroup, LongtailId, LongtailState, LongtailView, LongtailWriteView};
 pub use pending::{PendingGroup, PendingId, PendingQueues, PendingView, PendingWriteView};
@@ -38,6 +39,7 @@ mod decompose;
 mod delta_view;
 mod encode;
 mod epoch;
+mod eth1;
 mod hash_tree;
 mod longtail;
 mod pending;
@@ -56,13 +58,16 @@ pub struct BeaconState {
     pub validators: ValidatorsGroup,
     /// Rolled every slot; one isolated unit.
     pub balances: BalancesGroup,
+    /// Eth1 vote list — own ring, rolled every slot; forks carry only their
+    /// appends since finalization.
+    pub eth1: Eth1Group,
     /// Pending queues + participation + inactivity — own rings, rolled every
     /// slot.
     pub pending: PendingGroup,
     pub previous_participation: PreviousParticipationGroup,
     pub current_participation: CurrentParticipationGroup,
     pub inactivity: InactivityScoresGroup,
-    /// Slot tier (the heavy `SlotState` + root rings) — own ring, rolled every
+    /// Slot tier (`SlotState` scalars + root rings) — own ring, rolled every
     /// slot; its base holds the canonical finalized slot.
     pub slot_states: SlotStateGroup,
     /// Epoch tier (`EpochState` + randao/slashings rings) and longtail tier
@@ -85,6 +90,7 @@ impl BeaconState {
                 FinalizedValidators::try_new(&[]).expect("empty registry decodes"),
             ),
             balances: BalancesGroup::new(cap, 0, &[]).expect("empty column"),
+            eth1: Eth1Group::new(Eth1Votes::default()),
             pending: PendingGroup::new(PendingQueues::default()),
             previous_participation: PreviousParticipationGroup::new(cap, 0, &[])
                 .expect("empty column"),
@@ -105,6 +111,7 @@ impl BeaconState {
             epoch_idx: None,
             longtail_idx: None,
             balances_idx: self.balances.roll_fresh().commit(),
+            eth1_idx: self.eth1.roll_fresh().commit(),
             pending_idx: self.pending.roll_fresh().commit(),
             previous_participation_idx: self.previous_participation.roll_fresh().commit(),
             current_participation_idx: self.current_participation.roll_fresh().commit(),
@@ -121,6 +128,7 @@ impl BeaconState {
         StateReadView {
             imm: &self.immutable,
             balances: self.balances.view(state_id.balances_idx),
+            eth1: self.eth1.view(state_id.eth1_idx),
             epoch: self.epoch.view_opt(state_id.epoch_idx),
             longtail: self.longtail.view_opt(state_id.longtail_idx),
             pending: self.pending.view(state_id.pending_idx),

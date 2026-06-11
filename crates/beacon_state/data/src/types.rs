@@ -1,5 +1,5 @@
 use crate::{
-    BalancesId, CurrentParticipationId, EpochId, InactivityId, LongtailId, PendingId,
+    BalancesId, CurrentParticipationId, EpochId, Eth1Id, InactivityId, LongtailId, PendingId,
     PreviousParticipationId, SlotStateId, ValidatorsId,
 };
 
@@ -66,6 +66,7 @@ pub struct StateId {
     /// always present — set by whoever rolls the fork (mirrors how `epoch_idx`
     /// is set at an epoch boundary).
     pub balances_idx: BalancesId,
+    pub eth1_idx: Eth1Id,
     pub validators_idx: ValidatorsId,
     pub pending_idx: PendingId,
     pub previous_participation_idx: PreviousParticipationId,
@@ -74,20 +75,13 @@ pub struct StateId {
     pub slot_idx: SlotStateId,
 }
 
-// size: ~1 KB. `eth1_votes` is a heap-backed `Vec` (bounded at MAX_ETH1_VOTES
-// on push, reset each voting period) rather than an inline 144 KB ArrayVec, so
-// `SlotState` is no longer `Copy` — it lives in its own ring
-// (`SlotStateGroup`), is mutated in place through the write view, and
-// value-copying it (ring fill, `from_ssz` returns, `promote`) must not cost a
-// 144 KB stack frame. See [`crate::slot_state`]; `eth1_votes` is write-path +
-// checkpoint-persist only, never read on the seqlock path, so the heap buffer
-// is safe there.
-#[derive(Default)]
+// size: ~1 KB of plain data — the vote list lives in its own tier
+// ([`crate::Eth1Group`]), so the slot tier carries only scalars.
+#[derive(Clone, Default)]
 pub struct SlotState {
     pub randao_mix_current: B256,
     pub current_epoch_slashings: u64,
     pub eth1_data: Eth1Data,
-    pub eth1_votes: Vec<Eth1Data>,
     pub eth1_deposit_index: u64,
     pub slot: Slot,
     pub latest_block_header: BeaconBlockHeader,
@@ -99,37 +93,6 @@ pub struct SlotState {
     pub earliest_exit_epoch: Epoch,
     pub consolidation_balance_to_consume: u64,
     pub earliest_consolidation_epoch: Epoch,
-}
-
-// Manual Clone: the derived impl would leave `clone_from` at its default
-// (`*self = src.clone()`), replacing the `eth1_votes` heap allocation. The
-// checkpoint persist reads the finalized base's `eth1_votes` cross-thread and
-// relies on `promote` keeping that allocation stable, so `clone_from` must
-// reuse it (`Vec::clone_from` does, given reserved capacity).
-impl Clone for SlotState {
-    fn clone(&self) -> Self {
-        let mut new = Self::default();
-        new.clone_from(self);
-        new
-    }
-
-    fn clone_from(&mut self, src: &Self) {
-        self.randao_mix_current = src.randao_mix_current;
-        self.current_epoch_slashings = src.current_epoch_slashings;
-        self.eth1_data = src.eth1_data;
-        self.eth1_votes.clone_from(&src.eth1_votes);
-        self.eth1_deposit_index = src.eth1_deposit_index;
-        self.slot = src.slot;
-        self.latest_block_header = src.latest_block_header;
-        self.latest_execution_payload_header = src.latest_execution_payload_header;
-        self.next_withdrawal_index = src.next_withdrawal_index;
-        self.next_withdrawal_validator_index = src.next_withdrawal_validator_index;
-        self.deposit_requests_start_index = src.deposit_requests_start_index;
-        self.exit_balance_to_consume = src.exit_balance_to_consume;
-        self.earliest_exit_epoch = src.earliest_exit_epoch;
-        self.consolidation_balance_to_consume = src.consolidation_balance_to_consume;
-        self.earliest_consolidation_epoch = src.earliest_consolidation_epoch;
-    }
 }
 
 #[derive(Clone, Copy)]

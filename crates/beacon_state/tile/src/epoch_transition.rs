@@ -2,9 +2,9 @@ use core::cmp::{max, min};
 
 use silver_beacon_state_data::{
     self as common, Checkpoint, EPOCHS_PER_SLASHINGS_VECTOR, Epoch, EpochView, EpochWriteView,
-    HistoricalSummary, LongtailGroup, LongtailId, LongtailWriteView, MIN_SEED_LOOKAHEAD,
-    PROPOSER_LOOKAHEAD_SIZE, SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT, SYNC_COMMITTEE_SIZE,
-    SlotStateWriteView, SpecConfig, StateWriterView, iter_validator_rows,
+    Eth1WriteView, HistoricalSummary, LongtailGroup, LongtailId, LongtailWriteView,
+    MIN_SEED_LOOKAHEAD, PROPOSER_LOOKAHEAD_SIZE, SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT,
+    SYNC_COMMITTEE_SIZE, SpecConfig, StateWriterView, iter_validator_rows,
 };
 use silver_common::metrics::timed;
 
@@ -80,7 +80,7 @@ pub fn process_epoch(
     );
     process_registry_updates(cfg, view, &epoch.reader(), current_epoch);
     process_slashings(cfg, view, &epoch.reader(), current_epoch);
-    process_eth1_data_reset(&mut view.slot, current_epoch);
+    process_eth1_data_reset(&mut view.eth1, current_epoch);
     process_pending_deposits(cfg, view, epoch, &mut scratch.postponed);
     process_pending_consolidations(view);
     process_effective_balance_updates(view);
@@ -414,10 +414,10 @@ pub fn process_participation_flag_updates(
     view.current_participation.replace(scratch, |_, _| 0);
 }
 
-pub fn process_eth1_data_reset(slot: &mut SlotStateWriteView, current_epoch: Epoch) {
+pub fn process_eth1_data_reset(eth1: &mut Eth1WriteView, current_epoch: Epoch) {
     let next_epoch = current_epoch + 1;
     if next_epoch.is_multiple_of(EPOCHS_PER_ETH1_VOTING_PERIOD) {
-        slot.state_mut().eth1_votes.clear();
+        eth1.clear();
     }
 }
 

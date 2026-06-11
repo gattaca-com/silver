@@ -1,6 +1,6 @@
 //! Fuzz-style single-writer / concurrent-reader stress for the
 //! finalized-base + delta-ring design with HEAP-BACKED (`Vec`) payloads — the
-//! realloc hazard class (pending / validators / slot-eth1_votes / longtail).
+//! realloc hazard class (pending / validators / longtail).
 //!
 //! Miniature of the exact production protocol, isolated from the beacon types:
 //! - the writer rolls copy-on-write deltas (`Ring::roll_from`), mutates ONLY

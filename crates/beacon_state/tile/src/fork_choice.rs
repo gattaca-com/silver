@@ -423,6 +423,7 @@ mod tests {
             epoch_idx: None,
             longtail_idx: None,
             balances_idx: Default::default(),
+            eth1_idx: Default::default(),
             validators_idx: Default::default(),
             pending_idx: Default::default(),
             previous_participation_idx: Default::default(),

@@ -5,8 +5,8 @@ use crate::{
     types::{B256, Epoch, Slot, SlotState},
 };
 
-// size: ~1 KB inline (SlotState scalars + Vec headers); root tails + eth1_votes
-// on the heap.
+// size: ~1 KB inline (SlotState scalars + Vec headers); root tails on the
+// heap.
 #[derive(Clone, Default)]
 pub(crate) struct SlotStateDelta {
     pub(super) slot: SlotState,

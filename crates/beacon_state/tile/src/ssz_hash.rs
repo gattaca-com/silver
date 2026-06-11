@@ -84,7 +84,7 @@ pub fn hash_tree_root_state(rv: &StateReadView, scratch: &mut StateHashScratch) 
         hash_b256_vector(state_roots),
         imm.historical_roots_hash,
         hash_eth1_data(&slot.eth1_data),
-        hash_eth1_votes(slot),
+        hash_eth1_votes(&rv.eth1),
         uint64_chunk(slot.eth1_deposit_index),
         rv.validators.hash_root(),
         rv.balances.hash_root(),
@@ -139,14 +139,13 @@ pub fn hash_sync_committee(sc: &SyncCommittee) -> B256 {
 }
 
 #[timed]
-pub fn hash_eth1_votes(slot: &common::SlotState) -> B256 {
-    let n = slot.eth1_votes.len();
+pub fn hash_eth1_votes(eth1: &common::Eth1View) -> B256 {
     let mut stack = MerkleStack::new();
-    for i in 0..n {
-        merkle_push(&mut stack, hash_eth1_data(&slot.eth1_votes[i]));
+    for v in eth1.iter() {
+        merkle_push(&mut stack, hash_eth1_data(v));
     }
     let root = merkle_finalize(stack, list_depth(MAX_ETH1_VOTES));
-    mix_in_length(&root, n)
+    mix_in_length(&root, eth1.len())
 }
 
 #[timed]

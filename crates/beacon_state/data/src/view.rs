@@ -101,6 +101,7 @@ impl BeaconStateOwner {
         let view = StateWriterView {
             imm: &s.immutable,
             balances: s.balances.roll_from(parent.balances_idx),
+            eth1: s.eth1.roll_from(parent.eth1_idx),
             pending: s.pending.roll_from(parent.pending_idx),
             previous_participation: s
                 .previous_participation
@@ -191,11 +192,11 @@ impl BeaconStateReader {
     /// finalize). Returns `None` until the writer publishes its first real
     /// snapshot.
     ///
-    /// Lock-free path: only the fixed-size bases (epoch/slot scalars,
-    /// validators columns, balances/participation/inactivity boxes) are safe
-    /// to read optimistically. The pending / longtail / slot `eth1_votes`
-    /// bases are realloc-prone `Vec`s — reading their CONTENT here can race a
-    /// finalize realloc; those reads need the planned lock-guarded path.
+    /// Lock-free path: only the fixed-size bases (epoch/slot scalars, the
+    /// inline eth1 vote list, validators columns, balances/participation/
+    /// inactivity boxes) are safe to read optimistically. The pending /
+    /// longtail bases are realloc-prone `Vec`s — reading their CONTENT here
+    /// can race a finalize realloc; those reads need the lock-guarded path.
     pub fn read<F, R>(&self, reader: &F) -> Option<R>
     where
         F: Fn(StateReadView<'_>) -> R,

@@ -1,10 +1,10 @@
 use blst::min_pk::PublicKey;
 
 use crate::{
-    BalancesReader, BalancesWriteView, Current, EpochId, EpochView, InactivityView,
-    InactivityWriteView, LongtailId, LongtailView, ParticipationView, ParticipationWriteView,
-    PendingView, PendingWriteView, Previous, SlotStateView, SlotStateWriteView, ValidatorsView,
-    ValidatorsWriteView, Withdrawals,
+    BalancesReader, BalancesWriteView, Current, EpochId, EpochView, Eth1View, Eth1WriteView,
+    InactivityView, InactivityWriteView, LongtailId, LongtailView, ParticipationView,
+    ParticipationWriteView, PendingView, PendingWriteView, Previous, SlotStateView,
+    SlotStateWriteView, ValidatorsView, ValidatorsWriteView, Withdrawals,
     types::{B256, BLSPubkey, Epoch, Immutable, SLOTS_PER_EPOCH, StateId},
 };
 
@@ -17,6 +17,7 @@ pub struct StateReadView<'a> {
     pub imm: &'a Immutable,
     /// Writer-side reader (carries the SSZ list root for full-state hashing).
     pub balances: BalancesReader<'a>,
+    pub eth1: Eth1View<'a>,
     /// Base + the fork's delta when it owns one, else the lazy base view.
     pub epoch: EpochView<'a>,
     /// Same lazy resolution as `epoch`.
@@ -170,6 +171,7 @@ pub fn append_validator(
 pub struct StateWriterView<'a> {
     pub imm: &'a Immutable,
     pub balances: BalancesWriteView<'a>,
+    pub eth1: Eth1WriteView<'a>,
     pub pending: PendingWriteView<'a>,
     pub previous_participation: ParticipationWriteView<'a, Previous>,
     pub current_participation: ParticipationWriteView<'a, Current>,
@@ -189,6 +191,7 @@ impl<'a> StateWriterView<'a> {
             epoch_idx,
             longtail_idx,
             balances_idx: self.balances.commit(),
+            eth1_idx: self.eth1.commit(),
             validators_idx: self.validators.commit(),
             pending_idx: self.pending.commit(),
             previous_participation_idx: self.previous_participation.commit(),
@@ -211,6 +214,7 @@ impl<'a> StateWriterView<'a> {
         StateReadView {
             imm: self.imm,
             balances: self.balances.reader(),
+            eth1: self.eth1.reader(),
             epoch,
             longtail,
             pending: self.pending.reader(),
@@ -228,8 +232,9 @@ mod tests {
     use super::*;
     use crate::{
         BalancesGroup, BeaconState, CurrentParticipationGroup, EpochGroup, EpochStateFinalized,
-        InactivityScoresGroup, LongtailGroup, LongtailState, PendingGroup, PendingQueues,
-        PreviousParticipationGroup, SlotStateFinalized, SlotStateGroup, ValidatorsGroup,
+        Eth1Group, Eth1Votes, InactivityScoresGroup, LongtailGroup, LongtailState, PendingGroup,
+        PendingQueues, PreviousParticipationGroup, SlotStateFinalized, SlotStateGroup,
+        ValidatorsGroup,
         types::{PendingDeposit, SLOTS_PER_HISTORICAL_ROOT, SlotState},
         validators::{FinalizedValidators, ValSeed},
     };
@@ -279,6 +284,7 @@ mod tests {
                 immutable: Immutable::default(),
                 validators,
                 balances: BalancesGroup::new(cap, n, &balance_bytes).unwrap(),
+                eth1: Eth1Group::new(Eth1Votes::default()),
                 pending: PendingGroup::new(PendingQueues::default()),
                 previous_participation: PreviousParticipationGroup::new(cap, n, &zero_flags)
                     .unwrap(),
@@ -302,6 +308,7 @@ mod tests {
             let view = StateWriterView {
                 imm: &bs.immutable,
                 balances: bs.balances.roll_from(sid.balances_idx),
+                eth1: bs.eth1.roll_from(sid.eth1_idx),
                 pending: bs.pending.roll_from(sid.pending_idx),
                 previous_participation: bs
                     .previous_participation

@@ -107,7 +107,7 @@ impl BeaconState {
         let sl = self.slot_states.finalized().state();
         [
             self.immutable.historical_roots.len() * 32,
-            sl.eth1_votes.len() * ETH1_DATA_SSZ,
+            self.eth1.finalized().len() * ETH1_DATA_SSZ,
             n * VALIDATOR_SSZ,
             n * 8,
             n,
@@ -164,7 +164,7 @@ impl BeaconState {
         match section {
             Section::FixedPart => self.write_fixed_part(w, offsets),
             Section::HistoricalRoots => write_b256_slice(w, &self.immutable.historical_roots),
-            Section::Eth1Votes => self.slot_states.finalized().write_eth1_votes_ssz(w),
+            Section::Eth1Votes => self.eth1.finalized().write_ssz(w),
             Section::Validators => {
                 let v = self.validators.finalized();
                 v.write_ssz_range(0, v.validator_count(), w)

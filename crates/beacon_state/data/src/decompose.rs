@@ -2,9 +2,9 @@ use silver_common_macros::timed;
 
 use crate::{
     BalancesGroup, BeaconState, CurrentParticipationGroup, EpochGroup, EpochStateFinalized,
-    FinalizedValidators, InactivityScoresGroup, LongtailGroup, LongtailState, PendingGroup,
-    PendingQueues, PreviousParticipationGroup, SlotStateFinalized, SlotStateGroup, SpecConfig,
-    ValidatorsDecodeError, ValidatorsGroup, ssz_hash,
+    Eth1Group, Eth1Votes, FinalizedValidators, InactivityScoresGroup, LongtailGroup, LongtailState,
+    PendingGroup, PendingQueues, PreviousParticipationGroup, SlotStateFinalized, SlotStateGroup,
+    SpecConfig, ValidatorsDecodeError, ValidatorsGroup, ssz_hash,
     types::{
         B256, BeaconBlockHeader, Checkpoint, EPOCHS_PER_HISTORICAL_VECTOR,
         EPOCHS_PER_SLASHINGS_VECTOR, Eth1Data, ExecutionPayloadHeader, HISTORICAL_ROOTS_LIMIT,
@@ -322,6 +322,8 @@ impl BeaconState {
         let slot_states =
             SlotStateGroup::new(SlotStateFinalized::from_ssz(ssz, &offsets, epoch.finalized())?);
 
+        let eth1 = Eth1Group::new(Eth1Votes::from_ssz(ssz, &offsets)?);
+
         let val_bytes = &ssz[offsets.validators..offsets.balances];
         let validators = ValidatorsGroup::new(match pubkeys {
             Some(pk) => FinalizedValidators::try_new_with_pubkeys(val_bytes, pk)?,
@@ -368,6 +370,7 @@ impl BeaconState {
             immutable,
             validators,
             balances,
+            eth1,
             pending,
             previous_participation,
             current_participation,
@@ -499,6 +502,24 @@ fn read_eth1_data(s: &[u8]) -> Eth1Data {
 
 // `epoch` must already be filled — the derived `randao_mix_current` /
 // `current_epoch_slashings` read the current bucket from its rings.
+impl Eth1Votes {
+    fn from_ssz(ssz: &[u8], o: &Offsets) -> Result<Self, DecomposeError> {
+        let votes_bytes = &ssz[o.eth1_votes..o.validators];
+        if !votes_bytes.len().is_multiple_of(ETH1_DATA_SSZ_SIZE) {
+            return Err(DecomposeError::Eth1VotesLenNotMultiple { len: votes_bytes.len() });
+        }
+        let vote_count = votes_bytes.len() / ETH1_DATA_SSZ_SIZE;
+        if vote_count > MAX_ETH1_VOTES {
+            return Err(DecomposeError::TooManyEth1Votes { n: vote_count, max: MAX_ETH1_VOTES });
+        }
+        let mut votes = Self::default();
+        for i in 0..vote_count {
+            votes.push(read_eth1_data(&votes_bytes[i * ETH1_DATA_SSZ_SIZE..]));
+        }
+        Ok(votes)
+    }
+}
+
 impl SlotStateFinalized {
     pub(crate) fn from_ssz(
         ssz: &[u8],
@@ -529,19 +550,6 @@ impl SlotStateFinalized {
             earliest_consolidation_epoch: u64_le(ssz, F33),
             ..Default::default()
         };
-
-        // eth1_votes (variable-length section).
-        let votes_bytes = &ssz[o.eth1_votes..o.validators];
-        if !votes_bytes.len().is_multiple_of(ETH1_DATA_SSZ_SIZE) {
-            return Err(DecomposeError::Eth1VotesLenNotMultiple { len: votes_bytes.len() });
-        }
-        let vote_count = votes_bytes.len() / ETH1_DATA_SSZ_SIZE;
-        if vote_count > MAX_ETH1_VOTES {
-            return Err(DecomposeError::TooManyEth1Votes { n: vote_count, max: MAX_ETH1_VOTES });
-        }
-        for i in 0..vote_count {
-            slot.eth1_votes.push(read_eth1_data(&votes_bytes[i * ETH1_DATA_SSZ_SIZE..]));
-        }
 
         read_execution_payload_header(
             ssz,

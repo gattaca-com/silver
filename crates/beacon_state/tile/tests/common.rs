@@ -296,6 +296,7 @@ impl Harness {
         let view = StateWriterView {
             imm: &bs.immutable,
             balances: bs.balances.roll_fresh(),
+            eth1: bs.eth1.roll_fresh(),
             pending: bs.pending.roll_fresh(),
             previous_participation: bs.previous_participation.roll_fresh(),
             current_participation: bs.current_participation.roll_fresh(),

@@ -3,11 +3,11 @@ use core::cmp::{max, min};
 use blst::min_pk::PublicKey;
 use silver_beacon_state_data::{
     self as common, B256, BalancesWriteView, Current, EPOCHS_PER_SLASHINGS_VECTOR, Epoch,
-    EpochGroup, EpochId, EpochView, Immutable, LongtailGroup, LongtailId, LongtailView,
-    PENDING_CONSOLIDATIONS_LIMIT, PENDING_PARTIAL_WITHDRAWALS_LIMIT, ParticipationWriteView,
-    PendingView, PendingWriteView, Previous, SLOTS_PER_EPOCH, SYNC_COMMITTEE_SIZE, Slot,
-    SlotStateView, SlotStateWriteView, SpecConfig, StateId, StateReadView, StateWriterView,
-    ValidatorsView, ValidatorsWriteView, append_validator,
+    EpochGroup, EpochId, EpochView, Eth1WriteView, Immutable, LongtailGroup, LongtailId,
+    LongtailView, PENDING_CONSOLIDATIONS_LIMIT, PENDING_PARTIAL_WITHDRAWALS_LIMIT,
+    ParticipationWriteView, PendingView, PendingWriteView, Previous, SLOTS_PER_EPOCH,
+    SYNC_COMMITTEE_SIZE, Slot, SlotStateView, SlotStateWriteView, SpecConfig, StateId,
+    StateReadView, StateWriterView, ValidatorsView, ValidatorsWriteView, append_validator,
 };
 use silver_common::{
     metrics::timed,
@@ -714,7 +714,7 @@ fn apply_block_body_pass2(
     process_withdrawals(&mut *view, payload)?;
     process_execution_payload(&mut *view, cfg, payload, block_slot)?;
     process_randao(&mut view.slot, body);
-    process_eth1_data(&mut view.slot, body);
+    process_eth1_data(&mut view.slot, &mut view.eth1, body);
 
     if let Some(section) =
         offsets.try_slice(offsets.proposer_slashings_off, offsets.attester_slashings_off)
@@ -841,31 +841,26 @@ fn process_randao(slot: &mut SlotStateWriteView, body: &[u8]) {
     }
 }
 
-fn process_eth1_data(slot: &mut SlotStateWriteView, body: &[u8]) {
+fn process_eth1_data(slot: &mut SlotStateWriteView, eth1: &mut Eth1WriteView, body: &[u8]) {
     // BeaconBlockBody.eth1_data at body[96..168].
-    let eth1: &[u8; 72] = body[96..168].try_into().unwrap();
-    let deposit_root: B256 = *Eth1DataView::deposit_root(eth1);
-    let deposit_count = Eth1DataView::deposit_count(eth1);
-    let block_hash: B256 = *Eth1DataView::block_hash(eth1);
+    let data: &[u8; 72] = body[96..168].try_into().unwrap();
+    let deposit_root: B256 = *Eth1DataView::deposit_root(data);
+    let deposit_count = Eth1DataView::deposit_count(data);
+    let block_hash: B256 = *Eth1DataView::block_hash(data);
 
     let vote = common::Eth1Data { deposit_root, deposit_count, block_hash };
-    // One vote per slot, reset each voting period; the list never exceeds the
-    // period length (`process_eth1_data_reset`).
-    debug_assert!(
-        slot.state().eth1_votes.len() < common::MAX_ETH1_VOTES,
-        "eth1_votes exceeded MAX_ETH1_VOTES"
-    );
-    slot.state_mut().eth1_votes.push(vote);
+    // One vote per slot, reset each voting period (`process_eth1_data_reset`);
+    // `push` enforces the spec cap.
+    eth1.push(vote);
 
-    let mut count = 0usize;
-    for v in slot.state().eth1_votes.as_slice() {
-        if v.deposit_root == deposit_root &&
-            v.deposit_count == deposit_count &&
-            v.block_hash == block_hash
-        {
-            count += 1;
-        }
-    }
+    let count = eth1
+        .iter()
+        .filter(|v| {
+            v.deposit_root == deposit_root &&
+                v.deposit_count == deposit_count &&
+                v.block_hash == block_hash
+        })
+        .count();
     let slots_per_eth1_voting_period = EPOCHS_PER_ETH1_VOTING_PERIOD * SLOTS_PER_EPOCH;
     if count * 2 > slots_per_eth1_voting_period as usize {
         slot.state_mut().eth1_data = vote;
@@ -2824,18 +2819,18 @@ mod tests {
         body[136..168].copy_from_slice(&[0xBB; 32]);
 
         // slots_per_eth1_voting_period = 64 * 32 = 2048; need > 1024 votes.
-        process_eth1_data(&mut view.slot, &body);
-        assert_eq!(view.slot.state().eth1_votes.len(), 1);
+        process_eth1_data(&mut view.slot, &mut view.eth1, &body);
+        assert_eq!(view.eth1.len(), 1);
         assert_ne!(view.slot.state().eth1_data.deposit_root, deposit_root);
 
         for _ in 0..1024 {
-            view.slot.state_mut().eth1_votes.push(common::Eth1Data {
+            view.eth1.push(common::Eth1Data {
                 deposit_root,
                 deposit_count: 42,
                 block_hash: [0xBB; 32],
             });
         }
-        process_eth1_data(&mut view.slot, &body);
+        process_eth1_data(&mut view.slot, &mut view.eth1, &body);
         assert_eq!(view.slot.state().eth1_data.deposit_root, deposit_root);
     }
 

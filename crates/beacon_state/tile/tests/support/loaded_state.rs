@@ -35,6 +35,7 @@ impl LoadedState {
         let view = StateWriterView {
             imm: &bs.immutable,
             balances: bs.balances.roll_from(sid.balances_idx),
+            eth1: bs.eth1.roll_from(sid.eth1_idx),
             pending: bs.pending.roll_from(sid.pending_idx),
             previous_participation: bs
                 .previous_participation

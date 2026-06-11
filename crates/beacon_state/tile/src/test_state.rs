@@ -4,8 +4,8 @@
 
 use silver_beacon_state_data::{
     BalancesGroup, BeaconState, CurrentParticipationGroup, EpochGroup, EpochStateFinalized,
-    FinalizedValidators, Immutable, InactivityScoresGroup, LongtailGroup, LongtailState,
-    PendingGroup, PendingQueues, PreviousParticipationGroup, SLOTS_PER_EPOCH,
+    Eth1Group, Eth1Votes, FinalizedValidators, Immutable, InactivityScoresGroup, LongtailGroup,
+    LongtailState, PendingGroup, PendingQueues, PreviousParticipationGroup, SLOTS_PER_EPOCH,
     SLOTS_PER_HISTORICAL_ROOT, SlotState, SlotStateFinalized, SlotStateGroup, StateId,
     StateWriterView, ValSeed, ValidatorsGroup,
 };
@@ -40,6 +40,7 @@ impl TestState {
             immutable: Immutable::default(),
             validators,
             balances: BalancesGroup::new(cap, n, &balance_bytes).unwrap(),
+            eth1: Eth1Group::new(Eth1Votes::default()),
             pending: PendingGroup::new(PendingQueues::default()),
             previous_participation: PreviousParticipationGroup::new(cap, n, &zero_flags).unwrap(),
             current_participation: CurrentParticipationGroup::new(cap, n, &zero_flags).unwrap(),
@@ -64,6 +65,7 @@ impl TestState {
         let view = StateWriterView {
             imm: &bs.immutable,
             balances: bs.balances.roll_from(sid.balances_idx),
+            eth1: bs.eth1.roll_from(sid.eth1_idx),
             pending: bs.pending.roll_from(sid.pending_idx),
             previous_participation: bs
                 .previous_participation

@@ -798,6 +798,7 @@ impl BeaconStateTile {
             |s| &mut s.balances_idx,
             |ids| bs.balances.finalize(promoted.balances_idx, ids),
         );
+        rebase_tier(survivors, |s| &mut s.eth1_idx, |ids| bs.eth1.finalize(promoted.eth1_idx, ids));
         rebase_tier(
             survivors,
             |s| &mut s.previous_participation_idx,
@@ -1913,8 +1914,8 @@ mod tests {
 
     use silver_beacon_state_data::{
         BLSPubkey, BalancesGroup, CurrentParticipationGroup, EPOCHS_PER_SLASHINGS_VECTOR,
-        EpochGroup, EpochState, EpochStateFinalized, FinalizedValidators, Immutable,
-        InactivityScoresGroup, LongtailGroup, LongtailState, PROPOSER_LOOKAHEAD_SIZE,
+        EpochGroup, EpochState, EpochStateFinalized, Eth1Group, Eth1Votes, FinalizedValidators,
+        Immutable, InactivityScoresGroup, LongtailGroup, LongtailState, PROPOSER_LOOKAHEAD_SIZE,
         PendingDeposit, PendingGroup, PendingQueues, PreviousParticipationGroup,
         SLOTS_PER_HISTORICAL_ROOT, SlotStateFinalized, SlotStateGroup, SlotStateId, ValSeed,
         ValidatorsGroup, Withdrawals, validator_capacity,
@@ -2022,6 +2023,7 @@ mod tests {
             immutable: Immutable::default(),
             validators: ValidatorsGroup::new(FinalizedValidators::with_validators(seeds)),
             balances: BalancesGroup::new(cap, n, &zero_u64s).unwrap(),
+            eth1: Eth1Group::new(Eth1Votes::default()),
             pending: PendingGroup::new(PendingQueues::default()),
             previous_participation: PreviousParticipationGroup::new(cap, n, &zero_flags).unwrap(),
             current_participation: CurrentParticipationGroup::new(cap, n, &zero_flags).unwrap(),
