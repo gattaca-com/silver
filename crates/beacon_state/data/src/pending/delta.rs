@@ -4,12 +4,15 @@ use crate::{
     types::{PendingConsolidation, PendingDeposit, PendingPartialWithdrawal},
 };
 
-/// One pending queue's per-fork delta: drop the first `drain_offset` entries
-/// of the base, then read the remainder followed by `appended`.
+/// One pending queue's per-fork delta: the first `min(drain_offset, base len)`
+/// base entries are consumed; reads continue into `appended`. `drain_offset`
+/// accumulates past the base (the excess entries came off `appended`
+/// physically) so `rebase` can recover how much of an inherited prefix this
+/// fork already drained.
 #[derive(Clone)]
 pub(super) struct QueueDelta<T> {
-    drain_offset: u32,
-    appended: Vec<T>,
+    pub(super) drain_offset: u32,
+    pub(super) appended: Vec<T>,
 }
 
 // Manual impl: the derive would spuriously bind `T: Default`.
@@ -23,24 +26,25 @@ impl<T: Clone> QueueDelta<T> {
     /// Effective queue element at `ix`: the base remainder after the drain,
     /// then the appended tail.
     #[inline]
-    fn get<'b>(&'b self, base: &'b [T], ix: usize) -> &'b T {
+    pub(super) fn get<'b>(&'b self, base: &'b [T], ix: usize) -> &'b T {
         let drain = self.drain_offset as usize;
         let remaining = base.len().saturating_sub(drain);
         if ix < remaining { &base[drain + ix] } else { &self.appended[ix - remaining] }
     }
 
     #[inline]
-    fn len(&self, base_len: usize) -> usize {
+    pub(super) fn len(&self, base_len: usize) -> usize {
         base_len.saturating_sub(self.drain_offset as usize) + self.appended.len()
     }
 
-    /// Drop the first `n` items from the effective queue: bump `drain_offset`
-    /// against the base, then trim `appended`.
+    /// Drop the first `n` items from the effective queue. `drain_offset`
+    /// takes the full `n` (uncapped); the part past the base comes off
+    /// `appended` physically.
     #[inline]
-    fn drain(&mut self, base_len: usize, n: usize) {
+    pub(super) fn drain(&mut self, base_len: usize, n: usize) {
         let already = self.drain_offset as usize;
-        let from_appended = n.saturating_sub(base_len.saturating_sub(already));
-        self.drain_offset += (n - from_appended) as u32;
+        let from_appended = (already + n).saturating_sub(base_len.max(already));
+        self.drain_offset += n as u32;
         if from_appended > 0 {
             self.appended.drain(..from_appended);
         }
@@ -49,17 +53,23 @@ impl<T: Clone> QueueDelta<T> {
     /// Re-base onto a freshly-promoted base: subtract the `winner`'s drain
     /// (now folded into the base), and drop the inherited promoted-`appended`
     /// prefix this delta hasn't already drained from its own copy.
-    fn rebase(&mut self, winner: &Self, old_base_len: usize) {
+    pub(super) fn rebase(&mut self, winner: &Self, old_base_len: usize) {
         debug_assert!(
             self.drain_offset >= winner.drain_offset,
             "descendant must not drain less than the promoted delta",
         );
-        let cur_drain = self.drain_offset as usize;
-        let promoted_app_len = winner.appended.len();
-        let drained_from_pf = cur_drain.saturating_sub(old_base_len).min(promoted_app_len);
-        let drop_n = (promoted_app_len - drained_from_pf).min(self.appended.len());
+        let (d, w) = (self.drain_offset as usize, winner.drain_offset as usize);
+        // Of the winner's (post-drain) `appended` — now the new base's tail —
+        // how much this fork already drained out of its inherited copy. The
+        // winner's own past-base drains never reached the copy: they were
+        // removed from `winner.appended` before the fork inherited it.
+        let over = |drain: usize| drain.saturating_sub(old_base_len);
+        let consumed = (over(d) - over(w)).min(winner.appended.len());
+        // The un-drained inherited remainder; everything after it is this
+        // fork's own appends, which must survive.
+        let drop_n = winner.appended.len() - consumed;
         self.appended.drain(..drop_n);
-        self.drain_offset = (cur_drain - winner.drain_offset as usize) as u32;
+        self.drain_offset = (d.min(old_base_len) - w.min(old_base_len) + consumed) as u32;
     }
 
     /// Fold into the base queue: drain the promoted prefix, append the new
@@ -75,7 +85,7 @@ impl<T: Clone> QueueDelta<T> {
         self.appended.clear();
     }
 
-    fn reset_from(&mut self, other: &Self) {
+    pub(super) fn reset_from(&mut self, other: &Self) {
         self.drain_offset = other.drain_offset;
         self.appended.clone_from(&other.appended);
     }

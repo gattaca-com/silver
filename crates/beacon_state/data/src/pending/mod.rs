@@ -1,5 +1,7 @@
 mod delta;
 mod finalized;
+#[cfg(test)]
+mod tests;
 
 use delta::{OldBaseLens, PendingQueuesDelta};
 pub use delta::{PendingView, PendingWriteView};
