@@ -143,16 +143,15 @@ impl StorageTile {
         if to_request == 0 {
             return;
         }
+
         self.outstanding_requests.insert(block_root, (to_request, to_request, MAX_RETRIES));
         tracing::trace!(
             block = hex::encode(block_root),
             ?stream_id,
             "data columns by root request: {to_request:b}"
         );
-        // While syncing, RPC-delivered blocks get their columns by range.
-        if self.store.is_synced() || stream_id.protocol() == StreamProtocol::GossipSub {
-            emit(self.column_request(block_root, to_request));
-        }
+
+        emit(self.column_request(block_root, to_request));
     }
 
     #[timed]
@@ -233,6 +232,7 @@ impl StorageTile {
                     buffer,
                     v.slot.finalized_block_roots(),
                     v.slot.delta_block_roots(),
+                    self.store.head_root(),
                 );
                 let is_above_finalized =
                     util::is_above_finalized(buffer, v.epoch.state().finalized_checkpoint.epoch);
@@ -392,7 +392,7 @@ impl Tile<SilverSpine> for StorageTile {
                     let t_read = self.rpc_consumer.acquire(ssz);
                     self.store.backfill_block(t_read);
                 }
-                silver_common::RpcResponse::BeaconBlock { fork_digest: _, ssz } => {
+                silver_common::RpcResponse::BeaconBlock { fork_digest: _, ssz } if self.store.is_synced() => {
                     let t_read = self.rpc_consumer.acquire(ssz);
                     self.beacon_block(rsp.stream_id, t_read, &mut |evt| {
                         producers.peer_events.produce(&evt.into());

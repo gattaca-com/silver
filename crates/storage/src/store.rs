@@ -377,6 +377,7 @@ impl Store {
         match sync_update {
             SyncUpdate::Following if !self.first_sync => {
                 // First update - check whether we need to backfill history.
+                tracing::info!("storage first sync");
                 self.first_sync = true;
                 self.write_queue.push_back(PendingWrite::Backfill {
                     finalized_slot: self.finalized_slot,
@@ -403,6 +404,7 @@ impl Store {
     ) {
         self.head_slot = head_slot;
         self.head_root = head_root;
+        tracing::info!(head_slot, head_root = hex::encode(head_root), "storage head update");
 
         if finalized_slot <= self.finalized_slot {
             return;
@@ -464,6 +466,10 @@ impl Store {
 
     pub(super) fn head_slot(&self) -> u64 {
         self.head_slot
+    }
+
+    pub(super) fn head_root(&self) -> &[u8; 32] {
+        &self.head_root
     }
 
     #[timed]

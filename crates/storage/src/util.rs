@@ -213,9 +213,11 @@ pub fn parent_validated(
     sidecar: &[u8],
     finalized_block_roots: &[B256],
     delta_block_roots: &[B256],
+    store_head_root: &B256,
 ) -> bool {
     let parent_root = DataColumnSidecarView::parent_root(sidecar);
-    delta_block_roots.iter().any(|r| r == parent_root) ||
+    parent_root == store_head_root ||
+        delta_block_roots.iter().any(|r| r == parent_root) ||
         finalized_block_roots.iter().any(|r| r == parent_root)
 }
 
