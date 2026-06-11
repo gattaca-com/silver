@@ -52,7 +52,7 @@ pub const EPOCHS_RING_N: usize = 8;
 /// Bounds the number of simultaneously live forks; sizes the per-tier rings.
 pub const SLOTS_RING_N: usize = 256;
 
-// size: ~72 B. No `Default`: a bundle must not exist before its per-tier
+// No `Default`: a bundle must not exist before its per-tier
 // entries do — ids surface only from a writer's `commit`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct StateId {
@@ -129,7 +129,6 @@ impl Clone for SlotState {
     }
 }
 
-// size: ~648 B (proposer_lookahead 512 + 3 × Checkpoint 120 + scalars + pad)
 #[derive(Clone, Copy)]
 pub struct EpochState {
     pub proposer_lookahead: [u64; PROPOSER_LOOKAHEAD_SIZE],
@@ -160,7 +159,6 @@ impl Default for EpochState {
 // implemented). Length is whatever the validators layer reports; reading
 // past `base_count` with no edit returns the spec default (0 / false).
 
-// size: ~120 B inline + the frozen historical_roots heap block
 #[derive(Clone, Default)]
 pub struct Immutable {
     pub genesis_time: u64,
@@ -195,14 +193,12 @@ impl Immutable {
     }
 }
 
-// size: ~40 B
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub struct Checkpoint {
     pub epoch: Epoch,
     pub root: B256,
 }
 
-// size: ~16 B
 #[derive(Clone, Copy, Default)]
 pub struct Fork {
     pub previous_version: Version,
@@ -210,7 +206,6 @@ pub struct Fork {
     pub epoch: Epoch,
 }
 
-// size: ~72 B
 #[derive(Clone, Copy, Default)]
 pub struct Eth1Data {
     pub deposit_root: B256,
@@ -218,7 +213,6 @@ pub struct Eth1Data {
     pub block_hash: B256,
 }
 
-// size: ~112 B
 #[derive(Clone, Copy, Default, Debug)]
 pub struct BeaconBlockHeader {
     pub slot: Slot,
@@ -228,7 +222,6 @@ pub struct BeaconBlockHeader {
     pub body_root: B256,
 }
 
-// size: ~616 B (logs_bloom 256 + base_fee 32 + roots/hashes)
 #[derive(Clone, Copy)]
 pub struct ExecutionPayloadHeader {
     pub parent_hash: B256,
@@ -276,7 +269,6 @@ impl Default for ExecutionPayloadHeader {
     }
 }
 
-// size: ~192 B (sig 96 + pubkey 48 + creds 32 + 2 × u64)
 #[derive(Clone, Copy)]
 pub struct PendingDeposit {
     pub pubkey: BLSPubkey,
@@ -286,7 +278,6 @@ pub struct PendingDeposit {
     pub slot: Slot,
 }
 
-// size: ~24 B
 #[derive(Clone, Copy, Default)]
 pub struct PendingPartialWithdrawal {
     pub index: u64,
@@ -294,14 +285,12 @@ pub struct PendingPartialWithdrawal {
     pub withdrawable_epoch: Epoch,
 }
 
-// size: ~16 B
 #[derive(Clone, Copy, Default)]
 pub struct PendingConsolidation {
     pub source_index: u64,
     pub target_index: u64,
 }
 
-// size: ~64 B
 #[derive(Clone, Copy, Default)]
 pub struct HistoricalSummary {
     pub block_summary_root: B256,
@@ -321,7 +310,6 @@ impl Default for SyncCommittee {
     }
 }
 
-// size: ~32 B
 #[repr(transparent)]
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub struct Withdrawals(pub B256);

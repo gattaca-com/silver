@@ -4,7 +4,6 @@ use crate::types::SLOTS_PER_EPOCH;
 const FIN_SLOT: u64 = 100;
 const FIN_EPOCH: u64 = FIN_SLOT / SLOTS_PER_EPOCH;
 
-/// `EpochView::randao_mix_at_epoch` with no fork delta reads the base ring.
 #[test]
 fn randao_anchored_reads_base() {
     let mut base = EpochStateFinalized::default();
@@ -16,8 +15,6 @@ fn randao_anchored_reads_base() {
     assert_eq!(g.base_view().randao_mix_at_epoch(target_epoch, FIN_EPOCH), [0xAB; 32]);
 }
 
-/// A diverged fork delta hits the overlay for the epochs it covers, then falls
-/// through to the base for the rest.
 #[test]
 fn randao_diverged_hits_delta_then_base() {
     let mut base = EpochStateFinalized::default();
@@ -34,15 +31,10 @@ fn randao_diverged_hits_delta_then_base() {
     };
 
     let view = g.view(id);
-    // FIN_EPOCH → delta hit
     assert_eq!(view.randao_mix_at_epoch(FIN_EPOCH, FIN_EPOCH), [0xCC; 32]);
-    // FIN_EPOCH+1 → falls through to base
     assert_eq!(view.randao_mix_at_epoch(FIN_EPOCH + 1, FIN_EPOCH), [0x11; 32]);
 }
 
-/// Finalization overlays the winner fork's per-completed-epoch logs into the
-/// base circular buffers at `(old_fin_epoch + k) % cap` and replaces the scalar
-/// `EpochState`.
 #[test]
 fn finalize_overlays_rings_and_replaces_state() {
     let mut base = EpochStateFinalized::default();

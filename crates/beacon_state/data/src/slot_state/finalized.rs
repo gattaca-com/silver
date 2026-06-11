@@ -7,8 +7,6 @@ use crate::{
     types::{B256, MAX_ETH1_VOTES, SLOTS_PER_HISTORICAL_ROOT, SlotState},
 };
 
-/// Finalized base for the slot tier: the canonical `SlotState` scalars plus the
-/// `block_roots`/`state_roots` circular buffers (indexed by `slot % HR`).
 // size: ~1 KB inline (SlotState scalars + 3 × Box/Vec headers); heap 512 KB
 // (2 × HR × 32 B root rings) + the eth1_votes Vec.
 #[derive(Clone)]
@@ -45,7 +43,6 @@ impl SlotStateFinalized {
         Self { slot, block_roots, state_roots }
     }
 
-    /// The canonical finalized `SlotState` scalars (checkpoint encoding).
     #[inline]
     pub(crate) fn state(&self) -> &SlotState {
         &self.slot

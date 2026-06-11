@@ -11,7 +11,6 @@ use crate::{
     types::SLOTS_RING_N,
 };
 
-/// Typed ring-slot handle into a [`PendingGroup`] (see [`Id`]).
 pub type PendingId = Id<PendingGroup>;
 
 pub struct PendingGroup {
@@ -37,7 +36,6 @@ impl PendingGroup {
         f(&self.base)
     }
 
-    /// Read-only view over a fork — for the read views (`StateReadView`).
     #[inline]
     pub fn view(&self, id: PendingId) -> PendingView<'_> {
         PendingView::new(&self.base, self.forks.get(id))
@@ -74,7 +72,6 @@ impl PendingGroup {
     /// Re-anchor each survivor against the promoted `winner` into fresh slots
     /// (deduped for shared survivors), then promote the winner into the base.
     /// Self-contained — `old_base_lens` is snapshotted from the still-old base.
-    /// Mirrors [`BalancesGroup::finalize`](crate::BalancesGroup).
     pub fn finalize(&mut self, winner: PendingId, survivors: &[PendingId]) -> Vec<PendingId> {
         let old_base_lens = OldBaseLens::snapshot(&self.base);
 

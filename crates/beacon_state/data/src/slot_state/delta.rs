@@ -5,8 +5,6 @@ use crate::{
     types::{B256, Epoch, Slot, SlotState},
 };
 
-/// Per-fork slot-tier delta: the working `SlotState` scalars plus block/state
-/// roots appended since finalization (circular-buffer tail).
 // size: ~1 KB inline (SlotState scalars + Vec headers); root tails + eth1_votes
 // on the heap.
 #[derive(Clone, Default)]
@@ -55,13 +53,11 @@ impl<'a> SlotStateView<'a> {
         Self { base, delta }
     }
 
-    /// Effective `SlotState` — the fork's if it has a delta, else the base.
     #[inline]
     pub fn state(&self) -> &'a SlotState {
         self.delta.map_or(&self.base.slot, |d| &d.slot)
     }
 
-    /// The finalized base `SlotState` (ignores the fork delta).
     #[inline]
     pub fn base_state(&self) -> &'a SlotState {
         &self.base.slot
@@ -77,8 +73,6 @@ impl<'a> SlotStateView<'a> {
         self.state().slot / SLOTS_PER_EPOCH
     }
 
-    /// Finalized circular buffer of block roots (length
-    /// `SLOTS_PER_HISTORICAL_ROOT`).
     #[inline]
     pub fn finalized_block_roots(&self) -> &'a [B256] {
         &self.base.block_roots
@@ -89,7 +83,6 @@ impl<'a> SlotStateView<'a> {
         &self.base.state_roots
     }
 
-    /// Block roots appended on the fork delta (empty if no delta).
     #[inline]
     pub fn delta_block_roots(&self) -> &'a [B256] {
         self.delta.map_or(&[][..], |d| &d.block_roots)
@@ -122,13 +115,10 @@ impl<'a> SlotStateView<'a> {
         fin_roots[slot as usize % fin_roots.len()]
     }
 
-    /// Merged `block_roots` ring (finalized base + delta-appended roots
-    /// overlaid by slot) written into `out`.
     pub fn effective_block_roots_into(&self, out: &mut Vec<B256>) {
         self.overlay_ring_into(self.finalized_block_roots(), self.delta_block_roots(), out);
     }
 
-    /// Merged `state_roots` ring written into `out`.
     pub fn effective_state_roots_into(&self, out: &mut Vec<B256>) {
         self.overlay_ring_into(self.finalized_state_roots(), self.delta_state_roots(), out);
     }
@@ -168,13 +158,11 @@ impl<'a> SlotStateWriteView<'a> {
         SlotStateView { base: self.base, delta: Some(&self.fork) }
     }
 
-    /// The fork's working `SlotState` (read / mutate).
     #[inline]
     pub fn state(&self) -> &SlotState {
         &self.fork.slot
     }
 
-    /// The finalized base `SlotState`.
     #[inline]
     pub fn finalized_state(&self) -> &SlotState {
         &self.base.slot

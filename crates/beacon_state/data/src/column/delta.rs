@@ -9,10 +9,9 @@ use crate::{
     },
 };
 
-/// Per-fork sparse overlay of one scalar column over the finalized base.
 /// Sorted by index; entries equal to the base are elided on the bulk paths.
 /// `total` is the fork's list length, grown in lockstep with the validator
-/// registry. Shared by every column — the marker lives on [`ColumnGroup`].
+/// registry.
 #[derive(Clone)]
 pub(crate) struct ColumnDelta<V> {
     edits: Vec<(u32, V)>,
@@ -39,7 +38,7 @@ impl<V: ColumnVal> ColumnDelta<V> {
     }
 
     /// Anchor a freshly-rolled (reset) delta at `base`'s length. `edits` is
-    /// already empty; only the length needs seeding. Mirrors `BalancesDelta`.
+    /// already empty; only the length needs seeding.
     pub(super) fn anchor_at(&mut self, base: &FinalizedColumn<V>) {
         self.total = base.count();
     }
@@ -98,8 +97,6 @@ impl<V: ColumnVal> SparseLayer for ColumnDelta<V> {
     }
 }
 
-/// Read-only view over one column's base + a frozen fork delta. Generic over
-/// the column marker `C`.
 pub struct ColumnView<'a, C: ColumnSpec> {
     base: &'a FinalizedColumn<C::Val>,
     delta: &'a ColumnDelta<C::Val>,
@@ -139,8 +136,7 @@ impl<'a, C: ColumnSpec> ColumnView<'a, C> {
     }
 }
 
-/// Writer over one column's base + a per-fork delta. Generic over the column
-/// marker `C`. Length is intrinsic (no external counts).
+/// Length is intrinsic (no external counts).
 pub struct ColumnWriteView<'a, C: ColumnSpec> {
     base: &'a FinalizedColumn<C::Val>,
     fork: Slot<'a, ColumnGroup<C>, ColumnDelta<C::Val>>,
@@ -155,16 +151,13 @@ impl<'a, C: ColumnSpec> ColumnWriteView<'a, C> {
         Self { base, fork }
     }
 
-    /// Consume the writer and surface the fork's typed id (see
-    /// [`Slot::commit`]).
     #[inline]
     pub fn commit(self) -> Id<ColumnGroup<C>> {
         self.fork.commit()
     }
 
     /// Grow the list by one (new validator → the appended default, so no
-    /// edit). Mirrors `BalancesWriteView::append`; the columns move in
-    /// lockstep with the registry.
+    /// edit).
     #[inline]
     pub fn append(&mut self) -> u32 {
         let idx = self.fork.total as u32;
@@ -198,8 +191,6 @@ impl<'a, C: ColumnSpec> ColumnWriteView<'a, C> {
         replace_against(&mut *self.fork, self.base, scratch, f);
     }
 
-    /// Read-only view over the same base + fork — mirrors
-    /// `BalancesWriteView::reader`.
     #[inline]
     pub fn reader(&self) -> ColumnView<'_, C> {
         ColumnView::new(self.base, &self.fork)

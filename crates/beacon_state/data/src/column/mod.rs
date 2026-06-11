@@ -14,7 +14,6 @@ use crate::{
 
 /// Scalar element of a column: a fixed-size little-endian SSZ value.
 pub trait ColumnVal: Copy + PartialEq + 'static {
-    /// Encoded size in bytes.
     const SIZE: usize;
     /// Value of a freshly-appended element (past the finalized base).
     const APPENDED_DEFAULT: Self;
@@ -22,7 +21,6 @@ pub trait ColumnVal: Copy + PartialEq + 'static {
     /// Decode `dst.len()` values from the little-endian SSZ byte range.
     fn read_ssz_slice(dst: &mut [Self], src: &[u8]);
 
-    /// SSZ-encode `data` — the checkpoint persist's section body.
     fn write_ssz_slice<W: std::io::Write>(data: &[Self], w: &mut W) -> std::io::Result<()>;
 }
 
@@ -85,7 +83,6 @@ pub type ParticipationView<'a, M> = ColumnView<'a, M>;
 pub type ParticipationWriteView<'a, M> = ColumnWriteView<'a, M>;
 pub type FinalizedParticipation = FinalizedColumn<u8>;
 
-/// Typed ring-slot handle into the inactivity [`ColumnGroup`] (see [`Id`]).
 pub type InactivityScoresGroup = ColumnGroup<Inactivity>;
 pub type InactivityId = Id<InactivityScoresGroup>;
 pub type InactivityView<'a> = ColumnView<'a, Inactivity>;
@@ -99,7 +96,6 @@ pub struct ColumnGroup<C: ColumnSpec> {
 }
 
 impl<C: ColumnSpec> ColumnGroup<C> {
-    /// The finalized base (checkpoint encoding).
     #[inline]
     pub(crate) fn base(&self) -> &FinalizedColumn<C::Val> {
         &self.base
@@ -115,7 +111,6 @@ impl<C: ColumnSpec> ColumnGroup<C> {
         })
     }
 
-    /// Read-only view over a fork — for the read views.
     #[inline]
     pub fn view(&self, id: Id<Self>) -> ColumnView<'_, C> {
         ColumnView::new(&self.base, self.forks.get(id))
@@ -146,8 +141,6 @@ impl<C: ColumnSpec> ColumnGroup<C> {
 
     /// Re-anchor each survivor against the promoted `winner` into fresh slots
     /// (deduped for shared survivors), then promote the winner into the base.
-    /// Self-contained. Mirrors
-    /// [`BalancesGroup::finalize`](crate::BalancesGroup).
     pub fn finalize(&mut self, winner: Id<Self>, survivors: &[Id<Self>]) -> Vec<Id<Self>> {
         let fresh = reanchor_survivors(survivors, |s| self.reanchor(s, winner).commit());
 

@@ -12,7 +12,6 @@ use crate::{
     types::EPOCHS_RING_N,
 };
 
-/// Typed ring-slot handle into an [`EpochGroup`] (see [`Id`]).
 pub type EpochId = Id<EpochGroup>;
 
 pub struct EpochGroup {
@@ -30,7 +29,6 @@ impl EpochGroup {
         &self.base
     }
 
-    /// Read-only view over a fork — for the read views.
     #[inline]
     pub fn view(&self, id: EpochId) -> EpochView<'_> {
         EpochView::new(&self.base, Some(self.forks.get(id)))
@@ -67,8 +65,6 @@ impl EpochGroup {
         EpochWriteView::new(base, forks.roll_from(parent))
     }
 
-    /// Roll derived from the inherited `parent` entry, or fresh off the base
-    /// when no ancestor owns one.
     #[inline]
     pub fn roll_inheriting(&mut self, parent: Option<EpochId>) -> EpochWriteView<'_> {
         match parent {

@@ -3,9 +3,8 @@ use std::io::{self, Write};
 use super::{ColumnVal, delta::ColumnDelta};
 use crate::ColumnLenMismatch;
 
-/// Finalized base for one `List[V, VALIDATOR_REGISTRY_LIMIT]` column. Sized to
-/// validator capacity; `count` is the finalized list length (kept in lockstep
-/// with the validator registry), so the group is self-contained.
+/// Sized to validator capacity; `count` is the finalized list length (kept in
+/// lockstep with the validator registry).
 pub struct FinalizedColumn<V> {
     data: Box<[V]>,
     count: usize,
@@ -28,13 +27,10 @@ impl<V: ColumnVal> FinalizedColumn<V> {
         Ok(Self { data, count })
     }
 
-    /// SSZ-encode the finalized column (`count` little-endian values) — the
-    /// checkpoint persist's section body.
     pub(crate) fn write_ssz<W: Write>(&self, w: &mut W) -> io::Result<()> {
         V::write_ssz_slice(&self.data[..self.count], w)
     }
 
-    /// Finalized list length.
     #[inline]
     pub fn count(&self) -> usize {
         self.count

@@ -4,10 +4,6 @@ use crate::{
     types::{B256, Epoch, EpochState},
 };
 
-/// Per-fork epoch-tier delta: the working [`EpochState`] scalars plus the
-/// per-completed-epoch `randao_mixes`/`slashings` log appended since
-/// finalization.
-// size: ~696 B stack (2 × Vec header + EpochState ~648 B); logs on the heap.
 #[derive(Clone, Default)]
 pub(crate) struct EpochStateDelta {
     // one entry per completed epoch since finalization
@@ -58,7 +54,6 @@ impl<'a> EpochView<'a> {
         Self { base, delta }
     }
 
-    /// Effective `EpochState` — the fork's if it has a delta, else the base.
     #[inline]
     pub fn state(&self) -> &'a EpochState {
         self.delta.map_or(&self.base.state, |d| &d.state)
@@ -72,27 +67,21 @@ impl<'a> EpochView<'a> {
         self.state().proposer_lookahead.get(lookahead_idx).copied()
     }
 
-    /// Finalized circular buffer of randao mixes (length
-    /// `EPOCHS_PER_HISTORICAL_VECTOR`).
     #[inline]
     pub fn finalized_randao_mixes(&self) -> &'a [B256] {
         &self.base.randao_mixes
     }
 
-    /// Finalized circular buffer of per-epoch slashings totals (length
-    /// `EPOCHS_PER_SLASHINGS_VECTOR`).
     #[inline]
     pub fn finalized_slashings(&self) -> &'a [u64] {
         &self.base.slashings
     }
 
-    /// Randao mixes appended on the fork delta (empty if no delta).
     #[inline]
     pub fn delta_randao_mixes(&self) -> &'a [B256] {
         self.delta.map_or(&[][..], |d| &d.randao_mixes)
     }
 
-    /// Per-epoch slashings appended on the fork delta (empty if no delta).
     #[inline]
     pub fn delta_slashings(&self) -> &'a [u64] {
         self.delta.map_or(&[][..], |d| &d.slashings)
@@ -145,13 +134,11 @@ impl<'a> EpochWriteView<'a> {
         self.fork.commit()
     }
 
-    /// Read view over the same fork — mirrors `SlotStateWriteView::reader`.
     #[inline]
     pub fn reader(&self) -> EpochView<'_> {
         EpochView::new(self.base, Some(&self.fork))
     }
 
-    /// Mutable handle to the fork's scalar [`EpochState`].
     #[inline]
     pub fn state_mut(&mut self) -> &mut EpochState {
         &mut self.fork.state

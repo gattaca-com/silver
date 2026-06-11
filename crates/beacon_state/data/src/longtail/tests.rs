@@ -5,8 +5,6 @@ fn summary(b: u8) -> HistoricalSummary {
     HistoricalSummary { block_summary_root: [b; 32], state_summary_root: [b; 32] }
 }
 
-/// `LongtailView::historical_summary` with no fork reads the base log; an index
-/// past the base returns `None`.
 #[test]
 fn historical_summary_base_then_none() {
     let mut base = LongtailState::default();
@@ -21,8 +19,6 @@ fn historical_summary_base_then_none() {
     assert_eq!(view.historical_summaries_len(), 2);
 }
 
-/// A diverged fork extends the base log: reads past the base length resolve
-/// against the fork's appended tail.
 #[test]
 fn historical_summary_diverged_extends_past_base() {
     let mut base = LongtailState::default();
@@ -41,8 +37,6 @@ fn historical_summary_diverged_extends_past_base() {
     assert_eq!(view.historical_summary(1).unwrap().block_summary_root, [3; 32]);
 }
 
-/// Finalization rotates sync committees + indices (absolute replace) and
-/// **extends** the base historical-summary log with the winner's appends.
 #[test]
 fn finalize_rotates_committees_and_extends_summaries() {
     let mut base = LongtailState::default();
@@ -52,7 +46,6 @@ fn finalize_rotates_committees_and_extends_summaries() {
     let winner = {
         let mut wv = g.roll_fresh();
         wv.push_historical_summary(summary(2));
-        // Rotate the winner's sync committees + indices.
         wv.state_mut().current_sync_committee.pubkeys[0] = [0x77; 48];
         wv.state_mut().next_sync_committee.pubkeys[0] = [0x88; 48];
         wv.state_mut().sync_committee_indices[0] = 42;
@@ -65,7 +58,6 @@ fn finalize_rotates_committees_and_extends_summaries() {
     assert_eq!(base.current_sync_committee.pubkeys[0], [0x77; 48]);
     assert_eq!(base.next_sync_committee.pubkeys[0], [0x88; 48]);
     assert_eq!(base.sync_committee_indices[0], 42);
-    // Base entry kept, winner's appended.
     assert_eq!(base.historical_summaries.len(), 2);
     assert_eq!(base.historical_summaries[0].block_summary_root, [1; 32]);
     assert_eq!(base.historical_summaries[1].block_summary_root, [2; 32]);

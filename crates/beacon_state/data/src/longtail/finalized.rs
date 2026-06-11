@@ -5,10 +5,9 @@ use crate::{
     types::{HistoricalSummary, SYNC_COMMITTEE_SIZE, SyncCommittee},
 };
 
-/// Longtail tier state: sync committees + their resolved validator indices +
-/// the cumulative `historical_summaries` log. Used as BOTH the finalized base
-/// AND the per-fork delta entry — for the base `historical_summaries` is the
-/// full list; for a fork delta it holds only the post-finalization appends.
+/// Used as BOTH the finalized base AND the per-fork delta entry — for the base
+/// `historical_summaries` is the full list; for a fork delta it holds only the
+/// post-finalization appends.
 // size: ~50 KB (two SyncCommittees + sync_committee_indices). The base's
 // `historical_summaries` Vec GROWS, so the base allocation is realloc-prone;
 // `promote` extends in place rather than replacing it.

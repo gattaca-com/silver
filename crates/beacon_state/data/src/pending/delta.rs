@@ -81,8 +81,6 @@ impl<T: Clone> QueueDelta<T> {
     }
 }
 
-/// Per-fork delta on [`PendingQueues`], one [`QueueDelta`] per queue.
-// size: ~88 B
 #[derive(Clone, Default)]
 pub(crate) struct PendingQueuesDelta {
     pub(super) deposits: QueueDelta<PendingDeposit>,
@@ -261,8 +259,6 @@ impl<'a> PendingWriteView<'a> {
         self.fork.deposits.appended.append(src);
     }
 
-    /// Drop the first `n` items from the effective queue: bump `drain_offset`
-    /// against the base, then trim `appended`.
     #[inline]
     pub fn drain_pending_deposits(&mut self, n: usize) {
         self.fork.deposits.drain(self.base.pending_deposits.len(), n);

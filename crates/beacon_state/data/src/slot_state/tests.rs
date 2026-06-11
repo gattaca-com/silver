@@ -2,7 +2,6 @@ use super::{SlotStateFinalized, SlotStateGroup};
 
 const FIN_SLOT: u64 = 100;
 
-/// Default base anchored at finalized `FIN_SLOT`.
 fn anchored_base() -> SlotStateFinalized {
     let mut base = SlotStateFinalized::default();
     base.slot.slot = FIN_SLOT;

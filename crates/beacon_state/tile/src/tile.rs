@@ -1171,9 +1171,7 @@ impl BeaconStateTile {
                 let checkpoints = (es.current_justified_checkpoint, es.finalized_checkpoint);
                 Ok((view.commit(epoch_idx, longtail_idx), checkpoints))
             }
-            Err(e) => {
-                Err(e)
-            }
+            Err(e) => Err(e),
         };
         // `view`'s &mut self.state borrow ends here (`commit`/`drop` consumed
         // it); the fork-choice + publish work below needs &mut self.

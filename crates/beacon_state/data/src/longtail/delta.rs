@@ -1,11 +1,8 @@
 use super::{LongtailGroup, LongtailId, finalized::LongtailState};
 use crate::{buffer::Slot as RingSlot, types::HistoricalSummary};
 
-/// Value-layer read over the longtail tier (base + optional per-fork delta).
 /// The delta is `Some` for a fork that crossed a sync-committee / historical
 /// rotation, else `None` and reads fall through to the base.
-/// `historical_summary` merges the base's full log with the delta's appended
-/// tail.
 #[derive(Clone, Copy)]
 pub struct LongtailView<'a> {
     base: &'a LongtailState,
@@ -18,7 +15,6 @@ impl<'a> LongtailView<'a> {
         Self { base, delta }
     }
 
-    /// Effective longtail state — the fork's if it has a delta, else the base.
     /// Exposes the sync-committee scalars; for the merged
     /// `historical_summaries` view use [`Self::historical_summary`] /
     /// [`Self::historical_summaries_len`].
@@ -65,13 +61,11 @@ impl<'a> LongtailWriteView<'a> {
         self.fork.commit()
     }
 
-    /// Read view over the same fork — mirrors `SlotStateWriteView::reader`.
     #[inline]
     pub fn reader(&self) -> LongtailView<'_> {
         LongtailView::new(self.base, Some(&self.fork))
     }
 
-    /// Mutable handle to the fork's working [`LongtailState`].
     #[inline]
     pub fn state_mut(&mut self) -> &mut LongtailState {
         &mut self.fork

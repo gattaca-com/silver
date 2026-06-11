@@ -12,7 +12,6 @@ use crate::{
     types::SLOTS_RING_N,
 };
 
-/// Typed ring-slot handle into a [`SlotStateGroup`] (see [`Id`]).
 pub type SlotStateId = Id<SlotStateGroup>;
 
 pub struct SlotStateGroup {
@@ -21,7 +20,6 @@ pub struct SlotStateGroup {
 }
 
 impl SlotStateGroup {
-    /// The finalized base (checkpoint encoding).
     #[inline]
     pub(crate) fn base(&self) -> &SlotStateFinalized {
         &self.base
@@ -31,7 +29,6 @@ impl SlotStateGroup {
         Self { base, forks: Ring::default() }
     }
 
-    /// Read-only view over a fork — for the read views.
     #[inline]
     pub fn view(&self, id: SlotStateId) -> SlotStateView<'_> {
         SlotStateView::new(&self.base, Some(self.forks.get(id)))
@@ -74,7 +71,7 @@ impl SlotStateGroup {
 
     /// Re-anchor each survivor against the promoted `winner` into fresh slots
     /// (deduped), then promote the winner into the base (circular-buffer
-    /// write). Mirrors [`BalancesGroup::finalize`](crate::BalancesGroup).
+    /// write).
     pub fn finalize(&mut self, winner: SlotStateId, survivors: &[SlotStateId]) -> Vec<SlotStateId> {
         let fresh = reanchor_survivors(survivors, |s| self.reanchor(s, winner).commit());
 

@@ -6,9 +6,6 @@ use crate::types::{PendingConsolidation, PendingDeposit, PendingPartialWithdrawa
 /// SSZ-serialised `PendingDeposit` size; mirrors `decompose`/`encode`.
 const PENDING_DEPOSIT_SSZ: usize = 192;
 
-/// Finalized base for the three pending FIFO queues (`pending_deposits`,
-/// `pending_partial_withdrawals`, `pending_consolidations`).
-// size: ~72 B (3 × Vec header)
 #[derive(Clone, Default)]
 pub struct PendingQueues {
     pub pending_deposits: Vec<PendingDeposit>,
