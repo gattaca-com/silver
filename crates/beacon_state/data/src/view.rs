@@ -123,34 +123,45 @@ impl BeaconStateOwner {
         self.state.get().read_view(state_id)
     }
 
-    /// Publish the head's index bundle for cross-thread readers — call only
-    /// once the per-tier slots it names will no longer be mutated. The first
-    /// publish is what makes the state observable at all.
-    pub fn publish_state_id(&mut self, state_id: StateId) {
-        debug_assert!(self.inner.version() & 1 == 0, "publish inside a write window");
-        // Single producer; `write` also handles the never-written 0→2 case.
-        self.inner.write(&ControlInner { state_id: Some(state_id) });
+    /// Single writer: the current control word is whatever we last wrote;
+    /// pre-publish (never written) it's the default.
+    fn current_control(&self) -> ControlInner {
+        self.inner.read_copy().map_or_else(|_| ControlInner::default(), |(value, _)| value)
     }
 
-    /// Open the finalize write window: the seqlock's version goes (and stays)
-    /// odd, so optimistic readers spin inside `read_copy` until the
-    /// [`WriteGuard`] drops. The guard's drop writes the staged control word
-    /// and closes the window in one seqlock write.
+    /// Publish the head's index bundle for cross-thread readers — call only
+    /// once the per-tier slots it names will no longer be mutated. The first
+    /// publish is what makes the state observable at all. Carries the
+    /// finalize counter unchanged: a publish never invalidates an in-flight
+    /// read.
+    pub fn publish_state_id(&mut self, state_id: StateId) {
+        let mut value = self.current_control();
+        debug_assert!(value.finalize_version & 1 == 0, "publish inside a write window");
+        value.state_id = Some(state_id);
+        // Single producer; `write` also handles the never-written 0→2 case.
+        self.inner.write(&value);
+    }
+
+    /// Open the finalize write window: the published finalize counter goes
+    /// (and stays) odd, so optimistic readers spin until the [`WriteGuard`]
+    /// drops. The guard's drop writes the staged control word — even counter
+    /// plus any bundle staged via [`WriteGuard::set_state_id`] — closing the
+    /// window in one seqlock write.
     pub fn write(&mut self) -> WriteGuard<'_> {
         // Stage from the current control; pre-publish (never-written) windows
         // stage the default — its `None` still reads as "no state yet" if the
         // window closes before the first publish.
-        let value = match self.inner.read_copy() {
-            Ok((value, _)) => value,
-            Err(_) => ControlInner::default(),
-        };
-        let version = self.inner.version();
-        debug_assert!(version & 1 == 0, "nested finalize write window");
-        // Crossbeam-style writer begin: odd store, then a Release fence so the
-        // state mutations behind the guard can't hoist above it.
-        self.inner.set_version_unsafe(version + 1);
+        let mut value = self.current_control();
+        debug_assert!(value.finalize_version & 1 == 0, "nested finalize write window");
+        // Crossbeam-style writer begin: publish the odd counter, then a
+        // Release fence so the state mutations behind the guard can't hoist
+        // above it.
+        value.finalize_version += 1;
+        self.inner.write(&value);
         sync::atomic::fence(Ordering::Release);
 
+        // Stage the even close; lands at guard drop.
+        value.finalize_version += 1;
         WriteGuard { beacon_state: self.state.get_mut(), value, inner: &self.inner }
     }
 
@@ -169,9 +180,16 @@ pub struct BeaconStateReader {
 }
 
 impl BeaconStateReader {
+    /// Current published finalize counter; `None` if never written.
+    fn finalize_version(&self) -> Option<u64> {
+        self.inner.read_copy().ok().map(|(control, _)| control.finalize_version)
+    }
+
     /// Performs optimistic reads from the beacon state, this will loop if the
-    /// finalized state is updated during a read. Returns `None` until the
-    /// writer publishes its first real snapshot.
+    /// finalized state is updated during a read — concurrent publishes leave
+    /// the read standing (the bundle's data is append-only until the next
+    /// finalize). Returns `None` until the writer publishes its first real
+    /// snapshot.
     ///
     /// Lock-free path: only the fixed-size bases (epoch/slot scalars,
     /// validators columns, balances/participation/inactivity boxes) are safe
@@ -183,18 +201,21 @@ impl BeaconStateReader {
         F: Fn(StateReadView<'_>) -> R,
     {
         loop {
-            // `read_copy` spins through odd versions (an open finalize
-            // window) and returns the version it validated against.
             // `Err(Empty)` = never written; `state_id: None` = a pre-publish
             // finalize window closed — both mean no snapshot yet.
-            let Ok((control, version)) = self.inner.read_copy() else { return None };
+            let Ok((control, _)) = self.inner.read_copy() else { return None };
+            if control.finalize_version & 1 == 1 {
+                // Finalize window open: wait it out.
+                std::hint::spin_loop();
+                continue;
+            }
             let state_id = control.state_id?;
             sync::atomic::fence(Ordering::Acquire);
             let result = reader(self.state.get().read_view(state_id));
 
             // Validate: no finalize ran while we were reading the state.
             sync::atomic::fence(Ordering::Acquire);
-            if self.inner.version() == version {
+            if self.finalize_version() == Some(control.finalize_version) {
                 return Some(result);
             }
         }
@@ -225,7 +246,8 @@ impl BeaconStateReader {
     ) -> io::Result<CheckpointChunk> {
         loop {
             // A finalize landed (or its window is open): wait it out, restart.
-            if self.inner.version() != cursor.version {
+            // Publishes keep the counter — they don't disturb the checkpoint.
+            if self.finalize_version() != Some(cursor.version) {
                 self.capture_checkpoint(cursor);
                 return Ok(CheckpointChunk::Restarted);
             }
@@ -250,7 +272,7 @@ impl BeaconStateReader {
             // Validate before handing out: bytes encoded across a finalize
             // are torn — loop (the version mismatch branch restarts).
             sync::atomic::fence(Ordering::Acquire);
-            if self.inner.version() != cursor.version {
+            if self.finalize_version() != Some(cursor.version) {
                 continue;
             }
 
@@ -270,18 +292,22 @@ impl BeaconStateReader {
     }
 
     /// (Re)capture a consistent `(version, slot, offsets)` snapshot into the
-    /// cursor and reset its position. `read_copy` waits out an open finalize
-    /// window.
+    /// cursor and reset its position, waiting out an open finalize window.
     fn capture_checkpoint(&self, cursor: &mut CheckpointCursor) {
         loop {
             // Post-`begin_checkpoint` the control is always written.
-            let Ok((_, version)) = self.inner.read_copy() else { continue };
+            let Some(version) = self.finalize_version() else { continue };
+            if version & 1 == 1 {
+                // Finalize window open: wait it out.
+                std::hint::spin_loop();
+                continue;
+            }
             sync::atomic::fence(Ordering::Acquire);
             let state = self.state.get();
             let lens = state.var_len_section_lens();
             let slot = state.slot_states.base().state().slot;
             sync::atomic::fence(Ordering::Acquire);
-            if self.inner.version() == version {
+            if self.finalize_version() == Some(version) {
                 *cursor = CheckpointCursor {
                     version,
                     slot,
@@ -311,7 +337,7 @@ pub enum CheckpointChunk {
 }
 
 /// Position + consistency token for a chunked checkpoint read: which part
-/// comes next, and the seqlock version every produced byte must agree with.
+/// comes next, and the finalize counter every produced byte must agree with.
 /// Plain data — all the synchronization lives in
 /// [`BeaconStateReader::checkpoint_chunk`].
 #[derive(Default)]
@@ -373,22 +399,26 @@ impl<'a> WriteGuard<'a> {
 
 impl<'a> Drop for WriteGuard<'a> {
     fn drop(&mut self) {
-        debug_assert!(self.inner.version() & 1 == 1, "write window already closed");
-        // Order the window's state mutations before the closing version store.
+        debug_assert!(self.value.finalize_version & 1 == 0, "staged close must be even");
+        // Order the window's state mutations before the closing control write.
         sync::atomic::fence(Ordering::Release);
-        // Writes the staged control word and flips the held-odd version back
-        // to even — readers spinning in `read_copy` resume with the new head.
-        self.inner.write_unpoison(&self.value);
+        // One seqlock write lands the staged bundle and the even counter
+        // together — readers never resolve re-anchored tiers through a stale
+        // bundle, and spinners resume with the new head.
+        self.inner.write(&self.value);
     }
 }
 
-/// The control word: just the published head's per-tier index bundle.
-/// Write-window state lives in the `Seqlock`'s OWN version counter (odd =
-/// finalize in progress; `WriteGuard` holds it odd across the window).
-/// `Default` exists only because `Seqlock::default()` requires it; readers
-/// treat `state_id: None` (only reachable when a finalize window closes
-/// before the first publish) as "no state yet" — every publish writes `Some`.
+/// The control word: the published head's per-tier index bundle plus the
+/// finalize counter (odd = finalize window open). Publishes rewrite
+/// `state_id` but keep the counter — tiers are append-only between
+/// finalizations, so a publish never invalidates an in-flight read; only the
+/// finalize window (which rebases and frees tier slots) does. `Default`
+/// exists only because `Seqlock::default()` requires it; readers treat
+/// `state_id: None` (only reachable when a finalize window closes before the
+/// first publish) as "no state yet" — every publish writes `Some`.
 #[derive(Clone, Copy, Default)]
 struct ControlInner {
     state_id: Option<StateId>,
+    finalize_version: u64,
 }
