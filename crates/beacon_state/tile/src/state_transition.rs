@@ -801,7 +801,7 @@ fn collect_sigs_block_body(
         collect_sigs_bls_to_execution_changes(imm, &validators, section, sig_batch)?;
     }
     collect_sigs_sync_aggregate(
-        &rv,
+        rv,
         offsets.sync_aggregate(),
         block_slot,
         active_scratch,

@@ -6,12 +6,12 @@ use crate::{
     PendingQueues, PreviousParticipationGroup, SlotStateFinalized, SlotStateGroup, SpecConfig,
     ValidatorsDecodeError, ValidatorsGroup, ssz_hash,
     types::{
-        B256, Checkpoint, EPOCHS_PER_HISTORICAL_VECTOR, EPOCHS_PER_SLASHINGS_VECTOR, Eth1Data,
-        ExecutionPayloadHeader, HISTORICAL_ROOTS_LIMIT, HistoricalSummary, Immutable,
-        MAX_ETH1_VOTES, PENDING_CONSOLIDATIONS_LIMIT, PENDING_DEPOSITS_LIMIT,
-        PENDING_PARTIAL_WITHDRAWALS_LIMIT, PROPOSER_LOOKAHEAD_SIZE, PendingConsolidation,
-        PendingDeposit, PendingPartialWithdrawal, SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT,
-        SYNC_COMMITTEE_SIZE, SlotState, SyncCommittee, Withdrawals,
+        B256, BeaconBlockHeader, Checkpoint, EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR, Eth1Data, ExecutionPayloadHeader, HISTORICAL_ROOTS_LIMIT,
+        HistoricalSummary, Immutable, MAX_ETH1_VOTES, PENDING_CONSOLIDATIONS_LIMIT,
+        PENDING_DEPOSITS_LIMIT, PENDING_PARTIAL_WITHDRAWALS_LIMIT, PROPOSER_LOOKAHEAD_SIZE,
+        PendingConsolidation, PendingDeposit, PendingPartialWithdrawal, SLOTS_PER_EPOCH,
+        SLOTS_PER_HISTORICAL_ROOT, SYNC_COMMITTEE_SIZE, SlotState, SyncCommittee, Withdrawals,
     },
 };
 
@@ -505,29 +505,29 @@ impl SlotStateFinalized {
         epoch: &EpochStateFinalized,
     ) -> Result<Self, DecomposeError> {
         let mut slot = SlotState {
-        slot: u64_le(ssz, F2);
-        latest_block_header: BeaconBlockHeader {
-            slot: u64_le(ssz, F4),
-            proposer_index: u64_le(ssz, F4 + 8),
-            parent_root: b256(ssz, F4 + 16),
-            state_root: b256(ssz, F4 + 48),
-            body_root: b256(ssz, F4 + 80),
-        },
-        eth1_data: Eth1Data {
-            deposit_root: b256(ssz, F8),
-            deposit_count: u64_le(ssz, F8 + 32),
-            block_hash: b256(ssz, F8 + 40),
-        },
-        eth1_deposit_index: u64_le(ssz, F10),
-        next_withdrawal_index: u64_le(ssz, F25),
-        next_withdrawal_validator_index: u64_le(ssz, F26),
-        deposit_requests_start_index: u64_le(ssz, F28),
-        exit_balance_to_consume: u64_le(ssz, F30),
-        earliest_exit_epoch: u64_le(ssz, F31),
-        consolidation_balance_to_consume: u64_le(ssz, F32),
-        earliest_consolidation_epoch: u64_le(ssz, F33),
-        ..Default::default()
-    };
+            slot: u64_le(ssz, F2),
+            latest_block_header: BeaconBlockHeader {
+                slot: u64_le(ssz, F4),
+                proposer_index: u64_le(ssz, F4 + 8),
+                parent_root: b256(ssz, F4 + 16),
+                state_root: b256(ssz, F4 + 48),
+                body_root: b256(ssz, F4 + 80),
+            },
+            eth1_data: Eth1Data {
+                deposit_root: b256(ssz, F8),
+                deposit_count: u64_le(ssz, F8 + 32),
+                block_hash: b256(ssz, F8 + 40),
+            },
+            eth1_deposit_index: u64_le(ssz, F10),
+            next_withdrawal_index: u64_le(ssz, F25),
+            next_withdrawal_validator_index: u64_le(ssz, F26),
+            deposit_requests_start_index: u64_le(ssz, F28),
+            exit_balance_to_consume: u64_le(ssz, F30),
+            earliest_exit_epoch: u64_le(ssz, F31),
+            consolidation_balance_to_consume: u64_le(ssz, F32),
+            earliest_consolidation_epoch: u64_le(ssz, F33),
+            ..Default::default()
+        };
 
         // eth1_votes (variable-length section).
         let votes_bytes = &ssz[o.eth1_votes..o.validators];

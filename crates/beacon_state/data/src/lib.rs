@@ -2,6 +2,13 @@ pub use balances::{
     BalancesGroup, BalancesId, BalancesReader, BalancesView, BalancesWriteView, FinalizedBalances,
 };
 pub use buffer::{Id, Reset, Ring};
+pub use column::{
+    ColumnGroup, ColumnSpec, ColumnVal, ColumnView, ColumnWriteView, Current,
+    CurrentParticipationGroup, CurrentParticipationId, FinalizedColumn, FinalizedInactivityScores,
+    FinalizedParticipation, Inactivity, InactivityId, InactivityScoresGroup, InactivityView,
+    InactivityWriteView, ParticipationView, ParticipationWriteView, Previous,
+    PreviousParticipationGroup, PreviousParticipationId,
+};
 pub use decompose::DecomposeError;
 pub use delta_view::{
     StateReadView, StateWriterView, ValidatorRow, append_validator, effective_randao_mixes_into,
@@ -10,16 +17,7 @@ pub use delta_view::{
 pub use encode::{CHECKPOINT_SECTIONS, PubkeysDecodeError, decode_checkpoint_pubkeys};
 pub use epoch::{EpochGroup, EpochId, EpochStateFinalized, EpochView, EpochWriteView};
 pub use hash_tree::{DeltaHashTree, FinalizedHashTree};
-pub use inactivity::{
-    FinalizedInactivityScores, InactivityId, InactivityScoresGroup, InactivityView,
-    InactivityWriteView,
-};
 pub use longtail::{LongtailGroup, LongtailId, LongtailState, LongtailView, LongtailWriteView};
-pub use participation::{
-    Current, CurrentParticipationGroup, CurrentParticipationId, FinalizedParticipation,
-    ParticipationGroup, ParticipationView, ParticipationWriteView, Previous,
-    PreviousParticipationGroup, PreviousParticipationId,
-};
 pub use pending::{PendingGroup, PendingId, PendingQueues, PendingView, PendingWriteView};
 pub use silver_chain_spec::{BlobParameters, SpecConfig};
 pub(crate) use silver_ssz::ssz_hash;
@@ -35,14 +33,13 @@ pub use view::{BeaconStateOwner, BeaconStateReader, CheckpointChunk, CheckpointC
 
 mod balances;
 pub mod buffer;
+mod column;
 mod decompose;
 mod delta_view;
 mod encode;
 mod epoch;
 mod hash_tree;
-mod inactivity;
 mod longtail;
-mod participation;
 mod pending;
 mod slot_state;
 pub(crate) mod sparse;

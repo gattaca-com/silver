@@ -1172,7 +1172,6 @@ impl BeaconStateTile {
                 Ok((view.commit(epoch_idx, longtail_idx), checkpoints))
             }
             Err(e) => {
-                drop(view);
                 Err(e)
             }
         };
