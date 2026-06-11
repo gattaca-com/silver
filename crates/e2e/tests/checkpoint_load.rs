@@ -189,7 +189,7 @@ fn finalized_state_loads() {
         );
     }
 
-    let raw_header = bs.slot_states.base_view().state().latest_block_header;
+    let raw_header = bs.slot_states.finalized_view().state().latest_block_header;
 
     // Same gate via the chunked checkpoint-cursor path (the live persist's
     // path — ~18 validators chunks at mainnet scale, plus the pubkeys
