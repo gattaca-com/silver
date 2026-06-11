@@ -127,7 +127,7 @@ fn eth1_data_reset() {
     epoch_handler("eth1_data_reset", |s| {
         s.with_view(|view| {
             let current_epoch = view.slot.reader().current_epoch();
-            epoch_transition::process_eth1_data_reset(&mut view.slot, current_epoch);
+            epoch_transition::process_eth1_data_reset(&mut view.eth1, current_epoch);
         });
     });
 }
