@@ -6,15 +6,14 @@ use flux::{
 use rustc_hash::FxHashMap;
 use silver_beacon_state_data::{
     B256, BeaconBlockHeader, BeaconState, BeaconStateOwner, BlobParameters, Checkpoint,
-    EPOCHS_PER_HISTORICAL_VECTOR, EPOCHS_RING_N, Epoch, LONGTAILS_RING_N, MIN_SEED_LOOKAHEAD,
-    PROPOSER_LOOKAHEAD_SIZE, PendingQueuesOldBaseLens, SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT,
-    SLOTS_RING_N, Slot, SlotStateDelta, SpecConfig, StateDelta, StateDeltaReadView, StateDeltaView,
-    ValidatorsDelta, Version, buffer::RollResult, decode_checkpoint_pubkeys,
+    EPOCHS_PER_HISTORICAL_VECTOR, EPOCHS_RING_N, Epoch, EpochId, LONGTAILS_RING_N, LongtailId,
+    MIN_SEED_LOOKAHEAD, SLOTS_PER_EPOCH, Slot, SlotState, SpecConfig, StateId, StateReadView,
+    Version, decode_checkpoint_pubkeys, randao_mix_at_epoch,
 };
 use silver_common::{
     BeaconStateEvent, BlockSource, DataColumnsAvailable, GossipTopic, NewGossipMsg, P2pStreamId,
-    PeerEvent, RpcInbound, RpcResponse, RpcSeverity, SilverSpine, SyncUpdate, TCacheRead,
-    TRandomAccess, TRead, hex32,
+    PeerEvent, RpcInbound, RpcResponse, RpcResponseInbound, RpcSeverity, SilverSpine, SyncUpdate,
+    TCacheRead, TRandomAccess, TRead, hex32,
     ssz_view::{
         self, AttesterSlashingView, MAX_ATTESTATIONS_ELECTRA, MAX_ATTESTING_INDICES,
         PROPOSER_SLASHING_SIZE, ProposerSlashingView, SIGNED_BLS_CHANGE_SIZE,
@@ -27,12 +26,15 @@ use silver_common::{
 
 use crate::{
     bls,
-    epoch_transition::{EPOCHS_PER_SYNC_COMMITTEE_PERIOD, MAX_PENDING_DEPOSITS_PER_EPOCH},
     error::PrecheckError,
     fork_choice::{BlockImport, ForkChoice, MAX_FORK_CHOICE_NODES, VoteTracker, compute_deltas},
     shuffling::{self, DOMAIN_BEACON_ATTESTER},
     ssz_hash, state_transition, validate,
 };
+
+/// Survivor set re-anchored at finalization: every fork-choice node's bundle
+/// plus the (possibly node-less) slot-advanced head.
+const MAX_SURVIVORS: usize = MAX_FORK_CHOICE_NODES + 1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Mode {
@@ -89,8 +91,8 @@ struct ParsedBlock {
     /// `true` iff the block carries blob commitments, so its data columns must
     /// be available (`DataColumnsAvailable`) before it can enter fork choice.
     has_data_columns: bool,
-    /// Slots-ring seq of the parent block's post-state delta.
-    parent_seq: usize,
+    /// Index bundle of the parent block's post-state.
+    parent_state_id: StateId,
 }
 
 // Per-fork attester shuffling cache, keyed by `(epoch, seed-epoch randao
@@ -134,18 +136,22 @@ pub struct BeaconStateTile {
     mode: Mode,
     ticker: SlotTicker,
 
+    /// Highest finalized slot PM has announced as a sync target — bounds the
+    /// data-availability requirement while range sync back-fills.
     sync_finalized_slot: Slot,
 
     spec: SpecConfig,
 
+    /// Canonical in-process state: finalized base + per-fork per-tier rings.
+    /// Other tiles read via `state.reader()` (raw-ptr + seqlock).
     state: BeaconStateOwner,
 
     fork_choice: ForkChoice,
     vote_tracker: Box<VoteTracker>,
     shuffling_cache: Box<ShufflingCache>,
 
-    /// Slots-ring seq of the canonical head's post-state `StateDelta`.
-    last_applied: usize,
+    /// Index bundle of the canonical head's post-state.
+    last_applied: StateId,
     last_applied_block_root: B256,
 
     initial_status_emitted: bool,
@@ -156,26 +162,24 @@ pub struct BeaconStateTile {
     /// from an all-zero genesis-validators-root.
     configured_fork_digest: Option<[u8; 4]>,
 
-    /// Reusable epoch-transition scratch buffers.
-    postponed_scratch: Vec<silver_beacon_state_data::PendingDeposit>,
-    attestation_votes_scratch: Vec<(u32, B256, Epoch)>,
-    active_scratch: Vec<u32>,
-    replace_u64_scratch: Vec<(u32, u64)>,
-    replace_u8_scratch: Vec<(u32, u8)>,
-    eff_scratch: Vec<u64>,
+    /// Reusable state-transition scratch buffers, threaded into
+    /// `apply_block` / `process_slots`.
+    stf_scratch: state_transition::StfScratch,
+    /// Per-block buffer of votes emitted by `process_attestations` so the
+    /// tile can fold them into the vote tracker after `apply_block` returns.
+    attestation_votes_scratch: Vec<state_transition::AttestationVote>,
     /// Effective-balance column from the previous `recompute_head`, kept so
     /// `compute_deltas` can net per-validator balance changes onto LMD weights
     /// (not just vote-root changes). Indexed by validator; new validators read
     /// as 0 (no prior weight).
     prev_eff_balances: Vec<u64>,
-
+    /// Pre-validation pass collects every BLS sig in the block here, then
+    /// runs `verify_all` once before pass 2 mutates state.
     sig_batch: bls::SigBatch,
-    /// Reusable merged-ring buffers for `hash_tree_root_state` (block/state
-    /// roots, randao, slashings) — avoids re-allocating the rings per slot.
-    state_hash_scratch: ssz_hash::StateHashScratch,
-    /// Pending blocks for which we are missing a parent block.
+    /// Pending blocks - blocks we have received for which we do not have a
+    /// parent block. Keyed by the parent block_hash.
     pending_blocks: FxHashMap<B256, Vec<PendingBlock>>,
-    /// Blocks fully validated but withheld from fork choice until their data
+    /// Blocks fully prechecked but withheld from the STF until their data
     /// columns are available.
     dc_pending_blocks: FxHashMap<B256, PendingBlock>,
     /// Block roots the storage tile has signalled data-available.
@@ -193,13 +197,17 @@ impl BeaconStateTile {
     pub fn new(
         ticker: SlotTicker,
         spec: SpecConfig,
-        state: BeaconStateOwner,
+        mut state: BeaconStateOwner,
         gossip_consumer: TRandomAccess,
         rpc_consumer: TRandomAccess,
         checkpoint_state: &[u8],
         decompressed_pubkeys: &[u8],
     ) -> Self {
-        let val_cap = state.state().finalized.validators.capacity();
+        let val_cap = state.state().validators.finalized().capacity();
+        // Pre-bootstrap placeholder head: honest per-tier entries rolled on
+        // the (still empty) owner — a bundle never exists before its entries.
+        // `bootstrap` installs the real anchor before any STF use.
+        let last_applied = state.roll_fresh();
         let mut tile = Self {
             // Boot in Syncing. PM's first `SyncUpdate::Following` flips us
             // once peer Status data confirms we're caught up.
@@ -211,22 +219,17 @@ impl BeaconStateTile {
             fork_choice: ForkChoice::default(),
             vote_tracker: VoteTracker::with_capacity(val_cap),
             shuffling_cache: ShufflingCache::with_capacity(val_cap),
-            last_applied: 0,
+            last_applied,
             last_applied_block_root: [0u8; 32],
             initial_status_emitted: false,
             cached_fork_digest: None,
-            active_scratch: Vec::with_capacity(val_cap.max(MAX_ATTESTING_INDICES)),
             configured_fork_digest: None,
-            postponed_scratch: Vec::with_capacity(MAX_PENDING_DEPOSITS_PER_EPOCH),
+            stf_scratch: state_transition::StfScratch::new(val_cap),
             attestation_votes_scratch: Vec::with_capacity(
                 MAX_ATTESTATIONS_ELECTRA * MAX_ATTESTING_INDICES,
             ),
-            replace_u64_scratch: Vec::with_capacity(val_cap),
-            replace_u8_scratch: Vec::with_capacity(val_cap),
-            eff_scratch: Vec::with_capacity(val_cap),
             prev_eff_balances: Vec::with_capacity(val_cap),
             sig_batch: bls::SigBatch::new(),
-            state_hash_scratch: ssz_hash::StateHashScratch::new(),
             pending_blocks: FxHashMap::with_capacity_and_hasher(
                 MAX_FORK_CHOICE_NODES,
                 Default::default(),
@@ -257,25 +260,26 @@ impl BeaconStateTile {
         self.fork_choice.find_head()
     }
 
+    /// Effective `SlotState` for a state bundle, resolved through its
+    /// slot-group view (the slot tier lives in `slot_states`, keyed by
+    /// `slot_idx`).
+    fn slot_state_at(&self, state_id: StateId) -> &SlotState {
+        self.state.state().slot_states.view(state_id.slot_idx).state()
+    }
+
     pub fn head_state_slot(&self) -> Slot {
-        self.state.state().slots.get(self.last_applied).slot.slot.slot
+        self.slot_state_at(self.last_applied).slot
     }
 
     pub fn head_validator_count(&self) -> usize {
-        let d = self.state.state().slots.get(self.last_applied);
-        d.validators.base_count + d.validators.appended.len()
+        self.state.state().validators.view(self.last_applied.validators_idx).count()
     }
 
     /// `(current_justified, finalized)` as seen by the canonical head's
     /// post-state. Reads the epoch delta if the head fork owns one; otherwise
     /// falls back to the finalized base epoch state.
     fn head_checkpoints(&self) -> (Checkpoint, Checkpoint) {
-        let bs = self.state.state();
-        let d = bs.slots.get(self.last_applied);
-        let es = match d.epoch_idx {
-            Some(s) => &bs.epochs.get(s).state,
-            None => &bs.finalized.epoch.state,
-        };
+        let es = self.state.state().epoch.view_opt(self.last_applied.epoch_idx).state();
         (es.current_justified_checkpoint, es.finalized_checkpoint)
     }
 
@@ -291,15 +295,16 @@ impl BeaconStateTile {
     /// BeaconState. Used by integration tests to cross-check tile-applied
     /// STF output against EF post-state vectors.
     pub fn head_state_root(&mut self) -> B256 {
-        let seq = self.last_applied;
-        let view = self.state.delta_view(seq);
-        ssz_hash::hash_tree_root_state(&view, &mut self.state_hash_scratch)
+        let rv = self.state.read_view(self.last_applied);
+        ssz_hash::hash_tree_root_state(&rv, &mut self.stf_scratch.state_hash)
     }
 
     /// Load a checkpoint-state SSZ blob: decompose it into the finalized
     /// base, anchor a genesis slot delta on top (empty edits, full slot
     /// scalars seeded from the base), and seed fork choice with the trusted
-    /// anchor checkpoint.
+    /// anchor checkpoint. `decompressed_pubkeys` is the optional sidecar of
+    /// pre-decompressed validator pubkeys; on any decode/verify failure we
+    /// fall back to decompressing from the SSZ itself.
     pub fn bootstrap(&mut self, ssz: &[u8], decompressed_pubkeys: &[u8]) {
         let pubkeys = (!decompressed_pubkeys.is_empty())
             .then(|| decode_checkpoint_pubkeys(decompressed_pubkeys))
@@ -309,33 +314,31 @@ impl BeaconStateTile {
                 None
             });
 
-        let seq;
+        let anchor;
         let slot;
         {
             let mut guard = self.state.write();
             let bs: &mut BeaconState = &mut guard;
+            // Replace the pre-bootstrap stub under the write window: readers
+            // spin across the swap, the old stub drops inside it.
             let decoded = match pubkeys.as_deref() {
-                Some(pk) => bs.finalized.decompose_with_pubkeys(ssz, &self.spec, pk).or_else(|e| {
+                Some(pk) => BeaconState::decompose(ssz, &self.spec, Some(pk)).or_else(|e| {
                     tracing::warn!(%e, "checkpoint pubkey sidecar rejected; decompressing");
-                    bs.finalized.decompose(ssz, &self.spec)
+                    BeaconState::decompose(ssz, &self.spec, None)
                 }),
-                None => bs.finalized.decompose(ssz, &self.spec),
+                None => BeaconState::decompose(ssz, &self.spec, None),
             };
-            decoded.unwrap_or_else(|e| panic!("bootstrap: decompose failed: {e}"));
-            slot = bs.finalized.slot.slot.slot;
+            *bs = decoded.unwrap_or_else(|e| panic!("bootstrap: decompose failed: {e}"));
+            slot = bs.slot_states.finalized_view().slot_number();
 
-            // Anchor an empty per-fork delta on the freshly decoded base.
-            seq = match bs.slots.roll(None) {
-                RollResult::Reset(s) | RollResult::Rolled(s) => s,
-            };
-            let validators = ValidatorsDelta::new_at(&bs.finalized.validators);
-            let sd = bs.slots.get_mut(seq);
-            sd.validators = validators;
-            sd.slot = SlotStateDelta { slot: bs.finalized.slot.slot, ..Default::default() };
+            // Anchor an empty per-fork delta on the freshly decoded base
+            // (epoch/longtail stay lazy; `roll_fresh` anchors the slot fork's
+            // full scalars at the base).
+            anchor = bs.roll_fresh();
         }
 
         // Fresh state is correct here — nothing predates the anchor.
-        let cap = self.state.state().finalized.validators.capacity();
+        let cap = self.state.state().validators.finalized().capacity();
         self.vote_tracker = VoteTracker::with_capacity(cap);
         self.shuffling_cache = ShufflingCache::with_capacity(cap);
 
@@ -344,9 +347,9 @@ impl BeaconStateTile {
         // post-bootstrap `process_slot` hashes that canonical state and a
         // patched value would shift the result.
         let (block_root, anchor_state_root) = {
-            let view = self.state.delta_view(seq);
-            let state_root = ssz_hash::hash_tree_root_state(&view, &mut self.state_hash_scratch);
-            let mut header = view.latest_block_header();
+            let rv = self.state.read_view(anchor);
+            let state_root = ssz_hash::hash_tree_root_state(&rv, &mut self.stf_scratch.state_hash);
+            let mut header = rv.slot.state().latest_block_header;
             if header.state_root == [0u8; 32] {
                 header.state_root = state_root;
             }
@@ -354,45 +357,45 @@ impl BeaconStateTile {
         };
 
         let trusted = Checkpoint { epoch: slot.div_ceil(SLOTS_PER_EPOCH), root: block_root };
-        self.last_applied = seq;
+        self.last_applied = anchor;
         self.last_applied_block_root = block_root;
         self.fork_choice =
-            ForkChoice::init(trusted, trusted, slot, block_root, anchor_state_root, seq);
-        self.state.publish_offsets(None, Some(seq));
+            ForkChoice::init(trusted, trusted, slot, block_root, anchor_state_root, anchor);
+        self.state.publish_state_id(anchor);
     }
 
-    /// Slots-ring seq of fork-choice's canonical tip. For gossip-object
+    /// Index bundle of fork-choice's canonical tip. For gossip-object
     /// validation per spec ("the head state").
-    fn canonical_state_seq(&self) -> usize {
+    fn canonical_state_id(&self) -> StateId {
         let head_root = self.fork_choice.find_head();
         let idx = self
             .fork_choice
             .find_node_idx(&head_root)
             .expect("find_head returns a node-resident root");
-        self.fork_choice.node(idx).state_seq
+        self.fork_choice.node(idx).state_id
     }
 
     /// Seed-epoch randao mix that keys an epoch's attester shuffling (the
     /// single `randao_mixes[]` slot driving `get_seed(_, epoch, ATTESTER)`).
-    fn shuffling_mix(view: &StateDeltaView, epoch: Epoch) -> B256 {
+    fn shuffling_mix(view: &StateReadView, epoch: Epoch) -> B256 {
         let mix_epoch = epoch + EPOCHS_PER_HISTORICAL_VECTOR as u64 - MIN_SEED_LOOKAHEAD - 1;
-        view.randao_mix_at_epoch(mix_epoch)
+        randao_mix_at_epoch(&view.epoch, &view.slot, mix_epoch)
     }
 
     /// Compute and cache the attester shuffling for `epoch` against the post-
-    /// state at ring seq `seq`. No-op if already cached. Maintain the 2-epoch
-    /// window: attestations with `target_epoch ∈ {epoch, epoch - 1}` resolve
-    /// their committee against both.
-    fn ensure_shuffling_window(&mut self, epoch: Epoch, seq: usize) {
-        self.ensure_shuffling(epoch, seq);
+    /// state named by `state_id`. No-op if already cached. Maintain the
+    /// 2-epoch window: attestations with `target_epoch ∈ {epoch, epoch - 1}`
+    /// resolve their committee against both.
+    fn ensure_shuffling_window(&mut self, epoch: Epoch, state_id: StateId) {
+        self.ensure_shuffling(epoch, state_id);
         if epoch > 0 {
-            self.ensure_shuffling(epoch - 1, seq);
+            self.ensure_shuffling(epoch - 1, state_id);
         }
     }
 
-    fn ensure_shuffling(&mut self, epoch: Epoch, seq: usize) {
+    fn ensure_shuffling(&mut self, epoch: Epoch, state_id: StateId) {
         let mix = {
-            let view = self.state.delta_view(seq);
+            let view = self.state.read_view(state_id);
             Self::shuffling_mix(&view, epoch)
         };
         if self
@@ -404,13 +407,17 @@ impl BeaconStateTile {
             return;
         }
 
-        self.active_scratch.clear();
+        self.stf_scratch.active.clear();
         {
-            let view = self.state.delta_view(seq);
-            shuffling::get_active_validator_indices_into(&view, epoch, &mut self.active_scratch);
+            let view = self.state.read_view(state_id);
+            shuffling::get_active_validator_indices_into(
+                &view.validators,
+                epoch,
+                &mut self.stf_scratch.active,
+            );
         }
         let seed = shuffling::get_seed(&mix, epoch, DOMAIN_BEACON_ATTESTER);
-        shuffling::shuffle_list(&mut self.active_scratch, &seed);
+        shuffling::shuffle_list(&mut self.stf_scratch.active, &seed);
 
         let slot = self.find_shuffling_slot();
         let entry = &mut self.shuffling_cache.entries[slot];
@@ -418,7 +425,7 @@ impl BeaconStateTile {
         entry.mix = mix;
         entry.status = 1;
         entry.shuffled_indices.clear();
-        for &idx in self.active_scratch.iter() {
+        for &idx in self.stf_scratch.active.iter() {
             entry.shuffled_indices.push(idx);
         }
     }
@@ -449,12 +456,12 @@ impl BeaconStateTile {
     fn build_shuffling_ref<'a>(
         cache: &'a ShufflingCache,
         state: &mut BeaconStateOwner,
-        seq: usize,
+        state_id: StateId,
         block_epoch: Epoch,
     ) -> state_transition::ShufflingRef<'a> {
         let prev_epoch = block_epoch.saturating_sub(1);
         let (curr_mix, prev_mix) = {
-            let view = state.delta_view(seq);
+            let view = state.read_view(state_id);
             (Self::shuffling_mix(&view, block_epoch), Self::shuffling_mix(&view, prev_epoch))
         };
         let curr = Self::get_shuffling(cache, block_epoch, curr_mix)
@@ -483,7 +490,7 @@ impl BeaconStateTile {
             return d;
         }
 
-        let gvr = self.state.state().finalized.immutable.genesis_validators_root;
+        let gvr = self.state.state().immutable.genesis_validators_root;
         // Uninitialized state (no checkpoint, pre-sync): a digest computed
         // from a zero gvr is bogus. Fall back to the operator-configured
         // digest until a real state lands. Not cached — recompute once gvr
@@ -515,10 +522,10 @@ impl BeaconStateTile {
                 let n = self.fork_choice.node(idx);
                 (n.slot, n.finalized_checkpoint)
             }
-            None => {
-                let d = self.state.state().slots.get(self.last_applied);
-                (d.slot.slot.latest_block_header.slot, self.head_finalized_checkpoint())
-            }
+            None => (
+                self.slot_state_at(self.last_applied).latest_block_header.slot,
+                self.head_finalized_checkpoint(),
+            ),
         };
 
         if finalized.root == [0u8; 32] {
@@ -546,7 +553,7 @@ impl BeaconStateTile {
     /// empty slots. Sync's request watermark keys off this, not the fork-choice
     /// head in the Status SSZ (which can lag the imported tip).
     fn last_applied_block_slot(&self) -> Slot {
-        self.state.state().slots.get(self.last_applied).slot.slot.latest_block_header.slot
+        self.slot_state_at(self.last_applied).latest_block_header.slot
     }
 
     fn status_event(&mut self) -> BeaconStateEvent {
@@ -597,7 +604,7 @@ impl BeaconStateTile {
     /// definitely advanced, and finalized may have advanced via an epoch
     /// transition along the way).
     fn on_slot_start(&mut self, target_slot: Slot) -> bool {
-        let curr_slot = self.state.state().slots.get(self.last_applied).slot.slot.slot;
+        let curr_slot = self.slot_state_at(self.last_applied).slot;
         if target_slot <= curr_slot {
             return false;
         }
@@ -605,34 +612,31 @@ impl BeaconStateTile {
         // Advance on an unpublished child of the head — the published head is
         // resolved lock-free by readers and must not be mutated in place.
         // `process_slots` runs the per-slot loop and any epoch transitions
-        // crossed, recording the epoch-ring seq on the delta's `epoch_idx`.
-        //
-        // `cow_state_for_block` gives the child private epoch/longtail deltas
-        // when the advance crosses an epoch boundary. Mandatory: `process_epoch`
-        // shifts `proposer_lookahead` in place, and `self.last_applied` is a
-        // live fork-choice node that sibling blocks build on and the proposer
-        // precheck reads. Mutating its shared epoch delta would leave that node
-        // with a next-epoch `proposer_lookahead` shifted one epoch too far.
-        let curr_epoch = curr_slot / SLOTS_PER_EPOCH;
-        let target_epoch = target_slot / SLOTS_PER_EPOCH;
-        let new_seq = self.cow_state_for_block(self.last_applied, target_epoch, curr_epoch);
+        // crossed; `process_epoch` rolls the child a private epoch (and
+        // longtail) entry at each boundary, returning the committed ids for
+        // the bundle assembly at `commit`.
+        // Mandatory: `process_epoch` shifts `proposer_lookahead`, and
+        // `self.last_applied` is a live fork-choice node that sibling blocks
+        // build on and the proposer precheck reads — mutating its shared epoch
+        // entry would leave that node with a next-epoch `proposer_lookahead`
+        // shifted one epoch too far.
+        let new_id;
         {
-            let mut view = self.state.delta_view(new_seq);
-            state_transition::process_slots(
+            let parent = self.last_applied;
+            let (mut view, epoch, longtail) = self.state.apply_block_view(parent);
+            let (epoch_idx, longtail_idx) = state_transition::process_slots(
                 &self.spec,
                 &mut view,
+                epoch,
+                longtail,
+                parent,
                 target_slot,
-                &mut self.active_scratch,
-                &mut self.postponed_scratch,
-                &mut self.replace_u64_scratch,
-                &mut self.replace_u8_scratch,
-                &mut self.eff_scratch,
-                &mut self.state_hash_scratch,
+                &mut self.stf_scratch,
             );
+            new_id = view.commit(epoch_idx, longtail_idx);
         }
-        let epoch_off = self.state.state().slots.get(new_seq).epoch_idx;
-        self.last_applied = new_seq;
-        self.state.publish_offsets(epoch_off, Some(new_seq));
+        self.last_applied = new_id;
+        self.state.publish_state_id(new_id);
         // Empty-slot epoch transitions can advance justified/finalized in the
         // head post-state; reflect that in fork choice before finalizing.
         self.lift_checkpoints();
@@ -651,9 +655,10 @@ impl BeaconStateTile {
         // TODO: self.get_head() and cache result
     }
 
-    /// Promote the fork-choice-finalized node's `StateDelta` into the
-    /// `Finalized` base, re-base every surviving descendant delta against the
-    /// new base, and reclaim orphaned ring slots. No-op until finality
+    /// Promote the fork-choice-finalized node's `StateId` tiers into the
+    /// per-tier finalized bases, re-base every surviving descendant delta
+    /// against the new base, and refresh the survivors' (and the published
+    /// head's) bundles with the re-anchored ids. No-op until finality
     /// advances past the current base (fork-choice node 0).
     ///
     /// The epoch state-transition itself runs inside `process_slots`; this is
@@ -675,65 +680,62 @@ impl BeaconStateTile {
         if fin_idx == 0 {
             return; // already the base
         }
-        let promoted_seq = self.fork_choice.finalize_node(fin_idx);
+        let promoted = self.fork_choice.node(fin_idx).state_id;
 
         // Drop non-descendants of the finalized block; the survivors (node 0
         // is now the finalized block) are exactly the deltas to re-base.
         self.fork_choice.prune();
-        let mut survivors: ArrayVec<usize, SLOTS_RING_N> = ArrayVec::new();
-        survivors.extend(self.fork_choice.live_state_seqs());
+        let mut survivors: ArrayVec<StateId, MAX_SURVIVORS> = ArrayVec::new();
+        survivors.extend(self.fork_choice.live_state_ids());
 
-        // `on_slot_start` advances the head across empty slots into a fresh
-        // ring slot that is never registered as a fork-choice node. It is
-        // still a live descendant of the finalized base, so it must be
-        // re-based too — otherwise its `base_count` goes stale and the next
-        // `delta_view` on it (or a roll from it) trips the base-mirror assert.
-        if !survivors.as_slice().contains(&self.last_applied) {
-            // Cannot overflow: live nodes occupy distinct ring slots, so a full
-            // `survivors` (== SLOTS_RING_N) means every slot is a node and
-            // `last_applied` would have matched above.
-            debug_assert!(survivors.len() < SLOTS_RING_N, "survivors full, last_applied absent");
-            survivors.push(self.last_applied);
-        }
+        // `on_slot_start` advances the head onto a fresh bundle that is never
+        // registered as a fork-choice node. It is still a live descendant of
+        // the finalized base, so it must be re-based too — otherwise its
+        // `base_count` goes stale and the next `apply_block_view` on it (or a
+        // roll from it) trips the base-mirror assert. `MAX_SURVIVORS` covers
+        // every node plus this extra head bundle.
+        let head_pos = match survivors.iter().position(|&s| s == self.last_applied) {
+            Some(p) => p,
+            None => {
+                survivors.push(self.last_applied);
+                survivors.len() - 1
+            }
+        };
 
         // Unique epoch / longtail ring entries referenced by survivors, so
         // each cumulative log is re-based exactly once when siblings share it.
-        let mut epoch_idxs: ArrayVec<usize, EPOCHS_RING_N> = ArrayVec::new();
-        let mut longtail_idxs: ArrayVec<usize, LONGTAILS_RING_N> = ArrayVec::new();
-        {
-            let bs = self.state.state();
-            for &seq in survivors.iter() {
-                let d = bs.slots.get(seq);
-                if let Some(e) = d.epoch_idx &&
-                    !epoch_idxs.as_slice().contains(&e)
-                {
-                    epoch_idxs.push(e);
-                }
-                if let Some(l) = d.longtail_idx &&
-                    !longtail_idxs.as_slice().contains(&l)
-                {
-                    longtail_idxs.push(l);
-                }
+        let mut epoch_idxs: ArrayVec<EpochId, EPOCHS_RING_N> = ArrayVec::new();
+        let mut longtail_idxs: ArrayVec<LongtailId, LONGTAILS_RING_N> = ArrayVec::new();
+        for sid in survivors.iter() {
+            if let Some(e) = sid.epoch_idx &&
+                !epoch_idxs.as_slice().contains(&e)
+            {
+                epoch_idxs.push(e);
+            }
+            if let Some(l) = sid.longtail_idx &&
+                !longtail_idxs.as_slice().contains(&l)
+            {
+                longtail_idxs.push(l);
             }
         }
 
         self.promote_and_rebase(
-            promoted_seq,
-            survivors.as_slice(),
+            promoted,
+            survivors.as_mut_slice(),
+            head_pos,
             epoch_idxs.as_slice(),
             longtail_idxs.as_slice(),
         );
 
-        // Reclaim ring slots below the oldest surviving seq in each tier.
-        if let Some(&min_slot) = survivors.as_slice().iter().min() {
-            self.state.slots().free(min_slot);
+        // Hand the re-anchored bundles back to their holders: fork-choice
+        // nodes 1:1 (prune kept node order), then the head.
+        let node_count = self.fork_choice.nodes.len();
+        for (node, &sid) in
+            self.fork_choice.nodes.iter_mut().zip(&survivors.as_slice()[..node_count])
+        {
+            node.state_id = sid;
         }
-        if let Some(&min_epoch) = epoch_idxs.as_slice().iter().min() {
-            self.state.epochs().free(min_epoch);
-        }
-        if let Some(&min_longtail) = longtail_idxs.as_slice().iter().min() {
-            self.state.longtails().free(min_longtail);
-        }
+        self.last_applied = survivors.as_slice()[head_pos];
 
         let fin_slot = self.fork_choice.finalized_checkpoint.epoch * SLOTS_PER_EPOCH;
         self.clear_pending_blocks(fin_slot);
@@ -745,80 +747,114 @@ impl BeaconStateTile {
             finalized_slot,
             "clear pending blocks at finalization"
         );
+        let (gossip_consumer, rpc_consumer) = (&mut self.gossip_consumer, &mut self.rpc_consumer);
         self.pending_blocks.retain(|_, msgs| {
             msgs.iter().all(|msg| {
-                let acquired = match msg {
-                    PendingBlock::Gossip(g) => self.gossip_consumer.acquire(g.ssz),
-                    PendingBlock::Rpc(_, ssz) => self.rpc_consumer.acquire(*ssz),
-                };
-                if let Ok((buffer, _)) = acquired.buffer() {
-                    return SignedBeaconBlockView::slot(buffer) > finalized_slot;
-                }
-                false
+                pending_block_outlives(gossip_consumer, rpc_consumer, msg, finalized_slot)
             })
         });
 
         self.dc_pending_blocks.retain(|_, msg| {
-            let acquired = match msg {
-                PendingBlock::Gossip(g) => self.gossip_consumer.acquire(g.ssz),
-                PendingBlock::Rpc(_, ssz) => self.rpc_consumer.acquire(*ssz),
-            };
-            if let Ok((buffer, _)) = acquired.buffer() {
-                return SignedBeaconBlockView::slot(buffer) > finalized_slot;
-            }
-            false
+            pending_block_outlives(gossip_consumer, rpc_consumer, msg, finalized_slot)
         });
         self.dc_available.retain(|_, slot| *slot > finalized_slot);
     }
 
+    /// Rewrites each survivor bundle's per-tier ids to the re-anchored ones,
+    /// then stages `survivors[head_pos]` as the published bundle — it lands
+    /// with the guard drop, in the same seqlock window as the tier rewrites,
+    /// so readers never observe a bundle whose ids were already re-anchored.
     fn promote_and_rebase(
         &mut self,
-        promoted_seq: usize,
-        survivors: &[usize],
-        epoch_idxs: &[usize],
-        longtail_idxs: &[usize],
+        promoted: StateId,
+        survivors: &mut [StateId],
+        head_pos: usize,
+        epoch_idxs: &[EpochId],
+        longtail_idxs: &[LongtailId],
     ) {
         let mut guard = self.state.write();
         let bs = &mut *guard;
 
-        // Clone the promoted delta out of the ring: `apply_delta` borrows it
-        // while mutating the base, and the per-survivor re-base borrows it
-        // while mutating sibling slots in the same buffer.
-        let promoted = bs.slots.get(promoted_seq).clone();
-        let promoted_epoch = promoted.epoch_idx.map(|s| bs.epochs.get(s).clone());
-        let promoted_longtail = promoted.longtail_idx.map(|s| bs.longtails.get(s).clone());
+        // Old finalized epoch — the epoch tier overlays its ring at
+        // `(old_fin_epoch + k) % …`. Read from the (still-old) slot-group
+        // base before its finalize.
+        let old_fin_epoch =
+            (bs.slot_states.finalized_view().slot_number() / SLOTS_PER_EPOCH) as usize;
 
-        // Snapshot the finalized base into survivors at indices `promoted`
-        // will overwrite.
-        snapshot_finalized_into_survivors(bs, &promoted, survivors, promoted_seq);
+        // The always-rolled tiers finalize in their own groups — re-anchor
+        // each survivor against the winner (pin pre-promote values + prune
+        // redundancy), then promote the winner into the base. Each base is
+        // untouched until its own group's finalize, so it still holds the old
+        // count its rebase bounds read. Pending's drain-offset rebase
+        // snapshots `old_base_lens` internally from the still-old base; the
+        // slot tier prunes survivors' root tails of the promoted prefix.
+        rebase_tier(
+            survivors,
+            |s| &mut s.validators_idx,
+            |ids| bs.validators.finalize(promoted.validators_idx, ids),
+        );
+        rebase_tier(
+            survivors,
+            |s| &mut s.balances_idx,
+            |ids| bs.balances.finalize(promoted.balances_idx, ids),
+        );
+        rebase_tier(survivors, |s| &mut s.eth1_idx, |ids| bs.eth1.finalize(promoted.eth1_idx, ids));
+        rebase_tier(
+            survivors,
+            |s| &mut s.previous_participation_idx,
+            |ids| bs.previous_participation.finalize(promoted.previous_participation_idx, ids),
+        );
+        rebase_tier(
+            survivors,
+            |s| &mut s.current_participation_idx,
+            |ids| bs.current_participation.finalize(promoted.current_participation_idx, ids),
+        );
+        rebase_tier(
+            survivors,
+            |s| &mut s.inactivity_idx,
+            |ids| bs.inactivity.finalize(promoted.inactivity_idx, ids),
+        );
+        rebase_tier(
+            survivors,
+            |s| &mut s.pending_idx,
+            |ids| bs.pending.finalize(promoted.pending_idx, ids),
+        );
+        rebase_tier(
+            survivors,
+            |s| &mut s.slot_idx,
+            |ids| bs.slot_states.finalize(promoted.slot_idx, ids),
+        );
 
-        // `prune_queue_delta` needs the pre-apply_delta fin queue lengths
-        // to recover how many of promoted's `*_appended` prefix each
-        // survivor's cumulative `drain_offset` already consumed.
-        let old_pending_lens = PendingQueuesOldBaseLens::snapshot(&bs.finalized.pending.read());
-
-        bs.finalized.apply_delta(&promoted, promoted_epoch.as_ref(), promoted_longtail.as_ref());
-
-        for &seq in survivors {
-            bs.slots.get_mut(seq).prune_to_base(&bs.finalized, &promoted, &old_pending_lens);
+        // Epoch + longtail finalize in their own groups, but — unlike the
+        // always-rolled tiers above — forks roll these lazily, so finalize only
+        // when the promoted winner actually owns a delta. The survivor idx sets
+        // are pre-deduped (one cumulative log re-based once when siblings share
+        // it); the group returns the fresh ids 1:1, which we map old→new and
+        // write back onto every bundle referencing the old entry.
+        if let Some(winner_epoch) = promoted.epoch_idx {
+            rebase_lazy_tier(
+                survivors,
+                epoch_idxs,
+                |s| &mut s.epoch_idx,
+                || bs.epoch.finalize(winner_epoch, epoch_idxs, old_fin_epoch),
+            );
         }
-        if let Some(promoted_epoch) = &promoted_epoch {
-            for &e in epoch_idxs {
-                bs.epochs.get_mut(e).prune_to_base(promoted_epoch);
-            }
+        if let Some(winner_longtail) = promoted.longtail_idx {
+            rebase_lazy_tier(
+                survivors,
+                longtail_idxs,
+                |s| &mut s.longtail_idx,
+                || bs.longtail.finalize(winner_longtail, longtail_idxs),
+            );
         }
-        if let Some(promoted_longtail) = &promoted_longtail {
-            for &l in longtail_idxs {
-                bs.longtails.get_mut(l).prune_to_base(promoted_longtail);
-            }
-        }
+
+        // Publish-with-the-guard: the head's rewritten bundle replaces the
+        // stale published one atomically at guard drop.
+        guard.set_state_id(survivors[head_pos]);
     }
 
     fn on_attestation(&mut self, validator_idx: usize, block_root: B256, epoch: Epoch) {
-        let n = {
-            let d = self.state.state().slots.get(self.last_applied);
-            d.validators.base_count + d.validators.appended.len()
-        };
+        let n = self.head_validator_count();
         if validator_idx >= n {
             return;
         }
@@ -837,10 +873,10 @@ impl BeaconStateTile {
         // Materialise the head's effective-balance column into the reusable
         // scratch (compute_deltas weights LMD votes by effective balance).
         let n = {
-            let view = self.state.delta_view(self.last_applied);
-            self.eff_scratch.clear();
-            self.eff_scratch.extend(view.iter_validator_effective_balances());
-            view.validators_count()
+            let validators = self.state.read_view(self.last_applied).validators;
+            self.stf_scratch.eff.clear();
+            self.stf_scratch.eff.extend(validators.iter_effective_balances());
+            validators.count()
         };
 
         let mut deltas = compute_deltas(
@@ -848,12 +884,12 @@ impl BeaconStateTile {
             n,
             self.fork_choice.indices.as_slice(),
             &self.prev_eff_balances,
-            &self.eff_scratch,
+            &self.stf_scratch.eff,
         );
         self.fork_choice.apply_score_changes(&mut deltas);
         // Remember this recompute's balances so the next one can net the change.
         self.prev_eff_balances.clear();
-        self.prev_eff_balances.extend_from_slice(&self.eff_scratch);
+        self.prev_eff_balances.extend_from_slice(&self.stf_scratch.eff);
         self.lift_checkpoints();
     }
 
@@ -922,31 +958,14 @@ impl BeaconStateTile {
                 producers.produce(self.status_event());
             }
             Some(Feedback::RequestParent(parent_root)) => {
-                // Buffer the orphan on its parent; `apply_pending_blocks` retries
-                // it once the parent applies. Request the parent only when
-                // following and not already held awaiting columns — re-requesting
-                // a held block floods by-root, and during sync the range/DA path
-                // delivers it.
-                let request =
-                    self.mode.is_following() && !self.dc_pending_blocks.contains_key(&parent_root);
                 let peer = m.stream_id.peer();
-                self.pending_blocks
-                    .entry(parent_root)
-                    .and_modify(|v| v.push(PendingBlock::Gossip(m)))
-                    .or_insert_with(|| vec![PendingBlock::Gossip(m)]);
-                if request {
-                    producers.produce(PeerEvent::SendBlocksByRootRequest {
-                        request_id: 0,
-                        p2p_peer: Some(peer),
-                        block_root: parent_root,
-                    })
-                }
+                self.buffer_orphan(parent_root, PendingBlock::Gossip(m), peer, producers);
             }
             Some(Feedback::AwaitData(block_root)) => {
                 if do_relay {
                     Self::relay_gossip(&m, producers);
                 }
-                self.dc_pending_blocks.entry(block_root).or_insert(PendingBlock::Gossip(m));
+                self.buffer_awaiting_columns(block_root, PendingBlock::Gossip(m));
             }
             Some(Feedback::Ignore) | None => {}
         }
@@ -956,10 +975,38 @@ impl BeaconStateTile {
         if let Some(pending) = self.pending_blocks.remove(&parent_root) {
             for child in pending {
                 // First successful validation of an orphan held on a missing
-                // parent: relay it now.
+                // parent: relay it now. Recursively applies chained orphans.
                 self.replay_pending_block(child, true, producers);
             }
         }
+    }
+
+    /// Buffer an orphan on its missing parent; `apply_pending_blocks`
+    /// retries it once the parent applies. Request the parent only when
+    /// following and not already held awaiting columns — re-requesting a held
+    /// block floods by-root, and during sync the range/DA path delivers it.
+    fn buffer_orphan(
+        &mut self,
+        parent_root: B256,
+        pending: PendingBlock,
+        peer: usize,
+        producers: &mut Producers,
+    ) {
+        let request =
+            self.mode.is_following() && !self.dc_pending_blocks.contains_key(&parent_root);
+        self.pending_blocks.entry(parent_root).or_default().push(pending);
+        if request {
+            producers.produce(PeerEvent::SendBlocksByRootRequest {
+                request_id: 0,
+                p2p_peer: Some(peer),
+                block_root: parent_root,
+            })
+        }
+    }
+
+    /// Hold a fully-prechecked block until its data columns are available.
+    fn buffer_awaiting_columns(&mut self, block_root: B256, pending: PendingBlock) {
+        self.dc_pending_blocks.entry(block_root).or_insert(pending);
     }
 
     fn replay_pending_block(
@@ -1000,6 +1047,7 @@ impl BeaconStateTile {
             "DataColumnsAvailable received"
         );
         if let Some(pending) = self.dc_pending_blocks.remove(&m.block_root) {
+            // Already relayed when first seen — don't relay again.
             self.replay_pending_block(pending, false, producers);
         }
     }
@@ -1011,54 +1059,47 @@ impl BeaconStateTile {
         data_tcache: TRead,
         producers: &mut Producers,
     ) {
-        if !SignedBeaconBlockView::check_size(data) {
-            producers.produce(PeerEvent::RpcMisbehaviour {
-                p2p_peer: sender.peer(),
-                severity: RpcSeverity::LowTolerance,
-            });
-            return;
-        }
-        let tcache = data_tcache.read;
-        let f = self.apply_block(data, data_tcache, BlockSource::Rpc, producers);
-        match f {
-            Feedback::Accept(block_root) => {
-                // Try to apply any pending blocks for which this one was the parent.
-                if let Some(root) = block_root {
-                    self.apply_pending_blocks(root, producers);
+        {
+            if !SignedBeaconBlockView::check_size(data) {
+                producers.produce(PeerEvent::RpcMisbehaviour {
+                    p2p_peer: sender.peer(),
+                    severity: RpcSeverity::LowTolerance,
+                });
+                return;
+            }
+            let tcache = data_tcache.read;
+            let f = self.apply_block(data, data_tcache, BlockSource::Rpc, producers);
+            match f {
+                Feedback::Accept(block_root) => {
+                    // Try to apply any pending blocks for which this one was the parent.
+                    if let Some(root) = block_root {
+                        self.apply_pending_blocks(root, producers);
+                    }
+                    producers.produce(self.status_event());
                 }
-                producers.produce(self.status_event());
-            }
-            Feedback::RequestParent(parent_root) => {
-                // Buffer the orphan on its parent; retried by
-                // `apply_pending_blocks` once the parent applies. Request it
-                // only when following and not already held awaiting columns.
-                let request =
-                    self.mode.is_following() && !self.dc_pending_blocks.contains_key(&parent_root);
-                self.pending_blocks
-                    .entry(parent_root)
-                    .and_modify(|v| v.push(PendingBlock::Rpc(sender, tcache)))
-                    .or_insert_with(|| vec![PendingBlock::Rpc(sender, tcache)]);
-                if request {
-                    producers.produce(PeerEvent::SendBlocksByRootRequest {
-                        request_id: 0,
-                        p2p_peer: Some(sender.peer()),
-                        block_root: parent_root,
-                    })
+                Feedback::RequestParent(parent_root) => {
+                    let peer = sender.peer();
+                    self.buffer_orphan(
+                        parent_root,
+                        PendingBlock::Rpc(sender, tcache),
+                        peer,
+                        producers,
+                    );
                 }
+                Feedback::AwaitData(block_root) => {
+                    self.buffer_awaiting_columns(block_root, PendingBlock::Rpc(sender, tcache));
+                }
+                Feedback::Ignore => {}
+                Feedback::Reject(_) => producers.produce(PeerEvent::RpcMisbehaviour {
+                    p2p_peer: sender.peer(),
+                    severity: RpcSeverity::Fatal,
+                }),
             }
-            Feedback::AwaitData(block_root) => {
-                self.dc_pending_blocks
-                    .entry(block_root)
-                    .or_insert(PendingBlock::Rpc(sender, tcache));
-            }
-            Feedback::Ignore => {}
-            Feedback::Reject(_) => producers.produce(PeerEvent::RpcMisbehaviour {
-                p2p_peer: sender.peer(),
-                severity: RpcSeverity::Fatal,
-            }),
         }
     }
 
+    /// Below this slot data availability is not required (already finalized,
+    /// or PM is range-syncing past it).
     fn da_boundary(&self) -> Slot {
         self.sync_finalized_slot.max(self.fork_choice.finalized_checkpoint.epoch * SLOTS_PER_EPOCH)
     }
@@ -1082,26 +1123,36 @@ impl BeaconStateTile {
         }
 
         let block_epoch = parsed.block_slot / SLOTS_PER_EPOCH;
-        let parent_slot = self.state.state().slots.get(parsed.parent_seq).slot.slot.slot;
-        let parent_epoch = parent_slot / SLOTS_PER_EPOCH;
-
-        // COW: an unpublished child off the parent post-state (slot delta, plus
-        // private epoch/longtail copies if an epoch transition will be crossed).
-        let new_seq = self.cow_state_for_block(parsed.parent_seq, block_epoch, parent_epoch);
 
         // Per-block attester shuffling against the parent post-state (active
-        // set + seed for an epoch are fixed at its prior boundary). Reuse the
+        // set + seed for an epoch are fixed at its prior boundary). The child
+        // is a COW copy of the parent pre-STF, so shuffle inputs read identical
+        // off `parent_state_id` — done here, before the held-writer view takes the
+        // `&mut self.state` borrow for the whole transition. Reuse the
         // `(epoch, mix)`-keyed cache so consecutive same-epoch blocks skip the
         // O(rounds·n) shuffle; `ensure_shuffling_window` only computes on a miss.
-        self.ensure_shuffling_window(block_epoch, new_seq);
-        let sref =
-            Self::build_shuffling_ref(&self.shuffling_cache, &mut self.state, new_seq, block_epoch);
+        self.ensure_shuffling_window(block_epoch, parsed.parent_state_id);
+        let sref = Self::build_shuffling_ref(
+            &self.shuffling_cache,
+            &mut self.state,
+            parsed.parent_state_id,
+            block_epoch,
+        );
 
-        let mut view = self.state.delta_view(new_seq);
+        // COW: an unpublished child off the parent post-state. The view HOLDS
+        // every rolled per-slot writer for the whole transition (the boundary
+        // epoch/longtail writers are rolled inside `process_epoch` and their
+        // committed ids returned); `commit` assembles the child bundle for
+        // publish-last.
+        let parent = parsed.parent_state_id;
+        let (mut view, epoch, longtail) = self.state.apply_block_view(parent);
         self.attestation_votes_scratch.clear();
         let res = state_transition::apply_block(
             &self.spec,
             &mut view,
+            epoch,
+            longtail,
+            parent,
             data,
             parsed.block_slot,
             parsed.proposer_index as u32,
@@ -1109,30 +1160,26 @@ impl BeaconStateTile {
             parsed.body_root,
             parsed.state_root,
             Some(&sref),
-            &mut self.active_scratch,
-            &mut self.postponed_scratch,
-            &mut self.replace_u64_scratch,
-            &mut self.replace_u8_scratch,
-            &mut self.eff_scratch,
-            &mut self.state_hash_scratch,
+            &mut self.stf_scratch,
             &mut self.attestation_votes_scratch,
             &mut self.sig_batch,
         );
 
-        // Snapshot checkpoints while the view is live, then drop it so the
+        // Snapshot checkpoints while the view is live, then `commit` it so the
         // `&mut self.state` borrow ends before the fork-choice / publish work.
         let outcome = match res {
-            Ok(()) => {
-                let es = view.epoch_state();
-                Ok((es.current_justified_checkpoint, es.finalized_checkpoint))
+            Ok((epoch_idx, longtail_idx)) => {
+                let es = epoch.view_opt(epoch_idx).state();
+                let checkpoints = (es.current_justified_checkpoint, es.finalized_checkpoint);
+                Ok((view.commit(epoch_idx, longtail_idx), checkpoints))
             }
             Err(e) => Err(e),
         };
-        // `view`'s &mut self.state borrow ends here (last use above); the
-        // fork-choice + publish work below needs &mut self.
+        // `view`'s &mut self.state borrow ends here (`commit`/`drop` consumed
+        // it); the fork-choice + publish work below needs &mut self.
 
-        let (justified, finalized) = match outcome {
-            Ok(checkpoints) => checkpoints,
+        let (new_id, (justified, finalized)) = match outcome {
+            Ok(committed) => committed,
             Err(e) => {
                 tracing::error!(
                     error = %e,
@@ -1144,21 +1191,21 @@ impl BeaconStateTile {
             }
         };
 
-        self.publish_applied_block(&parsed, new_seq, justified, finalized);
+        self.publish_applied_block(&parsed, new_id, justified, finalized);
         Feedback::Accept(Some(parsed.block_root))
     }
 
     fn publish_applied_block(
         &mut self,
         parsed: &ParsedBlock,
-        new_seq: usize,
+        new_id: StateId,
         justified: Checkpoint,
         finalized: Checkpoint,
     ) {
         // Fold block-included attestations into the LMD vote tracker.
         for i in 0..self.attestation_votes_scratch.len() {
-            let (vi, root, ep) = self.attestation_votes_scratch[i];
-            self.on_attestation(vi as usize, root, ep);
+            let v = self.attestation_votes_scratch[i];
+            self.on_attestation(v.validator as usize, v.block_root, v.target_epoch);
         }
 
         // TODO(EL): pass the execution payload block hash to fork choice and
@@ -1171,17 +1218,16 @@ impl BeaconStateTile {
             execution_block_hash: [0u8; 32],
             justified,
             finalized,
-            state_seq: new_seq,
+            state_id: new_id,
         });
 
         self.dc_available.remove(&parsed.block_root);
 
         self.recompute_head();
 
-        self.last_applied = new_seq;
+        self.last_applied = new_id;
         self.last_applied_block_root = parsed.block_root;
-        let epoch_off = self.state.state().slots.get(new_seq).epoch_idx;
-        self.state.publish_offsets(epoch_off, Some(new_seq));
+        self.state.publish_state_id(new_id);
 
         self.maybe_finalize();
     }
@@ -1202,7 +1248,7 @@ impl BeaconStateTile {
         let block_epoch = block_slot / SLOTS_PER_EPOCH;
         let finalized_epoch = self.fork_choice.finalized_checkpoint.epoch;
         if block_epoch < finalized_epoch {
-            return Err(PrecheckError::PreFinalized { block_epoch, finalized_epoch })
+            return Err(PrecheckError::PreFinalized { block_epoch, finalized_epoch });
         }
 
         let proposer_index = SignedBeaconBlockView::proposer_index(data);
@@ -1210,7 +1256,6 @@ impl BeaconStateTile {
         let state_root = *SignedBeaconBlockView::state_root(data);
 
         let body = SignedBeaconBlockView::body(data);
-        let has_columns = SignedBeaconBlockView::has_data_columns(data);
         let body_root = ssz_hash::hash_tree_root_body(body);
         let block_header = BeaconBlockHeader {
             slot: block_slot,
@@ -1229,14 +1274,11 @@ impl BeaconStateTile {
             return Err(PrecheckError::ParentMissing { parent_root, last_applied_slot, block_slot });
         };
         let parent_node = self.fork_choice.node(parent_idx);
-        let parent_seq = parent_node.state_seq;
+        let parent_state_id = parent_node.state_id;
 
         // Immutable read view of the parent post-state.
-        let bs = self.state.state();
-        let parent_delta = bs.slots.get(parent_seq);
-        let epoch_delta = parent_delta.epoch_idx.map(|s| bs.epochs.get(s));
-        let read_view = StateDeltaReadView::new(&bs.finalized, Some(parent_delta), epoch_delta);
-        let parent_slot = read_view.slot();
+        let rv = self.state.read_view(parent_state_id);
+        let parent_slot = rv.slot.slot_number();
 
         // A block must strictly extend its parent's slot.
         if block_slot <= parent_slot {
@@ -1254,19 +1296,18 @@ impl BeaconStateTile {
         // it from the parent post-state.
         if block_epoch == parent_epoch || block_epoch == parent_epoch + 1 {
             let lookahead_idx = (block_slot - parent_epoch * SLOTS_PER_EPOCH) as usize;
-            if lookahead_idx < PROPOSER_LOOKAHEAD_SIZE {
-                let expected = read_view.epoch_state().proposer_lookahead[lookahead_idx];
-                if proposer_index != expected {
-                    return Err(PrecheckError::ProposerLookaheadMismatch {
-                        expected,
-                        got: proposer_index,
-                        block_root,
-                    });
-                }
+            if let Some(expected) = rv.epoch.proposer_at(lookahead_idx) &&
+                proposer_index != expected
+            {
+                return Err(PrecheckError::ProposerLookaheadMismatch {
+                    expected,
+                    got: proposer_index,
+                    block_root,
+                });
             }
         }
 
-        let validator_count = read_view.validators_count();
+        let validator_count = rv.validators.count();
         if proposer_index as usize >= validator_count {
             return Err(PrecheckError::ProposerIndexTooBig {
                 got: proposer_index,
@@ -1274,60 +1315,26 @@ impl BeaconStateTile {
                 block_root,
             });
         }
-        let (fork_version, gvr) = read_view.fork_version_at(block_epoch);
-        let proposer_pubkey = read_view.validator_pubkey_decompressed(proposer_index as usize);
+        let (fork_version, gvr) = rv.imm.fork_version_at(block_epoch);
+        let proposer_pubkey = rv.validators.pubkey_decompressed(proposer_index as usize);
         if !bls::verify_block_signature(data, proposer_pubkey, &body_root, fork_version, &gvr) {
             return Err(PrecheckError::InvalidBls {
                 proposer_index,
-                pubkey: read_view.validator_pubkey(proposer_index as usize),
+                pubkey: *rv.validators.pubkey(proposer_index as usize),
                 block_root,
             });
         }
 
         Ok(ParsedBlock {
+            has_data_columns: SignedBeaconBlockView::has_data_columns(data),
             block_slot,
             proposer_index,
             parent_root,
             state_root,
             body_root,
             block_root,
-            has_data_columns: has_columns,
-            parent_seq,
+            parent_state_id,
         })
-    }
-
-    /// Roll an unpublished child slot delta off `parent_seq`. `reset_from`
-    /// copies the parent's `epoch_idx`/`longtail_idx`, so when the child
-    /// crosses an epoch boundary (where `process_epoch` writes those tiers)
-    /// it is given private copies — otherwise it would corrupt sibling forks
-    /// sharing the parent's ring entries.
-    fn cow_state_for_block(
-        &mut self,
-        parent_seq: usize,
-        block_epoch: Epoch,
-        parent_epoch: Epoch,
-    ) -> usize {
-        let new_seq = match self.state.slots().roll(Some(parent_seq)) {
-            RollResult::Reset(s) | RollResult::Rolled(s) => s,
-        };
-        if block_epoch == parent_epoch {
-            return new_seq;
-        }
-        if let Some(parent_epoch_idx) = self.state.slots().get(new_seq).epoch_idx {
-            let new_epoch_idx = match self.state.epochs().roll(Some(parent_epoch_idx)) {
-                RollResult::Reset(s) | RollResult::Rolled(s) => s,
-            };
-            self.state.slots().get_mut(new_seq).epoch_idx = Some(new_epoch_idx);
-        }
-        if longtail_rotates_at_epoch(block_epoch) &&
-            let Some(parent_longtail_idx) = self.state.slots().get(new_seq).longtail_idx
-        {
-            let new_longtail_idx = match self.state.longtails().roll(Some(parent_longtail_idx)) {
-                RollResult::Reset(s) | RollResult::Rolled(s) => s,
-            };
-            self.state.slots().get_mut(new_seq).longtail_idx = Some(new_longtail_idx);
-        }
-        new_seq
     }
 
     fn handle_attestation(&mut self, data: &[u8]) -> Feedback {
@@ -1346,12 +1353,12 @@ impl BeaconStateTile {
             return Feedback::Ignore;
         }
 
-        let canon_seq = self.canonical_state_seq();
+        let canon_id = self.canonical_state_id();
         let att_epoch = att_slot / SLOTS_PER_EPOCH;
-        self.ensure_shuffling_window(att_epoch, canon_seq);
+        self.ensure_shuffling_window(att_epoch, canon_id);
 
         // Validate committee membership + signature against the canonical head.
-        let view = self.state.delta_view(canon_seq);
+        let view = self.state.read_view(canon_id);
         let mix = Self::shuffling_mix(&view, att_epoch);
         let entry = match Self::get_shuffling(&self.shuffling_cache, att_epoch, mix) {
             Some(e) => e,
@@ -1370,13 +1377,13 @@ impl BeaconStateTile {
         if !committee.contains(&(attester_index as u32)) {
             return Feedback::Reject(None);
         }
-        if attester_index >= view.validators_count() {
+        if attester_index >= view.validators.count() {
             return Feedback::Reject(None);
         }
-        let (fork_version, gvr) = view.fork_version_at(target_epoch);
+        let (fork_version, gvr) = view.imm.fork_version_at(target_epoch);
         let ok = bls::verify_single_attestation(
             buf,
-            view.validator_pubkey_decompressed(attester_index),
+            view.validators.pubkey_decompressed(attester_index),
             fork_version,
             &gvr,
         );
@@ -1418,11 +1425,11 @@ impl BeaconStateTile {
             None => return Feedback::Ignore,
         }
 
-        let canon_seq = self.canonical_state_seq();
-        self.ensure_shuffling_window(parsed.att_epoch, canon_seq);
+        let canon_id = self.canonical_state_id();
+        self.ensure_shuffling_window(parsed.att_epoch, canon_id);
 
-        let view = self.state.delta_view(canon_seq);
-        let count = view.validators_count();
+        let view = self.state.read_view(canon_id);
+        let count = view.validators.count();
         if parsed.aggregator_index >= count {
             return Feedback::Ignore;
         }
@@ -1447,7 +1454,7 @@ impl BeaconStateTile {
         }
         let committee_len = committee.len();
 
-        self.active_scratch.clear();
+        self.stf_scratch.active.clear();
         for (j, &vi32) in committee.iter().enumerate() {
             let byte_idx = j / 8;
             let bit_idx = j % 8;
@@ -1459,9 +1466,9 @@ impl BeaconStateTile {
             if vi32 as usize >= count {
                 return Feedback::Reject(None);
             }
-            self.active_scratch.push(vi32);
+            self.stf_scratch.active.push(vi32);
         }
-        if self.active_scratch.is_empty() {
+        if self.stf_scratch.active.is_empty() {
             return Feedback::Reject(None);
         }
 
@@ -1472,26 +1479,26 @@ impl BeaconStateTile {
         if !Self::verify_aggregate_and_proof_sigs(
             &view,
             &parsed,
-            &self.active_scratch,
+            &self.stf_scratch.active,
             &mut self.sig_batch,
         ) {
             return Feedback::Reject(None);
         }
 
-        for i in 0..self.active_scratch.len() {
-            let vi = self.active_scratch[i] as usize;
+        for i in 0..self.stf_scratch.active.len() {
+            let vi = self.stf_scratch.active[i] as usize;
             self.on_attestation(vi, parsed.beacon_block_root, parsed.target_epoch);
         }
         Feedback::Accept(None)
     }
 
     fn verify_aggregate_and_proof_sigs(
-        view: &StateDeltaView,
+        view: &StateReadView,
         parsed: &ParsedAggregateAndProof<'_>,
         active_scratch: &[u32],
         sig_batch: &mut bls::SigBatch,
     ) -> bool {
-        let (fv, gvr) = view.fork_version_at(parsed.target_epoch);
+        let (fv, gvr) = view.imm.fork_version_at(parsed.target_epoch);
 
         // (1) selection_proof — signer = aggregator, msg = htr(uint64(slot)).
         let slot_root = ssz_hash::uint64_chunk(parsed.agg_slot);
@@ -1513,11 +1520,11 @@ impl BeaconStateTile {
         let sr_att = bls::compute_signing_root(&data_root, &domain_att);
 
         sig_batch.clear();
-        let aggregator_pk = view.validator_pubkey_decompressed(parsed.aggregator_index);
+        let aggregator_pk = view.validators.pubkey_decompressed(parsed.aggregator_index);
         sig_batch.push_one(aggregator_pk, parsed.selection_proof, sr_sp);
         sig_batch.push_one(aggregator_pk, parsed.outer_sig, sr_aap);
         sig_batch.push_aggregate(
-            active_scratch.iter().map(|&vi| view.validator_pubkey_decompressed(vi as usize)),
+            active_scratch.iter().map(|&vi| view.validators.pubkey_decompressed(vi as usize)),
             parsed.agg_sig,
             sr_att,
         );
@@ -1534,16 +1541,16 @@ impl BeaconStateTile {
         let vi_u = SignedVoluntaryExitView::validator_index(buf);
         let vi = vi_u as usize;
 
-        let canon_seq = self.canonical_state_seq();
-        let view = self.state.delta_view(canon_seq);
+        let canon_id = self.canonical_state_id();
+        let view = self.state.read_view(canon_id);
         // Out-of-range index: state may be stale, defer.
-        if vi >= view.validators_count() {
+        if vi >= view.validators.count() {
             return Feedback::Ignore;
         }
-        let current_epoch = view.current_epoch();
+        let current_epoch = view.slot.current_epoch();
         if let Err(e) = validate::validate_voluntary_exit(
             &self.spec,
-            &view,
+            &view.validators,
             vi_u as u32,
             exit_epoch,
             current_epoch,
@@ -1551,12 +1558,12 @@ impl BeaconStateTile {
             tracing::debug!(error = %e, "voluntary_exit gossip rejected");
             return Feedback::Reject(None);
         }
-        if state_transition::get_pending_balance_to_withdraw(&view, vi_u as u32) != 0 {
+        if state_transition::get_pending_balance_to_withdraw(&view.pending, vi_u as u32) != 0 {
             return Feedback::Reject(None);
         }
 
         let object_root = ssz_hash::hash_tree_root_voluntary_exit(exit_epoch, vi_u);
-        let imm = view.immutable();
+        let imm = view.imm;
         let domain = bls::compute_domain(
             bls::DOMAIN_VOLUNTARY_EXIT,
             imm.capella_fork_version,
@@ -1564,7 +1571,7 @@ impl BeaconStateTile {
         );
         let signing_root = bls::compute_signing_root(&object_root, &domain);
         let sig = SignedVoluntaryExitView::signature(buf);
-        if !bls::verify_one(view.validator_pubkey_decompressed(vi), sig, &signing_root) {
+        if !bls::verify_one(view.validators.pubkey_decompressed(vi), sig, &signing_root) {
             return Feedback::Reject(None);
         }
         Feedback::Accept(None)
@@ -1580,26 +1587,30 @@ impl BeaconStateTile {
             return Feedback::Reject(None);
         }
 
-        let canon_seq = self.canonical_state_seq();
-        let view = self.state.delta_view(canon_seq);
-        let current_epoch = view.current_epoch();
+        let canon_id = self.canonical_state_id();
+        let view = self.state.read_view(canon_id);
+        let current_epoch = view.slot.current_epoch();
         let proposer_index = ProposerSlashingView::h1_proposer_index(buf) as usize;
-        if proposer_index >= view.validators_count() {
+        if proposer_index >= view.validators.count() {
             return Feedback::Ignore;
         }
-        if !state_transition::is_slashable_validator(&view, proposer_index as u32, current_epoch) {
+        if !state_transition::is_slashable_validator(
+            &view.validators,
+            proposer_index as u32,
+            current_epoch,
+        ) {
             return Feedback::Reject(None);
         }
 
         let h1_epoch = ProposerSlashingView::h1_slot(buf) / SLOTS_PER_EPOCH;
         let h2_epoch = ProposerSlashingView::h2_slot(buf) / SLOTS_PER_EPOCH;
-        let (fv1, gvr) = view.fork_version_at(h1_epoch);
-        let (fv2, _) = view.fork_version_at(h2_epoch);
+        let (fv1, gvr) = view.imm.fork_version_at(h1_epoch);
+        let (fv2, _) = view.imm.fork_version_at(h2_epoch);
         let sr1 = state_transition::signing_root_for_block_header(&buf[0..208], fv1, &gvr);
         let sr2 = state_transition::signing_root_for_block_header(&buf[208..416], fv2, &gvr);
         let sig1 = ProposerSlashingView::h1_signature(buf);
         let sig2 = ProposerSlashingView::h2_signature(buf);
-        let pubkey = view.validator_pubkey_decompressed(proposer_index);
+        let pubkey = view.validators.pubkey_decompressed(proposer_index);
 
         self.sig_batch.clear();
         self.sig_batch.push_one(pubkey, sig1, sr1);
@@ -1614,8 +1625,8 @@ impl BeaconStateTile {
         if !AttesterSlashingView::check_size(data) {
             return Feedback::Reject(None);
         }
-        let canon_seq = self.canonical_state_seq();
-        let view = self.state.delta_view(canon_seq);
+        let canon_id = self.canonical_state_id();
+        let view = self.state.read_view(canon_id);
         if state_transition::validate_attester_slashing_for_gossip(&view, data, &mut self.sig_batch)
         {
             Feedback::Accept(None)
@@ -1630,24 +1641,25 @@ impl BeaconStateTile {
         }
         let buf: &[u8; SIGNED_BLS_CHANGE_SIZE] = data[..SIGNED_BLS_CHANGE_SIZE].try_into().unwrap();
 
-        let canon_seq = self.canonical_state_seq();
-        let view = self.state.delta_view(canon_seq);
+        let canon_id = self.canonical_state_id();
+        let view = self.state.read_view(canon_id);
 
         let vi_u = SignedBlsToExecutionChangeView::validator_index(buf);
         let vi = vi_u as usize;
-        if vi >= view.validators_count() {
+        if vi >= view.validators.count() {
             return Feedback::Ignore;
         }
         let from_pubkey = SignedBlsToExecutionChangeView::from_bls_pubkey(buf);
         let to_address = SignedBlsToExecutionChangeView::to_execution_address(buf);
-        if let Err(e) = validate::validate_bls_to_execution_change(&view, vi_u as u32, from_pubkey)
+        if let Err(e) =
+            validate::validate_bls_to_execution_change(&view.validators, vi_u as u32, from_pubkey)
         {
             tracing::debug!(error = %e, "bls_to_execution_change gossip rejected");
             return Feedback::Reject(None);
         }
 
         let object_root = ssz_hash::hash_tree_root_bls_change(vi_u, from_pubkey, to_address);
-        let imm = view.immutable();
+        let imm = view.imm;
         let domain = bls::compute_domain(
             bls::DOMAIN_BLS_TO_EXECUTION_CHANGE,
             imm.genesis_fork_version,
@@ -1745,7 +1757,7 @@ impl Tile<SilverSpine> for BeaconStateTile {
                     p2p_peer = m.stream_id.peer(),
                     dc_pending_len = self.dc_pending_blocks.len(),
                     head_slot = self.head_state_slot(),
-                    "gossip dropped: BeaconState in Syncing mode",
+                    "gossip dropped: BeaconState in Syncing mode"
                 );
             }
         });
@@ -1776,15 +1788,18 @@ impl Tile<SilverSpine> for BeaconStateTile {
         });
 
         adapter.consume(|m: RpcInbound, producers| {
-            if let RpcInbound::Response(rsp) = m &&
-                !rsp.is_backfill() &&
-                let RpcResponse::BeaconBlock { fork_digest: _, ssz } = rsp.response
+            if let RpcInbound::Response(RpcResponseInbound {
+                application_id: _,
+                stream_id,
+                response,
+            }) = m &&
+                let RpcResponse::BeaconBlock { fork_digest: _, ssz } = response
             {
-                tracing::debug!(stream_id = ?rsp.stream_id, "received beacon block over rpc");
+                tracing::debug!(?stream_id, "received beacon block over rpc");
                 let acquired = self.rpc_consumer.acquire(ssz);
                 let data = acquired.buffer().ok().map(|(d, _)| d as *const [u8]);
                 if let Some(p) = data {
-                    self.handle_rpc_block(rsp.stream_id, unsafe { &*p }, acquired, producers);
+                    self.handle_rpc_block(stream_id, unsafe { &*p }, acquired, producers);
                 }
             }
         });
@@ -1800,20 +1815,63 @@ impl Tile<SilverSpine> for BeaconStateTile {
 /// current_slot >= aggregate.slot`.
 const ATTESTATION_PROPAGATION_SLOT_RANGE: u64 = 32;
 
+/// Re-anchor one always-rolled tier: collect each survivor's id for the tier
+/// (`proj`), run the group's `finalize`, and write the fresh ids back 1:1.
+fn rebase_tier<I: Copy>(
+    survivors: &mut [StateId],
+    proj: impl Fn(&mut StateId) -> &mut I,
+    finalize: impl FnOnce(&ArrayVec<I, MAX_SURVIVORS>) -> Vec<I>,
+) {
+    let ids: ArrayVec<I, MAX_SURVIVORS> = survivors.iter_mut().map(|s| *proj(s)).collect();
+    let new = finalize(&ids);
+    for (sid, &n) in survivors.iter_mut().zip(&new) {
+        *proj(sid) = n;
+    }
+}
+
+/// Re-anchor a lazily-rolled tier: `old_idxs` is the pre-deduped set of live
+/// entries (one cumulative log re-based once when siblings share it); the
+/// group's `finalize` returns the fresh ids 1:1, mapped old→new onto every
+/// bundle referencing an old entry.
+fn rebase_lazy_tier<I: Copy + PartialEq>(
+    survivors: &mut [StateId],
+    old_idxs: &[I],
+    proj: impl Fn(&mut StateId) -> &mut Option<I>,
+    finalize: impl FnOnce() -> Vec<I>,
+) {
+    let new = finalize();
+    for sid in survivors.iter_mut() {
+        if let Some(old) = *proj(sid) &&
+            let Some(pos) = old_idxs.iter().position(|&e| e == old)
+        {
+            *proj(sid) = Some(new[pos]);
+        }
+    }
+}
+
+/// Resolve a pending block's SSZ via its source consumer; keep it iff its
+/// slot is above the finalized boundary (unreadable buffers are dropped).
+fn pending_block_outlives(
+    gossip_consumer: &mut TRandomAccess,
+    rpc_consumer: &mut TRandomAccess,
+    msg: &PendingBlock,
+    finalized_slot: u64,
+) -> bool {
+    let acquired = match msg {
+        PendingBlock::Gossip(g) => gossip_consumer.acquire(g.ssz),
+        PendingBlock::Rpc(_, ssz) => rpc_consumer.acquire(*ssz),
+    };
+    if let Ok((buffer, _)) = acquired.buffer() {
+        return SignedBeaconBlockView::slot(buffer) > finalized_slot;
+    }
+    false
+}
+
 fn is_aggregator(committee_len: usize, selection_proof: &[u8; 96]) -> bool {
     const TARGET_AGGREGATORS_PER_COMMITTEE: u64 = 16;
     let modulo = (committee_len as u64 / TARGET_AGGREGATORS_PER_COMMITTEE).max(1);
     let h = ssz_hash::sha256(selection_proof);
     u64::from_le_bytes(h[0..8].try_into().unwrap()) % modulo == 0
-}
-
-/// `true` when crossing into `epoch` rotates the `HistoricalLongtail` tier:
-/// either a sync-committee rotation (every `EPOCHS_PER_SYNC_COMMITTEE_PERIOD`)
-/// or a historical-summaries push (every `SLOTS_PER_HISTORICAL_ROOT /
-/// SLOTS_PER_EPOCH`).
-fn longtail_rotates_at_epoch(epoch: Epoch) -> bool {
-    let hs_period = SLOTS_PER_HISTORICAL_ROOT as u64 / SLOTS_PER_EPOCH;
-    epoch.is_multiple_of(EPOCHS_PER_SYNC_COMMITTEE_PERIOD) || epoch.is_multiple_of(hs_period)
 }
 
 /// Spec `compute_fork_digest` (Fulu EIP-7892). `blob_parameters` is `None`
@@ -1850,184 +1908,22 @@ fn get_blob_parameters(
     default
 }
 
-/// Pin each survivor's effective view against the impending `apply_delta`:
-/// for every index promoted is about to overwrite that a survivor reads
-/// through the finalized base, materialise `(idx, finalized[idx])` on the
-/// survivor so its view doesn't shift to the new value.
-fn snapshot_finalized_into_survivors(
-    bs: &mut BeaconState,
-    promoted: &StateDelta,
-    survivors: &[usize],
-    promoted_seq: usize,
-) {
-    // Skip promoted's appended-validator range — those indices aren't yet
-    // in the finalized base, so there's no pre-promote value to preserve.
-    let valid_below = bs.finalized.validators.validator_count() as u32;
-    let fin = &bs.finalized;
-    let vfin = &fin.validators;
-
-    for &seq in survivors {
-        if seq == promoted_seq {
-            continue;
-        }
-        let d = bs.slots.get_mut(seq);
-        merge_finalized(
-            &mut d.previous_participation.edits,
-            &promoted.previous_participation.edits,
-            valid_below,
-            |i| fin.previous_participation.get(i),
-        );
-        merge_finalized(
-            &mut d.current_participation.edits,
-            &promoted.current_participation.edits,
-            valid_below,
-            |i| fin.current_participation.get(i),
-        );
-        merge_finalized(
-            &mut d.inactivity_scores.edits,
-            &promoted.inactivity_scores.edits,
-            valid_below,
-            |i| fin.inactivity_scores.get(i),
-        );
-        merge_finalized(
-            &mut d.validators.credentials_edits,
-            &promoted.validators.credentials_edits,
-            valid_below,
-            |i| *vfin.withdrawal_credentials(i),
-        );
-        merge_finalized(
-            &mut d.validators.effective_balance_edits,
-            &promoted.validators.effective_balance_edits,
-            valid_below,
-            |i| vfin.effective_balance(i),
-        );
-        merge_finalized(
-            &mut d.validators.slashed_edits,
-            &promoted.validators.slashed_edits,
-            valid_below,
-            |i| vfin.is_slashed(i),
-        );
-        merge_finalized(
-            &mut d.validators.activation_eligibility_epoch_edits,
-            &promoted.validators.activation_eligibility_epoch_edits,
-            valid_below,
-            |i| vfin.activation_eligibility_epoch(i),
-        );
-        merge_finalized(
-            &mut d.validators.activation_epoch_edits,
-            &promoted.validators.activation_epoch_edits,
-            valid_below,
-            |i| vfin.activation_epoch(i),
-        );
-        merge_finalized(
-            &mut d.validators.exit_epoch_edits,
-            &promoted.validators.exit_epoch_edits,
-            valid_below,
-            |i| vfin.exit_epoch(i),
-        );
-        merge_finalized(
-            &mut d.validators.withdrawable_epoch_edits,
-            &promoted.validators.withdrawable_epoch_edits,
-            valid_below,
-            |i| vfin.withdrawable_epoch(i),
-        );
-    }
-}
-
-/// O(n + m) in-place merge over the sorted-by-idx edit lists. For each idx
-/// in `promoted_edits` < `valid_below` not already in `edits`, insert
-/// `(idx, finalized_get(idx))`. Reverse-merge into a resized `edits`:
-/// no temporary `Vec`, no realloc once capacity has grown to the working
-/// set's high-water mark.
-#[inline]
-fn merge_finalized<T, F>(
-    edits: &mut Vec<(u32, T)>,
-    promoted_edits: &[(u32, T)],
-    valid_below: u32,
-    finalized_get: F,
-) where
-    T: Copy + Default,
-    F: Fn(usize) -> T,
-{
-    if promoted_edits.is_empty() {
-        return;
-    }
-    // Pass 1: count entries we'll actually add.
-    let mut to_add = 0usize;
-    let (mut i, mut j) = (0usize, 0usize);
-    while i < edits.len() && j < promoted_edits.len() {
-        let ei = edits[i].0;
-        let pj = promoted_edits[j].0;
-        if ei < pj {
-            i += 1;
-        } else if ei > pj {
-            if pj < valid_below {
-                to_add += 1;
-            }
-            j += 1;
-        } else {
-            i += 1;
-            j += 1;
-        }
-    }
-    while j < promoted_edits.len() {
-        if promoted_edits[j].0 < valid_below {
-            to_add += 1;
-        }
-        j += 1;
-    }
-    if to_add == 0 {
-        return;
-    }
-
-    // Pass 2: reverse-merge in place. Read from the back of each input,
-    // write to the back of the resized `edits`.
-    let orig = edits.len();
-    edits.resize(orig + to_add, (0u32, T::default()));
-    let mut w = orig + to_add;
-    let mut ii = orig;
-    let mut jj = promoted_edits.len();
-    while ii > 0 && jj > 0 {
-        let pj = promoted_edits[jj - 1].0;
-        if pj >= valid_below {
-            jj -= 1;
-            continue;
-        }
-        let ei = edits[ii - 1].0;
-        if ei > pj {
-            w -= 1;
-            edits[w] = edits[ii - 1];
-            ii -= 1;
-        } else if ei < pj {
-            w -= 1;
-            edits[w] = (pj, finalized_get(pj as usize));
-            jj -= 1;
-        } else {
-            w -= 1;
-            edits[w] = edits[ii - 1];
-            ii -= 1;
-            jj -= 1;
-        }
-    }
-    while jj > 0 {
-        let pj = promoted_edits[jj - 1].0;
-        if pj < valid_below {
-            w -= 1;
-            edits[w] = (pj, finalized_get(pj as usize));
-        }
-        jj -= 1;
-    }
-    debug_assert_eq!(w, ii, "reverse merge wrote past the surviving prefix");
-}
-
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-    use silver_beacon_state_data::{BLSPubkey, Finalized, Immutable, ValSeed, Withdrawals};
+    use silver_beacon_state_data::{
+        BLSPubkey, BalancesGroup, CurrentParticipationGroup, EPOCHS_PER_SLASHINGS_VECTOR,
+        EpochGroup, EpochState, EpochStateFinalized, Eth1Group, Eth1Votes, FinalizedValidators,
+        Immutable, InactivityScoresGroup, LongtailGroup, LongtailState, PROPOSER_LOOKAHEAD_SIZE,
+        PendingDeposit, PendingGroup, PendingQueues, PreviousParticipationGroup,
+        SLOTS_PER_HISTORICAL_ROOT, SlotStateFinalized, SlotStateGroup, SlotStateId, ValSeed,
+        ValidatorsGroup, Withdrawals, validator_capacity,
+    };
     use silver_common::{TCache, TCacheProducer, ssz_view::SIGNED_AGG_PROOF_MIN};
 
     use super::*;
+    use crate::test_signing;
 
     const MAX_EFFECTIVE_BALANCE: u64 = 32_000_000_000;
     const ANCHOR_ROOT: B256 = [0x01u8; 32];
@@ -2046,7 +1942,7 @@ mod tests {
         let event_p = TCache::producer("test_event", 1 << 20);
         let gossip_c = gossip_p.cache_ref().random_access("test_gossip", true).unwrap();
         let rpc_c = event_p.cache_ref().random_access("test_event", true).unwrap();
-        let state = BeaconStateOwner::new(BeaconState::empty());
+        let state = BeaconStateOwner::pre_bootstrap();
         BeaconStateTile::new(ticker, SpecConfig::mainnet(), state, gossip_c, rpc_c, &[], &[])
     }
 
@@ -2056,18 +1952,32 @@ mod tests {
         pk
     }
 
-    /// Build a `Finalized` base with `n` active validators (MAX effective
-    /// balance, activation epoch 0, exit FAR_FUTURE) at `start_slot`. With
-    /// `real_keys`, install spec BLS test pubkeys (+ BLS-prefix withdrawal
-    /// creds) so signature-checking handlers accept; otherwise collision-
-    /// free placeholder pubkeys.
-    fn build_seed_finalized(n: usize, start_slot: Slot, real_keys: bool) -> Box<Finalized> {
-        let cp_fin = silver_beacon_state_data::Checkpoint { epoch: 0, root: ANCHOR_ROOT };
+    /// Epoch-tier base with zeroed rings and the given checkpoints seeded —
+    /// the harness analog of a decomposed anchor.
+    fn epoch_base_with(justified: Checkpoint, finalized: Checkpoint) -> EpochStateFinalized {
+        EpochStateFinalized::from_parts(
+            EpochState {
+                current_justified_checkpoint: justified,
+                finalized_checkpoint: finalized,
+                ..Default::default()
+            },
+            vec![[0u8; 32]; EPOCHS_PER_HISTORICAL_VECTOR].into_boxed_slice(),
+            vec![0u64; EPOCHS_PER_SLASHINGS_VECTOR].into_boxed_slice(),
+        )
+    }
+
+    /// Build seed bases with `n` active validators (MAX effective balance,
+    /// activation epoch 0, exit FAR_FUTURE) at `start_slot`. With `real_keys`,
+    /// install spec BLS test pubkeys (+ BLS-prefix withdrawal creds) so
+    /// signature-checking handlers accept; otherwise collision-free
+    /// placeholder pubkeys.
+    fn build_seed_finalized(n: usize, real_keys: bool) -> (EpochStateFinalized, Vec<ValSeed>) {
+        let cp_fin = Checkpoint { epoch: 0, root: ANCHOR_ROOT };
         let seeds: Vec<ValSeed> = (0..n)
             .map(|i| {
                 let (pubkey, withdrawal_credentials) = if real_keys {
-                    let sk_idx = i % crate::test_signing::PRIVKEY_HEX.len();
-                    let pk_bytes = crate::test_signing::pubkey_pk(sk_idx).to_bytes();
+                    let sk_idx = i % test_signing::PRIVKEY_HEX.len();
+                    let pk_bytes = test_signing::pubkey_pk(sk_idx).to_bytes();
                     // BLS-prefix creds: [0]=0x00, [1..]=hash(pk)[1..].
                     let mut creds = Withdrawals(ssz_hash::sha256(&pk_bytes));
                     creds.0[0] = 0x00;
@@ -2085,50 +1995,73 @@ mod tests {
                 }
             })
             .collect();
-        let mut fin = Finalized::new_test(&seeds);
-        fin.slot.slot.slot = start_slot;
-        fin.epoch.state.current_justified_checkpoint = cp_fin;
-        fin.epoch.state.finalized_checkpoint = cp_fin;
-        fin
+        // The finalized slot lives in the slot-group base (seeded in
+        // `arm_tile` from `start_slot`); the validator registry rides its own
+        // group (seeded in `arm_tile` from `seeds`); the epoch tier rides its
+        // own group (built in `arm_tile` from this base).
+        (epoch_base_with(cp_fin, cp_fin), seeds)
     }
 
-    /// Install `fin` as the tile's base, anchor an empty per-fork delta seeded
-    /// with the finalized slot scalars, and arm fork choice + the start-epoch
-    /// attester shuffling at the anchor.
-    fn arm_tile(tile: &mut BeaconStateTile, fin: Box<Finalized>, start_slot: Slot) {
-        let mut bs = BeaconState::empty();
-        bs.finalized = *fin;
-        let mut owner = BeaconStateOwner::new(bs);
-
-        let fin_slot = owner.state().finalized.slot.slot;
-        let vd = ValidatorsDelta::new_at(&owner.state().finalized.validators);
-        let seq = match owner.slots().roll(None) {
-            RollResult::Reset(s) | RollResult::Rolled(s) => s,
+    /// Install the seed bases as the tile's state, anchor an empty per-fork
+    /// delta seeded with the finalized slot scalars, and arm fork choice + the
+    /// start-epoch attester shuffling at the anchor.
+    fn arm_tile(
+        tile: &mut BeaconStateTile,
+        epoch_base: EpochStateFinalized,
+        seeds: &[ValSeed],
+        start_slot: Slot,
+    ) {
+        // Test-built state: epoch base seeded from `epoch_base`, registry from
+        // `seeds`, slot base anchored at `start_slot`, per-validator columns
+        // zeroed at the registry's count, the rest empty.
+        let zero_roots = || vec![[0u8; 32]; SLOTS_PER_HISTORICAL_ROOT].into_boxed_slice();
+        let n = seeds.len();
+        let cap = validator_capacity(n);
+        let zero_u64s = vec![0u8; n * 8];
+        let zero_flags = vec![0u8; n];
+        let bs = BeaconState {
+            immutable: Immutable::default(),
+            validators: ValidatorsGroup::new(FinalizedValidators::with_validators(seeds)),
+            balances: BalancesGroup::new(cap, n, &zero_u64s).unwrap(),
+            eth1: Eth1Group::new(Eth1Votes::default()),
+            pending: PendingGroup::new(PendingQueues::default()),
+            previous_participation: PreviousParticipationGroup::new(cap, n, &zero_flags).unwrap(),
+            current_participation: CurrentParticipationGroup::new(cap, n, &zero_flags).unwrap(),
+            inactivity: InactivityScoresGroup::new(cap, n, &zero_u64s).unwrap(),
+            slot_states: SlotStateGroup::new(SlotStateFinalized::from_parts(
+                SlotState { slot: start_slot, ..Default::default() },
+                zero_roots(),
+                zero_roots(),
+            )),
+            epoch: EpochGroup::new(epoch_base),
+            longtail: LongtailGroup::new(LongtailState::default()),
         };
-        {
-            let sd = owner.slots().get_mut(seq);
-            sd.validators = vd;
-            sd.slot = SlotStateDelta { slot: fin_slot, ..Default::default() };
-        }
-        owner.publish_offsets(None, Some(seq));
+        let mut bs = bs;
+        // Anchor each tier's fork at the base (the slot tier at `start_slot`);
+        // epoch/longtail stay lazy. Rolled before the owner wraps the state.
+        let anchor = bs.roll_fresh();
+        let mut owner = BeaconStateOwner::new(bs);
+        owner.publish_state_id(anchor);
 
         tile.state = owner;
-        tile.last_applied = seq;
+        tile.last_applied = anchor;
         tile.last_applied_block_root = ANCHOR_ROOT;
         tile.mode = Mode::Following;
 
         let cp = Checkpoint { epoch: 0, root: ANCHOR_ROOT };
-        tile.fork_choice = ForkChoice::init(cp, cp, start_slot, ANCHOR_ROOT, ANCHOR_ROOT, seq);
+        tile.fork_choice = ForkChoice::init(cp, cp, start_slot, ANCHOR_ROOT, ANCHOR_ROOT, anchor);
 
-        tile.ensure_shuffling_window(start_slot / SLOTS_PER_EPOCH, seq);
+        tile.ensure_shuffling_window(start_slot / SLOTS_PER_EPOCH, anchor);
     }
 
     fn seed_tile(tile: &mut BeaconStateTile, n: usize, start_slot: Slot) {
-        arm_tile(tile, build_seed_finalized(n, start_slot, false), start_slot);
+        let (epoch_base, seeds) = build_seed_finalized(n, false);
+        arm_tile(tile, epoch_base, &seeds, start_slot);
     }
 
     fn seed_tile_with_keys(tile: &mut BeaconStateTile, n: usize, start_slot: Slot) {
-        arm_tile(tile, build_seed_finalized(n, start_slot, true), start_slot);
+        let (epoch_base, seeds) = build_seed_finalized(n, true);
+        arm_tile(tile, epoch_base, &seeds, start_slot);
     }
 
     /// Immutable tier the signed-object builders sign against. `seed_*` leave
@@ -2137,36 +2070,6 @@ mod tests {
     /// all zero → identical signing domains).
     fn seed_immutable(_tile: &BeaconStateTile) -> Immutable {
         Immutable::default()
-    }
-
-    /// Regression: the finalized base is frozen at the finalized *block*'s
-    /// slot, which underflows its epoch boundary when that boundary slot was
-    /// skipped. Bootstrap must round the anchor epoch up to the boundary the
-    /// block anchors — `slot/32` advertises an epoch one too low, and peers at
-    /// that epoch hold a different root, so the Status check fatal-evicts.
-    #[test]
-    fn bootstrap_anchor_epoch_rounds_up_to_boundary() {
-        // (block slot, expected anchor epoch): slot 91 is the boundary block
-        // for epoch 3 (slot 96 skipped) — `slot/32` = 2, FFG epoch is 3. The
-        // boundary-aligned slots confirm round-up never over-counts.
-        for (block_slot, want_epoch) in [(91u64, 3u64), (96, 3), (64, 2)] {
-            // Real BLS keys: decompose decompresses every validator pubkey.
-            let fin = build_seed_finalized(4, block_slot, true);
-            let mut ssz = Vec::new();
-            fin.encode_ssz(&mut ssz).expect("encode_ssz");
-
-            let mut tile = make_tile();
-            tile.bootstrap(&ssz, &[]);
-
-            assert_eq!(
-                tile.fork_choice.finalized_checkpoint.epoch, want_epoch,
-                "anchor epoch for block slot {block_slot}",
-            );
-            // The value Status actually advertises (epoch at bytes [36..44]).
-            let status = tile.status_payload();
-            let advertised = u64::from_le_bytes(status[36..44].try_into().unwrap());
-            assert_eq!(advertised, want_epoch, "advertised finalized epoch, slot {block_slot}");
-        }
     }
 
     #[test]
@@ -2192,7 +2095,7 @@ mod tests {
         tile.on_slot_start(34);
         assert_eq!(tile.head_state_slot(), 34);
         // Crossing into epoch 1 allocated the head fork its own epoch delta.
-        assert!(tile.state.state().slots.get(tile.last_applied).epoch_idx.is_some());
+        assert!(tile.last_applied.epoch_idx.is_some());
     }
 
     /// Regression: advancing the head over an empty epoch-boundary slot must
@@ -2205,27 +2108,31 @@ mod tests {
         let mut tile = make_tile();
         seed_tile(&mut tile, 4, 31); // anchor at epoch-0's last slot
 
-        // Give the anchor its own epoch delta with a recognizable lookahead.
-        let anchor = tile.last_applied;
-        {
-            let mut view = tile.state.delta_view(anchor);
-            view.ensure_epoch_delta();
-            let es = view.epoch_state_mut();
+        // Give the anchor its own epoch entry with a recognizable lookahead —
+        // rolled, mutated through the held writer, committed (append-only).
+        // The anchor bundle is rebuilt with the new epoch id and re-installed
+        // as the head (the fork-choice anchor node keeps the lazy bundle —
+        // this test never reads it).
+        let anchor_epoch_idx = {
+            let mut g = tile.state.write();
+            let mut w = g.epoch.roll_inheriting(tile.last_applied.epoch_idx);
+            let es = w.state_mut();
             for i in 0..PROPOSER_LOOKAHEAD_SIZE {
                 es.proposer_lookahead[i] = i as u64;
             }
-        }
-        let anchor_epoch_idx = tile.state.state().slots.get(anchor).epoch_idx.unwrap();
-        let before = tile.state.state().epochs.get(anchor_epoch_idx).state.proposer_lookahead;
+            w.commit()
+        };
+        tile.last_applied.epoch_idx = Some(anchor_epoch_idx);
+        let before = tile.state.state().epoch.view(anchor_epoch_idx).state().proposer_lookahead;
 
         // Advance across the epoch 0 -> 1 boundary on empty slots.
         tile.on_slot_start(32);
         assert_eq!(tile.head_state_slot(), 32);
 
         // Head forked onto a private epoch delta; the anchor's is untouched.
-        let head_epoch_idx = tile.state.state().slots.get(tile.last_applied).epoch_idx.unwrap();
+        let head_epoch_idx = tile.last_applied.epoch_idx.unwrap();
         assert_ne!(head_epoch_idx, anchor_epoch_idx, "head must COW its epoch delta");
-        let after = tile.state.state().epochs.get(anchor_epoch_idx).state.proposer_lookahead;
+        let after = tile.state.state().epoch.view(anchor_epoch_idx).state().proposer_lookahead;
         assert_eq!(before, after, "parent proposer_lookahead shifted in place");
     }
 
@@ -2284,7 +2191,7 @@ mod tests {
         // Past shard-committee-period so the exit is permitted.
         seed_tile_with_keys(&mut tile, 4, 256 * SLOTS_PER_EPOCH);
         let imm = seed_immutable(&tile);
-        let buf = crate::test_signing::sign_voluntary_exit(0, 0, 0, &imm);
+        let buf = test_signing::sign_voluntary_exit(0, 0, 0, &imm);
         assert_eq!(tile.handle_voluntary_exit(&buf), Feedback::Accept(None));
     }
 
@@ -2312,7 +2219,7 @@ mod tests {
         let mut tile = make_tile();
         seed_tile_with_keys(&mut tile, 4, 0);
         let imm = seed_immutable(&tile);
-        let buf = crate::test_signing::sign_proposer_slashing(0, 0, 0, &imm);
+        let buf = test_signing::sign_proposer_slashing(0, 0, 0, &imm);
         assert_eq!(tile.handle_proposer_slashing(&buf), Feedback::Accept(None));
     }
 
@@ -2373,7 +2280,7 @@ mod tests {
         let mut tile = make_tile();
         seed_tile_with_keys(&mut tile, 4, 0);
         let imm = seed_immutable(&tile);
-        let buf = crate::test_signing::sign_attester_slashing_double_vote(0, 0, 0, 0, &imm);
+        let buf = test_signing::sign_attester_slashing_double_vote(0, 0, 0, 0, &imm);
         assert_eq!(tile.handle_attester_slashing(&buf), Feedback::Accept(None));
     }
 
@@ -2382,8 +2289,8 @@ mod tests {
         let mut tile = make_tile();
         seed_tile_with_keys(&mut tile, 4, 0);
         let imm = seed_immutable(&tile);
-        let ia1 = crate::test_signing::build_indexed_attestation(0, 0, 0, 0, 0, 0xAA, &imm);
-        let ia2 = crate::test_signing::build_indexed_attestation(1, 1, 0, 0, 0, 0xBB, &imm);
+        let ia1 = test_signing::build_indexed_attestation(0, 0, 0, 0, 0, 0xAA, &imm);
+        let ia2 = test_signing::build_indexed_attestation(1, 1, 0, 0, 0, 0xBB, &imm);
         let buf = wrap_attester_slashing(&ia1, &ia2);
         assert_eq!(tile.handle_attester_slashing(&buf), Feedback::Reject(None));
     }
@@ -2415,10 +2322,8 @@ mod tests {
             })
             .collect();
         let cp = Checkpoint { epoch: 0, root: ANCHOR_ROOT };
-        let mut fin = Finalized::new_test(&seeds);
-        fin.epoch.state.current_justified_checkpoint = cp;
-        fin.epoch.state.finalized_checkpoint = cp;
-        arm_tile(&mut tile, fin, 0);
+        let epoch_base = epoch_base_with(cp, cp);
+        arm_tile(&mut tile, epoch_base, &seeds, 0);
         let buf = [0u8; SIGNED_BLS_CHANGE_SIZE]; // vi = 0
         assert_eq!(tile.handle_bls_to_execution_change(&buf), Feedback::Reject(None));
     }
@@ -2429,7 +2334,7 @@ mod tests {
         seed_tile_with_keys(&mut tile, 4, 0);
         let imm = seed_immutable(&tile);
         let to_addr = [0x42u8; 20];
-        let buf = crate::test_signing::sign_bls_to_execution_change(0, 0, &to_addr, &imm);
+        let buf = test_signing::sign_bls_to_execution_change(0, 0, &to_addr, &imm);
         assert_eq!(tile.handle_bls_to_execution_change(&buf), Feedback::Accept(None));
     }
 
@@ -2448,8 +2353,16 @@ mod tests {
             body_root: [0u8; 32],
         };
         {
-            let seq = tile.last_applied;
-            tile.state.slots().get_mut(seq).slot.slot.latest_block_header = genesis_header;
+            // Roll a fresh slot fork off the anchor with the known header set
+            // on the writer, commit, and repoint the head bundle's slot index
+            // — append-only, no re-open of the published anchor fork.
+            let new_slot_idx = {
+                let mut g = tile.state.write();
+                let mut sw = g.slot_states.roll_from(tile.last_applied.slot_idx);
+                sw.state_mut().latest_block_header = genesis_header;
+                sw.commit()
+            };
+            tile.last_applied.slot_idx = new_slot_idx;
         }
         let parent_root = ssz_hash::hash_tree_root_block_header(&genesis_header);
 
@@ -2502,7 +2415,7 @@ mod tests {
         let beacon_block_root = tile.last_applied_block_root;
         let target_root = tile.last_applied_block_root;
         let (slot, ci, pos, csize) = find_committee_for_vi0(tile);
-        crate::test_signing::sign_aggregate_and_proof(
+        test_signing::sign_aggregate_and_proof(
             0,
             0,
             slot,
@@ -2525,7 +2438,7 @@ mod tests {
         let (slot, ci, _, _) = find_committee_for_vi0(&tile);
         let imm = seed_immutable(&tile);
         let bbr = [0xAAu8; 32];
-        let buf = crate::test_signing::sign_single_attestation(
+        let buf = test_signing::sign_single_attestation(
             0,
             0,
             ci as u64,
@@ -2652,10 +2565,9 @@ mod tests {
 
     /// A `PendingDeposit` for a brand-new validator (spec key 0), signed under
     /// the genesis deposit domain (fork version + gvr both zero).
-    fn signed_new_validator_deposit()
-    -> (silver_beacon_state_data::BLSPubkey, silver_beacon_state_data::PendingDeposit) {
+    fn signed_new_validator_deposit() -> (BLSPubkey, PendingDeposit) {
         const DOMAIN_DEPOSIT: u32 = 0x03;
-        let pk = crate::test_signing::pubkey_bytes(0);
+        let pk = test_signing::pubkey_bytes(0);
         let wc = Withdrawals([0xAAu8; 32]);
         let amount = 32_000_000_000u64;
 
@@ -2666,9 +2578,9 @@ mod tests {
         ]);
         let domain = bls::compute_domain(DOMAIN_DEPOSIT, [0; 4], &[0u8; 32]);
         let signing_root = bls::compute_signing_root(&msg_root, &domain);
-        let sig = crate::test_signing::sign(0, &signing_root);
+        let sig = test_signing::sign(0, &signing_root);
 
-        (pk, silver_beacon_state_data::PendingDeposit {
+        (pk, PendingDeposit {
             pubkey: pk,
             withdrawal_credentials: wc,
             amount,
@@ -2678,48 +2590,55 @@ mod tests {
     }
 
     /// Speculative validator appends from deposit processing must land on the
-    /// head fork's `validators` delta, not on the shared `Finalized` base —
+    /// head fork's `validators` delta, not on the shared finalized base —
     /// the base only advances at Casper finality.
     #[test]
     fn epoch_transition_keeps_base_until_finality() {
         let mut tile = make_tile();
-        seed_tile(&mut tile, 1, 0);
+        // Arm with epoch 1 already finalized in the base (finality lives in the
+        // base, so this is equivalent to advancing it — and avoids mutating the
+        // published base mid-test) so slot-0 deposits are eligible.
+        let (_eb, seeds) = build_seed_finalized(1, false);
+        let epoch_base = epoch_base_with(Checkpoint { epoch: 0, root: ANCHOR_ROOT }, Checkpoint {
+            epoch: 1,
+            root: ANCHOR_ROOT,
+        });
+        arm_tile(&mut tile, epoch_base, &seeds, 0);
 
         let (pk, deposit) = signed_new_validator_deposit();
-        // Queue the deposit on the head delta and mark slot-0 deposits eligible
-        // by finalizing epoch 1 in the base.
-        {
-            let seq = tile.last_applied;
-            tile.state.slots().get_mut(seq).pending.deposits_appended.push(deposit);
+        // Queue the deposit append-only: roll a fresh pending fork off the
+        // head, push, and repoint the head bundle at the committed id.
+        tile.last_applied.pending_idx = {
             let mut g = tile.state.write();
-            g.finalized.epoch.state.finalized_checkpoint =
-                silver_beacon_state_data::Checkpoint { epoch: 1, root: ANCHOR_ROOT };
-        }
+            let mut pw = g.pending.roll_from(tile.last_applied.pending_idx);
+            pw.push_pending_deposit(deposit);
+            pw.commit()
+        };
 
         tile.on_slot_start(SLOTS_PER_EPOCH);
 
         // Base unchanged; the new validator lives on the head fork's delta.
         assert_eq!(
-            tile.state.state().finalized.validators.validator_count(),
+            tile.state.state().validators.finalized().validator_count(),
             1,
             "base must wait for finality"
         );
-        let head = tile.state.state().slots.get(tile.last_applied);
-        assert_eq!(head.validators.appended.len(), 1);
-        assert_eq!(head.validators.appended[0].pubkey, pk);
+        let head_validators = tile.state.state().validators.view(tile.last_applied.validators_idx);
+        assert_eq!(head_validators.count(), 2);
+        assert_eq!(*head_validators.pubkey(1), pk);
     }
 
     /// `maybe_finalize` with `fin_idx > 0` must (a) promote the finalized
     /// delta into the base, (b) prune non-descendant siblings from fork
     /// choice, (c) re-base the surviving descendant's cumulative edits against
-    /// the new base, and (d) advance the slots-ring tail. This is the only
-    /// place the survivor re-base path is exercised — single-fork tests take
-    /// the no-promote branch (`fin_idx == 0`).
+    /// the new base, and (d) hand the survivor its re-anchored bundle. This is
+    /// the only place the survivor re-base path is exercised — single-fork
+    /// tests take the no-promote branch (`fin_idx == 0`).
     #[test]
     fn multi_fork_finalize_promotes_and_rebases() {
         let mut tile = make_tile();
         seed_tile(&mut tile, 4, 0);
-        let anchor_seq = tile.last_applied;
+        let anchor_id = tile.last_applied;
 
         const F_ROOT: B256 = [0x0F; 32];
         const D_ROOT: B256 = [0x0D; 32];
@@ -2727,36 +2646,45 @@ mod tests {
         const ZERO_CP: Checkpoint = Checkpoint { epoch: 0, root: [0u8; 32] };
         let f_cp = Checkpoint { epoch: 0, root: F_ROOT };
 
-        // F: child of anchor (to be finalized). One cumulative `block_root`.
-        let f_seq = match tile.state.slots().roll(Some(anchor_seq)) {
-            RollResult::Reset(s) | RollResult::Rolled(s) => s,
+        // Roll a slot-group fork off `parent` with a slot number + one
+        // cumulative block root set on the writer, then commit — the
+        // writer→commit path (no in-place re-open). `reset_from` carries the
+        // parent's root tail, so a child appends onto it.
+        let roll_slot = |st: &mut BeaconStateOwner, parent: SlotStateId, slot: Slot, root: B256| {
+            let mut g = st.write();
+            let mut sw = g.slot_states.roll_from(parent);
+            sw.state_mut().slot = slot;
+            sw.push_block_root(root);
+            sw.commit()
         };
-        {
-            let f = tile.state.slots().get_mut(f_seq);
-            f.slot.slot.slot = 1;
-            f.slot.block_roots.push(F_ROOT);
-        }
+        let roll_balances = |st: &mut BeaconStateOwner, parent| {
+            let mut g = st.write();
+            g.balances.roll_from(parent).commit()
+        };
+
+        // F: child of anchor (to be finalized). One cumulative `block_root`.
+        // Each fork's bundle copies its parent's and re-points the rolled
+        // tiers (slot + balances here, the others shared for this test).
+        let f_id = StateId {
+            balances_idx: roll_balances(&mut tile.state, anchor_id.balances_idx),
+            slot_idx: roll_slot(&mut tile.state, anchor_id.slot_idx, 1, F_ROOT),
+            ..anchor_id
+        };
 
         // D: child of F (head, survives). Inherits F's block_roots via
         // `reset_from`, appends its own → [F_ROOT, D_ROOT].
-        let d_seq = match tile.state.slots().roll(Some(f_seq)) {
-            RollResult::Reset(s) | RollResult::Rolled(s) => s,
+        let d_id = StateId {
+            balances_idx: roll_balances(&mut tile.state, f_id.balances_idx),
+            slot_idx: roll_slot(&mut tile.state, f_id.slot_idx, 2, D_ROOT),
+            ..f_id
         };
-        {
-            let d = tile.state.slots().get_mut(d_seq);
-            d.slot.slot.slot = 2;
-            d.slot.block_roots.push(D_ROOT);
-        }
 
         // F2: sibling of F (will be pruned by fork choice).
-        let f2_seq = match tile.state.slots().roll(Some(anchor_seq)) {
-            RollResult::Reset(s) | RollResult::Rolled(s) => s,
+        let f2_id = StateId {
+            balances_idx: roll_balances(&mut tile.state, anchor_id.balances_idx),
+            slot_idx: roll_slot(&mut tile.state, anchor_id.slot_idx, 1, F2_ROOT),
+            ..anchor_id
         };
-        {
-            let f2 = tile.state.slots().get_mut(f2_seq);
-            f2.slot.slot.slot = 1;
-            f2.slot.block_roots.push(F2_ROOT);
-        }
 
         // Insert F2 first so its idx is below F's — fork choice's `prune`
         // only drops the prefix below the finalized node, so the sibling has
@@ -2769,7 +2697,7 @@ mod tests {
             execution_block_hash: [0u8; 32],
             justified: ZERO_CP,
             finalized: ZERO_CP,
-            state_seq: f2_seq,
+            state_id: f2_id,
         });
         tile.fork_choice.on_block(BlockImport {
             slot: 1,
@@ -2779,7 +2707,7 @@ mod tests {
             execution_block_hash: [0u8; 32],
             justified: f_cp,
             finalized: f_cp,
-            state_seq: f_seq,
+            state_id: f_id,
         });
         tile.fork_choice.on_block(BlockImport {
             slot: 2,
@@ -2789,42 +2717,55 @@ mod tests {
             execution_block_hash: [0u8; 32],
             justified: f_cp,
             finalized: f_cp,
-            state_seq: d_seq,
+            state_id: d_id,
         });
 
         // Head is D; finality target is F.
-        tile.last_applied = d_seq;
+        tile.last_applied = d_id;
         tile.last_applied_block_root = D_ROOT;
         tile.fork_choice.finalized_checkpoint = f_cp;
         // Republish so the seqlock control matches the new head.
-        tile.state.publish_offsets(None, Some(d_seq));
+        tile.state.publish_state_id(d_id);
 
         // Sanity: pre-finalize state.
-        assert_eq!(tile.state.state().finalized.slot.slot.slot, 0);
-        assert_eq!(tile.state.state().slots.get(d_seq).slot.block_roots, vec![F_ROOT, D_ROOT]);
+        assert_eq!(tile.state.state().slot_states.finalized_view().slot_number(), 0);
+        let d_slot_view = tile.state.state().slot_states.view(d_id.slot_idx);
+        assert_eq!(d_slot_view.delta_block_roots(), [F_ROOT, D_ROOT]);
         assert!(tile.fork_choice.find_node_idx(&F2_ROOT).is_some());
 
         tile.maybe_finalize();
 
         // (a) Base advanced to F's slot scalars; F's block_root landed in the
         //     circular buffer at the old finalized slot offset.
-        let base = &tile.state.state().finalized;
-        assert_eq!(base.slot.slot.slot, 1, "base.slot promoted to F's slot");
-        assert_eq!(base.slot.block_roots[0], F_ROOT, "F's block_root in base circular buffer");
+        let base = tile.state.state().slot_states.finalized_view();
+        assert_eq!(base.slot_number(), 1, "base slot promoted to F's slot");
+        assert_eq!(
+            base.finalized_block_roots()[0],
+            F_ROOT,
+            "F's block_root in base circular buffer"
+        );
 
         // (b) F2 pruned from fork choice; F is now node 0 (anchor); D survives.
         assert!(tile.fork_choice.find_node_idx(&F2_ROOT).is_none(), "F2 dropped");
         assert_eq!(tile.fork_choice.find_node_idx(&F_ROOT), Some(0), "F is the new anchor");
-        assert!(tile.fork_choice.find_node_idx(&D_ROOT).is_some(), "D survives");
+        let d_node = tile.fork_choice.find_node_idx(&D_ROOT).expect("D survives");
 
         // (c) D's cumulative `block_roots` log re-based against the new base:
-        //     F's prefix drained, only D's incremental entry remains.
-        let d = tile.state.state().slots.get(d_seq);
-        assert_eq!(d.slot.block_roots, vec![D_ROOT], "D's block_roots drained of F's prefix");
+        //     F's prefix drained, only D's incremental entry remains. Finalize
+        //     re-anchored D into a fresh slot fork, so re-read its bundle from
+        //     the fork-choice node.
+        let d_rebased = tile.fork_choice.node(d_node).state_id;
+        let d_slot_view = tile.state.state().slot_states.view(d_rebased.slot_idx);
+        assert_eq!(
+            d_slot_view.delta_block_roots(),
+            [D_ROOT],
+            "D's block_roots drained of F's prefix"
+        );
 
-        // (d) Slots ring tail advanced past the freed prefix (anchor + F2's
-        //     slot are below the new tail).
-        assert!(tile.state.state().slots.head().is_some(), "ring head present after finalize",);
+        // (d) D was the head, so `last_applied` got the same re-anchored
+        //     bundle (not the stale pre-finalize one).
+        assert_eq!(tile.last_applied, d_rebased, "head bundle refreshed");
+        assert_ne!(tile.last_applied, d_id, "stale head bundle replaced");
     }
 
     // ── fork_digest (standalone `compute_fork_digest`, no tile state) ──

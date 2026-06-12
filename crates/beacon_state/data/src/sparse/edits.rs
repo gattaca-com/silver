@@ -1,8 +1,20 @@
-use std::ops::Deref;
+use super::layer::{rebase_and_prune_sparse, sparse_merge_into};
 
-#[derive(Default, Clone, Debug, PartialEq, Eq)]
+#[derive(Default, Debug, PartialEq, Eq)]
 pub struct Edits<V> {
     inner: Vec<(u32, V)>,
+}
+
+// Manual Clone: `clone_from` must reuse the existing allocation (same
+// rationale as `SlotState`'s impl in `types.rs`).
+impl<V: Clone> Clone for Edits<V> {
+    fn clone(&self) -> Self {
+        Self { inner: self.inner.clone() }
+    }
+
+    fn clone_from(&mut self, other: &Self) {
+        self.inner.clone_from(&other.inner);
+    }
 }
 
 impl<V> Edits<V> {
@@ -12,129 +24,84 @@ impl<V> Edits<V> {
     }
 
     #[inline]
-    pub fn retain(&mut self, keep: impl FnMut(&(u32, V)) -> bool) {
-        self.inner.retain(keep);
+    pub fn iter(&self) -> std::slice::Iter<'_, (u32, V)> {
+        self.inner.iter()
+    }
+
+    #[inline]
+    pub fn partition_point(&self, pred: impl FnMut(&(u32, V)) -> bool) -> usize {
+        self.inner.partition_point(pred)
+    }
+
+    #[inline]
+    pub fn iter_from(&self, start: usize) -> std::slice::Iter<'_, (u32, V)> {
+        self.inner[start..].iter()
+    }
+
+    #[inline]
+    pub fn get(&self, idx: u32) -> Option<&V> {
+        self.inner.binary_search_by_key(&idx, |(k, _)| *k).ok().map(|p| &self.inner[p].1)
+    }
+
+    #[inline]
+    pub fn as_slice(&self) -> &[(u32, V)] {
+        &self.inner
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+
+    #[inline]
+    pub fn retain(&mut self, f: impl FnMut(&(u32, V)) -> bool) {
+        self.inner.retain(f);
+    }
+}
+
+impl<V: PartialEq> Edits<V> {
+    /// Drop edits below `new_base_count` that the (advanced) base already
+    /// reflects — keep only entries diverging from `base_at`.
+    pub fn retain_diverged(&mut self, new_base_count: usize, base_at: impl Fn(usize) -> V) {
+        self.inner
+            .retain(|(idx, v)| (*idx as usize) >= new_base_count || base_at(*idx as usize) != *v);
+    }
+}
+
+impl<V: Copy + PartialEq> Edits<V> {
+    /// Finalize a survivor's edits against a promoted `winner`; see
+    /// [`rebase_and_prune_sparse`].
+    pub fn rebase_and_prune(
+        &self,
+        winner: &Self,
+        valid_below: u32,
+        new_count: u32,
+        old_base_at: impl Fn(u32) -> V,
+        new_base_at: impl Fn(u32) -> V,
+    ) -> Self {
+        Self {
+            inner: rebase_and_prune_sparse(
+                &self.inner,
+                &winner.inner,
+                valid_below,
+                new_count,
+                old_base_at,
+                new_base_at,
+            ),
+        }
     }
 }
 
 impl<V: Copy> Edits<V> {
+    /// Merge an ascending distinct-key `changes` batch; see
+    /// [`sparse_merge_into`].
     #[inline]
     pub fn merge_in_place(&mut self, changes: &[(u32, V)]) {
-        let old_len = self.inner.len();
-        let insert_count = self.override_existing(changes);
-        if insert_count == 0 {
-            return;
-        }
-        self.merge_insertions_phase(changes, old_len, insert_count);
-    }
-
-    /// Phase 1 — overwrite override entries in `self` in place and count the
-    /// genuinely new (non-matching) changes, returned for phase 2 to insert.
-    ///
-    /// Small batches use per-change binary search (O(m log n)); large batches
-    /// use a linear merge (O(m + n)) seeded at the first change via
-    /// `partition_point`.
-    fn override_existing(&mut self, changes: &[(u32, V)]) -> usize {
-        let n = self.inner.len();
-        let m = changes.len();
-        if m == 0 {
-            return 0;
-        }
-        let log_n = usize::BITS as usize - n.max(1).leading_zeros() as usize;
-        if m.saturating_mul(log_n) <= m + n {
-            self.override_by_search(changes)
-        } else {
-            self.override_by_scan(changes)
-        }
-    }
-
-    /// O(m log n) — one binary search per change; best when `m ≪ n`.
-    fn override_by_search(&mut self, changes: &[(u32, V)]) -> usize {
-        let mut inserts = 0;
-        for &(idx, val) in changes {
-            match self.inner.binary_search_by_key(&idx, |(k, _)| *k) {
-                Ok(p) => self.inner[p].1 = val,
-                Err(_) => inserts += 1,
-            }
-        }
-        inserts
-    }
-
-    /// O(m + n) merge, starting at the first edit ≥ `changes[0].0`.
-    fn override_by_scan(&mut self, changes: &[(u32, V)]) -> usize {
-        let old_len = self.inner.len();
-        let changes_len = changes.len();
-
-        let mut edit_idx = self.inner.partition_point(|(k, _)| *k < changes[0].0);
-        let mut change_idx = 0;
-        let mut inserts = 0;
-        while edit_idx < old_len && change_idx < changes_len {
-            let ek = self.inner[edit_idx].0;
-            let ck = changes[change_idx].0;
-            if ek < ck {
-                edit_idx += 1;
-            } else if ek == ck {
-                self.inner[edit_idx].1 = changes[change_idx].1;
-                edit_idx += 1;
-                change_idx += 1;
-            } else {
-                inserts += 1;
-                change_idx += 1;
-            }
-        }
-        inserts + (changes_len - change_idx)
-    }
-
-    /// Phase 2 — right-to-left merge of the(already overridden values
-    #[allow(clippy::uninit_vec)]
-    fn merge_insertions_phase(
-        &mut self,
-        changes: &[(u32, V)],
-        old_len: usize,
-        insert_count: usize,
-    ) {
-        self.inner.reserve(insert_count);
-        // SAFETY: every slot in `old_len..old_len + insert_count` is written
-        // before any read (write ≥ ei invariant below); (u32, V) is Copy.
-        unsafe { self.inner.set_len(old_len + insert_count) };
-
-        let mut edit_idx = old_len;
-        let mut change_idx = changes.len();
-        let mut write = old_len + insert_count;
-        while edit_idx > 0 && change_idx > 0 {
-            debug_assert!(write >= edit_idx, "merge: write must converge to the unshifted prefix");
-
-            let (ek, ev) = self.inner[edit_idx - 1];
-            let (ck, cv) = changes[change_idx - 1];
-            write -= 1;
-            if ek > ck {
-                self.inner[write] = (ek, ev);
-                edit_idx -= 1;
-            } else if ek == ck {
-                self.inner[write] = (ek, ev);
-                edit_idx -= 1;
-                change_idx -= 1;
-            } else {
-                self.inner[write] = (ck, cv);
-                change_idx -= 1;
-            }
-        }
-        // Remaining `changes` are pure insertions; remaining `self` entries are
-        // already in their final slots (write == edit_idx).
-        while change_idx > 0 {
-            change_idx -= 1;
-            write -= 1;
-            self.inner[write] = changes[change_idx];
-        }
-        debug_assert_eq!(write, edit_idx, "merge: write must converge to the unshifted prefix");
-    }
-}
-
-impl<V> Deref for Edits<V> {
-    type Target = [(u32, V)];
-
-    #[inline]
-    fn deref(&self) -> &[(u32, V)] {
-        &self.inner
+        sparse_merge_into(&mut self.inner, changes);
     }
 }

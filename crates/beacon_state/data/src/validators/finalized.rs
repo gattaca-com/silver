@@ -1,11 +1,14 @@
-use std::convert::Infallible;
+use std::{
+    convert::Infallible,
+    io::{self, Write},
+};
 
 use blst::min_pk::PublicKey;
 use parking_lot::RwLock;
 use rustc_hash::FxHashMap;
 use silver_common_macros::timed;
 
-use super::validator_hash;
+use super::{delta::AppendedValidator, validator_hash};
 use crate::{
     Withdrawals,
     hash_tree::FinalizedHashTree,
@@ -14,7 +17,8 @@ use crate::{
 
 pub type PubkeyIndex = FxHashMap<BLSPubkey, u32>;
 
-/// Initial values for one validator passed to `Finalized::new`.
+/// Initial values for one validator passed to
+/// [`FinalizedValidators::with_validators`].
 pub struct ValSeed {
     pub pubkey: BLSPubkey,
     pub withdrawal_credentials: Withdrawals,
@@ -74,24 +78,11 @@ pub struct FinalizedValidators {
     pub(super) hash: FinalizedHashTree,
 }
 
-/// One validator's `Validator`-container fields.
-struct ValidatorFields {
-    pubkey: BLSPubkey,
-    pubkey_decompressed: PublicKey,
-    credentials: Withdrawals,
-    effective_balance: u64,
-    slashed: bool,
-    activation_eligibility_epoch: Epoch,
-    activation_epoch: Epoch,
-    exit_epoch: Epoch,
-    withdrawable_epoch: Epoch,
-}
-
 impl FinalizedValidators {
     fn build<E>(
         capacity: usize,
         n: usize,
-        mut field_at: impl FnMut(usize) -> Result<ValidatorFields, E>,
+        mut field_at: impl FnMut(usize) -> Result<AppendedValidator, E>,
     ) -> Result<Self, E> {
         debug_assert!(n <= capacity);
         let mut val_pubkey = vec![[0u8; 48]; capacity].into_boxed_slice();
@@ -153,16 +144,11 @@ impl FinalizedValidators {
             hash,
         })
     }
-
-    pub fn with_capacity(capacity: usize) -> Self {
-        Self::build(capacity, 0, |_| -> Result<ValidatorFields, Infallible> {
-            unreachable!("n = 0: field_at is never called")
-        })
-        .unwrap()
-    }
 }
 
 impl FinalizedValidators {
+    /// The one production constructor: decode the SSZ `validators` byte range
+    /// (capacity is derived from the count); `try_new(&[])` is the empty base.
     #[timed]
     pub fn try_new(val_bytes: &[u8]) -> Result<Self, ValidatorsDecodeError> {
         if !val_bytes.len().is_multiple_of(VALIDATOR_SSZ_SIZE) {
@@ -177,7 +163,7 @@ impl FinalizedValidators {
             let pubkey: BLSPubkey = v[..48].try_into().unwrap();
             let pubkey_decompressed = PublicKey::from_bytes(&pubkey)
                 .map_err(|_| ValidatorsDecodeError::InvalidPubkey { idx: i })?;
-            Ok(ValidatorFields {
+            Ok(AppendedValidator {
                 pubkey,
                 pubkey_decompressed,
                 credentials: Withdrawals(v[48..80].try_into().unwrap()),
@@ -215,7 +201,7 @@ impl FinalizedValidators {
             if decompressed[i].compress() != pubkey {
                 return Err(ValidatorsDecodeError::PubkeyMismatch { idx: i });
             }
-            Ok::<_, ValidatorsDecodeError>(ValidatorFields {
+            Ok::<_, ValidatorsDecodeError>(AppendedValidator {
                 pubkey,
                 pubkey_decompressed: decompressed[i],
                 credentials: Withdrawals(v[48..80].try_into().unwrap()),
@@ -230,6 +216,43 @@ impl FinalizedValidators {
     }
 
     #[inline]
+    /// SSZ-encode validators `[start, end)` (one 121-B record each) — the
+    /// checkpoint persist's section body, called in bounded slices.
+    pub(crate) fn write_ssz_range<W: Write>(
+        &self,
+        start: usize,
+        end: usize,
+        w: &mut W,
+    ) -> io::Result<()> {
+        let mut buf = [0u8; VALIDATOR_SSZ_SIZE];
+        for i in start..end {
+            buf[0..48].copy_from_slice(self.pubkey(i));
+            buf[48..80].copy_from_slice(&self.withdrawal_credentials(i).0);
+            buf[80..88].copy_from_slice(&self.effective_balance(i).to_le_bytes());
+            buf[88] = self.is_slashed(i) as u8;
+            buf[89..97].copy_from_slice(&self.activation_eligibility_epoch(i).to_le_bytes());
+            buf[97..105].copy_from_slice(&self.activation_epoch(i).to_le_bytes());
+            buf[105..113].copy_from_slice(&self.exit_epoch(i).to_le_bytes());
+            buf[113..121].copy_from_slice(&self.withdrawable_epoch(i).to_le_bytes());
+            w.write_all(&buf)?;
+        }
+        Ok(())
+    }
+
+    /// Write the decompressed (96-B serialized) pubkeys `[start, end)` — the
+    /// checkpoint sidecar's body, called in bounded slices.
+    pub(crate) fn write_pubkeys_range<W: Write>(
+        &self,
+        start: usize,
+        end: usize,
+        w: &mut W,
+    ) -> io::Result<()> {
+        for i in start..end {
+            w.write_all(&self.pubkey_decompressed(i).serialize())?;
+        }
+        Ok(())
+    }
+
     pub fn validator_count(&self) -> usize {
         self.validator_count
     }
@@ -341,10 +364,13 @@ impl FinalizedValidators {
         &self.slashed
     }
 
+    /// Harness-seeding constructor: builds a registry from `ValSeed`s whose
+    /// pubkeys need not be valid BLS points (decompression falls back to
+    /// default), which `try_new` would reject. Test/bench use only.
     pub fn with_validators(seeds: &[ValSeed]) -> Self {
         Self::build(validator_capacity(seeds.len()), seeds.len(), |i| {
             let s = &seeds[i];
-            Ok::<_, Infallible>(ValidatorFields {
+            Ok::<_, Infallible>(AppendedValidator {
                 pubkey: s.pubkey,
                 pubkey_decompressed: PublicKey::from_bytes(&s.pubkey).unwrap_or_default(),
                 credentials: s.withdrawal_credentials,
@@ -359,36 +385,23 @@ impl FinalizedValidators {
         .unwrap()
     }
 
-    /// Append a validator to the finalized base with caller-supplied
-    /// Validator-container field values. Updates the pubkey index but NOT
-    /// the hash tree.
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn append(
-        &mut self,
-        pubkey: &BLSPubkey,
-        pubkey_decompressed: &PublicKey,
-        credentials: &Withdrawals,
-        effective_balance: u64,
-        slashed: bool,
-        activation_eligibility_epoch: Epoch,
-        activation_epoch: Epoch,
-        exit_epoch: Epoch,
-        withdrawable_epoch: Epoch,
-    ) -> u32 {
+    /// Append a validator record to the finalized base. Updates the pubkey
+    /// index but NOT the hash tree.
+    pub(super) fn append(&mut self, a: &AppendedValidator) -> u32 {
         let idx = self.validator_count;
         debug_assert!(idx < self.capacity(), "append past validator capacity {}", self.capacity());
-        self.val_pubkey[idx] = *pubkey;
-        self.val_pubkey_decompressed[idx] = *pubkey_decompressed;
-        self.val_withdrawal_credentials[idx] = *credentials;
-        self.effective_balance[idx] = effective_balance;
-        if slashed {
+        self.val_pubkey[idx] = a.pubkey;
+        self.val_pubkey_decompressed[idx] = a.pubkey_decompressed;
+        self.val_withdrawal_credentials[idx] = a.credentials;
+        self.effective_balance[idx] = a.effective_balance;
+        if a.slashed {
             self.slashed[idx / 8] |= 1u8 << (idx % 8);
         }
-        self.activation_eligibility_epoch[idx] = activation_eligibility_epoch;
-        self.activation_epoch[idx] = activation_epoch;
-        self.exit_epoch[idx] = exit_epoch;
-        self.withdrawable_epoch[idx] = withdrawable_epoch;
-        self.index.write().insert(*pubkey, idx as u32);
+        self.activation_eligibility_epoch[idx] = a.activation_eligibility_epoch;
+        self.activation_epoch[idx] = a.activation_epoch;
+        self.exit_epoch[idx] = a.exit_epoch;
+        self.withdrawable_epoch[idx] = a.withdrawable_epoch;
+        self.index.write().insert(a.pubkey, idx as u32);
         self.validator_count = idx + 1;
         idx as u32
     }

@@ -6,9 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use silver_beacon_state_data::{
-    BeaconStateReader, CHECKPOINT_SECTIONS, CheckpointSnapshot, Section,
-};
+use silver_beacon_state_data::{BeaconStateReader, CheckpointChunk, CheckpointCursor};
 
 use super::{Store, io};
 
@@ -25,71 +23,42 @@ const MAX_FINALIZED_CHECKPOINTS: usize = 3;
 /// blob.
 const CHECKPOINT_WRITER_CAP: usize = 1 << 20;
 
+/// In-flight streamed persist: the data crate owns the synchronization
+/// (version capture, per-chunk validation, restart onto a newer finalized
+/// state) behind [`BeaconStateReader::checkpoint_chunk`]; this type owns only
+/// the files (temp paths, buffering, truncate-on-restart, atomic
+/// rename-commit).
 pub(super) struct CheckpointWriter {
     reader: BeaconStateReader,
+    cursor: CheckpointCursor,
+    // Reused chunk buffer `checkpoint_chunk` fills — only ever holds bytes
+    // consistent with the cursor's captured state.
+    chunk: Vec<u8>,
     writer: BufWriter<File>,
-    snapshot: CheckpointSnapshot,
     tmp_path: PathBuf,
     // Decompressed-pubkey sidecar (`<slot>.pubkeys`), written as a second stage
     // after the SSZ sections so checkpoint load can skip the per-validator
     // decompression.
     pubkeys_writer: BufWriter<File>,
     pubkeys_tmp: PathBuf,
-    // Next section to write, in `0..CHECKPOINT_SECTIONS` (0 = fixed part); once
-    // it reaches CHECKPOINT_SECTIONS the SSZ is done and the pubkeys stage runs.
-    cursor: usize,
-    // Chunk index within `cursor` — only the validators section spans >1.
-    chunk: usize,
-    // Chunk index within the pubkeys stage.
-    pubkeys_chunk: usize,
-}
-
-enum CheckpointStep {
-    More,
-    Done,
-    Superseded,
 }
 
 impl CheckpointWriter {
-    /// Encode the next section to the temp file. Aborts (without writing) if a
-    /// finalization has superseded the snapshot since it began.
-    fn step(&mut self) -> Result<CheckpointStep, Error> {
-        if !self.reader.checkpoint_version_matches(self.snapshot.version) {
-            return Ok(CheckpointStep::Superseded);
-        }
-
-        if self.cursor < CHECKPOINT_SECTIONS {
-            let complete = self.reader.write_checkpoint_chunk(
-                Section::ALL[self.cursor],
-                self.chunk,
-                &self.snapshot.offsets,
-                &mut self.writer,
-            )?;
-            if complete {
-                self.cursor += 1;
-                self.chunk = 0;
-            } else {
-                self.chunk += 1;
-            }
-            return Ok(CheckpointStep::More);
-        }
-
-        let complete = self
-            .reader
-            .write_checkpoint_pubkeys_chunk(self.pubkeys_chunk, &mut self.pubkeys_writer)?;
-        if complete {
-            Ok(CheckpointStep::Done)
-        } else {
-            self.pubkeys_chunk += 1;
-            Ok(CheckpointStep::More)
-        }
-    }
-
     fn discard(self) {
         drop(self.writer);
         drop(self.pubkeys_writer);
         remove_checkpoint_dir(&self.tmp_path);
     }
+}
+
+/// Drop everything buffered + written so far (a restart invalidated it):
+/// flush the stale buffer out, then truncate and rewind the file.
+fn truncate(w: &mut BufWriter<File>) -> Result<(), Error> {
+    use std::io::{Seek, Write};
+    w.flush()?;
+    let f = w.get_mut();
+    f.set_len(0)?;
+    f.rewind()
 }
 
 fn remove_checkpoint_dir(tmp_path: &Path) {
@@ -152,6 +121,11 @@ impl Store {
         self.last_persisted_finalized_slot
     }
 
+    #[cfg(test)]
+    pub(crate) fn reset_persist_watermark(&mut self) {
+        self.last_persisted_finalized_slot = 0;
+    }
+
     /// Create the per-slot checkpoint dir and open its temp file for writing.
     /// The streamed persist writes SSZ sections into the returned handle across
     /// `file_io` turns, then calls `commit_checkpoint`.
@@ -180,6 +154,7 @@ impl Store {
         drop(ssz_file);
         let base = self.finalized_checkpoints_dir();
         let dir = base.join(slot.to_string());
+        std::fs::create_dir_all(&dir)?;
         if let Some((pubkeys_file, pubkeys_tmp)) = pubkeys {
             pubkeys_file.sync_all()?;
             drop(pubkeys_file);
@@ -210,88 +185,102 @@ impl Store {
         self.checkpoint.is_some()
     }
 
-    /// Section the next `file_io` turn will write (for the persist benchmark's
-    /// per-section breakdown). `None` when no checkpoint is in flight.
+    /// Index of the section the next `file_io` turn will write (for the
+    /// persist benchmark's per-section breakdown). `None` when no checkpoint
+    /// is in flight or once past the SSZ sections (pubkeys stage).
     #[cfg(test)]
-    pub(crate) fn checkpoint_section(&self) -> Option<Section> {
-        // `None` once past the SSZ sections (pubkeys stage).
-        self.checkpoint.as_ref().and_then(|cw| Section::ALL.get(cw.cursor).copied())
+    pub(crate) fn checkpoint_section(&self) -> Option<usize> {
+        self.checkpoint.as_ref().and_then(|cw| cw.cursor.section_index())
     }
 
     pub(crate) fn begin_checkpoint(&mut self, reader: BeaconStateReader) {
         if self.checkpoint.is_some() {
             return;
         }
-        let snap = reader.begin_checkpoint();
-        if snap.slot <= self.last_persisted_finalized_slot {
+        // `None` only pre-snapshot — a checkpoint trigger can't usefully fire
+        // before bootstrap publishes.
+        let Some(cursor) = reader.begin_checkpoint() else {
+            tracing::warn!("checkpoint requested before the first beacon state snapshot");
+            return;
+        };
+        let slot = cursor.slot();
+        if slot <= self.last_persisted_finalized_slot {
             return;
         }
-        let (file, tmp_path) = match self.open_checkpoint_tmp(snap.slot) {
+        let (file, tmp_path) = match self.open_checkpoint_tmp(slot) {
             Ok(x) => x,
             Err(e) => {
-                tracing::error!(?e, slot = snap.slot, "failed to open checkpoint temp file");
+                tracing::error!(?e, slot, "failed to open checkpoint temp file");
                 return;
             }
         };
-        let pubkeys_tmp = tmp_path.with_file_name(format!("{}.pubkeys.tmp", snap.slot));
+        let pubkeys_tmp = tmp_path.with_file_name(format!("{slot}.pubkeys.tmp"));
         let pubkeys_file = match io::open_file_write(&pubkeys_tmp, false) {
             Ok(f) => f,
             Err(e) => {
-                tracing::error!(?e, slot = snap.slot, "failed to open pubkeys temp file");
+                tracing::error!(?e, slot, "failed to open pubkeys temp file");
                 remove_checkpoint_dir(&tmp_path);
                 return;
             }
         };
         self.checkpoint = Some(CheckpointWriter {
             reader,
+            cursor,
+            chunk: Vec::new(),
             writer: BufWriter::with_capacity(CHECKPOINT_WRITER_CAP, file),
-            snapshot: snap,
             tmp_path,
             pubkeys_writer: BufWriter::with_capacity(CHECKPOINT_WRITER_CAP, pubkeys_file),
             pubkeys_tmp,
-            cursor: 0,
-            chunk: 0,
-            pubkeys_chunk: 0,
         });
     }
 
-    /// Advance the in-flight checkpoint by one section. Called once per
-    /// `file_io` turn; commits after the last section (gated by a final version
-    /// check) and discards the temp on supersede or write error.
+    /// Advance the in-flight checkpoint by one chunk. Called once per
+    /// `file_io` turn; commits after the last chunk. A superseding finalize
+    /// surfaces as `Restarted` (the cursor is already back at part 0, on the
+    /// newer state) — both temp files are truncated and stepping continues.
     pub(super) fn step_checkpoint(&mut self) {
         let step = match self.checkpoint.as_mut() {
-            Some(cw) => cw.step(),
+            Some(cw) => {
+                use std::io::Write;
+                cw.reader.checkpoint_chunk(&mut cw.cursor, &mut cw.chunk).and_then(|c| {
+                    match &c {
+                        CheckpointChunk::Ssz => cw.writer.write_all(&cw.chunk)?,
+                        CheckpointChunk::Pubkeys => cw.pubkeys_writer.write_all(&cw.chunk)?,
+                        CheckpointChunk::Restarted => {
+                            tracing::debug!(
+                                slot = cw.cursor.slot(),
+                                "checkpoint superseded; restarting onto the newer state"
+                            );
+                            truncate(&mut cw.writer)?;
+                            truncate(&mut cw.pubkeys_writer)?;
+                        }
+                        CheckpointChunk::Done => {}
+                    }
+                    Ok(c)
+                })
+            }
             None => return,
         };
         match step {
-            Ok(CheckpointStep::More) => {}
-            Ok(CheckpointStep::Done) => {
+            Ok(CheckpointChunk::Ssz | CheckpointChunk::Pubkeys | CheckpointChunk::Restarted) => {}
+            Ok(CheckpointChunk::Done) => {
                 let cw = self.checkpoint.take().expect("checkpoint present");
                 self.commit_in_flight_checkpoint(cw);
             }
-            Ok(CheckpointStep::Superseded) => {
-                let cw = self.checkpoint.take().expect("checkpoint present");
-                tracing::debug!(
-                    slot = cw.snapshot.slot,
-                    "checkpoint persist superseded; discarded"
-                );
-                cw.discard();
-            }
             Err(e) => {
                 let cw = self.checkpoint.take().expect("checkpoint present");
-                tracing::error!(?e, section = cw.cursor, "checkpoint section write failed");
+                tracing::error!(?e, section = ?cw.cursor.section_index(), "checkpoint write failed");
                 cw.discard();
             }
         }
     }
 
-    /// Final version check, flush the writer, then atomically commit.
+    /// Flush the writers, then atomically commit. The slot is re-read from the
+    /// cursor — a restart may have advanced it past the temp paths' slot, in
+    /// which case the renames move the files into the newer slot's dir and
+    /// the stale temp dir is dropped.
     fn commit_in_flight_checkpoint(&mut self, cw: CheckpointWriter) {
-        if !cw.reader.checkpoint_version_matches(cw.snapshot.version) {
-            cw.discard();
-            return;
-        }
-        let slot = cw.snapshot.slot;
+        let slot = cw.cursor.slot();
         let CheckpointWriter { writer, tmp_path, pubkeys_writer, pubkeys_tmp, .. } = cw;
         let ssz_file = match writer.into_inner() {
             Ok(f) => f,
@@ -309,9 +298,19 @@ impl Store {
                 return;
             }
         };
-        match self.commit_checkpoint(slot, ssz_file, &tmp_path, Some((pubkeys_file, &pubkeys_tmp)))
-        {
-            Ok(()) => tracing::info!(slot, "persisted finalized checkpoint"),
+        let result =
+            self.commit_checkpoint(slot, ssz_file, &tmp_path, Some((pubkeys_file, &pubkeys_tmp)));
+        match result {
+            Ok(()) => {
+                tracing::info!(slot, "persisted finalized checkpoint");
+                // A restart moved the content to a newer slot: the begin-time
+                // temp dir is now empty — drop it.
+                if tmp_path.parent() !=
+                    Some(self.finalized_checkpoints_dir().join(slot.to_string()).as_path())
+                {
+                    remove_checkpoint_dir(&tmp_path);
+                }
+            }
             Err(e) => {
                 tracing::error!(?e, slot, "failed to commit checkpoint");
                 remove_checkpoint_dir(&tmp_path);
@@ -341,10 +340,30 @@ mod tests {
         time::{Duration, Instant},
     };
 
-    use silver_beacon_state_data::{Finalized, SpecConfig};
+    use silver_beacon_state_data::{BeaconState, BeaconStateOwner, SpecConfig};
 
     use super::{FINALIZED_CHECKPOINTS_DIR, Store};
     use crate::tile::IoEvent;
+
+    /// Owner over a decomposed state with its anchor published — the minimal
+    /// setup for `reader.begin_checkpoint()` to return a stream.
+    fn published_owner(bs: BeaconState) -> BeaconStateOwner {
+        let mut owner = BeaconStateOwner::new(bs);
+        let anchor = owner.roll_fresh();
+        owner.publish_state_id(anchor);
+        owner
+    }
+
+    /// Minimal canonical state: encode the pre-bootstrap stub (via a throwaway
+    /// owner), patch the fixed-part `slot` field (byte 40, Fulu layout), and
+    /// decompose — public API only.
+    fn synthetic_state(slot: u64) -> BeaconState {
+        let stub = BeaconStateOwner::pre_bootstrap();
+        let mut ssz = Vec::with_capacity(stub.state().ssz_len());
+        stub.state().encode_ssz(&mut ssz).expect("encode stub");
+        ssz[40..48].copy_from_slice(&slot.to_le_bytes());
+        BeaconState::decompose(&ssz, &SpecConfig::mainnet(), None).expect("decompose stub")
+    }
 
     /// Manual benchmark comparing the storage tile's two checkpoint-persist
     /// strategies on a real mainnet state, printing three medians:
@@ -378,41 +397,55 @@ mod tests {
             return;
         };
 
-        let mut fin = Box::new(Finalized::empty());
-        fin.decompose(&ssz, &SpecConfig::mainnet()).expect("decompose");
-        let base_slot = fin.slot();
-        let len = fin.ssz_len();
+        let bs = BeaconState::decompose(&ssz, &SpecConfig::mainnet(), None).expect("decompose");
+        let len = bs.ssz_len();
         assert_eq!(len, ssz.len(), "round-trip length mismatch");
-        println!("state: {len} bytes ({} MiB), base slot {base_slot}", len >> 20);
+        println!("state: {len} bytes ({} MiB)", len >> 20);
 
-        use silver_beacon_state_data::{
-            BeaconState, BeaconStateOwner, CHECKPOINT_SECTIONS, Section,
-        };
+        use silver_beacon_state_data::CHECKPOINT_SECTIONS;
         use silver_common::TCache;
 
+        // Section names in canonical order, for the per-section breakdown
+        // (the data crate keeps its `Section` enum private).
+        const SECTION_NAMES: [&str; CHECKPOINT_SECTIONS] = [
+            "FixedPart",
+            "HistoricalRoots",
+            "Eth1Votes",
+            "Validators",
+            "Balances",
+            "PreviousParticipation",
+            "CurrentParticipation",
+            "InactivityScores",
+            "ExecutionPayloadHeader",
+            "HistoricalSummaries",
+            "PendingDeposits",
+            "PendingPartialWithdrawals",
+            "PendingConsolidations",
+        ];
+
         // Real persist target (atomic temp → fsync → rename → fsync dirs →
-        // retention). A monotonically-increasing slot each iteration bypasses
-        // the idempotency guard and exercises the per-slot mkdir + retention
-        // prune; retention caps disk at the newest N. Unique subdir under
-        // SILVER_BENCH_DIR (default `/tmp`; point it at the data-store disk —
-        // tmpfs understates fsync). Removed at the end.
+        // retention). The persist watermark is reset each iteration to bypass
+        // the idempotency guard (the slot stays fixed — same per-slot dir,
+        // overwritten in place). Unique subdir under SILVER_BENCH_DIR (default
+        // `/tmp`; point it at the data-store disk — tmpfs understates fsync).
+        // Removed at the end.
         let base = std::env::var("SILVER_BENCH_DIR").unwrap_or_else(|_| "/tmp".to_string());
         let dir = format!("{base}/silver_bench_persist_{}", rand::random::<u32>());
         let mut store = Store::load(dir.clone()).unwrap();
 
         const ITERS: u64 = 23;
         const WARMUP: u64 = 3;
-        let mut slot = base_slot;
+        let slot = bs.slot_states.finalized_view().slot_number();
 
         // Phase 1, write half only: write a pre-encoded blob (encode excluded).
         let mut buf = Vec::with_capacity(len);
-        fin.encode_ssz(&mut buf).unwrap();
+        bs.encode_ssz(&mut buf).unwrap();
         let mut write_only = Vec::new();
         for i in 0..ITERS {
+            store.reset_persist_watermark();
             let t = Instant::now();
             store.persist_finalized_checkpoint(slot, &buf).unwrap();
             let elapsed = t.elapsed();
-            slot += 1;
             if i >= WARMUP {
                 write_only.push(elapsed);
             }
@@ -422,12 +455,12 @@ mod tests {
         // Phase 1, full: encode into the reused buffer, then write it.
         let mut oneshot = Vec::new();
         for i in 0..ITERS {
+            store.reset_persist_watermark();
             let t = Instant::now();
             buf.clear();
-            fin.encode_ssz(&mut buf).unwrap();
+            bs.encode_ssz(&mut buf).unwrap();
             store.persist_finalized_checkpoint(slot, &buf).unwrap();
             let elapsed = t.elapsed();
-            slot += 1;
             if i >= WARMUP {
                 oneshot.push(elapsed);
             }
@@ -435,11 +468,10 @@ mod tests {
         report("oneshot_full(encode+write)", &mut oneshot, len);
 
         // Phase 2, streamed: the real `begin_checkpoint` + `file_io` section
-        // loop (fused encode+write through the BufWriter, version checks, commit,
-        // retention). Consumes `fin` into an owner so the reader can drive it.
-        let mut bs = BeaconState::empty();
-        bs.finalized = *fin;
-        let mut owner = BeaconStateOwner::new(bs);
+        // loop (fused encode+write through the BufWriter, version checks,
+        // commit, retention). The owner publishes its anchor so the reader can
+        // open a stream.
+        let owner = published_owner(bs);
         let reader = owner.reader();
         let mut producer = TCache::multi_producer("bench_persist_rpc", 1 << 20);
         let mut streamed = Vec::new();
@@ -448,12 +480,7 @@ mod tests {
         let mut per_section = [Duration::ZERO; CHECKPOINT_SECTIONS];
         let mut counted = 0u32;
         for i in 0..ITERS {
-            // Advance the finalized slot so each persist targets a fresh slot
-            // (guard drops here → seqlock version even before the snapshot).
-            {
-                let mut g = owner.write();
-                g.finalized.slot.slot.slot = slot;
-            }
+            store.reset_persist_watermark();
             let t = Instant::now();
             store.begin_checkpoint(reader.clone());
             while store.checkpoint_in_flight() {
@@ -465,11 +492,10 @@ mod tests {
                 if i >= WARMUP &&
                     let Some(s) = section
                 {
-                    per_section[s as usize] += cdt;
+                    per_section[s] += cdt;
                 }
             }
             let elapsed = t.elapsed();
-            slot += 1;
             if i >= WARMUP {
                 streamed.push(elapsed);
                 counted += 1;
@@ -478,7 +504,7 @@ mod tests {
         report("streamed_full(encode+write)", &mut streamed, len);
         println!("  streamed per-section (mean over {counted} persists):");
         for (idx, total) in per_section.iter().enumerate() {
-            println!("    {:?}: {:?}", Section::ALL[idx], *total / counted);
+            println!("    {}: {:?}", SECTION_NAMES[idx], *total / counted);
         }
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -537,18 +563,16 @@ mod tests {
     }
 
     /// End-to-end streamed persist: `begin_checkpoint` arms a job, `file_io`
-    /// writes one section per turn and commits on the last, and the committed
+    /// writes one chunk per turn and commits on the last, and the committed
     /// file round-trips through `decompose`.
     #[test]
     fn streamed_checkpoint_persist_via_file_io() {
-        use silver_beacon_state_data::{BeaconState, BeaconStateOwner, decode_checkpoint_pubkeys};
+        use silver_beacon_state_data::decode_checkpoint_pubkeys;
         use silver_common::TCache;
 
         // Finalized base at slot 64 (epoch 2), zero validators — minimal but
         // canonical.
-        let mut bs = BeaconState::empty();
-        bs.finalized.slot.slot.slot = 64;
-        let mut owner = BeaconStateOwner::new(bs);
+        let owner = published_owner(synthetic_state(64));
         let reader = owner.reader();
 
         let dir = format!("/tmp/silver_storage_streamcp_{}", rand::random::<u32>());
@@ -559,7 +583,7 @@ mod tests {
         store.begin_checkpoint(reader);
         assert!(store.checkpoint_in_flight(), "begin_checkpoint should arm a job");
 
-        // One section per file_io turn until the commit clears the job.
+        // One chunk per file_io turn until the commit clears the job.
         let mut producer = TCache::multi_producer("streamcp_rpc", 1 << 20);
         let mut turns = 0;
         while store.checkpoint_in_flight() {
@@ -567,17 +591,21 @@ mod tests {
             turns += 1;
             assert!(turns <= 64, "checkpoint did not finish");
         }
-        // CHECKPOINT_SECTIONS SSZ turns + one pubkeys-stage turn.
-        assert_eq!(turns, super::CHECKPOINT_SECTIONS + 1, "one turn per section + pubkeys");
+        // CHECKPOINT_SECTIONS SSZ turns + one pubkeys-stage turn + the `Done`
+        // turn that commits.
+        assert_eq!(
+            turns,
+            silver_beacon_state_data::CHECKPOINT_SECTIONS + 2,
+            "one turn per section + pubkeys + commit"
+        );
         assert_eq!(store.last_persisted_finalized_slot(), 64);
 
         let slot_dir = Path::new(&dir).join(FINALIZED_CHECKPOINTS_DIR).join("64");
         assert!(!slot_dir.join("64.ssz.tmp").exists(), "no temp left after commit");
         assert!(!slot_dir.join("64.pubkeys.tmp").exists(), "no pubkeys temp after commit");
         let ssz = std::fs::read(slot_dir.join("64.ssz")).unwrap();
-        let mut fin = Box::new(Finalized::empty());
-        fin.decompose(&ssz, &SpecConfig::mainnet()).unwrap();
-        assert_eq!(fin.slot.slot.slot, 64);
+        let bs = BeaconState::decompose(&ssz, &SpecConfig::mainnet(), None).unwrap();
+        assert_eq!(bs.slot_states.finalized_view().slot_number(), 64);
 
         // Sidecar committed alongside; zero validators => empty pubkey vec.
         let pk = std::fs::read(slot_dir.join("64.pubkeys")).unwrap();

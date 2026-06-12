@@ -1,9 +1,10 @@
 use silver_beacon_state_data::{
     self as common, BeaconBlockHeader, Checkpoint, EPOCHS_PER_HISTORICAL_VECTOR,
     EPOCHS_PER_SLASHINGS_VECTOR, Eth1Data, ExecutionPayloadHeader, Fork, HISTORICAL_ROOTS_LIMIT,
-    MAX_ETH1_VOTES, PENDING_CONSOLIDATIONS_LIMIT, PENDING_DEPOSITS_LIMIT,
-    PENDING_PARTIAL_WITHDRAWALS_LIMIT, SLOTS_PER_HISTORICAL_ROOT, SYNC_COMMITTEE_SIZE,
-    StateDeltaView, SyncCommittee, VALIDATOR_REGISTRY_LIMIT,
+    LongtailView, MAX_ETH1_VOTES, PENDING_CONSOLIDATIONS_LIMIT, PENDING_DEPOSITS_LIMIT,
+    PENDING_PARTIAL_WITHDRAWALS_LIMIT, PendingView, SLOTS_PER_HISTORICAL_ROOT, SYNC_COMMITTEE_SIZE,
+    StateReadView, SyncCommittee, VALIDATOR_REGISTRY_LIMIT, effective_randao_mixes_into,
+    effective_slashings_into,
 };
 use silver_common::metrics::timed;
 pub use silver_common::ssz_hash::*;
@@ -53,22 +54,25 @@ impl StateHashScratch {
 
 // TODO(perf): full re-merkleization every block + every process_slot.
 // Replace with milhouse-style persistent trees with per-leaf dirty bits.
+/// Pure read over a fork's [`StateReadView`] — the caller resolves the bundle
+/// (including the boundary tiers, fresh at each call: a boundary
+/// `process_epoch` re-rolls them mid-`process_slots`).
 #[timed]
-pub fn hash_tree_root_state(view: &StateDeltaView, scratch: &mut StateHashScratch) -> B256 {
-    let imm = view.immutable();
-    let slot = view.slot_state();
-    let es = view.epoch_state();
-    let lt = view.longtail_state();
+pub fn hash_tree_root_state(rv: &StateReadView, scratch: &mut StateHashScratch) -> B256 {
+    let imm = rv.imm;
+    let slot = rv.slot.state();
+    let es = rv.epoch.state();
+    let lt = rv.longtail.state();
 
-    view.effective_block_roots_into(&mut scratch.block_roots);
-    view.effective_state_roots_into(&mut scratch.state_roots);
-    view.effective_randao_mixes_into(&mut scratch.randao_mixes);
-    view.effective_slashings_into(&mut scratch.slashings);
+    rv.slot.effective_block_roots_into(&mut scratch.block_roots);
+    rv.slot.effective_state_roots_into(&mut scratch.state_roots);
+    effective_randao_mixes_into(&rv.epoch, &rv.slot, &mut scratch.randao_mixes);
+    effective_slashings_into(&rv.epoch, &rv.slot, &mut scratch.slashings);
     let block_roots = scratch.block_roots.as_slice();
     let state_roots = scratch.state_roots.as_slice();
     let randao_mixes = scratch.randao_mixes.as_slice();
     let slashings = scratch.slashings.as_slice();
-    let n = view.validators_count();
+    let n = rv.validators.count();
 
     let fields: [B256; 38] = [
         uint64_chunk(imm.genesis_time),
@@ -80,34 +84,34 @@ pub fn hash_tree_root_state(view: &StateDeltaView, scratch: &mut StateHashScratc
         hash_b256_vector(state_roots),
         imm.historical_roots_hash,
         hash_eth1_data(&slot.eth1_data),
-        hash_eth1_votes(slot),
+        hash_eth1_votes(&rv.eth1),
         uint64_chunk(slot.eth1_deposit_index),
-        view.validators_root(),
-        view.balances_root(),
+        rv.validators.hash_root(),
+        rv.balances.hash_root(),
         hash_b256_vector(randao_mixes),
         hash_uint64_vector(slashings),
-        hash_uint8_list(view.iter_previous_epoch_participants(), n, VALIDATOR_REGISTRY_LIMIT),
-        hash_uint8_list(view.iter_current_epoch_participants(), n, VALIDATOR_REGISTRY_LIMIT),
+        hash_uint8_list(rv.previous_participation.iter(), n, VALIDATOR_REGISTRY_LIMIT),
+        hash_uint8_list(rv.current_participation.iter(), n, VALIDATOR_REGISTRY_LIMIT),
         uint64_chunk(es.justification_bits as u64),
         hash_checkpoint(&es.previous_justified_checkpoint),
         hash_checkpoint(&es.current_justified_checkpoint),
         hash_checkpoint(&es.finalized_checkpoint),
-        hash_uint64_list(view.iter_inactivity_scores(), n, VALIDATOR_REGISTRY_LIMIT),
+        hash_uint64_list(rv.inactivity.iter(), n, VALIDATOR_REGISTRY_LIMIT),
         hash_sync_committee(&lt.current_sync_committee),
         hash_sync_committee(&lt.next_sync_committee),
         hash_execution_payload_header(&slot.latest_execution_payload_header),
         uint64_chunk(slot.next_withdrawal_index),
         uint64_chunk(slot.next_withdrawal_validator_index),
-        hash_historical_summaries(view),
+        hash_historical_summaries(&rv.longtail),
         uint64_chunk(slot.deposit_requests_start_index),
         uint64_chunk(es.deposit_balance_to_consume),
         uint64_chunk(slot.exit_balance_to_consume),
         uint64_chunk(slot.earliest_exit_epoch),
         uint64_chunk(slot.consolidation_balance_to_consume),
         uint64_chunk(slot.earliest_consolidation_epoch),
-        hash_pending_deposits(view),
-        hash_pending_partial_withdrawals(view),
-        hash_pending_consolidations(view),
+        hash_pending_deposits(&rv.pending),
+        hash_pending_partial_withdrawals(&rv.pending),
+        hash_pending_consolidations(&rv.pending),
         hash_uint64_vector(&es.proposer_lookahead),
     ];
 
@@ -135,14 +139,13 @@ pub fn hash_sync_committee(sc: &SyncCommittee) -> B256 {
 }
 
 #[timed]
-pub fn hash_eth1_votes(slot: &common::SlotState) -> B256 {
-    let n = slot.eth1_votes.len();
+pub fn hash_eth1_votes(eth1: &common::Eth1View) -> B256 {
     let mut stack = MerkleStack::new();
-    for i in 0..n {
-        merkle_push(&mut stack, hash_eth1_data(&slot.eth1_votes[i]));
+    for v in eth1.iter() {
+        merkle_push(&mut stack, hash_eth1_data(v));
     }
     let root = merkle_finalize(stack, list_depth(MAX_ETH1_VOTES));
-    mix_in_length(&root, n)
+    mix_in_length(&root, eth1.len())
 }
 
 #[timed]
@@ -189,11 +192,11 @@ pub fn hash_execution_payload_header(h: &ExecutionPayloadHeader) -> B256 {
 }
 
 #[timed]
-pub fn hash_pending_deposits(view: &StateDeltaView) -> B256 {
-    let n = view.pending_deposits_len();
+pub fn hash_pending_deposits(pending: &PendingView) -> B256 {
+    let n = pending.pending_deposits_len();
     let mut stack = MerkleStack::new();
     for i in 0..n {
-        let d = view.pending_deposit(i);
+        let d = pending.pending_deposit(i);
         let leaf = merkleize(&[
             hash_fixed_bytes(&d.pubkey),
             d.withdrawal_credentials.0,
@@ -208,11 +211,11 @@ pub fn hash_pending_deposits(view: &StateDeltaView) -> B256 {
 }
 
 #[timed]
-pub fn hash_pending_partial_withdrawals(view: &StateDeltaView) -> B256 {
-    let n = view.pending_partial_withdrawals_len();
+pub fn hash_pending_partial_withdrawals(pending: &PendingView) -> B256 {
+    let n = pending.pending_partial_withdrawals_len();
     let mut stack = MerkleStack::new();
     for i in 0..n {
-        let w = view.pending_partial_withdrawal(i);
+        let w = pending.pending_partial_withdrawal(i);
         let leaf = merkleize(&[
             uint64_chunk(w.index),
             uint64_chunk(w.amount),
@@ -225,11 +228,11 @@ pub fn hash_pending_partial_withdrawals(view: &StateDeltaView) -> B256 {
 }
 
 #[timed]
-pub fn hash_pending_consolidations(view: &StateDeltaView) -> B256 {
-    let n = view.pending_consolidations_len();
+pub fn hash_pending_consolidations(pending: &PendingView) -> B256 {
+    let n = pending.pending_consolidations_len();
     let mut stack = MerkleStack::new();
     for i in 0..n {
-        let c = view.pending_consolidation(i);
+        let c = pending.pending_consolidation(i);
         let leaf = hash_concat(&uint64_chunk(c.source_index), &uint64_chunk(c.target_index));
         merkle_push(&mut stack, leaf);
     }
@@ -238,11 +241,11 @@ pub fn hash_pending_consolidations(view: &StateDeltaView) -> B256 {
 }
 
 #[timed]
-pub fn hash_historical_summaries(view: &StateDeltaView) -> B256 {
-    let n = view.historical_summaries_len();
+pub fn hash_historical_summaries(longtail: &LongtailView) -> B256 {
+    let n = longtail.historical_summaries_len();
     let mut stack = MerkleStack::new();
     for i in 0..n {
-        let s = view.historical_summary(i).unwrap();
+        let s = longtail.historical_summary(i).unwrap();
         let leaf = hash_concat(&s.block_summary_root, &s.state_summary_root);
         merkle_push(&mut stack, leaf);
     }

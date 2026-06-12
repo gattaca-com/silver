@@ -7,7 +7,7 @@ use silver_beacon_state::{
     ssz_hash::{hash_tree_root_block_header, hash_tree_root_body},
     tile::BeaconStateTile,
 };
-use silver_beacon_state_data::{BeaconBlockHeader, BeaconState, BeaconStateOwner, SpecConfig};
+use silver_beacon_state_data::{BeaconBlockHeader, BeaconStateOwner, SpecConfig};
 use silver_common::{
     BeaconStateEvent, DataColumnsAvailable, IpBytes, Keypair, P2pSend, P2pStreamId, PeerControl,
     PeerEvent, PeerId, RpcInbound, RpcOutbound, RpcRequest, RpcRequestOutbound, RpcResponse,
@@ -134,7 +134,7 @@ impl PmBsHarness {
         let gossip_c = gossip_p.cache_ref().random_access("test", true).expect("gossip ra");
         let rpc_c = rpc_p.cache_ref().random_access("test", true).expect("rpc ra");
 
-        let state = BeaconStateOwner::new(BeaconState::empty());
+        let state = BeaconStateOwner::pre_bootstrap();
         let mut bs = BeaconStateTile::new(
             ticker,
             SpecConfig::mainnet(),

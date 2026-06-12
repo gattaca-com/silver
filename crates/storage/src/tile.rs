@@ -220,23 +220,22 @@ impl StorageTile {
         // notional read lock too long otherwise).
         let block_slot = DataColumnSidecarView::slot(buffer);
         let claimed_proposer_index = DataColumnSidecarView::proposer_index(buffer);
-        let checks = self.beacon_state.read(&mut |v| {
-            let epoch_state = v.epoch_state();
-            let state_epoch = v.epoch();
+        let checks = self.beacon_state.read(&|v| {
+            let state_epoch = v.slot.current_epoch();
 
             let (proposer_matches, parent_validated, is_above_finalized) = if do_parent_checks {
                 // proposer_lookahead is anchored to `state_epoch` and covers
                 // current+next epochs (PROPOSER_LOOKAHEAD_SIZE = 64). Slots
                 // outside that window we cannot resolve here.
                 let lookahead_idx = block_slot.wrapping_sub(state_epoch * SLOTS_PER_EPOCH) as usize;
-                let expected_proposer = epoch_state.proposer_lookahead.get(lookahead_idx).copied();
+                let expected_proposer = v.epoch.proposer_at(lookahead_idx);
                 let parent_validated = util::parent_validated(
                     buffer,
-                    v.finalized_block_roots(),
-                    v.delta_block_roots(),
+                    v.slot.finalized_block_roots(),
+                    v.slot.delta_block_roots(),
                 );
                 let is_above_finalized =
-                    util::is_above_finalized(buffer, epoch_state.finalized_checkpoint.epoch);
+                    util::is_above_finalized(buffer, v.epoch.state().finalized_checkpoint.epoch);
                 (
                     expected_proposer == Some(claimed_proposer_index),
                     parent_validated,
@@ -249,19 +248,24 @@ impl StorageTile {
 
             let idx = claimed_proposer_index as usize;
             let pubkey =
-                (idx < v.validators_count()).then(|| *v.validator_pubkey_decompressed(idx));
+                (idx < v.validators.count()).then(|| *v.validators.pubkey_decompressed(idx));
 
             (
                 is_above_finalized,
                 parent_validated,
                 proposer_matches,
                 pubkey,
-                v.fork_current_version(), // TODO for backfill
-                v.genesis_validators_root(),
+                v.imm.fork.current_version, // TODO for backfill
+                v.imm.genesis_validators_root,
             )
         });
-        let (above_finalized, parent_validated, proposer_matches, pubkey, fork_version, gvr) =
-            checks;
+        // No snapshot yet (pre-bootstrap): nothing can be validated.
+        let Some((above_finalized, parent_validated, proposer_matches, pubkey, fork_version, gvr)) =
+            checks
+        else {
+            tracing::warn!(?stream_id, "sidecar before first beacon state snapshot");
+            return Some((block_root, column_bitmask));
+        };
 
         if !above_finalized {
             tracing::warn!(?stream_id, "sidecar slot at or below finalized");
@@ -565,7 +569,7 @@ pub(crate) enum IoEvent {
 mod tests {
     use std::io::Write;
 
-    use silver_beacon_state_data::{BeaconState, BeaconStateOwner};
+    use silver_beacon_state_data::BeaconStateOwner;
     use silver_common::{P2pStreamId, StreamProtocol, TCache, TCacheProducer};
 
     use super::*;
@@ -593,7 +597,7 @@ mod tests {
 
         let rpc_producer = TCache::multi_producer("rpc_out", 1024 * 1024);
 
-        let beacon_state = BeaconStateOwner::new(BeaconState::empty()).reader();
+        let beacon_state = BeaconStateOwner::pre_bootstrap().reader();
 
         let mut tile = StorageTile::new(
             gossip_consumer,

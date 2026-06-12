@@ -12,6 +12,8 @@ mod validate;
 
 #[cfg(test)]
 pub(crate) mod test_signing;
+#[cfg(test)]
+pub(crate) mod test_state;
 
 pub use error::{Error, PrecheckError, Result};
 pub use silver_common::ticker::SlotTicker;

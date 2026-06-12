@@ -1,4 +1,6 @@
-use silver_beacon_state_data::{Epoch, SLOTS_PER_EPOCH, Slot, SpecConfig, StateDeltaView};
+use silver_beacon_state_data::{
+    Epoch, SLOTS_PER_EPOCH, Slot, SlotStateView, SpecConfig, ValidatorsView,
+};
 use silver_common::ssz_view::{
     ATTESTATION_FIXED, AttestationDataView, AttestationView, EXECUTION_PAYLOAD_FIXED,
     ExecutionPayloadView, PROPOSER_SLASHING_SIZE, ProposerSlashingView,
@@ -87,18 +89,18 @@ pub fn validate_proposer_slashing(data: &[u8]) -> Result<(), ProposerSlashingErr
 
 pub fn validate_voluntary_exit(
     cfg: &SpecConfig,
-    view: &StateDeltaView,
+    validators: &ValidatorsView,
     vi: u32,
     exit_epoch: Epoch,
     current_epoch: Epoch,
 ) -> Result<(), VoluntaryExitError> {
-    let count = view.validators_count();
+    let count = validators.count();
     if (vi as usize) >= count {
         return Err(VoluntaryExitError::ValidatorOutOfRange { vi: vi as usize, count });
     }
-    let pubkey = view.validator_pubkey(vi as usize);
-    let act = view.validator_activation_epoch(vi as usize);
-    let exit = view.validator_exit_epoch(vi as usize);
+    let pubkey = *validators.pubkey(vi as usize);
+    let act = validators.activation_epoch(vi as usize);
+    let exit = validators.exit_epoch(vi as usize);
     if act > current_epoch || current_epoch >= exit {
         return Err(VoluntaryExitError::NotActive { vi: vi as usize, pubkey, epoch: current_epoch });
     }
@@ -118,20 +120,20 @@ pub fn validate_voluntary_exit(
 }
 
 pub fn validate_bls_to_execution_change(
-    view: &StateDeltaView,
+    validators: &ValidatorsView,
     vi: u32,
     from_pubkey: &[u8; 48],
 ) -> Result<(), BlsToExecutionChangeError> {
-    let count = view.validators_count();
+    let count = validators.count();
     if (vi as usize) >= count {
         return Err(BlsToExecutionChangeError::ValidatorOutOfRange { vi: vi as usize, count });
     }
-    let creds = view.validator_credentials(vi as usize);
+    let creds = *validators.credentials(vi as usize);
     let prefix = creds.0[0];
     if prefix != 0x00 {
         return Err(BlsToExecutionChangeError::BadCredentialPrefix {
             vi: vi as usize,
-            pubkey: view.validator_pubkey(vi as usize),
+            pubkey: *validators.pubkey(vi as usize),
             prefix,
         });
     }
@@ -150,7 +152,8 @@ pub fn validate_bls_to_execution_change(
 
 pub fn validate_execution_payload(
     cfg: &SpecConfig,
-    view: &StateDeltaView,
+    slot: &SlotStateView,
+    genesis_time: u64,
     payload: &[u8],
     block_slot: Slot,
 ) -> Result<(), ExecutionPayloadError> {
@@ -160,9 +163,8 @@ pub fn validate_execution_payload(
             min: EXECUTION_PAYLOAD_FIXED,
         });
     }
-    let header = view.latest_execution_payload_header();
-    let genesis_time = view.genesis_time();
-    let randao_mix_current = view.randao_mix_current();
+    let header = &slot.state().latest_execution_payload_header;
+    let randao_mix_current = slot.state().randao_mix_current;
 
     let got_parent = *ExecutionPayloadView::parent_hash(payload);
     let expected_parent = header.block_hash;

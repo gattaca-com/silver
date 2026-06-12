@@ -5,7 +5,6 @@ use std::fs;
 mod ef_common;
 
 use ef_common::{compare_states, iter_test_cases, load_state, snappy_decode, spec_tests_dir};
-use silver_beacon_state::state_transition;
 
 #[test]
 fn random() {
@@ -46,12 +45,9 @@ fn random() {
         let mut ok = true;
         for i in 0..block_count {
             let block_ssz = snappy_decode(&dir.join(format!("blocks_{i}.ssz_snappy")));
-            let mut view = pre.view();
-            if let Err(reason) = state_transition::apply_signed_block_debug(
-                &silver_beacon_state_data::SpecConfig::mainnet(),
-                &mut view,
-                &block_ssz,
-            ) {
+            if let Err(reason) =
+                pre.apply_block(&silver_beacon_state_data::SpecConfig::mainnet(), &block_ssz)
+            {
                 eprintln!("{name}: block {i}: {reason}");
                 ok = false;
                 break;

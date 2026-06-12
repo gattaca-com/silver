@@ -1,11 +1,11 @@
-use flux::utils::ArrayVec;
-use parking_lot::RwLock;
-
 use crate::{
-    balances::{BalancesDelta, FinalizedBalances},
-    buffer::Reset,
-    validators::{FinalizedValidators, ValSeed, ValidatorsDelta},
+    BalancesId, CurrentParticipationId, EpochId, Eth1Id, InactivityId, LongtailId, PendingId,
+    PreviousParticipationId, SlotStateId, ValidatorsId,
 };
+
+// Epoch-tier (`EpochStateFinalized`/`EpochStateDelta`) and longtail-tier
+// (`LongtailState`) types live in the `epoch`/`longtail` group modules; the
+// immutable block rides `BeaconState.immutable` directly.
 
 pub type B256 = [u8; 32];
 pub type BLSPubkey = [u8; 48];
@@ -47,130 +47,41 @@ pub const PROPOSER_LOOKAHEAD_SIZE: usize =
 pub const BYTES_PER_LOGS_BLOOM: usize = 256;
 pub const MAX_EXTRA_DATA_BYTES: usize = 32;
 
-pub const LONGTAILS_RING_N: usize = 2;
-pub const EPOCHS_RING_N: usize = 8;
+// Finalize reanchors by fresh roll, so a ring must hold the old ids plus one
+// fresh slot per distinct survivor at once — sized for forks crossing a
+// rotation / epoch boundary under delayed finality, not just the steady state.
+pub const LONGTAILS_RING_N: usize = 8;
+pub const EPOCHS_RING_N: usize = 16;
+/// Bounds the number of simultaneously live forks; sizes the per-tier rings.
 pub const SLOTS_RING_N: usize = 256;
 
-// size: ~195 KB stack (slot 145 KB + longtail 50 KB + rest); heap at default-
-// init ~2.6 MB (slot+epoch rings).
-pub struct Finalized {
-    pub immutable: Immutable,
-    pub longtail: LongtailState,
-    pub pending: RwLock<PendingQueues>,
-    pub validators: FinalizedValidators,
-    pub balances: FinalizedBalances,
-    pub previous_participation: FinalizedPreviousParticipation,
-    pub current_participation: FinalizedCurrentParticipation,
-    pub inactivity_scores: FinalizedInactivityScores,
-    pub epoch: EpochStateFinalized,
-    pub slot: SlotStateFinalized,
+// No `Default`: a bundle must not exist before its per-tier
+// entries do — ids surface only from a writer's `commit`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct StateId {
+    pub epoch_idx: Option<EpochId>,
+    pub longtail_idx: Option<LongtailId>,
+    /// Per-tier ring seqs this fork reads (balances and below). Unlike
+    /// `epoch_idx`/`longtail_idx`, these tiers change every slot, so they are
+    /// always present — set by whoever rolls the fork (mirrors how `epoch_idx`
+    /// is set at an epoch boundary).
+    pub balances_idx: BalancesId,
+    pub eth1_idx: Eth1Id,
+    pub validators_idx: ValidatorsId,
+    pub pending_idx: PendingId,
+    pub previous_participation_idx: PreviousParticipationId,
+    pub current_participation_idx: CurrentParticipationId,
+    pub inactivity_idx: InactivityId,
+    pub slot_idx: SlotStateId,
 }
 
-impl Finalized {
-    /// Zero-validator stub at floor capacity (pre-bootstrap / tests); no
-    /// `Default`, so the base's capacity is always a conscious choice.
-    pub fn empty() -> Self {
-        let cap = validator_capacity(0);
-        Self {
-            immutable: Immutable::default(),
-            longtail: LongtailState::default(),
-            pending: RwLock::new(PendingQueues::default()),
-            validators: FinalizedValidators::with_capacity(cap),
-            balances: FinalizedBalances::with_seed_balances(cap, &[]),
-            previous_participation: FinalizedPreviousParticipation::with_capacity(cap),
-            current_participation: FinalizedCurrentParticipation::with_capacity(cap),
-            inactivity_scores: FinalizedInactivityScores::with_capacity(cap),
-            epoch: EpochStateFinalized::default(),
-            slot: SlotStateFinalized::default(),
-        }
-    }
-}
-
-impl Finalized {
-    #[inline]
-    pub fn slot(&self) -> Slot {
-        self.slot.slot.slot
-    }
-
-    #[inline]
-    pub fn epoch(&self) -> Epoch {
-        self.slot.slot.slot / SLOTS_PER_EPOCH
-    }
-
-    pub fn new_test(seeds: &[ValSeed]) -> Box<Self> {
-        let mut f = Box::new(Self::empty());
-        f.validators = FinalizedValidators::with_validators(seeds);
-        let balances: Vec<u64> = seeds.iter().map(|s| s.balance).collect();
-        f.balances = FinalizedBalances::with_seed_balances(f.validators.capacity(), &balances);
-        f
-    }
-}
-
-// size: ~145 KB (dominated by SlotState)
+// size: ~1 KB of plain data — the vote list lives in its own tier
+// ([`crate::Eth1Group`]), so the slot tier carries only scalars.
 #[derive(Clone, Default)]
-pub struct StateDelta {
-    pub epoch_idx: Option<usize>,
-    pub longtail_idx: Option<usize>,
-    pub pending: PendingQueuesDelta,
-    pub validators: ValidatorsDelta,
-    pub balances: BalancesDelta,
-    pub previous_participation: PreviousParticipationDelta,
-    pub current_participation: CurrentParticipationDelta,
-    pub inactivity_scores: InactivityScoresDelta,
-    pub slot: SlotStateDelta,
-}
-
-impl StateDelta {
-    pub fn prune_to_base(
-        &mut self,
-        base: &Finalized,
-        promoted: &StateDelta,
-        old_pending_lens: &PendingQueuesOldBaseLens,
-    ) {
-        let new_base_count = base.validators.validator_count();
-        self.validators.prune_to_base(&base.validators);
-        self.balances.prune_to_base(&base.balances, new_base_count);
-        self.previous_participation.prune_to_base(&base.previous_participation, new_base_count);
-        self.current_participation.prune_to_base(&base.current_participation, new_base_count);
-        self.inactivity_scores.prune_to_base(&base.inactivity_scores, new_base_count);
-        self.pending.prune_to_base(&base.pending.read(), &promoted.pending, old_pending_lens);
-        self.slot.prune_to_base(&promoted.slot);
-    }
-}
-
-impl Reset for StateDelta {
-    fn reset(&mut self) {
-        self.epoch_idx = None;
-        self.longtail_idx = None;
-        self.pending.reset();
-        self.validators.reset();
-        self.balances.reset();
-        self.previous_participation.reset();
-        self.current_participation.reset();
-        self.inactivity_scores.reset();
-        self.slot.reset();
-    }
-
-    fn reset_from(&mut self, other: &Self) {
-        self.epoch_idx = other.epoch_idx;
-        self.longtail_idx = other.longtail_idx;
-        self.pending.reset_from(&other.pending);
-        self.validators.reset_from(&other.validators);
-        self.balances.reset_from(&other.balances);
-        self.previous_participation.reset_from(&other.previous_participation);
-        self.current_participation.reset_from(&other.current_participation);
-        self.inactivity_scores.reset_from(&other.inactivity_scores);
-        self.slot.reset_from(&other.slot);
-    }
-}
-
-// size: ~145 KB — eth1_votes ArrayVec is inline 72 B × 2048 (~144 KB)
-#[derive(Clone, Copy, Default)]
 pub struct SlotState {
     pub randao_mix_current: B256,
     pub current_epoch_slashings: u64,
     pub eth1_data: Eth1Data,
-    pub eth1_votes: ArrayVec<Eth1Data, MAX_ETH1_VOTES>,
     pub eth1_deposit_index: u64,
     pub slot: Slot,
     pub latest_block_header: BeaconBlockHeader,
@@ -184,64 +95,6 @@ pub struct SlotState {
     pub earliest_consolidation_epoch: Epoch,
 }
 
-// size: ~145 KB (SlotState 145 KB + 2 × Vec header)
-#[derive(Clone, Default)]
-pub struct SlotStateDelta {
-    pub slot: SlotState,
-    // Appended roots since finalization
-    // For finalized: last SLOTS_PER_HISTORICAL_ROOT (8192) (circular buffer indexed by
-    // `slot % HR`)
-    pub block_roots: Vec<B256>,
-    pub state_roots: Vec<B256>,
-}
-
-// size: ~145 KB stack (SlotState inline); heap 512 KB at default-init
-// (2 × SLOTS_PER_HISTORICAL_ROOT × 32 B rings).
-#[derive(Clone)]
-pub struct SlotStateFinalized {
-    pub slot: SlotState,
-    // Finalized: last SLOTS_PER_HISTORICAL_ROOT (8192) (circular buffer indexed by
-    // `slot % HR`)
-    pub block_roots: Box<[B256]>,
-    pub state_roots: Box<[B256]>,
-}
-
-impl Default for SlotStateFinalized {
-    fn default() -> Self {
-        Self {
-            slot: Default::default(),
-            block_roots: vec![[0u8; 32]; SLOTS_PER_HISTORICAL_ROOT].into_boxed_slice(),
-            state_roots: vec![[0u8; 32]; SLOTS_PER_HISTORICAL_ROOT].into_boxed_slice(),
-        }
-    }
-}
-
-impl SlotStateDelta {
-    pub fn prune_to_base(&mut self, promoted: &SlotStateDelta) {
-        let drop_b = promoted.block_roots.len().min(self.block_roots.len());
-        self.block_roots.drain(..drop_b);
-        let drop_s = promoted.state_roots.len().min(self.state_roots.len());
-        self.state_roots.drain(..drop_s);
-    }
-}
-
-impl Reset for SlotStateDelta {
-    fn reset(&mut self) {
-        self.slot = Default::default();
-        self.block_roots.clear();
-        self.state_roots.clear();
-    }
-
-    fn reset_from(&mut self, other: &Self) {
-        self.slot.randao_mix_current = other.slot.randao_mix_current;
-        self.slot.current_epoch_slashings = other.slot.current_epoch_slashings;
-        self.slot = other.slot;
-        self.block_roots.clone_from(&other.block_roots);
-        self.state_roots.clone_from(&other.state_roots);
-    }
-}
-
-// size: ~648 B (proposer_lookahead 512 + 3 × Checkpoint 120 + scalars + pad)
 #[derive(Clone, Copy)]
 pub struct EpochState {
     pub proposer_lookahead: [u64; PROPOSER_LOOKAHEAD_SIZE],
@@ -265,233 +118,6 @@ impl Default for EpochState {
     }
 }
 
-// size: ~696 B stack (2 × Vec header + EpochState ~648 B)
-#[derive(Clone, Default)]
-pub struct EpochStateDelta {
-    // For deltas: appended
-    pub randao_mixes: Vec<B256>,
-    // For deltas: one entry per completed epoch since finalization
-    pub slashings: Vec<u64>,
-    pub state: EpochState,
-}
-
-impl EpochStateDelta {
-    pub fn prune_to_base(&mut self, promoted: &EpochStateDelta) {
-        let drop_r = promoted.randao_mixes.len().min(self.randao_mixes.len());
-        self.randao_mixes.drain(..drop_r);
-        let drop_s = promoted.slashings.len().min(self.slashings.len());
-        self.slashings.drain(..drop_s);
-    }
-}
-
-impl Reset for EpochStateDelta {
-    fn reset(&mut self) {
-        self.randao_mixes.clear();
-        self.slashings.clear();
-        self.state = Default::default();
-    }
-
-    fn reset_from(&mut self, other: &Self) {
-        self.randao_mixes.clone_from(&other.randao_mixes);
-        self.slashings.clone_from(&other.slashings);
-        self.state = other.state;
-    }
-}
-
-// size: ~680 B stack (2 × Box<[T]> header + EpochState); heap at default-init
-// ~2.064 MB (randao_mixes 2 MB + slashings 64 KB rings).
-#[derive(Clone)]
-pub struct EpochStateFinalized {
-    // For finalized: last EPOCHS_PER_HISTORICAL_VECTOR (circular buffer indexed by `epoch % HV`)
-    pub randao_mixes: Box<[B256]>,
-    // For finalized: last EPOCHS_PER_SLASHINGS_VECTOR (circular buffer indexed by `epoch % SV`)
-    pub slashings: Box<[u64]>,
-    pub state: EpochState,
-}
-
-impl Default for EpochStateFinalized {
-    fn default() -> Self {
-        Self {
-            randao_mixes: vec![[0u8; 32]; EPOCHS_PER_HISTORICAL_VECTOR].into_boxed_slice(),
-            slashings: vec![0; EPOCHS_PER_SLASHINGS_VECTOR].into_boxed_slice(),
-            state: Default::default(),
-        }
-    }
-}
-
-// size: ~50 KB (two SyncCommittees + sync_committee_indices)
-pub struct LongtailState {
-    pub current_sync_committee: SyncCommittee,
-    pub next_sync_committee: SyncCommittee,
-    pub sync_committee_indices: [u32; SYNC_COMMITTEE_SIZE],
-    // For deltas: entries appended since finalization.
-    // For finalized: full list.
-    pub historical_summaries: RwLock<Vec<HistoricalSummary>>,
-}
-
-// Manual: `RwLock` isn't `Clone`, but the longtail delta ring clones entries.
-impl Clone for LongtailState {
-    fn clone(&self) -> Self {
-        Self {
-            current_sync_committee: self.current_sync_committee,
-            next_sync_committee: self.next_sync_committee,
-            sync_committee_indices: self.sync_committee_indices,
-            historical_summaries: RwLock::new(self.historical_summaries.read().clone()),
-        }
-    }
-}
-
-impl Default for LongtailState {
-    fn default() -> Self {
-        Self {
-            current_sync_committee: Default::default(),
-            next_sync_committee: Default::default(),
-            sync_committee_indices: [0u32; SYNC_COMMITTEE_SIZE],
-            historical_summaries: RwLock::new(Vec::new()),
-        }
-    }
-}
-
-impl LongtailState {
-    /// Re-base a survivor longtail entry after `promoted` was folded into the
-    /// base. Sync committees are absolute (replace, no re-base); only the
-    /// cumulative `historical_summaries` log drops the promoted prefix.
-    pub fn prune_to_base(&mut self, promoted: &LongtailState) {
-        let promoted_len = promoted.historical_summaries.read().len();
-        let self_len = self.historical_summaries.read().len();
-        let drop = promoted_len.min(self_len);
-        self.historical_summaries.write().drain(..drop);
-    }
-}
-
-impl Reset for LongtailState {
-    fn reset(&mut self) {
-        self.current_sync_committee = SyncCommittee::default();
-        self.next_sync_committee = SyncCommittee::default();
-        self.sync_committee_indices = [0u32; SYNC_COMMITTEE_SIZE];
-        self.historical_summaries.write().clear();
-    }
-
-    fn reset_from(&mut self, other: &Self) {
-        self.current_sync_committee = other.current_sync_committee;
-        self.next_sync_committee = other.next_sync_committee;
-        self.sync_committee_indices = other.sync_committee_indices;
-        self.historical_summaries.write().clone_from(&other.historical_summaries.read());
-    }
-}
-
-// size: ~72 B (3 × Vec header)
-#[derive(Clone, Default)]
-pub struct PendingQueues {
-    pub pending_deposits: Vec<PendingDeposit>,
-    pub pending_partial_withdrawals: Vec<PendingPartialWithdrawal>,
-    pub pending_consolidations: Vec<PendingConsolidation>,
-}
-
-/// Per-fork delta on `PendingQueues`. Each queue: drop the first
-/// `drain_offset` entries of the base, then read the remainder followed by
-/// `appended`.
-// size: ~88 B
-#[derive(Clone, Default)]
-pub struct PendingQueuesDelta {
-    pub deposits_drain_offset: u32,
-    pub deposits_appended: Vec<PendingDeposit>,
-    pub partial_withdrawals_drain_offset: u32,
-    pub partial_withdrawals_appended: Vec<PendingPartialWithdrawal>,
-    pub consolidations_drain_offset: u32,
-    pub consolidations_appended: Vec<PendingConsolidation>,
-}
-
-pub struct PendingQueuesOldBaseLens {
-    pub deposits: usize,
-    pub partial_withdrawals: usize,
-    pub consolidations: usize,
-}
-
-impl PendingQueuesOldBaseLens {
-    #[inline]
-    pub fn snapshot(base: &PendingQueues) -> Self {
-        Self {
-            deposits: base.pending_deposits.len(),
-            partial_withdrawals: base.pending_partial_withdrawals.len(),
-            consolidations: base.pending_consolidations.len(),
-        }
-    }
-}
-
-impl PendingQueuesDelta {
-    pub fn prune_to_base(
-        &mut self,
-        _base: &PendingQueues,
-        promoted: &PendingQueuesDelta,
-        old_base_lens: &PendingQueuesOldBaseLens,
-    ) {
-        prune_queue_delta(
-            &mut self.deposits_drain_offset,
-            &mut self.deposits_appended,
-            old_base_lens.deposits,
-            promoted.deposits_drain_offset,
-            promoted.deposits_appended.len(),
-        );
-        prune_queue_delta(
-            &mut self.partial_withdrawals_drain_offset,
-            &mut self.partial_withdrawals_appended,
-            old_base_lens.partial_withdrawals,
-            promoted.partial_withdrawals_drain_offset,
-            promoted.partial_withdrawals_appended.len(),
-        );
-        prune_queue_delta(
-            &mut self.consolidations_drain_offset,
-            &mut self.consolidations_appended,
-            old_base_lens.consolidations,
-            promoted.consolidations_drain_offset,
-            promoted.consolidations_appended.len(),
-        );
-    }
-}
-
-/// Re-base one queue's delta onto a freshly-promoted fin: subtract
-/// `promoted_drain` from `drain_offset` (now folded into fin), and drop
-/// the inherited promoted-`appended` prefix the descendant hasn't
-/// already drained from its own copy.
-fn prune_queue_delta<T>(
-    drain_offset: &mut u32,
-    appended: &mut Vec<T>,
-    old_base_len: usize,
-    promoted_drain: u32,
-    promoted_app_len: usize,
-) {
-    debug_assert!(
-        *drain_offset >= promoted_drain,
-        "descendant must not drain less than the promoted delta",
-    );
-    let cur_drain = *drain_offset as usize;
-    let drained_from_pf = cur_drain.saturating_sub(old_base_len).min(promoted_app_len);
-    let drop_n = (promoted_app_len - drained_from_pf).min(appended.len());
-    appended.drain(..drop_n);
-    *drain_offset = (cur_drain - promoted_drain as usize) as u32;
-}
-
-impl Reset for PendingQueuesDelta {
-    fn reset(&mut self) {
-        self.deposits_drain_offset = 0;
-        self.deposits_appended.clear();
-        self.partial_withdrawals_drain_offset = 0;
-        self.partial_withdrawals_appended.clear();
-        self.consolidations_drain_offset = 0;
-        self.consolidations_appended.clear();
-    }
-
-    fn reset_from(&mut self, other: &Self) {
-        self.deposits_drain_offset = other.deposits_drain_offset;
-        self.deposits_appended.clone_from(&other.deposits_appended);
-        self.partial_withdrawals_drain_offset = other.partial_withdrawals_drain_offset;
-        self.partial_withdrawals_appended.clone_from(&other.partial_withdrawals_appended);
-        self.consolidations_drain_offset = other.consolidations_drain_offset;
-        self.consolidations_appended.clone_from(&other.consolidations_appended);
-    }
-}
-
 // Spec parallel SSZ lists (`previous/current_epoch_participation`,
 // `inactivity_scores`; `balances` lives in the `balances` module). Each is its
 // own `List[T, VALIDATOR_REGISTRY_LIMIT]`
@@ -499,149 +125,29 @@ impl Reset for PendingQueuesDelta {
 // implemented). Length is whatever the validators layer reports; reading
 // past `base_count` with no edit returns the spec default (0 / false).
 
-/// `previous_epoch_participation: List[ParticipationFlags,
-/// VALIDATOR_REGISTRY_LIMIT]`.
-pub struct FinalizedPreviousParticipation {
-    pub data: Box<[u8]>,
-}
-
-impl FinalizedPreviousParticipation {
-    pub fn with_capacity(cap: usize) -> Self {
-        Self { data: vec![0u8; cap].into_boxed_slice() }
-    }
-
-    #[inline]
-    pub fn get(&self, i: usize) -> u8 {
-        self.data[i]
-    }
-
-    #[inline]
-    pub fn slice_mut(&mut self) -> &mut [u8] {
-        &mut self.data
-    }
-}
-
-#[derive(Default, Clone)]
-pub struct PreviousParticipationDelta {
-    pub edits: Vec<(u32, u8)>,
-}
-
-impl PreviousParticipationDelta {
-    pub fn prune_to_base(&mut self, base: &FinalizedPreviousParticipation, new_base_count: usize) {
-        self.edits
-            .retain(|(idx, v)| (*idx as usize) >= new_base_count || base.get(*idx as usize) != *v);
-    }
-}
-
-impl Reset for PreviousParticipationDelta {
-    fn reset(&mut self) {
-        self.edits.clear();
-    }
-    fn reset_from(&mut self, other: &Self) {
-        self.edits.clone_from(&other.edits);
-    }
-}
-
-/// `current_epoch_participation: List[ParticipationFlags,
-/// VALIDATOR_REGISTRY_LIMIT]`.
-pub struct FinalizedCurrentParticipation {
-    pub data: Box<[u8]>,
-}
-
-impl FinalizedCurrentParticipation {
-    pub fn with_capacity(cap: usize) -> Self {
-        Self { data: vec![0u8; cap].into_boxed_slice() }
-    }
-
-    #[inline]
-    pub fn get(&self, i: usize) -> u8 {
-        self.data[i]
-    }
-
-    #[inline]
-    pub fn slice_mut(&mut self) -> &mut [u8] {
-        &mut self.data
-    }
-}
-
-#[derive(Default, Clone)]
-pub struct CurrentParticipationDelta {
-    pub edits: Vec<(u32, u8)>,
-}
-
-impl CurrentParticipationDelta {
-    pub fn prune_to_base(&mut self, base: &FinalizedCurrentParticipation, new_base_count: usize) {
-        self.edits
-            .retain(|(idx, v)| (*idx as usize) >= new_base_count || base.get(*idx as usize) != *v);
-    }
-}
-
-impl Reset for CurrentParticipationDelta {
-    fn reset(&mut self) {
-        self.edits.clear();
-    }
-    fn reset_from(&mut self, other: &Self) {
-        self.edits.clone_from(&other.edits);
-    }
-}
-
-/// `inactivity_scores: List[u64, VALIDATOR_REGISTRY_LIMIT]`.
-pub struct FinalizedInactivityScores {
-    pub data: Box<[u64]>,
-}
-
-impl FinalizedInactivityScores {
-    pub fn with_capacity(cap: usize) -> Self {
-        Self { data: vec![0u64; cap].into_boxed_slice() }
-    }
-
-    #[inline]
-    pub fn get(&self, i: usize) -> u64 {
-        self.data[i]
-    }
-
-    #[inline]
-    pub fn slice_mut(&mut self) -> &mut [u64] {
-        &mut self.data
-    }
-}
-
-#[derive(Default, Clone)]
-pub struct InactivityScoresDelta {
-    pub edits: Vec<(u32, u64)>,
-}
-
-impl InactivityScoresDelta {
-    pub fn prune_to_base(&mut self, base: &FinalizedInactivityScores, new_base_count: usize) {
-        self.edits
-            .retain(|(idx, v)| (*idx as usize) >= new_base_count || base.get(*idx as usize) != *v);
-    }
-}
-
-impl Reset for InactivityScoresDelta {
-    fn reset(&mut self) {
-        self.edits.clear();
-    }
-    fn reset_from(&mut self, other: &Self) {
-        self.edits.clone_from(&other.edits);
-    }
-}
-
 #[derive(Clone, Default)]
 pub struct Immutable {
     pub genesis_time: u64,
     pub genesis_validators_root: B256,
-    pub historical_roots_hash: B256,
-    /// Raw `historical_roots` list. Frozen post-Capella (Fulu-only here), set
-    /// once at decompose. Retained verbatim so the state re-encodes to
-    /// canonical SSZ; `historical_roots_hash` is the hashing fast path.
+    /// Frozen since Capella (appends go to `historical_summaries`); kept raw
+    /// for checkpoint re-encoding alongside the precomputed list hash below.
     pub historical_roots: Box<[B256]>,
+    pub historical_roots_hash: B256,
     pub fork: Fork,
     pub genesis_fork_version: Version,
     pub capella_fork_version: Version,
 }
 
 impl Immutable {
+    /// `(fork_epoch, previous_version, current_version,
+    /// genesis_validators_root)` — the four inputs every BLS signing-root
+    /// needs together.
+    #[inline]
+    pub fn fork_descriptor(&self) -> (Epoch, [u8; 4], [u8; 4], B256) {
+        let f = &self.fork;
+        (f.epoch, f.previous_version, f.current_version, self.genesis_validators_root)
+    }
+
     #[inline]
     pub fn fork_version_at(&self, block_epoch: Epoch) -> ([u8; 4], B256) {
         let fv = if block_epoch >= self.fork.epoch {
@@ -653,14 +159,12 @@ impl Immutable {
     }
 }
 
-// size: ~40 B
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub struct Checkpoint {
     pub epoch: Epoch,
     pub root: B256,
 }
 
-// size: ~16 B
 #[derive(Clone, Copy, Default)]
 pub struct Fork {
     pub previous_version: Version,
@@ -668,7 +172,6 @@ pub struct Fork {
     pub epoch: Epoch,
 }
 
-// size: ~72 B
 #[derive(Clone, Copy, Default)]
 pub struct Eth1Data {
     pub deposit_root: B256,
@@ -676,7 +179,6 @@ pub struct Eth1Data {
     pub block_hash: B256,
 }
 
-// size: ~112 B
 #[derive(Clone, Copy, Default, Debug)]
 pub struct BeaconBlockHeader {
     pub slot: Slot,
@@ -686,7 +188,6 @@ pub struct BeaconBlockHeader {
     pub body_root: B256,
 }
 
-// size: ~616 B (logs_bloom 256 + base_fee 32 + roots/hashes)
 #[derive(Clone, Copy)]
 pub struct ExecutionPayloadHeader {
     pub parent_hash: B256,
@@ -734,7 +235,6 @@ impl Default for ExecutionPayloadHeader {
     }
 }
 
-// size: ~192 B (sig 96 + pubkey 48 + creds 32 + 2 × u64)
 #[derive(Clone, Copy)]
 pub struct PendingDeposit {
     pub pubkey: BLSPubkey,
@@ -744,7 +244,6 @@ pub struct PendingDeposit {
     pub slot: Slot,
 }
 
-// size: ~24 B
 #[derive(Clone, Copy, Default)]
 pub struct PendingPartialWithdrawal {
     pub index: u64,
@@ -752,14 +251,12 @@ pub struct PendingPartialWithdrawal {
     pub withdrawable_epoch: Epoch,
 }
 
-// size: ~16 B
 #[derive(Clone, Copy, Default)]
 pub struct PendingConsolidation {
     pub source_index: u64,
     pub target_index: u64,
 }
 
-// size: ~64 B
 #[derive(Clone, Copy, Default)]
 pub struct HistoricalSummary {
     pub block_summary_root: B256,
@@ -779,7 +276,6 @@ impl Default for SyncCommittee {
     }
 }
 
-// size: ~32 B
 #[repr(transparent)]
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub struct Withdrawals(pub B256);
@@ -818,11 +314,6 @@ impl Withdrawals {
         self.has_eth1_credential() || self.has_compounding_credential()
     }
 
-    #[inline]
-    pub fn set_compounding_prefix(&mut self) {
-        self.0[0] = Self::COMPOUNDING_PREFIX;
-    }
-
     /// Bytes [12..32] — the 20-byte execution address for `0x01` / `0x02`.
     #[inline]
     pub fn execution_address(&self) -> &[u8; 20] {
@@ -841,4 +332,13 @@ impl Withdrawals {
             MIN_ACTIVATION_BALANCE
         }
     }
+}
+
+/// A sparse column's SSZ byte length disagrees with the expected registry
+/// count — surfaced by the column constructors so construction = validation.
+#[derive(Debug, thiserror::Error)]
+#[error("column bytes {bytes} don't match expected count {expected}")]
+pub struct ColumnLenMismatch {
+    pub bytes: usize,
+    pub expected: usize,
 }

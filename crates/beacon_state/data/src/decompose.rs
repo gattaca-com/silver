@@ -1,17 +1,17 @@
-use blst::min_pk::PublicKey;
 use silver_common_macros::timed;
 
 use crate::{
-    FinalizedBalances, FinalizedValidators, SpecConfig, ValidatorsDecodeError, ssz_hash,
+    BalancesGroup, BeaconState, CurrentParticipationGroup, EpochGroup, EpochStateFinalized,
+    Eth1Group, Eth1Votes, FinalizedValidators, InactivityScoresGroup, LongtailGroup, LongtailState,
+    PendingGroup, PendingQueues, PreviousParticipationGroup, SlotStateFinalized, SlotStateGroup,
+    SpecConfig, ValidatorsDecodeError, ValidatorsGroup, ssz_hash,
     types::{
-        B256, Checkpoint, EPOCHS_PER_HISTORICAL_VECTOR, EPOCHS_PER_SLASHINGS_VECTOR,
-        EpochStateDelta, Eth1Data, ExecutionPayloadHeader, Finalized,
-        FinalizedCurrentParticipation, FinalizedInactivityScores, FinalizedPreviousParticipation,
-        HISTORICAL_ROOTS_LIMIT, HistoricalSummary, LongtailState, MAX_ETH1_VOTES,
-        PENDING_CONSOLIDATIONS_LIMIT, PENDING_DEPOSITS_LIMIT, PENDING_PARTIAL_WITHDRAWALS_LIMIT,
-        PROPOSER_LOOKAHEAD_SIZE, PendingConsolidation, PendingDeposit, PendingPartialWithdrawal,
-        SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT, SYNC_COMMITTEE_SIZE, StateDelta, SyncCommittee,
-        Withdrawals,
+        B256, BeaconBlockHeader, Checkpoint, EPOCHS_PER_HISTORICAL_VECTOR,
+        EPOCHS_PER_SLASHINGS_VECTOR, Eth1Data, ExecutionPayloadHeader, HISTORICAL_ROOTS_LIMIT,
+        HistoricalSummary, Immutable, MAX_ETH1_VOTES, PENDING_CONSOLIDATIONS_LIMIT,
+        PENDING_DEPOSITS_LIMIT, PENDING_PARTIAL_WITHDRAWALS_LIMIT, PROPOSER_LOOKAHEAD_SIZE,
+        PendingConsolidation, PendingDeposit, PendingPartialWithdrawal, SLOTS_PER_EPOCH,
+        SLOTS_PER_HISTORICAL_ROOT, SYNC_COMMITTEE_SIZE, SlotState, SyncCommittee, Withdrawals,
     },
 };
 
@@ -20,6 +20,9 @@ use crate::{
 // Fulu BeaconState layout. Variable-length fields store a 4-byte offset in
 // the fixed part; their bodies sit contiguously past `FIXED_PART` in
 // SSZ-declared order.
+//
+// The per-group `from_ssz` constructors live here (not in their groups) so
+// the SSZ offsets/consts stay private to decompose.
 
 const ETH1_DATA_SSZ_SIZE: usize = 72;
 const HISTORICAL_SUMMARY_SSZ_SIZE: usize = 64;
@@ -69,7 +72,6 @@ const F34_OFF: usize = 2_736_701; // pending_deposits offset
 const F35_OFF: usize = 2_736_705; // pending_partial_withdrawals offset
 const F36_OFF: usize = 2_736_709; // pending_consolidations offset
 const F37: usize = 2_736_713; // proposer_lookahead: 64 × 8 = 512
-
 pub(crate) const FIXED_PART: usize = 2_737_225;
 
 // Compile-time sanity for the hand-rolled offset table and the alignment
@@ -230,7 +232,7 @@ fn read_execution_payload_header(
 }
 
 /// Validated variable-field offsets, monotonic and within `ssz`.
-struct Offsets {
+pub(crate) struct Offsets {
     historical_roots: usize,
     eth1_votes: usize,
     validators: usize,
@@ -294,229 +296,104 @@ impl Offsets {
     }
 }
 
-impl Finalized {
-    /// Decompose a Fulu-encoded BeaconState SSZ blob into `self`.
+impl BeaconState {
+    /// Decompose a Fulu-encoded BeaconState SSZ blob — the one public way to
+    /// construct a real `BeaconState`. `pubkeys` is the optional checkpoint
+    /// sidecar of pre-decompressed validator pubkeys (verified against the
+    /// canonical compressed keys); `None` decompresses from the SSZ.
     #[timed]
-    pub fn decompose(&mut self, ssz: &[u8], cfg: &SpecConfig) -> Result<(), DecomposeError> {
-        self.decompose_inner(ssz, cfg, None)
-    }
-
-    #[timed]
-    pub fn decompose_with_pubkeys(
-        &mut self,
+    pub fn decompose(
         ssz: &[u8],
         cfg: &SpecConfig,
-        pubkeys: &[PublicKey],
-    ) -> Result<(), DecomposeError> {
-        self.decompose_inner(ssz, cfg, Some(pubkeys))
-    }
-
-    fn decompose_inner(
-        &mut self,
-        ssz: &[u8],
-        cfg: &SpecConfig,
-        pubkeys: Option<&[PublicKey]>,
-    ) -> Result<(), DecomposeError> {
+        pubkeys: Option<&[blst::min_pk::PublicKey]>,
+    ) -> Result<Self, DecomposeError> {
         if ssz.len() < FIXED_PART {
             return Err(DecomposeError::TruncatedFixedPart { len: ssz.len(), need: FIXED_PART });
         }
         let offsets = Offsets::read_and_validate(ssz)?;
 
-        self.clear_variable_buffers();
+        let mut immutable = Immutable::default();
+        immutable.fill_from_ssz(ssz, cfg);
 
-        self.fill_immutable(ssz, cfg);
-        self.fill_slot_scalars(ssz);
-        self.fill_block_state_roots(ssz);
-        self.fill_epoch_state(ssz);
-        self.fill_derived_caches();
+        let epoch = EpochGroup::new(EpochStateFinalized::from_ssz(ssz));
 
-        read_sync_committee(ssz, F22, "current", &mut self.longtail.current_sync_committee)?;
-        read_sync_committee(ssz, F23, "next", &mut self.longtail.next_sync_committee)?;
+        // The slot tier derives its per-block accumulators from the
+        // (just-built) epoch rings.
+        let slot_states =
+            SlotStateGroup::new(SlotStateFinalized::from_ssz(ssz, &offsets, epoch.finalized())?);
 
-        self.fill_validator_layers(ssz, &offsets, pubkeys)?;
+        let eth1 = Eth1Group::new(Eth1Votes::from_ssz(ssz, &offsets)?);
 
-        read_execution_payload_header(
-            ssz,
-            offsets.eph,
-            offsets.hist_summaries,
-            &mut self.slot.slot.latest_execution_payload_header,
-        )?;
+        let val_bytes = &ssz[offsets.validators..offsets.balances];
+        let validators = ValidatorsGroup::new(match pubkeys {
+            Some(pk) => FinalizedValidators::try_new_with_pubkeys(val_bytes, pk)?,
+            None => FinalizedValidators::try_new(val_bytes)?,
+        });
 
-        self.fill_eth1_votes(ssz, &offsets)?;
-        self.fill_historical_roots_hash(ssz, &offsets)?;
-        self.fill_historical_summaries(ssz, &offsets)?;
-        self.fill_pending_deposits(ssz, &offsets)?;
-        self.fill_pending_partial_withdrawals(ssz, &offsets)?;
-        self.fill_pending_consolidations(ssz, &offsets)?;
+        // All per-validator columns (balances, participation, inactivity) size
+        // to the validators' capacity/count so they stay aligned with the rest.
+        let (cap, n) =
+            (validators.finalized().capacity(), validators.finalized().validator_count());
 
-        self.fill_sync_committee_indices();
+        // Construction = validation: the column constructors check byte length
+        // against the validator count; map to field-specific errors.
+        let balances_bytes = &ssz[offsets.balances..offsets.prev_participation];
+        let balances = BalancesGroup::new(cap, n, balances_bytes)
+            .map_err(|e| DecomposeError::BalancesLenMismatch { bytes: e.bytes, validators: n })?;
 
-        Ok(())
+        let prev_part = &ssz[offsets.prev_participation..offsets.cur_participation];
+        let previous_participation =
+            PreviousParticipationGroup::new(cap, n, prev_part).map_err(|e| {
+                DecomposeError::PrevParticipationLenMismatch { bytes: e.bytes, validators: n }
+            })?;
+
+        let cur_part = &ssz[offsets.cur_participation..offsets.inactivity];
+        let current_participation =
+            CurrentParticipationGroup::new(cap, n, cur_part).map_err(|e| {
+                DecomposeError::CurParticipationLenMismatch { bytes: e.bytes, validators: n }
+            })?;
+
+        let inactivity_bytes = &ssz[offsets.inactivity..offsets.eph];
+        let inactivity = InactivityScoresGroup::new(cap, n, inactivity_bytes)
+            .map_err(|e| DecomposeError::InactivityLenMismatch { bytes: e.bytes, validators: n })?;
+
+        immutable.fill_historical_roots_hash(ssz, &offsets)?;
+
+        // Longtail's sync-committee → validator-index resolution reads the
+        // registry.
+        let longtail =
+            LongtailGroup::new(LongtailState::from_ssz(ssz, &offsets, validators.finalized())?);
+
+        let pending = PendingGroup::new(PendingQueues::from_ssz(ssz, &offsets)?);
+
+        Ok(Self {
+            immutable,
+            validators,
+            balances,
+            eth1,
+            pending,
+            previous_participation,
+            current_participation,
+            inactivity,
+            slot_states,
+            epoch,
+            longtail,
+        })
     }
+}
 
-    fn clear_variable_buffers(&mut self) {
-        self.slot.slot.eth1_votes.clear();
-        self.longtail.historical_summaries.write().clear();
-        let mut pending = self.pending.write();
-        pending.pending_deposits.clear();
-        pending.pending_partial_withdrawals.clear();
-        pending.pending_consolidations.clear();
-    }
-
+impl Immutable {
     #[timed]
-    fn fill_immutable(&mut self, ssz: &[u8], cfg: &SpecConfig) {
-        self.immutable.genesis_time = u64_le(ssz, F0);
-        self.immutable.genesis_validators_root = b256(ssz, F1);
-        self.immutable.fork = crate::types::Fork {
+    fn fill_from_ssz(&mut self, ssz: &[u8], cfg: &SpecConfig) {
+        self.genesis_time = u64_le(ssz, F0);
+        self.genesis_validators_root = b256(ssz, F1);
+        self.fork = crate::types::Fork {
             previous_version: ssz[F3..F3 + 4].try_into().unwrap(),
             current_version: ssz[F3 + 4..F3 + 8].try_into().unwrap(),
             epoch: u64_le(ssz, F3 + 8),
         };
-        self.immutable.genesis_fork_version = cfg.genesis_fork_version;
-        self.immutable.capella_fork_version = cfg.capella_fork_version;
-    }
-
-    #[timed]
-    fn fill_slot_scalars(&mut self, ssz: &[u8]) {
-        let sl = &mut self.slot.slot;
-        sl.slot = u64_le(ssz, F2);
-        sl.latest_block_header.slot = u64_le(ssz, F4);
-        sl.latest_block_header.proposer_index = u64_le(ssz, F4 + 8);
-        sl.latest_block_header.parent_root = b256(ssz, F4 + 16);
-        sl.latest_block_header.state_root = b256(ssz, F4 + 48);
-        sl.latest_block_header.body_root = b256(ssz, F4 + 80);
-        sl.eth1_data = Eth1Data {
-            deposit_root: b256(ssz, F8),
-            deposit_count: u64_le(ssz, F8 + 32),
-            block_hash: b256(ssz, F8 + 40),
-        };
-        sl.eth1_deposit_index = u64_le(ssz, F10);
-        sl.next_withdrawal_index = u64_le(ssz, F25);
-        sl.next_withdrawal_validator_index = u64_le(ssz, F26);
-        sl.deposit_requests_start_index = u64_le(ssz, F28);
-        sl.exit_balance_to_consume = u64_le(ssz, F30);
-        sl.earliest_exit_epoch = u64_le(ssz, F31);
-        sl.consolidation_balance_to_consume = u64_le(ssz, F32);
-        sl.earliest_consolidation_epoch = u64_le(ssz, F33);
-    }
-
-    #[timed]
-    fn fill_block_state_roots(&mut self, ssz: &[u8]) {
-        // Alignment-1 bulk copy (B256 has align 1, see assertion above).
-        let block_src: &[B256] = unsafe {
-            std::slice::from_raw_parts(ssz[F5..].as_ptr().cast::<B256>(), SLOTS_PER_HISTORICAL_ROOT)
-        };
-        self.slot.block_roots.copy_from_slice(block_src);
-        let state_src: &[B256] = unsafe {
-            std::slice::from_raw_parts(ssz[F6..].as_ptr().cast::<B256>(), SLOTS_PER_HISTORICAL_ROOT)
-        };
-        self.slot.state_roots.copy_from_slice(state_src);
-    }
-
-    #[timed]
-    fn fill_epoch_state(&mut self, ssz: &[u8]) {
-        let randao_src: &[B256] = unsafe {
-            std::slice::from_raw_parts(
-                ssz[F13..].as_ptr().cast::<B256>(),
-                EPOCHS_PER_HISTORICAL_VECTOR,
-            )
-        };
-        self.epoch.randao_mixes.copy_from_slice(randao_src);
-
-        for i in 0..EPOCHS_PER_SLASHINGS_VECTOR {
-            self.epoch.slashings[i] = u64_le(ssz, F14 + i * 8);
-        }
-
-        let est = &mut self.epoch.state;
-        for i in 0..PROPOSER_LOOKAHEAD_SIZE {
-            est.proposer_lookahead[i] = u64_le(ssz, F37 + i * 8);
-        }
-        est.justification_bits = ssz[F17] & 0x0F;
-        est.previous_justified_checkpoint = read_checkpoint(ssz, F18);
-        est.current_justified_checkpoint = read_checkpoint(ssz, F19);
-        est.finalized_checkpoint = read_checkpoint(ssz, F20);
-        est.deposit_balance_to_consume = u64_le(ssz, F29);
-    }
-
-    #[timed]
-    fn fill_derived_caches(&mut self) {
-        let current_epoch = self.slot.slot.slot / SLOTS_PER_EPOCH;
-        self.slot.slot.randao_mix_current =
-            self.epoch.randao_mixes[current_epoch as usize % EPOCHS_PER_HISTORICAL_VECTOR];
-        self.slot.slot.current_epoch_slashings =
-            self.epoch.slashings[current_epoch as usize % EPOCHS_PER_SLASHINGS_VECTOR];
-    }
-
-    #[timed]
-    fn fill_validator_layers(
-        &mut self,
-        ssz: &[u8],
-        o: &Offsets,
-        pubkeys: Option<&[PublicKey]>,
-    ) -> Result<(), DecomposeError> {
-        let val_bytes = &ssz[o.validators..o.balances];
-        self.validators = match pubkeys {
-            Some(pk) => FinalizedValidators::try_new_with_pubkeys(val_bytes, pk)?,
-            None => FinalizedValidators::try_new(val_bytes)?,
-        };
-        let n = self.validators.validator_count();
-
-        // Match the validators' capacity so per-validator columns stay aligned.
-        let cap = self.validators.capacity();
-        self.balances =
-            FinalizedBalances::from_ssz(cap, &ssz[o.balances..o.prev_participation], n)?;
-        self.previous_participation = FinalizedPreviousParticipation::with_capacity(cap);
-        self.current_participation = FinalizedCurrentParticipation::with_capacity(cap);
-        self.inactivity_scores = FinalizedInactivityScores::with_capacity(cap);
-
-        let prev_part = &ssz[o.prev_participation..o.cur_participation];
-        if prev_part.len() != n {
-            return Err(DecomposeError::PrevParticipationLenMismatch {
-                bytes: prev_part.len(),
-                validators: n,
-            });
-        }
-        self.previous_participation.slice_mut()[..n].copy_from_slice(prev_part);
-
-        let cur_part = &ssz[o.cur_participation..o.inactivity];
-        if cur_part.len() != n {
-            return Err(DecomposeError::CurParticipationLenMismatch {
-                bytes: cur_part.len(),
-                validators: n,
-            });
-        }
-        self.current_participation.slice_mut()[..n].copy_from_slice(cur_part);
-
-        let inact_bytes = &ssz[o.inactivity..o.eph];
-        if !inact_bytes.len().is_multiple_of(8) || inact_bytes.len() / 8 != n {
-            return Err(DecomposeError::InactivityLenMismatch {
-                bytes: inact_bytes.len(),
-                validators: n,
-            });
-        }
-        let inact = self.inactivity_scores.slice_mut();
-        for (i, s) in inact.iter_mut().enumerate().take(n) {
-            *s = u64_le(inact_bytes, i * 8);
-        }
-
-        Ok(())
-    }
-
-    #[timed]
-    fn fill_eth1_votes(&mut self, ssz: &[u8], o: &Offsets) -> Result<(), DecomposeError> {
-        let votes_bytes = &ssz[o.eth1_votes..o.validators];
-        if !votes_bytes.len().is_multiple_of(ETH1_DATA_SSZ_SIZE) {
-            return Err(DecomposeError::Eth1VotesLenNotMultiple { len: votes_bytes.len() });
-        }
-        let vote_count = votes_bytes.len() / ETH1_DATA_SSZ_SIZE;
-        if vote_count > MAX_ETH1_VOTES {
-            return Err(DecomposeError::TooManyEth1Votes { n: vote_count, max: MAX_ETH1_VOTES });
-        }
-        for i in 0..vote_count {
-            let v = &votes_bytes[i * ETH1_DATA_SSZ_SIZE..];
-            self.slot.slot.eth1_votes.push(read_eth1_data(v));
-        }
-        Ok(())
+        self.genesis_fork_version = cfg.genesis_fork_version;
+        self.capella_fork_version = cfg.capella_fork_version;
     }
 
     #[timed]
@@ -539,14 +416,56 @@ impl Finalized {
         let hr_chunks: &[B256] =
             unsafe { std::slice::from_raw_parts(hr_bytes.as_ptr().cast::<B256>(), hr_count) };
         let hr_root = ssz_hash::merkleize_padded(hr_chunks, HISTORICAL_ROOTS_LIMIT);
-        self.immutable.historical_roots_hash = ssz_hash::mix_in_length(&hr_root, hr_count);
-        // Retain the raw list for canonical re-encode (frozen post-Capella).
-        self.immutable.historical_roots = hr_chunks.to_vec().into_boxed_slice();
+        self.historical_roots = hr_chunks.into();
+        self.historical_roots_hash = ssz_hash::mix_in_length(&hr_root, hr_count);
         Ok(())
     }
+}
 
+impl EpochStateFinalized {
     #[timed]
-    fn fill_historical_summaries(&mut self, ssz: &[u8], o: &Offsets) -> Result<(), DecomposeError> {
+    pub(crate) fn from_ssz(ssz: &[u8]) -> Self {
+        let mut fin = Self::default();
+
+        let randao_src: &[B256] = unsafe {
+            std::slice::from_raw_parts(
+                ssz[F13..].as_ptr().cast::<B256>(),
+                EPOCHS_PER_HISTORICAL_VECTOR,
+            )
+        };
+        fin.randao_mixes.copy_from_slice(randao_src);
+
+        for i in 0..EPOCHS_PER_SLASHINGS_VECTOR {
+            fin.slashings[i] = u64_le(ssz, F14 + i * 8);
+        }
+
+        let est = &mut fin.state;
+        for i in 0..PROPOSER_LOOKAHEAD_SIZE {
+            est.proposer_lookahead[i] = u64_le(ssz, F37 + i * 8);
+        }
+        est.justification_bits = ssz[F17] & 0x0F;
+        est.previous_justified_checkpoint = read_checkpoint(ssz, F18);
+        est.current_justified_checkpoint = read_checkpoint(ssz, F19);
+        est.finalized_checkpoint = read_checkpoint(ssz, F20);
+        est.deposit_balance_to_consume = u64_le(ssz, F29);
+
+        fin
+    }
+}
+
+// `validators` resolves the sync-committee → validator indices.
+impl LongtailState {
+    #[timed]
+    pub(crate) fn from_ssz(
+        ssz: &[u8],
+        o: &Offsets,
+        validators: &FinalizedValidators,
+    ) -> Result<Self, DecomposeError> {
+        let mut lt = Self::default();
+
+        read_sync_committee(ssz, F22, "current", &mut lt.current_sync_committee)?;
+        read_sync_committee(ssz, F23, "next", &mut lt.next_sync_committee)?;
+
         let hs_bytes = &ssz[o.hist_summaries..o.pending_deposits];
         if !hs_bytes.len().is_multiple_of(HISTORICAL_SUMMARY_SSZ_SIZE) {
             return Err(DecomposeError::HistoricalSummariesLenNotMultiple { len: hs_bytes.len() });
@@ -558,20 +477,114 @@ impl Finalized {
                 max: HISTORICAL_SUMMARIES_LIMIT,
             });
         }
-        let mut summaries = self.longtail.historical_summaries.write();
-        summaries.reserve_exact(hs_count);
+        lt.historical_summaries.reserve_exact(hs_count);
         for i in 0..hs_count {
             let s = &hs_bytes[i * HISTORICAL_SUMMARY_SSZ_SIZE..];
-            summaries.push(HistoricalSummary {
+            lt.historical_summaries.push(HistoricalSummary {
                 block_summary_root: b256(s, 0),
                 state_summary_root: b256(s, 32),
             });
         }
-        Ok(())
-    }
 
-    #[timed]
-    fn fill_pending_deposits(&mut self, ssz: &[u8], o: &Offsets) -> Result<(), DecomposeError> {
+        for i in 0..SYNC_COMMITTEE_SIZE {
+            let pk = lt.current_sync_committee.pubkeys[i];
+            lt.sync_committee_indices[i] =
+                validators.find_by_pubkey(&pk).map(|i| i as u32).unwrap_or(u32::MAX);
+        }
+
+        Ok(lt)
+    }
+}
+
+fn read_eth1_data(s: &[u8]) -> Eth1Data {
+    Eth1Data { deposit_root: b256(s, 0), deposit_count: u64_le(s, 32), block_hash: b256(s, 40) }
+}
+
+// `epoch` must already be filled — the derived `randao_mix_current` /
+// `current_epoch_slashings` read the current bucket from its rings.
+impl Eth1Votes {
+    fn from_ssz(ssz: &[u8], o: &Offsets) -> Result<Self, DecomposeError> {
+        let votes_bytes = &ssz[o.eth1_votes..o.validators];
+        if !votes_bytes.len().is_multiple_of(ETH1_DATA_SSZ_SIZE) {
+            return Err(DecomposeError::Eth1VotesLenNotMultiple { len: votes_bytes.len() });
+        }
+        let vote_count = votes_bytes.len() / ETH1_DATA_SSZ_SIZE;
+        if vote_count > MAX_ETH1_VOTES {
+            return Err(DecomposeError::TooManyEth1Votes { n: vote_count, max: MAX_ETH1_VOTES });
+        }
+        let mut votes = Self::default();
+        for i in 0..vote_count {
+            votes.push(read_eth1_data(&votes_bytes[i * ETH1_DATA_SSZ_SIZE..]));
+        }
+        Ok(votes)
+    }
+}
+
+impl SlotStateFinalized {
+    pub(crate) fn from_ssz(
+        ssz: &[u8],
+        o: &Offsets,
+        epoch: &EpochStateFinalized,
+    ) -> Result<Self, DecomposeError> {
+        let mut slot = SlotState {
+            slot: u64_le(ssz, F2),
+            latest_block_header: BeaconBlockHeader {
+                slot: u64_le(ssz, F4),
+                proposer_index: u64_le(ssz, F4 + 8),
+                parent_root: b256(ssz, F4 + 16),
+                state_root: b256(ssz, F4 + 48),
+                body_root: b256(ssz, F4 + 80),
+            },
+            eth1_data: Eth1Data {
+                deposit_root: b256(ssz, F8),
+                deposit_count: u64_le(ssz, F8 + 32),
+                block_hash: b256(ssz, F8 + 40),
+            },
+            eth1_deposit_index: u64_le(ssz, F10),
+            next_withdrawal_index: u64_le(ssz, F25),
+            next_withdrawal_validator_index: u64_le(ssz, F26),
+            deposit_requests_start_index: u64_le(ssz, F28),
+            exit_balance_to_consume: u64_le(ssz, F30),
+            earliest_exit_epoch: u64_le(ssz, F31),
+            consolidation_balance_to_consume: u64_le(ssz, F32),
+            earliest_consolidation_epoch: u64_le(ssz, F33),
+            ..Default::default()
+        };
+
+        read_execution_payload_header(
+            ssz,
+            o.eph,
+            o.hist_summaries,
+            &mut slot.latest_execution_payload_header,
+        )?;
+
+        // Derived per-block accumulators: seed from the current epoch's bucket.
+        let current_epoch = slot.slot / SLOTS_PER_EPOCH;
+        slot.randao_mix_current =
+            epoch.randao_mixes[current_epoch as usize % EPOCHS_PER_HISTORICAL_VECTOR];
+        slot.current_epoch_slashings =
+            epoch.slashings[current_epoch as usize % EPOCHS_PER_SLASHINGS_VECTOR];
+
+        // block/state roots (alignment-1 bulk copy; B256 has align 1).
+        let mut block_roots = vec![[0u8; 32]; SLOTS_PER_HISTORICAL_ROOT].into_boxed_slice();
+        let block_src: &[B256] = unsafe {
+            std::slice::from_raw_parts(ssz[F5..].as_ptr().cast::<B256>(), SLOTS_PER_HISTORICAL_ROOT)
+        };
+        block_roots.copy_from_slice(block_src);
+        let mut state_roots = vec![[0u8; 32]; SLOTS_PER_HISTORICAL_ROOT].into_boxed_slice();
+        let state_src: &[B256] = unsafe {
+            std::slice::from_raw_parts(ssz[F6..].as_ptr().cast::<B256>(), SLOTS_PER_HISTORICAL_ROOT)
+        };
+        state_roots.copy_from_slice(state_src);
+
+        Ok(Self::from_parts(slot, block_roots, state_roots))
+    }
+}
+
+impl PendingQueues {
+    pub(crate) fn from_ssz(ssz: &[u8], o: &Offsets) -> Result<Self, DecomposeError> {
+        let mut q = Self::default();
+
         let pd_bytes = &ssz[o.pending_deposits..o.pending_withdrawals];
         if !pd_bytes.len().is_multiple_of(PENDING_DEPOSIT_SSZ_SIZE) {
             return Err(DecomposeError::PendingDepositsLenNotMultiple { len: pd_bytes.len() });
@@ -583,21 +596,12 @@ impl Finalized {
                 max: PENDING_DEPOSITS_LIMIT,
             });
         }
-        let mut pending = self.pending.write();
-        pending.pending_deposits.reserve_exact(pd_count);
+        q.pending_deposits.reserve_exact(pd_count);
         for i in 0..pd_count {
-            let d = &pd_bytes[i * PENDING_DEPOSIT_SSZ_SIZE..];
-            pending.pending_deposits.push(read_pending_deposit(d));
+            q.pending_deposits
+                .push(read_pending_deposit(&pd_bytes[i * PENDING_DEPOSIT_SSZ_SIZE..]));
         }
-        Ok(())
-    }
 
-    #[timed]
-    fn fill_pending_partial_withdrawals(
-        &mut self,
-        ssz: &[u8],
-        o: &Offsets,
-    ) -> Result<(), DecomposeError> {
         let pw_bytes = &ssz[o.pending_withdrawals..o.pending_consolidations];
         if !pw_bytes.len().is_multiple_of(PENDING_PARTIAL_WITHDRAWAL_SSZ_SIZE) {
             return Err(DecomposeError::PendingWithdrawalsLenNotMultiple { len: pw_bytes.len() });
@@ -609,25 +613,16 @@ impl Finalized {
                 max: PENDING_PARTIAL_WITHDRAWALS_LIMIT,
             });
         }
-        let mut pending = self.pending.write();
-        pending.pending_partial_withdrawals.reserve_exact(pw_count);
+        q.pending_partial_withdrawals.reserve_exact(pw_count);
         for i in 0..pw_count {
             let w = &pw_bytes[i * PENDING_PARTIAL_WITHDRAWAL_SSZ_SIZE..];
-            pending.pending_partial_withdrawals.push(PendingPartialWithdrawal {
+            q.pending_partial_withdrawals.push(PendingPartialWithdrawal {
                 index: u64_le(w, 0),
                 amount: u64_le(w, 8),
                 withdrawable_epoch: u64_le(w, 16),
             });
         }
-        Ok(())
-    }
 
-    #[timed]
-    fn fill_pending_consolidations(
-        &mut self,
-        ssz: &[u8],
-        o: &Offsets,
-    ) -> Result<(), DecomposeError> {
         let pc_bytes = &ssz[o.pending_consolidations..];
         if !pc_bytes.len().is_multiple_of(PENDING_CONSOLIDATION_SSZ_SIZE) {
             return Err(DecomposeError::PendingConsolidationsLenNotMultiple { len: pc_bytes.len() });
@@ -639,29 +634,17 @@ impl Finalized {
                 max: PENDING_CONSOLIDATIONS_LIMIT,
             });
         }
-        let mut pending = self.pending.write();
-        pending.pending_consolidations.reserve_exact(pc_count);
+        q.pending_consolidations.reserve_exact(pc_count);
         for i in 0..pc_count {
             let c = &pc_bytes[i * PENDING_CONSOLIDATION_SSZ_SIZE..];
-            pending.pending_consolidations.push(PendingConsolidation {
+            q.pending_consolidations.push(PendingConsolidation {
                 source_index: u64_le(c, 0),
                 target_index: u64_le(c, 8),
             });
         }
-        Ok(())
-    }
 
-    #[timed]
-    fn fill_sync_committee_indices(&mut self) {
-        for (i, pk) in self.longtail.current_sync_committee.pubkeys.iter().enumerate() {
-            self.longtail.sync_committee_indices[i] =
-                self.validators.find_by_pubkey(pk).map(|i| i as u32).unwrap_or(u32::MAX);
-        }
+        Ok(q)
     }
-}
-
-fn read_eth1_data(s: &[u8]) -> Eth1Data {
-    Eth1Data { deposit_root: b256(s, 0), deposit_count: u64_le(s, 32), block_hash: b256(s, 40) }
 }
 
 fn read_pending_deposit(d: &[u8]) -> PendingDeposit {
@@ -675,143 +658,6 @@ fn read_pending_deposit(d: &[u8]) -> PendingDeposit {
         amount: u64_le(d, 80),
         signature,
         slot: u64_le(d, 184),
-    }
-}
-
-impl Finalized {
-    /// Fold `delta` into the base. `delta.slot.slot` becomes the new
-    /// finalized slot.
-    ///
-    /// Entry args supply the per-tier delta state when the fork has crossed
-    /// a boundary; the caller resolves `epoch_idx` / `longtail_idx` against
-    /// the ring buffers before invoking. When the fork is anchored, pass
-    /// `None` for the corresponding tier — it is unchanged from this base.
-    #[timed]
-    pub fn apply_delta(
-        &mut self,
-        delta: &StateDelta,
-        epoch_entry: Option<&EpochStateDelta>,
-        longtail_entry: Option<&LongtailState>,
-    ) {
-        let old_fin_slot = self.slot.slot.slot as usize;
-        let old_fin_epoch = old_fin_slot / SLOTS_PER_EPOCH as usize;
-
-        self.apply_slot_tier(delta, old_fin_slot);
-        self.apply_epoch_tier(delta, epoch_entry, old_fin_epoch);
-        self.apply_longtail_tier(delta, longtail_entry);
-        self.apply_validator_layers(delta);
-        self.apply_pending_queues(delta);
-    }
-
-    #[timed]
-    fn apply_slot_tier(&mut self, delta: &StateDelta, old_fin_slot: usize) {
-        // SlotState is Copy; bulk-copy then handle circular buffers.
-        self.slot.slot = delta.slot.slot;
-
-        let block_cap = self.slot.block_roots.len();
-        debug_assert!(
-            delta.slot.block_roots.len() <= block_cap,
-            "delta block_roots ({}) exceeds ring cap ({})",
-            delta.slot.block_roots.len(),
-            block_cap
-        );
-        for (i, r) in delta.slot.block_roots.iter().enumerate() {
-            self.slot.block_roots[(old_fin_slot + i) % block_cap] = *r;
-        }
-        let state_cap = self.slot.state_roots.len();
-        debug_assert!(
-            delta.slot.state_roots.len() <= state_cap,
-            "delta state_roots ({}) exceeds ring cap ({})",
-            delta.slot.state_roots.len(),
-            state_cap
-        );
-        for (i, r) in delta.slot.state_roots.iter().enumerate() {
-            self.slot.state_roots[(old_fin_slot + i) % state_cap] = *r;
-        }
-    }
-
-    /// Apply only when the fork crossed an epoch boundary.
-    #[timed]
-    fn apply_epoch_tier(
-        &mut self,
-        delta: &StateDelta,
-        epoch_entry: Option<&EpochStateDelta>,
-        old_fin_epoch: usize,
-    ) {
-        debug_assert_eq!(
-            epoch_entry.is_some(),
-            delta.epoch_idx.is_some(),
-            "epoch_entry and delta.epoch_idx must agree",
-        );
-        let Some(e) = epoch_entry else { return };
-
-        let hv = self.epoch.randao_mixes.len();
-        debug_assert!(e.randao_mixes.len() <= hv, "epoch randao_mixes exceeds ring cap");
-        for (i, m) in e.randao_mixes.iter().enumerate() {
-            self.epoch.randao_mixes[(old_fin_epoch + i) % hv] = *m;
-        }
-        let sv = self.epoch.slashings.len();
-        debug_assert!(e.slashings.len() <= sv, "epoch slashings exceeds ring cap");
-        for (i, sl) in e.slashings.iter().enumerate() {
-            self.epoch.slashings[(old_fin_epoch + i) % sv] = *sl;
-        }
-        self.epoch.state = e.state;
-    }
-
-    /// Apply only when the fork crossed a 256-epoch sync-committee rotation.
-    #[timed]
-    fn apply_longtail_tier(&mut self, delta: &StateDelta, longtail_entry: Option<&LongtailState>) {
-        debug_assert_eq!(
-            longtail_entry.is_some(),
-            delta.longtail_idx.is_some(),
-            "longtail_entry and delta.longtail_idx must agree",
-        );
-        let Some(lt) = longtail_entry else { return };
-
-        self.longtail.current_sync_committee = lt.current_sync_committee;
-        self.longtail.next_sync_committee = lt.next_sync_committee;
-        self.longtail.sync_committee_indices = lt.sync_committee_indices;
-
-        let appended = lt.historical_summaries.read();
-        self.longtail.historical_summaries.write().extend_from_slice(&appended);
-    }
-
-    #[timed]
-    fn apply_validator_layers(&mut self, delta: &StateDelta) {
-        // Identity (append + sparse edits + hash overlay).
-        delta.validators.promote_into_base(&mut self.validators);
-
-        // Sibling columns (sparse edits only).
-        delta.balances.promote_into_base(&mut self.balances);
-        for &(idx, val) in &delta.previous_participation.edits {
-            self.previous_participation.slice_mut()[idx as usize] = val;
-        }
-        for &(idx, val) in &delta.current_participation.edits {
-            self.current_participation.slice_mut()[idx as usize] = val;
-        }
-        for &(idx, val) in &delta.inactivity_scores.edits {
-            self.inactivity_scores.slice_mut()[idx as usize] = val;
-        }
-    }
-
-    /// Drain promoted prefix, append new entries.
-    #[timed]
-    fn apply_pending_queues(&mut self, delta: &StateDelta) {
-        let pq = &delta.pending;
-        let mut pending = self.pending.write();
-
-        let n = (pq.deposits_drain_offset as usize).min(pending.pending_deposits.len());
-        pending.pending_deposits.drain(..n);
-        pending.pending_deposits.extend_from_slice(&pq.deposits_appended);
-
-        let n = (pq.partial_withdrawals_drain_offset as usize)
-            .min(pending.pending_partial_withdrawals.len());
-        pending.pending_partial_withdrawals.drain(..n);
-        pending.pending_partial_withdrawals.extend_from_slice(&pq.partial_withdrawals_appended);
-
-        let n = (pq.consolidations_drain_offset as usize).min(pending.pending_consolidations.len());
-        pending.pending_consolidations.drain(..n);
-        pending.pending_consolidations.extend_from_slice(&pq.consolidations_appended);
     }
 }
 
@@ -841,54 +687,58 @@ mod tests {
         assert!(ssz.len() >= FIXED_PART);
 
         let cfg = SpecConfig::mainnet();
-        let mut fin = Box::new(Finalized::empty());
-        fin.decompose(&ssz, &cfg).expect("decompose");
+        let bs = BeaconState::decompose(&ssz, &cfg, None).expect("decompose");
+        let imm = &bs.immutable;
+        let epoch = bs.epoch.finalized();
+        let longtail = bs.longtail.finalized();
+        let validators = bs.validators.finalized();
 
         // Re-read the raw slot from the SSZ fixed part to cross-check.
         let raw_slot = u64_le(&ssz, F2);
-        assert_eq!(fin.slot.slot.slot, raw_slot);
+        let slot_view = bs.slot_states.finalized_view();
+        assert_eq!(slot_view.slot_number(), raw_slot);
         let cur_epoch = raw_slot / SLOTS_PER_EPOCH;
 
         // Validator columnar arrays should be populated and consistent.
-        let n = fin.validators.validator_count();
+        let n = validators.validator_count();
         assert!(n > 0, "no validators decoded");
-        assert_eq!(fin.validators.index_len(), n);
+        assert_eq!(validators.index_len(), n);
 
         // Spec invariant: finalized ≤ previous_justified ≤ current_justified
         //                          ≤ current_epoch.
-        let est = &fin.epoch.state;
+        let est = &epoch.state;
         assert!(est.finalized_checkpoint.epoch <= est.previous_justified_checkpoint.epoch);
         assert!(est.previous_justified_checkpoint.epoch <= est.current_justified_checkpoint.epoch);
         assert!(est.current_justified_checkpoint.epoch <= cur_epoch);
 
         // Derived caches match the resolved circular-buffer entries.
-        let hv = fin.epoch.randao_mixes.len();
+        let hv = epoch.randao_mixes.len();
         assert_eq!(
-            fin.slot.slot.randao_mix_current,
-            fin.epoch.randao_mixes[cur_epoch as usize % hv]
+            slot_view.state().randao_mix_current,
+            epoch.randao_mixes[cur_epoch as usize % hv]
         );
-        let sv = fin.epoch.slashings.len();
+        let sv = epoch.slashings.len();
         assert_eq!(
-            fin.slot.slot.current_epoch_slashings,
-            fin.epoch.slashings[cur_epoch as usize % sv]
+            slot_view.state().current_epoch_slashings,
+            epoch.slashings[cur_epoch as usize % sv]
         );
 
         // Sync-committee indices either resolve to a real validator or are
         // sentinel u32::MAX (committee pubkey not in the registry).
-        for (i, idx) in fin.longtail.sync_committee_indices.iter().enumerate() {
+        for (i, idx) in longtail.sync_committee_indices.iter().enumerate() {
             if *idx != u32::MAX {
                 assert!((*idx as usize) < n);
-                let pk = &fin.longtail.current_sync_committee.pubkeys[i];
-                assert_eq!(fin.validators.find_by_pubkey(pk).map(|i| i as u32), Some(*idx));
+                let pk = &longtail.current_sync_committee.pubkeys[i];
+                assert_eq!(validators.find_by_pubkey(pk).map(|i| i as u32), Some(*idx));
             }
         }
 
         // Decompose is deterministic.
-        let mut fin2 = Box::new(Finalized::empty());
-        fin2.decompose(&ssz, &cfg).expect("decompose 2");
-        assert_eq!(fin2.slot.slot.slot, fin.slot.slot.slot);
-        assert_eq!(fin2.validators.validator_count(), n);
-        assert_eq!(fin2.immutable.genesis_validators_root, fin.immutable.genesis_validators_root);
-        assert_eq!(fin2.immutable.historical_roots_hash, fin.immutable.historical_roots_hash);
+        let bs2 = BeaconState::decompose(&ssz, &cfg, None).expect("decompose 2");
+        let imm2 = &bs2.immutable;
+        assert_eq!(bs2.slot_states.finalized_view().slot_number(), slot_view.slot_number());
+        assert_eq!(bs2.validators.finalized().validator_count(), n);
+        assert_eq!(imm2.genesis_validators_root, imm.genesis_validators_root);
+        assert_eq!(imm2.historical_roots_hash, imm.historical_roots_hash);
     }
 }
