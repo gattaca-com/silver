@@ -7,6 +7,7 @@
 //! - `counters-{name}` — shmem-mapped `[AtomicU64; N]` (read-only).
 //! - `timing-{name}` / `latency-{name}` — flux MPMC `TimingMessage` queues.
 //! - `tilemetrics-{name}` — flux SPMC `TileSample` queue.
+//! - `perf-{name}` — flux MPMC `PerfSample` queue (`#[perf]` functions).
 
 use std::{collections::HashMap, fs, io, path::PathBuf};
 
@@ -15,6 +16,7 @@ pub struct DiscoveredSources {
     pub tcaches: Vec<CounterFile>,
     pub timings: Vec<TimingFile>,
     pub tilemetrics: Vec<TileMetricsFile>,
+    pub perf: Vec<PerfFile>,
 }
 
 pub struct CounterFile {
@@ -41,6 +43,13 @@ pub struct TileMetricsFile {
     pub path: PathBuf,
 }
 
+pub struct PerfFile {
+    /// The `{name}` suffix from `perf-{name}` — the decorated function's
+    /// `module_path::fn` (or its `#[perf("...")]` override).
+    pub name: String,
+    pub path: PathBuf,
+}
+
 pub fn discover(base_dir: &std::path::Path, app_name: &str) -> io::Result<DiscoveredSources> {
     let mut counters = Vec::new();
     let mut tcaches = Vec::new();
@@ -48,6 +57,7 @@ pub fn discover(base_dir: &std::path::Path, app_name: &str) -> io::Result<Discov
     // Group by name so a single TimingFile carries both paths.
     let mut timing_map: HashMap<String, TimingFile> = HashMap::new();
     let mut tilemetrics = Vec::new();
+    let mut perf = Vec::new();
 
     let dir = flux::utils::directories::shmem_dir_queues_with_base(base_dir, app_name);
     if let Ok(entries) = fs::read_dir(&dir) {
@@ -80,6 +90,8 @@ pub fn discover(base_dir: &std::path::Path, app_name: &str) -> io::Result<Discov
                 entry.latency_path = Some(path);
             } else if let Some(name) = fname.strip_prefix("tilemetrics-") {
                 tilemetrics.push(TileMetricsFile { name: name.to_string(), path });
+            } else if let Some(name) = fname.strip_prefix("perf-") {
+                perf.push(PerfFile { name: name.to_string(), path });
             }
         }
     }
@@ -89,5 +101,6 @@ pub fn discover(base_dir: &std::path::Path, app_name: &str) -> io::Result<Discov
     tcaches.sort_by(|a, b| a.name.cmp(&b.name));
     timings.sort_by(|a, b| a.name.cmp(&b.name));
     tilemetrics.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(DiscoveredSources { counters, tcaches, timings, tilemetrics })
+    perf.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(DiscoveredSources { counters, tcaches, timings, tilemetrics, perf })
 }

@@ -1,7 +1,7 @@
 //! Terminal metrics viewer for silver. Reads `counters-*`,
-//! `timing-*`, `tilemetrics-*` files from flux's shmem queues
-//! directory — `{base_dir}/{app_name}/shmem/queues/` — and renders
-//! them in a ratatui-based TUI.
+//! `timing-*`, `tilemetrics-*`, `perf-*` files from flux's shmem
+//! queues directory — `{base_dir}/{app_name}/shmem/queues/` — and
+//! renders them in a ratatui-based TUI.
 //!
 //! Usage: `surfer [BASE_DIR] [APP_NAME]`.
 //! Defaults: `BASE_DIR = flux::utils::directories::local_share_dir()`
@@ -29,7 +29,9 @@ mod sources;
 
 use crate::{
     app::App,
-    sources::{counters::CounterSet, tilemetrics::TileMetricsSet, timings::TimingSet},
+    sources::{
+        counters::CounterSet, perf::PerfSet, tilemetrics::TileMetricsSet, timings::TimingSet,
+    },
 };
 
 const TICK: Duration = Duration::from_millis(100);
@@ -104,7 +106,22 @@ fn main() -> io::Result<()> {
     for t in &mut tile_sets {
         t.drain();
     }
-    let mut app = App::new(counter_sets, tcache_sets, timing_sets, tile_sets);
+
+    let mut perf_sets: Vec<PerfSet> = sources
+        .perf
+        .iter()
+        .filter_map(|f| match PerfSet::open(f) {
+            Ok(p) => Some(p),
+            Err(e) => {
+                eprintln!("surfer: skipping {}: {e}", f.path.display());
+                None
+            }
+        })
+        .collect();
+    for p in &mut perf_sets {
+        p.drain();
+    }
+    let mut app = App::new(counter_sets, tcache_sets, timing_sets, tile_sets, perf_sets);
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
