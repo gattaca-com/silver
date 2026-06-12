@@ -181,6 +181,8 @@ pub struct PeerManager {
     /// bounds the range).
     pub(crate) col_tried_for_range: FxHashSet<usize>,
 
+    col_stall_logged: bool,
+
     /// Slot of the highest block BS has imported (`last_applied`), from the
     /// `latest_block_slot` on the Status event.
     pub(crate) local_head_imported_slot: u64,
@@ -268,6 +270,12 @@ pub struct ColSyncReq {
     /// Reset on any delivered attempt; `max_colreq_attempts` caps it
     /// before the remainder is conceded to the by-root wheel.
     pub attempts: u64,
+    /// Min claimed head_slot across delivering peers (u64::MAX until the
+    /// first delivery). A `Complete` covers `[start, min(end, peer_head)]`
+    /// — the watermark advance is capped by this so slots past a serving
+    /// peer's tip re-open as the next range. Mirrors the block driver's
+    /// peer-head capping.
+    pub served_through: u64,
     /// In-flight per-peer attempt, if any.
     pub attempt: Option<ColAttempt>,
 }
@@ -333,6 +341,7 @@ impl PeerManager {
             col_syncreq: None,
             columns_synced_through: 0,
             col_tried_for_range: FxHashSet::with_capacity_and_hasher(PEERS_CAP, Default::default()),
+            col_stall_logged: false,
             local_head_imported_slot: 0,
             burnt_for_target: FxHashSet::with_capacity_and_hasher(PEERS_CAP, Default::default()),
             finalized_counts: FxHashMap::with_capacity_and_hasher(SYNC_AGG_CAP, Default::default()),
@@ -854,6 +863,17 @@ impl PeerManager {
                 if protocol.is_request_response() && protocol != StreamProtocol::Unset {
                     tracing::warn!(?protocol, "stream close misbehaviour");
                     self.on_rpc_misbehaviour(stream_id.peer(), RpcSeverity::MidTolerance);
+                    // No terminal response will arrive for this stream —
+                    // release the outbound in-flight slot, else each
+                    // abnormal close permanently burns one of the peer's
+                    // `MAX_RPC_PROTOCOL_IN_FLIGHT` slots and the protocol
+                    // goes dark for the connection's lifetime.
+                    if !stream_id.is_incoming() &&
+                        let Some(peer) = self.peers.get_mut(&stream_id.peer())
+                    {
+                        peer.outbound_in_flight[protocol.ordinal() as usize] =
+                            peer.outbound_in_flight[protocol.ordinal() as usize].saturating_sub(1);
+                    }
                 }
             }
             PeerEvent::P2pGossipTopicSubscribe { p2p_peer, topic } => {
@@ -4090,12 +4110,14 @@ mod tests {
     }
 
     /// Connect a peer advertising `DataColumnSidecarsByRange` with a cgc=4
-    /// ENR; returns its deterministic custody mask.
+    /// ENR and a Status claiming `head_slot`; returns its deterministic
+    /// custody mask.
     fn connect_column_peer(
         mgr: &mut PeerManager,
         cap: &mut Captured,
         conn: usize,
         seed: u8,
+        head_slot: u64,
         now: Instant,
     ) -> u128 {
         let kp = Keypair::from_secret(&[seed; 32]).unwrap();
@@ -4117,6 +4139,8 @@ mod tests {
         mgr.handle_event(PeerEvent::P2pPeerIdentity { p2p_peer: conn, identify }, now, &mut |c| {
             cap.0.push(c)
         });
+        // Digest matches the fixture's `[0u8; 4]` so the status is stored.
+        send_status(mgr, cap, conn, make_status_v2([0u8; 4], [0xAA; 32], 0, [0xBB; 32], head_slot));
         mgr.database.data_column_custody_groups_intersection(conn, u128::MAX)
     }
 
@@ -4124,7 +4148,7 @@ mod tests {
     fn colreq_complete_advances_column_watermark() {
         let now = Instant::now();
         let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
-        let mask = connect_column_peer(&mut mgr, &mut cap, 1, 1, now);
+        let mask = connect_column_peer(&mut mgr, &mut cap, 1, 1, 100_000, now);
         mgr.custody_columns = mask; // full overlap with peer 1
         mgr.synced_through = 128; // blocks confirmed-served [1, 128]
 
@@ -4155,8 +4179,8 @@ mod tests {
     fn colreq_partial_overlap_chases_remainder_on_second_peer() {
         let now = Instant::now();
         let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
-        let mask1 = connect_column_peer(&mut mgr, &mut cap, 1, 1, now);
-        let mask2 = connect_column_peer(&mut mgr, &mut cap, 2, 2, now);
+        let mask1 = connect_column_peer(&mut mgr, &mut cap, 1, 1, 100_000, now);
+        let mask2 = connect_column_peer(&mut mgr, &mut cap, 2, 2, 100_000, now);
         // Custody is deterministic from node_id+cgc; these seeds must give
         // each peer columns the other lacks.
         assert_ne!(mask1 & !mask2, 0);
@@ -4193,7 +4217,7 @@ mod tests {
     fn colreq_error_concedes_to_by_root_after_attempts_cap() {
         let now = Instant::now();
         let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
-        let mask = connect_column_peer(&mut mgr, &mut cap, 1, 1, now);
+        let mask = connect_column_peer(&mut mgr, &mut cap, 1, 1, 100_000, now);
         mgr.custody_columns = mask;
         mgr.synced_through = 32;
 
@@ -4226,7 +4250,7 @@ mod tests {
     fn colreq_timeout_scores_peer_and_reissues() {
         let now = Instant::now();
         let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
-        let mask = connect_column_peer(&mut mgr, &mut cap, 1, 1, now);
+        let mask = connect_column_peer(&mut mgr, &mut cap, 1, 1, 100_000, now);
         mgr.custody_columns = mask;
         mgr.synced_through = 16;
 
@@ -4249,10 +4273,39 @@ mod tests {
     }
 
     #[test]
+    fn colreq_complete_capped_by_peer_head() {
+        // Tip wedge regression: a peer `Complete`s a range that extends past
+        // its claimed head. The watermark must only advance to the peer's
+        // head — the tail re-opens as the next range — or the uncovered
+        // columns would never be re-requested and the DA check would wedge
+        // the chain (observed live: head stuck at the serving peer's tip).
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let mask = connect_column_peer(&mut mgr, &mut cap, 1, 1, 100, now);
+        mgr.custody_columns = mask;
+        mgr.synced_through = 120; // blocks confirmed past the peer's head
+
+        mgr.maybe_issue_colreq(now, &mut |c| cap.0.push(c));
+        let req = mgr.col_syncreq.expect("range opened");
+        assert_eq!((req.start_slot, req.count), (1, 120));
+        let att = req.attempt.expect("attempt issued");
+
+        let mut req = req;
+        req.attempt = Some(ColAttempt { responded: true, delivered: true, ..att });
+        mgr.col_syncreq = Some(req);
+        mgr.maybe_issue_colreq(now, &mut |c| cap.0.push(c));
+
+        assert_eq!(mgr.columns_synced_through, 100, "watermark capped by peer head");
+        // Same sweep re-opened the tail [101, 120] and re-issued.
+        let req = mgr.col_syncreq.expect("tail range re-opened");
+        assert_eq!((req.start_slot, req.start_slot + req.count - 1), (101, 120));
+    }
+
+    #[test]
     fn colreq_paced_to_block_driver() {
         let now = Instant::now();
         let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
-        let mask = connect_column_peer(&mut mgr, &mut cap, 1, 1, now);
+        let mask = connect_column_peer(&mut mgr, &mut cap, 1, 1, 100_000, now);
         mgr.custody_columns = mask;
 
         // No block range requested or served → nothing to pair with.
@@ -4272,6 +4325,56 @@ mod tests {
         mgr.maybe_issue_colreq(now, &mut |c| cap.0.push(c));
         let req = mgr.col_syncreq.expect("paired range opened");
         assert_eq!((req.start_slot, req.count), (1, 128));
+    }
+
+    #[test]
+    fn syncreq_paused_when_column_fetch_stalls() {
+        // Block issuance must not outrun the column fetch: batches past the
+        // column watermark only buffer in BS awaiting DA. A stalled column
+        // watermark halts block batches; advancing it (delivery or concede)
+        // releases them.
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let target = [0xBB; 32];
+        set_snapshot(&mut mgr, 10, 320);
+        connect(&mut mgr, &mut cap, 1, 1, now);
+        send_status(&mut mgr, &mut cap, 1, make_status_v2(fork_a(), target, 20, [0; 32], 640));
+        let _ = mgr.maybe_emit_sync_target();
+
+        // We custody columns, but the column fetch is frozen at the start head
+        // (no column peer here, so `maybe_issue_colreq` never advances it).
+        mgr.custody_columns = (1u128 << 3) | (1u128 << 7);
+        mgr.columns_synced_through = 320;
+        let batch = mgr.syncing.max_blocks_by_range_batch;
+
+        // Drive block deliveries with the applied head kept level, isolating
+        // the column-coupling gate from the apply-lag gate.
+        mgr.maybe_issue_syncreq(now, &mut |c| cap.0.push(c));
+        let mut guard = 0;
+        while let Some(req) = mgr.inflight_syncreq {
+            let end = req.start_slot + req.count - 1;
+            let mut r = req;
+            r.delivered = true;
+            mgr.inflight_syncreq = Some(r);
+            mgr.set_local_head_imported(end); // apply keeps up; columns do not
+            // Free the slot the terminal response would (test bypasses that path).
+            mgr.peers.get_mut(&1).unwrap().outbound_in_flight
+                [StreamProtocol::BeaconBlocksByRange.ordinal() as usize] = 0;
+            mgr.maybe_issue_syncreq(now, &mut |c| cap.0.push(c));
+            guard += 1;
+            assert!(guard < 8, "block issuance never paused on stalled columns");
+        }
+        assert_eq!(mgr.columns_synced_through, 320, "columns never advanced here");
+        assert!(
+            mgr.synced_through <= mgr.columns_synced_through + 2 * batch,
+            "blocks ran to {} — more than one batch beyond the stalled column watermark",
+            mgr.synced_through
+        );
+
+        // Column watermark advances → block issuance resumes.
+        mgr.columns_synced_through = mgr.synced_through;
+        mgr.maybe_issue_syncreq(now, &mut |c| cap.0.push(c));
+        assert!(mgr.inflight_syncreq.is_some(), "blocks resume once columns catch up");
     }
 
     #[test]

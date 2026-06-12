@@ -221,6 +221,7 @@ impl PeerManager {
         columns: u128,
         request_id: u64,
         exclude: &FxHashSet<usize>,
+        min_head: u64,
     ) -> Option<(usize, u128)> {
         let is_backfill = RequestCategory::from_request_id(request_id).is_backfill();
         self.database
@@ -229,7 +230,15 @@ impl PeerManager {
                 if exclude.contains(&p) {
                     return None;
                 }
-
+                // By-range only: skip peers whose claimed head is below the
+                // range start (no status ⇒ head 0). Their `Complete` could
+                // not cover a single requested slot.
+                if min_head > 0 &&
+                    self.database.peer_status_bytes(p).map(StatusView::head_slot).unwrap_or(0) <
+                        min_head
+                {
+                    return None;
+                }
                 let peer = self.peers.get(&p)?;
 
                 let in_flight = peer.outbound_in_flight[protocol.ordinal() as usize];
@@ -667,6 +676,25 @@ impl PeerManager {
         if self.synced_through > local_head_slot + self.syncing.max_blocks_by_range_batch {
             return;
         }
+        // Couple block issuance to the column fetch.
+        if self.custody_columns != 0 &&
+            self.synced_through >
+                self.columns_synced_through + self.syncing.max_blocks_by_range_batch
+        {
+            if !self.col_stall_logged {
+                tracing::warn!(
+                    synced_through = self.synced_through,
+                    columns_synced_through = self.columns_synced_through,
+                    "block sync stalled on data columns: column fetch is more than one \
+                     batch behind; pausing block batches until it catches up"
+                );
+                self.col_stall_logged = true;
+            }
+            return;
+        }
+
+        self.col_stall_logged = false;
+
         let start_slot = next_base + 1;
         let remaining = target_end_slot.saturating_sub(next_base);
         let count = remaining.min(self.syncing.max_blocks_by_range_batch);
@@ -733,71 +761,85 @@ impl PeerManager {
         if self.custody_columns == 0 {
             return;
         }
+        self.resolve_colreq_attempt(now);
+        self.open_colreq_range();
+        self.issue_colreq_attempt(now, emit);
+    }
 
-        // Phase 1: resolve the active attempt off its terminator / timeout.
-        if let Some(mut req) = self.col_syncreq &&
-            let Some(att) = req.attempt
+    fn resolve_colreq_attempt(&mut self, now: Instant) {
+        let Some(mut req) = self.col_syncreq else { return };
+        let Some(att) = req.attempt else { return };
+
+        if att.delivered {
+            // `Complete` covers the overlap only up to the peer's claimed
+            // head — never claim slots past its tip. Under-capping on a stale
+            // Status is safe (re-fetch is idempotent); over-capping would skip
+            // real columns and wedge the DA check.
+            let peer_head = self
+                .database
+                .peer_status_bytes(att.peer_id)
+                .map(StatusView::head_slot)
+                .unwrap_or(0);
+            req.served_through = req.served_through.min(peer_head);
+            req.remaining &= !att.columns;
+            req.attempts = 0;
+            req.attempt = None;
+            if req.remaining == 0 {
+                let end = (req.start_slot + req.count - 1).min(req.served_through);
+                self.columns_synced_through = self.columns_synced_through.max(end);
+                self.col_tried_for_range.clear();
+                self.col_syncreq = None;
+            } else {
+                self.col_syncreq = Some(req);
+            }
+        } else if att.responded {
+            // Error terminator — peer already scored via
+            // `severity_for_error_response`. Re-issue elsewhere.
+            self.col_tried_for_range.insert(att.peer_id);
+            req.attempt = None;
+            self.col_syncreq = Some(req);
+        } else if now.saturating_duration_since(att.last_progress_at) >=
+            Duration::from_millis(self.syncing.inflight_progress_timeout_ms)
         {
-            if att.delivered {
-                req.remaining &= !att.columns;
-                req.attempts = 0;
-                req.attempt = None;
-                if req.remaining == 0 {
-                    self.columns_synced_through =
-                        self.columns_synced_through.max(req.start_slot + req.count - 1);
-                    self.col_tried_for_range.clear();
-                    self.col_syncreq = None;
-                } else {
-                    self.col_syncreq = Some(req);
-                }
-            } else if att.responded {
-                // Error terminator — peer already scored via
-                // `severity_for_error_response`. Re-issue elsewhere.
-                self.col_tried_for_range.insert(att.peer_id);
-                req.attempt = None;
-                self.col_syncreq = Some(req);
-            } else if now.saturating_duration_since(att.last_progress_at) >=
-                Duration::from_millis(self.syncing.inflight_progress_timeout_ms)
-            {
-                // No terminator and no sidecar chunk for a full timeout
-                // window: peer stall.
-                self.col_tried_for_range.insert(att.peer_id);
-                req.attempt = None;
-                self.col_syncreq = Some(req);
-                self.on_rpc_misbehaviour(att.peer_id, RpcSeverity::MidTolerance);
-            }
+            // No terminator and no sidecar chunk for a full timeout window:
+            // peer stall.
+            self.col_tried_for_range.insert(att.peer_id);
+            req.attempt = None;
+            self.col_syncreq = Some(req);
+            self.on_rpc_misbehaviour(att.peer_id, RpcSeverity::MidTolerance);
         }
+    }
 
-        // Phase 2: open the next range. Base includes the imported head —
-        // an imported head implies DA was satisfied below it.
-        if self.col_syncreq.is_none() {
-            let base = self.columns_synced_through.max(self.local_head_imported_slot);
-            let block_end = self.inflight_syncreq.map_or(0, |r| r.start_slot + r.count - 1);
-            let cap = self.synced_through.max(block_end);
-            if base >= cap {
-                return;
-            }
-            let count = (cap - base).min(self.syncing.max_blocks_by_range_batch);
-            self.col_tried_for_range.clear();
-            self.col_syncreq = Some(ColSyncReq {
-                start_slot: base + 1,
-                count,
-                remaining: self.custody_columns,
-                attempts: 0,
-                attempt: None,
-            });
-        }
-
-        // Phase 3: issue an attempt for the remainder.
-        let Some(mut req) = self.col_syncreq else {
+    fn open_colreq_range(&mut self) {
+        if self.col_syncreq.is_some() {
             return;
-        };
+        }
+        let base = self.columns_synced_through.max(self.local_head_imported_slot);
+        let block_end = self.inflight_syncreq.map_or(0, |r| r.start_slot + r.count - 1);
+        let cap = self.synced_through.max(block_end);
+        if base >= cap {
+            return;
+        }
+        let count = (cap - base).min(self.syncing.max_blocks_by_range_batch);
+        self.col_tried_for_range.clear();
+        self.col_syncreq = Some(ColSyncReq {
+            start_slot: base + 1,
+            count,
+            remaining: self.custody_columns,
+            attempts: 0,
+            served_through: u64::MAX,
+            attempt: None,
+        });
+    }
+
+    fn issue_colreq_attempt(&mut self, now: Instant, emit: &mut impl FnMut(PeerControl)) {
+        let Some(mut req) = self.col_syncreq else { return };
         if req.attempt.is_some() {
             return;
         }
         if req.attempts >= self.syncing.max_colreq_attempts {
-            // Concede: advance the watermark past the range; storage's
-            // by-root wheel picks up the stragglers as blocks land.
+            // Concede: advance the watermark past the range; storage's by-root
+            // wheel picks up the stragglers as blocks land.
             tracing::debug!(
                 start_slot = req.start_slot,
                 count = req.count,
@@ -817,6 +859,7 @@ impl PeerManager {
             req.remaining,
             app_id,
             &self.col_tried_for_range,
+            req.start_slot,
         ) {
             Some((peer, overlap)) => {
                 // Request only the overlap: the responder omits columns it
@@ -957,6 +1000,7 @@ impl PeerManager {
                 remaining,
                 request_id,
                 &FxHashSet::default(),
+                0,
             ) else {
                 tracing::debug!("no peer has data columns: {remaining}");
                 break;

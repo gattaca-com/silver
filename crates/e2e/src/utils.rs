@@ -265,13 +265,31 @@ impl PmBsHarness {
     }
 
     /// Assert the next `BlocksByRange` request matches `expected = (start,
-    /// count)`, feed all `blocks`, and pump BS once.
+    /// count)`, mark data columns available, feed all `blocks`, and pump BS.
     pub fn drive_batch(&mut self, expected: (u64, u64), blocks: &[Vec<u8>]) {
         let (start, count, peer) = self.next_range_request();
         assert_eq!((start, count, peer), (expected.0, expected.1, SYNTH_PEER_CONN_ID));
+        // DA events first so blob-carrying blocks aren't held in
+        // dc_pending_blocks (same ordering as perf::replay).
+        for sig in blocks.iter().filter_map(|b| data_columns_available(b)) {
+            self.emit_data_columns_available(sig);
+        }
+        self.pump_bs();
         for b in blocks {
             self.inject_block(start, b);
         }
+        // Stream terminator: SyncReq completion is terminator-driven, so PM
+        // won't issue the next batch without it.
+        self.inj_a.produce(RpcInbound::Response(RpcResponseInbound {
+            application_id: start,
+            stream_id: P2pStreamId::new(
+                SYNTH_PEER_CONN_ID,
+                0,
+                StreamProtocol::BeaconBlocksByRange,
+                true,
+            ),
+            response: RpcResponse::Complete,
+        }));
         self.pump_bs();
     }
 
