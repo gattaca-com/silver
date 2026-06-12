@@ -125,6 +125,10 @@ impl StorageTile {
             return;
         }
 
+        if SignedBeaconBlockView::slot(buffer) <= self.store.finalized_slot() {
+            return;
+        }
+
         let block_root = util::block_root(buffer);
 
         if self.outstanding_requests.contains(&block_root) {
@@ -270,17 +274,17 @@ impl StorageTile {
         };
 
         if !above_finalized {
-            tracing::warn!(?stream_id, "sidecar slot at or below finalized");
-            return Some((block_root, column_bitmask));
+            tracing::debug!(?stream_id, "sidecar slot at or below finalized — ignoring");
+            return None;
         }
         if !parent_validated {
-            tracing::warn!(
+            tracing::debug!(
                 ?stream_id,
                 block_slot,
                 parent_root = hex::encode(parent_root),
-                "sidecar parent_root not in validated set"
+                "sidecar parent_root not yet validated — ignoring (not penalized)"
             );
-            return Some((block_root, column_bitmask));
+            return None;
         }
         if !proposer_matches {
             tracing::warn!(?stream_id, "sidecar proposer_index mismatch");

@@ -468,6 +468,10 @@ impl Store {
         self.head_slot
     }
 
+    pub(super) fn finalized_slot(&self) -> u64 {
+        self.finalized_slot
+    }
+
     pub(super) fn head_root(&self) -> &[u8; 32] {
         &self.head_root
     }

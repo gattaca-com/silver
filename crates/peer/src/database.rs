@@ -1,6 +1,7 @@
 use fxhash::{FxHashMap, FxHashSet};
 use silver_common::{
-    ALL_PROTOCOLS, Enr, Identify, NodeId, PeerId, PeerStatus, StreamProtocol,
+    ALL_PROTOCOLS, Enr, Identify, NUMBER_OF_CUSTODY_GROUPS, NodeId, PeerId, PeerStatus,
+    StreamProtocol,
     ssz_view::{METADATA_SIZE, MetadataView},
 };
 use slab::Slab;
@@ -146,14 +147,24 @@ impl PeerDatabase {
     }
 
     pub fn data_column_custody_groups_intersection(&self, peer: usize, columns: u128) -> u128 {
-        let custody_groups = self
-            .by_p2p_id
-            .get(&peer)
-            .and_then(|idx| self.peers.get(*idx))
-            .and_then(|r| r.node_id.zip(r.enr.as_ref().and_then(|enr| enr.cgc())))
-            .map(|(id, count)| id.custody_groups(count as u8))
-            .unwrap_or_default();
-        custody_groups & columns
+        let Some(record) = self.by_p2p_id.get(&peer).and_then(|idx| self.peers.get(*idx)) else {
+            return 0;
+        };
+
+        let Some(node_id) = record.node_id else {
+            return 0;
+        };
+        // Count: take the larger of the ENR `cgc` and the MetaData v3
+        // `custody_group_count`. A node promoted to supernode (e.g. by validator
+        // count) bumps its MetaData cgc immediately but can carry a stale lower
+        // `cgc` in its ENR.
+        let enr_cgc = record.enr.as_ref().and_then(|enr| enr.cgc()).unwrap_or(0);
+        let meta_cgc = record.metadata.as_ref().map(MetadataView::custody_group_count).unwrap_or(0);
+        let count = enr_cgc.max(meta_cgc).min(NUMBER_OF_CUSTODY_GROUPS as u64) as u8;
+        if count == 0 {
+            return 0;
+        }
+        node_id.custody_groups(count) & columns
     }
 
     /// Live connection ids whose identify advertises `protocol`. A peer is
