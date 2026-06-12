@@ -151,7 +151,9 @@ impl StorageTile {
             "data columns by root request: {to_request:b}"
         );
 
-        emit(self.column_request(block_root, to_request));
+        if self.store.is_synced() {
+            emit(self.column_request(block_root, to_request));
+        }
     }
 
     #[timed]
@@ -347,7 +349,7 @@ impl Tile<SilverSpine> for StorageTile {
 
         // Check for data columns and incoming blocks with data columns via gossip.
         adapter.consume(|gossip: NewGossipMsg, producers| match gossip.topic {
-            silver_common::GossipTopic::BeaconBlock if self.store.is_synced() => {
+            silver_common::GossipTopic::BeaconBlock => {
                 let t_read = self.gossip_consumer.acquire(gossip.ssz);
                 self.beacon_block(gossip.stream_id, t_read, &mut |evt| {
                     producers.peer_events.produce(&evt.into());
@@ -392,7 +394,7 @@ impl Tile<SilverSpine> for StorageTile {
                     let t_read = self.rpc_consumer.acquire(ssz);
                     self.store.backfill_block(t_read);
                 }
-                silver_common::RpcResponse::BeaconBlock { fork_digest: _, ssz } if self.store.is_synced() => {
+                silver_common::RpcResponse::BeaconBlock { fork_digest: _, ssz } => {
                     let t_read = self.rpc_consumer.acquire(ssz);
                     self.beacon_block(rsp.stream_id, t_read, &mut |evt| {
                         producers.peer_events.produce(&evt.into());
