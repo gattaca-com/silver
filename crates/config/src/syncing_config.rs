@@ -48,6 +48,11 @@ pub struct SyncingConfig {
     /// without false positives.
     #[serde(default = "default_u64::<15000>")]
     pub inflight_progress_timeout_ms: u64,
+    /// Consecutive failed `DataColumnsByRange` attempts (error terminator
+    /// or progress timeout) on one catch-up range before its remainder is
+    /// conceded to the by-root straggler fallback.
+    #[serde(default = "default_u64::<3>")]
+    pub max_colreq_attempts: u64,
 }
 
 impl Default for SyncingConfig {
@@ -60,6 +65,7 @@ impl Default for SyncingConfig {
             slots_per_epoch: 32,
             max_blocks_by_range_batch: 128,
             inflight_progress_timeout_ms: 15_000,
+            max_colreq_attempts: 3,
         }
     }
 }

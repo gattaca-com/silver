@@ -13,6 +13,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use fxhash::FxHashSet;
 use silver_common::{
     BASE_REQUEST_ID, P2pSend, PeerControl, PeerEvent, PeerStatus, RequestCategory, RpcInbound,
     RpcOutbound, RpcRequest, RpcRequestInbound, RpcRequestOutbound, RpcResponse,
@@ -20,7 +21,10 @@ use silver_common::{
     ssz_view::{BLOCKS_BY_RANGE_REQ_SIZE, DC_BY_RANGE_REQ_MAX, MetadataView, StatusView},
 };
 
-use crate::{PeerManager, manager::SyncReq};
+use crate::{
+    PeerManager,
+    manager::{ColAttempt, ColSyncReq, SyncReq},
+};
 
 /// Per-peer cap on outstanding RPC requests per protocol. Bounds load on any
 /// single peer and keeps fan-out useful when many ranges are pending.
@@ -216,12 +220,16 @@ impl PeerManager {
         protocol: StreamProtocol,
         columns: u128,
         request_id: u64,
-        slot: Option<u64>,
+        exclude: &FxHashSet<usize>,
     ) -> Option<(usize, u128)> {
         let is_backfill = RequestCategory::from_request_id(request_id).is_backfill();
         self.database
             .live_peers_supporting(protocol)
             .filter_map(|p| {
+                if exclude.contains(&p) {
+                    return None;
+                }
+
                 let peer = self.peers.get(&p)?;
 
                 let in_flight = peer.outbound_in_flight[protocol.ordinal() as usize];
@@ -241,11 +249,14 @@ impl PeerManager {
                     return None;
                 }
 
-                if let Some(slot) = slot &&
-                    let Some(earliest) = self.database.earliest_available_slot(p) &&
-                    slot < earliest
+                if let Some(earliest) = self.database.earliest_available_slot(p) &&
+                    self.local_head_imported_slot < earliest
                 {
-                    tracing::warn!(slot, earliest, "slot out of bounds");
+                    tracing::warn!(
+                        slot = self.local_head_imported_slot,
+                        earliest,
+                        "slot out of bounds"
+                    );
                     return None;
                 }
 
@@ -533,6 +544,22 @@ impl PeerManager {
                         req.delivered |= completed_ok;
                     }
                 }
+                // Column catch-up correlation: sidecar chunks bump progress,
+                // terminators resolve the attempt (swept by
+                // `maybe_issue_colreq`).
+                if stream_id.protocol() == StreamProtocol::DataColumnSidecarsByRange &&
+                    let Some(req) = self.col_syncreq.as_mut() &&
+                    let Some(att) = req.attempt.as_mut() &&
+                    att.peer_id == stream_id.peer() &&
+                    application_id == (BASE_REQUEST_ID | req.start_slot)
+                {
+                    if terminal_protocol.is_some() {
+                        att.responded = true;
+                        att.delivered |= completed_ok;
+                    } else {
+                        att.last_progress_at = now;
+                    }
+                }
             }
         }
     }
@@ -553,6 +580,12 @@ impl PeerManager {
     ///    BlocksByRange capacity, build the SSZ request, emit it, and set
     ///    `inflight_syncreq`.
     pub fn maybe_issue_syncreq(&mut self, now: Instant, emit: &mut impl FnMut(PeerControl)) {
+        // Columns first, unconditionally: the early returns below (flow
+        // control, target reached) must not starve the column driver —
+        // with the DA check, missing columns are exactly what stalls the
+        // applied head that those returns key off.
+        self.maybe_issue_colreq(now, emit);
+
         let head_slot = self.local_head_imported_slot;
 
         // Phase 1 + 2: completion (terminator-driven) / progress / timeout.
@@ -685,63 +718,158 @@ impl PeerManager {
             responded: false,
             delivered: false,
         });
+    }
 
-        // Pair a best-effort data-column-by-range fetch over our custody set
-        // for the same range, from the peer with the largest custody overlap.
-        // Paced by the block watermark; no separate retry. Columns the peer
-        // can't serve fall to the by-root straggler fallback. `BASE_REQUEST_ID`
-        // routes the response to storage's live `data_columns` path.
-        if self.custody_columns != 0 {
-            let col_app_id = BASE_REQUEST_ID | local_head_slot;
-            match self.best_peer_for_data_columns(
-                StreamProtocol::DataColumnSidecarsByRange,
-                self.custody_columns,
-                col_app_id,
-                Some(local_head_slot),
-            ) {
-                Some((col_peer, overlap)) => {
-                    tracing::info!(
-                        col_peer,
-                        local_head_slot,
-                        count,
-                        custody = self.custody_columns,
-                        overlap,
-                        "issuing DataColumnsByRange"
-                    );
-                    let (ssz, len) = Self::data_columns_by_range_ssz(
-                        local_head_slot,
-                        count,
-                        self.custody_columns,
-                    );
-                    if let Some(peer) = self.peers.get_mut(&col_peer) {
-                        peer.outbound_in_flight
-                            [StreamProtocol::DataColumnSidecarsByRange.ordinal() as usize] += 1;
-                    }
-                    emit(PeerControl::P2pSend(P2pSend::Rpc(RpcOutbound::Request(
-                        RpcRequestOutbound {
-                            application_id: col_app_id,
-                            peer: col_peer,
-                            request: RpcRequest::DataColumnsByRange { ssz, len },
-                        },
-                    ))));
+    /// Drive the PM-owned catch-up `DataColumnsByRange` lifecycle: one
+    /// range over our custody set, one peer attempt at a time. `remaining`
+    /// shrinks as attempts deliver (`Complete` covers the claimed-custody
+    /// overlap that was requested); an error terminator or progress
+    /// timeout marks the peer tried and re-issues the remainder elsewhere.
+    /// After `max_colreq_attempts` consecutive failures the remainder is
+    /// conceded to storage's by-root straggler wheel. Paced to the block
+    /// driver: never requests columns past
+    /// `max(synced_through, inflight block range end)`.
+    pub(crate) fn maybe_issue_colreq(&mut self, now: Instant, emit: &mut impl FnMut(PeerControl)) {
+        if self.custody_columns == 0 {
+            return;
+        }
+
+        // Phase 1: resolve the active attempt off its terminator / timeout.
+        if let Some(mut req) = self.col_syncreq &&
+            let Some(att) = req.attempt
+        {
+            if att.delivered {
+                req.remaining &= !att.columns;
+                req.attempts = 0;
+                req.attempt = None;
+                if req.remaining == 0 {
+                    self.columns_synced_through =
+                        self.columns_synced_through.max(req.start_slot + req.count - 1);
+                    self.col_tried_for_range.clear();
+                    self.col_syncreq = None;
+                } else {
+                    self.col_syncreq = Some(req);
                 }
-                None => {
-                    // No peer to serve our custody columns by range — sync
-                    // falls back to the by-root wheel.
-                    tracing::debug!(
-                        start_slot,
-                        count,
-                        custody = self.custody_columns,
-                        supporting = self
-                            .database
-                            .live_peers_supporting(StreamProtocol::DataColumnSidecarsByRange)
-                            .count(),
-                        "no peer for DataColumnsByRange"
-                    );
-                }
+            } else if att.responded {
+                // Error terminator — peer already scored via
+                // `severity_for_error_response`. Re-issue elsewhere.
+                self.col_tried_for_range.insert(att.peer_id);
+                req.attempt = None;
+                self.col_syncreq = Some(req);
+            } else if now.saturating_duration_since(att.last_progress_at) >=
+                Duration::from_millis(self.syncing.inflight_progress_timeout_ms)
+            {
+                // No terminator and no sidecar chunk for a full timeout
+                // window: peer stall.
+                self.col_tried_for_range.insert(att.peer_id);
+                req.attempt = None;
+                self.col_syncreq = Some(req);
+                self.on_rpc_misbehaviour(att.peer_id, RpcSeverity::MidTolerance);
             }
-        } else {
-            tracing::debug!("custody_columns is 0 — no by-range column fetch");
+        }
+
+        // Phase 2: open the next range. Base includes the imported head —
+        // an imported head implies DA was satisfied below it.
+        if self.col_syncreq.is_none() {
+            let base = self.columns_synced_through.max(self.local_head_imported_slot);
+            let block_end = self.inflight_syncreq.map_or(0, |r| r.start_slot + r.count - 1);
+            let cap = self.synced_through.max(block_end);
+            if base >= cap {
+                return;
+            }
+            let count = (cap - base).min(self.syncing.max_blocks_by_range_batch);
+            self.col_tried_for_range.clear();
+            self.col_syncreq = Some(ColSyncReq {
+                start_slot: base + 1,
+                count,
+                remaining: self.custody_columns,
+                attempts: 0,
+                attempt: None,
+            });
+        }
+
+        // Phase 3: issue an attempt for the remainder.
+        let Some(mut req) = self.col_syncreq else {
+            return;
+        };
+        if req.attempt.is_some() {
+            return;
+        }
+        if req.attempts >= self.syncing.max_colreq_attempts {
+            // Concede: advance the watermark past the range; storage's
+            // by-root wheel picks up the stragglers as blocks land.
+            tracing::debug!(
+                start_slot = req.start_slot,
+                count = req.count,
+                remaining = req.remaining,
+                "colreq attempts exhausted; remainder conceded to by-root"
+            );
+            self.columns_synced_through =
+                self.columns_synced_through.max(req.start_slot + req.count - 1);
+            self.col_tried_for_range.clear();
+            self.col_syncreq = None;
+            return;
+        }
+
+        let app_id = BASE_REQUEST_ID | req.start_slot;
+        match self.best_peer_for_data_columns(
+            StreamProtocol::DataColumnSidecarsByRange,
+            req.remaining,
+            app_id,
+            &self.col_tried_for_range,
+        ) {
+            Some((peer, overlap)) => {
+                // Request only the overlap: the responder omits columns it
+                // doesn't custody, so `Complete` then implies coverage of
+                // exactly `overlap`.
+                let (ssz, len) =
+                    Self::data_columns_by_range_ssz(req.start_slot, req.count, overlap);
+                if let Some(p) = self.peers.get_mut(&peer) {
+                    p.outbound_in_flight
+                        [StreamProtocol::DataColumnSidecarsByRange.ordinal() as usize] += 1;
+                }
+                tracing::debug!(
+                    peer,
+                    start_slot = req.start_slot,
+                    count = req.count,
+                    overlap,
+                    remaining = req.remaining,
+                    attempts = req.attempts,
+                    "issuing DataColumnsByRange"
+                );
+                emit(PeerControl::P2pSend(P2pSend::Rpc(RpcOutbound::Request(
+                    RpcRequestOutbound {
+                        application_id: app_id,
+                        peer,
+                        request: RpcRequest::DataColumnsByRange { ssz, len },
+                    },
+                ))));
+                req.attempts += 1;
+                req.attempt = Some(ColAttempt {
+                    peer_id: peer,
+                    columns: overlap,
+                    last_progress_at: now,
+                    responded: false,
+                    delivered: false,
+                });
+                self.col_syncreq = Some(req);
+            }
+            None => {
+                // No eligible peer. If some were skipped as tried, allow
+                // re-picks next tick; `attempts` still bounds the range.
+                if !self.col_tried_for_range.is_empty() {
+                    self.col_tried_for_range.clear();
+                }
+                tracing::debug!(
+                    start_slot = req.start_slot,
+                    remaining = req.remaining,
+                    supporting = self
+                        .database
+                        .live_peers_supporting(StreamProtocol::DataColumnSidecarsByRange)
+                        .count(),
+                    "no peer for DataColumnsByRange; retrying next tick"
+                );
+            }
         }
     }
 
@@ -828,7 +956,7 @@ impl PeerManager {
                 StreamProtocol::DataColumnSidecarsByRoot,
                 remaining,
                 request_id,
-                None,
+                &FxHashSet::default(),
             ) else {
                 tracing::debug!("no peer has data columns: {remaining}");
                 break;
