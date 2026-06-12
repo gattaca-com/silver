@@ -326,6 +326,7 @@ impl PeerManager {
             ssz[84..].copy_from_slice(&self.earliest_available_slot.to_le_bytes());
         }
 
+        tracing::info!("set status");
         self.status = Some(ssz);
         self.target_dirty = true;
     }
@@ -1519,7 +1520,8 @@ impl PeerManager {
         }
         let head_slot = StatusView::head_slot(buf);
         let head_root = *StatusView::head_root(buf);
-        self.database.p2p_status(p2p_peer, status_ssz);
+        let earliest_slot = StatusView::earliest_available_slot(buf);
+        self.database.p2p_status(p2p_peer, status_ssz, earliest_slot);
         self.agg_add(finalized_epoch, finalized_root, head_root, head_slot);
         self.target_dirty = true;
     }

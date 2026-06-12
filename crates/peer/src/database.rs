@@ -101,9 +101,10 @@ impl PeerDatabase {
         self.by_p2p_id.remove(&p2p_id);
     }
 
-    pub fn p2p_status(&mut self, p2p_id: usize, status: PeerStatus) {
+    pub fn p2p_status(&mut self, p2p_id: usize, status: PeerStatus, earliest_slot: Option<u64>) {
         if let Some(record) = self.by_p2p_id.get(&p2p_id).and_then(|idx| self.peers.get_mut(*idx)) {
             record.status.replace(status);
+            record.earliest_slot = earliest_slot;
         }
     }
 
@@ -135,6 +136,10 @@ impl PeerDatabase {
             .and_then(|idx| self.peers.get(*idx))
             .and_then(|record| record.metadata.as_ref())
             .map(MetadataView::seq_number)
+    }
+
+    pub fn earliest_available_slot(&self, p2p_id: usize) -> Option<u64> {
+        self.by_p2p_id.get(&p2p_id).and_then(|idx| self.peers.get(*idx)).and_then(|r| r.earliest_slot)
     }
 
     pub fn data_column_custody_groups_intersection(&self, peer: usize, columns: u128) -> u128 {
@@ -180,6 +185,7 @@ pub struct PeerRecord {
     pub enr: Option<Enr>,
     /// Latest peer status
     pub status: Option<PeerStatus>,
+    pub earliest_slot: Option<u64>,
     /// Latest peer metadata
     pub metadata: Option<[u8; METADATA_SIZE]>,
     /// Identify record
