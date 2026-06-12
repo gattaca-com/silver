@@ -349,7 +349,7 @@ impl Tile<SilverSpine> for StorageTile {
 
         // Check for data columns and incoming blocks with data columns via gossip.
         adapter.consume(|gossip: NewGossipMsg, producers| match gossip.topic {
-            silver_common::GossipTopic::BeaconBlock => {
+            silver_common::GossipTopic::BeaconBlock if self.store.is_synced() => {
                 let t_read = self.gossip_consumer.acquire(gossip.ssz);
                 self.beacon_block(gossip.stream_id, t_read, &mut |evt| {
                     producers.peer_events.produce(&evt.into());
