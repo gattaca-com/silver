@@ -198,7 +198,7 @@ impl PeerManager {
     ///   `MAX_RPC_PROTOCOL_IN_FLIGHT`,
     /// - peer's custody set intersects `columns` (otherwise the peer has
     ///   nothing to serve),
-    /// - `slot` is within the peer's 'earliest available slot'.  
+    /// - `slot` is within the peer's 'earliest available slot'.
     ///
     /// Among eligible peers, ranks lexicographically by
     /// `(overlap_count desc, rpc_score desc)` — preferring peers that
@@ -223,7 +223,7 @@ impl PeerManager {
             .live_peers_supporting(protocol)
             .filter_map(|p| {
                 let peer = self.peers.get(&p)?;
-                
+
                 let in_flight = peer.outbound_in_flight[protocol.ordinal() as usize];
                 let max_in_flight = if is_backfill {
                     MAX_RPC_PROTOCOL_IN_FLIGHT / 2
@@ -241,7 +241,10 @@ impl PeerManager {
                     return None;
                 }
 
-                if let Some(slot) = slot && let Some(earliest) = self.database.earliest_available_slot(p) && slot < earliest {
+                if let Some(slot) = slot &&
+                    let Some(earliest) = self.database.earliest_available_slot(p) &&
+                    slot < earliest
+                {
                     tracing::warn!(slot, earliest, "slot out of bounds");
                     return None;
                 }
@@ -640,7 +643,7 @@ impl PeerManager {
 
         let Some(peer_id) = self.pick_sync_peer() else {
             // Keep the pin; self-heals when an in-flight slot frees or a backer drops.
-            tracing::info!(
+            tracing::debug!(
                 target = ?self.current_sync_target(),
                 live_peers = self.database.iter_live_status_bytes().count(),
                 "no issuable sync peer this iteration; keeping pin"
@@ -705,8 +708,11 @@ impl PeerManager {
                         overlap,
                         "issuing DataColumnsByRange"
                     );
-                    let (ssz, len) =
-                        Self::data_columns_by_range_ssz(local_head_slot, count, self.custody_columns);
+                    let (ssz, len) = Self::data_columns_by_range_ssz(
+                        local_head_slot,
+                        count,
+                        self.custody_columns,
+                    );
                     if let Some(peer) = self.peers.get_mut(&col_peer) {
                         peer.outbound_in_flight
                             [StreamProtocol::DataColumnSidecarsByRange.ordinal() as usize] += 1;

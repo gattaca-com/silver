@@ -139,7 +139,10 @@ impl PeerDatabase {
     }
 
     pub fn earliest_available_slot(&self, p2p_id: usize) -> Option<u64> {
-        self.by_p2p_id.get(&p2p_id).and_then(|idx| self.peers.get(*idx)).and_then(|r| r.earliest_slot)
+        self.by_p2p_id
+            .get(&p2p_id)
+            .and_then(|idx| self.peers.get(*idx))
+            .and_then(|r| r.earliest_slot)
     }
 
     pub fn data_column_custody_groups_intersection(&self, peer: usize, columns: u128) -> u128 {
