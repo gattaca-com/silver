@@ -106,9 +106,12 @@ pub fn alloc_incoming_rpc(
     Ok(RpcReservation { inbound, offset: 0, tcache })
 }
 
-pub fn alloc_error_response(error: u8) -> RpcReservation {
+/// `length` is the chunk's varint payload length — the decoded error
+/// message lands in `msg`, capped at the spec's 256-byte ErrorMessage
+/// limit.
+pub fn alloc_error_response(error: u8, length: usize) -> RpcReservation {
     RpcReservation {
-        inbound: Rpc::Response(RpcResponse::Error { error, msg: [0u8; 256], len: 0 }),
+        inbound: Rpc::Response(RpcResponse::Error { error, msg: [0u8; 256], len: length.min(256) }),
         offset: 0,
         tcache: None,
     }

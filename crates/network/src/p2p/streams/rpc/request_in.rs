@@ -97,14 +97,13 @@ impl RpcReadRequest {
                     Err(e) => return Err(e.into()),
                 };
 
-                // write any remaining bytes to decoder -> output
+                // Decode any body bytes read along with the prefix. Output
+                // must be the full remaining buffer — see response_in.
                 let mut remaining = length;
                 if buf_end > buf_start {
-                    let len = buf_end - buf_start;
                     let out_buf = reservation.remaining_buffer()?;
-                    let out_limit = len.min(out_buf.len());
                     let (_, decoded_bytes) =
-                        decoder.decompress(&buf[buf_start..buf_end], &mut out_buf[..out_limit])?;
+                        decoder.decompress(&buf[buf_start..buf_end], out_buf)?;
 
                     reservation.increment_offset(decoded_bytes)?;
                     remaining -= decoded_bytes;

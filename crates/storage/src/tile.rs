@@ -143,14 +143,15 @@ impl StorageTile {
         if to_request == 0 {
             return;
         }
+
         self.outstanding_requests.insert(block_root, (to_request, to_request, MAX_RETRIES));
         tracing::trace!(
             block = hex::encode(block_root),
             ?stream_id,
             "data columns by root request: {to_request:b}"
         );
-        // While syncing, RPC-delivered blocks get their columns by range.
-        if self.store.is_synced() || stream_id.protocol() == StreamProtocol::GossipSub {
+
+        if self.store.is_synced() {
             emit(self.column_request(block_root, to_request));
         }
     }
@@ -233,6 +234,7 @@ impl StorageTile {
                     buffer,
                     v.slot.finalized_block_roots(),
                     v.slot.delta_block_roots(),
+                    self.store.head_root(),
                 );
                 let is_above_finalized =
                     util::is_above_finalized(buffer, v.epoch.state().finalized_checkpoint.epoch);
@@ -320,7 +322,7 @@ impl StorageTile {
         if validated & completion_check == completion_check {
             // have all validated data columns for the block.
             StorageCounters::DataColumnsAvailableEmitted.inc();
-            tracing::debug!(
+            tracing::info!(
                 block = hex::encode(block_root),
                 slot,
                 "DataColumnsAvailable: custody set complete"
@@ -347,7 +349,7 @@ impl Tile<SilverSpine> for StorageTile {
 
         // Check for data columns and incoming blocks with data columns via gossip.
         adapter.consume(|gossip: NewGossipMsg, producers| match gossip.topic {
-            silver_common::GossipTopic::BeaconBlock => {
+            silver_common::GossipTopic::BeaconBlock if self.store.is_synced() => {
                 let t_read = self.gossip_consumer.acquire(gossip.ssz);
                 self.beacon_block(gossip.stream_id, t_read, &mut |evt| {
                     producers.peer_events.produce(&evt.into());

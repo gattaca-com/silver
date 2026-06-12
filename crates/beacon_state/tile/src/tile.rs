@@ -1026,6 +1026,8 @@ impl BeaconStateTile {
                 let acquired = self.rpc_consumer.acquire(ssz);
                 if let Some(p) = acquired.buffer().ok().map(|(d, _)| d as *const [u8]) {
                     self.handle_rpc_block(stream_id, unsafe { &*p }, acquired, producers);
+                } else {
+                    tracing::error!("failed to acquire buffer for pending replay");
                 }
             }
         }

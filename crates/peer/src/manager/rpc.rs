@@ -197,7 +197,8 @@ impl PeerManager {
     /// - outbound in-flight on `protocol` is strictly below
     ///   `MAX_RPC_PROTOCOL_IN_FLIGHT`,
     /// - peer's custody set intersects `columns` (otherwise the peer has
-    ///   nothing to serve).
+    ///   nothing to serve),
+    /// - `slot` is within the peer's 'earliest available slot'.
     ///
     /// Among eligible peers, ranks lexicographically by
     /// `(overlap_count desc, rpc_score desc)` — preferring peers that
@@ -215,12 +216,14 @@ impl PeerManager {
         protocol: StreamProtocol,
         columns: u128,
         request_id: u64,
+        slot: Option<u64>,
     ) -> Option<(usize, u128)> {
         let is_backfill = RequestCategory::from_request_id(request_id).is_backfill();
         self.database
             .live_peers_supporting(protocol)
             .filter_map(|p| {
                 let peer = self.peers.get(&p)?;
+
                 let in_flight = peer.outbound_in_flight[protocol.ordinal() as usize];
                 let max_in_flight = if is_backfill {
                     MAX_RPC_PROTOCOL_IN_FLIGHT / 2
@@ -237,6 +240,15 @@ impl PeerManager {
                     );
                     return None;
                 }
+
+                if let Some(slot) = slot &&
+                    let Some(earliest) = self.database.earliest_available_slot(p) &&
+                    slot < earliest
+                {
+                    tracing::warn!(slot, earliest, "slot out of bounds");
+                    return None;
+                }
+
                 let overlap = self.database.data_column_custody_groups_intersection(p, columns);
                 tracing::debug!(peer = p, overlap, columns, "peer data columns overlap");
                 if overlap == 0 {
@@ -680,23 +692,27 @@ impl PeerManager {
         // can't serve fall to the by-root straggler fallback. `BASE_REQUEST_ID`
         // routes the response to storage's live `data_columns` path.
         if self.custody_columns != 0 {
-            let col_app_id = BASE_REQUEST_ID | start_slot;
+            let col_app_id = BASE_REQUEST_ID | local_head_slot;
             match self.best_peer_for_data_columns(
                 StreamProtocol::DataColumnSidecarsByRange,
                 self.custody_columns,
                 col_app_id,
+                Some(local_head_slot),
             ) {
                 Some((col_peer, overlap)) => {
-                    tracing::debug!(
+                    tracing::info!(
                         col_peer,
-                        start_slot,
+                        local_head_slot,
                         count,
                         custody = self.custody_columns,
                         overlap,
                         "issuing DataColumnsByRange"
                     );
-                    let (ssz, len) =
-                        Self::data_columns_by_range_ssz(start_slot, count, self.custody_columns);
+                    let (ssz, len) = Self::data_columns_by_range_ssz(
+                        local_head_slot,
+                        count,
+                        self.custody_columns,
+                    );
                     if let Some(peer) = self.peers.get_mut(&col_peer) {
                         peer.outbound_in_flight
                             [StreamProtocol::DataColumnSidecarsByRange.ordinal() as usize] += 1;
@@ -812,6 +828,7 @@ impl PeerManager {
                 StreamProtocol::DataColumnSidecarsByRoot,
                 remaining,
                 request_id,
+                None,
             ) else {
                 tracing::debug!("no peer has data columns: {remaining}");
                 break;

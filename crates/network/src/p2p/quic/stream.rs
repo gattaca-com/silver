@@ -34,11 +34,21 @@ impl<'a> StreamIo for StreamIoImpl<'a> {
                     offset += len;
                 }
                 Ok(None) => {
-                    // strem complete
-                    return Err(StreamError::StreamEOF);
+                    // Stream finished. Bytes already copied were consumed
+                    // from quinn's reassembly buffer — erroring here would
+                    // drop them. Deliver them; EOF surfaces on the next
+                    // call (offset == 0).
+                    if offset == 0 {
+                        let _ = chunks.finalize();
+                        return Err(StreamError::StreamEOF);
+                    }
+                    break;
                 }
                 Err(quinn_proto::ReadError::Blocked) => break,
-                Err(e) => return Err(e.into()),
+                Err(e) => {
+                    let _ = chunks.finalize();
+                    return Err(e.into());
+                }
             }
         }
         let _ = chunks.finalize();
