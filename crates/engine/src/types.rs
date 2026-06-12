@@ -269,20 +269,20 @@ pub(crate) fn write_new_payload_params(
     }
     let execution_payload_offset: usize =
         BeaconBlockBodyView::execution_payload_offset(body) as usize;
-    let bls_to_execution_payload: usize =
+    let bls_to_execution_changes: usize =
         BeaconBlockBodyView::bls_to_execution_changes_offset(body) as usize;
     let blob_kzg_off: usize = BeaconBlockBodyView::blob_kzg_commitments_offset(body) as usize;
     let execution_requests_offset: usize =
         BeaconBlockBodyView::execution_requests_offset(body) as usize;
     if execution_payload_offset < BEACON_BLOCK_BODY_FIXED ||
-        bls_to_execution_payload < execution_payload_offset ||
-        blob_kzg_off < bls_to_execution_payload ||
+        bls_to_execution_changes < execution_payload_offset ||
+        blob_kzg_off < bls_to_execution_changes ||
         execution_requests_offset < blob_kzg_off ||
         body.len() < execution_requests_offset
     {
         return Err(crate::EngineError::Ssz("invalid body variable offsets".into()));
     }
-    let execution_payload = &body[execution_payload_offset..bls_to_execution_payload];
+    let execution_payload = &body[execution_payload_offset..bls_to_execution_changes];
     if execution_payload.len() < PAYLOAD_FIXED_LEN {
         return Err(crate::EngineError::Ssz(format!(
             "execution_payload too short: {} < {PAYLOAD_FIXED_LEN}",
@@ -349,6 +349,11 @@ pub(crate) fn write_new_payload_params(
     // blob_kzg_data is a flat list of 48-byte KZG commitments (no SSZ list offsets,
     // because each element is fixed-size, so SSZ encodes it as a plain
     // concatenation).
+    if !blob_kzg_data.len().is_multiple_of(48) {
+        return Err(crate::EngineError::Ssz(
+            "blob_kzg_commitments length not multiple of 48".into(),
+        ));
+    }
     out.extend_from_slice(b",[");
     for (i, commitment) in blob_kzg_data.chunks(48).enumerate() {
         use sha2::{Digest, Sha256};
@@ -775,9 +780,12 @@ mod tests {
     use super::*;
 
     const SAMPLE_PAYLOAD_SSZ: &[u8] = include_bytes!("../testdata/sample_payload.ssz");
-    const SAMPLE_PAYLOAD_SSZ_SNAPPY: &[u8] = include_bytes!(
-        "/home/owen/code/rust/silver/crates/beacon_state/tile/consensus-spec-tests/tests/mainnet/fulu/ssz_static/SignedBeaconBlock/ssz_random/case_4/serialized.ssz_snappy"
-    );
+    // EF spec-test fixture (decompressed):
+    // mainnet/fulu/ssz_static/SignedBeaconBlock/ssz_random/case_4.
+    const SIGNED_BLOCK_SSZ: &[u8] = include_bytes!("../testdata/signed_block.ssz");
+    // Expected newPayload params for the block above, derived independently
+    // from the case's value.yaml.
+    const SIGNED_BLOCK_PARAMS: &[u8] = include_bytes!("../testdata/signed_block_params.json");
     const EMPTY_VAR_PAYLOAD_SSZ: &[u8] = include_bytes!("../testdata/empty_var_payload.ssz");
     const MANY_TX_PAYLOAD_SSZ: &[u8] = include_bytes!("../testdata/many_tx_payload.ssz");
     const TX_SINGLE: &[u8] = include_bytes!("../testdata/tx_single.bin");
@@ -1245,13 +1253,12 @@ mod tests {
     }
 
     #[test]
-    fn write_new_payload_params_snappy() {
-        let ssz = snap::raw::Decoder::new()
-            .decompress_vec(SAMPLE_PAYLOAD_SSZ_SNAPPY)
-            .expect("snappy decode");
+    fn write_new_payload_params_spec_block() {
         let mut json = Vec::new();
-        write_new_payload_params(&ssz, &mut json).unwrap();
-        println!("{}", std::str::from_utf8(&json).unwrap());
+        write_new_payload_params(SIGNED_BLOCK_SSZ, &mut json).unwrap();
+        let actual = simd_json::to_owned_value(&mut json).unwrap();
+        let expected = simd_json::to_owned_value(&mut SIGNED_BLOCK_PARAMS.to_vec()).unwrap();
+        assert_eq!(actual, expected);
     }
 
     #[test]

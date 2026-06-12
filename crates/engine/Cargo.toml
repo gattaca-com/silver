@@ -20,7 +20,6 @@ sha2.workspace = true
 silver_common.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-snap = "1.1.1"
 
 [dev-dependencies]
 tracing-subscriber.workspace = true

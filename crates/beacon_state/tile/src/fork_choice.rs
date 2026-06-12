@@ -101,6 +101,7 @@ impl ForkChoice {
         finalized_slot: Slot,
         finalized_block_root: B256,
         finalized_state_root: B256,
+        finalized_execution_block_hash: B256,
         state_id: StateId,
     ) -> Self {
         let mut nodes = Vec::with_capacity(MAX_FORK_CHOICE_NODES);
@@ -111,7 +112,7 @@ impl ForkChoice {
             block_root: finalized_block_root,
             state_root: finalized_state_root,
             parent_root: [0u8; 32],
-            execution_block_hash: [0u8; 32],
+            execution_block_hash: finalized_execution_block_hash,
             parent: NULL,
             best_child: NULL,
             best_descendant: 0, // self
@@ -564,7 +565,7 @@ mod tests {
     fn single_chain_head() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), test_state_id());
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), [0u8; 32], test_state_id());
 
         fc.on_block(block(1, root(2), root(1), jus, fin));
         fc.on_block(block(2, root(3), root(2), jus, fin));
@@ -576,7 +577,7 @@ mod tests {
     fn fork_heavier_wins() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), test_state_id());
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), [0u8; 32], test_state_id());
 
         fc.on_block(block(1, root(2), root(1), jus, fin));
         fc.on_block(block(1, root(3), root(1), jus, fin));
@@ -595,7 +596,7 @@ mod tests {
         // sibling loses weight.
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), test_state_id());
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), [0u8; 32], test_state_id());
 
         // root(1) → root(2) [idx 1] and root(3) [idx 2]
         fc.on_block(block(1, root(2), root(1), jus, fin));
@@ -619,7 +620,7 @@ mod tests {
     fn prune_below_finalized() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), test_state_id());
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), [0u8; 32], test_state_id());
 
         fc.on_block(block(1, root(2), root(1), jus, fin));
         fc.on_block(block(2, root(3), root(2), jus, fin));
@@ -638,7 +639,7 @@ mod tests {
     fn deltas_moving_votes() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), test_state_id());
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), [0u8; 32], test_state_id());
         fc.on_block(block(1, root(2), root(1), jus, fin));
 
         let mut votes = vec![Vote::default(); 16];
@@ -667,7 +668,8 @@ mod tests {
         // Each validator votes for a different block.
         let fin = cp(0, 100);
         let jus = cp(0, 100);
-        let mut fc = ForkChoice::init(fin, jus, 0, root(100), root(100), test_state_id());
+        let mut fc =
+            ForkChoice::init(fin, jus, 0, root(100), root(100), [0u8; 32], test_state_id());
 
         for i in 1..=16u8 {
             fc.on_block(block(i as u64, root(i), root(100), jus, fin));
@@ -695,7 +697,7 @@ mod tests {
     fn deltas_move_out_of_tree() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let fc = ForkChoice::init(fin, jus, 0, root(1), root(1), test_state_id());
+        let fc = ForkChoice::init(fin, jus, 0, root(1), root(1), [0u8; 32], test_state_id());
 
         let mut votes = vec![Vote::default(); 16];
         let mut balances = vec![0u64; 16];
@@ -719,7 +721,7 @@ mod tests {
     fn deltas_changing_balances() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), test_state_id());
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), [0u8; 32], test_state_id());
         fc.on_block(block(1, root(2), root(1), jus, fin));
 
         let mut votes = vec![Vote::default(); 16];
@@ -746,7 +748,7 @@ mod tests {
         // Balances change but votes don't — still need deltas.
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let fc = ForkChoice::init(fin, jus, 0, root(1), root(1), test_state_id());
+        let fc = ForkChoice::init(fin, jus, 0, root(1), root(1), [0u8; 32], test_state_id());
 
         let mut votes = vec![Vote::default(); 16];
         let mut old_bal = vec![0u64; 16];
@@ -769,7 +771,7 @@ mod tests {
     fn split_tie_breaker_no_attestations() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), test_state_id());
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), [0u8; 32], test_state_id());
 
         // Two blocks at slot 1 forking from genesis. root(2) < root(3).
         fc.on_block(block(1, root(2), root(1), jus, fin));
@@ -784,7 +786,7 @@ mod tests {
     fn shorter_chain_but_heavier_weight() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), test_state_id());
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), [0u8; 32], test_state_id());
 
         // Long chain: root(1) → root(2) → root(3) → root(4).
         fc.on_block(block(1, root(2), root(1), jus, fin));
@@ -808,7 +810,7 @@ mod tests {
     fn on_block_duplicate() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), test_state_id());
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), [0u8; 32], test_state_id());
 
         fc.on_block(block(1, root(2), root(1), jus, fin));
         assert_eq!(fc.nodes.len(), 2);
@@ -822,7 +824,7 @@ mod tests {
     fn on_block_unknown_parent() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), test_state_id());
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), [0u8; 32], test_state_id());
 
         // root(99) is not known.
         fc.on_block(block(1, root(2), root(99), jus, fin));

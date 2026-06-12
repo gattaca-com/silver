@@ -351,21 +351,32 @@ impl BeaconStateTile {
         // `latest_block_header.state_root` stays `[0;32]` — the first
         // post-bootstrap `process_slot` hashes that canonical state and a
         // patched value would shift the result.
-        let (block_root, anchor_state_root) = {
+        let (block_root, anchor_state_root, execution_block_hash) = {
             let rv = self.state.read_view(anchor);
             let state_root = ssz_hash::hash_tree_root_state(&rv, &mut self.stf_scratch.state_hash);
             let mut header = rv.slot.state().latest_block_header;
             if header.state_root == [0u8; 32] {
                 header.state_root = state_root;
             }
-            (ssz_hash::hash_tree_root_block_header(&header), state_root)
+            (
+                ssz_hash::hash_tree_root_block_header(&header),
+                state_root,
+                rv.slot.state().latest_execution_payload_header.block_hash,
+            )
         };
 
         let trusted = Checkpoint { epoch: slot.div_ceil(SLOTS_PER_EPOCH), root: block_root };
         self.last_applied = anchor;
         self.last_applied_block_root = block_root;
-        self.fork_choice =
-            ForkChoice::init(trusted, trusted, slot, block_root, anchor_state_root, anchor);
+        self.fork_choice = ForkChoice::init(
+            trusted,
+            trusted,
+            slot,
+            block_root,
+            anchor_state_root,
+            execution_block_hash,
+            anchor,
+        );
         self.state.publish_state_id(anchor);
     }
 
@@ -2145,7 +2156,8 @@ mod tests {
         tile.mode = Mode::Following;
 
         let cp = Checkpoint { epoch: 0, root: ANCHOR_ROOT };
-        tile.fork_choice = ForkChoice::init(cp, cp, start_slot, ANCHOR_ROOT, ANCHOR_ROOT, anchor);
+        tile.fork_choice =
+            ForkChoice::init(cp, cp, start_slot, ANCHOR_ROOT, ANCHOR_ROOT, [0u8; 32], anchor);
 
         tile.ensure_shuffling_window(start_slot / SLOTS_PER_EPOCH, anchor);
     }
@@ -2464,7 +2476,7 @@ mod tests {
 
         let cp = Checkpoint { epoch: 0, root: parent_root };
         tile.fork_choice =
-            ForkChoice::init(cp, cp, 10, parent_root, parent_root, tile.last_applied);
+            ForkChoice::init(cp, cp, 10, parent_root, parent_root, [0u8; 32], tile.last_applied);
         tile.last_applied_block_root = parent_root;
 
         // Valid structure, zeroed BLS signature → precheck reaches and fails

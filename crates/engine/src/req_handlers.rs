@@ -55,50 +55,29 @@ fn handle_new_payload(
     r: &EngineNewPayloadReq,
     producers: &mut <SilverSpine as FluxSpine>::Producers,
 ) {
-    match r.block_source {
-        BlockSource::Gossip => {
-            let acquired = gossip_consumer.acquire(r.data);
-            let bytes = match acquired.buffer() {
-                Ok((b, _)) => b,
-                Err(e) => {
-                    tracing::warn!("failed to read payload data: {e}");
-                    producers.engine_resps.produce(
-                        &EngineResp::NewPayload(invalid_new_payload_resp(r.block_root)).into(),
-                    );
-                    return;
-                }
-            };
-
-            if let Err(e) = send_new_payload(client, bytes, r.block_root) {
-                tracing::warn!("failed to encode payload: {e}");
-                producers.engine_resps.produce(
-                    &EngineResp::NewPayload(invalid_new_payload_resp(r.block_root)).into(),
-                );
-            }
-            gossip_consumer.free();
-        }
-        BlockSource::Rpc => {
-            let acquired = rpc_consumer.acquire(r.data);
-            let bytes = match acquired.buffer() {
-                Ok((b, _)) => b,
-                Err(e) => {
-                    tracing::warn!("failed to read payload data: {e}");
-                    producers.engine_resps.produce(
-                        &EngineResp::NewPayload(invalid_new_payload_resp(r.block_root)).into(),
-                    );
-                    return;
-                }
-            };
-
-            if let Err(e) = send_new_payload(client, bytes, r.block_root) {
-                tracing::warn!("failed to encode payload: {e}");
-                producers.engine_resps.produce(
-                    &EngineResp::NewPayload(invalid_new_payload_resp(r.block_root)).into(),
-                );
-            }
-            rpc_consumer.free();
+    let consumer = match r.block_source {
+        BlockSource::Gossip => gossip_consumer,
+        BlockSource::Rpc => rpc_consumer,
+    };
+    let acquired = consumer.acquire(r.data);
+    let bytes = match acquired.buffer() {
+        Ok((b, _)) => b,
+        Err(e) => {
+            tracing::warn!("failed to read payload data: {e}");
+            producers
+                .engine_resps
+                .produce(&EngineResp::NewPayload(invalid_new_payload_resp(r.block_root)).into());
+            return;
         }
     };
+
+    if let Err(e) = send_new_payload(client, bytes, r.block_root) {
+        tracing::warn!("failed to encode payload: {e}");
+        producers
+            .engine_resps
+            .produce(&EngineResp::NewPayload(invalid_new_payload_resp(r.block_root)).into());
+    }
+    consumer.free();
 }
 
 #[inline]
