@@ -2,17 +2,19 @@ use core::cmp::{max, min};
 
 use blst::min_pk::PublicKey;
 use silver_beacon_state_data::{
-    self as common, B256, BalancesWriteView, Current, EPOCHS_PER_SLASHINGS_VECTOR, Epoch,
-    EpochGroup, EpochId, EpochView, Eth1WriteView, Immutable, LongtailGroup, LongtailId,
-    LongtailView, PENDING_CONSOLIDATIONS_LIMIT, PENDING_PARTIAL_WITHDRAWALS_LIMIT,
-    ParticipationWriteView, PendingView, PendingWriteView, Previous, SLOTS_PER_EPOCH,
-    SYNC_COMMITTEE_SIZE, Slot, SlotStateView, SlotStateWriteView, SpecConfig, StateId,
-    StateReadView, StateWriterView, ValidatorsView, ValidatorsWriteView, append_validator,
+    B256, BalancesWriteView, BeaconBlockHeader, Current, EPOCHS_PER_SLASHINGS_VECTOR, Epoch,
+    EpochGroup, EpochId, EpochView, Eth1Data, Eth1WriteView, ExecutionPayloadHeader, Immutable,
+    LongtailGroup, LongtailId, LongtailView, PENDING_CONSOLIDATIONS_LIMIT,
+    PENDING_PARTIAL_WITHDRAWALS_LIMIT, ParticipationWriteView, PendingConsolidation,
+    PendingDeposit, PendingPartialWithdrawal, PendingView, PendingWriteView, Previous,
+    SLOTS_PER_EPOCH, SYNC_COMMITTEE_SIZE, Slot, SlotStateView, SlotStateWriteView, SpecConfig,
+    StateId, StateReadView, StateWriterView, ValidatorsView, ValidatorsWriteView, Withdrawals,
+    append_validator,
 };
 use silver_common::{
     metrics::timed,
     ssz_view::{
-        self, ATTESTATION_DATA_SIZE, AttestationDataView, AttestationView, BEACON_BLOCK_BODY_FIXED,
+        ATTESTATION_DATA_SIZE, AttestationDataView, AttestationView, BEACON_BLOCK_BODY_FIXED,
         BEACON_BLOCK_HEADER_SIZE, BLOCK_SYNC_AGGREGATE_SIZE, BeaconBlockBodyView,
         BeaconBlockHeaderView, CONSOLIDATION_REQUEST_SIZE, ConsolidationRequestView,
         DEPOSIT_CONTRACT_TREE_DEPTH, DEPOSIT_REQUEST_SIZE, DEPOSIT_SIZE, DepositDataView,
@@ -23,6 +25,7 @@ use silver_common::{
         WITHDRAWAL_REQUEST_SIZE, WITHDRAWAL_SIZE, WithdrawalRequestView, WithdrawalView,
     },
 };
+use silver_ssz::ssz_view::{IndexedAttestationView, MAX_ATTESTING_INDICES};
 
 use crate::{
     bls::{self, SigBatch},
@@ -69,7 +72,7 @@ pub struct StfScratch {
     /// Active set / committee participants / participating indices — reused
     /// across the epoch-transition and block-body passes.
     pub active: Vec<u32>,
-    pub postponed: Vec<common::PendingDeposit>,
+    pub postponed: Vec<PendingDeposit>,
     /// Sparse-edit rebuild buffers + effective-balance column for the
     /// epoch-transition passes.
     pub replace_u64: Vec<(u32, u64)>,
@@ -82,7 +85,7 @@ pub struct StfScratch {
 impl StfScratch {
     pub fn new(validator_cap: usize) -> Self {
         Self {
-            active: Vec::with_capacity(validator_cap.max(ssz_view::MAX_ATTESTING_INDICES)),
+            active: Vec::with_capacity(validator_cap.max(MAX_ATTESTING_INDICES)),
             postponed: Vec::with_capacity(epoch_transition::MAX_PENDING_DEPOSITS_PER_EPOCH),
             replace_u64: Vec::with_capacity(validator_cap),
             replace_u8: Vec::with_capacity(validator_cap),
@@ -508,7 +511,7 @@ pub fn process_block_header(
         return Err(BlockError::ParentRootMismatch { expected: expected_parent, got: parent_root });
     }
 
-    view.slot.state_mut().latest_block_header = common::BeaconBlockHeader {
+    view.slot.state_mut().latest_block_header = BeaconBlockHeader {
         slot: block_slot,
         proposer_index,
         parent_root,
@@ -847,7 +850,7 @@ fn process_eth1_data(slot: &mut SlotStateWriteView, eth1: &mut Eth1WriteView, bo
     let deposit_count = Eth1DataView::deposit_count(data);
     let block_hash: B256 = *Eth1DataView::block_hash(data);
 
-    let vote = common::Eth1Data { deposit_root, deposit_count, block_hash };
+    let vote = Eth1Data { deposit_root, deposit_count, block_hash };
     // One vote per slot, reset each voting period (`process_eth1_data_reset`);
     // `push` enforces the spec cap.
     eth1.push(vote);
@@ -1297,7 +1300,7 @@ pub fn process_execution_payload(
             .copy_from_slice(&payload_bytes[extra_data_off..extra_data_off + extra_data_len]);
     }
 
-    slot.state_mut().latest_execution_payload_header = common::ExecutionPayloadHeader {
+    slot.state_mut().latest_execution_payload_header = ExecutionPayloadHeader {
         parent_hash: *ExecutionPayloadView::parent_hash(payload_bytes),
         fee_recipient: *ExecutionPayloadView::fee_recipient(payload_bytes),
         state_root: *ExecutionPayloadView::state_root(payload_bytes),
@@ -1859,7 +1862,7 @@ pub fn process_deposit_requests(view: &mut StateWriterView, data: &[u8]) {
         let d: &[u8; DEPOSIT_REQUEST_SIZE] =
             data[i * DEPOSIT_REQUEST_SIZE..(i + 1) * DEPOSIT_REQUEST_SIZE].try_into().unwrap();
         let pubkey = *DepositRequestView::pubkey(d);
-        let credentials = common::Withdrawals(*DepositRequestView::withdrawal_credentials(d));
+        let credentials = Withdrawals(*DepositRequestView::withdrawal_credentials(d));
         let amount = DepositRequestView::amount(d);
         let signature = *DepositRequestView::signature(d);
         let index = DepositRequestView::index(d);
@@ -1868,7 +1871,7 @@ pub fn process_deposit_requests(view: &mut StateWriterView, data: &[u8]) {
             slot.state_mut().deposit_requests_start_index = index;
         }
 
-        pending.push_pending_deposit(common::PendingDeposit {
+        pending.push_pending_deposit(PendingDeposit {
             pubkey,
             withdrawal_credentials: credentials,
             amount,
@@ -1948,7 +1951,7 @@ pub fn process_withdrawal_requests(view: &mut StateWriterView, cfg: &SpecConfig,
                 current_epoch,
             );
             let withdrawable_epoch = exit_queue_epoch + cfg.min_validator_withdrawability_delay;
-            pending.push_pending_partial_withdrawal(common::PendingPartialWithdrawal {
+            pending.push_pending_partial_withdrawal(PendingPartialWithdrawal {
                 index: vi as u64,
                 amount: to_withdraw,
                 withdrawable_epoch,
@@ -2048,7 +2051,7 @@ pub fn process_consolidation_requests(view: &mut StateWriterView, cfg: &SpecConf
             source_idx,
             exit_epoch + cfg.min_validator_withdrawability_delay,
         );
-        pending.push_pending_consolidation(common::PendingConsolidation {
+        pending.push_pending_consolidation(PendingConsolidation {
             source_index: source_idx as u64,
             target_index: target_idx as u64,
         });
@@ -2135,7 +2138,7 @@ pub(crate) fn signing_root_for_block_header(
 ) -> B256 {
     let hb: &[u8; BEACON_BLOCK_HEADER_SIZE] =
         header[..BEACON_BLOCK_HEADER_SIZE].try_into().unwrap();
-    let h = common::BeaconBlockHeader {
+    let h = BeaconBlockHeader {
         slot: BeaconBlockHeaderView::slot(hb),
         proposer_index: BeaconBlockHeaderView::proposer_index(hb),
         parent_root: *BeaconBlockHeaderView::parent_root(hb),
@@ -2173,7 +2176,7 @@ pub fn process_deposits(view: &mut StateWriterView, data: &[u8]) -> Result<()> {
         }
 
         let pubkey = DepositDataView::pubkey(dd);
-        let credentials = common::Withdrawals(*DepositDataView::withdrawal_credentials(dd));
+        let credentials = Withdrawals(*DepositDataView::withdrawal_credentials(dd));
         let amount = DepositDataView::amount(dd);
         let signature = *DepositDataView::signature(dd);
 
@@ -2261,7 +2264,7 @@ pub fn process_bls_to_execution_changes(
             validator_index,
             from_bls_pubkey,
         )?;
-        let creds = common::Withdrawals::eth1(to_execution_address);
+        let creds = Withdrawals::eth1(to_execution_address);
         validators.set_credentials(validator_index, creds);
     }
     Ok(())
@@ -2286,7 +2289,7 @@ pub fn collect_sigs_attester_slashings(
 
             for (ia_off, ia_end, indices) in [(off1, off2, i1), (off2, slashing.len(), i2)] {
                 let ia = &slashing[ia_off..ia_end];
-                let target_epoch = ssz_view::IndexedAttestationView::target_epoch(ia);
+                let target_epoch = IndexedAttestationView::target_epoch(ia);
                 let fv = bls::fork_version_at_epoch(fork_epoch, prev_ver, cur_ver, target_epoch);
                 active_scratch.clear();
                 let n_idx = indices.len() / 8;
@@ -2301,8 +2304,8 @@ pub fn collect_sigs_attester_slashings(
                     }
                     active_scratch.push(vi as u32);
                 }
-                let data_chunk: &[u8; 128] = ssz_view::IndexedAttestationView::data(ia);
-                let sig: &[u8; 96] = ssz_view::IndexedAttestationView::signature(ia);
+                let data_chunk: &[u8; 128] = IndexedAttestationView::data(ia);
+                let sig: &[u8; 96] = IndexedAttestationView::signature(ia);
                 let object_root = ssz_hash::hash_attestation_data(data_chunk);
                 let domain = bls::compute_domain(bls::DOMAIN_BEACON_ATTESTER, fv, &gvr);
                 let signing_root = bls::compute_signing_root(&object_root, &domain);
@@ -2430,9 +2433,7 @@ pub fn validate_attester_slashing_for_gossip(
     }
     let i1 = attesting_indices_bytes(slashing, off1, off2);
     let i2 = attesting_indices_bytes(slashing, off2, slashing.len());
-    if i1.len() / 8 > ssz_view::MAX_ATTESTING_INDICES ||
-        i2.len() / 8 > ssz_view::MAX_ATTESTING_INDICES
-    {
+    if i1.len() / 8 > MAX_ATTESTING_INDICES || i2.len() / 8 > MAX_ATTESTING_INDICES {
         return false;
     }
     if !indices_sorted_unique(i1) || !indices_sorted_unique(i2) {
@@ -2459,7 +2460,7 @@ pub fn validate_attester_slashing_for_gossip(
     sig_batch.clear();
     for (ia_off, ia_end, indices) in [(off1, off2, i1), (off2, slashing.len(), i2)] {
         let ia = &slashing[ia_off..ia_end];
-        let target_epoch = ssz_view::IndexedAttestationView::target_epoch(ia);
+        let target_epoch = IndexedAttestationView::target_epoch(ia);
         let fv = bls::fork_version_at_epoch(fork_epoch, prev_ver, cur_ver, target_epoch);
         let n_idx = indices.len() / 8;
         for k in 0..n_idx {
@@ -2468,8 +2469,8 @@ pub fn validate_attester_slashing_for_gossip(
                 return false;
             }
         }
-        let data_chunk: &[u8; 128] = ssz_view::IndexedAttestationView::data(ia);
-        let sig: &[u8; 96] = ssz_view::IndexedAttestationView::signature(ia);
+        let data_chunk: &[u8; 128] = IndexedAttestationView::data(ia);
+        let sig: &[u8; 96] = IndexedAttestationView::signature(ia);
         let object_root = ssz_hash::hash_attestation_data(data_chunk);
         let domain = bls::compute_domain(bls::DOMAIN_BEACON_ATTESTER, fv, &gvr);
         let signing_root = bls::compute_signing_root(&object_root, &domain);
@@ -2740,7 +2741,7 @@ fn switch_to_compounding_validator(
 ) {
     let mut bytes = validators.credentials(vi as usize).0;
     bytes[0] = COMPOUNDING_WITHDRAWAL_PREFIX;
-    let creds = common::Withdrawals(bytes);
+    let creds = Withdrawals(bytes);
     validators.set_credentials(vi, creds);
 
     let balance = balances.get(vi as usize);
@@ -2748,7 +2749,7 @@ fn switch_to_compounding_validator(
         let excess = balance - MIN_ACTIVATION_BALANCE;
         balances.set(vi, MIN_ACTIVATION_BALANCE);
         let pubkey = *validators.pubkey(vi as usize);
-        pending.push_pending_deposit(common::PendingDeposit {
+        pending.push_pending_deposit(PendingDeposit {
             pubkey,
             withdrawal_credentials: creds,
             amount: excess,
@@ -2767,7 +2768,7 @@ fn switch_to_compounding_validator(
 fn apply_deposit(
     view: &mut StateWriterView,
     pubkey: &[u8; 48],
-    credentials: &common::Withdrawals,
+    credentials: &Withdrawals,
     amount: u64,
     signature: &[u8; 96],
 ) -> Result<()> {
@@ -2780,7 +2781,7 @@ fn apply_deposit(
         append_validator(view, *pubkey, pubkey_decompressed, *credentials);
     }
 
-    view.pending.push_pending_deposit(common::PendingDeposit {
+    view.pending.push_pending_deposit(PendingDeposit {
         pubkey: *pubkey,
         withdrawal_credentials: *credentials,
         amount,
@@ -2823,11 +2824,7 @@ mod tests {
         assert_ne!(view.slot.state().eth1_data.deposit_root, deposit_root);
 
         for _ in 0..1024 {
-            view.eth1.push(common::Eth1Data {
-                deposit_root,
-                deposit_count: 42,
-                block_hash: [0xBB; 32],
-            });
+            view.eth1.push(Eth1Data { deposit_root, deposit_count: 42, block_hash: [0xBB; 32] });
         }
         process_eth1_data(&mut view.slot, &mut view.eth1, &body);
         assert_eq!(view.slot.state().eth1_data.deposit_root, deposit_root);
@@ -2880,8 +2877,7 @@ mod tests {
 
         let mut st = fresh_state();
         let (mut view, _, _) = st.view();
-        view.slot.state_mut().eth1_data =
-            common::Eth1Data { deposit_root: root, ..Default::default() };
+        view.slot.state_mut().eth1_data = Eth1Data { deposit_root: root, ..Default::default() };
         // eth1_deposit_index defaults to 0.
 
         deposit_into(&mut view, &deposit).expect("valid proof must accept");
@@ -2897,8 +2893,7 @@ mod tests {
 
         let mut st = fresh_state();
         let (mut view, _, _) = st.view();
-        view.slot.state_mut().eth1_data =
-            common::Eth1Data { deposit_root: root, ..Default::default() };
+        view.slot.state_mut().eth1_data = Eth1Data { deposit_root: root, ..Default::default() };
 
         let err = deposit_into(&mut view, &deposit).unwrap_err();
         assert!(err.is_fatal());
@@ -2914,8 +2909,7 @@ mod tests {
 
         let mut st = fresh_state();
         let (mut view, _, _) = st.view();
-        view.slot.state_mut().eth1_data =
-            common::Eth1Data { deposit_root: root, ..Default::default() };
+        view.slot.state_mut().eth1_data = Eth1Data { deposit_root: root, ..Default::default() };
 
         let err = deposit_into(&mut view, &deposit).unwrap_err();
         assert!(matches!(err, Error::InvalidDepositProof { .. }));
@@ -2928,8 +2922,7 @@ mod tests {
 
         let mut st = fresh_state();
         let (mut view, _, _) = st.view();
-        view.slot.state_mut().eth1_data =
-            common::Eth1Data { deposit_root: root, ..Default::default() };
+        view.slot.state_mut().eth1_data = Eth1Data { deposit_root: root, ..Default::default() };
         // Proof was built for index 0; claim index 1 instead → must fail.
         view.slot.state_mut().eth1_deposit_index += 1;
 
