@@ -855,7 +855,7 @@ mod tests {
             pr_tc.cache_ref().random_access("pr", true).unwrap(),
             TCache::multi_producer("rpc_out", 1 << 20),
             TCache::producer("replay_out", 1 << 20),
-            BeaconStateOwner::new(BeaconState::empty()).reader(),
+            BeaconStateOwner::pre_bootstrap().reader(),
             custody,
             [1, 2, 3, 4],
             store_dir.clone(),

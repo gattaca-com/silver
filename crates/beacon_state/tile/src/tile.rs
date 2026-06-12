@@ -529,8 +529,8 @@ impl BeaconStateTile {
             return;
         }
         let ws_period = {
-            let view = self.state.delta_view(self.last_applied);
-            weak_subjectivity_period(&view, &mut self.active_scratch)
+            let view = self.state.read_view(self.last_applied);
+            weak_subjectivity_period(&view, &mut self.stf_scratch.active)
         };
         let checkpoint_epoch = self.head_state_slot() / SLOTS_PER_EPOCH;
         let current_epoch = self.ticker.current_slot() / SLOTS_PER_EPOCH;

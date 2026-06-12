@@ -2927,7 +2927,7 @@ mod tests {
         let now = Instant::now();
         let mut params = ScoreParams::default();
         params.target_peers = 4;
-        let (mut mgr, mut cap) = fixture(vec![], params);
+        let (mut mgr, mut cap) = fixture(vec![], params, false);
 
         connect(&mut mgr, &mut cap, 1, 7, now);
         mgr.handle_event(
@@ -4232,7 +4232,7 @@ mod tests {
     #[test]
     fn colreq_complete_advances_column_watermark() {
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
         let mask = connect_column_peer(&mut mgr, &mut cap, 1, 1, 100_000, now);
         mgr.custody_columns = mask; // full overlap with peer 1
         mgr.synced_through = 128; // blocks confirmed-served [1, 128]
@@ -4263,7 +4263,7 @@ mod tests {
     #[test]
     fn colreq_partial_overlap_chases_remainder_on_second_peer() {
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
         let mask1 = connect_column_peer(&mut mgr, &mut cap, 1, 1, 100_000, now);
         let mask2 = connect_column_peer(&mut mgr, &mut cap, 2, 2, 100_000, now);
         // Custody is deterministic from node_id+cgc; these seeds must give
@@ -4301,7 +4301,7 @@ mod tests {
     #[test]
     fn colreq_error_concedes_to_by_root_after_attempts_cap() {
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
         let mask = connect_column_peer(&mut mgr, &mut cap, 1, 1, 100_000, now);
         mgr.custody_columns = mask;
         mgr.synced_through = 32;
@@ -4334,7 +4334,7 @@ mod tests {
     #[test]
     fn colreq_timeout_scores_peer_and_reissues() {
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
         let mask = connect_column_peer(&mut mgr, &mut cap, 1, 1, 100_000, now);
         mgr.custody_columns = mask;
         mgr.synced_through = 16;
@@ -4365,7 +4365,7 @@ mod tests {
         // columns would never be re-requested and the DA check would wedge
         // the chain (observed live: head stuck at the serving peer's tip).
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
         let mask = connect_column_peer(&mut mgr, &mut cap, 1, 1, 100, now);
         mgr.custody_columns = mask;
         mgr.synced_through = 120; // blocks confirmed past the peer's head
@@ -4389,7 +4389,7 @@ mod tests {
     #[test]
     fn colreq_paced_to_block_driver() {
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
         let mask = connect_column_peer(&mut mgr, &mut cap, 1, 1, 100_000, now);
         mgr.custody_columns = mask;
 
@@ -4419,7 +4419,7 @@ mod tests {
         // watermark halts block batches; advancing it (delivery or concede)
         // releases them.
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
         let target = [0xBB; 32];
         set_snapshot(&mut mgr, 10, 320);
         connect(&mut mgr, &mut cap, 1, 1, now);

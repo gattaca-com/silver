@@ -1,4 +1,4 @@
-use silver_beacon_state_data::{SLOTS_PER_EPOCH, StateDeltaView};
+use silver_beacon_state_data::{SLOTS_PER_EPOCH, StateReadView};
 
 use crate::shuffling;
 
@@ -15,10 +15,10 @@ const MAX_DEPOSITS: u64 = 16;
 const MIN_PER_EPOCH_CHURN_LIMIT: u64 = 4;
 const CHURN_LIMIT_QUOTIENT: u64 = 1 << 16;
 
-pub(crate) fn weak_subjectivity_period(view: &StateDeltaView, scratch: &mut Vec<u32>) -> u64 {
-    let epoch = view.current_epoch();
+pub(crate) fn weak_subjectivity_period(view: &StateReadView, scratch: &mut Vec<u32>) -> u64 {
+    let epoch = view.slot.state().slot / SLOTS_PER_EPOCH;
     scratch.clear();
-    shuffling::get_active_validator_indices_into(view, epoch, scratch);
+    shuffling::get_active_validator_indices_into(&view.validators, epoch, scratch);
     let n = scratch.len() as u64;
     if n == 0 {
         return MIN_WITHDRAWABILITY_DELAY;
@@ -27,7 +27,7 @@ pub(crate) fn weak_subjectivity_period(view: &StateDeltaView, scratch: &mut Vec<
     // get_total_active_balance, floored at one increment, averaged to whole ETH.
     let total = scratch
         .iter()
-        .map(|&i| view.validator_effective_balance(i as usize))
+        .map(|&i| view.validators.effective_balance(i as usize))
         .sum::<u64>()
         .max(ETH_TO_GWEI);
     let d = SAFETY_DECAY;

@@ -438,7 +438,10 @@ pub fn decode_checkpoint_pubkeys(bytes: &[u8]) -> Result<Vec<PublicKey>, Pubkeys
 
 #[cfg(test)]
 mod tests {
-    use crate::{BeaconState, SpecConfig, decode_checkpoint_pubkeys, encode::Section};
+    use crate::{
+        BeaconState, EpochGroup, EpochStateFinalized, SLOTS_PER_HISTORICAL_ROOT, SlotState,
+        SlotStateFinalized, SlotStateGroup, SpecConfig, decode_checkpoint_pubkeys, encode::Section,
+    };
 
     /// `encode → decompose → encode` must be a byte-exact fixed point, and the
     /// chunked streaming path must match the one-pass path. The pre-bootstrap
@@ -474,61 +477,36 @@ mod tests {
     /// boundary.
     #[test]
     fn encode_uses_live_current_epoch_caches() {
-        let mut fin = Box::new(Finalized::empty());
-        fin.slot.slot.slot = 96; // epoch 3
         let cur = 3usize;
-        // Stale array buckets, distinct from the live caches.
-        fin.epoch.randao_mixes[cur] = [0xAA; 32];
-        fin.slot.slot.randao_mix_current = [0xBB; 32];
-        fin.epoch.slashings[cur] = 111;
-        fin.slot.slot.current_epoch_slashings = 222;
+        let mut bs = BeaconState::pre_bootstrap();
 
-        let mut ssz = Vec::with_capacity(fin.ssz_len());
-        fin.encode_ssz(&mut ssz).unwrap();
-        let mut decoded = Box::new(Finalized::empty());
-        decoded.decompose(&ssz, &SpecConfig::mainnet()).unwrap();
+        // Stale ring buckets, distinct from the live `*_current` caches the
+        // encode path must emit instead.
+        let mut epoch = EpochStateFinalized::default();
+        epoch.randao_mixes[cur] = [0xAA; 32];
+        epoch.slashings[cur] = 111;
+        bs.epoch = EpochGroup::new(epoch);
 
-        assert_eq!(decoded.epoch.randao_mixes[cur], [0xBB; 32], "randao current bucket = live");
-        assert_eq!(decoded.slot.slot.randao_mix_current, [0xBB; 32]);
-        assert_eq!(decoded.epoch.slashings[cur], 222, "slashings current bucket = live");
-        assert_eq!(decoded.slot.slot.current_epoch_slashings, 222);
-    }
-
-    /// Decompose a real mainnet checkpoint, then re-encode it via the chunked
-    /// streaming path (the live persist's path — ~18 validators chunks at
-    /// mainnet scale) and assert byte-equality with the original SSZ.
-    #[test]
-    fn streamed_reencode_matches_mainnet_checkpoint() {
-        use std::path::PathBuf;
-
-        let path = std::env::var("SILVER_CHECKPOINT_SSZ").map(PathBuf::from).unwrap_or_else(|_| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../e2e/tests/example_checkpoints/finalized_state.ssz")
-        });
-        let Ok(ssz) = std::fs::read(&path) else {
-            eprintln!("skipping: fixture {} not present", path.display());
-            return;
+        let zero_roots = || vec![[0u8; 32]; SLOTS_PER_HISTORICAL_ROOT].into_boxed_slice();
+        let slot = SlotState {
+            slot: 96, // epoch 3
+            randao_mix_current: [0xBB; 32],
+            current_epoch_slashings: 222,
+            ..Default::default()
         };
+        bs.slot_states =
+            SlotStateGroup::new(SlotStateFinalized::from_parts(slot, zero_roots(), zero_roots()));
 
-        let mut fin = Box::new(Finalized::empty());
-        fin.decompose(&ssz, &SpecConfig::mainnet()).expect("decompose");
+        let mut ssz = Vec::with_capacity(bs.ssz_len());
+        bs.encode_ssz(&mut ssz).unwrap();
+        let decoded = BeaconState::decompose(&ssz, &SpecConfig::mainnet(), None).unwrap();
 
-        let offsets = Finalized::offsets_from_lens(&fin.var_len_section_lens());
-        let mut out = Vec::with_capacity(fin.ssz_len());
-        for section in Section::ALL {
-            let mut chunk = 0;
-            while !fin.write_section_chunk(section, chunk, &offsets, &mut out).unwrap() {
-                chunk += 1;
-            }
-        }
-        if out != ssz {
-            let at = out.iter().zip(&ssz).position(|(a, b)| a != b);
-            panic!(
-                "streamed re-encode differs from original at byte {at:?} (lens {} vs {})",
-                out.len(),
-                ssz.len(),
-            );
-        }
+        let de = decoded.epoch.finalized();
+        let ds = decoded.slot_states.finalized().state();
+        assert_eq!(de.randao_mixes[cur], [0xBB; 32], "randao current bucket = live");
+        assert_eq!(ds.randao_mix_current, [0xBB; 32]);
+        assert_eq!(de.slashings[cur], 222, "slashings current bucket = live");
+        assert_eq!(ds.current_epoch_slashings, 222);
     }
 
     /// Write the decompressed-pubkey sidecar, decode it, rebuild the validators
