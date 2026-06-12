@@ -70,12 +70,14 @@ const INBOUND_QUOTAS: [Option<InboundQuota>; N_STREAM_PROTOCOLS] = [
 ];
 
 /// Result-byte values for eth2 RPC error chunks. Per
-/// `consensus-specs/p2p-interface.md`, only 0x01..=0x03 are spec-defined;
-/// 0x14 is a lighthouse extension some clients emit and others tolerate.
+/// `consensus-specs/p2p-interface.md`, only 0x01..=0x03 are spec-defined and
+/// [0x04, 0x7f] is RESERVED; codes >= 0x80 are client extensions. 0x8b is
+/// lighthouse's `RateLimited`. Prysm overloads 0x01 (`InvalidRequest`) for
+/// rate limiting, which is indistinguishable from a genuine malformed request.
 const RPC_ERR_INVALID_REQUEST: u8 = 0x01;
 const RPC_ERR_SERVER_ERROR: u8 = 0x02;
 const RPC_ERR_RESOURCE_UNAVAILABLE: u8 = 0x03;
-const RPC_ERR_RATE_LIMITED: u8 = 0x14;
+const RPC_ERR_RATE_LIMITED: u8 = 0x8b;
 
 #[derive(Default)]
 pub(crate) struct PeerInboundState {
@@ -118,8 +120,10 @@ fn severity_for_error_response(code: u8, protocol: StreamProtocol) -> Option<Rpc
             // not abusive.
             _ => Some(RpcSeverity::HighTolerance),
         },
-        // Lighthouse-emitted rate-limit signal. Means we're hammering them,
-        // not that they're misbehaving — back off, don't ban.
+        // Lighthouse's rate-limit signal (0x8b). We're hammering them, not
+        // misbehaviour — moderate, decaying penalty rotates us off this backer
+        // without banning. Prysm's code-0x01 rate limit can't be told apart
+        // from a real malformed request and lands on the arm above.
         RPC_ERR_RATE_LIMITED => Some(RpcSeverity::MidTolerance),
         // Unknown / reserved code. Spec may add new codes — forward-compat
         // mild penalty rather than crash.
@@ -1314,10 +1318,18 @@ mod tests {
 
     #[test]
     fn rate_limited_is_mid_tolerance() {
-        // Self-throttle, don't ban.
+        // Self-throttle, don't ban. Assert the literal wire code (lighthouse
+        // `RateLimited` = 139) so a regressed constant is caught here.
+        assert_eq!(RPC_ERR_RATE_LIMITED, 139);
         assert!(matches!(
-            severity_for_error_response(RPC_ERR_RATE_LIMITED, StreamProtocol::BeaconBlocksByRange),
+            severity_for_error_response(139, StreamProtocol::BeaconBlocksByRange),
             Some(RpcSeverity::MidTolerance)
+        ));
+        // Prysm overloads InvalidRequest (1) for rate limiting; by code alone
+        // that is indistinguishable from a malformed request.
+        assert!(matches!(
+            severity_for_error_response(1, StreamProtocol::BeaconBlocksByRange),
+            Some(RpcSeverity::LowTolerance)
         ));
     }
 

@@ -381,7 +381,7 @@ impl PeerManager {
             ssz[84..].copy_from_slice(&self.earliest_available_slot.to_le_bytes());
         }
 
-        tracing::info!("set status");
+        tracing::debug!("set status");
         self.status = Some(ssz);
         self.target_dirty = true;
     }
@@ -1483,10 +1483,7 @@ impl PeerManager {
             tracing::trace!(?peer_id, "already dialing peer id");
             return;
         }
-        if self.archived.contains_key(&peer_id) {
-            tracing::trace!(?peer_id, "archived peer id");
-            return;
-        }
+
         if enr.quic4_socket().is_none() && enr.quic6_socket().is_none() {
             tracing::debug!(udp4=?enr.udp4(), udp6=enr.udp6(), tcp4=?enr.tcp4(), tcp6=enr.tcp6(), "Peer does not support quic");
             return;
@@ -2881,6 +2878,35 @@ mod tests {
         assert!(
             cap.0.iter().any(|e| matches!(e, PeerControl::P2pDial { .. })),
             "expected P2pDial, got {:?}",
+            cap.0
+        );
+    }
+
+    #[test]
+    fn disc_node_found_redials_archived_peer() {
+        // Archive persists reputation but must not veto redial: a benign
+        // disconnect (not a ban) has to be re-dialable or we strand ourselves.
+        let now = Instant::now();
+        let mut params = ScoreParams::default();
+        params.target_peers = 4;
+        let (mut mgr, mut cap) = fixture(vec![], params);
+
+        connect(&mut mgr, &mut cap, 1, 7, now);
+        mgr.handle_event(
+            PeerEvent::P2pDisconnect { p2p_peer: 1, peer_id: peer_id(7) },
+            now,
+            &mut |c| cap.0.push(c),
+        );
+        assert_eq!(mgr.archived_count(), 1);
+        cap.0.clear();
+
+        let enr =
+            test_enr_with(7, std::net::Ipv4Addr::new(10, 0, 0, 7), Some([0u8; 16]), None, None);
+        mgr.handle_event(PeerEvent::DiscNodeFound { enr }, now, &mut |c| cap.0.push(c));
+
+        assert!(
+            cap.0.iter().any(|e| matches!(e, PeerControl::P2pDial { .. })),
+            "archived (non-banned) peer must be redialed, got {:?}",
             cap.0
         );
     }

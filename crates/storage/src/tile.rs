@@ -125,6 +125,10 @@ impl StorageTile {
             return;
         }
 
+        if SignedBeaconBlockView::slot(buffer) <= self.store.finalized_slot() {
+            return;
+        }
+
         let block_root = util::block_root(buffer);
 
         if self.outstanding_requests.contains(&block_root) {
