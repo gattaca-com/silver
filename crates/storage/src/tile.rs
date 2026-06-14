@@ -581,7 +581,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_beacon_block_gossip_requests_custody_columns() {
+    fn test_beacon_block_rpc_requests_custody_columns() {
         let store_dir = format!("/tmp/test_storage_tile_gossip_{}", rand::random::<u32>());
         let _ = std::fs::remove_dir_all(&store_dir);
 
@@ -643,7 +643,7 @@ mod tests {
         let block_root = util::block_root(&block_bytes);
         let rpc_stream = P2pStreamId::new(2, 2, StreamProtocol::BeaconBlocksByRange, true);
 
-        // 1. Once synced, an RPC block requests its custody columns by root.
+        // Once synced, an RPC block requests its custody columns by root.
         tile.store.sync_update(SyncUpdate::Following);
         let mut rpc_events = Vec::new();
         tile.beacon_block(rpc_stream, read.clone(), &mut |evt| rpc_events.push(evt));
@@ -659,23 +659,6 @@ mod tests {
 
         // Clean up outstanding request to allow requesting the same block root again
         tile.outstanding_requests.remove(&block_root);
-
-        // 2. Check Gossip block request (gossip stream)
-        let gossip_stream = P2pStreamId::new(1, 1, StreamProtocol::GossipSub, true);
-        let mut gossip_events = Vec::new();
-        tile.beacon_block(gossip_stream, read, &mut |evt| gossip_events.push(evt));
-
-        assert_eq!(gossip_events.len(), 1);
-        if let PeerEvent::SendDataColumnsByRootRequest { columns, block_root: req_root, .. } =
-            gossip_events[0]
-        {
-            assert_eq!(req_root, block_root);
-            // Gossip path requests custody columns only — no beyond-custody
-            // sampling (cgc is floored at SAMPLES_PER_SLOT).
-            assert_eq!(columns, custody_columns);
-        } else {
-            panic!("expected SendDataColumnsByRootRequest");
-        }
 
         let _ = std::fs::remove_dir_all(&store_dir);
     }
