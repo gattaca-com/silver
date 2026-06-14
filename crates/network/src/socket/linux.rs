@@ -7,6 +7,7 @@ use std::{
 use bytes::BytesMut;
 use flux::tracing;
 use mio::net::UdpSocket;
+use silver_metrics::perf;
 
 pub(crate) const RX_BATCH_MAX: usize = 128;
 pub(crate) const RX_BUF_SIZE: usize = 2048;
@@ -233,6 +234,7 @@ impl TxBatch {
         self.prepared = true;
     }
 
+    #[perf]
     fn do_send(&mut self, socket: &UdpSocket) -> bool {
         let fd = socket.as_raw_fd();
 

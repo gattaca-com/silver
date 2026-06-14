@@ -4,7 +4,9 @@ pub use discovery_config::DiscoveryConfig;
 pub use peer_score_params::ScoreParams;
 use secp256k1::PublicKey;
 use serde::{Deserialize, Serialize};
-use silver_common::{Enr, Error, GossipTopic, Identify, Keypair, NodeId, PeerId, StreamProtocol};
+use silver_common::{
+    Enr, Error, GossipTopic, Identify, Keypair, NodeId, PeerId, SAMPLES_PER_SLOT, StreamProtocol,
+};
 pub use syncing_config::SyncingConfig;
 
 use crate::chain_config::ChainConfig;
@@ -79,7 +81,9 @@ pub struct Config {
     discovery_port: Option<u16>,
     #[serde(default)]
     quic_port: Option<u16>,
-    #[serde(default = "default_u8::<4>")]
+    // Floored at `SAMPLES_PER_SLOT` (8) in `enr()`: silver custodies the full
+    // sample set, so cgc < 8 is unsupported (see `enr`).
+    #[serde(default = "default_u8::<8>")]
     data_column_custody_group_count: u8,
     /// Full multiselect protocol strings.
     #[serde(default = "default_supported_protocols")]
@@ -124,7 +128,7 @@ impl Config {
             external_ip_v6: None,
             discovery_port: None,
             quic_port: None,
-            data_column_custody_group_count: 4,
+            data_column_custody_group_count: SAMPLES_PER_SLOT,
             supported_protocols: default_supported_protocols(),
             gossip_topics: default_gossip_topics(),
             chain_config: ChainConfig::default(),
@@ -202,7 +206,8 @@ impl Config {
         eth2[8..].copy_from_slice(&self.next_fork_epoch.to_le_bytes());
 
         builder.eth2(eth2);
-        builder.cgc(self.data_column_custody_group_count as u64);
+        // Floor at SAMPLES_PER_SLOT: custody set must cover the sample set.
+        builder.cgc(self.data_column_custody_group_count.max(SAMPLES_PER_SLOT) as u64);
 
         if let Some(ip) = self.external_ip_v4 {
             builder.ip4(ip);

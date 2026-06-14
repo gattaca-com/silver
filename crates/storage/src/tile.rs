@@ -135,27 +135,29 @@ impl StorageTile {
             return;
         }
 
+        // Custody columns only — silver floors cgc at SAMPLES_PER_SLOT, so the
+        // custody set IS the sample set; no beyond-custody sampling needed.
+        // These by-root requests race gossip and serve as the fallback when a
+        // sidecar isn't delivered on the subscribed subnet.
         let mut to_request = self.custody_group_columns;
         let validated = self.validated_columns.get(&block_root).copied().unwrap_or(0);
         to_request &= !validated;
-
-        if stream_id.protocol() == StreamProtocol::GossipSub {
-            let candidate_mask = !(self.custody_group_columns | validated);
-            to_request |= util::select_random_columns(candidate_mask, 4);
-        }
 
         if to_request == 0 {
             return;
         }
 
         self.outstanding_requests.insert(block_root, (to_request, to_request, MAX_RETRIES));
+
         tracing::trace!(
             block = hex::encode(block_root),
             ?stream_id,
             "data columns by root request: {to_request:b}"
         );
 
-        emit(self.column_request(block_root, to_request));
+        if stream_id.protocol() != StreamProtocol::GossipSub {
+            emit(self.column_request(block_root, to_request));
+        }
     }
 
     #[timed]
@@ -579,7 +581,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_beacon_block_gossip_requests_random_columns() {
+    fn test_beacon_block_gossip_requests_custody_columns() {
         let store_dir = format!("/tmp/test_storage_tile_gossip_{}", rand::random::<u32>());
         let _ = std::fs::remove_dir_all(&store_dir);
 
@@ -668,12 +670,9 @@ mod tests {
             gossip_events[0]
         {
             assert_eq!(req_root, block_root);
-            // Must contain custody columns
-            assert_eq!(columns & custody_columns, custody_columns);
-            // Must contain exactly 6 columns (2 custody + 4 random)
-            assert_eq!(columns.count_ones(), 6);
-            // Must contain 4 extra columns
-            assert_eq!((columns & !custody_columns).count_ones(), 4);
+            // Gossip path requests custody columns only — no beyond-custody
+            // sampling (cgc is floored at SAMPLES_PER_SLOT).
+            assert_eq!(columns, custody_columns);
         } else {
             panic!("expected SendDataColumnsByRootRequest");
         }

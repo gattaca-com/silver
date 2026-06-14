@@ -168,7 +168,8 @@ pub(super) struct Store {
     finalized_slot: u64,
     finalized_root: [u8; 32],
     // Historical backfill.
-    first_sync: bool,
+    is_synced: bool,
+    backfill_checked: bool,
     backfill: Option<Backfill>,
     // Slot of the newest finalized-state checkpoint committed to disk.
     last_persisted_finalized_slot: u64,
@@ -255,7 +256,8 @@ impl Store {
             finalized_slot: 0,
             finalized_root: [0u8; 32],
             backfill: None,
-            first_sync: false,
+            backfill_checked: false,
+            is_synced: false,
             last_persisted_finalized_slot,
             checkpoint: None,
             write_queue: Default::default(),
@@ -375,21 +377,28 @@ impl Store {
 
     pub(super) fn sync_update(&mut self, sync_update: SyncUpdate) {
         match sync_update {
-            SyncUpdate::Following if !self.first_sync => {
+            SyncUpdate::Following if !self.is_synced => {
                 // First update - check whether we need to backfill history.
-                tracing::info!("storage first sync");
-                self.first_sync = true;
-                self.write_queue.push_back(PendingWrite::Backfill {
-                    finalized_slot: self.finalized_slot,
-                    finalized_root: self.finalized_root,
-                });
+                tracing::info!("storage synced");
+                self.is_synced = true;
+
+                if !self.backfill_checked {
+                    self.backfill_checked = true;
+                    self.write_queue.push_back(PendingWrite::Backfill {
+                        finalized_slot: self.finalized_slot,
+                        finalized_root: self.finalized_root,
+                    });
+                }
             }
-            _ => {}
+            _ => {
+                tracing::info!("storage not synced");
+                self.is_synced = false;
+            }
         }
     }
 
     pub(super) fn is_synced(&self) -> bool {
-        self.first_sync
+        self.is_synced
     }
 
     /// Update fork-choice head and finalization watermark from a Status. On a
