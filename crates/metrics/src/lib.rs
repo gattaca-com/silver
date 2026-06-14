@@ -25,9 +25,13 @@ use std::{
 };
 
 use flux::{Timer, timing::Instant};
-pub use silver_common_macros::timed;
+pub use silver_common_macros::{perf, timed};
 
 pub mod flamegraph_timer;
+#[cfg(feature = "perf")]
+pub mod hw_counter;
+mod perf_guard;
+pub use perf_guard::{PerfGuard, PerfSample};
 
 /// App name used as the parent directory for per-function `Timer`
 /// shmem queues. Falls back to `"silver"` if `init_app` is not called.
@@ -344,5 +348,46 @@ mod tests {
         assert_eq!(timed_default_name(7), 14);
         assert_eq!(timed_custom_name(0), Err("zero"));
         assert_eq!(timed_custom_name(41), Ok(42));
+    }
+
+    use crate::perf;
+
+    #[perf]
+    fn perf_default_name(x: u64) -> u64 {
+        x * 3
+    }
+
+    #[perf("perf_custom_label")]
+    fn perf_custom_name(x: u64) -> Result<u64, &'static str> {
+        if x == 0 { Err("zero") } else { Ok(x + 1) }
+    }
+
+    #[perf(sample = 4)]
+    fn perf_sampled(x: u64) -> u64 {
+        x + 1
+    }
+
+    #[perf("perf_sampled_label", sample = 1000)]
+    fn perf_sampled_named(x: u64) -> Result<u64, &'static str> {
+        if x == 0 { Err("zero") } else { Ok(x * 2) }
+    }
+
+    /// Inert without the `perf` feature / perf access; emits to
+    /// `perf-{name}` queues otherwise. Either way the wrap must be
+    /// transparent, including the sampled variants' skip path.
+    #[test]
+    fn perf_macro_expands_and_runs() {
+        super::init_app("silver_test");
+
+        assert_eq!(perf_default_name(7), 21);
+        assert_eq!(perf_custom_name(0), Err("zero"));
+        assert_eq!(perf_custom_name(41), Ok(42));
+
+        // Cross the sampling boundary a few times.
+        for i in 0..10 {
+            assert_eq!(perf_sampled(i), i + 1);
+        }
+        assert_eq!(perf_sampled_named(0), Err("zero"));
+        assert_eq!(perf_sampled_named(21), Ok(42));
     }
 }

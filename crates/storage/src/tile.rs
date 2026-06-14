@@ -155,9 +155,7 @@ impl StorageTile {
             "data columns by root request: {to_request:b}"
         );
 
-        if self.store.is_synced() {
-            emit(self.column_request(block_root, to_request));
-        }
+        emit(self.column_request(block_root, to_request));
     }
 
     #[timed]
@@ -398,7 +396,7 @@ impl Tile<SilverSpine> for StorageTile {
                     let t_read = self.rpc_consumer.acquire(ssz);
                     self.store.backfill_block(t_read);
                 }
-                silver_common::RpcResponse::BeaconBlock { fork_digest: _, ssz } => {
+                silver_common::RpcResponse::BeaconBlock { fork_digest: _, ssz } if self.store.is_synced() => {
                     let t_read = self.rpc_consumer.acquire(ssz);
                     self.beacon_block(rsp.stream_id, t_read, &mut |evt| {
                         producers.peer_events.produce(&evt.into());
@@ -641,22 +639,9 @@ mod tests {
         let read = blocks_consumer.acquire(ssz);
 
         let block_root = util::block_root(&block_bytes);
-
-        // 1a. RPC block while syncing: the immediate by-root request is
-        // suppressed (columns arrive via the PM by-range path), but the
-        // outstanding entry is still registered so the retry wheel can fall
-        // back to by-root for stragglers.
         let rpc_stream = P2pStreamId::new(2, 2, StreamProtocol::BeaconBlocksByRange, true);
-        let mut rpc_events = Vec::new();
-        tile.beacon_block(rpc_stream, read.clone(), &mut |evt| rpc_events.push(evt));
-        assert!(rpc_events.is_empty(), "RPC block while syncing must not emit immediately");
-        assert!(
-            tile.outstanding_requests.contains(&block_root),
-            "outstanding entry registered for the wheel fallback"
-        );
-        tile.outstanding_requests.remove(&block_root);
 
-        // 1b. Once synced, an RPC block requests its custody columns by root.
+        // 1. Once synced, an RPC block requests its custody columns by root.
         tile.store.sync_update(SyncUpdate::Following);
         let mut rpc_events = Vec::new();
         tile.beacon_block(rpc_stream, read.clone(), &mut |evt| rpc_events.push(evt));
