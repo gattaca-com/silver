@@ -9,7 +9,7 @@
 //! controller tile that drives the spine remains a thin shell.
 
 use std::{
-    ops::Deref,
+    ops::{Deref, Not},
     time::{Duration, Instant},
 };
 
@@ -597,11 +597,13 @@ impl PeerManager {
             return;
         }
 
-        // Columns first, unconditionally: the early returns below (flow
-        // control, target reached) must not starve the column driver —
-        // with the DA check, missing columns are exactly what stalls the
-        // applied head that those returns key off.
-        self.maybe_issue_colreq(now, emit);
+        if matches!(self.current_sync_target(), SyncUpdate::SyncingFinalized { .. }).not() {
+            // Columns first: the early returns below (flow
+            // control, target reached) must not starve the column driver —
+            // with the DA check, missing columns are exactly what stalls the
+            // applied head that those returns key off.
+            self.maybe_issue_colreq(now, emit);
+        }
 
         let head_slot = self.local_head_imported_slot;
 
