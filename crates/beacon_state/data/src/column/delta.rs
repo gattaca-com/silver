@@ -75,7 +75,7 @@ impl<V: Copy> Reset for ColumnDelta<V> {
     }
 }
 
-/// Resolve chunk `chunk`'s 32-byte leaf from the merged base+edits values.
+/// Resolve chunk's 32-byte leaf from the merged base+edits values.
 fn chunk_leaf<V: ColumnVal>(data: &[V], edits: &Edits<V>, chunk: u32) -> B256 {
     let per_chunk = V::VALS_PER_CHUNK;
     let b = chunk as usize * per_chunk;
