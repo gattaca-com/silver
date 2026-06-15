@@ -628,6 +628,13 @@ pub enum ReplayBlock {
     Done,
 }
 
+#[derive(Clone, Copy, Debug)]
+#[repr(u8)]
+pub enum SyncingStrategy {
+    SyncFromPeers,
+    ReplayDisk,
+}
+
 /// Maximum blob commitments per block (Fulu target; increase as the spec
 /// evolves).
 pub const MAX_BLOBS_PER_BLOCK: usize = 21;

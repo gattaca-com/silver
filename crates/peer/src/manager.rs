@@ -12,7 +12,7 @@ use fxhash::{FxHashMap, FxHashSet};
 use silver_common::{
     BlockSource, Enr, GossipMsgOut, GossipTopic, IpBytes, MessageId, P2pSend, PeerControl,
     PeerEvent, PeerId, PeerStatus, RpcRequest, RpcRequestOutbound, RpcSeverity, StreamProtocol,
-    SyncUpdate, TCacheRead,
+    SyncUpdate, SyncingStrategy, TCacheRead,
     ssz_view::{METADATA_SIZE, STATUS_V2_SIZE, StatusView},
 };
 use silver_config::{ScoreParams, SyncingConfig};
@@ -35,6 +35,10 @@ const SYNC_AGG_CAP: usize = 64;
 /// If BS never sends `ReplayComplete` (signal lost, storage stalled), drop the
 /// gate after this timeout so network sync can't be stranded.
 const REPLAY_GATE_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Boot replay-vs-sync decision: wait at most this long for peer Status before
+/// defaulting to replaying our on-disk chain.
+const SYNCING_STRATEGY_TIMEOUT_WINDOW: Duration = Duration::from_secs(15);
 
 pub struct PeerManager {
     /// Live peers keyed by connection handle.
@@ -198,6 +202,8 @@ pub struct PeerManager {
     /// REPLAY_GATE_TIMEOUT. `None` until the first tick.
     awaiting_replay_since: Option<Instant>,
 
+    syncing_strategy_chosen: bool,
+
     /// Peers burnt as backer candidates for the duration of the current
     /// catchup. A peer lands here when it misbehaves on an RPC while it is
     /// our active inflight backer — `pick_sync_peer` skips them so the next
@@ -357,6 +363,7 @@ impl PeerManager {
             local_head_imported_slot: 0,
             awaiting_local_replay,
             awaiting_replay_since: None,
+            syncing_strategy_chosen: false,
             burnt_for_target: FxHashSet::with_capacity_and_hasher(PEERS_CAP, Default::default()),
             finalized_counts: FxHashMap::with_capacity_and_hasher(SYNC_AGG_CAP, Default::default()),
             head_counts: FxHashMap::with_capacity_and_hasher(SYNC_AGG_CAP, Default::default()),
@@ -410,6 +417,24 @@ impl PeerManager {
             self.awaiting_local_replay = false;
             self.target_dirty = true;
         }
+    }
+
+    pub fn maybe_choose_syncing_strategy(&mut self, now: Instant) -> Option<SyncingStrategy> {
+        if !self.awaiting_local_replay || self.syncing_strategy_chosen {
+            return None;
+        }
+        // Need our own post-bootstrap finalized epoch to compare against peers.
+        self.status?;
+        let since = *self.awaiting_replay_since.get_or_insert(now);
+        if matches!(self.select_target(), SyncUpdate::SyncingFinalized { .. }) {
+            self.syncing_strategy_chosen = true;
+            return Some(SyncingStrategy::SyncFromPeers);
+        }
+        if now.saturating_duration_since(since) >= SYNCING_STRATEGY_TIMEOUT_WINDOW {
+            self.syncing_strategy_chosen = true;
+            return Some(SyncingStrategy::ReplayDisk);
+        }
+        None
     }
 
     pub fn set_wall_slot(&mut self, wall_slot: u64) {
@@ -549,6 +574,12 @@ impl PeerManager {
             // old target no longer guarantees contiguity with our head.
             self.synced_through = 0;
             self.reset_col_sync();
+
+            if matches!(prev_target, SyncUpdate::SyncingFinalized { .. }) &&
+                matches!(new_target, SyncUpdate::SyncingHead { .. })
+            {
+                self.columns_synced_through = self.local_head_imported_slot;
+            }
         }
         Some(new_target)
     }
@@ -4445,10 +4476,18 @@ mod tests {
         // releases them.
         let now = Instant::now();
         let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
-        let target = [0xBB; 32];
         set_snapshot(&mut mgr, 10, 320);
         connect(&mut mgr, &mut cap, 1, 1, now);
-        send_status(&mut mgr, &mut cap, 1, make_status_v2(fork_a(), target, 20, [0; 32], 640));
+        // SyncingHead target: peer finalized matches ours ([0xAA] @ epoch 10 —
+        // a divergent finalized root at the same epoch would get it evicted),
+        // head ahead with a non-zero head_root. The column-coupling gate only
+        // applies past finalization, not during SyncingFinalized catch-up.
+        send_status(
+            &mut mgr,
+            &mut cap,
+            1,
+            make_status_v2(fork_a(), [0xAA; 32], 10, [0xDD; 32], 5000),
+        );
         let _ = mgr.maybe_emit_sync_target();
 
         // We custody columns, but the column fetch is frozen at the start head

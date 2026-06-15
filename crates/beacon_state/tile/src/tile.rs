@@ -258,6 +258,9 @@ impl BeaconStateTile {
         if !checkpoint_state.is_empty() {
             tile.bootstrap(checkpoint_state, decompressed_pubkeys);
         }
+
+        tracing::info!("created BeaconStateTile: head_state_slot is {}", tile.head_state_slot());
+
         tile
     }
 

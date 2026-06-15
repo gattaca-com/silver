@@ -11,7 +11,8 @@ pub use messages::{
     MAX_PAYLOAD_BODIES_PER_REQ, NewGossipMsg, P2pSend, PayloadValidationStatus, PeerControl,
     PeerEvent, PeerStatus, REQUEST_ID_PREFIX_MASK, ReplayBlock, RequestCategory, RpcInbound,
     RpcMsg, RpcOutbound, RpcRequest, RpcRequestInbound, RpcRequestOutbound, RpcResponse,
-    RpcResponseInbound, RpcResponseOutbound, RpcSeverity, SyncUpdate, WithdrawalInline,
+    RpcResponseInbound, RpcResponseOutbound, RpcSeverity, SyncUpdate, SyncingStrategy,
+    WithdrawalInline,
 };
 pub use stream_id::P2pStreamId;
 pub use stream_protocol::{
@@ -53,6 +54,8 @@ pub struct SilverSpine {
     pub sync_target: SpineQueue<SyncUpdate>,
     #[queue(size(2usize.pow(12)))]
     pub replay_blocks: SpineQueue<ReplayBlock>,
+    #[queue(size(2usize.pow(1)))]
+    pub syncing_strategy: SpineQueue<SyncingStrategy>,
 
     #[queue(size(2usize.pow(10)))]
     pub engine_reqs: SpineQueue<EngineReq>,
