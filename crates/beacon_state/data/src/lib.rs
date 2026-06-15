@@ -1,12 +1,9 @@
-pub use balances::{
-    BalancesGroup, BalancesId, BalancesReader, BalancesView, BalancesWriteView, FinalizedBalances,
-};
 pub use buffer::{Id, Reset, Ring};
 pub use column::{
-    ColumnGroup, ColumnSpec, ColumnVal, ColumnView, ColumnWriteView, Current,
-    CurrentParticipationGroup, CurrentParticipationId, FinalizedColumn, FinalizedInactivityScores,
-    FinalizedParticipation, Inactivity, InactivityId, InactivityScoresGroup, InactivityView,
-    InactivityWriteView, ParticipationView, ParticipationWriteView, Previous,
+    Balances, BalancesGroup, BalancesId, BalancesReader, BalancesWriteView, ColumnGroup,
+    ColumnReader, ColumnSpec, ColumnVal, ColumnWriteView, Current, CurrentParticipationGroup,
+    CurrentParticipationId, FinalizedColumn, Inactivity, InactivityId, InactivityScoresGroup,
+    InactivityView, InactivityWriteView, ParticipationView, ParticipationWriteView, Previous,
     PreviousParticipationGroup, PreviousParticipationId,
 };
 pub use decompose::DecomposeError;
@@ -32,7 +29,6 @@ pub use validators::{
 };
 pub use view::{BeaconStateOwner, BeaconStateReader, CheckpointChunk, CheckpointCursor};
 
-mod balances;
 pub mod buffer;
 mod column;
 mod decompose;

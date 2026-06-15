@@ -15,15 +15,14 @@ fn rebase_and_prune_pins_injects_overrides_and_drops_redundant() {
     // winner overrides 0, 1 (< valid_below → candidates to inject) and 5 (skipped).
     let winner = edits_of(&[(0, 0), (1, 0), (5, 0)]);
     let old_base = |idx: u32| 100 + idx as u64;
-    let new_base = |idx: u32| if idx <= 1 { 900 + idx as u64 } else { 100 + idx as u64 };
 
-    let out = survivor.rebase_and_prune(
-        &winner, /* valid_below */ 3, /* new_count */ 4, old_base, new_base,
-    );
+    let out = survivor
+        .rebase_and_prune(&winner, /* valid_below */ 3, /* new_count */ 4, old_base);
 
-    // 0 injected at old base 100 (≠ new base 900 → kept); 1 kept as the survivor's
-    // override 77 (self wins over the winner pin); 5 skipped (≥ valid_below);
-    // (2,50) kept (≠ new base 102); (3,103) dropped (== new base 103).
+    // New base = winner's override (0 at idx 0,1) else old base. 0 pinned at old
+    // base 100 (≠ new base 0 → kept); 1 kept as the survivor's override 77 (wins
+    // over the pin); 5 skipped (≥ valid_below); (2,50) kept (≠ new base 102);
+    // (3,103) dropped (== new base 103).
     assert_eq!(out.iter().copied().collect::<Vec<_>>(), [(0, 100), (1, 77), (2, 50)]);
 }
 

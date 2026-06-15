@@ -329,41 +329,6 @@ impl FinalizedValidators {
         &mut self.hash
     }
 
-    #[inline]
-    pub fn effective_balance_slice(&self) -> &[u64] {
-        &self.effective_balance
-    }
-
-    #[inline]
-    pub fn activation_eligibility_epoch_slice(&self) -> &[Epoch] {
-        &self.activation_eligibility_epoch
-    }
-
-    #[inline]
-    pub fn activation_epoch_slice(&self) -> &[Epoch] {
-        &self.activation_epoch
-    }
-
-    #[inline]
-    pub fn exit_epoch_slice(&self) -> &[Epoch] {
-        &self.exit_epoch
-    }
-
-    #[inline]
-    pub fn withdrawable_epoch_slice(&self) -> &[Epoch] {
-        &self.withdrawable_epoch
-    }
-
-    #[inline]
-    pub fn withdrawal_credentials_slice(&self) -> &[Withdrawals] {
-        &self.val_withdrawal_credentials
-    }
-
-    #[inline]
-    pub fn slashed_bitset(&self) -> &[u8] {
-        &self.slashed
-    }
-
     /// Harness-seeding constructor: builds a registry from `ValSeed`s whose
     /// pubkeys need not be valid BLS points (decompression falls back to
     /// default), which `try_new` would reject. Test/bench use only.

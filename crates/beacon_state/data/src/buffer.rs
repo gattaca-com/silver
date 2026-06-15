@@ -150,13 +150,16 @@ pub struct Ring<G, T, const N: usize> {
     _owner: PhantomData<fn() -> G>,
 }
 
-impl<G, T: Clone + Default, const N: usize> Default for Ring<G, T, N> {
+impl<G, T: Default, const N: usize> Default for Ring<G, T, N> {
     fn default() -> Self {
         assert!(N.is_power_of_two());
         Self {
             next_seq: 0,
             tail_seq: 0,
-            entries: vec![T::default(); N].into_boxed_slice(),
+            // `T::default()` per slot (not `vec![clone; N]`) so the ring needs
+            // only `T: Default`, not `Clone` — delta types are reset/cloned
+            // field-wise via `Reset`, never whole-value cloned.
+            entries: (0..N).map(|_| T::default()).collect(),
             _owner: PhantomData,
         }
     }

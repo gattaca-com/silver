@@ -18,17 +18,40 @@ use crate::{
 };
 
 impl DeltaHashTree {
-    /// Write `leaf` to position `i` of this overlay over `base`. Sparse: only
-    /// the path from leaf `i` up to the root is materialised; sibling subtrees
-    /// remain `Base(..)` pointers into the finalized array.
+    /// Apply every `(leaf_index, leaf)` in `sorted` (ascending, distinct
+    /// indices) to this overlay over `base` in a single dirty-subtree rebuild
+    /// that hashes each internal node exactly once. A single-element batch is
+    /// the per-leaf write; only the path(s) up to the root are materialised,
+    /// sibling subtrees stay `Base(..)` pointers, and subtrees that end up
+    /// equal to the base collapse back to a `Base` symlink.
+    #[inline]
+    pub fn set_leaves(&mut self, base: &FinalizedHashTree, sorted: &[(u32, B256)]) {
+        if sorted.is_empty() {
+            return;
+        }
+        debug_assert!(
+            sorted.windows(2).all(|w| w[0].0 < w[1].0),
+            "set_leaves needs ascending, distinct indices",
+        );
+        debug_assert!(
+            (sorted.last().unwrap().0 as usize) < base.max_elements(),
+            "leaf index out of range",
+        );
+        *self = base.set_delta_leaves_collapse(
+            self,
+            sorted,
+            FinalizedHashTree::root(),
+            0,
+            base.max_elements() as u32,
+        );
+    }
+
+    /// Single-leaf write — a 1-element [`set_leaves`]. As fast at the depths
+    /// that use it (validators ≈ 2^22), and collapses to a `Base` symlink when
+    /// the leaf equals the base.
     #[inline]
     pub fn set_leaf(&mut self, base: &FinalizedHashTree, i: usize, leaf: B256) {
-        debug_assert!(
-            i < base.max_elements(),
-            "leaf index out of range: i={i}, max_elements={}",
-            base.max_elements()
-        );
-        *self = base.set_delta_leaf_in_range(self, i as u32, 0, base.max_elements() as u32, leaf);
+        self.set_leaves(base, &[(i as u32, leaf)]);
     }
 
     /// The hash this overlay resolves to over `base` — its merged root (for a

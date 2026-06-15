@@ -348,21 +348,18 @@ impl ValidatorsDelta {
             valid_below,
             new_count,
             |i| *base.withdrawal_credentials(i as usize),
-            |i| *winner.effective_credentials(base, i),
         );
         out.effective_balance_edits = self.effective_balance_edits.rebase_and_prune(
             &winner.effective_balance_edits,
             valid_below,
             new_count,
             |i| base.effective_balance(i as usize),
-            |i| winner.effective_balance(base, i),
         );
         out.slashed_edits = self.slashed_edits.rebase_and_prune(
             &winner.slashed_edits,
             valid_below,
             new_count,
             |i| base.is_slashed(i as usize),
-            |i| winner.is_slashed(base, i),
         );
         out.activation_eligibility_epoch_edits =
             self.activation_eligibility_epoch_edits.rebase_and_prune(
@@ -370,28 +367,24 @@ impl ValidatorsDelta {
                 valid_below,
                 new_count,
                 |i| base.activation_eligibility_epoch(i as usize),
-                |i| winner.activation_eligibility_epoch(base, i),
             );
         out.activation_epoch_edits = self.activation_epoch_edits.rebase_and_prune(
             &winner.activation_epoch_edits,
             valid_below,
             new_count,
             |i| base.activation_epoch(i as usize),
-            |i| winner.activation_epoch(base, i),
         );
         out.exit_epoch_edits = self.exit_epoch_edits.rebase_and_prune(
             &winner.exit_epoch_edits,
             valid_below,
             new_count,
             |i| base.exit_epoch(i as usize),
-            |i| winner.exit_epoch(base, i),
         );
         out.withdrawable_epoch_edits = self.withdrawable_epoch_edits.rebase_and_prune(
             &winner.withdrawable_epoch_edits,
             valid_below,
             new_count,
             |i| base.withdrawable_epoch(i as usize),
-            |i| winner.withdrawable_epoch(base, i),
         );
 
         out.hash_overlay = self.hash_overlay.clone();
@@ -573,113 +566,74 @@ impl<'a> ValidatorsView<'a> {
     }
 
     pub fn iter_activation_epochs(self) -> impl Iterator<Item = Epoch> + 'a {
-        let base_slice = self.base.activation_epoch_slice();
-        column_iter(
-            self.base_count(),
+        let (appended, base_count) = (self.appended(), self.base_count());
+        self.delta.activation_epoch_edits.sweep(
+            base_count,
             self.count(),
-            self.delta.activation_epoch_edits.as_slice(),
-            move |i| base_slice[i],
-            self.appended(),
-            |a| a.activation_epoch,
+            move |i| self.base.activation_epoch[i],
+            move |i| appended[i - base_count].activation_epoch,
         )
     }
 
     pub fn iter_exit_epochs(self) -> impl Iterator<Item = Epoch> + 'a {
-        let base_slice = self.base.exit_epoch_slice();
-        column_iter(
-            self.base_count(),
+        let (appended, base_count) = (self.appended(), self.base_count());
+        self.delta.exit_epoch_edits.sweep(
+            base_count,
             self.count(),
-            self.delta.exit_epoch_edits.as_slice(),
-            move |i| base_slice[i],
-            self.appended(),
-            |a| a.exit_epoch,
+            move |i| self.base.exit_epoch[i],
+            move |i| appended[i - base_count].exit_epoch,
         )
     }
 
     pub fn iter_withdrawable_epochs(self) -> impl Iterator<Item = Epoch> + 'a {
-        let base_slice = self.base.withdrawable_epoch_slice();
-        column_iter(
-            self.base_count(),
+        let (appended, base_count) = (self.appended(), self.base_count());
+        self.delta.withdrawable_epoch_edits.sweep(
+            base_count,
             self.count(),
-            self.delta.withdrawable_epoch_edits.as_slice(),
-            move |i| base_slice[i],
-            self.appended(),
-            |a| a.withdrawable_epoch,
+            move |i| self.base.withdrawable_epoch[i],
+            move |i| appended[i - base_count].withdrawable_epoch,
         )
     }
 
     pub fn iter_activation_eligibility_epochs(self) -> impl Iterator<Item = Epoch> + 'a {
-        let base_slice = self.base.activation_eligibility_epoch_slice();
-        column_iter(
-            self.base_count(),
+        let (appended, base_count) = (self.appended(), self.base_count());
+        self.delta.activation_eligibility_epoch_edits.sweep(
+            base_count,
             self.count(),
-            self.delta.activation_eligibility_epoch_edits.as_slice(),
-            move |i| base_slice[i],
-            self.appended(),
-            |a| a.activation_eligibility_epoch,
+            move |i| self.base.activation_eligibility_epoch[i],
+            move |i| appended[i - base_count].activation_eligibility_epoch,
         )
     }
 
     pub fn iter_effective_balances(self) -> impl Iterator<Item = u64> + 'a {
-        let base_slice = self.base.effective_balance_slice();
-        column_iter(
-            self.base_count(),
+        let (appended, base_count) = (self.appended(), self.base_count());
+        self.delta.effective_balance_edits.sweep(
+            base_count,
             self.count(),
-            self.delta.effective_balance_edits.as_slice(),
-            move |i| base_slice[i],
-            self.appended(),
-            |a| a.effective_balance,
+            move |i| self.base.effective_balance[i],
+            move |i| appended[i - base_count].effective_balance,
         )
     }
 
     pub fn iter_slashed(self) -> impl Iterator<Item = bool> + 'a {
-        let bitset = self.base.slashed_bitset();
-        column_iter(
-            self.base_count(),
+        let (appended, base_count) = (self.appended(), self.base_count());
+        self.delta.slashed_edits.sweep(
+            base_count,
             self.count(),
-            self.delta.slashed_edits.as_slice(),
-            move |i| bitset[i / 8] & (1u8 << (i % 8)) != 0,
-            self.appended(),
-            |a| a.slashed,
+            move |i| self.base.slashed[i / 8] & (1u8 << (i % 8)) != 0,
+            move |i| appended[i - base_count].slashed,
         )
     }
 
     pub fn iter_credentials(self) -> impl Iterator<Item = Withdrawals> + 'a {
-        let base_slice = self.base.withdrawal_credentials_slice();
-        column_iter(
-            self.base_count(),
+        let (appended, base_count) = (self.appended(), self.base_count());
+        self.delta.credentials_edits.sweep(
+            base_count,
             self.count(),
-            self.delta.credentials_edits.as_slice(),
-            move |i| base_slice[i],
-            self.appended(),
-            |a| a.credentials,
+            move |i| self.base.val_withdrawal_credentials[i],
+            move |i| appended[i - base_count].credentials,
         )
     }
-}
-
-/// Whole-column iterator: base prefix overlaid by the sparse `edits`, then the
-/// fork's `appended` records. Free fn so it captures only `'a` borrows (no
-/// `&self`), letting the write view build it over a transient view.
-fn column_iter<'a, T: Copy + 'a>(
-    base_count: usize,
-    total: usize,
-    edits: &'a [(u32, T)],
-    base_at: impl Fn(usize) -> T + 'a,
-    appended: &'a [AppendedValidator],
-    from_appended: impl Fn(&AppendedValidator) -> T + 'a,
-) -> impl Iterator<Item = T> + 'a {
-    let mut cursor = 0usize;
-    (0..total).map(move |i| {
-        if cursor < edits.len() && (edits[cursor].0 as usize) == i {
-            let v = edits[cursor].1;
-            cursor += 1;
-            v
-        } else if i < base_count {
-            base_at(i)
-        } else {
-            from_appended(&appended[i - base_count])
-        }
-    })
 }
 
 /// Write view over a validator fork: reads merge base + fork, mutators land on

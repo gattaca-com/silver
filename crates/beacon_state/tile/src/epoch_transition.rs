@@ -211,9 +211,13 @@ pub fn process_inactivity_updates(
             }
             s
         };
-        scratch.push((i as u32, new));
+        // Only changed scores: set_many's cost is per touched chunk, and in a
+        // healthy (non-leak) chain nearly every score is 0 and stays 0.
+        if new != r.inactivity_score {
+            scratch.push((i as u32, new));
+        }
     }
-    view.inactivity.install(scratch);
+    view.inactivity.set_many(scratch);
 }
 
 #[timed]
@@ -400,18 +404,48 @@ pub fn process_participation_flag_updates(
     view: &mut StateWriterView,
     scratch: &mut Vec<(u32, u8)>,
 ) {
-    // previous_epoch_participation = current_epoch_participation.
+    let n = view.validators.count();
+    rotate_previous_participation(view, n, scratch);
+    clear_current_participation(view, n, scratch);
+}
+
+/// previous_epoch_participation = current_epoch_participation. Only changed
+/// flags: the rotation is mostly a no-op (a validator timely in both epochs
+/// keeps identical flags), so prev and curr are equal almost everywhere.
+#[timed]
+fn rotate_previous_participation(
+    view: &mut StateWriterView,
+    n: usize,
+    scratch: &mut Vec<(u32, u8)>,
+) {
     scratch.clear();
     {
-        let n = view.validators.count();
+        let mut prev = view.previous_participation.iter();
         let mut curr = view.current_participation.iter();
         for i in 0..n {
-            scratch.push((i as u32, curr.next().unwrap()));
+            let (p, c) = (prev.next().unwrap(), curr.next().unwrap());
+            if c != p {
+                scratch.push((i as u32, c));
+            }
         }
     }
-    view.previous_participation.install(scratch);
-    // current_epoch_participation = 0 (no per-validator context needed).
-    view.current_participation.replace(scratch, |_, _| 0);
+    view.previous_participation.set_many(scratch);
+}
+
+/// current_epoch_participation = 0. ~n-participants sized (only the
+/// already-zero non-participants are skipped).
+#[timed]
+fn clear_current_participation(view: &mut StateWriterView, n: usize, scratch: &mut Vec<(u32, u8)>) {
+    scratch.clear();
+    {
+        let mut curr = view.current_participation.iter();
+        for i in 0..n {
+            if curr.next().unwrap() != 0 {
+                scratch.push((i as u32, 0));
+            }
+        }
+    }
+    view.current_participation.set_many(scratch);
 }
 
 pub fn process_eth1_data_reset(eth1: &mut Eth1WriteView, current_epoch: Epoch) {

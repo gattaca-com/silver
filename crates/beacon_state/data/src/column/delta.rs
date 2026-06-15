@@ -1,201 +1,195 @@
 use std::marker::PhantomData;
 
+use silver_common_macros::timed;
+
 use super::{ColumnGroup, ColumnSpec, ColumnVal, finalized::FinalizedColumn};
 use crate::{
     buffer::{Id, Reset, Slot},
-    sparse::{
-        SparseLayer, install_against, lookup_sparse, rebase_and_prune_sparse, replace_against,
-        set_against, sparse_merge_into, sweep,
-    },
+    hash_tree::DeltaHashTree,
+    sparse::Edits,
+    types::{B256, VALIDATOR_REGISTRY_LIMIT},
 };
 
-/// Sorted by index; entries equal to the base are elided on the bulk paths.
-/// `total` is the fork's list length, grown in lockstep with the validator
-/// registry.
-#[derive(Clone)]
+/// Per-fork delta of one column: sparse value edits over the finalized base
+/// plus the hash overlay over the same chunks. `total` is the fork's list
+/// length, grown in lockstep with the validator registry.
+#[derive(Default)]
 pub(crate) struct ColumnDelta<V> {
-    edits: Vec<(u32, V)>,
+    edits: Edits<V>,
+    hash: DeltaHashTree,
     total: usize,
 }
 
-// Manual impl: the derive would spuriously bind `V: Default` (an empty edit
-// vec needs no element default).
-impl<V> Default for ColumnDelta<V> {
-    fn default() -> Self {
-        Self { edits: Vec::new(), total: 0 }
-    }
-}
-
 impl<V: ColumnVal> ColumnDelta<V> {
-    #[inline]
-    pub(super) fn edits(&self) -> &[(u32, V)] {
-        &self.edits
-    }
-
-    #[inline]
-    pub(super) fn total(&self) -> usize {
-        self.total
-    }
-
-    /// Anchor a freshly-rolled (reset) delta at `base`'s length. `edits` is
-    /// already empty; only the length needs seeding.
+    /// Seed the fork length from `base` after a ring roll — `edits`/`hash` are
+    /// already empty, so only the length needs setting.
     pub(super) fn anchor_at(&mut self, base: &FinalizedColumn<V>) {
-        self.total = base.count();
+        self.total = base.count;
     }
 
-    /// Fill `out` (a fresh slot) with `self` (a survivor) finalized against a
-    /// promoted `winner`, pre-promotion. `self` is only read (stays frozen).
-    /// `valid_below` (old base count) and `new_count` (winner's length) are
-    /// both intrinsic. See [`rebase_and_prune_sparse`].
+    /// Finalize survivor `self` into fresh slot `out` against promoted
+    /// `winner`, rebasing pins and pruning redundancy onto the logical new
+    /// base (winner's override else old base). Must run before
+    /// [`promote_into_base`](Self::promote_into_base), while `base` still
+    /// holds the old count. `self` is read-only so lock-free readers stay
+    /// unblocked.
     pub(super) fn rebase_and_prune(
         &self,
-        out: &mut ColumnDelta<V>,
+        out: &mut Self,
         base: &FinalizedColumn<V>,
-        winner: &ColumnDelta<V>,
+        winner: &Self,
     ) {
         out.total = self.total;
-        out.edits = rebase_and_prune_sparse(
-            &self.edits,
+        out.edits = self.edits.rebase_and_prune(
             &winner.edits,
-            base.count() as u32,
+            base.count as u32,
             winner.total as u32,
-            |idx| base.get(idx as usize),
-            |idx| lookup_sparse(&winner.edits, idx).unwrap_or_else(|| base.get(idx as usize)),
+            |idx| base.data[idx as usize],
         );
+        out.hash = self.hash.clone();
+        out.hash.rebase(&base.hash, &winner.hash);
+        base.hash.prune_delta_against(&mut out.hash, &winner.hash);
+    }
+
+    /// Fold the delta into `base`: edits into `data`, fork length into the
+    /// count, and the overlay's cached hashes into the tree (zero SHA).
+    pub(super) fn promote_into_base(&self, base: &mut FinalizedColumn<V>) {
+        for &(idx, v) in self.edits.iter() {
+            base.data[idx as usize] = v;
+        }
+        base.count = self.total;
+        base.hash.promote_delta(&self.hash);
     }
 }
 
-impl<V: ColumnVal> Reset for ColumnDelta<V> {
+impl<V: Copy> Reset for ColumnDelta<V> {
     fn reset(&mut self) {
         self.edits.clear();
+        self.hash.reset();
         self.total = 0;
     }
     fn reset_from(&mut self, other: &Self) {
         self.edits.clone_from(&other.edits);
+        self.hash.reset_from(&other.hash);
         self.total = other.total;
     }
 }
 
-impl<V: ColumnVal> SparseLayer for ColumnDelta<V> {
-    type Base = FinalizedColumn<V>;
-    type Val = V;
-    const APPENDED_DEFAULT: V = V::APPENDED_DEFAULT;
-    fn edits_mut(&mut self) -> &mut Vec<(u32, V)> {
-        &mut self.edits
+/// Resolve chunk `chunk`'s 32-byte leaf from the merged base+edits values.
+fn chunk_leaf<V: ColumnVal>(data: &[V], edits: &Edits<V>, chunk: u32) -> B256 {
+    let per_chunk = V::VALS_PER_CHUNK;
+    let b = chunk as usize * per_chunk;
+    let mut vals = [V::default(); 32];
+    let vals = &mut vals[..per_chunk];
+    vals.copy_from_slice(&data[b..b + per_chunk]);
+
+    for &(k, v) in edits.iter_from(b as u32).take_while(|(k, _)| (*k as usize) < b + per_chunk) {
+        vals[k as usize - b] = v;
     }
-    fn base_get(base: &FinalizedColumn<V>, i: usize) -> V {
-        base.get(i)
-    }
-    fn base_data(base: &FinalizedColumn<V>) -> &[V] {
-        base.data()
-    }
-    fn base_count(base: &FinalizedColumn<V>) -> usize {
-        base.count()
-    }
-    fn total(&self) -> usize {
-        self.total
-    }
+    V::pack_leaf(vals)
 }
 
-pub struct ColumnView<'a, C: ColumnSpec> {
-    base: &'a FinalizedColumn<C::Val>,
+/// Read handle over base + delta: value reads (`get`/`iter`) plus the SSZ list
+/// root. `get`/`iter` never touch the hash overlay, so lock-free value readers
+/// can't race the writer; `hash_root` reads it and stays writer-side.
+pub struct ColumnReader<'a, C: ColumnSpec> {
+    finalized: &'a FinalizedColumn<C::Val>,
     delta: &'a ColumnDelta<C::Val>,
     _marker: PhantomData<fn() -> C>,
 }
 
-// Manual impls: deriving would spuriously bind `C: Clone`.
-impl<C: ColumnSpec> Clone for ColumnView<'_, C> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-impl<C: ColumnSpec> Copy for ColumnView<'_, C> {}
-
-impl<'a, C: ColumnSpec> ColumnView<'a, C> {
+impl<'a, C: ColumnSpec> ColumnReader<'a, C> {
     #[inline]
     pub(super) fn new(base: &'a FinalizedColumn<C::Val>, delta: &'a ColumnDelta<C::Val>) -> Self {
-        Self { base, delta, _marker: PhantomData }
+        Self { finalized: base, delta, _marker: PhantomData }
     }
 
     #[inline]
     pub fn get(&self, ix: usize) -> C::Val {
-        if let Some(v) = lookup_sparse(self.delta.edits(), ix as u32) {
+        if let Some(v) = self.delta.edits.get(ix as u32).copied() {
             return v;
         }
-        if ix < self.base.count() { self.base.get(ix) } else { C::Val::APPENDED_DEFAULT }
+        if ix < self.finalized.count { self.finalized.data[ix] } else { C::Val::default() }
     }
 
     #[inline]
     pub fn iter(self) -> impl Iterator<Item = C::Val> + 'a {
-        sweep(
-            self.delta.edits(),
-            &self.base.data()[..self.base.count()],
-            C::Val::APPENDED_DEFAULT,
-            self.delta.total(),
+        self.delta.edits.sweep(
+            self.finalized.count,
+            self.delta.total,
+            |i| self.finalized.data[i],
+            |_| C::Val::default(),
         )
+    }
+
+    #[inline]
+    pub fn hash_root(&self) -> B256 {
+        let chunk_depth = (VALIDATOR_REGISTRY_LIMIT / C::Val::VALS_PER_CHUNK).trailing_zeros();
+        self.delta.hash.ssz_list_root(&self.finalized.hash, chunk_depth, self.delta.total)
     }
 }
 
-/// Length is intrinsic (no external counts).
 pub struct ColumnWriteView<'a, C: ColumnSpec> {
-    base: &'a FinalizedColumn<C::Val>,
-    fork: Slot<'a, ColumnGroup<C>, ColumnDelta<C::Val>>,
+    finalized: &'a FinalizedColumn<C::Val>,
+    delta: Slot<'a, ColumnGroup<C>, ColumnDelta<C::Val>>,
 }
 
 impl<'a, C: ColumnSpec> ColumnWriteView<'a, C> {
     #[inline]
     pub(super) fn new(
-        base: &'a FinalizedColumn<C::Val>,
-        fork: Slot<'a, ColumnGroup<C>, ColumnDelta<C::Val>>,
+        finalized: &'a FinalizedColumn<C::Val>,
+        delta: Slot<'a, ColumnGroup<C>, ColumnDelta<C::Val>>,
     ) -> Self {
-        Self { base, fork }
+        Self { finalized, delta }
     }
 
     #[inline]
     pub fn commit(self) -> Id<ColumnGroup<C>> {
-        self.fork.commit()
-    }
-
-    /// Grow the list by one (new validator → the appended default, so no
-    /// edit).
-    #[inline]
-    pub fn append(&mut self) -> u32 {
-        let idx = self.fork.total as u32;
-        self.fork.total += 1;
-        idx
+        self.delta.commit()
     }
 
     #[inline]
     pub fn set(&mut self, idx: u32, v: C::Val) {
-        set_against(&mut *self.fork, self.base, idx, v);
+        self.set_many(&[(idx, v)]);
     }
 
     /// Merge a sorted, distinct-index batch in O(|edits| + |batch|), keeping
-    /// base-equal entries (the read sweep / rebase tolerate redundant edits).
-    #[inline]
-    pub fn merge(&mut self, sorted: &[(u32, C::Val)]) {
-        sparse_merge_into(self.fork.edits_mut(), sorted);
+    /// base-equal entries (the read sweep / rebase tolerate redundant edits),
+    /// then recompute each dirty chunk's leaf in the hash overlay.
+    #[timed]
+    pub fn set_many(&mut self, changes: &[(u32, C::Val)]) {
+        debug_assert!(
+            changes.windows(2).all(|w| w[0].0 < w[1].0),
+            "set_many input must be ascending with distinct indices",
+        );
+        let ColumnDelta { edits, hash, .. } = &mut *self.delta;
+        edits.merge_in_place(changes);
+
+        let per_chunk = C::Val::VALS_PER_CHUNK as u32;
+        let mut leaves: Vec<(u32, B256)> = Vec::with_capacity(changes.len());
+        for group in changes.chunk_by(|a, b| a.0 / per_chunk == b.0 / per_chunk) {
+            let chunk = group[0].0 / per_chunk;
+            leaves.push((chunk, chunk_leaf(&self.finalized.data, edits, chunk)));
+        }
+        hash.set_leaves(&self.finalized.hash, &leaves);
+    }
+
+    /// Append a value for a newly-registered validator (+1 length) — columns
+    /// move in lockstep with the registry so the lengths stay aligned.
+    pub fn append(&mut self, v: C::Val) -> u32 {
+        let idx = self.delta.total as u32;
+        self.delta.total += 1;
+        self.set(idx, v);
+        idx
     }
 
     #[inline]
-    pub fn install(&mut self, dense: &mut Vec<(u32, C::Val)>) {
-        install_against(&mut *self.fork, self.base, dense);
+    pub fn reader(&self) -> ColumnReader<'_, C> {
+        ColumnReader::new(self.finalized, &self.delta)
     }
 
-    #[inline]
-    pub fn replace<F: FnMut(usize, C::Val) -> C::Val>(
-        &mut self,
-        scratch: &mut Vec<(u32, C::Val)>,
-        f: F,
-    ) {
-        replace_against(&mut *self.fork, self.base, scratch, f);
-    }
-
-    #[inline]
-    pub fn reader(&self) -> ColumnView<'_, C> {
-        ColumnView::new(self.base, &self.fork)
-    }
-
+    // Read-through conveniences (a `Deref` to `ColumnReader` is impossible —
+    // the reader borrows the delta shared while we hold it `&mut`).
     #[inline]
     pub fn get(&self, ix: usize) -> C::Val {
         self.reader().get(ix)
@@ -204,5 +198,10 @@ impl<'a, C: ColumnSpec> ColumnWriteView<'a, C> {
     #[inline]
     pub fn iter(&self) -> impl Iterator<Item = C::Val> + '_ {
         self.reader().iter()
+    }
+
+    #[inline]
+    pub fn hash_root(&self) -> B256 {
+        self.reader().hash_root()
     }
 }

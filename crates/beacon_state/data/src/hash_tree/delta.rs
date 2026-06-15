@@ -124,39 +124,70 @@ pub struct DeltaNode {
 }
 
 impl FinalizedHashTree {
-    /// `[subtree_left, subtree_right)` is the leaf-index range covered by node
-    /// subtree.
-    pub(super) fn set_delta_leaf_in_range(
+    /// Apply all `leaves` (sorted, distinct, within `[lo, hi)`; `node` is the
+    /// 1-indexed tree node for that range) in one recursive divide & conquer
+    /// that hashes each touched internal node exactly once — instead of one
+    /// root→leaf rebuild per leaf re-hashing shared upper nodes. A
+    /// single-element batch is the per-leaf write. Subtrees with no dirty leaf
+    /// are never entered; auxiliary memory is just the recursion stack.
+    ///
+    /// Collapse-to-base: when a written leaf equals the base leaf, or both
+    /// children end up symlinking to this node's own base children, the
+    /// subtree provably equals the base, so we store a `Base(node)` symlink
+    /// instead of hashing/allocating a `Node`. A clear over an empty base
+    /// collapses every leaf and propagates to the root — no SHA, no `Arc`;
+    /// a non-empty base stays correct since differing subtrees build normally.
+    /// This is an eager prune — the finalize-time `rebase` re-pins these
+    /// symlinks on base advance.
+    pub(super) fn set_delta_leaves_collapse(
         &self,
         delta: &DeltaHashTree,
-        index: u32,
-        subtree_left: u32,
-        subtree_right: u32,
-        leaf: B256,
+        leaves: &[(u32, B256)],
+        node: u32,
+        lo: u32,
+        hi: u32,
     ) -> DeltaHashTree {
-        debug_assert!(subtree_left <= index && index < subtree_right);
+        debug_assert!(!leaves.is_empty());
 
-        if subtree_right - subtree_left == 1 {
+        if hi - lo == 1 {
+            let leaf = leaves[0].1;
+            if leaf == *self.node_hash(node) {
+                return DeltaHashTree::Base(node);
+            }
             return DeltaHashTree::Leaf(leaf);
         }
 
         let (mut left_node, mut right_node) = match delta {
-            DeltaHashTree::Base(b) => {
-                (DeltaHashTree::Base(Self::left(*b)), DeltaHashTree::Base(Self::right(*b)))
+            DeltaHashTree::Base(_) => {
+                (DeltaHashTree::Base(Self::left(node)), DeltaHashTree::Base(Self::right(node)))
             }
             DeltaHashTree::Node(arc) => (arc.left.clone(), arc.right.clone()),
-            DeltaHashTree::Leaf(_) => {
-                unreachable!("Leaf possible only when subtree_right - subtree_left == 1")
-            }
+            DeltaHashTree::Leaf(_) => unreachable!("Leaf possible only when hi - lo == 1"),
         };
 
-        let subtree_mid = (subtree_left + subtree_right) / 2;
-        if index < subtree_mid {
+        let mid = (lo + hi) / 2;
+        let split = leaves.partition_point(|(i, _)| *i < mid);
+        let (left_leaves, right_leaves) = leaves.split_at(split);
+        if !left_leaves.is_empty() {
             left_node =
-                self.set_delta_leaf_in_range(&left_node, index, subtree_left, subtree_mid, leaf);
-        } else {
-            right_node =
-                self.set_delta_leaf_in_range(&right_node, index, subtree_mid, subtree_right, leaf);
+                self.set_delta_leaves_collapse(&left_node, left_leaves, Self::left(node), lo, mid);
+        }
+        if !right_leaves.is_empty() {
+            right_node = self.set_delta_leaves_collapse(
+                &right_node,
+                right_leaves,
+                Self::right(node),
+                mid,
+                hi,
+            );
+        }
+
+        // Both children symlink to this node's base children ⇒ node == base.
+        // Collapse without hashing or allocating.
+        if let (DeltaHashTree::Base(l), DeltaHashTree::Base(r)) = (&left_node, &right_node) {
+            if *l == Self::left(node) && *r == Self::right(node) {
+                return DeltaHashTree::Base(node);
+            }
         }
 
         let hash = hash_concat(&left_node.root(self), &right_node.root(self));

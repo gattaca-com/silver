@@ -1,34 +1,37 @@
 use std::io::{self, Write};
 
-use super::{ColumnVal, delta::ColumnDelta};
-use crate::ColumnLenMismatch;
+use super::ColumnVal;
+use crate::{ColumnLenMismatch, hash_tree::FinalizedHashTree};
 
-/// Sized to validator capacity; `count` is the finalized list length (kept in
-/// lockstep with the validator registry).
 pub struct FinalizedColumn<V> {
-    data: Box<[V]>,
-    count: usize,
+    pub(super) data: Box<[V]>,
+    pub(super) hash: FinalizedHashTree,
+    pub(super) count: usize,
 }
 
 impl<V: ColumnVal> FinalizedColumn<V> {
-    /// Base decoded from the column's SSZ byte range (`count` little-endian
-    /// values) over a `cap`-sized buffer; `new(cap, 0, &[])` is the empty base.
     pub(super) fn new(
         cap: usize,
         count: usize,
         ssz_bytes: &[u8],
     ) -> Result<Self, ColumnLenMismatch> {
-        if ssz_bytes.len() != count * V::SIZE {
+        if ssz_bytes.len() != count * size_of::<V>() {
             return Err(ColumnLenMismatch { bytes: ssz_bytes.len(), expected: count });
         }
+        let cap = cap.next_multiple_of(V::VALS_PER_CHUNK);
         debug_assert!(count <= cap, "column count exceeds capacity");
-        let mut data = vec![V::APPENDED_DEFAULT; cap].into_boxed_slice();
+        let mut data = vec![V::default(); cap].into_boxed_slice();
         V::read_ssz_slice(&mut data[..count], ssz_bytes);
-        Ok(Self { data, count })
-    }
 
-    pub(crate) fn write_ssz<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        V::write_ssz_slice(&self.data[..self.count], w)
+        let hash = FinalizedHashTree::from_leaves(
+            ssz_bytes.chunks(32).map(|src| {
+                let mut leaf = [0u8; 32];
+                leaf[..src.len()].copy_from_slice(src);
+                leaf
+            }),
+            cap / V::VALS_PER_CHUNK,
+        );
+        Ok(Self { data, hash, count })
     }
 
     #[inline]
@@ -41,17 +44,7 @@ impl<V: ColumnVal> FinalizedColumn<V> {
         self.data[i]
     }
 
-    #[inline]
-    pub(super) fn data(&self) -> &[V] {
-        &self.data
-    }
-
-    /// Fold a fork's edits into the base, then adopt its length — the data
-    /// half of finalization.
-    pub(super) fn promote(&mut self, delta: &ColumnDelta<V>) {
-        for &(idx, v) in delta.edits() {
-            self.data[idx as usize] = v;
-        }
-        self.count = delta.total();
+    pub(crate) fn write_ssz<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        V::write_ssz_slice(&self.data[..self.count], w)
     }
 }
