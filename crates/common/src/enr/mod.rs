@@ -13,7 +13,7 @@ use alloy_rlp::{Decodable, Encodable, Error as DecoderError, Header};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 pub use builder::Error;
 use bytes::{Buf, BytesMut};
-pub use node_id::NodeId;
+pub use node_id::{NUMBER_OF_CUSTODY_GROUPS, NodeId, SAMPLES_PER_SLOT};
 use secp256k1::{PublicKey, SECP256K1, SecretKey};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 use sha3::{Digest, Keccak256};

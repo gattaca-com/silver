@@ -13,8 +13,8 @@ use silver_beacon_state_data::{
 use silver_common::{
     BeaconStateEvent, BlockSource, DataColumnsAvailable, EngineFcuReq, EngineNewPayloadReq,
     EngineReq, EngineResp, GossipTopic, NewGossipMsg, P2pStreamId, PayloadValidationStatus,
-    PeerEvent, RpcInbound, RpcResponse, RpcResponseInbound, RpcSeverity, SilverSpine, SyncUpdate,
-    TCacheRead, TRandomAccess, TRead, hex32,
+    PeerEvent, ReplayBlock, RpcInbound, RpcResponse, RpcResponseInbound, RpcSeverity, SilverSpine,
+    SyncUpdate, TCacheRead, TRandomAccess, TRead, hex32,
     ssz_view::{
         self, AttesterSlashingView, MAX_ATTESTATIONS_ELECTRA, MAX_ATTESTING_INDICES,
         PROPOSER_SLASHING_SIZE, ProposerSlashingView, SIGNED_BLS_CHANGE_SIZE,
@@ -31,6 +31,7 @@ use crate::{
     fork_choice::{BlockImport, ForkChoice, MAX_FORK_CHOICE_NODES, VoteTracker, compute_deltas},
     shuffling::{self, DOMAIN_BEACON_ATTESTER},
     ssz_hash, state_transition, validate,
+    weak_subjectivity::weak_subjectivity_period,
 };
 
 /// Survivor set re-anchored at finalization: every fork-choice node's bundle
@@ -189,6 +190,9 @@ pub struct BeaconStateTile {
     gossip_consumer: TRandomAccess,
     rpc_consumer: TRandomAccess,
     incoming_engine_resp_consumer: TRandomAccess,
+    replay_consumer: TRandomAccess,
+
+    verify_weak_subjectivity: bool,
 }
 
 type Producers = <SilverSpine as FluxSpine>::Producers;
@@ -204,6 +208,8 @@ impl BeaconStateTile {
         gossip_consumer: TRandomAccess,
         rpc_consumer: TRandomAccess,
         incoming_engine_resp_consumer: TRandomAccess,
+        replay_consumer: TRandomAccess,
+        verify_weak_subjectivity: bool,
         checkpoint_state: &[u8],
         decompressed_pubkeys: &[u8],
     ) -> Self {
@@ -249,6 +255,8 @@ impl BeaconStateTile {
             gossip_consumer,
             rpc_consumer,
             incoming_engine_resp_consumer,
+            replay_consumer,
+            verify_weak_subjectivity,
         };
 
         if !checkpoint_state.is_empty() {
@@ -378,6 +386,8 @@ impl BeaconStateTile {
             anchor,
         );
         self.state.publish_state_id(anchor);
+
+        self.assert_within_weak_subjectivity();
     }
 
     /// Index bundle of fork-choice's canonical tip. For gossip-object
@@ -527,6 +537,24 @@ impl BeaconStateTile {
     /// state is uninitialized). Call once after construction.
     pub fn set_configured_fork_digest(&mut self, digest: [u8; 4]) {
         self.configured_fork_digest = Some(digest);
+    }
+
+    pub fn assert_within_weak_subjectivity(&mut self) {
+        if !self.verify_weak_subjectivity {
+            return;
+        }
+        let ws_period = {
+            let view = self.state.read_view(self.last_applied);
+            weak_subjectivity_period(&view, &mut self.stf_scratch.active)
+        };
+        let checkpoint_epoch = self.head_state_slot() / SLOTS_PER_EPOCH;
+        let current_epoch = self.ticker.current_slot() / SLOTS_PER_EPOCH;
+        assert!(
+            current_epoch <= checkpoint_epoch + ws_period,
+            "checkpoint epoch {checkpoint_epoch} is outside the weak-subjectivity period \
+             ({ws_period} epochs); wall epoch {current_epoch} — refusing stale anchor \
+             (override with --disable-weak-subjectivity)",
+        );
     }
 
     fn status_payload(&mut self) -> [u8; STATUS_V2_SIZE] {
@@ -1176,6 +1204,28 @@ impl BeaconStateTile {
     /// or PM is range-syncing past it).
     fn da_boundary(&self) -> Slot {
         self.sync_finalized_slot.max(self.fork_choice.finalized_checkpoint.epoch * SLOTS_PER_EPOCH)
+    }
+    fn replay_block(&mut self, data: &[u8]) {
+        if !SignedBeaconBlockView::check_size(data) {
+            tracing::error!(len = data.len(), "replayed on-disk block malformed");
+            return;
+        }
+
+        let block_slot = SignedBeaconBlockView::slot(data);
+        let feedback = self.apply_block_impl(data, false, |_block_root| {});
+        match feedback {
+            Feedback::Reject(block_root) => tracing::error!(
+                block_slot,
+                block_root = ?block_root.map(|r| hex32(&r)),
+                "replayed block rejected",
+            ),
+            _ => tracing::info!(
+                head_slot = self.head_state_slot(),
+                block_slot,
+                "replayed block: {:?}",
+                feedback
+            ),
+        }
     }
 
     fn apply_block_impl<F: FnMut([u8; 32])>(
@@ -1904,6 +1954,21 @@ impl Tile<SilverSpine> for BeaconStateTile {
             self.handle_engine_response(eng_resp, producers);
         });
         self.incoming_engine_resp_consumer.free();
+
+        adapter.consume(|m: ReplayBlock, producers| match m {
+            ReplayBlock::Block { ssz } => {
+                let acquired = self.replay_consumer.acquire(ssz);
+                let data = acquired.buffer().ok().map(|(d, _)| d as *const [u8]);
+                if let Some(p) = data {
+                    self.replay_block(unsafe { &*p });
+                }
+            }
+            ReplayBlock::Done => {
+                producers.produce(self.status_event());
+                producers.produce(BeaconStateEvent::ReplayComplete);
+            }
+        });
+        self.replay_consumer.free();
     }
 }
 
@@ -2030,6 +2095,13 @@ mod tests {
 
     /// Tile whose ticker reports `wall_slot` as the current slot.
     fn make_tile_at_wall_slot(wall_slot: u64) -> BeaconStateTile {
+        make_tile_at_wall_slot_ws(wall_slot, true)
+    }
+
+    fn make_tile_at_wall_slot_ws(
+        wall_slot: u64,
+        verify_weak_subjectivity: bool,
+    ) -> BeaconStateTile {
         let secs_per_slot = 12u64;
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
         let genesis = now.saturating_sub(wall_slot * secs_per_slot + 1);
@@ -2037,9 +2109,11 @@ mod tests {
         let gossip_p = TCache::producer("test_gossip", 1 << 20);
         let event_p = TCache::producer("test_event", 1 << 20);
         let engine_p = TCache::producer("test_engine", 1 << 20);
+        let replay_p = TCache::producer("test_replay", 1 << 20);
         let gossip_c = gossip_p.cache_ref().random_access("test_gossip", true).unwrap();
         let rpc_c = event_p.cache_ref().random_access("test_event", true).unwrap();
         let engine_c = engine_p.cache_ref().random_access("test_engine", true).unwrap();
+        let replay_c = replay_p.cache_ref().random_access("test_replay", true).unwrap();
         let state = BeaconStateOwner::pre_bootstrap();
         BeaconStateTile::new(
             ticker,
@@ -2048,6 +2122,8 @@ mod tests {
             gossip_c,
             rpc_c,
             engine_c,
+            replay_c,
+            verify_weak_subjectivity,
             &[],
             &[],
         )

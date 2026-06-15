@@ -13,7 +13,7 @@ use blst::min_pk::PublicKey;
 use crate::{
     BeaconState,
     decompose::FIXED_PART,
-    types::{B256, Checkpoint, Eth1Data, SyncCommittee},
+    types::{B256, Checkpoint, Eth1Data, SLOTS_PER_EPOCH, SyncCommittee},
 };
 
 // SSZ-serialised sizes of the fixed-width records (Fulu); mirror `decompose`.
@@ -258,11 +258,23 @@ impl BeaconState {
         // F11_OFF/F12_OFF validators, balances
         w_u32(w, offs[2])?;
         w_u32(w, offs[3])?;
-        // F13 randao_mixes, F14 slashings
-        write_b256_slice(w, &epoch_base.randao_mixes)?;
-        for s in epoch_base.slashings.iter() {
-            w_u64(w, *s)?;
+
+        // The current epoch's bucket is only
+        // flushed to the array tier at the epoch boundary, so mid-epoch the live
+        // value lives in the `*_current` caches (the hashing path substitutes
+        // them in `effective_{randao_mixes,slashings}_into`).
+        // F13 randao_mixes
+        let current_epoch = (sl.slot / SLOTS_PER_EPOCH) as usize;
+        let randao_curr = current_epoch % epoch_base.randao_mixes.len();
+        write_b256_slice(w, &epoch_base.randao_mixes[..randao_curr])?;
+        w.write_all(&sl.randao_mix_current)?;
+        write_b256_slice(w, &epoch_base.randao_mixes[randao_curr + 1..])?;
+        // F14 slashings.
+        let slashings_curr = current_epoch % epoch_base.slashings.len();
+        for (i, s) in epoch_base.slashings.iter().enumerate() {
+            w_u64(w, if i == slashings_curr { sl.current_epoch_slashings } else { *s })?;
         }
+
         // F15_OFF/F16_OFF previous/current participation
         w_u32(w, offs[4])?;
         w_u32(w, offs[5])?;
@@ -426,7 +438,10 @@ pub fn decode_checkpoint_pubkeys(bytes: &[u8]) -> Result<Vec<PublicKey>, Pubkeys
 
 #[cfg(test)]
 mod tests {
-    use crate::{BeaconState, SpecConfig, decode_checkpoint_pubkeys, encode::Section};
+    use crate::{
+        BeaconState, EpochGroup, EpochStateFinalized, SLOTS_PER_HISTORICAL_ROOT, SlotState,
+        SlotStateFinalized, SlotStateGroup, SpecConfig, decode_checkpoint_pubkeys, encode::Section,
+    };
 
     /// `encode → decompose → encode` must be a byte-exact fixed point, and the
     /// chunked streaming path must match the one-pass path. The pre-bootstrap
@@ -456,7 +471,47 @@ mod tests {
         assert_eq!(once, streamed, "chunk-streamed SSZ differs from one-pass");
     }
 
-    /// Pubkeys sidecar: write → decode must reproduce the decompressed keys.
+    /// Regression: a checkpoint persisted mid-epoch must encode the *live*
+    /// current-epoch randao mix / slashings (the `*_current` caches), not the
+    /// stale array bucket — that bucket is only refreshed at the epoch
+    /// boundary.
+    #[test]
+    fn encode_uses_live_current_epoch_caches() {
+        let cur = 3usize;
+        let mut bs = BeaconState::pre_bootstrap();
+
+        // Stale ring buckets, distinct from the live `*_current` caches the
+        // encode path must emit instead.
+        let mut epoch = EpochStateFinalized::default();
+        epoch.randao_mixes[cur] = [0xAA; 32];
+        epoch.slashings[cur] = 111;
+        bs.epoch = EpochGroup::new(epoch);
+
+        let zero_roots = || vec![[0u8; 32]; SLOTS_PER_HISTORICAL_ROOT].into_boxed_slice();
+        let slot = SlotState {
+            slot: 96, // epoch 3
+            randao_mix_current: [0xBB; 32],
+            current_epoch_slashings: 222,
+            ..Default::default()
+        };
+        bs.slot_states =
+            SlotStateGroup::new(SlotStateFinalized::from_parts(slot, zero_roots(), zero_roots()));
+
+        let mut ssz = Vec::with_capacity(bs.ssz_len());
+        bs.encode_ssz(&mut ssz).unwrap();
+        let decoded = BeaconState::decompose(&ssz, &SpecConfig::mainnet(), None).unwrap();
+
+        let de = decoded.epoch.finalized();
+        let ds = decoded.slot_states.finalized().state();
+        assert_eq!(de.randao_mixes[cur], [0xBB; 32], "randao current bucket = live");
+        assert_eq!(ds.randao_mix_current, [0xBB; 32]);
+        assert_eq!(de.slashings[cur], 222, "slashings current bucket = live");
+        assert_eq!(ds.current_epoch_slashings, 222);
+    }
+
+    /// Write the decompressed-pubkey sidecar, decode it, rebuild the validators
+    /// from SSZ + sidecar, and confirm the pubkeys match. Also that a corrupted
+    /// sidecar is rejected (never silently accepted).
     #[test]
     fn pubkeys_sidecar_round_trip() {
         let bs = BeaconState::pre_bootstrap();

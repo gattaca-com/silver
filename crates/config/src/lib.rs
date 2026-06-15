@@ -1,14 +1,15 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 
+use chain_config::ChainConfig;
 pub use discovery_config::DiscoveryConfig;
 pub use engine_config::EngineConfig;
 pub use peer_score_params::ScoreParams;
 use secp256k1::PublicKey;
 use serde::{Deserialize, Serialize};
-use silver_common::{Enr, Error, GossipTopic, Identify, Keypair, NodeId, PeerId, StreamProtocol};
+use silver_common::{
+    Enr, Error, GossipTopic, Identify, Keypair, NodeId, PeerId, SAMPLES_PER_SLOT, StreamProtocol,
+};
 pub use syncing_config::SyncingConfig;
-
-use crate::chain_config::ChainConfig;
 
 mod chain_config;
 mod discovery_config;
@@ -81,7 +82,9 @@ pub struct Config {
     discovery_port: Option<u16>,
     #[serde(default)]
     quic_port: Option<u16>,
-    #[serde(default = "default_u8::<4>")]
+    // Floored at `SAMPLES_PER_SLOT` (8) in `enr()`: silver custodies the full
+    // sample set, so cgc < 8 is unsupported (see `enr`).
+    #[serde(default = "default_u8::<8>")]
     data_column_custody_group_count: u8,
     /// Full multiselect protocol strings.
     #[serde(default = "default_supported_protocols")]
@@ -110,6 +113,8 @@ pub struct Config {
     data_storage_dir: String,
     #[serde(default)]
     engine_config: EngineConfig,
+    #[serde(default)]
+    disable_weak_subjectivity_check: bool,
 }
 
 impl Config {
@@ -128,7 +133,7 @@ impl Config {
             external_ip_v6: None,
             discovery_port: None,
             quic_port: None,
-            data_column_custody_group_count: 4,
+            data_column_custody_group_count: SAMPLES_PER_SLOT,
             supported_protocols: default_supported_protocols(),
             gossip_topics: default_gossip_topics(),
             chain_config: ChainConfig::default(),
@@ -142,6 +147,7 @@ impl Config {
             outgoing_rpc_tcache_size: 2 << 24,        // ssz
             data_storage_dir: default_data_dir(),
             engine_config: Default::default(),
+            disable_weak_subjectivity_check: false,
         }
     }
 
@@ -183,6 +189,11 @@ impl Config {
         self
     }
 
+    pub fn with_disable_weak_subjectivity_check(mut self, disable: bool) -> Self {
+        self.disable_weak_subjectivity_check = disable;
+        self
+    }
+
     pub fn keypair(&self) -> Result<Keypair, Error> {
         Keypair::from_secret(&self.secret_key)
     }
@@ -207,7 +218,8 @@ impl Config {
         eth2[8..].copy_from_slice(&self.next_fork_epoch.to_le_bytes());
 
         builder.eth2(eth2);
-        builder.cgc(self.data_column_custody_group_count as u64);
+        // Floor at SAMPLES_PER_SLOT: custody set must cover the sample set.
+        builder.cgc(self.data_column_custody_group_count.max(SAMPLES_PER_SLOT) as u64);
 
         if let Some(ip) = self.external_ip_v4 {
             builder.ip4(ip);
@@ -258,8 +270,8 @@ impl Config {
         Ok(identify)
     }
 
-    pub fn chain_config(&self) -> ChainConfig {
-        self.chain_config.clone()
+    pub fn chain_config(&self) -> &ChainConfig {
+        &self.chain_config
     }
 
     pub fn discovery_config(&self) -> DiscoveryConfig {
@@ -270,7 +282,7 @@ impl Config {
         self.peer_score_params.clone()
     }
 
-    pub fn syncing(&self) -> SyncingConfig {
+    pub fn syncing_config(&self) -> SyncingConfig {
         self.syncing.clone()
     }
 
@@ -308,6 +320,10 @@ impl Config {
 
     pub fn engine_config(&self) -> EngineConfig {
         self.engine_config.clone()
+    }
+
+    pub fn disable_weak_subjectivity_check(&self) -> bool {
+        self.disable_weak_subjectivity_check
     }
 }
 

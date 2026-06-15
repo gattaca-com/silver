@@ -9,8 +9,8 @@ pub use messages::{
     EngineGetPayloadResp, EngineHealthEvent, EngineNewPayloadReq, EngineNewPayloadResp,
     EnginePreparePayloadReq, EngineReq, EngineResp, GossipMsgOut, IpBytes, MAX_BLOBS_PER_BLOCK,
     MAX_PAYLOAD_BODIES_PER_REQ, NewGossipMsg, P2pSend, PayloadValidationStatus, PeerControl,
-    PeerEvent, PeerStatus, REQUEST_ID_PREFIX_MASK, RequestCategory, RpcInbound, RpcMsg,
-    RpcOutbound, RpcRequest, RpcRequestInbound, RpcRequestOutbound, RpcResponse,
+    PeerEvent, PeerStatus, REQUEST_ID_PREFIX_MASK, ReplayBlock, RequestCategory, RpcInbound,
+    RpcMsg, RpcOutbound, RpcRequest, RpcRequestInbound, RpcRequestOutbound, RpcResponse,
     RpcResponseInbound, RpcResponseOutbound, RpcSeverity, SyncUpdate, WithdrawalInline,
 };
 pub use stream_id::P2pStreamId;
@@ -51,6 +51,8 @@ pub struct SilverSpine {
     pub data_columns: SpineQueue<DataColumnsAvailable>,
     #[queue(size(2usize.pow(10)))]
     pub sync_target: SpineQueue<SyncUpdate>,
+    #[queue(size(2usize.pow(12)))]
+    pub replay_blocks: SpineQueue<ReplayBlock>,
 
     #[queue(size(2usize.pow(10)))]
     pub engine_reqs: SpineQueue<EngineReq>,

@@ -38,6 +38,8 @@ backtrace = { workspace = true, optional = true }
 
 [features]
 alloc-profile = ["dep:backtrace"]
+# Forwards #[perf] collection (rdpmc instr+cycle counting) to silver_metrics.
+perf = ["silver_metrics/perf"]
 test-util = []
 
 [build-dependencies]

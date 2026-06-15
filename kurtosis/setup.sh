@@ -41,9 +41,10 @@ SECRET_KEY="${SECRET_KEY:-111111111111111111111111111111111111111111111111111111
 DISCOVERY_PORT="${DISCOVERY_PORT:-31133}"
 QUIC_PORT="${QUIC_PORT:-31123}"
 NEXT_FORK_VERSION="${NEXT_FORK_VERSION:-06000000}"
-# Custody groups silver subscribes to / advertises (ENR cgc). 4 = the spec
-# minimum for a non-supernode; bump to sample more columns.
-CUSTODY_GROUP_COUNT="${CUSTODY_GROUP_COUNT:-4}"
+# Custody groups silver subscribes to / advertises (ENR cgc). 8 = silver's
+# floor (SAMPLES_PER_SLOT): custody set covers the full sample set, so values
+# below 8 are raised to 8. Bump to custody/serve more columns.
+CUSTODY_GROUP_COUNT="${CUSTODY_GROUP_COUNT:-8}"
 # silver <-> local reth engine API (see run-reth.sh). Any 32-byte hex JWT
 # works — both sides read the same generated file.
 ENGINE_PORT="${ENGINE_PORT:-8551}"

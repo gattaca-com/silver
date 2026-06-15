@@ -16,6 +16,12 @@ type RawNodeId = [u8; 32];
 /// per group, so this MUST be ≤ 128 for the `u128` return type to fit.
 pub const NUMBER_OF_CUSTODY_GROUPS: u8 = 128;
 
+/// Minimum samples per slot, per consensus-specs/fulu/das-core.md. Silver
+/// floors `custody_group_count` at this so the custody set always covers the
+/// full sample set (`sampling_size = max(SAMPLES_PER_SLOT, cgc)`), removing
+/// the need for beyond-custody sampling.
+pub const SAMPLES_PER_SLOT: u8 = 8;
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct NodeId {

@@ -89,6 +89,15 @@ fn committed_checkpoint_slots(dir: &Path) -> Vec<u64> {
     slots
 }
 
+pub fn latest_local_checkpoint(store_dir: &str) -> Option<(u64, PathBuf, Option<PathBuf>)> {
+    let dir = Path::new(store_dir).join(FINALIZED_CHECKPOINTS_DIR);
+    let slot = *committed_checkpoint_slots(&dir).first()?;
+    let slot_dir = dir.join(slot.to_string());
+    let pubkeys = slot_dir.join(format!("{slot}.pubkeys"));
+    let pubkeys = pubkeys.exists().then_some(pubkeys);
+    Some((slot, slot_dir.join(format!("{slot}.ssz")), pubkeys))
+}
+
 /// Initialise the checkpoints dir on load: create it, drop incomplete dirs
 /// (crashed mid-write, no committed `<slot>.ssz`), prune to the newest
 /// MAX_FINALIZED_CHECKPOINTS, and return the newest committed slot (0 if none).

@@ -4561,6 +4561,7 @@ dependencies = [
  "serde",
  "serde_json",
  "silver_common_macros",
+ "tracing",
 ]
 
 [[package]]

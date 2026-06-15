@@ -132,10 +132,12 @@ impl PmBsHarness {
         let rpc_cap = (n_blocks * 300 * 1024).next_power_of_two().max(1 << 22);
         let rpc_p = TCache::producer("rpc_in", rpc_cap);
         let engine_resp_p = TCache::producer("engine_resp", 1 << 24);
+        let replay_p = TCache::producer("replay_in", 1 << 20);
         let gossip_c = gossip_p.cache_ref().random_access("test", true).expect("gossip ra");
         let rpc_c = rpc_p.cache_ref().random_access("test", true).expect("rpc ra");
         let engine_resp_c =
             engine_resp_p.cache_ref().random_access("test", true).expect("engine resp ra");
+        let replay_c = replay_p.cache_ref().random_access("test", true).expect("replay ra");
 
         let state = BeaconStateOwner::pre_bootstrap();
         let mut bs = BeaconStateTile::new(
@@ -145,6 +147,8 @@ impl PmBsHarness {
             gossip_c,
             rpc_c,
             engine_resp_c,
+            replay_c,
+            true,
             checkpoint,
             &[],
         );
@@ -161,6 +165,7 @@ impl PmBsHarness {
             [0u8; 4], // overwritten via set_status from BS's first emission
             [0u8; METADATA_SIZE],
             0,
+            false,
         );
         let mut ctl = Controller::new(pm, TCache::multi_producer("rpc_out_dummy", 32));
         let mut ctl_a = SpineAdapter::connect_tile(&ctl, &mut spine);
@@ -269,13 +274,31 @@ impl PmBsHarness {
     }
 
     /// Assert the next `BlocksByRange` request matches `expected = (start,
-    /// count)`, feed all `blocks`, and pump BS once.
+    /// count)`, mark data columns available, feed all `blocks`, and pump BS.
     pub fn drive_batch(&mut self, expected: (u64, u64), blocks: &[Vec<u8>]) {
         let (start, count, peer) = self.next_range_request();
         assert_eq!((start, count, peer), (expected.0, expected.1, SYNTH_PEER_CONN_ID));
+        // DA events first so blob-carrying blocks aren't held in
+        // dc_pending_blocks (same ordering as perf::replay).
+        for sig in blocks.iter().filter_map(|b| data_columns_available(b)) {
+            self.emit_data_columns_available(sig);
+        }
+        self.pump_bs();
         for b in blocks {
             self.inject_block(start, b);
         }
+        // Stream terminator: SyncReq completion is terminator-driven, so PM
+        // won't issue the next batch without it.
+        self.inj_a.produce(RpcInbound::Response(RpcResponseInbound {
+            application_id: start,
+            stream_id: P2pStreamId::new(
+                SYNTH_PEER_CONN_ID,
+                0,
+                StreamProtocol::BeaconBlocksByRange,
+                true,
+            ),
+            response: RpcResponse::Complete,
+        }));
         self.pump_bs();
     }
 

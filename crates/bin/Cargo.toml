@@ -32,3 +32,7 @@ workspace = true
 
 [features]
 alloc-profile = ["silver_common/alloc-profile"]
+# #[perf] collection: per-function instructions-retired + CPU cycles on
+# perf-{fn} queues (dev; needs `sudo sysctl kernel.perf_event_paranoid=2`).
+# Surfer picks the queues up when present; non-perf builds are unaffected.
+perf = ["silver_common/perf"]

@@ -95,7 +95,7 @@ impl StreamState {
                 matches!(write, GossipWriteState::Idle) && !matches!(read, GossipReadState::Closed)
             }
             StreamState::IncomingRpc(inc) => {
-                matches!(inc, RpcIn::ReadRequest(_)) && protocol == StreamProtocol::Goodbye
+                matches!(inc, RpcIn::WriteResponse(_)) && protocol == StreamProtocol::Goodbye
             }
             StreamState::OutgoingRpc(rpc_out) => matches!(rpc_out, RpcOut::ReadResponse(_)),
             StreamState::IncomingIdentify(_) => false,
