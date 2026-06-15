@@ -47,35 +47,6 @@ impl<V> Edits<V> {
     pub fn get(&self, idx: u32) -> Option<&V> {
         self.inner.binary_search_by_key(&idx, |(k, _)| *k).ok().map(|p| &self.inner[p].1)
     }
-
-    #[inline]
-    pub fn as_slice(&self) -> &[(u32, V)] {
-        &self.inner
-    }
-
-    #[inline]
-    pub fn len(&self) -> usize {
-        self.inner.len()
-    }
-
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.inner.is_empty()
-    }
-
-    #[inline]
-    pub fn retain(&mut self, f: impl FnMut(&(u32, V)) -> bool) {
-        self.inner.retain(f);
-    }
-}
-
-impl<V: PartialEq> Edits<V> {
-    /// Drop edits below `new_base_count` that the (advanced) base already
-    /// reflects — keep only entries diverging from `base_at`.
-    pub fn retain_diverged(&mut self, new_base_count: usize, base_at: impl Fn(usize) -> V) {
-        self.inner
-            .retain(|(idx, v)| (*idx as usize) >= new_base_count || base_at(*idx as usize) != *v);
-    }
 }
 
 impl<V: Copy + PartialEq> Edits<V> {
@@ -147,6 +118,22 @@ impl<V: Copy + PartialEq> Edits<V> {
     }
 }
 
+impl Edits<bool> {
+    /// Scatter these boolean edits into a packed bitset `col`, where logical
+    /// index `i` is bit `i % 8` of byte `i / 8`.
+    #[inline]
+    pub fn scatter_bits(&self, col: &mut [u8]) {
+        for &(idx, v) in &self.inner {
+            let (byte, mask) = (idx as usize / 8, 1u8 << (idx % 8));
+            if v {
+                col[byte] |= mask;
+            } else {
+                col[byte] &= !mask;
+            }
+        }
+    }
+}
+
 impl<V: Copy> Edits<V> {
     /// Merge an ascending, distinct-key `changes` batch in O(|edits| +
     /// |batch|), the batch value winning on a shared `idx`. Keeps
@@ -166,6 +153,15 @@ impl<V: Copy> Edits<V> {
             return;
         }
         self.merge_insertions_phase(changes, old_len, insert_count);
+    }
+
+    /// Scatter these edits into `col`, writing each value at its absolute
+    /// index. Used to fold a fork's edits into the finalized base column.
+    #[inline]
+    pub fn scatter(&self, col: &mut [V]) {
+        for &(idx, v) in &self.inner {
+            col[idx as usize] = v;
+        }
     }
 
     /// Merged read over the base + these edits, for `i` in `0..total`: yields

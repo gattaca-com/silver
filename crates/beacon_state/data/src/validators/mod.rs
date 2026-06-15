@@ -4,7 +4,8 @@ mod finalized;
 #[cfg(test)]
 mod tests;
 
-pub use delta::{AppendedValidator, ValidatorsDelta, ValidatorsView, ValidatorsWriteView};
+use delta::ValidatorsDelta;
+pub use delta::{ValidatorsView, ValidatorsWriteView};
 pub use finalized::{FinalizedValidators, ValSeed, ValidatorsDecodeError};
 
 use crate::{

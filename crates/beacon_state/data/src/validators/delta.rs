@@ -9,327 +9,97 @@ use crate::{
     types::{BLSPubkey, Epoch, FAR_FUTURE_EPOCH, VALIDATOR_REGISTRY_LIMIT},
 };
 
+/// A validator appended in this fork. Only the immutable identity fields are
+/// stored: the mutable Validator-container fields (balance, slashed, the four
+/// epochs) are spec-default until a `set_*` writes an edit, so the effective-
+/// read and iter paths return those defaults directly rather than storing them.
 #[derive(Clone, PartialEq)]
-pub struct AppendedValidator {
-    pub pubkey: BLSPubkey,
-    pub pubkey_decompressed: PublicKey,
-    pub credentials: Withdrawals,
-    pub effective_balance: u64,
-    pub slashed: bool,
-    pub activation_eligibility_epoch: Epoch,
-    pub activation_epoch: Epoch,
-    pub exit_epoch: Epoch,
-    pub withdrawable_epoch: Epoch,
+struct AppendedValidator {
+    pubkey: BLSPubkey,
+    pubkey_decompressed: PublicKey,
+    credentials: Withdrawals,
 }
 
-impl AppendedValidator {
-    #[inline]
-    pub fn new(
-        pubkey: BLSPubkey,
-        pubkey_decompressed: PublicKey,
-        credentials: Withdrawals,
-    ) -> Self {
-        Self {
-            pubkey,
-            pubkey_decompressed,
-            credentials,
-            effective_balance: 0,
-            slashed: false,
-            activation_eligibility_epoch: FAR_FUTURE_EPOCH,
-            activation_epoch: FAR_FUTURE_EPOCH,
-            exit_epoch: FAR_FUTURE_EPOCH,
-            withdrawable_epoch: FAR_FUTURE_EPOCH,
-        }
-    }
-}
-
-/// Per-fork delta over [`FinalizedValidators`]. Sparse edits per mutable
-/// Validator-container field + appended new-validator records + a hash
-/// overlay keyed by leaf index.
+/// Per-fork delta over [`FinalizedValidators`] — an opaque data holder: sparse
+/// edits per mutable Validator-container field, appended new-validator records,
+/// and a hash overlay keyed by leaf index. All read/write logic lives on
+/// [`ValidatorsView`] / [`ValidatorsWriteView`]; the delta exposes only the
+/// finalization hooks the ring needs (`anchor_at` / `rebase_and_prune` /
+/// `promote_into_base`).
 ///
 /// `appended[p]`'s absolute validator index is `base_count + p`. The `_edits`
 /// vecs are sparse, sorted by absolute index. Edits may target either a
 /// base validator (idx < base_count) or an appended one (idx >= base_count).
 #[derive(Default, Clone)]
 pub struct ValidatorsDelta {
-    pub base_count: usize,
-    pub appended: Vec<AppendedValidator>,
-    pub credentials_edits: Edits<Withdrawals>,
-    pub effective_balance_edits: Edits<u64>,
-    pub slashed_edits: Edits<bool>,
-    pub activation_eligibility_epoch_edits: Edits<Epoch>,
-    pub activation_epoch_edits: Edits<Epoch>,
-    pub exit_epoch_edits: Edits<Epoch>,
-    pub withdrawable_epoch_edits: Edits<Epoch>,
-    pub hash_overlay: DeltaHashTree,
+    base_count: usize,
+    appended: Vec<AppendedValidator>,
+    credentials_edits: Edits<Withdrawals>,
+    effective_balance_edits: Edits<u64>,
+    slashed_edits: Edits<bool>,
+    activation_eligibility_epoch_edits: Edits<Epoch>,
+    activation_epoch_edits: Edits<Epoch>,
+    exit_epoch_edits: Edits<Epoch>,
+    withdrawable_epoch_edits: Edits<Epoch>,
+    hash_overlay: DeltaHashTree,
 }
 
 impl ValidatorsDelta {
-    /// Empty delta over `base`.
-    pub fn new_at(base: &FinalizedValidators) -> Self {
-        let mut d = Self::default();
-        d.anchor_at(base);
-        d
-    }
-
-    /// Absolute index of an appended validator matching `pubkey`.
-    /// Linear scan — `appended` is bounded by deposits-since-finalization.
-    #[inline]
-    pub fn find_by_pubkey(&self, pubkey: &BLSPubkey) -> Option<usize> {
-        self.appended.iter().position(|a| &a.pubkey == pubkey).map(|p| self.base_count + p)
-    }
-
-    #[inline]
-    pub fn effective_credentials<'a>(
-        &'a self,
-        base: &'a FinalizedValidators,
-        idx: u32,
-    ) -> &'a Withdrawals {
-        if let Some(v) = self.credentials_edits.get(idx) {
-            return v;
-        }
-        let i = idx as usize;
-        if i < self.base_count {
-            base.withdrawal_credentials(i)
-        } else {
-            &self.appended[i - self.base_count].credentials
-        }
-    }
-
-    #[inline]
-    pub fn effective_pubkey<'a>(
-        &'a self,
-        base: &'a FinalizedValidators,
-        idx: u32,
-    ) -> &'a BLSPubkey {
-        let i = idx as usize;
-        if i < self.base_count {
-            base.pubkey(i)
-        } else {
-            &self.appended[i - self.base_count].pubkey
-        }
-    }
-
-    #[inline]
-    pub fn effective_pubkey_decompressed<'a>(
-        &'a self,
-        base: &'a FinalizedValidators,
-        idx: u32,
-    ) -> &'a PublicKey {
-        let i = idx as usize;
-        if i < self.base_count {
-            base.pubkey_decompressed(i)
-        } else {
-            &self.appended[i - self.base_count].pubkey_decompressed
-        }
-    }
-
-    /// Effective value of a `Copy` field at `idx`: base column when
-    /// `idx < base_count`, otherwise the appended record's field.
-    #[inline]
-    fn base_field<T>(
-        &self,
-        base: &FinalizedValidators,
-        idx: u32,
-        from_base: impl Fn(&FinalizedValidators, usize) -> T,
-        from_appended: impl Fn(&AppendedValidator) -> T,
-    ) -> T {
-        let i = idx as usize;
-        if i < self.base_count {
-            from_base(base, i)
-        } else {
-            from_appended(&self.appended[i - self.base_count])
-        }
-    }
-
-    #[inline]
-    pub fn effective_balance(&self, base: &FinalizedValidators, idx: u32) -> u64 {
-        self.effective_balance_edits.get(idx).copied().unwrap_or_else(|| {
-            self.base_field(base, idx, |b, i| b.effective_balance(i), |a| a.effective_balance)
-        })
-    }
-
-    #[inline]
-    pub fn is_slashed(&self, base: &FinalizedValidators, idx: u32) -> bool {
-        self.slashed_edits
-            .get(idx)
-            .copied()
-            .unwrap_or_else(|| self.base_field(base, idx, |b, i| b.is_slashed(i), |a| a.slashed))
-    }
-
-    #[inline]
-    pub fn activation_eligibility_epoch(&self, base: &FinalizedValidators, idx: u32) -> Epoch {
-        self.activation_eligibility_epoch_edits.get(idx).copied().unwrap_or_else(|| {
-            self.base_field(
-                base,
-                idx,
-                |b, i| b.activation_eligibility_epoch(i),
-                |a| a.activation_eligibility_epoch,
-            )
-        })
-    }
-
-    #[inline]
-    pub fn activation_epoch(&self, base: &FinalizedValidators, idx: u32) -> Epoch {
-        self.activation_epoch_edits.get(idx).copied().unwrap_or_else(|| {
-            self.base_field(base, idx, |b, i| b.activation_epoch(i), |a| a.activation_epoch)
-        })
-    }
-
-    #[inline]
-    pub fn exit_epoch(&self, base: &FinalizedValidators, idx: u32) -> Epoch {
-        self.exit_epoch_edits
-            .get(idx)
-            .copied()
-            .unwrap_or_else(|| self.base_field(base, idx, |b, i| b.exit_epoch(i), |a| a.exit_epoch))
-    }
-
-    #[inline]
-    pub fn withdrawable_epoch(&self, base: &FinalizedValidators, idx: u32) -> Epoch {
-        self.withdrawable_epoch_edits.get(idx).copied().unwrap_or_else(|| {
-            self.base_field(base, idx, |b, i| b.withdrawable_epoch(i), |a| a.withdrawable_epoch)
-        })
-    }
-
-    /// Recompute the Validator-container hash leaf for `idx` from the
-    /// current effective state (overlay + base). Used by every mutator
-    /// to keep `hash_overlay` consistent with the field edits.
-    pub fn recompute_leaf(&self, base: &FinalizedValidators, idx: u32) -> B256 {
-        validator_hash(
-            self.effective_pubkey(base, idx),
-            self.effective_credentials(base, idx),
-            self.effective_balance(base, idx),
-            self.is_slashed(base, idx),
-            self.activation_eligibility_epoch(base, idx),
-            self.activation_epoch(base, idx),
-            self.exit_epoch(base, idx),
-            self.withdrawable_epoch(base, idx),
-        )
-    }
-
-    /// SSZ `hash_tree_root` of the validators registry
-    /// (`List[Validator, VALIDATOR_REGISTRY_LIMIT]`) from the persistent hash
-    /// overlay: finalized base tree + this fork's cached delta-node hashes,
-    /// zero work for untouched subtrees. The physical tree only spans the
-    /// registry capacity's leaves, so extend its root with zero subtrees up to
-    /// the registry-limit depth, then mix in the validator count.
-    pub fn hash_root(&self, base: &FinalizedValidators) -> B256 {
-        const LIST_DEPTH: u32 = VALIDATOR_REGISTRY_LIMIT.trailing_zeros();
-        let len = self.base_count + self.appended.len();
-        self.hash_overlay.ssz_list_root(base.hash(), LIST_DEPTH, len)
-    }
-
-    /// Recompute and store the hash leaf for `idx` — every field write calls
-    /// this to keep `hash_overlay` consistent with the edits.
-    fn refresh_leaf(&mut self, base: &FinalizedValidators, idx: u32) {
-        let leaf = self.recompute_leaf(base, idx);
-        self.hash_overlay.set_leaf(base.hash(), idx as usize, leaf);
-    }
-
-    /// Append a fresh validator with spec-default Validator-container
-    /// fields. Returns the absolute index of the new validator.
-    pub fn append(
-        &mut self,
-        base: &FinalizedValidators,
-        pubkey: BLSPubkey,
-        pubkey_decompressed: PublicKey,
-        credentials: Withdrawals,
-    ) -> u32 {
-        let idx = (self.base_count + self.appended.len()) as u32;
-        self.appended.push(AppendedValidator::new(pubkey, pubkey_decompressed, credentials));
-
-        self.refresh_leaf(base, idx);
-        idx
-    }
-
-    pub fn set_credentials(&mut self, base: &FinalizedValidators, idx: u32, v: Withdrawals) {
-        self.credentials_edits.merge_in_place(&[(idx, v)]);
-        self.refresh_leaf(base, idx);
-    }
-
-    pub fn set_effective_balance(&mut self, base: &FinalizedValidators, idx: u32, v: u64) {
-        self.effective_balance_edits.merge_in_place(&[(idx, v)]);
-        self.refresh_leaf(base, idx);
-    }
-
-    pub fn set_slashed(&mut self, base: &FinalizedValidators, idx: u32, v: bool) {
-        self.slashed_edits.merge_in_place(&[(idx, v)]);
-        self.refresh_leaf(base, idx);
-    }
-
-    pub fn set_activation_eligibility_epoch(
-        &mut self,
-        base: &FinalizedValidators,
-        idx: u32,
-        v: Epoch,
-    ) {
-        self.activation_eligibility_epoch_edits.merge_in_place(&[(idx, v)]);
-        self.refresh_leaf(base, idx);
-    }
-
-    pub fn set_activation_epoch(&mut self, base: &FinalizedValidators, idx: u32, v: Epoch) {
-        self.activation_epoch_edits.merge_in_place(&[(idx, v)]);
-        self.refresh_leaf(base, idx);
-    }
-
-    pub fn set_exit_epoch(&mut self, base: &FinalizedValidators, idx: u32, v: Epoch) {
-        self.exit_epoch_edits.merge_in_place(&[(idx, v)]);
-        self.refresh_leaf(base, idx);
-    }
-
-    pub fn set_withdrawable_epoch(&mut self, base: &FinalizedValidators, idx: u32, v: Epoch) {
-        self.withdrawable_epoch_edits.merge_in_place(&[(idx, v)]);
-        self.refresh_leaf(base, idx);
-    }
-
     /// Fold this delta into `base`. Appended records advance
     /// `base.validator_count`; per-field edits land at their absolute
     /// indices.
-    pub fn promote_into_base(&self, base: &mut FinalizedValidators) {
+    pub(super) fn promote_into_base(&self, base: &mut FinalizedValidators) {
         debug_assert_eq!(
             base.validator_count(),
             self.base_count,
             "promote_into_base: delta.base_count must match the current base count",
         );
 
-        // 1. Append new identities (with their baked-in defaults).
-        for a in &self.appended {
-            base.append(a);
+        // 1. Append new identities into the pristine tail slots: write the three
+        // stored identity columns at `base_count..`, register their pubkeys, and
+        // advance the count. The mutable columns there are already spec-default
+        // (slots past the count are never written, see `FinalizedValidators::build`);
+        // the edit scatter below overwrites any appended validator whose fields
+        // diverged.
+        let start = self.base_count;
+        debug_assert!(
+            self.appended.is_empty() ||
+                (base.effective_balance[start] == 0 &&
+                    base.exit_epoch[start] == FAR_FUTURE_EPOCH &&
+                    !base.is_slashed(start)),
+            "appended tail slots must be pristine spec-default",
+        );
+        {
+            let mut index = base.index.write();
+            for (p, a) in self.appended.iter().enumerate() {
+                let idx = start + p;
+                base.val_pubkey[idx] = a.pubkey;
+                base.val_pubkey_decompressed[idx] = a.pubkey_decompressed;
+                base.val_withdrawal_credentials[idx] = a.credentials;
+                index.insert(a.pubkey, idx as u32);
+            }
         }
+        base.validator_count = start + self.appended.len();
 
-        // 2. Apply per-field edits in index order.
-        for &(idx, v) in self.credentials_edits.iter() {
-            base.set_withdrawal_credentials_at(idx as usize, v);
-        }
-        for &(idx, v) in self.effective_balance_edits.iter() {
-            base.set_effective_balance_at(idx as usize, v);
-        }
-        for &(idx, v) in self.slashed_edits.iter() {
-            base.set_slashed_at(idx as usize, v);
-        }
-        for &(idx, v) in self.activation_eligibility_epoch_edits.iter() {
-            base.set_activation_eligibility_epoch_at(idx as usize, v);
-        }
-        for &(idx, v) in self.activation_epoch_edits.iter() {
-            base.set_activation_epoch_at(idx as usize, v);
-        }
-        for &(idx, v) in self.exit_epoch_edits.iter() {
-            base.set_exit_epoch_at(idx as usize, v);
-        }
-        for &(idx, v) in self.withdrawable_epoch_edits.iter() {
-            base.set_withdrawable_epoch_at(idx as usize, v);
-        }
+        // 2. Scatter per-field edits into the base columns at their absolute
+        // indices. `slashed` is a packed bitset, so it scatters into the bytes.
+        self.credentials_edits.scatter(&mut base.val_withdrawal_credentials);
+        self.effective_balance_edits.scatter(&mut base.effective_balance);
+        self.activation_eligibility_epoch_edits.scatter(&mut base.activation_eligibility_epoch);
+        self.activation_epoch_edits.scatter(&mut base.activation_epoch);
+        self.exit_epoch_edits.scatter(&mut base.exit_epoch);
+        self.withdrawable_epoch_edits.scatter(&mut base.withdrawable_epoch);
+        self.slashed_edits.scatter_bits(&mut base.slashed);
 
         // 3. Fold the hash overlay into the finalized tree.
-        base.hash_mut().promote_delta(&self.hash_overlay);
+        base.hash.promote_delta(&self.hash_overlay);
     }
 
     /// Mirror of [`BalancesDelta::rebase_and_prune`] for the multi-column
     /// registry: finalize survivor `self` into `out` against promoted `winner`,
     /// pre-promote and read-only so lock-free readers stay unblocked. The
     /// winner-promoted prefix of `appended` is dropped; every column delegates
-    /// the rebase/prune to
-    /// [`rebase_and_prune_sparse`](crate::sparse::rebase_and_prune_sparse).
+    /// the rebase/prune to [`Edits::rebase_and_prune`].
     pub(super) fn rebase_and_prune(
         &self,
         out: &mut ValidatorsDelta,
@@ -347,13 +117,13 @@ impl ValidatorsDelta {
             &winner.credentials_edits,
             valid_below,
             new_count,
-            |i| *base.withdrawal_credentials(i as usize),
+            |i| base.val_withdrawal_credentials[i as usize],
         );
         out.effective_balance_edits = self.effective_balance_edits.rebase_and_prune(
             &winner.effective_balance_edits,
             valid_below,
             new_count,
-            |i| base.effective_balance(i as usize),
+            |i| base.effective_balance[i as usize],
         );
         out.slashed_edits = self.slashed_edits.rebase_and_prune(
             &winner.slashed_edits,
@@ -366,55 +136,30 @@ impl ValidatorsDelta {
                 &winner.activation_eligibility_epoch_edits,
                 valid_below,
                 new_count,
-                |i| base.activation_eligibility_epoch(i as usize),
+                |i| base.activation_eligibility_epoch[i as usize],
             );
         out.activation_epoch_edits = self.activation_epoch_edits.rebase_and_prune(
             &winner.activation_epoch_edits,
             valid_below,
             new_count,
-            |i| base.activation_epoch(i as usize),
+            |i| base.activation_epoch[i as usize],
         );
         out.exit_epoch_edits = self.exit_epoch_edits.rebase_and_prune(
             &winner.exit_epoch_edits,
             valid_below,
             new_count,
-            |i| base.exit_epoch(i as usize),
+            |i| base.exit_epoch[i as usize],
         );
         out.withdrawable_epoch_edits = self.withdrawable_epoch_edits.rebase_and_prune(
             &winner.withdrawable_epoch_edits,
             valid_below,
             new_count,
-            |i| base.withdrawable_epoch(i as usize),
+            |i| base.withdrawable_epoch[i as usize],
         );
 
         out.hash_overlay = self.hash_overlay.clone();
         out.hash_overlay.rebase(base.hash(), &winner.hash_overlay);
         base.hash().prune_delta_against(&mut out.hash_overlay, &winner.hash_overlay);
-    }
-
-    /// Reconcile with an advanced base: drop edits that the promoted base
-    /// already reflects, and re-anchor `base_count`. Caller must invoke this
-    /// on every surviving descendant fork (including the promoter itself)
-    /// after `promote_into_base`.
-    pub fn prune_to_base(&mut self, base: &FinalizedValidators) {
-        let new_base_count = base.validator_count();
-        debug_assert!(new_base_count >= self.base_count, "base count cannot regress");
-
-        let promoted = (new_base_count - self.base_count).min(self.appended.len());
-        self.appended.drain(..promoted);
-        self.base_count = new_base_count;
-
-        self.credentials_edits.retain_diverged(new_base_count, |i| *base.withdrawal_credentials(i));
-        self.effective_balance_edits.retain_diverged(new_base_count, |i| base.effective_balance(i));
-        self.slashed_edits.retain_diverged(new_base_count, |i| base.is_slashed(i));
-        self.activation_eligibility_epoch_edits
-            .retain_diverged(new_base_count, |i| base.activation_eligibility_epoch(i));
-        self.activation_epoch_edits.retain_diverged(new_base_count, |i| base.activation_epoch(i));
-        self.exit_epoch_edits.retain_diverged(new_base_count, |i| base.exit_epoch(i));
-        self.withdrawable_epoch_edits
-            .retain_diverged(new_base_count, |i| base.withdrawable_epoch(i));
-
-        base.hash().prune_delta(&mut self.hash_overlay);
     }
 
     /// Anchor a freshly-`reset` delta onto `base`: adopt its count and hash
@@ -455,9 +200,10 @@ impl Reset for ValidatorsDelta {
     }
 }
 
-/// Value-layer read over the validator registry (base + optional per-fork
-/// delta). Built only from a published fork id (or a held writer) — the
-/// delta is always present; pre-snapshot readers get no view at all.
+/// Value-layer read over the validator registry (base + per-fork delta). Holds
+/// every read: per-field `effective_*` merges, the pubkey lookup, the whole-
+/// column iterators, and the SSZ root. Built only from a published fork id (or
+/// a held writer) — the delta is always present; pre-snapshot readers get none.
 #[derive(Clone, Copy)]
 pub struct ValidatorsView<'a> {
     base: &'a FinalizedValidators,
@@ -477,57 +223,112 @@ impl<'a> ValidatorsView<'a> {
 
     #[inline]
     pub fn pubkey(&self, ix: usize) -> &'a BLSPubkey {
-        self.delta.effective_pubkey(self.base, ix as u32)
+        if ix < self.delta.base_count {
+            &self.base.val_pubkey[ix]
+        } else {
+            &self.delta.appended[ix - self.delta.base_count].pubkey
+        }
     }
 
     #[inline]
     pub fn pubkey_decompressed(&self, ix: usize) -> &'a PublicKey {
-        self.delta.effective_pubkey_decompressed(self.base, ix as u32)
+        if ix < self.delta.base_count {
+            &self.base.val_pubkey_decompressed[ix]
+        } else {
+            &self.delta.appended[ix - self.delta.base_count].pubkey_decompressed
+        }
     }
 
     #[inline]
     pub fn credentials(&self, ix: usize) -> &'a Withdrawals {
-        self.delta.effective_credentials(self.base, ix as u32)
+        if let Some(v) = self.delta.credentials_edits.get(ix as u32) {
+            return v;
+        }
+        if ix < self.delta.base_count {
+            &self.base.val_withdrawal_credentials[ix]
+        } else {
+            &self.delta.appended[ix - self.delta.base_count].credentials
+        }
+    }
+
+    /// Effective value of a `Copy` field at `ix` with no edit: the base column
+    /// when `ix < base_count`, otherwise `appended_default` — an appended
+    /// validator's mutable fields are spec-default until a `set_*` edit lands.
+    #[inline]
+    fn base_or<T>(
+        &self,
+        ix: usize,
+        from_base: impl Fn(&FinalizedValidators, usize) -> T,
+        appended_default: T,
+    ) -> T {
+        if ix < self.delta.base_count { from_base(self.base, ix) } else { appended_default }
     }
 
     #[inline]
     pub fn effective_balance(&self, ix: usize) -> u64 {
-        self.delta.effective_balance(self.base, ix as u32)
+        self.delta
+            .effective_balance_edits
+            .get(ix as u32)
+            .copied()
+            .unwrap_or_else(|| self.base_or(ix, |b, i| b.effective_balance[i], 0))
     }
 
     #[inline]
     pub fn is_slashed(&self, ix: usize) -> bool {
-        self.delta.is_slashed(self.base, ix as u32)
+        self.delta
+            .slashed_edits
+            .get(ix as u32)
+            .copied()
+            .unwrap_or_else(|| self.base_or(ix, |b, i| b.is_slashed(i), false))
     }
 
     #[inline]
     pub fn activation_eligibility_epoch(&self, ix: usize) -> Epoch {
-        self.delta.activation_eligibility_epoch(self.base, ix as u32)
+        self.delta.activation_eligibility_epoch_edits.get(ix as u32).copied().unwrap_or_else(|| {
+            self.base_or(ix, |b, i| b.activation_eligibility_epoch[i], FAR_FUTURE_EPOCH)
+        })
     }
 
     #[inline]
     pub fn activation_epoch(&self, ix: usize) -> Epoch {
-        self.delta.activation_epoch(self.base, ix as u32)
+        self.delta
+            .activation_epoch_edits
+            .get(ix as u32)
+            .copied()
+            .unwrap_or_else(|| self.base_or(ix, |b, i| b.activation_epoch[i], FAR_FUTURE_EPOCH))
     }
 
     #[inline]
     pub fn exit_epoch(&self, ix: usize) -> Epoch {
-        self.delta.exit_epoch(self.base, ix as u32)
+        self.delta
+            .exit_epoch_edits
+            .get(ix as u32)
+            .copied()
+            .unwrap_or_else(|| self.base_or(ix, |b, i| b.exit_epoch[i], FAR_FUTURE_EPOCH))
     }
 
     #[inline]
     pub fn withdrawable_epoch(&self, ix: usize) -> Epoch {
-        self.delta.withdrawable_epoch(self.base, ix as u32)
+        self.delta
+            .withdrawable_epoch_edits
+            .get(ix as u32)
+            .copied()
+            .unwrap_or_else(|| self.base_or(ix, |b, i| b.withdrawable_epoch[i], FAR_FUTURE_EPOCH))
     }
 
     /// Resolve a pubkey to its absolute index: finalized index first, then a
-    /// linear scan of the fork's appended records.
+    /// linear scan of the fork's appended records (bounded by deposits-since-
+    /// finalization).
     #[inline]
     pub fn find_by_pubkey(&self, pk: &BLSPubkey) -> Option<u32> {
         if let Some(i) = self.base.find_by_pubkey(pk) {
             return Some(i as u32);
         }
-        self.delta.find_by_pubkey(pk).map(|i| i as u32)
+        self.delta
+            .appended
+            .iter()
+            .position(|a| &a.pubkey == pk)
+            .map(|p| (self.delta.base_count + p) as u32)
     }
 
     /// Finalized-only pubkey lookup (ignores fork appends).
@@ -536,10 +337,34 @@ impl<'a> ValidatorsView<'a> {
         self.base.find_by_pubkey(pk).map(|i| i as u32)
     }
 
-    /// SSZ `hash_tree_root` of the registry (base tree + fork overlay).
+    /// SSZ `hash_tree_root` of the validators registry
+    /// (`List[Validator, VALIDATOR_REGISTRY_LIMIT]`) from the persistent hash
+    /// overlay: finalized base tree + this fork's cached delta-node hashes,
+    /// zero work for untouched subtrees. The physical tree only spans the
+    /// registry capacity's leaves, so extend its root with zero subtrees up to
+    /// the registry-limit depth, then mix in the validator count.
     #[inline]
     pub fn hash_root(&self) -> B256 {
-        self.delta.hash_root(self.base)
+        const LIST_DEPTH: u32 = VALIDATOR_REGISTRY_LIMIT.trailing_zeros();
+        let len = self.delta.base_count + self.delta.appended.len();
+        self.delta.hash_overlay.ssz_list_root(self.base.hash(), LIST_DEPTH, len)
+    }
+
+    /// Recompute the Validator-container hash leaf for `idx` from the current
+    /// effective state (overlay + base) — the write view calls this after each
+    /// edit to keep the overlay consistent with the field edits.
+    fn recompute_leaf(&self, idx: u32) -> B256 {
+        let ix = idx as usize;
+        validator_hash(
+            self.pubkey(ix),
+            self.credentials(ix),
+            self.effective_balance(ix),
+            self.is_slashed(ix),
+            self.activation_eligibility_epoch(ix),
+            self.activation_epoch(ix),
+            self.exit_epoch(ix),
+            self.withdrawable_epoch(ix),
+        )
     }
 
     /// The finalized base (for callers that must read the pre-fork registry).
@@ -566,62 +391,62 @@ impl<'a> ValidatorsView<'a> {
     }
 
     pub fn iter_activation_epochs(self) -> impl Iterator<Item = Epoch> + 'a {
-        let (appended, base_count) = (self.appended(), self.base_count());
+        let base_count = self.base_count();
         self.delta.activation_epoch_edits.sweep(
             base_count,
             self.count(),
             move |i| self.base.activation_epoch[i],
-            move |i| appended[i - base_count].activation_epoch,
+            move |_| FAR_FUTURE_EPOCH,
         )
     }
 
     pub fn iter_exit_epochs(self) -> impl Iterator<Item = Epoch> + 'a {
-        let (appended, base_count) = (self.appended(), self.base_count());
+        let base_count = self.base_count();
         self.delta.exit_epoch_edits.sweep(
             base_count,
             self.count(),
             move |i| self.base.exit_epoch[i],
-            move |i| appended[i - base_count].exit_epoch,
+            move |_| FAR_FUTURE_EPOCH,
         )
     }
 
     pub fn iter_withdrawable_epochs(self) -> impl Iterator<Item = Epoch> + 'a {
-        let (appended, base_count) = (self.appended(), self.base_count());
+        let base_count = self.base_count();
         self.delta.withdrawable_epoch_edits.sweep(
             base_count,
             self.count(),
             move |i| self.base.withdrawable_epoch[i],
-            move |i| appended[i - base_count].withdrawable_epoch,
+            move |_| FAR_FUTURE_EPOCH,
         )
     }
 
     pub fn iter_activation_eligibility_epochs(self) -> impl Iterator<Item = Epoch> + 'a {
-        let (appended, base_count) = (self.appended(), self.base_count());
+        let base_count = self.base_count();
         self.delta.activation_eligibility_epoch_edits.sweep(
             base_count,
             self.count(),
             move |i| self.base.activation_eligibility_epoch[i],
-            move |i| appended[i - base_count].activation_eligibility_epoch,
+            move |_| FAR_FUTURE_EPOCH,
         )
     }
 
     pub fn iter_effective_balances(self) -> impl Iterator<Item = u64> + 'a {
-        let (appended, base_count) = (self.appended(), self.base_count());
+        let base_count = self.base_count();
         self.delta.effective_balance_edits.sweep(
             base_count,
             self.count(),
             move |i| self.base.effective_balance[i],
-            move |i| appended[i - base_count].effective_balance,
+            move |_| 0,
         )
     }
 
     pub fn iter_slashed(self) -> impl Iterator<Item = bool> + 'a {
-        let (appended, base_count) = (self.appended(), self.base_count());
+        let base_count = self.base_count();
         self.delta.slashed_edits.sweep(
             base_count,
             self.count(),
-            move |i| self.base.slashed[i / 8] & (1u8 << (i % 8)) != 0,
-            move |i| appended[i - base_count].slashed,
+            move |i| self.base.is_slashed(i),
+            move |_| false,
         )
     }
 
@@ -636,8 +461,9 @@ impl<'a> ValidatorsView<'a> {
     }
 }
 
-/// Write view over a validator fork: reads merge base + fork, mutators land on
-/// the fork delta (recomputing the hash overlay leaf), publish freezes the id.
+/// Write view over a validator fork: reads delegate to [`ValidatorsView`],
+/// mutators land on the fork delta and refresh the hash overlay leaf, publish
+/// freezes the id.
 pub struct ValidatorsWriteView<'a> {
     base: &'a FinalizedValidators,
     fork: RingSlot<'a, ValidatorsGroup, ValidatorsDelta>,
@@ -662,9 +488,11 @@ impl<'a> ValidatorsWriteView<'a> {
         ValidatorsView { base: self.base, delta: &self.fork }
     }
 
+    // All reads delegate to the read view (`reader()` is a two-pointer `Copy`,
+    // so this is free) — the base+fork merge logic lives once on `ValidatorsView`.
     #[inline]
     pub fn count(&self) -> usize {
-        self.fork.base_count + self.fork.appended.len()
+        self.reader().count()
     }
 
     #[inline]
@@ -680,54 +508,52 @@ impl<'a> ValidatorsWriteView<'a> {
 
     #[inline]
     pub fn hash_root(&self) -> B256 {
-        self.fork.hash_root(self.base)
+        self.reader().hash_root()
     }
 
-    // Per-validator reads go straight to the delta's `effective_*` merge
-    // methods — no view construction per call.
     #[inline]
     pub fn pubkey(&self, ix: usize) -> &BLSPubkey {
-        self.fork.effective_pubkey(self.base, ix as u32)
+        self.reader().pubkey(ix)
     }
 
     #[inline]
     pub fn pubkey_decompressed(&self, ix: usize) -> &PublicKey {
-        self.fork.effective_pubkey_decompressed(self.base, ix as u32)
+        self.reader().pubkey_decompressed(ix)
     }
 
     #[inline]
     pub fn credentials(&self, ix: usize) -> &Withdrawals {
-        self.fork.effective_credentials(self.base, ix as u32)
+        self.reader().credentials(ix)
     }
 
     #[inline]
     pub fn effective_balance(&self, ix: usize) -> u64 {
-        self.fork.effective_balance(self.base, ix as u32)
+        self.reader().effective_balance(ix)
     }
 
     #[inline]
     pub fn is_slashed(&self, ix: usize) -> bool {
-        self.fork.is_slashed(self.base, ix as u32)
+        self.reader().is_slashed(ix)
     }
 
     #[inline]
     pub fn activation_eligibility_epoch(&self, ix: usize) -> Epoch {
-        self.fork.activation_eligibility_epoch(self.base, ix as u32)
+        self.reader().activation_eligibility_epoch(ix)
     }
 
     #[inline]
     pub fn activation_epoch(&self, ix: usize) -> Epoch {
-        self.fork.activation_epoch(self.base, ix as u32)
+        self.reader().activation_epoch(ix)
     }
 
     #[inline]
     pub fn exit_epoch(&self, ix: usize) -> Epoch {
-        self.fork.exit_epoch(self.base, ix as u32)
+        self.reader().exit_epoch(ix)
     }
 
     #[inline]
     pub fn withdrawable_epoch(&self, ix: usize) -> Epoch {
-        self.fork.withdrawable_epoch(self.base, ix as u32)
+        self.reader().withdrawable_epoch(ix)
     }
 
     pub fn iter_activation_epochs(&self) -> impl Iterator<Item = Epoch> + '_ {
@@ -758,43 +584,66 @@ impl<'a> ValidatorsWriteView<'a> {
         self.reader().iter_credentials()
     }
 
+    /// Recompute and store the hash overlay leaf for `idx` — every mutator
+    /// calls this so the overlay stays consistent with the field edits.
+    fn refresh_leaf(&mut self, idx: u32) {
+        let leaf = self.reader().recompute_leaf(idx);
+        self.fork.hash_overlay.set_leaf(self.base.hash(), idx as usize, leaf);
+    }
+
+    /// Append a fresh validator with spec-default Validator-container fields.
+    /// Returns the absolute index of the new validator.
     #[inline]
     pub fn append(&mut self, pk: BLSPubkey, pk_decompressed: PublicKey, creds: Withdrawals) -> u32 {
-        self.fork.append(self.base, pk, pk_decompressed, creds)
+        let idx = (self.fork.base_count + self.fork.appended.len()) as u32;
+        self.fork.appended.push(AppendedValidator {
+            pubkey: pk,
+            pubkey_decompressed: pk_decompressed,
+            credentials: creds,
+        });
+        self.refresh_leaf(idx);
+        idx
     }
 
     #[inline]
     pub fn set_credentials(&mut self, ix: u32, v: Withdrawals) {
-        self.fork.set_credentials(self.base, ix, v);
+        self.fork.credentials_edits.merge_in_place(&[(ix, v)]);
+        self.refresh_leaf(ix);
     }
 
     #[inline]
     pub fn set_effective_balance(&mut self, ix: u32, v: u64) {
-        self.fork.set_effective_balance(self.base, ix, v);
+        self.fork.effective_balance_edits.merge_in_place(&[(ix, v)]);
+        self.refresh_leaf(ix);
     }
 
     #[inline]
     pub fn set_slashed(&mut self, ix: u32, v: bool) {
-        self.fork.set_slashed(self.base, ix, v);
+        self.fork.slashed_edits.merge_in_place(&[(ix, v)]);
+        self.refresh_leaf(ix);
     }
 
     #[inline]
     pub fn set_activation_eligibility_epoch(&mut self, ix: u32, v: Epoch) {
-        self.fork.set_activation_eligibility_epoch(self.base, ix, v);
+        self.fork.activation_eligibility_epoch_edits.merge_in_place(&[(ix, v)]);
+        self.refresh_leaf(ix);
     }
 
     #[inline]
     pub fn set_activation_epoch(&mut self, ix: u32, v: Epoch) {
-        self.fork.set_activation_epoch(self.base, ix, v);
+        self.fork.activation_epoch_edits.merge_in_place(&[(ix, v)]);
+        self.refresh_leaf(ix);
     }
 
     #[inline]
     pub fn set_exit_epoch(&mut self, ix: u32, v: Epoch) {
-        self.fork.set_exit_epoch(self.base, ix, v);
+        self.fork.exit_epoch_edits.merge_in_place(&[(ix, v)]);
+        self.refresh_leaf(ix);
     }
 
     #[inline]
     pub fn set_withdrawable_epoch(&mut self, ix: u32, v: Epoch) {
-        self.fork.set_withdrawable_epoch(self.base, ix, v);
+        self.fork.withdrawable_epoch_edits.merge_in_place(&[(ix, v)]);
+        self.refresh_leaf(ix);
     }
 }

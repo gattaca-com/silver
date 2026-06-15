@@ -24,8 +24,8 @@ pub use slot_state::{
 };
 pub use types::*;
 pub use validators::{
-    AppendedValidator, FinalizedValidators, ValSeed, ValidatorsDecodeError, ValidatorsDelta,
-    ValidatorsGroup, ValidatorsId, ValidatorsView, ValidatorsWriteView, validator_hash,
+    FinalizedValidators, ValSeed, ValidatorsDecodeError, ValidatorsGroup, ValidatorsId,
+    ValidatorsView, ValidatorsWriteView, validator_hash,
 };
 pub use view::{BeaconStateOwner, BeaconStateReader, CheckpointChunk, CheckpointCursor};
 
@@ -83,7 +83,7 @@ impl BeaconState {
         Self {
             immutable: Immutable::default(),
             validators: ValidatorsGroup::new(
-                FinalizedValidators::try_new(&[]).expect("empty registry decodes"),
+                FinalizedValidators::try_new(&[], None).expect("empty registry decodes"),
             ),
             balances: BalancesGroup::new(cap, 0, &[]).expect("empty column"),
             eth1: Eth1Group::new(Eth1Votes::default()),
