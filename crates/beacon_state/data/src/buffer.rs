@@ -156,9 +156,7 @@ impl<G, T: Default, const N: usize> Default for Ring<G, T, N> {
         Self {
             next_seq: 0,
             tail_seq: 0,
-            // `T::default()` per slot (not `vec![clone; N]`) so the ring needs
-            // only `T: Default`, not `Clone` — delta types are reset/cloned
-            // field-wise via `Reset`, never whole-value cloned.
+            // Per-slot default avoids the `T: Clone` bound that `vec![v; N]` would force.
             entries: (0..N).map(|_| T::default()).collect(),
             _owner: PhantomData,
         }

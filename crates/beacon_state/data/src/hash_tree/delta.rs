@@ -125,20 +125,11 @@ pub struct DeltaNode {
 
 impl FinalizedHashTree {
     /// Apply all `leaves` (sorted, distinct, within `[lo, hi)`; `node` is the
-    /// 1-indexed tree node for that range) in one recursive divide & conquer
-    /// that hashes each touched internal node exactly once — instead of one
-    /// root→leaf rebuild per leaf re-hashing shared upper nodes. A
-    /// single-element batch is the per-leaf write. Subtrees with no dirty leaf
-    /// are never entered; auxiliary memory is just the recursion stack.
-    ///
-    /// Collapse-to-base: when a written leaf equals the base leaf, or both
-    /// children end up symlinking to this node's own base children, the
-    /// subtree provably equals the base, so we store a `Base(node)` symlink
-    /// instead of hashing/allocating a `Node`. A clear over an empty base
-    /// collapses every leaf and propagates to the root — no SHA, no `Arc`;
-    /// a non-empty base stays correct since differing subtrees build normally.
-    /// This is an eager prune — the finalize-time `rebase` re-pins these
-    /// symlinks on base advance.
+    /// 1-indexed tree node for that range), hashing each touched internal node
+    /// exactly once. Subtrees with no dirty leaf are skipped; a subtree that
+    /// ends up equal to the base collapses to a `Base(node)` symlink instead of
+    /// a hashed `Node`. This eager prune is re-pinned by the finalize-time
+    /// `rebase` on base advance.
     pub(super) fn set_delta_leaves_collapse(
         &self,
         delta: &DeltaHashTree,

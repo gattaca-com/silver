@@ -22,10 +22,7 @@ struct AppendedValidator {
 
 /// Per-fork delta over [`FinalizedValidators`] — an opaque data holder: sparse
 /// edits per mutable Validator-container field, appended new-validator records,
-/// and a hash overlay keyed by leaf index. All read/write logic lives on
-/// [`ValidatorsView`] / [`ValidatorsWriteView`]; the delta exposes only the
-/// finalization hooks the ring needs (`anchor_at` / `rebase_and_prune` /
-/// `promote_into_base`).
+/// and a hash overlay keyed by leaf index.
 ///
 /// `appended[p]`'s absolute validator index is `base_count + p`. The `_edits`
 /// vecs are sparse, sorted by absolute index. Edits may target either a
@@ -55,12 +52,9 @@ impl ValidatorsDelta {
             "promote_into_base: delta.base_count must match the current base count",
         );
 
-        // 1. Append new identities into the pristine tail slots: write the three
-        // stored identity columns at `base_count..`, register their pubkeys, and
-        // advance the count. The mutable columns there are already spec-default
-        // (slots past the count are never written, see `FinalizedValidators::build`);
-        // the edit scatter below overwrites any appended validator whose fields
-        // diverged.
+        // 1. Append new identities. Tail slots past the count are pristine
+        // spec-default, so the edit scatter below only overwrites appended
+        // validators whose fields diverged.
         let start = self.base_count;
         debug_assert!(
             self.appended.is_empty() ||
@@ -373,8 +367,8 @@ impl<'a> ValidatorsView<'a> {
         self.base
     }
 
-    /// Finalized prefix length (edits/appended index `< base_count` hit the
-    /// base columns). `base.validator_count()` when there's no active fork.
+    /// Finalized prefix length — `base.validator_count()` when there's no
+    /// active fork.
     #[inline]
     fn base_count(&self) -> usize {
         self.delta.base_count

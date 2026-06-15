@@ -62,7 +62,7 @@ const VALIDATOR_SSZ_SIZE: usize = 121;
 /// Byte offset of each field within a 121-byte SSZ `Validator` record. Fixed
 /// layout, packed contiguously: `pubkey[48] | withdrawal_credentials[32] |
 /// effective_balance:u64 | slashed:bool | 4 × epoch:u64`, ending at
-/// [`VALIDATOR_SSZ_SIZE`]. Shared by the decode (`build_from_ssz`) and encode
+/// [`VALIDATOR_SSZ_SIZE`]. Shared by the decode (`try_new`) and encode
 /// (`write_ssz_range`) paths so the layout lives in one place.
 mod offset {
     pub const PUBKEY: usize = 0;

@@ -18,12 +18,10 @@ use crate::{
 };
 
 impl DeltaHashTree {
-    /// Apply every `(leaf_index, leaf)` in `sorted` (ascending, distinct
-    /// indices) to this overlay over `base` in a single dirty-subtree rebuild
-    /// that hashes each internal node exactly once. A single-element batch is
-    /// the per-leaf write; only the path(s) up to the root are materialised,
-    /// sibling subtrees stay `Base(..)` pointers, and subtrees that end up
-    /// equal to the base collapse back to a `Base` symlink.
+    /// Apply every `(leaf_index, leaf)` in `sorted` (ascending, distinct,
+    /// in-range) to this overlay over `base`. See
+    /// [`FinalizedHashTree::set_delta_leaves_collapse`] for the rebuild and
+    /// collapse mechanics.
     #[inline]
     pub fn set_leaves(&mut self, base: &FinalizedHashTree, sorted: &[(u32, B256)]) {
         if sorted.is_empty() {
@@ -46,9 +44,7 @@ impl DeltaHashTree {
         );
     }
 
-    /// Single-leaf write — a 1-element [`set_leaves`]. As fast at the depths
-    /// that use it (validators ≈ 2^22), and collapses to a `Base` symlink when
-    /// the leaf equals the base.
+    /// Single-leaf write — a 1-element [`set_leaves`].
     #[inline]
     pub fn set_leaf(&mut self, base: &FinalizedHashTree, i: usize, leaf: B256) {
         self.set_leaves(base, &[(i as u32, leaf)]);
