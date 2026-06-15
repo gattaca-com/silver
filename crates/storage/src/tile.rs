@@ -550,26 +550,11 @@ impl Tile<SilverSpine> for StorageTile {
             },
         });
 
+        let mut latest_status_event = None;
+
         adapter.consume(|beacon_event: BeaconStateEvent, _| match beacon_event {
             BeaconStateEvent::Status { ssz, wall_slot, .. } => {
-                let head_slot = StatusView::head_slot(&ssz);
-                let head_root = *StatusView::head_root(&ssz);
-                let finalized_epoch = StatusView::finalized_epoch(&ssz);
-                let finalized_root = *StatusView::finalized_root(&ssz);
-                self.fork_digest = *StatusView::fork_digest(&ssz);
-                self.store.update_head(
-                    head_slot,
-                    head_root,
-                    finalized_epoch * SLOTS_PER_EPOCH,
-                    finalized_root,
-                );
-
-                if finalized_epoch > self.checkpointed_epoch &&
-                    head_slot + CAUGHT_UP_SLACK_SLOTS >= wall_slot
-                {
-                    self.checkpointed_epoch = finalized_epoch;
-                    self.persist_pending = true;
-                }
+                latest_status_event = Some((ssz, wall_slot));
             }
             BeaconStateEvent::PersistBlock {
                 ssz,
@@ -595,6 +580,27 @@ impl Tile<SilverSpine> for StorageTile {
             }
             _ => {}
         });
+
+        if let Some((ssz, wall_slot)) = latest_status_event {
+            let head_slot = StatusView::head_slot(&ssz);
+            let head_root = *StatusView::head_root(&ssz);
+            let finalized_epoch = StatusView::finalized_epoch(&ssz);
+            let finalized_root = *StatusView::finalized_root(&ssz);
+            self.fork_digest = *StatusView::fork_digest(&ssz);
+            self.store.update_head(
+                head_slot,
+                head_root,
+                finalized_epoch * SLOTS_PER_EPOCH,
+                finalized_root,
+            );
+
+            if finalized_epoch > self.checkpointed_epoch &&
+                head_slot + CAUGHT_UP_SLACK_SLOTS >= wall_slot
+            {
+                self.checkpointed_epoch = finalized_epoch;
+                self.persist_pending = true;
+            }
+        }
 
         adapter.consume(|sync_update: SyncUpdate, _| self.store.sync_update(sync_update));
 
