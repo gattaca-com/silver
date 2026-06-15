@@ -217,6 +217,9 @@ echo "$JWT_SECRET" > "$EL_DIR/jwt.hex"
   echo "[engine_config]"
   echo "execution_endpoint = \"http://127.0.0.1:$ENGINE_PORT\""
   echo "jwt_secret = \"$EL_DIR/jwt.hex\""
+  # Unsafe no-EL testing mode: set UNSAFE_NO_EL=1 to run silver without a local
+  # reth — the engine tile answers every request VALID (CL-only testing).
+  [ -n "$UNSAFE_NO_EL" ] && echo "unsafe_no_el = true"
   echo
   echo "[chain_config]"
   echo "genesis_unix_secs = $GENESIS"

@@ -1,9 +1,10 @@
 use flux::spine::FluxSpine;
 use silver_common::{
-    BlockSource, EngineFcuReq, EngineGetBlobsReq, EngineGetPayloadBodiesByHashReq,
-    EngineGetPayloadBodiesByRangeReq, EngineGetPayloadReq, EngineNewPayloadReq,
-    EngineNewPayloadResp, EnginePreparePayloadReq, EngineReq, EngineResp, PayloadValidationStatus,
-    SilverSpine, TRandomAccess,
+    BlockSource, EngineFcuReq, EngineFcuResp, EngineGetBlobsReq, EngineGetBlobsResp,
+    EngineGetPayloadBodiesByHashReq, EngineGetPayloadBodiesByRangeReq, EngineGetPayloadBodiesResp,
+    EngineGetPayloadReq, EngineGetPayloadResp, EngineNewPayloadReq, EngineNewPayloadResp,
+    EnginePreparePayloadReq, EngineReq, EngineResp, PayloadValidationStatus, SilverSpine,
+    TRandomAccess,
 };
 
 use crate::{
@@ -34,6 +35,63 @@ pub(crate) fn handle_request(
         EngineReq::GetPayloadBodiesByHash(r) => handle_get_payload_bodies_by_hash(client, r),
         EngineReq::GetPayloadBodiesByRange(r) => handle_get_payload_bodies_by_range(client, r),
     }
+}
+
+/// Unsafe no-EL testing mode: answer each request with a synthetic VALID
+/// response without contacting an execution client. Block-building and
+/// data-fetch results cannot be fabricated, so those return `ok: false`.
+#[inline]
+pub(crate) fn handle_request_no_el(
+    req: &EngineReq,
+    producers: &mut <SilverSpine as FluxSpine>::Producers,
+) {
+    let resp = match req {
+        EngineReq::Fcu(r) => EngineResp::Fcu(EngineFcuResp {
+            block_root: r.block_root,
+            status: PayloadValidationStatus::Valid,
+            latest_valid_hash: r.head_block_hash,
+            has_payload_id: false,
+            payload_id: [0u8; 8],
+        }),
+        EngineReq::NewPayload(r) => EngineResp::NewPayload(EngineNewPayloadResp {
+            block_root: r.block_root,
+            status: PayloadValidationStatus::Valid,
+            latest_valid_hash: [0u8; 32],
+        }),
+        // Proposal path correlates on payload_id; derive one from the spine id.
+        EngineReq::PreparePayload(r) => EngineResp::Fcu(EngineFcuResp {
+            block_root: [0u8; 32],
+            status: PayloadValidationStatus::Valid,
+            latest_valid_hash: [0u8; 32],
+            has_payload_id: true,
+            payload_id: r.id.to_le_bytes(),
+        }),
+        EngineReq::GetPayload(r) => EngineResp::GetPayload(EngineGetPayloadResp {
+            id: r.id,
+            ok: false,
+            data: unsafe { std::mem::zeroed() },
+        }),
+        EngineReq::GetBlobs(r) => EngineResp::GetBlobs(EngineGetBlobsResp {
+            id: r.id,
+            ok: false,
+            data: unsafe { std::mem::zeroed() },
+        }),
+        EngineReq::GetPayloadBodiesByHash(r) => {
+            EngineResp::GetPayloadBodies(EngineGetPayloadBodiesResp {
+                id: r.id,
+                ok: false,
+                data: unsafe { std::mem::zeroed() },
+            })
+        }
+        EngineReq::GetPayloadBodiesByRange(r) => {
+            EngineResp::GetPayloadBodies(EngineGetPayloadBodiesResp {
+                id: r.id,
+                ok: false,
+                data: unsafe { std::mem::zeroed() },
+            })
+        }
+    };
+    producers.engine_resps.produce(&resp.into());
 }
 
 #[inline]

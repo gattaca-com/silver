@@ -77,6 +77,7 @@ vars in the script; `next_fork_epoch` is omitted and defaults to FAR_FUTURE):
 | `chain_config.checkpoint_file` | `genesis.ssz` fetched from `/eth/v2/debug/beacon/states/genesis` — silver's sync anchor (bootstraps fork choice so block 1's parent, the genesis block, resolves). |
 | `engine_config.execution_endpoint` | `http://127.0.0.1:$ENGINE_PORT` — the local reth started by `run-reth.sh` (port from an env-overridable var, default 8551). |
 | `engine_config.jwt_secret`    | `el/jwt.hex`, written by `setup.sh` (fixed env-overridable value); `run-reth.sh` hands the same file to reth's `--authrpc.jwtsecret`. |
+| `engine_config.unsafe_no_el`  | Omitted by default. Set `UNSAFE_NO_EL=1` when running `setup.sh` to emit `unsafe_no_el = true` — see "Running without an EL" below. |
 
 On Linux the enclave's `172.x` container IPs are routable from the host, so
 silver dials them directly (no port-publishing). `next_fork_version` /
@@ -108,6 +109,26 @@ reth's datadir lives in `el/datadir` and survives restarts; `setup.sh` wipes
 it automatically when the enclave (and hence the EL genesis) changes. reth's
 log line for each `newPayload` / `forkchoiceUpdated` is the EL-side view to
 correlate against silver's engine logs.
+
+### Running without an EL (unsafe testing mode)
+
+To exercise the CL in isolation, silver's engine tile can run with **no EL
+attached**: it never connects to reth and answers every engine request
+(`newPayload` / `forkchoiceUpdated`) with a synthetic `VALID`. Block import
+proceeds without payload execution; **block proposal does not work** (the EL
+payload can't be fabricated). Never enable this outside testing.
+
+```bash
+# generate the config with the flag baked in...
+UNSAFE_NO_EL=1 kurtosis/setup.sh
+
+# ...then run silver directly — no run-reth.sh needed
+RUST_LOG=info cargo run --release --bin silver -- --config kurtosis/silver-devnet.toml
+```
+
+This sets `unsafe_no_el = true` under `[engine_config]`; `execution_endpoint`
+and `jwt_secret` are then ignored. (Editing `silver-devnet.toml` by hand works
+too, but `setup.sh` overwrites it on the next run — hence the env var.)
 
 ## Viewing node logs
 

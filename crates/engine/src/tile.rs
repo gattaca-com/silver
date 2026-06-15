@@ -1,20 +1,24 @@
 use std::time::{Duration, Instant};
 
 use flux::{spine::SpineAdapter, tile::Tile};
-use silver_common::{ELSyncStatus, EngineReq, SilverSpine, TProducer, TRandomAccess};
+use silver_common::{
+    ELSyncStatus, EngineHealthEvent, EngineReq, SilverSpine, TProducer, TRandomAccess,
+};
 use silver_config::EngineConfig;
 
 use crate::{
     EngineClient,
     client::{ReqKind, exchange_capabilities, get_client_version, get_sync_status, poll},
-    req_handlers::handle_request,
+    req_handlers::{handle_request, handle_request_no_el},
     resp_handlers::*,
 };
 
 const HEALTHCHECK_INTERVAL: Duration = Duration::from_secs(10);
 
 pub struct EngineTile {
-    pub client: EngineClient,
+    /// `None` in unsafe no-EL testing mode — see
+    /// [`EngineConfig::unsafe_no_el`].
+    pub client: Option<EngineClient>,
     pub gossip_consumer: TRandomAccess,
     pub rpc_consumer: TRandomAccess,
     pub resp_producer: TProducer,
@@ -30,9 +34,19 @@ pub struct EngineTile {
 
 impl Tile<SilverSpine> for EngineTile {
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
+        if self.client.is_none() {
+            // Unsafe no-EL testing mode: report healthy once so peers don't
+            // gate on EL liveness, then answer every request with VALID.
+            if self.first_run {
+                adapter.produce(EngineHealthEvent { sync_status: ELSyncStatus::Synced });
+                self.first_run = false;
+            }
+            adapter.consume(|req: EngineReq, producers| handle_request_no_el(&req, producers));
+            return;
+        }
         adapter.consume(|req: EngineReq, producers| {
             handle_request(
-                &mut self.client,
+                self.client.as_mut().unwrap(),
                 &mut self.gossip_consumer,
                 &mut self.rpc_consumer,
                 &req,
@@ -50,8 +64,16 @@ impl EngineTile {
         rpc_consumer: TRandomAccess,
         resp_producer: TProducer,
     ) -> Self {
+        let client = if config.unsafe_no_el {
+            tracing::warn!(
+                "engine tile in UNSAFE no-EL testing mode: answering all requests VALID"
+            );
+            None
+        } else {
+            Some(EngineClient::new(&config.execution_endpoint, &config.jwt_secret))
+        };
         Self {
-            client: EngineClient::new(&config.execution_endpoint, &config.jwt_secret),
+            client,
             gossip_consumer,
             rpc_consumer,
             resp_producer,
@@ -78,6 +100,8 @@ impl EngineTile {
                 sync_status,
                 ..
             } = self;
+            // Only reached in EL mode; loop_body returns early otherwise.
+            let client = client.as_mut().expect("spin without EL client");
 
             if !*healthcheck_pending && Instant::now() >= *healthcheck_deadline {
                 run_healthcheck(client, first_run, healthcheck_pending, healthcheck_deadline);
@@ -115,7 +139,9 @@ impl EngineTile {
         }
 
         if let Some(method) = negotiated_get_payload_method {
-            self.client.get_payload_method = method;
+            if let Some(client) = self.client.as_mut() {
+                client.get_payload_method = method;
+            }
         }
     }
 }
