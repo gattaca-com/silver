@@ -115,6 +115,7 @@ impl StorageTile {
         } else {
             VecDeque::new()
         };
+        tracing::info!("have {} replay block paths", replay_blocks.len());
 
         Self {
             custody_group_columns,
@@ -529,9 +530,7 @@ impl Tile<SilverSpine> for StorageTile {
                 silver_common::RpcResponse::DataColumnSidecar { fork_digest: _, ssz } if rsp.is_column_backfill() => {
                     tracing::debug!("backfill data column sidecar over rpc");
                     let t_read = self.rpc_consumer.acquire(ssz);
-                    self.store.backfill_data_column(t_read, &mut |event| {
-                        producers.peer_events.produce(&event.into());
-                    });
+                    self.store.backfill_data_column(t_read);
                 }
                 silver_common::RpcResponse::DataColumnSidecar { fork_digest: _, ssz } => {
                     // TODO validate that originating peer has data column index in custody groups

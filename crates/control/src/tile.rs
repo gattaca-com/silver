@@ -141,6 +141,7 @@ impl Tile<SilverSpine> for Controller {
         });
 
         if let Some((ssz, latest_block_slot, wall_slot)) = latest_status_event {
+            tracing::debug!(wall_slot, latest_block_slot, "new status set");
             self.peer_manager.set_status(ssz);
             self.peer_manager.set_local_head_imported(latest_block_slot);
             self.peer_manager.set_wall_slot(wall_slot);

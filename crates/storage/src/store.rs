@@ -15,7 +15,7 @@ use silver_common::{
 };
 use silver_metrics::timed;
 
-use crate::store::backfill::Backfill;
+use crate::store::backfill::{Backfill, ColumnBackfill};
 
 mod backfill;
 mod checkpoint;
@@ -128,6 +128,34 @@ enum PendingWrite {
         slot: u64,
         ssz: TRead,
     },
+    /// Kick off the data-column backfill disk scan. Runs to completion before
+    /// block backfill (`Backfill`) is queued — see `io::file_io`.
+    ColumnBackfillScan {
+        finalized_slot: u64,
+        finalized_root: B256,
+    },
+}
+
+/// Descending cursor for the data-column backfill disk scan. Walks persisted
+/// blocks from `finalized_slot` down to `floor` (= finalized − retention),
+/// seeding `ColumnBackfill` with blocks whose custody columns are incomplete.
+pub(super) struct ColumnScan {
+    pub(super) cursor: u64,
+    pub(super) floor: u64,
+}
+
+/// Sequences the two backfill phases. Column backfill runs first (disk scan of
+/// present blocks = set 1, plus the columns of blocks fetched by block backfill
+/// = set 2); block backfill is queued only once the scan + its set-1 requests
+/// drain. `EarliestSlot` drops to the column floor only at `Done` + columns
+/// complete, so we never over-advertise servable column history.
+#[derive(Clone, Copy)]
+pub(super) enum BlockBackfillStage {
+    Idle,
+    AwaitingColumns { finalized_slot: u64, finalized_root: B256 },
+    Queued,
+    Running,
+    Done,
 }
 
 /// One served file = one response chunk. The unit's resolution (canonical
@@ -172,6 +200,15 @@ pub(super) struct Store {
     is_synced: bool,
     backfill_checked: bool,
     backfill: Option<Backfill>,
+    // Data-column backfill, driven independently of block backfill and run
+    // first. `column_scan` is the in-progress disk scan that seeds
+    // `column_backfill`; `column_floor` is the window's lowest slot, advertised
+    // as earliest-available once both backfills finish. `block_backfill_stage`
+    // sequences column-then-block (see `BlockBackfillStage`).
+    column_backfill: Option<ColumnBackfill>,
+    column_scan: Option<ColumnScan>,
+    column_floor: u64,
+    block_backfill_stage: BlockBackfillStage,
     // Slot of the newest finalized-state checkpoint committed to disk.
     last_persisted_finalized_slot: u64,
     // In-flight streamed checkpoint, advanced one section per `file_io` turn.
@@ -257,6 +294,10 @@ impl Store {
             finalized_slot: 0,
             finalized_root: [0u8; 32],
             backfill: None,
+            column_backfill: None,
+            column_scan: None,
+            column_floor: 0,
+            block_backfill_stage: BlockBackfillStage::Idle,
             backfill_checked: false,
             is_synced: false,
             last_persisted_finalized_slot,
@@ -333,14 +374,11 @@ impl Store {
         }
     }
 
-    pub(super) fn backfill_data_column<F>(&mut self, sidecar: TRead, emit: &mut F)
-    where
-        F: FnMut(PeerEvent),
-    {
-        let accepted = match self.backfill.as_mut() {
-            Some(backfill) => backfill.add_data_column(&sidecar, emit),
+    pub(super) fn backfill_data_column(&mut self, sidecar: TRead) {
+        let accepted = match self.column_backfill.as_mut() {
+            Some(column_backfill) => column_backfill.add_sidecar(&sidecar),
             None => {
-                tracing::error!("received backfill data column, but no active backfill!");
+                tracing::error!("received backfill data column, but no active column backfill!");
                 None
             }
         };
@@ -353,10 +391,8 @@ impl Store {
                 accepted.slot,
             );
         }
-
-        if self.backfill.as_ref().map(Backfill::is_complete).unwrap_or_default() {
-            self.backfill = None;
-        }
+        // Completion + earliest-available emission is polled in `file_io`'s
+        // tick once both column and block backfill have drained.
     }
 
     pub(super) fn backfill_request_complete<F>(&mut self, id: u64, emit: &mut F)
@@ -385,7 +421,10 @@ impl Store {
 
                 if !self.backfill_checked {
                     self.backfill_checked = true;
-                    self.write_queue.push_back(PendingWrite::Backfill {
+                    // Column backfill first: scan persisted blocks for missing
+                    // columns and fetch them. Block backfill is queued by
+                    // `file_io` only once this completes.
+                    self.write_queue.push_back(PendingWrite::ColumnBackfillScan {
                         finalized_slot: self.finalized_slot,
                         finalized_root: self.finalized_root,
                     });
@@ -414,7 +453,7 @@ impl Store {
     ) {
         self.head_slot = head_slot;
         self.head_root = head_root;
-        tracing::info!(head_slot, head_root = hex::encode(head_root), "storage head update");
+        tracing::debug!(head_slot, head_root = hex::encode(head_root), "storage head update");
 
         if finalized_slot <= self.finalized_slot {
             return;
@@ -1234,6 +1273,10 @@ mod tests {
         let ssz = res.read();
         let mut consumer = blocks.cache_ref().random_access("column_backfill_cons", true).unwrap();
 
+        // Column backfill is live across the block-backfill phase: a block
+        // fetched by block backfill in the column window (set 2) must request
+        // its columns via the `BackfillBlock` feed.
+        store.column_backfill = Some(super::ColumnBackfill::new(1..slot + 1));
         store.backfill = Some(super::Backfill::new(slot..slot + 1, block_root));
         store.backfill_block(consumer.acquire(ssz));
 
@@ -1261,6 +1304,101 @@ mod tests {
         assert_eq!(store.root_index.get(&block_root), Some(&slot));
 
         let _ = std::fs::remove_dir_all(&store_path);
+    }
+
+    // Set 1: a block already on disk (from sync, columns skipped) with missing
+    // columns must be picked up by the column-backfill disk scan and requested
+    // — block backfill is never triggered for it (the block is present).
+    #[test]
+    fn column_scan_requests_missing_columns_for_persisted_block() {
+        use silver_common::{PeerEvent, TCache};
+
+        use crate::tile::IoEvent;
+
+        let store_path = format!("/tmp/test_store_column_scan_{}", rand::random::<u32>());
+        let mut store = super::Store::load(store_path.clone()).unwrap();
+
+        let slot = 96u64;
+        let parent_root = [0x31; 32];
+        let state_root = [0x13; 32];
+        let body_start = 184usize;
+        let body_len = 404usize;
+        let mut block = vec![0u8; body_start + body_len];
+        block[100..108].copy_from_slice(&slot.to_le_bytes());
+        block[108..116].copy_from_slice(&11u64.to_le_bytes());
+        block[116..148].copy_from_slice(&parent_root);
+        block[148..180].copy_from_slice(&state_root);
+        block[body_start + 388..body_start + 392].copy_from_slice(&396u32.to_le_bytes());
+        block[body_start + 392..body_start + 396].copy_from_slice(&404u32.to_le_bytes());
+        let block_root = crate::util::block_root(&block);
+
+        // Block on disk, no columns — exactly the post-sync state.
+        let dir = store.block_slot_dir(slot);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(format!("{slot}_block.ssz")), &block).unwrap();
+
+        // Trigger the scan (as sync_update(Following) would) and run file_io.
+        store.finalized_slot = slot;
+        store.write_queue.push_back(super::PendingWrite::ColumnBackfillScan {
+            finalized_slot: slot,
+            finalized_root: [0u8; 32],
+        });
+
+        let fork_digest = [0u8; 4];
+        let producer_cache = TCache::multi_producer("column_scan_rpc", 1 << 20);
+        let mut producer = producer_cache.clone();
+        let custody_columns = (1u128 << 3) | (1u128 << 7);
+        let mut requests = Vec::new();
+        store
+            .file_io(&fork_digest, custody_columns, &mut producer, &mut |io| {
+                if let IoEvent::PeerEvent(PeerEvent::SendDataColumnsByRootRequest {
+                    columns,
+                    block_root,
+                    ..
+                }) = io
+                {
+                    requests.push((columns, block_root));
+                }
+            })
+            .unwrap();
+
+        assert_eq!(requests.len(), 1, "scan should request the persisted block's columns");
+        assert_eq!(requests[0].0, custody_columns);
+        assert_eq!(requests[0].1, block_root);
+
+        let _ = std::fs::remove_dir_all(&store_path);
+    }
+
+    // Column backfill caps concurrent by-root requests: seeding the whole
+    // backlog at once must emit at most MAX_COLUMN_REQUESTS_IN_FLIGHT requests.
+    #[test]
+    fn column_backfill_caps_in_flight_requests() {
+        use silver_common::PeerEvent;
+
+        use crate::store::backfill::{ColumnBackfill, MAX_COLUMN_REQUESTS_IN_FLIGHT};
+
+        let mut cb = ColumnBackfill::new(1..10_000);
+        let custody = (1u128 << 3) | (1u128 << 7);
+        let mut requests = 0usize;
+
+        // Seed far more blocks than the cap.
+        for slot in 100u64..100 + 4 * MAX_COLUMN_REQUESTS_IN_FLIGHT as u64 {
+            let body_start = 184usize;
+            let mut block = vec![0u8; body_start + 404];
+            block[100..108].copy_from_slice(&slot.to_le_bytes());
+            block[108..116].copy_from_slice(&11u64.to_le_bytes());
+            block[body_start + 388..body_start + 392].copy_from_slice(&396u32.to_le_bytes());
+            block[body_start + 392..body_start + 396].copy_from_slice(&404u32.to_le_bytes());
+            let block_root = crate::util::block_root(&block);
+            cb.seed_block(block_root, slot, &block, custody, &mut |evt| {
+                if matches!(evt, PeerEvent::SendDataColumnsByRootRequest { .. }) {
+                    requests += 1;
+                }
+            });
+        }
+
+        assert_eq!(requests, MAX_COLUMN_REQUESTS_IN_FLIGHT, "in-flight cap not enforced");
+        assert!(!cb.is_complete());
     }
 
     // Two concurrent range requests must interleave chunk-by-chunk, not

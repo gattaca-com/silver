@@ -15,15 +15,23 @@ use silver_common::{
     TMultiProducer, hex32, metrics::timed, ssz_hash::B256, ssz_view::SignedBeaconBlockView,
 };
 
-use super::{PendingWrite, QueryUnit, Store, UnfinalizedBlock};
+use super::{
+    BlockBackfillStage, ColumnScan, PendingWrite, QueryUnit, Store, UnfinalizedBlock, columns_of,
+};
 use crate::{
     StorageCounters,
     store::{
         BLOCK_SLOTS_RETAINED, BLOCKS_DIR, Backfill, COLUMN_SLOTS_RETAINED, COLUMNS_DIR,
-        SLOTS_PER_DIR,
+        ColumnBackfill, SLOTS_PER_DIR,
     },
     tile::IoEvent,
+    util,
 };
+
+/// Slots scanned per `file_io` turn during the column-backfill disk scan.
+/// Each scanned slot may read a block file; bounded so the scan can't extend
+/// tile time on a large retention window.
+const COLUMN_SCAN_SLOTS_PER_LOOP: u64 = 64;
 
 /// Per-loop op budgets. Disk I/O on regular files is synchronous —
 /// O_NONBLOCK has no effect there — so each op blocks the tile until done;
@@ -193,13 +201,32 @@ impl Store {
                         _ => None,
                     };
                     if let Some((backfill_range, parent_root)) = range {
-                        emit(IoEvent::PeerEvent(PeerEvent::EarliestSlot(backfill_range.end)));
                         self.backfill = Some(Backfill::new(backfill_range, parent_root));
                         self.backfill
                             .as_mut()
                             .unwrap()
                             .start(&mut |evt| emit(IoEvent::PeerEvent(evt)));
+                        self.block_backfill_stage = BlockBackfillStage::Running;
+                    } else {
+                        // No block gap — block backfill is trivially done; the
+                        // tick's teardown will finalise once columns drain.
+                        self.block_backfill_stage = BlockBackfillStage::Done;
                     }
+                    self.write_queue.pop_front();
+                }
+                PendingWrite::ColumnBackfillScan { finalized_slot, finalized_root } => {
+                    // Window of slots for which columns are retained/servable.
+                    let floor = finalized_slot.saturating_sub(COLUMN_SLOTS_RETAINED).max(1);
+                    self.column_floor = floor;
+                    self.column_backfill = Some(ColumnBackfill::new(floor..*finalized_slot + 1));
+                    self.column_scan = Some(ColumnScan { cursor: *finalized_slot, floor });
+                    self.block_backfill_stage = BlockBackfillStage::AwaitingColumns {
+                        finalized_slot: *finalized_slot,
+                        finalized_root: *finalized_root,
+                    };
+                    // Conservative initial claim: only the recent region until the
+                    // whole window is backfilled (then we drop to `column_floor`).
+                    emit(IoEvent::PeerEvent(PeerEvent::EarliestSlot(*finalized_slot)));
                     self.write_queue.pop_front();
                 }
                 PendingWrite::BackfillBlock { block_root, slot, ssz } => {
@@ -216,8 +243,15 @@ impl Store {
                         open_file_write(dir.join("block_index.bin"), true)?.write_all(&record)?;
                         self.root_index.insert(*block_root, *slot);
                     }
-                    if let Some(backfill) = self.backfill.as_mut() {
-                        backfill.block_persisted(
+                    // Set 2: a block fetched by block backfill that falls in the
+                    // column window needs its columns too (the pre-block disk
+                    // scan couldn't see it — it wasn't on disk yet). Feed the
+                    // still-live column backfill. Just-written ⇒ no columns on
+                    // disk yet, so the full custody set is missing.
+                    if SignedBeaconBlockView::has_data_columns(buffer) &&
+                        let Some(cb) = self.column_backfill.as_mut()
+                    {
+                        cb.seed_block(
                             *block_root,
                             *slot,
                             buffer,
@@ -282,16 +316,105 @@ impl Store {
             }
         }
 
+        // Column backfill runs first: advance the disk scan (set 1) and
+        // re-request any outstanding columns (set 1 + set 2).
+        self.scan_columns_step(custody_group_columns, &mut |evt| emit(IoEvent::PeerEvent(evt)));
+        if let Some(cb) = self.column_backfill.as_mut() {
+            cb.tick(&mut |evt| emit(IoEvent::PeerEvent(evt)));
+        }
+
+        // Promote to block backfill once the disk scan finished and its set-1
+        // column requests drained — block backfill then feeds set 2 back in.
+        let scan_done = self.column_scan.is_none();
+        let columns_drained =
+            self.column_backfill.as_ref().map(ColumnBackfill::is_complete).unwrap_or(true);
+        if let BlockBackfillStage::AwaitingColumns { finalized_slot, finalized_root } =
+            self.block_backfill_stage &&
+            scan_done &&
+            columns_drained
+        {
+            self.write_queue.push_back(PendingWrite::Backfill { finalized_slot, finalized_root });
+            self.block_backfill_stage = BlockBackfillStage::Queued;
+        }
+
         if let Some(backfill) = self.backfill.as_mut() {
             backfill.tick(&mut |evt| emit(IoEvent::PeerEvent(evt)));
         }
         if self.backfill.as_ref().map(Backfill::is_complete).unwrap_or_default() {
             self.backfill = None;
+            self.block_backfill_stage = BlockBackfillStage::Done;
+        }
+
+        // Teardown: both phases finished AND every window column on disk. Only
+        // now drop the earliest-available claim to the column floor.
+        if matches!(self.block_backfill_stage, BlockBackfillStage::Done) &&
+            self.column_backfill.as_ref().map(ColumnBackfill::is_complete).unwrap_or(true)
+        {
+            if self.column_backfill.take().is_some() {
+                emit(IoEvent::PeerEvent(PeerEvent::EarliestSlot(self.column_floor)));
+            }
+            self.block_backfill_stage = BlockBackfillStage::Idle;
         }
 
         self.step_checkpoint();
 
         Ok(())
+    }
+
+    /// Advance the column-backfill disk scan by up to
+    /// `COLUMN_SCAN_SLOTS_PER_LOOP` slots, descending from the finalized slot.
+    /// For each persisted block carrying blob commitments whose custody columns
+    /// aren't all on disk, seed `column_backfill` with the missing set. Marks
+    /// the scan complete on reaching the retention floor.
+    fn scan_columns_step<F>(&mut self, custody: u128, emit: &mut F)
+    where
+        F: FnMut(PeerEvent),
+    {
+        let Some(mut scan) = self.column_scan.take() else {
+            return;
+        };
+        let mut budget = COLUMN_SCAN_SLOTS_PER_LOOP;
+        // floor is inclusive; `saturating_sub` keeps the cursor from underflowing
+        // below it (floor ≥ 1), so the loop exits cleanly at `cursor < floor`.
+        while budget > 0 && scan.cursor >= scan.floor {
+            let slot = scan.cursor;
+            scan.cursor = scan.cursor.saturating_sub(1);
+            budget -= 1;
+
+            let path = self.block_slot_dir(slot).join(format!("{slot}_block.ssz"));
+            let Ok(ssz) = std::fs::read(&path) else {
+                continue; // no block persisted at this slot
+            };
+            if !SignedBeaconBlockView::has_data_columns(&ssz) {
+                continue;
+            }
+            let missing = custody & !self.present_columns(slot, custody);
+            if missing == 0 {
+                continue;
+            }
+            let block_root = util::block_root(&ssz);
+            if let Some(cb) = self.column_backfill.as_mut() {
+                cb.seed_block(block_root, slot, &ssz, missing, emit);
+            }
+        }
+
+        if scan.cursor >= scan.floor {
+            self.column_scan = Some(scan); // budget exhausted; resume next loop
+        } else if let Some(cb) = self.column_backfill.as_mut() {
+            cb.mark_scan_complete();
+        }
+    }
+
+    /// Bitmask of custody columns already on disk for `slot` (flat store).
+    fn present_columns(&self, slot: u64, custody: u128) -> u128 {
+        let dir = self.column_slot_dir(slot);
+        let mut present = 0u128;
+        for c in columns_of(custody) {
+            if dir.join(format!("{slot}_{c}.ssz")).exists() {
+                present |= 1u128 << c;
+            }
+        }
+        present
     }
 
     fn unit_path(&self, unit: &QueryUnit) -> PathBuf {

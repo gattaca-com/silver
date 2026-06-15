@@ -105,7 +105,10 @@ hkdf = "0.12"
 hmac = "0.12"
 httparse = "1"
 libc = "0.2"
-mimalloc = "0.1.52"
+# v2: pin the stable mimalloc 2.x line. The crate defaults to v3, whose
+# exit-time `mi_process_done` force-collect races mimalloc's background purge
+# thread on the shared arena → SIGSEGV on shutdown. v2 has no such race.
+mimalloc = { version = "0.1.52", features = ["v2"] }
 mio = { version = "1.0.4", features = ["net", "os-poll"] }
 parking_lot = "0.12"
 pprof = { version = "0.13", features = ["criterion", "flamegraph"] }
