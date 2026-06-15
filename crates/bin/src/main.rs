@@ -148,7 +148,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         discv5.add_enr(enr, now);
     }
 
-    let das_custody_groups = local_enr.node_id().custody_groups(local_enr.cgc().unwrap_or(4) as u8);
+    // cgc is floored at SAMPLES_PER_SLOT when the ENR is built (see Config::enr).
+    let das_custody_groups = local_enr
+        .node_id()
+        .custody_groups(local_enr.cgc().unwrap_or(silver_common::SAMPLES_PER_SLOT as u64) as u8);
     let mut gossip_topics = config.gossip_topics()?;
     for i in 0..128 {
         if das_custody_groups & (1 << i) != 0 {

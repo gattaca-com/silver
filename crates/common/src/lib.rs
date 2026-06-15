@@ -51,6 +51,6 @@ mod util;
 mod wheel;
 mod wither;
 
-pub use enr::{Enr, NUMBER_OF_CUSTODY_GROUPS, NodeId};
+pub use enr::{Enr, NUMBER_OF_CUSTODY_GROUPS, NodeId, SAMPLES_PER_SLOT};
 pub use flux::timing::Nanos;
 pub use generated::{Identify as ProtoIdentify, IdentifyView as ProtoIdentifyView};

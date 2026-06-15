@@ -635,7 +635,11 @@ impl PeerManager {
                     // drop without penalty, advancing the watermark if our head
                     // already covered the range.
                     if head_slot < inflight.start_slot {
-                        self.on_rpc_misbehaviour(inflight.peer_id, RpcSeverity::MidTolerance);
+                        self.on_rpc_misbehaviour(
+                            inflight.peer_id,
+                            RpcSeverity::MidTolerance,
+                            "blocks-by-range progress stall",
+                        );
                     } else {
                         if head_slot >= end_inclusive {
                             self.synced_through = self.synced_through.max(end_inclusive);
@@ -810,7 +814,11 @@ impl PeerManager {
             self.col_tried_for_range.insert(att.peer_id);
             req.attempt = None;
             self.col_syncreq = Some(req);
-            self.on_rpc_misbehaviour(att.peer_id, RpcSeverity::MidTolerance);
+            self.on_rpc_misbehaviour(
+                att.peer_id,
+                RpcSeverity::MidTolerance,
+                "columns-by-range progress stall",
+            );
         }
     }
 

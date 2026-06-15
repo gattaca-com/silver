@@ -845,9 +845,11 @@ impl PeerManager {
                 self.dialing.remove(&peer_id);
                 self.on_disconnected(p2p_peer, now, emit);
             }
-            PeerEvent::P2pCannotCreateStream { p2p_peer, .. } |
+            PeerEvent::P2pCannotCreateStream { p2p_peer, .. } => {
+                self.add_behaviour_penalty(p2p_peer, 1.0, "cannot create stream");
+            }
             PeerEvent::P2pOutboundMessageDropped { p2p_peer, .. } => {
-                self.add_behaviour_penalty(p2p_peer, 1.0);
+                self.add_behaviour_penalty(p2p_peer, 1.0, "outbound message dropped");
             }
             PeerEvent::P2pStreamClosed { stream_id } => {
                 // Premature close on a request-response stream — the
@@ -862,7 +864,11 @@ impl PeerManager {
                 let protocol = stream_id.protocol();
                 if protocol.is_request_response() && protocol != StreamProtocol::Unset {
                     tracing::warn!(?protocol, "stream close misbehaviour");
-                    self.on_rpc_misbehaviour(stream_id.peer(), RpcSeverity::MidTolerance);
+                    self.on_rpc_misbehaviour(
+                        stream_id.peer(),
+                        RpcSeverity::MidTolerance,
+                        "premature rpc stream close",
+                    );
                     // No terminal response will arrive for this stream —
                     // release the outbound in-flight slot, else each
                     // abnormal close permanently burns one of the peer's
@@ -903,11 +909,11 @@ impl PeerManager {
             }
             PeerEvent::P2pGossipInvalidControl { p2p_peer } => {
                 crate::PeerCounters::GossipInvalidControl.inc();
-                self.add_behaviour_penalty(p2p_peer, 1.0);
+                self.add_behaviour_penalty(p2p_peer, 1.0, "invalid gossip control message");
             }
             PeerEvent::P2pGossipInvalidFrame { p2p_peer } => {
                 crate::PeerCounters::GossipInvalidFrame.inc();
-                self.add_behaviour_penalty(p2p_peer, 1.0);
+                self.add_behaviour_penalty(p2p_peer, 1.0, "invalid gossip frame");
             }
             PeerEvent::DiscNodeFound { enr } => {
                 self.on_disc_node_found(enr, now, emit);
@@ -935,7 +941,7 @@ impl PeerManager {
                 self.on_send_gossip(originator_stream_id.peer(), msg_hash, topic, protobuf, emit);
             }
             PeerEvent::RpcMisbehaviour { p2p_peer, severity } => {
-                self.on_rpc_misbehaviour(p2p_peer, severity);
+                self.on_rpc_misbehaviour(p2p_peer, severity, "rpc chunk/framing violation");
             }
             PeerEvent::P2pPeerStatus { p2p_peer, status_ssz } => {
                 tracing::trace!(p2p_peer, "Got peer status");
@@ -1245,7 +1251,7 @@ impl PeerManager {
             (over_cap, should_iwant)
         };
         if over_cap {
-            self.add_behaviour_penalty(conn, 1.0);
+            self.add_behaviour_penalty(conn, 1.0, "ihave rate limit exceeded");
             return;
         }
         if !should_iwant {
@@ -1531,9 +1537,16 @@ impl PeerManager {
         }
     }
 
-    fn add_behaviour_penalty(&mut self, conn: usize, delta: f64) {
+    fn add_behaviour_penalty(&mut self, conn: usize, delta: f64, offence: &'static str) {
         if let Some(peer) = self.peers.get_mut(&conn) {
             peer.behaviour_penalty += delta;
+            tracing::info!(
+                p2p_peer = conn,
+                offence,
+                delta,
+                total = peer.behaviour_penalty,
+                "P7 behaviour penalty"
+            );
         }
     }
 
@@ -1551,7 +1564,11 @@ impl PeerManager {
             PeerStatus::V2(b) => b.as_slice(),
         };
         if !StatusView::check_size(buf) {
-            self.on_rpc_misbehaviour(p2p_peer, RpcSeverity::LowTolerance);
+            self.on_rpc_misbehaviour(
+                p2p_peer,
+                RpcSeverity::LowTolerance,
+                "malformed status payload",
+            );
             return;
         }
         let fork_digest = *StatusView::fork_digest(buf);
@@ -1561,7 +1578,7 @@ impl PeerManager {
         if let Some(our_fd) = self.our_fork_digest &&
             fork_digest != our_fd
         {
-            self.on_rpc_misbehaviour(p2p_peer, RpcSeverity::Fatal);
+            self.on_rpc_misbehaviour(p2p_peer, RpcSeverity::Fatal, "status fork_digest mismatch");
             return;
         }
 
@@ -1575,12 +1592,16 @@ impl PeerManager {
             finalized_root != *StatusView::finalized_root(local_ssz)
         {
             tracing::warn!("FATAL: finalized root and epoch mismatch");
-            self.on_rpc_misbehaviour(p2p_peer, RpcSeverity::Fatal);
+            self.on_rpc_misbehaviour(
+                p2p_peer,
+                RpcSeverity::Fatal,
+                "status finalized checkpoint mismatch",
+            );
             return;
         }
 
         if self.rejected.is_rejected(&finalized_root) {
-            self.on_rpc_misbehaviour(p2p_peer, RpcSeverity::Fatal);
+            self.on_rpc_misbehaviour(p2p_peer, RpcSeverity::Fatal, "status backs rejected chain");
             return;
         }
 
@@ -1610,7 +1631,12 @@ impl PeerManager {
     /// default `graylist_threshold = -80`, triggering eviction on the next
     /// `tick`. Lighter severities accumulate over time until decay catches
     /// up — same recovery dynamics as gossipsub-domain behaviour penalty.
-    pub(crate) fn on_rpc_misbehaviour(&mut self, conn: usize, severity: RpcSeverity) {
+    pub(crate) fn on_rpc_misbehaviour(
+        &mut self,
+        conn: usize,
+        severity: RpcSeverity,
+        offence: &'static str,
+    ) {
         let delta = match severity {
             RpcSeverity::Fatal => -200.0,
             RpcSeverity::LowTolerance => -10.0,
@@ -1620,12 +1646,13 @@ impl PeerManager {
         crate::PeerCounters::RpcMisbehaviour.inc();
         if let Some(peer) = self.peers.get_mut(&conn) {
             peer.application_score += delta;
-            tracing::warn!(
+            tracing::info!(
                 peer_id = conn,
+                offence,
                 ?severity,
                 delta,
                 score = peer.application_score,
-                "rpc misbehaviour"
+                "P5 rpc misbehaviour"
             );
         }
         // If this peer is our current sync backer, drop them and burn for
@@ -1727,9 +1754,7 @@ impl PeerManager {
             !waiters.is_empty()
         });
         for (conn, count) in penalties {
-            if let Some(peer) = self.peers.get_mut(&conn) {
-                peer.behaviour_penalty += count as f64;
-            }
+            self.add_behaviour_penalty(conn, count as f64, "broken gossip promises");
         }
     }
 
