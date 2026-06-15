@@ -1,6 +1,6 @@
 use blst::min_pk::PublicKey;
 
-use super::{FinalizedValidators, ValidatorsDelta, validator_hash};
+use super::{FinalizedValidators, ValSeed, ValidatorsGroup, validator_hash};
 use crate::{
     Withdrawals,
     ssz_hash::{hash_concat, hash_fixed_bytes, merkleize, uint64_chunk},
@@ -16,7 +16,13 @@ fn creds(b: u8) -> Withdrawals {
 }
 
 fn empty_validators() -> FinalizedValidators {
-    FinalizedValidators::try_new(&[]).unwrap()
+    FinalizedValidators::try_new(&[], None).unwrap()
+}
+
+/// A registry group over an empty base — the entry point for all delta tests,
+/// which drive through [`ValidatorsWriteView`] / [`ValidatorsView`] only.
+fn group() -> ValidatorsGroup {
+    ValidatorsGroup::new(empty_validators())
 }
 
 /// Independent reference impl of `validator_hash`: merkleize 8 chunks
@@ -151,155 +157,139 @@ fn empty_validators_is_empty_and_well_formed() {
     assert_eq!(f.hash().max_elements(), validator_capacity(0));
     // Default-init: slashed bitset is all zeros, epochs are FAR_FUTURE.
     assert!(!f.is_slashed(0));
-    assert_eq!(f.activation_epoch(0), FAR_FUTURE_EPOCH);
+    assert_eq!(f.activation_epoch[0], FAR_FUTURE_EPOCH);
 }
 
 #[test]
 fn append_then_read_returns_baked_defaults() {
-    let f = empty_validators();
-    let mut d = ValidatorsDelta::new_at(&f);
+    let mut g = group();
+    let mut wv = g.roll_fresh();
     let pk = pk(7);
     let creds = creds(0x42);
-    let idx = d.append(&f, pk, PublicKey::default(), creds);
+    let idx = wv.append(pk, PublicKey::default(), creds);
     assert_eq!(idx, 0);
 
-    // Identity from appended record.
-    assert_eq!(d.effective_pubkey(&f, 0), &pk);
-    assert_eq!(d.effective_credentials(&f, 0), &creds);
+    // Identity from the appended record.
+    assert_eq!(wv.pubkey(0), &pk);
+    assert_eq!(wv.credentials(0), &creds);
 
     // Baked-in spec defaults.
-    assert_eq!(d.effective_balance(&f, 0), 0);
-    assert!(!d.is_slashed(&f, 0));
-    assert_eq!(d.activation_eligibility_epoch(&f, 0), FAR_FUTURE_EPOCH);
-    assert_eq!(d.activation_epoch(&f, 0), FAR_FUTURE_EPOCH);
-    assert_eq!(d.exit_epoch(&f, 0), FAR_FUTURE_EPOCH);
-    assert_eq!(d.withdrawable_epoch(&f, 0), FAR_FUTURE_EPOCH);
+    assert_eq!(wv.effective_balance(0), 0);
+    assert!(!wv.is_slashed(0));
+    assert_eq!(wv.activation_eligibility_epoch(0), FAR_FUTURE_EPOCH);
+    assert_eq!(wv.activation_epoch(0), FAR_FUTURE_EPOCH);
+    assert_eq!(wv.exit_epoch(0), FAR_FUTURE_EPOCH);
+    assert_eq!(wv.withdrawable_epoch(0), FAR_FUTURE_EPOCH);
 }
 
 #[test]
 fn set_credentials_inserts_then_updates_in_place() {
-    let f = empty_validators();
-    let mut d = ValidatorsDelta::new_at(&f);
-    d.append(&f, pk(0), PublicKey::default(), creds(1));
-    d.append(&f, pk(1), PublicKey::default(), creds(2));
+    let mut g = group();
+    let mut wv = g.roll_fresh();
+    wv.append(pk(0), PublicKey::default(), creds(1));
+    wv.append(pk(1), PublicKey::default(), creds(2));
 
-    // Set an edit at idx 0.
     let new_cr = creds(0xFF);
-    d.set_credentials(&f, 0, new_cr);
-    assert_eq!(d.effective_credentials(&f, 0), &new_cr);
-    assert_eq!(d.credentials_edits.len(), 1);
+    wv.set_credentials(0, new_cr);
+    assert_eq!(wv.credentials(0), &new_cr);
 
-    // Update in place — still one edit.
+    // Update in place.
     let newer = creds(0x55);
-    d.set_credentials(&f, 0, newer);
-    assert_eq!(d.effective_credentials(&f, 0), &newer);
-    assert_eq!(d.credentials_edits.len(), 1);
+    wv.set_credentials(0, newer);
+    assert_eq!(wv.credentials(0), &newer);
 
-    // Setting back to the appended record's value keeps the edit (no
-    // base-equal elision; correctness rides on merge_finalized + prune_to_base)
-    // but the effective read still reflects it.
-    d.set_credentials(&f, 0, creds(1));
-    assert_eq!(d.credentials_edits.len(), 1);
-    assert_eq!(d.effective_credentials(&f, 0), &creds(1));
+    // Setting back to the appended record's value still reads back correctly.
+    wv.set_credentials(0, creds(1));
+    assert_eq!(wv.credentials(0), &creds(1));
 }
 
 #[test]
 fn set_slashed_round_trips() {
-    let f = empty_validators();
-    let mut d = ValidatorsDelta::new_at(&f);
-    d.append(&f, pk(0), PublicKey::default(), creds(0));
+    let mut g = group();
+    let mut wv = g.roll_fresh();
+    wv.append(pk(0), PublicKey::default(), creds(0));
 
-    assert!(!d.is_slashed(&f, 0));
-    d.set_slashed(&f, 0, true);
-    assert!(d.is_slashed(&f, 0));
-    assert_eq!(d.slashed_edits.as_slice(), [(0, true)]);
-
-    // No base-equal elision: the edit is kept, but the effective read is back
-    // to the appended record's default.
-    d.set_slashed(&f, 0, false);
-    assert!(!d.is_slashed(&f, 0));
-    assert_eq!(d.slashed_edits.as_slice(), [(0, false)]);
+    assert!(!wv.is_slashed(0));
+    wv.set_slashed(0, true);
+    assert!(wv.is_slashed(0));
+    wv.set_slashed(0, false);
+    assert!(!wv.is_slashed(0));
 }
 
 #[test]
-fn set_effective_balance_updates_hash_overlay() {
-    // Sanity check: a set_* on a Validator-container field must update
-    // both the edit vec AND the hash overlay's leaf for that idx.
-    let f = empty_validators();
-    let mut d = ValidatorsDelta::new_at(&f);
-    d.append(&f, pk(0), PublicKey::default(), creds(0));
+fn set_effective_balance_reproduces_independent_root() {
+    // A `set_*` must refresh the hash overlay to the SSZ-correct leaf. Verify it
+    // both changes the registry root and reproduces the root of the same
+    // validator built straight into a finalized base (independent of the overlay
+    // path) — the cross-check `column/tests.rs` makes for single columns.
+    let mut g = group();
+    let mut wv = g.roll_fresh();
+    wv.append(pk(0), PublicKey::default(), creds(0));
+    let before = wv.hash_root();
+    wv.set_effective_balance(0, 32_000_000_000);
+    assert_ne!(before, wv.hash_root(), "writing effective_balance changes the registry root");
 
-    let root_before = d.hash_overlay.root(f.hash());
-    d.set_effective_balance(&f, 0, 32_000_000_000);
-    let root_after = d.hash_overlay.root(f.hash());
-    assert_ne!(root_before, root_after, "writing effective_balance changes the merged root");
-
-    // Match the value we'd get from recomputing the leaf by hand.
-    let want_leaf = validator_hash(
-        &pk(0),
-        &creds(0),
-        32_000_000_000,
-        false,
-        FAR_FUTURE_EPOCH,
-        FAR_FUTURE_EPOCH,
-        FAR_FUTURE_EPOCH,
-        FAR_FUTURE_EPOCH,
-    );
-    let recomputed = d.recompute_leaf(&f, 0);
-    assert_eq!(recomputed, want_leaf);
+    // Same validator decoded straight into a base; a fresh fork over it reads the
+    // base's registry root with no edits.
+    let base = FinalizedValidators::with_validators(&[ValSeed {
+        pubkey: pk(0),
+        effective_balance: 32_000_000_000,
+        ..ValSeed::default()
+    }]);
+    let mut g2 = ValidatorsGroup::new(base);
+    assert_eq!(wv.hash_root(), g2.roll_fresh().hash_root());
 }
 
 #[test]
-fn promote_then_prune_reanchors_delta() {
-    let mut f = empty_validators();
-    let mut d = ValidatorsDelta::new_at(&f);
-    let pk_a = pk(0xAA);
-    d.append(&f, pk_a, PublicKey::default(), creds(0xA1));
-    d.set_effective_balance(&f, 0, 100_000_000);
-    d.set_activation_epoch(&f, 0, 7);
+fn finalize_promotes_and_reanchors_winner() {
+    // Finalizing the sole fork promotes its appended validator + edits into the
+    // base and re-anchors it; a fresh fork over the result reads the promoted
+    // values and reproduces the pre-finalize root.
+    let mut g = group();
+    let winner = {
+        let mut w = g.roll_fresh();
+        w.append(pk(0xAA), PublicKey::default(), creds(0xA1));
+        w.set_effective_balance(0, 100_000_000);
+        w.set_activation_epoch(0, 7);
+        w.commit()
+    };
+    let before = g.view(winner).hash_root();
 
-    let root_pre = d.hash_overlay.root(f.hash());
+    let live = g.finalize(winner, &[winner]);
+    assert_eq!(g.finalized().validator_count(), 1);
 
-    d.promote_into_base(&mut f);
-    assert_eq!(f.validator_count(), 1);
-    assert_eq!(*f.pubkey(0), pk_a);
-    assert_eq!(f.effective_balance(0), 100_000_000);
-    assert_eq!(f.activation_epoch(0), 7);
-
-    // The promoted base's root equals the pre-promote merged root.
-    assert_eq!(f.hash().root_hash(), &root_pre);
-
-    d.prune_to_base(&f);
-    assert_eq!(d.base_count, 1);
-    assert!(d.appended.is_empty());
-    assert!(d.effective_balance_edits.is_empty(), "edit matches base after promote");
-    assert!(d.activation_epoch_edits.is_empty(), "edit matches base after promote");
-    // After prune, the overlay should be Base(root) — empty.
-    assert_eq!(d.hash_overlay.root(f.hash()), root_pre);
+    let wv = g.roll_from(live[0]);
+    assert_eq!(wv.pubkey(0), &pk(0xAA));
+    assert_eq!(wv.effective_balance(0), 100_000_000);
+    assert_eq!(wv.activation_epoch(0), 7);
+    assert_eq!(wv.hash_root(), before);
 }
 
 #[test]
-fn descendant_view_survives_promote_via_prune() {
-    // Standard fork-tree topology: parent → child. Promote parent's delta
-    // into base; child re-anchors via prune and its merged view stays
-    // identical to its pre-promote root.
-    let mut f = empty_validators();
-    let mut parent = ValidatorsDelta::new_at(&f);
-    parent.append(&f, pk(1), PublicKey::default(), creds(1));
-    parent.set_effective_balance(&f, 0, 1_000);
+fn descendant_view_survives_finalize() {
+    // Fork-tree: parent → child. Finalizing the parent (winner) promotes it and
+    // re-anchors the child; the child keeps its own divergence and root.
+    let mut g = group();
+    let parent = {
+        let mut w = g.roll_fresh();
+        w.append(pk(1), PublicKey::default(), creds(1));
+        w.set_effective_balance(0, 1_000);
+        w.commit()
+    };
+    let child = {
+        let mut w = g.roll_from(parent);
+        w.set_activation_epoch(0, 42);
+        w.commit()
+    };
+    let child_before = g.view(child).hash_root();
 
-    let mut child = parent.clone();
-    child.set_activation_epoch(&f, 0, 42);
+    let live = g.finalize(parent, &[parent, child]); // [reanchored parent, child]
+    assert_eq!(g.finalized().validator_count(), 1);
 
-    let child_root_pre = child.hash_overlay.root(f.hash());
-
-    parent.promote_into_base(&mut f);
-    parent.prune_to_base(&f);
-    child.prune_to_base(&f);
-
-    assert_eq!(child.base_count, 1);
-    // Child should still see activation_epoch = 42 (its own divergence
-    // from parent's promoted state).
-    assert_eq!(child.activation_epoch(&f, 0), 42);
-    assert_eq!(child.hash_overlay.root(f.hash()), child_root_pre);
+    let wv = g.roll_from(live[1]);
+    // Child still sees activation_epoch = 42 (its divergence) and the balance
+    // from the promoted base.
+    assert_eq!(wv.activation_epoch(0), 42);
+    assert_eq!(wv.effective_balance(0), 1_000);
+    assert_eq!(wv.hash_root(), child_before);
 }

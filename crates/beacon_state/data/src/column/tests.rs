@@ -1,4 +1,4 @@
-use super::{BalancesGroup, BalancesWriteView};
+use super::{BalancesGroup, BalancesWriteView, InactivityScoresGroup};
 use crate::{ssz_hash::hash_uint64_list, types::VALIDATOR_REGISTRY_LIMIT};
 
 fn le_bytes(values: &[u64]) -> Vec<u8> {
@@ -143,6 +143,23 @@ fn new_decodes_le_u64s() {
 #[test]
 fn new_rejects_len_mismatch() {
     assert!(BalancesGroup::new(4, 2, &[0u8; 12]).is_err());
+}
+
+/// The unhashed instantiation runs the same value machinery with no tree:
+/// set_many / append / finalize behave identically.
+#[test]
+fn unhashed_column_set_many_and_finalize() {
+    let mut g = InactivityScoresGroup::new(8, 3, &le_bytes(&[5, 6, 7])).unwrap();
+
+    let mut wv = g.roll_fresh();
+    wv.set_many(&[(0, 50), (2, 70)]);
+    wv.append(9);
+    let winner = wv.commit();
+
+    let survivor = g.roll_from(winner).commit();
+    let live = g.finalize(winner, &[winner, survivor]);
+
+    assert_eq!(g.roll_from(live[1]).iter().collect::<Vec<_>>(), vec![50, 6, 70, 9]);
 }
 
 // ---- hash tree ----

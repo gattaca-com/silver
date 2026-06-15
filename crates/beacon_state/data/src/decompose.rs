@@ -325,10 +325,7 @@ impl BeaconState {
         let eth1 = Eth1Group::new(Eth1Votes::from_ssz(ssz, &offsets)?);
 
         let val_bytes = &ssz[offsets.validators..offsets.balances];
-        let validators = ValidatorsGroup::new(match pubkeys {
-            Some(pk) => FinalizedValidators::try_new_with_pubkeys(val_bytes, pk)?,
-            None => FinalizedValidators::try_new(val_bytes)?,
-        });
+        let validators = ValidatorsGroup::new(FinalizedValidators::try_new(val_bytes, pubkeys)?);
 
         // All per-validator columns (balances, participation, inactivity) size
         // to the validators' capacity/count so they stay aligned with the rest.

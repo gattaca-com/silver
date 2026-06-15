@@ -3,8 +3,7 @@ use silver_beacon_state_data::{
     EPOCHS_PER_SLASHINGS_VECTOR, Eth1Data, ExecutionPayloadHeader, Fork, HISTORICAL_ROOTS_LIMIT,
     LongtailView, MAX_ETH1_VOTES, PENDING_CONSOLIDATIONS_LIMIT, PENDING_DEPOSITS_LIMIT,
     PENDING_PARTIAL_WITHDRAWALS_LIMIT, PendingView, SLOTS_PER_HISTORICAL_ROOT, SYNC_COMMITTEE_SIZE,
-    StateReadView, SyncCommittee, VALIDATOR_REGISTRY_LIMIT, effective_randao_mixes_into,
-    effective_slashings_into,
+    StateReadView, SyncCommittee, effective_randao_mixes_into, effective_slashings_into,
 };
 use silver_common::metrics::timed;
 pub use silver_common::ssz_hash::*;
@@ -72,7 +71,6 @@ pub fn hash_tree_root_state(rv: &StateReadView, scratch: &mut StateHashScratch) 
     let state_roots = scratch.state_roots.as_slice();
     let randao_mixes = scratch.randao_mixes.as_slice();
     let slashings = scratch.slashings.as_slice();
-    let n = rv.validators.count();
 
     let fields: [B256; 38] = [
         uint64_chunk(imm.genesis_time),
@@ -90,13 +88,13 @@ pub fn hash_tree_root_state(rv: &StateReadView, scratch: &mut StateHashScratch) 
         rv.balances.hash_root(),
         hash_b256_vector(randao_mixes),
         hash_uint64_vector(slashings),
-        hash_uint8_list(rv.previous_participation.iter(), n, VALIDATOR_REGISTRY_LIMIT),
-        hash_uint8_list(rv.current_participation.iter(), n, VALIDATOR_REGISTRY_LIMIT),
+        rv.previous_participation.hash_root(),
+        rv.current_participation.hash_root(),
         uint64_chunk(es.justification_bits as u64),
         hash_checkpoint(&es.previous_justified_checkpoint),
         hash_checkpoint(&es.current_justified_checkpoint),
         hash_checkpoint(&es.finalized_checkpoint),
-        hash_uint64_list(rv.inactivity.iter(), n, VALIDATOR_REGISTRY_LIMIT),
+        rv.inactivity.hash_root(),
         hash_sync_committee(&lt.current_sync_committee),
         hash_sync_committee(&lt.next_sync_committee),
         hash_execution_payload_header(&slot.latest_execution_payload_header),

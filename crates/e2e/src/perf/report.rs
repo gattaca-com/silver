@@ -53,14 +53,19 @@ impl PerfReport {
                 threshold: t.max_decompose,
             },
             Gauge {
-                label: "apply_block (avg)",
-                actual: self.frame_avg_ns("apply_block"),
-                threshold: t.max_apply_block_avg,
+                label: "apply_block (p50)",
+                actual: self.outcome.stats.aggregate_leaf_p50("apply_block"),
+                threshold: t.max_apply_block_p50,
             },
             Gauge {
                 label: "apply_block (max)",
                 actual: self.outcome.stats.aggregate_leaf_max("apply_block"),
                 threshold: t.max_apply_block_max,
+            },
+            Gauge {
+                label: "process_epoch (avg)",
+                actual: self.frame_avg_ns("process_epoch"),
+                threshold: t.max_process_epoch_avg,
             },
             Gauge {
                 label: "hash_tree_root_state (avg)",
