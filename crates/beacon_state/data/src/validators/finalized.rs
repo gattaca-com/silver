@@ -8,7 +8,7 @@ use parking_lot::RwLock;
 use rustc_hash::FxHashMap;
 use silver_common_macros::timed;
 
-use super::{delta::AppendedValidator, validator_hash};
+use super::validator_hash;
 use crate::{
     Withdrawals,
     hash_tree::FinalizedHashTree,
@@ -41,8 +41,39 @@ impl Default for ValSeed {
     }
 }
 
+/// Full per-validator field set, used only to construct or grow the finalized
+/// base (SSZ decode, genesis seeds). The fork delta's [`AppendedValidator`] is
+/// leaner — its mutable fields are always spec-defaults at append time.
+pub(super) struct ValidatorInit {
+    pub pubkey: BLSPubkey,
+    pub pubkey_decompressed: PublicKey,
+    pub credentials: Withdrawals,
+    pub effective_balance: u64,
+    pub slashed: bool,
+    pub activation_eligibility_epoch: Epoch,
+    pub activation_epoch: Epoch,
+    pub exit_epoch: Epoch,
+    pub withdrawable_epoch: Epoch,
+}
+
 /// SSZ-serialised size of a single `Validator` container (Fulu).
 const VALIDATOR_SSZ_SIZE: usize = 121;
+
+/// Byte offset of each field within a 121-byte SSZ `Validator` record. Fixed
+/// layout, packed contiguously: `pubkey[48] | withdrawal_credentials[32] |
+/// effective_balance:u64 | slashed:bool | 4 × epoch:u64`, ending at
+/// [`VALIDATOR_SSZ_SIZE`]. Shared by the decode (`try_new`) and encode
+/// (`write_ssz_range`) paths so the layout lives in one place.
+mod offset {
+    pub const PUBKEY: usize = 0;
+    pub const CREDENTIALS: usize = 48;
+    pub const EFFECTIVE_BALANCE: usize = 80;
+    pub const SLASHED: usize = 88;
+    pub const ACTIVATION_ELIGIBILITY_EPOCH: usize = 89;
+    pub const ACTIVATION_EPOCH: usize = 97;
+    pub const EXIT_EPOCH: usize = 105;
+    pub const WITHDRAWABLE_EPOCH: usize = 113;
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum ValidatorsDecodeError {
@@ -59,6 +90,11 @@ pub enum ValidatorsDecodeError {
 #[inline]
 fn u64_at(s: &[u8], off: usize) -> u64 {
     u64::from_le_bytes(s[off..off + 8].try_into().unwrap())
+}
+
+#[inline]
+fn put(buf: &mut [u8], off: usize, src: &[u8]) {
+    buf[off..off + src.len()].copy_from_slice(src);
 }
 
 pub struct FinalizedValidators {
@@ -82,7 +118,7 @@ impl FinalizedValidators {
     fn build<E>(
         capacity: usize,
         n: usize,
-        mut field_at: impl FnMut(usize) -> Result<AppendedValidator, E>,
+        mut field_at: impl FnMut(usize) -> Result<ValidatorInit, E>,
     ) -> Result<Self, E> {
         debug_assert!(n <= capacity);
         let mut val_pubkey = vec![[0u8; 48]; capacity].into_boxed_slice();
@@ -147,70 +183,52 @@ impl FinalizedValidators {
 }
 
 impl FinalizedValidators {
-    /// The one production constructor: decode the SSZ `validators` byte range
-    /// (capacity is derived from the count); `try_new(&[])` is the empty base.
+    /// Decode the SSZ `validators` byte range (layout per [`offset`]); capacity
+    /// is derived from the count, and `try_new(&[], None)` is the empty base.
+    /// With `Some(decompressed)`, each sidecar key is bound to its record's
+    /// canonical compressed pubkey; with `None`, pubkeys are decompressed from
+    /// the records (which rejects non-canonical points).
     #[timed]
-    pub fn try_new(val_bytes: &[u8]) -> Result<Self, ValidatorsDecodeError> {
-        if !val_bytes.len().is_multiple_of(VALIDATOR_SSZ_SIZE) {
-            return Err(ValidatorsDecodeError::LenNotMultiple { len: val_bytes.len() });
-        }
-        let n = val_bytes.len() / VALIDATOR_SSZ_SIZE;
-
-        // Validator container layout: pubkey[48] | withdrawal_credentials[32]
-        // | effective_balance:u64[8] | slashed:bool[1] | 4 × epoch:u64.
-        Self::build(validator_capacity(n), n, |i| {
-            let v = &val_bytes[i * VALIDATOR_SSZ_SIZE..];
-            let pubkey: BLSPubkey = v[..48].try_into().unwrap();
-            let pubkey_decompressed = PublicKey::from_bytes(&pubkey)
-                .map_err(|_| ValidatorsDecodeError::InvalidPubkey { idx: i })?;
-            Ok(AppendedValidator {
-                pubkey,
-                pubkey_decompressed,
-                credentials: Withdrawals(v[48..80].try_into().unwrap()),
-                effective_balance: u64_at(v, 80),
-                slashed: v[88] != 0,
-                activation_eligibility_epoch: u64_at(v, 89),
-                activation_epoch: u64_at(v, 97),
-                exit_epoch: u64_at(v, 105),
-                withdrawable_epoch: u64_at(v, 113),
-            })
-        })
-    }
-
-    #[timed]
-    pub fn try_new_with_pubkeys(
+    pub fn try_new(
         val_bytes: &[u8],
-        decompressed: &[PublicKey],
+        decompressed: Option<&[PublicKey]>,
     ) -> Result<Self, ValidatorsDecodeError> {
         if !val_bytes.len().is_multiple_of(VALIDATOR_SSZ_SIZE) {
             return Err(ValidatorsDecodeError::LenNotMultiple { len: val_bytes.len() });
         }
         let n = val_bytes.len() / VALIDATOR_SSZ_SIZE;
-        if decompressed.len() != n {
-            return Err(ValidatorsDecodeError::PubkeyCountMismatch {
-                sidecar: decompressed.len(),
-                validators: n,
-            });
+        if let Some(d) = decompressed {
+            if d.len() != n {
+                return Err(ValidatorsDecodeError::PubkeyCountMismatch {
+                    sidecar: d.len(),
+                    validators: n,
+                });
+            }
         }
 
         Self::build(validator_capacity(n), n, |i| {
             let v = &val_bytes[i * VALIDATOR_SSZ_SIZE..];
-            let pubkey: BLSPubkey = v[..48].try_into().unwrap();
-            // Bind the sidecar key to the canonical (state-root-covered)
-            // compressed pubkey.
-            if decompressed[i].compress() != pubkey {
-                return Err(ValidatorsDecodeError::PubkeyMismatch { idx: i });
-            }
-            Ok::<_, ValidatorsDecodeError>(AppendedValidator {
+            let pubkey: BLSPubkey = v[offset::PUBKEY..offset::CREDENTIALS].try_into().unwrap();
+            let pubkey_decompressed = match decompressed {
+                Some(d) if d[i].compress() != pubkey => {
+                    return Err(ValidatorsDecodeError::PubkeyMismatch { idx: i });
+                }
+                Some(d) => d[i],
+                None => PublicKey::from_bytes(&pubkey)
+                    .map_err(|_| ValidatorsDecodeError::InvalidPubkey { idx: i })?,
+            };
+            Ok(ValidatorInit {
                 pubkey,
-                pubkey_decompressed: decompressed[i],
-                credentials: Withdrawals(v[48..80].try_into().unwrap()),
-                effective_balance: u64_at(v, 80),
-                slashed: v[88] != 0,
-                activation_eligibility_epoch: u64_at(v, 89),
-                activation_epoch: u64_at(v, 97),
-                exit_epoch: u64_at(v, 105),
-                withdrawable_epoch: u64_at(v, 113),
+                pubkey_decompressed,
+                credentials: Withdrawals(
+                    v[offset::CREDENTIALS..offset::EFFECTIVE_BALANCE].try_into().unwrap(),
+                ),
+                effective_balance: u64_at(v, offset::EFFECTIVE_BALANCE),
+                slashed: v[offset::SLASHED] != 0,
+                activation_eligibility_epoch: u64_at(v, offset::ACTIVATION_ELIGIBILITY_EPOCH),
+                activation_epoch: u64_at(v, offset::ACTIVATION_EPOCH),
+                exit_epoch: u64_at(v, offset::EXIT_EPOCH),
+                withdrawable_epoch: u64_at(v, offset::WITHDRAWABLE_EPOCH),
             })
         })
     }
@@ -226,14 +244,15 @@ impl FinalizedValidators {
     ) -> io::Result<()> {
         let mut buf = [0u8; VALIDATOR_SSZ_SIZE];
         for i in start..end {
-            buf[0..48].copy_from_slice(self.pubkey(i));
-            buf[48..80].copy_from_slice(&self.withdrawal_credentials(i).0);
-            buf[80..88].copy_from_slice(&self.effective_balance(i).to_le_bytes());
-            buf[88] = self.is_slashed(i) as u8;
-            buf[89..97].copy_from_slice(&self.activation_eligibility_epoch(i).to_le_bytes());
-            buf[97..105].copy_from_slice(&self.activation_epoch(i).to_le_bytes());
-            buf[105..113].copy_from_slice(&self.exit_epoch(i).to_le_bytes());
-            buf[113..121].copy_from_slice(&self.withdrawable_epoch(i).to_le_bytes());
+            put(&mut buf, offset::PUBKEY, &self.val_pubkey[i]);
+            put(&mut buf, offset::CREDENTIALS, &self.val_withdrawal_credentials[i].0);
+            put(&mut buf, offset::EFFECTIVE_BALANCE, &self.effective_balance[i].to_le_bytes());
+            buf[offset::SLASHED] = self.is_slashed(i) as u8;
+            let elig = self.activation_eligibility_epoch[i].to_le_bytes();
+            put(&mut buf, offset::ACTIVATION_ELIGIBILITY_EPOCH, &elig);
+            put(&mut buf, offset::ACTIVATION_EPOCH, &self.activation_epoch[i].to_le_bytes());
+            put(&mut buf, offset::EXIT_EPOCH, &self.exit_epoch[i].to_le_bytes());
+            put(&mut buf, offset::WITHDRAWABLE_EPOCH, &self.withdrawable_epoch[i].to_le_bytes());
             w.write_all(&buf)?;
         }
         Ok(())
@@ -248,7 +267,7 @@ impl FinalizedValidators {
         w: &mut W,
     ) -> io::Result<()> {
         for i in start..end {
-            w.write_all(&self.pubkey_decompressed(i).serialize())?;
+            w.write_all(&self.val_pubkey_decompressed[i].serialize())?;
         }
         Ok(())
     }
@@ -262,49 +281,12 @@ impl FinalizedValidators {
         self.val_pubkey.len()
     }
 
+    /// `slashed` is a bitset (validator `i` at bit `i % 8` of byte `i / 8`), so
+    /// it keeps a reader rather than callers open-coding the mask. Every other
+    /// column is read directly through its `pub(super)` field.
     #[inline]
-    pub fn pubkey(&self, i: usize) -> &BLSPubkey {
-        &self.val_pubkey[i]
-    }
-
-    #[inline]
-    pub fn pubkey_decompressed(&self, i: usize) -> &PublicKey {
-        &self.val_pubkey_decompressed[i]
-    }
-
-    #[inline]
-    pub fn withdrawal_credentials(&self, i: usize) -> &Withdrawals {
-        &self.val_withdrawal_credentials[i]
-    }
-
-    #[inline]
-    pub fn effective_balance(&self, i: usize) -> u64 {
-        self.effective_balance[i]
-    }
-
-    #[inline]
-    pub fn is_slashed(&self, i: usize) -> bool {
+    pub(super) fn is_slashed(&self, i: usize) -> bool {
         self.slashed[i / 8] & (1u8 << (i % 8)) != 0
-    }
-
-    #[inline]
-    pub fn activation_eligibility_epoch(&self, i: usize) -> Epoch {
-        self.activation_eligibility_epoch[i]
-    }
-
-    #[inline]
-    pub fn activation_epoch(&self, i: usize) -> Epoch {
-        self.activation_epoch[i]
-    }
-
-    #[inline]
-    pub fn exit_epoch(&self, i: usize) -> Epoch {
-        self.exit_epoch[i]
-    }
-
-    #[inline]
-    pub fn withdrawable_epoch(&self, i: usize) -> Epoch {
-        self.withdrawable_epoch[i]
     }
 
     #[inline]
@@ -324,53 +306,13 @@ impl FinalizedValidators {
         &self.hash
     }
 
-    #[inline]
-    pub(super) fn hash_mut(&mut self) -> &mut FinalizedHashTree {
-        &mut self.hash
-    }
-
-    #[inline]
-    pub fn effective_balance_slice(&self) -> &[u64] {
-        &self.effective_balance
-    }
-
-    #[inline]
-    pub fn activation_eligibility_epoch_slice(&self) -> &[Epoch] {
-        &self.activation_eligibility_epoch
-    }
-
-    #[inline]
-    pub fn activation_epoch_slice(&self) -> &[Epoch] {
-        &self.activation_epoch
-    }
-
-    #[inline]
-    pub fn exit_epoch_slice(&self) -> &[Epoch] {
-        &self.exit_epoch
-    }
-
-    #[inline]
-    pub fn withdrawable_epoch_slice(&self) -> &[Epoch] {
-        &self.withdrawable_epoch
-    }
-
-    #[inline]
-    pub fn withdrawal_credentials_slice(&self) -> &[Withdrawals] {
-        &self.val_withdrawal_credentials
-    }
-
-    #[inline]
-    pub fn slashed_bitset(&self) -> &[u8] {
-        &self.slashed
-    }
-
     /// Harness-seeding constructor: builds a registry from `ValSeed`s whose
     /// pubkeys need not be valid BLS points (decompression falls back to
     /// default), which `try_new` would reject. Test/bench use only.
     pub fn with_validators(seeds: &[ValSeed]) -> Self {
         Self::build(validator_capacity(seeds.len()), seeds.len(), |i| {
             let s = &seeds[i];
-            Ok::<_, Infallible>(AppendedValidator {
+            Ok::<_, Infallible>(ValidatorInit {
                 pubkey: s.pubkey,
                 pubkey_decompressed: PublicKey::from_bytes(&s.pubkey).unwrap_or_default(),
                 credentials: s.withdrawal_credentials,
@@ -383,59 +325,5 @@ impl FinalizedValidators {
             })
         })
         .unwrap()
-    }
-
-    /// Append a validator record to the finalized base. Updates the pubkey
-    /// index but NOT the hash tree.
-    pub(super) fn append(&mut self, a: &AppendedValidator) -> u32 {
-        let idx = self.validator_count;
-        debug_assert!(idx < self.capacity(), "append past validator capacity {}", self.capacity());
-        self.val_pubkey[idx] = a.pubkey;
-        self.val_pubkey_decompressed[idx] = a.pubkey_decompressed;
-        self.val_withdrawal_credentials[idx] = a.credentials;
-        self.effective_balance[idx] = a.effective_balance;
-        if a.slashed {
-            self.slashed[idx / 8] |= 1u8 << (idx % 8);
-        }
-        self.activation_eligibility_epoch[idx] = a.activation_eligibility_epoch;
-        self.activation_epoch[idx] = a.activation_epoch;
-        self.exit_epoch[idx] = a.exit_epoch;
-        self.withdrawable_epoch[idx] = a.withdrawable_epoch;
-        self.index.write().insert(a.pubkey, idx as u32);
-        self.validator_count = idx + 1;
-        idx as u32
-    }
-
-    pub(super) fn set_withdrawal_credentials_at(&mut self, idx: usize, v: Withdrawals) {
-        self.val_withdrawal_credentials[idx] = v;
-    }
-
-    pub(super) fn set_effective_balance_at(&mut self, idx: usize, v: u64) {
-        self.effective_balance[idx] = v;
-    }
-
-    pub(super) fn set_slashed_at(&mut self, idx: usize, v: bool) {
-        let mask = 1u8 << (idx % 8);
-        if v {
-            self.slashed[idx / 8] |= mask;
-        } else {
-            self.slashed[idx / 8] &= !mask;
-        }
-    }
-
-    pub(super) fn set_activation_eligibility_epoch_at(&mut self, idx: usize, v: Epoch) {
-        self.activation_eligibility_epoch[idx] = v;
-    }
-
-    pub(super) fn set_activation_epoch_at(&mut self, idx: usize, v: Epoch) {
-        self.activation_epoch[idx] = v;
-    }
-
-    pub(super) fn set_exit_epoch_at(&mut self, idx: usize, v: Epoch) {
-        self.exit_epoch[idx] = v;
-    }
-
-    pub(super) fn set_withdrawable_epoch_at(&mut self, idx: usize, v: Epoch) {
-        self.withdrawable_epoch[idx] = v;
     }
 }

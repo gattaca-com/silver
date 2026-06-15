@@ -15,7 +15,8 @@ use crate::{
 /// holder — consumers read through the tier views directly.
 pub struct StateReadView<'a> {
     pub imm: &'a Immutable,
-    /// Writer-side reader (carries the SSZ list root for full-state hashing).
+    /// Writer-side column readers (carry the SSZ list root for full-state
+    /// hashing) — balances, participation and inactivity alike.
     pub balances: BalancesReader<'a>,
     pub eth1: Eth1View<'a>,
     /// Base + the fork's delta when it owns one, else the lazy base view.
@@ -153,9 +154,9 @@ pub fn append_validator(
     let idx = view.validators.append(pubkey, pubkey_decompressed, credentials);
     let bal_idx = view.balances.append(0);
     debug_assert_eq!(idx, bal_idx, "validator/balance append indices must agree");
-    let prev_idx = view.previous_participation.append();
-    let cur_idx = view.current_participation.append();
-    let inact_idx = view.inactivity.append();
+    let prev_idx = view.previous_participation.append(0);
+    let cur_idx = view.current_participation.append(0);
+    let inact_idx = view.inactivity.append(0);
     debug_assert!(
         idx == prev_idx && idx == cur_idx && idx == inact_idx,
         "validator/participation/inactivity append indices must agree",

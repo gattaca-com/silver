@@ -11,13 +11,17 @@ use silver_beacon_state_data::{BeaconStateReader, SLOTS_PER_EPOCH};
 use silver_common::{
     BASE_REQUEST_ID, BeaconStateEvent, DataColumnsAvailable, NewGossipMsg, P2pSend, P2pStreamId,
     PeerEvent, ReplayBlock, RpcInbound, RpcSeverity, SilverSpine, StreamProtocol, SyncUpdate,
-    TCacheProducer, TMultiProducer, TProducer, TRandomAccess, TRead, Wheel,
+    SyncingStrategy, TCacheProducer, TMultiProducer, TProducer, TRandomAccess, TRead, Wheel,
     ssz_view::{DataColumnSidecarView, SignedBeaconBlockView, StatusView},
 };
 use silver_metrics::timed;
 
 use crate::{StorageCounters, store::Store, util};
 const MAX_RETRIES: u8 = 5;
+
+/// Fallback: if control's replay-vs-sync decision is never received, default
+/// `drive_replay` to replaying the on-disk chain after this long.
+const SYNCING_STRATEGY_FALLBACK: Duration = Duration::from_secs(45);
 
 const MAX_REPLAY_BLOCKS_PER_LOOP: usize = 16;
 
@@ -78,6 +82,13 @@ pub struct StorageTile {
     replay_blocks: VecDeque<(PathBuf, bool)>,
     replay_producer: TProducer,
     replay_done: bool,
+    /// Boot decision from control: `None` = waiting; gates `drive_replay` so we
+    /// don't replay the on-disk fork tree before learning whether peers are
+    /// finalized ahead (in which case we skip it and range-sync from them).
+    syncing_strategy: Option<SyncingStrategy>,
+    /// Tile construction time; bounds how long `drive_replay` waits on the
+    /// decision before defaulting to replay (control signal lost).
+    created_at: Instant,
 }
 
 impl StorageTile {
@@ -124,11 +135,31 @@ impl StorageTile {
             replay_blocks,
             replay_producer,
             replay_done: !replay_from_disk,
+            syncing_strategy: None,
+            created_at: Instant::now(),
         }
     }
 
     fn drive_replay(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         if self.replay_done {
+            return;
+        }
+
+        let strategy = match self.syncing_strategy {
+            Some(d) => d,
+            None if self.created_at.elapsed() >= SYNCING_STRATEGY_FALLBACK => {
+                SyncingStrategy::ReplayDisk
+            }
+            None => return,
+        };
+        if matches!(strategy, SyncingStrategy::SyncFromPeers) {
+            tracing::info!(
+                staged = self.replay_blocks.len(),
+                "skipping on-disk replay; peers finalized ahead — syncing from peers"
+            );
+            self.replay_blocks.clear();
+            adapter.produce(ReplayBlock::Done);
+            self.replay_done = true;
             return;
         }
 
@@ -441,6 +472,7 @@ impl StorageTile {
 
 impl Tile<SilverSpine> for StorageTile {
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
+        adapter.consume(|d: SyncingStrategy, _| self.syncing_strategy = Some(d));
         self.drive_replay(adapter);
 
         self.gossip_consumer.free();
@@ -854,6 +886,7 @@ mod tests {
         inj_adapter.consume(|_: DataColumnsAvailable, _| {});
         inj_adapter.consume(|_: ReplayBlock, _| {});
 
+        tile.syncing_strategy = Some(SyncingStrategy::ReplayDisk);
         tile.drive_replay(&mut tile_adapter);
 
         let mut das = 0;

@@ -150,6 +150,10 @@ impl Tile<SilverSpine> for Controller {
             adapter.produce(target);
         }
 
+        if let Some(strategy) = self.peer_manager.maybe_choose_syncing_strategy(now) {
+            adapter.produce(strategy);
+        }
+
         // Catchup → Following edge: blast a one-shot Status to every peer
         // so they reciprocate with their fresh head — primes the head-sync
         // set — and announce our topic subscriptions so peers connected

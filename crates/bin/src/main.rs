@@ -164,6 +164,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let (checkpoint, checkpoint_pubkeys) = load_checkpoint(&config)?;
     let booting_from_local_checkpoint = !checkpoint.is_empty();
 
+    tracing::info!("booting from local checkpoint: {booting_from_local_checkpoint}");
+
     let control_tile = Controller::new(
         PeerManager::new(
             gossip_topics,
@@ -278,6 +280,7 @@ fn load_checkpoint(config: &Config) -> Result<(Vec<u8>, Vec<u8>), std::io::Error
     let chain_config = config.chain_config();
     match &chain_config.checkpoint_file {
         Some(file) => {
+            tracing::info!("using the config checkpoint at {}", file);
             let checkpoint = std::fs::read(file)?;
             let pubkeys = match &chain_config.checkpoint_pubkeys_file {
                 Some(file) if !checkpoint.is_empty() => std::fs::read(file)?,
@@ -287,11 +290,23 @@ fn load_checkpoint(config: &Config) -> Result<(Vec<u8>, Vec<u8>), std::io::Error
         }
         None => match latest_local_checkpoint(config.data_storage_dir()) {
             Some((slot, ssz_path, pubkeys_path)) => {
-                tracing::info!(slot, "bootstrapping from on-disk checkpoint");
+                tracing::info!(
+                    slot,
+                    "checkpoint not set in the config, booting from the latest persisted one."
+                );
                 let pubkeys = pubkeys_path.map(std::fs::read).transpose()?.unwrap_or_default();
                 Ok((std::fs::read(ssz_path)?, pubkeys))
             }
-            None => Ok((vec![], vec![])),
+            None => {
+                panic!(
+                    "no checkpoint to bootstrap from: `chain_config.checkpoint_file` is unset \
+                     and no persisted checkpoint was found under the data directory ({}). \
+                     Set `checkpoint_file` to a finalized BeaconState SSZ (e.g. fetched from a \
+                     trusted node's /eth/v2/debug/beacon/states/finalized), or run against a \
+                     data directory that already holds a persisted checkpoint.",
+                    config.data_storage_dir()
+                );
+            }
         },
     }
 }

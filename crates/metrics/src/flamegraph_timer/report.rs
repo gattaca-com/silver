@@ -14,6 +14,7 @@ struct PathStat {
     path: Vec<String>,
     count: u64,
     tracked_avg_ns: Nanos,
+    tracked_p50_ns: Nanos,
     tracked_p99_ns: Nanos,
     tracked_max_ns: Nanos,
     tracked_sum_ns: Nanos,
@@ -45,6 +46,7 @@ impl TimingStats {
                     } else {
                         Nanos::ZERO
                     },
+                    tracked_p50_ns: Nanos(percentile(&samples, 0.50)),
                     tracked_p99_ns: Nanos(percentile(&samples, 0.99)),
                     tracked_max_ns: Nanos(samples.last().copied().unwrap_or(0)),
                     tracked_sum_ns: Nanos(u64::try_from(sum).unwrap_or(u64::MAX)),
@@ -73,6 +75,18 @@ impl TimingStats {
             .iter()
             .filter(|s| s.path.last().is_some_and(|n| leaf_name(n) == leaf))
             .map(|s| s.tracked_max_ns)
+            .max()
+    }
+
+    /// Median (p50) tracked sample for `leaf`. Percentiles aren't combinable
+    /// across call sites, so this takes the max p50 over matching paths — exact
+    /// for a single-call-site leaf (e.g. the top-level `apply_block`). `None`
+    /// if no such path.
+    pub fn aggregate_leaf_p50(&self, leaf: &str) -> Option<Nanos> {
+        self.0
+            .iter()
+            .filter(|s| s.path.last().is_some_and(|n| leaf_name(n) == leaf))
+            .map(|s| s.tracked_p50_ns)
             .max()
     }
 

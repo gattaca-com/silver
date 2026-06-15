@@ -2,13 +2,13 @@ use core::cmp::{max, min};
 
 use blst::min_pk::PublicKey;
 use silver_beacon_state_data::{
-    B256, BalancesWriteView, BeaconBlockHeader, Current, EPOCHS_PER_SLASHINGS_VECTOR, Epoch,
+    B256, BalancesWriteView, BeaconBlockHeader, ColumnSpec, EPOCHS_PER_SLASHINGS_VECTOR, Epoch,
     EpochGroup, EpochId, EpochView, Eth1Data, Eth1WriteView, ExecutionPayloadHeader, Immutable,
     LongtailGroup, LongtailId, LongtailView, PENDING_CONSOLIDATIONS_LIMIT,
     PENDING_PARTIAL_WITHDRAWALS_LIMIT, ParticipationWriteView, PendingConsolidation,
-    PendingDeposit, PendingPartialWithdrawal, PendingView, PendingWriteView, Previous,
-    SLOTS_PER_EPOCH, SYNC_COMMITTEE_SIZE, Slot, SlotStateView, SlotStateWriteView, SpecConfig,
-    StateId, StateReadView, StateWriterView, ValidatorsView, ValidatorsWriteView, Withdrawals,
+    PendingDeposit, PendingPartialWithdrawal, PendingView, PendingWriteView, SLOTS_PER_EPOCH,
+    SYNC_COMMITTEE_SIZE, Slot, SlotStateView, SlotStateWriteView, SpecConfig, StateId,
+    StateReadView, StateWriterView, ValidatorsView, ValidatorsWriteView, Withdrawals,
     append_validator,
 };
 use silver_common::{
@@ -979,18 +979,13 @@ pub fn process_attestations(
     votes_sink: &mut Vec<AttestationVote>,
     active_scratch: &mut Vec<u32>,
 ) -> Result<(), AttestationError> {
-    let slot = &view.slot;
-    let validators = &view.validators;
-    let balances = &mut view.balances;
-    let previous_participation = &mut view.previous_participation;
-    let current_participation = &mut view.current_participation;
     if attestation_data.is_empty() {
         return Ok(());
     }
     let current_epoch = block_slot / SLOTS_PER_EPOCH;
     let previous_epoch = current_epoch.saturating_sub(1);
 
-    let total_active = total_active_balance(&validators.reader(), current_epoch);
+    let total_active = total_active_balance(&view.validators.reader(), current_epoch);
     for_each_ssz_list_item(
         attestation_data,
         |start, end| AttestationError::BadOffsets {
@@ -1000,10 +995,7 @@ pub fn process_attestations(
         },
         |att| {
             let reward = process_single_attestation(
-                slot,
-                validators,
-                previous_participation,
-                current_participation,
+                view,
                 epoch,
                 att,
                 current_epoch,
@@ -1013,12 +1005,12 @@ pub fn process_attestations(
                 votes_sink,
                 active_scratch,
             )?;
-            if reward > 0 && (proposer_index as usize) < validators.count() {
+            if reward > 0 && (proposer_index as usize) < view.validators.count() {
                 let proposer_reward_denominator =
                     (WEIGHT_DENOMINATOR - PROPOSER_WEIGHT) * WEIGHT_DENOMINATOR / PROPOSER_WEIGHT;
                 let proposer_reward = reward / proposer_reward_denominator;
-                let balance = balances.get(proposer_index as usize);
-                balances.set(proposer_index, balance.saturating_add(proposer_reward));
+                let balance = view.balances.get(proposer_index as usize);
+                view.balances.set(proposer_index, balance.saturating_add(proposer_reward));
             }
             Ok(())
         },
@@ -1030,10 +1022,7 @@ pub fn process_attestations(
 /// success.
 #[allow(clippy::too_many_arguments)]
 pub fn process_single_attestation(
-    slot: &SlotStateWriteView,
-    validators: &ValidatorsWriteView,
-    previous_participation: &mut ParticipationWriteView<Previous>,
-    current_participation: &mut ParticipationWriteView<Current>,
+    view: &mut StateWriterView,
     epoch: EpochView,
     att: &[u8],
     current_epoch: Epoch,
@@ -1043,7 +1032,7 @@ pub fn process_single_attestation(
     votes_sink: &mut Vec<AttestationVote>,
     active_scratch: &mut Vec<u32>,
 ) -> Result<u64, AttestationError> {
-    let current_slot = slot.state().slot;
+    let current_slot = view.slot.state().slot;
     validate::validate_attestation_data(att, current_slot, current_epoch, previous_epoch)?;
 
     let parsed = ParsedAttestationData::parse(att);
@@ -1051,10 +1040,10 @@ pub fn process_single_attestation(
         check_attestation_target_window(parsed.target_epoch, current_epoch, previous_epoch)?;
     check_attestation_source(epoch, is_current, parsed.source_epoch, parsed.source_root)?;
 
-    let flag_weights = compute_attestation_flags(slot, &parsed, current_slot);
+    let flag_weights = compute_attestation_flags(&view.slot, &parsed, current_slot);
 
     collect_attestation_participants(
-        &validators.reader(),
+        &view.validators.reader(),
         att,
         shuffling,
         &parsed,
@@ -1073,15 +1062,26 @@ pub fn process_single_attestation(
     if !flag_weights.iter().any(|&f| f) {
         return Ok(0);
     }
-    Ok(apply_attestation_participation_flags(
-        validators,
-        previous_participation,
-        current_participation,
-        active_scratch,
-        total_active,
-        is_current,
-        flag_weights,
-    ))
+    // Distinct `Previous`/`Current` types can't share one binding, so branch
+    // and let each arm monomorphise the generic helper for its column.
+    let validators = view.validators.reader();
+    Ok(if is_current {
+        apply_attestation_participation_flags(
+            &validators,
+            &mut view.current_participation,
+            active_scratch,
+            total_active,
+            flag_weights,
+        )
+    } else {
+        apply_attestation_participation_flags(
+            &validators,
+            &mut view.previous_participation,
+            active_scratch,
+            total_active,
+            flag_weights,
+        )
+    })
 }
 
 struct ParsedAttestationData {
@@ -1217,13 +1217,11 @@ fn collect_attestation_participants(
     Ok(())
 }
 
-fn apply_attestation_participation_flags(
-    validators: &ValidatorsWriteView,
-    previous_participation: &mut ParticipationWriteView<Previous>,
-    current_participation: &mut ParticipationWriteView<Current>,
+fn apply_attestation_participation_flags<M: ColumnSpec<Val = u8>>(
+    validators: &ValidatorsView,
+    participation: &mut ParticipationWriteView<M>,
     active_scratch: &[u32],
     total_active: u64,
-    is_current: bool,
     flag_weights: [bool; 3],
 ) -> u64 {
     let sqrt_total = epoch_transition::integer_sqrt(total_active);
@@ -1237,11 +1235,7 @@ fn apply_attestation_participation_flags(
     // over an epoch's accumulated participation edits).
     let mut updates: Vec<(u32, u8)> = Vec::with_capacity(active_scratch.len());
     for &vi in active_scratch {
-        let prev_p = if is_current {
-            current_participation.get(vi as usize)
-        } else {
-            previous_participation.get(vi as usize)
-        };
+        let prev_p = participation.get(vi as usize);
         let mut p = prev_p;
         let effective_balance = validators.effective_balance(vi as usize);
         let base_reward =
@@ -1258,11 +1252,7 @@ fn apply_attestation_participation_flags(
         }
     }
     updates.sort_unstable_by_key(|(idx, _)| *idx);
-    if is_current {
-        current_participation.merge(&updates);
-    } else {
-        previous_participation.merge(&updates);
-    }
+    participation.set_many(&updates);
     proposer_reward_numerator
 }
 

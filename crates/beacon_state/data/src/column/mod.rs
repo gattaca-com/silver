@@ -1,33 +1,41 @@
 mod delta;
 mod finalized;
+mod group;
+
+#[cfg(test)]
+mod tests;
 
 use std::marker::PhantomData;
 
-use delta::ColumnDelta;
-pub use delta::{ColumnView, ColumnWriteView};
+pub use delta::{ColumnReader, ColumnWriteView};
 pub use finalized::FinalizedColumn;
+pub use group::ColumnGroup;
 
-use crate::{
-    buffer::{Id, Ring, reanchor_survivors},
-    types::{ColumnLenMismatch, SLOTS_RING_N},
-};
+use crate::{buffer::Id, types::B256};
 
-/// Scalar element of a column: a fixed-size little-endian SSZ value.
-pub trait ColumnVal: Copy + PartialEq + 'static {
-    const SIZE: usize;
-    /// Value of a freshly-appended element (past the finalized state).
-    const APPENDED_DEFAULT: Self;
+/// Scalar element of a column: a fixed-size little-endian SSZ value. Its SSZ
+/// byte size equals `size_of::<Self>()` (1 for `u8`, 8 for `u64`).
+pub trait ColumnVal: Copy + PartialEq + Default + 'static {
+    /// Values SSZ-packed into one 32-byte chunk / merkle leaf (32 for `u8`,
+    /// 4 for `u64`).
+    const VALS_PER_CHUNK: usize = 32 / size_of::<Self>();
 
     /// Decode `dst.len()` values from the little-endian SSZ byte range.
     fn read_ssz_slice(dst: &mut [Self], src: &[u8]);
 
     fn write_ssz_slice<W: std::io::Write>(data: &[Self], w: &mut W) -> std::io::Result<()>;
+
+    /// SSZ-pack one chunk's `VALS_PER_CHUNK` values into its 32-byte leaf.
+    fn pack_leaf(vals: &[Self]) -> B256 {
+        debug_assert_eq!(vals.len(), Self::VALS_PER_CHUNK);
+        let mut leaf = [0u8; 32];
+        let mut w: &mut [u8] = &mut leaf;
+        Self::write_ssz_slice(vals, &mut w).expect("leaf holds exactly one chunk");
+        leaf
+    }
 }
 
 impl ColumnVal for u8 {
-    const SIZE: usize = 1;
-    const APPENDED_DEFAULT: Self = 0;
-
     fn read_ssz_slice(dst: &mut [Self], src: &[u8]) {
         dst.copy_from_slice(src);
     }
@@ -38,9 +46,6 @@ impl ColumnVal for u8 {
 }
 
 impl ColumnVal for u64 {
-    const SIZE: usize = 8;
-    const APPENDED_DEFAULT: Self = 0;
-
     fn read_ssz_slice(dst: &mut [Self], src: &[u8]) {
         for (i, slot) in dst.iter_mut().enumerate() {
             *slot = u64::from_le_bytes(src[i * 8..i * 8 + 8].try_into().expect("8-byte window"));
@@ -55,104 +60,41 @@ impl ColumnVal for u64 {
     }
 }
 
-/// Marker naming one concrete column: its scalar type plus a distinct
-/// identity for the ring ids.
-pub trait ColumnSpec: 'static {
+/// A column's marker: its scalar `Val` plus a distinct type identity, so ring
+/// ids of different columns can't be mixed.
+pub trait ColumnSpec {
     type Val: ColumnVal;
 }
 
-/// Column markers — one per column, so sibling ids can't be confused.
-pub struct Previous;
-impl ColumnSpec for Previous {
-    type Val = u8;
+/// Column marker — `V` is the scalar; `ID` only makes same-`V` columns (the two
+/// `u8` participations) distinct types so their ring ids can't mix.
+pub struct Col<V, const ID: u8>(PhantomData<V>);
+impl<V: ColumnVal, const ID: u8> ColumnSpec for Col<V, ID> {
+    type Val = V;
 }
-pub struct Current;
-impl ColumnSpec for Current {
-    type Val = u8;
-}
-pub struct Inactivity;
-impl ColumnSpec for Inactivity {
-    type Val = u64;
-}
+
+pub type Previous = Col<u8, 0>;
+pub type Current = Col<u8, 1>;
+pub type Inactivity = Col<u64, 2>;
+pub type Balances = Col<u64, 3>;
 
 pub type PreviousParticipationGroup = ColumnGroup<Previous>;
 pub type PreviousParticipationId = Id<PreviousParticipationGroup>;
+
 pub type CurrentParticipationGroup = ColumnGroup<Current>;
 pub type CurrentParticipationId = Id<CurrentParticipationGroup>;
-pub type ParticipationView<'a, M> = ColumnView<'a, M>;
+
+pub type ParticipationView<'a, M> = ColumnReader<'a, M>;
 pub type ParticipationWriteView<'a, M> = ColumnWriteView<'a, M>;
-pub type FinalizedParticipation = FinalizedColumn<u8>;
 
 pub type InactivityScoresGroup = ColumnGroup<Inactivity>;
 pub type InactivityId = Id<InactivityScoresGroup>;
-pub type InactivityView<'a> = ColumnView<'a, Inactivity>;
+
+pub type InactivityView<'a> = ColumnReader<'a, Inactivity>;
 pub type InactivityWriteView<'a> = ColumnWriteView<'a, Inactivity>;
-pub type FinalizedInactivityScores = FinalizedColumn<u64>;
 
-pub struct ColumnGroup<C: ColumnSpec> {
-    finalized: FinalizedColumn<C::Val>,
-    deltas: Ring<Self, ColumnDelta<C::Val>, SLOTS_RING_N>,
-    _marker: PhantomData<fn() -> C>,
-}
+pub type BalancesGroup = ColumnGroup<Balances>;
+pub type BalancesId = Id<BalancesGroup>;
 
-impl<C: ColumnSpec> ColumnGroup<C> {
-    #[inline]
-    pub(crate) fn finalized(&self) -> &FinalizedColumn<C::Val> {
-        &self.finalized
-    }
-
-    /// Group over a finalized state decoded from the column's SSZ byte range;
-    /// `new(cap, 0, &[])` is the empty group.
-    pub fn new(cap: usize, count: usize, ssz_bytes: &[u8]) -> Result<Self, ColumnLenMismatch> {
-        Ok(Self {
-            finalized: FinalizedColumn::new(cap, count, ssz_bytes)?,
-            deltas: Ring::default(),
-            _marker: PhantomData,
-        })
-    }
-
-    #[inline]
-    pub fn view(&self, id: Id<Self>) -> ColumnView<'_, C> {
-        ColumnView::new(&self.finalized, self.deltas.get(id))
-    }
-
-    #[inline]
-    pub fn roll_fresh(&mut self) -> ColumnWriteView<'_, C> {
-        let Self { finalized, deltas, .. } = self;
-        let mut fork = deltas.roll_fresh();
-        fork.anchor_at(finalized);
-        ColumnWriteView::new(finalized, fork)
-    }
-
-    #[inline]
-    pub fn roll_from(&mut self, parent: Id<Self>) -> ColumnWriteView<'_, C> {
-        let Self { finalized, deltas, .. } = self;
-        ColumnWriteView::new(finalized, deltas.roll_from(parent))
-    }
-
-    /// Re-anchor a survivor against the promoted `winner` into a fresh slot
-    /// (pin + prune), pre-promotion. The survivor stays frozen — append-only.
-    fn reanchor(&mut self, survivor: Id<Self>, winner: Id<Self>) -> ColumnWriteView<'_, C> {
-        let Self { finalized, deltas, .. } = self;
-        let (mut fork, old, winner_delta) = deltas.roll_fresh_deriving(survivor, winner);
-        old.rebase_and_prune(&mut fork, finalized, winner_delta);
-        ColumnWriteView::new(finalized, fork)
-    }
-
-    /// Re-anchor each survivor against the promoted `winner` into fresh slots
-    /// (deduped for shared survivors), then promote the winner into the
-    /// finalized state.
-    pub fn finalize(&mut self, winner: Id<Self>, survivors: &[Id<Self>]) -> Vec<Id<Self>> {
-        debug_assert!(survivors.contains(&winner), "winner must be among the survivors");
-        self.deltas.free_outdated(survivors);
-
-        let fresh = reanchor_survivors(survivors, |s| self.reanchor(s, winner).commit());
-
-        let Self { finalized, deltas, .. } = self;
-        finalized.promote(deltas.get(winner));
-
-        deltas.free_outdated(&fresh);
-
-        fresh
-    }
-}
+pub type BalancesReader<'a> = ColumnReader<'a, Balances>;
+pub type BalancesWriteView<'a> = ColumnWriteView<'a, Balances>;
