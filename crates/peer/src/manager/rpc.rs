@@ -666,7 +666,8 @@ impl PeerManager {
         // For SyncingFinalized, drive past `(target_epoch + 2) * SLOTS_PER_EPOCH`:
         // Casper FFG needs two more epochs of justification/finalization before
         // local `finalized_checkpoint.epoch` can reach `target_epoch`.
-        let target_end_slot = match self.current_sync_target() {
+        let syncing_target = self.current_sync_target();
+        let target_end_slot = match syncing_target {
             SyncUpdate::SyncingFinalized { target_epoch, .. } => {
                 target_epoch.saturating_add(2).saturating_mul(self.syncing.slots_per_epoch)
             }
@@ -688,24 +689,27 @@ impl PeerManager {
         if self.synced_through > head_slot + self.syncing.max_blocks_by_range_batch {
             return;
         }
-        // Couple block issuance to the column fetch.
-        if self.custody_columns != 0 &&
-            self.synced_through >
-                self.columns_synced_through + self.syncing.max_blocks_by_range_batch
-        {
-            if !self.col_stall_logged {
-                tracing::warn!(
-                    synced_through = self.synced_through,
-                    columns_synced_through = self.columns_synced_through,
-                    "block sync stalled on data columns: column fetch is more than one \
-                     batch behind; pausing block batches until it catches up"
-                );
-                self.col_stall_logged = true;
-            }
-            return;
-        }
 
-        self.col_stall_logged = false;
+        if matches!(syncing_target, SyncUpdate::SyncingFinalized { .. }).not() {
+            // Couple block issuance to the column fetch.
+            if self.custody_columns != 0 &&
+                self.synced_through >
+                    self.columns_synced_through + self.syncing.max_blocks_by_range_batch
+            {
+                if !self.col_stall_logged {
+                    tracing::warn!(
+                        synced_through = self.synced_through,
+                        columns_synced_through = self.columns_synced_through,
+                        "block sync stalled on data columns: column fetch is more than one \
+                        batch behind; pausing block batches until it catches up"
+                    );
+                    self.col_stall_logged = true;
+                }
+                return;
+            }
+
+            self.col_stall_logged = false;
+        }
 
         let start_slot = next_base + 1;
         let remaining = target_end_slot.saturating_sub(next_base);
