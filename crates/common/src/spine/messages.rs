@@ -618,6 +618,14 @@ pub enum BeaconStateEvent {
     Status { ssz: [u8; STATUS_V2_SIZE], latest_block_slot: u64, wall_slot: u64 },
     PersistBlock { ssz: TCacheRead, source: BlockSource },
     BlockRejected { block_root: [u8; 32], source: BlockSource },
+    ReplayComplete,
+}
+
+#[derive(Clone, Copy, Debug)]
+#[repr(C, u8)]
+pub enum ReplayBlock {
+    Block { ssz: TCacheRead },
+    Done,
 }
 
 /// Maximum blob commitments per block (Fulu target; increase as the spec
@@ -851,7 +859,7 @@ impl BeaconStateEvent {
         match self {
             Self::Status { .. } => SszView::Status(StatusView {}),
             Self::PersistBlock { .. } => SszView::SignedBeaconBlock(SignedBeaconBlockView {}),
-            Self::BlockRejected { .. } => SszView::None,
+            Self::BlockRejected { .. } | Self::ReplayComplete => SszView::None,
         }
     }
 }

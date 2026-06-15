@@ -131,8 +131,10 @@ impl PmBsHarness {
         let gossip_p = TCache::producer("gossip_in", 1 << 20);
         let rpc_cap = (n_blocks * 300 * 1024).next_power_of_two().max(1 << 22);
         let rpc_p = TCache::producer("rpc_in", rpc_cap);
+        let replay_p = TCache::producer("replay_in", 1 << 20);
         let gossip_c = gossip_p.cache_ref().random_access("test", true).expect("gossip ra");
         let rpc_c = rpc_p.cache_ref().random_access("test", true).expect("rpc ra");
+        let replay_c = replay_p.cache_ref().random_access("test", true).expect("replay ra");
 
         let state = BeaconStateOwner::pre_bootstrap();
         let mut bs = BeaconStateTile::new(
@@ -141,6 +143,8 @@ impl PmBsHarness {
             state,
             gossip_c,
             rpc_c,
+            replay_c,
+            true,
             checkpoint,
             &[],
         );
@@ -157,6 +161,7 @@ impl PmBsHarness {
             [0u8; 4], // overwritten via set_status from BS's first emission
             [0u8; METADATA_SIZE],
             0,
+            false,
         );
         let mut ctl = Controller::new(pm, TCache::multi_producer("rpc_out_dummy", 32));
         let mut ctl_a = SpineAdapter::connect_tile(&ctl, &mut spine);

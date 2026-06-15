@@ -9,7 +9,7 @@
 //! controller tile that drives the spine remains a thin shell.
 
 use std::{
-    ops::Deref,
+    ops::{Deref, Not},
     time::{Duration, Instant},
 };
 
@@ -593,11 +593,17 @@ impl PeerManager {
     ///    BlocksByRange capacity, build the SSZ request, emit it, and set
     ///    `inflight_syncreq`.
     pub fn maybe_issue_syncreq(&mut self, now: Instant, emit: &mut impl FnMut(PeerControl)) {
-        // Columns first, unconditionally: the early returns below (flow
-        // control, target reached) must not starve the column driver —
-        // with the DA check, missing columns are exactly what stalls the
-        // applied head that those returns key off.
-        self.maybe_issue_colreq(now, emit);
+        if self.awaiting_local_replay {
+            return;
+        }
+
+        if matches!(self.current_sync_target(), SyncUpdate::SyncingFinalized { .. }).not() {
+            // Columns first: the early returns below (flow
+            // control, target reached) must not starve the column driver —
+            // with the DA check, missing columns are exactly what stalls the
+            // applied head that those returns key off.
+            self.maybe_issue_colreq(now, emit);
+        }
 
         let head_slot = self.local_head_imported_slot;
 
@@ -657,8 +663,6 @@ impl PeerManager {
         if self.status().is_none() {
             return;
         }
-        let local_head_slot = self.local_head_imported_slot;
-
         // For SyncingFinalized, drive past `(target_epoch + 2) * SLOTS_PER_EPOCH`:
         // Casper FFG needs two more epochs of justification/finalization before
         // local `finalized_checkpoint.epoch` can reach `target_epoch`.
@@ -670,18 +674,18 @@ impl PeerManager {
             SyncUpdate::Following => return,
         };
 
-        if local_head_slot >= target_end_slot {
+        if head_slot >= target_end_slot {
             return;
         }
         // Continue past slots a peer already served this catch-up — never
         // rewind into the delivered range while the (async) apply head lags.
-        let next_base = local_head_slot.max(self.synced_through);
+        let next_base = head_slot.max(self.synced_through);
         if next_base >= target_end_slot {
             return;
         }
         // Flow control: cap how far requests run ahead of the applied head so
         // in-flight + BS-buffered blocks stay bounded (~one batch ahead).
-        if self.synced_through > local_head_slot + self.syncing.max_blocks_by_range_batch {
+        if self.synced_through > head_slot + self.syncing.max_blocks_by_range_batch {
             return;
         }
         // Couple block issuance to the column fetch.
@@ -735,7 +739,7 @@ impl PeerManager {
             peer_id,
             start_slot,
             count,
-            local_head_slot,
+            head_slot,
             target = ?self.current_sync_target(),
             "issuing BlocksByRange"
         );
@@ -749,7 +753,7 @@ impl PeerManager {
             peer_id,
             start_slot,
             count,
-            last_observed_head_slot: local_head_slot,
+            last_observed_head_slot: head_slot,
             last_progress_at: now,
             responded: false,
             delivered: false,

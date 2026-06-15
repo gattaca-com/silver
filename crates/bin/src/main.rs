@@ -1,4 +1,4 @@
-use std::{error::Error, path::Path, str::FromStr, sync::Arc, time::Instant};
+use std::{error::Error, str::FromStr, sync::Arc, time::Instant};
 
 use flux::{
     tile::{TileConfig, attach_tile},
@@ -15,7 +15,7 @@ use silver_discovery::{DiscV5, Discovery};
 use silver_gossip::GossipHandler;
 use silver_network::{Context, NetworkTile, P2p};
 use silver_peer::PeerManager;
-use silver_storage::tile::StorageTile;
+use silver_storage::{latest_local_checkpoint, tile::StorageTile};
 use tracing_subscriber::{EnvFilter, fmt::format::FmtSpan};
 
 #[cfg(not(feature = "alloc-profile"))]
@@ -36,34 +36,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     tracing::debug!("start");
 
-    let args = std::env::args().collect::<Vec<_>>();
-    let config_path = args.iter().position(|a| a == "--config").and_then(|i| args.get(i + 1));
-
-    let config = match config_path {
-        // Devnet / custom: every network-specific value (fork_digest,
-        // genesis, bootstrap ENRs, external IP, ports, secret key) comes
-        // from the file — no source edits needed.
-        Some(path) => Config::from_file(path)?,
-        // Default: mainnet, random identity, hardcoded bootnodes below.
-        None => {
-            let mut secret = [0u8; 32];
-            rand::thread_rng().fill_bytes(&mut secret);
-            let fork_digest = [0x8c, 0x9f, 0x62, 0xfe];
-            let next_fork_version = [6, 0, 0, 0];
-            let next_fork_epoch = u64::MAX;
-            let mut config = Config::new(secret, fork_digest, next_fork_version, next_fork_epoch)
-                .with_discovery_port(31133)
-                .with_quic_port(31123);
-
-            if let Some(ckpt) = args.get(1).filter(|a| !a.starts_with("--")) {
-                config = config.with_checkpoint(ckpt.to_string());
-                if let Some(pk) = args.get(2).filter(|a| !a.starts_with("--")) {
-                    config = config.with_checkpoint_pubkeys(pk.to_string());
-                }
-            }
-            config
-        }
-    };
+    let config = load_config()?;
 
     tracing::info!("loaded config with fork digest: {}", hex::encode(config.fork_digest()));
 
@@ -89,10 +62,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         incoming_rpc_producer.cache_ref().random_access("ds_incoming_rpc", true)?;
     let persist_rpc_consumer_ds =
         incoming_rpc_producer.cache_ref().random_access("ds_persist_incoming_rpc", true)?;
-
-    // rpc producer
     let outgoing_rpc_producer =
         TCache::multi_producer("outgoing_rpc", config.outgoing_rpc_tcache_size());
+    let replay_blocks_producer = TCache::producer("replay_blocks", 1 << 25);
+    let replay_blocks_consumer =
+        replay_blocks_producer.cache_ref().random_access("bs_replay", true)?;
 
     // Tiles.
     let keypair = config.keypair()?;
@@ -127,10 +101,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
 
     let now = Instant::now();
-    // File configs supply bootnodes via chain_config.bootstrap_enrs; the
-    // default mainnet run falls back to the hardcoded set.
-    let bootnodes: Vec<Enr> = if config_path.is_some() {
-        config.chain_config().bootstrap_enrs
+
+    let bootnodes = if !config.chain_config().bootstrap_enrs.is_empty() {
+        config.chain_config().bootstrap_enrs.clone()
     } else {
         vec![
             Enr::from_str(
@@ -144,6 +117,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             )?,
         ]
     };
+
     for enr in &bootnodes {
         discv5.add_enr(enr, now);
     }
@@ -167,18 +141,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         hex::encode(config.fork_digest()),
     )?;
 
-    let control_tile = Controller::new(
-        PeerManager::new(
-            gossip_topics,
-            config.peer_score_params(),
-            config.syncing(),
-            config.fork_digest(),
-            local_enr.into(),
-            das_custody_groups,
-        ),
-        outgoing_rpc_producer.clone(),
-    );
-
     let chain_config = config.chain_config();
     let ticker = SlotTicker::new(
         chain_config.genesis_unix_secs,
@@ -186,15 +148,21 @@ fn main() -> Result<(), Box<dyn Error>> {
         chain_config.playload_lookahead(),
     );
 
-    let checkpoint = match chain_config.checkpoint_file {
-        Some(file) => load_checkpoint(file)?,
-        None => vec![],
-    };
-    // Pubkey sidecar only meaningful alongside a checkpoint.
-    let checkpoint_pubkeys = match chain_config.checkpoint_pubkeys_file {
-        Some(file) if !checkpoint.is_empty() => load_checkpoint(file)?,
-        _ => vec![],
-    };
+    let (checkpoint, checkpoint_pubkeys) = load_checkpoint(&config)?;
+    let booting_from_local_checkpoint = !checkpoint.is_empty();
+
+    let control_tile = Controller::new(
+        PeerManager::new(
+            gossip_topics,
+            config.peer_score_params(),
+            config.syncing_config(),
+            config.fork_digest(),
+            local_enr.into(),
+            das_custody_groups,
+            booting_from_local_checkpoint,
+        ),
+        outgoing_rpc_producer.clone(),
+    );
 
     let state = BeaconStateOwner::pre_bootstrap();
     let state_reader = state.reader();
@@ -206,6 +174,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         state,
         ssz_gossip_consumer,
         incoming_rpc_consumer,
+        replay_blocks_consumer,
+        !config.disable_weak_subjectivity_check(),
         &checkpoint,
         &checkpoint_pubkeys,
     );
@@ -221,13 +191,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         incoming_rpc_consumer_ds,
         persist_rpc_consumer_ds,
         outgoing_rpc_producer,
+        replay_blocks_producer,
         state_reader,
         das_custody_groups,
         config.fork_digest(),
         config.data_storage_dir().into(),
+        booting_from_local_checkpoint,
     );
 
-    // Spine
     let spine = SilverSpine::new(None);
     // TODO panic handler
     spine.start(None, None, |scoped_spine| {
@@ -242,9 +213,62 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn load_checkpoint<P: AsRef<Path> + std::fmt::Debug>(
-    file_path: P,
-) -> Result<Vec<u8>, std::io::Error> {
-    tracing::info!("loading checkpoint file: {file_path:?}");
-    std::fs::read(file_path)
+fn load_config() -> Result<Config, silver_common::Error> {
+    let args = std::env::args().collect::<Vec<_>>();
+    let config_path = args.iter().position(|a| a == "--config").and_then(|i| args.get(i + 1));
+    let mut config = match config_path {
+        // Devnet / custom: every network-specific value (fork_digest,
+        // genesis, bootstrap ENRs, external IP, ports, secret key) comes
+        // from the file — no source edits needed.
+        Some(path) => Config::from_file(path)?,
+        // Default: mainnet, random identity, hardcoded bootnodes below.
+        None => {
+            let mut secret = [0u8; 32];
+            rand::thread_rng().fill_bytes(&mut secret);
+            let fork_digest = [0x8c, 0x9f, 0x62, 0xfe];
+            let next_fork_version = [6, 0, 0, 0];
+            let next_fork_epoch = u64::MAX;
+            let mut config = Config::new(secret, fork_digest, next_fork_version, next_fork_epoch)
+                .with_discovery_port(31133)
+                .with_quic_port(31123);
+
+            if let Some(ckpt) = args.get(1).filter(|a| !a.starts_with("--")) {
+                config = config.with_checkpoint(ckpt.to_string());
+                if let Some(pk) = args.get(2).filter(|a| !a.starts_with("--")) {
+                    config = config.with_checkpoint_pubkeys(pk.to_string());
+                }
+            }
+
+            config
+        }
+    };
+
+    // CLI override (applies on top of either source).
+    if args.iter().any(|a| a == "--disable-weak-subjectivity") {
+        config = config.with_disable_weak_subjectivity_check(true);
+    }
+
+    Ok(config)
+}
+
+fn load_checkpoint(config: &Config) -> Result<(Vec<u8>, Vec<u8>), std::io::Error> {
+    let chain_config = config.chain_config();
+    match &chain_config.checkpoint_file {
+        Some(file) => {
+            let checkpoint = std::fs::read(file)?;
+            let pubkeys = match &chain_config.checkpoint_pubkeys_file {
+                Some(file) if !checkpoint.is_empty() => std::fs::read(file)?,
+                _ => vec![],
+            };
+            Ok((checkpoint, pubkeys))
+        }
+        None => match latest_local_checkpoint(config.data_storage_dir()) {
+            Some((slot, ssz_path, pubkeys_path)) => {
+                tracing::info!(slot, "bootstrapping from on-disk checkpoint");
+                let pubkeys = pubkeys_path.map(std::fs::read).transpose()?.unwrap_or_default();
+                Ok((std::fs::read(ssz_path)?, pubkeys))
+            }
+            None => Ok((vec![], vec![])),
+        },
+    }
 }

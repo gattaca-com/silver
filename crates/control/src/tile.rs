@@ -125,17 +125,26 @@ impl Tile<SilverSpine> for Controller {
                 .on_rpc_inbound(rpc, now, &mut |evt| handle_peer_control(evt, producers));
         });
 
+        let mut latest_status_event = None;
+
         adapter.consume(|beacon_event: BeaconStateEvent, _producers| match beacon_event {
             BeaconStateEvent::Status { ssz, latest_block_slot, wall_slot } => {
-                self.peer_manager.set_status(ssz);
-                self.peer_manager.set_local_head_imported(latest_block_slot);
-                self.peer_manager.set_wall_slot(wall_slot);
+                latest_status_event = Some((ssz, latest_block_slot, wall_slot));
             }
             BeaconStateEvent::BlockRejected { block_root, source } => {
                 self.peer_manager.record_block_rejected(block_root, source);
             }
+            BeaconStateEvent::ReplayComplete => {
+                self.peer_manager.on_local_replay_complete();
+            }
             _ => {}
         });
+
+        if let Some((ssz, latest_block_slot, wall_slot)) = latest_status_event {
+            self.peer_manager.set_status(ssz);
+            self.peer_manager.set_local_head_imported(latest_block_slot);
+            self.peer_manager.set_wall_slot(wall_slot);
+        }
 
         if let Some(target) = self.peer_manager.maybe_emit_sync_target() {
             adapter.produce(target);

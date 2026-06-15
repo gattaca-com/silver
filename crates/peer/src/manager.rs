@@ -5,7 +5,7 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     net::{IpAddr, SocketAddr},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use fxhash::{FxHashMap, FxHashSet};
@@ -31,6 +31,10 @@ const PEERS_CAP: usize = 256;
 const IP_COLOC_CAP: usize = 128;
 const ARCHIVE_CAP: usize = 512;
 const SYNC_AGG_CAP: usize = 64;
+
+/// If BS never sends `ReplayComplete` (signal lost, storage stalled), drop the
+/// gate after this timeout so network sync can't be stranded.
+const REPLAY_GATE_TIMEOUT: Duration = Duration::from_secs(300);
 
 pub struct PeerManager {
     /// Live peers keyed by connection handle.
@@ -187,6 +191,13 @@ pub struct PeerManager {
     /// `latest_block_slot` on the Status event.
     pub(crate) local_head_imported_slot: u64,
 
+    /// Gates `maybe_issue_syncreq` while the storage tile replays the on-disk
+    /// chain into BS, so we don't network-fetch blocks we already have.
+    awaiting_local_replay: bool,
+    /// First `tick` instant seen while `awaiting_local_replay`; anchors
+    /// REPLAY_GATE_TIMEOUT. `None` until the first tick.
+    awaiting_replay_since: Option<Instant>,
+
     /// Peers burnt as backer candidates for the duration of the current
     /// catchup. A peer lands here when it misbehaves on an RPC while it is
     /// our active inflight backer — `pick_sync_peer` skips them so the next
@@ -299,6 +310,7 @@ impl PeerManager {
         fork_digest: [u8; 4],
         metadata: [u8; METADATA_SIZE],
         custody_columns: u128,
+        awaiting_local_replay: bool,
     ) -> Self {
         let now = Instant::now();
         let mesh =
@@ -343,6 +355,8 @@ impl PeerManager {
             col_tried_for_range: FxHashSet::with_capacity_and_hasher(PEERS_CAP, Default::default()),
             col_stall_logged: false,
             local_head_imported_slot: 0,
+            awaiting_local_replay,
+            awaiting_replay_since: None,
             burnt_for_target: FxHashSet::with_capacity_and_hasher(PEERS_CAP, Default::default()),
             finalized_counts: FxHashMap::with_capacity_and_hasher(SYNC_AGG_CAP, Default::default()),
             head_counts: FxHashMap::with_capacity_and_hasher(SYNC_AGG_CAP, Default::default()),
@@ -388,6 +402,14 @@ impl PeerManager {
 
     pub fn set_local_head_imported(&mut self, slot: u64) {
         self.local_head_imported_slot = slot;
+    }
+
+    pub fn on_local_replay_complete(&mut self) {
+        if self.awaiting_local_replay {
+            tracing::info!("local replay complete; unblocking network sync");
+            self.awaiting_local_replay = false;
+            self.target_dirty = true;
+        }
     }
 
     pub fn set_wall_slot(&mut self, wall_slot: u64) {
@@ -981,6 +1003,17 @@ impl PeerManager {
         if now.saturating_duration_since(self.last_heartbeat) >= self.params.heartbeat_interval {
             self.heartbeat(now);
             self.last_heartbeat = now;
+        }
+
+        if self.awaiting_local_replay {
+            let since = *self.awaiting_replay_since.get_or_insert(now);
+            if now.saturating_duration_since(since) >= REPLAY_GATE_TIMEOUT {
+                tracing::warn!(
+                    "local-replay gate timed out without ReplayComplete; unblocking sync"
+                );
+                self.awaiting_local_replay = false;
+                self.target_dirty = true;
+            }
         }
 
         // 2) Activate P3 tracking for peers whose grace window has elapsed.
@@ -2070,7 +2103,11 @@ mod tests {
     #[derive(Default)]
     struct Captured(Vec<PeerControl>);
 
-    fn fixture(our_topics: Vec<GossipTopic>, params: ScoreParams) -> (PeerManager, Captured) {
+    fn fixture(
+        our_topics: Vec<GossipTopic>,
+        params: ScoreParams,
+        awaiting_replay: bool,
+    ) -> (PeerManager, Captured) {
         (
             PeerManager::new(
                 our_topics,
@@ -2079,6 +2116,7 @@ mod tests {
                 [0u8; 4],
                 [0u8; METADATA_SIZE],
                 0,
+                awaiting_replay,
             ),
             Captured::default(),
         )
@@ -2114,7 +2152,7 @@ mod tests {
     #[test]
     fn connect_with_no_topics_emits_nothing() {
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
         mgr.set_synced(true);
         connect(&mut mgr, &mut cap, 1, 1, now);
         assert!(subscribe_events(&cap).is_empty());
@@ -2124,7 +2162,7 @@ mod tests {
     fn connect_emits_subscribe_per_our_topic() {
         let now = Instant::now();
         let topics = vec![GossipTopic::BeaconBlock, GossipTopic::VoluntaryExit];
-        let (mut mgr, mut cap) = fixture(topics.clone(), ScoreParams::default());
+        let (mut mgr, mut cap) = fixture(topics.clone(), ScoreParams::default(), false);
         mgr.set_synced(true);
         connect(&mut mgr, &mut cap, 1, 1, now);
         let subs = subscribe_events(&cap);
@@ -2138,7 +2176,7 @@ mod tests {
     fn peer_subscribes_and_we_graft_when_mesh_under_d_low() {
         let now = Instant::now();
         let topics = vec![GossipTopic::BeaconBlock];
-        let (mut mgr, mut cap) = fixture(topics, ScoreParams::default());
+        let (mut mgr, mut cap) = fixture(topics, ScoreParams::default(), false);
         mgr.set_synced(true);
         connect(&mut mgr, &mut cap, 1, 1, now);
         cap.0.clear();
@@ -2168,7 +2206,7 @@ mod tests {
         params.behaviour_penalty_weight = -10.0; // excess^2 * -10
         params.graylist_threshold = -80.0; // behaviour_penalty=3 → score=-90
         params.ip_ban_threshold = 1; // single eviction → BanIp for this test
-        let (mut mgr, mut cap) = fixture(vec![], params);
+        let (mut mgr, mut cap) = fixture(vec![], params, false);
         connect(&mut mgr, &mut cap, 1, 1, now);
 
         for _ in 0..5 {
@@ -2198,7 +2236,7 @@ mod tests {
         let mut params = ScoreParams::default();
         params.iwant_followup = Duration::from_secs(3);
         params.heartbeat_interval = Duration::from_millis(100);
-        let (mut mgr, mut cap) = fixture(vec![], params);
+        let (mut mgr, mut cap) = fixture(vec![], params, false);
         connect(&mut mgr, &mut cap, 1, 1, now);
 
         let hash = silver_common::MessageId { id: [7u8; 20] };
@@ -2226,7 +2264,7 @@ mod tests {
         let mut params = ScoreParams::default();
         params.max_ihave_length = 3;
         params.graylist_threshold = -100_000.0;
-        let (mut mgr, mut cap) = fixture(vec![], params);
+        let (mut mgr, mut cap) = fixture(vec![], params, false);
         connect(&mut mgr, &mut cap, 1, 1, now);
 
         let hash = silver_common::MessageId { id: [9u8; 20] };
@@ -2253,7 +2291,7 @@ mod tests {
         let mut params = ScoreParams::default();
         params.iwant_followup = Duration::from_secs(3);
         params.heartbeat_interval = Duration::from_millis(100);
-        let (mut mgr, mut cap) = fixture(vec![], params);
+        let (mut mgr, mut cap) = fixture(vec![], params, false);
         connect(&mut mgr, &mut cap, 1, 1, now);
 
         let hash = silver_common::MessageId { id: [77u8; 20] };
@@ -2280,7 +2318,7 @@ mod tests {
         let mut params = ScoreParams::default();
         params.ip_colocation_threshold = 2;
         params.ip_colocation_weight = -5.0;
-        let (mut mgr, mut cap) = fixture(vec![], params);
+        let (mut mgr, mut cap) = fixture(vec![], params, false);
 
         for i in 1..=5u8 {
             mgr.handle_event(
@@ -2305,7 +2343,7 @@ mod tests {
     fn disconnect_archives_and_reconnect_restores() {
         let now = Instant::now();
         let params = ScoreParams::default();
-        let (mut mgr, mut cap) = fixture(vec![], params);
+        let (mut mgr, mut cap) = fixture(vec![], params, false);
         connect(&mut mgr, &mut cap, 1, 1, now);
 
         mgr.handle_event(PeerEvent::P2pGossipInvalidFrame { p2p_peer: 1 }, now, &mut |c| {
@@ -2333,7 +2371,7 @@ mod tests {
         let mut now = Instant::now();
         let mut params = ScoreParams::default();
         params.archived_ttl = Duration::from_secs(10);
-        let (mut mgr, mut cap) = fixture(vec![], params);
+        let (mut mgr, mut cap) = fixture(vec![], params, false);
         connect(&mut mgr, &mut cap, 1, 1, now);
         mgr.handle_event(
             PeerEvent::P2pDisconnect { p2p_peer: 1, peer_id: peer_id(1) },
@@ -2361,7 +2399,7 @@ mod tests {
         let mut params = ScoreParams::default();
         params.iwant_followup = Duration::from_secs(3);
         params.heartbeat_interval = Duration::from_millis(100);
-        let (mut mgr, mut cap) = fixture(vec![], params);
+        let (mut mgr, mut cap) = fixture(vec![], params, false);
         connect(&mut mgr, &mut cap, 1, 1, now);
 
         let hash = silver_common::MessageId { id: [7u8; 20] };
@@ -2421,7 +2459,7 @@ mod tests {
         let mut params = ScoreParams::default();
         params.iwant_followup = Duration::from_secs(3);
         params.heartbeat_interval = Duration::from_millis(100);
-        let (mut mgr, mut cap) = fixture(vec![], params);
+        let (mut mgr, mut cap) = fixture(vec![], params, false);
         connect(&mut mgr, &mut cap, 1, 1, now);
         connect(&mut mgr, &mut cap, 2, 2, now);
 
@@ -2493,7 +2531,7 @@ mod tests {
         let mut params = ScoreParams::default();
         params.d_lazy = 3;
         params.d_low = 1; // so the first subscriber grafts into mesh, rest stay non-mesh
-        let (mut mgr, mut cap) = fixture(vec![GossipTopic::BeaconBlock], params);
+        let (mut mgr, mut cap) = fixture(vec![GossipTopic::BeaconBlock], params, false);
         mgr.set_synced(true);
 
         for i in 1..=4u8 {
@@ -2549,7 +2587,7 @@ mod tests {
         let mut params = ScoreParams::default();
         params.gossip_threshold = -1.0;
         params.graylist_threshold = -1_000_000.0;
-        let (mut mgr, mut cap) = fixture(vec![GossipTopic::BeaconBlock], params);
+        let (mut mgr, mut cap) = fixture(vec![GossipTopic::BeaconBlock], params, false);
         connect(&mut mgr, &mut cap, 1, 1, now);
         mgr.handle_event(
             PeerEvent::P2pGossipTopicSubscribe { p2p_peer: 1, topic: GossipTopic::BeaconBlock },
@@ -2587,7 +2625,7 @@ mod tests {
     fn iwant_request_above_threshold_emits_forward() {
         use silver_common::{TCache, TCacheRead};
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
         connect(&mut mgr, &mut cap, 1, 1, now);
         mgr.set_synced(true);
 
@@ -2620,7 +2658,7 @@ mod tests {
         let mut params = ScoreParams::default();
         params.gossip_threshold = -1.0;
         params.graylist_threshold = -1_000_000.0;
-        let (mut mgr, mut cap) = fixture(vec![], params);
+        let (mut mgr, mut cap) = fixture(vec![], params, false);
         connect(&mut mgr, &mut cap, 1, 1, now);
 
         for _ in 0..5 {
@@ -2661,7 +2699,7 @@ mod tests {
         params.d_low = 0;
         params.d = 0;
         params.d_high = 8;
-        let (mut mgr, mut cap) = fixture(vec![GossipTopic::BeaconBlock], params);
+        let (mut mgr, mut cap) = fixture(vec![GossipTopic::BeaconBlock], params, false);
         mgr.set_synced(true);
 
         for i in 1..=4u8 {
@@ -2728,7 +2766,7 @@ mod tests {
         params.gossip_threshold = -1.0;
         params.graylist_threshold = -1_000_000.0;
         params.d_high = 8;
-        let (mut mgr, mut cap) = fixture(vec![GossipTopic::BeaconBlock], params);
+        let (mut mgr, mut cap) = fixture(vec![GossipTopic::BeaconBlock], params, false);
 
         for i in 1..=2u8 {
             connect(&mut mgr, &mut cap, i as usize, i, now);
@@ -2783,7 +2821,7 @@ mod tests {
         params.d_low = 0;
         params.d = 0;
         params.d_high = 8;
-        let (mut mgr, mut cap) = fixture(vec![GossipTopic::BeaconBlock], params);
+        let (mut mgr, mut cap) = fixture(vec![GossipTopic::BeaconBlock], params, false);
         mgr.set_synced(true);
 
         for i in 1..=3u8 {
@@ -2892,7 +2930,7 @@ mod tests {
         let now = Instant::now();
         let mut params = ScoreParams::default();
         params.target_peers = 4;
-        let (mut mgr, mut cap) = fixture(vec![], params);
+        let (mut mgr, mut cap) = fixture(vec![], params, false);
         // ENR must carry an `eth2` field matching the fixture's [0u8;4]
         // fork digest now that `our_fork_digest` is always set.
         let enr =
@@ -2914,7 +2952,7 @@ mod tests {
         let now = Instant::now();
         let mut params = ScoreParams::default();
         params.target_peers = 4;
-        let (mut mgr, mut cap) = fixture(vec![], params);
+        let (mut mgr, mut cap) = fixture(vec![], params, false);
 
         connect(&mut mgr, &mut cap, 1, 7, now);
         mgr.handle_event(
@@ -2941,7 +2979,7 @@ mod tests {
         let now = Instant::now();
         let mut params = ScoreParams::default();
         params.target_peers = 2;
-        let (mut mgr, mut cap) = fixture(vec![], params);
+        let (mut mgr, mut cap) = fixture(vec![], params, false);
 
         connect(&mut mgr, &mut cap, 1, 1, now);
         connect(&mut mgr, &mut cap, 2, 2, now);
@@ -2966,7 +3004,7 @@ mod tests {
         params.graylist_threshold = -80.0;
         params.target_peers = 8;
         params.ip_ban_threshold = 1; // single eviction → BanIp for this test
-        let (mut mgr, mut cap) = fixture(vec![], params);
+        let (mut mgr, mut cap) = fixture(vec![], params, false);
 
         // Connect a peer on 10.0.0.42, drive their score below graylist, tick
         // to evict — that should record 10.0.0.42 in `banned_ips`.
@@ -3008,7 +3046,7 @@ mod tests {
         // Decay must be slow enough that "5 invalid frames -> tick -> ban"
         // still trips the gate after the test's first tick.
         params.behaviour_penalty_decay = 0.999;
-        let (mut mgr, mut cap) = fixture(vec![], params);
+        let (mut mgr, mut cap) = fixture(vec![], params, false);
 
         connect(&mut mgr, &mut cap, 42, 42, now);
         for _ in 0..5 {
@@ -3053,7 +3091,7 @@ mod tests {
         params.ip_ban_threshold = 3;
         // Slow decay so we don't flap above threshold between iterations.
         params.behaviour_penalty_decay = 0.999;
-        let (mut mgr, mut cap) = fixture(vec![], params);
+        let (mut mgr, mut cap) = fixture(vec![], params, false);
 
         let ip = std::net::Ipv4Addr::new(10, 0, 0, 99);
 
@@ -3103,7 +3141,7 @@ mod tests {
         params.ip_ban_threshold = 2;
         params.banned_ip_ttl = Duration::from_secs(10);
         params.behaviour_penalty_decay = 0.999;
-        let (mut mgr, mut cap) = fixture(vec![], params);
+        let (mut mgr, mut cap) = fixture(vec![], params, false);
 
         let ip = std::net::Ipv4Addr::new(10, 0, 0, 88);
         // First eviction: bumps count to 1. No BanIp yet (threshold=2).
@@ -3169,7 +3207,7 @@ mod tests {
         params.ip_ban_threshold = 1;
         params.banned_ip_ttl = Duration::from_secs(10);
         params.behaviour_penalty_decay = 0.999;
-        let (mut mgr, mut cap) = fixture(vec![], params);
+        let (mut mgr, mut cap) = fixture(vec![], params, false);
 
         connect(&mut mgr, &mut cap, 42, 42, now);
         for _ in 0..5 {
@@ -3214,7 +3252,7 @@ mod tests {
         params.banned_ip_ttl = Duration::from_secs(60);
         params.ip_ban_threshold = 2;
         params.behaviour_penalty_decay = 0.999;
-        let (mut mgr, mut cap) = fixture(vec![], params);
+        let (mut mgr, mut cap) = fixture(vec![], params, false);
 
         connect(&mut mgr, &mut cap, 1, 1, now);
         for _ in 0..5 {
@@ -3249,7 +3287,7 @@ mod tests {
         params.banned_peer_ttl = Duration::from_secs(3600);
         params.ip_ban_threshold = 100;
         params.behaviour_penalty_decay = 0.999;
-        let (mut mgr, mut cap) = fixture(vec![], params);
+        let (mut mgr, mut cap) = fixture(vec![], params, false);
 
         // Connect peer with seed=7 on 10.0.0.7 → drive below graylist → tick.
         connect(&mut mgr, &mut cap, 1, 7, now);
@@ -3280,7 +3318,7 @@ mod tests {
         params.target_peers = 4;
         params.discovery_query_interval = Duration::from_secs(5);
         params.heartbeat_interval = Duration::from_millis(10);
-        let (mut mgr, mut cap) = fixture(vec![], params);
+        let (mut mgr, mut cap) = fixture(vec![], params, false);
 
         // First tick after construction: under target, throttle has elapsed
         // (last_discovery was set to construction time, query_interval=5s).
@@ -3305,7 +3343,7 @@ mod tests {
         let now = Instant::now();
         let mut params = ScoreParams::default();
         params.target_peers = 4;
-        let (mut mgr, mut cap) = fixture(vec![], params);
+        let (mut mgr, mut cap) = fixture(vec![], params, false);
         mgr.set_fork_digest([0xAA, 0xBB, 0xCC, 0xDD]);
 
         let mut wrong_eth2 = [0u8; 16];
@@ -3326,7 +3364,7 @@ mod tests {
         let now = Instant::now();
         let mut params = ScoreParams::default();
         params.target_peers = 4;
-        let (mut mgr, mut cap) = fixture(vec![], params);
+        let (mut mgr, mut cap) = fixture(vec![], params, false);
         mgr.set_fork_digest([0xAA, 0xBB, 0xCC, 0xDD]);
 
         // ENR with no eth2 field — same drop policy as lighthouse.
@@ -3346,7 +3384,7 @@ mod tests {
         params.target_peers = 2;
         params.max_priority_peers = 4;
         // Subscribe to attnet 5 — our required mask flips bit 5.
-        let (mut mgr, mut cap) = fixture(vec![GossipTopic::BeaconAttestation(5)], params);
+        let (mut mgr, mut cap) = fixture(vec![GossipTopic::BeaconAttestation(5)], params, false);
         connect(&mut mgr, &mut cap, 1, 1, now);
         connect(&mut mgr, &mut cap, 2, 2, now);
         cap.0.clear();
@@ -3378,7 +3416,7 @@ mod tests {
         let mut params = ScoreParams::default();
         params.target_peers = 2;
         params.max_priority_peers = 2; // already at the priority cap
-        let (mut mgr, mut cap) = fixture(vec![GossipTopic::BeaconAttestation(5)], params);
+        let (mut mgr, mut cap) = fixture(vec![GossipTopic::BeaconAttestation(5)], params, false);
         connect(&mut mgr, &mut cap, 1, 1, now);
         connect(&mut mgr, &mut cap, 2, 2, now);
         cap.0.clear();
@@ -3400,7 +3438,7 @@ mod tests {
     fn rpc_fatal_misbehaviour_evicts_on_tick() {
         let now = Instant::now();
         // Defaults: graylist_threshold = -80, Fatal delta = -200.
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
         connect(&mut mgr, &mut cap, 1, 1, now);
         cap.0.clear();
 
@@ -3424,7 +3462,7 @@ mod tests {
     fn rpc_low_tolerance_penalises_but_keeps_peer() {
         let now = Instant::now();
         // Defaults: graylist_threshold = -80, Low delta = -10.
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
         connect(&mut mgr, &mut cap, 1, 1, now);
 
         mgr.handle_event(
@@ -3451,7 +3489,7 @@ mod tests {
         let now = Instant::now();
         // Eight Low reports at -10 each = -80, exactly at graylist (strict <
         // check, so push to nine to trip).
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
         connect(&mut mgr, &mut cap, 1, 1, now);
 
         for _ in 0..9 {
@@ -3479,7 +3517,7 @@ mod tests {
         let mut params = ScoreParams::default();
         params.behaviour_penalty_decay = 0.5;
         params.decay_to_zero = 0.01;
-        let (mut mgr, mut cap) = fixture(vec![], params);
+        let (mut mgr, mut cap) = fixture(vec![], params, false);
         connect(&mut mgr, &mut cap, 1, 1, now);
 
         mgr.handle_event(PeerEvent::P2pGossipInvalidFrame { p2p_peer: 1 }, now, &mut |c| {
@@ -3545,7 +3583,7 @@ mod tests {
     #[test]
     fn p2p_status_fork_digest_mismatch_evicts() {
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
         connect(&mut mgr, &mut cap, 1, 1, now);
         mgr.set_fork_digest(fork_a());
         cap.0.clear();
@@ -3564,7 +3602,7 @@ mod tests {
     #[test]
     fn p2p_status_matching_fork_digest_keeps_peer_and_parses_db() {
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
         connect(&mut mgr, &mut cap, 1, 1, now);
         mgr.set_fork_digest(fork_a());
 
@@ -3581,7 +3619,7 @@ mod tests {
     #[test]
     fn p2p_status_divergent_finalized_root_evicts() {
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
         connect(&mut mgr, &mut cap, 1, 1, now);
         set_local(&mut mgr, status_v2_ssz(fork_a(), [0xAA; 32], 42, [0xCC; 32], 42 * 32 + 5));
         mgr.set_wall_slot(42 * 32 + 5);
@@ -3607,7 +3645,7 @@ mod tests {
     #[test]
     fn p2p_status_same_finalized_root_accepted() {
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
         connect(&mut mgr, &mut cap, 1, 1, now);
         set_local(&mut mgr, status_v2_ssz(fork_a(), [0xAA; 32], 42, [0xCC; 32], 42 * 32 + 5));
         mgr.set_wall_slot(42 * 32 + 5);
@@ -3625,7 +3663,7 @@ mod tests {
     #[test]
     fn p2p_status_rejected_finalized_root_evicts() {
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
         connect(&mut mgr, &mut cap, 1, 1, now);
         set_local(&mut mgr, status_v2_ssz(fork_a(), [0xAA; 32], 42, [0xCC; 32], 42 * 32 + 5));
         mgr.set_wall_slot(42 * 32 + 5);
@@ -3658,7 +3696,7 @@ mod tests {
         // lockstep so ENR-discovery filter and inbound Status check never
         // diverge.
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
         connect(&mut mgr, &mut cap, 1, 1, now);
 
         set_local(&mut mgr, status_v2_ssz(fork_b(), [0; 32], 0, [0; 32], 0));
@@ -3691,7 +3729,7 @@ mod tests {
 
     #[test]
     fn select_target_no_local_state_returns_following() {
-        let (mut mgr, _cap) = fixture(vec![], ScoreParams::default());
+        let (mut mgr, _cap) = fixture(vec![], ScoreParams::default(), false);
         assert!(mgr.maybe_emit_sync_target().is_none(), "no dirty signal");
         mgr.target_dirty = true;
         // No local_state → can't decide; stays Following (and equals last
@@ -3702,7 +3740,7 @@ mod tests {
     #[test]
     fn select_target_picks_max_vote_finalized_target() {
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
         set_snapshot(&mut mgr, /* finalized_epoch */ 10, /* head_slot */ 320);
 
         // 2 peers back finalized (epoch=20, root=X); 1 peer backs (epoch=15, root=Y).
@@ -3728,7 +3766,7 @@ mod tests {
     #[test]
     fn select_target_skips_blacklisted_finalized() {
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
         set_snapshot(&mut mgr, 10, 320);
 
         let x = [0xBB; 32];
@@ -3751,7 +3789,7 @@ mod tests {
     #[test]
     fn select_target_pins_until_reached() {
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
         set_snapshot(&mut mgr, 10, 320);
 
         let x = [0xBB; 32];
@@ -3782,7 +3820,7 @@ mod tests {
     #[test]
     fn select_target_unpins_after_reaching_finalized() {
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
         set_snapshot(&mut mgr, 10, 320);
 
         let x = [0xBB; 32];
@@ -3807,7 +3845,7 @@ mod tests {
         // just not FFG-finalized). Must NOT trigger a SyncingFinalized
         // catch-up to re-download blocks we hold.
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
         // finalized_epoch=10, head_slot=700 (> 20 * 32 = 640).
         set_snapshot(&mut mgr, 10, 700);
 
@@ -3828,7 +3866,7 @@ mod tests {
         // Pinned to a finalized target, then our head advances past its epoch
         // boundary without FFG-finalizing it → target is considered reached.
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
         set_snapshot(&mut mgr, 10, 320);
 
         let x = [0xBB; 32];
@@ -3851,7 +3889,7 @@ mod tests {
     #[test]
     fn select_target_falls_through_to_head_catchup() {
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
         // Finalized is current; head is behind.
         set_local(&mut mgr, status_v2_ssz(fork_a(), [0xAA; 32], 100, [0xCC; 32], 3200));
         mgr.set_wall_slot(100_000);
@@ -3887,7 +3925,7 @@ mod tests {
     #[test]
     fn select_target_following_when_no_one_is_ahead() {
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
         set_snapshot(&mut mgr, 100, 3200);
 
         // Peer is at the same finalized + head; nothing to chase.
@@ -3906,7 +3944,7 @@ mod tests {
     #[test]
     fn select_target_emits_only_on_change() {
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
         set_snapshot(&mut mgr, 10, 320);
 
         let x = [0xBB; 32];
@@ -3924,9 +3962,30 @@ mod tests {
     }
 
     #[test]
+    fn awaiting_local_replay_gates_syncreq_until_complete() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), true);
+        set_snapshot(&mut mgr, 10, 320);
+
+        // A peer is well ahead — target selection still runs during replay.
+        connect(&mut mgr, &mut cap, 1, 1, now);
+        send_status(&mut mgr, &mut cap, 1, make_status_v2(fork_a(), [0xBB; 32], 20, [0; 32], 640));
+        assert!(matches!(mgr.maybe_emit_sync_target(), Some(SyncUpdate::SyncingFinalized { .. })));
+
+        // Gated: no BlocksByRange while the storage tile is still replaying.
+        mgr.maybe_issue_syncreq(now, &mut |c| cap.0.push(c));
+        assert!(mgr.inflight_syncreq.is_none(), "no syncreq while awaiting replay");
+
+        // Released on the BS ReplayComplete signal — now it issues.
+        mgr.on_local_replay_complete();
+        mgr.maybe_issue_syncreq(now, &mut |c| cap.0.push(c));
+        assert!(mgr.inflight_syncreq.is_some(), "syncreq issues after replay completes");
+    }
+
+    #[test]
     fn block_rejected_in_finalized_catchup_blacklists_target() {
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
         set_snapshot(&mut mgr, 10, 320);
 
         let bad_target = [0xBB; 32];
@@ -3977,7 +4036,7 @@ mod tests {
         // == target_root`. Guards against stuck-pinned off-by-one and against
         // an epoch match with a drifted root being treated as reached.
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
         let target = [0xBB; 32];
 
         // Local: epoch 10, head 320, finalized_root [0xAA] (snapshot default).
@@ -4027,7 +4086,7 @@ mod tests {
         // from a local apply-lag (peer delivered, head didn't advance).
         // Only the former scores + burns.
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
         let target = [0xBB; 32];
         set_snapshot(&mut mgr, 10, 320);
         connect(&mut mgr, &mut cap, 1, 1, now);
@@ -4072,7 +4131,7 @@ mod tests {
         // the delivered watermark is more than one batch ahead of head_slot,
         // issuance pauses until apply catches up.
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
         let target = [0xBB; 32];
         set_snapshot(&mut mgr, 10, 320); // head_slot 320, never advances here
         connect(&mut mgr, &mut cap, 1, 1, now);
@@ -4114,7 +4173,7 @@ mod tests {
         // re-issue from our apply-lagged head_slot and re-import the same
         // blocks.
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
         // Local well behind head; finalized current so head sync (not
         // finalized) is selected. wall_slot near head so the behind-wall
         // guard doesn't fire.
@@ -4198,7 +4257,7 @@ mod tests {
     #[test]
     fn colreq_complete_advances_column_watermark() {
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
         let mask = connect_column_peer(&mut mgr, &mut cap, 1, 1, 100_000, now);
         mgr.custody_columns = mask; // full overlap with peer 1
         mgr.synced_through = 128; // blocks confirmed-served [1, 128]
@@ -4229,7 +4288,7 @@ mod tests {
     #[test]
     fn colreq_partial_overlap_chases_remainder_on_second_peer() {
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
         let mask1 = connect_column_peer(&mut mgr, &mut cap, 1, 1, 100_000, now);
         let mask2 = connect_column_peer(&mut mgr, &mut cap, 2, 2, 100_000, now);
         // Custody is deterministic from node_id+cgc; these seeds must give
@@ -4267,7 +4326,7 @@ mod tests {
     #[test]
     fn colreq_error_concedes_to_by_root_after_attempts_cap() {
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
         let mask = connect_column_peer(&mut mgr, &mut cap, 1, 1, 100_000, now);
         mgr.custody_columns = mask;
         mgr.synced_through = 32;
@@ -4300,7 +4359,7 @@ mod tests {
     #[test]
     fn colreq_timeout_scores_peer_and_reissues() {
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
         let mask = connect_column_peer(&mut mgr, &mut cap, 1, 1, 100_000, now);
         mgr.custody_columns = mask;
         mgr.synced_through = 16;
@@ -4331,7 +4390,7 @@ mod tests {
         // columns would never be re-requested and the DA check would wedge
         // the chain (observed live: head stuck at the serving peer's tip).
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
         let mask = connect_column_peer(&mut mgr, &mut cap, 1, 1, 100, now);
         mgr.custody_columns = mask;
         mgr.synced_through = 120; // blocks confirmed past the peer's head
@@ -4355,7 +4414,7 @@ mod tests {
     #[test]
     fn colreq_paced_to_block_driver() {
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
         let mask = connect_column_peer(&mut mgr, &mut cap, 1, 1, 100_000, now);
         mgr.custody_columns = mask;
 
@@ -4385,7 +4444,7 @@ mod tests {
         // watermark halts block batches; advancing it (delivery or concede)
         // releases them.
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
         let target = [0xBB; 32];
         set_snapshot(&mut mgr, 10, 320);
         connect(&mut mgr, &mut cap, 1, 1, now);
@@ -4433,7 +4492,7 @@ mod tests {
         // Following + head trailing wall_slot by > head_lag_threshold_slots
         // ⇒ fell_behind(). Strict `>` at the boundary; gated on `is_synced`
         // and on having a local status.
-        let (mut mgr, _cap) = fixture(vec![], ScoreParams::default());
+        let (mut mgr, _cap) = fixture(vec![], ScoreParams::default(), false);
 
         // No local status yet → false regardless of flag.
         assert!(!mgr.fell_behind());
@@ -4467,7 +4526,7 @@ mod tests {
         // march its head over the empty genesis→wall gap). Once caught up it
         // latches synced, and a later empty-slot tail keeps `Following`.
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
 
         set_local(&mut mgr, status_v2_ssz(fork_a(), [0xAA; 32], 0, [0; 32], 0));
         mgr.set_wall_slot(100_000);
@@ -4503,7 +4562,7 @@ mod tests {
     #[test]
     fn select_target_filters_too_far_ahead_finalized() {
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
         set_local(&mut mgr, status_v2_ssz(fork_a(), [0xAA; 32], 10, [0xCC; 32], 320));
         mgr.set_wall_slot(320);
 
@@ -4525,7 +4584,7 @@ mod tests {
     #[test]
     fn peer_data_columns_prioritization_and_slot_reservation() {
         let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
 
         // Connect and identify Peer 1
         let kp1 = Keypair::from_secret(&[1u8; 32]).unwrap();
