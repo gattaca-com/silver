@@ -482,6 +482,10 @@ impl Store {
         self.finalized_slot
     }
 
+    pub(super) fn store_dir(&self) -> &str {
+        &self.store_dir
+    }
+
     pub(super) fn head_root(&self) -> &[u8; 32] {
         &self.head_root
     }

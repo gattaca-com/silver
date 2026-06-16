@@ -1,7 +1,7 @@
 use std::{
     io::{BufRead, BufWriter, Write},
     net::{IpAddr, SocketAddr},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use alloy_rlp::{Decodable, Encodable};
@@ -31,6 +31,7 @@ const PENDING_PROBES_CAPACITY: usize = 64;
 const BANNED_NODES_CAPACITY: usize = 32;
 
 const MAX_LOGGED_FORK_DIGESTS: usize = 20;
+const TABLE_LOG_INTERVAL: Duration = Duration::from_secs(12);
 
 const PRE_FULU_FORK_DIGESTS: &[([u8; 4], &str)] = &[
     ([0xb5, 0x30, 0x3f, 0x2a], "Phase0"),
@@ -80,6 +81,7 @@ pub struct DiscV5 {
     last_ping: Instant,
     last_lookup: Instant,
     last_cleanup: Instant,
+    last_table_log: Instant,
 
     ping_cursor: usize,
     lookup_requested: bool,
@@ -136,6 +138,9 @@ impl DiscV5 {
             last_ping: Instant::now(),
             last_lookup: Instant::now(),
             last_cleanup: Instant::now(),
+            last_table_log: Instant::now()
+                .checked_sub(TABLE_LOG_INTERVAL)
+                .unwrap_or_else(Instant::now),
             ping_cursor: 0,
             lookup_requested: false,
             metrics: Default::default(),
@@ -367,7 +372,7 @@ impl DiscV5 {
                 now,
             );
             if matches!(result, InsertResult::Inserted) {
-                self.log_table_state();
+                self.log_table_state(now);
             }
             let is_new = matches!(result, InsertResult::Inserted) || prev_raw != Some(*raw);
             if is_new {
@@ -688,7 +693,7 @@ impl DiscV5 {
                     warn!(%src_id, %src_addr, ?result, "handshake established but kbuckets insert not committed");
                 }
                 if matches!(result, InsertResult::Inserted) {
-                    self.log_table_state();
+                    self.log_table_state(now);
                 }
 
                 (pk_bytes, Some(raw))
@@ -777,7 +782,11 @@ impl DiscV5 {
         digest == self.fork_digest || PRE_FULU_FORK_DIGESTS.iter().any(|(d, _)| *d == digest)
     }
 
-    fn log_table_state(&mut self) {
+    fn log_table_state(&mut self, now: Instant) {
+        if now.saturating_duration_since(self.last_table_log) < TABLE_LOG_INTERVAL {
+            return;
+        }
+        self.last_table_log = now;
         // Disjoint field borrows so the scratch buffer can be filled from the
         // tally without re-borrowing `self`.
         let Self { seen_fork_digests, seen_scratch, fork_digest, kbuckets, sessions, .. } = self;
@@ -1022,7 +1031,7 @@ impl Discovery for DiscV5 {
         );
         match result {
             InsertResult::Failed(reason) => tracing::error!(?reason, "add enr failed"),
-            InsertResult::Inserted => self.log_table_state(),
+            InsertResult::Inserted => self.log_table_state(now),
             _ => {}
         }
     }

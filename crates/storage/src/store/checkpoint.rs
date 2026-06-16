@@ -219,7 +219,7 @@ impl Store {
         let (file, tmp_path) = match self.open_checkpoint_tmp(slot) {
             Ok(x) => x,
             Err(e) => {
-                tracing::error!(?e, slot, "failed to open checkpoint temp file");
+                tracing::error!(?e, slot, dir = ?self.finalized_checkpoints_dir().join(slot.to_string()), "failed to open checkpoint temp file");
                 return;
             }
         };
