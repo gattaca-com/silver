@@ -374,7 +374,12 @@ impl DiscV5 {
             if matches!(result, InsertResult::Inserted) {
                 self.log_table_state(now);
             }
-            let is_new = matches!(result, InsertResult::Inserted) || prev_raw != Some(*raw);
+
+            let is_new = match result {
+                InsertResult::Inserted => true,
+                InsertResult::Updated => prev_raw != Some(*raw),
+                InsertResult::Pending { .. } | InsertResult::Failed(_) => false,
+            };
             if is_new {
                 self.metrics.nodes_discovered += 1;
                 self.emit_node_found(enr);
@@ -460,6 +465,10 @@ impl DiscV5 {
     /// shares our node id) → guaranteed handshake timeout / zombie.
     fn emit_node_found(&mut self, enr: Enr) {
         if enr.node_id() == self.local_id {
+            return;
+        }
+
+        if !self.emit_to_pm(&enr) {
             return;
         }
         self.event_queue.push(DiscoveryEvent::NodeFound(enr));
