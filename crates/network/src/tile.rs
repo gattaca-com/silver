@@ -47,7 +47,7 @@ impl NetworkTile {
 
     fn handle_peer_control(&mut self, peer_control: PeerControl, now: Instant) {
         match peer_control {
-            PeerControl::Ban { p2p, p2p_connection: _ } => {
+            PeerControl::Ban { p2p } => {
                 if let Ok(pubkey) = PublicKey::from_slice(p2p.pubkey()) {
                     self.inner.discovery.ban_node(pubkey.into());
                 }

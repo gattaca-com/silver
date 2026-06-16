@@ -461,7 +461,6 @@ impl P2pSend {
 pub enum PeerControl {
     Ban {
         p2p: PeerId,
-        p2p_connection: usize,
     },
     BanIp {
         ip: IpAddr,

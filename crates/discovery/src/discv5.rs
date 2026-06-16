@@ -342,6 +342,9 @@ impl DiscV5 {
     ) {
         for raw in nodes.iter() {
             let Ok(enr) = Enr::decode(&mut raw.as_slice()) else { continue };
+            if self.banned_nodes.contains(&enr.node_id()) {
+                continue;
+            }
             self.record_fork_digest(&enr);
 
             let addr = if let (Some(ip4), Some(udp4)) = (enr.ip4(), enr.udp4()) {
@@ -885,26 +888,9 @@ impl DiscV5 {
     }
 
     fn load_persisted(&mut self, now: Instant) {
-        if let Some(path) = self.config.persisted_kbuckets_path.clone() {
-            if let Ok(file) = std::fs::File::open(&path) {
-                let mut i = 0usize;
-                for line in std::io::BufReader::new(file).lines() {
-                    let Ok(line) = line else { continue };
-                    let line = line.trim();
-                    if line.is_empty() {
-                        continue;
-                    }
-
-                    if let Ok(enr) = line.parse::<Enr>() {
-                        self.add_enr(&enr, now);
-                        i += 1;
-                    }
-                }
-
-                info!("loaded {i} persisted kbuckets from {}", path.display());
-            }
-        }
-
+        // Load bans before kbuckets: `add_enr` skips banned nodes, so the ban
+        // set must be populated first or a persisted-banned node could be
+        // re-added to the routing table.
         if let Some(path) = self.config.persisted_banned_nodes_path.clone() {
             if let Ok(file) = std::fs::File::open(&path) {
                 let mut i = 0usize;
@@ -935,6 +921,26 @@ impl DiscV5 {
                 }
 
                 info!("loaded {i} banned nodes from {}", path.display());
+            }
+        }
+
+        if let Some(path) = self.config.persisted_kbuckets_path.clone() {
+            if let Ok(file) = std::fs::File::open(&path) {
+                let mut i = 0usize;
+                for line in std::io::BufReader::new(file).lines() {
+                    let Ok(line) = line else { continue };
+                    let line = line.trim();
+                    if line.is_empty() {
+                        continue;
+                    }
+
+                    if let Ok(enr) = line.parse::<Enr>() {
+                        self.add_enr(&enr, now);
+                        i += 1;
+                    }
+                }
+
+                info!("loaded {i} persisted kbuckets from {}", path.display());
             }
         }
     }
@@ -997,6 +1003,9 @@ impl Discovery for DiscV5 {
     }
 
     fn add_enr(&mut self, enr: &Enr, now: Instant) {
+        if self.banned_nodes.contains(&enr.node_id()) {
+            return;
+        }
         self.record_fork_digest(enr);
         let addr = if let (Some(ip4), Some(udp4)) = (enr.ip4(), enr.udp4()) {
             SocketAddr::new(IpAddr::V4(ip4), udp4)
@@ -1030,6 +1039,7 @@ impl Discovery for DiscV5 {
 
     fn ban_node(&mut self, id: NodeId) {
         self.banned_nodes.insert(id);
+        self.kbuckets.remove(&Key::from(id));
         self.sessions.remove(&id);
         self.pending_findnodes.remove(&id);
         self.pending_probe_nonces.remove(&id);
@@ -1601,6 +1611,26 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, DiscoveryEvent::NodeFound(enr) if enr.node_id() == id_bad)),
             "bad (wrong fork_digest) node should not be surfaced to PM"
+        );
+    }
+
+    #[test]
+    fn ban_evicts_from_kbuckets_and_blocks_readd() {
+        let now = Instant::now();
+        let (mut a, _) = make_node(19071);
+        let (b, _) = make_node(19072);
+
+        a.add_enr(&b.local_enr, now);
+        assert!(a.kbuckets.get(&Key::from(b.local_id)).is_some(), "node added to kbuckets");
+
+        a.ban_node(b.local_id);
+        assert!(a.kbuckets.get(&Key::from(b.local_id)).is_none(), "ban should evict from kbuckets");
+
+        // A banned node must not be re-added by a later add_enr / NODES response.
+        a.add_enr(&b.local_enr, now);
+        assert!(
+            a.kbuckets.get(&Key::from(b.local_id)).is_none(),
+            "banned node should not be re-added"
         );
     }
 
