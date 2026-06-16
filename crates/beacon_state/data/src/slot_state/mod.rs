@@ -6,6 +6,7 @@ mod tests;
 use delta::SlotStateDelta;
 pub use delta::{SlotStateView, SlotStateWriteView};
 pub use finalized::SlotStateFinalized;
+use silver_common_macros::timed;
 
 use crate::{
     buffer::{Id, Reset, Ring, reanchor_survivors},
@@ -73,6 +74,7 @@ impl SlotStateGroup {
     /// Re-anchor each survivor against the promoted `winner` into fresh slots
     /// (deduped), then promote the winner into the finalized state
     /// (circular-buffer write).
+    #[timed]
     pub fn finalize(&mut self, winner: SlotStateId, survivors: &[SlotStateId]) -> Vec<SlotStateId> {
         debug_assert!(survivors.contains(&winner), "winner must be among the survivors");
         self.deltas.free_outdated(survivors);

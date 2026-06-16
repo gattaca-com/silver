@@ -72,6 +72,13 @@ impl PerfReport {
                 actual: self.frame_avg_ns("hash_tree_root_state"),
                 threshold: t.max_hash_tree_root_state_avg,
             },
+            Gauge {
+                // `#[timed]` auto-qualifies methods by `Self`, so the
+                // `tile::finalize` frame's leaf is `finalize<BeaconStateTile>`.
+                label: "finalize (avg)",
+                actual: self.frame_avg_ns("finalize<BeaconStateTile>"),
+                threshold: t.max_finalize_avg,
+            },
         ]
     }
 

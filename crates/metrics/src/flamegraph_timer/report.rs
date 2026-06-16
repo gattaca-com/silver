@@ -2,7 +2,7 @@
 //! path is the measured timed-frame chain, so containment holds by
 //! construction.
 
-use std::{collections::HashMap, fmt::Write as _};
+use std::{borrow::Cow, collections::HashMap, fmt::Write as _};
 
 use flux::timing::Nanos;
 
@@ -64,7 +64,7 @@ impl TimingStats {
     pub fn aggregate_leaf(&self, leaf: &str) -> (Nanos, u64) {
         self.0
             .iter()
-            .filter(|s| s.path.last().is_some_and(|n| leaf_name(n) == leaf))
+            .filter(|s| s.path.last().is_some_and(|n| leaf_name(n).as_ref() == leaf))
             .fold((Nanos::ZERO, 0), |(sum, cnt), s| (sum + s.tracked_sum_ns, cnt + s.count))
     }
 
@@ -73,7 +73,7 @@ impl TimingStats {
     pub fn aggregate_leaf_max(&self, leaf: &str) -> Option<Nanos> {
         self.0
             .iter()
-            .filter(|s| s.path.last().is_some_and(|n| leaf_name(n) == leaf))
+            .filter(|s| s.path.last().is_some_and(|n| leaf_name(n).as_ref() == leaf))
             .map(|s| s.tracked_max_ns)
             .max()
     }
@@ -85,7 +85,7 @@ impl TimingStats {
     pub fn aggregate_leaf_p50(&self, leaf: &str) -> Option<Nanos> {
         self.0
             .iter()
-            .filter(|s| s.path.last().is_some_and(|n| leaf_name(n) == leaf))
+            .filter(|s| s.path.last().is_some_and(|n| leaf_name(n).as_ref() == leaf))
             .map(|s| s.tracked_p50_ns)
             .max()
     }
@@ -117,8 +117,51 @@ impl TimingStats {
     }
 }
 
-fn leaf_name(qualified: &str) -> &str {
-    qualified.rsplit("::").next().unwrap_or(qualified)
+/// Display/identity leaf for a frame path segment.
+///
+/// A plain `#[timed]` free-function frame is `module::path::fn` → the trailing
+/// `::fn`. A `#[timed]` method frame embeds its receiver as a
+/// `…::fn::__TimedTy<ConcreteSelf>` marker (so each monomorphization is a
+/// distinct frame — the type a string-keyed sink can't otherwise tell apart);
+/// here we unwrap it into a `fn<Type>` label. Plain frames stay borrowed — the
+/// threshold gauges match on these and must be unaffected.
+fn leaf_name(qualified: &str) -> Cow<'_, str> {
+    const MARK: &str = "::__TimedTy<";
+    if let Some(at) = qualified.find(MARK) {
+        let func = qualified[..at].rsplit("::").next().unwrap_or(&qualified[..at]);
+        // The marker wraps exactly the receiver type; drop its closing `>`.
+        let ty = &qualified[at + MARK.len()..];
+        let ty = ty.strip_suffix('>').unwrap_or(ty);
+        return Cow::Owned(format!("{func}<{}>", strip_module_paths(ty)));
+    }
+    Cow::Borrowed(qualified.rsplit("::").next().unwrap_or(qualified))
+}
+
+/// Minimal "short type name": `type_name` is fully qualified
+/// (`crate::col::ColumnGroup<crate::col::Balances>`); keep only the last `::`
+/// segment of each path, preserving generic punctuation — yielding
+/// `ColumnGroup<Balances>`. (Same job as `disqualified::ShortName` / `tynm`,
+/// inlined to keep this low-level crate dependency-free.)
+///
+/// `rsplit("::")` alone won't do — `::` also appears inside generic args — so
+/// we split on the generic punctuation first, then take each path's leaf.
+fn strip_module_paths(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for chunk in s.split_inclusive(['<', '>', ',', ' ']) {
+        // `split_inclusive` keeps the delimiter as the chunk's last char, so a
+        // chunk is one path plus a trailing delimiter, e.g. `crate::mod::T<`
+        // (the final chunk may have none). The delimiters are ASCII, so the
+        // split below always lands on a char boundary.
+        let (path, delim) = match chunk.as_bytes().last() {
+            Some(b'<' | b'>' | b',' | b' ') => {
+                (&chunk[..chunk.len() - 1], &chunk[chunk.len() - 1..])
+            }
+            _ => (chunk, ""),
+        };
+        out.push_str(path.rsplit("::").next().unwrap_or(path));
+        out.push_str(delim);
+    }
+    out
 }
 
 fn percentile(sorted: &[u64], q: f64) -> u64 {
@@ -159,7 +202,7 @@ impl Node {
             .collect();
         if self.count > 0 {
             rows.push(Row {
-                label: "untracked",
+                label: Cow::Borrowed("untracked"),
                 sum_ns: self.total_untracked_ns,
                 count: self.count,
                 child: None,
@@ -188,7 +231,7 @@ impl Node {
         for r in &rows[..cut] {
             let avg = r.sum_ns / r.count.max(1);
             let count = Some(CallCount { total: r.count, per_parent: self.count });
-            emit_row(out, indent, r.label, avg, count);
+            emit_row(out, indent, r.label.as_ref(), avg, count);
             if let Some(child) = r.child {
                 child.render_children(depth + 1, out);
             }
@@ -203,7 +246,7 @@ impl Node {
 }
 
 struct Row<'a> {
-    label: &'a str,
+    label: Cow<'a, str>,
     sum_ns: Nanos,
     count: u64,
     /// `None` for the synthetic `untracked` row (no subtree to recurse into).

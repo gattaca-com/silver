@@ -20,22 +20,38 @@ use syn::{
 /// `timing-{crate}::{module}::{fn_name}` and stays unambiguous across
 /// crates without manual labelling.
 ///
-/// Pass a string literal to override: `#[timed("custom_name")]` uses
-/// that name verbatim (no module prefix).
+/// On a method, the default name auto-qualifies by the monomorphized `Self`:
+/// `type_name` bakes the concrete type in per instantiation, so generic code
+/// whose frames would otherwise collapse onto one compile-time string (e.g.
+/// `ColumnGroup<Balances>` vs `ColumnGroup<Inactivity>`) stays split — the type
+/// info a flamegraph can't recover from a bare address in-process. Generic
+/// helpers called underneath still split by their qualified parent path, so
+/// only the receiver type is folded in (not fn-level type params, which would
+/// fork a frame per closure type / call site). The name is a `&'static str`
+/// (no hot-path cost); the report unwraps the marker into a `fn<Type>` label.
+/// Free functions keep the plain `module::path::fn` name.
+///
+/// Pass a string literal to override: `#[timed("custom_name")]` uses that name
+/// verbatim (no module prefix, no type qualification).
 ///
 /// Records processing time on every exit path — normal return, `?`,
 /// early `return`, panic-unwind — via a Drop guard.
 #[proc_macro_attribute]
 pub fn timed(attr: TokenStream, item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as ItemFn);
+    let func_name_str = input.sig.ident.to_string();
 
-    let timer_name_expr = if attr.is_empty() {
-        let func_name_str = input.sig.ident.to_string();
-        quote! { concat!(module_path!(), "::", #func_name_str) }
-    } else {
-        let lit = parse_macro_input!(attr as LitStr);
-        let s = lit.value();
+    let is_method = matches!(input.sig.inputs.first(), Some(syn::FnArg::Receiver(_)));
+    let timer_name_expr = if !attr.is_empty() {
+        let s = parse_macro_input!(attr as LitStr).value();
         quote! { #s }
+    } else if is_method {
+        quote! {{
+            struct __TimedTy<T: ?Sized>(::core::marker::PhantomData<T>);
+            ::core::any::type_name::<__TimedTy<Self>>()
+        }}
+    } else {
+        quote! { concat!(module_path!(), "::", #func_name_str) }
     };
 
     let ItemFn { attrs, vis, sig, block } = input;

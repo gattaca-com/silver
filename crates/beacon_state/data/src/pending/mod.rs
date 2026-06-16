@@ -7,6 +7,7 @@ mod tests;
 pub use delta::{PendingView, PendingWriteView, QueueView, QueueWriteView};
 pub use finalized::QueueItem;
 use group::QueueGroup;
+use silver_common_macros::timed;
 
 use crate::{
     buffer::Id,
@@ -77,6 +78,7 @@ impl PendingGroup {
     /// Finalize all three queues against the promoted `winner` and bundle the
     /// re-anchored ids 1:1 with `survivors` (each queue's `finalize` preserves
     /// order, so the zip stays aligned).
+    #[timed]
     pub fn finalize(&mut self, winner: PendingId, survivors: &[PendingId]) -> Vec<PendingId> {
         let dep_ids = survivors.iter().map(|s| s.deposits).collect::<Vec<_>>();
         let pw_ids = survivors.iter().map(|s| s.partial_withdrawals).collect::<Vec<_>>();

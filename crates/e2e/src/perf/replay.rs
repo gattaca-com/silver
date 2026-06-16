@@ -39,6 +39,7 @@ pub fn replay(fixtures: &Fixtures) -> ReplayOutcome {
     enable();
 
     let mut harness = PmBsHarness::new(&fixtures.state_ssz, n_blocks, blocks.len());
+    let anchor_finalized_epoch = harness.fork_choice_finalized_epoch();
     let first_block_slot = block_slot(&blocks[0]);
     assert_eq!(StatusView::head_slot(harness.local_status()) + 1, first_block_slot);
 
@@ -83,6 +84,22 @@ pub fn replay(fixtures: &Fixtures) -> ReplayOutcome {
          if STF logic legitimately changed)"
     );
     eprintln!("perf: state_root matches expected ✓");
+
+    // Finalization is representation-only (promote delta window → base), so the
+    // state_root check above also proves it stayed behavior-preserving. Assert
+    // it actually fired: a fixture set too short to advance finality would make
+    // the `finalize` frame a silent no-op and hide its cost.
+    let finalized_epoch = harness.fork_choice_finalized_epoch();
+    assert!(
+        finalized_epoch > anchor_finalized_epoch,
+        "replay never finalized: fork-choice finalized epoch stayed at {anchor_finalized_epoch} \
+         — need more blocks (≥4 epochs) for finality to advance past the anchor",
+    );
+    eprintln!(
+        "perf: finalized epoch {anchor_finalized_epoch} → {finalized_epoch} \
+         ({} promotions) ✓",
+        finalized_epoch - anchor_finalized_epoch,
+    );
 
     ReplayOutcome {
         stats: TimingStats::collect(),

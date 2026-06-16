@@ -6,6 +6,7 @@ mod tests;
 pub use delta::{LongtailView, LongtailWriteView};
 pub use finalized::LongtailState;
 use parking_lot::Mutex;
+use silver_common_macros::timed;
 
 use crate::{
     buffer::{Id, Reset, Ring, reanchor_survivors},
@@ -102,6 +103,7 @@ impl LongtailGroup {
 
     /// Re-anchor each survivor against the promoted `winner` into fresh slots
     /// (deduped), then promote the winner into the finalized state.
+    #[timed]
     pub fn finalize(&mut self, winner: LongtailId, survivors: &[LongtailId]) -> Vec<LongtailId> {
         debug_assert!(survivors.contains(&winner), "winner must be among the survivors");
         self.deltas.free_outdated(survivors);

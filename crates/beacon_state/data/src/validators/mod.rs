@@ -7,6 +7,7 @@ mod tests;
 use delta::ValidatorsDelta;
 pub use delta::{ValidatorsView, ValidatorsWriteView};
 pub use finalized::{FinalizedValidators, ValSeed, ValidatorsDecodeError};
+use silver_common_macros::timed;
 
 use crate::{
     Withdrawals,
@@ -78,6 +79,7 @@ impl ValidatorsGroup {
     /// Re-anchor each survivor against the promoted `winner` into fresh slots
     /// (deduped), promote the winner into the finalized state, then free the
     /// oldest. Mirrors [`BalancesGroup::finalize`](crate::BalancesGroup).
+    #[timed]
     pub fn finalize(
         &mut self,
         winner: ValidatorsId,

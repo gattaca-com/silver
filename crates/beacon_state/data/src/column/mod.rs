@@ -5,8 +5,6 @@ mod group;
 #[cfg(test)]
 mod tests;
 
-use std::marker::PhantomData;
-
 pub use delta::{ColumnReader, ColumnWriteView};
 pub use finalized::FinalizedColumn;
 pub use group::ColumnGroup;
@@ -66,17 +64,29 @@ pub trait ColumnSpec {
     type Val: ColumnVal;
 }
 
-/// Column marker — `V` is the scalar; `ID` only makes same-`V` columns (the two
-/// `u8` participations) distinct types so their ring ids can't mix.
-pub struct Col<V, const ID: u8>(PhantomData<V>);
-impl<V: ColumnVal, const ID: u8> ColumnSpec for Col<V, ID> {
-    type Val = V;
+/// Column markers — one zero-sized type per registry-aligned column. Distinct
+/// named types (rather than a discriminated `Col<V, ID>`) so ring ids of
+/// different columns can't mix *and* `type_name` reads cleanly in perf frames
+/// (`Balances`, not `Col<u64, 3>`).
+pub struct Previous;
+impl ColumnSpec for Previous {
+    type Val = u8;
 }
 
-pub type Previous = Col<u8, 0>;
-pub type Current = Col<u8, 1>;
-pub type Inactivity = Col<u64, 2>;
-pub type Balances = Col<u64, 3>;
+pub struct Current;
+impl ColumnSpec for Current {
+    type Val = u8;
+}
+
+pub struct Inactivity;
+impl ColumnSpec for Inactivity {
+    type Val = u64;
+}
+
+pub struct Balances;
+impl ColumnSpec for Balances {
+    type Val = u64;
+}
 
 pub type PreviousParticipationGroup = ColumnGroup<Previous>;
 pub type PreviousParticipationId = Id<PreviousParticipationGroup>;

@@ -6,6 +6,7 @@ mod tests;
 pub(crate) use delta::EpochStateDelta;
 pub use delta::{EpochView, EpochWriteView};
 pub use finalized::EpochStateFinalized;
+use silver_common_macros::timed;
 
 use crate::{
     buffer::{Id, Reset, Ring, reanchor_survivors},
@@ -88,6 +89,7 @@ impl EpochGroup {
     /// (circular-buffer write at `old_fin_epoch`). Mirrors
     /// [`SlotStateGroup::finalize`](crate:: SlotStateGroup), with the extra
     /// `old_fin_epoch` offset the epoch circular buffers need.
+    #[timed]
     pub fn finalize(
         &mut self,
         winner: EpochId,
