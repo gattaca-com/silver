@@ -8,7 +8,7 @@ use crate::p2p::streams::{
         Rpc, RpcReservation, alloc_incoming_rpc,
         reservation::{alloc_error_response, rpc_response_context_length},
     },
-    snappy::SnappyDecoder,
+    snappy::{SnappyDecoder, SnappyError},
 };
 
 /// State machine for reading a single length-prefixed, snappy-compressed SSZ
@@ -56,6 +56,9 @@ impl RpcReadResponse {
             // Responses carry the bulk inbound payload (BeaconBlock /
             // DataColumnSidecar). KZG cells are incompressible ⇒ peers emit
             // CHUNK_UNCOMPRESSED frames; stream those straight into the tcache.
+            // The earlier hang (a frame overshooting the declared chunk length
+            // stalled on zero-length reads, pinning the reservation) is fixed by
+            // the bounds guard in `ReadingBody` — see `direct_remaining` there.
             decoder: SnappyDecoder::new_direct(),
             buf: [0; 15],
             read: 0,
@@ -210,11 +213,26 @@ impl RpcReadResponse {
                 mut remaining,
             } => {
                 if decoder.direct_remaining() > 0 {
-                    // Uncompressed frame: read its data straight into the tcache,
-                    // capped at the frame's remaining bytes so we don't spill the
-                    // next frame's header into the output.
+                    // Uncompressed frame: read its data straight into the tcache.
                     let out = reservation.remaining_buffer()?;
-                    let want = decoder.direct_remaining().min(out.len());
+                    // Bounds guard: the frame's remaining data must fit the
+                    // reservation's remaining room. If it overshoots, the peer
+                    // sent more bytes than the declared chunk length — error
+                    // (which tears the stream down and frees the reservation)
+                    // rather than capping the read at a zero-length slice and
+                    // spinning forever on zero-progress reads.
+                    if decoder.direct_remaining() > out.len() {
+                        tracing::error!(
+                            ?p2p_id,
+                            chunk,
+                            direct_remaining = decoder.direct_remaining(),
+                            out = out.len(),
+                            remaining,
+                            "rpc response uncompressed frame overshoots reservation"
+                        );
+                        return Err(StreamError::SnappyError(SnappyError::OutputTooSmall));
+                    }
+                    let want = decoder.direct_remaining();
                     let written = io.read_from_stream(p2p_id.stream_id(), &mut out[..want])?;
                     if written == 0 {
                         return Ok(Spin::Ok(Self::ReadingBody {
@@ -372,6 +390,60 @@ mod tests {
                 }
                 other => panic!("cap {cap}: expected error response, got {other:?}"),
             }
+        }
+    }
+
+    /// Direct-decode bounds guard. A `CHUNK_UNCOMPRESSED` frame whose data
+    /// exceeds the declared chunk length must error (tearing the stream down
+    /// and freeing the reservation), not stall on zero-length reads. Regression
+    /// for the inbound-RPC hang that got the direct path disabled: an over-long
+    /// frame pinned its `rpc_in` reservation forever.
+    #[test]
+    fn direct_decode_overshoot_errors_not_hangs() {
+        const CHUNK_UNCOMPRESSED: u8 = 0x01;
+        const CHECKSUM_LEN: usize = 4;
+        const STREAM_IDENTIFIER: [u8; 10] =
+            [0xff, 0x06, 0x00, 0x00, b's', b'N', b'a', b'P', b'p', b'Y'];
+
+        let declared = 8usize; // SSZ length advertised to the reader
+        let data_len = 100usize; // actual uncompressed frame data — overshoots
+
+        // [status=0][fork_digest:4][varint declared][stream id][uncompressed frame]
+        let mut wire = vec![0u8];
+        wire.extend_from_slice(&[0xAB; 4]);
+        wire.push(declared as u8); // single-byte varint (< 0x80)
+        wire.extend_from_slice(&STREAM_IDENTIFIER);
+        let chunk_len = CHECKSUM_LEN + data_len;
+        wire.push(CHUNK_UNCOMPRESSED);
+        wire.push((chunk_len & 0xff) as u8);
+        wire.push(((chunk_len >> 8) & 0xff) as u8);
+        wire.push(((chunk_len >> 16) & 0xff) as u8);
+        wire.extend_from_slice(&[0u8; CHECKSUM_LEN]); // crc (unchecked)
+        wire.extend(std::iter::repeat_n(0xCD, data_len));
+
+        let mut producer = TCache::producer("test_rpc_direct_overshoot", 1 << 16);
+        let p2p_id = P2pStreamId::new(0, 16, StreamProtocol::DataColumnSidecarsByRange, false);
+
+        // Whole-buffer, byte-by-byte, and odd reads — the boundary the bug hid at.
+        for cap in [usize::MAX, 1, 7] {
+            let mut io = WireIo { data: wire.clone(), pos: 0, cap };
+            let mut state = RpcReadResponse::new(7, 0);
+            let mut spins = 0;
+            let err = loop {
+                match state.spin(&mut io, &p2p_id, &mut producer) {
+                    Ok(s) => state = s,
+                    Err(e) => break e,
+                }
+                if let RpcReadResponse::Complete { .. } = state {
+                    panic!("cap {cap}: overshoot completed instead of erroring");
+                }
+                spins += 1;
+                assert!(spins < 1000, "cap {cap}: state machine hung instead of erroring");
+            };
+            assert!(
+                matches!(err, StreamError::SnappyError(_)),
+                "cap {cap}: expected SnappyError, got {err:?}"
+            );
         }
     }
 }

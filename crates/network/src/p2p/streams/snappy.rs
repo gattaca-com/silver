@@ -110,6 +110,11 @@ impl SnappyDecoder {
     /// check `direct_remaining()` — if non-zero, read that many bytes straight
     /// into the output and call `advance_direct`; otherwise use the
     /// `decompress_buffer`/`decompress_written` staging path as usual.
+    ///
+    /// The caller MUST bound `direct_remaining()` against its output room and
+    /// error if a frame overshoots — otherwise an over-long frame stalls on
+    /// zero-length reads (the inbound-RPC hang this path once caused). See
+    /// `response_in::ReadingBody`.
     pub fn new_direct() -> Self {
         Self { direct: true, ..Self::default() }
     }

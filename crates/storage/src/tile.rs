@@ -10,8 +10,9 @@ use flux::{spine::SpineAdapter, tile::Tile};
 use silver_beacon_state_data::{BeaconStateReader, SLOTS_PER_EPOCH};
 use silver_common::{
     BASE_REQUEST_ID, BeaconStateEvent, DataColumnsAvailable, NewGossipMsg, P2pSend, P2pStreamId,
-    PeerEvent, ReplayBlock, RpcInbound, RpcSeverity, SilverSpine, StreamProtocol, SyncUpdate,
-    SyncingStrategy, TCacheProducer, TMultiProducer, TProducer, TRandomAccess, TRead, Wheel,
+    PeerControl, PeerEvent, ReplayBlock, RpcInbound, RpcSeverity, SilverSpine, StreamProtocol,
+    SyncUpdate, SyncingStrategy, TCacheProducer, TMultiProducer, TProducer, TRandomAccess, TRead,
+    Wheel,
     ssz_view::{DataColumnSidecarView, SignedBeaconBlockView, StatusView},
 };
 use silver_metrics::timed;
@@ -89,6 +90,7 @@ pub struct StorageTile {
     /// Tile construction time; bounds how long `drive_replay` waits on the
     /// decision before defaulting to replay (control signal lost).
     created_at: Instant,
+    peers_loaded: bool,
 }
 
 impl StorageTile {
@@ -138,6 +140,7 @@ impl StorageTile {
             replay_done: !replay_from_disk,
             syncing_strategy: None,
             created_at: Instant::now(),
+            peers_loaded: false,
         }
     }
 
@@ -641,6 +644,17 @@ impl Tile<SilverSpine> for StorageTile {
         }
 
         adapter.consume(|sync_update: SyncUpdate, _| self.store.sync_update(sync_update));
+
+        adapter.consume(|peer_control: PeerControl, _| {
+            if let PeerControl::PersistPeer { enr } = peer_control {
+                self.store.persist_peer(enr);
+            }
+        });
+
+        if !self.peers_loaded {
+            self.peers_loaded = true;
+            self.store.load_peers();
+        }
 
         let now = Instant::now();
 

@@ -11,8 +11,9 @@ use std::{
 };
 
 use silver_common::{
-    P2pSend, PeerEvent, RpcOutbound, RpcResponse, RpcResponseOutbound, TCacheProducer, TCacheRead,
-    TMultiProducer, hex32, metrics::timed, ssz_hash::B256, ssz_view::SignedBeaconBlockView,
+    Enr, P2pSend, PeerEvent, RpcOutbound, RpcResponse, RpcResponseOutbound, TCacheProducer,
+    TCacheRead, TMultiProducer, hex32, metrics::timed, ssz_hash::B256,
+    ssz_view::SignedBeaconBlockView,
 };
 
 use super::{
@@ -261,6 +262,26 @@ impl Store {
                     }
                     StorageCounters::BackfillBlocksWritten.inc();
                     self.write_queue.pop_front();
+                }
+                PendingWrite::PersistPeer { enr } => {
+                    let peer_file = self.peers_dir().join(format!("{}.enr", enr.public_key()));
+                    open_file_write(peer_file, false)?.write_all(enr.to_string().as_bytes())?;
+                    self.write_queue.pop_front();
+                }
+                PendingWrite::LoadPeers => {
+                    self.write_queue.pop_front();
+                    let peer_files = std::fs::read_dir(self.peers_dir())?;
+                    for entry in peer_files {
+                        if let Ok(entry) = entry &&
+                            entry.metadata()?.is_file()
+                        {
+                            let mut enr_string = String::new();
+                            open_file_read(entry.path())?.read_to_string(&mut enr_string)?;
+                            let enr = Enr::from_base64(enr_string.as_str(), false)
+                                .map_err(Error::other)?;
+                            emit(IoEvent::PeerEvent(PeerEvent::DiscNodeFound { enr }));
+                        }
+                    }
                 }
             }
         }
