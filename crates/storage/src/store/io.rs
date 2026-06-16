@@ -385,6 +385,10 @@ impl Store {
             let Ok(ssz) = std::fs::read(&path) else {
                 continue; // no block persisted at this slot
             };
+            if !SignedBeaconBlockView::check_size(&ssz) {
+                tracing::error!(?path, "persisted block ssz has invalid size");
+                continue;
+            }
             if !SignedBeaconBlockView::has_data_columns(&ssz) {
                 continue;
             }
@@ -392,8 +396,8 @@ impl Store {
             if missing == 0 {
                 continue;
             }
-            let block_root = util::block_root(&ssz);
             if let Some(cb) = self.column_backfill.as_mut() {
+                let block_root = util::block_root(&ssz);
                 cb.seed_block(block_root, slot, &ssz, missing, emit);
             }
         }

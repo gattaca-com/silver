@@ -8,7 +8,7 @@ use fxhash::FxHashMap;
 use silver_common::{
     BACKFILL_REQUEST_ID, COLUMN_BACKFILL_REQUEST_ID, PeerEvent,
     RpcRequest::BlocksByRange,
-    TRead,
+    TRead, Wheel,
     ssz_hash::B256,
     ssz_view::{BLOCKS_BY_RANGE_REQ_SIZE, DataColumnSidecarView, SignedBeaconBlockView},
 };
@@ -22,9 +22,12 @@ use crate::{
 /// The seeded backlog is drained a few blocks at a time rather than flooding
 /// the network tile / peers with the whole retention window.
 pub(super) const MAX_COLUMN_REQUESTS_IN_FLIGHT: usize = 8;
-/// Re-request a block's outstanding columns if no column for it has arrived
-/// within this window (lost request or slow peer).
-const COLUMN_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
+/// In-flight retry timer: an entry sits a full wheel revolution
+/// (`BUCKETS × INTERVAL` ≈ 3s) before its bucket comes back around and it's
+/// re-requested. Each received column re-buckets it to the head (resets the
+/// timer), so an actively-delivering request is never retried mid-stream.
+const COLUMN_REQUEST_WHEEL_BUCKETS: usize = 4;
+const COLUMN_REQUEST_WHEEL_INTERVAL: Duration = Duration::from_millis(750);
 
 /// Block-history backfill. Blocks only — data-column backfill is a separate,
 /// disk-scan-driven concern (`ColumnBackfill`) that runs to completion *before*
@@ -170,9 +173,10 @@ pub(super) struct ColumnBackfill {
     pending: FxHashMap<B256, PendingColumnBlock>,
     // Roots seeded but not yet requested — FIFO backlog.
     queue: VecDeque<B256>,
-    // Roots with a request in flight → last-progress instant (retry/timeout).
-    // `queue` and `in_flight` are disjoint; size bounds concurrent requests.
-    in_flight: FxHashMap<B256, Instant>,
+    // Roots with a request in flight. A timing wheel doubles as the retry
+    // timer: rotation expires idle requests (event-driven, no per-tick scan),
+    // and `len()` bounds concurrency. `queue` and `in_flight` are disjoint.
+    in_flight: Wheel<B256, (), COLUMN_REQUEST_WHEEL_BUCKETS>,
     request_id: u64,
     scan_complete: bool,
 }
@@ -194,7 +198,7 @@ impl ColumnBackfill {
             range,
             pending: FxHashMap::default(),
             queue: VecDeque::new(),
-            in_flight: FxHashMap::default(),
+            in_flight: Wheel::new(COLUMN_REQUEST_WHEEL_INTERVAL),
             request_id: COLUMN_BACKFILL_REQUEST_ID,
             scan_complete: false,
         }
@@ -302,10 +306,10 @@ impl ColumnBackfill {
             // block on the following loop.
             self.pending.remove(&block_root);
             self.in_flight.remove(&block_root);
-        } else if let Some(last) = self.in_flight.get_mut(&block_root) {
-            // Progress: refresh the timer so an actively-delivering request
-            // isn't retried mid-stream.
-            *last = Instant::now();
+        } else if self.in_flight.remove(&block_root).is_some() {
+            // Progress: re-bucket to the head so the retry timer resets and an
+            // actively-delivering request isn't retried mid-stream.
+            self.in_flight.insert(block_root, ());
         }
 
         Some(AcceptedColumn { block_root, slot, column_index })
@@ -315,28 +319,36 @@ impl ColumnBackfill {
     where
         F: FnMut(PeerEvent),
     {
-        let now = Instant::now();
-        // Re-request in-flight blocks that have made no progress within the
-        // timeout. Collect first — `emit_request` borrows `self` mutably.
-        let stale: Vec<B256> = self
-            .in_flight
-            .iter()
-            .filter(|(_, last)| now.duration_since(**last) >= COLUMN_REQUEST_TIMEOUT)
-            .map(|(root, _)| *root)
-            .collect();
-        for root in stale {
-            match self.pending.get(&root) {
-                Some(p) => {
-                    let columns = p.requested & !p.received;
-                    self.emit_request(root, columns, emit);
-                    self.in_flight.insert(root, now);
-                }
-                None => {
-                    self.in_flight.remove(&root);
+        // Expire in-flight requests idle for a full wheel revolution. The
+        // rotation closure only collects roots (it can't borrow `self.pending`
+        // / `emit`); re-request + reset happens below where borrows are free.
+        Self::rotate(&mut self.in_flight, &self.pending, &mut self.request_id, emit);
+        self.pump(emit);
+    }
+
+    fn rotate<F>(
+        wheel: &mut Wheel<B256, (), COLUMN_REQUEST_WHEEL_BUCKETS>,
+        pending: &FxHashMap<B256, PendingColumnBlock>,
+        request_id: &mut u64,
+        emit: &mut F,
+    ) where
+        F: FnMut(PeerEvent),
+    {
+        wheel.maybe_rotate(Instant::now(), &mut |root, _| {
+            if let Some(p) = pending.get(root) {
+                let columns = p.requested & !p.received;
+                if columns != 0 {
+                    emit(PeerEvent::SendDataColumnsByRootRequest {
+                        request_id: *request_id,
+                        columns,
+                        block_root: *root,
+                    });
+                    *request_id += 1;
+                    return false; // re-bucket to head = reset
                 }
             }
-        }
-        self.pump(emit);
+            true
+        });
     }
 
     /// Complete = disk scan finished AND no block awaiting columns. Both the
@@ -366,7 +378,7 @@ impl ColumnBackfill {
             };
             let columns = p.requested & !p.received;
             self.emit_request(root, columns, emit);
-            self.in_flight.insert(root, Instant::now());
+            self.in_flight.insert(root, ());
         }
     }
 
