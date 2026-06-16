@@ -1443,10 +1443,10 @@ fn process_partial_withdrawals(
     cursor: &mut WithdrawalsCursor,
 ) -> Result<(), WithdrawalsError> {
     let partial_limit = min(MAX_PENDING_PARTIALS_PER_SWEEP, MAX_WITHDRAWALS_PER_PAYLOAD - 1);
-    let ppw_len = pending.pending_partial_withdrawals_len();
+    let ppw_len = pending.partial_withdrawals.reader().len();
 
     for qi in 0..ppw_len {
-        let pw = *pending.pending_partial_withdrawal(qi);
+        let pw = *pending.partial_withdrawals.reader().get(qi);
         if pw.withdrawable_epoch > current_epoch || cursor.partials_emitted >= partial_limit {
             break;
         }
@@ -1616,7 +1616,7 @@ fn apply_withdrawals(
         slot.state_mut().next_withdrawal_index = cursor.withdrawal_index;
     }
     if cursor.processed_partial_count > 0 {
-        pending.drain_pending_partial_withdrawals(cursor.processed_partial_count);
+        pending.partial_withdrawals.drain(cursor.processed_partial_count);
     }
     if n_validators > 0 {
         if cursor.expected_count == MAX_WITHDRAWALS_PER_PAYLOAD {
@@ -1861,7 +1861,7 @@ pub fn process_deposit_requests(view: &mut StateWriterView, data: &[u8]) {
             slot.state_mut().deposit_requests_start_index = index;
         }
 
-        pending.push_pending_deposit(PendingDeposit {
+        pending.deposits.push(PendingDeposit {
             pubkey,
             withdrawal_credentials: credentials,
             amount,
@@ -1889,7 +1889,7 @@ pub fn process_withdrawal_requests(view: &mut StateWriterView, cfg: &SpecConfig,
         let amount = WithdrawalRequestView::amount(r);
         let is_full_exit = amount == FULL_EXIT_REQUEST_AMOUNT;
 
-        let ppw_len = pending.pending_partial_withdrawals_len();
+        let ppw_len = pending.partial_withdrawals.reader().len();
         if ppw_len >= PENDING_PARTIAL_WITHDRAWALS_LIMIT && !is_full_exit {
             continue;
         }
@@ -1941,7 +1941,7 @@ pub fn process_withdrawal_requests(view: &mut StateWriterView, cfg: &SpecConfig,
                 current_epoch,
             );
             let withdrawable_epoch = exit_queue_epoch + cfg.min_validator_withdrawability_delay;
-            pending.push_pending_partial_withdrawal(PendingPartialWithdrawal {
+            pending.partial_withdrawals.push(PendingPartialWithdrawal {
                 index: vi as u64,
                 amount: to_withdraw,
                 withdrawable_epoch,
@@ -1982,7 +1982,7 @@ pub fn process_consolidation_requests(view: &mut StateWriterView, cfg: &SpecConf
         }
 
         // Full consolidation.
-        let pc_len = pending.pending_consolidations_len();
+        let pc_len = pending.consolidations.reader().len();
         if pc_len >= PENDING_CONSOLIDATIONS_LIMIT {
             continue;
         }
@@ -2041,7 +2041,7 @@ pub fn process_consolidation_requests(view: &mut StateWriterView, cfg: &SpecConf
             source_idx,
             exit_epoch + cfg.min_validator_withdrawability_delay,
         );
-        pending.push_pending_consolidation(PendingConsolidation {
+        pending.consolidations.push(PendingConsolidation {
             source_index: source_idx as u64,
             target_index: target_idx as u64,
         });
@@ -2655,10 +2655,10 @@ pub(crate) fn total_active_balance(validators: &ValidatorsView, current_epoch: E
 }
 
 pub(crate) fn get_pending_balance_to_withdraw(pending: &PendingView, vi: u32) -> u64 {
-    let n = pending.pending_partial_withdrawals_len();
+    let n = pending.partial_withdrawals.len();
     let mut total = 0u64;
     for i in 0..n {
-        let pw = pending.pending_partial_withdrawal(i);
+        let pw = pending.partial_withdrawals.get(i);
         if pw.index == vi as u64 {
             total += pw.amount;
         }
@@ -2739,7 +2739,7 @@ fn switch_to_compounding_validator(
         let excess = balance - MIN_ACTIVATION_BALANCE;
         balances.set(vi, MIN_ACTIVATION_BALANCE);
         let pubkey = *validators.pubkey(vi as usize);
-        pending.push_pending_deposit(PendingDeposit {
+        pending.deposits.push(PendingDeposit {
             pubkey,
             withdrawal_credentials: creds,
             amount: excess,
@@ -2771,7 +2771,7 @@ fn apply_deposit(
         append_validator(view, *pubkey, pubkey_decompressed, *credentials);
     }
 
-    view.pending.push_pending_deposit(PendingDeposit {
+    view.pending.deposits.push(PendingDeposit {
         pubkey: *pubkey,
         withdrawal_credentials: *credentials,
         amount,
@@ -2790,7 +2790,7 @@ mod tests {
 
     fn fresh_state() -> TestState {
         // Empty registry; slot tier anchored at the empty base's slot (0).
-        TestState::new(EpochStateFinalized::default(), &[], &[])
+        TestState::new(EpochStateFinalized::default(), &[])
     }
 
     /// EF `sanity_blocks` doesn't exercise the eth1 majority threshold

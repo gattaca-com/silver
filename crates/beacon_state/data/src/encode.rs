@@ -96,13 +96,9 @@ impl BeaconState {
     /// Byte lengths of the 12 variable-length fields, in SSZ-declared order.
     pub(crate) fn var_len_section_lens(&self) -> [usize; VAR_LEN_SECTIONS] {
         let n = self.validators.finalized().validator_count();
-        let (dep, wdr, con) = self.pending.with_finalized_locked(|p| {
-            (
-                p.pending_deposits.len(),
-                p.pending_partial_withdrawals.len(),
-                p.pending_consolidations.len(),
-            )
-        });
+        let dep = self.pending.deposits.with_finalized_locked(|q| q.len());
+        let wdr = self.pending.partial_withdrawals.with_finalized_locked(|q| q.len());
+        let con = self.pending.consolidations.with_finalized_locked(|q| q.len());
         let summaries = self.longtail.with_finalized_locked(|lt| lt.historical_summaries.len());
         let sl = self.slot_states.finalized().state();
         [
@@ -178,13 +174,13 @@ impl BeaconState {
                 self.longtail.with_finalized_locked(|lt| lt.write_historical_summaries_ssz(w))
             }
             Section::PendingDeposits => {
-                self.pending.with_finalized_locked(|p| p.write_deposits_ssz(w))
+                self.pending.deposits.with_finalized_locked(|q| q.write_ssz(w))
             }
             Section::PendingPartialWithdrawals => {
-                self.pending.with_finalized_locked(|p| p.write_partial_withdrawals_ssz(w))
+                self.pending.partial_withdrawals.with_finalized_locked(|q| q.write_ssz(w))
             }
             Section::PendingConsolidations => {
-                self.pending.with_finalized_locked(|p| p.write_consolidations_ssz(w))
+                self.pending.consolidations.with_finalized_locked(|q| q.write_ssz(w))
             }
         }
     }
@@ -444,11 +440,11 @@ mod tests {
     };
 
     /// `encode → decompose → encode` must be a byte-exact fixed point, and the
-    /// chunked streaming path must match the one-pass path. The pre-bootstrap
-    /// stub is a valid (empty) state, so it round-trips with no fixture.
+    /// chunked streaming path must match the one-pass path. The empty state is
+    /// a valid state, so it round-trips with no fixture.
     #[test]
     fn encode_decompose_fixed_point() {
-        let bs = BeaconState::pre_bootstrap();
+        let bs = BeaconState::empty_test(0);
 
         let mut once = Vec::with_capacity(bs.ssz_len());
         bs.encode_ssz(&mut once).expect("encode");
@@ -478,7 +474,7 @@ mod tests {
     #[test]
     fn encode_uses_live_current_epoch_caches() {
         let cur = 3usize;
-        let mut bs = BeaconState::pre_bootstrap();
+        let mut bs = BeaconState::empty_test(0);
 
         // Stale ring buckets, distinct from the live `*_current` caches the
         // encode path must emit instead.
@@ -514,7 +510,7 @@ mod tests {
     /// sidecar is rejected (never silently accepted).
     #[test]
     fn pubkeys_sidecar_round_trip() {
-        let bs = BeaconState::pre_bootstrap();
+        let bs = BeaconState::empty_test(0);
         let mut sidecar = Vec::with_capacity(bs.pubkeys_sidecar_len());
         let mut chunk = 0;
         while !bs.write_pubkeys_chunk(chunk, &mut sidecar).expect("pubkeys chunk") {

@@ -1,58 +1,92 @@
-use super::{PendingGroup, PendingId, finalized::PendingQueues};
+use super::{
+    PendingId,
+    finalized::{Queue, QueueItem},
+    group::QueueGroup,
+};
 use crate::{
-    buffer::{Reset, Slot},
+    B256,
+    buffer::{Id, Reset, Slot},
+    ssz_hash::{MerkleStack, merkle_finalize, merkle_push, mix_in_length},
     types::{PendingConsolidation, PendingDeposit, PendingPartialWithdrawal},
 };
 
-/// One pending queue's per-fork delta: the first `min(drain_offset, base len)`
-/// base entries are consumed; reads continue into `appended`. `drain_offset`
-/// accumulates past the base (the excess entries came off `appended`
-/// physically) so `rebase` can recover how much of an inherited prefix this
-/// fork already drained.
+/// One queue's per-fork delta — a pure data holder (mirror of
+/// `ColumnDelta`'s backing): the first
+/// `min(drain_offset, base len)` base entries are consumed and reads continue
+/// into `appended`. `drain_offset` accumulates past the base (the excess came
+/// off `appended` physically) so [`rebase`](Self::rebase) can recover how much
+/// of an inherited prefix this fork already drained.
+///
+/// `frontier` is the [`MerkleStack`] of the effective queue's leaves
+/// (`base[drain..] ++ appended`): appends extend it in place and the root
+/// finalizes a clone (both O(log n)); only a front drain forces an O(n)
+/// rebuild. Keyed by the leaf *sequence* — not base position — it's
+/// base-swap-invariant: `rebase`/`promote` preserve the effective queue, so it
+/// survives finalization untouched.
 #[derive(Clone)]
-pub(super) struct QueueDelta<T> {
+pub(super) struct QueueDelta<Q> {
     pub(super) drain_offset: u32,
-    pub(super) appended: Vec<T>,
+    appended: Queue<Q>,
+    frontier: MerkleStack,
 }
 
-// Manual impl: the derive would spuriously bind `T: Default`.
-impl<T> Default for QueueDelta<T> {
+// Manual impl: the derive would spuriously bind `Q: Default`.
+impl<Q> Default for QueueDelta<Q> {
     fn default() -> Self {
-        Self { drain_offset: 0, appended: Vec::new() }
+        Self { drain_offset: 0, appended: Queue::default(), frontier: MerkleStack::new() }
     }
 }
 
-impl<T: Clone> QueueDelta<T> {
-    /// Effective queue element at `ix`: the base remainder after the drain,
-    /// then the appended tail.
-    #[inline]
-    pub(super) fn get<'b>(&'b self, base: &'b [T], ix: usize) -> &'b T {
-        let drain = self.drain_offset as usize;
-        let remaining = base.len().saturating_sub(drain);
-        if ix < remaining { &base[drain + ix] } else { &self.appended[ix - remaining] }
+impl<Q: QueueItem> QueueDelta<Q> {
+    /// (Re)build the frontier from `base[drain..] ++ appended`'s cached leaves.
+    /// Called only when the front moves (a fresh anchor or a drain); appends
+    /// extend it in place. The frontier parks one subtree root per set bit of
+    /// the length, so [`root`](Self::root) is O(log n).
+    pub(super) fn rebuild_frontier(&mut self, base: &Queue<Q>) {
+        let start = (self.drain_offset as usize).min(base.len());
+        let mut frontier = MerkleStack::new();
+        for &leaf in base.leaves()[start..].iter().chain(self.appended.leaves()) {
+            merkle_push(&mut frontier, leaf);
+        }
+        self.frontier = frontier;
     }
 
     #[inline]
-    pub(super) fn len(&self, base_len: usize) -> usize {
-        base_len.saturating_sub(self.drain_offset as usize) + self.appended.len()
+    pub(super) fn push(&mut self, e: Q) {
+        let leaf = self.appended.push(e);
+        merkle_push(&mut self.frontier, leaf);
     }
 
-    /// Drop the first `n` items from the effective queue. `drain_offset`
-    /// takes the full `n` (uncapped); the part past the base comes off
-    /// `appended` physically.
-    #[inline]
-    pub(super) fn drain(&mut self, base_len: usize, n: usize) {
+    /// Drop the first `n` items from the effective queue. `drain_offset` takes
+    /// the full `n` (uncapped); the part past the base comes off `appended`
+    /// physically. The front moved, so the frontier is rebuilt — skipped for a
+    /// no-op drain (the common case: deposits too recent to process leave the
+    /// front, and hence the frontier, untouched).
+    pub(super) fn drain(&mut self, base: &Queue<Q>, n: usize) {
+        if n == 0 {
+            return;
+        }
         let already = self.drain_offset as usize;
-        let from_appended = (already + n).saturating_sub(base_len.max(already));
+        let from_appended = (already + n).saturating_sub(base.len().max(already));
         self.drain_offset += n as u32;
         if from_appended > 0 {
-            self.appended.drain(..from_appended);
+            self.appended.drain_front(from_appended);
         }
+        self.rebuild_frontier(base);
+    }
+
+    /// SSZ `hash_tree_root` of a `List[Q, SSZ_LIMIT]` of `len` items: finalize
+    /// a clone of the frontier (≤ 48 parked roots, so the cache survives),
+    /// pad to the list depth, and mix in the length.
+    pub(super) fn root(&self, len: usize) -> B256 {
+        let depth = Q::SSZ_LIMIT.next_power_of_two().trailing_zeros() as u8;
+        mix_in_length(&merkle_finalize(self.frontier.clone(), depth), len)
     }
 
     /// Re-base onto a freshly-promoted base: subtract the `winner`'s drain
     /// (now folded into the base), and drop the inherited promoted-`appended`
-    /// prefix this delta hasn't already drained from its own copy.
+    /// prefix this delta hasn't already drained from its own copy. The
+    /// effective queue is unchanged, so the frontier needs no touch.
     pub(super) fn rebase(&mut self, winner: &Self, old_base_len: usize) {
         debug_assert!(
             self.drain_offset >= winner.drain_offset,
@@ -68,219 +102,154 @@ impl<T: Clone> QueueDelta<T> {
         // The un-drained inherited remainder; everything after it is this
         // fork's own appends, which must survive.
         let drop_n = winner.appended.len() - consumed;
-        self.appended.drain(..drop_n);
+        self.appended.drain_front(drop_n);
         self.drain_offset = (d.min(old_base_len) - w.min(old_base_len) + consumed) as u32;
     }
 
     /// Fold into the base queue: drain the promoted prefix, append the new
     /// entries. The data half of finalization.
-    pub(super) fn promote_into(&self, base: &mut Vec<T>) {
+    pub(super) fn promote_into(&self, base: &mut Queue<Q>) {
         let n = (self.drain_offset as usize).min(base.len());
-        base.drain(..n);
-        base.extend_from_slice(&self.appended);
+        base.drain_front(n);
+        base.extend(&self.appended);
     }
+}
 
+impl<Q: QueueItem> Reset for QueueDelta<Q> {
     fn reset(&mut self) {
         self.drain_offset = 0;
         self.appended.clear();
-    }
-
-    pub(super) fn reset_from(&mut self, other: &Self) {
-        self.drain_offset = other.drain_offset;
-        self.appended.clone_from(&other.appended);
-    }
-}
-
-#[derive(Clone, Default)]
-pub(crate) struct PendingQueuesDelta {
-    pub(super) deposits: QueueDelta<PendingDeposit>,
-    pub(super) partial_withdrawals: QueueDelta<PendingPartialWithdrawal>,
-    pub(super) consolidations: QueueDelta<PendingConsolidation>,
-}
-
-/// Pre-promotion base queue lengths — [`QueueDelta::rebase`] needs them to
-/// recover how much of the promoted `appended` prefix a survivor's cumulative
-/// `drain_offset` already consumed.
-pub(super) struct OldBaseLens {
-    pub deposits: usize,
-    pub partial_withdrawals: usize,
-    pub consolidations: usize,
-}
-
-impl OldBaseLens {
-    #[inline]
-    pub(super) fn snapshot(base: &PendingQueues) -> Self {
-        Self {
-            deposits: base.pending_deposits.len(),
-            partial_withdrawals: base.pending_partial_withdrawals.len(),
-            consolidations: base.pending_consolidations.len(),
-        }
-    }
-}
-
-impl PendingQueuesDelta {
-    /// Re-base each queue's delta onto the (about-to-be) promoted base against
-    /// the promoted `winner`. Run pre-promotion with `old_base_lens`
-    /// snapshotted from the still-old base. `self` is mutated in place on a
-    /// fresh copy.
-    pub(super) fn rebase(&mut self, winner: &PendingQueuesDelta, old_base_lens: &OldBaseLens) {
-        self.deposits.rebase(&winner.deposits, old_base_lens.deposits);
-        self.partial_withdrawals
-            .rebase(&winner.partial_withdrawals, old_base_lens.partial_withdrawals);
-        self.consolidations.rebase(&winner.consolidations, old_base_lens.consolidations);
-    }
-}
-
-impl Reset for PendingQueuesDelta {
-    fn reset(&mut self) {
-        self.deposits.reset();
-        self.partial_withdrawals.reset();
-        self.consolidations.reset();
+        self.frontier.clear();
     }
 
     fn reset_from(&mut self, other: &Self) {
-        self.deposits.reset_from(&other.deposits);
-        self.partial_withdrawals.reset_from(&other.partial_withdrawals);
-        self.consolidations.reset_from(&other.consolidations);
+        self.drain_offset = other.drain_offset;
+        self.appended.clone_from(&other.appended);
+        self.frontier.clone_from(&other.frontier);
     }
 }
 
-/// Value-layer read over the pending queues (base + a per-fork delta). Built
-/// only from a published fork id (or a held writer) — the delta is always
-/// present; pre-snapshot readers get no view at all.
+/// Read view over one queue: the finalized `base` overlaid by a fork's
+/// `delta`. Holds the base+delta merge (effective element, length, SSZ root),
+/// mirroring [`ColumnReader`](crate::ColumnReader). A [`PendingView`] exposes
+/// one per queue as a public field.
 #[derive(Clone, Copy)]
-pub struct PendingView<'a> {
-    base: &'a PendingQueues,
-    delta: &'a PendingQueuesDelta,
+pub struct QueueView<'a, Q> {
+    base: &'a Queue<Q>,
+    delta: &'a QueueDelta<Q>,
 }
 
-impl<'a> PendingView<'a> {
+impl<'a, Q: QueueItem> QueueView<'a, Q> {
     #[inline]
-    pub(super) fn new(base: &'a PendingQueues, delta: &'a PendingQueuesDelta) -> Self {
+    pub(super) fn new(base: &'a Queue<Q>, delta: &'a QueueDelta<Q>) -> Self {
         Self { base, delta }
     }
 
+    /// Effective element at `ix`: the base remainder after the drain, then the
+    /// appended tail.
     #[inline]
-    pub fn pending_deposit(&self, ix: usize) -> &'a PendingDeposit {
-        self.delta.deposits.get(&self.base.pending_deposits, ix)
+    pub fn get(&self, ix: usize) -> &'a Q {
+        let drain = self.delta.drain_offset as usize;
+        let remaining = self.base.len().saturating_sub(drain);
+        if ix < remaining {
+            &self.base.entries()[drain + ix]
+        } else {
+            &self.delta.appended.entries()[ix - remaining]
+        }
     }
 
     #[inline]
-    pub fn pending_deposits_len(&self) -> usize {
-        self.delta.deposits.len(self.base.pending_deposits.len())
+    pub fn len(&self) -> usize {
+        self.base.len().saturating_sub(self.delta.drain_offset as usize) + self.delta.appended.len()
     }
 
+    /// SSZ `hash_tree_root` — folds the cached frontier, padding + length only
+    /// (no per-element hashing).
     #[inline]
-    pub fn pending_partial_withdrawal(&self, ix: usize) -> &'a PendingPartialWithdrawal {
-        self.delta.partial_withdrawals.get(&self.base.pending_partial_withdrawals, ix)
-    }
-
-    #[inline]
-    pub fn pending_partial_withdrawals_len(&self) -> usize {
-        self.delta.partial_withdrawals.len(self.base.pending_partial_withdrawals.len())
-    }
-
-    #[inline]
-    pub fn pending_consolidation(&self, ix: usize) -> &'a PendingConsolidation {
-        self.delta.consolidations.get(&self.base.pending_consolidations, ix)
-    }
-
-    #[inline]
-    pub fn pending_consolidations_len(&self) -> usize {
-        self.delta.consolidations.len(self.base.pending_consolidations.len())
+    pub fn root(&self) -> B256 {
+        self.delta.root(self.len())
     }
 }
 
-pub struct PendingWriteView<'a> {
-    base: &'a PendingQueues,
-    fork: Slot<'a, PendingGroup, PendingQueuesDelta>,
+/// Write view over one queue: the appends/drains, each keeping the delta's
+/// frontier consistent, plus `commit` of the ring slot. Mirror of
+/// [`ColumnWriteView`](crate::ColumnWriteView); held per queue by
+/// [`PendingWriteView`].
+pub struct QueueWriteView<'a, Q: QueueItem> {
+    base: &'a Queue<Q>,
+    fork: Slot<'a, QueueGroup<Q>, QueueDelta<Q>>,
 }
 
-impl<'a> PendingWriteView<'a> {
+impl<'a, Q: QueueItem> QueueWriteView<'a, Q> {
     #[inline]
-    pub(super) fn new(
-        base: &'a PendingQueues,
-        fork: Slot<'a, PendingGroup, PendingQueuesDelta>,
-    ) -> Self {
+    pub(super) fn new(base: &'a Queue<Q>, fork: Slot<'a, QueueGroup<Q>, QueueDelta<Q>>) -> Self {
         Self { base, fork }
     }
 
     #[inline]
-    pub fn commit(self) -> PendingId {
+    pub(super) fn commit(self) -> Id<QueueGroup<Q>> {
         self.fork.commit()
     }
 
     #[inline]
+    pub fn reader(&self) -> QueueView<'_, Q> {
+        QueueView::new(self.base, &self.fork)
+    }
+
+    #[inline]
+    pub fn push(&mut self, e: Q) {
+        self.fork.push(e);
+    }
+
+    /// Re-queue exited validators' deposits onto the tail.
+    pub fn append(&mut self, src: &mut Vec<Q>) {
+        for e in src.drain(..) {
+            self.fork.push(e);
+        }
+    }
+
+    #[inline]
+    pub fn drain(&mut self, n: usize) {
+        self.fork.drain(self.base, n);
+    }
+}
+
+/// Value-layer read over the pending queues — a methodless holder of one
+/// [`QueueView`] per queue (mirror of [`StateReadView`](crate::StateReadView)):
+/// callers read a queue directly, e.g. `pending.deposits.root()`.
+#[derive(Clone, Copy)]
+pub struct PendingView<'a> {
+    pub deposits: QueueView<'a, PendingDeposit>,
+    pub partial_withdrawals: QueueView<'a, PendingPartialWithdrawal>,
+    pub consolidations: QueueView<'a, PendingConsolidation>,
+}
+
+/// Write view over the pending queues — a holder of one [`QueueWriteView`] per
+/// queue (each queue owns its ring slot, so they split cleanly). Callers write
+/// directly, e.g. `pending.deposits.push(d)`; reads go through
+/// [`reader`](Self::reader); `commit` freezes the bundled id.
+pub struct PendingWriteView<'a> {
+    pub deposits: QueueWriteView<'a, PendingDeposit>,
+    pub partial_withdrawals: QueueWriteView<'a, PendingPartialWithdrawal>,
+    pub consolidations: QueueWriteView<'a, PendingConsolidation>,
+}
+
+impl PendingWriteView<'_> {
+    #[inline]
+    pub fn commit(self) -> PendingId {
+        PendingId {
+            deposits: self.deposits.commit(),
+            partial_withdrawals: self.partial_withdrawals.commit(),
+            consolidations: self.consolidations.commit(),
+        }
+    }
+
+    #[inline]
     pub fn reader(&self) -> PendingView<'_> {
-        PendingView { base: self.base, delta: &self.fork }
-    }
-
-    // Read-through conveniences (a `Deref` to `PendingView` is impossible — the
-    // reader borrows the delta shared while we hold it `&mut`).
-    #[inline]
-    pub fn pending_deposit(&self, ix: usize) -> &PendingDeposit {
-        self.reader().pending_deposit(ix)
-    }
-
-    #[inline]
-    pub fn pending_deposits_len(&self) -> usize {
-        self.reader().pending_deposits_len()
-    }
-
-    #[inline]
-    pub fn pending_partial_withdrawal(&self, ix: usize) -> &PendingPartialWithdrawal {
-        self.reader().pending_partial_withdrawal(ix)
-    }
-
-    #[inline]
-    pub fn pending_partial_withdrawals_len(&self) -> usize {
-        self.reader().pending_partial_withdrawals_len()
-    }
-
-    #[inline]
-    pub fn pending_consolidation(&self, ix: usize) -> &PendingConsolidation {
-        self.reader().pending_consolidation(ix)
-    }
-
-    #[inline]
-    pub fn pending_consolidations_len(&self) -> usize {
-        self.reader().pending_consolidations_len()
-    }
-
-    #[inline]
-    pub fn push_pending_deposit(&mut self, d: PendingDeposit) {
-        self.fork.deposits.appended.push(d);
-    }
-
-    #[inline]
-    pub fn push_pending_partial_withdrawal(&mut self, w: PendingPartialWithdrawal) {
-        self.fork.partial_withdrawals.appended.push(w);
-    }
-
-    #[inline]
-    pub fn push_pending_consolidation(&mut self, c: PendingConsolidation) {
-        self.fork.consolidations.appended.push(c);
-    }
-
-    /// Move postponed deposits back onto the queue (re-queue exited
-    /// validators').
-    #[inline]
-    pub fn append_pending_deposits(&mut self, src: &mut Vec<PendingDeposit>) {
-        self.fork.deposits.appended.append(src);
-    }
-
-    #[inline]
-    pub fn drain_pending_deposits(&mut self, n: usize) {
-        self.fork.deposits.drain(self.base.pending_deposits.len(), n);
-    }
-
-    #[inline]
-    pub fn drain_pending_partial_withdrawals(&mut self, n: usize) {
-        self.fork.partial_withdrawals.drain(self.base.pending_partial_withdrawals.len(), n);
-    }
-
-    #[inline]
-    pub fn drain_pending_consolidations(&mut self, n: usize) {
-        self.fork.consolidations.drain(self.base.pending_consolidations.len(), n);
+        PendingView {
+            deposits: self.deposits.reader(),
+            partial_withdrawals: self.partial_withdrawals.reader(),
+            consolidations: self.consolidations.reader(),
+        }
     }
 }

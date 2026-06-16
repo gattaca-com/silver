@@ -739,7 +739,7 @@ mod tests {
         let rpc_producer = TCache::multi_producer("rpc_out", 1024 * 1024);
         let replay_producer = TCache::producer("replay_out", 1024 * 1024);
 
-        let beacon_state = BeaconStateOwner::pre_bootstrap().reader();
+        let beacon_state = BeaconStateOwner::empty_test(0).reader();
 
         let mut tile = StorageTile::new(
             gossip_consumer,
@@ -867,7 +867,7 @@ mod tests {
             pr_tc.cache_ref().random_access("pr", true).unwrap(),
             TCache::multi_producer("rpc_out", 1 << 20),
             TCache::producer("replay_out", 1 << 20),
-            BeaconStateOwner::pre_bootstrap().reader(),
+            BeaconStateOwner::empty_test(0).reader(),
             custody,
             [1, 2, 3, 4],
             store_dir.clone(),

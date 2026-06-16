@@ -3,11 +3,8 @@
 //! asserts a non-empty validator set).
 
 use silver_beacon_state_data::{
-    BalancesGroup, BeaconState, CurrentParticipationGroup, EpochGroup, EpochStateFinalized,
-    Eth1Group, Eth1Votes, FinalizedValidators, Immutable, InactivityScoresGroup, LongtailGroup,
-    LongtailState, PendingGroup, PendingQueues, PreviousParticipationGroup, SLOTS_PER_EPOCH,
-    SLOTS_PER_HISTORICAL_ROOT, SlotState, SlotStateFinalized, SlotStateGroup, StateId,
-    StateWriterView, ValSeed, ValidatorsGroup,
+    BeaconState, EpochGroup, EpochStateFinalized, LongtailGroup, SLOTS_PER_EPOCH, StateId,
+    StateWriterView, ValSeed,
 };
 
 /// `BeaconState` + its working bundle; mutations persist only through
@@ -18,41 +15,13 @@ pub(crate) struct TestState {
 }
 
 impl TestState {
-    /// State with the registry seeded from `seeds`, the sibling per-validator
-    /// columns zeroed (balances from `seed_balances`), and the slot tier
-    /// anchored at `epoch_base`'s finalized epoch boundary.
-    pub(crate) fn new(
-        epoch_base: EpochStateFinalized,
-        seeds: &[ValSeed],
-        seed_balances: &[u64],
-    ) -> Self {
-        let validators = ValidatorsGroup::new(FinalizedValidators::with_validators(seeds));
-        let cap = validators.finalized().capacity();
-        let n = validators.finalized().validator_count();
+    /// State with the registry seeded from `seeds`, the balances column from
+    /// each seed's `balance`, the other per-validator columns zeroed, and the
+    /// slot tier anchored at `epoch_base`'s finalized epoch boundary.
+    pub(crate) fn new(epoch_base: EpochStateFinalized, seeds: &[ValSeed]) -> Self {
         // Anchor slot = the finalized epoch boundary.
         let anchor_slot = epoch_base.state().finalized_checkpoint.epoch * SLOTS_PER_EPOCH;
-        let balance_bytes: Vec<u8> = seed_balances.iter().flat_map(|v| v.to_le_bytes()).collect();
-        // Sibling lists stay lockstep with the registry: n zero entries.
-        let zero_flags = vec![0u8; n];
-        let zero_scores = vec![0u8; n * 8];
-        let zero_roots = || vec![[0u8; 32]; SLOTS_PER_HISTORICAL_ROOT].into_boxed_slice();
-        let mut bs = BeaconState {
-            immutable: Immutable::default(),
-            validators,
-            balances: BalancesGroup::new(cap, n, &balance_bytes).unwrap(),
-            eth1: Eth1Group::new(Eth1Votes::default()),
-            pending: PendingGroup::new(PendingQueues::default()),
-            previous_participation: PreviousParticipationGroup::new(cap, n, &zero_flags).unwrap(),
-            current_participation: CurrentParticipationGroup::new(cap, n, &zero_flags).unwrap(),
-            inactivity: InactivityScoresGroup::new(cap, n, &zero_scores).unwrap(),
-            slot_states: SlotStateGroup::new(SlotStateFinalized::from_parts(
-                SlotState { slot: anchor_slot, ..Default::default() },
-                zero_roots(),
-                zero_roots(),
-            )),
-            epoch: EpochGroup::new(epoch_base),
-            longtail: LongtailGroup::new(LongtailState::default()),
-        };
+        let mut bs = BeaconState::for_test(epoch_base, seeds, anchor_slot);
         let state_id = bs.roll_fresh();
         Self { bs, state_id }
     }

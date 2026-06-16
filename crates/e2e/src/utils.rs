@@ -7,7 +7,7 @@ use silver_beacon_state::{
     ssz_hash::{hash_tree_root_block_header, hash_tree_root_body},
     tile::BeaconStateTile,
 };
-use silver_beacon_state_data::{BeaconBlockHeader, BeaconStateOwner, SpecConfig};
+use silver_beacon_state_data::{BeaconBlockHeader, BeaconState, SpecConfig};
 use silver_common::{
     BeaconStateEvent, DataColumnsAvailable, IpBytes, Keypair, P2pSend, P2pStreamId, PeerControl,
     PeerEvent, PeerId, RpcInbound, RpcOutbound, RpcRequest, RpcRequestOutbound, RpcResponse,
@@ -139,18 +139,17 @@ impl PmBsHarness {
             engine_resp_p.cache_ref().random_access("test", true).expect("engine resp ra");
         let replay_c = replay_p.cache_ref().random_access("test", true).expect("replay ra");
 
-        let state = BeaconStateOwner::pre_bootstrap();
+        let state = BeaconState::from_checkpoint(checkpoint, &SpecConfig::mainnet(), &[])
+            .unwrap_or_else(|e| panic!("decompose checkpoint: {e}"));
         let mut bs = BeaconStateTile::new(
             ticker,
             SpecConfig::mainnet(),
-            state,
             gossip_c,
             rpc_c,
             engine_resp_c,
             replay_c,
             true,
-            checkpoint,
-            &[],
+            state,
         );
         let mut bs_a = SpineAdapter::connect_tile(&bs, &mut *spine);
 

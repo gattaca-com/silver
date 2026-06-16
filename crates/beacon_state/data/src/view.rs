@@ -55,10 +55,13 @@ impl BeaconStateOwner {
         }
     }
 
-    /// The syncing-mode owner — exists so reader handles can be wired before
-    /// the snapshot arrives; readers observe nothing until the first publish.
-    pub fn pre_bootstrap() -> Self {
-        Self::new(BeaconState::pre_bootstrap())
+    /// Owner around the all-empty test state at `slot` — the
+    /// `BeaconStateOwner::new(BeaconState::empty_test(slot))` shorthand for
+    /// test wiring that needs an owner/reader without a real checkpoint.
+    /// Test-only.
+    #[doc(hidden)]
+    pub fn empty_test(slot: u64) -> Self {
+        Self::new(BeaconState::empty_test(slot))
     }
 
     pub fn state(&self) -> &BeaconState {

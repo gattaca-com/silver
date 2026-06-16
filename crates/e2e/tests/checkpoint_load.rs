@@ -160,18 +160,17 @@ fn finalized_state_loads() {
     let engine_resp_c = engine_resp_p.cache_ref().random_access("test", false).unwrap();
     let replay_c = replay_p.cache_ref().random_access("test", false).unwrap();
 
-    let state = BeaconStateOwner::pre_bootstrap();
+    let state = BeaconState::from_checkpoint(&ssz, &SpecConfig::mainnet(), &[])
+        .unwrap_or_else(|e| panic!("decompose checkpoint: {e}"));
     let mut tile = BeaconStateTile::new(
         ticker,
         silver_beacon_state_data::SpecConfig::mainnet(),
-        state,
         gossip_c,
         rpc_c,
         engine_resp_c,
         replay_c,
         true,
-        &ssz,
-        &[],
+        state,
     );
 
     let head = tile.head_block_root();
@@ -343,18 +342,17 @@ fn tile_apply_block_ef_fixture() {
     let engine_resp_c = engine_resp_p.cache_ref().random_access("test", false).unwrap();
     let replay_c = replay_p.cache_ref().random_access("test", false).unwrap();
 
-    let state = BeaconStateOwner::pre_bootstrap();
+    let state = BeaconState::from_checkpoint(&pre_ssz, &SpecConfig::mainnet(), &[])
+        .unwrap_or_else(|e| panic!("decompose checkpoint: {e}"));
     let mut tile = BeaconStateTile::new(
         ticker,
         silver_beacon_state_data::SpecConfig::mainnet(),
-        state,
         gossip_c,
         rpc_c,
         engine_resp_c,
         replay_c,
         true,
-        &pre_ssz,
-        &[],
+        state,
     );
 
     let fb = tile.try_apply_block(&block_ssz);
