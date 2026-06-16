@@ -1829,6 +1829,7 @@ impl<'a> ParsedAggregateAndProof<'a> {
 impl Tile<SilverSpine> for BeaconStateTile {
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         if !self.initial_status_emitted {
+            tracing::info!("producing initial status");
             adapter.produce(self.status_event());
             self.initial_status_emitted = true;
         }
@@ -1929,8 +1930,8 @@ impl Tile<SilverSpine> for BeaconStateTile {
                 }
             }
             ReplayBlock::Done => {
-                producers.produce(self.status_event());
                 producers.produce(BeaconStateEvent::ReplayComplete);
+                producers.produce(self.status_event());
             }
         });
         self.replay_consumer.free();

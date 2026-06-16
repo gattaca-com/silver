@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     symbols,
-    text::{Line, Span},
+    text::Line,
     widgets::{Axis, Block, Borders, Cell, Chart, Dataset, GraphType, Paragraph, Row, Table},
 };
 
@@ -69,7 +69,7 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                 Style::default()
             };
             Row::new(vec![
-                Cell::from(Span::styled(t.name.clone(), style)),
+                Cell::from(t.name.clone()),
                 Cell::from(kind),
                 Cell::from(format_ns(last_ns)),
                 Cell::from(format_ns(last_bucket.p50_ns)),
@@ -77,6 +77,7 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                 Cell::from(format!("{:>10}", last_bucket.count)),
             ])
             .height(1)
+            .style(style)
         })
         .collect();
 

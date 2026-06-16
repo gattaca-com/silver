@@ -53,7 +53,10 @@ impl RpcReadResponse {
         Self::ReadingPrefix {
             app_id,
             chunk,
-            decoder: SnappyDecoder::default(),
+            // Responses carry the bulk inbound payload (BeaconBlock /
+            // DataColumnSidecar). KZG cells are incompressible ⇒ peers emit
+            // CHUNK_UNCOMPRESSED frames; stream those straight into the tcache.
+            decoder: SnappyDecoder::new_direct(),
             buf: [0; 15],
             read: 0,
         }
@@ -206,9 +209,13 @@ impl RpcReadResponse {
                 mut reservation,
                 mut remaining,
             } => {
-                let decompress_buffer = decoder.decompress_buffer();
-                if !decompress_buffer.is_empty() {
-                    let written = io.read_from_stream(p2p_id.stream_id(), decompress_buffer)?;
+                if decoder.direct_remaining() > 0 {
+                    // Uncompressed frame: read its data straight into the tcache,
+                    // capped at the frame's remaining bytes so we don't spill the
+                    // next frame's header into the output.
+                    let out = reservation.remaining_buffer()?;
+                    let want = decoder.direct_remaining().min(out.len());
+                    let written = io.read_from_stream(p2p_id.stream_id(), &mut out[..want])?;
                     if written == 0 {
                         return Ok(Spin::Ok(Self::ReadingBody {
                             app_id,
@@ -218,20 +225,37 @@ impl RpcReadResponse {
                             remaining,
                         }));
                     }
-                    let decoded = decoder
-                        .decompress_written(written, reservation.remaining_buffer()?)
-                        .inspect_err(|e| {
-                            tracing::error!(
-                                ?e,
-                                ?p2p_id,
-                                chunk,
-                                remaining,
-                                ?decoder,
-                                "rpc response body decode failed"
-                            );
-                        })?;
+                    let decoded = decoder.advance_direct(written);
                     reservation.increment_offset(decoded)?;
                     remaining -= decoded;
+                } else {
+                    let decompress_buffer = decoder.decompress_buffer();
+                    if !decompress_buffer.is_empty() {
+                        let written = io.read_from_stream(p2p_id.stream_id(), decompress_buffer)?;
+                        if written == 0 {
+                            return Ok(Spin::Ok(Self::ReadingBody {
+                                app_id,
+                                chunk,
+                                decoder,
+                                reservation,
+                                remaining,
+                            }));
+                        }
+                        let decoded = decoder
+                            .decompress_written(written, reservation.remaining_buffer()?)
+                            .inspect_err(|e| {
+                                tracing::error!(
+                                    ?e,
+                                    ?p2p_id,
+                                    chunk,
+                                    remaining,
+                                    ?decoder,
+                                    "rpc response body decode failed"
+                                );
+                            })?;
+                        reservation.increment_offset(decoded)?;
+                        remaining -= decoded;
+                    }
                 }
                 if remaining == 0 {
                     match reservation.into_rpc() {

@@ -11,6 +11,7 @@ fxhash.workspace = true
 hex.workspace = true
 silver_common.workspace = true
 silver_config.workspace = true
+silver_metrics.workspace = true
 slab.workspace = true
 tracing.workspace = true
 

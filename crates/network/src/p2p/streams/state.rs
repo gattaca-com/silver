@@ -97,7 +97,9 @@ impl StreamState {
             StreamState::IncomingRpc(inc) => {
                 matches!(inc, RpcIn::WriteResponse(_)) && protocol == StreamProtocol::Goodbye
             }
-            StreamState::OutgoingRpc(rpc_out) => matches!(rpc_out, RpcOut::ReadResponse(_)),
+            StreamState::OutgoingRpc(rpc_out) => {
+                matches!(rpc_out, RpcOut::ReadResponse(_)) || protocol == StreamProtocol::Metadata
+            }
             StreamState::IncomingIdentify(_) => false,
             StreamState::OutgoingIdentify(_) => true,
             StreamState::Finished => true,

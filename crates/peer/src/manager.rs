@@ -13,6 +13,7 @@ use silver_common::{
     BlockSource, Enr, GossipMsgOut, GossipTopic, IpBytes, MessageId, P2pSend, PeerControl,
     PeerEvent, PeerId, PeerStatus, RpcRequest, RpcRequestOutbound, RpcSeverity, StreamProtocol,
     SyncUpdate, SyncingStrategy, TCacheRead,
+    metrics::timed,
     ssz_view::{METADATA_SIZE, STATUS_V2_SIZE, StatusView},
 };
 use silver_config::{ScoreParams, SyncingConfig};
@@ -882,7 +883,7 @@ impl PeerManager {
     }
 
     // ── Hot path: counter updates only ──────────────────────────────────
-
+    #[timed]
     pub fn handle_event(
         &mut self,
         event: PeerEvent,
