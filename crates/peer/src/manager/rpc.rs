@@ -542,7 +542,7 @@ impl PeerManager {
 
                         tracing::debug!(
                             ?stream_id,
-                            "peer count is now: {}",
+                            "peer in-flight count is now: {}",
                             peer.outbound_in_flight[protocol.ordinal() as usize]
                         );
                     }
@@ -1039,7 +1039,8 @@ impl PeerManager {
             remaining &= !overlap;
             tracing::trace!(peer, overlap, remaining, "sent data columns request");
         }
-        if remaining != 0 {
+        if remaining != 0 && remaining != columns {
+            // if we sent nothing we rely on upstream retries
             let is_backfill = RequestCategory::from_request_id(request_id).is_backfill();
             if is_backfill {
                 self.pending_backfill_columns_by_root

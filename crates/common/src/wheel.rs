@@ -47,6 +47,15 @@ impl<K: Hash + Eq, V, const N: usize> Wheel<K, V, N> {
         self.buckets.iter().any(|b| b.contains_key(key))
     }
 
+    /// Total entries across all buckets.
+    pub fn len(&self) -> usize {
+        self.buckets.iter().map(|b| b.len()).sum()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.buckets.iter().all(|b| b.is_empty())
+    }
+
     pub fn get(&self, key: &K) -> Option<&V> {
         // tail first iteration
         let mut i = (self.head + 1) & (N - 1);

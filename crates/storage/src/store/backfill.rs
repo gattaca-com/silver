@@ -10,21 +10,29 @@ use silver_common::{
     RpcRequest::BlocksByRange,
     TRead, Wheel,
     ssz_hash::B256,
-    ssz_view::{
-        BEACON_BLOCK_BODY_FIXED, BLOCKS_BY_RANGE_REQ_SIZE, DataColumnSidecarView,
-        SignedBeaconBlockView,
-    },
+    ssz_view::{BLOCKS_BY_RANGE_REQ_SIZE, DataColumnSidecarView, SignedBeaconBlockView},
 };
 
 use crate::{
-    store::{COLUMN_SLOTS_RETAINED, MAX_REQUEST_BLOCKS, PendingWrite},
-    // common::{BACKFILL_REQUEST_ID, COLUMN_BACKFILL_REQUEST_ID},
+    store::{MAX_REQUEST_BLOCKS, PendingWrite},
     util,
 };
 
-const COLUMN_BACKFILL_WHEEL_BUCKETS: usize = 16;
-const COLUMN_BACKFILL_WHEEL_INTERVAL: Duration = Duration::from_millis(625);
+/// Max column-backfill `DataColumnSidecarsByRoot` requests in flight at once.
+/// The seeded backlog is drained a few blocks at a time rather than flooding
+/// the network tile / peers with the whole retention window.
+pub(super) const MAX_COLUMN_REQUESTS_IN_FLIGHT: usize = 8;
+/// In-flight retry timer: an entry sits a full wheel revolution
+/// (`BUCKETS × INTERVAL` ≈ 3s) before its bucket comes back around and it's
+/// re-requested. Each received column re-buckets it to the head (resets the
+/// timer), so an actively-delivering request is never retried mid-stream.
+const COLUMN_REQUEST_WHEEL_BUCKETS: usize = 4;
+const COLUMN_REQUEST_WHEEL_INTERVAL: Duration = Duration::from_millis(750);
 
+/// Block-history backfill. Blocks only — data-column backfill is a separate,
+/// disk-scan-driven concern (`ColumnBackfill`) that runs to completion *before*
+/// block backfill starts. Block backfill therefore emits no `EarliestSlot`:
+/// the advertised earliest-available slot tracks data columns, not blocks.
 pub(super) struct Backfill {
     range: Range<u64>,
     // buffered blocks keyed by block root
@@ -34,7 +42,6 @@ pub(super) struct Backfill {
     in_flight: Option<(Range<u64>, u64, Instant)>,
     earliest_written: u64,
     blocks_complete: bool,
-    columns: Option<ColumnBackfill>,
 }
 
 pub(super) struct AcceptedColumn {
@@ -46,9 +53,6 @@ pub(super) struct AcceptedColumn {
 impl Backfill {
     pub(super) fn new(range: Range<u64>, next_parent: B256) -> Self {
         let range_end = range.end;
-        let column_start = range_end.saturating_sub(COLUMN_SLOTS_RETAINED).max(range.start);
-        let columns =
-            (column_start < range_end).then(|| ColumnBackfill::new(column_start..range_end));
         Self {
             range,
             buffered_blocks: FxHashMap::with_capacity_and_hasher(
@@ -60,7 +64,6 @@ impl Backfill {
             in_flight: None,
             earliest_written: range_end + 1,
             blocks_complete: false,
-            columns,
         }
     }
 
@@ -95,34 +98,6 @@ impl Backfill {
         }
     }
 
-    pub(super) fn block_persisted<F>(
-        &mut self,
-        block_root: B256,
-        slot: u64,
-        block: &[u8],
-        custody_columns: u128,
-        emit: &mut F,
-    ) where
-        F: FnMut(PeerEvent),
-    {
-        if let Some(columns) = self.columns.as_mut() {
-            columns.block_persisted(block_root, slot, block, custody_columns, emit);
-        }
-    }
-
-    pub(super) fn add_data_column<F>(
-        &mut self,
-        sidecar: &TRead,
-        emit: &mut F,
-    ) -> Option<AcceptedColumn>
-    where
-        F: FnMut(PeerEvent),
-    {
-        let accepted = self.columns.as_mut()?.add_sidecar(sidecar)?;
-        self.maybe_emit_earliest(emit);
-        Some(accepted)
-    }
-
     /// Returns `true` if backfilling is complete.
     pub(super) fn query_complete<F>(&mut self, id: u64, emit: &mut F) -> bool
     where
@@ -135,15 +110,11 @@ impl Backfill {
             if self.earliest_written < in_flight.end {
                 // the previous request returned something,
                 self.range.end = self.earliest_written.max(in_flight.start);
-                self.update_column_scan();
-                self.maybe_emit_earliest(emit);
             }
         }
         if self.range.end == self.range.start {
             tracing::info!("backfill blocks complete");
             self.blocks_complete = true;
-            self.update_column_scan();
-            self.maybe_emit_earliest(emit);
             return self.is_complete();
         }
         self.buffered_blocks.clear();
@@ -161,14 +132,10 @@ impl Backfill {
         {
             self.query_complete(*request_id, emit);
         }
-        if let Some(columns) = self.columns.as_mut() {
-            columns.tick(emit);
-        }
     }
 
     pub(super) fn is_complete(&self) -> bool {
-        self.blocks_complete &&
-            self.columns.as_ref().map(ColumnBackfill::is_complete).unwrap_or(true)
+        self.blocks_complete
     }
 
     fn range_request<F>(&mut self, emit: &mut F)
@@ -192,34 +159,24 @@ impl Backfill {
         self.in_flight =
             Some((next_start_slot..next_start_slot + count, request_id, Instant::now()));
     }
-
-    fn update_column_scan(&mut self) {
-        if let Some(columns) = self.columns.as_mut() &&
-            (self.blocks_complete || self.range.end <= columns.range.start)
-        {
-            columns.mark_scan_complete();
-        }
-    }
-
-    fn maybe_emit_earliest<F>(&self, emit: &mut F)
-    where
-        F: FnMut(PeerEvent),
-    {
-        let earliest = if let Some(columns) = self.columns.as_ref() &&
-            !columns.is_complete()
-        {
-            columns.range.end
-        } else {
-            self.earliest_written
-        };
-        emit(PeerEvent::EarliestSlot(earliest));
-    }
 }
 
-struct ColumnBackfill {
+/// Data-column backfill, independent of block backfill. Seeded by an on-disk
+/// scan of persisted blocks in the column-retention window (`io::file_io`):
+/// for each block carrying blob commitments whose custody columns aren't all
+/// present on disk, the missing columns are requested by root. Sync skips
+/// columns for blocks below the finalized epoch, so a fully block-synced node
+/// still needs this to fetch their columns — block backfill alone won't.
+pub(super) struct ColumnBackfill {
     range: Range<u64>,
-    pending: Wheel<B256, PendingColumnBlock, COLUMN_BACKFILL_WHEEL_BUCKETS>,
-    pending_count: usize,
+    // Every block awaiting columns (queued or in flight), keyed by block root.
+    pending: FxHashMap<B256, PendingColumnBlock>,
+    // Roots seeded but not yet requested — FIFO backlog.
+    queue: VecDeque<B256>,
+    // Roots with a request in flight. A timing wheel doubles as the retry
+    // timer: rotation expires idle requests (event-driven, no per-tick scan),
+    // and `len()` bounds concurrency. `queue` and `in_flight` are disjoint.
+    in_flight: Wheel<B256, (), COLUMN_REQUEST_WHEEL_BUCKETS>,
     request_id: u64,
     scan_complete: bool,
 }
@@ -236,35 +193,31 @@ struct PendingColumnBlock {
 }
 
 impl ColumnBackfill {
-    fn new(range: Range<u64>) -> Self {
+    pub(super) fn new(range: Range<u64>) -> Self {
         Self {
             range,
-            pending: Wheel::new(COLUMN_BACKFILL_WHEEL_INTERVAL),
-            pending_count: 0,
+            pending: FxHashMap::default(),
+            queue: VecDeque::new(),
+            in_flight: Wheel::new(COLUMN_REQUEST_WHEEL_INTERVAL),
             request_id: COLUMN_BACKFILL_REQUEST_ID,
             scan_complete: false,
         }
     }
 
-    fn block_persisted<F>(
+    /// Seed a block found by the disk scan. `missing` is the set of custody
+    /// columns not already on disk for this block (computed by the scanner);
+    /// callers must pass a non-zero `missing` for a block carrying columns.
+    pub(super) fn seed_block<F>(
         &mut self,
         block_root: B256,
         slot: u64,
         block: &[u8],
-        custody_columns: u128,
+        missing: u128,
         emit: &mut F,
     ) where
         F: FnMut(PeerEvent),
     {
-        if custody_columns == 0 || !self.range.contains(&slot) {
-            return;
-        }
-        if block.len() < 184 + BEACON_BLOCK_BODY_FIXED ||
-            !SignedBeaconBlockView::has_data_columns(block)
-        {
-            return;
-        }
-        if self.pending.contains(&block_root) {
+        if missing == 0 || !self.range.contains(&slot) || self.pending.contains_key(&block_root) {
             return;
         }
 
@@ -275,15 +228,17 @@ impl ColumnBackfill {
             state_root: *SignedBeaconBlockView::state_root(block),
             body_root: util::body_root(SignedBeaconBlockView::body(block)),
             signature: *SignedBeaconBlockView::signature(block),
-            requested: custody_columns,
+            requested: missing,
             received: 0,
         };
         self.pending.insert(block_root, pending);
-        self.pending_count += 1;
-        self.emit_request(block_root, custody_columns, emit);
+        self.queue.push_back(block_root);
+        // Only fires if under the in-flight cap; otherwise the block waits in
+        // the backlog and is drained by `tick`/`pump` as slots free up.
+        self.pump(emit);
     }
 
-    fn add_sidecar(&mut self, sidecar: &TRead) -> Option<AcceptedColumn> {
+    pub(super) fn add_sidecar(&mut self, sidecar: &TRead) -> Option<AcceptedColumn> {
         let buffer = match sidecar.buffer() {
             Ok((buffer, _)) => buffer,
             Err(e) => {
@@ -347,45 +302,84 @@ impl ColumnBackfill {
         };
 
         if complete {
+            // Frees an in-flight slot; `tick`/`pump` requests the next backlog
+            // block on the following loop.
             self.pending.remove(&block_root);
-            self.pending_count = self.pending_count.saturating_sub(1);
+            self.in_flight.remove(&block_root);
+        } else if self.in_flight.remove(&block_root).is_some() {
+            // Progress: re-bucket to the head so the retry timer resets and an
+            // actively-delivering request isn't retried mid-stream.
+            self.in_flight.insert(block_root, ());
         }
 
         Some(AcceptedColumn { block_root, slot, column_index })
     }
 
-    fn tick<F>(&mut self, emit: &mut F)
+    pub(super) fn tick<F>(&mut self, emit: &mut F)
     where
         F: FnMut(PeerEvent),
     {
-        let now = Instant::now();
-        let mut request_id = self.request_id;
-        let mut complete = 0;
-        self.pending.maybe_rotate(now, &mut |block_root, pending| {
-            let columns = pending.requested & !pending.received;
-            if columns == 0 {
-                complete += 1;
-                true
-            } else {
-                request_id += 1;
-                emit(PeerEvent::SendDataColumnsByRootRequest {
-                    request_id,
-                    columns,
-                    block_root: *block_root,
-                });
-                false
+        // Expire in-flight requests idle for a full wheel revolution. The
+        // rotation closure only collects roots (it can't borrow `self.pending`
+        // / `emit`); re-request + reset happens below where borrows are free.
+        Self::rotate(&mut self.in_flight, &self.pending, &mut self.request_id, emit);
+        self.pump(emit);
+    }
+
+    fn rotate<F>(
+        wheel: &mut Wheel<B256, (), COLUMN_REQUEST_WHEEL_BUCKETS>,
+        pending: &FxHashMap<B256, PendingColumnBlock>,
+        request_id: &mut u64,
+        emit: &mut F,
+    ) where
+        F: FnMut(PeerEvent),
+    {
+        wheel.maybe_rotate(Instant::now(), &mut |root, _| {
+            if let Some(p) = pending.get(root) {
+                let columns = p.requested & !p.received;
+                if columns != 0 {
+                    emit(PeerEvent::SendDataColumnsByRootRequest {
+                        request_id: *request_id,
+                        columns,
+                        block_root: *root,
+                    });
+                    *request_id += 1;
+                    return false; // re-bucket to head = reset
+                }
             }
+            true
         });
-        self.pending_count = self.pending_count.saturating_sub(complete);
-        self.request_id = request_id;
     }
 
-    fn is_complete(&self) -> bool {
-        self.scan_complete && self.pending_count == 0
+    /// Complete = disk scan finished AND no block awaiting columns. Both the
+    /// scan (set 1) and block-backfill `seed_block` calls (set 2) feed
+    /// `pending`, so this only holds once every column in the window is on
+    /// disk.
+    pub(super) fn is_complete(&self) -> bool {
+        self.scan_complete && self.pending.is_empty()
     }
 
-    fn mark_scan_complete(&mut self) {
+    pub(super) fn mark_scan_complete(&mut self) {
         self.scan_complete = true;
+    }
+
+    /// Promote backlog roots to in-flight requests up to the concurrency cap.
+    fn pump<F>(&mut self, emit: &mut F)
+    where
+        F: FnMut(PeerEvent),
+    {
+        while self.in_flight.len() < MAX_COLUMN_REQUESTS_IN_FLIGHT {
+            let Some(root) = self.queue.pop_front() else {
+                break; // backlog drained
+            };
+            // May have completed (and been removed) since it was queued.
+            let Some(p) = self.pending.get(&root) else {
+                continue;
+            };
+            let columns = p.requested & !p.received;
+            self.emit_request(root, columns, emit);
+            self.in_flight.insert(root, ());
+        }
     }
 
     fn emit_request<F>(&mut self, block_root: B256, columns: u128, emit: &mut F)
