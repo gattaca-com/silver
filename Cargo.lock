@@ -4606,6 +4606,7 @@ dependencies = [
  "hex",
  "silver_common",
  "silver_config",
+ "silver_metrics",
  "slab",
  "tracing",
 ]

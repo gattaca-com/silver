@@ -499,7 +499,7 @@ impl Stream {
             tracing::warn!(
                 error_code = error_code.into_inner(),
                 protocol = ?self.p2p_id.protocol(),
-                state = self.state.get_mut().name(),
+                state = ?self.state.get_mut(),
                 "Stop send called in non-receive only state."
             );
             on_event(NetEvent::StreamClosed { stream: self.p2p_id });

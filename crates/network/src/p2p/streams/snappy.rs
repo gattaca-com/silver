@@ -52,6 +52,17 @@ pub(crate) struct SnappyDecoder {
     need: usize,
     got_stream_id: bool,
     decoder: Decoder,
+    /// When set, `CHUNK_UNCOMPRESSED` frame data is streamed straight into the
+    /// caller's output via `direct_remaining`/`advance_direct` — skipping the
+    /// `buf` staging copy. Only the 4-byte header + 4-byte CRC are staged. Off
+    /// by default (the `decompress`/`decompress_written` contract is unchanged
+    /// for callers that don't drive the direct path, e.g. inbound requests).
+    direct: bool,
+    /// Bytes of the current uncompressed frame's data still to stream direct.
+    direct_remaining: usize,
+    /// Set between staging an uncompressed frame's header and its CRC, so the
+    /// CRC-complete transition switches to direct streaming.
+    parsing_uncompressed: bool,
     /// Diagnostics: compressed bytes consumed / frames processed over the
     /// decoder's lifetime (one chunk for RPC use). On a framing error these
     /// locate the desync: small `consumed` = bad from chunk start, large =
@@ -66,6 +77,8 @@ impl Debug for SnappyDecoder {
             .field("buf_len", &self.buf_len)
             .field("need", &self.need)
             .field("got_stream_id", &self.got_stream_id)
+            .field("direct_remaining", &self.direct_remaining)
+            .field("parsing_uncompressed", &self.parsing_uncompressed)
             .field("consumed", &self.consumed)
             .field("frames", &self.frames)
             .field("decoder", &self.decoder)
@@ -81,6 +94,9 @@ impl Default for SnappyDecoder {
             need: FRAME_HDR_LEN,
             got_stream_id: false,
             decoder: Decoder::new(),
+            direct: false,
+            direct_remaining: 0,
+            parsing_uncompressed: false,
             consumed: 0,
             frames: 0,
         }
@@ -88,6 +104,31 @@ impl Default for SnappyDecoder {
 }
 
 impl SnappyDecoder {
+    /// Decoder that streams `CHUNK_UNCOMPRESSED` frame data directly into the
+    /// caller's output (one copy QUIC→out) instead of staging it in `buf`
+    /// (two copies). The caller MUST drive the direct path: before each read,
+    /// check `direct_remaining()` — if non-zero, read that many bytes straight
+    /// into the output and call `advance_direct`; otherwise use the
+    /// `decompress_buffer`/`decompress_written` staging path as usual.
+    pub fn new_direct() -> Self {
+        Self { direct: true, ..Self::default() }
+    }
+
+    /// Bytes of an in-progress uncompressed frame to read directly into the
+    /// output buffer (0 = use the staging path). Direct mode only.
+    pub fn direct_remaining(&self) -> usize {
+        self.direct_remaining
+    }
+
+    /// Account for `amount` uncompressed-data bytes the caller read straight
+    /// into its output. Returns `amount` (raw == decoded). Direct mode only.
+    pub fn advance_direct(&mut self, amount: usize) -> usize {
+        debug_assert!(amount <= self.direct_remaining);
+        self.direct_remaining -= amount;
+        self.consumed += amount as u64;
+        amount
+    }
+
     /// Feed compressed bytes, decompress complete frames into `out`.
     /// Returns `(bytes_consumed, bytes_written)`.
     #[timed]
@@ -253,9 +294,23 @@ impl SnappyDecoder {
     ) -> Result<usize, SnappyError> {
         self.buf_len += amount;
         self.consumed += amount as u64;
-        let mut out_pos = 0;
 
         if self.buf_len < self.need {
+            return Ok(0);
+        }
+
+        // Direct mode: header + CRC of an uncompressed frame are now staged.
+        // Switch to streaming its data straight into the caller's output; the
+        // caller drives the rest via `direct_remaining`/`advance_direct`.
+        if self.parsing_uncompressed {
+            debug_assert_eq!(self.need, FRAME_HDR_LEN + CHECKSUM_LEN);
+            let payload_len =
+                self.buf[1] as usize | (self.buf[2] as usize) << 8 | (self.buf[3] as usize) << 16;
+            self.direct_remaining = payload_len - CHECKSUM_LEN;
+            self.parsing_uncompressed = false;
+            self.frames += 1;
+            self.buf_len = 0;
+            self.need = FRAME_HDR_LEN;
             return Ok(0);
         }
 
@@ -275,18 +330,29 @@ impl SnappyDecoder {
                 );
                 return Err(SnappyError::FrameTooLarge);
             }
-            self.need = FRAME_HDR_LEN + payload_len;
-            // Fall through to try filling payload from remaining input.
+            // Direct path for uncompressed data frames: stage only header+CRC,
+            // then stream the data. Guarded by `got_stream_id` and a non-empty
+            // data region so malformed/empty frames still take the staging path
+            // and surface the same errors via `process_frame`.
+            if self.direct &&
+                self.buf[0] == CHUNK_UNCOMPRESSED &&
+                self.got_stream_id &&
+                payload_len > CHECKSUM_LEN
+            {
+                self.need = FRAME_HDR_LEN + CHECKSUM_LEN;
+                self.parsing_uncompressed = true;
+            } else {
+                self.need = FRAME_HDR_LEN + payload_len;
+            }
+            Ok(0)
         } else {
             // Full frame in buf[0..self.need]. Process it.
-            let written = self.process_frame(&mut out[out_pos..])?;
-            out_pos += written;
+            let written = self.process_frame(out)?;
             self.frames += 1;
             self.buf_len = 0;
             self.need = FRAME_HDR_LEN;
+            Ok(written)
         }
-
-        Ok(out_pos)
     }
 }
 
@@ -515,6 +581,115 @@ mod tests {
     use snap::read::FrameEncoder;
 
     use super::*;
+
+    /// Direct mode: incompressible data is framed as CHUNK_UNCOMPRESSED, then
+    /// decoded via the streaming API a reader uses — `direct_remaining()`
+    /// drives copies straight to the output, header/CRC via the staging path.
+    /// Feeds input in tiny chunks to exercise partial header/CRC/data reads.
+    #[test]
+    fn decoder_direct_streams_uncompressed_to_output() {
+        let mut rng = rand::thread_rng();
+        let mut raw = vec![0u8; 200 * 1024];
+        rng.fill_bytes(&mut raw); // random ⇒ every frame is CHUNK_UNCOMPRESSED
+
+        let mut encoder = SnappyEncoder::new();
+        let mut framed = Vec::new();
+        let (consumed, pending) = encoder.compress(&raw, &mut framed).unwrap();
+        assert_eq!(consumed, raw.len());
+        assert_eq!(pending, 0);
+
+        let mut dec = SnappyDecoder::new_direct();
+        let mut out = vec![0u8; raw.len()];
+        let mut out_pos = 0;
+        let mut in_pos = 0;
+        let mut saw_direct = false;
+        let cap = 7usize; // tiny reads → partial header/CRC/data
+
+        let mut guard = 0;
+        while out_pos < out.len() {
+            guard += 1;
+            assert!(guard < framed.len() * 4, "no progress");
+
+            if dec.direct_remaining() > 0 {
+                saw_direct = true;
+                // Reader reads frame data straight into the output buffer.
+                let want = dec.direct_remaining().min(out.len() - out_pos).min(cap);
+                let n = want.min(framed.len() - in_pos);
+                out[out_pos..out_pos + n].copy_from_slice(&framed[in_pos..in_pos + n]);
+                in_pos += n;
+                out_pos += dec.advance_direct(n);
+            } else {
+                let buf = dec.decompress_buffer();
+                let take = buf.len().min(cap).min(framed.len() - in_pos);
+                buf[..take].copy_from_slice(&framed[in_pos..in_pos + take]);
+                in_pos += take;
+                out_pos += dec.decompress_written(take, &mut out[out_pos..]).unwrap();
+            }
+        }
+
+        assert!(saw_direct, "uncompressed frames must use the direct path");
+        assert_eq!(out, raw);
+        assert_eq!(in_pos, framed.len(), "all framed input consumed");
+    }
+
+    /// Direct mode with a MIX of compressed and uncompressed frames: the
+    /// decoder must take the direct path for `CHUNK_UNCOMPRESSED` frames and
+    /// switch back to staged decompression for `CHUNK_COMPRESSED` ones,
+    /// re-deciding per frame header. Layout below yields COMPRESSED (zeros),
+    /// then UNCOMPRESSED (random), then COMPRESSED again past the encoder's
+    /// skip window — exercising both transitions.
+    #[test]
+    fn decoder_direct_handles_mixed_frames() {
+        let blk = MAX_UNCOMPRESSED_BLOCK;
+        let mut rng = rand::thread_rng();
+        let mut raw = vec![0u8; 11 * blk];
+        // [0]=zeros (compresses), [1]=random (raw), [2..=8]=zeros forced raw by
+        // the skip window, [9..]=zeros (compresses again on retry).
+        rng.fill_bytes(&mut raw[blk..2 * blk]);
+
+        let mut encoder = SnappyEncoder::new();
+        let mut framed = Vec::new();
+        let (consumed, pending) = encoder.compress(&raw, &mut framed).unwrap();
+        assert_eq!(consumed, raw.len());
+        assert_eq!(pending, 0);
+
+        let mut dec = SnappyDecoder::new_direct();
+        let mut out = vec![0u8; raw.len()];
+        let mut out_pos = 0;
+        let mut in_pos = 0;
+        let (mut saw_direct, mut saw_staged) = (false, false);
+        let cap = 9usize;
+
+        let mut guard = 0;
+        while out_pos < out.len() {
+            guard += 1;
+            assert!(guard < framed.len() * 4, "no progress");
+
+            if dec.direct_remaining() > 0 {
+                saw_direct = true;
+                let want = dec.direct_remaining().min(out.len() - out_pos).min(cap);
+                let n = want.min(framed.len() - in_pos);
+                out[out_pos..out_pos + n].copy_from_slice(&framed[in_pos..in_pos + n]);
+                in_pos += n;
+                out_pos += dec.advance_direct(n);
+            } else {
+                let buf = dec.decompress_buffer();
+                let take = buf.len().min(cap).min(framed.len() - in_pos);
+                buf[..take].copy_from_slice(&framed[in_pos..in_pos + take]);
+                in_pos += take;
+                let decoded = dec.decompress_written(take, &mut out[out_pos..]).unwrap();
+                // A staged decode that yields bytes is a compressed frame
+                // (uncompressed frames yield via the direct path; stream-id
+                // and header reads yield 0).
+                saw_staged |= decoded > 0;
+                out_pos += decoded;
+            }
+        }
+
+        assert_eq!(out, raw);
+        assert!(saw_direct, "uncompressed frames must use the direct path");
+        assert!(saw_staged, "compressed frames must use staged decompression");
+    }
 
     #[test]
     fn roundtrip_random_chunks() {

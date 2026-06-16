@@ -83,19 +83,22 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
             let bucket_delta = set.last_bucket_delta(slot_idx) as i64;
 
             let selected = set_idx == sel_set && slot_idx == sel_slot;
-            let name_style = if selected {
+            // Row-wide highlight: delta cells keep their own red/green fg and
+            // just inherit the selected background.
+            let row_style = if selected {
                 Style::default().bg(Color::DarkGray).fg(Color::White).add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
             };
             rows.push(
                 Row::new(vec![
-                    Cell::from(Span::styled(format!("  {slot_name}"), name_style)),
+                    Cell::from(format!("  {slot_name}")),
                     Cell::from(Span::raw(format!("{:>10}", fmt_u64(cur)))),
                     Cell::from(Line::from(vec![delta_span(tick_delta, 10)])),
                     Cell::from(Line::from(vec![delta_span(bucket_delta, 10)])),
                 ])
-                .height(1),
+                .height(1)
+                .style(row_style),
             );
         }
     }
