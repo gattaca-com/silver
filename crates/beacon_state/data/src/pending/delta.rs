@@ -80,7 +80,7 @@ impl<Q: QueueItem> QueueDelta<Q> {
     /// pad to the list depth, and mix in the length.
     pub(super) fn root(&self, len: usize) -> B256 {
         let depth = Q::SSZ_LIMIT.next_power_of_two().trailing_zeros() as u8;
-        mix_in_length(&merkle_finalize(self.frontier.clone(), depth), len)
+        mix_in_length(&merkle_finalize(self.frontier, depth), len)
     }
 
     /// Re-base onto a freshly-promoted base: subtract the `winner`'s drain
@@ -161,6 +161,11 @@ impl<'a, Q: QueueItem> QueueView<'a, Q> {
     #[inline]
     pub fn len(&self) -> usize {
         self.base.len().saturating_sub(self.delta.drain_offset as usize) + self.delta.appended.len()
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     /// SSZ `hash_tree_root` — folds the cached frontier, padding + length only
