@@ -26,7 +26,7 @@ impl JwtSecret {
         Ok(Self { secret: arr, cached_iat: 0, cached_token: String::new() })
     }
 
-    pub fn from_file(path: &std::path::Path) -> Result<Self, EngineError> {
+    pub fn from_file(path: &str) -> Result<Self, EngineError> {
         let s = std::fs::read_to_string(path).map_err(|e| EngineError::Jwt(e.to_string()))?;
         Self::from_hex(s.trim())
     }

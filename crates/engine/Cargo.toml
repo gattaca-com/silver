@@ -6,6 +6,7 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
+silver_config.workspace = true
 base64.workspace = true
 flux.workspace = true
 hex.workspace = true

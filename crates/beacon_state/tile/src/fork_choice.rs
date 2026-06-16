@@ -1,6 +1,7 @@
 use flux::utils::ArrayVec;
 use silver_beacon_state_data::{B256, Checkpoint, Epoch, Slot, StateId};
 use silver_common::metrics::timed;
+use tracing::info;
 
 // TODO(stalls): ~8 epochs of unpruned mainnet activity hits 256. The May
 // 2023 incident lasted ~25 epochs. Either grow + paginate the node table or
@@ -52,8 +53,8 @@ pub struct ForkChoiceNode {
     pub justified_checkpoint: Checkpoint,
     pub finalized_checkpoint: Checkpoint,
 
-    /// 0=irrelevant, 1=optimistic, 2=valid, 3=invalid. Wired by EL plumbing.
-    #[allow(dead_code)]
+    /// 0=irrelevant, 1=optimistic, 2=valid, 3=invalid. Updated from EL
+    /// payload verdicts; invalid nodes are excluded from head viability.
     pub execution_status: u8,
 
     /// Per-tier index bundle of this block's post-state. Every node carries a
@@ -100,6 +101,7 @@ impl ForkChoice {
         finalized_slot: Slot,
         finalized_block_root: B256,
         finalized_state_root: B256,
+        finalized_execution_block_hash: B256,
         state_id: StateId,
     ) -> Self {
         let mut nodes = Vec::with_capacity(MAX_FORK_CHOICE_NODES);
@@ -110,7 +112,7 @@ impl ForkChoice {
             block_root: finalized_block_root,
             state_root: finalized_state_root,
             parent_root: [0u8; 32],
-            execution_block_hash: [0u8; 32],
+            execution_block_hash: finalized_execution_block_hash,
             parent: NULL,
             best_child: NULL,
             best_descendant: 0, // self
@@ -153,10 +155,6 @@ impl ForkChoice {
             weight: 0,
             justified_checkpoint: b.justified,
             finalized_checkpoint: b.finalized,
-            // TODO(EL): newly imported blocks are optimistic until
-            // engine_newPayloadV4 returns VALID/INVALID. Wire EL responses
-            // back to flip this to 2 (valid) or 3 (invalid) and drop invalid
-            // descendants from the head choice.
             execution_status: 1, // optimistic
             state_id: b.state_id,
         });
@@ -243,6 +241,104 @@ impl ForkChoice {
         }
     }
 
+    /// Returns `(head_root, head_exec, safe_exec, finalized_exec)` for
+    /// `engine_forkchoiceUpdatedV3`. `head_root` is the head's beacon root,
+    /// echoed by the engine tile so the FCU verdict can be applied here.
+    /// safe = justified block; zeros when the checkpoint block is absent from
+    /// the tree.
+    pub fn fcu_execution_hashes(&self) -> (B256, B256, B256, B256) {
+        let zero = [0u8; 32];
+        let Some(ji) = self.find_node_idx(&self.justified_checkpoint.root) else {
+            return (zero, zero, zero, zero);
+        };
+        let node = &self.nodes[ji];
+        let head_idx =
+            if node.best_descendant != NULL && self.node_is_viable_for_head(node.best_descendant) {
+                node.best_descendant
+            } else {
+                ji
+            };
+        let fin_exec = self
+            .find_node_idx(&self.finalized_checkpoint.root)
+            .map(|i| self.nodes[i].execution_block_hash)
+            .unwrap_or(zero);
+        let head = &self.nodes[head_idx];
+        (head.block_root, head.execution_block_hash, node.execution_block_hash, fin_exec)
+    }
+
+    /// EL VALID verdict (newPayload or FCU response): the EL fully validated
+    /// `block_root`'s payload, which transitively validates every ancestor.
+    /// Walk up until the first already-valid node.
+    pub fn on_payload_valid(&mut self, block_root: &B256) {
+        let Some(mut idx) = self.find_node_idx(block_root) else {
+            return;
+        };
+        loop {
+            let n = &mut self.nodes[idx];
+            if n.execution_status == 2 {
+                break;
+            }
+            n.execution_status = 2;
+            if n.parent == NULL {
+                break;
+            }
+            idx = n.parent;
+        }
+    }
+
+    /// EL INVALID verdict (newPayload or FCU response): `block_root` and
+    /// everything above the last valid ancestor (`latest_valid_hash`) is
+    /// invalid. When the EL gave no usable hash, condemn only `block_root` —
+    /// optimistic ancestors keep their status. Caller must recompute head
+    /// afterwards: invalid nodes are filtered by `node_is_viable_for_head`
+    /// and the next score pass reroutes best_child/best_descendant around
+    /// them.
+    pub fn on_payload_invalid(&mut self, block_root: &B256, latest_valid_hash: &B256) {
+        let Some(head_idx) = self.find_node_idx(block_root) else {
+            return;
+        };
+        let lvh_idx = if *latest_valid_hash == [0u8; 32] {
+            None
+        } else {
+            self.nodes.iter().position(|n| n.execution_block_hash == *latest_valid_hash)
+        };
+
+        info!(?block_root, ?latest_valid_hash, "payload invalid, marking branch");
+
+        // Ancestor segment: block down to (exclusive) the last valid ancestor.
+        let mut idx = head_idx;
+        loop {
+            if Some(idx) == lvh_idx {
+                self.nodes[idx].execution_status = 2;
+                break;
+            }
+            let n = &mut self.nodes[idx];
+            if n.execution_status == 2 {
+                break;
+            }
+            n.execution_status = 3;
+            n.best_child = NULL;
+            n.best_descendant = NULL;
+            // Unknown ancestor: only `block_root` is provably bad.
+            if n.parent == NULL || lvh_idx.is_none() {
+                break;
+            }
+            idx = n.parent;
+        }
+
+        // Descendants of an invalid node are invalid. Parents always precede
+        // children in `nodes`, so one forward pass suffices.
+        for i in 0..self.nodes.len() {
+            let p = self.nodes[i].parent;
+            if p != NULL && self.nodes[p].execution_status == 3 {
+                let n = &mut self.nodes[i];
+                n.execution_status = 3;
+                n.best_child = NULL;
+                n.best_descendant = NULL;
+            }
+        }
+    }
+
     // TODO(perf): O(n_nodes) scan. Hit per on_block (parent lookup), per
     // find_head (justified root), and per moved validator vote in
     // compute_deltas (worst case 2M × MAX_FORK_CHOICE_NODES on
@@ -295,7 +391,8 @@ impl ForkChoice {
         // — silver isn't a proposer. Implication: blocks whose post-state
         // names checkpoints more advanced than ours get filtered, and we
         // accept only blocks <= our anchor's j/f. Revisit if/when proposing.
-        n.justified_checkpoint.epoch <= self.justified_checkpoint.epoch &&
+        n.execution_status != 3 &&
+            n.justified_checkpoint.epoch <= self.justified_checkpoint.epoch &&
             n.finalized_checkpoint.epoch <= self.finalized_checkpoint.epoch
     }
 
@@ -468,7 +565,7 @@ mod tests {
     fn single_chain_head() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), test_state_id());
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), [0u8; 32], test_state_id());
 
         fc.on_block(block(1, root(2), root(1), jus, fin));
         fc.on_block(block(2, root(3), root(2), jus, fin));
@@ -480,7 +577,7 @@ mod tests {
     fn fork_heavier_wins() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), test_state_id());
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), [0u8; 32], test_state_id());
 
         fc.on_block(block(1, root(2), root(1), jus, fin));
         fc.on_block(block(1, root(3), root(1), jus, fin));
@@ -499,7 +596,7 @@ mod tests {
         // sibling loses weight.
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), test_state_id());
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), [0u8; 32], test_state_id());
 
         // root(1) → root(2) [idx 1] and root(3) [idx 2]
         fc.on_block(block(1, root(2), root(1), jus, fin));
@@ -523,7 +620,7 @@ mod tests {
     fn prune_below_finalized() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), test_state_id());
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), [0u8; 32], test_state_id());
 
         fc.on_block(block(1, root(2), root(1), jus, fin));
         fc.on_block(block(2, root(3), root(2), jus, fin));
@@ -542,7 +639,7 @@ mod tests {
     fn deltas_moving_votes() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), test_state_id());
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), [0u8; 32], test_state_id());
         fc.on_block(block(1, root(2), root(1), jus, fin));
 
         let mut votes = vec![Vote::default(); 16];
@@ -571,7 +668,8 @@ mod tests {
         // Each validator votes for a different block.
         let fin = cp(0, 100);
         let jus = cp(0, 100);
-        let mut fc = ForkChoice::init(fin, jus, 0, root(100), root(100), test_state_id());
+        let mut fc =
+            ForkChoice::init(fin, jus, 0, root(100), root(100), [0u8; 32], test_state_id());
 
         for i in 1..=16u8 {
             fc.on_block(block(i as u64, root(i), root(100), jus, fin));
@@ -599,7 +697,7 @@ mod tests {
     fn deltas_move_out_of_tree() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let fc = ForkChoice::init(fin, jus, 0, root(1), root(1), test_state_id());
+        let fc = ForkChoice::init(fin, jus, 0, root(1), root(1), [0u8; 32], test_state_id());
 
         let mut votes = vec![Vote::default(); 16];
         let mut balances = vec![0u64; 16];
@@ -623,7 +721,7 @@ mod tests {
     fn deltas_changing_balances() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), test_state_id());
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), [0u8; 32], test_state_id());
         fc.on_block(block(1, root(2), root(1), jus, fin));
 
         let mut votes = vec![Vote::default(); 16];
@@ -650,7 +748,7 @@ mod tests {
         // Balances change but votes don't — still need deltas.
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let fc = ForkChoice::init(fin, jus, 0, root(1), root(1), test_state_id());
+        let fc = ForkChoice::init(fin, jus, 0, root(1), root(1), [0u8; 32], test_state_id());
 
         let mut votes = vec![Vote::default(); 16];
         let mut old_bal = vec![0u64; 16];
@@ -673,7 +771,7 @@ mod tests {
     fn split_tie_breaker_no_attestations() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), test_state_id());
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), [0u8; 32], test_state_id());
 
         // Two blocks at slot 1 forking from genesis. root(2) < root(3).
         fc.on_block(block(1, root(2), root(1), jus, fin));
@@ -688,7 +786,7 @@ mod tests {
     fn shorter_chain_but_heavier_weight() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), test_state_id());
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), [0u8; 32], test_state_id());
 
         // Long chain: root(1) → root(2) → root(3) → root(4).
         fc.on_block(block(1, root(2), root(1), jus, fin));
@@ -712,7 +810,7 @@ mod tests {
     fn on_block_duplicate() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), test_state_id());
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), [0u8; 32], test_state_id());
 
         fc.on_block(block(1, root(2), root(1), jus, fin));
         assert_eq!(fc.nodes.len(), 2);
@@ -726,7 +824,7 @@ mod tests {
     fn on_block_unknown_parent() {
         let fin = cp(0, 1);
         let jus = cp(0, 1);
-        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), test_state_id());
+        let mut fc = ForkChoice::init(fin, jus, 0, root(1), root(1), [0u8; 32], test_state_id());
 
         // root(99) is not known.
         fc.on_block(block(1, root(2), root(99), jus, fin));

@@ -2,12 +2,13 @@ use std::time::Duration;
 
 use mio::{Events, Poll};
 use rustc_hash::FxHashMap;
+use silver_common::ssz_hash::B256;
 
 use crate::{
     EngineError, JwtSecret,
     http::{HttpPool, http_pool_enqueue, poll_http_pool},
     ipc::{IpcPool, ipc_pool_enqueue, poll_ipc_pool},
-    types::{B256, ForkchoiceState, PayloadAttributesV3, write_new_payload_params},
+    types::{ForkchoiceState, PayloadAttributesV3, write_new_payload_params},
 };
 
 const EVENTS_CAPACITY: usize = 16;
@@ -32,8 +33,8 @@ pub enum ReqKind {
     Capabilities,
     ClientVersion,
     Syncing,
-    Fcu(u64),
-    NewPayload(u64),
+    Fcu(B256),        // head beacon block root, zeros for prepare-payload
+    NewPayload(B256), // block root
     GetPayloadFetch(u64),
     GetBlobs(u64),
     GetPayloadBodiesByHash(u64),
@@ -56,7 +57,8 @@ pub struct EngineClient {
 }
 
 impl EngineClient {
-    pub fn new(endpoint: impl Into<String>, jwt: JwtSecret) -> Self {
+    pub fn new(endpoint: impl Into<String>, jwt: &str) -> Self {
+        let jwt = JwtSecret::from_file(jwt).expect("invalid JWT secret");
         Self {
             transport: Transport::Http(HttpPool::new(endpoint.into(), jwt)),
             poll: Poll::new().expect("mio Poll::new failed"),
@@ -116,28 +118,26 @@ fn enqueue(c: &mut EngineClient, rpc_id: u64, body: &simd_json::OwnedValue) {
 
 pub fn send_fcu(
     c: &mut EngineClient,
+    block_root: B256,
     state: ForkchoiceState,
     attrs: Option<PayloadAttributesV3>,
-    req_id: u64,
 ) {
     let (id, body) =
         make_rpc_body(&mut c.id, "engine_forkchoiceUpdatedV3", simd_json::json!([state, attrs]));
     enqueue(c, id, &body);
-    c.pending_requests.insert(id, ReqKind::Fcu(req_id));
+    c.pending_requests.insert(id, ReqKind::Fcu(block_root));
 }
 
 pub fn send_new_payload(
     c: &mut EngineClient,
     data: &[u8],
-    versioned_hashes: &[B256],
-    parent_beacon_block_root: &B256,
-    req_id: u64,
+    block_root: [u8; 32],
 ) -> Result<(), EngineError> {
     let rpc_id = next_id(&mut c.id);
     c.scratch.clear();
     c.scratch
         .extend_from_slice(b"{\"jsonrpc\":\"2.0\",\"method\":\"engine_newPayloadV4\",\"params\":");
-    write_new_payload_params(data, versioned_hashes, parent_beacon_block_root, &mut c.scratch)?;
+    write_new_payload_params(data, &mut c.scratch)?;
     c.scratch.extend_from_slice(b",\"id\":");
     append_decimal_u64(rpc_id, &mut c.scratch);
     c.scratch.push(b'}');
@@ -145,7 +145,7 @@ pub fn send_new_payload(
         Transport::Http(p) => http_pool_enqueue(p, rpc_id, &c.scratch, &mut c.poll),
         Transport::Ipc(p) => ipc_pool_enqueue(p, rpc_id, &c.scratch, &mut c.poll),
     }
-    c.pending_requests.insert(rpc_id, ReqKind::NewPayload(req_id));
+    c.pending_requests.insert(rpc_id, ReqKind::NewPayload(block_root));
     Ok(())
 }
 

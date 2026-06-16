@@ -12,6 +12,7 @@ use silver_common::{Enr, ProtoIdentify, SilverSpine, TCache, TCacheProducer};
 use silver_config::Config;
 use silver_control::Controller;
 use silver_discovery::{DiscV5, Discovery};
+use silver_engine::EngineTile;
 use silver_gossip::GossipHandler;
 use silver_network::{Context, NetworkTile, P2p};
 use silver_peer::PeerManager;
@@ -53,6 +54,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         ssz_gossip_producer.cache_ref().random_access("ds_ssz_gossip", true)?;
     let ssz_persist_gossip_consumer_ds =
         ssz_gossip_producer.cache_ref().random_access("ds_persist_ssz_gossip", true)?;
+    let ssz_gossip_consumer_eng =
+        ssz_gossip_producer.cache_ref().random_access("eng_ssz_gossip", true)?;
     let outgoing_gossip_producer =
         TCache::producer("outgoing_gossip", config.outgoing_gossip_tcache_size());
     let incoming_rpc_producer = TCache::producer("incoming_rpc", config.incoming_rpc_tcache_size());
@@ -62,6 +65,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         incoming_rpc_producer.cache_ref().random_access("ds_incoming_rpc", true)?;
     let persist_rpc_consumer_ds =
         incoming_rpc_producer.cache_ref().random_access("ds_persist_incoming_rpc", true)?;
+    let incoming_rpc_consumer_eng =
+        incoming_rpc_producer.cache_ref().random_access("eng_incoming_rpc", true)?;
+    let incoming_engine_resp_producer = TCache::producer(
+        "incoming_engine_resp",
+        config.engine_config().incoming_engine_resp_tcache_size,
+    );
+    let incoming_engine_resp_consumer =
+        incoming_engine_resp_producer.cache_ref().random_access("engine_incoming_resp", true)?;
+
+    // rpc producer
     let outgoing_rpc_producer =
         TCache::multi_producer("outgoing_rpc", config.outgoing_rpc_tcache_size());
     let replay_blocks_producer = TCache::producer("replay_blocks", 1 << 25);
@@ -176,6 +189,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         state,
         ssz_gossip_consumer,
         incoming_rpc_consumer,
+        incoming_engine_resp_consumer,
         replay_blocks_consumer,
         !config.disable_weak_subjectivity_check(),
         &checkpoint,
@@ -201,6 +215,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         booting_from_local_checkpoint,
     );
 
+    let engine_tile = EngineTile::new(
+        config.engine_config(),
+        ssz_gossip_consumer_eng,
+        incoming_rpc_consumer_eng,
+        incoming_engine_resp_producer,
+    );
+
+    // Spine
     let spine = SilverSpine::new(None);
     // TODO panic handler
     spine.start(None, None, |scoped_spine| {
@@ -210,6 +232,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         attach_tile(network_tile, scoped_spine, TileConfig::new(3, ThreadPriority::OSDefault));
         attach_tile(beacon_state_tile, scoped_spine, TileConfig::new(4, ThreadPriority::OSDefault));
         attach_tile(storage_tile, scoped_spine, TileConfig::new(5, ThreadPriority::OSDefault));
+        attach_tile(engine_tile, scoped_spine, TileConfig::new(6, ThreadPriority::OSDefault));
     });
 
     Ok(())

@@ -153,9 +153,11 @@ fn finalized_state_loads() {
     let ticker = SlotTicker::new(genesis_time, Duration::from_secs(12), Duration::from_secs(4));
     let gossip_p = TCache::producer("gossip_in", 1 << 20);
     let rpc_p = TCache::producer("rpc_in", 1 << 20);
+    let engine_resp_p = TCache::producer("engine_resp", 1 << 24);
     let replay_p = TCache::producer("replay_in", 1 << 20);
     let gossip_c = gossip_p.cache_ref().random_access("test", false).unwrap();
     let rpc_c = rpc_p.cache_ref().random_access("test", false).unwrap();
+    let engine_resp_c = engine_resp_p.cache_ref().random_access("test", false).unwrap();
     let replay_c = replay_p.cache_ref().random_access("test", false).unwrap();
 
     let state = BeaconStateOwner::pre_bootstrap();
@@ -165,6 +167,7 @@ fn finalized_state_loads() {
         state,
         gossip_c,
         rpc_c,
+        engine_resp_c,
         replay_c,
         true,
         &ssz,
@@ -333,9 +336,11 @@ fn tile_apply_block_ef_fixture() {
     );
     let gossip_p = TCache::producer("gossip_ef", 1 << 20);
     let rpc_p = TCache::producer("rpc_ef", 1 << 20);
+    let engine_resp_p = TCache::producer("engine_resp", 1 << 24);
     let replay_p = TCache::producer("replay_ef", 1 << 20);
     let gossip_c = gossip_p.cache_ref().random_access("test", false).unwrap();
     let rpc_c = rpc_p.cache_ref().random_access("test", false).unwrap();
+    let engine_resp_c = engine_resp_p.cache_ref().random_access("test", false).unwrap();
     let replay_c = replay_p.cache_ref().random_access("test", false).unwrap();
 
     let state = BeaconStateOwner::pre_bootstrap();
@@ -345,6 +350,7 @@ fn tile_apply_block_ef_fixture() {
         state,
         gossip_c,
         rpc_c,
+        engine_resp_c,
         replay_c,
         true,
         &pre_ssz,

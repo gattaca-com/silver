@@ -274,6 +274,13 @@ impl StorageTile {
             "data columns by root request: {to_request:b}"
         );
 
+        // TODO(engine_getBlobsV2): try the EL mempool before/alongside the
+        // peer ByRoot request — produce `EngineReq::GetBlobs` with the
+        // versioned hashes from the block's kzg_commitments, then build the
+        // custody columns locally from the returned blobs. Avoids the p2p
+        // round trip for mempool blobs. Needs compute_cells_and_kzg_proofs
+        // (EIP-7594) and the `EngineResp::GetBlobs` queue consumed here
+        // rather than in the beacon state tile.
         if stream_id.protocol() != StreamProtocol::GossipSub {
             emit(self.column_request(block_root, to_request));
         }

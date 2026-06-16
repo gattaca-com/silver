@@ -1,9 +1,10 @@
 use flux::spine::FluxSpine;
 use silver_common::{
-    EngineFcuReq, EngineGetBlobsReq, EngineGetPayloadBodiesByHashReq,
-    EngineGetPayloadBodiesByRangeReq, EngineGetPayloadReq, EngineNewPayloadReq,
-    EngineNewPayloadResp, EnginePreparePayloadReq, EngineReq, EngineResp, PayloadValidationStatus,
-    SilverSpine, TRandomAccess,
+    BlockSource, EngineFcuReq, EngineFcuResp, EngineGetBlobsReq, EngineGetBlobsResp,
+    EngineGetPayloadBodiesByHashReq, EngineGetPayloadBodiesByRangeReq, EngineGetPayloadBodiesResp,
+    EngineGetPayloadReq, EngineGetPayloadResp, EngineNewPayloadReq, EngineNewPayloadResp,
+    EnginePreparePayloadReq, EngineReq, EngineResp, PayloadValidationStatus, SilverSpine,
+    TRandomAccess,
 };
 
 use crate::{
@@ -18,13 +19,16 @@ use crate::{
 #[inline]
 pub(crate) fn handle_request(
     client: &mut EngineClient,
-    req_consumer: &mut TRandomAccess,
+    gossip_consumer: &mut TRandomAccess,
+    rpc_consumer: &mut TRandomAccess,
     req: &EngineReq,
     producers: &mut <SilverSpine as FluxSpine>::Producers,
 ) {
     match req {
         EngineReq::Fcu(r) => handle_fcu(client, r),
-        EngineReq::NewPayload(r) => handle_new_payload(client, req_consumer, r, producers),
+        EngineReq::NewPayload(r) => {
+            handle_new_payload(client, gossip_consumer, rpc_consumer, r, producers)
+        }
         EngineReq::PreparePayload(r) => handle_prepare_payload(client, *r),
         EngineReq::GetPayload(r) => handle_get_payload(client, *r),
         EngineReq::GetBlobs(r) => handle_get_blobs(client, r),
@@ -33,48 +37,105 @@ pub(crate) fn handle_request(
     }
 }
 
+/// Unsafe no-EL testing mode: answer each request with a synthetic VALID
+/// response without contacting an execution client. Block-building and
+/// data-fetch results cannot be fabricated, so those return `ok: false`.
+#[inline]
+pub(crate) fn handle_request_no_el(
+    req: &EngineReq,
+    producers: &mut <SilverSpine as FluxSpine>::Producers,
+) {
+    let resp = match req {
+        EngineReq::Fcu(r) => EngineResp::Fcu(EngineFcuResp {
+            block_root: r.block_root,
+            status: PayloadValidationStatus::Valid,
+            latest_valid_hash: r.head_block_hash,
+            has_payload_id: false,
+            payload_id: [0u8; 8],
+        }),
+        EngineReq::NewPayload(r) => EngineResp::NewPayload(EngineNewPayloadResp {
+            block_root: r.block_root,
+            status: PayloadValidationStatus::Valid,
+            latest_valid_hash: [0u8; 32],
+        }),
+        // Proposal path correlates on payload_id; derive one from the spine id.
+        EngineReq::PreparePayload(r) => EngineResp::Fcu(EngineFcuResp {
+            block_root: [0u8; 32],
+            status: PayloadValidationStatus::Valid,
+            latest_valid_hash: [0u8; 32],
+            has_payload_id: true,
+            payload_id: r.id.to_le_bytes(),
+        }),
+        EngineReq::GetPayload(r) => EngineResp::GetPayload(EngineGetPayloadResp {
+            id: r.id,
+            ok: false,
+            data: unsafe { std::mem::zeroed() },
+        }),
+        EngineReq::GetBlobs(r) => EngineResp::GetBlobs(EngineGetBlobsResp {
+            id: r.id,
+            ok: false,
+            data: unsafe { std::mem::zeroed() },
+        }),
+        EngineReq::GetPayloadBodiesByHash(r) => {
+            EngineResp::GetPayloadBodies(EngineGetPayloadBodiesResp {
+                id: r.id,
+                ok: false,
+                data: unsafe { std::mem::zeroed() },
+            })
+        }
+        EngineReq::GetPayloadBodiesByRange(r) => {
+            EngineResp::GetPayloadBodies(EngineGetPayloadBodiesResp {
+                id: r.id,
+                ok: false,
+                data: unsafe { std::mem::zeroed() },
+            })
+        }
+    };
+    producers.engine_resps.produce(&resp.into());
+}
+
 #[inline]
 fn handle_fcu(client: &mut EngineClient, r: &EngineFcuReq) {
-    tracing::info!(head = %hex::encode(&r.head_block_hash[..4]), id = r.id, "FCU ← spine");
+    tracing::info!(head = %hex::encode(&r.head_block_hash[..4]), "FCU ← spine");
     let state = ForkchoiceState {
         head_block_hash: r.head_block_hash,
         safe_block_hash: r.safe_block_hash,
         finalized_block_hash: r.finalized_block_hash,
     };
-    send_fcu(client, state, None, r.id);
+    send_fcu(client, r.block_root, state, None);
 }
 
 #[inline]
 fn handle_new_payload(
     client: &mut EngineClient,
-    req_consumer: &mut TRandomAccess,
+    gossip_consumer: &mut TRandomAccess,
+    rpc_consumer: &mut TRandomAccess,
     r: &EngineNewPayloadReq,
     producers: &mut <SilverSpine as FluxSpine>::Producers,
 ) {
-    let acquired = req_consumer.acquire(r.data);
+    let consumer = match r.block_source {
+        BlockSource::Gossip => gossip_consumer,
+        BlockSource::Rpc => rpc_consumer,
+    };
+    let acquired = consumer.acquire(r.data);
     let bytes = match acquired.buffer() {
         Ok((b, _)) => b,
         Err(e) => {
             tracing::warn!("failed to read payload data: {e}");
             producers
                 .engine_resps
-                .produce(&EngineResp::NewPayload(invalid_new_payload_resp(r.id)).into());
+                .produce(&EngineResp::NewPayload(invalid_new_payload_resp(r.block_root)).into());
             return;
         }
     };
 
-    let n = r.versioned_hash_count as usize;
-    if let Err(e) =
-        send_new_payload(client, bytes, &r.versioned_hashes[..n], &r.parent_beacon_block_root, r.id)
-    {
+    if let Err(e) = send_new_payload(client, bytes, r.block_root) {
         tracing::warn!("failed to encode payload: {e}");
         producers
             .engine_resps
-            .produce(&EngineResp::NewPayload(invalid_new_payload_resp(r.id)).into());
+            .produce(&EngineResp::NewPayload(invalid_new_payload_resp(r.block_root)).into());
     }
-
-    drop(acquired);
-    req_consumer.free();
+    consumer.free();
 }
 
 #[inline]
@@ -131,7 +192,8 @@ fn handle_prepare_payload(client: &mut EngineClient, r: EnginePreparePayloadReq)
         withdrawals,
         parent_beacon_block_root: r.attrs_parent_beacon_block_root,
     });
-    send_fcu(client, state, attrs, r.id);
+    // Proposal path correlates on payload_id, not the head verdict.
+    send_fcu(client, [0u8; 32], state, attrs);
 }
 
 #[inline]
@@ -141,11 +203,11 @@ fn handle_get_payload(client: &mut EngineClient, r: EngineGetPayloadReq) {
 }
 
 #[inline]
-fn invalid_new_payload_resp(id: u64) -> EngineNewPayloadResp {
+fn invalid_new_payload_resp(block_root: [u8; 32]) -> EngineNewPayloadResp {
     // Internal error (TCache read/decode failure) — use SYNCING, not INVALID.
     // INVALID tells the CL the block is definitively bad; we don't know that here.
     EngineNewPayloadResp {
-        id,
+        block_root,
         status: PayloadValidationStatus::Syncing,
         latest_valid_hash: [0u8; 32],
     }
@@ -157,16 +219,8 @@ mod tests {
 
     #[test]
     fn invalid_new_payload_resp_fields() {
-        let resp = invalid_new_payload_resp(99);
-        assert_eq!(resp.id, 99);
+        let resp = invalid_new_payload_resp([0u8; 32]);
         assert_eq!(resp.status, PayloadValidationStatus::Syncing);
         assert_eq!(resp.latest_valid_hash, [0u8; 32]);
-    }
-
-    #[test]
-    fn invalid_new_payload_resp_preserves_id() {
-        for id in [0, 1, u64::MAX] {
-            assert_eq!(invalid_new_payload_resp(id).id, id);
-        }
     }
 }

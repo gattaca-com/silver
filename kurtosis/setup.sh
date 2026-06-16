@@ -11,7 +11,8 @@
 # Generates silver-devnet.toml from scratch each run (derived fields harvested
 # from the CL; static fields — secret_key, ports, next_fork_version — taken
 # from the env-overridable vars below). Also writes genesis.ssz (the sync
-# anchor) alongside it.
+# anchor) and el/ (genesis + bootnodes + JWT for silver's dedicated local
+# reth — start it with run-reth.sh).
 #
 # Requires: kurtosis, docker, curl, jq. Linux only — silver runs as a host
 # process joining the Docker bridge, and external_ip_v4 detection is
@@ -44,6 +45,10 @@ NEXT_FORK_VERSION="${NEXT_FORK_VERSION:-06000000}"
 # floor (SAMPLES_PER_SLOT): custody set covers the full sample set, so values
 # below 8 are raised to 8. Bump to custody/serve more columns.
 CUSTODY_GROUP_COUNT="${CUSTODY_GROUP_COUNT:-8}"
+# silver <-> local reth engine API (see run-reth.sh). Any 32-byte hex JWT
+# works — both sides read the same generated file.
+ENGINE_PORT="${ENGINE_PORT:-8551}"
+JWT_SECRET="${JWT_SECRET:-2222222222222222222222222222222222222222222222222222222222222222}"
 
 # Pin a known-good release — the bare locator pulls the default branch (HEAD),
 # which periodically breaks (e.g. the zkboost `GpuConfig` regression). Bump the
@@ -154,6 +159,49 @@ mbe="$(jq -r '.MAX_BLOBS_PER_BLOCK_ELECTRA | tonumber' <<<"$SPEC")"
 sps="$(jq -r '.SECONDS_PER_SLOT | tonumber' <<<"$SPEC")"
 echo "spec: fulu_fork_version=$ffv"
 
+# 7d. Local EL — silver drives its own dedicated reth over the engine API
+#     (newPayload / forkchoiceUpdated). A dedicated EL, not a shared enclave
+#     one: two CLs driving one EL fight over its fork choice. Harvest what a
+#     host reth needs — the EL genesis, the devnet EL enodes, and a JWT —
+#     into el/; run-reth.sh consumes them.
+EL_DIR="$HERE/el"
+mkdir -p "$EL_DIR"
+
+echo "fetching EL genesis -> $EL_DIR/genesis"
+rm -rf "$EL_DIR/genesis"
+kurtosis files download "$ENCLAVE" el_cl_genesis_data "$EL_DIR/genesis" >/dev/null
+GENESIS_JSON="$(find "$EL_DIR/genesis" -name genesis.json | head -1)"
+[ -n "$GENESIS_JSON" ] && [ -s "$GENESIS_JSON" ] || {
+  echo "no genesis.json in el_cl_genesis_data artifact" >&2; exit 1;
+}
+
+# A new enclave means a new EL chain: drop the reth datadir when the
+# downloaded genesis changes, else reth refuses the mismatched chain.
+GENESIS_SUM="$(sha256sum "$GENESIS_JSON" | awk '{print $1}')"
+if [ "$(cat "$EL_DIR/genesis.sha256" 2>/dev/null)" != "$GENESIS_SUM" ]; then
+  rm -rf "$EL_DIR/datadir"
+  echo "$GENESIS_SUM" > "$EL_DIR/genesis.sha256"
+fi
+
+# enodes of the devnet ELs -> reth bootnodes/trusted peers. Container IPs in
+# the enodes are host-routable on Linux (same model as the CL dialing).
+# admin_nodeInfo failures are skipped (client without the admin namespace).
+ENODES=()
+for svc in $(kurtosis enclave inspect "$ENCLAVE" \
+  | grep -oE 'el-[0-9]+-[a-z]+-[a-z]+' | sort -u); do
+  url="$(kurtosis port print "$ENCLAVE" "$svc" rpc)" || continue
+  [[ "$url" == http* ]] || url="http://$url"
+  enode="$(curl -fsS -X POST -H 'Content-Type: application/json' \
+    --data '{"jsonrpc":"2.0","method":"admin_nodeInfo","params":[],"id":1}' \
+    "$url" | jq -r '.result.enode // empty')" || continue
+  [ -n "$enode" ] && ENODES+=("$enode")
+done
+[ "${#ENODES[@]}" -gt 0 ] || { echo "no EL enodes harvested" >&2; exit 1; }
+printf '%s\n' "${ENODES[@]}" > "$EL_DIR/bootnodes.txt"
+echo "EL bootnodes: ${#ENODES[@]} harvested"
+
+echo "$JWT_SECRET" > "$EL_DIR/jwt.hex"
+
 # 8. Write the config TOML. Static fields from the vars above; derived fields
 #    harvested. external_ip_v4 omitted if unresolved (outbound-only).
 {
@@ -165,6 +213,13 @@ echo "spec: fulu_fork_version=$ffv"
   echo "discovery_port = $DISCOVERY_PORT"
   echo "quic_port = $QUIC_PORT"
   echo "data_column_custody_group_count = $CUSTODY_GROUP_COUNT"
+  echo
+  echo "[engine_config]"
+  echo "execution_endpoint = \"http://127.0.0.1:$ENGINE_PORT\""
+  echo "jwt_secret = \"$EL_DIR/jwt.hex\""
+  # Unsafe no-EL testing mode: set UNSAFE_NO_EL=1 to run silver without a local
+  # reth — the engine tile answers every request VALID (CL-only testing).
+  [ -n "$UNSAFE_NO_EL" ] && echo "unsafe_no_el = true"
   echo
   echo "[chain_config]"
   echo "genesis_unix_secs = $GENESIS"
@@ -187,6 +242,9 @@ echo "spec: fulu_fork_version=$ffv"
 } > "$CONFIG"
 
 echo "wrote -> $CONFIG"
+echo
+echo "start silver's local reth (separate terminal):"
+echo "  kurtosis/run-reth.sh"
 echo
 echo "run silver:"
 echo "  RUST_LOG=info,silver_network=info,silver_peer=info \\"

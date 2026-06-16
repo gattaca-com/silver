@@ -2,6 +2,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV
 
 use chain_config::ChainConfig;
 pub use discovery_config::DiscoveryConfig;
+pub use engine_config::EngineConfig;
 pub use peer_score_params::ScoreParams;
 use secp256k1::PublicKey;
 use serde::{Deserialize, Serialize};
@@ -12,6 +13,7 @@ pub use syncing_config::SyncingConfig;
 
 mod chain_config;
 mod discovery_config;
+mod engine_config;
 mod peer_score_params;
 mod syncing_config;
 
@@ -110,6 +112,8 @@ pub struct Config {
     #[serde(default = "default_data_dir")]
     data_storage_dir: String,
     #[serde(default)]
+    engine_config: EngineConfig,
+    #[serde(default)]
     disable_weak_subjectivity_check: bool,
 }
 
@@ -142,6 +146,7 @@ impl Config {
             incoming_rpc_tcache_size: 2 << 27,        // ssz
             outgoing_rpc_tcache_size: 2 << 24,        // ssz
             data_storage_dir: default_data_dir(),
+            engine_config: Default::default(),
             disable_weak_subjectivity_check: false,
         }
     }
@@ -311,6 +316,10 @@ impl Config {
 
     pub fn data_storage_dir(&self) -> &str {
         &self.data_storage_dir
+    }
+
+    pub fn engine_config(&self) -> EngineConfig {
+        self.engine_config.clone()
     }
 
     pub fn disable_weak_subjectivity_check(&self) -> bool {

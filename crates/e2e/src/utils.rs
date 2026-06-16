@@ -131,9 +131,12 @@ impl PmBsHarness {
         let gossip_p = TCache::producer("gossip_in", 1 << 20);
         let rpc_cap = (n_blocks * 300 * 1024).next_power_of_two().max(1 << 22);
         let rpc_p = TCache::producer("rpc_in", rpc_cap);
+        let engine_resp_p = TCache::producer("engine_resp", 1 << 24);
         let replay_p = TCache::producer("replay_in", 1 << 20);
         let gossip_c = gossip_p.cache_ref().random_access("test", true).expect("gossip ra");
         let rpc_c = rpc_p.cache_ref().random_access("test", true).expect("rpc ra");
+        let engine_resp_c =
+            engine_resp_p.cache_ref().random_access("test", true).expect("engine resp ra");
         let replay_c = replay_p.cache_ref().random_access("test", true).expect("replay ra");
 
         let state = BeaconStateOwner::pre_bootstrap();
@@ -143,6 +146,7 @@ impl PmBsHarness {
             state,
             gossip_c,
             rpc_c,
+            engine_resp_c,
             replay_c,
             true,
             checkpoint,
