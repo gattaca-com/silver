@@ -165,6 +165,7 @@ fn finalized_state_loads() {
     let mut tile = BeaconStateTile::new(
         ticker,
         silver_beacon_state_data::SpecConfig::mainnet(),
+        &silver_config::SyncingConfig::default(),
         gossip_c,
         rpc_c,
         engine_resp_c,
@@ -347,6 +348,7 @@ fn tile_apply_block_ef_fixture() {
     let mut tile = BeaconStateTile::new(
         ticker,
         silver_beacon_state_data::SpecConfig::mainnet(),
+        &silver_config::SyncingConfig::default(),
         gossip_c,
         rpc_c,
         engine_resp_c,

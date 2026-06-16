@@ -144,6 +144,7 @@ impl PmBsHarness {
         let mut bs = BeaconStateTile::new(
             ticker,
             SpecConfig::mainnet(),
+            &SyncingConfig::default(),
             gossip_c,
             rpc_c,
             engine_resp_c,

@@ -11,6 +11,7 @@ ef_tests = []
 [dependencies]
 silver_common.workspace = true
 silver_beacon_state_data.workspace = true
+silver_config.workspace = true
 silver_metrics.workspace = true
 silver_ssz.workspace = true
 flux.workspace = true

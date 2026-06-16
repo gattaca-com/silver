@@ -12,7 +12,7 @@ pub enum PrecheckError {
          block_slot={block_slot}",
         b256_hex(parent_root)
     )]
-    ParentMissing { parent_root: B256, last_applied_slot: Slot, block_slot: Slot },
+    ParentMissing { parent_root: B256, block_root: B256, last_applied_slot: Slot, block_slot: Slot },
     #[error(
         "block parent invalid: parent_root=0x{} block_root=0x{}",
         b256_hex(parent_root),
@@ -41,28 +41,22 @@ pub enum PrecheckError {
         b256_hex(block_root)
     )]
     ProposerIndexTooBig { got: u64, validator_count: usize, block_root: B256 },
-    #[error(
-        "block signature precheck failed: proposer_index={proposer_index} pubkey=0x{} \
-         block_root=0x{}",
-        pubkey_hex(pubkey),
-        b256_hex(block_root)
-    )]
-    InvalidBls { proposer_index: u64, pubkey: BLSPubkey, block_root: B256 },
 }
 
 impl PrecheckError {
     pub fn feedback(self) -> Feedback {
         match self {
             Self::SizeMismatch { .. } => Feedback::Reject(None),
-            Self::ParentMissing { parent_root, .. } => Feedback::RequestParent(parent_root),
+            Self::ParentMissing { parent_root, block_root, .. } => {
+                Feedback::RequestParent { parent_root, block_root }
+            }
             Self::PreFinalized { .. } |
             Self::PastSlot { .. } |
             Self::FutureSlot { .. } |
             Self::AlreadyKnown { .. } => Feedback::Ignore,
             Self::ParentInvalid { block_root, .. } |
             Self::ProposerLookaheadMismatch { block_root, .. } |
-            Self::ProposerIndexTooBig { block_root, .. } |
-            Self::InvalidBls { block_root, .. } => Feedback::Reject(Some(block_root)),
+            Self::ProposerIndexTooBig { block_root, .. } => Feedback::Reject(Some(block_root)),
         }
     }
 }

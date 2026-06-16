@@ -22,6 +22,7 @@ use silver_common::{
     ssz_view::{STATUS_V2_SIZE, SignedBeaconBlockView},
     ticker::SlotTicker,
 };
+use silver_config::SyncingConfig;
 
 fn null_stream_id() -> P2pStreamId {
     P2pStreamId::new(0, 0, StreamProtocol::Unset, false)
@@ -101,6 +102,7 @@ pub enum OutboundKind {
     BlockRejected,
     SendGossip,
     ReplayComplete,
+    BacktrackStall,
 }
 
 impl OutboundKind {
@@ -111,6 +113,7 @@ impl OutboundKind {
             "block_rejected" => Self::BlockRejected,
             "send_gossip" => Self::SendGossip,
             "replay_complete" => Self::ReplayComplete,
+            "backtrack_stall" => Self::BacktrackStall,
             _ => return None,
         })
     }
@@ -121,6 +124,7 @@ impl OutboundKind {
             BeaconStateEvent::PersistBlock { .. } => Self::PersistBlock,
             BeaconStateEvent::BlockRejected { .. } => Self::BlockRejected,
             BeaconStateEvent::ReplayComplete => Self::ReplayComplete,
+            BeaconStateEvent::BacktrackStall => Self::BacktrackStall,
         }
     }
 }
@@ -130,7 +134,17 @@ impl Harness {
         Self::build(wall_slot, |ticker, gc, rc, ec, repc| {
             let state = BeaconState::from_checkpoint(checkpoint_ssz, &SpecConfig::mainnet(), &[])
                 .unwrap_or_else(|e| panic!("decompose checkpoint: {e}"));
-            BeaconStateTile::new(ticker, SpecConfig::mainnet(), gc, rc, ec, repc, true, state)
+            BeaconStateTile::new(
+                ticker,
+                SpecConfig::mainnet(),
+                &SyncingConfig::default(),
+                gc,
+                rc,
+                ec,
+                repc,
+                true,
+                state,
+            )
         })
     }
 

@@ -4352,6 +4352,7 @@ dependencies = [
  "serde_yml",
  "silver_beacon_state_data",
  "silver_common",
+ "silver_config",
  "silver_metrics",
  "silver_ssz",
  "snap 0.1.2",

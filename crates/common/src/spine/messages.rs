@@ -618,6 +618,7 @@ pub enum BeaconStateEvent {
     PersistBlock { ssz: TCacheRead, source: BlockSource },
     BlockRejected { block_root: [u8; 32], source: BlockSource },
     ReplayComplete,
+    BacktrackStall,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -865,7 +866,9 @@ impl BeaconStateEvent {
         match self {
             Self::Status { .. } => SszView::Status(StatusView {}),
             Self::PersistBlock { .. } => SszView::SignedBeaconBlock(SignedBeaconBlockView {}),
-            Self::BlockRejected { .. } | Self::ReplayComplete => SszView::None,
+            Self::BlockRejected { .. } | Self::ReplayComplete | Self::BacktrackStall => {
+                SszView::None
+            }
         }
     }
 }

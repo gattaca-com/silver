@@ -137,6 +137,9 @@ impl Tile<SilverSpine> for Controller {
             BeaconStateEvent::ReplayComplete => {
                 self.peer_manager.on_local_replay_complete();
             }
+            BeaconStateEvent::BacktrackStall => {
+                self.peer_manager.request_resync();
+            }
             _ => {}
         });
 
