@@ -1493,6 +1493,13 @@ impl PeerManager {
         }
     }
 
+    fn ban_disc_peer(&mut self, peer_id: PeerId, now: Instant, emit: &mut impl FnMut(PeerControl)) {
+        if self.banned_peers.insert(peer_id, now).is_none() {
+            crate::PeerCounters::PeersBanned.inc();
+            emit(PeerControl::Ban { p2p: peer_id });
+        }
+    }
+
     /// Discovery surfaced a candidate peer. Filter chain:
     /// 1. Fork-digest match (if `our_fork_digest` is set).
     /// 2. IP not in our recent ban set.
@@ -1514,12 +1521,22 @@ impl PeerManager {
                             ?enr,
                             "fork digest mismatch"
                         );
+                        self.ban_disc_peer(
+                            PeerId::from_secp256k1_pubkey(&enr.public_key().serialize()),
+                            now,
+                            emit,
+                        );
                         return;
                     }
                 }
                 None => {
                     crate::PeerCounters::DiscDroppedForkDigest.inc();
                     tracing::trace!("Not a beacon node, no eth2");
+                    self.ban_disc_peer(
+                        PeerId::from_secp256k1_pubkey(&enr.public_key().serialize()),
+                        now,
+                        emit,
+                    );
                     return;
                 }
             }
@@ -1556,6 +1573,7 @@ impl PeerManager {
 
         if enr.quic4_socket().is_none() && enr.quic6_socket().is_none() {
             tracing::debug!(udp4=?enr.udp4(), udp6=enr.udp6(), tcp4=?enr.tcp4(), tcp6=enr.tcp6(), "Peer does not support quic");
+            self.ban_disc_peer(peer_id, now, emit);
             return;
         }
 
@@ -1877,7 +1895,7 @@ impl PeerManager {
             }
         }
         for (conn, peer_id, ip) in evict {
-            emit(PeerControl::Ban { p2p: peer_id, p2p_connection: conn });
+            emit(PeerControl::Ban { p2p: peer_id });
             crate::PeerCounters::PeersEvicted.inc();
             crate::PeerCounters::PeersBanned.inc();
             self.banned_peers.insert(peer_id, now);

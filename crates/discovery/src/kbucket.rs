@@ -182,6 +182,22 @@ impl<T: Copy> KBucket<T> {
         InsertResult::Inserted
     }
 
+    /// Remove `key` from the committed slots or the pending slot. Returns
+    /// whether anything was removed.
+    fn remove(&mut self, key: &Key) -> bool {
+        if let Some(pos) = self.position(key) {
+            let len = self.nodes.len();
+            self.nodes.copy_within(pos + 1..len, pos);
+            self.nodes.truncate(len - 1);
+            return true;
+        }
+        if self.pending.as_ref().is_some_and(|p| &p.node.key == key) {
+            self.pending = None;
+            return true;
+        }
+        false
+    }
+
     /// Promote the pending node if its timeout has elapsed, evicting the
     /// current LRU.
     fn apply_pending(&mut self) -> Option<AppliedPending<T>> {
@@ -282,6 +298,15 @@ impl<T: Copy> KBucketsTable<T> {
         let i = BucketIndex::new(&self.local_key.distance(key))?;
         let pos = self.buckets[i.get()].position(key)?;
         Some(&self.buckets[i.get()].nodes[pos])
+    }
+
+    /// Evict a node from the routing table (committed or pending slot).
+    /// Returns whether it was present.
+    pub fn remove(&mut self, key: &Key) -> bool {
+        match BucketIndex::new(&self.local_key.distance(key)) {
+            Some(i) => self.buckets[i.get()].remove(key),
+            None => false,
+        }
     }
 
     /// `(bucket_index, committed_node_count)` for every non-empty bucket.
