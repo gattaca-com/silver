@@ -1,17 +1,17 @@
 use silver_common_macros::timed;
 
 use crate::{
-    BalancesGroup, BeaconState, CurrentParticipationGroup, EpochGroup, EpochStateFinalized,
-    Eth1Group, Eth1Votes, FinalizedValidators, InactivityScoresGroup, LongtailGroup, LongtailState,
-    PendingGroup, PendingQueues, PreviousParticipationGroup, SlotStateFinalized, SlotStateGroup,
-    SpecConfig, ValidatorsDecodeError, ValidatorsGroup, ssz_hash,
+    BalancesGroup, BeaconState, ColumnLenMismatch, CurrentParticipationGroup, EpochGroup,
+    EpochStateFinalized, Eth1Group, Eth1Votes, FinalizedValidators, InactivityScoresGroup,
+    LongtailGroup, LongtailState, PendingGroup, PreviousParticipationGroup, QueueItem,
+    SlotStateFinalized, SlotStateGroup, SpecConfig, ValidatorsDecodeError, ValidatorsGroup,
+    decode_checkpoint_pubkeys, ssz_hash,
     types::{
         B256, BeaconBlockHeader, Checkpoint, EPOCHS_PER_HISTORICAL_VECTOR,
         EPOCHS_PER_SLASHINGS_VECTOR, Eth1Data, ExecutionPayloadHeader, HISTORICAL_ROOTS_LIMIT,
-        HistoricalSummary, Immutable, MAX_ETH1_VOTES, PENDING_CONSOLIDATIONS_LIMIT,
-        PENDING_DEPOSITS_LIMIT, PENDING_PARTIAL_WITHDRAWALS_LIMIT, PROPOSER_LOOKAHEAD_SIZE,
+        HistoricalSummary, Immutable, MAX_ETH1_VOTES, PROPOSER_LOOKAHEAD_SIZE,
         PendingConsolidation, PendingDeposit, PendingPartialWithdrawal, SLOTS_PER_EPOCH,
-        SLOTS_PER_HISTORICAL_ROOT, SYNC_COMMITTEE_SIZE, SlotState, SyncCommittee, Withdrawals,
+        SLOTS_PER_HISTORICAL_ROOT, SYNC_COMMITTEE_SIZE, SlotState, SyncCommittee,
     },
 };
 
@@ -93,14 +93,8 @@ pub enum DecomposeError {
     SyncCommitteeOutOfBounds { which: &'static str, off: usize, end: usize, len: usize },
     #[error(transparent)]
     Validators(#[from] ValidatorsDecodeError),
-    #[error("balances bytes {bytes} doesn't match validator count {validators} (×8)")]
-    BalancesLenMismatch { bytes: usize, validators: usize },
-    #[error("previous_epoch_participation bytes {bytes} != validator count {validators}")]
-    PrevParticipationLenMismatch { bytes: usize, validators: usize },
-    #[error("current_epoch_participation bytes {bytes} != validator count {validators}")]
-    CurParticipationLenMismatch { bytes: usize, validators: usize },
-    #[error("inactivity_scores bytes {bytes} doesn't match validator count {validators} (×8)")]
-    InactivityLenMismatch { bytes: usize, validators: usize },
+    #[error(transparent)]
+    Column(#[from] ColumnLenMismatch),
     #[error("eth1_votes bytes {len} not a multiple of {ETH1_DATA_SSZ_SIZE}")]
     Eth1VotesLenNotMultiple { len: usize },
     #[error("too many eth1_votes: {n} > MAX_ETH1_VOTES {max}")]
@@ -297,6 +291,27 @@ impl Offsets {
 }
 
 impl BeaconState {
+    /// Decode the checkpoint state, using the pubkey sidecar when it's present
+    /// and valid and decompressing from the SSZ otherwise. Keeps the sidecar
+    /// plumbing out of every caller.
+    pub fn from_checkpoint(
+        ssz: &[u8],
+        cfg: &SpecConfig,
+        pubkey_sidecar: &[u8],
+    ) -> Result<Self, DecomposeError> {
+        // The sidecar is an optimization (skips pubkey decompression); on any
+        // problem with it, fall back to decompressing from the SSZ.
+        if !pubkey_sidecar.is_empty() {
+            if let Ok(pubkeys) = decode_checkpoint_pubkeys(pubkey_sidecar) &&
+                let Ok(state) = Self::decompose(ssz, cfg, Some(&pubkeys))
+            {
+                return Ok(state);
+            }
+            tracing::warn!("checkpoint pubkey sidecar unusable; decompressing from SSZ");
+        }
+        Self::decompose(ssz, cfg, None)
+    }
+
     /// Decompose a Fulu-encoded BeaconState SSZ blob — the one public way to
     /// construct a real `BeaconState`. `pubkeys` is the optional checkpoint
     /// sidecar of pre-decompressed validator pubkeys (verified against the
@@ -332,27 +347,19 @@ impl BeaconState {
         let (cap, n) =
             (validators.finalized().capacity(), validators.finalized().validator_count());
 
-        // Construction = validation: the column constructors check byte length
-        // against the validator count; map to field-specific errors.
+        // Construction = validation: each column constructor length-checks against the
+        // validator count.
         let balances_bytes = &ssz[offsets.balances..offsets.prev_participation];
-        let balances = BalancesGroup::new(cap, n, balances_bytes)
-            .map_err(|e| DecomposeError::BalancesLenMismatch { bytes: e.bytes, validators: n })?;
+        let balances = BalancesGroup::new(cap, n, balances_bytes)?;
 
         let prev_part = &ssz[offsets.prev_participation..offsets.cur_participation];
-        let previous_participation =
-            PreviousParticipationGroup::new(cap, n, prev_part).map_err(|e| {
-                DecomposeError::PrevParticipationLenMismatch { bytes: e.bytes, validators: n }
-            })?;
+        let previous_participation = PreviousParticipationGroup::new(cap, n, prev_part)?;
 
         let cur_part = &ssz[offsets.cur_participation..offsets.inactivity];
-        let current_participation =
-            CurrentParticipationGroup::new(cap, n, cur_part).map_err(|e| {
-                DecomposeError::CurParticipationLenMismatch { bytes: e.bytes, validators: n }
-            })?;
+        let current_participation = CurrentParticipationGroup::new(cap, n, cur_part)?;
 
         let inactivity_bytes = &ssz[offsets.inactivity..offsets.eph];
-        let inactivity = InactivityScoresGroup::new(cap, n, inactivity_bytes)
-            .map_err(|e| DecomposeError::InactivityLenMismatch { bytes: e.bytes, validators: n })?;
+        let inactivity = InactivityScoresGroup::new(cap, n, inactivity_bytes)?;
 
         immutable.fill_historical_roots_hash(ssz, &offsets)?;
 
@@ -361,7 +368,7 @@ impl BeaconState {
         let longtail =
             LongtailGroup::new(LongtailState::from_ssz(ssz, &offsets, validators.finalized())?);
 
-        let pending = PendingGroup::new(PendingQueues::from_ssz(ssz, &offsets)?);
+        let pending = decode_pending(ssz, &offsets)?;
 
         Ok(Self {
             immutable,
@@ -578,84 +585,42 @@ impl SlotStateFinalized {
     }
 }
 
-impl PendingQueues {
-    pub(crate) fn from_ssz(ssz: &[u8], o: &Offsets) -> Result<Self, DecomposeError> {
-        let mut q = Self::default();
-
-        let pd_bytes = &ssz[o.pending_deposits..o.pending_withdrawals];
-        if !pd_bytes.len().is_multiple_of(PENDING_DEPOSIT_SSZ_SIZE) {
-            return Err(DecomposeError::PendingDepositsLenNotMultiple { len: pd_bytes.len() });
-        }
-        let pd_count = pd_bytes.len() / PENDING_DEPOSIT_SSZ_SIZE;
-        if pd_count > PENDING_DEPOSITS_LIMIT {
-            return Err(DecomposeError::TooManyPendingDeposits {
-                n: pd_count,
-                max: PENDING_DEPOSITS_LIMIT,
-            });
-        }
-        q.pending_deposits.reserve_exact(pd_count);
-        for i in 0..pd_count {
-            q.pending_deposits
-                .push(read_pending_deposit(&pd_bytes[i * PENDING_DEPOSIT_SSZ_SIZE..]));
-        }
-
-        let pw_bytes = &ssz[o.pending_withdrawals..o.pending_consolidations];
-        if !pw_bytes.len().is_multiple_of(PENDING_PARTIAL_WITHDRAWAL_SSZ_SIZE) {
-            return Err(DecomposeError::PendingWithdrawalsLenNotMultiple { len: pw_bytes.len() });
-        }
-        let pw_count = pw_bytes.len() / PENDING_PARTIAL_WITHDRAWAL_SSZ_SIZE;
-        if pw_count > PENDING_PARTIAL_WITHDRAWALS_LIMIT {
-            return Err(DecomposeError::TooManyPendingWithdrawals {
-                n: pw_count,
-                max: PENDING_PARTIAL_WITHDRAWALS_LIMIT,
-            });
-        }
-        q.pending_partial_withdrawals.reserve_exact(pw_count);
-        for i in 0..pw_count {
-            let w = &pw_bytes[i * PENDING_PARTIAL_WITHDRAWAL_SSZ_SIZE..];
-            q.pending_partial_withdrawals.push(PendingPartialWithdrawal {
-                index: u64_le(w, 0),
-                amount: u64_le(w, 8),
-                withdrawable_epoch: u64_le(w, 16),
-            });
-        }
-
-        let pc_bytes = &ssz[o.pending_consolidations..];
-        if !pc_bytes.len().is_multiple_of(PENDING_CONSOLIDATION_SSZ_SIZE) {
-            return Err(DecomposeError::PendingConsolidationsLenNotMultiple { len: pc_bytes.len() });
-        }
-        let pc_count = pc_bytes.len() / PENDING_CONSOLIDATION_SSZ_SIZE;
-        if pc_count > PENDING_CONSOLIDATIONS_LIMIT {
-            return Err(DecomposeError::TooManyPendingConsolidations {
-                n: pc_count,
-                max: PENDING_CONSOLIDATIONS_LIMIT,
-            });
-        }
-        q.pending_consolidations.reserve_exact(pc_count);
-        for i in 0..pc_count {
-            let c = &pc_bytes[i * PENDING_CONSOLIDATION_SSZ_SIZE..];
-            q.pending_consolidations.push(PendingConsolidation {
-                source_index: u64_le(c, 0),
-                target_index: u64_le(c, 8),
-            });
-        }
-
-        Ok(q)
-    }
+/// Decode the three pending queues from their SSZ byte ranges into isolated
+/// groups. Each range must be a whole number of fixed-size records within its
+/// `List` limit; the per-element codec lives on [`QueueItem`].
+fn decode_pending(ssz: &[u8], o: &Offsets) -> Result<PendingGroup, DecomposeError> {
+    let pd = validate_queue::<PendingDeposit>(
+        &ssz[o.pending_deposits..o.pending_withdrawals],
+        |len| DecomposeError::PendingDepositsLenNotMultiple { len },
+        |n, max| DecomposeError::TooManyPendingDeposits { n, max },
+    )?;
+    let pw = validate_queue::<PendingPartialWithdrawal>(
+        &ssz[o.pending_withdrawals..o.pending_consolidations],
+        |len| DecomposeError::PendingWithdrawalsLenNotMultiple { len },
+        |n, max| DecomposeError::TooManyPendingWithdrawals { n, max },
+    )?;
+    let pc = validate_queue::<PendingConsolidation>(
+        &ssz[o.pending_consolidations..],
+        |len| DecomposeError::PendingConsolidationsLenNotMultiple { len },
+        |n, max| DecomposeError::TooManyPendingConsolidations { n, max },
+    )?;
+    Ok(PendingGroup::from_ssz(pd, pw, pc))
 }
 
-fn read_pending_deposit(d: &[u8]) -> PendingDeposit {
-    let mut pubkey = [0u8; 48];
-    pubkey.copy_from_slice(&d[..48]);
-    let mut signature = [0u8; 96];
-    signature.copy_from_slice(&d[88..184]);
-    PendingDeposit {
-        pubkey,
-        withdrawal_credentials: Withdrawals(b256(d, 48)),
-        amount: u64_le(d, 80),
-        signature,
-        slot: u64_le(d, 184),
+/// Validate a pending-queue byte range: whole records, count within limit.
+fn validate_queue<Q: QueueItem>(
+    bytes: &[u8],
+    len_err: impl Fn(usize) -> DecomposeError,
+    many_err: impl Fn(usize, usize) -> DecomposeError,
+) -> Result<&[u8], DecomposeError> {
+    if !bytes.len().is_multiple_of(Q::SSZ_SIZE) {
+        return Err(len_err(bytes.len()));
     }
+    let n = bytes.len() / Q::SSZ_SIZE;
+    if n > Q::SSZ_LIMIT {
+        return Err(many_err(n, Q::SSZ_LIMIT));
+    }
+    Ok(bytes)
 }
 
 #[cfg(test)]

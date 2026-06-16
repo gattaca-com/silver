@@ -1,7 +1,7 @@
 {
-  "max_decompose": "48s",
-  "max_apply_block_p50": "0.5s",
-  "max_apply_block_max": "1.7s",
-  "max_process_epoch_avg": "0.6s",
-  "max_hash_tree_root_state_avg": "0.25s"
+  "max_decompose": "36s",
+  "max_apply_block_p50": "92ms",
+  "max_apply_block_max": "540ms",
+  "max_process_epoch_avg": "440ms",
+  "max_hash_tree_root_state_avg": "7.6ms"
 }

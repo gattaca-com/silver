@@ -1,8 +1,7 @@
 use silver_beacon_state_data::{
     self as common, BeaconBlockHeader, Checkpoint, EPOCHS_PER_HISTORICAL_VECTOR,
     EPOCHS_PER_SLASHINGS_VECTOR, Eth1Data, ExecutionPayloadHeader, Fork, HISTORICAL_ROOTS_LIMIT,
-    LongtailView, MAX_ETH1_VOTES, PENDING_CONSOLIDATIONS_LIMIT, PENDING_DEPOSITS_LIMIT,
-    PENDING_PARTIAL_WITHDRAWALS_LIMIT, PendingView, SLOTS_PER_HISTORICAL_ROOT, SYNC_COMMITTEE_SIZE,
+    LongtailView, MAX_ETH1_VOTES, PendingView, SLOTS_PER_HISTORICAL_ROOT, SYNC_COMMITTEE_SIZE,
     StateReadView, SyncCommittee, effective_randao_mixes_into, effective_slashings_into,
 };
 use silver_common::metrics::timed;
@@ -189,53 +188,21 @@ pub fn hash_execution_payload_header(h: &ExecutionPayloadHeader) -> B256 {
     merkleize(&fields)
 }
 
+// Thin `#[timed]` wrappers kept for the perf frame; the root is folded from
+// cached leaves in `PendingView`.
 #[timed]
 pub fn hash_pending_deposits(pending: &PendingView) -> B256 {
-    let n = pending.pending_deposits_len();
-    let mut stack = MerkleStack::new();
-    for i in 0..n {
-        let d = pending.pending_deposit(i);
-        let leaf = merkleize(&[
-            hash_fixed_bytes(&d.pubkey),
-            d.withdrawal_credentials.0,
-            uint64_chunk(d.amount),
-            hash_fixed_bytes(&d.signature),
-            uint64_chunk(d.slot),
-        ]);
-        merkle_push(&mut stack, leaf);
-    }
-    let root = merkle_finalize(stack, list_depth(PENDING_DEPOSITS_LIMIT));
-    mix_in_length(&root, n)
+    pending.deposits.root()
 }
 
 #[timed]
 pub fn hash_pending_partial_withdrawals(pending: &PendingView) -> B256 {
-    let n = pending.pending_partial_withdrawals_len();
-    let mut stack = MerkleStack::new();
-    for i in 0..n {
-        let w = pending.pending_partial_withdrawal(i);
-        let leaf = merkleize(&[
-            uint64_chunk(w.index),
-            uint64_chunk(w.amount),
-            uint64_chunk(w.withdrawable_epoch),
-        ]);
-        merkle_push(&mut stack, leaf);
-    }
-    let root = merkle_finalize(stack, list_depth(PENDING_PARTIAL_WITHDRAWALS_LIMIT));
-    mix_in_length(&root, n)
+    pending.partial_withdrawals.root()
 }
 
 #[timed]
 pub fn hash_pending_consolidations(pending: &PendingView) -> B256 {
-    let n = pending.pending_consolidations_len();
-    let mut stack = MerkleStack::new();
-    for i in 0..n {
-        let c = pending.pending_consolidation(i);
-        let leaf = hash_concat(&uint64_chunk(c.source_index), &uint64_chunk(c.target_index));
-        merkle_push(&mut stack, leaf);
-    }
-    let root = merkle_finalize(stack, list_depth(PENDING_CONSOLIDATIONS_LIMIT));
-    mix_in_length(&root, n)
+    pending.consolidations.root()
 }
 
 #[timed]

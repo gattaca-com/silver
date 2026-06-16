@@ -47,7 +47,7 @@ fn slot_tag(slot: u64) -> B256 {
 
 #[test]
 fn concurrent_reads_observe_consistent_state() {
-    let mut control = BeaconStateOwner::pre_bootstrap();
+    let mut control = BeaconStateOwner::empty_test(0);
 
     // Reader and writer rendezvous here so the reader is live and reading while
     // the writer mutates — the writer loop is microsecond-cheap on its own, so

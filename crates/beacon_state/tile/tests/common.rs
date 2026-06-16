@@ -14,9 +14,7 @@ use silver_beacon_state::{
     },
     tile::BeaconStateTile,
 };
-use silver_beacon_state_data::{
-    BeaconBlockHeader, BeaconState, BeaconStateOwner, SpecConfig, StateWriterView,
-};
+use silver_beacon_state_data::{BeaconBlockHeader, BeaconState, SpecConfig, StateWriterView};
 use silver_common::{
     BeaconStateEvent, DataColumnsAvailable, GossipTopic, MessageId, NewGossipMsg, P2pStreamId,
     PeerEvent, RpcInbound, RpcResponseInbound, SilverSpine, StreamProtocol, SyncUpdate, TCache,
@@ -130,19 +128,9 @@ impl OutboundKind {
 impl Harness {
     pub fn new(wall_slot: u64, checkpoint_ssz: &[u8]) -> Self {
         Self::build(wall_slot, |ticker, gc, rc, ec, repc| {
-            let state = BeaconStateOwner::pre_bootstrap();
-            BeaconStateTile::new(
-                ticker,
-                SpecConfig::mainnet(),
-                state,
-                gc,
-                rc,
-                ec,
-                repc,
-                true,
-                checkpoint_ssz,
-                &[],
-            )
+            let state = BeaconState::from_checkpoint(checkpoint_ssz, &SpecConfig::mainnet(), &[])
+                .unwrap_or_else(|e| panic!("decompose checkpoint: {e}"));
+            BeaconStateTile::new(ticker, SpecConfig::mainnet(), gc, rc, ec, repc, true, state)
         })
     }
 

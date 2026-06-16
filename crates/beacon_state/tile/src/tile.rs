@@ -5,10 +5,10 @@ use flux::{
 };
 use rustc_hash::FxHashMap;
 use silver_beacon_state_data::{
-    B256, BeaconBlockHeader, BeaconState, BeaconStateOwner, BlobParameters, Checkpoint,
-    EPOCHS_PER_HISTORICAL_VECTOR, EPOCHS_RING_N, Epoch, EpochId, LONGTAILS_RING_N, LongtailId,
-    MIN_SEED_LOOKAHEAD, SLOTS_PER_EPOCH, Slot, SlotState, SpecConfig, StateId, StateReadView,
-    Version, decode_checkpoint_pubkeys, randao_mix_at_epoch,
+    B256, BeaconBlockHeader, BeaconState, BeaconStateOwner, BeaconStateReader, BlobParameters,
+    Checkpoint, EPOCHS_PER_HISTORICAL_VECTOR, EPOCHS_RING_N, Epoch, EpochId, LONGTAILS_RING_N,
+    LongtailId, MIN_SEED_LOOKAHEAD, SLOTS_PER_EPOCH, Slot, SlotState, SpecConfig, StateId,
+    StateReadView, Version, randao_mix_at_epoch,
 };
 use silver_common::{
     BeaconStateEvent, BlockSource, DataColumnsAvailable, EngineFcuReq, EngineNewPayloadReq,
@@ -198,26 +198,25 @@ pub struct BeaconStateTile {
 type Producers = <SilverSpine as FluxSpine>::Producers;
 
 impl BeaconStateTile {
-    /// If `checkpoint_state` is non-empty, bootstraps immediately; otherwise
-    /// starts inert in `Mode::Syncing` (call `bootstrap` before the loop).
+    /// Builds the tile owning the checkpoint `state` (from
+    /// [`BeaconState::from_checkpoint`]), seeds the anchor + fork choice, and
+    /// publishes. Boots in `Mode::Syncing`; PM flips it to `Following` once
+    /// caught up to head. Wire other tiles' read handles afterwards with
+    /// [`reader`](Self::reader) (valid across the publish — same allocation).
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         ticker: SlotTicker,
         spec: SpecConfig,
-        mut state: BeaconStateOwner,
         gossip_consumer: TRandomAccess,
         rpc_consumer: TRandomAccess,
         incoming_engine_resp_consumer: TRandomAccess,
         replay_consumer: TRandomAccess,
         verify_weak_subjectivity: bool,
-        checkpoint_state: &[u8],
-        decompressed_pubkeys: &[u8],
+        state: BeaconState,
     ) -> Self {
-        let val_cap = state.state().validators.finalized().capacity();
-        // Pre-bootstrap placeholder head: honest per-tier entries rolled on
-        // the (still empty) owner — a bundle never exists before its entries.
-        // `bootstrap` installs the real anchor before any STF use.
-        let last_applied = state.roll_fresh();
+        let mut owner = BeaconStateOwner::new(state);
+        let val_cap = owner.state().validators.finalized().capacity();
+        let anchor = owner.roll_fresh();
         let mut tile = Self {
             // Boot in Syncing. PM's first `SyncUpdate::Following` flips us
             // once peer Status data confirms we're caught up.
@@ -225,11 +224,11 @@ impl BeaconStateTile {
             ticker,
             sync_finalized_slot: 0,
             spec,
-            state,
+            state: owner,
             fork_choice: ForkChoice::default(),
             vote_tracker: VoteTracker::with_capacity(val_cap),
             shuffling_cache: ShufflingCache::with_capacity(val_cap),
-            last_applied,
+            last_applied: anchor,
             last_applied_block_root: [0u8; 32],
             initial_status_emitted: false,
             cached_fork_digest: None,
@@ -258,14 +257,15 @@ impl BeaconStateTile {
             replay_consumer,
             verify_weak_subjectivity,
         };
-
-        if !checkpoint_state.is_empty() {
-            tile.bootstrap(checkpoint_state, decompressed_pubkeys);
-        }
-
+        tile.seed_anchor(anchor);
         tracing::info!("created BeaconStateTile: head_state_slot is {}", tile.head_state_slot());
-
         tile
+    }
+
+    /// A read handle on the owned state, for wiring other tiles (lock-free
+    /// seqlock reads). Valid across the anchor publish — same allocation.
+    pub fn reader(&self) -> BeaconStateReader {
+        self.state.reader()
     }
 
     pub fn head_block_root(&self) -> B256 {
@@ -315,48 +315,11 @@ impl BeaconStateTile {
         ssz_hash::hash_tree_root_state(&rv, &mut self.stf_scratch.state_hash)
     }
 
-    /// Load a checkpoint-state SSZ blob: decompose it into the finalized
-    /// base, anchor a genesis slot delta on top (empty edits, full slot
-    /// scalars seeded from the base), and seed fork choice with the trusted
-    /// anchor checkpoint. `decompressed_pubkeys` is the optional sidecar of
-    /// pre-decompressed validator pubkeys; on any decode/verify failure we
-    /// fall back to decompressing from the SSZ itself.
-    pub fn bootstrap(&mut self, ssz: &[u8], decompressed_pubkeys: &[u8]) {
-        let pubkeys = (!decompressed_pubkeys.is_empty())
-            .then(|| decode_checkpoint_pubkeys(decompressed_pubkeys))
-            .transpose()
-            .unwrap_or_else(|e| {
-                tracing::warn!(?e, "checkpoint pubkey sidecar decode failed; decompressing");
-                None
-            });
-
-        let anchor;
-        let slot;
-        {
-            let mut guard = self.state.write();
-            let bs: &mut BeaconState = &mut guard;
-            // Replace the pre-bootstrap stub under the write window: readers
-            // spin across the swap, the old stub drops inside it.
-            let decoded = match pubkeys.as_deref() {
-                Some(pk) => BeaconState::decompose(ssz, &self.spec, Some(pk)).or_else(|e| {
-                    tracing::warn!(%e, "checkpoint pubkey sidecar rejected; decompressing");
-                    BeaconState::decompose(ssz, &self.spec, None)
-                }),
-                None => BeaconState::decompose(ssz, &self.spec, None),
-            };
-            *bs = decoded.unwrap_or_else(|e| panic!("bootstrap: decompose failed: {e}"));
-            slot = bs.slot_states.finalized_view().slot_number();
-
-            // Anchor an empty per-fork delta on the freshly decoded base
-            // (epoch/longtail stay lazy; `roll_fresh` anchors the slot fork's
-            // full scalars at the base).
-            anchor = bs.roll_fresh();
-        }
-
-        // Fresh state is correct here — nothing predates the anchor.
-        let cap = self.state.state().validators.finalized().capacity();
-        self.vote_tracker = VoteTracker::with_capacity(cap);
-        self.shuffling_cache = ShufflingCache::with_capacity(cap);
+    /// Seed fork choice from the freshly-anchored real state and publish the
+    /// `anchor` — the second half of `new` for a non-stub state. (Caches are
+    /// already sized for the real validator count in `new`.)
+    fn seed_anchor(&mut self, anchor: StateId) {
+        let slot = self.state.state().slot_states.finalized_view().slot_number();
 
         // Anchor block root. Compute on a local header copy so the state's
         // `latest_block_header.state_root` stays `[0;32]` — the first
@@ -377,7 +340,6 @@ impl BeaconStateTile {
         };
 
         let trusted = Checkpoint { epoch: slot.div_ceil(SLOTS_PER_EPOCH), root: block_root };
-        self.last_applied = anchor;
         self.last_applied_block_root = block_root;
         self.fork_choice = ForkChoice::init(
             trusted,
@@ -2077,12 +2039,8 @@ mod tests {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use silver_beacon_state_data::{
-        BLSPubkey, BalancesGroup, CurrentParticipationGroup, EPOCHS_PER_SLASHINGS_VECTOR,
-        EpochGroup, EpochState, EpochStateFinalized, Eth1Group, Eth1Votes, FinalizedValidators,
-        Immutable, InactivityScoresGroup, LongtailGroup, LongtailState, PROPOSER_LOOKAHEAD_SIZE,
-        PendingDeposit, PendingGroup, PendingQueues, PreviousParticipationGroup,
-        SLOTS_PER_HISTORICAL_ROOT, SlotStateFinalized, SlotStateGroup, SlotStateId, ValSeed,
-        ValidatorsGroup, Withdrawals, validator_capacity,
+        BLSPubkey, BeaconState, EPOCHS_PER_SLASHINGS_VECTOR, EpochState, EpochStateFinalized,
+        Immutable, PROPOSER_LOOKAHEAD_SIZE, PendingDeposit, SlotStateId, ValSeed, Withdrawals,
     };
     use silver_common::{TCache, TCacheProducer, ssz_view::SIGNED_AGG_PROOF_MIN};
 
@@ -2117,18 +2075,15 @@ mod tests {
         let rpc_c = event_p.cache_ref().random_access("test_event", true).unwrap();
         let engine_c = engine_p.cache_ref().random_access("test_engine", true).unwrap();
         let replay_c = replay_p.cache_ref().random_access("test_replay", true).unwrap();
-        let state = BeaconStateOwner::pre_bootstrap();
         BeaconStateTile::new(
             ticker,
             SpecConfig::mainnet(),
-            state,
             gossip_c,
             rpc_c,
             engine_c,
             replay_c,
             verify_weak_subjectivity,
-            &[],
-            &[],
+            BeaconState::empty_test(0),
         )
     }
 
@@ -2197,32 +2152,10 @@ mod tests {
         seeds: &[ValSeed],
         start_slot: Slot,
     ) {
-        // Test-built state: epoch base seeded from `epoch_base`, registry from
-        // `seeds`, slot base anchored at `start_slot`, per-validator columns
-        // zeroed at the registry's count, the rest empty.
-        let zero_roots = || vec![[0u8; 32]; SLOTS_PER_HISTORICAL_ROOT].into_boxed_slice();
-        let n = seeds.len();
-        let cap = validator_capacity(n);
-        let zero_u64s = vec![0u8; n * 8];
-        let zero_flags = vec![0u8; n];
-        let bs = BeaconState {
-            immutable: Immutable::default(),
-            validators: ValidatorsGroup::new(FinalizedValidators::with_validators(seeds)),
-            balances: BalancesGroup::new(cap, n, &zero_u64s).unwrap(),
-            eth1: Eth1Group::new(Eth1Votes::default()),
-            pending: PendingGroup::new(PendingQueues::default()),
-            previous_participation: PreviousParticipationGroup::new(cap, n, &zero_flags).unwrap(),
-            current_participation: CurrentParticipationGroup::new(cap, n, &zero_flags).unwrap(),
-            inactivity: InactivityScoresGroup::new(cap, n, &zero_u64s).unwrap(),
-            slot_states: SlotStateGroup::new(SlotStateFinalized::from_parts(
-                SlotState { slot: start_slot, ..Default::default() },
-                zero_roots(),
-                zero_roots(),
-            )),
-            epoch: EpochGroup::new(epoch_base),
-            longtail: LongtailGroup::new(LongtailState::default()),
-        };
-        let mut bs = bs;
+        // Test-built state: epoch base from `epoch_base`, registry + balances
+        // column from `seeds`, slot base anchored at `start_slot`, the rest
+        // empty.
+        let mut bs = BeaconState::for_test(epoch_base, seeds, start_slot);
         // Anchor each tier's fork at the base (the slot tier at `start_slot`);
         // epoch/longtail stay lazy. Rolled before the owner wraps the state.
         let anchor = bs.roll_fresh();
@@ -2798,7 +2731,7 @@ mod tests {
         tile.last_applied.pending_idx = {
             let mut g = tile.state.write();
             let mut pw = g.pending.roll_from(tile.last_applied.pending_idx);
-            pw.push_pending_deposit(deposit);
+            pw.deposits.push(deposit);
             pw.commit()
         };
 

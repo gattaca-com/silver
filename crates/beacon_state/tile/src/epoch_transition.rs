@@ -474,9 +474,9 @@ pub fn process_pending_deposits(
     let mut next_deposit_index: usize = 0;
     let mut churn_limit_reached = false;
 
-    let pending_len = view.pending.pending_deposits_len();
+    let pending_len = view.pending.deposits.reader().len();
     for di in 0..pending_len {
-        let deposit = *view.pending.pending_deposit(di);
+        let deposit = *view.pending.deposits.reader().get(di);
 
         if deposit.slot > 0 &&
             view.slot.state().eth1_deposit_index < view.slot.state().deposit_requests_start_index
@@ -510,8 +510,8 @@ pub fn process_pending_deposits(
         next_deposit_index += 1;
     }
 
-    view.pending.drain_pending_deposits(next_deposit_index);
-    view.pending.append_pending_deposits(postponed);
+    view.pending.deposits.drain(next_deposit_index);
+    view.pending.deposits.append(postponed);
 
     epoch.state_mut().deposit_balance_to_consume =
         if churn_limit_reached { available - processed_amount } else { 0 };
@@ -579,9 +579,9 @@ pub fn process_pending_consolidations(view: &mut StateWriterView) {
     let next_epoch = current_epoch + 1;
     let mut next_pending: usize = 0;
 
-    let pending_len = view.pending.pending_consolidations_len();
+    let pending_len = view.pending.consolidations.reader().len();
     for ci in 0..pending_len {
-        let pc = *view.pending.pending_consolidation(ci);
+        let pc = *view.pending.consolidations.reader().get(ci);
         let src = pc.source_index as u32;
         if view.validators.is_slashed(src as usize) {
             next_pending += 1;
@@ -599,7 +599,7 @@ pub fn process_pending_consolidations(view: &mut StateWriterView) {
         view.balances.set(tgt, tgt_bal.saturating_add(moved));
         next_pending += 1;
     }
-    view.pending.drain_pending_consolidations(next_pending);
+    view.pending.consolidations.drain(next_pending);
 }
 
 /// Gated by the hub: runs only when `current_epoch + 1` is a
@@ -929,7 +929,7 @@ mod tests {
 
     #[test]
     fn pending_deposit_valid_sig_adds_validator() {
-        let mut st = TestState::new(fresh(10), &[], &[]);
+        let mut st = TestState::new(fresh(10), &[]);
         let sid = st.state_id;
         let (mut view, epoch, _) = st.view();
 
@@ -940,7 +940,7 @@ mod tests {
         let dst = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_";
         let sig = sk.sign(&signing_root, dst, &[]).to_bytes();
 
-        view.pending.push_pending_deposit(PendingDeposit {
+        view.pending.deposits.push(PendingDeposit {
             pubkey: pk,
             withdrawal_credentials: wc,
             amount,
@@ -955,7 +955,7 @@ mod tests {
         assert_eq!(view.validators.count(), 1);
         assert_eq!(*view.validators.pubkey(0), pk);
         assert_eq!(view.balances.get(0), amount);
-        assert_eq!(view.pending.pending_deposits_len(), 0);
+        assert_eq!(view.pending.deposits.reader().len(), 0);
     }
 
     #[test]
@@ -980,7 +980,7 @@ mod tests {
             slashings,
         );
 
-        let mut st = TestState::new(epoch_base, &[], &[]);
+        let mut st = TestState::new(epoch_base, &[]);
         // Pre-seed the accumulator append-only: roll, set, write the id back.
         let mut sw = st.bs.slot_states.roll_from(st.state_id.slot_idx);
         sw.state_mut().current_epoch_slashings = 100;
@@ -1002,13 +1002,13 @@ mod tests {
 
     #[test]
     fn pending_deposit_invalid_sig_rejected() {
-        let mut st = TestState::new(fresh(10), &[], &[]);
+        let mut st = TestState::new(fresh(10), &[]);
         let sid = st.state_id;
         let (mut view, epoch, _) = st.view();
 
         // Zeroed (invalid) signature; pubkey also bogus, but the sig check
         // rejects first.
-        view.pending.push_pending_deposit(PendingDeposit {
+        view.pending.deposits.push(PendingDeposit {
             pubkey: [0x01u8; 48],
             withdrawal_credentials: Withdrawals::ZERO,
             amount: 32_000_000_000,
@@ -1022,7 +1022,7 @@ mod tests {
 
         // Deposit consumed from queue but validator NOT added.
         assert_eq!(view.validators.count(), 0);
-        assert_eq!(view.pending.pending_deposits_len(), 0);
+        assert_eq!(view.pending.deposits.reader().len(), 0);
     }
 
     #[test]
@@ -1038,13 +1038,13 @@ mod tests {
             exit_epoch: u64::MAX,
         }];
         // Existing validator's base balance must live in the balances base.
-        let mut st = TestState::new(fresh(10), &seeds, &[MAX_EFFECTIVE_BALANCE]);
+        let mut st = TestState::new(fresh(10), &seeds);
         let sid = st.state_id;
         let (mut view, epoch, _) = st.view();
 
         // Top-up to existing validator — signature is ignored per spec.
         let top_up = 1_000_000_000u64;
-        view.pending.push_pending_deposit(PendingDeposit {
+        view.pending.deposits.push(PendingDeposit {
             pubkey: pk,
             withdrawal_credentials: Withdrawals::ZERO,
             amount: top_up,
@@ -1058,6 +1058,6 @@ mod tests {
 
         assert_eq!(view.validators.count(), 1);
         assert_eq!(view.balances.get(0), MAX_EFFECTIVE_BALANCE + top_up);
-        assert_eq!(view.pending.pending_deposits_len(), 0);
+        assert_eq!(view.pending.deposits.reader().len(), 0);
     }
 }

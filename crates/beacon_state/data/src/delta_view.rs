@@ -232,12 +232,8 @@ impl<'a> StateWriterView<'a> {
 mod tests {
     use super::*;
     use crate::{
-        BalancesGroup, BeaconState, CurrentParticipationGroup, EpochGroup, EpochStateFinalized,
-        Eth1Group, Eth1Votes, InactivityScoresGroup, LongtailGroup, LongtailState, PendingGroup,
-        PendingQueues, PreviousParticipationGroup, SlotStateFinalized, SlotStateGroup,
-        ValidatorsGroup,
-        types::{PendingDeposit, SLOTS_PER_HISTORICAL_ROOT, SlotState},
-        validators::{FinalizedValidators, ValSeed},
+        BeaconState, EpochGroup, EpochStateFinalized, LongtailGroup, PendingGroup, QueueItem,
+        types::PendingDeposit, validators::ValSeed,
     };
 
     /// Finalized slot the test harness anchors at (lives in the slot group's
@@ -255,50 +251,17 @@ mod tests {
     }
 
     impl TestState {
-        /// Anchored state with no validators and empty balances.
+        /// Anchored state with no validators.
         fn new() -> Self {
-            Self::seeded(&[], &[])
+            Self::with_validators(&[])
         }
 
-        /// Anchored state whose validator registry is seeded from `seeds` and
-        /// balances are empty.
+        /// Anchored state whose registry and balances column are seeded from
+        /// `seeds` (the balances column takes each seed's `balance`), anchored
+        /// at `TEST_FIN_SLOT`.
         fn with_validators(seeds: &[ValSeed]) -> Self {
-            Self::seeded(seeds, &[])
-        }
-
-        /// Anchored state with the validator registry seeded from `seeds` and
-        /// balances seeded to `balances` (sized to the validator capacity).
-        fn seeded(seeds: &[ValSeed], balances: &[u64]) -> Self {
-            let validators = ValidatorsGroup::new(FinalizedValidators::with_validators(seeds));
-            let cap = validators.finalized().capacity();
-            let n = seeds.len();
-            // The sibling lists stay lockstep with the validator registry, so
-            // seed their finalized counts to `n` too (balances default to zero
-            // when no explicit seed is given).
-            let seed_balances = if balances.is_empty() { vec![0u64; n] } else { balances.to_vec() };
-            let balance_bytes: Vec<u8> =
-                seed_balances.iter().flat_map(|v| v.to_le_bytes()).collect();
-            let zero_flags = vec![0u8; n];
-            let zero_scores = vec![0u8; n * 8];
-            let zero_roots = || vec![[0u8; 32]; SLOTS_PER_HISTORICAL_ROOT].into_boxed_slice();
-            let mut bs = BeaconState {
-                immutable: Immutable::default(),
-                validators,
-                balances: BalancesGroup::new(cap, n, &balance_bytes).unwrap(),
-                eth1: Eth1Group::new(Eth1Votes::default()),
-                pending: PendingGroup::new(PendingQueues::default()),
-                previous_participation: PreviousParticipationGroup::new(cap, n, &zero_flags)
-                    .unwrap(),
-                current_participation: CurrentParticipationGroup::new(cap, n, &zero_flags).unwrap(),
-                inactivity: InactivityScoresGroup::new(cap, n, &zero_scores).unwrap(),
-                slot_states: SlotStateGroup::new(SlotStateFinalized::from_parts(
-                    SlotState { slot: TEST_FIN_SLOT, ..Default::default() },
-                    zero_roots(),
-                    zero_roots(),
-                )),
-                epoch: EpochGroup::new(EpochStateFinalized::default()),
-                longtail: LongtailGroup::new(LongtailState::default()),
-            };
+            let mut bs =
+                BeaconState::for_test(EpochStateFinalized::default(), seeds, TEST_FIN_SLOT);
             let state_id = bs.roll_fresh();
             Self { bs, state_id }
         }
@@ -351,7 +314,7 @@ mod tests {
     #[test]
     fn balance_edit_overrides_base() {
         let seeds = [ValSeed { balance: 1_000, ..ValSeed::default() }];
-        let mut state = TestState::seeded(&seeds, &[1_000]);
+        let mut state = TestState::with_validators(&seeds);
         {
             let (v, _, _) = state.view();
             assert_eq!(v.balances.get(0), 1_000);
@@ -404,8 +367,7 @@ mod tests {
     fn iter_balances_merges_in_order() {
         let seeds: Vec<ValSeed> =
             (0..5u64).map(|i| ValSeed { balance: i * 100, ..ValSeed::default() }).collect();
-        let bals: Vec<u64> = seeds.iter().map(|s| s.balance).collect();
-        let mut state = TestState::seeded(&seeds, &bals);
+        let mut state = TestState::with_validators(&seeds);
         state.set_balances(&[(1, 999), (3, 333)]);
         let (v, _, _) = state.view();
         let got: Vec<u64> = v.balances.iter().collect();
@@ -421,19 +383,21 @@ mod tests {
             signature: [0; 96],
             slot: 0,
         };
-        let mut base = PendingQueues::default();
+        // Seed the finalized base with three deposits via the SSZ codec.
+        let mut bytes = Vec::new();
         for i in 0..3u64 {
-            base.pending_deposits.push(deposit(i));
+            deposit(i).write_ssz(&mut bytes).unwrap();
         }
-        let mut group = PendingGroup::new(base);
+        let mut group = PendingGroup::from_ssz(&bytes, &[], &[]);
         let mut wv = group.roll_fresh();
-        wv.drain_pending_deposits(1);
-        wv.push_pending_deposit(deposit(99));
+        wv.deposits.drain(1);
+        wv.deposits.push(deposit(99));
 
-        assert_eq!(wv.pending_deposits_len(), 3);
-        assert_eq!(wv.pending_deposit(0).amount, 1);
-        assert_eq!(wv.pending_deposit(1).amount, 2);
-        assert_eq!(wv.pending_deposit(2).amount, 99);
+        let r = wv.reader();
+        assert_eq!(r.deposits.len(), 3);
+        assert_eq!(r.deposits.get(0).amount, 1);
+        assert_eq!(r.deposits.get(1).amount, 2);
+        assert_eq!(r.deposits.get(2).amount, 99);
     }
 
     #[test]

@@ -363,17 +363,6 @@ mod tests {
         owner
     }
 
-    /// Minimal canonical state: encode the pre-bootstrap stub (via a throwaway
-    /// owner), patch the fixed-part `slot` field (byte 40, Fulu layout), and
-    /// decompose — public API only.
-    fn synthetic_state(slot: u64) -> BeaconState {
-        let stub = BeaconStateOwner::pre_bootstrap();
-        let mut ssz = Vec::with_capacity(stub.state().ssz_len());
-        stub.state().encode_ssz(&mut ssz).expect("encode stub");
-        ssz[40..48].copy_from_slice(&slot.to_le_bytes());
-        BeaconState::decompose(&ssz, &SpecConfig::mainnet(), None).expect("decompose stub")
-    }
-
     /// Manual benchmark comparing the storage tile's two checkpoint-persist
     /// strategies on a real mainnet state, printing three medians:
     ///   - `oneshot_write_only` — write a pre-encoded blob (encode excluded);
@@ -581,7 +570,7 @@ mod tests {
 
         // Finalized base at slot 64 (epoch 2), zero validators — minimal but
         // canonical.
-        let owner = published_owner(synthetic_state(64));
+        let owner = published_owner(silver_beacon_state_data::BeaconState::empty_test(64));
         let reader = owner.reader();
 
         let dir = format!("/tmp/silver_storage_streamcp_{}", rand::random::<u32>());

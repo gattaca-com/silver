@@ -7,7 +7,7 @@ use flux::{
 use quinn_proto::{Endpoint, EndpointConfig};
 use rand::RngCore;
 use silver_beacon_state::{BeaconStateTile, SlotTicker};
-use silver_beacon_state_data::BeaconStateOwner;
+use silver_beacon_state_data::BeaconState;
 use silver_common::{Enr, ProtoIdentify, SilverSpine, TCache, TCacheProducer};
 use silver_config::Config;
 use silver_control::Controller;
@@ -179,22 +179,22 @@ fn main() -> Result<(), Box<dyn Error>> {
         outgoing_rpc_producer.clone(),
     );
 
-    let state = BeaconStateOwner::pre_bootstrap();
-    let state_reader = state.reader();
-
-    // Bootstrap explicitly (not via `new`) so the pubkey sidecar can be passed.
+    // A finalized checkpoint state is mandatory (no genesis or runtime sync):
+    // an empty/absent blob falls through to `decompose`, which errors here and
+    // crashes the boot rather than running an inert node.
+    let state = BeaconState::from_checkpoint(&checkpoint, &chain_config.spec, &checkpoint_pubkeys)
+        .unwrap_or_else(|e| panic!("bootstrap: decompose checkpoint failed: {e}"));
     let mut beacon_state_tile = BeaconStateTile::new(
         ticker,
         chain_config.spec.clone(),
-        state,
         ssz_gossip_consumer,
         incoming_rpc_consumer,
         incoming_engine_resp_consumer,
         replay_blocks_consumer,
         !config.disable_weak_subjectivity_check(),
-        &checkpoint,
-        &checkpoint_pubkeys,
+        state,
     );
+    let state_reader = beacon_state_tile.reader();
 
     // Bootstrap digest: until a real state lands (checkpoint/sync), the tile
     // derives the fork digest from a zero gvr — use the configured one so

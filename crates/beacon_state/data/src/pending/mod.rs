@@ -1,98 +1,101 @@
 mod delta;
 mod finalized;
+mod group;
 #[cfg(test)]
 mod tests;
 
-use delta::{OldBaseLens, PendingQueuesDelta};
-pub use delta::{PendingView, PendingWriteView};
-pub use finalized::PendingQueues;
-use parking_lot::Mutex;
+pub use delta::{PendingView, PendingWriteView, QueueView, QueueWriteView};
+pub use finalized::QueueItem;
+use group::QueueGroup;
 
 use crate::{
-    buffer::{Id, Reset, Ring, reanchor_survivors},
-    types::SLOTS_RING_N,
+    buffer::Id,
+    types::{PendingConsolidation, PendingDeposit, PendingPartialWithdrawal},
 };
 
-pub type PendingId = Id<PendingGroup>;
+type DepositsGroup = QueueGroup<PendingDeposit>;
+type PartialWithdrawalsGroup = QueueGroup<PendingPartialWithdrawal>;
+type ConsolidationsGroup = QueueGroup<PendingConsolidation>;
 
+/// A fork's id across the three pending queues — one isolated ring id each.
+/// The queues roll in lockstep (the holder fans every roll out to all three),
+/// so the bundle threads through the state as a single `pending_idx`.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct PendingId {
+    pub(crate) deposits: Id<DepositsGroup>,
+    pub(crate) partial_withdrawals: Id<PartialWithdrawalsGroup>,
+    pub(crate) consolidations: Id<ConsolidationsGroup>,
+}
+
+/// Holder of the three isolated pending-queue groups. Each queue is a
+/// self-contained [`QueueGroup`] (own base, delta ring, persist lock); the
+/// holder fans `view`/`roll`/`finalize` out to all three and bundles their ids.
 pub struct PendingGroup {
-    finalized: PendingQueues,
-    deltas: Ring<Self, PendingQueuesDelta, SLOTS_RING_N>,
-    /// Promote barrier: the finalized queues are growable `Vec`s, so the
-    /// checkpoint persist (storage thread) must not read them while
-    /// `finalize` promotes into them (realloc would dangle the read).
-    /// Writer-thread view reads never race promote (same thread) and stay
-    /// lock-free.
-    persist_lock: Mutex<()>,
+    pub(crate) deposits: DepositsGroup,
+    pub(crate) partial_withdrawals: PartialWithdrawalsGroup,
+    pub(crate) consolidations: ConsolidationsGroup,
 }
 
 impl PendingGroup {
-    pub fn new(finalized: PendingQueues) -> Self {
-        Self { finalized, deltas: Ring::default(), persist_lock: Mutex::new(()) }
-    }
-
-    /// Run `f` over the finalized state under the promote barrier — the
-    /// checkpoint encoder's (only) way in. Keep `f` to a bounded memcpy.
-    #[inline]
-    pub(crate) fn with_finalized_locked<R>(&self, f: impl FnOnce(&PendingQueues) -> R) -> R {
-        let _g = self.persist_lock.lock();
-        f(&self.finalized)
+    /// Build from the three queues' SSZ byte ranges (validated by the caller);
+    /// empty ranges yield empty queues.
+    pub fn from_ssz(deposits: &[u8], partial_withdrawals: &[u8], consolidations: &[u8]) -> Self {
+        Self {
+            deposits: QueueGroup::from_ssz(deposits),
+            partial_withdrawals: QueueGroup::from_ssz(partial_withdrawals),
+            consolidations: QueueGroup::from_ssz(consolidations),
+        }
     }
 
     #[inline]
     pub fn view(&self, id: PendingId) -> PendingView<'_> {
-        PendingView::new(&self.finalized, self.deltas.get(id))
+        PendingView {
+            deposits: self.deposits.view(id.deposits),
+            partial_withdrawals: self.partial_withdrawals.view(id.partial_withdrawals),
+            consolidations: self.consolidations.view(id.consolidations),
+        }
     }
 
     #[inline]
     pub fn roll_fresh(&mut self) -> PendingWriteView<'_> {
-        let Self { finalized, deltas, .. } = self;
-        PendingWriteView::new(finalized, deltas.roll_fresh())
+        PendingWriteView {
+            deposits: self.deposits.roll_fresh(),
+            partial_withdrawals: self.partial_withdrawals.roll_fresh(),
+            consolidations: self.consolidations.roll_fresh(),
+        }
     }
 
     #[inline]
     pub fn roll_from(&mut self, parent: PendingId) -> PendingWriteView<'_> {
-        let Self { finalized, deltas, .. } = self;
-        PendingWriteView::new(finalized, deltas.roll_from(parent))
-    }
-
-    /// Copy a survivor into a fresh slot and re-base it against the promoted
-    /// `winner` (pre-promotion, with the old base lengths). The survivor stays
-    /// frozen — append-only.
-    fn reanchor(
-        &mut self,
-        survivor: PendingId,
-        winner: PendingId,
-        old_base_lens: &OldBaseLens,
-    ) -> PendingWriteView<'_> {
-        let Self { finalized, deltas, .. } = self;
-        let (mut fork, old, winner_delta) = deltas.roll_fresh_deriving(survivor, winner);
-        fork.reset_from(old);
-        fork.rebase(winner_delta, old_base_lens);
-        PendingWriteView::new(finalized, fork)
-    }
-
-    /// Re-anchor each survivor against the promoted `winner` into fresh slots
-    /// (deduped for shared survivors), then promote the winner into the
-    /// finalized state. Self-contained — `old_base_lens` is snapshotted
-    /// from the still-old finalized state.
-    pub fn finalize(&mut self, winner: PendingId, survivors: &[PendingId]) -> Vec<PendingId> {
-        let old_base_lens = OldBaseLens::snapshot(&self.finalized);
-
-        debug_assert!(survivors.contains(&winner), "winner must be among the survivors");
-        self.deltas.free_outdated(survivors);
-
-        let fresh =
-            reanchor_survivors(survivors, |s| self.reanchor(s, winner, &old_base_lens).commit());
-
-        let Self { finalized, deltas, persist_lock } = self;
-        {
-            let _g = persist_lock.lock();
-            finalized.promote(deltas.get(winner));
+        PendingWriteView {
+            deposits: self.deposits.roll_from(parent.deposits),
+            partial_withdrawals: self.partial_withdrawals.roll_from(parent.partial_withdrawals),
+            consolidations: self.consolidations.roll_from(parent.consolidations),
         }
+    }
 
-        deltas.free_outdated(&fresh);
+    /// Finalize all three queues against the promoted `winner` and bundle the
+    /// re-anchored ids 1:1 with `survivors` (each queue's `finalize` preserves
+    /// order, so the zip stays aligned).
+    pub fn finalize(&mut self, winner: PendingId, survivors: &[PendingId]) -> Vec<PendingId> {
+        let dep_ids = survivors.iter().map(|s| s.deposits).collect::<Vec<_>>();
+        let pw_ids = survivors.iter().map(|s| s.partial_withdrawals).collect::<Vec<_>>();
+        let cons_ids = survivors.iter().map(|s| s.consolidations).collect::<Vec<_>>();
 
-        fresh
+        let deposits = self.deposits.finalize(winner.deposits, &dep_ids);
+        let partial_withdrawals =
+            self.partial_withdrawals.finalize(winner.partial_withdrawals, &pw_ids);
+        let consolidations = self.consolidations.finalize(winner.consolidations, &cons_ids);
+
+        deposits
+            .into_iter()
+            .zip(partial_withdrawals)
+            .zip(consolidations)
+            .map(|((deposits, partial_withdrawals), consolidations)| PendingId {
+                deposits,
+                partial_withdrawals,
+                consolidations,
+            })
+            .collect()
     }
 }

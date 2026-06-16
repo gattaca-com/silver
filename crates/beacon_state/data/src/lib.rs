@@ -16,7 +16,9 @@ pub use epoch::{EpochGroup, EpochId, EpochStateFinalized, EpochView, EpochWriteV
 pub use eth1::{Eth1Group, Eth1Id, Eth1View, Eth1Votes, Eth1WriteView};
 pub use hash_tree::{DeltaHashTree, FinalizedHashTree};
 pub use longtail::{LongtailGroup, LongtailId, LongtailState, LongtailView, LongtailWriteView};
-pub use pending::{PendingGroup, PendingId, PendingQueues, PendingView, PendingWriteView};
+pub use pending::{
+    PendingGroup, PendingId, PendingView, PendingWriteView, QueueItem, QueueView, QueueWriteView,
+};
 pub use silver_chain_spec::{BlobParameters, SpecConfig};
 pub(crate) use silver_ssz::ssz_hash;
 pub use slot_state::{
@@ -75,30 +77,6 @@ pub struct BeaconState {
 }
 
 impl BeaconState {
-    /// Writer-private placeholder for the pre-snapshot owner — unobservable
-    /// by readers (nothing is published until a real state is installed);
-    /// [`Self::decompose`] is the public constructor.
-    pub(crate) fn pre_bootstrap() -> Self {
-        let cap = validator_capacity(0);
-        Self {
-            immutable: Immutable::default(),
-            validators: ValidatorsGroup::new(
-                FinalizedValidators::try_new(&[], None).expect("empty registry decodes"),
-            ),
-            balances: BalancesGroup::new(cap, 0, &[]).expect("empty column"),
-            eth1: Eth1Group::new(Eth1Votes::default()),
-            pending: PendingGroup::new(PendingQueues::default()),
-            previous_participation: PreviousParticipationGroup::new(cap, 0, &[])
-                .expect("empty column"),
-            current_participation: CurrentParticipationGroup::new(cap, 0, &[])
-                .expect("empty column"),
-            inactivity: InactivityScoresGroup::new(cap, 0, &[]).expect("empty column"),
-            slot_states: SlotStateGroup::new(SlotStateFinalized::default()),
-            epoch: EpochGroup::new(EpochStateFinalized::default()),
-            longtail: LongtailGroup::new(LongtailState::default()),
-        }
-    }
-
     /// Anchor a fresh per-fork delta on every always-rolled tier (epoch/
     /// longtail stay lazy: `None` reads their bases) and assemble the anchor
     /// bundle — the bootstrap / pre-bootstrap head.
@@ -138,5 +116,43 @@ impl BeaconState {
             slot: self.slot_states.view(state_id.slot_idx),
             validators: self.validators.view(state_id.validators_idx),
         }
+    }
+}
+
+/// Test-only constructors. `#[doc(hidden)]` + dev-dependency-only use keeps
+/// them out of the public API and the production binary.
+impl BeaconState {
+    #[doc(hidden)]
+    pub fn for_test(epoch_base: EpochStateFinalized, seeds: &[ValSeed], slot: u64) -> Self {
+        let validators = ValidatorsGroup::new(FinalizedValidators::with_validators(seeds));
+        let cap = validators.finalized().capacity();
+        let n = validators.finalized().validator_count();
+        let balances: Vec<u8> = seeds.iter().flat_map(|s| s.balance.to_le_bytes()).collect();
+        // Sibling columns are zeroed lockstep with the registry: `n` entries of
+        // the column's element width (participation flags 1 B, scores 8 B).
+        let zeros = |width: usize| vec![0u8; n * width];
+        let zero_roots = || vec![[0u8; 32]; SLOTS_PER_HISTORICAL_ROOT].into_boxed_slice();
+        Self {
+            immutable: Immutable::default(),
+            validators,
+            balances: BalancesGroup::new(cap, n, &balances).unwrap(),
+            eth1: Eth1Group::new(Eth1Votes::default()),
+            pending: PendingGroup::from_ssz(&[], &[], &[]),
+            previous_participation: PreviousParticipationGroup::new(cap, n, &zeros(1)).unwrap(),
+            current_participation: CurrentParticipationGroup::new(cap, n, &zeros(1)).unwrap(),
+            inactivity: InactivityScoresGroup::new(cap, n, &zeros(8)).unwrap(),
+            slot_states: SlotStateGroup::new(SlotStateFinalized::from_parts(
+                SlotState { slot, ..Default::default() },
+                zero_roots(),
+                zero_roots(),
+            )),
+            epoch: EpochGroup::new(epoch_base),
+            longtail: LongtailGroup::new(LongtailState::default()),
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn empty_test(slot: u64) -> Self {
+        Self::for_test(EpochStateFinalized::default(), &[], slot)
     }
 }

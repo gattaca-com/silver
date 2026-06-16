@@ -18,7 +18,9 @@ use crate::{
 pub type PubkeyIndex = FxHashMap<BLSPubkey, u32>;
 
 /// Initial values for one validator passed to
-/// [`FinalizedValidators::with_validators`].
+/// [`FinalizedValidators::with_validators`]. Test-fixture input (reaches other
+/// crates' tests through `for_test`), hidden from the public API.
+#[doc(hidden)]
 pub struct ValSeed {
     pub pubkey: BLSPubkey,
     pub withdrawal_credentials: Withdrawals,
@@ -308,8 +310,10 @@ impl FinalizedValidators {
 
     /// Harness-seeding constructor: builds a registry from `ValSeed`s whose
     /// pubkeys need not be valid BLS points (decompression falls back to
-    /// default), which `try_new` would reject. Test/bench use only.
-    pub fn with_validators(seeds: &[ValSeed]) -> Self {
+    /// default), which `try_new` would reject. Crate-internal test use only —
+    /// the one bridge from test seeds to the private `build`; reached from
+    /// other crates' tests only through `for_test`.
+    pub(crate) fn with_validators(seeds: &[ValSeed]) -> Self {
         Self::build(validator_capacity(seeds.len()), seeds.len(), |i| {
             let s = &seeds[i];
             Ok::<_, Infallible>(ValidatorInit {
