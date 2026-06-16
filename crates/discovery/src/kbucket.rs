@@ -76,7 +76,7 @@ impl Distance {
     }
 }
 
-pub const MAX_NODES_PER_BUCKET: usize = 16;
+pub const MAX_NODES_PER_BUCKET: usize = 64;
 
 /// A node in a k-bucket.
 #[derive(Debug, Clone, Copy)]

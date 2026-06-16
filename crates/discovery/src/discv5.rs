@@ -33,15 +33,6 @@ const BANNED_NODES_CAPACITY: usize = 32;
 const MAX_LOGGED_FORK_DIGESTS: usize = 20;
 const TABLE_LOG_INTERVAL: Duration = Duration::from_secs(12);
 
-const PRE_FULU_FORK_DIGESTS: &[([u8; 4], &str)] = &[
-    ([0xb5, 0x30, 0x3f, 0x2a], "Phase0"),
-    ([0xaf, 0xca, 0xab, 0xa0], "Altair"),
-    ([0x4a, 0x26, 0xc5, 0x8b], "Bellatrix"),
-    ([0xbb, 0xa4, 0xda, 0x96], "Capella"),
-    ([0x6a, 0x95, 0xa1, 0xa9], "Deneb"),
-    ([0x9f, 0xed, 0x6b, 0x22], "Electra"),
-];
-
 fn fork_digest_hex(d: &[u8; 4]) -> String {
     format!("0x{:02x}{:02x}{:02x}{:02x}", d[0], d[1], d[2], d[3])
 }
@@ -72,7 +63,7 @@ pub struct DiscV5 {
 
     seen_fork_digests: FxHashMap<[u8; 4], u64>,
 
-    seen_scratch: Vec<(String, u64, String)>,
+    seen_scratch: Vec<(String, u64, &'static str)>,
 
     whoareyou_per_ip: FxHashMap<IpAddr, (u32, Instant)>,
     whoareyou_global: (u32, Instant),
@@ -351,9 +342,7 @@ impl DiscV5 {
     ) {
         for raw in nodes.iter() {
             let Ok(enr) = Enr::decode(&mut raw.as_slice()) else { continue };
-            if !self.keep_for_routing(&enr) {
-                continue;
-            }
+            self.record_fork_digest(&enr);
 
             let addr = if let (Some(ip4), Some(udp4)) = (enr.ip4(), enr.udp4()) {
                 SocketAddr::new(IpAddr::V4(ip4), udp4)
@@ -780,15 +769,12 @@ impl DiscV5 {
         Enr::decode(&mut raw.as_slice()).ok()
     }
 
-    fn keep_for_routing(&mut self, enr: &Enr) -> bool {
+    fn record_fork_digest(&mut self, enr: &Enr) {
         let Some(eth2) = enr.eth2() else {
-            return true;
+            return;
         };
         let digest: [u8; 4] = eth2[..4].try_into().expect("eth2 field >= 4 bytes");
-        // Tally every advertised digest for diagnostics. Current and pre-Fulu
-        // forks are kept for routing; anything else is dropped.
         *self.seen_fork_digests.entry(digest).or_default() += 1;
-        digest == self.fork_digest || PRE_FULU_FORK_DIGESTS.iter().any(|(d, _)| *d == digest)
     }
 
     fn log_table_state(&mut self, now: Instant) {
@@ -802,13 +788,8 @@ impl DiscV5 {
         seen_scratch.clear();
 
         for (d, n) in seen_fork_digests.iter() {
-            let label = if *d == *fork_digest {
-                format!("{} (ours)", fork_digest_hex(fork_digest))
-            } else if let Some((_, name)) = PRE_FULU_FORK_DIGESTS.iter().find(|(k, _)| k == d) {
-                name.to_string()
-            } else {
-                "unknown (rejected)".to_string()
-            };
+            // "current" = peered with; "other" = kept for routing only.
+            let label = if *d == *fork_digest { "current" } else { "other" };
             seen_scratch.push((fork_digest_hex(d), *n, label));
         }
 
@@ -1016,9 +997,7 @@ impl Discovery for DiscV5 {
     }
 
     fn add_enr(&mut self, enr: &Enr, now: Instant) {
-        if !self.keep_for_routing(enr) {
-            return;
-        }
+        self.record_fork_digest(enr);
         let addr = if let (Some(ip4), Some(udp4)) = (enr.ip4(), enr.udp4()) {
             SocketAddr::new(IpAddr::V4(ip4), udp4)
         } else if let (Some(ip6), Some(udp6)) = (enr.ip6(), enr.udp6()) {
@@ -1567,8 +1546,8 @@ mod tests {
         do_handshake(&mut a, a_addr, &mut b, b_addr, now);
 
         // Build two ENRs:
-        // - good: no eth2 field (passes the filter)
-        // - bad: eth2 with wrong fork_digest (dropped)
+        // - good: no eth2 field (surfaced to PM)
+        // - bad: eth2 with wrong fork_digest (kept for routing, not surfaced)
         let sk_good = SecretKey::new(&mut rand::thread_rng());
         let enr_good =
             Enr::builder().ip4(Ipv4Addr::new(10, 0, 0, 1)).udp4(19053u16).build(&sk_good).unwrap();
@@ -1597,15 +1576,31 @@ mod tests {
             Message::Nodes { request_id: RequestId::from(20u64), total: 1, nodes },
             now,
         );
-        collect_events(&mut a);
+        let events = collect_events(&mut a);
 
+        // Fork-agnostic routing: both nodes are kept in the table.
         assert!(
             a.kbuckets.iter_ref().any(|n| *n.key.preimage() == id_good),
             "good (no-eth2) node should be in kbuckets"
         );
         assert!(
-            !a.kbuckets.iter_ref().any(|n| *n.key.preimage() == id_bad),
-            "bad (wrong fork_digest) node should be filtered"
+            a.kbuckets.iter_ref().any(|n| *n.key.preimage() == id_bad),
+            "bad (wrong fork_digest) node should still be kept for routing"
+        );
+
+        // PM gating happens at NodeFound emission: only the matching-fork
+        // (here no-eth2 → allowed) node is surfaced.
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, DiscoveryEvent::NodeFound(enr) if enr.node_id() == id_good)),
+            "good (no-eth2) node should be surfaced to PM"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, DiscoveryEvent::NodeFound(enr) if enr.node_id() == id_bad)),
+            "bad (wrong fork_digest) node should not be surfaced to PM"
         );
     }
 
