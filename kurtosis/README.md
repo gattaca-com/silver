@@ -77,7 +77,7 @@ vars in the script; `next_fork_epoch` is omitted and defaults to FAR_FUTURE):
 | `chain_config.checkpoint_file` | `genesis.ssz` fetched from `/eth/v2/debug/beacon/states/genesis` — silver's sync anchor (bootstraps fork choice so block 1's parent, the genesis block, resolves). |
 | `engine_config.execution_endpoint` | `http://127.0.0.1:$ENGINE_PORT` — the local reth started by `run-reth.sh` (port from an env-overridable var, default 8551). |
 | `engine_config.jwt_secret`    | `el/jwt.hex`, written by `setup.sh` (fixed env-overridable value); `run-reth.sh` hands the same file to reth's `--authrpc.jwtsecret`. |
-| `engine_config.unsafe_no_el`  | Omitted by default. Set `UNSAFE_NO_EL=1` when running `setup.sh` to emit `unsafe_no_el = true` — see "Running without an EL" below. |
+| `engine_config.unsafe_no_el`  | Omitted by default. Set `UNSAFE_NO_EL=1` when running `setup.sh` to emit `unsafe_no_el = true`, or pass `--unsafe-no-el` to silver to force it without regenerating the config — see "Running without an EL" below. |
 
 On Linux the enclave's `172.x` container IPs are routable from the host, so
 silver dials them directly (no port-publishing). `next_fork_version` /
@@ -118,17 +118,29 @@ attached**: it never connects to reth and answers every engine request
 proceeds without payload execution; **block proposal does not work** (the EL
 payload can't be fabricated). Never enable this outside testing.
 
+The quickest way is the `--unsafe-no-el` CLI flag, which forces no-EL mode on
+top of any config — no regeneration needed:
+
+```bash
+# run silver against an existing config — no run-reth.sh needed
+RUST_LOG=info cargo run --release --bin silver -- \
+  --config kurtosis/silver-devnet.toml --unsafe-no-el
+```
+
+Alternatively, bake it into the generated config via the env var:
+
 ```bash
 # generate the config with the flag baked in...
 UNSAFE_NO_EL=1 kurtosis/setup.sh
 
-# ...then run silver directly — no run-reth.sh needed
+# ...then run silver directly
 RUST_LOG=info cargo run --release --bin silver -- --config kurtosis/silver-devnet.toml
 ```
 
-This sets `unsafe_no_el = true` under `[engine_config]`; `execution_endpoint`
-and `jwt_secret` are then ignored. (Editing `silver-devnet.toml` by hand works
-too, but `setup.sh` overwrites it on the next run — hence the env var.)
+Either way sets `unsafe_no_el = true` (the CLI flag overrides the config file);
+`execution_endpoint` and `jwt_secret` are then ignored. Editing
+`silver-devnet.toml` by hand works too, but `setup.sh` overwrites it on the next
+run — hence the flag and env var.
 
 ## Viewing node logs
 

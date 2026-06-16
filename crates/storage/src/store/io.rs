@@ -404,12 +404,15 @@ fn parse_hex32(s: &str) -> Option<[u8; 32]> {
 fn remove_subdirs<P: AsRef<Path>>(dir: P, earliest_slot: u64) -> Result<(), Error> {
     let contents = std::fs::read_dir(dir)?;
     for entry in contents {
-        let dir_entry = entry?.file_name();
+        let entry = entry?;
+        let dir_entry = entry.file_name();
         if let Ok(dir_number) =
             dir_entry.to_str().ok_or(Error::other("unparsable dir name"))?.parse::<u64>()
         {
             if dir_number + SLOTS_PER_DIR < earliest_slot {
-                std::fs::remove_dir_all(dir_entry)?;
+                // `entry.path()` is the full path; `file_name()` alone would
+                // resolve relative to CWD, not `dir`.
+                std::fs::remove_dir_all(entry.path())?;
             }
         }
     }

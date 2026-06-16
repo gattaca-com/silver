@@ -268,9 +268,11 @@ fn load_config() -> Result<Config, silver_common::Error> {
         }
     };
 
-    // CLI override (applies on top of either source).
     if args.iter().any(|a| a == "--disable-weak-subjectivity") {
         config = config.with_disable_weak_subjectivity_check(true);
+    }
+    if args.iter().any(|a| a == "--unsafe-no-el") {
+        config = config.with_unsafe_no_el(true);
     }
 
     Ok(config)

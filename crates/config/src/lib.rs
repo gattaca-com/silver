@@ -194,6 +194,11 @@ impl Config {
         self
     }
 
+    pub fn with_unsafe_no_el(mut self, unsafe_no_el: bool) -> Self {
+        self.engine_config.unsafe_no_el = unsafe_no_el;
+        self
+    }
+
     pub fn keypair(&self) -> Result<Keypair, Error> {
         Keypair::from_secret(&self.secret_key)
     }

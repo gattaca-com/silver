@@ -58,7 +58,7 @@ pub struct EngineClient {
 
 impl EngineClient {
     pub fn new(endpoint: impl Into<String>, jwt: &str) -> Self {
-        let jwt = JwtSecret::from_file(jwt).expect("invalid JWT secret");
+        let jwt = JwtSecret::from_file(jwt).unwrap_or_else(|e| panic!("invalid JWT secret: {e}"));
         Self {
             transport: Transport::Http(HttpPool::new(endpoint.into(), jwt)),
             poll: Poll::new().expect("mio Poll::new failed"),

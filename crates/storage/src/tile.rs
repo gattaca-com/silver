@@ -696,7 +696,11 @@ impl Tile<SilverSpine> for StorageTile {
                 IoEvent::PeerEvent(peer_event) => adapter.produce(peer_event),
             },
         ) {
-            tracing::error!(?e, "storage store file i/o failed");
+            tracing::error!(
+                ?e,
+                store_dir = self.store.store_dir(),
+                "storage store file i/o failed"
+            );
         }
     }
 }

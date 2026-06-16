@@ -27,7 +27,8 @@ impl JwtSecret {
     }
 
     pub fn from_file(path: &str) -> Result<Self, EngineError> {
-        let s = std::fs::read_to_string(path).map_err(|e| EngineError::Jwt(e.to_string()))?;
+        let s =
+            std::fs::read_to_string(path).map_err(|e| EngineError::Jwt(format!("{path}: {e}")))?;
         Self::from_hex(s.trim())
     }
 
