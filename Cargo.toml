@@ -134,6 +134,7 @@ sha2-const-stable = "0.1"
 sha3 = "0.10"
 slab = "0.4.12"
 snap = "1.1.1"
+socket2 = "0.5.10"
 syn = { version = "2", features = ["full"] }
 thiserror = "1.0.58"
 tracing = "0.1.40"

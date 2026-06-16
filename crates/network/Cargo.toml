@@ -14,6 +14,7 @@ fxhash.workspace = true
 libc.workspace = true
 mio.workspace = true
 quinn-proto.workspace = true
+socket2.workspace = true
 rcgen.workspace = true
 ring.workspace = true
 secp256k1.workspace = true

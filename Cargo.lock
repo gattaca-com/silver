@@ -4590,6 +4590,7 @@ dependencies = [
  "silver_discovery",
  "silver_metrics",
  "snap 1.1.1",
+ "socket2 0.5.10",
  "thiserror 1.0.69",
  "tracing",
  "tracing-subscriber",
