@@ -30,14 +30,20 @@ const NONCE_RING_SIZE: usize = 64;
 const PENDING_PROBES_CAPACITY: usize = 64;
 const BANNED_NODES_CAPACITY: usize = 32;
 
-const PRE_FULU_FORK_DIGESTS: &[[u8; 4]] = &[
-    [0xb5, 0x30, 0x3f, 0x2a], // Phase 0
-    [0xaf, 0xca, 0xab, 0xa0], // Altair
-    [0x4a, 0x26, 0xc5, 0x8b], // Bellatrix
-    [0xbb, 0xa4, 0xda, 0x96], // Capella
-    [0x6a, 0x95, 0xa1, 0xa9], // Deneb
-    [0x9f, 0xed, 0x6b, 0x22], // Electra
+const MAX_LOGGED_FORK_DIGESTS: usize = 20;
+
+const PRE_FULU_FORK_DIGESTS: &[([u8; 4], &str)] = &[
+    ([0xb5, 0x30, 0x3f, 0x2a], "Phase0"),
+    ([0xaf, 0xca, 0xab, 0xa0], "Altair"),
+    ([0x4a, 0x26, 0xc5, 0x8b], "Bellatrix"),
+    ([0xbb, 0xa4, 0xda, 0x96], "Capella"),
+    ([0x6a, 0x95, 0xa1, 0xa9], "Deneb"),
+    ([0x9f, 0xed, 0x6b, 0x22], "Electra"),
 ];
+
+fn fork_digest_hex(d: &[u8; 4]) -> String {
+    format!("0x{:02x}{:02x}{:02x}{:02x}", d[0], d[1], d[2], d[3])
+}
 
 pub struct DiscV5 {
     config: DiscoveryConfig,
@@ -62,6 +68,10 @@ pub struct DiscV5 {
     ip_vote_counts: FxHashMap<(IpAddr, u16), u32>,
 
     banned_nodes: FxHashSet<NodeId>,
+
+    seen_fork_digests: FxHashMap<[u8; 4], u64>,
+
+    seen_scratch: Vec<(String, u64, String)>,
 
     whoareyou_per_ip: FxHashMap<IpAddr, (u32, Instant)>,
     whoareyou_global: (u32, Instant),
@@ -118,6 +128,8 @@ impl DiscV5 {
                 BANNED_NODES_CAPACITY,
                 Default::default(),
             ),
+            seen_fork_digests: FxHashMap::with_capacity_and_hasher(128, Default::default()),
+            seen_scratch: Vec::with_capacity(128),
             whoareyou_per_ip: FxHashMap::with_capacity_and_hasher(target, Default::default()),
             whoareyou_global: (0, Instant::now()),
             next_request_id: 0,
@@ -354,6 +366,9 @@ impl DiscV5 {
                 NodeEntry { addr, enr_seq: enr.seq(), pubkey: pk_bytes, enr_raw: Some(*raw) },
                 now,
             );
+            if matches!(result, InsertResult::Inserted) {
+                self.log_table_state();
+            }
             let is_new = matches!(result, InsertResult::Inserted) || prev_raw != Some(*raw);
             if is_new {
                 self.metrics.nodes_discovered += 1;
@@ -659,7 +674,7 @@ impl DiscV5 {
 
                 let pk_bytes = enr.public_key().serialize();
 
-                self.kbuckets.insert_or_update(
+                let result = self.kbuckets.insert_or_update(
                     &Key::from(src_id),
                     NodeEntry {
                         addr: src_addr,
@@ -669,6 +684,12 @@ impl DiscV5 {
                     },
                     now,
                 );
+                if !matches!(result, InsertResult::Inserted | InsertResult::Updated) {
+                    warn!(%src_id, %src_addr, ?result, "handshake established but kbuckets insert not committed");
+                }
+                if matches!(result, InsertResult::Inserted) {
+                    self.log_table_state();
+                }
 
                 (pk_bytes, Some(raw))
             }
@@ -745,12 +766,44 @@ impl DiscV5 {
         Enr::decode(&mut raw.as_slice()).ok()
     }
 
-    fn keep_for_routing(&self, enr: &Enr) -> bool {
+    fn keep_for_routing(&mut self, enr: &Enr) -> bool {
         let Some(eth2) = enr.eth2() else {
             return true;
         };
         let digest: [u8; 4] = eth2[..4].try_into().expect("eth2 field >= 4 bytes");
-        digest == self.fork_digest || PRE_FULU_FORK_DIGESTS.contains(&digest)
+        // Tally every advertised digest for diagnostics. Current and pre-Fulu
+        // forks are kept for routing; anything else is dropped.
+        *self.seen_fork_digests.entry(digest).or_default() += 1;
+        digest == self.fork_digest || PRE_FULU_FORK_DIGESTS.iter().any(|(d, _)| *d == digest)
+    }
+
+    fn log_table_state(&mut self) {
+        // Disjoint field borrows so the scratch buffer can be filled from the
+        // tally without re-borrowing `self`.
+        let Self { seen_fork_digests, seen_scratch, fork_digest, kbuckets, sessions, .. } = self;
+        seen_scratch.clear();
+
+        for (d, n) in seen_fork_digests.iter() {
+            let label = if *d == *fork_digest {
+                format!("{} (ours)", fork_digest_hex(fork_digest))
+            } else if let Some((_, name)) = PRE_FULU_FORK_DIGESTS.iter().find(|(k, _)| k == d) {
+                name.to_string()
+            } else {
+                "unknown (rejected)".to_string()
+            };
+            seen_scratch.push((fork_digest_hex(d), *n, label));
+        }
+
+        // Highest counts first, capped to avoid log spam.
+        seen_scratch.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+        seen_scratch.truncate(MAX_LOGGED_FORK_DIGESTS);
+        info!(
+            buckets = ?kbuckets.bucket_sizes(),
+            sessions = sessions.len(),
+            fork_digests_total = seen_fork_digests.len(),
+            seen_fork_digests = ?seen_scratch,
+            "kbuckets insertion",
+        );
     }
 
     fn emit_to_pm(&self, enr: &Enr) -> bool {
@@ -962,12 +1015,15 @@ impl Discovery for DiscV5 {
         let mut enr_raw: ArrayVec<u8, ENR_RECORD_MAX> = ArrayVec::new();
         enr.encode(&mut enr_raw);
 
-        if let InsertResult::Failed(reason) = self.kbuckets.insert_or_update(
+        let result = self.kbuckets.insert_or_update(
             &Key::from(enr.node_id()),
             NodeEntry { addr, enr_seq: enr.seq(), pubkey, enr_raw: Some(enr_raw) },
             now,
-        ) {
-            tracing::error!(?reason, "add enr failed");
+        );
+        match result {
+            InsertResult::Failed(reason) => tracing::error!(?reason, "add enr failed"),
+            InsertResult::Inserted => self.log_table_state(),
+            _ => {}
         }
     }
 
@@ -1000,6 +1056,12 @@ impl Discovery for DiscV5 {
         }
 
         while let Some(applied) = self.kbuckets.take_applied_pending() {
+            if let Some(evicted) = &applied.evicted {
+                let id = *evicted.key.preimage();
+                if self.sessions.contains_key(&id) {
+                    warn!(%id, "kbuckets entry evicted while session still live");
+                }
+            }
             if let Some(enr) = self.decode_enr_for(*applied.inserted.preimage()) {
                 // Drop our own record (peers echo it back; promoting it here
                 // would otherwise surface us as a dial target → self-dial).

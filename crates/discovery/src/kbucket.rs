@@ -122,7 +122,6 @@ pub enum FailureReason {
 
 pub struct AppliedPending<T: Copy> {
     pub inserted: Key,
-    #[allow(dead_code)]
     pub evicted: Option<Node<T>>,
 }
 
@@ -284,6 +283,17 @@ impl<T: Copy> KBucketsTable<T> {
         let pos = self.buckets[i.get()].position(key)?;
         Some(&self.buckets[i.get()].nodes[pos])
     }
+
+    /// `(bucket_index, committed_node_count)` for every non-empty bucket.
+    /// Diagnostics only; pending entries are not counted.
+    pub fn bucket_sizes(&self) -> Vec<(usize, usize)> {
+        self.buckets
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| !b.nodes.is_empty())
+            .map(|(i, b)| (i, b.nodes.len()))
+            .collect()
+    }
 }
 
 #[derive(Copy, Clone)]
@@ -315,5 +325,61 @@ mod tests {
             table.insert_or_update(&local_key, (), Instant::now()),
             InsertResult::Failed(FailureReason::SelfUpdate)
         ));
+    }
+
+    // Random peers do NOT spread evenly across the 256 buckets. Bucket index is
+    // 255 - leading_zeros(xor_distance), so the probability of landing in the
+    // top bucket is 1/2, the next 1/4, and so on — a geometric distribution
+    // concentrated in the few high-distance buckets.
+    #[test]
+    fn random_ids_distribute_geometrically_by_distance() {
+        let local = Key::from(NodeId::random());
+        let n = 100_000usize;
+        let mut counts = [0usize; NUM_BUCKETS];
+        for _ in 0..n {
+            let k = Key::from(NodeId::random());
+            let idx = BucketIndex::new(&local.distance(&k)).expect("distinct key").get();
+            counts[idx] += 1;
+        }
+
+        // Top bucket ~1/2, next ~1/4, next ~1/8 (10% relative slack).
+        assert!((counts[255] as f64 - n as f64 / 2.0).abs() < n as f64 * 0.05);
+        assert!((counts[254] as f64 - n as f64 / 4.0).abs() < n as f64 * 0.05);
+        assert!((counts[253] as f64 - n as f64 / 8.0).abs() < n as f64 * 0.05);
+
+        // The top 16 buckets hold essentially everything; lower buckets are
+        // effectively unreachable for uniformly-random peer ids.
+        let top16: usize = counts[NUM_BUCKETS - 16..].iter().sum();
+        assert!(top16 > n * 999 / 1000, "top16={top16}");
+    }
+
+    // Consequence of the geometric distribution: offering many random peers
+    // saturates the high buckets at MAX_NODES_PER_BUCKET and rejects the rest,
+    // so the committed table holds far fewer nodes than peers offered.
+    #[test]
+    fn high_buckets_saturate_and_reject() {
+        let local = Key::from(NodeId::random());
+        let mut table = KBucketsTable::<()>::new(local, Duration::from_secs(60));
+        let now = Instant::now();
+
+        let offered = 4096usize;
+        let mut not_committed = 0usize;
+        for _ in 0..offered {
+            match table.insert_or_update(&Key::from(NodeId::random()), (), now) {
+                InsertResult::Inserted | InsertResult::Updated => {}
+                InsertResult::Pending { .. } | InsertResult::Failed(_) => not_committed += 1,
+            }
+        }
+
+        for b in &table.buckets {
+            assert!(b.nodes.len() <= MAX_NODES_PER_BUCKET);
+        }
+
+        // Top buckets are full; the table commits only a small fraction.
+        assert_eq!(table.buckets[255].nodes.len(), MAX_NODES_PER_BUCKET);
+        assert_eq!(table.buckets[254].nodes.len(), MAX_NODES_PER_BUCKET);
+        let committed: usize = table.buckets.iter().map(|b| b.nodes.len()).sum();
+        assert!(committed < offered / 4, "committed={committed}");
+        assert!(not_committed > offered * 3 / 4, "not_committed={not_committed}");
     }
 }
