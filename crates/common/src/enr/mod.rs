@@ -296,156 +296,7 @@ impl Enr {
         })
     }
 
-    // Clone, apply f, re-sign, check size, commit.
-    fn apply<F>(&mut self, key: &SecretKey, f: F) -> Result<(), Error>
-    where
-        F: FnOnce(&mut Self),
-    {
-        let mut new = *self;
-        f(&mut new);
-        new.seq = new.seq.checked_add(1).ok_or(Error::SequenceNumberTooHigh)?;
-        new.sign(key)?;
-        new.node_id = NodeId::from(key.public_key(SECP256K1));
-        if new.size() > MAX_ENR_SIZE {
-            return Err(Error::ExceedsMaxSize);
-        }
-        *self = new;
-        Ok(())
-    }
-
-    // Encode (seq + k-v pairs) into a flat buffer; signature is prepended only
-    // when include_signature is true. Keys emitted in lexicographic sorted order:
-    //   attnets < eth2 < id < ip < ip6 < quic < quic6 < secp256k1 < syncnets <
-    //   udp < udp6
-    fn append_rlp_content(&self, stream: &mut BytesMut, include_signature: bool) {
-        if include_signature {
-            self.signature.as_ref().encode(stream);
-        }
-        self.seq.encode(stream);
-
-        if let Some(attnets) = self.attnets {
-            ATTNETS_ENR_KEY.encode(stream);
-            attnets.as_ref().encode(stream);
-        }
-        if let Some(cgc) = self.cgc {
-            CGC_ENR_KEY.encode(stream);
-            cgc.encode(stream);
-        }
-        if let Some(eth2) = self.eth2 {
-            ETH2_ENR_KEY.encode(stream);
-            eth2.as_ref().encode(stream);
-        }
-        ID_ENR_KEY.encode(stream);
-        ENR_VERSION.encode(stream);
-        if let Some(ip4) = self.ip4 {
-            IP_ENR_KEY.encode(stream);
-            ip4.octets().as_ref().encode(stream);
-        }
-        if let Some(ip6) = self.ip6 {
-            IP6_ENR_KEY.encode(stream);
-            ip6.octets().as_ref().encode(stream);
-        }
-        if let Some(quic4) = self.quic4 {
-            QUIC_ENR_KEY.encode(stream);
-            quic4.encode(stream);
-        }
-        if let Some(quic6) = self.quic6 {
-            QUIC6_ENR_KEY.encode(stream);
-            quic6.encode(stream);
-        }
-        keys::ENR_KEY.encode(stream);
-        self.public_key.serialize().as_ref().encode(stream);
-        if let Some(syncnets) = self.syncnets {
-            SYNCNETS_ENR_KEY.encode(stream);
-            [syncnets].as_ref().encode(stream);
-        }
-        if let Some(tcp4) = self.tcp4 {
-            TCP_ENR_KEY.encode(stream);
-            tcp4.encode(stream);
-        }
-        if let Some(tcp6) = self.tcp6 {
-            TCP6_ENR_KEY.encode(stream);
-            tcp6.encode(stream);
-        }
-        if let Some(udp4) = self.udp4 {
-            UDP_ENR_KEY.encode(stream);
-            udp4.encode(stream);
-        }
-        if let Some(udp6) = self.udp6 {
-            UDP6_ENR_KEY.encode(stream);
-            udp6.encode(stream);
-        }
-    }
-
-    // Returns the RLP list used as the signing payload (no signature prefix).
-    fn rlp_content(&self) -> BytesMut {
-        let mut stream = BytesMut::with_capacity(MAX_ENR_SIZE);
-        self.append_rlp_content(&mut stream, false);
-        let header = Header { list: true, payload_length: stream.len() };
-        let mut out = BytesMut::new();
-        header.encode(&mut out);
-        out.extend_from_slice(&stream);
-        out
-    }
-
-    fn sign(&mut self, key: &SecretKey) -> Result<[u8; 64], Error> {
-        let sig_bytes = keys::sign_v4(key, &self.rlp_content()).map_err(|_| Error::SigningError)?;
-        let old = self.signature;
-        self.signature = sig_bytes;
-        Ok(old)
-    }
-}
-
-impl std::fmt::Display for Enr {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{}", self.to_base64())
-    }
-}
-
-impl FromStr for Enr {
-    type Err = String;
-
-    fn from_str(base64_string: &str) -> Result<Self, Self::Err> {
-        if base64_string.len() < 4 {
-            return Err("Invalid ENR string".to_string());
-        }
-        let decode_string = if base64_string.starts_with("enr:") {
-            base64_string.get(4..).ok_or_else(|| "Invalid ENR string".to_string())?
-        } else {
-            base64_string
-        };
-        let bytes = URL_SAFE_NO_PAD
-            .decode(decode_string)
-            .map_err(|e| format!("Invalid base64 encoding: {e:?}"))?;
-        Self::decode(&mut bytes.as_ref()).map_err(|e| format!("Invalid ENR: {e:?}"))
-    }
-}
-
-impl Serialize for Enr {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&self.to_base64())
-    }
-}
-
-impl<'de> Deserialize<'de> for Enr {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let s: String = Deserialize::deserialize(deserializer)?;
-        Self::from_str(&s).map_err(D::Error::custom)
-    }
-}
-
-impl Encodable for Enr {
-    fn encode(&self, out: &mut dyn bytes::BufMut) {
-        let mut stream = BytesMut::with_capacity(MAX_ENR_SIZE);
-        self.append_rlp_content(&mut stream, true);
-        let header = Header { list: true, payload_length: stream.len() };
-        header.encode(out);
-        out.put_slice(&stream);
-    }
-}
-
-impl Decodable for Enr {
-    fn decode(buf: &mut &[u8]) -> Result<Self, DecoderError> {
+    pub fn from_rlp(buf: &mut &[u8], validate_signature: bool) -> Result<Self, DecoderError> {
         if buf.len() > MAX_ENR_SIZE {
             return Err(DecoderError::Custom("enr exceeds max size"));
         }
@@ -581,16 +432,18 @@ impl Decodable for Enr {
         let public_key = keys::decode_public(pk_bytes)?;
         let node_id = NodeId::from(public_key);
 
-        // Verify signature over the full content (including skipped fields).
-        let content_rlp = {
-            let header = Header { list: true, payload_length: content_list.len() };
-            let mut out = BytesMut::with_capacity(header.length() + content_list.len());
-            header.encode(&mut out);
-            out.extend_from_slice(&content_list);
-            out
-        };
-        if !keys::verify_v4(&public_key, &content_rlp, &signature) {
-            return Err(DecoderError::Custom("Invalid Signature"));
+        if validate_signature {
+            // Verify signature over the full content (including skipped fields).
+            let content_rlp = {
+                let header = Header { list: true, payload_length: content_list.len() };
+                let mut out = BytesMut::with_capacity(header.length() + content_list.len());
+                header.encode(&mut out);
+                out.extend_from_slice(&content_list);
+                out
+            };
+            if !keys::verify_v4(&public_key, &content_rlp, &signature) {
+                return Err(DecoderError::Custom("Invalid Signature"));
+            }
         }
 
         Ok(Self {
@@ -611,6 +464,164 @@ impl Decodable for Enr {
             public_key,
             signature,
         })
+    }
+
+    pub fn from_base64(base64_string: &str, validate_signature: bool) -> Result<Self, String> {
+        if base64_string.len() < 4 {
+            return Err("Invalid ENR string".to_string());
+        }
+        let decode_string = if base64_string.starts_with("enr:") {
+            base64_string.get(4..).ok_or_else(|| "Invalid ENR string".to_string())?
+        } else {
+            base64_string
+        };
+        let bytes = URL_SAFE_NO_PAD
+            .decode(decode_string)
+            .map_err(|e| format!("Invalid base64 encoding: {e:?}"))?;
+        Self::from_rlp(&mut bytes.as_ref(), validate_signature)
+            .map_err(|e| format!("Invalid ENR: {e:?}"))
+    }
+
+    // Clone, apply f, re-sign, check size, commit.
+    fn apply<F>(&mut self, key: &SecretKey, f: F) -> Result<(), Error>
+    where
+        F: FnOnce(&mut Self),
+    {
+        let mut new = *self;
+        f(&mut new);
+        new.seq = new.seq.checked_add(1).ok_or(Error::SequenceNumberTooHigh)?;
+        new.sign(key)?;
+        new.node_id = NodeId::from(key.public_key(SECP256K1));
+        if new.size() > MAX_ENR_SIZE {
+            return Err(Error::ExceedsMaxSize);
+        }
+        *self = new;
+        Ok(())
+    }
+
+    // Encode (seq + k-v pairs) into a flat buffer; signature is prepended only
+    // when include_signature is true. Keys emitted in lexicographic sorted order:
+    //   attnets < eth2 < id < ip < ip6 < quic < quic6 < secp256k1 < syncnets <
+    //   udp < udp6
+    fn append_rlp_content(&self, stream: &mut BytesMut, include_signature: bool) {
+        if include_signature {
+            self.signature.as_ref().encode(stream);
+        }
+        self.seq.encode(stream);
+
+        if let Some(attnets) = self.attnets {
+            ATTNETS_ENR_KEY.encode(stream);
+            attnets.as_ref().encode(stream);
+        }
+        if let Some(cgc) = self.cgc {
+            CGC_ENR_KEY.encode(stream);
+            cgc.encode(stream);
+        }
+        if let Some(eth2) = self.eth2 {
+            ETH2_ENR_KEY.encode(stream);
+            eth2.as_ref().encode(stream);
+        }
+        ID_ENR_KEY.encode(stream);
+        ENR_VERSION.encode(stream);
+        if let Some(ip4) = self.ip4 {
+            IP_ENR_KEY.encode(stream);
+            ip4.octets().as_ref().encode(stream);
+        }
+        if let Some(ip6) = self.ip6 {
+            IP6_ENR_KEY.encode(stream);
+            ip6.octets().as_ref().encode(stream);
+        }
+        if let Some(quic4) = self.quic4 {
+            QUIC_ENR_KEY.encode(stream);
+            quic4.encode(stream);
+        }
+        if let Some(quic6) = self.quic6 {
+            QUIC6_ENR_KEY.encode(stream);
+            quic6.encode(stream);
+        }
+        keys::ENR_KEY.encode(stream);
+        self.public_key.serialize().as_ref().encode(stream);
+        if let Some(syncnets) = self.syncnets {
+            SYNCNETS_ENR_KEY.encode(stream);
+            [syncnets].as_ref().encode(stream);
+        }
+        if let Some(tcp4) = self.tcp4 {
+            TCP_ENR_KEY.encode(stream);
+            tcp4.encode(stream);
+        }
+        if let Some(tcp6) = self.tcp6 {
+            TCP6_ENR_KEY.encode(stream);
+            tcp6.encode(stream);
+        }
+        if let Some(udp4) = self.udp4 {
+            UDP_ENR_KEY.encode(stream);
+            udp4.encode(stream);
+        }
+        if let Some(udp6) = self.udp6 {
+            UDP6_ENR_KEY.encode(stream);
+            udp6.encode(stream);
+        }
+    }
+
+    // Returns the RLP list used as the signing payload (no signature prefix).
+    fn rlp_content(&self) -> BytesMut {
+        let mut stream = BytesMut::with_capacity(MAX_ENR_SIZE);
+        self.append_rlp_content(&mut stream, false);
+        let header = Header { list: true, payload_length: stream.len() };
+        let mut out = BytesMut::new();
+        header.encode(&mut out);
+        out.extend_from_slice(&stream);
+        out
+    }
+
+    fn sign(&mut self, key: &SecretKey) -> Result<[u8; 64], Error> {
+        let sig_bytes = keys::sign_v4(key, &self.rlp_content()).map_err(|_| Error::SigningError)?;
+        let old = self.signature;
+        self.signature = sig_bytes;
+        Ok(old)
+    }
+}
+
+impl std::fmt::Display for Enr {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{}", self.to_base64())
+    }
+}
+
+impl FromStr for Enr {
+    type Err = String;
+
+    fn from_str(base64_string: &str) -> Result<Self, Self::Err> {
+        Self::from_base64(base64_string, true)
+    }
+}
+
+impl Serialize for Enr {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_base64())
+    }
+}
+
+impl<'de> Deserialize<'de> for Enr {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s: String = Deserialize::deserialize(deserializer)?;
+        Self::from_str(&s).map_err(D::Error::custom)
+    }
+}
+
+impl Encodable for Enr {
+    fn encode(&self, out: &mut dyn bytes::BufMut) {
+        let mut stream = BytesMut::with_capacity(MAX_ENR_SIZE);
+        self.append_rlp_content(&mut stream, true);
+        let header = Header { list: true, payload_length: stream.len() };
+        header.encode(out);
+        out.put_slice(&stream);
+    }
+}
+
+impl Decodable for Enr {
+    fn decode(buf: &mut &[u8]) -> Result<Self, DecoderError> {
+        Enr::from_rlp(buf, true)
     }
 }
 

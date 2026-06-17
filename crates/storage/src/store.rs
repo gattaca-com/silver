@@ -6,7 +6,7 @@ use std::{
 
 use fxhash::FxHashMap;
 use silver_common::{
-    P2pStreamId, PeerEvent, RpcRequestInbound, SyncUpdate, TRandomAccess, TRead,
+    Enr, P2pStreamId, PeerEvent, RpcRequestInbound, SyncUpdate, TRandomAccess, TRead,
     ssz_hash::B256,
     ssz_view::{
         BeaconBlocksByRangeRequestView, BeaconBlocksByRootRequestView,
@@ -52,6 +52,7 @@ const UNFINALIZED_COLUMNS_DIR: &str = "unfinalized_columns";
 
 const BLOCKS_DIR: &str = "blocks";
 const COLUMNS_DIR: &str = "columns";
+const PEERS_DIR: &str = "peers";
 
 const BLOCK_SLOTS_RETAINED: u64 = 33024 * 32;
 const COLUMN_SLOTS_RETAINED: u64 = 4096 * 32;
@@ -134,6 +135,10 @@ enum PendingWrite {
         finalized_slot: u64,
         finalized_root: B256,
     },
+    PersistPeer {
+        enr: Enr,
+    },
+    LoadPeers,
 }
 
 /// Descending cursor for the data-column backfill disk scan. Walks persisted
@@ -233,6 +238,9 @@ impl Store {
 
         let columns_dir = Path::new(&store_dir).join(COLUMNS_DIR);
         std::fs::create_dir_all(&columns_dir)?;
+
+        let peers_dir = Path::new(&store_dir).join(PEERS_DIR);
+        std::fs::create_dir_all(&peers_dir)?;
 
         for sub_dir in std::fs::read_dir(&blocks_dir)? {
             let index_path = sub_dir?.path().join("block_index.bin");
@@ -686,6 +694,14 @@ impl Store {
         self.query_queue.push_back(PendingQuery { stream_id, units });
     }
 
+    pub(super) fn persist_peer(&mut self, enr: Enr) {
+        self.write_queue.push_back(PendingWrite::PersistPeer { enr });
+    }
+
+    pub(super) fn load_peers(&mut self) {
+        self.write_queue.push_back(PendingWrite::LoadPeers);
+    }
+
     /// Canonical chain blocks with slot in `[start, end)`, found by walking
     /// ancestors of the current head through the unfinalized tree. Maps
     /// slot → (parent_root, block_root). Empty before the first Status.
@@ -731,6 +747,10 @@ impl Store {
 
     fn unfinalized_columns_dir(&self) -> PathBuf {
         Path::new(&self.store_dir).join(UNFINALIZED_COLUMNS_DIR)
+    }
+
+    fn peers_dir(&self) -> PathBuf {
+        Path::new(&self.store_dir).join(PEERS_DIR)
     }
 }
 

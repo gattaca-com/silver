@@ -180,6 +180,14 @@ impl PeerDatabase {
             .iter()
             .filter_map(move |(p2p_id, idx)| proto?.contains(idx).then_some(*p2p_id))
     }
+
+    /// Live peers with a valid status.
+    pub fn live_peers_with_status(&self) -> impl Iterator<Item = &PeerRecord> {
+        self.by_p2p_id
+            .iter()
+            .filter_map(|(_, idx)| self.peers.get(*idx))
+            .filter(|record| record.status.is_some())
+    }
 }
 
 fn status_bytes(s: &PeerStatus) -> &[u8] {

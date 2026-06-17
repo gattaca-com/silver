@@ -12,6 +12,7 @@ use silver_common::{
 use silver_peer::PeerManager;
 
 const OUTBOUND_DRAIN_INTERVAL: Duration = Duration::from_secs(5);
+const PEER_PERSIST_INTERVAL: Duration = Duration::from_secs(300);
 
 pub struct Controller {
     peer_manager: PeerManager,
@@ -20,6 +21,7 @@ pub struct Controller {
     last_ping: Instant,
     last_status: Instant,
     last_drain: Instant,
+    last_peer_persist: Instant,
 
     /// When false, the 17000ms heartbeat skips the per-peer Ping fan-out.
     /// Tests use this to keep the peer-state machine ticking without
@@ -40,6 +42,7 @@ impl Controller {
             last_ping: Instant::now(),
             last_status: Instant::now(),
             last_drain: Instant::now(),
+            last_peer_persist: Instant::now(),
             auto_ping: true,
         }
     }
@@ -191,6 +194,18 @@ impl Tile<SilverSpine> for Controller {
                 self.last_ping = now;
                 self.peer_manager
                     .fan_out_ping(&mut |evt| handle_peer_control(evt, &mut adapter.producers));
+            }
+        }
+
+        if self.last_peer_persist.elapsed() > PEER_PERSIST_INTERVAL {
+            self.last_peer_persist = now;
+            for peer in self.peer_manager.live_peers_with_status() {
+                if let Some(enr) = peer.enr.as_ref() {
+                    handle_peer_control(
+                        PeerControl::PersistPeer { enr: *enr },
+                        &mut adapter.producers,
+                    );
+                }
             }
         }
 

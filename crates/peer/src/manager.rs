@@ -19,7 +19,7 @@ use silver_common::{
 use silver_config::{ScoreParams, SyncingConfig};
 
 use crate::{
-    database::PeerDatabase,
+    database::{PeerDatabase, PeerRecord},
     scoring,
     state::{ArchivedState, IpPrefix, MsgIdMap, PeerState, TopicScore},
 };
@@ -802,6 +802,10 @@ impl PeerManager {
     /// Iterator over live peer connection handles (for tests/introspection).
     pub fn live_peers(&self) -> impl Iterator<Item = usize> + '_ {
         self.peers.keys().copied()
+    }
+
+    pub fn live_peers_with_status(&self) -> impl Iterator<Item = &PeerRecord> {
+        self.database.live_peers_with_status()
     }
 
     /// Announce our topic subscriptions to every currently-connected peer.

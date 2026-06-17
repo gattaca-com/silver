@@ -523,6 +523,9 @@ pub enum PeerControl {
     UnbanIp {
         ip: IpAddr,
     },
+    PersistPeer {
+        enr: Enr,
+    },
 }
 
 #[derive(Clone, Copy, Debug)]
