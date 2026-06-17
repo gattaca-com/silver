@@ -466,6 +466,19 @@ impl DiscV5 {
         self.event_queue.push(DiscoveryEvent::NodeFound(enr));
     }
 
+    /// Drop all per-peer state for a node evicted from the routing table so it
+    /// does not outlive its kbuckets entry. Called whenever an insert displaces
+    /// the bucket LRU — both forced session inserts and pending promotions.
+    fn evict_peer(&mut self, id: NodeId) {
+        if self.sessions.remove(&id).is_some() {
+            warn!(%id, "evicted live peer from routing table");
+        }
+        self.pending_findnodes.remove(&id);
+        self.pending_probe_nonces.remove(&id);
+        self.challenges.remove(&id);
+        self.pending_pings.retain(|_, (nid, _)| *nid != id);
+    }
+
     fn handle_message(&mut self, src_id: NodeId, src_addr: SocketAddr, bytes: &[u8], now: Instant) {
         let msg = match Message::decode(bytes) {
             Some(o) => o,
@@ -651,8 +664,9 @@ impl DiscV5 {
         };
 
         let existing_entry = self.kbuckets.get(&Key::from(src_id)).map(|n| n.value);
-        let (remote_pubkey, stored_enr_raw) = match existing_entry {
-            Some(e) => (e.pubkey, e.enr_raw),
+
+        let (remote_pubkey, stored_enr_raw, new_peer) = match existing_entry {
+            Some(e) => (e.pubkey, e.enr_raw, None),
             None => {
                 // If we don't have the node's record, Handshake must contain it.
                 let raw = match enr_record {
@@ -679,27 +693,40 @@ impl DiscV5 {
                 }
 
                 let pk_bytes = enr.public_key().serialize();
-
-                let result = self.kbuckets.insert_or_update(
-                    &Key::from(src_id),
-                    NodeEntry {
-                        addr: src_addr,
-                        enr_seq: enr.seq(),
-                        pubkey: pk_bytes,
-                        enr_raw: Some(raw),
-                    },
-                    now,
-                );
-                if !matches!(result, InsertResult::Inserted | InsertResult::Updated) {
-                    warn!(%src_id, %src_addr, ?result, "handshake established but kbuckets insert not committed");
-                }
-                if matches!(result, InsertResult::Inserted) {
-                    self.log_table_state(now);
-                }
-
-                (pk_bytes, Some(raw))
+                (pk_bytes, Some(raw), Some((pk_bytes, enr.seq(), raw)))
             }
         };
+
+        if !verify_id_nonce_sig(
+            &remote_pubkey,
+            &challenge.data,
+            &ephem_pubkey,
+            &self.local_id,
+            &id_nonce_sig,
+        ) {
+            warn!(%src_id, %src_addr, "handshake id-nonce signature verification failed");
+            self.metrics.failed_nodes += 1;
+            return;
+        }
+
+        if let Some((pk_bytes, enr_seq, raw)) = new_peer {
+            match self.kbuckets.insert_or_update_evicting(
+                &Key::from(src_id),
+                NodeEntry { addr: src_addr, enr_seq, pubkey: pk_bytes, enr_raw: Some(raw) },
+                now,
+            ) {
+                Ok(evicted) => {
+                    if let Some(node) = evicted {
+                        self.evict_peer(*node.key.preimage());
+                    }
+                    self.log_table_state(now);
+                }
+                Err(_) => {
+                    warn!(%src_id, %src_addr, "handshake carries local node id; dropping");
+                    return;
+                }
+            }
+        }
 
         // Update enr_raw if a fresher record was provided in this Handshake.
         if let Some(raw) = enr_record {
@@ -719,18 +746,6 @@ impl DiscV5 {
                     }
                 }
             }
-        }
-
-        if !verify_id_nonce_sig(
-            &remote_pubkey,
-            &challenge.data,
-            &ephem_pubkey,
-            &self.local_id,
-            &id_nonce_sig,
-        ) {
-            warn!(%src_id, %src_addr, "handshake id-nonce signature verification failed");
-            self.metrics.failed_nodes += 1;
-            return;
         }
 
         let (initiator_key, recipient_key) = match ecdh_and_derive_keys_responder(
@@ -1043,6 +1058,7 @@ impl Discovery for DiscV5 {
         self.sessions.remove(&id);
         self.pending_findnodes.remove(&id);
         self.pending_probe_nonces.remove(&id);
+        self.pending_pings.retain(|_, (nid, _)| *nid != id);
     }
 
     fn unban_node(&mut self, id: NodeId) {
@@ -1064,10 +1080,9 @@ impl Discovery for DiscV5 {
 
         while let Some(applied) = self.kbuckets.take_applied_pending() {
             if let Some(evicted) = &applied.evicted {
-                let id = *evicted.key.preimage();
-                if self.sessions.contains_key(&id) {
-                    warn!(%id, "kbuckets entry evicted while session still live");
-                }
+                // Pending promotion displaced the LRU: drop its per-peer state
+                // so it doesn't outlive the routing-table entry.
+                self.evict_peer(*evicted.key.preimage());
             }
             if let Some(enr) = self.decode_enr_for(*applied.inserted.preimage()) {
                 // Drop our own record (peers echo it back; promoting it here
@@ -2028,5 +2043,74 @@ mod tests {
         let events = collect_sends(&mut a);
         let whoareyou_count = events.len();
         assert_eq!(whoareyou_count, limit as usize, "should cap WhoAreYou at global limit");
+    }
+
+    #[test]
+    fn test_handshake_bad_signature_does_not_mutate_table() {
+        // An unknown peer must not be admitted to the routing table (and must not
+        // evict an incumbent) until its id-nonce signature verifies. Tamper B's
+        // stored challenge so A's otherwise-valid handshake fails verification.
+        let now = Instant::now();
+        let (mut a, a_addr) = make_node(19171);
+        let (mut b, b_addr) = make_node(19172);
+
+        // A learns B and probes it; B replies WhoAreYou and records a challenge.
+        a.add_enr(&b.local_enr, now);
+        a.find_nodes();
+        let a_sends = collect_sends(&mut a);
+        let probe = a_sends.iter().find(|(to, _)| *to == b_addr).map(|(_, d)| d.clone()).unwrap();
+
+        b.handle(a_addr, &probe, now);
+        let b_sends = collect_sends(&mut b);
+        let wru = b_sends.iter().find(|(to, _)| *to == a_addr).map(|(_, d)| d.clone()).unwrap();
+        assert!(
+            b.kbuckets.get(&Key::from(a.local_id)).is_none(),
+            "B must not know A pre-handshake"
+        );
+
+        // Corrupt B's stored challenge: A signs over the original nonce, so
+        // verification against the tampered copy fails.
+        b.challenges.get_mut(&a.local_id).unwrap().data[0] ^= 0xff;
+
+        // A produces a validly-signed Handshake in response to the WhoAreYou.
+        a.handle(b_addr, &wru, now);
+        let a_sends = collect_sends(&mut a);
+        let failed_before = b.metrics.failed_nodes;
+        for (to, data) in &a_sends {
+            if *to == b_addr {
+                b.handle(a_addr, data, now);
+            }
+        }
+
+        assert!(
+            b.metrics.failed_nodes > failed_before,
+            "signature verification should have failed"
+        );
+        assert!(
+            b.kbuckets.get(&Key::from(a.local_id)).is_none(),
+            "unverified handshake must not insert into kbuckets"
+        );
+        assert!(!b.sessions.contains_key(&a.local_id), "no session for unverified peer");
+    }
+
+    #[test]
+    fn test_evict_and_ban_drop_pending_pings() {
+        let now = Instant::now();
+        let (mut a, _) = make_node(19181);
+        let (b, _) = make_node(19182);
+        let (c, _) = make_node(19183);
+        let (bid, cid) = (b.local_id, c.local_id);
+
+        // Two in-flight pings for b, one for c (an unrelated node).
+        a.pending_pings.insert(RequestId::from(1u64), (bid, now));
+        a.pending_pings.insert(RequestId::from(2u64), (bid, now));
+        a.pending_pings.insert(RequestId::from(3u64), (cid, now));
+
+        a.evict_peer(bid);
+        assert!(!a.pending_pings.values().any(|(id, _)| *id == bid), "evict left pings for b");
+        assert!(a.pending_pings.values().any(|(id, _)| *id == cid), "evict dropped unrelated ping");
+
+        a.ban_node(cid);
+        assert!(!a.pending_pings.values().any(|(id, _)| *id == cid), "ban left pings for c");
     }
 }

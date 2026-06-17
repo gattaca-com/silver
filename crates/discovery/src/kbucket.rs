@@ -182,6 +182,40 @@ impl<T: Copy> KBucket<T> {
         InsertResult::Inserted
     }
 
+    /// Like `insert_or_update`, but always commits the node: a full bucket
+    /// evicts its LRU entry immediately instead of parking the node as pending.
+    /// Used on session establishment, where the peer must be routable because
+    /// we will connect to it on the p2p layer. Returns the evicted LRU node.
+    fn insert_or_update_evicting(&mut self, key: &Key, value: T, now: Instant) -> Option<Node<T>> {
+        if let Some(pos) = self.position(key) {
+            let mut node = self.nodes[pos];
+            let len = self.nodes.len();
+            self.nodes.copy_within(pos + 1..len, pos);
+            self.nodes.truncate(len - 1);
+            node.value = value;
+            node.last_seen = now;
+            self.nodes.push(node);
+            return None;
+        }
+
+        // A pending copy is stale once we commit the node directly.
+        if self.pending.as_ref().is_some_and(|p| &p.node.key == key) {
+            self.pending = None;
+        }
+
+        let evicted = if self.nodes.is_full() {
+            let node = self.nodes[0];
+            let len = self.nodes.len();
+            self.nodes.copy_within(1..len, 0);
+            self.nodes.truncate(len - 1);
+            Some(node)
+        } else {
+            None
+        };
+        self.nodes.push(Node { key: *key, value, last_seen: now });
+        evicted
+    }
+
     /// Remove `key` from the committed slots or the pending slot. Returns
     /// whether anything was removed.
     fn remove(&mut self, key: &Key) -> bool {
@@ -249,6 +283,23 @@ impl<T: Copy> KBucketsTable<T> {
             self.applied_pending.push_back(applied);
         }
         bucket.insert_or_update(key, value, now)
+    }
+
+    /// Force-commit a node, evicting the bucket LRU if full.
+    pub fn insert_or_update_evicting(
+        &mut self,
+        key: &Key,
+        value: T,
+        now: Instant,
+    ) -> Result<Option<Node<T>>, FailureReason> {
+        let Some(i) = BucketIndex::new(&self.local_key.distance(key)) else {
+            return Err(FailureReason::SelfUpdate);
+        };
+        let bucket = &mut self.buckets[i.get()];
+        if let Some(applied) = bucket.apply_pending() {
+            self.applied_pending.push_back(applied);
+        }
+        Ok(bucket.insert_or_update_evicting(key, value, now))
     }
 
     /// Iterate all nodes (no pending promotion triggered).
@@ -406,5 +457,66 @@ mod tests {
         let committed: usize = table.buckets.iter().map(|b| b.nodes.len()).sum();
         assert!(committed < offered / 4, "committed={committed}");
         assert!(not_committed > offered * 3 / 4, "not_committed={not_committed}");
+    }
+
+    #[test]
+    fn evicting_insert_replaces_lru_when_full() {
+        let now = Instant::now();
+        let mut b = KBucket::<u32>::new(Duration::from_secs(60));
+        let keys: Vec<Key> =
+            (0..MAX_NODES_PER_BUCKET).map(|_| Key::from(NodeId::random())).collect();
+        for (i, k) in keys.iter().enumerate() {
+            assert!(matches!(b.insert_or_update(k, i as u32, now), InsertResult::Inserted));
+        }
+        assert!(b.nodes.is_full());
+
+        let newcomer = Key::from(NodeId::random());
+        let evicted = b.insert_or_update_evicting(&newcomer, 999, now).expect("LRU evicted");
+        assert_eq!(evicted.key, keys[0]); // index 0 is the LRU
+        assert_eq!(b.nodes.len(), MAX_NODES_PER_BUCKET);
+        assert!(b.position(&newcomer).is_some());
+        assert!(b.position(&keys[0]).is_none());
+    }
+
+    #[test]
+    fn evicting_insert_updates_in_place_without_eviction() {
+        let now = Instant::now();
+        let mut b = KBucket::<u32>::new(Duration::from_secs(60));
+        let k = Key::from(NodeId::random());
+        b.insert_or_update(&k, 1, now);
+        b.insert_or_update(&Key::from(NodeId::random()), 2, now);
+
+        assert!(b.insert_or_update_evicting(&k, 7, now).is_none());
+        assert_eq!(b.nodes.len(), 2);
+        let pos = b.position(&k).expect("still present");
+        assert_eq!(b.nodes[pos].value, 7);
+        assert_eq!(pos, b.nodes.len() - 1); // refreshed -> moved to tail (MRU)
+    }
+
+    #[test]
+    fn evicting_insert_commits_pending_node() {
+        let now = Instant::now();
+        let mut b = KBucket::<u32>::new(Duration::from_secs(60));
+        for i in 0..MAX_NODES_PER_BUCKET {
+            b.insert_or_update(&Key::from(NodeId::random()), i as u32, now);
+        }
+        let pend = Key::from(NodeId::random());
+        assert!(matches!(b.insert_or_update(&pend, 100, now), InsertResult::Pending { .. }));
+        assert!(b.pending.is_some());
+
+        let evicted = b.insert_or_update_evicting(&pend, 100, now).expect("LRU evicted");
+        assert!(b.pending.is_none());
+        assert!(b.position(&pend).is_some());
+        assert_ne!(evicted.key, pend);
+    }
+
+    #[test]
+    fn evicting_insert_rejects_local() {
+        let local = Key::from(NodeId::random());
+        let mut table = KBucketsTable::<()>::new(local, Duration::from_secs(5));
+        assert!(matches!(
+            table.insert_or_update_evicting(&local, (), Instant::now()),
+            Err(FailureReason::SelfUpdate)
+        ));
     }
 }
