@@ -27,7 +27,7 @@ pub use checkpoint::latest_local_checkpoint;
 /// `DataColumnSidecarsByRange` is bounded by
 /// `count * NUMBER_OF_COLUMNS <= MAX_REQUEST_DATA_COLUMN_SIDECARS`
 /// (16384), i.e. `count <= MAX_REQUEST_BLOCKS_DENEB`.
-const MAX_REQUEST_BLOCKS: u64 = 128;
+const MAX_REQUEST_BLOCKS: u64 = 32;
 
 /// Cap on concurrent in-flight read requests. Past this, a new request is
 /// answered with an empty (Complete-only) response — sheds load under a peer
