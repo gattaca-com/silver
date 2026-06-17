@@ -1,8 +1,8 @@
 use silver_beacon_state_data::{
     self as common, BeaconBlockHeader, Checkpoint, EPOCHS_PER_HISTORICAL_VECTOR,
     EPOCHS_PER_SLASHINGS_VECTOR, Eth1Data, ExecutionPayloadHeader, Fork, HISTORICAL_ROOTS_LIMIT,
-    LongtailView, MAX_ETH1_VOTES, SLOTS_PER_HISTORICAL_ROOT, SYNC_COMMITTEE_SIZE,
-    StateReadView, SyncCommittee, effective_randao_mixes_into, effective_slashings_into,
+    LongtailView, MAX_ETH1_VOTES, SLOTS_PER_HISTORICAL_ROOT, SYNC_COMMITTEE_SIZE, StateReadView,
+    SyncCommittee, effective_randao_mixes_into, effective_slashings_into,
 };
 use silver_common::metrics::timed;
 pub use silver_common::ssz_hash::*;
