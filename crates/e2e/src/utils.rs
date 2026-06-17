@@ -321,4 +321,8 @@ impl PmBsHarness {
     pub fn head_validator_count(&self) -> usize {
         self.bs.head_validator_count()
     }
+
+    pub fn fork_choice_finalized_epoch(&self) -> u64 {
+        self.bs.fork_choice_finalized_epoch()
+    }
 }

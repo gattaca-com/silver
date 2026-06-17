@@ -6,6 +6,7 @@ mod tests;
 use delta::Eth1VotesDelta;
 pub use delta::{Eth1View, Eth1WriteView};
 pub use finalized::Eth1Votes;
+use silver_common_macros::timed;
 
 use crate::{
     buffer::{Id, Reset, Ring, reanchor_survivors},
@@ -61,6 +62,7 @@ impl Eth1Group {
 
     /// Re-anchor each survivor against the promoted `winner` into fresh slots
     /// (deduped), then promote the winner into the finalized state.
+    #[timed]
     pub fn finalize(&mut self, winner: Eth1Id, survivors: &[Eth1Id]) -> Vec<Eth1Id> {
         debug_assert!(survivors.contains(&winner), "winner must be among the survivors");
         self.deltas.free_outdated(survivors);

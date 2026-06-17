@@ -1,5 +1,7 @@
 use std::marker::PhantomData;
 
+use silver_common_macros::timed;
+
 use super::{
     ColumnReader, ColumnSpec, ColumnWriteView, delta::ColumnDelta, finalized::FinalizedColumn,
 };
@@ -57,6 +59,7 @@ impl<C: ColumnSpec> ColumnGroup<C> {
     /// Re-anchor each survivor against the promoted `winner` into fresh slots
     /// (deduped for shared survivors), then promote the winner into the
     /// finalized state.
+    #[timed]
     pub fn finalize(&mut self, winner: Id<Self>, survivors: &[Id<Self>]) -> Vec<Id<Self>> {
         debug_assert!(survivors.contains(&winner), "winner must be among the survivors");
         self.deltas.free_outdated(survivors);

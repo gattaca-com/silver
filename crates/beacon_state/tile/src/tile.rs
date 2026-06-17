@@ -15,6 +15,7 @@ use silver_common::{
     EngineReq, EngineResp, GossipTopic, NewGossipMsg, P2pStreamId, PayloadValidationStatus,
     PeerEvent, ReplayBlock, RpcInbound, RpcResponse, RpcResponseInbound, RpcSeverity, SilverSpine,
     SyncUpdate, TCacheRead, TRandomAccess, TRead, hex32,
+    metrics::timed,
     ssz_view::{
         self, AttesterSlashingView, MAX_ATTESTATIONS_ELECTRA, MAX_ATTESTING_INDICES,
         PROPOSER_SLASHING_SIZE, ProposerSlashingView, SIGNED_BLS_CHANGE_SIZE,
@@ -304,6 +305,13 @@ impl BeaconStateTile {
 
     pub fn head_validator_count(&self) -> usize {
         self.state.state().validators.view(self.last_applied.validators_idx).count()
+    }
+
+    /// Fork-choice finalized epoch — advances only when `finalize` promotes a
+    /// new base. The perf harness asserts this moved past the anchor so the
+    /// replay actually exercises finalization.
+    pub fn fork_choice_finalized_epoch(&self) -> u64 {
+        self.fork_choice.finalized_checkpoint.epoch
     }
 
     /// `(current_justified, finalized)` as seen by the canonical head's
@@ -720,7 +728,15 @@ impl BeaconStateTile {
             return; // already the base
         }
         let promoted = self.fork_choice.node(fin_idx).state_id;
+        self.finalize(promoted);
+    }
 
+    /// Promote `promoted` into the per-tier bases and re-anchor the survivors.
+    /// Split out of `maybe_finalize` so the perf harness sees a `finalize`
+    /// frame that fires only when finality actually advances (the early-out
+    /// checks above run every block and would dilute the timing).
+    #[timed]
+    fn finalize(&mut self, promoted: StateId) {
         // Drop non-descendants of the finalized block; the survivors (node 0
         // is now the finalized block) are exactly the deltas to re-base.
         self.fork_choice.prune();

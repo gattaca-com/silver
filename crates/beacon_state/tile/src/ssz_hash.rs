@@ -1,8 +1,8 @@
 use silver_beacon_state_data::{
     self as common, BeaconBlockHeader, Checkpoint, EPOCHS_PER_HISTORICAL_VECTOR,
     EPOCHS_PER_SLASHINGS_VECTOR, Eth1Data, ExecutionPayloadHeader, Fork, HISTORICAL_ROOTS_LIMIT,
-    LongtailView, MAX_ETH1_VOTES, PendingView, SLOTS_PER_HISTORICAL_ROOT, SYNC_COMMITTEE_SIZE,
-    StateReadView, SyncCommittee, effective_randao_mixes_into, effective_slashings_into,
+    LongtailView, MAX_ETH1_VOTES, SLOTS_PER_HISTORICAL_ROOT, SYNC_COMMITTEE_SIZE, StateReadView,
+    SyncCommittee, effective_randao_mixes_into, effective_slashings_into,
 };
 use silver_common::metrics::timed;
 pub use silver_common::ssz_hash::*;
@@ -106,9 +106,9 @@ pub fn hash_tree_root_state(rv: &StateReadView, scratch: &mut StateHashScratch) 
         uint64_chunk(slot.earliest_exit_epoch),
         uint64_chunk(slot.consolidation_balance_to_consume),
         uint64_chunk(slot.earliest_consolidation_epoch),
-        hash_pending_deposits(&rv.pending),
-        hash_pending_partial_withdrawals(&rv.pending),
-        hash_pending_consolidations(&rv.pending),
+        rv.pending.deposits.hash_root(),
+        rv.pending.partial_withdrawals.hash_root(),
+        rv.pending.consolidations.hash_root(),
         hash_uint64_vector(&es.proposer_lookahead),
     ];
 
@@ -186,23 +186,6 @@ pub fn hash_execution_payload_header(h: &ExecutionPayloadHeader) -> B256 {
         uint64_chunk(h.excess_blob_gas),
     ];
     merkleize(&fields)
-}
-
-// Thin `#[timed]` wrappers kept for the perf frame; the root is folded from
-// cached leaves in `PendingView`.
-#[timed]
-pub fn hash_pending_deposits(pending: &PendingView) -> B256 {
-    pending.deposits.root()
-}
-
-#[timed]
-pub fn hash_pending_partial_withdrawals(pending: &PendingView) -> B256 {
-    pending.partial_withdrawals.root()
-}
-
-#[timed]
-pub fn hash_pending_consolidations(pending: &PendingView) -> B256 {
-    pending.consolidations.root()
 }
 
 #[timed]

@@ -72,6 +72,11 @@ impl PerfReport {
                 actual: self.frame_avg_ns("hash_tree_root_state"),
                 threshold: t.max_hash_tree_root_state_avg,
             },
+            Gauge {
+                label: "finalize (avg)",
+                actual: self.frame_avg_ns("finalize<BeaconStateTile>"),
+                threshold: t.max_finalize_avg,
+            },
         ]
     }
 

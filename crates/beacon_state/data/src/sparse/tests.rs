@@ -27,6 +27,22 @@ fn rebase_and_prune_pins_injects_overrides_and_drops_redundant() {
 }
 
 #[test]
+fn rebase_and_prune_uses_winner_overrides_at_appended_indices() {
+    // Winner overrides reach past `valid_below` (appended validators). Those
+    // must still feed the prune comparison even though they never inject a pin.
+    let survivor = edits_of(&[(2, 500), (3, 999)]);
+    let winner = edits_of(&[(0, 9), (2, 500), (3, 501)]);
+    let old_base = |idx: u32| 100 + idx as u64;
+
+    let out = survivor
+        .rebase_and_prune(&winner, /* valid_below */ 2, /* new_count */ 4, old_base);
+
+    // idx 0: winner-only, < valid_below → pinned to old base 100. idx 2: new base
+    // is the winner's 500 == survivor → pruned. idx 3: new base 501 ≠ 999 → kept.
+    assert_eq!(out.iter().copied().collect::<Vec<_>>(), [(0, 100), (3, 999)]);
+}
+
+#[test]
 fn get_finds_and_misses() {
     let edits = edits_of(&[(2, 20), (5, 50)]);
     assert_eq!(edits.get(2), Some(&20));
