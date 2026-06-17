@@ -48,6 +48,7 @@ mod identity;
 mod spine;
 pub use silver_ssz::{ssz_hash, ssz_view};
 pub mod ticker;
+pub mod tracing;
 mod util;
 mod wheel;
 mod wither;

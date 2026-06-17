@@ -138,6 +138,7 @@ socket2 = "0.5.10"
 syn = { version = "2", features = ["full"] }
 thiserror = "1.0.58"
 tracing = "0.1.40"
+tracing-appender = "0.2.5"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 uint = "0.9"
 x509-parser = { version = "0.17", features = ["verify"] }

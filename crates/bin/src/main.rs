@@ -8,7 +8,9 @@ use quinn_proto::{Endpoint, EndpointConfig};
 use rand::RngCore;
 use silver_beacon_state::{BeaconStateTile, SlotTicker};
 use silver_beacon_state_data::BeaconState;
-use silver_common::{Enr, ProtoIdentify, SilverSpine, TCache, TCacheProducer};
+use silver_common::{
+    Enr, ProtoIdentify, SilverSpine, TCache, TCacheProducer, tracing::initialise_tracing_log,
+};
 use silver_config::Config;
 use silver_control::Controller;
 use silver_discovery::{DiscV5, Discovery};
@@ -17,7 +19,6 @@ use silver_gossip::GossipHandler;
 use silver_network::{Context, NetworkTile, P2p};
 use silver_peer::PeerManager;
 use silver_storage::{latest_local_checkpoint, tile::StorageTile};
-use tracing_subscriber::{EnvFilter, fmt::format::FmtSpan};
 
 #[cfg(not(feature = "alloc-profile"))]
 #[global_allocator]
@@ -27,14 +28,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     #[cfg(feature = "alloc-profile")]
     let _alloc_profile_guard = silver_common::allocator::init_allocator_trace();
 
-    tracing_subscriber::fmt()
-        .with_file(true)
-        .with_line_number(true)
-        .with_thread_names(true)
-        .with_span_events(FmtSpan::CLOSE)
-        .with_env_filter(EnvFilter::from_default_env())
-        .init();
-
+    let _tracing = initialise_tracing_log("silver", 10, None, false);
     tracing::debug!("start");
 
     let config = load_config()?;
