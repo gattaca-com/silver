@@ -81,7 +81,7 @@ fn effective(v: &QueueView<'_, u32>) -> Vec<u32> {
 fn assert_consistent(g: &U32Group, id: U32Id) {
     let got = effective(&g.view(id));
     let mut fresh = group_from(&got);
-    assert_eq!(g.view(id).root(), fresh.roll_fresh().reader().root());
+    assert_eq!(g.view(id).hash_root(), fresh.roll_fresh().reader().hash_root());
 }
 
 #[test]

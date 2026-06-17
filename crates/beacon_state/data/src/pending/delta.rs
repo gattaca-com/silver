@@ -171,7 +171,7 @@ impl<'a, Q: QueueItem> QueueView<'a, Q> {
     /// SSZ `hash_tree_root` — folds the cached frontier, padding + length only
     /// (no per-element hashing).
     #[inline]
-    pub fn root(&self) -> B256 {
+    pub fn hash_root(&self) -> B256 {
         self.delta.root(self.len())
     }
 }

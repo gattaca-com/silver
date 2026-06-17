@@ -82,10 +82,6 @@ pub(crate) fn drain_promoted_prefix<T>(log: &mut Vec<T>, promoted_len: usize) {
 
 /// Reanchor each distinct survivor exactly once: duplicate ids map to the id
 /// minted for their first occurrence, fresh ids come from `reanchor`.
-//
-// `#[timed]` here nests under each tier's `finalize` frame, so the perf harness
-// reads survivor-rebase cost per tier — the cost the base-swap-invariant
-// redesign removes.
 #[timed]
 pub(crate) fn reanchor_survivors<I: Copy + PartialEq>(
     survivors: &[I],
