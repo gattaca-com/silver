@@ -49,9 +49,9 @@ impl RxBatch {
             match socket.recv_from(&mut self.bufs[i]) {
                 Ok((len, remote)) => {
                     let unmapped_remote = match remote {
-                        std::net::SocketAddr::V6(v6) => {
+                        SocketAddr::V6(v6) => {
                             if let Some(ip4) = v6.ip().to_ipv4_mapped() {
-                                std::net::SocketAddr::V4(std::net::SocketAddrV4::new(ip4, v6.port()))
+                                SocketAddr::V4(std::net::SocketAddrV4::new(ip4, v6.port()))
                             } else {
                                 remote
                             }
@@ -128,12 +128,9 @@ impl TxBatch {
             let buf = &self.bufs[entry.buf_idx];
             let dst = if is_ipv6 {
                 match entry.dst {
-                    std::net::SocketAddr::V4(v4) => std::net::SocketAddr::V6(std::net::SocketAddrV6::new(
-                        v4.ip().to_ipv6_mapped(),
-                        v4.port(),
-                        0,
-                        0,
-                    )),
+                    std::net::SocketAddr::V4(v4) => std::net::SocketAddr::V6(
+                        std::net::SocketAddrV6::new(v4.ip().to_ipv6_mapped(), v4.port(), 0, 0),
+                    ),
                     other => other,
                 }
             } else {
