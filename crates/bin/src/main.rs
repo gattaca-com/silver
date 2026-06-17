@@ -8,7 +8,9 @@ use quinn_proto::{Endpoint, EndpointConfig};
 use rand::RngCore;
 use silver_beacon_state::{BeaconStateTile, SlotTicker};
 use silver_beacon_state_data::BeaconState;
-use silver_common::{tracing::initialise_tracing_log, Enr, ProtoIdentify, SilverSpine, TCache, TCacheProducer};
+use silver_common::{
+    Enr, ProtoIdentify, SilverSpine, TCache, TCacheProducer, tracing::initialise_tracing_log,
+};
 use silver_config::Config;
 use silver_control::Controller;
 use silver_discovery::{DiscV5, Discovery};

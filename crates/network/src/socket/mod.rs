@@ -38,26 +38,15 @@ impl Socket {
                 } else {
                     v4.ip().to_ipv6_mapped()
                 };
-                SocketAddr::V6(SocketAddrV6::new(
-                    ip,
-                    v4.port(),
-                    0,
-                    0,
-                ))
+                SocketAddr::V6(SocketAddrV6::new(ip, v4.port(), 0, 0))
             }
             SocketAddr::V6(v6) => SocketAddr::V6(v6),
         };
-        
-        let domain = if bind_addr.is_ipv6() {
-            socket2::Domain::IPV6
-        } else {
-            socket2::Domain::IPV4
-        };
-        let socket2 = socket2::Socket::new(
-            domain,
-            socket2::Type::DGRAM,
-            Some(socket2::Protocol::UDP),
-        )?;
+
+        let domain =
+            if bind_addr.is_ipv6() { socket2::Domain::IPV6 } else { socket2::Domain::IPV4 };
+        let socket2 =
+            socket2::Socket::new(domain, socket2::Type::DGRAM, Some(socket2::Protocol::UDP))?;
         if bind_addr.is_ipv6() {
             socket2.set_only_v6(false)?;
         }
