@@ -230,6 +230,7 @@ pub fn sign_attester_slashing_double_vote(
 /// Build a `SingleAttestation` (gossip subnet form) signed by `sk_idx`.
 /// Caller resolves `(slot, committee_index)` so `attester_index` is in the
 /// resolved committee.
+#[allow(clippy::too_many_arguments)]
 pub fn sign_single_attestation(
     sk_idx: usize,
     attester_index: u64,
@@ -237,16 +238,18 @@ pub fn sign_single_attestation(
     slot: u64,
     beacon_block_root: B256,
     target_epoch: u64,
+    target_root: B256,
     imm: &Immutable,
 ) -> [u8; SINGLE_ATT_SIZE] {
     let mut buf = [0u8; SINGLE_ATT_SIZE];
     buf[0..8].copy_from_slice(&committee_index.to_le_bytes());
     buf[8..16].copy_from_slice(&attester_index.to_le_bytes());
+    // AttestationData @ buf[16..144]: slot, index=0 (Fulu), beacon_block_root,
+    // source (zero), target — written at the view's spec offsets.
     buf[16..24].copy_from_slice(&slot.to_le_bytes());
-    // AttestationData.index = 0 (Fulu); source/target left mostly zero,
-    // target_epoch matters for sig.
-    buf[24..56].copy_from_slice(&beacon_block_root);
-    buf[96..104].copy_from_slice(&target_epoch.to_le_bytes());
+    buf[32..64].copy_from_slice(&beacon_block_root);
+    buf[104..112].copy_from_slice(&target_epoch.to_le_bytes());
+    buf[112..144].copy_from_slice(&target_root);
 
     let fv = bls::fork_version_at_epoch(
         imm.fork.epoch,

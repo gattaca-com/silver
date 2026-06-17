@@ -144,8 +144,15 @@ fn attester_slashing() {
             return false;
         }
         s.with_view_and_epoch(|view, e| {
-            state_transition::process_attester_slashings(view, *e, &cfg, &list, &mut active_scratch)
-                .is_ok()
+            state_transition::process_attester_slashings(
+                view,
+                *e,
+                &cfg,
+                &list,
+                &mut active_scratch,
+                &mut Vec::new(),
+            )
+            .is_ok()
         })
     });
 }

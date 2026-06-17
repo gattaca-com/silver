@@ -163,6 +163,7 @@ pub fn apply_block(
     shuffling: Option<&ShufflingRef<'_>>,
     scratch: &mut StfScratch,
     attestation_votes: &mut Vec<AttestationVote>,
+    slashed_sink: &mut Vec<u32>,
     sig_batch: &mut SigBatch,
 ) -> Result<(Option<EpochId>, Option<LongtailId>)> {
     let wrap = |kind: BlockError| Error::invalid_block(block_state_root, kind);
@@ -214,6 +215,7 @@ pub fn apply_block(
         proposer_index,
         shuffling,
         attestation_votes,
+        slashed_sink,
     )?;
 
     let rv = view.read(epoch_view, longtail_view);
@@ -312,6 +314,7 @@ pub fn apply_signed_block_debug(
     let rv = view.read(epoch_view, longtail_view);
     let sref = ShufflingRef::build(&rv, current_epoch, &mut curr, &mut prev);
     let mut votes_sink: Vec<AttestationVote> = Vec::new();
+    let mut slashed_sink: Vec<u32> = Vec::new();
     let mut sig_batch = SigBatch::new();
     process_block_body(
         cfg,
@@ -326,6 +329,7 @@ pub fn apply_signed_block_debug(
         proposer_index,
         Some(&sref),
         &mut votes_sink,
+        &mut slashed_sink,
     )?;
 
     let rv = view.read(epoch_view, longtail_view);
@@ -656,6 +660,7 @@ pub fn process_block_body(
     proposer_index: u32,
     shuffling: Option<&ShufflingRef<'_>>,
     attestation_votes: &mut Vec<AttestationVote>,
+    slashed_sink: &mut Vec<u32>,
 ) -> Result<()> {
     let wrap = |kind: BlockError| Error::invalid_block(state_root, kind);
     validate::validate_operation_counts(body).map_err(wrap)?;
@@ -694,6 +699,7 @@ pub fn process_block_body(
         proposer_index,
         shuffling,
         attestation_votes,
+        slashed_sink,
     )
 }
 
@@ -709,6 +715,7 @@ fn apply_block_body_pass2(
     proposer_index: u32,
     shuffling: Option<&ShufflingRef<'_>>,
     attestation_votes: &mut Vec<AttestationVote>,
+    slashed_sink: &mut Vec<u32>,
 ) -> Result<()> {
     let body = offsets.body;
     let payload = offsets.payload();
@@ -726,7 +733,7 @@ fn apply_block_body_pass2(
     if let Some(section) =
         offsets.try_slice(offsets.attester_slashings_off, offsets.attestations_off)
     {
-        process_attester_slashings(&mut *view, epoch, cfg, section, active_scratch)?;
+        process_attester_slashings(&mut *view, epoch, cfg, section, active_scratch, slashed_sink)?;
     }
     if let Some(section) = offsets.try_slice(offsets.attestations_off, offsets.deposits_off) {
         process_attestations(
@@ -2346,6 +2353,7 @@ pub fn process_attester_slashings(
     cfg: &SpecConfig,
     data: &[u8],
     scratch: &mut Vec<u32>,
+    slashed_sink: &mut Vec<u32>,
 ) -> Result<(), AttesterSlashingError> {
     if data.is_empty() {
         return Ok(());
@@ -2394,6 +2402,7 @@ pub fn process_attester_slashings(
                 // loop.
                 if is_slashable_validator(&validators.reader(), vi, current_epoch) {
                     slash_validator(cfg, slot, validators, balances, vi, proposer_index);
+                    slashed_sink.push(vi);
                     slashed_any = true;
                 }
             }
@@ -2407,9 +2416,13 @@ pub fn process_attester_slashings(
 
 /// Gossip-side `AttesterSlashing` validator (single slashing, not the
 /// block-body list form).
+/// On success, `equivocating_out` is filled with the in-range intersection of
+/// the two attestations' indices (the validators to mark equivocating in fork
+/// choice). Its contents are meaningless when this returns `false`.
 pub fn validate_attester_slashing_for_gossip(
     view: &StateReadView,
     slashing: &[u8],
+    equivocating_out: &mut Vec<u32>,
     sig_batch: &mut SigBatch,
 ) -> bool {
     let (fork_epoch, prev_ver, cur_ver, gvr) = view.imm.fork_descriptor();
@@ -2433,15 +2446,17 @@ pub fn validate_attester_slashing_for_gossip(
     let current_epoch = view.slot.current_epoch();
     let count = view.validators.count();
     let validators = view.validators;
+    equivocating_out.clear();
     let mut any_slashable = false;
     for_each_sorted_intersection(i1, i2, |vi| {
         let vi32 = vi as u32;
-        if vi < count && is_slashable_validator(&validators, vi32, current_epoch) {
-            any_slashable = true;
-            true
-        } else {
-            false
+        if vi < count {
+            equivocating_out.push(vi32);
+            if is_slashable_validator(&validators, vi32, current_epoch) {
+                any_slashable = true;
+            }
         }
+        false
     });
     if !any_slashable {
         return false;

@@ -9,6 +9,9 @@ const STATE_ADVANCE_DIVISOR: u64 = 4;
 
 const NUM_PHASES: usize = 4;
 
+// Spec INTERVALS_PER_SLOT: attesting deadline at 1/3 of the slot.
+const INTERVALS_PER_SLOT: u64 = 3;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TickEvent {
     /// Slot boundary. Fork choice, cache pruning.
@@ -104,6 +107,12 @@ impl SlotTicker {
     /// Current wall-clock slot.
     pub fn current_slot(&self) -> u64 {
         self.since_genesis_ms() / self.slot_ms
+    }
+
+    /// Spec `is_before_attesting_interval`: within the first 1/3 of the slot,
+    /// the window in which a current-slot block earns proposer boost.
+    pub fn is_before_attesting_interval(&self) -> bool {
+        self.since_genesis_ms() % self.slot_ms < self.slot_ms / INTERVALS_PER_SLOT
     }
 
     /// Force `current_slot()` to return `slot` at this moment and reset
