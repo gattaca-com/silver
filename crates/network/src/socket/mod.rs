@@ -7,7 +7,7 @@ mod udp;
 
 use std::{
     io::Error,
-    net::{IpAddr, Ipv4Addr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6},
 };
 
 use fxhash::FxHasher;
@@ -31,7 +31,30 @@ pub struct Socket {
 impl Socket {
     pub(crate) fn new(addr: SocketAddr, poll: &Poll, token: Token) -> Result<Self, Error> {
         tracing::debug!("bind to: {addr:?}");
-        let mut socket = UdpSocket::bind(addr)?;
+        let bind_addr = match addr {
+            SocketAddr::V4(v4) => {
+                let ip = if v4.ip().is_unspecified() {
+                    Ipv6Addr::UNSPECIFIED
+                } else {
+                    v4.ip().to_ipv6_mapped()
+                };
+                SocketAddr::V6(SocketAddrV6::new(ip, v4.port(), 0, 0))
+            }
+            SocketAddr::V6(v6) => SocketAddr::V6(v6),
+        };
+
+        let domain =
+            if bind_addr.is_ipv6() { socket2::Domain::IPV6 } else { socket2::Domain::IPV4 };
+        let socket2 =
+            socket2::Socket::new(domain, socket2::Type::DGRAM, Some(socket2::Protocol::UDP))?;
+        if bind_addr.is_ipv6() {
+            socket2.set_only_v6(false)?;
+        }
+        socket2.bind(&bind_addr.into())?;
+        socket2.set_nonblocking(true)?;
+
+        let std_socket: std::net::UdpSocket = socket2.into();
+        let mut socket = UdpSocket::from_std(std_socket);
         poll.registry().register(&mut socket, token, Interest::READABLE)?;
 
         Ok(Self {

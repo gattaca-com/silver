@@ -264,11 +264,20 @@ fn sockaddr_from(addr: SocketAddr) -> libc::sockaddr_storage {
     let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
     match addr {
         SocketAddr::V4(v4) => {
-            let sa = &mut storage as *mut _ as *mut libc::sockaddr_in;
+            // Map IPv4 destination to IPv4-mapped IPv6 address: ::ffff:a.b.c.d
+            let sa = &mut storage as *mut _ as *mut libc::sockaddr_in6;
+            let ip_octets = v4.ip().octets();
+            let mut ipv6_octets = [0u8; 16];
+            ipv6_octets[10] = 0xff;
+            ipv6_octets[11] = 0xff;
+            ipv6_octets[12..16].copy_from_slice(&ip_octets);
+
             unsafe {
-                (*sa).sin_family = libc::AF_INET as u16;
-                (*sa).sin_port = v4.port().to_be();
-                (*sa).sin_addr.s_addr = u32::from_ne_bytes(v4.ip().octets());
+                (*sa).sin6_family = libc::AF_INET6 as u16;
+                (*sa).sin6_port = v4.port().to_be();
+                (*sa).sin6_addr.s6_addr = ipv6_octets;
+                (*sa).sin6_flowinfo = 0;
+                (*sa).sin6_scope_id = 0;
             }
         }
         SocketAddr::V6(v6) => {
@@ -298,14 +307,18 @@ fn sockaddr_to_std(storage: &libc::sockaddr_storage) -> SocketAddr {
         libc::AF_INET6 => {
             let sa = storage as *const _ as *const libc::sockaddr_in6;
             unsafe {
-                let ip = Ipv6Addr::from((*sa).sin6_addr.s6_addr);
+                let ip6 = Ipv6Addr::from((*sa).sin6_addr.s6_addr);
                 let port = u16::from_be((*sa).sin6_port);
-                SocketAddr::V6(SocketAddrV6::new(
-                    ip,
-                    port,
-                    (*sa).sin6_flowinfo,
-                    (*sa).sin6_scope_id,
-                ))
+                if let Some(ip4) = ip6.to_ipv4_mapped() {
+                    SocketAddr::V4(SocketAddrV4::new(ip4, port))
+                } else {
+                    SocketAddr::V6(SocketAddrV6::new(
+                        ip6,
+                        port,
+                        (*sa).sin6_flowinfo,
+                        (*sa).sin6_scope_id,
+                    ))
+                }
             }
         }
         family => {
@@ -315,9 +328,6 @@ fn sockaddr_to_std(storage: &libc::sockaddr_storage) -> SocketAddr {
     }
 }
 
-fn sockaddr_len(addr: SocketAddr) -> libc::socklen_t {
-    match addr {
-        SocketAddr::V4(_) => std::mem::size_of::<libc::sockaddr_in>() as _,
-        SocketAddr::V6(_) => std::mem::size_of::<libc::sockaddr_in6>() as _,
-    }
+fn sockaddr_len(_addr: SocketAddr) -> libc::socklen_t {
+    std::mem::size_of::<libc::sockaddr_in6>() as _
 }
