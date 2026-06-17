@@ -34,5 +34,8 @@ silver_common::declare_counters! {
         ColumnsPruned,
         BackfillBlocksWritten,
         BackfillColumnsWritten,
+        // EL-mempool blob fetch (engine_getBlobsV2)
+        ElBlobsFetched,
+        ElColumnsBuilt,
     }
 }

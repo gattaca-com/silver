@@ -140,8 +140,7 @@ impl Store {
                 PendingWrite::UnfinalizedColumn { slot, block_root, column, ssz } => {
                     let dir = self.unfinalized_columns_dir();
                     let path = dir.join(unfinalized_column_name(*slot, block_root, *column));
-                    let (buffer, _) = ssz.buffer().map_err(Error::other)?;
-                    open_file_write(path, false)?.write_all(buffer)?;
+                    open_file_write(path, false)?.write_all(ssz.bytes()?)?;
                     StorageCounters::UnfinalizedColumnsWritten.inc();
                     self.write_queue.pop_front();
                 }
