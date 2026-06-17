@@ -187,6 +187,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut beacon_state_tile = BeaconStateTile::new(
         ticker,
         chain_config.spec.clone(),
+        &config.syncing_config(),
         ssz_gossip_consumer,
         incoming_rpc_consumer,
         incoming_engine_resp_consumer,

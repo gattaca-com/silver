@@ -95,6 +95,10 @@ pub struct PeerManager {
     /// local state, blacklist, peer drop). `maybe_emit_sync_target` clears
     /// it. Avoids recomputing per-event when nothing's pending.
     target_dirty: bool,
+    /// The beacon-state tile asked us to range-sync (orphan backtrack too
+    /// deep). `select_target` relaxes its lag thresholds to 0 while set so a
+    /// slightly-ahead peer qualifies; cleared once a Syncing target is picked.
+    force_resync: bool,
 
     /// SSZ Bitvector[64] of attestation subnets we subscribe to, derived
     /// once from `our_topics`. Bit N set ↔ `BeaconAttestation(N) ∈
@@ -226,7 +230,6 @@ pub struct PeerManager {
     head_counts: FxHashMap<[u8; 32], HeadAgg>,
 
     pub(crate) pending_live_columns_by_root: VecDeque<(u64, u128, [u8; 32])>,
-    pub(crate) pending_backfill_columns_by_root: VecDeque<(u64, u128, [u8; 32])>,
     pub(crate) pending_block_by_root: VecDeque<(u64, Option<usize>, [u8; 32])>,
     pub(crate) pending_rpc_request: VecDeque<(u64, RpcRequest)>,
 }
@@ -341,6 +344,7 @@ impl PeerManager {
             syncing,
             current_target: SyncUpdate::Following,
             target_dirty: false,
+            force_resync: false,
             required_attnets,
             required_syncnets,
             params,
@@ -370,7 +374,6 @@ impl PeerManager {
             head_counts: FxHashMap::with_capacity_and_hasher(SYNC_AGG_CAP, Default::default()),
             // TODO: prealloc?
             pending_live_columns_by_root: VecDeque::new(),
-            pending_backfill_columns_by_root: VecDeque::new(),
             pending_block_by_root: VecDeque::new(),
             pending_rpc_request: VecDeque::new(),
         }
@@ -418,6 +421,14 @@ impl PeerManager {
             self.awaiting_local_replay = false;
             self.target_dirty = true;
         }
+    }
+
+    /// Beacon-state tile signalled a too-deep orphan backtrack. Force the next
+    /// target selection to pick a Syncing target if any peer leads our head
+    /// (relaxed thresholds), handing the deep gap to range sync.
+    pub fn request_resync(&mut self) {
+        self.force_resync = true;
+        self.target_dirty = true;
     }
 
     pub fn maybe_choose_syncing_strategy(&mut self, now: Instant) -> Option<SyncingStrategy> {
@@ -524,6 +535,11 @@ impl PeerManager {
             new_target = self.select_target();
         }
 
+        // One-shot: a forced-resync request relaxes thresholds for this
+        // selection only. If no peer leads us, range sync can't help anyway;
+        // the tile re-signals if its orphan buffer fills again.
+        self.force_resync = false;
+
         let identity_changed = !same_target_identity(new_target, self.current_target);
         let prev_target = self.current_target;
         self.current_target = new_target;
@@ -570,18 +586,39 @@ impl PeerManager {
             _ => false,
         };
         if !small_head_advance {
-            self.inflight_syncreq = None;
-            // New chain segment to catch up — the delivered watermark from the
-            // old target no longer guarantees contiguity with our head.
-            self.synced_through = 0;
-            self.reset_col_sync();
-
-            if matches!(prev_target, SyncUpdate::SyncingFinalized { .. }) &&
-                matches!(new_target, SyncUpdate::SyncingHead { .. })
-            {
-                self.columns_synced_through = self.local_head_imported_slot;
+            // Same canonical chain continuing? Finality is monotonic, so a newer
+            // finalized target extends the one we were syncing; and a head target
+            // extends the finalized segment we just synced. In both cases
+            // in-flight block progress and the block watermark stay valid (incl.
+            // delivered-but-not-yet-applied AwaitData blocks) — keep them, so the
+            // next batch resumes after the delivered range instead of
+            // re-fetching the overlap. Only a genuine chain-segment change
+            // (fork, fall-behind re-sync) discards them.
+            let same_chain_forward = match (prev_target, new_target) {
+                (
+                    SyncUpdate::SyncingFinalized { target_epoch: p, .. },
+                    SyncUpdate::SyncingFinalized { target_epoch: n, .. },
+                ) => n >= p,
+                (SyncUpdate::SyncingFinalized { .. }, SyncUpdate::SyncingHead { .. }) => true,
+                _ => false,
+            };
+            let finalized_to_head = matches!(prev_target, SyncUpdate::SyncingFinalized { .. }) &&
+                matches!(new_target, SyncUpdate::SyncingHead { .. });
+            if same_chain_forward {
+                if finalized_to_head {
+                    // colreq turns on at the head edge — seed the column
+                    // watermark to the applied head (columns weren't fetched
+                    // during SyncingFinalized, colreq gated off there).
+                    self.reset_col_sync();
+                    self.columns_synced_through = self.local_head_imported_slot;
+                }
+            } else {
+                self.inflight_syncreq = None;
+                self.synced_through = 0;
+                self.reset_col_sync();
             }
         }
+
         Some(new_target)
     }
 
@@ -683,7 +720,8 @@ impl PeerManager {
         our_head_slot: u64,
         wall_slot: u64,
     ) -> Option<(u64, [u8; 32], u16)> {
-        let trigger_epoch = our_epoch.saturating_add(self.syncing.finalized_lag_threshold_epochs);
+        let lag = if self.force_resync { 0 } else { self.syncing.finalized_lag_threshold_epochs };
+        let trigger_epoch = our_epoch.saturating_add(lag);
         self.finalized_counts
             .iter()
             .filter(|((epoch, root), _)| {
@@ -705,10 +743,11 @@ impl PeerManager {
     /// not past wall_clock + tolerance. Max peer_count; ties broken by
     /// higher slot then lexicographic root.
     fn best_head_target(&self, our_head_slot: u64, wall_slot: u64) -> Option<([u8; 32], u64)> {
+        let head_lag = if self.force_resync { 0 } else { self.syncing.head_lag_threshold_slots };
         self.head_counts
             .iter()
             .filter(|(root, a)| {
-                a.head_slot > our_head_slot + self.syncing.head_lag_threshold_slots &&
+                a.head_slot > our_head_slot + head_lag &&
                     a.head_slot <= wall_slot + self.syncing.wall_clock_tolerance_slots &&
                     !self.rejected.is_rejected(root) &&
                     self.has_usable_head_backer(root)
@@ -3977,6 +4016,39 @@ mod tests {
     }
 
     #[test]
+    fn request_resync_relaxes_lag_threshold_to_pick_head() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
+        // Finalized current; our head 3200. Peer head only 3 slots ahead —
+        // inside the default 8-slot lag threshold, so normally Following.
+        set_local(&mut mgr, status_v2_ssz(fork_a(), [0xAA; 32], 100, [0xCC; 32], 3200));
+        mgr.set_wall_slot(100_000);
+        let advanced_head = [0xDE; 32];
+        connect(&mut mgr, &mut cap, 1, 1, now);
+        send_status(
+            &mut mgr,
+            &mut cap,
+            1,
+            make_status_v2(fork_a(), [0xAA; 32], 100, advanced_head, 3203),
+        );
+
+        // Baseline: nobody far enough ahead → Following.
+        assert_eq!(mgr.maybe_emit_sync_target(), None);
+        assert_eq!(mgr.current_sync_target(), SyncUpdate::Following);
+
+        // Tile signals a deep backtrack: relax thresholds, chase the head.
+        mgr.request_resync();
+        match mgr.maybe_emit_sync_target().expect("forced resync emits a head target") {
+            SyncUpdate::SyncingHead { head_root, head_slot } => {
+                assert_eq!(head_root, advanced_head);
+                assert_eq!(head_slot, 3203);
+            }
+            other => panic!("expected SyncingHead, got {other:?}"),
+        }
+        assert!(!mgr.force_resync, "one-shot flag cleared after selection");
+    }
+
+    #[test]
     fn select_target_following_when_no_one_is_ahead() {
         let now = Instant::now();
         let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
@@ -4726,10 +4798,10 @@ mod tests {
         );
         assert_eq!(mgr.peers.get(&1).unwrap().outbound_in_flight[dcbr], 1);
         assert_eq!(mgr.peers.get(&2).unwrap().outbound_in_flight[dcbr], 0);
-        assert_eq!(mgr.pending_backfill_columns_by_root.len(), 0);
 
         // 2) Backfill `both`: peer 1 is at its backfill cap, so only peer 2's `m2` is
-        //    placed; peer 1's `m1` is queued (partial coverage).
+        //    placed; peer 1's `m1` can't be sent and — being backfill — is dropped, not
+        //    queued (the storage ColumnBackfill wheel re-emits it).
         mgr.handle_event(
             PeerEvent::SendDataColumnsByRootRequest {
                 request_id: COLUMN_BACKFILL_REQUEST_ID | 2,
@@ -4741,7 +4813,6 @@ mod tests {
         );
         assert_eq!(mgr.peers.get(&1).unwrap().outbound_in_flight[dcbr], 1);
         assert_eq!(mgr.peers.get(&2).unwrap().outbound_in_flight[dcbr], 1);
-        assert_eq!(mgr.pending_backfill_columns_by_root.len(), 1);
 
         // 3) Live `m1` → peer 1: backfill used 1 of its 2 live slots, so this fits.
         mgr.handle_event(
@@ -4770,13 +4841,10 @@ mod tests {
         assert_eq!(mgr.peers.get(&1).unwrap().outbound_in_flight[dcbr], 2);
         assert_eq!(mgr.peers.get(&2).unwrap().outbound_in_flight[dcbr], 2);
         assert_eq!(mgr.pending_live_columns_by_root.len(), 1);
-        assert_eq!(mgr.pending_backfill_columns_by_root.len(), 1);
 
-        // 5) Prioritization on a contended slot. Both queued remainders are `m1` (peer
-        //    1's). Free one peer-1 slot and drain: live drains before backfill, so the
-        //    freed slot goes to the live `m1`. The backfill `m1` then finds peer 1 full
-        //    again and — no other peer custodies `m1` — is dropped (relies on upstream
-        //    retry), not re-queued.
+        // 5) Prioritization on a contended slot. The queued live remainder is `m1`
+        //    (peer 1's). Free one peer-1 slot and drain: the freed slot goes to the
+        //    live `m1`.
         mgr.peers.get_mut(&1).unwrap().outbound_in_flight[dcbr] = 1;
         cap.0.clear();
         mgr.drain_pending_outbound(&mut |c| cap.0.push(c));
@@ -4787,10 +4855,5 @@ mod tests {
             "freed slot taken by the live request"
         );
         assert_eq!(mgr.pending_live_columns_by_root.len(), 0);
-        assert_eq!(
-            mgr.pending_backfill_columns_by_root.len(),
-            0,
-            "backfill remainder dropped (upstream retry), not re-queued"
-        );
     }
 }

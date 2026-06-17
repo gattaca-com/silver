@@ -971,15 +971,6 @@ impl PeerManager {
             }
         }
 
-        let len = self.pending_backfill_columns_by_root.len();
-        for _ in 0..len {
-            if let Some((request_id, columns, block_root)) =
-                self.pending_backfill_columns_by_root.pop_front()
-            {
-                self.on_request_data_columns_by_root(request_id, columns, block_root, emit);
-            }
-        }
-
         // Drain pending blocks by root
         let len = self.pending_block_by_root.len();
         for _ in 0..len {
@@ -1039,21 +1030,19 @@ impl PeerManager {
             remaining &= !overlap;
             tracing::trace!(peer, overlap, remaining, "sent data columns request");
         }
+        // If we sent nothing (no overlap) we rely on upstream retries.
         if remaining != 0 && remaining != columns {
-            // if we sent nothing we rely on upstream retries
-            let is_backfill = RequestCategory::from_request_id(request_id).is_backfill();
-            if is_backfill {
-                self.pending_backfill_columns_by_root
-                    .push_back((request_id, remaining, block_root));
-            } else {
-                self.pending_live_columns_by_root.push_back((request_id, remaining, block_root));
+            // Backfill columns aren't cached here — the storage ColumnBackfill
+            // wheel re-emits them; only live requests are retried.
+            if RequestCategory::from_request_id(request_id).is_backfill() {
+                return;
             }
+            self.pending_live_columns_by_root.push_back((request_id, remaining, block_root));
             emit(PeerControl::DiscoverNodes);
             tracing::debug!(
                 request_id,
                 remaining,
                 pending_live = self.pending_live_columns_by_root.len(),
-                pending_backfill = self.pending_backfill_columns_by_root.len(),
                 "partial DataColumnsByRoot coverage; cached remainder + discovery kicked"
             );
         }

@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use silver_common::{
     Enr, Error, GossipTopic, Identify, Keypair, NodeId, PeerId, SAMPLES_PER_SLOT, StreamProtocol,
 };
-pub use syncing_config::SyncingConfig;
+pub use syncing_config::{PendingBounds, SyncingConfig};
 
 mod chain_config;
 mod discovery_config;

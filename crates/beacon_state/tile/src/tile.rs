@@ -24,6 +24,7 @@ use silver_common::{
     },
     ticker::{SlotTicker, TickEvent},
 };
+use silver_config::{PendingBounds, SyncingConfig};
 
 use crate::{
     bls,
@@ -61,7 +62,10 @@ pub enum Feedback {
     /// pre-hash block fails) use `Reject(None)`.
     Reject(Option<B256>),
     /// The parent block is missing and must be requested.
-    RequestParent(B256),
+    RequestParent {
+        parent_root: B256,
+        block_root: B256,
+    },
     /// The block is valid but carries blob commitments whose data columns are
     /// not yet available.
     AwaitData(B256),
@@ -77,7 +81,12 @@ impl core::fmt::Debug for Feedback {
             Self::Ignore => f.write_str("Ignore"),
             Self::Reject(Some(r)) => write!(f, "Reject(Some(0x{}))", hex32(r)),
             Self::Reject(None) => f.write_str("Reject(None)"),
-            Self::RequestParent(r) => write!(f, "RequestParent(0x{})", hex32(r)),
+            Self::RequestParent { parent_root, block_root } => write!(
+                f,
+                "RequestParent(parent=0x{}, block=0x{})",
+                hex32(parent_root),
+                hex32(block_root)
+            ),
             Self::AwaitData(r) => write!(f, "AwaitData(0x{})", hex32(r)),
         }
     }
@@ -180,12 +189,15 @@ pub struct BeaconStateTile {
     sig_batch: bls::SigBatch,
     /// Pending blocks - blocks we have received for which we do not have a
     /// parent block. Keyed by the parent block_hash.
-    pending_blocks: FxHashMap<B256, Vec<PendingBlock>>,
+    pending_blocks: FxHashMap<B256, Vec<(B256, PendingBlock)>>,
     /// Blocks fully prechecked but withheld from the STF until their data
     /// columns are available.
     dc_pending_blocks: FxHashMap<B256, PendingBlock>,
     /// Block roots the storage tile has signalled data-available.
     dc_available: FxHashMap<B256, Slot>,
+    /// Resolved pending-buffer admission / eviction / fallback bounds.
+    pending_bounds: PendingBounds,
+    max_pending_per_parent: usize,
 
     gossip_consumer: TRandomAccess,
     rpc_consumer: TRandomAccess,
@@ -207,6 +219,7 @@ impl BeaconStateTile {
     pub fn new(
         ticker: SlotTicker,
         spec: SpecConfig,
+        syncing: &SyncingConfig,
         gossip_consumer: TRandomAccess,
         rpc_consumer: TRandomAccess,
         incoming_engine_resp_consumer: TRandomAccess,
@@ -251,6 +264,8 @@ impl BeaconStateTile {
                 MAX_FORK_CHOICE_NODES,
                 Default::default(),
             ),
+            pending_bounds: syncing.pending,
+            max_pending_per_parent: (syncing.head_lag_threshold_slots * 2) as usize,
             gossip_consumer,
             rpc_consumer,
             incoming_engine_resp_consumer,
@@ -304,7 +319,7 @@ impl BeaconStateTile {
     }
 
     pub fn try_apply_block(&mut self, data: &[u8]) -> Feedback {
-        self.apply_block_impl(data, false, |_block_root| {})
+        self.apply_block_impl(data, false, false, |_block_root| {})
     }
 
     /// SSZ `hash_tree_root` of the most-recently-applied block's full
@@ -581,6 +596,7 @@ impl BeaconStateTile {
         data: &[u8],
         data_tcache: TRead,
         source: BlockSource,
+        pre_verified: bool,
         producers: &mut Producers,
     ) -> Feedback {
         let block_slot = SignedBeaconBlockView::slot(data);
@@ -588,7 +604,7 @@ impl BeaconStateTile {
             // Pre-finalization block - either backfill or irrelevant.
             return Feedback::Ignore;
         }
-        let f = self.apply_block_impl(data, true, |root| {
+        let f = self.apply_block_impl(data, true, pre_verified, |root| {
             producers.produce(EngineReq::NewPayload(EngineNewPayloadReq {
                 data: *data_tcache,
                 block_root: root,
@@ -772,7 +788,7 @@ impl BeaconStateTile {
         );
         let (gossip_consumer, rpc_consumer) = (&mut self.gossip_consumer, &mut self.rpc_consumer);
         self.pending_blocks.retain(|_, msgs| {
-            msgs.iter().all(|msg| {
+            msgs.iter().all(|(_, msg)| {
                 pending_block_outlives(gossip_consumer, rpc_consumer, msg, finalized_slot)
             })
         });
@@ -990,12 +1006,13 @@ impl BeaconStateTile {
         m: NewGossipMsg,
         data: &[u8],
         do_relay: bool,
+        pre_verified: bool,
         producers: &mut Producers,
     ) {
         let feedback = match m.topic {
             GossipTopic::BeaconBlock => {
                 let acquired = self.gossip_consumer.acquire(m.ssz);
-                Some(self.apply_block(data, acquired, BlockSource::Gossip, producers))
+                Some(self.apply_block(data, acquired, BlockSource::Gossip, pre_verified, producers))
             }
             GossipTopic::BeaconAttestation(_) => Some(self.handle_attestation(data)),
             GossipTopic::BeaconAggregateAndProof => Some(self.handle_aggregate_and_proof(data)),
@@ -1022,9 +1039,17 @@ impl BeaconStateTile {
                 }
                 producers.produce(self.status_event());
             }
-            Some(Feedback::RequestParent(parent_root)) => {
+            Some(Feedback::RequestParent { parent_root, block_root }) => {
                 let peer = m.stream_id.peer();
-                self.buffer_orphan(parent_root, PendingBlock::Gossip(m), peer, producers);
+                let block_slot = SignedBeaconBlockView::slot(data);
+                self.buffer_orphan(
+                    parent_root,
+                    block_root,
+                    PendingBlock::Gossip(m),
+                    block_slot,
+                    peer,
+                    producers,
+                );
             }
             Some(Feedback::AwaitData(block_root)) => {
                 if do_relay {
@@ -1038,39 +1063,89 @@ impl BeaconStateTile {
 
     fn apply_pending_blocks(&mut self, parent_root: B256, producers: &mut Producers) {
         if let Some(pending) = self.pending_blocks.remove(&parent_root) {
-            for child in pending {
+            for (_, child) in pending {
                 // First successful validation of an orphan held on a missing
                 // parent: relay it now. Recursively applies chained orphans.
-                self.replay_pending_block(child, true, producers);
+                // Not pre-verified — precheck bailed at parent-missing before
+                // the BLS check, so the signature is still unverified.
+                self.replay_pending_block(child, true, false, producers);
             }
         }
     }
 
-    /// Buffer an orphan on its missing parent; `apply_pending_blocks`
-    /// retries it once the parent applies. Request the parent only when
-    /// following and not already held awaiting columns — re-requesting a held
-    /// block floods by-root, and during sync the range/DA path delivers it.
     fn buffer_orphan(
         &mut self,
         parent_root: B256,
+        block_root: B256,
         pending: PendingBlock,
+        block_slot: Slot,
         peer: usize,
         producers: &mut Producers,
     ) {
+        if !self.within_pending_window(block_slot) {
+            return;
+        }
+
+        let head_slot = self.head_state_slot();
+        if self.mode.is_following() &&
+            block_slot.saturating_sub(head_slot) > self.pending_bounds.max_chain_len as u64
+        {
+            tracing::warn!(
+                block_slot,
+                head_slot,
+                limit = self.pending_bounds.max_chain_len,
+                "orphan too far ahead; falling back to range sync"
+            );
+            producers.produce(BeaconStateEvent::BacktrackStall);
+            return;
+        }
+
+        let existing = self.pending_blocks.get(&parent_root);
+        if existing.is_some_and(|v| v.iter().any(|(r, _)| *r == block_root)) {
+            return;
+        }
+
+        let at_parent_cap = existing.is_some_and(|v| v.len() >= self.max_pending_per_parent);
+        let new_parent = existing.is_none();
+        if at_parent_cap ||
+            (new_parent && self.pending_blocks.len() >= self.pending_bounds.max_parents)
+        {
+            tracing::warn!(
+                parent = hex32(&parent_root),
+                at_parent_cap,
+                pending_parents = self.pending_blocks.len(),
+                "pending-orphan buffer full; dropping orphan"
+            );
+            return;
+        }
+
         let request =
             self.mode.is_following() && !self.dc_pending_blocks.contains_key(&parent_root);
-        self.pending_blocks.entry(parent_root).or_default().push(pending);
+        self.pending_blocks.entry(parent_root).or_default().push((block_root, pending));
         if request {
             producers.produce(PeerEvent::SendBlocksByRootRequest {
                 request_id: 0,
                 p2p_peer: Some(peer),
                 block_root: parent_root,
-            })
+            });
         }
     }
 
-    /// Hold a fully-prechecked block until its data columns are available.
+    /// True iff `block_slot` is inside the pending admission window:
+    /// above the finalized boundary and at most `future_tolerance` slots ahead
+    /// of the wall clock.
+    fn within_pending_window(&self, block_slot: Slot) -> bool {
+        let finalized_slot = self.head_finalized_checkpoint().epoch * SLOTS_PER_EPOCH;
+        block_slot > finalized_slot &&
+            block_slot <= self.ticker.current_slot() + self.pending_bounds.future_tolerance
+    }
+
     fn buffer_awaiting_columns(&mut self, block_root: B256, pending: PendingBlock) {
+        if self.dc_pending_blocks.len() >= self.pending_bounds.max_dc &&
+            !self.dc_pending_blocks.contains_key(&block_root)
+        {
+            return;
+        }
         self.dc_pending_blocks.entry(block_root).or_insert(pending);
     }
 
@@ -1078,19 +1153,26 @@ impl BeaconStateTile {
         &mut self,
         pending: PendingBlock,
         do_relay: bool,
+        pre_verified: bool,
         producers: &mut Producers,
     ) {
         match pending {
             PendingBlock::Gossip(g) => {
                 let acquired = self.gossip_consumer.acquire(g.ssz);
                 if let Some(p) = acquired.buffer().ok().map(|(d, _)| d as *const [u8]) {
-                    self.handle_gossip(g, unsafe { &*p }, do_relay, producers);
+                    self.handle_gossip(g, unsafe { &*p }, do_relay, pre_verified, producers);
                 }
             }
             PendingBlock::Rpc(stream_id, ssz) => {
                 let acquired = self.rpc_consumer.acquire(ssz);
                 if let Some(p) = acquired.buffer().ok().map(|(d, _)| d as *const [u8]) {
-                    self.handle_rpc_block(stream_id, unsafe { &*p }, acquired, producers);
+                    self.handle_rpc_block(
+                        stream_id,
+                        unsafe { &*p },
+                        acquired,
+                        pre_verified,
+                        producers,
+                    );
                 } else {
                     tracing::error!("failed to acquire buffer for pending replay");
                 }
@@ -1114,8 +1196,9 @@ impl BeaconStateTile {
             "DataColumnsAvailable received"
         );
         if let Some(pending) = self.dc_pending_blocks.remove(&m.block_root) {
-            // Already relayed when first seen — don't relay again.
-            self.replay_pending_block(pending, false, producers);
+            // Already relayed and BLS-verified when first seen (it reached the
+            // DA gate, which is past the signature check).
+            self.replay_pending_block(pending, false, true, producers);
         }
     }
 
@@ -1124,6 +1207,7 @@ impl BeaconStateTile {
         sender: P2pStreamId,
         data: &[u8],
         data_tcache: TRead,
+        pre_verified: bool,
         producers: &mut Producers,
     ) {
         {
@@ -1135,7 +1219,7 @@ impl BeaconStateTile {
                 return;
             }
             let tcache = data_tcache.read;
-            let f = self.apply_block(data, data_tcache, BlockSource::Rpc, producers);
+            let f = self.apply_block(data, data_tcache, BlockSource::Rpc, pre_verified, producers);
             match f {
                 Feedback::Accept(block_root) => {
                     // Try to apply any pending blocks for which this one was the parent.
@@ -1144,11 +1228,14 @@ impl BeaconStateTile {
                     }
                     producers.produce(self.status_event());
                 }
-                Feedback::RequestParent(parent_root) => {
+                Feedback::RequestParent { parent_root, block_root } => {
                     let peer = sender.peer();
+                    let block_slot = SignedBeaconBlockView::slot(data);
                     self.buffer_orphan(
                         parent_root,
+                        block_root,
                         PendingBlock::Rpc(sender, tcache),
+                        block_slot,
                         peer,
                         producers,
                     );
@@ -1170,6 +1257,7 @@ impl BeaconStateTile {
     fn da_boundary(&self) -> Slot {
         self.sync_finalized_slot.max(self.fork_choice.finalized_checkpoint.epoch * SLOTS_PER_EPOCH)
     }
+
     fn replay_block(&mut self, data: &[u8]) {
         if !SignedBeaconBlockView::check_size(data) {
             tracing::error!(len = data.len(), "replayed on-disk block malformed");
@@ -1177,7 +1265,7 @@ impl BeaconStateTile {
         }
 
         let block_slot = SignedBeaconBlockView::slot(data);
-        let feedback = self.apply_block_impl(data, false, |_block_root| {});
+        let feedback = self.apply_block_impl(data, false, false, |_block_root| {});
         match feedback {
             Feedback::Reject(block_root) => tracing::error!(
                 block_slot,
@@ -1197,6 +1285,7 @@ impl BeaconStateTile {
         &mut self,
         data: &[u8],
         gate_da: bool,
+        pre_verified: bool,
         mut notify_el: F,
     ) -> Feedback {
         let parsed = match self.precheck_block(data) {
@@ -1206,6 +1295,15 @@ impl BeaconStateTile {
                 return err.feedback();
             }
         };
+
+        if !pre_verified && !self.verify_block_signature(data, &parsed) {
+            tracing::warn!(
+                head_slot = self.head_state_slot(),
+                block_root = ?hex32(&parsed.block_root),
+                "block BLS proposer signature invalid"
+            );
+            return Feedback::Reject(Some(parsed.block_root));
+        }
 
         // Data availability is only required above the finalized boundary.
         if gate_da &&
@@ -1333,10 +1431,6 @@ impl BeaconStateTile {
         self.maybe_finalize();
     }
 
-    /// Pre-COW block validation: parse, parent-known, past-slot, proposer
-    /// lookahead, BLS sig. Cheap, no state mutation. Returns parsed fields
-    /// on accept; a structured `PrecheckError` on reject/ignore. Caller
-    /// projects via `err.feedback()`.
     fn precheck_block(&self, data: &[u8]) -> Result<ParsedBlock, PrecheckError> {
         if !SignedBeaconBlockView::check_size(data) {
             return Err(PrecheckError::SizeMismatch {
@@ -1372,7 +1466,12 @@ impl BeaconStateTile {
 
         let Some(parent_idx) = self.fork_choice.find_node_idx(&parent_root) else {
             let last_applied_slot = self.head_state_slot();
-            return Err(PrecheckError::ParentMissing { parent_root, last_applied_slot, block_slot });
+            return Err(PrecheckError::ParentMissing {
+                parent_root,
+                block_root,
+                last_applied_slot,
+                block_slot,
+            });
         };
         let parent_node = self.fork_choice.node(parent_idx);
         // EL declared the parent invalid — descendants are invalid by
@@ -1421,16 +1520,6 @@ impl BeaconStateTile {
                 block_root,
             });
         }
-        let (fork_version, gvr) = rv.imm.fork_version_at(block_epoch);
-        let proposer_pubkey = rv.validators.pubkey_decompressed(proposer_index as usize);
-        if !bls::verify_block_signature(data, proposer_pubkey, &body_root, fork_version, &gvr) {
-            return Err(PrecheckError::InvalidBls {
-                proposer_index,
-                pubkey: *rv.validators.pubkey(proposer_index as usize),
-                block_root,
-            });
-        }
-
         Ok(ParsedBlock {
             has_data_columns: SignedBeaconBlockView::has_data_columns(data),
             block_slot,
@@ -1441,6 +1530,14 @@ impl BeaconStateTile {
             block_root,
             parent_state_id,
         })
+    }
+
+    fn verify_block_signature(&self, data: &[u8], parsed: &ParsedBlock) -> bool {
+        let block_epoch = parsed.block_slot / SLOTS_PER_EPOCH;
+        let rv = self.state.read_view(parsed.parent_state_id);
+        let (fork_version, gvr) = rv.imm.fork_version_at(block_epoch);
+        let proposer_pubkey = rv.validators.pubkey_decompressed(parsed.proposer_index as usize);
+        bls::verify_block_signature(data, proposer_pubkey, &parsed.body_root, fork_version, &gvr)
     }
 
     fn handle_attestation(&mut self, data: &[u8]) -> Feedback {
@@ -1856,7 +1953,7 @@ impl Tile<SilverSpine> for BeaconStateTile {
                 let acquired = self.gossip_consumer.acquire(m.ssz);
                 let data = acquired.buffer().ok().map(|(d, _)| d as *const [u8]);
                 if let Some(p) = data {
-                    self.handle_gossip(m, unsafe { &*p }, true, producers);
+                    self.handle_gossip(m, unsafe { &*p }, true, false, producers);
                 }
             } else {
                 tracing::trace!(
@@ -1906,7 +2003,7 @@ impl Tile<SilverSpine> for BeaconStateTile {
                 let acquired = self.rpc_consumer.acquire(ssz);
                 let data = acquired.buffer().ok().map(|(d, _)| d as *const [u8]);
                 if let Some(p) = data {
-                    self.handle_rpc_block(stream_id, unsafe { &*p }, acquired, producers);
+                    self.handle_rpc_block(stream_id, unsafe { &*p }, acquired, false, producers);
                 }
             }
         });
@@ -1976,22 +2073,29 @@ fn rebase_lazy_tier<I: Copy + PartialEq>(
     }
 }
 
-/// Resolve a pending block's SSZ via its source consumer; keep it iff its
-/// slot is above the finalized boundary (unreadable buffers are dropped).
+/// Resolve a pending block's slot via its source consumer. `None` if the
+/// buffer was recycled (the block's data is gone).
+fn pending_block_slot(
+    gossip_consumer: &mut TRandomAccess,
+    rpc_consumer: &mut TRandomAccess,
+    msg: &PendingBlock,
+) -> Option<Slot> {
+    let acquired = match msg {
+        PendingBlock::Gossip(g) => gossip_consumer.acquire(g.ssz),
+        PendingBlock::Rpc(_, ssz) => rpc_consumer.acquire(*ssz),
+    };
+    acquired.buffer().ok().map(|(buffer, _)| SignedBeaconBlockView::slot(buffer))
+}
+
+/// Keep a pending block iff its slot is above the finalized boundary
+/// (unreadable buffers are dropped).
 fn pending_block_outlives(
     gossip_consumer: &mut TRandomAccess,
     rpc_consumer: &mut TRandomAccess,
     msg: &PendingBlock,
     finalized_slot: u64,
 ) -> bool {
-    let acquired = match msg {
-        PendingBlock::Gossip(g) => gossip_consumer.acquire(g.ssz),
-        PendingBlock::Rpc(_, ssz) => rpc_consumer.acquire(*ssz),
-    };
-    if let Ok((buffer, _)) = acquired.buffer() {
-        return SignedBeaconBlockView::slot(buffer) > finalized_slot;
-    }
-    false
+    pending_block_slot(gossip_consumer, rpc_consumer, msg).is_some_and(|s| s > finalized_slot)
 }
 
 fn is_aggregator(committee_len: usize, selection_proof: &[u8; 96]) -> bool {
@@ -2039,11 +2143,15 @@ fn get_blob_parameters(
 mod tests {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+    use flux::timing::Nanos;
     use silver_beacon_state_data::{
         BLSPubkey, BeaconState, EPOCHS_PER_SLASHINGS_VECTOR, EpochState, EpochStateFinalized,
         Immutable, PROPOSER_LOOKAHEAD_SIZE, PendingDeposit, SlotStateId, ValSeed, Withdrawals,
     };
-    use silver_common::{TCache, TCacheProducer, ssz_view::SIGNED_AGG_PROOF_MIN};
+    use silver_common::{
+        MessageId, StreamProtocol, TCache, TCacheProducer, TProducer,
+        ssz_view::SIGNED_AGG_PROOF_MIN,
+    };
 
     use super::*;
     use crate::test_signing;
@@ -2079,6 +2187,7 @@ mod tests {
         BeaconStateTile::new(
             ticker,
             SpecConfig::mainnet(),
+            &SyncingConfig::default(),
             gossip_c,
             rpc_c,
             engine_c,
@@ -2086,6 +2195,57 @@ mod tests {
             verify_weak_subjectivity,
             BeaconState::empty_test(0),
         )
+    }
+
+    /// Like `make_tile_at_wall_slot` but returns the gossip producer so tests
+    /// can write real block buffers the tile's consumer can read back.
+    fn make_tile_with_gossip(wall_slot: u64) -> (BeaconStateTile, TProducer) {
+        let secs_per_slot = 12u64;
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let genesis = now.saturating_sub(wall_slot * secs_per_slot + 1);
+        let ticker = SlotTicker::new(genesis, Duration::from_secs(12), Duration::from_secs(4));
+        let gossip_p = TCache::producer("test_gossip_buf", 1 << 20);
+        let event_p = TCache::producer("test_event_buf", 1 << 20);
+        let engine_p = TCache::producer("test_engine", 1 << 20);
+        let replay_p = TCache::producer("test_replay_buf", 1 << 20);
+        let gossip_c = gossip_p.cache_ref().random_access("test_gossip_buf", true).unwrap();
+        let rpc_c = event_p.cache_ref().random_access("test_event_buf", true).unwrap();
+        let engine_c = engine_p.cache_ref().random_access("test_engine", true).unwrap();
+        let replay_c = replay_p.cache_ref().random_access("test_replay_buf", true).unwrap();
+        let tile = BeaconStateTile::new(
+            ticker,
+            SpecConfig::mainnet(),
+            &SyncingConfig::default(),
+            gossip_c,
+            rpc_c,
+            engine_c,
+            replay_c,
+            true,
+            BeaconState::empty_test(0),
+        );
+        (tile, gossip_p)
+    }
+
+    /// Publish a minimal block (slot at offset 100) into `producer` and wrap it
+    /// as a buffered gossip orphan whose slot the tile can read back.
+    fn gossip_pending(producer: &mut TProducer, slot: u64) -> PendingBlock {
+        let mut bytes = vec![0u8; 200];
+        bytes[100..108].copy_from_slice(&slot.to_le_bytes());
+        let mut r = producer.reserve(bytes.len(), true).expect("reserve");
+        if let Ok(buf) = r.buffer() {
+            buf[..bytes.len()].copy_from_slice(&bytes);
+        }
+        r.increment_offset(bytes.len());
+        let read = r.read();
+        producer.publish_head();
+        PendingBlock::Gossip(NewGossipMsg {
+            stream_id: P2pStreamId::new(0, 0, StreamProtocol::Unset, false),
+            topic: GossipTopic::BeaconBlock,
+            msg_hash: MessageId { id: [0u8; 20] },
+            recv_ts: Nanos(0),
+            ssz: read,
+            protobuf: read,
+        })
     }
 
     fn placeholder_pubkey(i: usize) -> BLSPubkey {
@@ -2280,10 +2440,144 @@ mod tests {
 
         let head_before = tile.last_applied;
         let nodes_before = tile.fork_choice.nodes.len();
-        tile.apply_block_impl(&buf, true, |_block_root| {});
+        tile.apply_block_impl(&buf, true, false, |_block_root| {});
 
         assert_eq!(tile.last_applied, head_before, "head must be unchanged");
         assert_eq!(tile.fork_choice.nodes.len(), nodes_before, "no node added");
+    }
+
+    // ── pending-block bounds ──
+
+    #[test]
+    fn pending_admission_window_bounds() {
+        let mut tile = make_tile_at_wall_slot(50);
+        seed_tile(&mut tile, 4, 10);
+        let fin = tile.head_finalized_checkpoint().epoch * SLOTS_PER_EPOCH;
+        let tol = tile.pending_bounds.future_tolerance;
+        // At/below the finalized boundary: rejected.
+        assert!(!tile.within_pending_window(fin));
+        // Above finalized and within the future tolerance: admitted.
+        assert!(tile.within_pending_window(fin + 1));
+        assert!(tile.within_pending_window(50 + tol));
+        // Beyond the future tolerance: rejected.
+        assert!(!tile.within_pending_window(50 + tol + 1));
+    }
+
+    /// Tile (seed separately) plus a spine + adapter, so tests can drive
+    /// `buffer_orphan`, which produces into `adapter.producers`. The spine is
+    /// returned to keep it alive for the adapter.
+    fn tile_with_producers(
+        wall_slot: u64,
+    ) -> (BeaconStateTile, TProducer, Box<SilverSpine>, SpineAdapter<SilverSpine>) {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let (tile, gp) = make_tile_with_gossip(wall_slot);
+        let base = std::env::temp_dir().join(format!(
+            "silver-pending-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&base).expect("temp base");
+        let mut spine = Box::new(SilverSpine::new_with_base_dir(&base, None));
+        let adapter = SpineAdapter::connect_tile(&tile, &mut spine);
+        (tile, gp, spine, adapter)
+    }
+
+    fn root_with(idx: u64, tag: u8) -> B256 {
+        let mut r = [0u8; 32];
+        r[..8].copy_from_slice(&idx.to_le_bytes());
+        r[31] = tag;
+        r
+    }
+
+    /// Buffer an orphan under a distinct missing parent `idx`, just ahead of
+    /// the head so the slot-distance fallback stays clear. Its own root is in a
+    /// separate tag namespace so it never collides with another entry.
+    fn buffer_orphan_idx(
+        tile: &mut BeaconStateTile,
+        gp: &mut TProducer,
+        producers: &mut Producers,
+        idx: u64,
+    ) {
+        let parent = root_with(idx, 0x00);
+        let block_root = root_with(idx, 0xFF);
+        let slot = tile.head_state_slot() + 1;
+        tile.buffer_orphan(parent, block_root, gossip_pending(gp, slot), slot, 0, producers);
+    }
+
+    #[test]
+    fn orphan_below_cap_is_buffered() {
+        let (mut tile, mut gp, _spine, mut adapter) = tile_with_producers(200);
+        seed_tile(&mut tile, 4, 10); // Following, finalized epoch 0
+        let cap = tile.pending_bounds.max_parents;
+        for i in 0..cap as u64 - 1 {
+            buffer_orphan_idx(&mut tile, &mut gp, &mut adapter.producers, i);
+        }
+        assert_eq!(tile.pending_blocks.len(), cap - 1);
+        // A new distinct missing parent while below the cap is buffered.
+        buffer_orphan_idx(&mut tile, &mut gp, &mut adapter.producers, u64::MAX);
+        assert_eq!(tile.pending_blocks.len(), cap, "orphan buffered below cap");
+    }
+
+    #[test]
+    fn orphan_at_cap_is_refused() {
+        let (mut tile, mut gp, _spine, mut adapter) = tile_with_producers(200);
+        seed_tile(&mut tile, 4, 10);
+        let cap = tile.pending_bounds.max_parents;
+        for i in 0..cap as u64 {
+            buffer_orphan_idx(&mut tile, &mut gp, &mut adapter.producers, i);
+        }
+        assert_eq!(tile.pending_blocks.len(), cap);
+        // At the cap, a new distinct missing parent is refused — chain capped.
+        buffer_orphan_idx(&mut tile, &mut gp, &mut adapter.producers, u64::MAX);
+        assert_eq!(tile.pending_blocks.len(), cap, "orphan refused at cap");
+    }
+
+    #[test]
+    fn orphan_too_far_ahead_falls_back_to_range_sync() {
+        let (mut tile, mut gp, _spine, mut adapter) = tile_with_producers(200);
+        seed_tile(&mut tile, 4, 10); // Following, head slot 10
+        let head = tile.head_state_slot();
+        let limit = tile.pending_bounds.max_chain_len as u64;
+
+        // At the edge of the gap: still buffered (by-root backtrack).
+        let edge = head + limit;
+        tile.buffer_orphan(
+            root_with(0, 0x00),
+            root_with(0, 0xFF),
+            gossip_pending(&mut gp, edge),
+            edge,
+            0,
+            &mut adapter.producers,
+        );
+        assert_eq!(tile.pending_blocks.len(), 1, "edge orphan buffered");
+
+        // One slot past the gap: refused before insert, range sync takes over.
+        let beyond = head + limit + 1;
+        tile.buffer_orphan(
+            root_with(1, 0x00),
+            root_with(1, 0xFF),
+            gossip_pending(&mut gp, beyond),
+            beyond,
+            0,
+            &mut adapter.producers,
+        );
+        assert_eq!(tile.pending_blocks.len(), 1, "too-far orphan not buffered");
+    }
+
+    #[test]
+    fn duplicate_orphan_not_rebuffered() {
+        let (mut tile, mut gp, _spine, mut adapter) = tile_with_producers(200);
+        seed_tile(&mut tile, 4, 10);
+        let (parent, block_root) = (root_with(0, 0x00), root_with(0, 0xFF));
+        let slot = tile.head_state_slot() + 1;
+        let buffer = |tile: &mut BeaconStateTile, gp: &mut TProducer, prods: &mut Producers| {
+            tile.buffer_orphan(parent, block_root, gossip_pending(gp, slot), slot, 0, prods);
+        };
+        buffer(&mut tile, &mut gp, &mut adapter.producers);
+        buffer(&mut tile, &mut gp, &mut adapter.producers);
+        assert_eq!(tile.pending_blocks.len(), 1, "same parent");
+        assert_eq!(tile.pending_blocks[&parent].len(), 1, "duplicate block_root dropped");
     }
 
     // ── gossip handlers ──
@@ -2499,7 +2793,7 @@ mod tests {
         buf[108..116].copy_from_slice(&0u64.to_le_bytes()); // proposer_index
         buf[116..148].copy_from_slice(&parent_root); // parent_root
 
-        tile.apply_block_impl(&buf, true, |_block_root| {});
+        tile.apply_block_impl(&buf, true, false, |_block_root| {});
         assert_eq!(tile.fork_choice.nodes.len(), 1);
     }
 
