@@ -603,6 +603,10 @@ impl ForkChoice {
         self.current_epoch = epoch;
     }
 
+    pub fn current_epoch(&self) -> Epoch {
+        self.current_epoch
+    }
+
     /// True when the justified-balance snapshot must be rebuilt — the justified
     /// checkpoint moved, or we have no snapshot yet.
     pub fn justified_balances_stale(&self) -> bool {

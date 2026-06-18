@@ -908,35 +908,22 @@ pub fn collect_sigs_attestations(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn collect_sigs_single_attestation(
-    imm: &Immutable,
-    validators: &ValidatorsView,
+pub fn attesting_indices_from_shuffled(
     att: &[u8],
-    current_epoch: Epoch,
-    shuffling: Option<&ShufflingRef<'_>>,
-    active_scratch: &mut Vec<u32>,
-    sig_batch: &mut SigBatch,
+    shuffled: &[u32],
+    committees_per_slot: usize,
+    validators_count: usize,
+    out: &mut Vec<u32>,
 ) -> Result<(), AttestationError> {
-    let (fork_epoch, prev_v, curr_v, gvr) = imm.fork_descriptor();
-    let data = AttestationView::data(att);
-    let att_slot = AttestationDataView::slot(data);
-    let target_epoch = AttestationDataView::target_epoch(data);
-    let is_current = target_epoch == current_epoch;
-    let shuffling = shuffling.ok_or(AttestationError::MissingShuffling)?;
-    let (shuffled, committees_per_slot) = shuffling.epoch_slice(is_current);
-    if shuffled.is_empty() || committees_per_slot == 0 {
-        return Err(AttestationError::EmptyShuffling);
-    }
+    let att_slot = AttestationDataView::slot(AttestationView::data(att));
     let committee_bits = u64::from_le_bytes(*AttestationView::committee_bits(att));
     let agg_bits = AttestationView::aggregation_bits(att);
     if committee_bits == 0 {
         return Err(AttestationError::EmptyCommitteeBits);
     }
 
-    active_scratch.clear();
+    out.clear();
     let mut agg_offset = 0usize;
-    let count = validators.count();
     for ci in 0..committees_per_slot {
         if committee_bits & (1u64 << ci) == 0 {
             continue;
@@ -951,13 +938,42 @@ pub fn collect_sigs_single_attestation(
                 continue;
             }
             let vi = validator_idx as usize;
-            if vi >= count {
-                return Err(AttestationError::ValidatorOutOfRange { vi, count });
+            if vi >= validators_count {
+                return Err(AttestationError::ValidatorOutOfRange { vi, count: validators_count });
             }
-            active_scratch.push(validator_idx);
+            out.push(validator_idx);
         }
         agg_offset += committee.len();
     }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn collect_sigs_single_attestation(
+    imm: &Immutable,
+    validators: &ValidatorsView,
+    att: &[u8],
+    current_epoch: Epoch,
+    shuffling: Option<&ShufflingRef<'_>>,
+    active_scratch: &mut Vec<u32>,
+    sig_batch: &mut SigBatch,
+) -> Result<(), AttestationError> {
+    let (fork_epoch, prev_v, curr_v, gvr) = imm.fork_descriptor();
+    let data = AttestationView::data(att);
+    let target_epoch = AttestationDataView::target_epoch(data);
+    let is_current = target_epoch == current_epoch;
+    let shuffling = shuffling.ok_or(AttestationError::MissingShuffling)?;
+    let (shuffled, committees_per_slot) = shuffling.epoch_slice(is_current);
+    if shuffled.is_empty() || committees_per_slot == 0 {
+        return Err(AttestationError::EmptyShuffling);
+    }
+    attesting_indices_from_shuffled(
+        att,
+        shuffled,
+        committees_per_slot,
+        validators.count(),
+        active_scratch,
+    )?;
 
     let fork_version = bls::fork_version_at_epoch(fork_epoch, prev_v, curr_v, target_epoch);
     let sig = AttestationView::signature(att);

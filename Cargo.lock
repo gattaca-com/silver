@@ -4355,6 +4355,7 @@ dependencies = [
  "silver_config",
  "silver_metrics",
  "silver_ssz",
+ "silver_storage",
  "snap 0.1.2",
  "thiserror 1.0.69",
  "tracing",

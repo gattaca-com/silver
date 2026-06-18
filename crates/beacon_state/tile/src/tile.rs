@@ -1003,16 +1003,24 @@ impl BeaconStateTile {
     /// at an epoch boundary pull up unrealized checkpoints. Returns whether a
     /// state advance occurred.
     fn slot_tick(&mut self, slot: Slot) -> bool {
-        let pre_epoch = self.head_state_slot() / SLOTS_PER_EPOCH;
         let advanced = self.on_slot_start(slot);
+        self.fork_choice_tick();
+        advanced
+    }
+
+    /// Spec `on_tick`, fork-choice only: expire proposer boost, make the
+    /// previous slot's deferred votes eligible, refold the head, and at an
+    /// epoch boundary pull up unrealized checkpoints.
+    fn fork_choice_tick(&mut self) {
+        let prev_epoch = self.fork_choice.current_epoch();
+        let new_epoch = self.ticker.current_slot() / SLOTS_PER_EPOCH;
         self.fork_choice.expire_proposer_boost();
         let n = self.head_validator_count();
         self.fork_choice.drain_pending_votes(n);
         self.recompute_head();
-        if slot / SLOTS_PER_EPOCH > pre_epoch {
+        if new_epoch > prev_epoch {
             self.lift_unrealized_checkpoints();
         }
-        advanced
     }
 
     fn relay_gossip(m: &NewGossipMsg, producers: &mut Producers) {
@@ -1748,6 +1756,70 @@ impl BeaconStateTile {
         Feedback::Accept(None)
     }
 
+    /// Spec `on_attestation` core for an aggregated `Attestation` (the inner
+    /// part of a `SignedAggregateAndProof`): validate the LMD/FFG target
+    /// and ancestry, derive the attesting indices via committee shuffling, and
+    /// record their votes (deferring current-slot votes per the slot+1 rule).
+    fn apply_attestation(&mut self, att: &[u8]) -> Feedback {
+        use silver_common::ssz_view::{AttestationDataView, AttestationView};
+        let data = AttestationView::data(att);
+        let att_slot = AttestationDataView::slot(data);
+        let target_epoch = AttestationDataView::target_epoch(data);
+        let target_root = *AttestationDataView::target_root(data);
+        let beacon_block_root = *AttestationDataView::beacon_block_root(data);
+
+        if target_epoch != att_slot / SLOTS_PER_EPOCH {
+            return Feedback::Reject(None);
+        }
+        match self
+            .fork_choice
+            .get_checkpoint_block(&beacon_block_root, target_epoch * SLOTS_PER_EPOCH)
+        {
+            Some(r) if r == target_root => {}
+            Some(_) => return Feedback::Reject(None),
+            None => return Feedback::Ignore,
+        }
+        match self.fork_choice.find_node_idx(&beacon_block_root) {
+            Some(idx) if self.fork_choice.node(idx).slot <= att_slot => {}
+            _ => return Feedback::Ignore,
+        }
+
+        let canon_id = self.canonical_state_id();
+        let att_epoch = att_slot / SLOTS_PER_EPOCH;
+        self.ensure_shuffling_window(att_epoch, canon_id);
+        let mix = Self::shuffling_mix(&self.state.read_view(canon_id), att_epoch);
+        let n = self.head_validator_count();
+        {
+            let Some(entry) = Self::get_shuffling(&self.shuffling_cache, att_epoch, mix) else {
+                return Feedback::Ignore;
+            };
+            let shuffled = entry.shuffled_indices.as_slice();
+            let cps = shuffling::committees_per_slot(shuffled.len());
+            if state_transition::attesting_indices_from_shuffled(
+                att,
+                shuffled,
+                cps,
+                n,
+                &mut self.stf_scratch.active,
+            )
+            .is_err()
+            {
+                return Feedback::Reject(None);
+            }
+        }
+
+        let defer = att_slot == self.ticker.current_slot();
+        for i in 0..self.stf_scratch.active.len() {
+            let vi = self.stf_scratch.active[i];
+            if defer {
+                self.fork_choice.defer_vote(vi, beacon_block_root, target_epoch);
+            } else {
+                self.fork_choice.record_vote(vi as usize, beacon_block_root, target_epoch, n);
+            }
+        }
+        Feedback::Accept(None)
+    }
+
     fn handle_aggregate_and_proof(&mut self, data: &[u8]) -> Feedback {
         let Some(parsed) = ParsedAggregateAndProof::try_from(data) else {
             return Feedback::Reject(None);
@@ -1838,22 +1910,9 @@ impl BeaconStateTile {
             return Feedback::Reject(None);
         }
 
-        // Spec `validate_on_attestation`: defer current-slot votes one slot.
-        let defer = parsed.agg_slot == self.ticker.current_slot();
-        let n = self.head_validator_count();
-        for i in 0..self.stf_scratch.active.len() {
-            let vi = self.stf_scratch.active[i] as usize;
-            if defer {
-                self.fork_choice.defer_vote(
-                    vi as u32,
-                    parsed.beacon_block_root,
-                    parsed.target_epoch,
-                );
-            } else {
-                self.fork_choice.record_vote(vi, parsed.beacon_block_root, parsed.target_epoch, n);
-            }
-        }
-        Feedback::Accept(None)
+        // Record the votes (validates target/ancestry + slot+1 deferral, derives
+        // the committee again). The inner attestation is the aggregate field.
+        self.apply_attestation(parsed.aggregate_bytes)
     }
 
     fn verify_aggregate_and_proof_sigs(
@@ -2093,6 +2152,47 @@ impl<'a> ParsedAggregateAndProof<'a> {
             aggregate_bytes: SignedAggregateAndProofView::aggregate(data),
             att_epoch: agg_slot / SLOTS_PER_EPOCH,
         })
+    }
+}
+
+/// EF `fork_choice`/`sync` vector harness API: thin gated wrappers over the
+/// private production methods.
+#[cfg(feature = "ef_tests")]
+impl BeaconStateTile {
+    pub fn ef_fork_choice(&self) -> &ForkChoice {
+        &self.fork_choice
+    }
+
+    pub fn ef_tick(&mut self, since_genesis_ms: u64) {
+        self.ticker.set_since_genesis_ms(since_genesis_ms);
+        self.fork_choice_tick();
+    }
+
+    pub fn ef_apply_block(&mut self, ssz: &[u8]) -> Option<B256> {
+        match self.try_apply_block(ssz) {
+            Feedback::Accept(r) => r,
+            _ => None,
+        }
+    }
+
+    pub fn ef_apply_attestation(&mut self, ssz: &[u8]) {
+        self.apply_attestation(ssz);
+        self.recompute_head();
+    }
+
+    pub fn ef_apply_attester_slashing(&mut self, ssz: &[u8]) {
+        if matches!(self.handle_attester_slashing(ssz), Feedback::Accept(_)) {
+            self.recompute_head();
+        }
+    }
+
+    pub fn ef_payload_verdict(
+        &mut self,
+        block_root: B256,
+        status: PayloadValidationStatus,
+        latest_valid_hash: B256,
+    ) {
+        self.on_payload_verdict(&block_root, &latest_valid_hash, status);
     }
 }
 
