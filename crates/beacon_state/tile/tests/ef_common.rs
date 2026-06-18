@@ -27,6 +27,14 @@ impl LoadedState {
         self.bs.slot_states.view(self.state_id.slot_idx).slot_number()
     }
 
+    /// hash_tree_root of the loaded state (single-leaf merkle-proof checks).
+    pub fn state_root(&mut self) -> [u8; 32] {
+        let sid = self.state_id;
+        let (view, epoch, longtail) = self.view();
+        let rv = view.read(epoch.view_opt(sid.epoch_idx), longtail.view_opt(sid.longtail_idx));
+        hash_tree_root_state(&rv, &mut StateHashScratch::new())
+    }
+
     /// Roll a fork, run `f` over its writer view, then commit with the
     /// inherited epoch/longtail ids and write the bundle back.
     pub fn with_view<R>(&mut self, f: impl FnOnce(&mut StateWriterView<'_>) -> R) -> R {
