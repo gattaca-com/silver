@@ -52,7 +52,7 @@ impl<C: ColumnSpec> ColumnGroup<C> {
     fn reanchor(&mut self, survivor: Id<Self>, winner: Id<Self>) -> ColumnWriteView<'_, C> {
         let Self { finalized, deltas, .. } = self;
         let (mut new, old, winner_delta) = deltas.roll_fresh_deriving(survivor, winner);
-        old.rebase_and_prune(&mut new, finalized, winner_delta);
+        new.rebase_and_prune_from(old, finalized, winner_delta);
         ColumnWriteView::new(finalized, new)
     }
 

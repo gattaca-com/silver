@@ -16,8 +16,10 @@ fn rebase_and_prune_pins_injects_overrides_and_drops_redundant() {
     let winner = edits_of(&[(0, 0), (1, 0), (5, 0)]);
     let old_base = |idx: u32| 100 + idx as u64;
 
-    let out = survivor
-        .rebase_and_prune(&winner, /* valid_below */ 3, /* new_count */ 4, old_base);
+    let mut out = Edits::default();
+    out.rebase_and_prune_from(
+        &survivor, &winner, /* valid_below */ 3, /* new_count */ 4, old_base,
+    );
 
     // New base = winner's override (0 at idx 0,1) else old base. 0 pinned at old
     // base 100 (≠ new base 0 → kept); 1 kept as the survivor's override 77 (wins
@@ -34,8 +36,10 @@ fn rebase_and_prune_uses_winner_overrides_at_appended_indices() {
     let winner = edits_of(&[(0, 9), (2, 500), (3, 501)]);
     let old_base = |idx: u32| 100 + idx as u64;
 
-    let out = survivor
-        .rebase_and_prune(&winner, /* valid_below */ 2, /* new_count */ 4, old_base);
+    let mut out = Edits::default();
+    out.rebase_and_prune_from(
+        &survivor, &winner, /* valid_below */ 2, /* new_count */ 4, old_base,
+    );
 
     // idx 0: winner-only, < valid_below → pinned to old base 100. idx 2: new base
     // is the winner's 500 == survivor → pruned. idx 3: new base 501 ≠ 999 → kept.
