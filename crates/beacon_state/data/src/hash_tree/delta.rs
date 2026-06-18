@@ -203,7 +203,7 @@ impl FinalizedHashTree {
         match delta {
             DeltaHashTree::Base(_) => None,
             DeltaHashTree::Leaf(hash) => {
-                (hash == self.node_hash(node)).then(|| DeltaHashTree::Base(node))
+                (hash == self.node_hash(node)).then_some(DeltaHashTree::Base(node))
             }
             DeltaHashTree::Node(arc) => {
                 if arc.hash == *self.node_hash(node) {
@@ -247,7 +247,7 @@ impl FinalizedHashTree {
             // a node the winner left untouched: following the base stays correct.
             DeltaHashTree::Base(_) => None,
             DeltaHashTree::Leaf(hash) => {
-                (*hash == new_base_hash).then(|| DeltaHashTree::Base(node))
+                (*hash == new_base_hash).then_some(DeltaHashTree::Base(node))
             }
             DeltaHashTree::Node(arc) => {
                 if arc.hash == new_base_hash {

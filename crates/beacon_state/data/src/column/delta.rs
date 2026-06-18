@@ -34,12 +34,9 @@ impl<V: ColumnVal> ColumnDelta<V> {
         winner: &Self,
     ) {
         self.total = old.total;
-        self.edits.rebase_and_prune_from(
-            &old.edits,
-            &winner.edits,
-            winner.total as u32,
-            |idx| base.data[idx as usize],
-        );
+        self.edits.rebase_and_prune_from(&old.edits, &winner.edits, winner.total as u32, |idx| {
+            base.data[idx as usize]
+        });
 
         // Don't rebase hash part as it is slow because:
         // * Rebase is slow as almost all elements are updated
