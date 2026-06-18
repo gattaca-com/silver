@@ -124,6 +124,18 @@ impl SlotTicker {
         self.last = None;
     }
 
+    /// Force `since_genesis_ms()` to `ms` at this moment, fixing both the slot
+    /// and the sub-slot offset (so `is_before_attesting_interval` reflects a
+    /// precise within-slot time). For EF fork-choice vectors that pin proposer
+    /// boost to a `tick`. Reads drift by the elapsed call latency (negligible
+    /// vs the 12s slot / 4s deadline).
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn set_since_genesis_ms(&mut self, ms: u64) {
+        self.anchor = Instant::now();
+        self.anchor_genesis_ms = ms;
+        self.last = None;
+    }
+
     pub fn tick(&mut self) -> TickEvent {
         let ms = self.since_genesis_ms();
         let slot = ms / self.slot_ms;

@@ -16,6 +16,8 @@ pub const MAX_FORK_CHOICE_NODES: usize = SLOTS_RING_N;
 
 const NULL: usize = usize::MAX;
 
+const GENESIS_EPOCH: Epoch = 0;
+
 /// Spec PROPOSER_SCORE_BOOST (percent). A timely current-slot block earns a
 /// transient weight of this fraction of one slot's attesting balance.
 pub const PROPOSER_SCORE_BOOST: u64 = 40;
@@ -69,6 +71,10 @@ pub struct ForkChoice {
     /// state at `justified_balances_cp.epoch` (active set incl. slashed,
     /// clamped to one increment).
     justified_total_active_balance: u64,
+    /// Spec `get_current_store_epoch`: the wall-clock epoch, set from the
+    /// ticker. Drives the unrealized-justification viability relaxation
+    /// (`voting_source.epoch + 2 >= current_epoch`).
+    current_epoch: Epoch,
 }
 
 const LOOKUP_SLOTS: usize = 2 * MAX_FORK_CHOICE_NODES;
@@ -164,6 +170,9 @@ pub struct ForkChoiceNode {
     pub justified_checkpoint: Checkpoint,
     pub finalized_checkpoint: Checkpoint,
 
+    pub unrealized_justified_checkpoint: Checkpoint,
+    pub unrealized_finalized_checkpoint: Checkpoint,
+
     pub execution_status: ExecutionStatus,
 
     pub state_id: StateId,
@@ -197,7 +206,8 @@ pub struct BlockImport {
     pub execution_block_hash: B256,
     pub justified: Checkpoint,
     pub finalized: Checkpoint,
-    /// Per-tier index bundle of this block's post-state.
+    pub unrealized_justified: Checkpoint,
+    pub unrealized_finalized: Checkpoint,
     pub state_id: StateId,
 }
 
@@ -228,6 +238,9 @@ impl ForkChoice {
             weight: 0,
             justified_checkpoint,
             finalized_checkpoint,
+            // Anchor is trusted: unrealized == realized.
+            unrealized_justified_checkpoint: justified_checkpoint,
+            unrealized_finalized_checkpoint: finalized_checkpoint,
             execution_status: ExecutionStatus::Valid,
             state_id,
         });
@@ -251,6 +264,7 @@ impl ForkChoice {
             justified_balances_cp: Checkpoint::default(),
             justified_balances_full_pass: false,
             justified_total_active_balance: 0,
+            current_epoch: 0,
         }
     }
 
@@ -275,6 +289,8 @@ impl ForkChoice {
             weight: 0,
             justified_checkpoint: b.justified,
             finalized_checkpoint: b.finalized,
+            unrealized_justified_checkpoint: b.unrealized_justified,
+            unrealized_finalized_checkpoint: b.unrealized_finalized,
             execution_status: ExecutionStatus::Optimistic,
             state_id: b.state_id,
         });
@@ -581,6 +597,12 @@ impl ForkChoice {
         self.proposer_boost_root = [0u8; 32];
     }
 
+    /// Spec `get_current_store_epoch`: set the wall-clock epoch driving the
+    /// unrealized-justification viability relaxation.
+    pub fn set_current_epoch(&mut self, epoch: Epoch) {
+        self.current_epoch = epoch;
+    }
+
     /// True when the justified-balance snapshot must be rebuilt — the justified
     /// checkpoint moved, or we have no snapshot yet.
     pub fn justified_balances_stale(&self) -> bool {
@@ -664,23 +686,38 @@ impl ForkChoice {
     #[inline]
     fn node_is_viable_for_head(&self, idx: usize) -> bool {
         let n = &self.nodes[idx];
-        // An EL-invalid node (and its subtree) is never viable. The rest is the
-        // realized j/f filter.
-        //
-        // TODO: Spec viability has three pieces silver does not implement:
-        //   (a) genesis-epoch exception (always viable in epoch 0),
-        //   (b) unrealized-justification (use the block's *unrealized* j/f
-        //       checkpoints when its post-state hasn't crossed the epoch
-        //       boundary yet),
-        //   (c) finalized-descendant ancestry (the head must descend from
-        //       the finalized block).
-        // Acceptable for a passive follower that trusts its checkpoint anchor
-        // — silver isn't a proposer. Implication: blocks whose post-state
-        // names checkpoints more advanced than ours get filtered, and we
-        // accept only blocks <= our anchor's j/f. Revisit if/when proposing.
-        n.execution_status != ExecutionStatus::Invalid &&
-            n.justified_checkpoint.epoch <= self.justified_checkpoint.epoch &&
-            n.finalized_checkpoint.epoch <= self.finalized_checkpoint.epoch
+        if n.execution_status == ExecutionStatus::Invalid {
+            return false;
+        }
+
+        // Spec `get_voting_source`: a node from a prior epoch votes from its
+        // *unrealized* (pulled-up) justified checkpoint; otherwise its realized
+        // one.
+        let block_epoch = n.slot / SLOTS_PER_EPOCH;
+        let voting_source = if self.current_epoch > block_epoch {
+            n.unrealized_justified_checkpoint
+        } else {
+            n.justified_checkpoint
+        };
+
+        // Justified: the voting source is at the store's justified epoch, or no
+        // more than two epochs behind the current epoch (the spec relaxation
+        // that keeps a just-missed-justification branch viable). Unconditional
+        // at genesis.
+        let correct_justified = self.justified_checkpoint.epoch == GENESIS_EPOCH ||
+            voting_source.epoch == self.justified_checkpoint.epoch ||
+            voting_source.epoch + 2 >= self.current_epoch;
+
+        // Finalized: the node must descend from the store's finalized block (its
+        // ancestor at the finalized epoch's start slot is the finalized root).
+        // Unconditional at genesis.
+        let correct_finalized = self.finalized_checkpoint.epoch == GENESIS_EPOCH ||
+            self.get_checkpoint_block(
+                &n.block_root,
+                self.finalized_checkpoint.epoch * SLOTS_PER_EPOCH,
+            ) == Some(self.finalized_checkpoint.root);
+
+        correct_justified && correct_finalized
     }
 
     #[inline]
@@ -860,6 +897,8 @@ mod tests {
             execution_block_hash: [0u8; 32],
             justified: jus,
             finalized: fin,
+            unrealized_justified: jus,
+            unrealized_finalized: fin,
             state_id: test_state_id(),
         }
     }
@@ -1218,5 +1257,55 @@ mod tests {
         for i in 0..32 {
             assert_eq!(votes_full[i].current_root, votes_dirty[i].current_root);
         }
+    }
+
+    /// Genesis exception: while the store's justified checkpoint is at
+    /// GENESIS_EPOCH, any node is viable regardless of its (stale) voting
+    /// source — the `+2` rule would otherwise filter it.
+    #[test]
+    fn viability_genesis_exception() {
+        let g = cp(0, 1);
+        let mut fc = ForkChoice::init(g, g, 0, root(1), root(1), [0u8; 32], test_state_id(), 0);
+        // Prior-epoch node with a stale (epoch 1) voting source.
+        fc.on_block(block(64, root(2), root(1), cp(1, 9), g));
+        let a = fc.find_node_idx(&root(2)).unwrap();
+        fc.nodes[a].unrealized_justified_checkpoint = cp(1, 9);
+        fc.set_current_epoch(10); // +2 would filter cp(1, ..), but store is at genesis
+        fc.apply_score_changes(&mut [0i64; MAX_FORK_CHOICE_NODES]);
+        assert_eq!(fc.find_head(), root(2));
+    }
+
+    /// A prior-epoch node votes from its *unrealized* justified checkpoint, and
+    /// the `voting_source.epoch + 2 >= current_epoch` relaxation governs the
+    /// boundary.
+    #[test]
+    fn viability_unrealized_justified_and_plus_two() {
+        // Genesis finalized isolates the justified rule; store justified
+        // promoted to epoch 2 (node root(2) at slot 64).
+        let g = cp(0, 1);
+        let mut fc = ForkChoice::init(g, g, 0, root(1), root(1), [0u8; 32], test_state_id(), 0);
+        fc.on_block(block(64, root(2), root(1), cp(2, 2), g)); // A @ epoch 2
+        fc.justified_checkpoint = cp(2, 2);
+        // C @ epoch 2, child of A, realized justified stale (epoch 1).
+        fc.on_block(block(65, root(3), root(2), cp(1, 9), g));
+        let c = fc.find_node_idx(&root(3)).unwrap();
+
+        // current_epoch 4: C is prior-epoch -> voting source is its unrealized
+        // justified. Caught up to epoch 2 -> viable -> head = C.
+        fc.set_current_epoch(4);
+        fc.nodes[c].unrealized_justified_checkpoint = cp(2, 2);
+        fc.apply_score_changes(&mut [0i64; MAX_FORK_CHOICE_NODES]);
+        assert_eq!(fc.find_head(), root(3));
+
+        // Stale unrealized (epoch 1): 1 != 2 and 1 + 2 < 4 -> filtered -> head
+        // falls back to A.
+        fc.nodes[c].unrealized_justified_checkpoint = cp(1, 9);
+        fc.apply_score_changes(&mut [0i64; MAX_FORK_CHOICE_NODES]);
+        assert_eq!(fc.find_head(), root(2));
+
+        // +2 boundary: at current_epoch 3, 1 + 2 >= 3 -> viable again.
+        fc.set_current_epoch(3);
+        fc.apply_score_changes(&mut [0i64; MAX_FORK_CHOICE_NODES]);
+        assert_eq!(fc.find_head(), root(3));
     }
 }
