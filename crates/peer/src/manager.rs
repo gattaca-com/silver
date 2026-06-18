@@ -14,6 +14,7 @@ use silver_common::{
     PeerEvent, PeerId, PeerStatus, RpcRequest, RpcRequestOutbound, RpcSeverity, StreamProtocol,
     SyncUpdate, SyncingStrategy, TCacheRead,
     metrics::timed,
+    rpc_rate_limit::RpcRateLimit,
     ssz_view::{METADATA_SIZE, STATUS_V2_SIZE, StatusView},
 };
 use silver_config::{ScoreParams, SyncingConfig};
@@ -231,7 +232,8 @@ pub struct PeerManager {
     /// slot — we max to tolerate transient skew).
     head_counts: FxHashMap<[u8; 32], HeadAgg>,
 
-    pub(crate) pending_live_columns_by_root: VecDeque<(u64, u128, [u8; 32])>,
+    pub(crate) pending_range_requests: VecDeque<PendingRangeRequest>,
+    pub(crate) outbound_range_attempts: Vec<OutboundRangeAttempt>,
     pub(crate) pending_block_by_root: VecDeque<(u64, Option<usize>, [u8; 32])>,
     pub(crate) pending_rpc_request: VecDeque<(u64, RpcRequest)>,
 }
@@ -314,6 +316,58 @@ pub struct ColAttempt {
     pub delivered: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum PendingRangeRequest {
+    Blocks(PendingBlocksByRange),
+    DataColumns(PendingDataColumnsByRange),
+}
+
+impl PendingRangeRequest {
+    pub(crate) fn request_id(self) -> u64 {
+        match self {
+            PendingRangeRequest::Blocks(req) => req.request_id,
+            PendingRangeRequest::DataColumns(req) => req.request_id,
+        }
+    }
+
+    pub(crate) fn protocol(self) -> StreamProtocol {
+        match self {
+            PendingRangeRequest::Blocks(_) => StreamProtocol::BeaconBlocksByRange,
+            PendingRangeRequest::DataColumns(_) => StreamProtocol::DataColumnSidecarsByRange,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PendingBlocksByRange {
+    pub request_id: u64,
+    pub start_slot: u64,
+    pub count: u64,
+    pub step: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PendingDataColumnsByRange {
+    pub request_id: u64,
+    pub start_slot: u64,
+    pub count: u64,
+    pub columns: u128,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct OutboundRangeAttempt {
+    pub request_id: u64,
+    pub peer_id: usize,
+    pub protocol: StreamProtocol,
+    pub start_slot: u64,
+    pub count: u64,
+    pub step: u64,
+    pub columns: u128,
+    pub last_progress_at: Instant,
+    pub responded: bool,
+    pub delivered: bool,
+}
+
 impl PeerManager {
     pub fn new(
         our_topics: Vec<GossipTopic>,
@@ -374,8 +428,8 @@ impl PeerManager {
             burnt_for_target: FxHashSet::with_capacity_and_hasher(PEERS_CAP, Default::default()),
             finalized_counts: FxHashMap::with_capacity_and_hasher(SYNC_AGG_CAP, Default::default()),
             head_counts: FxHashMap::with_capacity_and_hasher(SYNC_AGG_CAP, Default::default()),
-            // TODO: prealloc?
-            pending_live_columns_by_root: VecDeque::new(),
+            pending_range_requests: VecDeque::new(),
+            outbound_range_attempts: Vec::new(),
             pending_block_by_root: VecDeque::new(),
             pending_rpc_request: VecDeque::new(),
         }
@@ -979,6 +1033,9 @@ impl PeerManager {
                         peer.outbound_in_flight[protocol.ordinal() as usize] =
                             peer.outbound_in_flight[protocol.ordinal() as usize].saturating_sub(1);
                     }
+                    if !stream_id.is_incoming() {
+                        self.on_range_stream_closed(stream_id.peer(), protocol, emit);
+                    }
                 }
             }
             PeerEvent::P2pGossipTopicSubscribe { p2p_peer, topic } => {
@@ -1059,13 +1116,13 @@ impl PeerManager {
                 self.database.add_p2p_identify(p2p_peer, identify)
             }
             PeerEvent::SendDataColumnsByRootRequest { request_id, columns, block_root } => {
-                self.on_request_data_columns_by_root(request_id, columns, block_root, emit);
+                self.on_request_data_columns_by_root(request_id, columns, block_root, now, emit);
             }
             PeerEvent::SendBlocksByRootRequest { request_id, p2p_peer, block_root } => {
-                self.on_request_blocks_by_root(request_id, p2p_peer, block_root, emit);
+                self.on_request_blocks_by_root(request_id, p2p_peer, block_root, now, emit);
             }
             PeerEvent::SendRpcRequest { request_id, rpc } => {
-                self.on_rpc_request(request_id, rpc, emit);
+                self.on_rpc_request(request_id, rpc, now, emit);
             }
             PeerEvent::EarliestSlot(slot) => {
                 self.earliest_available_slot = slot;
@@ -1122,6 +1179,8 @@ impl PeerManager {
         // 8) Trigger discovery if we're under target.
         self.maybe_request_discovery(now, emit);
 
+        self.sweep_backfill_range_attempts(now, emit);
+
         // 9) Prune stale dials (older than 15 seconds)
         self.dialing.retain(|_, &mut time| {
             now.saturating_duration_since(time) < std::time::Duration::from_secs(15)
@@ -1159,12 +1218,23 @@ impl PeerManager {
             .or_insert_with(|| Vec::with_capacity(4))
             .push(conn);
 
+        let initial_status = if local_dialler &&
+            let Some(status) = self.status &&
+            matches!(
+                state.outbound_rpc_limits.admit_outbound(StreamProtocol::StatusV2, 1, now),
+                RpcRateLimit::Allowed
+            ) {
+            Some(status)
+        } else {
+            None
+        };
+
         tracing::info!("adding peer with p2p connection: {conn}");
         self.peers.insert(conn, state);
         self.database.add_peer_id(peer_id, conn);
 
         emit(PeerControl::P2pSend(P2pSend::Identify(conn)));
-        if local_dialler && let Some(status) = self.status {
+        if let Some(status) = initial_status {
             // Send rpc Status
             emit(PeerControl::P2pSend(P2pSend::Rpc(silver_common::RpcOutbound::Request(
                 RpcRequestOutbound {
@@ -1176,11 +1246,10 @@ impl PeerManager {
         }
 
         // Announce our own topic subscriptions to this peer.
-        if self.is_synced {
-            for &topic in &self.our_topics {
-                emit(PeerControl::P2pGossipSubscribe { p2p: peer_id, p2p_connection: conn, topic });
-            }
+        for &topic in &self.our_topics {
+            emit(PeerControl::P2pGossipSubscribe { p2p: peer_id, p2p_connection: conn, topic });
         }
+        
     }
 
     fn on_disconnected(&mut self, conn: usize, now: Instant, emit: &mut impl FnMut(PeerControl)) {
@@ -1240,6 +1309,8 @@ impl PeerManager {
         self.database.peer_disconnected(conn);
         // A peer disappearing may unpin / change the target.
         self.target_dirty = true;
+
+        self.on_range_peer_disconnected(conn, emit);
 
         // Clear inflight sync requests if it was assigned to this conn. Next
         // `maybe_issue_syncreq` picks a different peer.
@@ -2189,7 +2260,9 @@ mod tests {
     use std::time::Duration;
 
     use silver_common::{
-        BASE_REQUEST_ID, COLUMN_BACKFILL_REQUEST_ID, Enr, Identify, Keypair, TCacheProducer,
+        BACKFILL_REQUEST_ID, BASE_REQUEST_ID, COLUMN_BACKFILL_REQUEST_ID, Enr, Identify, Keypair,
+        P2pStreamId, RpcInbound, RpcResponse, RpcResponseInbound, TCacheProducer,
+        ssz_view::BLOCKS_BY_RANGE_REQ_SIZE,
     };
 
     use super::*;
@@ -4596,8 +4669,12 @@ mod tests {
         let batch = mgr.syncing.max_blocks_by_range_batch;
 
         // Drive block deliveries with the applied head kept level, isolating
-        // the column-coupling gate from the apply-lag gate.
-        mgr.maybe_issue_syncreq(now, &mut |c| cap.0.push(c));
+        // the column-coupling gate from the apply-lag gate. Advance the
+        // synthetic clock between full-range completions so this test is not
+        // stopped by the outbound BlocksByRange quota.
+        const OUTBOUND_BLOCKS_BY_RANGE_QUOTA_WINDOW: Duration = Duration::from_secs(30);
+        let mut tick = now;
+        mgr.maybe_issue_syncreq(tick, &mut |c| cap.0.push(c));
         let mut guard = 0;
         while let Some(req) = mgr.inflight_syncreq {
             let end = req.start_slot + req.count - 1;
@@ -4608,7 +4685,8 @@ mod tests {
             // Free the slot the terminal response would (test bypasses that path).
             mgr.peers.get_mut(&1).unwrap().outbound_in_flight
                 [StreamProtocol::BeaconBlocksByRange.ordinal() as usize] = 0;
-            mgr.maybe_issue_syncreq(now, &mut |c| cap.0.push(c));
+            tick += OUTBOUND_BLOCKS_BY_RANGE_QUOTA_WINDOW;
+            mgr.maybe_issue_syncreq(tick, &mut |c| cap.0.push(c));
             guard += 1;
             assert!(guard < 8, "block issuance never paused on stalled columns");
         }
@@ -4621,7 +4699,8 @@ mod tests {
 
         // Column watermark advances → block issuance resumes.
         mgr.columns_synced_through = mgr.synced_through;
-        mgr.maybe_issue_syncreq(now, &mut |c| cap.0.push(c));
+        tick += OUTBOUND_BLOCKS_BY_RANGE_QUOTA_WINDOW;
+        mgr.maybe_issue_syncreq(tick, &mut |c| cap.0.push(c));
         assert!(mgr.inflight_syncreq.is_some(), "blocks resume once columns catch up");
     }
 
@@ -4779,9 +4858,9 @@ mod tests {
 
         // Peer-exclusive custody columns so a request can split cleanly: peer 1
         // covers `m1`, peer 2 covers `m2`, no overlap. A request for `m1 | m2`
-        // sent while one peer is at capacity yields partial coverage — the
-        // covered part is placed, the rest queued. (Requests where *nothing*
-        // can be placed are dropped, not queued: upstream retries handle those.)
+        // sent while one peer is at capacity yields partial coverage: the
+        // covered part is placed, while the unsent remainder is left for the
+        // storage live/backfill wheels to retry.
         let m1 = custody_mask1 & !custody_mask2;
         let m2 = custody_mask2 & !custody_mask1;
         assert!(m1 != 0 && m2 != 0, "test needs peer-exclusive custody columns");
@@ -4829,10 +4908,9 @@ mod tests {
             &mut |c| cap.0.push(c),
         );
         assert_eq!(mgr.peers.get(&1).unwrap().outbound_in_flight[dcbr], 2);
-        assert_eq!(mgr.pending_live_columns_by_root.len(), 0);
 
-        // 4) Live `both`: peer 1 is at its live cap (2), so `m1` is queued; peer 2 (1
-        //    in-flight < 2) takes `m2` (partial coverage, live queue).
+        // 4) Live `both`: peer 1 is at its live cap (2), so peer 2 takes `m2` and `m1`
+        //    is left for storage's live wheel to retry.
         mgr.handle_event(
             PeerEvent::SendDataColumnsByRootRequest {
                 request_id: BASE_REQUEST_ID | 4,
@@ -4844,20 +4922,167 @@ mod tests {
         );
         assert_eq!(mgr.peers.get(&1).unwrap().outbound_in_flight[dcbr], 2);
         assert_eq!(mgr.peers.get(&2).unwrap().outbound_in_flight[dcbr], 2);
-        assert_eq!(mgr.pending_live_columns_by_root.len(), 1);
+    }
 
-        // 5) Prioritization on a contended slot. The queued live remainder is `m1`
-        //    (peer 1's). Free one peer-1 slot and drain: the freed slot goes to the
-        //    live `m1`.
-        mgr.peers.get_mut(&1).unwrap().outbound_in_flight[dcbr] = 1;
-        cap.0.clear();
-        mgr.drain_pending_outbound(&mut |c| cap.0.push(c));
+    #[test]
+    fn block_backfill_pending_range_is_coalesced_without_peers() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
+        let mut ssz = [0u8; BLOCKS_BY_RANGE_REQ_SIZE];
+        ssz[0..8].copy_from_slice(&10u64.to_le_bytes());
+        ssz[8..16].copy_from_slice(&4u64.to_le_bytes());
+        ssz[16..24].copy_from_slice(&1u64.to_le_bytes());
+        let rpc = RpcRequest::BlocksByRange(ssz);
 
-        assert_eq!(
-            mgr.peers.get(&1).unwrap().outbound_in_flight[dcbr],
-            2,
-            "freed slot taken by the live request"
+        mgr.handle_event(
+            PeerEvent::SendRpcRequest { request_id: BACKFILL_REQUEST_ID | 1, rpc },
+            now,
+            &mut |c| cap.0.push(c),
         );
-        assert_eq!(mgr.pending_live_columns_by_root.len(), 0);
+        mgr.handle_event(
+            PeerEvent::SendRpcRequest { request_id: BACKFILL_REQUEST_ID | 2, rpc },
+            now,
+            &mut |c| cap.0.push(c),
+        );
+
+        assert!(mgr.pending_rpc_request.is_empty());
+        assert_eq!(mgr.pending_range_requests.len(), 1);
+        let PendingRangeRequest::Blocks(req) = mgr.pending_range_requests.front().copied().unwrap()
+        else {
+            panic!("expected pending BlocksByRange");
+        };
+        assert_eq!(req.request_id, BACKFILL_REQUEST_ID | 2);
+        assert_eq!((req.start_slot, req.count, req.step), (10, 4, 1));
+    }
+
+    #[test]
+    fn block_backfill_range_attempt_is_tracked_until_complete() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
+        connect(&mut mgr, &mut cap, 1, 1, now);
+        let mut identify = Identify::default();
+        identify.protocols |= 1 << StreamProtocol::BeaconBlocksByRange.ordinal();
+        mgr.handle_event(PeerEvent::P2pPeerIdentity { p2p_peer: 1, identify }, now, &mut |c| {
+            cap.0.push(c)
+        });
+
+        let mut ssz = [0u8; BLOCKS_BY_RANGE_REQ_SIZE];
+        ssz[0..8].copy_from_slice(&20u64.to_le_bytes());
+        ssz[8..16].copy_from_slice(&3u64.to_le_bytes());
+        ssz[16..24].copy_from_slice(&1u64.to_le_bytes());
+        mgr.handle_event(
+            PeerEvent::SendRpcRequest {
+                request_id: BACKFILL_REQUEST_ID | 7,
+                rpc: RpcRequest::BlocksByRange(ssz),
+            },
+            now,
+            &mut |c| cap.0.push(c),
+        );
+
+        assert!(mgr.pending_range_requests.is_empty());
+        assert_eq!(mgr.outbound_range_attempts.len(), 1);
+        assert_eq!(mgr.outbound_range_attempts[0].request_id, BACKFILL_REQUEST_ID | 7);
+
+        mgr.on_rpc_inbound(
+            RpcInbound::Response(RpcResponseInbound {
+                application_id: BACKFILL_REQUEST_ID | 7,
+                stream_id: P2pStreamId::new(1, 11, StreamProtocol::BeaconBlocksByRange, false),
+                response: RpcResponse::Complete,
+            }),
+            now,
+            &mut |c| cap.0.push(c),
+        );
+
+        assert!(mgr.outbound_range_attempts.is_empty());
+    }
+
+    #[test]
+    fn block_backfill_range_error_is_retried_by_peer_manager() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
+        connect(&mut mgr, &mut cap, 1, 1, now);
+        let mut identify = Identify::default();
+        identify.protocols |= 1 << StreamProtocol::BeaconBlocksByRange.ordinal();
+        mgr.handle_event(PeerEvent::P2pPeerIdentity { p2p_peer: 1, identify }, now, &mut |c| {
+            cap.0.push(c)
+        });
+
+        let mut ssz = [0u8; BLOCKS_BY_RANGE_REQ_SIZE];
+        ssz[0..8].copy_from_slice(&20u64.to_le_bytes());
+        ssz[8..16].copy_from_slice(&3u64.to_le_bytes());
+        ssz[16..24].copy_from_slice(&1u64.to_le_bytes());
+        mgr.handle_event(
+            PeerEvent::SendRpcRequest {
+                request_id: BACKFILL_REQUEST_ID | 8,
+                rpc: RpcRequest::BlocksByRange(ssz),
+            },
+            now,
+            &mut |c| cap.0.push(c),
+        );
+        assert_eq!(mgr.outbound_range_attempts.len(), 1);
+
+        mgr.on_rpc_inbound(
+            RpcInbound::Response(RpcResponseInbound {
+                application_id: BACKFILL_REQUEST_ID | 8,
+                stream_id: P2pStreamId::new(1, 12, StreamProtocol::BeaconBlocksByRange, false),
+                response: RpcResponse::Error { error: 2, msg: [0; 256], len: 0 },
+            }),
+            now,
+            &mut |c| cap.0.push(c),
+        );
+
+        assert!(mgr.outbound_range_attempts.is_empty());
+        assert_eq!(mgr.pending_range_requests.len(), 1);
+        let PendingRangeRequest::Blocks(req) = mgr.pending_range_requests.front().copied().unwrap()
+        else {
+            panic!("expected pending BlocksByRange retry");
+        };
+        assert_eq!(req.request_id, BACKFILL_REQUEST_ID | 8);
+        assert_eq!((req.start_slot, req.count, req.step), (20, 3, 1));
+    }
+
+    #[test]
+    fn block_backfill_range_timeout_is_retried_by_peer_manager() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
+        connect(&mut mgr, &mut cap, 1, 1, now);
+        let mut identify = Identify::default();
+        identify.protocols |= 1 << StreamProtocol::BeaconBlocksByRange.ordinal();
+        mgr.handle_event(PeerEvent::P2pPeerIdentity { p2p_peer: 1, identify }, now, &mut |c| {
+            cap.0.push(c)
+        });
+
+        let mut ssz = [0u8; BLOCKS_BY_RANGE_REQ_SIZE];
+        ssz[0..8].copy_from_slice(&30u64.to_le_bytes());
+        ssz[8..16].copy_from_slice(&2u64.to_le_bytes());
+        ssz[16..24].copy_from_slice(&1u64.to_le_bytes());
+        mgr.handle_event(
+            PeerEvent::SendRpcRequest {
+                request_id: BACKFILL_REQUEST_ID | 9,
+                rpc: RpcRequest::BlocksByRange(ssz),
+            },
+            now,
+            &mut |c| cap.0.push(c),
+        );
+        assert_eq!(mgr.outbound_range_attempts.len(), 1);
+
+        let later = now +
+            Duration::from_millis(mgr.syncing.inflight_progress_timeout_ms) +
+            Duration::from_millis(1);
+        mgr.tick(later, &mut |c| cap.0.push(c));
+
+        assert!(mgr.outbound_range_attempts.is_empty());
+        assert_eq!(
+            mgr.peers.get(&1).unwrap().outbound_in_flight
+                [StreamProtocol::BeaconBlocksByRange.ordinal() as usize],
+            0
+        );
+        assert_eq!(mgr.pending_range_requests.len(), 1);
+        let PendingRangeRequest::Blocks(req) = mgr.pending_range_requests.front().copied().unwrap()
+        else {
+            panic!("expected pending BlocksByRange retry");
+        };
+        assert_eq!(req.request_id, BACKFILL_REQUEST_ID | 9);
+        assert_eq!((req.start_slot, req.count, req.step), (30, 2, 1));
     }
 }

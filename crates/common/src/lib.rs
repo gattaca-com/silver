@@ -37,6 +37,7 @@ pub use crate::{
 pub mod allocator;
 mod enr;
 mod error;
+pub mod rpc_rate_limit;
 pub use silver_metrics::{self as metrics, declare_counters, flamegraph_timer};
 #[path = "generated/protobuf.identify.rs"]
 #[allow(clippy::all, dead_code, non_snake_case)]

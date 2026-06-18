@@ -169,7 +169,7 @@ impl Tile<SilverSpine> for Controller {
         if self.peer_manager.take_just_synced() {
             self.last_status = now;
             self.peer_manager
-                .fan_out_status(&mut |evt| handle_peer_control(evt, &mut adapter.producers));
+                .fan_out_status(now, &mut |evt| handle_peer_control(evt, &mut adapter.producers));
             self.peer_manager
                 .fan_out_subscriptions(&mut |evt| handle_peer_control(evt, &mut adapter.producers));
         }
@@ -183,7 +183,7 @@ impl Tile<SilverSpine> for Controller {
 
         if self.last_drain.elapsed() > OUTBOUND_DRAIN_INTERVAL {
             self.last_drain = now;
-            self.peer_manager.drain_pending_outbound(&mut |evt| {
+            self.peer_manager.drain_pending_outbound(now, &mut |evt| {
                 handle_peer_control(evt, &mut adapter.producers)
             });
         }
@@ -196,7 +196,7 @@ impl Tile<SilverSpine> for Controller {
             if self.auto_ping && self.last_ping.elapsed() > Duration::from_secs(17) {
                 self.last_ping = now;
                 self.peer_manager
-                    .fan_out_ping(&mut |evt| handle_peer_control(evt, &mut adapter.producers));
+                    .fan_out_ping(now, &mut |evt| handle_peer_control(evt, &mut adapter.producers));
             }
         }
 
@@ -221,7 +221,7 @@ impl Tile<SilverSpine> for Controller {
         if fell_behind || self.last_status.elapsed() > Duration::from_secs(30) {
             self.last_status = now;
             self.peer_manager
-                .fan_out_status(&mut |evt| handle_peer_control(evt, &mut adapter.producers));
+                .fan_out_status(now, &mut |evt| handle_peer_control(evt, &mut adapter.producers));
         }
     }
 }

@@ -1,7 +1,10 @@
+use std::time::Instant;
+
 use buffa::Message;
 use silver_common::{
     P2pStreamId, RpcInbound, RpcRequest, RpcRequestInbound, RpcResponse, RpcResponseInbound,
     StreamProtocol, encode_observed_addr,
+    rpc_rate_limit::{RpcRateLimit, RpcRateLimitSet},
 };
 
 use super::{gossip_in::GossipReadState, gossip_out::GossipWriteState};
@@ -15,7 +18,8 @@ use crate::{
             identify_out::ReadIdentifyResponse,
             negotiate::NegotiateState,
             rpc::{
-                RpcIn, RpcOut, RpcReadRequest, RpcReadResponse, RpcWriteRequest, RpcWriteResponse,
+                AcquiredRpcResponse, RpcIn, RpcOut, RpcReadRequest, RpcReadResponse,
+                RpcWriteRequest, RpcWriteResponse,
             },
         },
     },
@@ -35,6 +39,33 @@ pub enum StreamState {
     OutgoingIdentify(ReadIdentifyResponse),
     #[default]
     Finished,
+}
+
+enum InboundRpcAdmission {
+    Admit,
+    RateLimited,
+    Drop,
+}
+
+fn admit_inbound_rpc(
+    limits: &mut RpcRateLimitSet,
+    stream_id: P2pStreamId,
+    request: &RpcRequest,
+    now: Instant,
+) -> InboundRpcAdmission {
+    let protocol = request.protocol();
+    let tokens = request.rate_limit_tokens().unwrap_or(1);
+    match limits.admit_inbound(protocol, tokens, now) {
+        RpcRateLimit::Allowed => InboundRpcAdmission::Admit,
+        RpcRateLimit::TooLarge | RpcRateLimit::TooSoon => {
+            tracing::debug!(?stream_id, ?protocol, tokens, "inbound rpc request rate limited");
+            if protocol == StreamProtocol::Goodbye {
+                InboundRpcAdmission::Drop
+            } else {
+                InboundRpcAdmission::RateLimited
+            }
+        }
+    }
 }
 
 impl StreamState {
@@ -129,6 +160,8 @@ impl StreamState {
         io: &mut S,
         id: &mut P2pStreamId,
         context: &mut Context,
+        now: Instant,
+        inbound_rpc_limits: &mut RpcRateLimitSet,
         emit: &mut F,
     ) -> Result<Self, StreamError>
     where
@@ -172,15 +205,33 @@ impl StreamState {
                                         // controller can issue a response without
                                         // silver trying to read a non-existent
                                         // varint+snappy body off the wire.
-                                        emit(NetEvent::RpcInbound(RpcInbound::Request(
-                                            RpcRequestInbound {
-                                                stream_id: *id,
-                                                request: RpcRequest::MetaData,
-                                            },
-                                        )));
-                                        Ok(Self::IncomingRpc(RpcIn::WriteResponse(
-                                            RpcWriteResponse::Idle,
-                                        )))
+                                        let request = RpcRequest::MetaData;
+                                        match admit_inbound_rpc(
+                                            inbound_rpc_limits,
+                                            *id,
+                                            &request,
+                                            now,
+                                        ) {
+                                            InboundRpcAdmission::Admit => {
+                                                emit(NetEvent::RpcInbound(RpcInbound::Request(
+                                                    RpcRequestInbound { stream_id: *id, request },
+                                                )));
+                                                Ok(Self::IncomingRpc(RpcIn::WriteResponse(
+                                                    RpcWriteResponse::Idle,
+                                                )))
+                                            }
+                                            InboundRpcAdmission::RateLimited => {
+                                                Ok(Self::IncomingRpc(RpcIn::WriteResponse(
+                                                    RpcWriteResponse::new(
+                                                        AcquiredRpcResponse::rate_limited(),
+                                                    )?,
+                                                )))
+                                            }
+                                            InboundRpcAdmission::Drop => {
+                                                io.close_write(id.stream_id())?;
+                                                Ok(Self::Finished)
+                                            }
+                                        }
                                     } else {
                                         Ok(Self::IncomingRpc(RpcIn::ReadRequest(
                                             RpcReadRequest::default(),
@@ -218,11 +269,25 @@ impl StreamState {
                 RpcIn::ReadRequest(read_request) => {
                     match read_request.spin(io, id, &mut context.rpc_producer)? {
                         RpcReadRequest::Complete { msg } => {
-                            emit(NetEvent::RpcInbound(RpcInbound::Request(RpcRequestInbound {
-                                stream_id: *id,
-                                request: msg,
-                            })));
-                            Ok(Self::IncomingRpc(RpcIn::WriteResponse(RpcWriteResponse::Idle)))
+                            match admit_inbound_rpc(inbound_rpc_limits, *id, &msg, now) {
+                                InboundRpcAdmission::Admit => {
+                                    emit(NetEvent::RpcInbound(RpcInbound::Request(
+                                        RpcRequestInbound { stream_id: *id, request: msg },
+                                    )));
+                                    Ok(Self::IncomingRpc(RpcIn::WriteResponse(
+                                        RpcWriteResponse::Idle,
+                                    )))
+                                }
+                                InboundRpcAdmission::RateLimited => {
+                                    Ok(Self::IncomingRpc(RpcIn::WriteResponse(
+                                        RpcWriteResponse::new(AcquiredRpcResponse::rate_limited())?,
+                                    )))
+                                }
+                                InboundRpcAdmission::Drop => {
+                                    io.close_write(id.stream_id())?;
+                                    Ok(Self::Finished)
+                                }
+                            }
                         }
                         other => Ok(Self::IncomingRpc(RpcIn::ReadRequest(other))),
                     }

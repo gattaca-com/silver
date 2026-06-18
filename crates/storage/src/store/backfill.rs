@@ -21,7 +21,7 @@ use crate::{
 /// Max column-backfill `DataColumnSidecarsByRoot` requests in flight at once.
 /// The seeded backlog is drained a few blocks at a time rather than flooding
 /// the network tile / peers with the whole retention window.
-pub(super) const MAX_COLUMN_REQUESTS_IN_FLIGHT: usize = 8;
+pub(super) const MAX_COLUMN_REQUESTS_IN_FLIGHT: usize = 4;
 /// In-flight retry timer: an entry sits a full wheel revolution
 /// (`BUCKETS × INTERVAL` ≈ 3s) before its bucket comes back around and it's
 /// re-requested. Each received column re-buckets it to the head (resets the
@@ -39,7 +39,7 @@ pub(super) struct Backfill {
     buffered_blocks: FxHashMap<B256, (u64, B256, TRead)>,
     next_parent: B256,
     request_id: u64,
-    in_flight: Option<(Range<u64>, u64, Instant)>,
+    in_flight: Option<(Range<u64>, u64)>,
     earliest_written: u64,
     blocks_complete: bool,
 }
@@ -103,10 +103,10 @@ impl Backfill {
     where
         F: FnMut(PeerEvent),
     {
-        if self.in_flight.as_ref().map(|(_, request_id, _)| *request_id != id).unwrap_or_default() {
+        if self.in_flight.as_ref().map(|(_, request_id)| *request_id != id).unwrap_or_default() {
             return false;
         }
-        if let Some((in_flight, _, _)) = self.in_flight.take() {
+        if let Some((in_flight, _)) = self.in_flight.take() {
             if self.earliest_written < in_flight.end {
                 // the previous request returned something,
                 self.range.end = self.earliest_written.max(in_flight.start);
@@ -126,12 +126,10 @@ impl Backfill {
     where
         F: FnMut(PeerEvent),
     {
-        if !self.blocks_complete &&
-            let Some((_, request_id, start)) = self.in_flight.as_ref() &&
-            start.elapsed() > Duration::from_secs(10)
-        {
-            self.query_complete(*request_id, emit);
-        }
+        let _ = emit;
+        // The peer manager owns retry timing for outbound BlocksByRange
+        // attempts. Storage only advances the backfill range when the
+        // network delivers a terminal Complete for the active request id.
     }
 
     pub(super) fn is_complete(&self) -> bool {
@@ -156,8 +154,7 @@ impl Backfill {
         request[16..].copy_from_slice(&1u64.to_le_bytes());
 
         emit(PeerEvent::SendRpcRequest { request_id, rpc: BlocksByRange(request) });
-        self.in_flight =
-            Some((next_start_slot..next_start_slot + count, request_id, Instant::now()));
+        self.in_flight = Some((next_start_slot..next_start_slot + count, request_id));
     }
 }
 
