@@ -198,53 +198,8 @@ impl PeerManager {
         self.pending_rpc_request.push_back((request_id, rpc));
     }
 
-    fn enqueue_pending_range_request(&mut self, mut req: PendingRangeRequest) {
-        let category = RequestCategory::from_request_id(req.request_id());
-        if category.is_backfill() {
-            self.pending_range_requests.retain(|pending| {
-                if RequestCategory::from_request_id(pending.request_id()) == category &&
-                    pending.protocol() == req.protocol()
-                {
-                    req = Self::coalesce_pending_range(*pending, req);
-                    false
-                } else {
-                    true
-                }
-            });
-        }
+    fn enqueue_pending_range_request(&mut self, req: PendingRangeRequest) {
         self.pending_range_requests.push_back(req);
-    }
-
-    fn coalesce_pending_range(
-        existing: PendingRangeRequest,
-        incoming: PendingRangeRequest,
-    ) -> PendingRangeRequest {
-        match (existing, incoming) {
-            (PendingRangeRequest::Blocks(a), PendingRangeRequest::Blocks(b))
-                if a.step == b.step =>
-            {
-                let start_slot = a.start_slot.min(b.start_slot);
-                let end_slot =
-                    a.start_slot.saturating_add(a.count).max(b.start_slot.saturating_add(b.count));
-                PendingRangeRequest::Blocks(PendingBlocksByRange {
-                    request_id: b.request_id,
-                    start_slot,
-                    count: end_slot.saturating_sub(start_slot),
-                    step: b.step,
-                })
-            }
-            (PendingRangeRequest::DataColumns(a), PendingRangeRequest::DataColumns(b))
-                if a.start_slot == b.start_slot && a.count == b.count =>
-            {
-                PendingRangeRequest::DataColumns(PendingDataColumnsByRange {
-                    request_id: b.request_id,
-                    start_slot: b.start_slot,
-                    count: b.count,
-                    columns: a.columns | b.columns,
-                })
-            }
-            (_, incoming) => incoming,
-        }
     }
 
     fn pending_range_from_rpc(request_id: u64, rpc: RpcRequest) -> Option<PendingRangeRequest> {
@@ -305,6 +260,7 @@ impl PeerManager {
     /// this peer can serve — callers may use it to trim the wire
     /// request (the responder will omit columns it doesn't have
     /// regardless, so this is just bandwidth optimisation).
+    #[allow(clippy::too_many_arguments)]
     pub fn best_peer_for_data_columns(
         &self,
         protocol: StreamProtocol,
@@ -792,7 +748,10 @@ impl PeerManager {
         let count = match syncing_target {
             SyncUpdate::SyncingFinalized { target_epoch, target_root: _ } => {
                 let target_slot = target_epoch.saturating_mul(self.syncing.slots_per_epoch) + 1;
-                target_slot.saturating_sub(start_slot).min(remaining).min(self.syncing.max_blocks_by_range_batch)
+                target_slot
+                    .saturating_sub(start_slot)
+                    .min(remaining)
+                    .min(self.syncing.max_blocks_by_range_batch)
             }
             _ => remaining.min(self.syncing.max_blocks_by_range_batch),
         };
@@ -1050,6 +1009,7 @@ impl PeerManager {
         ssz
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn issue_blocks_by_range_request(
         &mut self,
         peer: usize,
@@ -1084,6 +1044,7 @@ impl PeerManager {
         true
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn issue_data_columns_by_range_request(
         &mut self,
         peer: usize,

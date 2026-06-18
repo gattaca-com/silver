@@ -322,22 +322,6 @@ pub(crate) enum PendingRangeRequest {
     DataColumns(PendingDataColumnsByRange),
 }
 
-impl PendingRangeRequest {
-    pub(crate) fn request_id(self) -> u64 {
-        match self {
-            PendingRangeRequest::Blocks(req) => req.request_id,
-            PendingRangeRequest::DataColumns(req) => req.request_id,
-        }
-    }
-
-    pub(crate) fn protocol(self) -> StreamProtocol {
-        match self {
-            PendingRangeRequest::Blocks(_) => StreamProtocol::BeaconBlocksByRange,
-            PendingRangeRequest::DataColumns(_) => StreamProtocol::DataColumnSidecarsByRange,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PendingBlocksByRange {
     pub request_id: u64,
@@ -1249,7 +1233,6 @@ impl PeerManager {
         for &topic in &self.our_topics {
             emit(PeerControl::P2pGossipSubscribe { p2p: peer_id, p2p_connection: conn, topic });
         }
-        
     }
 
     fn on_disconnected(&mut self, conn: usize, now: Instant, emit: &mut impl FnMut(PeerControl)) {
@@ -4922,37 +4905,6 @@ mod tests {
         );
         assert_eq!(mgr.peers.get(&1).unwrap().outbound_in_flight[dcbr], 2);
         assert_eq!(mgr.peers.get(&2).unwrap().outbound_in_flight[dcbr], 2);
-    }
-
-    #[test]
-    fn block_backfill_pending_range_is_coalesced_without_peers() {
-        let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
-        let mut ssz = [0u8; BLOCKS_BY_RANGE_REQ_SIZE];
-        ssz[0..8].copy_from_slice(&10u64.to_le_bytes());
-        ssz[8..16].copy_from_slice(&4u64.to_le_bytes());
-        ssz[16..24].copy_from_slice(&1u64.to_le_bytes());
-        let rpc = RpcRequest::BlocksByRange(ssz);
-
-        mgr.handle_event(
-            PeerEvent::SendRpcRequest { request_id: BACKFILL_REQUEST_ID | 1, rpc },
-            now,
-            &mut |c| cap.0.push(c),
-        );
-        mgr.handle_event(
-            PeerEvent::SendRpcRequest { request_id: BACKFILL_REQUEST_ID | 2, rpc },
-            now,
-            &mut |c| cap.0.push(c),
-        );
-
-        assert!(mgr.pending_rpc_request.is_empty());
-        assert_eq!(mgr.pending_range_requests.len(), 1);
-        let PendingRangeRequest::Blocks(req) = mgr.pending_range_requests.front().copied().unwrap()
-        else {
-            panic!("expected pending BlocksByRange");
-        };
-        assert_eq!(req.request_id, BACKFILL_REQUEST_ID | 2);
-        assert_eq!((req.start_slot, req.count, req.step), (10, 4, 1));
     }
 
     #[test]
