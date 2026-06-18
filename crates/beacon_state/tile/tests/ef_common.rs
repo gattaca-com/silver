@@ -9,7 +9,7 @@ use std::{
 use silver_beacon_state::{
     BeaconStateTile,
     ssz_hash::{StateHashScratch, hash_tree_root_state},
-    state_transition,
+    stf,
 };
 use silver_beacon_state_data::{
     B256, EpochGroup, EpochView, LongtailGroup, SpecConfig, StateId, StateWriterView,
@@ -66,9 +66,7 @@ impl LoadedState {
     pub fn apply_block(&mut self, cfg: &SpecConfig, block_ssz: &[u8]) -> Result<(), String> {
         let parent = self.state_id;
         let (mut view, epoch, longtail) = self.view();
-        match state_transition::apply_signed_block_debug(
-            cfg, &mut view, epoch, longtail, parent, block_ssz,
-        ) {
+        match stf::apply_signed_block_debug(cfg, &mut view, epoch, longtail, parent, block_ssz) {
             Ok((epoch_idx, longtail_idx)) => {
                 self.state_id = view.commit(epoch_idx, longtail_idx);
                 Ok(())

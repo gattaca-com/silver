@@ -1,8 +1,8 @@
 use core::cmp::{max, min};
 
 use silver_beacon_state_data::{
-    self as common, B256, Checkpoint, EPOCHS_PER_SLASHINGS_VECTOR, Epoch, EpochState, EpochView,
-    EpochWriteView, Eth1WriteView, HistoricalSummary, LongtailGroup, LongtailId, LongtailWriteView,
+    self as common, Checkpoint, EPOCHS_PER_SLASHINGS_VECTOR, Epoch, EpochView, EpochWriteView,
+    Eth1WriteView, HistoricalSummary, LongtailGroup, LongtailId, LongtailWriteView,
     MIN_SEED_LOOKAHEAD, PROPOSER_LOOKAHEAD_SIZE, SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT,
     SYNC_COMMITTEE_SIZE, SpecConfig, StateWriterView, iter_validator_rows,
 };
@@ -12,7 +12,7 @@ use crate::{
     bls,
     shuffling::{self, DOMAIN_BEACON_PROPOSER},
     ssz_hash,
-    state_transition::{StfScratch, total_active_balance},
+    stf::{common::StfScratch, validator::total_active_balance},
 };
 
 pub const EPOCHS_PER_ETH1_VOTING_PERIOD: u64 = 64;
@@ -22,7 +22,6 @@ pub const EPOCHS_PER_SYNC_COMMITTEE_PERIOD: u64 = 256;
 const TIMELY_SOURCE_FLAG: u8 = 1 << 0;
 const TIMELY_TARGET_FLAG: u8 = 1 << 1;
 const TIMELY_HEAD_FLAG: u8 = 1 << 2;
-
 const PARTICIPATION_FLAGS: [u8; 3] = [TIMELY_SOURCE_FLAG, TIMELY_TARGET_FLAG, TIMELY_HEAD_FLAG];
 const PARTICIPATION_WEIGHTS: [u64; 3] = [14, 26, 14];
 pub(crate) const WEIGHT_DENOMINATOR: u64 = 64;
@@ -120,55 +119,33 @@ pub fn process_justification_and_finalization(
     if current_epoch <= 1 {
         return;
     }
-    let (prev_root, curr_root) = justification_target_roots(view, current_epoch);
-    let es = epoch.state_mut();
-    let (prev_just, curr_just, finalized, bits) = justification_transition(
-        es.previous_justified_checkpoint,
-        es.current_justified_checkpoint,
-        es.finalized_checkpoint,
-        es.justification_bits,
-        prev_root,
-        curr_root,
-        current_epoch,
-    );
-    es.previous_justified_checkpoint = prev_just;
-    es.current_justified_checkpoint = curr_just;
-    es.finalized_checkpoint = finalized;
-    es.justification_bits = bits;
-}
-
-/// Spec `compute_pulled_up_tip`: run justification + finalization on a block's
-/// post-state read-only (without advancing a slot), returning its *unrealized*
-/// `(justified, finalized)` checkpoints.
-pub(crate) fn unrealized_checkpoints(
-    view: &StateWriterView,
-    es: &EpochState,
-    current_epoch: Epoch,
-) -> (Checkpoint, Checkpoint) {
-    if current_epoch <= 1 {
-        return (es.current_justified_checkpoint, es.finalized_checkpoint);
-    }
-    let (prev_root, curr_root) = justification_target_roots(view, current_epoch);
-    let (_, curr_just, finalized, _) = justification_transition(
-        es.previous_justified_checkpoint,
-        es.current_justified_checkpoint,
-        es.finalized_checkpoint,
-        es.justification_bits,
-        prev_root,
-        curr_root,
-        current_epoch,
-    );
-    (curr_just, finalized)
-}
-
-/// Target-vote supermajority roots for the previous / current epoch (spec 2/3
-/// threshold). `None` when the threshold isn't met. Single zipped read sweep
-/// over merged validator rows.
-fn justification_target_roots(
-    view: &StateWriterView,
-    current_epoch: Epoch,
-) -> (Option<B256>, Option<B256>) {
     let previous_epoch = current_epoch - 1;
+
+    let (total_active, curr_target, prev_target) =
+        attesting_target_balances(view, current_epoch, previous_epoch);
+
+    let prev_root = (prev_target * 3 >= total_active * 2)
+        .then(|| view.slot.block_root_at_slot(previous_epoch * SLOTS_PER_EPOCH));
+    let curr_root = (curr_target * 3 >= total_active * 2)
+        .then(|| view.slot.block_root_at_slot(current_epoch * SLOTS_PER_EPOCH));
+
+    weigh_justification_and_finalization(
+        epoch,
+        current_epoch,
+        previous_epoch,
+        prev_root,
+        curr_root,
+    );
+}
+
+/// Single zipped read sweep over merged validator rows: `(total_active,
+/// current-epoch target-attesting, previous-epoch target-attesting)` balances.
+/// `total_active` is floored at one increment so it is safe as a divisor.
+fn attesting_target_balances(
+    view: &StateWriterView,
+    current_epoch: Epoch,
+    previous_epoch: Epoch,
+) -> (u64, u64, u64) {
     let (mut total_active, mut curr_target, mut prev_target) = (0u64, 0u64, 0u64);
     for r in validator_rows(view) {
         if r.activation_epoch <= current_epoch && current_epoch < r.exit_epoch {
@@ -185,56 +162,46 @@ fn justification_target_roots(
             prev_target += r.effective_balance;
         }
     }
-    total_active = total_active.max(EFFECTIVE_BALANCE_INCREMENT);
-
-    let prev_root = (prev_target * 3 >= total_active * 2)
-        .then(|| view.slot.block_root_at_slot(previous_epoch * SLOTS_PER_EPOCH));
-    let curr_root = (curr_target * 3 >= total_active * 2)
-        .then(|| view.slot.block_root_at_slot(current_epoch * SLOTS_PER_EPOCH));
-    (prev_root, curr_root)
+    (total_active.max(EFFECTIVE_BALANCE_INCREMENT), curr_target, prev_target)
 }
 
-/// Pure justification + finalization bit logic. Given the pre-transition
-/// checkpoints/bits and the supermajority roots, returns the post-transition
-/// `(previous_justified, current_justified, finalized, justification_bits)`.
-/// `finalized` is returned unchanged unless one of the four spec rules fires.
-fn justification_transition(
-    old_prev_justified: Checkpoint,
-    old_curr_justified: Checkpoint,
-    old_finalized: Checkpoint,
-    old_bits: u8,
-    prev_root: Option<B256>,
-    curr_root: Option<B256>,
+/// Shift the justification bits, record any new justified checkpoint, and apply
+/// the four finalization rules.
+fn weigh_justification_and_finalization(
+    epoch: &mut EpochWriteView,
     current_epoch: Epoch,
-) -> (Checkpoint, Checkpoint, Checkpoint, u8) {
-    let previous_epoch = current_epoch - 1;
-    let new_prev_justified = old_curr_justified;
-    let mut new_curr_justified = old_curr_justified;
-    let mut bits = (old_bits << 1) & 0x0F;
+    previous_epoch: Epoch,
+    prev_root: Option<common::B256>,
+    curr_root: Option<common::B256>,
+) {
+    let es = epoch.state_mut();
+    let old_prev_justified = es.previous_justified_checkpoint;
+    let old_curr_justified = es.current_justified_checkpoint;
+    es.previous_justified_checkpoint = es.current_justified_checkpoint;
+    es.justification_bits = (es.justification_bits << 1) & 0x0F;
 
     if let Some(root) = prev_root {
-        new_curr_justified = Checkpoint { epoch: previous_epoch, root };
-        bits |= 0x02;
+        es.current_justified_checkpoint = Checkpoint { epoch: previous_epoch, root };
+        es.justification_bits |= 0x02;
     }
     if let Some(root) = curr_root {
-        new_curr_justified = Checkpoint { epoch: current_epoch, root };
-        bits |= 0x01;
+        es.current_justified_checkpoint = Checkpoint { epoch: current_epoch, root };
+        es.justification_bits |= 0x01;
     }
 
-    let mut finalized = old_finalized;
+    let bits = es.justification_bits;
     if bits & 0x0E == 0x0E && old_prev_justified.epoch + 3 == current_epoch {
-        finalized = old_prev_justified;
+        es.finalized_checkpoint = old_prev_justified;
     }
     if bits & 0x06 == 0x06 && old_prev_justified.epoch + 2 == current_epoch {
-        finalized = old_prev_justified;
+        es.finalized_checkpoint = old_prev_justified;
     }
     if bits & 0x07 == 0x07 && old_curr_justified.epoch + 2 == current_epoch {
-        finalized = old_curr_justified;
+        es.finalized_checkpoint = old_curr_justified;
     }
     if bits & 0x03 == 0x03 && old_curr_justified.epoch + 1 == current_epoch {
-        finalized = old_curr_justified;
+        es.finalized_checkpoint = old_curr_justified;
     }
-    (new_prev_justified, new_curr_justified, finalized, bits)
 }
 
 #[timed]
@@ -293,19 +260,7 @@ pub fn process_rewards_and_penalties(
 
     let previous_epoch = current_epoch.saturating_sub(1);
 
-    // Pass 1: flag-weighted active increments (pure read sweep).
-    let mut flag_increments = [0u64; 3];
-    for r in validator_rows(view) {
-        if r.activation_epoch > previous_epoch || previous_epoch >= r.exit_epoch || r.slashed {
-            continue;
-        }
-        let incs = r.effective_balance / EFFECTIVE_BALANCE_INCREMENT;
-        for (fi, &flag) in PARTICIPATION_FLAGS.iter().enumerate() {
-            if r.previous_participation & flag != 0 {
-                flag_increments[fi] += incs;
-            }
-        }
-    }
+    let flag_increments = flag_attesting_increments(view, previous_epoch);
     let active_increments = total_active / EFFECTIVE_BALANCE_INCREMENT;
 
     // Pass 2: per-validator reward/penalty → changed balances into scratch.
@@ -340,6 +295,24 @@ pub fn process_rewards_and_penalties(
         }
     }
     view.balances.set_many(scratch);
+}
+
+/// Pass 1 (pure read sweep): per-flag sum of effective-balance increments over
+/// previous-epoch active, unslashed validators that set each timely flag.
+fn flag_attesting_increments(view: &StateWriterView, previous_epoch: Epoch) -> [u64; 3] {
+    let mut flag_increments = [0u64; 3];
+    for r in validator_rows(view) {
+        if r.activation_epoch > previous_epoch || previous_epoch >= r.exit_epoch || r.slashed {
+            continue;
+        }
+        let incs = r.effective_balance / EFFECTIVE_BALANCE_INCREMENT;
+        for (fi, &flag) in PARTICIPATION_FLAGS.iter().enumerate() {
+            if r.previous_participation & flag != 0 {
+                flag_increments[fi] += incs;
+            }
+        }
+    }
+    flag_increments
 }
 
 #[timed]
@@ -916,108 +889,6 @@ mod tests {
         let mut root = [0u8; 32];
         root[0] = tag;
         Checkpoint { epoch, root }
-    }
-
-    /// Pure justification/finalization bit logic. The mutating epoch path and
-    /// the read-only `unrealized_checkpoints` share this helper, so these cases
-    /// guard both against drift.
-    #[test]
-    fn justification_transition_rules() {
-        let r = |t: u8| {
-            let mut x = [0u8; 32];
-            x[0] = t;
-            x
-        };
-
-        // No supermajority: previous <- current, current unchanged, bits shift
-        // left, finalized untouched.
-        let (p, c, f, b) = justification_transition(
-            checkpoint(3, 2),
-            checkpoint(4, 1),
-            checkpoint(2, 3),
-            0b0001,
-            None,
-            None,
-            5,
-        );
-        assert_eq!(p, checkpoint(4, 1));
-        assert_eq!(c, checkpoint(4, 1));
-        assert_eq!(f, checkpoint(2, 3));
-        assert_eq!(b, 0b0010);
-
-        // Current epoch justifies: current <- {current_epoch, root}, bit 0 set.
-        let (_, c, _, b) = justification_transition(
-            checkpoint(3, 2),
-            checkpoint(3, 1),
-            checkpoint(2, 3),
-            0b0000,
-            None,
-            Some(r(9)),
-            5,
-        );
-        assert_eq!(c, Checkpoint { epoch: 5, root: r(9) });
-        assert_eq!(b & 0x01, 0x01);
-
-        // Previous epoch justifies: current <- {previous_epoch, root}, bit 1 set.
-        let (_, c, _, b) = justification_transition(
-            checkpoint(3, 2),
-            checkpoint(3, 1),
-            checkpoint(2, 3),
-            0b0000,
-            Some(r(8)),
-            None,
-            5,
-        );
-        assert_eq!(c, Checkpoint { epoch: 4, root: r(8) });
-        assert_eq!(b & 0x02, 0x02);
-
-        // Finalize rule 0x03: bits {0,1}, current_justified one epoch back.
-        let (_, _, f, _) = justification_transition(
-            checkpoint(3, 2),
-            checkpoint(4, 1),
-            checkpoint(2, 3),
-            0b0001,
-            None,
-            Some(r(9)),
-            5,
-        );
-        assert_eq!(f, checkpoint(4, 1));
-
-        // Finalize rule 0x07: bits {0,1,2}, current_justified two epochs back.
-        let (_, _, f, _) = justification_transition(
-            checkpoint(2, 2),
-            checkpoint(3, 1),
-            checkpoint(1, 3),
-            0b0011,
-            None,
-            Some(r(9)),
-            5,
-        );
-        assert_eq!(f, checkpoint(3, 1));
-
-        // Finalize rule 0x06: bits {1,2}, previous_justified two epochs back.
-        let (_, _, f, _) = justification_transition(
-            checkpoint(3, 2),
-            checkpoint(4, 1),
-            checkpoint(1, 3),
-            0b0011,
-            Some(r(8)),
-            None,
-            5,
-        );
-        assert_eq!(f, checkpoint(3, 2));
-
-        // Finalize rule 0x0E: bits {1,2,3}, previous_justified three back.
-        let (_, _, f, _) = justification_transition(
-            checkpoint(2, 2),
-            checkpoint(4, 1),
-            checkpoint(1, 3),
-            0b0111,
-            Some(r(8)),
-            None,
-            5,
-        );
-        assert_eq!(f, checkpoint(2, 2));
     }
 
     /// Build the deposit signing root for a (pubkey, wc, amount) triple.

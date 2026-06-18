@@ -29,12 +29,6 @@ pub struct SyncingConfig {
     /// wall slot. Beyond this, the claim is rejected as bogus.
     #[serde(default = "default_u64::<32>")]
     pub wall_clock_tolerance_slots: u64,
-    /// Mainnet `SLOTS_PER_EPOCH`. Used by the finalized-target wall-clock
-    /// filter to convert `epoch * SLOTS_PER_EPOCH → start slot`. Spec
-    /// constant, but kept here so tests / non-mainnet networks can
-    /// override.
-    #[serde(default = "default_u64::<32>")]
-    pub slots_per_epoch: u64,
     /// Max slots per `BlocksByRange` request issued by the peer-manager
     /// catch-up driver. Bounds in-flight memory + response time on the
     /// peer.
@@ -65,7 +59,6 @@ impl Default for SyncingConfig {
             head_lag_threshold_slots: 8,
             finalized_lag_threshold_epochs: 2,
             wall_clock_tolerance_slots: 32,
-            slots_per_epoch: 32,
             max_blocks_by_range_batch: 128,
             inflight_progress_timeout_ms: 15_000,
             max_colreq_attempts: 3,

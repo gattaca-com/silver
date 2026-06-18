@@ -5,7 +5,7 @@ use std::fs;
 mod ef_common;
 
 use ef_common::{compare_states, iter_test_cases, load_state, spec_tests_dir};
-use silver_beacon_state::state_transition;
+use silver_beacon_state::stf;
 
 #[test]
 fn sanity_slots() {
@@ -36,10 +36,10 @@ fn sanity_slots() {
 
         let mut pre = load_state(&pre_path);
         let target_slot = pre.slot() + target_slots;
-        let mut scratch = state_transition::StfScratch::new(0);
+        let mut scratch = stf::StfScratch::new(0);
         let sid = pre.state_id;
         let (mut v, epoch, longtail) = pre.view();
-        let (epoch_idx, longtail_idx) = state_transition::process_slots(
+        let (epoch_idx, longtail_idx) = stf::process_slots(
             &silver_beacon_state_data::SpecConfig::mainnet(),
             &mut v,
             epoch,

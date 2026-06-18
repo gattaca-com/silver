@@ -4,8 +4,8 @@ mod ef_common;
 
 use ef_common::{LoadedState, compare_states, iter_test_cases, load_state, spec_tests_dir};
 use silver_beacon_state::{
-    epoch_transition::{self, EPOCHS_PER_SYNC_COMMITTEE_PERIOD, HISTORICAL_SUMMARY_PERIOD},
     ssz_hash::StateHashScratch,
+    stf::{self, EPOCHS_PER_SYNC_COMMITTEE_PERIOD, HISTORICAL_SUMMARY_PERIOD},
 };
 fn epoch_handler(handler_name: &str, run: impl Fn(&mut LoadedState)) {
     let base = spec_tests_dir()
@@ -57,11 +57,7 @@ fn justification_and_finalization() {
         let (mut view, epoch, _) = s.view();
         let current_epoch = view.slot.reader().current_epoch();
         let mut epoch_w = epoch.roll_inheriting(sid.epoch_idx);
-        epoch_transition::process_justification_and_finalization(
-            &mut view,
-            &mut epoch_w,
-            current_epoch,
-        );
+        stf::process_justification_and_finalization(&mut view, &mut epoch_w, current_epoch);
         s.state_id = view.commit(Some(epoch_w.commit()), sid.longtail_idx);
     });
 }
@@ -72,13 +68,7 @@ fn inactivity_updates() {
     epoch_handler("inactivity_updates", move |s| {
         s.with_view_and_epoch(|view, e| {
             let current_epoch = view.slot.reader().current_epoch();
-            epoch_transition::process_inactivity_updates(
-                &cfg,
-                view,
-                e,
-                current_epoch,
-                &mut Vec::new(),
-            );
+            stf::process_inactivity_updates(&cfg, view, e, current_epoch, &mut Vec::new());
         });
     });
 }
@@ -89,13 +79,7 @@ fn rewards_and_penalties() {
     epoch_handler("rewards_and_penalties", move |s| {
         s.with_view_and_epoch(|view, e| {
             let current_epoch = view.slot.reader().current_epoch();
-            epoch_transition::process_rewards_and_penalties(
-                &cfg,
-                view,
-                e,
-                current_epoch,
-                &mut Vec::new(),
-            );
+            stf::process_rewards_and_penalties(&cfg, view, e, current_epoch, &mut Vec::new());
         });
     });
 }
@@ -106,7 +90,7 @@ fn registry_updates() {
     epoch_handler("registry_updates", move |s| {
         s.with_view_and_epoch(|view, e| {
             let current_epoch = view.slot.reader().current_epoch();
-            epoch_transition::process_registry_updates(&cfg, view, e, current_epoch);
+            stf::process_registry_updates(&cfg, view, e, current_epoch);
         });
     });
 }
@@ -117,7 +101,7 @@ fn slashings() {
     epoch_handler("slashings", move |s| {
         s.with_view_and_epoch(|view, e| {
             let current_epoch = view.slot.reader().current_epoch();
-            epoch_transition::process_slashings(&cfg, view, e, current_epoch);
+            stf::process_slashings(&cfg, view, e, current_epoch);
         });
     });
 }
@@ -127,7 +111,7 @@ fn eth1_data_reset() {
     epoch_handler("eth1_data_reset", |s| {
         s.with_view(|view| {
             let current_epoch = view.slot.reader().current_epoch();
-            epoch_transition::process_eth1_data_reset(&mut view.eth1, current_epoch);
+            stf::process_eth1_data_reset(&mut view.eth1, current_epoch);
         });
     });
 }
@@ -139,7 +123,7 @@ fn pending_deposits() {
         let sid = s.state_id;
         let (mut view, epoch, _) = s.view();
         let mut epoch_w = epoch.roll_inheriting(sid.epoch_idx);
-        epoch_transition::process_pending_deposits(&cfg, &mut view, &mut epoch_w, &mut Vec::new());
+        stf::process_pending_deposits(&cfg, &mut view, &mut epoch_w, &mut Vec::new());
         s.state_id = view.commit(Some(epoch_w.commit()), sid.longtail_idx);
     });
 }
@@ -147,14 +131,14 @@ fn pending_deposits() {
 #[test]
 fn pending_consolidations() {
     epoch_handler("pending_consolidations", |s| {
-        s.with_view(|view| epoch_transition::process_pending_consolidations(view));
+        s.with_view(|view| stf::process_pending_consolidations(view));
     });
 }
 
 #[test]
 fn effective_balance_updates() {
     epoch_handler("effective_balance_updates", |s| {
-        s.with_view(|view| epoch_transition::process_effective_balance_updates(view));
+        s.with_view(|view| stf::process_effective_balance_updates(view));
     });
 }
 
@@ -164,7 +148,7 @@ fn slashings_reset() {
         let sid = s.state_id;
         let (mut view, epoch, _) = s.view();
         let mut epoch_w = epoch.roll_inheriting(sid.epoch_idx);
-        epoch_transition::process_slashings_reset(&mut view, &mut epoch_w);
+        stf::process_slashings_reset(&mut view, &mut epoch_w);
         s.state_id = view.commit(Some(epoch_w.commit()), sid.longtail_idx);
     });
 }
@@ -175,7 +159,7 @@ fn randao_mixes_reset() {
         let sid = s.state_id;
         let (view, epoch, _) = s.view();
         let mut epoch_w = epoch.roll_inheriting(sid.epoch_idx);
-        epoch_transition::process_randao_mixes_reset(&view, &mut epoch_w);
+        stf::process_randao_mixes_reset(&view, &mut epoch_w);
         s.state_id = view.commit(Some(epoch_w.commit()), sid.longtail_idx);
     });
 }
@@ -192,11 +176,7 @@ fn historical_summaries_update() {
         }
         let mut longtail_w = longtail.roll_inheriting(sid.longtail_idx);
         let mut scratch = StateHashScratch::new();
-        epoch_transition::process_historical_summaries_update(
-            &mut view,
-            &mut longtail_w,
-            &mut scratch,
-        );
+        stf::process_historical_summaries_update(&mut view, &mut longtail_w, &mut scratch);
         s.state_id = view.commit(sid.epoch_idx, Some(longtail_w.commit()));
     });
 }
@@ -205,7 +185,7 @@ fn historical_summaries_update() {
 fn participation_flag_updates() {
     epoch_handler("participation_flag_updates", |s| {
         s.with_view(|view| {
-            epoch_transition::process_participation_flag_updates(view, &mut Vec::new());
+            stf::process_participation_flag_updates(view, &mut Vec::new());
         });
     });
 }
@@ -224,7 +204,7 @@ fn sync_committee_updates() {
         let epoch_view = epoch.view_opt(sid.epoch_idx);
         let mut active = Vec::new();
         let mut eff = Vec::new();
-        epoch_transition::process_sync_committee_updates(
+        stf::process_sync_committee_updates(
             &mut view,
             &epoch_view,
             &mut longtail_w,
@@ -245,7 +225,7 @@ fn proposer_lookahead() {
         let mut epoch_w = epoch.roll_inheriting(sid.epoch_idx);
         let mut scratch = Vec::new();
         let mut eff = Vec::new();
-        epoch_transition::process_proposer_lookahead(
+        stf::process_proposer_lookahead(
             &mut view,
             &mut epoch_w,
             current_epoch,

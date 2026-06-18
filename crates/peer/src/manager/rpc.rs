@@ -23,7 +23,7 @@ use silver_common::{
 
 use crate::{
     PeerManager,
-    manager::{ColAttempt, ColSyncReq, SyncReq},
+    manager::{ColAttempt, ColSyncReq, SLOTS_PER_EPOCH, SyncReq},
 };
 
 /// Per-peer cap on outstanding RPC requests per protocol. Bounds load on any
@@ -669,7 +669,7 @@ impl PeerManager {
         let syncing_target = self.current_sync_target();
         let target_end_slot = match syncing_target {
             SyncUpdate::SyncingFinalized { target_epoch, .. } => {
-                target_epoch.saturating_add(2).saturating_mul(self.syncing.slots_per_epoch)
+                target_epoch.saturating_add(2).saturating_mul(SLOTS_PER_EPOCH)
             }
             SyncUpdate::SyncingHead { head_slot, .. } => head_slot,
             SyncUpdate::Following => return,
