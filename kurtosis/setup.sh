@@ -49,6 +49,7 @@ CUSTODY_GROUP_COUNT="${CUSTODY_GROUP_COUNT:-8}"
 # works — both sides read the same generated file.
 ENGINE_PORT="${ENGINE_PORT:-8551}"
 JWT_SECRET="${JWT_SECRET:-2222222222222222222222222222222222222222222222222222222222222222}"
+UNSAFE_NO_EL="${UNSAFE_NO_EL:-1}"
 
 # Pin a known-good release — the bare locator pulls the default branch (HEAD),
 # which periodically breaks (e.g. the zkboost `GpuConfig` regression). Bump the

@@ -59,7 +59,14 @@ fn default_supported_protocols() -> Vec<String> {
 }
 
 fn default_gossip_topics() -> Vec<String> {
-    vec![GossipTopic::BeaconBlock.to_string()]
+    vec![
+        GossipTopic::BeaconBlock.to_string(),
+        GossipTopic::BeaconAggregateAndProof.to_string(),
+        GossipTopic::VoluntaryExit.to_string(),
+        GossipTopic::ProposerSlashing.to_string(),
+        GossipTopic::AttesterSlashing.to_string(),
+        GossipTopic::BlsToExecutionChange.to_string(),
+    ]
 }
 
 #[derive(Debug, Deserialize, Serialize)]

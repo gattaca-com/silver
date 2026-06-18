@@ -1176,8 +1176,10 @@ impl PeerManager {
         }
 
         // Announce our own topic subscriptions to this peer.
-        for &topic in &self.our_topics {
-            emit(PeerControl::P2pGossipSubscribe { p2p: peer_id, p2p_connection: conn, topic });
+        if self.is_synced {
+            for &topic in &self.our_topics {
+                emit(PeerControl::P2pGossipSubscribe { p2p: peer_id, p2p_connection: conn, topic });
+            }
         }
     }
 

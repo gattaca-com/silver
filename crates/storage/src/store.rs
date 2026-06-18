@@ -576,6 +576,8 @@ impl Store {
         // Shed load past the in-flight cap: an empty `units` drains straight to
         // a `Complete`, giving the peer a clean empty response without letting
         // the unit-bearing `query_queue` entries grow without bound.
+
+        // TODO should not return 'Complete' should return rate limit error
         if self.query_queue.len() >= MAX_INFLIGHT_QUERIES {
             self.query_queue.push_back(PendingQuery { stream_id, units: VecDeque::new() });
             return;
@@ -584,6 +586,12 @@ impl Store {
         // Resolve each requested chunk to a `QueryUnit` up-front (canonical vs
         // flat decided against the head snapshot). `file_io` then serves them
         // one at a time, interleaved fairly with other requests.
+
+        // TODO queries assume we have all data that we should - i.e. if there is no
+        // block for a slot is was a missed slot, if no data column then block
+        // had none - need to check that responses are not misreporting missing
+        // data.
+
         let mut units = VecDeque::new();
         match request.request {
             silver_common::RpcRequest::DataColumnsByRange { ssz, len } => {
