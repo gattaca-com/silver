@@ -1,11 +1,18 @@
+use flux::spine::SpineProducers;
 use silver_beacon_state_data::{ParsedAggregateAndProof, SLOTS_PER_EPOCH, StateReadView};
-use silver_common::ssz_view::{
-    AttesterSlashingView, PROPOSER_SLASHING_SIZE, ProposerSlashingView, SIGNED_BLS_CHANGE_SIZE,
-    SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE, SignedBlsToExecutionChangeView,
-    SignedVoluntaryExitView, SingleAttestationView,
+use silver_common::{
+    BlockSource, GossipTopic, NewGossipMsg, PeerEvent,
+    ssz_view::{
+        AttesterSlashingView, PROPOSER_SLASHING_SIZE, ProposerSlashingView, SIGNED_BLS_CHANGE_SIZE,
+        SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE, SignedBeaconBlockView,
+        SignedBlsToExecutionChangeView, SignedVoluntaryExitView, SingleAttestationView,
+    },
 };
 
-use super::{ATTESTATION_PROPAGATION_SLOT_RANGE, BeaconStateTile, Feedback};
+use super::{
+    ATTESTATION_PROPAGATION_SLOT_RANGE, BeaconStateTile, Feedback, Producers,
+    orphan_pool::PendingBlock,
+};
 use crate::{bls, shuffling, ssz_hash, stf, validate};
 
 impl BeaconStateTile {
@@ -453,6 +460,75 @@ impl BeaconStateTile {
             return Feedback::Reject(None);
         }
         Feedback::Accept(None)
+    }
+    pub(super) fn handle_gossip(
+        &mut self,
+        m: NewGossipMsg,
+        data: &[u8],
+        do_relay: bool,
+        pre_verified: bool,
+        producers: &mut Producers,
+    ) {
+        let feedback = match m.topic {
+            GossipTopic::BeaconBlock => {
+                let acquired = self.gossip_consumer.acquire(m.ssz);
+                Some(self.apply_block(data, acquired, BlockSource::Gossip, pre_verified, producers))
+            }
+            GossipTopic::BeaconAttestation(_) => Some(self.handle_attestation(data)),
+            GossipTopic::BeaconAggregateAndProof => Some(self.handle_aggregate_and_proof(data)),
+            GossipTopic::VoluntaryExit => Some(self.handle_voluntary_exit(data)),
+            GossipTopic::ProposerSlashing => Some(self.handle_proposer_slashing(data)),
+            GossipTopic::AttesterSlashing => Some(self.handle_attester_slashing(data)),
+            GossipTopic::BlsToExecutionChange => Some(self.handle_bls_to_execution_change(data)),
+            _ => None,
+        };
+        match feedback {
+            Some(Feedback::Reject(_)) => producers.produce(PeerEvent::P2pGossipInvalidMsg {
+                p2p_peer: m.stream_id.peer(),
+                topic: m.topic,
+                hash: m.msg_hash,
+            }),
+            Some(Feedback::Accept(block_root)) => {
+                if do_relay {
+                    Self::relay_gossip(&m, producers);
+                }
+
+                // Try to apply any pending blocks for which this one was the parent.
+                if let Some(root) = block_root {
+                    self.apply_pending_blocks(root, producers);
+                }
+                producers.produce(self.status_event());
+            }
+            Some(Feedback::RequestParent { parent_root, block_root }) => {
+                let peer = m.stream_id.peer();
+                let block_slot = SignedBeaconBlockView::slot(data);
+                self.buffer_orphan(
+                    parent_root,
+                    block_root,
+                    PendingBlock::Gossip(m),
+                    block_slot,
+                    peer,
+                    producers,
+                );
+            }
+            Some(Feedback::AwaitData(block_root)) => {
+                if do_relay {
+                    Self::relay_gossip(&m, producers);
+                }
+                self.buffer_awaiting_columns(block_root, PendingBlock::Gossip(m));
+            }
+            Some(Feedback::Ignore) | None => {}
+        }
+    }
+
+    fn relay_gossip(m: &NewGossipMsg, producers: &mut Producers) {
+        producers.produce(PeerEvent::SendGossip {
+            originator_stream_id: m.stream_id,
+            topic: m.topic,
+            msg_hash: m.msg_hash,
+            recv_ts: m.recv_ts,
+            protobuf: m.protobuf,
+        });
     }
 }
 

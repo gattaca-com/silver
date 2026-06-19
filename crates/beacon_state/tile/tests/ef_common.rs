@@ -371,7 +371,7 @@ pub fn spec_tests_dir() -> PathBuf {
 }
 
 /// Parse a `0x`-prefixed 32-byte hex root (fork_choice / sync vectors).
-pub fn parse_root(s: &str) -> silver_beacon_state_data::B256 {
+pub fn parse_root(s: &str) -> B256 {
     let h = s.strip_prefix("0x").unwrap_or(s);
     let mut out = [0u8; 32];
     for (i, b) in out.iter_mut().enumerate() {
@@ -389,9 +389,7 @@ pub fn case_file(dir: &Path, stem: &str) -> Vec<u8> {
 /// fork_choice / sync vector harnesses. Genesis-relative time is driven by the
 /// harness via `ef_tick`; weak-subjectivity is skipped (the anchor is the test
 /// genesis).
-pub fn ef_tile(
-    state: silver_beacon_state_data::BeaconState,
-) -> silver_beacon_state::BeaconStateTile {
+pub fn ef_tile(state: silver_beacon_state_data::BeaconState) -> BeaconStateTile {
     use silver_beacon_state::{BeaconStateTile, SlotTicker};
     use silver_common::{TCache, TCacheProducer};
     use silver_config::SyncingConfig;
