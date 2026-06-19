@@ -8,7 +8,7 @@ use ef_common::{
 use silver_beacon_state::{
     bls::SigBatch,
     shuffling,
-    state_transition::{self, ShufflingRef},
+    stf::{self, ShufflingRef},
 };
 use silver_beacon_state_data::SLOTS_PER_EPOCH;
 
@@ -95,13 +95,8 @@ fn proposer_slashing() {
         let mut batch = SigBatch::new();
         {
             let (p, _, _) = s.view();
-            if state_transition::collect_sigs_proposer_slashings(
-                p.imm,
-                &p.validators.reader(),
-                op,
-                &mut batch,
-            )
-            .is_err()
+            if stf::collect_sigs_proposer_slashings(p.imm, &p.validators.reader(), op, &mut batch)
+                .is_err()
             {
                 return false;
             }
@@ -110,9 +105,7 @@ fn proposer_slashing() {
         if !batch.verify_all() {
             return false;
         }
-        s.with_view_and_epoch(|view, e| {
-            state_transition::process_proposer_slashings(view, *e, &cfg, op).is_ok()
-        })
+        s.with_view_and_epoch(|view, e| stf::process_proposer_slashings(view, *e, &cfg, op).is_ok())
     });
 }
 
@@ -127,7 +120,7 @@ fn attester_slashing() {
         let mut batch = SigBatch::new();
         {
             let (p, _, _) = s.view();
-            if state_transition::collect_sigs_attester_slashings(
+            if stf::collect_sigs_attester_slashings(
                 p.imm,
                 &p.validators.reader(),
                 &list,
@@ -144,7 +137,7 @@ fn attester_slashing() {
             return false;
         }
         s.with_view_and_epoch(|view, e| {
-            state_transition::process_attester_slashings(
+            stf::process_attester_slashings(
                 view,
                 *e,
                 &cfg,
@@ -219,7 +212,7 @@ fn attestation() {
         let mut batch = SigBatch::new();
         {
             let (p, _, _) = s.view();
-            if state_transition::collect_sigs_attestations(
+            if stf::collect_sigs_attestations(
                 p.imm,
                 &p.validators.reader(),
                 &list,
@@ -237,7 +230,7 @@ fn attestation() {
             return false;
         }
         s.with_view_and_epoch(|view, e| {
-            state_transition::process_attestations(
+            stf::process_attestations(
                 view,
                 *e,
                 &list,
@@ -255,7 +248,7 @@ fn attestation() {
 #[test]
 fn deposit() {
     operations_handler("deposit", "deposit", true, move |s, op| {
-        s.with_view(|view| state_transition::process_deposits(view, op).is_ok())
+        s.with_view(|view| stf::process_deposits(view, op).is_ok())
     });
 }
 
@@ -265,18 +258,13 @@ fn voluntary_exit() {
         let mut batch = SigBatch::new();
         {
             let (p, _, _) = s.view();
-            state_transition::collect_sigs_voluntary_exits(
-                p.imm,
-                &p.validators.reader(),
-                op,
-                &mut batch,
-            );
+            stf::collect_sigs_voluntary_exits(p.imm, &p.validators.reader(), op, &mut batch);
         }
         let cfg = silver_beacon_state_data::SpecConfig::mainnet();
         if !batch.verify_all() {
             return false;
         }
-        s.with_view(|view| state_transition::process_voluntary_exits(view, &cfg, op).is_ok())
+        s.with_view(|view| stf::process_voluntary_exits(view, &cfg, op).is_ok())
     });
 }
 
@@ -286,7 +274,7 @@ fn bls_to_execution_change() {
         let mut batch = SigBatch::new();
         {
             let (p, _, _) = s.view();
-            if state_transition::collect_sigs_bls_to_execution_changes(
+            if stf::collect_sigs_bls_to_execution_changes(
                 p.imm,
                 &p.validators.reader(),
                 op,
@@ -300,9 +288,7 @@ fn bls_to_execution_change() {
         if !batch.verify_all() {
             return false;
         }
-        s.with_view(|p| {
-            state_transition::process_bls_to_execution_changes(&mut p.validators, op).is_ok()
-        })
+        s.with_view(|p| stf::process_bls_to_execution_changes(&mut p.validators, op).is_ok())
     });
 }
 
@@ -319,13 +305,7 @@ fn sync_aggregate() {
             let rv = p.read(epoch.view_opt(sid.epoch_idx), longtail.view_opt(sid.longtail_idx));
             proposer_index =
                 rv.epoch.proposer_at((block_slot % SLOTS_PER_EPOCH) as usize).unwrap() as u32;
-            state_transition::collect_sigs_sync_aggregate(
-                &rv,
-                op,
-                block_slot,
-                &mut active_scratch,
-                &mut batch,
-            );
+            stf::collect_sigs_sync_aggregate(&rv, op, block_slot, &mut active_scratch, &mut batch);
         }
         if !batch.verify_all() {
             return false;
@@ -333,9 +313,7 @@ fn sync_aggregate() {
         let sid = s.state_id;
         let (mut view, _, longtail) = s.view();
         let longtail_view = longtail.view_opt(sid.longtail_idx);
-        let ok =
-            state_transition::process_sync_aggregate(&mut view, longtail_view, op, proposer_index)
-                .is_ok();
+        let ok = stf::process_sync_aggregate(&mut view, longtail_view, op, proposer_index).is_ok();
         s.state_id = view.commit(sid.epoch_idx, sid.longtail_idx);
         ok
     });
@@ -344,7 +322,7 @@ fn sync_aggregate() {
 #[test]
 fn deposit_request() {
     operations_handler("deposit_request", "deposit_request", false, |s, op| {
-        s.with_view(|view| state_transition::process_deposit_requests(view, op));
+        s.with_view(|view| stf::process_deposit_requests(view, op));
         true
     });
 }
@@ -353,7 +331,7 @@ fn deposit_request() {
 fn withdrawal_request() {
     let cfg = silver_beacon_state_data::SpecConfig::mainnet();
     operations_handler("withdrawal_request", "withdrawal_request", false, move |s, op| {
-        s.with_view(|view| state_transition::process_withdrawal_requests(view, &cfg, op));
+        s.with_view(|view| stf::process_withdrawal_requests(view, &cfg, op));
         true
     });
 }
@@ -362,7 +340,7 @@ fn withdrawal_request() {
 fn consolidation_request() {
     let cfg = silver_beacon_state_data::SpecConfig::mainnet();
     operations_handler("consolidation_request", "consolidation_request", false, move |s, op| {
-        s.with_view(|view| state_transition::process_consolidation_requests(view, &cfg, op));
+        s.with_view(|view| stf::process_consolidation_requests(view, &cfg, op));
         true
     });
 }
@@ -370,7 +348,7 @@ fn consolidation_request() {
 #[test]
 fn withdrawals() {
     operations_handler("withdrawals", "execution_payload", true, |s, op| {
-        s.with_view(|view| state_transition::process_withdrawals(view, op).is_ok())
+        s.with_view(|view| stf::process_withdrawals(view, op).is_ok())
     });
 }
 
@@ -388,9 +366,8 @@ fn execution_payload() {
             let payload = &op[exec_off..bls_off];
             let block_slot = s.slot();
             s.with_view(|view| {
-                let _ =
-                    state_transition::process_execution_payload(view, &cfg, payload, block_slot);
-                let _ = state_transition::process_withdrawals(view, payload);
+                let _ = stf::process_execution_payload(view, &cfg, payload, block_slot);
+                let _ = stf::process_withdrawals(view, payload);
             });
         }
         true
@@ -412,15 +389,7 @@ fn block_header() {
         let body = if body_off <= op.len() { &op[body_off..] } else { &[] };
         let body_root = silver_beacon_state::ssz_hash::hash_tree_root_body(body);
         s.with_view_and_epoch(|view, e| {
-            state_transition::process_block_header(
-                view,
-                e,
-                slot,
-                proposer_index,
-                parent_root,
-                body_root,
-            )
-            .is_ok()
+            stf::process_block_header(view, e, slot, proposer_index, parent_root, body_root).is_ok()
         })
     });
 }

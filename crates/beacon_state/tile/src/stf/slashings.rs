@@ -223,6 +223,7 @@ pub fn process_attester_slashings(
     cfg: &SpecConfig,
     data: &[u8],
     scratch: &mut Vec<u32>,
+    slashed_sink: &mut Vec<u32>,
 ) -> Result<(), AttesterSlashingError> {
     if data.is_empty() {
         return Ok(());
@@ -271,6 +272,7 @@ pub fn process_attester_slashings(
                 // loop.
                 if is_slashable_validator(&validators.reader(), vi, current_epoch) {
                     slash_validator(cfg, slot, validators, balances, vi, proposer_index);
+                    slashed_sink.push(vi);
                     slashed_any = true;
                 }
             }
@@ -284,9 +286,13 @@ pub fn process_attester_slashings(
 
 /// Gossip-side `AttesterSlashing` validator (single slashing, not the
 /// block-body list form).
+/// On success, `equivocating_out` is filled with the in-range intersection of
+/// the two attestations' indices (the validators to mark equivocating in fork
+/// choice). Its contents are meaningless when this returns `false`.
 pub fn validate_attester_slashing_for_gossip(
     view: &StateReadView,
     slashing: &[u8],
+    equivocating_out: &mut Vec<u32>,
     sig_batch: &mut SigBatch,
 ) -> bool {
     let (fork_epoch, prev_ver, cur_ver, gvr) = view.imm.fork_descriptor();
@@ -310,15 +316,17 @@ pub fn validate_attester_slashing_for_gossip(
     let current_epoch = view.slot.current_epoch();
     let count = view.validators.count();
     let validators = view.validators;
+    equivocating_out.clear();
     let mut any_slashable = false;
     for_each_sorted_intersection(i1, i2, |vi| {
         let vi32 = vi as u32;
-        if vi < count && is_slashable_validator(&validators, vi32, current_epoch) {
-            any_slashable = true;
-            true
-        } else {
-            false
+        if vi < count {
+            equivocating_out.push(vi32);
+            if is_slashable_validator(&validators, vi32, current_epoch) {
+                any_slashable = true;
+            }
         }
+        false
     });
     if !any_slashable {
         return false;

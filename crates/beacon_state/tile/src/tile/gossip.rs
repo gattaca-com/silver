@@ -19,10 +19,30 @@ impl BeaconStateTile {
         let target_epoch = SingleAttestationView::target_epoch(buf);
         let att_slot = SingleAttestationView::slot(buf);
         let committee_index = SingleAttestationView::committee_index(buf) as usize;
+        let target_root = *SingleAttestationView::target_root(buf);
 
         let wall = self.ticker.current_slot();
         if att_slot > wall || att_slot.saturating_add(ATTESTATION_PROPAGATION_SLOT_RANGE) < wall {
             return Feedback::Ignore;
+        }
+
+        // Fulu single attestations encode the committee in `committee_index`;
+        // `AttestationData.index` must be 0.
+        if SingleAttestationView::data_index(buf) != 0 {
+            return Feedback::Reject(None);
+        }
+        if target_epoch != att_slot / SLOTS_PER_EPOCH {
+            return Feedback::Reject(None);
+        }
+        match self.fork_choice.get_checkpoint_block(&block_root, target_epoch * SLOTS_PER_EPOCH) {
+            Some(r) if r == target_root => {}
+            Some(_) => return Feedback::Reject(None),
+            None => return Feedback::Ignore,
+        }
+        if let Some(idx) = self.fork_choice.find_node_idx(&block_root) &&
+            self.fork_choice.node(idx).slot > att_slot
+        {
+            return Feedback::Reject(None);
         }
 
         let canon_id = self.canonical_state_id();
@@ -67,7 +87,82 @@ impl BeaconStateTile {
             return Feedback::Reject(None);
         }
 
-        self.on_attestation(attester_index, block_root, target_epoch);
+        // Spec `validate_on_attestation`: a current-slot vote is not eligible
+        // until the next slot. Defer it; older slots apply immediately.
+        if att_slot == self.ticker.current_slot() {
+            self.fork_choice.defer_vote(attester_index as u32, block_root, target_epoch);
+        } else {
+            let n = self.head_validator_count();
+            self.fork_choice.record_vote(attester_index, block_root, target_epoch, n);
+        }
+        Feedback::Accept(None)
+    }
+
+    /// Spec `on_attestation` core for an aggregated `Attestation` (the inner
+    /// part of a `SignedAggregateAndProof`): validate the LMD/FFG target and
+    /// ancestry, derive the attesting indices via committee shuffling, and
+    /// record their votes (deferring current-slot votes per the slot+1 rule).
+    pub(super) fn apply_attestation(&mut self, att: &[u8]) -> Feedback {
+        use silver_common::ssz_view::{AttestationDataView, AttestationView};
+        let data = AttestationView::data(att);
+        let att_slot = AttestationDataView::slot(data);
+        let target_epoch = AttestationDataView::target_epoch(data);
+        let target_root = *AttestationDataView::target_root(data);
+        let beacon_block_root = *AttestationDataView::beacon_block_root(data);
+
+        if target_epoch != att_slot / SLOTS_PER_EPOCH {
+            return Feedback::Reject(None);
+        }
+        match self
+            .fork_choice
+            .get_checkpoint_block(&beacon_block_root, target_epoch * SLOTS_PER_EPOCH)
+        {
+            Some(r) if r == target_root => {}
+            Some(_) => return Feedback::Reject(None),
+            None => return Feedback::Ignore,
+        }
+        match self.fork_choice.find_node_idx(&beacon_block_root) {
+            Some(idx) if self.fork_choice.node(idx).slot <= att_slot => {}
+            _ => return Feedback::Ignore,
+        }
+
+        let canon_id = self.canonical_state_id();
+        let att_epoch = att_slot / SLOTS_PER_EPOCH;
+        self.shuffling_cache.ensure_window(
+            &self.state,
+            canon_id,
+            att_epoch,
+            &mut self.stf_scratch.active,
+        );
+        let n = self.head_validator_count();
+        {
+            let view = self.state.read_view(canon_id);
+            let Some(shuffled) = self.shuffling_cache.lookup(&view, att_epoch) else {
+                return Feedback::Ignore;
+            };
+            let cps = shuffling::committees_per_slot(shuffled.len());
+            if stf::attesting_indices_from_shuffled(
+                att,
+                shuffled,
+                cps,
+                n,
+                &mut self.stf_scratch.active,
+            )
+            .is_err()
+            {
+                return Feedback::Reject(None);
+            }
+        }
+
+        let defer = att_slot == self.ticker.current_slot();
+        for i in 0..self.stf_scratch.active.len() {
+            let vi = self.stf_scratch.active[i];
+            if defer {
+                self.fork_choice.defer_vote(vi, beacon_block_root, target_epoch);
+            } else {
+                self.fork_choice.record_vote(vi as usize, beacon_block_root, target_epoch, n);
+            }
+        }
         Feedback::Accept(None)
     }
 
@@ -165,11 +260,9 @@ impl BeaconStateTile {
             return Feedback::Reject(None);
         }
 
-        for i in 0..self.stf_scratch.active.len() {
-            let vi = self.stf_scratch.active[i] as usize;
-            self.on_attestation(vi, parsed.beacon_block_root, parsed.target_epoch);
-        }
-        Feedback::Accept(None)
+        // Record the votes (validates target/ancestry + slot+1 deferral, derives
+        // the committee again). The inner attestation is the aggregate field.
+        self.apply_attestation(parsed.aggregate_bytes)
     }
 
     fn verify_aggregate_and_proof_sigs(
@@ -302,12 +395,25 @@ impl BeaconStateTile {
             return Feedback::Reject(None);
         }
         let canon_id = self.canonical_state_id();
-        let view = self.state.read_view(canon_id);
-        if stf::validate_attester_slashing_for_gossip(&view, data, &mut self.sig_batch) {
-            Feedback::Accept(None)
-        } else {
-            Feedback::Reject(None)
+        let ok = {
+            let view = self.state.read_view(canon_id);
+            stf::validate_attester_slashing_for_gossip(
+                &view,
+                data,
+                &mut self.slashed_indices_scratch,
+                &mut self.sig_batch,
+            )
+        };
+        if !ok {
+            return Feedback::Reject(None);
         }
+        // Mark the equivocators (spec `on_attester_slashing`) so fork choice
+        // excludes them. Idempotent; removes any live LMD weight next recompute.
+        for i in 0..self.slashed_indices_scratch.len() {
+            let idx = self.slashed_indices_scratch[i] as usize;
+            self.fork_choice.mark_equivocating(idx);
+        }
+        Feedback::Accept(None)
     }
 
     pub(super) fn handle_bls_to_execution_change(&mut self, data: &[u8]) -> Feedback {

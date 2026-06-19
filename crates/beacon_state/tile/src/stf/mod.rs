@@ -9,8 +9,8 @@ mod validator;
 mod withdrawals;
 
 pub use attestation::{
-    collect_sigs_attestations, collect_sigs_single_attestation, process_attestations,
-    process_single_attestation,
+    attesting_indices_from_shuffled, collect_sigs_attestations, collect_sigs_single_attestation,
+    process_attestations, process_single_attestation,
 };
 pub use block::{
     apply_block, apply_signed_block_debug, collect_sigs_randao, process_block_body,
@@ -20,6 +20,7 @@ pub use common::{AttestationVote, ShufflingRef, StfScratch};
 pub(crate) use common::{MIN_ACTIVATION_BALANCE, for_each_ssz_list_item};
 pub(crate) use epoch::{
     BASE_REWARD_FACTOR, EFFECTIVE_BALANCE_INCREMENT, PROPOSER_WEIGHT, WEIGHT_DENOMINATOR,
+    unrealized_checkpoints,
 };
 pub use epoch::{
     EPOCHS_PER_ETH1_VOTING_PERIOD, EPOCHS_PER_SYNC_COMMITTEE_PERIOD, HISTORICAL_SUMMARY_PERIOD,

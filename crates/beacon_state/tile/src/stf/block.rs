@@ -46,6 +46,7 @@ pub fn apply_block(
     shuffling: Option<&ShufflingRef<'_>>,
     scratch: &mut StfScratch,
     attestation_votes: &mut Vec<AttestationVote>,
+    slashed_sink: &mut Vec<u32>,
     sig_batch: &mut SigBatch,
 ) -> Result<(Option<EpochId>, Option<LongtailId>)> {
     let wrap = |kind: BlockError| Error::invalid_block(block_state_root, kind);
@@ -97,6 +98,7 @@ pub fn apply_block(
         proposer_index,
         shuffling,
         attestation_votes,
+        slashed_sink,
     )?;
 
     let rv = view.read(epoch_view, longtail_view);
@@ -195,6 +197,7 @@ pub fn apply_signed_block_debug(
     let rv = view.read(epoch_view, longtail_view);
     let sref = ShufflingRef::build(&rv, current_epoch, &mut curr, &mut prev);
     let mut votes_sink: Vec<AttestationVote> = Vec::new();
+    let mut slashed_sink: Vec<u32> = Vec::new();
     let mut sig_batch = SigBatch::new();
     process_block_body(
         cfg,
@@ -209,6 +212,7 @@ pub fn apply_signed_block_debug(
         proposer_index,
         Some(&sref),
         &mut votes_sink,
+        &mut slashed_sink,
     )?;
 
     let rv = view.read(epoch_view, longtail_view);
@@ -479,6 +483,7 @@ pub fn process_block_body(
     proposer_index: u32,
     shuffling: Option<&ShufflingRef<'_>>,
     attestation_votes: &mut Vec<AttestationVote>,
+    slashed_sink: &mut Vec<u32>,
 ) -> Result<()> {
     let wrap = |kind: BlockError| Error::invalid_block(state_root, kind);
     validate::validate_operation_counts(body).map_err(wrap)?;
@@ -517,6 +522,7 @@ pub fn process_block_body(
         proposer_index,
         shuffling,
         attestation_votes,
+        slashed_sink,
     )
 }
 
@@ -532,6 +538,7 @@ fn apply_block_body_pass2(
     proposer_index: u32,
     shuffling: Option<&ShufflingRef<'_>>,
     attestation_votes: &mut Vec<AttestationVote>,
+    slashed_sink: &mut Vec<u32>,
 ) -> Result<()> {
     let body = offsets.body;
     let payload = offsets.payload();
@@ -549,7 +556,7 @@ fn apply_block_body_pass2(
     if let Some(section) =
         offsets.try_slice(offsets.attester_slashings_off, offsets.attestations_off)
     {
-        process_attester_slashings(&mut *view, epoch, cfg, section, active_scratch)?;
+        process_attester_slashings(&mut *view, epoch, cfg, section, active_scratch, slashed_sink)?;
     }
     if let Some(section) = offsets.try_slice(offsets.attestations_off, offsets.deposits_off) {
         process_attestations(
