@@ -29,8 +29,11 @@ use silver_config::{PendingBounds, SyncingConfig};
 
 use crate::{
     bls,
+    epoch_transition::{self, EFFECTIVE_BALANCE_INCREMENT},
     error::PrecheckError,
-    fork_choice::{BlockImport, ForkChoice, MAX_FORK_CHOICE_NODES, VoteTracker, compute_deltas},
+    fork_choice::{
+        BlockImport, ExecutionStatus, ForkChoice, MAX_FORK_CHOICE_NODES, proposer_boost_score,
+    },
     shuffling::{self, DOMAIN_BEACON_ATTESTER},
     ssz_hash, state_transition, validate,
     weak_subjectivity::weak_subjectivity_period,
@@ -159,7 +162,6 @@ pub struct BeaconStateTile {
     state: BeaconStateOwner,
 
     fork_choice: ForkChoice,
-    vote_tracker: Box<VoteTracker>,
     shuffling_cache: Box<ShufflingCache>,
 
     /// Index bundle of the canonical head's post-state.
@@ -180,11 +182,11 @@ pub struct BeaconStateTile {
     /// Per-block buffer of votes emitted by `process_attestations` so the
     /// tile can fold them into the vote tracker after `apply_block` returns.
     attestation_votes_scratch: Vec<state_transition::AttestationVote>,
-    /// Effective-balance column from the previous `recompute_head`, kept so
-    /// `compute_deltas` can net per-validator balance changes onto LMD weights
-    /// (not just vote-root changes). Indexed by validator; new validators read
-    /// as 0 (no prior weight).
-    prev_eff_balances: Vec<u64>,
+    /// Per-block buffer of validator indices actually slashed by a block's
+    /// attester slashings; consumed in `publish_applied_block` to mark them
+    /// equivocating in fork choice. Also reused transiently by the gossip
+    /// attester-slashing path.
+    slashed_indices_scratch: Vec<u32>,
     /// Pre-validation pass collects every BLS sig in the block here, then
     /// runs `verify_all` once before pass 2 mutates state.
     sig_batch: bls::SigBatch,
@@ -240,7 +242,6 @@ impl BeaconStateTile {
             spec,
             state: owner,
             fork_choice: ForkChoice::default(),
-            vote_tracker: VoteTracker::with_capacity(val_cap),
             shuffling_cache: ShufflingCache::with_capacity(val_cap),
             last_applied: anchor,
             last_applied_block_root: [0u8; 32],
@@ -251,7 +252,7 @@ impl BeaconStateTile {
             attestation_votes_scratch: Vec::with_capacity(
                 MAX_ATTESTATIONS_ELECTRA * MAX_ATTESTING_INDICES,
             ),
-            prev_eff_balances: Vec::with_capacity(val_cap),
+            slashed_indices_scratch: Vec::with_capacity(MAX_ATTESTING_INDICES),
             sig_batch: bls::SigBatch::new(),
             pending_blocks: FxHashMap::with_capacity_and_hasher(
                 MAX_FORK_CHOICE_NODES,
@@ -273,8 +274,11 @@ impl BeaconStateTile {
             replay_consumer,
             verify_weak_subjectivity,
         };
-        tile.seed_anchor(anchor);
+
+        tile.seed_anchor(anchor, val_cap);
+
         tracing::info!("created BeaconStateTile: head_state_slot is {}", tile.head_state_slot());
+
         tile
     }
 
@@ -341,7 +345,7 @@ impl BeaconStateTile {
     /// Seed fork choice from the freshly-anchored real state and publish the
     /// `anchor` — the second half of `new` for a non-stub state. (Caches are
     /// already sized for the real validator count in `new`.)
-    fn seed_anchor(&mut self, anchor: StateId) {
+    fn seed_anchor(&mut self, anchor: StateId, validators_capacity: usize) {
         let slot = self.state.state().slot_states.finalized_view().slot_number();
 
         // Anchor block root. Compute on a local header copy so the state's
@@ -372,6 +376,7 @@ impl BeaconStateTile {
             anchor_state_root,
             execution_block_hash,
             anchor,
+            validators_capacity,
         );
         self.state.publish_state_id(anchor);
 
@@ -908,44 +913,62 @@ impl BeaconStateTile {
         guard.set_state_id(survivors[head_pos]);
     }
 
-    fn on_attestation(&mut self, validator_idx: usize, block_root: B256, epoch: Epoch) {
-        let n = self.head_validator_count();
-        if validator_idx >= n {
+    /// Rebuild fork choice's justified-balance snapshot when its justified
+    /// checkpoint has moved. One sweep of the justified post-state yields both
+    /// the per-validator attestation-score balances (spec
+    /// `get_attestation_score`: active + unslashed) and the total active
+    /// balance (spec `get_proposer_score`: active set incl. slashed).
+    fn refresh_justified_balances(&mut self) {
+        if !self.fork_choice.justified_balances_stale() {
             return;
         }
-        // Spec `update_latest_messages`: only newer-epoch votes overwrite.
-        // Zero `next_root` is the uninitialised sentinel — first vote always
-        // takes; a real attestation never has a zero `beacon_block_root`.
-        let v = &mut self.vote_tracker.votes[validator_idx];
-        if v.next_root != [0u8; 32] && epoch <= v.next_epoch {
-            return;
+
+        let jc = self.fork_choice.justified_checkpoint;
+        // Justified is lifted only to resident roots; fall back to the head if
+        // somehow absent (boot before the anchor node is wired).
+        let sid = match self.fork_choice.find_node_idx(&jc.root) {
+            Some(idx) => self.fork_choice.node(idx).state_id,
+            None => self.last_applied,
+        };
+
+        let mut buf = self.fork_choice.take_justified_scratch();
+        let mut total_active = 0u64;
+        {
+            let v = self.state.read_view(sid).validators;
+            let mut act = v.iter_activation_epochs();
+            let mut exit = v.iter_exit_epochs();
+            let mut eff = v.iter_effective_balances();
+            let mut slashed = v.iter_slashed();
+            for _ in 0..v.count() {
+                let a = act.next().unwrap();
+                let x = exit.next().unwrap();
+                let b = eff.next().unwrap();
+                let s = slashed.next().unwrap();
+                let active = a <= jc.epoch && jc.epoch < x;
+                if active {
+                    total_active += b;
+                }
+                buf.push(if active && !s { b } else { 0 });
+            }
         }
-        v.next_root = block_root;
-        v.next_epoch = epoch;
+        // Clamp matches `total_active_balance` (avoids a zero proposer score on
+        // a degenerate empty active set).
+        let total_active = total_active.max(EFFECTIVE_BALANCE_INCREMENT);
+        self.fork_choice.commit_justified_balances(buf, total_active, jc);
     }
 
     fn recompute_head(&mut self) {
-        // Materialise the head's effective-balance column into the reusable
-        // scratch (compute_deltas weights LMD votes by effective balance).
-        let n = {
-            let validators = self.state.read_view(self.last_applied).validators;
-            self.stf_scratch.eff.clear();
-            self.stf_scratch.eff.extend(validators.iter_effective_balances());
-            validators.count()
-        };
-
-        let mut deltas = compute_deltas(
-            &mut self.vote_tracker.votes,
-            n,
-            self.fork_choice.indices.as_slice(),
-            &self.prev_eff_balances,
-            &self.stf_scratch.eff,
-        );
-        self.fork_choice.apply_score_changes(&mut deltas);
-        // Remember this recompute's balances so the next one can net the change.
-        self.prev_eff_balances.clear();
-        self.prev_eff_balances.extend_from_slice(&self.stf_scratch.eff);
+        // Spec `get_current_store_epoch`: viability reads the wall-clock epoch.
+        self.fork_choice.set_current_epoch(self.ticker.current_slot() / SLOTS_PER_EPOCH);
+        // Lift first: an epoch-boundary block's post-state may advance the
+        // justified checkpoint, and `lift_checkpoints` reads the head post-state
+        // (`last_applied`). Lifting before the refresh lets
+        // `refresh_justified_balances` rebuild the snapshot for the *new*
+        // checkpoint and the fold weight against the new balances in this same
+        // pass.
         self.lift_checkpoints();
+        self.refresh_justified_balances();
+        self.fork_choice.recompute_head();
     }
 
     /// Monotonically lift fork-choice justified/finalized from the head post-
@@ -962,6 +985,57 @@ impl BeaconStateTile {
             self.fork_choice.find_node_idx(&f.root).is_some()
         {
             self.fork_choice.finalized_checkpoint = f;
+        }
+    }
+
+    /// Spec `on_tick_per_slot` epoch-boundary pull-up: lift store
+    /// justified/finalized from the head node's *unrealized* checkpoints
+    /// (monotone, resident-only). For the canonical head this largely
+    /// duplicates the realized `lift_checkpoints` after the eager
+    /// `on_slot_start` advance; the value is consistency when the head node
+    /// itself hasn't crossed the boundary yet.
+    fn lift_unrealized_checkpoints(&mut self) {
+        let head = self.fork_choice.find_head();
+        let Some(idx) = self.fork_choice.find_node_idx(&head) else {
+            return;
+        };
+        let n = self.fork_choice.node(idx);
+        let (uj, uf) = (n.unrealized_justified_checkpoint, n.unrealized_finalized_checkpoint);
+        if uj.epoch > self.fork_choice.justified_checkpoint.epoch &&
+            self.fork_choice.find_node_idx(&uj.root).is_some()
+        {
+            self.fork_choice.justified_checkpoint = uj;
+        }
+        if uf.epoch > self.fork_choice.finalized_checkpoint.epoch &&
+            self.fork_choice.find_node_idx(&uf.root).is_some()
+        {
+            self.fork_choice.finalized_checkpoint = uf;
+        }
+    }
+
+    /// Per-slot fork-choice tick (spec `on_tick_per_slot`): advance the head
+    /// state across empty slots, expire proposer boost, make the previous
+    /// slot's deferred votes eligible (spec slot+1 rule), refold the head, and
+    /// at an epoch boundary pull up unrealized checkpoints. Returns whether a
+    /// state advance occurred.
+    fn slot_tick(&mut self, slot: Slot) -> bool {
+        let advanced = self.on_slot_start(slot);
+        self.fork_choice_tick();
+        advanced
+    }
+
+    /// Spec `on_tick`, fork-choice only: expire proposer boost, make the
+    /// previous slot's deferred votes eligible, refold the head, and at an
+    /// epoch boundary pull up unrealized checkpoints.
+    fn fork_choice_tick(&mut self) {
+        let prev_epoch = self.fork_choice.current_epoch();
+        let new_epoch = self.ticker.current_slot() / SLOTS_PER_EPOCH;
+        self.fork_choice.expire_proposer_boost();
+        let n = self.head_validator_count();
+        self.fork_choice.drain_pending_votes(n);
+        self.recompute_head();
+        if new_epoch > prev_epoch {
+            self.lift_unrealized_checkpoints();
         }
     }
 
@@ -1361,6 +1435,7 @@ impl BeaconStateTile {
         let parent = parsed.parent_state_id;
         let (mut view, epoch, longtail) = self.state.apply_block_view(parent);
         self.attestation_votes_scratch.clear();
+        self.slashed_indices_scratch.clear();
         let res = state_transition::apply_block(
             &self.spec,
             &mut view,
@@ -1376,6 +1451,7 @@ impl BeaconStateTile {
             Some(&sref),
             &mut self.stf_scratch,
             &mut self.attestation_votes_scratch,
+            &mut self.slashed_indices_scratch,
             &mut self.sig_batch,
         );
 
@@ -1385,16 +1461,28 @@ impl BeaconStateTile {
             Ok((epoch_idx, longtail_idx)) => {
                 let es = epoch.view_opt(epoch_idx).state();
                 let checkpoints = (es.current_justified_checkpoint, es.finalized_checkpoint);
+                // Spec `compute_pulled_up_tip`: the j/f this post-state would
+                // realize at its epoch boundary, read-only on the live view.
+                let unrealized = epoch_transition::unrealized_checkpoints(
+                    &view,
+                    es,
+                    parsed.block_slot / SLOTS_PER_EPOCH,
+                );
                 let execution_block_hash =
                     view.slot.state().latest_execution_payload_header.block_hash;
-                Ok((view.commit(epoch_idx, longtail_idx), checkpoints, execution_block_hash))
+                Ok((
+                    view.commit(epoch_idx, longtail_idx),
+                    checkpoints,
+                    unrealized,
+                    execution_block_hash,
+                ))
             }
             Err(e) => Err(e),
         };
         // `view`'s &mut self.state borrow ends here (`commit`/`drop` consumed
         // it); the fork-choice + publish work below needs &mut self.
 
-        let (new_id, (justified, finalized), execution_block_hash) = match outcome {
+        let (new_id, (justified, finalized), unrealized, execution_block_hash) = match outcome {
             Ok(committed) => committed,
             Err(e) => {
                 tracing::error!(
@@ -1407,7 +1495,14 @@ impl BeaconStateTile {
             }
         };
 
-        self.publish_applied_block(&parsed, new_id, justified, finalized, execution_block_hash);
+        self.publish_applied_block(
+            &parsed,
+            new_id,
+            justified,
+            finalized,
+            unrealized,
+            execution_block_hash,
+        );
         Feedback::Accept(Some(parsed.block_root))
     }
 
@@ -1417,12 +1512,14 @@ impl BeaconStateTile {
         new_id: StateId,
         justified: Checkpoint,
         finalized: Checkpoint,
+        unrealized: (Checkpoint, Checkpoint),
         execution_block_hash: [u8; 32],
     ) {
         // Fold block-included attestations into the LMD vote tracker.
+        let n = self.head_validator_count();
         for i in 0..self.attestation_votes_scratch.len() {
             let v = self.attestation_votes_scratch[i];
-            self.on_attestation(v.validator as usize, v.block_root, v.target_epoch);
+            self.fork_choice.record_vote(v.validator as usize, v.block_root, v.target_epoch, n);
         }
 
         self.fork_choice.on_block(BlockImport {
@@ -1433,15 +1530,49 @@ impl BeaconStateTile {
             execution_block_hash,
             justified,
             finalized,
+            unrealized_justified: unrealized.0,
+            unrealized_finalized: unrealized.1,
             state_id: new_id,
         });
 
+        // Block-included attester slashings: mark the slashed validators
+        // equivocating (spec `on_attester_slashing`), removing any live LMD
+        // weight on the next recompute. Gossip validates against the canonical
+        // view, spec against the justified state — equivalent for our purposes.
+        for i in 0..self.slashed_indices_scratch.len() {
+            let idx = self.slashed_indices_scratch[i] as usize;
+            self.fork_choice.mark_equivocating(idx);
+        }
+
+        // Proposer boost: the FIRST current-slot block that arrived before the
+        // attesting deadline (first 1/3) gets a transient weight bonus, expired
+        // at the next slot boundary by the fork-choice tick. Set before
+        // `recompute_head` so `apply_score_changes` folds it in. First-block
+        // guard per spec `update_proposer_boost_root`: a same-slot equivocation
+        // must not steal the boost. Spec's canonical-proposer match is covered
+        // by precheck's lookahead pin, modulo cross-epoch forks.
+        if parsed.block_slot == self.ticker.current_slot() &&
+            self.ticker.is_before_attesting_interval() &&
+            self.fork_choice.proposer_boost_root == [0u8; 32]
+        {
+            // Spec keys the score off the justified state's total active
+            // balance, cached with the justified-balance snapshot. Refresh here
+            // (a no-op unless the checkpoint just moved) and read it back, so
+            // boost never sweeps the validator set itself.
+            self.refresh_justified_balances();
+            let tab = self.fork_choice.justified_total_active_balance();
+            self.fork_choice.set_proposer_boost(parsed.block_root, proposer_boost_score(tab));
+        }
+
         self.dc_available.remove(&parsed.block_root);
 
-        self.recompute_head();
-
+        // Adopt the new block as head before recompute so `lift_checkpoints`
+        // reads ITS post-state checkpoints — an epoch-boundary block's justified
+        // advance lands this import, not one recompute later.
         self.last_applied = new_id;
         self.last_applied_block_root = parsed.block_root;
+
+        self.recompute_head();
         self.state.publish_state_id(new_id);
 
         self.maybe_finalize();
@@ -1492,7 +1623,7 @@ impl BeaconStateTile {
         let parent_node = self.fork_choice.node(parent_idx);
         // EL declared the parent invalid — descendants are invalid by
         // definition. Reject before the COW/EL round-trip.
-        if parent_node.execution_status == 3 {
+        if parent_node.execution_status == ExecutionStatus::Invalid {
             return Err(PrecheckError::ParentInvalid { parent_root, block_root });
         }
         let parent_state_id = parent_node.state_id;
@@ -1564,12 +1695,32 @@ impl BeaconStateTile {
         let attester_index = SingleAttestationView::attester_index(buf) as usize;
         let block_root = *SingleAttestationView::beacon_block_root(buf);
         let target_epoch = SingleAttestationView::target_epoch(buf);
+        let target_root = *SingleAttestationView::target_root(buf);
         let att_slot = SingleAttestationView::slot(buf);
         let committee_index = SingleAttestationView::committee_index(buf) as usize;
 
         let wall = self.ticker.current_slot();
         if att_slot > wall || att_slot.saturating_add(ATTESTATION_PROPAGATION_SLOT_RANGE) < wall {
             return Feedback::Ignore;
+        }
+
+        // Fulu single attestations encode the committee in `committee_index`;
+        // `AttestationData.index` must be 0.
+        if SingleAttestationView::data_index(buf) != 0 {
+            return Feedback::Reject(None);
+        }
+        if target_epoch != att_slot / SLOTS_PER_EPOCH {
+            return Feedback::Reject(None);
+        }
+        match self.fork_choice.get_checkpoint_block(&block_root, target_epoch * SLOTS_PER_EPOCH) {
+            Some(r) if r == target_root => {}
+            Some(_) => return Feedback::Reject(None),
+            None => return Feedback::Ignore,
+        }
+        if let Some(idx) = self.fork_choice.find_node_idx(&block_root) &&
+            self.fork_choice.node(idx).slot > att_slot
+        {
+            return Feedback::Reject(None);
         }
 
         let canon_id = self.canonical_state_id();
@@ -1610,7 +1761,78 @@ impl BeaconStateTile {
             return Feedback::Reject(None);
         }
 
-        self.on_attestation(attester_index, block_root, target_epoch);
+        // Spec `validate_on_attestation`: a current-slot vote is not eligible
+        // until the next slot. Defer it; older slots apply immediately.
+        if att_slot == self.ticker.current_slot() {
+            self.fork_choice.defer_vote(attester_index as u32, block_root, target_epoch);
+        } else {
+            let n = self.head_validator_count();
+            self.fork_choice.record_vote(attester_index, block_root, target_epoch, n);
+        }
+        Feedback::Accept(None)
+    }
+
+    /// Spec `on_attestation` core for an aggregated `Attestation` (the inner
+    /// part of a `SignedAggregateAndProof`): validate the LMD/FFG target
+    /// and ancestry, derive the attesting indices via committee shuffling, and
+    /// record their votes (deferring current-slot votes per the slot+1 rule).
+    fn apply_attestation(&mut self, att: &[u8]) -> Feedback {
+        use silver_common::ssz_view::{AttestationDataView, AttestationView};
+        let data = AttestationView::data(att);
+        let att_slot = AttestationDataView::slot(data);
+        let target_epoch = AttestationDataView::target_epoch(data);
+        let target_root = *AttestationDataView::target_root(data);
+        let beacon_block_root = *AttestationDataView::beacon_block_root(data);
+
+        if target_epoch != att_slot / SLOTS_PER_EPOCH {
+            return Feedback::Reject(None);
+        }
+        match self
+            .fork_choice
+            .get_checkpoint_block(&beacon_block_root, target_epoch * SLOTS_PER_EPOCH)
+        {
+            Some(r) if r == target_root => {}
+            Some(_) => return Feedback::Reject(None),
+            None => return Feedback::Ignore,
+        }
+        match self.fork_choice.find_node_idx(&beacon_block_root) {
+            Some(idx) if self.fork_choice.node(idx).slot <= att_slot => {}
+            _ => return Feedback::Ignore,
+        }
+
+        let canon_id = self.canonical_state_id();
+        let att_epoch = att_slot / SLOTS_PER_EPOCH;
+        self.ensure_shuffling_window(att_epoch, canon_id);
+        let mix = Self::shuffling_mix(&self.state.read_view(canon_id), att_epoch);
+        let n = self.head_validator_count();
+        {
+            let Some(entry) = Self::get_shuffling(&self.shuffling_cache, att_epoch, mix) else {
+                return Feedback::Ignore;
+            };
+            let shuffled = entry.shuffled_indices.as_slice();
+            let cps = shuffling::committees_per_slot(shuffled.len());
+            if state_transition::attesting_indices_from_shuffled(
+                att,
+                shuffled,
+                cps,
+                n,
+                &mut self.stf_scratch.active,
+            )
+            .is_err()
+            {
+                return Feedback::Reject(None);
+            }
+        }
+
+        let defer = att_slot == self.ticker.current_slot();
+        for i in 0..self.stf_scratch.active.len() {
+            let vi = self.stf_scratch.active[i];
+            if defer {
+                self.fork_choice.defer_vote(vi, beacon_block_root, target_epoch);
+            } else {
+                self.fork_choice.record_vote(vi as usize, beacon_block_root, target_epoch, n);
+            }
+        }
         Feedback::Accept(None)
     }
 
@@ -1704,11 +1926,9 @@ impl BeaconStateTile {
             return Feedback::Reject(None);
         }
 
-        for i in 0..self.stf_scratch.active.len() {
-            let vi = self.stf_scratch.active[i] as usize;
-            self.on_attestation(vi, parsed.beacon_block_root, parsed.target_epoch);
-        }
-        Feedback::Accept(None)
+        // Record the votes (validates target/ancestry + slot+1 deferral, derives
+        // the committee again). The inner attestation is the aggregate field.
+        self.apply_attestation(parsed.aggregate_bytes)
     }
 
     fn verify_aggregate_and_proof_sigs(
@@ -1845,13 +2065,25 @@ impl BeaconStateTile {
             return Feedback::Reject(None);
         }
         let canon_id = self.canonical_state_id();
-        let view = self.state.read_view(canon_id);
-        if state_transition::validate_attester_slashing_for_gossip(&view, data, &mut self.sig_batch)
-        {
-            Feedback::Accept(None)
-        } else {
-            Feedback::Reject(None)
+        let ok = {
+            let view = self.state.read_view(canon_id);
+            state_transition::validate_attester_slashing_for_gossip(
+                &view,
+                data,
+                &mut self.slashed_indices_scratch,
+                &mut self.sig_batch,
+            )
+        };
+        if !ok {
+            return Feedback::Reject(None);
         }
+        // Mark the equivocators (spec `on_attester_slashing`) so fork choice
+        // excludes them. Idempotent; removes any live LMD weight next recompute.
+        for i in 0..self.slashed_indices_scratch.len() {
+            let idx = self.slashed_indices_scratch[i] as usize;
+            self.fork_choice.mark_equivocating(idx);
+        }
+        Feedback::Accept(None)
     }
 
     fn handle_bls_to_execution_change(&mut self, data: &[u8]) -> Feedback {
@@ -1939,6 +2171,47 @@ impl<'a> ParsedAggregateAndProof<'a> {
     }
 }
 
+/// EF `fork_choice`/`sync` vector harness API: thin gated wrappers over the
+/// private production methods.
+#[cfg(feature = "ef_tests")]
+impl BeaconStateTile {
+    pub fn ef_fork_choice(&self) -> &ForkChoice {
+        &self.fork_choice
+    }
+
+    pub fn ef_tick(&mut self, since_genesis_ms: u64) {
+        self.ticker.set_since_genesis_ms(since_genesis_ms);
+        self.fork_choice_tick();
+    }
+
+    pub fn ef_apply_block(&mut self, ssz: &[u8]) -> Option<B256> {
+        match self.try_apply_block(ssz) {
+            Feedback::Accept(r) => r,
+            _ => None,
+        }
+    }
+
+    pub fn ef_apply_attestation(&mut self, ssz: &[u8]) {
+        self.apply_attestation(ssz);
+        self.recompute_head();
+    }
+
+    pub fn ef_apply_attester_slashing(&mut self, ssz: &[u8]) {
+        if matches!(self.handle_attester_slashing(ssz), Feedback::Accept(_)) {
+            self.recompute_head();
+        }
+    }
+
+    pub fn ef_payload_verdict(
+        &mut self,
+        block_root: B256,
+        status: PayloadValidationStatus,
+        latest_valid_hash: B256,
+    ) {
+        self.on_payload_verdict(&block_root, &latest_valid_hash, status);
+    }
+}
+
 impl Tile<SilverSpine> for BeaconStateTile {
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         if !self.initial_status_emitted {
@@ -1951,7 +2224,11 @@ impl Tile<SilverSpine> for BeaconStateTile {
         if following {
             match self.ticker.tick() {
                 TickEvent::SlotStart(slot) => {
-                    if self.on_slot_start(slot) {
+                    // The head can move without a state advance (votes folded,
+                    // boost expired), so emit status on either.
+                    let prev_head = self.fork_choice.find_head();
+                    let advanced = self.slot_tick(slot);
+                    if advanced || self.fork_choice.find_head() != prev_head {
                         adapter.produce(self.status_event());
                     }
                 }
@@ -2345,8 +2622,16 @@ mod tests {
         tile.mode = Mode::Following;
 
         let cp = Checkpoint { epoch: 0, root: ANCHOR_ROOT };
-        tile.fork_choice =
-            ForkChoice::init(cp, cp, start_slot, ANCHOR_ROOT, ANCHOR_ROOT, [0u8; 32], anchor);
+        tile.fork_choice = ForkChoice::init(
+            cp,
+            cp,
+            start_slot,
+            ANCHOR_ROOT,
+            ANCHOR_ROOT,
+            [0u8; 32],
+            anchor,
+            seeds.len(),
+        );
 
         tile.ensure_shuffling_window(start_slot / SLOTS_PER_EPOCH, anchor);
     }
@@ -2604,7 +2889,7 @@ mod tests {
         seed_tile(&mut tile, 4, 10);
         let buf = [0u8; 100];
         tile.handle_attestation(&buf);
-        assert_eq!(tile.vote_tracker.votes[0].next_epoch, 0);
+        assert_eq!(tile.fork_choice.vote_tracker.votes[0].next_epoch, 0);
     }
 
     #[test]
@@ -2799,8 +3084,7 @@ mod tests {
 
         let cp = Checkpoint { epoch: 0, root: parent_root };
         tile.fork_choice =
-            ForkChoice::init(cp, cp, 10, parent_root, parent_root, [0u8; 32], tile.last_applied);
-        tile.last_applied_block_root = parent_root;
+            ForkChoice::init(cp, cp, 10, parent_root, parent_root, [0u8; 32], tile.last_applied, 0);
 
         // Valid structure, zeroed BLS signature → precheck reaches and fails
         // signature verification, so no fork-choice node is added.
@@ -2868,7 +3152,9 @@ mod tests {
         seed_tile_with_keys(&mut tile, 128, 0);
         let (slot, ci, _, _) = find_committee_for_vi0(&tile);
         let imm = seed_immutable(&tile);
-        let bbr = [0xAAu8; 32];
+        // Vote for the (known) anchor block; target is the anchor's checkpoint
+        // block, so the spec target/ancestor checks accept.
+        let bbr = tile.last_applied_block_root;
         let buf = test_signing::sign_single_attestation(
             0,
             0,
@@ -2876,6 +3162,7 @@ mod tests {
             slot,
             bbr,
             slot / SLOTS_PER_EPOCH,
+            bbr,
             &imm,
         );
         // Assert against what the handler reads via the view (the view owns
@@ -2883,8 +3170,148 @@ mod tests {
         let want_root = *SingleAttestationView::beacon_block_root(&buf);
         let want_epoch = SingleAttestationView::target_epoch(&buf);
         assert_eq!(tile.handle_attestation(&buf), Feedback::Accept(None));
-        assert_eq!(tile.vote_tracker.votes[0].next_root, want_root);
-        assert_eq!(tile.vote_tracker.votes[0].next_epoch, want_epoch);
+        assert_eq!(tile.fork_choice.vote_tracker.votes[0].next_root, want_root);
+        assert_eq!(tile.fork_choice.vote_tracker.votes[0].next_epoch, want_epoch);
+    }
+
+    /// Spec `validate_on_attestation`: a single attestation for a block we
+    /// don't hold is dropped (Ignore), self-healing on the validator's next
+    /// vote.
+    #[test]
+    fn single_att_unknown_block_ignored() {
+        let mut tile = make_tile_at_wall_slot(31);
+        seed_tile_with_keys(&mut tile, 128, 0);
+        let (slot, ci, _, _) = find_committee_for_vi0(&tile);
+        let imm = seed_immutable(&tile);
+        let unknown = [0xAAu8; 32];
+        let buf = test_signing::sign_single_attestation(
+            0,
+            0,
+            ci as u64,
+            slot,
+            unknown,
+            slot / SLOTS_PER_EPOCH,
+            unknown,
+            &imm,
+        );
+        assert_eq!(tile.handle_attestation(&buf), Feedback::Ignore);
+    }
+
+    /// Spec `validate_on_attestation`: a known-block vote whose target does not
+    /// match the block's target-epoch ancestor is rejected.
+    #[test]
+    fn single_att_mismatched_target_rejected() {
+        let mut tile = make_tile_at_wall_slot(31);
+        seed_tile_with_keys(&mut tile, 128, 0);
+        let (slot, ci, _, _) = find_committee_for_vi0(&tile);
+        let imm = seed_immutable(&tile);
+        let bbr = tile.last_applied_block_root; // known anchor
+        let wrong_target = [0x77u8; 32];
+        let buf = test_signing::sign_single_attestation(
+            0,
+            0,
+            ci as u64,
+            slot,
+            bbr,
+            slot / SLOTS_PER_EPOCH,
+            wrong_target,
+            &imm,
+        );
+        assert_eq!(tile.handle_attestation(&buf), Feedback::Reject(None));
+    }
+
+    /// Fulu: a single attestation with a non-zero `AttestationData.index` is
+    /// rejected (the committee belongs in `committee_index`). Checked before
+    /// signature verification, so a zero-signed buffer suffices.
+    #[test]
+    fn single_att_nonzero_data_index_rejected() {
+        let mut tile = make_tile_at_wall_slot(31);
+        seed_tile_with_keys(&mut tile, 128, 0);
+        let (slot, ci, _, _) = find_committee_for_vi0(&tile);
+        let imm = seed_immutable(&tile);
+        let bbr = tile.last_applied_block_root;
+        let mut buf = test_signing::sign_single_attestation(
+            0,
+            0,
+            ci as u64,
+            slot,
+            bbr,
+            slot / SLOTS_PER_EPOCH,
+            bbr,
+            &imm,
+        );
+        // AttestationData.index @ buf[24..32]; non-zero is illegal post-Electra.
+        buf[24] = 1;
+        assert_eq!(tile.handle_attestation(&buf), Feedback::Reject(None));
+    }
+
+    /// Spec `validate_on_attestation`: a current-slot vote is held until the
+    /// next slot. It is accepted but not folded until `drain_pending_votes`.
+    #[test]
+    fn current_slot_vote_deferred_until_drain() {
+        let mut tile = make_tile_at_wall_slot(31);
+        seed_tile_with_keys(&mut tile, 128, 0);
+        let (slot, ci, _, _) = find_committee_for_vi0(&tile);
+        // Make the committee slot the current slot → the vote must defer.
+        tile.ticker.set_current_slot(slot);
+        let imm = seed_immutable(&tile);
+        let bbr = tile.last_applied_block_root;
+        let buf = test_signing::sign_single_attestation(
+            0,
+            0,
+            ci as u64,
+            slot,
+            bbr,
+            slot / SLOTS_PER_EPOCH,
+            bbr,
+            &imm,
+        );
+        assert_eq!(tile.handle_attestation(&buf), Feedback::Accept(None));
+        // Deferred: not yet folded into the tracker.
+        assert_eq!(tile.fork_choice.vote_tracker.votes[0].next_root, [0u8; 32]);
+        let n = tile.head_validator_count();
+        tile.fork_choice.drain_pending_votes(n);
+        assert_eq!(tile.fork_choice.vote_tracker.votes[0].next_root, bbr);
+    }
+
+    /// Marking a validator equivocating zeroes its live vote and blocks future
+    /// votes (spec `equivocating_indices` exclusion).
+    #[test]
+    fn equivocator_excluded_from_votes() {
+        let mut tile = make_tile();
+        seed_tile(&mut tile, 8, 0);
+        let anchor = tile.last_applied_block_root;
+        let n = tile.head_validator_count();
+        tile.fork_choice.record_vote(3, anchor, 0, n);
+        assert_eq!(tile.fork_choice.vote_tracker.votes[3].next_root, anchor);
+
+        tile.fork_choice.mark_equivocating(3);
+        assert!(tile.fork_choice.is_equivocating(3));
+        assert_eq!(tile.fork_choice.vote_tracker.votes[3].next_root, [0u8; 32]);
+
+        // A later attestation from an equivocator is ignored.
+        tile.fork_choice.record_vote(3, [0x55u8; 32], 5, n);
+        assert_eq!(tile.fork_choice.vote_tracker.votes[3].next_root, [0u8; 32]);
+    }
+
+    /// The justified-balance snapshot is rebuilt only when the justified
+    /// checkpoint moves; the first build is a full pass, the next is a no-op.
+    #[test]
+    fn justified_balances_rebuilt_on_checkpoint_change_only() {
+        let mut tile = make_tile();
+        seed_tile(&mut tile, 8, 0);
+        // Anchor justified checkpoint differs from the default → stale → rebuild.
+        assert!(tile.fork_choice.justified_balances_stale());
+        tile.refresh_justified_balances();
+        assert!(!tile.fork_choice.justified_balances_stale());
+        assert_eq!(tile.fork_choice.justified_balances.len(), 8);
+        assert!(tile.fork_choice.justified_balances.iter().all(|&b| b == MAX_EFFECTIVE_BALANCE));
+        // Total active balance is cached in the same sweep: all 8 active and
+        // unslashed → 8 × MAX_EFFECTIVE_BALANCE (proposer boost reads this
+        // instead of re-sweeping per block).
+        assert_eq!(tile.fork_choice.justified_total_active_balance(), 8 * MAX_EFFECTIVE_BALANCE);
+        // Unchanged checkpoint → no rebuild (idempotent).
+        tile.refresh_justified_balances();
     }
 
     #[test]
@@ -2914,8 +3341,8 @@ mod tests {
         let beacon_block_root = tile.last_applied_block_root;
         let slot = SignedAggregateAndProofView::agg_slot(&buf);
         assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Accept(None));
-        assert_eq!(tile.vote_tracker.votes[0].next_root, beacon_block_root);
-        assert_eq!(tile.vote_tracker.votes[0].next_epoch, slot / SLOTS_PER_EPOCH);
+        assert_eq!(tile.fork_choice.vote_tracker.votes[0].next_root, beacon_block_root);
+        assert_eq!(tile.fork_choice.vote_tracker.votes[0].next_epoch, slot / SLOTS_PER_EPOCH);
     }
 
     #[test]
@@ -2924,16 +3351,16 @@ mod tests {
         seed_tile_with_keys(&mut tile, 128, 0);
 
         let preset_root = [0x99u8; 32];
-        tile.vote_tracker.votes[0].next_root = preset_root;
-        tile.vote_tracker.votes[0].next_epoch = 1;
+        tile.fork_choice.vote_tracker.votes[0].next_root = preset_root;
+        tile.fork_choice.vote_tracker.votes[0].next_epoch = 1;
 
         let buf = build_agg_for_vi0(&tile);
         assert_eq!(SignedAggregateAndProofView::agg_target_epoch(&buf), 0);
         assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Accept(None));
 
         // Older-epoch aggregate must not overwrite the newer vote.
-        assert_eq!(tile.vote_tracker.votes[0].next_root, preset_root);
-        assert_eq!(tile.vote_tracker.votes[0].next_epoch, 1);
+        assert_eq!(tile.fork_choice.vote_tracker.votes[0].next_root, preset_root);
+        assert_eq!(tile.fork_choice.vote_tracker.votes[0].next_epoch, 1);
     }
 
     #[test]
@@ -3128,6 +3555,8 @@ mod tests {
             execution_block_hash: [0u8; 32],
             justified: ZERO_CP,
             finalized: ZERO_CP,
+            unrealized_justified: ZERO_CP,
+            unrealized_finalized: ZERO_CP,
             state_id: f2_id,
         });
         tile.fork_choice.on_block(BlockImport {
@@ -3138,6 +3567,8 @@ mod tests {
             execution_block_hash: [0u8; 32],
             justified: f_cp,
             finalized: f_cp,
+            unrealized_justified: f_cp,
+            unrealized_finalized: f_cp,
             state_id: f_id,
         });
         tile.fork_choice.on_block(BlockImport {
@@ -3148,6 +3579,8 @@ mod tests {
             execution_block_hash: [0u8; 32],
             justified: f_cp,
             finalized: f_cp,
+            unrealized_justified: f_cp,
+            unrealized_finalized: f_cp,
             state_id: d_id,
         });
 

@@ -17,5 +17,9 @@ pub(crate) mod test_signing;
 pub(crate) mod test_state;
 
 pub use error::{Error, PrecheckError, Result};
+// Fork-choice store types, exposed only for the EF vector harnesses' read
+// access via `BeaconStateTile::ef_fork_choice`.
+#[cfg(feature = "ef_tests")]
+pub use fork_choice::{ExecutionStatus, ForkChoice, ForkChoiceNode};
 pub use silver_common::ticker::SlotTicker;
 pub use tile::BeaconStateTile;
