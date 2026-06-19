@@ -25,10 +25,11 @@ use silver_common::{
 };
 
 use crate::{
+    PeerManager,
     manager::{
         ColAttempt, ColSyncReq, OutboundRangeAttempt, PendingBlocksByRange,
-        PendingDataColumnsByRange, PendingRangeRequest, SyncReq, SLOTS_PER_EPOCH,
-    }, PeerManager
+        PendingDataColumnsByRange, PendingRangeRequest, SLOTS_PER_EPOCH, SyncReq,
+    },
 };
 
 /// Per-peer cap on outstanding RPC requests per protocol. Bounds load on any
@@ -747,7 +748,7 @@ impl PeerManager {
         let remaining = target_end_slot.saturating_sub(next_base);
         let count = match syncing_target {
             SyncUpdate::SyncingFinalized { target_epoch, target_root: _ } => {
-                let target_slot = target_epoch.saturating_mul(self.syncing.slots_per_epoch) + 1;
+                let target_slot = target_epoch.saturating_mul(SLOTS_PER_EPOCH) + 1;
                 target_slot
                     .saturating_sub(start_slot)
                     .min(remaining)
@@ -1180,17 +1181,16 @@ impl PeerManager {
         peer_id: usize,
         emit: &mut impl FnMut(PeerControl),
     ) {
-        let mut retry = Vec::new();
-        self.outbound_range_attempts.retain(|attempt| {
-            if attempt.peer_id == peer_id {
-                retry.push(*attempt);
-                false
-            } else {
-                true
-            }
-        });
-        for attempt in retry {
+        let mut start = 0;
+        loop {
+            let Some(position) =
+                self.outbound_range_attempts[start..].iter().position(|x| x.peer_id == peer_id)
+            else {
+                break;
+            };
+            let attempt = self.outbound_range_attempts.swap_remove(position);
             self.retry_backfill_range_attempt(attempt, "peer disconnected", emit);
+            start = position;
         }
     }
 

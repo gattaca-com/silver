@@ -122,16 +122,6 @@ impl Backfill {
         false
     }
 
-    pub(super) fn tick<F>(&mut self, emit: &mut F)
-    where
-        F: FnMut(PeerEvent),
-    {
-        let _ = emit;
-        // The peer manager owns retry timing for outbound BlocksByRange
-        // attempts. Storage only advances the backfill range when the
-        // network delivers a terminal Complete for the active request id.
-    }
-
     pub(super) fn is_complete(&self) -> bool {
         self.blocks_complete
     }

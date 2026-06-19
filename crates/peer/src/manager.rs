@@ -412,10 +412,10 @@ impl PeerManager {
             burnt_for_target: FxHashSet::with_capacity_and_hasher(PEERS_CAP, Default::default()),
             finalized_counts: FxHashMap::with_capacity_and_hasher(SYNC_AGG_CAP, Default::default()),
             head_counts: FxHashMap::with_capacity_and_hasher(SYNC_AGG_CAP, Default::default()),
-            pending_range_requests: VecDeque::new(),
-            outbound_range_attempts: Vec::new(),
-            pending_block_by_root: VecDeque::new(),
-            pending_rpc_request: VecDeque::new(),
+            pending_range_requests: VecDeque::with_capacity(PEERS_CAP),
+            outbound_range_attempts: Vec::with_capacity(PEERS_CAP),
+            pending_block_by_root: VecDeque::with_capacity(PEERS_CAP),
+            pending_rpc_request: VecDeque::with_capacity(PEERS_CAP),
         }
     }
 

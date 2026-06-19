@@ -358,9 +358,6 @@ impl Store {
             self.block_backfill_stage = BlockBackfillStage::Queued;
         }
 
-        if let Some(backfill) = self.backfill.as_mut() {
-            backfill.tick(&mut |evt| emit(IoEvent::PeerEvent(evt)));
-        }
         if self.backfill.as_ref().map(Backfill::is_complete).unwrap_or_default() {
             self.backfill = None;
             self.block_backfill_stage = BlockBackfillStage::Done;
