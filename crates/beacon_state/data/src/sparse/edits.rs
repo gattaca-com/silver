@@ -50,24 +50,14 @@ impl<V> Edits<V> {
 }
 
 impl<V: Copy + PartialEq> Edits<V> {
-    /// Finalize these (a survivor's) edits against a promoted `winner` in one
-    /// pass, returning a fresh `Edits`. Fuses:
-    /// - **rebase**: every index `< valid_below` that `winner` overrides and
-    ///   `self` does not is pinned to its *old* base value (`old_base_at`), so
-    ///   the survivor keeps reading the pre-promote value (ABA hazard).
-    /// - **prune**: any resulting entry `< new_count` that already equals the
-    ///   *new* base — `winner`'s override there, else `old_base_at` — is
-    ///   dropped as redundant.
-    ///
-    /// Output is the ascending merge (survivor's value wins on a shared index).
-    pub fn rebase_and_prune(
-        &self,
+    pub fn rebase_and_prune_from(
+        &mut self,
+        survivor: &Self,
         winner: &Self,
-        valid_below: u32,
         new_count: u32,
         old_base_at: impl Fn(u32) -> V,
-    ) -> Self {
-        let survivor = &self.inner;
+    ) {
+        let survivor = &survivor.inner;
         debug_assert!(
             survivor.windows(2).all(|w| w[0].0 < w[1].0),
             "survivor must be ascending with distinct indices",
@@ -76,45 +66,40 @@ impl<V: Copy + PartialEq> Edits<V> {
             winner.inner.windows(2).all(|w| w[0].0 < w[1].0),
             "winner must be ascending with distinct indices",
         );
-        let mut out: Vec<(u32, V)> = Vec::with_capacity(survivor.len() + winner.inner.len());
-        let mut keep = |idx: u32, v: V| {
-            // New base at `idx`: the winner's override there, else the old base.
-            let new_base = winner.get(idx).copied().unwrap_or_else(|| old_base_at(idx));
-            if idx >= new_count || new_base != v {
-                out.push((idx, v));
-            }
-        };
+        let winner = &winner.inner;
+        let out = &mut self.inner;
+        out.clear();
+        out.reserve(survivor.len() + winner.len());
 
-        let (mut i, mut j) = (0, 0);
-        while i < survivor.len() && j < winner.inner.len() {
-            let (si, sv) = survivor[i];
-            let wi = winner.inner[j].0;
-            if wi >= valid_below {
-                break; // no winner index from here injects
-            }
-            if si < wi {
-                keep(si, sv);
-                i += 1;
-            } else if si == wi {
-                keep(si, sv); // survivor overrides the winner's pin
-                i += 1;
+        let mut j = 0;
+        for k in 0..=survivor.len() {
+            let entry = survivor.get(k);
+            let si = entry.map_or(u32::MAX, |&(i, _)| i);
+
+            while j < winner.len() && winner[j].0 < si {
+                let (wi, wv) = winner[j];
+                let old = old_base_at(wi);
+                if old != wv {
+                    out.push((wi, old));
+                }
                 j += 1;
+            }
+
+            let Some(&(_, sv)) = entry else { break };
+
+            let new_base = if j < winner.len() && winner[j].0 == si {
+                let wv = winner[j].1;
+                j += 1; // survivor's value wins over the winner's pin at `si`
+                Some(wv)
+            } else if si < new_count {
+                Some(old_base_at(si))
             } else {
-                keep(wi, old_base_at(wi)); // pin the old base value
-                j += 1;
+                None
+            };
+            if new_base != Some(sv) {
+                out.push((si, sv));
             }
         }
-        while j < winner.inner.len() && winner.inner[j].0 < valid_below {
-            let wi = winner.inner[j].0;
-            keep(wi, old_base_at(wi));
-            j += 1;
-        }
-        while i < survivor.len() {
-            let (si, sv) = survivor[i];
-            keep(si, sv);
-            i += 1;
-        }
-        Self { inner: out }
     }
 }
 

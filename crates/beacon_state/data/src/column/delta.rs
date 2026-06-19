@@ -27,28 +27,21 @@ impl<V: ColumnVal> ColumnDelta<V> {
         self.total = base.count;
     }
 
-    /// Finalize survivor `self` into fresh slot `out` against promoted
-    /// `winner`, rebasing pins and pruning redundancy onto the logical new
-    /// base (winner's override else old base). Must run before
-    /// [`promote_into_base`](Self::promote_into_base), while `base` still
-    /// holds the old count. `self` is read-only so lock-free readers stay
-    /// unblocked.
-    pub(super) fn rebase_and_prune(
-        &self,
-        out: &mut Self,
+    pub(super) fn rebase_and_prune_from(
+        &mut self,
+        old: &Self,
         base: &FinalizedColumn<V>,
         winner: &Self,
     ) {
-        out.total = self.total;
-        out.edits = self.edits.rebase_and_prune(
-            &winner.edits,
-            base.count as u32,
-            winner.total as u32,
-            |idx| base.data[idx as usize],
-        );
-        out.hash = self.hash.clone();
-        out.hash.rebase(&base.hash, &winner.hash);
-        base.hash.prune_delta_against(&mut out.hash, &winner.hash);
+        self.total = old.total;
+        self.edits.rebase_and_prune_from(&old.edits, &winner.edits, winner.total as u32, |idx| {
+            base.data[idx as usize]
+        });
+
+        // Don't rebase hash part as it is slow because:
+        // * Rebase is slow as almost all elements are updated
+        // * We don't use finalize part of hash tree
+        self.hash = old.hash.clone();
     }
 
     /// Fold the delta into `base`: edits into `data`, fork length into the

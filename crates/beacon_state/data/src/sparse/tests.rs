@@ -10,36 +10,43 @@ fn edits_of<V: Copy + Default>(items: &[(u32, V)]) -> Edits<V> {
 
 #[test]
 fn rebase_and_prune_pins_injects_overrides_and_drops_redundant() {
-    // survivor overrides idx 1 and 2; (3, 103) will match the new base → pruned.
-    let survivor = edits_of(&[(1, 77), (2, 50), (3, 103)]);
-    // winner overrides 0, 1 (< valid_below → candidates to inject) and 5 (skipped).
-    let winner = edits_of(&[(0, 0), (1, 0), (5, 0)]);
+    // The new base updates only where `winner` overrides; everywhere else it
+    // stays at the old base. survivor overrides 1, 3, 4 and 5.
+    let survivor = edits_of(&[(1, 77), (3, 103), (4, 904), (5, 500)]);
+    // winner promotes new base values at 0 and 4; its 102 at idx 2 already
+    // equals the old base there; idx 6 sits past the survivor's last index.
+    let winner = edits_of(&[(0, 900), (2, 102), (4, 904), (6, 600)]);
     let old_base = |idx: u32| 100 + idx as u64;
 
-    let out = survivor
-        .rebase_and_prune(&winner, /* valid_below */ 3, /* new_count */ 4, old_base);
+    let mut out = Edits::default();
+    out.rebase_and_prune_from(&survivor, &winner, /* new_count */ 7, old_base);
 
-    // New base = winner's override (0 at idx 0,1) else old base. 0 pinned at old
-    // base 100 (≠ new base 0 → kept); 1 kept as the survivor's override 77 (wins
-    // over the pin); 5 skipped (≥ valid_below); (2,50) kept (≠ new base 102);
-    // (3,103) dropped (== new base 103).
-    assert_eq!(out.iter().copied().collect::<Vec<_>>(), [(0, 100), (1, 77), (2, 50)]);
+    // idx 0: winner-only override (900) ≠ old base → old base 100 pinned (kept).
+    // idx 1: survivor 77 ≠ old base 101 → kept.
+    // idx 2: winner-only override equals old base 102 → no pin needed.
+    // idx 3: survivor 103 == old base 103 → dropped (redundant).
+    // idx 4: survivor 904 == winner's new base 904 → dropped (redundant).
+    // idx 5: survivor 500 ≠ old base 105 → kept.
+    // idx 6: winner-only override past survivor's last index (flushed at the
+    //        end) ≠ old base → old base 106 pinned (kept).
+    assert_eq!(out.iter().copied().collect::<Vec<_>>(), [(0, 100), (1, 77), (5, 500), (6, 106)]);
 }
 
 #[test]
-fn rebase_and_prune_uses_winner_overrides_at_appended_indices() {
-    // Winner overrides reach past `valid_below` (appended validators). Those
-    // must still feed the prune comparison even though they never inject a pin.
-    let survivor = edits_of(&[(2, 500), (3, 999)]);
+fn rebase_and_prune_keeps_survivor_appended_indices() {
+    // The survivor fork appended idx 6, which the winner's count (4) doesn't
+    // cover — it has no base to compare against and is always kept.
+    let survivor = edits_of(&[(2, 500), (3, 999), (6, 42)]);
     let winner = edits_of(&[(0, 9), (2, 500), (3, 501)]);
     let old_base = |idx: u32| 100 + idx as u64;
 
-    let out = survivor
-        .rebase_and_prune(&winner, /* valid_below */ 2, /* new_count */ 4, old_base);
+    let mut out = Edits::default();
+    out.rebase_and_prune_from(&survivor, &winner, /* new_count */ 4, old_base);
 
-    // idx 0: winner-only, < valid_below → pinned to old base 100. idx 2: new base
-    // is the winner's 500 == survivor → pruned. idx 3: new base 501 ≠ 999 → kept.
-    assert_eq!(out.iter().copied().collect::<Vec<_>>(), [(0, 100), (3, 999)]);
+    // idx 0: winner-only override 9 ≠ old base 100 → pinned 100. idx 2: winner's
+    // new base 500 == survivor → pruned. idx 3: winner's new base 501 ≠ 999 →
+    // kept. idx 6: appended (≥ new_count) → kept verbatim.
+    assert_eq!(out.iter().copied().collect::<Vec<_>>(), [(0, 100), (3, 999), (6, 42)]);
 }
 
 #[test]
