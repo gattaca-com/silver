@@ -14,8 +14,6 @@ use syn::{
     parse_macro_input,
 };
 
-/// Arguments to `#[timed]`: an optional name literal, then an optional
-/// `sample = N`.
 struct TimedArgs {
     name: Option<LitStr>,
     sample: u64,

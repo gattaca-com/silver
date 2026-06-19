@@ -75,16 +75,13 @@ mod imp {
         /// the general-purpose PMU counters (typically a handful per
         /// hyperthread, one of which the NMI watchdog may hold), so opens
         /// past the budget return None and the slot reads zero.
-        pub fn event(type_: u32, config: u64) -> Option<Self> {
-            Self::new(type_, config)
-        }
-
+        ///
         /// Counts kernel-mode work when permitted (`perf_event_paranoid`
         /// <= 1 or `CAP_PERFMON`), else falls back to userspace-only.
         /// Returns None (with a warn) if perf or rdpmc is unavailable —
         /// typically `kernel.perf_event_paranoid` > 2.
         /// fd and mapping live for the process; no Drop (keeps Copy).
-        fn new(type_: u32, config: u64) -> Option<Self> {
+        pub fn event(type_: u32, config: u64) -> Option<Self> {
             match Self::open(type_, config, false) {
                 Ok(c) => Some(c),
                 Err(_) => match Self::open(type_, config, true) {

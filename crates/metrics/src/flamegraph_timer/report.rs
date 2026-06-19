@@ -370,8 +370,6 @@ fn make_line(
             format!("  ×{per}  ({} total)", c.total)
         }
     };
-    // Counter text — only when collected (`perf` feature + permitted).
-    // `render_aligned` lines the column up across rows.
     let counters = counter_text(perf, calls);
     Line { name, avg, suffix, counters }
 }
