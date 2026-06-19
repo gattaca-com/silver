@@ -572,6 +572,9 @@ impl BeaconStateTile {
 /// EF `fork_choice`/`sync` vector harness API: thin gated wrappers over the
 /// private production methods.
 #[cfg(feature = "ef_tests")]
+use silver_common::PayloadValidationStatus;
+
+#[cfg(feature = "ef_tests")]
 impl BeaconStateTile {
     pub fn ef_fork_choice(&self) -> &ForkChoice {
         &self.fork_choice
