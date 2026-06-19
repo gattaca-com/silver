@@ -12,7 +12,7 @@ use silver_common::{
         MAX_BLOB_COMMITMENTS_PER_BLOCK, NUMBER_OF_COLUMNS, SignedBeaconBlockView,
     },
 };
-use silver_metrics::{perf, timed};
+use silver_metrics::timed;
 
 /// Depth of the Merkle branch attaching `kzg_commitments` to
 /// `BeaconBlockBody.body_root`. Per Fulu spec: `floor(log2(gindex))`
@@ -143,7 +143,6 @@ pub fn verify_data_column_sidecar_inclusion_proof(sidecar: &[u8]) -> bool {
 /// required. `precompute = 0` — verification doesn't benefit from the
 /// precomputation table (only proof generation does).
 #[timed]
-#[perf]
 pub fn verify_data_column_sidecar_kzg_proofs(sidecar: &[u8]) -> bool {
     let column = DataColumnSidecarView::column(sidecar);
     let commits = DataColumnSidecarView::kzg_commitments(sidecar);
@@ -234,7 +233,7 @@ pub fn parent_validated(
 /// `fork_version` is the active version at `sidecar.slot`'s epoch; the
 /// caller resolves it from the fork schedule. `proposer_pubkey` is the
 /// already-decompressed registry entry (no extra subgroup check).
-#[perf]
+#[timed]
 pub fn verify_proposer_signature(
     sidecar: &[u8],
     proposer_pubkey: &PublicKey,

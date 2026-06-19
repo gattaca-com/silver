@@ -1,36 +1,47 @@
-//! Consumer for `perf-{name}` MPMC queues emitted by `#[perf]`-decorated
-//! functions. Each `PerfSample` is one call: instructions retired and CPU
-//! cycles (userspace) between entry and exit.
+//! Consumer for `perf-{name}` MPMC queues emitted by `#[timed]` functions
+//! built with the `perf` feature. Each `PerfSample` is one call: raw counter
+//! values, positional by `silver_metrics::schema()` slot.
 //!
 //! Samples are summed into 1 s wall-clock buckets (mirroring
 //! counters/timings); table stats average over the last
 //! `TABLE_WINDOW_BUCKETS` so they track current behaviour, while the full
-//! ring feeds the drill-down IPC chart.
+//! ring feeds the drill-down IPC chart. Counters are looked up by event name
+//! (`instructions`, `cpu-cycles`, …); a name absent from the active schema
+//! reads zero.
 
 use std::collections::VecDeque;
 
 use flux::communication::queue::{ConsumerBare, Queue};
-use silver_metrics::PerfSample;
+use silver_metrics::{MAX_EVENTS, PerfSample, slot};
 
 use crate::{discovery::PerfFile, sources::counters::BUCKET_HISTORY_LEN};
 
 /// Table stats average over the last 30 s of 1 s buckets.
 const TABLE_WINDOW_BUCKETS: usize = 30;
 
-/// Call count and counter sums over one wall-clock bucket.
+/// Call count and per-slot counter sums over one wall-clock bucket.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PerfBucket {
     pub count: u64,
-    pub instr: u64,
-    pub cycles: u64,
-    pub branch_misses: u64,
-    pub cache_misses: u64,
+    pub vals: [u64; MAX_EVENTS],
 }
 
 impl PerfBucket {
+    /// Summed value of the event labelled `label`, or 0 if it isn't in the
+    /// active schema.
+    fn val(&self, label: &str) -> u64 {
+        slot(label).map_or(0, |i| self.vals[i])
+    }
+
+    /// CPU cycles under either spelling perf uses.
+    fn cycles(&self) -> u64 {
+        self.val("cpu-cycles").max(self.val("cycles"))
+    }
+
     #[inline]
     pub fn ipc(&self) -> f64 {
-        if self.cycles == 0 { 0.0 } else { self.instr as f64 / self.cycles as f64 }
+        let cycles = self.cycles();
+        if cycles == 0 { 0.0 } else { self.val("instructions") as f64 / cycles as f64 }
     }
 }
 
@@ -64,10 +75,9 @@ impl PerfSet {
         let mut sample = PerfSample::default();
         while self.consumer.try_consume(&mut sample).is_ok() {
             self.cur.count += 1;
-            self.cur.instr += sample.instr;
-            self.cur.cycles += sample.cycles;
-            self.cur.branch_misses += sample.branch_misses;
-            self.cur.cache_misses += sample.cache_misses;
+            for i in 0..MAX_EVENTS {
+                self.cur.vals[i] += sample.vals[i];
+            }
             self.total_count += 1;
         }
     }
@@ -88,13 +98,14 @@ impl PerfSet {
     }
 
     fn recent_sums(&self) -> PerfBucket {
-        self.recent().fold(PerfBucket::default(), |acc, b| PerfBucket {
-            count: acc.count + b.count,
-            instr: acc.instr + b.instr,
-            cycles: acc.cycles + b.cycles,
-            branch_misses: acc.branch_misses + b.branch_misses,
-            cache_misses: acc.cache_misses + b.cache_misses,
-        })
+        let mut acc = PerfBucket::default();
+        for b in self.recent() {
+            acc.count += b.count;
+            for i in 0..MAX_EVENTS {
+                acc.vals[i] += b.vals[i];
+            }
+        }
+        acc
     }
 
     /// Mean calls/s over the table window (buckets are 1 s).
@@ -106,13 +117,13 @@ impl PerfSet {
     /// Mean instructions retired per call over the table window.
     pub fn instr_avg(&self) -> u64 {
         let s = self.recent_sums();
-        if s.count == 0 { 0 } else { s.instr / s.count }
+        if s.count == 0 { 0 } else { s.val("instructions") / s.count }
     }
 
     /// Mean CPU cycles per call over the table window.
     pub fn cycles_avg(&self) -> u64 {
         let s = self.recent_sums();
-        if s.count == 0 { 0 } else { s.cycles / s.count }
+        if s.count == 0 { 0 } else { s.cycles() / s.count }
     }
 
     /// Cycle-weighted instructions per cycle over the table window.
@@ -123,13 +134,14 @@ impl PerfSet {
     /// Branch misses per 1k instructions over the table window.
     pub fn branch_per_kinstr(&self) -> f64 {
         let s = self.recent_sums();
-        if s.instr == 0 { 0.0 } else { s.branch_misses as f64 * 1000.0 / s.instr as f64 }
+        let instr = s.val("instructions");
+        if instr == 0 { 0.0 } else { s.val("branch-misses") as f64 * 1000.0 / instr as f64 }
     }
 
     /// Mean LLC misses per call over the table window.
     pub fn cache_miss_avg(&self) -> u64 {
         let s = self.recent_sums();
-        if s.count == 0 { 0 } else { s.cache_misses / s.count }
+        if s.count == 0 { 0 } else { s.val("cache-misses") / s.count }
     }
 
     pub fn has_data(&self) -> bool {
@@ -144,6 +156,17 @@ mod tests {
     use super::*;
     use crate::discovery::PerfFile;
 
+    /// Build a sample by metric name (order-independent), so it tracks
+    /// whatever the default schema resolves to.
+    fn sample(instr: u64, cycles: u64, branch: u64, cache: u64) -> PerfSample {
+        let mut s = PerfSample::default();
+        s.vals[slot("instructions").unwrap()] = instr;
+        s.vals[slot("cpu-cycles").unwrap()] = cycles;
+        s.vals[slot("branch-misses").unwrap()] = branch;
+        s.vals[slot("cache-misses").unwrap()] = cache;
+        s
+    }
+
     #[test]
     fn aggregates_buckets() {
         let tmp = std::env::temp_dir().join(format!("surfer_perf_{}", std::process::id()));
@@ -157,18 +180,8 @@ mod tests {
         // Prime the cursor at head before producing (mirrors main.rs).
         set.drain();
 
-        producer.produce(&PerfSample {
-            instr: 3000,
-            cycles: 1000,
-            branch_misses: 5,
-            cache_misses: 12,
-        });
-        producer.produce(&PerfSample {
-            instr: 1000,
-            cycles: 1000,
-            branch_misses: 3,
-            cache_misses: 4,
-        });
+        producer.produce(&sample(3000, 1000, 5, 12));
+        producer.produce(&sample(1000, 1000, 3, 4));
         set.drain();
         set.roll_bucket();
 

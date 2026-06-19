@@ -17,11 +17,11 @@ tracing = { workspace = true, optional = true }
 workspace = true
 
 [features]
-# #[perf] collection: per-function instructions-retired + CPU cycles via
-# rdpmc (hw_counter), emitted on perf-{fn} queues. Needs
+# `#[timed]`'s hardware-counter dimension: per-call counters via rdpmc
+# (hw_counter), emitted on perf-{fn} queues. Needs
 # kernel.perf_event_paranoid <= 2 at runtime (<= 1 to include kernel-mode
 # work in the counts):
 #   sudo sysctl kernel.perf_event_paranoid=1
-# Disabled with a warn otherwise. `PerfSample` and the #[perf] macro
-# compile regardless — collection alone is gated.
+# Disabled with a warn otherwise. `PerfSample` and the `#[timed]` macro
+# compile regardless — counter collection alone is gated.
 perf = ["dep:tracing"]

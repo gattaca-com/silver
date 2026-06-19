@@ -24,11 +24,6 @@ mod imp {
 
     use tracing::{info, warn};
 
-    const PERF_TYPE_HARDWARE: u32 = 0;
-    const PERF_COUNT_HW_CPU_CYCLES: u64 = 0;
-    const PERF_COUNT_HW_INSTRUCTIONS: u64 = 1;
-    const PERF_COUNT_HW_CACHE_MISSES: u64 = 3;
-    const PERF_COUNT_HW_BRANCH_MISSES: u64 = 5;
     const PERF_FLAG_FD_CLOEXEC: libc::c_ulong = 8;
     // perf_event_attr flag bits.
     const ATTR_EXCLUDE_KERNEL: u64 = 1 << 5;
@@ -74,36 +69,22 @@ mod imp {
     unsafe impl Send for HwCounter {}
 
     impl HwCounter {
-        pub fn instructions() -> Option<Self> {
-            Self::new(PERF_COUNT_HW_INSTRUCTIONS)
-        }
-
-        pub fn cycles() -> Option<Self> {
-            Self::new(PERF_COUNT_HW_CPU_CYCLES)
-        }
-
-        /// Branch mispredictions. Unlike instructions/cycles (fixed PMU
-        /// counters) this takes a general-purpose counter — typically 4
-        /// per hyperthread, one of which the NMI watchdog may hold.
-        pub fn branch_misses() -> Option<Self> {
-            Self::new(PERF_COUNT_HW_BRANCH_MISSES)
-        }
-
-        /// Last-level cache misses (~DRAM round trips). General-purpose
-        /// counter, same budget note as `branch_misses`.
-        pub fn cache_misses() -> Option<Self> {
-            Self::new(PERF_COUNT_HW_CACHE_MISSES)
-        }
-
+        /// Open an arbitrary perf event by `(type, config)` — the same ABI
+        /// numbers perf resolves event names into. Fixed-function events
+        /// (instructions, cycles) always fit; everything else competes for
+        /// the general-purpose PMU counters (typically a handful per
+        /// hyperthread, one of which the NMI watchdog may hold), so opens
+        /// past the budget return None and the slot reads zero.
+        ///
         /// Counts kernel-mode work when permitted (`perf_event_paranoid`
         /// <= 1 or `CAP_PERFMON`), else falls back to userspace-only.
         /// Returns None (with a warn) if perf or rdpmc is unavailable —
         /// typically `kernel.perf_event_paranoid` > 2.
         /// fd and mapping live for the process; no Drop (keeps Copy).
-        fn new(config: u64) -> Option<Self> {
-            match Self::open(config, false) {
+        pub fn event(type_: u32, config: u64) -> Option<Self> {
+            match Self::open(type_, config, false) {
                 Ok(c) => Some(c),
-                Err(_) => match Self::open(config, true) {
+                Err(_) => match Self::open(type_, config, true) {
                     Ok(c) => {
                         static NOTICE: Once = Once::new();
                         NOTICE.call_once(|| {
@@ -126,9 +107,9 @@ mod imp {
             }
         }
 
-        fn open(config: u64, exclude_kernel: bool) -> Result<Self, Error> {
+        fn open(type_: u32, config: u64, exclude_kernel: bool) -> Result<Self, Error> {
             let mut attr: PerfEventAttr = unsafe { std::mem::zeroed() };
-            attr.type_ = PERF_TYPE_HARDWARE;
+            attr.type_ = type_;
             attr.size = size_of::<PerfEventAttr>() as u32;
             attr.config = config;
             attr.flags = ATTR_EXCLUDE_HV | if exclude_kernel { ATTR_EXCLUDE_KERNEL } else { 0 };
@@ -236,19 +217,7 @@ mod imp {
     pub struct HwCounter {}
 
     impl HwCounter {
-        pub fn instructions() -> Option<Self> {
-            None
-        }
-
-        pub fn cycles() -> Option<Self> {
-            None
-        }
-
-        pub fn branch_misses() -> Option<Self> {
-            None
-        }
-
-        pub fn cache_misses() -> Option<Self> {
+        pub fn event(_type_: u32, _config: u64) -> Option<Self> {
             None
         }
 
@@ -265,10 +234,15 @@ pub use imp::HwCounter;
 mod tests {
     use super::HwCounter;
 
+    // PERF_TYPE_HARDWARE, and its instructions / cpu-cycles configs.
+    const HW: u32 = 0;
+    const INSTRUCTIONS: u64 = 1;
+    const CYCLES: u64 = 0;
+
     /// Skips (None) where `perf_event_open` is restricted, e.g. CI.
     #[test]
     fn counts_loop_instructions() {
-        let Some(c) = HwCounter::instructions() else {
+        let Some(c) = HwCounter::event(HW, INSTRUCTIONS) else {
             eprintln!("perf unavailable; skipping");
             return;
         };
@@ -285,7 +259,7 @@ mod tests {
 
     #[test]
     fn counts_cycles() {
-        let Some(c) = HwCounter::cycles() else {
+        let Some(c) = HwCounter::event(HW, CYCLES) else {
             eprintln!("perf unavailable; skipping");
             return;
         };

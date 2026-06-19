@@ -2,11 +2,11 @@
 //! path is the measured timed-frame chain, so containment holds by
 //! construction.
 
-use std::{borrow::Cow, collections::HashMap, fmt::Write as _};
+use std::{borrow::Cow, collections::HashMap};
 
 use flux::timing::Nanos;
 
-use crate::flamegraph_timer::collect::drain;
+use crate::{flamegraph_timer::collect::drain, perf::PerfSample, slot};
 
 #[derive(serde::Serialize)]
 struct PathStat {
@@ -19,6 +19,11 @@ struct PathStat {
     tracked_max_ns: Nanos,
     tracked_sum_ns: Nanos,
     total_untracked_ns: Nanos,
+    /// Summed counter deltas over all calls on this path, and the same
+    /// excluding timed children (mirroring `total_untracked_ns`). All-zero
+    /// unless built with the `perf` feature (and `perf_event_open` permitted).
+    tracked_perf: PerfSample,
+    untracked_perf: PerfSample,
 }
 
 fn join_path<S: serde::Serializer>(path: &[String], s: S) -> Result<S::Ok, S::Error> {
@@ -51,6 +56,8 @@ impl TimingStats {
                     tracked_max_ns: Nanos(samples.last().copied().unwrap_or(0)),
                     tracked_sum_ns: Nanos(u64::try_from(sum).unwrap_or(u64::MAX)),
                     total_untracked_ns: Nanos(timing.samples.total_untracked_ns),
+                    tracked_perf: timing.samples.tracked_perf,
+                    untracked_perf: timing.samples.total_untracked_perf,
                 }
             })
             .collect();
@@ -103,11 +110,13 @@ impl TimingStats {
             node.count = s.count;
             node.total_untracked_ns = s.total_untracked_ns;
             node.tracked_sum_ns = s.tracked_sum_ns;
+            node.perf = s.tracked_perf;
+            node.untracked_perf = s.untracked_perf;
         }
 
-        let mut out = String::new();
-        root.render_children(0, &mut out);
-        out
+        let mut lines = Vec::new();
+        root.render_children(0, &mut lines);
+        render_aligned(&lines)
     }
 
     /// Deterministic JSON `{label, paths}` — see `PathStat` for the per-path
@@ -132,7 +141,7 @@ fn leaf_name(qualified: &str) -> Cow<'_, str> {
         // The marker wraps exactly the receiver type; drop its closing `>`.
         let ty = &qualified[at + MARK.len()..];
         let ty = ty.strip_suffix('>').unwrap_or(ty);
-        return Cow::Owned(format!("{func}<{}>", strip_module_paths(ty)));
+        return Cow::Owned(format!("{func}<{}>", strip_module_paths(&strip_lifetimes(ty))));
     }
     Cow::Borrowed(qualified.rsplit("::").next().unwrap_or(qualified))
 }
@@ -164,6 +173,34 @@ fn strip_module_paths(s: &str) -> String {
     out
 }
 
+/// Drop lifetime arguments from a `type_name` string so a receiver renders
+/// `ColumnWriteView<Current>` rather than `ColumnWriteView<'_, Current>`. A
+/// lifetime is `'` + ident; a following `, ` separator (the lifetime was a
+/// leading generic arg) is dropped with it.
+fn strip_lifetimes(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < s.len() {
+        if bytes[i] == b'\'' {
+            i += 1;
+            while i < s.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
+            }
+            if s[i..].starts_with(", ") {
+                i += 2;
+            } else if i < s.len() && bytes[i] == b',' {
+                i += 1;
+            }
+            continue;
+        }
+        let ch = s[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
 fn percentile(sorted: &[u64], q: f64) -> u64 {
     if sorted.is_empty() {
         return 0;
@@ -177,6 +214,8 @@ struct Node {
     count: u64,
     total_untracked_ns: Nanos,
     tracked_sum_ns: Nanos,
+    perf: PerfSample,
+    untracked_perf: PerfSample,
     children: HashMap<String, Node>,
 }
 
@@ -185,8 +224,51 @@ struct Node {
 /// dominant costs.
 const COVERAGE_PCT: u64 = 99;
 
+/// One rendered row, held as parts so [`render_aligned`] can line up the avg
+/// (ns) column past the widest label and the counter column past the widest
+/// prefix — both vary with label length, so neither can use a fixed column.
+struct Line {
+    name: String,
+    avg: String,
+    suffix: String,
+    /// Counter text; `None` for synthetic rows and when `perf` is off.
+    counters: Option<String>,
+}
+
+fn width(s: &str) -> usize {
+    s.chars().count()
+}
+
+/// Assemble rows into the tree: avg right-aligned just past the widest label,
+/// then the counter column just past the widest prefix that carries counters.
+fn render_aligned(lines: &[Line]) -> String {
+    let name_w = lines.iter().map(|l| width(&l.name)).max().unwrap_or(0);
+    let prefix = |l: &Line| {
+        format!("{name:<name_w$}  {avg:>10}{suffix}", name = l.name, avg = l.avg, suffix = l.suffix)
+    };
+    let counter_w = lines
+        .iter()
+        .filter(|l| l.counters.is_some())
+        .map(|l| width(&prefix(l)))
+        .max()
+        .map_or(0, |w| w + 3);
+    let mut out = String::new();
+    for l in lines {
+        let p = prefix(l);
+        out.push_str(&p);
+        if let Some(c) = &l.counters {
+            for _ in 0..counter_w.saturating_sub(width(&p)) {
+                out.push(' ');
+            }
+            out.push_str(c);
+        }
+        out.push('\n');
+    }
+    out
+}
+
 impl Node {
-    fn render_children(&self, depth: usize, out: &mut String) {
+    fn render_children(&self, depth: usize, out: &mut Vec<Line>) {
         if self.children.is_empty() {
             return;
         }
@@ -197,6 +279,7 @@ impl Node {
                 label: leaf_name(name),
                 sum_ns: c.tracked_sum_ns,
                 count: c.count,
+                perf: c.perf,
                 child: Some(c),
             })
             .collect();
@@ -205,6 +288,7 @@ impl Node {
                 label: Cow::Borrowed("untracked"),
                 sum_ns: self.total_untracked_ns,
                 count: self.count,
+                perf: self.untracked_perf,
                 child: None,
             });
         }
@@ -231,7 +315,7 @@ impl Node {
         for r in &rows[..cut] {
             let avg = r.sum_ns / r.count.max(1);
             let count = Some(CallCount { total: r.count, per_parent: self.count });
-            emit_row(out, indent, r.label.as_ref(), avg, count);
+            out.push(make_line(indent, r.label.as_ref(), avg, count, &r.perf, r.count));
             if let Some(child) = r.child {
                 child.render_children(depth + 1, out);
             }
@@ -240,7 +324,7 @@ impl Node {
             let rem_sum: Nanos = rows[cut..].iter().map(|r| r.sum_ns).sum();
             let rem_avg = rem_sum / self.count.max(1);
             let label = format!("... ({} more)", rows.len() - cut);
-            emit_row(out, indent, &label, rem_avg, None);
+            out.push(make_line(indent, &label, rem_avg, None, &PerfSample::default(), 0));
         }
     }
 }
@@ -249,6 +333,9 @@ struct Row<'a> {
     label: Cow<'a, str>,
     sum_ns: Nanos,
     count: u64,
+    /// Summed counter deltas for this frame; all-zero for the synthetic
+    /// `untracked`/fold rows and when the `perf` feature is off.
+    perf: PerfSample,
     /// `None` for the synthetic `untracked` row (no subtree to recurse into).
     child: Option<&'a Node>,
 }
@@ -259,25 +346,58 @@ struct CallCount {
     per_parent: u64,
 }
 
-fn emit_row(out: &mut String, indent: usize, label: &str, avg: Nanos, count: Option<CallCount>) {
-    let width = 38usize.saturating_sub(indent);
-    // `Nanos` Display ignores formatter width, so stringify then pad.
-    let avg_str = avg.to_string();
+fn make_line(
+    indent: usize,
+    label: &str,
+    avg: Nanos,
+    count: Option<CallCount>,
+    perf: &PerfSample,
+    calls: u64,
+) -> Line {
+    let name = format!("{blank:indent$}{label}", blank = "");
+    let avg = avg.to_string();
     let suffix = match count {
         None => String::new(),
         // No parent (root) or parent ran once → avg == total; show plain count.
         Some(c) if c.per_parent <= 1 => format!("  ×{}", c.total),
         Some(c) => {
             // avg calls per parent invocation; integer when divisible.
-            let avg = if c.total % c.per_parent == 0 {
+            let per = if c.total % c.per_parent == 0 {
                 (c.total / c.per_parent).to_string()
             } else {
                 format!("{:.1}", c.total as f64 / c.per_parent as f64)
             };
-            format!("  ×{avg}  ({} total)", c.total)
+            format!("  ×{per}  ({} total)", c.total)
         }
     };
-    writeln!(out, "{pad:indent$}{label:<width$}  {avg_str:>10}{suffix}", pad = "").unwrap();
+    let counters = counter_text(perf, calls);
+    Line { name, avg, suffix, counters }
+}
+
+/// Per-call counter columns from the runtime [`schema`](crate::schema): each
+/// non-IPC-input event as `N label/call`, then IPC derived from the
+/// `instructions`/`cpu-cycles` slots if both were measured. `None` when no
+/// counters were collected (the `perf` feature is off or this is a synthetic
+/// row).
+fn counter_text(perf: &PerfSample, calls: u64) -> Option<String> {
+    if calls == 0 || perf.vals.iter().all(|&v| v == 0) {
+        return None;
+    }
+    let schema = crate::schema();
+    let is_ipc_input = |label: &str| matches!(label, "instructions" | "cpu-cycles" | "cycles");
+    let mut parts: Vec<String> = schema
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| !is_ipc_input(&e.label))
+        .map(|(i, e)| format!("{:>9} {}/call", perf.vals[i] / calls, e.label))
+        .collect();
+    if let (Some(i), Some(c)) =
+        (slot("instructions"), slot("cpu-cycles").or_else(|| slot("cycles"))) &&
+        perf.vals[c] > 0
+    {
+        parts.push(format!("ipc {:.2}", perf.vals[i] as f64 / perf.vals[c] as f64));
+    }
+    (!parts.is_empty()).then(|| parts.join("  "))
 }
 
 #[cfg(test)]

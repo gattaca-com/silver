@@ -4,7 +4,6 @@ use std::{
 };
 
 use silver_common::metrics::timed;
-use silver_metrics::perf;
 use snap::raw::{Decoder, Encoder};
 use thiserror::Error;
 
@@ -137,7 +136,6 @@ impl SnappyDecoder {
     /// Feed compressed bytes, decompress complete frames into `out`.
     /// Returns `(bytes_consumed, bytes_written)`.
     #[timed]
-    #[perf]
     pub fn decompress(
         &mut self,
         input: &[u8],

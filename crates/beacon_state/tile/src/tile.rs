@@ -10,9 +10,8 @@ use silver_beacon_state_data::{
     SLOTS_PER_EPOCH, Slot, SlotState, SpecConfig, StateId, Version,
 };
 use silver_common::{
-    BeaconStateEvent, DataColumnsAvailable, EngineResp, NewGossipMsg, PayloadValidationStatus,
-    ReplayBlock, RpcInbound, RpcResponse, RpcResponseInbound, SilverSpine, SyncUpdate,
-    TRandomAccess, hex32,
+    BeaconStateEvent, DataColumnsAvailable, EngineResp, NewGossipMsg, ReplayBlock, RpcInbound,
+    RpcResponse, RpcResponseInbound, SilverSpine, SyncUpdate, TRandomAccess, hex32,
     ssz_view::{MAX_ATTESTATIONS_ELECTRA, MAX_ATTESTING_INDICES, STATUS_V2_SIZE},
     ticker::{SlotTicker, TickEvent},
 };
@@ -572,6 +571,9 @@ impl BeaconStateTile {
 
 /// EF `fork_choice`/`sync` vector harness API: thin gated wrappers over the
 /// private production methods.
+#[cfg(feature = "ef_tests")]
+use silver_common::PayloadValidationStatus;
+
 #[cfg(feature = "ef_tests")]
 impl BeaconStateTile {
     pub fn ef_fork_choice(&self) -> &ForkChoice {
