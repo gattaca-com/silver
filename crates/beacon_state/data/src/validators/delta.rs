@@ -609,6 +609,24 @@ impl<'a> ValidatorsWriteView<'a> {
         self.refresh_leaf(ix);
     }
 
+    /// Batch effective-balance update — mirrors a column `set_many`: one merge
+    /// into the field edits, then one batched hash-overlay rebuild over all
+    /// touched validator leaves (vs `set_effective_balance` rebuilding the
+    /// shared ancestors per call). `changes` must be ascending and distinct.
+    pub fn set_effective_balance_many(&mut self, changes: &[(u32, u64)]) {
+        if changes.is_empty() {
+            return;
+        }
+        debug_assert!(
+            changes.windows(2).all(|w| w[0].0 < w[1].0),
+            "set_effective_balance_many input must be ascending with distinct indices",
+        );
+        self.fork.effective_balance_edits.merge_in_place(changes);
+        let leaves: Vec<(u32, B256)> =
+            changes.iter().map(|&(ix, _)| (ix, self.reader().recompute_leaf(ix))).collect();
+        self.fork.hash_overlay.set_leaves(self.base.hash(), &leaves);
+    }
+
     #[inline]
     pub fn set_slashed(&mut self, ix: u32, v: bool) {
         self.fork.slashed_edits.merge_in_place(&[(ix, v)]);
