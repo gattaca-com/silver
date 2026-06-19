@@ -1,9 +1,10 @@
-//! Proc-macro support for the silver crates. Exposes `#[timed]` (wraps a
-//! function body in a thread-local flux `Timer` so processing time is
-//! emitted to a per-function shmem queue) and `#[perf]` (same shape, but
-//! records instructions retired + CPU cycles via rdpmc onto `perf-{fn}`
-//! queues). Storage and Drop-side recording live in `silver_metrics`;
-//! this crate is only the attribute-macro glue.
+//! Proc-macro support for the silver crates. Exposes `#[timed]`, which wraps a
+//! function body in a thread-local flux `Timer` so processing time is emitted
+//! to a per-function shmem queue (or folded into an in-process call tree under
+//! the perf harness). Built with the `perf` feature, the same guard also
+//! records hardware counters (instructions, cycles, branch/cache misses) via
+//! rdpmc. Storage and Drop-side recording live in `silver_metrics`; this crate
+//! is only the attribute-macro glue.
 
 use proc_macro::TokenStream;
 use quote::quote;
@@ -13,69 +14,14 @@ use syn::{
     parse_macro_input,
 };
 
-/// Wrap a function body in a per-function thread-local flux `Timer`.
-///
-/// Default timer name is `concat!(module_path!(), "::", fn_name)`
-/// resolved at the call site — so the queue file becomes
-/// `timing-{crate}::{module}::{fn_name}` and stays unambiguous across
-/// crates without manual labelling.
-///
-/// On a method, the default name auto-qualifies by the monomorphized `Self`:
-/// `type_name` bakes the concrete type in per instantiation, so generic code
-/// whose frames would otherwise collapse onto one compile-time string (e.g.
-/// `ColumnGroup<Balances>` vs `ColumnGroup<Inactivity>`) stays split — the type
-/// info a flamegraph can't recover from a bare address in-process. Generic
-/// helpers called underneath still split by their qualified parent path, so
-/// only the receiver type is folded in (not fn-level type params, which would
-/// fork a frame per closure type / call site). The name is a `&'static str`
-/// (no hot-path cost); the report unwraps the marker into a `fn<Type>` label.
-/// Free functions keep the plain `module::path::fn` name.
-///
-/// Pass a string literal to override: `#[timed("custom_name")]` uses that name
-/// verbatim (no module prefix, no type qualification).
-///
-/// Records processing time on every exit path — normal return, `?`,
-/// early `return`, panic-unwind — via a Drop guard.
-#[proc_macro_attribute]
-pub fn timed(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(item as ItemFn);
-    let func_name_str = input.sig.ident.to_string();
-
-    let is_method = matches!(input.sig.inputs.first(), Some(syn::FnArg::Receiver(_)));
-    let timer_name_expr = if !attr.is_empty() {
-        let s = parse_macro_input!(attr as LitStr).value();
-        quote! { #s }
-    } else if is_method {
-        quote! {{
-            struct __TimedTy<T: ?Sized>(::core::marker::PhantomData<T>);
-            ::core::any::type_name::<__TimedTy<Self>>()
-        }}
-    } else {
-        quote! { concat!(module_path!(), "::", #func_name_str) }
-    };
-
-    let ItemFn { attrs, vis, sig, block } = input;
-
-    let expanded = quote! {
-        #(#attrs)* #vis #sig {
-            let __timed_guard = ::silver_metrics::TimerGuard::new(
-                #timer_name_expr,
-            );
-            #block
-        }
-    };
-
-    expanded.into()
-}
-
-/// Arguments to `#[perf]`: an optional name literal, then an optional
+/// Arguments to `#[timed]`: an optional name literal, then an optional
 /// `sample = N`.
-struct PerfArgs {
+struct TimedArgs {
     name: Option<LitStr>,
     sample: u64,
 }
 
-impl Parse for PerfArgs {
+impl Parse for TimedArgs {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let mut name = None;
         let mut sample = 1u64;
@@ -101,57 +47,74 @@ impl Parse for PerfArgs {
     }
 }
 
-/// Record instructions retired + CPU cycles for a function via a
-/// Drop guard, emitted per call onto the `perf-{name}` shmem queue.
+/// Wrap a function body in a per-function thread-local flux `Timer`.
 ///
-/// Naming matches `#[timed]`: default is
-/// `concat!(module_path!(), "::", fn_name)`; pass a string literal to
-/// override (`#[perf("custom_name")]`).
+/// Default timer name is `concat!(module_path!(), "::", fn_name)`
+/// resolved at the call site — so the queue file becomes
+/// `timing-{crate}::{module}::{fn_name}` and stays unambiguous across
+/// crates without manual labelling.
 ///
-/// `sample = N` measures one in N calls (per thread, via a
-/// thread-local call counter) — use on hot paths where two rdpmc
-/// reads per call is too much. Default 1 = every call. Combinable:
-/// `#[perf("custom_name", sample = 1000)]`.
+/// On a method, the default name auto-qualifies by the monomorphized `Self`:
+/// `type_name` bakes the concrete type in per instantiation, so generic code
+/// whose frames would otherwise collapse onto one compile-time string (e.g.
+/// `ColumnGroup<Balances>` vs `ColumnGroup<Inactivity>`) stays split — the type
+/// info a flamegraph can't recover from a bare address in-process. Generic
+/// helpers called underneath still split by their qualified parent path, so
+/// only the receiver type is folded in (not fn-level type params, which would
+/// fork a frame per closure type / call site). The name is a `&'static str`
+/// (no hot-path cost); the report unwraps the marker into a `fn<Type>` label.
+/// Free functions keep the plain `module::path::fn` name.
 ///
-/// Collection requires the `perf` feature on `silver_metrics` (rdpmc)
-/// and `kernel.perf_event_paranoid <= 2` at runtime; otherwise the
-/// guard is inert.
+/// Pass a string literal to override: `#[timed("custom_name")]` uses that name
+/// verbatim (no module prefix, no type qualification).
+///
+/// `sample = N` throttles the hardware-counter dimension (built with the `perf`
+/// feature) to one in N calls on hot paths — timing is still recorded every
+/// call. Combinable: `#[timed("custom_name", sample = 1000)]`. Without the
+/// `perf` feature `sample` only affects which calls would have been counted, so
+/// it is a no-op there.
+///
+/// Records processing time on every exit path — normal return, `?`,
+/// early `return`, panic-unwind — via a Drop guard.
 #[proc_macro_attribute]
-pub fn perf(attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn timed(attr: TokenStream, item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as ItemFn);
-    let args = parse_macro_input!(attr as PerfArgs);
+    let args = parse_macro_input!(attr as TimedArgs);
+    let func_name_str = input.sig.ident.to_string();
 
-    let name_expr = match &args.name {
+    let is_method = matches!(input.sig.inputs.first(), Some(syn::FnArg::Receiver(_)));
+    let timer_name_expr = match &args.name {
         Some(lit) => {
             let s = lit.value();
             quote! { #s }
         }
-        None => {
-            let func_name_str = input.sig.ident.to_string();
-            quote! { concat!(module_path!(), "::", #func_name_str) }
-        }
+        None if is_method => quote! {{
+            struct __TimedTy<T: ?Sized>(::core::marker::PhantomData<T>);
+            ::core::any::type_name::<__TimedTy<Self>>()
+        }},
+        None => quote! { concat!(module_path!(), "::", #func_name_str) },
     };
 
     let ItemFn { attrs, vis, sig, block } = input;
 
     let guard = if args.sample <= 1 {
         quote! {
-            let __perf_guard = ::silver_metrics::PerfGuard::new(
-                #name_expr,
-            );
+            let __timed_guard = ::silver_metrics::TimerGuard::new(#timer_name_expr);
         }
     } else {
         let sample = args.sample;
         quote! {
             ::std::thread_local! {
-                static __PERF_SKIP: ::core::cell::Cell<u64> =
+                static __TIMED_SKIP: ::core::cell::Cell<u64> =
                     const { ::core::cell::Cell::new(0) };
             }
-            let __perf_guard = __PERF_SKIP.with(|c| {
+            let __timed_sample = __TIMED_SKIP.with(|c| {
                 let n = c.get();
                 c.set(n.wrapping_add(1));
-                (n % #sample == 0).then(|| ::silver_metrics::PerfGuard::new(#name_expr))
+                n % #sample == 0
             });
+            let __timed_guard =
+                ::silver_metrics::TimerGuard::new_sampled(#timer_name_expr, __timed_sample);
         }
     };
 

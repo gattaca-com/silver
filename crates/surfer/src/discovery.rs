@@ -7,7 +7,8 @@
 //! - `counters-{name}` — shmem-mapped `[AtomicU64; N]` (read-only).
 //! - `timing-{name}` / `latency-{name}` — flux MPMC `TimingMessage` queues.
 //! - `tilemetrics-{name}` — flux SPMC `TileSample` queue.
-//! - `perf-{name}` — flux MPMC `PerfSample` queue (`#[perf]` functions).
+//! - `perf-{name}` — flux MPMC `PerfSample` queue (`#[timed]` functions built
+//!   with the `perf` feature).
 
 use std::{collections::HashMap, fs, io, path::PathBuf};
 
@@ -45,7 +46,7 @@ pub struct TileMetricsFile {
 
 pub struct PerfFile {
     /// The `{name}` suffix from `perf-{name}` — the decorated function's
-    /// `module_path::fn` (or its `#[perf("...")]` override).
+    /// `module_path::fn` (or its `#[timed("...")]` override).
     pub name: String,
     pub path: PathBuf,
 }
