@@ -1,4 +1,5 @@
 pub mod counters;
+mod el_blobs;
 mod store;
 pub mod tile;
 pub mod util;
