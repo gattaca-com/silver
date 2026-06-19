@@ -192,10 +192,6 @@ pub fn validate_execution_payload(
         });
     }
 
-    // TODO(EL): full payload acceptance is determined by engine_newPayloadV4
-    // (VALID/INVALID/SYNCING). See process_block_body — flag block as
-    // optimistic on SYNCING, reject on INVALID.
-
     Ok(())
 }
 

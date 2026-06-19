@@ -7,11 +7,12 @@ use std::{
 };
 
 use silver_beacon_state::{
+    BeaconStateTile,
     ssz_hash::{StateHashScratch, hash_tree_root_state},
-    state_transition,
+    stf,
 };
 use silver_beacon_state_data::{
-    EpochGroup, EpochView, LongtailGroup, SpecConfig, StateId, StateWriterView,
+    B256, EpochGroup, EpochView, LongtailGroup, SpecConfig, StateId, StateWriterView,
     effective_randao_mixes_into, effective_slashings_into,
 };
 
@@ -25,6 +26,14 @@ impl LoadedState {
     /// group, keyed by the bundle's `slot_idx`).
     pub fn slot(&self) -> u64 {
         self.bs.slot_states.view(self.state_id.slot_idx).slot_number()
+    }
+
+    /// hash_tree_root of the loaded state (single-leaf merkle-proof checks).
+    pub fn state_root(&mut self) -> [u8; 32] {
+        let sid = self.state_id;
+        let (view, epoch, longtail) = self.view();
+        let rv = view.read(epoch.view_opt(sid.epoch_idx), longtail.view_opt(sid.longtail_idx));
+        hash_tree_root_state(&rv, &mut StateHashScratch::new())
     }
 
     /// Roll a fork, run `f` over its writer view, then commit with the
@@ -57,9 +66,7 @@ impl LoadedState {
     pub fn apply_block(&mut self, cfg: &SpecConfig, block_ssz: &[u8]) -> Result<(), String> {
         let parent = self.state_id;
         let (mut view, epoch, longtail) = self.view();
-        match state_transition::apply_signed_block_debug(
-            cfg, &mut view, epoch, longtail, parent, block_ssz,
-        ) {
+        match stf::apply_signed_block_debug(cfg, &mut view, epoch, longtail, parent, block_ssz) {
             Ok((epoch_idx, longtail_idx)) => {
                 self.state_id = view.commit(epoch_idx, longtail_idx);
                 Ok(())
@@ -361,4 +368,51 @@ fn hex(b: &[u8; 32]) -> String {
 
 pub fn spec_tests_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("consensus-spec-tests")
+}
+
+/// Parse a `0x`-prefixed 32-byte hex root (fork_choice / sync vectors).
+pub fn parse_root(s: &str) -> B256 {
+    let h = s.strip_prefix("0x").unwrap_or(s);
+    let mut out = [0u8; 32];
+    for (i, b) in out.iter_mut().enumerate() {
+        *b = u8::from_str_radix(&h[i * 2..i * 2 + 2], 16).expect("hex root");
+    }
+    out
+}
+
+/// Snappy-decode a `<stem>.ssz_snappy` object referenced from a steps file.
+pub fn case_file(dir: &Path, stem: &str) -> Vec<u8> {
+    snappy_decode(&dir.join(format!("{}.ssz_snappy", stem.trim())))
+}
+
+/// Anchor a tile on a decomposed EF state with in-memory stub channels, for the
+/// fork_choice / sync vector harnesses. Genesis-relative time is driven by the
+/// harness via `ef_tick`; weak-subjectivity is skipped (the anchor is the test
+/// genesis).
+pub fn ef_tile(state: silver_beacon_state_data::BeaconState) -> BeaconStateTile {
+    use silver_beacon_state::{BeaconStateTile, SlotTicker};
+    use silver_common::{TCache, TCacheProducer};
+    use silver_config::SyncingConfig;
+
+    let ticker =
+        SlotTicker::new(0, std::time::Duration::from_secs(12), std::time::Duration::from_secs(4));
+    // Producers stay bound through `new`; the tile's consumers keep their caches
+    // alive afterward (mirrors the `make_tile` unit-test harness).
+    let (gp, rp, ep, yp) = (
+        TCache::producer("ef_gossip", 1 << 16),
+        TCache::producer("ef_rpc", 1 << 16),
+        TCache::producer("ef_engine", 1 << 16),
+        TCache::producer("ef_replay", 1 << 16),
+    );
+    BeaconStateTile::new(
+        ticker,
+        SpecConfig::mainnet(),
+        &SyncingConfig::default(),
+        gp.cache_ref().random_access("ef_gossip", true).unwrap(),
+        rp.cache_ref().random_access("ef_rpc", true).unwrap(),
+        ep.cache_ref().random_access("ef_engine", true).unwrap(),
+        yp.cache_ref().random_access("ef_replay", true).unwrap(),
+        false,
+        state,
+    )
 }

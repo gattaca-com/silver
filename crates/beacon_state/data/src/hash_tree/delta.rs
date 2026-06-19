@@ -62,37 +62,70 @@ impl DeltaHashTree {
     ///
     /// Full invariant: `docs/delta-rebase-invariant.md`.
     pub(crate) fn rebase(&mut self, base: &FinalizedHashTree, winner: &DeltaHashTree) {
-        self.rebase_at(base, winner, FinalizedHashTree::root())
+        if let Some(rebased) = self.rebased(base, winner, FinalizedHashTree::root()) {
+            *self = rebased;
+        }
     }
 
-    fn rebase_at(&mut self, base: &FinalizedHashTree, winner: &DeltaHashTree, node: u32) {
+    fn rebased(
+        &self,
+        base: &FinalizedHashTree,
+        winner: &DeltaHashTree,
+        node: u32,
+    ) -> Option<DeltaHashTree> {
         // Survivor already equals the winner here → it matches the new base too,
         // so no symlink can drift; nothing to pin.
         if self.same(winner) {
-            return;
+            return None;
         }
 
         match winner {
             // Base doesn't move here → the survivor's symlinks stay valid.
-            DeltaHashTree::Base(_) => (),
-            // Base moves here → freeze the survivor's value, else its symlink
-            // would follow the base to the winner's new value.
-            DeltaHashTree::Leaf(_) => *self = DeltaHashTree::Leaf(self.root(base)),
+            DeltaHashTree::Base(_) => None,
+            // Base moves here → a `Base` symlink must freeze to its current value
+            // (else it would follow the base to the winner's); a `Leaf` is already
+            // frozen, so it's unchanged.
+            DeltaHashTree::Leaf(_) => match self {
+                DeltaHashTree::Base(_) => Some(DeltaHashTree::Leaf(self.root(base))),
+                DeltaHashTree::Leaf(_) => None,
+                DeltaHashTree::Node(_) => unreachable!("winner Leaf ⇒ single-leaf range"),
+            },
             // Base moves below → descend to the symlinks at risk.
             DeltaHashTree::Node(winner_node) => {
-                let (mut left, mut right) = match self {
-                    DeltaHashTree::Base(_) => (
-                        DeltaHashTree::Base(FinalizedHashTree::left(node)),
-                        DeltaHashTree::Base(FinalizedHashTree::right(node)),
-                    ),
-                    DeltaHashTree::Node(n) => (n.left.clone(), n.right.clone()),
+                let (left, right) = match self {
+                    DeltaHashTree::Node(n) => {
+                        let l =
+                            n.left.rebased(base, &winner_node.left, FinalizedHashTree::left(node));
+                        let r = n.right.rebased(
+                            base,
+                            &winner_node.right,
+                            FinalizedHashTree::right(node),
+                        );
+                        if l.is_none() && r.is_none() {
+                            return None; // neither child moved → keep this `Arc`
+                        }
+                        (l.unwrap_or_else(|| n.left.clone()), r.unwrap_or_else(|| n.right.clone()))
+                    }
+                    DeltaHashTree::Base(_) => {
+                        let (l0, r0) = (
+                            DeltaHashTree::Base(FinalizedHashTree::left(node)),
+                            DeltaHashTree::Base(FinalizedHashTree::right(node)),
+                        );
+                        let l = l0.rebased(base, &winner_node.left, FinalizedHashTree::left(node));
+                        let r =
+                            r0.rebased(base, &winner_node.right, FinalizedHashTree::right(node));
+                        if l.is_none() && r.is_none() {
+                            return None; // symlink stays valid in both halves
+                        }
+                        (l.unwrap_or(l0), r.unwrap_or(r0))
+                    }
                     DeltaHashTree::Leaf(_) => unreachable!("Leaf only at a single-leaf range"),
                 };
-                left.rebase_at(base, &winner_node.left, FinalizedHashTree::left(node));
-                right.rebase_at(base, &winner_node.right, FinalizedHashTree::right(node));
-
-                *self =
-                    DeltaHashTree::Node(Arc::new(DeltaNode { hash: self.root(base), left, right }));
+                Some(DeltaHashTree::Node(Arc::new(DeltaNode {
+                    hash: self.root(base),
+                    left,
+                    right,
+                })))
             }
         }
     }
@@ -124,13 +157,7 @@ pub struct DeltaNode {
 }
 
 impl FinalizedHashTree {
-    /// Apply all `leaves` (sorted, distinct, within `[lo, hi)`; `node` is the
-    /// 1-indexed tree node for that range), hashing each touched internal node
-    /// exactly once. Subtrees with no dirty leaf are skipped; a subtree that
-    /// ends up equal to the base collapses to a `Base(node)` symlink instead of
-    /// a hashed `Node`. This eager prune is re-pinned by the finalize-time
-    /// `rebase` on base advance.
-    pub(super) fn set_delta_leaves_collapse(
+    pub(super) fn set_delta_leaves(
         &self,
         delta: &DeltaHashTree,
         leaves: &[(u32, B256)],
@@ -141,11 +168,9 @@ impl FinalizedHashTree {
         debug_assert!(!leaves.is_empty());
 
         if hi - lo == 1 {
-            let leaf = leaves[0].1;
-            if leaf == *self.node_hash(node) {
-                return DeltaHashTree::Base(node);
-            }
-            return DeltaHashTree::Leaf(leaf);
+            // Don't collapse to a `Base` symlink: as hashing rebase disabled for some state
+            // layers for finalization perf reasons
+            return DeltaHashTree::Leaf(leaves[0].1);
         }
 
         let (mut left_node, mut right_node) = match delta {
@@ -160,50 +185,40 @@ impl FinalizedHashTree {
         let split = leaves.partition_point(|(i, _)| *i < mid);
         let (left_leaves, right_leaves) = leaves.split_at(split);
         if !left_leaves.is_empty() {
-            left_node =
-                self.set_delta_leaves_collapse(&left_node, left_leaves, Self::left(node), lo, mid);
+            left_node = self.set_delta_leaves(&left_node, left_leaves, Self::left(node), lo, mid);
         }
         if !right_leaves.is_empty() {
-            right_node = self.set_delta_leaves_collapse(
-                &right_node,
-                right_leaves,
-                Self::right(node),
-                mid,
-                hi,
-            );
-        }
-
-        // Both children symlink to this node's base children ⇒ node == base.
-        // Collapse without hashing or allocating.
-        if let (DeltaHashTree::Base(l), DeltaHashTree::Base(r)) = (&left_node, &right_node) {
-            if *l == Self::left(node) && *r == Self::right(node) {
-                return DeltaHashTree::Base(node);
-            }
+            right_node =
+                self.set_delta_leaves(&right_node, right_leaves, Self::right(node), mid, hi);
         }
 
         let hash = hash_concat(&left_node.root(self), &right_node.root(self));
         DeltaHashTree::Node(Arc::new(DeltaNode { hash, left: left_node, right: right_node }))
     }
 
-    pub(super) fn prune_delta_at(&self, delta: &mut DeltaHashTree, node: u32) {
+    /// Pruned subtree if anything collapsed, else `None` so the caller keeps
+    /// the original `Arc` — unchanged subtrees are shared, never recopied
+    /// (a dense overlay that collapses nothing allocates nothing).
+    pub(super) fn pruned(&self, delta: &DeltaHashTree, node: u32) -> Option<DeltaHashTree> {
         match delta {
-            DeltaHashTree::Base(_) => {}
+            DeltaHashTree::Base(_) => None,
             DeltaHashTree::Leaf(hash) => {
-                if hash == self.node_hash(node) {
-                    *delta = DeltaHashTree::Base(node);
-                }
+                (hash == self.node_hash(node)).then_some(DeltaHashTree::Base(node))
             }
             DeltaHashTree::Node(arc) => {
                 if arc.hash == *self.node_hash(node) {
-                    *delta = DeltaHashTree::Base(node);
-                    return;
+                    return Some(DeltaHashTree::Base(node));
                 }
-                // We must clone-on-write because the Arc may still be shared with sibling
-                // forks.
-                let mut delta_node = (**arc).clone();
-                self.prune_delta_at(&mut delta_node.left, Self::left(node));
-                self.prune_delta_at(&mut delta_node.right, Self::right(node));
-                *arc = Arc::new(delta_node);
+                let left = self.pruned(&arc.left, Self::left(node));
+                let right = self.pruned(&arc.right, Self::right(node));
+                if left.is_none() && right.is_none() {
+                    return None; // nothing collapsed → keep this `Arc`
+                }
+                Some(DeltaHashTree::Node(Arc::new(DeltaNode {
+                    hash: arc.hash,
+                    left: left.unwrap_or_else(|| arc.left.clone()),
+                    right: right.unwrap_or_else(|| arc.right.clone()),
+                })))
             }
         }
     }
@@ -215,12 +230,12 @@ impl FinalizedHashTree {
     /// `rebase`) differ from the new base, so they survive; only edits that
     /// already equal the new base fold back to `Base` symlinks (which then
     /// follow the base once `winner` is promoted).
-    pub(super) fn prune_delta_against_at(
+    pub(super) fn pruned_against(
         &self,
-        delta: &mut DeltaHashTree,
+        delta: &DeltaHashTree,
         winner: &DeltaHashTree,
         node: u32,
-    ) {
+    ) -> Option<DeltaHashTree> {
         let new_base_hash = match winner {
             DeltaHashTree::Base(_) => *self.node_hash(node),
             DeltaHashTree::Leaf(hash) => *hash,
@@ -230,16 +245,13 @@ impl FinalizedHashTree {
             // A symlink reads the (new) base live — already collapsed. `rebase`
             // froze every winner-moved leaf first, so a surviving `Base` here is
             // a node the winner left untouched: following the base stays correct.
-            DeltaHashTree::Base(_) => {}
+            DeltaHashTree::Base(_) => None,
             DeltaHashTree::Leaf(hash) => {
-                if *hash == new_base_hash {
-                    *delta = DeltaHashTree::Base(node);
-                }
+                (*hash == new_base_hash).then_some(DeltaHashTree::Base(node))
             }
             DeltaHashTree::Node(arc) => {
                 if arc.hash == new_base_hash {
-                    *delta = DeltaHashTree::Base(node);
-                    return;
+                    return Some(DeltaHashTree::Base(node));
                 }
                 // `delta` is a `Node`, so this range spans >1 leaf and `winner`
                 // is `Base`/`Node` here (never `Leaf`); descend its children.
@@ -253,15 +265,16 @@ impl FinalizedHashTree {
                         unreachable!("Leaf spans a single leaf, delta is Node")
                     }
                 };
-                // COW: the Arc may still be shared with sibling forks.
-                let mut delta_node = (**arc).clone();
-                self.prune_delta_against_at(&mut delta_node.left, &winner_left, Self::left(node));
-                self.prune_delta_against_at(
-                    &mut delta_node.right,
-                    &winner_right,
-                    Self::right(node),
-                );
-                *arc = Arc::new(delta_node);
+                let left = self.pruned_against(&arc.left, &winner_left, Self::left(node));
+                let right = self.pruned_against(&arc.right, &winner_right, Self::right(node));
+                if left.is_none() && right.is_none() {
+                    return None; // nothing collapsed → keep this `Arc`
+                }
+                Some(DeltaHashTree::Node(Arc::new(DeltaNode {
+                    hash: arc.hash,
+                    left: left.unwrap_or_else(|| arc.left.clone()),
+                    right: right.unwrap_or_else(|| arc.right.clone()),
+                })))
             }
         }
     }

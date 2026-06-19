@@ -16,6 +16,7 @@ pub use epoch::{EpochGroup, EpochId, EpochStateFinalized, EpochView, EpochWriteV
 pub use eth1::{Eth1Group, Eth1Id, Eth1View, Eth1Votes, Eth1WriteView};
 pub use hash_tree::{DeltaHashTree, FinalizedHashTree};
 pub use longtail::{LongtailGroup, LongtailId, LongtailState, LongtailView, LongtailWriteView};
+pub use parsed::ParsedAggregateAndProof;
 pub use pending::{
     PendingGroup, PendingId, PendingView, PendingWriteView, QueueItem, QueueView, QueueWriteView,
 };
@@ -40,6 +41,7 @@ mod epoch;
 mod eth1;
 mod hash_tree;
 mod longtail;
+mod parsed;
 mod pending;
 mod slot_state;
 pub(crate) mod sparse;

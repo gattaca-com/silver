@@ -6,7 +6,7 @@ rust-version.workspace = true
 version.workspace = true
 
 [features]
-ef_tests = []
+ef_tests = ["silver_common/test-util"]
 
 [dependencies]
 silver_common.workspace = true
@@ -22,6 +22,11 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+# Exposes SlotTicker::set_current_slot for fork-choice tick tests.
+silver_common = { workspace = true, features = ["test-util"] }
+# EF fork_choice peerdas DA cases: run the real column-sidecar verification
+# (lives in storage; storage only depends on beacon_state_data, so no cycle).
+silver_storage.workspace = true
 criterion.workspace = true
 rand.workspace = true
 serde = { version = "1", features = ["derive"] }

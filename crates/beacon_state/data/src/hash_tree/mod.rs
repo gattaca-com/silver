@@ -35,7 +35,7 @@ impl DeltaHashTree {
             (sorted.last().unwrap().0 as usize) < base.max_elements(),
             "leaf index out of range",
         );
-        *self = base.set_delta_leaves_collapse(
+        *self = base.set_delta_leaves(
             self,
             sorted,
             FinalizedHashTree::root(),
@@ -103,7 +103,9 @@ impl FinalizedHashTree {
     /// finalization building block — drive it via [`Self::finalize`].
     #[inline]
     pub(crate) fn prune_delta(&self, delta: &mut DeltaHashTree) {
-        self.prune_delta_at(delta, Self::root());
+        if let Some(pruned) = self.pruned(delta, Self::root()) {
+            *delta = pruned;
+        }
     }
 
     /// Pre-promote counterpart of [`Self::prune_delta`]: collapse `delta` nodes
@@ -112,6 +114,8 @@ impl FinalizedHashTree {
     /// `rebase`, before `winner` is folded into the base.
     #[inline]
     pub(crate) fn prune_delta_against(&self, delta: &mut DeltaHashTree, winner: &DeltaHashTree) {
-        self.prune_delta_against_at(delta, winner, Self::root());
+        if let Some(pruned) = self.pruned_against(delta, winner, Self::root()) {
+            *delta = pruned;
+        }
     }
 }

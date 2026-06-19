@@ -89,71 +89,69 @@ impl ValidatorsDelta {
         base.hash.promote_delta(&self.hash_overlay);
     }
 
-    /// Mirror of [`BalancesDelta::rebase_and_prune`] for the multi-column
-    /// registry: finalize survivor `self` into `out` against promoted `winner`,
+    /// Mirror of [`BalancesDelta::rebase_and_prune_from`] for the multi-column
+    /// registry: finalize survivor `old` into `self` against promoted `winner`,
     /// pre-promote and read-only so lock-free readers stay unblocked. The
     /// winner-promoted prefix of `appended` is dropped; every column delegates
-    /// the rebase/prune to [`Edits::rebase_and_prune`].
-    pub(super) fn rebase_and_prune(
-        &self,
-        out: &mut ValidatorsDelta,
+    /// the rebase/prune to [`Edits::rebase_and_prune_from`].
+    pub(super) fn rebase_and_prune_from(
+        &mut self,
+        old: &ValidatorsDelta,
         base: &FinalizedValidators,
         winner: &ValidatorsDelta,
     ) {
-        let valid_below = base.validator_count() as u32;
         let new_count = (winner.base_count + winner.appended.len()) as u32;
 
-        let promoted = (new_count as usize - self.base_count).min(self.appended.len());
-        out.appended = self.appended[promoted..].to_vec();
-        out.base_count = new_count as usize;
+        let promoted = (new_count as usize - old.base_count).min(old.appended.len());
+        self.appended = old.appended[promoted..].to_vec();
+        self.base_count = new_count as usize;
 
-        out.credentials_edits = self.credentials_edits.rebase_and_prune(
+        self.credentials_edits.rebase_and_prune_from(
+            &old.credentials_edits,
             &winner.credentials_edits,
-            valid_below,
             new_count,
             |i| base.val_withdrawal_credentials[i as usize],
         );
-        out.effective_balance_edits = self.effective_balance_edits.rebase_and_prune(
+        self.effective_balance_edits.rebase_and_prune_from(
+            &old.effective_balance_edits,
             &winner.effective_balance_edits,
-            valid_below,
             new_count,
             |i| base.effective_balance[i as usize],
         );
-        out.slashed_edits = self.slashed_edits.rebase_and_prune(
+        self.slashed_edits.rebase_and_prune_from(
+            &old.slashed_edits,
             &winner.slashed_edits,
-            valid_below,
             new_count,
             |i| base.is_slashed(i as usize),
         );
-        out.activation_eligibility_epoch_edits =
-            self.activation_eligibility_epoch_edits.rebase_and_prune(
-                &winner.activation_eligibility_epoch_edits,
-                valid_below,
-                new_count,
-                |i| base.activation_eligibility_epoch[i as usize],
-            );
-        out.activation_epoch_edits = self.activation_epoch_edits.rebase_and_prune(
+        self.activation_eligibility_epoch_edits.rebase_and_prune_from(
+            &old.activation_eligibility_epoch_edits,
+            &winner.activation_eligibility_epoch_edits,
+            new_count,
+            |i| base.activation_eligibility_epoch[i as usize],
+        );
+        self.activation_epoch_edits.rebase_and_prune_from(
+            &old.activation_epoch_edits,
             &winner.activation_epoch_edits,
-            valid_below,
             new_count,
             |i| base.activation_epoch[i as usize],
         );
-        out.exit_epoch_edits = self.exit_epoch_edits.rebase_and_prune(
+        self.exit_epoch_edits.rebase_and_prune_from(
+            &old.exit_epoch_edits,
             &winner.exit_epoch_edits,
-            valid_below,
             new_count,
             |i| base.exit_epoch[i as usize],
         );
-        out.withdrawable_epoch_edits = self.withdrawable_epoch_edits.rebase_and_prune(
+        self.withdrawable_epoch_edits.rebase_and_prune_from(
+            &old.withdrawable_epoch_edits,
             &winner.withdrawable_epoch_edits,
-            valid_below,
             new_count,
             |i| base.withdrawable_epoch[i as usize],
         );
 
-        out.hash_overlay = self.hash_overlay.clone();
-        out.hash_overlay.rebase(base.hash(), &winner.hash_overlay);
-        base.hash().prune_delta_against(&mut out.hash_overlay, &winner.hash_overlay);
+        self.hash_overlay = old.hash_overlay.clone();
+        self.hash_overlay.rebase(base.hash(), &winner.hash_overlay);
+        base.hash().prune_delta_against(&mut self.hash_overlay, &winner.hash_overlay);
     }
 
     /// Anchor a freshly-`reset` delta onto `base`: adopt its count and hash

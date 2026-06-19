@@ -9,6 +9,9 @@ const STATE_ADVANCE_DIVISOR: u64 = 4;
 
 const NUM_PHASES: usize = 4;
 
+// Spec INTERVALS_PER_SLOT: attesting deadline at 1/3 of the slot.
+const INTERVALS_PER_SLOT: u64 = 3;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TickEvent {
     /// Slot boundary. Fork choice, cache pruning.
@@ -106,12 +109,30 @@ impl SlotTicker {
         self.since_genesis_ms() / self.slot_ms
     }
 
+    /// Spec `is_before_attesting_interval`: within the first 1/3 of the slot,
+    /// the window in which a current-slot block earns proposer boost.
+    pub fn is_before_attesting_interval(&self) -> bool {
+        self.since_genesis_ms() % self.slot_ms < self.slot_ms / INTERVALS_PER_SLOT
+    }
+
     /// Force `current_slot()` to return `slot` at this moment and reset
     /// the in-slot phase state.
     #[cfg(any(test, feature = "test-util"))]
     pub fn set_current_slot(&mut self, slot: u64) {
         self.anchor = Instant::now();
         self.anchor_genesis_ms = slot * self.slot_ms;
+        self.last = None;
+    }
+
+    /// Force `since_genesis_ms()` to `ms` at this moment, fixing both the slot
+    /// and the sub-slot offset (so `is_before_attesting_interval` reflects a
+    /// precise within-slot time). For EF fork-choice vectors that pin proposer
+    /// boost to a `tick`. Reads drift by the elapsed call latency (negligible
+    /// vs the 12s slot / 4s deadline).
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn set_since_genesis_ms(&mut self, ms: u64) {
+        self.anchor = Instant::now();
+        self.anchor_genesis_ms = ms;
         self.last = None;
     }
 

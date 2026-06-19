@@ -72,7 +72,7 @@ impl ValidatorsGroup {
     ) -> ValidatorsWriteView<'_> {
         let Self { finalized, deltas } = self;
         let (mut fork, old, winner_delta) = deltas.roll_fresh_deriving(survivor, winner);
-        old.rebase_and_prune(&mut fork, finalized, winner_delta);
+        fork.rebase_and_prune_from(old, finalized, winner_delta);
         ValidatorsWriteView::new(finalized, fork)
     }
 

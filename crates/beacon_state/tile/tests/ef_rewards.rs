@@ -5,7 +5,7 @@ use std::{fs, path::Path};
 mod ef_common;
 
 use ef_common::{load_state, snappy_decode, spec_tests_dir};
-use silver_beacon_state::epoch_transition;
+use silver_beacon_state::stf;
 use silver_beacon_state_data::{Epoch, EpochView, StateWriterView};
 
 const TIMELY_SOURCE_FLAG: u8 = 1 << 0;
@@ -51,7 +51,7 @@ fn compute_flag_deltas(
         }
     }
     total_active = total_active.max(EFFECTIVE_BALANCE_INCREMENT);
-    let sqrt_total = epoch_transition::integer_sqrt(total_active);
+    let sqrt_total = stf::integer_sqrt(total_active);
     let base_reward_per_increment = EFFECTIVE_BALANCE_INCREMENT * BASE_REWARD_FACTOR / sqrt_total;
     let is_leak = is_in_inactivity_leak(view, epoch);
 

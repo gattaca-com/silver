@@ -337,7 +337,7 @@ pub fn verify_deposit_signature(pubkey: &BLSPubkey, sig: &[u8; 96], signing_root
 
 /// Verify a single-attester `SingleAttestation` (gossip subnet form). Used
 /// on the gossip hot path; the body-included aggregate path goes through
-/// `state_transition::validate_attestations` + `SigBatch`.
+/// `stf::validate_attestations` + `SigBatch`.
 pub fn verify_single_attestation(
     att: &[u8; SINGLE_ATT_SIZE],
     attester_pubkey: &PublicKey,
