@@ -21,7 +21,6 @@ target/
 .cursor
 .claude
 .local
-CLAUDE.md
 
 *.ssz
 # Perf-regression fixtures are committed via git-lfs (see .gitattributes
