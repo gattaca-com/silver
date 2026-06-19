@@ -178,7 +178,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // crashes the boot rather than running an inert node.
     let state = BeaconState::from_checkpoint(&checkpoint, &chain_config.spec, &checkpoint_pubkeys)
         .unwrap_or_else(|e| panic!("bootstrap: decompose checkpoint failed: {e}"));
-    let mut beacon_state_tile = BeaconStateTile::new(
+    let beacon_state_tile = BeaconStateTile::new(
         ticker,
         chain_config.spec.clone(),
         &config.syncing_config(),
@@ -190,11 +190,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         state,
     );
     let state_reader = beacon_state_tile.reader();
-
-    // Bootstrap digest: until a real state lands (checkpoint/sync), the tile
-    // derives the fork digest from a zero gvr — use the configured one so
-    // silver's Status doesn't clobber the PeerManager digest with a bogus value.
-    beacon_state_tile.set_configured_fork_digest(config.fork_digest());
 
     let storage_tile = StorageTile::new(
         ssz_gossip_consumer_ds,

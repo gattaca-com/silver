@@ -11,7 +11,7 @@ use silver_beacon_state::{
     bls::{self, DOMAIN_BEACON_ATTESTER, DST, SigBatch},
     shuffling,
     ssz_hash::hash_attestation_data,
-    state_transition::{
+    stf::{
         self, ShufflingRef, collect_sigs_attestations, collect_sigs_attester_slashings,
         collect_sigs_bls_to_execution_changes, collect_sigs_proposer_slashings,
         collect_sigs_randao, collect_sigs_sync_aggregate, collect_sigs_voluntary_exits,
@@ -154,9 +154,9 @@ fn build_ef_block() -> SigBatch {
     let sid = s.state_id;
     let (mut view, epoch_group, longtail_group) = s.view();
 
-    let mut scratch = state_transition::StfScratch::new(0);
+    let mut scratch = stf::StfScratch::new(0);
     let (epoch_idx, longtail_idx) = if block_slot > view.slot.state().slot {
-        state_transition::process_slots(
+        stf::process_slots(
             &cfg,
             &mut view,
             epoch_group,

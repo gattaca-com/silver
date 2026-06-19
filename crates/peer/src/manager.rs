@@ -33,6 +33,8 @@ const IP_COLOC_CAP: usize = 128;
 const ARCHIVE_CAP: usize = 512;
 const SYNC_AGG_CAP: usize = 64;
 
+const SLOTS_PER_EPOCH: u64 = 32;
+
 /// If BS never sends `ReplayComplete` (signal lost, storage stalled), drop the
 /// gate after this timeout so network sync can't be stranded.
 const REPLAY_GATE_TIMEOUT: Duration = Duration::from_secs(300);
@@ -658,7 +660,7 @@ impl PeerManager {
 
         // 1. Pinned SyncingFinalized viable?
         if let SyncUpdate::SyncingFinalized { target_epoch, target_root } = self.current_target {
-            let target_slot = target_epoch.saturating_mul(self.syncing.slots_per_epoch);
+            let target_slot = target_epoch.saturating_mul(SLOTS_PER_EPOCH);
 
             let reached = (local_finalized_epoch >= target_epoch &&
                 local_finalized_root == target_root) ||
@@ -725,7 +727,7 @@ impl PeerManager {
         self.finalized_counts
             .iter()
             .filter(|((epoch, root), _)| {
-                let target_slot = epoch.saturating_mul(self.syncing.slots_per_epoch);
+                let target_slot = epoch.saturating_mul(SLOTS_PER_EPOCH);
                 *epoch >= trigger_epoch &&
                     target_slot > our_head_slot &&
                     !self.rejected.is_rejected(root) &&

@@ -1,8 +1,8 @@
 use core::cmp::{max, min};
 
 use silver_beacon_state_data::{
-    self as common, B256, Checkpoint, EPOCHS_PER_SLASHINGS_VECTOR, Epoch, EpochState, EpochView,
-    EpochWriteView, Eth1WriteView, HistoricalSummary, LongtailGroup, LongtailId, LongtailWriteView,
+    self as common, Checkpoint, EPOCHS_PER_SLASHINGS_VECTOR, Epoch, EpochView, EpochWriteView,
+    Eth1WriteView, HistoricalSummary, LongtailGroup, LongtailId, LongtailWriteView,
     MIN_SEED_LOOKAHEAD, PROPOSER_LOOKAHEAD_SIZE, SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT,
     SYNC_COMMITTEE_SIZE, SpecConfig, StateWriterView, iter_validator_rows,
 };
@@ -12,7 +12,7 @@ use crate::{
     bls,
     shuffling::{self, DOMAIN_BEACON_PROPOSER},
     ssz_hash,
-    state_transition::{StfScratch, total_active_balance},
+    stf::{common::StfScratch, validator::total_active_balance},
 };
 
 pub const EPOCHS_PER_ETH1_VOTING_PERIOD: u64 = 64;
@@ -22,7 +22,6 @@ pub const EPOCHS_PER_SYNC_COMMITTEE_PERIOD: u64 = 256;
 const TIMELY_SOURCE_FLAG: u8 = 1 << 0;
 const TIMELY_TARGET_FLAG: u8 = 1 << 1;
 const TIMELY_HEAD_FLAG: u8 = 1 << 2;
-
 const PARTICIPATION_FLAGS: [u8; 3] = [TIMELY_SOURCE_FLAG, TIMELY_TARGET_FLAG, TIMELY_HEAD_FLAG];
 const PARTICIPATION_WEIGHTS: [u64; 3] = [14, 26, 14];
 pub(crate) const WEIGHT_DENOMINATOR: u64 = 64;
@@ -142,7 +141,7 @@ pub fn process_justification_and_finalization(
 /// `(justified, finalized)` checkpoints.
 pub(crate) fn unrealized_checkpoints(
     view: &StateWriterView,
-    es: &EpochState,
+    es: &common::EpochState,
     current_epoch: Epoch,
 ) -> (Checkpoint, Checkpoint) {
     if current_epoch <= 1 {
@@ -167,7 +166,7 @@ pub(crate) fn unrealized_checkpoints(
 fn justification_target_roots(
     view: &StateWriterView,
     current_epoch: Epoch,
-) -> (Option<B256>, Option<B256>) {
+) -> (Option<common::B256>, Option<common::B256>) {
     let previous_epoch = current_epoch - 1;
     let (mut total_active, mut curr_target, mut prev_target) = (0u64, 0u64, 0u64);
     for r in validator_rows(view) {
@@ -203,8 +202,8 @@ fn justification_transition(
     old_curr_justified: Checkpoint,
     old_finalized: Checkpoint,
     old_bits: u8,
-    prev_root: Option<B256>,
-    curr_root: Option<B256>,
+    prev_root: Option<common::B256>,
+    curr_root: Option<common::B256>,
     current_epoch: Epoch,
 ) -> (Checkpoint, Checkpoint, Checkpoint, u8) {
     let previous_epoch = current_epoch - 1;
@@ -293,19 +292,7 @@ pub fn process_rewards_and_penalties(
 
     let previous_epoch = current_epoch.saturating_sub(1);
 
-    // Pass 1: flag-weighted active increments (pure read sweep).
-    let mut flag_increments = [0u64; 3];
-    for r in validator_rows(view) {
-        if r.activation_epoch > previous_epoch || previous_epoch >= r.exit_epoch || r.slashed {
-            continue;
-        }
-        let incs = r.effective_balance / EFFECTIVE_BALANCE_INCREMENT;
-        for (fi, &flag) in PARTICIPATION_FLAGS.iter().enumerate() {
-            if r.previous_participation & flag != 0 {
-                flag_increments[fi] += incs;
-            }
-        }
-    }
+    let flag_increments = flag_attesting_increments(view, previous_epoch);
     let active_increments = total_active / EFFECTIVE_BALANCE_INCREMENT;
 
     // Pass 2: per-validator reward/penalty → changed balances into scratch.
@@ -340,6 +327,24 @@ pub fn process_rewards_and_penalties(
         }
     }
     view.balances.set_many(scratch);
+}
+
+/// Pass 1 (pure read sweep): per-flag sum of effective-balance increments over
+/// previous-epoch active, unslashed validators that set each timely flag.
+fn flag_attesting_increments(view: &StateWriterView, previous_epoch: Epoch) -> [u64; 3] {
+    let mut flag_increments = [0u64; 3];
+    for r in validator_rows(view) {
+        if r.activation_epoch > previous_epoch || previous_epoch >= r.exit_epoch || r.slashed {
+            continue;
+        }
+        let incs = r.effective_balance / EFFECTIVE_BALANCE_INCREMENT;
+        for (fi, &flag) in PARTICIPATION_FLAGS.iter().enumerate() {
+            if r.previous_participation & flag != 0 {
+                flag_increments[fi] += incs;
+            }
+        }
+    }
+    flag_increments
 }
 
 #[timed]
