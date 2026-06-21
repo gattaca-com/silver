@@ -11,6 +11,7 @@ pub use response_in::RpcReadResponse;
 pub use response_out::RpcWriteResponse;
 use silver_common::{
     P2pStreamId, RpcOutbound, RpcRequest, RpcResponse, StreamProtocol, TRandomAccess, TRead,
+    rpc_rate_limit::{RPC_ERR_RATE_LIMITED, RPC_RATE_LIMITED_MSG},
     ssz_view::{
         BLOCKS_BY_RANGE_REQ_SIZE, DC_BY_RANGE_REQ_MAX, GOODBYE_SIZE, METADATA_SIZE, PING_SIZE,
         STATUS_V1_SIZE, STATUS_V2_SIZE,
@@ -87,6 +88,14 @@ pub(crate) enum AcquiredRpcResponse {
     DataColumnSidecar { fork_digest: [u8; 4], ssz: TRead },
     Error { error: u8, msg: [u8; 256], len: usize },
     Complete,
+}
+
+impl AcquiredRpcResponse {
+    pub(crate) fn rate_limited() -> Self {
+        let mut msg = [0u8; 256];
+        msg[..RPC_RATE_LIMITED_MSG.len()].copy_from_slice(RPC_RATE_LIMITED_MSG);
+        Self::Error { error: RPC_ERR_RATE_LIMITED, msg, len: RPC_RATE_LIMITED_MSG.len() }
+    }
 }
 
 impl From<(RpcResponse, &mut TRandomAccess)> for AcquiredRpcResponse {

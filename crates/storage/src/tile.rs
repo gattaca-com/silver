@@ -571,9 +571,6 @@ impl Tile<SilverSpine> for StorageTile {
                 silver_common::RpcResponse::Error { error, msg, len } if rsp.is_backfill() => {
                     let err_msg = String::from_utf8_lossy(&msg[..len]).to_string();
                     tracing::error!(error, err_msg, "backfill rpc error response");
-                    self.store.backfill_request_complete(rsp.application_id, &mut |event| {
-                        producers.peer_events.produce(&event.into());
-                    });
                 }
                 silver_common::RpcResponse::Error { error, msg, len } if rsp.is_live_column_request() => {
                     let err_msg = String::from_utf8_lossy(&msg[..len]).to_string();

@@ -1,5 +1,10 @@
+use crate::rpc_rate_limit::RpcQuota;
+
 pub const MULTISTREAM_V1: &[u8] = b"\x13/multistream/1.0.0\n";
 pub const REJECT_RESPONSE: &[u8] = b"\x13/multistream/1.0.0\n\x03na\n";
+
+const MAX_SIDECAR_RATE_LIMIT_TOKENS: u64 = 16384;
+const MAX_BLOCK_RATE_LIMIT_TOKENS: u64 = 128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
@@ -57,6 +62,44 @@ impl StreamProtocol {
                 Self::DataColumnSidecarsByRange |
                 Self::DataColumnSidecarsByRoot
         )
+    }
+
+    /// Inbound quotas bound the work we are willing to do for a peer. These
+    /// mirror Lighthouse's default RPC limiter quotas.
+    pub const fn inbound_rpc_quota(self) -> Option<RpcQuota> {
+        match self {
+            Self::GossipSub | Self::Identity | Self::Unset => None,
+            Self::StatusV1 | Self::StatusV2 => Some(RpcQuota::n_every(5, 15)),
+            Self::Ping => Some(RpcQuota::n_every(2, 10)),
+            Self::Goodbye => Some(RpcQuota::one_every(10)),
+            Self::Metadata => Some(RpcQuota::n_every(2, 5)),
+            Self::BeaconBlocksByRange | Self::BeaconBlocksByRoot => {
+                Some(RpcQuota::n_every(MAX_BLOCK_RATE_LIMIT_TOKENS, 10))
+            }
+            Self::DataColumnSidecarsByRange | Self::DataColumnSidecarsByRoot => {
+                Some(RpcQuota::n_every(MAX_SIDECAR_RATE_LIMIT_TOKENS, 10))
+            }
+        }
+    }
+
+    /// Outbound quotas self-throttle requests we send to one peer. Keep these
+    /// more conservative than inbound quotas so Silver does not trip remote
+    /// peer scoring while still allowing a max-sized legal request as one
+    /// burst.
+    pub const fn outbound_rpc_quota(self) -> Option<RpcQuota> {
+        match self {
+            Self::GossipSub | Self::Identity | Self::Unset => None,
+            Self::StatusV1 | Self::StatusV2 => Some(RpcQuota::n_every(5, 15)),
+            Self::Ping => Some(RpcQuota::n_every(2, 10)),
+            Self::Goodbye => Some(RpcQuota::one_every(10)),
+            Self::Metadata => Some(RpcQuota::n_every(2, 5)),
+            Self::BeaconBlocksByRange | Self::BeaconBlocksByRoot => {
+                Some(RpcQuota::n_every(MAX_BLOCK_RATE_LIMIT_TOKENS, 15))
+            }
+            Self::DataColumnSidecarsByRange | Self::DataColumnSidecarsByRoot => {
+                Some(RpcQuota::n_every(MAX_SIDECAR_RATE_LIMIT_TOKENS, 15))
+            }
+        }
     }
 
     /// Next protocol to try if the initial proposal is rejected.

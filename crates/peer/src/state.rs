@@ -12,7 +12,10 @@ use std::{
     time::Instant,
 };
 
-use silver_common::{CountingWitherFilter, GossipTopic, MessageId, MessageIdHasher, PeerId};
+use silver_common::{
+    CountingWitherFilter, GossipTopic, MessageId, MessageIdHasher, PeerId,
+    rpc_rate_limit::{N_STREAM_PROTOCOLS, RpcRateLimitSet},
+};
 
 /// Max topics an honest eth2 peer can reasonably subscribe to (64 attnets +
 /// 4 syncnets + 6 blobs + aggregates + blocks + slashings + exits + bls-
@@ -21,8 +24,6 @@ use silver_common::{CountingWitherFilter, GossipTopic, MessageId, MessageIdHashe
 pub(crate) const TOPICS_PER_PEER_CAP: usize = 96;
 
 pub(crate) type MsgIdBuild = BuildHasherDefault<MessageIdHasher>;
-
-use crate::manager::rpc::{N_STREAM_PROTOCOLS, PeerInboundState};
 
 /// One live peer's state.
 pub(crate) struct PeerState {
@@ -56,8 +57,8 @@ pub(crate) struct PeerState {
     pub ihaves_received: u16, // gates P7 via max_ihave_messages
     pub iwant_ids_sent: u16,  // gates P7 via max_ihave_length
 
-    // Inbound protocol rate-limit state
-    pub inbound_state: PeerInboundState,
+    // Outbound protocol rate-limit state.
+    pub outbound_rpc_limits: RpcRateLimitSet,
 
     // Outbound requests in flight count per protocol
     pub outbound_in_flight: [u32; N_STREAM_PROTOCOLS],
@@ -83,7 +84,7 @@ impl PeerState {
             behaviour_penalty: 0.0,
             ihaves_received: 0,
             iwant_ids_sent: 0,
-            inbound_state: PeerInboundState::default(),
+            outbound_rpc_limits: RpcRateLimitSet::default(),
             outbound_in_flight: [0; N_STREAM_PROTOCOLS],
             backoffs: HashMap::new(),
             cached_score: 0.0,

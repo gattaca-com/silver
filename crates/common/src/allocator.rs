@@ -21,6 +21,26 @@ mod profile_impl {
 
     static ALLOC_STATS: OnceLock<Mutex<HashMap<CallPoint, AllocStats>>> = OnceLock::new();
     static TLS_KEY: OnceLock<libc::pthread_key_t> = OnceLock::new();
+    const SYMBOL_ONLY_FILE: &str = "<release symbols>";
+    const SILVER_SYMBOL_PREFIXES: &[&str] = &[
+        "silver::",
+        "silver_beacon_state::",
+        "silver_beacon_state_data::",
+        "silver_chain_spec::",
+        "silver_common::",
+        "silver_config::",
+        "silver_control::",
+        "silver_discovery::",
+        "silver_e2e::",
+        "silver_engine::",
+        "silver_gossip::",
+        "silver_metrics::",
+        "silver_network::",
+        "silver_peer::",
+        "silver_ssz::",
+        "silver_storage::",
+        "silver_surfer::",
+    ];
 
     fn get_stats() -> &'static Mutex<HashMap<CallPoint, AllocStats>> {
         ALLOC_STATS.get_or_init(|| Mutex::new(HashMap::new()))
@@ -64,6 +84,39 @@ mod profile_impl {
             !path_str.contains(".rustup")
     }
 
+    fn is_silver_symbol(function: &str) -> bool {
+        let function = function.trim_start_matches('<');
+        !function.contains("silver_common::allocator::") &&
+            SILVER_SYMBOL_PREFIXES.iter().any(|prefix| function.starts_with(prefix))
+    }
+
+    fn call_point_from_symbol(
+        filename: Option<&str>,
+        line: Option<u32>,
+        function: Option<String>,
+    ) -> Option<CallPoint> {
+        if let Some(path_str) = filename &&
+            is_silver_path(path_str)
+        {
+            return Some(CallPoint {
+                file: path_str.to_string(),
+                line: line.unwrap_or(0),
+                function,
+            });
+        }
+
+        let function = function?;
+        if is_silver_symbol(&function) {
+            return Some(CallPoint {
+                file: SYMBOL_ONLY_FILE.to_string(),
+                line: 0,
+                function: Some(function),
+            });
+        }
+
+        None
+    }
+
     fn record_allocation(size: usize) {
         if is_reentrant() {
             return;
@@ -73,26 +126,19 @@ mod profile_impl {
         backtrace::trace(|frame| {
             let mut found = false;
             backtrace::resolve_frame(frame, |symbol| {
-                if let Some(filename) = symbol.filename() {
-                    if let Some(path_str) = filename.to_str() {
-                        if is_silver_path(path_str) {
-                            let file = path_str.to_string();
-                            let line = symbol.lineno().unwrap_or(0);
-                            let function = symbol.name().map(|n| format!("{:#}", n));
-
-                            let call_point = CallPoint { file, line, function };
-
-                            let stats = get_stats();
-                            if let Ok(mut map) = stats.lock() {
-                                let entry = map
-                                    .entry(call_point)
-                                    .or_insert(AllocStats { count: 0, bytes: 0 });
-                                entry.count += 1;
-                                entry.bytes += size as u64;
-                            }
-                            found = true;
-                        }
+                let filename = symbol.filename().and_then(|filename| filename.to_str());
+                let function = symbol.name().map(|name| format!("{:#}", name));
+                if let Some(call_point) =
+                    call_point_from_symbol(filename, symbol.lineno(), function)
+                {
+                    let stats = get_stats();
+                    if let Ok(mut map) = stats.lock() {
+                        let entry =
+                            map.entry(call_point).or_insert(AllocStats { count: 0, bytes: 0 });
+                        entry.count += 1;
+                        entry.bytes += size as u64;
                     }
+                    found = true;
                 }
             });
             !found
@@ -160,12 +206,16 @@ mod profile_impl {
                 println!("{}", "-".repeat(95));
                 for (cp, stat) in list {
                     let func_name = cp.function.as_deref().unwrap_or("<unknown>");
-                    let display_file = if let Some(idx) = cp.file.find("crates/") {
-                        &cp.file[idx..]
+                    let call_str = if cp.file == SYMBOL_ONLY_FILE {
+                        format!("{func_name} ({SYMBOL_ONLY_FILE})")
                     } else {
-                        &cp.file
+                        let display_file = if let Some(idx) = cp.file.find("crates/") {
+                            &cp.file[idx..]
+                        } else {
+                            &cp.file
+                        };
+                        format!("{func_name} ({display_file}:{})", cp.line)
                     };
-                    let call_str = format!("{} ({}:{})", func_name, display_file, cp.line);
                     println!("{:<12} | {:<15} | {:<60}", stat.count, stat.bytes, call_str);
                 }
                 println!("==========================================\n");
@@ -185,6 +235,51 @@ mod profile_impl {
 
     pub fn init_allocator_trace() -> AllocProfileGuard {
         AllocProfileGuard
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn accepts_release_symbols_from_workspace_crates() {
+            assert!(is_silver_symbol("silver::main"));
+            assert!(is_silver_symbol("silver_storage::store::Store::add_block"));
+            assert!(is_silver_symbol("<silver_network::P2p as core::fmt::Debug>::fmt"));
+        }
+
+        #[test]
+        fn rejects_allocator_and_dependency_symbols() {
+            assert!(!is_silver_symbol("silver_common::allocator::profile_impl::record_allocation"));
+            assert!(!is_silver_symbol("alloc::raw_vec::RawVec<T,A>::grow_one"));
+            assert!(!is_silver_symbol("backtrace::backtrace::libunwind::trace"));
+        }
+
+        #[test]
+        fn call_point_prefers_debug_file_info() {
+            let call_point = call_point_from_symbol(
+                Some("/home/vlad/repoz/silver/crates/storage/src/store.rs"),
+                Some(42),
+                Some("silver_storage::store::Store::add_block".to_string()),
+            )
+            .unwrap();
+
+            assert_eq!(call_point.file, "/home/vlad/repoz/silver/crates/storage/src/store.rs");
+            assert_eq!(call_point.line, 42);
+        }
+
+        #[test]
+        fn call_point_falls_back_to_release_symbols() {
+            let call_point = call_point_from_symbol(
+                None,
+                None,
+                Some("silver_storage::store::Store::add_block".to_string()),
+            )
+            .unwrap();
+
+            assert_eq!(call_point.file, SYMBOL_ONLY_FILE);
+            assert_eq!(call_point.line, 0);
+        }
     }
 }
 

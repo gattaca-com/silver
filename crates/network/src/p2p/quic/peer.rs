@@ -7,7 +7,7 @@ use quinn_proto::{
     Connection, ConnectionEvent, ConnectionHandle, Dir, EndpointEvent, Side, StreamId, Transmit,
     VarInt,
 };
-use silver_common::{P2pStreamId, PeerId, StreamProtocol, TRead};
+use silver_common::{P2pStreamId, PeerId, StreamProtocol, TRead, rpc_rate_limit::RpcRateLimitSet};
 
 use crate::{
     RemotePeer,
@@ -34,6 +34,7 @@ pub(crate) struct Peer {
     /// A connection that dies with this still false is a "zombie" — the
     /// peer never responded to our handshake.
     handshake_completed: bool,
+    inbound_rpc_limits: RpcRateLimitSet,
 }
 
 impl Peer {
@@ -51,6 +52,7 @@ impl Peer {
             outbound_gossip: None,
             created_at: Instant::now(),
             handshake_completed: false,
+            inbound_rpc_limits: RpcRateLimitSet::default(),
         }
     }
 
@@ -238,7 +240,7 @@ impl Peer {
                     );
                 }
                 quinn_proto::Event::Stream(stream_event) => {
-                    self.handle_stream_event(stream_event, context, on_event);
+                    self.handle_stream_event(stream_event, now, context, on_event);
                 }
                 _ => {}
             }
@@ -253,7 +255,13 @@ impl Peer {
         // Drive all streams (negotiating and active) — catches pending writes.
         let mut to_remove = ArrayVec::<StreamId, 8>::new();
         for (id, stream) in &mut self.streams {
-            match stream.spin(&mut self.connection, context, on_event) {
+            match stream.spin(
+                &mut self.connection,
+                context,
+                now,
+                &mut self.inbound_rpc_limits,
+                on_event,
+            ) {
                 SpinResult::Ok => {}
                 SpinResult::Protocol(protocol) => {
                     tracing::debug!(?id, ?protocol, "incoming stream negotatied");
@@ -276,6 +284,7 @@ impl Peer {
     fn handle_stream_event<E>(
         &mut self,
         event: quinn_proto::StreamEvent,
+        now: Instant,
         context: &mut Context,
         on_event: &mut E,
     ) where
@@ -304,7 +313,13 @@ impl Peer {
             quinn_proto::StreamEvent::Readable { id } |
             quinn_proto::StreamEvent::Writable { id } => {
                 let remove = match self.streams.get_mut(&id) {
-                    Some(stream) => match stream.spin(&mut self.connection, context, on_event) {
+                    Some(stream) => match stream.spin(
+                        &mut self.connection,
+                        context,
+                        now,
+                        &mut self.inbound_rpc_limits,
+                        on_event,
+                    ) {
                         SpinResult::Ok => false,
                         SpinResult::Protocol(protocol) => {
                             tracing::debug!(?id, ?protocol, "incoming stream negotiated");
@@ -430,6 +445,8 @@ impl Stream {
         &mut self,
         connection: &mut Connection,
         context: &mut Context,
+        now: Instant,
+        inbound_rpc_limits: &mut RpcRateLimitSet,
         on_event: &mut E,
     ) -> SpinResult
     where
@@ -441,7 +458,7 @@ impl Stream {
         let state_name = state.name();
         let mut io = StreamIoImpl { connection, outbound: &mut self.out_buffer };
 
-        match state.spin(&mut io, &mut self.p2p_id, context, on_event) {
+        match state.spin(&mut io, &mut self.p2p_id, context, now, inbound_rpc_limits, on_event) {
             Ok(StreamState::Finished) => {
                 self.state.replace(StreamState::Finished);
                 SpinResult::End

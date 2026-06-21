@@ -3,7 +3,8 @@ use std::net::{IpAddr, SocketAddr};
 use flux::timing::Nanos;
 
 use crate::{
-    Enr, GossipTopic, Identify, MessageId, P2pStreamId, PeerId, StreamProtocol, TCacheRead,
+    Enr, GossipTopic, Identify, MessageId, P2pStreamId, PeerId, StreamProtocol, TCacheError,
+    TCacheRead,
     ssz_view::{
         BLOCKS_BY_RANGE_REQ_SIZE, BeaconBlocksByRangeRequestView, BeaconBlocksByRootRequestView,
         BlobIdentifierView, DC_BY_RANGE_REQ_MAX, DataColumnSidecarView,
@@ -68,6 +69,44 @@ impl RpcRequest {
             RpcRequest::DataColumnsByRoot { .. } => StreamProtocol::DataColumnSidecarsByRoot,
         }
     }
+
+    pub fn rate_limit_tokens(&self) -> Result<u64, TCacheError> {
+        let tokens = match self {
+            RpcRequest::StatusV1(_) |
+            RpcRequest::StatusV2(_) |
+            RpcRequest::Ping(_) |
+            RpcRequest::Goodbye(_) |
+            RpcRequest::MetaData => 1,
+            RpcRequest::BlocksByRange(ssz) => BeaconBlocksByRangeRequestView::count(ssz),
+            RpcRequest::BlockByRoot(read) => fixed_width_list_tokens(read.len()?, 32),
+            RpcRequest::DataColumnsByRange { ssz, len } => {
+                let Some(buf) = ssz.get(..*len) else { return Ok(1) };
+                if !DataColumnSidecarsByRangeRequestView::check_size(buf) {
+                    1
+                } else {
+                    let count = DataColumnSidecarsByRangeRequestView::count(buf);
+                    let columns = DataColumnSidecarsByRangeRequestView::columns(buf).len() / 8;
+                    count.saturating_mul(columns as u64)
+                }
+            }
+            RpcRequest::DataColumnsByRoot(read) => {
+                data_columns_by_root_tokens_from_len(read.len()?)
+            }
+        };
+        Ok(tokens.max(1))
+    }
+}
+
+fn fixed_width_list_tokens(len: usize, width: usize) -> u64 {
+    len.div_ceil(width) as u64
+}
+
+fn data_columns_by_root_tokens_from_len(len: usize) -> u64 {
+    // Silver currently emits one DataColumnsByRootIdentifier per request:
+    // 4B outer-list offset + 32B block root + 4B inner-list offset + N*8B columns.
+    // Length-derived accounting avoids acquiring the TCache payload in the hot
+    // path.
+    len.saturating_sub(4 + 32 + 4).div_ceil(8) as u64
 }
 
 /// An RPC request recevied from a peer.
