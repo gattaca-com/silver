@@ -234,20 +234,21 @@ impl PmBsHarness {
 
     /// Next `BlocksByRange` request on `p2p_send` as `(start_slot, count,
     /// peer)`; panics if none was emitted.
-    pub fn next_range_request(&mut self) -> (u64, u64, usize) {
+    pub fn next_range_request(&mut self) -> (u64, u64, usize, u64) {
         let mut hit = None;
         self.inj_a.consume::<P2pSend, _>(|ev, _| {
             if hit.is_none() &&
                 let P2pSend::Rpc(RpcOutbound::Request(RpcRequestOutbound {
                     peer,
                     request: RpcRequest::BlocksByRange(ssz),
-                    ..
+                    application_id,
                 })) = ev
             {
                 hit = Some((
                     BeaconBlocksByRangeRequestView::start_slot(&ssz),
                     BeaconBlocksByRangeRequestView::count(&ssz),
                     peer,
+                    application_id,
                 ));
             }
         });
@@ -269,6 +270,19 @@ impl PmBsHarness {
         }));
     }
 
+    pub fn inject_response_complete(&mut self, application_id: u64) {
+        self.inj_a.produce(RpcInbound::Response(RpcResponseInbound {
+            application_id,
+            stream_id: P2pStreamId::new(
+                SYNTH_PEER_CONN_ID,
+                0,
+                StreamProtocol::BeaconBlocksByRange,
+                true,
+            ),
+            response: RpcResponse::Complete,
+        }));
+    }
+
     pub fn emit_data_columns_available(&mut self, sig: DataColumnsAvailable) {
         self.inj_a.produce(sig);
     }
@@ -276,7 +290,7 @@ impl PmBsHarness {
     /// Assert the next `BlocksByRange` request matches `expected = (start,
     /// count)`, mark data columns available, feed all `blocks`, and pump BS.
     pub fn drive_batch(&mut self, expected: (u64, u64), blocks: &[Vec<u8>]) {
-        let (start, count, peer) = self.next_range_request();
+        let (start, count, peer, _request_id) = self.next_range_request();
         assert_eq!((start, count, peer), (expected.0, expected.1, SYNTH_PEER_CONN_ID));
         // DA events first so blob-carrying blocks aren't held in
         // dc_pending_blocks (same ordering as perf::replay).

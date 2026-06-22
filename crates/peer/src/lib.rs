@@ -4,6 +4,7 @@ mod scoring;
 mod state;
 
 pub use manager::PeerManager;
+pub use silver_config::SyncingConfig;
 
 silver_common::declare_counters! {
     pub PeerCounters => "peer" {

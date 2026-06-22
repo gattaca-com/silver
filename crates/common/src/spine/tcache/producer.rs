@@ -41,6 +41,7 @@ trait SealedProducer {
 pub struct Producer {
     pub(super) cache: *const TCache,
     pub(super) seq: u64,
+    pub(super) published_seq: u64,
     pub(super) space: u32,
 }
 
@@ -64,9 +65,10 @@ impl TCacheProducer for Producer {
     /// filled. otherwise it must ber manually committed by calling `flush`.
     fn reserve(&mut self, len: usize, auto_commit: bool) -> Option<Reservation> {
         let tcache = unsafe { &*self.cache };
-        if tcache.reserve_len(self.seq, len) > self.space as usize {
+        if tcache.reserve_len(self.seq, len) > self.space as usize || self.seq - self.published_seq > (tcache.len >> 1) as u64 {
             // try reclaim space.
             self.publish_head();
+            self.published_seq = self.seq;
             self.space = tcache.space(self.seq);
         }
         tcache.reserve(self.seq, self.space, len as u32).map(|(seq, reservation_len)| {

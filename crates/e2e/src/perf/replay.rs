@@ -45,15 +45,24 @@ pub fn replay(fixtures: &Fixtures) -> ReplayOutcome {
 
     harness.connect_peer(final_slot);
 
-    let (start, count, peer) = harness.next_range_request();
-    assert_eq!((start, count, peer), (first_block_slot, n_blocks, SYNTH_PEER_CONN_ID));
-
     for event in &da_events {
         harness.emit_data_columns_available(*event);
     }
-    harness.pump_bs();
-    for b in blocks {
-        harness.inject_block(start, b);
+
+    // Max blocks by range for syncing head is 32
+    let mut injected = 0;
+
+    while injected < n_blocks {
+        let (start, count, peer, request_id) = harness.next_range_request();
+        assert_eq!((start, count, peer), (first_block_slot + injected, 32, SYNTH_PEER_CONN_ID));
+
+        harness.pump_bs();
+        for b in &blocks[injected as usize..injected as usize + 32] {
+            harness.inject_block(start, b);
+        }
+        harness.inject_response_complete(request_id);
+        harness.pump_ctl();
+        injected += 32;
     }
 
     // Stay in Syncing (no Controller tick) — Following mode would let

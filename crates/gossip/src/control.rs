@@ -105,6 +105,8 @@ pub(super) fn handle_iwants<'a>(
                     hash,
                     tcache,
                 }));
+            } else {
+                tracing::warn!(?stream_id, "WANT message not in cache");
             }
         }
     }

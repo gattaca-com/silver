@@ -382,9 +382,12 @@ impl Store {
         }
     }
 
-    pub(super) fn backfill_data_column(&mut self, sidecar: TRead) {
+    pub(super) fn backfill_data_column<F>(&mut self, sidecar: TRead, emit: &mut F)
+    where
+        F: FnMut(PeerEvent),
+    {
         let accepted = match self.column_backfill.as_mut() {
-            Some(column_backfill) => column_backfill.add_sidecar(&sidecar),
+            Some(column_backfill) => column_backfill.add_sidecar(&sidecar, emit),
             None => {
                 tracing::error!("received backfill data column, but no active column backfill!");
                 None
@@ -401,23 +404,6 @@ impl Store {
         }
         // Completion + earliest-available emission is polled in `file_io`'s
         // tick once both column and block backfill have drained.
-    }
-
-    pub(super) fn backfill_request_complete<F>(&mut self, id: u64, emit: &mut F)
-    where
-        F: FnMut(PeerEvent),
-    {
-        match self.backfill.as_mut() {
-            Some(backfill) => {
-                if backfill.query_complete(id, emit) {
-                    // backfill is finished
-                    self.backfill = None;
-                }
-            }
-            None => {
-                tracing::error!("received backfill complete, but no active backfill!");
-            }
-        }
     }
 
     pub(super) fn sync_update(&mut self, sync_update: SyncUpdate) {
@@ -1316,23 +1302,19 @@ mod tests {
         let producer_cache = TCache::multi_producer("column_backfill_rpc", 1 << 20);
         let mut producer = producer_cache.clone();
         let custody_columns = (1u128 << 3) | (1u128 << 7);
-        let mut requests = Vec::new();
+        let mut needs = Vec::new();
         store
-            .file_io(&fork_digest, custody_columns, &mut producer, &mut |io| match io {
-                IoEvent::PeerEvent(PeerEvent::SendDataColumnsByRootRequest {
-                    request_id,
-                    columns,
-                    block_root,
-                }) => requests.push((request_id, columns, block_root)),
-                _ => {}
+            .file_io(&fork_digest, custody_columns, &mut producer, &mut |io| {
+                if let IoEvent::PeerEvent(PeerEvent::ColumnNeed { block_root, missing, .. }) = io {
+                    needs.push((missing, block_root));
+                }
             })
             .unwrap();
 
-        assert_eq!(requests.len(), 1);
-        let (request_id, columns, requested_root) = requests[0];
-        assert_eq!(request_id & 0xffff_ffff_0000_0000, silver_common::COLUMN_BACKFILL_REQUEST_ID);
-        assert_eq!(columns, custody_columns);
-        assert_eq!(requested_root, block_root);
+        // Storage reports the need; the SyncEngine schedules the by-root fetch.
+        assert_eq!(needs.len(), 1);
+        assert_eq!(needs[0].0, custody_columns);
+        assert_eq!(needs[0].1, block_root);
         assert_eq!(store.root_index.get(&block_root), Some(&slot));
 
         let _ = std::fs::remove_dir_all(&store_path);
@@ -1380,57 +1362,20 @@ mod tests {
         let producer_cache = TCache::multi_producer("column_scan_rpc", 1 << 20);
         let mut producer = producer_cache.clone();
         let custody_columns = (1u128 << 3) | (1u128 << 7);
-        let mut requests = Vec::new();
+        let mut needs = Vec::new();
         store
             .file_io(&fork_digest, custody_columns, &mut producer, &mut |io| {
-                if let IoEvent::PeerEvent(PeerEvent::SendDataColumnsByRootRequest {
-                    columns,
-                    block_root,
-                    ..
-                }) = io
-                {
-                    requests.push((columns, block_root));
+                if let IoEvent::PeerEvent(PeerEvent::ColumnNeed { block_root, missing, .. }) = io {
+                    needs.push((missing, block_root));
                 }
             })
             .unwrap();
 
-        assert_eq!(requests.len(), 1, "scan should request the persisted block's columns");
-        assert_eq!(requests[0].0, custody_columns);
-        assert_eq!(requests[0].1, block_root);
+        assert_eq!(needs.len(), 1, "scan should report the persisted block's missing columns");
+        assert_eq!(needs[0].0, custody_columns);
+        assert_eq!(needs[0].1, block_root);
 
         let _ = std::fs::remove_dir_all(&store_path);
-    }
-
-    // Column backfill caps concurrent by-root requests: seeding the whole
-    // backlog at once must emit at most MAX_COLUMN_REQUESTS_IN_FLIGHT requests.
-    #[test]
-    fn column_backfill_caps_in_flight_requests() {
-        use silver_common::PeerEvent;
-
-        use crate::store::backfill::{ColumnBackfill, MAX_COLUMN_REQUESTS_IN_FLIGHT};
-
-        let mut cb = ColumnBackfill::new(1..10_000);
-        let custody = (1u128 << 3) | (1u128 << 7);
-        let mut requests = 0usize;
-
-        // Seed far more blocks than the cap.
-        for slot in 100u64..100 + 4 * MAX_COLUMN_REQUESTS_IN_FLIGHT as u64 {
-            let body_start = 184usize;
-            let mut block = vec![0u8; body_start + 404];
-            block[100..108].copy_from_slice(&slot.to_le_bytes());
-            block[108..116].copy_from_slice(&11u64.to_le_bytes());
-            block[body_start + 388..body_start + 392].copy_from_slice(&396u32.to_le_bytes());
-            block[body_start + 392..body_start + 396].copy_from_slice(&404u32.to_le_bytes());
-            let block_root = crate::util::block_root(&block);
-            cb.seed_block(block_root, slot, &block, custody, &mut |evt| {
-                if matches!(evt, PeerEvent::SendDataColumnsByRootRequest { .. }) {
-                    requests += 1;
-                }
-            });
-        }
-
-        assert_eq!(requests, MAX_COLUMN_REQUESTS_IN_FLIGHT, "in-flight cap not enforced");
-        assert!(!cb.is_complete());
     }
 
     // Two concurrent range requests must interleave chunk-by-chunk, not

@@ -221,7 +221,7 @@ impl AcquiredRead {
                 seq: self.read.seq,
                 tail: consumer.active.tail_seq,
             };
-            tracing::warn!("reading below current tile: {:?}", e);
+            tracing::warn!("reading below current tail: {:?}", e);
         }
         consumer.cache.read(self.read.seq).map(|(data, _, ts)| (data, ts))
     }
@@ -269,7 +269,7 @@ pub(super) struct Buckets {
 }
 
 impl Buckets {
-    pub(super) fn new(bucket_size: u64, cache_capacity: u64) -> Self {
+    pub(super) fn new(bucket_size: u64, cache_capacity: u64, seq: u64) -> Self {
         assert!(bucket_size.is_power_of_two());
         let mut number_of_buckets = cache_capacity / bucket_size;
         if !cache_capacity.is_multiple_of(bucket_size) || !number_of_buckets.is_power_of_two() {
@@ -277,7 +277,7 @@ impl Buckets {
         }
         Self {
             buckets: vec![0; number_of_buckets as usize].into_boxed_slice(),
-            tail_seq: u64::MAX,
+            tail_seq: seq,
             head_seq: 0,
             bucket_size,
             bucket_shift: bucket_size.trailing_zeros() as u64,
@@ -371,7 +371,7 @@ mod tests {
 
     #[test]
     fn buckets_acquire_initialises_tail_to_bucket_boundary() {
-        let mut b = Buckets::new(64, 1024);
+        let mut b = Buckets::new(64, 1024, 0);
         b.acquire(100);
         // 100 lives in bucket 1 (64..128); tail starts `guard` (10% of
         // 1024 → 128) below its bucket start, saturating at 0.
@@ -384,7 +384,7 @@ mod tests {
     #[test]
     fn buckets_out_of_order_acquire_within_guard() {
         // guard = (1024/10).next_multiple_of(64) = 128.
-        let mut b = Buckets::new(64, 1024);
+        let mut b = Buckets::new(64, 1024, 0);
         b.acquire(0);
         b.release(0, "");
         b.acquire(300);
@@ -404,7 +404,7 @@ mod tests {
     /// would permanently stall the tail on a phantom holder.
     #[test]
     fn buckets_acquire_below_tail_dropped_without_corruption() {
-        let mut b = Buckets::new(64, 1024); // guard 128, lag threshold 921
+        let mut b = Buckets::new(64, 1024, 0); // guard 128, lag threshold 921
         b.acquire(0);
         b.release(0, "");
         b.acquire(1000); // forces tail well past bucket 0 (tail = 832)
@@ -427,7 +427,7 @@ mod tests {
 
     #[test]
     fn buckets_release_advances_tail_when_head_is_ahead() {
-        let mut b = Buckets::new(64, 1024);
+        let mut b = Buckets::new(64, 1024, 0);
         b.acquire(0); // bucket 0, tail = 0
         b.acquire(200); // bucket 3, head = 200
         assert_eq!(b.tail_seq, 0);
@@ -439,7 +439,7 @@ mod tests {
 
     #[test]
     fn buckets_out_of_order_release_keeps_holders_alive() {
-        let mut b = Buckets::new(64, 1024);
+        let mut b = Buckets::new(64, 1024, 0);
         b.acquire(0); // bucket 0
         b.acquire(100); // bucket 1
         b.acquire(300); // bucket 4
@@ -455,7 +455,7 @@ mod tests {
     #[test]
     fn buckets_lag_threshold_force_evicts_held_tail() {
         // threshold = 0.9 * 1024 = 921
-        let mut b = Buckets::new(64, 1024);
+        let mut b = Buckets::new(64, 1024, 0);
         b.acquire(0); // hold bucket 0; never released
         let tail_before = b.tail_seq;
         // Bump head past lag threshold with a fresh acquire.
@@ -469,7 +469,7 @@ mod tests {
 
     #[test]
     fn buckets_release_below_tail_is_noop() {
-        let mut b = Buckets::new(64, 1024);
+        let mut b = Buckets::new(64, 1024, 0);
         b.acquire(0);
         b.acquire(1000); // forces tail past bucket 0
         let tail_after_eviction = b.tail_seq;
