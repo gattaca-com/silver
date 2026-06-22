@@ -138,7 +138,7 @@ fn pending_consolidations() {
 #[test]
 fn effective_balance_updates() {
     epoch_handler("effective_balance_updates", |s| {
-        s.with_view(|view| stf::process_effective_balance_updates(view));
+        s.with_view(|view| stf::process_effective_balance_updates(view, &mut Vec::new()));
     });
 }
 

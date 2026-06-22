@@ -8,8 +8,8 @@ pub use column::{
 };
 pub use decompose::DecomposeError;
 pub use delta_view::{
-    StateReadView, StateWriterView, ValidatorRow, append_validator, effective_randao_mixes_into,
-    effective_slashings_into, iter_validator_rows, randao_mix_at_epoch,
+    StateReadView, StateWriterView, append_validator, effective_randao_mixes_into,
+    effective_slashings_into, randao_mix_at_epoch,
 };
 pub use encode::{CHECKPOINT_SECTIONS, PubkeysDecodeError, decode_checkpoint_pubkeys};
 pub use epoch::{EpochGroup, EpochId, EpochStateFinalized, EpochView, EpochWriteView};

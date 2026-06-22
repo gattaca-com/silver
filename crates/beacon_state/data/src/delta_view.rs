@@ -31,62 +31,9 @@ pub struct StateReadView<'a> {
     pub validators: ValidatorsView<'a>,
 }
 
-/// All scalar per-validator columns merged at one index, yielded by
-/// [`iter_validator_rows`]. Passes read only the fields they need; the unused
-/// ones cost a cursor advance, no allocation.
-#[derive(Clone, Copy)]
-pub struct ValidatorRow {
-    pub effective_balance: u64,
-    pub balance: u64,
-    pub activation_eligibility_epoch: Epoch,
-    pub activation_epoch: Epoch,
-    pub exit_epoch: Epoch,
-    pub withdrawable_epoch: Epoch,
-    pub slashed: bool,
-    pub previous_participation: u8,
-    pub current_participation: u8,
-    pub inactivity_score: u64,
-}
-
-// The base+delta merge for the cross-tier reads (validator rows, the
-// circular-buffer rings hashed by `hash_tree_root_state`) lives here as free
-// fns over the individual tier read views, so a leaf can call them with the
-// subset of views it holds.
-
-/// Merged per-validator row over all scalar columns, in validator-index order.
-/// `validators`/`balances` are the tier readers; participation + inactivity are
-/// read through their writers (`&self`, no standalone read view). Zero-alloc.
-pub fn iter_validator_rows<'v>(
-    validators: ValidatorsView<'v>,
-    balances: BalancesReader<'v>,
-    previous_participation: &'v ParticipationWriteView<'_, Previous>,
-    current_participation: &'v ParticipationWriteView<'_, Current>,
-    inactivity: &'v InactivityWriteView<'_>,
-) -> impl Iterator<Item = ValidatorRow> + 'v {
-    let total = validators.count();
-    let mut effective_balance = validators.iter_effective_balances();
-    let mut balance = balances.iter();
-    let mut elig = validators.iter_activation_eligibility_epochs();
-    let mut act = validators.iter_activation_epochs();
-    let mut exit = validators.iter_exit_epochs();
-    let mut withdr = validators.iter_withdrawable_epochs();
-    let mut slashed = validators.iter_slashed();
-    let mut prev_p = previous_participation.iter();
-    let mut curr_p = current_participation.iter();
-    let mut inact = inactivity.iter();
-    (0..total).map(move |_| ValidatorRow {
-        effective_balance: effective_balance.next().unwrap(),
-        balance: balance.next().unwrap(),
-        activation_eligibility_epoch: elig.next().unwrap(),
-        activation_epoch: act.next().unwrap(),
-        exit_epoch: exit.next().unwrap(),
-        withdrawable_epoch: withdr.next().unwrap(),
-        slashed: slashed.next().unwrap(),
-        previous_participation: prev_p.next().unwrap(),
-        current_participation: curr_p.next().unwrap(),
-        inactivity_score: inact.next().unwrap(),
-    })
-}
+// The base+delta merge for the cross-tier reads (the circular-buffer rings
+// hashed by `hash_tree_root_state`) lives here as free fns over the individual
+// tier read views, so a leaf can call them with the subset of views it holds.
 
 /// Merged `randao_mixes` ring. Overlays per-completed-epoch delta entries
 /// (written to both `e % EHV` and `(e+1) % EHV`), then substitutes the

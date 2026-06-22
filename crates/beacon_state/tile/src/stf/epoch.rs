@@ -4,7 +4,7 @@ use silver_beacon_state_data::{
     self as common, Checkpoint, EPOCHS_PER_SLASHINGS_VECTOR, Epoch, EpochView, EpochWriteView,
     Eth1WriteView, HistoricalSummary, LongtailGroup, LongtailId, LongtailWriteView,
     MIN_SEED_LOOKAHEAD, PROPOSER_LOOKAHEAD_SIZE, SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT,
-    SYNC_COMMITTEE_SIZE, SpecConfig, StateWriterView, iter_validator_rows,
+    SYNC_COMMITTEE_SIZE, SpecConfig, StateWriterView,
 };
 use silver_common::metrics::timed;
 
@@ -12,7 +12,10 @@ use crate::{
     bls,
     shuffling::{self, DOMAIN_BEACON_PROPOSER},
     ssz_hash,
-    stf::{common::StfScratch, validator::total_active_balance},
+    stf::{
+        common::StfScratch,
+        validator::{ActiveStatus, total_active_balance},
+    },
 };
 
 pub const EPOCHS_PER_ETH1_VOTING_PERIOD: u64 = 64;
@@ -82,7 +85,7 @@ pub fn process_epoch(
     process_eth1_data_reset(&mut view.eth1, current_epoch);
     process_pending_deposits(cfg, view, epoch, &mut scratch.postponed);
     process_pending_consolidations(view);
-    process_effective_balance_updates(view);
+    process_effective_balance_updates(view, &mut scratch.replace_u64);
     process_slashings_reset(view, epoch);
     process_randao_mixes_reset(view, epoch);
     if rotates_summary {
@@ -169,19 +172,34 @@ fn justification_target_roots(
 ) -> (Option<common::B256>, Option<common::B256>) {
     let previous_epoch = current_epoch - 1;
     let (mut total_active, mut curr_target, mut prev_target) = (0u64, 0u64, 0u64);
-    for r in validator_rows(view) {
-        if r.activation_epoch <= current_epoch && current_epoch < r.exit_epoch {
-            total_active += r.effective_balance;
-            if !r.slashed && r.current_participation & TIMELY_TARGET_FLAG != 0 {
-                curr_target += r.effective_balance;
+    let validators = view.validators.reader();
+    let n = validators.count();
+    let mut act = validators.iter_activation_epochs();
+    let mut exit = validators.iter_exit_epochs();
+    let mut slashed_col = validators.iter_slashed();
+    let mut eff = validators.iter_effective_balances();
+    let mut prev_p = view.previous_participation.iter();
+    let mut curr_p = view.current_participation.iter();
+    for _ in 0..n {
+        let status = ActiveStatus {
+            activation_epoch: act.next().unwrap(),
+            exit_epoch: exit.next().unwrap(),
+            slashed: slashed_col.next().unwrap(),
+        };
+        let effective_balance = eff.next().unwrap();
+        let previous_participation = prev_p.next().unwrap();
+        let current_participation = curr_p.next().unwrap();
+        if status.active_at(current_epoch) {
+            total_active += effective_balance;
+            if !status.slashed && current_participation & TIMELY_TARGET_FLAG != 0 {
+                curr_target += effective_balance;
             }
         }
-        if r.activation_epoch <= previous_epoch &&
-            previous_epoch < r.exit_epoch &&
-            !r.slashed &&
-            r.previous_participation & TIMELY_TARGET_FLAG != 0
+        if status.active_at(previous_epoch) &&
+            !status.slashed &&
+            previous_participation & TIMELY_TARGET_FLAG != 0
         {
-            prev_target += r.effective_balance;
+            prev_target += effective_balance;
         }
     }
     total_active = total_active.max(EFFECTIVE_BALANCE_INCREMENT);
@@ -250,25 +268,43 @@ pub fn process_inactivity_updates(
     let is_leak = is_inactivity_leak(cfg, epoch, current_epoch);
 
     scratch.clear();
-    for (i, r) in validator_rows(view).enumerate() {
-        let new = if !eligibility(&r, current_epoch) {
-            r.inactivity_score
-        } else {
-            let mut s = r.inactivity_score;
-            if r.previous_participation & TIMELY_TARGET_FLAG != 0 && !r.slashed {
-                s = s.saturating_sub(1);
+    {
+        let validators = view.validators.reader();
+        let n = validators.count();
+        let mut act = validators.iter_activation_epochs();
+        let mut exit = validators.iter_exit_epochs();
+        let mut withdr = validators.iter_withdrawable_epochs();
+        let mut slashed_col = validators.iter_slashed();
+        let mut prev_p = view.previous_participation.iter();
+        let mut inact = view.inactivity.iter();
+        for i in 0..n {
+            let status = ActiveStatus {
+                activation_epoch: act.next().unwrap(),
+                exit_epoch: exit.next().unwrap(),
+                slashed: slashed_col.next().unwrap(),
+            };
+            let withdrawable_epoch = withdr.next().unwrap();
+            let previous_participation = prev_p.next().unwrap();
+            let inactivity_score = inact.next().unwrap();
+            let new = if !status.eligible(withdrawable_epoch, current_epoch) {
+                inactivity_score
             } else {
-                s += cfg.inactivity_score_bias;
+                let mut s = inactivity_score;
+                if previous_participation & TIMELY_TARGET_FLAG != 0 && !status.slashed {
+                    s = s.saturating_sub(1);
+                } else {
+                    s += cfg.inactivity_score_bias;
+                }
+                if !is_leak {
+                    s -= min(cfg.inactivity_score_recovery_rate, s);
+                }
+                s
+            };
+            // Only changed scores: set_many's cost is per touched chunk, and in
+            // a healthy (non-leak) chain nearly every score is 0 and stays 0.
+            if new != inactivity_score {
+                scratch.push((i as u32, new));
             }
-            if !is_leak {
-                s -= min(cfg.inactivity_score_recovery_rate, s);
-            }
-            s
-        };
-        // Only changed scores: set_many's cost is per touched chunk, and in a
-        // healthy (non-leak) chain nearly every score is 0 and stays 0.
-        if new != r.inactivity_score {
-            scratch.push((i as u32, new));
         }
     }
     view.inactivity.set_many(scratch);
@@ -297,33 +333,55 @@ pub fn process_rewards_and_penalties(
 
     // Pass 2: per-validator reward/penalty → changed balances into scratch.
     scratch.clear();
-    for (i, r) in validator_rows(view).enumerate() {
-        if !eligibility(&r, current_epoch) {
-            continue;
-        }
-        let base_reward =
-            (r.effective_balance / EFFECTIVE_BALANCE_INCREMENT) * base_reward_per_increment;
-        let is_unslashed = !r.slashed;
-        let mut reward: u64 = 0;
-        let mut penalty: u64 = 0;
-        for (fi, &flag) in PARTICIPATION_FLAGS.iter().enumerate() {
-            let weight = PARTICIPATION_WEIGHTS[fi];
-            let participating = is_unslashed && r.previous_participation & flag != 0;
-            if participating && !is_leak {
-                let num = base_reward * weight * flag_increments[fi];
-                reward += num / (active_increments * WEIGHT_DENOMINATOR);
-            } else if !participating && fi != 2 {
-                penalty += base_reward * weight / WEIGHT_DENOMINATOR;
+    {
+        let validators = view.validators.reader();
+        let n = validators.count();
+        let mut act = validators.iter_activation_epochs();
+        let mut exit = validators.iter_exit_epochs();
+        let mut slashed_col = validators.iter_slashed();
+        let mut withdr = validators.iter_withdrawable_epochs();
+        let mut eff = validators.iter_effective_balances();
+        let mut bal = view.balances.reader().iter();
+        let mut prev_p = view.previous_participation.iter();
+        let mut inact = view.inactivity.iter();
+        for i in 0..n {
+            let status = ActiveStatus {
+                activation_epoch: act.next().unwrap(),
+                exit_epoch: exit.next().unwrap(),
+                slashed: slashed_col.next().unwrap(),
+            };
+            let withdrawable_epoch = withdr.next().unwrap();
+            let effective_balance = eff.next().unwrap();
+            let balance = bal.next().unwrap();
+            let previous_participation = prev_p.next().unwrap();
+            let inactivity_score = inact.next().unwrap();
+            if !status.eligible(withdrawable_epoch, current_epoch) {
+                continue;
             }
-        }
-        let target_ok = is_unslashed && r.previous_participation & TIMELY_TARGET_FLAG != 0;
-        if !target_ok {
-            let pen_num = r.effective_balance * r.inactivity_score;
-            penalty += pen_num / (cfg.inactivity_score_bias * cfg.inactivity_penalty_quotient);
-        }
-        let new = r.balance.saturating_add(reward).saturating_sub(penalty);
-        if new != r.balance {
-            scratch.push((i as u32, new));
+            let base_reward =
+                (effective_balance / EFFECTIVE_BALANCE_INCREMENT) * base_reward_per_increment;
+            let is_unslashed = !status.slashed;
+            let mut reward: u64 = 0;
+            let mut penalty: u64 = 0;
+            for (fi, &flag) in PARTICIPATION_FLAGS.iter().enumerate() {
+                let weight = PARTICIPATION_WEIGHTS[fi];
+                let participating = is_unslashed && previous_participation & flag != 0;
+                if participating && !is_leak {
+                    let num = base_reward * weight * flag_increments[fi];
+                    reward += num / (active_increments * WEIGHT_DENOMINATOR);
+                } else if !participating && fi != 2 {
+                    penalty += base_reward * weight / WEIGHT_DENOMINATOR;
+                }
+            }
+            let target_ok = is_unslashed && previous_participation & TIMELY_TARGET_FLAG != 0;
+            if !target_ok {
+                let pen_num = effective_balance * inactivity_score;
+                penalty += pen_num / (cfg.inactivity_score_bias * cfg.inactivity_penalty_quotient);
+            }
+            let new = balance.saturating_add(reward).saturating_sub(penalty);
+            if new != balance {
+                scratch.push((i as u32, new));
+            }
         }
     }
     view.balances.set_many(scratch);
@@ -333,13 +391,27 @@ pub fn process_rewards_and_penalties(
 /// previous-epoch active, unslashed validators that set each timely flag.
 fn flag_attesting_increments(view: &StateWriterView, previous_epoch: Epoch) -> [u64; 3] {
     let mut flag_increments = [0u64; 3];
-    for r in validator_rows(view) {
-        if r.activation_epoch > previous_epoch || previous_epoch >= r.exit_epoch || r.slashed {
+    let validators = view.validators.reader();
+    let n = validators.count();
+    let mut act = validators.iter_activation_epochs();
+    let mut exit = validators.iter_exit_epochs();
+    let mut slashed_col = validators.iter_slashed();
+    let mut eff = validators.iter_effective_balances();
+    let mut prev_p = view.previous_participation.iter();
+    for _ in 0..n {
+        let status = ActiveStatus {
+            activation_epoch: act.next().unwrap(),
+            exit_epoch: exit.next().unwrap(),
+            slashed: slashed_col.next().unwrap(),
+        };
+        let effective_balance = eff.next().unwrap();
+        let previous_participation = prev_p.next().unwrap();
+        if !status.active_at(previous_epoch) || status.slashed {
             continue;
         }
-        let incs = r.effective_balance / EFFECTIVE_BALANCE_INCREMENT;
+        let incs = effective_balance / EFFECTIVE_BALANCE_INCREMENT;
         for (fi, &flag) in PARTICIPATION_FLAGS.iter().enumerate() {
-            if r.previous_participation & flag != 0 {
+            if previous_participation & flag != 0 {
                 flag_increments[fi] += incs;
             }
         }
@@ -438,25 +510,36 @@ pub fn process_slashings_reset(view: &mut StateWriterView, epoch: &mut EpochWrit
     view.slot.state_mut().current_epoch_slashings = 0;
 }
 
-pub fn process_effective_balance_updates(view: &mut StateWriterView) {
+#[timed]
+pub fn process_effective_balance_updates(
+    view: &mut StateWriterView,
+    scratch: &mut Vec<(u32, u64)>,
+) {
     let hys_down =
         EFFECTIVE_BALANCE_INCREMENT * HYSTERESIS_DOWNWARD_MULTIPLIER / HYSTERESIS_QUOTIENT;
     let hys_up = EFFECTIVE_BALANCE_INCREMENT * HYSTERESIS_UPWARD_MULTIPLIER / HYSTERESIS_QUOTIENT;
-    let total = view.validators.count();
-    for i in 0..total {
-        let effective_balance = view.validators.effective_balance(i);
-        let b = view.balances.get(i);
-        let creds = *view.validators.credentials(i);
-        let max_eff = creds.max_effective_balance();
-        let new = if b + hys_down < effective_balance || effective_balance + hys_up < b {
-            (b - b % EFFECTIVE_BALANCE_INCREMENT).min(max_eff)
-        } else {
-            effective_balance
-        };
-        if new != effective_balance {
-            view.validators.set_effective_balance(i as u32, new);
+    scratch.clear();
+    {
+        let validators = view.validators.reader();
+        let n = validators.count();
+        let mut eff = validators.iter_effective_balances();
+        let mut bal = view.balances.reader().iter();
+        let mut creds = validators.iter_credentials();
+        for i in 0..n {
+            let effective_balance = eff.next().unwrap();
+            let b = bal.next().unwrap();
+            let max_eff = creds.next().unwrap().max_effective_balance();
+            let new = if b + hys_down < effective_balance || effective_balance + hys_up < b {
+                (b - b % EFFECTIVE_BALANCE_INCREMENT).min(max_eff)
+            } else {
+                effective_balance
+            };
+            if new != effective_balance {
+                scratch.push((i as u32, new));
+            }
         }
     }
+    view.validators.set_effective_balance_many(scratch);
 }
 
 #[timed]
@@ -869,26 +952,6 @@ fn is_inactivity_leak(cfg: &SpecConfig, epoch: &EpochView, current_epoch: Epoch)
     let previous_epoch = current_epoch.saturating_sub(1);
     let finalized = epoch.state().finalized_checkpoint.epoch;
     previous_epoch.saturating_sub(finalized) > cfg.min_epochs_to_inactivity_penalty
-}
-
-/// Merged validator-row iterator over the view's per-validator tiers.
-fn validator_rows<'a>(
-    view: &'a StateWriterView<'_>,
-) -> impl Iterator<Item = common::ValidatorRow> + 'a {
-    iter_validator_rows(
-        view.validators.reader(),
-        view.balances.reader(),
-        &view.previous_participation,
-        &view.current_participation,
-        &view.inactivity,
-    )
-}
-
-#[inline]
-fn eligibility(row: &common::ValidatorRow, current_epoch: Epoch) -> bool {
-    let prev = current_epoch.saturating_sub(1);
-    let active_prev = row.activation_epoch <= prev && prev < row.exit_epoch;
-    active_prev || (row.slashed && current_epoch < row.withdrawable_epoch)
 }
 
 pub fn integer_sqrt(n: u64) -> u64 {

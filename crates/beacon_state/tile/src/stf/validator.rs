@@ -161,6 +161,31 @@ pub(crate) fn is_slashable_validator(validators: &ValidatorsView, vi: u32, e: Ep
         e < validators.withdrawable_epoch(vi as usize)
 }
 
+/// The validator columns that decide activity/eligibility, built inline per
+/// element in the epoch read sweeps (built from separate column iterators, not
+/// a bundled row iterator, so the independent loads stay parallel).
+#[derive(Clone, Copy)]
+pub(crate) struct ActiveStatus {
+    pub(crate) activation_epoch: Epoch,
+    pub(crate) exit_epoch: Epoch,
+    pub(crate) slashed: bool,
+}
+
+impl ActiveStatus {
+    #[inline]
+    pub(crate) fn active_at(self, epoch: Epoch) -> bool {
+        self.activation_epoch <= epoch && epoch < self.exit_epoch
+    }
+
+    /// Eligible for rewards/inactivity accounting this epoch: active in the
+    /// previous epoch, or slashed but not yet withdrawable.
+    #[inline]
+    pub(crate) fn eligible(self, withdrawable_epoch: Epoch, current_epoch: Epoch) -> bool {
+        self.active_at(current_epoch.saturating_sub(1)) ||
+            (self.slashed && current_epoch < withdrawable_epoch)
+    }
+}
+
 #[inline]
 pub(crate) fn get_beacon_proposer_index(slot: &SlotStateWriteView, epoch: EpochView) -> u32 {
     let s = slot.state().slot;
