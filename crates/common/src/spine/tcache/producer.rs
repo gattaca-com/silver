@@ -65,7 +65,9 @@ impl TCacheProducer for Producer {
     /// filled. otherwise it must ber manually committed by calling `flush`.
     fn reserve(&mut self, len: usize, auto_commit: bool) -> Option<Reservation> {
         let tcache = unsafe { &*self.cache };
-        if tcache.reserve_len(self.seq, len) > self.space as usize || self.seq - self.published_seq > (tcache.len >> 1) as u64 {
+        if tcache.reserve_len(self.seq, len) > self.space as usize ||
+            self.seq - self.published_seq > (tcache.len >> 1) as u64
+        {
             // try reclaim space.
             self.publish_head();
             self.published_seq = self.seq;
