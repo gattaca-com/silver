@@ -135,6 +135,7 @@ impl Syncing {
             let ReqState::InFlight { peer: p, peer_head_at_issue, .. } = r.state &&
             p == peer
         {
+            tracing::info!(delivered, peer, target=?self.target, "sync request completed");
             r.state = if delivered {
                 ReqState::Delivered { peer_head_at_issue }
             } else {
