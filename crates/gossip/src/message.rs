@@ -49,7 +49,7 @@ pub(super) fn handle_incoming(
         }
     })?;
 
-    // Alloc into downstream tcache - SSZ message bytes 
+    // Alloc into downstream tcache - SSZ message bytes
     let mut reservation = incoming_gossip_publish
         .reserve(len, false)
         .ok_or(Error::BufferTooSmall)
