@@ -202,11 +202,13 @@ impl Store {
                         _ => None,
                     };
                     if let Some((backfill_range, parent_root)) = range {
+                        // Report the gap; the SyncEngine schedules the fetches.
+                        emit(IoEvent::PeerEvent(PeerEvent::BackfillState {
+                            block_floor: backfill_range.start,
+                            earliest_present: backfill_range.end,
+                            column_floor: self.column_floor,
+                        }));
                         self.backfill = Some(Backfill::new(backfill_range, parent_root));
-                        self.backfill
-                            .as_mut()
-                            .unwrap()
-                            .start(&mut |evt| emit(IoEvent::PeerEvent(evt)));
                         self.block_backfill_stage = BlockBackfillStage::Running;
                     } else {
                         // No block gap — block backfill is trivially done; the
@@ -337,12 +339,9 @@ impl Store {
             }
         }
 
-        // Column backfill runs first: advance the disk scan (set 1) and
-        // re-request any outstanding columns (set 1 + set 2).
+        // Column backfill runs first: advance the disk scan (set 1), reporting
+        // missing columns via `ColumnNeed`. Re-request/retry is the engine's.
         self.scan_columns_step(custody_group_columns, &mut |evt| emit(IoEvent::PeerEvent(evt)));
-        if let Some(cb) = self.column_backfill.as_mut() {
-            cb.tick(&mut |evt| emit(IoEvent::PeerEvent(evt)));
-        }
 
         // Promote to block backfill once the disk scan finished and its set-1
         // column requests drained — block backfill then feeds set 2 back in.

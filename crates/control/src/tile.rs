@@ -3,19 +3,26 @@ use std::{
     time::{Duration, Instant},
 };
 
-use flux::tile::Tile;
+use flux::{spine::SpineAdapter, tile::Tile};
 use silver_common::{
-    BeaconStateEvent, P2pSend, PeerControl, PeerEvent, RpcInbound, RpcOutbound, RpcRequestOutbound,
-    SilverSpine, SilverSpineProducers, TCacheProducer, TCacheRead, TMultiProducer,
-    ssz_view::{METADATA_SIZE, STATUS_V2_SIZE},
+    BACKFILL_REQUEST_ID, BeaconStateEvent, P2pSend, PeerControl, PeerEvent, REQUEST_ID_PREFIX_MASK,
+    RpcInbound, RpcOutbound, RpcRequestOutbound, SilverSpine, SilverSpineProducers, TCacheProducer,
+    TCacheRead, TMultiProducer,
+    ssz_view::{BLOCKS_BY_RANGE_REQ_SIZE, METADATA_SIZE, STATUS_V2_SIZE, StatusView},
 };
 use silver_peer::PeerManager;
+
+use crate::sync_engine::{SyncAction, SyncEngine, SyncEvent};
 
 const OUTBOUND_DRAIN_INTERVAL: Duration = Duration::from_secs(5);
 const PEER_PERSIST_INTERVAL: Duration = Duration::from_secs(300);
 
 pub struct Controller {
     peer_manager: PeerManager,
+    /// Authoritative sync driver: owns target selection (produces the
+    /// `sync_target`) and forward block issuance. PM serves its requests
+    /// (peer-pick, caps, send) and owns column sync.
+    sync_engine: SyncEngine,
     rpc_producer: TMultiProducer,
     last_tick: Instant,
     last_ping: Instant,
@@ -35,8 +42,14 @@ impl Controller {
     /// update them via `set_status` / `set_metadata` once chain state is
     /// available.
     pub fn new(peer_manager: PeerManager, rpc_producer: TMultiProducer) -> Self {
+        let sync_engine = SyncEngine::new(
+            peer_manager.syncing_config(),
+            peer_manager.awaiting_local_replay(),
+            peer_manager.custody_columns(),
+        );
         Self {
             peer_manager,
+            sync_engine,
             rpc_producer,
             last_tick: Instant::now(),
             last_ping: Instant::now(),
@@ -66,7 +79,7 @@ impl Controller {
 }
 
 impl Tile<SilverSpine> for Controller {
-    fn loop_body(&mut self, adapter: &mut flux::spine::SpineAdapter<SilverSpine>) {
+    fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         let now = Instant::now();
 
         let mut handle_peer_control =
@@ -119,11 +132,13 @@ impl Tile<SilverSpine> for Controller {
             };
 
         adapter.consume(|event: PeerEvent, producers| {
+            self.sync_engine.peer_event(event, now, self.peer_manager.our_fork_digest());
             self.peer_manager
                 .handle_event(event, now, &mut |evt| handle_peer_control(evt, producers));
         });
 
         adapter.consume(|rpc: RpcInbound, producers| {
+            self.sync_engine.rpc_event(now, &rpc, self.peer_manager.our_fork_digest());
             self.peer_manager
                 .on_rpc_inbound(rpc, now, &mut |evt| handle_peer_control(evt, producers));
         });
@@ -135,38 +150,59 @@ impl Tile<SilverSpine> for Controller {
                 latest_status_event = Some((ssz, latest_block_slot, wall_slot));
             }
             BeaconStateEvent::BlockRejected { block_root, source } => {
+                // PM keeps the reject for peer eviction (Status backing a
+                // rejected chain); the engine owns target invalidation.
                 self.peer_manager.record_block_rejected(block_root, source);
+                self.sync_engine.on_event(SyncEvent::BlockRejected { block_root, source }, now);
             }
             BeaconStateEvent::ReplayComplete => {
                 self.peer_manager.on_local_replay_complete();
+                self.sync_engine.on_event(SyncEvent::ReplayComplete, now);
             }
             BeaconStateEvent::BacktrackStall => {
-                self.peer_manager.request_resync();
+                // Relax the engine's (authoritative) target selection for one
+                // pass so a slightly-ahead peer qualifies for range sync.
+                self.sync_engine.request_resync();
             }
             _ => {}
         });
 
         if let Some((ssz, latest_block_slot, wall_slot)) = latest_status_event {
             tracing::debug!(wall_slot, latest_block_slot, "new status set");
+            // PM still tracks our Status (peer-Status validation) + applied head
+            // (custody-peer eligibility); the wall slot is the engine's only.
             self.peer_manager.set_status(ssz);
             self.peer_manager.set_local_head_imported(latest_block_slot);
-            self.peer_manager.set_wall_slot(wall_slot);
+            self.sync_engine.on_event(
+                SyncEvent::LocalStatus {
+                    head_slot: latest_block_slot,
+                    finalized_epoch: StatusView::finalized_epoch(&ssz),
+                    finalized_root: *StatusView::finalized_root(&ssz),
+                    wall_slot,
+                },
+                now,
+            );
         }
 
-        if let Some(target) = self.peer_manager.maybe_emit_sync_target() {
-            adapter.produce(target);
-        }
-
-        if let Some(strategy) = self.peer_manager.maybe_choose_syncing_strategy(now) {
+        // Target selection: the engine is authoritative. Produce its target
+        // onto the `sync_target` queue, and feed it to PM for peer-pick + column
+        // gating (PM keeps `current_target` in step; runs its column reset).
+        self.sync_engine.advance(now, &mut |action| {
+            if let SyncAction::SetSyncTarget(target) = action {
+                adapter.produce(target);
+            }
+        });
+        self.peer_manager.set_sync_target(self.sync_engine.current_target());
+        if let Some(strategy) = self.sync_engine.maybe_choose_syncing_strategy(now) {
             adapter.produce(strategy);
         }
 
-        // Catchup → Following edge: blast a one-shot Status to every peer
+        // Catchup → Following edge: fan out Status to every peer
         // so they reciprocate with their fresh head — primes the head-sync
         // set — and announce our topic subscriptions so peers connected
         // during catch-up start gossiping to us. Subsequent Status fan-outs
         // run on the periodic 300s heartbeat.
-        if self.peer_manager.take_just_synced() {
+        if self.sync_engine.take_just_synced() {
             self.last_status = now;
             self.peer_manager
                 .fan_out_status(now, &mut |evt| handle_peer_control(evt, &mut adapter.producers));
@@ -174,12 +210,11 @@ impl Tile<SilverSpine> for Controller {
                 .fan_out_subscriptions(&mut |evt| handle_peer_control(evt, &mut adapter.producers));
         }
 
-        self.peer_manager.maybe_issue_syncreq(now, &mut |pc| {
-            match pc {
-                PeerControl::P2pSend(send) => adapter.produce(send),
-                other => adapter.produce(other),
-            };
-        });
+        // Sync issuance: the engine (Syncing or Following) decides the ranges +
+        // owns completion. Forward requests are PM-picked (peer matched to the
+        // target); backfill requests (BACKFILL/COLUMN_BACKFILL prefix) route via
+        // PM's history-/custody-aware path, peer-agnostic.
+        sync(now, &mut self.sync_engine, &mut self.peer_manager, adapter);
 
         if self.last_drain.elapsed() > OUTBOUND_DRAIN_INTERVAL {
             self.last_drain = now;
@@ -217,12 +252,110 @@ impl Tile<SilverSpine> for Controller {
         // a newer head or we need to learn we're stranded — either way,
         // refresh sooner rather than waiting on the 5 min keepalive.
         let fell_behind =
-            self.peer_manager.fell_behind() && self.last_status.elapsed() > Duration::from_secs(1);
+            self.sync_engine.fell_behind() && self.last_status.elapsed() > Duration::from_secs(1);
         if fell_behind || self.last_status.elapsed() > Duration::from_secs(30) {
             self.last_status = now;
             self.peer_manager
                 .fan_out_status(now, &mut |evt| handle_peer_control(evt, &mut adapter.producers));
         }
+    }
+}
+
+fn sync(
+    now: Instant,
+    sync_engine: &mut SyncEngine,
+    peer_manager: &mut PeerManager,
+    adapter: &mut SpineAdapter<SilverSpine>,
+) {
+    let mut request_issued = None;
+    let mut column_request_issued = None;
+    sync_engine.drive_forward_sync(now, &mut |action| match action {
+        SyncAction::RequestBlocksByRange { request_id, start, count, .. } => {
+            if request_id & REQUEST_ID_PREFIX_MASK == BACKFILL_REQUEST_ID {
+                let mut ssz = [0u8; BLOCKS_BY_RANGE_REQ_SIZE];
+                ssz[..8].copy_from_slice(&start.to_le_bytes());
+                ssz[8..16].copy_from_slice(&count.to_le_bytes());
+                ssz[16..].copy_from_slice(&1u64.to_le_bytes());
+                peer_manager.on_rpc_request(
+                    request_id,
+                    silver_common::RpcRequest::BlocksByRange(ssz),
+                    now,
+                    &mut |pc| {
+                        match pc {
+                            PeerControl::P2pSend(send) => adapter.produce(send),
+                            other => adapter.produce(other),
+                        };
+                    },
+                );
+            } else {
+                let peer = peer_manager.issue_sync_blocks_by_range(
+                    request_id,
+                    start,
+                    count,
+                    now,
+                    &mut |pc| {
+                        match pc {
+                            PeerControl::P2pSend(send) => adapter.produce(send),
+                            other => adapter.produce(other),
+                        };
+                    },
+                );
+                request_issued = Some(move |sync_engine: &mut SyncEngine| {
+                    sync_engine.on_request_issued(request_id, start, count, peer, now)
+                });
+            }
+        }
+        SyncAction::RequestColumnsByRange {
+            request_id,
+            start,
+            count,
+            columns,
+            tried_peers,
+            ..
+        } => {
+            let peer = peer_manager.issue_sync_columns_by_range(
+                request_id,
+                start,
+                count,
+                columns,
+                &tried_peers,
+                now,
+                &mut |pc| {
+                    match pc {
+                        PeerControl::P2pSend(send) => adapter.produce(send),
+                        other => adapter.produce(other),
+                    };
+                },
+            );
+            column_request_issued = Some(move |sync_engine: &mut SyncEngine| {
+                sync_engine.on_column_request_issued(request_id, peer, now)
+            });
+        }
+        SyncAction::RequestColumnsByRoot { request_id, block_root, columns, .. } => {
+            peer_manager.on_request_data_columns_by_root(
+                request_id,
+                columns,
+                block_root,
+                now,
+                &mut |pc| {
+                    match pc {
+                        PeerControl::P2pSend(send) => adapter.produce(send),
+                        other => adapter.produce(other),
+                    };
+                },
+            );
+        }
+        SyncAction::ScorePeer { peer, severity } => {
+            peer_manager.score_sync_peer(peer, severity);
+        }
+        _ => {}
+    });
+
+    if let Some(req_issued) = request_issued {
+        req_issued(sync_engine);
+    }
+    if let Some(column_req_issued) = column_request_issued {
+        column_req_issued(sync_engine);
     }
 }
 

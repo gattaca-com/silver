@@ -94,7 +94,7 @@ impl StreamProtocol {
             Self::Goodbye => Some(RpcQuota::one_every(10)),
             Self::Metadata => Some(RpcQuota::n_every(2, 5)),
             Self::BeaconBlocksByRange | Self::BeaconBlocksByRoot => {
-                Some(RpcQuota::n_every(MAX_BLOCK_RATE_LIMIT_TOKENS, 15))
+                Some(RpcQuota::n_every(MAX_BLOCK_RATE_LIMIT_TOKENS, 30)) // 30s appears to be the default period of Prysm. Lighthouse is 10s. 
             }
             Self::DataColumnSidecarsByRange | Self::DataColumnSidecarsByRoot => {
                 Some(RpcQuota::n_every(MAX_SIDECAR_RATE_LIMIT_TOKENS, 15))

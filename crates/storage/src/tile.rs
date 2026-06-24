@@ -540,7 +540,9 @@ impl Tile<SilverSpine> for StorageTile {
                 silver_common::RpcResponse::DataColumnSidecar { fork_digest: _, ssz } if rsp.is_column_backfill() => {
                     tracing::debug!("backfill data column sidecar over rpc");
                     let t_read = self.rpc_consumer.acquire(ssz);
-                    self.store.backfill_data_column(t_read);
+                    self.store.backfill_data_column(t_read, &mut |evt| {
+                        producers.peer_events.produce(&evt.into());
+                    });
                 }
                 silver_common::RpcResponse::DataColumnSidecar { fork_digest: _, ssz } => {
                     // TODO validate that originating peer has data column index in custody groups
@@ -576,12 +578,11 @@ impl Tile<SilverSpine> for StorageTile {
                     let err_msg = String::from_utf8_lossy(&msg[..len]).to_string();
                     tracing::error!(error, err_msg, "rpc error response");
                 }
-                silver_common::RpcResponse::Complete if rsp.is_column_backfill() => {}
-                silver_common::RpcResponse::Complete if rsp.is_backfill() => {
-                    self.store.backfill_request_complete(rsp.application_id, &mut |event| {
-                        producers.peer_events.produce(&event.into());
-                    });
-                }
+                // Backfill block/column stream terminators: completion is the
+                // SyncEngine's (it owns the request lifecycle); storage just
+                // writes payloads + tracks per-block column completeness.
+                silver_common::RpcResponse::Complete
+                    if rsp.is_column_backfill() || rsp.is_backfill() => {}
                 other => {
                     tracing::trace!(?other, app_id=rsp.application_id, id=?rsp.stream_id, "ignoring rpc response");
                 }

@@ -401,6 +401,21 @@ pub enum PeerEvent {
         rpc: RpcRequest,
     },
     EarliestSlot(u64),
+    /// Storage's startup-scan backfill report: the block gap to fill backward
+    /// (`[block_floor, earliest_present)`) + the column-retention floor.
+    BackfillState {
+        block_floor: u64,
+        earliest_present: u64,
+        column_floor: u64,
+    },
+    /// A persisted block whose custody columns aren't all on disk (`missing`),
+    /// found by the scan or pulled in by block backfill. `missing == 0` clears
+    /// a previously-reported need (the block's columns are now complete).
+    ColumnNeed {
+        block_root: [u8; 32],
+        slot: u64,
+        missing: u128,
+    },
 }
 
 /// Sync target chosen by the peer manager.

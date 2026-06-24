@@ -34,6 +34,9 @@ pub struct EngineTile {
 
 impl Tile<SilverSpine> for EngineTile {
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
+        self.rpc_consumer.free();
+        self.gossip_consumer.free();
+
         if self.client.is_none() {
             // Unsafe no-EL testing mode: report healthy once so peers don't
             // gate on EL liveness, then answer every request with VALID.

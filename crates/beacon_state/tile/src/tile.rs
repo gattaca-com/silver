@@ -647,7 +647,7 @@ impl Tile<SilverSpine> for BeaconStateTile {
 
         adapter.consume(|target: SyncUpdate, _producers| self.on_sync_update(target));
 
-        adapter.consume(|m: RpcInbound, producers| self.on_rpc_inbound(m, producers));
+        adapter.consume_n(64, |m: RpcInbound, producers| self.on_rpc_inbound(m, producers));
         self.rpc_consumer.free();
 
         adapter.consume(|m: DataColumnsAvailable, producers| {

@@ -37,10 +37,11 @@ pub struct SyncingConfig {
     /// Inflight `BlocksByRange` request progress timeout, in milliseconds.
     /// If no head_slot advance into the requested range is observed for
     /// this long, the request is declared stuck: peer is scored
-    /// (mid-severity) and the request is re-issued. Sized to absorb BLS
-    /// and STF import latency for a full 128-block batch (several seconds)
-    /// without false positives.
-    #[serde(default = "default_u64::<15000>")]
+    /// (high-tolerance, the lightest penalty) and the request is re-issued.
+    /// A healthy peer's
+    /// terminator clears the request well before this; the bound exists to
+    /// rotate off a silent/slow peer fast during catch-up.
+    #[serde(default = "default_u64::<2000>")]
     pub inflight_progress_timeout_ms: u64,
     /// Consecutive failed `DataColumnsByRange` attempts (error terminator
     /// or progress timeout) on one catch-up range before its remainder is
@@ -60,7 +61,7 @@ impl Default for SyncingConfig {
             finalized_lag_threshold_epochs: 2,
             wall_clock_tolerance_slots: 32,
             max_blocks_by_range_batch: 128,
-            inflight_progress_timeout_ms: 15_000,
+            inflight_progress_timeout_ms: 2_000,
             max_colreq_attempts: 3,
             pending: PendingBounds::default(),
         }

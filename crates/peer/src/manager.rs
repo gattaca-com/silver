@@ -5,14 +5,14 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     net::{IpAddr, SocketAddr},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
-use fxhash::{FxHashMap, FxHashSet};
+use fxhash::FxHashSet;
 use silver_common::{
     BlockSource, Enr, GossipMsgOut, GossipTopic, IpBytes, MessageId, P2pSend, PeerControl,
     PeerEvent, PeerId, PeerStatus, RpcRequest, RpcRequestOutbound, RpcSeverity, StreamProtocol,
-    SyncUpdate, SyncingStrategy, TCacheRead,
+    SyncUpdate, TCacheRead,
     metrics::timed,
     rpc_rate_limit::RpcRateLimit,
     ssz_view::{METADATA_SIZE, STATUS_V2_SIZE, StatusView},
@@ -32,17 +32,6 @@ pub(crate) mod rpc;
 const PEERS_CAP: usize = 256;
 const IP_COLOC_CAP: usize = 128;
 const ARCHIVE_CAP: usize = 512;
-const SYNC_AGG_CAP: usize = 64;
-
-const SLOTS_PER_EPOCH: u64 = 32;
-
-/// If BS never sends `ReplayComplete` (signal lost, storage stalled), drop the
-/// gate after this timeout so network sync can't be stranded.
-const REPLAY_GATE_TIMEOUT: Duration = Duration::from_secs(300);
-
-/// Boot replay-vs-sync decision: wait at most this long for peer Status before
-/// defaulting to replaying our on-disk chain.
-const SYNCING_STRATEGY_TIMEOUT_WINDOW: Duration = Duration::from_secs(15);
 
 pub struct PeerManager {
     /// Live peers keyed by connection handle.
@@ -77,12 +66,6 @@ pub struct PeerManager {
     /// it). Compared against the leading 4 bytes of an ENR's `eth2` field.
     our_fork_digest: Option<[u8; 4]>,
 
-    /// Wall slot sampled by BS alongside the last `Status` event. Paired
-    /// with `self.status` — read fields off `self.status` via
-    /// `StatusView::*`. `0` when no `Status` has arrived yet (status is
-    /// `None` in that case too).
-    local_wall_slot: u64,
-
     /// Session-level blacklist of rejected block + finalized roots. Inserted
     /// from beacon-state's `BlockRejected`; queried by Status validation
     /// and target selection.
@@ -91,17 +74,10 @@ pub struct PeerManager {
     /// Tunables for target selection + blacklist caps.
     pub(crate) syncing: SyncingConfig,
 
-    /// Currently-pinned sync target. `Following` until enough peer Status
-    /// data + a `LocalStateUpdate` arrives to compute one.
+    /// The `SyncEngine`-selected sync target, fed in via `set_sync_target`.
+    /// Read by `pick_sync_peer` to match candidate peers; `Following` until the
+    /// engine selects one.
     current_target: SyncUpdate,
-    /// Set when something happened that may change the target (peer Status,
-    /// local state, blacklist, peer drop). `maybe_emit_sync_target` clears
-    /// it. Avoids recomputing per-event when nothing's pending.
-    target_dirty: bool,
-    /// The beacon-state tile asked us to range-sync (orphan backtrack too
-    /// deep). `select_target` relaxes its lag thresholds to 0 while set so a
-    /// slightly-ahead peer qualifies; cleared once a Syncing target is picked.
-    force_resync: bool,
 
     /// SSZ Bitvector[64] of attestation subnets we subscribe to, derived
     /// once from `our_topics`. Bit N set ↔ `BeaconAttestation(N) ∈
@@ -153,167 +129,24 @@ pub struct PeerManager {
     metadata: [u8; METADATA_SIZE],
     earliest_available_slot: u64,
 
-    /// True iff the last evaluated sync target was `Following`. Maintained
-    /// by `maybe_emit_sync_target`. Gates gossip relay/subscribe/graft.
-    is_synced: bool,
-
-    /// Latched once `is_synced` first goes true. Distinguishes a cold start
-    /// (head far behind wall, never synced) from a steady-state empty-slot
-    /// tail (synced, then trailing wall because no blocks were proposed). The
-    /// former must not enter `Following`; the latter must stay in it.
-    was_ever_synced: bool,
-
-    /// One-shot edge: set inside `maybe_emit_sync_target` when `is_synced`
-    /// transitions false→true. Drained by `take_just_synced` so the
-    /// controller can fire a one-off Status fan-out without waiting for
-    /// the 300s periodic.
-    just_synced: bool,
-
     /// Our data-column custody set (bitmask of column indices), derived from
     /// node_id + CGC at startup. Used to fetch columns by range alongside
     /// catch-up `BlocksByRange`.
     pub(crate) custody_columns: u128,
 
-    /// Outstanding catch-up `BlocksByRange` request issued by the PM-owned
-    /// driver. At most one in flight per target.
-    pub(crate) inflight_syncreq: Option<SyncReq>,
-
-    /// Highest slot a peer has confirmed-served (`Complete`) this catch-up.
-    /// Reset to 0 whenever the target changes or a
-    /// block is rejected — the contiguity assumption no longer holds.
-    pub(crate) synced_through: u64,
-
-    /// Outstanding catch-up `DataColumnsByRange` work. At most one range,
-    /// one peer attempt at a time. Driven by `maybe_issue_colreq`.
-    pub(crate) col_syncreq: Option<ColSyncReq>,
-
-    /// Highest slot whose custody columns a peer has confirmed-served
-    /// (`Complete`) this catch-up. Reset alongside `synced_through`.
-    pub(crate) columns_synced_through: u64,
-
-    /// Peers that failed (error/timeout) the active column range; the
-    /// picker skips them so the remainder goes elsewhere. Cleared per
-    /// range, and when no eligible peer is left (the attempts cap still
-    /// bounds the range).
-    pub(crate) col_tried_for_range: FxHashSet<usize>,
-
-    col_stall_logged: bool,
-
     /// Slot of the highest block BS has imported (`last_applied`), from the
-    /// `latest_block_slot` on the Status event.
+    /// `latest_block_slot` on the Status event. Used by the data-column peer
+    /// picker (`best_peer_for_data_columns`) for earliest-available gating.
     pub(crate) local_head_imported_slot: u64,
 
-    /// Gates `maybe_issue_syncreq` while the storage tile replays the on-disk
-    /// chain into BS, so we don't network-fetch blocks we already have.
+    /// Seeds the `SyncEngine`'s replay gate at construction; cleared on
+    /// `on_local_replay_complete`.
     awaiting_local_replay: bool,
-    /// First `tick` instant seen while `awaiting_local_replay`; anchors
-    /// REPLAY_GATE_TIMEOUT. `None` until the first tick.
-    awaiting_replay_since: Option<Instant>,
-
-    syncing_strategy_chosen: bool,
-
-    /// Peers burnt as backer candidates for the duration of the current
-    /// catchup. A peer lands here when it misbehaves on an RPC while it is
-    /// our active inflight backer — `pick_sync_peer` skips them so the next
-    /// `maybe_issue_syncreq` selects a different peer.
-    pub(crate) burnt_for_target: FxHashSet<usize>,
-
-    /// Incremental aggregate: live-peer count keyed by
-    /// `(finalized_epoch, finalized_root)`. Maintained on Status upsert
-    /// and on disconnect; query side (`select_target` / `count_finalized_
-    /// backers`) becomes O(map size) instead of O(n_peers). Map entries
-    /// are removed when count hits 0 to keep size bounded by the number
-    /// of distinct claimed targets.
-    finalized_counts: FxHashMap<(u64, [u8; 32]), u16>,
-
-    /// Incremental aggregate: live-peer count keyed by `head_root`, with
-    /// the maximum claimed `head_slot` observed for that root retained
-    /// (Status responses for a given head_root should agree on its
-    /// slot — we max to tolerate transient skew).
-    head_counts: FxHashMap<[u8; 32], HeadAgg>,
 
     pub(crate) pending_range_requests: VecDeque<PendingRangeRequest>,
     pub(crate) outbound_range_attempts: Vec<OutboundRangeAttempt>,
     pub(crate) pending_block_by_root: VecDeque<(u64, Option<usize>, [u8; 32])>,
     pub(crate) pending_rpc_request: VecDeque<(u64, RpcRequest)>,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct HeadAgg {
-    pub head_slot: u64,
-    pub peer_count: u16,
-}
-
-fn same_target_identity(a: SyncUpdate, b: SyncUpdate) -> bool {
-    match (a, b) {
-        (SyncUpdate::Following, SyncUpdate::Following) => true,
-        (
-            SyncUpdate::SyncingFinalized { target_epoch: e1, target_root: r1 },
-            SyncUpdate::SyncingFinalized { target_epoch: e2, target_root: r2 },
-        ) => e1 == e2 && r1 == r2,
-        (
-            SyncUpdate::SyncingHead { head_root: r1, .. },
-            SyncUpdate::SyncingHead { head_root: r2, .. },
-        ) => r1 == r2,
-        _ => false,
-    }
-}
-
-/// One in-flight `BlocksByRange` request for sync catch-up. PM-owned.
-#[derive(Debug, Clone, Copy)]
-pub struct SyncReq {
-    pub peer_id: usize,
-    pub start_slot: u64,
-    pub count: u64,
-    /// Local head_slot at the time of the most recent progress observation
-    /// (within `[start_slot, start_slot + count)`). Initialized at issuance
-    /// to the head_slot at that moment; bumped whenever a later observation
-    /// shows further advance into the requested range.
-    pub last_observed_head_slot: u64,
-    /// Time corresponding to `last_observed_head_slot`. Drives the
-    /// progress-timeout sweep in `tick`.
-    pub last_progress_at: Instant,
-    /// Set on any terminator (Complete or Error) for this request. Drives
-    /// timeout attribution: `!responded && head < start_slot` ⇒ peer stall.
-    pub responded: bool,
-    /// Set only on a `Complete` terminator — the peer served the whole
-    /// `[start_slot, start_slot + count)` range.
-    pub delivered: bool,
-}
-
-/// One catch-up `DataColumnsByRange` range over our custody set.
-/// Unlike `SyncReq` the range outlives individual peer attempts:
-/// `remaining` shrinks as attempts deliver, and each attempt requests one
-/// peer's claimed-custody overlap of it.
-#[derive(Debug, Clone, Copy)]
-pub struct ColSyncReq {
-    pub start_slot: u64,
-    pub count: u64,
-    /// Custody columns not yet `Complete`-covered for this range.
-    pub remaining: u128,
-    /// Consecutive failed attempts (error terminator / progress timeout).
-    /// Reset on any delivered attempt; `max_colreq_attempts` caps it
-    /// before the remainder is conceded to the by-root wheel.
-    pub attempts: u64,
-    /// Min claimed head_slot across delivering peers (u64::MAX until the
-    /// first delivery). A `Complete` covers `[start, min(end, peer_head)]`
-    /// — the watermark advance is capped by this so slots past a serving
-    /// peer's tip re-open as the next range. Mirrors the block driver's
-    /// peer-head capping.
-    pub served_through: u64,
-    /// In-flight per-peer attempt, if any.
-    pub attempt: Option<ColAttempt>,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct ColAttempt {
-    pub peer_id: usize,
-    /// Columns requested from `peer_id`: claimed custody ∩ `remaining`.
-    pub columns: u128,
-    /// Bumped on every `DataColumnSidecar` chunk for this request.
-    pub last_progress_at: Instant,
-    pub responded: bool,
-    pub delivered: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -379,12 +212,9 @@ impl PeerManager {
             ip_eviction_counts: HashMap::with_capacity(64),
             banned_peers: HashMap::with_capacity(128),
             our_fork_digest: Some(fork_digest),
-            local_wall_slot: 0,
             rejected,
             syncing,
             current_target: SyncUpdate::Following,
-            target_dirty: false,
-            force_resync: false,
             required_attnets,
             required_syncnets,
             params,
@@ -395,23 +225,9 @@ impl PeerManager {
             status: None,
             metadata,
             earliest_available_slot: u64::MAX,
-            is_synced: false,
-            was_ever_synced: false,
-            just_synced: false,
             custody_columns,
-            inflight_syncreq: None,
-            synced_through: 0,
-            col_syncreq: None,
-            columns_synced_through: 0,
-            col_tried_for_range: FxHashSet::with_capacity_and_hasher(PEERS_CAP, Default::default()),
-            col_stall_logged: false,
             local_head_imported_slot: 0,
             awaiting_local_replay,
-            awaiting_replay_since: None,
-            syncing_strategy_chosen: false,
-            burnt_for_target: FxHashSet::with_capacity_and_hasher(PEERS_CAP, Default::default()),
-            finalized_counts: FxHashMap::with_capacity_and_hasher(SYNC_AGG_CAP, Default::default()),
-            head_counts: FxHashMap::with_capacity_and_hasher(SYNC_AGG_CAP, Default::default()),
             pending_range_requests: VecDeque::with_capacity(PEERS_CAP),
             outbound_range_attempts: Vec::with_capacity(PEERS_CAP),
             pending_block_by_root: VecDeque::with_capacity(PEERS_CAP),
@@ -448,7 +264,6 @@ impl PeerManager {
 
         tracing::debug!("set status");
         self.status = Some(ssz);
-        self.target_dirty = true;
     }
 
     pub fn set_local_head_imported(&mut self, slot: u64) {
@@ -459,83 +274,18 @@ impl PeerManager {
         if self.awaiting_local_replay {
             tracing::info!("local replay complete; unblocking network sync");
             self.awaiting_local_replay = false;
-            self.target_dirty = true;
         }
     }
 
-    /// Beacon-state tile signalled a too-deep orphan backtrack. Force the next
-    /// target selection to pick a Syncing target if any peer leads our head
-    /// (relaxed thresholds), handing the deep gap to range sync.
-    pub fn request_resync(&mut self) {
-        self.force_resync = true;
-        self.target_dirty = true;
-    }
-
-    pub fn maybe_choose_syncing_strategy(&mut self, now: Instant) -> Option<SyncingStrategy> {
-        if !self.awaiting_local_replay || self.syncing_strategy_chosen {
-            return None;
-        }
-        // Need our own post-bootstrap finalized epoch to compare against peers.
-        self.status?;
-        let since = *self.awaiting_replay_since.get_or_insert(now);
-        if matches!(self.select_target(), SyncUpdate::SyncingFinalized { .. }) {
-            self.syncing_strategy_chosen = true;
-            return Some(SyncingStrategy::SyncFromPeers);
-        }
-        if now.saturating_duration_since(since) >= SYNCING_STRATEGY_TIMEOUT_WINDOW {
-            self.syncing_strategy_chosen = true;
-            return Some(SyncingStrategy::ReplayDisk);
-        }
-        None
-    }
-
-    pub fn set_wall_slot(&mut self, wall_slot: u64) {
-        if self.local_wall_slot != wall_slot {
-            self.local_wall_slot = wall_slot;
-            self.target_dirty = true;
-        }
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn local_wall_slot(&self) -> u64 {
-        self.local_wall_slot
-    }
-
-    /// Consume `BeaconStateEvent::BlockRejected`. Blacklists `block_root`, and
-    /// on `RejectSource::Rpc` while pinned to a finalized target also
-    /// blacklists `target_root` so the next selection can't re-pin it.
-    ///
-    /// `target_dirty` is flipped so the next `maybe_emit_sync_target` runs
-    /// the algorithm; the now-blacklisted target is filtered out and a
-    /// fresh target (or `Following`) is emitted.
-    pub fn record_block_rejected(&mut self, block_root: [u8; 32], source: BlockSource) {
+    /// Consume `BeaconStateEvent::BlockRejected`: blacklist `block_root` so a
+    /// peer whose Status backs the rejected chain gets evicted. The sync-target
+    /// + watermark invalidation is the `SyncEngine`'s.
+    pub fn record_block_rejected(&mut self, block_root: [u8; 32], _source: BlockSource) {
         self.rejected.mark(block_root);
-
-        if matches!(source, BlockSource::Rpc) &&
-            let SyncUpdate::SyncingFinalized { target_root, .. } = self.current_target
-        {
-            self.rejected.mark(target_root);
-        }
-
-        // A rejected block breaks the delivered chain past our applied head:
-        // blocks AND their custody columns at/after the reject are bound to the
-        // now-orphaned roots. Reset both watermarks so block + column sync
-        // re-derive from the applied head (re-fetch of the still-valid prefix is
-        // idempotent — deduped on arrival).
-        self.synced_through = 0;
-        self.reset_col_sync();
-        self.target_dirty = true;
-    }
-
-    pub(crate) fn reset_col_sync(&mut self) {
-        self.col_syncreq = None;
-        self.columns_synced_through = 0;
-        self.col_tried_for_range.clear();
     }
 
     pub fn record_finalized_rejected(&mut self, root: [u8; 32]) {
         self.rejected.mark(root);
-        self.target_dirty = true;
     }
 
     pub fn rejected(&self) -> &RejectedRoots {
@@ -546,332 +296,84 @@ impl PeerManager {
         self.current_target
     }
 
-    /// If the identity (variant + root, ignoring head_slot) has changed
-    /// since the last call, return `Some(new_target)`.
-    pub fn maybe_emit_sync_target(&mut self) -> Option<SyncUpdate> {
-        if !self.target_dirty {
-            return None;
-        }
-        self.target_dirty = false;
-        let mut new_target = self.select_target();
+    /// Tunables, for the control-tile `SyncEngine` shadow (step 2 migration).
+    pub fn syncing_config(&self) -> SyncingConfig {
+        self.syncing.clone()
+    }
 
-        // Recovery: if `select_target` retained a Syncing* target but the
-        // burn set has eaten every backer for it, we'd deadlock — pick_sync_peer
-        // would skip them all, no syncreq fires, target_dirty wouldn't flip
-        // again. Lift the burn and reselect once; if a peer is still bad
-        // they'll get re-burnt on the next misbehaviour.
-        if matches!(
-            new_target,
-            SyncUpdate::SyncingHead { .. } | SyncUpdate::SyncingFinalized { .. }
-        ) && !self.burnt_for_target.is_empty() &&
-            !self.has_usable_backer(new_target)
-        {
-            tracing::info!(
-                target = ?new_target,
-                burnt = self.burnt_for_target.len(),
-                "PM clearing burnt-for-target: all backers exhausted",
-            );
-            self.burnt_for_target.clear();
-            new_target = self.select_target();
-        }
+    /// Our fork digest, once a Status has been set. The `SyncEngine` shadow
+    /// uses it to drop wrong-network peer Status before aggregation (PM
+    /// evicts those peers; the shadow must not count them).
+    pub fn our_fork_digest(&self) -> Option<[u8; 4]> {
+        self.our_fork_digest
+    }
 
-        // One-shot: a forced-resync request relaxes thresholds for this
-        // selection only. If no peer leads us, range sync can't help anyway;
-        // the tile re-signals if its orphan buffer fills again.
-        self.force_resync = false;
+    /// Still replaying disk into fork choice — forward issuance is gated until
+    /// this clears. Seeds the `SyncEngine`'s matching gate at construction.
+    pub fn awaiting_local_replay(&self) -> bool {
+        self.awaiting_local_replay
+    }
 
-        let identity_changed = !same_target_identity(new_target, self.current_target);
-        let prev_target = self.current_target;
+    pub fn custody_columns(&self) -> u128 {
+        self.custody_columns
+    }
+
+    /// Track the engine-selected sync target (the engine is authoritative) so
+    /// `pick_sync_peer` / `best_peer_for_data_columns` can match peers against
+    /// it. Watermark + column resets are the engine's.
+    pub fn set_sync_target(&mut self, new_target: SyncUpdate) {
         self.current_target = new_target;
-
-        let was_synced = self.is_synced;
-        self.is_synced = self.status.is_some() && matches!(new_target, SyncUpdate::Following);
-
-        // Cold-start safety: never *enter* `Following` before reaching the tip
-        // once. At genesis (head 0, far behind wall) with no peer target yet,
-        // flipping BS to Following marches its head over the empty
-        // genesis→wall gap. Stay in BS's boot Syncing mode (emit nothing) until
-        // we either catch up once or get a real target. A node that has synced
-        // before and is merely trailing an empty-slot tail keeps `Following`.
-        if self.is_synced && !self.was_ever_synced && self.behind_wall() {
-            self.is_synced = false;
-            self.current_target = prev_target;
-            return None;
-        }
-        self.was_ever_synced |= self.is_synced;
-
-        if self.is_synced && !was_synced {
-            tracing::info!("PM caught up: Syncing -> Synced");
-            self.just_synced = true;
-            self.burnt_for_target.clear();
-        } else if !self.is_synced && was_synced {
-            tracing::info!(target = ?new_target, "PM falling behind: Synced -> Syncing");
-        }
-
-        if !identity_changed {
-            return None;
-        }
-        tracing::info!(
-            from = ?prev_target,
-            to = ?new_target,
-            is_synced = self.is_synced,
-            "PM sync target changed"
-        );
-
-        let small_head_advance = match (prev_target, new_target) {
-            (
-                SyncUpdate::SyncingHead { head_slot: prev_hs, .. },
-                SyncUpdate::SyncingHead { head_slot: new_hs, .. },
-            ) => new_hs.abs_diff(prev_hs) <= self.syncing.head_lag_threshold_slots,
-            _ => false,
-        };
-        if !small_head_advance {
-            // Same canonical chain continuing? Finality is monotonic, so a newer
-            // finalized target extends the one we were syncing; and a head target
-            // extends the finalized segment we just synced. In both cases
-            // in-flight block progress and the block watermark stay valid (incl.
-            // delivered-but-not-yet-applied AwaitData blocks) — keep them, so the
-            // next batch resumes after the delivered range instead of
-            // re-fetching the overlap. Only a genuine chain-segment change
-            // (fork, fall-behind re-sync) discards them.
-            let same_chain_forward = match (prev_target, new_target) {
-                (
-                    SyncUpdate::SyncingFinalized { target_epoch: p, .. },
-                    SyncUpdate::SyncingFinalized { target_epoch: n, .. },
-                ) => n >= p,
-                (SyncUpdate::SyncingFinalized { .. }, SyncUpdate::SyncingHead { .. }) => true,
-                _ => false,
-            };
-            let finalized_to_head = matches!(prev_target, SyncUpdate::SyncingFinalized { .. }) &&
-                matches!(new_target, SyncUpdate::SyncingHead { .. });
-            if same_chain_forward {
-                if finalized_to_head {
-                    // colreq turns on at the head edge — seed the column
-                    // watermark to the applied head (columns weren't fetched
-                    // during SyncingFinalized, colreq gated off there).
-                    self.reset_col_sync();
-                    self.columns_synced_through = self.local_head_imported_slot;
-                }
-            } else {
-                self.inflight_syncreq = None;
-                self.synced_through = 0;
-                self.reset_col_sync();
-            }
-        }
-
-        Some(new_target)
     }
 
-    /// Returns true exactly once after each catchup→Following edge. The
-    /// controller uses this to fire a one-off Status fan-out.
-    pub fn take_just_synced(&mut self) -> bool {
-        std::mem::take(&mut self.just_synced)
+    /// Pick a target-matching peer with capacity (PM keeps ranking + caps) and
+    /// issue the engine's forward `BlocksByRange`. Returns the chosen peer, or
+    /// `None` if none was eligible / admitted — the engine re-emits next loop.
+    pub fn issue_sync_blocks_by_range(
+        &mut self,
+        request_id: u64,
+        start_slot: u64,
+        count: u64,
+        now: Instant,
+        emit: &mut impl FnMut(PeerControl),
+    ) -> Option<usize> {
+        let peer = self.pick_sync_peer(count, now)?;
+        self.issue_blocks_by_range_request(peer, request_id, start_slot, count, 1, now, emit)
+            .then_some(peer)
     }
 
-    /// Compute the next sync target from the parsed-Status DB + local
-    /// state + blacklist. Pin invariant: keep the active target if it's
-    /// still viable.
-    ///
-    /// Selection order:
-    ///   1. Pinned SyncingFinalized target X — keep iff not reached (neither
-    ///      FFG-finalized nor already imported past its epoch boundary), not
-    ///      blacklisted, and at least one peer still backs it.
-    ///   2. Pinned SyncingHead fork F — keep iff not reached, not blacklisted,
-    ///      and at least one peer still backs it.
-    ///   3. Highest-peer-count `(finalized_epoch, finalized_root)` whose epoch
-    ///      exceeds ours by at least
-    ///      `SyncingConfig::finalized_lag_threshold_epochs`, whose epoch
-    ///      boundary is past our imported head_slot, not blacklisted, not
-    ///      too-far-ahead wall-clock-wise.
-    ///   4. Else, highest-peer-count `head_root` whose `head_slot > our
-    ///      head_slot + SyncingConfig::head_lag_threshold_slots, not
-    ///      blacklisted.
-    ///   5. Else, `Following`.
-    fn select_target(&self) -> SyncUpdate {
-        let Some(local) = self.status.as_ref() else {
-            return SyncUpdate::Following;
-        };
-        let local_finalized_epoch = StatusView::finalized_epoch(local);
-        let local_finalized_root = *StatusView::finalized_root(local);
-        let local_head_slot = self.local_head_imported_slot;
-        let wall_slot = self.local_wall_slot;
-
-        // 1. Pinned SyncingFinalized viable?
-        if let SyncUpdate::SyncingFinalized { target_epoch, target_root } = self.current_target {
-            let target_slot = target_epoch.saturating_mul(SLOTS_PER_EPOCH);
-
-            let reached = (local_finalized_epoch >= target_epoch &&
-                local_finalized_root == target_root) ||
-                local_head_slot >= target_slot;
-
-            let rejected = self.rejected.is_rejected(&target_root);
-            let usable = self.has_usable_finalized_backer(target_epoch, &target_root);
-            if !reached && !rejected && usable {
-                return SyncUpdate::SyncingFinalized { target_epoch, target_root };
-            }
-        }
-
-        // 2. Pinned SyncingHead viable?
-        if let SyncUpdate::SyncingHead { head_root, head_slot } = self.current_target {
-            let reached = local_head_slot >= head_slot;
-            let rejected = self.rejected.is_rejected(&head_root);
-            let usable = self.has_usable_head_backer(&head_root);
-            if !reached && !rejected && usable {
-                return SyncUpdate::SyncingHead { head_root, head_slot };
-            }
-        }
-
-        // 3. New SyncingFinalized target?
-        if let Some((epoch, root, _)) =
-            self.best_finalized_target(local_finalized_epoch, local_head_slot, wall_slot)
-        {
-            return SyncUpdate::SyncingFinalized { target_epoch: epoch, target_root: root };
-        }
-
-        // 4. New SyncingHead target?
-        if let Some((head_root, head_slot)) = self.best_head_target(local_head_slot, wall_slot) {
-            return SyncUpdate::SyncingHead { head_root, head_slot };
-        }
-
-        // 5. No viable peer target. If we're meaningfully behind wall_slot
-        // (no credible peer can move us forward but the chain is still
-        // ticking), hold the current target rather than dropping the pin while
-        // a backer is momentarily unavailable. The cold-start case (current
-        // target already `Following`, never synced) is caught downstream in
-        // `maybe_emit_sync_target`, which suppresses the Following emission.
-        if self.behind_wall() {
-            return self.current_target;
-        }
-
-        // 6. Following.
-        SyncUpdate::Following
+    /// Pick a custody-overlapping peer with capacity (PM keeps the picker +
+    /// caps) and issue the engine's forward `DataColumnsByRange`, requesting
+    /// only the claimed-custody overlap of `columns`. `tried` peers (failed the
+    /// active range) are skipped. Returns `(peer, overlap)` if sent.
+    #[allow(clippy::too_many_arguments)]
+    pub fn issue_sync_columns_by_range(
+        &mut self,
+        request_id: u64,
+        start_slot: u64,
+        count: u64,
+        columns: u128,
+        tried: &[usize],
+        now: Instant,
+        emit: &mut impl FnMut(PeerControl),
+    ) -> Option<(usize, u128)> {
+        let (peer, overlap, _tokens) = self.best_peer_for_data_columns(
+            StreamProtocol::DataColumnSidecarsByRange,
+            columns,
+            request_id,
+            tried,
+            start_slot,
+            count,
+            now,
+        )?;
+        self.issue_data_columns_by_range_request(
+            peer, request_id, start_slot, count, overlap, now, emit,
+        )
+        .then_some((peer, overlap))
     }
 
-    /// Best `(finalized_epoch, finalized_root)` target: queries the
-    /// incremental aggregate, filtering on `epoch - our_epoch >=
-    /// finalized_lag_threshold_epochs`, the target epoch boundary strictly
-    /// ahead of `our_head_slot` (else we've already imported the block and
-    /// the catch-up is pointless), not blacklisted, not past wall_clock +
-    /// tolerance (defensive). Max peer_count; ties broken by higher epoch,
-    /// then lexicographic root.
-    fn best_finalized_target(
-        &self,
-        our_epoch: u64,
-        our_head_slot: u64,
-        wall_slot: u64,
-    ) -> Option<(u64, [u8; 32], u16)> {
-        let lag = if self.force_resync { 0 } else { self.syncing.finalized_lag_threshold_epochs };
-        let trigger_epoch = our_epoch.saturating_add(lag);
-        self.finalized_counts
-            .iter()
-            .filter(|((epoch, root), _)| {
-                let target_slot = epoch.saturating_mul(SLOTS_PER_EPOCH);
-                *epoch >= trigger_epoch &&
-                    target_slot > our_head_slot &&
-                    !self.rejected.is_rejected(root) &&
-                    target_slot <= wall_slot + self.syncing.wall_clock_tolerance_slots &&
-                    self.has_usable_finalized_backer(*epoch, root)
-            })
-            .max_by(|a, b| {
-                a.1.cmp(b.1).then_with(|| a.0.0.cmp(&b.0.0)).then_with(|| a.0.1.cmp(&b.0.1))
-            })
-            .map(|(&(e, r), &c)| (e, r, c))
-    }
-
-    /// Best `head_root` target: queries the incremental aggregate,
-    /// filtering on `head_slot > our + head_lag_threshold`, not blacklisted,
-    /// not past wall_clock + tolerance. Max peer_count; ties broken by
-    /// higher slot then lexicographic root.
-    fn best_head_target(&self, our_head_slot: u64, wall_slot: u64) -> Option<([u8; 32], u64)> {
-        let head_lag = if self.force_resync { 0 } else { self.syncing.head_lag_threshold_slots };
-        self.head_counts
-            .iter()
-            .filter(|(root, a)| {
-                a.head_slot > our_head_slot + head_lag &&
-                    a.head_slot <= wall_slot + self.syncing.wall_clock_tolerance_slots &&
-                    !self.rejected.is_rejected(root) &&
-                    self.has_usable_head_backer(root)
-            })
-            .max_by(|a, b| {
-                a.1.peer_count
-                    .cmp(&b.1.peer_count)
-                    .then_with(|| a.1.head_slot.cmp(&b.1.head_slot))
-                    .then_with(|| a.0.cmp(b.0))
-            })
-            .map(|(&head_root, a)| (head_root, a.head_slot))
-    }
-
-    /// True iff `target` has at least one live, non-burnt peer backing it.
-    /// `Following` is treated as backed (no peer dependence).
-    fn has_usable_backer(&self, target: SyncUpdate) -> bool {
-        match target {
-            SyncUpdate::SyncingFinalized { target_epoch, target_root } => {
-                self.has_usable_finalized_backer(target_epoch, &target_root)
-            }
-            SyncUpdate::SyncingHead { head_root, .. } => self.has_usable_head_backer(&head_root),
-            SyncUpdate::Following => true,
-        }
-    }
-
-    /// True iff at least one live peer backs `(epoch, root)` as their
-    /// finalized checkpoint *and* is not burnt for the current catchup.
-    /// Fast-path: empty burn set ⇒ aggregate lookup (zero-count entries
-    /// are removed by `agg_remove`, so `contains_key` ⇔ `count > 0`).
-    fn has_usable_finalized_backer(&self, epoch: u64, root: &[u8; 32]) -> bool {
-        if self.burnt_for_target.is_empty() {
-            return self.finalized_counts.contains_key(&(epoch, *root));
-        }
-        self.database.iter_live_status_bytes().any(|(peer, ssz)| {
-            !self.burnt_for_target.contains(&peer) &&
-                StatusView::finalized_epoch(ssz) == epoch &&
-                *StatusView::finalized_root(ssz) == *root
-        })
-    }
-
-    /// True iff at least one live peer backs `head_root` *and* is not burnt
-    /// for the current catchup. Fast-path mirrors the finalized variant.
-    fn has_usable_head_backer(&self, root: &[u8; 32]) -> bool {
-        if self.burnt_for_target.is_empty() {
-            return self.head_counts.contains_key(root);
-        }
-        self.database.iter_live_status_bytes().any(|(peer, ssz)| {
-            !self.burnt_for_target.contains(&peer) && *StatusView::head_root(ssz) == *root
-        })
-    }
-
-    /// Increment finalized + head aggregates.
-    fn agg_add(&mut self, fe: u64, fr: [u8; 32], hr: [u8; 32], hs: u64) {
-        *self.finalized_counts.entry((fe, fr)).or_insert(0) += 1;
-        self.head_counts
-            .entry(hr)
-            .and_modify(|a| {
-                a.peer_count = a.peer_count.saturating_add(1);
-                a.head_slot = a.head_slot.max(hs);
-            })
-            .or_insert(HeadAgg { head_slot: hs, peer_count: 1 });
-    }
-
-    /// Decrement finalized + head aggregates; removes zero-count buckets
-    /// to keep the maps sized by *distinct* claims, not history.
-    fn agg_remove(&mut self, fe: u64, fr: [u8; 32], hr: [u8; 32]) {
-        let drop_fin = if let Some(c) = self.finalized_counts.get_mut(&(fe, fr)) {
-            *c = c.saturating_sub(1);
-            *c == 0
-        } else {
-            false
-        };
-        if drop_fin {
-            self.finalized_counts.remove(&(fe, fr));
-        }
-        let drop_head = if let Some(a) = self.head_counts.get_mut(&hr) {
-            a.peer_count = a.peer_count.saturating_sub(1);
-            a.peer_count == 0
-        } else {
-            false
-        };
-        if drop_head {
-            self.head_counts.remove(&hr);
-        }
+    /// Score a forward-sync peer that stalled an engine-issued range.
+    pub fn score_sync_peer(&mut self, peer: usize, severity: RpcSeverity) {
+        self.on_rpc_misbehaviour(peer, severity, "blocks-by-range progress stall");
     }
 
     pub fn peer_metadata_seq(&self, p2p_peer: usize) -> Option<u64> {
@@ -910,30 +412,6 @@ impl PeerManager {
 
     pub fn set_metadata(&mut self, metadata: [u8; METADATA_SIZE]) {
         self.metadata = metadata;
-    }
-
-    pub fn is_synced(&self) -> bool {
-        self.is_synced
-    }
-
-    pub fn fell_behind(&self) -> bool {
-        self.is_synced && self.status.is_some() && self.behind_wall()
-    }
-
-    fn behind_wall(&self) -> bool {
-        self.local_wall_slot >
-            self.local_head_imported_slot.saturating_add(self.syncing.head_lag_threshold_slots)
-    }
-
-    /// Test-only shortcut to put the manager into the synced state without
-    /// going through the target-selection loop. Real flow drives this via
-    /// `maybe_emit_sync_target`.
-    #[cfg(test)]
-    pub fn set_synced(&mut self, synced: bool) {
-        self.is_synced = synced;
-        if synced {
-            self.current_target = SyncUpdate::Following;
-        }
     }
 
     /// Pick the connected, protocol-supporting peer with the highest
@@ -1111,6 +589,9 @@ impl PeerManager {
             PeerEvent::EarliestSlot(slot) => {
                 self.earliest_available_slot = slot;
             }
+            // Storage backfill reports — consumed by the control tile's
+            // `SyncEngine`, not PM.
+            PeerEvent::BackfillState { .. } | PeerEvent::ColumnNeed { .. } => {}
         }
     }
 
@@ -1121,17 +602,6 @@ impl PeerManager {
         if now.saturating_duration_since(self.last_heartbeat) >= self.params.heartbeat_interval {
             self.heartbeat(now);
             self.last_heartbeat = now;
-        }
-
-        if self.awaiting_local_replay {
-            let since = *self.awaiting_replay_since.get_or_insert(now);
-            if now.saturating_duration_since(since) >= REPLAY_GATE_TIMEOUT {
-                tracing::warn!(
-                    "local-replay gate timed out without ReplayComplete; unblocking sync"
-                );
-                self.awaiting_local_replay = false;
-                self.target_dirty = true;
-            }
         }
 
         // 2) Activate P3 tracking for peers whose grace window has elapsed.
@@ -1277,36 +747,8 @@ impl PeerManager {
             archived_at: now,
         });
 
-        // Decrement aggregates while the peer's Status is still in the
-        // DB; then drop the DB record.
-        let prev = self.database.peer_status_bytes(conn).map(|prev| {
-            (
-                StatusView::finalized_epoch(prev),
-                *StatusView::finalized_root(prev),
-                *StatusView::head_root(prev),
-            )
-        });
-        if let Some((fe, fr, hr)) = prev {
-            self.agg_remove(fe, fr, hr);
-        }
         self.database.peer_disconnected(conn);
-        // A peer disappearing may unpin / change the target.
-        self.target_dirty = true;
-
         self.on_range_peer_disconnected(conn, emit);
-
-        // Clear inflight sync requests if it was assigned to this conn. Next
-        // `maybe_issue_syncreq` picks a different peer.
-        if let Some(inflight) = self.inflight_syncreq &&
-            inflight.peer_id == conn
-        {
-            self.inflight_syncreq = None;
-        }
-        if let Some(req) = self.col_syncreq.as_mut() &&
-            req.attempt.is_some_and(|a| a.peer_id == conn)
-        {
-            req.attempt = None;
-        }
     }
 
     // ── Gossip event handlers ───────────────────────────────────────────
@@ -1789,25 +1231,10 @@ impl PeerManager {
             return;
         }
 
-        // Maintain incremental aggregates: read prior fields off the DB
-        // (V1/V2-agnostic via `StatusView`), decrement them, then upsert
-        // and increment using the just-validated `buf` we hold above.
-        let prev = self.database.peer_status_bytes(p2p_peer).map(|prev| {
-            (
-                StatusView::finalized_epoch(prev),
-                *StatusView::finalized_root(prev),
-                *StatusView::head_root(prev),
-            )
-        });
-        if let Some((fe, fr, hr)) = prev {
-            self.agg_remove(fe, fr, hr);
-        }
-        let head_slot = StatusView::head_slot(buf);
-        let head_root = *StatusView::head_root(buf);
+        // Upsert the validated Status into the DB; the `SyncEngine` consumes
+        // its own copy (`PeerStatus` event) for target selection + aggregates.
         let earliest_slot = StatusView::earliest_available_slot(buf);
         self.database.p2p_status(p2p_peer, status_ssz, earliest_slot);
-        self.agg_add(finalized_epoch, finalized_root, head_root, head_slot);
-        self.target_dirty = true;
     }
 
     /// Translate RPC misbehaviour severity into a P5 application-score
@@ -1838,23 +1265,6 @@ impl PeerManager {
                 score = peer.application_score,
                 "P5 rpc misbehaviour"
             );
-        }
-        // If this peer is our current sync backer, drop them and burn for
-        // the current catchup. Mark dirty so the very next
-        // `maybe_emit_sync_target` re-evaluates: if no un-burnt peer still
-        // backs the pinned target, viability falls through and we pick a
-        // new target in the same iteration. Burn set is cleared on the
-        // catchup→Following edge.
-        if self.inflight_syncreq.is_some_and(|i| i.peer_id == conn) {
-            tracing::warn!(
-                peer_id = conn,
-                ?severity,
-                target = ?self.current_target,
-                "PM dropping current sync backer on rpc misbehaviour"
-            );
-            self.inflight_syncreq = None;
-            self.burnt_for_target.insert(conn);
-            self.target_dirty = true;
         }
     }
 
@@ -2306,7 +1716,6 @@ mod tests {
     fn connect_with_no_topics_emits_nothing() {
         let now = Instant::now();
         let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
-        mgr.set_synced(true);
         connect(&mut mgr, &mut cap, 1, 1, now);
         assert!(subscribe_events(&cap).is_empty());
     }
@@ -2316,7 +1725,6 @@ mod tests {
         let now = Instant::now();
         let topics = vec![GossipTopic::BeaconBlock, GossipTopic::VoluntaryExit];
         let (mut mgr, mut cap) = fixture(topics.clone(), ScoreParams::default(), false);
-        mgr.set_synced(true);
         connect(&mut mgr, &mut cap, 1, 1, now);
         let subs = subscribe_events(&cap);
         assert_eq!(subs.len(), 2);
@@ -2330,7 +1738,6 @@ mod tests {
         let now = Instant::now();
         let topics = vec![GossipTopic::BeaconBlock];
         let (mut mgr, mut cap) = fixture(topics, ScoreParams::default(), false);
-        mgr.set_synced(true);
         connect(&mut mgr, &mut cap, 1, 1, now);
         cap.0.clear();
 
@@ -2685,7 +2092,6 @@ mod tests {
         params.d_lazy = 3;
         params.d_low = 1; // so the first subscriber grafts into mesh, rest stay non-mesh
         let (mut mgr, mut cap) = fixture(vec![GossipTopic::BeaconBlock], params, false);
-        mgr.set_synced(true);
 
         for i in 1..=4u8 {
             connect(&mut mgr, &mut cap, i as usize, i, now);
@@ -2780,7 +2186,6 @@ mod tests {
         let now = Instant::now();
         let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
         connect(&mut mgr, &mut cap, 1, 1, now);
-        mgr.set_synced(true);
 
         let mut producer = TCache::producer("test_peer", 1 << 14);
         let mut reservation = producer.reserve(64, true).unwrap();
@@ -2853,7 +2258,6 @@ mod tests {
         params.d = 0;
         params.d_high = 8;
         let (mut mgr, mut cap) = fixture(vec![GossipTopic::BeaconBlock], params, false);
-        mgr.set_synced(true);
 
         for i in 1..=4u8 {
             connect(&mut mgr, &mut cap, i as usize, i, now);
@@ -2975,7 +2379,6 @@ mod tests {
         params.d = 0;
         params.d_high = 8;
         let (mut mgr, mut cap) = fixture(vec![GossipTopic::BeaconBlock], params, false);
-        mgr.set_synced(true);
 
         for i in 1..=3u8 {
             connect(&mut mgr, &mut cap, i as usize, i, now);
@@ -3775,7 +3178,6 @@ mod tests {
         let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
         connect(&mut mgr, &mut cap, 1, 1, now);
         set_local(&mut mgr, status_v2_ssz(fork_a(), [0xAA; 32], 42, [0xCC; 32], 42 * 32 + 5));
-        mgr.set_wall_slot(42 * 32 + 5);
         cap.0.clear();
 
         // Same epoch, DIFFERENT finalized root → permanent fork divergence.
@@ -3801,7 +3203,6 @@ mod tests {
         let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
         connect(&mut mgr, &mut cap, 1, 1, now);
         set_local(&mut mgr, status_v2_ssz(fork_a(), [0xAA; 32], 42, [0xCC; 32], 42 * 32 + 5));
-        mgr.set_wall_slot(42 * 32 + 5);
 
         send_status(
             &mut mgr,
@@ -3819,7 +3220,6 @@ mod tests {
         let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
         connect(&mut mgr, &mut cap, 1, 1, now);
         set_local(&mut mgr, status_v2_ssz(fork_a(), [0xAA; 32], 42, [0xCC; 32], 42 * 32 + 5));
-        mgr.set_wall_slot(42 * 32 + 5);
         // Mark a competing finalized root as rejected. Any peer reporting
         // it must be evicted on next inbound Status.
         mgr.record_finalized_rejected([0xBB; 32]);
@@ -3853,932 +3253,16 @@ mod tests {
         connect(&mut mgr, &mut cap, 1, 1, now);
 
         set_local(&mut mgr, status_v2_ssz(fork_b(), [0; 32], 0, [0; 32], 0));
-        mgr.set_wall_slot(0);
         send_status(&mut mgr, &mut cap, 1, make_status_v2(fork_b(), [0u8; 32], 0, [0u8; 32], 0));
         mgr.tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
         assert!(mgr.score(1).is_some());
     }
 
-    fn snapshot(finalized_epoch: u64, head_slot: u64) -> ([u8; STATUS_V2_SIZE], u64) {
-        let ssz = status_v2_ssz(fork_a(), [0xAA; 32], finalized_epoch, [0xCC; 32], head_slot);
-        // wall_slot well ahead so the wall-clock filter doesn't trip.
-        (ssz, 100_000)
-    }
-
-    /// Convenience: apply `snapshot(...)` to a manager in one call.
-    fn set_snapshot(mgr: &mut PeerManager, finalized_epoch: u64, head_slot: u64) {
-        let (ssz, wall) = snapshot(finalized_epoch, head_slot);
-        set_local(mgr, ssz);
-        mgr.set_wall_slot(wall);
-    }
-
     /// Set local status + imported tip together, as the controller does from a
-    /// real Status event. Self-assessment (`select_target`, `fell_behind`) keys
-    /// off the imported tip, so tests simulating local progress must set both.
+    /// real Status event.
     fn set_local(mgr: &mut PeerManager, ssz: [u8; STATUS_V2_SIZE]) {
         mgr.set_local_head_imported(StatusView::head_slot(&ssz));
         mgr.set_status(ssz);
-    }
-
-    #[test]
-    fn select_target_no_local_state_returns_following() {
-        let (mut mgr, _cap) = fixture(vec![], ScoreParams::default(), false);
-        assert!(mgr.maybe_emit_sync_target().is_none(), "no dirty signal");
-        mgr.target_dirty = true;
-        // No local_state → can't decide; stays Following (and equals last
-        // emitted = Following, so still None).
-        assert!(mgr.maybe_emit_sync_target().is_none());
-    }
-
-    #[test]
-    fn select_target_picks_max_vote_finalized_target() {
-        let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
-        set_snapshot(&mut mgr, /* finalized_epoch */ 10, /* head_slot */ 320);
-
-        // 2 peers back finalized (epoch=20, root=X); 1 peer backs (epoch=15, root=Y).
-        let x = [0xBB; 32];
-        let y = [0xCC; 32];
-        connect(&mut mgr, &mut cap, 1, 1, now);
-        connect(&mut mgr, &mut cap, 2, 2, now);
-        connect(&mut mgr, &mut cap, 3, 3, now);
-        send_status(&mut mgr, &mut cap, 1, make_status_v2(fork_a(), x, 20, [0; 32], 640));
-        send_status(&mut mgr, &mut cap, 2, make_status_v2(fork_a(), x, 20, [0; 32], 640));
-        send_status(&mut mgr, &mut cap, 3, make_status_v2(fork_a(), y, 15, [0; 32], 480));
-
-        let target = mgr.maybe_emit_sync_target().expect("should emit a target");
-        match target {
-            SyncUpdate::SyncingFinalized { target_epoch, target_root } => {
-                assert_eq!(target_epoch, 20);
-                assert_eq!(target_root, x);
-            }
-            other => panic!("expected SyncingFinalized(20, X), got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn select_target_skips_blacklisted_finalized() {
-        let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
-        set_snapshot(&mut mgr, 10, 320);
-
-        let x = [0xBB; 32];
-        let y = [0xCC; 32];
-        // X has more peers but is blacklisted.
-        mgr.record_finalized_rejected(x);
-        connect(&mut mgr, &mut cap, 1, 1, now);
-        connect(&mut mgr, &mut cap, 2, 2, now);
-        connect(&mut mgr, &mut cap, 3, 3, now);
-        send_status(&mut mgr, &mut cap, 1, make_status_v2(fork_a(), x, 20, [0; 32], 640));
-        send_status(&mut mgr, &mut cap, 2, make_status_v2(fork_a(), x, 20, [0; 32], 640));
-        // ^ these get evicted by the inbound rejected-finalized rule, so
-        // they don't even reach the DB.
-        send_status(&mut mgr, &mut cap, 3, make_status_v2(fork_a(), y, 15, [0; 32], 480));
-
-        let target = mgr.maybe_emit_sync_target().expect("should emit Y");
-        assert_eq!(target, SyncUpdate::SyncingFinalized { target_epoch: 15, target_root: y });
-    }
-
-    #[test]
-    fn select_target_pins_until_reached() {
-        let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
-        set_snapshot(&mut mgr, 10, 320);
-
-        let x = [0xBB; 32];
-        connect(&mut mgr, &mut cap, 1, 1, now);
-        send_status(&mut mgr, &mut cap, 1, make_status_v2(fork_a(), x, 20, [0; 32], 640));
-        let target = mgr.maybe_emit_sync_target().expect("first emission");
-        assert!(matches!(target, SyncUpdate::SyncingFinalized { .. }));
-
-        // Even with another peer reporting a higher-epoch target, we stay
-        // pinned to X (1 backer is still enough to keep it).
-        let z = [0xEE; 32];
-        connect(&mut mgr, &mut cap, 2, 2, now);
-        send_status(&mut mgr, &mut cap, 2, make_status_v2(fork_a(), z, 30, [0; 32], 960));
-        // dirty was set; select_target should return same pinned X.
-        let again = {
-            mgr.target_dirty = true;
-            let t = mgr.select_target();
-            mgr.current_target = t;
-            t
-        };
-        assert_eq!(
-            again,
-            SyncUpdate::SyncingFinalized { target_epoch: 20, target_root: x },
-            "must stay pinned until X is reached or rejected"
-        );
-    }
-
-    #[test]
-    fn select_target_unpins_after_reaching_finalized() {
-        let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
-        set_snapshot(&mut mgr, 10, 320);
-
-        let x = [0xBB; 32];
-        connect(&mut mgr, &mut cap, 1, 1, now);
-        send_status(&mut mgr, &mut cap, 1, make_status_v2(fork_a(), x, 20, [0; 32], 640));
-        let _ = mgr.maybe_emit_sync_target();
-
-        // Simulate BS finalizing at the target.
-        set_local(&mut mgr, status_v2_ssz(fork_a(), x, 20, [0; 32], 640));
-        mgr.set_wall_slot(640);
-        // The peer is still reporting epoch=20, but we've reached it →
-        // either re-pin to a higher target if one exists, or fall through
-        // to head/Following.
-        let next = mgr.maybe_emit_sync_target().expect("change emitted");
-        assert_ne!(next, SyncUpdate::SyncingFinalized { target_epoch: 20, target_root: x });
-    }
-
-    #[test]
-    fn select_target_skips_finalized_already_imported() {
-        // Peer's finalized epoch is well ahead of ours, but our imported
-        // head_slot is already past that epoch's boundary (block imported,
-        // just not FFG-finalized). Must NOT trigger a SyncingFinalized
-        // catch-up to re-download blocks we hold.
-        let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
-        // finalized_epoch=10, head_slot=700 (> 20 * 32 = 640).
-        set_snapshot(&mut mgr, 10, 700);
-
-        let x = [0xBB; 32];
-        connect(&mut mgr, &mut cap, 1, 1, now);
-        send_status(&mut mgr, &mut cap, 1, make_status_v2(fork_a(), x, 20, [0; 32], 640));
-
-        mgr.target_dirty = true;
-        assert_eq!(
-            mgr.select_target(),
-            SyncUpdate::Following,
-            "head already past target epoch boundary → no finalized catch-up"
-        );
-    }
-
-    #[test]
-    fn select_target_unpins_finalized_when_head_imported_past_boundary() {
-        // Pinned to a finalized target, then our head advances past its epoch
-        // boundary without FFG-finalizing it → target is considered reached.
-        let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
-        set_snapshot(&mut mgr, 10, 320);
-
-        let x = [0xBB; 32];
-        connect(&mut mgr, &mut cap, 1, 1, now);
-        send_status(&mut mgr, &mut cap, 1, make_status_v2(fork_a(), x, 20, [0; 32], 640));
-        let target = mgr.maybe_emit_sync_target().expect("first emission");
-        assert!(matches!(target, SyncUpdate::SyncingFinalized { target_epoch: 20, .. }));
-
-        // Head imported past slot 640 (= 20 * 32) but still finalized at 10.
-        set_local(&mut mgr, status_v2_ssz(fork_a(), [0xAA; 32], 10, [0xCC; 32], 645));
-        mgr.set_wall_slot(646);
-        mgr.target_dirty = true;
-        assert_ne!(
-            mgr.select_target(),
-            SyncUpdate::SyncingFinalized { target_epoch: 20, target_root: x },
-            "imported past boundary → target reached, must unpin"
-        );
-    }
-
-    #[test]
-    fn select_target_falls_through_to_head_catchup() {
-        let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
-        // Finalized is current; head is behind.
-        set_local(&mut mgr, status_v2_ssz(fork_a(), [0xAA; 32], 100, [0xCC; 32], 3200));
-        mgr.set_wall_slot(100_000);
-
-        // Two peers ahead on head, same head_root, well past the lag
-        // threshold.
-        let advanced_head = [0xDE; 32];
-        connect(&mut mgr, &mut cap, 1, 1, now);
-        connect(&mut mgr, &mut cap, 2, 2, now);
-        send_status(
-            &mut mgr,
-            &mut cap,
-            1,
-            make_status_v2(fork_a(), [0xAA; 32], 100, advanced_head, 3500),
-        );
-        send_status(
-            &mut mgr,
-            &mut cap,
-            2,
-            make_status_v2(fork_a(), [0xAA; 32], 100, advanced_head, 3500),
-        );
-
-        let target = mgr.maybe_emit_sync_target().expect("emit");
-        match target {
-            SyncUpdate::SyncingHead { head_root, head_slot } => {
-                assert_eq!(head_root, advanced_head);
-                assert_eq!(head_slot, 3500);
-            }
-            other => panic!("expected SyncingHead, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn request_resync_relaxes_lag_threshold_to_pick_head() {
-        let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
-        // Finalized current; our head 3200. Peer head only 3 slots ahead —
-        // inside the default 8-slot lag threshold, so normally Following.
-        set_local(&mut mgr, status_v2_ssz(fork_a(), [0xAA; 32], 100, [0xCC; 32], 3200));
-        mgr.set_wall_slot(100_000);
-        let advanced_head = [0xDE; 32];
-        connect(&mut mgr, &mut cap, 1, 1, now);
-        send_status(
-            &mut mgr,
-            &mut cap,
-            1,
-            make_status_v2(fork_a(), [0xAA; 32], 100, advanced_head, 3203),
-        );
-
-        // Baseline: nobody far enough ahead → Following.
-        assert_eq!(mgr.maybe_emit_sync_target(), None);
-        assert_eq!(mgr.current_sync_target(), SyncUpdate::Following);
-
-        // Tile signals a deep backtrack: relax thresholds, chase the head.
-        mgr.request_resync();
-        match mgr.maybe_emit_sync_target().expect("forced resync emits a head target") {
-            SyncUpdate::SyncingHead { head_root, head_slot } => {
-                assert_eq!(head_root, advanced_head);
-                assert_eq!(head_slot, 3203);
-            }
-            other => panic!("expected SyncingHead, got {other:?}"),
-        }
-        assert!(!mgr.force_resync, "one-shot flag cleared after selection");
-    }
-
-    #[test]
-    fn select_target_following_when_no_one_is_ahead() {
-        let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
-        set_snapshot(&mut mgr, 100, 3200);
-
-        // Peer is at the same finalized + head; nothing to chase.
-        connect(&mut mgr, &mut cap, 1, 1, now);
-        send_status(
-            &mut mgr,
-            &mut cap,
-            1,
-            make_status_v2(fork_a(), [0xAA; 32], 100, [0xCC; 32], 3200),
-        );
-
-        assert_eq!(mgr.maybe_emit_sync_target(), None, "Following == last emitted");
-        assert_eq!(mgr.current_sync_target(), SyncUpdate::Following);
-    }
-
-    #[test]
-    fn select_target_emits_only_on_change() {
-        let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
-        set_snapshot(&mut mgr, 10, 320);
-
-        let x = [0xBB; 32];
-        connect(&mut mgr, &mut cap, 1, 1, now);
-        send_status(&mut mgr, &mut cap, 1, make_status_v2(fork_a(), x, 20, [0; 32], 640));
-        let first = mgr.maybe_emit_sync_target();
-        assert!(matches!(first, Some(SyncUpdate::SyncingFinalized { .. })));
-
-        // Same status from another peer for the same target — pinned;
-        // target unchanged (peer_count only goes up but we don't carry it
-        // in the SyncingFinalized variant), no re-emission expected.
-        connect(&mut mgr, &mut cap, 2, 2, now);
-        send_status(&mut mgr, &mut cap, 2, make_status_v2(fork_a(), x, 20, [0; 32], 640));
-        assert_eq!(mgr.maybe_emit_sync_target(), None);
-    }
-
-    #[test]
-    fn awaiting_local_replay_gates_syncreq_until_complete() {
-        let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), true);
-        set_snapshot(&mut mgr, 10, 320);
-
-        // A peer is well ahead — target selection still runs during replay.
-        connect(&mut mgr, &mut cap, 1, 1, now);
-        send_status(&mut mgr, &mut cap, 1, make_status_v2(fork_a(), [0xBB; 32], 20, [0; 32], 640));
-        assert!(matches!(mgr.maybe_emit_sync_target(), Some(SyncUpdate::SyncingFinalized { .. })));
-
-        // Gated: no BlocksByRange while the storage tile is still replaying.
-        mgr.maybe_issue_syncreq(now, &mut |c| cap.0.push(c));
-        assert!(mgr.inflight_syncreq.is_none(), "no syncreq while awaiting replay");
-
-        // Released on the BS ReplayComplete signal — now it issues.
-        mgr.on_local_replay_complete();
-        mgr.maybe_issue_syncreq(now, &mut |c| cap.0.push(c));
-        assert!(mgr.inflight_syncreq.is_some(), "syncreq issues after replay completes");
-    }
-
-    #[test]
-    fn block_rejected_in_finalized_catchup_blacklists_target() {
-        let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
-        set_snapshot(&mut mgr, 10, 320);
-
-        let bad_target = [0xBB; 32];
-        let good_target = [0xCC; 32];
-        connect(&mut mgr, &mut cap, 1, 1, now);
-        connect(&mut mgr, &mut cap, 2, 2, now);
-        connect(&mut mgr, &mut cap, 3, 3, now);
-        // Two peers back the bad target (epoch=20), one backs a good one
-        // (epoch=15). PM picks the bad target by majority.
-        send_status(&mut mgr, &mut cap, 1, make_status_v2(fork_a(), bad_target, 20, [0; 32], 640));
-        send_status(&mut mgr, &mut cap, 2, make_status_v2(fork_a(), bad_target, 20, [0; 32], 640));
-        send_status(&mut mgr, &mut cap, 3, make_status_v2(fork_a(), good_target, 15, [0; 32], 480));
-
-        assert!(matches!(
-            mgr.maybe_emit_sync_target(),
-            Some(SyncUpdate::SyncingFinalized { target_root, .. }) if target_root == bad_target
-        ));
-        cap.0.clear();
-
-        mgr.maybe_issue_syncreq(now, &mut |c| cap.0.push(c));
-        assert!(mgr.inflight_syncreq.is_some(), "sync req issued");
-
-        mgr.record_block_rejected([0xDE; 32], BlockSource::Rpc);
-        mgr.tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
-
-        // Target poisoned and the delivered watermark reset.
-        assert!(mgr.rejected().is_rejected(&bad_target));
-        assert_eq!(mgr.synced_through, 0);
-        // No peer is evicted here: the serving peer is Fatal-banned by BS's
-        // separate `RpcMisbehaviour` (real sender), not off `inflight_syncreq`.
-        assert!(mgr.score(1).is_some(), "backer kept");
-        assert!(mgr.score(2).is_some(), "backer kept");
-        assert!(mgr.score(3).is_some(), "non-backer kept");
-
-        // Next selection switches to good_target (root blacklist prevents re-pin).
-        match mgr.maybe_emit_sync_target() {
-            Some(SyncUpdate::SyncingFinalized { target_root, .. }) => {
-                assert_eq!(target_root, good_target);
-            }
-            other => panic!("expected switch to good_target, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn finalized_pin_reached_only_when_epoch_and_root_match() {
-        // PM-side `reached` predicate at the catchup boundary: pin drops
-        // iff `local_finalized_epoch >= target_epoch && local_finalized_root
-        // == target_root`. Guards against stuck-pinned off-by-one and against
-        // an epoch match with a drifted root being treated as reached.
-        let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
-        let target = [0xBB; 32];
-
-        // Local: epoch 10, head 320, finalized_root [0xAA] (snapshot default).
-        // Peer: epoch 20, head 640, finalized_root = target. wall_slot well
-        // ahead so neither wall-clock filter trips.
-        set_snapshot(&mut mgr, 10, 320);
-        connect(&mut mgr, &mut cap, 1, 1, now);
-        send_status(&mut mgr, &mut cap, 1, make_status_v2(fork_a(), target, 20, [0; 32], 640));
-
-        assert!(matches!(
-            mgr.maybe_emit_sync_target(),
-            Some(SyncUpdate::SyncingFinalized { target_epoch: 20, target_root }) if target_root == target
-        ));
-
-        // One short of the boundary: pin holds.
-        set_local(&mut mgr, status_v2_ssz(fork_a(), target, 19, [0xCC; 32], 608));
-        mgr.set_wall_slot(100_000);
-        assert_eq!(mgr.maybe_emit_sync_target(), None);
-        assert!(matches!(
-            mgr.current_sync_target(),
-            SyncUpdate::SyncingFinalized { target_epoch: 20, target_root } if target_root == target
-        ));
-
-        // Epoch matches but root drifted (different fork at same epoch):
-        // not reached — must stay pinned.
-        set_local(&mut mgr, status_v2_ssz(fork_a(), [0xEE; 32], 20, [0xCC; 32], 640));
-        mgr.set_wall_slot(100_000);
-        assert_eq!(mgr.maybe_emit_sync_target(), None);
-        assert!(matches!(
-            mgr.current_sync_target(),
-            SyncUpdate::SyncingFinalized { target_epoch: 20, target_root } if target_root == target
-        ));
-
-        // Boundary met (epoch ≥ target AND root matches): pin drops. No
-        // other target → Following. wall_slot kept near head_slot so the
-        // behind-wall_slot guard in `select_target` doesn't pin us.
-        set_local(&mut mgr, status_v2_ssz(fork_a(), target, 20, [0xCC; 32], 640));
-        mgr.set_wall_slot(640);
-        assert_eq!(mgr.maybe_emit_sync_target(), Some(SyncUpdate::Following));
-        assert_eq!(mgr.current_sync_target(), SyncUpdate::Following);
-        assert!(mgr.is_synced());
-    }
-
-    #[test]
-    fn syncreq_timeout_penalizes_only_when_peer_did_not_respond() {
-        // Progress-timeout must separate a true peer stall (no terminator)
-        // from a local apply-lag (peer delivered, head didn't advance).
-        // Only the former scores + burns.
-        let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
-        let target = [0xBB; 32];
-        set_snapshot(&mut mgr, 10, 320);
-        connect(&mut mgr, &mut cap, 1, 1, now);
-        send_status(&mut mgr, &mut cap, 1, make_status_v2(fork_a(), target, 20, [0; 32], 640));
-        let _ = mgr.maybe_emit_sync_target();
-        cap.0.clear();
-
-        // Case A: no response, no head progress → peer at fault, burned.
-        mgr.maybe_issue_syncreq(now, &mut |c| cap.0.push(c));
-        assert!(mgr.inflight_syncreq.is_some_and(|r| r.peer_id == 1 && !r.responded));
-        let timeout = Duration::from_millis(mgr.syncing.inflight_progress_timeout_ms);
-        mgr.maybe_issue_syncreq(now + timeout + Duration::from_millis(1), &mut |c| cap.0.push(c));
-        assert!(mgr.inflight_syncreq.is_none(), "inflight cleared on timeout");
-        assert!(mgr.burnt_for_target.contains(&1), "peer burned for stalling");
-
-        // Reset for case B: clear burn, re-pin, re-issue against peer 1.
-        mgr.burnt_for_target.clear();
-        mgr.target_dirty = true;
-        let _ = mgr.maybe_emit_sync_target();
-        let t1 = now + Duration::from_secs(60);
-        mgr.maybe_issue_syncreq(t1, &mut |c| cap.0.push(c));
-        assert!(mgr.inflight_syncreq.is_some_and(|r| r.peer_id == 1));
-
-        // Case B: peer served the full range (`Complete` → delivered=true) but
-        // our head never advanced (local apply-lag). The request completes off
-        // the terminator without penalty, and the delivered watermark advances
-        // to the range end so the next request won't rewind.
-        let req = mgr.inflight_syncreq.unwrap();
-        let end_inclusive = req.start_slot + req.count - 1;
-        let mut req = req;
-        req.responded = true;
-        req.delivered = true;
-        mgr.inflight_syncreq = Some(req);
-        mgr.maybe_issue_syncreq(t1, &mut |c| cap.0.push(c));
-        assert!(!mgr.burnt_for_target.contains(&1), "delivered peer must not be burned");
-        assert_eq!(mgr.synced_through, end_inclusive, "watermark advanced to range end");
-    }
-
-    #[test]
-    fn syncreq_flow_control_pauses_when_far_ahead_of_apply() {
-        // Requests must not outrun the (async) applied head unboundedly: once
-        // the delivered watermark is more than one batch ahead of head_slot,
-        // issuance pauses until apply catches up.
-        let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
-        let target = [0xBB; 32];
-        set_snapshot(&mut mgr, 10, 320); // head_slot 320, never advances here
-        connect(&mut mgr, &mut cap, 1, 1, now);
-        send_status(&mut mgr, &mut cap, 1, make_status_v2(fork_a(), target, 20, [0; 32], 640));
-        let _ = mgr.maybe_emit_sync_target();
-
-        let batch = mgr.syncing.max_blocks_by_range_batch;
-
-        // Drive batches by marking each Complete; head_slot stays pinned at 320.
-        // Capacity (MAX_RPC_PROTOCOL_IN_FLIGHT) is bypassed by clearing inflight
-        // in-flight bookkeeping isn't decremented, so stop once paused.
-        mgr.maybe_issue_syncreq(now, &mut |c| cap.0.push(c));
-        let mut issued = 0u64;
-        while let Some(req) = mgr.inflight_syncreq {
-            // Watermark must never exceed head + one batch at issue time.
-            assert!(
-                req.start_slot <= 320 + batch + 1,
-                "issued start {} runs more than one batch ahead of head 320",
-                req.start_slot
-            );
-            let mut r = req;
-            r.delivered = true;
-            mgr.inflight_syncreq = Some(r);
-            mgr.maybe_issue_syncreq(now, &mut |c| cap.0.push(c));
-            issued += 1;
-            if issued > 4 {
-                break;
-            }
-        }
-        assert!(mgr.inflight_syncreq.is_none(), "issuance paused while far ahead of apply");
-        assert!(mgr.synced_through >= 320 + batch, "delivered at least one batch ahead");
-    }
-
-    #[test]
-    fn head_root_churn_preserves_inflight_syncreq() {
-        // During head sync the peer produces a block ~every slot, so its
-        // head_root (and our pinned SyncingHead target) churns. The in-flight
-        // BlocksByRange range stays valid — it must NOT be reset, else we
-        // re-issue from our apply-lagged head_slot and re-import the same
-        // blocks.
-        let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
-        // Local well behind head; finalized current so head sync (not
-        // finalized) is selected. wall_slot near head so the behind-wall
-        // guard doesn't fire.
-        set_local(&mut mgr, status_v2_ssz(fork_a(), [0xAA; 32], 100, [0xCC; 32], 3200));
-        mgr.set_wall_slot(3260);
-
-        let head1 = [0xD1; 32];
-        connect(&mut mgr, &mut cap, 1, 1, now);
-        send_status(&mut mgr, &mut cap, 1, make_status_v2(fork_a(), [0xAA; 32], 100, head1, 3250));
-        assert!(matches!(
-            mgr.maybe_emit_sync_target(),
-            Some(SyncUpdate::SyncingHead { head_root, .. }) if head_root == head1
-        ));
-
-        mgr.maybe_issue_syncreq(now, &mut |c| cap.0.push(c));
-        let issued = mgr.inflight_syncreq.expect("sync req issued");
-        assert_eq!(issued.start_slot, 3201);
-
-        // Peer advances to a new head_root (next slot). Old root loses its
-        // backer → new SyncingHead target, identity changes.
-        let head2 = [0xD2; 32];
-        send_status(&mut mgr, &mut cap, 1, make_status_v2(fork_a(), [0xAA; 32], 100, head2, 3251));
-        mgr.set_wall_slot(3261);
-        assert!(matches!(
-            mgr.maybe_emit_sync_target(),
-            Some(SyncUpdate::SyncingHead { head_root, .. }) if head_root == head2
-        ));
-
-        // The in-flight request survived the small churn unchanged.
-        let still = mgr.inflight_syncreq.expect("inflight preserved across head churn");
-        assert_eq!(still.start_slot, issued.start_slot);
-        assert_eq!(still.peer_id, issued.peer_id);
-
-        // A noticeable jump in the chased head (> head_lag_threshold_slots)
-        // does reset the request.
-        let head3 = [0xD3; 32];
-        send_status(&mut mgr, &mut cap, 1, make_status_v2(fork_a(), [0xAA; 32], 100, head3, 3300));
-        mgr.set_wall_slot(3310);
-        assert!(matches!(
-            mgr.maybe_emit_sync_target(),
-            Some(SyncUpdate::SyncingHead { head_root, .. }) if head_root == head3
-        ));
-        assert!(mgr.inflight_syncreq.is_none(), "large head jump resets inflight");
-    }
-
-    /// Connect a peer advertising `DataColumnSidecarsByRange` with a cgc=4
-    /// ENR and a Status claiming `head_slot`; returns its deterministic
-    /// custody mask.
-    fn connect_column_peer(
-        mgr: &mut PeerManager,
-        cap: &mut Captured,
-        conn: usize,
-        seed: u8,
-        head_slot: u64,
-        now: Instant,
-    ) -> u128 {
-        let kp = Keypair::from_secret(&[seed; 32]).unwrap();
-        let enr = Enr::builder().cgc(4).build(kp.secret_key()).unwrap();
-        mgr.database.add_enr(enr);
-        mgr.handle_event(
-            PeerEvent::P2pNewConnection {
-                p2p_peer_id: conn,
-                peer_id_full: kp.peer_id(),
-                ip: IpBytes::V4([10, 0, 0, seed]),
-                port: 4000 + seed as u16,
-                local_dial: false,
-            },
-            now,
-            &mut |c| cap.0.push(c),
-        );
-        let mut identify = Identify::default();
-        identify.protocols |= 1 << StreamProtocol::DataColumnSidecarsByRange.ordinal();
-        mgr.handle_event(PeerEvent::P2pPeerIdentity { p2p_peer: conn, identify }, now, &mut |c| {
-            cap.0.push(c)
-        });
-        // Digest matches the fixture's `[0u8; 4]` so the status is stored.
-        send_status(mgr, cap, conn, make_status_v2([0u8; 4], [0xAA; 32], 0, [0xBB; 32], head_slot));
-        mgr.database.data_column_custody_groups_intersection(conn, u128::MAX)
-    }
-
-    #[test]
-    fn colreq_complete_advances_column_watermark() {
-        let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
-        let mask = connect_column_peer(&mut mgr, &mut cap, 1, 1, 100_000, now);
-        mgr.custody_columns = mask; // full overlap with peer 1
-        mgr.synced_through = 128; // blocks confirmed-served [1, 128]
-
-        mgr.maybe_issue_colreq(now, &mut |c| cap.0.push(c));
-        let req = mgr.col_syncreq.expect("range opened");
-        assert_eq!(req.start_slot, 1);
-        assert_eq!(req.count, 128);
-        let att = req.attempt.expect("attempt issued");
-        assert_eq!(att.peer_id, 1);
-        assert_eq!(att.columns, mask);
-        assert_eq!(
-            mgr.peers.get(&1).unwrap().outbound_in_flight
-                [StreamProtocol::DataColumnSidecarsByRange.ordinal() as usize],
-            1
-        );
-
-        // Complete terminator (stamped by `on_rpc_inbound` in prod).
-        let mut req = req;
-        req.attempt = Some(ColAttempt { responded: true, delivered: true, ..att });
-        mgr.col_syncreq = Some(req);
-
-        mgr.maybe_issue_colreq(now, &mut |c| cap.0.push(c));
-        assert_eq!(mgr.columns_synced_through, 128);
-        assert!(mgr.col_syncreq.is_none(), "range done; nothing further to request");
-    }
-
-    #[test]
-    fn colreq_partial_overlap_chases_remainder_on_second_peer() {
-        let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
-        let mask1 = connect_column_peer(&mut mgr, &mut cap, 1, 1, 100_000, now);
-        let mask2 = connect_column_peer(&mut mgr, &mut cap, 2, 2, 100_000, now);
-        // Custody is deterministic from node_id+cgc; these seeds must give
-        // each peer columns the other lacks.
-        assert_ne!(mask1 & !mask2, 0);
-        assert_ne!(mask2 & !mask1, 0);
-        mgr.custody_columns = mask1 | mask2;
-        mgr.synced_through = 64;
-
-        mgr.maybe_issue_colreq(now, &mut |c| cap.0.push(c));
-        let req = mgr.col_syncreq.expect("range opened");
-        let first = req.attempt.expect("attempt issued");
-        // Only the picked peer's overlap is requested, not full custody.
-        assert_ne!(first.columns, mgr.custody_columns);
-
-        let mut req = req;
-        req.attempt = Some(ColAttempt { responded: true, delivered: true, ..first });
-        mgr.col_syncreq = Some(req);
-
-        // Remainder goes to the other peer in the same sweep.
-        mgr.maybe_issue_colreq(now, &mut |c| cap.0.push(c));
-        let req = mgr.col_syncreq.expect("remainder still in flight");
-        let second = req.attempt.expect("remainder attempt issued");
-        assert_ne!(second.peer_id, first.peer_id);
-        assert_eq!(second.columns, mgr.custody_columns & !first.columns);
-
-        let mut req = req;
-        req.attempt = Some(ColAttempt { responded: true, delivered: true, ..second });
-        mgr.col_syncreq = Some(req);
-        mgr.maybe_issue_colreq(now, &mut |c| cap.0.push(c));
-        assert_eq!(mgr.columns_synced_through, 64, "full custody covered across two peers");
-        assert!(mgr.col_syncreq.is_none());
-    }
-
-    #[test]
-    fn colreq_error_concedes_to_by_root_after_attempts_cap() {
-        let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
-        let mask = connect_column_peer(&mut mgr, &mut cap, 1, 1, 100_000, now);
-        mgr.custody_columns = mask;
-        mgr.synced_through = 32;
-
-        // Sole peer answers every attempt with an Error terminator. Each
-        // failure re-picks it (tried set cleared when no one is left);
-        // `max_colreq_attempts` must bound the loop, then concede the
-        // range so the by-root wheel owns the remainder.
-        let mut calls = 0;
-        while mgr.columns_synced_through < 32 {
-            mgr.maybe_issue_colreq(now, &mut |c| cap.0.push(c));
-            if let Some(mut req) = mgr.col_syncreq &&
-                let Some(att) = req.attempt &&
-                !att.responded
-            {
-                req.attempt = Some(ColAttempt { responded: true, ..att });
-                mgr.col_syncreq = Some(req);
-                // The Error terminator also releases the in-flight slot
-                // (the `terminal_protocol` bookkeeping in prod).
-                mgr.peers.get_mut(&1).unwrap().outbound_in_flight
-                    [StreamProtocol::DataColumnSidecarsByRange.ordinal() as usize] -= 1;
-            }
-            calls += 1;
-            assert!(calls < 20, "driver failed to converge");
-        }
-        assert!(mgr.col_syncreq.is_none(), "range conceded");
-        assert!(mgr.burnt_for_target.is_empty(), "column failures must not burn block backers");
-    }
-
-    #[test]
-    fn colreq_timeout_scores_peer_and_reissues() {
-        let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
-        let mask = connect_column_peer(&mut mgr, &mut cap, 1, 1, 100_000, now);
-        mgr.custody_columns = mask;
-        mgr.synced_through = 16;
-
-        mgr.maybe_issue_colreq(now, &mut |c| cap.0.push(c));
-        assert!(mgr.col_syncreq.is_some_and(|r| r.attempt.is_some()));
-
-        // No terminator, no sidecar chunk for a full window: stall.
-        let timeout = Duration::from_millis(mgr.syncing.inflight_progress_timeout_ms);
-        let later = now + timeout + Duration::from_millis(1);
-        mgr.maybe_issue_colreq(later, &mut |c| cap.0.push(c));
-        let req = mgr.col_syncreq.expect("range survives the timeout");
-        assert!(req.attempt.is_none(), "stalled attempt dropped");
-        assert!(mgr.peers.get(&1).unwrap().application_score < 0.0, "stalling peer scored");
-
-        // Sole peer: tried set was cleared, next sweep re-issues to it.
-        mgr.maybe_issue_colreq(later, &mut |c| cap.0.push(c));
-        let req = mgr.col_syncreq.expect("range still active");
-        assert!(req.attempt.is_some_and(|a| a.peer_id == 1), "re-issued");
-        assert_eq!(req.attempts, 2);
-    }
-
-    #[test]
-    fn colreq_complete_capped_by_peer_head() {
-        // Tip wedge regression: a peer `Complete`s a range that extends past
-        // its claimed head. The watermark must only advance to the peer's
-        // head — the tail re-opens as the next range — or the uncovered
-        // columns would never be re-requested and the DA check would wedge
-        // the chain (observed live: head stuck at the serving peer's tip).
-        let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
-        let mask = connect_column_peer(&mut mgr, &mut cap, 1, 1, 100, now);
-        mgr.custody_columns = mask;
-        mgr.synced_through = 120; // blocks confirmed past the peer's head
-
-        mgr.maybe_issue_colreq(now, &mut |c| cap.0.push(c));
-        let req = mgr.col_syncreq.expect("range opened");
-        assert_eq!((req.start_slot, req.count), (1, 120));
-        let att = req.attempt.expect("attempt issued");
-
-        let mut req = req;
-        req.attempt = Some(ColAttempt { responded: true, delivered: true, ..att });
-        mgr.col_syncreq = Some(req);
-        mgr.maybe_issue_colreq(now, &mut |c| cap.0.push(c));
-
-        assert_eq!(mgr.columns_synced_through, 100, "watermark capped by peer head");
-        // Same sweep re-opened the tail [101, 120] and re-issued.
-        let req = mgr.col_syncreq.expect("tail range re-opened");
-        assert_eq!((req.start_slot, req.start_slot + req.count - 1), (101, 120));
-    }
-
-    #[test]
-    fn colreq_paced_to_block_driver() {
-        let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
-        let mask = connect_column_peer(&mut mgr, &mut cap, 1, 1, 100_000, now);
-        mgr.custody_columns = mask;
-
-        // No block range requested or served → nothing to pair with.
-        mgr.maybe_issue_colreq(now, &mut |c| cap.0.push(c));
-        assert!(mgr.col_syncreq.is_none());
-
-        // An inflight block request opens the same range for columns.
-        mgr.inflight_syncreq = Some(SyncReq {
-            peer_id: 1,
-            start_slot: 1,
-            count: 128,
-            last_observed_head_slot: 0,
-            last_progress_at: now,
-            responded: false,
-            delivered: false,
-        });
-        mgr.maybe_issue_colreq(now, &mut |c| cap.0.push(c));
-        let req = mgr.col_syncreq.expect("paired range opened");
-        assert_eq!((req.start_slot, req.count), (1, 128));
-    }
-
-    #[test]
-    fn syncreq_paused_when_column_fetch_stalls() {
-        // Block issuance must not outrun the column fetch: batches past the
-        // column watermark only buffer in BS awaiting DA. A stalled column
-        // watermark halts block batches; advancing it (delivery or concede)
-        // releases them.
-        let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
-        set_snapshot(&mut mgr, 10, 320);
-        connect(&mut mgr, &mut cap, 1, 1, now);
-        // SyncingHead target: peer finalized matches ours ([0xAA] @ epoch 10 —
-        // a divergent finalized root at the same epoch would get it evicted),
-        // head ahead with a non-zero head_root. The column-coupling gate only
-        // applies past finalization, not during SyncingFinalized catch-up.
-        send_status(
-            &mut mgr,
-            &mut cap,
-            1,
-            make_status_v2(fork_a(), [0xAA; 32], 10, [0xDD; 32], 5000),
-        );
-        let _ = mgr.maybe_emit_sync_target();
-
-        // We custody columns, but the column fetch is frozen at the start head
-        // (no column peer here, so `maybe_issue_colreq` never advances it).
-        mgr.custody_columns = (1u128 << 3) | (1u128 << 7);
-        mgr.columns_synced_through = 320;
-        let batch = mgr.syncing.max_blocks_by_range_batch;
-
-        // Drive block deliveries with the applied head kept level, isolating
-        // the column-coupling gate from the apply-lag gate. Advance the
-        // synthetic clock between full-range completions so this test is not
-        // stopped by the outbound BlocksByRange quota.
-        const OUTBOUND_BLOCKS_BY_RANGE_QUOTA_WINDOW: Duration = Duration::from_secs(30);
-        let mut tick = now;
-        mgr.maybe_issue_syncreq(tick, &mut |c| cap.0.push(c));
-        let mut guard = 0;
-        while let Some(req) = mgr.inflight_syncreq {
-            let end = req.start_slot + req.count - 1;
-            let mut r = req;
-            r.delivered = true;
-            mgr.inflight_syncreq = Some(r);
-            mgr.set_local_head_imported(end); // apply keeps up; columns do not
-            // Free the slot the terminal response would (test bypasses that path).
-            mgr.peers.get_mut(&1).unwrap().outbound_in_flight
-                [StreamProtocol::BeaconBlocksByRange.ordinal() as usize] = 0;
-            tick += OUTBOUND_BLOCKS_BY_RANGE_QUOTA_WINDOW;
-            mgr.maybe_issue_syncreq(tick, &mut |c| cap.0.push(c));
-            guard += 1;
-            assert!(guard < 8, "block issuance never paused on stalled columns");
-        }
-        assert_eq!(mgr.columns_synced_through, 320, "columns never advanced here");
-        assert!(
-            mgr.synced_through <= mgr.columns_synced_through + 2 * batch,
-            "blocks ran to {} — more than one batch beyond the stalled column watermark",
-            mgr.synced_through
-        );
-
-        // Column watermark advances → block issuance resumes.
-        mgr.columns_synced_through = mgr.synced_through;
-        tick += OUTBOUND_BLOCKS_BY_RANGE_QUOTA_WINDOW;
-        mgr.maybe_issue_syncreq(tick, &mut |c| cap.0.push(c));
-        assert!(mgr.inflight_syncreq.is_some(), "blocks resume once columns catch up");
-    }
-
-    #[test]
-    fn fell_behind_detects_silent_stall_in_following() {
-        // Following + head trailing wall_slot by > head_lag_threshold_slots
-        // ⇒ fell_behind(). Strict `>` at the boundary; gated on `is_synced`
-        // and on having a local status.
-        let (mut mgr, _cap) = fixture(vec![], ScoreParams::default(), false);
-
-        // No local status yet → false regardless of flag.
-        assert!(!mgr.fell_behind());
-
-        // Caught up: head == wall.
-        set_local(&mut mgr, status_v2_ssz(fork_a(), [0xAA; 32], 10, [0xCC; 32], 320));
-        mgr.set_wall_slot(320);
-        mgr.set_synced(true);
-        assert!(!mgr.fell_behind());
-
-        let lag = mgr.syncing.head_lag_threshold_slots;
-
-        // Wall exactly at boundary (head + threshold): NOT fell behind
-        // (predicate is strict `>`).
-        mgr.set_wall_slot(320 + lag);
-        assert!(!mgr.fell_behind(), "boundary is not yet behind");
-
-        // One slot past boundary: fell behind.
-        mgr.set_wall_slot(320 + lag + 1);
-        assert!(mgr.fell_behind());
-
-        // Not synced → false even with huge wall-vs-head gap.
-        mgr.set_synced(false);
-        assert!(!mgr.fell_behind());
-    }
-
-    #[test]
-    fn cold_start_behind_wall_does_not_enter_following() {
-        // Genesis cold start: local head 0, wall far ahead, no peers. PM must
-        // not emit `Following` (which would flip BS into following mode and
-        // march its head over the empty genesis→wall gap). Once caught up it
-        // latches synced, and a later empty-slot tail keeps `Following`.
-        let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
-
-        set_local(&mut mgr, status_v2_ssz(fork_a(), [0xAA; 32], 0, [0; 32], 0));
-        mgr.set_wall_slot(100_000);
-        assert_eq!(mgr.maybe_emit_sync_target(), None, "cold start must not emit Following");
-        assert!(!mgr.is_synced(), "behind wall, never synced");
-        assert_eq!(mgr.current_sync_target(), SyncUpdate::Following);
-
-        // A peer well ahead appears → real catch-up target, still not synced.
-        connect(&mut mgr, &mut cap, 1, 1, now);
-        send_status(&mut mgr, &mut cap, 1, make_status_v2(fork_a(), [0xBB; 32], 20, [0; 32], 640));
-        assert!(matches!(
-            mgr.maybe_emit_sync_target(),
-            Some(SyncUpdate::SyncingFinalized { target_epoch: 20, .. })
-        ));
-        assert!(!mgr.is_synced());
-
-        // Caught up: imported head past the target boundary, wall near head, no
-        // peer ahead → Following, synced latches.
-        set_local(&mut mgr, status_v2_ssz(fork_a(), [0xBB; 32], 20, [0; 32], 640));
-        mgr.set_wall_slot(645);
-        assert_eq!(mgr.maybe_emit_sync_target(), Some(SyncUpdate::Following));
-        assert!(mgr.is_synced());
-
-        // Empty-slot tail: wall runs ahead of the last applied block while
-        // synced. Must stay Following (drives fell_behind recovery), not relapse
-        // to the cold-start inert state.
-        mgr.set_wall_slot(645 + mgr.syncing.head_lag_threshold_slots + 50);
-        assert_eq!(mgr.maybe_emit_sync_target(), None, "no target change");
-        assert!(mgr.is_synced(), "synced node stays Following on empty-slot tail");
-        assert!(mgr.fell_behind(), "and flags fell_behind for recovery fan-out");
-    }
-
-    #[test]
-    fn select_target_filters_too_far_ahead_finalized() {
-        let now = Instant::now();
-        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
-        set_local(&mut mgr, status_v2_ssz(fork_a(), [0xAA; 32], 10, [0xCC; 32], 320));
-        mgr.set_wall_slot(320);
-
-        // Peer claims epoch=1000 (slot 32000) — way beyond our wall slot.
-        connect(&mut mgr, &mut cap, 1, 1, now);
-        send_status(
-            &mut mgr,
-            &mut cap,
-            1,
-            make_status_v2(fork_a(), [0xBB; 32], 1000, [0; 32], 32000),
-        );
-
-        // Should NOT pick the bogus target — falls through to Following
-        // (and that equals last_emitted, so None).
-        assert_eq!(mgr.maybe_emit_sync_target(), None);
-        assert_eq!(mgr.current_sync_target(), SyncUpdate::Following);
     }
 
     #[test]

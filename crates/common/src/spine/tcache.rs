@@ -133,7 +133,7 @@ impl TCache {
     pub fn producer(name: &'static str, n: usize) -> Producer {
         let tcache = Self::alloc_heap(name, n);
         let space = tcache.len;
-        Producer { cache: Box::into_raw(tcache), seq: 0, space }
+        Producer { cache: Box::into_raw(tcache), seq: 0, published_seq: 0, space }
     }
 
     /// Create a multi-producer t-cache.
@@ -154,7 +154,7 @@ impl TCache {
     pub fn shm_producer(name: &str, n: usize) -> Producer {
         let tcache = Self::attach_shmem(name, n);
         let space = tcache.len;
-        Producer { cache: Box::into_raw(tcache), seq: 0, space }
+        Producer { cache: Box::into_raw(tcache), seq: 0, published_seq: 0, space }
     }
 
     /// Attach to a named shmem segment as a random-access consumer, creating
@@ -213,7 +213,12 @@ impl TCache {
             })
             .ok_or(Error::MaxConsumers)?;
 
-        tracing::info!(name, index, "new random access consumer with tail seq {seq}");
+        tracing::info!(
+            tcache_name = self.name(),
+            name,
+            index,
+            "new random access consumer with tail seq {seq}"
+        );
 
         self.record_tail(index, seq);
         self.record_consumer_name(index, name);
@@ -222,7 +227,7 @@ impl TCache {
             cache: TCacheRef { cache: addr_of!(*self) as *const c_void },
             index,
             name,
-            active: Buckets::new(32 * 1024, self.len as u64),
+            active: Buckets::new(32 * 1024, self.len as u64, seq),
             auto_free,
             timer: self.create_consumer_timer(name),
             last_read: Nanos::now(),
