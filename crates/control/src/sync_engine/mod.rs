@@ -365,6 +365,7 @@ impl SyncEngine {
                 Phase::Idle => {}
             },
             SyncEvent::BackfillState { block_floor, earliest_present, column_floor: _ } => {
+                tracing::info!(block_floor, earliest_present, "set backfill state");
                 self.ctx.backfill.set_block_gap(block_floor, earliest_present);
             }
             SyncEvent::ColumnNeed { block_root, slot: _, missing } => {

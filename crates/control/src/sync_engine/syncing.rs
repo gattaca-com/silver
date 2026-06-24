@@ -264,6 +264,66 @@ impl Syncing {
             }
         }
 
+        let (sync_through, complete) = match &mut self.inflight {
+            None => (None, true),
+            Some(req) => {
+                let end_inclusive = req.start_slot + req.count - 1;
+                match &mut req.state {
+                    ReqState::AwaitingPeer { retry_at } => {
+                        if now >= *retry_at {
+                            emit(SyncAction::RequestBlocksByRange {
+                                request_id: req.request_id,
+                                peer: 0,
+                                start: req.start_slot,
+                                count: req.count,
+                            });
+                            // Re-arm locally; pacing must not depend on the caller
+                            // round-tripping back through `on_request_issued`.
+                            *retry_at = now + ISSUE_RETRY_BACKOFF;
+                        }
+                        (None, false)
+                    }
+                    ReqState::InFlight {
+                        peer, last_observed_head_slot, last_progress_at, ..
+                    } => {
+                        if head_slot > *last_observed_head_slot {
+                            *last_observed_head_slot = head_slot;
+                            *last_progress_at = now;
+                            (None, false)
+                        } else {
+                            let timeout =
+                                Duration::from_millis(ctx.cfg.inflight_progress_timeout_ms);
+                            let mut sync_through = None;
+                            if now.saturating_duration_since(*last_progress_at) >= timeout {
+                                if head_slot < req.start_slot {
+                                    emit(SyncAction::ScorePeer {
+                                        peer: *peer,
+                                        severity: RpcSeverity::HighTolerance,
+                                    });
+                                } else if head_slot >= end_inclusive {
+                                    sync_through = Some(end_inclusive);
+                                }
+                                (sync_through, true)
+                            } else {
+                                (None, false)
+                            }
+                        }
+                    }
+                    ReqState::Delivered { peer_head_at_issue } => {
+                        (Some(end_inclusive.min(*peer_head_at_issue)), true)
+                    }
+                    ReqState::Errored => (None, true),
+                }
+            }
+        };
+
+        if let Some(sync) = sync_through {
+            self.synced_through = self.synced_through.max(sync);
+        }
+        if complete {
+            self.inflight = None;
+        }
+
         // Import-stall backtrack: the watermark led import (normal) but import
         // froze — reset to the applied head, drop in-flight, re-fetch from the
         // frontier this loop. A fresh delivery does *not* refresh the clock;

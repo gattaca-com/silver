@@ -11,7 +11,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use secp256k1::{SECP256K1, SecretKey};
 use silver_common::{Enr, NodeId};
 use silver_config::DiscoveryConfig;
-use tracing::{info, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 use crate::{
     crypto::{
@@ -471,7 +471,7 @@ impl DiscV5 {
     /// the bucket LRU — both forced session inserts and pending promotions.
     fn evict_peer(&mut self, id: NodeId) {
         if self.sessions.remove(&id).is_some() {
-            warn!(%id, "evicted live peer from routing table");
+            debug!(%id, "evicted live peer from routing table");
         }
         self.pending_findnodes.remove(&id);
         self.pending_probe_nonces.remove(&id);
@@ -546,7 +546,7 @@ impl DiscV5 {
         {
             Some(v) => v,
             None => {
-                warn!(%src_addr, peer_enr_seq, "WhoAreYou from unknown addr, no kbuckets entry");
+                debug!(%src_addr, peer_enr_seq, "WhoAreYou from unknown addr, no kbuckets entry");
                 return;
             }
         };
