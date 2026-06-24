@@ -49,12 +49,12 @@ pub(super) fn handle_incoming(
         }
     })?;
 
-    // Alloc into downstream tcache - SSZ message bytes
+    // Alloc into downstream tcache - SSZ message bytes 
     let mut reservation = incoming_gossip_publish
         .reserve(len, false)
         .ok_or(Error::BufferTooSmall)
         .inspect_err(|e| {
-            tracing::error!(?e, "failed to reserve incoming gossip SSZ");
+            tracing::error!(?e, len, "failed to reserve incoming gossip SSZ");
         })?;
 
     let msg_id = decompress_to_reservation(
