@@ -31,6 +31,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let _tracing = initialise_tracing_log("silver", 10, None, false);
     tracing::debug!("start");
 
+    // Stream `#[timed]` per-function timings to surfer; `#[timed]` is inert
+    // (no shmem) until a process opts into a mode.
+    silver_common::metrics::enable_live();
+
     let config = load_config()?;
 
     tracing::info!("loaded config with fork digest: {}", hex::encode(config.fork_digest()));

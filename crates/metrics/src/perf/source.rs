@@ -59,8 +59,7 @@ mod imp {
     }
 
     fn new_producer(name: &str) -> Producer<PerfSample> {
-        let app = crate::APP_NAME.get().map(String::as_str).unwrap_or("silver");
-        let dir = shmem_dir_queues_with_base(local_share_dir(), app);
+        let dir = shmem_dir_queues_with_base(local_share_dir(), crate::TIMING.app());
         let _ = std::fs::create_dir_all(&dir);
         let queue: Queue<PerfSample> = Queue::create_or_open_shared(
             dir.join(format!("perf-{name}")),

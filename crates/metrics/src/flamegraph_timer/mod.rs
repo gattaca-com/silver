@@ -1,8 +1,12 @@
 //! Capture #[timed] call trees in-process and render them as a call tree or
 //! JSON.
 
-pub mod collect;
+mod builder;
+mod producer;
+mod queue_dir;
+mod reader;
 pub mod report;
 
-pub use collect::enable;
-pub(crate) use collect::{is_enabled, stack_enter, stack_exit};
+pub(crate) use builder::Event;
+pub(crate) use producer::record;
+pub use reader::enable;

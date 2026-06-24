@@ -4,7 +4,7 @@
 use std::time::{Duration, Instant};
 
 use silver_common::{
-    flamegraph_timer::{collect::enable, report::TimingStats},
+    flamegraph_timer::{enable, report::TimingStats},
     ssz_view::StatusView,
 };
 

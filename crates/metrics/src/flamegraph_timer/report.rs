@@ -6,7 +6,7 @@ use std::{borrow::Cow, collections::HashMap};
 
 use flux::timing::Nanos;
 
-use crate::{flamegraph_timer::collect::drain, perf::PerfSample, slot};
+use crate::{flamegraph_timer::reader::drain, perf::PerfSample, slot};
 
 #[derive(serde::Serialize)]
 struct PathStat {
@@ -32,11 +32,12 @@ fn join_path<S: serde::Serializer>(path: &[String], s: S) -> Result<S::Ok, S::Er
 
 /// Summarised `#[timed]` call paths for one run. Build with
 /// [`TimingStats::collect`], then render to a call tree or JSON.
-pub struct TimingStats(Vec<PathStat>);
+pub struct TimingStats(Vec<PathStat>, bool);
 
 impl TimingStats {
     pub fn collect() -> Self {
-        let mut paths: Vec<_> = drain()
+        let (timings, lapped) = drain();
+        let mut paths: Vec<_> = timings
             .into_iter()
             .map(|timing| {
                 let mut samples = timing.samples.tracked_ns;
@@ -62,7 +63,13 @@ impl TimingStats {
             })
             .collect();
         paths.sort_by(|a, b| a.path.cmp(&b.path));
-        Self(paths)
+        Self(paths, lapped)
+    }
+
+    /// A timing ring wrapped before the reader drained it: marks were lost, so
+    /// these stats are incomplete and any gate built on them is invalid.
+    pub fn missed_events(&self) -> bool {
+        self.1
     }
 
     /// Sum tracked time + call count across every path whose leaf is
@@ -403,7 +410,7 @@ fn counter_text(perf: &PerfSample, calls: u64) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{flamegraph_timer::collect::enable, timed};
+    use crate::{flamegraph_timer::enable, test_shmem::ShmemGuard, timed};
 
     #[timed]
     fn leaf_work(spin: u64) -> u64 {
@@ -421,6 +428,7 @@ mod tests {
 
     #[test]
     fn records_call_paths_with_self_time() {
+        let _guard = ShmemGuard::new();
         enable();
         // 3 parent invocations × 2 leaf calls each = 6 leaf total.
         for _ in 0..3 {
