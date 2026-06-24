@@ -38,6 +38,7 @@ pub enum StreamError {
     ProtobufDecodeError(#[from] DecodeError),
     InvalidPubkey(#[from] TryFromSliceError),
     IdentifyTooBig,
+    ReadResponseTimeout,
 }
 
 impl fmt::Display for StreamError {
