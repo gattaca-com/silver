@@ -15,7 +15,7 @@ use std::{
 use silver_common::{
     P2pSend, PeerControl, PeerEvent, PeerStatus, RequestCategory, RpcInbound, RpcOutbound,
     RpcRequest, RpcRequestInbound, RpcRequestOutbound, RpcResponse, RpcResponseInbound,
-    RpcResponseOutbound, RpcSeverity, StreamProtocol, SyncUpdate, hex32,
+    RpcResponseOutbound, RpcSeverity, StreamProtocol, SyncUpdate,
     rpc_rate_limit::{RPC_ERR_RATE_LIMITED, RpcRateLimit},
     ssz_view::{
         BLOCKS_BY_RANGE_REQ_SIZE, BeaconBlocksByRangeRequestView, DC_BY_RANGE_REQ_MAX,
@@ -1123,25 +1123,22 @@ impl PeerManager {
         let target = self.current_sync_target();
         let mut best: Option<(usize, f64)> = None;
         for (peer, ssz) in self.database.iter_live_status_bytes() {
-            let matches = match target {
-                SyncUpdate::SyncingFinalized { target_epoch, target_root } => {
-                    StatusView::finalized_epoch(ssz) == target_epoch &&
-                        *StatusView::finalized_root(ssz) == target_root
+            let can_serve = match target {
+                SyncUpdate::SyncingFinalized { target_epoch, .. } => {
+                    StatusView::finalized_epoch(ssz) >= target_epoch
                 }
-                SyncUpdate::SyncingHead { head_root, .. } => {
-                    *StatusView::head_root(ssz) == head_root
+                SyncUpdate::SyncingHead { head_slot, .. } => {
+                    StatusView::head_slot(ssz) >= head_slot
                 }
                 SyncUpdate::Following => return None,
             };
-            if !matches {
+            if !can_serve {
                 tracing::debug!(
                     peer,
                     ?target,
                     peer_finalized_epoch = StatusView::finalized_epoch(ssz),
-                    peer_finalized_root = hex32(StatusView::finalized_root(ssz)),
                     peer_head_slot = StatusView::head_slot(ssz),
-                    peer_head_root = hex32(StatusView::head_root(ssz)),
-                    "pick_sync_peer peer status does not match pinned target"
+                    "pick_sync_peer peer cannot serve sync target range"
                 );
                 continue;
             }

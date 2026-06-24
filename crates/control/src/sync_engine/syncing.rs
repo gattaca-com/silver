@@ -217,6 +217,13 @@ impl Syncing {
                             start: req.start_slot,
                             count: req.count,
                         });
+                        // Re-arm locally; pacing must not depend on the caller
+                        // round-tripping back through `on_request_issued`.
+                        if let Some(r) = self.inflight.as_mut() &&
+                            let ReqState::AwaitingPeer { retry_at } = &mut r.state
+                        {
+                            *retry_at = now + ISSUE_RETRY_BACKOFF;
+                        }
                     }
                 }
                 ReqState::InFlight { peer, last_observed_head_slot, last_progress_at, .. } => {
