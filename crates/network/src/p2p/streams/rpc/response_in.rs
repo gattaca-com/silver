@@ -1,4 +1,7 @@
-use std::io::ErrorKind;
+use std::{
+    io::ErrorKind,
+    time::{Duration, Instant},
+};
 
 use silver_common::{P2pStreamId, RpcResponse, TProducer, decode_varint};
 
@@ -11,6 +14,8 @@ use crate::p2p::streams::{
     snappy::{SnappyDecoder, SnappyError},
 };
 
+const READ_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// State machine for reading a single length-prefixed, snappy-compressed SSZ
 /// chunk.
 #[derive(Debug)]
@@ -18,7 +23,14 @@ use crate::p2p::streams::{
 pub enum RpcReadResponse {
     /// Reading the response status, possible prefix and varint length of the
     /// SSZ chunk
-    ReadingPrefix { app_id: u64, chunk: u32, decoder: SnappyDecoder, buf: [u8; 15], read: usize },
+    ReadingPrefix {
+        app_id: u64,
+        chunk: u32,
+        decoder: SnappyDecoder,
+        buf: [u8; 15],
+        read: usize,
+        start: Instant,
+    },
     /// Allocating
     AllocBody {
         app_id: u64,
@@ -28,6 +40,7 @@ pub enum RpcReadResponse {
         buf: [u8; 15],
         buf_start: usize,
         buf_end: usize,
+        start: Instant,
     },
     /// Stream Snappy decompressing the chunk payload into a handler buffer.
     ReadingBody {
@@ -36,6 +49,7 @@ pub enum RpcReadResponse {
         decoder: SnappyDecoder,
         reservation: RpcReservation,
         remaining: usize,
+        start: Instant,
     },
     /// Request read completed
     Complete { app_id: u64, chunk: u32, msg: RpcResponse },
@@ -49,7 +63,7 @@ enum Spin {
 impl RpcReadResponse {
     /// `chunk` is the zero-based index within a multipart response, for
     /// diagnostics.
-    pub fn new(app_id: u64, chunk: u32) -> Self {
+    pub fn new(app_id: u64, chunk: u32, now: Instant) -> Self {
         Self::ReadingPrefix {
             app_id,
             chunk,
@@ -62,6 +76,7 @@ impl RpcReadResponse {
             decoder: SnappyDecoder::new_direct(),
             buf: [0; 15],
             read: 0,
+            start: now,
         }
     }
 
@@ -69,11 +84,20 @@ impl RpcReadResponse {
         mut self,
         io: &mut S,
         p2p_id: &P2pStreamId,
+        now: Instant,
         producer: &mut TProducer,
     ) -> Result<Self, StreamError> {
         loop {
             match self.spin_inner(io, p2p_id, producer)? {
-                Spin::Ok(read_state) => return Ok(read_state),
+                Spin::Ok(read_state) => {
+                    if let Some(start) = read_state.start_time() &&
+                        now - start > READ_RESPONSE_TIMEOUT
+                    {
+                        tracing::warn!(?p2p_id, "rpc read response timeout");
+                        return Err(StreamError::ReadResponseTimeout);
+                    }
+                    return Ok(read_state)
+                }
                 Spin::Next(read_state) => {
                     self = read_state;
                 }
@@ -88,7 +112,7 @@ impl RpcReadResponse {
         producer: &mut TProducer,
     ) -> Result<Spin, StreamError> {
         match self {
-            RpcReadResponse::ReadingPrefix { app_id, chunk, decoder, mut buf, mut read } => {
+            RpcReadResponse::ReadingPrefix { app_id, chunk, decoder, mut buf, mut read, start } => {
                 match io.read_from_stream(p2p_id.stream_id(), &mut buf[read..]) {
                     Ok(r) => read += r,
                     Err(StreamError::StreamEOF)
@@ -109,17 +133,17 @@ impl RpcReadResponse {
                 let prefix_length = rpc_response_context_length(p2p_id.protocol());
                 if read > prefix_length {
                     // status and any prefix have been read, check for complete length.
-                    let start = if buf[0] == 0 {
+                    let b_start = if buf[0] == 0 {
                         prefix_length + 1
                     } else {
                         // error response
                         1
                     };
 
-                    for pos in start..read {
+                    for pos in b_start..read {
                         if buf[pos] & 0x80 == 0 {
                             // last byte of varint.
-                            let (length, offset) = decode_varint(&buf[..read], start)?;
+                            let (length, offset) = decode_varint(&buf[..read], b_start)?;
                             return Ok(Spin::Next(Self::AllocBody {
                                 app_id,
                                 chunk,
@@ -128,11 +152,12 @@ impl RpcReadResponse {
                                 buf,
                                 buf_start: offset,
                                 buf_end: read,
+                                start,
                             }));
                         }
                     }
                 }
-                Ok(Spin::Ok(Self::ReadingPrefix { app_id, chunk, decoder, buf, read }))
+                Ok(Spin::Ok(Self::ReadingPrefix { app_id, chunk, decoder, buf, read, start }))
             }
             RpcReadResponse::AllocBody {
                 app_id,
@@ -142,6 +167,7 @@ impl RpcReadResponse {
                 buf,
                 buf_start,
                 buf_end,
+                start,
             } => {
                 // Raw prefix capture: status byte, context bytes, varint and
                 // any body leftover, exactly as read off the wire.
@@ -165,6 +191,7 @@ impl RpcReadResponse {
                                 buf,
                                 buf_start,
                                 buf_end,
+                                start,
                             }));
                         }
                         Err(e) => return Err(e.into()),
@@ -203,7 +230,14 @@ impl RpcReadResponse {
                     remaining -= decoded_bytes;
                 }
 
-                Ok(Spin::Next(Self::ReadingBody { app_id, chunk, decoder, reservation, remaining }))
+                Ok(Spin::Next(Self::ReadingBody {
+                    app_id,
+                    chunk,
+                    decoder,
+                    reservation,
+                    remaining,
+                    start,
+                }))
             }
             RpcReadResponse::ReadingBody {
                 app_id,
@@ -211,6 +245,7 @@ impl RpcReadResponse {
                 mut decoder,
                 mut reservation,
                 mut remaining,
+                start,
             } => {
                 if decoder.direct_remaining() > 0 {
                     // Uncompressed frame: read its data straight into the tcache.
@@ -241,6 +276,7 @@ impl RpcReadResponse {
                             decoder,
                             reservation,
                             remaining,
+                            start,
                         }));
                     }
                     let decoded = decoder.advance_direct(written);
@@ -257,6 +293,7 @@ impl RpcReadResponse {
                                 decoder,
                                 reservation,
                                 remaining,
+                                start,
                             }));
                         }
                         let decoded = decoder
@@ -288,12 +325,28 @@ impl RpcReadResponse {
                         }
                     }
                 }
-                Ok(Spin::Next(Self::ReadingBody { app_id, chunk, decoder, reservation, remaining }))
+                Ok(Spin::Next(Self::ReadingBody {
+                    app_id,
+                    chunk,
+                    decoder,
+                    reservation,
+                    remaining,
+                    start,
+                }))
             }
             RpcReadResponse::Complete { app_id, chunk, msg } => {
                 tracing::debug!(?p2p_id, chunk, "read response");
                 Ok(Spin::Ok(Self::Complete { app_id, chunk, msg }))
             }
+        }
+    }
+
+    fn start_time(&self) -> Option<Instant> {
+        match self {
+            RpcReadResponse::ReadingPrefix { start, .. } => Some(*start),
+            RpcReadResponse::AllocBody { start, .. } => Some(*start),
+            RpcReadResponse::ReadingBody { start, .. } => Some(*start),
+            RpcReadResponse::Complete { .. } => None,
         }
     }
 }
@@ -371,10 +424,10 @@ mod tests {
         // Full-buffer reads (the live failure shape), byte-by-byte, and odd.
         for cap in [usize::MAX, 1, 7] {
             let mut io = WireIo { data: wire.clone(), pos: 0, cap };
-            let mut state = RpcReadResponse::new(7, 0);
+            let mut state = RpcReadResponse::new(7, 0, Instant::now());
             let mut spins = 0;
             let out = loop {
-                state = state.spin(&mut io, &p2p_id, &mut producer).unwrap();
+                state = state.spin(&mut io, &p2p_id, Instant::now(), &mut producer).unwrap();
                 if let RpcReadResponse::Complete { app_id, msg, .. } = state {
                     assert_eq!(app_id, 7);
                     break msg;
@@ -427,10 +480,10 @@ mod tests {
         // Whole-buffer, byte-by-byte, and odd reads — the boundary the bug hid at.
         for cap in [usize::MAX, 1, 7] {
             let mut io = WireIo { data: wire.clone(), pos: 0, cap };
-            let mut state = RpcReadResponse::new(7, 0);
+            let mut state = RpcReadResponse::new(7, 0, Instant::now());
             let mut spins = 0;
             let err = loop {
-                match state.spin(&mut io, &p2p_id, &mut producer) {
+                match state.spin(&mut io, &p2p_id, Instant::now(), &mut producer) {
                     Ok(s) => state = s,
                     Err(e) => break e,
                 }
