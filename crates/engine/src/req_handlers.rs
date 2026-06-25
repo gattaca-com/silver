@@ -4,7 +4,7 @@ use silver_common::{
     EngineGetPayloadBodiesByHashReq, EngineGetPayloadBodiesByRangeReq, EngineGetPayloadBodiesResp,
     EngineGetPayloadReq, EngineGetPayloadResp, EngineNewPayloadReq, EngineNewPayloadResp,
     EnginePreparePayloadReq, EngineReq, EngineResp, PayloadValidationStatus, SilverSpine,
-    TRandomAccess,
+    TProducer, TRandomAccess,
 };
 
 use crate::{
@@ -13,6 +13,7 @@ use crate::{
         get_blobs, get_payload, get_payload_bodies_by_hash, get_payload_bodies_by_range, send_fcu,
         send_new_payload,
     },
+    resp_handlers::write_tcache,
     types::{ForkchoiceState, PayloadAttributesV3, Withdrawal},
 };
 
@@ -38,10 +39,12 @@ pub(crate) fn handle_request(
 }
 
 /// Unsafe no-EL testing mode: answer each request with a synthetic VALID
-/// response without contacting an execution client. Block-building and
-/// data-fetch results cannot be fabricated, so those return `ok: false`.
+/// response without contacting an execution client. Built payloads and payload
+/// bodies can't be fabricated, so those return `ok: false`; blob fetches answer
+/// as a healthy EL that simply holds none of the requested blobs.
 #[inline]
 pub(crate) fn handle_request_no_el(
+    resp_producer: &mut TProducer,
     req: &EngineReq,
     producers: &mut <SilverSpine as FluxSpine>::Producers,
 ) {
@@ -71,11 +74,15 @@ pub(crate) fn handle_request_no_el(
             ok: false,
             data: unsafe { std::mem::zeroed() },
         }),
-        EngineReq::GetBlobs(r) => EngineResp::GetBlobs(EngineGetBlobsResp {
-            id: r.id,
-            ok: false,
-            data: unsafe { std::mem::zeroed() },
-        }),
+        // EL responded with none of the requested blobs: a count-0 frame.
+        EngineReq::GetBlobs(r) => match write_tcache(resp_producer, &0u32.to_le_bytes()) {
+            Some(data) => EngineResp::GetBlobs(EngineGetBlobsResp { id: r.id, ok: true, data }),
+            None => EngineResp::GetBlobs(EngineGetBlobsResp {
+                id: r.id,
+                ok: false,
+                data: unsafe { std::mem::zeroed() },
+            }),
+        },
         EngineReq::GetPayloadBodiesByHash(r) => {
             EngineResp::GetPayloadBodies(EngineGetPayloadBodiesResp {
                 id: r.id,
