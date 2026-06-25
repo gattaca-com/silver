@@ -1,14 +1,19 @@
 mod delta;
 mod finalized;
 
+#[cfg(test)]
+mod tests;
+
 use delta::BuildersDelta;
 pub use delta::{BuildersView, BuildersWriteView};
 pub use finalized::FinalizedBuilders;
 use silver_common_macros::timed;
 
 use crate::{
-    buffer::{Id, Reset, Ring, reanchor_survivors},
-    types::SLOTS_RING_N,
+    buffer::{Id, Ring, reanchor_survivors},
+    gloas::Builder,
+    ssz_hash::{hash_fixed_bytes, merkleize, uint64_chunk},
+    types::{B256, SLOTS_RING_N},
 };
 
 pub type BuildersId = Id<BuildersGroup>;
@@ -36,7 +41,9 @@ impl BuildersGroup {
     #[inline]
     pub fn roll_fresh(&mut self) -> BuildersWriteView<'_> {
         let Self { finalized, deltas } = self;
-        BuildersWriteView::new(finalized, deltas.roll_fresh())
+        let mut fork = deltas.roll_fresh();
+        fork.anchor_at(finalized);
+        BuildersWriteView::new(finalized, fork)
     }
 
     #[inline]
@@ -48,8 +55,7 @@ impl BuildersGroup {
     fn reanchor(&mut self, survivor: BuildersId, winner: BuildersId) -> BuildersWriteView<'_> {
         let Self { finalized, deltas } = self;
         let (mut fork, old, winner_delta) = deltas.roll_fresh_deriving(survivor, winner);
-        fork.reset_from(old);
-        fork.rebase(winner_delta);
+        fork.rebase_and_prune_from(old, finalized, winner_delta);
         BuildersWriteView::new(finalized, fork)
     }
 
@@ -61,10 +67,22 @@ impl BuildersGroup {
         let fresh = reanchor_survivors(survivors, |s| self.reanchor(s, winner).commit());
 
         let Self { finalized, deltas } = self;
-        finalized.promote(deltas.get(winner));
+        deltas.get(winner).promote_into_base(finalized);
 
         deltas.free_outdated(&fresh);
 
         fresh
     }
+}
+
+#[inline]
+pub(crate) fn builder_hash(b: &Builder) -> B256 {
+    merkleize(&[
+        hash_fixed_bytes(&b.pubkey),
+        uint64_chunk(b.version as u64),
+        hash_fixed_bytes(&b.execution_address),
+        uint64_chunk(b.balance),
+        uint64_chunk(b.deposit_epoch),
+        uint64_chunk(b.withdrawable_epoch),
+    ])
 }

@@ -1,19 +1,39 @@
-use super::delta::BuildersDelta;
+use super::builder_hash;
 use crate::{
     DecomposeError,
-    gloas::{BUILDER_REGISTRY_LIMIT, Builder},
+    gloas::{BUILDER_REGISTRY_LIMIT, Builder, builder_capacity},
+    hash_tree::FinalizedHashTree,
 };
 
 /// SSZ-serialised `Builder`: pubkey(48) + version(1) + execution_address(20) +
 /// balance(8) + deposit_epoch(8) + withdrawable_epoch(8).
 const BUILDER_SSZ: usize = 93;
 
-#[derive(Default)]
 pub struct FinalizedBuilders {
-    builders: Vec<Builder>,
+    pub(super) builders: Box<[Builder]>,
+    pub(super) count: usize,
+    pub(super) hash: FinalizedHashTree,
+}
+
+impl Default for FinalizedBuilders {
+    fn default() -> Self {
+        Self::from_builders(&[])
+    }
 }
 
 impl FinalizedBuilders {
+    fn from_builders(parsed: &[Builder]) -> Self {
+        let count = parsed.len();
+        let capacity = builder_capacity(count);
+        let mut builders = vec![Builder::default(); capacity].into_boxed_slice();
+        builders[..count].copy_from_slice(parsed);
+        let hash = FinalizedHashTree::from_leaves(
+            (0..count).map(|i| builder_hash(&builders[i])),
+            capacity,
+        );
+        Self { builders, count, hash }
+    }
+
     pub(crate) fn from_ssz(bytes: &[u8]) -> Result<Self, DecomposeError> {
         if !bytes.len().is_multiple_of(BUILDER_SSZ) {
             return Err(DecomposeError::GloasFieldLen {
@@ -30,7 +50,7 @@ impl FinalizedBuilders {
                 max: BUILDER_REGISTRY_LIMIT,
             });
         }
-        let builders = (0..count)
+        let parsed: Vec<Builder> = (0..count)
             .map(|i| {
                 let s = &bytes[i * BUILDER_SSZ..];
                 Builder {
@@ -43,25 +63,31 @@ impl FinalizedBuilders {
                 }
             })
             .collect();
-        Ok(Self { builders })
+        Ok(Self::from_builders(&parsed))
     }
 
     #[inline]
     pub fn len(&self) -> usize {
-        self.builders.len()
+        self.count
     }
 
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.builders.is_empty()
+        self.count == 0
     }
 
     #[inline]
-    pub(super) fn as_slice(&self) -> &[Builder] {
-        &self.builders
+    pub(super) fn get(&self, i: usize) -> Option<&Builder> {
+        (i < self.count).then(|| &self.builders[i])
     }
 
-    pub(super) fn promote(&mut self, delta: &BuildersDelta) {
-        self.builders.extend(delta.appended().iter().cloned());
+    #[inline]
+    pub fn capacity(&self) -> usize {
+        self.builders.len()
+    }
+
+    #[inline]
+    pub fn hash(&self) -> &FinalizedHashTree {
+        &self.hash
     }
 }

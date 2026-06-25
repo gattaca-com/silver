@@ -1,9 +1,15 @@
 use std::io::{self, Write};
 
+use silver_common_macros::timed;
+
 use crate::{
+    DecomposeError, FinalizedValidators,
     buffer::{Reset, drain_promoted_prefix},
+    decompose::common::{F22, F23, HISTORICAL_SUMMARY_SSZ_SIZE, Offsets, b256},
     types::{HistoricalSummary, SYNC_COMMITTEE_SIZE, SyncCommittee},
 };
+
+const HISTORICAL_SUMMARIES_LIMIT: usize = 1 << 24;
 
 /// Used as BOTH the finalized base AND the per-fork delta entry — for the base
 /// `historical_summaries` is the full list; for a fork delta it holds only the
@@ -59,6 +65,76 @@ impl LongtailState {
     pub(super) fn prune_to_base(&mut self, promoted: &LongtailState) {
         drain_promoted_prefix(&mut self.historical_summaries, promoted.historical_summaries.len());
     }
+}
+
+// `validators` resolves the sync-committee → validator indices.
+impl LongtailState {
+    #[timed]
+    pub(crate) fn from_ssz(
+        ssz: &[u8],
+        o: &Offsets,
+        validators: &FinalizedValidators,
+    ) -> Result<Self, DecomposeError> {
+        let mut lt = Self::default();
+
+        read_sync_committee(ssz, F22, "current", &mut lt.current_sync_committee)?;
+        read_sync_committee(ssz, F23, "next", &mut lt.next_sync_committee)?;
+
+        let hs_bytes = &ssz[o.hist_summaries..o.pending_deposits];
+        if !hs_bytes.len().is_multiple_of(HISTORICAL_SUMMARY_SSZ_SIZE) {
+            return Err(DecomposeError::HistoricalSummariesLenNotMultiple { len: hs_bytes.len() });
+        }
+        let hs_count = hs_bytes.len() / HISTORICAL_SUMMARY_SSZ_SIZE;
+        if hs_count > HISTORICAL_SUMMARIES_LIMIT {
+            return Err(DecomposeError::TooManyHistoricalSummaries {
+                n: hs_count,
+                max: HISTORICAL_SUMMARIES_LIMIT,
+            });
+        }
+        lt.historical_summaries.reserve_exact(hs_count);
+        for i in 0..hs_count {
+            let s = &hs_bytes[i * HISTORICAL_SUMMARY_SSZ_SIZE..];
+            lt.historical_summaries.push(HistoricalSummary {
+                block_summary_root: b256(s, 0),
+                state_summary_root: b256(s, 32),
+            });
+        }
+
+        for i in 0..SYNC_COMMITTEE_SIZE {
+            let pk = lt.current_sync_committee.pubkeys[i];
+            lt.sync_committee_indices[i] =
+                validators.find_by_pubkey(&pk).map(|i| i as u32).unwrap_or(u32::MAX);
+        }
+
+        Ok(lt)
+    }
+}
+
+fn read_sync_committee(
+    s: &[u8],
+    off: usize,
+    which: &'static str,
+    sc: &mut SyncCommittee,
+) -> Result<(), DecomposeError> {
+    const SC_SIZE: usize = SYNC_COMMITTEE_SIZE * 48 + 48;
+    let end = off.checked_add(SC_SIZE).ok_or(DecomposeError::SyncCommitteeOutOfBounds {
+        which,
+        off,
+        end: 0,
+        len: s.len(),
+    })?;
+    let bytes = s.get(off..end).ok_or(DecomposeError::SyncCommitteeOutOfBounds {
+        which,
+        off,
+        end,
+        len: s.len(),
+    })?;
+    for i in 0..SYNC_COMMITTEE_SIZE {
+        sc.pubkeys[i].copy_from_slice(&bytes[i * 48..(i + 1) * 48]);
+    }
+    sc.aggregate_pubkey
+        .copy_from_slice(&bytes[SYNC_COMMITTEE_SIZE * 48..SYNC_COMMITTEE_SIZE * 48 + 48]);
+    Ok(())
 }
 
 impl Reset for LongtailState {

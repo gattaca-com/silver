@@ -1,11 +1,11 @@
 use silver_beacon_state_data::{
-    self as common, BeaconBlockHeader, Builder, BuilderPendingPayment, BuilderPendingWithdrawal,
-    Checkpoint, EPOCHS_PER_HISTORICAL_VECTOR, EPOCHS_PER_SLASHINGS_VECTOR, Eth1Data,
-    ExecutionPayloadBid, ExecutionPayloadHeader, Fork, HISTORICAL_ROOTS_LIMIT, LongtailView,
-    MAX_ETH1_VOTES, SLOTS_PER_HISTORICAL_ROOT, SYNC_COMMITTEE_SIZE, StateReadView, SyncCommittee,
-    Withdrawal, effective_randao_mixes_into, effective_slashings_into,
+    self as common, BeaconBlockHeader, BuilderPendingPayment, BuilderPendingWithdrawal, Checkpoint,
+    EPOCHS_PER_HISTORICAL_VECTOR, EPOCHS_PER_SLASHINGS_VECTOR, Eth1Data, ExecutionPayloadBid,
+    ExecutionPayloadHeader, Fork, HISTORICAL_ROOTS_LIMIT, LongtailView, MAX_ETH1_VOTES,
+    SLOTS_PER_HISTORICAL_ROOT, SYNC_COMMITTEE_SIZE, StateReadView, SyncCommittee, Withdrawal,
+    effective_randao_mixes_into, effective_slashings_into,
     gloas::{
-        BUILDER_PENDING_PAYMENTS_LEN, BUILDER_PENDING_WITHDRAWALS_LIMIT, BUILDER_REGISTRY_LIMIT,
+        BUILDER_PENDING_PAYMENTS_LEN, BUILDER_PENDING_WITHDRAWALS_LIMIT,
         MAX_BLOB_COMMITMENTS_PER_BLOCK, MAX_WITHDRAWALS_PER_PAYLOAD, PTC_WINDOW_LEN,
     },
 };
@@ -67,10 +67,19 @@ pub fn hash_tree_root_state(rv: &StateReadView, scratch: &mut StateHashScratch) 
 
 // TODO(perf): full re-merkleization every block + every process_slot.
 // Replace with milhouse-style persistent trees with per-leaf dirty bits.
+
+/// State fields 0..=37, shared by the Fulu and Gloas layouts. Field 24 is the
+/// sole divergence — Fulu hashes `latest_execution_payload_header`, Gloas
+/// substitutes `latest_block_hash` — so the caller passes it in.
+///
 /// Pure read over a fork's [`StateReadView`] — the caller resolves the bundle
 /// (including the boundary tiers, fresh at each call: a boundary
 /// `process_epoch` re-rolls them mid-`process_slots`).
-fn hash_tree_root_state_fulu(rv: &StateReadView, scratch: &mut StateHashScratch) -> B256 {
+fn hash_common_fields(
+    rv: &StateReadView,
+    scratch: &mut StateHashScratch,
+    execution_field: B256,
+) -> [B256; 38] {
     let imm = rv.imm;
     let slot = rv.slot.state();
     let es = rv.epoch.state();
@@ -85,7 +94,7 @@ fn hash_tree_root_state_fulu(rv: &StateReadView, scratch: &mut StateHashScratch)
     let randao_mixes = scratch.randao_mixes.as_slice();
     let slashings = scratch.slashings.as_slice();
 
-    let fields: [B256; 38] = [
+    [
         uint64_chunk(imm.genesis_time),
         imm.genesis_validators_root,
         uint64_chunk(slot.slot),
@@ -110,7 +119,7 @@ fn hash_tree_root_state_fulu(rv: &StateReadView, scratch: &mut StateHashScratch)
         rv.inactivity.hash_root(),
         hash_sync_committee(&lt.current_sync_committee),
         hash_sync_committee(&lt.next_sync_committee),
-        hash_execution_payload_header(&slot.latest_execution_payload_header),
+        execution_field,
         uint64_chunk(slot.next_withdrawal_index),
         uint64_chunk(slot.next_withdrawal_validator_index),
         hash_historical_summaries(&rv.longtail),
@@ -124,68 +133,25 @@ fn hash_tree_root_state_fulu(rv: &StateReadView, scratch: &mut StateHashScratch)
         rv.pending.partial_withdrawals.hash_root(),
         rv.pending.consolidations.hash_root(),
         hash_uint64_vector(&es.proposer_lookahead),
-    ];
+    ]
+}
 
-    merkleize(&fields)
+fn hash_tree_root_state_fulu(rv: &StateReadView, scratch: &mut StateHashScratch) -> B256 {
+    let header = hash_execution_payload_header(&rv.slot.state().latest_execution_payload_header);
+    merkleize(&hash_common_fields(rv, scratch, header))
 }
 
 fn hash_tree_root_state_gloas(rv: &StateReadView, scratch: &mut StateHashScratch) -> B256 {
-    let imm = rv.imm;
+    // [Modified in Gloas] `latest_block_hash` (Hash32) replaces the header.
+    let common = hash_common_fields(rv, scratch, rv.slot.state().latest_block_hash);
     let slot = rv.slot.state();
     let es = rv.epoch.state();
-    let lt = rv.longtail.state();
 
-    rv.slot.effective_block_roots_into(&mut scratch.block_roots);
-    rv.slot.effective_state_roots_into(&mut scratch.state_roots);
-    effective_randao_mixes_into(&rv.epoch, &rv.slot, &mut scratch.randao_mixes);
-    effective_slashings_into(&rv.epoch, &rv.slot, &mut scratch.slashings);
-    let block_roots = scratch.block_roots.as_slice();
-    let state_roots = scratch.state_roots.as_slice();
-    let randao_mixes = scratch.randao_mixes.as_slice();
-    let slashings = scratch.slashings.as_slice();
-
-    let fields: [B256; 46] = [
-        uint64_chunk(imm.genesis_time),
-        imm.genesis_validators_root,
-        uint64_chunk(slot.slot),
-        hash_fork(&imm.fork),
-        hash_tree_root_block_header(&slot.latest_block_header),
-        hash_b256_vector(block_roots),
-        hash_b256_vector(state_roots),
-        imm.historical_roots_hash,
-        hash_eth1_data(&slot.eth1_data),
-        hash_eth1_votes(&rv.eth1),
-        uint64_chunk(slot.eth1_deposit_index),
-        rv.validators.hash_root(),
-        rv.balances.hash_root(),
-        hash_b256_vector(randao_mixes),
-        hash_uint64_vector(slashings),
-        rv.previous_participation.hash_root(),
-        rv.current_participation.hash_root(),
-        uint64_chunk(es.justification_bits as u64),
-        hash_checkpoint(&es.previous_justified_checkpoint),
-        hash_checkpoint(&es.current_justified_checkpoint),
-        hash_checkpoint(&es.finalized_checkpoint),
-        rv.inactivity.hash_root(),
-        hash_sync_committee(&lt.current_sync_committee),
-        hash_sync_committee(&lt.next_sync_committee),
-        // [Modified in Gloas] `latest_block_hash` (Hash32) replaces the header.
-        slot.latest_block_hash,
-        uint64_chunk(slot.next_withdrawal_index),
-        uint64_chunk(slot.next_withdrawal_validator_index),
-        hash_historical_summaries(&rv.longtail),
-        uint64_chunk(slot.deposit_requests_start_index),
-        uint64_chunk(es.deposit_balance_to_consume),
-        uint64_chunk(slot.exit_balance_to_consume),
-        uint64_chunk(slot.earliest_exit_epoch),
-        uint64_chunk(slot.consolidation_balance_to_consume),
-        uint64_chunk(slot.earliest_consolidation_epoch),
-        rv.pending.deposits.hash_root(),
-        rv.pending.partial_withdrawals.hash_root(),
-        rv.pending.consolidations.hash_root(),
-        hash_uint64_vector(&es.proposer_lookahead),
-        // [New in Gloas]
-        hash_list(rv.builders.iter(), rv.builders.len(), BUILDER_REGISTRY_LIMIT, hash_builder),
+    let mut fields = [[0u8; 32]; 46];
+    fields[..38].copy_from_slice(&common);
+    // [New in Gloas]
+    fields[38..].copy_from_slice(&[
+        rv.builders.hash_root(),
         uint64_chunk(slot.next_withdrawal_builder_index),
         hash_bitvector(&slot.execution_payload_availability),
         hash_vector(
@@ -208,7 +174,7 @@ fn hash_tree_root_state_gloas(rv: &StateReadView, scratch: &mut StateHashScratch
         ),
         // `ptc_window`: each committee is a `Vector[ValidatorIndex, PTC_SIZE]`.
         hash_vector(es.ptc_window.iter(), PTC_WINDOW_LEN, |c| hash_uint64_vector(c)),
-    ];
+    ]);
 
     merkleize(&fields)
 }
@@ -223,17 +189,6 @@ fn address_chunk(addr: &[u8; 20]) -> B256 {
     let mut c = ZERO_HASH;
     c[..20].copy_from_slice(addr);
     c
-}
-
-fn hash_builder(b: &Builder) -> B256 {
-    merkleize(&[
-        hash_fixed_bytes(&b.pubkey),
-        uint64_chunk(b.version as u64),
-        address_chunk(&b.execution_address),
-        uint64_chunk(b.balance),
-        uint64_chunk(b.deposit_epoch),
-        uint64_chunk(b.withdrawable_epoch),
-    ])
 }
 
 fn hash_builder_pending_withdrawal(w: &BuilderPendingWithdrawal) -> B256 {

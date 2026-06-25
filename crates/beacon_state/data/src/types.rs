@@ -1,12 +1,15 @@
 use crate::{
-    BalancesId, BuildersId, CurrentParticipationId, EpochId, Eth1Id, InactivityId, LongtailId,
-    PendingId, PreviousParticipationId, SlotStateId, ValidatorsId,
+    BalancesId, BuildersId, CurrentParticipationId, DecomposeError, EpochId, Eth1Id, InactivityId,
+    LongtailId, PendingId, PreviousParticipationId, SlotStateId, ValidatorsId,
+    decompose::common::{b256, u32_le, u64_le},
     gloas::{
         BUILDER_PENDING_PAYMENTS_LEN, BuilderPendingPayment, BuilderPendingWithdrawal,
         EXECUTION_PAYLOAD_AVAILABILITY_BYTES, ExecutionPayloadBid, GLOAS_FORK_VERSION,
         PTC_WINDOW_LEN, PtcCommittee, Withdrawal, zeroed_ptc_window,
     },
 };
+
+const EPH_FIXED_PART: usize = 584;
 
 // Epoch-tier (`EpochStateFinalized`/`EpochStateDelta`) and longtail-tier
 // (`LongtailState`) types live in the `epoch`/`longtail` group modules; the
@@ -243,6 +246,12 @@ pub struct Eth1Data {
     pub block_hash: B256,
 }
 
+impl Eth1Data {
+    pub(crate) fn from_ssz(s: &[u8]) -> Self {
+        Self { deposit_root: b256(s, 0), deposit_count: u64_le(s, 32), block_hash: b256(s, 40) }
+    }
+}
+
 #[derive(Clone, Copy, Default, Debug)]
 pub struct BeaconBlockHeader {
     pub slot: Slot,
@@ -250,6 +259,18 @@ pub struct BeaconBlockHeader {
     pub parent_root: B256,
     pub state_root: B256,
     pub body_root: B256,
+}
+
+impl BeaconBlockHeader {
+    pub(crate) fn from_ssz(s: &[u8]) -> Self {
+        Self {
+            slot: u64_le(s, 0),
+            proposer_index: u64_le(s, 8),
+            parent_root: b256(s, 16),
+            state_root: b256(s, 48),
+            body_root: b256(s, 80),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -296,6 +317,51 @@ impl Default for ExecutionPayloadHeader {
             blob_gas_used: Default::default(),
             excess_blob_gas: Default::default(),
         }
+    }
+}
+
+impl ExecutionPayloadHeader {
+    pub(crate) fn from_ssz(eph: &[u8]) -> Result<Self, DecomposeError> {
+        if eph.len() < EPH_FIXED_PART {
+            return Err(DecomposeError::EphTruncated { len: eph.len(), need: EPH_FIXED_PART });
+        }
+
+        let mut out = Self {
+            parent_hash: b256(eph, 0),
+            state_root: b256(eph, 52),
+            receipts_root: b256(eph, 84),
+            prev_randao: b256(eph, 372),
+            block_number: u64_le(eph, 404),
+            gas_limit: u64_le(eph, 412),
+            gas_used: u64_le(eph, 420),
+            timestamp: u64_le(eph, 428),
+            base_fee_per_gas: b256(eph, 440),
+            block_hash: b256(eph, 472),
+            transactions_root: b256(eph, 504),
+            withdrawals_root: b256(eph, 536),
+            blob_gas_used: u64_le(eph, 568),
+            excess_blob_gas: u64_le(eph, 576),
+            ..Default::default()
+        };
+        out.fee_recipient.copy_from_slice(&eph[32..52]);
+        out.logs_bloom.copy_from_slice(&eph[116..372]);
+
+        let extra_off = u32_le(eph, 436) as usize;
+        if extra_off < EPH_FIXED_PART || extra_off > eph.len() {
+            return Err(DecomposeError::EphExtraDataOffsetInvalid {
+                off: extra_off,
+                fixed: EPH_FIXED_PART,
+                len: eph.len(),
+            });
+        }
+        let extra_len = eph.len() - extra_off;
+        if extra_len > 32 {
+            return Err(DecomposeError::EphExtraDataTooLong { len: extra_len });
+        }
+        out.extra_data_len = extra_len as u8;
+        out.extra_data[..extra_len].copy_from_slice(&eph[extra_off..]);
+
+        Ok(out)
     }
 }
 

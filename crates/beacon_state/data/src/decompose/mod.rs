@@ -3,9 +3,9 @@ use silver_metrics::timed;
 
 use crate::{BeaconState, SpecConfig, decode_checkpoint_pubkeys};
 
-mod common;
+pub(crate) mod common;
 mod fulu;
-mod gloas;
+pub(crate) mod gloas;
 
 pub use common::DecomposeError;
 pub(crate) use common::{FIXED_PART, u64_le};
