@@ -65,6 +65,24 @@ struct UnfinalizedBlock {
     parent_root: [u8; 32],
 }
 
+/// SSZ bytes for an unfinalized column write: either a tcache ref (the usual
+/// gossip/RPC path, needing a `buffer()` step to deref) or bytes owned by the
+/// tile (a sidecar reconstructed in-tile from EL blobs).
+#[derive(Debug)]
+enum ColumnSsz {
+    Ref(TRead),
+    Owned(Vec<u8>),
+}
+
+impl ColumnSsz {
+    fn bytes(&self) -> Result<&[u8], Error> {
+        match self {
+            ColumnSsz::Ref(ssz) => Ok(ssz.buffer().map_err(Error::other)?.0),
+            ColumnSsz::Owned(ssz) => Ok(ssz),
+        }
+    }
+}
+
 #[derive(Debug)]
 enum PendingWrite {
     Index {
@@ -100,7 +118,7 @@ enum PendingWrite {
         slot: u64,
         block_root: [u8; 32],
         column: u64,
-        ssz: TRead,
+        ssz: ColumnSsz,
     },
     /// Finalized: rename `unfinalized_columns/…` → flat `<slot>_<column>.ssz`.
     PromoteColumn {
@@ -342,9 +360,28 @@ impl Store {
                 slot,
                 block_root,
                 column: column_index,
-                ssz: sidecar_ssz,
+                ssz: ColumnSsz::Ref(sidecar_ssz),
             });
         }
+    }
+
+    /// Store a data column sidecar whose bytes are owned by the tile (built
+    /// in-tile from EL blobs, not borrowed from a tcache). Always unfinalized:
+    /// the caller only reconstructs columns for blocks above finality.
+    pub(super) fn add_unfinalized_data_column(
+        &mut self,
+        block_root: [u8; 32],
+        column_index: u64,
+        sidecar_ssz: Vec<u8>,
+        slot: u64,
+    ) {
+        self.unfinalized_columns.entry(block_root).or_insert((slot, 0)).1 |= 1u128 << column_index;
+        self.write_queue.push_back(PendingWrite::UnfinalizedColumn {
+            slot,
+            block_root,
+            column: column_index,
+            ssz: ColumnSsz::Owned(sidecar_ssz),
+        });
     }
 
     pub(super) fn add_block(

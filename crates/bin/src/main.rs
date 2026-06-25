@@ -67,6 +67,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
     let incoming_engine_resp_consumer =
         incoming_engine_resp_producer.cache_ref().random_access("engine_incoming_resp", true)?;
+    let incoming_engine_resp_consumer_ds =
+        incoming_engine_resp_producer.cache_ref().random_access("ds_engine_incoming_resp", true)?;
 
     // rpc producer
     let outgoing_rpc_producer =
@@ -203,6 +205,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         config.fork_digest(),
         config.data_storage_dir().into(),
         booting_from_local_checkpoint,
+        incoming_engine_resp_consumer_ds,
     );
 
     let engine_tile = EngineTile::new(

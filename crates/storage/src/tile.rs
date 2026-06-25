@@ -9,15 +9,15 @@ use std::{
 use flux::{spine::SpineAdapter, tile::Tile};
 use silver_beacon_state_data::{BeaconStateReader, SLOTS_PER_EPOCH};
 use silver_common::{
-    BASE_REQUEST_ID, BeaconStateEvent, DataColumnsAvailable, NewGossipMsg, P2pSend, P2pStreamId,
-    PeerControl, PeerEvent, ReplayBlock, RpcInbound, RpcSeverity, SilverSpine, StreamProtocol,
-    SyncUpdate, SyncingStrategy, TCacheProducer, TMultiProducer, TProducer, TRandomAccess, TRead,
-    Wheel,
+    BASE_REQUEST_ID, BeaconStateEvent, DataColumnsAvailable, EngineReq, EngineResp, NewGossipMsg,
+    P2pSend, P2pStreamId, PeerControl, PeerEvent, ReplayBlock, RpcInbound, RpcSeverity,
+    SilverSpine, StreamProtocol, SyncUpdate, SyncingStrategy, TCacheProducer, TMultiProducer,
+    TProducer, TRandomAccess, TRead, Wheel,
     ssz_view::{DataColumnSidecarView, SignedBeaconBlockView, StatusView},
 };
 use silver_metrics::timed;
 
-use crate::{StorageCounters, store::Store, util};
+use crate::{StorageCounters, el_blobs::ElBlobFetcher, store::Store, util};
 const MAX_RETRIES: u8 = 5;
 
 /// Fallback: if control's replay-vs-sync decision is never received, default
@@ -40,6 +40,14 @@ const EPOCH_DURATION: Duration = Duration::from_secs(32 * 12);
 /// `DataColumnsByRootIdentifier`. Keys `validated_columns` so ByRoot
 /// lookups and head-update integration are direct lookups.
 type BlockRoot = [u8; 32];
+
+/// `EngineReq` is large but short-lived here, so
+/// boxing it would only add an alloc on the block path.
+#[allow(clippy::large_enum_variant)]
+pub(crate) enum StorageEmit {
+    Peer(PeerEvent),
+    Engine(EngineReq),
+}
 
 pub struct StorageTile {
     // bit set of our custody group columns.
@@ -91,6 +99,8 @@ pub struct StorageTile {
     /// decision before defaulting to replay (control signal lost).
     created_at: Instant,
     peers_loaded: bool,
+
+    el_fetcher: ElBlobFetcher,
 }
 
 impl StorageTile {
@@ -107,6 +117,7 @@ impl StorageTile {
         fork_digest: [u8; 4],
         data_store_dir: String,
         replay_from_disk: bool,
+        engine_resp_consumer: TRandomAccess,
     ) -> Self {
         let store = Store::load(data_store_dir).expect("failed to load storage store");
         let checkpointed_epoch = store.last_persisted_finalized_slot() / SLOTS_PER_EPOCH;
@@ -141,6 +152,7 @@ impl StorageTile {
             syncing_strategy: None,
             created_at: Instant::now(),
             peers_loaded: false,
+            el_fetcher: ElBlobFetcher::new(engine_resp_consumer),
         }
     }
 
@@ -234,7 +246,7 @@ impl StorageTile {
     #[timed]
     fn beacon_block<F>(&mut self, stream_id: P2pStreamId, block: TRead, emit: &mut F)
     where
-        F: FnMut(PeerEvent),
+        F: FnMut(StorageEmit),
     {
         let buffer = match block.buffer() {
             Ok((buffer, _)) => buffer,
@@ -278,15 +290,11 @@ impl StorageTile {
             "data columns by root request: {to_request:b}"
         );
 
-        // TODO(engine_getBlobsV2): try the EL mempool before/alongside the
-        // peer ByRoot request — produce `EngineReq::GetBlobs` with the
-        // versioned hashes from the block's kzg_commitments, then build the
-        // custody columns locally from the returned blobs. Avoids the p2p
-        // round trip for mempool blobs. Needs compute_cells_and_kzg_proofs
-        // (EIP-7594) and the `EngineResp::GetBlobs` queue consumed here
-        // rather than in the beacon state tile.
+        let slot = SignedBeaconBlockView::slot(buffer);
+        self.el_fetcher.try_fetch(buffer, block_root, slot, to_request, emit);
+
         if stream_id.protocol() != StreamProtocol::GossipSub {
-            emit(self.column_request(block_root, to_request));
+            emit(StorageEmit::Peer(self.column_request(block_root, to_request)));
         }
     }
 
@@ -488,8 +496,13 @@ impl Tile<SilverSpine> for StorageTile {
         adapter.consume(|gossip: NewGossipMsg, producers| match gossip.topic {
             silver_common::GossipTopic::BeaconBlock if self.store.is_synced() => {
                 let t_read = self.gossip_consumer.acquire(gossip.ssz);
-                self.beacon_block(gossip.stream_id, t_read, &mut |evt| {
-                    producers.peer_events.produce(&evt.into());
+                self.beacon_block(gossip.stream_id, t_read, &mut |emit| match emit {
+                    StorageEmit::Peer(evt) => {
+                        producers.peer_events.produce(&evt.into());
+                    }
+                    StorageEmit::Engine(req) => {
+                        producers.engine_reqs.produce(&req.into());
+                    }
                 });
             }
             silver_common::GossipTopic::DataColumnSidecar(_custody_group)
@@ -533,8 +546,13 @@ impl Tile<SilverSpine> for StorageTile {
                 }
                 silver_common::RpcResponse::BeaconBlock { fork_digest: _, ssz } if self.store.is_synced() => {
                     let t_read = self.rpc_consumer.acquire(ssz);
-                    self.beacon_block(rsp.stream_id, t_read, &mut |evt| {
-                        producers.peer_events.produce(&evt.into());
+                    self.beacon_block(rsp.stream_id, t_read, &mut |emit| match emit {
+                        StorageEmit::Peer(evt) => {
+                            producers.peer_events.produce(&evt.into());
+                        }
+                        StorageEmit::Engine(req) => {
+                            producers.engine_reqs.produce(&req.into());
+                        }
                     });
                 }
                 silver_common::RpcResponse::DataColumnSidecar { fork_digest: _, ssz } if rsp.is_column_backfill() => {
@@ -654,12 +672,33 @@ impl Tile<SilverSpine> for StorageTile {
             self.store.load_peers();
         }
 
+        // EL-mempool blob responses (engine_getBlobsV2). Broadcast queue — we
+        // only act on GetBlobs; the rest are the beacon-state tile's.
+        adapter.consume(|resp: EngineResp, producers| {
+            if let EngineResp::GetBlobs(r) = resp {
+                self.el_fetcher.handle_response(
+                    r,
+                    &mut self.store,
+                    &mut self.validated_columns,
+                    &mut self.outstanding_requests,
+                    self.custody_group_columns,
+                    &mut |msg| {
+                        producers.data_columns.produce(&msg.into());
+                    },
+                );
+            }
+        });
+        self.el_fetcher.free();
+
         let now = Instant::now();
 
         // Age out per-block validation memo.
         self.validated_blocks.maybe_rotate(now, &mut |_, _| true);
         // Age out validated columns.
         self.validated_columns.maybe_rotate(now, &mut |_, _| true);
+        // Age out EL blob fetches the engine never answered (the p2p race
+        // covers those columns); answered ones are removed on response.
+        self.el_fetcher.rotate(now);
 
         // Timeout any pending requests and re-issue
         let mut request_id = self.request_id;
@@ -754,6 +793,11 @@ mod tests {
         let rpc_producer = TCache::multi_producer("rpc_out", 1024 * 1024);
         let replay_producer = TCache::producer("replay_out", 1024 * 1024);
 
+        // Unused here (no EL path exercised); only satisfies the constructor.
+        let engine_resp_tc = TCache::producer("engine_resp", 1024 * 1024);
+        let engine_resp_consumer =
+            engine_resp_tc.cache_ref().random_access("engine_resp_cons", true).unwrap();
+
         let beacon_state = BeaconStateOwner::empty_test(0).reader();
 
         let mut tile = StorageTile::new(
@@ -768,6 +812,7 @@ mod tests {
             [1, 2, 3, 4],
             store_dir.clone(),
             false,
+            engine_resp_consumer,
         );
 
         let mut block_bytes = vec![0u8; 784];
@@ -799,7 +844,11 @@ mod tests {
         // Once synced, an RPC block requests its custody columns by root.
         tile.store.sync_update(SyncUpdate::Following);
         let mut rpc_events = Vec::new();
-        tile.beacon_block(rpc_stream, read.clone(), &mut |evt| rpc_events.push(evt));
+        tile.beacon_block(rpc_stream, read.clone(), &mut |emit| {
+            if let StorageEmit::Peer(evt) = emit {
+                rpc_events.push(evt);
+            }
+        });
         assert_eq!(rpc_events.len(), 1);
         if let PeerEvent::SendDataColumnsByRootRequest { columns, block_root: req_root, .. } =
             rpc_events[0]
@@ -875,6 +924,7 @@ mod tests {
         let pg_tc = TCache::producer("pg", 1 << 20);
         let rpc_tc = TCache::producer("r", 1 << 20);
         let pr_tc = TCache::producer("pr", 1 << 20);
+        let engine_resp_tc = TCache::producer("engine_resp", 1 << 20);
         let mut tile = StorageTile::new(
             gossip_tc.cache_ref().random_access("g", true).unwrap(),
             pg_tc.cache_ref().random_access("pg", true).unwrap(),
@@ -887,6 +937,7 @@ mod tests {
             [1, 2, 3, 4],
             store_dir.clone(),
             true,
+            engine_resp_tc.cache_ref().random_access("engine_resp", true).unwrap(),
         );
         assert_eq!(tile.replay_blocks.len(), 3, "skip decided at replay, not load");
 

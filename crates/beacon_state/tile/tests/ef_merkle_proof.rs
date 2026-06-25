@@ -55,6 +55,46 @@ fn single_merkle_proof() {
     assert_eq!(fail, 0, "merkle_proof: {fail} test(s) failed");
 }
 
+/// Our `kzg_commitments_inclusion_proof` generator must reproduce the canonical
+/// branch the spec ships for `BeaconBlockBody.blob_kzg_commitments` (gindex
+/// 27).
+#[test]
+fn generates_kzg_commitments_inclusion_proof() {
+    let base = spec_tests_dir()
+        .join("tests/mainnet/fulu/merkle_proof/single_merkle_proof/BeaconBlockBody");
+    let Ok(entries) = fs::read_dir(&base) else {
+        eprintln!("merkle_proof: no test cases, skipping");
+        return;
+    };
+
+    let mut checked = 0;
+    for entry in entries.flatten() {
+        if !entry.file_type().is_ok_and(|t| t.is_dir()) {
+            continue;
+        }
+        let dir = entry.path();
+        let object_path = dir.join("object.ssz_snappy");
+        let proof_path = dir.join("proof.yaml");
+        if !object_path.exists() || !proof_path.exists() {
+            continue;
+        }
+
+        let (_leaf, leaf_index, branch) = parse_proof(&fs::read_to_string(&proof_path).unwrap());
+        // gindex 27 == blob_kzg_commitments; that's the only proof we generate.
+        if leaf_index != 27 {
+            continue;
+        }
+
+        let body_ssz = snappy_decode(&object_path);
+        let generated = ssz_hash::kzg_commitments_inclusion_proof(&body_ssz);
+
+        let expected: Vec<u8> = branch.iter().flatten().copied().collect();
+        assert_eq!(generated.as_slice(), expected.as_slice(), "branch mismatch for {dir:?}");
+        checked += 1;
+    }
+    eprintln!("kzg_commitments_inclusion_proof: {checked} case(s) checked");
+}
+
 /// Light-client proofs share the proof format but cover `BeaconState` leaves
 /// (sync committees, finality) alongside `BeaconBlockBody` (execution).
 #[test]

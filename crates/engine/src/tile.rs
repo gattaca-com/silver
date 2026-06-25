@@ -44,7 +44,10 @@ impl Tile<SilverSpine> for EngineTile {
                 adapter.produce(EngineHealthEvent { sync_status: ELSyncStatus::Synced });
                 self.first_run = false;
             }
-            adapter.consume(|req: EngineReq, producers| handle_request_no_el(&req, producers));
+            let resp_producer = &mut self.resp_producer;
+            adapter.consume(|req: EngineReq, producers| {
+                handle_request_no_el(resp_producer, &req, producers)
+            });
             return;
         }
         adapter.consume(|req: EngineReq, producers| {

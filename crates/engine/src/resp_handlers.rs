@@ -366,7 +366,7 @@ fn status_from_str(s: &str) -> PayloadValidationStatus {
 }
 
 #[inline]
-fn write_tcache(producer: &mut TProducer, data: &[u8]) -> Option<TCacheRead> {
+pub(crate) fn write_tcache(producer: &mut TProducer, data: &[u8]) -> Option<TCacheRead> {
     use std::io::Write as _;
     let mut res =
         producer.reserve(data.len(), false).or_else(|| producer.reserve(data.len(), false))?;

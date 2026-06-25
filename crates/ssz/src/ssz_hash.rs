@@ -345,12 +345,17 @@ pub fn hash_tree_root_fork_data(version: [u8; 4], genesis_validators_root: &B256
     hash_concat(&version_chunk, genesis_validators_root)
 }
 
-/// Compute hash_tree_root of a BeaconBlockBody from raw SSZ bytes.
-/// Fulu layout: 13 fields → 16 leaves.
-#[timed]
-pub fn hash_tree_root_body(body: &[u8]) -> B256 {
+/// The 13 field roots of a Fulu `BeaconBlockBody`, in field order. Returns
+/// `None` when `body` is below the fixed prefix size.
+///
+/// `merkleize`-ing these yields `body_root` (see [`hash_tree_root_body`]); the
+/// Merkle branch from field 11 (`blob_kzg_commitments`) up to that root is the
+/// `kzg_commitments` inclusion proof (see [`kzg_commitments_inclusion_proof`]).
+/// Both callers share this so the field layout is defined once per fork.
+#[inline]
+fn beacon_block_body_field_roots(body: &[u8]) -> Option<[B256; 13]> {
     if body.len() < 396 {
-        return ZERO_HASH;
+        return None;
     }
 
     let randao = hash_fixed_bytes(&body[0..96]);
@@ -381,7 +386,7 @@ pub fn hash_tree_root_body(body: &[u8]) -> B256 {
     let blob_commitments = hash_list_fixed_elements(var_field(7), 48, 4096);
     let execution_requests = hash_execution_requests(var_field(8));
 
-    let field_hashes = [
+    Some([
         randao,
         eth1,
         graffiti,
@@ -395,9 +400,52 @@ pub fn hash_tree_root_body(body: &[u8]) -> B256 {
         bls_changes,
         blob_commitments,
         execution_requests,
-    ];
+    ])
+}
 
-    merkleize(&field_hashes)
+/// Compute hash_tree_root of a BeaconBlockBody from raw SSZ bytes.
+/// Fulu layout: 13 fields → 16 leaves.
+#[timed]
+pub fn hash_tree_root_body(body: &[u8]) -> B256 {
+    match beacon_block_body_field_roots(body) {
+        Some(field_hashes) => merkleize(&field_hashes),
+        None => ZERO_HASH,
+    }
+}
+
+/// Generate the `kzg_commitments_inclusion_proof` carried by a
+/// `DataColumnSidecar`: the 4-node Merkle branch proving the block's
+/// `blob_kzg_commitments` list root (field 11 of the 13-field → 16-leaf
+/// `BeaconBlockBody` tree) sits under `body_root`. Generator inverse of the
+/// verifier in
+/// `silver_storage::util::verify_data_column_sidecar_inclusion_proof`.
+///
+/// Returns all-zero bytes when `body` is below the fixed prefix size (mirrors
+/// `hash_tree_root_body`'s fallback).
+#[timed]
+pub fn kzg_commitments_inclusion_proof(body: &[u8]) -> [u8; 128] {
+    let Some(field_roots) = beacon_block_body_field_roots(body) else {
+        return [0u8; 128];
+    };
+
+    // The 16 leaves of the body tree (13 fields + 3 zero-padding).
+    let mut layer = [ZERO_HASH; 16];
+    layer[..13].copy_from_slice(&field_roots);
+
+    // Walk up the 4 levels, recording the sibling on leaf 11's path.
+    let mut proof = [0u8; 128];
+    let mut idx = 11usize;
+    let mut width = 16usize;
+    for level in 0..4 {
+        proof[level * 32..level * 32 + 32].copy_from_slice(&layer[idx ^ 1]);
+        let half = width / 2;
+        for i in 0..half {
+            layer[i] = hash_concat(&layer[2 * i], &layer[2 * i + 1]);
+        }
+        idx >>= 1;
+        width = half;
+    }
+    proof
 }
 
 #[timed]

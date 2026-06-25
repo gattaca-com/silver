@@ -5,14 +5,18 @@ use silver_beacon_state_data::SLOTS_PER_EPOCH;
 use silver_common::{
     ssz_hash::{
         B256, hash_concat, hash_list_fixed_elements, hash_tree_root_body, hash_tree_root_fork_data,
-        is_valid_merkle_branch, merkleize, uint64_chunk,
+        is_valid_merkle_branch, merkleize, sha256, uint64_chunk,
     },
     ssz_view::{
-        BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF, DataColumnSidecarView,
-        MAX_BLOB_COMMITMENTS_PER_BLOCK, NUMBER_OF_COLUMNS, SignedBeaconBlockView,
+        BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF, DATA_COLUMN_SIDECAR_MIN,
+        DataColumnSidecarView, MAX_BLOB_COMMITMENTS_PER_BLOCK, NUMBER_OF_COLUMNS,
+        SignedBeaconBlockView,
     },
 };
 use silver_metrics::timed;
+
+/// EIP-4844 versioned-hash version byte (`VERSIONED_HASH_VERSION_KZG`).
+const VERSIONED_HASH_VERSION_KZG: u8 = 0x01;
 
 /// Depth of the Merkle branch attaching `kzg_commitments` to
 /// `BeaconBlockBody.body_root`. Per Fulu spec: `floor(log2(gindex))`
@@ -256,10 +260,48 @@ pub fn verify_proposer_signature(
         BLST_ERROR::BLST_SUCCESS
 }
 
+/// EIP-4844 versioned hash of a 48-byte KZG commitment:
+/// `sha256(commitment)` with the first byte replaced by the KZG version.
+/// These are the `versionedHashes` passed to `engine_getBlobsV2`.
+pub fn kzg_commitment_to_versioned_hash(commitment: &[u8]) -> [u8; 32] {
+    let mut h = sha256(commitment);
+    h[0] = VERSIONED_HASH_VERSION_KZG;
+    h
+}
+
+/// SSZ-serialized size of a `DataColumnSidecar` whose three parallel lists
+/// each hold `num_blobs` elements.
+pub fn data_column_sidecar_len(num_blobs: usize) -> usize {
+    DATA_COLUMN_SIDECAR_MIN +
+        num_blobs * BYTES_PER_CELL +
+        num_blobs * BYTES_PER_KZG_COMMITMENT +
+        num_blobs * BYTES_PER_KZG_PROOF
+}
+
+/// Append the 356-byte fixed prefix of a `DataColumnSidecar` (index, the three
+/// list offsets for `num_blobs` elements, the 208-byte `signed_block_header`,
+/// and the 128-byte inclusion proof) to `out`
+pub fn push_data_column_sidecar_prefix(
+    out: &mut Vec<u8>,
+    index: u64,
+    num_blobs: usize,
+    header: &[u8; 208],
+    inclusion_proof: &[u8; 128],
+) {
+    let col_off = DATA_COLUMN_SIDECAR_MIN;
+    let com_off = col_off + num_blobs * BYTES_PER_CELL;
+    let proof_off = com_off + num_blobs * BYTES_PER_KZG_COMMITMENT;
+
+    out.extend_from_slice(&index.to_le_bytes());
+    out.extend_from_slice(&(col_off as u32).to_le_bytes());
+    out.extend_from_slice(&(com_off as u32).to_le_bytes());
+    out.extend_from_slice(&(proof_off as u32).to_le_bytes());
+    out.extend_from_slice(header);
+    out.extend_from_slice(inclusion_proof);
+}
+
 #[cfg(test)]
 mod tests {
-    use silver_common::ssz_view::DATA_COLUMN_SIDECAR_MIN;
-
     use super::*;
 
     #[test]
@@ -350,5 +392,70 @@ mod tests {
         // error; we map every non-Ok(true) result to false.
         let buf = synth_sidecar(0, 1, 1, 1);
         assert!(!verify_data_column_sidecar_kzg_proofs(&buf));
+    }
+
+    /// Build a minimal BeaconBlockBody whose only non-empty variable field is
+    /// `blob_kzg_commitments`, so its body_root + inclusion proof are
+    /// self-consistent for the encoded sidecar.
+    fn synth_body_with_commitments(commitments: &[u8]) -> Vec<u8> {
+        const FIXED: usize = 396;
+        let mut body = vec![0u8; FIXED + commitments.len()];
+        // All variable fields empty (offset = FIXED) except blob_kzg_commitments.
+        for pos in [200usize, 204, 208, 212, 216, 380, 384, 388] {
+            body[pos..pos + 4].copy_from_slice(&(FIXED as u32).to_le_bytes());
+        }
+        // execution_requests starts after the commitments list.
+        body[392..396].copy_from_slice(&((FIXED + commitments.len()) as u32).to_le_bytes());
+        body[FIXED..].copy_from_slice(commitments);
+        body
+    }
+
+    /// End-to-end: reconstruct sidecars from blobs exactly as the EL-blob path
+    /// does (commitments + cells + cell proofs from c-kzg, inclusion proof from
+    /// the body) and assert they pass all three sidecar verifications.
+    #[test]
+    fn el_built_sidecars_pass_all_verifications() {
+        use silver_common::ssz_hash::kzg_commitments_inclusion_proof;
+
+        let settings = c_kzg::ethereum_kzg_settings(0);
+        let n = 2usize;
+        let blob = c_kzg::Blob::new([0u8; 131072]); // zero blob: valid field elements
+
+        let mut commitments = Vec::new();
+        let mut cells = Vec::new();
+        let mut proofs = Vec::new();
+        for _ in 0..n {
+            let c = settings.blob_to_kzg_commitment(&blob).unwrap();
+            commitments.extend_from_slice(&c.to_bytes().into_inner());
+            let (cs, ps) = settings.compute_cells_and_kzg_proofs(&blob).unwrap();
+            cells.push(cs);
+            proofs.push(ps);
+        }
+
+        let body = synth_body_with_commitments(&commitments);
+        let mut header = [0u8; 208];
+        header[80..112].copy_from_slice(&hash_tree_root_body(&body));
+        let inclusion_proof = kzg_commitments_inclusion_proof(&body);
+
+        // A representative spread of column indices (full sweep is redundant).
+        for j in [0u64, 1, 63, 127] {
+            let mut column = Vec::new();
+            let mut col_proofs = Vec::new();
+            for i in 0..n {
+                column.extend_from_slice(&cells[i][j as usize].to_bytes());
+                col_proofs.extend_from_slice(&proofs[i][j as usize].to_bytes().into_inner());
+            }
+            let mut out = Vec::with_capacity(data_column_sidecar_len(n));
+            push_data_column_sidecar_prefix(&mut out, j, n, &header, &inclusion_proof);
+            out.extend_from_slice(&column);
+            out.extend_from_slice(&commitments);
+            out.extend_from_slice(&col_proofs);
+            assert_eq!(out.len(), data_column_sidecar_len(n));
+
+            assert!(verify_data_column_sidecar(&out), "shape, col {j}");
+            assert_eq!(DataColumnSidecarView::index(&out), j);
+            assert!(verify_data_column_sidecar_kzg_proofs(&out), "kzg, col {j}");
+            assert!(verify_data_column_sidecar_inclusion_proof(&out), "inclusion, col {j}");
+        }
     }
 }
