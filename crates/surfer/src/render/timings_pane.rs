@@ -90,10 +90,10 @@ fn draw_charts(f: &mut Frame, area: Rect, app: &App) {
         f.render_widget(Block::default().borders(Borders::ALL).title(" history "), area);
         return;
     };
-    draw_channel_chart(f, area, &timer.name, Color::Magenta, &timer.latency);
+    draw_channel_chart(f, area, &timer.name, &timer.latency);
 }
 
-fn draw_channel_chart(f: &mut Frame, area: Rect, name: &str, p50_color: Color, ch: &TimingChannel) {
+fn draw_channel_chart(f: &mut Frame, area: Rect, name: &str, ch: &TimingChannel) {
     let title = format!(
         " {name} — latency p50 / p99 over {}s buckets ",
         crate::sources::counters::BUCKET_SECS
@@ -125,7 +125,7 @@ fn draw_channel_chart(f: &mut Frame, area: Rect, name: &str, p50_color: Color, c
         Dataset::default()
             .name("p50 µs")
             .marker(symbols::Marker::Braille)
-            .style(Style::default().fg(p50_color))
+            .style(Style::default().fg(Color::Magenta))
             .graph_type(GraphType::Line)
             .data(&p50),
         Dataset::default()

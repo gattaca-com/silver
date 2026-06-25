@@ -10,7 +10,7 @@ use rustc_hash::FxHashMap;
 use crate::{
     flamegraph_timer::{names::leaf_name, report::PathStat},
     perf::PerfSample,
-    slot,
+    schema, slot,
 };
 
 pub(super) fn render(paths: &[PathStat], names: &FxHashMap<u64, String>) -> String {
@@ -115,7 +115,6 @@ struct Row<'a> {
     child: Option<&'a Node>,
 }
 
-/// `per_parent == 0` ⇒ root row (no parent invocation to divide by).
 struct CallCount {
     total: u64,
     per_parent: u64,
@@ -163,7 +162,7 @@ fn counter_text(perf: &PerfSample, calls: u64) -> Option<String> {
     if calls == 0 || perf.vals.iter().all(|&v| v == 0) {
         return None;
     }
-    let schema = crate::schema();
+    let schema = schema();
     let is_ipc_input = |label: &str| matches!(label, "instructions" | "cpu-cycles" | "cycles");
     let mut parts: Vec<String> = schema
         .iter()
