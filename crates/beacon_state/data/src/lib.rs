@@ -1,4 +1,5 @@
 pub use buffer::{Id, Reset, Ring};
+pub use builders::{BuildersGroup, BuildersId, BuildersView, BuildersWriteView, FinalizedBuilders};
 pub use column::{
     Balances, BalancesGroup, BalancesId, BalancesReader, BalancesWriteView, ColumnGroup,
     ColumnReader, ColumnSpec, ColumnVal, ColumnWriteView, Current, CurrentParticipationGroup,
@@ -14,6 +15,10 @@ pub use delta_view::{
 pub use encode::{CHECKPOINT_SECTIONS, PubkeysDecodeError, decode_checkpoint_pubkeys};
 pub use epoch::{EpochGroup, EpochId, EpochStateFinalized, EpochView, EpochWriteView};
 pub use eth1::{Eth1Group, Eth1Id, Eth1View, Eth1Votes, Eth1WriteView};
+pub use gloas::{
+    Builder, BuilderPendingPayment, BuilderPendingWithdrawal, ExecutionPayloadBid, PtcCommittee,
+    Withdrawal,
+};
 pub use hash_tree::{DeltaHashTree, FinalizedHashTree};
 pub use longtail::{LongtailGroup, LongtailId, LongtailState, LongtailView, LongtailWriteView};
 pub use parsed::ParsedAggregateAndProof;
@@ -33,12 +38,14 @@ pub use validators::{
 pub use view::{BeaconStateOwner, BeaconStateReader, CheckpointChunk, CheckpointCursor};
 
 pub mod buffer;
+mod builders;
 mod column;
 mod decompose;
 mod delta_view;
 mod encode;
 mod epoch;
 mod eth1;
+pub mod gloas;
 mod hash_tree;
 mod longtail;
 mod parsed;
@@ -76,6 +83,9 @@ pub struct BeaconState {
     /// state.
     pub epoch: EpochGroup,
     pub longtail: LongtailGroup,
+    /// Gloas (EIP-7732) builder registry — own ring, rolled every slot. Empty
+    /// until the Gloas fork.
+    pub builders: BuildersGroup,
 }
 
 impl BeaconState {
@@ -94,6 +104,7 @@ impl BeaconState {
             inactivity_idx: self.inactivity.roll_fresh().commit(),
             slot_idx: self.slot_states.roll_fresh().commit(),
             validators_idx: self.validators.roll_fresh().commit(),
+            builders_idx: self.builders.roll_fresh().commit(),
         }
     }
 
@@ -117,6 +128,7 @@ impl BeaconState {
             inactivity: self.inactivity.view(state_id.inactivity_idx),
             slot: self.slot_states.view(state_id.slot_idx),
             validators: self.validators.view(state_id.validators_idx),
+            builders: self.builders.view(state_id.builders_idx),
         }
     }
 }
@@ -150,6 +162,7 @@ impl BeaconState {
             )),
             epoch: EpochGroup::new(epoch_base),
             longtail: LongtailGroup::new(LongtailState::default()),
+            builders: BuildersGroup::new(FinalizedBuilders::default()),
         }
     }
 

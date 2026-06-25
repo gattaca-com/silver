@@ -115,6 +115,7 @@ impl BeaconStateOwner {
             inactivity: s.inactivity.roll_from(parent.inactivity_idx),
             slot: s.slot_states.roll_from(parent.slot_idx),
             validators: s.validators.roll_from(parent.validators_idx),
+            builders: s.builders.roll_from(parent.builders_idx),
         };
         (view, &mut s.epoch, &mut s.longtail)
     }

@@ -45,6 +45,6 @@ impl EpochStateFinalized {
     pub(super) fn promote(&mut self, delta: &EpochStateDelta, old_fin_epoch: usize) {
         write_ring_window(&mut self.randao_mixes, old_fin_epoch, &delta.randao_mixes);
         write_ring_window(&mut self.slashings, old_fin_epoch, &delta.slashings);
-        self.state = delta.state;
+        self.state = delta.state.clone();
     }
 }

@@ -2,6 +2,7 @@ mod attestation;
 mod block;
 mod common;
 mod epoch;
+mod fork_transition;
 mod operations;
 mod slashings;
 mod sync_aggregate;
@@ -32,6 +33,7 @@ pub use epoch::{
     process_randao_mixes_reset, process_registry_updates, process_rewards_and_penalties,
     process_slashings, process_slashings_reset, process_sync_committee_updates,
 };
+pub use fork_transition::upgrade_to_gloas;
 pub(crate) use operations::process_execution_requests;
 pub use operations::{
     collect_sigs_bls_to_execution_changes, collect_sigs_voluntary_exits,

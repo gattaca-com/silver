@@ -33,7 +33,7 @@ impl Reset for EpochStateDelta {
     fn reset_from(&mut self, other: &Self) {
         self.randao_mixes.clone_from(&other.randao_mixes);
         self.slashings.clone_from(&other.slashings);
-        self.state = other.state;
+        self.state = other.state.clone();
     }
 }
 
@@ -148,7 +148,7 @@ impl<'a> EpochWriteView<'a> {
     /// per-completed-epoch logs stay empty (cleared by `reset`).
     #[inline]
     pub(super) fn seed_from_base(&mut self) {
-        self.fork.state = self.base.state;
+        self.fork.state = self.base.state.clone();
     }
 
     #[inline]

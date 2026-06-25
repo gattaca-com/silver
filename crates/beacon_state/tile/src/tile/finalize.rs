@@ -204,6 +204,11 @@ impl BeaconStateTile {
             |s| &mut s.slot_idx,
             |ids| bs.slot_states.finalize(promoted.slot_idx, ids),
         );
+        rebase_tier(
+            survivors,
+            |s| &mut s.builders_idx,
+            |ids| bs.builders.finalize(promoted.builders_idx, ids),
+        );
 
         // Epoch + longtail finalize in their own groups, but — unlike the
         // always-rolled tiers above — forks roll these lazily, so finalize only

@@ -1,10 +1,10 @@
 use blst::min_pk::PublicKey;
 
 use crate::{
-    BalancesReader, BalancesWriteView, Current, EpochId, EpochView, Eth1View, Eth1WriteView,
-    InactivityView, InactivityWriteView, LongtailId, LongtailView, ParticipationView,
-    ParticipationWriteView, PendingView, PendingWriteView, Previous, SlotStateView,
-    SlotStateWriteView, ValidatorsView, ValidatorsWriteView, Withdrawals,
+    BalancesReader, BalancesWriteView, BuildersView, BuildersWriteView, Current, EpochId,
+    EpochView, Eth1View, Eth1WriteView, InactivityView, InactivityWriteView, LongtailId,
+    LongtailView, ParticipationView, ParticipationWriteView, PendingView, PendingWriteView,
+    Previous, SlotStateView, SlotStateWriteView, ValidatorsView, ValidatorsWriteView, Withdrawals,
     types::{B256, BLSPubkey, Epoch, Immutable, SLOTS_PER_EPOCH, StateId},
 };
 
@@ -29,6 +29,7 @@ pub struct StateReadView<'a> {
     pub inactivity: InactivityView<'a>,
     pub slot: SlotStateView<'a>,
     pub validators: ValidatorsView<'a>,
+    pub builders: BuildersView<'a>,
 }
 
 // The base+delta merge for the cross-tier reads (the circular-buffer rings
@@ -126,6 +127,7 @@ pub struct StateWriterView<'a> {
     pub inactivity: InactivityWriteView<'a>,
     pub slot: SlotStateWriteView<'a>,
     pub validators: ValidatorsWriteView<'a>,
+    pub builders: BuildersWriteView<'a>,
 }
 
 impl<'a> StateWriterView<'a> {
@@ -146,6 +148,7 @@ impl<'a> StateWriterView<'a> {
             current_participation_idx: self.current_participation.commit(),
             inactivity_idx: self.inactivity.commit(),
             slot_idx: self.slot.commit(),
+            builders_idx: self.builders.commit(),
         }
     }
 
@@ -171,6 +174,7 @@ impl<'a> StateWriterView<'a> {
             inactivity: self.inactivity.reader(),
             slot: self.slot.reader(),
             validators: self.validators.reader(),
+            builders: self.builders.reader(),
         }
     }
 }
@@ -230,6 +234,7 @@ mod tests {
                 inactivity: bs.inactivity.roll_from(sid.inactivity_idx),
                 slot: bs.slot_states.roll_from(sid.slot_idx),
                 validators: bs.validators.roll_from(sid.validators_idx),
+                builders: bs.builders.roll_from(sid.builders_idx),
             };
             (view, &mut bs.epoch, &mut bs.longtail)
         }

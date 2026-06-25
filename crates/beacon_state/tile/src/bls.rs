@@ -42,6 +42,8 @@ pub const DOMAIN_SELECTION_PROOF: u32 = 0x0000_0005;
 pub const DOMAIN_AGGREGATE_AND_PROOF: u32 = 0x0000_0006;
 pub const DOMAIN_SYNC_COMMITTEE: u32 = 0x0000_0007;
 pub const DOMAIN_BLS_TO_EXECUTION_CHANGE: u32 = 0x0000_000a;
+/// Gloas (EIP-7732) `DomainType('0x0C000000')`.
+pub const DOMAIN_PTC_ATTESTER: u32 = 0x0000_000c;
 
 pub fn compute_domain(
     domain_type: u32,

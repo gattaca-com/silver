@@ -871,6 +871,7 @@ mod tests {
             current_participation_idx: Default::default(),
             inactivity_idx: Default::default(),
             slot_idx: Default::default(),
+            builders_idx: Default::default(),
         }
     }
 
