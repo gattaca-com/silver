@@ -11,7 +11,6 @@ pub enum SszView {
     SignedAggregateAndProof(SignedAggregateAndProofView),
     AttesterSlashing(AttesterSlashingView),
     DataColumnSidecar(DataColumnSidecarView),
-    BlobSidecar(BlobSidecarView),
     LightClientHeader(LightClientHeaderView),
     LightClientFinalityUpdate(LightClientFinalityUpdateView),
     LightClientOptimisticUpdate(LightClientOptimisticUpdateView),
@@ -21,7 +20,6 @@ pub enum SszView {
     Ping(PingView),
     Goodbye(GoodbyeView),
     BeaconBlocksByRootRequest(BeaconBlocksByRootRequestView),
-    BlobIdentifier(BlobIdentifierView),
     DataColumnSidecarsByRangeRequest(DataColumnSidecarsByRangeRequestView),
     DataColumnsByRootIdentifier(DataColumnsByRootIdentifierView),
     // [New in Gloas]
@@ -1015,86 +1013,6 @@ impl DataColumnSidecarView {
     }
 }
 
-// -- BlobSidecar (blob_sidecar_{subnet_id}) --------------------------
-//
-// All fixed, exactly 131928B. Deprecated in Fulu (transition period only).
-//   [0..8)                   index (BlobIndex = u64)
-//   [8..131080)              blob (BYTES_PER_BLOB = 131072B)
-//   [131080..131128)         kzg_commitment (48B)
-//   [131128..131176)         kzg_proof (48B)
-//   [131176..131384)         signed_block_header (208B)
-//     [131176..131184)         slot
-//     [131184..131192)         proposer_index
-//     [131192..131224)         parent_root
-//     [131224..131256)         state_root
-//     [131256..131288)         body_root
-//     [131288..131384)         signature
-//   [131384..131928)         kzg_commitment_inclusion_proof
-//                            (KZG_COMMITMENT_INCLUSION_PROOF_DEPTH*32 = 544B)
-
-pub const BYTES_PER_BLOB: usize = 131_072;
-pub const KZG_COMMITMENT_INCLUSION_PROOF_DEPTH: usize = 17;
-pub const BLOB_INCLUSION_PROOF_SIZE: usize = KZG_COMMITMENT_INCLUSION_PROOF_DEPTH * 32;
-pub const BLOB_SIDECAR_SIZE: usize = 8 +
-    BYTES_PER_BLOB +
-    BYTES_PER_KZG_COMMITMENT +
-    BYTES_PER_KZG_PROOF +
-    208 +
-    BLOB_INCLUSION_PROOF_SIZE;
-
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-#[repr(C)]
-pub struct BlobSidecarView;
-
-impl BlobSidecarView {
-    #[inline]
-    pub fn index(buf: &[u8; BLOB_SIDECAR_SIZE]) -> u64 {
-        u64_le(buf, 0)
-    }
-    #[inline]
-    pub fn blob(buf: &[u8; BLOB_SIDECAR_SIZE]) -> &[u8; BYTES_PER_BLOB] {
-        fixed(buf, 8)
-    }
-    #[inline]
-    pub fn kzg_commitment(buf: &[u8; BLOB_SIDECAR_SIZE]) -> &[u8; BYTES_PER_KZG_COMMITMENT] {
-        fixed(buf, 131_080)
-    }
-    #[inline]
-    pub fn kzg_proof(buf: &[u8; BLOB_SIDECAR_SIZE]) -> &[u8; BYTES_PER_KZG_PROOF] {
-        fixed(buf, 131_128)
-    }
-    #[inline]
-    pub fn slot(buf: &[u8; BLOB_SIDECAR_SIZE]) -> u64 {
-        u64_le(buf, 131_176)
-    }
-    #[inline]
-    pub fn proposer_index(buf: &[u8; BLOB_SIDECAR_SIZE]) -> u64 {
-        u64_le(buf, 131_184)
-    }
-    #[inline]
-    pub fn parent_root(buf: &[u8; BLOB_SIDECAR_SIZE]) -> &[u8; 32] {
-        fixed(buf, 131_192)
-    }
-    #[inline]
-    pub fn state_root(buf: &[u8; BLOB_SIDECAR_SIZE]) -> &[u8; 32] {
-        fixed(buf, 131_224)
-    }
-    #[inline]
-    pub fn body_root(buf: &[u8; BLOB_SIDECAR_SIZE]) -> &[u8; 32] {
-        fixed(buf, 131_256)
-    }
-    #[inline]
-    pub fn block_signature(buf: &[u8; BLOB_SIDECAR_SIZE]) -> &[u8; 96] {
-        fixed(buf, 131_288)
-    }
-    #[inline]
-    pub fn kzg_commitment_inclusion_proof(
-        buf: &[u8; BLOB_SIDECAR_SIZE],
-    ) -> &[u8; BLOB_INCLUSION_PROOF_SIZE] {
-        fixed(buf, 131_384)
-    }
-}
-
 // -- LightClientHeader (inner container for LC updates) --------------
 //
 // Variable (inner ExecutionPayloadHeader has variable extra_data).
@@ -1474,29 +1392,6 @@ impl BeaconBlocksByRootRequestView {
     #[inline]
     pub fn check_size(buf: &[u8]) -> bool {
         buf.len() <= BLOCKS_BY_ROOT_REQ_MAX && buf.len().is_multiple_of(32)
-    }
-}
-
-// -- BlobIdentifier (used in req/blob_sidecars_by_root/1 request list)
-//
-// All fixed, exactly 40B. Deprecated in Fulu (transition period only).
-//   [0..32) block_root
-//   [32..40) index (BlobIndex = u64)
-
-pub const BLOB_IDENTIFIER_SIZE: usize = 40;
-
-#[derive(Clone, Copy, Debug)]
-#[repr(C)]
-pub struct BlobIdentifierView;
-
-impl BlobIdentifierView {
-    #[inline]
-    pub fn block_root(buf: &[u8; BLOB_IDENTIFIER_SIZE]) -> &[u8; 32] {
-        fixed(buf, 0)
-    }
-    #[inline]
-    pub fn index(buf: &[u8; BLOB_IDENTIFIER_SIZE]) -> u64 {
-        u64_le(buf, 32)
     }
 }
 
@@ -2137,7 +2032,7 @@ impl AttestationDataView {
 }
 
 // -- BeaconBlockHeader (112B; nested inside SignedBeaconBlockHeader,
-// ProposerSlashing, LightClientHeader, BlobSidecar, DataColumnSidecar) -
+// ProposerSlashing, LightClientHeader, DataColumnSidecar) -
 
 pub const BEACON_BLOCK_HEADER_SIZE: usize = 112;
 

@@ -7,10 +7,10 @@ use crate::{
     TCacheRead,
     ssz_view::{
         BLOCKS_BY_RANGE_REQ_SIZE, BeaconBlocksByRangeRequestView, BeaconBlocksByRootRequestView,
-        BlobIdentifierView, DC_BY_RANGE_REQ_MAX, DataColumnSidecarView,
-        DataColumnSidecarsByRangeRequestView, DataColumnsByRootIdentifierView, GOODBYE_SIZE,
-        GoodbyeView, METADATA_SIZE, MetadataView, PING_SIZE, PingView, STATUS_V1_SIZE,
-        STATUS_V2_SIZE, SignedBeaconBlockView, SszView, StatusView,
+        DC_BY_RANGE_REQ_MAX, DataColumnSidecarView, DataColumnSidecarsByRangeRequestView,
+        DataColumnsByRootIdentifierView, GOODBYE_SIZE, GoodbyeView, METADATA_SIZE, MetadataView,
+        PING_SIZE, PingView, STATUS_V1_SIZE, STATUS_V2_SIZE, SignedBeaconBlockView, SszView,
+        StatusView,
     },
 };
 
@@ -611,7 +611,6 @@ pub enum RpcMsg {
     MetaData(MetadataView),
     BlocksRangeReq(BeaconBlocksByRangeRequestView),
     BlocksRootReq(BeaconBlocksByRootRequestView),
-    BlobId(BlobIdentifierView),
     DataColumnRangeReq(DataColumnSidecarsByRangeRequestView),
     DataColumnByRoot(DataColumnsByRootIdentifierView),
     // rpc response chunks (one per successful response_chunk)
