@@ -12,6 +12,7 @@ use silver_common::{
     GossipMsgOut, P2pSend, PeerControl, PeerEvent, RpcInbound, RpcOutbound, SilverSpine,
 };
 use silver_discovery::{DiscV5, Discovery, DiscoveryEvent};
+use silver_metrics::timed;
 
 use crate::{
     NetEvent, NetworkCounters, SendResult,
@@ -23,6 +24,11 @@ const MAX_PENDING_OUTBOUND_GOSSIP_MSGS: usize = 1024;
 const MAX_PENDING_OUTBOUND_RPC_MSGS: usize = 128;
 const P2P_SOCKET_TOKEN: Token = Token(0);
 const DISC_SOCKET_TOKEN: Token = Token(1);
+
+#[cfg(feature = "thread_park")]
+const POLL_TIMEOUT: Duration = Duration::from_millis(10);
+#[cfg(not(feature = "thread_park"))]
+const POLL_TIMEOUT: Duration = Duration::ZERO;
 
 pub struct NetworkTile {
     inner: NetworkTileInner<DiscV5>,
@@ -83,16 +89,8 @@ impl NetworkTile {
             _ => {} // no-ops for this tile
         }
     }
-}
 
-#[allow(clippy::large_enum_variant)]
-pub enum Event {
-    P2pNet(NetEvent),
-    Discovery(DiscoveryEvent),
-}
-
-impl Tile<SilverSpine> for NetworkTile {
-    fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
+    fn body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         // Consume peer control messages
         let now = Instant::now();
         adapter.consume(|peer_control: PeerControl, _producers| {
@@ -206,6 +204,28 @@ impl Tile<SilverSpine> for NetworkTile {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
+pub enum Event {
+    P2pNet(NetEvent),
+    Discovery(DiscoveryEvent),
+}
+
+impl Tile<SilverSpine> for NetworkTile {
+    fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
+        self.body(adapter);
+    }
+
+    #[cfg(feature = "thread_park")]
+    fn try_init(&mut self, adapter: &mut SpineAdapter<SilverSpine>) -> bool {
+        const WAKER_TOKEN: Token = Token(3);
+
+        let waker = mio::Waker::new(self.inner.poll.registry(), WAKER_TOKEN)
+            .expect("failed to create network waker");
+        adapter.register_waker(waker);
+        true
+    }
+}
+
 pub struct NetworkTileInner<D>
 where
     D: Discovery,
@@ -260,13 +280,18 @@ where
         self.p2p_endpoint.enqueue_rpc_out(msg, &mut self.context)
     }
 
+    #[timed]
+    fn poll(&mut self) -> Result<(), Error> {
+        self.poll.poll(&mut self.events, Some(POLL_TIMEOUT))
+    }
+
     pub fn spin<E>(&mut self, on_event: &mut E) -> bool
     where
         E: FnMut(Event) + Send,
     {
         let mut did_work = false;
 
-        if let Err(e) = self.poll.poll(&mut self.events, Some(Duration::ZERO)) {
+        if let Err(e) = self.poll() {
             tracing::error!(error=?e, "poll");
             return false;
         }

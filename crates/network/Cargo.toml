@@ -28,6 +28,9 @@ tracing.workspace = true
 x509-parser.workspace = true
 yasna.workspace = true
 
+[features]
+thread_park = ["flux/park"]
+
 [dev-dependencies]
 criterion.workspace = true
 hdrhistogram.workspace = true

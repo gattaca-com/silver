@@ -43,6 +43,7 @@ alloc-profile = []
 # Forwards `#[timed]`'s hardware-counter dimension (rdpmc) to silver_metrics.
 perf = ["silver_metrics/perf"]
 test-util = []
+thread_park = ["flux/park"]
 
 [build-dependencies]
 buffa-build = "0.2.0"

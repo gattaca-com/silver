@@ -410,6 +410,9 @@ impl TCache {
         // `publish_head` on out-of-space, but surfer wants the live
         // production cursor.
         self.record_head(new_head);
+
+        #[cfg(feature = "thread_park")]
+        flux::park::SIGNAL.signal();
     }
 
     // --- backing accessors ---
