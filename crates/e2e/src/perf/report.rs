@@ -36,8 +36,8 @@ impl PerfReport {
 
     pub fn check_thresholds(&self) -> Result<(), String> {
         if self.outcome.stats.missed_events() {
-            return Err("perf gate failed: a timing ring lapped — marks were lost and the \
-                        measurement is invalid; raise RING_CAPACITY in flamegraph_timer::collect"
+            return Err("perf gate failed: a timing ring lost marks and the measurement is \
+                        invalid; raise RING_CAPACITY in flamegraph_timer::collect"
                 .into());
         }
         let failures: Vec<String> = self.gauges().iter().filter_map(Gauge::failure).collect();

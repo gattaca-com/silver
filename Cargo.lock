@@ -4561,6 +4561,7 @@ version = "0.0.1"
 dependencies = [
  "flux",
  "libc",
+ "rustc-hash",
  "serde",
  "serde_json",
  "silver_common_macros",

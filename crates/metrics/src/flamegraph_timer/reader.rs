@@ -1,199 +1,108 @@
 use std::{
-    collections::{HashMap, hash_map::Entry},
-    path::Path,
     sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc,
+        atomic::{AtomicBool, Ordering},
     },
     thread::{self, JoinHandle},
     time::Duration,
 };
 
-use flux::communication::{
-    ReadError,
-    queue::{ConsumerBare, Queue},
-};
-
 use crate::flamegraph_timer::{
-    builder::{Builder, CallStackTiming, Event, Mark},
-    queue_dir::QueueDir,
+    drainer::EventsDrainer,
+    queue_dir::{QueueDir, enable_overseer},
+    report::TimingStats,
+    symbols::{InProcessSymbolsResolver, RemoteSymbolsResolver},
 };
-#[cfg(feature = "perf")]
-use crate::perf::PerfSample;
 
-const EMPTY_MARK: Mark = Mark { name: Event::Close, ts: 0 };
+/// Reads a *running* silver's `#[timed]` marks from its shmem rings and folds
+/// them into a call tree on demand. The producer is a different process, so
+/// names are read from its on-disk binary rather than dereferenced.
+///
+/// Polling is cumulative — every mark since attach is retained — so the fold
+/// covers the whole run, and memory grows with the marks produced.
+pub struct FlamegraphReader {
+    drainer: EventsDrainer,
+    resolver: RemoteSymbolsResolver,
+    pid: u32,
+}
 
-static READER: Mutex<Option<Reader>> = Mutex::new(None);
+impl FlamegraphReader {
+    /// The pid of the *live* producer under `app`, or `None` if none has
+    /// produced yet or the last one exited. Its change across calls signals a
+    /// restart, so a consumer can re-[`attach`](Self::attach).
+    pub fn published_pid(app: &str) -> Option<u32> {
+        QueueDir::open_app(app).live_pid()
+    }
 
-pub fn enable() {
-    crate::TIMING.set_harness();
-    QueueDir::open().clear_stale();
+    /// Attaches to the live silver registered under `app`, or `None` if none is
+    /// running.
+    pub fn attach(app: &str) -> Option<Self> {
+        let dir = QueueDir::open_app(app);
+        let pid = dir.live_pid()?;
+        Some(Self {
+            drainer: EventsDrainer::new(dir),
+            resolver: RemoteSymbolsResolver::new(pid),
+            pid,
+        })
+    }
 
-    let mut reader = READER.lock().unwrap();
-    if reader.is_none() {
-        *reader = Some(Reader::spawn());
+    pub fn pid(&self) -> u32 {
+        self.pid
+    }
+
+    pub fn poll(&mut self) {
+        self.drainer.poll(&self.resolver);
+    }
+
+    pub fn stats(&self) -> TimingStats {
+        self.drainer.fold()
     }
 }
 
-/// Returns the folded timings and whether any ring lapped (marks lost, so the
-/// timings are incomplete).
-pub(super) fn drain() -> (Vec<CallStackTiming>, bool) {
-    let Some(reader) = READER.lock().unwrap().take() else { return (Vec::new(), false) };
-
-    let mut builder = Builder::default();
-    let mut lapped = false;
-    for stream in reader.stop_and_collect() {
-        lapped |= stream.lapped;
-        #[cfg(feature = "perf")]
-        builder.fold_thread(&stream.marks, &stream.perf);
-        #[cfg(not(feature = "perf"))]
-        builder.fold_thread(&stream.marks, &[]);
-    }
-    (builder.finish(), lapped)
-}
-
-/// Background reader: spawned by [`enable`], it discovers per-thread rings and
-/// drains them into heap until [`drain`] stops it and folds the result.
-struct Reader {
+/// The perf harness's in-process reader: enables `#[timed]` production and
+/// drains every thread's ring on a background thread until
+/// [`collect`](Self::collect) stops it and folds the whole run.
+pub struct LocalReader {
     stop: Arc<AtomicBool>,
-    handle: JoinHandle<Vec<ThreadStream>>,
+    handle: JoinHandle<EventsDrainer>,
 }
 
-impl Reader {
-    fn spawn() -> Self {
+impl LocalReader {
+    pub fn start() -> Self {
+        enable_overseer();
         let stop = Arc::new(AtomicBool::new(false));
         let handle = {
             let stop = stop.clone();
             thread::Builder::new()
                 .name("flamegraph-reader".to_owned())
-                .spawn(move || run(stop))
+                .spawn(move || Self::run(stop))
                 .expect("spawn flamegraph reader")
         };
         Self { stop, handle }
     }
 
-    fn stop_and_collect(self) -> Vec<ThreadStream> {
+    /// Stop the background reader and fold the whole run into stats.
+    pub fn collect(self) -> TimingStats {
         self.stop.store(true, Ordering::Release);
-        self.handle.join().unwrap_or_default()
-    }
-}
-
-fn run(stop: Arc<AtomicBool>) -> Vec<ThreadStream> {
-    let dir = QueueDir::open();
-    let mut rings: HashMap<String, ThreadRings> = HashMap::new();
-    loop {
-        for token in dir.event_tokens() {
-            if let Entry::Vacant(slot) = rings.entry(token) {
-                if let Some(thread_rings) = ThreadRings::open(&dir, slot.key()) {
-                    slot.insert(thread_rings);
-                }
-            }
-        }
-        for thread_rings in rings.values_mut() {
-            thread_rings.poll();
-        }
-        // Poll once more after the stop is observed: producers have finished by
-        // then, so this pass flushes their tails.
-        if stop.load(Ordering::Acquire) {
-            break;
-        }
-        thread::sleep(Duration::from_millis(1));
-    }
-    rings.into_values().map(ThreadRings::into_stream).collect()
-}
-
-/// A live consumer that drains one ring into a growing heap `Vec`. Polled
-/// repeatedly by the reader; survivors of the run are folded at `drain`.
-struct RingStream<T: Copy> {
-    consumer: ConsumerBare<T>,
-    out: Vec<T>,
-    scratch: T,
-    /// Set once the ring wrapped before we drained it — marks were lost, so the
-    /// fold built from `out` is incomplete.
-    lapped: bool,
-}
-
-impl<T: Copy> RingStream<T> {
-    fn open(path: &Path, scratch: T, label: &'static str) -> Option<Self> {
-        let queue = Queue::<T>::try_open_shared(path).ok()?;
-        let mut consumer = ConsumerBare::new(queue, label);
-        consumer.try_init_collaborative();
-        Some(Self { consumer, out: Vec::new(), scratch, lapped: false })
+        let drainer = self.handle.join().unwrap_or_else(|_| EventsDrainer::new(QueueDir::open()));
+        drainer.fold()
     }
 
-    fn poll(&mut self) {
+    fn run(stop: Arc<AtomicBool>) -> EventsDrainer {
+        // Boots with the producer, so it reads the whole run from slot 0 and any
+        // loss is a genuine overrun, not a pre-attach gap.
+        let mut drainer = EventsDrainer::new(QueueDir::open());
         loop {
-            match self.consumer.try_consume(&mut self.scratch) {
-                Ok(()) => self.out.push(self.scratch),
-                Err(ReadError::Empty) => break,
-                // The ring wrapped before we drained it: resync past the gap and
-                // flag the loss so the perf gate fails instead of measuring a
-                // truncated stream. Raise RING_CAPACITY if it recurs.
-                Err(ReadError::SpedPast) => {
-                    self.consumer.recover_after_error();
-                    self.lapped = true;
-                }
+            drainer.poll(&InProcessSymbolsResolver);
+            // Poll once more after stop is observed: producers have finished by
+            // then, so this pass flushes their tails.
+            if stop.load(Ordering::Acquire) {
+                break;
             }
+            thread::sleep(Duration::from_millis(1));
         }
+        drainer
     }
-}
-
-/// One producing thread's marks and (with `perf`) counter samples, read in
-/// lockstep so `Builder::fold_thread` can pair them by index.
-struct ThreadRings {
-    marks: RingStream<Mark>,
-    #[cfg(feature = "perf")]
-    perf: RingStream<PerfSample>,
-}
-
-impl ThreadRings {
-    fn open(dir: &QueueDir, token: &str) -> Option<Self> {
-        let marks = RingStream::open(&dir.path("events", token), EMPTY_MARK, fresh_label())?;
-        #[cfg(feature = "perf")]
-        let perf = RingStream::open(
-            &dir.path("perf-events", token),
-            PerfSample::default(),
-            fresh_label(),
-        )?;
-        Some(Self {
-            marks,
-            #[cfg(feature = "perf")]
-            perf,
-        })
-    }
-
-    fn poll(&mut self) {
-        self.marks.poll();
-        #[cfg(feature = "perf")]
-        self.perf.poll();
-    }
-
-    fn into_stream(self) -> ThreadStream {
-        #[cfg(feature = "perf")]
-        let lapped = self.marks.lapped || self.perf.lapped;
-        #[cfg(not(feature = "perf"))]
-        let lapped = self.marks.lapped;
-        ThreadStream {
-            marks: self.marks.out,
-            #[cfg(feature = "perf")]
-            perf: self.perf.out,
-            lapped,
-        }
-    }
-}
-
-/// A finished thread's accumulated marks (and counter samples) — plain data the
-/// reader hands back to be folded, leaving the live consumers behind.
-struct ThreadStream {
-    marks: Vec<Mark>,
-    #[cfg(feature = "perf")]
-    perf: Vec<PerfSample>,
-    lapped: bool,
-}
-
-fn fresh_label() -> &'static str {
-    static NEXT: AtomicUsize = AtomicUsize::new(0);
-    Box::leak(format!("flamegraph-stream-{}", NEXT.fetch_add(1, Ordering::Relaxed)).into())
 }
 
 #[cfg(test)]
@@ -201,30 +110,23 @@ mod tests {
     use std::thread;
 
     use super::*;
-    use crate::flamegraph_timer::{Event, record};
-
-    fn marks(timings: &[CallStackTiming], leaf: &str) -> u64 {
-        timings
-            .iter()
-            .filter(|t| t.call_stack.last().is_some_and(|n| n.ends_with(leaf)))
-            .map(|t| t.samples.tracked_ns.len() as u64)
-            .sum()
-    }
+    use crate::flamegraph_timer::{Frame, record};
 
     #[test]
     fn drain_discovers_every_thread_ring() {
         let _guard = crate::test_shmem::ShmemGuard::new();
-        enable();
+        let reader = LocalReader::start();
 
         let spawn = |tag: &'static str, reps: usize| {
             thread::Builder::new()
                 .name(format!("drainer-{tag}"))
                 .spawn(move || {
+                    let (outer, inner) = ("outer", "inner");
                     for _ in 0..reps {
-                        record(Event::Open("outer"));
-                        record(Event::Open("inner"));
-                        record(Event::Close);
-                        record(Event::Close);
+                        record(Frame::open(outer));
+                        record(Frame::open(inner));
+                        record(Frame::close(inner));
+                        record(Frame::close(outer));
                     }
                 })
                 .unwrap()
@@ -233,9 +135,49 @@ mod tests {
         spawn("a", 3).join().unwrap();
         spawn("b", 5).join().unwrap();
 
-        let (timings, lapped) = drain();
-        assert!(!lapped, "test rings are larger than the few marks produced");
-        assert_eq!(marks(&timings, "outer"), 8, "both threads' outer frames");
-        assert_eq!(marks(&timings, "inner"), 8, "both threads' inner frames");
+        let stats = reader.collect();
+        assert!(!stats.missed_events(), "test rings are larger than the few marks produced");
+        assert_eq!(stats.aggregate_leaf("outer").1, 8, "both threads' outer frames");
+        assert_eq!(stats.aggregate_leaf("inner").1, 8, "both threads' inner frames");
+    }
+
+    /// The overseer path: produce marks, then fold them through
+    /// [`FlamegraphReader`], which resolves names from the producer's on-disk
+    /// binary (here our own process) rather than by dereferencing the id.
+    #[test]
+    fn flamegraph_reader_resolves_names_cross_process() {
+        let _guard = crate::test_shmem::ShmemGuard::new();
+        enable_overseer();
+
+        thread::Builder::new()
+            .name("overseer-producer".to_owned())
+            .spawn(|| {
+                let (alpha, beta) = ("alpha", "beta");
+                for _ in 0..4 {
+                    record(Frame::open(alpha));
+                    record(Frame::open(beta));
+                    record(Frame::close(beta));
+                    record(Frame::close(alpha));
+                }
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+
+        let mut reader = FlamegraphReader::attach(crate::TIMING.app()).expect("pid published");
+        reader.poll();
+        let stats = reader.stats();
+
+        assert!(!stats.missed_events());
+        assert_eq!(stats.aggregate_leaf("alpha").1, 4, "name resolved from on-disk binary");
+        assert_eq!(stats.aggregate_leaf("beta").1, 4);
+
+        // The producer is gone; re-polling the now-static ring must not invent
+        // marks, so the cumulative fold stays put (no perpetual churn at idle).
+        reader.poll();
+        reader.poll();
+        let again = reader.stats();
+        assert_eq!(again.aggregate_leaf("alpha").1, 4, "re-poll of a static ring changed the fold");
+        assert_eq!(again.aggregate_leaf("beta").1, 4);
     }
 }

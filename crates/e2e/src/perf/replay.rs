@@ -4,7 +4,7 @@
 use std::time::{Duration, Instant};
 
 use silver_common::{
-    flamegraph_timer::{enable, report::TimingStats},
+    flamegraph_timer::{LocalReader, report::TimingStats},
     ssz_view::StatusView,
 };
 
@@ -34,9 +34,9 @@ pub fn replay(fixtures: &Fixtures) -> ReplayOutcome {
 
     let da_events: Vec<_> = blocks.iter().filter_map(|b| data_columns_available(b)).collect();
 
-    // Enable before harness construction — `new_heap` already runs `#[timed]` STF
+    // Start before harness construction — `new_heap` already runs `#[timed]` STF
     // code.
-    enable();
+    let recorder = LocalReader::start();
 
     let mut harness = PmBsHarness::new(&fixtures.state_ssz, n_blocks, blocks.len());
     let anchor_finalized_epoch = harness.fork_choice_finalized_epoch();
@@ -102,7 +102,7 @@ pub fn replay(fixtures: &Fixtures) -> ReplayOutcome {
     );
 
     ReplayOutcome {
-        stats: TimingStats::collect(),
+        stats: recorder.collect(),
         validator_count: harness.head_validator_count(),
         wall_elapsed,
         final_slot,

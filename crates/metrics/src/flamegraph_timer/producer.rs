@@ -3,7 +3,7 @@ use std::sync::OnceLock;
 use flux::{communication::queue::Producer, timing::Instant};
 
 use crate::flamegraph_timer::{
-    builder::{Event, Mark},
+    mark::{Frame, Mark},
     queue_dir::QueueDir,
 };
 #[cfg(feature = "perf")]
@@ -26,18 +26,18 @@ impl Producers {
         let dir = QueueDir::open();
         let token = thread_token();
         Producers {
-            marks: Producer::from(dir.ring::<Mark>("events", &token)),
+            marks: Producer::from(dir.ring::<Mark>(&token)),
             #[cfg(feature = "perf")]
-            perf: Producer::from(dir.ring::<PerfSample>("perf-events", &token)),
+            perf: Producer::from(dir.ring::<PerfSample>(&token)),
         }
     }
 
-    fn push(&self, event: Event) {
+    fn push(&self, frame: Frame) {
         // `Producer` is `Copy`; the thread-local stores it behind a shared `&`,
         // so produce through a local copy of the cheap handle.
         let ts = Instant::now().0;
         let mut marks = self.marks;
-        marks.produce(&Mark { name: event, ts });
+        marks.produce(&Mark { frame, ts });
         #[cfg(feature = "perf")]
         {
             let mut perf = self.perf;
@@ -55,9 +55,6 @@ fn thread_token() -> String {
 }
 
 #[inline]
-pub(crate) fn record(event: Event) {
-    if !crate::TIMING.is_harness() {
-        return;
-    }
-    PRODUCERS.with(|cell| cell.get_or_init(Producers::for_current_thread).push(event));
+pub(crate) fn record(frame: Frame) {
+    PRODUCERS.with(|cell| cell.get_or_init(Producers::for_current_thread).push(frame));
 }

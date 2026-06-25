@@ -1,5 +1,5 @@
 //! Terminal metrics viewer for silver. Reads `counters-*`,
-//! `timing-*`, `tilemetrics-*`, `perf-*` files from flux's shmem
+//! `latency-*`, `tilemetrics-*`, `perf-*` files from flux's shmem
 //! queues directory — `{base_dir}/{app_name}/shmem/queues/` — and
 //! renders them in a ratatui-based TUI.
 //!
@@ -23,12 +23,14 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 
 mod app;
 mod discovery;
+mod flamegraph;
 mod render;
 mod schema;
 mod sources;
 
 use crate::{
     app::App,
+    flamegraph::Flamegraph,
     sources::{
         counters::CounterSet, perf::PerfSet, tilemetrics::TileMetricsSet, timings::TimingSet,
     },
@@ -121,7 +123,9 @@ fn main() -> io::Result<()> {
     for p in &mut perf_sets {
         p.drain();
     }
-    let mut app = App::new(counter_sets, tcache_sets, timing_sets, tile_sets, perf_sets);
+    let flamegraph = Flamegraph::attach(&app_name);
+    let mut app =
+        App::new(counter_sets, tcache_sets, timing_sets, tile_sets, perf_sets, flamegraph);
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -154,7 +158,7 @@ fn run<B: ratatui::backend::Backend>(
         if event::poll(timeout)? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
-                    handle_key(app, key.code);
+                    handle_key(app, key.code, app_name);
                 }
             }
         }
@@ -170,6 +174,7 @@ fn run<B: ratatui::backend::Backend>(
             if let Ok(s) = discovery::discover(base_dir, app_name) {
                 app.merge_new_sources(s);
             }
+            app.flamegraph.reattach_if_restarted(app_name);
             last_discover = Instant::now();
         }
         if app.quit {
@@ -178,7 +183,7 @@ fn run<B: ratatui::backend::Backend>(
     }
 }
 
-fn handle_key(app: &mut App, code: KeyCode) {
+fn handle_key(app: &mut App, code: KeyCode, app_name: &str) {
     match code {
         KeyCode::Char('q') => app.quit = true,
         KeyCode::Esc | KeyCode::Backspace if app.drilled_in => app.drilled_in = false,
@@ -191,6 +196,8 @@ fn handle_key(app: &mut App, code: KeyCode) {
         KeyCode::Up => app.move_selection(-1),
         KeyCode::Char('[') => app.adjust_split(-1),
         KeyCode::Char(']') => app.adjust_split(1),
+        KeyCode::Char('p') => app.flamegraph.toggle_pause(),
+        KeyCode::Char('c') => app.flamegraph.clear(app_name),
         _ => {}
     }
 }

@@ -4,6 +4,7 @@ use ratatui::widgets::TableState;
 
 use crate::{
     discovery::DiscoveredSources,
+    flamegraph::Flamegraph,
     sources::{
         counters::CounterSet, perf::PerfSet, tilemetrics::TileMetricsSet, timings::TimingSet,
     },
@@ -16,7 +17,11 @@ pub enum Pane {
     Timings,
     Tiles,
     Perf,
+    Flamegraph,
 }
+
+pub const PANES: [Pane; 6] =
+    [Pane::Counters, Pane::TCaches, Pane::Timings, Pane::Tiles, Pane::Perf, Pane::Flamegraph];
 
 impl Pane {
     pub fn label(self) -> &'static str {
@@ -26,6 +31,7 @@ impl Pane {
             Pane::Timings => "Timings",
             Pane::Tiles => "Tiles",
             Pane::Perf => "Perf",
+            Pane::Flamegraph => "Flamegraph",
         }
     }
 
@@ -35,7 +41,8 @@ impl Pane {
             Pane::TCaches => Pane::Timings,
             Pane::Timings => Pane::Tiles,
             Pane::Tiles => Pane::Perf,
-            Pane::Perf => Pane::Counters,
+            Pane::Perf => Pane::Flamegraph,
+            Pane::Flamegraph => Pane::Counters,
         }
     }
 }
@@ -71,6 +78,7 @@ pub struct App {
     pub timings_table_state: TableState,
     pub tiles_table_state: TableState,
     pub perf_table_state: TableState,
+    pub flamegraph: Flamegraph,
     pub quit: bool,
 }
 
@@ -86,6 +94,7 @@ impl App {
         timings: Vec<TimingSet>,
         tilemetrics: Vec<TileMetricsSet>,
         perf: Vec<PerfSet>,
+        flamegraph: Flamegraph,
     ) -> Self {
         Self {
             pane: Pane::Counters,
@@ -106,6 +115,7 @@ impl App {
             timings_table_state: TableState::default(),
             tiles_table_state: TableState::default(),
             perf_table_state: TableState::default(),
+            flamegraph,
             quit: false,
         }
     }
@@ -240,6 +250,7 @@ impl App {
         for p in &mut self.perf {
             p.drain();
         }
+        self.flamegraph.sample();
     }
 
     pub fn roll_bucket(&mut self) {
@@ -261,6 +272,7 @@ impl App {
         for p in &mut self.perf {
             p.roll_bucket();
         }
+        self.flamegraph.roll_bucket();
     }
 
     /// Scroll the selection within the active pane. `dir = +1`
@@ -273,6 +285,7 @@ impl App {
             Pane::Timings => self.move_timing_selection(dir),
             Pane::Tiles => self.move_tile_selection(dir),
             Pane::Perf => self.move_perf_selection(dir),
+            Pane::Flamegraph => self.flamegraph.scroll_by(dir),
         }
     }
 

@@ -8,62 +8,111 @@ use flux::{
     utils::directories::{local_share_dir, shmem_dir_queues_with_base},
 };
 
-/// Per-thread ring capacity. A background reader continuously drains each ring
-/// into a heap `Vec`, so the ring only has to absorb the marks produced between
-/// reader polls, not the whole run — hence a small `1 << 14`. Each slot is a
-/// 64-aligned `Seqlock<T>` (timer ring 1 MiB, perf ring 2 MiB per thread).
+use crate::flamegraph_timer::mark::{Frame, Mark};
+#[cfg(feature = "perf")]
+use crate::perf::{MAX_EVENTS, PerfSample};
+
+/// Each ring element type carries its own ring name and empty value, so the
+/// two can't be mismatched at a call site.
+pub(super) trait RingEntry: Copy {
+    const PREFIX: &'static str;
+    const EMPTY: Self;
+}
+
+impl RingEntry for Mark {
+    const PREFIX: &'static str = "events";
+    const EMPTY: Self = Mark { frame: Frame::Close { id: 0 }, ts: 0 };
+}
+
+#[cfg(feature = "perf")]
+impl RingEntry for PerfSample {
+    const PREFIX: &'static str = "perf-events";
+    const EMPTY: Self = PerfSample { vals: [0; MAX_EVENTS] };
+}
+
+/// A background reader drains each ring continuously, so a ring only buffers
+/// the marks produced between polls, not the whole run — hence small.
 const RING_CAPACITY: usize = 1 << 14;
 
-/// The shmem directory holding this run's per-thread timing rings, named
-/// `events-<token>` (and `perf-events-<token>` with the `perf` feature).
-/// Producers and the background reader meet here.
+/// The shmem dir holding this run's per-thread timing rings.
 pub(super) struct QueueDir(PathBuf);
 
 impl QueueDir {
     pub(super) fn open() -> Self {
-        let dir = shmem_dir_queues_with_base(local_share_dir(), crate::TIMING.app());
+        Self::open_app(crate::TIMING.app())
+    }
+
+    pub(super) fn open_app(app: &str) -> Self {
+        let dir = shmem_dir_queues_with_base(local_share_dir(), app);
         let _ = std::fs::create_dir_all(&dir);
         Self(dir)
     }
 
-    pub(super) fn path(&self, prefix: &str, token: &str) -> PathBuf {
-        self.0.join(format!("{prefix}-{token}"))
+    /// Publish our pid so an overseer can attach to this run.
+    pub(super) fn write_pid(&self) {
+        let _ = std::fs::write(self.0.join("pid"), std::process::id().to_string());
     }
 
-    /// Unlink rings left by a prior run before producers create theirs, so the
-    /// reader only sees this run's threads — a stale `events-<token>` whose
-    /// thread is now absent would otherwise be folded as bogus data.
+    /// The published pid, but only if its process is still alive: the pid file
+    /// and stale `events-*` rings outlive a dead run, so a consumer must not
+    /// fold them as live data.
+    pub(super) fn live_pid(&self) -> Option<u32> {
+        let pid: u32 = std::fs::read_to_string(self.0.join("pid")).ok()?.trim().parse().ok()?;
+        // `/proc/<pid>` exists only while the process is alive.
+        std::path::Path::new(&format!("/proc/{pid}")).exists().then_some(pid)
+    }
+
+    pub(super) fn path<T: RingEntry>(&self, token: &str) -> PathBuf {
+        self.0.join(format!("{}-{token}", T::PREFIX))
+    }
+
+    fn entries(&self) -> impl Iterator<Item = std::fs::DirEntry> {
+        std::fs::read_dir(&self.0).into_iter().flatten().flatten()
+    }
+
+    /// Unlink a prior run's rings before producers create theirs, so the reader
+    /// doesn't fold a vanished thread's stale ring as live data.
     pub(super) fn clear_stale(&self) {
-        let Ok(entries) = std::fs::read_dir(&self.0) else { return };
-        for entry in entries.flatten() {
+        for entry in self.entries() {
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            if name.starts_with("events-") || name.starts_with("perf-events-") {
+            let is_ring = name.starts_with(Mark::PREFIX);
+            #[cfg(feature = "perf")]
+            let is_ring = is_ring || name.starts_with(PerfSample::PREFIX);
+            if is_ring {
                 let _ = cleanup_flink(&entry.path());
             }
         }
     }
 
-    pub(super) fn ring<T: Copy>(&self, prefix: &str, token: &str) -> Queue<T> {
-        let path = self.path(prefix, token);
-        // Stable name, fresh ring: unlink any pre-existing backing so a stale
-        // file (crashed run) or a foreign producer (concurrent `silver`-app
-        // process: a restart overlap, the unit tests alongside `perf-local`,
-        // nextest's per-test processes) is never reused. Two producers on one
-        // ring desync the marks/perf streams and corrupt headers.
+    pub(super) fn ring<T: RingEntry>(&self, token: &str) -> Queue<T> {
+        let path = self.path::<T>(token);
+        // Discard any leftover backing under this stable name first: a crashed
+        // run's ring or another `silver` process must never be shared, or two
+        // producers would write the same ring and corrupt each other.
         let _ = cleanup_flink(&path);
         Queue::create_or_open_shared(path, RING_CAPACITY, QueueType::SPMC)
     }
 
-    /// The `<token>` of every `events-<token>` ring currently in the dir.
-    /// `perf-events-*` is excluded (it doesn't start with `events-`).
-    pub(super) fn event_tokens(&self) -> Vec<String> {
-        let Ok(entries) = std::fs::read_dir(&self.0) else { return Vec::new() };
-        entries
-            .flatten()
+    /// The `<token>` of every marks ring in the dir; perf rings are excluded.
+    pub(super) fn event_threads(&self) -> Vec<String> {
+        self.entries()
             .filter_map(|e| {
-                e.file_name().to_string_lossy().strip_prefix("events-").map(str::to_owned)
+                e.file_name()
+                    .to_string_lossy()
+                    .strip_prefix(Mark::PREFIX)
+                    .and_then(|rest| rest.strip_prefix('-'))
+                    .map(str::to_owned)
             })
             .collect()
     }
+}
+
+/// Enable `#[timed]` production and publish this run so an overseer can attach.
+/// Call once at startup.
+pub fn enable_overseer() {
+    crate::TIMING.set_enabled();
+    let dir = QueueDir::open();
+    dir.clear_stale();
+    dir.write_pid();
 }

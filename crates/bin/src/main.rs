@@ -31,9 +31,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let _tracing = initialise_tracing_log("silver", 10, None, false);
     tracing::debug!("start");
 
-    // Stream `#[timed]` per-function timings to surfer; `#[timed]` is inert
-    // (no shmem) until a process opts into a mode.
-    silver_common::metrics::enable_live();
+    // `#[timed]` is inert until a process opts in.
+    silver_common::flamegraph_timer::enable_overseer();
 
     let config = load_config()?;
 

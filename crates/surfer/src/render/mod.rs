@@ -1,4 +1,5 @@
 pub mod counters_pane;
+pub mod flamegraph_pane;
 pub mod fmt;
 pub mod perf_pane;
 pub mod tcaches_pane;
@@ -13,7 +14,7 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use crate::app::{App, Pane};
+use crate::app::{App, PANES, Pane};
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
@@ -28,12 +29,13 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Pane::Timings => timings_pane::draw(f, chunks[1], app),
         Pane::Tiles => tiles_pane::draw(f, chunks[1], app),
         Pane::Perf => perf_pane::draw(f, chunks[1], app),
+        Pane::Flamegraph => flamegraph_pane::draw(f, chunks[1], app),
     }
     draw_footer(f, chunks[2], app);
 }
 
 fn draw_header(f: &mut Frame, area: Rect, app: &App) {
-    let spans: Vec<Span> = [Pane::Counters, Pane::TCaches, Pane::Timings, Pane::Tiles, Pane::Perf]
+    let spans: Vec<Span> = PANES
         .iter()
         .flat_map(|&p| {
             let style = if p == app.pane {

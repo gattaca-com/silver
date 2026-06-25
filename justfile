@@ -43,6 +43,13 @@ nextest:
 perf-local events="instructions,cycles,l1d-misses,l2-misses,l3-misses":
   SILVER_PERF_EVENTS="{{events}}" cargo test --release -p silver_e2e --features perf-counters --test sync_pm_bs_perf -- --ignored --nocapture
 
+# Run surfer (the metrics overseer) with `#[timed]` perf counters folded into
+# the flamegraph. `events` MUST match the watched silver's `SILVER_PERF_EVENTS`
+# — surfer labels the producer's counter slots positionally, so a mismatch
+# mislabels the columns. Extra args pass through as `[BASE_DIR] [APP_NAME]`.
+surfer events="instructions,cycles,l1d-misses,l2-misses,l3-misses" *args='':
+  SILVER_PERF_EVENTS="{{events}}" cargo run --release -p silver_surfer --features perf -- {{args}}
+
 # Refresh crates/e2e/data/perf from mainnet (~13 min for the default 128
 # blocks at lodestar's ~1 req / 6 s cap). Commit the result via git-lfs.
 # Pass `--continue` (and/or `--blocks N`) to resume after a network blip.

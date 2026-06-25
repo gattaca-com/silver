@@ -29,7 +29,7 @@ pub use perf::{EventSpec, MAX_EVENTS, PerfSample, schema, slot};
 pub(crate) use timing::TIMING;
 #[cfg(test)]
 pub(crate) use timing::test_shmem;
-pub use timing::{TimerGuard, enable_live, init_app};
+pub use timing::{TimerGuard, init_app};
 
 /// Open / create the counters file, ftruncate to `bytes`, mmap shared,
 /// and return the base pointer. Counter files land in flux's standard
