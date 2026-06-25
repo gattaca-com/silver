@@ -49,7 +49,7 @@ pub fn upgrade_to_gloas(view: &mut StateWriterView, epoch: &mut EpochWriteView) 
     }
 
     let window = build_ptc_window(view, &epoch.reader());
-    epoch.state_mut().ptc_window = window;
+    epoch.set_ptc_window(window);
 
     onboard_builders_from_pending_deposits(view);
 }

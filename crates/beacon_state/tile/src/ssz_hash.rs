@@ -145,7 +145,6 @@ fn hash_tree_root_state_gloas(rv: &StateReadView, scratch: &mut StateHashScratch
     // [Modified in Gloas] `latest_block_hash` (Hash32) replaces the header.
     let common = hash_common_fields(rv, scratch, rv.slot.state().latest_block_hash);
     let slot = rv.slot.state();
-    let es = rv.epoch.state();
 
     let mut fields = [[0u8; 32]; 46];
     fields[..38].copy_from_slice(&common);
@@ -173,7 +172,7 @@ fn hash_tree_root_state_gloas(rv: &StateReadView, scratch: &mut StateHashScratch
             hash_withdrawal,
         ),
         // `ptc_window`: each committee is a `Vector[ValidatorIndex, PTC_SIZE]`.
-        hash_vector(es.ptc_window.iter(), PTC_WINDOW_LEN, |c| hash_uint64_vector(c)),
+        hash_vector(rv.epoch.ptc_window().iter(), PTC_WINDOW_LEN, |c| hash_uint64_vector(c)),
     ]);
 
     merkleize(&fields)

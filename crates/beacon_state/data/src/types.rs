@@ -4,8 +4,7 @@ use crate::{
     decompose::common::{b256, u32_le, u64_le},
     gloas::{
         BUILDER_PENDING_PAYMENTS_LEN, BuilderPendingPayment, BuilderPendingWithdrawal,
-        EXECUTION_PAYLOAD_AVAILABILITY_BYTES, ExecutionPayloadBid, GLOAS_FORK_VERSION,
-        PTC_WINDOW_LEN, PtcCommittee, Withdrawal, zeroed_ptc_window,
+        EXECUTION_PAYLOAD_AVAILABILITY_BYTES, ExecutionPayloadBid, GLOAS_FORK_VERSION, Withdrawal,
     },
 };
 
@@ -143,7 +142,7 @@ impl Default for SlotState {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub struct EpochState {
     pub proposer_lookahead: [u64; PROPOSER_LOOKAHEAD_SIZE],
     pub justification_bits: u8,
@@ -151,8 +150,6 @@ pub struct EpochState {
     pub current_justified_checkpoint: Checkpoint,
     pub finalized_checkpoint: Checkpoint,
     pub deposit_balance_to_consume: u64,
-    /// [New in Gloas]
-    pub ptc_window: Box<[PtcCommittee; PTC_WINDOW_LEN]>,
 }
 
 impl Default for EpochState {
@@ -164,7 +161,6 @@ impl Default for EpochState {
             current_justified_checkpoint: Default::default(),
             finalized_checkpoint: Default::default(),
             deposit_balance_to_consume: Default::default(),
-            ptc_window: zeroed_ptc_window(),
         }
     }
 }

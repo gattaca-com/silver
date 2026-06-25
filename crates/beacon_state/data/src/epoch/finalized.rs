@@ -7,7 +7,7 @@ use crate::{
         common::{F13, F14, F17, F18, F19, F20, F29, F37, read_checkpoint, u64_le},
         gloas::{G_DEPOSIT_BALANCE_TO_CONSUME, G_PROPOSER_LOOKAHEAD, G_PTC_WINDOW},
     },
-    gloas::PTC_SIZE,
+    gloas::{PTC_SIZE, PTC_WINDOW_LEN, PtcCommittee, zeroed_ptc_window},
     types::{
         B256, EPOCHS_PER_HISTORICAL_VECTOR, EPOCHS_PER_SLASHINGS_VECTOR, EpochState,
         PROPOSER_LOOKAHEAD_SIZE,
@@ -23,6 +23,9 @@ pub struct EpochStateFinalized {
     // last EPOCHS_PER_SLASHINGS_VECTOR (circular buffer indexed by `epoch % SV`)
     pub(crate) slashings: Box<[u64]>,
     pub(crate) state: EpochState,
+    /// [New in Gloas] Sibling of `state` (not a field of it) to keep
+    /// `EpochState` a small `Copy` scalar type. Zeroed (unused) pre-Gloas.
+    pub(crate) ptc_window: Box<[PtcCommittee; PTC_WINDOW_LEN]>,
 }
 
 impl Default for EpochStateFinalized {
@@ -31,6 +34,7 @@ impl Default for EpochStateFinalized {
             randao_mixes: vec![[0u8; 32]; EPOCHS_PER_HISTORICAL_VECTOR].into_boxed_slice(),
             slashings: vec![0; EPOCHS_PER_SLASHINGS_VECTOR].into_boxed_slice(),
             state: Default::default(),
+            ptc_window: zeroed_ptc_window(),
         }
     }
 }
@@ -45,17 +49,18 @@ impl EpochStateFinalized {
     pub fn from_parts(state: EpochState, randao_mixes: Box<[B256]>, slashings: Box<[u64]>) -> Self {
         debug_assert_eq!(randao_mixes.len(), EPOCHS_PER_HISTORICAL_VECTOR);
         debug_assert_eq!(slashings.len(), EPOCHS_PER_SLASHINGS_VECTOR);
-        Self { randao_mixes, slashings, state }
+        Self { randao_mixes, slashings, state, ptc_window: zeroed_ptc_window() }
     }
 
     /// Fold a fork's delta into the base: write its per-completed-epoch
     /// `randao_mixes`/`slashings` log into the circular buffers at the epochs
     /// they cover (`(old_fin_epoch + i) % cap`), then adopt its scalar
-    /// [`EpochState`]. The data half of finalization.
+    /// [`EpochState`] and `ptc_window`. The data half of finalization.
     pub(super) fn promote(&mut self, delta: &EpochStateDelta, old_fin_epoch: usize) {
         write_ring_window(&mut self.randao_mixes, old_fin_epoch, &delta.randao_mixes);
         write_ring_window(&mut self.slashings, old_fin_epoch, &delta.slashings);
-        self.state = delta.state.clone();
+        self.state = delta.state;
+        self.ptc_window.clone_from(&delta.ptc_window);
     }
 
     #[timed]
@@ -112,12 +117,16 @@ impl EpochStateFinalized {
         est.current_justified_checkpoint = read_checkpoint(ssz, F19);
         est.finalized_checkpoint = read_checkpoint(ssz, F20);
         est.deposit_balance_to_consume = u64_le(ssz, G_DEPOSIT_BALANCE_TO_CONSUME);
-        for (c, committee) in est.ptc_window.iter_mut().enumerate() {
+
+        let mut ptc_window = zeroed_ptc_window();
+        for (c, committee) in ptc_window.iter_mut().enumerate() {
             for (j, v) in committee.iter_mut().enumerate() {
                 *v = u64_le(ssz, G_PTC_WINDOW + (c * PTC_SIZE + j) * 8);
             }
         }
 
-        Self::from_parts(est, randao_mixes, slashings)
+        let mut fin = Self::from_parts(est, randao_mixes, slashings);
+        fin.ptc_window = ptc_window;
+        fin
     }
 }
