@@ -48,7 +48,7 @@ pub fn fmt_span_ago(n: usize) -> String {
     }
 }
 
-fn fmt_signed(v: i64) -> String {
+pub fn fmt_signed(v: i64) -> String {
     let mag = v.unsigned_abs();
     let suffix = if mag >= 1_000_000_000 {
         format!("{:.2}G", mag as f64 / 1e9)

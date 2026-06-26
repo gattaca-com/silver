@@ -114,11 +114,17 @@ impl App {
     pub fn counters_flat_idx(&self) -> usize {
         let (sel_set, sel_slot) = self.counters_selection;
         let mut idx = 0;
+        let mut prev_group: Option<&str> = None;
         for (i, set) in self.counters.iter().enumerate() {
-            if i == sel_set {
-                return idx + 1 + sel_slot;
+            let group = crate::schema::group_of(&set.name).0;
+            if prev_group != Some(group) {
+                idx += 1; // group header row
+                prev_group = Some(group);
             }
-            idx += 1 + set.slot_count();
+            if i == sel_set {
+                return idx + sel_slot;
+            }
+            idx += set.slot_count();
         }
         idx
     }
@@ -146,7 +152,7 @@ impl App {
                 }
             }
         }
-        self.counters.sort_by(|a, b| a.name.cmp(&b.name));
+        self.counters.sort_by(|a, b| crate::schema::group_cmp(&a.name, &b.name));
         if let Some(n) = sel_name {
             if let Some(idx) = self.counters.iter().position(|c| c.name == n) {
                 self.counters_selection.0 = idx;

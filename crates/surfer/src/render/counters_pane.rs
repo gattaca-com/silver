@@ -9,7 +9,7 @@ use ratatui::{
 
 use crate::{
     app::App,
-    render::fmt::{delta_span, fmt_span_ago, fmt_u64},
+    render::fmt::{delta_span, fmt_signed, fmt_span_ago, fmt_u64},
 };
 
 pub fn draw(f: &mut Frame, area: Rect, app: &mut App) {
@@ -55,26 +55,32 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
 
     let (sel_set, sel_slot) = app.counters_selection;
     let mut rows: Vec<Row> = Vec::new();
+    let mut prev_group: Option<&str> = None;
 
     for (set_idx, set) in app.counters.iter().enumerate() {
-        let mut header_spans = vec![Span::styled(
-            format!("[{}]", set.name),
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-        )];
-        if !set.schema_registered {
-            header_spans.push(Span::raw("  "));
-            header_spans
-                .push(Span::styled("(no schema registered)", Style::default().fg(Color::Red)));
+        let (group, thread) = crate::schema::group_of(&set.name);
+        // One section header per group: thread counters of the same group share it.
+        if prev_group != Some(group) {
+            let mut header_spans = vec![Span::styled(
+                format!("[{group}]"),
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            )];
+            if !set.schema_registered {
+                header_spans.push(Span::raw("  "));
+                header_spans
+                    .push(Span::styled("(no schema registered)", Style::default().fg(Color::Red)));
+            }
+            rows.push(
+                Row::new(vec![
+                    Cell::from(Line::from(header_spans)),
+                    Cell::from(""),
+                    Cell::from(""),
+                    Cell::from(""),
+                ])
+                .height(1),
+            );
+            prev_group = Some(group);
         }
-        rows.push(
-            Row::new(vec![
-                Cell::from(Line::from(header_spans)),
-                Cell::from(""),
-                Cell::from(""),
-                Cell::from(""),
-            ])
-            .height(1),
-        );
 
         for (slot_idx, slot_name) in set.slot_names.iter().enumerate() {
             let cur = *set.current.get(slot_idx).unwrap_or(&0);
@@ -90,10 +96,16 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
             } else {
                 Style::default()
             };
+            let label = if thread.is_empty() {
+                format!("  {slot_name}")
+            } else {
+                format!("  {thread} / {slot_name}")
+            };
+            let value_str = if set.signed { fmt_signed(cur as i64) } else { fmt_u64(cur) };
             rows.push(
                 Row::new(vec![
-                    Cell::from(format!("  {slot_name}")),
-                    Cell::from(Span::raw(format!("{:>10}", fmt_u64(cur)))),
+                    Cell::from(label),
+                    Cell::from(Span::raw(format!("{value_str:>10}"))),
                     Cell::from(Line::from(vec![delta_span(tick_delta, 10)])),
                     Cell::from(Line::from(vec![delta_span(bucket_delta, 10)])),
                 ])
@@ -122,7 +134,7 @@ fn draw_chart(f: &mut Frame, area: Rect, app: &mut App) {
         return;
     };
     let label = set.slot_names.get(slot_idx).map(String::as_str).unwrap_or("?");
-    let Some(hist) = set.history.get(slot_idx) else {
+    let Some(hist) = set.value_history.get(slot_idx) else {
         f.render_widget(Block::default().borders(Borders::ALL).title(" history "), area);
         return;
     };
@@ -140,14 +152,24 @@ fn draw_chart(f: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
 
-    let data: Vec<(f64, f64)> =
-        hist.iter().enumerate().map(|(i, &v)| (i as f64, v as f64)).collect();
-    let y_max = data.iter().map(|(_, y)| *y).fold(0.0f64, f64::max).max(1.0);
+    let signed = set.signed;
+    let data: Vec<(f64, f64)> = hist
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| (i as f64, if signed { v as i64 as f64 } else { v as f64 }))
+        .collect();
+    // Value plot: auto-range to the data's span (padded) rather than anchoring
+    // at 0, so the trajectory is visible regardless of magnitude.
+    let data_lo = data.iter().map(|(_, y)| *y).fold(f64::INFINITY, f64::min);
+    let data_hi = data.iter().map(|(_, y)| *y).fold(f64::NEG_INFINITY, f64::max);
+    let pad = ((data_hi - data_lo) * 0.05).max(1.0);
+    let y_min = data_lo - pad;
+    let y_max = data_hi + pad;
     let x_max = n.saturating_sub(1).max(1) as f64;
 
     let datasets = vec![
         Dataset::default()
-            .name(format!("Δ {secs}s"))
+            .name("value")
             .marker(symbols::Marker::Braille)
             .style(Style::default().fg(Color::Cyan))
             .graph_type(GraphType::Line)
@@ -159,10 +181,13 @@ fn draw_chart(f: &mut Frame, area: Rect, app: &mut App) {
         Line::from(format!("-{}", fmt_span_ago(n / 2))),
         Line::from("now"),
     ];
+    let fmt_y = |v: f64| {
+        if signed { fmt_signed(v.round() as i64) } else { fmt_u64(v.round() as u64) }
+    };
     let y_labels = vec![
-        Line::from("0"),
-        Line::from(fmt_u64((y_max / 2.0).round() as u64)),
-        Line::from(fmt_u64(y_max.round() as u64)),
+        Line::from(fmt_y(y_min)),
+        Line::from(fmt_y((y_min + y_max) / 2.0)),
+        Line::from(fmt_y(y_max)),
     ];
 
     let chart = Chart::new(datasets)
@@ -175,7 +200,7 @@ fn draw_chart(f: &mut Frame, area: Rect, app: &mut App) {
         )
         .y_axis(
             Axis::default()
-                .bounds([0.0, y_max * 1.1])
+                .bounds([y_min, y_max])
                 .labels(y_labels)
                 .style(Style::default().fg(Color::DarkGray)),
         );

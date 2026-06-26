@@ -30,6 +30,34 @@ pub fn lookup(file_name: &str) -> Option<&'static [&'static str]> {
 const THREAD_COUNTERS: &[(&str, &[&str])] =
     &[("allocator", silver_common::allocator::AllocationCounters::NAMES)];
 
+/// Surfer grouping key for a `counters-{file_name}` file. Thread counters
+/// (`{thread}_{group}`) collapse into one `{group}` section with `thread` as a
+/// per-row prefix; process-wide counters are their own group. Returns
+/// `(group, thread)`, `thread` empty for process-wide counters.
+pub fn group_of(file_name: &str) -> (&str, &str) {
+    for &(group, _) in THREAD_COUNTERS {
+        if let Some(thread) = file_name.strip_suffix(group) &&
+            let Some(thread) = thread.strip_suffix('_')
+        {
+            return (group, thread);
+        }
+    }
+    (file_name, "")
+}
+
+/// Order files so same-group thread counters are contiguous: by
+/// `(group, thread, name)`.
+pub fn group_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    group_of(a).cmp(&group_of(b)).then_with(|| a.cmp(b))
+}
+
+/// Thread counters are `i64` gauges (`declare_thread_counters!`, e.g. the
+/// allocator's add/sub); process-wide `declare_counters!` are `u64`. Drives
+/// signed rendering in surfer.
+pub fn is_signed(file_name: &str) -> bool {
+    !group_of(file_name).1.is_empty()
+}
+
 /// `lookup` with a positional fallback. Returns `(names, registered)`
 /// — `registered = false` means surfer is displaying positional
 /// labels because no schema was wired up for this file.

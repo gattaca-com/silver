@@ -34,6 +34,10 @@ pub struct CounterSet {
     /// are positional fallbacks because no schema was wired up
     /// (`false`).
     pub schema_registered: bool,
+    /// `i64` gauge (thread counters) vs `u64` (process counters). The raw
+    /// slot is the same 8 bytes; `signed` selects how it's interpreted for
+    /// display and delta bucketing.
+    pub signed: bool,
     /// Companion read-only mmap into `tcache-names-{name}` when the
     /// CounterSet is a tcache. `n_consumers × 32` bytes of zero-padded
     /// UTF-8. `None` for non-tcache counters and for tcaches whose
@@ -51,6 +55,9 @@ pub struct CounterSet {
     bucket_start: Vec<u64>,
     /// Per-slot ring of completed-bucket deltas (newest at back).
     pub history: Vec<VecDeque<u64>>,
+    /// Per-slot ring of absolute values sampled at each bucket close
+    /// (newest at back). Drives the drill-in value chart.
+    pub value_history: Vec<VecDeque<u64>>,
     /// `false` until the first `sample()` call. The first sample
     /// primes `previous` and `bucket_start` so initial deltas start
     /// at 0 rather than a wraparound (matters for slots initialised
@@ -98,6 +105,7 @@ impl CounterSet {
             name: file.name.clone(),
             slot_names,
             schema_registered,
+            signed: crate::schema::is_signed(&file.name),
             consumer_names_base,
             consumer_names_bytes,
             base,
@@ -107,6 +115,9 @@ impl CounterSet {
             previous: vec![0; slot_count],
             bucket_start: vec![0; slot_count],
             history: (0..slot_count).map(|_| VecDeque::with_capacity(BUCKET_HISTORY_LEN)).collect(),
+            value_history: (0..slot_count)
+                .map(|_| VecDeque::with_capacity(BUCKET_HISTORY_LEN))
+                .collect(),
             primed: false,
         })
     }
@@ -168,7 +179,12 @@ impl CounterSet {
     /// from a previous run.
     pub fn roll_bucket(&mut self) {
         for i in 0..self.slot_count {
-            let delta = if self.current[i] == u64::MAX || self.bucket_start[i] == u64::MAX {
+            // Sentinel suppression is for unsigned TCache tails; a signed gauge
+            // legitimately sits at -1 (== u64::MAX bit pattern), so skip it there.
+            // wrapping_sub yields the correct two's-complement delta either way.
+            let delta = if !self.signed &&
+                (self.current[i] == u64::MAX || self.bucket_start[i] == u64::MAX)
+            {
                 0
             } else {
                 self.current[i].wrapping_sub(self.bucket_start[i])
@@ -178,6 +194,13 @@ impl CounterSet {
                 h.pop_front();
             }
             h.push_back(delta);
+
+            let v = &mut self.value_history[i];
+            if v.len() == BUCKET_HISTORY_LEN {
+                v.pop_front();
+            }
+            v.push_back(self.current[i]);
+
             self.bucket_start[i] = self.current[i];
         }
     }

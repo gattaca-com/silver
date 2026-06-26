@@ -332,20 +332,20 @@ mod count_impl {
         unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
             let ptr = unsafe { System.alloc(layout) };
             if !ptr.is_null() {
-                Self::count(|| AllocationCounters::Allocated.add(layout.size() as u64));
+                Self::count(|| AllocationCounters::Allocated.add(layout.size() as i64));
             }
             ptr
         }
 
         unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-            Self::count(|| AllocationCounters::Allocated.sub(layout.size() as u64));
+            Self::count(|| AllocationCounters::Allocated.sub(layout.size() as i64));
             unsafe { System.dealloc(ptr, layout) };
         }
 
         unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
             let ptr = unsafe { System.alloc_zeroed(layout) };
             if !ptr.is_null() {
-                Self::count(|| AllocationCounters::Allocated.add(layout.size() as u64));
+                Self::count(|| AllocationCounters::Allocated.add(layout.size() as i64));
             }
             ptr
         }
@@ -355,9 +355,9 @@ mod count_impl {
             if !ptr.is_null() {
                 Self::count(|| {
                     if new_size > layout.size() {
-                        AllocationCounters::Allocated.add((new_size - layout.size()) as u64);
+                        AllocationCounters::Allocated.add((new_size - layout.size()) as i64);
                     } else {
-                        AllocationCounters::Allocated.sub((layout.size() - new_size) as u64);
+                        AllocationCounters::Allocated.sub((layout.size() - new_size) as i64);
                     }
                 });
             }

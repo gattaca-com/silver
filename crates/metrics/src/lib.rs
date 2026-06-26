@@ -273,20 +273,21 @@ macro_rules! declare_thread_counters {
             pub const NAMES: &'static [&'static str] = &[ $( stringify!($variant), )+ ];
 
             const BYTES: usize =
-                Self::COUNT * ::core::mem::size_of::<::core::sync::atomic::AtomicU64>();
+                Self::COUNT * ::core::mem::size_of::<::core::sync::atomic::AtomicI64>();
 
             pub const DEFAULT_APP_NAME: &'static str = "silver";
 
             fn map_for_thread(
                 base_dir: &::std::path::Path,
                 app_name: &str,
-            ) -> ::std::io::Result<*mut ::core::sync::atomic::AtomicU64> {
+            ) -> ::std::io::Result<*mut ::core::sync::atomic::AtomicI64> {
                 let thread = ::std::thread::current();
                 let file_name = match thread.name() {
                     ::core::option::Option::Some(n) => ::std::format!("{n}_{}", $file),
                     ::core::option::Option::None => ::std::format!("{:?}_{}", thread.id(), $file),
                 };
                 $crate::mmap_counters_file(base_dir, app_name, &file_name, Self::BYTES)
+                    .map(|p| p.cast::<::core::sync::atomic::AtomicI64>())
             }
 
             /// This thread's base pointer, invoking `map` to map the file on
@@ -295,10 +296,10 @@ macro_rules! declare_thread_counters {
             /// warm path — keeping it allocation-free for use under a global
             /// allocator.
             fn base_with(
-                map: &dyn ::core::ops::Fn() -> ::std::io::Result<*mut ::core::sync::atomic::AtomicU64>,
-            ) -> ::std::io::Result<*mut ::core::sync::atomic::AtomicU64> {
+                map: &dyn ::core::ops::Fn() -> ::std::io::Result<*mut ::core::sync::atomic::AtomicI64>,
+            ) -> ::std::io::Result<*mut ::core::sync::atomic::AtomicI64> {
                 ::std::thread_local! {
-                    static BASE: ::core::cell::Cell<*mut ::core::sync::atomic::AtomicU64> =
+                    static BASE: ::core::cell::Cell<*mut ::core::sync::atomic::AtomicI64> =
                         const { ::core::cell::Cell::new(::core::ptr::null_mut()) };
                 }
                 BASE.with(|c| {
@@ -332,7 +333,7 @@ macro_rules! declare_thread_counters {
             }
 
             #[inline]
-            fn slot(self) -> &'static ::core::sync::atomic::AtomicU64 {
+            fn slot(self) -> &'static ::core::sync::atomic::AtomicI64 {
                 let p = Self::base_with(&|| {
                     Self::map_for_thread(
                         ::flux::utils::directories::local_share_dir().as_ref(),
@@ -351,29 +352,27 @@ macro_rules! declare_thread_counters {
             }
 
             #[inline]
-            pub fn add(self, n: u64) {
+            pub fn add(self, n: i64) {
                 self.slot().fetch_add(n, ::core::sync::atomic::Ordering::Relaxed);
             }
 
-            /// Wraps on underflow — use only on gauge-style counters.
             #[inline]
             pub fn dec(self) {
                 self.slot().fetch_sub(1, ::core::sync::atomic::Ordering::Relaxed);
             }
 
-            /// Wraps on underflow — use only on gauge-style counters.
             #[inline]
-            pub fn sub(self, n: u64) {
+            pub fn sub(self, n: i64) {
                 self.slot().fetch_sub(n, ::core::sync::atomic::Ordering::Relaxed);
             }
 
             #[inline]
-            pub fn get(self) -> u64 {
+            pub fn get(self) -> i64 {
                 self.slot().load(::core::sync::atomic::Ordering::Relaxed)
             }
 
             #[inline]
-            pub fn set(self, v: u64) {
+            pub fn set(self, v: i64) {
                 self.slot().store(v, ::core::sync::atomic::Ordering::Relaxed);
             }
         }
@@ -425,7 +424,7 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("silver_thread_test_{}", std::process::id()));
 
         // Each thread maps its own file; counts must not bleed across threads.
-        let run = |name: &str, hits: u64| {
+        let run = |name: &str, hits: i64| {
             let tmp = tmp.clone();
             let name = name.to_owned();
             std::thread::Builder::new()
@@ -436,7 +435,9 @@ mod tests {
                     TestThreadCounters::Misses.set(1);
                     TestThreadCounters::Hits.add(hits);
                     assert_eq!(TestThreadCounters::Hits.get(), hits);
-                    assert_eq!(TestThreadCounters::Misses.get(), 1);
+                    // i64 gauge: sub past zero goes negative (not wraparound).
+                    TestThreadCounters::Misses.sub(5);
+                    assert_eq!(TestThreadCounters::Misses.get(), -4);
                     name
                 })
                 .unwrap()
