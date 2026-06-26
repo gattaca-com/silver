@@ -66,7 +66,6 @@ pub fn discover(base_dir: &std::path::Path, app_name: &str) -> io::Result<Discov
         }
     }
 
-    let mut timings: Vec<TimingFile> = timing_map.into_values().collect();
     counters.sort_by(|a, b| crate::schema::group_cmp(&a.name, &b.name));
     tcaches.sort_by(|a, b| a.name.cmp(&b.name));
     timings.sort_by(|a, b| a.name.cmp(&b.name));
