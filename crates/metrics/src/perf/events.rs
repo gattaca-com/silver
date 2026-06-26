@@ -1,7 +1,7 @@
 //! Event vocabulary: turn a portable name into the perf_event_open
 //! `(type, config)` for the running CPU. **Edit [`METRICS`] to add a counter.**
 //!
-//! All of this runs once, at [`schema`] init — never on the hot path. Names
+//! All of this runs once, at [`Schema`] init — never on the hot path. Names
 //! resolve like `perf -e`: the curated table, then raw `rNNNN`, then a
 //! `/sys/bus/event_source/devices/cpu/events/<name>` event.
 
@@ -12,6 +12,7 @@ use super::sample::MAX_EVENTS;
 /// A resolved hardware event: the perf_event_open ABI numbers plus a label.
 /// `type_`/`config` are the same ids perf derives from an event name, so a
 /// postprocessor can relabel or merge across runs from them alone.
+#[derive(Clone)]
 pub struct EventSpec {
     pub type_: u32,
     pub config: u64,
@@ -174,30 +175,72 @@ fn resolve(name: &str) -> Option<EventSpec> {
     sysfs(name)
 }
 
-/// The slots read this run, resolved once from `SILVER_PERF_EVENTS` (or
-/// [`DEFAULT_EVENTS`]). Unknown names are skipped with a warning; the list is
-/// capped at [`MAX_EVENTS`].
-pub fn schema() -> &'static [EventSpec] {
-    static SCHEMA: OnceLock<Vec<EventSpec>> = OnceLock::new();
-    SCHEMA.get_or_init(|| {
-        let spec =
-            std::env::var("SILVER_PERF_EVENTS").unwrap_or_else(|_| DEFAULT_EVENTS.to_owned());
-        spec.split(',')
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .filter_map(|n| {
-                resolve(n).or_else(|| {
-                    eprintln!("perf: unknown event '{n}', skipping");
-                    None
+/// The perf event vocabulary a run measures: an ordered slot list that counter
+/// samples are positional in.
+#[derive(Clone)]
+pub struct Schema(Vec<EventSpec>);
+
+impl Schema {
+    /// Resolve a comma-separated spec: unknown names are skipped with a
+    /// warning, and the list is capped at [`MAX_EVENTS`].
+    pub fn parse(spec: &str) -> Self {
+        Self(
+            spec.split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .filter_map(|n| {
+                    resolve(n).or_else(|| {
+                        eprintln!("perf: unknown event '{n}', skipping");
+                        None
+                    })
                 })
-            })
-            .take(MAX_EVENTS)
-            .collect()
-    })
+                .take(MAX_EVENTS)
+                .collect(),
+        )
+    }
+
+    pub const fn empty() -> Self {
+        Self(Vec::new())
+    }
+
+    /// Slot index of the event labelled `label`.
+    pub fn slot(&self, label: &str) -> Option<usize> {
+        self.0.iter().position(|e| e.label == label)
+    }
+
+    /// Value of `label` in a positional sample's slots, or 0 if the run didn't
+    /// measure it.
+    pub fn value(&self, vals: &[u64], label: &str) -> u64 {
+        self.slot(label).map_or(0, |i| vals[i])
+    }
+
+    /// CPU cycles under either spelling perf uses for the event.
+    pub fn cycles(&self, vals: &[u64]) -> u64 {
+        self.value(vals, "cpu-cycles").max(self.value(vals, "cycles"))
+    }
+
+    /// Instructions per cycle, or 0 when cycles weren't measured.
+    pub fn ipc(&self, vals: &[u64]) -> f64 {
+        let cycles = self.cycles(vals);
+        if cycles == 0 { 0.0 } else { self.value(vals, "instructions") as f64 / cycles as f64 }
+    }
+
+    /// This process's own counter slots, resolved once from
+    /// `SILVER_PERF_EVENTS` (or [`DEFAULT_EVENTS`]) — the producer's
+    /// vocabulary.
+    pub fn local() -> &'static Schema {
+        static SCHEMA: OnceLock<Schema> = OnceLock::new();
+        SCHEMA.get_or_init(|| {
+            let spec =
+                std::env::var("SILVER_PERF_EVENTS").unwrap_or_else(|_| DEFAULT_EVENTS.to_owned());
+            Schema::parse(&spec)
+        })
+    }
 }
 
-/// Slot index of the event labelled `label`, for postprocessing that derives
-/// ratios (e.g. IPC from `instructions`/`cpu-cycles`).
-pub fn slot(label: &str) -> Option<usize> {
-    schema().iter().position(|e| e.label == label)
+impl std::ops::Deref for Schema {
+    type Target = [EventSpec];
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }

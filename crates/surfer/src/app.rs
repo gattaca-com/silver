@@ -4,9 +4,8 @@ use ratatui::widgets::TableState;
 
 use crate::{
     discovery::DiscoveredSources,
-    sources::{
-        counters::CounterSet, perf::PerfSet, tilemetrics::TileMetricsSet, timings::TimingSet,
-    },
+    flamegraph::Flamegraph,
+    sources::{counters::CounterSet, tilemetrics::TileMetricsSet, timings::TimingSet},
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -15,8 +14,11 @@ pub enum Pane {
     TCaches,
     Timings,
     Tiles,
-    Perf,
+    Flamegraph,
 }
+
+pub const PANES: [Pane; 5] =
+    [Pane::Counters, Pane::TCaches, Pane::Timings, Pane::Tiles, Pane::Flamegraph];
 
 impl Pane {
     pub fn label(self) -> &'static str {
@@ -25,7 +27,7 @@ impl Pane {
             Pane::TCaches => "TCaches",
             Pane::Timings => "Timings",
             Pane::Tiles => "Tiles",
-            Pane::Perf => "Perf",
+            Pane::Flamegraph => "Flamegraph",
         }
     }
 
@@ -34,8 +36,8 @@ impl Pane {
             Pane::Counters => Pane::TCaches,
             Pane::TCaches => Pane::Timings,
             Pane::Timings => Pane::Tiles,
-            Pane::Tiles => Pane::Perf,
-            Pane::Perf => Pane::Counters,
+            Pane::Tiles => Pane::Flamegraph,
+            Pane::Flamegraph => Pane::Counters,
         }
     }
 }
@@ -52,8 +54,6 @@ pub struct App {
     pub timings_selection: usize,
     pub tilemetrics: Vec<TileMetricsSet>,
     pub tiles_selection: usize,
-    pub perf: Vec<PerfSet>,
-    pub perf_selection: usize,
     /// When true, the active pane renders only the plot for the
     /// selected row, full-area. Toggled by Enter; Esc exits.
     pub drilled_in: bool,
@@ -70,7 +70,7 @@ pub struct App {
     pub tcaches_table_state: TableState,
     pub timings_table_state: TableState,
     pub tiles_table_state: TableState,
-    pub perf_table_state: TableState,
+    pub flamegraph: Flamegraph,
     pub quit: bool,
 }
 
@@ -85,7 +85,7 @@ impl App {
         tcaches: Vec<CounterSet>,
         timings: Vec<TimingSet>,
         tilemetrics: Vec<TileMetricsSet>,
-        perf: Vec<PerfSet>,
+        flamegraph: Flamegraph,
     ) -> Self {
         Self {
             pane: Pane::Counters,
@@ -97,15 +97,13 @@ impl App {
             timings_selection: 0,
             tilemetrics,
             tiles_selection: 0,
-            perf,
-            perf_selection: 0,
             drilled_in: false,
             split_pct: SPLIT_DEFAULT,
             counters_table_state: TableState::default(),
             tcaches_table_state: TableState::default(),
             timings_table_state: TableState::default(),
             tiles_table_state: TableState::default(),
-            perf_table_state: TableState::default(),
+            flamegraph,
             quit: false,
         }
     }
@@ -205,23 +203,6 @@ impl App {
                 self.tiles_selection = idx;
             }
         }
-
-        // Perf.
-        let sel_name = self.perf.get(self.perf_selection).map(|p| p.name.clone());
-        let existing: HashSet<String> = self.perf.iter().map(|p| p.name.clone()).collect();
-        for f in &sources.perf {
-            if !existing.contains(&f.name) {
-                if let Ok(p) = PerfSet::open(f) {
-                    self.perf.push(p);
-                }
-            }
-        }
-        self.perf.sort_by(|a, b| a.name.cmp(&b.name));
-        if let Some(n) = sel_name {
-            if let Some(idx) = self.perf.iter().position(|p| p.name == n) {
-                self.perf_selection = idx;
-            }
-        }
     }
 
     pub fn sample(&mut self) {
@@ -232,14 +213,12 @@ impl App {
             c.sample();
         }
         for t in &mut self.timings {
-            t.drain();
+            t.latency.drain();
         }
         for t in &mut self.tilemetrics {
             t.drain();
         }
-        for p in &mut self.perf {
-            p.drain();
-        }
+        self.flamegraph.sample();
     }
 
     pub fn roll_bucket(&mut self) {
@@ -253,14 +232,12 @@ impl App {
             c.roll_bucket();
         }
         for t in &mut self.timings {
-            t.roll_bucket();
+            t.latency.roll_bucket();
         }
         for t in &mut self.tilemetrics {
             t.roll_bucket();
         }
-        for p in &mut self.perf {
-            p.roll_bucket();
-        }
+        self.flamegraph.roll_bucket();
     }
 
     /// Scroll the selection within the active pane. `dir = +1`
@@ -272,17 +249,8 @@ impl App {
             Pane::TCaches => self.move_tcache_selection(dir),
             Pane::Timings => self.move_timing_selection(dir),
             Pane::Tiles => self.move_tile_selection(dir),
-            Pane::Perf => self.move_perf_selection(dir),
+            Pane::Flamegraph => self.flamegraph.scroll_by(dir),
         }
-    }
-
-    fn move_perf_selection(&mut self, dir: i32) {
-        if self.perf.is_empty() {
-            return;
-        }
-        let n = self.perf.len() as i32;
-        let new = (self.perf_selection as i32 + dir).rem_euclid(n);
-        self.perf_selection = new as usize;
     }
 
     fn move_tcache_selection(&mut self, dir: i32) {

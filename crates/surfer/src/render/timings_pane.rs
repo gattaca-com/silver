@@ -7,10 +7,7 @@ use ratatui::{
     widgets::{Axis, Block, Borders, Cell, Chart, Dataset, GraphType, Paragraph, Row, Table},
 };
 
-use crate::{
-    app::App,
-    sources::timings::{TimingChannel, TimingSet},
-};
+use crate::{app::App, sources::timings::TimingChannel};
 
 pub fn draw(f: &mut Frame, area: Rect, app: &mut App) {
     if app.timings.is_empty() {
@@ -45,7 +42,6 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
     let block = Block::default().borders(Borders::ALL).title(" timings ");
     let header = Row::new(vec![
         Cell::from("timer"),
-        Cell::from("kind"),
         Cell::from("last"),
         Cell::from("p50 (last bucket)"),
         Cell::from("p99 (last bucket)"),
@@ -59,10 +55,7 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
         .iter()
         .enumerate()
         .map(|(i, t)| {
-            let kind = kind_marker(t);
-            let primary = t.primary();
-            let last_bucket = primary.and_then(|c| c.last_bucket()).unwrap_or_default();
-            let last_ns = primary.map(|c| c.last_ns).unwrap_or(0);
+            let last_bucket = t.latency.last_bucket().unwrap_or_default();
             let style = if i == app.timings_selection {
                 Style::default().bg(Color::DarkGray).fg(Color::White).add_modifier(Modifier::BOLD)
             } else {
@@ -70,8 +63,7 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
             };
             Row::new(vec![
                 Cell::from(t.name.clone()),
-                Cell::from(kind),
-                Cell::from(format_ns(last_ns)),
+                Cell::from(format_ns(t.latency.last_ns)),
                 Cell::from(format_ns(last_bucket.p50_ns)),
                 Cell::from(format_ns(last_bucket.p99_ns)),
                 Cell::from(format!("{:>10}", last_bucket.count)),
@@ -83,7 +75,6 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
 
     let widths = [
         Constraint::Percentage(35),
-        Constraint::Length(6),
         Constraint::Length(12),
         Constraint::Length(18),
         Constraint::Length(18),
@@ -94,86 +85,17 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
     f.render_stateful_widget(table, area, &mut app.timings_table_state);
 }
 
-fn kind_marker(t: &TimingSet) -> &'static str {
-    let has_t = t.timing.as_ref().is_some_and(TimingChannel::has_data);
-    let has_l = t.latency.as_ref().is_some_and(TimingChannel::has_data);
-    match (has_t, has_l) {
-        (true, true) => "T+L",
-        (true, false) => "T",
-        (false, true) => "L",
-        (false, false) => "·",
-    }
-}
-
 fn draw_charts(f: &mut Frame, area: Rect, app: &App) {
     let Some(timer) = app.timings.get(app.timings_selection) else {
         f.render_widget(Block::default().borders(Borders::ALL).title(" history "), area);
         return;
     };
-
-    let has_t = timer.timing.as_ref().is_some_and(TimingChannel::has_data);
-    let has_l = timer.latency.as_ref().is_some_and(TimingChannel::has_data);
-    match (has_t, has_l) {
-        (true, true) => {
-            let rows = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-                .split(area);
-            draw_channel_chart(
-                f,
-                rows[0],
-                &timer.name,
-                "processing",
-                Color::Cyan,
-                timer.timing.as_ref().unwrap(),
-            );
-            draw_channel_chart(
-                f,
-                rows[1],
-                &timer.name,
-                "latency",
-                Color::Magenta,
-                timer.latency.as_ref().unwrap(),
-            );
-        }
-        (true, false) => draw_channel_chart(
-            f,
-            area,
-            &timer.name,
-            "processing",
-            Color::Cyan,
-            timer.timing.as_ref().unwrap(),
-        ),
-        (false, true) => draw_channel_chart(
-            f,
-            area,
-            &timer.name,
-            "latency",
-            Color::Magenta,
-            timer.latency.as_ref().unwrap(),
-        ),
-        (false, false) => {
-            let block = Block::default().borders(Borders::ALL).title(format!(" {} ", timer.name));
-            let inner = block.inner(area);
-            f.render_widget(block, area);
-            f.render_widget(
-                Paragraph::new("no events drained yet").style(Style::default().fg(Color::DarkGray)),
-                inner,
-            );
-        }
-    }
+    draw_channel_chart(f, area, &timer.name, &timer.latency);
 }
 
-fn draw_channel_chart(
-    f: &mut Frame,
-    area: Rect,
-    name: &str,
-    kind: &str,
-    p50_color: Color,
-    ch: &TimingChannel,
-) {
+fn draw_channel_chart(f: &mut Frame, area: Rect, name: &str, ch: &TimingChannel) {
     let title = format!(
-        " {name} — {kind} p50 / p99 over {}s buckets ",
+        " {name} — latency p50 / p99 over {}s buckets ",
         crate::sources::counters::BUCKET_SECS
     );
     let block = Block::default().borders(Borders::ALL).title(title);
@@ -203,7 +125,7 @@ fn draw_channel_chart(
         Dataset::default()
             .name("p50 µs")
             .marker(symbols::Marker::Braille)
-            .style(Style::default().fg(p50_color))
+            .style(Style::default().fg(Color::Magenta))
             .graph_type(GraphType::Line)
             .data(&p50),
         Dataset::default()

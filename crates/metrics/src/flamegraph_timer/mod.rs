@@ -1,8 +1,20 @@
-//! Capture #[timed] call trees in-process and render them as a call tree or
-//! JSON.
+//! Capture #[timed] call trees and render them as a call tree or JSON. Marks
+//! are produced into per-thread shmem rings; the call tree is folded either
+//! in-process (the perf harness) or by a surfer reading the rings of a
+//! running silver ([`FlamegraphReader`]).
 
-pub mod collect;
+mod aggregator;
+mod call_tree;
+mod drainer;
+mod mark;
+mod names;
+mod producer;
+mod queue_dir;
+mod reader;
 pub mod report;
+mod symbols;
 
-pub use collect::enable;
-pub(crate) use collect::{is_enabled, stack_enter, stack_exit};
+pub(crate) use mark::Frame;
+pub(crate) use producer::record;
+pub use queue_dir::enable_surfer;
+pub use reader::{FlamegraphReader, LocalReader};

@@ -43,6 +43,14 @@ nextest:
 perf-local events="instructions,cycles,l1d-misses,l2-misses,l3-misses":
   SILVER_PERF_EVENTS="{{events}}" cargo test --release -p silver_e2e --features perf-counters --test sync_pm_bs_perf -- --ignored --nocapture
 
+# Run surfer (the metrics TUI). It folds the watched silver's `#[timed]` perf
+# counters into the flamegraph whenever that silver published them (the producer
+# opts into counters via its own `perf` feature); otherwise it shows timing
+# only. Counter labels come from the silver's published schema, so no event list
+# is needed here. Extra args pass through as `[BASE_DIR] [APP_NAME]`.
+surfer *args='':
+  cargo run --release -p silver_surfer -- {{args}}
+
 # Refresh crates/e2e/data/perf from mainnet (~13 min for the default 128
 # blocks at lodestar's ~1 req / 6 s cap). Commit the result via git-lfs.
 # Pass `--continue` (and/or `--blocks N`) to resume after a network blip.

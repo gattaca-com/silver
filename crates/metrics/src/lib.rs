@@ -13,102 +13,23 @@
 extern crate self as silver_metrics;
 
 use std::{
-    cell::RefCell,
     fs::OpenOptions,
     io,
     os::fd::AsRawFd,
     path::Path,
-    sync::{
-        OnceLock,
-        atomic::{AtomicPtr, AtomicU64, Ordering},
-    },
+    sync::atomic::{AtomicPtr, AtomicU64, Ordering},
 };
 
-use flux::{Timer, timing::Instant};
 pub use silver_common_macros::timed;
 
 pub mod flamegraph_timer;
 mod perf;
-pub use perf::{EventSpec, MAX_EVENTS, PerfSample, schema, slot};
-
-/// App name used as the parent directory for per-function `Timer`
-/// shmem queues. Falls back to `"silver"` if `init_app` is not called.
-static APP_NAME: OnceLock<String> = OnceLock::new();
-
-/// Publish the app name used by `#[timed]`-created `Timer`s. Must be
-/// called at process startup, before any `#[timed]` function fires.
-/// Repeat calls are no-ops (first set wins).
-pub fn init_app(app_name: &str) {
-    let _ = APP_NAME.set(app_name.to_owned());
-}
-
-/// Internal: construct a flux `Timer` under the app namespace published
-/// by `init_app`. Used by `TimerGuard` on first hit.
-#[doc(hidden)]
-pub fn new_timer(name: &str) -> Timer {
-    Timer::new(APP_NAME.get().map(String::as_str).unwrap_or("silver"), name)
-}
-
-::std::thread_local! {
-    static TIMERS: RefCell<std::collections::HashMap<&'static str, Timer>> = RefCell::new(std::collections::HashMap::new());
-}
-
-/// Drop-based timer scope used by the `#[timed]` macro expansion.
-/// Records processing time on every exit path — normal return, `?`,
-/// early `return`, panic-unwind.
-///
-/// Built with the `perf` feature it also carries a hardware-counter
-/// dimension: in harness (call-tree) mode the counters are captured inside
-/// [`flamegraph_timer`]; in live mode this guard reads them itself and streams
-/// a [`PerfSample`] onto the `perf-{name}` queue for surfer.
-#[doc(hidden)]
-pub struct TimerGuard {
-    name: &'static str,
-    start: Instant,
-    /// Counter snapshot at entry for live-mode streaming. `None` in harness
-    /// mode (the call-tree sink reads counters itself), when this call is not
-    /// sampled, or when the `perf` feature/`perf_event_open` is unavailable.
-    perf_start: Option<PerfSample>,
-}
-
-impl TimerGuard {
-    #[inline]
-    pub fn new(name: &'static str) -> Self {
-        Self::new_sampled(name, true)
-    }
-
-    /// As [`new`](Self::new) but `sample = false` skips this call's counter
-    /// read/stream (timing is still recorded). Used by `#[timed(sample = N)]`.
-    #[inline]
-    pub fn new_sampled(name: &'static str, sample: bool) -> Self {
-        let start = Instant::now();
-        flamegraph_timer::stack_enter(name, start);
-        // Live mode only: in harness mode the sink captures counters itself.
-        let perf_start = (sample && !flamegraph_timer::is_enabled()).then(perf::read).flatten();
-        Self { name, start, perf_start }
-    }
-}
-
-impl Drop for TimerGuard {
-    fn drop(&mut self) {
-        // Bench/test mode replaces flux emission: record the call tree and
-        // skip the shmem write entirely.
-        if flamegraph_timer::is_enabled() {
-            flamegraph_timer::stack_exit();
-            return;
-        }
-        TIMERS.with(|cell| {
-            let mut map = cell.borrow_mut();
-            let timer = map.entry(self.name).or_insert_with(|| new_timer(self.name));
-            timer.set_start(self.start);
-            timer.record_processing();
-        });
-        // Stream the call's counter delta for surfer (no-op without `perf`).
-        if let (Some(start), Some(end)) = (self.perf_start, perf::read()) {
-            perf::emit(self.name, &end.delta(&start));
-        }
-    }
-}
+mod timing;
+pub(crate) use perf::Schema;
+pub(crate) use timing::TIMING;
+#[cfg(test)]
+pub(crate) use timing::test_shmem;
+pub use timing::{TimerGuard, init_app};
 
 /// Open / create the counters file, ftruncate to `bytes`, mmap shared,
 /// and return the base pointer. Counter files land in flux's standard
@@ -345,53 +266,5 @@ mod tests {
         assert_eq!(TestCounters::COUNT, 3);
 
         std::fs::remove_dir_all(&tmp).ok();
-    }
-
-    use crate::timed;
-
-    #[timed]
-    fn timed_default_name(x: u64) -> u64 {
-        x * 2
-    }
-
-    #[timed("custom_label")]
-    fn timed_custom_name(x: u64) -> Result<u64, &'static str> {
-        if x == 0 { Err("zero") } else { Ok(x + 1) }
-    }
-
-    #[test]
-    fn timed_macro_expands_and_runs() {
-        // Sets the app namespace so the per-fn shmem queues land somewhere
-        // predictable for the test run.
-        super::init_app("silver_test");
-
-        assert_eq!(timed_default_name(7), 14);
-        assert_eq!(timed_custom_name(0), Err("zero"));
-        assert_eq!(timed_custom_name(41), Ok(42));
-    }
-
-    #[timed(sample = 4)]
-    fn timed_sampled(x: u64) -> u64 {
-        x + 1
-    }
-
-    #[timed("timed_sampled_label", sample = 1000)]
-    fn timed_sampled_named(x: u64) -> Result<u64, &'static str> {
-        if x == 0 { Err("zero") } else { Ok(x * 2) }
-    }
-
-    /// The hardware-counter dimension is inert without the `perf` feature /
-    /// perf access; either way the wrap must be transparent, including the
-    /// sampled variants' skip path.
-    #[test]
-    fn timed_sampled_macro_expands_and_runs() {
-        super::init_app("silver_test");
-
-        // Cross the sampling boundary a few times.
-        for i in 0..10 {
-            assert_eq!(timed_sampled(i), i + 1);
-        }
-        assert_eq!(timed_sampled_named(0), Err("zero"));
-        assert_eq!(timed_sampled_named(21), Ok(42));
     }
 }
