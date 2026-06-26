@@ -283,10 +283,65 @@ mod profile_impl {
     }
 }
 
+use std::alloc::{GlobalAlloc, Layout, System};
+
 #[cfg(feature = "alloc-profile")]
 pub use profile_impl::{AllocProfileGuard, init_allocator_trace, print_allocations};
+use silver_metrics::declare_thread_counters;
 
 #[cfg(not(feature = "alloc-profile"))]
 pub fn print_allocations() {
     // No-op
 }
+
+declare_thread_counters! {
+    pub AllocationCounters => "allocator" {
+        Allocated,
+    }
+}
+
+pub struct CountingAllocator;
+
+unsafe impl GlobalAlloc for CountingAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let ptr = unsafe { System.alloc(layout) };
+        if !ptr.is_null() {
+            let inc = layout.size();
+            AllocationCounters::Allocated.add(inc as u64);
+        }
+        ptr
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        let dec = layout.size();
+        AllocationCounters::Allocated.sub(dec as u64);
+        unsafe { System.dealloc(ptr, layout) };
+    }
+
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        let ptr = unsafe { System.alloc_zeroed(layout) };
+        if !ptr.is_null() {
+            let inc = layout.size();
+            AllocationCounters::Allocated.add(inc as u64);
+        }
+        ptr
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        let ptr = unsafe { System.realloc(ptr, layout, new_size) };
+        if !ptr.is_null() {
+            if new_size > layout.size() {
+                let inc = new_size - layout.size();
+                AllocationCounters::Allocated.add(inc as u64);
+            } else {
+                let dec = layout.size() - new_size;
+                AllocationCounters::Allocated.sub(dec as u64);
+            }
+        }
+        ptr
+    }
+}
+
+#[global_allocator]
+static ALLOCATOR: CountingAllocator = CountingAllocator;
+

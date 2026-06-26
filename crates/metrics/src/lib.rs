@@ -222,6 +222,147 @@ macro_rules! declare_counters {
                 self.slot().fetch_sub(1, ::core::sync::atomic::Ordering::Relaxed);
             }
 
+            /// Wraps on underflow — use only on gauge-style counters.
+            #[inline]
+            pub fn sub(self, n: u64) {
+                self.slot().fetch_sub(n, ::core::sync::atomic::Ordering::Relaxed);
+            }
+
+            #[inline]
+            pub fn get(self) -> u64 {
+                self.slot().load(::core::sync::atomic::Ordering::Relaxed)
+            }
+
+            #[inline]
+            pub fn set(self, v: u64) {
+                self.slot().store(v, ::core::sync::atomic::Ordering::Relaxed);
+            }
+        }
+    };
+}
+
+/// As `declare_counters!` but each thread gets its own instance: counter
+/// ops touch a per-thread `mmap(MAP_SHARED)` region backed by a file named
+/// `counters-{thread name}_{file}` (falling back to the thread id when the
+/// thread is unnamed). One thread writes each file; the observer reads all of
+/// them, so attribution is per-thread without cross-thread atomic contention.
+///
+/// Mapping is lazy: the first counter op on a thread maps that thread's file.
+/// `init` / `init_with_base` force the map early (and let tests redirect the
+/// base dir) for the calling thread only.
+#[macro_export]
+macro_rules! declare_thread_counters {
+    (
+        $(#[$meta:meta])*
+        $vis:vis $name:ident => $file:literal {
+            $( $variant:ident ),+ $(,)?
+        }
+    ) => {
+        $(#[$meta])*
+        #[repr(u32)]
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        #[allow(clippy::manual_non_exhaustive)]
+        $vis enum $name {
+            $( $variant, )+
+            #[doc(hidden)]
+            _Count,
+        }
+
+        impl $name {
+            pub const COUNT: usize = Self::_Count as usize;
+            pub const NAMES: &'static [&'static str] = &[ $( stringify!($variant), )+ ];
+
+            const BYTES: usize =
+                Self::COUNT * ::core::mem::size_of::<::core::sync::atomic::AtomicU64>();
+
+            pub const DEFAULT_APP_NAME: &'static str = "silver";
+
+            fn map_for_thread(
+                base_dir: &::std::path::Path,
+                app_name: &str,
+            ) -> ::std::io::Result<*mut ::core::sync::atomic::AtomicU64> {
+                let thread = ::std::thread::current();
+                let file_name = match thread.name() {
+                    ::core::option::Option::Some(n) => ::std::format!("{n}_{}", $file),
+                    ::core::option::Option::None => ::std::format!("{:?}_{}", thread.id(), $file),
+                };
+                $crate::mmap_counters_file(base_dir, app_name, &file_name, Self::BYTES)
+            }
+
+            /// This thread's base pointer, mapping its file on first use under
+            /// `(base_dir, app_name)`. Later calls return the cached pointer
+            /// and ignore the args.
+            fn base_with(
+                base_dir: &::std::path::Path,
+                app_name: &str,
+            ) -> ::std::io::Result<*mut ::core::sync::atomic::AtomicU64> {
+                ::std::thread_local! {
+                    static BASE: ::core::cell::Cell<*mut ::core::sync::atomic::AtomicU64> =
+                        const { ::core::cell::Cell::new(::core::ptr::null_mut()) };
+                }
+                BASE.with(|c| {
+                    let p = c.get();
+                    if !p.is_null() {
+                        return ::core::result::Result::Ok(p);
+                    }
+                    let ptr = Self::map_for_thread(base_dir, app_name)?;
+                    c.set(ptr);
+                    ::core::result::Result::Ok(ptr)
+                })
+            }
+
+            pub fn init() -> ::std::io::Result<()> {
+                Self::init_with_app(Self::DEFAULT_APP_NAME)
+            }
+
+            pub fn init_with_app(app_name: &str) -> ::std::io::Result<()> {
+                Self::init_with_base(
+                    ::flux::utils::directories::local_share_dir(),
+                    app_name,
+                )
+            }
+
+            pub fn init_with_base<P: ::core::convert::AsRef<::std::path::Path>>(
+                base_dir: P,
+                app_name: &str,
+            ) -> ::std::io::Result<()> {
+                Self::base_with(base_dir.as_ref(), app_name).map(|_| ())
+            }
+
+            #[inline]
+            fn slot(self) -> &'static ::core::sync::atomic::AtomicU64 {
+                let p = Self::base_with(
+                    ::flux::utils::directories::local_share_dir().as_ref(),
+                    Self::DEFAULT_APP_NAME,
+                )
+                .unwrap_or_else(|e| {
+                    panic!("{}::slot() failed: {e}", ::core::stringify!($name))
+                });
+                unsafe { &*p.add(self as usize) }
+            }
+
+            #[inline]
+            pub fn inc(self) {
+                self.slot().fetch_add(1, ::core::sync::atomic::Ordering::Relaxed);
+            }
+
+            #[inline]
+            pub fn add(self, n: u64) {
+                self.slot().fetch_add(n, ::core::sync::atomic::Ordering::Relaxed);
+            }
+
+            /// Wraps on underflow — use only on gauge-style counters.
+            #[inline]
+            pub fn dec(self) {
+                self.slot().fetch_sub(1, ::core::sync::atomic::Ordering::Relaxed);
+            }
+
+            /// Wraps on underflow — use only on gauge-style counters.
+            #[inline]
+            pub fn sub(self, n: u64) {
+                self.slot().fetch_sub(n, ::core::sync::atomic::Ordering::Relaxed);
+            }
+
             #[inline]
             pub fn get(self) -> u64 {
                 self.slot().load(::core::sync::atomic::Ordering::Relaxed)
@@ -266,5 +407,97 @@ mod tests {
         assert_eq!(TestCounters::COUNT, 3);
 
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    crate::declare_thread_counters! {
+        TestThreadCounters => "test_thread_metrics" {
+            Hits,
+            Misses,
+        }
+    }
+
+    #[test]
+    fn thread_counters_are_per_thread() {
+        let tmp = std::env::temp_dir().join(format!("silver_thread_test_{}", std::process::id()));
+
+        // Each thread maps its own file; counts must not bleed across threads.
+        let run = |name: &str, hits: u64| {
+            let tmp = tmp.clone();
+            let name = name.to_owned();
+            std::thread::Builder::new()
+                .name(name.clone())
+                .spawn(move || {
+                    TestThreadCounters::init_with_base(&tmp, "thread_rt").unwrap();
+                    TestThreadCounters::Hits.set(0);
+                    TestThreadCounters::Misses.set(1);
+                    TestThreadCounters::Hits.add(hits);
+                    assert_eq!(TestThreadCounters::Hits.get(), hits);
+                    assert_eq!(TestThreadCounters::Misses.get(), 1);
+                    name
+                })
+                .unwrap()
+                .join()
+                .unwrap()
+        };
+
+        let a = run("alpha", 3);
+        let b = run("beta", 7);
+
+        let dir = flux::utils::directories::shmem_dir_queues_with_base(&tmp, "thread_rt");
+        assert!(dir.join(format!("counters-{a}_test_thread_metrics")).exists());
+        assert!(dir.join(format!("counters-{b}_test_thread_metrics")).exists());
+
+        assert_eq!(TestThreadCounters::NAMES, &["Hits", "Misses"]);
+        assert_eq!(TestThreadCounters::COUNT, 2);
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    use crate::timed;
+
+    #[timed]
+    fn timed_default_name(x: u64) -> u64 {
+        x * 2
+    }
+
+    #[timed("custom_label")]
+    fn timed_custom_name(x: u64) -> Result<u64, &'static str> {
+        if x == 0 { Err("zero") } else { Ok(x + 1) }
+    }
+
+    #[test]
+    fn timed_macro_expands_and_runs() {
+        // Sets the app namespace so the per-fn shmem queues land somewhere
+        // predictable for the test run.
+        super::init_app("silver_test");
+
+        assert_eq!(timed_default_name(7), 14);
+        assert_eq!(timed_custom_name(0), Err("zero"));
+        assert_eq!(timed_custom_name(41), Ok(42));
+    }
+
+    #[timed(sample = 4)]
+    fn timed_sampled(x: u64) -> u64 {
+        x + 1
+    }
+
+    #[timed("timed_sampled_label", sample = 1000)]
+    fn timed_sampled_named(x: u64) -> Result<u64, &'static str> {
+        if x == 0 { Err("zero") } else { Ok(x * 2) }
+    }
+
+    /// The hardware-counter dimension is inert without the `perf` feature /
+    /// perf access; either way the wrap must be transparent, including the
+    /// sampled variants' skip path.
+    #[test]
+    fn timed_sampled_macro_expands_and_runs() {
+        super::init_app("silver_test");
+
+        // Cross the sampling boundary a few times.
+        for i in 0..10 {
+            assert_eq!(timed_sampled(i), i + 1);
+        }
+        assert_eq!(timed_sampled_named(0), Err("zero"));
+        assert_eq!(timed_sampled_named(21), Ok(42));
     }
 }

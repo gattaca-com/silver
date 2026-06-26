@@ -14,6 +14,7 @@ use fxhash::FxHasher;
 use mio::{Interest, Poll, Token, net::UdpSocket};
 use quinn_proto::Transmit;
 use silver_common::WitherFilter;
+use silver_metrics::timed;
 pub(crate) use udp::{RX_BATCH_MAX, RX_BUF_SIZE, RxBatch, TxBatch};
 
 pub(crate) const MAX_GSO_SEGMENTS: usize = 10;
@@ -89,6 +90,7 @@ impl Socket {
         self.blocked
     }
 
+    #[timed]
     pub(crate) fn flush(&mut self, poll: &Poll) -> bool {
         if !self.tx_batch.entries.is_empty() {
             if self.tx_batch.flush(&self.socket) {
@@ -104,6 +106,7 @@ impl Socket {
         }
     }
 
+    #[timed]
     pub(crate) fn send<F>(&mut self, poll: &Poll, mut f: F) -> bool
     where
         F: FnMut(&mut Vec<u8>) -> Option<Transmit>,
@@ -127,6 +130,7 @@ impl Socket {
         true
     }
 
+    #[timed]
     pub(crate) fn recv<F>(&mut self, mut f: F)
     where
         F: FnMut(bytes::BytesMut, SocketAddr, &mut Vec<u8>, &UdpSocket) -> bool,

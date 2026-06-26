@@ -20,6 +20,7 @@ use silver_common::{
     GossipMsgOut, Identify, Keypair, P2pStreamId, PeerId, ProtoIdentify, ProtoIdentifyView,
     RpcOutbound,
 };
+use silver_metrics::timed;
 
 use crate::{
     NetworkCounters, RemotePeer,
@@ -28,6 +29,7 @@ use crate::{
 };
 
 /// Function to spin the P2p stack - invoked from tile main loop.
+#[timed]
 pub fn p2p_spin<F: FnMut(NetEvent)>(
     poll: &Poll,
     p2p_endpoint: &mut P2p,

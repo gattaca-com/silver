@@ -285,6 +285,7 @@ where
         self.poll.poll(&mut self.events, Some(POLL_TIMEOUT))
     }
 
+    #[timed]
     pub fn spin<E>(&mut self, on_event: &mut E) -> bool
     where
         E: FnMut(Event) + Send,

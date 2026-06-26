@@ -20,9 +20,9 @@ use silver_network::{Context, NetworkTile, P2p};
 use silver_peer::PeerManager;
 use silver_storage::{latest_local_checkpoint, tile::StorageTile};
 
-#[cfg(not(feature = "alloc-profile"))]
-#[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+// #[cfg(not(feature = "alloc-profile"))]
+// #[global_allocator]
+// static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() -> Result<(), Box<dyn Error>> {
     #[cfg(feature = "alloc-profile")]
