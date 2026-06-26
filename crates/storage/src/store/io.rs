@@ -278,9 +278,11 @@ impl Store {
                         {
                             let mut enr_string = String::new();
                             open_file_read(entry.path())?.read_to_string(&mut enr_string)?;
-                            let enr = Enr::from_base64(enr_string.as_str(), false)
-                                .map_err(Error::other)?;
-                            emit(IoEvent::PeerEvent(PeerEvent::DiscNodeFound { enr }));
+                            let Ok(enr) = Enr::from_base64(enr_string.as_str(), false) else {
+                                tracing::warn!(file=?entry.path(), "failed to parse ENR from file");
+                                continue;
+                            };
+                            emit(IoEvent::PeerEvent(PeerEvent::DiscNodeFound { enr, saved: true }));
                         }
                     }
                 }
