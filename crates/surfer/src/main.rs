@@ -143,7 +143,9 @@ fn run<B: ratatui::backend::Backend>(
         let timeout = TICK.saturating_sub(last_tick.elapsed());
         if event::poll(timeout)? {
             match event::read()? {
-                Event::Key(key) if key.kind == KeyEventKind::Press => handle_key(app, key.code, app_name),
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    handle_key(app, key.code, app_name)
+                }
                 Event::Mouse(m) => match m.kind {
                     MouseEventKind::Moved | MouseEventKind::Drag(_) => {
                         app.mouse = Some((m.column, m.row));
