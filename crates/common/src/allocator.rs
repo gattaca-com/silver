@@ -283,65 +283,91 @@ mod profile_impl {
     }
 }
 
-use std::alloc::{GlobalAlloc, Layout, System};
-
 #[cfg(feature = "alloc-profile")]
 pub use profile_impl::{AllocProfileGuard, init_allocator_trace, print_allocations};
-use silver_metrics::declare_thread_counters;
 
 #[cfg(not(feature = "alloc-profile"))]
 pub fn print_allocations() {
     // No-op
 }
 
-declare_thread_counters! {
+silver_metrics::declare_thread_counters! {
     pub AllocationCounters => "allocator" {
         Allocated,
     }
 }
 
-pub struct CountingAllocator;
+// CountingAllocator is the default global allocator; alloc-profile swaps in
+// ProfilingAllocator instead (only one #[global_allocator] may exist). The
+// AllocationCounters enum above is always compiled so surfer can resolve its
+// NAMES regardless of feature set.
+#[cfg(not(feature = "alloc-profile"))]
+mod count_impl {
+    use std::alloc::{GlobalAlloc, Layout, System};
 
-unsafe impl GlobalAlloc for CountingAllocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let ptr = unsafe { System.alloc(layout) };
-        if !ptr.is_null() {
-            let inc = layout.size();
-            AllocationCounters::Allocated.add(inc as u64);
-        }
-        ptr
+    use super::AllocationCounters;
+
+    pub struct CountingAllocator;
+
+    std::thread_local! {
+        // The thread counter's first-touch path mmaps a file, which allocates and
+        // would re-enter this allocator. const-init + Copy => no lazy init / no
+        // destructor, so the guard itself never allocates. Counter updates made
+        // while it is set are skipped.
+        static COUNTING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     }
 
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        let dec = layout.size();
-        AllocationCounters::Allocated.sub(dec as u64);
-        unsafe { System.dealloc(ptr, layout) };
-    }
-
-    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        let ptr = unsafe { System.alloc_zeroed(layout) };
-        if !ptr.is_null() {
-            let inc = layout.size();
-            AllocationCounters::Allocated.add(inc as u64);
-        }
-        ptr
-    }
-
-    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        let ptr = unsafe { System.realloc(ptr, layout, new_size) };
-        if !ptr.is_null() {
-            if new_size > layout.size() {
-                let inc = new_size - layout.size();
-                AllocationCounters::Allocated.add(inc as u64);
-            } else {
-                let dec = layout.size() - new_size;
-                AllocationCounters::Allocated.sub(dec as u64);
+    impl CountingAllocator {
+        #[inline]
+        fn count(f: impl FnOnce()) {
+            if COUNTING.with(|c| c.replace(true)) {
+                return;
             }
+            f();
+            COUNTING.with(|c| c.set(false));
         }
-        ptr
     }
+
+    unsafe impl GlobalAlloc for CountingAllocator {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            let ptr = unsafe { System.alloc(layout) };
+            if !ptr.is_null() {
+                Self::count(|| AllocationCounters::Allocated.add(layout.size() as u64));
+            }
+            ptr
+        }
+
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            Self::count(|| AllocationCounters::Allocated.sub(layout.size() as u64));
+            unsafe { System.dealloc(ptr, layout) };
+        }
+
+        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+            let ptr = unsafe { System.alloc_zeroed(layout) };
+            if !ptr.is_null() {
+                Self::count(|| AllocationCounters::Allocated.add(layout.size() as u64));
+            }
+            ptr
+        }
+
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            let ptr = unsafe { System.realloc(ptr, layout, new_size) };
+            if !ptr.is_null() {
+                Self::count(|| {
+                    if new_size > layout.size() {
+                        AllocationCounters::Allocated.add((new_size - layout.size()) as u64);
+                    } else {
+                        AllocationCounters::Allocated.sub((layout.size() - new_size) as u64);
+                    }
+                });
+            }
+            ptr
+        }
+    }
+
+    #[global_allocator]
+    static ALLOCATOR: CountingAllocator = CountingAllocator;
 }
 
-#[global_allocator]
-static ALLOCATOR: CountingAllocator = CountingAllocator;
-
+#[cfg(not(feature = "alloc-profile"))]
+pub use count_impl::CountingAllocator;

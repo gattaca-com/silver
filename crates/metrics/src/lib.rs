@@ -289,12 +289,13 @@ macro_rules! declare_thread_counters {
                 $crate::mmap_counters_file(base_dir, app_name, &file_name, Self::BYTES)
             }
 
-            /// This thread's base pointer, mapping its file on first use under
-            /// `(base_dir, app_name)`. Later calls return the cached pointer
-            /// and ignore the args.
+            /// This thread's base pointer, invoking `map` to map the file on
+            /// first use only. `map` is a `&dyn` (not generic) so the single
+            /// `BASE` is shared across call sites, and is not evaluated on the
+            /// warm path — keeping it allocation-free for use under a global
+            /// allocator.
             fn base_with(
-                base_dir: &::std::path::Path,
-                app_name: &str,
+                map: &dyn ::core::ops::Fn() -> ::std::io::Result<*mut ::core::sync::atomic::AtomicU64>,
             ) -> ::std::io::Result<*mut ::core::sync::atomic::AtomicU64> {
                 ::std::thread_local! {
                     static BASE: ::core::cell::Cell<*mut ::core::sync::atomic::AtomicU64> =
@@ -305,7 +306,7 @@ macro_rules! declare_thread_counters {
                     if !p.is_null() {
                         return ::core::result::Result::Ok(p);
                     }
-                    let ptr = Self::map_for_thread(base_dir, app_name)?;
+                    let ptr = map()?;
                     c.set(ptr);
                     ::core::result::Result::Ok(ptr)
                 })
@@ -326,15 +327,18 @@ macro_rules! declare_thread_counters {
                 base_dir: P,
                 app_name: &str,
             ) -> ::std::io::Result<()> {
-                Self::base_with(base_dir.as_ref(), app_name).map(|_| ())
+                let base_dir = base_dir.as_ref();
+                Self::base_with(&|| Self::map_for_thread(base_dir, app_name)).map(|_| ())
             }
 
             #[inline]
             fn slot(self) -> &'static ::core::sync::atomic::AtomicU64 {
-                let p = Self::base_with(
-                    ::flux::utils::directories::local_share_dir().as_ref(),
-                    Self::DEFAULT_APP_NAME,
-                )
+                let p = Self::base_with(&|| {
+                    Self::map_for_thread(
+                        ::flux::utils::directories::local_share_dir().as_ref(),
+                        Self::DEFAULT_APP_NAME,
+                    )
+                })
                 .unwrap_or_else(|e| {
                     panic!("{}::slot() failed: {e}", ::core::stringify!($name))
                 });

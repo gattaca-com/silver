@@ -8,12 +8,27 @@
 /// enums via `silver_common::declare_counters!`.
 pub fn lookup(file_name: &str) -> Option<&'static [&'static str]> {
     match file_name {
-        "storage" => Some(silver_storage::StorageCounters::NAMES),
-        "network" => Some(silver_network::NetworkCounters::NAMES),
-        "peer" => Some(silver_peer::PeerCounters::NAMES),
-        _ => None,
+        "storage" => return Some(silver_storage::StorageCounters::NAMES),
+        "network" => return Some(silver_network::NetworkCounters::NAMES),
+        "peer" => return Some(silver_peer::PeerCounters::NAMES),
+        _ => {}
     }
+    // Thread counters write one file per thread, named "{thread}_{group}".
+    for (group, names) in THREAD_COUNTERS {
+        if let Some(thread) = file_name.strip_suffix(group) &&
+            thread.ends_with('_')
+        {
+            return Some(names);
+        }
+    }
+    None
 }
+
+/// `(group, NAMES)` for each `declare_thread_counters!` enum. `group` is the
+/// `{file}` literal; matched as the `_{group}` suffix of
+/// `counters-{thread}_{group}`.
+const THREAD_COUNTERS: &[(&str, &[&str])] =
+    &[("allocator", silver_common::allocator::AllocationCounters::NAMES)];
 
 /// `lookup` with a positional fallback. Returns `(names, registered)`
 /// — `registered = false` means surfer is displaying positional
