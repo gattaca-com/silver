@@ -1,7 +1,14 @@
 use crate::{
-    BalancesId, CurrentParticipationId, EpochId, Eth1Id, InactivityId, LongtailId, PendingId,
-    PreviousParticipationId, SlotStateId, ValidatorsId,
+    BalancesId, BuildersId, CurrentParticipationId, DecomposeError, EpochId, Eth1Id, InactivityId,
+    LongtailId, PendingId, PreviousParticipationId, SlotStateId, ValidatorsId,
+    decompose::common::{b256, u32_le, u64_le},
+    gloas::{
+        BUILDER_PENDING_PAYMENTS_LEN, BuilderPendingPayment, EXECUTION_PAYLOAD_AVAILABILITY_BYTES,
+        ExecutionPayloadBid, GLOAS_FORK_VERSION, Withdrawal,
+    },
 };
+
+const EPH_FIXED_PART: usize = 584;
 
 // Epoch-tier (`EpochStateFinalized`/`EpochStateDelta`) and longtail-tier
 // (`LongtailState`) types live in the `epoch`/`longtail` group modules; the
@@ -73,11 +80,13 @@ pub struct StateId {
     pub current_participation_idx: CurrentParticipationId,
     pub inactivity_idx: InactivityId,
     pub slot_idx: SlotStateId,
+    /// Empty until the Gloas fork.
+    pub builders_idx: BuildersId,
 }
 
-// size: ~1 KB of plain data — the vote list lives in its own tier
-// ([`crate::Eth1Group`]), so the slot tier carries only scalars.
-#[derive(Clone, Default)]
+// size: ~5.5 KB of plain data — the vote list lives in its own tier
+// ([`crate::Eth1Group`]).
+#[derive(Clone)]
 pub struct SlotState {
     pub randao_mix_current: B256,
     pub current_epoch_slashings: u64,
@@ -93,6 +102,42 @@ pub struct SlotState {
     pub earliest_exit_epoch: Epoch,
     pub consolidation_balance_to_consume: u64,
     pub earliest_consolidation_epoch: Epoch,
+
+    // [New in Gloas]
+    pub latest_block_hash: B256,
+    pub next_withdrawal_builder_index: u64,
+    pub execution_payload_availability: [u8; EXECUTION_PAYLOAD_AVAILABILITY_BYTES],
+    pub builder_pending_payments: [BuilderPendingPayment; BUILDER_PENDING_PAYMENTS_LEN],
+    pub latest_execution_payload_bid: ExecutionPayloadBid,
+    pub payload_expected_withdrawals: Vec<Withdrawal>,
+}
+
+impl Default for SlotState {
+    fn default() -> Self {
+        Self {
+            randao_mix_current: B256::default(),
+            current_epoch_slashings: 0,
+            eth1_data: Eth1Data::default(),
+            eth1_deposit_index: 0,
+            slot: 0,
+            latest_block_header: BeaconBlockHeader::default(),
+            latest_execution_payload_header: ExecutionPayloadHeader::default(),
+            next_withdrawal_index: 0,
+            next_withdrawal_validator_index: 0,
+            deposit_requests_start_index: 0,
+            exit_balance_to_consume: 0,
+            earliest_exit_epoch: 0,
+            consolidation_balance_to_consume: 0,
+            earliest_consolidation_epoch: 0,
+            latest_block_hash: B256::default(),
+            next_withdrawal_builder_index: 0,
+            execution_payload_availability: [0u8; EXECUTION_PAYLOAD_AVAILABILITY_BYTES],
+            builder_pending_payments: [BuilderPendingPayment::default();
+                BUILDER_PENDING_PAYMENTS_LEN],
+            latest_execution_payload_bid: ExecutionPayloadBid::default(),
+            payload_expected_withdrawals: Vec::new(),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -125,7 +170,7 @@ impl Default for EpochState {
 // implemented). Length is whatever the validators layer reports; reading
 // past `base_count` with no edit returns the spec default (0 / false).
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct Immutable {
     pub genesis_time: u64,
     pub genesis_validators_root: B256,
@@ -136,6 +181,22 @@ pub struct Immutable {
     pub fork: Fork,
     pub genesis_fork_version: Version,
     pub capella_fork_version: Version,
+    pub gloas_fork_version: Version,
+}
+
+impl Default for Immutable {
+    fn default() -> Self {
+        Self {
+            genesis_time: 0,
+            genesis_validators_root: B256::default(),
+            historical_roots: Box::default(),
+            historical_roots_hash: B256::default(),
+            fork: Fork::default(),
+            genesis_fork_version: Version::default(),
+            capella_fork_version: Version::default(),
+            gloas_fork_version: GLOAS_FORK_VERSION,
+        }
+    }
 }
 
 impl Immutable {
@@ -179,6 +240,12 @@ pub struct Eth1Data {
     pub block_hash: B256,
 }
 
+impl Eth1Data {
+    pub(crate) fn from_ssz(s: &[u8]) -> Self {
+        Self { deposit_root: b256(s, 0), deposit_count: u64_le(s, 32), block_hash: b256(s, 40) }
+    }
+}
+
 #[derive(Clone, Copy, Default, Debug)]
 pub struct BeaconBlockHeader {
     pub slot: Slot,
@@ -186,6 +253,18 @@ pub struct BeaconBlockHeader {
     pub parent_root: B256,
     pub state_root: B256,
     pub body_root: B256,
+}
+
+impl BeaconBlockHeader {
+    pub(crate) fn from_ssz(s: &[u8]) -> Self {
+        Self {
+            slot: u64_le(s, 0),
+            proposer_index: u64_le(s, 8),
+            parent_root: b256(s, 16),
+            state_root: b256(s, 48),
+            body_root: b256(s, 80),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -232,6 +311,51 @@ impl Default for ExecutionPayloadHeader {
             blob_gas_used: Default::default(),
             excess_blob_gas: Default::default(),
         }
+    }
+}
+
+impl ExecutionPayloadHeader {
+    pub(crate) fn from_ssz(eph: &[u8]) -> Result<Self, DecomposeError> {
+        if eph.len() < EPH_FIXED_PART {
+            return Err(DecomposeError::EphTruncated { len: eph.len(), need: EPH_FIXED_PART });
+        }
+
+        let mut out = Self {
+            parent_hash: b256(eph, 0),
+            state_root: b256(eph, 52),
+            receipts_root: b256(eph, 84),
+            prev_randao: b256(eph, 372),
+            block_number: u64_le(eph, 404),
+            gas_limit: u64_le(eph, 412),
+            gas_used: u64_le(eph, 420),
+            timestamp: u64_le(eph, 428),
+            base_fee_per_gas: b256(eph, 440),
+            block_hash: b256(eph, 472),
+            transactions_root: b256(eph, 504),
+            withdrawals_root: b256(eph, 536),
+            blob_gas_used: u64_le(eph, 568),
+            excess_blob_gas: u64_le(eph, 576),
+            ..Default::default()
+        };
+        out.fee_recipient.copy_from_slice(&eph[32..52]);
+        out.logs_bloom.copy_from_slice(&eph[116..372]);
+
+        let extra_off = u32_le(eph, 436) as usize;
+        if extra_off < EPH_FIXED_PART || extra_off > eph.len() {
+            return Err(DecomposeError::EphExtraDataOffsetInvalid {
+                off: extra_off,
+                fixed: EPH_FIXED_PART,
+                len: eph.len(),
+            });
+        }
+        let extra_len = eph.len() - extra_off;
+        if extra_len > 32 {
+            return Err(DecomposeError::EphExtraDataTooLong { len: extra_len });
+        }
+        out.extra_data_len = extra_len as u8;
+        out.extra_data[..extra_len].copy_from_slice(&eph[extra_off..]);
+
+        Ok(out)
     }
 }
 
@@ -284,6 +408,8 @@ impl Withdrawals {
     pub const ZERO: Self = Self([0u8; 32]);
     pub const ETH1_ADDRESS_PREFIX: u8 = 0x01;
     pub const COMPOUNDING_PREFIX: u8 = 0x02;
+    /// Gloas (EIP-7732) `BUILDER_WITHDRAWAL_PREFIX`.
+    pub const BUILDER_PREFIX: u8 = 0x03;
 
     /// Build eth1-prefixed credentials (`0x01 || 11 zero bytes || addr`).
     #[inline]
@@ -307,6 +433,11 @@ impl Withdrawals {
     #[inline]
     pub fn has_compounding_credential(&self) -> bool {
         self.prefix() == Self::COMPOUNDING_PREFIX
+    }
+
+    #[inline]
+    pub fn has_builder_credential(&self) -> bool {
+        self.prefix() == Self::BUILDER_PREFIX
     }
 
     #[inline]

@@ -6,6 +6,7 @@ use super::{
 use crate::{
     B256,
     buffer::{Id, Reset, Slot},
+    gloas::BuilderPendingWithdrawal,
     ssz_hash::{MerkleStack, merkle_finalize, merkle_push, mix_in_length},
     types::{PendingConsolidation, PendingDeposit, PendingPartialWithdrawal},
 };
@@ -227,6 +228,7 @@ pub struct PendingView<'a> {
     pub deposits: QueueView<'a, PendingDeposit>,
     pub partial_withdrawals: QueueView<'a, PendingPartialWithdrawal>,
     pub consolidations: QueueView<'a, PendingConsolidation>,
+    pub builder_withdrawals: QueueView<'a, BuilderPendingWithdrawal>,
 }
 
 /// Write view over the pending queues — a holder of one [`QueueWriteView`] per
@@ -237,6 +239,7 @@ pub struct PendingWriteView<'a> {
     pub deposits: QueueWriteView<'a, PendingDeposit>,
     pub partial_withdrawals: QueueWriteView<'a, PendingPartialWithdrawal>,
     pub consolidations: QueueWriteView<'a, PendingConsolidation>,
+    pub builder_withdrawals: QueueWriteView<'a, BuilderPendingWithdrawal>,
 }
 
 impl PendingWriteView<'_> {
@@ -246,6 +249,7 @@ impl PendingWriteView<'_> {
             deposits: self.deposits.commit(),
             partial_withdrawals: self.partial_withdrawals.commit(),
             consolidations: self.consolidations.commit(),
+            builder_withdrawals: self.builder_withdrawals.commit(),
         }
     }
 
@@ -255,6 +259,7 @@ impl PendingWriteView<'_> {
             deposits: self.deposits.reader(),
             partial_withdrawals: self.partial_withdrawals.reader(),
             consolidations: self.consolidations.reader(),
+            builder_withdrawals: self.builder_withdrawals.reader(),
         }
     }
 }

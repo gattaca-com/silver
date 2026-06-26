@@ -142,6 +142,9 @@ impl BeaconState {
     /// Encode the full canonical SSZ in one pass: the 2.74 MB fixed part, then
     /// the 12 variable bodies in SSZ-declared order.
     pub fn encode_ssz(&self, w: &mut Vec<u8>) -> io::Result<()> {
+        if self.immutable.is_gloas() {
+            return self.encode_ssz_gloas(w);
+        }
         let lens = self.var_len_section_lens();
         w.reserve(FIXED_PART + lens.iter().sum::<usize>());
         let offsets = Self::offsets_from_lens(&lens);
@@ -149,6 +152,10 @@ impl BeaconState {
             self.write_section(section, &offsets, w)?;
         }
         Ok(())
+    }
+
+    fn encode_ssz_gloas(&self, _w: &mut Vec<u8>) -> io::Result<()> {
+        todo!("Gloas checkpoint encode — implement against EF gloas fixtures")
     }
 
     pub(crate) fn write_section<W: Write>(

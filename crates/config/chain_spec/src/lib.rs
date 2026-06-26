@@ -32,11 +32,16 @@ pub struct SpecConfig {
     #[serde(default = "default_capella_fork_version", with = "hex_0x")]
     pub capella_fork_version: [u8; 4],
     /// Fulu fork version. Mixed into every Fulu
-    /// fork digest. We target Fulu only — no `FULU_FORK_EPOCH` field
-    /// because no code path gates on "is current epoch ≥ Fulu activation?":
-    /// we always apply Fulu rules.
+    /// fork digest.
     #[serde(default = "default_fulu_fork_version", with = "hex_0x")]
     pub fulu_fork_version: [u8; 4],
+    /// Gloas (EIP-7732) fork version, compared against
+    /// `state.fork.current_version` to gate Gloas state logic.
+    #[serde(default = "default_gloas_fork_version", with = "hex_0x")]
+    pub gloas_fork_version: [u8; 4],
+    /// Gloas activation epoch.
+    #[serde(default = "default_gloas_fork_epoch")]
+    pub gloas_fork_epoch: u64,
     /// Per-epoch override on `max_blobs_per_block` (EIP-7892). Sorted by
     /// `epoch`; the active entry is the highest-epoch entry whose epoch
     /// <= the queried epoch. Empty ⇒ always fall back to the Electra
@@ -114,6 +119,14 @@ fn default_fulu_fork_version() -> [u8; 4] {
     [0x06, 0x00, 0x00, 0x00]
 }
 
+fn default_gloas_fork_version() -> [u8; 4] {
+    [0x07, 0x00, 0x00, 0x00]
+}
+
+fn default_gloas_fork_epoch() -> u64 {
+    u64::MAX
+}
+
 fn default_blob_schedule() -> Vec<BlobParameters> {
     vec![BlobParameters { epoch: 412672, max_blobs_per_block: 15 }, BlobParameters {
         epoch: 419072,
@@ -169,6 +182,8 @@ impl SpecConfig {
             genesis_fork_version: [0x10, 0x00, 0x09, 0x10],
             capella_fork_version: [0x40, 0x00, 0x09, 0x10],
             fulu_fork_version: [0x70, 0x00, 0x09, 0x10],
+            gloas_fork_version: [0x80, 0x00, 0x09, 0x10],
+            gloas_fork_epoch: u64::MAX,
             // No BPO entries spec'd on Hoodi at time of writing. Empty ⇒
             // always fall back to (`electra_fork_epoch`,
             // `max_blobs_per_block_electra`).
@@ -198,6 +213,8 @@ impl SpecConfig {
             genesis_fork_version: default_genesis_fork_version(),
             capella_fork_version: default_capella_fork_version(),
             fulu_fork_version: default_fulu_fork_version(),
+            gloas_fork_version: default_gloas_fork_version(),
+            gloas_fork_epoch: default_gloas_fork_epoch(),
             blob_schedule: default_blob_schedule(),
             electra_fork_epoch: 364032,
             max_blobs_per_block_electra: 9,

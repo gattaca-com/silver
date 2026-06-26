@@ -1,4 +1,4 @@
-CONSENSUS_SPECS_TEST_VERSION ?= v1.7.0-alpha.1
+CONSENSUS_SPECS_TEST_VERSION ?= v1.7.0-alpha.11
 OUTPUT_DIR := ./consensus-spec-tests
 
 .PHONY: all clean

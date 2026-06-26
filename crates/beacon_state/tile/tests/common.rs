@@ -340,6 +340,7 @@ impl Harness {
             inactivity: bs.inactivity.roll_fresh(),
             slot: bs.slot_states.roll_fresh(),
             validators: bs.validators.roll_fresh(),
+            builders: bs.builders.roll_fresh(),
         };
 
         let mut scratch = StateHashScratch::new();

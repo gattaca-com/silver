@@ -4,6 +4,8 @@ use flux::utils::ArrayVec;
 
 use super::delta::Eth1VotesDelta;
 use crate::{
+    DecomposeError,
+    decompose::common::{ETH1_DATA_SSZ_SIZE, Offsets},
     encode::write_eth1_data,
     types::{Eth1Data, MAX_ETH1_VOTES},
 };
@@ -51,5 +53,25 @@ impl Eth1Votes {
     /// votes. The data half of finalization.
     pub(super) fn promote(&mut self, delta: &Eth1VotesDelta) {
         delta.promote_into(&mut self.votes);
+    }
+}
+
+// `epoch` must already be filled — the derived `randao_mix_current` /
+// `current_epoch_slashings` read the current bucket from its rings.
+impl Eth1Votes {
+    pub(crate) fn from_ssz(ssz: &[u8], o: &Offsets) -> Result<Self, DecomposeError> {
+        let votes_bytes = &ssz[o.eth1_votes..o.validators];
+        if !votes_bytes.len().is_multiple_of(ETH1_DATA_SSZ_SIZE) {
+            return Err(DecomposeError::Eth1VotesLenNotMultiple { len: votes_bytes.len() });
+        }
+        let vote_count = votes_bytes.len() / ETH1_DATA_SSZ_SIZE;
+        if vote_count > MAX_ETH1_VOTES {
+            return Err(DecomposeError::TooManyEth1Votes { n: vote_count, max: MAX_ETH1_VOTES });
+        }
+        let mut votes = Self::default();
+        for i in 0..vote_count {
+            votes.push(Eth1Data::from_ssz(&votes_bytes[i * ETH1_DATA_SSZ_SIZE..]));
+        }
+        Ok(votes)
     }
 }

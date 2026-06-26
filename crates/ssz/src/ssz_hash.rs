@@ -554,6 +554,38 @@ pub fn hash_list_variable_containers(
     mix_in_length(&root, count)
 }
 
+/// `hash_tree_root` of `List[T, limit]` — each element hashed by `hash_fn`,
+/// padded to `limit`'s leaf count, with `count` mixed in. The typed-iterator
+/// counterpart to [`hash_list_containers`] (which works on packed SSZ bytes).
+pub fn hash_list<T>(
+    items: impl Iterator<Item = T>,
+    count: usize,
+    limit: usize,
+    hash_fn: impl Fn(T) -> B256,
+) -> B256 {
+    let target_depth = limit.next_power_of_two().trailing_zeros() as u8;
+    let mut stack = MerkleStack::new();
+    for item in items {
+        merkle_push(&mut stack, hash_fn(item));
+    }
+    mix_in_length(&merkle_finalize(stack, target_depth), count)
+}
+
+/// `hash_tree_root` of a fixed `Vector[T, len]` — like [`hash_list`] but no
+/// length mix-in.
+pub fn hash_vector<T>(
+    items: impl Iterator<Item = T>,
+    len: usize,
+    hash_fn: impl Fn(T) -> B256,
+) -> B256 {
+    let target_depth = len.next_power_of_two().trailing_zeros() as u8;
+    let mut stack = MerkleStack::new();
+    for item in items {
+        merkle_push(&mut stack, hash_fn(item));
+    }
+    merkle_finalize(stack, target_depth)
+}
+
 #[timed]
 pub fn hash_signed_beacon_block_header(d: &[u8]) -> B256 {
     let msg = hash_beacon_block_header_bytes(&d[..112]);

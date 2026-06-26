@@ -2,6 +2,7 @@ use std::io::{self, Write};
 
 use crate::{
     decompose::u64_le,
+    gloas::{BUILDER_PENDING_WITHDRAWALS_LIMIT, BuilderPendingWithdrawal},
     ssz_hash::{hash_concat, hash_fixed_bytes, merkleize, uint64_chunk},
     types::{
         B256, PENDING_CONSOLIDATIONS_LIMIT, PENDING_DEPOSITS_LIMIT,
@@ -103,6 +104,32 @@ impl QueueItem for PendingConsolidation {
     fn write_ssz<W: Write>(&self, w: &mut W) -> io::Result<()> {
         w.write_all(&self.source_index.to_le_bytes())?;
         w.write_all(&self.target_index.to_le_bytes())
+    }
+}
+
+impl QueueItem for BuilderPendingWithdrawal {
+    const SSZ_LIMIT: usize = BUILDER_PENDING_WITHDRAWALS_LIMIT;
+    const SSZ_SIZE: usize = 36;
+
+    #[inline]
+    fn leaf(&self) -> B256 {
+        merkleize(&[
+            hash_fixed_bytes(&self.fee_recipient),
+            uint64_chunk(self.amount),
+            uint64_chunk(self.builder_index),
+        ])
+    }
+
+    fn read_ssz(src: &[u8]) -> Self {
+        BuilderPendingWithdrawal::from_ssz(src)
+    }
+
+    fn write_ssz<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        let mut buf = [0u8; Self::SSZ_SIZE];
+        buf[0..20].copy_from_slice(&self.fee_recipient);
+        buf[20..28].copy_from_slice(&self.amount.to_le_bytes());
+        buf[28..36].copy_from_slice(&self.builder_index.to_le_bytes());
+        w.write_all(&buf)
     }
 }
 

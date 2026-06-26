@@ -3,11 +3,10 @@ use std::fmt;
 use crate::{
     Error,
     ssz_view::{
-        AttesterSlashingView, BlobSidecarView, DataColumnSidecarView,
-        LightClientFinalityUpdateView, LightClientOptimisticUpdateView, ProposerSlashingView,
-        SignedAggregateAndProofView, SignedBeaconBlockView, SignedBlsToExecutionChangeView,
-        SignedContributionAndProofView, SignedVoluntaryExitView, SingleAttestationView, SszView,
-        SyncCommitteeView,
+        AttesterSlashingView, DataColumnSidecarView, LightClientFinalityUpdateView,
+        LightClientOptimisticUpdateView, ProposerSlashingView, SignedAggregateAndProofView,
+        SignedBeaconBlockView, SignedBlsToExecutionChangeView, SignedContributionAndProofView,
+        SignedVoluntaryExitView, SingleAttestationView, SszView, SyncCommitteeView,
     },
 };
 
@@ -34,7 +33,6 @@ pub enum GossipTopic {
     LightClientFinalityUpdate,
     LightClientOptimisticUpdate,
     BlsToExecutionChange,
-    BlobSidecar(u64),
     DataColumnSidecar(u64),
     ExecutionPayloadBid,
     ExecutionPayload,
@@ -59,7 +57,6 @@ impl fmt::Display for GossipTopic {
             Self::LightClientFinalityUpdate => f.write_str("light_client_finality_update"),
             Self::LightClientOptimisticUpdate => f.write_str("light_client_optimistic_update"),
             Self::BlsToExecutionChange => f.write_str("bls_to_execution_change"),
-            Self::BlobSidecar(id) => write!(f, "blob_sidecar_{id}"),
             Self::DataColumnSidecar(id) => write!(f, "data_column_sidecar_{id}"),
             Self::ExecutionPayloadBid => f.write_str("execution_payload_bid"),
             Self::ExecutionPayload => f.write_str("execution_payload"),
@@ -111,7 +108,6 @@ impl GossipTopic {
             Self::BlsToExecutionChange => {
                 SszView::SignedBlsToExecutionChange(SignedBlsToExecutionChangeView)
             }
-            Self::BlobSidecar(_) => SszView::BlobSidecar(BlobSidecarView),
             Self::DataColumnSidecar(_) => SszView::DataColumnSidecar(DataColumnSidecarView),
             Self::LightClientFinalityUpdate => {
                 SszView::LightClientFinalityUpdate(LightClientFinalityUpdateView)
@@ -158,8 +154,6 @@ impl TryFrom<&str> for GossipTopic {
                     Self::SyncCommittee(id.parse().map_err(|_| Error::ParseTopicError)?)
                 } else if let Some(id) = other.strip_prefix("data_column_sidecar_") {
                     Self::DataColumnSidecar(id.parse().map_err(|_| Error::ParseTopicError)?)
-                } else if let Some(id) = other.strip_prefix("blob_sidecar_") {
-                    Self::BlobSidecar(id.parse().map_err(|_| Error::ParseTopicError)?)
                 } else {
                     return Err(Error::ParseTopicError);
                 }
@@ -201,7 +195,6 @@ mod tests {
             for t in [
                 GossipTopic::BeaconAttestation(i),
                 GossipTopic::SyncCommittee(i),
-                GossipTopic::BlobSidecar(i),
                 GossipTopic::DataColumnSidecar(i),
             ] {
                 let s: String = t.into();

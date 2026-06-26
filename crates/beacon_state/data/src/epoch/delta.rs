@@ -1,16 +1,31 @@
 use super::{EpochGroup, EpochId, finalized::EpochStateFinalized};
 use crate::{
     buffer::{Reset, Slot as RingSlot, drain_promoted_prefix},
+    gloas::{PTC_WINDOW_LEN, PtcCommittee, zeroed_ptc_window},
     types::{B256, Epoch, EpochState},
 };
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(crate) struct EpochStateDelta {
     // one entry per completed epoch since finalization
     pub(super) randao_mixes: Vec<B256>,
     // one entry per completed epoch since finalization
     pub(super) slashings: Vec<u64>,
     pub(super) state: EpochState,
+    // [New in Gloas] whole-value (not a per-epoch log); seeded from the base on
+    // roll and folded back by `promote`.
+    pub(super) ptc_window: Box<[PtcCommittee; PTC_WINDOW_LEN]>,
+}
+
+impl Default for EpochStateDelta {
+    fn default() -> Self {
+        Self {
+            randao_mixes: Vec::new(),
+            slashings: Vec::new(),
+            state: EpochState::default(),
+            ptc_window: zeroed_ptc_window(),
+        }
+    }
 }
 
 impl EpochStateDelta {
@@ -28,12 +43,16 @@ impl Reset for EpochStateDelta {
         self.randao_mixes.clear();
         self.slashings.clear();
         self.state = Default::default();
+        // `ptc_window` is left as-is: every roll re-seeds it via
+        // `seed_from_base` (roll_fresh) or `reset_from`, so zeroing the 393 KB
+        // box here would be redundant work.
     }
 
     fn reset_from(&mut self, other: &Self) {
         self.randao_mixes.clone_from(&other.randao_mixes);
         self.slashings.clone_from(&other.slashings);
         self.state = other.state;
+        self.ptc_window.clone_from(&other.ptc_window);
     }
 }
 
@@ -57,6 +76,11 @@ impl<'a> EpochView<'a> {
     #[inline]
     pub fn state(&self) -> &'a EpochState {
         self.delta.map_or(&self.base.state, |d| &d.state)
+    }
+
+    #[inline]
+    pub fn ptc_window(&self) -> &'a [PtcCommittee; PTC_WINDOW_LEN] {
+        self.delta.map_or(&self.base.ptc_window, |d| &d.ptc_window)
     }
 
     /// Expected proposer at `lookahead_idx` (slots since the lookahead's
@@ -144,11 +168,18 @@ impl<'a> EpochWriteView<'a> {
         &mut self.fork.state
     }
 
-    /// Seed the fresh fork's scalar `EpochState` from the finalized base; the
-    /// per-completed-epoch logs stay empty (cleared by `reset`).
+    #[inline]
+    pub fn set_ptc_window(&mut self, window: Box<[PtcCommittee; PTC_WINDOW_LEN]>) {
+        self.fork.ptc_window = window;
+    }
+
+    /// Seed the fresh fork's scalar `EpochState` + `ptc_window` from the
+    /// finalized base; the per-completed-epoch logs stay empty (cleared by
+    /// `reset`).
     #[inline]
     pub(super) fn seed_from_base(&mut self) {
         self.fork.state = self.base.state;
+        self.fork.ptc_window.clone_from(&self.base.ptc_window);
     }
 
     #[inline]

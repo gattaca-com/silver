@@ -45,6 +45,7 @@ impl TestState {
             inactivity: bs.inactivity.roll_from(sid.inactivity_idx),
             slot: bs.slot_states.roll_from(sid.slot_idx),
             validators: bs.validators.roll_from(sid.validators_idx),
+            builders: bs.builders.roll_from(sid.builders_idx),
         };
         (view, &mut bs.epoch, &mut bs.longtail)
     }

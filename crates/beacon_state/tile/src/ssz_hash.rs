@@ -1,8 +1,13 @@
 use silver_beacon_state_data::{
-    self as common, BeaconBlockHeader, Checkpoint, EPOCHS_PER_HISTORICAL_VECTOR,
-    EPOCHS_PER_SLASHINGS_VECTOR, Eth1Data, ExecutionPayloadHeader, Fork, HISTORICAL_ROOTS_LIMIT,
-    LongtailView, MAX_ETH1_VOTES, SLOTS_PER_HISTORICAL_ROOT, SYNC_COMMITTEE_SIZE, StateReadView,
-    SyncCommittee, effective_randao_mixes_into, effective_slashings_into,
+    self as common, BeaconBlockHeader, BuilderPendingPayment, BuilderPendingWithdrawal, Checkpoint,
+    EPOCHS_PER_HISTORICAL_VECTOR, EPOCHS_PER_SLASHINGS_VECTOR, Eth1Data, ExecutionPayloadBid,
+    ExecutionPayloadHeader, Fork, HISTORICAL_ROOTS_LIMIT, LongtailView, MAX_ETH1_VOTES,
+    SLOTS_PER_HISTORICAL_ROOT, SYNC_COMMITTEE_SIZE, StateReadView, SyncCommittee, Withdrawal,
+    effective_randao_mixes_into, effective_slashings_into,
+    gloas::{
+        BUILDER_PENDING_PAYMENTS_LEN, MAX_BLOB_COMMITMENTS_PER_BLOCK, MAX_WITHDRAWALS_PER_PAYLOAD,
+        PTC_WINDOW_LEN,
+    },
 };
 use silver_common::metrics::timed;
 pub use silver_common::ssz_hash::*;
@@ -50,13 +55,31 @@ impl StateHashScratch {
     }
 }
 
+#[inline]
+#[timed]
+pub fn hash_tree_root_state(rv: &StateReadView, scratch: &mut StateHashScratch) -> B256 {
+    if rv.imm.is_gloas() {
+        hash_tree_root_state_gloas(rv, scratch)
+    } else {
+        hash_tree_root_state_fulu(rv, scratch)
+    }
+}
+
 // TODO(perf): full re-merkleization every block + every process_slot.
 // Replace with milhouse-style persistent trees with per-leaf dirty bits.
+
+/// State fields 0..=37, shared by the Fulu and Gloas layouts. Field 24 is the
+/// sole divergence — Fulu hashes `latest_execution_payload_header`, Gloas
+/// substitutes `latest_block_hash` — so the caller passes it in.
+///
 /// Pure read over a fork's [`StateReadView`] — the caller resolves the bundle
 /// (including the boundary tiers, fresh at each call: a boundary
 /// `process_epoch` re-rolls them mid-`process_slots`).
-#[timed]
-pub fn hash_tree_root_state(rv: &StateReadView, scratch: &mut StateHashScratch) -> B256 {
+fn hash_common_fields(
+    rv: &StateReadView,
+    scratch: &mut StateHashScratch,
+    execution_field: B256,
+) -> [B256; 38] {
     let imm = rv.imm;
     let slot = rv.slot.state();
     let es = rv.epoch.state();
@@ -71,7 +94,7 @@ pub fn hash_tree_root_state(rv: &StateReadView, scratch: &mut StateHashScratch) 
     let randao_mixes = scratch.randao_mixes.as_slice();
     let slashings = scratch.slashings.as_slice();
 
-    let fields: [B256; 38] = [
+    [
         uint64_chunk(imm.genesis_time),
         imm.genesis_validators_root,
         uint64_chunk(slot.slot),
@@ -96,7 +119,7 @@ pub fn hash_tree_root_state(rv: &StateReadView, scratch: &mut StateHashScratch) 
         rv.inactivity.hash_root(),
         hash_sync_committee(&lt.current_sync_committee),
         hash_sync_committee(&lt.next_sync_committee),
-        hash_execution_payload_header(&slot.latest_execution_payload_header),
+        execution_field,
         uint64_chunk(slot.next_withdrawal_index),
         uint64_chunk(slot.next_withdrawal_validator_index),
         hash_historical_summaries(&rv.longtail),
@@ -110,9 +133,112 @@ pub fn hash_tree_root_state(rv: &StateReadView, scratch: &mut StateHashScratch) 
         rv.pending.partial_withdrawals.hash_root(),
         rv.pending.consolidations.hash_root(),
         hash_uint64_vector(&es.proposer_lookahead),
-    ];
+    ]
+}
+
+fn hash_tree_root_state_fulu(rv: &StateReadView, scratch: &mut StateHashScratch) -> B256 {
+    let header = hash_execution_payload_header(&rv.slot.state().latest_execution_payload_header);
+    merkleize(&hash_common_fields(rv, scratch, header))
+}
+
+fn hash_tree_root_state_gloas(rv: &StateReadView, scratch: &mut StateHashScratch) -> B256 {
+    // [Modified in Gloas] `latest_block_hash` (Hash32) replaces the header.
+    let common = hash_common_fields(rv, scratch, rv.slot.state().latest_block_hash);
+    let slot = rv.slot.state();
+
+    let mut fields = [[0u8; 32]; 46];
+    fields[..38].copy_from_slice(&common);
+    // [New in Gloas]
+    fields[38..].copy_from_slice(&[
+        rv.builders.hash_root(),
+        uint64_chunk(slot.next_withdrawal_builder_index),
+        hash_bitvector(&slot.execution_payload_availability),
+        hash_vector(
+            slot.builder_pending_payments.iter(),
+            BUILDER_PENDING_PAYMENTS_LEN,
+            hash_builder_pending_payment,
+        ),
+        rv.pending.builder_withdrawals.hash_root(),
+        hash_execution_payload_bid(&slot.latest_execution_payload_bid),
+        hash_list(
+            slot.payload_expected_withdrawals.iter(),
+            slot.payload_expected_withdrawals.len(),
+            MAX_WITHDRAWALS_PER_PAYLOAD,
+            hash_withdrawal,
+        ),
+        // `ptc_window`: each committee is a `Vector[ValidatorIndex, PTC_SIZE]`.
+        hash_vector(rv.epoch.ptc_window().iter(), PTC_WINDOW_LEN, |c| hash_uint64_vector(c)),
+    ]);
 
     merkleize(&fields)
+}
+
+// ---------------------------------------------------------------------------
+// Gloas (EIP-7732) leaf hashers
+// ---------------------------------------------------------------------------
+
+/// `ExecutionAddress` (20 B) right-padded into a 32-B chunk.
+#[inline]
+fn address_chunk(addr: &[u8; 20]) -> B256 {
+    let mut c = ZERO_HASH;
+    c[..20].copy_from_slice(addr);
+    c
+}
+
+fn hash_builder_pending_withdrawal(w: &BuilderPendingWithdrawal) -> B256 {
+    merkleize(&[
+        address_chunk(&w.fee_recipient),
+        uint64_chunk(w.amount),
+        uint64_chunk(w.builder_index),
+    ])
+}
+
+fn hash_builder_pending_payment(p: &BuilderPendingPayment) -> B256 {
+    merkleize(&[
+        uint64_chunk(p.weight),
+        hash_builder_pending_withdrawal(&p.withdrawal),
+        uint64_chunk(p.proposer_index),
+    ])
+}
+
+fn hash_withdrawal(w: &Withdrawal) -> B256 {
+    merkleize(&[
+        uint64_chunk(w.index),
+        uint64_chunk(w.validator_index),
+        address_chunk(&w.address),
+        uint64_chunk(w.amount),
+    ])
+}
+
+fn hash_execution_payload_bid(bid: &ExecutionPayloadBid) -> B256 {
+    let kzg_commitments_root = hash_list(
+        bid.blob_kzg_commitments.iter(),
+        bid.blob_kzg_commitments.len(),
+        MAX_BLOB_COMMITMENTS_PER_BLOCK,
+        |c| hash_fixed_bytes(c),
+    );
+    merkleize(&[
+        bid.parent_block_hash,
+        bid.parent_block_root,
+        bid.block_hash,
+        bid.prev_randao,
+        address_chunk(&bid.fee_recipient),
+        uint64_chunk(bid.gas_limit),
+        uint64_chunk(bid.builder_index),
+        uint64_chunk(bid.slot),
+        uint64_chunk(bid.value),
+        uint64_chunk(bid.execution_payment),
+        kzg_commitments_root,
+        bid.execution_requests_root,
+    ])
+}
+
+/// `Bitvector[N]` root: the packed bytes as 32-B chunks, merkleized to the
+/// chunk-count depth (no length mix-in).
+fn hash_bitvector(bits: &[u8]) -> B256 {
+    let mut stack = MerkleStack::new();
+    push_bytes_as_chunks(bits, &mut stack);
+    merkle_finalize(stack, list_depth(bits.len().div_ceil(32)))
 }
 
 // ---------------------------------------------------------------------------
@@ -126,23 +252,14 @@ fn list_depth(limit: usize) -> u8 {
 
 #[timed]
 pub fn hash_sync_committee(sc: &SyncCommittee) -> B256 {
-    let mut stack = MerkleStack::new();
-    for pk in &sc.pubkeys {
-        merkle_push(&mut stack, hash_fixed_bytes(pk));
-    }
-    let pubkeys_root = merkle_finalize(stack, list_depth(SYNC_COMMITTEE_SIZE));
-    let agg_root = hash_fixed_bytes(&sc.aggregate_pubkey);
-    hash_concat(&pubkeys_root, &agg_root)
+    let pubkeys_root =
+        hash_vector(sc.pubkeys.iter(), SYNC_COMMITTEE_SIZE, |pk| hash_fixed_bytes(pk));
+    hash_concat(&pubkeys_root, &hash_fixed_bytes(&sc.aggregate_pubkey))
 }
 
 #[timed]
 pub fn hash_eth1_votes(eth1: &common::Eth1View) -> B256 {
-    let mut stack = MerkleStack::new();
-    for v in eth1.iter() {
-        merkle_push(&mut stack, hash_eth1_data(v));
-    }
-    let root = merkle_finalize(stack, list_depth(MAX_ETH1_VOTES));
-    mix_in_length(&root, eth1.len())
+    hash_list(eth1.iter(), eth1.len(), MAX_ETH1_VOTES, hash_eth1_data)
 }
 
 #[timed]
@@ -191,14 +308,12 @@ pub fn hash_execution_payload_header(h: &ExecutionPayloadHeader) -> B256 {
 #[timed]
 pub fn hash_historical_summaries(longtail: &LongtailView) -> B256 {
     let n = longtail.historical_summaries_len();
-    let mut stack = MerkleStack::new();
-    for i in 0..n {
-        let s = longtail.historical_summary(i).unwrap();
-        let leaf = hash_concat(&s.block_summary_root, &s.state_summary_root);
-        merkle_push(&mut stack, leaf);
-    }
-    let root = merkle_finalize(stack, list_depth(HISTORICAL_ROOTS_LIMIT));
-    mix_in_length(&root, n)
+    hash_list(
+        (0..n).map(|i| longtail.historical_summary(i).unwrap()),
+        n,
+        HISTORICAL_ROOTS_LIMIT,
+        |s| hash_concat(&s.block_summary_root, &s.state_summary_root),
+    )
 }
 
 // Compile-time sanity: spec circular buffer sizes match the slice lengths

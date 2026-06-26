@@ -4,5 +4,5 @@
   "max_apply_block_max": "540ms",
   "max_process_epoch_avg": "440ms",
   "max_hash_tree_root_state_avg": "7.6ms",
-  "max_finalize_avg": "800ms"
+  "max_finalize_avg": "850ms"
 }

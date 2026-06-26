@@ -20,7 +20,7 @@ pub fn snappy_decode(path: &Path) -> Vec<u8> {
 /// State-transition runs mutate a rolled fork; post-state comparison hashes
 /// via `hash_tree_root_state` over a `StateWriterView`.
 pub struct LoadedState {
-    pub bs: BeaconState,
+    pub bs: Box<BeaconState>,
     pub state_id: StateId,
 }
 
@@ -46,6 +46,7 @@ impl LoadedState {
             inactivity: bs.inactivity.roll_from(sid.inactivity_idx),
             slot: bs.slot_states.roll_from(sid.slot_idx),
             validators: bs.validators.roll_from(sid.validators_idx),
+            builders: bs.builders.roll_from(sid.builders_idx),
         };
         (view, &mut bs.epoch, &mut bs.longtail)
     }
@@ -53,8 +54,10 @@ impl LoadedState {
 
 pub fn load_state(path: &Path) -> LoadedState {
     let ssz = snappy_decode(path);
-    let mut bs = BeaconState::decompose(&ssz, &SpecConfig::mainnet(), None)
-        .unwrap_or_else(|e| panic!("{}: decompose failed: {e}", path.display()));
+    let mut bs = Box::new(
+        BeaconState::decompose(&ssz, &SpecConfig::mainnet(), None)
+            .unwrap_or_else(|e| panic!("{}: decompose failed: {e}", path.display())),
+    );
     // Anchor each working fork at the decoded base; epoch/longtail stay
     // unrolled (lazy — `None` idx reads the base).
     let state_id = bs.roll_fresh();
