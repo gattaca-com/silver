@@ -7,9 +7,7 @@ use crate::flamegraph_timer::{
     queue_dir::QueueDir,
 };
 #[cfg(feature = "perf")]
-use crate::perf::PerfSample;
-#[cfg(feature = "perf")]
-use crate::perf::read;
+use crate::perf::{PerfSample, read};
 
 thread_local! {
     static PRODUCERS: OnceLock<Producers> = const { OnceLock::new() };

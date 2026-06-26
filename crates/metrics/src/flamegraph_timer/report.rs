@@ -5,6 +5,7 @@ use flux::timing::Nanos;
 use rustc_hash::FxHashMap;
 
 use crate::{
+    Schema,
     flamegraph_timer::{aggregator::CallStackSamples, call_tree, names::leaf_name},
     perf::PerfSample,
 };
@@ -61,19 +62,28 @@ struct PathStatJson<'a> {
     metrics: &'a PathMetrics,
 }
 
+/// A fold's render/match labels: frame-id → resolved name, and the perf event
+/// vocabulary the counter samples are positional in. Travels as one unit to the
+/// call-tree renderer and the leaf matchers.
+#[derive(Clone)]
+pub(crate) struct FlamegraphMeta {
+    pub names: FxHashMap<u64, String>,
+    pub schema: Schema,
+}
+
 /// Per-path `#[timed]` stats for one run. Frame ids stay opaque in `paths`;
-/// `names` resolves them only at the render/match boundary, so the threshold
+/// `meta` resolves them only at the render/match boundary, so the threshold
 /// gauges and the call tree share one model.
 pub struct TimingStats {
     paths: Vec<PathStat>,
-    names: FxHashMap<u64, String>,
+    meta: FlamegraphMeta,
     lost: bool,
 }
 
 impl TimingStats {
     pub(crate) fn from_timings(
         paths: FxHashMap<Vec<u64>, CallStackSamples>,
-        names: FxHashMap<u64, String>,
+        meta: FlamegraphMeta,
         lost: bool,
     ) -> Self {
         let mut paths: Vec<PathStat> = paths
@@ -83,9 +93,9 @@ impl TimingStats {
         // Ids are ASLR'd pointers; sort on resolved names so JSON output is
         // deterministic across runs.
         paths.sort_by(|a, b| {
-            a.path.iter().map(|id| &names[id]).cmp(b.path.iter().map(|id| &names[id]))
+            a.path.iter().map(|id| &meta.names[id]).cmp(b.path.iter().map(|id| &meta.names[id]))
         });
-        Self { paths, names, lost }
+        Self { paths, meta, lost }
     }
 
     /// The mark stream was unreliable — a ring wrapped before the reader
@@ -98,7 +108,7 @@ impl TimingStats {
 
     fn matching_paths<'a>(&'a self, leaf: &'a str) -> impl Iterator<Item = &'a PathStat> {
         self.paths.iter().filter(move |s| {
-            s.path.last().is_some_and(|id| leaf_name(&self.names[id]).as_ref() == leaf)
+            s.path.last().is_some_and(|id| leaf_name(&self.meta.names[id]).as_ref() == leaf)
         })
     }
 
@@ -126,7 +136,7 @@ impl TimingStats {
     }
 
     pub fn call_tree(&self) -> String {
-        call_tree::render(&self.paths, &self.names)
+        call_tree::render(&self.paths, &self.meta)
     }
 
     /// Deterministic JSON `{label, paths}` — see `PathMetrics` for the per-path
@@ -141,7 +151,7 @@ impl TimingStats {
     }
 
     fn path_name(&self, path: &[u64]) -> String {
-        path.iter().map(|id| self.names[id].as_str()).collect::<Vec<_>>().join(";")
+        path.iter().map(|id| self.meta.names[id].as_str()).collect::<Vec<_>>().join(";")
     }
 }
 
@@ -182,7 +192,7 @@ mod tests {
         }
 
         let stats = reader.collect();
-        let names = &stats.names;
+        let names = &stats.meta.names;
         let parent = stats
             .paths
             .iter()

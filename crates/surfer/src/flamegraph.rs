@@ -11,7 +11,6 @@ pub struct Flamegraph {
 }
 
 impl Flamegraph {
-    /// `None` reader until a run publishes its pid; polling reattaches.
     pub fn attach(app_name: &str) -> Self {
         Self {
             reader: FlamegraphReader::attach(app_name),
@@ -61,7 +60,7 @@ impl Flamegraph {
     /// producer, or the producer restarted with a new pid and new rings.
     pub fn reattach_if_restarted(&mut self, app_name: &str) {
         if let Some(pid) = FlamegraphReader::published_pid(app_name) {
-            if self.pid() != Some(pid) {
+            if self.reader.as_ref().map(FlamegraphReader::pid) != Some(pid) {
                 self.reattach(app_name);
             }
         }
@@ -71,10 +70,6 @@ impl Flamegraph {
         self.reader = FlamegraphReader::attach(app_name);
         self.tree.clear();
         self.scroll = 0;
-    }
-
-    fn pid(&self) -> Option<u32> {
-        self.reader.as_ref().map(FlamegraphReader::pid)
     }
 
     pub fn is_attached(&self) -> bool {

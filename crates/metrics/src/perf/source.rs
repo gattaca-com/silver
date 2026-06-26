@@ -1,14 +1,15 @@
-//! Counter source: open the [`schema`](super::schema)'s events per thread via
-//! rdpmc, then [`read`] a snapshot to ride alongside each flamegraph mark. Only
+//! Counter source: open the [`Schema::local`](super::Schema::local) events
+//! per thread via rdpmc, then [`read`] a snapshot to ride alongside each
+//! flamegraph mark. Only
 //! compiled with the `perf` feature; without it `#[timed]` never calls in here
 //! and degrades to timing only.
 
 pub(crate) use imp::read;
 
 mod imp {
-    use crate::perf::{MAX_EVENTS, PerfSample, raw::HwCounter, schema};
+    use crate::perf::{MAX_EVENTS, PerfSample, Schema, raw::HwCounter};
 
-    /// Per-thread counters, one slot per [`schema`] entry (`None` where the
+    /// Per-thread counters, one slot per [`Schema`] entry (`None` where the
     /// event couldn't be opened — over budget or unsupported).
     struct Counters {
         opened: Vec<Option<HwCounter>>,
@@ -17,7 +18,7 @@ mod imp {
     impl Counters {
         fn open() -> Option<Self> {
             let opened: Vec<_> =
-                schema().iter().map(|e| HwCounter::event(e.type_, e.config)).collect();
+                Schema::local().iter().map(|e| HwCounter::event(e.type_, e.config)).collect();
             opened.iter().any(Option::is_some).then_some(Self { opened })
         }
 

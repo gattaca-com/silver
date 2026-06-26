@@ -22,7 +22,7 @@ mod sample;
 #[cfg(feature = "perf")]
 mod source;
 
-pub use events::{EventSpec, schema, slot};
+pub use events::Schema;
 pub use sample::{MAX_EVENTS, PerfSample};
 #[cfg(feature = "perf")]
 pub(crate) use source::read;

@@ -8,9 +8,12 @@ use flux::{
     utils::directories::{local_share_dir, shmem_dir_queues_with_base},
 };
 
-use crate::flamegraph_timer::mark::{Frame, Mark};
 #[cfg(feature = "perf")]
 use crate::perf::{MAX_EVENTS, PerfSample};
+use crate::{
+    Schema,
+    flamegraph_timer::mark::{Frame, Mark},
+};
 
 /// Each ring element type carries its own ring name and empty value, so the
 /// two can't be mismatched at a call site.
@@ -51,6 +54,26 @@ impl QueueDir {
     /// Publish our pid so a surfer can attach to this run.
     pub(super) fn write_pid(&self) {
         let _ = std::fs::write(self.0.join("pid"), std::process::id().to_string());
+    }
+
+    /// Publish the perf event names this run measures so a surfer labels its
+    /// positional samples by our vocabulary, not its own `SILVER_PERF_EVENTS`.
+    /// Removed when the run has no perf, so a surfer can't fold a prior perf
+    /// run's stale names against samples that no longer exist.
+    pub(super) fn publish_perf_schema(&self) {
+        let path = self.0.join("perf_schema");
+        #[cfg(feature = "perf")]
+        {
+            let names: Vec<&str> = Schema::local().iter().map(|e| e.label.as_str()).collect();
+            let _ = std::fs::write(path, names.join(","));
+        }
+        #[cfg(not(feature = "perf"))]
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// The vocabulary this run published, if it enabled perf.
+    pub(super) fn perf_schema(&self) -> Option<Schema> {
+        std::fs::read_to_string(self.0.join("perf_schema")).ok().map(|s| Schema::parse(&s))
     }
 
     /// The published pid, but only if its process is still alive: the pid file
@@ -114,5 +137,6 @@ pub fn enable_surfer() {
     crate::TIMING.set_enabled();
     let dir = QueueDir::open();
     dir.clear_stale();
+    dir.publish_perf_schema();
     dir.write_pid();
 }

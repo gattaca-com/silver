@@ -25,7 +25,7 @@ pub use silver_common_macros::timed;
 pub mod flamegraph_timer;
 mod perf;
 mod timing;
-pub use perf::{EventSpec, MAX_EVENTS, PerfSample, schema, slot};
+pub(crate) use perf::Schema;
 pub(crate) use timing::TIMING;
 #[cfg(test)]
 pub(crate) use timing::test_shmem;

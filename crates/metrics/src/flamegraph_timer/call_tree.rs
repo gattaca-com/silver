@@ -8,12 +8,14 @@ use flux::timing::Nanos;
 use rustc_hash::FxHashMap;
 
 use crate::{
-    flamegraph_timer::{names::leaf_name, report::PathStat},
+    flamegraph_timer::{
+        names::leaf_name,
+        report::{FlamegraphMeta, PathStat},
+    },
     perf::PerfSample,
-    schema, slot,
 };
 
-pub(super) fn render(paths: &[PathStat], names: &FxHashMap<u64, String>) -> String {
+pub(super) fn render(paths: &[PathStat], meta: &FlamegraphMeta) -> String {
     let mut root = Node::default();
     for s in paths {
         let mut node = &mut root;
@@ -28,7 +30,7 @@ pub(super) fn render(paths: &[PathStat], names: &FxHashMap<u64, String>) -> Stri
     }
 
     let mut lines = Vec::new();
-    root.render_children(0, names, &mut lines);
+    root.render_children(0, meta, &mut lines);
     render_aligned(&lines)
 }
 
@@ -46,7 +48,7 @@ struct Node {
 const COVERAGE_PCT: u64 = 99;
 
 impl Node {
-    fn render_children(&self, depth: usize, names: &FxHashMap<u64, String>, out: &mut Vec<Line>) {
+    fn render_children(&self, depth: usize, meta: &FlamegraphMeta, out: &mut Vec<Line>) {
         if self.children.is_empty() {
             return;
         }
@@ -54,7 +56,7 @@ impl Node {
             .children
             .iter()
             .map(|(id, c)| Row {
-                label: leaf_name(&names[id]),
+                label: leaf_name(&meta.names[id]),
                 sum_ns: c.tracked_sum_ns,
                 count: c.count,
                 perf: c.perf,
@@ -92,16 +94,16 @@ impl Node {
         for r in &rows[..cut] {
             let avg = r.sum_ns / r.count.max(1);
             let count = Some(CallCount { total: r.count, per_parent: self.count });
-            out.push(make_line(indent, r.label.as_ref(), avg, count, &r.perf));
+            out.push(make_line(indent, r.label.as_ref(), avg, count, &r.perf, meta));
             if let Some(child) = r.child {
-                child.render_children(depth + 1, names, out);
+                child.render_children(depth + 1, meta, out);
             }
         }
         if cut < rows.len() {
             let rem_sum: Nanos = rows[cut..].iter().map(|r| r.sum_ns).sum();
             let rem_avg = rem_sum / self.count.max(1);
             let label = format!("... ({} more)", rows.len() - cut);
-            out.push(make_line(indent, &label, rem_avg, None, &PerfSample::default()));
+            out.push(make_line(indent, &label, rem_avg, None, &PerfSample::default(), meta));
         }
     }
 }
@@ -135,6 +137,7 @@ fn make_line(
     avg: Nanos,
     count: Option<CallCount>,
     perf: &PerfSample,
+    meta: &FlamegraphMeta,
 ) -> Line {
     let name = format!("{blank:indent$}{label}", blank = "");
     let avg = avg.to_string();
@@ -151,18 +154,18 @@ fn make_line(
             format!("  ×{per}  ({} total)", c.total)
         }
     };
-    let counters = counter_text(perf, count.map_or(0, |c| c.total));
+    let counters = counter_text(perf, count.map_or(0, |c| c.total), meta);
     Line { name, avg, suffix, counters }
 }
 
 /// Per-call counter columns: each non-IPC-input event as `N label/call`, then
 /// IPC derived from the instructions/cycles slots when both were measured.
 /// `None` when no counters were collected (perf off, or a synthetic row).
-fn counter_text(perf: &PerfSample, calls: u64) -> Option<String> {
+fn counter_text(perf: &PerfSample, calls: u64, meta: &FlamegraphMeta) -> Option<String> {
     if calls == 0 || perf.vals.iter().all(|&v| v == 0) {
         return None;
     }
-    let schema = schema();
+    let schema = &meta.schema;
     let is_ipc_input = |label: &str| matches!(label, "instructions" | "cpu-cycles" | "cycles");
     let mut parts: Vec<String> = schema
         .iter()
@@ -170,11 +173,9 @@ fn counter_text(perf: &PerfSample, calls: u64) -> Option<String> {
         .filter(|(_, e)| !is_ipc_input(&e.label))
         .map(|(i, e)| format!("{:>9} {}/call", perf.vals[i] / calls, e.label))
         .collect();
-    if let (Some(i), Some(c)) =
-        (slot("instructions"), slot("cpu-cycles").or_else(|| slot("cycles"))) &&
-        perf.vals[c] > 0
-    {
-        parts.push(format!("ipc {:.2}", perf.vals[i] as f64 / perf.vals[c] as f64));
+    let ipc = schema.ipc(&perf.vals);
+    if ipc > 0.0 {
+        parts.push(format!("ipc {ipc:.2}"));
     }
     (!parts.is_empty()).then(|| parts.join("  "))
 }

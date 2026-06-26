@@ -17,25 +17,29 @@ use flux::communication::{
 };
 use rustc_hash::FxHashMap;
 
-use crate::flamegraph_timer::{
-    aggregator::Aggregator,
-    mark::{Frame, Mark},
-    queue_dir::{QueueDir, RingEntry},
-    report::TimingStats,
-    symbols::FrameResolver,
-};
 #[cfg(feature = "perf")]
 use crate::perf::PerfSample;
+use crate::{
+    Schema,
+    flamegraph_timer::{
+        aggregator::Aggregator,
+        mark::{Frame, Mark},
+        queue_dir::{QueueDir, RingEntry},
+        report::{FlamegraphMeta, TimingStats},
+        symbols::FrameResolver,
+    },
+};
 
 pub(super) struct EventsDrainer {
     dir: QueueDir,
     threads: HashMap<String, ThreadDrainer>,
-    names: FxHashMap<u64, String>,
+    meta: FlamegraphMeta,
 }
 
 impl EventsDrainer {
-    pub(super) fn new(dir: QueueDir) -> Self {
-        Self { dir, threads: HashMap::new(), names: FxHashMap::default() }
+    pub(super) fn new(dir: QueueDir, schema: Schema) -> Self {
+        let meta = FlamegraphMeta { names: FxHashMap::default(), schema };
+        Self { dir, threads: HashMap::new(), meta }
     }
 
     pub(super) fn poll(&mut self, resolver: &impl FrameResolver) {
@@ -47,7 +51,7 @@ impl EventsDrainer {
             }
         }
         for thread in self.threads.values_mut() {
-            thread.poll(&mut self.names, resolver);
+            thread.poll(&mut self.meta.names, resolver);
         }
     }
 
@@ -59,7 +63,7 @@ impl EventsDrainer {
             thread.fold_into(&mut aggregator);
         }
         lost |= aggregator.desynced();
-        TimingStats::from_timings(aggregator.into_paths(), self.names.clone(), lost)
+        TimingStats::from_timings(aggregator.into_paths(), self.meta.clone(), lost)
     }
 }
 

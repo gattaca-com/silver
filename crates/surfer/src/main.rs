@@ -1,7 +1,8 @@
 //! Terminal metrics viewer for silver. Reads `counters-*`,
-//! `latency-*`, `tilemetrics-*`, `perf-*` files from flux's shmem
+//! `latency-*`, `tilemetrics-*` files from flux's shmem
 //! queues directory — `{base_dir}/{app_name}/shmem/queues/` — and
-//! renders them in a ratatui-based TUI.
+//! renders them in a ratatui-based TUI. `#[timed]` perf counters are
+//! folded into the flamegraph pane, not surfaced as a separate source.
 //!
 //! Usage: `surfer [BASE_DIR] [APP_NAME]`.
 //! Defaults: `BASE_DIR = flux::utils::directories::local_share_dir()`
@@ -31,9 +32,7 @@ mod sources;
 use crate::{
     app::App,
     flamegraph::Flamegraph,
-    sources::{
-        counters::CounterSet, perf::PerfSet, tilemetrics::TileMetricsSet, timings::TimingSet,
-    },
+    sources::{counters::CounterSet, tilemetrics::TileMetricsSet, timings::TimingSet},
 };
 
 const TICK: Duration = Duration::from_millis(100);
@@ -109,23 +108,8 @@ fn main() -> io::Result<()> {
         t.drain();
     }
 
-    let mut perf_sets: Vec<PerfSet> = sources
-        .perf
-        .iter()
-        .filter_map(|f| match PerfSet::open(f) {
-            Ok(p) => Some(p),
-            Err(e) => {
-                eprintln!("surfer: skipping {}: {e}", f.path.display());
-                None
-            }
-        })
-        .collect();
-    for p in &mut perf_sets {
-        p.drain();
-    }
     let flamegraph = Flamegraph::attach(&app_name);
-    let mut app =
-        App::new(counter_sets, tcache_sets, timing_sets, tile_sets, perf_sets, flamegraph);
+    let mut app = App::new(counter_sets, tcache_sets, timing_sets, tile_sets, flamegraph);
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();

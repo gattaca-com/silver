@@ -31,8 +31,8 @@ struct OpenFrame {
 /// needs the producer's binary and belongs to the reader that owns it.
 ///
 /// Each `fold_thread` call folds a mark stream from a fresh stack, so a
-/// cumulative tree comes from re-folding the whole retained stream (as the perf
-/// harness does at [`drain`]), not from folding disjoint windows.
+/// cumulative tree comes from re-folding the whole retained stream, not from
+/// folding disjoint windows.
 #[derive(Default)]
 pub(crate) struct Aggregator {
     paths: FxHashMap<Vec<u64>, CallStackSamples>,

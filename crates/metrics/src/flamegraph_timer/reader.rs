@@ -7,11 +7,14 @@ use std::{
     time::Duration,
 };
 
-use crate::flamegraph_timer::{
-    drainer::EventsDrainer,
-    queue_dir::{QueueDir, enable_surfer},
-    report::TimingStats,
-    symbols::{InProcessSymbolsResolver, RemoteSymbolsResolver},
+use crate::{
+    Schema,
+    flamegraph_timer::{
+        drainer::EventsDrainer,
+        queue_dir::{QueueDir, enable_surfer},
+        report::TimingStats,
+        symbols::{InProcessSymbolsResolver, RemoteSymbolsResolver},
+    },
 };
 
 /// Reads a *running* silver's `#[timed]` marks from its shmem rings and folds
@@ -39,8 +42,9 @@ impl FlamegraphReader {
     pub fn attach(app: &str) -> Option<Self> {
         let dir = QueueDir::open_app(app);
         let pid = dir.live_pid()?;
+        let schema = dir.perf_schema().unwrap_or_else(Schema::empty);
         Some(Self {
-            drainer: EventsDrainer::new(dir),
+            drainer: EventsDrainer::new(dir, schema),
             resolver: RemoteSymbolsResolver::new(pid),
             pid,
         })
@@ -84,14 +88,17 @@ impl LocalReader {
     /// Stop the background reader and fold the whole run into stats.
     pub fn collect(self) -> TimingStats {
         self.stop.store(true, Ordering::Release);
-        let drainer = self.handle.join().unwrap_or_else(|_| EventsDrainer::new(QueueDir::open()));
+        let drainer = self
+            .handle
+            .join()
+            .unwrap_or_else(|_| EventsDrainer::new(QueueDir::open(), Schema::local().clone()));
         drainer.fold()
     }
 
     fn run(stop: Arc<AtomicBool>) -> EventsDrainer {
         // Boots with the producer, so it reads the whole run from slot 0 and any
         // loss is a genuine overrun, not a pre-attach gap.
-        let mut drainer = EventsDrainer::new(QueueDir::open());
+        let mut drainer = EventsDrainer::new(QueueDir::open(), Schema::local().clone());
         loop {
             drainer.poll(&InProcessSymbolsResolver);
             // Poll once more after stop is observed: producers have finished by
