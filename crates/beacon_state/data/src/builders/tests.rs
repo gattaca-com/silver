@@ -19,7 +19,7 @@ fn builder(seed: u8) -> Builder {
 
 /// Independent full-recompute over the same effective builders.
 fn naive_root(view: &BuildersView) -> B256 {
-    hash_list(view.iter(), view.len(), BUILDER_REGISTRY_LIMIT, builder_hash)
+    hash_list(view.iter(), view.len(), BUILDER_REGISTRY_LIMIT, |b| builder_hash(&b))
 }
 
 fn ssz_bytes(builders: &[Builder]) -> Vec<u8> {

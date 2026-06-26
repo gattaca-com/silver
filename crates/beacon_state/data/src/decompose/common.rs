@@ -5,9 +5,11 @@ use crate::{
     EpochGroup, EpochStateFinalized, Eth1Group, Eth1Votes, FinalizedBuilders, FinalizedValidators,
     InactivityScoresGroup, LongtailGroup, LongtailState, PendingGroup, PreviousParticipationGroup,
     QueueItem, SlotStateFinalized, SlotStateGroup, SpecConfig, ValidatorsDecodeError,
-    ValidatorsGroup, ssz_hash,
+    ValidatorsGroup,
+    gloas::BuilderPendingWithdrawal,
+    ssz_hash,
     types::{
-        B256, Checkpoint, HISTORICAL_ROOTS_LIMIT, Immutable, PROPOSER_LOOKAHEAD_SIZE,
+        self, B256, Checkpoint, HISTORICAL_ROOTS_LIMIT, Immutable, PROPOSER_LOOKAHEAD_SIZE,
         PendingConsolidation, PendingDeposit, PendingPartialWithdrawal,
     },
 };
@@ -170,10 +172,11 @@ impl BeaconState {
         offsets: &Offsets,
         pubkeys: Option<&[blst::min_pk::PublicKey]>,
         consolidations_end: usize,
-        mut immutable: Immutable,
+        builder_withdrawals: &[u8],
         epoch: EpochStateFinalized,
         slot: SlotStateFinalized,
         builders: FinalizedBuilders,
+        cfg: &SpecConfig,
     ) -> Result<Self, DecomposeError> {
         let eth1 = Eth1Group::new(Eth1Votes::from_ssz(ssz, offsets)?);
 
@@ -197,6 +200,8 @@ impl BeaconState {
 
         let inactivity = InactivityScoresGroup::new(cap, n, &ssz[offsets.inactivity..offsets.eph])?;
 
+        let mut immutable = Immutable::default();
+        immutable.fill_from_ssz(ssz, cfg);
         immutable.fill_historical_roots_hash(ssz, offsets)?;
 
         // Longtail's sync-committee → validator-index resolution reads the
@@ -204,7 +209,7 @@ impl BeaconState {
         let longtail =
             LongtailGroup::new(LongtailState::from_ssz(ssz, offsets, validators.finalized())?);
 
-        let pending = decode_pending(ssz, offsets, consolidations_end)?;
+        let pending = decode_pending(ssz, offsets, consolidations_end, builder_withdrawals)?;
 
         Ok(Self {
             immutable,
@@ -228,7 +233,7 @@ impl Immutable {
     pub(super) fn fill_from_ssz(&mut self, ssz: &[u8], cfg: &SpecConfig) {
         self.genesis_time = u64_le(ssz, F0);
         self.genesis_validators_root = b256(ssz, F1);
-        self.fork = crate::types::Fork {
+        self.fork = types::Fork {
             previous_version: ssz[F3..F3 + 4].try_into().unwrap(),
             current_version: ssz[F3 + 4..F3 + 8].try_into().unwrap(),
             epoch: u64_le(ssz, F3 + 8),
@@ -271,6 +276,7 @@ fn decode_pending(
     ssz: &[u8],
     o: &Offsets,
     consolidations_end: usize,
+    builder_withdrawals: &[u8],
 ) -> Result<PendingGroup, DecomposeError> {
     let pd = validate_queue::<PendingDeposit>(
         &ssz[o.pending_deposits..o.pending_withdrawals],
@@ -289,7 +295,17 @@ fn decode_pending(
         |len| DecomposeError::PendingConsolidationsLenNotMultiple { len },
         |n, max| DecomposeError::TooManyPendingConsolidations { n, max },
     )?;
-    Ok(PendingGroup::from_ssz(pd, pw, pc))
+    // Gloas-only; Fulu passes `&[]`, which validates to an empty queue.
+    let bpw = validate_queue::<BuilderPendingWithdrawal>(
+        builder_withdrawals,
+        |len| DecomposeError::GloasFieldLen {
+            field: "builder_pending_withdrawals",
+            len,
+            size: BuilderPendingWithdrawal::SSZ_SIZE,
+        },
+        |n, max| DecomposeError::GloasTooMany { field: "builder_pending_withdrawals", n, max },
+    )?;
+    Ok(PendingGroup::from_ssz(pd, pw, pc, bpw))
 }
 
 /// Validate a pending-queue byte range: whole records, count within limit.

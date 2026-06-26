@@ -5,8 +5,8 @@ use silver_beacon_state_data::{
     SLOTS_PER_HISTORICAL_ROOT, SYNC_COMMITTEE_SIZE, StateReadView, SyncCommittee, Withdrawal,
     effective_randao_mixes_into, effective_slashings_into,
     gloas::{
-        BUILDER_PENDING_PAYMENTS_LEN, BUILDER_PENDING_WITHDRAWALS_LIMIT,
-        MAX_BLOB_COMMITMENTS_PER_BLOCK, MAX_WITHDRAWALS_PER_PAYLOAD, PTC_WINDOW_LEN,
+        BUILDER_PENDING_PAYMENTS_LEN, MAX_BLOB_COMMITMENTS_PER_BLOCK, MAX_WITHDRAWALS_PER_PAYLOAD,
+        PTC_WINDOW_LEN,
     },
 };
 use silver_common::metrics::timed;
@@ -158,12 +158,7 @@ fn hash_tree_root_state_gloas(rv: &StateReadView, scratch: &mut StateHashScratch
             BUILDER_PENDING_PAYMENTS_LEN,
             hash_builder_pending_payment,
         ),
-        hash_list(
-            slot.builder_pending_withdrawals.iter(),
-            slot.builder_pending_withdrawals.len(),
-            BUILDER_PENDING_WITHDRAWALS_LIMIT,
-            hash_builder_pending_withdrawal,
-        ),
+        rv.pending.builder_withdrawals.hash_root(),
         hash_execution_payload_bid(&slot.latest_execution_payload_bid),
         hash_list(
             slot.payload_expected_withdrawals.iter(),

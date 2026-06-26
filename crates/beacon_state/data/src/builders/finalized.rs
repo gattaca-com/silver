@@ -17,23 +17,11 @@ pub struct FinalizedBuilders {
 
 impl Default for FinalizedBuilders {
     fn default() -> Self {
-        Self::from_builders(&[])
+        Self::from_ssz(&[]).expect("empty builders registry is valid")
     }
 }
 
 impl FinalizedBuilders {
-    fn from_builders(parsed: &[Builder]) -> Self {
-        let count = parsed.len();
-        let capacity = builder_capacity(count);
-        let mut builders = vec![Builder::default(); capacity].into_boxed_slice();
-        builders[..count].copy_from_slice(parsed);
-        let hash = FinalizedHashTree::from_leaves(
-            (0..count).map(|i| builder_hash(&builders[i])),
-            capacity,
-        );
-        Self { builders, count, hash }
-    }
-
     pub(crate) fn from_ssz(bytes: &[u8]) -> Result<Self, DecomposeError> {
         if !bytes.len().is_multiple_of(BUILDER_SSZ) {
             return Err(DecomposeError::GloasFieldLen {
@@ -50,20 +38,28 @@ impl FinalizedBuilders {
                 max: BUILDER_REGISTRY_LIMIT,
             });
         }
-        let parsed: Vec<Builder> = (0..count)
-            .map(|i| {
-                let s = &bytes[i * BUILDER_SSZ..];
-                Builder {
-                    pubkey: s[0..48].try_into().unwrap(),
-                    version: s[48],
-                    execution_address: s[49..69].try_into().unwrap(),
-                    balance: u64::from_le_bytes(s[69..77].try_into().unwrap()),
-                    deposit_epoch: u64::from_le_bytes(s[77..85].try_into().unwrap()),
-                    withdrawable_epoch: u64::from_le_bytes(s[85..93].try_into().unwrap()),
-                }
-            })
-            .collect();
-        Ok(Self::from_builders(&parsed))
+
+        // One allocation: the capacity-sized registry, filled in place from the
+        // SSZ bytes (no intermediate parsed buffer). Tail past `count` stays
+        // spec-default for the append headroom.
+        let mut builders = vec![Builder::default(); builder_capacity(count)].into_boxed_slice();
+        for (i, slot) in builders[..count].iter_mut().enumerate() {
+            let s = &bytes[i * BUILDER_SSZ..];
+            *slot = Builder {
+                pubkey: s[0..48].try_into().unwrap(),
+                version: s[48],
+                execution_address: s[49..69].try_into().unwrap(),
+                balance: u64::from_le_bytes(s[69..77].try_into().unwrap()),
+                deposit_epoch: u64::from_le_bytes(s[77..85].try_into().unwrap()),
+                withdrawable_epoch: u64::from_le_bytes(s[85..93].try_into().unwrap()),
+            };
+        }
+
+        let hash = FinalizedHashTree::from_leaves(
+            builders[..count].iter().map(builder_hash),
+            builder_capacity(count),
+        );
+        Ok(Self { builders, count, hash })
     }
 
     #[inline]
@@ -79,6 +75,11 @@ impl FinalizedBuilders {
     #[inline]
     pub(super) fn get(&self, i: usize) -> Option<&Builder> {
         (i < self.count).then(|| &self.builders[i])
+    }
+
+    #[inline]
+    pub(super) fn as_slice(&self) -> &[Builder] {
+        &self.builders[..self.count]
     }
 
     #[inline]

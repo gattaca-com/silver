@@ -3,8 +3,8 @@ use crate::{
     LongtailId, PendingId, PreviousParticipationId, SlotStateId, ValidatorsId,
     decompose::common::{b256, u32_le, u64_le},
     gloas::{
-        BUILDER_PENDING_PAYMENTS_LEN, BuilderPendingPayment, BuilderPendingWithdrawal,
-        EXECUTION_PAYLOAD_AVAILABILITY_BYTES, ExecutionPayloadBid, GLOAS_FORK_VERSION, Withdrawal,
+        BUILDER_PENDING_PAYMENTS_LEN, BuilderPendingPayment, EXECUTION_PAYLOAD_AVAILABILITY_BYTES,
+        ExecutionPayloadBid, GLOAS_FORK_VERSION, Withdrawal,
     },
 };
 
@@ -108,7 +108,6 @@ pub struct SlotState {
     pub next_withdrawal_builder_index: u64,
     pub execution_payload_availability: [u8; EXECUTION_PAYLOAD_AVAILABILITY_BYTES],
     pub builder_pending_payments: [BuilderPendingPayment; BUILDER_PENDING_PAYMENTS_LEN],
-    pub builder_pending_withdrawals: Vec<BuilderPendingWithdrawal>,
     pub latest_execution_payload_bid: ExecutionPayloadBid,
     pub payload_expected_withdrawals: Vec<Withdrawal>,
 }
@@ -135,7 +134,6 @@ impl Default for SlotState {
             execution_payload_availability: [0u8; EXECUTION_PAYLOAD_AVAILABILITY_BYTES],
             builder_pending_payments: [BuilderPendingPayment::default();
                 BUILDER_PENDING_PAYMENTS_LEN],
-            builder_pending_withdrawals: Vec::new(),
             latest_execution_payload_bid: ExecutionPayloadBid::default(),
             payload_expected_withdrawals: Vec::new(),
         }

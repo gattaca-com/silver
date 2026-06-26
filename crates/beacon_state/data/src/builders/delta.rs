@@ -111,10 +111,19 @@ impl<'a> BuildersView<'a> {
         }
     }
 
-    #[inline]
-    pub fn iter(&self) -> impl Iterator<Item = &'a Builder> + use<'a> {
-        let view = *self;
-        (0..view.len()).map(move |i| view.get(i).unwrap())
+    /// Single forward-cursor merge of the base/appended slots with the sparse
+    /// `edits` overlay (no per-element lookup). `Builder` is `Copy`, so this
+    /// yields by value.
+    pub fn iter(self) -> impl Iterator<Item = Builder> + 'a {
+        let base_count = self.delta.base_count;
+        let base = self.base.as_slice();
+        let appended = self.delta.appended.as_slice();
+        self.delta.edits.sweep(
+            base_count,
+            self.len(),
+            move |i| base[i],
+            move |i| appended[i - base_count],
+        )
     }
 
     #[inline]

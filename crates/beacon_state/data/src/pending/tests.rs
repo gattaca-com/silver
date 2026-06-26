@@ -36,7 +36,7 @@ fn pc(i: u64) -> PendingConsolidation {
 /// they were dropped and the drained entry resurrected).
 #[test]
 fn finalize_preserves_survivor_queue_after_inherited_drain() {
-    let mut g = PendingGroup::from_ssz(&[], &[], &[]);
+    let mut g = PendingGroup::from_ssz(&[], &[], &[], &[]);
 
     let winner = {
         let mut wv = g.roll_fresh();

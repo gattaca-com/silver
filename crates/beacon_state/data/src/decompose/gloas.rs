@@ -6,7 +6,6 @@ use super::common::{
 use crate::{
     BeaconState, EpochStateFinalized, FinalizedBuilders, SlotStateFinalized, SpecConfig,
     gloas::{PTC_SIZE, PTC_WINDOW_LEN},
-    types::Immutable,
 };
 
 // Gloas fixed-part byte offsets, from field 24 on (≤ F23 shares Fulu's
@@ -57,8 +56,6 @@ pub(super) fn decompose(
         return Err(DecomposeError::TruncatedFixedPart { len: ssz.len(), need: GLOAS_FIXED_PART });
     }
     let off = read_offsets(ssz)?;
-    let mut immutable = Immutable::default();
-    immutable.fill_from_ssz(ssz, cfg);
     let epoch = EpochStateFinalized::from_ssz_gloas(ssz);
     let slot = SlotStateFinalized::from_ssz_gloas(ssz, &off, &epoch)?;
     let builders =
@@ -68,7 +65,17 @@ pub(super) fn decompose(
     // identical to Fulu given the offsets; `builders` bounds the
     // `pending_consolidations` body in place of the end of the buffer
     // (`ssz.len()`).
-    BeaconState::assemble(ssz, &off.shared, pubkeys, off.builders, immutable, epoch, slot, builders)
+    BeaconState::assemble(
+        ssz,
+        &off.shared,
+        pubkeys,
+        off.builders,
+        &ssz[off.builder_pending_withdrawals..off.latest_execution_payload_bid],
+        epoch,
+        slot,
+        builders,
+        cfg,
+    )
 }
 
 fn read_offsets(ssz: &[u8]) -> Result<GloasOffsets, DecomposeError> {

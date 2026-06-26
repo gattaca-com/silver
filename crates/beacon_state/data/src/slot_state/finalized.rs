@@ -18,9 +18,8 @@ use crate::{
     },
     encode::write_b256_slice,
     gloas::{
-        BUILDER_PENDING_PAYMENTS_LEN, BUILDER_PENDING_WITHDRAWALS_LIMIT, BuilderPendingPayment,
-        BuilderPendingWithdrawal, EXECUTION_PAYLOAD_AVAILABILITY_BYTES, ExecutionPayloadBid,
-        MAX_WITHDRAWALS_PER_PAYLOAD, Withdrawal,
+        BUILDER_PENDING_PAYMENTS_LEN, BuilderPendingPayment, EXECUTION_PAYLOAD_AVAILABILITY_BYTES,
+        ExecutionPayloadBid, MAX_WITHDRAWALS_PER_PAYLOAD, Withdrawal,
     },
     types::{
         B256, BeaconBlockHeader, EPOCHS_PER_HISTORICAL_VECTOR, EPOCHS_PER_SLASHINGS_VECTOR,
@@ -30,7 +29,6 @@ use crate::{
 
 // SSZ-serialised sizes of the Gloas fixed-width records.
 const WITHDRAWAL_SSZ: usize = 44;
-const BUILDER_PENDING_WITHDRAWAL_SSZ: usize = 36;
 const BUILDER_PENDING_PAYMENT_SSZ: usize = 52;
 
 // size: ~1 KB inline (SlotState scalars + 2 × Box headers); heap 512 KB
@@ -140,7 +138,6 @@ impl SlotStateFinalized {
             next_withdrawal_builder_index: u64_le(ssz, G_NEXT_WITHDRAWAL_BUILDER_INDEX),
             execution_payload_availability: read_availability(ssz),
             builder_pending_payments: read_pending_payments(ssz),
-            builder_pending_withdrawals: read_pending_withdrawals(ssz, off)?,
             latest_execution_payload_bid: ExecutionPayloadBid::from_ssz(
                 &ssz[off.latest_execution_payload_bid..off.payload_expected_withdrawals],
             )?,
@@ -158,14 +155,13 @@ impl SlotStateFinalized {
     }
 }
 
-// block/state roots (alignment-1 bulk copy; B256 has align 1).
+// block/state roots — B256 is align-1, so the region reinterprets as `&[B256]`
+// and copies straight into a fresh box (no zero-init).
 fn read_roots(ssz: &[u8], at: usize) -> Box<[B256]> {
-    let mut roots = vec![[0u8; 32]; SLOTS_PER_HISTORICAL_ROOT].into_boxed_slice();
     let src: &[B256] = unsafe {
         std::slice::from_raw_parts(ssz[at..].as_ptr().cast::<B256>(), SLOTS_PER_HISTORICAL_ROOT)
     };
-    roots.copy_from_slice(src);
-    roots
+    src.to_vec().into_boxed_slice()
 }
 
 fn read_availability(ssz: &[u8]) -> [u8; EXECUTION_PAYLOAD_AVAILABILITY_BYTES] {
@@ -185,22 +181,6 @@ fn read_pending_payments(ssz: &[u8]) -> [BuilderPendingPayment; BUILDER_PENDING_
         );
     }
     payments
-}
-
-fn read_pending_withdrawals(
-    ssz: &[u8],
-    off: &GloasOffsets,
-) -> Result<Vec<BuilderPendingWithdrawal>, DecomposeError> {
-    let body = &ssz[off.builder_pending_withdrawals..off.latest_execution_payload_bid];
-    let count = checked_count(
-        body.len(),
-        BUILDER_PENDING_WITHDRAWAL_SSZ,
-        "builder_pending_withdrawals",
-        BUILDER_PENDING_WITHDRAWALS_LIMIT,
-    )?;
-    Ok((0..count)
-        .map(|i| BuilderPendingWithdrawal::from_ssz(&body[i * BUILDER_PENDING_WITHDRAWAL_SSZ..]))
-        .collect())
 }
 
 fn read_expected_withdrawals(

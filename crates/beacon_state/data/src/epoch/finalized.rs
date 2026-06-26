@@ -8,10 +8,7 @@ use crate::{
         gloas::{G_DEPOSIT_BALANCE_TO_CONSUME, G_PROPOSER_LOOKAHEAD, G_PTC_WINDOW},
     },
     gloas::{PTC_SIZE, PTC_WINDOW_LEN, PtcCommittee, zeroed_ptc_window},
-    types::{
-        B256, EPOCHS_PER_HISTORICAL_VECTOR, EPOCHS_PER_SLASHINGS_VECTOR, EpochState,
-        PROPOSER_LOOKAHEAD_SIZE,
-    },
+    types::{B256, EPOCHS_PER_HISTORICAL_VECTOR, EPOCHS_PER_SLASHINGS_VECTOR, EpochState},
 };
 
 // size: ~680 B stack (2 × Box<[T]> header + EpochState); heap at default-init
@@ -65,58 +62,40 @@ impl EpochStateFinalized {
 
     #[timed]
     pub(crate) fn from_ssz(ssz: &[u8]) -> Self {
-        let mut fin = Self::default();
-
+        // SAFETY: `B256` is align-1, so the randao region reinterprets as `&[B256]`.
         let randao_src: &[B256] = unsafe {
             std::slice::from_raw_parts(
                 ssz[F13..].as_ptr().cast::<B256>(),
                 EPOCHS_PER_HISTORICAL_VECTOR,
             )
         };
-        fin.randao_mixes.copy_from_slice(randao_src);
 
-        for i in 0..EPOCHS_PER_SLASHINGS_VECTOR {
-            fin.slashings[i] = u64_le(ssz, F14 + i * 8);
+        Self {
+            randao_mixes: randao_src.to_vec().into_boxed_slice(),
+            slashings: (0..EPOCHS_PER_SLASHINGS_VECTOR)
+                .map(|i| u64_le(ssz, F14 + i * 8))
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+            state: EpochState {
+                proposer_lookahead: std::array::from_fn(|i| u64_le(ssz, F37 + i * 8)),
+                justification_bits: ssz[F17] & 0x0F,
+                previous_justified_checkpoint: read_checkpoint(ssz, F18),
+                current_justified_checkpoint: read_checkpoint(ssz, F19),
+                finalized_checkpoint: read_checkpoint(ssz, F20),
+                deposit_balance_to_consume: u64_le(ssz, F29),
+            },
+            ptc_window: zeroed_ptc_window(),
         }
-
-        let est = &mut fin.state;
-        for i in 0..PROPOSER_LOOKAHEAD_SIZE {
-            est.proposer_lookahead[i] = u64_le(ssz, F37 + i * 8);
-        }
-        est.justification_bits = ssz[F17] & 0x0F;
-        est.previous_justified_checkpoint = read_checkpoint(ssz, F18);
-        est.current_justified_checkpoint = read_checkpoint(ssz, F19);
-        est.finalized_checkpoint = read_checkpoint(ssz, F20);
-        est.deposit_balance_to_consume = u64_le(ssz, F29);
-
-        fin
     }
 
     pub(crate) fn from_ssz_gloas(ssz: &[u8]) -> Self {
-        let mut randao_mixes = vec![[0u8; 32]; EPOCHS_PER_HISTORICAL_VECTOR].into_boxed_slice();
+        // SAFETY: `B256` is align-1, so the randao region reinterprets as `&[B256]`.
         let randao_src: &[B256] = unsafe {
             std::slice::from_raw_parts(
                 ssz[F13..].as_ptr().cast::<B256>(),
                 EPOCHS_PER_HISTORICAL_VECTOR,
             )
         };
-        randao_mixes.copy_from_slice(randao_src);
-
-        let mut slashings = vec![0u64; EPOCHS_PER_SLASHINGS_VECTOR].into_boxed_slice();
-        for (i, s) in slashings.iter_mut().enumerate() {
-            *s = u64_le(ssz, F14 + i * 8);
-        }
-
-        let mut est = EpochState::default();
-        for (i, p) in est.proposer_lookahead.iter_mut().enumerate() {
-            *p = u64_le(ssz, G_PROPOSER_LOOKAHEAD + i * 8);
-        }
-        debug_assert_eq!(est.proposer_lookahead.len(), PROPOSER_LOOKAHEAD_SIZE);
-        est.justification_bits = ssz[F17] & 0x0F;
-        est.previous_justified_checkpoint = read_checkpoint(ssz, F18);
-        est.current_justified_checkpoint = read_checkpoint(ssz, F19);
-        est.finalized_checkpoint = read_checkpoint(ssz, F20);
-        est.deposit_balance_to_consume = u64_le(ssz, G_DEPOSIT_BALANCE_TO_CONSUME);
 
         let mut ptc_window = zeroed_ptc_window();
         for (c, committee) in ptc_window.iter_mut().enumerate() {
@@ -125,8 +104,23 @@ impl EpochStateFinalized {
             }
         }
 
-        let mut fin = Self::from_parts(est, randao_mixes, slashings);
-        fin.ptc_window = ptc_window;
-        fin
+        Self {
+            randao_mixes: randao_src.to_vec().into_boxed_slice(),
+            slashings: (0..EPOCHS_PER_SLASHINGS_VECTOR)
+                .map(|i| u64_le(ssz, F14 + i * 8))
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+            state: EpochState {
+                proposer_lookahead: std::array::from_fn(|i| {
+                    u64_le(ssz, G_PROPOSER_LOOKAHEAD + i * 8)
+                }),
+                justification_bits: ssz[F17] & 0x0F,
+                previous_justified_checkpoint: read_checkpoint(ssz, F18),
+                current_justified_checkpoint: read_checkpoint(ssz, F19),
+                finalized_checkpoint: read_checkpoint(ssz, F20),
+                deposit_balance_to_consume: u64_le(ssz, G_DEPOSIT_BALANCE_TO_CONSUME),
+            },
+            ptc_window,
+        }
     }
 }

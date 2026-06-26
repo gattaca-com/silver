@@ -340,7 +340,7 @@ mod tests {
         for i in 0..3u64 {
             deposit(i).write_ssz(&mut bytes).unwrap();
         }
-        let mut group = PendingGroup::from_ssz(&bytes, &[], &[]);
+        let mut group = PendingGroup::from_ssz(&bytes, &[], &[], &[]);
         let mut wv = group.roll_fresh();
         wv.deposits.drain(1);
         wv.deposits.push(deposit(99));

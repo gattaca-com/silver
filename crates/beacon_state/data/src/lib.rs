@@ -151,7 +151,7 @@ impl BeaconState {
             validators,
             balances: BalancesGroup::new(cap, n, &balances).unwrap(),
             eth1: Eth1Group::new(Eth1Votes::default()),
-            pending: PendingGroup::from_ssz(&[], &[], &[]),
+            pending: PendingGroup::from_ssz(&[], &[], &[], &[]),
             previous_participation: PreviousParticipationGroup::new(cap, n, &zeros(1)).unwrap(),
             current_participation: CurrentParticipationGroup::new(cap, n, &zeros(1)).unwrap(),
             inactivity: InactivityScoresGroup::new(cap, n, &zeros(8)).unwrap(),
