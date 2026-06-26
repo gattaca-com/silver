@@ -63,8 +63,7 @@ struct PathStatJson<'a> {
 }
 
 /// A fold's render/match labels: frame-id → resolved name, and the perf event
-/// vocabulary the counter samples are positional in. Travels as one unit to the
-/// call-tree renderer and the leaf matchers.
+/// vocabulary the counter samples are positional in.
 #[derive(Clone)]
 pub(crate) struct FlamegraphMeta {
     pub names: FxHashMap<u64, String>,

@@ -176,16 +176,13 @@ fn resolve(name: &str) -> Option<EventSpec> {
 }
 
 /// The perf event vocabulary a run measures: an ordered slot list that counter
-/// samples are positional in. Owns slot lookup so callers pass one `Schema`
-/// rather than threading a `&[EventSpec]` alongside a free `slot` helper.
+/// samples are positional in.
 #[derive(Clone)]
 pub struct Schema(Vec<EventSpec>);
 
 impl Schema {
     /// Resolve a comma-separated spec: unknown names are skipped with a
-    /// warning, and the list is capped at [`MAX_EVENTS`]. A surfer parses
-    /// the producer's published names this way to label its samples by the
-    /// producer's vocabulary rather than its own.
+    /// warning, and the list is capped at [`MAX_EVENTS`].
     pub fn parse(spec: &str) -> Self {
         Self(
             spec.split(',')
@@ -230,9 +227,7 @@ impl Schema {
 
     /// This process's own counter slots, resolved once from
     /// `SILVER_PERF_EVENTS` (or [`DEFAULT_EVENTS`]) — the producer's
-    /// vocabulary, opened per thread by [`read`](super::read). A surfer
-    /// doesn't use this; it labels by the watched run's published
-    /// [`Schema`].
+    /// vocabulary.
     pub fn local() -> &'static Schema {
         static SCHEMA: OnceLock<Schema> = OnceLock::new();
         SCHEMA.get_or_init(|| {

@@ -103,12 +103,4 @@ impl TimingSet {
         let latency = TimingChannel::open(&file.path, label)?;
         Ok(Self { name: file.name.clone(), latency })
     }
-
-    pub fn drain(&mut self) {
-        self.latency.drain();
-    }
-
-    pub fn roll_bucket(&mut self) {
-        self.latency.roll_bucket();
-    }
 }

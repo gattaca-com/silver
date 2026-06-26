@@ -90,7 +90,7 @@ fn main() -> io::Result<()> {
         })
         .collect();
     for t in &mut timing_sets {
-        t.drain();
+        t.latency.drain();
     }
 
     let mut tile_sets: Vec<TileMetricsSet> = sources
