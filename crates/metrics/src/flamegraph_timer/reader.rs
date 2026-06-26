@@ -9,7 +9,7 @@ use std::{
 
 use crate::flamegraph_timer::{
     drainer::EventsDrainer,
-    queue_dir::{QueueDir, enable_overseer},
+    queue_dir::{QueueDir, enable_surfer},
     report::TimingStats,
     symbols::{InProcessSymbolsResolver, RemoteSymbolsResolver},
 };
@@ -69,7 +69,7 @@ pub struct LocalReader {
 
 impl LocalReader {
     pub fn start() -> Self {
-        enable_overseer();
+        enable_surfer();
         let stop = Arc::new(AtomicBool::new(false));
         let handle = {
             let stop = stop.clone();
@@ -141,16 +141,16 @@ mod tests {
         assert_eq!(stats.aggregate_leaf("inner").1, 8, "both threads' inner frames");
     }
 
-    /// The overseer path: produce marks, then fold them through
+    /// The surfer path: produce marks, then fold them through
     /// [`FlamegraphReader`], which resolves names from the producer's on-disk
     /// binary (here our own process) rather than by dereferencing the id.
     #[test]
     fn flamegraph_reader_resolves_names_cross_process() {
         let _guard = crate::test_shmem::ShmemGuard::new();
-        enable_overseer();
+        enable_surfer();
 
         thread::Builder::new()
-            .name("overseer-producer".to_owned())
+            .name("surfer-producer".to_owned())
             .spawn(|| {
                 let (alpha, beta) = ("alpha", "beta");
                 for _ in 0..4 {

@@ -48,7 +48,7 @@ impl QueueDir {
         Self(dir)
     }
 
-    /// Publish our pid so an overseer can attach to this run.
+    /// Publish our pid so a surfer can attach to this run.
     pub(super) fn write_pid(&self) {
         let _ = std::fs::write(self.0.join("pid"), std::process::id().to_string());
     }
@@ -108,9 +108,9 @@ impl QueueDir {
     }
 }
 
-/// Enable `#[timed]` production and publish this run so an overseer can attach.
+/// Enable `#[timed]` production and publish this run so a surfer can attach.
 /// Call once at startup.
-pub fn enable_overseer() {
+pub fn enable_surfer() {
     crate::TIMING.set_enabled();
     let dir = QueueDir::open();
     dir.clear_stale();

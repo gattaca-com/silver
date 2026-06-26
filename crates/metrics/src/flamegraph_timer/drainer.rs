@@ -1,12 +1,12 @@
 //! The live ring drainer: discovers a run's per-thread shmem rings, drains each
 //! into a retained heap buffer, and folds the lot into a call tree. The two
-//! consumers (the in-process harness and the overseer) drive the same engine
+//! consumers (the in-process harness and the surfer) drive the same engine
 //! and differ only in the [`FrameResolver`] they poll with. Each ring is read
-//! from slot 0, so an overseer attaching mid-run reports loss for the
+//! from slot 0, so a surfer attaching mid-run reports loss for the
 //! pre-attach prefix the producer has already overwritten.
 //!
 //! Frame names are resolved as marks are drained, not at `fold` time: an
-//! overseer reads them from the live producer's binary, which may be gone by
+//! surfer reads them from the live producer's binary, which may be gone by
 //! the time anyone folds the retained marks into stats.
 
 use std::collections::{HashMap, hash_map::Entry};
@@ -124,7 +124,7 @@ struct QueueDrainer<T: RingEntry> {
     out: Vec<T>,
     /// Set once a `SpedPast` showed the producer overwrote slots we hadn't read
     /// — marks were lost, so the fold built from `out` is incomplete. An
-    /// overseer attaching mid-run latches this on its first poll: the
+    /// surfer attaching mid-run latches this on its first poll: the
     /// pre-attach prefix is genuinely gone.
     lost: bool,
 }

@@ -43,7 +43,7 @@ nextest:
 perf-local events="instructions,cycles,l1d-misses,l2-misses,l3-misses":
   SILVER_PERF_EVENTS="{{events}}" cargo test --release -p silver_e2e --features perf-counters --test sync_pm_bs_perf -- --ignored --nocapture
 
-# Run surfer (the metrics overseer) with `#[timed]` perf counters folded into
+# Run surfer (the metrics TUI) with `#[timed]` perf counters folded into
 # the flamegraph. `events` MUST match the watched silver's `SILVER_PERF_EVENTS`
 # — surfer labels the producer's counter slots positionally, so a mismatch
 # mislabels the columns. Extra args pass through as `[BASE_DIR] [APP_NAME]`.

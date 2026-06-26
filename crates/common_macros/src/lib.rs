@@ -1,7 +1,7 @@
 //! Proc-macro support for the silver crates. Exposes `#[timed]`, which wraps a
 //! function body in a drop guard that records a frame open/close into the
 //! cross-process flamegraph rings (folded in-process under the perf harness, or
-//! by an overseer reading a running silver). Built with the `perf` feature, the
+//! by a surfer reading a running silver). Built with the `perf` feature, the
 //! same marks carry hardware counters (instructions, cycles, branch/cache
 //! misses) via rdpmc. Storage and Drop-side recording live in `silver_metrics`;
 //! this crate is only the attribute-macro glue.
