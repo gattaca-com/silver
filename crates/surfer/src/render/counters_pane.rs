@@ -1,6 +1,6 @@
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Layout, Position, Rect},
     style::{Color, Modifier, Style},
     symbols,
     text::{Line, Span},
@@ -147,6 +147,7 @@ fn draw_chart(f: &mut Frame, area: Rect, app: &mut App) {
     };
     let title = format!(" {} / {label} — {span_label} ", set.name);
     let block = Block::default().borders(Borders::ALL).title(title);
+    let inner = block.inner(area);
     if n == 0 {
         f.render_widget(block, area);
         return;
@@ -190,6 +191,11 @@ fn draw_chart(f: &mut Frame, area: Rect, app: &mut App) {
         Line::from(fmt_y(y_max)),
     ];
 
+    // Label widths drive the graph-area reconstruction below; capture before
+    // the label vecs are moved into the chart.
+    let y_label_w = y_labels.iter().map(|l| l.width() as u16).max().unwrap_or(0);
+    let first_x_label_w = x_labels.first().map(|l| l.width() as u16).unwrap_or(0);
+
     let chart = Chart::new(datasets)
         .block(block)
         .x_axis(
@@ -205,4 +211,102 @@ fn draw_chart(f: &mut Frame, area: Rect, app: &mut App) {
                 .style(Style::default().fg(Color::DarkGray)),
         );
     f.render_widget(chart, area);
+
+    draw_hover(f, inner, app, &data, y_min, y_max, n, y_label_w, first_x_label_w, signed);
+}
+
+/// Overlay a vertical crosshair + value readout at the hovered data point.
+/// No-op unless the mouse sits inside the reconstructed graph area.
+#[allow(clippy::too_many_arguments)]
+fn draw_hover(
+    f: &mut Frame,
+    inner: Rect,
+    app: &App,
+    data: &[(f64, f64)],
+    y_min: f64,
+    y_max: f64,
+    n: usize,
+    y_label_w: u16,
+    first_x_label_w: u16,
+    signed: bool,
+) {
+    let Some((mx, my)) = app.mouse else { return };
+    let ga = chart_graph_area(inner, y_label_w, first_x_label_w);
+    if ga.width == 0 ||
+        ga.height == 0 ||
+        mx < ga.left() ||
+        mx >= ga.right() ||
+        my < ga.top() ||
+        my >= ga.bottom()
+    {
+        return;
+    }
+
+    let span = (ga.width - 1).max(1);
+    let last = n.saturating_sub(1);
+    let idx = if last == 0 {
+        0
+    } else {
+        let frac = (mx - ga.left()) as f64 / span as f64;
+        ((frac * last as f64).round() as usize).min(last)
+    };
+    let col = ga.left() + ((idx as f64 / last.max(1) as f64) * span as f64).round() as u16;
+
+    let val = data[idx].1;
+    let row_frac = (y_max - val) / (y_max - y_min);
+    let py = ga.top() + (row_frac * (ga.height - 1) as f64).round() as u16;
+    let py = py.clamp(ga.top(), ga.bottom() - 1);
+
+    let buf = f.buffer_mut();
+    let cross = Style::default().fg(Color::DarkGray);
+    for ry in ga.top()..ga.bottom() {
+        if let Some(cell) = buf.cell_mut(Position::new(col, ry)) {
+            cell.set_symbol("│").set_style(cross);
+        }
+    }
+    if let Some(cell) = buf.cell_mut(Position::new(col, py)) {
+        cell.set_symbol("●")
+            .set_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
+    }
+
+    let age =
+        if idx == last { "now".to_string() } else { format!("-{}", fmt_span_ago(last - idx)) };
+    let val_str = if signed { fmt_signed(val.round() as i64) } else { fmt_u64(val.round() as u64) };
+    let text = format!(" {age}  {val_str} ");
+    let label_w = text.chars().count() as u16;
+    // Keep the readout on-screen: prefer right of the crosshair, flip left near
+    // the edge.
+    let lx = if col + 1 + label_w <= ga.right() {
+        col + 1
+    } else {
+        col.saturating_sub(label_w).max(ga.left())
+    };
+    buf.set_string(
+        lx,
+        ga.top(),
+        &text,
+        Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD),
+    );
+}
+
+/// Reconstruct ratatui 0.29 `Chart::layout`'s graph area for a chart with
+/// non-empty, Left-aligned x and y labels — needed to map a mouse column back
+/// to a data index. Mirrors the private layout math; revisit on ratatui bumps.
+fn chart_graph_area(area: Rect, y_label_w: u16, first_x_label_w: u16) -> Rect {
+    let mut x = area.left();
+    let mut y = area.bottom().saturating_sub(1);
+    if y > area.top() {
+        y -= 1; // x-axis labels row
+    }
+    let left_w = y_label_w.max(first_x_label_w.saturating_sub(1)).min(area.width / 3);
+    x += left_w;
+    if y > area.top() {
+        y -= 1; // x-axis line row
+    }
+    if x + 1 < area.right() {
+        x += 1; // y-axis line column
+    }
+    let w = area.right().saturating_sub(x);
+    let h = y.saturating_sub(area.top()).saturating_add(1);
+    Rect::new(x, area.top(), w, h)
 }

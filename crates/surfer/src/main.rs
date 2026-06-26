@@ -16,7 +16,9 @@ use std::{
 };
 
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseEventKind,
+    },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -113,14 +115,14 @@ fn main() -> io::Result<()> {
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut term = Terminal::new(backend)?;
 
     let result = run(&mut term, &mut app, &base_dir, &app_name);
 
     disable_raw_mode()?;
-    execute!(term.backend_mut(), LeaveAlternateScreen)?;
+    execute!(term.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
     term.show_cursor()?;
 
     result
@@ -140,10 +142,15 @@ fn run<B: ratatui::backend::Backend>(
 
         let timeout = TICK.saturating_sub(last_tick.elapsed());
         if event::poll(timeout)? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
-                    handle_key(app, key.code, app_name);
-                }
+            match event::read()? {
+                Event::Key(key) if key.kind == KeyEventKind::Press => handle_key(app, key.code, app_name),
+                Event::Mouse(m) => match m.kind {
+                    MouseEventKind::Moved | MouseEventKind::Drag(_) => {
+                        app.mouse = Some((m.column, m.row));
+                    }
+                    _ => {}
+                },
+                _ => {}
             }
         }
         if last_tick.elapsed() >= TICK {

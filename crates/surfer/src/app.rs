@@ -71,6 +71,9 @@ pub struct App {
     pub timings_table_state: TableState,
     pub tiles_table_state: TableState,
     pub flamegraph: Flamegraph,
+    /// Last known mouse position (absolute terminal col, row), or `None`
+    /// if unknown. Drives the counters chart hover crosshair.
+    pub mouse: Option<(u16, u16)>,
     pub quit: bool,
 }
 
@@ -104,6 +107,7 @@ impl App {
             timings_table_state: TableState::default(),
             tiles_table_state: TableState::default(),
             flamegraph,
+            mouse: None,
             quit: false,
         }
     }
