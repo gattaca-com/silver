@@ -2,17 +2,16 @@ use std::path::PathBuf;
 
 use flux::{
     communication::{
-        cleanup::cleanup_flink,
+        cleanup::{cleanup_flink, is_pid_alive},
         queue::{Queue, QueueType},
     },
     utils::directories::{local_share_dir, shmem_dir_queues_with_base},
 };
 
-#[cfg(feature = "perf")]
-use crate::perf::{MAX_EVENTS, PerfSample};
 use crate::{
     Schema,
     flamegraph_timer::mark::{Frame, Mark},
+    perf::{MAX_EVENTS, PerfSample},
 };
 
 /// Each ring element type carries its own ring name and empty value, so the
@@ -27,7 +26,6 @@ impl RingEntry for Mark {
     const EMPTY: Self = Mark { frame: Frame::Close { id: 0 }, ts: 0 };
 }
 
-#[cfg(feature = "perf")]
 impl RingEntry for PerfSample {
     const PREFIX: &'static str = "perf-events";
     const EMPTY: Self = PerfSample { vals: [0; MAX_EVENTS] };
@@ -81,8 +79,7 @@ impl QueueDir {
     /// fold them as live data.
     pub(super) fn live_pid(&self) -> Option<u32> {
         let pid: u32 = std::fs::read_to_string(self.0.join("pid")).ok()?.trim().parse().ok()?;
-        // `/proc/<pid>` exists only while the process is alive.
-        std::path::Path::new(&format!("/proc/{pid}")).exists().then_some(pid)
+        is_pid_alive(pid).then_some(pid)
     }
 
     pub(super) fn path<T: RingEntry>(&self, token: &str) -> PathBuf {
@@ -99,9 +96,7 @@ impl QueueDir {
         for entry in self.entries() {
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            let is_ring = name.starts_with(Mark::PREFIX);
-            #[cfg(feature = "perf")]
-            let is_ring = is_ring || name.starts_with(PerfSample::PREFIX);
+            let is_ring = name.starts_with(Mark::PREFIX) || name.starts_with(PerfSample::PREFIX);
             if is_ring {
                 let _ = cleanup_flink(&entry.path());
             }

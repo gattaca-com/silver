@@ -17,8 +17,6 @@ use flux::communication::{
 };
 use rustc_hash::FxHashMap;
 
-#[cfg(feature = "perf")]
-use crate::perf::PerfSample;
 use crate::{
     Schema,
     flamegraph_timer::{
@@ -28,6 +26,7 @@ use crate::{
         report::{FlamegraphMeta, TimingStats},
         symbols::FrameResolver,
     },
+    perf::PerfSample,
 };
 
 pub(super) struct EventsDrainer {
@@ -71,8 +70,11 @@ impl EventsDrainer {
 /// lockstep so the aggregator can pair them by index.
 struct ThreadDrainer {
     marks: QueueDrainer<Mark>,
-    #[cfg(feature = "perf")]
-    perf: QueueDrainer<PerfSample>,
+    /// `None` when the producer was built without `perf`: the marks ring exists
+    /// but the perf ring never does, so the thread folds timing-only. The
+    /// `perf` feature gates only the producer's counter reads, never this
+    /// drain.
+    perf: Option<QueueDrainer<PerfSample>>,
     /// Marks in `marks.out[..resolved]` have already had their frame names
     /// resolved, so each `poll` only resolves the freshly drained tail.
     resolved: usize,
@@ -82,16 +84,16 @@ impl ThreadDrainer {
     fn open(dir: &QueueDir, token: &str) -> Option<Self> {
         Some(Self {
             marks: QueueDrainer::<Mark>::open(dir, token)?,
-            #[cfg(feature = "perf")]
-            perf: QueueDrainer::<PerfSample>::open(dir, token)?,
+            perf: QueueDrainer::<PerfSample>::open(dir, token),
             resolved: 0,
         })
     }
 
     fn poll(&mut self, names: &mut FxHashMap<u64, String>, resolver: &impl FrameResolver) {
         self.marks.poll();
-        #[cfg(feature = "perf")]
-        self.perf.poll();
+        if let Some(perf) = &mut self.perf {
+            perf.poll();
+        }
         // The frame name lives in the producer's binary; `len` says how many
         // bytes to read. Resolve each id once, while the producer is still
         // alive to read it from.
@@ -106,18 +108,13 @@ impl ThreadDrainer {
     }
 
     fn fold_into(&self, aggregator: &mut Aggregator) {
-        #[cfg(feature = "perf")]
-        aggregator.fold_thread(&self.marks.out, &self.perf.out);
-        #[cfg(not(feature = "perf"))]
-        aggregator.fold_thread(&self.marks.out, &[]);
+        let counters = self.perf.as_ref().map_or(&[][..], |p| &p.out);
+        aggregator.fold_thread(&self.marks.out, counters);
     }
 
     /// Whether either ring lost marks, leaving the fold incomplete.
     fn lost(&self) -> bool {
-        #[cfg(feature = "perf")]
-        return self.marks.lost || self.perf.lost;
-        #[cfg(not(feature = "perf"))]
-        return self.marks.lost;
+        self.marks.lost || self.perf.as_ref().is_some_and(|p| p.lost)
     }
 }
 
@@ -136,13 +133,12 @@ struct QueueDrainer<T: RingEntry> {
 impl<T: RingEntry> QueueDrainer<T> {
     fn open(dir: &QueueDir, token: &str) -> Option<Self> {
         let queue = Queue::<T>::try_open_shared(dir.path::<T>(token)).ok()?;
-        // The group label is the ring's filename, so reopening a ring reuses its
-        // flux cursor slot rather than leaking a new one, and the group table is
-        // greppable back to its ring.
-        let label = Box::leak(format!("{}-{token}", T::PREFIX).into_boxed_str());
-        let mut consumer = ConsumerBare::new(queue, label);
+        // Each ring is its own queue with its own flux group table and the surfer
+        // is its only consumer, so the static per-type prefix works as the group
+        // label — no per-token string to allocate and leak.
+        let mut consumer = ConsumerBare::new(queue, T::PREFIX);
 
-        // Using collaborative only because it read from the beggining of the ring.
+        // Collaborative so the cursor starts at the beginning of the ring.
         consumer.try_init_collaborative();
         Some(Self { consumer, out: Vec::with_capacity(1024), lost: false })
     }

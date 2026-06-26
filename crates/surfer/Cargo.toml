@@ -17,11 +17,5 @@ silver_network.workspace = true
 silver_peer.workspace = true
 silver_storage.workspace = true
 
-[features]
-# Fold the producer's perf-events rings into the surfer flamegraph's per-call
-# counter columns. Surfer only reads the samples the producer already wrote — no
-# rdpmc here — so it needs no perf_event_paranoid privileges itself.
-perf = ["silver_metrics/perf"]
-
 [lints]
 workspace = true
