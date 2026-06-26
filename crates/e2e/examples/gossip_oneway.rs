@@ -38,7 +38,6 @@ use std::{
 };
 
 use flux::{tile::Tile, timing::Nanos};
-use mimalloc::MiMalloc;
 use rand::{Rng, RngCore};
 use silver_common::{GossipMsgOut, GossipTopic, NewGossipMsg, P2pSend, PeerEvent, TRandomAccess};
 use silver_e2e::{
@@ -56,9 +55,9 @@ const FORK_DIGEST_HEX: &str = "abcd1234";
 const TOPIC: GossipTopic = GossipTopic::BeaconBlock;
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 
-#[cfg(not(feature = "alloc-profile"))]
-#[global_allocator]
-static GLOBAL: MiMalloc = MiMalloc;
+// #[cfg(not(feature = "alloc-profile"))]
+// #[global_allocator]
+// static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() {
     #[cfg(feature = "alloc-profile")]
