@@ -481,12 +481,12 @@ mod tests {
         assert_eq!(timed_custom_name(41), Ok(42));
     }
 
-    #[timed(sample = 4)]
+    #[timed]
     fn timed_sampled(x: u64) -> u64 {
         x + 1
     }
 
-    #[timed("timed_sampled_label", sample = 1000)]
+    #[timed("timed_sampled_label")]
     fn timed_sampled_named(x: u64) -> Result<u64, &'static str> {
         if x == 0 { Err("zero") } else { Ok(x * 2) }
     }
