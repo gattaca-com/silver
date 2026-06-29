@@ -8,6 +8,8 @@ pub struct Flamegraph {
     /// When set, stop polling/folding so the tree holds still for reading — a
     /// live producer otherwise keeps growing the cumulative tree every tick.
     paused: bool,
+    /// Outcome of the last `e` export, shown in the header until the next one.
+    last_export: Option<String>,
 }
 
 impl Flamegraph {
@@ -18,6 +20,7 @@ impl Flamegraph {
             missed: false,
             scroll: 0,
             paused: false,
+            last_export: None,
         }
     }
 
@@ -47,6 +50,21 @@ impl Flamegraph {
 
     pub fn toggle_pause(&mut self) {
         self.paused = !self.paused;
+    }
+
+    /// `e`: dump the whole retained run to a Fuchsia FXT trace in the cwd, to
+    /// open at https://magic-trace.org (shows real wall-clock time per slice).
+    pub fn export_trace(&mut self) {
+        let Some(reader) = &self.reader else { return };
+        let path = format!("silver-trace-{}.fxt", reader.pid());
+        self.last_export = Some(match std::fs::write(&path, reader.export_trace()) {
+            Ok(()) => format!("exported → {path}"),
+            Err(e) => format!("export failed: {e}"),
+        });
+    }
+
+    pub fn last_export(&self) -> Option<&str> {
+        self.last_export.as_deref()
     }
 
     /// Drop the accumulator and start a fresh cumulative window from now —

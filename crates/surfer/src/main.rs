@@ -181,6 +181,7 @@ fn handle_key(app: &mut App, code: KeyCode, app_name: &str) {
         KeyCode::Char('[') => app.adjust_split(-1),
         KeyCode::Char(']') => app.adjust_split(1),
         KeyCode::Char('p') => app.flamegraph.toggle_pause(),
+        KeyCode::Char('e') => app.flamegraph.export_trace(),
         KeyCode::Char('c') => app.flamegraph.clear(app_name),
         _ => {}
     }
