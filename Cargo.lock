@@ -1436,7 +1436,7 @@ dependencies = [
 [[package]]
 name = "flux"
 version = "0.0.38"
-source = "git+https://github.com/gattaca-com/flux?rev=f441d123b3bb1ef94b22d1c829749b5ca27f5df9#f441d123b3bb1ef94b22d1c829749b5ca27f5df9"
+source = "git+https://github.com/gattaca-com/flux?rev=3a72d5c5724c356199c33bae3fe35d0d9dc2733c#3a72d5c5724c356199c33bae3fe35d0d9dc2733c"
 dependencies = [
  "bitcode",
  "core_affinity",
@@ -1457,7 +1457,7 @@ dependencies = [
 [[package]]
 name = "flux-communication"
 version = "0.0.27"
-source = "git+https://github.com/gattaca-com/flux?rev=f441d123b3bb1ef94b22d1c829749b5ca27f5df9#f441d123b3bb1ef94b22d1c829749b5ca27f5df9"
+source = "git+https://github.com/gattaca-com/flux?rev=3a72d5c5724c356199c33bae3fe35d0d9dc2733c#3a72d5c5724c356199c33bae3fe35d0d9dc2733c"
 dependencies = [
  "directories",
  "flux-timing",
@@ -1471,7 +1471,7 @@ dependencies = [
 [[package]]
 name = "flux-timing"
 version = "0.0.16"
-source = "git+https://github.com/gattaca-com/flux?rev=f441d123b3bb1ef94b22d1c829749b5ca27f5df9#f441d123b3bb1ef94b22d1c829749b5ca27f5df9"
+source = "git+https://github.com/gattaca-com/flux?rev=3a72d5c5724c356199c33bae3fe35d0d9dc2733c#3a72d5c5724c356199c33bae3fe35d0d9dc2733c"
 dependencies = [
  "bitcode",
  "chrono",
@@ -1488,7 +1488,7 @@ dependencies = [
 [[package]]
 name = "flux-utils"
 version = "0.0.23"
-source = "git+https://github.com/gattaca-com/flux?rev=f441d123b3bb1ef94b22d1c829749b5ca27f5df9#f441d123b3bb1ef94b22d1c829749b5ca27f5df9"
+source = "git+https://github.com/gattaca-com/flux?rev=3a72d5c5724c356199c33bae3fe35d0d9dc2733c#3a72d5c5724c356199c33bae3fe35d0d9dc2733c"
 dependencies = [
  "bytes",
  "core_affinity",
@@ -4754,7 +4754,7 @@ dependencies = [
 [[package]]
 name = "spine-derive"
 version = "0.0.10"
-source = "git+https://github.com/gattaca-com/flux?rev=f441d123b3bb1ef94b22d1c829749b5ca27f5df9#f441d123b3bb1ef94b22d1c829749b5ca27f5df9"
+source = "git+https://github.com/gattaca-com/flux?rev=3a72d5c5724c356199c33bae3fe35d0d9dc2733c#3a72d5c5724c356199c33bae3fe35d0d9dc2733c"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5247,12 +5247,12 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 [[package]]
 name = "type-hash"
 version = "0.0.1"
-source = "git+https://github.com/gattaca-com/flux?rev=f441d123b3bb1ef94b22d1c829749b5ca27f5df9#f441d123b3bb1ef94b22d1c829749b5ca27f5df9"
+source = "git+https://github.com/gattaca-com/flux?rev=3a72d5c5724c356199c33bae3fe35d0d9dc2733c#3a72d5c5724c356199c33bae3fe35d0d9dc2733c"
 
 [[package]]
 name = "type-hash-derive"
 version = "0.0.4"
-source = "git+https://github.com/gattaca-com/flux?rev=f441d123b3bb1ef94b22d1c829749b5ca27f5df9#f441d123b3bb1ef94b22d1c829749b5ca27f5df9"
+source = "git+https://github.com/gattaca-com/flux?rev=3a72d5c5724c356199c33bae3fe35d0d9dc2733c#3a72d5c5724c356199c33bae3fe35d0d9dc2733c"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
