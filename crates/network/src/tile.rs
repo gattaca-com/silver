@@ -280,7 +280,6 @@ where
         self.p2p_endpoint.enqueue_rpc_out(msg, &mut self.context)
     }
 
-    #[timed]
     fn poll(&mut self) -> Result<(), Error> {
         self.poll.poll(&mut self.events, Some(POLL_TIMEOUT))
     }

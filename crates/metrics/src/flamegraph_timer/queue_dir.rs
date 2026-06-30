@@ -33,7 +33,7 @@ impl RingEntry for PerfSample {
 
 /// A background reader drains each ring continuously, so a ring only buffers
 /// the marks produced between polls, not the whole run — hence small.
-const RING_CAPACITY: usize = 1 << 14;
+const RING_CAPACITY: usize = 1 << 15;
 
 /// The shmem dir holding this run's per-thread timing rings.
 pub(super) struct QueueDir(PathBuf);
