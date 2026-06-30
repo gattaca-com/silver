@@ -13,7 +13,7 @@ use silver_common::{
     P2pSend, P2pStreamId, PeerControl, PeerEvent, ReplayBlock, RpcInbound, RpcSeverity,
     SilverSpine, StreamProtocol, SyncUpdate, SyncingStrategy, TCacheProducer, TMultiProducer,
     TProducer, TRandomAccess, TRead, Wheel,
-    ssz_view::{DataColumnSidecarView, SignedBeaconBlockView, StatusView},
+    ssz_view::{DataColumnSidecarFuluView, SignedBeaconBlockView, StatusView},
 };
 use silver_metrics::timed;
 
@@ -317,8 +317,8 @@ impl StorageTile {
         };
 
         let block_root = util::block_root_from_sidecar(buffer);
-        let parent_root = DataColumnSidecarView::parent_root(buffer);
-        let slot = DataColumnSidecarView::slot(buffer);
+        let parent_root = DataColumnSidecarFuluView::parent_root(buffer);
+        let slot = DataColumnSidecarFuluView::slot(buffer);
 
         if self.store.is_synced() && slot > self.store.head_slot() + 1 {
             // received data columns with parent ahead of current head
@@ -326,7 +326,7 @@ impl StorageTile {
             return None;
         }
 
-        let column_index = DataColumnSidecarView::index(buffer);
+        let column_index = DataColumnSidecarFuluView::index(buffer);
         let column_bitmask = 1u128 << column_index;
         let requested = self.outstanding_requests.remove(&block_root);
 
@@ -361,8 +361,8 @@ impl StorageTile {
         // State-driven validations: pull every input in one seqlock pass.
         // BLS verify runs OUTSIDE the closure (slow; would hold the
         // notional read lock too long otherwise).
-        let block_slot = DataColumnSidecarView::slot(buffer);
-        let claimed_proposer_index = DataColumnSidecarView::proposer_index(buffer);
+        let block_slot = DataColumnSidecarFuluView::slot(buffer);
+        let claimed_proposer_index = DataColumnSidecarFuluView::proposer_index(buffer);
         let checks = self.beacon_state.read(&|v| {
             let state_epoch = v.slot.current_epoch();
 
@@ -399,7 +399,7 @@ impl StorageTile {
                 parent_validated,
                 proposer_matches,
                 pubkey,
-                v.imm.fork.current_version, // TODO for backfill
+                v.epoch.fork().current_version, // TODO for backfill
                 v.imm.genesis_validators_root,
             )
         });
@@ -433,7 +433,7 @@ impl StorageTile {
         // signature bytes match a previously-validated signature for
         // this block_root. block_root does not pin the signature, so
         // bytes-equality is required.
-        let sig_bytes = *DataColumnSidecarView::block_signature(buffer);
+        let sig_bytes = *DataColumnSidecarFuluView::block_signature(buffer);
         if self.validated_blocks.get(&block_root) != Some(&sig_bytes) {
             let Some(pubkey) = pubkey else {
                 tracing::warn!(?stream_id, "sidecar proposer_index out of range");

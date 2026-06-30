@@ -58,7 +58,7 @@ impl StateHashScratch {
 #[inline]
 #[timed]
 pub fn hash_tree_root_state(rv: &StateReadView, scratch: &mut StateHashScratch) -> B256 {
-    if rv.imm.is_gloas() {
+    if rv.is_gloas() {
         hash_tree_root_state_gloas(rv, scratch)
     } else {
         hash_tree_root_state_fulu(rv, scratch)
@@ -98,7 +98,7 @@ fn hash_common_fields(
         uint64_chunk(imm.genesis_time),
         imm.genesis_validators_root,
         uint64_chunk(slot.slot),
-        hash_fork(&imm.fork),
+        hash_fork(rv.epoch.fork()),
         hash_tree_root_block_header(&slot.latest_block_header),
         hash_b256_vector(block_roots),
         hash_b256_vector(state_roots),
@@ -148,7 +148,6 @@ fn hash_tree_root_state_gloas(rv: &StateReadView, scratch: &mut StateHashScratch
 
     let mut fields = [[0u8; 32]; 46];
     fields[..38].copy_from_slice(&common);
-    // [New in Gloas]
     fields[38..].copy_from_slice(&[
         rv.builders.hash_root(),
         uint64_chunk(slot.next_withdrawal_builder_index),
@@ -174,7 +173,7 @@ fn hash_tree_root_state_gloas(rv: &StateReadView, scratch: &mut StateHashScratch
 }
 
 // ---------------------------------------------------------------------------
-// Gloas (EIP-7732) leaf hashers
+// Gloas leaf hashers
 // ---------------------------------------------------------------------------
 
 /// `ExecutionAddress` (20 B) right-padded into a 32-B chunk.
@@ -210,7 +209,7 @@ fn hash_withdrawal(w: &Withdrawal) -> B256 {
     ])
 }
 
-fn hash_execution_payload_bid(bid: &ExecutionPayloadBid) -> B256 {
+pub(crate) fn hash_execution_payload_bid(bid: &ExecutionPayloadBid) -> B256 {
     let kzg_commitments_root = hash_list(
         bid.blob_kzg_commitments.iter(),
         bid.blob_kzg_commitments.len(),

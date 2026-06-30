@@ -11,7 +11,7 @@ use silver_common::{
     ssz_hash::kzg_commitments_inclusion_proof,
     ssz_view::{
         BEACON_BLOCK_BODY_FIXED, BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF,
-        BeaconBlockBodyView, NUMBER_OF_COLUMNS, SignedBeaconBlockView,
+        BeaconBlockBodyFuluView, NUMBER_OF_COLUMNS, SignedBeaconBlockView,
     },
 };
 
@@ -80,8 +80,8 @@ impl ElBlobFetcher {
         if body.len() < BEACON_BLOCK_BODY_FIXED {
             return;
         }
-        let kzg_off = BeaconBlockBodyView::blob_kzg_commitments_offset(body) as usize;
-        let exec_off = BeaconBlockBodyView::execution_requests_offset(body) as usize;
+        let kzg_off = BeaconBlockBodyFuluView::blob_kzg_commitments_offset(body) as usize;
+        let exec_off = BeaconBlockBodyFuluView::execution_requests_offset(body) as usize;
         if kzg_off > exec_off || exec_off > body.len() {
             return;
         }

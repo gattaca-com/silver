@@ -1,14 +1,14 @@
 use blst::min_pk::PublicKey;
 use silver_beacon_state_data::{
-    B256, BeaconBlockHeader, Epoch, EpochGroup, EpochId, EpochView, Eth1Data, Eth1WriteView,
-    Immutable, LongtailGroup, LongtailId, LongtailView, SLOTS_PER_EPOCH, Slot, SlotStateView,
-    SlotStateWriteView, SpecConfig, StateId, StateReadView, StateWriterView, ValidatorsView,
+    B256, BeaconBlockHeader, BlockBodyError, BodyFork, BodyOffsets, Epoch, EpochGroup, EpochId,
+    EpochView, EpochWriteView, Eth1Data, Eth1WriteView, Immutable, LongtailGroup, LongtailId,
+    LongtailView, SLOTS_PER_EPOCH, Slot, SlotStateView, SlotStateWriteView, SpecConfig, StateId,
+    StateReadView, StateWriterView, ValidatorsView,
 };
 use silver_common::{
     metrics::timed,
     ssz_view::{
-        BEACON_BLOCK_BODY_FIXED, BeaconBlockBodyView, Eth1DataView, SIGNED_BEACON_BLOCK_MIN,
-        SignedBeaconBlockView,
+        BEACON_BLOCK_BODY_FIXED, Eth1DataView, SIGNED_BEACON_BLOCK_MIN, SignedBeaconBlockView,
     },
 };
 
@@ -19,14 +19,15 @@ use crate::{
     stf::{
         AttestationVote, EPOCHS_PER_ETH1_VOTING_PERIOD, ShufflingRef, StfScratch,
         collect_sigs_attestations, collect_sigs_attester_slashings,
-        collect_sigs_bls_to_execution_changes, collect_sigs_proposer_slashings,
-        collect_sigs_sync_aggregate, collect_sigs_voluntary_exits, process_attestations,
-        process_attester_slashings, process_bls_to_execution_changes, process_deposits,
-        process_epoch, process_execution_payload, process_execution_requests,
-        process_proposer_slashings, process_sync_aggregate, process_voluntary_exits,
-        process_withdrawals,
+        collect_sigs_bls_to_execution_changes, collect_sigs_execution_payload_bid,
+        collect_sigs_proposer_slashings, collect_sigs_sync_aggregate, collect_sigs_voluntary_exits,
+        gloas::collect_sigs_payload_attestations, process_attestations, process_attester_slashings,
+        process_bls_to_execution_changes, process_deposits, process_epoch,
+        process_execution_payload, process_execution_payload_bid, process_execution_requests,
+        process_parent_execution_payload, process_payload_attestations, process_proposer_slashings,
+        process_sync_aggregate, process_voluntary_exits, process_withdrawals_fulu,
+        process_withdrawals_gloas, upgrade_to_gloas,
     },
-    validate,
 };
 
 #[timed]
@@ -136,7 +137,6 @@ pub fn apply_signed_block_debug(
     let parent_root: B256 = *SignedBeaconBlockView::parent_root(block_bytes);
     let state_root: B256 = *SignedBeaconBlockView::state_root(block_bytes);
     let body = SignedBeaconBlockView::body(block_bytes);
-    let body_root = ssz_hash::hash_tree_root_body(body);
     let wrap = |kind: BlockError| Error::invalid_block(state_root, kind);
 
     if block_slot <= head_block_header_slot {
@@ -160,18 +160,6 @@ pub fn apply_signed_block_debug(
     if proposer_index as usize >= count {
         return Err(wrap(BlockError::ProposerOutOfRange { idx: proposer_index as u64, count }));
     }
-    let block_epoch = block_slot / SLOTS_PER_EPOCH;
-    if !verify_block_sig(
-        view.imm,
-        &view.validators.reader(),
-        block_bytes,
-        &body_root,
-        block_epoch,
-        proposer_index,
-    ) {
-        return Err(Error::InvalidBlockSig);
-    }
-
     let (epoch_idx, longtail_idx) = if block_slot > head_slot {
         process_slots(cfg, view, epoch, longtail, parent, block_slot, &mut scratch)
     } else {
@@ -181,6 +169,28 @@ pub fn apply_signed_block_debug(
     // them). process_block can't change them, so the hash reuses these.
     let epoch_view = epoch.view_opt(epoch_idx);
     let longtail_view = longtail.view_opt(longtail_idx);
+
+    // body_root + proposer-sig read the block's fork from the post-`process_slots`
+    // epoch view, so a block at the fork boundary uses the upgraded fork (Gloas
+    // body layout / signing version), not the parent's.
+    let block_epoch = block_slot / SLOTS_PER_EPOCH;
+    let body_root = if epoch_view.is_gloas(view.imm.gloas_fork_version) {
+        ssz_hash::hash_tree_root_body_gloas(body)
+    } else {
+        ssz_hash::hash_tree_root_body_fulu(body)
+    };
+    if !verify_block_sig(
+        view.imm,
+        &epoch_view,
+        &view.validators.reader(),
+        block_bytes,
+        &body_root,
+        block_epoch,
+        proposer_index,
+    ) {
+        return Err(Error::InvalidBlockSig);
+    }
+
     process_block_header(
         view,
         &epoch_view,
@@ -260,15 +270,22 @@ fn check_proposer_lookahead(
 
 fn verify_block_sig(
     imm: &Immutable,
+    epoch: &EpochView,
     validators: &ValidatorsView,
     block_bytes: &[u8],
     body_root: &B256,
     block_epoch: Epoch,
     proposer_index: u32,
 ) -> bool {
-    let (fork_version, gvr) = imm.fork_version_at(block_epoch);
+    let fork_version = epoch.fork_version_at(block_epoch);
     let pk = validators.pubkey_decompressed(proposer_index as usize);
-    bls::verify_block_signature(block_bytes, pk, body_root, fork_version, &gvr)
+    bls::verify_block_signature(
+        block_bytes,
+        pk,
+        body_root,
+        fork_version,
+        &imm.genesis_validators_root,
+    )
 }
 
 /// Advance state from `view.slot`'s slot to `target_slot`, processing empty
@@ -314,6 +331,8 @@ pub fn process_slots(
     loop {
         process_epoch(cfg, view, &mut epoch_w, longtail, &mut longtail_idx, scratch);
         view.slot.advance_slot();
+
+        maybe_upgrade_to_gloas(cfg, view, &mut epoch_w);
         while view.slot.state().slot < target_slot {
             process_slot(view, &epoch_w.reader(), longtail, longtail_idx, &mut scratch.state_hash);
             if (view.slot.state().slot + 1).is_multiple_of(SLOTS_PER_EPOCH) {
@@ -324,6 +343,19 @@ pub fn process_slots(
         if view.slot.state().slot >= target_slot {
             return (Some(epoch_w.commit()), longtail_idx);
         }
+    }
+}
+
+fn maybe_upgrade_to_gloas(
+    cfg: &SpecConfig,
+    view: &mut StateWriterView,
+    epoch: &mut EpochWriteView,
+) {
+    let current_epoch = view.slot.state().slot / SLOTS_PER_EPOCH;
+    if current_epoch == cfg.gloas_fork_epoch &&
+        !epoch.reader().is_gloas(view.imm.gloas_fork_version)
+    {
+        upgrade_to_gloas(view, epoch);
     }
 }
 
@@ -347,6 +379,10 @@ pub fn process_slot(
     let header = slot.state().latest_block_header;
     let block_root = hash_tree_root_block_header(&header);
     slot.push_block_root(block_root);
+
+    if epoch.is_gloas(view.imm.gloas_fork_version) {
+        view.slot.unset_next_payload_availability();
+    }
 }
 
 pub fn process_block_header(
@@ -402,59 +438,6 @@ pub fn process_block_header(
     Ok(())
 }
 
-struct BodyOffsets<'a> {
-    body: &'a [u8],
-    exec_off: usize,
-    bls_changes_off: usize,
-    proposer_slashings_off: usize,
-    attester_slashings_off: usize,
-    attestations_off: usize,
-    deposits_off: usize,
-    voluntary_exits_off: usize,
-    blob_off: usize,
-    exec_requests_off: usize,
-}
-
-impl<'a> BodyOffsets<'a> {
-    fn new(body: &'a [u8]) -> Option<Self> {
-        if body.len() < BEACON_BLOCK_BODY_FIXED {
-            return None;
-        }
-        Some(Self {
-            body,
-            exec_off: BeaconBlockBodyView::execution_payload_offset(body) as usize,
-            bls_changes_off: BeaconBlockBodyView::bls_to_execution_changes_offset(body) as usize,
-            proposer_slashings_off: BeaconBlockBodyView::proposer_slashings_offset(body) as usize,
-            attester_slashings_off: BeaconBlockBodyView::attester_slashings_offset(body) as usize,
-            attestations_off: BeaconBlockBodyView::attestations_offset(body) as usize,
-            deposits_off: BeaconBlockBodyView::deposits_offset(body) as usize,
-            voluntary_exits_off: BeaconBlockBodyView::voluntary_exits_offset(body) as usize,
-            blob_off: BeaconBlockBodyView::blob_kzg_commitments_offset(body) as usize,
-            exec_requests_off: BeaconBlockBodyView::execution_requests_offset(body) as usize,
-        })
-    }
-    #[inline]
-    fn payload(&self) -> &'a [u8] {
-        if self.exec_off <= self.bls_changes_off && self.bls_changes_off <= self.body.len() {
-            &self.body[self.exec_off..self.bls_changes_off]
-        } else {
-            &[]
-        }
-    }
-    /// In-bounds slice or `None` if the offsets don't bracket a valid range.
-    #[inline]
-    fn try_slice(&self, start: usize, end: usize) -> Option<&'a [u8]> {
-        if start <= end && end <= self.body.len() { Some(&self.body[start..end]) } else { None }
-    }
-
-    /// The sync-aggregate fixed region of the body. The offsets are
-    /// compile-time constants of the BeaconBlockBody fixed part.
-    #[inline]
-    fn sync_aggregate(&self) -> &'a [u8] {
-        &self.body[220..380]
-    }
-}
-
 /// Two-pass block body processing.
 ///
 /// Pass 1 — `collect_sigs_block_body` walks every op with a BLS signature and
@@ -486,14 +469,17 @@ pub fn process_block_body(
     slashed_sink: &mut Vec<u32>,
 ) -> Result<()> {
     let wrap = |kind: BlockError| Error::invalid_block(state_root, kind);
-    validate::validate_operation_counts(body).map_err(wrap)?;
-    let offsets = BodyOffsets::new(body).ok_or_else(|| {
-        wrap(BlockError::BodyTooShort { len: body.len(), min: BEACON_BLOCK_BODY_FIXED })
+    let is_gloas = epoch.is_gloas(view.imm.gloas_fork_version);
+    let fork = if is_gloas { BodyFork::Gloas } else { BodyFork::Fulu };
+    let offsets = BodyOffsets::new(body, fork).ok_or_else(|| {
+        wrap(BlockBodyError::BodyTooShort { len: body.len(), min: BEACON_BLOCK_BODY_FIXED }.into())
     })?;
+
     let count = view.validators.count();
     if (proposer_index as usize) >= count {
         return Err(wrap(BlockError::ProposerOutOfRange { idx: proposer_index as u64, count }));
     }
+    offsets.validate().map_err(|e| wrap(e.into()))?;
 
     sig_batch.clear();
     // Pass 1 is read-only: hand it the read-only sibling over the same fork.
@@ -511,7 +497,7 @@ pub fn process_block_body(
         return Err(Error::SigBatchFailed);
     }
 
-    apply_block_body_pass2(
+    apply_block_body(
         cfg,
         view,
         *epoch,
@@ -523,11 +509,12 @@ pub fn process_block_body(
         shuffling,
         attestation_votes,
         slashed_sink,
+        is_gloas,
     )
 }
 
 #[allow(clippy::too_many_arguments)]
-fn apply_block_body_pass2(
+fn apply_block_body(
     cfg: &SpecConfig,
     view: &mut StateWriterView,
     epoch: EpochView,
@@ -539,26 +526,32 @@ fn apply_block_body_pass2(
     shuffling: Option<&ShufflingRef<'_>>,
     attestation_votes: &mut Vec<AttestationVote>,
     slashed_sink: &mut Vec<u32>,
+    is_gloas: bool,
 ) -> Result<()> {
-    let body = offsets.body;
+    let body = offsets.body();
     let payload = offsets.payload();
 
-    process_withdrawals(&mut *view, payload)?;
-    process_execution_payload(&mut *view, cfg, payload, block_slot)?;
+    if is_gloas {
+        process_parent_execution_payload(&mut *view, &epoch, cfg, body)?;
+        process_withdrawals_gloas(&mut *view);
+        if let Some(bid) = offsets.signed_bid() {
+            process_execution_payload_bid(&mut *view, &epoch, cfg, bid)?;
+        }
+    } else {
+        process_withdrawals_fulu(&mut *view, payload)?;
+        process_execution_payload(&mut *view, cfg, payload, block_slot)?;
+    }
+
     process_randao(&mut view.slot, body);
     process_eth1_data(&mut view.slot, &mut view.eth1, body);
 
-    if let Some(section) =
-        offsets.try_slice(offsets.proposer_slashings_off, offsets.attester_slashings_off)
-    {
+    if let Some(section) = offsets.proposer_slashings() {
         process_proposer_slashings(&mut *view, epoch, cfg, section)?;
     }
-    if let Some(section) =
-        offsets.try_slice(offsets.attester_slashings_off, offsets.attestations_off)
-    {
+    if let Some(section) = offsets.attester_slashings() {
         process_attester_slashings(&mut *view, epoch, cfg, section, active_scratch, slashed_sink)?;
     }
-    if let Some(section) = offsets.try_slice(offsets.attestations_off, offsets.deposits_off) {
+    if let Some(section) = offsets.attestations() {
         process_attestations(
             &mut *view,
             epoch,
@@ -570,19 +563,28 @@ fn apply_block_body_pass2(
             active_scratch,
         )?;
     }
-    if let Some(section) = offsets.try_slice(offsets.deposits_off, offsets.voluntary_exits_off) {
+
+    if !is_gloas && let Some(section) = offsets.deposits() {
         process_deposits(&mut *view, section)?;
     }
-    if let Some(section) = offsets.try_slice(offsets.voluntary_exits_off, offsets.exec_off) {
+
+    if let Some(section) = offsets.voluntary_exits() {
         process_voluntary_exits(&mut *view, cfg, section)?;
     }
-    if let Some(section) = offsets.try_slice(offsets.bls_changes_off, offsets.blob_off) {
+    if let Some(section) = offsets.bls_changes() {
         process_bls_to_execution_changes(&mut view.validators, section)?;
     }
-    if offsets.exec_requests_off <= body.len() {
-        process_execution_requests(&mut *view, cfg, &body[offsets.exec_requests_off..]);
+
+    if is_gloas {
+        if let Some(section) = offsets.payload_attestations() {
+            process_payload_attestations(&*view, section)?;
+        }
+    } else {
+        process_execution_requests(&mut *view, cfg, offsets.execution_requests());
     }
+
     process_sync_aggregate(&mut *view, longtail, offsets.sync_aggregate(), proposer_index)?;
+
     Ok(())
 }
 
@@ -597,26 +599,30 @@ fn collect_sigs_block_body(
     proposer_index: u32,
     shuffling: Option<&ShufflingRef<'_>>,
 ) -> Result<()> {
-    let body = offsets.body;
+    let body = offsets.body();
     let imm = rv.imm;
     let validators = rv.validators;
 
     let proposer_pubkey = validators.pubkey_decompressed(proposer_index as usize);
-    collect_sigs_randao(imm, body, block_slot, proposer_pubkey, sig_batch);
+    collect_sigs_randao(imm, &rv.epoch, body, block_slot, proposer_pubkey, sig_batch);
 
-    if let Some(section) =
-        offsets.try_slice(offsets.proposer_slashings_off, offsets.attester_slashings_off)
-    {
-        collect_sigs_proposer_slashings(imm, &validators, section, sig_batch)?;
+    if let Some(section) = offsets.proposer_slashings() {
+        collect_sigs_proposer_slashings(imm, &rv.epoch, &validators, section, sig_batch)?;
     }
-    if let Some(section) =
-        offsets.try_slice(offsets.attester_slashings_off, offsets.attestations_off)
-    {
-        collect_sigs_attester_slashings(imm, &validators, section, active_scratch, sig_batch)?;
+    if let Some(section) = offsets.attester_slashings() {
+        collect_sigs_attester_slashings(
+            imm,
+            &rv.epoch,
+            &validators,
+            section,
+            active_scratch,
+            sig_batch,
+        )?;
     }
-    if let Some(section) = offsets.try_slice(offsets.attestations_off, offsets.deposits_off) {
+    if let Some(section) = offsets.attestations() {
         collect_sigs_attestations(
             imm,
+            &rv.epoch,
             &validators,
             section,
             block_slot,
@@ -625,13 +631,38 @@ fn collect_sigs_block_body(
             sig_batch,
         )?;
     }
-    // deposits skipped — these are verified inline in `apply_deposit`.
-    if let Some(section) = offsets.try_slice(offsets.voluntary_exits_off, offsets.exec_off) {
+
+    if let Some(section) = offsets.voluntary_exits() {
         collect_sigs_voluntary_exits(imm, &validators, section, sig_batch);
     }
-    if let Some(section) = offsets.try_slice(offsets.bls_changes_off, offsets.blob_off) {
+    if let Some(section) = offsets.bls_changes() {
         collect_sigs_bls_to_execution_changes(imm, &validators, section, sig_batch)?;
     }
+
+    if rv.is_gloas() {
+        let current_epoch = block_slot / SLOTS_PER_EPOCH;
+        if let Some(bid) = offsets.signed_bid() {
+            collect_sigs_execution_payload_bid(
+                imm,
+                &rv.epoch,
+                &rv.builders,
+                bid,
+                current_epoch,
+                sig_batch,
+            )?;
+        }
+        if let Some(section) = offsets.payload_attestations() {
+            collect_sigs_payload_attestations(
+                imm,
+                &validators,
+                &rv.epoch,
+                block_slot,
+                section,
+                sig_batch,
+            )?;
+        }
+    }
+
     collect_sigs_sync_aggregate(
         rv,
         offsets.sync_aggregate(),
@@ -644,6 +675,7 @@ fn collect_sigs_block_body(
 
 pub fn collect_sigs_randao(
     imm: &Immutable,
+    epoch: &EpochView,
     body: &[u8],
     block_slot: Slot,
     proposer_pubkey: &PublicKey,
@@ -654,10 +686,11 @@ pub fn collect_sigs_randao(
     }
     let reveal: &[u8; 96] = body[0..96].try_into().unwrap();
     let block_epoch = block_slot / SLOTS_PER_EPOCH;
-    let (fork_version, gvr) = imm.fork_version_at(block_epoch);
+    let fork_version = epoch.fork_version_at(block_epoch);
     let mut epoch_chunk = [0u8; 32];
     epoch_chunk[..8].copy_from_slice(&block_epoch.to_le_bytes());
-    let domain = bls::compute_domain(bls::DOMAIN_RANDAO, fork_version, &gvr);
+    let domain =
+        bls::compute_domain(bls::DOMAIN_RANDAO, fork_version, &imm.genesis_validators_root);
     let signing_root = bls::compute_signing_root(&epoch_chunk, &domain);
     sig_batch.push_one(proposer_pubkey, reveal, signing_root);
 }

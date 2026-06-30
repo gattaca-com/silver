@@ -130,6 +130,13 @@ pub struct StateWriterView<'a> {
     pub builders: BuildersWriteView<'a>,
 }
 
+impl<'a> StateReadView<'a> {
+    #[inline]
+    pub fn is_gloas(&self) -> bool {
+        self.epoch.is_gloas(self.imm.gloas_fork_version)
+    }
+}
+
 impl<'a> StateWriterView<'a> {
     /// Finish the block: consume every held writer and assemble the fork's
     /// index bundle (for `publish_state_id`) — ids exist only from here on,

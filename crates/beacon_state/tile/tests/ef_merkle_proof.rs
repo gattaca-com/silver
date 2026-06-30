@@ -8,7 +8,7 @@ use ef_common::{load_state, snappy_decode, spec_tests_dir};
 use silver_beacon_state::ssz_hash::{self, sha256};
 
 #[test]
-fn single_merkle_proof() {
+fn fulu_single_merkle_proof() {
     let base = spec_tests_dir()
         .join("tests/mainnet/fulu/merkle_proof/single_merkle_proof/BeaconBlockBody");
     let Ok(entries) = fs::read_dir(&base) else {
@@ -33,7 +33,7 @@ fn single_merkle_proof() {
 
         // Load object and compute its hash_tree_root.
         let body_ssz = snappy_decode(&object_path);
-        let object_root = ssz_hash::hash_tree_root_body(&body_ssz);
+        let object_root = ssz_hash::hash_tree_root_body_fulu(&body_ssz);
 
         // Parse proof.yaml.
         let proof_yaml = fs::read_to_string(&proof_path).unwrap();
@@ -59,7 +59,7 @@ fn single_merkle_proof() {
 /// branch the spec ships for `BeaconBlockBody.blob_kzg_commitments` (gindex
 /// 27).
 #[test]
-fn generates_kzg_commitments_inclusion_proof() {
+fn fulu_generates_kzg_commitments_inclusion_proof() {
     let base = spec_tests_dir()
         .join("tests/mainnet/fulu/merkle_proof/single_merkle_proof/BeaconBlockBody");
     let Ok(entries) = fs::read_dir(&base) else {
@@ -98,7 +98,7 @@ fn generates_kzg_commitments_inclusion_proof() {
 /// Light-client proofs share the proof format but cover `BeaconState` leaves
 /// (sync committees, finality) alongside `BeaconBlockBody` (execution).
 #[test]
-fn light_client_single_merkle_proof() {
+fn fulu_light_client_single_merkle_proof() {
     let base = spec_tests_dir().join("tests/mainnet/fulu/light_client/single_merkle_proof");
     let Ok(types) = fs::read_dir(&base) else {
         eprintln!("light_client merkle_proof: no test cases, skipping");
@@ -125,7 +125,9 @@ fn light_client_single_merkle_proof() {
             }
 
             let object_root = match object_type.as_str() {
-                "BeaconBlockBody" => ssz_hash::hash_tree_root_body(&snappy_decode(&object_path)),
+                "BeaconBlockBody" => {
+                    ssz_hash::hash_tree_root_body_fulu(&snappy_decode(&object_path))
+                }
                 "BeaconState" => load_state(&object_path).state_root(),
                 other => panic!("light_client merkle_proof: unhandled object type {other}"),
             };

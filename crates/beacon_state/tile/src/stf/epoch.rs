@@ -4,7 +4,7 @@ use silver_beacon_state_data::{
     self as common, Checkpoint, EPOCHS_PER_SLASHINGS_VECTOR, Epoch, EpochView, EpochWriteView,
     Eth1WriteView, HistoricalSummary, LongtailGroup, LongtailId, LongtailWriteView,
     MIN_SEED_LOOKAHEAD, PROPOSER_LOOKAHEAD_SIZE, SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT,
-    SYNC_COMMITTEE_SIZE, SpecConfig, StateWriterView,
+    SYNC_COMMITTEE_SIZE, SpecConfig, StateWriterView, ValidatorsView,
 };
 use silver_common::metrics::timed;
 
@@ -14,6 +14,7 @@ use crate::{
     ssz_hash,
     stf::{
         common::StfScratch,
+        process_builder_pending_payments, process_ptc_window,
         validator::{ActiveStatus, total_active_balance},
     },
 };
@@ -63,6 +64,8 @@ pub fn process_epoch(
     scratch: &mut StfScratch,
 ) {
     let current_epoch = view.slot.state().slot / SLOTS_PER_EPOCH;
+    let is_gloas = epoch.reader().is_gloas(view.imm.gloas_fork_version);
+
     // Longtail boundary roll: once iff either rotation gate fires, derived
     // from the inherited entry (fresh off the base when no ancestor rotated).
     let next_epoch = current_epoch + 1;
@@ -85,6 +88,9 @@ pub fn process_epoch(
     process_eth1_data_reset(&mut view.eth1, current_epoch);
     process_pending_deposits(cfg, view, epoch, &mut scratch.postponed);
     process_pending_consolidations(view);
+    if is_gloas {
+        process_builder_pending_payments(view, current_epoch);
+    }
     process_effective_balance_updates(view, &mut scratch.replace_u64);
     process_slashings_reset(view, epoch);
     process_randao_mixes_reset(view, epoch);
@@ -105,6 +111,9 @@ pub fn process_epoch(
         );
     }
     process_proposer_lookahead(view, epoch, current_epoch, &mut scratch.active, &mut scratch.eff);
+    if is_gloas {
+        process_ptc_window(view, epoch, current_epoch);
+    }
 
     // Commit the boundary-rolled longtail entry: its id surfaces only here,
     // after the rotation leaves are done mutating it.
@@ -608,8 +617,7 @@ pub fn process_pending_deposits(
     let current_epoch = view.slot.state().slot / SLOTS_PER_EPOCH;
     let next_epoch = current_epoch + 1;
     let dep_balance_to_consume = epoch.state_mut().deposit_balance_to_consume;
-    let available =
-        dep_balance_to_consume + get_activation_exit_churn_limit(cfg, view, current_epoch);
+    let available = dep_balance_to_consume + get_deposit_churn_limit(cfg, view, current_epoch);
     let finalized_slot = epoch.state_mut().finalized_checkpoint.epoch * SLOTS_PER_EPOCH;
 
     postponed.clear();
@@ -697,6 +705,32 @@ pub fn is_valid_deposit_signature(
     amount: u64,
     signature: &[u8; 96],
 ) -> bool {
+    verify_deposit_signature(pubkey, withdrawal_credentials, amount, signature, bls::DOMAIN_DEPOSIT)
+}
+
+/// EIP-8282
+pub(crate) fn is_valid_builder_deposit_signature(
+    pubkey: &[u8; 48],
+    withdrawal_credentials: &common::Withdrawals,
+    amount: u64,
+    signature: &[u8; 96],
+) -> bool {
+    verify_deposit_signature(
+        pubkey,
+        withdrawal_credentials,
+        amount,
+        signature,
+        bls::DOMAIN_BUILDER_DEPOSIT,
+    )
+}
+
+fn verify_deposit_signature(
+    pubkey: &[u8; 48],
+    withdrawal_credentials: &common::Withdrawals,
+    amount: u64,
+    signature: &[u8; 96],
+    domain_type: u32,
+) -> bool {
     let mut pk_chunk = [0u8; 64];
     pk_chunk[..48].copy_from_slice(pubkey);
     let pubkey_root = ssz_hash::sha256(&pk_chunk);
@@ -708,7 +742,7 @@ pub fn is_valid_deposit_signature(
     let domain = {
         let fork_data_root = ssz_hash::hash_tree_root_fork_data([0; 4], &[0u8; 32]);
         let mut d = [0u8; 32];
-        d[0..4].copy_from_slice(&0x03u32.to_le_bytes());
+        d[0..4].copy_from_slice(&domain_type.to_le_bytes());
         d[4..32].copy_from_slice(&fork_data_root[..28]);
         d
     };
@@ -864,6 +898,9 @@ pub fn process_proposer_lookahead(
         target_epoch,
         active_scratch,
     );
+    if epoch.reader().is_gloas(view.imm.gloas_fork_version) {
+        retain_unslashed(active_scratch, &view.validators.reader());
+    }
     eff_scratch.clear();
     eff_scratch.extend(view.validators.iter_effective_balances());
 
@@ -876,9 +913,10 @@ pub fn process_proposer_lookahead(
     }
 }
 
-// ============================================================================
-// Helpers
-// ============================================================================
+/// EIP-8045: restrict a candidate index set to unslashed validators.
+fn retain_unslashed(indices: &mut Vec<u32>, validators: &ValidatorsView) {
+    indices.retain(|&i| !validators.is_slashed(i as usize));
+}
 
 #[timed]
 fn initiate_validator_exit(
@@ -908,7 +946,7 @@ fn compute_exit_epoch_and_update_churn(
     let activation_exit_epoch = current_epoch + 1 + cfg.max_seed_lookahead;
     let prev_earliest = view.slot.state().earliest_exit_epoch;
     let mut earliest = max(prev_earliest, activation_exit_epoch);
-    let per_epoch_churn = get_activation_exit_churn_limit(cfg, view, current_epoch);
+    let per_epoch_churn = get_exit_churn_limit(cfg, view, current_epoch);
 
     let mut consume = if prev_earliest < earliest {
         per_epoch_churn
@@ -929,21 +967,35 @@ fn compute_exit_epoch_and_update_churn(
 #[timed]
 fn get_balance_churn_limit(cfg: &SpecConfig, view: &StateWriterView, current_epoch: Epoch) -> u64 {
     let total = total_active_balance(&view.validators.reader(), current_epoch);
-    let churn = max(cfg.min_per_epoch_churn_limit, total / cfg.churn_limit_quotient);
+    let quotient = if cfg.is_gloas_at(current_epoch) {
+        cfg.churn_limit_quotient_gloas
+    } else {
+        cfg.churn_limit_quotient
+    };
+    let churn = max(cfg.min_per_epoch_churn_limit, total / quotient);
     churn - churn % EFFECTIVE_BALANCE_INCREMENT
 }
 
 #[inline]
 #[timed]
-fn get_activation_exit_churn_limit(
-    cfg: &SpecConfig,
-    view: &StateWriterView,
-    current_epoch: Epoch,
-) -> u64 {
-    min(
-        cfg.max_per_epoch_activation_exit_churn_limit,
-        get_balance_churn_limit(cfg, view, current_epoch),
-    )
+fn get_deposit_churn_limit(cfg: &SpecConfig, view: &StateWriterView, current_epoch: Epoch) -> u64 {
+    let cap = if cfg.is_gloas_at(current_epoch) {
+        cfg.max_per_epoch_activation_churn_limit_gloas
+    } else {
+        cfg.max_per_epoch_activation_exit_churn_limit
+    };
+    min(cap, get_balance_churn_limit(cfg, view, current_epoch))
+}
+
+#[inline]
+#[timed]
+fn get_exit_churn_limit(cfg: &SpecConfig, view: &StateWriterView, current_epoch: Epoch) -> u64 {
+    let base = get_balance_churn_limit(cfg, view, current_epoch);
+    if cfg.is_gloas_at(current_epoch) {
+        base
+    } else {
+        min(cfg.max_per_epoch_activation_exit_churn_limit, base)
+    }
 }
 
 /// Inactivity-leak predicate: the chain hasn't finalized for more than

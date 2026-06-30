@@ -155,7 +155,7 @@ fn run_checks(name: &str, si: usize, tile: &BeaconStateTile, checks: &Mapping) {
 }
 
 #[test]
-fn sync_optimistic() {
+fn fulu_sync_optimistic() {
     let cases = iter_test_cases(&optimistic_dir());
     assert!(!cases.is_empty(), "no sync/optimistic cases found");
     for (name, path) in &cases {

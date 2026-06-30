@@ -19,7 +19,7 @@ use silver_beacon_state::{
 };
 use silver_beacon_state_data::{B256, SLOTS_PER_EPOCH, SpecConfig, StateReadView};
 use silver_common::ssz_view::{
-    BLOCK_SYNC_AGGREGATE_SIZE, BeaconBlockBodyView, SINGLE_ATT_SIZE, SignedBeaconBlockView,
+    BLOCK_SYNC_AGGREGATE_SIZE, BeaconBlockBodyFuluView, SINGLE_ATT_SIZE, SignedBeaconBlockView,
 };
 
 fn keypair(seed: u64) -> (SecretKey, PublicKey) {
@@ -185,24 +185,26 @@ fn build_ef_block() -> SigBatch {
         prev_committees_per_slot,
     };
 
-    let ps = BeaconBlockBodyView::proposer_slashings_offset(body) as usize;
-    let at_s = BeaconBlockBodyView::attester_slashings_offset(body) as usize;
-    let att = BeaconBlockBodyView::attestations_offset(body) as usize;
-    let dep = BeaconBlockBodyView::deposits_offset(body) as usize;
-    let ve = BeaconBlockBodyView::voluntary_exits_offset(body) as usize;
-    let exec = BeaconBlockBodyView::execution_payload_offset(body) as usize;
-    let bls_ = BeaconBlockBodyView::bls_to_execution_changes_offset(body) as usize;
-    let blob = BeaconBlockBodyView::blob_kzg_commitments_offset(body) as usize;
+    let ps = BeaconBlockBodyFuluView::proposer_slashings_offset(body) as usize;
+    let at_s = BeaconBlockBodyFuluView::attester_slashings_offset(body) as usize;
+    let att = BeaconBlockBodyFuluView::attestations_offset(body) as usize;
+    let dep = BeaconBlockBodyFuluView::deposits_offset(body) as usize;
+    let ve = BeaconBlockBodyFuluView::voluntary_exits_offset(body) as usize;
+    let exec = BeaconBlockBodyFuluView::execution_payload_offset(body) as usize;
+    let bls_ = BeaconBlockBodyFuluView::bls_to_execution_changes_offset(body) as usize;
+    let blob = BeaconBlockBodyFuluView::blob_kzg_commitments_offset(body) as usize;
 
     let mut batch = SigBatch::new();
     let mut scratch = Vec::new();
     let imm = rv.imm;
     let proposer_pk = validators.pubkey_decompressed(proposer_index as usize);
 
-    collect_sigs_randao(imm, body, block_slot, proposer_pk, &mut batch);
-    let _ = collect_sigs_proposer_slashings(imm, &validators, &body[ps..at_s], &mut batch);
+    collect_sigs_randao(imm, &rv.epoch, body, block_slot, proposer_pk, &mut batch);
+    let _ =
+        collect_sigs_proposer_slashings(imm, &rv.epoch, &validators, &body[ps..at_s], &mut batch);
     let _ = collect_sigs_attester_slashings(
         imm,
+        &rv.epoch,
         &validators,
         &body[at_s..att],
         &mut scratch,
@@ -210,6 +212,7 @@ fn build_ef_block() -> SigBatch {
     );
     let _ = collect_sigs_attestations(
         imm,
+        &rv.epoch,
         &validators,
         &body[att..dep],
         block_slot,
@@ -217,7 +220,7 @@ fn build_ef_block() -> SigBatch {
         &mut scratch,
         &mut batch,
     );
-    // deposits skipped — verified inline in apply_deposit.
+
     collect_sigs_voluntary_exits(imm, &validators, &body[ve..exec], &mut batch);
     let _ = collect_sigs_bls_to_execution_changes(imm, &validators, &body[bls_..blob], &mut batch);
     collect_sigs_sync_aggregate(

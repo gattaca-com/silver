@@ -10,7 +10,7 @@ pub enum SszView {
     SignedBeaconBlock(SignedBeaconBlockView),
     SignedAggregateAndProof(SignedAggregateAndProofView),
     AttesterSlashing(AttesterSlashingView),
-    DataColumnSidecar(DataColumnSidecarView),
+    DataColumnSidecar(DataColumnSidecarFuluView),
     LightClientHeader(LightClientHeaderView),
     LightClientFinalityUpdate(LightClientFinalityUpdateView),
     LightClientOptimisticUpdate(LightClientOptimisticUpdateView),
@@ -22,6 +22,7 @@ pub enum SszView {
     BeaconBlocksByRootRequest(BeaconBlocksByRootRequestView),
     DataColumnSidecarsByRangeRequest(DataColumnSidecarsByRangeRequestView),
     DataColumnsByRootIdentifier(DataColumnsByRootIdentifierView),
+
     // [New in Gloas]
     SignedExecutionPayloadBid(SignedExecutionPayloadBidView),
     SignedExecutionPayloadEnvelope(SignedExecutionPayloadEnvelopeView),
@@ -72,10 +73,12 @@ pub const BYTES_PER_KZG_PROOF: usize = 48;
 
 // Block-body list limits (beacon-chain.md).
 pub const MAX_PROPOSER_SLASHINGS: usize = 16;
+pub const MAX_ATTESTER_SLASHINGS_ELECTRA: usize = 1;
 pub const MAX_ATTESTATIONS_ELECTRA: usize = 8;
 pub const MAX_DEPOSITS: usize = 16;
 pub const MAX_VOLUNTARY_EXITS: usize = 16;
 pub const MAX_BLS_TO_EXECUTION_CHANGES: usize = 16;
+pub const MAX_PAYLOAD_ATTESTATIONS: usize = 4;
 pub const MAX_EXTRA_DATA_BYTES: usize = 32;
 pub const MAX_WITHDRAWALS_PER_PAYLOAD: usize = 16;
 pub const MAX_TRANSACTIONS_PER_PAYLOAD: usize = 1 << 20;
@@ -83,6 +86,8 @@ pub const MAX_BYTES_PER_TRANSACTION: usize = 1 << 30;
 pub const MAX_DEPOSIT_REQUESTS_PER_PAYLOAD: usize = 8192;
 pub const MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD: usize = 16;
 pub const MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD: usize = 2;
+pub const MAX_BUILDER_DEPOSIT_REQUESTS_PER_PAYLOAD: usize = 256;
+pub const MAX_BUILDER_EXIT_REQUESTS_PER_PAYLOAD: usize = 16;
 pub const DEPOSIT_CONTRACT_TREE_DEPTH: usize = 32;
 pub const SYNC_COMMITTEE_SIZE: usize = 512;
 
@@ -565,9 +570,9 @@ impl SignedBeaconBlockView {
             return false;
         }
         let kzg_commitments_offset =
-            BeaconBlockBodyView::blob_kzg_commitments_offset(beacon_block_body);
+            BeaconBlockBodyFuluView::blob_kzg_commitments_offset(beacon_block_body);
         let execution_requests_offset =
-            BeaconBlockBodyView::execution_requests_offset(beacon_block_body);
+            BeaconBlockBodyFuluView::execution_requests_offset(beacon_block_body);
 
         (kzg_commitments_offset as usize) < beacon_block_body.len() &&
             kzg_commitments_offset < execution_requests_offset
@@ -598,9 +603,9 @@ pub const BEACON_BLOCK_BODY_FIXED: usize = 396;
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 #[repr(C)]
-pub struct BeaconBlockBodyView;
+pub struct BeaconBlockBodyFuluView;
 
-impl BeaconBlockBodyView {
+impl BeaconBlockBodyFuluView {
     #[inline]
     pub fn randao_reveal(buf: &[u8]) -> &[u8; 96] {
         fixed(buf, 0)
@@ -937,9 +942,9 @@ pub const DATA_COLUMN_SIDECAR_MAX: usize = DATA_COLUMN_SIDECAR_MIN +
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 #[repr(C)]
-pub struct DataColumnSidecarView;
+pub struct DataColumnSidecarFuluView;
 
-impl DataColumnSidecarView {
+impl DataColumnSidecarFuluView {
     // -- fixed fields (compile-time offsets) --
 
     #[inline]
@@ -1481,22 +1486,6 @@ impl DataColumnsByRootIdentifierView {
     }
 }
 
-// -- AttestationData (inner 128B; reused inside Attestation,
-// IndexedAttestation, SingleAttestation, AggregateAndProof)
-// -------------------------------
-//
-//   [0..8)    slot
-//   [8..16)   index (always 0 post-Electra)
-//   [16..48)  beacon_block_root
-//   [48..56)  source.epoch
-//   [56..88)  source.root
-//   [88..96)  target.epoch
-//   [96..128) target.root
-
-// =====================================================================
-// Gloas (EIP-7732) gossip / RPC payload messages
-// =====================================================================
-
 // -- PayloadAttestationData -------------------------------------------
 //
 // All fixed, 42B.
@@ -1527,6 +1516,39 @@ impl PayloadAttestationDataView {
     #[inline]
     pub fn blob_data_available(buf: &[u8; PAYLOAD_ATTESTATION_DATA_SIZE]) -> bool {
         buf[41] != 0
+    }
+}
+
+// -- PayloadAttestation (beacon block body payload_attestations element) --
+//
+// All fixed, 202B.
+//   [0..64)    aggregation_bits (Bitvector[PTC_SIZE=512])
+//   [64..106)  data (PayloadAttestationData 42B)
+//   [106..202) signature
+
+// aggregation_bits: Bitvector[PTC_SIZE] where PTC_SIZE = 512.
+pub const PTC_AGGREGATION_BITS_SIZE: usize = 512 / 8;
+pub const PAYLOAD_ATTESTATION_SIZE: usize =
+    PTC_AGGREGATION_BITS_SIZE + PAYLOAD_ATTESTATION_DATA_SIZE + 96;
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[repr(C)]
+pub struct PayloadAttestationView;
+
+impl PayloadAttestationView {
+    #[inline]
+    pub fn aggregation_bits(
+        buf: &[u8; PAYLOAD_ATTESTATION_SIZE],
+    ) -> &[u8; PTC_AGGREGATION_BITS_SIZE] {
+        fixed(buf, 0)
+    }
+    #[inline]
+    pub fn data(buf: &[u8; PAYLOAD_ATTESTATION_SIZE]) -> &[u8; PAYLOAD_ATTESTATION_DATA_SIZE] {
+        fixed(buf, PTC_AGGREGATION_BITS_SIZE)
+    }
+    #[inline]
+    pub fn signature(buf: &[u8; PAYLOAD_ATTESTATION_SIZE]) -> &[u8; 96] {
+        fixed(buf, PTC_AGGREGATION_BITS_SIZE + PAYLOAD_ATTESTATION_DATA_SIZE)
     }
 }
 
@@ -1993,6 +2015,18 @@ impl BeaconBlockBodyGloasView {
         u32_le(buf, 392)
     }
 }
+
+// -- AttestationData (inner 128B; reused inside Attestation,
+// IndexedAttestation, SingleAttestation, AggregateAndProof)
+// -------------------------------
+//
+//   [0..8)    slot
+//   [8..16)   index (always 0 post-Electra)
+//   [16..48)  beacon_block_root
+//   [48..56)  source.epoch
+//   [56..88)  source.root
+//   [88..96)  target.epoch
+//   [96..128) target.root
 
 pub const ATTESTATION_DATA_SIZE: usize = 128;
 

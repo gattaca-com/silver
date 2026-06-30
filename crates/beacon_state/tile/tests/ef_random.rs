@@ -4,16 +4,31 @@ use std::fs;
 
 mod ef_common;
 
-use ef_common::{compare_states, iter_test_cases, load_state, snappy_decode, spec_tests_dir};
+use ef_common::{
+    compare_states, iter_test_cases, load_state, load_state_gloas, snappy_decode, spec_tests_dir,
+};
+use silver_beacon_state_data::SpecConfig;
 
 #[test]
-fn random() {
-    let base = spec_tests_dir().join("tests/mainnet/fulu/random/random");
+fn fulu_random() {
+    random_fork("fulu", SpecConfig::mainnet());
+}
+
+#[test]
+fn gloas_random() {
+    let mut cfg = SpecConfig::mainnet();
+    cfg.gloas_fork_epoch = 0;
+    random_fork("gloas", cfg);
+}
+
+fn random_fork(fork: &str, cfg: SpecConfig) {
+    let base = spec_tests_dir().join(format!("tests/mainnet/{fork}/random/random"));
     let cases = iter_test_cases(&base);
     if cases.is_empty() {
-        eprintln!("random: no test cases, skipping");
+        eprintln!("random[{fork}]: no test cases, skipping");
         return;
     }
+    let loader = if fork == "gloas" { load_state_gloas } else { load_state };
 
     let mut pass = 0;
     let mut fail = 0;
@@ -40,14 +55,12 @@ fn random() {
             }
         }
 
-        let mut pre = load_state(&pre_path);
+        let mut pre = loader(&pre_path);
 
         let mut ok = true;
         for i in 0..block_count {
             let block_ssz = snappy_decode(&dir.join(format!("blocks_{i}.ssz_snappy")));
-            if let Err(reason) =
-                pre.apply_block(&silver_beacon_state_data::SpecConfig::mainnet(), &block_ssz)
-            {
+            if let Err(reason) = pre.apply_block(&cfg, &block_ssz) {
                 eprintln!("{name}: block {i}: {reason}");
                 ok = false;
                 break;
@@ -59,7 +72,7 @@ fn random() {
             continue;
         }
 
-        let mut post = load_state(&post_path);
+        let mut post = loader(&post_path);
         let diffs = compare_states(name, &mut pre, &mut post);
         if diffs.is_empty() {
             pass += 1;
@@ -70,6 +83,6 @@ fn random() {
             }
         }
     }
-    eprintln!("random: {pass} passed, {fail} failed, {skip} skipped");
-    assert_eq!(fail, 0, "random: {fail} test(s) failed");
+    eprintln!("random[{fork}]: {pass} passed, {fail} failed, {skip} skipped");
+    assert_eq!(fail, 0, "random[{fork}]: {fail} test(s) failed");
 }

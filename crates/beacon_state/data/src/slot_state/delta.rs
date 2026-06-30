@@ -2,7 +2,7 @@ use super::{SlotStateGroup, SlotStateId, finalized::SlotStateFinalized};
 use crate::{
     SLOTS_PER_EPOCH,
     buffer::{Reset, Slot as RingSlot, drain_promoted_prefix},
-    types::{B256, Epoch, Slot, SlotState},
+    types::{B256, Epoch, SLOTS_PER_HISTORICAL_ROOT, Slot, SlotState},
 };
 
 // size: ~1 KB inline (SlotState scalars + Vec headers); root tails on the
@@ -176,6 +176,12 @@ impl<'a> SlotStateWriteView<'a> {
     #[inline]
     pub fn advance_slot(&mut self) {
         self.fork.slot.slot += 1;
+    }
+
+    #[inline]
+    pub fn unset_next_payload_availability(&mut self) {
+        let next = ((self.fork.slot.slot + 1) % SLOTS_PER_HISTORICAL_ROOT as u64) as usize;
+        self.fork.slot.execution_payload_availability[next / 8] &= !(1u8 << (next % 8));
     }
 
     /// Fill in `state_root` on the latest block header iff it's currently

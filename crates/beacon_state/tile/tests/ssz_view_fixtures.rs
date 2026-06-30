@@ -356,29 +356,29 @@ fn data_column_sidecar() {
         let sbh = &v["signed_block_header"];
         let m = &sbh["message"];
 
-        assert_eq!(DataColumnSidecarView::index(buf), u(&v["index"]));
-        assert_eq!(DataColumnSidecarView::slot(buf), u(&m["slot"]));
-        assert_eq!(DataColumnSidecarView::proposer_index(buf), u(&m["proposer_index"]));
-        assert_eq!(*DataColumnSidecarView::parent_root(buf), b32(&m["parent_root"]));
-        assert_eq!(*DataColumnSidecarView::state_root(buf), b32(&m["state_root"]));
-        assert_eq!(*DataColumnSidecarView::body_root(buf), b32(&m["body_root"]));
-        assert_eq!(*DataColumnSidecarView::block_signature(buf), b96(&sbh["signature"]));
+        assert_eq!(DataColumnSidecarFuluView::index(buf), u(&v["index"]));
+        assert_eq!(DataColumnSidecarFuluView::slot(buf), u(&m["slot"]));
+        assert_eq!(DataColumnSidecarFuluView::proposer_index(buf), u(&m["proposer_index"]));
+        assert_eq!(*DataColumnSidecarFuluView::parent_root(buf), b32(&m["parent_root"]));
+        assert_eq!(*DataColumnSidecarFuluView::state_root(buf), b32(&m["state_root"]));
+        assert_eq!(*DataColumnSidecarFuluView::body_root(buf), b32(&m["body_root"]));
+        assert_eq!(*DataColumnSidecarFuluView::block_signature(buf), b96(&sbh["signature"]));
         let inc_proof = hex_list_concat(&v["kzg_commitments_inclusion_proof"], 32);
         assert_eq!(inc_proof.len(), 128);
-        assert_eq!(DataColumnSidecarView::inclusion_proof(buf)[..], inc_proof[..]);
+        assert_eq!(DataColumnSidecarFuluView::inclusion_proof(buf)[..], inc_proof[..]);
 
         // Variable: column is a List[Cell=2048B]; kzg_commitments / kzg_proofs are
         // Lists of 48B.
         assert_eq!(
-            DataColumnSidecarView::column(buf),
+            DataColumnSidecarFuluView::column(buf),
             hex_list_concat(&v["column"], BYTES_PER_CELL)
         );
         assert_eq!(
-            DataColumnSidecarView::kzg_commitments(buf),
+            DataColumnSidecarFuluView::kzg_commitments(buf),
             hex_list_concat(&v["kzg_commitments"], BYTES_PER_KZG_COMMITMENT)
         );
         assert_eq!(
-            DataColumnSidecarView::kzg_proofs(buf),
+            DataColumnSidecarFuluView::kzg_proofs(buf),
             hex_list_concat(&v["kzg_proofs"], BYTES_PER_KZG_PROOF)
         );
     }

@@ -133,6 +133,11 @@ impl<'a> BuildersView<'a> {
         self.delta.hash_overlay.ssz_list_root(self.base.hash(), LIST_DEPTH, len)
     }
 
+    // TODO: replace the linear scan
+    pub fn find_by_pubkey(&self, pubkey: &[u8; 48]) -> Option<usize> {
+        (0..self.len()).find(|&i| self.get(i).unwrap().pubkey == *pubkey)
+    }
+
     #[inline]
     fn recompute_leaf(&self, i: usize) -> B256 {
         builder_hash(self.get(i).unwrap())
@@ -203,5 +208,20 @@ impl<'a> BuildersWriteView<'a> {
         b.balance += amount;
         self.fork.edits.merge_in_place(&[(builder_index as u32, b)]);
         self.refresh_leaf(builder_index);
+    }
+
+    #[inline]
+    pub fn sub_balance(&mut self, builder_index: usize, amount: u64) {
+        let mut b = *self.reader().get(builder_index).expect("sub_balance: index out of range");
+        b.balance -= amount.min(b.balance);
+        self.set_builder(builder_index, b);
+    }
+
+    #[inline]
+    pub fn set_withdrawable_epoch(&mut self, builder_index: usize, epoch: u64) {
+        let mut b =
+            *self.reader().get(builder_index).expect("set_withdrawable_epoch: index out of range");
+        b.withdrawable_epoch = epoch;
+        self.set_builder(builder_index, b);
     }
 }

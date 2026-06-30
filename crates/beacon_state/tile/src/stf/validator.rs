@@ -39,7 +39,7 @@ pub(crate) fn compute_exit_epoch_and_update_churn(
     let activation_exit_epoch = current_epoch + 1 + cfg.max_seed_lookahead;
     let prev_earliest = slot.state().earliest_exit_epoch;
     let mut earliest = max(prev_earliest, activation_exit_epoch);
-    let per_epoch_churn = get_activation_exit_churn_limit(cfg, validators, current_epoch);
+    let per_epoch_churn = get_exit_churn_limit(cfg, validators, current_epoch);
 
     let mut balance_to_consume = if prev_earliest < earliest {
         per_epoch_churn
@@ -95,7 +95,12 @@ fn get_balance_churn_limit(
     current_epoch: Epoch,
 ) -> u64 {
     let total = total_active_balance(validators, current_epoch);
-    let churn = max(cfg.min_per_epoch_churn_limit, total / cfg.churn_limit_quotient);
+    let quotient = if cfg.is_gloas_at(current_epoch) {
+        cfg.churn_limit_quotient_gloas
+    } else {
+        cfg.churn_limit_quotient
+    };
+    let churn = max(cfg.min_per_epoch_churn_limit, total / quotient);
     churn - churn % EFFECTIVE_BALANCE_INCREMENT
 }
 
@@ -110,11 +115,32 @@ fn get_activation_exit_churn_limit(
     )
 }
 
+/// EIP-8061 (Gloas): exit churn is the uncapped base churn; pre-Gloas it
+/// shares the activation/exit cap.
+fn get_exit_churn_limit(
+    cfg: &SpecConfig,
+    validators: &ValidatorsView,
+    current_epoch: Epoch,
+) -> u64 {
+    let base = get_balance_churn_limit(cfg, validators, current_epoch);
+    if cfg.is_gloas_at(current_epoch) {
+        base
+    } else {
+        min(cfg.max_per_epoch_activation_exit_churn_limit, base)
+    }
+}
+
 pub(crate) fn get_consolidation_churn_limit(
     cfg: &SpecConfig,
     validators: &ValidatorsView,
     current_epoch: Epoch,
 ) -> u64 {
+    // EIP-8061 (Gloas): independently derived from total active balance.
+    if cfg.is_gloas_at(current_epoch) {
+        let total = total_active_balance(validators, current_epoch);
+        let churn = total / cfg.consolidation_churn_limit_quotient;
+        return churn - churn % EFFECTIVE_BALANCE_INCREMENT;
+    }
     get_balance_churn_limit(cfg, validators, current_epoch) -
         get_activation_exit_churn_limit(cfg, validators, current_epoch)
 }

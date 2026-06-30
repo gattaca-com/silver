@@ -143,6 +143,14 @@ pub(crate) fn read_checkpoint(s: &[u8], off: usize) -> Checkpoint {
     Checkpoint { epoch: u64_le(s, off), root: b256(s, off + 8) }
 }
 
+pub(crate) fn read_fork(s: &[u8]) -> types::Fork {
+    types::Fork {
+        previous_version: s[F3..F3 + 4].try_into().unwrap(),
+        current_version: s[F3 + 4..F3 + 8].try_into().unwrap(),
+        epoch: u64_le(s, F3 + 8),
+    }
+}
+
 /// Validated variable-field offsets, monotonic and within `ssz`.
 pub(crate) struct Offsets {
     pub(crate) historical_roots: usize,
@@ -233,11 +241,6 @@ impl Immutable {
     pub(super) fn fill_from_ssz(&mut self, ssz: &[u8], cfg: &SpecConfig) {
         self.genesis_time = u64_le(ssz, F0);
         self.genesis_validators_root = b256(ssz, F1);
-        self.fork = types::Fork {
-            previous_version: ssz[F3..F3 + 4].try_into().unwrap(),
-            current_version: ssz[F3 + 4..F3 + 8].try_into().unwrap(),
-            epoch: u64_le(ssz, F3 + 8),
-        };
         self.genesis_fork_version = cfg.genesis_fork_version;
         self.capella_fork_version = cfg.capella_fork_version;
         self.gloas_fork_version = cfg.gloas_fork_version;

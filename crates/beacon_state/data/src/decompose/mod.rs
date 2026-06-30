@@ -39,6 +39,16 @@ impl BeaconState {
         }
         Self::decompose_fulu(ssz, cfg, pubkeys)
     }
+
+    /// Force the Gloas decoder regardless of the SSZ `fork.current_version`.
+    #[doc(hidden)]
+    pub fn decompose_gloas(
+        ssz: &[u8],
+        cfg: &SpecConfig,
+        pubkeys: Option<&[blst::min_pk::PublicKey]>,
+    ) -> Result<Self, DecomposeError> {
+        gloas::decompose(ssz, cfg, pubkeys)
+    }
 }
 
 #[cfg(test)]

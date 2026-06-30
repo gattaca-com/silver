@@ -84,7 +84,7 @@ impl SlotStateFinalized {
         write_ring_window(&mut self.state_roots, old_fin_slot, &delta.state_roots);
     }
 
-    pub(crate) fn from_ssz(
+    pub(crate) fn from_ssz_fulu(
         ssz: &[u8],
         o: &Offsets,
         epoch: &EpochStateFinalized,

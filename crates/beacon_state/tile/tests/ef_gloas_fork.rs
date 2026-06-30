@@ -4,7 +4,6 @@ mod ef_common;
 
 use ef_common::{compare_states, iter_test_cases, load_state, spec_tests_dir};
 use silver_beacon_state::stf;
-use silver_beacon_state_data::{Fork, SLOTS_PER_EPOCH, SpecConfig};
 
 /// EF `fork` vectors for the Fulu → Gloas upgrade: decode the Fulu `pre`, apply
 /// `upgrade_to_gloas`, and check the result hashes to the Gloas `post`.
@@ -18,7 +17,6 @@ fn gloas_fork() {
         return;
     }
 
-    let cfg = SpecConfig::mainnet();
     let mut pass = 0;
     let mut fail = 0;
     for (name, dir) in &cases {
@@ -29,17 +27,7 @@ fn gloas_fork() {
         }
 
         let mut pre = load_state(&pre_path);
-        // The immutable-tier fork field is the caller's to set (the per-fork
-        // view borrows it shared); do it before the upgrade transforms the
-        // tier state, so `is_gloas` routes the post-state hash to the Gloas
-        // hasher.
-        let current_epoch = pre.slot() / SLOTS_PER_EPOCH;
-        pre.bs.immutable.fork = Fork {
-            previous_version: pre.bs.immutable.fork.current_version,
-            current_version: cfg.gloas_fork_version,
-            epoch: current_epoch,
-        };
-        // The upgrade writes the epoch tier (`ptc_window`), so roll its
+        // The upgrade writes the epoch tier (`fork` + `ptc_window`), so roll its
         // boundary writer — the production `process_slots`-at-boundary shape.
         let sid = pre.state_id;
         pre.state_id = {

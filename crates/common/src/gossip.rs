@@ -3,7 +3,7 @@ use std::fmt;
 use crate::{
     Error,
     ssz_view::{
-        AttesterSlashingView, DataColumnSidecarView, LightClientFinalityUpdateView,
+        AttesterSlashingView, DataColumnSidecarFuluView, LightClientFinalityUpdateView,
         LightClientOptimisticUpdateView, ProposerSlashingView, SignedAggregateAndProofView,
         SignedBeaconBlockView, SignedBlsToExecutionChangeView, SignedContributionAndProofView,
         SignedVoluntaryExitView, SingleAttestationView, SszView, SyncCommitteeView,
@@ -108,7 +108,7 @@ impl GossipTopic {
             Self::BlsToExecutionChange => {
                 SszView::SignedBlsToExecutionChange(SignedBlsToExecutionChangeView)
             }
-            Self::DataColumnSidecar(_) => SszView::DataColumnSidecar(DataColumnSidecarView),
+            Self::DataColumnSidecar(_) => SszView::DataColumnSidecar(DataColumnSidecarFuluView),
             Self::LightClientFinalityUpdate => {
                 SszView::LightClientFinalityUpdate(LightClientFinalityUpdateView)
             }

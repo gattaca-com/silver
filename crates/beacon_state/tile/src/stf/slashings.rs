@@ -1,9 +1,9 @@
 use core::cmp::max;
 
 use silver_beacon_state_data::{
-    B256, BalancesWriteView, BeaconBlockHeader, EPOCHS_PER_SLASHINGS_VECTOR, EpochView, Immutable,
-    SLOTS_PER_EPOCH, SlotStateWriteView, SpecConfig, StateReadView, StateWriterView,
-    ValidatorsView, ValidatorsWriteView,
+    B256, BalancesWriteView, BeaconBlockHeader, BuilderPendingPayment, EPOCHS_PER_SLASHINGS_VECTOR,
+    EpochView, Immutable, SLOTS_PER_EPOCH, SlotStateWriteView, SpecConfig, StateReadView,
+    StateWriterView, ValidatorsView, ValidatorsWriteView,
 };
 use silver_common::ssz_view::{
     ATTESTATION_DATA_SIZE, AttestationDataView, BEACON_BLOCK_HEADER_SIZE, BeaconBlockHeaderView,
@@ -47,11 +47,13 @@ fn attester_slashing_inner_offsets(
 /// Pass 1 — push both header sigs per slashing entry.
 pub fn collect_sigs_proposer_slashings(
     imm: &Immutable,
+    epoch: &EpochView,
     validators: &ValidatorsView,
     data: &[u8],
     sig_batch: &mut SigBatch,
 ) -> Result<(), ProposerSlashingError> {
-    let (fork_epoch, prev_ver, cur_ver, gvr) = imm.fork_descriptor();
+    let gvr = imm.genesis_validators_root;
+    let (fork_epoch, prev_ver, cur_ver) = epoch.fork_descriptor();
     let count = data.len() / PROPOSER_SLASHING_SIZE;
     let n = validators.count();
     for i in 0..count {
@@ -88,6 +90,7 @@ pub fn process_proposer_slashings(
     cfg: &SpecConfig,
     data: &[u8],
 ) -> Result<(), ProposerSlashingError> {
+    let is_gloas = epoch.is_gloas(view.imm.gloas_fork_version);
     let slot = &mut view.slot;
     let validators = &mut view.validators;
     let balances = &mut view.balances;
@@ -110,9 +113,38 @@ pub fn process_proposer_slashings(
                 epoch: current_epoch,
             });
         }
+        if is_gloas {
+            clear_builder_payment_on_slash(
+                slot,
+                ProposerSlashingView::h1_slot(s),
+                vi,
+                current_epoch,
+            );
+        }
         slash_validator(cfg, slot, validators, balances, vi, proposer_index);
     }
     Ok(())
+}
+
+fn clear_builder_payment_on_slash(
+    slot: &mut SlotStateWriteView,
+    proposal_slot: u64,
+    proposer_index: u32,
+    current_epoch: u64,
+) {
+    let spe = SLOTS_PER_EPOCH as usize;
+    let proposal_epoch = proposal_slot / SLOTS_PER_EPOCH;
+    let slot_in_epoch = proposal_slot as usize % spe;
+    let ring = if proposal_epoch == current_epoch {
+        spe + slot_in_epoch
+    } else if current_epoch > 0 && proposal_epoch == current_epoch - 1 {
+        slot_in_epoch
+    } else {
+        return;
+    };
+    if slot.state().builder_pending_payments[ring].proposer_index == proposer_index as u64 {
+        slot.state_mut().builder_pending_payments[ring] = BuilderPendingPayment::default();
+    }
 }
 
 /// Compute signing root for a `BeaconBlockHeader` (208-byte SSZ): slot,
@@ -140,12 +172,14 @@ pub(crate) fn signing_root_for_block_header(
 /// Pass 1 — push both IndexedAttestation aggregate sigs per slashing entry.
 pub fn collect_sigs_attester_slashings(
     imm: &Immutable,
+    epoch: &EpochView,
     validators: &ValidatorsView,
     data: &[u8],
     active_scratch: &mut Vec<u32>,
     sig_batch: &mut SigBatch,
 ) -> Result<(), AttesterSlashingError> {
-    let (fork_epoch, prev_ver, cur_ver, gvr) = imm.fork_descriptor();
+    let gvr = imm.genesis_validators_root;
+    let (fork_epoch, prev_ver, cur_ver) = epoch.fork_descriptor();
     for_each_ssz_list_item(
         data,
         |start, end| AttesterSlashingError::BadOffsets { start, end, parent_len: data.len() },
@@ -295,7 +329,8 @@ pub fn validate_attester_slashing_for_gossip(
     equivocating_out: &mut Vec<u32>,
     sig_batch: &mut SigBatch,
 ) -> bool {
-    let (fork_epoch, prev_ver, cur_ver, gvr) = view.imm.fork_descriptor();
+    let gvr = view.imm.genesis_validators_root;
+    let (fork_epoch, prev_ver, cur_ver) = view.epoch.fork_descriptor();
     let Ok((off1, off2)) = attester_slashing_inner_offsets(slashing) else {
         return false;
     };

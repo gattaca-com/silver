@@ -1,6 +1,6 @@
 use silver_beacon_state_data::{
-    B256, ColumnSpec, Epoch, EpochView, Immutable, ParticipationWriteView, SLOTS_PER_EPOCH, Slot,
-    SlotStateWriteView, StateWriterView, ValidatorsView,
+    B256, ColumnSpec, Epoch, EpochView, Immutable, ParticipationWriteView, SLOTS_PER_EPOCH,
+    SLOTS_PER_HISTORICAL_ROOT, Slot, SlotStateWriteView, StateWriterView, ValidatorsView,
 };
 use silver_common::{
     metrics::timed,
@@ -19,9 +19,15 @@ use crate::{
     validate,
 };
 
+const GLOAS_PAYLOAD_ABSENT: u64 = 0;
+const GLOAS_PAYLOAD_PRESENT: u64 = 1;
+
+const TIMELY_HEAD_FLAG_INDEX: usize = 2;
+
 #[allow(clippy::too_many_arguments)]
 pub fn collect_sigs_attestations(
     imm: &Immutable,
+    epoch: &EpochView,
     validators: &ValidatorsView,
     attestation_data: &[u8],
     block_slot: Slot,
@@ -40,6 +46,7 @@ pub fn collect_sigs_attestations(
         |att| {
             collect_sigs_single_attestation(
                 imm,
+                epoch,
                 validators,
                 att,
                 current_epoch,
@@ -97,6 +104,7 @@ pub fn attesting_indices_from_shuffled(
 #[allow(clippy::too_many_arguments)]
 pub fn collect_sigs_single_attestation(
     imm: &Immutable,
+    epoch: &EpochView,
     validators: &ValidatorsView,
     att: &[u8],
     current_epoch: Epoch,
@@ -104,7 +112,7 @@ pub fn collect_sigs_single_attestation(
     active_scratch: &mut Vec<u32>,
     sig_batch: &mut SigBatch,
 ) -> Result<(), AttestationError> {
-    let (fork_epoch, prev_v, curr_v, gvr) = imm.fork_descriptor();
+    let (fork_epoch, prev_v, curr_v) = epoch.fork_descriptor();
     let data = AttestationView::data(att);
     let target_epoch = AttestationDataView::target_epoch(data);
     let is_current = target_epoch == current_epoch;
@@ -124,7 +132,11 @@ pub fn collect_sigs_single_attestation(
     let fork_version = bls::fork_version_at_epoch(fork_epoch, prev_v, curr_v, target_epoch);
     let sig = AttestationView::signature(att);
     let object_root = ssz_hash::hash_attestation_data(data);
-    let domain = bls::compute_domain(bls::DOMAIN_BEACON_ATTESTER, fork_version, &gvr);
+    let domain = bls::compute_domain(
+        bls::DOMAIN_BEACON_ATTESTER,
+        fork_version,
+        &imm.genesis_validators_root,
+    );
     let signing_root = bls::compute_signing_root(&object_root, &domain);
     sig_batch.push_aggregate(
         active_scratch.iter().map(|&vi| validators.pubkey_decompressed(vi as usize)),
@@ -135,7 +147,7 @@ pub fn collect_sigs_single_attestation(
 }
 
 /// Pass 2 — full data + state-dep validation, apply participation flags +
-/// proposer rewards. BLS verified in pass 1.
+/// proposer rewards.
 #[timed]
 #[allow(clippy::too_many_arguments)]
 pub fn process_attestations(
@@ -202,14 +214,26 @@ pub fn process_single_attestation(
     active_scratch: &mut Vec<u32>,
 ) -> Result<u64, AttestationError> {
     let current_slot = view.slot.state().slot;
-    validate::validate_attestation_data(att, current_slot, current_epoch, previous_epoch)?;
+    let is_gloas = epoch.is_gloas(view.imm.gloas_fork_version);
+    validate::validate_attestation_data(
+        att,
+        current_slot,
+        current_epoch,
+        previous_epoch,
+        is_gloas,
+    )?;
 
     let parsed = ParsedAttestationData::parse(att);
     let is_current =
         check_attestation_target_window(parsed.target_epoch, current_epoch, previous_epoch)?;
     check_attestation_source(epoch, is_current, parsed.source_epoch, parsed.source_root)?;
 
-    let flag_weights = compute_attestation_flags(&view.slot, &parsed, current_slot);
+    let mut flag_weights = compute_attestation_flags(&view.slot, &parsed, current_slot);
+
+    // [New in Gloas] `data.index` is the payload-presence vote: it gates
+    // the head flag and for same-slot attestations feeds builder-payment weight.
+    let same_slot =
+        is_gloas && gloas_payload_vote_is_same_slot(&view.slot, att, &parsed, &mut flag_weights)?;
 
     collect_attestation_participants(
         &view.validators.reader(),
@@ -234,7 +258,7 @@ pub fn process_single_attestation(
     // Distinct `Previous`/`Current` types can't share one binding, so branch
     // and let each arm monomorphise the generic helper for its column.
     let validators = view.validators.reader();
-    Ok(if is_current {
+    let (reward, new_flag_eb) = if is_current {
         apply_attestation_participation_flags(
             &validators,
             &mut view.current_participation,
@@ -250,7 +274,66 @@ pub fn process_single_attestation(
             total_active,
             flag_weights,
         )
-    })
+    };
+
+    if same_slot && new_flag_eb > 0 {
+        accrue_builder_payment_weight(&mut view.slot, parsed.att_slot, is_current, new_flag_eb);
+    }
+
+    Ok(reward)
+}
+
+fn accrue_builder_payment_weight(
+    slot: &mut SlotStateWriteView,
+    att_slot: Slot,
+    is_current: bool,
+    new_flag_eb: u64,
+) {
+    let spe = SLOTS_PER_EPOCH as usize;
+    let slot_in_epoch = att_slot as usize % spe;
+    let ring = if is_current { spe + slot_in_epoch } else { slot_in_epoch };
+    if slot.state().builder_pending_payments[ring].withdrawal.amount > 0 {
+        slot.state_mut().builder_pending_payments[ring].weight += new_flag_eb;
+    }
+}
+
+fn gloas_payload_vote_is_same_slot(
+    slot: &SlotStateWriteView,
+    att: &[u8],
+    parsed: &ParsedAttestationData,
+    flag_weights: &mut [bool; 3],
+) -> Result<bool, AttestationError> {
+    let index = AttestationDataView::index(AttestationView::data(att));
+    if index > GLOAS_PAYLOAD_PRESENT {
+        return Err(AttestationError::InvalidPayloadIndex { index });
+    }
+    let same_slot = is_attestation_same_slot(slot, parsed);
+    let payload_matches = if same_slot {
+        // The payload is revealed after the block, so a same-slot vote must
+        // claim "absent".
+        if index != GLOAS_PAYLOAD_ABSENT {
+            return Err(AttestationError::InvalidPayloadIndex { index });
+        }
+        true
+    } else {
+        index == payload_availability_bit(slot, parsed.att_slot)
+    };
+    flag_weights[TIMELY_HEAD_FLAG_INDEX] &= payload_matches;
+    Ok(same_slot)
+}
+
+fn is_attestation_same_slot(slot: &SlotStateWriteView, parsed: &ParsedAttestationData) -> bool {
+    if parsed.att_slot == 0 {
+        return true;
+    }
+    let root = parsed.beacon_block_root;
+    root == slot.block_root_at_slot(parsed.att_slot) &&
+        root != slot.block_root_at_slot(parsed.att_slot - 1)
+}
+
+fn payload_availability_bit(slot: &SlotStateWriteView, att_slot: Slot) -> u64 {
+    let i = (att_slot % SLOTS_PER_HISTORICAL_ROOT as u64) as usize;
+    (slot.state().execution_payload_availability[i / 8] >> (i % 8) & 1) as u64
 }
 
 struct ParsedAttestationData {
@@ -386,13 +469,16 @@ fn collect_attestation_participants(
     Ok(())
 }
 
+/// Returns `(proposer_reward_numerator, effective_balance_sum)` — the latter
+/// over attesters that set at least one new flag, for the Gloas builder-payment
+/// weight.
 fn apply_attestation_participation_flags<M: ColumnSpec<Val = u8>>(
     validators: &ValidatorsView,
     participation: &mut ParticipationWriteView<M>,
     active_scratch: &[u32],
     total_active: u64,
     flag_weights: [bool; 3],
-) -> u64 {
+) -> (u64, u64) {
     let sqrt_total = integer_sqrt(total_active);
     let base_reward_per_increment = EFFECTIVE_BALANCE_INCREMENT * BASE_REWARD_FACTOR / sqrt_total;
 
@@ -403,6 +489,7 @@ fn apply_attestation_participation_flags<M: ColumnSpec<Val = u8>>(
     // per-validator `set_*_participation` would be O(|edits|) each (quadratic
     // over an epoch's accumulated participation edits).
     let mut updates: Vec<(u32, u8)> = Vec::with_capacity(active_scratch.len());
+    let mut new_flag_eb = 0u64;
     for &vi in active_scratch {
         let prev_p = participation.get(vi as usize);
         let mut p = prev_p;
@@ -418,9 +505,10 @@ fn apply_attestation_participation_flags<M: ColumnSpec<Val = u8>>(
         }
         if p != prev_p {
             updates.push((vi, p));
+            new_flag_eb += effective_balance;
         }
     }
     updates.sort_unstable_by_key(|(idx, _)| *idx);
     participation.set_many(&updates);
-    proposer_reward_numerator
+    (proposer_reward_numerator, new_flag_eb)
 }

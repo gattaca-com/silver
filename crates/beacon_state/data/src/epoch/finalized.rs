@@ -4,7 +4,7 @@ use super::delta::EpochStateDelta;
 use crate::{
     buffer::write_ring_window,
     decompose::{
-        common::{F13, F14, F17, F18, F19, F20, F29, F37, read_checkpoint, u64_le},
+        common::{F13, F14, F17, F18, F19, F20, F29, F37, read_checkpoint, read_fork, u64_le},
         gloas::{G_DEPOSIT_BALANCE_TO_CONSUME, G_PROPOSER_LOOKAHEAD, G_PTC_WINDOW},
     },
     gloas::{PTC_SIZE, PTC_WINDOW_LEN, PtcCommittee, zeroed_ptc_window},
@@ -20,8 +20,7 @@ pub struct EpochStateFinalized {
     // last EPOCHS_PER_SLASHINGS_VECTOR (circular buffer indexed by `epoch % SV`)
     pub(crate) slashings: Box<[u64]>,
     pub(crate) state: EpochState,
-    /// [New in Gloas] Sibling of `state` (not a field of it) to keep
-    /// `EpochState` a small `Copy` scalar type. Zeroed (unused) pre-Gloas.
+    /// [New in Gloas]
     pub(crate) ptc_window: Box<[PtcCommittee; PTC_WINDOW_LEN]>,
 }
 
@@ -61,7 +60,7 @@ impl EpochStateFinalized {
     }
 
     #[timed]
-    pub(crate) fn from_ssz(ssz: &[u8]) -> Self {
+    pub(crate) fn from_ssz_fulu(ssz: &[u8]) -> Self {
         // SAFETY: `B256` is align-1, so the randao region reinterprets as `&[B256]`.
         let randao_src: &[B256] = unsafe {
             std::slice::from_raw_parts(
@@ -83,6 +82,7 @@ impl EpochStateFinalized {
                 current_justified_checkpoint: read_checkpoint(ssz, F19),
                 finalized_checkpoint: read_checkpoint(ssz, F20),
                 deposit_balance_to_consume: u64_le(ssz, F29),
+                fork: read_fork(ssz),
             },
             ptc_window: zeroed_ptc_window(),
         }
@@ -119,6 +119,7 @@ impl EpochStateFinalized {
                 current_justified_checkpoint: read_checkpoint(ssz, F19),
                 finalized_checkpoint: read_checkpoint(ssz, F20),
                 deposit_balance_to_consume: u64_le(ssz, G_DEPOSIT_BALANCE_TO_CONSUME),
+                fork: read_fork(ssz),
             },
             ptc_window,
         }

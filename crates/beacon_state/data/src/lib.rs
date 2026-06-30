@@ -1,3 +1,4 @@
+pub use beacon_block_body::{BlockBodyError, BodyFork, BodyOffsets, OperationKind};
 pub use buffer::{Id, Reset, Ring};
 pub use builders::{BuildersGroup, BuildersId, BuildersView, BuildersWriteView, FinalizedBuilders};
 pub use column::{
@@ -37,6 +38,7 @@ pub use validators::{
 };
 pub use view::{BeaconStateOwner, BeaconStateReader, CheckpointChunk, CheckpointCursor};
 
+mod beacon_block_body;
 pub mod buffer;
 mod builders;
 mod column;
@@ -83,8 +85,7 @@ pub struct BeaconState {
     /// state.
     pub epoch: EpochGroup,
     pub longtail: LongtailGroup,
-    /// Gloas (EIP-7732) builder registry — own ring, rolled every slot. Empty
-    /// until the Gloas fork.
+    /// Gloas builder registry — own ring, rolled every slot.
     pub builders: BuildersGroup,
 }
 

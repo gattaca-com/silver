@@ -53,11 +53,24 @@ impl LoadedState {
 }
 
 pub fn load_state(path: &Path) -> LoadedState {
-    let ssz = snappy_decode(path);
-    let mut bs = Box::new(
-        BeaconState::decompose(&ssz, &SpecConfig::mainnet(), None)
+    anchor(
+        BeaconState::decompose(&snappy_decode(path), &SpecConfig::mainnet(), None)
             .unwrap_or_else(|e| panic!("{}: decompose failed: {e}", path.display())),
-    );
+    )
+}
+
+/// Force the Gloas decoder. EF Gloas suites contain vectors that mutate
+/// `fork.current_version` (signature testing), which defeats the version
+/// routing in `BeaconState::decompose`; the harness knows the layout is Gloas.
+pub fn load_state_gloas(path: &Path) -> LoadedState {
+    anchor(
+        BeaconState::decompose_gloas(&snappy_decode(path), &SpecConfig::mainnet(), None)
+            .unwrap_or_else(|e| panic!("{}: decompose_gloas failed: {e}", path.display())),
+    )
+}
+
+fn anchor(bs: BeaconState) -> LoadedState {
+    let mut bs = Box::new(bs);
     // Anchor each working fork at the decoded base; epoch/longtail stay
     // unrolled (lazy — `None` idx reads the base).
     let state_id = bs.roll_fresh();

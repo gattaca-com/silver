@@ -2,7 +2,7 @@ use crate::{
     DecomposeError,
     decompose::common::{b256, u32_le, u64_le},
     types::{
-        B256, BLSPubkey, Epoch, ExecutionAddress, Immutable, MIN_SEED_LOOKAHEAD, SLOTS_PER_EPOCH,
+        B256, BLSPubkey, Epoch, ExecutionAddress, MIN_SEED_LOOKAHEAD, SLOTS_PER_EPOCH,
         SLOTS_PER_HISTORICAL_ROOT, Slot, Version,
     },
 };
@@ -40,13 +40,6 @@ pub fn zeroed_ptc_window() -> Box<[PtcCommittee; PTC_WINDOW_LEN]> {
     // flat `[u64; PTC_SIZE * PTC_WINDOW_LEN]` (row-major, no padding), and the
     // length matches.
     unsafe { Box::from_raw(Box::into_raw(flat) as *mut [PtcCommittee; PTC_WINDOW_LEN]) }
-}
-
-impl Immutable {
-    #[inline]
-    pub fn is_gloas(&self) -> bool {
-        self.fork.current_version == self.gloas_fork_version
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -143,7 +136,7 @@ pub struct ExecutionPayloadBid {
 }
 
 impl ExecutionPayloadBid {
-    pub(crate) fn from_ssz(body: &[u8]) -> Result<Self, DecomposeError> {
+    pub fn from_ssz(body: &[u8]) -> Result<Self, DecomposeError> {
         if body.len() < EXECUTION_PAYLOAD_BID_FIXED {
             return Err(DecomposeError::GloasFieldLen {
                 field: "latest_execution_payload_bid",

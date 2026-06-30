@@ -147,16 +147,16 @@ fn run_handler(handler: &str) {
 }
 
 #[test]
-fn fork_choice_ex_ante() {
+fn fulu_fork_choice_ex_ante() {
     run_handler("ex_ante");
 }
 
 #[test]
-fn fork_choice_get_head() {
+fn fulu_fork_choice_get_head() {
     run_handler("get_head");
 }
 
 #[test]
-fn fork_choice_on_block() {
+fn fulu_fork_choice_on_block() {
     run_handler("on_block");
 }

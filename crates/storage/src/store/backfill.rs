@@ -4,7 +4,7 @@ use fxhash::FxHashMap;
 use silver_common::{
     PeerEvent, TRead,
     ssz_hash::B256,
-    ssz_view::{DataColumnSidecarView, SignedBeaconBlockView},
+    ssz_view::{DataColumnSidecarFuluView, SignedBeaconBlockView},
 };
 
 use crate::{store::PendingWrite, util};
@@ -164,7 +164,7 @@ impl ColumnBackfill {
         }
 
         let block_root = util::block_root_from_sidecar(buffer);
-        let column_index = DataColumnSidecarView::index(buffer);
+        let column_index = DataColumnSidecarFuluView::index(buffer);
         let column_bitmask = 1u128 << column_index;
         let (slot, complete) = {
             let expected = match self.pending.get_mut(&block_root) {
@@ -184,12 +184,12 @@ impl ColumnBackfill {
             if expected.received & column_bitmask != 0 {
                 return None;
             }
-            if DataColumnSidecarView::slot(buffer) != expected.slot ||
-                DataColumnSidecarView::proposer_index(buffer) != expected.proposer_index ||
-                DataColumnSidecarView::parent_root(buffer) != &expected.parent_root ||
-                DataColumnSidecarView::state_root(buffer) != &expected.state_root ||
-                DataColumnSidecarView::body_root(buffer) != &expected.body_root ||
-                DataColumnSidecarView::block_signature(buffer) != &expected.signature
+            if DataColumnSidecarFuluView::slot(buffer) != expected.slot ||
+                DataColumnSidecarFuluView::proposer_index(buffer) != expected.proposer_index ||
+                DataColumnSidecarFuluView::parent_root(buffer) != &expected.parent_root ||
+                DataColumnSidecarFuluView::state_root(buffer) != &expected.state_root ||
+                DataColumnSidecarFuluView::body_root(buffer) != &expected.body_root ||
+                DataColumnSidecarFuluView::block_signature(buffer) != &expected.signature
             {
                 tracing::warn!(
                     block_root = hex::encode(block_root),

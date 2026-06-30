@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use flux::{spine::SpineAdapter, tile::Tile};
 use silver_beacon_state::{
-    ssz_hash::{hash_tree_root_block_header, hash_tree_root_body},
+    ssz_hash::{hash_tree_root_block_header, hash_tree_root_body_fulu},
     tile::BeaconStateTile,
 };
 use silver_beacon_state_data::{BeaconBlockHeader, BeaconState, SpecConfig};
@@ -43,7 +43,7 @@ pub fn data_columns_available(block: &[u8]) -> Option<DataColumnsAvailable> {
         proposer_index: SignedBeaconBlockView::proposer_index(block),
         parent_root: *SignedBeaconBlockView::parent_root(block),
         state_root: *SignedBeaconBlockView::state_root(block),
-        body_root: hash_tree_root_body(SignedBeaconBlockView::body(block)),
+        body_root: hash_tree_root_body_fulu(SignedBeaconBlockView::body(block)),
     });
     Some(DataColumnsAvailable { block_root, slot: SignedBeaconBlockView::slot(block) })
 }

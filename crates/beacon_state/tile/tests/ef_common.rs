@@ -19,7 +19,7 @@ use silver_beacon_state_data::{
 #[path = "support/loaded_state.rs"]
 mod loaded_state;
 #[allow(unused_imports)]
-pub use loaded_state::{LoadedState, load_state, snappy_decode};
+pub use loaded_state::{LoadedState, load_state, load_state_gloas, snappy_decode};
 
 impl LoadedState {
     /// The loaded state's working slot number (resolved through the slot

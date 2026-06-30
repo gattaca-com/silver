@@ -142,7 +142,8 @@ impl BeaconState {
     /// Encode the full canonical SSZ in one pass: the 2.74 MB fixed part, then
     /// the 12 variable bodies in SSZ-declared order.
     pub fn encode_ssz(&self, w: &mut Vec<u8>) -> io::Result<()> {
-        if self.immutable.is_gloas() {
+        if self.epoch.finalized().state().fork.current_version == self.immutable.gloas_fork_version
+        {
             return self.encode_ssz_gloas(w);
         }
         let lens = self.var_len_section_lens();
@@ -237,9 +238,9 @@ impl BeaconState {
         w_u64(w, imm.genesis_time)?;
         w.write_all(&imm.genesis_validators_root)?;
         w_u64(w, sl.slot)?;
-        w.write_all(&imm.fork.previous_version)?;
-        w.write_all(&imm.fork.current_version)?;
-        w_u64(w, imm.fork.epoch)?;
+        w.write_all(&est.fork.previous_version)?;
+        w.write_all(&est.fork.current_version)?;
+        w_u64(w, est.fork.epoch)?;
         let h = &sl.latest_block_header;
         w_u64(w, h.slot)?;
         w_u64(w, h.proposer_index)?;

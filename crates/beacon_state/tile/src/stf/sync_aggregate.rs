@@ -40,7 +40,7 @@ pub fn collect_sigs_sync_aggregate(
     let previous_slot = block_slot.saturating_sub(1);
     let previous_block_root = slot.block_root_at_slot(previous_slot);
     let previous_epoch = previous_slot / SLOTS_PER_EPOCH;
-    let (fork_version, gvr) = imm.fork_version_at(previous_epoch);
+    let fork_version = view.epoch.fork_version_at(previous_epoch);
 
     active_scratch.clear();
     let count = validators.count();
@@ -56,7 +56,8 @@ pub fn collect_sigs_sync_aggregate(
             active_scratch.push(vi);
         }
     }
-    let domain = bls::compute_domain(bls::DOMAIN_SYNC_COMMITTEE, fork_version, &gvr);
+    let domain =
+        bls::compute_domain(bls::DOMAIN_SYNC_COMMITTEE, fork_version, &imm.genesis_validators_root);
     let signing_root = bls::compute_signing_root(&previous_block_root, &domain);
     sig_batch.push_eth_aggregate(
         active_scratch.len(),
