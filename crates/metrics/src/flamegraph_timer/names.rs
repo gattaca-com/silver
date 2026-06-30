@@ -23,6 +23,16 @@ pub(super) fn leaf_name(qualified: &str) -> Cow<'_, str> {
     Cow::Owned(format!("{func}<{}>", short_type_name(ty)))
 }
 
+/// Strip the `__TimedTy` plumbing, keeping the path verbatim — unlike
+/// [`leaf_name`], nothing is abbreviated.
+pub(super) fn untimed(qualified: &str) -> Cow<'_, str> {
+    const PLUMBING: &str = "::__TimedTy"; // sits in front of the `<Receiver>`
+    match qualified.find(PLUMBING) {
+        None => Cow::Borrowed(qualified),
+        Some(at) => Cow::Owned([&qualified[..at], &qualified[at + PLUMBING.len()..]].concat()),
+    }
+}
+
 fn leaf(path: &str) -> &str {
     path.rsplit("::").next().unwrap_or(path)
 }

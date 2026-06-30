@@ -61,6 +61,10 @@ impl FlamegraphReader {
     pub fn stats(&self) -> TimingStats {
         self.drainer.fold()
     }
+
+    pub fn export_trace(&self) -> Vec<u8> {
+        self.drainer.fxt_trace()
+    }
 }
 
 /// The perf harness's in-process reader: enables `#[timed]` production and
@@ -186,5 +190,36 @@ mod tests {
         let again = reader.stats();
         assert_eq!(again.aggregate_leaf("alpha").1, 4, "re-poll of a static ring changed the fold");
         assert_eq!(again.aggregate_leaf("beta").1, 4);
+    }
+
+    #[test]
+    fn exports_fxt_trace() {
+        let _guard = crate::test_shmem::ShmemGuard::new();
+        enable_surfer();
+
+        thread::Builder::new()
+            .name("trace-producer".to_owned())
+            .spawn(|| {
+                let (outer, inner) = ("outer", "inner");
+                record(Frame::open(outer));
+                record(Frame::open(inner));
+                record(Frame::close(inner));
+                record(Frame::close(outer));
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+
+        let mut reader = FlamegraphReader::attach(crate::TIMING.app()).expect("pid published");
+        reader.poll();
+
+        let trace = reader.export_trace();
+        assert_eq!(&trace[..8], b"\x10\x00\x04FxT\x16\x00", "FXT magic record");
+        assert!(contains(&trace, b"trace-producer"), "track named after the thread");
+        assert!(contains(&trace, b"outer") && contains(&trace, b"inner"), "frame names present");
+    }
+
+    fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack.windows(needle.len()).any(|w| w == needle)
     }
 }

@@ -6,6 +6,7 @@
 mod aggregator;
 mod call_tree;
 mod drainer;
+mod fxt;
 mod mark;
 mod names;
 mod producer;

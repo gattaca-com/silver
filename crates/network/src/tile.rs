@@ -12,7 +12,6 @@ use silver_common::{
     GossipMsgOut, P2pSend, PeerControl, PeerEvent, RpcInbound, RpcOutbound, SilverSpine,
 };
 use silver_discovery::{DiscV5, Discovery, DiscoveryEvent};
-use silver_metrics::timed;
 
 use crate::{
     NetEvent, NetworkCounters, SendResult,
@@ -280,7 +279,6 @@ where
         self.p2p_endpoint.enqueue_rpc_out(msg, &mut self.context)
     }
 
-    #[timed]
     fn poll(&mut self) -> Result<(), Error> {
         self.poll.poll(&mut self.events, Some(POLL_TIMEOUT))
     }
