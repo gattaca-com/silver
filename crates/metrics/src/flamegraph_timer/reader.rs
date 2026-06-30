@@ -62,8 +62,6 @@ impl FlamegraphReader {
         self.drainer.fold()
     }
 
-    /// The whole retained run as a Fuchsia FXT trace, for viewing in
-    /// Perfetto/magic-trace with real wall-clock time.
     pub fn export_trace(&self) -> Vec<u8> {
         self.drainer.fxt_trace()
     }
@@ -194,8 +192,6 @@ mod tests {
         assert_eq!(again.aggregate_leaf("beta").1, 4);
     }
 
-    /// Marks export as a Fuchsia FXT trace carrying the thread track name and
-    /// each frame's resolved name.
     #[test]
     fn exports_fxt_trace() {
         let _guard = crate::test_shmem::ShmemGuard::new();
@@ -218,8 +214,6 @@ mod tests {
         reader.poll();
 
         let trace = reader.export_trace();
-        // Begins with the FXT magic-number record; thread + frame names follow
-        // as interned strings.
         assert_eq!(&trace[..8], b"\x10\x00\x04FxT\x16\x00", "FXT magic record");
         assert!(contains(&trace, b"trace-producer"), "track named after the thread");
         assert!(contains(&trace, b"outer") && contains(&trace, b"inner"), "frame names present");

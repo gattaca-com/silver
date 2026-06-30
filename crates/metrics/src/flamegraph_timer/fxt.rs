@@ -1,8 +1,7 @@
 //! Encode the retained `#[timed]` marks as a Fuchsia FXT trace — magic-trace's
 //! native format, the one Perfetto reads with per-slice wall-clock time. The
 //! init record's realtime anchor (wall-clock at tick 0) drives the UI's
-//! "Absolute time"; its Chrome-JSON and protobuf-clock-snapshot paths only ever
-//! surface a constant trace datum.
+//! "Absolute time".
 //!
 //! Layout mirrors what magic-trace emits (validated against its output): a
 //! string table, a process/thread kernel-object pair, a thread record, then
@@ -87,7 +86,6 @@ impl Fxt {
         self.buf.extend_from_slice(&w.to_le_bytes());
     }
 
-    /// String bytes padded up to an 8-byte word boundary.
     fn string_bytes(&mut self, s: &[u8]) {
         self.buf.extend_from_slice(s);
         self.buf.resize(self.buf.len() + (8 - s.len() % 8) % 8, 0);

@@ -23,11 +23,8 @@ pub(super) fn leaf_name(qualified: &str) -> Cow<'_, str> {
     Cow::Owned(format!("{func}<{}>", short_type_name(ty)))
 }
 
-/// Hide only the `__TimedTy` plumbing, keeping everything else verbatim — the
-/// full function path and the fully-qualified monomorphised receiver:
-/// `a::b::SigBatch::verify_all::__TimedTy<a::b::SigBatch>`
-/// → `a::b::SigBatch::verify_all<a::b::SigBatch>`. Unlike [`leaf_name`],
-/// nothing is abbreviated. Free functions (no marker) are unchanged.
+/// Strip the `__TimedTy` plumbing, keeping the path verbatim — unlike
+/// [`leaf_name`], nothing is abbreviated.
 pub(super) fn untimed(qualified: &str) -> Cow<'_, str> {
     const PLUMBING: &str = "::__TimedTy"; // sits in front of the `<Receiver>`
     match qualified.find(PLUMBING) {

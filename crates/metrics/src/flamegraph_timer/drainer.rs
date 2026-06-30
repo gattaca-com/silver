@@ -66,9 +66,6 @@ impl EventsDrainer {
         TimingStats::from_timings(aggregator.into_paths(), self.meta.clone(), lost)
     }
 
-    /// The whole retained mark stream as a Fuchsia FXT trace, with a realtime
-    /// anchor so Perfetto/magic-trace shows per-slice wall-clock time. The live
-    /// timeline a flamegraph aggregates away.
     pub(super) fn fxt_trace(&self) -> Vec<u8> {
         fxt::trace(
             self.threads.iter().map(|(name, t)| (name.as_str(), t.marks.out.as_slice())),
