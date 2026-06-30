@@ -2,7 +2,7 @@ use super::{EpochGroup, EpochId, finalized::EpochStateFinalized};
 use crate::{
     buffer::{Reset, Slot as RingSlot, drain_promoted_prefix},
     gloas::{PTC_WINDOW_LEN, PtcCommittee, zeroed_ptc_window},
-    types::{B256, Epoch, EpochState},
+    types::{B256, Epoch, EpochState, Fork, SLOTS_PER_EPOCH, Version},
 };
 
 #[derive(Clone)]
@@ -12,8 +12,7 @@ pub(crate) struct EpochStateDelta {
     // one entry per completed epoch since finalization
     pub(super) slashings: Vec<u64>,
     pub(super) state: EpochState,
-    // [New in Gloas] whole-value (not a per-epoch log); seeded from the base on
-    // roll and folded back by `promote`.
+    // [New in Gloas]
     pub(super) ptc_window: Box<[PtcCommittee; PTC_WINDOW_LEN]>,
 }
 
@@ -122,6 +121,34 @@ impl<'a> EpochView<'a> {
     pub fn slashings_at(&self, epoch: Epoch, fin_epoch: Epoch) -> u64 {
         ring_overlay_at(&self.base.slashings, self.delta_slashings(), epoch, fin_epoch)
     }
+
+    #[inline]
+    pub fn fork(&self) -> &'a Fork {
+        &self.state().fork
+    }
+
+    #[inline]
+    pub fn is_gloas(&self, gloas_fork_version: Version) -> bool {
+        self.state().fork.current_version == gloas_fork_version
+    }
+
+    /// `(fork_version_at(block_epoch), genesis_validators_root)` — the pair a
+    /// BLS signing domain needs. `gvr` rides in from `Immutable`.
+    #[inline]
+    pub fn fork_version_at(&self, block_epoch: Epoch, gvr: B256) -> (Version, B256) {
+        let f = &self.state().fork;
+        let fv = if block_epoch >= f.epoch { f.current_version } else { f.previous_version };
+        (fv, gvr)
+    }
+
+    /// `(fork_epoch, previous_version, current_version,
+    /// genesis_validators_root)` — the four inputs every BLS signing-root
+    /// needs together.
+    #[inline]
+    pub fn fork_descriptor(&self, gvr: B256) -> (Epoch, Version, Version, B256) {
+        let f = &self.state().fork;
+        (f.epoch, f.previous_version, f.current_version, gvr)
+    }
 }
 
 /// Circular-buffer read at `epoch` with the fork-delta overlay, walked in
@@ -171,6 +198,14 @@ impl<'a> EpochWriteView<'a> {
     #[inline]
     pub fn set_ptc_window(&mut self, window: Box<[PtcCommittee; PTC_WINDOW_LEN]>) {
         self.fork.ptc_window = window;
+    }
+
+    #[inline]
+    pub fn rotate_ptc_window(&mut self, new_last_epoch: &[PtcCommittee]) {
+        const SPE: usize = SLOTS_PER_EPOCH as usize;
+        debug_assert_eq!(new_last_epoch.len(), SPE);
+        self.fork.ptc_window.copy_within(SPE.., 0);
+        self.fork.ptc_window[PTC_WINDOW_LEN - SPE..].copy_from_slice(new_last_epoch);
     }
 
     /// Seed the fresh fork's scalar `EpochState` + `ptc_window` from the

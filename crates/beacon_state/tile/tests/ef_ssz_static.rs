@@ -74,12 +74,12 @@ fn hex(b: &[u8; 32]) -> String {
 }
 
 #[test]
-fn beacon_block_body() {
-    run_ssz_static("BeaconBlockBody", move |ssz| ssz_hash::hash_tree_root_body(ssz));
+fn fulu_beacon_block_body() {
+    run_ssz_static("BeaconBlockBody", move |ssz| ssz_hash::hash_tree_root_body_fulu(ssz));
 }
 
 #[test]
-fn beacon_block_header() {
+fn fulu_beacon_block_header() {
     run_ssz_static("BeaconBlockHeader", move |ssz| {
         let h = silver_beacon_state_data::BeaconBlockHeader {
             slot: u64::from_le_bytes(ssz[0..8].try_into().unwrap()),

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use silver_common::ssz_view::{
-    BEACON_BLOCK_BODY_FIXED, BeaconBlockBodyView, ExecutionPayloadView, SIGNED_BEACON_BLOCK_MIN,
-    SignedBeaconBlockView,
+    BEACON_BLOCK_BODY_FIXED, BeaconBlockBodyFuluView, ExecutionPayloadView,
+    SIGNED_BEACON_BLOCK_MIN, SignedBeaconBlockView,
 };
 
 pub type B256 = [u8; 32];
@@ -268,12 +268,12 @@ pub(crate) fn write_new_payload_params(
         )));
     }
     let execution_payload_offset: usize =
-        BeaconBlockBodyView::execution_payload_offset(body) as usize;
+        BeaconBlockBodyFuluView::execution_payload_offset(body) as usize;
     let bls_to_execution_changes: usize =
-        BeaconBlockBodyView::bls_to_execution_changes_offset(body) as usize;
-    let blob_kzg_off: usize = BeaconBlockBodyView::blob_kzg_commitments_offset(body) as usize;
+        BeaconBlockBodyFuluView::bls_to_execution_changes_offset(body) as usize;
+    let blob_kzg_off: usize = BeaconBlockBodyFuluView::blob_kzg_commitments_offset(body) as usize;
     let execution_requests_offset: usize =
-        BeaconBlockBodyView::execution_requests_offset(body) as usize;
+        BeaconBlockBodyFuluView::execution_requests_offset(body) as usize;
     if execution_payload_offset < BEACON_BLOCK_BODY_FIXED ||
         bls_to_execution_changes < execution_payload_offset ||
         blob_kzg_off < bls_to_execution_changes ||
@@ -344,7 +344,7 @@ pub(crate) fn write_new_payload_params(
     out.push(b'}');
 
     // versionedHashes — derived from blob_kzg_commitments
-    let blob_kzg_off: usize = BeaconBlockBodyView::blob_kzg_commitments_offset(body) as usize;
+    let blob_kzg_off: usize = BeaconBlockBodyFuluView::blob_kzg_commitments_offset(body) as usize;
     let blob_kzg_data = &body[blob_kzg_off..execution_requests_offset];
     // blob_kzg_data is a flat list of 48-byte KZG commitments (no SSZ list offsets,
     // because each element is fixed-size, so SSZ encodes it as a plain

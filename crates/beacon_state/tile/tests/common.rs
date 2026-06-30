@@ -10,7 +10,8 @@ use flux::{spine::SpineAdapter, tile::Tile, timing::Nanos};
 use serde::Deserialize;
 use silver_beacon_state::{
     ssz_hash::{
-        StateHashScratch, hash_tree_root_block_header, hash_tree_root_body, hash_tree_root_state,
+        StateHashScratch, hash_tree_root_block_header, hash_tree_root_body_fulu,
+        hash_tree_root_state,
     },
     tile::BeaconStateTile,
 };
@@ -294,7 +295,7 @@ impl Harness {
             proposer_index: SignedBeaconBlockView::proposer_index(block),
             parent_root: *SignedBeaconBlockView::parent_root(block),
             state_root: *SignedBeaconBlockView::state_root(block),
-            body_root: hash_tree_root_body(SignedBeaconBlockView::body(block)),
+            body_root: hash_tree_root_body_fulu(SignedBeaconBlockView::body(block)),
         });
         self.inj_adapter
             .produce(DataColumnsAvailable { block_root, slot: SignedBeaconBlockView::slot(block) });

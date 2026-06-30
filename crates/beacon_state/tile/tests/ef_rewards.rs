@@ -4,7 +4,7 @@ use std::{fs, path::Path};
 
 mod ef_common;
 
-use ef_common::{load_state, snappy_decode, spec_tests_dir};
+use ef_common::{load_state, load_state_gloas, snappy_decode, spec_tests_dir};
 use silver_beacon_state::stf;
 use silver_beacon_state_data::{Epoch, EpochView, StateWriterView};
 
@@ -144,7 +144,12 @@ fn decode_deltas(ssz: &[u8]) -> (Vec<u64>, Vec<u64>) {
 }
 
 fn run_rewards_handler(handler_name: &str) {
-    let base = spec_tests_dir().join("tests/mainnet/fulu/rewards").join(handler_name);
+    run_rewards_handler_fork("fulu", handler_name);
+}
+
+fn run_rewards_handler_fork(fork: &str, handler_name: &str) {
+    let base = spec_tests_dir().join(format!("tests/mainnet/{fork}/rewards")).join(handler_name);
+    let loader = if fork == "gloas" { load_state_gloas } else { load_state };
     let Ok(suites) = fs::read_dir(&base) else {
         eprintln!("{handler_name}: no test dir, skipping");
         return;
@@ -174,7 +179,7 @@ fn run_rewards_handler(handler_name: &str) {
                 continue;
             }
 
-            let mut s = load_state(&pre_path);
+            let mut s = loader(&pre_path);
 
             let check = |label: &str, ours: &(Vec<u64>, Vec<u64>), expected_path: &Path| -> bool {
                 if !expected_path.exists() {
@@ -235,16 +240,31 @@ fn run_rewards_handler(handler_name: &str) {
 }
 
 #[test]
-fn rewards_basic() {
+fn fulu_rewards_basic() {
     run_rewards_handler("basic");
 }
 
 #[test]
-fn rewards_leak() {
+fn fulu_rewards_leak() {
     run_rewards_handler("leak");
 }
 
 #[test]
-fn rewards_random() {
+fn fulu_rewards_random() {
     run_rewards_handler("random");
+}
+
+#[test]
+fn gloas_rewards_basic() {
+    run_rewards_handler_fork("gloas", "basic");
+}
+
+#[test]
+fn gloas_rewards_leak() {
+    run_rewards_handler_fork("gloas", "leak");
+}
+
+#[test]
+fn gloas_rewards_random() {
+    run_rewards_handler_fork("gloas", "random");
 }

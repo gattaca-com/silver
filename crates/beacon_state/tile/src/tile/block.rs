@@ -312,7 +312,7 @@ impl BeaconStateTile {
         let state_root = *SignedBeaconBlockView::state_root(data);
 
         let body = SignedBeaconBlockView::body(data);
-        let body_root = ssz_hash::hash_tree_root_body(body);
+        let body_root = ssz_hash::hash_tree_root_body_fulu(body);
         let block_header = BeaconBlockHeader {
             slot: block_slot,
             proposer_index,
@@ -396,7 +396,8 @@ impl BeaconStateTile {
     fn verify_block_signature(&self, data: &[u8], parsed: &ParsedBlock) -> bool {
         let block_epoch = parsed.block_slot / SLOTS_PER_EPOCH;
         let rv = self.state.read_view(parsed.parent_state_id);
-        let (fork_version, gvr) = rv.imm.fork_version_at(block_epoch);
+        let (fork_version, gvr) =
+            rv.epoch.fork_version_at(block_epoch, rv.imm.genesis_validators_root);
         let proposer_pubkey = rv.validators.pubkey_decompressed(parsed.proposer_index as usize);
         bls::verify_block_signature(data, proposer_pubkey, &parsed.body_root, fork_version, &gvr)
     }

@@ -3,6 +3,7 @@ mod block;
 mod common;
 mod epoch;
 mod fork_transition;
+mod gloas;
 mod operations;
 mod slashings;
 mod sync_aggregate;
@@ -21,7 +22,7 @@ pub use common::{AttestationVote, ShufflingRef, StfScratch};
 pub(crate) use common::{MIN_ACTIVATION_BALANCE, for_each_ssz_list_item};
 pub(crate) use epoch::{
     BASE_REWARD_FACTOR, EFFECTIVE_BALANCE_INCREMENT, PROPOSER_WEIGHT, WEIGHT_DENOMINATOR,
-    unrealized_checkpoints,
+    is_valid_builder_deposit_signature, unrealized_checkpoints,
 };
 pub use epoch::{
     EPOCHS_PER_ETH1_VOTING_PERIOD, EPOCHS_PER_SYNC_COMMITTEE_PERIOD, HISTORICAL_SUMMARY_PERIOD,
@@ -34,6 +35,13 @@ pub use epoch::{
     process_slashings, process_slashings_reset, process_sync_committee_updates,
 };
 pub use fork_transition::upgrade_to_gloas;
+pub use gloas::{
+    collect_sigs_execution_payload_bid, collect_sigs_payload_attestations,
+    get_builder_payment_quorum_threshold, process_builder_deposit_request,
+    process_builder_exit_request, process_builder_pending_payments, process_execution_payload_bid,
+    process_parent_execution_payload, process_payload_attestations, process_ptc_window,
+    process_withdrawals_gloas,
+};
 pub(crate) use operations::process_execution_requests;
 pub use operations::{
     collect_sigs_bls_to_execution_changes, collect_sigs_voluntary_exits,
@@ -51,4 +59,8 @@ pub(crate) use validator::{
     get_beacon_proposer_index, get_consolidation_churn_limit, get_pending_balance_to_withdraw,
     initiate_validator_exit, is_active, is_slashable_validator, total_active_balance,
 };
-pub use withdrawals::{process_execution_payload, process_withdrawals};
+pub(crate) use withdrawals::{
+    get_pending_partial_withdrawals, get_validators_sweep_withdrawals,
+    update_next_withdrawal_index, update_next_withdrawal_validator_index,
+};
+pub use withdrawals::{process_execution_payload, process_withdrawals_fulu};

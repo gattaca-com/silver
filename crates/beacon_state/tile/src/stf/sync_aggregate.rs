@@ -40,7 +40,8 @@ pub fn collect_sigs_sync_aggregate(
     let previous_slot = block_slot.saturating_sub(1);
     let previous_block_root = slot.block_root_at_slot(previous_slot);
     let previous_epoch = previous_slot / SLOTS_PER_EPOCH;
-    let (fork_version, gvr) = imm.fork_version_at(previous_epoch);
+    let (fork_version, gvr) =
+        view.epoch.fork_version_at(previous_epoch, imm.genesis_validators_root);
 
     active_scratch.clear();
     let count = validators.count();

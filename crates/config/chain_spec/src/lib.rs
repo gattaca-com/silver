@@ -79,6 +79,18 @@ pub struct SpecConfig {
     /// churn_limit_quotient)`. `1<<16` mainnet.
     #[serde(default = "default_u64::<65536>")]
     pub churn_limit_quotient: u64,
+    /// EIP-8061: Gloas replaces `churn_limit_quotient` for the base churn
+    /// (`1<<15`, double the Electra rate). Deposit/exit churn split off it.
+    #[serde(default = "default_u64::<32768>")]
+    pub churn_limit_quotient_gloas: u64,
+    /// EIP-8061: Gloas consolidation churn is independently derived as
+    /// `total_stake / this`, rounded. `1<<16` mainnet.
+    #[serde(default = "default_u64::<65536>")]
+    pub consolidation_churn_limit_quotient: u64,
+    /// EIP-8061: Gloas cap on per-epoch *activation* (deposit) churn, in Gwei.
+    /// Exit churn is uncapped in Gloas.
+    #[serde(default = "default_u64::<256_000_000_000>")]
+    pub max_per_epoch_activation_churn_limit_gloas: u64,
     /// Per-validator inactivity score increment for missed-target epochs.
     #[serde(default = "default_u64::<4>")]
     pub inactivity_score_bias: u64,
@@ -164,6 +176,12 @@ impl SpecConfig {
         }
     }
 
+    /// Whether `epoch` is at or past the Gloas activation.
+    #[inline]
+    pub fn is_gloas_at(&self, epoch: u64) -> bool {
+        epoch >= self.gloas_fork_epoch
+    }
+
     /// Hoodi testnet (launched 2025-03-17). Differs from mainnet in fork
     /// versions and a few fork epochs only — preset dimensions, validator
     /// lifecycle, inactivity, slashing, and churn scalars are all identical
@@ -198,6 +216,9 @@ impl SpecConfig {
             min_per_epoch_churn_limit: 128_000_000_000,
             max_per_epoch_activation_exit_churn_limit: 256_000_000_000,
             churn_limit_quotient: 1 << 16,
+            churn_limit_quotient_gloas: 1 << 15,
+            consolidation_churn_limit_quotient: 1 << 16,
+            max_per_epoch_activation_churn_limit_gloas: 256_000_000_000,
             inactivity_score_bias: 4,
             inactivity_score_recovery_rate: 16,
             inactivity_penalty_quotient: 1 << 24,
@@ -225,6 +246,9 @@ impl SpecConfig {
             min_per_epoch_churn_limit: 128_000_000_000,
             max_per_epoch_activation_exit_churn_limit: 256_000_000_000,
             churn_limit_quotient: 1 << 16,
+            churn_limit_quotient_gloas: 1 << 15,
+            consolidation_churn_limit_quotient: 1 << 16,
+            max_per_epoch_activation_churn_limit_gloas: 256_000_000_000,
             inactivity_score_bias: 4,
             inactivity_score_recovery_rate: 16,
             inactivity_penalty_quotient: 1 << 24,

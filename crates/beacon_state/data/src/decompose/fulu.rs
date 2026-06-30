@@ -66,9 +66,9 @@ impl BeaconState {
             return Err(DecomposeError::TruncatedFixedPart { len: ssz.len(), need: FIXED_PART });
         }
         let offsets = Offsets::read_and_validate(ssz)?;
-        let epoch = EpochStateFinalized::from_ssz(ssz);
+        let epoch = EpochStateFinalized::from_ssz_fulu(ssz);
         // The slot tier derives its per-block accumulators from the epoch rings.
-        let slot = SlotStateFinalized::from_ssz(ssz, &offsets, &epoch)?;
+        let slot = SlotStateFinalized::from_ssz_fulu(ssz, &offsets, &epoch)?;
         // Fulu has no `builders`; `pending_consolidations` is the last section,
         // so its body runs to the end of the buffer (`ssz.len()`).
         Self::assemble(

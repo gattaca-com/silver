@@ -9,7 +9,7 @@
 //!    `hash_uint64_list/vector`, `hash_uint8_list`, `hash_b256_vector`,
 //!    `hash_list_containers`, `hash_list_variable_containers`,
 //!    `hash_list_fixed_elements`, `hash_bitlist`.
-//! 3. Eth2-shape hashers over raw SSZ bytes: `hash_tree_root_body`,
+//! 3. Eth2-shape hashers over raw SSZ bytes: `hash_tree_root_body_fulu`,
 //!    `hash_execution_payload`, the per-element helpers for attestations /
 //!    slashings / deposits / exits / bls-changes / execution-requests, and the
 //!    freestanding `hash_tree_root_{fork_data, voluntary_exit, bls_change,
@@ -34,6 +34,7 @@ static HASHTREE_READY: LazyLock<()> = LazyLock::new(|| {
 });
 
 use crate::ssz_view::{
+    MAX_BUILDER_DEPOSIT_REQUESTS_PER_PAYLOAD, MAX_BUILDER_EXIT_REQUESTS_PER_PAYLOAD,
     MAX_BYTES_PER_TRANSACTION, MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD,
     MAX_DEPOSIT_REQUESTS_PER_PAYLOAD, MAX_TRANSACTIONS_PER_PAYLOAD,
     MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD, MAX_WITHDRAWALS_PER_PAYLOAD,
@@ -348,12 +349,13 @@ pub fn hash_tree_root_fork_data(version: [u8; 4], genesis_validators_root: &B256
 /// The 13 field roots of a Fulu `BeaconBlockBody`, in field order. Returns
 /// `None` when `body` is below the fixed prefix size.
 ///
-/// `merkleize`-ing these yields `body_root` (see [`hash_tree_root_body`]); the
-/// Merkle branch from field 11 (`blob_kzg_commitments`) up to that root is the
-/// `kzg_commitments` inclusion proof (see [`kzg_commitments_inclusion_proof`]).
-/// Both callers share this so the field layout is defined once per fork.
+/// `merkleize`-ing these yields `body_root` (see [`hash_tree_root_body_fulu`]);
+/// the Merkle branch from field 11 (`blob_kzg_commitments`) up to that root is
+/// the `kzg_commitments` inclusion proof (see
+/// [`kzg_commitments_inclusion_proof`]). Both callers share this so the field
+/// layout is defined once per fork.
 #[inline]
-fn beacon_block_body_field_roots(body: &[u8]) -> Option<[B256; 13]> {
+fn beacon_block_body_field_roots_fulu(body: &[u8]) -> Option<[B256; 13]> {
     if body.len() < 396 {
         return None;
     }
@@ -384,7 +386,7 @@ fn beacon_block_body_field_roots(body: &[u8]) -> Option<[B256; 13]> {
     let execution_payload = hash_execution_payload(var_field(5));
     let bls_changes = hash_list_containers(var_field(6), 172, 16, hash_signed_bls_change);
     let blob_commitments = hash_list_fixed_elements(var_field(7), 48, 4096);
-    let execution_requests = hash_execution_requests(var_field(8));
+    let execution_requests = hash_execution_requests_fulu(var_field(8));
 
     Some([
         randao,
@@ -406,11 +408,141 @@ fn beacon_block_body_field_roots(body: &[u8]) -> Option<[B256; 13]> {
 /// Compute hash_tree_root of a BeaconBlockBody from raw SSZ bytes.
 /// Fulu layout: 13 fields → 16 leaves.
 #[timed]
-pub fn hash_tree_root_body(body: &[u8]) -> B256 {
-    match beacon_block_body_field_roots(body) {
+pub fn hash_tree_root_body_fulu(body: &[u8]) -> B256 {
+    match beacon_block_body_field_roots_fulu(body) {
         Some(field_hashes) => merkleize(&field_hashes),
         None => ZERO_HASH,
     }
+}
+
+// Body layout: `execution_payload` /
+// `blob_kzg_commitments` / `execution_requests` are replaced by
+// `signed_execution_payload_bid` / `payload_attestations` /
+// `parent_execution_requests`, and `bls_to_execution_changes` moves ahead of
+// them. Still 13 fields → 16 leaves; fields 0..9 are identical to Fulu.
+fn beacon_block_body_field_roots_gloas(body: &[u8]) -> Option<[B256; 13]> {
+    if body.len() < 396 {
+        return None;
+    }
+
+    let randao = hash_fixed_bytes(&body[0..96]);
+    let eth1 = hash_eth1_data_bytes(&body[96..168]);
+    let graffiti: B256 = body[168..200].try_into().unwrap();
+    let sync_agg = hash_sync_aggregate(&body[220..380]);
+
+    let off = |pos: usize| -> usize {
+        u32::from_le_bytes(body[pos..pos + 4].try_into().unwrap()) as usize
+    };
+    let offsets =
+        [off(200), off(204), off(208), off(212), off(216), off(380), off(384), off(388), off(392)];
+    let var_field = |idx: usize| -> &[u8] {
+        let start = offsets[idx];
+        let end = if idx + 1 < offsets.len() { offsets[idx + 1] } else { body.len() };
+        if start <= end && end <= body.len() { &body[start..end] } else { &[] }
+    };
+
+    let proposer_slashings = hash_list_containers(var_field(0), 416, 16, hash_proposer_slashing);
+    let attester_slashings = hash_list_variable_containers(var_field(1), 1, hash_attester_slashing);
+    let attestations = hash_list_variable_containers(var_field(2), 8, hash_attestation);
+    let deposits = hash_list_containers(var_field(3), 1240, 16, hash_deposit);
+    let voluntary_exits = hash_list_containers(var_field(4), 112, 16, hash_signed_voluntary_exit);
+    let bls_changes = hash_list_containers(var_field(5), 172, 16, hash_signed_bls_change);
+    let signed_bid = hash_signed_execution_payload_bid(var_field(6));
+    let payload_attestations = hash_list_containers(var_field(7), 202, 4, hash_payload_attestation);
+    let parent_requests = hash_execution_requests_gloas(var_field(8));
+
+    Some([
+        randao,
+        eth1,
+        graffiti,
+        proposer_slashings,
+        attester_slashings,
+        attestations,
+        deposits,
+        voluntary_exits,
+        sync_agg,
+        bls_changes,
+        signed_bid,
+        payload_attestations,
+        parent_requests,
+    ])
+}
+
+#[timed]
+pub fn hash_tree_root_body_gloas(body: &[u8]) -> B256 {
+    match beacon_block_body_field_roots_gloas(body) {
+        Some(field_hashes) => merkleize(&field_hashes),
+        None => ZERO_HASH,
+    }
+}
+
+/// `SignedExecutionPayloadBid`: { message: ExecutionPayloadBid, signature }.
+/// Fixed part 100B: offset(4) + signature(96); message at [100..].
+fn hash_signed_execution_payload_bid(d: &[u8]) -> B256 {
+    if d.len() < 100 {
+        return ZERO_HASH;
+    }
+    let message = hash_execution_payload_bid(&d[100..]);
+    let signature = hash_fixed_bytes(&d[4..100]);
+    merkleize(&[message, signature])
+}
+
+/// `ExecutionPayloadBid` message. 12 fields → 16 leaves; `blob_kzg_commitments`
+/// (field 11) is the only variable field, offset at byte 188.
+fn hash_execution_payload_bid(msg: &[u8]) -> B256 {
+    if msg.len() < 224 {
+        return ZERO_HASH;
+    }
+    let u64_at =
+        |pos: usize| uint64_chunk(u64::from_le_bytes(msg[pos..pos + 8].try_into().unwrap()));
+    let mut fee_recipient = [0u8; 32];
+    fee_recipient[..20].copy_from_slice(&msg[128..148]);
+    let blob_off = u32::from_le_bytes(msg[188..192].try_into().unwrap()) as usize;
+    let blob_commitments = if blob_off <= msg.len() {
+        hash_list_fixed_elements(&msg[blob_off..], 48, 4096)
+    } else {
+        hash_list_fixed_elements(&[], 48, 4096)
+    };
+
+    merkleize(&[
+        msg[0..32].try_into().unwrap(),   // parent_block_hash
+        msg[32..64].try_into().unwrap(),  // parent_block_root
+        msg[64..96].try_into().unwrap(),  // block_hash
+        msg[96..128].try_into().unwrap(), // prev_randao
+        fee_recipient,
+        u64_at(148), // gas_limit
+        u64_at(156), // builder_index
+        u64_at(164), // slot
+        u64_at(172), // value
+        u64_at(180), // execution_payment
+        blob_commitments,
+        msg[192..224].try_into().unwrap(), // execution_requests_root
+    ])
+}
+
+/// `PayloadAttestation`: aggregation_bits(Bitvector[512]=64B) + data(42B) +
+/// signature(96B).
+pub fn hash_payload_attestation(d: &[u8]) -> B256 {
+    let aggregation_bits = hash_fixed_bytes(&d[0..64]);
+    let data = hash_payload_attestation_data(&d[64..106]);
+    let signature = hash_fixed_bytes(&d[106..202]);
+    merkleize(&[aggregation_bits, data, signature])
+}
+
+/// `PayloadAttestationData`: beacon_block_root(32) + slot(8) +
+/// payload_present(bool) + blob_data_available(bool).
+fn hash_payload_attestation_data(d: &[u8]) -> B256 {
+    let bool_chunk = |b: u8| {
+        let mut c = [0u8; 32];
+        c[0] = b;
+        c
+    };
+    merkleize(&[
+        d[0..32].try_into().unwrap(),
+        uint64_chunk(u64::from_le_bytes(d[32..40].try_into().unwrap())),
+        bool_chunk(d[40]),
+        bool_chunk(d[41]),
+    ])
 }
 
 /// Generate the `kzg_commitments_inclusion_proof` carried by a
@@ -421,10 +553,10 @@ pub fn hash_tree_root_body(body: &[u8]) -> B256 {
 /// `silver_storage::util::verify_data_column_sidecar_inclusion_proof`.
 ///
 /// Returns all-zero bytes when `body` is below the fixed prefix size (mirrors
-/// `hash_tree_root_body`'s fallback).
+/// `hash_tree_root_body_fulu`'s fallback).
 #[timed]
 pub fn kzg_commitments_inclusion_proof(body: &[u8]) -> [u8; 128] {
-    let Some(field_roots) = beacon_block_body_field_roots(body) else {
+    let Some(field_roots) = beacon_block_body_field_roots_fulu(body) else {
         return [0u8; 128];
     };
 
@@ -449,7 +581,7 @@ pub fn kzg_commitments_inclusion_proof(body: &[u8]) -> [u8; 128] {
 }
 
 #[timed]
-pub fn hash_execution_requests(data: &[u8]) -> B256 {
+pub fn hash_execution_requests_fulu(data: &[u8]) -> B256 {
     if data.len() < 12 {
         return merkleize(&[ZERO_HASH, ZERO_HASH, ZERO_HASH]);
     }
@@ -483,6 +615,52 @@ pub fn hash_execution_requests(data: &[u8]) -> B256 {
     );
 
     merkleize(&[deposit_requests, withdrawal_requests, consolidation_requests])
+}
+
+#[timed]
+pub fn hash_execution_requests_gloas(data: &[u8]) -> B256 {
+    let field = |idx: usize, count: usize| -> &[u8] {
+        if data.len() < count * 4 {
+            return &[];
+        }
+        let off = |pos: usize| u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
+        let start = off(idx * 4);
+        let end = if idx + 1 < count { off((idx + 1) * 4) } else { data.len() };
+        if start <= end && end <= data.len() { &data[start..end] } else { &[] }
+    };
+
+    merkleize(&[
+        hash_list_containers(
+            field(0, 5),
+            192,
+            MAX_DEPOSIT_REQUESTS_PER_PAYLOAD,
+            hash_deposit_request,
+        ),
+        hash_list_containers(
+            field(1, 5),
+            76,
+            MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD,
+            hash_withdrawal_request,
+        ),
+        hash_list_containers(
+            field(2, 5),
+            116,
+            MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD,
+            hash_consolidation_request,
+        ),
+        hash_list_containers(
+            field(3, 5),
+            184,
+            MAX_BUILDER_DEPOSIT_REQUESTS_PER_PAYLOAD,
+            hash_builder_deposit_request,
+        ),
+        hash_list_containers(
+            field(4, 5),
+            68,
+            MAX_BUILDER_EXIT_REQUESTS_PER_PAYLOAD,
+            hash_builder_exit_request,
+        ),
+    ])
 }
 
 #[timed]
@@ -851,6 +1029,26 @@ pub fn hash_consolidation_request(d: &[u8]) -> B256 {
     let mut addr = ZERO_HASH;
     addr[..20].copy_from_slice(&d[..20]);
     merkleize(&[addr, hash_fixed_bytes(&d[20..68]), hash_fixed_bytes(&d[68..116])])
+}
+
+/// `BuilderDepositRequest`: pubkey(48) + withdrawal_credentials(32) + amount(8)
+/// + signature(96).
+#[timed]
+pub fn hash_builder_deposit_request(d: &[u8]) -> B256 {
+    merkleize(&[
+        hash_fixed_bytes(&d[..48]),
+        <[u8; 32]>::try_from(&d[48..80]).unwrap(),
+        uint64_chunk(u64::from_le_bytes(d[80..88].try_into().unwrap())),
+        hash_fixed_bytes(&d[88..184]),
+    ])
+}
+
+/// `BuilderExitRequest`: source_address(20) + pubkey(48).
+#[timed]
+pub fn hash_builder_exit_request(d: &[u8]) -> B256 {
+    let mut addr = ZERO_HASH;
+    addr[..20].copy_from_slice(&d[..20]);
+    merkleize(&[addr, hash_fixed_bytes(&d[20..68])])
 }
 
 #[timed]

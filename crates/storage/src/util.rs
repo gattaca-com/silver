@@ -4,12 +4,12 @@ use blst::{BLST_ERROR, min_pk::PublicKey};
 use silver_beacon_state_data::SLOTS_PER_EPOCH;
 use silver_common::{
     ssz_hash::{
-        B256, hash_concat, hash_list_fixed_elements, hash_tree_root_body, hash_tree_root_fork_data,
-        is_valid_merkle_branch, merkleize, sha256, uint64_chunk,
+        B256, hash_concat, hash_list_fixed_elements, hash_tree_root_body_fulu,
+        hash_tree_root_fork_data, is_valid_merkle_branch, merkleize, sha256, uint64_chunk,
     },
     ssz_view::{
         BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF, DATA_COLUMN_SIDECAR_MIN,
-        DataColumnSidecarView, MAX_BLOB_COMMITMENTS_PER_BLOCK, NUMBER_OF_COLUMNS,
+        DataColumnSidecarFuluView, MAX_BLOB_COMMITMENTS_PER_BLOCK, NUMBER_OF_COLUMNS,
         SignedBeaconBlockView,
     },
 };
@@ -34,9 +34,9 @@ const KZG_COMMITMENTS_SUBTREE_INDEX: u64 = 11;
 /// SSZ `body_root` of a `BeaconBlockBody` given its raw SSZ bytes.
 /// Returns `[0u8; 32]` if `body.len()` is below the post-Electra fixed
 /// prefix size — mirrors the spec-compliant fallback in
-/// `silver_common::ssz_hash::hash_tree_root_body`.
+/// `silver_common::ssz_hash::hash_tree_root_body_fulu`.
 pub fn body_root(body: &[u8]) -> B256 {
-    hash_tree_root_body(body)
+    hash_tree_root_body_fulu(body)
 }
 
 /// SSZ `block_root` of a `BeaconBlockHeader` derived from a
@@ -45,7 +45,7 @@ pub fn body_root(body: &[u8]) -> B256 {
 /// replaced by `body_root`. This is the value used as
 /// `DataColumnsByRootIdentifier.block_root` in DA RPC requests.
 pub fn block_root(signed_block: &[u8]) -> B256 {
-    let body_root = hash_tree_root_body(SignedBeaconBlockView::body(signed_block));
+    let body_root = hash_tree_root_body_fulu(SignedBeaconBlockView::body(signed_block));
     merkleize(&[
         uint64_chunk(SignedBeaconBlockView::slot(signed_block)),
         uint64_chunk(SignedBeaconBlockView::proposer_index(signed_block)),
@@ -60,11 +60,11 @@ pub fn block_root(signed_block: &[u8]) -> B256 {
 /// body hashing is required — just the 5-leaf merkleize.
 pub fn block_root_from_sidecar(sidecar: &[u8]) -> B256 {
     merkleize(&[
-        uint64_chunk(DataColumnSidecarView::slot(sidecar)),
-        uint64_chunk(DataColumnSidecarView::proposer_index(sidecar)),
-        *DataColumnSidecarView::parent_root(sidecar),
-        *DataColumnSidecarView::state_root(sidecar),
-        *DataColumnSidecarView::body_root(sidecar),
+        uint64_chunk(DataColumnSidecarFuluView::slot(sidecar)),
+        uint64_chunk(DataColumnSidecarFuluView::proposer_index(sidecar)),
+        *DataColumnSidecarFuluView::parent_root(sidecar),
+        *DataColumnSidecarFuluView::state_root(sidecar),
+        *DataColumnSidecarFuluView::body_root(sidecar),
     ])
 }
 
@@ -78,15 +78,15 @@ pub fn block_root_from_sidecar(sidecar: &[u8]) -> B256 {
 /// Does NOT verify KZG cell proofs (separate function pending a KZG
 /// dep) or the proposer signature (needs proposer pubkey from state).
 pub fn verify_data_column_sidecar(sidecar: &[u8]) -> bool {
-    if !DataColumnSidecarView::check_size(sidecar) {
+    if !DataColumnSidecarFuluView::check_size(sidecar) {
         return false;
     }
-    if DataColumnSidecarView::index(sidecar) >= NUMBER_OF_COLUMNS as u64 {
+    if DataColumnSidecarFuluView::index(sidecar) >= NUMBER_OF_COLUMNS as u64 {
         return false;
     }
-    let column = DataColumnSidecarView::column(sidecar);
-    let commits = DataColumnSidecarView::kzg_commitments(sidecar);
-    let proofs = DataColumnSidecarView::kzg_proofs(sidecar);
+    let column = DataColumnSidecarFuluView::column(sidecar);
+    let commits = DataColumnSidecarFuluView::kzg_commitments(sidecar);
+    let proofs = DataColumnSidecarFuluView::kzg_proofs(sidecar);
     if !column.len().is_multiple_of(BYTES_PER_CELL) ||
         !commits.len().is_multiple_of(BYTES_PER_KZG_COMMITMENT) ||
         !proofs.len().is_multiple_of(BYTES_PER_KZG_PROOF)
@@ -114,14 +114,14 @@ pub fn verify_data_column_sidecar(sidecar: &[u8]) -> bool {
 /// (relies on the size invariants for `kzg_commitments` and the
 /// inclusion-proof bytes).
 pub fn verify_data_column_sidecar_inclusion_proof(sidecar: &[u8]) -> bool {
-    let commitments = DataColumnSidecarView::kzg_commitments(sidecar);
+    let commitments = DataColumnSidecarFuluView::kzg_commitments(sidecar);
     let leaf = hash_list_fixed_elements(
         commitments,
         BYTES_PER_KZG_COMMITMENT,
         MAX_BLOB_COMMITMENTS_PER_BLOCK,
     );
-    let branch = DataColumnSidecarView::inclusion_proof(sidecar);
-    let body_root = DataColumnSidecarView::body_root(sidecar);
+    let branch = DataColumnSidecarFuluView::inclusion_proof(sidecar);
+    let body_root = DataColumnSidecarFuluView::body_root(sidecar);
     is_valid_merkle_branch(
         &leaf,
         branch,
@@ -148,9 +148,9 @@ pub fn verify_data_column_sidecar_inclusion_proof(sidecar: &[u8]) -> bool {
 /// precomputation table (only proof generation does).
 #[timed]
 pub fn verify_data_column_sidecar_kzg_proofs(sidecar: &[u8]) -> bool {
-    let column = DataColumnSidecarView::column(sidecar);
-    let commits = DataColumnSidecarView::kzg_commitments(sidecar);
-    let proofs = DataColumnSidecarView::kzg_proofs(sidecar);
+    let column = DataColumnSidecarFuluView::column(sidecar);
+    let commits = DataColumnSidecarFuluView::kzg_commitments(sidecar);
+    let proofs = DataColumnSidecarFuluView::kzg_proofs(sidecar);
 
     let n = column.len() / BYTES_PER_CELL;
     if n == 0 {
@@ -164,7 +164,7 @@ pub fn verify_data_column_sidecar_kzg_proofs(sidecar: &[u8]) -> bool {
     let kzg_proofs: &[c_kzg::Bytes48] =
         unsafe { std::slice::from_raw_parts(proofs.as_ptr() as *const c_kzg::Bytes48, n) };
 
-    let index = DataColumnSidecarView::index(sidecar);
+    let index = DataColumnSidecarFuluView::index(sidecar);
 
     // Stack-allocated indices array to avoid heap allocation on the hot path
     let mut stack_indices = [0u64; 128];
@@ -192,14 +192,14 @@ const BLS_DST: &[u8] = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_";
 /// Validation: sidecar's slot is strictly above the finalized slot.
 /// `finalized_epoch` is `state.epoch.finalized_checkpoint.epoch`.
 pub fn is_above_finalized(sidecar: &[u8], finalized_epoch: u64) -> bool {
-    DataColumnSidecarView::slot(sidecar) > finalized_epoch * SLOTS_PER_EPOCH
+    DataColumnSidecarFuluView::slot(sidecar) > finalized_epoch * SLOTS_PER_EPOCH
 }
 
 /// Validation: sidecar's `proposer_index` matches the expected proposer
 /// for `sidecar.slot`. Caller resolves the expectation via
 /// `state.epoch.proposer_lookahead` for the slot's epoch.
 pub fn check_proposer_index(sidecar: &[u8], expected_proposer_index: u64) -> bool {
-    DataColumnSidecarView::proposer_index(sidecar) == expected_proposer_index
+    DataColumnSidecarFuluView::proposer_index(sidecar) == expected_proposer_index
 }
 
 /// Validations 4 + 5: sidecar's `parent_root` has been seen AND validated.
@@ -222,7 +222,7 @@ pub fn parent_validated(
     delta_block_roots: &[B256],
     store_head_root: &B256,
 ) -> bool {
-    let parent_root = DataColumnSidecarView::parent_root(sidecar);
+    let parent_root = DataColumnSidecarFuluView::parent_root(sidecar);
     parent_root == store_head_root ||
         delta_block_roots.iter().any(|r| r == parent_root) ||
         finalized_block_roots.iter().any(|r| r == parent_root)
@@ -252,7 +252,7 @@ pub fn verify_proposer_signature(
     let header_root = block_root_from_sidecar(sidecar);
     let signing_root = hash_concat(&header_root, &domain);
 
-    let sig_bytes = DataColumnSidecarView::block_signature(sidecar);
+    let sig_bytes = DataColumnSidecarFuluView::block_signature(sidecar);
     let Ok(signature) = blst::min_pk::Signature::from_bytes(sig_bytes) else {
         return false;
     };
@@ -434,7 +434,7 @@ mod tests {
 
         let body = synth_body_with_commitments(&commitments);
         let mut header = [0u8; 208];
-        header[80..112].copy_from_slice(&hash_tree_root_body(&body));
+        header[80..112].copy_from_slice(&hash_tree_root_body_fulu(&body));
         let inclusion_proof = kzg_commitments_inclusion_proof(&body);
 
         // A representative spread of column indices (full sweep is redundant).
@@ -453,7 +453,7 @@ mod tests {
             assert_eq!(out.len(), data_column_sidecar_len(n));
 
             assert!(verify_data_column_sidecar(&out), "shape, col {j}");
-            assert_eq!(DataColumnSidecarView::index(&out), j);
+            assert_eq!(DataColumnSidecarFuluView::index(&out), j);
             assert!(verify_data_column_sidecar_kzg_proofs(&out), "kzg, col {j}");
             assert!(verify_data_column_sidecar_inclusion_proof(&out), "inclusion, col {j}");
         }

@@ -9,7 +9,7 @@ use silver_common::{NUMBER_OF_CUSTODY_GROUPS, NodeId};
 use silver_ssz::ssz_view::NUMBER_OF_COLUMNS;
 
 #[test]
-fn get_custody_groups() {
+fn fulu_get_custody_groups() {
     let base =
         spec_tests_dir().join("tests/mainnet/fulu/networking/get_custody_groups/pyspec_tests");
     let Ok(cases) = fs::read_dir(&base) else {
@@ -50,7 +50,7 @@ fn get_custody_groups() {
 }
 
 #[test]
-fn compute_columns_for_custody_group() {
+fn fulu_compute_columns_for_custody_group() {
     let base = spec_tests_dir()
         .join("tests/mainnet/fulu/networking/compute_columns_for_custody_group/pyspec_tests");
     let Ok(cases) = fs::read_dir(&base) else {

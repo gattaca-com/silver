@@ -28,7 +28,7 @@ pub const DST: &[u8] = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_";
 
 /// G2 point at infinity (compressed). Spec: a sync_aggregate over an empty
 /// participant set verifies iff the signature is this value.
-const G2_POINT_AT_INFINITY: [u8; 96] = {
+pub(crate) const G2_POINT_AT_INFINITY: [u8; 96] = {
     let mut s = [0u8; 96];
     s[0] = 0xc0;
     s
@@ -37,13 +37,16 @@ const G2_POINT_AT_INFINITY: [u8; 96] = {
 pub const DOMAIN_BEACON_PROPOSER: u32 = 0x0000_0000;
 pub const DOMAIN_BEACON_ATTESTER: u32 = 0x0000_0001;
 pub const DOMAIN_RANDAO: u32 = 0x0000_0002;
+pub const DOMAIN_DEPOSIT: u32 = 0x0000_0003;
 pub const DOMAIN_VOLUNTARY_EXIT: u32 = 0x0000_0004;
 pub const DOMAIN_SELECTION_PROOF: u32 = 0x0000_0005;
 pub const DOMAIN_AGGREGATE_AND_PROOF: u32 = 0x0000_0006;
 pub const DOMAIN_SYNC_COMMITTEE: u32 = 0x0000_0007;
 pub const DOMAIN_BLS_TO_EXECUTION_CHANGE: u32 = 0x0000_000a;
-/// Gloas (EIP-7732) `DomainType('0x0C000000')`.
+// Gloas
+pub const DOMAIN_BEACON_BUILDER: u32 = 0x0000_000b;
 pub const DOMAIN_PTC_ATTESTER: u32 = 0x0000_000c;
+pub const DOMAIN_BUILDER_DEPOSIT: u32 = 0x0000_000e;
 
 pub fn compute_domain(
     domain_type: u32,

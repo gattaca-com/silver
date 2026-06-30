@@ -148,6 +148,7 @@ pub struct EpochState {
     pub current_justified_checkpoint: Checkpoint,
     pub finalized_checkpoint: Checkpoint,
     pub deposit_balance_to_consume: u64,
+    pub fork: Fork,
 }
 
 impl Default for EpochState {
@@ -159,6 +160,7 @@ impl Default for EpochState {
             current_justified_checkpoint: Default::default(),
             finalized_checkpoint: Default::default(),
             deposit_balance_to_consume: Default::default(),
+            fork: Fork::default(),
         }
     }
 }
@@ -178,7 +180,6 @@ pub struct Immutable {
     /// for checkpoint re-encoding alongside the precomputed list hash below.
     pub historical_roots: Box<[B256]>,
     pub historical_roots_hash: B256,
-    pub fork: Fork,
     pub genesis_fork_version: Version,
     pub capella_fork_version: Version,
     pub gloas_fork_version: Version,
@@ -191,32 +192,10 @@ impl Default for Immutable {
             genesis_validators_root: B256::default(),
             historical_roots: Box::default(),
             historical_roots_hash: B256::default(),
-            fork: Fork::default(),
             genesis_fork_version: Version::default(),
             capella_fork_version: Version::default(),
             gloas_fork_version: GLOAS_FORK_VERSION,
         }
-    }
-}
-
-impl Immutable {
-    /// `(fork_epoch, previous_version, current_version,
-    /// genesis_validators_root)` — the four inputs every BLS signing-root
-    /// needs together.
-    #[inline]
-    pub fn fork_descriptor(&self) -> (Epoch, [u8; 4], [u8; 4], B256) {
-        let f = &self.fork;
-        (f.epoch, f.previous_version, f.current_version, self.genesis_validators_root)
-    }
-
-    #[inline]
-    pub fn fork_version_at(&self, block_epoch: Epoch) -> ([u8; 4], B256) {
-        let fv = if block_epoch >= self.fork.epoch {
-            self.fork.current_version
-        } else {
-            self.fork.previous_version
-        };
-        (fv, self.genesis_validators_root)
     }
 }
 
@@ -408,7 +387,7 @@ impl Withdrawals {
     pub const ZERO: Self = Self([0u8; 32]);
     pub const ETH1_ADDRESS_PREFIX: u8 = 0x01;
     pub const COMPOUNDING_PREFIX: u8 = 0x02;
-    /// Gloas (EIP-7732) `BUILDER_WITHDRAWAL_PREFIX`.
+    /// Gloas `BUILDER_WITHDRAWAL_PREFIX`.
     pub const BUILDER_PREFIX: u8 = 0x03;
 
     /// Build eth1-prefixed credentials (`0x01 || 11 zero bytes || addr`).

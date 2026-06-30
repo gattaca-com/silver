@@ -7,7 +7,7 @@ use crate::{
     TCacheRead,
     ssz_view::{
         BLOCKS_BY_RANGE_REQ_SIZE, BeaconBlocksByRangeRequestView, BeaconBlocksByRootRequestView,
-        DC_BY_RANGE_REQ_MAX, DataColumnSidecarView, DataColumnSidecarsByRangeRequestView,
+        DC_BY_RANGE_REQ_MAX, DataColumnSidecarFuluView, DataColumnSidecarsByRangeRequestView,
         DataColumnsByRootIdentifierView, GOODBYE_SIZE, GoodbyeView, METADATA_SIZE, MetadataView,
         PING_SIZE, PingView, STATUS_V1_SIZE, STATUS_V2_SIZE, SignedBeaconBlockView, SszView,
         StatusView,
@@ -616,8 +616,8 @@ pub enum RpcMsg {
     // rpc response chunks (one per successful response_chunk)
     BlocksRangeResp(SignedBeaconBlockView),
     BlocksRootResp(SignedBeaconBlockView),
-    DataColumnRangeResp(DataColumnSidecarView),
-    DataColumnByRootResp(DataColumnSidecarView),
+    DataColumnRangeResp(DataColumnSidecarFuluView),
+    DataColumnByRootResp(DataColumnSidecarFuluView),
     Empty,
 }
 
@@ -648,7 +648,7 @@ impl From<&RpcInbound> for RpcMsg {
                 RpcResponse::MetaData(_) => RpcMsg::MetaData(MetadataView),
                 RpcResponse::BeaconBlock { .. } => RpcMsg::BlocksRangeResp(SignedBeaconBlockView),
                 RpcResponse::DataColumnSidecar { .. } => {
-                    RpcMsg::DataColumnByRootResp(DataColumnSidecarView)
+                    RpcMsg::DataColumnByRootResp(DataColumnSidecarFuluView)
                 }
                 _ => RpcMsg::Empty,
             },

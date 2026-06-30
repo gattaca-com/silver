@@ -1,8 +1,8 @@
 use core::cmp::min;
 
 use silver_beacon_state_data::{
-    BalancesWriteView, ExecutionPayloadHeader, PendingWriteView, SLOTS_PER_EPOCH, Slot,
-    SlotStateWriteView, SpecConfig, StateWriterView, ValidatorsWriteView,
+    ExecutionPayloadHeader, FAR_FUTURE_EPOCH, SLOTS_PER_EPOCH, Slot, SpecConfig, StateWriterView,
+    Withdrawal,
 };
 use silver_common::ssz_view::{ExecutionPayloadView, WITHDRAWAL_SIZE, WithdrawalView};
 
@@ -13,7 +13,9 @@ use crate::{
     validate,
 };
 
-const MAX_WITHDRAWALS_PER_PAYLOAD: usize = 16;
+pub(crate) const MAX_WITHDRAWALS_PER_PAYLOAD: usize = 16;
+pub(crate) const MAX_VALIDATORS_PER_WITHDRAWALS_SWEEP: u64 = 16384;
+const MAX_PENDING_PARTIALS_PER_WITHDRAWALS_SWEEP: usize = 8;
 
 /// Validate header sanity then cache the execution payload header.
 /// No BLS sigs; everything happens in pass 2.
@@ -75,33 +77,124 @@ pub fn process_execution_payload(
     Ok(())
 }
 
-const MAX_VALIDATORS_PER_WITHDRAWALS_SWEEP: u64 = 16384;
-
-const MAX_PENDING_PARTIALS_PER_SWEEP: usize = 8;
-
-/// Cursor and accumulators tracked across the two withdrawal phases.
-struct WithdrawalsCursor {
-    /// (validator_index, amount) selected in the partials phase, used by the
-    /// sweep to discount already-debited balance.
-    selected: [(u64, u64); MAX_PENDING_PARTIALS_PER_SWEEP],
-    partials_emitted: usize,
-    processed_partial_count: usize,
-    expected_count: usize,
-    withdrawal_index: u64,
-    last_emitted_vi: u64,
+/// Electra pending-partial-withdrawal sweep. Appends eligible partials to
+/// `out`, advancing `wi`; returns the number of queue entries consumed.
+pub(crate) fn get_pending_partial_withdrawals(
+    view: &StateWriterView,
+    current_epoch: u64,
+    out: &mut Vec<Withdrawal>,
+    wi: &mut u64,
+) -> usize {
+    let limit = min(
+        out.len() + MAX_PENDING_PARTIALS_PER_WITHDRAWALS_SWEEP,
+        MAX_WITHDRAWALS_PER_PAYLOAD - 1,
+    );
+    let validators = &view.validators;
+    let ppw = view.pending.partial_withdrawals.reader();
+    let mut processed = 0;
+    for i in 0..ppw.len() {
+        let pw = *ppw.get(i);
+        if pw.withdrawable_epoch > current_epoch || out.len() >= limit {
+            break;
+        }
+        let vi = pw.index;
+        let balance = balance_after(view, out, vi);
+        if validators.exit_epoch(vi as usize) == FAR_FUTURE_EPOCH &&
+            validators.effective_balance(vi as usize) >= MIN_ACTIVATION_BALANCE &&
+            balance > MIN_ACTIVATION_BALANCE
+        {
+            out.push(Withdrawal {
+                index: *wi,
+                validator_index: vi,
+                address: *validators.credentials(vi as usize).execution_address(),
+                amount: min(balance - MIN_ACTIVATION_BALANCE, pw.amount),
+            });
+            *wi += 1;
+        }
+        processed += 1;
+    }
+    processed
 }
 
-impl WithdrawalsCursor {
-    fn new(withdrawal_index: u64) -> Self {
-        Self {
-            selected: [(0, 0); MAX_PENDING_PARTIALS_PER_SWEEP],
-            partials_emitted: 0,
-            processed_partial_count: 0,
-            expected_count: 0,
-            withdrawal_index,
-            last_emitted_vi: 0,
+/// Electra validator sweep: round-robin from `next_withdrawal_validator_index`,
+/// emitting full or partial withdrawals.
+pub(crate) fn get_validators_sweep_withdrawals(
+    view: &StateWriterView,
+    current_epoch: u64,
+    out: &mut Vec<Withdrawal>,
+    wi: &mut u64,
+) {
+    let validators = &view.validators;
+    let n = validators.count() as u64;
+    if n == 0 {
+        return;
+    }
+    let bound = min(n, MAX_VALIDATORS_PER_WITHDRAWALS_SWEEP);
+    let mut vi = view.slot.state().next_withdrawal_validator_index;
+    for _ in 0..bound {
+        if out.len() >= MAX_WITHDRAWALS_PER_PAYLOAD {
+            break;
+        }
+        let creds = *validators.credentials(vi as usize);
+        if creds.has_execution_credential() {
+            let balance = balance_after(view, out, vi);
+            let max_eb = creds.max_effective_balance();
+            let amount =
+                if validators.withdrawable_epoch(vi as usize) <= current_epoch && balance > 0 {
+                    Some(balance)
+                } else if validators.effective_balance(vi as usize) == max_eb && balance > max_eb {
+                    Some(balance - max_eb)
+                } else {
+                    None
+                };
+            if let Some(amount) = amount {
+                out.push(Withdrawal {
+                    index: *wi,
+                    validator_index: vi,
+                    address: *creds.execution_address(),
+                    amount,
+                });
+                *wi += 1;
+            }
+        }
+        vi = (vi + 1) % n;
+    }
+}
+
+/// Balance net of withdrawals already queued for `vi` this block.
+pub(crate) fn balance_after(view: &StateWriterView, out: &[Withdrawal], vi: u64) -> u64 {
+    let mut balance = view.balances.get(vi as usize);
+    for w in out {
+        if w.validator_index == vi {
+            balance = balance.saturating_sub(w.amount);
         }
     }
+    balance
+}
+
+pub(crate) fn update_next_withdrawal_index(view: &mut StateWriterView, withdrawals: &[Withdrawal]) {
+    if let Some(last) = withdrawals.last() {
+        view.slot.state_mut().next_withdrawal_index = last.index + 1;
+    }
+}
+
+/// Capella `update_next_withdrawal_validator_index`: resume the sweep after the
+/// last withdrawal when the payload filled, else advance by the sweep bound.
+pub(crate) fn update_next_withdrawal_validator_index(
+    view: &mut StateWriterView,
+    withdrawals: &[Withdrawal],
+) {
+    let n = view.validators.count() as u64;
+    if n == 0 {
+        return;
+    }
+    let next = if withdrawals.len() == MAX_WITHDRAWALS_PER_PAYLOAD {
+        (withdrawals.last().unwrap().validator_index + 1) % n
+    } else {
+        (view.slot.state().next_withdrawal_validator_index + MAX_VALIDATORS_PER_WITHDRAWALS_SWEEP) %
+            n
+    };
+    view.slot.state_mut().next_withdrawal_validator_index = next;
 }
 
 fn payload_record(withdrawals_data: &[u8], i: usize) -> WithdrawalRecord {
@@ -119,17 +212,12 @@ fn payload_record(withdrawals_data: &[u8], i: usize) -> WithdrawalRecord {
     }
 }
 
-/// Process withdrawals from the execution payload.
-/// Withdrawal SSZ: index(8) + validator_index(8) + address(20) + amount(8) = 44
-/// bytes.
-pub fn process_withdrawals(
+/// Compute the expected withdrawals, assert the payload carries exactly them,
+/// then apply and advance the cursors.
+pub fn process_withdrawals_fulu(
     view: &mut StateWriterView,
     payload_bytes: &[u8],
 ) -> Result<(), WithdrawalsError> {
-    let slot = &mut view.slot;
-    let validators = &view.validators;
-    let balances = &mut view.balances;
-    let pending = &mut view.pending;
     if payload_bytes.len() < 528 {
         return Err(WithdrawalsError::PayloadTooShort { len: payload_bytes.len(), min: 528 });
     }
@@ -141,7 +229,6 @@ pub fn process_withdrawals(
         });
     }
     let withdrawals_data = &payload_bytes[withdrawals_off..];
-
     let payload_count = withdrawals_data.len() / WITHDRAWAL_SIZE;
     if payload_count > MAX_WITHDRAWALS_PER_PAYLOAD {
         return Err(WithdrawalsError::TooMany {
@@ -150,245 +237,40 @@ pub fn process_withdrawals(
         });
     }
 
-    let count = validators.count();
-    let n_validators = count as u64;
-    let current_epoch = slot.state().slot / SLOTS_PER_EPOCH;
-    let mut cursor = WithdrawalsCursor::new(slot.state().next_withdrawal_index);
+    let current_epoch = view.slot.state().slot / SLOTS_PER_EPOCH;
+    let mut expected: Vec<Withdrawal> = Vec::new();
+    let mut wi = view.slot.state().next_withdrawal_index;
+    let processed_partial =
+        get_pending_partial_withdrawals(view, current_epoch, &mut expected, &mut wi);
+    get_validators_sweep_withdrawals(view, current_epoch, &mut expected, &mut wi);
 
-    process_partial_withdrawals(
-        validators,
-        balances,
-        pending,
-        withdrawals_data,
-        current_epoch,
-        count,
-        &mut cursor,
-    )?;
-    process_sweep_withdrawals(
-        slot,
-        validators,
-        balances,
-        withdrawals_data,
-        current_epoch,
-        count,
-        n_validators,
-        &mut cursor,
-    )?;
-
-    if cursor.expected_count != payload_count {
+    if expected.len() != payload_count {
         return Err(WithdrawalsError::CountMismatch {
-            expected: cursor.expected_count,
+            expected: expected.len(),
             actual: payload_count,
         });
     }
+    for (i, w) in expected.iter().enumerate() {
+        let exp = WithdrawalRecord {
+            index: w.index,
+            validator_index: w.validator_index,
+            address: w.address,
+            amount: w.amount,
+        };
+        let got = payload_record(withdrawals_data, i);
+        if got != exp {
+            return Err(WithdrawalsError::Mismatch { payload_index: i, expected: exp, got });
+        }
+    }
 
-    apply_withdrawals(
-        slot,
-        balances,
-        pending,
-        withdrawals_data,
-        payload_count,
-        count,
-        n_validators,
-        &cursor,
-    );
+    for w in &expected {
+        let balance = view.balances.get(w.validator_index as usize);
+        view.balances.set(w.validator_index as u32, balance.saturating_sub(w.amount));
+    }
+    update_next_withdrawal_index(view, &expected);
+    if processed_partial > 0 {
+        view.pending.partial_withdrawals.drain(processed_partial);
+    }
+    update_next_withdrawal_validator_index(view, &expected);
     Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn process_partial_withdrawals(
-    validators: &ValidatorsWriteView,
-    balances: &BalancesWriteView,
-    pending: &PendingWriteView,
-    withdrawals_data: &[u8],
-    current_epoch: u64,
-    count: usize,
-    cursor: &mut WithdrawalsCursor,
-) -> Result<(), WithdrawalsError> {
-    let partial_limit = min(MAX_PENDING_PARTIALS_PER_SWEEP, MAX_WITHDRAWALS_PER_PAYLOAD - 1);
-    let ppw_len = pending.partial_withdrawals.reader().len();
-
-    for qi in 0..ppw_len {
-        let pw = *pending.partial_withdrawals.reader().get(qi);
-        if pw.withdrawable_epoch > current_epoch || cursor.partials_emitted >= partial_limit {
-            break;
-        }
-        let vi = pw.index as u32;
-        if (vi as usize) < count {
-            let total_withdrawn =
-                sum_selected_for(&cursor.selected[..cursor.partials_emitted], pw.index);
-            let balance = balances.get(vi as usize).saturating_sub(total_withdrawn);
-            let eligible = validators.exit_epoch(vi as usize) == u64::MAX &&
-                validators.effective_balance(vi as usize) >= MIN_ACTIVATION_BALANCE &&
-                balance > MIN_ACTIVATION_BALANCE;
-            if eligible {
-                let amount = min(balance - MIN_ACTIVATION_BALANCE, pw.amount);
-                let creds = validators.credentials(vi as usize);
-                let expected = WithdrawalRecord {
-                    index: cursor.withdrawal_index,
-                    validator_index: pw.index,
-                    address: *creds.execution_address(),
-                    amount,
-                };
-                let got = payload_record(withdrawals_data, cursor.expected_count);
-                if got != expected {
-                    return Err(WithdrawalsError::PartialMismatch {
-                        payload_index: cursor.expected_count,
-                        expected,
-                        got,
-                    });
-                }
-                cursor.selected[cursor.partials_emitted] = (pw.index, amount);
-                cursor.partials_emitted += 1;
-                cursor.expected_count += 1;
-                cursor.withdrawal_index += 1;
-                cursor.last_emitted_vi = pw.index;
-            }
-        }
-        cursor.processed_partial_count += 1;
-    }
-    Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn process_sweep_withdrawals(
-    slot: &SlotStateWriteView,
-    validators: &ValidatorsWriteView,
-    balances: &BalancesWriteView,
-    withdrawals_data: &[u8],
-    current_epoch: u64,
-    count: usize,
-    n_validators: u64,
-    cursor: &mut WithdrawalsCursor,
-) -> Result<(), WithdrawalsError> {
-    if n_validators == 0 {
-        return Ok(());
-    }
-    let mut sweep_vi = slot.state().next_withdrawal_validator_index;
-    let bound = min(n_validators, MAX_VALIDATORS_PER_WITHDRAWALS_SWEEP);
-
-    for _ in 0..bound {
-        let vi = sweep_vi as u32;
-        if (vi as usize) < count {
-            sweep_one_validator(
-                validators,
-                balances,
-                withdrawals_data,
-                sweep_vi,
-                current_epoch,
-                cursor,
-            )?;
-        }
-        if cursor.expected_count >= MAX_WITHDRAWALS_PER_PAYLOAD {
-            break;
-        }
-        sweep_vi = (sweep_vi + 1) % n_validators;
-    }
-    Ok(())
-}
-
-fn sweep_one_validator(
-    validators: &ValidatorsWriteView,
-    balances: &BalancesWriteView,
-    withdrawals_data: &[u8],
-    sweep_vi: u64,
-    current_epoch: u64,
-    cursor: &mut WithdrawalsCursor,
-) -> Result<(), WithdrawalsError> {
-    let vi = sweep_vi as u32;
-    let creds = *validators.credentials(vi as usize);
-    if !creds.has_execution_credential() {
-        return Ok(());
-    }
-
-    let partial_drawn = sum_selected_for(&cursor.selected[..cursor.partials_emitted], sweep_vi);
-    let balance = balances.get(vi as usize).saturating_sub(partial_drawn);
-    let max_eb = creds.max_effective_balance();
-    let address = *creds.execution_address();
-    let wd_epoch = validators.withdrawable_epoch(vi as usize);
-    let effective_balance = validators.effective_balance(vi as usize);
-
-    let (expected_amount, kind) = if wd_epoch <= current_epoch && balance > 0 {
-        (balance, SweepKind::Full)
-    } else if effective_balance == max_eb && balance > max_eb {
-        (balance - max_eb, SweepKind::Excess)
-    } else {
-        return Ok(());
-    };
-
-    let expected = WithdrawalRecord {
-        index: cursor.withdrawal_index,
-        validator_index: sweep_vi,
-        address,
-        amount: expected_amount,
-    };
-    let got = payload_record(withdrawals_data, cursor.expected_count);
-    if got != expected {
-        let pubkey = *validators.pubkey(vi as usize);
-        return Err(match kind {
-            SweepKind::Full => {
-                WithdrawalsError::SweepMismatchFull { vi: sweep_vi, pubkey, expected, got }
-            }
-            SweepKind::Excess => {
-                WithdrawalsError::SweepMismatchExcess { vi: sweep_vi, pubkey, expected, got }
-            }
-        });
-    }
-    cursor.expected_count += 1;
-    cursor.withdrawal_index += 1;
-    cursor.last_emitted_vi = sweep_vi;
-    Ok(())
-}
-
-enum SweepKind {
-    Full,
-    Excess,
-}
-
-fn sum_selected_for(selected: &[(u64, u64)], vi: u64) -> u64 {
-    let mut total = 0u64;
-    for &(svi, samt) in selected {
-        if svi == vi {
-            total = total.saturating_add(samt);
-        }
-    }
-    total
-}
-
-#[allow(clippy::too_many_arguments)]
-fn apply_withdrawals(
-    slot: &mut SlotStateWriteView,
-    balances: &mut BalancesWriteView,
-    pending: &mut PendingWriteView,
-    withdrawals_data: &[u8],
-    payload_count: usize,
-    count: usize,
-    n_validators: u64,
-    cursor: &WithdrawalsCursor,
-) {
-    for i in 0..payload_count {
-        let w: &[u8; WITHDRAWAL_SIZE] =
-            withdrawals_data[i * WITHDRAWAL_SIZE..(i + 1) * WITHDRAWAL_SIZE].try_into().unwrap();
-        let validator_index = WithdrawalView::validator_index(w) as u32;
-        let amount = WithdrawalView::amount(w);
-        debug_assert!((validator_index as usize) < count);
-        let balance = balances.get(validator_index as usize);
-        balances.set(validator_index, balance.saturating_sub(amount));
-    }
-    if cursor.expected_count > 0 {
-        slot.state_mut().next_withdrawal_index = cursor.withdrawal_index;
-    }
-    if cursor.processed_partial_count > 0 {
-        pending.partial_withdrawals.drain(cursor.processed_partial_count);
-    }
-    if n_validators > 0 {
-        if cursor.expected_count == MAX_WITHDRAWALS_PER_PAYLOAD {
-            slot.state_mut().next_withdrawal_validator_index =
-                (cursor.last_emitted_vi + 1) % n_validators;
-        } else {
-            let next_idx = slot.state().next_withdrawal_validator_index;
-            slot.state_mut().next_withdrawal_validator_index =
-                (next_idx + MAX_VALIDATORS_PER_WITHDRAWALS_SWEEP) % n_validators;
-        }
-    }
 }

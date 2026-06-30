@@ -83,7 +83,8 @@ impl BeaconStateTile {
         if attester_index >= view.validators.count() {
             return Feedback::Reject(None);
         }
-        let (fork_version, gvr) = view.imm.fork_version_at(target_epoch);
+        let (fork_version, gvr) =
+            view.epoch.fork_version_at(target_epoch, view.imm.genesis_validators_root);
         let ok = bls::verify_single_attestation(
             buf,
             view.validators.pubkey_decompressed(attester_index),
@@ -278,7 +279,8 @@ impl BeaconStateTile {
         active_scratch: &[u32],
         sig_batch: &mut bls::SigBatch,
     ) -> bool {
-        let (fv, gvr) = view.imm.fork_version_at(parsed.target_epoch);
+        let (fv, gvr) =
+            view.epoch.fork_version_at(parsed.target_epoch, view.imm.genesis_validators_root);
 
         // (1) selection_proof — signer = aggregator, msg = htr(uint64(slot)).
         let slot_root = ssz_hash::uint64_chunk(parsed.agg_slot);
@@ -380,8 +382,9 @@ impl BeaconStateTile {
 
         let h1_epoch = ProposerSlashingView::h1_slot(buf) / SLOTS_PER_EPOCH;
         let h2_epoch = ProposerSlashingView::h2_slot(buf) / SLOTS_PER_EPOCH;
-        let (fv1, gvr) = view.imm.fork_version_at(h1_epoch);
-        let (fv2, _) = view.imm.fork_version_at(h2_epoch);
+        let gvr = view.imm.genesis_validators_root;
+        let (fv1, _) = view.epoch.fork_version_at(h1_epoch, gvr);
+        let (fv2, _) = view.epoch.fork_version_at(h2_epoch, gvr);
         let sr1 = stf::signing_root_for_block_header(&buf[0..208], fv1, &gvr);
         let sr2 = stf::signing_root_for_block_header(&buf[208..416], fv2, &gvr);
         let sig1 = ProposerSlashingView::h1_signature(buf);

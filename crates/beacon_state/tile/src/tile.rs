@@ -690,7 +690,7 @@ fn compute_fork_digest(
 /// Spec `get_blob_parameters`. `schedule` must be sorted ascending by epoch;
 /// `default` is `BlobParameters(ELECTRA_FORK_EPOCH,
 /// MAX_BLOBS_PER_BLOCK_ELECTRA)`.
-fn get_blob_parameters(
+pub(crate) fn get_blob_parameters(
     epoch: Epoch,
     schedule: &[BlobParameters],
     default: BlobParameters,

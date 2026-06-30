@@ -1,4 +1,4 @@
-use silver_common::ssz_view::{BeaconBlockBodyView, SignedBeaconBlockView};
+use silver_common::ssz_view::{BeaconBlockBodyFuluView, SignedBeaconBlockView};
 
 const SYNC_COMMITTEE_BITS_BYTES: usize = 512 / 8;
 
@@ -14,9 +14,9 @@ pub struct BlockWorkload {
 impl BlockWorkload {
     pub fn from_block_ssz(block: &[u8]) -> Self {
         let body = SignedBeaconBlockView::body(block);
-        let attestations_offset = BeaconBlockBodyView::attestations_offset(body) as usize;
-        let deposits_offset = BeaconBlockBodyView::deposits_offset(body) as usize;
-        let sync = BeaconBlockBodyView::sync_aggregate(body);
+        let attestations_offset = BeaconBlockBodyFuluView::attestations_offset(body) as usize;
+        let deposits_offset = BeaconBlockBodyFuluView::deposits_offset(body) as usize;
+        let sync = BeaconBlockBodyFuluView::sync_aggregate(body);
         Self {
             slot: SignedBeaconBlockView::slot(block),
             attestations: ssz_list_len(body, attestations_offset, deposits_offset),
