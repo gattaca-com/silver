@@ -112,7 +112,7 @@ pub fn collect_sigs_single_attestation(
     active_scratch: &mut Vec<u32>,
     sig_batch: &mut SigBatch,
 ) -> Result<(), AttestationError> {
-    let (fork_epoch, prev_v, curr_v, gvr) = epoch.fork_descriptor(imm.genesis_validators_root);
+    let (fork_epoch, prev_v, curr_v) = epoch.fork_descriptor();
     let data = AttestationView::data(att);
     let target_epoch = AttestationDataView::target_epoch(data);
     let is_current = target_epoch == current_epoch;
@@ -132,7 +132,11 @@ pub fn collect_sigs_single_attestation(
     let fork_version = bls::fork_version_at_epoch(fork_epoch, prev_v, curr_v, target_epoch);
     let sig = AttestationView::signature(att);
     let object_root = ssz_hash::hash_attestation_data(data);
-    let domain = bls::compute_domain(bls::DOMAIN_BEACON_ATTESTER, fork_version, &gvr);
+    let domain = bls::compute_domain(
+        bls::DOMAIN_BEACON_ATTESTER,
+        fork_version,
+        &imm.genesis_validators_root,
+    );
     let signing_root = bls::compute_signing_root(&object_root, &domain);
     sig_batch.push_aggregate(
         active_scratch.iter().map(|&vi| validators.pubkey_decompressed(vi as usize)),

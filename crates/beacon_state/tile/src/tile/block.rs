@@ -396,9 +396,14 @@ impl BeaconStateTile {
     fn verify_block_signature(&self, data: &[u8], parsed: &ParsedBlock) -> bool {
         let block_epoch = parsed.block_slot / SLOTS_PER_EPOCH;
         let rv = self.state.read_view(parsed.parent_state_id);
-        let (fork_version, gvr) =
-            rv.epoch.fork_version_at(block_epoch, rv.imm.genesis_validators_root);
+        let fork_version = rv.epoch.fork_version_at(block_epoch);
         let proposer_pubkey = rv.validators.pubkey_decompressed(parsed.proposer_index as usize);
-        bls::verify_block_signature(data, proposer_pubkey, &parsed.body_root, fork_version, &gvr)
+        bls::verify_block_signature(
+            data,
+            proposer_pubkey,
+            &parsed.body_root,
+            fork_version,
+            &rv.imm.genesis_validators_root,
+        )
     }
 }

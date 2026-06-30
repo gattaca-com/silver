@@ -92,9 +92,9 @@ fn collect_sigs_payload_attestation(
         .map(|i| validators.pubkey_decompressed(ptc[i] as usize))
         .collect();
 
-    let (fork_version, gvr) =
-        epoch.fork_version_at(pa_slot / SLOTS_PER_EPOCH, imm.genesis_validators_root);
-    let domain = bls::compute_domain(DOMAIN_PTC_ATTESTER, fork_version, &gvr);
+    let fork_version = epoch.fork_version_at(pa_slot / SLOTS_PER_EPOCH);
+    let domain =
+        bls::compute_domain(DOMAIN_PTC_ATTESTER, fork_version, &imm.genesis_validators_root);
     let signing_root = bls::compute_signing_root(&hash_payload_attestation_data(data), &domain);
     batch.push_aggregate(pubkeys, signature, signing_root);
     Ok(())

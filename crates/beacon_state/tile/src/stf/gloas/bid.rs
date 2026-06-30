@@ -119,8 +119,9 @@ pub fn collect_sigs_execution_payload_bid(
         return Err(E::BadBuilderPubkey { index: bid.builder_index });
     };
 
-    let (fork_version, gvr) = epoch.fork_version_at(current_epoch, imm.genesis_validators_root);
-    let domain = bls::compute_domain(DOMAIN_BEACON_BUILDER, fork_version, &gvr);
+    let fork_version = epoch.fork_version_at(current_epoch);
+    let domain =
+        bls::compute_domain(DOMAIN_BEACON_BUILDER, fork_version, &imm.genesis_validators_root);
     let signing_root = bls::compute_signing_root(&hash_execution_payload_bid(&bid), &domain);
     batch.push_one(&pubkey, SignedExecutionPayloadBidView::signature(signed_bid), signing_root);
     Ok(())

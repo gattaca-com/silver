@@ -277,9 +277,15 @@ fn verify_block_sig(
     block_epoch: Epoch,
     proposer_index: u32,
 ) -> bool {
-    let (fork_version, gvr) = epoch.fork_version_at(block_epoch, imm.genesis_validators_root);
+    let fork_version = epoch.fork_version_at(block_epoch);
     let pk = validators.pubkey_decompressed(proposer_index as usize);
-    bls::verify_block_signature(block_bytes, pk, body_root, fork_version, &gvr)
+    bls::verify_block_signature(
+        block_bytes,
+        pk,
+        body_root,
+        fork_version,
+        &imm.genesis_validators_root,
+    )
 }
 
 /// Advance state from `view.slot`'s slot to `target_slot`, processing empty
@@ -680,10 +686,11 @@ pub fn collect_sigs_randao(
     }
     let reveal: &[u8; 96] = body[0..96].try_into().unwrap();
     let block_epoch = block_slot / SLOTS_PER_EPOCH;
-    let (fork_version, gvr) = epoch.fork_version_at(block_epoch, imm.genesis_validators_root);
+    let fork_version = epoch.fork_version_at(block_epoch);
     let mut epoch_chunk = [0u8; 32];
     epoch_chunk[..8].copy_from_slice(&block_epoch.to_le_bytes());
-    let domain = bls::compute_domain(bls::DOMAIN_RANDAO, fork_version, &gvr);
+    let domain =
+        bls::compute_domain(bls::DOMAIN_RANDAO, fork_version, &imm.genesis_validators_root);
     let signing_root = bls::compute_signing_root(&epoch_chunk, &domain);
     sig_batch.push_one(proposer_pubkey, reveal, signing_root);
 }

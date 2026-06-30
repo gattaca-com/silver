@@ -52,7 +52,8 @@ pub fn collect_sigs_proposer_slashings(
     data: &[u8],
     sig_batch: &mut SigBatch,
 ) -> Result<(), ProposerSlashingError> {
-    let (fork_epoch, prev_ver, cur_ver, gvr) = epoch.fork_descriptor(imm.genesis_validators_root);
+    let gvr = imm.genesis_validators_root;
+    let (fork_epoch, prev_ver, cur_ver) = epoch.fork_descriptor();
     let count = data.len() / PROPOSER_SLASHING_SIZE;
     let n = validators.count();
     for i in 0..count {
@@ -177,7 +178,8 @@ pub fn collect_sigs_attester_slashings(
     active_scratch: &mut Vec<u32>,
     sig_batch: &mut SigBatch,
 ) -> Result<(), AttesterSlashingError> {
-    let (fork_epoch, prev_ver, cur_ver, gvr) = epoch.fork_descriptor(imm.genesis_validators_root);
+    let gvr = imm.genesis_validators_root;
+    let (fork_epoch, prev_ver, cur_ver) = epoch.fork_descriptor();
     for_each_ssz_list_item(
         data,
         |start, end| AttesterSlashingError::BadOffsets { start, end, parent_len: data.len() },
@@ -327,8 +329,8 @@ pub fn validate_attester_slashing_for_gossip(
     equivocating_out: &mut Vec<u32>,
     sig_batch: &mut SigBatch,
 ) -> bool {
-    let (fork_epoch, prev_ver, cur_ver, gvr) =
-        view.epoch.fork_descriptor(view.imm.genesis_validators_root);
+    let gvr = view.imm.genesis_validators_root;
+    let (fork_epoch, prev_ver, cur_ver) = view.epoch.fork_descriptor();
     let Ok((off1, off2)) = attester_slashing_inner_offsets(slashing) else {
         return false;
     };

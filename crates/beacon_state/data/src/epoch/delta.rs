@@ -132,22 +132,16 @@ impl<'a> EpochView<'a> {
         self.state().fork.current_version == gloas_fork_version
     }
 
-    /// `(fork_version_at(block_epoch), genesis_validators_root)` — the pair a
-    /// BLS signing domain needs. `gvr` rides in from `Immutable`.
     #[inline]
-    pub fn fork_version_at(&self, block_epoch: Epoch, gvr: B256) -> (Version, B256) {
+    pub fn fork_version_at(&self, block_epoch: Epoch) -> Version {
         let f = &self.state().fork;
-        let fv = if block_epoch >= f.epoch { f.current_version } else { f.previous_version };
-        (fv, gvr)
+        if block_epoch >= f.epoch { f.current_version } else { f.previous_version }
     }
 
-    /// `(fork_epoch, previous_version, current_version,
-    /// genesis_validators_root)` — the four inputs every BLS signing-root
-    /// needs together.
     #[inline]
-    pub fn fork_descriptor(&self, gvr: B256) -> (Epoch, Version, Version, B256) {
+    pub fn fork_descriptor(&self) -> (Epoch, Version, Version) {
         let f = &self.state().fork;
-        (f.epoch, f.previous_version, f.current_version, gvr)
+        (f.epoch, f.previous_version, f.current_version)
     }
 }
 
