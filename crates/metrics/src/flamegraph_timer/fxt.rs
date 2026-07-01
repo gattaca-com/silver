@@ -16,10 +16,7 @@ use rustc_hash::FxHashMap;
 use crate::{
     Schema,
     allocator::AllocSample,
-    flamegraph_timer::{
-        mark::{Frame, Mark},
-        names::untimed,
-    },
+    flamegraph_timer::{mark::Mark, names::untimed},
     perf::PerfSample,
 };
 
@@ -94,10 +91,8 @@ pub(super) fn trace<'a>(
         let mut prev_perf: Option<PerfSample> = None;
 
         for (j, mark) in t.marks.iter().enumerate() {
-            let (id, ty) = match mark.frame {
-                Frame::Open { id, .. } => (id, DURATION_BEGIN),
-                Frame::Close { id } => (id, DURATION_END),
-            };
+            let id = mark.id;
+            let ty = if mark.is_open() { DURATION_BEGIN } else { DURATION_END };
             let raw = names.get(&id).map_or("unknown", String::as_str);
             let name = fxt.intern(&untimed(raw));
             fxt.event(ty, index, name, ns(mark.ts));
@@ -231,22 +226,14 @@ mod tests {
     use rustc_hash::FxHashMap;
 
     use super::{COUNTER, ThreadTrace, trace};
-    use crate::{
-        Schema,
-        allocator::AllocSample,
-        flamegraph_timer::mark::{Frame, Mark},
-        perf::PerfSample,
-    };
+    use crate::{Schema, allocator::AllocSample, flamegraph_timer::mark::Mark, perf::PerfSample};
 
     fn names() -> FxHashMap<u64, String> {
         FxHashMap::from_iter([(7u64, "work".to_owned())])
     }
 
     fn frames() -> [Mark; 2] {
-        [Mark { frame: Frame::Open { id: 7, len: 4 }, ts: 0 }, Mark {
-            frame: Frame::Close { id: 7 },
-            ts: 100,
-        }]
+        [Mark::from_parts(7, 0, true), Mark::from_parts(7, 100, false)]
     }
 
     fn thread<'a>(
@@ -290,10 +277,10 @@ mod tests {
         // Four marks, but the alloc gauge never moves after the first sample:
         // Perfetto holds the value between points, so only the first is emitted.
         let marks = [
-            Mark { frame: Frame::Open { id: 7, len: 4 }, ts: 0 },
-            Mark { frame: Frame::Close { id: 7 }, ts: 10 },
-            Mark { frame: Frame::Open { id: 7, len: 4 }, ts: 20 },
-            Mark { frame: Frame::Close { id: 7 }, ts: 30 },
+            Mark::from_parts(7, 0, true),
+            Mark::from_parts(7, 10, false),
+            Mark::from_parts(7, 20, true),
+            Mark::from_parts(7, 30, false),
         ];
         let flat = AllocSample { allocated: 64, freed: 0 };
         let buf = trace([thread(&marks, &[flat; 4], &[])].into_iter(), &names(), &Schema::empty());

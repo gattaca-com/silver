@@ -121,7 +121,7 @@ mod tests {
     use std::thread;
 
     use super::*;
-    use crate::flamegraph_timer::{Frame, record};
+    use crate::flamegraph_timer::{record_close, record_open};
 
     #[test]
     fn drain_discovers_every_thread_ring() {
@@ -134,10 +134,10 @@ mod tests {
                 .spawn(move || {
                     let (outer, inner) = ("outer", "inner");
                     for _ in 0..reps {
-                        record(Frame::open(outer));
-                        record(Frame::open(inner));
-                        record(Frame::close(inner));
-                        record(Frame::close(outer));
+                        record_open(outer);
+                        record_open(inner);
+                        record_close(inner);
+                        record_close(outer);
                     }
                 })
                 .unwrap()
@@ -165,10 +165,10 @@ mod tests {
             .spawn(|| {
                 let (alpha, beta) = ("alpha", "beta");
                 for _ in 0..4 {
-                    record(Frame::open(alpha));
-                    record(Frame::open(beta));
-                    record(Frame::close(beta));
-                    record(Frame::close(alpha));
+                    record_open(alpha);
+                    record_open(beta);
+                    record_close(beta);
+                    record_close(alpha);
                 }
             })
             .unwrap()
@@ -201,10 +201,10 @@ mod tests {
             .name("trace-producer".to_owned())
             .spawn(|| {
                 let (outer, inner) = ("outer", "inner");
-                record(Frame::open(outer));
-                record(Frame::open(inner));
-                record(Frame::close(inner));
-                record(Frame::close(outer));
+                record_open(outer);
+                record_open(inner);
+                record_close(inner);
+                record_close(outer);
             })
             .unwrap()
             .join()

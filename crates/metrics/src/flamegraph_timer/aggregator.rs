@@ -3,10 +3,7 @@ use rustc_hash::FxHashMap;
 
 use crate::{
     allocator::AllocSample,
-    flamegraph_timer::{
-        counters::Counters,
-        mark::{Frame, Mark},
-    },
+    flamegraph_timer::{counters::Counters, mark::Mark},
     perf::PerfSample,
 };
 
@@ -60,19 +57,17 @@ impl Aggregator {
                 perf: perf.get(i).copied().unwrap_or_default(),
                 alloc: alloc.get(i).copied().unwrap_or_default(),
             };
-            let closing_id = match mark.frame {
-                Frame::Open { id, .. } => {
-                    stack.push(OpenFrame {
-                        id,
-                        ts: mark.ts,
-                        counters: sample,
-                        total_tracked_ns: 0,
-                        total_tracked: Counters::default(),
-                    });
-                    continue;
-                }
-                Frame::Close { id } => id,
-            };
+            if mark.is_open() {
+                stack.push(OpenFrame {
+                    id: mark.id,
+                    ts: mark.ts,
+                    counters: sample,
+                    total_tracked_ns: 0,
+                    total_tracked: Counters::default(),
+                });
+                continue;
+            }
+            let closing_id = mark.id;
 
             let Some(frame) = stack.pop() else { continue };
             // Drop guards close in reverse open order, so a close must pop its
@@ -107,11 +102,11 @@ mod tests {
     use super::*;
 
     fn open(id: u64, ts: u64) -> Mark {
-        Mark { frame: Frame::Open { id, len: 0 }, ts }
+        Mark::from_parts(id, ts, true)
     }
 
     fn close(id: u64, ts: u64) -> Mark {
-        Mark { frame: Frame::Close { id }, ts }
+        Mark::from_parts(id, ts, false)
     }
 
     fn alloc(allocated: u64, freed: u64) -> AllocSample {

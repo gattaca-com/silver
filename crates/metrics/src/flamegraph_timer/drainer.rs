@@ -23,7 +23,7 @@ use crate::{
     flamegraph_timer::{
         aggregator::Aggregator,
         fxt,
-        mark::{Frame, Mark},
+        mark::Mark,
         queue_dir::{QueueDir, RingEntry},
         report::{FlamegraphMeta, ThreadTimings, TimingStats},
         symbols::FrameResolver,
@@ -128,9 +128,10 @@ impl ThreadDrainer {
         // bytes to read. Resolve each id once, while the producer is still
         // alive to read it from.
         for mark in &self.marks.out[self.resolved..] {
-            if let Frame::Open { id, len } = mark.frame {
+            if mark.is_open() {
+                let id = mark.id;
                 names.entry(id).or_insert_with(|| {
-                    resolver.resolve(id, len).unwrap_or_else(|| format!("unknown_{id}"))
+                    resolver.resolve(id, mark.name_len()).unwrap_or_else(|| format!("unknown_{id}"))
                 });
             }
         }
