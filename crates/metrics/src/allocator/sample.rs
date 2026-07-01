@@ -2,7 +2,7 @@
 //! monotonic per-thread byte counts.
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default, serde::Serialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub struct AllocSample {
     pub allocated: u64,
     pub freed: u64,

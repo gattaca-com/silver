@@ -11,7 +11,7 @@ pub const MAX_EVENTS: usize = 8;
 
 /// One call's raw counter values, positional by [`schema`](super::schema) slot.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default, serde::Serialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub struct PerfSample {
     pub vals: [u64; MAX_EVENTS],
 }

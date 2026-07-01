@@ -70,19 +70,6 @@ pub(super) fn trace<'a>(
     let process = fxt.intern("silver");
     fxt.kernel_object(OBJ_PROCESS, PROCESS_KOID, process, None);
 
-    // Interned only when some thread carries the samples, so a timing-only
-    // trace isn't padded with unused string records. Each perf event gets its
-    // own track (label doubling as track and series name) — the counters differ
-    // in magnitude by orders (instructions vs cache-misses), so a shared axis
-    // would flatten all but the largest.
-    let counter_names = threads.iter().any(|t| !t.alloc.is_empty()).then(|| {
-        (fxt.intern("memory"), fxt.intern("live"), fxt.intern("allocated"), fxt.intern("freed"))
-    });
-    let perf_labels: Option<Vec<_>> = threads
-        .iter()
-        .any(|t| !t.perf.is_empty())
-        .then(|| schema.iter().map(|e| fxt.intern(&e.label)).collect());
-
     for (i, t) in threads.iter().enumerate() {
         let koid = i as u64 + 2; // 1 is the process koid
         let index = i as u64 + 1; // 1-based thread-table index
@@ -90,6 +77,31 @@ pub(super) fn trace<'a>(
         let process_arg = fxt.intern("process");
         fxt.kernel_object(OBJ_THREAD, koid, name, Some((process_arg, PROCESS_KOID)));
         fxt.thread_record(index, PROCESS_KOID, koid);
+
+        // Perfetto scopes counter tracks to the process, keyed by name, so
+        // qualifying each track with the thread name keeps threads' thread-local
+        // counts from merging into one scrambled line.
+        let memory_track = (!t.alloc.is_empty()).then(|| {
+            (
+                fxt.intern(&format!("memory ({})", t.name)),
+                fxt.intern("live"),
+                fxt.intern("allocated"),
+                fxt.intern("freed"),
+            )
+        });
+        let perf_tracks: Option<Vec<_>> = (!t.perf.is_empty()).then(|| {
+            schema
+                .iter()
+                .map(|e| (fxt.intern(&format!("{} ({})", e.label, t.name)), fxt.intern(&e.label)))
+                .collect()
+        });
+
+        // Counters are cumulative gauges Perfetto holds flat between points, so a
+        // sample equal to the last emitted one on this thread is redundant. Most
+        // frames don't allocate, so gating on change drops the bulk of the file.
+        let mut prev_alloc: Option<AllocSample> = None;
+        let mut prev_perf: Option<PerfSample> = None;
+
         for (j, mark) in t.marks.iter().enumerate() {
             let (id, ty) = match mark.frame {
                 Frame::Open { id, .. } => (id, DURATION_BEGIN),
@@ -98,19 +110,25 @@ pub(super) fn trace<'a>(
             let raw = names.get(&id).map_or("unknown", String::as_str);
             let name = fxt.intern(&untimed(raw));
             fxt.event(ty, index, name, ns(mark.ts));
-            if let (Some(a), Some((memory, live, allocated, freed))) =
-                (t.alloc.get(j), counter_names)
+
+            if let (Some(&a), Some((track, live, allocated, freed))) =
+                (t.alloc.get(j), memory_track) &&
+                prev_alloc != Some(a)
             {
-                fxt.counter(index, memory, ns(mark.ts), &[
+                fxt.counter(index, track, ns(mark.ts), &[
                     (live, a.live()),
                     (allocated, a.allocated),
                     (freed, a.freed),
                 ]);
+                prev_alloc = Some(a);
             }
-            if let (Some(sample), Some(labels)) = (t.perf.get(j), &perf_labels) {
-                for (slot, &label) in labels.iter().enumerate() {
-                    fxt.counter(index, label, ns(mark.ts), &[(label, sample.vals[slot])]);
+            if let (Some(&sample), Some(tracks)) = (t.perf.get(j), &perf_tracks) &&
+                prev_perf != Some(sample)
+            {
+                for (slot, &(track, series)) in tracks.iter().enumerate() {
+                    fxt.counter(index, track, ns(mark.ts), &[(series, sample.vals[slot])]);
                 }
+                prev_perf = Some(sample);
             }
         }
     }
@@ -189,9 +207,10 @@ impl Fxt {
         self.word(ts);
     }
 
-    /// Counter event (one per `(name, counter_id)` track): header + timestamp,
-    /// then a uint64 argument per series, then the trailing counter id.
-    /// Perfetto plots each argument as a line under the thread.
+    /// Counter event: header + timestamp, a uint64 argument per series, then
+    /// the trailing counter id. Perfetto keys the (process-scoped) track by
+    /// `(name, counter_id)` and plots each argument as a line, labelling it
+    /// `name:arg:counter_id`.
     fn counter(&mut self, thread_index: u64, name: u16, ts: u64, args: &[(u16, u64)]) {
         let n_args = args.len() as u64;
         let size = 2 + 2 * n_args + 1; // header + ts, two words per arg, counter id
@@ -208,7 +227,7 @@ impl Fxt {
             self.word(ARG_UINT64 | (2 << 4) | (u64::from(arg_name) << 16));
             self.word(val);
         }
-        self.word(0); // counter id: one track per thread, so a constant suffices
+        self.word(0); // counter id
     }
 }
 
@@ -276,6 +295,21 @@ mod tests {
     }
 
     #[test]
+    fn unchanged_counter_samples_are_gated() {
+        // Four marks, but the alloc gauge never moves after the first sample:
+        // Perfetto holds the value between points, so only the first is emitted.
+        let marks = [
+            Mark { frame: Frame::Open { id: 7, len: 4 }, ts: 0 },
+            Mark { frame: Frame::Close { id: 7 }, ts: 10 },
+            Mark { frame: Frame::Open { id: 7, len: 4 }, ts: 20 },
+            Mark { frame: Frame::Close { id: 7 }, ts: 30 },
+        ];
+        let flat = AllocSample { allocated: 64, freed: 0 };
+        let buf = trace([thread(&marks, &[flat; 4], &[])].into_iter(), &names(), &Schema::empty());
+        assert_eq!(count_counter_events(&buf), 1, "only the first sample of a flat run is kept");
+    }
+
+    #[test]
     fn timing_only_trace_has_no_counter() {
         let marks = frames();
         let buf = trace([thread(&marks, &[], &[])].into_iter(), &names(), &Schema::empty());
@@ -293,9 +327,25 @@ mod tests {
     /// [`COUNTER`]. A heuristic scan, but the values here (small ts, byte
     /// strings) don't collide with that bit pattern.
     fn has_counter_event(buf: &[u8]) -> bool {
-        buf.chunks_exact(8).any(|w| {
-            let word = u64::from_le_bytes(w.try_into().unwrap());
-            word & 0xf == 4 && (word >> 16) & 0xf == COUNTER
-        })
+        count_counter_events(buf) > 0
+    }
+
+    /// Counter records walked by their size header (not a word scan), so a data
+    /// word matching the Counter bit pattern can't inflate the count.
+    fn count_counter_events(buf: &[u8]) -> usize {
+        let mut off = 0;
+        let mut n = 0;
+        while off + 8 <= buf.len() {
+            let word = u64::from_le_bytes(buf[off..off + 8].try_into().unwrap());
+            let size = ((word >> 4) & 0xfff) as usize;
+            if size == 0 {
+                break;
+            }
+            if word & 0xf == 4 && (word >> 16) & 0xf == COUNTER {
+                n += 1;
+            }
+            off += size * 8;
+        }
+        n
     }
 }
