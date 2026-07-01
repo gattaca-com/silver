@@ -4,10 +4,13 @@ use flux::{
     tile::{TileConfig, attach_tile},
     utils::ThreadPriority,
 };
+use mimalloc::MiMalloc;
 use quinn_proto::{Endpoint, EndpointConfig};
 use rand::RngCore;
 use silver_beacon_state::{BeaconStateTile, SlotTicker};
 use silver_beacon_state_data::BeaconState;
+#[cfg(feature = "alloc-profile")]
+use silver_common::metrics::CountingAllocator;
 use silver_common::{
     Enr, ProtoIdentify, SilverSpine, TCache, TCacheProducer, tracing::initialise_tracing_log,
 };
@@ -22,12 +25,13 @@ use silver_storage::{latest_local_checkpoint, tile::StorageTile};
 
 #[cfg(not(feature = "alloc-profile"))]
 #[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static GLOBAL: MiMalloc = MiMalloc;
+
+#[cfg(feature = "alloc-profile")]
+#[global_allocator]
+static GLOBAL: CountingAllocator<MiMalloc> = CountingAllocator(MiMalloc);
 
 fn main() -> Result<(), Box<dyn Error>> {
-    #[cfg(feature = "alloc-profile")]
-    let _alloc_profile_guard = silver_common::allocator::init_allocator_trace();
-
     let _tracing = initialise_tracing_log("silver", 10, None, false);
     tracing::debug!("start");
 

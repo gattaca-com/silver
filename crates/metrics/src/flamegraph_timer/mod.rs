@@ -5,6 +5,7 @@
 
 mod aggregator;
 mod call_tree;
+mod counters;
 mod drainer;
 mod fxt;
 mod mark;

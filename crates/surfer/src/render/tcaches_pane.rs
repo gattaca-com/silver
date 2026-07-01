@@ -16,6 +16,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Axis, Block, Borders, Cell, Chart, Dataset, GraphType, Paragraph, Row, Table},
 };
+use silver_metrics::fmt_bytes;
 
 use crate::{app::App, render::fmt::fmt_span_ago, sources::counters::CounterSet};
 
@@ -324,21 +325,4 @@ fn bar_line(capacity: u64, head_seq: u64, min_tail_seq: u64, width: usize) -> Li
         Span::styled(bar, Style::default().fg(Color::Cyan)),
         Span::raw("]"),
     ])
-}
-
-fn fmt_bytes(bytes: u64) -> String {
-    const KB: u64 = 1 << 10;
-    const MB: u64 = 1 << 20;
-    const GB: u64 = 1 << 30;
-    if bytes == 0 {
-        "0B".to_string()
-    } else if bytes >= GB {
-        format!("{:.2}GB", bytes as f64 / GB as f64)
-    } else if bytes >= MB {
-        format!("{:.2}MB", bytes as f64 / MB as f64)
-    } else if bytes >= KB {
-        format!("{:.2}KB", bytes as f64 / KB as f64)
-    } else {
-        format!("{bytes}B")
-    }
 }

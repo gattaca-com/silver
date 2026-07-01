@@ -26,3 +26,8 @@ workspace = true
 # Disabled with a warn otherwise. `PerfSample` and the `#[timed]` macro
 # compile regardless — counter collection alone is gated.
 perf = ["dep:tracing"]
+# Wrap the global allocator in `CountingAllocator` and ride its per-thread
+# allocated/freed byte counts alongside each `#[timed]` mark, the allocation
+# analogue of `perf`. `AllocSample` and the fold compile regardless — only the
+# wrapper and its counter production are gated.
+alloc-profile = []

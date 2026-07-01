@@ -6,8 +6,9 @@ use rustc_hash::FxHashMap;
 
 use crate::{
     Schema,
-    flamegraph_timer::{aggregator::CallStackSamples, call_tree, names::leaf_name},
-    perf::PerfSample,
+    flamegraph_timer::{
+        aggregator::CallStackSamples, call_tree, counters::Counters, names::leaf_name,
+    },
 };
 
 pub(super) struct PathStat {
@@ -24,11 +25,12 @@ pub(super) struct PathMetrics {
     tracked_max_ns: Nanos,
     pub(super) tracked_sum_ns: Nanos,
     pub(super) total_untracked_ns: Nanos,
-    /// Summed counter deltas over all calls on this path; `untracked_perf`
-    /// excludes timed children, like `total_untracked_ns`. All-zero unless the
-    /// `perf` feature is built and `perf_event_open` is permitted.
-    pub(super) tracked_perf: PerfSample,
-    pub(super) untracked_perf: PerfSample,
+    /// Summed counter deltas (perf, alloc bytes) over all calls on this path;
+    /// `untracked` excludes timed children, like `total_untracked_ns`. A
+    /// dimension is all-zero unless its feature was built (and, for perf,
+    /// `perf_event_open` permitted).
+    pub(super) tracked: Counters,
+    pub(super) untracked: Counters,
 }
 
 impl PathMetrics {
@@ -49,8 +51,8 @@ impl PathMetrics {
             tracked_max_ns: Nanos(times.last().copied().unwrap_or(0)),
             tracked_sum_ns: Nanos(u64::try_from(sum).unwrap_or(u64::MAX)),
             total_untracked_ns: Nanos(samples.total_untracked_ns),
-            tracked_perf: samples.tracked_perf,
-            untracked_perf: samples.total_untracked_perf,
+            tracked: samples.tracked,
+            untracked: samples.total_untracked,
         }
     }
 }

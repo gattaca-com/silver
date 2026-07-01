@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 
 use silver_common::Nanos;
+use silver_metrics::table::{Column, Table};
 
 use crate::perf::{BlockWorkload, Fixtures, fixtures_dir::Thresholds, replay::ReplayOutcome};
 
@@ -128,9 +129,16 @@ impl PerfReport {
     /// runs and failures show the same numbers.
     fn print_key_metrics(&self) {
         eprintln!("\nKey metrics (thresholded):");
+        let mut table = Table::new(vec![
+            Column::left("metric"),
+            Column::right("actual"),
+            Column::right("threshold"),
+            Column::left("status"),
+        ]);
         for g in self.gauges() {
-            eprintln!("  {}", g.render_row());
+            table.row(g.cells());
         }
+        eprint!("{}", table.render());
     }
 
     fn print_call_tree(&self) {
@@ -171,7 +179,7 @@ impl Gauge {
         }
     }
 
-    fn render_row(&self) -> String {
+    fn cells(&self) -> Vec<String> {
         let actual = self.actual.map(|v| v.to_string()).unwrap_or_else(|| "n/a".into());
         let (threshold, status) = match (self.actual, self.threshold) {
             (_, None) => ("—".to_string(), "(no threshold)"),
@@ -179,14 +187,11 @@ impl Gauge {
             (Some(a), Some(c)) if a > c => (c.to_string(), "BREACH"),
             (_, Some(c)) => (c.to_string(), "ok"),
         };
-        format!(
-            "{label:<32}  actual {actual:>10}   threshold {threshold:>10}   {status}",
-            label = self.label,
-        )
+        vec![self.label.to_string(), actual, threshold, status.to_string()]
     }
 
-    /// Breach-panic row — same layout as `render_row`, sans the status
-    /// suffix (every row in the panic is a breach by construction).
+    /// Breach-panic row: a self-contained line for the failure message, which
+    /// isn't rendered through the key-metrics table.
     fn render_breach(&self) -> String {
         let actual = self.actual.map(|v| v.to_string()).unwrap_or_else(|| "n/a".into());
         let threshold = self.threshold.map(|v| v.to_string()).unwrap_or_else(|| "—".into());

@@ -39,7 +39,7 @@ tracing-appender.workspace = true
 tracing-subscriber.workspace = true
 
 [features]
-alloc-profile = []
+alloc-profile = ["silver_metrics/alloc-profile"]
 # Forwards `#[timed]`'s hardware-counter dimension (rdpmc) to silver_metrics.
 perf = ["silver_metrics/perf"]
 test-util = []

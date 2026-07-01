@@ -2,7 +2,11 @@ use flux::timing::Duration;
 use rustc_hash::FxHashMap;
 
 use crate::{
-    flamegraph_timer::mark::{Frame, Mark},
+    allocator::AllocSample,
+    flamegraph_timer::{
+        counters::Counters,
+        mark::{Frame, Mark},
+    },
     perf::PerfSample,
 };
 
@@ -10,19 +14,19 @@ use crate::{
 pub(crate) struct CallStackSamples {
     pub(crate) tracked_ns: Vec<u64>,
     pub(crate) total_untracked_ns: u64,
-    /// Summed entry→exit counter deltas across calls; all-zero when the
-    /// `perf` feature is off. `total_untracked_perf` excludes children, like
-    /// `total_untracked_ns`.
-    pub(crate) tracked_perf: PerfSample,
-    pub(crate) total_untracked_perf: PerfSample,
+    /// Summed entry→exit counter deltas across calls; the `perf`/`alloc` slots
+    /// are all-zero when their feature is off. `total_untracked` excludes
+    /// children, like `total_untracked_ns`.
+    pub(crate) tracked: Counters,
+    pub(crate) total_untracked: Counters,
 }
 
 struct OpenFrame {
     id: u64,
     ts: u64,
-    perf: PerfSample,
+    counters: Counters,
     total_tracked_ns: u64,
-    total_tracked_perf: PerfSample,
+    total_tracked: Counters,
 }
 
 /// Folds mark streams into call-path timings keyed by portable frame id,
@@ -43,24 +47,32 @@ pub(crate) struct Aggregator {
 }
 
 impl Aggregator {
-    pub(crate) fn fold_thread(&mut self, marks: &[Mark], counters: &[PerfSample]) {
-        // `counters[i]` is the snapshot pushed right after `marks[i]` (same
-        // producer thread, lockstep order), so the two are index-aligned over
-        // their common prefix. A live drain (surfer reading while the producer
-        // runs) can snapshot the rings a push apart, leaving a 1-ish tail
-        // mismatch — benign: the extra counter is ignored and a mark missing
-        // its counter falls back to zero below. Perf off ⇒ `counters` empty.
+    pub(crate) fn fold_thread(
+        &mut self,
+        marks: &[Mark],
+        perf: &[PerfSample],
+        alloc: &[AllocSample],
+    ) {
+        // `perf[i]`/`alloc[i]` are the snapshots pushed right after `marks[i]`
+        // (same producer thread, lockstep order), so they are index-aligned with
+        // the marks over their common prefix. A live drain (surfer reading while
+        // the producer runs) can snapshot the rings a push apart, leaving a 1-ish
+        // tail mismatch — benign: the extra sample is ignored and a mark missing
+        // its sample falls back to zero below. Feature off ⇒ the slice is empty.
         let mut stack: Vec<OpenFrame> = Vec::new();
         for (i, mark) in marks.iter().enumerate() {
-            let sample = counters.get(i).copied().unwrap_or_default();
+            let sample = Counters {
+                perf: perf.get(i).copied().unwrap_or_default(),
+                alloc: alloc.get(i).copied().unwrap_or_default(),
+            };
             let closing_id = match mark.frame {
                 Frame::Open { id, .. } => {
                     stack.push(OpenFrame {
                         id,
                         ts: mark.ts,
-                        perf: sample,
+                        counters: sample,
                         total_tracked_ns: 0,
-                        total_tracked_perf: PerfSample::default(),
+                        total_tracked: Counters::default(),
                     });
                     continue;
                 }
@@ -76,20 +88,20 @@ impl Aggregator {
             self.desynced |= closing_id != frame.id;
             let tracked_ns = Duration(mark.ts.saturating_sub(frame.ts)).as_nanos() as u64;
             let untracked_ns = tracked_ns.saturating_sub(frame.total_tracked_ns);
-            let tracked_perf = sample.delta(&frame.perf);
-            let untracked_perf = tracked_perf.delta(&frame.total_tracked_perf);
+            let tracked = sample.delta(&frame.counters);
+            let untracked = tracked.delta(&frame.total_tracked);
 
             let path: Vec<u64> = stack.iter().map(|f| f.id).chain([frame.id]).collect();
             if let Some(parent) = stack.last_mut() {
                 parent.total_tracked_ns += tracked_ns;
-                parent.total_tracked_perf = parent.total_tracked_perf.add(&tracked_perf);
+                parent.total_tracked = parent.total_tracked.add(&tracked);
             }
 
             let entry = self.paths.entry(path).or_default();
             entry.tracked_ns.push(tracked_ns);
             entry.total_untracked_ns += untracked_ns;
-            entry.tracked_perf = entry.tracked_perf.add(&tracked_perf);
-            entry.total_untracked_perf = entry.total_untracked_perf.add(&untracked_perf);
+            entry.tracked = entry.tracked.add(&tracked);
+            entry.total_untracked = entry.total_untracked.add(&untracked);
         }
     }
 
@@ -99,5 +111,55 @@ impl Aggregator {
 
     pub(crate) fn into_paths(self) -> FxHashMap<Vec<u64>, CallStackSamples> {
         self.paths
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn open(id: u64, ts: u64) -> Mark {
+        Mark { frame: Frame::Open { id, len: 0 }, ts }
+    }
+
+    fn close(id: u64, ts: u64) -> Mark {
+        Mark { frame: Frame::Close { id }, ts }
+    }
+
+    fn alloc(allocated: u64, freed: u64) -> AllocSample {
+        AllocSample { allocated, freed }
+    }
+
+    /// A parent frame that allocates around a child: the child's bytes are
+    /// charged to the child path, and excluded from the parent's untracked.
+    #[test]
+    fn alloc_deltas_attribute_to_paths_excluding_children() {
+        let marks = [open(1, 0), open(2, 0), close(2, 0), close(1, 0)];
+        // Snapshots ride after each mark: parent enters at 0/0, allocates 30
+        // before the child, the child allocates 100 and frees 40, then the
+        // parent allocates 70 more after the child returns.
+        let allocs = [alloc(0, 0), alloc(30, 0), alloc(130, 40), alloc(200, 40)];
+
+        let mut agg = Aggregator::default();
+        agg.fold_thread(&marks, &[], &allocs);
+        let paths = agg.into_paths();
+
+        let child = &paths[&vec![1, 2]];
+        assert_eq!(child.tracked.alloc.allocated, 100);
+        assert_eq!(child.tracked.alloc.freed, 40);
+
+        let parent = &paths[&vec![1]];
+        assert_eq!(parent.tracked.alloc.allocated, 200, "parent's full subtree");
+        // Untracked = parent total (200) minus the child it called (100) = 100.
+        assert_eq!(parent.total_untracked.alloc.allocated, 100, "child's bytes excluded");
+    }
+
+    #[test]
+    fn absent_alloc_slice_folds_to_zero() {
+        let marks = [open(1, 0), close(1, 0)];
+        let mut agg = Aggregator::default();
+        agg.fold_thread(&marks, &[], &[]);
+        let paths = agg.into_paths();
+        assert_eq!(paths[&vec![1]].tracked.alloc.allocated, 0);
     }
 }

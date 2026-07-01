@@ -10,6 +10,7 @@ use flux::{
 
 use crate::{
     Schema,
+    allocator::AllocSample,
     flamegraph_timer::mark::{Frame, Mark},
     perf::{MAX_EVENTS, PerfSample},
 };
@@ -29,6 +30,11 @@ impl RingEntry for Mark {
 impl RingEntry for PerfSample {
     const PREFIX: &'static str = "perf-events";
     const EMPTY: Self = PerfSample { vals: [0; MAX_EVENTS] };
+}
+
+impl RingEntry for AllocSample {
+    const PREFIX: &'static str = "alloc-events";
+    const EMPTY: Self = AllocSample { allocated: 0, freed: 0 };
 }
 
 /// A background reader drains each ring continuously, so a ring only buffers
@@ -96,7 +102,9 @@ impl QueueDir {
         for entry in self.entries() {
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            let is_ring = name.starts_with(Mark::PREFIX) || name.starts_with(PerfSample::PREFIX);
+            let is_ring = name.starts_with(Mark::PREFIX) ||
+                name.starts_with(PerfSample::PREFIX) ||
+                name.starts_with(AllocSample::PREFIX);
             if is_ring {
                 let _ = cleanup_flink(&entry.path());
             }

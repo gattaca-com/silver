@@ -19,6 +19,7 @@ use rustc_hash::FxHashMap;
 
 use crate::{
     Schema,
+    allocator::AllocSample,
     flamegraph_timer::{
         aggregator::Aggregator,
         fxt,
@@ -68,8 +69,14 @@ impl EventsDrainer {
 
     pub(super) fn fxt_trace(&self) -> Vec<u8> {
         fxt::trace(
-            self.threads.iter().map(|(name, t)| (name.as_str(), t.marks.out.as_slice())),
+            self.threads.iter().map(|(name, t)| fxt::ThreadTrace {
+                name: name.as_str(),
+                marks: t.marks.out.as_slice(),
+                alloc: t.alloc_out(),
+                perf: t.perf_out(),
+            }),
             &self.meta.names,
+            &self.meta.schema,
         )
     }
 }
@@ -83,6 +90,8 @@ struct ThreadDrainer {
     /// `perf` feature gates only the producer's counter reads, never this
     /// drain.
     perf: Option<QueueDrainer<PerfSample>>,
+    /// `None` when the producer was built without `alloc-profile`.
+    alloc: Option<QueueDrainer<AllocSample>>,
     /// Marks in `marks.out[..resolved]` have already had their frame names
     /// resolved, so each `poll` only resolves the freshly drained tail.
     resolved: usize,
@@ -93,14 +102,26 @@ impl ThreadDrainer {
         Some(Self {
             marks: QueueDrainer::<Mark>::open(dir, token)?,
             perf: QueueDrainer::<PerfSample>::open(dir, token),
+            alloc: QueueDrainer::<AllocSample>::open(dir, token),
             resolved: 0,
         })
+    }
+
+    fn alloc_out(&self) -> &[AllocSample] {
+        self.alloc.as_ref().map_or(&[], |a| &a.out)
+    }
+
+    fn perf_out(&self) -> &[PerfSample] {
+        self.perf.as_ref().map_or(&[], |p| &p.out)
     }
 
     fn poll(&mut self, names: &mut FxHashMap<u64, String>, resolver: &impl FrameResolver) {
         self.marks.poll();
         if let Some(perf) = &mut self.perf {
             perf.poll();
+        }
+        if let Some(alloc) = &mut self.alloc {
+            alloc.poll();
         }
         // The frame name lives in the producer's binary; `len` says how many
         // bytes to read. Resolve each id once, while the producer is still
@@ -116,13 +137,15 @@ impl ThreadDrainer {
     }
 
     fn fold_into(&self, aggregator: &mut Aggregator) {
-        let counters = self.perf.as_ref().map_or(&[][..], |p| &p.out);
-        aggregator.fold_thread(&self.marks.out, counters);
+        let perf = self.perf.as_ref().map_or(&[][..], |p| &p.out);
+        aggregator.fold_thread(&self.marks.out, perf, self.alloc_out());
     }
 
-    /// Whether either ring lost marks, leaving the fold incomplete.
+    /// Whether any ring lost marks, leaving the fold incomplete.
     fn lost(&self) -> bool {
-        self.marks.lost || self.perf.as_ref().is_some_and(|p| p.lost)
+        self.marks.lost ||
+            self.perf.as_ref().is_some_and(|p| p.lost) ||
+            self.alloc.as_ref().is_some_and(|a| a.lost)
     }
 }
 

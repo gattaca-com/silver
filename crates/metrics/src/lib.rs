@@ -22,11 +22,28 @@ use std::{
 
 pub use silver_common_macros::timed;
 
+pub mod allocator;
 pub mod flamegraph_timer;
 mod perf;
+pub mod table;
 mod timing;
+#[cfg(feature = "alloc-profile")]
+pub use allocator::CountingAllocator;
 pub(crate) use perf::Schema;
 pub(crate) use timing::TIMING;
+
+pub fn fmt_bytes(bytes: u64) -> String {
+    const KIB: u64 = 1 << 10;
+    const MIB: u64 = 1 << 20;
+    const GIB: u64 = 1 << 30;
+    match bytes {
+        0 => "0 B".to_string(),
+        b if b >= GIB => format!("{:.2} GiB", b as f64 / GIB as f64),
+        b if b >= MIB => format!("{:.2} MiB", b as f64 / MIB as f64),
+        b if b >= KIB => format!("{:.2} KiB", b as f64 / KIB as f64),
+        b => format!("{b} B"),
+    }
+}
 #[cfg(test)]
 pub(crate) use timing::test_shmem;
 pub use timing::{TimerGuard, init_app};
