@@ -155,12 +155,28 @@ impl TimingStats {
     }
 
     /// One call tree per producing thread, each under a centered `thread: name`
-    /// rule that flags the thread if its stream lost events.
+    /// rule that flags the thread if its stream lost events. Rules share one
+    /// width across threads, and a blank line between threads keeps the stacked
+    /// tables from reading as one block.
     pub fn call_tree(&self) -> String {
-        self.threads
+        let tables: Vec<_> = self
+            .threads
             .iter()
-            .map(|t| call_tree::render_thread(&t.name, t.lost, &t.paths, &self.meta))
-            .collect()
+            .map(|t| (t, call_tree::thread_table(&t.paths, &self.meta)))
+            .collect();
+        let width = tables
+            .iter()
+            .flat_map(|(_, table)| table.lines())
+            .map(|l| l.chars().count())
+            .max()
+            .unwrap_or(0);
+        tables
+            .iter()
+            .map(|(t, table)| {
+                format!("{}\n{table}", call_tree::thread_rule(&t.name, t.lost, width))
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// Deterministic JSON `{label, threads: [{thread, lost, paths}]}` — see

@@ -60,7 +60,12 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
         Span::styled("↑/↓", bold),
         Span::raw(" select  "),
     ];
-    if app.drilled_in {
+    if app.pane == Pane::Flamegraph {
+        for (key, action) in [("p", " pause  "), ("e", " export  "), ("c", " clear  ")] {
+            spans.push(Span::styled(key, bold));
+            spans.push(Span::raw(action));
+        }
+    } else if app.drilled_in {
         spans.push(Span::styled("Esc", bold));
         spans.push(Span::raw(" close plot  "));
     } else {

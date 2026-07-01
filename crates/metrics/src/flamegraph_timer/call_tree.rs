@@ -19,26 +19,19 @@ use crate::{
     table::{Column, Table},
 };
 
-/// A thread's call tree under a centered `thread: name` rule, flagged when its
-/// mark stream lost events (so the reader knows which thread's numbers to
-/// distrust).
-pub(super) fn render_thread(
-    name: &str,
-    lost: bool,
-    paths: &[PathStat],
-    meta: &FlamegraphMeta,
-) -> String {
-    let table = render(paths, meta);
-    let width = table.lines().map(|l| l.chars().count()).max().unwrap_or(0);
+/// A centered `thread: name` rule, flagged when the thread's mark stream lost
+/// events (so the reader knows which thread's numbers to distrust). `width` is
+/// shared across threads so every rule lands at the same length.
+pub(super) fn thread_rule(name: &str, lost: bool, width: usize) -> String {
     let tag = if lost { " — EVENTS LOST (producer outran reader)" } else { "" };
     let label = format!(" thread: {name}{tag} ");
     let pad = width.saturating_sub(label.chars().count());
     let left = "─".repeat(pad / 2);
     let right = "─".repeat(pad - pad / 2);
-    format!("{left}{label}{right}\n{table}")
+    format!("{left}{label}{right}")
 }
 
-fn render(paths: &[PathStat], meta: &FlamegraphMeta) -> String {
+pub(super) fn thread_table(paths: &[PathStat], meta: &FlamegraphMeta) -> String {
     let mut root = Node::default();
     for s in paths {
         let mut node = &mut root;

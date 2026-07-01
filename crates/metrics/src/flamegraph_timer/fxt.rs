@@ -3,10 +3,10 @@
 //! init record's realtime anchor (wall-clock at tick 0) drives the UI's
 //! "Absolute time".
 //!
-//! Layout mirrors what magic-trace emits (validated against its output): a
-//! string table, a process/thread kernel-object pair, a thread record, then
-//! duration begin/end events. See the Fuchsia Trace Format spec for the
-//! records.
+//! A string table, then per tile a process/thread kernel-object pair and a
+//! thread record, followed by that tile's duration begin/end events. Each tile
+//! is its own process so Perfetto renders its process-scoped counters beside
+//! its timer track. See the Fuchsia Trace Format spec for the records.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -28,7 +28,6 @@ const TSC_MASK: u64 = 0x3fff_ffff_ffff_ffff;
 /// Perfetto sniffs these 8 bytes to pick its Fuchsia importer; `FxT` sits
 /// between the record's fixed framing bytes.
 const MAGIC_NUMBER_RECORD: &[u8] = b"\x10\x00\x04FxT\x16\x00";
-const PROCESS_KOID: u64 = 1;
 const OBJ_PROCESS: u64 = 1; // zx_obj_type PROCESS
 const OBJ_THREAD: u64 = 2; // zx_obj_type THREAD
 const COUNTER: u64 = 1; // fuchsia event type Counter — Perfetto draws it as a line graph
@@ -49,7 +48,8 @@ pub(super) fn trace<'a>(
     names: &FxHashMap<u64, String>,
     schema: &Schema,
 ) -> Vec<u8> {
-    let threads: Vec<_> = threads.collect();
+    let mut threads: Vec<_> = threads.collect();
+    threads.sort_by(|a, b| a.name.cmp(b.name));
     debug_assert!(threads.len() < 256, "thread ref is 8-bit");
     let now_tsc = Instant::now().0 & TSC_MASK;
     let now_epoch_ns =
@@ -67,34 +67,25 @@ pub(super) fn trace<'a>(
     let mut fxt = Fxt::default();
     fxt.buf.extend_from_slice(MAGIC_NUMBER_RECORD);
     fxt.init(anchor_ns);
-    let process = fxt.intern("silver");
-    fxt.kernel_object(OBJ_PROCESS, PROCESS_KOID, process, None);
+    let process_arg = fxt.intern("process");
 
     for (i, t) in threads.iter().enumerate() {
-        let koid = i as u64 + 2; // 1 is the process koid
+        // Each tile is its own process so its counters (which the Fuchsia
+        // importer can only scope to a process, never a thread) group under the
+        // same collapsible node as the tile's timer track.
+        let process_koid = i as u64 * 2 + 1;
+        let thread_koid = process_koid + 1;
         let index = i as u64 + 1; // 1-based thread-table index
         let name = fxt.intern(t.name);
-        let process_arg = fxt.intern("process");
-        fxt.kernel_object(OBJ_THREAD, koid, name, Some((process_arg, PROCESS_KOID)));
-        fxt.thread_record(index, PROCESS_KOID, koid);
+        fxt.kernel_object(OBJ_PROCESS, process_koid, name, None);
+        fxt.kernel_object(OBJ_THREAD, thread_koid, name, Some((process_arg, process_koid)));
+        fxt.thread_record(index, process_koid, thread_koid);
 
-        // Perfetto scopes counter tracks to the process, keyed by name, so
-        // qualifying each track with the thread name keeps threads' thread-local
-        // counts from merging into one scrambled line.
         let memory_track = (!t.alloc.is_empty()).then(|| {
-            (
-                fxt.intern(&format!("memory ({})", t.name)),
-                fxt.intern("live"),
-                fxt.intern("allocated"),
-                fxt.intern("freed"),
-            )
+            (fxt.intern("memory"), fxt.intern("live"), fxt.intern("allocated"), fxt.intern("freed"))
         });
-        let perf_tracks: Option<Vec<_>> = (!t.perf.is_empty()).then(|| {
-            schema
-                .iter()
-                .map(|e| (fxt.intern(&format!("{} ({})", e.label, t.name)), fxt.intern(&e.label)))
-                .collect()
-        });
+        let perf_tracks: Option<Vec<_>> = (!t.perf.is_empty())
+            .then(|| schema.iter().map(|e| (fxt.intern(&e.label), fxt.intern(&e.label))).collect());
 
         // Counters are cumulative gauges Perfetto holds flat between points, so a
         // sample equal to the last emitted one on this thread is redundant. Most

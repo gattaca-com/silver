@@ -3,7 +3,6 @@ use silver_metrics::flamegraph_timer::FlamegraphReader;
 pub struct Flamegraph {
     reader: Option<FlamegraphReader>,
     tree: String,
-    missed: bool,
     scroll: u16,
     /// When set, stop polling/folding so the tree holds still for reading — a
     /// live producer otherwise keeps growing the cumulative tree every tick.
@@ -17,7 +16,6 @@ impl Flamegraph {
         Self {
             reader: FlamegraphReader::attach(app_name),
             tree: String::new(),
-            missed: false,
             scroll: 0,
             paused: false,
             last_export: None,
@@ -38,9 +36,7 @@ impl Flamegraph {
             return;
         }
         if let Some(reader) = &self.reader {
-            let stats = reader.stats();
-            self.missed = stats.missed_events();
-            self.tree = stats.call_tree();
+            self.tree = reader.stats().call_tree();
         }
     }
 
@@ -96,10 +92,6 @@ impl Flamegraph {
 
     pub fn tree(&self) -> &str {
         &self.tree
-    }
-
-    pub fn missed(&self) -> bool {
-        self.missed
     }
 
     pub fn paused(&self) -> bool {

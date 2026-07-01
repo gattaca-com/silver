@@ -10,7 +10,7 @@ use crate::app::App;
 
 pub fn draw(f: &mut Frame, area: Rect, app: &App) {
     let fg = &app.flamegraph;
-    let block = block(fg.missed(), fg.paused());
+    let block = block(fg.paused());
 
     if !fg.is_attached() {
         f.render_widget(
@@ -37,13 +37,8 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(Paragraph::new(fg.tree()).block(block).scroll((fg.scroll(), 0)), area);
 }
 
-fn block(missed: bool, paused: bool) -> Block<'static> {
-    let title = if missed {
-        Span::styled(
-            " Flamegraph (cumulative) — EVENTS LOST: see per-thread banners ",
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-        )
-    } else if paused {
+fn block(paused: bool) -> Block<'static> {
+    let title = if paused {
         Span::styled(
             " Flamegraph (cumulative) — PAUSED (p resume · c clear) ",
             Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
