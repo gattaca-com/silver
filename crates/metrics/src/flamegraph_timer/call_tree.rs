@@ -19,7 +19,26 @@ use crate::{
     table::{Column, Table},
 };
 
-pub(super) fn render(paths: &[PathStat], meta: &FlamegraphMeta) -> String {
+/// A thread's call tree under a centered `thread: name` rule, flagged when its
+/// mark stream lost events (so the reader knows which thread's numbers to
+/// distrust).
+pub(super) fn render_thread(
+    name: &str,
+    lost: bool,
+    paths: &[PathStat],
+    meta: &FlamegraphMeta,
+) -> String {
+    let table = render(paths, meta);
+    let width = table.lines().map(|l| l.chars().count()).max().unwrap_or(0);
+    let tag = if lost { " — EVENTS LOST (producer outran reader)" } else { "" };
+    let label = format!(" thread: {name}{tag} ");
+    let pad = width.saturating_sub(label.chars().count());
+    let left = "─".repeat(pad / 2);
+    let right = "─".repeat(pad - pad / 2);
+    format!("{left}{label}{right}\n{table}")
+}
+
+fn render(paths: &[PathStat], meta: &FlamegraphMeta) -> String {
     let mut root = Node::default();
     for s in paths {
         let mut node = &mut root;

@@ -29,36 +29,31 @@ struct OpenFrame {
     total_tracked: Counters,
 }
 
-/// Folds mark streams into call-path timings keyed by portable frame id,
-/// independent of how the marks were transported (in-process buffers or a
-/// cross-process shmem ring). Frame ids stay opaque: resolving them to names
-/// needs the producer's binary and belongs to the reader that owns it.
+/// One thread's mark stream folded into call-path timings keyed by portable
+/// frame id, independent of how the marks were transported (in-process buffers
+/// or a cross-process shmem ring). Frame ids stay opaque: resolving them to
+/// names needs the producer's binary and belongs to the reader that owns it.
 ///
-/// Each `fold_thread` call folds a mark stream from a fresh stack, so a
-/// cumulative tree comes from re-folding the whole retained stream, not from
-/// folding disjoint windows.
-#[derive(Default)]
+/// Folding is one-shot over the whole retained stream from a fresh stack, so a
+/// cumulative tree comes from re-[`new`](Self::new)ing on the grown stream, not
+/// from folding disjoint windows.
 pub(crate) struct Aggregator {
-    paths: FxHashMap<Vec<u64>, CallStackSamples>,
+    pub(crate) paths: FxHashMap<Vec<u64>, CallStackSamples>,
     /// A close popped an open with a different id — the stream desynced, so the
-    /// folded stats are unreliable (surfaced as `missed_events`). See
-    /// [`Self::fold_thread`].
-    desynced: bool,
+    /// folded stats are unreliable (surfaced per-thread as lost events).
+    pub(crate) desynced: bool,
 }
 
 impl Aggregator {
-    pub(crate) fn fold_thread(
-        &mut self,
-        marks: &[Mark],
-        perf: &[PerfSample],
-        alloc: &[AllocSample],
-    ) {
+    pub(crate) fn new(marks: &[Mark], perf: &[PerfSample], alloc: &[AllocSample]) -> Self {
         // `perf[i]`/`alloc[i]` are the snapshots pushed right after `marks[i]`
         // (same producer thread, lockstep order), so they are index-aligned with
         // the marks over their common prefix. A live drain (surfer reading while
         // the producer runs) can snapshot the rings a push apart, leaving a 1-ish
         // tail mismatch — benign: the extra sample is ignored and a mark missing
         // its sample falls back to zero below. Feature off ⇒ the slice is empty.
+        let mut paths = FxHashMap::<Vec<u64>, CallStackSamples>::default();
+        let mut desynced = false;
         let mut stack: Vec<OpenFrame> = Vec::new();
         for (i, mark) in marks.iter().enumerate() {
             let sample = Counters {
@@ -85,7 +80,7 @@ impl Aggregator {
             // crash/restart, or a ring overwrite reordering marks); we still
             // attribute to the popped frame but flag the fold as unreliable.
             debug_assert_eq!(closing_id, frame.id, "timed close popped a non-matching open");
-            self.desynced |= closing_id != frame.id;
+            desynced |= closing_id != frame.id;
             let tracked_ns = Duration(mark.ts.saturating_sub(frame.ts)).as_nanos() as u64;
             let untracked_ns = tracked_ns.saturating_sub(frame.total_tracked_ns);
             let tracked = sample.delta(&frame.counters);
@@ -97,20 +92,13 @@ impl Aggregator {
                 parent.total_tracked = parent.total_tracked.add(&tracked);
             }
 
-            let entry = self.paths.entry(path).or_default();
+            let entry = paths.entry(path).or_default();
             entry.tracked_ns.push(tracked_ns);
             entry.total_untracked_ns += untracked_ns;
             entry.tracked = entry.tracked.add(&tracked);
             entry.total_untracked = entry.total_untracked.add(&untracked);
         }
-    }
-
-    pub(crate) fn desynced(&self) -> bool {
-        self.desynced
-    }
-
-    pub(crate) fn into_paths(self) -> FxHashMap<Vec<u64>, CallStackSamples> {
-        self.paths
+        Self { paths, desynced }
     }
 }
 
@@ -140,9 +128,7 @@ mod tests {
         // parent allocates 70 more after the child returns.
         let allocs = [alloc(0, 0), alloc(30, 0), alloc(130, 40), alloc(200, 40)];
 
-        let mut agg = Aggregator::default();
-        agg.fold_thread(&marks, &[], &allocs);
-        let paths = agg.into_paths();
+        let paths = Aggregator::new(&marks, &[], &allocs).paths;
 
         let child = &paths[&vec![1, 2]];
         assert_eq!(child.tracked.alloc.allocated, 100);
@@ -157,9 +143,7 @@ mod tests {
     #[test]
     fn absent_alloc_slice_folds_to_zero() {
         let marks = [open(1, 0), close(1, 0)];
-        let mut agg = Aggregator::default();
-        agg.fold_thread(&marks, &[], &[]);
-        let paths = agg.into_paths();
+        let paths = Aggregator::new(&marks, &[], &[]).paths;
         assert_eq!(paths[&vec![1]].tracked.alloc.allocated, 0);
     }
 }

@@ -25,7 +25,7 @@ use crate::{
         fxt,
         mark::{Frame, Mark},
         queue_dir::{QueueDir, RingEntry},
-        report::{FlamegraphMeta, TimingStats},
+        report::{FlamegraphMeta, ThreadTimings, TimingStats},
         symbols::FrameResolver,
     },
     perf::PerfSample,
@@ -57,14 +57,15 @@ impl EventsDrainer {
     }
 
     pub(super) fn fold(&self) -> TimingStats {
-        let mut aggregator = Aggregator::default();
-        let mut lost = false;
-        for thread in self.threads.values() {
-            lost |= thread.lost();
-            thread.fold_into(&mut aggregator);
-        }
-        lost |= aggregator.desynced();
-        TimingStats::from_timings(aggregator.into_paths(), self.meta.clone(), lost)
+        let threads = self
+            .threads
+            .iter()
+            .map(|(name, t)| {
+                let agg = t.aggregate();
+                ThreadTimings::new(name.clone(), agg.paths, t.lost() || agg.desynced, &self.meta)
+            })
+            .collect();
+        TimingStats::from_threads(threads, self.meta.clone())
     }
 
     pub(super) fn fxt_trace(&self) -> Vec<u8> {
@@ -136,9 +137,8 @@ impl ThreadDrainer {
         self.resolved = self.marks.out.len();
     }
 
-    fn fold_into(&self, aggregator: &mut Aggregator) {
-        let perf = self.perf.as_ref().map_or(&[][..], |p| &p.out);
-        aggregator.fold_thread(&self.marks.out, perf, self.alloc_out());
+    fn aggregate(&self) -> Aggregator {
+        Aggregator::new(&self.marks.out, self.perf_out(), self.alloc_out())
     }
 
     /// Whether any ring lost marks, leaving the fold incomplete.

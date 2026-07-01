@@ -146,10 +146,11 @@ impl PerfReport {
         eprint!("{}", self.outcome.stats.call_tree());
     }
 
-    /// Writes the structured per-path JSON only. Folded stacks aren't
-    /// persisted: each path's `total_untracked_ns` lives in the JSON, so a
-    /// flamegraph can be regenerated on demand with e.g.
-    /// `jq -r '.paths[] | "\(.path) \(.total_untracked_ns)"' perf-*.json`.
+    /// Writes the structured per-thread/per-path JSON only. Folded stacks
+    /// aren't persisted: each path's `total_untracked_ns` lives in the
+    /// JSON, so a flamegraph can be regenerated on demand with e.g.
+    /// `jq -r '.threads[].paths[] | "\(.path) \(.total_untracked_ns)"'
+    /// perf-*.json`.
     fn write_artifacts(&self) {
         let label = format!("finalized_{}_blocks_{}", self.finalized_slot, self.n_blocks());
         std::fs::create_dir_all(&self.out_dir).expect("create perf output dir");
