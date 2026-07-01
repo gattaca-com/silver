@@ -2,6 +2,8 @@ use std::sync::OnceLock;
 
 use flux::{communication::queue::Producer, timing::Instant};
 
+#[cfg(feature = "alloc-profile")]
+use crate::allocator::{self, AllocSample};
 use crate::flamegraph_timer::{
     mark::{Frame, Mark},
     queue_dir::QueueDir,
@@ -17,6 +19,8 @@ struct Producers {
     marks: Producer<Mark>,
     #[cfg(feature = "perf")]
     perf: Producer<PerfSample>,
+    #[cfg(feature = "alloc-profile")]
+    alloc: Producer<AllocSample>,
 }
 
 impl Producers {
@@ -27,6 +31,8 @@ impl Producers {
             marks: Producer::from(dir.ring::<Mark>(&token)),
             #[cfg(feature = "perf")]
             perf: Producer::from(dir.ring::<PerfSample>(&token)),
+            #[cfg(feature = "alloc-profile")]
+            alloc: Producer::from(dir.ring::<AllocSample>(&token)),
         }
     }
 
@@ -40,6 +46,11 @@ impl Producers {
         {
             let mut perf = self.perf;
             perf.produce(&read().unwrap_or_default());
+        }
+        #[cfg(feature = "alloc-profile")]
+        {
+            let mut alloc = self.alloc;
+            alloc.produce(&allocator::read());
         }
     }
 }

@@ -3,19 +3,24 @@
 //! init record's realtime anchor (wall-clock at tick 0) drives the UI's
 //! "Absolute time".
 //!
-//! Layout mirrors what magic-trace emits (validated against its output): a
-//! string table, a process/thread kernel-object pair, a thread record, then
-//! duration begin/end events. See the Fuchsia Trace Format spec for the
-//! records.
+//! A string table, then per tile a process/thread kernel-object pair and a
+//! thread record, followed by that tile's duration begin/end events. Each tile
+//! is its own process so Perfetto renders its process-scoped counters beside
+//! its timer track. See the Fuchsia Trace Format spec for the records.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use flux::timing::{Duration, Instant};
 use rustc_hash::FxHashMap;
 
-use crate::flamegraph_timer::{
-    mark::{Frame, Mark},
-    names::untimed,
+use crate::{
+    Schema,
+    allocator::AllocSample,
+    flamegraph_timer::{
+        mark::{Frame, Mark},
+        names::untimed,
+    },
+    perf::PerfSample,
 };
 
 /// `Instant`'s top 2 bits hold the socket id, low 62 the rdtscp counter.
@@ -23,25 +28,35 @@ const TSC_MASK: u64 = 0x3fff_ffff_ffff_ffff;
 /// Perfetto sniffs these 8 bytes to pick its Fuchsia importer; `FxT` sits
 /// between the record's fixed framing bytes.
 const MAGIC_NUMBER_RECORD: &[u8] = b"\x10\x00\x04FxT\x16\x00";
-const PROCESS_KOID: u64 = 1;
 const OBJ_PROCESS: u64 = 1; // zx_obj_type PROCESS
 const OBJ_THREAD: u64 = 2; // zx_obj_type THREAD
-const DURATION_BEGIN: u64 = 2; // fuchsia event types: 1 is Counter, not begin
+const COUNTER: u64 = 1; // fuchsia event type Counter — Perfetto draws it as a line graph
+const DURATION_BEGIN: u64 = 2;
 const DURATION_END: u64 = 3;
+const ARG_UINT64: u64 = 4;
 const ARG_KOID: u64 = 8;
 
+pub(super) struct ThreadTrace<'a> {
+    pub(super) name: &'a str,
+    pub(super) marks: &'a [Mark],
+    pub(super) alloc: &'a [AllocSample],
+    pub(super) perf: &'a [PerfSample],
+}
+
 pub(super) fn trace<'a>(
-    threads: impl Iterator<Item = (&'a str, &'a [Mark])>,
+    threads: impl Iterator<Item = ThreadTrace<'a>>,
     names: &FxHashMap<u64, String>,
+    schema: &Schema,
 ) -> Vec<u8> {
-    let threads: Vec<_> = threads.collect();
+    let mut threads: Vec<_> = threads.collect();
+    threads.sort_by(|a, b| a.name.cmp(b.name));
     debug_assert!(threads.len() < 256, "thread ref is 8-bit");
     let now_tsc = Instant::now().0 & TSC_MASK;
     let now_epoch_ns =
         SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64);
     let base_tsc = threads
         .iter()
-        .filter_map(|(_, marks)| marks.first().map(|m| m.ts & TSC_MASK))
+        .filter_map(|t| t.marks.first().map(|m| m.ts & TSC_MASK))
         .min()
         .unwrap_or(now_tsc);
     // Wall-clock of tick 0 (the earliest mark): now minus how long ago it was.
@@ -52,17 +67,33 @@ pub(super) fn trace<'a>(
     let mut fxt = Fxt::default();
     fxt.buf.extend_from_slice(MAGIC_NUMBER_RECORD);
     fxt.init(anchor_ns);
-    let process = fxt.intern("silver");
-    fxt.kernel_object(OBJ_PROCESS, PROCESS_KOID, process, None);
+    let process_arg = fxt.intern("process");
 
-    for (i, (thread, marks)) in threads.iter().enumerate() {
-        let koid = i as u64 + 2; // 1 is the process koid
+    for (i, t) in threads.iter().enumerate() {
+        // Each tile is its own process so its counters (which the Fuchsia
+        // importer can only scope to a process, never a thread) group under the
+        // same collapsible node as the tile's timer track.
+        let process_koid = i as u64 * 2 + 1;
+        let thread_koid = process_koid + 1;
         let index = i as u64 + 1; // 1-based thread-table index
-        let name = fxt.intern(thread);
-        let process_arg = fxt.intern("process");
-        fxt.kernel_object(OBJ_THREAD, koid, name, Some((process_arg, PROCESS_KOID)));
-        fxt.thread_record(index, PROCESS_KOID, koid);
-        for mark in *marks {
+        let name = fxt.intern(t.name);
+        fxt.kernel_object(OBJ_PROCESS, process_koid, name, None);
+        fxt.kernel_object(OBJ_THREAD, thread_koid, name, Some((process_arg, process_koid)));
+        fxt.thread_record(index, process_koid, thread_koid);
+
+        let memory_track = (!t.alloc.is_empty()).then(|| {
+            (fxt.intern("memory"), fxt.intern("live"), fxt.intern("allocated"), fxt.intern("freed"))
+        });
+        let perf_tracks: Option<Vec<_>> = (!t.perf.is_empty())
+            .then(|| schema.iter().map(|e| (fxt.intern(&e.label), fxt.intern(&e.label))).collect());
+
+        // Counters are cumulative gauges Perfetto holds flat between points, so a
+        // sample equal to the last emitted one on this thread is redundant. Most
+        // frames don't allocate, so gating on change drops the bulk of the file.
+        let mut prev_alloc: Option<AllocSample> = None;
+        let mut prev_perf: Option<PerfSample> = None;
+
+        for (j, mark) in t.marks.iter().enumerate() {
             let (id, ty) = match mark.frame {
                 Frame::Open { id, .. } => (id, DURATION_BEGIN),
                 Frame::Close { id } => (id, DURATION_END),
@@ -70,6 +101,26 @@ pub(super) fn trace<'a>(
             let raw = names.get(&id).map_or("unknown", String::as_str);
             let name = fxt.intern(&untimed(raw));
             fxt.event(ty, index, name, ns(mark.ts));
+
+            if let (Some(&a), Some((track, live, allocated, freed))) =
+                (t.alloc.get(j), memory_track) &&
+                prev_alloc != Some(a)
+            {
+                fxt.counter(index, track, ns(mark.ts), &[
+                    (live, a.live()),
+                    (allocated, a.allocated),
+                    (freed, a.freed),
+                ]);
+                prev_alloc = Some(a);
+            }
+            if let (Some(&sample), Some(tracks)) = (t.perf.get(j), &perf_tracks) &&
+                prev_perf != Some(sample)
+            {
+                for (slot, &(track, series)) in tracks.iter().enumerate() {
+                    fxt.counter(index, track, ns(mark.ts), &[(series, sample.vals[slot])]);
+                }
+                prev_perf = Some(sample);
+            }
         }
     }
     fxt.buf
@@ -146,8 +197,146 @@ impl Fxt {
         );
         self.word(ts);
     }
+
+    /// Counter event: header + timestamp, a uint64 argument per series, then
+    /// the trailing counter id. Perfetto keys the (process-scoped) track by
+    /// `(name, counter_id)` and plots each argument as a line, labelling it
+    /// `name:arg:counter_id`.
+    fn counter(&mut self, thread_index: u64, name: u16, ts: u64, args: &[(u16, u64)]) {
+        let n_args = args.len() as u64;
+        let size = 2 + 2 * n_args + 1; // header + ts, two words per arg, counter id
+        self.word(
+            4 | (size << 4) |
+                (COUNTER << 16) |
+                (n_args << 20) |
+                (thread_index << 24) |
+                (u64::from(name) << 48),
+        );
+        self.word(ts);
+        for &(arg_name, val) in args {
+            // uint64 argument: type 4, size 2 words, name ref [16:32), then value.
+            self.word(ARG_UINT64 | (2 << 4) | (u64::from(arg_name) << 16));
+            self.word(val);
+        }
+        self.word(0); // counter id
+    }
 }
 
 fn words(bytes: usize) -> u64 {
     bytes.div_ceil(8) as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use rustc_hash::FxHashMap;
+
+    use super::{COUNTER, ThreadTrace, trace};
+    use crate::{
+        Schema,
+        allocator::AllocSample,
+        flamegraph_timer::mark::{Frame, Mark},
+        perf::PerfSample,
+    };
+
+    fn names() -> FxHashMap<u64, String> {
+        FxHashMap::from_iter([(7u64, "work".to_owned())])
+    }
+
+    fn frames() -> [Mark; 2] {
+        [Mark { frame: Frame::Open { id: 7, len: 4 }, ts: 0 }, Mark {
+            frame: Frame::Close { id: 7 },
+            ts: 100,
+        }]
+    }
+
+    fn thread<'a>(
+        marks: &'a [Mark],
+        alloc: &'a [AllocSample],
+        perf: &'a [PerfSample],
+    ) -> ThreadTrace<'a> {
+        ThreadTrace { name: "t", marks, alloc, perf }
+    }
+
+    #[test]
+    fn emits_counter_track_when_alloc_present() {
+        let marks = frames();
+        let allocs =
+            [AllocSample { allocated: 0, freed: 0 }, AllocSample { allocated: 4096, freed: 1024 }];
+        let buf = trace([thread(&marks, &allocs, &[])].into_iter(), &names(), &Schema::empty());
+
+        // The track/series names are interned only on the counter path, so their
+        // presence proves a `memory` counter was emitted.
+        assert!(contains(&buf, b"memory") && contains(&buf, b"live"), "counter track present");
+        assert!(has_counter_event(&buf), "a Counter event record was written");
+    }
+
+    #[test]
+    fn emits_perf_track_per_event() {
+        let marks = frames();
+        let perf =
+            [PerfSample::default(), PerfSample { vals: [1_000_000_000, 500, 0, 0, 0, 0, 0, 0] }];
+        let schema = Schema::parse("instructions,cache-misses");
+        let buf = trace([thread(&marks, &[], &perf)].into_iter(), &names(), &schema);
+
+        // A track is interned per schema event, so both labels present proves a
+        // separate counter track was emitted for each.
+        assert!(contains(&buf, b"instructions"), "instructions track present");
+        assert!(contains(&buf, b"cache-misses"), "cache-misses track present");
+        assert!(has_counter_event(&buf), "a Counter event record was written");
+    }
+
+    #[test]
+    fn unchanged_counter_samples_are_gated() {
+        // Four marks, but the alloc gauge never moves after the first sample:
+        // Perfetto holds the value between points, so only the first is emitted.
+        let marks = [
+            Mark { frame: Frame::Open { id: 7, len: 4 }, ts: 0 },
+            Mark { frame: Frame::Close { id: 7 }, ts: 10 },
+            Mark { frame: Frame::Open { id: 7, len: 4 }, ts: 20 },
+            Mark { frame: Frame::Close { id: 7 }, ts: 30 },
+        ];
+        let flat = AllocSample { allocated: 64, freed: 0 };
+        let buf = trace([thread(&marks, &[flat; 4], &[])].into_iter(), &names(), &Schema::empty());
+        assert_eq!(count_counter_events(&buf), 1, "only the first sample of a flat run is kept");
+    }
+
+    #[test]
+    fn timing_only_trace_has_no_counter() {
+        let marks = frames();
+        let buf = trace([thread(&marks, &[], &[])].into_iter(), &names(), &Schema::empty());
+        // The counter path is the only thing that interns these names, so their
+        // absence is a deterministic "no counter emitted" signal (unlike the
+        // word-pattern scan, which a data word could coincidentally match).
+        assert!(!contains(&buf, b"memory") && !contains(&buf, b"live"), "no counter track");
+    }
+
+    fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack.windows(needle.len()).any(|w| w == needle)
+    }
+
+    /// True if any 8-byte word is an Event record (type 4) of event-type
+    /// [`COUNTER`]. A heuristic scan, but the values here (small ts, byte
+    /// strings) don't collide with that bit pattern.
+    fn has_counter_event(buf: &[u8]) -> bool {
+        count_counter_events(buf) > 0
+    }
+
+    /// Counter records walked by their size header (not a word scan), so a data
+    /// word matching the Counter bit pattern can't inflate the count.
+    fn count_counter_events(buf: &[u8]) -> usize {
+        let mut off = 0;
+        let mut n = 0;
+        while off + 8 <= buf.len() {
+            let word = u64::from_le_bytes(buf[off..off + 8].try_into().unwrap());
+            let size = ((word >> 4) & 0xfff) as usize;
+            if size == 0 {
+                break;
+            }
+            if word & 0xf == 4 && (word >> 16) & 0xf == COUNTER {
+                n += 1;
+            }
+            off += size * 8;
+        }
+        n
+    }
 }

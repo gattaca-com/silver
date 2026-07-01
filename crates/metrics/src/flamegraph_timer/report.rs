@@ -6,8 +6,9 @@ use rustc_hash::FxHashMap;
 
 use crate::{
     Schema,
-    flamegraph_timer::{aggregator::CallStackSamples, call_tree, names::leaf_name},
-    perf::PerfSample,
+    flamegraph_timer::{
+        aggregator::CallStackSamples, call_tree, counters::Counters, names::leaf_name,
+    },
 };
 
 pub(super) struct PathStat {
@@ -24,11 +25,12 @@ pub(super) struct PathMetrics {
     tracked_max_ns: Nanos,
     pub(super) tracked_sum_ns: Nanos,
     pub(super) total_untracked_ns: Nanos,
-    /// Summed counter deltas over all calls on this path; `untracked_perf`
-    /// excludes timed children, like `total_untracked_ns`. All-zero unless the
-    /// `perf` feature is built and `perf_event_open` is permitted.
-    pub(super) tracked_perf: PerfSample,
-    pub(super) untracked_perf: PerfSample,
+    /// Summed counter deltas (perf, alloc bytes) over all calls on this path;
+    /// `untracked` excludes timed children, like `total_untracked_ns`. A
+    /// dimension is all-zero unless its feature was built (and, for perf,
+    /// `perf_event_open` permitted).
+    pub(super) tracked: Counters,
+    pub(super) untracked: Counters,
 }
 
 impl PathMetrics {
@@ -49,8 +51,8 @@ impl PathMetrics {
             tracked_max_ns: Nanos(times.last().copied().unwrap_or(0)),
             tracked_sum_ns: Nanos(u64::try_from(sum).unwrap_or(u64::MAX)),
             total_untracked_ns: Nanos(samples.total_untracked_ns),
-            tracked_perf: samples.tracked_perf,
-            untracked_perf: samples.total_untracked_perf,
+            tracked: samples.tracked,
+            untracked: samples.total_untracked,
         }
     }
 }
@@ -70,43 +72,61 @@ pub(crate) struct FlamegraphMeta {
     pub schema: Schema,
 }
 
-/// Per-path `#[timed]` stats for one run. Frame ids stay opaque in `paths`;
-/// `meta` resolves them only at the render/match boundary, so the threshold
-/// gauges and the call tree share one model.
-pub struct TimingStats {
+/// One producing thread's folded paths, plus whether its mark stream was
+/// unreliable (a ring wrapped before the reader drained it, or a close popped a
+/// non-matching open — a producer crash/restart or ring overwrite).
+pub(crate) struct ThreadTimings {
+    name: String,
     paths: Vec<PathStat>,
-    meta: FlamegraphMeta,
     lost: bool,
 }
 
-impl TimingStats {
-    pub(crate) fn from_timings(
+impl ThreadTimings {
+    pub(crate) fn new(
+        name: String,
         paths: FxHashMap<Vec<u64>, CallStackSamples>,
-        meta: FlamegraphMeta,
         lost: bool,
+        meta: &FlamegraphMeta,
     ) -> Self {
         let mut paths: Vec<PathStat> = paths
             .into_iter()
             .map(|(path, samples)| PathStat { path, metrics: PathMetrics::from_samples(samples) })
             .collect();
-        // Ids are ASLR'd pointers; sort on resolved names so JSON output is
+        // Ids are ASLR'd pointers; sort on resolved names so output is
         // deterministic across runs.
         paths.sort_by(|a, b| {
             a.path.iter().map(|id| &meta.names[id]).cmp(b.path.iter().map(|id| &meta.names[id]))
         });
-        Self { paths, meta, lost }
+        Self { name, paths, lost }
+    }
+}
+
+/// Per-thread `#[timed]` stats for one run. Frame ids stay opaque in each
+/// thread's `paths`; `meta` resolves them only at the render/match boundary, so
+/// the threshold gauges and the call tree share one model.
+pub struct TimingStats {
+    threads: Vec<ThreadTimings>,
+    meta: FlamegraphMeta,
+}
+
+impl TimingStats {
+    pub(crate) fn from_threads(mut threads: Vec<ThreadTimings>, meta: FlamegraphMeta) -> Self {
+        // Ring discovery order is nondeterministic, so sort for a stable report.
+        threads.sort_by(|a, b| a.name.cmp(&b.name));
+        Self { threads, meta }
     }
 
-    /// The mark stream was unreliable — a ring wrapped before the reader
-    /// drained it (marks lost), or a close popped a non-matching open (stream
-    /// desync, e.g. a producer crash/restart). Either way these stats are
-    /// incomplete and any gate built on them is invalid.
+    /// Any thread's mark stream was unreliable, so the run is incomplete and
+    /// any gate built on it is invalid. Per-thread detail rides in
+    /// [`call_tree`].
+    ///
+    /// [`call_tree`]: Self::call_tree
     pub fn missed_events(&self) -> bool {
-        self.lost
+        self.threads.iter().any(|t| t.lost)
     }
 
     fn matching_paths<'a>(&'a self, leaf: &'a str) -> impl Iterator<Item = &'a PathStat> {
-        self.paths.iter().filter(move |s| {
+        self.threads.iter().flat_map(|t| &t.paths).filter(move |s| {
             s.path.last().is_some_and(|id| leaf_name(&self.meta.names[id]).as_ref() == leaf)
         })
     }
@@ -134,19 +154,48 @@ impl TimingStats {
         self.matching_paths(leaf).map(|s| s.metrics.tracked_p50_ns).max()
     }
 
+    /// One call tree per producing thread, each under a centered `thread: name`
+    /// rule that flags the thread if its stream lost events. Rules share one
+    /// width across threads, and a blank line between threads keeps the stacked
+    /// tables from reading as one block.
     pub fn call_tree(&self) -> String {
-        call_tree::render(&self.paths, &self.meta)
+        let tables: Vec<_> = self
+            .threads
+            .iter()
+            .map(|t| (t, call_tree::thread_table(&t.paths, &self.meta)))
+            .collect();
+        let width = tables
+            .iter()
+            .flat_map(|(_, table)| table.lines())
+            .map(|l| l.chars().count())
+            .max()
+            .unwrap_or(0);
+        tables
+            .iter()
+            .map(|(t, table)| {
+                format!("{}\n{table}", call_tree::thread_rule(&t.name, t.lost, width))
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
-    /// Deterministic JSON `{label, paths}` — see `PathMetrics` for the per-path
-    /// schema; the path is its frame names joined by `;`.
+    /// Deterministic JSON `{label, threads: [{thread, lost, paths}]}` — see
+    /// `PathMetrics` for the per-path schema; the path is its frame names
+    /// joined by `;`.
     pub fn to_json(&self, label: &str) -> String {
-        let paths: Vec<_> = self
-            .paths
+        let threads: Vec<_> = self
+            .threads
             .iter()
-            .map(|s| PathStatJson { path: self.path_name(&s.path), metrics: &s.metrics })
+            .map(|t| {
+                let paths: Vec<_> = t
+                    .paths
+                    .iter()
+                    .map(|s| PathStatJson { path: self.path_name(&s.path), metrics: &s.metrics })
+                    .collect();
+                serde_json::json!({ "thread": t.name, "lost": t.lost, "paths": paths })
+            })
             .collect();
-        serde_json::json!({ "label": label, "paths": paths }).to_string()
+        serde_json::json!({ "label": label, "threads": threads }).to_string()
     }
 
     fn path_name(&self, path: &[u64]) -> String {
@@ -192,14 +241,11 @@ mod tests {
 
         let stats = reader.collect();
         let names = &stats.meta.names;
-        let parent = stats
-            .paths
-            .iter()
+        let paths = || stats.threads.iter().flat_map(|t| &t.paths);
+        let parent = paths()
             .find(|s| s.path.len() == 1 && names[&s.path[0]].ends_with("parent_work"))
             .expect("parent path recorded");
-        let child = stats
-            .paths
-            .iter()
+        let child = paths()
             .find(|s| s.path.len() == 2 && names[&s.path[1]].ends_with("leaf_work"))
             .expect("nested leaf path recorded");
 

@@ -14,7 +14,9 @@ use super::sample::MAX_EVENTS;
 /// postprocessor can relabel or merge across runs from them alone.
 #[derive(Clone)]
 pub struct EventSpec {
+    #[cfg_attr(not(feature = "perf"), allow(dead_code))]
     pub type_: u32,
+    #[cfg_attr(not(feature = "perf"), allow(dead_code))]
     pub config: u64,
     pub label: String,
 }
