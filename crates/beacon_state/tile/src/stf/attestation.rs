@@ -230,10 +230,14 @@ pub fn process_single_attestation(
 
     let mut flag_weights = compute_attestation_flags(&view.slot, &parsed, current_slot);
 
-    // [New in Gloas] `data.index` is the payload-presence vote: it gates
-    // the head flag and for same-slot attestations feeds builder-payment weight.
-    let same_slot =
-        is_gloas && gloas_payload_vote_is_same_slot(&view.slot, att, &parsed, &mut flag_weights)?;
+    let (same_slot, payload_present) = if is_gloas {
+        (
+            gloas_payload_vote_is_same_slot(&view.slot, att, &parsed, &mut flag_weights)?,
+            gloas_payload_is_present(att),
+        )
+    } else {
+        (false, false)
+    };
 
     collect_attestation_participants(
         &view.validators.reader(),
@@ -249,6 +253,8 @@ pub fn process_single_attestation(
             validator: validator_idx,
             block_root: parsed.beacon_block_root,
             target_epoch: parsed.target_epoch,
+            attestation_slot: parsed.att_slot,
+            payload_present,
         });
     }
 
@@ -320,6 +326,10 @@ fn gloas_payload_vote_is_same_slot(
     };
     flag_weights[TIMELY_HEAD_FLAG_INDEX] &= payload_matches;
     Ok(same_slot)
+}
+
+fn gloas_payload_is_present(att: &[u8]) -> bool {
+    AttestationDataView::index(AttestationView::data(att)) == GLOAS_PAYLOAD_PRESENT
 }
 
 fn is_attestation_same_slot(slot: &SlotStateWriteView, parsed: &ParsedAttestationData) -> bool {

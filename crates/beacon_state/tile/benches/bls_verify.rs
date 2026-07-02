@@ -1,6 +1,7 @@
 //! BLS verify benches.
 //!
-//! Run: cargo bench -p silver_beacon_state --bench bls_verify
+//! Run: cargo bench -p silver_beacon_state --features ef_tests --bench
+//! bls_verify
 
 use std::path::{Path, PathBuf};
 

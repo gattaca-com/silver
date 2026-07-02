@@ -10,8 +10,8 @@ pub use builders::{
     get_builder_payment_quorum_threshold, process_builder_deposit_request,
     process_builder_exit_request, process_builder_pending_payments,
 };
-pub(crate) use committee::fill_epoch_ptc;
 pub use committee::process_ptc_window;
+pub(crate) use committee::{fill_epoch_ptc, get_ptc};
 pub use parent_payload::process_parent_execution_payload;
 pub use payload_attestation::{collect_sigs_payload_attestations, process_payload_attestations};
 pub use withdrawals::process_withdrawals as process_withdrawals_gloas;

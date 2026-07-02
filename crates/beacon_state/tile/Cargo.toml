@@ -36,3 +36,4 @@ snap = "0.1"
 [[bench]]
 harness = false
 name = "bls_verify"
+required-features = ["ef_tests"]
