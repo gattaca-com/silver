@@ -1,11 +1,14 @@
 use flux::spine::SpineProducers;
-use silver_beacon_state_data::{ParsedAggregateAndProof, SLOTS_PER_EPOCH, StateReadView};
+use silver_beacon_state_data::{
+    B256, Epoch, ParsedAggregateAndProof, SLOTS_PER_EPOCH, Slot, StateReadView,
+};
 use silver_common::{
     BlockSource, GossipTopic, NewGossipMsg, PeerEvent,
     ssz_view::{
-        AttesterSlashingView, PROPOSER_SLASHING_SIZE, ProposerSlashingView, SIGNED_BLS_CHANGE_SIZE,
-        SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE, SignedBeaconBlockView,
-        SignedBlsToExecutionChangeView, SignedVoluntaryExitView, SingleAttestationView,
+        AttestationDataView, AttestationView, AttesterSlashingView, PROPOSER_SLASHING_SIZE,
+        ProposerSlashingView, SIGNED_BLS_CHANGE_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE,
+        SignedBeaconBlockView, SignedBlsToExecutionChangeView, SignedVoluntaryExitView,
+        SingleAttestationView,
     },
 };
 
@@ -38,18 +41,10 @@ impl BeaconStateTile {
         if SingleAttestationView::data_index(buf) != 0 {
             return Feedback::Reject(None);
         }
-        if target_epoch != att_slot / SLOTS_PER_EPOCH {
-            return Feedback::Reject(None);
-        }
-        match self.fork_choice.get_checkpoint_block(&block_root, target_epoch * SLOTS_PER_EPOCH) {
-            Some(r) if r == target_root => {}
-            Some(_) => return Feedback::Reject(None),
-            None => return Feedback::Ignore,
-        }
-        if let Some(idx) = self.fork_choice.find_node_idx(&block_root) &&
-            self.fork_choice.node(idx).slot > att_slot
+        if let Err(f) =
+            self.validate_attestation_target(&block_root, &target_root, target_epoch, att_slot)
         {
-            return Feedback::Reject(None);
+            return f;
         }
 
         let canon_id = self.canonical_state_id();
@@ -94,43 +89,35 @@ impl BeaconStateTile {
             return Feedback::Reject(None);
         }
 
-        // Spec `validate_on_attestation`: a current-slot vote is not eligible
-        // until the next slot. Defer it; older slots apply immediately.
-        if att_slot == self.ticker.current_slot() {
-            self.fork_choice.defer_vote(attester_index as u32, block_root, target_epoch);
-        } else {
-            let n = self.head_validator_count();
-            self.fork_choice.record_vote(attester_index, block_root, target_epoch, n);
-        }
+        // This handler enforces `data_index == 0` above, so the payload-present
+        // vote is always false here.
+        let vote = stf::AttestationVote {
+            validator: attester_index as u32,
+            block_root,
+            target_epoch,
+            attestation_slot: att_slot,
+            payload_present: false,
+        };
+        let n = self.head_validator_count();
+        self.record_or_defer_vote(vote, n);
+
         Feedback::Accept(None)
     }
 
-    /// Spec `on_attestation` core for an aggregated `Attestation` (the inner
-    /// part of a `SignedAggregateAndProof`): validate the LMD/FFG target and
-    /// ancestry, derive the attesting indices via committee shuffling, and
-    /// record their votes (deferring current-slot votes per the slot+1 rule).
     pub(super) fn apply_attestation(&mut self, att: &[u8]) -> Feedback {
-        use silver_common::ssz_view::{AttestationDataView, AttestationView};
         let data = AttestationView::data(att);
         let att_slot = AttestationDataView::slot(data);
         let target_epoch = AttestationDataView::target_epoch(data);
         let target_root = *AttestationDataView::target_root(data);
         let beacon_block_root = *AttestationDataView::beacon_block_root(data);
 
-        if target_epoch != att_slot / SLOTS_PER_EPOCH {
-            return Feedback::Reject(None);
-        }
-        match self
-            .fork_choice
-            .get_checkpoint_block(&beacon_block_root, target_epoch * SLOTS_PER_EPOCH)
-        {
-            Some(r) if r == target_root => {}
-            Some(_) => return Feedback::Reject(None),
-            None => return Feedback::Ignore,
-        }
-        match self.fork_choice.find_node_idx(&beacon_block_root) {
-            Some(idx) if self.fork_choice.node(idx).slot <= att_slot => {}
-            _ => return Feedback::Ignore,
+        if let Err(f) = self.validate_attestation_target(
+            &beacon_block_root,
+            &target_root,
+            target_epoch,
+            att_slot,
+        ) {
+            return f;
         }
 
         let canon_id = self.canonical_state_id();
@@ -161,15 +148,18 @@ impl BeaconStateTile {
             }
         }
 
-        let defer = att_slot == self.ticker.current_slot();
+        let payload_present = AttestationDataView::index(data) == 1;
         for i in 0..self.stf_scratch.active.len() {
-            let vi = self.stf_scratch.active[i];
-            if defer {
-                self.fork_choice.defer_vote(vi, beacon_block_root, target_epoch);
-            } else {
-                self.fork_choice.record_vote(vi as usize, beacon_block_root, target_epoch, n);
-            }
+            let vote = stf::AttestationVote {
+                validator: self.stf_scratch.active[i],
+                block_root: beacon_block_root,
+                target_epoch,
+                attestation_slot: att_slot,
+                payload_present,
+            };
+            self.record_or_defer_vote(vote, n);
         }
+
         Feedback::Accept(None)
     }
 
@@ -270,6 +260,36 @@ impl BeaconStateTile {
         // Record the votes (validates target/ancestry + slot+1 deferral, derives
         // the committee again). The inner attestation is the aggregate field.
         self.apply_attestation(parsed.aggregate_bytes)
+    }
+
+    fn validate_attestation_target(
+        &self,
+        block_root: &B256,
+        target_root: &B256,
+        target_epoch: Epoch,
+        att_slot: Slot,
+    ) -> Result<(), Feedback> {
+        if target_epoch != att_slot / SLOTS_PER_EPOCH {
+            return Err(Feedback::Reject(None));
+        }
+        match self.fork_choice.get_checkpoint_block(block_root, target_epoch * SLOTS_PER_EPOCH) {
+            Some(r) if r == *target_root => {}
+            Some(_) => return Err(Feedback::Reject(None)),
+            None => return Err(Feedback::Ignore),
+        }
+        match self.fork_choice.find_node_idx(block_root) {
+            Some(idx) if self.fork_choice.node(idx).slot <= att_slot => Ok(()),
+            Some(_) => Err(Feedback::Reject(None)),
+            None => Err(Feedback::Ignore),
+        }
+    }
+
+    fn record_or_defer_vote(&mut self, vote: stf::AttestationVote, validator_count: usize) {
+        if vote.attestation_slot == self.ticker.current_slot() {
+            self.fork_choice.defer_vote(vote);
+        } else {
+            self.fork_choice.record_vote(&vote, validator_count);
+        }
     }
 
     fn verify_aggregate_and_proof_sigs(
@@ -482,6 +502,8 @@ impl BeaconStateTile {
             GossipTopic::ProposerSlashing => Some(self.handle_proposer_slashing(data)),
             GossipTopic::AttesterSlashing => Some(self.handle_attester_slashing(data)),
             GossipTopic::BlsToExecutionChange => Some(self.handle_bls_to_execution_change(data)),
+            GossipTopic::ExecutionPayload => Some(self.on_execution_payload_envelope(data)),
+            GossipTopic::PayloadAttestationMessage => Some(self.on_payload_attestation(data)),
             _ => None,
         };
         match feedback {

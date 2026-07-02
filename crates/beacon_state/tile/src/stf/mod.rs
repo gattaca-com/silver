@@ -35,6 +35,7 @@ pub use epoch::{
     process_slashings, process_slashings_reset, process_sync_committee_updates,
 };
 pub use fork_transition::upgrade_to_gloas;
+pub(crate) use gloas::get_ptc;
 pub use gloas::{
     collect_sigs_execution_payload_bid, collect_sigs_payload_attestations,
     get_builder_payment_quorum_threshold, process_builder_deposit_request,

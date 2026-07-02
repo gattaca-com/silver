@@ -6,8 +6,8 @@ use flux::{
 };
 use rustc_hash::FxHashMap;
 use silver_beacon_state_data::{
-    B256, BeaconState, BeaconStateOwner, BeaconStateReader, BlobParameters, Checkpoint, Epoch,
-    SLOTS_PER_EPOCH, Slot, SlotState, SpecConfig, StateId, Version,
+    B256, BeaconBlockHeader, BeaconState, BeaconStateOwner, BeaconStateReader, BlobParameters,
+    Checkpoint, Epoch, SLOTS_PER_EPOCH, Slot, SlotState, SpecConfig, StateId, Version,
 };
 use silver_common::{
     BeaconStateEvent, DataColumnsAvailable, EngineResp, NewGossipMsg, ReplayBlock, RpcInbound,
@@ -19,7 +19,7 @@ use silver_config::{PendingBounds, SyncingConfig};
 
 use crate::{
     bls,
-    fork_choice::{ForkChoice, MAX_FORK_CHOICE_NODES},
+    fork_choice::{ForkChoice, MAX_FORK_CHOICE_NODES, PayloadStatus},
     ssz_hash, stf,
     tile::{orphan_pool::PendingBlock, shuffling_cache::ShufflingCache},
     weak_subjectivity::weak_subjectivity_period,
@@ -86,17 +86,12 @@ impl Debug for Feedback {
 }
 
 struct ParsedBlock {
-    block_slot: Slot,
-    proposer_index: u64,
-    parent_root: B256,
-    state_root: B256,
-    body_root: B256,
+    header: BeaconBlockHeader,
     block_root: B256,
-    /// `true` iff the block carries blob commitments, so its data columns must
-    /// be available (`DataColumnsAvailable`) before it can enter fork choice.
     has_data_columns: bool,
-    /// Index bundle of the parent block's post-state.
     parent_state_id: StateId,
+    is_gloas: bool,
+    parent_payload_status: PayloadStatus,
 }
 
 pub struct BeaconStateTile {
@@ -291,7 +286,7 @@ impl BeaconStateTile {
         // `latest_block_header.state_root` stays `[0;32]` — the first
         // post-bootstrap `process_slot` hashes that canonical state and a
         // patched value would shift the result.
-        let (block_root, anchor_state_root, execution_block_hash) = {
+        let (block_root, execution_block_hash) = {
             let rv = self.state.read_view(anchor);
             let state_root = ssz_hash::hash_tree_root_state(&rv, &mut self.stf_scratch.state_hash);
             let mut header = rv.slot.state().latest_block_header;
@@ -300,23 +295,25 @@ impl BeaconStateTile {
             }
             (
                 ssz_hash::hash_tree_root_block_header(&header),
-                state_root,
                 rv.slot.state().latest_execution_payload_header.block_hash,
             )
         };
 
         let trusted = Checkpoint { epoch: slot.div_ceil(SLOTS_PER_EPOCH), root: block_root };
         self.last_applied_block_root = block_root;
+
+        let anchor_is_gloas = self.state.read_view(anchor).is_gloas();
         self.fork_choice = ForkChoice::init(
             trusted,
             trusted,
             slot,
             block_root,
-            anchor_state_root,
             execution_block_hash,
+            anchor_is_gloas,
             anchor,
             validators_capacity,
         );
+
         self.state.publish_state_id(anchor);
 
         self.assert_within_weak_subjectivity();
@@ -367,7 +364,7 @@ impl BeaconStateTile {
         let (slot, mut finalized) = match self.fork_choice.find_node_idx(&head_root) {
             Some(idx) => {
                 let n = self.fork_choice.node(idx);
-                (n.slot, n.finalized_checkpoint)
+                (n.slot, n.checkpoints.finalized)
             }
             None => (
                 self.slot_state_at(self.last_applied).latest_block_header.slot,
@@ -603,6 +600,14 @@ impl BeaconStateTile {
         }
     }
 
+    pub fn ef_apply_execution_payload(&mut self, ssz: &[u8]) -> bool {
+        matches!(self.on_execution_payload_envelope(ssz), Feedback::Accept(_))
+    }
+
+    pub fn ef_apply_payload_attestation(&mut self, ssz: &[u8]) -> bool {
+        matches!(self.on_payload_attestation(ssz), Feedback::Accept(_))
+    }
+
     pub fn ef_payload_verdict(
         &mut self,
         block_root: B256,
@@ -722,7 +727,12 @@ mod tests {
     };
 
     use super::*;
-    use crate::{fork_choice::BlockImport, shuffling, test_signing};
+    use crate::{
+        fork_choice::{BlockImport, PayloadStatus},
+        shuffling,
+        stf::AttestationVote,
+        test_signing,
+    };
 
     const MAX_EFFECTIVE_BALANCE: u64 = 32_000_000_000;
     const ANCHOR_ROOT: B256 = [0x01u8; 32];
@@ -902,8 +912,8 @@ mod tests {
             cp,
             start_slot,
             ANCHOR_ROOT,
-            ANCHOR_ROOT,
             [0u8; 32],
+            false,
             anchor,
             seeds.len(),
         );
@@ -1169,7 +1179,7 @@ mod tests {
         seed_tile(&mut tile, 4, 10);
         let buf = [0u8; 100];
         tile.handle_attestation(&buf);
-        assert_eq!(tile.fork_choice.vote_tracker.votes[0].next_epoch, 0);
+        assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_epoch, 0);
     }
 
     #[test]
@@ -1364,7 +1374,7 @@ mod tests {
 
         let cp = Checkpoint { epoch: 0, root: parent_root };
         tile.fork_choice =
-            ForkChoice::init(cp, cp, 10, parent_root, parent_root, [0u8; 32], tile.last_applied, 0);
+            ForkChoice::init(cp, cp, 10, parent_root, [0u8; 32], false, tile.last_applied, 0);
 
         // Valid structure, zeroed BLS signature → precheck reaches and fails
         // signature verification, so no fork-choice node is added.
@@ -1438,8 +1448,8 @@ mod tests {
         let want_root = *SingleAttestationView::beacon_block_root(&buf);
         let want_epoch = SingleAttestationView::target_epoch(&buf);
         assert_eq!(tile.handle_attestation(&buf), Feedback::Accept(None));
-        assert_eq!(tile.fork_choice.vote_tracker.votes[0].next_root, want_root);
-        assert_eq!(tile.fork_choice.vote_tracker.votes[0].next_epoch, want_epoch);
+        assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_root, want_root);
+        assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_epoch, want_epoch);
     }
 
     /// Spec `validate_on_attestation`: a single attestation for a block we
@@ -1536,10 +1546,10 @@ mod tests {
         );
         assert_eq!(tile.handle_attestation(&buf), Feedback::Accept(None));
         // Deferred: not yet folded into the tracker.
-        assert_eq!(tile.fork_choice.vote_tracker.votes[0].next_root, [0u8; 32]);
+        assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_root, [0u8; 32]);
         let n = tile.head_validator_count();
         tile.fork_choice.drain_pending_votes(n);
-        assert_eq!(tile.fork_choice.vote_tracker.votes[0].next_root, bbr);
+        assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_root, bbr);
     }
 
     /// Marking a validator equivocating zeroes its live vote and blocks future
@@ -1550,16 +1560,34 @@ mod tests {
         seed_tile(&mut tile, 8, 0);
         let anchor = tile.last_applied_block_root;
         let n = tile.head_validator_count();
-        tile.fork_choice.record_vote(3, anchor, 0, n);
-        assert_eq!(tile.fork_choice.vote_tracker.votes[3].next_root, anchor);
+        tile.fork_choice.record_vote(
+            &AttestationVote {
+                validator: 3,
+                block_root: anchor,
+                target_epoch: 0,
+                attestation_slot: 0,
+                payload_present: false,
+            },
+            n,
+        );
+        assert_eq!(tile.fork_choice.vote_tracker.votes[3].latest_root, anchor);
 
         tile.fork_choice.mark_equivocating(3);
         assert!(tile.fork_choice.is_equivocating(3));
-        assert_eq!(tile.fork_choice.vote_tracker.votes[3].next_root, [0u8; 32]);
+        assert_eq!(tile.fork_choice.vote_tracker.votes[3].latest_root, [0u8; 32]);
 
         // A later attestation from an equivocator is ignored.
-        tile.fork_choice.record_vote(3, [0x55u8; 32], 5, n);
-        assert_eq!(tile.fork_choice.vote_tracker.votes[3].next_root, [0u8; 32]);
+        tile.fork_choice.record_vote(
+            &AttestationVote {
+                validator: 3,
+                block_root: [0x55u8; 32],
+                target_epoch: 5,
+                attestation_slot: 5,
+                payload_present: false,
+            },
+            n,
+        );
+        assert_eq!(tile.fork_choice.vote_tracker.votes[3].latest_root, [0u8; 32]);
     }
 
     /// The justified-balance snapshot is rebuilt only when the justified
@@ -1609,8 +1637,8 @@ mod tests {
         let beacon_block_root = tile.last_applied_block_root;
         let slot = SignedAggregateAndProofView::agg_slot(&buf);
         assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Accept(None));
-        assert_eq!(tile.fork_choice.vote_tracker.votes[0].next_root, beacon_block_root);
-        assert_eq!(tile.fork_choice.vote_tracker.votes[0].next_epoch, slot / SLOTS_PER_EPOCH);
+        assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_root, beacon_block_root);
+        assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_epoch, slot / SLOTS_PER_EPOCH);
     }
 
     #[test]
@@ -1619,16 +1647,16 @@ mod tests {
         seed_tile_with_keys(&mut tile, 128, 0);
 
         let preset_root = [0x99u8; 32];
-        tile.fork_choice.vote_tracker.votes[0].next_root = preset_root;
-        tile.fork_choice.vote_tracker.votes[0].next_epoch = 1;
+        tile.fork_choice.vote_tracker.votes[0].latest_root = preset_root;
+        tile.fork_choice.vote_tracker.votes[0].latest_epoch = 1;
 
         let buf = build_agg_for_vi0(&tile);
         assert_eq!(SignedAggregateAndProofView::agg_target_epoch(&buf), 0);
         assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Accept(None));
 
         // Older-epoch aggregate must not overwrite the newer vote.
-        assert_eq!(tile.fork_choice.vote_tracker.votes[0].next_root, preset_root);
-        assert_eq!(tile.fork_choice.vote_tracker.votes[0].next_epoch, 1);
+        assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_root, preset_root);
+        assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_epoch, 1);
     }
 
     #[test]
@@ -1819,37 +1847,46 @@ mod tests {
             slot: 1,
             block_root: F2_ROOT,
             parent_root: ANCHOR_ROOT,
-            state_root: [0u8; 32],
             execution_block_hash: [0u8; 32],
             justified: ZERO_CP,
             finalized: ZERO_CP,
             unrealized_justified: ZERO_CP,
             unrealized_finalized: ZERO_CP,
             state_id: f2_id,
+            bid_block_hash: [0u8; 32],
+            parent_payload_status: PayloadStatus::Full,
+            payload_verified: true,
+            is_gloas: false,
         });
         tile.fork_choice.on_block(BlockImport {
             slot: 1,
             block_root: F_ROOT,
             parent_root: ANCHOR_ROOT,
-            state_root: [0u8; 32],
             execution_block_hash: [0u8; 32],
             justified: f_cp,
             finalized: f_cp,
             unrealized_justified: f_cp,
             unrealized_finalized: f_cp,
             state_id: f_id,
+            bid_block_hash: [0u8; 32],
+            parent_payload_status: PayloadStatus::Full,
+            payload_verified: true,
+            is_gloas: false,
         });
         tile.fork_choice.on_block(BlockImport {
             slot: 2,
             block_root: D_ROOT,
             parent_root: F_ROOT,
-            state_root: [0u8; 32],
             execution_block_hash: [0u8; 32],
             justified: f_cp,
             finalized: f_cp,
             unrealized_justified: f_cp,
             unrealized_finalized: f_cp,
             state_id: d_id,
+            bid_block_hash: [0u8; 32],
+            parent_payload_status: PayloadStatus::Full,
+            payload_verified: true,
+            is_gloas: false,
         });
 
         // Head is D; finality target is F.

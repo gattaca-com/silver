@@ -1,12 +1,25 @@
 use silver_beacon_state_data::{B256, SLOTS_PER_EPOCH, StateId};
-use silver_common::PayloadValidationStatus;
+use silver_common::{
+    PayloadValidationStatus,
+    metrics::timed,
+    ssz_view::{
+        BeaconBlockBodyGloasView as BlockBodyGloas, ExecutionPayloadEnvelopeView as Envelope,
+        ExecutionPayloadView as Payload, PAYLOAD_ATTESTATION_SIZE,
+        PayloadAttestationDataView as PayloadAttestationData,
+        PayloadAttestationMessageView as PayloadAttestationMessage,
+        PayloadAttestationView as PayloadAttestation, SignedBeaconBlockView,
+        SignedExecutionPayloadEnvelopeView as SignedPayload,
+    },
+};
+use silver_ssz::ssz_view::PAYLOAD_ATTESTATION_MESSAGE_SIZE;
 
 use super::BeaconStateTile;
-use crate::stf;
+use crate::{stf, tile::Feedback};
 
 impl BeaconStateTile {
     /// Rebuild fork choice's justified-balance snapshot when its justified
     /// checkpoint has moved.
+    #[timed]
     pub(super) fn refresh_justified_balances(&mut self) {
         if !self.fork_choice.justified_balances_stale() {
             return;
@@ -19,36 +32,13 @@ impl BeaconStateTile {
             Some(idx) => self.fork_choice.node(idx).state_id,
             None => self.last_applied,
         };
-
-        let mut buf = self.fork_choice.take_justified_scratch();
-        let mut total_active = 0u64;
-        {
-            let v = self.state.read_view(sid).validators;
-            let mut act = v.iter_activation_epochs();
-            let mut exit = v.iter_exit_epochs();
-            let mut eff = v.iter_effective_balances();
-            let mut slashed = v.iter_slashed();
-            for _ in 0..v.count() {
-                let a = act.next().unwrap();
-                let x = exit.next().unwrap();
-                let b = eff.next().unwrap();
-                let s = slashed.next().unwrap();
-                let active = a <= jc.epoch && jc.epoch < x;
-                if active {
-                    total_active += b;
-                }
-                buf.push(if active && !s { b } else { 0 });
-            }
-        }
-        // Clamp matches `total_active_balance` (avoids a zero proposer score on
-        // a degenerate empty active set).
-        let total_active = total_active.max(stf::EFFECTIVE_BALANCE_INCREMENT);
-        self.fork_choice.commit_justified_balances(buf, total_active, jc);
+        let validators = self.state.read_view(sid).validators;
+        self.fork_choice.set_justified_balances(jc, validators);
     }
 
+    #[timed]
     pub(super) fn recompute_head(&mut self) {
-        // Spec `get_current_store_epoch`: viability reads the wall-clock epoch.
-        self.fork_choice.set_current_epoch(self.ticker.current_slot() / SLOTS_PER_EPOCH);
+        self.fork_choice.set_current_slot(self.ticker.current_slot());
         // Lift first: an epoch-boundary block's post-state may advance the
         // justified checkpoint, and `lift_checkpoints` reads the head post-state
         // (`last_applied`). Lifting before the refresh lets
@@ -64,16 +54,8 @@ impl BeaconStateTile {
     /// post-state often names checkpoints from blocks we never imported.
     pub(super) fn lift_checkpoints(&mut self) {
         let (j, f) = self.head_checkpoints();
-        if j.epoch > self.fork_choice.justified_checkpoint.epoch &&
-            self.fork_choice.find_node_idx(&j.root).is_some()
-        {
-            self.fork_choice.justified_checkpoint = j;
-        }
-        if f.epoch > self.fork_choice.finalized_checkpoint.epoch &&
-            self.fork_choice.find_node_idx(&f.root).is_some()
-        {
-            self.fork_choice.finalized_checkpoint = f;
-        }
+        self.fork_choice.lift_justified(j);
+        self.fork_choice.lift_finalized(f);
     }
 
     /// Spec `on_tick_per_slot` epoch-boundary pull-up: lift store
@@ -88,22 +70,15 @@ impl BeaconStateTile {
             return;
         };
         let n = self.fork_choice.node(idx);
-        let (uj, uf) = (n.unrealized_justified_checkpoint, n.unrealized_finalized_checkpoint);
-        if uj.epoch > self.fork_choice.justified_checkpoint.epoch &&
-            self.fork_choice.find_node_idx(&uj.root).is_some()
-        {
-            self.fork_choice.justified_checkpoint = uj;
-        }
-        if uf.epoch > self.fork_choice.finalized_checkpoint.epoch &&
-            self.fork_choice.find_node_idx(&uf.root).is_some()
-        {
-            self.fork_choice.finalized_checkpoint = uf;
-        }
+        let (uj, uf) = (n.checkpoints.unrealized_justified, n.checkpoints.unrealized_finalized);
+        self.fork_choice.lift_justified(uj);
+        self.fork_choice.lift_finalized(uf);
     }
 
     /// Spec `on_tick`, fork-choice only: expire proposer boost, make the
     /// previous slot's deferred votes eligible, refold the head, and at an
     /// epoch boundary pull up unrealized checkpoints.
+    #[timed]
     pub(super) fn fork_choice_tick(&mut self) {
         let prev_epoch = self.fork_choice.current_epoch();
         let new_epoch = self.ticker.current_slot() / SLOTS_PER_EPOCH;
@@ -144,6 +119,99 @@ impl BeaconStateTile {
             }
             // Optimistic: EL still syncing; verdict arrives on a later FCU.
             PayloadValidationStatus::Syncing | PayloadValidationStatus::Accepted => {}
+        }
+    }
+
+    #[timed]
+    pub(super) fn on_execution_payload_envelope(&mut self, ssz: &[u8]) -> Feedback {
+        if !SignedPayload::check_size(ssz) {
+            return Feedback::Ignore;
+        }
+        let msg = SignedPayload::message(ssz);
+        let block_root = *Envelope::beacon_block_root(msg);
+        let Some(idx) = self.fork_choice.find_node_idx(&block_root) else {
+            return Feedback::Ignore;
+        };
+        let state_id = self.fork_choice.node(idx).state_id;
+        let builder_index = Envelope::builder_index(msg);
+        let payload_block_hash = *Payload::block_hash(Envelope::payload(msg));
+
+        // Consistency with the bid the block committed to.
+        {
+            let rv = self.state.read_view(state_id);
+            let bid = &rv.slot.state().latest_execution_payload_bid;
+            if bid.builder_index != builder_index || bid.block_hash != payload_block_hash {
+                return Feedback::Ignore;
+            }
+        }
+
+        self.fork_choice.mark_payload_verified(&block_root);
+        self.fork_choice.on_payload_valid(&block_root);
+        self.recompute_head();
+
+        Feedback::Accept(Some(block_root))
+    }
+
+    pub(super) fn on_payload_attestation(&mut self, ssz: &[u8]) -> Feedback {
+        if ssz.len() < PAYLOAD_ATTESTATION_MESSAGE_SIZE {
+            return Feedback::Reject(None);
+        }
+        let buf: &[u8; PAYLOAD_ATTESTATION_MESSAGE_SIZE] =
+            ssz[..PAYLOAD_ATTESTATION_MESSAGE_SIZE].try_into().unwrap();
+
+        let validator_index = PayloadAttestationMessage::validator_index(buf);
+        let data = PayloadAttestationMessage::data(buf);
+        let block_root = *PayloadAttestationData::beacon_block_root(data);
+        let slot = PayloadAttestationData::slot(data);
+        let present = PayloadAttestationData::payload_present(data);
+        let da = PayloadAttestationData::blob_data_available(data);
+
+        let Some(idx) = self.fork_choice.find_node_idx(&block_root) else {
+            return Feedback::Ignore;
+        };
+        let state_id = self.fork_choice.node(idx).state_id;
+
+        let ptc_idx = {
+            let rv = self.state.read_view(state_id);
+            let state_epoch = rv.slot.slot_number() / SLOTS_PER_EPOCH;
+            let Some(ptc) = stf::get_ptc(&rv.epoch, state_epoch, slot) else {
+                return Feedback::Ignore;
+            };
+            match ptc.iter().position(|&v| v == validator_index) {
+                Some(p) => p,
+                None => return Feedback::Ignore,
+            }
+        };
+
+        self.fork_choice.record_ptc_vote(&block_root, ptc_idx, present, da);
+        self.recompute_head();
+
+        Feedback::Accept(Some(block_root))
+    }
+
+    pub(super) fn notify_ptc_from_block(&mut self, block_data: &[u8]) {
+        let body = SignedBeaconBlockView::body(block_data);
+        let start = BlockBodyGloas::payload_attestations_offset(body) as usize;
+        let end = BlockBodyGloas::parent_execution_requests_offset(body) as usize;
+        let Some(section) = body.get(start..end) else {
+            return;
+        };
+
+        for pa in section.chunks_exact(PAYLOAD_ATTESTATION_SIZE) {
+            let Ok(pa) = <&[u8; PAYLOAD_ATTESTATION_SIZE]>::try_from(pa) else {
+                continue;
+            };
+            let data = PayloadAttestation::data(pa);
+            let block_root = *PayloadAttestationData::beacon_block_root(data);
+            let present = PayloadAttestationData::payload_present(data);
+            let da = PayloadAttestationData::blob_data_available(data);
+
+            let bits = PayloadAttestation::aggregation_bits(pa);
+            for i in 0..bits.len() * 8 {
+                if bits[i / 8] >> (i % 8) & 1 == 1 {
+                    self.fork_choice.record_ptc_vote(&block_root, i, present, da);
+                }
+            }
         }
     }
 }

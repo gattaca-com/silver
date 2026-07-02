@@ -1,4 +1,4 @@
-use silver_beacon_state_data::{B256, Epoch, PendingDeposit, StateReadView};
+use silver_beacon_state_data::{B256, Epoch, PendingDeposit, Slot, StateReadView};
 use silver_ssz::ssz_view::MAX_ATTESTING_INDICES;
 
 use crate::{
@@ -16,6 +16,9 @@ pub struct AttestationVote {
     pub validator: u32,
     pub block_root: B256,
     pub target_epoch: Epoch,
+    // [New in Gloas]
+    pub attestation_slot: Slot,
+    pub payload_present: bool,
 }
 
 /// Reusable scratch buffers threaded together through the state transition
