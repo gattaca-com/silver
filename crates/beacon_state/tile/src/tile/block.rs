@@ -2,6 +2,7 @@ use flux::spine::SpineProducers;
 use silver_beacon_state_data::{B256, BeaconBlockHeader, Checkpoint, SLOTS_PER_EPOCH, StateId};
 use silver_common::{
     BeaconStateEvent, BlockSource, EngineFcuReq, EngineNewPayloadReq, EngineReq, TRead, hex32,
+    metrics::timed,
     ssz_view::{self, SignedBeaconBlockView},
 };
 
@@ -30,6 +31,7 @@ impl BeaconStateTile {
     /// Post-import emission: PersistBlock (for storage) + Status (head and
     /// possibly finalized just moved). Called after `handle_block` returns
     /// `GossipFeedback::Accept` from gossip or RPC range/root response paths.
+    #[timed]
     pub(super) fn apply_block(
         &mut self,
         data: &[u8],
@@ -101,6 +103,7 @@ impl BeaconStateTile {
         }
     }
 
+    #[timed]
     pub(super) fn apply_block_impl<F: FnMut([u8; 32])>(
         &mut self,
         data: &[u8],
@@ -162,6 +165,7 @@ impl BeaconStateTile {
     /// (ending at `commit`), then returns the committed `StateId`, the post-
     /// state `(justified, finalized)` checkpoints, and the execution block
     /// hash.
+    #[timed]
     fn apply_stf_and_commit(
         &mut self,
         parsed: &ParsedBlock,
@@ -228,6 +232,7 @@ impl BeaconStateTile {
         })
     }
 
+    #[timed]
     fn publish_applied_block(
         &mut self,
         parsed: &ParsedBlock,

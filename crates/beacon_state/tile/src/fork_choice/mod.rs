@@ -1,6 +1,7 @@
 use silver_beacon_state_data::{
     B256, Checkpoint, Epoch, SLOTS_PER_EPOCH, SLOTS_RING_N, Slot, StateId,
 };
+use silver_common::metrics::timed;
 
 use crate::stf::AttestationVote;
 
@@ -147,6 +148,7 @@ impl ForkChoice {
         }
     }
 
+    #[timed]
     pub fn on_block(&mut self, b: BlockImport) {
         if self.find_node_idx(&b.block_root).is_some() {
             return;
@@ -196,6 +198,7 @@ impl ForkChoice {
 
     /// Remove all nodes below the current finalized root. Callers re-anchor
     /// the survivors via `live_state_ids` after pruning.
+    #[timed]
     pub fn prune(&mut self) {
         let Some(fin_idx) = self.find_node_idx(&self.finalized_checkpoint.root) else {
             return;
@@ -224,6 +227,7 @@ impl ForkChoice {
     /// best_descendant. A fresh balance snapshot (`set_justified_balances`)
     /// arms a full pass; otherwise only the dirtied votes are folded against
     /// the unchanged snapshot.
+    #[timed]
     pub fn recompute_head(&mut self) {
         let full_pass = self.justified_balances_full_pass;
         let n = self.justified_balances.len();

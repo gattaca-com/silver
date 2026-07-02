@@ -1,4 +1,5 @@
 use silver_beacon_state_data::{B256, SLOTS_PER_EPOCH, Slot};
+use silver_common::metrics::timed;
 
 use super::{
     ExecutionStatus, ForkChoice, GENESIS_EPOCH, MAX_FORK_CHOICE_NODES, NULL, NodeLookup,
@@ -6,6 +7,7 @@ use super::{
 };
 
 impl ForkChoice {
+    #[timed]
     pub fn apply_score_changes(&mut self, deltas: &mut [WeightDelta; MAX_FORK_CHOICE_NODES]) {
         Self::add_proposer_boost(
             deltas,
@@ -79,7 +81,10 @@ impl ForkChoice {
             return self.nodes[best_desc].block_root;
         }
 
-        // Fallback: best_descendant not viable (shouldn't happen with correct scoring).
+        debug_assert!(
+            self.node_is_viable_for_head(best_desc),
+            "find_head: non-viable best descendant (proto-array scoring bug)",
+        );
         self.nodes[justified_idx].block_root
     }
 

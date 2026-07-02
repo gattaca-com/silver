@@ -1,9 +1,11 @@
 use silver_beacon_state_data::B256;
+use silver_common::metrics::timed;
 use tracing::info;
 
 use super::{ExecutionStatus, ForkChoice, NULL, node::PTC_SIZE};
 
 impl ForkChoice {
+    #[timed]
     pub fn on_payload_valid(&mut self, block_root: &B256) {
         let Some(mut idx) = self.find_node_idx(block_root) else {
             return;
@@ -21,6 +23,7 @@ impl ForkChoice {
         }
     }
 
+    #[timed]
     pub fn on_payload_invalid(&mut self, block_root: &B256, latest_valid_hash: &B256) {
         let Some(head_idx) = self.find_node_idx(block_root) else {
             return;

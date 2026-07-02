@@ -1,6 +1,7 @@
 use silver_beacon_state_data::{B256, SLOTS_PER_EPOCH, StateId};
 use silver_common::{
     PayloadValidationStatus,
+    metrics::timed,
     ssz_view::{
         BeaconBlockBodyGloasView as BlockBodyGloas, ExecutionPayloadEnvelopeView as Envelope,
         ExecutionPayloadView as Payload, PAYLOAD_ATTESTATION_SIZE,
@@ -18,6 +19,7 @@ use crate::{stf, tile::Feedback};
 impl BeaconStateTile {
     /// Rebuild fork choice's justified-balance snapshot when its justified
     /// checkpoint has moved.
+    #[timed]
     pub(super) fn refresh_justified_balances(&mut self) {
         if !self.fork_choice.justified_balances_stale() {
             return;
@@ -34,6 +36,7 @@ impl BeaconStateTile {
         self.fork_choice.set_justified_balances(jc, validators);
     }
 
+    #[timed]
     pub(super) fn recompute_head(&mut self) {
         self.fork_choice.set_current_slot(self.ticker.current_slot());
         // Lift first: an epoch-boundary block's post-state may advance the
@@ -75,6 +78,7 @@ impl BeaconStateTile {
     /// Spec `on_tick`, fork-choice only: expire proposer boost, make the
     /// previous slot's deferred votes eligible, refold the head, and at an
     /// epoch boundary pull up unrealized checkpoints.
+    #[timed]
     pub(super) fn fork_choice_tick(&mut self) {
         let prev_epoch = self.fork_choice.current_epoch();
         let new_epoch = self.ticker.current_slot() / SLOTS_PER_EPOCH;
@@ -118,6 +122,7 @@ impl BeaconStateTile {
         }
     }
 
+    #[timed]
     pub(super) fn on_execution_payload_envelope(&mut self, ssz: &[u8]) -> Feedback {
         if !SignedPayload::check_size(ssz) {
             return Feedback::Ignore;
