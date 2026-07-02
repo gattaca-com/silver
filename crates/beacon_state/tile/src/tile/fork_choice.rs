@@ -1,5 +1,18 @@
 use silver_beacon_state_data::{B256, SLOTS_PER_EPOCH, StateId};
-use silver_common::{PayloadValidationStatus, metrics::timed};
+use silver_common::{
+    PayloadValidationStatus,
+    metrics::timed,
+    ssz_view::{
+        BeaconBlockBodyGloasView as BlockBodyGloas, ExecutionPayloadEnvelopeView as Envelope,
+        ExecutionPayloadView as Payload, PAYLOAD_ATTESTATION_SIZE,
+        PayloadAttestationDataView as PayloadAttestationData,
+        PayloadAttestationMessageView as PayloadAttestationMessage,
+        PayloadAttestationView as PayloadAttestation, SignedBeaconBlockView,
+        SignedExecutionPayloadEnvelopeView as SignedPayload,
+    },
+};
+use silver_ssz::ssz_view::PAYLOAD_ATTESTATION_MESSAGE_SIZE;
+
 
 use super::BeaconStateTile;
 use crate::{stf, tile::Feedback};
