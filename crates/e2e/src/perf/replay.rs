@@ -52,6 +52,9 @@ pub fn replay(fixtures: &Fixtures) -> ReplayOutcome {
     // Max blocks by range for syncing head is 32
     let mut injected = 0;
 
+    // Start before injection: `pump_bs` applies each batch inside this loop, so
+    // timing only the tail catch-up would exclude most block applies.
+    let wall_start = Instant::now();
     while injected < n_blocks {
         let (start, count, peer, request_id) = harness.next_range_request();
         assert_eq!((start, count, peer), (first_block_slot + injected, 32, SYNTH_PEER_CONN_ID));
@@ -68,7 +71,6 @@ pub fn replay(fixtures: &Fixtures) -> ReplayOutcome {
     // Stay in Syncing (no Controller tick) — Following mode would let
     // `ticker.tick()` advance head_state_root over wall-clock time and
     // diverge from canonical.
-    let wall_start = Instant::now();
     let max_passes = n_blocks * 2 + 8;
     let mut passes = 0;
     loop {
