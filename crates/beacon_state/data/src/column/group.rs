@@ -12,7 +12,7 @@ use crate::{
 
 pub struct ColumnGroup<C: ColumnSpec> {
     finalized: FinalizedColumn<C::Val>,
-    deltas: Ring<Self, ColumnDelta<C::Val>, SLOTS_RING_N>,
+    deltas: Ring<Self, ColumnDelta, SLOTS_RING_N>,
     _marker: PhantomData<fn() -> C>,
 }
 

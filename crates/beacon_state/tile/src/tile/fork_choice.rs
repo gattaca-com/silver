@@ -1,5 +1,5 @@
 use silver_beacon_state_data::{B256, SLOTS_PER_EPOCH, StateId};
-use silver_common::PayloadValidationStatus;
+use silver_common::{PayloadValidationStatus, metrics::timed};
 
 use super::BeaconStateTile;
 use crate::stf;
@@ -7,6 +7,7 @@ use crate::stf;
 impl BeaconStateTile {
     /// Rebuild fork choice's justified-balance snapshot when its justified
     /// checkpoint has moved.
+    #[timed]
     pub(super) fn refresh_justified_balances(&mut self) {
         if !self.fork_choice.justified_balances_stale() {
             return;
@@ -46,6 +47,7 @@ impl BeaconStateTile {
         self.fork_choice.commit_justified_balances(buf, total_active, jc);
     }
 
+    #[timed]
     pub(super) fn recompute_head(&mut self) {
         // Spec `get_current_store_epoch`: viability reads the wall-clock epoch.
         self.fork_choice.set_current_epoch(self.ticker.current_slot() / SLOTS_PER_EPOCH);

@@ -36,16 +36,34 @@ impl<V> Edits<V> {
         self.inner.iter()
     }
 
-    /// Iterate edits from the first whose key is `>= from` (a `partition_point`
-    /// over the ascending keys, then the tail).
     #[inline]
-    pub fn iter_from(&self, from: u32) -> std::slice::Iter<'_, (u32, V)> {
-        self.inner[self.inner.partition_point(|(k, _)| *k < from)..].iter()
+    pub(crate) fn as_slice(&self) -> &[(u32, V)] {
+        &self.inner
     }
 
     #[inline]
     pub fn get(&self, idx: u32) -> Option<&V> {
         self.inner.binary_search_by_key(&idx, |(k, _)| *k).ok().map(|p| &self.inner[p].1)
+    }
+
+    /// `get` for ascending lookups: resumes at `cursor` and gallops, so a
+    /// sorted sweep costs O(log gap) per step instead of a fresh binary
+    /// search. Leaves `cursor` at the first position with index ≥ `idx`.
+    pub(crate) fn get_from(&self, cursor: &mut usize, idx: u32) -> Option<&V> {
+        *cursor = self.position_from(*cursor, idx);
+        self.inner.get(*cursor).filter(|&&(k, _)| k == idx).map(|(_, v)| v)
+    }
+
+    /// First position ≥ `from` whose index is ≥ `idx`, found by galloping.
+    fn position_from(&self, from: usize, idx: u32) -> usize {
+        let edits = &self.inner;
+        let (mut lo, mut step) = (from, 1);
+        while lo + step <= edits.len() && edits[lo + step - 1].0 < idx {
+            lo += step;
+            step *= 2;
+        }
+        let hi = (lo + step - 1).min(edits.len());
+        lo + edits[lo..hi].partition_point(|&(k, _)| k < idx)
     }
 }
 
@@ -181,60 +199,20 @@ impl<V: Copy> Edits<V> {
 /// [`merge_in_place`](Edits::merge_in_place).
 impl<V: Copy> Edits<V> {
     /// Phase 1 — overwrite the override entries in place and count the
-    /// genuinely new (non-matching) changes, returned for phase 2 to
-    /// insert.
-    ///
-    /// Small batches use per-change binary search (O(m log n)); large batches
-    /// use a linear merge (O(m + n)) seeded at the first change.
+    /// genuinely new (non-matching) changes, returned for phase 2 to insert.
+    /// Gallops through the ascending batch: O(log gap) per change, so ~O(m +
+    /// n) when dense and O(m log n) when sparse.
     fn override_existing(&mut self, changes: &[(u32, V)]) -> usize {
-        let n = self.inner.len();
-        let m = changes.len();
-        if m == 0 {
-            return 0;
-        }
-        let log_n = usize::BITS as usize - n.max(1).leading_zeros() as usize;
-        if m.saturating_mul(log_n) <= m + n {
-            self.override_by_search(changes)
-        } else {
-            self.override_by_scan(changes)
-        }
-    }
-
-    /// O(m log n) — one binary search per change; best when `m ≪ n`.
-    fn override_by_search(&mut self, changes: &[(u32, V)]) -> usize {
         let mut inserts = 0;
+        let mut cursor = 0;
         for &(idx, val) in changes {
-            match self.inner.binary_search_by_key(&idx, |(k, _)| *k) {
-                Ok(p) => self.inner[p].1 = val,
-                Err(_) => inserts += 1,
+            cursor = self.position_from(cursor, idx);
+            match self.inner.get_mut(cursor) {
+                Some(entry) if entry.0 == idx => entry.1 = val,
+                _ => inserts += 1,
             }
         }
         inserts
-    }
-
-    /// O(m + n) merge, starting at the first edit ≥ `changes[0].0`.
-    fn override_by_scan(&mut self, changes: &[(u32, V)]) -> usize {
-        let old_len = self.inner.len();
-        let changes_len = changes.len();
-
-        let mut edit_idx = self.inner.partition_point(|(k, _)| *k < changes[0].0);
-        let mut change_idx = 0;
-        let mut inserts = 0;
-        while edit_idx < old_len && change_idx < changes_len {
-            let ek = self.inner[edit_idx].0;
-            let ck = changes[change_idx].0;
-            if ek < ck {
-                edit_idx += 1;
-            } else if ek == ck {
-                self.inner[edit_idx].1 = changes[change_idx].1;
-                edit_idx += 1;
-                change_idx += 1;
-            } else {
-                inserts += 1;
-                change_idx += 1;
-            }
-        }
-        inserts + (changes_len - change_idx)
     }
 
     /// Phase 2 — right-to-left merge of the (already overridden) edits with the

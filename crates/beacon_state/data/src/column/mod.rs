@@ -31,6 +31,19 @@ pub trait ColumnVal: Copy + PartialEq + Default + 'static {
         Self::write_ssz_slice(vals, &mut w).expect("leaf holds exactly one chunk");
         leaf
     }
+
+    fn lane(group: &B256, lane: usize) -> Self {
+        let sz = size_of::<Self>();
+        let mut out = [Self::default()];
+        Self::read_ssz_slice(&mut out, &group[lane * sz..lane * sz + sz]);
+        out[0]
+    }
+
+    fn set_lane(group: &mut B256, lane: usize, v: Self) {
+        let sz = size_of::<Self>();
+        let mut w: &mut [u8] = &mut group[lane * sz..lane * sz + sz];
+        Self::write_ssz_slice(&[v], &mut w).expect("lane fits its chunk");
+    }
 }
 
 impl ColumnVal for u8 {
