@@ -13,7 +13,6 @@ use silver_common::{
 };
 use silver_ssz::ssz_view::PAYLOAD_ATTESTATION_MESSAGE_SIZE;
 
-
 use super::BeaconStateTile;
 use crate::{stf, tile::Feedback};
 
