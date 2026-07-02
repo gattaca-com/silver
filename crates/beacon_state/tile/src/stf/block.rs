@@ -39,17 +39,16 @@ pub fn apply_block(
     longtail: &mut LongtailGroup,
     parent: StateId,
     block_bytes: &[u8],
-    block_slot: Slot,
-    proposer_index: u32,
-    parent_root: B256,
-    body_root: B256,
-    block_state_root: B256,
+    header: &BeaconBlockHeader,
     shuffling: Option<&ShufflingRef<'_>>,
     scratch: &mut StfScratch,
     attestation_votes: &mut Vec<AttestationVote>,
     slashed_sink: &mut Vec<u32>,
     sig_batch: &mut SigBatch,
 ) -> Result<(Option<EpochId>, Option<LongtailId>)> {
+    let block_slot = header.slot;
+    let proposer_index = header.proposer_index as u32;
+    let block_state_root = header.state_root;
     let wrap = |kind: BlockError| Error::invalid_block(block_state_root, kind);
 
     check_slot_after_header(&view.slot.reader(), block_slot).map_err(wrap)?;
@@ -81,9 +80,9 @@ pub fn apply_block(
         view,
         &epoch_view,
         block_slot,
-        proposer_index as u64,
-        parent_root,
-        body_root,
+        header.proposer_index,
+        header.parent_root,
+        header.body_root,
     )
     .map_err(wrap)?;
     process_block_body(

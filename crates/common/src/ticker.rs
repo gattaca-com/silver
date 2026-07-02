@@ -9,9 +9,6 @@ const STATE_ADVANCE_DIVISOR: u64 = 4;
 
 const NUM_PHASES: usize = 4;
 
-// Spec INTERVALS_PER_SLOT: attesting deadline at 1/3 of the slot.
-const INTERVALS_PER_SLOT: u64 = 3;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TickEvent {
     /// Slot boundary. Fork choice, cache pruning.
@@ -104,19 +101,18 @@ impl SlotTicker {
         self.anchor_genesis_ms + self.anchor.elapsed().as_millis() as u64
     }
 
-    /// Current wall-clock slot.
     pub fn current_slot(&self) -> u64 {
         self.since_genesis_ms() / self.slot_ms
     }
 
-    /// Spec `is_before_attesting_interval`: within the first 1/3 of the slot,
-    /// the window in which a current-slot block earns proposer boost.
-    pub fn is_before_attesting_interval(&self) -> bool {
-        self.since_genesis_ms() % self.slot_ms < self.slot_ms / INTERVALS_PER_SLOT
+    pub fn is_before_fulu_attesting_interval(&self) -> bool {
+        self.since_genesis_ms() % self.slot_ms < self.slot_ms / 3
     }
 
-    /// Force `current_slot()` to return `slot` at this moment and reset
-    /// the in-slot phase state.
+    pub fn is_before_gloas_attesting_interval(&self) -> bool {
+        self.since_genesis_ms() % self.slot_ms < self.slot_ms / 4
+    }
+
     #[cfg(any(test, feature = "test-util"))]
     pub fn set_current_slot(&mut self, slot: u64) {
         self.anchor = Instant::now();

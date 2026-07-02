@@ -20,8 +20,8 @@ use serde_yml::{Mapping, Value};
 use silver_beacon_state::BeaconStateTile;
 use silver_beacon_state_data::{BeaconState, SpecConfig};
 
-fn fork_choice_dir(handler: &str) -> PathBuf {
-    spec_tests_dir().join("tests").join("mainnet").join("fulu").join("fork_choice").join(handler)
+fn fork_choice_dir(fork: &str, handler: &str) -> PathBuf {
+    spec_tests_dir().join("tests").join("mainnet").join(fork).join("fork_choice").join(handler)
 }
 
 /// Cases we knowingly don't cover yet — logged, never silently passed.
@@ -83,6 +83,17 @@ fn run_case(name: &str, dir: &Path) {
             tile.ef_apply_attestation(&case_file(dir, a));
         } else if let Some(s) = m.get("attester_slashing").and_then(Value::as_str) {
             tile.ef_apply_attester_slashing(&case_file(dir, s));
+        } else if let Some(e) = m.get("execution_payload").and_then(Value::as_str) {
+            // [Gloas] reveal an execution payload envelope.
+            let valid = m.get("valid").and_then(Value::as_bool).unwrap_or(true);
+            let accepted = tile.ef_apply_execution_payload(&case_file(dir, e));
+            assert_eq!(
+                accepted, valid,
+                "{name} step {si}: execution_payload {e} accepted={accepted}, want valid={valid}"
+            );
+        } else if let Some(p) = m.get("payload_attestation_message").and_then(Value::as_str) {
+            // [Gloas] record a PTC timeliness/DA vote.
+            tile.ef_apply_payload_attestation(&case_file(dir, p));
         } else if let Some(checks) = m.get("checks").and_then(Value::as_mapping) {
             run_checks(name, si, &tile, checks);
         }
@@ -111,6 +122,14 @@ fn run_checks(name: &str, si: usize, tile: &BeaconStateTile, checks: &Mapping) {
             parse_root(h.get("root").and_then(Value::as_str).unwrap()),
             "{name} step {si}: head root"
         );
+        // [Gloas] the head's resolved payload side (1 = FULL, 0 = EMPTY).
+        if let Some(ps) = h.get("payload_status").and_then(Value::as_u64) {
+            assert_eq!(
+                fc.head_payload_present() as u64,
+                ps,
+                "{name} step {si}: head payload_status"
+            );
+        }
     }
     if let Some(c) = checks.get("justified_checkpoint").and_then(Value::as_mapping) {
         let cp = fc.justified_checkpoint;
@@ -127,36 +146,69 @@ fn run_checks(name: &str, si: usize, tile: &BeaconStateTile, checks: &Mapping) {
             "{name} step {si}: proposer_boost_root"
         );
     }
+    // [Gloas] PTC timeliness / data-availability votes, as
+    // `{block_root, votes: [true|false|null; PTC_SIZE]}` (null = not voted).
+    let assert_votes = |label: &str, c: &Mapping, got: &[Option<bool>]| {
+        let root = parse_root(c.get("block_root").and_then(Value::as_str).unwrap());
+        let want = c.get("votes").and_then(Value::as_sequence).unwrap();
+        assert_eq!(want.len(), got.len(), "{name} step {si}: {label} length ({root:?})");
+        for (i, v) in want.iter().enumerate() {
+            assert_eq!(got[i], v.as_bool(), "{name} step {si}: {label}[{i}]");
+        }
+    };
+    if let Some(c) = checks.get("payload_timeliness_vote").and_then(Value::as_mapping) {
+        let root = parse_root(c.get("block_root").and_then(Value::as_str).unwrap());
+        assert_votes("payload_timeliness_vote", c, &fc.ptc_timeliness_votes(&root));
+    }
+    if let Some(c) = checks.get("payload_data_availability_vote").and_then(Value::as_mapping) {
+        let root = parse_root(c.get("block_root").and_then(Value::as_str).unwrap());
+        assert_votes("payload_data_availability_vote", c, &fc.ptc_data_availability_votes(&root));
+    }
     // Intentionally unchecked: `time` (silver tracks slots, not store secs),
     // `get_proposer_head`, `should_override_forkchoice_update` (proposer-only).
 }
 
-fn run_handler(handler: &str) {
-    let cases = iter_test_cases(&fork_choice_dir(handler));
-    assert!(!cases.is_empty(), "{handler}: no fork_choice cases found");
+fn run_handler(fork: &str, handler: &str) {
+    let cases = iter_test_cases(&fork_choice_dir(fork, handler));
+    assert!(!cases.is_empty(), "{fork}/{handler}: no fork_choice cases found");
     let mut skipped = 0;
     for (name, path) in &cases {
         if let Some(reason) = known_skip(name) {
-            eprintln!("SKIP {handler}/{name}: {reason}");
+            eprintln!("SKIP {fork}/{handler}/{name}: {reason}");
             skipped += 1;
             continue;
         }
-        run_case(&format!("{handler}/{name}"), path);
+        run_case(&format!("{fork}/{handler}/{name}"), path);
     }
-    eprintln!("{handler}: {} run, {skipped} skipped", cases.len() - skipped);
+    eprintln!("{fork}/{handler}: {} run, {skipped} skipped", cases.len() - skipped);
 }
 
 #[test]
 fn fulu_fork_choice_ex_ante() {
-    run_handler("ex_ante");
+    run_handler("fulu", "ex_ante");
 }
 
 #[test]
 fn fulu_fork_choice_get_head() {
-    run_handler("get_head");
+    run_handler("fulu", "get_head");
 }
 
 #[test]
 fn fulu_fork_choice_on_block() {
-    run_handler("on_block");
+    run_handler("fulu", "on_block");
+}
+
+#[test]
+fn gloas_fork_choice_ex_ante() {
+    run_handler("gloas", "ex_ante");
+}
+
+#[test]
+fn gloas_fork_choice_get_head() {
+    run_handler("gloas", "get_head");
+}
+
+#[test]
+fn gloas_fork_choice_on_block() {
+    run_handler("gloas", "on_block");
 }

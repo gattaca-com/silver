@@ -90,6 +90,10 @@ pub struct BeaconState {
 }
 
 impl BeaconState {
+    pub fn is_finalized_post_gloas(&self) -> bool {
+        self.epoch.finalized().state().fork.current_version == self.immutable.gloas_fork_version
+    }
+
     /// Anchor a fresh per-fork delta on every always-rolled tier (epoch/
     /// longtail stay lazy: `None` reads their bases) and assemble the anchor
     /// bundle — the bootstrap / pre-bootstrap head.

@@ -41,6 +41,12 @@ pub enum PrecheckError {
         b256_hex(block_root)
     )]
     ProposerIndexTooBig { got: u64, validator_count: usize, block_root: B256 },
+    #[error(
+        "block extends parent's unverified FULL payload: parent_root=0x{} block_root=0x{}",
+        b256_hex(parent_root),
+        b256_hex(block_root)
+    )]
+    UnverifiedParentPayload { parent_root: B256, block_root: B256 },
 }
 
 impl PrecheckError {
@@ -53,7 +59,8 @@ impl PrecheckError {
             Self::PreFinalized { .. } |
             Self::PastSlot { .. } |
             Self::FutureSlot { .. } |
-            Self::AlreadyKnown { .. } => Feedback::Ignore,
+            Self::AlreadyKnown { .. } |
+            Self::UnverifiedParentPayload { .. } => Feedback::Ignore,
             Self::ParentInvalid { block_root, .. } |
             Self::ProposerLookaheadMismatch { block_root, .. } |
             Self::ProposerIndexTooBig { block_root, .. } => Feedback::Reject(Some(block_root)),

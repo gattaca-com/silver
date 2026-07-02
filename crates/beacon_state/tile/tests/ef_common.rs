@@ -404,9 +404,14 @@ pub fn ef_tile(state: silver_beacon_state_data::BeaconState) -> BeaconStateTile 
         TCache::producer("ef_engine", 1 << 16),
         TCache::producer("ef_replay", 1 << 16),
     );
+
+    let mut spec = SpecConfig::mainnet();
+    if state.is_finalized_post_gloas() {
+        spec.gloas_fork_epoch = 0;
+    }
     BeaconStateTile::new(
         ticker,
-        SpecConfig::mainnet(),
+        spec,
         &SyncingConfig::default(),
         gp.cache_ref().random_access("ef_gossip", true).unwrap(),
         rp.cache_ref().random_access("ef_rpc", true).unwrap(),

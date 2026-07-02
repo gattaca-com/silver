@@ -58,11 +58,7 @@ impl BeaconStateTile {
         // Lift fork-choice finality from the head post-state (monotone, only
         // to a block we actually hold).
         let hf = self.head_finalized_checkpoint();
-        if hf.epoch > self.fork_choice.finalized_checkpoint.epoch &&
-            self.fork_choice.find_node_idx(&hf.root).is_some()
-        {
-            self.fork_choice.finalized_checkpoint = hf;
-        }
+        self.fork_choice.lift_finalized(hf);
 
         let fin_root = self.fork_choice.finalized_checkpoint.root;
         let Some(fin_idx) = self.fork_choice.find_node_idx(&fin_root) else {

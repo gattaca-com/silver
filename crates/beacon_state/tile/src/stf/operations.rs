@@ -7,11 +7,14 @@ use silver_beacon_state_data::{
     PendingPartialWithdrawal, PendingWriteView, SLOTS_PER_EPOCH, SpecConfig, StateWriterView,
     ValidatorsView, ValidatorsWriteView, Withdrawals, append_validator,
 };
-use silver_common::ssz_view::{
-    CONSOLIDATION_REQUEST_SIZE, ConsolidationRequestView, DEPOSIT_CONTRACT_TREE_DEPTH,
-    DEPOSIT_REQUEST_SIZE, DEPOSIT_SIZE, DepositDataView, DepositRequestView, DepositView,
-    SIGNED_BLS_CHANGE_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE, SignedBlsToExecutionChangeView,
-    SignedVoluntaryExitView, WITHDRAWAL_REQUEST_SIZE, WithdrawalRequestView,
+use silver_common::{
+    metrics::timed,
+    ssz_view::{
+        CONSOLIDATION_REQUEST_SIZE, ConsolidationRequestView, DEPOSIT_CONTRACT_TREE_DEPTH,
+        DEPOSIT_REQUEST_SIZE, DEPOSIT_SIZE, DepositDataView, DepositRequestView, DepositView,
+        SIGNED_BLS_CHANGE_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE, SignedBlsToExecutionChangeView,
+        SignedVoluntaryExitView, WITHDRAWAL_REQUEST_SIZE, WithdrawalRequestView,
+    },
 };
 
 use crate::{
@@ -43,6 +46,7 @@ const G2_POINT_AT_INFINITY: [u8; 96] = {
 /// Pass 1 — push voluntary-exit sigs. Each exit's signing root is the
 /// `(epoch, validator_index)` pair under `DOMAIN_VOLUNTARY_EXIT` pinned to
 /// `CAPELLA_FORK_VERSION`. Returns false on out-of-range vi (early reject).
+#[timed]
 pub fn collect_sigs_voluntary_exits(
     imm: &Immutable,
     validators: &ValidatorsView,
@@ -77,6 +81,7 @@ pub fn collect_sigs_voluntary_exits(
 /// Pass 2 — validate state-dependent preconditions (post-block-mutation
 /// state evolution may change `is_slashable` / pending-balance), apply
 /// `initiate_validator_exit` per accepted entry. BLS already verified.
+#[timed]
 pub fn process_voluntary_exits(
     view: &mut StateWriterView,
     cfg: &SpecConfig,
@@ -112,6 +117,7 @@ pub fn process_voluntary_exits(
     Ok(())
 }
 
+#[timed]
 pub(crate) fn process_execution_requests(
     view: &mut StateWriterView,
     cfg: &SpecConfig,
@@ -137,6 +143,7 @@ pub(crate) fn process_execution_requests(
     process_consolidation_requests(&mut *view, cfg, f2);
 }
 
+#[timed]
 pub fn process_deposit_requests(view: &mut StateWriterView, data: &[u8]) {
     let slot = &mut view.slot;
     let pending = &mut view.pending;
@@ -166,6 +173,7 @@ pub fn process_deposit_requests(view: &mut StateWriterView, data: &[u8]) {
     }
 }
 
+#[timed]
 pub fn process_withdrawal_requests(view: &mut StateWriterView, cfg: &SpecConfig, data: &[u8]) {
     let count = data.len() / WITHDRAWAL_REQUEST_SIZE;
     let current_epoch = view.slot.state().slot / SLOTS_PER_EPOCH;
@@ -181,6 +189,7 @@ pub fn process_withdrawal_requests(view: &mut StateWriterView, cfg: &SpecConfig,
 /// One EL withdrawal request: validate source address / credentials /
 /// eligibility, then queue either a full exit or a partial (excess) withdrawal.
 /// Any failed precondition silently drops the request (spec: no-op).
+#[timed]
 fn process_withdrawal_request(
     view: &mut StateWriterView,
     cfg: &SpecConfig,
@@ -257,6 +266,7 @@ fn process_withdrawal_request(
     }
 }
 
+#[timed]
 pub fn process_consolidation_requests(view: &mut StateWriterView, cfg: &SpecConfig, data: &[u8]) {
     let count = data.len() / CONSOLIDATION_REQUEST_SIZE;
     let current_epoch = view.slot.state().slot / SLOTS_PER_EPOCH;
@@ -272,6 +282,7 @@ pub fn process_consolidation_requests(view: &mut StateWriterView, cfg: &SpecConf
 /// One EL consolidation request. A source==target request switches the source
 /// validator to compounding credentials; otherwise validate both validators and
 /// queue a full consolidation. Failed preconditions drop the request (no-op).
+#[timed]
 fn process_consolidation_request(
     view: &mut StateWriterView,
     cfg: &SpecConfig,
@@ -368,6 +379,7 @@ fn process_consolidation_request(
 /// Spec: process_deposit. Verify each Deposit's 33-level Merkle branch
 /// against `state.eth1_data.deposit_root` at leaf index
 /// `state.eth1_deposit_index` before queueing. A bad proof fails the block.
+#[timed]
 pub fn process_deposits(view: &mut StateWriterView, data: &[u8]) -> Result<()> {
     let count = data.len() / DEPOSIT_SIZE;
 
@@ -416,6 +428,7 @@ pub fn process_deposits(view: &mut StateWriterView, data: &[u8]) -> Result<()> {
 /// 2's `process_bls_to_execution_changes` re-runs the full cred check
 /// against post-deposit / post-prior-change state, so a same-block
 /// duplicate still rejects.
+#[timed]
 pub fn collect_sigs_bls_to_execution_changes(
     imm: &Immutable,
     validators: &ValidatorsView,
@@ -461,6 +474,7 @@ pub fn collect_sigs_bls_to_execution_changes(
 /// rewrite credentials. Same-block duplicate change for the same vi: the
 /// first one flips the prefix to 0x01, the second's `validate` call sees
 /// the now-non-BLS prefix and rejects → block invalid.
+#[timed]
 pub fn process_bls_to_execution_changes(
     validators: &mut ValidatorsWriteView,
     data: &[u8],
