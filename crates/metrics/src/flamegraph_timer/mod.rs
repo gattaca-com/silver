@@ -16,7 +16,6 @@ mod reader;
 pub mod report;
 mod symbols;
 
-pub(crate) use mark::Frame;
-pub(crate) use producer::record;
+pub(crate) use producer::{record_close, record_open};
 pub use queue_dir::enable_surfer;
 pub use reader::{FlamegraphReader, LocalReader};

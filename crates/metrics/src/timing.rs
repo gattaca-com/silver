@@ -10,7 +10,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use crate::flamegraph_timer::{self, Frame};
+use crate::flamegraph_timer;
 
 /// Process-global `#[timed]` config: whether marks are produced, and the app
 /// name used as the parent dir for the shmem rings (`"silver"` until
@@ -59,7 +59,7 @@ impl TimerGuard {
     pub fn new(name: &'static str) -> Self {
         let close = TIMING.is_enabled().then_some(name);
         if let Some(name) = close {
-            flamegraph_timer::record(Frame::open(name));
+            flamegraph_timer::record_open(name);
         }
         Self { close }
     }
@@ -68,7 +68,7 @@ impl TimerGuard {
 impl Drop for TimerGuard {
     fn drop(&mut self) {
         if let Some(name) = self.close {
-            flamegraph_timer::record(Frame::close(name));
+            flamegraph_timer::record_close(name);
         }
     }
 }

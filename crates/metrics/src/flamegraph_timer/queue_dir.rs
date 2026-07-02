@@ -11,7 +11,7 @@ use flux::{
 use crate::{
     Schema,
     allocator::AllocSample,
-    flamegraph_timer::mark::{Frame, Mark},
+    flamegraph_timer::mark::Mark,
     perf::{MAX_EVENTS, PerfSample},
 };
 
@@ -24,7 +24,7 @@ pub(super) trait RingEntry: Copy {
 
 impl RingEntry for Mark {
     const PREFIX: &'static str = "events";
-    const EMPTY: Self = Mark { frame: Frame::Close { id: 0 }, ts: 0 };
+    const EMPTY: Self = Mark::EMPTY;
 }
 
 impl RingEntry for PerfSample {

@@ -1,13 +1,10 @@
 use std::sync::OnceLock;
 
-use flux::{communication::queue::Producer, timing::Instant};
+use flux::communication::queue::Producer;
 
 #[cfg(feature = "alloc-profile")]
 use crate::allocator::{self, AllocSample};
-use crate::flamegraph_timer::{
-    mark::{Frame, Mark},
-    queue_dir::QueueDir,
-};
+use crate::flamegraph_timer::{mark::Mark, queue_dir::QueueDir};
 #[cfg(feature = "perf")]
 use crate::perf::{PerfSample, read};
 
@@ -36,12 +33,11 @@ impl Producers {
         }
     }
 
-    fn push(&self, frame: Frame) {
+    fn push(&self, mark: Mark) {
         // `Producer` is `Copy`; the thread-local stores it behind a shared `&`,
         // so produce through a local copy of the cheap handle.
-        let ts = Instant::now().0;
         let mut marks = self.marks;
-        marks.produce(&Mark { frame, ts });
+        marks.produce(&mark);
         #[cfg(feature = "perf")]
         {
             let mut perf = self.perf;
@@ -64,6 +60,11 @@ fn thread_token() -> String {
 }
 
 #[inline]
-pub(crate) fn record(frame: Frame) {
-    PRODUCERS.with(|cell| cell.get_or_init(Producers::for_current_thread).push(frame));
+pub(crate) fn record_open(name: &'static str) {
+    PRODUCERS.with(|cell| cell.get_or_init(Producers::for_current_thread).push(Mark::open(name)));
+}
+
+#[inline]
+pub(crate) fn record_close(name: &'static str) {
+    PRODUCERS.with(|cell| cell.get_or_init(Producers::for_current_thread).push(Mark::close(name)));
 }
