@@ -13,17 +13,24 @@ use crate::{
     flamegraph_timer::{
         counters::Counters,
         names::leaf_name,
-        report::{FlamegraphMeta, PathStat},
+        report::{FlamegraphMeta, Loss, PathStat},
     },
     fmt_bytes,
     table::{Column, Table},
 };
 
 /// A centered `thread: name` rule, flagged when the thread's mark stream lost
-/// events (so the reader knows which thread's numbers to distrust). `width` is
-/// shared across threads so every rule lands at the same length.
-pub(super) fn thread_rule(name: &str, lost: bool, width: usize) -> String {
-    let tag = if lost { " — EVENTS LOST (producer outran reader)" } else { "" };
+/// events (so the reader knows the thread's numbers are incomplete). `width`
+/// is shared across threads so every rule lands at the same length.
+pub(super) fn thread_rule(name: &str, loss: Loss, width: usize) -> String {
+    let tag = if loss.is_lossy() {
+        format!(
+            " — LOSSY: ~{} events missed, {} unmatched closes dropped (producer outran reader)",
+            loss.missed, loss.dropped
+        )
+    } else {
+        String::new()
+    };
     let label = format!(" thread: {name}{tag} ");
     let pad = width.saturating_sub(label.chars().count());
     let left = "─".repeat(pad / 2);

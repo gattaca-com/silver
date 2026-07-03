@@ -104,10 +104,12 @@ impl LocalReader {
         // loss is a genuine overrun, not a pre-attach gap.
         let mut drainer = EventsDrainer::new(QueueDir::open(), Schema::local().clone());
         loop {
+            // Observe stop before polling, not after: producers have finished
+            // by the time it is set, so the one poll that follows is guaranteed
+            // to see their rings and flush their tails.
+            let stopping = stop.load(Ordering::Acquire);
             drainer.poll(&InProcessSymbolsResolver);
-            // Poll once more after stop is observed: producers have finished by
-            // then, so this pass flushes their tails.
-            if stop.load(Ordering::Acquire) {
+            if stopping {
                 break;
             }
             thread::sleep(Duration::from_millis(1));
@@ -121,7 +123,7 @@ mod tests {
     use std::thread;
 
     use super::*;
-    use crate::flamegraph_timer::{record_close, record_open};
+    use crate::flamegraph_timer::{queue_dir::RING_CAPACITY, record_close, record_open};
 
     #[test]
     fn drain_discovers_every_thread_ring() {
@@ -221,5 +223,34 @@ mod tests {
 
     fn contains(haystack: &[u8], needle: &[u8]) -> bool {
         haystack.windows(needle.len()).any(|w| w == needle)
+    }
+
+    /// Attaching after the producer already lapped its ring: the overwritten
+    /// prefix is reported as loss, and no samples are fabricated from the
+    /// partial record. (The gap-recording rules themselves are unit-tested in
+    /// `drainer`; the exact overrun accounting in `ring_drainer`.)
+    #[test]
+    fn overrun_is_reported_as_missed_events() {
+        let _guard = crate::test_shmem::ShmemGuard::new();
+        enable_surfer();
+
+        thread::Builder::new()
+            .name("overrun-producer".to_owned())
+            .spawn(|| {
+                for _ in 0..RING_CAPACITY {
+                    record_open("work");
+                    record_close("work");
+                }
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+
+        let mut reader = FlamegraphReader::attach(crate::TIMING.app()).expect("pid published");
+        reader.poll();
+
+        let stats = reader.stats();
+        assert!(stats.missed_events(), "the loss must be reported");
+        assert_eq!(stats.aggregate_leaf("work").1, 0, "no samples fabricated from the lost prefix");
     }
 }

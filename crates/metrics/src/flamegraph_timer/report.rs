@@ -72,20 +72,34 @@ pub(crate) struct FlamegraphMeta {
     pub schema: Schema,
 }
 
-/// One producing thread's folded paths, plus whether its mark stream was
-/// unreliable (a ring wrapped before the reader drained it, or a close popped a
-/// non-matching open — a producer crash/restart or ring overwrite).
+/// How much of a thread's stream was lost: `missed` events were overwritten
+/// in a ring before the reader drained them (producer outran reader), and
+/// `dropped` drained closes were discarded because a gap took their open.
+/// The gaps themselves are retained as `<missed>` frames.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Loss {
+    pub(crate) missed: u64,
+    pub(crate) dropped: u64,
+}
+
+impl Loss {
+    pub(crate) fn is_lossy(&self) -> bool {
+        self.missed > 0 || self.dropped > 0
+    }
+}
+
+/// One producing thread's folded paths, plus how much of its stream was lost.
 pub(crate) struct ThreadTimings {
     name: String,
     paths: Vec<PathStat>,
-    lost: bool,
+    loss: Loss,
 }
 
 impl ThreadTimings {
     pub(crate) fn new(
         name: String,
         paths: FxHashMap<Vec<u64>, CallStackSamples>,
-        lost: bool,
+        loss: Loss,
         meta: &FlamegraphMeta,
     ) -> Self {
         let mut paths: Vec<PathStat> = paths
@@ -97,7 +111,7 @@ impl ThreadTimings {
         paths.sort_by(|a, b| {
             a.path.iter().map(|id| &meta.names[id]).cmp(b.path.iter().map(|id| &meta.names[id]))
         });
-        Self { name, paths, lost }
+        Self { name, paths, loss }
     }
 }
 
@@ -122,7 +136,7 @@ impl TimingStats {
     ///
     /// [`call_tree`]: Self::call_tree
     pub fn missed_events(&self) -> bool {
-        self.threads.iter().any(|t| t.lost)
+        self.threads.iter().any(|t| t.loss.is_lossy())
     }
 
     fn matching_paths<'a>(&'a self, leaf: &'a str) -> impl Iterator<Item = &'a PathStat> {
@@ -173,7 +187,7 @@ impl TimingStats {
         tables
             .iter()
             .map(|(t, table)| {
-                format!("{}\n{table}", call_tree::thread_rule(&t.name, t.lost, width))
+                format!("{}\n{table}", call_tree::thread_rule(&t.name, t.loss, width))
             })
             .collect::<Vec<_>>()
             .join("\n")
@@ -192,7 +206,13 @@ impl TimingStats {
                     .iter()
                     .map(|s| PathStatJson { path: self.path_name(&s.path), metrics: &s.metrics })
                     .collect();
-                serde_json::json!({ "thread": t.name, "lost": t.lost, "paths": paths })
+                serde_json::json!({
+                    "thread": t.name,
+                    "lost": t.loss.is_lossy(),
+                    "missed_events": t.loss.missed,
+                    "dropped_marks": t.loss.dropped,
+                    "paths": paths,
+                })
             })
             .collect();
         serde_json::json!({ "label": label, "threads": threads }).to_string()

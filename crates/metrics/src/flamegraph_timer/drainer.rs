@@ -1,20 +1,15 @@
-//! The live ring drainer: discovers a run's per-thread shmem rings, drains each
-//! into a retained heap buffer, and folds the lot into a call tree. The two
-//! consumers (the in-process harness and the surfer) drive the same engine
-//! and differ only in the [`FrameResolver`] they poll with. Each ring is read
-//! from slot 0, so a surfer attaching mid-run reports loss for the
-//! pre-attach prefix the producer has already overwritten.
+//! Joins a run's per-thread shmem rings into retained events by sequence
+//! number: the producer pushes a mark and its counter samples back-to-back,
+//! so entry N of every ring belongs to the same `#[timed]` event. Ring
+//! overruns are consumed at the join ([`ThreadDrainer::record_gap`]), so the
+//! retained events are always well-formed, sample-aligned stacks and
+//! folds/exports need no gap handling of their own.
 //!
-//! Frame names are resolved as marks are drained, not at `fold` time: an
-//! surfer reads them from the live producer's binary, which may be gone by
-//! the time anyone folds the retained marks into stats.
+//! Frame names are resolved as marks are drained, not at fold time: a surfer
+//! reads them from the live producer's binary, which may be gone by then.
 
-use std::collections::{HashMap, hash_map::Entry};
+use std::collections::hash_map::Entry;
 
-use flux::communication::{
-    ReadError,
-    queue::{ConsumerBare, Queue},
-};
 use rustc_hash::FxHashMap;
 
 use crate::{
@@ -23,9 +18,10 @@ use crate::{
     flamegraph_timer::{
         aggregator::Aggregator,
         fxt,
-        mark::Mark,
-        queue_dir::{QueueDir, RingEntry},
-        report::{FlamegraphMeta, ThreadTimings, TimingStats},
+        mark::{MISSED_ID, Mark},
+        queue_dir::QueueDir,
+        report::{FlamegraphMeta, Loss, ThreadTimings, TimingStats},
+        ring_drainer::Rings,
         symbols::FrameResolver,
     },
     perf::PerfSample,
@@ -33,14 +29,16 @@ use crate::{
 
 pub(super) struct EventsDrainer {
     dir: QueueDir,
-    threads: HashMap<String, ThreadDrainer>,
+    threads: FxHashMap<String, ThreadDrainer>,
     meta: FlamegraphMeta,
 }
 
 impl EventsDrainer {
     pub(super) fn new(dir: QueueDir, schema: Schema) -> Self {
-        let meta = FlamegraphMeta { names: FxHashMap::default(), schema };
-        Self { dir, threads: HashMap::new(), meta }
+        let mut names = FxHashMap::default();
+        names.insert(MISSED_ID, "<missed>".to_string());
+        let meta = FlamegraphMeta { names, schema };
+        Self { dir, threads: FxHashMap::default(), meta }
     }
 
     pub(super) fn poll(&mut self, resolver: &impl FrameResolver) {
@@ -61,8 +59,7 @@ impl EventsDrainer {
             .threads
             .iter()
             .map(|(name, t)| {
-                let agg = t.aggregate();
-                ThreadTimings::new(name.clone(), agg.paths, t.lost() || agg.desynced, &self.meta)
+                ThreadTimings::new(name.clone(), t.aggregate().paths, t.loss(), &self.meta)
             })
             .collect();
         TimingStats::from_threads(threads, self.meta.clone())
@@ -72,9 +69,9 @@ impl EventsDrainer {
         fxt::trace(
             self.threads.iter().map(|(name, t)| fxt::ThreadTrace {
                 name: name.as_str(),
-                marks: t.marks.out.as_slice(),
-                alloc: t.alloc_out(),
-                perf: t.perf_out(),
+                marks: &t.events.marks,
+                alloc: &t.events.alloc,
+                perf: &t.events.perf,
             }),
             &self.meta.names,
             &self.meta.schema,
@@ -82,110 +79,189 @@ impl EventsDrainer {
     }
 }
 
-/// One producing thread's marks and (with `perf`) counter samples, read in
-/// lockstep so the aggregator can pair them by index.
+/// Index-aligned event vecs, appended only as a unit so an event's samples
+/// never separate from its mark; a sample vec stays empty when its ring is
+/// absent.
+#[derive(Default)]
+struct EventsData {
+    marks: Vec<Mark>,
+    perf: Vec<PerfSample>,
+    alloc: Vec<AllocSample>,
+}
+
+impl EventsData {
+    fn push(&mut self, mark: Mark, perf: Option<PerfSample>, alloc: Option<AllocSample>) {
+        self.marks.push(mark);
+        self.perf.extend(perf);
+        self.alloc.extend(alloc);
+    }
+}
+
 struct ThreadDrainer {
-    marks: QueueDrainer<Mark>,
-    /// `None` when the producer was built without `perf`: the marks ring exists
-    /// but the perf ring never does, so the thread folds timing-only. The
-    /// `perf` feature gates only the producer's counter reads, never this
-    /// drain.
-    perf: Option<QueueDrainer<PerfSample>>,
-    /// `None` when the producer was built without `alloc-profile`.
-    alloc: Option<QueueDrainer<AllocSample>>,
-    /// Marks in `marks.out[..resolved]` have already had their frame names
-    /// resolved, so each `poll` only resolves the freshly drained tail.
-    resolved: usize,
+    rings: Rings,
+    events: EventsData,
+    /// Stack of opens whose close hasn't arrived yet.
+    open_ids: Vec<u64>,
+    unmatched_closes: u64,
+    expected_seq: u64,
 }
 
 impl ThreadDrainer {
     fn open(dir: &QueueDir, token: &str) -> Option<Self> {
         Some(Self {
-            marks: QueueDrainer::<Mark>::open(dir, token)?,
-            perf: QueueDrainer::<PerfSample>::open(dir, token),
-            alloc: QueueDrainer::<AllocSample>::open(dir, token),
-            resolved: 0,
+            rings: Rings::open(dir, token)?,
+            events: EventsData::default(),
+            open_ids: Vec::new(),
+            unmatched_closes: 0,
+            expected_seq: 0,
         })
     }
 
-    fn alloc_out(&self) -> &[AllocSample] {
-        self.alloc.as_ref().map_or(&[], |a| &a.out)
-    }
-
-    fn perf_out(&self) -> &[PerfSample] {
-        self.perf.as_ref().map_or(&[], |p| &p.out)
-    }
-
     fn poll(&mut self, names: &mut FxHashMap<u64, String>, resolver: &impl FrameResolver) {
-        self.marks.poll();
-        if let Some(perf) = &mut self.perf {
-            perf.poll();
-        }
-        if let Some(alloc) = &mut self.alloc {
-            alloc.poll();
-        }
-        // The frame name lives in the producer's binary; `len` says how many
-        // bytes to read. Resolve each id once, while the producer is still
-        // alive to read it from.
-        for mark in &self.marks.out[self.resolved..] {
+        self.rings.drain();
+        let slowest_cursor = self.rings.slowest_cursor();
+
+        while let Some((seq, mark)) = self.rings.marks.pop_ready(slowest_cursor) {
             if mark.is_open() {
                 let id = mark.id;
                 names.entry(id).or_insert_with(|| {
                     resolver.resolve(id, mark.name_len()).unwrap_or_else(|| format!("unknown_{id}"))
                 });
             }
+            let (perf, alloc) = self.take_samples(seq);
+
+            if seq != self.expected_seq {
+                self.record_gap(mark.ts, perf, alloc);
+            }
+            self.expected_seq = seq + 1;
+
+            if mark.is_open() {
+                self.open_ids.push(mark.id);
+                self.events.push(mark, perf, alloc);
+            } else if let Some(open_id) = self.open_ids.pop() {
+                debug_assert_eq!(open_id, mark.id, "timed close under a non-matching open");
+                self.events.push(mark, perf, alloc);
+            } else {
+                self.unmatched_closes += 1;
+            }
         }
-        self.resolved = self.marks.out.len();
+    }
+
+    /// The samples pushed with mark `seq`, or the last retained ones if a
+    /// ring lost it to a hole; `None` when the ring doesn't exist.
+    fn take_samples(&mut self, seq: u64) -> (Option<PerfSample>, Option<AllocSample>) {
+        let last_perf = self.events.perf.last().copied();
+        let last_alloc = self.events.alloc.last().copied();
+        (
+            self.rings.perf.as_mut().map(|ring| ring.take_at(seq, last_perf)),
+            self.rings.alloc.as_mut().map(|ring| ring.take_at(seq, last_alloc)),
+        )
+    }
+
+    /// Record a ring hole: every pending open spans it and will never see its
+    /// real close (that close later arrives unmatched and drops), so close
+    /// them all at the last retained mark and keep the gap as a `<missed>`
+    /// frame carrying the gap's time and counter delta.
+    fn record_gap(
+        &mut self,
+        gap_end_ts: u64,
+        perf: Option<PerfSample>,
+        alloc: Option<AllocSample>,
+    ) {
+        let Some(gap_start_ts) = self.events.marks.last().map(|mark| mark.ts) else {
+            // Nothing retained yet (attached mid-run): no gap to anchor.
+            return;
+        };
+        let last_perf = self.events.perf.last().copied();
+        let last_alloc = self.events.alloc.last().copied();
+        while let Some(id) = self.open_ids.pop() {
+            self.events.push(Mark::from_parts(id, gap_start_ts, false), last_perf, last_alloc);
+        }
+        self.events.push(Mark::from_parts(MISSED_ID, gap_start_ts, true), last_perf, last_alloc);
+        self.events.push(Mark::from_parts(MISSED_ID, gap_end_ts, false), perf, alloc);
     }
 
     fn aggregate(&self) -> Aggregator {
-        Aggregator::new(&self.marks.out, self.perf_out(), self.alloc_out())
+        Aggregator::new(&self.events.marks, &self.events.perf, &self.events.alloc)
     }
 
-    /// Whether any ring lost marks, leaving the fold incomplete.
-    fn lost(&self) -> bool {
-        self.marks.lost ||
-            self.perf.as_ref().is_some_and(|p| p.lost) ||
-            self.alloc.as_ref().is_some_and(|a| a.lost)
+    fn loss(&self) -> Loss {
+        Loss { missed: self.rings.missed(), dropped: self.unmatched_closes }
     }
 }
 
-/// A live consumer that drains one ring into a growing heap `Vec`, polled
-/// repeatedly across a run.
-struct QueueDrainer<T: RingEntry> {
-    consumer: ConsumerBare<T>,
-    out: Vec<T>,
-    /// Set once a `SpedPast` showed the producer overwrote slots we hadn't read
-    /// — marks were lost, so the fold built from `out` is incomplete. An
-    /// surfer attaching mid-run latches this on its first poll: the
-    /// pre-attach prefix is genuinely gone.
-    lost: bool,
-}
+#[cfg(test)]
+mod tests {
+    use flux::communication::queue::Producer;
 
-impl<T: RingEntry> QueueDrainer<T> {
-    fn open(dir: &QueueDir, token: &str) -> Option<Self> {
-        let queue = Queue::<T>::try_open_shared(dir.path::<T>(token)).ok()?;
-        // Each ring is its own queue with its own flux group table and the surfer
-        // is its only consumer, so the static per-type prefix works as the group
-        // label — no per-token string to allocate and leak.
-        let mut consumer = ConsumerBare::new(queue, T::PREFIX);
+    use super::*;
+    use crate::{flamegraph_timer::queue_dir::RING_CAPACITY, test_shmem::ShmemGuard};
 
-        // Collaborative so the cursor starts at the beginning of the ring.
-        consumer.try_init_collaborative();
-        Some(Self { consumer, out: Vec::with_capacity(1024), lost: false })
-    }
+    struct NoResolver;
 
-    fn poll(&mut self) {
-        let mut scratch = T::EMPTY;
-        loop {
-            match self.consumer.try_consume(&mut scratch) {
-                Ok(()) => self.out.push(scratch),
-                Err(ReadError::Empty) => break,
-                Err(ReadError::SpedPast) => {
-                    self.consumer.recover_after_error();
-                    self.lost = true;
-                }
-            }
+    impl FrameResolver for NoResolver {
+        fn resolve(&self, _id: u64, _len: u32) -> Option<String> {
+            None
         }
+    }
+
+    /// A hole closes the frames spanning it with synthetic closes at the last
+    /// retained mark, records the gap as a `<missed>` span carrying the gap's
+    /// counter delta, and drops closes whose open was lost — nothing already
+    /// retained is discarded.
+    #[test]
+    fn hole_closes_spanning_frames_and_records_a_missed_span() {
+        let _guard = ShmemGuard::new();
+        let dir = QueueDir::open();
+        let mut mark_producer = Producer::from(dir.ring::<Mark>("drainer-test"));
+        let mut alloc_producer = Producer::from(dir.ring::<AllocSample>("drainer-test"));
+        let mut thread = ThreadDrainer::open(&dir, "drainer-test").unwrap();
+        let mut names = FxHashMap::default();
+
+        let mut push = |mark: Mark, allocated: u64| {
+            mark_producer.produce(&mark);
+            alloc_producer.produce(&AllocSample { allocated, freed: 0 });
+        };
+
+        push(Mark::from_parts(1, 10, true), 100);
+        push(Mark::from_parts(2, 20, true), 200);
+        thread.poll(&mut names, &NoResolver);
+
+        // Lap both rings, then recover: everything produced so far after the
+        // two retained opens — including close(2)/close(1) — is a hole.
+        for _ in 0..RING_CAPACITY as u64 + 5 {
+            push(Mark::from_parts(3, 30, true), 300);
+        }
+        thread.poll(&mut names, &NoResolver);
+
+        // First post-hole events: an unmatched close (its open was lost), then
+        // a clean frame.
+        push(Mark::from_parts(9, 40, false), 900);
+        push(Mark::from_parts(4, 50, true), 1000);
+        push(Mark::from_parts(4, 60, false), 1100);
+        thread.poll(&mut names, &NoResolver);
+
+        let events: Vec<_> =
+            thread.events.marks.iter().map(|m| (m.id, m.is_open(), m.ts)).collect();
+        assert_eq!(events, [
+            (1, true, 10),
+            (2, true, 20),
+            (2, false, 20),
+            (1, false, 20),
+            (MISSED_ID, true, 20),
+            (MISSED_ID, false, 40),
+            (4, true, 50),
+            (4, false, 60),
+        ]);
+        let allocated: Vec<_> = thread.events.alloc.iter().map(|a| a.allocated).collect();
+        assert_eq!(
+            allocated,
+            [100, 200, 200, 200, 200, 900, 1000, 1100],
+            "closed frames carry the last pre-hole sample; the missed close carries the first \
+             post-hole one, so the gap's delta lands on <missed>"
+        );
+        assert_eq!(thread.unmatched_closes, 1, "only the unmatched close is discarded");
+        assert!(thread.loss().missed > 0);
+        assert!(thread.open_ids.is_empty());
     }
 }
