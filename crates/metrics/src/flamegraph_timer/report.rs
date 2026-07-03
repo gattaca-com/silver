@@ -72,20 +72,34 @@ pub(crate) struct FlamegraphMeta {
     pub schema: Schema,
 }
 
-/// One producing thread's folded paths, plus whether its mark stream was
-/// unreliable (a ring wrapped before the reader drained it, or a close popped a
-/// non-matching open — a producer crash/restart or ring overwrite).
+/// How much of a thread's stream was lost: `missed` events were overwritten
+/// in a ring before the reader drained them (producer outran reader), and
+/// `dropped` drained closes were discarded because a gap took their open.
+/// The gaps themselves are retained as `<missed>` frames.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Loss {
+    pub(crate) missed: u64,
+    pub(crate) dropped: u64,
+}
+
+impl Loss {
+    pub(crate) fn is_lossy(&self) -> bool {
+        self.missed > 0 || self.dropped > 0
+    }
+}
+
+/// One producing thread's folded paths, plus how much of its stream was lost.
 pub(crate) struct ThreadTimings {
     name: String,
     paths: Vec<PathStat>,
-    lost: bool,
+    loss: Loss,
 }
 
 impl ThreadTimings {
     pub(crate) fn new(
         name: String,
         paths: FxHashMap<Vec<u64>, CallStackSamples>,
-        lost: bool,
+        loss: Loss,
         meta: &FlamegraphMeta,
     ) -> Self {
         let mut paths: Vec<PathStat> = paths
@@ -97,7 +111,7 @@ impl ThreadTimings {
         paths.sort_by(|a, b| {
             a.path.iter().map(|id| &meta.names[id]).cmp(b.path.iter().map(|id| &meta.names[id]))
         });
-        Self { name, paths, lost }
+        Self { name, paths, loss }
     }
 }
 
@@ -122,7 +136,7 @@ impl TimingStats {
     ///
     /// [`call_tree`]: Self::call_tree
     pub fn missed_events(&self) -> bool {
-        self.threads.iter().any(|t| t.lost)
+        self.threads.iter().any(|t| t.loss.is_lossy())
     }
 
     fn matching_paths<'a>(&'a self, leaf: &'a str) -> impl Iterator<Item = &'a PathStat> {
@@ -173,7 +187,7 @@ impl TimingStats {
         tables
             .iter()
             .map(|(t, table)| {
-                format!("{}\n{table}", call_tree::thread_rule(&t.name, t.lost, width))
+                format!("{}\n{table}", call_tree::thread_rule(&t.name, t.loss, width))
             })
             .collect::<Vec<_>>()
             .join("\n")
@@ -192,7 +206,13 @@ impl TimingStats {
                     .iter()
                     .map(|s| PathStatJson { path: self.path_name(&s.path), metrics: &s.metrics })
                     .collect();
-                serde_json::json!({ "thread": t.name, "lost": t.lost, "paths": paths })
+                serde_json::json!({
+                    "thread": t.name,
+                    "lost": t.loss.is_lossy(),
+                    "missed_events": t.loss.missed,
+                    "dropped_marks": t.loss.dropped,
+                    "paths": paths,
+                })
             })
             .collect();
         serde_json::json!({ "label": label, "threads": threads }).to_string()
@@ -265,6 +285,62 @@ mod tests {
         assert!(tree.contains("×3"), "parent should render plain ×3: {tree}");
         assert!(tree.contains("×2  (6 total)"), "leaf split missing: {tree}");
         assert!(tree.contains("untracked"), "untracked row missing: {tree}");
+    }
+
+    #[timed]
+    fn tick() {}
+
+    /// Full-stack overrun stress against the report surface: a producer
+    /// thread hammers `#[timed]` calls while the reader drains at its
+    /// production cadence. The run must be flagged lossy, and the reported
+    /// numbers must account for all production: every call is folded, dropped,
+    /// or missed. A call spanning a gap counts once as folded (its synthetic
+    /// close) and once as missed (its real close fell in the hole), so the
+    /// bound carries one call of slack per `<missed>` gap.
+    #[test]
+    fn stress_reported_loss_accounts_for_all_production() {
+        let _guard = ShmemGuard::new();
+        let reader = LocalReader::start();
+
+        const CALLS: u64 = 10_000_000;
+        std::thread::Builder::new()
+            .name("stress-producer".to_owned())
+            .spawn(|| {
+                for _ in 0..CALLS {
+                    tick();
+                }
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+
+        let stats = reader.collect();
+        assert!(stats.missed_events(), "overrun must be reported");
+
+        let report: serde_json::Value = serde_json::from_str(&stats.to_json("stress")).unwrap();
+        let thread = report["threads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["thread"] == "stress-producer")
+            .expect("producer thread reported");
+        let missed = thread["missed_events"].as_u64().unwrap();
+        let dropped = thread["dropped_marks"].as_u64().unwrap();
+        let (_, retained) = stats.aggregate_leaf("tick");
+        let (_, gaps) = stats.aggregate_leaf("<missed>");
+
+        let produced_marks = 2 * CALLS;
+        println!(
+            "produced={produced_marks} retained_calls={retained} missed={missed} \
+             dropped={dropped} gaps={gaps}"
+        );
+        assert!(retained > 0, "reader retained nothing despite polling throughout");
+        assert!(retained <= CALLS, "more calls folded than were made");
+        assert!(
+            missed + 2 * retained + dropped <= produced_marks + gaps,
+            "reported loss exceeds production: missed={missed} retained_calls={retained} \
+             dropped={dropped} gaps={gaps} produced_marks={produced_marks}"
+        );
     }
 
     #[test]

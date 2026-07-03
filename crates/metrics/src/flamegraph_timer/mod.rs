@@ -14,6 +14,7 @@ mod producer;
 mod queue_dir;
 mod reader;
 pub mod report;
+mod ring_drainer;
 mod symbols;
 
 pub(crate) use producer::{record_close, record_open};

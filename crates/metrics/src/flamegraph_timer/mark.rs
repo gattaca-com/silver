@@ -13,6 +13,10 @@ pub(crate) struct Mark {
 
 const OPEN_BIT: u32 = 1 << 31;
 
+/// Frame id of the synthetic span covering a ring hole. Real ids are `.rodata`
+/// pointers, never null.
+pub(crate) const MISSED_ID: u64 = 0;
+
 impl Mark {
     pub(crate) const EMPTY: Self = Mark { id: 0, ts: 0, len_and_open: 0 };
 
@@ -37,7 +41,6 @@ impl Mark {
         self.len_and_open & !OPEN_BIT
     }
 
-    #[cfg(test)]
     pub(crate) const fn from_parts(id: u64, ts: u64, open: bool) -> Self {
         Mark { id, ts, len_and_open: if open { OPEN_BIT } else { 0 } }
     }

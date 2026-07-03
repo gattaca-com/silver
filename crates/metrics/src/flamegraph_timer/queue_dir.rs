@@ -38,8 +38,12 @@ impl RingEntry for AllocSample {
 }
 
 /// A background reader drains each ring continuously, so a ring only buffers
-/// the marks produced between polls, not the whole run — hence small.
-const RING_CAPACITY: usize = 1 << 15;
+/// the marks produced between polls — but a poll can be delayed by a whole
+/// fold (O(retained marks)) on the same thread, and burst producers push
+/// millions of marks per second, so the buffer is sized in seconds of steady
+/// production (~50k marks/s), not polls. 256k entries ≈ 6 MiB of marks per
+/// thread.
+pub(super) const RING_CAPACITY: usize = 1 << 18;
 
 /// The shmem dir holding this run's per-thread timing rings.
 pub(super) struct QueueDir(PathBuf);

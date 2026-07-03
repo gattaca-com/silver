@@ -36,21 +36,16 @@ struct OpenFrame {
 /// from folding disjoint windows.
 pub(crate) struct Aggregator {
     pub(crate) paths: FxHashMap<Vec<u64>, CallStackSamples>,
-    /// A close popped an open with a different id — the stream desynced, so the
-    /// folded stats are unreliable (surfaced per-thread as lost events).
-    pub(crate) desynced: bool,
 }
 
 impl Aggregator {
     pub(crate) fn new(marks: &[Mark], perf: &[PerfSample], alloc: &[AllocSample]) -> Self {
-        // `perf[i]`/`alloc[i]` are the snapshots pushed right after `marks[i]`
-        // (same producer thread, lockstep order), so they are index-aligned with
-        // the marks over their common prefix. A live drain (surfer reading while
-        // the producer runs) can snapshot the rings a push apart, leaving a 1-ish
-        // tail mismatch — benign: the extra sample is ignored and a mark missing
-        // its sample falls back to zero below. Feature off ⇒ the slice is empty.
+        // `perf[i]`/`alloc[i]` ride the same drain row as `marks[i]` (the rings
+        // are joined by push sequence number, see the drainer), so pairing by
+        // position is exact; a feature-off slice is empty and folds to zero.
+        // The join also guarantees well-formedness: every close pops its own
+        // open.
         let mut paths = FxHashMap::<Vec<u64>, CallStackSamples>::default();
-        let mut desynced = false;
         let mut stack: Vec<OpenFrame> = Vec::new();
         for (i, mark) in marks.iter().enumerate() {
             let sample = Counters {
@@ -67,15 +62,9 @@ impl Aggregator {
                 });
                 continue;
             }
-            let closing_id = mark.id;
 
             let Some(frame) = stack.pop() else { continue };
-            // Drop guards close in reverse open order, so a close must pop its
-            // own open. A mismatch means the stream desynced (a producer
-            // crash/restart, or a ring overwrite reordering marks); we still
-            // attribute to the popped frame but flag the fold as unreliable.
-            debug_assert_eq!(closing_id, frame.id, "timed close popped a non-matching open");
-            desynced |= closing_id != frame.id;
+            debug_assert_eq!(mark.id, frame.id, "timed close popped a non-matching open");
             let tracked_ns = Duration(mark.ts.saturating_sub(frame.ts)).as_nanos() as u64;
             let untracked_ns = tracked_ns.saturating_sub(frame.total_tracked_ns);
             let tracked = sample.delta(&frame.counters);
@@ -93,7 +82,7 @@ impl Aggregator {
             entry.tracked = entry.tracked.add(&tracked);
             entry.total_untracked = entry.total_untracked.add(&untracked);
         }
-        Self { paths, desynced }
+        Self { paths }
     }
 }
 
