@@ -22,7 +22,7 @@ use crate::{
     fork_choice::{ForkChoice, MAX_FORK_CHOICE_NODES, PayloadStatus},
     ssz_hash, stf,
     tile::{orphan_pool::PendingBlock, shuffling_cache::ShufflingCache},
-    weak_subjectivity::weak_subjectivity_period,
+    weak_subjectivity::{weak_subjectivity_period_fulu, weak_subjectivity_period_gloas},
 };
 
 mod block;
@@ -343,10 +343,16 @@ impl BeaconStateTile {
         if !self.verify_weak_subjectivity {
             return;
         }
+
         let ws_period = {
             let view = self.state.read_view(self.last_applied);
-            weak_subjectivity_period(&view, &mut self.stf_scratch.active)
+            if view.is_gloas() {
+                weak_subjectivity_period_gloas(&self.spec, &view, &mut self.stf_scratch.active)
+            } else {
+                weak_subjectivity_period_fulu(&view, &mut self.stf_scratch.active)
+            }
         };
+
         let checkpoint_epoch = self.head_state_slot() / SLOTS_PER_EPOCH;
         let current_epoch = self.ticker.current_slot() / SLOTS_PER_EPOCH;
         assert!(
