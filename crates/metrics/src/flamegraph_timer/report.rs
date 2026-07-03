@@ -287,6 +287,62 @@ mod tests {
         assert!(tree.contains("untracked"), "untracked row missing: {tree}");
     }
 
+    #[timed]
+    fn tick() {}
+
+    /// Full-stack overrun stress against the report surface: a producer
+    /// thread hammers `#[timed]` calls while the reader drains at its
+    /// production cadence. The run must be flagged lossy, and the reported
+    /// numbers must account for all production: every call is folded, dropped,
+    /// or missed. A call spanning a gap counts once as folded (its synthetic
+    /// close) and once as missed (its real close fell in the hole), so the
+    /// bound carries one call of slack per `<missed>` gap.
+    #[test]
+    fn stress_reported_loss_accounts_for_all_production() {
+        let _guard = ShmemGuard::new();
+        let reader = LocalReader::start();
+
+        const CALLS: u64 = 10_000_000;
+        std::thread::Builder::new()
+            .name("stress-producer".to_owned())
+            .spawn(|| {
+                for _ in 0..CALLS {
+                    tick();
+                }
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+
+        let stats = reader.collect();
+        assert!(stats.missed_events(), "overrun must be reported");
+
+        let report: serde_json::Value = serde_json::from_str(&stats.to_json("stress")).unwrap();
+        let thread = report["threads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["thread"] == "stress-producer")
+            .expect("producer thread reported");
+        let missed = thread["missed_events"].as_u64().unwrap();
+        let dropped = thread["dropped_marks"].as_u64().unwrap();
+        let (_, retained) = stats.aggregate_leaf("tick");
+        let (_, gaps) = stats.aggregate_leaf("<missed>");
+
+        let produced_marks = 2 * CALLS;
+        println!(
+            "produced={produced_marks} retained_calls={retained} missed={missed} \
+             dropped={dropped} gaps={gaps}"
+        );
+        assert!(retained > 0, "reader retained nothing despite polling throughout");
+        assert!(retained <= CALLS, "more calls folded than were made");
+        assert!(
+            missed + 2 * retained + dropped <= produced_marks + gaps,
+            "reported loss exceeds production: missed={missed} retained_calls={retained} \
+             dropped={dropped} gaps={gaps} produced_marks={produced_marks}"
+        );
+    }
+
     #[test]
     fn percentile_corners() {
         let v = [10u64, 20, 30, 40, 50];

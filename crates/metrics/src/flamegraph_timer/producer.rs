@@ -34,20 +34,15 @@ impl Producers {
     }
 
     fn push(&self, mark: Mark) {
-        // `Producer` is `Copy`; the thread-local stores it behind a shared `&`,
-        // so produce through a local copy of the cheap handle.
-        let mut marks = self.marks;
-        marks.produce(&mark);
+        // `QueueDir::ring` unlinks any leftover backing before creating, so no
+        // slot can hold a crashed writer's poison and `produce_first`'s
+        // unpoison pass (which `Producer::produce` would re-run on every call
+        // here, as the thread-local only hands out `&self`) is unnecessary.
+        self.marks.produce_without_first(&mark);
         #[cfg(feature = "perf")]
-        {
-            let mut perf = self.perf;
-            perf.produce(&read().unwrap_or_default());
-        }
+        self.perf.produce_without_first(&read().unwrap_or_default());
         #[cfg(feature = "alloc-profile")]
-        {
-            let mut alloc = self.alloc;
-            alloc.produce(&allocator::read());
-        }
+        self.alloc.produce_without_first(&allocator::read());
     }
 }
 

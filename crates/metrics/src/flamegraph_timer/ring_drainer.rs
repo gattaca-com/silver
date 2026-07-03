@@ -132,13 +132,13 @@ impl Rings {
             .min(self.alloc.as_ref().map_or(u64::MAX, |r| r.next_seq))
     }
 
-    /// The worst ring's overruns bound the thread's unaccounted events, since
-    /// the rings are pushed in lockstep.
+    /// Marks are the event stream, so only their ring's overruns count as
+    /// missed events. A sample ring's own holes don't lose events — a mark
+    /// whose sample was overwritten survives with the last retained sample
+    /// substituted — and counting them (the rings recover at slightly
+    /// different heads) would double-count events whose mark was retained.
     pub(super) fn missed(&self) -> u64 {
-        self.marks
-            .missed
-            .max(self.perf.as_ref().map_or(0, |r| r.missed))
-            .max(self.alloc.as_ref().map_or(0, |r| r.missed))
+        self.marks.missed
     }
 }
 
