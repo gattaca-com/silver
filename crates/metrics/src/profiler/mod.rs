@@ -21,6 +21,6 @@ pub use drainer::{EventsDrainer, Loss, ThreadEvents};
 pub(crate) use mark::Mark;
 #[cfg(test)]
 pub(crate) use queue_dir::test_shmem;
-pub use queue_dir::{app_with_pid, enable_profiler, published_pid};
+pub use queue_dir::{enable_profiler, live_apps, published_pid};
 pub use reader::{CrossProcessReader, InProcessReader};
 pub use timing::TimerGuard;

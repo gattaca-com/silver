@@ -125,11 +125,16 @@ pub fn enable_profiler(app_name: &str) {
     dir.write_pid();
 }
 
-pub fn app_with_pid(pid: u32) -> Option<String> {
-    let apps = std::fs::read_dir(local_share_dir()).ok()?;
+/// Every app under `local_share_dir()` whose queue dir names a live pid.
+pub fn live_apps() -> Vec<(String, u32)> {
+    let Ok(apps) = std::fs::read_dir(local_share_dir()) else { return Vec::new() };
     apps.flatten()
         .filter_map(|entry| entry.file_name().into_string().ok())
-        .find(|app| QueueDir(shmem_dir_queues(app)).live_pid() == Some(pid))
+        .filter_map(|app| {
+            let pid = QueueDir(shmem_dir_queues(&app)).live_pid()?;
+            Some((app, pid))
+        })
+        .collect()
 }
 
 pub fn published_pid(app: &str) -> Option<u32> {
