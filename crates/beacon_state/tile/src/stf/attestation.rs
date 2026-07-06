@@ -1,11 +1,9 @@
+use flux_profiler::timed;
 use silver_beacon_state_data::{
     B256, ColumnSpec, Epoch, EpochView, Immutable, ParticipationWriteView, SLOTS_PER_EPOCH,
     SLOTS_PER_HISTORICAL_ROOT, Slot, SlotStateWriteView, StateWriterView, ValidatorsView,
 };
-use silver_common::{
-    metrics::timed,
-    ssz_view::{AttestationDataView, AttestationView},
-};
+use silver_common::ssz_view::{AttestationDataView, AttestationView};
 
 use crate::{
     bls::{self, SigBatch},

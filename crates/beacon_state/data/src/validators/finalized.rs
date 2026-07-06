@@ -4,9 +4,9 @@ use std::{
 };
 
 use blst::min_pk::PublicKey;
+use flux_profiler::timed;
 use parking_lot::RwLock;
 use rustc_hash::FxHashMap;
-use silver_common_macros::timed;
 
 use super::validator_hash;
 use crate::{

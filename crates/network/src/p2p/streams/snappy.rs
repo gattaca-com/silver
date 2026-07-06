@@ -3,7 +3,7 @@ use std::{
     io,
 };
 
-use silver_common::metrics::timed;
+use flux_profiler::timed;
 use snap::raw::{Decoder, Encoder};
 use thiserror::Error;
 

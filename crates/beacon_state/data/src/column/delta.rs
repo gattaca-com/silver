@@ -1,6 +1,6 @@
 use std::marker::PhantomData;
 
-use silver_common_macros::timed;
+use flux_profiler::timed;
 
 use super::{ColumnGroup, ColumnSpec, ColumnVal, finalized::FinalizedColumn};
 use crate::{

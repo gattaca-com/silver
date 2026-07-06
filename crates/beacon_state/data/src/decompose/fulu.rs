@@ -1,4 +1,4 @@
-use silver_common_macros::timed;
+use flux_profiler::timed;
 
 use super::common::{
     DecomposeError, F7_OFF, F9_OFF, F11_OFF, F12_OFF, F15_OFF, F16_OFF, F21_OFF, F24_OFF, F27_OFF,

@@ -1,5 +1,5 @@
 use common::F3;
-use silver_metrics::timed;
+use flux_profiler::timed;
 
 use crate::{BeaconState, SpecConfig, decode_checkpoint_pubkeys};
 

@@ -6,7 +6,6 @@ members = [
   "crates/common",
   "crates/config",
   "crates/config/chain_spec",
-  "crates/common_macros",
   "crates/control",
   "crates/storage",
   "crates/discovery",
@@ -72,11 +71,11 @@ silver_discovery = {path = "crates/discovery" }
 silver_gossip = {path = "crates/gossip" }
 silver_network = {path = "crates/network" }
 silver_peer = {path = "crates/peer" }
-silver_common_macros = { path = "crates/common_macros" }
 silver_storage = { path = "crates/storage" }
 silver_engine = { path = "crates/engine"}
-flux = { git = "https://github.com/gattaca-com/flux", rev = "3a72d5c5724c356199c33bae3fe35d0d9dc2733c"}
-flux-utils = { git = "https://github.com/gattaca-com/flux", rev = "3a72d5c5724c356199c33bae3fe35d0d9dc2733c", features = ["bytes"]}
+flux = { git = "https://github.com/gattaca-com/flux", rev = "29e00f5a070465cc755c36c8721c4fbbc9c03d0f"}
+flux-utils = { git = "https://github.com/gattaca-com/flux", rev = "29e00f5a070465cc755c36c8721c4fbbc9c03d0f", features = ["bytes"]}
+flux-profiler = { git = "https://github.com/gattaca-com/flux", rev = "29e00f5a070465cc755c36c8721c4fbbc9c03d0f"}
 
 # External
 backtrace = "0.3"

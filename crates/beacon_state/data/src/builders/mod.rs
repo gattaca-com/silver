@@ -7,7 +7,7 @@ mod tests;
 use delta::BuildersDelta;
 pub use delta::{BuildersView, BuildersWriteView};
 pub use finalized::FinalizedBuilders;
-use silver_common_macros::timed;
+use flux_profiler::timed;
 
 use crate::{
     buffer::{Id, Ring, reanchor_survivors},

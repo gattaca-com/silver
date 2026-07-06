@@ -1,5 +1,5 @@
+use flux_profiler::timed;
 use silver_beacon_state_data::{B256, SLOTS_PER_EPOCH, Slot};
-use silver_common::metrics::timed;
 
 use super::{
     ExecutionStatus, ForkChoice, GENESIS_EPOCH, MAX_FORK_CHOICE_NODES, NULL, NodeLookup,

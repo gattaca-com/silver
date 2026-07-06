@@ -1,8 +1,8 @@
 use flux::utils::ArrayVec;
+use flux_profiler::timed;
 use silver_beacon_state_data::{
     EPOCHS_RING_N, EpochId, LONGTAILS_RING_N, LongtailId, SLOTS_PER_EPOCH, StateId,
 };
-use silver_common::metrics::timed;
 
 use super::BeaconStateTile;
 use crate::fork_choice::MAX_FORK_CHOICE_NODES;

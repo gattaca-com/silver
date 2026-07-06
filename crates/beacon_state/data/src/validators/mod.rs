@@ -7,7 +7,7 @@ mod tests;
 use delta::ValidatorsDelta;
 pub use delta::{ValidatorsView, ValidatorsWriteView};
 pub use finalized::{FinalizedValidators, ValSeed, ValidatorsDecodeError};
-use silver_common_macros::timed;
+use flux_profiler::timed;
 
 use crate::{
     Withdrawals,

@@ -1,10 +1,8 @@
+use flux_profiler::timed;
 use silver_beacon_state_data::{
     LongtailView, SLOTS_PER_EPOCH, SYNC_COMMITTEE_SIZE, Slot, StateReadView, StateWriterView,
 };
-use silver_common::{
-    metrics::timed,
-    ssz_view::{BLOCK_SYNC_AGGREGATE_SIZE, SyncAggregateView},
-};
+use silver_common::ssz_view::{BLOCK_SYNC_AGGREGATE_SIZE, SyncAggregateView};
 
 use crate::{
     bls::{self, SigBatch},

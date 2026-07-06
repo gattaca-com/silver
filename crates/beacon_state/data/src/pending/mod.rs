@@ -6,8 +6,8 @@ mod tests;
 
 pub use delta::{PendingView, PendingWriteView, QueueView, QueueWriteView};
 pub use finalized::QueueItem;
+use flux_profiler::timed;
 use group::QueueGroup;
-use silver_common_macros::timed;
 
 use crate::{
     buffer::Id,

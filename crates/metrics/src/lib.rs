@@ -20,13 +20,12 @@ use std::{
     sync::atomic::{AtomicPtr, AtomicU64, Ordering},
 };
 
-pub use silver_common_macros::timed;
+pub use flux_profiler::{self as profiler, timed};
 
-pub mod profiler;
 mod stats;
 pub mod table;
 #[cfg(feature = "alloc-profile")]
-pub use profiler::allocator::CountingAllocator;
+pub use flux_profiler::allocator::CountingAllocator;
 pub use stats::{TimingStats, fold_stats};
 
 pub fn fmt_bytes(bytes: u64) -> String {
@@ -41,9 +40,9 @@ pub fn fmt_bytes(bytes: u64) -> String {
         b => format!("{b} B"),
     }
 }
-pub use profiler::TimerGuard;
+pub use flux_profiler::TimerGuard;
 #[cfg(test)]
-pub(crate) use profiler::test_shmem;
+pub(crate) use flux_profiler::test_shmem;
 
 /// Open / create the counters file, ftruncate to `bytes`, mmap shared,
 /// and return the base pointer. Counter files land in flux's standard

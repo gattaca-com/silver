@@ -7,6 +7,7 @@ use std::{
 };
 
 use flux::{spine::SpineAdapter, tile::Tile};
+use flux_profiler::timed;
 use silver_beacon_state_data::{BeaconStateReader, SLOTS_PER_EPOCH};
 use silver_common::{
     BASE_REQUEST_ID, BeaconStateEvent, DataColumnsAvailable, EngineReq, EngineResp, NewGossipMsg,
@@ -15,7 +16,6 @@ use silver_common::{
     TProducer, TRandomAccess, TRead, Wheel,
     ssz_view::{DataColumnSidecarFuluView, SignedBeaconBlockView, StatusView},
 };
-use silver_metrics::timed;
 
 use crate::{StorageCounters, el_blobs::ElBlobFetcher, store::Store, util};
 const MAX_RETRIES: u8 = 5;

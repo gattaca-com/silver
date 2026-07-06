@@ -1,5 +1,5 @@
+use flux_profiler::timed;
 use silver_beacon_state_data::{B256, Checkpoint, Epoch, Slot, ValidatorsView};
-use silver_common::metrics::timed;
 
 use super::{ForkChoice, ForkChoiceNode, MAX_FORK_CHOICE_NODES, NodeLookup, PayloadStatus};
 use crate::stf::{AttestationVote, EFFECTIVE_BALANCE_INCREMENT};

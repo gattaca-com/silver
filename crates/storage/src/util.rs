@@ -1,6 +1,7 @@
 //! Utility helpers for data-column construction and verification.
 
 use blst::{BLST_ERROR, min_pk::PublicKey};
+use flux_profiler::timed;
 use silver_beacon_state_data::SLOTS_PER_EPOCH;
 use silver_common::{
     ssz_hash::{
@@ -13,7 +14,6 @@ use silver_common::{
         SignedBeaconBlockView,
     },
 };
-use silver_metrics::timed;
 
 /// EIP-4844 versioned-hash version byte (`VERSIONED_HASH_VERSION_KZG`).
 const VERSIONED_HASH_VERSION_KZG: u8 = 0x01;
