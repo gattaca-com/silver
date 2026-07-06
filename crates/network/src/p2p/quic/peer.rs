@@ -8,6 +8,7 @@ use quinn_proto::{
     VarInt,
 };
 use silver_common::{P2pStreamId, PeerId, StreamProtocol, TRead, rpc_rate_limit::RpcRateLimitSet};
+use silver_metrics::timed;
 
 use crate::{
     RemotePeer,
@@ -157,6 +158,7 @@ impl Peer {
         self.connection.poll_transmit(now, max_datagrams, buf)
     }
 
+    #[timed]
     pub(crate) fn spin<F, E>(
         &mut self,
         now: Instant,
@@ -285,6 +287,7 @@ impl Peer {
         next_timeout
     }
 
+    #[timed]
     fn handle_stream_event<E>(
         &mut self,
         event: quinn_proto::StreamEvent,
@@ -445,6 +448,7 @@ enum SpinResult {
 }
 
 impl Stream {
+    #[timed]
     fn spin<E>(
         &mut self,
         connection: &mut Connection,

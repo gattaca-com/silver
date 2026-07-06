@@ -1,4 +1,5 @@
 use silver_common::{P2pStreamId, TRead};
+use silver_metrics::timed;
 
 use crate::p2p::streams::{StreamError, StreamIo};
 
@@ -28,6 +29,7 @@ enum Spin {
 }
 
 impl GossipWriteState {
+    #[timed]
     pub fn spin<S: StreamIo>(
         mut self,
         io: &mut S,
