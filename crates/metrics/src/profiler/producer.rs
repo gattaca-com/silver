@@ -3,10 +3,10 @@ use std::sync::OnceLock;
 use flux::communication::queue::Producer;
 
 #[cfg(feature = "alloc-profile")]
-use crate::allocator::{self, AllocSample};
-use crate::flamegraph_timer::{mark::Mark, queue_dir::QueueDir};
+use super::allocator::{self, AllocSample};
 #[cfg(feature = "perf")]
-use crate::perf::{PerfSample, read};
+use super::perf::{PerfSample, read};
+use super::{mark::Mark, queue_dir::QUEUE_DIR};
 
 thread_local! {
     static PRODUCERS: OnceLock<Producers> = const { OnceLock::new() };
@@ -22,7 +22,7 @@ struct Producers {
 
 impl Producers {
     fn for_current_thread() -> Self {
-        let dir = QueueDir::open();
+        let dir = QUEUE_DIR.get().expect("enable_profiler locks the queue dir before production");
         let token = thread_token();
         Producers {
             marks: Producer::from(dir.ring::<Mark>(&token)),
@@ -34,10 +34,8 @@ impl Producers {
     }
 
     fn push(&self, mark: Mark) {
-        // `QueueDir::ring` unlinks any leftover backing before creating, so no
-        // slot can hold a crashed writer's poison and `produce_first`'s
-        // unpoison pass (which `Producer::produce` would re-run on every call
-        // here, as the thread-local only hands out `&self`) is unnecessary.
+        // Rings arrive freshly created (never adopted from a crashed writer),
+        // so the per-call unpoison pass of plain `produce` is unnecessary.
         self.marks.produce_without_first(&mark);
         #[cfg(feature = "perf")]
         self.perf.produce_without_first(&read().unwrap_or_default());
@@ -55,11 +53,16 @@ fn thread_token() -> String {
 }
 
 #[inline]
+fn record(mark: Mark) {
+    PRODUCERS.with(|cell| cell.get_or_init(Producers::for_current_thread).push(mark));
+}
+
+#[inline]
 pub(crate) fn record_open(name: &'static str) {
-    PRODUCERS.with(|cell| cell.get_or_init(Producers::for_current_thread).push(Mark::open(name)));
+    record(Mark::open(name));
 }
 
 #[inline]
 pub(crate) fn record_close(name: &'static str) {
-    PRODUCERS.with(|cell| cell.get_or_init(Producers::for_current_thread).push(Mark::close(name)));
+    record(Mark::close(name));
 }

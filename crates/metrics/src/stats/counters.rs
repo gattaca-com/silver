@@ -2,7 +2,7 @@
 //! are monotonic and folded in lockstep, which is why they share one struct
 //! rather than a parallel field per dimension.
 
-use crate::{allocator::AllocSample, perf::PerfSample};
+use crate::profiler::{allocator::AllocSample, perf::PerfSample};
 
 #[derive(Clone, Copy, Default, serde::Serialize)]
 pub(crate) struct Counters {

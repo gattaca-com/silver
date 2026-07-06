@@ -1,15 +1,15 @@
-//! The raw counter record. Plain numbers, positional by [`schema`] slot, so
+//! The raw counter record. Plain numbers, positional by [`Schema`] slot, so
 //! the hot path does no interpretation — labels and ratios (IPC, misses/call)
 //! are derived in postprocessing.
 //!
-//! [`schema`]: super::schema
+//! [`Schema`]: super::Schema
 
 /// Max counters read per call. Bounds the hot-path array and the streamed
 /// queue element; the PMU's general-purpose counter budget is usually the
-/// tighter limit (opens past it return `None` and read zero).
+/// tighter limit.
 pub const MAX_EVENTS: usize = 8;
 
-/// One call's raw counter values, positional by [`schema`](super::schema) slot.
+/// One call's raw counter values, positional by [`Schema`](super::Schema) slot.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub struct PerfSample {

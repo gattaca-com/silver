@@ -1,20 +1,20 @@
 //! Turns a frame id back into its `#[timed]` name. An id is only an address in
-//! the *producing* process, so resolution is process-relative:
-//! [`InProcessSymbolsResolver`] dereferences it directly,
-//! [`RemoteSymbolsResolver`] reads it out of another process's on-disk binary.
+//! the *producing* process, so resolution is process-relative: an in-process
+//! resolver dereferences it directly, a cross-process one reads it out of
+//! another process's on-disk binary.
 
-use std::{cell::RefCell, collections::HashMap, fs, os::unix::fs::FileExt, path::PathBuf};
+use std::{fs, os::unix::fs::FileExt, path::PathBuf};
 
 /// `len` is the name's exact byte length (from the `Frame::Open` fat pointer),
 /// so resolution reads a fixed span and never scans for a terminator.
-pub(crate) trait FrameResolver {
-    fn resolve(&self, id: u64, len: u32) -> Option<String>;
+pub(super) trait FrameResolver {
+    fn resolve(&self, id: u64, len: u16) -> Option<String>;
 }
 
-pub(crate) struct InProcessSymbolsResolver;
+pub(super) struct InProcessSymbolsResolver;
 
 impl FrameResolver for InProcessSymbolsResolver {
-    fn resolve(&self, id: u64, len: u32) -> Option<String> {
+    fn resolve(&self, id: u64, len: u16) -> Option<String> {
         // SAFETY: in-process ids are `&'static str` pointers from `#[timed]`
         // names; the string lives in `.rodata` for the whole run.
         let bytes = unsafe { std::slice::from_raw_parts(id as *const u8, len as usize) };
@@ -28,12 +28,8 @@ impl FrameResolver for InProcessSymbolsResolver {
 /// (covering PIE/ASLR), and reading the file needs only `PTRACE_MODE_READ`,
 /// which yama leaves open to same-uid readers — unlike the `PTRACE_MODE_ATTACH`
 /// that `process_vm_readv` would require.
-///
-/// Names are cached so a resolved frame outlives the producer: once its `/proc`
-/// entry is gone, re-resolving would otherwise blank every name.
-pub struct RemoteSymbolsResolver {
+pub(super) struct CrossProcessSymbolsResolver {
     segments: Vec<Segment>,
-    cache: RefCell<HashMap<u64, String>>,
 }
 
 /// `path` is `/proc/<pid>/exe` for the main binary so a rebuilt-then-deleted
@@ -45,12 +41,14 @@ struct Segment {
     path: PathBuf,
 }
 
-impl RemoteSymbolsResolver {
-    pub fn new(pid: u32) -> Self {
-        Self { segments: parse_maps(pid), cache: RefCell::new(HashMap::new()) }
+impl CrossProcessSymbolsResolver {
+    pub(super) fn new(pid: u32) -> Self {
+        Self { segments: parse_maps(pid) }
     }
+}
 
-    fn read(&self, id: u64, len: u32) -> Option<String> {
+impl FrameResolver for CrossProcessSymbolsResolver {
+    fn resolve(&self, id: u64, len: u16) -> Option<String> {
         let seg = self.segments.iter().find(|s| (s.start..s.end).contains(&id))?;
         let mut buf = vec![0u8; len as usize];
         fs::File::open(&seg.path)
@@ -58,17 +56,6 @@ impl RemoteSymbolsResolver {
             .read_exact_at(&mut buf, id - seg.start + seg.offset)
             .ok()?;
         String::from_utf8(buf).ok()
-    }
-}
-
-impl FrameResolver for RemoteSymbolsResolver {
-    fn resolve(&self, id: u64, len: u32) -> Option<String> {
-        if let Some(name) = self.cache.borrow().get(&id) {
-            return Some(name.clone());
-        }
-        let name = self.read(id, len)?;
-        self.cache.borrow_mut().insert(id, name.clone());
-        Some(name)
     }
 }
 

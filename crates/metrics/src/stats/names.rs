@@ -11,8 +11,8 @@ const MARK: &str = "::__TimedTy<";
 /// trailing `fn`. A `#[timed]` method embeds its receiver as a
 /// `…::fn::__TimedTy<ConcreteSelf>` marker (so each monomorphization is a
 /// distinct frame a string-keyed sink could otherwise not tell apart),
-/// unwrapped here into `fn<Type>`. Plain frames stay borrowed — the threshold
-/// gauges match on these and must be unaffected.
+/// unwrapped here into `fn<Type>`. Plain frames stay borrowed unchanged —
+/// downstream name matching depends on the exact string.
 pub(super) fn leaf_name(qualified: &str) -> Cow<'_, str> {
     let Some(at) = qualified.find(MARK) else {
         return Cow::Borrowed(leaf(qualified));
@@ -21,16 +21,6 @@ pub(super) fn leaf_name(qualified: &str) -> Cow<'_, str> {
     let rest = &qualified[at + MARK.len()..];
     let ty = rest.strip_suffix('>').unwrap_or(rest);
     Cow::Owned(format!("{func}<{}>", short_type_name(ty)))
-}
-
-/// Strip the `__TimedTy` plumbing, keeping the path verbatim — unlike
-/// [`leaf_name`], nothing is abbreviated.
-pub(super) fn untimed(qualified: &str) -> Cow<'_, str> {
-    const PLUMBING: &str = "::__TimedTy"; // sits in front of the `<Receiver>`
-    match qualified.find(PLUMBING) {
-        None => Cow::Borrowed(qualified),
-        Some(at) => Cow::Owned([&qualified[..at], &qualified[at + PLUMBING.len()..]].concat()),
-    }
 }
 
 fn leaf(path: &str) -> &str {

@@ -7,7 +7,7 @@ use std::{
     cell::Cell,
 };
 
-use crate::allocator::AllocSample;
+use super::AllocSample;
 
 thread_local! {
     // `const` init keeps these on the non-lazy TLS path: reading or bumping

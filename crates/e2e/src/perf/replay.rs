@@ -3,10 +3,8 @@
 
 use std::time::{Duration, Instant};
 
-use silver_common::{
-    flamegraph_timer::{LocalReader, report::TimingStats},
-    ssz_view::StatusView,
-};
+use silver_common::{profiler::InProcessReader, ssz_view::StatusView};
+use silver_metrics::{TimingStats, fold_stats};
 
 use crate::{
     perf::Fixtures,
@@ -36,7 +34,7 @@ pub fn replay(fixtures: &Fixtures) -> ReplayOutcome {
 
     // Start before harness construction — `new_heap` already runs `#[timed]` STF
     // code.
-    let recorder = LocalReader::start();
+    let recorder = InProcessReader::start();
 
     let mut harness = PmBsHarness::new(&fixtures.state_ssz, n_blocks, blocks.len());
     let anchor_finalized_epoch = harness.fork_choice_finalized_epoch();
@@ -113,7 +111,7 @@ pub fn replay(fixtures: &Fixtures) -> ReplayOutcome {
     );
 
     ReplayOutcome {
-        stats: recorder.collect(),
+        stats: fold_stats(&recorder.collect()),
         validator_count: harness.head_validator_count(),
         wall_elapsed,
         final_slot,

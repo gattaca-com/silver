@@ -1,6 +1,14 @@
-//! The allocation analogue of [`PerfSample`](crate::perf::PerfSample): two
-//! monotonic per-thread byte counts.
+//! Per-thread allocated/freed byte accounting for the profiler rings.
 
+#[cfg(feature = "alloc-profile")]
+mod counting;
+#[cfg(feature = "alloc-profile")]
+pub use counting::CountingAllocator;
+#[cfg(feature = "alloc-profile")]
+pub(super) use counting::read;
+
+/// The allocation analogue of `PerfSample`: two monotonic per-thread byte
+/// counts.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub struct AllocSample {

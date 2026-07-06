@@ -1,11 +1,8 @@
 use flux::timing::Duration;
 use rustc_hash::FxHashMap;
 
-use crate::{
-    allocator::AllocSample,
-    flamegraph_timer::{counters::Counters, mark::Mark},
-    perf::PerfSample,
-};
+use super::counters::Counters;
+use crate::profiler::{Mark, allocator::AllocSample, perf::PerfSample};
 
 #[derive(Default)]
 pub(crate) struct CallStackSamples {
