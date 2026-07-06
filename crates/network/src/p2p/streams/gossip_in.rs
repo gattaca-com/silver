@@ -1,7 +1,7 @@
 use std::io::Write;
 
+use flux_profiler::timed;
 use silver_common::{P2pStreamId, TCacheProducer, TProducer, TReservation, decode_varint};
-use silver_metrics::timed;
 
 use crate::p2p::streams::{StreamError, StreamIo};
 

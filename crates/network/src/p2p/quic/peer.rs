@@ -2,13 +2,13 @@ use std::{cell::Cell, hash::BuildHasherDefault, time::Instant};
 
 use bytes::Bytes;
 use flux::utils::ArrayVec;
+use flux_profiler::timed;
 use fxhash::{FxHashMap, FxHashSet};
 use quinn_proto::{
     Connection, ConnectionEvent, ConnectionHandle, Dir, EndpointEvent, Side, StreamId, Transmit,
     VarInt,
 };
 use silver_common::{P2pStreamId, PeerId, StreamProtocol, TRead, rpc_rate_limit::RpcRateLimitSet};
-use silver_metrics::timed;
 
 use crate::{
     RemotePeer,

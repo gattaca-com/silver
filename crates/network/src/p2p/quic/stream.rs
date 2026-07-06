@@ -1,7 +1,7 @@
 use std::io::{Error, Write};
 
+use flux_profiler::timed;
 use quinn_proto::{Connection, StreamId, WriteError};
-use silver_metrics::timed;
 
 use crate::p2p::{
     quic::peer::OutboundBuffer,

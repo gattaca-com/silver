@@ -1,5 +1,5 @@
+use flux_profiler::timed;
 use silver_common::{P2pStreamId, TRead};
-use silver_metrics::timed;
 
 use crate::p2p::streams::{StreamError, StreamIo};
 
