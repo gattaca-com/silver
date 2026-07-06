@@ -92,9 +92,12 @@ mod tests {
     use std::thread;
 
     use super::*;
-    use crate::profiler::{
-        producer::{record_close, record_open},
-        queue_dir::RING_CAPACITY,
+    use crate::{
+        profiler::{
+            producer::{record_close, record_open},
+            queue_dir::RING_CAPACITY,
+        },
+        test_shmem::ShmemGuard,
     };
 
     fn open_frames(events: &EventsDrainer, name: &str) -> usize {
@@ -111,7 +114,7 @@ mod tests {
 
     #[test]
     fn drain_discovers_every_thread_ring() {
-        let _guard = crate::test_shmem::ShmemGuard::new();
+        let _guard = ShmemGuard::new();
         let reader = InProcessReader::start();
 
         let spawn = |tag: &'static str, reps: usize| {
@@ -140,7 +143,7 @@ mod tests {
 
     #[test]
     fn flamegraph_reader_resolves_names_cross_process() {
-        let guard = crate::test_shmem::ShmemGuard::new();
+        let guard = ShmemGuard::new();
         enable_profiler("test");
 
         thread::Builder::new()
@@ -173,7 +176,7 @@ mod tests {
 
     #[test]
     fn exports_fxt_trace() {
-        let guard = crate::test_shmem::ShmemGuard::new();
+        let guard = ShmemGuard::new();
         enable_profiler("test");
 
         thread::Builder::new()
@@ -204,7 +207,7 @@ mod tests {
 
     #[test]
     fn overrun_is_reported_as_missed_events() {
-        let guard = crate::test_shmem::ShmemGuard::new();
+        let guard = ShmemGuard::new();
         enable_profiler("test");
 
         thread::Builder::new()

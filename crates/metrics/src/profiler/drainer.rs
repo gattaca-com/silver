@@ -1,7 +1,7 @@
 //! Joins a run's per-thread shmem rings into retained events by sequence
 //! number: the producer pushes a mark and its counter samples back-to-back,
 //! so entry N of every ring belongs to the same `#[timed]` event. Ring
-//! overruns are consumed at the join ([`ThreadDrainer::record_gap`]), so the
+//! overruns are consumed at the join, so the
 //! retained events are always well-formed, sample-aligned stacks and
 //! folds/exports need no gap handling of their own.
 //!
@@ -120,6 +120,10 @@ impl EventsData {
         self.perf.extend(perf);
         self.alloc.extend(alloc);
     }
+
+    fn last_samples(&self) -> (Option<PerfSample>, Option<AllocSample>) {
+        (self.perf.last().copied(), self.alloc.last().copied())
+    }
 }
 
 struct ThreadDrainer {
@@ -173,8 +177,7 @@ impl ThreadDrainer {
     /// The samples pushed with mark `seq`, or the last retained ones if a
     /// ring lost it to a hole; `None` when the ring doesn't exist.
     fn take_samples(&mut self, seq: u64) -> (Option<PerfSample>, Option<AllocSample>) {
-        let last_perf = self.events.perf.last().copied();
-        let last_alloc = self.events.alloc.last().copied();
+        let (last_perf, last_alloc) = self.events.last_samples();
         (
             self.rings.perf.as_mut().map(|ring| ring.take_at(seq, last_perf)),
             self.rings.alloc.as_mut().map(|ring| ring.take_at(seq, last_alloc)),
@@ -195,8 +198,7 @@ impl ThreadDrainer {
             // Nothing retained yet (attached mid-run): no gap to anchor.
             return;
         };
-        let last_perf = self.events.perf.last().copied();
-        let last_alloc = self.events.alloc.last().copied();
+        let (last_perf, last_alloc) = self.events.last_samples();
         while let Some(id) = self.open_ids.pop() {
             self.events.push(Mark::from_parts(id, gap_start_ts, false), last_perf, last_alloc);
         }

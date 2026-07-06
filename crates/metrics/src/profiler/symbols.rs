@@ -1,8 +1,7 @@
 //! Turns a frame id back into its `#[timed]` name. An id is only an address in
-//! the *producing* process, so resolution is process-relative:
-//! [`InProcessSymbolsResolver`] dereferences it directly,
-//! [`CrossProcessSymbolsResolver`] reads it out of another process's on-disk
-//! binary.
+//! the *producing* process, so resolution is process-relative: an in-process
+//! resolver dereferences it directly, a cross-process one reads it out of
+//! another process's on-disk binary.
 
 use std::{fs, os::unix::fs::FileExt, path::PathBuf};
 

@@ -90,7 +90,7 @@ impl ThreadTimings {
         loss: Loss,
         meta: &FlamegraphMeta,
     ) -> Self {
-        let mut paths: Vec<PathStat> = paths
+        let mut paths: Vec<_> = paths
             .into_iter()
             .map(|(path, samples)| PathStat { path, metrics: PathMetrics::from_samples(samples) })
             .collect();
@@ -119,10 +119,7 @@ impl TimingStats {
     }
 
     /// Any thread's mark stream was unreliable, so the run is incomplete and
-    /// any gate built on it is invalid. Per-thread detail rides in
-    /// [`call_tree`].
-    ///
-    /// [`call_tree`]: Self::call_tree
+    /// any gate built on it is invalid.
     pub fn missed_events(&self) -> bool {
         self.threads.iter().any(|t| t.loss.is_lossy())
     }
@@ -181,9 +178,8 @@ impl TimingStats {
             .join("\n")
     }
 
-    /// Deterministic JSON `{label, threads: [{thread, lost, paths}]}` — see
-    /// `PathMetrics` for the per-path schema; the path is its frame names
-    /// joined by `;`.
+    /// Deterministic JSON `{label, threads: [{thread, lost, paths}]}`; the path
+    /// is its frame names joined by `;`.
     pub fn to_json(&self, label: &str) -> String {
         let threads: Vec<_> = self
             .threads

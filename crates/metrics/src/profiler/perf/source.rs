@@ -35,8 +35,6 @@ thread_local! {
     static COUNTERS: Option<Counters> = Counters::open();
 }
 
-/// Current counter snapshot for the calling thread, or `None` when
-/// `perf_event_open` is unavailable.
 #[inline]
 pub(crate) fn read() -> Option<PerfSample> {
     COUNTERS.with(|c| c.as_ref().map(Counters::read))

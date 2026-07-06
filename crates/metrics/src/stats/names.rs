@@ -11,8 +11,8 @@ const MARK: &str = "::__TimedTy<";
 /// trailing `fn`. A `#[timed]` method embeds its receiver as a
 /// `…::fn::__TimedTy<ConcreteSelf>` marker (so each monomorphization is a
 /// distinct frame a string-keyed sink could otherwise not tell apart),
-/// unwrapped here into `fn<Type>`. Plain frames stay borrowed — the threshold
-/// gauges match on these and must be unaffected.
+/// unwrapped here into `fn<Type>`. Plain frames stay borrowed unchanged —
+/// downstream name matching depends on the exact string.
 pub(super) fn leaf_name(qualified: &str) -> Cow<'_, str> {
     let Some(at) = qualified.find(MARK) else {
         return Cow::Borrowed(leaf(qualified));

@@ -117,11 +117,11 @@ mod tests {
     use flux::communication::queue::Producer;
 
     use super::*;
-    use crate::profiler::queue_dir::RING_CAPACITY;
+    use crate::{profiler::queue_dir::RING_CAPACITY, test_shmem::ShmemGuard};
 
     #[test]
     fn overrun_is_counted_exactly_and_indexing_resumes_at_the_head() {
-        let guard = crate::test_shmem::ShmemGuard::new();
+        let guard = ShmemGuard::new();
         let dir = QueueDir::new(guard.app());
         let mut producer = Producer::from(dir.ring::<Mark>("ring-drainer-test"));
         let mut drainer = RingDrainer::<Mark>::open(&dir, "ring-drainer-test").unwrap();
@@ -156,7 +156,7 @@ mod tests {
 
     #[test]
     fn take_at_falls_back_to_last_retained_on_a_hole() {
-        let guard = crate::test_shmem::ShmemGuard::new();
+        let guard = ShmemGuard::new();
         let dir = QueueDir::new(guard.app());
         let mut producer = Producer::from(dir.ring::<AllocSample>("take-at-test"));
         let mut drainer = RingDrainer::<AllocSample>::open(&dir, "take-at-test").unwrap();
