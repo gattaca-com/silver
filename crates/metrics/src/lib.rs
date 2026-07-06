@@ -22,15 +22,12 @@ use std::{
 
 pub use silver_common_macros::timed;
 
-pub mod allocator;
-pub mod flamegraph_timer;
-mod perf;
+pub mod profiler;
+mod stats;
 pub mod table;
-mod timing;
 #[cfg(feature = "alloc-profile")]
-pub use allocator::CountingAllocator;
-pub(crate) use perf::Schema;
-pub(crate) use timing::TIMING;
+pub use profiler::allocator::CountingAllocator;
+pub use stats::{TimingStats, fold_stats};
 
 pub fn fmt_bytes(bytes: u64) -> String {
     const KIB: u64 = 1 << 10;
@@ -44,9 +41,9 @@ pub fn fmt_bytes(bytes: u64) -> String {
         b => format!("{b} B"),
     }
 }
+pub use profiler::TimerGuard;
 #[cfg(test)]
-pub(crate) use timing::test_shmem;
-pub use timing::{TimerGuard, init_app};
+pub(crate) use profiler::test_shmem;
 
 /// Open / create the counters file, ftruncate to `bytes`, mmap shared,
 /// and return the base pointer. Counter files land in flux's standard

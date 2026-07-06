@@ -1,95 +1,72 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::OnceLock};
 
 use flux::{
     communication::{
         cleanup::{cleanup_flink, is_pid_alive},
         queue::{Queue, QueueType},
     },
-    utils::directories::{local_share_dir, shmem_dir_queues_with_base},
+    utils::directories::{local_share_dir, shmem_dir_queues},
 };
 
-use crate::{
-    Schema,
+use super::{
     allocator::AllocSample,
-    flamegraph_timer::mark::Mark,
-    perf::{MAX_EVENTS, PerfSample},
+    mark::Mark,
+    perf::{PerfSample, Schema},
 };
 
-/// Each ring element type carries its own ring name and empty value, so the
-/// two can't be mismatched at a call site.
-pub(super) trait RingEntry: Copy {
+pub(super) trait RingEntry: Copy + Default {
     const PREFIX: &'static str;
-    const EMPTY: Self;
 }
 
 impl RingEntry for Mark {
     const PREFIX: &'static str = "events";
-    const EMPTY: Self = Mark::EMPTY;
 }
 
 impl RingEntry for PerfSample {
     const PREFIX: &'static str = "perf-events";
-    const EMPTY: Self = PerfSample { vals: [0; MAX_EVENTS] };
 }
 
 impl RingEntry for AllocSample {
     const PREFIX: &'static str = "alloc-events";
-    const EMPTY: Self = AllocSample { allocated: 0, freed: 0 };
 }
 
-/// A background reader drains each ring continuously, so a ring only buffers
-/// the marks produced between polls — but a poll can be delayed by a whole
-/// fold (O(retained marks)) on the same thread, and burst producers push
-/// millions of marks per second, so the buffer is sized in seconds of steady
-/// production (~50k marks/s), not polls. 256k entries ≈ 6 MiB of marks per
-/// thread.
+/// 256k entries ≈ 6 MiB of marks per thread.
 pub(super) const RING_CAPACITY: usize = 1 << 18;
 
-/// The shmem dir holding this run's per-thread timing rings.
+#[derive(Clone)]
 pub(super) struct QueueDir(PathBuf);
 
-impl QueueDir {
-    pub(super) fn open() -> Self {
-        Self::open_app(crate::TIMING.app())
-    }
+pub(super) static QUEUE_DIR: OnceLock<QueueDir> = OnceLock::new();
 
-    pub(super) fn open_app(app: &str) -> Self {
-        let dir = shmem_dir_queues_with_base(local_share_dir(), app);
+impl QueueDir {
+    pub(super) fn new(app: &str) -> Self {
+        let dir = shmem_dir_queues(app);
         let _ = std::fs::create_dir_all(&dir);
         Self(dir)
     }
 
-    /// Publish our pid so a surfer can attach to this run.
     pub(super) fn write_pid(&self) {
         let _ = std::fs::write(self.0.join("pid"), std::process::id().to_string());
     }
 
-    /// Publish the perf event names this run measures so a surfer labels its
-    /// positional samples by our vocabulary, not its own `SILVER_PERF_EVENTS`.
-    /// Removed when the run has no perf, so a surfer can't fold a prior perf
-    /// run's stale names against samples that no longer exist.
+    pub(super) fn live_pid(&self) -> Option<u32> {
+        let pid: u32 = std::fs::read_to_string(self.0.join("pid")).ok()?.trim().parse().ok()?;
+        is_pid_alive(pid).then_some(pid)
+    }
+
     pub(super) fn publish_perf_schema(&self) {
         let path = self.0.join("perf_schema");
         #[cfg(feature = "perf")]
         {
-            let names: Vec<&str> = Schema::local().iter().map(|e| e.label.as_str()).collect();
+            let names: Vec<_> = Schema::local().iter().map(|e| e.label.as_str()).collect();
             let _ = std::fs::write(path, names.join(","));
         }
         #[cfg(not(feature = "perf"))]
         let _ = std::fs::remove_file(path);
     }
 
-    /// The vocabulary this run published, if it enabled perf.
     pub(super) fn perf_schema(&self) -> Option<Schema> {
         std::fs::read_to_string(self.0.join("perf_schema")).ok().map(|s| Schema::parse(&s))
-    }
-
-    /// The published pid, but only if its process is still alive: the pid file
-    /// and stale `events-*` rings outlive a dead run, so a consumer must not
-    /// fold them as live data.
-    pub(super) fn live_pid(&self) -> Option<u32> {
-        let pid: u32 = std::fs::read_to_string(self.0.join("pid")).ok()?.trim().parse().ok()?;
-        is_pid_alive(pid).then_some(pid)
     }
 
     pub(super) fn path<T: RingEntry>(&self, token: &str) -> PathBuf {
@@ -118,13 +95,13 @@ impl QueueDir {
     pub(super) fn ring<T: RingEntry>(&self, token: &str) -> Queue<T> {
         let path = self.path::<T>(token);
         // Discard any leftover backing under this stable name first: a crashed
-        // run's ring or another `silver` process must never be shared, or two
-        // producers would write the same ring and corrupt each other.
+        // run's ring or another process under the same app must never be
+        // shared, or two producers would write the same ring and corrupt each
+        // other.
         let _ = cleanup_flink(&path);
         Queue::create_or_open_shared(path, RING_CAPACITY, QueueType::SPMC)
     }
 
-    /// The `<token>` of every marks ring in the dir; perf rings are excluded.
     pub(super) fn event_threads(&self) -> Vec<String> {
         self.entries()
             .filter_map(|e| {
@@ -138,12 +115,63 @@ impl QueueDir {
     }
 }
 
-/// Enable `#[timed]` production and publish this run so a surfer can attach.
-/// Call once at startup.
-pub fn enable_surfer() {
-    crate::TIMING.set_enabled();
-    let dir = QueueDir::open();
-    dir.clear_stale();
+pub fn enable_profiler(app_name: &str) {
+    let dir = QUEUE_DIR.get_or_init(|| {
+        let dir = QueueDir::new(app_name);
+        dir.clear_stale();
+        dir
+    });
     dir.publish_perf_schema();
     dir.write_pid();
+}
+
+pub fn app_with_pid(pid: u32) -> Option<String> {
+    let apps = std::fs::read_dir(local_share_dir()).ok()?;
+    apps.flatten()
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .find(|app| QueueDir(shmem_dir_queues(app)).live_pid() == Some(pid))
+}
+
+pub fn published_pid(app: &str) -> Option<u32> {
+    QueueDir::new(app).live_pid()
+}
+
+#[cfg(test)]
+pub(crate) mod test_shmem {
+    use std::sync::{Mutex, MutexGuard};
+
+    use flux::{communication::cleanup::cleanup_shmem, utils::directories::local_share_dir};
+
+    use super::{QUEUE_DIR, QueueDir};
+
+    /// Timing tests drive the process-global mode + reader and share one shmem
+    /// dir, so they must run one at a time. nextest isolates per process;
+    /// `cargo test` runs them as threads, so serialize here.
+    static SERIAL: Mutex<()> = Mutex::new(());
+
+    pub(crate) struct ShmemGuard {
+        app: String,
+        _serial: MutexGuard<'static, ()>,
+    }
+
+    impl ShmemGuard {
+        pub(crate) fn new() -> Self {
+            let serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+            let app = format!("profiler_test_{}", std::process::id());
+            let _ = QUEUE_DIR.set(QueueDir::new(&app));
+            ShmemGuard { app, _serial: serial }
+        }
+
+        /// The app this guard registered (and will clean up) — what a test
+        /// attaches to, since a guard-first `enable_profiler` name loses.
+        pub(crate) fn app(&self) -> &str {
+            &self.app
+        }
+    }
+
+    impl Drop for ShmemGuard {
+        fn drop(&mut self) {
+            cleanup_shmem(&local_share_dir().join(&self.app));
+        }
+    }
 }

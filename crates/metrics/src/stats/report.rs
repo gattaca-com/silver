@@ -4,12 +4,13 @@
 use flux::timing::Nanos;
 use rustc_hash::FxHashMap;
 
-use crate::{
-    Schema,
-    flamegraph_timer::{
-        aggregator::CallStackSamples, call_tree, counters::Counters, names::leaf_name,
-    },
+use super::{
+    aggregator::{Aggregator, CallStackSamples},
+    call_tree,
+    counters::Counters,
+    names::leaf_name,
 };
+use crate::profiler::{EventsDrainer, FlamegraphMeta, Loss};
 
 pub(super) struct PathStat {
     pub(super) path: Vec<u64>,
@@ -64,28 +65,15 @@ struct PathStatJson<'a> {
     metrics: &'a PathMetrics,
 }
 
-/// A fold's render/match labels: frame-id → resolved name, and the perf event
-/// vocabulary the counter samples are positional in.
-#[derive(Clone)]
-pub(crate) struct FlamegraphMeta {
-    pub names: FxHashMap<u64, String>,
-    pub schema: Schema,
-}
-
-/// How much of a thread's stream was lost: `missed` events were overwritten
-/// in a ring before the reader drained them (producer outran reader), and
-/// `dropped` drained closes were discarded because a gap took their open.
-/// The gaps themselves are retained as `<missed>` frames.
-#[derive(Clone, Copy, Default)]
-pub(crate) struct Loss {
-    pub(crate) missed: u64,
-    pub(crate) dropped: u64,
-}
-
-impl Loss {
-    pub(crate) fn is_lossy(&self) -> bool {
-        self.missed > 0 || self.dropped > 0
-    }
+pub fn fold_stats(events: &EventsDrainer) -> TimingStats {
+    let threads = events
+        .threads()
+        .map(|t| {
+            let paths = Aggregator::new(t.marks, t.perf, t.alloc).paths;
+            ThreadTimings::new(t.name.to_owned(), paths, t.loss, events.meta())
+        })
+        .collect();
+    TimingStats::from_threads(threads, events.meta().clone())
 }
 
 /// One producing thread's folded paths, plus how much of its stream was lost.
@@ -234,7 +222,7 @@ fn percentile(sorted: &[u64], q: f64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{flamegraph_timer::LocalReader, test_shmem::ShmemGuard, timed};
+    use crate::{profiler::InProcessReader, test_shmem::ShmemGuard, timed};
 
     #[timed]
     fn leaf_work(spin: u64) -> u64 {
@@ -253,13 +241,13 @@ mod tests {
     #[test]
     fn records_call_paths_with_self_time() {
         let _guard = ShmemGuard::new();
-        let reader = LocalReader::start();
+        let reader = InProcessReader::start();
         // 3 parent invocations × 2 leaf calls each = 6 leaf total.
         for _ in 0..3 {
             std::hint::black_box(parent_work());
         }
 
-        let stats = reader.collect();
+        let stats = fold_stats(&reader.collect());
         let names = &stats.meta.names;
         let paths = || stats.threads.iter().flat_map(|t| &t.paths);
         let parent = paths()
@@ -300,7 +288,7 @@ mod tests {
     #[test]
     fn stress_reported_loss_accounts_for_all_production() {
         let _guard = ShmemGuard::new();
-        let reader = LocalReader::start();
+        let reader = InProcessReader::start();
 
         const CALLS: u64 = 10_000_000;
         std::thread::Builder::new()
@@ -314,7 +302,7 @@ mod tests {
             .join()
             .unwrap();
 
-        let stats = reader.collect();
+        let stats = fold_stats(&reader.collect());
         assert!(stats.missed_events(), "overrun must be reported");
 
         let report: serde_json::Value = serde_json::from_str(&stats.to_json("stress")).unwrap();

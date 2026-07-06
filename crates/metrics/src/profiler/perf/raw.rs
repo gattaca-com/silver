@@ -1,5 +1,4 @@
-//! Hardware counters (instructions retired, CPU cycles) via
-//! `perf_event_open` + userspace rdpmc.
+//! Hardware counters via `perf_event_open` + userspace rdpmc.
 //!
 //! Reads cost ~30 cycles. Kernel-mode work is counted when permitted
 //! (`perf_event_paranoid` <= 1 or `CAP_PERFMON`) so syscall-heavy
@@ -64,9 +63,6 @@ mod imp {
         page: *const PerfEventMmapPage,
         fd: i32,
     }
-
-    // Used from exactly one tile thread; raw ptr blocks the auto impl.
-    unsafe impl Send for HwCounter {}
 
     impl HwCounter {
         /// Open an arbitrary perf event by `(type, config)` — the same ABI
@@ -154,9 +150,9 @@ mod imp {
             Ok(Self { page, fd })
         }
 
-        /// Current instructions-retired count. Userspace mmap-page seqlock
-        /// read (see `perf_event_mmap_page` kernel docs); falls back to the
-        /// read(2) path if the event is momentarily descheduled (index == 0).
+        /// Current counter value. Userspace mmap-page seqlock read (see
+        /// `perf_event_mmap_page` kernel docs); falls back to the read(2)
+        /// path if the event is momentarily descheduled (index == 0).
         #[inline]
         pub fn read(&self) -> u64 {
             unsafe {
@@ -214,7 +210,7 @@ mod imp {
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
 mod imp {
     #[derive(Clone, Copy, Debug)]
-    pub struct HwCounter {}
+    pub struct HwCounter;
 
     impl HwCounter {
         pub fn event(_type_: u32, _config: u64) -> Option<Self> {

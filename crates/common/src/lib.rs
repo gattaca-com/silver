@@ -37,7 +37,7 @@ pub use crate::{
 mod enr;
 mod error;
 pub mod rpc_rate_limit;
-pub use silver_metrics::{self as metrics, declare_counters, flamegraph_timer};
+pub use silver_metrics::{self as metrics, declare_counters, profiler};
 #[path = "generated/protobuf.identify.rs"]
 #[allow(clippy::all, dead_code, non_snake_case)]
 #[rustfmt::skip]

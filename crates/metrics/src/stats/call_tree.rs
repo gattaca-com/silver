@@ -9,13 +9,10 @@ use std::borrow::Cow;
 use flux::timing::Nanos;
 use rustc_hash::FxHashMap;
 
+use super::{counters::Counters, names::leaf_name, report::PathStat};
 use crate::{
-    flamegraph_timer::{
-        counters::Counters,
-        names::leaf_name,
-        report::{FlamegraphMeta, Loss, PathStat},
-    },
     fmt_bytes,
+    profiler::{FlamegraphMeta, Loss},
     table::{Column, Table},
 };
 

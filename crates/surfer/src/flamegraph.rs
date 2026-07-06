@@ -1,7 +1,10 @@
-use silver_metrics::flamegraph_timer::FlamegraphReader;
+use silver_metrics::{
+    fold_stats,
+    profiler::{CrossProcessReader, published_pid},
+};
 
 pub struct Flamegraph {
-    reader: Option<FlamegraphReader>,
+    reader: Option<CrossProcessReader>,
     tree: String,
     scroll: u16,
     /// When set, stop polling/folding so the tree holds still for reading — a
@@ -14,7 +17,7 @@ pub struct Flamegraph {
 impl Flamegraph {
     pub fn attach(app_name: &str) -> Self {
         Self {
-            reader: FlamegraphReader::attach(app_name),
+            reader: CrossProcessReader::attach(app_name),
             tree: String::new(),
             scroll: 0,
             paused: false,
@@ -36,7 +39,7 @@ impl Flamegraph {
             return;
         }
         if let Some(reader) = &self.reader {
-            self.tree = reader.stats().call_tree();
+            self.tree = fold_stats(reader.events()).call_tree();
         }
     }
 
@@ -53,7 +56,7 @@ impl Flamegraph {
     pub fn export_trace(&mut self) {
         let Some(reader) = &self.reader else { return };
         let path = format!("silver-trace-{}.fxt", reader.pid());
-        self.last_export = Some(match std::fs::write(&path, reader.export_trace()) {
+        self.last_export = Some(match std::fs::write(&path, reader.events().fxt_trace()) {
             Ok(()) => format!("exported → {path}"),
             Err(e) => format!("export failed: {e}"),
         });
@@ -73,15 +76,15 @@ impl Flamegraph {
     /// Reattach when a fresh pid is published — surfer started before the
     /// producer, or the producer restarted with a new pid and new rings.
     pub fn reattach_if_restarted(&mut self, app_name: &str) {
-        if let Some(pid) = FlamegraphReader::published_pid(app_name) {
-            if self.reader.as_ref().map(FlamegraphReader::pid) != Some(pid) {
+        if let Some(pid) = published_pid(app_name) {
+            if self.reader.as_ref().map(CrossProcessReader::pid) != Some(pid) {
                 self.reattach(app_name);
             }
         }
     }
 
     fn reattach(&mut self, app_name: &str) {
-        self.reader = FlamegraphReader::attach(app_name);
+        self.reader = CrossProcessReader::attach(app_name);
         self.tree.clear();
         self.scroll = 0;
     }

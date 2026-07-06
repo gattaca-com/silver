@@ -7,6 +7,8 @@
 
 use std::sync::OnceLock;
 
+use tracing::warn;
+
 use super::sample::MAX_EVENTS;
 
 /// A resolved hardware event: the perf_event_open ABI numbers plus a label.
@@ -25,7 +27,7 @@ const PERF_TYPE_HARDWARE: u32 = 0;
 const PERF_TYPE_HW_CACHE: u32 = 3;
 const PERF_TYPE_RAW: u32 = 4;
 
-/// Events read every run unless `SILVER_PERF_EVENTS` overrides — IPC inputs,
+/// Events read every run unless `PERF_EVENTS` overrides — IPC inputs,
 /// branch mispredicts, and a miss counter. Kept small (two general-purpose
 /// counters) so it never multiplexes; widen the set per run via the env var.
 const DEFAULT_EVENTS: &str = "instructions,cpu-cycles,branch-misses,cache-misses";
@@ -165,7 +167,6 @@ fn sysfs(name: &str) -> Option<EventSpec> {
 }
 
 fn resolve(name: &str) -> Option<EventSpec> {
-    // Curated metric, else escape hatches: raw `rNNNN`, then a sysfs event.
     if let Some(spec) = canonical(name) {
         return Some(spec);
     }
@@ -192,7 +193,7 @@ impl Schema {
                 .filter(|s| !s.is_empty())
                 .filter_map(|n| {
                     resolve(n).or_else(|| {
-                        eprintln!("perf: unknown event '{n}', skipping");
+                        warn!("perf: unknown event '{n}', skipping");
                         None
                     })
                 })
@@ -206,18 +207,18 @@ impl Schema {
     }
 
     /// Slot index of the event labelled `label`.
-    pub fn slot(&self, label: &str) -> Option<usize> {
+    fn slot(&self, label: &str) -> Option<usize> {
         self.0.iter().position(|e| e.label == label)
     }
 
     /// Value of `label` in a positional sample's slots, or 0 if the run didn't
     /// measure it.
-    pub fn value(&self, vals: &[u64], label: &str) -> u64 {
+    fn value(&self, vals: &[u64], label: &str) -> u64 {
         self.slot(label).map_or(0, |i| vals[i])
     }
 
     /// CPU cycles under either spelling perf uses for the event.
-    pub fn cycles(&self, vals: &[u64]) -> u64 {
+    fn cycles(&self, vals: &[u64]) -> u64 {
         self.value(vals, "cpu-cycles").max(self.value(vals, "cycles"))
     }
 
@@ -228,13 +229,12 @@ impl Schema {
     }
 
     /// This process's own counter slots, resolved once from
-    /// `SILVER_PERF_EVENTS` (or [`DEFAULT_EVENTS`]) — the producer's
+    /// `PERF_EVENTS` (or [`DEFAULT_EVENTS`]) — the producer's
     /// vocabulary.
     pub fn local() -> &'static Schema {
         static SCHEMA: OnceLock<Schema> = OnceLock::new();
         SCHEMA.get_or_init(|| {
-            let spec =
-                std::env::var("SILVER_PERF_EVENTS").unwrap_or_else(|_| DEFAULT_EVENTS.to_owned());
+            let spec = std::env::var("PERF_EVENTS").unwrap_or_else(|_| DEFAULT_EVENTS.to_owned());
             Schema::parse(&spec)
         })
     }

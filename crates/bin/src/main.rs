@@ -36,7 +36,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     tracing::debug!("start");
 
     // `#[timed]` is inert until a process opts in.
-    silver_common::flamegraph_timer::enable_surfer();
+    silver_common::profiler::enable_profiler("silver");
 
     let config = load_config()?;
 

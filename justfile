@@ -41,7 +41,7 @@ nextest:
 # Run the perf-regression harness on the committed mainnet fixtures.
 # Release-only; reads crates/e2e/data/perf (git-lfs). CI runs this too.
 perf-local events="instructions,cycles,l1d-misses,l2-misses,l3-misses":
-  SILVER_PERF_EVENTS="{{events}}" cargo test --release -p silver_e2e --features perf-counters,alloc-profile --test sync_pm_bs_perf -- --ignored --nocapture
+  PERF_EVENTS="{{events}}" cargo test --release -p silver_e2e --features perf-counters,alloc-profile --test sync_pm_bs_perf -- --ignored --nocapture
 
 # Run surfer (the metrics TUI). It folds the watched silver's `#[timed]` perf
 # counters into the flamegraph whenever that silver published them (the producer

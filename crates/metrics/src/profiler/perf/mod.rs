@@ -1,7 +1,7 @@
-//! Hardware performance counters for `#[timed]` (distinct from the shmem app
-//! counters in `declare_counters!`). The hot path is deliberately dumb: read
-//! the opened counters into a fixed [`PerfSample`] that rides alongside each
-//! flamegraph mark; all labelling and derived ratios happen in postprocessing.
+//! Hardware performance counters for `#[timed]`. The hot path is deliberately
+//! dumb: read the opened counters into a fixed [`PerfSample`] that rides
+//! alongside each mark; all labelling and derived ratios happen in
+//! postprocessing.
 //!
 //! Layers (read top-down):
 //! - [`events`] — name → perf_event_open `(type, config)` for this CPU; the
@@ -23,6 +23,6 @@ mod sample;
 mod source;
 
 pub use events::Schema;
-pub use sample::{MAX_EVENTS, PerfSample};
+pub use sample::PerfSample;
 #[cfg(feature = "perf")]
-pub(crate) use source::read;
+pub(super) use source::read;
