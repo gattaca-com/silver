@@ -360,7 +360,8 @@ impl Peer {
         }
 
         let state = stream.state.get_mut();
-        stream.needs_spin = state.awaiting_alloc() || !stream.out_buffer.is_empty();
+        stream.needs_spin =
+            state.awaiting_alloc() || (state.write_idle() && !stream.out_buffer.is_empty());
         if let Some(d) = state.deadline() {
             self.next_deadline = Some(self.next_deadline.map_or(d, |cur| cur.min(d)));
         }
@@ -480,7 +481,8 @@ where
         }
 
         let state = stream.state.get_mut();
-        stream.needs_spin = state.awaiting_alloc() || !stream.out_buffer.is_empty();
+        stream.needs_spin =
+            state.awaiting_alloc() || (state.write_idle() && !stream.out_buffer.is_empty());
         if let Some(d) = state.deadline() {
             *next_deadline = Some(next_deadline.map_or(d, |cur| cur.min(d)));
         }
@@ -547,9 +549,11 @@ struct Stream {
     p2p_id: P2pStreamId,
     state: Cell<StreamState>,
     out_buffer: OutboundBuffer,
-    /// Has work no quinn event re-drives: queued outbound msgs or a
-    /// tcache-alloc retry. Fresh streams are born flagged — the initial
-    /// negotiate write, and bytes delivered with `Opened`, emit no event.
+    /// Has work no quinn event re-drives: a tcache-alloc retry, or queued
+    /// outbound msgs with the write side idle (mid-write parks are
+    /// Writable-driven — flagging those busy-loops until the peer grants
+    /// credit). Fresh streams are born flagged — the initial negotiate
+    /// write, and bytes delivered with `Opened`, emit no event.
     needs_spin: bool,
 }
 

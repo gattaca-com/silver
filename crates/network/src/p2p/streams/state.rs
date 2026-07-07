@@ -130,6 +130,18 @@ impl StreamState {
         )
     }
 
+    /// Write side parked idle, able to pull a queued outbound msg. Starting
+    /// that pull is spin-only work — no quinn event fires for it. Mid-write
+    /// parks are excluded: they are write-blocked and Writable re-drives
+    /// them; re-spinning would busy-loop until the peer grants credit.
+    pub fn write_idle(&self) -> bool {
+        matches!(
+            self,
+            StreamState::Gossip { write: GossipWriteState::Idle, .. } |
+                StreamState::IncomingRpc(RpcIn::WriteResponse(RpcWriteResponse::Idle))
+        )
+    }
+
     /// Instant at which this state times out if not spun; `None` when no
     /// timeout applies. A silent peer produces no quinn event, so the owner
     /// must arrange a spin at this deadline.
