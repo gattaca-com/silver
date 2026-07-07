@@ -4492,6 +4492,7 @@ dependencies = [
  "bytes",
  "ctr",
  "flux",
+ "flux-profiler",
  "hex",
  "hkdf",
  "rand 0.8.6",
