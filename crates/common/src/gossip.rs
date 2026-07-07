@@ -4,9 +4,11 @@ use crate::{
     Error,
     ssz_view::{
         AttesterSlashingView, DataColumnSidecarFuluView, LightClientFinalityUpdateView,
-        LightClientOptimisticUpdateView, ProposerSlashingView, SignedAggregateAndProofView,
-        SignedBeaconBlockView, SignedBlsToExecutionChangeView, SignedContributionAndProofView,
-        SignedVoluntaryExitView, SingleAttestationView, SszView, SyncCommitteeView,
+        LightClientOptimisticUpdateView, PayloadAttestationMessageView, ProposerSlashingView,
+        SignedAggregateAndProofView, SignedBeaconBlockView, SignedBlsToExecutionChangeView,
+        SignedContributionAndProofView, SignedExecutionPayloadBidView,
+        SignedExecutionPayloadEnvelopeView, SignedProposerPreferencesView, SignedVoluntaryExitView,
+        SingleAttestationView, SszView, SyncCommitteeView,
     },
 };
 
@@ -38,7 +40,6 @@ pub enum GossipTopic {
     ExecutionPayload,
     PayloadAttestationMessage,
     ProposerPreferences,
-    InclusionList,
 }
 
 impl fmt::Display for GossipTopic {
@@ -62,7 +63,6 @@ impl fmt::Display for GossipTopic {
             Self::ExecutionPayload => f.write_str("execution_payload"),
             Self::PayloadAttestationMessage => f.write_str("payload_attestation_message"),
             Self::ProposerPreferences => f.write_str("proposer_preferences"),
-            Self::InclusionList => f.write_str("inclusion_list"),
         }
     }
 }
@@ -115,12 +115,18 @@ impl GossipTopic {
             Self::LightClientOptimisticUpdate => {
                 SszView::LightClientOptimisticUpdate(LightClientOptimisticUpdateView)
             }
-            // Post-Fulu
-            Self::ExecutionPayloadBid |
-            Self::ExecutionPayload |
-            Self::PayloadAttestationMessage |
-            Self::ProposerPreferences |
-            Self::InclusionList => unimplemented!(),
+            Self::ExecutionPayloadBid => {
+                SszView::SignedExecutionPayloadBid(SignedExecutionPayloadBidView)
+            }
+            Self::ExecutionPayload => {
+                SszView::SignedExecutionPayloadEnvelope(SignedExecutionPayloadEnvelopeView)
+            }
+            Self::PayloadAttestationMessage => {
+                SszView::PayloadAttestationMessage(PayloadAttestationMessageView)
+            }
+            Self::ProposerPreferences => {
+                SszView::SignedProposerPreferences(SignedProposerPreferencesView)
+            }
         }
     }
 }
@@ -146,7 +152,6 @@ impl TryFrom<&str> for GossipTopic {
             "execution_payload" => Self::ExecutionPayload,
             "payload_attestation_message" => Self::PayloadAttestationMessage,
             "proposer_preferences" => Self::ProposerPreferences,
-            "inclusion_list" => Self::InclusionList,
             other => {
                 if let Some(id) = other.strip_prefix("beacon_attestation_") {
                     Self::BeaconAttestation(id.parse().map_err(|_| Error::ParseTopicError)?)
@@ -182,7 +187,6 @@ mod tests {
             GossipTopic::ExecutionPayload,
             GossipTopic::PayloadAttestationMessage,
             GossipTopic::ProposerPreferences,
-            GossipTopic::InclusionList,
         ] {
             let s: String = t.into();
             assert_eq!(GossipTopic::try_from(s.as_str()).unwrap(), t);

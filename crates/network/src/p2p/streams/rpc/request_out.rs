@@ -96,59 +96,67 @@ impl RpcWriteRequest {
 }
 
 fn request_buffer(request: &AcquiredRpcRequest, offset: usize) -> Result<&[u8], StreamError> {
-    let buf = match request {
-        AcquiredRpcRequest::StatusV1(buffer) => {
-            if offset < buffer.len() {
-                &buffer[offset..]
-            } else {
-                &[]
+    let buf =
+        match request {
+            AcquiredRpcRequest::StatusV1(buffer) => {
+                if offset < buffer.len() {
+                    &buffer[offset..]
+                } else {
+                    &[]
+                }
             }
-        }
-        AcquiredRpcRequest::StatusV2(buffer) => {
-            if offset < buffer.len() {
-                &buffer[offset..]
-            } else {
-                &[]
+            AcquiredRpcRequest::StatusV2(buffer) => {
+                if offset < buffer.len() {
+                    &buffer[offset..]
+                } else {
+                    &[]
+                }
             }
-        }
-        AcquiredRpcRequest::Ping(buffer) => {
-            if offset < buffer.len() {
-                &buffer[offset..]
-            } else {
-                &[]
+            AcquiredRpcRequest::Ping(buffer) => {
+                if offset < buffer.len() {
+                    &buffer[offset..]
+                } else {
+                    &[]
+                }
             }
-        }
-        AcquiredRpcRequest::Goodbye(buffer) => {
-            if offset < buffer.len() {
-                &buffer[offset..]
-            } else {
-                &[]
+            AcquiredRpcRequest::Goodbye(buffer) => {
+                if offset < buffer.len() {
+                    &buffer[offset..]
+                } else {
+                    &[]
+                }
             }
-        }
-        AcquiredRpcRequest::MetaData => &[],
-        AcquiredRpcRequest::BlocksByRange(buffer) => {
-            if offset < buffer.len() {
-                &buffer[offset..]
-            } else {
-                &[]
+            AcquiredRpcRequest::MetaData => &[],
+            AcquiredRpcRequest::BlocksByRange(buffer) => {
+                if offset < buffer.len() {
+                    &buffer[offset..]
+                } else {
+                    &[]
+                }
             }
-        }
-        AcquiredRpcRequest::BlockByRoot(read) => {
-            let (buf, _) = read.buffer()?;
-            if offset < buf.len() { &buf[offset..] } else { &[] }
-        }
-        AcquiredRpcRequest::DataColumnsByRange { ssz, len } => {
-            if offset < *len {
-                &ssz[offset..*len]
-            } else {
-                &[]
+            AcquiredRpcRequest::BlockByRoot(read) => {
+                let (buf, _) = read.buffer()?;
+                if offset < buf.len() { &buf[offset..] } else { &[] }
             }
-        }
-        AcquiredRpcRequest::DataColumnsByRoot(read) => {
-            let (buf, _) = read.buffer()?;
-            if offset < buf.len() { &buf[offset..] } else { &[] }
-        }
-    };
+            AcquiredRpcRequest::DataColumnsByRange { ssz, len } => {
+                if offset < *len {
+                    &ssz[offset..*len]
+                } else {
+                    &[]
+                }
+            }
+            AcquiredRpcRequest::DataColumnsByRoot(read) => {
+                let (buf, _) = read.buffer()?;
+                if offset < buf.len() { &buf[offset..] } else { &[] }
+            }
+            AcquiredRpcRequest::ExecutionPayloadEnvelopesByRange(buffer) => {
+                if offset < buffer.len() { &buffer[offset..] } else { &[] }
+            }
+            AcquiredRpcRequest::ExecutionPayloadEnvelopesByRoot(read) => {
+                let (buf, _) = read.buffer()?;
+                if offset < buf.len() { &buf[offset..] } else { &[] }
+            }
+        };
     Ok(buf)
 }
 
@@ -163,6 +171,8 @@ fn request_length(request: &AcquiredRpcRequest) -> Result<usize, StreamError> {
         AcquiredRpcRequest::BlockByRoot(tcache_read) => tcache_read.len()?,
         AcquiredRpcRequest::DataColumnsByRange { ssz: _, len } => *len,
         AcquiredRpcRequest::DataColumnsByRoot(tcache_read) => tcache_read.len()?,
+        AcquiredRpcRequest::ExecutionPayloadEnvelopesByRange(b) => b.len(),
+        AcquiredRpcRequest::ExecutionPayloadEnvelopesByRoot(tcache_read) => tcache_read.len()?,
     };
     Ok(len)
 }

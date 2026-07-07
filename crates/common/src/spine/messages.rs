@@ -8,9 +8,10 @@ use crate::{
     ssz_view::{
         BLOCKS_BY_RANGE_REQ_SIZE, BeaconBlocksByRangeRequestView, BeaconBlocksByRootRequestView,
         DC_BY_RANGE_REQ_MAX, DataColumnSidecarFuluView, DataColumnSidecarsByRangeRequestView,
-        DataColumnsByRootIdentifierView, GOODBYE_SIZE, GoodbyeView, METADATA_SIZE, MetadataView,
-        PING_SIZE, PingView, STATUS_V1_SIZE, STATUS_V2_SIZE, SignedBeaconBlockView, SszView,
-        StatusView,
+        DataColumnsByRootIdentifierView, EXECUTION_PAYLOAD_ENVELOPES_BY_RANGE_REQ_SIZE,
+        ExecutionPayloadEnvelopesByRangeRequestView, GOODBYE_SIZE, GoodbyeView, METADATA_SIZE,
+        MetadataView, PING_SIZE, PingView, STATUS_V1_SIZE, STATUS_V2_SIZE, SignedBeaconBlockView,
+        SszView, StatusView,
     },
 };
 
@@ -53,6 +54,8 @@ pub enum RpcRequest {
     BlockByRoot(TCacheRead),
     DataColumnsByRange { ssz: [u8; DC_BY_RANGE_REQ_MAX], len: usize },
     DataColumnsByRoot(TCacheRead),
+    ExecutionPayloadEnvelopesByRange([u8; EXECUTION_PAYLOAD_ENVELOPES_BY_RANGE_REQ_SIZE]),
+    ExecutionPayloadEnvelopesByRoot(TCacheRead),
 }
 
 impl RpcRequest {
@@ -67,6 +70,12 @@ impl RpcRequest {
             RpcRequest::BlockByRoot { .. } => StreamProtocol::BeaconBlocksByRoot,
             RpcRequest::DataColumnsByRange { .. } => StreamProtocol::DataColumnSidecarsByRange,
             RpcRequest::DataColumnsByRoot { .. } => StreamProtocol::DataColumnSidecarsByRoot,
+            RpcRequest::ExecutionPayloadEnvelopesByRange(_) => {
+                StreamProtocol::ExecutionPayloadEnvelopesByRange
+            }
+            RpcRequest::ExecutionPayloadEnvelopesByRoot { .. } => {
+                StreamProtocol::ExecutionPayloadEnvelopesByRoot
+            }
         }
     }
 
@@ -91,6 +100,12 @@ impl RpcRequest {
             }
             RpcRequest::DataColumnsByRoot(read) => {
                 data_columns_by_root_tokens_from_len(read.len()?)
+            }
+            RpcRequest::ExecutionPayloadEnvelopesByRange(ssz) => {
+                ExecutionPayloadEnvelopesByRangeRequestView::count(ssz)
+            }
+            RpcRequest::ExecutionPayloadEnvelopesByRoot(read) => {
+                fixed_width_list_tokens(read.len()?, 32)
             }
         };
         Ok(tokens.max(1))
@@ -138,6 +153,10 @@ pub enum RpcResponse {
         ssz: TCacheRead,
     },
     DataColumnSidecar {
+        fork_digest: [u8; 4],
+        ssz: TCacheRead,
+    },
+    ExecutionPayloadEnvelope {
         fork_digest: [u8; 4],
         ssz: TCacheRead,
     },
@@ -231,11 +250,13 @@ impl RpcOutbound {
             RpcOutbound::Request(req) => match &req.request {
                 RpcRequest::BlockByRoot(tcache_read) => Some(tcache_read),
                 RpcRequest::DataColumnsByRoot(tcache_read) => Some(tcache_read),
+                RpcRequest::ExecutionPayloadEnvelopesByRoot(tcache_read) => Some(tcache_read),
                 _ => None,
             },
             RpcOutbound::Response(rsp) => match &rsp.response {
                 RpcResponse::BeaconBlock { fork_digest: _, ssz } => Some(ssz),
                 RpcResponse::DataColumnSidecar { fork_digest: _, ssz } => Some(ssz),
+                RpcResponse::ExecutionPayloadEnvelope { fork_digest: _, ssz } => Some(ssz),
                 _ => None,
             },
         }
@@ -640,6 +661,8 @@ impl From<&RpcInbound> for RpcMsg {
                 RpcRequest::DataColumnsByRoot(_) => {
                     RpcMsg::DataColumnByRoot(DataColumnsByRootIdentifierView)
                 }
+                RpcRequest::ExecutionPayloadEnvelopesByRange(_) |
+                RpcRequest::ExecutionPayloadEnvelopesByRoot(_) => RpcMsg::Empty,
             },
             RpcInbound::Response(rsp) => match rsp.response {
                 RpcResponse::StatusV1(_) => RpcMsg::Status(StatusView),

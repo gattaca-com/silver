@@ -538,18 +538,28 @@ impl BeaconStateTile {
         }
     }
 
-    /// RPC inbound: apply a `BeaconBlock` response received over the wire.
     fn on_rpc_inbound(&mut self, m: RpcInbound, producers: &mut Producers) {
-        if let RpcInbound::Response(RpcResponseInbound { application_id: _, stream_id, response }) =
-            m &&
-            let RpcResponse::BeaconBlock { fork_digest: _, ssz } = response
-        {
-            tracing::debug!(?stream_id, "received beacon block over rpc");
-            let acquired = self.rpc_consumer.acquire(ssz);
-            let data = acquired.buffer().ok().map(|(d, _)| d as *const [u8]);
-            if let Some(p) = data {
-                self.handle_rpc_block(stream_id, unsafe { &*p }, acquired, false, producers);
+        let RpcInbound::Response(RpcResponseInbound { application_id: _, stream_id, response }) = m
+        else {
+            return;
+        };
+        match response {
+            RpcResponse::BeaconBlock { fork_digest: _, ssz } => {
+                tracing::debug!(?stream_id, "received beacon block over rpc");
+                let acquired = self.rpc_consumer.acquire(ssz);
+                let data = acquired.buffer().ok().map(|(d, _)| d as *const [u8]);
+                if let Some(p) = data {
+                    self.handle_rpc_block(stream_id, unsafe { &*p }, acquired, false, producers);
+                }
             }
+            RpcResponse::ExecutionPayloadEnvelope { fork_digest: _, ssz } => {
+                let acquired = self.rpc_consumer.acquire(ssz);
+                let data = acquired.buffer().ok().map(|(d, _)| d as *const [u8]);
+                if let Some(p) = data {
+                    self.handle_execution_payload_envelope(unsafe { &*p });
+                }
+            }
+            _ => {}
         }
     }
 

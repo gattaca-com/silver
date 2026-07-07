@@ -471,6 +471,8 @@ impl PeerManager {
                     RpcRequest::BlockByRoot(_req) => {}
                     RpcRequest::DataColumnsByRange { ssz: _, len: _ } => {}
                     RpcRequest::DataColumnsByRoot(_req) => {}
+                    RpcRequest::ExecutionPayloadEnvelopesByRange(_ssz) => {}
+                    RpcRequest::ExecutionPayloadEnvelopesByRoot(_req) => {}
                 }
             }
             RpcInbound::Response(RpcResponseInbound { application_id, stream_id, response }) => {

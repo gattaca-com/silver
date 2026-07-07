@@ -66,6 +66,8 @@ fn default_gossip_topics() -> Vec<String> {
         GossipTopic::ProposerSlashing.to_string(),
         GossipTopic::AttesterSlashing.to_string(),
         GossipTopic::BlsToExecutionChange.to_string(),
+        GossipTopic::ExecutionPayload.to_string(),
+        GossipTopic::PayloadAttestationMessage.to_string(),
     ]
 }
 

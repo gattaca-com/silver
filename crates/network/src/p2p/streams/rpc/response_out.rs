@@ -147,6 +147,10 @@ fn response_buffer(response: &AcquiredRpcResponse, offset: usize) -> Result<&[u8
             let (buf, _) = ssz.buffer()?;
             if offset < buf.len() { &buf[offset..] } else { &[] }
         }
+        AcquiredRpcResponse::ExecutionPayloadEnvelope { fork_digest: _, ssz } => {
+            let (buf, _) = ssz.buffer()?;
+            if offset < buf.len() { &buf[offset..] } else { &[] }
+        }
         AcquiredRpcResponse::Error { error: _, msg, len } => {
             if offset < *len {
                 &msg[offset..*len]
@@ -167,6 +171,7 @@ fn response_length(response: &AcquiredRpcResponse) -> Result<usize, StreamError>
         AcquiredRpcResponse::MetaData(b) => b.len(),
         AcquiredRpcResponse::BeaconBlock { fork_digest: _, ssz } => ssz.len()?,
         AcquiredRpcResponse::DataColumnSidecar { fork_digest: _, ssz } => ssz.len()?,
+        AcquiredRpcResponse::ExecutionPayloadEnvelope { fork_digest: _, ssz } => ssz.len()?,
         AcquiredRpcResponse::Error { error: _, msg: _, len } => *len,
         AcquiredRpcResponse::Complete => 0,
     };
@@ -185,6 +190,12 @@ fn write_prefix(
             Ok(offset + 5)
         }
         AcquiredRpcResponse::DataColumnSidecar { fork_digest, ssz } => {
+            prefix[0] = 0;
+            prefix[1..5].copy_from_slice(fork_digest);
+            let offset = encode_varint(ssz.len()? as u64, &mut prefix[5..])?;
+            Ok(offset + 5)
+        }
+        AcquiredRpcResponse::ExecutionPayloadEnvelope { fork_digest, ssz } => {
             prefix[0] = 0;
             prefix[1..5].copy_from_slice(fork_digest);
             let offset = encode_varint(ssz.len()? as u64, &mut prefix[5..])?;

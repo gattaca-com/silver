@@ -20,6 +20,8 @@ pub enum StreamProtocol {
     BeaconBlocksByRoot,
     DataColumnSidecarsByRange,
     DataColumnSidecarsByRoot,
+    ExecutionPayloadEnvelopesByRange,
+    ExecutionPayloadEnvelopesByRoot,
     Unset,
 }
 
@@ -35,6 +37,8 @@ pub const ALL_PROTOCOLS: &[StreamProtocol] = &[
     StreamProtocol::BeaconBlocksByRoot,
     StreamProtocol::DataColumnSidecarsByRange,
     StreamProtocol::DataColumnSidecarsByRoot,
+    StreamProtocol::ExecutionPayloadEnvelopesByRange,
+    StreamProtocol::ExecutionPayloadEnvelopesByRoot,
 ];
 
 pub const RPC_PROTOCOLS: &[StreamProtocol] = &[
@@ -47,6 +51,8 @@ pub const RPC_PROTOCOLS: &[StreamProtocol] = &[
     StreamProtocol::BeaconBlocksByRoot,
     StreamProtocol::DataColumnSidecarsByRange,
     StreamProtocol::DataColumnSidecarsByRoot,
+    StreamProtocol::ExecutionPayloadEnvelopesByRange,
+    StreamProtocol::ExecutionPayloadEnvelopesByRoot,
 ];
 
 impl StreamProtocol {
@@ -60,7 +66,9 @@ impl StreamProtocol {
             Self::BeaconBlocksByRange |
                 Self::BeaconBlocksByRoot |
                 Self::DataColumnSidecarsByRange |
-                Self::DataColumnSidecarsByRoot
+                Self::DataColumnSidecarsByRoot |
+                Self::ExecutionPayloadEnvelopesByRange |
+                Self::ExecutionPayloadEnvelopesByRoot
         )
     }
 
@@ -73,7 +81,10 @@ impl StreamProtocol {
             Self::Ping => Some(RpcQuota::n_every(2, 10)),
             Self::Goodbye => Some(RpcQuota::one_every(10)),
             Self::Metadata => Some(RpcQuota::n_every(2, 5)),
-            Self::BeaconBlocksByRange | Self::BeaconBlocksByRoot => {
+            Self::BeaconBlocksByRange |
+            Self::BeaconBlocksByRoot |
+            Self::ExecutionPayloadEnvelopesByRange |
+            Self::ExecutionPayloadEnvelopesByRoot => {
                 Some(RpcQuota::n_every(MAX_BLOCK_RATE_LIMIT_TOKENS, 10))
             }
             Self::DataColumnSidecarsByRange | Self::DataColumnSidecarsByRoot => {
@@ -93,8 +104,11 @@ impl StreamProtocol {
             Self::Ping => Some(RpcQuota::n_every(2, 10)),
             Self::Goodbye => Some(RpcQuota::one_every(10)),
             Self::Metadata => Some(RpcQuota::n_every(2, 5)),
-            Self::BeaconBlocksByRange | Self::BeaconBlocksByRoot => {
-                Some(RpcQuota::n_every(MAX_BLOCK_RATE_LIMIT_TOKENS, 30)) // 30s appears to be the default period of Prysm. Lighthouse is 10s. 
+            Self::BeaconBlocksByRange |
+            Self::BeaconBlocksByRoot |
+            Self::ExecutionPayloadEnvelopesByRange |
+            Self::ExecutionPayloadEnvelopesByRoot => {
+                Some(RpcQuota::n_every(MAX_BLOCK_RATE_LIMIT_TOKENS, 30)) // 30s appears to be the default period of Prysm. Lighthouse is 10s.
             }
             Self::DataColumnSidecarsByRange | Self::DataColumnSidecarsByRoot => {
                 Some(RpcQuota::n_every(MAX_SIDECAR_RATE_LIMIT_TOKENS, 15))
@@ -132,6 +146,12 @@ impl StreamProtocol {
             }
             StreamProtocol::DataColumnSidecarsByRoot => {
                 b"\x41/eth2/beacon_chain/req/data_column_sidecars_by_root/1/ssz_snappy\n"
+            }
+            StreamProtocol::ExecutionPayloadEnvelopesByRange => {
+                b"\x49/eth2/beacon_chain/req/execution_payload_envelopes_by_range/1/ssz_snappy\n"
+            }
+            StreamProtocol::ExecutionPayloadEnvelopesByRoot => {
+                b"\x48/eth2/beacon_chain/req/execution_payload_envelopes_by_root/1/ssz_snappy\n"
             }
         }
     }
@@ -210,6 +230,14 @@ mod tests {
         assert_eq!(
             StreamProtocol::DataColumnSidecarsByRoot.multiselect().len(),
             (StreamProtocol::DataColumnSidecarsByRoot.multiselect()[0] + 1) as usize
+        );
+        assert_eq!(
+            StreamProtocol::ExecutionPayloadEnvelopesByRange.multiselect().len(),
+            (StreamProtocol::ExecutionPayloadEnvelopesByRange.multiselect()[0] + 1) as usize
+        );
+        assert_eq!(
+            StreamProtocol::ExecutionPayloadEnvelopesByRoot.multiselect().len(),
+            (StreamProtocol::ExecutionPayloadEnvelopesByRoot.multiselect()[0] + 1) as usize
         );
     }
 

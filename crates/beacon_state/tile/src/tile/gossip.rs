@@ -502,8 +502,8 @@ impl BeaconStateTile {
             GossipTopic::ProposerSlashing => Some(self.handle_proposer_slashing(data)),
             GossipTopic::AttesterSlashing => Some(self.handle_attester_slashing(data)),
             GossipTopic::BlsToExecutionChange => Some(self.handle_bls_to_execution_change(data)),
-            GossipTopic::ExecutionPayload => Some(self.on_execution_payload_envelope(data)),
-            GossipTopic::PayloadAttestationMessage => Some(self.on_payload_attestation(data)),
+            GossipTopic::ExecutionPayload => Some(self.handle_execution_payload_envelope(data)),
+            GossipTopic::PayloadAttestationMessage => Some(self.handle_payload_attestation(data)),
             _ => None,
         };
         match feedback {

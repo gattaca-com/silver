@@ -123,7 +123,7 @@ impl BeaconStateTile {
     }
 
     #[timed]
-    pub(super) fn on_execution_payload_envelope(&mut self, ssz: &[u8]) -> Feedback {
+    pub(super) fn handle_execution_payload_envelope(&mut self, ssz: &[u8]) -> Feedback {
         if !SignedPayload::check_size(ssz) {
             return Feedback::Ignore;
         }
@@ -152,7 +152,7 @@ impl BeaconStateTile {
         Feedback::Accept(Some(block_root))
     }
 
-    pub(super) fn on_payload_attestation(&mut self, ssz: &[u8]) -> Feedback {
+    pub(super) fn handle_payload_attestation(&mut self, ssz: &[u8]) -> Feedback {
         if ssz.len() < PAYLOAD_ATTESTATION_MESSAGE_SIZE {
             return Feedback::Reject(None);
         }

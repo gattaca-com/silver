@@ -15,8 +15,9 @@ pub(crate) enum NegotiateState {
     OutReading { protocol: StreamProtocol, buf: [u8; 96], read: usize, header: bool },
     /// Inbound: reading multistream header (fixed size).
     InReadingHeader { buf: [u8; 20], read: usize },
-    /// Inbound: header matched, reading protocol varint + string.
-    InReadingProtocol { buf: [u8; 68], read: usize },
+    /// Inbound: header matched, reading protocol varint + string. Sized for
+    /// the longest protocol line (`execution_payload_envelopes_by_range`, 74B).
+    InReadingProtocol { buf: [u8; 96], read: usize },
     /// Inbound: matched protocol, writing multistream header + protocol echo.
     InWriting { protocol: StreamProtocol, written: usize },
     /// Inbound: unrecognized protocol, writing reject (header + na).
@@ -136,7 +137,7 @@ impl NegotiateState {
                     if buf[..] != MULTISTREAM_V1[..] {
                         return Err(StreamError::InvalidMultiStreamHeader);
                     }
-                    return Ok(Spin::Next(Self::InReadingProtocol { buf: [0u8; 68], read: 0 }));
+                    return Ok(Spin::Next(Self::InReadingProtocol { buf: [0u8; 96], read: 0 }));
                 }
 
                 Ok(Spin::Ok(Self::InReadingHeader { buf, read }))
@@ -149,6 +150,9 @@ impl NegotiateState {
                     }
                 }
                 let total = buf[0] as usize + 1; // +1 for length byte itself.
+                if total > buf.len() {
+                    return Ok(Spin::Next(Self::InWritingReject { written: 0 }));
+                }
                 if read < total {
                     read += io.read_from_stream(id, &mut buf[read..total])?;
                 }
