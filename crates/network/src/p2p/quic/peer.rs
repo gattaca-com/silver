@@ -36,6 +36,9 @@ pub(crate) struct Peer {
     /// peer never responded to our handshake.
     handshake_completed: bool,
     inbound_rpc_limits: RpcRateLimitSet,
+    /// Earliest rpc read-response deadline across streams. A silent peer
+    /// emits no event to trip the timeout, so lapse triggers a full sweep.
+    next_deadline: Option<Instant>,
 }
 
 impl Peer {
@@ -54,6 +57,7 @@ impl Peer {
             created_at: Instant::now(),
             handshake_completed: false,
             inbound_rpc_limits: RpcRateLimitSet::default(),
+            next_deadline: None,
         }
     }
 
@@ -78,10 +82,9 @@ impl Peer {
             }),
         } {
             if let OutboundBuffer::Gossip(buffer) = &mut stream.out_buffer {
-                match buffer.add_msg(msg) {
-                    true => return SendResult::MessageDropped,
-                    false => return SendResult::Ok,
-                }
+                let dropped = buffer.add_msg(msg);
+                stream.needs_spin = true;
+                return if dropped { SendResult::MessageDropped } else { SendResult::Ok };
             }
         }
         SendResult::StreamCreationError
@@ -97,10 +100,9 @@ impl Peer {
             AcquiredRpcOutbound::Response(rsp) => self.streams.get_mut(&rsp.stream_id.stream_id()),
         } {
             if let OutboundBuffer::Rpc(buffer) = &mut stream.out_buffer {
-                match buffer.add_msg(msg) {
-                    true => return SendResult::MessageDropped,
-                    false => return SendResult::Ok,
-                }
+                let dropped = buffer.add_msg(msg);
+                stream.needs_spin = true;
+                return if dropped { SendResult::MessageDropped } else { SendResult::Ok };
             }
         };
         SendResult::StreamCreationError
@@ -145,10 +147,16 @@ impl Peer {
         // allocate out buffer.
         let out_buffer = out_buffer(&p2p_id, false);
         let stream = StreamState::new_outbound(protocol);
-        self.streams.insert(id, Stream { p2p_id, state: Cell::new(stream), out_buffer });
+        self.streams.insert(id, Stream {
+            p2p_id,
+            state: Cell::new(stream),
+            out_buffer,
+            needs_spin: true,
+        });
         Some(id)
     }
 
+    #[timed]
     pub(crate) fn transmit(
         &mut self,
         now: Instant,
@@ -258,33 +266,79 @@ impl Peer {
             }
         }
 
-        // Drive all streams (negotiating and active) — catches pending writes.
-        let mut to_remove = ArrayVec::<StreamId, 8>::new();
-        for (id, stream) in &mut self.streams {
-            match stream.spin(
-                &mut self.connection,
-                context,
-                now,
-                &mut self.inbound_rpc_limits,
-                on_event,
-            ) {
-                SpinResult::Ok => {}
-                SpinResult::Protocol(protocol) => {
-                    tracing::debug!(?id, ?protocol, "incoming stream negotatied");
-                    if protocol == StreamProtocol::GossipSub {
-                        self.inbound_gossip.replace(*id);
-                    }
-                }
-                SpinResult::End => {
-                    to_remove.try_push(stream.p2p_id.stream_id());
-                }
-            }
-        }
+        // Drive only streams flagged for non-event work; quinn-I/O parks are
+        // re-driven by Readable/Writable via `handle_stream_event`.
+        let to_remove = spin_streams(
+            now,
+            &mut self.connection,
+            context,
+            &mut self.streams,
+            &mut self.inbound_rpc_limits,
+            &mut self.next_deadline,
+            &mut self.inbound_gossip,
+            false,
+            on_event,
+        );
         for id in to_remove {
             self.remove_stream(id);
         }
 
+        // Read-response timeouts only fire inside a spin; sweep everything
+        // when the earliest deadline lapses.
+        if self.next_deadline.is_some_and(|d| now >= d) {
+            self.next_deadline = None;
+            let to_remove = spin_streams(
+                now,
+                &mut self.connection,
+                context,
+                &mut self.streams,
+                &mut self.inbound_rpc_limits,
+                &mut self.next_deadline,
+                &mut self.inbound_gossip,
+                true,
+                on_event,
+            );
+            for id in to_remove {
+                self.remove_stream(id);
+            }
+        }
+
         next_timeout
+    }
+
+    /// Spin one stream and re-arm its bookkeeping: the `needs_spin` flag
+    /// for non-event work and the min read-response deadline.
+    fn spin_stream<E>(
+        &mut self,
+        id: StreamId,
+        now: Instant,
+        context: &mut Context,
+        on_event: &mut E,
+    ) where
+        E: FnMut(crate::NetEvent),
+    {
+        let Some(stream) = self.streams.get_mut(&id) else {
+            return;
+        };
+        let result =
+            stream.spin(&mut self.connection, context, now, &mut self.inbound_rpc_limits, on_event);
+        if let SpinResult::End = result {
+            self.remove_stream(id);
+            return;
+        }
+
+        let state = stream.state.get_mut();
+        stream.needs_spin = state.awaiting_alloc() || !stream.out_buffer.is_empty();
+        if let Some(d) = state.deadline() {
+            self.next_deadline = Some(self.next_deadline.map_or(d, |cur| cur.min(d)));
+        }
+
+        if let SpinResult::Protocol(protocol) = result {
+            tracing::debug!(?id, ?protocol, "incoming stream negotiated");
+            if protocol == StreamProtocol::GossipSub {
+                self.inbound_gossip.replace(id);
+            }
+        }
     }
 
     #[timed]
@@ -312,6 +366,7 @@ impl Peer {
                         p2p_id,
                         state: Cell::new(StreamState::new_inbound()),
                         out_buffer: OutboundBuffer::Unset,
+                        needs_spin: true,
                     });
                     on_event(NetEvent::StreamReady { stream: p2p_id });
                     tracing::debug!(?p2p_id, "stream open");
@@ -319,29 +374,7 @@ impl Peer {
             }
             quinn_proto::StreamEvent::Readable { id } |
             quinn_proto::StreamEvent::Writable { id } => {
-                let remove = match self.streams.get_mut(&id) {
-                    Some(stream) => match stream.spin(
-                        &mut self.connection,
-                        context,
-                        now,
-                        &mut self.inbound_rpc_limits,
-                        on_event,
-                    ) {
-                        SpinResult::Ok => false,
-                        SpinResult::Protocol(protocol) => {
-                            tracing::debug!(?id, ?protocol, "incoming stream negotiated");
-                            if protocol == StreamProtocol::GossipSub {
-                                self.inbound_gossip.replace(id);
-                            }
-                            false
-                        }
-                        SpinResult::End => true,
-                    },
-                    None => false,
-                };
-                if remove {
-                    self.remove_stream(id);
-                }
+                self.spin_stream(id, now, context, on_event);
             }
             quinn_proto::StreamEvent::Finished { id } => {
                 // This event is emitted after we call 'finish()' on the send side of
@@ -385,6 +418,49 @@ impl Peer {
         }
         self.streams.remove(&id);
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spin_streams<E>(
+    now: Instant,
+    connection: &mut Connection,
+    context: &mut Context,
+    streams: &mut FxHashMap<StreamId, Stream>,
+    inbound_rpc_limits: &mut RpcRateLimitSet,
+    next_deadline: &mut Option<Instant>,
+    inbound_gossip: &mut Option<StreamId>,
+    all: bool,
+    on_event: &mut E,
+) -> ArrayVec<StreamId, 64>
+where
+    E: FnMut(crate::NetEvent),
+{
+    let mut to_remove = ArrayVec::new();
+    for (id, stream) in streams {
+        if !all && !stream.needs_spin {
+            continue;
+        }
+
+        let result = stream.spin(connection, context, now, inbound_rpc_limits, on_event);
+        if let SpinResult::End = result {
+            to_remove.push(*id);
+            continue;
+        }
+
+        let state = stream.state.get_mut();
+        stream.needs_spin = state.awaiting_alloc() || !stream.out_buffer.is_empty();
+        if let Some(d) = state.deadline() {
+            *next_deadline = Some(next_deadline.map_or(d, |cur| cur.min(d)));
+        }
+
+        if let SpinResult::Protocol(protocol) = result {
+            tracing::debug!(?id, ?protocol, "incoming stream negotiated");
+            if protocol == StreamProtocol::GossipSub {
+                inbound_gossip.replace(*id);
+            }
+        }
+    }
+    to_remove
 }
 
 /// Bucket a `ConnectionLost` reason into the `NetworkCounters` disconnect
@@ -439,6 +515,10 @@ struct Stream {
     p2p_id: P2pStreamId,
     state: Cell<StreamState>,
     out_buffer: OutboundBuffer,
+    /// Has work no quinn event re-drives: queued outbound msgs or a
+    /// tcache-alloc retry. Fresh streams are born flagged — the initial
+    /// negotiate write, and bytes delivered with `Opened`, emit no event.
+    needs_spin: bool,
 }
 
 enum SpinResult {
@@ -464,9 +544,33 @@ impl Stream {
         // Capture the phase before `spin` consumes `state`, so a stream
         // error/teardown log can report which protocol phase it failed in.
         let state_name = state.name();
+        let was_negotiate = matches!(state, StreamState::Negotiate(_));
         let mut io = StreamIoImpl { connection, outbound: &mut self.out_buffer };
 
-        match state.spin(&mut io, &mut self.p2p_id, context, now, inbound_rpc_limits, on_event) {
+        let result = state
+            .spin(&mut io, &mut self.p2p_id, context, now, inbound_rpc_limits, on_event)
+            .and_then(|state| {
+                // Negotiation completion transitions into a state that may
+                // already have work — request/response bytes to write, or
+                // surplus bytes quinn buffered past the capped negotiate
+                // read — with no event armed. Step the successor once.
+                if was_negotiate &&
+                    !matches!(state, StreamState::Negotiate(_) | StreamState::Finished)
+                {
+                    state.spin(
+                        &mut io,
+                        &mut self.p2p_id,
+                        context,
+                        now,
+                        inbound_rpc_limits,
+                        on_event,
+                    )
+                } else {
+                    Ok(state)
+                }
+            });
+
+        match result {
             Ok(StreamState::Finished) => {
                 self.state.replace(StreamState::Finished);
                 SpinResult::End
@@ -803,6 +907,23 @@ mod tests {
             CE: FnMut(NetEvent),
             SE: FnMut(NetEvent),
         {
+            self.step_inner(now, client_h, server_h, client_on_event, server_on_event, true)
+        }
+
+        /// `drain: false` leaves inbound frames unread so tests can hold the
+        /// gossip-in tcache full.
+        fn step_inner<CE, SE>(
+            &mut self,
+            now: Instant,
+            client_h: &mut PeerHarness,
+            server_h: &mut PeerHarness,
+            client_on_event: &mut CE,
+            server_on_event: &mut SE,
+            drain: bool,
+        ) where
+            CE: FnMut(NetEvent),
+            SE: FnMut(NetEvent),
+        {
             let mut buf = Vec::new();
             let mut scratch = vec![0u8; 2048];
 
@@ -856,8 +977,10 @@ mod tests {
                     );
                 }
 
-                client_h.drain_inbound();
-                server_h.drain_inbound();
+                if drain {
+                    client_h.drain_inbound();
+                    server_h.drain_inbound();
+                }
 
                 if !progress {
                     break;
@@ -1013,5 +1136,63 @@ mod tests {
         let all: Vec<u8> = server_h.received.values().flat_map(|v| v.clone()).collect();
         assert!(all.windows(10).any(|w| w == b"stream one"));
         assert!(all.windows(10).any(|w| w == b"stream two"));
+    }
+
+    /// TCache-full park + poll-retry. No quinn event re-drives a reader
+    /// parked in `AllocBody` (space frees when another tile consumes) — only
+    /// the `pending_spin` retry does. Fill the server's gossip-in tcache so
+    /// the second frame parks, then free and verify delivery resumes.
+    #[test]
+    fn tcache_full_park_and_retry() {
+        let mut pair = PeerPair::new();
+        let mut client_h = PeerHarness::new();
+        let mut server_h = PeerHarness::new();
+
+        // Shrink the server's inbound gossip tcache: one 6 KB frame fits,
+        // two don't.
+        server_h.context.gossip_producer = TCache::producer("gossip_in_small", 8 * 1024);
+        server_h.gossip_in_consumer =
+            server_h.context.gossip_producer.cache_ref().consumer("peer_gossip_in_small").unwrap();
+
+        let sid = pair.client_peer.open_stream(StreamProtocol::GossipSub).unwrap();
+        let stream_id = P2pStreamId::new(
+            pair.client_peer.id.connection,
+            sid.into(),
+            StreamProtocol::GossipSub,
+            false,
+        );
+
+        let msg1 = vec![0xA5u8; 6 * 1024];
+        let msg2 = vec![0x5Au8; 6 * 1024];
+        client_h.send_gossip(stream_id, &msg1, &mut pair.client_peer);
+        client_h.send_gossip(stream_id, &msg2, &mut pair.client_peer);
+
+        // Pump without draining: frame 1 lands in the tcache, frame 2 must
+        // park in AllocBody and stay in the retry set.
+        let now = Instant::now();
+        let mut noop_c = |_: NetEvent| {};
+        let mut noop_s = |_: NetEvent| {};
+        for _ in 0..50 {
+            pair.step_inner(now, &mut client_h, &mut server_h, &mut noop_c, &mut noop_s, false);
+        }
+        let parked =
+            pair.server_peer.streams.values_mut().any(|s| s.state.get_mut().awaiting_alloc());
+        assert!(parked, "reader should be parked awaiting tcache space");
+        assert!(
+            pair.server_peer.streams.values().any(|s| s.needs_spin),
+            "parked stream must stay flagged for retry"
+        );
+
+        // Free the tcache (drain reads + frees) and pump — the retry must
+        // deliver frame 2 with no further client writes.
+        server_h.drain_inbound();
+        wait_for(&mut pair, &mut client_h, &mut server_h, 200, |_, s| {
+            s.received.values().map(|v| v.len()).sum::<usize>() == msg1.len() + msg2.len()
+        });
+
+        let all: Vec<u8> = server_h.received.values().flat_map(|v| v.clone()).collect();
+        assert_eq!(all.len(), msg1.len() + msg2.len());
+        assert_eq!(&all[..msg1.len()], &msg1[..]);
+        assert_eq!(&all[msg1.len()..], &msg2[..]);
     }
 }

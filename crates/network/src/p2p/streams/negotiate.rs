@@ -62,6 +62,7 @@ impl NegotiateState {
             NegotiateState::OutWriting { protocol, mut written, header } => {
                 // try to write any remaining negotiate bytes: MULTISELECT_V1 ++
                 // protocol.multiselect()
+                let before = written;
                 if written < MULTISTREAM_V1.len() {
                     written += io.write_to_stream(id, &MULTISTREAM_V1[written..])?;
                 } else {
@@ -78,7 +79,11 @@ impl NegotiateState {
                         }));
                     }
                 }
-                Ok(Spin::Ok(Self::OutWriting { protocol, written, header }))
+                // Park only on zero progress (quinn write-blocked, Writable
+                // armed); a completed header write must continue to the
+                // proposal in this spin — no event fires for it.
+                let next = Self::OutWriting { protocol, written, header };
+                Ok(if written > before { Spin::Next(next) } else { Spin::Ok(next) })
             }
             NegotiateState::OutReading { protocol, mut buf, mut read, header } => {
                 // The responder sends the multistream header once per
@@ -159,6 +164,7 @@ impl NegotiateState {
                 Ok(Spin::Ok(Self::InReadingProtocol { buf, read }))
             }
             NegotiateState::InWriting { protocol, mut written } => {
+                let before = written;
                 if written < MULTISTREAM_V1.len() {
                     written += io.write_to_stream(id, &MULTISTREAM_V1[written..])?;
                 } else {
@@ -170,7 +176,10 @@ impl NegotiateState {
                         return Ok(Spin::Ok(Self::Done(protocol)));
                     }
                 }
-                Ok(Spin::Ok(Self::InWriting { protocol, written }))
+                // As `OutWriting`: header-complete must roll into the echo
+                // write in this spin; park only when write-blocked.
+                let next = Self::InWriting { protocol, written };
+                Ok(if written > before { Spin::Next(next) } else { Spin::Ok(next) })
             }
             NegotiateState::InWritingReject { mut written } => {
                 written += io.write_to_stream(id, &REJECT_RESPONSE[written..])?;

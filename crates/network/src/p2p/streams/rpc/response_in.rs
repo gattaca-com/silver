@@ -349,6 +349,13 @@ impl RpcReadResponse {
             RpcReadResponse::Complete { .. } => None,
         }
     }
+
+    /// Instant at which `spin` will fail with `ReadResponseTimeout`. The
+    /// caller must arrange a spin at this deadline — a silent peer produces
+    /// no quinn event to trigger one.
+    pub fn deadline(&self) -> Option<Instant> {
+        self.start_time().map(|s| s + READ_RESPONSE_TIMEOUT)
+    }
 }
 
 #[cfg(test)]
@@ -399,6 +406,16 @@ mod tests {
         fn remote_addr(&self) -> SocketAddr {
             "127.0.0.1:0".parse().unwrap()
         }
+    }
+
+    #[test]
+    fn deadline_is_start_plus_timeout() {
+        let now = Instant::now();
+        let state = RpcReadResponse::new(1, 0, now);
+        assert_eq!(state.deadline(), Some(now + READ_RESPONSE_TIMEOUT));
+        let complete =
+            RpcReadResponse::Complete { app_id: 1, chunk: 0, msg: RpcResponse::Complete };
+        assert_eq!(complete.deadline(), None);
     }
 
     /// Error chunk wire shape: `[code][varint len][snappy frames(msg)]` — no
