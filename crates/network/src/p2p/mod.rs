@@ -11,6 +11,7 @@ use std::{
 
 use buffa::{Message, MessageView};
 pub use context::Context;
+use flux_profiler::timed;
 use fxhash::{FxHashMap, FxHashSet};
 use mio::{Poll, net::UdpSocket};
 pub(crate) use quic::{Peer, create_client_config};
@@ -28,6 +29,7 @@ use crate::{
 };
 
 /// Function to spin the P2p stack - invoked from tile main loop.
+#[timed]
 pub fn p2p_spin<F: FnMut(NetEvent)>(
     poll: &Poll,
     p2p_endpoint: &mut P2p,
@@ -184,6 +186,7 @@ impl P2p {
 
     /// Drive the network. `data` handles byte movement for streams;
     /// `on_event` is called inline for lifecycle events.
+    #[timed]
     pub fn poll<E>(
         &mut self,
         now: Instant,
