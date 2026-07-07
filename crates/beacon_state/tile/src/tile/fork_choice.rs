@@ -3,12 +3,10 @@ use silver_beacon_state_data::{B256, SLOTS_PER_EPOCH, StateId};
 use silver_common::{
     PayloadValidationStatus,
     ssz_view::{
-        BeaconBlockBodyGloasView as BlockBodyGloas, ExecutionPayloadEnvelopeView as Envelope,
-        ExecutionPayloadView as Payload, PAYLOAD_ATTESTATION_SIZE,
+        BeaconBlockBodyGloasView as BlockBodyGloas, PAYLOAD_ATTESTATION_SIZE,
         PayloadAttestationDataView as PayloadAttestationData,
         PayloadAttestationMessageView as PayloadAttestationMessage,
         PayloadAttestationView as PayloadAttestation, SignedBeaconBlockView,
-        SignedExecutionPayloadEnvelopeView as SignedPayload,
     },
 };
 use silver_ssz::ssz_view::PAYLOAD_ATTESTATION_MESSAGE_SIZE;
@@ -120,36 +118,6 @@ impl BeaconStateTile {
             // Optimistic: EL still syncing; verdict arrives on a later FCU.
             PayloadValidationStatus::Syncing | PayloadValidationStatus::Accepted => {}
         }
-    }
-
-    #[timed]
-    pub(super) fn handle_execution_payload_envelope(&mut self, ssz: &[u8]) -> Feedback {
-        if !SignedPayload::check_size(ssz) {
-            return Feedback::Ignore;
-        }
-        let msg = SignedPayload::message(ssz);
-        let block_root = *Envelope::beacon_block_root(msg);
-        let Some(idx) = self.fork_choice.find_node_idx(&block_root) else {
-            return Feedback::Ignore;
-        };
-        let state_id = self.fork_choice.node(idx).state_id;
-        let builder_index = Envelope::builder_index(msg);
-        let payload_block_hash = *Payload::block_hash(Envelope::payload(msg));
-
-        // Consistency with the bid the block committed to.
-        {
-            let rv = self.state.read_view(state_id);
-            let bid = &rv.slot.state().latest_execution_payload_bid;
-            if bid.builder_index != builder_index || bid.block_hash != payload_block_hash {
-                return Feedback::Ignore;
-            }
-        }
-
-        self.fork_choice.mark_payload_verified(&block_root);
-        self.fork_choice.on_payload_valid(&block_root);
-        self.recompute_head();
-
-        Feedback::Accept(Some(block_root))
     }
 
     pub(super) fn handle_payload_attestation(&mut self, ssz: &[u8]) -> Feedback {

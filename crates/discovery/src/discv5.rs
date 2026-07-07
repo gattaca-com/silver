@@ -1052,6 +1052,22 @@ impl Discovery for DiscV5 {
         self.lookup_requested = true;
     }
 
+    fn update_enr_fork_id(&mut self, eth2: [u8; 16]) {
+        if self.local_enr.eth2() == Some(eth2) {
+            return;
+        }
+        self.fork_digest = eth2[..4].try_into().expect("slice is 4 bytes");
+
+        if let Err(e) = self.local_enr.set_eth2(eth2, &self.local_key) {
+            tracing::error!(?e, "failed to update local ENR eth2 field");
+            return;
+        }
+        let mut raw: ArrayVec<u8, ENR_RECORD_MAX> = ArrayVec::new();
+        self.local_enr.encode(&mut raw);
+        self.local_enr_raw = raw;
+        tracing::info!("advanced local ENR fork digest to {}", fork_digest_hex(&self.fork_digest));
+    }
+
     fn ban_node(&mut self, id: NodeId) {
         self.banned_nodes.insert(id);
         self.kbuckets.remove(&Key::from(id));
@@ -1557,6 +1573,37 @@ mod tests {
                 .any(|e| matches!(e, DiscoveryEvent::ExternalAddrChanged(sa) if sa.ip() == ipv6)),
             "expected ExternalAddrChanged with IPv6 address"
         );
+    }
+
+    #[test]
+    fn update_enr_fork_id_rewrites_enr_and_filter() {
+        let old = [0x01, 0x02, 0x03, 0x04u8];
+        let sk = SecretKey::new(&mut rand::thread_rng());
+        let mut old_eth2 = [0u8; 16];
+        old_eth2[..4].copy_from_slice(&old);
+        let mut enr = Enr::builder().ip4(Ipv4Addr::LOCALHOST).udp4(20000u16).build(&sk).unwrap();
+        enr.set_eth2(old_eth2, &sk).unwrap();
+        let mut d = DiscV5::new(DiscoveryConfig::default(), sk, enr, old);
+
+        // Ready-made ENRForkID for the new fork: digest + next-fork fields.
+        let mut new_eth2 = [0u8; 16];
+        new_eth2[..4].copy_from_slice(&[0x0a, 0x0b, 0x0c, 0x0du8]);
+        new_eth2[4..8].copy_from_slice(&[0x0a, 0x0b, 0x0c, 0x0du8]);
+        new_eth2[8..].copy_from_slice(&u64::MAX.to_le_bytes());
+
+        let seq_before = d.local_enr.seq();
+        d.update_enr_fork_id(new_eth2);
+
+        assert_eq!(&d.fork_digest, &new_eth2[..4], "peer-filter digest advanced");
+        assert_eq!(d.local_enr.eth2().unwrap(), new_eth2, "full ENRForkID installed");
+        assert!(d.local_enr.seq() > seq_before, "seq bumped so peers refresh");
+        assert!(d.local_enr.verify(), "re-signed");
+        assert!(!d.local_enr_raw.is_empty(), "raw re-encoded");
+
+        // Same ENRForkID is a no-op (no seq churn).
+        let seq_after = d.local_enr.seq();
+        d.update_enr_fork_id(new_eth2);
+        assert_eq!(d.local_enr.seq(), seq_after);
     }
 
     #[test]

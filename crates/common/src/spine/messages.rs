@@ -693,9 +693,20 @@ pub enum BlockSource {
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub enum BeaconStateEvent {
-    Status { ssz: [u8; STATUS_V2_SIZE], latest_block_slot: u64, wall_slot: u64 },
-    PersistBlock { ssz: TCacheRead, source: BlockSource },
-    BlockRejected { block_root: [u8; 32], source: BlockSource },
+    Status {
+        ssz: [u8; STATUS_V2_SIZE],
+        latest_block_slot: u64,
+        wall_slot: u64,
+        enr_fork_id: [u8; 16],
+    },
+    PersistBlock {
+        ssz: TCacheRead,
+        source: BlockSource,
+    },
+    BlockRejected {
+        block_root: [u8; 32],
+        source: BlockSource,
+    },
     ReplayComplete,
     BacktrackStall,
 }
@@ -772,6 +783,21 @@ pub struct EngineNewPayloadReq {
     pub data: TCacheRead,
     pub block_root: [u8; 32],
     pub block_source: BlockSource,
+}
+
+/// `engine_newPayloadV4` for a Gloas `SignedExecutionPayloadEnvelope`. Unlike a
+/// pre-Gloas block, the payload / `parent_beacon_block_root` / execution
+/// requests live in the envelope (`data`), but the blob KZG commitments do not
+/// — so the caller derives `versioned_hashes[..hash_count]` from the committed
+/// bid in state and passes them here.
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct EngineNewPayloadEnvelopeReq {
+    pub data: TCacheRead,
+    pub block_root: [u8; 32],
+    pub block_source: BlockSource,
+    pub hash_count: u8,
+    pub versioned_hashes: [[u8; 32]; MAX_BLOBS_PER_BLOCK],
 }
 
 /// Response to `engine_forkchoiceUpdatedV3`.  Fully inline.
@@ -902,6 +928,7 @@ pub struct EngineGetPayloadBodiesResp {
 pub enum EngineReq {
     Fcu(EngineFcuReq),
     NewPayload(EngineNewPayloadReq),
+    NewPayloadEnvelope(EngineNewPayloadEnvelopeReq),
     PreparePayload(EnginePreparePayloadReq),
     GetPayload(EngineGetPayloadReq),
     GetBlobs(EngineGetBlobsReq),

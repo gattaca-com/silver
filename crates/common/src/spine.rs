@@ -6,13 +6,13 @@ pub use messages::{
     COLUMN_BACKFILL_REQUEST_ID, DataColumnsAvailable, ELSyncStatus, EngineFcuReq, EngineFcuResp,
     EngineGetBlobsReq, EngineGetBlobsResp, EngineGetPayloadBodiesByHashReq,
     EngineGetPayloadBodiesByRangeReq, EngineGetPayloadBodiesResp, EngineGetPayloadReq,
-    EngineGetPayloadResp, EngineHealthEvent, EngineNewPayloadReq, EngineNewPayloadResp,
-    EnginePreparePayloadReq, EngineReq, EngineResp, GossipMsgOut, IpBytes, MAX_BLOBS_PER_BLOCK,
-    MAX_PAYLOAD_BODIES_PER_REQ, NewGossipMsg, P2pSend, PayloadValidationStatus, PeerControl,
-    PeerEvent, PeerStatus, REQUEST_ID_PREFIX_MASK, ReplayBlock, RequestCategory, RpcInbound,
-    RpcMsg, RpcOutbound, RpcRequest, RpcRequestInbound, RpcRequestOutbound, RpcResponse,
-    RpcResponseInbound, RpcResponseOutbound, RpcSeverity, SyncUpdate, SyncingStrategy,
-    WithdrawalInline,
+    EngineGetPayloadResp, EngineHealthEvent, EngineNewPayloadEnvelopeReq, EngineNewPayloadReq,
+    EngineNewPayloadResp, EnginePreparePayloadReq, EngineReq, EngineResp, GossipMsgOut, IpBytes,
+    MAX_BLOBS_PER_BLOCK, MAX_PAYLOAD_BODIES_PER_REQ, NewGossipMsg, P2pSend,
+    PayloadValidationStatus, PeerControl, PeerEvent, PeerStatus, REQUEST_ID_PREFIX_MASK,
+    ReplayBlock, RequestCategory, RpcInbound, RpcMsg, RpcOutbound, RpcRequest, RpcRequestInbound,
+    RpcRequestOutbound, RpcResponse, RpcResponseInbound, RpcResponseOutbound, RpcSeverity,
+    SyncUpdate, SyncingStrategy, WithdrawalInline,
 };
 pub use stream_id::P2pStreamId;
 pub use stream_protocol::{

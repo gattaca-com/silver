@@ -1,3 +1,5 @@
+use silver_ssz::ssz_hash;
+
 use super::{SlotStateGroup, SlotStateId, finalized::SlotStateFinalized};
 use crate::{
     SLOTS_PER_EPOCH,
@@ -56,6 +58,19 @@ impl<'a> SlotStateView<'a> {
     #[inline]
     pub fn state(&self) -> &'a SlotState {
         self.delta.map_or(&self.base.slot, |d| &d.slot)
+    }
+
+    pub fn bid_versioned_hashes_len(&self, out: &mut [[u8; 32]]) -> Option<usize> {
+        let commitments = &self.state().latest_execution_payload_bid.blob_kzg_commitments;
+        if commitments.len() > out.len() {
+            return None;
+        }
+        for (i, c) in commitments.iter().enumerate() {
+            let mut h = ssz_hash::sha256(c);
+            h[0] = 0x01;
+            out[i] = h;
+        }
+        Some(commitments.len())
     }
 
     #[inline]

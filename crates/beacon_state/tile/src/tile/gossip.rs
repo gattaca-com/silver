@@ -1,14 +1,18 @@
 use flux::spine::SpineProducers;
 use silver_beacon_state_data::{
-    B256, Epoch, ParsedAggregateAndProof, SLOTS_PER_EPOCH, Slot, StateReadView,
+    B256, Epoch, ParsedAggregateAndProof, SLOTS_PER_EPOCH, Slot, StateId, StateReadView,
 };
 use silver_common::{
-    BlockSource, GossipTopic, NewGossipMsg, PeerEvent,
+    BlockSource, EngineNewPayloadEnvelopeReq, EngineReq, GossipTopic, MAX_BLOBS_PER_BLOCK,
+    NewGossipMsg, PeerEvent, TCacheRead,
+    metrics::timed,
     ssz_view::{
-        AttestationDataView, AttestationView, AttesterSlashingView, PROPOSER_SLASHING_SIZE,
-        ProposerSlashingView, SIGNED_BLS_CHANGE_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE,
-        SignedBeaconBlockView, SignedBlsToExecutionChangeView, SignedVoluntaryExitView,
-        SingleAttestationView,
+        AttestationDataView, AttestationView, AttesterSlashingView,
+        ExecutionPayloadEnvelopeView as Envelope, ExecutionPayloadView as Payload,
+        PROPOSER_SLASHING_SIZE, ProposerSlashingView, SIGNED_BLS_CHANGE_SIZE,
+        SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE, SignedBeaconBlockView,
+        SignedBlsToExecutionChangeView, SignedExecutionPayloadEnvelopeView as SignedPayload,
+        SignedVoluntaryExitView, SingleAttestationView,
     },
 };
 
@@ -36,9 +40,16 @@ impl BeaconStateTile {
             return Feedback::Ignore;
         }
 
-        // Fulu single attestations encode the committee in `committee_index`;
-        // `AttestationData.index` must be 0.
-        if SingleAttestationView::data_index(buf) != 0 {
+        // Pre-Gloas single attestations encode the committee in
+        // `committee_index`, so `AttestationData.index` must be 0. Gloas widens
+        // it to a payload-status bit (`index == 1` ⇒ payload present).
+        let data_index = SingleAttestationView::data_index(buf);
+        let is_gloas = target_epoch >= self.spec.gloas_fork_epoch;
+        if is_gloas {
+            if data_index >= 2 {
+                return Feedback::Reject(None);
+            }
+        } else if data_index != 0 {
             return Feedback::Reject(None);
         }
         if let Err(f) =
@@ -46,6 +57,14 @@ impl BeaconStateTile {
         {
             return f;
         }
+        let payload_present = if is_gloas {
+            match self.gloas_payload_present(&block_root, att_slot, data_index) {
+                Ok(present) => present,
+                Err(f) => return f,
+            }
+        } else {
+            false
+        };
 
         let canon_id = self.canonical_state_id();
         let att_epoch = att_slot / SLOTS_PER_EPOCH;
@@ -89,14 +108,12 @@ impl BeaconStateTile {
             return Feedback::Reject(None);
         }
 
-        // This handler enforces `data_index == 0` above, so the payload-present
-        // vote is always false here.
         let vote = stf::AttestationVote {
             validator: attester_index as u32,
             block_root,
             target_epoch,
             attestation_slot: att_slot,
-            payload_present: false,
+            payload_present,
         };
         let n = self.head_validator_count();
         self.record_or_defer_vote(vote, n);
@@ -168,8 +185,12 @@ impl BeaconStateTile {
             return Feedback::Reject(None);
         };
 
-        // Gossip-rule checks (no state access).
-        if parsed.agg_data_index != 0 || parsed.target_epoch != parsed.att_epoch {
+        // Gossip-rule checks (no state access). Pre-Gloas requires index 0;
+        // Gloas widens it to the payload-status bit (`index < 2`).
+        let is_gloas = parsed.att_epoch >= self.spec.gloas_fork_epoch;
+        let index_ok =
+            if is_gloas { parsed.agg_data_index < 2 } else { parsed.agg_data_index == 0 };
+        if !index_ok || parsed.target_epoch != parsed.att_epoch {
             return Feedback::Reject(None);
         }
         let wall = self.ticker.current_slot();
@@ -191,6 +212,17 @@ impl BeaconStateTile {
             Some(r) if r == parsed.target_root => {}
             Some(_) => return Feedback::Reject(None),
             None => return Feedback::Ignore,
+        }
+        // `payload_present` is re-derived from the index in `apply_attestation`;
+        // here we only enforce the Gloas index==1 gossip rules.
+        if is_gloas {
+            if let Err(f) = self.gloas_payload_present(
+                &parsed.beacon_block_root,
+                parsed.agg_slot,
+                parsed.agg_data_index,
+            ) {
+                return f;
+            }
         }
 
         let canon_id = self.canonical_state_id();
@@ -260,6 +292,89 @@ impl BeaconStateTile {
         // Record the votes (validates target/ancestry + slot+1 deferral, derives
         // the committee again). The inner attestation is the aggregate field.
         self.apply_attestation(parsed.aggregate_bytes)
+    }
+
+    pub(super) fn validate_execution_payload_envelope(
+        &self,
+        ssz: &[u8],
+    ) -> Result<(B256, StateId), Feedback> {
+        if !SignedPayload::check_size(ssz) {
+            return Err(Feedback::Ignore);
+        }
+        let msg = SignedPayload::message(ssz);
+        let block_root = *Envelope::beacon_block_root(msg);
+        let Some(idx) = self.fork_choice.find_node_idx(&block_root) else {
+            return Err(Feedback::Ignore);
+        };
+        let state_id = self.fork_choice.node(idx).state_id;
+        let builder_index = Envelope::builder_index(msg);
+        let payload_block_hash = *Payload::block_hash(Envelope::payload(msg));
+        let rv = self.state.read_view(state_id);
+        let bid = &rv.slot.state().latest_execution_payload_bid;
+        if bid.builder_index != builder_index || bid.block_hash != payload_block_hash {
+            return Err(Feedback::Ignore);
+        }
+        Ok((block_root, state_id))
+    }
+
+    #[timed]
+    pub(super) fn handle_execution_payload_envelope(
+        &mut self,
+        ssz: &[u8],
+        data: TCacheRead,
+        source: BlockSource,
+        producers: &mut Producers,
+    ) -> Feedback {
+        let (block_root, state_id) = match self.validate_execution_payload_envelope(ssz) {
+            Ok(v) => v,
+            Err(f) => return f,
+        };
+
+        // Versioned hashes come from the committed bid's KZG commitments — the
+        // envelope does not carry them.
+        let mut versioned_hashes = [[0u8; 32]; MAX_BLOBS_PER_BLOCK];
+        let hash_count = match self
+            .state
+            .read_view(state_id)
+            .slot
+            .bid_versioned_hashes_len(&mut versioned_hashes)
+        {
+            Some(n) => n as u8,
+            None => return Feedback::Reject(None),
+        };
+
+        self.fork_choice.mark_payload_verified(&block_root);
+        producers.produce(EngineReq::NewPayloadEnvelope(EngineNewPayloadEnvelopeReq {
+            data,
+            block_root,
+            block_source: source,
+            hash_count,
+            versioned_hashes,
+        }));
+        self.recompute_head();
+
+        Feedback::Accept(Some(block_root))
+    }
+
+    fn gloas_payload_present(
+        &self,
+        block_root: &B256,
+        att_slot: Slot,
+        data_index: u64,
+    ) -> Result<bool, Feedback> {
+        if data_index != 1 {
+            return Ok(false);
+        }
+        let Some(idx) = self.fork_choice.find_node_idx(block_root) else {
+            return Err(Feedback::Ignore);
+        };
+        if self.fork_choice.node(idx).slot == att_slot {
+            return Err(Feedback::Reject(None));
+        }
+        if !self.fork_choice.is_payload_verified(block_root) {
+            return Err(Feedback::Ignore);
+        }
+        Ok(true)
     }
 
     fn validate_attestation_target(
@@ -502,7 +617,12 @@ impl BeaconStateTile {
             GossipTopic::ProposerSlashing => Some(self.handle_proposer_slashing(data)),
             GossipTopic::AttesterSlashing => Some(self.handle_attester_slashing(data)),
             GossipTopic::BlsToExecutionChange => Some(self.handle_bls_to_execution_change(data)),
-            GossipTopic::ExecutionPayload => Some(self.handle_execution_payload_envelope(data)),
+            GossipTopic::ExecutionPayload => Some(self.handle_execution_payload_envelope(
+                data,
+                m.ssz,
+                BlockSource::Gossip,
+                producers,
+            )),
             GossipTopic::PayloadAttestationMessage => Some(self.handle_payload_attestation(data)),
             _ => None,
         };

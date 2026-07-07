@@ -413,7 +413,7 @@ impl Store {
                 continue;
             }
             if let Some(cb) = self.column_backfill.as_mut() {
-                let block_root = util::block_root(&ssz);
+                let block_root = util::block_root_fulu(&ssz);
                 cb.seed_block(block_root, slot, &ssz, missing, emit);
             }
         }

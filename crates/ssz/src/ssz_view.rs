@@ -577,6 +577,13 @@ impl SignedBeaconBlockView {
         (kzg_commitments_offset as usize) < beacon_block_body.len() &&
             kzg_commitments_offset < execution_requests_offset
     }
+
+    #[inline]
+    pub fn is_gloas(buf: &[u8]) -> bool {
+        let body = Self::body(buf);
+        body.len() >= BEACON_BLOCK_BODY_GLOAS_FIXED &&
+            u32_le(body, 200) as usize == BEACON_BLOCK_BODY_GLOAS_FIXED
+    }
 }
 
 // -- BeaconBlockBody --------------------------------------------------
@@ -600,6 +607,7 @@ impl SignedBeaconBlockView {
 //   [396..)    variable region
 
 pub const BEACON_BLOCK_BODY_FIXED: usize = 396;
+pub const BEACON_BLOCK_BODY_GLOAS_FIXED: usize = 392;
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 #[repr(C)]
@@ -1934,6 +1942,11 @@ impl DataColumnSidecarGloasView {
         let col_off = u32_le(buf, 8) as usize;
         let proof_off = u32_le(buf, 12) as usize;
         col_off >= DATA_COLUMN_SIDECAR_GLOAS_MIN && col_off <= proof_off && proof_off <= buf.len()
+    }
+
+    #[inline]
+    pub fn is_gloas(buf: &[u8]) -> bool {
+        buf.len() >= 12 && u32_le(buf, 8) as usize == DATA_COLUMN_SIDECAR_GLOAS_MIN
     }
 }
 

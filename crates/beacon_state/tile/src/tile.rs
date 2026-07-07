@@ -10,8 +10,8 @@ use silver_beacon_state_data::{
     Checkpoint, Epoch, SLOTS_PER_EPOCH, Slot, SlotState, SpecConfig, StateId, Version,
 };
 use silver_common::{
-    BeaconStateEvent, DataColumnsAvailable, EngineResp, NewGossipMsg, ReplayBlock, RpcInbound,
-    RpcResponse, RpcResponseInbound, SilverSpine, SyncUpdate, TRandomAccess, hex32,
+    BeaconStateEvent, BlockSource, DataColumnsAvailable, EngineResp, NewGossipMsg, ReplayBlock,
+    RpcInbound, RpcResponse, RpcResponseInbound, SilverSpine, SyncUpdate, TRandomAccess, hex32,
     ssz_view::{MAX_ATTESTATIONS_ELECTRA, MAX_ATTESTING_INDICES, STATUS_V2_SIZE},
     ticker::{SlotTicker, TickEvent},
 };
@@ -319,12 +319,8 @@ impl BeaconStateTile {
         self.assert_within_weak_subjectivity();
     }
 
-    /// Spec `compute_fork_digest` (Fulu EIP-7892). Cached per epoch: inputs
-    /// (Fulu fork version, gvr, active blob_parameters) only change at epoch
-    /// boundaries — schedule entries are epoch-aligned and `gvr` is frozen.
-    /// Reorg within an epoch keeps the cache valid.
     fn fork_digest(&mut self) -> [u8; 4] {
-        let epoch = self.head_state_slot() / SLOTS_PER_EPOCH;
+        let epoch = self.ticker.current_slot() / SLOTS_PER_EPOCH;
         if let Some((cached_epoch, d)) = self.cached_fork_digest &&
             cached_epoch == epoch
         {
@@ -334,9 +330,34 @@ impl BeaconStateTile {
         let gvr = self.state.state().immutable.genesis_validators_root;
         let bp =
             get_blob_parameters(epoch, &self.spec.blob_schedule, self.spec.default_blob_params());
-        let d = compute_fork_digest(self.spec.fulu_fork_version, &gvr, Some(bp));
+        let d = compute_fork_digest(self.active_fork_version(epoch), &gvr, Some(bp));
         self.cached_fork_digest = Some((epoch, d));
         d
+    }
+
+    fn active_fork_version(&self, epoch: Epoch) -> [u8; 4] {
+        if epoch >= self.spec.gloas_fork_epoch {
+            self.spec.gloas_fork_version
+        } else {
+            self.spec.fulu_fork_version
+        }
+    }
+
+    fn enr_fork_id(&mut self) -> [u8; 16] {
+        let digest = self.fork_digest();
+        let epoch = self.ticker.current_slot() / SLOTS_PER_EPOCH;
+        let gloas_scheduled = self.spec.gloas_fork_epoch != u64::MAX;
+        let (next_version, next_epoch) = if gloas_scheduled && epoch < self.spec.gloas_fork_epoch {
+            (self.spec.gloas_fork_version, self.spec.gloas_fork_epoch)
+        } else {
+            (self.active_fork_version(epoch), u64::MAX)
+        };
+
+        let mut eth2 = [0u8; 16];
+        eth2[..4].copy_from_slice(&digest);
+        eth2[4..8].copy_from_slice(&next_version);
+        eth2[8..].copy_from_slice(&next_epoch.to_le_bytes());
+        eth2
     }
 
     pub fn assert_within_weak_subjectivity(&mut self) {
@@ -411,6 +432,7 @@ impl BeaconStateTile {
             ssz: self.status_payload(),
             latest_block_slot: self.last_applied_block_slot(),
             wall_slot: self.ticker.current_slot(),
+            enr_fork_id: self.enr_fork_id(),
         }
     }
 
@@ -556,7 +578,12 @@ impl BeaconStateTile {
                 let acquired = self.rpc_consumer.acquire(ssz);
                 let data = acquired.buffer().ok().map(|(d, _)| d as *const [u8]);
                 if let Some(p) = data {
-                    self.handle_execution_payload_envelope(unsafe { &*p });
+                    self.handle_execution_payload_envelope(
+                        unsafe { &*p },
+                        ssz,
+                        BlockSource::Rpc,
+                        producers,
+                    );
                 }
             }
             _ => {}
@@ -617,11 +644,21 @@ impl BeaconStateTile {
     }
 
     pub fn ef_apply_execution_payload(&mut self, ssz: &[u8]) -> bool {
-        matches!(self.on_execution_payload_envelope(ssz), Feedback::Accept(_))
+        // EF vectors have no execution client: validate against the committed bid
+        // and mark the payload valid synchronously (production notifies the EL).
+        match self.validate_execution_payload_envelope(ssz) {
+            Ok((block_root, _)) => {
+                self.fork_choice.mark_payload_verified(&block_root);
+                self.fork_choice.on_payload_valid(&block_root);
+                self.recompute_head();
+                true
+            }
+            Err(_) => false,
+        }
     }
 
     pub fn ef_apply_payload_attestation(&mut self, ssz: &[u8]) -> bool {
-        matches!(self.on_payload_attestation(ssz), Feedback::Accept(_))
+        matches!(self.handle_payload_attestation(ssz), Feedback::Accept(_))
     }
 
     pub fn ef_payload_verdict(

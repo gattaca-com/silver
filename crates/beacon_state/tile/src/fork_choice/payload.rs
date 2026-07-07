@@ -88,6 +88,10 @@ impl ForkChoice {
         }
     }
 
+    pub fn is_payload_verified(&self, block_root: &B256) -> bool {
+        self.find_node_idx(block_root).is_some_and(|idx| self.nodes[idx].payload.verified)
+    }
+
     pub fn record_ptc_vote(&mut self, block_root: &B256, ptc_idx: usize, present: bool, da: bool) {
         let Some(idx) = self.find_node_idx(block_root) else {
             return;

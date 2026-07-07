@@ -8,7 +8,10 @@ use crate::{
     EngineError, JwtSecret,
     http::{HttpPool, http_pool_enqueue, poll_http_pool},
     ipc::{IpcPool, ipc_pool_enqueue, poll_ipc_pool},
-    types::{ForkchoiceState, PayloadAttributesV3, write_new_payload_params},
+    types::{
+        ForkchoiceState, PayloadAttributesV3, write_new_payload_params_fulu,
+        write_new_payload_params_gloas,
+    },
 };
 
 const EVENTS_CAPACITY: usize = 16;
@@ -133,11 +136,30 @@ pub fn send_new_payload(
     data: &[u8],
     block_root: [u8; 32],
 ) -> Result<(), EngineError> {
+    send_new_payload_request_impl(c, block_root, |out| write_new_payload_params_fulu(data, out))
+}
+
+pub fn send_new_payload_envelope(
+    c: &mut EngineClient,
+    data: &[u8],
+    versioned_hashes: &[[u8; 32]],
+    block_root: [u8; 32],
+) -> Result<(), EngineError> {
+    send_new_payload_request_impl(c, block_root, |out| {
+        write_new_payload_params_gloas(data, versioned_hashes, out)
+    })
+}
+
+fn send_new_payload_request_impl(
+    c: &mut EngineClient,
+    block_root: [u8; 32],
+    write_params: impl FnOnce(&mut Vec<u8>) -> Result<(), EngineError>,
+) -> Result<(), EngineError> {
     let rpc_id = next_id(&mut c.id);
     c.scratch.clear();
     c.scratch
         .extend_from_slice(b"{\"jsonrpc\":\"2.0\",\"method\":\"engine_newPayloadV4\",\"params\":");
-    write_new_payload_params(data, &mut c.scratch)?;
+    write_params(&mut c.scratch)?;
     c.scratch.extend_from_slice(b",\"id\":");
     append_decimal_u64(rpc_id, &mut c.scratch);
     c.scratch.push(b'}');

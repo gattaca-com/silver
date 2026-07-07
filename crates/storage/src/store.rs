@@ -842,7 +842,7 @@ mod tests {
         time::{Duration, Instant},
     };
 
-    use crate::tile::IoEvent;
+    use crate::{tile::IoEvent, util};
 
     #[test]
     fn concurrent_read_write() {
@@ -1273,7 +1273,7 @@ mod tests {
         block[108..116].copy_from_slice(&7u64.to_le_bytes());
         block[116..148].copy_from_slice(&parent_root);
         block[148..180].copy_from_slice(&state_root);
-        let block_root = crate::util::block_root(&block);
+        let block_root = util::block_root_fulu(&block);
 
         let mut blocks = TCache::producer("backfill_index_blocks", 1 << 20);
         let mut res = blocks.reserve(block.len(), true).unwrap();
@@ -1319,7 +1319,7 @@ mod tests {
         block[148..180].copy_from_slice(&state_root);
         block[body_start + 388..body_start + 392].copy_from_slice(&396u32.to_le_bytes());
         block[body_start + 392..body_start + 396].copy_from_slice(&404u32.to_le_bytes());
-        let block_root = crate::util::block_root(&block);
+        let block_root = util::block_root_fulu(&block);
 
         let mut blocks = TCache::producer("column_backfill_blocks", 1 << 20);
         let mut res = blocks.reserve(block.len(), true).unwrap();
@@ -1381,7 +1381,7 @@ mod tests {
         block[148..180].copy_from_slice(&state_root);
         block[body_start + 388..body_start + 392].copy_from_slice(&396u32.to_le_bytes());
         block[body_start + 392..body_start + 396].copy_from_slice(&404u32.to_le_bytes());
-        let block_root = crate::util::block_root(&block);
+        let block_root = util::block_root_fulu(&block);
 
         // Block on disk, no columns — exactly the post-sync state.
         let dir = store.block_slot_dir(slot);

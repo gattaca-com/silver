@@ -254,9 +254,10 @@ impl PeerManager {
         self.our_fork_digest = Some(digest);
     }
 
-    /// Update our cached chain position.
-    pub fn set_status(&mut self, mut ssz: [u8; STATUS_V2_SIZE]) {
-        self.our_fork_digest = Some(*StatusView::fork_digest(&ssz));
+    pub fn set_status(&mut self, mut ssz: [u8; STATUS_V2_SIZE]) -> bool {
+        let new_digest = *StatusView::fork_digest(&ssz);
+        let digest_changed = self.our_fork_digest != Some(new_digest);
+        self.our_fork_digest = Some(new_digest);
 
         if self.earliest_available_slot != u64::MAX {
             ssz[84..].copy_from_slice(&self.earliest_available_slot.to_le_bytes());
@@ -264,6 +265,7 @@ impl PeerManager {
 
         tracing::debug!("set status");
         self.status = Some(ssz);
+        digest_changed
     }
 
     pub fn set_local_head_imported(&mut self, slot: u64) {
@@ -3256,6 +3258,17 @@ mod tests {
         send_status(&mut mgr, &mut cap, 1, make_status_v2(fork_b(), [0u8; 32], 0, [0u8; 32], 0));
         mgr.tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
         assert!(mgr.score(1).is_some());
+    }
+
+    #[test]
+    fn set_status_reports_fork_digest_change() {
+        let (mut mgr, _cap) = fixture(vec![], ScoreParams::default(), false);
+        // First set (None -> Some) is a change.
+        assert!(mgr.set_status(status_v2_ssz(fork_a(), [0; 32], 0, [0; 32], 0)));
+        // Same digest, other fields differ -> not a change (only the digest matters).
+        assert!(!mgr.set_status(status_v2_ssz(fork_a(), [0; 32], 0, [1; 32], 5)));
+        // Fork flip -> change (triggers subscription re-announce).
+        assert!(mgr.set_status(status_v2_ssz(fork_b(), [0; 32], 0, [0; 32], 0)));
     }
 
     /// Set local status + imported tip together, as the controller does from a

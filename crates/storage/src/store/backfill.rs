@@ -54,7 +54,7 @@ impl Backfill {
             }
         };
 
-        let new_block_root = util::block_root(buffer);
+        let new_block_root = util::block_root_fulu(buffer);
         let slot = SignedBeaconBlockView::slot(buffer);
         let new_parent_root = *SignedBeaconBlockView::parent_root(buffer);
 
@@ -150,11 +150,11 @@ impl ColumnBackfill {
             }
         };
 
-        if !util::verify_data_column_sidecar(buffer) {
+        if !util::verify_data_column_sidecar_fulu(buffer) {
             tracing::warn!("badly formed backfill data column sidecar");
             return None;
         }
-        if !util::verify_data_column_sidecar_kzg_proofs(buffer) {
+        if !util::verify_data_column_sidecar_kzg_proofs_fulu(buffer) {
             tracing::warn!("failed to verify backfill sidecar kzg proof");
             return None;
         }

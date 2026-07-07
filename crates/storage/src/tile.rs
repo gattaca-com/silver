@@ -14,7 +14,9 @@ use silver_common::{
     P2pSend, P2pStreamId, PeerControl, PeerEvent, ReplayBlock, RpcInbound, RpcSeverity,
     SilverSpine, StreamProtocol, SyncUpdate, SyncingStrategy, TCacheProducer, TMultiProducer,
     TProducer, TRandomAccess, TRead, Wheel,
-    ssz_view::{DataColumnSidecarFuluView, SignedBeaconBlockView, StatusView},
+    ssz_view::{
+        DataColumnSidecarFuluView, DataColumnSidecarGloasView, SignedBeaconBlockView, StatusView,
+    },
 };
 
 use crate::{StorageCounters, el_blobs::ElBlobFetcher, store::Store, util};
@@ -66,6 +68,9 @@ pub struct StorageTile {
 
     // keyed by block body root
     validated_columns: Wheel<BlockRoot, u128, 4>,
+    // Gloas: block_root → bid.blob_kzg_commitments (raw 48B elements). Gloas
+    // sidecars carry no commitments, so column KZG verifies against these.
+    gloas_commitments: Wheel<BlockRoot, Box<[u8]>, 4>,
     // BLS verify memo: block_root → previously-validated 96-byte
     // proposer signature. On a subsequent sidecar with the same
     // block_root AND matching signature bytes we skip the ~1 ms BLS
@@ -142,6 +147,7 @@ impl StorageTile {
             store,
             fork_digest,
             validated_columns: Wheel::new(EPOCH_DURATION),
+            gloas_commitments: Wheel::new(EPOCH_DURATION),
             validated_blocks: Wheel::new(EPOCH_DURATION),
             outstanding_requests: Wheel::new(Duration::from_millis(100)),
             checkpointed_epoch,
@@ -256,7 +262,14 @@ impl StorageTile {
             }
         };
 
-        if !SignedBeaconBlockView::has_data_columns(buffer) {
+        let is_gloas = SignedBeaconBlockView::is_gloas(buffer);
+
+        let has_columns = if is_gloas {
+            !util::gloas_block_commitments(buffer).is_empty()
+        } else {
+            SignedBeaconBlockView::has_data_columns(buffer)
+        };
+        if !has_columns {
             return;
         }
 
@@ -264,7 +277,13 @@ impl StorageTile {
             return;
         }
 
-        let block_root = util::block_root(buffer);
+        let block_root =
+            if is_gloas { util::block_root_gloas(buffer) } else { util::block_root_fulu(buffer) };
+
+        if is_gloas {
+            let commitments = util::gloas_block_commitments(buffer).to_vec().into_boxed_slice();
+            self.gloas_commitments.insert(block_root, commitments);
+        }
 
         if self.outstanding_requests.contains(&block_root) {
             return;
@@ -291,15 +310,40 @@ impl StorageTile {
         );
 
         let slot = SignedBeaconBlockView::slot(buffer);
-        self.el_fetcher.try_fetch(buffer, block_root, slot, to_request, emit);
+        // EL blob reconstruction parses the Fulu body layout; gloas blobs are
+        // fetched from peers by root/range instead.
+        if !is_gloas {
+            self.el_fetcher.try_fetch(buffer, block_root, slot, to_request, emit);
+        }
 
         if stream_id.protocol() != StreamProtocol::GossipSub {
             emit(StorageEmit::Peer(self.column_request(block_root, to_request)));
         }
     }
 
-    #[timed]
+    #[inline]
     fn data_columns<F>(
+        &mut self,
+        stream_id: P2pStreamId,
+        sidecar: TRead,
+        emit: &mut F,
+    ) -> Option<([u8; 32], u128)>
+    where
+        F: FnMut(DataColumnsAvailable),
+    {
+        let is_gloas = sidecar
+            .buffer()
+            .map(|(buf, _)| DataColumnSidecarGloasView::is_gloas(buf))
+            .unwrap_or(false);
+        if is_gloas {
+            self.data_columns_gloas(stream_id, sidecar, emit)
+        } else {
+            self.data_columns_fulu(stream_id, sidecar, emit)
+        }
+    }
+
+    #[timed]
+    fn data_columns_fulu<F>(
         &mut self,
         stream_id: P2pStreamId,
         sidecar: TRead,
@@ -328,7 +372,6 @@ impl StorageTile {
 
         let column_index = DataColumnSidecarFuluView::index(buffer);
         let column_bitmask = 1u128 << column_index;
-        let requested = self.outstanding_requests.remove(&block_root);
 
         let do_parent_checks = stream_id.protocol() == StreamProtocol::GossipSub;
 
@@ -341,11 +384,11 @@ impl StorageTile {
             return None;
         }
 
-        if !util::verify_data_column_sidecar(buffer) {
+        if !util::verify_data_column_sidecar_fulu(buffer) {
             tracing::warn!(?stream_id, "badly formed data column sidecar");
             return Some((block_root, column_bitmask));
         }
-        if !util::verify_data_column_sidecar_kzg_proofs(buffer) {
+        if !util::verify_data_column_sidecar_kzg_proofs_fulu(buffer) {
             tracing::warn!(?stream_id, "failed to verify sidecar kzg proof");
             return Some((block_root, column_bitmask));
         }
@@ -446,9 +489,97 @@ impl StorageTile {
             self.validated_blocks.insert(block_root, sig_bytes);
         }
 
+        self.record_validated_column(block_root, column_index, column_bitmask, slot, sidecar, emit)
+    }
+
+    fn cache_gloas_commitments(&mut self, buffer: &[u8]) {
+        if !SignedBeaconBlockView::check_size(buffer) {
+            return;
+        }
+        let commitments = util::gloas_block_commitments(buffer);
+        if commitments.is_empty() {
+            return;
+        }
+        let block_root = util::block_root_gloas(buffer);
+        self.gloas_commitments.insert(block_root, commitments.to_vec().into_boxed_slice());
+    }
+
+    #[timed]
+    fn data_columns_gloas<F>(
+        &mut self,
+        stream_id: P2pStreamId,
+        sidecar: TRead,
+        emit: &mut F,
+    ) -> Option<([u8; 32], u128)>
+    where
+        F: FnMut(DataColumnsAvailable),
+    {
+        let buffer = match sidecar.buffer() {
+            Ok((buffer, _)) => buffer,
+            Err(e) => {
+                tracing::error!(?e, ?stream_id, "failed to read gloas data column sidecar buffer");
+                return None;
+            }
+        };
+
+        let block_root = *DataColumnSidecarGloasView::beacon_block_root(buffer);
+        let slot = DataColumnSidecarGloasView::slot(buffer);
+
+        if self.store.is_synced() && slot > self.store.head_slot() + 1 {
+            return None;
+        }
+        if slot <= self.store.finalized_slot() {
+            return None;
+        }
+
+        let column_index = DataColumnSidecarGloasView::index(buffer);
+        let column_bitmask = 1u128 << column_index;
+
+        if self
+            .validated_columns
+            .get(&block_root)
+            .map(|c| c & column_bitmask != 0)
+            .unwrap_or_default()
+        {
+            return None;
+        }
+
+        // Commitments come from the referenced block. Not yet seen ⇒ IGNORE
+        // (not penalised): re-fetched by the by-root request on block arrival.
+        let Some(commitments) = self.gloas_commitments.get(&block_root) else {
+            tracing::debug!(?stream_id, slot, "gloas column before block — deferring");
+            return None;
+        };
+
+        if !util::verify_data_column_sidecar_gloas(buffer, commitments) {
+            tracing::warn!(?stream_id, "badly formed gloas data column sidecar");
+            return Some((block_root, column_bitmask));
+        }
+        if !util::verify_data_column_sidecar_kzg_proofs_gloas(buffer, commitments) {
+            tracing::warn!(?stream_id, "failed to verify gloas sidecar kzg proof");
+            return Some((block_root, column_bitmask));
+        }
+
+        self.record_validated_column(block_root, column_index, column_bitmask, slot, sidecar, emit)
+    }
+
+    fn record_validated_column<F>(
+        &mut self,
+        block_root: [u8; 32],
+        column_index: u64,
+        column_bitmask: u128,
+        slot: u64,
+        sidecar: TRead,
+        emit: &mut F,
+    ) -> Option<([u8; 32], u128)>
+    where
+        F: FnMut(DataColumnsAvailable),
+    {
         let mut completion_check = self.custody_group_columns;
 
-        if let Some((mut requested, full_set, retries)) = requested {
+        if let Some((mut requested, full_set, retries)) =
+            self.outstanding_requests.remove(&block_root)
+        {
             requested &= !column_bitmask;
             completion_check = full_set;
             if requested != 0 {
@@ -544,7 +675,9 @@ impl Tile<SilverSpine> for StorageTile {
                     let t_read = self.rpc_consumer.acquire(ssz);
                     self.store.backfill_block(t_read);
                 }
-                silver_common::RpcResponse::BeaconBlock { fork_digest: _, ssz } if self.store.is_synced() => {
+                silver_common::RpcResponse::BeaconBlock { fork_digest: _, ssz }
+                    if self.store.is_synced() =>
+                {
                     let t_read = self.rpc_consumer.acquire(ssz);
                     self.beacon_block(rsp.stream_id, t_read, &mut |emit| match emit {
                         StorageEmit::Peer(evt) => {
@@ -554,6 +687,15 @@ impl Tile<SilverSpine> for StorageTile {
                             producers.engine_reqs.produce(&req.into());
                         }
                     });
+                }
+                // Forward-sync (not synced): cache each gloas block's bid
+                // commitments so its data columns can be KZG-verified as they
+                // range-sync. Fulu columns are self-contained — no block needed.
+                silver_common::RpcResponse::BeaconBlock { fork_digest: _, ssz } => {
+                    let t_read = self.rpc_consumer.acquire(ssz);
+                    if let Ok((buf, _)) = t_read.buffer() && SignedBeaconBlockView::is_gloas(buf) {
+                        self.cache_gloas_commitments(buf);
+                    }
                 }
                 silver_common::RpcResponse::DataColumnSidecar { fork_digest: _, ssz } if rsp.is_column_backfill() => {
                     tracing::debug!("backfill data column sidecar over rpc");
@@ -627,7 +769,7 @@ impl Tile<SilverSpine> for StorageTile {
                         use silver_common::ssz_view::SignedBeaconBlockView;
                         let slot = SignedBeaconBlockView::slot(buf);
                         let parent_root = *SignedBeaconBlockView::parent_root(buf);
-                        let block_root = util::block_root(buf);
+                        let block_root = util::block_root_fulu(buf);
                         self.store.add_block(block_root, t_read, slot, parent_root);
                     }
                     Err(e) => {
@@ -838,7 +980,7 @@ mod tests {
             producer.cache_ref().random_access("test_block_cons", true).unwrap();
         let read = blocks_consumer.acquire(ssz);
 
-        let block_root = util::block_root(&block_bytes);
+        let block_root = util::block_root_fulu(&block_bytes);
         let rpc_stream = P2pStreamId::new(2, 2, StreamProtocol::BeaconBlocksByRange, true);
 
         // Once synced, an RPC block requests its custody columns by root.
