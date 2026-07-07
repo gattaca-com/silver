@@ -312,6 +312,7 @@ where
         self.p2p_endpoint.goodbye_all(&mut self.context);
     }
 
+    #[timed]
     fn poll(&mut self) -> Result<(), Error> {
         self.poll.poll(&mut self.events, Some(POLL_TIMEOUT))
     }
