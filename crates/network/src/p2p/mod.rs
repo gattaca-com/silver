@@ -18,7 +18,7 @@ pub use quic::{SendResult, create_endpoint, create_server_config};
 use quinn_proto::{ConnectionHandle, DatagramEvent, Endpoint};
 use silver_common::{
     GossipMsgOut, Identify, Keypair, P2pStreamId, PeerId, ProtoIdentify, ProtoIdentifyView,
-    RpcOutbound,
+    RpcOutbound, RpcRequestOutbound,
 };
 
 use crate::{
@@ -301,5 +301,24 @@ impl P2p {
 
         // Rebuild and resign identify proto.
         Ok(ProtoIdentify::from((&identify, &self.keypair)))
+    }
+
+    pub fn goodbye_all(&mut self, context: &mut Context) {
+        let peer_ids = self.peers.values().map(|p| p.id().connection).collect::<Vec<_>>();
+        for id in peer_ids {
+            let goodbye = RpcOutbound::Request(RpcRequestOutbound {
+                application_id: 0,
+                peer: id,
+                request: silver_common::RpcRequest::Goodbye(1u64.to_le_bytes()),
+            });
+            self.enqueue_rpc_out(goodbye, context);
+        }
+    }
+
+    pub fn shutdown(&mut self) {
+        let now = Instant::now();
+        for peer in self.peers.values_mut() {
+            peer.shutdown(now);
+        }
     }
 }

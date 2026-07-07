@@ -223,6 +223,32 @@ impl Tile<SilverSpine> for NetworkTile {
         adapter.register_waker(waker);
         true
     }
+
+    fn teardown(mut self, _adapter: &mut SpineAdapter<SilverSpine>) {
+        // Enqueue goodbyes
+        self.inner.goodbye_all();
+        p2p::p2p_spin(
+            &self.inner.poll,
+            &mut self.inner.p2p_endpoint,
+            &mut self.inner.p2p_socket,
+            &mut self.inner.context,
+            Instant::now(),
+            &mut |_| {},
+        );
+        self.inner.p2p_socket.flush(&self.inner.poll);
+
+        // Close all p2p connections
+        self.p2p_mut().shutdown();
+        p2p::p2p_spin(
+            &self.inner.poll,
+            &mut self.inner.p2p_endpoint,
+            &mut self.inner.p2p_socket,
+            &mut self.inner.context,
+            Instant::now(),
+            &mut |_| {},
+        );
+        self.inner.p2p_socket.flush(&self.inner.poll);
+    }
 }
 
 pub struct NetworkTileInner<D>
@@ -277,6 +303,10 @@ where
 
     pub fn enqueue_rpc_out(&mut self, msg: RpcOutbound) -> SendResult {
         self.p2p_endpoint.enqueue_rpc_out(msg, &mut self.context)
+    }
+
+    pub fn goodbye_all(&mut self) {
+        self.p2p_endpoint.goodbye_all(&mut self.context);
     }
 
     fn poll(&mut self) -> Result<(), Error> {
