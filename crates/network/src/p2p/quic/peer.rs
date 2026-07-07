@@ -120,6 +120,10 @@ impl Peer {
         self.streams.values().map(|s| s.out_buffer.len()).sum()
     }
 
+    pub(crate) fn shutdown(&mut self, now: Instant) {
+        self.connection.close(now, VarInt::from_u32(0), Bytes::new());
+    }
+
     /// Open an outbound stream with the given protocol. Returns `None` if
     /// the connection isn't ready (e.g. stream limit not yet negotiated).
     /// Multistream-select negotiation runs internally; `NetEvent::StreamReady`
