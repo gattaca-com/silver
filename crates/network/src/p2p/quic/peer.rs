@@ -39,6 +39,12 @@ pub(crate) struct Peer {
     /// Earliest rpc read-response deadline across streams. A silent peer
     /// emits no event to trip the timeout, so lapse triggers a full sweep.
     next_deadline: Option<Instant>,
+    /// Connection has un-polled inputs (fed events, local sends). Cleared
+    /// by `settle` once a full transmit+spin cycle quiesces.
+    dirty: bool,
+    /// Earliest instant the connection needs a poll absent any other
+    /// wakeup: min(quinn timer, `next_deadline`). Re-armed by `settle`.
+    wake_at: Option<Instant>,
 }
 
 impl Peer {
@@ -58,6 +64,10 @@ impl Peer {
             handshake_completed: false,
             inbound_rpc_limits: RpcRateLimitSet::default(),
             next_deadline: None,
+            // Born dirty: a dial must emit its handshake, an accept its
+            // response — neither has a quinn event to trigger the first poll.
+            dirty: true,
+            wake_at: None,
         }
     }
 
@@ -66,6 +76,7 @@ impl Peer {
     }
 
     pub(crate) fn event(&mut self, event: ConnectionEvent) {
+        self.dirty = true;
         self.connection.handle_event(event);
     }
 
@@ -73,7 +84,30 @@ impl Peer {
         self.connection.is_drained()
     }
 
+    /// Needs a transmit+spin cycle now: un-polled inputs, or the wake
+    /// deadline (quinn timer / rpc read-response timeout) has lapsed.
+    pub(crate) fn due(&self, now: Instant) -> bool {
+        self.dirty || self.wake_at.is_none_or(|t| t <= now)
+    }
+
+    pub(crate) fn wake_at(&self) -> Option<Instant> {
+        self.wake_at
+    }
+
+    /// Quiesce after a full transmit+spin+transmit cycle: stay dirty while
+    /// any stream has non-event work or the socket cut off transmits, and
+    /// re-arm the wake deadline. `poll_timeout` must be read here, after the
+    /// final transmit drain — transmits re-arm pacing/loss timers.
+    pub(crate) fn settle(&mut self, socket_blocked: bool) {
+        self.dirty = socket_blocked || self.streams.values().any(|s| s.needs_spin);
+        self.wake_at = match (self.connection.poll_timeout(), self.next_deadline) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+    }
+
     pub(crate) fn send_gossip(&mut self, msg: TRead) -> SendResult {
+        self.dirty = true;
         if let Some(stream) = match &self.outbound_gossip {
             Some(id) => self.streams.get_mut(id),
             None => self.open_stream(StreamProtocol::GossipSub).and_then(|id| {
@@ -92,6 +126,7 @@ impl Peer {
 
     pub(crate) fn send_rpc(&mut self, msg: AcquiredRpcOutbound) -> SendResult {
         tracing::debug!(id=?self.id, protocol=?msg.protocol(), "outbound rpc");
+        self.dirty = true;
 
         if let Some(stream) = match &msg {
             AcquiredRpcOutbound::Request(req) => {
@@ -109,6 +144,7 @@ impl Peer {
     }
 
     pub(crate) fn send_identify(&mut self) -> SendResult {
+        self.dirty = true;
         match self.open_stream(StreamProtocol::Identity) {
             Some(_) => SendResult::Ok,
             None => SendResult::StreamCreationError,
@@ -174,15 +210,13 @@ impl Peer {
         context: &mut Context,
         on_event: &mut E,
         banned_peers: &FxHashSet<PeerId>,
-    ) -> Option<Instant>
-    where
+    ) where
         F: FnMut(ConnectionHandle, EndpointEvent) -> Option<ConnectionEvent>,
         E: FnMut(crate::NetEvent),
     {
         while self.connection.poll_timeout().is_some_and(|t| t <= now) {
             self.connection.handle_timeout(now);
         }
-        let next_timeout = self.connection.poll_timeout();
 
         while let Some(ep_event) = self.connection.poll_endpoint_events() {
             if let Some(conn_event) = (ep_callback)(self.handle, ep_event) {
@@ -302,8 +336,6 @@ impl Peer {
                 self.remove_stream(id);
             }
         }
-
-        next_timeout
     }
 
     /// Spin one stream and re-arm its bookkeeping: the `needs_spin` flag

@@ -314,7 +314,9 @@ where
 
     #[timed]
     fn poll(&mut self) -> Result<(), Error> {
-        self.poll.poll(&mut self.events, Some(POLL_TIMEOUT))
+        let timeout =
+            self.p2p_endpoint.timeout().map(|d| d.min(POLL_TIMEOUT)).or(Some(POLL_TIMEOUT));
+        self.poll.poll(&mut self.events, timeout)
     }
 
     #[timed]
