@@ -73,9 +73,9 @@ silver_network = {path = "crates/network" }
 silver_peer = {path = "crates/peer" }
 silver_storage = { path = "crates/storage" }
 silver_engine = { path = "crates/engine"}
-flux = { git = "https://github.com/gattaca-com/flux", rev = "29e00f5a070465cc755c36c8721c4fbbc9c03d0f"}
-flux-utils = { git = "https://github.com/gattaca-com/flux", rev = "29e00f5a070465cc755c36c8721c4fbbc9c03d0f", features = ["bytes"]}
-flux-profiler = { git = "https://github.com/gattaca-com/flux", rev = "29e00f5a070465cc755c36c8721c4fbbc9c03d0f"}
+flux = { git = "https://github.com/gattaca-com/flux", rev = "ceddf228cdcda60bd134ddb49cc0a8375a09b853"}
+flux-utils = { git = "https://github.com/gattaca-com/flux", rev = "ceddf228cdcda60bd134ddb49cc0a8375a09b853", features = ["bytes"]}
+flux-profiler = { git = "https://github.com/gattaca-com/flux", rev = "ceddf228cdcda60bd134ddb49cc0a8375a09b853"}
 
 # External
 backtrace = "0.3"
