@@ -1,3 +1,4 @@
+use flux_profiler::timed;
 use silver_beacon_state_data::{
     self as common, BeaconBlockHeader, BuilderPendingPayment, BuilderPendingWithdrawal, Checkpoint,
     EPOCHS_PER_HISTORICAL_VECTOR, EPOCHS_PER_SLASHINGS_VECTOR, Eth1Data, ExecutionPayloadBid,
@@ -9,7 +10,6 @@ use silver_beacon_state_data::{
         PTC_WINDOW_LEN,
     },
 };
-use silver_common::metrics::timed;
 pub use silver_common::ssz_hash::*;
 
 #[timed]

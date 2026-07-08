@@ -1,6 +1,6 @@
 use std::io::{self, Write};
 
-use silver_common_macros::timed;
+use flux_profiler::timed;
 
 use crate::{
     DecomposeError, FinalizedValidators,

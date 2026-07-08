@@ -1,7 +1,7 @@
+use flux_profiler::timed;
 use silver_beacon_state_data::{B256, SLOTS_PER_EPOCH, StateId};
 use silver_common::{
     PayloadValidationStatus,
-    metrics::timed,
     ssz_view::{
         BeaconBlockBodyGloasView as BlockBodyGloas, ExecutionPayloadEnvelopeView as Envelope,
         ExecutionPayloadView as Payload, PAYLOAD_ATTESTATION_SIZE,

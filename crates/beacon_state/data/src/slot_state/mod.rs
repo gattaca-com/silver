@@ -6,7 +6,7 @@ mod tests;
 use delta::SlotStateDelta;
 pub use delta::{SlotStateView, SlotStateWriteView};
 pub use finalized::SlotStateFinalized;
-use silver_common_macros::timed;
+use flux_profiler::timed;
 
 use crate::{
     buffer::{Id, Reset, Ring, reanchor_survivors},

@@ -6,7 +6,7 @@ mod tests;
 pub(crate) use delta::EpochStateDelta;
 pub use delta::{EpochView, EpochWriteView};
 pub use finalized::EpochStateFinalized;
-use silver_common_macros::timed;
+use flux_profiler::timed;
 
 use crate::{
     buffer::{Id, Reset, Ring, reanchor_survivors},

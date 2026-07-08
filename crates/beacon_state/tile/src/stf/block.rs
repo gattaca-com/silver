@@ -1,15 +1,13 @@
 use blst::min_pk::PublicKey;
+use flux_profiler::timed;
 use silver_beacon_state_data::{
     B256, BeaconBlockHeader, BlockBodyError, BodyFork, BodyOffsets, Epoch, EpochGroup, EpochId,
     EpochView, EpochWriteView, Eth1Data, Eth1WriteView, Immutable, LongtailGroup, LongtailId,
     LongtailView, SLOTS_PER_EPOCH, Slot, SlotStateView, SlotStateWriteView, SpecConfig, StateId,
     StateReadView, StateWriterView, ValidatorsView,
 };
-use silver_common::{
-    metrics::timed,
-    ssz_view::{
-        BEACON_BLOCK_BODY_FIXED, Eth1DataView, SIGNED_BEACON_BLOCK_MIN, SignedBeaconBlockView,
-    },
+use silver_common::ssz_view::{
+    BEACON_BLOCK_BODY_FIXED, Eth1DataView, SIGNED_BEACON_BLOCK_MIN, SignedBeaconBlockView,
 };
 
 use crate::{

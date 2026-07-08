@@ -5,8 +5,8 @@ mod tests;
 
 pub use delta::{LongtailView, LongtailWriteView};
 pub use finalized::LongtailState;
+use flux_profiler::timed;
 use parking_lot::Mutex;
-use silver_common_macros::timed;
 
 use crate::{
     buffer::{Id, Reset, Ring, reanchor_survivors},

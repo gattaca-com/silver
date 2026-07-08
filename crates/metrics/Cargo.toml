@@ -6,28 +6,19 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
-silver_common_macros.workspace = true
 flux.workspace = true
+flux-profiler.workspace = true
 libc.workspace = true
 rustc-hash.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tracing.workspace = true
+
+[dev-dependencies]
+flux-profiler = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true
 
 [features]
-# `#[timed]`'s hardware-counter dimension: per-call counters via rdpmc
-# (hw_counter), emitted on perf-{fn} queues. Needs
-# kernel.perf_event_paranoid <= 2 at runtime (<= 1 to include kernel-mode
-# work in the counts):
-#   sudo sysctl kernel.perf_event_paranoid=1
-# Disabled with a warn otherwise. `PerfSample` and the `#[timed]` macro
-# compile regardless — counter collection alone is gated.
-perf = []
-# Wrap the global allocator in `CountingAllocator` and ride its per-thread
-# allocated/freed byte counts alongside each `#[timed]` mark, the allocation
-# analogue of `perf`. `AllocSample` and the fold compile regardless — only the
-# wrapper and its counter production are gated.
-alloc-profile = []
+perf = ["flux-profiler/perf"]
+alloc-profile = ["flux-profiler/alloc-profile"]

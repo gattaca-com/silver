@@ -25,7 +25,6 @@ rustc-hash.workspace = true
 rustls.workspace = true
 secp256k1.workspace = true
 silver_chain_spec.workspace = true
-silver_common_macros.workspace = true
 silver_metrics.workspace = true
 silver_ssz.workspace = true
 serde.workspace = true

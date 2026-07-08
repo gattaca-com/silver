@@ -6,7 +6,7 @@ mod tests;
 use delta::Eth1VotesDelta;
 pub use delta::{Eth1View, Eth1WriteView};
 pub use finalized::Eth1Votes;
-use silver_common_macros::timed;
+use flux_profiler::timed;
 
 use crate::{
     buffer::{Id, Reset, Ring, reanchor_survivors},

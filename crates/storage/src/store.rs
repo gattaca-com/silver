@@ -4,6 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use flux_profiler::timed;
 use fxhash::FxHashMap;
 use silver_common::{
     Enr, P2pStreamId, PeerEvent, RpcRequestInbound, SyncUpdate, TRandomAccess, TRead,
@@ -13,7 +14,6 @@ use silver_common::{
         DataColumnSidecarsByRangeRequestView, DataColumnsByRootIdentifierView,
     },
 };
-use silver_metrics::timed;
 
 use crate::store::backfill::{Backfill, ColumnBackfill};
 

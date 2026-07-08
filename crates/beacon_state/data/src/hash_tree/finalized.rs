@@ -4,7 +4,7 @@
 //! delta's precomputed hashes. Reads are O(1); per-leaf `set` belongs on
 //! the delta layer.
 
-use silver_common_macros::timed;
+use flux_profiler::timed;
 
 use crate::{
     ssz_hash::{ZERO_HASHES, hash_concat_many},

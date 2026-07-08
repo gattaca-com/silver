@@ -1,4 +1,4 @@
-use silver_common_macros::timed;
+use flux_profiler::timed;
 
 use crate::{
     BalancesGroup, BeaconState, BuildersGroup, ColumnLenMismatch, CurrentParticipationGroup,

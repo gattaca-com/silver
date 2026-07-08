@@ -5,7 +5,7 @@ use std::{
     ops::{Deref, DerefMut},
 };
 
-use silver_common_macros::timed;
+use flux_profiler::timed;
 
 /// Typed handle to a ring slot owned by group `G`. Minted only by [`Ring<G>`],
 /// so a slot id for one group can't be passed where another's is expected and

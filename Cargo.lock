@@ -153,7 +153,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -164,7 +164,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -640,6 +640,12 @@ name = "bytes"
 version = "1.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
+
+[[package]]
+name = "bytesize"
+version = "1.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2e93abca9e28e0a1b9877922aacb20576e05d4679ffa78c3d6dc22a26a216659"
 
 [[package]]
 name = "c-kzg"
@@ -1332,7 +1338,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1436,7 +1442,7 @@ dependencies = [
 [[package]]
 name = "flux"
 version = "0.0.38"
-source = "git+https://github.com/gattaca-com/flux?rev=3a72d5c5724c356199c33bae3fe35d0d9dc2733c#3a72d5c5724c356199c33bae3fe35d0d9dc2733c"
+source = "git+https://github.com/gattaca-com/flux?rev=ceddf228cdcda60bd134ddb49cc0a8375a09b853#ceddf228cdcda60bd134ddb49cc0a8375a09b853"
 dependencies = [
  "bitcode",
  "core_affinity",
@@ -1457,7 +1463,7 @@ dependencies = [
 [[package]]
 name = "flux-communication"
 version = "0.0.27"
-source = "git+https://github.com/gattaca-com/flux?rev=3a72d5c5724c356199c33bae3fe35d0d9dc2733c#3a72d5c5724c356199c33bae3fe35d0d9dc2733c"
+source = "git+https://github.com/gattaca-com/flux?rev=ceddf228cdcda60bd134ddb49cc0a8375a09b853#ceddf228cdcda60bd134ddb49cc0a8375a09b853"
 dependencies = [
  "directories",
  "flux-timing",
@@ -1469,9 +1475,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "flux-profiler"
+version = "0.0.1"
+source = "git+https://github.com/gattaca-com/flux?rev=ceddf228cdcda60bd134ddb49cc0a8375a09b853#ceddf228cdcda60bd134ddb49cc0a8375a09b853"
+dependencies = [
+ "bytesize",
+ "clap",
+ "flux-communication",
+ "flux-profiler-macros",
+ "flux-timing",
+ "flux-utils",
+ "humantime",
+ "libc",
+ "rustc-hash",
+ "serde",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "flux-profiler-macros"
+version = "0.0.1"
+source = "git+https://github.com/gattaca-com/flux?rev=ceddf228cdcda60bd134ddb49cc0a8375a09b853#ceddf228cdcda60bd134ddb49cc0a8375a09b853"
+dependencies = [
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "flux-timing"
 version = "0.0.16"
-source = "git+https://github.com/gattaca-com/flux?rev=3a72d5c5724c356199c33bae3fe35d0d9dc2733c#3a72d5c5724c356199c33bae3fe35d0d9dc2733c"
+source = "git+https://github.com/gattaca-com/flux?rev=ceddf228cdcda60bd134ddb49cc0a8375a09b853#ceddf228cdcda60bd134ddb49cc0a8375a09b853"
 dependencies = [
  "bitcode",
  "chrono",
@@ -1488,7 +1522,7 @@ dependencies = [
 [[package]]
 name = "flux-utils"
 version = "0.0.23"
-source = "git+https://github.com/gattaca-com/flux?rev=3a72d5c5724c356199c33bae3fe35d0d9dc2733c#3a72d5c5724c356199c33bae3fe35d0d9dc2733c"
+source = "git+https://github.com/gattaca-com/flux?rev=ceddf228cdcda60bd134ddb49cc0a8375a09b853#ceddf228cdcda60bd134ddb49cc0a8375a09b853"
 dependencies = [
  "bytes",
  "core_affinity",
@@ -2392,7 +2426,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi",
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3184,7 +3218,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4032,7 +4066,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4345,6 +4379,7 @@ dependencies = [
  "blst",
  "criterion",
  "flux",
+ "flux-profiler",
  "rand 0.8.6",
  "ring",
  "rustc-hash",
@@ -4353,7 +4388,6 @@ dependencies = [
  "silver_beacon_state_data",
  "silver_common",
  "silver_config",
- "silver_metrics",
  "silver_ssz",
  "silver_storage",
  "snap 0.1.2",
@@ -4368,14 +4402,13 @@ dependencies = [
  "blst",
  "criterion",
  "flux",
+ "flux-profiler",
  "hex",
  "parking_lot",
  "rand 0.8.6",
  "rustc-hash",
  "serde",
  "silver_chain_spec",
- "silver_common_macros",
- "silver_metrics",
  "silver_ssz",
  "snap 1.1.1",
  "thiserror 1.0.69",
@@ -4417,7 +4450,6 @@ dependencies = [
  "serde_json",
  "sha3",
  "silver_chain_spec",
- "silver_common_macros",
  "silver_metrics",
  "silver_ssz",
  "snap 1.1.1",
@@ -4426,15 +4458,6 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "silver_common_macros"
-version = "0.0.1"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
 ]
 
 [[package]]
@@ -4561,12 +4584,11 @@ name = "silver_metrics"
 version = "0.0.1"
 dependencies = [
  "flux",
+ "flux-profiler",
  "libc",
  "rustc-hash",
  "serde",
  "serde_json",
- "silver_common_macros",
- "tracing",
 ]
 
 [[package]]
@@ -4578,6 +4600,7 @@ dependencies = [
  "crc32c",
  "criterion",
  "flux",
+ "flux-profiler",
  "fxhash",
  "hdrhistogram",
  "ipnet-trie",
@@ -4593,7 +4616,6 @@ dependencies = [
  "secp256k1",
  "silver_common",
  "silver_discovery",
- "silver_metrics",
  "snap 1.1.1",
  "socket2 0.5.10",
  "thiserror 1.0.69",
@@ -4608,11 +4630,11 @@ name = "silver_peer"
 version = "0.0.1"
 dependencies = [
  "flux",
+ "flux-profiler",
  "fxhash",
  "hex",
  "silver_common",
  "silver_config",
- "silver_metrics",
  "slab",
  "tracing",
 ]
@@ -4622,11 +4644,10 @@ name = "silver_ssz"
 version = "0.0.1"
 dependencies = [
  "flux",
+ "flux-profiler",
  "hashtree-rs",
  "sha2",
  "sha2-const-stable",
- "silver_common_macros",
- "silver_metrics",
 ]
 
 [[package]]
@@ -4636,13 +4657,12 @@ dependencies = [
  "blst",
  "c-kzg",
  "flux",
+ "flux-profiler",
  "fxhash",
  "hex",
  "rand 0.8.6",
  "silver_beacon_state_data",
  "silver_common",
- "silver_common_macros",
- "silver_metrics",
  "tracing",
 ]
 
@@ -4739,7 +4759,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4754,7 +4774,7 @@ dependencies = [
 [[package]]
 name = "spine-derive"
 version = "0.0.10"
-source = "git+https://github.com/gattaca-com/flux?rev=3a72d5c5724c356199c33bae3fe35d0d9dc2733c#3a72d5c5724c356199c33bae3fe35d0d9dc2733c"
+source = "git+https://github.com/gattaca-com/flux?rev=ceddf228cdcda60bd134ddb49cc0a8375a09b853#ceddf228cdcda60bd134ddb49cc0a8375a09b853"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4920,7 +4940,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5247,12 +5267,12 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 [[package]]
 name = "type-hash"
 version = "0.0.1"
-source = "git+https://github.com/gattaca-com/flux?rev=3a72d5c5724c356199c33bae3fe35d0d9dc2733c#3a72d5c5724c356199c33bae3fe35d0d9dc2733c"
+source = "git+https://github.com/gattaca-com/flux?rev=ceddf228cdcda60bd134ddb49cc0a8375a09b853#ceddf228cdcda60bd134ddb49cc0a8375a09b853"
 
 [[package]]
 name = "type-hash-derive"
 version = "0.0.4"
-source = "git+https://github.com/gattaca-com/flux?rev=3a72d5c5724c356199c33bae3fe35d0d9dc2733c#3a72d5c5724c356199c33bae3fe35d0d9dc2733c"
+source = "git+https://github.com/gattaca-com/flux?rev=ceddf228cdcda60bd134ddb49cc0a8375a09b853#ceddf228cdcda60bd134ddb49cc0a8375a09b853"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -5601,7 +5621,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

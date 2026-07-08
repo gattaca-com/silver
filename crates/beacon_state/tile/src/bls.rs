@@ -2,13 +2,11 @@ use blst::{
     BLST_ERROR, Pairing, blst_p1_affine, blst_p2_affine,
     min_pk::{AggregatePublicKey, PublicKey, Signature},
 };
+use flux_profiler::timed;
 use ring::rand::{SecureRandom, SystemRandom};
 use silver_beacon_state_data::{B256, BLSPubkey, BeaconBlockHeader, SYNC_COMMITTEE_SIZE};
-use silver_common::{
-    metrics::timed,
-    ssz_view::{
-        SIGNED_BEACON_BLOCK_MIN, SINGLE_ATT_SIZE, SignedBeaconBlockView, SingleAttestationView,
-    },
+use silver_common::ssz_view::{
+    SIGNED_BEACON_BLOCK_MIN, SINGLE_ATT_SIZE, SignedBeaconBlockView, SingleAttestationView,
 };
 
 use crate::ssz_hash::{self, hash_attestation_data, hash_tree_root_block_header};

@@ -1,12 +1,12 @@
 use core::cmp::{max, min};
 
+use flux_profiler::timed;
 use silver_beacon_state_data::{
     self as common, Checkpoint, EPOCHS_PER_SLASHINGS_VECTOR, Epoch, EpochView, EpochWriteView,
     Eth1WriteView, HistoricalSummary, LongtailGroup, LongtailId, LongtailWriteView,
     MIN_SEED_LOOKAHEAD, PROPOSER_LOOKAHEAD_SIZE, SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT,
     SYNC_COMMITTEE_SIZE, SpecConfig, StateWriterView, ValidatorsView,
 };
-use silver_common::metrics::timed;
 
 use crate::{
     bls,

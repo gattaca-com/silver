@@ -8,12 +8,12 @@ use std::{
     time::Instant,
 };
 
+use flux_profiler::timed;
 use fxhash::FxHashSet;
 use silver_common::{
     BlockSource, Enr, GossipMsgOut, GossipTopic, IpBytes, MessageId, P2pSend, PeerControl,
     PeerEvent, PeerId, PeerStatus, RpcRequest, RpcRequestOutbound, RpcSeverity, StreamProtocol,
     SyncUpdate, TCacheRead,
-    metrics::timed,
     rpc_rate_limit::RpcRateLimit,
     ssz_view::{METADATA_SIZE, STATUS_V2_SIZE, StatusView},
 };

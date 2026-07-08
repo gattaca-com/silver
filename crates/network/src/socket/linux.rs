@@ -6,8 +6,8 @@ use std::{
 
 use bytes::BytesMut;
 use flux::tracing;
+use flux_profiler::timed;
 use mio::net::UdpSocket;
-use silver_metrics::timed;
 
 pub(crate) const RX_BATCH_MAX: usize = 128;
 pub(crate) const RX_BUF_SIZE: usize = 2048;

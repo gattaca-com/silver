@@ -1,20 +1,18 @@
 use core::cmp::min;
 
 use blst::min_pk::PublicKey;
+use flux_profiler::timed;
 use silver_beacon_state_data::{
     BalancesWriteView, Epoch, Immutable, PENDING_CONSOLIDATIONS_LIMIT,
     PENDING_PARTIAL_WITHDRAWALS_LIMIT, PendingConsolidation, PendingDeposit,
     PendingPartialWithdrawal, PendingWriteView, SLOTS_PER_EPOCH, SpecConfig, StateWriterView,
     ValidatorsView, ValidatorsWriteView, Withdrawals, append_validator,
 };
-use silver_common::{
-    metrics::timed,
-    ssz_view::{
-        CONSOLIDATION_REQUEST_SIZE, ConsolidationRequestView, DEPOSIT_CONTRACT_TREE_DEPTH,
-        DEPOSIT_REQUEST_SIZE, DEPOSIT_SIZE, DepositDataView, DepositRequestView, DepositView,
-        SIGNED_BLS_CHANGE_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE, SignedBlsToExecutionChangeView,
-        SignedVoluntaryExitView, WITHDRAWAL_REQUEST_SIZE, WithdrawalRequestView,
-    },
+use silver_common::ssz_view::{
+    CONSOLIDATION_REQUEST_SIZE, ConsolidationRequestView, DEPOSIT_CONTRACT_TREE_DEPTH,
+    DEPOSIT_REQUEST_SIZE, DEPOSIT_SIZE, DepositDataView, DepositRequestView, DepositView,
+    SIGNED_BLS_CHANGE_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE, SignedBlsToExecutionChangeView,
+    SignedVoluntaryExitView, WITHDRAWAL_REQUEST_SIZE, WithdrawalRequestView,
 };
 
 use crate::{

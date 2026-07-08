@@ -1,8 +1,8 @@
 use flux::spine::SpineProducers;
+use flux_profiler::timed;
 use silver_beacon_state_data::{B256, BeaconBlockHeader, Checkpoint, SLOTS_PER_EPOCH, StateId};
 use silver_common::{
     BeaconStateEvent, BlockSource, EngineFcuReq, EngineNewPayloadReq, EngineReq, TRead, hex32,
-    metrics::timed,
     ssz_view::{self, SignedBeaconBlockView},
 };
 

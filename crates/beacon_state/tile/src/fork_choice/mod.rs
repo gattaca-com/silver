@@ -1,7 +1,7 @@
+use flux_profiler::timed;
 use silver_beacon_state_data::{
     B256, Checkpoint, Epoch, SLOTS_PER_EPOCH, SLOTS_RING_N, Slot, StateId,
 };
-use silver_common::metrics::timed;
 
 use crate::stf::AttestationVote;
 
