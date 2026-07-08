@@ -13,24 +13,18 @@ use crate::p2p::streams::{
 #[derive(Debug)]
 pub enum RpcReadRequest {
     /// Reading the varint length prefix of the SSZ chunk
-    ReadingLength { decoder: Box<SnappyDecoder>, buf: [u8; 10], read: usize },
+    ReadingLength { buf: [u8; 10], read: usize },
     /// Alocating
-    AllocBody {
-        decoder: Box<SnappyDecoder>,
-        length: usize,
-        buf: [u8; 10],
-        buf_start: usize,
-        buf_end: usize,
-    },
+    AllocBody { length: usize, buf: [u8; 10], buf_start: usize, buf_end: usize },
     /// Stream Snappy decompressing the chunk payload into a handler buffer.
-    ReadingBody { decoder: Box<SnappyDecoder>, reservation: RpcReservation, remaining: usize },
+    ReadingBody { reservation: RpcReservation, remaining: usize },
     /// Request read completed
     Complete { msg: RpcRequest },
 }
 
 impl Default for RpcReadRequest {
     fn default() -> Self {
-        Self::ReadingLength { decoder: Box::new(SnappyDecoder::default()), buf: [0; 10], read: 0 }
+        Self::ReadingLength { buf: [0; 10], read: 0 }
     }
 }
 
@@ -45,9 +39,10 @@ impl RpcReadRequest {
         io: &mut S,
         p2p_id: &P2pStreamId,
         producer: &mut TProducer,
+        decoder: &mut SnappyDecoder,
     ) -> Result<Self, StreamError> {
         loop {
-            match self.spin_inner(io, p2p_id, producer)? {
+            match self.spin_inner(io, p2p_id, producer, decoder)? {
                 Spin::Ok(read_state) => return Ok(read_state),
                 Spin::Next(read_state) => {
                     self = read_state;
@@ -61,9 +56,10 @@ impl RpcReadRequest {
         io: &mut S,
         p2p_id: &P2pStreamId,
         producer: &mut TProducer,
+        decoder: &mut SnappyDecoder,
     ) -> Result<Spin, StreamError> {
         match self {
-            RpcReadRequest::ReadingLength { decoder, mut buf, mut read } => {
+            RpcReadRequest::ReadingLength { mut buf, mut read } => {
                 read += io.read_from_stream(p2p_id.stream_id(), &mut buf[read..])?;
 
                 for pos in 0..read {
@@ -71,7 +67,6 @@ impl RpcReadRequest {
                         // last byte of varint.
                         let (length, offset) = decode_varint(&buf[..read], 0)?;
                         return Ok(Spin::Next(Self::AllocBody {
-                            decoder,
                             length: length as usize,
                             buf,
                             buf_start: offset,
@@ -80,19 +75,13 @@ impl RpcReadRequest {
                     }
                 }
 
-                Ok(Spin::Ok(Self::ReadingLength { decoder, buf, read }))
+                Ok(Spin::Ok(Self::ReadingLength { buf, read }))
             }
-            RpcReadRequest::AllocBody { mut decoder, length, buf, buf_start, buf_end } => {
+            RpcReadRequest::AllocBody { length, buf, buf_start, buf_end } => {
                 let mut reservation = match alloc_incoming_rpc(producer, p2p_id, length) {
                     Ok(reservation) => reservation,
                     Err(e) if e.kind() == ErrorKind::FileTooLarge => {
-                        return Ok(Spin::Ok(Self::AllocBody {
-                            decoder,
-                            length,
-                            buf,
-                            buf_start,
-                            buf_end,
-                        }));
+                        return Ok(Spin::Ok(Self::AllocBody { length, buf, buf_start, buf_end }));
                     }
                     Err(e) => return Err(e.into()),
                 };
@@ -109,9 +98,9 @@ impl RpcReadRequest {
                     remaining -= decoded_bytes;
                 }
 
-                Ok(Spin::Next(Self::ReadingBody { decoder, reservation, remaining }))
+                Ok(Spin::Next(Self::ReadingBody { reservation, remaining }))
             }
-            RpcReadRequest::ReadingBody { mut decoder, mut reservation, mut remaining } => {
+            RpcReadRequest::ReadingBody { mut reservation, mut remaining } => {
                 // Short-circuit BEFORE attempting another read — once the
                 // SSZ payload is fully decoded the peer's already FIN'd
                 // (single-chunk request) and reading would surface
@@ -128,12 +117,12 @@ impl RpcReadRequest {
                 if !decompress_buffer.is_empty() {
                     let written = io.read_from_stream(p2p_id.stream_id(), decompress_buffer)?;
                     if written == 0 {
-                        return Ok(Spin::Ok(Self::ReadingBody { decoder, reservation, remaining }));
+                        return Ok(Spin::Ok(Self::ReadingBody { reservation, remaining }));
                     }
                     remaining -=
                         decoder.decompress_written(written, reservation.remaining_buffer()?)?;
                 }
-                Ok(Spin::Next(Self::ReadingBody { decoder, reservation, remaining }))
+                Ok(Spin::Next(Self::ReadingBody { reservation, remaining }))
             }
             RpcReadRequest::Complete { msg } => Ok(Spin::Ok(Self::Complete { msg })),
         }

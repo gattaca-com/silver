@@ -14,7 +14,7 @@ use crate::p2p::{
 pub enum RpcWriteResponse {
     Idle,
     WritingPrefix { buf: [u8; 15], length: usize, written: usize, response: AcquiredRpcResponse },
-    WritingResponse { encoder: Box<SnappyEncoder>, response: AcquiredRpcResponse, written: usize },
+    WritingResponse { response: AcquiredRpcResponse, written: usize },
 }
 
 impl RpcWriteResponse {
@@ -35,9 +35,14 @@ enum Spin {
 }
 
 impl RpcWriteResponse {
-    pub fn spin<S: StreamIo>(mut self, id: &P2pStreamId, io: &mut S) -> Result<Self, StreamError> {
+    pub fn spin<S: StreamIo>(
+        mut self,
+        id: &P2pStreamId,
+        io: &mut S,
+        encoder: &mut SnappyEncoder,
+    ) -> Result<Self, StreamError> {
         loop {
-            match self.spin_inner(id, io)? {
+            match self.spin_inner(id, io, encoder)? {
                 Spin::Ok(rpc_write_response) => return Ok(rpc_write_response),
                 Spin::Next(rpc_write_response) => {
                     self = rpc_write_response;
@@ -46,7 +51,12 @@ impl RpcWriteResponse {
         }
     }
 
-    fn spin_inner<S: StreamIo>(self, id: &P2pStreamId, io: &mut S) -> Result<Spin, StreamError> {
+    fn spin_inner<S: StreamIo>(
+        self,
+        id: &P2pStreamId,
+        io: &mut S,
+        encoder: &mut SnappyEncoder,
+    ) -> Result<Spin, StreamError> {
         match self {
             RpcWriteResponse::Idle => match io.rpc_next() {
                 Some(AcquiredRpcOutbound::Response(rsp)) => match &rsp.response {
@@ -62,13 +72,13 @@ impl RpcWriteResponse {
             RpcWriteResponse::WritingPrefix { buf, length, mut written, response } => {
                 written += io.write_to_stream(id.stream_id(), &buf[written..length])?;
                 if written == length {
-                    let encoder = Box::new(SnappyEncoder::new());
-                    Ok(Spin::Next(Self::WritingResponse { encoder, response, written: 0 }))
+                    encoder.reset();
+                    Ok(Spin::Next(Self::WritingResponse { response, written: 0 }))
                 } else {
                     Ok(Spin::Ok(Self::WritingPrefix { buf, length, written, response }))
                 }
             }
-            RpcWriteResponse::WritingResponse { mut encoder, response, mut written } => {
+            RpcWriteResponse::WritingResponse { response, mut written } => {
                 // write bytes -> encoder -> stream.
                 let buffer = response_buffer(&response, written)?;
                 let buffer_len = buffer.len();
@@ -92,7 +102,7 @@ impl RpcWriteResponse {
                     }
                     Ok(Spin::Ok(Self::Idle))
                 } else {
-                    Ok(Spin::Ok(Self::WritingResponse { encoder, response, written }))
+                    Ok(Spin::Ok(Self::WritingResponse { response, written }))
                 }
             }
         }

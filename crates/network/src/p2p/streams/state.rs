@@ -18,7 +18,7 @@ use crate::{
             identify_out::ReadIdentifyResponse,
             negotiate::NegotiateState,
             rpc::{
-                AcquiredRpcResponse, RpcIn, RpcOut, RpcReadRequest, RpcReadResponse,
+                AcquiredRpcResponse, RpcCodec, RpcIn, RpcOut, RpcReadRequest, RpcReadResponse,
                 RpcWriteRequest, RpcWriteResponse,
             },
         },
@@ -33,8 +33,14 @@ pub enum StreamState {
         read: GossipReadState,
         write: GossipWriteState,
     },
-    IncomingRpc(RpcIn),
-    OutgoingRpc(RpcOut),
+    IncomingRpc {
+        rpc: RpcIn,
+        codec: Box<RpcCodec>,
+    },
+    OutgoingRpc {
+        rpc: RpcOut,
+        codec: Box<RpcCodec>,
+    },
     IncomingIdentify(WriteIdentifyResponse),
     OutgoingIdentify(ReadIdentifyResponse),
     #[default]
@@ -84,8 +90,8 @@ impl StreamState {
         match self {
             StreamState::Negotiate(_) => "Negotiate",
             StreamState::Gossip { .. } => "Gossip",
-            StreamState::IncomingRpc(_) => "IncomingRpc",
-            StreamState::OutgoingRpc(_) => "OutgoingRpc",
+            StreamState::IncomingRpc { .. } => "IncomingRpc",
+            StreamState::OutgoingRpc { .. } => "OutgoingRpc",
             StreamState::IncomingIdentify(_) => "IncomingIdentify",
             StreamState::OutgoingIdentify(_) => "OutgoingIdentify",
             StreamState::Finished => "Finished",
@@ -107,11 +113,11 @@ impl StreamState {
             StreamState::Gossip { read, write } => {
                 matches!(read, GossipReadState::Closed) && matches!(write, GossipWriteState::Idle)
             }
-            StreamState::IncomingRpc(rpc_in) => {
-                matches!(rpc_in, RpcIn::WriteResponse(RpcWriteResponse::Idle))
+            StreamState::IncomingRpc { rpc, .. } => {
+                matches!(rpc, RpcIn::WriteResponse(RpcWriteResponse::Idle))
             }
-            StreamState::OutgoingRpc(rpc_out) => {
-                matches!(rpc_out, RpcOut::ReadResponse(RpcReadResponse::ReadingPrefix { read, .. }) if *read == 0)
+            StreamState::OutgoingRpc { rpc, .. } => {
+                matches!(rpc, RpcOut::ReadResponse(RpcReadResponse::ReadingPrefix { read, .. }) if *read == 0)
             }
             StreamState::IncomingIdentify(write) => matches!(write, WriteIdentifyResponse::Done),
             StreamState::OutgoingIdentify(_) => false,
@@ -125,8 +131,14 @@ impl StreamState {
         matches!(
             self,
             StreamState::Gossip { read: GossipReadState::AllocBody { .. }, .. } |
-                StreamState::IncomingRpc(RpcIn::ReadRequest(RpcReadRequest::AllocBody { .. })) |
-                StreamState::OutgoingRpc(RpcOut::ReadResponse(RpcReadResponse::AllocBody { .. }))
+                StreamState::IncomingRpc {
+                    rpc: RpcIn::ReadRequest(RpcReadRequest::AllocBody { .. }),
+                    ..
+                } |
+                StreamState::OutgoingRpc {
+                    rpc: RpcOut::ReadResponse(RpcReadResponse::AllocBody { .. }),
+                    ..
+                }
         )
     }
 
@@ -138,7 +150,10 @@ impl StreamState {
         matches!(
             self,
             StreamState::Gossip { write: GossipWriteState::Idle, .. } |
-                StreamState::IncomingRpc(RpcIn::WriteResponse(RpcWriteResponse::Idle))
+                StreamState::IncomingRpc {
+                    rpc: RpcIn::WriteResponse(RpcWriteResponse::Idle),
+                    ..
+                }
         )
     }
 
@@ -147,7 +162,7 @@ impl StreamState {
     /// must arrange a spin at this deadline.
     pub fn deadline(&self) -> Option<Instant> {
         match self {
-            StreamState::OutgoingRpc(RpcOut::ReadResponse(read_response)) => {
+            StreamState::OutgoingRpc { rpc: RpcOut::ReadResponse(read_response), .. } => {
                 read_response.deadline()
             }
             _ => None,
@@ -160,9 +175,9 @@ impl StreamState {
             StreamState::Gossip { read, write } => {
                 matches!(write, GossipWriteState::Idle) && !matches!(read, GossipReadState::Closed)
             }
-            StreamState::IncomingRpc(_) => protocol == StreamProtocol::Goodbye,
-            StreamState::OutgoingRpc(rpc_out) => {
-                matches!(rpc_out, RpcOut::ReadResponse(_)) || protocol == StreamProtocol::Metadata
+            StreamState::IncomingRpc { .. } => protocol == StreamProtocol::Goodbye,
+            StreamState::OutgoingRpc { rpc, .. } => {
+                matches!(rpc, RpcOut::ReadResponse(_)) || protocol == StreamProtocol::Metadata
             }
             StreamState::IncomingIdentify(_) => false,
             StreamState::OutgoingIdentify(_) => true,
@@ -176,10 +191,10 @@ impl StreamState {
         F: FnMut(NetEvent),
     {
         if p2p_id.protocol().has_multipart_response() &&
-            let StreamState::OutgoingRpc(RpcOut::ReadResponse(RpcReadResponse::ReadingPrefix {
-                app_id,
+            let StreamState::OutgoingRpc {
+                rpc: RpcOut::ReadResponse(RpcReadResponse::ReadingPrefix { app_id, .. }),
                 ..
-            })) = self
+            } = self
         {
             emit(NetEvent::RpcInbound(RpcInbound::Response(RpcResponseInbound {
                 application_id: *app_id,
@@ -251,16 +266,22 @@ impl StreamState {
                                                 emit(NetEvent::RpcInbound(RpcInbound::Request(
                                                     RpcRequestInbound { stream_id: *id, request },
                                                 )));
-                                                Ok(Self::IncomingRpc(RpcIn::WriteResponse(
-                                                    RpcWriteResponse::Idle,
-                                                )))
+                                                Ok(Self::IncomingRpc {
+                                                    rpc: RpcIn::WriteResponse(
+                                                        RpcWriteResponse::Idle,
+                                                    ),
+                                                    codec: RpcCodec::incoming(),
+                                                })
                                             }
                                             InboundRpcAdmission::RateLimited => {
-                                                Ok(Self::IncomingRpc(RpcIn::WriteResponse(
-                                                    RpcWriteResponse::new(
-                                                        AcquiredRpcResponse::rate_limited(),
-                                                    )?,
-                                                )))
+                                                Ok(Self::IncomingRpc {
+                                                    rpc: RpcIn::WriteResponse(
+                                                        RpcWriteResponse::new(
+                                                            AcquiredRpcResponse::rate_limited(),
+                                                        )?,
+                                                    ),
+                                                    codec: RpcCodec::incoming(),
+                                                })
                                             }
                                             InboundRpcAdmission::Drop => {
                                                 io.close_write(id.stream_id())?;
@@ -268,9 +289,10 @@ impl StreamState {
                                             }
                                         }
                                     } else {
-                                        Ok(Self::IncomingRpc(RpcIn::ReadRequest(
-                                            RpcReadRequest::default(),
-                                        )))
+                                        Ok(Self::IncomingRpc {
+                                            rpc: RpcIn::ReadRequest(RpcReadRequest::default()),
+                                            codec: RpcCodec::incoming(),
+                                        })
                                     }
                                 } else {
                                     let (app_id, request) = match io.rpc_next() {
@@ -279,9 +301,12 @@ impl StreamState {
                                         }
                                         _ => return Err(StreamError::InvalidRpc),
                                     };
-                                    Ok(Self::OutgoingRpc(RpcOut::WriteRequest(
-                                        RpcWriteRequest::new(app_id, request)?,
-                                    )))
+                                    Ok(Self::OutgoingRpc {
+                                        rpc: RpcOut::WriteRequest(RpcWriteRequest::new(
+                                            app_id, request,
+                                        )?),
+                                        codec: RpcCodec::outgoing(),
+                                    })
                                 }
                             }
                         }
@@ -300,55 +325,62 @@ impl StreamState {
                     Ok(Self::Gossip { read, write })
                 }
             }
-            StreamState::IncomingRpc(rpc_in) => match rpc_in {
+            StreamState::IncomingRpc { rpc, mut codec } => match rpc {
                 RpcIn::ReadRequest(read_request) => {
-                    match read_request.spin(io, id, &mut context.rpc_producer)? {
+                    match read_request.spin(io, id, &mut context.rpc_producer, &mut codec.dec)? {
                         RpcReadRequest::Complete { msg } => {
                             match admit_inbound_rpc(inbound_rpc_limits, *id, &msg, now) {
                                 InboundRpcAdmission::Admit => {
                                     emit(NetEvent::RpcInbound(RpcInbound::Request(
                                         RpcRequestInbound { stream_id: *id, request: msg },
                                     )));
-                                    Ok(Self::IncomingRpc(RpcIn::WriteResponse(
-                                        RpcWriteResponse::Idle,
-                                    )))
+                                    Ok(Self::IncomingRpc {
+                                        rpc: RpcIn::WriteResponse(RpcWriteResponse::Idle),
+                                        codec,
+                                    })
                                 }
-                                InboundRpcAdmission::RateLimited => {
-                                    Ok(Self::IncomingRpc(RpcIn::WriteResponse(
-                                        RpcWriteResponse::new(AcquiredRpcResponse::rate_limited())?,
-                                    )))
-                                }
+                                InboundRpcAdmission::RateLimited => Ok(Self::IncomingRpc {
+                                    rpc: RpcIn::WriteResponse(RpcWriteResponse::new(
+                                        AcquiredRpcResponse::rate_limited(),
+                                    )?),
+                                    codec,
+                                }),
                                 InboundRpcAdmission::Drop => {
                                     io.close_write(id.stream_id())?;
                                     Ok(Self::Finished)
                                 }
                             }
                         }
-                        other => Ok(Self::IncomingRpc(RpcIn::ReadRequest(other))),
+                        other => Ok(Self::IncomingRpc { rpc: RpcIn::ReadRequest(other), codec }),
                     }
                 }
                 RpcIn::WriteResponse(mut write_response) => {
-                    write_response = write_response.spin(id, io)?;
-                    Ok(Self::IncomingRpc(RpcIn::WriteResponse(write_response)))
+                    write_response = write_response.spin(id, io, &mut codec.enc)?;
+                    Ok(Self::IncomingRpc { rpc: RpcIn::WriteResponse(write_response), codec })
                 }
             },
-            StreamState::OutgoingRpc(rpc_out) => match rpc_out {
+            StreamState::OutgoingRpc { rpc, mut codec } => match rpc {
                 RpcOut::WriteRequest(write_request) => {
-                    match write_request.spin(id, io)? {
+                    match write_request.spin(id, io, &mut codec.enc)? {
                         RpcWriteRequest::Complete(app_id) => {
                             // close write side
                             io.close_write(id.stream_id())?;
-                            Ok(Self::OutgoingRpc(RpcOut::ReadResponse(RpcReadResponse::new(
-                                app_id, 0, now,
-                            ))))
+                            let read = RpcReadResponse::new(app_id, 0, now, &mut codec.dec);
+                            Ok(Self::OutgoingRpc { rpc: RpcOut::ReadResponse(read), codec })
                         }
-                        other => Ok(Self::OutgoingRpc(RpcOut::WriteRequest(other))),
+                        other => Ok(Self::OutgoingRpc { rpc: RpcOut::WriteRequest(other), codec }),
                     }
                 }
                 RpcOut::ReadResponse(read_response) => {
                     let mut read_response = read_response;
                     loop {
-                        match read_response.spin(io, id, now, &mut context.rpc_producer)? {
+                        match read_response.spin(
+                            io,
+                            id,
+                            now,
+                            &mut context.rpc_producer,
+                            &mut codec.dec,
+                        )? {
                             RpcReadResponse::Complete { app_id, chunk, msg } => {
                                 // For multipart, `RpcResponse::Complete` is the
                                 // synthetic terminator emitted on recv-EOF — at
@@ -377,9 +409,15 @@ impl StreamState {
                                 }
                                 // Loop: the next chunk may already be buffered
                                 // in quinn with no further Readable coming.
-                                read_response = RpcReadResponse::new(app_id, chunk + 1, now);
+                                read_response =
+                                    RpcReadResponse::new(app_id, chunk + 1, now, &mut codec.dec);
                             }
-                            other => return Ok(Self::OutgoingRpc(RpcOut::ReadResponse(other))),
+                            other => {
+                                return Ok(Self::OutgoingRpc {
+                                    rpc: RpcOut::ReadResponse(other),
+                                    codec,
+                                });
+                            }
                         }
                     }
                 }
