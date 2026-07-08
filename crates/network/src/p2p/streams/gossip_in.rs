@@ -1,5 +1,6 @@
 use std::io::Write;
 
+use flux_profiler::timed;
 use silver_common::{P2pStreamId, TCacheProducer, TProducer, TReservation, decode_varint};
 
 use crate::p2p::streams::{StreamError, StreamIo};
@@ -30,6 +31,7 @@ enum Spin {
 }
 
 impl GossipReadState {
+    #[timed]
     pub(crate) fn spin<S: StreamIo>(
         mut self,
         io: &mut S,
@@ -99,7 +101,8 @@ impl GossipReadState {
                 remaining -= n;
                 if remaining == 0 {
                     assert!(reservation.is_committed());
-                    return Ok(Spin::Ok(Self::ReadingLength { buf: [0u8; 10], read: 0 }));
+                    // Continue into the next frame.
+                    return Ok(Spin::Next(Self::ReadingLength { buf: [0u8; 10], read: 0 }));
                 }
                 Ok(Spin::Ok(Self::ReadingBody { reservation, remaining }))
             }

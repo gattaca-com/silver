@@ -12,6 +12,7 @@ alloy-rlp.workspace = true
 ctr.workspace = true
 bytes.workspace = true
 flux.workspace = true
+flux-profiler.workspace = true
 hex.workspace = true
 hkdf.workspace = true
 rand.workspace = true

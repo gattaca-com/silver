@@ -119,6 +119,41 @@ impl StreamState {
         }
     }
 
+    /// Parked waiting on a tcache reservation. Space frees when another tile
+    /// consumes — no quinn event fires, so the owner must poll-retry.
+    pub fn awaiting_alloc(&self) -> bool {
+        matches!(
+            self,
+            StreamState::Gossip { read: GossipReadState::AllocBody { .. }, .. } |
+                StreamState::IncomingRpc(RpcIn::ReadRequest(RpcReadRequest::AllocBody { .. })) |
+                StreamState::OutgoingRpc(RpcOut::ReadResponse(RpcReadResponse::AllocBody { .. }))
+        )
+    }
+
+    /// Write side parked idle, able to pull a queued outbound msg. Starting
+    /// that pull is spin-only work — no quinn event fires for it. Mid-write
+    /// parks are excluded: they are write-blocked and Writable re-drives
+    /// them; re-spinning would busy-loop until the peer grants credit.
+    pub fn write_idle(&self) -> bool {
+        matches!(
+            self,
+            StreamState::Gossip { write: GossipWriteState::Idle, .. } |
+                StreamState::IncomingRpc(RpcIn::WriteResponse(RpcWriteResponse::Idle))
+        )
+    }
+
+    /// Instant at which this state times out if not spun; `None` when no
+    /// timeout applies. A silent peer produces no quinn event, so the owner
+    /// must arrange a spin at this deadline.
+    pub fn deadline(&self) -> Option<Instant> {
+        match self {
+            StreamState::OutgoingRpc(RpcOut::ReadResponse(read_response)) => {
+                read_response.deadline()
+            }
+            _ => None,
+        }
+    }
+
     pub fn is_receive_only(&self, protocol: StreamProtocol) -> bool {
         match self {
             StreamState::Negotiate(state) => matches!(state, NegotiateState::OutReading { .. }),
@@ -311,36 +346,41 @@ impl StreamState {
                     }
                 }
                 RpcOut::ReadResponse(read_response) => {
-                    match read_response.spin(io, id, now, &mut context.rpc_producer)? {
-                        RpcReadResponse::Complete { app_id, chunk, msg } => {
-                            // For multipart, `RpcResponse::Complete` is the
-                            // synthetic terminator emitted on recv-EOF — at
-                            // that point the stream is done from our side
-                            // and re-arming `ReadingPrefix` would just hit
-                            // `ClosedStream` on the next poll, tripping the
-                            // spin error path and a spurious
-                            // `P2pStreamClosed` peer-score hit. Re-arm only
-                            // for non-terminator chunks; transition to
-                            // `Finished` on `Complete`/`Error`.
-                            let terminal = !id.protocol().has_multipart_response() ||
-                                matches!(msg, RpcResponse::Complete | RpcResponse::Error { .. });
-                            emit(NetEvent::RpcInbound(RpcInbound::Response(RpcResponseInbound {
-                                application_id: app_id,
-                                stream_id: *id,
-                                response: msg,
-                            })));
-                            if terminal {
-                                io.close_write(id.stream_id())?;
-                                Ok(Self::Finished)
-                            } else {
-                                Ok(Self::OutgoingRpc(RpcOut::ReadResponse(RpcReadResponse::new(
-                                    app_id,
-                                    chunk + 1,
-                                    now,
-                                ))))
+                    let mut read_response = read_response;
+                    loop {
+                        match read_response.spin(io, id, now, &mut context.rpc_producer)? {
+                            RpcReadResponse::Complete { app_id, chunk, msg } => {
+                                // For multipart, `RpcResponse::Complete` is the
+                                // synthetic terminator emitted on recv-EOF — at
+                                // that point the stream is done from our side
+                                // and re-arming `ReadingPrefix` would just hit
+                                // `ClosedStream` on the next poll, tripping the
+                                // spin error path and a spurious
+                                // `P2pStreamClosed` peer-score hit. Re-arm only
+                                // for non-terminator chunks; transition to
+                                // `Finished` on `Complete`/`Error`.
+                                let terminal = !id.protocol().has_multipart_response() ||
+                                    matches!(
+                                        msg,
+                                        RpcResponse::Complete | RpcResponse::Error { .. }
+                                    );
+                                emit(NetEvent::RpcInbound(RpcInbound::Response(
+                                    RpcResponseInbound {
+                                        application_id: app_id,
+                                        stream_id: *id,
+                                        response: msg,
+                                    },
+                                )));
+                                if terminal {
+                                    io.close_write(id.stream_id())?;
+                                    return Ok(Self::Finished);
+                                }
+                                // Loop: the next chunk may already be buffered
+                                // in quinn with no further Readable coming.
+                                read_response = RpcReadResponse::new(app_id, chunk + 1, now);
                             }
+                            other => return Ok(Self::OutgoingRpc(RpcOut::ReadResponse(other))),
                         }
-                        other => Ok(Self::OutgoingRpc(RpcOut::ReadResponse(other))),
                     }
                 }
             },

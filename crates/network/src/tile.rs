@@ -5,6 +5,7 @@ use std::{
 };
 
 use flux::{spine::SpineAdapter, tile::Tile, tracing};
+use flux_profiler::timed;
 use mio::{Events, Poll, Token};
 use quinn_proto::Transmit;
 use secp256k1::PublicKey;
@@ -50,6 +51,7 @@ impl NetworkTile {
         self.inner.p2p_mut()
     }
 
+    #[timed]
     fn handle_peer_control(&mut self, peer_control: PeerControl, now: Instant) {
         match peer_control {
             PeerControl::Ban { p2p } => {
@@ -89,6 +91,7 @@ impl NetworkTile {
         }
     }
 
+    #[timed]
     fn body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         // Consume peer control messages
         let now = Instant::now();
@@ -309,10 +312,14 @@ where
         self.p2p_endpoint.goodbye_all(&mut self.context);
     }
 
+    #[timed]
     fn poll(&mut self) -> Result<(), Error> {
-        self.poll.poll(&mut self.events, Some(POLL_TIMEOUT))
+        let timeout =
+            self.p2p_endpoint.timeout().map(|d| d.min(POLL_TIMEOUT)).or(Some(POLL_TIMEOUT));
+        self.poll.poll(&mut self.events, timeout)
     }
 
+    #[timed]
     pub fn spin<E>(&mut self, on_event: &mut E) -> bool
     where
         E: FnMut(Event) + Send,
