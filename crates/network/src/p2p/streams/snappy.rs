@@ -118,6 +118,16 @@ impl SnappyDecoder {
         Self { direct: true, ..Self::default() }
     }
 
+    pub fn reset(&mut self) {
+        self.buf_len = 0;
+        self.need = FRAME_HDR_LEN;
+        self.got_stream_id = false;
+        self.direct_remaining = 0;
+        self.parsing_uncompressed = false;
+        self.consumed = 0;
+        self.frames = 0;
+    }
+
     /// Bytes of an in-progress uncompressed frame to read directly into the
     /// output buffer (0 = use the staging path). Direct mode only.
     pub fn direct_remaining(&self) -> usize {
@@ -428,6 +438,14 @@ impl SnappyEncoder {
             skip_compress: 0,
             raw_remaining: 0,
         }
+    }
+
+    pub fn reset(&mut self) {
+        self.dst_len = 0;
+        self.dst_written = 0;
+        self.wrote_stream_id = false;
+        self.skip_compress = 0;
+        self.raw_remaining = 0;
     }
 
     /// Returns `(input_consumed, output_pending)`. `output_pending` is the
@@ -790,6 +808,24 @@ mod tests {
         }
         assert_eq!(out_off, raw.len());
         assert_eq!(raw, out);
+    }
+
+    #[test]
+    fn encoder_reset_reuses_across_chunks() {
+        let mut encoder = SnappyEncoder::new();
+        for msg in [b"first chunk".as_slice(), b"second chunk after reset"] {
+            let mut compressed = Vec::new();
+            let (consumed, pending) = encoder.compress(msg, &mut compressed).unwrap();
+            assert_eq!(consumed, msg.len());
+            assert_eq!(pending, 0);
+            assert!(compressed.starts_with(&STREAM_IDENTIFIER));
+
+            let mut out = Vec::new();
+            snap::read::FrameDecoder::new(compressed.as_slice()).read_to_end(&mut out).unwrap();
+            assert_eq!(out, msg);
+
+            encoder.reset();
+        }
     }
 
     /// Short payload still produces a valid stream (id + one frame).

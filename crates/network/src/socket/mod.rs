@@ -10,6 +10,7 @@ use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6},
 };
 
+use flux_profiler::timed;
 use fxhash::FxHasher;
 use mio::{Interest, Poll, Token, net::UdpSocket};
 use quinn_proto::Transmit;
@@ -104,6 +105,7 @@ impl Socket {
         }
     }
 
+    #[timed]
     pub(crate) fn send<F>(&mut self, poll: &Poll, mut f: F) -> bool
     where
         F: FnMut(&mut Vec<u8>) -> Option<Transmit>,
@@ -127,6 +129,7 @@ impl Socket {
         true
     }
 
+    #[timed]
     pub(crate) fn recv<F>(&mut self, mut f: F)
     where
         F: FnMut(bytes::BytesMut, SocketAddr, &mut Vec<u8>, &UdpSocket) -> bool,

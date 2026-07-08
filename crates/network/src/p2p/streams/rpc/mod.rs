@@ -18,6 +18,28 @@ use silver_common::{
     },
 };
 
+use crate::p2p::streams::snappy::{SnappyDecoder, SnappyEncoder};
+
+#[derive(Debug)]
+pub struct RpcCodec {
+    pub enc: SnappyEncoder,
+    pub dec: SnappyDecoder,
+}
+
+impl RpcCodec {
+    pub fn incoming() -> Box<Self> {
+        Box::new(Self { enc: SnappyEncoder::new(), dec: SnappyDecoder::default() })
+    }
+
+    /// Outbound stream: responses carry the bulk inbound payload
+    /// (BeaconBlock / DataColumnSidecar). KZG cells are incompressible ⇒
+    /// peers emit `CHUNK_UNCOMPRESSED` frames; stream those straight into
+    /// the tcache (direct decode).
+    pub fn outgoing() -> Box<Self> {
+        Box::new(Self { enc: SnappyEncoder::new(), dec: SnappyDecoder::new_direct() })
+    }
+}
+
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
 pub enum RpcIn {
