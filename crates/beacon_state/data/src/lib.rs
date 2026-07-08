@@ -4,8 +4,7 @@ pub use builders::{BuildersGroup, BuildersId, BuildersView, BuildersWriteView, F
 pub use column::{
     Balances, BalancesGroup, BalancesId, BalancesReader, BalancesWriteView, ColumnGroup,
     ColumnReader, ColumnSpec, ColumnVal, ColumnWriteView, Current, CurrentParticipationGroup,
-    CurrentParticipationId, FinalizedColumn, Inactivity, InactivityId, InactivityScoresGroup,
-    InactivityView, InactivityWriteView, ParticipationView, ParticipationWriteView, Previous,
+    CurrentParticipationId, ParticipationView, ParticipationWriteView, Previous,
     PreviousParticipationGroup, PreviousParticipationId,
 };
 pub use decompose::DecomposeError;
@@ -21,6 +20,9 @@ pub use gloas::{
     Withdrawal,
 };
 pub use hash_tree::{DeltaHashTree, FinalizedHashTree};
+pub use inactivity::{
+    Inactivity, InactivityId, InactivityScoresGroup, InactivityView, InactivityWriteView,
+};
 pub use longtail::{LongtailGroup, LongtailId, LongtailState, LongtailView, LongtailWriteView};
 pub use parsed::ParsedAggregateAndProof;
 pub use pending::{
@@ -49,6 +51,7 @@ mod epoch;
 mod eth1;
 pub mod gloas;
 mod hash_tree;
+mod inactivity;
 mod longtail;
 mod parsed;
 mod pending;

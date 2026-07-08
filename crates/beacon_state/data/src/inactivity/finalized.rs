@@ -1,7 +1,6 @@
 use std::io::{self, Write};
 
-use super::ColumnVal;
-use crate::{ColumnLenMismatch, hash_tree::FinalizedHashTree, types::B256};
+use crate::{ColumnLenMismatch, column::ColumnVal, hash_tree::FinalizedHashTree, types::B256};
 
 pub struct FinalizedColumn<V> {
     pub(super) data: Box<[V]>,
@@ -34,16 +33,6 @@ impl<V: ColumnVal> FinalizedColumn<V> {
         Ok(Self { data, hash, count })
     }
 
-    #[inline]
-    pub fn count(&self) -> usize {
-        self.count
-    }
-
-    #[inline]
-    pub fn get(&self, i: usize) -> V {
-        self.data[i]
-    }
-
     /// The packed 32-byte group for `chunk` — its merkle leaf. Lanes past
     /// `count` read the spec-default zeros the base is padded with.
     #[inline]
@@ -53,7 +42,7 @@ impl<V: ColumnVal> FinalizedColumn<V> {
         V::pack_leaf(&self.data[b..b + k])
     }
 
-    pub(crate) fn write_ssz<W: Write>(&self, w: &mut W) -> io::Result<()> {
+    pub(super) fn write_ssz<W: Write>(&self, w: &mut W) -> io::Result<()> {
         V::write_ssz_slice(&self.data[..self.count], w)
     }
 }

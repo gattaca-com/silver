@@ -1,13 +1,12 @@
-mod delta;
-mod finalized;
 mod group;
+mod tree;
+mod view;
 
 #[cfg(test)]
 mod tests;
 
-pub use delta::{ColumnReader, ColumnWriteView};
-pub use finalized::FinalizedColumn;
 pub use group::ColumnGroup;
+pub use view::{ColumnReader, ColumnWriteView};
 
 use crate::{buffer::Id, types::B256};
 
@@ -91,11 +90,6 @@ impl ColumnSpec for Current {
     type Val = u8;
 }
 
-pub struct Inactivity;
-impl ColumnSpec for Inactivity {
-    type Val = u64;
-}
-
 pub struct Balances;
 impl ColumnSpec for Balances {
     type Val = u64;
@@ -109,12 +103,6 @@ pub type CurrentParticipationId = Id<CurrentParticipationGroup>;
 
 pub type ParticipationView<'a, M> = ColumnReader<'a, M>;
 pub type ParticipationWriteView<'a, M> = ColumnWriteView<'a, M>;
-
-pub type InactivityScoresGroup = ColumnGroup<Inactivity>;
-pub type InactivityId = Id<InactivityScoresGroup>;
-
-pub type InactivityView<'a> = ColumnReader<'a, Inactivity>;
-pub type InactivityWriteView<'a> = ColumnWriteView<'a, Inactivity>;
 
 pub type BalancesGroup = ColumnGroup<Balances>;
 pub type BalancesId = Id<BalancesGroup>;

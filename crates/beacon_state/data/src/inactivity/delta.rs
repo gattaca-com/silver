@@ -2,16 +2,17 @@ use std::marker::PhantomData;
 
 use flux_profiler::timed;
 
-use super::{ColumnGroup, ColumnSpec, ColumnVal, finalized::FinalizedColumn};
+use super::{ColumnGroup, finalized::FinalizedColumn};
 use crate::{
     buffer::{Id, Reset, Slot},
+    column::{ColumnSpec, ColumnVal},
     hash_tree::DeltaHashTree,
     sparse::Edits,
     types::{B256, VALIDATOR_REGISTRY_LIMIT},
 };
 
 #[derive(Default)]
-pub(crate) struct ColumnDelta {
+pub(super) struct ColumnDelta {
     /// Keyed by chunk index, not element index: a stored group holds the
     /// chunk's every lane (dirty ones the fork's value, clean ones the base
     /// value at materialisation), so it doubles as the merkle leaf and the

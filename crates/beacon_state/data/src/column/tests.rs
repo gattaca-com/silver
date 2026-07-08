@@ -1,4 +1,4 @@
-use super::{BalancesGroup, BalancesWriteView, InactivityScoresGroup};
+use super::{BalancesGroup, BalancesWriteView};
 use crate::{ssz_hash::hash_uint64_list, types::VALIDATOR_REGISTRY_LIMIT};
 
 fn le_bytes(values: &[u64]) -> Vec<u8> {
@@ -86,8 +86,8 @@ fn set_many_keeps_prior_writes() {
 #[test]
 fn finalize_preserves_survivor_reads_and_root() {
     // Winner has two appended validators and a base-equal edit; finalizing it
-    // promotes its values into the base and re-anchors the survivor, leaving the
-    // survivor's reads and root untouched.
+    // copies its whole tree into the base. The survivor is a standalone tree —
+    // its id and contents are unchanged.
     let mut g = group(&[1_000, 2_000]);
 
     let mut wv = g.roll_fresh();
@@ -100,19 +100,19 @@ fn finalize_preserves_survivor_reads_and_root() {
     let winner = wv.commit();
 
     let survivor = g.roll_from(winner).commit(); // inherits the winner's state
-    let live = g.finalize(winner, &[winner, survivor]); // survivor re-anchored → new seq
+    let live = g.finalize(winner, &[winner, survivor]); // ids unchanged
 
-    // Re-anchored slots are frozen; read them through a fresh fork.
+    assert_eq!(live, vec![winner, survivor]);
     let wv = g.roll_from(live[1]);
     assert_eq!(wv.iter().collect::<Vec<_>>(), vec![1_000, 5_000, 0, 7_000]);
     assert_eq!(wv.hash_root(), before);
 }
 
 #[test]
-fn finalize_dedupes_shared_survivor() {
-    // Sibling forks can share a balances slot, so the same survivor id can
-    // appear more than once. Each distinct source is derived once: the repeated
-    // id gets the *same* new id back, and the lone distinct one a different slot.
+fn finalize_returns_survivor_ids_unchanged() {
+    // Sibling forks can share a column slot, so the same survivor id can appear
+    // more than once. finalize is a base copy + free with no re-anchor, so it
+    // returns the survivor ids verbatim (duplicates preserved).
     let mut g = group(&[10, 20, 30]);
 
     let mut wv = g.roll_fresh();
@@ -123,12 +123,11 @@ fn finalize_dedupes_shared_survivor() {
     let other = g.roll_from(winner).commit();
 
     let live = g.finalize(winner, &[winner, shared, shared, other]);
-    assert_eq!(live[1], live[2], "the repeated survivor id re-anchors to one slot");
-    assert_ne!(live[1], live[3], "the distinct survivor gets its own slot");
+    assert_eq!(live, vec![winner, shared, shared, other]);
 
-    // Both ids still read the finalized state (through fresh forks).
-    assert_eq!(g.roll_from(live[1]).iter().collect::<Vec<_>>(), vec![111, 20, 30]);
-    assert_eq!(g.roll_from(live[3]).iter().collect::<Vec<_>>(), vec![111, 20, 30]);
+    // Every survivor still reads the finalized state (through fresh forks).
+    assert_eq!(g.roll_from(shared).iter().collect::<Vec<_>>(), vec![111, 20, 30]);
+    assert_eq!(g.roll_from(other).iter().collect::<Vec<_>>(), vec![111, 20, 30]);
 }
 
 #[test]
@@ -143,23 +142,6 @@ fn new_decodes_le_u64s() {
 #[test]
 fn new_rejects_len_mismatch() {
     assert!(BalancesGroup::new(4, 2, &[0u8; 12]).is_err());
-}
-
-/// The unhashed instantiation runs the same value machinery with no tree:
-/// set_many / append / finalize behave identically.
-#[test]
-fn unhashed_column_set_many_and_finalize() {
-    let mut g = InactivityScoresGroup::new(8, 3, &le_bytes(&[5, 6, 7])).unwrap();
-
-    let mut wv = g.roll_fresh();
-    wv.set_many(&[(0, 50), (2, 70)]);
-    wv.append(9);
-    let winner = wv.commit();
-
-    let survivor = g.roll_from(winner).commit();
-    let live = g.finalize(winner, &[winner, survivor]);
-
-    assert_eq!(g.roll_from(live[1]).iter().collect::<Vec<_>>(), vec![50, 6, 70, 9]);
 }
 
 // ---- hash tree ----
@@ -212,9 +194,11 @@ fn promote_reproduces_root_over_new_base() {
 }
 
 #[test]
-fn aba_finalize_pins_reverted_value() {
+fn aba_finalize_keeps_reverted_value() {
     // base[0]=C; D1(0=A) ← D2(0=B) ← D3(0=A reverted). Finalizing D1 then D2 must
-    // leave D3's view of idx 0 at A across both base swaps (the ABA hazard).
+    // leave D3's view of idx 0 at A across both base swaps (the classic ABA
+    // hazard). Standalone per-fork trees read nothing through the base, so D3
+    // keeps its own A with no rebase needed.
     const C: u64 = 1_000;
     const A: u64 = 2_000;
     const B: u64 = 3_000;
@@ -230,14 +214,43 @@ fn aba_finalize_pins_reverted_value() {
     wv3.set(0, A);
     let s3 = wv3.commit();
 
-    // Finalize D1 (winner s1): base[0] → A; survivors re-anchor into fresh
-    // slots — finalize hands back their new seqs (old s2/s3 are now frozen).
-    let live = g.finalize(s1, &[s1, s2, s3]); // [new D1, new D2, new D3]
-    assert_eq!(g.roll_from(live[2]).get(0), A);
+    // Finalize D1 (winner s1): base[0] → A. Ids are unchanged.
+    let live = g.finalize(s1, &[s1, s2, s3]);
+    assert_eq!(live, vec![s1, s2, s3]);
+    assert_eq!(g.roll_from(s3).get(0), A);
 
-    // Finalize D2 (winner = new D2): base[0] → B; rebase pins D3's reverted A.
-    let live = g.finalize(live[1], &[live[1], live[2]]); // [newest D2, newest D3]
-    let wv3 = g.roll_from(live[1]);
+    // Finalize D2 (winner s2): base[0] → B; D3's own tree still holds A.
+    g.finalize(s2, &[s2, s3]);
+    let wv3 = g.roll_from(s3);
     assert_eq!(wv3.get(0), A, "D3 must not inherit B");
     assert_root_matches(&wv3);
+}
+
+#[test]
+fn append_within_cap_headroom() {
+    // Appends stay inside the leaf row sized from the headroomed cap; reads and
+    // root track the appended values.
+    let mut g = BalancesGroup::new(16, 1, &le_bytes(&[5])).unwrap();
+    let mut wv = g.roll_fresh();
+    for v in [6, 7, 8, 9, 10] {
+        wv.append(v);
+    }
+    assert_eq!(wv.iter().collect::<Vec<_>>(), vec![5, 6, 7, 8, 9, 10]);
+    assert_root_matches(&wv);
+}
+
+#[test]
+fn edits_across_commits_under_shared_parent() {
+    // Two sibling leaf chunks (0 and 1) share a parent one level up. Editing
+    // them in separate set_many calls must recompute that parent from the tree's
+    // current leaves, not from this call's dirty set alone — otherwise the
+    // second call would rehash the shared parent against a stale first chunk.
+    let values: Vec<u64> = (0..8u64).map(|i| (i + 1) * 10).collect();
+    let mut g = group(&values);
+    let mut wv = g.roll_fresh();
+
+    wv.set_many(&[(0, 111)]); // chunk 0 only
+    wv.set_many(&[(4, 555)]); // chunk 1 only (chunk 0's sibling)
+    assert_eq!(wv.iter().collect::<Vec<_>>(), vec![111, 20, 30, 40, 555, 60, 70, 80]);
+    assert_root_matches(&wv);
 }
