@@ -418,6 +418,7 @@ impl StreamState {
                                     codec,
                                 });
                             }
+                            other => return Ok(Self::OutgoingRpc(RpcOut::ReadResponse(other))),
                         }
                     }
                 }

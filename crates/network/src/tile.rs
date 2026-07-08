@@ -91,6 +91,7 @@ impl NetworkTile {
         }
     }
 
+    #[timed]
     fn body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         // Consume peer control messages
         let now = Instant::now();
@@ -311,12 +312,14 @@ where
         self.p2p_endpoint.goodbye_all(&mut self.context);
     }
 
+    #[timed]
     fn poll(&mut self) -> Result<(), Error> {
         let timeout =
             self.p2p_endpoint.timeout().map(|d| d.min(POLL_TIMEOUT)).or(Some(POLL_TIMEOUT));
         self.poll.poll(&mut self.events, timeout)
     }
 
+    #[timed]
     pub fn spin<E>(&mut self, on_event: &mut E) -> bool
     where
         E: FnMut(Event) + Send,
