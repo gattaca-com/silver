@@ -254,3 +254,29 @@ fn edits_across_commits_under_shared_parent() {
     assert_eq!(wv.iter().collect::<Vec<_>>(), vec![111, 20, 30, 40, 555, 60, 70, 80]);
     assert_root_matches(&wv);
 }
+
+#[test]
+fn root_matches_reference_random_batches() {
+    use rand::{Rng, SeedableRng, rngs::StdRng, seq::SliceRandom};
+
+    // Exercises the batched (contiguous-run) leaf rehash against the reference
+    // hasher across dense, sparse, and single-index write batches.
+    let mut rng = StdRng::seed_from_u64(0xB0BA);
+    for n in [1usize, 7, 64, 500, 4096] {
+        let values: Vec<u64> = (0..n as u64).map(|_| rng.gen_range(0..=u64::MAX)).collect();
+        let mut g = BalancesGroup::new(n + 4, n, &le_bytes(&values)).unwrap();
+        let mut wv = g.roll_fresh();
+
+        for _ in 0..8 {
+            let count = rng.gen_range(1..=n);
+            let mut idxs: Vec<u32> = (0..n as u32).collect();
+            idxs.shuffle(&mut rng);
+            idxs.truncate(count);
+            idxs.sort_unstable();
+            let batch: Vec<(u32, u64)> =
+                idxs.iter().map(|&i| (i, rng.gen_range(0..=u64::MAX))).collect();
+            wv.set_many(&batch);
+            assert_root_matches(&wv);
+        }
+    }
+}
