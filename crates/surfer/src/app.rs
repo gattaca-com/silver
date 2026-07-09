@@ -116,9 +116,10 @@ impl App {
         let mut idx = 0;
         for (i, set) in self.counters.iter().enumerate() {
             if i == sel_set {
-                return idx + 1 + sel_slot;
+                let visible_before = (0..sel_slot).filter(|&s| set.slot_visible(s)).count();
+                return idx + 1 + visible_before;
             }
-            idx += 1 + set.slot_count();
+            idx += 1 + set.visible_slots();
         }
         idx
     }
@@ -146,7 +147,9 @@ impl App {
                 }
             }
         }
-        self.counters.sort_by(|a, b| a.name.cmp(&b.name));
+        self.counters.sort_by(|a, b| {
+            crate::schema::sort_key(&a.name).cmp(&crate::schema::sort_key(&b.name))
+        });
         if let Some(n) = sel_name {
             if let Some(idx) = self.counters.iter().position(|c| c.name == n) {
                 self.counters_selection.0 = idx;
@@ -277,18 +280,27 @@ impl App {
         }
         let (mut set, mut slot) = self.counters_selection;
         let n_sets = self.counters.len();
-        let cur_len = self.counters[set].slot_count() as i32;
-        let new_slot = slot as i32 + dir;
-        if new_slot < 0 {
-            set = (set + n_sets - 1) % n_sets;
-            slot = self.counters[set].slot_count().saturating_sub(1);
-        } else if new_slot >= cur_len {
-            set = (set + 1) % n_sets;
-            slot = 0;
-        } else {
-            slot = new_slot as usize;
+        let total: usize = self.counters.iter().map(|s| s.slot_count()).sum();
+        // Step one slot at a time (wrapping across sets), skipping hidden
+        // zero-valued slots; bounded by the total slot count.
+        for _ in 0..total {
+            if dir > 0 {
+                slot += 1;
+                if slot >= self.counters[set].slot_count() {
+                    set = (set + 1) % n_sets;
+                    slot = 0;
+                }
+            } else if slot == 0 {
+                set = (set + n_sets - 1) % n_sets;
+                slot = self.counters[set].slot_count().saturating_sub(1);
+            } else {
+                slot -= 1;
+            }
+            if self.counters[set].slot_visible(slot) {
+                self.counters_selection = (set, slot);
+                return;
+            }
         }
-        self.counters_selection = (set, slot);
     }
 
     fn move_timing_selection(&mut self, dir: i32) {

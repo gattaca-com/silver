@@ -590,6 +590,7 @@ impl Store {
 
         // TODO should not return 'Complete' should return rate limit error
         if self.query_queue.len() >= MAX_INFLIGHT_QUERIES {
+            tracing::warn!(?stream_id, "queries at capacity");
             self.query_queue.push_back(PendingQuery { stream_id, units: VecDeque::new() });
             return;
         }
@@ -616,6 +617,9 @@ impl Store {
                             .chunks_exact(8)
                             .map(|chunk| u64::from_le_bytes(chunk.try_into().unwrap()))
                             .collect();
+
+                    tracing::info!(?stream_id, start, count, "storage query");
+
                     // `(slot, column)` order per fulu p2p-interface: outer slot,
                     // inner column.
                     self.resolve_canonical_range(start, end, |slot, canonical| {
@@ -640,6 +644,9 @@ impl Store {
                         let request_columns = DataColumnsByRootIdentifierView::columns(buf)
                             .chunks_exact(8)
                             .map(|chunk| u64::from_le_bytes(chunk.try_into().unwrap()));
+
+                        tracing::info!(?stream_id, ?root, "storage query");
+
                         // Serve a specific block's columns regardless of
                         // canonicity: unfinalized (by block_root) first, else
                         // the finalized flat store.
@@ -664,6 +671,9 @@ impl Store {
                 let count =
                     BeaconBlocksByRangeRequestView::count(&req_bytes).min(MAX_REQUEST_BLOCKS);
                 let end = start.saturating_add(count);
+
+                tracing::info!(?stream_id, start, count, "storage query");
+
                 self.resolve_canonical_range(start, end, |slot, canonical| {
                     units.push_back(match canonical {
                         Some((parent_root, block_root)) => {
@@ -680,6 +690,9 @@ impl Store {
                     BeaconBlocksByRootRequestView::check_size,
                     |buf| {
                         let count = BeaconBlocksByRootRequestView::count(buf);
+
+                        tracing::info!(?stream_id, count, "storage query");
+
                         for i in 0..count {
                             let root = BeaconBlocksByRootRequestView::root(buf, i);
                             // Serve any block we hold by root regardless of

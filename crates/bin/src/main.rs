@@ -68,6 +68,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         incoming_rpc_producer.cache_ref().random_access("ds_persist_incoming_rpc", true)?;
     let incoming_rpc_consumer_eng =
         incoming_rpc_producer.cache_ref().random_access("eng_incoming_rpc", true)?;
+    let incoming_rpc_consumer_ctl =
+        incoming_rpc_producer.cache_ref().random_access("ctl_incoming_rpc", true)?;
     let incoming_engine_resp_producer = TCache::producer(
         "incoming_engine_resp",
         config.engine_config().incoming_engine_resp_tcache_size,
@@ -185,6 +187,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         gossip_handler,
         outgoing_rpc_producer.clone(),
         spec.clone(),
+        incoming_rpc_consumer_ctl,
     );
 
     // A finalized checkpoint state is mandatory (no genesis or runtime sync):

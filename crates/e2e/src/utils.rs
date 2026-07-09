@@ -184,6 +184,7 @@ impl PmBsHarness {
             gossip_handler,
             TCache::multi_producer("rpc_out_dummy", 32),
             Arc::new(SpecConfig::mainnet()),
+            rpc_p.cache_ref().random_access("ctl_test", true).expect("ctl rpc ra"),
         );
         let mut ctl_a = SpineAdapter::connect_tile(&ctl, &mut spine);
 

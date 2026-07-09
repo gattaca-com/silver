@@ -520,10 +520,10 @@ impl PeerManager {
                 self.on_unsubscribe(p2p_peer, topic, now, emit);
             }
             PeerEvent::P2pGossipTopicGraft { p2p_peer, topic } => {
-                self.on_remote_graft(p2p_peer, topic, now);
+                self.on_remote_graft(p2p_peer, topic, now, emit);
             }
             PeerEvent::P2pGossipTopicPrune { p2p_peer, topic } => {
-                self.on_remote_prune(p2p_peer, topic, now);
+                self.on_remote_prune(p2p_peer, topic, now, emit);
             }
             PeerEvent::P2pGossipHave { p2p_peer, topic: _, hash, already_seen } => {
                 self.on_ihave(p2p_peer, hash, already_seen, now);
@@ -558,6 +558,9 @@ impl PeerManager {
             PeerEvent::OutboundIHave { topic, msg_count: _, protobuf } => {
                 self.on_outbound_ihave(topic, protobuf, emit);
             }
+            // Consumed by the control tile (gossip republish); PM sees only
+            // the SendGossip it turns into.
+            PeerEvent::PublishDataColumn { .. } => {}
             PeerEvent::OutboundIWant { p2p_peer, iwant } => {
                 self.on_outbound_iwant(p2p_peer, iwant, emit);
             }
@@ -582,9 +585,8 @@ impl PeerManager {
                 tracing::trace!(p2p_peer, "Got peer metadata");
                 self.database.p2p_metadata(p2p_peer, metadata_ssz)
             }
-            PeerEvent::P2pPeerGoodbye { p2p_peer: _, status: _ } => {
-                // TODO send p2p disconnect
-                // TODO scoring based on status?
+            PeerEvent::P2pPeerGoodbye { p2p_peer, status } => {
+                self.on_p2p_peer_goodbye(p2p_peer, now, status, emit);
             }
             PeerEvent::P2pPeerIdentity { p2p_peer, identify } => {
                 tracing::trace!(p2p_peer, ?identify, "Got peer identify");
@@ -628,6 +630,28 @@ impl PeerManager {
     // ── Cold path: tick ─────────────────────────────────────────────────
 
     pub fn tick(&mut self, now: Instant, emit: &mut impl FnMut(PeerControl)) {
+        // Mesh-size gauges refreshed here rather than at each mutation site —
+        // mesh entries persist (empty vecs stay), so this is exact.
+        for (topic, mesh_peers) in &self.mesh {
+            crate::counters::GossipTopicCounters::mesh(*topic, mesh_peers.len());
+        }
+        // Peers announce SUBSCRIBE for all their subnets; only count
+        // subscribers on topics we participate in ourselves.
+        let mut ours = [false; silver_common::GOSSIP_TOPIC_COUNTER_SLOTS];
+        for topic in &self.our_topics {
+            ours[topic.counter_slot()] = true;
+        }
+        let mut subs = [0u16; silver_common::GOSSIP_TOPIC_COUNTER_SLOTS];
+        for peer in self.peers.values() {
+            for topic in &peer.topics {
+                let slot = topic.counter_slot();
+                if ours[slot] {
+                    subs[slot] = subs[slot].saturating_add(1);
+                }
+            }
+        }
+        crate::counters::GossipTopicCounters::subscribed(&subs);
+
         // 1) Heartbeat rollover: reset per-heartbeat counters, sweep broken promises.
         if now.saturating_duration_since(self.last_heartbeat) >= self.params.heartbeat_interval {
             self.heartbeat(now);
@@ -735,11 +759,13 @@ impl PeerManager {
         }
     }
 
-    fn on_disconnected(&mut self, conn: usize, now: Instant, emit: &mut impl FnMut(PeerControl)) {
-        tracing::debug!("removing disconnected peer: {conn}");
-        let Some(mut state) = self.peers.remove(&conn) else {
-            return;
-        };
+    fn on_disconnected(
+        &mut self,
+        conn: usize,
+        now: Instant,
+        emit: &mut impl FnMut(PeerControl),
+    ) -> Option<&PeerRecord> {
+        let mut state = self.peers.remove(&conn)?;
 
         // De-index IP colocation.
         if let Some(v) = self.ip_colocations.get_mut(&state.ip_prefix) {
@@ -777,8 +803,8 @@ impl PeerManager {
             archived_at: now,
         });
 
-        self.database.peer_disconnected(conn);
         self.on_range_peer_disconnected(conn, emit);
+        self.database.peer_disconnected(conn)
     }
 
     // ── Gossip event handlers ───────────────────────────────────────────
@@ -837,34 +863,70 @@ impl PeerManager {
         }
     }
 
-    /// Peer grafted us — they consider us in their mesh. From our side this
-    /// just means subsequent deliveries from them will count as mesh
-    /// deliveries (P3 tracking), which needs a timestamp.
-    fn on_remote_graft(&mut self, conn: usize, topic: GossipTopic, now: Instant) {
-        if let Some(peer) = self.peers.get_mut(&conn) {
-            let t = peer.topic_stats.entry(topic).or_default();
-            t.meshed_since = Some(now);
-            t.mesh_active = false; // activates after grace window
+    fn on_remote_graft(
+        &mut self,
+        conn: usize,
+        topic: GossipTopic,
+        now: Instant,
+        emit: &mut impl FnMut(PeerControl),
+    ) {
+        let Some(peer) = self.peers.get(&conn) else {
+            if let Some(record) = self.database.by_p2p_id(conn) &&
+                let Some(id) = record.peer_id
+            {
+                emit(PeerControl::P2pDisconnect { p2p: id, p2p_connection: conn })
+            }
+            return;
+        };
+        let peer_id = peer.peer_id;
+        let score = peer.cached_score;
+        let mesh_size = self.mesh.get(&topic).map(|m| m.len()).unwrap_or(0);
+        let accept = self.our_topics.contains(&topic) &&
+            mesh_size < self.params.d_high as usize &&
+            score >= self.params.gossip_threshold &&
+            !self.is_backed_off(conn, topic, now);
+        if accept {
+            self.do_graft(conn, peer_id, topic, now, emit);
+            tracing::info!(p2p_peer = conn, ?topic, mesh_size, "PM peer GRAFTed us: accepted");
+        } else {
+            self.do_prune(conn, peer_id, topic, now, emit);
+            tracing::info!(p2p_peer = conn, ?topic, mesh_size, "PM peer GRAFTed us: refused");
         }
-        tracing::info!(p2p_peer = conn, ?topic, "PM peer GRAFTed us");
     }
 
-    fn on_remote_prune(&mut self, conn: usize, topic: GossipTopic, now: Instant) {
-        if let Some(peer) = self.peers.get_mut(&conn) {
-            if let Some(t) = peer.topic_stats.get_mut(&topic) {
-                // Carry any active deficit into the failure penalty.
-                if t.mesh_active &&
-                    t.mesh_deliveries < self.params.mesh_message_deliveries_threshold
-                {
-                    t.mesh_failure_penalty +=
-                        self.params.mesh_message_deliveries_threshold - t.mesh_deliveries;
-                }
-                t.meshed_since = None;
-                t.mesh_active = false;
-            }
-            peer.backoffs.insert(topic, now + self.params.prune_backoff);
+    fn on_remote_prune(
+        &mut self,
+        conn: usize,
+        topic: GossipTopic,
+        now: Instant,
+        emit: &mut impl FnMut(PeerControl),
+    ) {
+        let mut mesh_size = 0;
+        if let Some(mesh_peers) = self.mesh.get_mut(&topic) &&
+            let Some(idx) = mesh_peers.iter().position(|c| *c == conn)
+        {
+            mesh_peers.swap_remove(idx);
+            mesh_size = mesh_peers.len();
         }
-        tracing::debug!(p2p_peer = conn, ?topic, "PM peer PRUNEd us");
+        let Some(peer) = self.peers.get_mut(&conn) else {
+            if let Some(record) = self.database.by_p2p_id(conn) &&
+                let Some(id) = record.peer_id
+            {
+                emit(PeerControl::P2pDisconnect { p2p: id, p2p_connection: conn })
+            }
+            return;
+        };
+        if let Some(t) = peer.topic_stats.get_mut(&topic) {
+            // Carry any active deficit into the failure penalty.
+            if t.mesh_active && t.mesh_deliveries < self.params.mesh_message_deliveries_threshold {
+                t.mesh_failure_penalty +=
+                    self.params.mesh_message_deliveries_threshold - t.mesh_deliveries;
+            }
+            t.meshed_since = None;
+            t.mesh_active = false;
+        }
+        peer.backoffs.insert(topic, now + self.params.prune_backoff);
+        tracing::info!(p2p_peer = conn, ?topic, mesh_size, "PM peer PRUNEd us");
     }
 
     fn on_ihave(&mut self, conn: usize, hash: MessageId, already_seen: bool, now: Instant) {
@@ -949,6 +1011,8 @@ impl PeerManager {
         idontwant: TCacheRead,
         emit: &mut impl FnMut(PeerControl),
     ) {
+        crate::counters::GossipTopicCounters::recv(topic);
+
         // Any peer who promised this id is released — they did their job;
         // we just got another copy from someone else first.
         self.promises.remove(&msg_hash);
@@ -1063,6 +1127,7 @@ impl PeerManager {
                 // dontwant
                 continue;
             }
+            crate::counters::GossipTopicCounters::sent(topic);
             emit(PeerControl::P2pSend(P2pSend::Gossip(GossipMsgOut { peer_id: *peer, tcache })));
         }
     }
@@ -1161,7 +1226,12 @@ impl PeerManager {
         //    `target_peers` up to `max_priority_peers` for under-meshed validator
         //    subnets.
         let connected = self.peers.len() + self.dialing.len();
-        let priority = enr_matches_subnets(&enr, self.required_attnets, self.required_syncnets);
+        let priority = enr_matches_subnets(
+            &enr,
+            self.required_attnets,
+            self.required_syncnets,
+            self.custody_columns,
+        );
         let dial = connected < self.params.target_peers ||
             (priority && connected < self.params.max_priority_peers);
         if !dial {
@@ -1267,6 +1337,28 @@ impl PeerManager {
         self.database.p2p_status(p2p_peer, status_ssz, earliest_slot);
     }
 
+    pub(crate) fn on_p2p_peer_goodbye(
+        &mut self,
+        p2p_peer: usize,
+        now: Instant,
+        code: u64,
+        emit: &mut impl FnMut(PeerControl),
+    ) {
+        if let Some(peer_record) = self.on_disconnected(p2p_peer, now, emit) &&
+            let Some(peer_id) = peer_record.peer_id
+        {
+            let user_agent = peer_record.identify.as_ref().map(|i| i.user_agent());
+            tracing::info!(
+                p2p_peer,
+                code = Self::goodbye_reason(code),
+                ?user_agent,
+                "received goodbye"
+            );
+            emit(PeerControl::P2pDisconnect { p2p: peer_id, p2p_connection: p2p_peer })
+        }
+        self.peers.remove(&p2p_peer);
+    }
+
     /// Translate RPC misbehaviour severity into a P5 application-score
     /// delta. Calibrated so a single `Fatal` report drops the peer below the
     /// default `graylist_threshold = -80`, triggering eviction on the next
@@ -1326,6 +1418,7 @@ impl PeerManager {
             t.meshed_since = Some(now);
             t.mesh_active = false;
         }
+        tracing::info!(?topic, conn, "GRAFT peer");
         emit(PeerControl::P2pGossipGraft { p2p: peer_id, p2p_connection: conn, topic });
     }
 
@@ -1377,16 +1470,18 @@ impl PeerManager {
             });
             !waiters.is_empty()
         });
-        for (conn, count) in penalties {
-            self.add_behaviour_penalty(conn, count as f64, "broken gossip promises");
+        for (conn, _count) in penalties {
+            // TODO seem to be over eagerly banning people here
+            self.add_behaviour_penalty(conn, 1.0, "broken gossip promises");
         }
     }
 
     fn activate_p3_where_due(&mut self, now: Instant) {
         let activation = self.params.mesh_message_deliveries_activation_s;
         for peer in self.peers.values_mut() {
-            for t in peer.topic_stats.values_mut() {
-                if !t.mesh_active &&
+            for (topic, t) in peer.topic_stats.iter_mut() {
+                if topic.p3_scored() &&
+                    !t.mesh_active &&
                     let Some(since) = t.meshed_since &&
                     now.saturating_duration_since(since).as_secs_f64() >= activation
                 {
@@ -1581,6 +1676,20 @@ impl PeerManager {
             }
         });
     }
+
+    /// Human label for a Goodbye reason code (per eth2 spec).
+    fn goodbye_reason(code: u64) -> &'static str {
+        match code {
+            1 => "ClientShutdown",
+            2 => "IrrelevantNetwork",
+            3 => "Error",
+            128 => "Banned",
+            129 => "BannedIP",
+            250 => "ScoreTooLow",
+            251 => "Fault",
+            _ => "Unknown",
+        }
+    }
 }
 
 /// Session-level blacklist. Inserted into by beacon-state's `BlockRejected`
@@ -1649,7 +1758,12 @@ fn build_subnet_masks(our_topics: &[GossipTopic]) -> ([u8; 8], u8) {
 /// True iff the ENR advertises subscription to at least one attnet/syncnet
 /// we also subscribe to. Both bitfields are SSZ Bitvectors so a bytewise
 /// AND is sufficient — any non-zero result means at least one shared bit.
-fn enr_matches_subnets(enr: &Enr, attnets_mask: [u8; 8], syncnets_mask: u8) -> bool {
+fn enr_matches_subnets(
+    enr: &Enr,
+    attnets_mask: [u8; 8],
+    syncnets_mask: u8,
+    custody_columns: u128,
+) -> bool {
     if let Some(enr_attnets) = enr.attnets() {
         for i in 0..8 {
             if enr_attnets[i] & attnets_mask[i] != 0 {
@@ -1661,6 +1775,9 @@ fn enr_matches_subnets(enr: &Enr, attnets_mask: [u8; 8], syncnets_mask: u8) -> b
         enr_syncnets & syncnets_mask != 0
     {
         return true;
+    }
+    if let Some(cgc) = enr.cgc() {
+        return enr.node_id().custody_groups(cgc as u8) & custody_columns != 0
     }
     false
 }

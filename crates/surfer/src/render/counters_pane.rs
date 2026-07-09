@@ -77,12 +77,14 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
         );
 
         for (slot_idx, slot_name) in set.slot_names.iter().enumerate() {
+            let selected = set_idx == sel_set && slot_idx == sel_slot;
+            if !set.slot_visible(slot_idx) && !selected {
+                continue;
+            }
             let cur = *set.current.get(slot_idx).unwrap_or(&0);
             let prev = *set.previous.get(slot_idx).unwrap_or(&0);
             let tick_delta = cur as i64 - prev as i64;
             let bucket_delta = set.last_bucket_delta(slot_idx) as i64;
-
-            let selected = set_idx == sel_set && slot_idx == sel_slot;
             // Row-wide highlight: delta cells keep their own red/green fg and
             // just inherit the selected background.
             let row_style = if selected {
@@ -112,6 +114,14 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
     let table = Table::new(rows, widths).header(header).block(block);
     let flat_idx = app.counters_flat_idx();
     app.counters_table_state.select(Some(flat_idx));
+    // Group-header rows aren't selectable, so scrolling up stops one short
+    // of them: when the selection is its group's first row, pull the offset
+    // back to keep the `[source]` header in view.
+    let first_of_group =
+        app.counters.get(sel_set).is_some_and(|set| (0..sel_slot).all(|s| !set.slot_visible(s)));
+    if first_of_group && flat_idx > 0 && app.counters_table_state.offset() >= flat_idx {
+        *app.counters_table_state.offset_mut() = flat_idx - 1;
+    }
     f.render_stateful_widget(table, area, &mut app.counters_table_state);
 }
 
@@ -122,7 +132,7 @@ fn draw_chart(f: &mut Frame, area: Rect, app: &mut App) {
         return;
     };
     let label = set.slot_names.get(slot_idx).map(String::as_str).unwrap_or("?");
-    let Some(hist) = set.history.get(slot_idx) else {
+    let Some(hist) = set.value_history.get(slot_idx) else {
         f.render_widget(Block::default().borders(Borders::ALL).title(" history "), area);
         return;
     };
@@ -142,12 +152,18 @@ fn draw_chart(f: &mut Frame, area: Rect, app: &mut App) {
 
     let data: Vec<(f64, f64)> =
         hist.iter().enumerate().map(|(i, &v)| (i as f64, v as f64)).collect();
-    let y_max = data.iter().map(|(_, y)| *y).fold(0.0f64, f64::max).max(1.0);
+    // Value plot: auto-range to the data's span (padded) rather than
+    // anchoring at 0, so the trajectory is visible at any magnitude.
+    let data_lo = data.iter().map(|(_, y)| *y).fold(f64::INFINITY, f64::min);
+    let data_hi = data.iter().map(|(_, y)| *y).fold(f64::NEG_INFINITY, f64::max);
+    let pad = ((data_hi - data_lo) * 0.05).max(1.0);
+    let y_min = (data_lo - pad).max(0.0);
+    let y_max = data_hi + pad;
     let x_max = n.saturating_sub(1).max(1) as f64;
 
     let datasets = vec![
         Dataset::default()
-            .name(format!("Δ {secs}s"))
+            .name("value")
             .marker(symbols::Marker::Braille)
             .style(Style::default().fg(Color::Cyan))
             .graph_type(GraphType::Line)
@@ -160,8 +176,8 @@ fn draw_chart(f: &mut Frame, area: Rect, app: &mut App) {
         Line::from("now"),
     ];
     let y_labels = vec![
-        Line::from("0"),
-        Line::from(fmt_u64((y_max / 2.0).round() as u64)),
+        Line::from(fmt_u64(y_min.round() as u64)),
+        Line::from(fmt_u64(((y_min + y_max) / 2.0).round() as u64)),
         Line::from(fmt_u64(y_max.round() as u64)),
     ];
 
@@ -175,7 +191,7 @@ fn draw_chart(f: &mut Frame, area: Rect, app: &mut App) {
         )
         .y_axis(
             Axis::default()
-                .bounds([0.0, y_max * 1.1])
+                .bounds([y_min, y_max])
                 .labels(y_labels)
                 .style(Style::default().fg(Color::DarkGray)),
         );

@@ -280,7 +280,13 @@ impl Store {
                     self.query_queue.push_back(query);
                 }
                 ServeResult::Missing => {
-                    self.query_queue.push_back(query);
+                    let error = "resource unavailable".as_bytes();
+                    let mut msg = [0u8; 256];
+                    msg[..error.len()].copy_from_slice(error);
+                    let response = RpcResponse::Error { error: 3, msg, len: error.len() };
+                    emit(IoEvent::P2pSend(P2pSend::Rpc(RpcOutbound::Response(
+                        RpcResponseOutbound { stream_id: query.stream_id, response },
+                    ))));
                 }
                 ServeResult::ProducerFull => {
                     // Tcache full — un-consume and retry this request first

@@ -98,8 +98,8 @@ impl PeerDatabase {
         }
     }
 
-    pub fn peer_disconnected(&mut self, p2p_id: usize) {
-        self.by_p2p_id.remove(&p2p_id);
+    pub fn peer_disconnected(&mut self, p2p_id: usize) -> Option<&PeerRecord> {
+        self.by_p2p_id.remove(&p2p_id).and_then(|idx| self.peers.get(idx))
     }
 
     pub fn p2p_status(&mut self, p2p_id: usize, status: PeerStatus, earliest_slot: Option<u64>) {
@@ -187,6 +187,10 @@ impl PeerDatabase {
             .iter()
             .filter_map(|(_, idx)| self.peers.get(*idx))
             .filter(|record| record.status.is_some())
+    }
+
+    pub fn by_p2p_id(&self, p2p: usize) -> Option<&PeerRecord> {
+        self.by_p2p_id.get(&p2p).and_then(|idx| self.peers.get(*idx))
     }
 }
 

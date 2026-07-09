@@ -5,16 +5,16 @@ mod dedup;
 #[rustfmt::skip]
 #[allow(clippy::all)]
 mod generated;
+mod handler;
 mod mcache;
 mod message;
-mod tile;
 
 pub use control::{
     copy_grafts_to_protobuf_output, copy_prunes_to_protobuf_output,
     copy_subscribes_to_protobuf_output, copy_unsubscribes_to_protobuf_output,
 };
+pub use handler::GossipHandler;
 use silver_common::{GossipMsgOut, NewGossipMsg, PeerEvent};
-pub use tile::GossipHandler;
 
 /// Events emitted by the GossipHandler.
 #[allow(clippy::large_enum_variant)]

@@ -111,6 +111,9 @@ impl Socket {
         F: FnMut(&mut Vec<u8>) -> Option<Transmit>,
     {
         let buf_idx = self.tx_batch.entries.len();
+        if buf_idx >= self.tx_batch.bufs.len() {
+            return false;
+        }
         self.tx_batch.bufs[buf_idx].clear();
 
         let Some(tx) = f(&mut self.tx_batch.bufs[buf_idx]) else {

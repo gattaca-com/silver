@@ -338,7 +338,7 @@ impl StorageTile {
         gloas_root
     }
 
-    #[inline]
+    #[timed]
     fn data_columns<F>(
         &mut self,
         stream_id: P2pStreamId,
@@ -620,6 +620,16 @@ impl StorageTile {
             }
         }
 
+        if stream_id.protocol() != StreamProtocol::GossipSub && self.store.is_synced() {
+            // Validated from a non-gossip source: the mesh never saw us
+            // deliver it. Hand it to control for re-publish on its subnet.
+            peer(PeerEvent::PublishDataColumn {
+                originator: stream_id,
+                topic: GossipTopic::DataColumnSidecar(column_index),
+                ssz: sidecar.read,
+            });
+        }
+
         let validated = self.validated_columns.entry(block_root).or_default();
         *validated |= column_bitmask;
         let validated = *validated;
@@ -630,6 +640,7 @@ impl StorageTile {
             tracing::info!(
                 block = hex::encode(block_root),
                 slot,
+                is_gossip = matches!(stream_id.protocol(), StreamProtocol::GossipSub),
                 "DataColumnsAvailable: custody set complete"
             );
             emit(DataColumnsAvailable { block_root, slot })
@@ -672,14 +683,15 @@ impl StorageTile {
         stream_id: P2pStreamId,
         is_gloas: bool,
         producers: &mut SilverSpineProducers,
-    ) {
+    ) -> bool {
         let emit_da = &mut |msg: DataColumnsAvailable| {
             producers.data_columns.produce(&msg.into());
         };
 
         let Some((block_root, columns)) = self.data_columns(stream_id, t_read, is_gloas, emit_da)
         else {
-            return;
+            // Validated
+            return true;
         };
 
         // Validation failed - score down the peer and retransmit
@@ -691,6 +703,7 @@ impl StorageTile {
             .into(),
         );
         producers.peer_events.produce(&self.column_request(block_root, columns).into());
+        false
     }
 }
 
@@ -717,9 +730,20 @@ impl Tile<SilverSpine> for StorageTile {
                 tracing::debug!(_custody_group, "data column sidecar over gossip");
 
                 let t_read = self.gossip_consumer.acquire(gossip.ssz);
-                // Gossip is `is_synced`-gated, so head ≈ wall selects the layout.
+
                 let is_gloas = self.spec.is_gloas_at_slot(self.store.head_slot() + 1);
-                self.handle_data_column_sidecar(t_read, gossip.stream_id, is_gloas, producers);
+                if self.handle_data_column_sidecar(t_read, gossip.stream_id, is_gloas, producers) {
+                    producers.peer_events.produce(
+                        &PeerEvent::SendGossip {
+                            originator_stream_id: gossip.stream_id,
+                            topic: gossip.topic,
+                            msg_hash: gossip.msg_hash,
+                            recv_ts: gossip.recv_ts,
+                            protobuf: gossip.protobuf,
+                        }
+                        .into(),
+                    );
+                }
             }
             _ => {}
         });

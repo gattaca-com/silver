@@ -202,6 +202,10 @@ mod tests {
         );
         assert_eq!(
             outbound.peek_outbound(protocol, 128, now + Duration::from_secs(30)),
+            RpcRateLimit::TooSoon
+        );
+        assert_eq!(
+            outbound.peek_outbound(protocol, 128, now + Duration::from_secs(60)),
             RpcRateLimit::Allowed
         );
     }

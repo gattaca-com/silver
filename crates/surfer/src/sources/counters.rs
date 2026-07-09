@@ -34,6 +34,9 @@ pub struct CounterSet {
     /// are positional fallbacks because no schema was wired up
     /// (`false`).
     pub schema_registered: bool,
+    /// Zero-valued slots are hidden (dense pre-allocated layouts where
+    /// only touched slots carry signal).
+    hide_zero: bool,
     /// Companion read-only mmap into `tcache-names-{name}` when the
     /// CounterSet is a tcache. `n_consumers × 32` bytes of zero-padded
     /// UTF-8. `None` for non-tcache counters and for tcaches whose
@@ -51,6 +54,9 @@ pub struct CounterSet {
     bucket_start: Vec<u64>,
     /// Per-slot ring of completed-bucket deltas (newest at back).
     pub history: Vec<VecDeque<u64>>,
+    /// Per-slot ring of absolute values sampled at each bucket close —
+    /// drives the drill-in value chart.
+    pub value_history: Vec<VecDeque<u64>>,
     /// `false` until the first `sample()` call. The first sample
     /// primes `previous` and `bucket_start` so initial deltas start
     /// at 0 rather than a wraparound (matters for slots initialised
@@ -73,6 +79,7 @@ impl CounterSet {
         let map_bytes = slot_count * 8;
         let base = mmap_readonly(&file.path, map_bytes)?;
         let (slot_names, schema_registered) = crate::schema::names_for(&file.name, slot_count);
+        let hide_zero = crate::schema::hide_zero(&file.name);
 
         // For tcache counters, try to open the companion names file
         // `tcache-names-{tcache_name}`. Failure is non-fatal — surfer
@@ -98,6 +105,7 @@ impl CounterSet {
             name: file.name.clone(),
             slot_names,
             schema_registered,
+            hide_zero,
             consumer_names_base,
             consumer_names_bytes,
             base,
@@ -107,6 +115,9 @@ impl CounterSet {
             previous: vec![0; slot_count],
             bucket_start: vec![0; slot_count],
             history: (0..slot_count).map(|_| VecDeque::with_capacity(BUCKET_HISTORY_LEN)).collect(),
+            value_history: (0..slot_count)
+                .map(|_| VecDeque::with_capacity(BUCKET_HISTORY_LEN))
+                .collect(),
             primed: false,
         })
     }
@@ -155,6 +166,19 @@ impl CounterSet {
         self.slot_count
     }
 
+    /// Traffic counters are monotonic so rows appear and stay; gauge
+    /// slots (mesh size) can drop back to zero and re-hide.
+    pub fn slot_visible(&self, i: usize) -> bool {
+        !self.hide_zero || self.current.get(i).copied().unwrap_or(0) != 0
+    }
+
+    pub fn visible_slots(&self) -> usize {
+        if !self.hide_zero {
+            return self.slot_count;
+        }
+        self.current.iter().filter(|&&v| v != 0).count()
+    }
+
     /// Close the current bucket: for each slot, compute
     /// `current - bucket_start` and push to the per-slot history ring
     /// (drop oldest when full). Then snapshot `current` into
@@ -178,6 +202,13 @@ impl CounterSet {
                 h.pop_front();
             }
             h.push_back(delta);
+
+            let v = &mut self.value_history[i];
+            if v.len() == BUCKET_HISTORY_LEN {
+                v.pop_front();
+            }
+            v.push_back(self.current[i]);
+
             self.bucket_start[i] = self.current[i];
         }
     }

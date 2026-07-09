@@ -34,7 +34,6 @@ flowchart LR
   NET -->|peer_events : PeerEvent| CTL
   ST  -->|peer_events : PeerEvent| CTL
   BS  -->|peer_events : PeerEvent| CTL
-  CTL -->|"peer_events : PeerEvent (gossip)"| CTL
   CTL -->|peer_control : PeerControl| NET
   CTL -->|peer_control : PeerControl| ST
 
@@ -66,11 +65,10 @@ flowchart LR
 Solid arrows are spine queues (`queue : MessageType`), one per consumer since queues are
 SPMC. The dashed edge is the exception: `incoming_gossip` is the *tcache* carrying raw
 protobuf Network → Control (no spine queue on that hop — the gossip handler's queued
-output is `new_gossip`). The Control self-edge is the gossip handler's `PeerEvent`s
-(gossipsub scoring/misbehaviour): produced onto the queue and consumed by Control's own
-`PeerEvent` pass next loop. Gossip's former `peer_control` and `beacon_events`
-consumption is now in-tile — Control forwards `PeerControl` to the handler directly and
-sets its fork digest from the `Status` it already consumes. `engine_health` is omitted
+output is `new_gossip`). The gossip handler's other traffic is in-tile, not on the
+spine: its `PeerEvent`s (gossipsub scoring/misbehaviour) go straight to the
+`PeerManager`, `PeerControl` is forwarded to the handler directly, and its fork digest
+is set from the `Status` Control already consumes. `engine_health` is omitted
 from the diagram: Engine produces it but no tile currently consumes it. Both
 Storage↔Engine edges carry only the `GetBlobs` variants (EL-mempool blob fetch); the
 queues are broadcast, so Storage sees every `EngineResp` and ignores the rest.
@@ -82,7 +80,7 @@ queues are broadcast, so Storage sees every `EngineResp` and ignores the rest.
 | `new_gossip` | `NewGossipMsg` | Control _(gossip)_ | BeaconState, Storage | refs → `incoming_gossip`, `ssz_gossip` |
 | `p2p_send` | `P2pSend` | Control, Storage | Network | refs → `outgoing_gossip` / `outgoing_rpc` |
 | `rpc_inbound` | `RpcInbound` | Network | Control, BeaconState, Storage | ref → `incoming_rpc` |
-| `peer_events` | `PeerEvent` | Network, Control _(gossip)_, Storage, BeaconState | Control | inline |
+| `peer_events` | `PeerEvent` | Network, Storage, BeaconState | Control | inline |
 | `peer_control` | `PeerControl` | Control | Network, Storage | inline |
 | `beacon_events` | `BeaconStateEvent` | BeaconState | Control, Storage | inline |
 | `data_columns` | `DataColumnsAvailable` | Storage | BeaconState | inline |

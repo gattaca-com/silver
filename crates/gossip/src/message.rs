@@ -10,10 +10,7 @@ use silver_common::{
     TCacheRead, TProducer, TReservation, msg_id_invalid_snappy, msg_id_valid_snappy,
 };
 
-use crate::{
-    GossipHandlerEvent, control::copy_idontwants_to_protobuf_output, dedup::DedupCache,
-    mcache::MessageCache,
-};
+use crate::{GossipHandlerEvent, control::copy_idontwants_to_protobuf_output, dedup::DedupCache};
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn handle_incoming(
@@ -25,7 +22,6 @@ pub(super) fn handle_incoming(
     dedup_cache: &mut DedupCache,
     incoming_gossip_publish: &mut TProducer,
     mcache_publish: &mut TProducer,
-    mcache: &mut MessageCache,
     emit: &mut impl FnMut(GossipHandlerEvent),
 ) -> Result<(), Error> {
     // Fast duplicate check.
@@ -84,9 +80,6 @@ pub(super) fn handle_incoming(
             }
         })?;
 
-    // Add message to message cache.
-    mcache.insert(msg_id, topic, mcache_read);
-
     // Flush the reservation matching the gossip message available downstream.
     reservation.flush()?;
 
@@ -128,7 +121,7 @@ fn decompress_to_reservation(
     Ok(msg_id)
 }
 
-fn copy_compressed_to_protobuf_output(
+pub(crate) fn copy_compressed_to_protobuf_output(
     producer: &mut TProducer,
     snappy_data: &[u8],
     topic: &str,

@@ -106,7 +106,14 @@ pub(super) fn handle_iwants<'a>(
                     tcache,
                 }));
             } else {
-                tracing::warn!(?stream_id, "WANT message not in cache");
+                match mcache.history(&hash) {
+                    Some(ts) => {
+                        tracing::info!(?stream_id, ?hash, elapsed=?ts.elapsed(),  "IWANT for message > 8.4s old");
+                    }
+                    None => {
+                        tracing::warn!(?stream_id, ?hash, "WANT message not in cache");
+                    }
+                }
             }
         }
     }

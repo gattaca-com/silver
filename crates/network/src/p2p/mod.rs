@@ -267,7 +267,7 @@ impl P2p {
     pub fn enqueue_rpc_out(&mut self, msg: RpcOutbound, context: &mut Context) -> SendResult {
         match self.peers.get_mut(&ConnectionHandle(msg.peer_id())) {
             Some(peer) => {
-                tracing::debug!(protocol=?msg.protocol(), "enqueue outbound rpc request");
+                tracing::debug!(protocol=?msg.protocol(), peer=msg.peer_id(), "enqueue outbound rpc request");
                 let acquired_msg = AcquiredRpcOutbound::from((msg, &mut context.rpc_consumer));
                 peer.send_rpc(acquired_msg)
             }
