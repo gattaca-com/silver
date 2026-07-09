@@ -10,10 +10,9 @@ use silver_common::{
         sha256, uint64_chunk,
     },
     ssz_view::{
-        BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF, BeaconBlockBodyGloasView,
-        DATA_COLUMN_SIDECAR_MIN, DataColumnSidecarFuluView, DataColumnSidecarGloasView,
-        ExecutionPayloadBidView, MAX_BLOB_COMMITMENTS_PER_BLOCK, NUMBER_OF_COLUMNS,
-        SignedBeaconBlockView, SignedExecutionPayloadBidView,
+        BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF, DATA_COLUMN_SIDECAR_MIN,
+        DataColumnSidecarFuluView, DataColumnSidecarGloasView, MAX_BLOB_COMMITMENTS_PER_BLOCK,
+        NUMBER_OF_COLUMNS, SignedBeaconBlockView,
     },
 };
 
@@ -60,6 +59,10 @@ pub fn block_root_gloas(signed_block: &[u8]) -> B256 {
     )
 }
 
+pub fn block_root(signed_block: &[u8], is_gloas: bool) -> B256 {
+    if is_gloas { block_root_gloas(signed_block) } else { block_root_fulu(signed_block) }
+}
+
 fn block_root_from_body(signed_block: &[u8], body_root: B256) -> B256 {
     merkleize(&[
         uint64_chunk(SignedBeaconBlockView::slot(signed_block)),
@@ -68,28 +71,6 @@ fn block_root_from_body(signed_block: &[u8], body_root: B256) -> B256 {
         *SignedBeaconBlockView::state_root(signed_block),
         body_root,
     ])
-}
-
-/// Gloas `bid.blob_kzg_commitments` (raw 48B-element bytes).
-pub fn gloas_block_commitments(signed_block: &[u8]) -> &[u8] {
-    let body = SignedBeaconBlockView::body(signed_block);
-    if body.len() < 392 {
-        return &[];
-    }
-    let bid_off = BeaconBlockBodyGloasView::signed_execution_payload_bid_offset(body) as usize;
-    let pa_off = BeaconBlockBodyGloasView::payload_attestations_offset(body) as usize;
-    if bid_off < 392 || bid_off > pa_off || pa_off > body.len() {
-        return &[];
-    }
-    let signed_bid = &body[bid_off..pa_off];
-    if !SignedExecutionPayloadBidView::check_size(signed_bid) {
-        return &[];
-    }
-    let bid = SignedExecutionPayloadBidView::message(signed_bid);
-    if !ExecutionPayloadBidView::check_size(bid) {
-        return &[];
-    }
-    ExecutionPayloadBidView::blob_kzg_commitments(bid)
 }
 
 /// SSZ `block_root` reconstructed from a `DataColumnSidecar`'s embedded
@@ -105,25 +86,7 @@ pub fn block_root_from_sidecar(sidecar: &[u8]) -> B256 {
     ])
 }
 
-/// Spec `verify_data_column_sidecar` — pure shape/sanity checks against
-/// a `DataColumnSidecar` byte buffer. Confirms:
-/// - SSZ-level layout (offsets, total length within `[MIN, MAX]`).
-/// - `index < NUMBER_OF_COLUMNS`.
-/// - `column`, `kzg_commitments`, `kzg_proofs` are clean multiples of their
-///   per-element sizes (2048 / 48 / 48) and all carry the same element count.
-///
-/// Does NOT verify KZG cell proofs (separate function pending a KZG
-/// dep) or the proposer signature (needs proposer pubkey from state).
-pub fn verify_data_column_sidecar_fulu(sidecar: &[u8]) -> bool {
-    if !DataColumnSidecarFuluView::check_size(sidecar) {
-        return false;
-    }
-    if DataColumnSidecarFuluView::index(sidecar) >= NUMBER_OF_COLUMNS as u64 {
-        return false;
-    }
-    let column = DataColumnSidecarFuluView::column(sidecar);
-    let commits = DataColumnSidecarFuluView::kzg_commitments(sidecar);
-    let proofs = DataColumnSidecarFuluView::kzg_proofs(sidecar);
+fn check_sidecar_shape(column: &[u8], commits: &[u8], proofs: &[u8]) -> bool {
     if !column.len().is_multiple_of(BYTES_PER_CELL) ||
         !commits.len().is_multiple_of(BYTES_PER_KZG_COMMITMENT) ||
         !proofs.len().is_multiple_of(BYTES_PER_KZG_PROOF)
@@ -133,13 +96,21 @@ pub fn verify_data_column_sidecar_fulu(sidecar: &[u8]) -> bool {
     let n_cells = column.len() / BYTES_PER_CELL;
     let n_commits = commits.len() / BYTES_PER_KZG_COMMITMENT;
     let n_proofs = proofs.len() / BYTES_PER_KZG_PROOF;
-    if n_cells != n_commits || n_commits != n_proofs {
+    n_cells == n_commits && n_commits == n_proofs && n_commits <= MAX_BLOB_COMMITMENTS_PER_BLOCK
+}
+
+pub fn verify_data_column_sidecar_fulu(sidecar: &[u8]) -> bool {
+    if !DataColumnSidecarFuluView::check_size(sidecar) {
         return false;
     }
-    if n_commits > MAX_BLOB_COMMITMENTS_PER_BLOCK {
+    if DataColumnSidecarFuluView::index(sidecar) >= NUMBER_OF_COLUMNS as u64 {
         return false;
     }
-    true
+    check_sidecar_shape(
+        DataColumnSidecarFuluView::column(sidecar),
+        DataColumnSidecarFuluView::kzg_commitments(sidecar),
+        DataColumnSidecarFuluView::kzg_proofs(sidecar),
+    )
 }
 
 pub fn verify_data_column_sidecar_gloas(sidecar: &[u8], commitments: &[u8]) -> bool {
@@ -149,18 +120,11 @@ pub fn verify_data_column_sidecar_gloas(sidecar: &[u8], commitments: &[u8]) -> b
     if DataColumnSidecarGloasView::index(sidecar) >= NUMBER_OF_COLUMNS as u64 {
         return false;
     }
-    let column = DataColumnSidecarGloasView::column(sidecar);
-    let proofs = DataColumnSidecarGloasView::kzg_proofs(sidecar);
-    if !column.len().is_multiple_of(BYTES_PER_CELL) ||
-        !commitments.len().is_multiple_of(BYTES_PER_KZG_COMMITMENT) ||
-        !proofs.len().is_multiple_of(BYTES_PER_KZG_PROOF)
-    {
-        return false;
-    }
-    let n_cells = column.len() / BYTES_PER_CELL;
-    let n_commits = commitments.len() / BYTES_PER_KZG_COMMITMENT;
-    let n_proofs = proofs.len() / BYTES_PER_KZG_PROOF;
-    n_cells == n_commits && n_commits == n_proofs && n_commits <= MAX_BLOB_COMMITMENTS_PER_BLOCK
+    check_sidecar_shape(
+        DataColumnSidecarGloasView::column(sidecar),
+        commitments,
+        DataColumnSidecarGloasView::kzg_proofs(sidecar),
+    )
 }
 
 /// Spec `verify_data_column_sidecar_inclusion_proof` — re-roots the
@@ -472,13 +436,6 @@ mod tests {
         buf[8..12].copy_from_slice(&56u32.to_le_bytes());
         buf[12..16].copy_from_slice(&(56 + col_len as u32).to_le_bytes());
         buf
-    }
-
-    #[test]
-    fn gloas_sidecar_is_gloas_discriminates_layout() {
-        // Gloas sidecar (fixed part 56 → column offset 56) vs Fulu (offset 260).
-        assert!(DataColumnSidecarGloasView::is_gloas(&synth_gloas_sidecar(0, 1, 1)));
-        assert!(!DataColumnSidecarGloasView::is_gloas(&synth_sidecar(0, 1, 1, 1)));
     }
 
     #[test]

@@ -108,6 +108,13 @@ pub(crate) fn decay(state: &mut PeerState, params: &ScoreParams) {
         params.decay_to_zero,
     );
 
+    // P5 application score carries (negative) RPC-misbehaviour penalties;
+    // decay toward zero from either sign so transient faults recover.
+    state.application_score *= params.application_score_decay;
+    if state.application_score.abs() < params.decay_to_zero {
+        state.application_score = 0.0;
+    }
+
     for t in state.topic_stats.values_mut() {
         decay_to_floor(
             &mut t.first_deliveries,

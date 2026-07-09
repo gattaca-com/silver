@@ -564,7 +564,12 @@ impl SignedBeaconBlockView {
     }
 
     #[inline]
-    pub fn has_data_columns(buf: &[u8]) -> bool {
+    pub fn has_data_columns(buf: &[u8], is_gloas: bool) -> bool {
+        if is_gloas { Self::has_data_columns_gloas(buf) } else { Self::has_data_columns_fulu(buf) }
+    }
+
+    #[inline]
+    pub fn has_data_columns_fulu(buf: &[u8]) -> bool {
         let beacon_block_body = Self::body(buf);
         if beacon_block_body.len() < BEACON_BLOCK_BODY_FIXED {
             return false;
@@ -579,10 +584,30 @@ impl SignedBeaconBlockView {
     }
 
     #[inline]
-    pub fn is_gloas(buf: &[u8]) -> bool {
+    pub fn gloas_block_commitments(buf: &[u8]) -> &[u8] {
         let body = Self::body(buf);
-        body.len() >= BEACON_BLOCK_BODY_GLOAS_FIXED &&
-            u32_le(body, 200) as usize == BEACON_BLOCK_BODY_GLOAS_FIXED
+        if body.len() < BEACON_BLOCK_BODY_FIXED {
+            return &[];
+        }
+        let bid_off = BeaconBlockBodyGloasView::signed_execution_payload_bid_offset(body) as usize;
+        let pa_off = BeaconBlockBodyGloasView::payload_attestations_offset(body) as usize;
+        if bid_off < BEACON_BLOCK_BODY_FIXED || bid_off > pa_off || pa_off > body.len() {
+            return &[];
+        }
+        let signed_bid = &body[bid_off..pa_off];
+        if !SignedExecutionPayloadBidView::check_size(signed_bid) {
+            return &[];
+        }
+        let bid = SignedExecutionPayloadBidView::message(signed_bid);
+        if !ExecutionPayloadBidView::check_size(bid) {
+            return &[];
+        }
+        ExecutionPayloadBidView::blob_kzg_commitments(bid)
+    }
+
+    #[inline]
+    pub fn has_data_columns_gloas(buf: &[u8]) -> bool {
+        !Self::gloas_block_commitments(buf).is_empty()
     }
 }
 
@@ -607,7 +632,6 @@ impl SignedBeaconBlockView {
 //   [396..)    variable region
 
 pub const BEACON_BLOCK_BODY_FIXED: usize = 396;
-pub const BEACON_BLOCK_BODY_GLOAS_FIXED: usize = 392;
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 #[repr(C)]
@@ -1942,11 +1966,6 @@ impl DataColumnSidecarGloasView {
         let col_off = u32_le(buf, 8) as usize;
         let proof_off = u32_le(buf, 12) as usize;
         col_off >= DATA_COLUMN_SIDECAR_GLOAS_MIN && col_off <= proof_off && proof_off <= buf.len()
-    }
-
-    #[inline]
-    pub fn is_gloas(buf: &[u8]) -> bool {
-        buf.len() >= 12 && u32_le(buf, 8) as usize == DATA_COLUMN_SIDECAR_GLOAS_MIN
     }
 }
 

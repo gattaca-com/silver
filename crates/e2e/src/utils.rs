@@ -1,6 +1,6 @@
 //! Shared PM + BS harness for the `sync_pm_bs*` integration tests.
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use flux::{spine::SpineAdapter, tile::Tile};
 use silver_beacon_state::{
@@ -36,7 +36,7 @@ pub fn block_slot(ssz: &[u8]) -> u64 {
 }
 
 pub fn data_columns_available(block: &[u8]) -> Option<DataColumnsAvailable> {
-    if !SignedBeaconBlockView::has_data_columns(block) {
+    if !SignedBeaconBlockView::has_data_columns_fulu(block) {
         return None;
     }
     let block_root = hash_tree_root_block_header(&BeaconBlockHeader {
@@ -144,7 +144,7 @@ impl PmBsHarness {
             .unwrap_or_else(|e| panic!("decompose checkpoint: {e}"));
         let mut bs = BeaconStateTile::new(
             ticker,
-            SpecConfig::mainnet(),
+            Arc::new(SpecConfig::mainnet()),
             &SyncingConfig::default(),
             gossip_c,
             rpc_c,
@@ -179,8 +179,12 @@ impl PmBsHarness {
             String::new(),
         )
         .unwrap();
-        let mut ctl =
-            Controller::new(pm, gossip_handler, TCache::multi_producer("rpc_out_dummy", 32));
+        let mut ctl = Controller::new(
+            pm,
+            gossip_handler,
+            TCache::multi_producer("rpc_out_dummy", 32),
+            Arc::new(SpecConfig::mainnet()),
+        );
         let mut ctl_a = SpineAdapter::connect_tile(&ctl, &mut spine);
 
         let mut inj_a = SpineAdapter::connect_tile(&Injector, &mut spine);

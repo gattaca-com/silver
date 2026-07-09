@@ -4,10 +4,14 @@
 //! compression) bound to its own `path_suffix` on the shared flux base_dir so
 //! two stacks coexist in one process.
 
-use std::{net::SocketAddr, sync::atomic::AtomicUsize};
+use std::{
+    net::SocketAddr,
+    sync::{Arc, atomic::AtomicUsize},
+};
 
 use flux::{spine::SpineAdapter, tile::Tile};
 use quinn_proto::Endpoint;
+use silver_beacon_state_data::SpecConfig;
 use silver_common::{
     Enr, Identify, Keypair, PeerId, ProtoIdentify, SilverSpine, TCache, TCacheProducer, TConsumer,
     TProducer, TRandomAccess, ssz_view::METADATA_SIZE,
@@ -267,6 +271,7 @@ impl PublisherStack {
             )
             .unwrap(),
             TCache::multi_producer("dummy_rpc_out", 32), // dummpy rpc out
+            Arc::new(SpecConfig::mainnet()),
         );
 
         // Spine + per-tile adapters.
@@ -376,6 +381,7 @@ impl EchoStack {
             ),
             compression,
             TCache::multi_producer("dummy_rpc_out", 32), // dummpy rpc out
+            Arc::new(SpecConfig::mainnet()),
         );
 
         let mut spine = SilverSpine::new_with_base_dir(base_dir, Some(path_suffix));

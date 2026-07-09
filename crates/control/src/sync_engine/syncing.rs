@@ -1,8 +1,13 @@
 use std::time::{Duration, Instant};
 
-use silver_common::{BASE_REQUEST_ID, REQUEST_ID_PREFIX_MASK, RpcSeverity, SyncUpdate};
+use silver_common::{RpcSeverity, SyncUpdate, msg_is_envelope_request, msg_is_live_column_request};
 
-use super::{Ctx, SLOTS_PER_EPOCH, columns::ColumnSync, event::SyncAction, same_target_identity};
+use super::{
+    Ctx, SLOTS_PER_EPOCH,
+    event::SyncAction,
+    range_driver::{ColumnSync, EnvelopeSync},
+    same_target_identity,
+};
 
 pub(super) const IMPORT_STALL_TIMEOUT: Duration = Duration::from_secs(24);
 const HEAD_SYNC_BLOCKS_BY_RANGE_BATCH: u64 = 32;
@@ -40,6 +45,7 @@ pub(super) struct Syncing {
     inflight: Option<ForwardReq>,
     pending_since: Option<Instant>,
     columns: ColumnSync,
+    envelopes: EnvelopeSync,
 }
 
 impl Syncing {
@@ -50,6 +56,7 @@ impl Syncing {
             inflight: None,
             pending_since: None,
             columns: ColumnSync::default(),
+            envelopes: EnvelopeSync::default(),
         }
     }
 
@@ -63,11 +70,6 @@ impl Syncing {
 
     pub(super) fn inflight_end(&self) -> u64 {
         self.inflight.map_or(0, |r| r.start_slot + r.count - 1)
-    }
-
-    /// Peers excluded from the next column attempt — passed to PM's picker.
-    pub(super) fn column_tried_peers(&self) -> Vec<usize> {
-        self.columns.tried_peers()
     }
 
     /// Re-point at a new target. A monotonic finalized advance, a
@@ -121,6 +123,7 @@ impl Syncing {
         self.synced_through = 0;
         self.inflight = None;
         self.columns = ColumnSync::default();
+        self.envelopes = EnvelopeSync::default();
     }
 
     /// Forward terminator (engine-issued). The `BASE_REQUEST_ID` prefix routes
@@ -128,8 +131,10 @@ impl Syncing {
     /// request to `Delivered` (advances the watermark in `drive`) or `Errored`
     /// (retry from the applied head).
     pub(super) fn on_terminator(&mut self, request_id: u64, peer: usize, delivered: bool) {
-        if request_id & REQUEST_ID_PREFIX_MASK == BASE_REQUEST_ID {
+        if msg_is_live_column_request(request_id) {
             self.columns.on_terminator(request_id, delivered);
+        } else if msg_is_envelope_request(request_id) {
+            self.envelopes.on_terminator(request_id, delivered);
         } else if let Some(r) = self.inflight.as_mut() &&
             r.request_id == request_id &&
             let ReqState::InFlight { peer: p, peer_head_at_issue, .. } = r.state &&
@@ -147,8 +152,10 @@ impl Syncing {
     /// `DataColumnSidecar` chunk — refresh the column attempt's progress timer
     /// (blocks are head-paced, so block chunks are ignored).
     pub(super) fn on_chunk(&mut self, request_id: u64, now: Instant) {
-        if request_id & REQUEST_ID_PREFIX_MASK == BASE_REQUEST_ID {
+        if msg_is_live_column_request(request_id) {
             self.columns.on_chunk(request_id, now);
+        } else if msg_is_envelope_request(request_id) {
+            self.envelopes.on_chunk(request_id, now);
         }
     }
 
@@ -176,22 +183,25 @@ impl Syncing {
         self.inflight = Some(ForwardReq { request_id, start_slot: start, count, state });
     }
 
-    /// Record the outcome of routing the last emitted `RequestColumnsByRange`.
-    pub(super) fn on_column_request_issued(
+    pub(super) fn on_range_request_issued(
         &mut self,
         ctx: &Ctx,
         request_id: u64,
         peer: Option<(usize, u128)>,
         now: Instant,
     ) {
-        self.columns.on_request_issued(ctx, request_id, peer, now);
+        if msg_is_live_column_request(request_id) {
+            self.columns.on_request_issued(ctx, request_id, peer, now);
+        } else if msg_is_envelope_request(request_id) {
+            self.envelopes.on_request_issued(ctx, request_id, peer, now);
+        }
     }
 
     /// Drive the lifecycle: block completion (terminator-driven), progress/
     /// timeout, import-stall backtrack, block issuance, then the trailing
     /// column driver. Issuance emits `RequestBlocksByRange` /
     /// `RequestColumnsByRange` (peer unset; PM picks + caps on routing,
-    /// then `on_request_issued` / `on_column_request_issued` records the
+    /// then `on_request_issued` / `on_range_request_issued` records the
     /// chosen peer); a stalled peer is scored via `ScorePeer`.
     pub(super) fn drive(&mut self, ctx: &mut Ctx, now: Instant, emit: &mut impl FnMut(SyncAction)) {
         if ctx.awaiting_local_replay {
@@ -204,65 +214,12 @@ impl Syncing {
             let block_inflight_end = self.inflight_end();
             self.columns.drive(ctx, self.synced_through, block_inflight_end, now, emit);
         }
+        // Trailing envelope catch-up. Every full-payload gloas block needs its
+        // envelope before its child can apply, so fetch at block pace — in both
+        // sync phases.
+        let block_inflight_end = self.inflight_end();
+        self.envelopes.drive(ctx, self.synced_through, block_inflight_end, now, emit);
         let head_slot = ctx.local.head_imported_slot;
-
-        if let Some(req) = self.inflight {
-            let end_inclusive = req.start_slot + req.count - 1;
-            match req.state {
-                ReqState::AwaitingPeer { retry_at } => {
-                    if now >= retry_at {
-                        emit(SyncAction::RequestBlocksByRange {
-                            request_id: req.request_id,
-                            peer: 0,
-                            start: req.start_slot,
-                            count: req.count,
-                        });
-                        // Re-arm locally; pacing must not depend on the caller
-                        // round-tripping back through `on_request_issued`.
-                        if let Some(r) = self.inflight.as_mut() &&
-                            let ReqState::AwaitingPeer { retry_at } = &mut r.state
-                        {
-                            *retry_at = now + ISSUE_RETRY_BACKOFF;
-                        }
-                    }
-                }
-                ReqState::InFlight { peer, last_observed_head_slot, last_progress_at, .. } => {
-                    if head_slot > last_observed_head_slot {
-                        if let Some(r) = self.inflight.as_mut() &&
-                            let ReqState::InFlight {
-                                last_observed_head_slot,
-                                last_progress_at,
-                                ..
-                            } = &mut r.state
-                        {
-                            *last_observed_head_slot = head_slot;
-                            *last_progress_at = now;
-                        }
-                    } else {
-                        let timeout = Duration::from_millis(ctx.cfg.inflight_progress_timeout_ms);
-                        if now.saturating_duration_since(last_progress_at) >= timeout {
-                            if head_slot < req.start_slot {
-                                emit(SyncAction::ScorePeer {
-                                    peer,
-                                    severity: RpcSeverity::HighTolerance,
-                                });
-                            } else if head_slot >= end_inclusive {
-                                self.synced_through = self.synced_through.max(end_inclusive);
-                            }
-                            self.inflight = None;
-                        }
-                    }
-                }
-                ReqState::Delivered { peer_head_at_issue } => {
-                    self.synced_through =
-                        self.synced_through.max(end_inclusive.min(peer_head_at_issue));
-                    self.inflight = None;
-                }
-                ReqState::Errored => {
-                    self.inflight = None;
-                }
-            }
-        }
 
         let (sync_through, complete) = match &mut self.inflight {
             None => (None, true),

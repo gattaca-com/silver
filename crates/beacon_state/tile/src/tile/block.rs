@@ -291,11 +291,7 @@ impl BeaconStateTile {
         // at the next slot boundary by the fork-choice tick. Set before
         // `recompute_head` so `apply_score_changes` folds it in. First-block
         // guard per spec `update_proposer_boost_root`.
-        let before_deadline = if is_gloas {
-            self.ticker.is_before_gloas_attesting_interval()
-        } else {
-            self.ticker.is_before_fulu_attesting_interval()
-        };
+        let before_deadline = self.ticker.is_before_attesting_interval(is_gloas);
 
         if parsed.header.slot == self.ticker.current_slot() &&
             before_deadline &&
@@ -344,12 +340,8 @@ impl BeaconStateTile {
 
         let body = SignedBeaconBlockView::body(data);
 
-        let is_gloas = block_epoch >= self.spec.gloas_fork_epoch;
-        let body_root = if is_gloas {
-            ssz_hash::hash_tree_root_body_gloas(body)
-        } else {
-            ssz_hash::hash_tree_root_body_fulu(body)
-        };
+        let is_gloas = self.spec.is_gloas_at(block_epoch);
+        let body_root = ssz_hash::hash_tree_root_body(body, is_gloas);
 
         let block_header = BeaconBlockHeader {
             slot: block_slot,
@@ -429,10 +421,12 @@ impl BeaconStateTile {
             });
         }
 
+        let has_data_columns = SignedBeaconBlockView::has_data_columns(data, is_gloas);
+
         Ok(ParsedBlock {
             header: block_header,
             block_root,
-            has_data_columns: SignedBeaconBlockView::has_data_columns(data),
+            has_data_columns,
             parent_state_id,
             is_gloas,
             parent_payload_status,
@@ -442,7 +436,7 @@ impl BeaconStateTile {
     fn verify_block_signature(&self, data: &[u8], parsed: &ParsedBlock) -> bool {
         let block_epoch = parsed.header.slot / SLOTS_PER_EPOCH;
         let rv = self.state.read_view(parsed.parent_state_id);
-        let fork_version = rv.epoch.fork_version_at(block_epoch);
+        let fork_version = self.spec.fork_version_at(block_epoch);
         let proposer_pubkey =
             rv.validators.pubkey_decompressed(parsed.header.proposer_index as usize);
         bls::verify_block_signature(

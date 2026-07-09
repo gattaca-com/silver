@@ -251,6 +251,20 @@ fn write_withdrawals_json(data: &[u8], out: &mut Vec<u8>) -> Result<(), crate::E
     Ok(())
 }
 
+/// Emit the `,[ "0x..", .. ]` versionedHashes JSON array element.
+fn write_versioned_hashes_json(out: &mut Vec<u8>, hashes: impl Iterator<Item = [u8; 32]>) {
+    out.extend_from_slice(b",[");
+    for (i, h) in hashes.enumerate() {
+        if i > 0 {
+            out.push(b',');
+        }
+        out.extend_from_slice(b"\"0x");
+        append_hex(&h, out);
+        out.push(b'"');
+    }
+    out.push(b']');
+}
+
 pub(crate) fn write_new_payload_params_fulu(
     data: &[u8],
     out: &mut Vec<u8>,
@@ -300,19 +314,16 @@ pub(crate) fn write_new_payload_params_fulu(
             "blob_kzg_commitments length not multiple of 48".into(),
         ));
     }
-    out.extend_from_slice(b",[");
-    for (i, commitment) in blob_kzg_data.chunks(48).enumerate() {
-        use sha2::{Digest, Sha256};
-        let mut h = Sha256::digest(commitment);
-        h[0] = 0x01;
-        if i > 0 {
-            out.push(b',');
-        }
-        out.extend_from_slice(b"\"0x");
-        append_hex(&h, out);
-        out.push(b'"');
-    }
-    out.push(b']');
+    write_versioned_hashes_json(
+        out,
+        blob_kzg_data.chunks(48).map(|commitment| {
+            use sha2::{Digest, Sha256};
+            let mut h = [0u8; 32];
+            h.copy_from_slice(&Sha256::digest(commitment));
+            h[0] = 0x01;
+            h
+        }),
+    );
 
     out.extend_from_slice(b",\"0x");
     append_hex(SignedBeaconBlockView::parent_root(data), out);
@@ -347,16 +358,7 @@ pub(crate) fn write_new_payload_params_gloas(
     out.push(b'[');
     write_execution_payload_obj(execution_payload, out)?;
 
-    out.extend_from_slice(b",[");
-    for (i, h) in versioned_hashes.iter().enumerate() {
-        if i > 0 {
-            out.push(b',');
-        }
-        out.extend_from_slice(b"\"0x");
-        append_hex(h, out);
-        out.push(b'"');
-    }
-    out.push(b']');
+    write_versioned_hashes_json(out, versioned_hashes.iter().copied());
 
     out.extend_from_slice(b",\"0x");
     append_hex(ExecutionPayloadEnvelopeView::parent_beacon_block_root(envelope), out);

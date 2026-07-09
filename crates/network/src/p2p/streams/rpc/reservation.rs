@@ -185,26 +185,8 @@ impl RpcReservation {
                 RpcResponse::StatusV2(s) => &mut s[self.offset..],
                 RpcResponse::Ping(p) => &mut p[self.offset..],
                 RpcResponse::MetaData(m) => &mut m[self.offset..],
-                RpcResponse::BeaconBlock { fork_digest, ssz: _ } => {
-                    if self.offset < fork_digest.len() {
-                        &mut fork_digest[self.offset..]
-                    } else {
-                        match &mut self.tcache {
-                            Some(reservation) => reservation.remaining_buffer()?,
-                            None => return Err(ErrorKind::InvalidData.into()), // uses reservation
-                        }
-                    }
-                }
-                RpcResponse::DataColumnSidecar { fork_digest, ssz: _ } => {
-                    if self.offset < fork_digest.len() {
-                        &mut fork_digest[self.offset..]
-                    } else {
-                        match &mut self.tcache {
-                            Some(reservation) => reservation.remaining_buffer()?,
-                            None => return Err(ErrorKind::InvalidData.into()), // uses reservation
-                        }
-                    }
-                }
+                RpcResponse::BeaconBlock { fork_digest, ssz: _ } |
+                RpcResponse::DataColumnSidecar { fork_digest, ssz: _ } |
                 RpcResponse::ExecutionPayloadEnvelope { fork_digest, ssz: _ } => {
                     if self.offset < fork_digest.len() {
                         &mut fork_digest[self.offset..]
@@ -231,29 +213,9 @@ impl RpcReservation {
                 None => self.offset += written,
             },
             Rpc::Response(rsp) => match rsp {
-                RpcResponse::BeaconBlock { fork_digest: _, ssz: _ } => {
-                    if self.offset < 4 {
-                        self.offset += written;
-                        debug_assert!(self.offset <= 4);
-                    } else {
-                        match &mut self.tcache {
-                            Some(reservation) => reservation.increment_offset(written),
-                            None => return Err(ErrorKind::InvalidData.into()), // uses reservation
-                        }
-                    }
-                }
-                RpcResponse::DataColumnSidecar { fork_digest: _, ssz: _ } => {
-                    if self.offset < 4 {
-                        self.offset += written;
-                        debug_assert!(self.offset <= 4);
-                    } else {
-                        match &mut self.tcache {
-                            Some(reservation) => reservation.increment_offset(written),
-                            None => return Err(ErrorKind::InvalidData.into()), // uses reservation
-                        }
-                    }
-                }
-                RpcResponse::ExecutionPayloadEnvelope { fork_digest: _, ssz: _ } => {
+                RpcResponse::BeaconBlock { .. } |
+                RpcResponse::DataColumnSidecar { .. } |
+                RpcResponse::ExecutionPayloadEnvelope { .. } => {
                     if self.offset < 4 {
                         self.offset += written;
                         debug_assert!(self.offset <= 4);

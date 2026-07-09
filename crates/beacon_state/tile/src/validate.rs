@@ -14,6 +14,14 @@ use crate::{
     ssz_hash,
 };
 
+/// Attestation `data.index` gossip rule: pre-Gloas the committee is encoded in
+/// `committee_index` so `index` must be 0; Gloas repurposes it as the
+/// payload-presence bit.
+#[inline]
+pub fn attestation_index_ok(is_gloas: bool, index: u64) -> bool {
+    if is_gloas { index < 2 } else { index == 0 }
+}
+
 pub fn validate_attestation_data(
     att: &[u8],
     state_slot: Slot,
@@ -47,9 +55,7 @@ pub fn validate_attestation_data(
         });
     }
 
-    // Gloas repurposes `data.index` as the payload-presence vote (0 or 1);
-    // pre-Gloas it must be 0.
-    if !is_gloas && att_index != 0 {
+    if !attestation_index_ok(is_gloas, att_index) {
         return Err(AttestationError::IndexNonZero { idx: att_index });
     }
 

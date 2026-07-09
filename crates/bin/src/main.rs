@@ -163,6 +163,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     tracing::info!("booting from local checkpoint: {booting_from_local_checkpoint}");
 
+    let spec = Arc::new(chain_config.spec.clone());
+
     let gossip_handler = GossipHandler::new(
         incoming_gossip_consumer,
         ssz_gossip_producer,
@@ -182,6 +184,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         ),
         gossip_handler,
         outgoing_rpc_producer.clone(),
+        spec.clone(),
     );
 
     // A finalized checkpoint state is mandatory (no genesis or runtime sync):
@@ -191,7 +194,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .unwrap_or_else(|e| panic!("bootstrap: decompose checkpoint failed: {e}"));
     let beacon_state_tile = BeaconStateTile::new(
         ticker,
-        chain_config.spec.clone(),
+        spec.clone(),
         &config.syncing_config(),
         ssz_gossip_consumer,
         incoming_rpc_consumer,
@@ -212,6 +215,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         state_reader,
         das_custody_groups,
         config.fork_digest(),
+        spec.clone(),
         config.data_storage_dir().into(),
         booting_from_local_checkpoint,
         incoming_engine_resp_consumer_ds,

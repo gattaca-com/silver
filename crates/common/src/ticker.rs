@@ -97,20 +97,17 @@ impl SlotTicker {
         }
     }
 
-    fn since_genesis_ms(&self) -> u64 {
+    pub fn millis_since_genesis(&self) -> u64 {
         self.anchor_genesis_ms + self.anchor.elapsed().as_millis() as u64
     }
 
     pub fn current_slot(&self) -> u64 {
-        self.since_genesis_ms() / self.slot_ms
+        self.millis_since_genesis() / self.slot_ms
     }
 
-    pub fn is_before_fulu_attesting_interval(&self) -> bool {
-        self.since_genesis_ms() % self.slot_ms < self.slot_ms / 3
-    }
-
-    pub fn is_before_gloas_attesting_interval(&self) -> bool {
-        self.since_genesis_ms() % self.slot_ms < self.slot_ms / 4
+    pub fn is_before_attesting_interval(&self, is_gloas: bool) -> bool {
+        let fraction = if is_gloas { 4 } else { 3 };
+        self.millis_since_genesis() % self.slot_ms < self.slot_ms / fraction
     }
 
     #[cfg(any(test, feature = "test-util"))]
@@ -133,7 +130,7 @@ impl SlotTicker {
     }
 
     pub fn tick(&mut self) -> TickEvent {
-        let ms = self.since_genesis_ms();
+        let ms = self.millis_since_genesis();
         let slot = ms / self.slot_ms;
         let into = ms % self.slot_ms;
 

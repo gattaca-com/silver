@@ -1,15 +1,19 @@
 mod backfill;
-mod columns;
 mod event;
 mod peers;
+mod range_driver;
 mod select;
 mod syncing;
 
-use std::time::{Duration, Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use backfill::{Backfill, BackfillPlan};
 pub use event::{SyncAction, SyncEvent};
 use peers::PeerView;
+use silver_chain_spec::SpecConfig;
 use silver_common::{
     BlockSource, PeerEvent, PeerStatus, RpcInbound, RpcRequest, RpcRequestInbound, RpcResponse,
     RpcResponseInbound, StreamProtocol, SyncUpdate, SyncingStrategy, ssz_view::StatusView,
@@ -66,6 +70,7 @@ impl LocalView {
 struct Ctx {
     cfg: SyncingConfig,
     custody_columns: u128,
+    spec: Arc<SpecConfig>,
     awaiting_local_replay: bool,
     next_request_id: u64,
     local: LocalView,
@@ -77,6 +82,10 @@ impl Ctx {
     fn behind_wall(&self) -> bool {
         self.local.wall_slot >
             self.local.head_imported_slot.saturating_add(self.cfg.head_lag_threshold_slots)
+    }
+
+    fn head_is_gloas(&self) -> bool {
+        self.spec.is_gloas_at_slot(self.local.head_imported_slot + 1)
     }
 }
 
@@ -99,11 +108,17 @@ pub struct SyncEngine {
 }
 
 impl SyncEngine {
-    pub fn new(cfg: SyncingConfig, awaiting_local_replay: bool, custody_columns: u128) -> Self {
+    pub fn new(
+        cfg: SyncingConfig,
+        awaiting_local_replay: bool,
+        custody_columns: u128,
+        spec: Arc<SpecConfig>,
+    ) -> Self {
         Self {
             ctx: Ctx {
                 cfg,
                 custody_columns,
+                spec,
                 awaiting_local_replay,
                 next_request_id: 0,
                 local: LocalView::default(),
@@ -193,23 +208,18 @@ impl SyncEngine {
                 self.on_event(SyncEvent::PeerDisconnected { peer: *p2p_peer }, now);
             }
             // Storage's backfill scan reports → engine (it schedules).
-            PeerEvent::BackfillState { block_floor, earliest_present, column_floor } => {
+            PeerEvent::BackfillState { block_floor, earliest_present, .. } => {
                 self.on_event(
                     SyncEvent::BackfillState {
                         block_floor: *block_floor,
                         earliest_present: *earliest_present,
-                        column_floor: *column_floor,
                     },
                     now,
                 );
             }
-            PeerEvent::ColumnNeed { block_root, slot, missing } => {
+            PeerEvent::ColumnNeed { block_root, missing, .. } => {
                 self.on_event(
-                    SyncEvent::ColumnNeed {
-                        block_root: *block_root,
-                        slot: *slot,
-                        missing: *missing,
-                    },
+                    SyncEvent::ColumnNeed { block_root: *block_root, missing: *missing },
                     now,
                 );
             }
@@ -224,7 +234,8 @@ impl SyncEngine {
                     stream_id.protocol(),
                     StreamProtocol::BeaconBlocksByRange |
                         StreamProtocol::DataColumnSidecarsByRange |
-                        StreamProtocol::DataColumnSidecarsByRoot
+                        StreamProtocol::DataColumnSidecarsByRoot |
+                        StreamProtocol::ExecutionPayloadEnvelopesByRange
                 ) =>
             {
                 let peer = stream_id.peer();
@@ -232,7 +243,9 @@ impl SyncEngine {
                 let ev = match response {
                     RpcResponse::Complete => Some(SyncEvent::RpcComplete { request_id, peer }),
                     RpcResponse::Error { .. } => Some(SyncEvent::RpcFailed { request_id, peer }),
-                    RpcResponse::BeaconBlock { .. } | RpcResponse::DataColumnSidecar { .. } => {
+                    RpcResponse::BeaconBlock { .. } |
+                    RpcResponse::DataColumnSidecar { .. } |
+                    RpcResponse::ExecutionPayloadEnvelope { .. } => {
                         Some(SyncEvent::RpcChunk { request_id, peer })
                     }
                     _ => None,
@@ -364,14 +377,13 @@ impl SyncEngine {
                 Phase::Following(bf) => bf.on_column_chunk(request_id, now),
                 Phase::Idle => {}
             },
-            SyncEvent::BackfillState { block_floor, earliest_present, column_floor: _ } => {
+            SyncEvent::BackfillState { block_floor, earliest_present } => {
                 tracing::info!(block_floor, earliest_present, "set backfill state");
                 self.ctx.backfill.set_block_gap(block_floor, earliest_present);
             }
-            SyncEvent::ColumnNeed { block_root, slot: _, missing } => {
+            SyncEvent::ColumnNeed { block_root, missing } => {
                 self.ctx.backfill.set_column_need(block_root, missing);
             }
-            SyncEvent::PeerConnected { .. } => {}
         }
     }
 
@@ -450,13 +462,6 @@ impl SyncEngine {
         }
     }
 
-    pub fn column_tried_peers(&self) -> Vec<usize> {
-        match &self.phase {
-            Phase::Syncing(s) => s.column_tried_peers(),
-            _ => Vec::new(),
-        }
-    }
-
     pub fn on_request_issued(
         &mut self,
         request_id: u64,
@@ -470,14 +475,14 @@ impl SyncEngine {
         }
     }
 
-    pub fn on_column_request_issued(
+    pub fn on_range_request_issued(
         &mut self,
         request_id: u64,
         peer: Option<(usize, u128)>,
         now: Instant,
     ) {
         if let Phase::Syncing(s) = &mut self.phase {
-            s.on_column_request_issued(&self.ctx, request_id, peer, now);
+            s.on_range_request_issued(&self.ctx, request_id, peer, now);
         }
     }
 }
@@ -516,9 +521,16 @@ fn parse_peer_status(
 
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, Instant};
+    use std::{
+        sync::Arc,
+        time::{Duration, Instant},
+    };
 
-    use silver_common::{BASE_REQUEST_ID, BlockSource, REQUEST_ID_PREFIX_MASK, SyncUpdate};
+    use silver_chain_spec::SpecConfig;
+    use silver_common::{
+        BlockSource, SyncUpdate, msg_is_envelope_request, msg_is_live_column_request,
+        msg_is_post_gloas,
+    };
     use silver_peer::SyncingConfig;
 
     use super::{
@@ -530,7 +542,7 @@ mod tests {
     const HEAD_ROOT: [u8; 32] = [7; 32];
 
     fn engine() -> SyncEngine {
-        SyncEngine::new(SyncingConfig::default(), false, 0)
+        SyncEngine::new(SyncingConfig::default(), false, 0, Arc::new(SpecConfig::mainnet()))
     }
 
     fn peer_status(peer: usize, head_root: [u8; 32], head_slot: u64) -> SyncEvent {
@@ -667,7 +679,7 @@ mod tests {
     fn finalized_uses_full_batch_head_uses_smaller() {
         let now = Instant::now();
         let mut e = engine();
-        // A finalized target far ahead → full `max_blocks_by_range_batch` (128).
+        // A finalized target far ahead → full `max_blocks_by_range_batch` (64).
         feed(
             &mut e,
             SyncEvent::PeerStatus {
@@ -685,12 +697,70 @@ mod tests {
         e.advance(now, &mut |_| {});
         assert!(matches!(e.current_target(), SyncUpdate::SyncingFinalized { .. }));
         let (_, start, count) = drive(&mut e, now).expect("range issued");
-        assert_eq!((start, count), (1, 128), "finalized catch-up uses the full batch");
+        assert_eq!((start, count), (1, 64), "finalized catch-up uses the full batch");
 
         // A head-only peer → the 32-block head batch.
         let mut e = engine();
         let (_, start, count) = issue_one(&mut e, 200, 0, now);
         assert_eq!((start, count), (1, 32), "head sync uses the 32-block batch");
+    }
+
+    #[test]
+    fn envelopes_trail_block_progress_in_gloas() {
+        let now = Instant::now();
+        // Gloas from epoch 0: the whole head-sync window is in gloas.
+        let mut e = SyncEngine::new(
+            SyncingConfig::default(),
+            false,
+            0,
+            Arc::new(SpecConfig { gloas_fork_epoch: 0, ..SpecConfig::mainnet() }),
+        );
+        feed(&mut e, peer_status(PEER, HEAD_ROOT, 200), now);
+        feed(&mut e, local_status(0, 200), now);
+        e.advance(now, &mut |_| {});
+
+        // First drive issues blocks; envelopes can't open until a block range is
+        // in flight (they pace to the block watermark / in-flight end).
+        let (brid, bstart, bcount) = drive(&mut e, now).expect("block issued");
+        e.on_request_issued(brid, bstart, bcount, Some(PEER), now);
+
+        // Second drive: the envelope range now trails the in-flight block range.
+        let mut env = None;
+        e.drive_forward_sync(now, &mut |a| {
+            if let SyncAction::RequestEnvelopesByRange { request_id, start, count, .. } = a {
+                env = Some((request_id, start, count));
+            }
+        });
+        let (erid, estart, ecount) = env.expect("envelope range issued");
+        assert_eq!((estart, ecount), (1, 32), "envelopes trail the 32-block head batch");
+        assert!(msg_is_envelope_request(erid), "envelope request id");
+    }
+
+    #[test]
+    fn no_envelopes_below_gloas_fork() {
+        let now = Instant::now();
+        // Gloas far in the future (epoch 32 = slot 1024): the applied-head
+        // frontier stays pre-gloas across the 200-slot window.
+        let mut e = SyncEngine::new(
+            SyncingConfig::default(),
+            false,
+            0,
+            Arc::new(SpecConfig { gloas_fork_epoch: 32, ..SpecConfig::mainnet() }),
+        );
+        feed(&mut e, peer_status(PEER, HEAD_ROOT, 200), now);
+        feed(&mut e, local_status(0, 200), now);
+        e.advance(now, &mut |_| {});
+
+        let (brid, bstart, bcount) = drive(&mut e, now).expect("block issued");
+        e.on_request_issued(brid, bstart, bcount, Some(PEER), now);
+
+        let mut env = None;
+        e.drive_forward_sync(now, &mut |a| {
+            if let SyncAction::RequestEnvelopesByRange { start, count, .. } = a {
+                env = Some((start, count));
+            }
+        });
+        assert_eq!(env, None, "no envelope request below the gloas fork slot");
     }
 
     #[test]
@@ -736,7 +806,12 @@ mod tests {
     #[test]
     fn unrouted_column_request_awaits_peer_then_re_emits_after_backoff() {
         let t0 = Instant::now();
-        let mut e = SyncEngine::new(SyncingConfig::default(), false, 0b1011);
+        let mut e = SyncEngine::new(
+            SyncingConfig::default(),
+            false,
+            0b1011,
+            Arc::new(SpecConfig::mainnet()),
+        );
         feed(&mut e, peer_status(PEER, HEAD_ROOT, 200), t0);
         feed(&mut e, local_status(0, 200), t0);
         e.advance(t0, &mut |_| {});
@@ -757,7 +832,7 @@ mod tests {
         let (crid, cstart, ccount) = col(&mut e, t0).expect("column range issued");
 
         // PM found no custody peer → AwaitingPeer.
-        e.on_column_request_issued(crid, None, t0);
+        e.on_range_request_issued(crid, None, t0);
         assert!(col(&mut e, t0).is_none(), "awaits peer; no re-emit before backoff");
 
         // After the backoff: re-emitted with the *same* request id + range.
@@ -835,7 +910,12 @@ mod tests {
     fn columns_trail_block_progress() {
         let now = Instant::now();
         // Custody a few columns so the column driver is live.
-        let mut e = SyncEngine::new(SyncingConfig::default(), false, 0b1011);
+        let mut e = SyncEngine::new(
+            SyncingConfig::default(),
+            false,
+            0b1011,
+            Arc::new(SpecConfig::mainnet()),
+        );
         feed(&mut e, peer_status(PEER, HEAD_ROOT, 200), now);
         feed(&mut e, local_status(0, 200), now);
         e.advance(now, &mut |_| {});
@@ -856,7 +936,67 @@ mod tests {
         // Columns trail the in-flight block range (head sync's 32-block batch).
         assert_eq!((cstart, ccount), (1, 32));
         assert_eq!(ccols, 0b1011, "requests the full custody mask");
-        assert_eq!(crid & REQUEST_ID_PREFIX_MASK, BASE_REQUEST_ID, "live-column request id");
+        assert!(msg_is_live_column_request(crid), "live-column request id");
+        assert!(!msg_is_post_gloas(crid), "pre-gloas range carries no era flag");
+    }
+
+    #[test]
+    fn column_range_stops_at_gloas_fork() {
+        let now = Instant::now();
+        // Gloas at epoch 1 (slot 32). A pre-fork column range must not span the
+        // boundary, so the whole range shares one (fulu) sidecar layout.
+        let mut e = SyncEngine::new(
+            SyncingConfig::default(),
+            false,
+            0b1011,
+            Arc::new(SpecConfig { gloas_fork_epoch: 1, ..SpecConfig::mainnet() }),
+        );
+        feed(&mut e, peer_status(PEER, HEAD_ROOT, 200), now);
+        feed(&mut e, local_status(0, 200), now);
+        e.advance(now, &mut |_| {});
+
+        let (brid, bstart, bcount) = drive(&mut e, now).expect("block issued");
+        e.on_request_issued(brid, bstart, bcount, Some(PEER), now);
+
+        let mut col = None;
+        e.drive_forward_sync(now, &mut |a| {
+            if let SyncAction::RequestColumnsByRange { request_id, start, count, .. } = a {
+                col = Some((request_id, start, count));
+            }
+        });
+        let (crid, cstart, ccount) = col.expect("column range issued");
+        // Clamped to end at slot 31 (fork slot 32) instead of the full 32-batch.
+        assert_eq!((cstart, ccount), (1, 31), "range stops just below the fork slot");
+        assert!(!msg_is_post_gloas(crid), "fulu-era range: no gloas flag");
+    }
+
+    #[test]
+    fn gloas_era_column_range_carries_flag() {
+        let now = Instant::now();
+        // Gloas from epoch 0: the whole window is gloas-era.
+        let mut e = SyncEngine::new(
+            SyncingConfig::default(),
+            false,
+            0b1011,
+            Arc::new(SpecConfig { gloas_fork_epoch: 0, ..SpecConfig::mainnet() }),
+        );
+        feed(&mut e, peer_status(PEER, HEAD_ROOT, 200), now);
+        feed(&mut e, local_status(0, 200), now);
+        e.advance(now, &mut |_| {});
+
+        let (brid, bstart, bcount) = drive(&mut e, now).expect("block issued");
+        e.on_request_issued(brid, bstart, bcount, Some(PEER), now);
+
+        let mut col = None;
+        e.drive_forward_sync(now, &mut |a| {
+            if let SyncAction::RequestColumnsByRange { request_id, start, count, .. } = a {
+                col = Some((request_id, start, count));
+            }
+        });
+        let (crid, cstart, ccount) = col.expect("column range issued");
+        assert_eq!((cstart, ccount), (1, 32), "gloas columns trail the block batch");
+        assert!(msg_is_post_gloas(crid), "gloas-era range carries the flag");
+        assert!(msg_is_live_column_request(crid), "live-column request id");
     }
 
     #[test]

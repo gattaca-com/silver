@@ -4,6 +4,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use silver_beacon_state::{
@@ -411,7 +412,7 @@ pub fn ef_tile(state: silver_beacon_state_data::BeaconState) -> BeaconStateTile 
     }
     BeaconStateTile::new(
         ticker,
-        spec,
+        Arc::new(spec),
         &SyncingConfig::default(),
         gp.cache_ref().random_access("ef_gossip", true).unwrap(),
         rp.cache_ref().random_access("ef_rpc", true).unwrap(),

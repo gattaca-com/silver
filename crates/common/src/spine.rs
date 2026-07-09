@@ -3,16 +3,17 @@
 use flux::{communication::ShmemData, spine::SpineQueue, spine_derive::from_spine, tile::TileInfo};
 pub use messages::{
     BACKFILL_REQUEST_ID, BASE_REQUEST_ID, BeaconStateEvent, BlockSource,
-    COLUMN_BACKFILL_REQUEST_ID, DataColumnsAvailable, ELSyncStatus, EngineFcuReq, EngineFcuResp,
-    EngineGetBlobsReq, EngineGetBlobsResp, EngineGetPayloadBodiesByHashReq,
-    EngineGetPayloadBodiesByRangeReq, EngineGetPayloadBodiesResp, EngineGetPayloadReq,
-    EngineGetPayloadResp, EngineHealthEvent, EngineNewPayloadEnvelopeReq, EngineNewPayloadReq,
-    EngineNewPayloadResp, EnginePreparePayloadReq, EngineReq, EngineResp, GossipMsgOut, IpBytes,
-    MAX_BLOBS_PER_BLOCK, MAX_PAYLOAD_BODIES_PER_REQ, NewGossipMsg, P2pSend,
-    PayloadValidationStatus, PeerControl, PeerEvent, PeerStatus, REQUEST_ID_PREFIX_MASK,
-    ReplayBlock, RequestCategory, RpcInbound, RpcMsg, RpcOutbound, RpcRequest, RpcRequestInbound,
+    COLUMN_BACKFILL_REQUEST_ID, DataColumnsAvailable, ELSyncStatus, ENVELOPE_REQUEST_ID,
+    EngineFcuReq, EngineFcuResp, EngineGetBlobsReq, EngineGetBlobsResp,
+    EngineGetPayloadBodiesByHashReq, EngineGetPayloadBodiesByRangeReq, EngineGetPayloadBodiesResp,
+    EngineGetPayloadReq, EngineGetPayloadResp, EngineHealthEvent, EngineNewPayloadEnvelopeReq,
+    EngineNewPayloadReq, EngineNewPayloadResp, EnginePreparePayloadReq, EngineReq, EngineResp,
+    GLOAS_ERA_FLAG, GossipMsgOut, IpBytes, MAX_BLOBS_PER_BLOCK, MAX_PAYLOAD_BODIES_PER_REQ,
+    NewGossipMsg, P2pSend, PayloadValidationStatus, PeerControl, PeerEvent, PeerStatus,
+    ReplayBlock, RequestCategory, RpcInbound, RpcOutbound, RpcRequest, RpcRequestInbound,
     RpcRequestOutbound, RpcResponse, RpcResponseInbound, RpcResponseOutbound, RpcSeverity,
-    SyncUpdate, SyncingStrategy, WithdrawalInline,
+    SyncUpdate, SyncingStrategy, WithdrawalInline, msg_is_backfill, msg_is_column_backfill,
+    msg_is_envelope_request, msg_is_live_column_request, msg_is_post_gloas,
 };
 pub use stream_id::P2pStreamId;
 pub use stream_protocol::{

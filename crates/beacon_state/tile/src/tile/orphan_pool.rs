@@ -1,13 +1,16 @@
 use flux::spine::SpineProducers;
+use rustc_hash::FxHashMap;
 use silver_beacon_state_data::{B256, SLOTS_PER_EPOCH, Slot};
 use silver_common::{
     BeaconStateEvent, BlockSource, DataColumnsAvailable, NewGossipMsg, P2pStreamId, PeerEvent,
-    RpcSeverity, TCacheRead, TRandomAccess, TRead, hex32, ssz_view::SignedBeaconBlockView,
+    RpcSeverity, TCacheRead, TRandomAccess, TRead, hex32, metrics::timed,
+    ssz_view::SignedBeaconBlockView,
 };
 
-use super::{BeaconStateTile, Feedback, Producers};
+use super::{BY_ROOT_REQUEST_ID, BeaconStateTile, Feedback, Producers};
 
 impl BeaconStateTile {
+    #[timed]
     pub(super) fn clear_pending_blocks(&mut self, finalized_slot: u64) {
         tracing::debug!(
             pending_blocks = self.pending_blocks.len(),
@@ -15,16 +18,18 @@ impl BeaconStateTile {
             "clear pending blocks at finalization"
         );
         let (gossip_consumer, rpc_consumer) = (&mut self.gossip_consumer, &mut self.rpc_consumer);
-        self.pending_blocks.retain(|_, msgs| {
-            msgs.iter().all(|(_, msg)| {
-                pending_block_outlives(gossip_consumer, rpc_consumer, msg, finalized_slot)
-            })
-        });
-
-        self.dc_pending_blocks.retain(|_, msg| {
+        let mut outlives = |msg: &PendingBlock| {
             pending_block_outlives(gossip_consumer, rpc_consumer, msg, finalized_slot)
-        });
+        };
+        self.pending_blocks.retain(|_, msgs| msgs.iter().all(|(_, msg)| outlives(msg)));
+        self.dc_pending_blocks.retain(|_, msg| outlives(msg));
+        self.payload_pending_blocks.retain(|_, msgs| msgs.iter().all(&mut outlives));
         self.dc_available.retain(|_, slot| *slot > finalized_slot);
+        self.pending_envelopes
+            .retain(|_, handle| gossip_consumer.acquire(*handle).buffer().is_ok());
+
+        let fc = &self.fork_choice;
+        self.envelope_requested.retain(|root, _| fc.find_node_idx(root).is_some());
     }
 
     pub(super) fn apply_pending_blocks(&mut self, parent_root: B256, producers: &mut Producers) {
@@ -90,7 +95,7 @@ impl BeaconStateTile {
         self.pending_blocks.entry(parent_root).or_default().push((block_root, pending));
         if request {
             producers.produce(PeerEvent::SendBlocksByRootRequest {
-                request_id: 0,
+                request_id: BY_ROOT_REQUEST_ID,
                 p2p_peer: Some(peer),
                 block_root: parent_root,
             });
@@ -107,12 +112,43 @@ impl BeaconStateTile {
     }
 
     pub(super) fn buffer_awaiting_columns(&mut self, block_root: B256, pending: PendingBlock) {
-        if self.dc_pending_blocks.len() >= self.pending_bounds.max_dc &&
-            !self.dc_pending_blocks.contains_key(&block_root)
-        {
+        if !has_room(&self.dc_pending_blocks, self.pending_bounds.max_dc, &block_root) {
             return;
         }
         self.dc_pending_blocks.entry(block_root).or_insert(pending);
+    }
+
+    pub(super) fn buffer_awaiting_payload(
+        &mut self,
+        parent_root: B256,
+        pending: PendingBlock,
+        peer: usize,
+        producers: &mut Producers,
+    ) {
+        let known = self.payload_pending_blocks.contains_key(&parent_root);
+        if !known && self.payload_pending_blocks.len() >= self.pending_bounds.max_dc {
+            return;
+        }
+        self.payload_pending_blocks.entry(parent_root).or_default().push(pending);
+        if !known {
+            producers.produce(PeerEvent::SendEnvelopesByRootRequest {
+                request_id: BY_ROOT_REQUEST_ID,
+                p2p_peer: Some(peer),
+                block_root: parent_root,
+            });
+        }
+    }
+
+    pub(super) fn drain_awaiting_payload(
+        &mut self,
+        verified_root: B256,
+        producers: &mut Producers,
+    ) {
+        if let Some(pending) = self.payload_pending_blocks.remove(&verified_root) {
+            for child in pending {
+                self.replay_pending_block(child, false, false, producers);
+            }
+        }
     }
 
     fn replay_pending_block(
@@ -168,6 +204,36 @@ impl BeaconStateTile {
         }
     }
 
+    pub(super) fn on_accept(&mut self, block_root: Option<B256>, producers: &mut Producers) {
+        if let Some(root) = block_root {
+            self.apply_pending_blocks(root, producers);
+            self.drain_pending_envelope(root, producers);
+        }
+        producers.produce(self.status_event());
+    }
+
+    pub(super) fn park_block(
+        &mut self,
+        feedback: Feedback,
+        source: PendingBlock,
+        data: &[u8],
+        producers: &mut Producers,
+    ) {
+        match feedback {
+            Feedback::RequestParent { parent_root, block_root } => {
+                let peer = source.peer();
+                let block_slot = SignedBeaconBlockView::slot(data);
+                self.buffer_orphan(parent_root, block_root, source, block_slot, peer, producers);
+            }
+            Feedback::AwaitData(block_root) => self.buffer_awaiting_columns(block_root, source),
+            Feedback::AwaitParentPayload { parent_root, .. } => {
+                let peer = source.peer();
+                self.buffer_awaiting_payload(parent_root, source, peer, producers);
+            }
+            _ => debug_assert!(false, "park_block: unexpected feedback {feedback:?}"),
+        }
+    }
+
     pub(super) fn handle_rpc_block(
         &mut self,
         sender: P2pStreamId,
@@ -176,45 +242,25 @@ impl BeaconStateTile {
         pre_verified: bool,
         producers: &mut Producers,
     ) {
-        {
-            if !SignedBeaconBlockView::check_size(data) {
-                producers.produce(PeerEvent::RpcMisbehaviour {
-                    p2p_peer: sender.peer(),
-                    severity: RpcSeverity::LowTolerance,
-                });
-                return;
-            }
-            let tcache = data_tcache.read;
-            let f = self.apply_block(data, data_tcache, BlockSource::Rpc, pre_verified, producers);
-            match f {
-                Feedback::Accept(block_root) => {
-                    // Try to apply any pending blocks for which this one was the parent.
-                    if let Some(root) = block_root {
-                        self.apply_pending_blocks(root, producers);
-                    }
-                    producers.produce(self.status_event());
-                }
-                Feedback::RequestParent { parent_root, block_root } => {
-                    let peer = sender.peer();
-                    let block_slot = SignedBeaconBlockView::slot(data);
-                    self.buffer_orphan(
-                        parent_root,
-                        block_root,
-                        PendingBlock::Rpc(sender, tcache),
-                        block_slot,
-                        peer,
-                        producers,
-                    );
-                }
-                Feedback::AwaitData(block_root) => {
-                    self.buffer_awaiting_columns(block_root, PendingBlock::Rpc(sender, tcache));
-                }
-                Feedback::Ignore => {}
-                Feedback::Reject(_) => producers.produce(PeerEvent::RpcMisbehaviour {
-                    p2p_peer: sender.peer(),
-                    severity: RpcSeverity::Fatal,
-                }),
-            }
+        if !SignedBeaconBlockView::check_size(data) {
+            producers.produce(PeerEvent::RpcMisbehaviour {
+                p2p_peer: sender.peer(),
+                severity: RpcSeverity::LowTolerance,
+            });
+            return;
+        }
+
+        let tcache = data_tcache.read;
+        let feedback =
+            self.apply_block(data, data_tcache, BlockSource::Rpc, pre_verified, producers);
+        match feedback {
+            Feedback::Accept(block_root) => self.on_accept(block_root, producers),
+            Feedback::Reject(_) => producers.produce(PeerEvent::RpcMisbehaviour {
+                p2p_peer: sender.peer(),
+                severity: RpcSeverity::Fatal,
+            }),
+            Feedback::Ignore => {}
+            _ => self.park_block(feedback, PendingBlock::Rpc(sender, tcache), data, producers),
         }
     }
 
@@ -228,6 +274,15 @@ impl BeaconStateTile {
 pub(super) enum PendingBlock {
     Gossip(NewGossipMsg),
     Rpc(P2pStreamId, TCacheRead),
+}
+
+impl PendingBlock {
+    fn peer(&self) -> usize {
+        match self {
+            Self::Gossip(m) => m.stream_id.peer(),
+            Self::Rpc(sender, _) => sender.peer(),
+        }
+    }
 }
 
 /// Resolve a pending block's slot via its source consumer. `None` if the
@@ -244,8 +299,11 @@ fn pending_block_slot(
     acquired.buffer().ok().map(|(buffer, _)| SignedBeaconBlockView::slot(buffer))
 }
 
-/// Keep a pending block iff its slot is above the finalized boundary
-/// (unreadable buffers are dropped).
+pub(super) fn has_room<V>(map: &FxHashMap<B256, V>, cap: usize, key: &B256) -> bool {
+    map.len() < cap || map.contains_key(key)
+}
+
+/// Keep a pending block iff its slot is above the finalized boundary.
 fn pending_block_outlives(
     gossip_consumer: &mut TRandomAccess,
     rpc_consumer: &mut TRandomAccess,

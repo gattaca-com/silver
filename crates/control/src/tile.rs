@@ -1,13 +1,14 @@
 use std::{
     io::{self, ErrorKind, Write},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
 use flux::{spine::SpineAdapter, tile::Tile};
+use silver_chain_spec::SpecConfig;
 use silver_common::{
-    BACKFILL_REQUEST_ID, BeaconStateEvent, P2pSend, PeerControl, PeerEvent, REQUEST_ID_PREFIX_MASK,
-    RpcInbound, RpcOutbound, RpcRequestOutbound, SilverSpine, SilverSpineProducers, TCacheProducer,
-    TCacheRead, TMultiProducer,
+    BeaconStateEvent, P2pSend, PeerControl, PeerEvent, RpcInbound, RpcOutbound, RpcRequestOutbound,
+    SilverSpine, SilverSpineProducers, TCacheProducer, TCacheRead, TMultiProducer, msg_is_backfill,
     ssz_view::{BLOCKS_BY_RANGE_REQ_SIZE, METADATA_SIZE, STATUS_V2_SIZE, StatusView},
 };
 use silver_gossip::{GossipHandler, GossipHandlerEvent};
@@ -47,11 +48,13 @@ impl Controller {
         peer_manager: PeerManager,
         gossip_handler: GossipHandler,
         rpc_producer: TMultiProducer,
+        spec: Arc<SpecConfig>,
     ) -> Self {
         let sync_engine = SyncEngine::new(
             peer_manager.syncing_config(),
             peer_manager.awaiting_local_replay(),
             peer_manager.custody_columns(),
+            spec,
         );
         Self {
             peer_manager,
@@ -172,6 +175,26 @@ impl Tile<SilverSpine> for Controller {
                         }
                         Err(e) => {
                             tracing::error!(?e, "failed to allocate blocks by root request");
+                        }
+                    }
+                }
+                PeerControl::P2pEnvelopeByRootRequest { app_id, peer, block_root } => {
+                    match allocate_blocks_by_root(&mut self.rpc_producer, &block_root) {
+                        Ok(read) => {
+                            producers.p2p_send.produce(
+                                &P2pSend::Rpc(RpcOutbound::Request(RpcRequestOutbound {
+                                    application_id: app_id,
+                                    peer,
+                                    request:
+                                        silver_common::RpcRequest::ExecutionPayloadEnvelopesByRoot(
+                                            read,
+                                        ),
+                                }))
+                                .into(),
+                            );
+                        }
+                        Err(e) => {
+                            tracing::error!(?e, "failed to allocate envelopes by root request");
                         }
                     }
                 }
@@ -308,6 +331,17 @@ impl Tile<SilverSpine> for Controller {
     }
 }
 
+fn produce_sync_control(adapter: &mut SpineAdapter<SilverSpine>, pc: PeerControl) {
+    match pc {
+        PeerControl::P2pSend(send) => {
+            adapter.produce(send);
+        }
+        other => {
+            adapter.produce(other);
+        }
+    }
+}
+
 fn sync(
     now: Instant,
     sync_engine: &mut SyncEngine,
@@ -316,9 +350,10 @@ fn sync(
 ) {
     let mut request_issued = None;
     let mut column_request_issued = None;
+    let mut envelope_request_issued = None;
     sync_engine.drive_forward_sync(now, &mut |action| match action {
         SyncAction::RequestBlocksByRange { request_id, start, count, .. } => {
-            if request_id & REQUEST_ID_PREFIX_MASK == BACKFILL_REQUEST_ID {
+            if msg_is_backfill(request_id) {
                 let mut ssz = [0u8; BLOCKS_BY_RANGE_REQ_SIZE];
                 ssz[..8].copy_from_slice(&start.to_le_bytes());
                 ssz[8..16].copy_from_slice(&count.to_le_bytes());
@@ -327,12 +362,7 @@ fn sync(
                     request_id,
                     silver_common::RpcRequest::BlocksByRange(ssz),
                     now,
-                    &mut |pc| {
-                        match pc {
-                            PeerControl::P2pSend(send) => adapter.produce(send),
-                            other => adapter.produce(other),
-                        };
-                    },
+                    &mut |pc| produce_sync_control(adapter, pc),
                 );
             } else {
                 let peer = peer_manager.issue_sync_blocks_by_range(
@@ -340,17 +370,24 @@ fn sync(
                     start,
                     count,
                     now,
-                    &mut |pc| {
-                        match pc {
-                            PeerControl::P2pSend(send) => adapter.produce(send),
-                            other => adapter.produce(other),
-                        };
-                    },
+                    &mut |pc| produce_sync_control(adapter, pc),
                 );
                 request_issued = Some(move |sync_engine: &mut SyncEngine| {
                     sync_engine.on_request_issued(request_id, start, count, peer, now)
                 });
             }
+        }
+        SyncAction::RequestEnvelopesByRange { request_id, start, count, .. } => {
+            let peer = peer_manager.issue_sync_envelopes_by_range(
+                request_id,
+                start,
+                count,
+                now,
+                &mut |pc| produce_sync_control(adapter, pc),
+            );
+            envelope_request_issued = Some(move |sync_engine: &mut SyncEngine| {
+                sync_engine.on_range_request_issued(request_id, peer.map(|p| (p, 0)), now)
+            });
         }
         SyncAction::RequestColumnsByRange {
             request_id,
@@ -367,15 +404,10 @@ fn sync(
                 columns,
                 &tried_peers,
                 now,
-                &mut |pc| {
-                    match pc {
-                        PeerControl::P2pSend(send) => adapter.produce(send),
-                        other => adapter.produce(other),
-                    };
-                },
+                &mut |pc| produce_sync_control(adapter, pc),
             );
             column_request_issued = Some(move |sync_engine: &mut SyncEngine| {
-                sync_engine.on_column_request_issued(request_id, peer, now)
+                sync_engine.on_range_request_issued(request_id, peer, now)
             });
         }
         SyncAction::RequestColumnsByRoot { request_id, block_root, columns, .. } => {
@@ -384,12 +416,7 @@ fn sync(
                 columns,
                 block_root,
                 now,
-                &mut |pc| {
-                    match pc {
-                        PeerControl::P2pSend(send) => adapter.produce(send),
-                        other => adapter.produce(other),
-                    };
-                },
+                &mut |pc| produce_sync_control(adapter, pc),
             );
         }
         SyncAction::ScorePeer { peer, severity } => {
@@ -403,6 +430,9 @@ fn sync(
     }
     if let Some(column_req_issued) = column_request_issued {
         column_req_issued(sync_engine);
+    }
+    if let Some(envelope_req_issued) = envelope_request_issued {
+        envelope_req_issued(sync_engine);
     }
 }
 

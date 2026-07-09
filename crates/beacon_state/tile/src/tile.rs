@@ -1,4 +1,4 @@
-use std::fmt::Debug;
+use std::{fmt::Debug, sync::Arc};
 
 use flux::{
     spine::{FluxSpine, SpineAdapter, SpineProducers},
@@ -11,7 +11,8 @@ use silver_beacon_state_data::{
 };
 use silver_common::{
     BeaconStateEvent, BlockSource, DataColumnsAvailable, EngineResp, NewGossipMsg, ReplayBlock,
-    RpcInbound, RpcResponse, RpcResponseInbound, SilverSpine, SyncUpdate, TRandomAccess, hex32,
+    RpcInbound, RpcResponse, RpcResponseInbound, SilverSpine, SyncUpdate, TCacheRead,
+    TRandomAccess, hex32,
     ssz_view::{MAX_ATTESTATIONS_ELECTRA, MAX_ATTESTING_INDICES, STATUS_V2_SIZE},
     ticker::{SlotTicker, TickEvent},
 };
@@ -62,6 +63,12 @@ pub enum Feedback {
     /// The block is valid but carries blob commitments whose data columns are
     /// not yet available.
     AwaitData(B256),
+    /// Gloas block that builds on a parent whose execution-payload envelope
+    /// hasn't been verified yet.
+    AwaitParentPayload {
+        parent_root: B256,
+        block_root: B256,
+    },
 }
 
 // Manual Debug to hex-encode the `B256` roots (`B256 = [u8; 32]`, whose
@@ -81,6 +88,12 @@ impl Debug for Feedback {
                 hex32(block_root)
             ),
             Self::AwaitData(r) => write!(f, "AwaitData(0x{})", hex32(r)),
+            Self::AwaitParentPayload { parent_root, block_root } => write!(
+                f,
+                "AwaitPayload(parent=0x{}, block=0x{})",
+                hex32(parent_root),
+                hex32(block_root)
+            ),
         }
     }
 }
@@ -98,7 +111,7 @@ pub struct BeaconStateTile {
     mode: Mode,
     ticker: SlotTicker,
 
-    spec: SpecConfig,
+    spec: Arc<SpecConfig>,
 
     fork_choice: ForkChoice,
     shuffling_cache: Box<ShufflingCache>,
@@ -138,8 +151,19 @@ pub struct BeaconStateTile {
     /// Blocks fully prechecked but withheld from the STF until their data
     /// columns are available.
     dc_pending_blocks: FxHashMap<B256, PendingBlock>,
+    /// Gloas: blocks withheld until their parent's execution-payload envelope
+    /// is verified.
+    payload_pending_blocks: FxHashMap<B256, Vec<PendingBlock>>,
     /// Block roots the storage tile has signalled data-available.
     dc_available: FxHashMap<B256, Slot>,
+    /// Gloas: payload envelopes seen before their block entered fork choice.
+    pending_envelopes: FxHashMap<B256, TCacheRead>,
+    /// Gloas: block roots a payload-present attestation referenced while their
+    /// payload was still unverified (envelope missed on gossip).
+    envelope_request_queue: Vec<B256>,
+    /// Last by-root envelope request per block root:
+    /// dedups repeated payload-present attestations and gates re-requests.
+    envelope_requested: FxHashMap<B256, u64>,
     /// Resolved pending-buffer admission / eviction / fallback bounds.
     pending_bounds: PendingBounds,
     max_pending_per_parent: usize,
@@ -154,6 +178,10 @@ pub struct BeaconStateTile {
 
 type Producers = <SilverSpine as FluxSpine>::Producers;
 
+fn root_map<V>() -> FxHashMap<B256, V> {
+    FxHashMap::with_capacity_and_hasher(MAX_FORK_CHOICE_NODES, Default::default())
+}
+
 impl BeaconStateTile {
     /// Builds the tile owning the checkpoint `state` (from
     /// [`BeaconState::from_checkpoint`]), seeds the anchor + fork choice, and
@@ -163,7 +191,7 @@ impl BeaconStateTile {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         ticker: SlotTicker,
-        spec: SpecConfig,
+        spec: Arc<SpecConfig>,
         syncing: &SyncingConfig,
         gossip_consumer: TRandomAccess,
         rpc_consumer: TRandomAccess,
@@ -195,18 +223,13 @@ impl BeaconStateTile {
             ),
             slashed_indices_scratch: Vec::with_capacity(MAX_ATTESTING_INDICES),
             sig_batch: bls::SigBatch::new(),
-            pending_blocks: FxHashMap::with_capacity_and_hasher(
-                MAX_FORK_CHOICE_NODES,
-                Default::default(),
-            ),
-            dc_pending_blocks: FxHashMap::with_capacity_and_hasher(
-                MAX_FORK_CHOICE_NODES,
-                Default::default(),
-            ),
-            dc_available: FxHashMap::with_capacity_and_hasher(
-                MAX_FORK_CHOICE_NODES,
-                Default::default(),
-            ),
+            pending_blocks: root_map(),
+            dc_pending_blocks: root_map(),
+            payload_pending_blocks: root_map(),
+            dc_available: root_map(),
+            pending_envelopes: root_map(),
+            envelope_request_queue: Vec::with_capacity(MAX_FORK_CHOICE_NODES),
+            envelope_requested: root_map(),
             pending_bounds: syncing.pending,
             max_pending_per_parent: (syncing.head_lag_threshold_slots * 2) as usize,
             gossip_consumer,
@@ -330,28 +353,15 @@ impl BeaconStateTile {
         let gvr = self.state.state().immutable.genesis_validators_root;
         let bp =
             get_blob_parameters(epoch, &self.spec.blob_schedule, self.spec.default_blob_params());
-        let d = compute_fork_digest(self.active_fork_version(epoch), &gvr, Some(bp));
+        let d = compute_fork_digest(self.spec.fork_version_at(epoch), &gvr, Some(bp));
         self.cached_fork_digest = Some((epoch, d));
         d
-    }
-
-    fn active_fork_version(&self, epoch: Epoch) -> [u8; 4] {
-        if epoch >= self.spec.gloas_fork_epoch {
-            self.spec.gloas_fork_version
-        } else {
-            self.spec.fulu_fork_version
-        }
     }
 
     fn enr_fork_id(&mut self) -> [u8; 16] {
         let digest = self.fork_digest();
         let epoch = self.ticker.current_slot() / SLOTS_PER_EPOCH;
-        let gloas_scheduled = self.spec.gloas_fork_epoch != u64::MAX;
-        let (next_version, next_epoch) = if gloas_scheduled && epoch < self.spec.gloas_fork_epoch {
-            (self.spec.gloas_fork_version, self.spec.gloas_fork_epoch)
-        } else {
-            (self.active_fork_version(epoch), u64::MAX)
-        };
+        let (next_version, next_epoch) = self.spec.next_fork(epoch);
 
         let mut eth2 = [0u8; 16];
         eth2[..4].copy_from_slice(&digest);
@@ -421,8 +431,7 @@ impl BeaconStateTile {
     }
 
     /// Slot of the highest block we've imported (`last_applied`), excluding
-    /// empty slots. Sync's request watermark keys off this, not the fork-choice
-    /// head in the Status SSZ (which can lag the imported tip).
+    /// empty slots. Sync's request watermark keys off this.
     fn last_applied_block_slot(&self) -> Slot {
         self.slot_state_at(self.last_applied).latest_block_header.slot
     }
@@ -647,13 +656,13 @@ impl BeaconStateTile {
         // EF vectors have no execution client: validate against the committed bid
         // and mark the payload valid synchronously (production notifies the EL).
         match self.validate_execution_payload_envelope(ssz) {
-            Ok((block_root, _)) => {
+            gossip::EnvelopeCheck::Ready { block_root, .. } => {
                 self.fork_choice.mark_payload_verified(&block_root);
                 self.fork_choice.on_payload_valid(&block_root);
                 self.recompute_head();
                 true
             }
-            Err(_) => false,
+            gossip::EnvelopeCheck::AwaitBlock(_) | gossip::EnvelopeCheck::Ignore => false,
         }
     }
 
@@ -726,6 +735,10 @@ impl Tile<SilverSpine> for BeaconStateTile {
 /// Spec gossip rule: `aggregate.slot + ATTESTATION_PROPAGATION_SLOT_RANGE >=
 /// current_slot >= aggregate.slot`.
 const ATTESTATION_PROPAGATION_SLOT_RANGE: u64 = 32;
+
+/// By-root RPC requests carry no application correlation id — the peer manager
+/// picks the peer/stream. `0` marks such unsolicited by-root requests.
+const BY_ROOT_REQUEST_ID: u64 = 0;
 
 /// Spec `compute_fork_digest` (Fulu EIP-7892). `blob_parameters` is `None`
 /// pre-Fulu, `Some` from Fulu onward — the active BLOB_SCHEDULE entry.
@@ -817,7 +830,7 @@ mod tests {
         let replay_c = replay_p.cache_ref().random_access("test_replay", true).unwrap();
         BeaconStateTile::new(
             ticker,
-            SpecConfig::mainnet(),
+            Arc::new(SpecConfig::mainnet()),
             &SyncingConfig::default(),
             gossip_c,
             rpc_c,
@@ -845,7 +858,7 @@ mod tests {
         let replay_c = replay_p.cache_ref().random_access("test_replay_buf", true).unwrap();
         let tile = BeaconStateTile::new(
             ticker,
-            SpecConfig::mainnet(),
+            Arc::new(SpecConfig::mainnet()),
             &SyncingConfig::default(),
             gossip_c,
             rpc_c,

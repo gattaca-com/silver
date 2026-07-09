@@ -149,7 +149,8 @@ fn handle_new_payload_envelope(
     r: &EngineNewPayloadEnvelopeReq,
     producers: &mut <SilverSpine as FluxSpine>::Producers,
 ) {
-    let versioned_hashes = &r.versioned_hashes[..r.hash_count as usize];
+    let hash_count = (r.hash_count as usize).min(r.versioned_hashes.len());
+    let versioned_hashes = &r.versioned_hashes[..hash_count];
     handle_new_payload_common(
         client,
         gossip_consumer,
