@@ -75,10 +75,8 @@ pub struct EchoStack {
     pub spine: SilverSpine,
     pub network: NetworkTile,
     pub ssz_consumer: TRandomAccess,
-    pub compression: GossipHandler,
     pub controller: Controller,
     pub network_adapter: SpineAdapter<SilverSpine>,
-    pub compression_adapter: SpineAdapter<SilverSpine>,
     pub controller_adapter: SpineAdapter<SilverSpine>,
     /// Auxiliary adapter for the harness to inject `PeerControl` events
     /// (e.g. `P2pGossipSubscribe`) onto the spine. Required by lh_gossip
@@ -117,8 +115,6 @@ pub struct EchoNetworkHalf {
 /// TCache; this half reads them, decodes/decompresses, emits
 /// `NewGossipMsg` onto the spine.
 pub struct EchoCompressionHalf {
-    pub compression: GossipHandler,
-    pub compression_adapter: SpineAdapter<SilverSpine>,
     pub stats_adapter: SpineAdapter<SilverSpine>,
     pub ssz_consumer: TRandomAccess,
     pub stats: Stats,
@@ -142,8 +138,6 @@ impl EchoStack {
                 _keep_alive: self._keep_alive,
             },
             EchoCompressionHalf {
-                compression: self.compression,
-                compression_adapter: self.compression_adapter,
                 stats_adapter: self.stats_adapter,
                 ssz_consumer: self.ssz_consumer,
                 stats: self.stats,
@@ -202,6 +196,7 @@ impl PublisherStack {
         // gossip_in: network writes raw inbound gossip here; nobody reads.
         let gossip_in_producer = TCache::producer("e2e_stack", TCACHE_SIZE);
         let gossip_in_consumer = gossip_in_producer.cache_ref().consumer("e2e").ok();
+        let gossip_in_consumer_2 = gossip_in_producer.cache_ref().consumer("e2e_2").unwrap();
 
         // gossip_out: network reads outbound bytes from here via random-access.
         // The publisher's mcache TCache IS the gossip_out source — same cache.
@@ -264,6 +259,13 @@ impl PublisherStack {
                 0,
                 false,
             ),
+            GossipHandler::new(
+                gossip_in_consumer_2,
+                TCache::producer("g_ssz", 32),
+                TCache::producer("g_proto", 32),
+                String::new(),
+            )
+            .unwrap(),
             TCache::multi_producer("dummy_rpc_out", 32), // dummpy rpc out
         );
 
@@ -372,12 +374,12 @@ impl EchoStack {
                 0,
                 false,
             ),
+            compression,
             TCache::multi_producer("dummy_rpc_out", 32), // dummpy rpc out
         );
 
         let mut spine = SilverSpine::new_with_base_dir(base_dir, Some(path_suffix));
         let network_adapter = SpineAdapter::connect_tile(&network, &mut spine);
-        let compression_adapter = SpineAdapter::connect_tile(&compression, &mut spine);
         let controller_adapter = SpineAdapter::connect_tile(&controller, &mut spine);
         let injector_tile = Injector;
         let injector_adapter = SpineAdapter::connect_tile(&injector_tile, &mut spine);
@@ -389,11 +391,9 @@ impl EchoStack {
             peer_id,
             spine,
             network,
-            compression,
             controller,
             ssz_consumer,
             network_adapter,
-            compression_adapter,
             controller_adapter,
             injector_adapter,
             stats_adapter,
