@@ -240,4 +240,3 @@ impl GossipHandler {
         did_work
     }
 }
-
