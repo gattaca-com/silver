@@ -51,9 +51,15 @@ impl ColumnTree {
         Ok(tree)
     }
 
-    /// One value at `i`: unpack lane `i % k` from leaf chunk `i / k`. Leaves
-    /// past `count` are zero, unpacking to `V::default()` — so no bound on
-    /// `count` is needed.
+    #[inline]
+    pub(super) fn max_elements(&self) -> usize {
+        self.max_elements
+    }
+
+    pub(super) fn prealloc(&mut self, max_elements: usize) {
+        self.nodes = vec![[0u8; 32]; 2 * max_elements];
+    }
+
     #[inline]
     pub fn get<V: ColumnVal>(&self, i: usize) -> V {
         let k = V::VALS_PER_CHUNK;

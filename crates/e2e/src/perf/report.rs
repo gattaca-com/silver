@@ -59,14 +59,20 @@ impl PerfReport {
                 threshold: t.max_decompose,
             },
             Gauge {
-                label: "apply_block (p50)",
-                actual: self.outcome.stats.aggregate_leaf_p50("apply_block"),
-                threshold: t.max_apply_block_p50,
+                label: "apply_and_commit (p50)",
+                actual: self
+                    .outcome
+                    .stats
+                    .aggregate_leaf_p50("apply_stf_and_commit<BeaconStateTile>"),
+                threshold: t.max_apply_and_commit_p50,
             },
             Gauge {
-                label: "apply_block (max)",
-                actual: self.outcome.stats.aggregate_leaf_max("apply_block"),
-                threshold: t.max_apply_block_max,
+                label: "apply_and_commit (max)",
+                actual: self
+                    .outcome
+                    .stats
+                    .aggregate_leaf_max("apply_stf_and_commit<BeaconStateTile>"),
+                threshold: t.max_apply_and_commit_max,
             },
             Gauge {
                 label: "process_epoch (avg)",

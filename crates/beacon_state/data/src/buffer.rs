@@ -193,6 +193,10 @@ impl<G, T: Reset, const N: usize> Ring<G, T, N> {
         &self.entries[Self::pos(id.index())]
     }
 
+    pub fn prealloc(&mut self, mut f: impl FnMut(&mut T)) {
+        self.entries.iter_mut().for_each(&mut f);
+    }
+
     /// Roll a fresh head reset to defaults.
     pub fn roll_fresh(&mut self) -> Slot<'_, G, T> {
         let (new_head, new_head_pos) = self.next_head();

@@ -151,6 +151,7 @@ pub fn process_justification_and_finalization(
 /// Spec `compute_pulled_up_tip`: run justification + finalization on a block's
 /// post-state read-only (without advancing a slot), returning its *unrealized*
 /// `(justified, finalized)` checkpoints.
+#[timed]
 pub(crate) fn unrealized_checkpoints(
     view: &StateWriterView,
     es: &common::EpochState,

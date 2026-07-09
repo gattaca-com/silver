@@ -25,14 +25,10 @@ pub struct Thresholds {
     /// One-shot cost of `decompose` at harness boot.
     #[serde(deserialize_with = "de_duration")]
     pub max_decompose: Option<Nanos>,
-    /// Median (p50) `apply_block` call — typical per-block latency, robust to
-    /// the epoch-boundary outliers that skew the average.
     #[serde(deserialize_with = "de_duration")]
-    pub max_apply_block_p50: Option<Nanos>,
-    /// Slowest single `apply_block` call in the run — guards worst-case
-    /// latency, not just the typical block.
+    pub max_apply_and_commit_p50: Option<Nanos>,
     #[serde(deserialize_with = "de_duration")]
-    pub max_apply_block_max: Option<Nanos>,
+    pub max_apply_and_commit_max: Option<Nanos>,
     /// Average wall time of one `process_epoch` (epoch-transition) call.
     #[serde(deserialize_with = "de_duration")]
     pub max_process_epoch_avg: Option<Nanos>,

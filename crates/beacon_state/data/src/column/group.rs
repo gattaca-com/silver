@@ -19,11 +19,11 @@ pub struct ColumnGroup<C: ColumnSpec> {
 
 impl<C: ColumnSpec> ColumnGroup<C> {
     pub fn new(cap: usize, count: usize, ssz_bytes: &[u8]) -> Result<Self, ColumnLenMismatch> {
-        Ok(Self {
-            finalized: ColumnTree::new::<C::Val>(cap, count, ssz_bytes)?,
-            deltas: Ring::default(),
-            _marker: PhantomData,
-        })
+        let finalized = ColumnTree::new::<C::Val>(cap, count, ssz_bytes)?;
+        let max_elements = finalized.max_elements();
+        let mut deltas: Ring<Self, ColumnTree, SLOTS_RING_N> = Ring::default();
+        deltas.prealloc(|slot| slot.prealloc(max_elements));
+        Ok(Self { finalized, deltas, _marker: PhantomData })
     }
 
     #[inline]
