@@ -1,9 +1,9 @@
 use super::{BuildersGroup, builder_hash, finalized::FinalizedBuilders};
 use crate::{
     B256,
-    buffer::{Reset, Slot},
     gloas::{BUILDER_REGISTRY_LIMIT, Builder},
     hash_tree::DeltaHashTree,
+    ring::{Reset, Slot},
     sparse::Edits,
 };
 

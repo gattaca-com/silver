@@ -3,7 +3,6 @@ use std::io::{self, Write};
 use super::delta::SlotStateDelta;
 use crate::{
     DecomposeError, EpochStateFinalized,
-    buffer::write_ring_window,
     decompose::{
         common::{
             F2, F4, F5, F6, F8, F10, F25, F26, F28, F30, F31, F32, F33, Offsets, b256, u64_le,
@@ -21,6 +20,7 @@ use crate::{
         BUILDER_PENDING_PAYMENTS_LEN, BuilderPendingPayment, EXECUTION_PAYLOAD_AVAILABILITY_BYTES,
         ExecutionPayloadBid, MAX_WITHDRAWALS_PER_PAYLOAD, Withdrawal,
     },
+    reanchor::write_ring_window,
     types::{
         B256, BeaconBlockHeader, EPOCHS_PER_HISTORICAL_VECTOR, EPOCHS_PER_SLASHINGS_VECTOR,
         Eth1Data, ExecutionPayloadHeader, SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT, SlotState,

@@ -1,7 +1,8 @@
 use super::{SlotStateGroup, SlotStateId, finalized::SlotStateFinalized};
 use crate::{
     SLOTS_PER_EPOCH,
-    buffer::{Reset, Slot as RingSlot, drain_promoted_prefix},
+    reanchor::drain_promoted_prefix,
+    ring::{Reset, Slot as RingSlot},
     types::{B256, Epoch, SLOTS_PER_HISTORICAL_ROOT, Slot, SlotState},
 };
 

@@ -5,8 +5,8 @@ use super::{
 };
 use crate::{
     B256,
-    buffer::{Id, Reset, Slot},
     gloas::BuilderPendingWithdrawal,
+    ring::{Id, Reset, Slot},
     ssz_hash::{MerkleStack, merkle_finalize, merkle_push, mix_in_length},
     types::{PendingConsolidation, PendingDeposit, PendingPartialWithdrawal},
 };

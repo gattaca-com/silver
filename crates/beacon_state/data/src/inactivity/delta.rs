@@ -4,9 +4,9 @@ use flux_profiler::timed;
 
 use super::{ColumnGroup, finalized::FinalizedColumn};
 use crate::{
-    buffer::{Id, Reset, Slot},
     column::{ColumnSpec, ColumnVal},
     hash_tree::DeltaHashTree,
+    ring::{Id, Reset, Slot},
     sparse::Edits,
     types::{B256, VALIDATOR_REGISTRY_LIMIT},
 };

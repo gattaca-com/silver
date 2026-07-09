@@ -14,7 +14,7 @@ mod tests;
 pub use delta::{ColumnReader, ColumnWriteView};
 pub use group::ColumnGroup;
 
-use crate::{buffer::Id, column::ColumnSpec};
+use crate::{column::ColumnSpec, ring::Id};
 
 pub struct Inactivity;
 impl ColumnSpec for Inactivity {

@@ -3,8 +3,8 @@ use blst::min_pk::PublicKey;
 use super::{FinalizedValidators, ValidatorsGroup, ValidatorsId, validator_hash};
 use crate::{
     B256, Withdrawals,
-    buffer::{Reset, Slot as RingSlot},
     hash_tree::DeltaHashTree,
+    ring::{Reset, Slot as RingSlot},
     sparse::Edits,
     types::{BLSPubkey, Epoch, FAR_FUTURE_EPOCH, VALIDATOR_REGISTRY_LIMIT},
 };

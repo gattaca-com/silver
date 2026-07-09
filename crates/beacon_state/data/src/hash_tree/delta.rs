@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use super::finalized::FinalizedHashTree;
-use crate::{buffer::Reset, ssz_hash::hash_concat, types::B256};
+use crate::{ring::Reset, ssz_hash::hash_concat, types::B256};
 
 /// Per-fork delta on top of a [`FinalizedHashTree`]. Three states:
 /// - `Base(node)`: a lazy **symlink** to the finalized base at `node` —

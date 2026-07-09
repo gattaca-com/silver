@@ -4,8 +4,9 @@ use flux_profiler::timed;
 
 use super::{ColumnReader, ColumnWriteView, delta::ColumnDelta, finalized::FinalizedColumn};
 use crate::{
-    buffer::{Id, Ring, reanchor_survivors},
     column::ColumnSpec,
+    reanchor::reanchor_survivors,
+    ring::{Id, Ring},
     types::{ColumnLenMismatch, SLOTS_RING_N},
 };
 

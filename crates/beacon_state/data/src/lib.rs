@@ -1,5 +1,4 @@
 pub use beacon_block_body::{BlockBodyError, BodyFork, BodyOffsets, OperationKind};
-pub use buffer::{Id, Reset, Ring};
 pub use builders::{BuildersGroup, BuildersId, BuildersView, BuildersWriteView, FinalizedBuilders};
 pub use column::{
     Balances, BalancesGroup, BalancesId, BalancesReader, BalancesWriteView, ColumnGroup,
@@ -28,6 +27,7 @@ pub use parsed::ParsedAggregateAndProof;
 pub use pending::{
     PendingGroup, PendingId, PendingView, PendingWriteView, QueueItem, QueueView, QueueWriteView,
 };
+pub use ring::{Id, Reset, Ring};
 pub use silver_chain_spec::{BlobParameters, SpecConfig};
 pub(crate) use silver_ssz::ssz_hash;
 pub use slot_state::{
@@ -41,7 +41,6 @@ pub use validators::{
 pub use view::{BeaconStateOwner, BeaconStateReader, CheckpointChunk, CheckpointCursor};
 
 mod beacon_block_body;
-pub mod buffer;
 mod builders;
 mod column;
 mod decompose;
@@ -55,6 +54,8 @@ mod inactivity;
 mod longtail;
 mod parsed;
 mod pending;
+mod reanchor;
+pub mod ring;
 mod slot_state;
 pub(crate) mod sparse;
 pub mod types;

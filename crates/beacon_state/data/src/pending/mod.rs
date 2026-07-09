@@ -10,8 +10,8 @@ use flux_profiler::timed;
 use group::QueueGroup;
 
 use crate::{
-    buffer::Id,
     gloas::BuilderPendingWithdrawal,
+    ring::Id,
     types::{PendingConsolidation, PendingDeposit, PendingPartialWithdrawal},
 };
 
