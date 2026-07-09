@@ -276,6 +276,8 @@ fn load_config() -> Result<Config, silver_common::Error> {
         config = config.with_unsafe_no_el(true);
     }
 
+    tracing::info!("loaded config: {config:#?}");
+
     Ok(config)
 }
 
