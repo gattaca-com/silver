@@ -83,6 +83,29 @@ impl Controller {
     pub fn peer_manager(&self) -> &PeerManager {
         &self.peer_manager
     }
+
+    fn handle_latest_status(
+        &mut self,
+        now: Instant,
+        latest_status_event: Option<([u8; 92], u64, u64)>,
+    ) {
+        if let Some((ssz, latest_block_slot, wall_slot)) = latest_status_event {
+            tracing::debug!(wall_slot, latest_block_slot, "new status set");
+            // PM still tracks our Status (peer-Status validation) + applied head
+            // (custody-peer eligibility); the wall slot is the engine's only.
+            self.peer_manager.set_status(ssz);
+            self.peer_manager.set_local_head_imported(latest_block_slot);
+            self.sync_engine.on_event(
+                SyncEvent::LocalStatus {
+                    head_slot: latest_block_slot,
+                    finalized_epoch: StatusView::finalized_epoch(&ssz),
+                    finalized_root: *StatusView::finalized_root(&ssz),
+                    wall_slot,
+                },
+                now,
+            );
+        }
+    }
 }
 
 impl Tile<SilverSpine> for Controller {
@@ -117,23 +140,7 @@ impl Tile<SilverSpine> for Controller {
             }
             _ => {}
         });
-
-        if let Some((ssz, latest_block_slot, wall_slot)) = latest_status_event {
-            tracing::debug!(wall_slot, latest_block_slot, "new status set");
-            // PM still tracks our Status (peer-Status validation) + applied head
-            // (custody-peer eligibility); the wall slot is the engine's only.
-            self.peer_manager.set_status(ssz);
-            self.peer_manager.set_local_head_imported(latest_block_slot);
-            self.sync_engine.on_event(
-                SyncEvent::LocalStatus {
-                    head_slot: latest_block_slot,
-                    finalized_epoch: StatusView::finalized_epoch(&ssz),
-                    finalized_root: *StatusView::finalized_root(&ssz),
-                    wall_slot,
-                },
-                now,
-            );
-        }
+        self.handle_latest_status(now, latest_status_event);
 
         let mut handle_peer_control = |pc: PeerControl, producers: &mut SilverSpineProducers| {
             self.gossip_handler.handle_peer_control(pc, &mut |event| {
