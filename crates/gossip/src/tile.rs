@@ -1,10 +1,9 @@
 use std::time::Instant;
 
 use buffa::MessageView;
-use flux::tile::Tile;
 use silver_common::{
-    BeaconStateEvent, Error, GossipMsgOut, MessageId, P2pSend, P2pStreamId, PeerControl, PeerEvent,
-    SilverSpine, TCacheProducer, TConsumer, TProducer, ssz_view::StatusView,
+    Error, GossipMsgOut, MessageId, P2pStreamId, PeerControl, PeerEvent, TCacheProducer, TConsumer,
+    TProducer, ssz_view::StatusView,
 };
 
 use crate::{
@@ -31,11 +30,11 @@ use crate::{
 pub struct GossipHandler {
     incoming_gossip: TConsumer,
     incoming_gossip_publish: TProducer,
-    fork_digest_hex: String,
+    pub fork_digest_hex: String,
     dedup_cache: DedupCache,
 
     // publisher of gossip message protobufs.
-    mcache_publish: TProducer,
+    pub mcache_publish: TProducer,
     mcache: MessageCache,
 
     // scratch buffer for iwant meessage ids.
@@ -86,7 +85,11 @@ impl GossipHandler {
         }
     }
 
-    fn handle_peer_control(
+    pub fn set_fork_digest(&mut self, status_ssz: &[u8; 92]) {
+        self.fork_digest_hex = hex::encode(StatusView::fork_digest(status_ssz));
+    }
+
+    pub fn handle_peer_control(
         &mut self,
         peer_control: PeerControl,
         emit: &mut impl FnMut(GossipHandlerEvent),
@@ -238,29 +241,31 @@ impl GossipHandler {
     }
 }
 
-/// Wire the GossipHandler as a tile.
-impl Tile<SilverSpine> for GossipHandler {
-    fn loop_body(&mut self, adapter: &mut flux::spine::SpineAdapter<SilverSpine>) {
-        adapter.consume(|peer_control: PeerControl, producers| {
-            self.handle_peer_control(peer_control, &mut |event| {
-                if let GossipHandlerEvent::SendGossip(gossip_msg_out) = event {
-                    producers.p2p_send.produce(&P2pSend::Gossip(gossip_msg_out).into());
-                }
-            });
-        });
-        adapter.consume(|beacon_event: BeaconStateEvent, _producers| {
-            if let BeaconStateEvent::Status { ssz, .. } = beacon_event {
-                self.fork_digest_hex = hex::encode(StatusView::fork_digest(&ssz));
-            }
-        });
-        if self.spin(&mut |event| match event {
-            GossipHandlerEvent::PeerEvent(peer_event) => adapter.produce(peer_event),
-            GossipHandlerEvent::NewGossip(new_gossip_msg) => adapter.produce(new_gossip_msg),
-            GossipHandlerEvent::SendGossip(gossip_msg_out) => {
-                adapter.produce(P2pSend::Gossip(gossip_msg_out))
-            }
-        }) {
-            adapter.mark_work();
-        }
-    }
-}
+// Wire the GossipHandler as a tile.
+// impl Tile<SilverSpine> for GossipHandler {
+//     fn loop_body(&mut self, adapter: &mut
+// flux::spine::SpineAdapter<SilverSpine>) {         adapter.
+// consume(|peer_control: PeerControl, producers| {             
+// self.handle_peer_control(peer_control, &mut |event| {                 if let
+// GossipHandlerEvent::SendGossip(gossip_msg_out) = event {                     
+// producers.p2p_send.produce(&P2pSend::Gossip(gossip_msg_out).into());
+//                 }
+//             });
+//         });
+//         adapter.consume(|beacon_event: BeaconStateEvent, _producers| {
+//             if let BeaconStateEvent::Status { ssz, .. } = beacon_event {
+//                 self.fork_digest_hex =
+// hex::encode(StatusView::fork_digest(&ssz));             }
+//         });
+//         if self.spin(&mut |event| match event {
+//             GossipHandlerEvent::PeerEvent(peer_event) =>
+// adapter.produce(peer_event),             
+// GossipHandlerEvent::NewGossip(new_gossip_msg) =>
+// adapter.produce(new_gossip_msg),             
+// GossipHandlerEvent::SendGossip(gossip_msg_out) => {                 
+// adapter.produce(P2pSend::Gossip(gossip_msg_out))             }
+//         }) {
+//             adapter.mark_work();
+//         }
+//     }
+// }

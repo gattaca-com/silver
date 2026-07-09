@@ -33,6 +33,7 @@ flowchart LR
 
   %% ---- peer management ----
   NET -->|peer_events : PeerEvent| CTL
+  GOS -->|peer_events : PeerEvent| CTL
   ST  -->|peer_events : PeerEvent| CTL
   BS  -->|peer_events : PeerEvent| CTL
   CTL -->|peer_control : PeerControl| NET
@@ -53,8 +54,9 @@ flowchart LR
 
   %% ---- engine / EL ----
   BS -->|engine_reqs : EngineReq| EN
+  ST -->|"engine_reqs : EngineReq (GetBlobs)"| EN
   EN -->|engine_resps : EngineResp| BS
-  EN -.->|engine_health : EngineHealthEvent ?| CTL
+  EN -->|"engine_resps : EngineResp (GetBlobs)"| ST
 
   classDef net fill:#fef2f2,stroke:#fca5a5,color:#0f172a;
   classDef gos fill:#eff6ff,stroke:#93c5fd,color:#0f172a;
@@ -66,10 +68,12 @@ flowchart LR
 ```
 
 Solid arrows are spine queues (`queue : MessageType`), one per consumer since queues are
-SPMC. The two dashed edges are exceptions: `incoming_gossip` is the *tcache* carrying raw
+SPMC. The dashed edge is the exception: `incoming_gossip` is the *tcache* carrying raw
 protobuf Network → Gossip (no spine queue on that hop — Gossip's queued output is
-`new_gossip`); `engine_health` is marked `?` as its consumer isn't pinned in source
-(attributed to Control's sync side).
+`new_gossip`). `engine_health` is omitted from the diagram: Engine produces it but no
+tile currently consumes it. Both Storage↔Engine edges carry only the
+`GetBlobs` variants (EL-mempool blob fetch); the queues are broadcast, so Storage sees
+every `EngineResp` and ignores the rest.
 
 ## Spine queues
 
@@ -78,16 +82,16 @@ protobuf Network → Gossip (no spine queue on that hop — Gossip's queued outp
 | `new_gossip` | `NewGossipMsg` | Gossip | BeaconState, Storage | refs → `incoming_gossip`, `ssz_gossip` |
 | `p2p_send` | `P2pSend` | Gossip, Control, Storage | Network | refs → `outgoing_gossip` / `outgoing_rpc` |
 | `rpc_inbound` | `RpcInbound` | Network | Control, BeaconState, Storage | ref → `incoming_rpc` |
-| `peer_events` | `PeerEvent` | Network, Storage, BeaconState | Control | inline |
+| `peer_events` | `PeerEvent` | Network, Gossip, Storage, BeaconState | Control | inline |
 | `peer_control` | `PeerControl` | Control | Network, Gossip, Storage | inline |
 | `beacon_events` | `BeaconStateEvent` | BeaconState | Control, Gossip, Storage | inline |
 | `data_columns` | `DataColumnsAvailable` | Storage | BeaconState | inline |
 | `sync_target` | `SyncUpdate` | Control | BeaconState, Storage | inline |
 | `replay_blocks` | `ReplayBlock` | Storage | BeaconState | ref → `replay_blocks` tcache |
 | `syncing_strategy` | `SyncingStrategy` | Control | Storage | inline |
-| `engine_reqs` | `EngineReq` | BeaconState | Engine | refs → `ssz_gossip` / `incoming_rpc` |
-| `engine_resps` | `EngineResp` | Engine | BeaconState | ref → `incoming_engine_resp` |
-| `engine_health` | `EngineHealthEvent` | Engine | Control _(unverified)_ | inline |
+| `engine_reqs` | `EngineReq` | BeaconState, Storage _(GetBlobs)_ | Engine | refs → `ssz_gossip` / `incoming_rpc`; GetBlobs inline |
+| `engine_resps` | `EngineResp` | Engine | BeaconState, Storage _(GetBlobs)_ | ref → `incoming_engine_resp` |
+| `engine_health` | `EngineHealthEvent` | Engine | _none (currently unconsumed)_ | inline |
 
 ## TCaches
 
@@ -101,11 +105,10 @@ Bulk-byte rings that the queue messages reference, so payloads cross tiles witho
 | `incoming_rpc` | Network | BeaconState, Storage (live + persist), Engine | RPC response bodies (BeaconBlock / DataColumnSidecar) |
 | `outgoing_rpc` _(multi-producer)_ | Control, Storage | Network | RPC request bodies (we ask) + served response bodies (we answer) |
 | `replay_blocks` | Storage | BeaconState | persisted block SSZ replayed at startup |
-| `incoming_engine_resp` | Engine | BeaconState | EL responses (payloads, blobs, bodies) |
+| `incoming_engine_resp` | Engine | BeaconState, Storage (GetBlobs) | EL responses (payloads, blobs, bodies) |
 
 ---
 
 Source of truth: `crates/common/src/spine.rs` (queue declarations), `crates/bin/src/main.rs`
-(tcache producer/consumer wiring), and each tile's `loop_body`. A couple of fan-out edges
-(`engine_health` consumer; some `adapter.produce(var)` sites) were inferred from context
-rather than a literal type match — flagged inline. Regenerate when the spine changes.
+(tcache producer/consumer wiring), and each tile's `loop_body`. Regenerate when the spine
+changes.

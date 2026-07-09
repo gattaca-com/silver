@@ -239,7 +239,6 @@ fn compression_thread(
 ) {
     let mut drain_deadline: Option<Instant> = None;
     loop {
-        comp.compression.loop_body(&mut comp.compression_adapter);
         drain_compression_stats(&mut comp);
         if publisher_done.load(Ordering::Acquire) {
             let expected = expected_count.load(Ordering::Acquire);

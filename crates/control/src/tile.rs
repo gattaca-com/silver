@@ -10,6 +10,7 @@ use silver_common::{
     TCacheRead, TMultiProducer,
     ssz_view::{BLOCKS_BY_RANGE_REQ_SIZE, METADATA_SIZE, STATUS_V2_SIZE, StatusView},
 };
+use silver_gossip::{GossipHandler, GossipHandlerEvent};
 use silver_peer::PeerManager;
 
 use crate::sync_engine::{SyncAction, SyncEngine, SyncEvent};
@@ -19,6 +20,7 @@ const PEER_PERSIST_INTERVAL: Duration = Duration::from_secs(300);
 
 pub struct Controller {
     peer_manager: PeerManager,
+    gossip_handler: GossipHandler,
     /// Authoritative sync driver: owns target selection (produces the
     /// `sync_target`) and forward block issuance. PM serves its requests
     /// (peer-pick, caps, send) and owns column sync.
@@ -41,7 +43,11 @@ impl Controller {
     /// Build a Controller. `status` and `metadata` start empty — callers
     /// update them via `set_status` / `set_metadata` once chain state is
     /// available.
-    pub fn new(peer_manager: PeerManager, rpc_producer: TMultiProducer) -> Self {
+    pub fn new(
+        peer_manager: PeerManager,
+        gossip_handler: GossipHandler,
+        rpc_producer: TMultiProducer,
+    ) -> Self {
         let sync_engine = SyncEngine::new(
             peer_manager.syncing_config(),
             peer_manager.awaiting_local_replay(),
@@ -49,6 +55,7 @@ impl Controller {
         );
         Self {
             peer_manager,
+            gossip_handler,
             sync_engine,
             rpc_producer,
             last_tick: Instant::now(),
@@ -82,8 +89,14 @@ impl Tile<SilverSpine> for Controller {
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         let now = Instant::now();
 
-        let mut handle_peer_control =
-            |pc: PeerControl, producers: &mut SilverSpineProducers| match pc {
+        let mut handle_peer_control = |pc: PeerControl, producers: &mut SilverSpineProducers| {
+            self.gossip_handler.handle_peer_control(pc, &mut |event| {
+                if let GossipHandlerEvent::SendGossip(gossip_msg_out) = event {
+                    producers.p2p_send.produce(&P2pSend::Gossip(gossip_msg_out).into());
+                }
+            });
+
+            match pc {
                 PeerControl::P2pSend(send) => {
                     producers.p2p_send.produce(&send.into());
                 }
@@ -129,7 +142,8 @@ impl Tile<SilverSpine> for Controller {
                 other => {
                     producers.peer_control.produce(&other.into());
                 }
-            };
+            }
+        };
 
         adapter.consume(|event: PeerEvent, producers| {
             self.sync_engine.peer_event(event, now, self.peer_manager.our_fork_digest());
@@ -142,47 +156,6 @@ impl Tile<SilverSpine> for Controller {
             self.peer_manager
                 .on_rpc_inbound(rpc, now, &mut |evt| handle_peer_control(evt, producers));
         });
-
-        let mut latest_status_event = None;
-
-        adapter.consume(|beacon_event: BeaconStateEvent, _producers| match beacon_event {
-            BeaconStateEvent::Status { ssz, latest_block_slot, wall_slot } => {
-                latest_status_event = Some((ssz, latest_block_slot, wall_slot));
-            }
-            BeaconStateEvent::BlockRejected { block_root, source } => {
-                // PM keeps the reject for peer eviction (Status backing a
-                // rejected chain); the engine owns target invalidation.
-                self.peer_manager.record_block_rejected(block_root, source);
-                self.sync_engine.on_event(SyncEvent::BlockRejected { block_root, source }, now);
-            }
-            BeaconStateEvent::ReplayComplete => {
-                self.peer_manager.on_local_replay_complete();
-                self.sync_engine.on_event(SyncEvent::ReplayComplete, now);
-            }
-            BeaconStateEvent::BacktrackStall => {
-                // Relax the engine's (authoritative) target selection for one
-                // pass so a slightly-ahead peer qualifies for range sync.
-                self.sync_engine.request_resync();
-            }
-            _ => {}
-        });
-
-        if let Some((ssz, latest_block_slot, wall_slot)) = latest_status_event {
-            tracing::debug!(wall_slot, latest_block_slot, "new status set");
-            // PM still tracks our Status (peer-Status validation) + applied head
-            // (custody-peer eligibility); the wall slot is the engine's only.
-            self.peer_manager.set_status(ssz);
-            self.peer_manager.set_local_head_imported(latest_block_slot);
-            self.sync_engine.on_event(
-                SyncEvent::LocalStatus {
-                    head_slot: latest_block_slot,
-                    finalized_epoch: StatusView::finalized_epoch(&ssz),
-                    finalized_root: *StatusView::finalized_root(&ssz),
-                    wall_slot,
-                },
-                now,
-            );
-        }
 
         // Target selection: the engine is authoritative. Produce its target
         // onto the `sync_target` queue, and feed it to PM for peer-pick + column
@@ -257,6 +230,57 @@ impl Tile<SilverSpine> for Controller {
             self.last_status = now;
             self.peer_manager
                 .fan_out_status(now, &mut |evt| handle_peer_control(evt, &mut adapter.producers));
+        }
+
+        let mut latest_status_event = None;
+        adapter.consume(|beacon_event: BeaconStateEvent, _producers| match beacon_event {
+            BeaconStateEvent::Status { ssz, latest_block_slot, wall_slot } => {
+                latest_status_event = Some((ssz, latest_block_slot, wall_slot));
+                self.gossip_handler.set_fork_digest(&ssz);
+            }
+            BeaconStateEvent::BlockRejected { block_root, source } => {
+                // PM keeps the reject for peer eviction (Status backing a
+                // rejected chain); the engine owns target invalidation.
+                self.peer_manager.record_block_rejected(block_root, source);
+                self.sync_engine.on_event(SyncEvent::BlockRejected { block_root, source }, now);
+            }
+            BeaconStateEvent::ReplayComplete => {
+                self.peer_manager.on_local_replay_complete();
+                self.sync_engine.on_event(SyncEvent::ReplayComplete, now);
+            }
+            BeaconStateEvent::BacktrackStall => {
+                // Relax the engine's (authoritative) target selection for one
+                // pass so a slightly-ahead peer qualifies for range sync.
+                self.sync_engine.request_resync();
+            }
+            _ => {}
+        });
+
+        if self.gossip_handler.spin(&mut |event| match event {
+            GossipHandlerEvent::PeerEvent(peer_event) => adapter.produce(peer_event),
+            GossipHandlerEvent::NewGossip(new_gossip_msg) => adapter.produce(new_gossip_msg),
+            GossipHandlerEvent::SendGossip(gossip_msg_out) => {
+                adapter.produce(P2pSend::Gossip(gossip_msg_out))
+            }
+        }) {
+            adapter.mark_work();
+        }
+
+        if let Some((ssz, latest_block_slot, wall_slot)) = latest_status_event {
+            tracing::debug!(wall_slot, latest_block_slot, "new status set");
+            // PM still tracks our Status (peer-Status validation) + applied head
+            // (custody-peer eligibility); the wall slot is the engine's only.
+            self.peer_manager.set_status(ssz);
+            self.peer_manager.set_local_head_imported(latest_block_slot);
+            self.sync_engine.on_event(
+                SyncEvent::LocalStatus {
+                    head_slot: latest_block_slot,
+                    finalized_epoch: StatusView::finalized_epoch(&ssz),
+                    finalized_root: *StatusView::finalized_root(&ssz),
+                    wall_slot,
+                },
+                now,
+            );
         }
     }
 }

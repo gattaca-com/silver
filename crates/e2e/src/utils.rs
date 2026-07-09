@@ -20,6 +20,7 @@ use silver_common::{
 };
 use silver_config::{ScoreParams, SyncingConfig};
 use silver_control::Controller;
+use silver_gossip::GossipHandler;
 use silver_peer::PeerManager;
 use tempfile::TempDir;
 
@@ -167,7 +168,19 @@ impl PmBsHarness {
             0,
             false,
         );
-        let mut ctl = Controller::new(pm, TCache::multi_producer("rpc_out_dummy", 32));
+
+        let dummy_gossip_in = TCache::producer("dummy gossip in", 32);
+        let dummy_gossip_c = dummy_gossip_in.cache_ref().consumer("dummy  gossip c").unwrap();
+
+        let gossip_handler = GossipHandler::new(
+            dummy_gossip_c,
+            TCache::producer("g ssz", 32),
+            TCache::producer("g proto", 32),
+            String::new(),
+        )
+        .unwrap();
+        let mut ctl =
+            Controller::new(pm, gossip_handler, TCache::multi_producer("rpc_out_dummy", 32));
         let mut ctl_a = SpineAdapter::connect_tile(&ctl, &mut spine);
 
         let mut inj_a = SpineAdapter::connect_tile(&Injector, &mut spine);

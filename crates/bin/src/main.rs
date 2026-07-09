@@ -150,12 +150,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let network_tile = NetworkTile::new(discv5_addr, discv5, p2p_addr, p2p_endpoint, p2p_context)?;
-    let gossip_tile = GossipHandler::new(
-        incoming_gossip_consumer,
-        ssz_gossip_producer,
-        outgoing_gossip_producer,
-        hex::encode(config.fork_digest()),
-    )?;
 
     let chain_config = config.chain_config();
     let ticker = SlotTicker::new(
@@ -169,6 +163,13 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     tracing::info!("booting from local checkpoint: {booting_from_local_checkpoint}");
 
+    let gossip_handler = GossipHandler::new(
+        incoming_gossip_consumer,
+        ssz_gossip_producer,
+        outgoing_gossip_producer,
+        hex::encode(config.fork_digest()),
+    )?;
+
     let control_tile = Controller::new(
         PeerManager::new(
             gossip_topics,
@@ -179,6 +180,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             das_custody_groups,
             booting_from_local_checkpoint,
         ),
+        gossip_handler,
         outgoing_rpc_producer.clone(),
     );
 
@@ -228,11 +230,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     spine.start(None, None, |scoped_spine| {
         // TODO core config
         attach_tile(control_tile, scoped_spine, TileConfig::new(1, ThreadPriority::OSDefault));
-        attach_tile(gossip_tile, scoped_spine, TileConfig::new(2, ThreadPriority::OSDefault));
-        attach_tile(network_tile, scoped_spine, TileConfig::new(3, ThreadPriority::OSDefault));
-        attach_tile(beacon_state_tile, scoped_spine, TileConfig::new(4, ThreadPriority::OSDefault));
-        attach_tile(storage_tile, scoped_spine, TileConfig::new(5, ThreadPriority::OSDefault));
-        attach_tile(engine_tile, scoped_spine, TileConfig::new(6, ThreadPriority::OSDefault));
+        attach_tile(network_tile, scoped_spine, TileConfig::new(2, ThreadPriority::OSDefault));
+        attach_tile(beacon_state_tile, scoped_spine, TileConfig::new(3, ThreadPriority::OSDefault));
+        attach_tile(storage_tile, scoped_spine, TileConfig::new(4, ThreadPriority::OSDefault));
+        attach_tile(engine_tile, scoped_spine, TileConfig::new(5, ThreadPriority::OSDefault));
     });
 
     Ok(())

@@ -4478,6 +4478,7 @@ version = "0.0.1"
 dependencies = [
  "flux",
  "silver_common",
+ "silver_gossip",
  "silver_peer",
  "tracing",
 ]

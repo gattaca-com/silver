@@ -105,7 +105,6 @@ impl TwoStackHarness {
 
         // Echo: network + compression + controller.
         self.echo.network.loop_body(&mut self.echo.network_adapter);
-        self.echo.compression.loop_body(&mut self.echo.compression_adapter);
         self.echo.controller.loop_body(&mut self.echo.controller_adapter);
 
         // Drain publisher-side peer events to discover echo's connection handle.
