@@ -1,4 +1,6 @@
 mod group;
+mod pool;
+mod snapshot;
 mod tree;
 mod view;
 
@@ -8,7 +10,7 @@ mod tests;
 pub use group::ColumnGroup;
 pub use view::{ColumnReader, ColumnWriteView};
 
-use crate::{buffer::Id, types::B256};
+use crate::{ring::Id, types::B256};
 
 /// Scalar element of a column: a fixed-size little-endian SSZ value. Its SSZ
 /// byte size equals `size_of::<Self>()` (1 for `u8`, 8 for `u64`).

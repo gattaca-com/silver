@@ -73,9 +73,9 @@ fn set_many_keeps_prior_writes() {
     let mut wv = g.roll_fresh();
 
     // Three validators join (idx 3,4,5 at default 0), then writes land.
-    wv.append(0);
-    wv.append(0);
-    wv.append(0);
+    wv.append_empty();
+    wv.append_empty();
+    wv.append_empty();
     wv.set(0, 111);
     wv.set_many(&[(1, 99), (5, 7)]);
     // idx 0's earlier write survives; 1 and 5 applied; 2 reads base, 3/4 default.
@@ -91,8 +91,8 @@ fn finalize_preserves_survivor_reads_and_root() {
     let mut g = group(&[1_000, 2_000]);
 
     let mut wv = g.roll_fresh();
-    wv.append(0); // idx 2
-    wv.append(0); // idx 3
+    wv.append_empty(); // idx 2
+    wv.append_empty(); // idx 3
     wv.set(0, 1_000); // equals base[0]
     wv.set(1, 5_000);
     wv.set(3, 7_000);
@@ -162,8 +162,9 @@ fn root_reflects_edits_and_appends() {
     let mut wv = g.roll_fresh();
 
     wv.set(1, 999); // base edit
-    wv.append(0); // idx 5
-    wv.append(7); // idx 6 — appended validator with balance 7
+    wv.append_empty(); // idx 5
+    let idx = wv.append_empty(); // idx 6 — appended validator, balance set to 7
+    wv.set(idx, 7);
     assert_root_matches(&wv);
 
     // Setting an appended balance back to 0 (its default) re-collapses the leaf.
@@ -233,7 +234,8 @@ fn append_within_cap_headroom() {
     let mut g = BalancesGroup::new(16, 1, &le_bytes(&[5])).unwrap();
     let mut wv = g.roll_fresh();
     for v in [6, 7, 8, 9, 10] {
-        wv.append(v);
+        let idx = wv.append_empty();
+        wv.set(idx, v);
     }
     assert_eq!(wv.iter().collect::<Vec<_>>(), vec![5, 6, 7, 8, 9, 10]);
     assert_root_matches(&wv);

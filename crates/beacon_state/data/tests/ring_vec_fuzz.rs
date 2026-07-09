@@ -187,7 +187,7 @@ fn fuzz_ring_vec_payloads_concurrent() {
             let mut w = state.ring.roll_fresh();
             w.start = state.base.len() as u64;
             head = w.commit();
-            state.ring.free(head); // tail = reanchored head
+            state.ring.free_outdated(&[head]); // tail = reanchored head
             rolls_in_window = 0;
 
             version += 1;

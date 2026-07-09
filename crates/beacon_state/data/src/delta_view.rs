@@ -100,10 +100,10 @@ pub fn append_validator(
     credentials: Withdrawals,
 ) -> u32 {
     let idx = view.validators.append(pubkey, pubkey_decompressed, credentials);
-    let bal_idx = view.balances.append(0);
+    let bal_idx = view.balances.append_empty();
     debug_assert_eq!(idx, bal_idx, "validator/balance append indices must agree");
-    let prev_idx = view.previous_participation.append(0);
-    let cur_idx = view.current_participation.append(0);
+    let prev_idx = view.previous_participation.append_empty();
+    let cur_idx = view.current_participation.append_empty();
     let inact_idx = view.inactivity.append(0);
     debug_assert!(
         idx == prev_idx && idx == cur_idx && idx == inact_idx,

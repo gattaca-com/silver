@@ -1,18 +1,16 @@
-use std::io::{self, Write};
-
-use super::ColumnVal;
-use crate::{
-    ColumnLenMismatch,
-    buffer::Reset,
-    ssz_hash::{ZERO_HASHES, hash_concat, hash_concat_many, mix_in_length},
-    types::B256,
+use super::{
+    ColumnVal,
+    pool::{PAGE_NODES, PagePool},
+    snapshot::PageSnapshot,
 };
+use crate::{ColumnLenMismatch, ssz_hash::hash_concat_many, types::B256};
 
 #[derive(Default)]
 pub struct ColumnTree {
     nodes: Vec<B256>,
     max_elements: usize,
     count: usize,
+    dirty_mark: Vec<bool>,
 }
 
 impl ColumnTree {
@@ -37,7 +35,8 @@ impl ColumnTree {
             hash_concat_many(&mut parents[parent..level], &children[..level]);
             level = parent;
         }
-        Ok(Self { nodes, max_elements, count })
+        let num_pages = (2 * max_elements).div_ceil(PAGE_NODES).max(1);
+        Ok(Self { nodes, max_elements, count, dirty_mark: vec![false; num_pages] })
     }
 
     #[inline]
@@ -45,20 +44,82 @@ impl ColumnTree {
         self.max_elements
     }
 
-    pub(super) fn prealloc(&mut self, max_elements: usize) {
-        self.nodes = vec![[0u8; 32]; 2 * max_elements];
+    #[inline]
+    pub(super) fn count(&self) -> usize {
+        self.count
     }
 
     #[inline]
-    pub fn get<V: ColumnVal>(&self, i: usize) -> V {
-        let k = V::VALS_PER_CHUNK;
-        V::lane(&self.nodes[self.max_elements + i / k], i % k)
+    pub(super) fn num_pages(&self) -> usize {
+        (2 * self.max_elements).div_ceil(PAGE_NODES).max(1)
     }
 
     #[inline]
-    pub fn iter<V: ColumnVal>(&self) -> impl Iterator<Item = V> + '_ {
-        let k = V::VALS_PER_CHUNK;
-        (0..self.count).map(move |i| V::lane(&self.nodes[self.max_elements + i / k], i % k))
+    pub(super) fn node(&self, n: usize) -> &B256 {
+        &self.nodes[n]
+    }
+
+    #[inline]
+    fn page(&self, pi: usize) -> &[B256] {
+        let end = ((pi + 1) * PAGE_NODES).min(self.nodes.len());
+        &self.nodes[pi * PAGE_NODES..end]
+    }
+
+    #[inline]
+    fn page_mut(&mut self, pi: usize) -> &mut [B256] {
+        let end = ((pi + 1) * PAGE_NODES).min(self.nodes.len());
+        &mut self.nodes[pi * PAGE_NODES..end]
+    }
+
+    fn reset_to(&mut self, max_elements: usize, count: usize) {
+        self.nodes.resize(2 * max_elements, [0u8; 32]);
+        self.max_elements = max_elements;
+        self.count = count;
+    }
+
+    pub(super) fn gather_from(&mut self, pool: &PagePool, snapshot: &PageSnapshot) {
+        self.reset_to(snapshot.max_elements(), snapshot.len());
+        for pi in 0..snapshot.num_pages() {
+            let dst = self.page_mut(pi);
+            dst.copy_from_slice(&snapshot.page(pool, pi)[..dst.len()]);
+        }
+    }
+
+    pub(super) fn to_snapshot(&self, pool: &mut PagePool) -> PageSnapshot {
+        let pages = (0..self.num_pages()).map(|pi| pool.alloc_from_slice(self.page(pi))).collect();
+        PageSnapshot { pages, max_elements: self.max_elements, count: self.count }
+    }
+
+    pub(super) fn commit_from(&self, pool: &mut PagePool, parent: &PageSnapshot) -> PageSnapshot {
+        let pages = parent
+            .pages
+            .iter()
+            .enumerate()
+            .map(|(pi, &id)| {
+                if self.dirty_mark[pi] {
+                    pool.alloc_from_slice(self.page(pi))
+                } else {
+                    pool.retain(id);
+                    id
+                }
+            })
+            .collect();
+        PageSnapshot { pages, max_elements: self.max_elements, count: self.count }
+    }
+
+    pub(super) fn reset_dirty_mask(&mut self) {
+        let num_pages = self.num_pages();
+        self.dirty_mark.clear();
+        self.dirty_mark.resize(num_pages, false);
+    }
+
+    #[inline]
+    fn mark_dirty_node(&mut self, leaf: u32) {
+        let mut node = leaf as usize;
+        while node >= 1 && !self.dirty_mark[node / PAGE_NODES] {
+            self.dirty_mark[node / PAGE_NODES] = true;
+            node >>= 1;
+        }
     }
 
     pub fn set_vals<V: ColumnVal>(&mut self, changes: &[(u32, V)]) {
@@ -79,6 +140,7 @@ impl ColumnTree {
             for &(idx, v) in group {
                 V::set_lane(leaf, (idx % k) as usize, v);
             }
+            self.mark_dirty_node(node);
             dirty.push(node);
         }
         self.rehash(&mut dirty);
@@ -115,48 +177,21 @@ impl ColumnTree {
         }
     }
 
-    pub fn append<V: ColumnVal>(&mut self, v: V) -> u32 {
+    pub fn append_empty<V: ColumnVal>(&mut self) -> u32 {
         let idx = self.count as u32;
         self.count += 1;
         debug_assert!(
             self.count <= self.max_elements * V::VALS_PER_CHUNK,
             "append past leaf capacity — cap headroom exhausted",
         );
-        self.set_vals(&[(idx, v)]);
+
+        let k = V::VALS_PER_CHUNK;
+        debug_assert!(
+            V::lane(&self.nodes[self.max_elements + idx as usize / k], idx as usize % k) ==
+                V::default(),
+            "append over a non-zero leaf slot",
+        );
+
         idx
-    }
-
-    #[inline]
-    pub fn hash_root(&self, list_depth: u32) -> B256 {
-        let mut root = self.nodes[1];
-        for h in self.max_elements.trailing_zeros()..list_depth {
-            root = hash_concat(&root, &ZERO_HASHES[h as usize]);
-        }
-        mix_in_length(&root, self.count)
-    }
-
-    pub fn write_ssz<V: ColumnVal, W: Write>(&self, w: &mut W) -> io::Result<()> {
-        let (k, size) = (V::VALS_PER_CHUNK, size_of::<V>());
-        let leaves = &self.nodes[self.max_elements..];
-        let (full, rem) = (self.count / k, self.count % k);
-        w.write_all(leaves[..full].as_flattened())?;
-        if rem > 0 {
-            w.write_all(&leaves[full][..rem * size])?;
-        }
-        Ok(())
-    }
-}
-
-impl Reset for ColumnTree {
-    fn reset(&mut self) {
-        self.nodes.clear();
-        self.max_elements = 0;
-        self.count = 0;
-    }
-
-    fn reset_from(&mut self, other: &Self) {
-        self.nodes.clone_from(&other.nodes);
-        self.max_elements = other.max_elements;
-        self.count = other.count;
     }
 }
