@@ -164,6 +164,19 @@ impl<'a, C: ColumnSpec> ColumnWriteView<'a, C> {
         self.group.scratch_mut().append_empty::<C::Val>()
     }
 
+    pub fn copy_changed_from<D: ColumnSpec<Val = C::Val>>(
+        &mut self,
+        other: &ColumnWriteView<'_, D>,
+    ) {
+        let src = other.group.scratch();
+        self.group.scratch_mut().copy_changed_pages_from(src);
+    }
+
+    #[inline]
+    pub fn clear_to_zero(&mut self) {
+        self.group.scratch_mut().fill_zero();
+    }
+
     #[inline]
     pub fn reader(&self) -> ColumnReader<'_, C> {
         ColumnReader::flat(self.group.scratch())

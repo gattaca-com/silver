@@ -164,6 +164,13 @@ impl PerfReport {
         std::fs::write(&json_path, self.outcome.stats.to_json(&label)).expect("write perf JSON");
         let display = std::fs::canonicalize(&json_path).unwrap_or_else(|_| json_path.clone());
         eprintln!("\nperf: JSON {}", display.display());
+
+        if let (Some(fxt_path), Some(bytes)) = (crate::perf::replay::fxt_path(), &self.outcome.fxt)
+        {
+            std::fs::write(&fxt_path, bytes).expect("write perf FXT");
+            let display = std::fs::canonicalize(&fxt_path).unwrap_or(fxt_path);
+            eprintln!("perf: FXT  {} ({} MiB)", display.display(), bytes.len() >> 20);
+        }
     }
 }
 
