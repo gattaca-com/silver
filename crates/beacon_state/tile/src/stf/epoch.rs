@@ -98,7 +98,7 @@ pub fn process_epoch(
         let lt = longtail_w.as_mut().expect("longtail rolled at boundary");
         process_historical_summaries_update(view, lt, &mut scratch.state_hash);
     }
-    process_participation_flag_updates(view, &mut scratch.replace_u8);
+    process_participation_flag_updates(view);
     if rotates_sync_committee {
         let lt = longtail_w.as_mut().expect("longtail rolled at boundary");
         process_sync_committee_updates(
@@ -553,52 +553,9 @@ pub fn process_effective_balance_updates(
 }
 
 #[timed]
-pub fn process_participation_flag_updates(
-    view: &mut StateWriterView,
-    scratch: &mut Vec<(u32, u8)>,
-) {
-    let n = view.validators.count();
-    rotate_previous_participation(view, n, scratch);
-    clear_current_participation(view, n, scratch);
-}
-
-/// previous_epoch_participation = current_epoch_participation. Only changed
-/// flags: the rotation is mostly a no-op (a validator timely in both epochs
-/// keeps identical flags), so prev and curr are equal almost everywhere.
-#[timed]
-fn rotate_previous_participation(
-    view: &mut StateWriterView,
-    n: usize,
-    scratch: &mut Vec<(u32, u8)>,
-) {
-    scratch.clear();
-    {
-        let mut prev = view.previous_participation.iter();
-        let mut curr = view.current_participation.iter();
-        for i in 0..n {
-            let (p, c) = (prev.next().unwrap(), curr.next().unwrap());
-            if c != p {
-                scratch.push((i as u32, c));
-            }
-        }
-    }
-    view.previous_participation.set_many(scratch);
-}
-
-/// current_epoch_participation = 0. ~n-participants sized (only the
-/// already-zero non-participants are skipped).
-#[timed]
-fn clear_current_participation(view: &mut StateWriterView, n: usize, scratch: &mut Vec<(u32, u8)>) {
-    scratch.clear();
-    {
-        let mut curr = view.current_participation.iter();
-        for i in 0..n {
-            if curr.next().unwrap() != 0 {
-                scratch.push((i as u32, 0));
-            }
-        }
-    }
-    view.current_participation.set_many(scratch);
+pub fn process_participation_flag_updates(view: &mut StateWriterView) {
+    view.previous_participation.copy_changed_from(&view.current_participation);
+    view.current_participation.clear_to_zero();
 }
 
 pub fn process_eth1_data_reset(eth1: &mut Eth1WriteView, current_epoch: Epoch) {

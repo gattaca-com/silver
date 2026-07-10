@@ -3,7 +3,11 @@ use super::{
     pool::{PAGE_NODES, PagePool},
     snapshot::PageSnapshot,
 };
-use crate::{ColumnLenMismatch, ssz_hash::hash_concat_many, types::B256};
+use crate::{
+    ColumnLenMismatch,
+    ssz_hash::{ZERO_HASHES, hash_concat_many},
+    types::B256,
+};
 
 #[derive(Default)]
 pub struct ColumnTree {
@@ -122,6 +126,35 @@ impl ColumnTree {
         let num_pages = self.num_pages();
         self.dirty_mark.clear();
         self.dirty_mark.resize(num_pages, false);
+    }
+
+    pub(super) fn mark_all_dirty(&mut self) {
+        self.dirty_mark.fill(true);
+    }
+
+    pub(super) fn copy_changed_pages_from(&mut self, src: &ColumnTree) {
+        debug_assert_eq!(self.max_elements, src.max_elements, "rotate needs a same-shape source");
+        debug_assert_eq!(self.count, src.count, "rotate needs a same-length source");
+        let len = self.nodes.len();
+        let Self { nodes, dirty_mark, .. } = self;
+        for (pi, dirty) in dirty_mark.iter_mut().enumerate() {
+            let range = pi * PAGE_NODES..((pi + 1) * PAGE_NODES).min(len);
+            if nodes[range.clone()].as_flattened() != src.nodes[range.clone()].as_flattened() {
+                nodes[range.clone()].copy_from_slice(&src.nodes[range]);
+                *dirty = true;
+            }
+        }
+    }
+
+    pub fn fill_zero(&mut self) {
+        let mut level = self.max_elements;
+        let mut depth = 0;
+        while level >= 1 {
+            self.nodes[level..2 * level].fill(ZERO_HASHES[depth]);
+            level >>= 1;
+            depth += 1;
+        }
+        self.mark_all_dirty();
     }
 
     #[inline]

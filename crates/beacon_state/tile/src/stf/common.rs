@@ -31,7 +31,6 @@ pub struct StfScratch {
     /// Sparse-edit rebuild buffers + effective-balance column for the
     /// epoch-transition passes.
     pub replace_u64: Vec<(u32, u64)>,
-    pub replace_u8: Vec<(u32, u8)>,
     pub eff: Vec<u64>,
     /// Merged-ring buffers for `hash_tree_root_state`.
     pub state_hash: ssz_hash::StateHashScratch,
@@ -43,7 +42,6 @@ impl StfScratch {
             active: Vec::with_capacity(validator_cap.max(MAX_ATTESTING_INDICES)),
             postponed: Vec::with_capacity(MAX_PENDING_DEPOSITS_PER_EPOCH),
             replace_u64: Vec::with_capacity(validator_cap),
-            replace_u8: Vec::with_capacity(validator_cap),
             eff: Vec::with_capacity(validator_cap),
             state_hash: ssz_hash::StateHashScratch::new(),
         }

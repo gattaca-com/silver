@@ -11,8 +11,18 @@ use crate::{
     utils::{PmBsHarness, SYNTH_PEER_CONN_ID, block_slot, data_columns_available},
 };
 
+/// Destination for the FXT trace, from `PERF_FXT` (empty/unset ⇒ no dump).
+pub fn fxt_path() -> Option<std::path::PathBuf> {
+    std::env::var_os("PERF_FXT").filter(|s| !s.is_empty()).map(Into::into)
+}
+
+fn fxt_requested() -> bool {
+    fxt_path().is_some()
+}
+
 pub struct ReplayOutcome {
     pub stats: TimingStats,
+    pub fxt: Option<Vec<u8>>,
     pub validator_count: usize,
     pub wall_elapsed: Duration,
     pub final_slot: u64,
@@ -110,8 +120,12 @@ pub fn replay(fixtures: &Fixtures) -> ReplayOutcome {
         finalized_epoch - anchor_finalized_epoch,
     );
 
+    let drainer = recorder.collect();
+    let fxt = fxt_requested().then(|| drainer.fxt_trace());
+
     ReplayOutcome {
-        stats: fold_stats(&recorder.collect()),
+        stats: fold_stats(&drainer),
+        fxt,
         validator_count: harness.head_validator_count(),
         wall_elapsed,
         final_slot,

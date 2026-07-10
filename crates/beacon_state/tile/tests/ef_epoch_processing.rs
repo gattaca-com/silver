@@ -201,7 +201,7 @@ fn fulu_historical_summaries_update() {
 fn fulu_participation_flag_updates() {
     epoch_handler("participation_flag_updates", |s| {
         s.with_view(|view| {
-            stf::process_participation_flag_updates(view, &mut Vec::new());
+            stf::process_participation_flag_updates(view);
         });
     });
 }
