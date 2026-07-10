@@ -87,24 +87,35 @@ impl ColumnTree {
 
     pub(super) fn to_snapshot(&self, pool: &mut PagePool) -> PageSnapshot {
         let pages = (0..self.num_pages()).map(|pi| pool.alloc_from_slice(self.page(pi))).collect();
-        PageSnapshot { pages, max_elements: self.max_elements, count: self.count }
+        PageSnapshot {
+            pages,
+            max_elements: self.max_elements,
+            count: self.count,
+            is_released: false,
+        }
     }
 
-    pub(super) fn commit_from(&self, pool: &mut PagePool, parent: &PageSnapshot) -> PageSnapshot {
-        let pages = parent
-            .pages
-            .iter()
-            .enumerate()
-            .map(|(pi, &id)| {
-                if self.dirty_mark[pi] {
-                    pool.alloc_from_slice(self.page(pi))
-                } else {
-                    pool.retain(id);
-                    id
-                }
-            })
-            .collect();
-        PageSnapshot { pages, max_elements: self.max_elements, count: self.count }
+    /// Commit the scratch into `dst`, reusing `dst`'s page-table allocation: it
+    /// shares `parent`'s clean pages (bumping their refcounts) and claims fresh
+    /// pages for the ones this block dirtied.
+    pub(super) fn commit_into(
+        &self,
+        pool: &mut PagePool,
+        dst: &mut PageSnapshot,
+        parent: &PageSnapshot,
+    ) {
+        dst.pages.clear();
+        dst.pages.extend(parent.pages.iter().enumerate().map(|(pi, &id)| {
+            if self.dirty_mark[pi] {
+                pool.alloc_from_slice(self.page(pi))
+            } else {
+                pool.retain(id);
+                id
+            }
+        }));
+        dst.max_elements = self.max_elements;
+        dst.count = self.count;
+        dst.is_released = false;
     }
 
     pub(super) fn reset_dirty_mask(&mut self) {
@@ -116,6 +127,11 @@ impl ColumnTree {
     #[inline]
     fn mark_dirty_node(&mut self, leaf: u32) {
         let mut node = leaf as usize;
+        debug_assert!(PAGE_NODES.is_power_of_two(), "PAGE_NODES must be a power of two");
+        // We can skip already marked pages as top bids will always be the same after
+        // division by 2 Example (top bits | last PAGE_NODES bits):
+        // Leaf1 110|0101011 -> 11|0010101
+        // Leaf2 110|1010100 -> 11|0101010
         while node >= 1 && !self.dirty_mark[node / PAGE_NODES] {
             self.dirty_mark[node / PAGE_NODES] = true;
             node >>= 1;

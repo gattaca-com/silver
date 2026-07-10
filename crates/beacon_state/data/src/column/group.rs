@@ -35,7 +35,7 @@ impl<C: ColumnSpec> ColumnGroup<C> {
         // Grow-hint for the base's pages; the pool grows lazily beyond it.
         let mut pool = PagePool::new(flat.num_pages() * 2);
         let finalized = flat.to_snapshot(&mut pool);
-        let ring = (0..SLOTS_RING_N).map(|_| PageSnapshot::default()).collect();
+        let ring = (0..SLOTS_RING_N).map(|_| PageSnapshot::new_released()).collect();
         Ok(Self {
             pool,
             finalized,
@@ -53,9 +53,8 @@ impl<C: ColumnSpec> ColumnGroup<C> {
     }
 
     pub fn roll_fresh(&mut self) -> ColumnWriteView<'_, C> {
-        let (id, pos) = self.index.roll();
-        let Self { pool, finalized, ring, scratch, .. } = self;
-        debug_assert!(ring[pos].is_released(), "recycled slot not freed by finalize");
+        let (id, _) = self.index.roll();
+        let Self { pool, finalized, scratch, .. } = self;
         scratch.gather_from(pool, finalized);
         scratch.reset_dirty_mask();
         self.scratch_at = None;
@@ -63,11 +62,10 @@ impl<C: ColumnSpec> ColumnGroup<C> {
     }
 
     pub fn roll_from(&mut self, parent: Id<Self>) -> ColumnWriteView<'_, C> {
-        let (id, pos) = self.index.roll();
+        let (id, _) = self.index.roll();
         let reuse_scratch = self.scratch_at == Some(parent);
         let parent_pos = self.index.pos(parent);
         let Self { pool, ring, scratch, .. } = self;
-        debug_assert!(ring[pos].is_released(), "recycled slot not freed by finalize");
         if !reuse_scratch {
             scratch.gather_from(pool, &ring[parent_pos]);
         }
@@ -84,11 +82,14 @@ impl<C: ColumnSpec> ColumnGroup<C> {
         let pos = self.index.pos(id);
         let parent_pos = parent.map(|p| self.index.pos(p));
         let Self { pool, finalized, ring, scratch, .. } = self;
-        let parent = match parent_pos {
-            None => &*finalized,
-            Some(ppos) => &ring[ppos],
-        };
-        ring[pos] = scratch.commit_from(pool, parent);
+        debug_assert!(ring[pos].is_released, "recycled slot not freed by finalize or clear");
+        match parent_pos {
+            None => scratch.commit_into(pool, &mut ring[pos], finalized),
+            Some(ppos) => {
+                let [dst, parent] = ring.get_disjoint_mut([pos, ppos]).expect("distinct slots");
+                scratch.commit_into(pool, dst, parent);
+            }
+        }
         self.scratch_at = Some(id);
     }
 
@@ -108,8 +109,7 @@ impl<C: ColumnSpec> ColumnGroup<C> {
         let winner_pos = self.index.pos(winner);
         {
             let Self { pool, finalized, ring, .. } = self;
-            pool.release(finalized);
-            *finalized = pool.share(&ring[winner_pos]);
+            pool.share_into(finalized, &ring[winner_pos]);
         }
         for seq in self.index.free_outdated(survivors) {
             let pos = self.index.slot(seq);

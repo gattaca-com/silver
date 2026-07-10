@@ -5,17 +5,17 @@ use crate::types::B256;
 /// id of node-page `i`. Built and read by
 /// [`ColumnTree`](super::tree::ColumnTree) (the data), shared/released by
 /// [`PagePool`](PagePool) (the refcounts).
-#[derive(Default)]
 pub struct PageSnapshot {
     pub(super) pages: Vec<PageId>,
     pub(super) max_elements: usize,
     pub(super) count: usize,
+    pub(super) is_released: bool,
 }
 
 impl PageSnapshot {
     #[inline]
-    pub(super) fn is_released(&self) -> bool {
-        self.pages.is_empty()
+    pub(super) fn new_released() -> Self {
+        Self { pages: Vec::new(), max_elements: 0, count: 0, is_released: true }
     }
 
     #[inline]

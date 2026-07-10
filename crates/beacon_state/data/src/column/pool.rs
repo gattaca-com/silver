@@ -45,17 +45,20 @@ impl PagePool {
         }
     }
 
-    /// A second handle to `snapshot`'s pages: bump every refcount and hand back
-    /// a copy of the page table (the finalized base adopting a survivor).
-    pub(super) fn share(&mut self, snapshot: &PageSnapshot) -> PageSnapshot {
-        for &id in &snapshot.pages {
+    /// Re-point `dst` at `src`'s pages, reusing `dst`'s page-table allocation:
+    /// release `dst`'s current pages, then adopt `src`'s (bumping their
+    /// refcounts). The finalized base adopting a survivor.
+    pub(super) fn share_into(&mut self, dst: &mut PageSnapshot, src: &PageSnapshot) {
+        debug_assert!(!dst.is_released, "share_into over a released snapshot double-frees");
+        self.release(dst);
+        dst.pages.clear();
+        dst.pages.extend_from_slice(&src.pages);
+        for &id in &dst.pages {
             self.retain(id);
         }
-        PageSnapshot {
-            pages: snapshot.pages.clone(),
-            max_elements: snapshot.max_elements,
-            count: snapshot.count,
-        }
+        dst.max_elements = src.max_elements;
+        dst.count = src.count;
+        dst.is_released = false;
     }
 
     /// Drop `snapshot`'s hold on its pages (freeing any that hit refcount 0)
@@ -64,9 +67,7 @@ impl PagePool {
         for &id in &snapshot.pages {
             self.release_page(id);
         }
-        snapshot.pages.clear();
-        snapshot.max_elements = 0;
-        snapshot.count = 0;
+        snapshot.is_released = true;
     }
 
     #[inline]
