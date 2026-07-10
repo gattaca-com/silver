@@ -439,24 +439,41 @@ pub fn process_registry_updates(
     let activation_epoch_new = current_epoch + 1 + cfg.max_seed_lookahead;
     let finalized_epoch = epoch.state().finalized_checkpoint.epoch;
     let n = view.validators.count();
+    let mut elig_updates: Vec<(u32, Epoch)> = Vec::new();
+    let mut act_updates: Vec<(u32, Epoch)> = Vec::new();
+    let mut to_eject: Vec<u32> = Vec::new();
+    {
+        let validators = view.validators.reader();
+        let mut eff = validators.iter_effective_balances();
+        let mut elig_col = validators.iter_activation_eligibility_epochs();
+        let mut act_col = validators.iter_activation_epochs();
+        let mut exit_col = validators.iter_exit_epochs();
+        for vi in 0..n as u32 {
+            let effective_balance = eff.next().unwrap();
+            let elig = elig_col.next().unwrap();
+            let act = act_col.next().unwrap();
+            let exit = exit_col.next().unwrap();
 
-    for i in 0..n {
-        let vi = i as u32;
-        let effective_balance = view.validators.effective_balance(i);
-        let elig = view.validators.activation_eligibility_epoch(i);
-        let act = view.validators.activation_epoch(i);
-        let exit = view.validators.exit_epoch(i);
+            let in_queue = elig == u64::MAX && effective_balance >= MIN_ACTIVATION_BALANCE;
+            let active_now = act <= current_epoch && current_epoch < exit;
 
-        let in_queue = elig == u64::MAX && effective_balance >= MIN_ACTIVATION_BALANCE;
-        let active_now = act <= current_epoch && current_epoch < exit;
-
-        if in_queue {
-            view.validators.set_activation_eligibility_epoch(vi, current_epoch + 1);
-        } else if active_now && effective_balance <= cfg.ejection_balance {
-            initiate_validator_exit(cfg, view, vi, current_epoch);
-        } else if elig <= finalized_epoch && act == u64::MAX {
-            view.validators.set_activation_epoch(vi, activation_epoch_new);
+            if in_queue {
+                elig_updates.push((vi, current_epoch + 1));
+            } else if active_now && effective_balance <= cfg.ejection_balance {
+                to_eject.push(vi);
+            } else if elig <= finalized_epoch && act == u64::MAX {
+                act_updates.push((vi, activation_epoch_new));
+            }
         }
+    }
+    for &(vi, v) in &elig_updates {
+        view.validators.set_activation_eligibility_epoch(vi, v);
+    }
+    for &vi in &to_eject {
+        initiate_validator_exit(cfg, view, vi, current_epoch);
+    }
+    for &(vi, v) in &act_updates {
+        view.validators.set_activation_epoch(vi, v);
     }
 }
 
@@ -493,9 +510,9 @@ pub fn process_slashings(
     let penalty_per_increment = if total_increments > 0 { adjusted / total_increments } else { 0 };
 
     let n = view.validators.count();
+    let mut slashed_col = view.validators.reader().iter_slashed();
     for i in 0..n {
-        let vi = i as u32;
-        if !view.validators.is_slashed(i) {
+        if !slashed_col.next().unwrap() {
             continue;
         }
         if view.validators.withdrawable_epoch(i) != target_withdrawable {
@@ -504,7 +521,7 @@ pub fn process_slashings(
         let effective_balance = view.validators.effective_balance(i);
         let balance = view.balances.get(i);
         let penalty = penalty_per_increment * (effective_balance / EFFECTIVE_BALANCE_INCREMENT);
-        view.balances.set(vi, balance.saturating_sub(penalty));
+        view.balances.set(i as u32, balance.saturating_sub(penalty));
     }
 }
 
