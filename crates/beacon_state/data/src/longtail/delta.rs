@@ -1,5 +1,5 @@
 use super::{LongtailGroup, LongtailId, finalized::LongtailState};
-use crate::{buffer::Slot as RingSlot, types::HistoricalSummary};
+use crate::{ring::Slot as RingSlot, types::HistoricalSummary};
 
 /// The delta is `Some` for a fork that crossed a sync-committee / historical
 /// rotation, else `None` and reads fall through to the base.

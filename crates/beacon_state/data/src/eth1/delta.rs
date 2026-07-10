@@ -2,7 +2,7 @@ use flux::utils::ArrayVec;
 
 use super::{Eth1Group, Eth1Id, finalized::Eth1Votes};
 use crate::{
-    buffer::{Reset, Slot},
+    ring::{Reset, Slot},
     types::{Eth1Data, MAX_ETH1_VOTES},
 };
 

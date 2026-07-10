@@ -10,8 +10,9 @@ pub use finalized::FinalizedBuilders;
 use flux_profiler::timed;
 
 use crate::{
-    buffer::{Id, Ring, reanchor_survivors},
     gloas::Builder,
+    reanchor::reanchor_survivors,
+    ring::{Id, Ring},
     ssz_hash::{hash_fixed_bytes, merkleize, uint64_chunk},
     types::{B256, SLOTS_RING_N},
 };

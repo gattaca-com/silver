@@ -1,7 +1,8 @@
 use super::{EpochGroup, EpochId, finalized::EpochStateFinalized};
 use crate::{
-    buffer::{Reset, Slot as RingSlot, drain_promoted_prefix},
     gloas::{PTC_WINDOW_LEN, PtcCommittee, zeroed_ptc_window},
+    reanchor::drain_promoted_prefix,
+    ring::{Reset, Slot as RingSlot},
     types::{B256, Epoch, EpochState, Fork, SLOTS_PER_EPOCH, Version},
 };
 

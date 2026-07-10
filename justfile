@@ -27,19 +27,19 @@ ef-tests-download:
 checkpoint-fixtures:
   make -C crates/e2e checkpoint-fixtures
 
-# Mirrors CI's test invocation: every crate, EF spec tests on, lh-client
-# e2e suite on. Run `just ef-tests-download` + `just checkpoint-fixtures`
-# first if you don't have the fixtures locally.
+# Same features/crates as CI, but optimised (opt-level 3) with debug-assertions
+# on so invariant checks run. Run `just ef-tests-download` + `just
+# checkpoint-fixtures` first if you don't have the fixtures locally.
 test:
-  cargo test --workspace --features "silver_beacon_state/ef_tests,silver_e2e/lh-client" --release --no-fail-fast 2>&1
+  cargo test --workspace --features "silver_beacon_state/ef_tests,silver_e2e/lh-client" --profile release-with-debug --no-fail-fast 2>&1
 
 # As above but using `nextest`
 nextest:
   cargo install --locked cargo-nextest && \
-  cargo nextest r --features "silver_beacon_state/ef_tests,silver_e2e/lh-client" --release --no-fail-fast --status-level skip
+  cargo nextest r --features "silver_beacon_state/ef_tests,silver_e2e/lh-client" --cargo-profile release-with-debug --no-fail-fast --status-level skip
 
 # Run the perf-regression harness on the committed mainnet fixtures.
-# Release-only; reads crates/e2e/data/perf (git-lfs). CI runs this too.
+# Release-only (no debug-assertions — they skew the counters); reads crates/e2e/data/perf (git-lfs). CI runs this too.
 perf-local events="instructions,cycles,l1d-misses,l2-misses,l3-misses":
   PERF_EVENTS="{{events}}" cargo test --release -p silver_e2e --features perf-counters,alloc-profile --test sync_pm_bs_perf -- --ignored --nocapture
 

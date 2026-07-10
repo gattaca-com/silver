@@ -5,7 +5,8 @@ use super::{
     finalized::{Queue, QueueItem},
 };
 use crate::{
-    buffer::{Id, Reset, Ring, reanchor_survivors},
+    reanchor::reanchor_survivors,
+    ring::{Id, Reset, Ring},
     types::SLOTS_RING_N,
 };
 

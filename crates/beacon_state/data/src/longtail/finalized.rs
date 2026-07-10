@@ -4,8 +4,9 @@ use flux_profiler::timed;
 
 use crate::{
     DecomposeError, FinalizedValidators,
-    buffer::{Reset, drain_promoted_prefix},
     decompose::common::{F22, F23, HISTORICAL_SUMMARY_SSZ_SIZE, Offsets, b256},
+    reanchor::drain_promoted_prefix,
+    ring::Reset,
     types::{HistoricalSummary, SYNC_COMMITTEE_SIZE, SyncCommittee},
 };
 

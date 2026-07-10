@@ -173,10 +173,10 @@ impl BeaconState {
                 let v = self.validators.finalized();
                 v.write_ssz_range(0, v.validator_count(), w)
             }
-            Section::Balances => self.balances.finalized().write_ssz(w),
-            Section::PreviousParticipation => self.previous_participation.finalized().write_ssz(w),
-            Section::CurrentParticipation => self.current_participation.finalized().write_ssz(w),
-            Section::InactivityScores => self.inactivity.finalized().write_ssz(w),
+            Section::Balances => self.balances.write_ssz(w),
+            Section::PreviousParticipation => self.previous_participation.write_ssz(w),
+            Section::CurrentParticipation => self.current_participation.write_ssz(w),
+            Section::InactivityScores => self.inactivity.write_ssz(w),
             Section::ExecutionPayloadHeader => self.write_eph(w),
             Section::HistoricalSummaries => {
                 self.longtail.with_finalized_locked(|lt| lt.write_historical_summaries_ssz(w))

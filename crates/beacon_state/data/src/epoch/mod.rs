@@ -9,7 +9,8 @@ pub use finalized::EpochStateFinalized;
 use flux_profiler::timed;
 
 use crate::{
-    buffer::{Id, Reset, Ring, reanchor_survivors},
+    reanchor::reanchor_survivors,
+    ring::{Id, Reset, Ring},
     types::EPOCHS_RING_N,
 };
 

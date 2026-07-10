@@ -2,7 +2,7 @@ use std::io::{self, Write};
 
 use super::{PendingGroup, QueueItem, delta::QueueView, group::QueueGroup};
 use crate::{
-    buffer::Id,
+    ring::Id,
     ssz_hash::uint64_chunk,
     types::{B256, PendingConsolidation},
 };

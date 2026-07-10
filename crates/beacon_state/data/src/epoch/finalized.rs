@@ -2,12 +2,12 @@ use flux_profiler::timed;
 
 use super::delta::EpochStateDelta;
 use crate::{
-    buffer::write_ring_window,
     decompose::{
         common::{F13, F14, F17, F18, F19, F20, F29, F37, read_checkpoint, read_fork, u64_le},
         gloas::{G_DEPOSIT_BALANCE_TO_CONSUME, G_PROPOSER_LOOKAHEAD, G_PTC_WINDOW},
     },
     gloas::{PTC_SIZE, PTC_WINDOW_LEN, PtcCommittee, zeroed_ptc_window},
+    reanchor::write_ring_window,
     types::{B256, EPOCHS_PER_HISTORICAL_VECTOR, EPOCHS_PER_SLASHINGS_VECTOR, EpochState},
 };
 

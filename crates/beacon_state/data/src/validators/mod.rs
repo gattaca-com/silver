@@ -11,7 +11,8 @@ use flux_profiler::timed;
 
 use crate::{
     Withdrawals,
-    buffer::{Id, Ring, reanchor_survivors},
+    reanchor::reanchor_survivors,
+    ring::{Id, Ring},
     ssz_hash::{hash_fixed_bytes, merkleize, uint64_chunk},
     types::{B256, BLSPubkey, Epoch, SLOTS_RING_N},
 };

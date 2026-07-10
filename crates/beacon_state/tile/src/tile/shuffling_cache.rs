@@ -1,3 +1,4 @@
+use flux_profiler::timed;
 use silver_beacon_state_data::{
     B256, BeaconStateOwner, EPOCHS_PER_HISTORICAL_VECTOR, Epoch, MIN_SEED_LOOKAHEAD, StateId,
     StateReadView, randao_mix_at_epoch,
@@ -44,6 +45,7 @@ impl ShufflingCache {
     /// against the post-state named by `state_id`. Maintains the 2-epoch
     /// window so attestations with `target_epoch ∈ {epoch, epoch - 1}` resolve.
     /// `scratch` is a reusable active-index buffer (cleared on entry).
+    #[timed]
     pub fn ensure_window(
         &mut self,
         state: &BeaconStateOwner,

@@ -9,7 +9,8 @@ use flux_profiler::timed;
 use parking_lot::Mutex;
 
 use crate::{
-    buffer::{Id, Reset, Ring, reanchor_survivors},
+    reanchor::reanchor_survivors,
+    ring::{Id, Reset, Ring},
     types::LONGTAILS_RING_N,
 };
 

@@ -6,6 +6,7 @@ use std::{
 };
 
 use flux::communication::Seqlock;
+use flux_profiler::timed;
 
 use crate::{
     BeaconState, CHECKPOINT_SECTIONS, EpochGroup, LongtailGroup, StateId, StateReadView,
@@ -87,6 +88,7 @@ impl BeaconStateOwner {
     /// reads them — `process_epoch` rolls the boundary writers itself. The
     /// groups ride alongside the view for exactly those boundary reads and
     /// rolls.
+    #[timed]
     pub fn apply_block_view(
         &mut self,
         parent: StateId,
