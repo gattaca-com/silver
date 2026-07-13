@@ -400,12 +400,12 @@ mod tests {
         assert_eq!(len, ssz.len(), "round-trip length mismatch");
         println!("state: {len} bytes ({} MiB)", len >> 20);
 
-        use silver_beacon_state_data::CHECKPOINT_SECTIONS;
+        use silver_beacon_state_data::FULU_CHECKPOINT_SECTIONS;
         use silver_common::TCache;
 
         // Section names in canonical order, for the per-section breakdown
         // (the data crate keeps its `Section` enum private).
-        const SECTION_NAMES: [&str; CHECKPOINT_SECTIONS] = [
+        const SECTION_NAMES: [&str; FULU_CHECKPOINT_SECTIONS] = [
             "FixedPart",
             "HistoricalRoots",
             "Eth1Votes",
@@ -475,7 +475,7 @@ mod tests {
         let mut streamed = Vec::new();
         // Per-section total over the measured iterations (the per-turn `Instant`
         // overhead is ~ns/turn, negligible vs the section writes it brackets).
-        let mut per_section = [Duration::ZERO; CHECKPOINT_SECTIONS];
+        let mut per_section = [Duration::ZERO; FULU_CHECKPOINT_SECTIONS];
         let mut counted = 0u32;
         for i in 0..ITERS {
             store.reset_persist_watermark();
@@ -593,7 +593,7 @@ mod tests {
         // turn that commits.
         assert_eq!(
             turns,
-            silver_beacon_state_data::CHECKPOINT_SECTIONS + 2,
+            silver_beacon_state_data::FULU_CHECKPOINT_SECTIONS + 2,
             "one turn per section + pubkeys + commit"
         );
         assert_eq!(store.last_persisted_finalized_slot(), 64);

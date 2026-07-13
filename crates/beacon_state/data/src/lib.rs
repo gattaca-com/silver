@@ -12,7 +12,7 @@ pub use delta_view::{
     StateReadView, StateWriterView, append_validator, effective_randao_mixes_into,
     effective_slashings_into, randao_mix_at_epoch,
 };
-pub use encode::{CHECKPOINT_SECTIONS, PubkeysDecodeError, decode_checkpoint_pubkeys};
+pub use encode::{FULU_CHECKPOINT_SECTIONS, PubkeysDecodeError, decode_checkpoint_pubkeys};
 pub use epoch::{EpochGroup, EpochId, EpochStateFinalized, EpochView, EpochWriteView};
 pub use eth1::{Eth1Group, Eth1Id, Eth1View, Eth1Votes, Eth1WriteView};
 pub use gloas::{

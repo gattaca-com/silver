@@ -59,11 +59,11 @@ pub(super) const F34_OFF: usize = 2_736_701; // pending_deposits offset
 pub(super) const F35_OFF: usize = 2_736_705; // pending_partial_withdrawals offset
 pub(super) const F36_OFF: usize = 2_736_709; // pending_consolidations offset
 pub(crate) const F37: usize = 2_736_713; // proposer_lookahead: 64 × 8 = 512
-pub(crate) const FIXED_PART: usize = 2_737_225;
+pub(crate) const FULU_FIXED_PART: usize = 2_737_225;
 
 // Compile-time sanity for the hand-rolled offset table and the alignment
 // assumption behind the `&[B256]` raw-slice casts below.
-const _: () = assert!(F37 + PROPOSER_LOOKAHEAD_SIZE * 8 == FIXED_PART);
+const _: () = assert!(F37 + PROPOSER_LOOKAHEAD_SIZE * 8 == FULU_FIXED_PART);
 const _: () = assert!(std::mem::align_of::<B256>() == 1);
 
 #[derive(Debug, thiserror::Error)]

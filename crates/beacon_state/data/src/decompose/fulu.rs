@@ -2,7 +2,7 @@ use flux_profiler::timed;
 
 use super::common::{
     DecomposeError, F7_OFF, F9_OFF, F11_OFF, F12_OFF, F15_OFF, F16_OFF, F21_OFF, F24_OFF, F27_OFF,
-    F34_OFF, F35_OFF, F36_OFF, FIXED_PART, Offsets, u32_le,
+    F34_OFF, F35_OFF, F36_OFF, FULU_FIXED_PART, Offsets, u32_le,
 };
 use crate::{BeaconState, EpochStateFinalized, FinalizedBuilders, SlotStateFinalized, SpecConfig};
 
@@ -23,10 +23,10 @@ impl Offsets {
             u32_le(ssz, F36_OFF) as usize,
         ];
 
-        if raw[0] < FIXED_PART {
+        if raw[0] < FULU_FIXED_PART {
             return Err(DecomposeError::FirstOffsetBeforeFixedPart {
                 off: raw[0],
-                fixed: FIXED_PART,
+                fixed: FULU_FIXED_PART,
             });
         }
         for (i, w) in raw.windows(2).enumerate() {
@@ -62,8 +62,11 @@ impl BeaconState {
         cfg: &SpecConfig,
         pubkeys: Option<&[blst::min_pk::PublicKey]>,
     ) -> Result<Self, DecomposeError> {
-        if ssz.len() < FIXED_PART {
-            return Err(DecomposeError::TruncatedFixedPart { len: ssz.len(), need: FIXED_PART });
+        if ssz.len() < FULU_FIXED_PART {
+            return Err(DecomposeError::TruncatedFixedPart {
+                len: ssz.len(),
+                need: FULU_FIXED_PART,
+            });
         }
         let offsets = Offsets::read_and_validate(ssz)?;
         let epoch = EpochStateFinalized::from_ssz_fulu(ssz);

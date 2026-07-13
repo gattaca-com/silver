@@ -8,7 +8,7 @@ mod fulu;
 pub(crate) mod gloas;
 
 pub use common::DecomposeError;
-pub(crate) use common::{FIXED_PART, u64_le};
+pub(crate) use common::{FULU_FIXED_PART, u64_le};
 
 impl BeaconState {
     pub fn from_checkpoint(
@@ -55,7 +55,7 @@ impl BeaconState {
 mod tests {
     use std::path::PathBuf;
 
-    use super::common::{F2, FIXED_PART, u64_le};
+    use super::common::{F2, FULU_FIXED_PART, u64_le};
     use crate::{BeaconState, SpecConfig, types::SLOTS_PER_EPOCH};
 
     // EF fixture: a known-valid Fulu pre-state from sanity/blocks tests.
@@ -74,7 +74,7 @@ mod tests {
             return;
         };
         let ssz = snap::raw::Decoder::new().decompress_vec(&compressed).expect("snappy decode");
-        assert!(ssz.len() >= FIXED_PART);
+        assert!(ssz.len() >= FULU_FIXED_PART);
 
         let cfg = SpecConfig::mainnet();
         let bs = BeaconState::decompose(&ssz, &cfg, None).expect("decompose");
