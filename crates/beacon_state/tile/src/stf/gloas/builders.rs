@@ -40,9 +40,9 @@ const SPE: usize = SLOTS_PER_EPOCH as usize;
 
 // `BuilderDepositRequest`: pubkey(48) + withdrawal_credentials(32) + amount(8)
 // + signature(96).
-const DEPOSIT_REQUEST_SSZ: usize = 184;
+pub(crate) const BUILDER_DEPOSIT_SSZ: usize = 184;
 // `BuilderExitRequest`: source_address(20) + pubkey(48).
-const EXIT_REQUEST_SSZ: usize = 68;
+pub(crate) const BUILDER_EXIT_SSZ: usize = 68;
 
 #[inline]
 pub(crate) fn is_active_builder(builder: &Builder, finalized_epoch: u64) -> bool {
@@ -113,7 +113,7 @@ pub fn process_builder_pending_payments(view: &mut StateWriterView, current_epoc
 }
 
 pub fn process_builder_deposit_request(view: &mut StateWriterView, request: &[u8]) {
-    debug_assert_eq!(request.len(), DEPOSIT_REQUEST_SSZ);
+    debug_assert_eq!(request.len(), BUILDER_DEPOSIT_SSZ);
     let pubkey: [u8; 48] = request[0..48].try_into().unwrap();
     let credentials = Withdrawals(request[48..80].try_into().unwrap());
     let amount = u64::from_le_bytes(request[80..88].try_into().unwrap());
@@ -176,7 +176,7 @@ pub fn process_builder_exit_request(
     finalized_epoch: u64,
     request: &[u8],
 ) {
-    debug_assert_eq!(request.len(), EXIT_REQUEST_SSZ);
+    debug_assert_eq!(request.len(), BUILDER_EXIT_SSZ);
     let source_address: [u8; 20] = request[0..20].try_into().unwrap();
     let pubkey: [u8; 48] = request[20..68].try_into().unwrap();
 

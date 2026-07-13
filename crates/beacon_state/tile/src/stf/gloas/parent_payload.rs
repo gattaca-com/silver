@@ -7,7 +7,8 @@ use silver_common::ssz_view::{
 };
 
 use super::builders::{
-    process_builder_deposit_request, process_builder_exit_request, settle_builder_payment,
+    BUILDER_DEPOSIT_SSZ, BUILDER_EXIT_SSZ, process_builder_deposit_request,
+    process_builder_exit_request, settle_builder_payment,
 };
 use crate::{
     error::ParentExecutionPayloadError as E,
@@ -16,8 +17,6 @@ use crate::{
 };
 
 const SPE: usize = SLOTS_PER_EPOCH as usize;
-const BUILDER_DEPOSIT_SSZ: usize = 184;
-const BUILDER_EXIT_SSZ: usize = 68;
 
 /// Validate and apply the parent block's execution payload. The
 /// child's bid declares the parent FULL (matching `parent_block_hash`) or

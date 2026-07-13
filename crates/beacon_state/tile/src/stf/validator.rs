@@ -1,5 +1,6 @@
 use core::cmp::{max, min};
 
+use flux_profiler::timed;
 use silver_beacon_state_data::{
     Epoch, EpochView, PendingView, SLOTS_PER_EPOCH, SlotStateWriteView, SpecConfig, ValidatorsView,
     ValidatorsWriteView,
@@ -7,6 +8,7 @@ use silver_beacon_state_data::{
 
 use crate::stf::EFFECTIVE_BALANCE_INCREMENT;
 
+#[timed]
 pub(crate) fn initiate_validator_exit(
     cfg: &SpecConfig,
     slot: &mut SlotStateWriteView,
@@ -29,6 +31,7 @@ pub(crate) fn initiate_validator_exit(
     validators.set_withdrawable_epoch(vi, exit_epoch + cfg.min_validator_withdrawability_delay);
 }
 
+#[timed]
 pub(crate) fn compute_exit_epoch_and_update_churn(
     cfg: &SpecConfig,
     slot: &mut SlotStateWriteView,
@@ -89,7 +92,8 @@ pub(crate) fn compute_consolidation_epoch_and_update_churn(
     earliest
 }
 
-fn get_balance_churn_limit(
+#[timed]
+pub(crate) fn get_balance_churn_limit(
     cfg: &SpecConfig,
     validators: &ValidatorsView,
     current_epoch: Epoch,
