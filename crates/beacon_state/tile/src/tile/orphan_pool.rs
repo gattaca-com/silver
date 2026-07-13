@@ -3,8 +3,7 @@ use rustc_hash::FxHashMap;
 use silver_beacon_state_data::{B256, SLOTS_PER_EPOCH, Slot};
 use silver_common::{
     BeaconStateEvent, BlockSource, DataColumnsAvailable, NewGossipMsg, P2pStreamId, PeerEvent,
-    RpcSeverity, TCacheRead, TRandomAccess, TRead, hex32, metrics::timed,
-    ssz_view::SignedBeaconBlockView,
+    RpcSeverity, TCacheRead, TRandomAccess, hex32, metrics::timed, ssz_view::SignedBeaconBlockView,
 };
 
 use super::{BY_ROOT_REQUEST_ID, BeaconStateTile, Feedback, Producers};
@@ -25,8 +24,7 @@ impl BeaconStateTile {
         self.dc_pending_blocks.retain(|_, msg| outlives(msg));
         self.payload_pending_blocks.retain(|_, msgs| msgs.iter().all(&mut outlives));
         self.dc_available.retain(|_, slot| *slot > finalized_slot);
-        self.pending_envelopes
-            .retain(|_, handle| gossip_consumer.acquire(*handle).buffer().is_ok());
+        self.pending_envelopes.retain(|_, handle| handle.buffer().is_ok());
 
         let fc = &self.fork_choice;
         self.envelope_requested.retain(|root, _| fc.find_node_idx(root).is_some());
@@ -160,24 +158,10 @@ impl BeaconStateTile {
     ) {
         match pending {
             PendingBlock::Gossip(g) => {
-                let acquired = self.gossip_consumer.acquire(g.ssz);
-                if let Some(p) = acquired.buffer().ok().map(|(d, _)| d as *const [u8]) {
-                    self.handle_gossip(g, unsafe { &*p }, do_relay, pre_verified, producers);
-                }
+                self.handle_gossip(g.ssz, g, do_relay, pre_verified, producers);
             }
             PendingBlock::Rpc(stream_id, ssz) => {
-                let acquired = self.rpc_consumer.acquire(ssz);
-                if let Some(p) = acquired.buffer().ok().map(|(d, _)| d as *const [u8]) {
-                    self.handle_rpc_block(
-                        stream_id,
-                        unsafe { &*p },
-                        acquired,
-                        pre_verified,
-                        producers,
-                    );
-                } else {
-                    tracing::error!("failed to acquire buffer for pending replay");
-                }
+                self.handle_rpc_block(stream_id, ssz, pre_verified, producers);
             }
         }
     }
@@ -237,11 +221,15 @@ impl BeaconStateTile {
     pub(super) fn handle_rpc_block(
         &mut self,
         sender: P2pStreamId,
-        data: &[u8],
-        data_tcache: TRead,
+        read: TCacheRead,
         pre_verified: bool,
         producers: &mut Producers,
     ) {
+        let acquired = self.rpc_consumer.acquire(read);
+        let Some((data, _)) = acquired.buffer().ok() else {
+            return;
+        };
+
         if !SignedBeaconBlockView::check_size(data) {
             producers.produce(PeerEvent::RpcMisbehaviour {
                 p2p_peer: sender.peer(),
@@ -250,9 +238,7 @@ impl BeaconStateTile {
             return;
         }
 
-        let tcache = data_tcache.read;
-        let feedback =
-            self.apply_block(data, data_tcache, BlockSource::Rpc, pre_verified, producers);
+        let feedback = self.apply_block(data, read, BlockSource::Rpc, pre_verified, producers);
         match feedback {
             Feedback::Accept(block_root) => self.on_accept(block_root, producers),
             Feedback::Reject(_) => producers.produce(PeerEvent::RpcMisbehaviour {
@@ -260,7 +246,7 @@ impl BeaconStateTile {
                 severity: RpcSeverity::Fatal,
             }),
             Feedback::Ignore => {}
-            _ => self.park_block(feedback, PendingBlock::Rpc(sender, tcache), data, producers),
+            _ => self.park_block(feedback, PendingBlock::Rpc(sender, read), data, producers),
         }
     }
 

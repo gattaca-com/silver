@@ -11,8 +11,8 @@ use silver_beacon_state_data::{
 };
 use silver_common::{
     BeaconStateEvent, BlockSource, DataColumnsAvailable, EngineResp, NewGossipMsg, ReplayBlock,
-    RpcInbound, RpcResponse, RpcResponseInbound, SilverSpine, SyncUpdate, TCacheRead,
-    TRandomAccess, hex32,
+    RpcInbound, RpcResponse, RpcResponseInbound, SilverSpine, SyncUpdate, TRandomAccess, TRead,
+    hex32,
     ssz_view::{MAX_ATTESTATIONS_ELECTRA, MAX_ATTESTING_INDICES, STATUS_V2_SIZE},
     ticker::{SlotTicker, TickEvent},
 };
@@ -157,7 +157,7 @@ pub struct BeaconStateTile {
     /// Block roots the storage tile has signalled data-available.
     dc_available: FxHashMap<B256, Slot>,
     /// Gloas: payload envelopes seen before their block entered fork choice.
-    pending_envelopes: FxHashMap<B256, TCacheRead>,
+    pending_envelopes: FxHashMap<B256, TRead>,
     /// Gloas: block roots a payload-present attestation referenced while their
     /// payload was still unverified (envelope missed on gossip).
     envelope_request_queue: Vec<B256>,
@@ -535,11 +535,7 @@ impl BeaconStateTile {
     /// dispatch; in Syncing mode drop it (PM drives sync).
     fn on_gossip(&mut self, m: NewGossipMsg, following: bool, producers: &mut Producers) {
         if following {
-            let acquired = self.gossip_consumer.acquire(m.ssz);
-            let data = acquired.buffer().ok().map(|(d, _)| d as *const [u8]);
-            if let Some(p) = data {
-                self.handle_gossip(m, unsafe { &*p }, true, false, producers);
-            }
+            self.handle_gossip(m.ssz, m, true, false, producers);
         } else {
             tracing::trace!(
                 topic = ?m.topic,
@@ -574,22 +570,18 @@ impl BeaconStateTile {
         else {
             return;
         };
+
         match response {
             RpcResponse::BeaconBlock { fork_digest: _, ssz } => {
                 tracing::debug!(?stream_id, "received beacon block over rpc");
-                let acquired = self.rpc_consumer.acquire(ssz);
-                let data = acquired.buffer().ok().map(|(d, _)| d as *const [u8]);
-                if let Some(p) = data {
-                    self.handle_rpc_block(stream_id, unsafe { &*p }, acquired, false, producers);
-                }
+                self.handle_rpc_block(stream_id, ssz, false, producers);
             }
             RpcResponse::ExecutionPayloadEnvelope { fork_digest: _, ssz } => {
                 let acquired = self.rpc_consumer.acquire(ssz);
-                let data = acquired.buffer().ok().map(|(d, _)| d as *const [u8]);
-                if let Some(p) = data {
+                if let Ok((data, _)) = acquired.buffer() {
                     self.handle_execution_payload_envelope(
-                        unsafe { &*p },
-                        ssz,
+                        acquired.clone(),
+                        data,
                         BlockSource::Rpc,
                         producers,
                     );
@@ -604,11 +596,7 @@ impl BeaconStateTile {
     fn on_replay(&mut self, m: ReplayBlock, producers: &mut Producers) {
         match m {
             ReplayBlock::Block { ssz } => {
-                let acquired = self.replay_consumer.acquire(ssz);
-                let data = acquired.buffer().ok().map(|(d, _)| d as *const [u8]);
-                if let Some(p) = data {
-                    self.replay_block(unsafe { &*p });
-                }
+                self.replay_block(ssz);
             }
             ReplayBlock::Done => {
                 producers.produce(BeaconStateEvent::ReplayComplete);

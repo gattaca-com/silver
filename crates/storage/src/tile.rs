@@ -13,9 +13,9 @@ use silver_beacon_state_data::{B256, BeaconStateReader, SLOTS_PER_EPOCH, SpecCon
 use silver_common::{
     BASE_REQUEST_ID, BeaconStateEvent, DataColumnsAvailable, EngineReq, EngineResp, NewGossipMsg,
     P2pSend, P2pStreamId, PeerControl, PeerEvent, ReplayBlock, RpcInbound, RpcSeverity,
-    SilverSpine, StreamProtocol, SyncUpdate, SyncingStrategy, TCacheProducer, TMultiProducer,
-    TProducer, TRandomAccess, TRead, Wheel, msg_is_backfill, msg_is_column_backfill,
-    msg_is_live_column_request, msg_is_post_gloas,
+    SilverSpine, SilverSpineProducers, StreamProtocol, SyncUpdate, SyncingStrategy, TCacheProducer,
+    TMultiProducer, TProducer, TRandomAccess, TRead, Wheel, msg_is_backfill,
+    msg_is_column_backfill, msg_is_live_column_request, msg_is_post_gloas,
     ssz_view::{
         DataColumnSidecarFuluView, DataColumnSidecarGloasView, NUMBER_OF_COLUMNS,
         SignedBeaconBlockView, StatusView,
@@ -299,6 +299,7 @@ impl StorageTile {
         if is_gloas {
             self.cache_gloas_commitments(block_root, buffer);
         }
+        // idk
         let gloas_root = is_gloas.then_some(block_root);
 
         if self.outstanding_requests.contains(&block_root) {
@@ -643,6 +644,55 @@ impl StorageTile {
 
         None
     }
+
+    fn handle_beacon_block(
+        &mut self,
+        t_read: TRead,
+        stream_id: P2pStreamId,
+        producers: &mut SilverSpineProducers,
+    ) {
+        let gloas_root = self.beacon_block(stream_id, t_read, &mut |emit| match emit {
+            StorageEmit::Peer(evt) => {
+                producers.peer_events.produce(&evt.into());
+            }
+            StorageEmit::Engine(req) => {
+                producers.engine_reqs.produce(&req.into());
+            }
+        });
+
+        if let Some(block_root) = gloas_root {
+            self.drain_pending_gloas_columns(block_root, &mut |msg| {
+                producers.data_columns.produce(&msg.into());
+            });
+        }
+    }
+
+    fn handle_data_column_sidecar(
+        &mut self,
+        t_read: TRead,
+        stream_id: P2pStreamId,
+        is_gloas: bool,
+        producers: &mut SilverSpineProducers,
+    ) {
+        let emit_da = &mut |msg: DataColumnsAvailable| {
+            producers.data_columns.produce(&msg.into());
+        };
+
+        let Some((block_root, columns)) = self.data_columns(stream_id, t_read, is_gloas, emit_da)
+        else {
+            return;
+        };
+
+        // Validation failed - score down the peer and retransmit
+        producers.peer_events.produce(
+            &PeerEvent::RpcMisbehaviour {
+                p2p_peer: stream_id.peer(),
+                severity: RpcSeverity::Fatal,
+            }
+            .into(),
+        );
+        producers.peer_events.produce(&self.column_request(block_root, columns).into());
+    }
 }
 
 impl Tile<SilverSpine> for StorageTile {
@@ -658,22 +708,8 @@ impl Tile<SilverSpine> for StorageTile {
         // Check for data columns and incoming blocks with data columns via gossip.
         adapter.consume(|gossip: NewGossipMsg, producers| match gossip.topic {
             silver_common::GossipTopic::BeaconBlock if self.store.is_synced() => {
-                let t_read = self.gossip_consumer.acquire(gossip.ssz);
-                let gloas_root =
-                    self.beacon_block(gossip.stream_id, t_read, &mut |emit| match emit {
-                        StorageEmit::Peer(evt) => {
-                            producers.peer_events.produce(&evt.into());
-                        }
-                        StorageEmit::Engine(req) => {
-                            producers.engine_reqs.produce(&req.into());
-                        }
-                    });
-
-                if let Some(block_root) = gloas_root {
-                    self.drain_pending_gloas_columns(block_root, &mut |msg| {
-                        producers.data_columns.produce(&msg.into());
-                    });
-                }
+                let t_read: TRead = self.gossip_consumer.acquire(gossip.ssz);
+                self.handle_beacon_block(t_read, gossip.stream_id, producers);
             }
             silver_common::GossipTopic::DataColumnSidecar(_custody_group)
                 if self.store.is_synced() =>
@@ -684,22 +720,7 @@ impl Tile<SilverSpine> for StorageTile {
                 let t_read = self.gossip_consumer.acquire(gossip.ssz);
                 // Gossip is `is_synced`-gated, so head ≈ wall selects the layout.
                 let is_gloas = self.spec.is_gloas_at_slot(self.store.head_slot() + 1);
-                if let Some((block_root, columns)) =
-                    self.data_columns(gossip.stream_id, t_read, is_gloas, &mut |msg| {
-                        producers.data_columns.produce(&msg.into());
-                    })
-                {
-                    // Validation failed - score down the peer and retransmit
-                    producers.peer_events.produce(
-                        &PeerEvent::P2pGossipInvalidMsg {
-                            p2p_peer: gossip.stream_id.peer(),
-                            topic: gossip.topic,
-                            hash: gossip.msg_hash,
-                        }
-                        .into(),
-                    );
-                    producers.peer_events.produce(&self.column_request(block_root, columns).into());
-                }
+                self.handle_data_column_sidecar(t_read, gossip.stream_id, is_gloas, producers);
             }
             _ => {}
         });
@@ -720,21 +741,7 @@ impl Tile<SilverSpine> for StorageTile {
                     if self.store.is_synced() =>
                 {
                     let t_read = self.rpc_consumer.acquire(ssz);
-                    let gloas_root =
-                        self.beacon_block(rsp.stream_id, t_read, &mut |emit| match emit {
-                            StorageEmit::Peer(evt) => {
-                                producers.peer_events.produce(&evt.into());
-                            }
-                            StorageEmit::Engine(req) => {
-                                producers.engine_reqs.produce(&req.into());
-                            }
-                        });
-
-                    if let Some(block_root) = gloas_root {
-                        self.drain_pending_gloas_columns(block_root, &mut |msg| {
-                            producers.data_columns.produce(&msg.into());
-                        });
-                    }
+                    self.handle_beacon_block(t_read, rsp.stream_id, producers);
                 }
                 // Forward-sync (not synced): cache each gloas block's bid
                 // commitments so its data columns can be KZG-verified as they
@@ -764,23 +771,7 @@ impl Tile<SilverSpine> for StorageTile {
                     tracing::debug!("data column sidecar over rpc");
                     let t_read = self.rpc_consumer.acquire(ssz);
                     let is_gloas = msg_is_post_gloas(rsp.application_id);
-                    if let Some((block_root, columns)) =
-                        self.data_columns(rsp.stream_id, t_read, is_gloas, &mut |msg| {
-                            producers.data_columns.produce(&msg.into());
-                        })
-                    {
-                        // Validation failed - score down the peer and retransmit
-                        producers.peer_events.produce(
-                            &PeerEvent::RpcMisbehaviour {
-                                p2p_peer: rsp.stream_id.peer(),
-                                severity: RpcSeverity::Fatal,
-                            }
-                            .into(),
-                        );
-                        producers
-                            .peer_events
-                            .produce(&self.column_request(block_root, columns).into());
-                    }
+                    self.handle_data_column_sidecar(t_read, rsp.stream_id, is_gloas, producers);
                 }
                 silver_common::RpcResponse::Error { error, msg, len } if msg_is_column_backfill(rsp.application_id)=> {
                     let err_msg = String::from_utf8_lossy(&msg[..len]).to_string();

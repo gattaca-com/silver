@@ -4,7 +4,7 @@ use silver_beacon_state_data::{
 };
 use silver_common::{
     BlockSource, EngineNewPayloadEnvelopeReq, EngineReq, GossipTopic, MAX_BLOBS_PER_BLOCK,
-    NewGossipMsg, PeerEvent, TCacheRead,
+    NewGossipMsg, PeerEvent, TCacheRead, TRead,
     metrics::timed,
     ssz_view::{
         AttestationDataView, AttestationView, AttesterSlashingView,
@@ -318,15 +318,15 @@ impl BeaconStateTile {
     #[timed]
     pub(super) fn handle_execution_payload_envelope(
         &mut self,
+        acquired: TRead,
         ssz: &[u8],
-        data: TCacheRead,
         source: BlockSource,
         producers: &mut Producers,
     ) -> Feedback {
         let (block_root, state_id) = match self.validate_execution_payload_envelope(ssz) {
             EnvelopeCheck::Ready { block_root, state_id } => (block_root, state_id),
             EnvelopeCheck::AwaitBlock(block_root) => {
-                self.buffer_pending_envelope(block_root, data);
+                self.buffer_pending_envelope(block_root, acquired);
                 return Feedback::Ignore;
             }
             EnvelopeCheck::Ignore => return Feedback::Ignore,
@@ -352,7 +352,7 @@ impl BeaconStateTile {
         self.fork_choice.mark_payload_verified(&block_root);
         self.envelope_requested.remove(&block_root);
         producers.produce(EngineReq::NewPayloadEnvelope(EngineNewPayloadEnvelopeReq {
-            data,
+            data: acquired.read,
             block_root,
             block_source: source,
             hash_count,
@@ -365,26 +365,28 @@ impl BeaconStateTile {
         Feedback::Accept(Some(block_root))
     }
 
-    fn buffer_pending_envelope(&mut self, block_root: B256, data: TCacheRead) {
+    fn buffer_pending_envelope(&mut self, block_root: B256, acquired: TRead) {
         if !has_room(&self.pending_envelopes, self.pending_bounds.max_dc, &block_root) {
             return;
         }
-        self.pending_envelopes.insert(block_root, data);
+        self.pending_envelopes.insert(block_root, acquired);
     }
 
     pub(super) fn drain_pending_envelope(&mut self, block_root: B256, producers: &mut Producers) {
-        let Some(handle) = self.pending_envelopes.remove(&block_root) else {
+        let Some(acquired) = self.pending_envelopes.remove(&block_root) else {
             return;
         };
-        let acquired = self.gossip_consumer.acquire(handle);
-        if let Some(p) = acquired.buffer().ok().map(|(d, _)| d as *const [u8]) {
-            self.handle_execution_payload_envelope(
-                unsafe { &*p },
-                handle,
-                BlockSource::Gossip,
-                producers,
-            );
-        }
+
+        let Some((ssz, _)) = acquired.buffer().ok() else {
+            return;
+        };
+
+        self.handle_execution_payload_envelope(
+            acquired.clone(),
+            ssz,
+            BlockSource::Gossip,
+            producers,
+        );
     }
 
     fn gloas_payload_present(
@@ -655,18 +657,21 @@ impl BeaconStateTile {
         }
         Feedback::Accept(None)
     }
+
     pub(super) fn handle_gossip(
         &mut self,
+        read: TCacheRead,
         m: NewGossipMsg,
-        data: &[u8],
         do_relay: bool,
         pre_verified: bool,
         producers: &mut Producers,
     ) {
+        let acquired = self.gossip_consumer.acquire(read);
+        let Some(data) = acquired.buffer().ok().map(|(d, _)| d) else { return };
+
         let feedback = match m.topic {
             GossipTopic::BeaconBlock => {
-                let acquired = self.gossip_consumer.acquire(m.ssz);
-                self.apply_block(data, acquired, BlockSource::Gossip, pre_verified, producers)
+                self.apply_block(data, read, BlockSource::Gossip, pre_verified, producers)
             }
             GossipTopic::BeaconAttestation(_) => self.handle_attestation(data),
             GossipTopic::BeaconAggregateAndProof => self.handle_aggregate_and_proof(data),
@@ -674,9 +679,12 @@ impl BeaconStateTile {
             GossipTopic::ProposerSlashing => self.handle_proposer_slashing(data),
             GossipTopic::AttesterSlashing => self.handle_attester_slashing(data),
             GossipTopic::BlsToExecutionChange => self.handle_bls_to_execution_change(data),
-            GossipTopic::ExecutionPayload => {
-                self.handle_execution_payload_envelope(data, m.ssz, BlockSource::Gossip, producers)
-            }
+            GossipTopic::ExecutionPayload => self.handle_execution_payload_envelope(
+                acquired.clone(),
+                data,
+                BlockSource::Gossip,
+                producers,
+            ),
             GossipTopic::PayloadAttestationMessage => self.handle_payload_attestation(data),
             _ => {
                 self.drain_envelope_requests(producers);

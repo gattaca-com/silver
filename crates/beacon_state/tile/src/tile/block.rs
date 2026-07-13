@@ -2,7 +2,7 @@ use flux::spine::SpineProducers;
 use flux_profiler::timed;
 use silver_beacon_state_data::{B256, BeaconBlockHeader, Checkpoint, SLOTS_PER_EPOCH, StateId};
 use silver_common::{
-    BeaconStateEvent, BlockSource, EngineFcuReq, EngineNewPayloadReq, EngineReq, TRead, hex32,
+    BeaconStateEvent, BlockSource, EngineFcuReq, EngineNewPayloadReq, EngineReq, TCacheRead, hex32,
     ssz_view::{self, SignedBeaconBlockView},
 };
 
@@ -35,7 +35,7 @@ impl BeaconStateTile {
     pub(super) fn apply_block(
         &mut self,
         data: &[u8],
-        data_tcache: TRead,
+        read: TCacheRead,
         source: BlockSource,
         pre_verified: bool,
         producers: &mut Producers,
@@ -47,7 +47,7 @@ impl BeaconStateTile {
         }
         let f = self.apply_block_impl(data, true, pre_verified, |root| {
             producers.produce(EngineReq::NewPayload(EngineNewPayloadReq {
-                data: *data_tcache,
+                data: read,
                 block_root: root,
                 block_source: source,
             }));
@@ -67,7 +67,7 @@ impl BeaconStateTile {
             return f;
         }
 
-        producers.produce(BeaconStateEvent::PersistBlock { ssz: *data_tcache, source });
+        producers.produce(BeaconStateEvent::PersistBlock { ssz: read, source });
 
         let (head_root, head, safe, fin) = self.fork_choice.fcu_execution_hashes();
         producers.produce(EngineReq::Fcu(EngineFcuReq {
@@ -80,7 +80,12 @@ impl BeaconStateTile {
         f
     }
 
-    pub(super) fn replay_block(&mut self, data: &[u8]) {
+    pub(super) fn replay_block(&mut self, read: TCacheRead) {
+        let acquired = self.replay_consumer.acquire(read);
+        let Some((data, _)) = acquired.buffer().ok() else {
+            return;
+        };
+
         if !SignedBeaconBlockView::check_size(data) {
             tracing::error!(len = data.len(), "replayed on-disk block malformed");
             return;
