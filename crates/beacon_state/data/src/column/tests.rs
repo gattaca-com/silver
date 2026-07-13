@@ -101,6 +101,24 @@ fn add_at_batch_then_rehash() {
 }
 
 #[test]
+fn add_at_unsorted_then_rehash_unsorted() {
+    // Deltas applied out of index order, with a repeated index (7): the RMW is
+    // sequential in call order, and rehash_unsorted sorts the dirty leaves.
+    let mut g = group(&[0, 10, 20, 30, 40, 50, 60, 70, 80]);
+    let mut wv = g.roll_fresh();
+
+    wv.add_at(8, 1);
+    wv.add_at(0, 100);
+    wv.add_at(7, -5); // 65
+    wv.add_at(3, 2);
+    wv.add_at(7, 3); // 65 + 3 = 68, second hit on the same leaf
+    wv.rehash_unsorted();
+
+    assert_eq!(wv.iter().collect::<Vec<_>>(), vec![100, 10, 20, 32, 40, 50, 60, 68, 81],);
+    assert_root_matches(&wv);
+}
+
+#[test]
 fn set_many_keeps_prior_writes() {
     let mut g = group(&[10, 20, 30]);
     let mut wv = g.roll_fresh();

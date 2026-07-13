@@ -164,6 +164,11 @@ impl<'a, C: ColumnSpec> ColumnWriteView<'a, C> {
         self.group.scratch_mut().rehash();
     }
 
+    #[timed]
+    pub fn rehash_unsorted(&mut self) {
+        self.group.scratch_mut().rehash_unsorted();
+    }
+
     #[inline]
     pub fn append_empty(&mut self) -> u32 {
         self.group.scratch_mut().append_empty::<C::Val>()

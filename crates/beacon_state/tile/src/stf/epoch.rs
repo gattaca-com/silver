@@ -506,10 +506,10 @@ pub fn process_slashings(
             continue;
         }
         let effective_balance = view.validators.effective_balance(i);
-        let balance = view.balances.get(i);
         let penalty = penalty_per_increment * (effective_balance / EFFECTIVE_BALANCE_INCREMENT);
-        view.balances.set(i as u32, balance.saturating_sub(penalty));
+        view.balances.add_at(i as u32, -(penalty as i64));
     }
+    view.balances.rehash();
 }
 
 /// At epoch boundary: flush the per-block `current_epoch_slashings`

@@ -191,10 +191,6 @@ impl ColumnTree {
         }
         u64::set_lane(leaf, lane, new);
         self.mark_dirty_node(node);
-        debug_assert!(
-            self.dirty_scratch.last().is_none_or(|&last| last <= node),
-            "add_at needs ascending indices within a batch",
-        );
         if self.dirty_scratch.last() != Some(&node) {
             self.dirty_scratch.push(node);
         }
@@ -224,7 +220,16 @@ impl ColumnTree {
         self.rehash();
     }
 
+    pub fn rehash_unsorted(&mut self) {
+        self.dirty_scratch.sort_unstable();
+        self.rehash();
+    }
+
     pub fn rehash(&mut self) {
+        debug_assert!(
+            self.dirty_scratch.windows(2).all(|w| w[0] <= w[1]),
+            "rehash needs ascending dirty ids; use rehash_unsorted",
+        );
         let mut level = self.max_elements as u32;
         let Self { nodes, dirty_scratch: dirty, .. } = self;
         while level > 1 {

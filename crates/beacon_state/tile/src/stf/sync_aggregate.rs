@@ -110,7 +110,6 @@ pub fn process_sync_aggregate(
     let sync_indices: [u32; SYNC_COMMITTEE_SIZE] = longtail.state().sync_committee_indices;
 
     let mut proposer_reward_sum = 0u64;
-    let mut steps: Vec<(u32, i64)> = Vec::with_capacity(SYNC_COMMITTEE_SIZE + 1);
     #[allow(clippy::needless_range_loop)]
     for i in 0..SYNC_COMMITTEE_SIZE {
         let vi = sync_indices[i];
@@ -119,27 +118,12 @@ pub fn process_sync_aggregate(
         }
         if bits[i / 8] & (1 << (i % 8)) != 0 {
             proposer_reward_sum += proposer_reward_per;
-            steps.push((vi, participant_reward as i64));
+            balances.add_at(vi, participant_reward as i64);
         } else {
-            steps.push((vi, -(participant_reward as i64)));
+            balances.add_at(vi, -(participant_reward as i64));
         }
     }
-    steps.push((proposer_index, proposer_reward_sum as i64));
-
-    // One `set_many` batch instead of a write per step. The stable sort keeps
-    // push order within one validator's run (committee slots, then its
-    // proposer bonus), so folding a run replays the spec's sequential
-    // saturating steps exactly.
-    steps.sort_by_key(|&(vi, _)| vi);
-    let mut changes: Vec<(u32, u64)> = Vec::with_capacity(steps.len());
-    for run in steps.chunk_by(|a, b| a.0 == b.0) {
-        let vi = run[0].0;
-        let mut balance = balances.get(vi as usize);
-        for &(_, delta) in run {
-            balance = balance.saturating_add_signed(delta);
-        }
-        changes.push((vi, balance));
-    }
-    balances.set_many(&changes);
+    balances.add_at(proposer_index, proposer_reward_sum as i64);
+    balances.rehash_unsorted();
     Ok(())
 }
