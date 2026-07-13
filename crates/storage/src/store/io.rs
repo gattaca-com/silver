@@ -23,7 +23,7 @@ use crate::{
     StorageCounters,
     store::{
         BLOCK_SLOTS_RETAINED, BLOCKS_DIR, Backfill, COLUMN_SLOTS_RETAINED, COLUMNS_DIR,
-        ColumnBackfill, SLOTS_PER_DIR,
+        ColumnBackfill, ENVELOPES_DIR, SLOTS_PER_DIR,
     },
     tile::IoEvent,
     util,
@@ -171,6 +171,37 @@ impl Store {
                     StorageCounters::ColumnsPruned.inc();
                     self.write_queue.pop_front();
                 }
+                PendingWrite::UnfinalizedEnvelope { slot, block_root, ssz } => {
+                    let path = self.unfinalized_envelopes_dir().join(unfinalized_envelope_name(*slot, block_root));
+                    let (buffer, _) = ssz.buffer().map_err(Error::other)?;
+                    open_file_write(&path, false)?.write_all(buffer)?;
+                    self.write_queue.pop_front();
+                }
+                PendingWrite::PromoteEnvelope { slot, block_root } => {
+                    let dir = self.envelope_slot_dir(*slot);
+                    std::fs::create_dir_all(&dir)?;
+                    let from = self
+                        .unfinalized_envelopes_dir()
+                        .join(unfinalized_envelope_name(*slot, block_root));
+                    // Rename is atomic; NotFound means already moved/pruned.
+                    match std::fs::rename(&from, dir.join(format!("{slot}_envelope.ssz"))) {
+                        Ok(()) => {}
+                        Err(e) if e.kind() == ErrorKind::NotFound => {}
+                        Err(e) => return Err(e),
+                    }
+                    self.write_queue.pop_front();
+                }
+                PendingWrite::PruneEnvelope { slot, block_root } => {
+                    let path = self
+                        .unfinalized_envelopes_dir()
+                        .join(unfinalized_envelope_name(*slot, block_root));
+                    match std::fs::remove_file(path) {
+                        Ok(()) => {}
+                        Err(e) if e.kind() == ErrorKind::NotFound => {}
+                        Err(e) => return Err(e),
+                    }
+                    self.write_queue.pop_front();
+                }
                 PendingWrite::TruncateBlockHistory { finalized_slot } => {
                     let earliest_slot = finalized_slot.saturating_sub(BLOCK_SLOTS_RETAINED);
                     let dir = PathBuf::new().join(&self.store_dir).join(BLOCKS_DIR);
@@ -180,6 +211,12 @@ impl Store {
                 PendingWrite::TruncateColumnHistory { finalized_slot } => {
                     let earliest_slot = finalized_slot.saturating_sub(COLUMN_SLOTS_RETAINED);
                     let dir = PathBuf::new().join(&self.store_dir).join(COLUMNS_DIR);
+                    remove_subdirs(dir, earliest_slot)?;
+                    self.write_queue.pop_front();
+                }
+                PendingWrite::TruncateEnvelopeHistory { finalized_slot } => {
+                    let earliest_slot = finalized_slot.saturating_sub(BLOCK_SLOTS_RETAINED);
+                    let dir = PathBuf::new().join(&self.store_dir).join(ENVELOPES_DIR);
                     remove_subdirs(dir, earliest_slot)?;
                     self.write_queue.pop_front();
                 }
@@ -522,6 +559,21 @@ pub(super) fn parse_unfinalized_column_name(name: &str) -> Option<([u8; 32], u64
         return None;
     }
     Some((block_root, slot, column))
+}
+
+pub(super) fn unfinalized_envelope_name(slot: u64, block_root: &[u8; 32]) -> String {
+    format!("{slot}_{}.ssz", hex32(block_root))
+}
+
+pub(super) fn parse_unfinalized_envelope_name(name: &str) -> Option<([u8; 32], u64)> {
+    let stem = name.strip_suffix(".ssz")?;
+    let mut parts = stem.split('_');
+    let slot: u64 = parts.next()?.parse().ok()?;
+    let block_root = parse_hex32(parts.next()?)?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((block_root, slot))
 }
 
 fn parse_finalized_block_name(name: &str) -> Option<u64> {

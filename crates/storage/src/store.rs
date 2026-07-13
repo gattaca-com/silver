@@ -50,8 +50,14 @@ const UNFINALIZED_DIR: &str = "unfinalized";
 /// Files: `<slot>_<block_root>_<column>.ssz`.
 const UNFINALIZED_COLUMNS_DIR: &str = "unfinalized_columns";
 
+/// Sub-directory holding unfinalized execution-payload envelopes, keyed by
+/// owning block (one per block — canonicity follows the block).
+/// Files: `<slot>_<block_root>.ssz`.
+const UNFINALIZED_ENVELOPES_DIR: &str = "unfinalized_envelopes";
+
 const BLOCKS_DIR: &str = "blocks";
 const COLUMNS_DIR: &str = "columns";
+const ENVELOPES_DIR: &str = "envelopes";
 const PEERS_DIR: &str = "peers";
 
 const BLOCK_SLOTS_RETAINED: u64 = 33024 * 32;
@@ -132,10 +138,30 @@ enum PendingWrite {
         block_root: [u8; 32],
         column: u64,
     },
+    /// New envelope → `unfinalized_envelopes/<slot>_<block_root>.ssz`.
+    UnfinalizedEnvelope {
+        slot: u64,
+        block_root: [u8; 32],
+        ssz: TRead,
+    },
+    /// Finalized: rename `unfinalized_envelopes/…` → flat
+    /// `<slot>_envelope.ssz`.
+    PromoteEnvelope {
+        slot: u64,
+        block_root: [u8; 32],
+    },
+    /// Orphaned fork envelope below finality: unlink `unfinalized_envelopes/…`.
+    PruneEnvelope {
+        slot: u64,
+        block_root: [u8; 32],
+    },
     TruncateBlockHistory {
         finalized_slot: u64,
     },
     TruncateColumnHistory {
+        finalized_slot: u64,
+    },
+    TruncateEnvelopeHistory {
         finalized_slot: u64,
     },
     Backfill {
@@ -214,6 +240,10 @@ pub(super) struct Store {
     // on disk). Canonicity follows the owning block; rebuilt from
     // unfinalized_columns/ filenames on load.
     unfinalized_columns: FxHashMap<[u8; 32], (u64, u128)>,
+    // Unfinalized envelopes: block_root → slot. One per block; canonicity
+    // follows the owning block. Rebuilt from unfinalized_envelopes/ filenames
+    // on load.
+    unfinalized_envelopes: FxHashMap<[u8; 32], u64>,
     // Latest fork-choice head + finalization watermark from Status.
     head_root: [u8; 32],
     head_slot: u64,
@@ -306,6 +336,23 @@ impl Store {
             }
         }
 
+        // Rebuild the unfinalized envelope index from filenames (slot + owning
+        // block_root), no bodies read.
+        std::fs::create_dir_all(Path::new(&store_dir).join(ENVELOPES_DIR))?;
+        let unfinalized_envelopes_dir = Path::new(&store_dir).join(UNFINALIZED_ENVELOPES_DIR);
+        std::fs::create_dir_all(&unfinalized_envelopes_dir)?;
+
+        let mut unfinalized_envelopes: FxHashMap<[u8; 32], u64> = FxHashMap::default();
+        if let Ok(entries) = std::fs::read_dir(unfinalized_envelopes_dir) {
+            for entry in entries {
+                if let Some(name) = entry?.file_name().to_str() &&
+                    let Some((block_root, slot)) = io::parse_unfinalized_envelope_name(name)
+                {
+                    unfinalized_envelopes.insert(block_root, slot);
+                }
+            }
+        }
+
         // Finalized-state checkpoints: drop incomplete dirs, prune to the
         // newest N, and anchor `last_persisted` at the newest committed slot.
         let last_persisted_finalized_slot = checkpoint::init_checkpoints_dir(&store_dir)?;
@@ -315,6 +362,7 @@ impl Store {
             root_index,
             unfinalized,
             unfinalized_columns,
+            unfinalized_envelopes,
             head_root: [0u8; 32],
             head_slot: 0,
             finalized_slot: 0,
@@ -381,6 +429,31 @@ impl Store {
             block_root,
             column: column_index,
             ssz: ColumnSsz::Owned(sidecar_ssz),
+        });
+    }
+
+    pub(super) fn add_envelope(&mut self, block_root: [u8; 32], envelope_ssz: TRead) {
+        let slot = match self.unfinalized.get(&block_root) {
+            Some(block) => block.slot,
+            None => match self.root_index.get(&block_root) {
+                Some(&slot) => slot,
+                None => {
+                    tracing::debug!(
+                        block_root = hex::encode(block_root),
+                        "envelope for unknown block; dropping"
+                    );
+                    return;
+                }
+            },
+        };
+        if slot <= self.finalized_slot {
+            return;
+        }
+        self.unfinalized_envelopes.insert(block_root, slot);
+        self.write_queue.push_back(PendingWrite::UnfinalizedEnvelope {
+            slot,
+            block_root,
+            ssz: envelope_ssz,
         });
     }
 
@@ -524,24 +597,31 @@ impl Store {
                     });
                 }
             }
+            if let Some(slot) = self.unfinalized_envelopes.remove(&root) {
+                self.write_queue
+                    .push_back(PendingWrite::PromoteEnvelope { slot, block_root: root });
+            }
             root = block.parent_root;
         }
 
-        // Prune orphaned forks: anything left at/below finality cannot be
-        // canonical (finality forbids a reorg below it).
         prune_orphaned_blocks(finalized_slot, &mut self.unfinalized, &mut self.write_queue);
 
-        // Prune orphaned columns: any column set left at/below finality whose
-        // block did not promote above.
         prune_orphaned_columns(
             finalized_slot,
             &mut self.unfinalized_columns,
             &mut self.write_queue,
         );
 
+        prune_orphaned_envelopes(
+            finalized_slot,
+            &mut self.unfinalized_envelopes,
+            &mut self.write_queue,
+        );
+
         // Truncate history
         self.write_queue.push_back(PendingWrite::TruncateBlockHistory { finalized_slot });
         self.write_queue.push_back(PendingWrite::TruncateColumnHistory { finalized_slot });
+        self.write_queue.push_back(PendingWrite::TruncateEnvelopeHistory { finalized_slot });
     }
 
     pub(super) fn head_slot(&self) -> u64 {
@@ -789,6 +869,15 @@ impl Store {
         Path::new(&self.store_dir).join(UNFINALIZED_COLUMNS_DIR)
     }
 
+    fn envelope_slot_dir(&self, slot: u64) -> PathBuf {
+        let group_dir = slot & !(SLOTS_PER_DIR - 1);
+        PathBuf::new().join(&self.store_dir).join(ENVELOPES_DIR).join(group_dir.to_string())
+    }
+
+    fn unfinalized_envelopes_dir(&self) -> PathBuf {
+        Path::new(&self.store_dir).join(UNFINALIZED_ENVELOPES_DIR)
+    }
+
     fn peers_dir(&self) -> PathBuf {
         Path::new(&self.store_dir).join(PEERS_DIR)
     }
@@ -813,6 +902,22 @@ fn prune_orphaned_columns(
                     column,
                 })
             }
+            false
+        } else {
+            true
+        }
+    });
+}
+
+fn prune_orphaned_envelopes(
+    finalized_slot: u64,
+    unfinalized_envelopes: &mut FxHashMap<[u8; 32], u64>,
+    write_queue: &mut VecDeque<PendingWrite>,
+) {
+    unfinalized_envelopes.retain(|block_root, slot| {
+        if *slot <= finalized_slot {
+            write_queue
+                .push_back(PendingWrite::PruneEnvelope { slot: *slot, block_root: *block_root });
             false
         } else {
             true
@@ -1058,6 +1163,83 @@ mod tests {
         let reloaded = super::Store::load(store_path.clone()).unwrap();
         assert_eq!(reloaded.root_index.get(&root_a), Some(&slot));
         assert!(reloaded.unfinalized.is_empty());
+
+        let _ = std::fs::remove_dir_all(&store_path);
+    }
+
+    // Envelopes: persist unfinalized, promote the canonical one to the flat
+    // store on finalization, prune the orphan, and rebuild the index on reload.
+    #[test]
+    fn envelope_persist_promote_prune() {
+        use silver_common::{TCache, TCacheProducer};
+
+        let store_path = format!("/tmp/test_store_env_{}", rand::random::<u32>());
+        let _ = std::fs::remove_dir_all(&store_path);
+        let mut store = super::Store::load(store_path.clone()).unwrap();
+
+        // Canonical block A + fork block B at slot 42, shared parent CC; each
+        // gets an envelope.
+        let parent_root = [0xCC; 32];
+        let root_a = [0xAA; 32];
+        let root_b = [0xBB; 32];
+        let slot = 42u64;
+        let block_a = [0xA7u8; 100];
+        let block_b = [0xB7u8; 80];
+        let env_a = [0x1Au8; 120];
+        let env_b = [0x1Bu8; 60];
+
+        let mut cache = TCache::producer("env_blocks", 1024 * 1024);
+        let stage = |cache: &mut _, bytes: &[u8]| {
+            let mut res = TCacheProducer::reserve(cache, bytes.len(), true).unwrap();
+            res.write_all(bytes).unwrap();
+            res.flush().unwrap();
+            res.read()
+        };
+        let ssz_ba = stage(&mut cache, &block_a);
+        let ssz_bb = stage(&mut cache, &block_b);
+        let ssz_ea = stage(&mut cache, &env_a);
+        let ssz_eb = stage(&mut cache, &env_b);
+        let mut cons = cache.cache_ref().random_access("env_cons", true).unwrap();
+
+        // Block before envelope: `add_envelope` derives the slot from the block.
+        store.add_block(root_a, cons.acquire(ssz_ba), slot, parent_root);
+        store.add_block(root_b, cons.acquire(ssz_bb), slot, parent_root);
+        store.add_envelope(root_a, cons.acquire(ssz_ea));
+        store.add_envelope(root_b, cons.acquire(ssz_eb));
+        assert_eq!(store.unfinalized_envelopes.get(&root_a), Some(&slot));
+        assert_eq!(store.unfinalized_envelopes.get(&root_b), Some(&slot));
+
+        // Head selects A; nothing finalized yet.
+        store.update_head(slot, root_a, 0, [0u8; 32]);
+
+        let fork_digest = [1, 2, 3, 4];
+        let producer_cache = TCache::multi_producer("env_rpc_in", 1024 * 1024);
+        let mut producer = producer_cache.clone();
+        store.file_io(&fork_digest, 0, &mut producer, &mut |_| {}).unwrap();
+
+        let unf_a = store
+            .unfinalized_envelopes_dir()
+            .join(super::io::unfinalized_envelope_name(slot, &root_a));
+        let unf_b = store
+            .unfinalized_envelopes_dir()
+            .join(super::io::unfinalized_envelope_name(slot, &root_b));
+        assert!(unf_a.exists());
+        assert!(unf_b.exists());
+
+        // Finalize at slot 42 on A: promote A's envelope, prune orphan B's.
+        store.update_head(slot, root_a, slot, root_a);
+        assert!(store.unfinalized_envelopes.is_empty());
+        store.file_io(&fork_digest, 0, &mut producer, &mut |_| {}).unwrap();
+
+        let flat_a = store.envelope_slot_dir(slot).join(format!("{slot}_envelope.ssz"));
+        assert!(flat_a.exists(), "canonical envelope promoted to flat store");
+        assert_eq!(std::fs::read(&flat_a).unwrap(), env_a);
+        assert!(!unf_a.exists(), "promoted out of unfinalized");
+        assert!(!unf_b.exists(), "orphan envelope pruned");
+
+        // Reload rebuilds the (now empty) unfinalized envelope index.
+        let reloaded = super::Store::load(store_path.clone()).unwrap();
+        assert!(reloaded.unfinalized_envelopes.is_empty());
 
         let _ = std::fs::remove_dir_all(&store_path);
     }

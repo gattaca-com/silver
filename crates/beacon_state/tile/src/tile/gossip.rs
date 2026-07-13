@@ -3,7 +3,7 @@ use silver_beacon_state_data::{
     B256, Epoch, ParsedAggregateAndProof, SLOTS_PER_EPOCH, Slot, StateId, StateReadView,
 };
 use silver_common::{
-    BlockSource, EngineNewPayloadEnvelopeReq, EngineReq, GossipTopic, MAX_BLOBS_PER_BLOCK,
+    BeaconStateEvent, BlockSource, EngineNewPayloadEnvelopeReq, EngineReq, GossipTopic, MAX_BLOBS_PER_BLOCK,
     NewGossipMsg, PeerEvent, TCacheRead, TRead,
     metrics::timed,
     ssz_view::{
@@ -358,6 +358,8 @@ impl BeaconStateTile {
             hash_count,
             versioned_hashes,
         }));
+
+        producers.produce(BeaconStateEvent::PersistEnvelope { ssz: acquired.read, source });
 
         self.drain_awaiting_payload(block_root, producers);
         self.recompute_head();
