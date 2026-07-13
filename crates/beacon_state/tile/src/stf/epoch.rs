@@ -76,13 +76,7 @@ pub fn process_epoch(
 
     process_justification_and_finalization(view, epoch, current_epoch);
     process_inactivity_updates(cfg, view, &epoch.reader(), current_epoch, &mut scratch.replace_u64);
-    process_rewards_and_penalties(
-        cfg,
-        view,
-        &epoch.reader(),
-        current_epoch,
-        &mut scratch.replace_u64,
-    );
+    process_rewards_and_penalties(cfg, view, &epoch.reader(), current_epoch);
     process_registry_updates(cfg, view, &epoch.reader(), current_epoch);
     process_slashings(cfg, view, &epoch.reader(), current_epoch);
     process_eth1_data_reset(&mut view.eth1, current_epoch);
@@ -326,7 +320,6 @@ pub fn process_rewards_and_penalties(
     view: &mut StateWriterView,
     epoch: &EpochView,
     current_epoch: Epoch,
-    scratch: &mut Vec<(u32, u64)>,
 ) {
     if current_epoch == 0 {
         return;
@@ -341,60 +334,54 @@ pub fn process_rewards_and_penalties(
     let flag_increments = flag_attesting_increments(view, previous_epoch);
     let active_increments = total_active / EFFECTIVE_BALANCE_INCREMENT;
 
-    // Pass 2: per-validator reward/penalty → changed balances into scratch.
-    scratch.clear();
-    {
-        let validators = view.validators.reader();
-        let n = validators.count();
-        let mut act = validators.iter_activation_epochs();
-        let mut exit = validators.iter_exit_epochs();
-        let mut slashed_col = validators.iter_slashed();
-        let mut withdr = validators.iter_withdrawable_epochs();
-        let mut eff = validators.iter_effective_balances();
-        let mut bal = view.balances.reader().iter();
-        let mut prev_p = view.previous_participation.iter();
-        let mut inact = view.inactivity.iter();
-        for i in 0..n {
-            let status = ActiveStatus {
-                activation_epoch: act.next().unwrap(),
-                exit_epoch: exit.next().unwrap(),
-                slashed: slashed_col.next().unwrap(),
-            };
-            let withdrawable_epoch = withdr.next().unwrap();
-            let effective_balance = eff.next().unwrap();
-            let balance = bal.next().unwrap();
-            let previous_participation = prev_p.next().unwrap();
-            let inactivity_score = inact.next().unwrap();
-            if !status.eligible(withdrawable_epoch, current_epoch) {
-                continue;
-            }
-            let base_reward =
-                (effective_balance / EFFECTIVE_BALANCE_INCREMENT) * base_reward_per_increment;
-            let is_unslashed = !status.slashed;
-            let mut reward: u64 = 0;
-            let mut penalty: u64 = 0;
-            for (fi, &flag) in PARTICIPATION_FLAGS.iter().enumerate() {
-                let weight = PARTICIPATION_WEIGHTS[fi];
-                let participating = is_unslashed && previous_participation & flag != 0;
-                if participating && !is_leak {
-                    let num = base_reward * weight * flag_increments[fi];
-                    reward += num / (active_increments * WEIGHT_DENOMINATOR);
-                } else if !participating && fi != 2 {
-                    penalty += base_reward * weight / WEIGHT_DENOMINATOR;
-                }
-            }
-            let target_ok = is_unslashed && previous_participation & TIMELY_TARGET_FLAG != 0;
-            if !target_ok {
-                let pen_num = effective_balance * inactivity_score;
-                penalty += pen_num / (cfg.inactivity_score_bias * cfg.inactivity_penalty_quotient);
-            }
-            let new = balance.saturating_add(reward).saturating_sub(penalty);
-            if new != balance {
-                scratch.push((i as u32, new));
+    // Pass 2: per-validator reward/penalty, added onto balances in place.
+    let validators = view.validators.reader();
+    let n = validators.count();
+    let mut act = validators.iter_activation_epochs();
+    let mut exit = validators.iter_exit_epochs();
+    let mut slashed_col = validators.iter_slashed();
+    let mut withdr = validators.iter_withdrawable_epochs();
+    let mut eff = validators.iter_effective_balances();
+    let mut prev_p = view.previous_participation.iter();
+    let mut inact = view.inactivity.iter();
+    for i in 0..n {
+        let status = ActiveStatus {
+            activation_epoch: act.next().unwrap(),
+            exit_epoch: exit.next().unwrap(),
+            slashed: slashed_col.next().unwrap(),
+        };
+        let withdrawable_epoch = withdr.next().unwrap();
+        let effective_balance = eff.next().unwrap();
+        let previous_participation = prev_p.next().unwrap();
+        let inactivity_score = inact.next().unwrap();
+        if !status.eligible(withdrawable_epoch, current_epoch) {
+            continue;
+        }
+        let base_reward =
+            (effective_balance / EFFECTIVE_BALANCE_INCREMENT) * base_reward_per_increment;
+        let is_unslashed = !status.slashed;
+        let mut reward: u64 = 0;
+        let mut penalty: u64 = 0;
+        for (fi, &flag) in PARTICIPATION_FLAGS.iter().enumerate() {
+            let weight = PARTICIPATION_WEIGHTS[fi];
+            let participating = is_unslashed && previous_participation & flag != 0;
+            if participating && !is_leak {
+                let num = base_reward * weight * flag_increments[fi];
+                reward += num / (active_increments * WEIGHT_DENOMINATOR);
+            } else if !participating && fi != 2 {
+                penalty += base_reward * weight / WEIGHT_DENOMINATOR;
             }
         }
+        let target_ok = is_unslashed && previous_participation & TIMELY_TARGET_FLAG != 0;
+        if !target_ok {
+            let pen_num = effective_balance * inactivity_score;
+            penalty += pen_num / (cfg.inactivity_score_bias * cfg.inactivity_penalty_quotient);
+        }
+        if reward != penalty {
+            view.balances.add_at(i as u32, reward as i64 - penalty as i64);
+        }
     }
-    view.balances.set_many(scratch);
+    view.balances.rehash();
 }
 
 /// Pass 1 (pure read sweep): per-flag sum of effective-balance increments over

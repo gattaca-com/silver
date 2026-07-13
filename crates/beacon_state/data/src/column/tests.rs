@@ -68,6 +68,39 @@ fn set_many_applies_sparse_changes() {
 }
 
 #[test]
+fn add_at_batch_then_rehash() {
+    // 9 values spans 3 chunks (4 u64 lanes each), with a partial tail chunk.
+    let mut g = group(&[0, 10, 20, 30, 40, 50, 60, 70, 80]);
+    let mut wv = g.roll_fresh();
+
+    wv.add_at(0, 5);
+    wv.add_at(1, -3);
+    wv.add_at(2, -25); // saturates at 0
+    wv.add_at(4, 0); // no-op, must not dirty
+    wv.add_at(5, 1);
+    wv.add_at(8, i64::MAX); // tail chunk
+    wv.rehash();
+
+    assert_eq!(wv.iter().collect::<Vec<_>>(), vec![
+        5,
+        7,
+        0,
+        30,
+        40,
+        51,
+        60,
+        70,
+        80 + i64::MAX as u64
+    ],);
+    assert_root_matches(&wv);
+
+    // A later set_many batch on the rehashed tree stays consistent.
+    wv.set_many(&[(3, 333)]);
+    assert_eq!(wv.get(3), 333);
+    assert_root_matches(&wv);
+}
+
+#[test]
 fn set_many_keeps_prior_writes() {
     let mut g = group(&[10, 20, 30]);
     let mut wv = g.roll_fresh();

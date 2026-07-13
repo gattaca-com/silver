@@ -159,6 +159,11 @@ impl<'a, C: ColumnSpec> ColumnWriteView<'a, C> {
         self.group.scratch_mut().set_vals::<C::Val>(changes);
     }
 
+    #[timed]
+    pub fn rehash(&mut self) {
+        self.group.scratch_mut().rehash();
+    }
+
     #[inline]
     pub fn append_empty(&mut self) -> u32 {
         self.group.scratch_mut().append_empty::<C::Val>()
@@ -195,5 +200,12 @@ impl<'a, C: ColumnSpec> ColumnWriteView<'a, C> {
     #[inline]
     pub fn hash_root(&self) -> B256 {
         self.reader().hash_root()
+    }
+}
+
+impl<C: ColumnSpec<Val = u64>> ColumnWriteView<'_, C> {
+    #[inline]
+    pub fn add_at(&mut self, idx: u32, delta: i64) {
+        self.group.scratch_mut().add_at(idx, delta);
     }
 }
