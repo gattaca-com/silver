@@ -32,7 +32,7 @@ const G_BUILDER_PENDING_WITHDRAWALS_OFF: usize = 2_741_617; // 4
 const G_LATEST_EXECUTION_PAYLOAD_BID_OFF: usize = 2_741_621; // 4
 const G_PAYLOAD_EXPECTED_WITHDRAWALS_OFF: usize = 2_741_625; // 4
 pub(crate) const G_PTC_WINDOW: usize = 2_741_629; // 96 × 512 × 8 = 393216
-const GLOAS_FIXED_PART: usize = 3_134_845;
+pub(crate) const GLOAS_FIXED_PART: usize = 3_134_845;
 
 const _: () = assert!(G_PTC_WINDOW + PTC_WINDOW_LEN * PTC_SIZE * 8 == GLOAS_FIXED_PART);
 

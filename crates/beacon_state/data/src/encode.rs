@@ -12,7 +12,7 @@ use blst::min_pk::PublicKey;
 
 use crate::{
     BeaconState,
-    decompose::FIXED_PART,
+    decompose::{FULU_FIXED_PART, gloas::GLOAS_FIXED_PART},
     types::{B256, Checkpoint, Eth1Data, SLOTS_PER_EPOCH, SyncCommittee},
 };
 
@@ -28,10 +28,22 @@ const PENDING_CONSOLIDATION_SSZ: usize = 16;
 const EPH_FIXED: usize = 584;
 
 /// Number of variable-length fields in the Fulu `BeaconState`.
-pub(crate) const VAR_LEN_SECTIONS: usize = 12;
+pub(crate) const FULU_VAR_LEN_SECTIONS: usize = 12;
 
 /// Number of checkpoint sections: the fixed part + the 12 variable bodies.
-pub const CHECKPOINT_SECTIONS: usize = 1 + VAR_LEN_SECTIONS;
+pub const FULU_CHECKPOINT_SECTIONS: usize = 1 + FULU_VAR_LEN_SECTIONS;
+
+/// Variable-length fields in the Gloas `BeaconState`: Fulu's 12 minus the
+/// (now fixed) `execution_payload_header`, plus `builders`,
+/// `builder_pending_withdrawals`, `latest_execution_payload_bid`,
+/// `payload_expected_withdrawals`.
+pub(crate) const GLOAS_VAR_LEN_SECTIONS: usize = 15;
+
+/// Number of checkpoint sections for Gloas: the fixed part + the 15 var bodies.
+pub const GLOAS_CHECKPOINT_SECTIONS: usize = 1 + GLOAS_VAR_LEN_SECTIONS;
+
+const BUILDER_PENDING_WITHDRAWAL_SSZ: usize = 36;
+const WITHDRAWAL_SSZ: usize = 44;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Section {
@@ -48,10 +60,14 @@ pub(crate) enum Section {
     PendingDeposits,
     PendingPartialWithdrawals,
     PendingConsolidations,
+    Builders,
+    BuilderPendingWithdrawals,
+    LatestExecutionPayloadBid,
+    PayloadExpectedWithdrawals,
 }
 
 impl Section {
-    pub(crate) const ALL: [Section; CHECKPOINT_SECTIONS] = [
+    pub(crate) const FULU: [Section; FULU_CHECKPOINT_SECTIONS] = [
         Section::FixedPart,
         Section::HistoricalRoots,
         Section::Eth1Votes,
@@ -65,6 +81,25 @@ impl Section {
         Section::PendingDeposits,
         Section::PendingPartialWithdrawals,
         Section::PendingConsolidations,
+    ];
+
+    pub(crate) const GLOAS: [Section; GLOAS_CHECKPOINT_SECTIONS] = [
+        Section::FixedPart,
+        Section::HistoricalRoots,
+        Section::Eth1Votes,
+        Section::Validators,
+        Section::Balances,
+        Section::PreviousParticipation,
+        Section::CurrentParticipation,
+        Section::InactivityScores,
+        Section::HistoricalSummaries,
+        Section::PendingDeposits,
+        Section::PendingPartialWithdrawals,
+        Section::PendingConsolidations,
+        Section::Builders,
+        Section::BuilderPendingWithdrawals,
+        Section::LatestExecutionPayloadBid,
+        Section::PayloadExpectedWithdrawals,
     ];
 }
 
@@ -94,7 +129,7 @@ pub(crate) fn write_b256_slice<W: Write>(w: &mut W, s: &[B256]) -> io::Result<()
 
 impl BeaconState {
     /// Byte lengths of the 12 variable-length fields, in SSZ-declared order.
-    pub(crate) fn var_len_section_lens(&self) -> [usize; VAR_LEN_SECTIONS] {
+    pub(crate) fn var_len_section_lens_fulu(&self) -> [usize; FULU_VAR_LEN_SECTIONS] {
         let n = self.validators.finalized().validator_count();
         let dep = self.pending.deposits.with_finalized_locked(|q| q.len());
         let wdr = self.pending.partial_withdrawals.with_finalized_locked(|q| q.len());
@@ -117,11 +152,53 @@ impl BeaconState {
         ]
     }
 
-    /// Absolute byte offsets of the 12 variable bodies (the values written into
+    /// Byte lengths of the 15 Gloas variable-length fields, in SSZ-declared
+    /// order (offset-slot order): the 11 Fulu-shared bodies (no
+    /// `execution_payload_header`) then the four Gloas-only bodies.
+    pub(crate) fn var_len_section_lens_gloas(&self) -> [usize; GLOAS_VAR_LEN_SECTIONS] {
+        let n = self.validators.finalized().validator_count();
+        let dep = self.pending.deposits.with_finalized_locked(|q| q.len());
+        let wdr = self.pending.partial_withdrawals.with_finalized_locked(|q| q.len());
+        let con = self.pending.consolidations.with_finalized_locked(|q| q.len());
+        let bpw = self.pending.builder_withdrawals.with_finalized_locked(|q| q.len());
+        let summaries = self.longtail.with_finalized_locked(|lt| lt.historical_summaries.len());
+        let sl = self.slot_states.finalized().state();
+        [
+            self.immutable.historical_roots.len() * 32,
+            self.eth1.finalized().len() * ETH1_DATA_SSZ,
+            n * VALIDATOR_SSZ,
+            n * 8,
+            n,
+            n,
+            n * 8,
+            summaries * HIST_SUMMARY_SSZ,
+            dep * PENDING_DEPOSIT_SSZ,
+            wdr * PENDING_WITHDRAWAL_SSZ,
+            con * PENDING_CONSOLIDATION_SSZ,
+            self.builders.finalized().ssz_len(),
+            bpw * BUILDER_PENDING_WITHDRAWAL_SSZ,
+            sl.latest_execution_payload_bid.ssz_len(),
+            sl.payload_expected_withdrawals.len() * WITHDRAWAL_SSZ,
+        ]
+    }
+
+    /// Absolute byte offsets of the variable bodies (the values written into
     /// the fixed part's offset slots), derived from a section-length snapshot.
-    pub(crate) fn offsets_from_lens(lens: &[usize; VAR_LEN_SECTIONS]) -> [u32; VAR_LEN_SECTIONS] {
-        let mut offs = [0u32; VAR_LEN_SECTIONS];
-        let mut acc = FIXED_PART;
+    pub(crate) fn offsets_from_lens_fulu(
+        lens: &[usize; FULU_VAR_LEN_SECTIONS],
+    ) -> [u32; FULU_VAR_LEN_SECTIONS] {
+        Self::offsets_with_base(lens, FULU_FIXED_PART)
+    }
+
+    fn offsets_from_lens_gloas(
+        lens: &[usize; GLOAS_VAR_LEN_SECTIONS],
+    ) -> [u32; GLOAS_VAR_LEN_SECTIONS] {
+        Self::offsets_with_base(lens, GLOAS_FIXED_PART)
+    }
+
+    fn offsets_with_base<const N: usize>(lens: &[usize; N], base: usize) -> [u32; N] {
+        let mut offs = [0u32; N];
+        let mut acc = base;
         for (o, len) in offs.iter_mut().zip(lens) {
             *o = u32::try_from(acc).expect("ssz variable offset exceeds u32");
             acc += len;
@@ -131,42 +208,78 @@ impl BeaconState {
 
     /// Total SSZ length of the encoded state.
     pub fn ssz_len(&self) -> usize {
-        FIXED_PART + self.var_len_section_lens().iter().sum::<usize>()
+        if self.is_finalized_post_gloas() {
+            GLOAS_FIXED_PART + self.var_len_section_lens_gloas().iter().sum::<usize>()
+        } else {
+            FULU_FIXED_PART + self.var_len_section_lens_fulu().iter().sum::<usize>()
+        }
+    }
+
+    /// Fork-selected checkpoint section list for the streaming cursor.
+    pub(crate) fn checkpoint_sections(&self) -> &'static [Section] {
+        if self.is_finalized_post_gloas() { &Section::GLOAS } else { &Section::FULU }
+    }
+
+    /// Variable-body offsets for the streaming checkpoint cursor, widened to
+    /// the Gloas array; Fulu fills only the leading [`VAR_LEN_SECTIONS`].
+    pub(crate) fn checkpoint_offsets(&self) -> [u32; GLOAS_VAR_LEN_SECTIONS] {
+        let mut out = [0u32; GLOAS_VAR_LEN_SECTIONS];
+        if self.is_finalized_post_gloas() {
+            out = Self::offsets_from_lens_gloas(&self.var_len_section_lens_gloas());
+        } else {
+            out[..FULU_VAR_LEN_SECTIONS]
+                .copy_from_slice(&Self::offsets_from_lens_fulu(&self.var_len_section_lens_fulu()));
+        }
+        out
     }
 
     #[cfg(test)]
-    pub(crate) fn var_offsets(&self) -> [u32; VAR_LEN_SECTIONS] {
-        Self::offsets_from_lens(&self.var_len_section_lens())
+    pub(crate) fn var_offsets_fulu(&self) -> [u32; FULU_VAR_LEN_SECTIONS] {
+        Self::offsets_from_lens_fulu(&self.var_len_section_lens_fulu())
     }
 
-    /// Encode the full canonical SSZ in one pass: the 2.74 MB fixed part, then
-    /// the 12 variable bodies in SSZ-declared order.
     pub fn encode_ssz(&self, w: &mut Vec<u8>) -> io::Result<()> {
-        if self.epoch.finalized().state().fork.current_version == self.immutable.gloas_fork_version
-        {
-            return self.encode_ssz_gloas(w);
+        if self.is_finalized_post_gloas() {
+            self.encode_ssz_gloas(w)
+        } else {
+            self.encode_ssz_fulu(w)
         }
-        let lens = self.var_len_section_lens();
-        w.reserve(FIXED_PART + lens.iter().sum::<usize>());
-        let offsets = Self::offsets_from_lens(&lens);
-        for section in Section::ALL {
+    }
+
+    fn encode_ssz_fulu(&self, w: &mut Vec<u8>) -> io::Result<()> {
+        let lens = self.var_len_section_lens_fulu();
+        w.reserve(FULU_FIXED_PART + lens.iter().sum::<usize>());
+        let offsets = Self::offsets_from_lens_fulu(&lens);
+        for section in Section::FULU {
             self.write_section(section, &offsets, w)?;
         }
         Ok(())
     }
 
-    fn encode_ssz_gloas(&self, _w: &mut Vec<u8>) -> io::Result<()> {
-        todo!("Gloas checkpoint encode — implement against EF gloas fixtures")
+    fn encode_ssz_gloas(&self, w: &mut Vec<u8>) -> io::Result<()> {
+        let lens = self.var_len_section_lens_gloas();
+        w.reserve(GLOAS_FIXED_PART + lens.iter().sum::<usize>());
+        let offsets = Self::offsets_from_lens_gloas(&lens);
+        for section in Section::GLOAS {
+            self.write_section(section, &offsets, w)?;
+        }
+        Ok(())
     }
 
     pub(crate) fn write_section<W: Write>(
         &self,
         section: Section,
-        offsets: &[u32; VAR_LEN_SECTIONS],
+        offsets: &[u32],
         w: &mut W,
     ) -> io::Result<()> {
         match section {
-            Section::FixedPart => self.write_fixed_part(w, offsets),
+            Section::FixedPart => {
+                if self.is_finalized_post_gloas() {
+                    self.write_fixed_part_gloas(w, offsets)
+                } else {
+                    self.write_fixed_part_fulu(w, offsets)
+                }
+            }
             Section::HistoricalRoots => write_b256_slice(w, &self.immutable.historical_roots),
             Section::Eth1Votes => self.eth1.finalized().write_ssz(w),
             Section::Validators => {
@@ -190,6 +303,19 @@ impl BeaconState {
             Section::PendingConsolidations => {
                 self.pending.consolidations.with_finalized_locked(|q| q.write_ssz(w))
             }
+            Section::Builders => self.builders.finalized().write_ssz(w),
+            Section::BuilderPendingWithdrawals => {
+                self.pending.builder_withdrawals.with_finalized_locked(|q| q.write_ssz(w))
+            }
+            Section::LatestExecutionPayloadBid => {
+                self.slot_states.finalized().state().latest_execution_payload_bid.write_ssz(w)
+            }
+            Section::PayloadExpectedWithdrawals => {
+                for wd in &self.slot_states.finalized().state().payload_expected_withdrawals {
+                    wd.write_ssz(w)?;
+                }
+                Ok(())
+            }
         }
     }
 
@@ -202,7 +328,7 @@ impl BeaconState {
         &self,
         section: Section,
         chunk: usize,
-        offsets: &[u32; VAR_LEN_SECTIONS],
+        offsets: &[u32],
         w: &mut W,
     ) -> io::Result<bool> {
         if section == Section::Validators {
@@ -219,14 +345,10 @@ impl BeaconState {
         }
     }
 
-    /// Emit the 2.74 MB fixed part, fields in SSZ order, with the variable
-    /// offsets spliced into their slots. `offs` must come from
-    /// [`Self::offsets_from_lens`].
-    fn write_fixed_part<W: Write>(
-        &self,
-        w: &mut W,
-        offs: &[u32; VAR_LEN_SECTIONS],
-    ) -> io::Result<()> {
+    /// Fixed-part fields F0..F23 (genesis_time through next_sync_committee),
+    /// byte-identical across Fulu and Gloas. `off[0..=6]` are the seven leading
+    /// variable offsets (historical_roots..inactivity_scores).
+    fn write_fixed_prefix<W: Write>(&self, w: &mut W, off: &[u32]) -> io::Result<()> {
         let imm = &self.immutable;
         let slot_base = self.slot_states.finalized();
         let sl = slot_base.state();
@@ -252,16 +374,16 @@ impl BeaconState {
         slot_base.write_roots_ssz(w)?;
 
         // F7_OFF historical_roots
-        w_u32(w, offs[0])?;
+        w_u32(w, off[0])?;
         // F8 eth1_data
         write_eth1_data(w, &sl.eth1_data)?;
         // F9_OFF eth1_data_votes
-        w_u32(w, offs[1])?;
+        w_u32(w, off[1])?;
         // F10 eth1_deposit_index
         w_u64(w, sl.eth1_deposit_index)?;
         // F11_OFF/F12_OFF validators, balances
-        w_u32(w, offs[2])?;
-        w_u32(w, offs[3])?;
+        w_u32(w, off[2])?;
+        w_u32(w, off[3])?;
 
         // The current epoch's bucket is only
         // flushed to the array tier at the epoch boundary, so mid-epoch the live
@@ -280,8 +402,8 @@ impl BeaconState {
         }
 
         // F15_OFF/F16_OFF previous/current participation
-        w_u32(w, offs[4])?;
-        w_u32(w, offs[5])?;
+        w_u32(w, off[4])?;
+        w_u32(w, off[5])?;
         // F17 justification_bits (Bitvector[4], single byte; upper bits 0)
         w.write_all(&[est.justification_bits & 0x0F])?;
         // F18/F19/F20 checkpoints
@@ -289,31 +411,81 @@ impl BeaconState {
         write_checkpoint(w, &est.current_justified_checkpoint)?;
         write_checkpoint(w, &est.finalized_checkpoint)?;
         // F21_OFF inactivity_scores
-        w_u32(w, offs[6])?;
+        w_u32(w, off[6])?;
         // F22/F23 sync committees
         write_sync_committee(w, &lt.current_sync_committee)?;
-        write_sync_committee(w, &lt.next_sync_committee)?;
-        // F24_OFF execution_payload_header
-        w_u32(w, offs[7])?;
-        // F25/F26 withdrawal indices
+        write_sync_committee(w, &lt.next_sync_committee)
+    }
+
+    /// Fixed-part fields shared by both forks' tails.
+    fn write_summaries_scalars_pending<W: Write>(
+        &self,
+        w: &mut W,
+        hist_summaries: u32,
+        pending_deposits: u32,
+        pending_partial_withdrawals: u32,
+        pending_consolidations: u32,
+    ) -> io::Result<()> {
+        let sl = self.slot_states.finalized().state();
+        let est = self.epoch.finalized().state();
+
         w_u64(w, sl.next_withdrawal_index)?;
         w_u64(w, sl.next_withdrawal_validator_index)?;
-        // F27_OFF historical_summaries
-        w_u32(w, offs[8])?;
-        // F28..F33 deposit/exit/consolidation scalars (note: F29 lives in epoch)
+        w_u32(w, hist_summaries)?;
         w_u64(w, sl.deposit_requests_start_index)?;
         w_u64(w, est.deposit_balance_to_consume)?;
         w_u64(w, sl.exit_balance_to_consume)?;
         w_u64(w, sl.earliest_exit_epoch)?;
         w_u64(w, sl.consolidation_balance_to_consume)?;
         w_u64(w, sl.earliest_consolidation_epoch)?;
-        // F34_OFF/F35_OFF/F36_OFF pending queues
-        w_u32(w, offs[9])?;
-        w_u32(w, offs[10])?;
-        w_u32(w, offs[11])?;
-        // F37 proposer_lookahead
+        w_u32(w, pending_deposits)?;
+        w_u32(w, pending_partial_withdrawals)?;
+        w_u32(w, pending_consolidations)?;
         for v in est.proposer_lookahead.iter() {
             w_u64(w, *v)?;
+        }
+        Ok(())
+    }
+
+    fn write_fixed_part_fulu<W: Write>(&self, w: &mut W, offs: &[u32]) -> io::Result<()> {
+        self.write_fixed_prefix(w, offs)?;
+        // F24_OFF execution_payload_header
+        w_u32(w, offs[7])?;
+        // F25/F26 withdrawal indices, F27_OFF historical_summaries, F28..F33
+        // scalars, F34..F36 pending offsets, F37 proposer_lookahead
+        self.write_summaries_scalars_pending(w, offs[8], offs[9], offs[10], offs[11])
+    }
+
+    fn write_fixed_part_gloas<W: Write>(&self, w: &mut W, offs: &[u32]) -> io::Result<()> {
+        self.write_fixed_prefix(w, offs)?;
+        let epoch_base = self.epoch.finalized();
+        let sl = self.slot_states.finalized().state();
+
+        // latest_block_hash
+        w.write_all(&sl.latest_block_hash)?;
+        // withdrawal indices, historical_summaries offset, scalars, pending
+        // offsets, proposer_lookahead
+        self.write_summaries_scalars_pending(w, offs[7], offs[8], offs[9], offs[10])?;
+        // builders offset
+        w_u32(w, offs[11])?;
+        // next_withdrawal_builder_index
+        w_u64(w, sl.next_withdrawal_builder_index)?;
+        // execution_payload_availability (Bitvector[SLOTS_PER_HISTORICAL_ROOT])
+        w.write_all(&sl.execution_payload_availability)?;
+        // builder_pending_payments (Vector[BuilderPendingPayment, 2*SPE])
+        for p in sl.builder_pending_payments.iter() {
+            p.write_ssz(w)?;
+        }
+        // builder_pending_withdrawals / latest_execution_payload_bid /
+        // payload_expected_withdrawals offsets
+        w_u32(w, offs[12])?;
+        w_u32(w, offs[13])?;
+        w_u32(w, offs[14])?;
+        // ptc_window (Vector[Vector[ValidatorIndex, PTC_SIZE], PTC_WINDOW_LEN])
+        for committee in epoch_base.ptc_window.iter() {
+            for v in committee.iter() {
+                w_u64(w, *v)?;
+            }
         }
         Ok(())
     }
@@ -346,12 +518,6 @@ impl BeaconState {
     // 48-B compressed form), the dominant cost of a checkpoint load. Layout:
     // `PUBKEYS_HEADER` (magic + version + count) then `count × 96 B` in
     // validator-index order.
-
-    #[cfg(test)]
-    pub(crate) fn pubkeys_sidecar_len(&self) -> usize {
-        PUBKEYS_HEADER + self.validators.finalized().validator_count() * PUBKEY_SER
-    }
-
     pub(crate) fn write_pubkeys_chunk<W: Write>(
         &self,
         chunk: usize,
@@ -368,6 +534,11 @@ impl BeaconState {
         let end = (start + PUBKEYS_PER_CHUNK).min(n);
         v.write_pubkeys_range(start, end, w)?;
         Ok(end >= n)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pubkeys_sidecar_len(&self) -> usize {
+        PUBKEYS_HEADER + self.validators.finalized().validator_count() * PUBKEY_SER
     }
 }
 
@@ -464,15 +635,54 @@ mod tests {
         assert_eq!(once, twice, "encode → decompose → encode is not a fixed point");
 
         // Chunk-streamed path must produce the same bytes.
-        let offsets = bs.var_offsets();
+        let offsets = bs.var_offsets_fulu();
         let mut streamed = Vec::with_capacity(bs.ssz_len());
-        for section in Section::ALL {
+        for section in Section::FULU {
             let mut chunk = 0;
             while !bs.write_section_chunk(section, chunk, &offsets, &mut streamed).expect("chunk") {
                 chunk += 1;
             }
         }
         assert_eq!(once, streamed, "chunk-streamed SSZ differs from one-pass");
+    }
+
+    /// Gloas counterpart: an empty Gloas state (fork forced) must be a
+    /// byte-exact `encode → decompose → encode` fixed point, and the
+    /// chunk-streamed path must match the one-pass path over the 16 Gloas
+    /// sections.
+    #[test]
+    fn encode_decompose_gloas_fixed_point() {
+        let cfg = SpecConfig::mainnet();
+        let mut bs = BeaconState::empty_test(0);
+        // `is_finalized_post_gloas` compares the finalized epoch fork against
+        // `immutable.gloas_fork_version`; hold both at the cfg version so decode
+        // routes to Gloas too.
+        bs.immutable.gloas_fork_version = cfg.gloas_fork_version;
+        let mut epoch = EpochStateFinalized::default();
+        epoch.state.fork.current_version = cfg.gloas_fork_version;
+        bs.epoch = EpochGroup::new(epoch);
+        assert!(bs.is_finalized_post_gloas());
+
+        let mut once = Vec::with_capacity(bs.ssz_len());
+        bs.encode_ssz(&mut once).expect("encode");
+        assert_eq!(once.len(), bs.ssz_len(), "ssz_len disagrees with encoded length");
+
+        let reloaded = BeaconState::decompose(&once, &cfg, None)
+            .expect("decompose of self-encoded gloas state");
+        assert!(reloaded.is_finalized_post_gloas());
+        let mut twice = Vec::with_capacity(reloaded.ssz_len());
+        reloaded.encode_ssz(&mut twice).expect("re-encode");
+        assert_eq!(once, twice, "gloas encode → decompose → encode is not a fixed point");
+
+        let offsets = bs.checkpoint_offsets();
+        let mut streamed = Vec::with_capacity(bs.ssz_len());
+        for section in Section::GLOAS {
+            let mut chunk = 0;
+            while !bs.write_section_chunk(section, chunk, &offsets, &mut streamed).expect("chunk") {
+                chunk += 1;
+            }
+        }
+        assert_eq!(once, streamed, "gloas chunk-streamed SSZ differs from one-pass");
     }
 
     /// Regression: a checkpoint persisted mid-epoch must encode the *live*

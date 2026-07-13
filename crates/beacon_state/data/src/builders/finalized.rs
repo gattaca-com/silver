@@ -1,3 +1,5 @@
+use std::io::{self, Write};
+
 use super::builder_hash;
 use crate::{
     DecomposeError,
@@ -60,6 +62,22 @@ impl FinalizedBuilders {
             builder_capacity(count),
         );
         Ok(Self { builders, count, hash })
+    }
+
+    pub(crate) fn ssz_len(&self) -> usize {
+        self.count * BUILDER_SSZ
+    }
+
+    pub(crate) fn write_ssz<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        for b in self.as_slice() {
+            w.write_all(&b.pubkey)?;
+            w.write_all(&[b.version])?;
+            w.write_all(&b.execution_address)?;
+            w.write_all(&b.balance.to_le_bytes())?;
+            w.write_all(&b.deposit_epoch.to_le_bytes())?;
+            w.write_all(&b.withdrawable_epoch.to_le_bytes())?;
+        }
+        Ok(())
     }
 
     #[inline]

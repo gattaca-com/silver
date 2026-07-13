@@ -9,9 +9,8 @@ use flux::communication::Seqlock;
 use flux_profiler::timed;
 
 use crate::{
-    BeaconState, CHECKPOINT_SECTIONS, EpochGroup, LongtailGroup, StateId, StateReadView,
-    StateWriterView,
-    encode::{Section, VAR_LEN_SECTIONS},
+    BeaconState, EpochGroup, LongtailGroup, StateId, StateReadView, StateWriterView,
+    encode::GLOAS_VAR_LEN_SECTIONS,
 };
 
 /// The shared `BeaconState` allocation. Lifetime rides the `Arc` (a reader
@@ -264,12 +263,12 @@ impl BeaconStateReader {
 
             let state = self.state.get();
             buf.clear();
-            let pubkeys_stage = cursor.section >= CHECKPOINT_SECTIONS;
+            let pubkeys_stage = cursor.section >= cursor.section_count;
             let complete = if pubkeys_stage {
                 state.write_pubkeys_chunk(cursor.chunk, buf)?
             } else {
                 state.write_section_chunk(
-                    Section::ALL[cursor.section],
+                    state.checkpoint_sections()[cursor.section],
                     cursor.chunk,
                     &cursor.offsets,
                     buf,
@@ -311,14 +310,16 @@ impl BeaconStateReader {
             }
             sync::atomic::fence(Ordering::Acquire);
             let state = self.state.get();
-            let lens = state.var_len_section_lens();
+            let offsets = state.checkpoint_offsets();
+            let section_count = state.checkpoint_sections().len();
             let slot = state.slot_states.finalized().state().slot;
             sync::atomic::fence(Ordering::Acquire);
             if self.finalize_version() == Some(version) {
                 *cursor = CheckpointCursor {
                     version,
                     slot,
-                    offsets: BeaconState::offsets_from_lens(&lens),
+                    offsets,
+                    section_count,
                     section: 0,
                     chunk: 0,
                     done: false,
@@ -351,8 +352,9 @@ pub enum CheckpointChunk {
 pub struct CheckpointCursor {
     version: u64,
     slot: u64,
-    offsets: [u32; VAR_LEN_SECTIONS],
-    // Section index; pubkeys stage once past `CHECKPOINT_SECTIONS`.
+    offsets: [u32; GLOAS_VAR_LEN_SECTIONS],
+    section_count: usize,
+    // Section index; pubkeys stage once past `section_count`.
     section: usize,
     // Chunk index within `section` — only validators/pubkeys span >1.
     chunk: usize,
@@ -366,11 +368,10 @@ impl CheckpointCursor {
         self.slot
     }
 
-    /// Index of the section the next chunk comes from
-    /// (`0..CHECKPOINT_SECTIONS`, canonical SSZ order); `None` once in the
-    /// pubkeys stage. Diagnostics only.
+    /// Index of the section the next chunk comes from (canonical SSZ order);
+    /// `None` once in the pubkeys stage. Diagnostics only.
     pub fn section_index(&self) -> Option<usize> {
-        (self.section < CHECKPOINT_SECTIONS).then_some(self.section)
+        (self.section < self.section_count).then_some(self.section)
     }
 }
 

@@ -1,3 +1,5 @@
+use std::io::{self, Write};
+
 use crate::{
     DecomposeError,
     decompose::common::{b256, u32_le, u64_le},
@@ -97,6 +99,15 @@ impl BuilderPendingPayment {
             proposer_index: u64_le(s, 44),
         }
     }
+
+    pub(crate) fn write_ssz<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        w.write_all(&self.weight.to_le_bytes())?;
+        // BuilderPendingWithdrawal: fee_recipient(20) + amount(8) + builder_index(8)
+        w.write_all(&self.withdrawal.fee_recipient)?;
+        w.write_all(&self.withdrawal.amount.to_le_bytes())?;
+        w.write_all(&self.withdrawal.builder_index.to_le_bytes())?;
+        w.write_all(&self.proposer_index.to_le_bytes())
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -115,6 +126,13 @@ impl Withdrawal {
             address: s[16..36].try_into().unwrap(),
             amount: u64_le(s, 36),
         }
+    }
+
+    pub(crate) fn write_ssz<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        w.write_all(&self.index.to_le_bytes())?;
+        w.write_all(&self.validator_index.to_le_bytes())?;
+        w.write_all(&self.address)?;
+        w.write_all(&self.amount.to_le_bytes())
     }
 }
 
@@ -179,5 +197,33 @@ impl ExecutionPayloadBid {
                 .collect(),
             execution_requests_root: b256(body, 192),
         })
+    }
+
+    /// SSZ-serialised length: the 224-byte fixed part plus the variable
+    /// `blob_kzg_commitments` list.
+    pub(crate) fn ssz_len(&self) -> usize {
+        EXECUTION_PAYLOAD_BID_FIXED + self.blob_kzg_commitments.len() * KZG_COMMITMENT_SSZ
+    }
+
+    /// SSZ-encode the bid (checkpoint encoding) — inverse of
+    /// [`Self::from_ssz`]. `blob_kzg_commitments` is the sole variable
+    /// field; its offset slot at byte 188 is the fixed-part size.
+    pub(crate) fn write_ssz<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        w.write_all(&self.parent_block_hash)?; // [0..32]
+        w.write_all(&self.parent_block_root)?; // [32..64]
+        w.write_all(&self.block_hash)?; // [64..96]
+        w.write_all(&self.prev_randao)?; // [96..128]
+        w.write_all(&self.fee_recipient)?; // [128..148]
+        w.write_all(&self.gas_limit.to_le_bytes())?; // [148..156]
+        w.write_all(&self.builder_index.to_le_bytes())?; // [156..164]
+        w.write_all(&self.slot.to_le_bytes())?; // [164..172]
+        w.write_all(&self.value.to_le_bytes())?; // [172..180]
+        w.write_all(&self.execution_payment.to_le_bytes())?; // [180..188]
+        w.write_all(&(EXECUTION_PAYLOAD_BID_FIXED as u32).to_le_bytes())?; // [188..192] offset
+        w.write_all(&self.execution_requests_root)?; // [192..224]
+        for c in &self.blob_kzg_commitments {
+            w.write_all(c)?;
+        }
+        Ok(())
     }
 }
