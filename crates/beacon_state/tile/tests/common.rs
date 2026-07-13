@@ -2,7 +2,10 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -137,7 +140,7 @@ impl Harness {
                 .unwrap_or_else(|e| panic!("decompose checkpoint: {e}"));
             BeaconStateTile::new(
                 ticker,
-                SpecConfig::mainnet(),
+                Arc::new(SpecConfig::mainnet()),
                 &SyncingConfig::default(),
                 gc,
                 rc,

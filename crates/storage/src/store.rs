@@ -719,6 +719,15 @@ impl Store {
                     }
                 }
             }
+            // Request-only for envelopes: we don't persist/serve them. Reply
+            // with an empty list (empty `units` drains straight to `Complete`),
+            // giving the peer a clean "none held" rather than a hung stream that
+            // times out and scores us down. `ByRoot` carries a tcache handle —
+            // acquire it so the inbound slot is released.
+            silver_common::RpcRequest::ExecutionPayloadEnvelopesByRange(_) => {}
+            silver_common::RpcRequest::ExecutionPayloadEnvelopesByRoot(tcache_read) => {
+                let _ = rpc_consumer.acquire(tcache_read);
+            }
             // Unhandled request kind: no response (matches prior behaviour).
             _ => return,
         }
@@ -842,7 +851,7 @@ mod tests {
         time::{Duration, Instant},
     };
 
-    use crate::tile::IoEvent;
+    use crate::{tile::IoEvent, util};
 
     #[test]
     fn concurrent_read_write() {
@@ -1102,6 +1111,54 @@ mod tests {
     }
 
     #[test]
+    fn envelope_range_request_served_empty() {
+        use silver_common::{
+            P2pSend, P2pStreamId, RpcOutbound, RpcRequest, RpcRequestInbound, RpcResponse,
+            RpcResponseOutbound, StreamProtocol, TCache, TCacheProducer,
+            ssz_view::EXECUTION_PAYLOAD_ENVELOPES_BY_RANGE_REQ_SIZE,
+        };
+
+        let store_path = format!("/tmp/test_store_env_{}", rand::random::<u32>());
+        let _ = std::fs::remove_dir_all(&store_path);
+        let mut store = super::Store::load(store_path.clone()).unwrap();
+
+        // We don't persist envelopes, but an inbound range request must still get
+        // a clean empty response (`Complete` only), never a hung stream.
+        let req_producer = TCache::producer("env_req", 1024 * 1024);
+        let mut req_consumer =
+            req_producer.cache_ref().random_access("env_req_cons", true).unwrap();
+        let sid = P2pStreamId::new(9, 1, StreamProtocol::ExecutionPayloadEnvelopesByRange, false);
+        let mut req = [0u8; EXECUTION_PAYLOAD_ENVELOPES_BY_RANGE_REQ_SIZE];
+        req[0..8].copy_from_slice(&10u64.to_le_bytes());
+        req[8..16].copy_from_slice(&5u64.to_le_bytes());
+        store.rpc_request(&mut req_consumer, RpcRequestInbound {
+            stream_id: sid,
+            request: RpcRequest::ExecutionPayloadEnvelopesByRange(req),
+        });
+
+        let fork_digest = [1, 2, 3, 4];
+        let producer_cache = TCache::multi_producer("env_rpc_in", 1024 * 1024);
+        let mut producer = producer_cache.clone();
+        let mut responses = vec![];
+        store
+            .file_io(&fork_digest, 0, &mut producer, &mut |s| {
+                if let IoEvent::P2pSend(s) = s {
+                    responses.push(s);
+                }
+            })
+            .unwrap();
+
+        assert_eq!(responses.len(), 1, "empty envelope response is just Complete");
+        assert!(matches!(
+            &responses[0],
+            P2pSend::Rpc(RpcOutbound::Response(RpcResponseOutbound {
+                response: RpcResponse::Complete,
+                ..
+            }))
+        ));
+    }
+
+    #[test]
     fn column_fork_persist_serve_promote() {
         use silver_common::{
             P2pSend, P2pStreamId, RpcOutbound, RpcRequest, RpcRequestInbound, RpcResponse,
@@ -1273,7 +1330,7 @@ mod tests {
         block[108..116].copy_from_slice(&7u64.to_le_bytes());
         block[116..148].copy_from_slice(&parent_root);
         block[148..180].copy_from_slice(&state_root);
-        let block_root = crate::util::block_root(&block);
+        let block_root = util::block_root_fulu(&block);
 
         let mut blocks = TCache::producer("backfill_index_blocks", 1 << 20);
         let mut res = blocks.reserve(block.len(), true).unwrap();
@@ -1319,7 +1376,7 @@ mod tests {
         block[148..180].copy_from_slice(&state_root);
         block[body_start + 388..body_start + 392].copy_from_slice(&396u32.to_le_bytes());
         block[body_start + 392..body_start + 396].copy_from_slice(&404u32.to_le_bytes());
-        let block_root = crate::util::block_root(&block);
+        let block_root = util::block_root_fulu(&block);
 
         let mut blocks = TCache::producer("column_backfill_blocks", 1 << 20);
         let mut res = blocks.reserve(block.len(), true).unwrap();
@@ -1381,7 +1438,7 @@ mod tests {
         block[148..180].copy_from_slice(&state_root);
         block[body_start + 388..body_start + 392].copy_from_slice(&396u32.to_le_bytes());
         block[body_start + 392..body_start + 396].copy_from_slice(&404u32.to_le_bytes());
-        let block_root = crate::util::block_root(&block);
+        let block_root = util::block_root_fulu(&block);
 
         // Block on disk, no columns — exactly the post-sync state.
         let dir = store.block_slot_dir(slot);

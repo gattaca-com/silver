@@ -6,11 +6,10 @@ use crate::{
     Enr, GossipTopic, Identify, MessageId, P2pStreamId, PeerId, StreamProtocol, TCacheError,
     TCacheRead,
     ssz_view::{
-        BLOCKS_BY_RANGE_REQ_SIZE, BeaconBlocksByRangeRequestView, BeaconBlocksByRootRequestView,
-        DC_BY_RANGE_REQ_MAX, DataColumnSidecarFuluView, DataColumnSidecarsByRangeRequestView,
-        DataColumnsByRootIdentifierView, GOODBYE_SIZE, GoodbyeView, METADATA_SIZE, MetadataView,
-        PING_SIZE, PingView, STATUS_V1_SIZE, STATUS_V2_SIZE, SignedBeaconBlockView, SszView,
-        StatusView,
+        BLOCKS_BY_RANGE_REQ_SIZE, BeaconBlocksByRangeRequestView, DC_BY_RANGE_REQ_MAX,
+        DataColumnSidecarsByRangeRequestView, EXECUTION_PAYLOAD_ENVELOPES_BY_RANGE_REQ_SIZE,
+        ExecutionPayloadEnvelopesByRangeRequestView, GOODBYE_SIZE, METADATA_SIZE, PING_SIZE,
+        STATUS_V1_SIZE, STATUS_V2_SIZE, SignedBeaconBlockView, SszView, StatusView,
     },
 };
 
@@ -53,6 +52,8 @@ pub enum RpcRequest {
     BlockByRoot(TCacheRead),
     DataColumnsByRange { ssz: [u8; DC_BY_RANGE_REQ_MAX], len: usize },
     DataColumnsByRoot(TCacheRead),
+    ExecutionPayloadEnvelopesByRange([u8; EXECUTION_PAYLOAD_ENVELOPES_BY_RANGE_REQ_SIZE]),
+    ExecutionPayloadEnvelopesByRoot(TCacheRead),
 }
 
 impl RpcRequest {
@@ -67,6 +68,12 @@ impl RpcRequest {
             RpcRequest::BlockByRoot { .. } => StreamProtocol::BeaconBlocksByRoot,
             RpcRequest::DataColumnsByRange { .. } => StreamProtocol::DataColumnSidecarsByRange,
             RpcRequest::DataColumnsByRoot { .. } => StreamProtocol::DataColumnSidecarsByRoot,
+            RpcRequest::ExecutionPayloadEnvelopesByRange(_) => {
+                StreamProtocol::ExecutionPayloadEnvelopesByRange
+            }
+            RpcRequest::ExecutionPayloadEnvelopesByRoot { .. } => {
+                StreamProtocol::ExecutionPayloadEnvelopesByRoot
+            }
         }
     }
 
@@ -92,6 +99,12 @@ impl RpcRequest {
             RpcRequest::DataColumnsByRoot(read) => {
                 data_columns_by_root_tokens_from_len(read.len()?)
             }
+            RpcRequest::ExecutionPayloadEnvelopesByRange(ssz) => {
+                ExecutionPayloadEnvelopesByRangeRequestView::count(ssz)
+            }
+            RpcRequest::ExecutionPayloadEnvelopesByRoot(read) => {
+                fixed_width_list_tokens(read.len()?, 32)
+            }
         };
         Ok(tokens.max(1))
     }
@@ -109,7 +122,6 @@ fn data_columns_by_root_tokens_from_len(len: usize) -> u64 {
     len.saturating_sub(4 + 32 + 4).div_ceil(8) as u64
 }
 
-/// An RPC request recevied from a peer.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct RpcRequestInbound {
@@ -117,7 +129,6 @@ pub struct RpcRequestInbound {
     pub request: RpcRequest,
 }
 
-/// An RPC request to be sent to a peer.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct RpcRequestOutbound {
@@ -141,6 +152,10 @@ pub enum RpcResponse {
         fork_digest: [u8; 4],
         ssz: TCacheRead,
     },
+    ExecutionPayloadEnvelope {
+        fork_digest: [u8; 4],
+        ssz: TCacheRead,
+    },
     Error {
         error: u8,
         msg: [u8; 256],
@@ -156,12 +171,50 @@ pub enum RpcResponse {
 /// tile's historical backfill. Block responses are broadcast to every tile, not
 /// routed by issuer, so non-storage tiles use this to recognise and skip
 /// backfill traffic.
+pub const REQUEST_ID_PREFIX_MASK: u64 = 0xffff_ffff_0000_0000 & !GLOAS_ERA_FLAG;
 pub const BACKFILL_REQUEST_ID: u64 = 0xbacc_f111 << 32;
 pub const COLUMN_BACKFILL_REQUEST_ID: u64 = 0xc01b_accf << 32;
 pub const BASE_REQUEST_ID: u64 = 0x00da_5da5 << 32; // DAS prefix.
-pub const REQUEST_ID_PREFIX_MASK: u64 = 0xffff_ffff_0000_0000;
+pub const ENVELOPE_REQUEST_ID: u64 = 0x0e0e_10be << 32; // envelope prefix.
+/// OR'd into a live data-column range request id when the range is Gloas-era,
+/// so storage picks the Gloas sidecar layout on the response — the sidecar's
+/// own `slot` sits at a layout-dependent offset and can't be read before the
+/// layout is chosen. Only the column-response path consumes it. Carved out of
+/// `REQUEST_ID_PREFIX_MASK` so request-category matching ignores it.
+pub const GLOAS_ERA_FLAG: u64 = 1 << 56;
 
-/// RPC response received from a peer.
+const _: () = assert!(
+    (BACKFILL_REQUEST_ID | COLUMN_BACKFILL_REQUEST_ID | BASE_REQUEST_ID | ENVELOPE_REQUEST_ID) &
+        GLOAS_ERA_FLAG ==
+        0,
+    "GLOAS_ERA_FLAG must not collide with any request-id prefix",
+);
+
+#[inline]
+pub fn msg_is_backfill(id: u64) -> bool {
+    id & REQUEST_ID_PREFIX_MASK == BACKFILL_REQUEST_ID
+}
+
+#[inline]
+pub fn msg_is_column_backfill(id: u64) -> bool {
+    id & REQUEST_ID_PREFIX_MASK == COLUMN_BACKFILL_REQUEST_ID
+}
+
+#[inline]
+pub fn msg_is_live_column_request(id: u64) -> bool {
+    id & REQUEST_ID_PREFIX_MASK == BASE_REQUEST_ID
+}
+
+#[inline]
+pub fn msg_is_envelope_request(id: u64) -> bool {
+    id & REQUEST_ID_PREFIX_MASK == ENVELOPE_REQUEST_ID
+}
+
+#[inline]
+pub fn msg_is_post_gloas(id: u64) -> bool {
+    id & GLOAS_ERA_FLAG != 0
+}
+
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct RpcResponseInbound {
@@ -170,24 +223,6 @@ pub struct RpcResponseInbound {
     pub response: RpcResponse,
 }
 
-impl RpcResponseInbound {
-    #[inline]
-    pub fn is_backfill(&self) -> bool {
-        self.application_id & BACKFILL_REQUEST_ID == BACKFILL_REQUEST_ID
-    }
-
-    #[inline]
-    pub fn is_column_backfill(&self) -> bool {
-        self.application_id & REQUEST_ID_PREFIX_MASK == COLUMN_BACKFILL_REQUEST_ID
-    }
-
-    #[inline]
-    pub fn is_live_column_request(&self) -> bool {
-        self.application_id & REQUEST_ID_PREFIX_MASK == BASE_REQUEST_ID
-    }
-}
-
-/// RPC response to send to a peer.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct RpcResponseOutbound {
@@ -231,11 +266,13 @@ impl RpcOutbound {
             RpcOutbound::Request(req) => match &req.request {
                 RpcRequest::BlockByRoot(tcache_read) => Some(tcache_read),
                 RpcRequest::DataColumnsByRoot(tcache_read) => Some(tcache_read),
+                RpcRequest::ExecutionPayloadEnvelopesByRoot(tcache_read) => Some(tcache_read),
                 _ => None,
             },
             RpcOutbound::Response(rsp) => match &rsp.response {
                 RpcResponse::BeaconBlock { fork_digest: _, ssz } => Some(ssz),
                 RpcResponse::DataColumnSidecar { fork_digest: _, ssz } => Some(ssz),
+                RpcResponse::ExecutionPayloadEnvelope { fork_digest: _, ssz } => Some(ssz),
                 _ => None,
             },
         }
@@ -396,6 +433,11 @@ pub enum PeerEvent {
         p2p_peer: Option<usize>,
         block_root: [u8; 32],
     },
+    SendEnvelopesByRootRequest {
+        request_id: u64,
+        p2p_peer: Option<usize>,
+        block_root: [u8; 32],
+    },
     SendRpcRequest {
         request_id: u64,
         rpc: RpcRequest,
@@ -548,15 +590,18 @@ pub enum PeerControl {
         enr: Enr,
     },
     P2pSend(P2pSend),
-    /// Generate a data columns by root request.
     P2pDataColumnsRequest {
         app_id: u64,
         peer: usize,
         block_root: [u8; 32],
         columns: u128,
     },
-    /// Generate a blocks by root request.
     P2pBlockByRootRequest {
+        app_id: u64,
+        peer: usize,
+        block_root: [u8; 32],
+    },
+    P2pEnvelopeByRootRequest {
         app_id: u64,
         peer: usize,
         block_root: [u8; 32],
@@ -598,64 +643,6 @@ impl From<IpAddr> for IpBytes {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-#[repr(C)]
-pub enum RpcMsg {
-    // Status v2 and MetaData v3 are symmetric: same view for req and resp.
-    Status(StatusView),
-    /// `Ping` request and `Pong` response share wire shape (uint64 seq).
-    Ping(PingView),
-    /// `Goodbye` is request-only (uint64 reason).
-    Goodbye(GoodbyeView),
-    /// `MetaData` request body is empty; this carries the response only.
-    MetaData(MetadataView),
-    BlocksRangeReq(BeaconBlocksByRangeRequestView),
-    BlocksRootReq(BeaconBlocksByRootRequestView),
-    DataColumnRangeReq(DataColumnSidecarsByRangeRequestView),
-    DataColumnByRoot(DataColumnsByRootIdentifierView),
-    // rpc response chunks (one per successful response_chunk)
-    BlocksRangeResp(SignedBeaconBlockView),
-    BlocksRootResp(SignedBeaconBlockView),
-    DataColumnRangeResp(DataColumnSidecarFuluView),
-    DataColumnByRootResp(DataColumnSidecarFuluView),
-    Empty,
-}
-
-impl From<&RpcInbound> for RpcMsg {
-    fn from(value: &RpcInbound) -> Self {
-        match value {
-            RpcInbound::Request(req) => match req.request {
-                RpcRequest::StatusV1(_) => RpcMsg::Status(StatusView),
-                RpcRequest::StatusV2(_) => RpcMsg::Status(StatusView),
-                RpcRequest::Ping(_) => RpcMsg::Ping(PingView),
-                RpcRequest::Goodbye(_) => RpcMsg::Goodbye(GoodbyeView),
-                RpcRequest::MetaData => RpcMsg::Empty,
-                RpcRequest::BlocksByRange(_) => {
-                    RpcMsg::BlocksRangeReq(BeaconBlocksByRangeRequestView)
-                }
-                RpcRequest::BlockByRoot(_) => RpcMsg::BlocksRootReq(BeaconBlocksByRootRequestView),
-                RpcRequest::DataColumnsByRange { .. } => {
-                    RpcMsg::DataColumnRangeReq(DataColumnSidecarsByRangeRequestView)
-                }
-                RpcRequest::DataColumnsByRoot(_) => {
-                    RpcMsg::DataColumnByRoot(DataColumnsByRootIdentifierView)
-                }
-            },
-            RpcInbound::Response(rsp) => match rsp.response {
-                RpcResponse::StatusV1(_) => RpcMsg::Status(StatusView),
-                RpcResponse::StatusV2(_) => RpcMsg::Status(StatusView),
-                RpcResponse::Ping(_) => RpcMsg::Ping(PingView),
-                RpcResponse::MetaData(_) => RpcMsg::MetaData(MetadataView),
-                RpcResponse::BeaconBlock { .. } => RpcMsg::BlocksRangeResp(SignedBeaconBlockView),
-                RpcResponse::DataColumnSidecar { .. } => {
-                    RpcMsg::DataColumnByRootResp(DataColumnSidecarFuluView)
-                }
-                _ => RpcMsg::Empty,
-            },
-        }
-    }
-}
-
 /// Origin of a rejected block. PM treats RPC rejects as evidence that the
 /// active catchup target is bad (chain poisoning); gossip rejects are not
 /// chain-attributable and only blacklist the individual block_root.
@@ -670,9 +657,20 @@ pub enum BlockSource {
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub enum BeaconStateEvent {
-    Status { ssz: [u8; STATUS_V2_SIZE], latest_block_slot: u64, wall_slot: u64 },
-    PersistBlock { ssz: TCacheRead, source: BlockSource },
-    BlockRejected { block_root: [u8; 32], source: BlockSource },
+    Status {
+        ssz: [u8; STATUS_V2_SIZE],
+        latest_block_slot: u64,
+        wall_slot: u64,
+        enr_fork_id: [u8; 16],
+    },
+    PersistBlock {
+        ssz: TCacheRead,
+        source: BlockSource,
+    },
+    BlockRejected {
+        block_root: [u8; 32],
+        source: BlockSource,
+    },
     ReplayComplete,
     BacktrackStall,
 }
@@ -749,6 +747,21 @@ pub struct EngineNewPayloadReq {
     pub data: TCacheRead,
     pub block_root: [u8; 32],
     pub block_source: BlockSource,
+}
+
+/// `engine_newPayloadV4` for a Gloas `SignedExecutionPayloadEnvelope`. Unlike a
+/// pre-Gloas block, the payload / `parent_beacon_block_root` / execution
+/// requests live in the envelope (`data`), but the blob KZG commitments do not
+/// — so the caller derives `versioned_hashes[..hash_count]` from the committed
+/// bid in state and passes them here.
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct EngineNewPayloadEnvelopeReq {
+    pub data: TCacheRead,
+    pub block_root: [u8; 32],
+    pub block_source: BlockSource,
+    pub hash_count: u8,
+    pub versioned_hashes: [[u8; 32]; MAX_BLOBS_PER_BLOCK],
 }
 
 /// Response to `engine_forkchoiceUpdatedV3`.  Fully inline.
@@ -879,6 +892,7 @@ pub struct EngineGetPayloadBodiesResp {
 pub enum EngineReq {
     Fcu(EngineFcuReq),
     NewPayload(EngineNewPayloadReq),
+    NewPayloadEnvelope(EngineNewPayloadEnvelopeReq),
     PreparePayload(EnginePreparePayloadReq),
     GetPayload(EngineGetPayloadReq),
     GetBlobs(EngineGetBlobsReq),

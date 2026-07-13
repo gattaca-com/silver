@@ -4,6 +4,7 @@
 
 use std::{
     path::PathBuf,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -164,7 +165,7 @@ fn finalized_state_loads() {
         .unwrap_or_else(|e| panic!("decompose checkpoint: {e}"));
     let mut tile = BeaconStateTile::new(
         ticker,
-        silver_beacon_state_data::SpecConfig::mainnet(),
+        Arc::new(silver_beacon_state_data::SpecConfig::mainnet()),
         &silver_config::SyncingConfig::default(),
         gossip_c,
         rpc_c,
@@ -347,7 +348,7 @@ fn tile_apply_block_ef_fixture() {
         .unwrap_or_else(|e| panic!("decompose checkpoint: {e}"));
     let mut tile = BeaconStateTile::new(
         ticker,
-        silver_beacon_state_data::SpecConfig::mainnet(),
+        Arc::new(silver_beacon_state_data::SpecConfig::mainnet()),
         &silver_config::SyncingConfig::default(),
         gossip_c,
         rpc_c,

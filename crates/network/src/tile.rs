@@ -10,7 +10,8 @@ use mio::{Events, Poll, Token};
 use quinn_proto::Transmit;
 use secp256k1::PublicKey;
 use silver_common::{
-    GossipMsgOut, P2pSend, PeerControl, PeerEvent, RpcInbound, RpcOutbound, SilverSpine,
+    BeaconStateEvent, GossipMsgOut, P2pSend, PeerControl, PeerEvent, RpcInbound, RpcOutbound,
+    SilverSpine,
 };
 use silver_discovery::{DiscV5, Discovery, DiscoveryEvent};
 
@@ -97,6 +98,12 @@ impl NetworkTile {
         let now = Instant::now();
         adapter.consume(|peer_control: PeerControl, _producers| {
             self.handle_peer_control(peer_control, now);
+        });
+
+        adapter.consume(|beacon_event: BeaconStateEvent, _producers| {
+            if let BeaconStateEvent::Status { enr_fork_id, .. } = beacon_event {
+                self.inner.update_enr_fork_id(enr_fork_id);
+            }
         });
 
         let mut on_event = |event| match event {
@@ -294,6 +301,10 @@ where
 
     pub fn p2p_mut(&mut self) -> &mut P2p {
         &mut self.p2p_endpoint
+    }
+
+    pub fn update_enr_fork_id(&mut self, eth2: [u8; 16]) {
+        self.discovery.update_enr_fork_id(eth2);
     }
 
     pub fn context_mut(&mut self) -> &mut Context {

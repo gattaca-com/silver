@@ -2,16 +2,16 @@ use flux::spine::FluxSpine;
 use silver_common::{
     BlockSource, EngineFcuReq, EngineFcuResp, EngineGetBlobsReq, EngineGetBlobsResp,
     EngineGetPayloadBodiesByHashReq, EngineGetPayloadBodiesByRangeReq, EngineGetPayloadBodiesResp,
-    EngineGetPayloadReq, EngineGetPayloadResp, EngineNewPayloadReq, EngineNewPayloadResp,
-    EnginePreparePayloadReq, EngineReq, EngineResp, PayloadValidationStatus, SilverSpine,
-    TProducer, TRandomAccess,
+    EngineGetPayloadReq, EngineGetPayloadResp, EngineNewPayloadEnvelopeReq, EngineNewPayloadReq,
+    EngineNewPayloadResp, EnginePreparePayloadReq, EngineReq, EngineResp, PayloadValidationStatus,
+    SilverSpine, TCacheRead, TProducer, TRandomAccess,
 };
 
 use crate::{
-    EngineClient,
+    EngineClient, EngineError,
     client::{
         get_blobs, get_payload, get_payload_bodies_by_hash, get_payload_bodies_by_range, send_fcu,
-        send_new_payload,
+        send_new_payload, send_new_payload_envelope,
     },
     resp_handlers::write_tcache,
     types::{ForkchoiceState, PayloadAttributesV3, Withdrawal},
@@ -29,6 +29,9 @@ pub(crate) fn handle_request(
         EngineReq::Fcu(r) => handle_fcu(client, r),
         EngineReq::NewPayload(r) => {
             handle_new_payload(client, gossip_consumer, rpc_consumer, r, producers)
+        }
+        EngineReq::NewPayloadEnvelope(r) => {
+            handle_new_payload_envelope(client, gossip_consumer, rpc_consumer, r, producers)
         }
         EngineReq::PreparePayload(r) => handle_prepare_payload(client, *r),
         EngineReq::GetPayload(r) => handle_get_payload(client, *r),
@@ -57,6 +60,11 @@ pub(crate) fn handle_request_no_el(
             payload_id: [0u8; 8],
         }),
         EngineReq::NewPayload(r) => EngineResp::NewPayload(EngineNewPayloadResp {
+            block_root: r.block_root,
+            status: PayloadValidationStatus::Valid,
+            latest_valid_hash: [0u8; 32],
+        }),
+        EngineReq::NewPayloadEnvelope(r) => EngineResp::NewPayload(EngineNewPayloadResp {
             block_root: r.block_root,
             status: PayloadValidationStatus::Valid,
             latest_valid_hash: [0u8; 32],
@@ -120,27 +128,75 @@ fn handle_new_payload(
     r: &EngineNewPayloadReq,
     producers: &mut <SilverSpine as FluxSpine>::Producers,
 ) {
-    let consumer = match r.block_source {
+    handle_new_payload_common(
+        client,
+        gossip_consumer,
+        rpc_consumer,
+        r.block_source,
+        r.data,
+        r.block_root,
+        producers,
+        "payload",
+        |client, bytes| send_new_payload(client, bytes, r.block_root),
+    );
+}
+
+#[inline]
+fn handle_new_payload_envelope(
+    client: &mut EngineClient,
+    gossip_consumer: &mut TRandomAccess,
+    rpc_consumer: &mut TRandomAccess,
+    r: &EngineNewPayloadEnvelopeReq,
+    producers: &mut <SilverSpine as FluxSpine>::Producers,
+) {
+    let hash_count = (r.hash_count as usize).min(r.versioned_hashes.len());
+    let versioned_hashes = &r.versioned_hashes[..hash_count];
+    handle_new_payload_common(
+        client,
+        gossip_consumer,
+        rpc_consumer,
+        r.block_source,
+        r.data,
+        r.block_root,
+        producers,
+        "envelope",
+        |client, bytes| send_new_payload_envelope(client, bytes, versioned_hashes, r.block_root),
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_new_payload_common(
+    client: &mut EngineClient,
+    gossip_consumer: &mut TRandomAccess,
+    rpc_consumer: &mut TRandomAccess,
+    block_source: BlockSource,
+    data: TCacheRead,
+    block_root: [u8; 32],
+    producers: &mut <SilverSpine as FluxSpine>::Producers,
+    kind: &str,
+    send: impl FnOnce(&mut EngineClient, &[u8]) -> Result<(), EngineError>,
+) {
+    let consumer = match block_source {
         BlockSource::Gossip => gossip_consumer,
         BlockSource::Rpc => rpc_consumer,
     };
-    let acquired = consumer.acquire(r.data);
+    let acquired = consumer.acquire(data);
     let bytes = match acquired.buffer() {
         Ok((b, _)) => b,
         Err(e) => {
-            tracing::warn!("failed to read payload data: {e}");
+            tracing::warn!("failed to read {kind} data: {e}");
             producers
                 .engine_resps
-                .produce(&EngineResp::NewPayload(invalid_new_payload_resp(r.block_root)).into());
+                .produce(&EngineResp::NewPayload(invalid_new_payload_resp(block_root)).into());
             return;
         }
     };
 
-    if let Err(e) = send_new_payload(client, bytes, r.block_root) {
-        tracing::warn!("failed to encode payload: {e}");
+    if let Err(e) = send(client, bytes) {
+        tracing::warn!("failed to encode {kind}: {e}");
         producers
             .engine_resps
-            .produce(&EngineResp::NewPayload(invalid_new_payload_resp(r.block_root)).into());
+            .produce(&EngineResp::NewPayload(invalid_new_payload_resp(block_root)).into());
     }
     consumer.free();
 }

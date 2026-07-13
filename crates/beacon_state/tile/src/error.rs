@@ -59,8 +59,10 @@ impl PrecheckError {
             Self::PreFinalized { .. } |
             Self::PastSlot { .. } |
             Self::FutureSlot { .. } |
-            Self::AlreadyKnown { .. } |
-            Self::UnverifiedParentPayload { .. } => Feedback::Ignore,
+            Self::AlreadyKnown { .. } => Feedback::Ignore,
+            Self::UnverifiedParentPayload { parent_root, block_root } => {
+                Feedback::AwaitParentPayload { parent_root, block_root }
+            }
             Self::ParentInvalid { block_root, .. } |
             Self::ProposerLookaheadMismatch { block_root, .. } |
             Self::ProposerIndexTooBig { block_root, .. } => Feedback::Reject(Some(block_root)),

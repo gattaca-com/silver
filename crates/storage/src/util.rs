@@ -6,12 +6,13 @@ use silver_beacon_state_data::SLOTS_PER_EPOCH;
 use silver_common::{
     ssz_hash::{
         B256, hash_concat, hash_list_fixed_elements, hash_tree_root_body_fulu,
-        hash_tree_root_fork_data, is_valid_merkle_branch, merkleize, sha256, uint64_chunk,
+        hash_tree_root_body_gloas, hash_tree_root_fork_data, is_valid_merkle_branch, merkleize,
+        sha256, uint64_chunk,
     },
     ssz_view::{
         BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF, DATA_COLUMN_SIDECAR_MIN,
-        DataColumnSidecarFuluView, MAX_BLOB_COMMITMENTS_PER_BLOCK, NUMBER_OF_COLUMNS,
-        SignedBeaconBlockView,
+        DataColumnSidecarFuluView, DataColumnSidecarGloasView, MAX_BLOB_COMMITMENTS_PER_BLOCK,
+        NUMBER_OF_COLUMNS, SignedBeaconBlockView,
     },
 };
 
@@ -44,8 +45,25 @@ pub fn body_root(body: &[u8]) -> B256 {
 /// `BeaconBlock`: both merkleize the same five leaves once the body is
 /// replaced by `body_root`. This is the value used as
 /// `DataColumnsByRootIdentifier.block_root` in DA RPC requests.
-pub fn block_root(signed_block: &[u8]) -> B256 {
-    let body_root = hash_tree_root_body_fulu(SignedBeaconBlockView::body(signed_block));
+pub fn block_root_fulu(signed_block: &[u8]) -> B256 {
+    block_root_from_body(
+        signed_block,
+        hash_tree_root_body_fulu(SignedBeaconBlockView::body(signed_block)),
+    )
+}
+
+pub fn block_root_gloas(signed_block: &[u8]) -> B256 {
+    block_root_from_body(
+        signed_block,
+        hash_tree_root_body_gloas(SignedBeaconBlockView::body(signed_block)),
+    )
+}
+
+pub fn block_root(signed_block: &[u8], is_gloas: bool) -> B256 {
+    if is_gloas { block_root_gloas(signed_block) } else { block_root_fulu(signed_block) }
+}
+
+fn block_root_from_body(signed_block: &[u8], body_root: B256) -> B256 {
     merkleize(&[
         uint64_chunk(SignedBeaconBlockView::slot(signed_block)),
         uint64_chunk(SignedBeaconBlockView::proposer_index(signed_block)),
@@ -68,25 +86,7 @@ pub fn block_root_from_sidecar(sidecar: &[u8]) -> B256 {
     ])
 }
 
-/// Spec `verify_data_column_sidecar` — pure shape/sanity checks against
-/// a `DataColumnSidecar` byte buffer. Confirms:
-/// - SSZ-level layout (offsets, total length within `[MIN, MAX]`).
-/// - `index < NUMBER_OF_COLUMNS`.
-/// - `column`, `kzg_commitments`, `kzg_proofs` are clean multiples of their
-///   per-element sizes (2048 / 48 / 48) and all carry the same element count.
-///
-/// Does NOT verify KZG cell proofs (separate function pending a KZG
-/// dep) or the proposer signature (needs proposer pubkey from state).
-pub fn verify_data_column_sidecar(sidecar: &[u8]) -> bool {
-    if !DataColumnSidecarFuluView::check_size(sidecar) {
-        return false;
-    }
-    if DataColumnSidecarFuluView::index(sidecar) >= NUMBER_OF_COLUMNS as u64 {
-        return false;
-    }
-    let column = DataColumnSidecarFuluView::column(sidecar);
-    let commits = DataColumnSidecarFuluView::kzg_commitments(sidecar);
-    let proofs = DataColumnSidecarFuluView::kzg_proofs(sidecar);
+fn check_sidecar_shape(column: &[u8], commits: &[u8], proofs: &[u8]) -> bool {
     if !column.len().is_multiple_of(BYTES_PER_CELL) ||
         !commits.len().is_multiple_of(BYTES_PER_KZG_COMMITMENT) ||
         !proofs.len().is_multiple_of(BYTES_PER_KZG_PROOF)
@@ -96,13 +96,35 @@ pub fn verify_data_column_sidecar(sidecar: &[u8]) -> bool {
     let n_cells = column.len() / BYTES_PER_CELL;
     let n_commits = commits.len() / BYTES_PER_KZG_COMMITMENT;
     let n_proofs = proofs.len() / BYTES_PER_KZG_PROOF;
-    if n_cells != n_commits || n_commits != n_proofs {
+    n_cells == n_commits && n_commits == n_proofs && n_commits <= MAX_BLOB_COMMITMENTS_PER_BLOCK
+}
+
+pub fn verify_data_column_sidecar_fulu(sidecar: &[u8]) -> bool {
+    if !DataColumnSidecarFuluView::check_size(sidecar) {
         return false;
     }
-    if n_commits > MAX_BLOB_COMMITMENTS_PER_BLOCK {
+    if DataColumnSidecarFuluView::index(sidecar) >= NUMBER_OF_COLUMNS as u64 {
         return false;
     }
-    true
+    check_sidecar_shape(
+        DataColumnSidecarFuluView::column(sidecar),
+        DataColumnSidecarFuluView::kzg_commitments(sidecar),
+        DataColumnSidecarFuluView::kzg_proofs(sidecar),
+    )
+}
+
+pub fn verify_data_column_sidecar_gloas(sidecar: &[u8], commitments: &[u8]) -> bool {
+    if !DataColumnSidecarGloasView::check_size(sidecar) {
+        return false;
+    }
+    if DataColumnSidecarGloasView::index(sidecar) >= NUMBER_OF_COLUMNS as u64 {
+        return false;
+    }
+    check_sidecar_shape(
+        DataColumnSidecarGloasView::column(sidecar),
+        commitments,
+        DataColumnSidecarGloasView::kzg_proofs(sidecar),
+    )
 }
 
 /// Spec `verify_data_column_sidecar_inclusion_proof` — re-roots the
@@ -110,7 +132,7 @@ pub fn verify_data_column_sidecar(sidecar: &[u8]) -> bool {
 /// `kzg_commitments_inclusion_proof` Merkle branch lifts that root to
 /// `signed_block_header.message.body_root`.
 ///
-/// Caller MUST have already passed `verify_data_column_sidecar`
+/// Caller MUST have already passed `verify_data_column_sidecar_fulu`
 /// (relies on the size invariants for `kzg_commitments` and the
 /// inclusion-proof bytes).
 pub fn verify_data_column_sidecar_inclusion_proof(sidecar: &[u8]) -> bool {
@@ -137,7 +159,7 @@ pub fn verify_data_column_sidecar_inclusion_proof(sidecar: &[u8]) -> bool {
 /// `sidecar.index`), so the batch's `cell_indices` is just that
 /// index repeated `N` times.
 ///
-/// Caller MUST have already passed `verify_data_column_sidecar` —
+/// Caller MUST have already passed `verify_data_column_sidecar_fulu` —
 /// this function relies on the shape invariants (matching list
 /// lengths, element-size multiples) and skips re-validation.
 /// Empty-list sidecars (N = 0) trivially pass.
@@ -147,11 +169,34 @@ pub fn verify_data_column_sidecar_inclusion_proof(sidecar: &[u8]) -> bool {
 /// required. `precompute = 0` — verification doesn't benefit from the
 /// precomputation table (only proof generation does).
 #[timed]
-pub fn verify_data_column_sidecar_kzg_proofs(sidecar: &[u8]) -> bool {
-    let column = DataColumnSidecarFuluView::column(sidecar);
-    let commits = DataColumnSidecarFuluView::kzg_commitments(sidecar);
-    let proofs = DataColumnSidecarFuluView::kzg_proofs(sidecar);
+pub fn verify_data_column_sidecar_kzg_proofs_fulu(sidecar: &[u8]) -> bool {
+    kzg_verify_batch(
+        DataColumnSidecarFuluView::column(sidecar),
+        DataColumnSidecarFuluView::kzg_commitments(sidecar),
+        DataColumnSidecarFuluView::kzg_proofs(sidecar),
+        DataColumnSidecarFuluView::index(sidecar),
+    )
+}
 
+pub fn verify_data_column_sidecar_kzg_proofs_gloas(sidecar: &[u8], commitments: &[u8]) -> bool {
+    kzg_verify_batch(
+        DataColumnSidecarGloasView::column(sidecar),
+        commitments,
+        DataColumnSidecarGloasView::kzg_proofs(sidecar),
+        DataColumnSidecarGloasView::index(sidecar),
+    )
+}
+
+/// KZG cell-proof batch verify shared by Fulu + Gloas. Every cell shares the
+/// column `index`, so `cell_indices` is that index repeated `N` times. Uses the
+/// statically-bundled mainnet trusted setup (`precompute = 0` — only proof
+/// generation benefits). Empty (N = 0) trivially passes.
+///
+/// Preconditions (caller-verified via `verify_data_column_sidecar{,_gloas}`):
+/// `column`/`commitments`/`proofs` carry the same element count and are clean
+/// multiples of their element sizes — the raw-slice casts rely on it.
+#[timed]
+fn kzg_verify_batch(column: &[u8], commits: &[u8], proofs: &[u8], index: u64) -> bool {
     let n = column.len() / BYTES_PER_CELL;
     if n == 0 {
         return true;
@@ -163,8 +208,6 @@ pub fn verify_data_column_sidecar_kzg_proofs(sidecar: &[u8]) -> bool {
         unsafe { std::slice::from_raw_parts(commits.as_ptr() as *const c_kzg::Bytes48, n) };
     let kzg_proofs: &[c_kzg::Bytes48] =
         unsafe { std::slice::from_raw_parts(proofs.as_ptr() as *const c_kzg::Bytes48, n) };
-
-    let index = DataColumnSidecarFuluView::index(sidecar);
 
     // Stack-allocated indices array to avoid heap allocation on the hot path
     let mut stack_indices = [0u64; 128];
@@ -339,7 +382,7 @@ mod tests {
     fn verify_shape_accepts_synthetic_sidecar() {
         for n in [0usize, 1, 2, 6, 72] {
             let buf = synth_sidecar(0, n, n, n);
-            assert!(verify_data_column_sidecar(&buf), "n={n}");
+            assert!(verify_data_column_sidecar_fulu(&buf), "n={n}");
         }
     }
 
@@ -347,21 +390,21 @@ mod tests {
     fn verify_shape_rejects_out_of_range_index() {
         let mut buf = synth_sidecar(0, 1, 1, 1);
         buf[0..8].copy_from_slice(&(NUMBER_OF_COLUMNS as u64).to_le_bytes());
-        assert!(!verify_data_column_sidecar(&buf));
+        assert!(!verify_data_column_sidecar_fulu(&buf));
     }
 
     #[test]
     fn verify_shape_rejects_length_mismatch() {
         // 2 cells but only 1 commitment + 1 proof — count mismatch.
         let buf = synth_sidecar(0, 2, 1, 1);
-        assert!(!verify_data_column_sidecar(&buf));
+        assert!(!verify_data_column_sidecar_fulu(&buf));
     }
 
     #[test]
     fn verify_shape_rejects_truncated_buffer() {
         let mut buf = synth_sidecar(0, 1, 1, 1);
         buf.truncate(DATA_COLUMN_SIDECAR_MIN - 1);
-        assert!(!verify_data_column_sidecar(&buf));
+        assert!(!verify_data_column_sidecar_fulu(&buf));
     }
 
     #[test]
@@ -380,7 +423,77 @@ mod tests {
         // verification is vacuously true. Also exercises the
         // static-init of the bundled mainnet trusted setup.
         let buf = synth_sidecar(0, 0, 0, 0);
-        assert!(verify_data_column_sidecar_kzg_proofs(&buf));
+        assert!(verify_data_column_sidecar_kzg_proofs_fulu(&buf));
+    }
+
+    /// Gloas sidecar: index(8), col_off(4), proof_off(4), slot(8),
+    /// beacon_block_root(32), then column ‖ kzg_proofs.
+    fn synth_gloas_sidecar(index: u64, n_cells: usize, n_proofs: usize) -> Vec<u8> {
+        let col_len = n_cells * BYTES_PER_CELL;
+        let proof_len = n_proofs * BYTES_PER_KZG_PROOF;
+        let mut buf = vec![0u8; 56 + col_len + proof_len];
+        buf[0..8].copy_from_slice(&index.to_le_bytes());
+        buf[8..12].copy_from_slice(&56u32.to_le_bytes());
+        buf[12..16].copy_from_slice(&(56 + col_len as u32).to_le_bytes());
+        buf
+    }
+
+    #[test]
+    fn gloas_sidecar_shape_checks() {
+        let commits = |n: usize| vec![0u8; n * BYTES_PER_KZG_COMMITMENT];
+        // 1 cell / 1 commit / 1 proof — well-formed.
+        assert!(verify_data_column_sidecar_gloas(&synth_gloas_sidecar(0, 1, 1), &commits(1)));
+        // empty.
+        assert!(verify_data_column_sidecar_gloas(&synth_gloas_sidecar(0, 0, 0), &commits(0)));
+        // index out of range.
+        assert!(!verify_data_column_sidecar_gloas(
+            &synth_gloas_sidecar(NUMBER_OF_COLUMNS as u64, 1, 1),
+            &commits(1)
+        ));
+        // cell/proof count mismatch.
+        assert!(!verify_data_column_sidecar_gloas(&synth_gloas_sidecar(0, 2, 1), &commits(2)));
+        // commitment-count mismatch.
+        assert!(!verify_data_column_sidecar_gloas(&synth_gloas_sidecar(0, 1, 1), &commits(2)));
+    }
+
+    /// End-to-end gloas: real cells + proofs through the gloas sidecar layout,
+    /// commitments supplied externally (as they would come from the block bid),
+    /// pass both the shape check and the shared KZG batch.
+    #[test]
+    fn gloas_built_sidecar_passes_kzg() {
+        let settings = c_kzg::ethereum_kzg_settings(0);
+        let n = 2usize;
+        let blob = c_kzg::Blob::new([0u8; 131072]);
+
+        let mut commitments = Vec::new();
+        let mut cells = Vec::new();
+        let mut proofs = Vec::new();
+        for _ in 0..n {
+            let c = settings.blob_to_kzg_commitment(&blob).unwrap();
+            commitments.extend_from_slice(&c.to_bytes().into_inner());
+            let (cs, ps) = settings.compute_cells_and_kzg_proofs(&blob).unwrap();
+            cells.push(cs);
+            proofs.push(ps);
+        }
+
+        for j in [0u64, 1, 63, 127] {
+            let mut column = Vec::new();
+            let mut col_proofs = Vec::new();
+            for i in 0..n {
+                column.extend_from_slice(&cells[i][j as usize].to_bytes());
+                col_proofs.extend_from_slice(&proofs[i][j as usize].to_bytes().into_inner());
+            }
+            // index(8) col_off(4)=56 proof_off(4) slot(8) beacon_block_root(32).
+            let mut buf = vec![0u8; 56];
+            buf[0..8].copy_from_slice(&j.to_le_bytes());
+            buf[8..12].copy_from_slice(&56u32.to_le_bytes());
+            buf[12..16].copy_from_slice(&((56 + column.len()) as u32).to_le_bytes());
+            buf.extend_from_slice(&column);
+            buf.extend_from_slice(&col_proofs);
+
+            assert!(verify_data_column_sidecar_gloas(&buf, &commitments), "shape j={j}");
+            assert!(verify_data_column_sidecar_kzg_proofs_gloas(&buf, &commitments), "kzg j={j}");
+        }
     }
 
     #[test]
@@ -391,7 +504,7 @@ mod tests {
         // bytes are not a valid G1 encoding. c-kzg rejects with an
         // error; we map every non-Ok(true) result to false.
         let buf = synth_sidecar(0, 1, 1, 1);
-        assert!(!verify_data_column_sidecar_kzg_proofs(&buf));
+        assert!(!verify_data_column_sidecar_kzg_proofs_fulu(&buf));
     }
 
     /// Build a minimal BeaconBlockBody whose only non-empty variable field is
@@ -452,9 +565,9 @@ mod tests {
             out.extend_from_slice(&col_proofs);
             assert_eq!(out.len(), data_column_sidecar_len(n));
 
-            assert!(verify_data_column_sidecar(&out), "shape, col {j}");
+            assert!(verify_data_column_sidecar_fulu(&out), "shape, col {j}");
             assert_eq!(DataColumnSidecarFuluView::index(&out), j);
-            assert!(verify_data_column_sidecar_kzg_proofs(&out), "kzg, col {j}");
+            assert!(verify_data_column_sidecar_kzg_proofs_fulu(&out), "kzg, col {j}");
             assert!(verify_data_column_sidecar_inclusion_proof(&out), "inclusion, col {j}");
         }
     }

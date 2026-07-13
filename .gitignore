@@ -31,6 +31,9 @@ target/
 !crates/engine/testdata/*.ssz
 # kurtosis generated files
 kurtosis/silver-devnet.toml
+kurtosis/silver-gloas.toml
 # ethereum consensus-spec-tests
 crates/beacon_state/consensus-spec-tests/
 kurtosis/el/
+
+crates/beacon_state/tile/tests/sync_scenarios/gloas_fork_transition/fixtures/

@@ -41,9 +41,9 @@ fn columns_available(dir: &Path, cols: &[Value]) -> bool {
     !cols.is_empty() &&
         cols.iter().all(|c| {
             let sc = case_file(dir, c.as_str().unwrap());
-            silver_storage::util::verify_data_column_sidecar(&sc) &&
+            silver_storage::util::verify_data_column_sidecar_fulu(&sc) &&
                 silver_storage::util::verify_data_column_sidecar_inclusion_proof(&sc) &&
-                silver_storage::util::verify_data_column_sidecar_kzg_proofs(&sc)
+                silver_storage::util::verify_data_column_sidecar_kzg_proofs_fulu(&sc)
         })
 }
 

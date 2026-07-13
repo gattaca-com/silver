@@ -564,7 +564,12 @@ impl SignedBeaconBlockView {
     }
 
     #[inline]
-    pub fn has_data_columns(buf: &[u8]) -> bool {
+    pub fn has_data_columns(buf: &[u8], is_gloas: bool) -> bool {
+        if is_gloas { Self::has_data_columns_gloas(buf) } else { Self::has_data_columns_fulu(buf) }
+    }
+
+    #[inline]
+    pub fn has_data_columns_fulu(buf: &[u8]) -> bool {
         let beacon_block_body = Self::body(buf);
         if beacon_block_body.len() < BEACON_BLOCK_BODY_FIXED {
             return false;
@@ -576,6 +581,33 @@ impl SignedBeaconBlockView {
 
         (kzg_commitments_offset as usize) < beacon_block_body.len() &&
             kzg_commitments_offset < execution_requests_offset
+    }
+
+    #[inline]
+    pub fn gloas_block_commitments(buf: &[u8]) -> &[u8] {
+        let body = Self::body(buf);
+        if body.len() < BEACON_BLOCK_BODY_FIXED {
+            return &[];
+        }
+        let bid_off = BeaconBlockBodyGloasView::signed_execution_payload_bid_offset(body) as usize;
+        let pa_off = BeaconBlockBodyGloasView::payload_attestations_offset(body) as usize;
+        if bid_off < BEACON_BLOCK_BODY_FIXED || bid_off > pa_off || pa_off > body.len() {
+            return &[];
+        }
+        let signed_bid = &body[bid_off..pa_off];
+        if !SignedExecutionPayloadBidView::check_size(signed_bid) {
+            return &[];
+        }
+        let bid = SignedExecutionPayloadBidView::message(signed_bid);
+        if !ExecutionPayloadBidView::check_size(bid) {
+            return &[];
+        }
+        ExecutionPayloadBidView::blob_kzg_commitments(bid)
+    }
+
+    #[inline]
+    pub fn has_data_columns_gloas(buf: &[u8]) -> bool {
+        !Self::gloas_block_commitments(buf).is_empty()
     }
 }
 

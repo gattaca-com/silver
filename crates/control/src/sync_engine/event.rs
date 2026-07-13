@@ -13,9 +13,6 @@ pub enum SyncEvent {
         earliest_available_slot: u64,
         custody: u128,
     },
-    PeerConnected {
-        peer: usize,
-    },
     PeerDisconnected {
         peer: usize,
     },
@@ -45,11 +42,9 @@ pub enum SyncEvent {
     BackfillState {
         block_floor: u64,
         earliest_present: u64,
-        column_floor: u64,
     },
     ColumnNeed {
         block_root: [u8; 32],
-        slot: u64,
         missing: u128,
     },
 }
@@ -57,6 +52,12 @@ pub enum SyncEvent {
 /// Outputs.
 pub enum SyncAction {
     RequestBlocksByRange {
+        request_id: u64,
+        peer: usize,
+        start: u64,
+        count: u64,
+    },
+    RequestEnvelopesByRange {
         request_id: u64,
         peer: usize,
         start: u64,
@@ -75,11 +76,6 @@ pub enum SyncAction {
         peer: usize,
         block_root: [u8; 32],
         columns: u128,
-    },
-    RequestBlocksByRoot {
-        request_id: u64,
-        peer: usize,
-        block_root: [u8; 32],
     },
     SetSyncTarget(SyncUpdate),
     ScorePeer {

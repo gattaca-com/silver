@@ -39,5 +39,7 @@ pub trait Discovery {
 
     fn poll<F: FnMut(DiscoveryEvent)>(&mut self, f: F);
 
+    fn update_enr_fork_id(&mut self, _eth2: [u8; 16]) {}
+
     fn teardown(&self);
 }

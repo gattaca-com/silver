@@ -171,11 +171,8 @@ pub fn apply_signed_block_debug(
     // epoch view, so a block at the fork boundary uses the upgraded fork (Gloas
     // body layout / signing version), not the parent's.
     let block_epoch = block_slot / SLOTS_PER_EPOCH;
-    let body_root = if epoch_view.is_gloas(view.imm.gloas_fork_version) {
-        ssz_hash::hash_tree_root_body_gloas(body)
-    } else {
-        ssz_hash::hash_tree_root_body_fulu(body)
-    };
+    let body_root =
+        ssz_hash::hash_tree_root_body(body, epoch_view.is_gloas(view.imm.gloas_fork_version));
     if !verify_block_sig(
         view.imm,
         &epoch_view,
@@ -349,7 +346,7 @@ fn maybe_upgrade_to_gloas(
     epoch: &mut EpochWriteView,
 ) {
     let current_epoch = view.slot.state().slot / SLOTS_PER_EPOCH;
-    if current_epoch == cfg.gloas_fork_epoch &&
+    if cfg.is_gloas_activation_epoch(current_epoch) &&
         !epoch.reader().is_gloas(view.imm.gloas_fork_version)
     {
         upgrade_to_gloas(view, epoch);

@@ -145,41 +145,38 @@ pub struct PeerManager {
 
     pub(crate) pending_range_requests: VecDeque<PendingRangeRequest>,
     pub(crate) outbound_range_attempts: Vec<OutboundRangeAttempt>,
-    pub(crate) pending_block_by_root: VecDeque<(u64, Option<usize>, [u8; 32])>,
+    pub(crate) pending_by_root: VecDeque<(RootReqKind, u64, Option<usize>, [u8; 32])>,
     pub(crate) pending_rpc_request: VecDeque<(u64, RpcRequest)>,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum PendingRangeRequest {
-    Blocks(PendingBlocksByRange),
-    DataColumns(PendingDataColumnsByRange),
+pub(crate) enum RangeReqKind {
+    Blocks { step: u64 },
+    DataColumns { columns: u128 },
+    Envelopes,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct PendingBlocksByRange {
-    pub request_id: u64,
-    pub start_slot: u64,
-    pub count: u64,
-    pub step: u64,
+pub(crate) enum RootReqKind {
+    Block,
+    Envelope,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct PendingDataColumnsByRange {
+pub(crate) struct PendingRangeRequest {
     pub request_id: u64,
     pub start_slot: u64,
     pub count: u64,
-    pub columns: u128,
+    pub kind: RangeReqKind,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct OutboundRangeAttempt {
     pub request_id: u64,
     pub peer_id: usize,
-    pub protocol: StreamProtocol,
     pub start_slot: u64,
     pub count: u64,
-    pub step: u64,
-    pub columns: u128,
+    pub kind: RangeReqKind,
     pub last_progress_at: Instant,
     pub responded: bool,
     pub delivered: bool,
@@ -230,7 +227,7 @@ impl PeerManager {
             awaiting_local_replay,
             pending_range_requests: VecDeque::with_capacity(PEERS_CAP),
             outbound_range_attempts: Vec::with_capacity(PEERS_CAP),
-            pending_block_by_root: VecDeque::with_capacity(PEERS_CAP),
+            pending_by_root: VecDeque::with_capacity(PEERS_CAP),
             pending_rpc_request: VecDeque::with_capacity(PEERS_CAP),
         }
     }
@@ -254,9 +251,10 @@ impl PeerManager {
         self.our_fork_digest = Some(digest);
     }
 
-    /// Update our cached chain position.
-    pub fn set_status(&mut self, mut ssz: [u8; STATUS_V2_SIZE]) {
-        self.our_fork_digest = Some(*StatusView::fork_digest(&ssz));
+    pub fn set_status(&mut self, mut ssz: [u8; STATUS_V2_SIZE]) -> bool {
+        let new_digest = *StatusView::fork_digest(&ssz);
+        let digest_changed = self.our_fork_digest != Some(new_digest);
+        self.our_fork_digest = Some(new_digest);
 
         if self.earliest_available_slot != u64::MAX {
             ssz[84..].copy_from_slice(&self.earliest_available_slot.to_le_bytes());
@@ -264,6 +262,7 @@ impl PeerManager {
 
         tracing::debug!("set status");
         self.status = Some(ssz);
+        digest_changed
     }
 
     pub fn set_local_head_imported(&mut self, slot: u64) {
@@ -337,8 +336,16 @@ impl PeerManager {
         emit: &mut impl FnMut(PeerControl),
     ) -> Option<usize> {
         let peer = self.pick_sync_peer(count, now)?;
-        self.issue_blocks_by_range_request(peer, request_id, start_slot, count, 1, now, emit)
-            .then_some(peer)
+        self.issue_range_request(
+            peer,
+            request_id,
+            start_slot,
+            count,
+            RangeReqKind::Blocks { step: 1 },
+            now,
+            emit,
+        )
+        .then_some(peer)
     }
 
     /// Pick a custody-overlapping peer with capacity (PM keeps the picker +
@@ -365,8 +372,14 @@ impl PeerManager {
             count,
             now,
         )?;
-        self.issue_data_columns_by_range_request(
-            peer, request_id, start_slot, count, overlap, now, emit,
+        self.issue_range_request(
+            peer,
+            request_id,
+            start_slot,
+            count,
+            RangeReqKind::DataColumns { columns: overlap },
+            now,
+            emit,
         )
         .then_some((peer, overlap))
     }
@@ -581,7 +594,24 @@ impl PeerManager {
                 self.on_request_data_columns_by_root(request_id, columns, block_root, now, emit);
             }
             PeerEvent::SendBlocksByRootRequest { request_id, p2p_peer, block_root } => {
-                self.on_request_blocks_by_root(request_id, p2p_peer, block_root, now, emit);
+                self.on_request_by_root(
+                    RootReqKind::Block,
+                    request_id,
+                    p2p_peer,
+                    block_root,
+                    now,
+                    emit,
+                );
+            }
+            PeerEvent::SendEnvelopesByRootRequest { request_id, p2p_peer, block_root } => {
+                self.on_request_by_root(
+                    RootReqKind::Envelope,
+                    request_id,
+                    p2p_peer,
+                    block_root,
+                    now,
+                    emit,
+                );
             }
             PeerEvent::SendRpcRequest { request_id, rpc } => {
                 self.on_rpc_request(request_id, rpc, now, emit);
@@ -3258,6 +3288,17 @@ mod tests {
         assert!(mgr.score(1).is_some());
     }
 
+    #[test]
+    fn set_status_reports_fork_digest_change() {
+        let (mut mgr, _cap) = fixture(vec![], ScoreParams::default(), false);
+        // First set (None -> Some) is a change.
+        assert!(mgr.set_status(status_v2_ssz(fork_a(), [0; 32], 0, [0; 32], 0)));
+        // Same digest, other fields differ -> not a change (only the digest matters).
+        assert!(!mgr.set_status(status_v2_ssz(fork_a(), [0; 32], 0, [1; 32], 5)));
+        // Fork flip -> change (triggers subscription re-announce).
+        assert!(mgr.set_status(status_v2_ssz(fork_b(), [0; 32], 0, [0; 32], 0)));
+    }
+
     /// Set local status + imported tip together, as the controller does from a
     /// real Status event.
     fn set_local(mgr: &mut PeerManager, ssz: [u8; STATUS_V2_SIZE]) {
@@ -3469,12 +3510,12 @@ mod tests {
 
         assert!(mgr.outbound_range_attempts.is_empty());
         assert_eq!(mgr.pending_range_requests.len(), 1);
-        let PendingRangeRequest::Blocks(req) = mgr.pending_range_requests.front().copied().unwrap()
-        else {
+        let req = mgr.pending_range_requests.front().copied().unwrap();
+        let RangeReqKind::Blocks { step } = req.kind else {
             panic!("expected pending BlocksByRange retry");
         };
         assert_eq!(req.request_id, BACKFILL_REQUEST_ID | 8);
-        assert_eq!((req.start_slot, req.count, req.step), (20, 3, 1));
+        assert_eq!((req.start_slot, req.count, step), (20, 3, 1));
     }
 
     #[test]
@@ -3514,11 +3555,11 @@ mod tests {
             0
         );
         assert_eq!(mgr.pending_range_requests.len(), 1);
-        let PendingRangeRequest::Blocks(req) = mgr.pending_range_requests.front().copied().unwrap()
-        else {
+        let req = mgr.pending_range_requests.front().copied().unwrap();
+        let RangeReqKind::Blocks { step } = req.kind else {
             panic!("expected pending BlocksByRange retry");
         };
         assert_eq!(req.request_id, BACKFILL_REQUEST_ID | 9);
-        assert_eq!((req.start_slot, req.count, req.step), (30, 2, 1));
+        assert_eq!((req.start_slot, req.count, step), (30, 2, 1));
     }
 }

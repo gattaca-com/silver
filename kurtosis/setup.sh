@@ -20,19 +20,32 @@
 set -euo pipefail
 
 RECREATE=0
-ENCLAVE="silver-dev"
+GLOAS=0
+ENCLAVE=""
 for arg in "$@"; do
   case "$arg" in
     --recreate) RECREATE=1 ;;
+    --gloas) GLOAS=1 ;;
     -*) echo "unknown flag: $arg" >&2; exit 1 ;;
     *) ENCLAVE="$arg" ;;
   esac
 done
+[ -n "$ENCLAVE" ] || { [ "$GLOAS" -eq 1 ] && ENCLAVE="silver-gloas" || ENCLAVE="silver-dev"; }
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ARGS_FILE="$HERE/net.yaml"
-CONFIG="$HERE/silver-devnet.toml"
-GENESIS_SSZ="$HERE/genesis.ssz"
+# Gloas: separate args/config/anchor so the Fulu devnet files are untouched. The
+# anchor is a recent *finalized* (post-Gloas) state, not genesis — silver then
+# anchors already in Gloas and follows live, sidestepping the from-genesis DA
+# wedge and the Fulu→Gloas digest transition.
+if [ "$GLOAS" -eq 1 ]; then
+  ARGS_FILE="$HERE/net-gloas.yaml"
+  CONFIG="$HERE/silver-gloas.toml"
+  GENESIS_SSZ="$HERE/gloas-anchor.ssz"
+else
+  ARGS_FILE="$HERE/net.yaml"
+  CONFIG="$HERE/silver-devnet.toml"
+  GENESIS_SSZ="$HERE/genesis.ssz"
+fi
 
 # Static (non-harvested) config values — override via env if needed. A fixed
 # secret_key gives silver a stable peer-id/ENR across restarts. next_fork_epoch
@@ -57,6 +70,9 @@ UNSAFE_NO_EL="${UNSAFE_NO_EL:-1}"
 #   PACKAGE='github.com/ethpandaops/ethereum-package@<tag>' kurtosis/setup.sh
 # Discover tags:
 #   git ls-remote --tags https://github.com/ethpandaops/ethereum-package
+# 6.1.0 already exposes `gloas_fork_epoch`, and its Starlark is compatible with
+# the installed Kurtosis CLI (HEAD trips an `undefined: GpuConfig` regression),
+# so both Fulu and Gloas pin 6.1.0.
 PACKAGE="${PACKAGE:-github.com/ethpandaops/ethereum-package@6.1.0}"
 
 for bin in kurtosis docker curl jq; do
@@ -143,9 +159,15 @@ echo "external_ip_v4: ${GATEWAY:-<unresolved>}"
 # 7b. Genesis state — silver's sync anchor. It bootstraps fork choice from
 #     this so block 1's parent (the genesis block) resolves; without it sync
 #     fails the parent precheck at slot 1.
-echo "fetching genesis state -> $GENESIS_SSZ"
-curl -fsS -H 'Accept: application/octet-stream' \
-  "$PRIMARY_URL/eth/v2/debug/beacon/states/genesis" -o "$GENESIS_SSZ"
+if [ "$GLOAS" -eq 1 ]; then
+  echo "fetching finalized (post-Gloas) anchor state -> $GENESIS_SSZ"
+  curl -fsS -H 'Accept: application/octet-stream' \
+    "$PRIMARY_URL/eth/v2/debug/beacon/states/finalized" -o "$GENESIS_SSZ"
+else
+  echo "fetching genesis state -> $GENESIS_SSZ"
+  curl -fsS -H 'Accept: application/octet-stream' \
+    "$PRIMARY_URL/eth/v2/debug/beacon/states/genesis" -o "$GENESIS_SSZ"
+fi
 
 # 7c. Spec — devnet fork versions + blob schedule. silver derives the fork
 #     digest AND BLS signing domains from these; mainnet defaults mismatch on
@@ -155,6 +177,8 @@ SPEC="$(curl -fsS "$PRIMARY_URL/eth/v1/config/spec" | jq '.data')"
 gfv="$(jq -r '.GENESIS_FORK_VERSION' <<<"$SPEC")"
 cfv="$(jq -r '.CAPELLA_FORK_VERSION' <<<"$SPEC")"
 ffv="$(jq -r '.FULU_FORK_VERSION' <<<"$SPEC")"
+gloasfv="$(jq -r '.GLOAS_FORK_VERSION' <<<"$SPEC")"
+gloasfe="$(jq -r '.GLOAS_FORK_EPOCH | tonumber' <<<"$SPEC")"
 efe="$(jq -r '.ELECTRA_FORK_EPOCH | tonumber' <<<"$SPEC")"
 mbe="$(jq -r '.MAX_BLOBS_PER_BLOCK_ELECTRA | tonumber' <<<"$SPEC")"
 sps="$(jq -r '.SECONDS_PER_SLOT | tonumber' <<<"$SPEC")"
@@ -233,6 +257,12 @@ echo "$JWT_SECRET" > "$EL_DIR/jwt.hex"
   echo "GENESIS_FORK_VERSION = \"$gfv\""
   echo "CAPELLA_FORK_VERSION = \"$cfv\""
   echo "FULU_FORK_VERSION = \"$ffv\""
+  # Only emit Gloas keys for --gloas: the spec's default GLOAS_FORK_EPOCH is
+  # FAR_FUTURE (u64 max), which exceeds TOML's i64 range and fails to parse.
+  if [ "$GLOAS" -eq 1 ]; then
+    echo "GLOAS_FORK_VERSION = \"$gloasfv\""
+    echo "GLOAS_FORK_EPOCH = $gloasfe"
+  fi
   echo "ELECTRA_FORK_EPOCH = $efe"
   echo "MAX_BLOBS_PER_BLOCK_ELECTRA = $mbe"
   echo "SECONDS_PER_SLOT = $sps"

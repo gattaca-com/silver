@@ -2,7 +2,7 @@ use flux::spine::SpineProducers;
 use flux_profiler::timed;
 use silver_beacon_state_data::{B256, BeaconBlockHeader, Checkpoint, SLOTS_PER_EPOCH, StateId};
 use silver_common::{
-    BeaconStateEvent, BlockSource, EngineFcuReq, EngineNewPayloadReq, EngineReq, TRead, hex32,
+    BeaconStateEvent, BlockSource, EngineFcuReq, EngineNewPayloadReq, EngineReq, TCacheRead, hex32,
     ssz_view::{self, SignedBeaconBlockView},
 };
 
@@ -35,7 +35,7 @@ impl BeaconStateTile {
     pub(super) fn apply_block(
         &mut self,
         data: &[u8],
-        data_tcache: TRead,
+        read: TCacheRead,
         source: BlockSource,
         pre_verified: bool,
         producers: &mut Producers,
@@ -47,7 +47,7 @@ impl BeaconStateTile {
         }
         let f = self.apply_block_impl(data, true, pre_verified, |root| {
             producers.produce(EngineReq::NewPayload(EngineNewPayloadReq {
-                data: *data_tcache,
+                data: read,
                 block_root: root,
                 block_source: source,
             }));
@@ -67,7 +67,7 @@ impl BeaconStateTile {
             return f;
         }
 
-        producers.produce(BeaconStateEvent::PersistBlock { ssz: *data_tcache, source });
+        producers.produce(BeaconStateEvent::PersistBlock { ssz: read, source });
 
         let (head_root, head, safe, fin) = self.fork_choice.fcu_execution_hashes();
         producers.produce(EngineReq::Fcu(EngineFcuReq {
@@ -80,7 +80,12 @@ impl BeaconStateTile {
         f
     }
 
-    pub(super) fn replay_block(&mut self, data: &[u8]) {
+    pub(super) fn replay_block(&mut self, read: TCacheRead) {
+        let acquired = self.replay_consumer.acquire(read);
+        let Some((data, _)) = acquired.buffer().ok() else {
+            return;
+        };
+
         if !SignedBeaconBlockView::check_size(data) {
             tracing::error!(len = data.len(), "replayed on-disk block malformed");
             return;
@@ -291,11 +296,7 @@ impl BeaconStateTile {
         // at the next slot boundary by the fork-choice tick. Set before
         // `recompute_head` so `apply_score_changes` folds it in. First-block
         // guard per spec `update_proposer_boost_root`.
-        let before_deadline = if is_gloas {
-            self.ticker.is_before_gloas_attesting_interval()
-        } else {
-            self.ticker.is_before_fulu_attesting_interval()
-        };
+        let before_deadline = self.ticker.is_before_attesting_interval(is_gloas);
 
         if parsed.header.slot == self.ticker.current_slot() &&
             before_deadline &&
@@ -344,12 +345,8 @@ impl BeaconStateTile {
 
         let body = SignedBeaconBlockView::body(data);
 
-        let is_gloas = block_epoch >= self.spec.gloas_fork_epoch;
-        let body_root = if is_gloas {
-            ssz_hash::hash_tree_root_body_gloas(body)
-        } else {
-            ssz_hash::hash_tree_root_body_fulu(body)
-        };
+        let is_gloas = self.spec.is_gloas_at(block_epoch);
+        let body_root = ssz_hash::hash_tree_root_body(body, is_gloas);
 
         let block_header = BeaconBlockHeader {
             slot: block_slot,
@@ -429,10 +426,12 @@ impl BeaconStateTile {
             });
         }
 
+        let has_data_columns = SignedBeaconBlockView::has_data_columns(data, is_gloas);
+
         Ok(ParsedBlock {
             header: block_header,
             block_root,
-            has_data_columns: SignedBeaconBlockView::has_data_columns(data),
+            has_data_columns,
             parent_state_id,
             is_gloas,
             parent_payload_status,
@@ -442,7 +441,7 @@ impl BeaconStateTile {
     fn verify_block_signature(&self, data: &[u8], parsed: &ParsedBlock) -> bool {
         let block_epoch = parsed.header.slot / SLOTS_PER_EPOCH;
         let rv = self.state.read_view(parsed.parent_state_id);
-        let fork_version = rv.epoch.fork_version_at(block_epoch);
+        let fork_version = self.spec.fork_version_at(block_epoch);
         let proposer_pubkey =
             rv.validators.pubkey_decompressed(parsed.header.proposer_index as usize);
         bls::verify_block_signature(

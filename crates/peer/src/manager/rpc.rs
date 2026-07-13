@@ -19,15 +19,14 @@ use silver_common::{
     rpc_rate_limit::{RPC_ERR_RATE_LIMITED, RpcRateLimit},
     ssz_view::{
         BLOCKS_BY_RANGE_REQ_SIZE, BeaconBlocksByRangeRequestView, DC_BY_RANGE_REQ_MAX,
-        DataColumnSidecarsByRangeRequestView, MetadataView, StatusView,
+        DataColumnSidecarsByRangeRequestView, EXECUTION_PAYLOAD_ENVELOPES_BY_RANGE_REQ_SIZE,
+        MetadataView, StatusView,
     },
 };
 
 use crate::{
     PeerManager,
-    manager::{
-        OutboundRangeAttempt, PendingBlocksByRange, PendingDataColumnsByRange, PendingRangeRequest,
-    },
+    manager::{OutboundRangeAttempt, PendingRangeRequest, RangeReqKind, RootReqKind},
 };
 
 /// Per-peer cap on outstanding RPC requests per protocol. Bounds load on any
@@ -82,6 +81,50 @@ fn severity_for_error_response(code: u8, protocol: StreamProtocol) -> Option<Rpc
         // Unknown / reserved code. Spec may add new codes — forward-compat
         // mild penalty rather than crash.
         _ => Some(RpcSeverity::HighTolerance),
+    }
+}
+
+impl RangeReqKind {
+    fn protocol(self) -> StreamProtocol {
+        match self {
+            RangeReqKind::Blocks { .. } => StreamProtocol::BeaconBlocksByRange,
+            RangeReqKind::DataColumns { .. } => StreamProtocol::DataColumnSidecarsByRange,
+            RangeReqKind::Envelopes => StreamProtocol::ExecutionPayloadEnvelopesByRange,
+        }
+    }
+
+    fn tokens(self, count: u64) -> u64 {
+        match self {
+            RangeReqKind::Blocks { .. } => count,
+            RangeReqKind::Envelopes => count.max(1),
+            RangeReqKind::DataColumns { columns } => {
+                count.max(1).saturating_mul(columns.count_ones() as u64).max(1)
+            }
+        }
+    }
+
+    fn build_request(self, start_slot: u64, count: u64) -> RpcRequest {
+        match self {
+            RangeReqKind::Blocks { step } => {
+                RpcRequest::BlocksByRange(PeerManager::blocks_by_range_ssz(start_slot, count, step))
+            }
+            RangeReqKind::Envelopes => RpcRequest::ExecutionPayloadEnvelopesByRange(
+                PeerManager::envelopes_by_range_ssz(start_slot, count),
+            ),
+            RangeReqKind::DataColumns { columns } => {
+                let (ssz, len) = PeerManager::data_columns_by_range_ssz(start_slot, count, columns);
+                RpcRequest::DataColumnsByRange { ssz, len }
+            }
+        }
+    }
+}
+
+impl RootReqKind {
+    fn protocol(self) -> StreamProtocol {
+        match self {
+            RootReqKind::Block => StreamProtocol::BeaconBlocksByRoot,
+            RootReqKind::Envelope => StreamProtocol::ExecutionPayloadEnvelopesByRoot,
+        }
     }
 }
 
@@ -203,25 +246,23 @@ impl PeerManager {
 
     fn pending_range_from_rpc(request_id: u64, rpc: RpcRequest) -> Option<PendingRangeRequest> {
         match rpc {
-            RpcRequest::BlocksByRange(ssz) => {
-                Some(PendingRangeRequest::Blocks(PendingBlocksByRange {
-                    request_id,
-                    start_slot: BeaconBlocksByRangeRequestView::start_slot(&ssz),
-                    count: BeaconBlocksByRangeRequestView::count(&ssz),
-                    step: BeaconBlocksByRangeRequestView::step(&ssz),
-                }))
-            }
+            RpcRequest::BlocksByRange(ssz) => Some(PendingRangeRequest {
+                request_id,
+                start_slot: BeaconBlocksByRangeRequestView::start_slot(&ssz),
+                count: BeaconBlocksByRangeRequestView::count(&ssz),
+                kind: RangeReqKind::Blocks { step: BeaconBlocksByRangeRequestView::step(&ssz) },
+            }),
             RpcRequest::DataColumnsByRange { ssz, len } => {
                 let buf = ssz.get(..len)?;
                 if !DataColumnSidecarsByRangeRequestView::check_size(buf) {
                     return None;
                 }
-                Some(PendingRangeRequest::DataColumns(PendingDataColumnsByRange {
+                Some(PendingRangeRequest {
                     request_id,
                     start_slot: DataColumnSidecarsByRangeRequestView::start_slot(buf),
                     count: DataColumnSidecarsByRangeRequestView::count(buf),
-                    columns: Self::data_columns_bitmask(buf)?,
-                }))
+                    kind: RangeReqKind::DataColumns { columns: Self::data_columns_bitmask(buf)? },
+                })
             }
             _ => None,
         }
@@ -467,10 +508,12 @@ impl PeerManager {
                             },
                         ))));
                     }
-                    RpcRequest::BlocksByRange(_ssz) => {}
-                    RpcRequest::BlockByRoot(_req) => {}
-                    RpcRequest::DataColumnsByRange { ssz: _, len: _ } => {}
-                    RpcRequest::DataColumnsByRoot(_req) => {}
+                    RpcRequest::BlocksByRange(_) |
+                    RpcRequest::BlockByRoot(_) |
+                    RpcRequest::DataColumnsByRange { .. } |
+                    RpcRequest::DataColumnsByRoot(_) |
+                    RpcRequest::ExecutionPayloadEnvelopesByRange(_) |
+                    RpcRequest::ExecutionPayloadEnvelopesByRoot(_) => {}
                 }
             }
             RpcInbound::Response(RpcResponseInbound { application_id, stream_id, response }) => {
@@ -481,6 +524,9 @@ impl PeerManager {
                     RpcResponse::BeaconBlock { .. } => Some(StreamProtocol::BeaconBlocksByRange),
                     RpcResponse::DataColumnSidecar { .. } => {
                         Some(StreamProtocol::DataColumnSidecarsByRange)
+                    }
+                    RpcResponse::ExecutionPayloadEnvelope { .. } => {
+                        Some(StreamProtocol::ExecutionPayloadEnvelopesByRange)
                     }
                     _ => None,
                 };
@@ -616,34 +662,41 @@ impl PeerManager {
         ssz
     }
 
+    fn envelopes_by_range_ssz(
+        start_slot: u64,
+        count: u64,
+    ) -> [u8; EXECUTION_PAYLOAD_ENVELOPES_BY_RANGE_REQ_SIZE] {
+        let mut ssz = [0u8; EXECUTION_PAYLOAD_ENVELOPES_BY_RANGE_REQ_SIZE];
+        ssz[..8].copy_from_slice(&start_slot.to_le_bytes());
+        ssz[8..16].copy_from_slice(&count.to_le_bytes());
+        ssz
+    }
+
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn issue_blocks_by_range_request(
+    pub(crate) fn issue_range_request(
         &mut self,
         peer: usize,
         request_id: u64,
         start_slot: u64,
         count: u64,
-        step: u64,
+        kind: RangeReqKind,
         now: Instant,
         emit: &mut impl FnMut(PeerControl),
     ) -> bool {
-        if !self.admit_outbound_request(peer, StreamProtocol::BeaconBlocksByRange, count, now) {
+        if !self.admit_outbound_request(peer, kind.protocol(), kind.tokens(count), now) {
             return false;
         }
-        let ssz = Self::blocks_by_range_ssz(start_slot, count, step);
         emit(PeerControl::P2pSend(P2pSend::Rpc(RpcOutbound::Request(RpcRequestOutbound {
             application_id: request_id,
             peer,
-            request: RpcRequest::BlocksByRange(ssz),
+            request: kind.build_request(start_slot, count),
         }))));
         self.track_outbound_range_attempt(OutboundRangeAttempt {
             request_id,
             peer_id: peer,
-            protocol: StreamProtocol::BeaconBlocksByRange,
             start_slot,
             count,
-            step,
-            columns: 0,
+            kind,
             last_progress_at: now,
             responded: false,
             delivered: false,
@@ -651,52 +704,36 @@ impl PeerManager {
         true
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn issue_data_columns_by_range_request(
+    pub fn issue_sync_envelopes_by_range(
         &mut self,
-        peer: usize,
         request_id: u64,
         start_slot: u64,
         count: u64,
-        columns: u128,
         now: Instant,
         emit: &mut impl FnMut(PeerControl),
-    ) -> bool {
-        let tokens = count.max(1).saturating_mul(columns.count_ones() as u64).max(1);
-        if !self.admit_outbound_request(
+    ) -> Option<usize> {
+        let protocol = StreamProtocol::ExecutionPayloadEnvelopesByRange;
+        let tokens = count.max(1);
+        let peer = self.best_peer_for(protocol, |i| {
+            self.outbound_has_capacity(i, protocol, tokens, now, MAX_RPC_PROTOCOL_IN_FLIGHT)
+        })?;
+        self.issue_range_request(
             peer,
-            StreamProtocol::DataColumnSidecarsByRange,
-            tokens,
-            now,
-        ) {
-            return false;
-        }
-        let (ssz, len) = Self::data_columns_by_range_ssz(start_slot, count, columns);
-        emit(PeerControl::P2pSend(P2pSend::Rpc(RpcOutbound::Request(RpcRequestOutbound {
-            application_id: request_id,
-            peer,
-            request: RpcRequest::DataColumnsByRange { ssz, len },
-        }))));
-        self.track_outbound_range_attempt(OutboundRangeAttempt {
             request_id,
-            peer_id: peer,
-            protocol: StreamProtocol::DataColumnSidecarsByRange,
             start_slot,
             count,
-            step: 0,
-            columns,
-            last_progress_at: now,
-            responded: false,
-            delivered: false,
-        });
-        true
+            RangeReqKind::Envelopes,
+            now,
+            emit,
+        )
+        .then_some(peer)
     }
 
     fn track_outbound_range_attempt(&mut self, attempt: OutboundRangeAttempt) {
         self.outbound_range_attempts.retain(|existing| {
             existing.request_id != attempt.request_id ||
                 existing.peer_id != attempt.peer_id ||
-                existing.protocol != attempt.protocol
+                existing.kind.protocol() != attempt.kind.protocol()
         });
         self.outbound_range_attempts.push(attempt);
     }
@@ -711,31 +748,18 @@ impl PeerManager {
         if let Some(attempt) = self.outbound_range_attempts.iter_mut().find(|attempt| {
             attempt.request_id == request_id &&
                 attempt.peer_id == peer_id &&
-                attempt.protocol == protocol
+                attempt.kind.protocol() == protocol
         }) {
             attempt.last_progress_at = now;
         }
     }
 
     fn pending_range_from_attempt(attempt: OutboundRangeAttempt) -> PendingRangeRequest {
-        match attempt.protocol {
-            StreamProtocol::BeaconBlocksByRange => {
-                PendingRangeRequest::Blocks(PendingBlocksByRange {
-                    request_id: attempt.request_id,
-                    start_slot: attempt.start_slot,
-                    count: attempt.count,
-                    step: attempt.step,
-                })
-            }
-            StreamProtocol::DataColumnSidecarsByRange => {
-                PendingRangeRequest::DataColumns(PendingDataColumnsByRange {
-                    request_id: attempt.request_id,
-                    start_slot: attempt.start_slot,
-                    count: attempt.count,
-                    columns: attempt.columns,
-                })
-            }
-            _ => unreachable!("only range attempts are tracked"),
+        PendingRangeRequest {
+            request_id: attempt.request_id,
+            start_slot: attempt.start_slot,
+            count: attempt.count,
+            kind: attempt.kind,
         }
     }
 
@@ -755,10 +779,9 @@ impl PeerManager {
         tracing::debug!(
             request_id = attempt.request_id,
             peer = attempt.peer_id,
-            protocol = ?attempt.protocol,
+            kind = ?attempt.kind,
             start_slot = attempt.start_slot,
             count = attempt.count,
-            columns = attempt.columns,
             reason,
             "queueing backfill range retry"
         );
@@ -775,7 +798,7 @@ impl PeerManager {
         if let Some(pos) = self
             .outbound_range_attempts
             .iter()
-            .position(|attempt| attempt.peer_id == peer_id && attempt.protocol == protocol)
+            .position(|attempt| attempt.peer_id == peer_id && attempt.kind.protocol() == protocol)
         {
             let attempt = self.outbound_range_attempts.remove(pos);
             self.retry_backfill_range_attempt(attempt, "stream closed", emit);
@@ -818,8 +841,8 @@ impl PeerManager {
 
             let attempt = self.outbound_range_attempts.remove(i);
             if let Some(peer) = self.peers.get_mut(&attempt.peer_id) {
-                peer.outbound_in_flight[attempt.protocol.ordinal() as usize] =
-                    peer.outbound_in_flight[attempt.protocol.ordinal() as usize].saturating_sub(1);
+                let ord = attempt.kind.protocol().ordinal() as usize;
+                peer.outbound_in_flight[ord] = peer.outbound_in_flight[ord].saturating_sub(1);
             }
             self.on_rpc_misbehaviour(
                 attempt.peer_id,
@@ -841,7 +864,7 @@ impl PeerManager {
         if let Some(pos) = self.outbound_range_attempts.iter().position(|attempt| {
             attempt.request_id == request_id &&
                 attempt.peer_id == peer_id &&
-                attempt.protocol == protocol
+                attempt.kind.protocol() == protocol
         }) {
             let mut attempt = self.outbound_range_attempts.remove(pos);
             attempt.responded = true;
@@ -852,7 +875,7 @@ impl PeerManager {
                 ?protocol,
                 start_slot = attempt.start_slot,
                 count = attempt.count,
-                columns = attempt.columns,
+                kind = ?attempt.kind,
                 delivered = attempt.delivered,
                 "outbound range attempt completed"
             );
@@ -881,74 +904,104 @@ impl PeerManager {
         now: Instant,
         emit: &mut impl FnMut(PeerControl),
     ) -> bool {
-        match req {
-            PendingRangeRequest::Blocks(req) => {
-                let protocol = StreamProtocol::BeaconBlocksByRange;
-                let tokens = req.count.max(1);
-                let has_capacity = |i: usize| {
-                    self.outbound_has_capacity(i, protocol, tokens, now, MAX_RPC_PROTOCOL_IN_FLIGHT)
-                };
-                let Some(peer) = self.best_peer_for(protocol, has_capacity) else {
-                    tracing::debug!(
-                        request_id = req.request_id,
-                        start_slot = req.start_slot,
-                        count = req.count,
-                        "no peer for pending BlocksByRange"
-                    );
-                    return false;
-                };
-                self.issue_blocks_by_range_request(
-                    peer,
-                    req.request_id,
-                    req.start_slot,
-                    req.count,
-                    req.step,
-                    now,
-                    emit,
-                )
+        match req.kind {
+            RangeReqKind::Blocks { .. } => self.try_issue_simple_range_request(
+                req,
+                StreamProtocol::BeaconBlocksByRange,
+                now,
+                emit,
+            ),
+            RangeReqKind::DataColumns { columns } => {
+                self.try_issue_columns_range_request(req, now, emit, columns)
             }
-            PendingRangeRequest::DataColumns(req) => {
-                if req.columns == 0 {
-                    return true;
-                }
-                let Some((peer, overlap, _tokens)) = self.best_peer_for_data_columns(
-                    StreamProtocol::DataColumnSidecarsByRange,
-                    req.columns,
-                    req.request_id,
-                    &[],
-                    req.start_slot,
-                    req.count,
-                    now,
-                ) else {
-                    tracing::debug!(
-                        request_id = req.request_id,
-                        start_slot = req.start_slot,
-                        count = req.count,
-                        columns = req.columns,
-                        "no peer for pending DataColumnsByRange"
-                    );
-                    return false;
-                };
-                if !self.issue_data_columns_by_range_request(
-                    peer,
-                    req.request_id,
-                    req.start_slot,
-                    req.count,
-                    overlap,
-                    now,
-                    emit,
-                ) {
-                    return false;
-                }
-                let remaining = req.columns & !overlap;
-                if remaining != 0 {
-                    self.enqueue_pending_range_request(PendingRangeRequest::DataColumns(
-                        PendingDataColumnsByRange { columns: remaining, ..req },
-                    ));
-                }
-                true
-            }
+            RangeReqKind::Envelopes => self.try_issue_simple_range_request(
+                req,
+                StreamProtocol::ExecutionPayloadEnvelopesByRange,
+                now,
+                emit,
+            ),
         }
+    }
+
+    fn try_issue_simple_range_request(
+        &mut self,
+        req: PendingRangeRequest,
+        protocol: StreamProtocol,
+        now: Instant,
+        emit: &mut impl FnMut(PeerControl),
+    ) -> bool {
+        let tokens = req.count.max(1);
+        let Some(peer) = self.best_peer_for(protocol, |i| {
+            self.outbound_has_capacity(i, protocol, tokens, now, MAX_RPC_PROTOCOL_IN_FLIGHT)
+        }) else {
+            tracing::debug!(
+                request_id = req.request_id,
+                start_slot = req.start_slot,
+                count = req.count,
+                ?protocol,
+                "no peer for pending range request"
+            );
+            return false;
+        };
+        self.issue_range_request(
+            peer,
+            req.request_id,
+            req.start_slot,
+            req.count,
+            req.kind,
+            now,
+            emit,
+        )
+    }
+
+    fn try_issue_columns_range_request(
+        &mut self,
+        req: PendingRangeRequest,
+        now: Instant,
+        emit: &mut impl FnMut(PeerControl),
+        columns: u128,
+    ) -> bool {
+        if columns == 0 {
+            return true;
+        }
+        let Some((peer, overlap, _tokens)) = self.best_peer_for_data_columns(
+            StreamProtocol::DataColumnSidecarsByRange,
+            columns,
+            req.request_id,
+            &[],
+            req.start_slot,
+            req.count,
+            now,
+        ) else {
+            tracing::debug!(
+                request_id = req.request_id,
+                start_slot = req.start_slot,
+                count = req.count,
+                columns,
+                "no peer for pending DataColumnsByRange"
+            );
+            return false;
+        };
+        if !self.issue_range_request(
+            peer,
+            req.request_id,
+            req.start_slot,
+            req.count,
+            RangeReqKind::DataColumns { columns: overlap },
+            now,
+            emit,
+        ) {
+            return false;
+        }
+        let remaining = columns & !overlap;
+        if remaining != 0 {
+            self.enqueue_pending_range_request(PendingRangeRequest {
+                kind: RangeReqKind::DataColumns { columns: remaining },
+                ..req
+            });
+        }
+
+        true
     }
 
     /// Drain pending RPC requests onto any peer that's freshly available
@@ -956,13 +1009,11 @@ impl PeerManager {
     pub fn drain_pending_outbound(&mut self, now: Instant, emit: &mut impl FnMut(PeerControl)) {
         self.drain_pending_range_requests(now, emit);
 
-        // Drain pending blocks by root
-        let len = self.pending_block_by_root.len();
+        let len = self.pending_by_root.len();
         for _ in 0..len {
-            if let Some((request_id, p2p_peer, block_root)) = self.pending_block_by_root.pop_front()
+            if let Some((kind, request_id, p2p_peer, block_root)) = self.pending_by_root.pop_front()
             {
-                // requests that still cannot be sent will be re-added.
-                self.on_request_blocks_by_root(request_id, p2p_peer, block_root, now, emit);
+                self.on_request_by_root(kind, request_id, p2p_peer, block_root, now, emit);
             }
         }
 
@@ -1032,46 +1083,53 @@ impl PeerManager {
         }
     }
 
-    /// Dispatch a BlocksByRoot request to either the specified peer or the
-    /// highest-scoring connected peer that advertises the protocol AND has
-    /// spare outbound capacity.
-    /// If no peer qualifies, cache the request and kick discovery — the
-    /// retry pass in `drain_pending_outbound` drains the cache as soon
-    /// as an eligible peer becomes available.
-    pub fn on_request_blocks_by_root(
+    /// Peer routing shared by the by-root request paths (blocks + gloas
+    /// envelopes): pick a capable peer and try to admit one token. `Ok(peer)`
+    /// ⇒ send; `Err((requeue_peer, kick_discovery))` ⇒ caller re-queues (and
+    /// kicks discovery when no peer was available at all).
+    fn route_by_root(
         &mut self,
+        protocol: StreamProtocol,
+        p2p_peer: Option<usize>,
+        now: Instant,
+    ) -> Result<usize, (Option<usize>, bool)> {
+        let has_capacity =
+            |i: usize| self.outbound_has_capacity(i, protocol, 1, now, MAX_RPC_PROTOCOL_IN_FLIGHT);
+        let peer = match p2p_peer {
+            Some(p) if has_capacity(p) => Some(p),
+            _ => self.best_peer_for(protocol, has_capacity),
+        };
+        match peer {
+            Some(peer) if self.admit_outbound_request(peer, protocol, 1, now) => Ok(peer),
+            Some(peer) => Err((Some(peer), false)),
+            None => Err((p2p_peer, true)),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn on_request_by_root(
+        &mut self,
+        kind: RootReqKind,
         request_id: u64,
         p2p_peer: Option<usize>,
         block_root: [u8; 32],
         now: Instant,
         emit: &mut impl FnMut(PeerControl),
     ) {
-        let protocol = StreamProtocol::BeaconBlocksByRoot;
-        let tokens = 1;
-        let has_capacity = |i: usize| {
-            self.outbound_has_capacity(i, protocol, tokens, now, MAX_RPC_PROTOCOL_IN_FLIGHT)
-        };
-
-        tracing::debug!(?p2p_peer, "request blocks by root");
-
-        let peer = match p2p_peer {
-            Some(p) if has_capacity(p) => Some(p),
-            _ => self.best_peer_for(protocol, has_capacity),
-        };
-
-        match peer {
-            Some(peer) => {
-                if !self.admit_outbound_request(peer, protocol, tokens, now) {
-                    self.pending_block_by_root.push_back((request_id, Some(peer), block_root));
-                    return;
+        match self.route_by_root(kind.protocol(), p2p_peer, now) {
+            Ok(peer) => emit(match kind {
+                RootReqKind::Block => {
+                    PeerControl::P2pBlockByRootRequest { app_id: request_id, peer, block_root }
                 }
-                tracing::debug!("sending blocks by root request to {peer}");
-                emit(PeerControl::P2pBlockByRootRequest { app_id: request_id, peer, block_root });
-            }
-            None => {
-                tracing::warn!("no peer for blocks by root");
-                self.pending_block_by_root.push_back((request_id, p2p_peer, block_root));
-                emit(PeerControl::DiscoverNodes);
+                RootReqKind::Envelope => {
+                    PeerControl::P2pEnvelopeByRootRequest { app_id: request_id, peer, block_root }
+                }
+            }),
+            Err((peer, discover)) => {
+                self.pending_by_root.push_back((kind, request_id, peer, block_root));
+                if discover {
+                    emit(PeerControl::DiscoverNodes);
+                }
             }
         }
     }

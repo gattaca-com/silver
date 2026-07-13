@@ -49,6 +49,13 @@ pub struct ScoreParams {
     pub ip_colocation_threshold: usize,
     pub ip_colocation_weight: f64,
 
+    // ── P5: application score (RPC-misbehaviour penalties) ──────────────
+    /// Per-`score_decay_interval` decay applied to the P5 application score.
+    /// RPC faults (timeouts, premature closes) add negative deltas here;
+    /// decaying them toward zero lets a peer that hiccups transiently on a
+    /// flaky network recover instead of accumulating to permanent eviction.
+    pub application_score_decay: f64,
+
     // ── P7: behaviour penalty ───────────────────────────────────────────
     pub behaviour_penalty_threshold: f64,
     pub behaviour_penalty_weight: f64,
@@ -157,6 +164,11 @@ impl Default for ScoreParams {
             // P6 — IP colocation
             ip_colocation_threshold: 10,
             ip_colocation_weight: -1.0,
+
+            // P5 — application score. ~0.95/slot ⇒ a one-off RPC fault (−5)
+            // fades to noise in ~1 min; a peer must fault faster than roughly
+            // once per slot to accumulate toward the −80 graylist floor.
+            application_score_decay: 0.95,
 
             // P7 — behaviour penalty
             behaviour_penalty_threshold: 0.0,

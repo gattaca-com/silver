@@ -66,6 +66,8 @@ fn default_gossip_topics() -> Vec<String> {
         GossipTopic::ProposerSlashing.to_string(),
         GossipTopic::AttesterSlashing.to_string(),
         GossipTopic::BlsToExecutionChange.to_string(),
+        GossipTopic::ExecutionPayload.to_string(),
+        GossipTopic::PayloadAttestationMessage.to_string(),
     ]
 }
 
@@ -363,7 +365,7 @@ mod tests {
         assert_eq!(cfg.fork_digest(), [0x8c, 0x9f, 0x62, 0xfe]);
         assert_eq!(cfg.next_fork_epoch, u64::MAX);
         assert_eq!(cfg.supported_protocols().unwrap().len(), 11);
-        assert_eq!(cfg.gossip_topics().unwrap().len(), 6);
+        assert_eq!(cfg.gossip_topics().unwrap().len(), 8);
     }
 
     #[test]

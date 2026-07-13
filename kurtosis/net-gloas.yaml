@@ -1,0 +1,68 @@
+# Kurtosis ethereum-package args for a local Gloas devnet
+#
+#   PACKAGE=github.com/ethpandaops/ethereum-package \
+#     kurtosis/setup.sh --recreate --gloas silver-gloas
+#
+# Differences from net.yaml (Fulu):
+#   - gloas_fork_epoch set (Gloas activates shortly after genesis) so the chain
+#     produces Gloas blocks/envelopes/PTC without a multi-hour wait. Gloas ships
+#     in Glamsterdam; ethpandaops devnet-6 uses epoch 30 with a long Fulu tail,
+#     but a low epoch is fine for a follower test.
+#   - REQUIRES ethereum-package @ main (the `gloas_fork_epoch` param postdates
+#     the 6.1.0 tag) — pass PACKAGE=github.com/ethpandaops/ethereum-package.
+
+participants:
+  - el_type: geth
+    el_image: ethpandaops/geth:glamsterdam-devnet-6
+    cl_type: lighthouse
+    cl_image: ethpandaops/lighthouse:glamsterdam-devnet-6
+    cl_extra_params:
+      - --target-peers=64
+    count: 1
+  - el_type: reth
+    el_image: ethpandaops/reth:glamsterdam-devnet-6
+    cl_type: lighthouse
+    cl_image: ethpandaops/lighthouse:glamsterdam-devnet-6
+    cl_extra_params:
+      - --target-peers=64
+    count: 1
+  - el_type: nethermind
+    el_image: ethpandaops/nethermind:glamsterdam-devnet-6
+    cl_type: prysm
+    cl_image: ethpandaops/prysm-beacon-chain:glamsterdam-devnet-6
+    vc_image: ethpandaops/prysm-validator:glamsterdam-devnet-6
+    count: 1
+  - el_type: geth
+    el_image: ethpandaops/geth:glamsterdam-devnet-6
+    cl_type: prysm
+    cl_image: ethpandaops/prysm-beacon-chain:glamsterdam-devnet-6
+    vc_image: ethpandaops/prysm-validator:glamsterdam-devnet-6
+    count: 1
+
+network_params:
+  preset: mainnet
+  seconds_per_slot: 12
+  num_validator_keys_per_node: 128
+  genesis_delay: 20
+  deneb_fork_epoch: 0
+  electra_fork_epoch: 0
+  fulu_fork_epoch: 0
+  # Gloas a few epochs out so a from-genesis (Fulu) follower can catch up and be
+  # Following *before* the fork, then exercise the live Fulu→Gloas transition
+  # (digest flip, subscription re-fanout, ENR update) across the boundary.
+  # epoch 3 = slot 96 = ~19 min after genesis at 12s slots.
+  gloas_fork_epoch: 3
+
+global_log_level: debug
+
+additional_services:
+  - dora
+  - spamoor
+
+spamoor_params:
+  spammers:
+    - scenario: blobs
+      name: blob-spammer
+      config:
+        throughput: 2
+        sidecars: 3

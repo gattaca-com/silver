@@ -32,7 +32,7 @@ pub struct SyncingConfig {
     /// Max slots per `BlocksByRange` request issued by the peer-manager
     /// catch-up driver. Bounds in-flight memory + response time on the
     /// peer.
-    #[serde(default = "default_u64::<128>")]
+    #[serde(default = "default_u64::<64>")]
     pub max_blocks_by_range_batch: u64,
     /// Inflight `BlocksByRange` request progress timeout, in milliseconds.
     /// If no head_slot advance into the requested range is observed for
@@ -60,7 +60,7 @@ impl Default for SyncingConfig {
             head_lag_threshold_slots: 8,
             finalized_lag_threshold_epochs: 2,
             wall_clock_tolerance_slots: 32,
-            max_blocks_by_range_batch: 128,
+            max_blocks_by_range_batch: 64,
             inflight_progress_timeout_ms: 2_000,
             max_colreq_attempts: 3,
             pending: PendingBounds::default(),
@@ -84,10 +84,20 @@ pub struct PendingBounds {
     /// backtracking; beyond it the peer-manager range-syncs the gap instead.
     #[serde(default = "default_usize::<32>")]
     pub max_chain_len: usize,
+    /// Wall-clock gap before a by-root execution-payload-envelope request
+    /// is re-issued for a still-unverified payload.
+    #[serde(default = "default_u64::<1000>")]
+    pub envelope_rerequest_ms: u64,
 }
 
 impl Default for PendingBounds {
     fn default() -> Self {
-        Self { future_tolerance: 2, max_parents: 64, max_dc: 512, max_chain_len: 32 }
+        Self {
+            future_tolerance: 2,
+            max_parents: 64,
+            max_dc: 512,
+            max_chain_len: 32,
+            envelope_rerequest_ms: 1000,
+        }
     }
 }

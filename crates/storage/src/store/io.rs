@@ -250,7 +250,7 @@ impl Store {
                     // scan couldn't see it — it wasn't on disk yet). Feed the
                     // still-live column backfill. Just-written ⇒ no columns on
                     // disk yet, so the full custody set is missing.
-                    if SignedBeaconBlockView::has_data_columns(buffer) &&
+                    if SignedBeaconBlockView::has_data_columns_fulu(buffer) &&
                         let Some(cb) = self.column_backfill.as_mut()
                     {
                         cb.seed_block(
@@ -405,7 +405,7 @@ impl Store {
                 tracing::error!(?path, "persisted block ssz has invalid size");
                 continue;
             }
-            if !SignedBeaconBlockView::has_data_columns(&ssz) {
+            if !SignedBeaconBlockView::has_data_columns_fulu(&ssz) {
                 continue;
             }
             let missing = custody & !self.present_columns(slot, custody);
@@ -413,7 +413,7 @@ impl Store {
                 continue;
             }
             if let Some(cb) = self.column_backfill.as_mut() {
-                let block_root = util::block_root(&ssz);
+                let block_root = util::block_root_fulu(&ssz);
                 cb.seed_block(block_root, slot, &ssz, missing, emit);
             }
         }

@@ -4544,6 +4544,7 @@ name = "silver_control"
 version = "0.0.1"
 dependencies = [
  "flux",
+ "silver_chain_spec",
  "silver_common",
  "silver_gossip",
  "silver_peer",

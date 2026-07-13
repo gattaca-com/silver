@@ -4,6 +4,9 @@ const fn default_u64<const V: u64>() -> u64 {
     V
 }
 
+/// Mainnet preset; every network we support uses it.
+const SLOTS_PER_EPOCH: u64 = 32;
+
 /// Fulu `BLOB_SCHEDULE` entry (EIP-7892). Per-epoch override on
 /// `max_blobs_per_block`. Network-specific.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -180,6 +183,38 @@ impl SpecConfig {
     #[inline]
     pub fn is_gloas_at(&self, epoch: u64) -> bool {
         epoch >= self.gloas_fork_epoch
+    }
+
+    #[inline]
+    pub fn is_gloas_at_slot(&self, slot: u64) -> bool {
+        self.is_gloas_at(slot / SLOTS_PER_EPOCH)
+    }
+
+    #[inline]
+    pub fn is_gloas_activation_epoch(&self, epoch: u64) -> bool {
+        epoch == self.gloas_fork_epoch
+    }
+
+    /// First Gloas slot, or `u64::MAX` if Gloas isn't scheduled.
+    #[inline]
+    pub fn gloas_fork_slot(&self) -> u64 {
+        self.gloas_fork_epoch.saturating_mul(SLOTS_PER_EPOCH)
+    }
+
+    #[inline]
+    pub fn fork_version_at(&self, epoch: u64) -> [u8; 4] {
+        if self.is_gloas_at(epoch) { self.gloas_fork_version } else { self.fulu_fork_version }
+    }
+
+    /// `(next_fork_version, next_fork_epoch)` for the ENR `eth2` field at
+    /// `epoch`: the scheduled Gloas activation until it passes, then
+    /// FAR_FUTURE.
+    pub fn next_fork(&self, epoch: u64) -> ([u8; 4], u64) {
+        if self.gloas_fork_epoch != u64::MAX && epoch < self.gloas_fork_epoch {
+            (self.gloas_fork_version, self.gloas_fork_epoch)
+        } else {
+            (self.fork_version_at(epoch), u64::MAX)
+        }
     }
 
     /// Hoodi testnet (launched 2025-03-17). Differs from mainnet in fork

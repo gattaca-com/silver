@@ -405,6 +405,10 @@ fn beacon_block_body_field_roots_fulu(body: &[u8]) -> Option<[B256; 13]> {
     ])
 }
 
+pub fn hash_tree_root_body(body: &[u8], is_gloas: bool) -> B256 {
+    if is_gloas { hash_tree_root_body_gloas(body) } else { hash_tree_root_body_fulu(body) }
+}
+
 /// Compute hash_tree_root of a BeaconBlockBody from raw SSZ bytes.
 /// Fulu layout: 13 fields → 16 leaves.
 #[timed]

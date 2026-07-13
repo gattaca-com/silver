@@ -95,63 +95,33 @@ impl RpcWriteRequest {
     }
 }
 
+#[inline]
+fn slice_from(buf: &[u8], offset: usize) -> &[u8] {
+    if offset < buf.len() { &buf[offset..] } else { &[] }
+}
+
+#[inline]
 fn request_buffer(request: &AcquiredRpcRequest, offset: usize) -> Result<&[u8], StreamError> {
     let buf = match request {
-        AcquiredRpcRequest::StatusV1(buffer) => {
-            if offset < buffer.len() {
-                &buffer[offset..]
-            } else {
-                &[]
-            }
-        }
-        AcquiredRpcRequest::StatusV2(buffer) => {
-            if offset < buffer.len() {
-                &buffer[offset..]
-            } else {
-                &[]
-            }
-        }
-        AcquiredRpcRequest::Ping(buffer) => {
-            if offset < buffer.len() {
-                &buffer[offset..]
-            } else {
-                &[]
-            }
-        }
-        AcquiredRpcRequest::Goodbye(buffer) => {
-            if offset < buffer.len() {
-                &buffer[offset..]
-            } else {
-                &[]
-            }
-        }
+        AcquiredRpcRequest::StatusV1(buffer) => slice_from(buffer, offset),
+        AcquiredRpcRequest::StatusV2(buffer) => slice_from(buffer, offset),
+        AcquiredRpcRequest::Ping(buffer) => slice_from(buffer, offset),
+        AcquiredRpcRequest::Goodbye(buffer) => slice_from(buffer, offset),
         AcquiredRpcRequest::MetaData => &[],
-        AcquiredRpcRequest::BlocksByRange(buffer) => {
-            if offset < buffer.len() {
-                &buffer[offset..]
-            } else {
-                &[]
-            }
-        }
-        AcquiredRpcRequest::BlockByRoot(read) => {
+        AcquiredRpcRequest::BlocksByRange(buffer) => slice_from(buffer, offset),
+        AcquiredRpcRequest::ExecutionPayloadEnvelopesByRange(buffer) => slice_from(buffer, offset),
+        AcquiredRpcRequest::DataColumnsByRange { ssz, len } => slice_from(&ssz[..*len], offset),
+        AcquiredRpcRequest::BlockByRoot(read) |
+        AcquiredRpcRequest::DataColumnsByRoot(read) |
+        AcquiredRpcRequest::ExecutionPayloadEnvelopesByRoot(read) => {
             let (buf, _) = read.buffer()?;
-            if offset < buf.len() { &buf[offset..] } else { &[] }
-        }
-        AcquiredRpcRequest::DataColumnsByRange { ssz, len } => {
-            if offset < *len {
-                &ssz[offset..*len]
-            } else {
-                &[]
-            }
-        }
-        AcquiredRpcRequest::DataColumnsByRoot(read) => {
-            let (buf, _) = read.buffer()?;
-            if offset < buf.len() { &buf[offset..] } else { &[] }
+            slice_from(buf, offset)
         }
     };
     Ok(buf)
 }
 
+#[inline]
 fn request_length(request: &AcquiredRpcRequest) -> Result<usize, StreamError> {
     let len = match request {
         AcquiredRpcRequest::StatusV1(b) => b.len(),
@@ -163,6 +133,8 @@ fn request_length(request: &AcquiredRpcRequest) -> Result<usize, StreamError> {
         AcquiredRpcRequest::BlockByRoot(tcache_read) => tcache_read.len()?,
         AcquiredRpcRequest::DataColumnsByRange { ssz: _, len } => *len,
         AcquiredRpcRequest::DataColumnsByRoot(tcache_read) => tcache_read.len()?,
+        AcquiredRpcRequest::ExecutionPayloadEnvelopesByRange(b) => b.len(),
+        AcquiredRpcRequest::ExecutionPayloadEnvelopesByRoot(tcache_read) => tcache_read.len()?,
     };
     Ok(len)
 }

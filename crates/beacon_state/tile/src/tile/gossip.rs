@@ -1,22 +1,32 @@
 use flux::spine::SpineProducers;
 use silver_beacon_state_data::{
-    B256, Epoch, ParsedAggregateAndProof, SLOTS_PER_EPOCH, Slot, StateReadView,
+    B256, Epoch, ParsedAggregateAndProof, SLOTS_PER_EPOCH, Slot, StateId, StateReadView,
 };
 use silver_common::{
-    BlockSource, GossipTopic, NewGossipMsg, PeerEvent,
+    BlockSource, EngineNewPayloadEnvelopeReq, EngineReq, GossipTopic, MAX_BLOBS_PER_BLOCK,
+    NewGossipMsg, PeerEvent, TCacheRead, TRead,
+    metrics::timed,
     ssz_view::{
-        AttestationDataView, AttestationView, AttesterSlashingView, PROPOSER_SLASHING_SIZE,
-        ProposerSlashingView, SIGNED_BLS_CHANGE_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE,
-        SignedBeaconBlockView, SignedBlsToExecutionChangeView, SignedVoluntaryExitView,
+        AttestationDataView, AttestationView, AttesterSlashingView,
+        ExecutionPayloadEnvelopeView as Envelope, ExecutionPayloadView as Payload,
+        PROPOSER_SLASHING_SIZE, ProposerSlashingView, SIGNED_BLS_CHANGE_SIZE,
+        SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE, SignedBlsToExecutionChangeView,
+        SignedExecutionPayloadEnvelopeView as SignedPayload, SignedVoluntaryExitView,
         SingleAttestationView,
     },
 };
 
 use super::{
-    ATTESTATION_PROPAGATION_SLOT_RANGE, BeaconStateTile, Feedback, Producers,
-    orphan_pool::PendingBlock,
+    ATTESTATION_PROPAGATION_SLOT_RANGE, BY_ROOT_REQUEST_ID, BeaconStateTile, Feedback, Producers,
+    orphan_pool::{PendingBlock, has_room},
 };
 use crate::{bls, shuffling, ssz_hash, stf, validate};
+
+pub(super) enum EnvelopeCheck {
+    Ready { block_root: B256, state_id: StateId },
+    AwaitBlock(B256),
+    Ignore,
+}
 
 impl BeaconStateTile {
     pub(super) fn handle_attestation(&mut self, data: &[u8]) -> Feedback {
@@ -36,9 +46,12 @@ impl BeaconStateTile {
             return Feedback::Ignore;
         }
 
-        // Fulu single attestations encode the committee in `committee_index`;
-        // `AttestationData.index` must be 0.
-        if SingleAttestationView::data_index(buf) != 0 {
+        // Pre-Gloas single attestations encode the committee in
+        // `committee_index`, so `AttestationData.index` must be 0. Gloas widens
+        // it to a payload-status bit (`index == 1` ⇒ payload present).
+        let data_index = SingleAttestationView::data_index(buf);
+        let is_gloas = self.spec.is_gloas_at(target_epoch);
+        if !validate::attestation_index_ok(is_gloas, data_index) {
             return Feedback::Reject(None);
         }
         if let Err(f) =
@@ -46,6 +59,14 @@ impl BeaconStateTile {
         {
             return f;
         }
+        let payload_present = if is_gloas {
+            match self.gloas_payload_present(&block_root, att_slot, data_index) {
+                Ok(present) => present,
+                Err(f) => return f,
+            }
+        } else {
+            false
+        };
 
         let canon_id = self.canonical_state_id();
         let att_epoch = att_slot / SLOTS_PER_EPOCH;
@@ -89,14 +110,12 @@ impl BeaconStateTile {
             return Feedback::Reject(None);
         }
 
-        // This handler enforces `data_index == 0` above, so the payload-present
-        // vote is always false here.
         let vote = stf::AttestationVote {
             validator: attester_index as u32,
             block_root,
             target_epoch,
             attestation_slot: att_slot,
-            payload_present: false,
+            payload_present,
         };
         let n = self.head_validator_count();
         self.record_or_defer_vote(vote, n);
@@ -168,8 +187,11 @@ impl BeaconStateTile {
             return Feedback::Reject(None);
         };
 
-        // Gossip-rule checks (no state access).
-        if parsed.agg_data_index != 0 || parsed.target_epoch != parsed.att_epoch {
+        // Gossip-rule checks (no state access). Pre-Gloas requires index 0;
+        // Gloas widens it to the payload-status bit (`index < 2`).
+        let is_gloas = self.spec.is_gloas_at(parsed.att_epoch);
+        let index_ok = validate::attestation_index_ok(is_gloas, parsed.agg_data_index);
+        if !index_ok || parsed.target_epoch != parsed.att_epoch {
             return Feedback::Reject(None);
         }
         let wall = self.ticker.current_slot();
@@ -191,6 +213,17 @@ impl BeaconStateTile {
             Some(r) if r == parsed.target_root => {}
             Some(_) => return Feedback::Reject(None),
             None => return Feedback::Ignore,
+        }
+        // `payload_present` is re-derived from the index in `apply_attestation`;
+        // here we only enforce the Gloas index==1 gossip rules.
+        if is_gloas {
+            if let Err(f) = self.gloas_payload_present(
+                &parsed.beacon_block_root,
+                parsed.agg_slot,
+                parsed.agg_data_index,
+            ) {
+                return f;
+            }
         }
 
         let canon_id = self.canonical_state_id();
@@ -260,6 +293,147 @@ impl BeaconStateTile {
         // Record the votes (validates target/ancestry + slot+1 deferral, derives
         // the committee again). The inner attestation is the aggregate field.
         self.apply_attestation(parsed.aggregate_bytes)
+    }
+
+    pub(super) fn validate_execution_payload_envelope(&self, ssz: &[u8]) -> EnvelopeCheck {
+        if !SignedPayload::check_size(ssz) {
+            return EnvelopeCheck::Ignore;
+        }
+        let msg = SignedPayload::message(ssz);
+        let block_root = *Envelope::beacon_block_root(msg);
+        let Some(idx) = self.fork_choice.find_node_idx(&block_root) else {
+            return EnvelopeCheck::AwaitBlock(block_root);
+        };
+        let state_id = self.fork_choice.node(idx).state_id;
+        let builder_index = Envelope::builder_index(msg);
+        let payload_block_hash = *Payload::block_hash(Envelope::payload(msg));
+        let rv = self.state.read_view(state_id);
+        let bid = &rv.slot.state().latest_execution_payload_bid;
+        if bid.builder_index != builder_index || bid.block_hash != payload_block_hash {
+            return EnvelopeCheck::Ignore;
+        }
+        EnvelopeCheck::Ready { block_root, state_id }
+    }
+
+    #[timed]
+    pub(super) fn handle_execution_payload_envelope(
+        &mut self,
+        acquired: TRead,
+        ssz: &[u8],
+        source: BlockSource,
+        producers: &mut Producers,
+    ) -> Feedback {
+        let (block_root, state_id) = match self.validate_execution_payload_envelope(ssz) {
+            EnvelopeCheck::Ready { block_root, state_id } => (block_root, state_id),
+            EnvelopeCheck::AwaitBlock(block_root) => {
+                self.buffer_pending_envelope(block_root, acquired);
+                return Feedback::Ignore;
+            }
+            EnvelopeCheck::Ignore => return Feedback::Ignore,
+        };
+
+        if self.fork_choice.is_payload_verified(&block_root) {
+            return Feedback::Ignore;
+        }
+
+        // Versioned hashes come from the committed bid's KZG commitments — the
+        // envelope does not carry them.
+        let mut versioned_hashes = [[0u8; 32]; MAX_BLOBS_PER_BLOCK];
+        let hash_count = match self
+            .state
+            .read_view(state_id)
+            .slot
+            .bid_versioned_hashes_len(&mut versioned_hashes)
+        {
+            Some(n) => n as u8,
+            None => return Feedback::Reject(None),
+        };
+
+        self.fork_choice.mark_payload_verified(&block_root);
+        self.envelope_requested.remove(&block_root);
+        producers.produce(EngineReq::NewPayloadEnvelope(EngineNewPayloadEnvelopeReq {
+            data: acquired.read,
+            block_root,
+            block_source: source,
+            hash_count,
+            versioned_hashes,
+        }));
+
+        self.drain_awaiting_payload(block_root, producers);
+        self.recompute_head();
+
+        Feedback::Accept(Some(block_root))
+    }
+
+    fn buffer_pending_envelope(&mut self, block_root: B256, acquired: TRead) {
+        if !has_room(&self.pending_envelopes, self.pending_bounds.max_dc, &block_root) {
+            return;
+        }
+        self.pending_envelopes.insert(block_root, acquired);
+    }
+
+    pub(super) fn drain_pending_envelope(&mut self, block_root: B256, producers: &mut Producers) {
+        let Some(acquired) = self.pending_envelopes.remove(&block_root) else {
+            return;
+        };
+
+        let Some((ssz, _)) = acquired.buffer().ok() else {
+            return;
+        };
+
+        self.handle_execution_payload_envelope(
+            acquired.clone(),
+            ssz,
+            BlockSource::Gossip,
+            producers,
+        );
+    }
+
+    fn gloas_payload_present(
+        &mut self,
+        block_root: &B256,
+        att_slot: Slot,
+        data_index: u64,
+    ) -> Result<bool, Feedback> {
+        if data_index != 1 {
+            return Ok(false);
+        }
+        let Some(idx) = self.fork_choice.find_node_idx(block_root) else {
+            return Err(Feedback::Ignore);
+        };
+        if self.fork_choice.node(idx).slot == att_slot {
+            return Err(Feedback::Reject(None));
+        }
+        if !self.fork_choice.is_payload_verified(block_root) {
+            let now_ms = self.ticker.millis_since_genesis();
+            let rerequest_ms = self.pending_bounds.envelope_rerequest_ms;
+            let due = self
+                .envelope_requested
+                .get(block_root)
+                .is_none_or(|&at_ms| now_ms.saturating_sub(at_ms) >= rerequest_ms);
+            if due {
+                self.envelope_request_queue.push(*block_root);
+            }
+            return Err(Feedback::Ignore);
+        }
+        Ok(true)
+    }
+
+    fn drain_envelope_requests(&mut self, producers: &mut Producers) {
+        if self.envelope_request_queue.is_empty() {
+            return;
+        }
+        let now_ms = self.ticker.millis_since_genesis();
+        let mut queue = std::mem::take(&mut self.envelope_request_queue);
+        for block_root in queue.drain(..) {
+            self.envelope_requested.insert(block_root, now_ms);
+            producers.produce(PeerEvent::SendEnvelopesByRootRequest {
+                request_id: BY_ROOT_REQUEST_ID,
+                p2p_peer: None,
+                block_root,
+            });
+        }
+        self.envelope_request_queue = queue;
     }
 
     fn validate_attestation_target(
@@ -483,66 +657,64 @@ impl BeaconStateTile {
         }
         Feedback::Accept(None)
     }
+
     pub(super) fn handle_gossip(
         &mut self,
+        read: TCacheRead,
         m: NewGossipMsg,
-        data: &[u8],
         do_relay: bool,
         pre_verified: bool,
         producers: &mut Producers,
     ) {
+        let acquired = self.gossip_consumer.acquire(read);
+        let Some(data) = acquired.buffer().ok().map(|(d, _)| d) else { return };
+
         let feedback = match m.topic {
             GossipTopic::BeaconBlock => {
-                let acquired = self.gossip_consumer.acquire(m.ssz);
-                Some(self.apply_block(data, acquired, BlockSource::Gossip, pre_verified, producers))
+                self.apply_block(data, read, BlockSource::Gossip, pre_verified, producers)
             }
-            GossipTopic::BeaconAttestation(_) => Some(self.handle_attestation(data)),
-            GossipTopic::BeaconAggregateAndProof => Some(self.handle_aggregate_and_proof(data)),
-            GossipTopic::VoluntaryExit => Some(self.handle_voluntary_exit(data)),
-            GossipTopic::ProposerSlashing => Some(self.handle_proposer_slashing(data)),
-            GossipTopic::AttesterSlashing => Some(self.handle_attester_slashing(data)),
-            GossipTopic::BlsToExecutionChange => Some(self.handle_bls_to_execution_change(data)),
-            GossipTopic::ExecutionPayload => Some(self.on_execution_payload_envelope(data)),
-            GossipTopic::PayloadAttestationMessage => Some(self.on_payload_attestation(data)),
-            _ => None,
+            GossipTopic::BeaconAttestation(_) => self.handle_attestation(data),
+            GossipTopic::BeaconAggregateAndProof => self.handle_aggregate_and_proof(data),
+            GossipTopic::VoluntaryExit => self.handle_voluntary_exit(data),
+            GossipTopic::ProposerSlashing => self.handle_proposer_slashing(data),
+            GossipTopic::AttesterSlashing => self.handle_attester_slashing(data),
+            GossipTopic::BlsToExecutionChange => self.handle_bls_to_execution_change(data),
+            GossipTopic::ExecutionPayload => self.handle_execution_payload_envelope(
+                acquired.clone(),
+                data,
+                BlockSource::Gossip,
+                producers,
+            ),
+            GossipTopic::PayloadAttestationMessage => self.handle_payload_attestation(data),
+            _ => {
+                self.drain_envelope_requests(producers);
+                return;
+            }
         };
         match feedback {
-            Some(Feedback::Reject(_)) => producers.produce(PeerEvent::P2pGossipInvalidMsg {
+            Feedback::Reject(_) => producers.produce(PeerEvent::P2pGossipInvalidMsg {
                 p2p_peer: m.stream_id.peer(),
                 topic: m.topic,
                 hash: m.msg_hash,
             }),
-            Some(Feedback::Accept(block_root)) => {
+            Feedback::Accept(block_root) => {
                 if do_relay {
                     Self::relay_gossip(&m, producers);
                 }
-
-                // Try to apply any pending blocks for which this one was the parent.
-                if let Some(root) = block_root {
-                    self.apply_pending_blocks(root, producers);
-                }
-                producers.produce(self.status_event());
+                self.on_accept(block_root, producers);
             }
-            Some(Feedback::RequestParent { parent_root, block_root }) => {
-                let peer = m.stream_id.peer();
-                let block_slot = SignedBeaconBlockView::slot(data);
-                self.buffer_orphan(
-                    parent_root,
-                    block_root,
-                    PendingBlock::Gossip(m),
-                    block_slot,
-                    peer,
-                    producers,
-                );
+            Feedback::RequestParent { .. } => {
+                self.park_block(feedback, PendingBlock::Gossip(m), data, producers)
             }
-            Some(Feedback::AwaitData(block_root)) => {
+            Feedback::AwaitData(_) | Feedback::AwaitParentPayload { .. } => {
                 if do_relay {
                     Self::relay_gossip(&m, producers);
                 }
-                self.buffer_awaiting_columns(block_root, PendingBlock::Gossip(m));
+                self.park_block(feedback, PendingBlock::Gossip(m), data, producers);
             }
-            Some(Feedback::Ignore) | None => {}
+            Feedback::Ignore => {}
         }
+        self.drain_envelope_requests(producers);
     }
 
     fn relay_gossip(m: &NewGossipMsg, producers: &mut Producers) {

@@ -13,7 +13,8 @@ use silver_common::{
     P2pStreamId, RpcOutbound, RpcRequest, RpcResponse, StreamProtocol, TRandomAccess, TRead,
     rpc_rate_limit::{RPC_ERR_RATE_LIMITED, RPC_RATE_LIMITED_MSG},
     ssz_view::{
-        BLOCKS_BY_RANGE_REQ_SIZE, DC_BY_RANGE_REQ_MAX, GOODBYE_SIZE, METADATA_SIZE, PING_SIZE,
+        BLOCKS_BY_RANGE_REQ_SIZE, DC_BY_RANGE_REQ_MAX,
+        EXECUTION_PAYLOAD_ENVELOPES_BY_RANGE_REQ_SIZE, GOODBYE_SIZE, METADATA_SIZE, PING_SIZE,
         STATUS_V1_SIZE, STATUS_V2_SIZE,
     },
 };
@@ -108,6 +109,7 @@ pub(crate) enum AcquiredRpcResponse {
     MetaData([u8; METADATA_SIZE]),
     BeaconBlock { fork_digest: [u8; 4], ssz: TRead },
     DataColumnSidecar { fork_digest: [u8; 4], ssz: TRead },
+    ExecutionPayloadEnvelope { fork_digest: [u8; 4], ssz: TRead },
     Error { error: u8, msg: [u8; 256], len: usize },
     Complete,
 }
@@ -135,6 +137,10 @@ impl From<(RpcResponse, &mut TRandomAccess)> for AcquiredRpcResponse {
                 let acquired = consumer.acquire(ssz);
                 Self::DataColumnSidecar { fork_digest, ssz: acquired }
             }
+            RpcResponse::ExecutionPayloadEnvelope { fork_digest, ssz } => {
+                let acquired = consumer.acquire(ssz);
+                Self::ExecutionPayloadEnvelope { fork_digest, ssz: acquired }
+            }
             RpcResponse::Error { error, msg, len } => Self::Error { error, msg, len },
             RpcResponse::Complete => Self::Complete,
         }
@@ -153,6 +159,8 @@ pub(crate) enum AcquiredRpcRequest {
     BlockByRoot(TRead),
     DataColumnsByRange { ssz: [u8; DC_BY_RANGE_REQ_MAX], len: usize },
     DataColumnsByRoot(TRead),
+    ExecutionPayloadEnvelopesByRange([u8; EXECUTION_PAYLOAD_ENVELOPES_BY_RANGE_REQ_SIZE]),
+    ExecutionPayloadEnvelopesByRoot(TRead),
 }
 
 impl AcquiredRpcRequest {
@@ -170,6 +178,12 @@ impl AcquiredRpcRequest {
             }
             AcquiredRpcRequest::DataColumnsByRoot { .. } => {
                 StreamProtocol::DataColumnSidecarsByRoot
+            }
+            AcquiredRpcRequest::ExecutionPayloadEnvelopesByRange(_) => {
+                StreamProtocol::ExecutionPayloadEnvelopesByRange
+            }
+            AcquiredRpcRequest::ExecutionPayloadEnvelopesByRoot { .. } => {
+                StreamProtocol::ExecutionPayloadEnvelopesByRoot
             }
         }
     }
@@ -192,6 +206,13 @@ impl From<(RpcRequest, &mut TRandomAccess)> for AcquiredRpcRequest {
             RpcRequest::DataColumnsByRoot(tcache_read) => {
                 let acquired = consumer.acquire(tcache_read);
                 Self::DataColumnsByRoot(acquired)
+            }
+            RpcRequest::ExecutionPayloadEnvelopesByRange(b) => {
+                Self::ExecutionPayloadEnvelopesByRange(b)
+            }
+            RpcRequest::ExecutionPayloadEnvelopesByRoot(tcache_read) => {
+                let acquired = consumer.acquire(tcache_read);
+                Self::ExecutionPayloadEnvelopesByRoot(acquired)
             }
         }
     }
