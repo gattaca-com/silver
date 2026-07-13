@@ -36,7 +36,6 @@ impl UnfinalizedEnvelopes {
         self.0.is_empty()
     }
 
-    #[cfg(test)]
     pub(crate) fn slot_of(&self, root: &[u8; 32]) -> Option<u64> {
         self.0.get(root).copied()
     }

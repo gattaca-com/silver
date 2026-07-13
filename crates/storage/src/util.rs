@@ -2,7 +2,7 @@
 
 use blst::{BLST_ERROR, min_pk::PublicKey};
 use flux_profiler::timed;
-use silver_beacon_state_data::SLOTS_PER_EPOCH;
+use silver_beacon_state_data::{SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
     ssz_hash::{
         B256, hash_concat, hash_list_fixed_elements, hash_tree_root_body_fulu,
@@ -18,6 +18,29 @@ use silver_common::{
 
 /// EIP-4844 versioned-hash version byte (`VERSIONED_HASH_VERSION_KZG`).
 const VERSIONED_HASH_VERSION_KZG: u8 = 0x01;
+
+/// Spec `compute_fork_digest` (EIP-7892) for the fork active at `slot`. Each
+/// served RPC chunk must carry the context fork-digest for its own slot's
+/// fork: a range/root request can span a
+/// fork boundary, and post-fork the retention window still holds pre-fork
+/// blocks/columns.
+#[timed]
+pub fn fork_digest_at(spec: &SpecConfig, slot: u64, genesis_validators_root: &B256) -> [u8; 4] {
+    let epoch = slot / SLOTS_PER_EPOCH;
+    let base = hash_tree_root_fork_data(spec.fork_version_at(epoch), genesis_validators_root);
+    let bp = spec
+        .blob_schedule
+        .iter()
+        .rev()
+        .find(|e| epoch >= e.epoch)
+        .copied()
+        .unwrap_or_else(|| spec.default_blob_params());
+    let mut input = [0u8; 16];
+    input[..8].copy_from_slice(&bp.epoch.to_le_bytes());
+    input[8..].copy_from_slice(&bp.max_blobs_per_block.to_le_bytes());
+    let mix = sha256(&input);
+    [base[0] ^ mix[0], base[1] ^ mix[1], base[2] ^ mix[2], base[3] ^ mix[3]]
+}
 
 /// Depth of the Merkle branch attaching `kzg_commitments` to
 /// `BeaconBlockBody.body_root`. Per Fulu spec: `floor(log2(gindex))`
@@ -357,6 +380,34 @@ mod tests {
     fn body_root_is_deterministic() {
         let body = [0u8; 396];
         assert_eq!(body_root(&body), body_root(&body));
+    }
+
+    /// Known-answer for the served context fork-digest: mainnet Fulu at epoch
+    /// 419072 = `8c9f62fe` (same vector the beacon-state tile's
+    /// `compute_fork_digest` is checked against — guards this crate's copy).
+    #[test]
+    fn fork_digest_at_matches_mainnet_fulu() {
+        let mainnet_gvr: B256 = [
+            0x4b, 0x36, 0x3d, 0xb9, 0x4e, 0x28, 0x61, 0x20, 0xd7, 0x6e, 0xb9, 0x05, 0x34, 0x0f,
+            0xdd, 0x4e, 0x54, 0xbf, 0xe9, 0xf0, 0x6b, 0xf3, 0x3f, 0xf6, 0xcf, 0x5a, 0xd2, 0x7f,
+            0x51, 0x1b, 0xfe, 0x95,
+        ];
+        let spec = SpecConfig::mainnet();
+        assert_eq!(fork_digest_at(&spec, 419072 * SLOTS_PER_EPOCH, &mainnet_gvr), [
+            0x8c, 0x9f, 0x62, 0xfe
+        ],);
+    }
+
+    /// A range/root request spanning the Gloas boundary must tag pre- and
+    /// post-fork chunks with different context digests (the bug this fixes).
+    #[test]
+    fn fork_digest_at_differs_across_gloas_boundary() {
+        let gvr = [7u8; 32];
+        let mut spec = SpecConfig::mainnet();
+        spec.gloas_fork_epoch = 10;
+        let pre = fork_digest_at(&spec, 9 * SLOTS_PER_EPOCH, &gvr);
+        let post = fork_digest_at(&spec, 10 * SLOTS_PER_EPOCH, &gvr);
+        assert_ne!(pre, post, "fulu-era and gloas-era digests must differ");
     }
 
     /// Build a synthetic sidecar byte buffer with the given index and
