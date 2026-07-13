@@ -56,11 +56,6 @@ impl<'a> Nodes<'a> {
     }
 
     #[inline]
-    fn iter<V: ColumnVal>(self) -> impl Iterator<Item = V> + 'a {
-        (0..self.count()).map(move |i| self.get::<V>(i))
-    }
-
-    #[inline]
     fn hash_root<V: ColumnVal>(&self) -> B256 {
         let list_depth = (VALIDATOR_REGISTRY_LIMIT / V::VALS_PER_CHUNK).trailing_zeros();
         let mut root = *self.node(1);
@@ -106,11 +101,6 @@ impl<'a, C: ColumnSpec> ColumnReader<'a, C> {
     #[inline]
     pub fn get(&self, ix: usize) -> C::Val {
         self.nodes.get::<C::Val>(ix)
-    }
-
-    #[inline]
-    pub fn iter(self) -> impl Iterator<Item = C::Val> + 'a {
-        self.nodes.iter::<C::Val>()
     }
 
     #[inline]
@@ -199,7 +189,7 @@ impl<'a, C: ColumnSpec> ColumnWriteView<'a, C> {
 
     #[inline]
     pub fn iter(&self) -> impl Iterator<Item = C::Val> + '_ {
-        self.reader().iter()
+        self.group.scratch().iter_vals::<C::Val>()
     }
 
     #[inline]

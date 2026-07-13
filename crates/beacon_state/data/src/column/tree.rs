@@ -178,6 +178,16 @@ impl ColumnTree {
         }
     }
 
+    pub fn iter_vals<V: ColumnVal>(&self) -> impl Iterator<Item = V> + '_ {
+        let sz = size_of::<V>();
+        let bytes = &self.nodes[self.max_elements..].as_flattened()[..self.count * sz];
+        (0..self.count).map(move |i| {
+            let mut out = [V::default()];
+            V::read_ssz_slice(&mut out, &bytes[i * sz..i * sz + sz]);
+            out[0]
+        })
+    }
+
     pub fn add_at(&mut self, idx: u32, delta: i64) {
         let k = u64::VALS_PER_CHUNK as u32;
         let node = self.max_elements as u32 + idx / k;

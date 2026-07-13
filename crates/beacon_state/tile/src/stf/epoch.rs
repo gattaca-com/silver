@@ -75,7 +75,7 @@ pub fn process_epoch(
     let mut longtail_w = needs_longtail.then(|| longtail.roll_inheriting(*longtail_idx));
 
     process_justification_and_finalization(view, epoch, current_epoch);
-    process_inactivity_updates(cfg, view, &epoch.reader(), current_epoch, &mut scratch.replace_u64);
+    process_inactivity_updates(cfg, view, &epoch.reader(), current_epoch);
     process_rewards_and_penalties(cfg, view, &epoch.reader(), current_epoch);
     process_registry_updates(cfg, view, &epoch.reader(), current_epoch);
     process_slashings(cfg, view, &epoch.reader(), current_epoch);
@@ -264,54 +264,46 @@ pub fn process_inactivity_updates(
     view: &mut StateWriterView,
     epoch: &EpochView,
     current_epoch: Epoch,
-    scratch: &mut Vec<(u32, u64)>,
 ) {
     if current_epoch == 0 {
         return;
     }
     let is_leak = is_inactivity_leak(cfg, epoch, current_epoch);
+    let bias = cfg.inactivity_score_bias as i64;
+    let recovery = cfg.inactivity_score_recovery_rate as i64;
 
-    scratch.clear();
-    {
-        let validators = view.validators.reader();
-        let n = validators.count();
-        let mut act = validators.iter_activation_epochs();
-        let mut exit = validators.iter_exit_epochs();
-        let mut withdr = validators.iter_withdrawable_epochs();
-        let mut slashed_col = validators.iter_slashed();
-        let mut prev_p = view.previous_participation.iter();
-        let mut inact = view.inactivity.iter();
-        for i in 0..n {
-            let status = ActiveStatus {
-                activation_epoch: act.next().unwrap(),
-                exit_epoch: exit.next().unwrap(),
-                slashed: slashed_col.next().unwrap(),
-            };
-            let withdrawable_epoch = withdr.next().unwrap();
-            let previous_participation = prev_p.next().unwrap();
-            let inactivity_score = inact.next().unwrap();
-            let new = if !status.eligible(withdrawable_epoch, current_epoch) {
-                inactivity_score
-            } else {
-                let mut s = inactivity_score;
-                if previous_participation & TIMELY_TARGET_FLAG != 0 && !status.slashed {
-                    s = s.saturating_sub(1);
-                } else {
-                    s += cfg.inactivity_score_bias;
-                }
-                if !is_leak {
-                    s -= min(cfg.inactivity_score_recovery_rate, s);
-                }
-                s
-            };
-            // Only changed scores: set_many's cost is per touched chunk, and in
-            // a healthy (non-leak) chain nearly every score is 0 and stays 0.
-            if new != inactivity_score {
-                scratch.push((i as u32, new));
-            }
+    let validators = view.validators.reader();
+    let n = validators.count();
+    let mut act = validators.iter_activation_epochs();
+    let mut exit = validators.iter_exit_epochs();
+    let mut withdr = validators.iter_withdrawable_epochs();
+    let mut slashed_col = validators.iter_slashed();
+    let mut prev_p = view.previous_participation.iter();
+    for i in 0..n {
+        let status = ActiveStatus {
+            activation_epoch: act.next().unwrap(),
+            exit_epoch: exit.next().unwrap(),
+            slashed: slashed_col.next().unwrap(),
+        };
+        let withdrawable_epoch = withdr.next().unwrap();
+        let previous_participation = prev_p.next().unwrap();
+        if !status.eligible(withdrawable_epoch, current_epoch) {
+            continue;
+        }
+        // The spec's `saturating_sub(1)` / `s - min(recovery, s)` are saturating
+        // subtractions flooring at 0 — which `add_at`'s `saturating_add_signed`
+        // reproduces — so the delta depends only on participation/leak, not the
+        // current score. No inactivity read needed.
+        let target_ok = previous_participation & TIMELY_TARGET_FLAG != 0 && !status.slashed;
+        let mut delta = if target_ok { -1 } else { bias };
+        if !is_leak {
+            delta -= recovery;
+        }
+        if delta != 0 {
+            view.inactivity.add_at(i as u32, delta);
         }
     }
-    view.inactivity.set_many(scratch);
+    view.inactivity.rehash();
 }
 
 #[timed]
@@ -537,7 +529,7 @@ pub fn process_effective_balance_updates(
         let validators = view.validators.reader();
         let n = validators.count();
         let mut eff = validators.iter_effective_balances();
-        let mut bal = view.balances.reader().iter();
+        let mut bal = view.balances.iter();
         let mut creds = validators.iter_credentials();
         for i in 0..n {
             let effective_balance = eff.next().unwrap();
