@@ -9,7 +9,8 @@ use crate::{
         BLOCKS_BY_RANGE_REQ_SIZE, BeaconBlocksByRangeRequestView, DC_BY_RANGE_REQ_MAX,
         DataColumnSidecarsByRangeRequestView, EXECUTION_PAYLOAD_ENVELOPES_BY_RANGE_REQ_SIZE,
         ExecutionPayloadEnvelopesByRangeRequestView, GOODBYE_SIZE, METADATA_SIZE, PING_SIZE,
-        STATUS_V1_SIZE, STATUS_V2_SIZE, SignedBeaconBlockView, SszView, StatusView,
+        STATUS_V1_SIZE, STATUS_V2_SIZE, SignedBeaconBlockView, SignedExecutionPayloadEnvelopeView,
+        SszView, StatusView,
     },
 };
 
@@ -667,6 +668,10 @@ pub enum BeaconStateEvent {
         ssz: TCacheRead,
         source: BlockSource,
     },
+    PersistEnvelope {
+        ssz: TCacheRead,
+        source: BlockSource,
+    },
     BlockRejected {
         block_root: [u8; 32],
         source: BlockSource,
@@ -936,6 +941,9 @@ impl BeaconStateEvent {
         match self {
             Self::Status { .. } => SszView::Status(StatusView {}),
             Self::PersistBlock { .. } => SszView::SignedBeaconBlock(SignedBeaconBlockView {}),
+            Self::PersistEnvelope { .. } => {
+                SszView::SignedExecutionPayloadEnvelope(SignedExecutionPayloadEnvelopeView {})
+            }
             Self::BlockRejected { .. } | Self::ReplayComplete | Self::BacktrackStall => {
                 SszView::None
             }

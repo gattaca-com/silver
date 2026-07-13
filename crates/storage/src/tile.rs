@@ -17,8 +17,8 @@ use silver_common::{
     TMultiProducer, TProducer, TRandomAccess, TRead, Wheel, msg_is_backfill,
     msg_is_column_backfill, msg_is_live_column_request, msg_is_post_gloas,
     ssz_view::{
-        DataColumnSidecarFuluView, DataColumnSidecarGloasView, NUMBER_OF_COLUMNS,
-        SignedBeaconBlockView, StatusView,
+        DataColumnSidecarFuluView, DataColumnSidecarGloasView, ExecutionPayloadEnvelopeView,
+        NUMBER_OF_COLUMNS, SignedBeaconBlockView, SignedExecutionPayloadEnvelopeView, StatusView,
     },
 };
 
@@ -813,7 +813,6 @@ impl Tile<SilverSpine> for StorageTile {
 
                 match t_read.buffer() {
                     Ok((buf, _)) => {
-                        use silver_common::ssz_view::SignedBeaconBlockView;
                         let slot = SignedBeaconBlockView::slot(buf);
                         let parent_root = *SignedBeaconBlockView::parent_root(buf);
                         let block_root = util::block_root_fulu(buf);
@@ -821,6 +820,23 @@ impl Tile<SilverSpine> for StorageTile {
                     }
                     Err(e) => {
                         tracing::error!(?e, seq=t_read.seq(), consumer=?self.persist_gossip_consumer, "persist consumer buffer acquire failed");
+                    }
+                }
+            }
+            BeaconStateEvent::PersistEnvelope { ssz, source } => {
+                let t_read = match source {
+                    silver_common::BlockSource::Gossip => self.persist_gossip_consumer.acquire(ssz),
+                    silver_common::BlockSource::Rpc => self.persist_rpc_consumer.acquire(ssz),
+                };
+                match t_read.buffer() {
+                    Ok((buf, _)) if SignedExecutionPayloadEnvelopeView::check_size(buf) => {
+                        let msg = SignedExecutionPayloadEnvelopeView::message(buf);
+                        let block_root = *ExecutionPayloadEnvelopeView::beacon_block_root(msg);
+                        self.store.add_envelope(block_root, t_read);
+                    }
+                    Ok(_) => tracing::error!("persist envelope: bad ssz size"),
+                    Err(e) => {
+                        tracing::error!(?e, "persist envelope consumer buffer acquire failed");
                     }
                 }
             }

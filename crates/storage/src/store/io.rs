@@ -17,14 +17,12 @@ use silver_common::{
 };
 
 use super::{
-    BlockBackfillStage, ColumnScan, PendingWrite, QueryUnit, Store, UnfinalizedBlock, columns_of,
+    BlockBackfillStage, ColumnScan, Payload, PendingWrite, QueryUnit, Store,
+    unfinalized::{PayloadKey, columns_of},
 };
 use crate::{
     StorageCounters,
-    store::{
-        BLOCK_SLOTS_RETAINED, BLOCKS_DIR, Backfill, COLUMN_SLOTS_RETAINED, COLUMNS_DIR,
-        ColumnBackfill, SLOTS_PER_DIR,
-    },
+    store::{BLOCK_SLOTS_RETAINED, Backfill, COLUMN_SLOTS_RETAINED, ColumnBackfill, SLOTS_PER_DIR},
     tile::IoEvent,
     util,
 };
@@ -71,7 +69,7 @@ impl Store {
             tracing::debug!(?pending, "process pending write");
             match pending {
                 PendingWrite::Index { block_root, slot } => {
-                    let dir = self.block_slot_dir(*slot);
+                    let dir = self.finalized_slot_dir(Payload::Block, *slot);
                     std::fs::create_dir_all(&dir)?;
                     let path = dir.join("block_index.bin");
                     let mut file = open_file_write(path, true)?;
@@ -85,7 +83,7 @@ impl Store {
                     self.write_queue.pop_front();
                 }
                 PendingWrite::Column { slot, column, ssz } => {
-                    let dir = self.column_slot_dir(*slot);
+                    let dir = self.finalized_slot_dir(Payload::Column, *slot);
                     std::fs::create_dir_all(&dir)?;
                     let path = dir.join(format!("{slot}_{column}.ssz"));
                     let (buffer, _) = ssz.buffer().map_err(Error::other)?;
@@ -93,99 +91,49 @@ impl Store {
                     StorageCounters::BackfillColumnsWritten.inc();
                     self.write_queue.pop_front();
                 }
-                PendingWrite::UnfinalizedBlock { slot, parent_root, block_root, ssz } => {
-                    let dir = self.unfinalized_dir();
-                    let path = dir.join(unfinalized_name(*slot, parent_root, block_root));
-                    let (buffer, _) = ssz.buffer().map_err(Error::other)?;
-                    open_file_write(&path, false)?.write_all(buffer)?;
-                    StorageCounters::UnfinalizedBlocksWritten.inc();
+                PendingWrite::WriteUnfinalized { slot, key, ssz } => {
+                    let path =
+                        self.unfinalized_dir(key.payload()).join(key.unfinalized_name(*slot));
+                    open_file_write(&path, false)?.write_all(ssz.bytes()?)?;
+                    key.payload().record_written();
                     self.write_queue.pop_front();
                 }
-                PendingWrite::Promote { slot, parent_root, block_root } => {
-                    let dir = self.block_slot_dir(*slot);
+                PendingWrite::Promote { slot, key } => {
+                    let payload = key.payload();
+                    let dir = self.finalized_slot_dir(payload, *slot);
                     std::fs::create_dir_all(&dir)?;
-                    let from = self.unfinalized_dir().join(unfinalized_name(
-                        *slot,
-                        parent_root,
-                        block_root,
-                    ));
-                    // Rename is atomic; data before index. A NotFound means the
-                    // file was already moved/pruned — treat the move as done.
-                    match std::fs::rename(&from, dir.join(format!("{slot}_block.ssz"))) {
-                        Ok(()) => {}
-                        Err(e) if e.kind() == ErrorKind::NotFound => {}
-                        Err(e) => return Err(e),
+                    let from = self.unfinalized_dir(payload).join(key.unfinalized_name(*slot));
+                    rename_tolerant(&from, &dir.join(key.finalized_name(*slot)))?;
+                    // Data before index: a block's index record is appended only
+                    // after the rename, so a crash never indexes an unmoved block.
+                    if let PayloadKey::Block { block_root, .. } = key {
+                        let mut record = [0u8; 40];
+                        record[..32].copy_from_slice(block_root);
+                        record[32..].copy_from_slice(&slot.to_le_bytes());
+                        open_file_write(dir.join("block_index.bin"), true)?.write_all(&record)?;
                     }
-                    let mut record = [0u8; 40];
-                    record[..32].copy_from_slice(block_root);
-                    record[32..].copy_from_slice(&slot.to_le_bytes());
-                    open_file_write(dir.join("block_index.bin"), true)?.write_all(&record)?;
-                    StorageCounters::BlocksPromoted.inc();
+                    payload.record_promoted();
                     self.write_queue.pop_front();
                 }
-                PendingWrite::Prune { slot, parent_root, block_root } => {
-                    let path = self.unfinalized_dir().join(unfinalized_name(
-                        *slot,
-                        parent_root,
-                        block_root,
-                    ));
-                    match std::fs::remove_file(path) {
-                        Ok(()) => {}
-                        Err(e) if e.kind() == ErrorKind::NotFound => {}
-                        Err(e) => return Err(e),
-                    }
-                    StorageCounters::BlocksPruned.inc();
+                PendingWrite::Prune { slot, key } => {
+                    let path =
+                        self.unfinalized_dir(key.payload()).join(key.unfinalized_name(*slot));
+                    remove_tolerant(&path)?;
+                    key.payload().record_pruned();
                     self.write_queue.pop_front();
                 }
-                PendingWrite::UnfinalizedColumn { slot, block_root, column, ssz } => {
-                    let dir = self.unfinalized_columns_dir();
-                    let path = dir.join(unfinalized_column_name(*slot, block_root, *column));
-                    open_file_write(path, false)?.write_all(ssz.bytes()?)?;
-                    StorageCounters::UnfinalizedColumnsWritten.inc();
-                    self.write_queue.pop_front();
-                }
-                PendingWrite::PromoteColumn { slot, block_root, column } => {
-                    let dir = self.column_slot_dir(*slot);
-                    std::fs::create_dir_all(&dir)?;
-                    let from = self
-                        .unfinalized_columns_dir()
-                        .join(unfinalized_column_name(*slot, block_root, *column));
-                    // Rename is atomic; NotFound means already moved/pruned.
-                    match std::fs::rename(&from, dir.join(format!("{slot}_{column}.ssz"))) {
-                        Ok(()) => {}
-                        Err(e) if e.kind() == ErrorKind::NotFound => {}
-                        Err(e) => return Err(e),
-                    }
-                    StorageCounters::ColumnsPromoted.inc();
-                    self.write_queue.pop_front();
-                }
-                PendingWrite::PruneColumn { slot, block_root, column } => {
-                    let path = self
-                        .unfinalized_columns_dir()
-                        .join(unfinalized_column_name(*slot, block_root, *column));
-                    match std::fs::remove_file(path) {
-                        Ok(()) => {}
-                        Err(e) if e.kind() == ErrorKind::NotFound => {}
-                        Err(e) => return Err(e),
-                    }
-                    StorageCounters::ColumnsPruned.inc();
-                    self.write_queue.pop_front();
-                }
-                PendingWrite::TruncateBlockHistory { finalized_slot } => {
-                    let earliest_slot = finalized_slot.saturating_sub(BLOCK_SLOTS_RETAINED);
-                    let dir = PathBuf::new().join(&self.store_dir).join(BLOCKS_DIR);
-                    remove_subdirs(dir, earliest_slot)?;
-                    self.write_queue.pop_front();
-                }
-                PendingWrite::TruncateColumnHistory { finalized_slot } => {
-                    let earliest_slot = finalized_slot.saturating_sub(COLUMN_SLOTS_RETAINED);
-                    let dir = PathBuf::new().join(&self.store_dir).join(COLUMNS_DIR);
+                PendingWrite::TruncateHistory { payload, finalized_slot } => {
+                    let earliest_slot = finalized_slot.saturating_sub(payload.slots_retained());
+                    let dir =
+                        PathBuf::new().join(&self.store_dir).join(payload.finalized_dir_name());
                     remove_subdirs(dir, earliest_slot)?;
                     self.write_queue.pop_front();
                 }
                 PendingWrite::Backfill { finalized_slot, finalized_root } => {
                     let start_slot = finalized_slot.saturating_sub(BLOCK_SLOTS_RETAINED).max(1);
-                    let dir = PathBuf::new().join(&self.store_dir).join(BLOCKS_DIR);
+                    let dir = PathBuf::new()
+                        .join(&self.store_dir)
+                        .join(Payload::Block.finalized_dir_name());
                     let range = match earliest_block(dir)? {
                         Some((slot, parent_root)) if slot > start_slot => {
                             Some((start_slot..slot.min(*finalized_slot), parent_root))
@@ -232,7 +180,7 @@ impl Store {
                     self.write_queue.pop_front();
                 }
                 PendingWrite::BackfillBlock { block_root, slot, ssz } => {
-                    let dir = self.block_slot_dir(*slot);
+                    let dir = self.finalized_slot_dir(Payload::Block, *slot);
                     std::fs::create_dir_all(&dir)?;
                     let path = dir.join(format!("{slot}_block.ssz"));
 
@@ -397,7 +345,8 @@ impl Store {
             scan.cursor = scan.cursor.saturating_sub(1);
             budget -= 1;
 
-            let path = self.block_slot_dir(slot).join(format!("{slot}_block.ssz"));
+            let path =
+                self.finalized_slot_dir(Payload::Block, slot).join(format!("{slot}_block.ssz"));
             let Ok(ssz) = std::fs::read(&path) else {
                 continue; // no block persisted at this slot
             };
@@ -427,7 +376,7 @@ impl Store {
 
     /// Bitmask of custody columns already on disk for `slot` (flat store).
     fn present_columns(&self, slot: u64, custody: u128) -> u128 {
-        let dir = self.column_slot_dir(slot);
+        let dir = self.finalized_slot_dir(Payload::Column, slot);
         let mut present = 0u128;
         for c in columns_of(custody) {
             if dir.join(format!("{slot}_{c}.ssz")).exists() {
@@ -440,16 +389,16 @@ impl Store {
     fn unit_path(&self, unit: &QueryUnit) -> PathBuf {
         match unit {
             QueryUnit::Block { slot } => {
-                self.block_slot_dir(*slot).join(format!("{slot}_block.ssz"))
+                self.finalized_slot_dir(Payload::Block, *slot).join(format!("{slot}_block.ssz"))
             }
-            QueryUnit::UnfinalizedBlock { slot, parent_root, block_root } => {
-                self.unfinalized_dir().join(unfinalized_name(*slot, parent_root, block_root))
-            }
+            QueryUnit::UnfinalizedBlock { slot, parent_root, block_root } => self
+                .unfinalized_dir(Payload::Block)
+                .join(unfinalized_name(*slot, parent_root, block_root)),
             QueryUnit::Column { slot, column } => {
-                self.column_slot_dir(*slot).join(format!("{slot}_{column}.ssz"))
+                self.finalized_slot_dir(Payload::Column, *slot).join(format!("{slot}_{column}.ssz"))
             }
             QueryUnit::UnfinalizedColumn { slot, block_root, column } => self
-                .unfinalized_columns_dir()
+                .unfinalized_dir(Payload::Column)
                 .join(unfinalized_column_name(*slot, block_root, *column)),
         }
     }
@@ -477,6 +426,25 @@ pub(super) fn open_file_read<P: AsRef<Path>>(path: P) -> Result<File, Error> {
     File::open(path)
 }
 
+/// Rename tolerating an already-moved/pruned source: a `NotFound` means the
+/// promote raced a prior move/prune and is treated as done. Rename is atomic.
+fn rename_tolerant(from: &Path, to: &Path) -> Result<(), Error> {
+    match std::fs::rename(from, to) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+/// Unlink tolerating an already-removed target (idempotent prune).
+fn remove_tolerant(path: &Path) -> Result<(), Error> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
 pub(super) fn open_file_write<P: AsRef<Path>>(path: P, append: bool) -> Result<File, Error> {
     if append {
         File::options().append(true).create(true).open(path)
@@ -491,9 +459,10 @@ pub(super) fn unfinalized_name(slot: u64, parent_root: &[u8; 32], block_root: &[
     format!("{slot}_{}_{}.ssz", hex32(parent_root), hex32(block_root))
 }
 
-/// Inverse of `unfinalized_name`. `None` on any malformed name so a stray
-/// file in `unfinalized/` is skipped rather than aborting the load scan.
-pub(super) fn parse_unfinalized_name(name: &str) -> Option<([u8; 32], UnfinalizedBlock)> {
+/// Inverse of `unfinalized_name`, returning `(block_root, slot, parent_root)`.
+/// `None` on any malformed name so a stray file in `unfinalized/` is skipped
+/// rather than aborting the load scan.
+pub(super) fn parse_unfinalized_name(name: &str) -> Option<([u8; 32], u64, [u8; 32])> {
     let stem = name.strip_suffix(".ssz")?;
     let mut parts = stem.split('_');
     let slot: u64 = parts.next()?.parse().ok()?;
@@ -502,7 +471,7 @@ pub(super) fn parse_unfinalized_name(name: &str) -> Option<([u8; 32], Unfinalize
     if parts.next().is_some() {
         return None;
     }
-    Some((block_root, UnfinalizedBlock { slot, parent_root }))
+    Some((block_root, slot, parent_root))
 }
 
 /// `<slot>_<block_root>_<column>.ssz` — the unfinalized column filename.
@@ -522,6 +491,21 @@ pub(super) fn parse_unfinalized_column_name(name: &str) -> Option<([u8; 32], u64
         return None;
     }
     Some((block_root, slot, column))
+}
+
+pub(super) fn unfinalized_envelope_name(slot: u64, block_root: &[u8; 32]) -> String {
+    format!("{slot}_{}.ssz", hex32(block_root))
+}
+
+pub(super) fn parse_unfinalized_envelope_name(name: &str) -> Option<([u8; 32], u64)> {
+    let stem = name.strip_suffix(".ssz")?;
+    let mut parts = stem.split('_');
+    let slot: u64 = parts.next()?.parse().ok()?;
+    let block_root = parse_hex32(parts.next()?)?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((block_root, slot))
 }
 
 fn parse_finalized_block_name(name: &str) -> Option<u64> {
