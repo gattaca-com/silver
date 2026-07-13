@@ -15,14 +15,21 @@ use silver_common::{
     },
 };
 
-use crate::store::backfill::{Backfill, ColumnBackfill};
+use crate::{
+    StorageCounters,
+    store::backfill::{Backfill, ColumnBackfill},
+};
 
 mod backfill;
 mod checkpoint;
 mod io;
+mod unfinalized;
 
 use checkpoint::CheckpointWriter;
 pub use checkpoint::latest_local_checkpoint;
+use unfinalized::{
+    PayloadKey, PayloadSsz, UnfinalizedBlocks, UnfinalizedColumns, UnfinalizedEnvelopes,
+};
 
 /// `DataColumnSidecarsByRange` is bounded by
 /// `count * NUMBER_OF_COLUMNS <= MAX_REQUEST_DATA_COLUMN_SIDECARS`
@@ -40,51 +47,65 @@ const MAX_INFLIGHT_QUERIES: usize = 256;
 /// manageable for the startup index scan.
 const SLOTS_PER_DIR: u64 = 128;
 
-/// Sub-directory holding the unfinalized block fork-tree. Flat (no slot
-/// grouping) — bounded by the `[finalized, head]` window, a few epochs.
-/// Files: `<slot>_<parent_root>_<block_root>.ssz`.
-const UNFINALIZED_DIR: &str = "unfinalized";
-
-/// Sub-directory holding unfinalized data columns, keyed by owning block
-/// (columns have no fork of their own — canonicity follows the block).
-/// Files: `<slot>_<block_root>_<column>.ssz`.
-const UNFINALIZED_COLUMNS_DIR: &str = "unfinalized_columns";
-
-/// Sub-directory holding unfinalized execution-payload envelopes, keyed by
-/// owning block (one per block — canonicity follows the block).
-/// Files: `<slot>_<block_root>.ssz`.
-const UNFINALIZED_ENVELOPES_DIR: &str = "unfinalized_envelopes";
-
-const BLOCKS_DIR: &str = "blocks";
-const COLUMNS_DIR: &str = "columns";
-const ENVELOPES_DIR: &str = "envelopes";
 const PEERS_DIR: &str = "peers";
 
 const BLOCK_SLOTS_RETAINED: u64 = 33024 * 32;
 const COLUMN_SLOTS_RETAINED: u64 = 4096 * 32;
 
-/// One node of the unfinalized fork tree. The edge (`parent_root`) is
-/// durable in the on-disk filename; this is the in-memory index rebuilt
-/// from `readdir` on load for O(1) ancestor walks.
-struct UnfinalizedBlock {
-    slot: u64,
-    parent_root: [u8; 32],
+const ALL_PAYLOADS: [Payload; 3] = [Payload::Block, Payload::Column, Payload::Envelope];
+
+#[derive(Clone, Copy, Debug)]
+pub(super) enum Payload {
+    Block,
+    Column,
+    Envelope,
 }
 
-/// SSZ bytes for an unfinalized column write: either a tcache ref (the usual
-/// gossip/RPC path, needing a `buffer()` step to deref) or bytes owned by the
-/// tile (a sidecar reconstructed in-tile from EL blobs).
-#[derive(Debug)]
-enum ColumnSsz {
-    Ref(TRead),
-    Owned(Vec<u8>),
-}
-
-impl ColumnSsz {
-    fn bytes(&self) -> Result<&[u8], Error> {
+impl Payload {
+    fn finalized_dir_name(self) -> &'static str {
         match self {
-            ColumnSsz::Ref(ssz) => Ok(ssz.buffer().map_err(Error::other)?.0),
-            ColumnSsz::Owned(ssz) => Ok(ssz),
+            Payload::Block => UnfinalizedBlocks::FINALIZED_DIR,
+            Payload::Column => UnfinalizedColumns::FINALIZED_DIR,
+            Payload::Envelope => UnfinalizedEnvelopes::FINALIZED_DIR,
+        }
+    }
+
+    fn unfinalized_dir_name(self) -> &'static str {
+        match self {
+            Payload::Block => UnfinalizedBlocks::UNFINALIZED_DIR,
+            Payload::Column => UnfinalizedColumns::UNFINALIZED_DIR,
+            Payload::Envelope => UnfinalizedEnvelopes::UNFINALIZED_DIR,
+        }
+    }
+
+    fn slots_retained(self) -> u64 {
+        match self {
+            Payload::Block | Payload::Envelope => BLOCK_SLOTS_RETAINED,
+            Payload::Column => COLUMN_SLOTS_RETAINED,
+        }
+    }
+
+    fn record_written(self) {
+        match self {
+            Payload::Block => StorageCounters::UnfinalizedBlocksWritten.inc(),
+            Payload::Column => StorageCounters::UnfinalizedColumnsWritten.inc(),
+            Payload::Envelope => {}
+        }
+    }
+
+    fn record_promoted(self) {
+        match self {
+            Payload::Block => StorageCounters::BlocksPromoted.inc(),
+            Payload::Column => StorageCounters::ColumnsPromoted.inc(),
+            Payload::Envelope => {}
+        }
+    }
+
+    fn record_pruned(self) {
+        match self {
+            Payload::Block => StorageCounters::BlocksPruned.inc(),
+            Payload::Column => StorageCounters::ColumnsPruned.inc(),
+            Payload::Envelope => {}
         }
     }
 }
@@ -100,68 +121,25 @@ enum PendingWrite {
         column: u64,
         ssz: TRead,
     },
-    /// New block → `unfinalized/<slot>_<parent>_<root>.ssz`.
-    UnfinalizedBlock {
+    /// New unfinalized payload → `<unfinalized dir>/<key>.ssz`.
+    WriteUnfinalized {
         slot: u64,
-        parent_root: [u8; 32],
-        block_root: [u8; 32],
-        ssz: TRead,
+        key: PayloadKey,
+        ssz: PayloadSsz,
     },
-    /// Finalized: rename `unfinalized/…` → flat `<slot>_block.ssz`, then index.
+    /// Finalized: rename the unfinalized file into the flat slot store (a block
+    /// additionally appends its index record).
     Promote {
         slot: u64,
-        parent_root: [u8; 32],
-        block_root: [u8; 32],
+        key: PayloadKey,
     },
-    /// Orphaned fork below finality: unlink `unfinalized/…`.
+    /// Orphaned fork below finality: unlink the unfinalized file.
     Prune {
         slot: u64,
-        parent_root: [u8; 32],
-        block_root: [u8; 32],
+        key: PayloadKey,
     },
-    /// New column → `unfinalized_columns/<slot>_<block_root>_<column>.ssz`.
-    UnfinalizedColumn {
-        slot: u64,
-        block_root: [u8; 32],
-        column: u64,
-        ssz: ColumnSsz,
-    },
-    /// Finalized: rename `unfinalized_columns/…` → flat `<slot>_<column>.ssz`.
-    PromoteColumn {
-        slot: u64,
-        block_root: [u8; 32],
-        column: u64,
-    },
-    /// Orphaned fork column below finality: unlink `unfinalized_columns/…`.
-    PruneColumn {
-        slot: u64,
-        block_root: [u8; 32],
-        column: u64,
-    },
-    /// New envelope → `unfinalized_envelopes/<slot>_<block_root>.ssz`.
-    UnfinalizedEnvelope {
-        slot: u64,
-        block_root: [u8; 32],
-        ssz: TRead,
-    },
-    /// Finalized: rename `unfinalized_envelopes/…` → flat
-    /// `<slot>_envelope.ssz`.
-    PromoteEnvelope {
-        slot: u64,
-        block_root: [u8; 32],
-    },
-    /// Orphaned fork envelope below finality: unlink `unfinalized_envelopes/…`.
-    PruneEnvelope {
-        slot: u64,
-        block_root: [u8; 32],
-    },
-    TruncateBlockHistory {
-        finalized_slot: u64,
-    },
-    TruncateColumnHistory {
-        finalized_slot: u64,
-    },
-    TruncateEnvelopeHistory {
+    TruncateHistory {
+        payload: Payload,
         finalized_slot: u64,
     },
     Backfill {
@@ -233,17 +211,9 @@ pub(super) struct Store {
     // Finalized block index: block_root → slot, persisted in block_index.bin.
     root_index: FxHashMap<[u8; 32], u64>,
 
-    // Unfinalized block fork tree: block_root → (slot, parent_root).
-    // Rebuilt from unfinalized/ filenames on load.
-    unfinalized: FxHashMap<[u8; 32], UnfinalizedBlock>,
-    // Unfinalized custodied columns: block_root → (slot, bitmask of columns
-    // on disk). Canonicity follows the owning block; rebuilt from
-    // unfinalized_columns/ filenames on load.
-    unfinalized_columns: FxHashMap<[u8; 32], (u64, u128)>,
-    // Unfinalized envelopes: block_root → slot. One per block; canonicity
-    // follows the owning block. Rebuilt from unfinalized_envelopes/ filenames
-    // on load.
-    unfinalized_envelopes: FxHashMap<[u8; 32], u64>,
+    unfinalized: UnfinalizedBlocks,
+    unfinalized_columns: UnfinalizedColumns,
+    unfinalized_envelopes: UnfinalizedEnvelopes,
     // Latest fork-choice head + finalization watermark from Status.
     head_root: [u8; 32],
     head_slot: u64,
@@ -281,14 +251,11 @@ impl Store {
             std::fs::create_dir_all(&store_dir)?;
         }
 
-        let blocks_dir = Path::new(&store_dir).join(BLOCKS_DIR);
-        std::fs::create_dir_all(&blocks_dir)?;
-
-        let columns_dir = Path::new(&store_dir).join(COLUMNS_DIR);
-        std::fs::create_dir_all(&columns_dir)?;
-
-        let peers_dir = Path::new(&store_dir).join(PEERS_DIR);
-        std::fs::create_dir_all(&peers_dir)?;
+        for payload in ALL_PAYLOADS {
+            ensure_dir(&store_dir, payload.finalized_dir_name())?;
+        }
+        ensure_dir(&store_dir, PEERS_DIR)?;
+        let blocks_dir = Path::new(&store_dir).join(UnfinalizedBlocks::FINALIZED_DIR);
 
         for sub_dir in std::fs::read_dir(&blocks_dir)? {
             let index_path = sub_dir?.path().join("block_index.bin");
@@ -302,56 +269,9 @@ impl Store {
             }
         }
 
-        // Rebuild the unfinalized fork tree from filenames — the edges are
-        // encoded in the names, so no block bodies are read.
-        let unfinalized_dir = Path::new(&store_dir).join(UNFINALIZED_DIR);
-        std::fs::create_dir_all(&unfinalized_dir)?;
-
-        let mut unfinalized = FxHashMap::default();
-        if let Ok(entries) = std::fs::read_dir(unfinalized_dir) {
-            for entry in entries {
-                if let Some(name) = entry?.file_name().to_str() &&
-                    let Some((block_root, block)) = io::parse_unfinalized_name(name)
-                {
-                    unfinalized.insert(block_root, block);
-                }
-            }
-        }
-
-        // Rebuild the unfinalized column index from filenames (slot + owning
-        // block_root + column index), no bodies read.
-        let unfinalized_columns_dir = Path::new(&store_dir).join(UNFINALIZED_COLUMNS_DIR);
-        std::fs::create_dir_all(&unfinalized_columns_dir)?;
-
-        let mut unfinalized_columns: FxHashMap<[u8; 32], (u64, u128)> = FxHashMap::default();
-        if let Ok(entries) = std::fs::read_dir(unfinalized_columns_dir) {
-            for entry in entries {
-                if let Some(name) = entry?.file_name().to_str() &&
-                    let Some((block_root, slot, column)) =
-                        io::parse_unfinalized_column_name(name)
-                {
-                    let e = unfinalized_columns.entry(block_root).or_insert((slot, 0));
-                    e.1 |= 1u128 << column;
-                }
-            }
-        }
-
-        // Rebuild the unfinalized envelope index from filenames (slot + owning
-        // block_root), no bodies read.
-        std::fs::create_dir_all(Path::new(&store_dir).join(ENVELOPES_DIR))?;
-        let unfinalized_envelopes_dir = Path::new(&store_dir).join(UNFINALIZED_ENVELOPES_DIR);
-        std::fs::create_dir_all(&unfinalized_envelopes_dir)?;
-
-        let mut unfinalized_envelopes: FxHashMap<[u8; 32], u64> = FxHashMap::default();
-        if let Ok(entries) = std::fs::read_dir(unfinalized_envelopes_dir) {
-            for entry in entries {
-                if let Some(name) = entry?.file_name().to_str() &&
-                    let Some((block_root, slot)) = io::parse_unfinalized_envelope_name(name)
-                {
-                    unfinalized_envelopes.insert(block_root, slot);
-                }
-            }
-        }
+        let unfinalized = UnfinalizedBlocks::load(&store_dir)?;
+        let unfinalized_columns = UnfinalizedColumns::load(&store_dir)?;
+        let unfinalized_envelopes = UnfinalizedEnvelopes::load(&store_dir)?;
 
         // Finalized-state checkpoints: drop incomplete dirs, prune to the
         // newest N, and anchor `last_persisted` at the newest committed slot.
@@ -402,13 +322,11 @@ impl Store {
         } else {
             // Unfinalized: keyed by owning block_root, promoted/pruned with
             // the block. The caller (tile) has already validated the sidecar.
-            self.unfinalized_columns.entry(block_root).or_insert((slot, 0)).1 |=
-                1u128 << column_index;
-            self.write_queue.push_back(PendingWrite::UnfinalizedColumn {
+            self.unfinalized_columns.record(block_root, slot, column_index);
+            self.write_queue.push_back(PendingWrite::WriteUnfinalized {
                 slot,
-                block_root,
-                column: column_index,
-                ssz: ColumnSsz::Ref(sidecar_ssz),
+                key: PayloadKey::Column { block_root, column: column_index },
+                ssz: PayloadSsz::Ref(sidecar_ssz),
             });
         }
     }
@@ -423,18 +341,17 @@ impl Store {
         sidecar_ssz: Vec<u8>,
         slot: u64,
     ) {
-        self.unfinalized_columns.entry(block_root).or_insert((slot, 0)).1 |= 1u128 << column_index;
-        self.write_queue.push_back(PendingWrite::UnfinalizedColumn {
+        self.unfinalized_columns.record(block_root, slot, column_index);
+        self.write_queue.push_back(PendingWrite::WriteUnfinalized {
             slot,
-            block_root,
-            column: column_index,
-            ssz: ColumnSsz::Owned(sidecar_ssz),
+            key: PayloadKey::Column { block_root, column: column_index },
+            ssz: PayloadSsz::Owned(sidecar_ssz),
         });
     }
 
     pub(super) fn add_envelope(&mut self, block_root: [u8; 32], envelope_ssz: TRead) {
         let slot = match self.unfinalized.get(&block_root) {
-            Some(block) => block.slot,
+            Some((slot, _)) => slot,
             None => match self.root_index.get(&block_root) {
                 Some(&slot) => slot,
                 None => {
@@ -450,10 +367,10 @@ impl Store {
             return;
         }
         self.unfinalized_envelopes.insert(block_root, slot);
-        self.write_queue.push_back(PendingWrite::UnfinalizedEnvelope {
+        self.write_queue.push_back(PendingWrite::WriteUnfinalized {
             slot,
-            block_root,
-            ssz: envelope_ssz,
+            key: PayloadKey::Envelope { block_root },
+            ssz: PayloadSsz::Ref(envelope_ssz),
         });
     }
 
@@ -469,17 +386,16 @@ impl Store {
         // anything else is an orphan. Dedup repeats. Canonicity is resolved
         // by the head walk at query time and by finalization promotion.
         if slot <= self.finalized_slot ||
-            self.unfinalized.contains_key(&block_root) ||
+            self.unfinalized.contains(&block_root) ||
             self.root_index.contains_key(&block_root)
         {
             return;
         }
-        self.unfinalized.insert(block_root, UnfinalizedBlock { slot, parent_root });
-        self.write_queue.push_back(PendingWrite::UnfinalizedBlock {
+        self.unfinalized.insert(block_root, slot, parent_root);
+        self.write_queue.push_back(PendingWrite::WriteUnfinalized {
             slot,
-            parent_root,
-            block_root,
-            ssz: block_ssz,
+            key: PayloadKey::Block { parent_root, block_root },
+            ssz: PayloadSsz::Ref(block_ssz),
         });
     }
 
@@ -581,47 +497,24 @@ impl Store {
         // canonical block's file and serve the wrong block's data under that
         // root. Missing-skip keeps the fork-correctness guarantee intact.
         let mut root = finalized_root;
-        while let Some(block) = self.unfinalized.remove(&root) {
-            self.root_index.insert(root, block.slot);
+        while let Some((slot, parent_root)) = self.unfinalized.remove(&root) {
+            self.root_index.insert(root, slot);
             self.write_queue.push_back(PendingWrite::Promote {
-                slot: block.slot,
-                parent_root: block.parent_root,
-                block_root: root,
+                slot,
+                key: PayloadKey::Block { parent_root, block_root: root },
             });
-            if let Some((slot, bitmask)) = self.unfinalized_columns.remove(&root) {
-                for column in columns_of(bitmask) {
-                    self.write_queue.push_back(PendingWrite::PromoteColumn {
-                        slot,
-                        block_root: root,
-                        column,
-                    });
-                }
-            }
-            if let Some(slot) = self.unfinalized_envelopes.remove(&root) {
-                self.write_queue
-                    .push_back(PendingWrite::PromoteEnvelope { slot, block_root: root });
-            }
-            root = block.parent_root;
+            self.unfinalized_columns.promote(root, &mut self.write_queue);
+            self.unfinalized_envelopes.promote(root, &mut self.write_queue);
+            root = parent_root;
         }
 
-        prune_orphaned_blocks(finalized_slot, &mut self.unfinalized, &mut self.write_queue);
+        self.unfinalized.prune_below(finalized_slot, &mut self.write_queue);
+        self.unfinalized_columns.prune_below(finalized_slot, &mut self.write_queue);
+        self.unfinalized_envelopes.prune_below(finalized_slot, &mut self.write_queue);
 
-        prune_orphaned_columns(
-            finalized_slot,
-            &mut self.unfinalized_columns,
-            &mut self.write_queue,
-        );
-
-        prune_orphaned_envelopes(
-            finalized_slot,
-            &mut self.unfinalized_envelopes,
-            &mut self.write_queue,
-        );
-
-        // Truncate history
-        self.write_queue.push_back(PendingWrite::TruncateBlockHistory { finalized_slot });
-        self.write_queue.push_back(PendingWrite::TruncateColumnHistory { finalized_slot });
-        self.write_queue.push_back(PendingWrite::TruncateEnvelopeHistory { finalized_slot });
+        for payload in ALL_PAYLOADS {
+            self.write_queue.push_back(PendingWrite::TruncateHistory { payload, finalized_slot });
+        }
     }
 
     pub(super) fn head_slot(&self) -> u64 {
@@ -643,17 +536,16 @@ impl Store {
     pub(super) fn replay_block_paths(&self, custody: u128) -> Vec<(u64, PathBuf, bool)> {
         let checkpoint_slot = self.last_persisted_finalized_slot;
         let mut paths = Vec::with_capacity(self.unfinalized.len());
-        for (block_root, block) in &self.unfinalized {
-            if block.slot > checkpoint_slot {
-                let mask = self.unfinalized_columns.get(block_root).map_or(0, |&(_, m)| m);
+        for (block_root, slot, parent_root) in self.unfinalized.iter() {
+            if slot > checkpoint_slot {
                 paths.push((
-                    block.slot,
-                    self.unfinalized_dir().join(io::unfinalized_name(
-                        block.slot,
-                        &block.parent_root,
+                    slot,
+                    self.unfinalized_dir(Payload::Block).join(io::unfinalized_name(
+                        slot,
+                        &parent_root,
                         block_root,
                     )),
-                    mask & custody == custody,
+                    self.unfinalized_columns.has_full_custody(block_root, custody),
                 ));
             }
         }
@@ -661,7 +553,7 @@ impl Store {
             if slot > checkpoint_slot {
                 paths.push((
                     slot,
-                    self.block_slot_dir(slot).join(format!("{slot}_block.ssz")),
+                    self.finalized_slot_dir(Payload::Block, slot).join(format!("{slot}_block.ssz")),
                     true,
                 ));
             }
@@ -703,7 +595,12 @@ impl Store {
                     let count = DataColumnSidecarsByRangeRequestView::count(&ssz[..len])
                         .min(MAX_REQUEST_BLOCKS);
                     let end = start.saturating_add(count);
-                    let canonical = self.canonical_chain_in_range(start, end);
+                    let canonical = self.unfinalized.canonical_chain_in_range(
+                        self.head_root,
+                        self.head_slot,
+                        start,
+                        end,
+                    );
                     let columns: Vec<u64> =
                         DataColumnSidecarsByRangeRequestView::columns(&ssz[..len])
                             .chunks_exact(8)
@@ -738,7 +635,7 @@ impl Store {
                         // Serve a specific block's columns regardless of
                         // canonicity: unfinalized (by block_root) first, else
                         // the finalized flat store.
-                        if let Some(&(slot, _bitmask)) = self.unfinalized_columns.get(root) {
+                        if let Some(slot) = self.unfinalized_columns.slot_of(root) {
                             for column in request_columns {
                                 units.push_back(QueryUnit::UnfinalizedColumn {
                                     slot,
@@ -761,7 +658,12 @@ impl Store {
                 let end = start.saturating_add(count);
                 // Per slot: the unfinalized canonical block if present, else the
                 // finalized flat store (`serve_file` skips an absent slot).
-                let canonical = self.canonical_chain_in_range(start, end);
+                let canonical = self.unfinalized.canonical_chain_in_range(
+                    self.head_root,
+                    self.head_slot,
+                    start,
+                    end,
+                );
                 for slot in start..end {
                     if let Some(&(parent_root, block_root)) = canonical.get(&slot) {
                         units.push_back(QueryUnit::UnfinalizedBlock {
@@ -784,9 +686,7 @@ impl Store {
                             // Serve any block we hold by root regardless of
                             // canonicity: unfinalized fork tree first, then the
                             // finalized flat store.
-                            if let Some(&UnfinalizedBlock { slot, parent_root }) =
-                                self.unfinalized.get(root)
-                            {
+                            if let Some((slot, parent_root)) = self.unfinalized.get(root) {
                                 units.push_back(QueryUnit::UnfinalizedBlock {
                                     slot,
                                     parent_root,
@@ -822,60 +722,16 @@ impl Store {
         self.write_queue.push_back(PendingWrite::LoadPeers);
     }
 
-    /// Canonical chain blocks with slot in `[start, end)`, found by walking
-    /// ancestors of the current head through the unfinalized tree. Maps
-    /// slot → (parent_root, block_root). Empty before the first Status.
-    fn canonical_chain_in_range(
-        &self,
-        start: u64,
-        end: u64,
-    ) -> FxHashMap<u64, ([u8; 32], [u8; 32])> {
-        let mut chain = FxHashMap::default();
-        let mut root = self.head_root;
-        // Enforce strictly-decreasing slots towards the root. A cycle — a
-        // self-parenting block or A→B→A from malformed gossip or a stale
-        // on-disk filename — would otherwise spin forever: a remote DoS via
-        // any BlocksByRange. Seed at head_slot+1 so the head block (whose slot
-        // is head_slot) is admitted.
-        let mut prev_slot = self.head_slot.saturating_add(1);
-        while let Some(block) = self.unfinalized.get(&root) {
-            if block.slot >= prev_slot || block.slot < start {
-                break;
-            }
-            if block.slot < end {
-                chain.insert(block.slot, (block.parent_root, root));
-            }
-            prev_slot = block.slot;
-            root = block.parent_root;
-        }
-        chain
-    }
-
-    fn block_slot_dir(&self, slot: u64) -> PathBuf {
+    fn finalized_slot_dir(&self, payload: Payload, slot: u64) -> PathBuf {
         let group_dir = slot & !(SLOTS_PER_DIR - 1);
-        PathBuf::new().join(&self.store_dir).join(BLOCKS_DIR).join(group_dir.to_string())
+        PathBuf::new()
+            .join(&self.store_dir)
+            .join(payload.finalized_dir_name())
+            .join(group_dir.to_string())
     }
 
-    fn column_slot_dir(&self, slot: u64) -> PathBuf {
-        let group_dir = slot & !(SLOTS_PER_DIR - 1);
-        PathBuf::new().join(&self.store_dir).join(COLUMNS_DIR).join(group_dir.to_string())
-    }
-
-    fn unfinalized_dir(&self) -> PathBuf {
-        Path::new(&self.store_dir).join(UNFINALIZED_DIR)
-    }
-
-    fn unfinalized_columns_dir(&self) -> PathBuf {
-        Path::new(&self.store_dir).join(UNFINALIZED_COLUMNS_DIR)
-    }
-
-    fn envelope_slot_dir(&self, slot: u64) -> PathBuf {
-        let group_dir = slot & !(SLOTS_PER_DIR - 1);
-        PathBuf::new().join(&self.store_dir).join(ENVELOPES_DIR).join(group_dir.to_string())
-    }
-
-    fn unfinalized_envelopes_dir(&self) -> PathBuf {
-        Path::new(&self.store_dir).join(UNFINALIZED_ENVELOPES_DIR)
+    fn unfinalized_dir(&self, payload: Payload) -> PathBuf {
+        Path::new(&self.store_dir).join(payload.unfinalized_dir_name())
     }
 
     fn peers_dir(&self) -> PathBuf {
@@ -883,65 +739,11 @@ impl Store {
     }
 }
 
-/// Set bit positions of a column bitmask, ascending.
-fn columns_of(bitmask: u128) -> impl Iterator<Item = u64> {
-    (0..128u64).filter(move |c| bitmask & (1u128 << c) != 0)
-}
-
-fn prune_orphaned_columns(
-    finalized_slot: u64,
-    unfinalized_columns: &mut FxHashMap<[u8; 32], (u64, u128)>,
-    write_queue: &mut VecDeque<PendingWrite>,
-) {
-    unfinalized_columns.retain(|block_root, (slot, bitmask)| {
-        if *slot <= finalized_slot {
-            for column in columns_of(*bitmask) {
-                write_queue.push_back(PendingWrite::PruneColumn {
-                    slot: *slot,
-                    block_root: *block_root,
-                    column,
-                })
-            }
-            false
-        } else {
-            true
-        }
-    });
-}
-
-fn prune_orphaned_envelopes(
-    finalized_slot: u64,
-    unfinalized_envelopes: &mut FxHashMap<[u8; 32], u64>,
-    write_queue: &mut VecDeque<PendingWrite>,
-) {
-    unfinalized_envelopes.retain(|block_root, slot| {
-        if *slot <= finalized_slot {
-            write_queue
-                .push_back(PendingWrite::PruneEnvelope { slot: *slot, block_root: *block_root });
-            false
-        } else {
-            true
-        }
-    });
-}
-
-fn prune_orphaned_blocks(
-    finalized_slot: u64,
-    unfinalized: &mut FxHashMap<[u8; 32], UnfinalizedBlock>,
-    write_queue: &mut VecDeque<PendingWrite>,
-) {
-    unfinalized.retain(|block_root, block| {
-        if block.slot <= finalized_slot {
-            write_queue.push_back(PendingWrite::Prune {
-                slot: block.slot,
-                parent_root: block.parent_root,
-                block_root: *block_root,
-            });
-            false
-        } else {
-            true
-        }
-    });
+/// Join `name` under `store_dir` and ensure the directory exists.
+fn ensure_dir(store_dir: &str, name: &str) -> Result<PathBuf, Error> {
+    let dir = Path::new(store_dir).join(name);
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
 }
 
 #[cfg(test)]
@@ -1046,8 +848,8 @@ mod tests {
 
         store.add_block(root_a, read_a, slot, parent_root);
         store.add_block(root_b, read_b, slot, parent_root);
-        assert!(store.unfinalized.contains_key(&root_a));
-        assert!(store.unfinalized.contains_key(&root_b));
+        assert!(store.unfinalized.contains(&root_a));
+        assert!(store.unfinalized.contains(&root_b));
 
         // Head selects A; not yet finalized.
         store.update_head(slot, root_a, 0, [0u8; 32]);
@@ -1057,10 +859,12 @@ mod tests {
         let mut producer = producer_cache.clone();
         store.file_io(&fork_digest, 0, &mut producer, &mut |_| {}).unwrap();
 
-        let path_a =
-            store.unfinalized_dir().join(super::io::unfinalized_name(slot, &parent_root, &root_a));
-        let path_b =
-            store.unfinalized_dir().join(super::io::unfinalized_name(slot, &parent_root, &root_b));
+        let path_a = store
+            .unfinalized_dir(super::Payload::Block)
+            .join(super::io::unfinalized_name(slot, &parent_root, &root_a));
+        let path_b = store
+            .unfinalized_dir(super::Payload::Block)
+            .join(super::io::unfinalized_name(slot, &parent_root, &root_b));
         assert!(path_a.exists());
         assert!(path_b.exists());
 
@@ -1135,11 +939,12 @@ mod tests {
         // Finalize at slot 42 on A: promote A, prune the orphan B.
         store.update_head(slot, root_a, slot, root_a);
         assert_eq!(store.root_index.get(&root_a), Some(&slot));
-        assert!(!store.unfinalized.contains_key(&root_a));
-        assert!(!store.unfinalized.contains_key(&root_b));
+        assert!(!store.unfinalized.contains(&root_a));
+        assert!(!store.unfinalized.contains(&root_b));
 
         store.file_io(&fork_digest, 0, &mut producer, &mut |_| {}).unwrap();
-        let flat_a = store.block_slot_dir(slot).join(format!("{slot}_block.ssz"));
+        let flat_a =
+            store.finalized_slot_dir(super::Payload::Block, slot).join(format!("{slot}_block.ssz"));
         assert!(flat_a.exists());
         assert!(!path_a.exists()); // moved to flat store
         assert!(!path_b.exists()); // orphan pruned
@@ -1206,8 +1011,8 @@ mod tests {
         store.add_block(root_b, cons.acquire(ssz_bb), slot, parent_root);
         store.add_envelope(root_a, cons.acquire(ssz_ea));
         store.add_envelope(root_b, cons.acquire(ssz_eb));
-        assert_eq!(store.unfinalized_envelopes.get(&root_a), Some(&slot));
-        assert_eq!(store.unfinalized_envelopes.get(&root_b), Some(&slot));
+        assert_eq!(store.unfinalized_envelopes.slot_of(&root_a), Some(slot));
+        assert_eq!(store.unfinalized_envelopes.slot_of(&root_b), Some(slot));
 
         // Head selects A; nothing finalized yet.
         store.update_head(slot, root_a, 0, [0u8; 32]);
@@ -1218,10 +1023,10 @@ mod tests {
         store.file_io(&fork_digest, 0, &mut producer, &mut |_| {}).unwrap();
 
         let unf_a = store
-            .unfinalized_envelopes_dir()
+            .unfinalized_dir(super::Payload::Envelope)
             .join(super::io::unfinalized_envelope_name(slot, &root_a));
         let unf_b = store
-            .unfinalized_envelopes_dir()
+            .unfinalized_dir(super::Payload::Envelope)
             .join(super::io::unfinalized_envelope_name(slot, &root_b));
         assert!(unf_a.exists());
         assert!(unf_b.exists());
@@ -1231,7 +1036,9 @@ mod tests {
         assert!(store.unfinalized_envelopes.is_empty());
         store.file_io(&fork_digest, 0, &mut producer, &mut |_| {}).unwrap();
 
-        let flat_a = store.envelope_slot_dir(slot).join(format!("{slot}_envelope.ssz"));
+        let flat_a = store
+            .finalized_slot_dir(super::Payload::Envelope, slot)
+            .join(format!("{slot}_envelope.ssz"));
         assert!(flat_a.exists(), "canonical envelope promoted to flat store");
         assert_eq!(std::fs::read(&flat_a).unwrap(), env_a);
         assert!(!unf_a.exists(), "promoted out of unfinalized");
@@ -1351,8 +1158,8 @@ mod tests {
         let store_path = format!("/tmp/test_store_colfork_{}", rand::random::<u32>());
         let _ = std::fs::remove_dir_all(&store_path);
         let mut store = super::Store::load(store_path.clone()).unwrap();
-        let ucol_dir = store.unfinalized_columns_dir();
-        let flat_dir = store.column_slot_dir(42);
+        let ucol_dir = store.unfinalized_dir(super::Payload::Column);
+        let flat_dir = store.finalized_slot_dir(super::Payload::Column, 42);
 
         let parent_root = [0xCC; 32];
         let root_a = [0xAA; 32];
@@ -1382,8 +1189,8 @@ mod tests {
         store.add_data_column(root_a, 3, consumer.acquire(ssz_a3), slot);
         store.add_data_column(root_a, 7, consumer.acquire(ssz_a7), slot);
         store.add_data_column(root_b, 3, consumer.acquire(ssz_b3), slot);
-        assert!(store.unfinalized_columns.contains_key(&root_a));
-        assert!(store.unfinalized_columns.contains_key(&root_b));
+        assert!(store.unfinalized_columns.contains(&root_a));
+        assert!(store.unfinalized_columns.contains(&root_b));
 
         store.update_head(slot, root_a, 0, [0u8; 32]);
 
@@ -1530,7 +1337,12 @@ mod tests {
         store.file_io(&fork_digest, 0, &mut producer, &mut |_| {}).unwrap();
 
         assert_eq!(store.root_index.get(&block_root), Some(&slot));
-        assert!(store.block_slot_dir(slot).join(format!("{slot}_block.ssz")).exists());
+        assert!(
+            store
+                .finalized_slot_dir(super::Payload::Block, slot)
+                .join(format!("{slot}_block.ssz"))
+                .exists()
+        );
 
         let reloaded = super::Store::load(store_path.clone()).unwrap();
         assert_eq!(reloaded.root_index.get(&block_root), Some(&slot));
@@ -1623,7 +1435,7 @@ mod tests {
         let block_root = util::block_root_fulu(&block);
 
         // Block on disk, no columns — exactly the post-sync state.
-        let dir = store.block_slot_dir(slot);
+        let dir = store.finalized_slot_dir(super::Payload::Block, slot);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(format!("{slot}_block.ssz")), &block).unwrap();
 

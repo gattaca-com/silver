@@ -103,6 +103,7 @@ pub struct Harness {
 pub enum OutboundKind {
     Status,
     PersistBlock,
+    PersistEnvelope,
     BlockRejected,
     SendGossip,
     ReplayComplete,
@@ -114,6 +115,7 @@ impl OutboundKind {
         Some(match s {
             "status" => Self::Status,
             "persist_block" => Self::PersistBlock,
+            "persist_envelope" => Self::PersistEnvelope,
             "block_rejected" => Self::BlockRejected,
             "send_gossip" => Self::SendGossip,
             "replay_complete" => Self::ReplayComplete,
@@ -126,6 +128,7 @@ impl OutboundKind {
         match ev {
             BeaconStateEvent::Status { .. } => Self::Status,
             BeaconStateEvent::PersistBlock { .. } => Self::PersistBlock,
+            BeaconStateEvent::PersistEnvelope { .. } => Self::PersistEnvelope,
             BeaconStateEvent::BlockRejected { .. } => Self::BlockRejected,
             BeaconStateEvent::ReplayComplete => Self::ReplayComplete,
             BeaconStateEvent::BacktrackStall => Self::BacktrackStall,

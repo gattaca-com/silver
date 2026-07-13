@@ -3,8 +3,8 @@ use silver_beacon_state_data::{
     B256, Epoch, ParsedAggregateAndProof, SLOTS_PER_EPOCH, Slot, StateId, StateReadView,
 };
 use silver_common::{
-    BeaconStateEvent, BlockSource, EngineNewPayloadEnvelopeReq, EngineReq, GossipTopic, MAX_BLOBS_PER_BLOCK,
-    NewGossipMsg, PeerEvent, TCacheRead, TRead,
+    BeaconStateEvent, BlockSource, EngineNewPayloadEnvelopeReq, EngineReq, GossipTopic,
+    MAX_BLOBS_PER_BLOCK, NewGossipMsg, PeerEvent, TCacheRead, TRead,
     metrics::timed,
     ssz_view::{
         AttestationDataView, AttestationView, AttesterSlashingView,
