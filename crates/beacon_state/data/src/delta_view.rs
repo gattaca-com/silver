@@ -104,7 +104,7 @@ pub fn append_validator(
     debug_assert_eq!(idx, bal_idx, "validator/balance append indices must agree");
     let prev_idx = view.previous_participation.append_empty();
     let cur_idx = view.current_participation.append_empty();
-    let inact_idx = view.inactivity.append(0);
+    let inact_idx = view.inactivity.append_empty();
     debug_assert!(
         idx == prev_idx && idx == cur_idx && idx == inact_idx,
         "validator/participation/inactivity append indices must agree",
@@ -329,7 +329,7 @@ mod tests {
         let mut state = TestState::with_validators(&seeds);
         state.set_balances(&[(1, 999), (3, 333)]);
         let (v, _, _) = state.view();
-        let got: Vec<u64> = v.balances.iter().collect();
+        let got: Vec<u64> = (0..5).map(|i| v.balances.get(i)).collect();
         assert_eq!(got, vec![0, 999, 200, 333, 400]);
     }
 

@@ -59,30 +59,6 @@ fn get_finds_and_misses() {
 }
 
 #[test]
-fn get_from_gallops_and_matches_get() {
-    let edits = edits_of(&[(2, 20), (5, 50), (9, 90)]);
-    let mut cursor = 0;
-    assert_eq!(edits.get_from(&mut cursor, 0), None);
-    assert_eq!(edits.get_from(&mut cursor, 2), Some(&20));
-    assert_eq!(edits.get_from(&mut cursor, 3), None);
-    assert_eq!(edits.get_from(&mut cursor, 5), Some(&50));
-    assert_eq!(edits.get_from(&mut cursor, 9), Some(&90));
-    assert_eq!(edits.get_from(&mut cursor, 10), None);
-    assert_eq!(cursor, 3);
-
-    let empty = Edits::<u64>::default();
-    assert_eq!(empty.get_from(&mut 0, 7), None);
-
-    // Long ascending sweep agrees with `get` on every hit and gap.
-    let seed: Vec<_> = (0..1_000u32).map(|i| (i * 3, i as u64)).collect();
-    let edits = edits_of(&seed);
-    let mut cursor = 0;
-    for idx in 0..3_000u32 {
-        assert_eq!(edits.get_from(&mut cursor, idx), edits.get(idx), "idx {idx}");
-    }
-}
-
-#[test]
 fn merge_updates_in_place() {
     let mut edits = edits_of(&[(0, 10), (2, 20), (5, 50)]);
     edits.merge_in_place(&[(2, 22), (5, 55)]);

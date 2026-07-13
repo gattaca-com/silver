@@ -15,6 +15,7 @@ pub struct ColumnTree {
     max_elements: usize,
     count: usize,
     dirty_mark: Vec<bool>,
+    dirty_scratch: Vec<u32>,
 }
 
 impl ColumnTree {
@@ -40,7 +41,13 @@ impl ColumnTree {
             level = parent;
         }
         let num_pages = (2 * max_elements).div_ceil(PAGE_NODES).max(1);
-        Ok(Self { nodes, max_elements, count, dirty_mark: vec![false; num_pages] })
+        Ok(Self {
+            nodes,
+            max_elements,
+            count,
+            dirty_mark: vec![false; num_pages],
+            dirty_scratch: Vec::new(),
+        })
     }
 
     #[inline]
@@ -171,6 +178,34 @@ impl ColumnTree {
         }
     }
 
+    pub fn iter_vals<V: ColumnVal>(&self) -> impl Iterator<Item = V> + '_ {
+        let sz = size_of::<V>();
+        let bytes = &self.nodes[self.max_elements..].as_flattened()[..self.count * sz];
+        (0..self.count).map(move |i| {
+            let mut out = [V::default()];
+            V::read_ssz_slice(&mut out, &bytes[i * sz..i * sz + sz]);
+            out[0]
+        })
+    }
+
+    pub fn add_at(&mut self, idx: u32, delta: i64) {
+        let k = u64::VALS_PER_CHUNK as u32;
+        let node = self.max_elements as u32 + idx / k;
+        debug_assert!((node as usize) < 2 * self.max_elements, "index out of range");
+        let leaf = &mut self.nodes[node as usize];
+        let lane = (idx % k) as usize;
+        let old = u64::lane(leaf, lane);
+        let new = old.saturating_add_signed(delta);
+        if new == old {
+            return;
+        }
+        u64::set_lane(leaf, lane, new);
+        self.mark_dirty_node(node);
+        if self.dirty_scratch.last() != Some(&node) {
+            self.dirty_scratch.push(node);
+        }
+    }
+
     pub fn set_vals<V: ColumnVal>(&mut self, changes: &[(u32, V)]) {
         if changes.is_empty() {
             return;
@@ -181,7 +216,7 @@ impl ColumnTree {
         );
         let k = V::VALS_PER_CHUNK as u32;
 
-        let mut dirty: Vec<u32> = Vec::with_capacity(changes.len());
+        debug_assert!(self.dirty_scratch.is_empty(), "unhashed add_at batch pending");
         for group in changes.chunk_by(|a, b| a.0 / k == b.0 / k) {
             let node = self.max_elements as u32 + group[0].0 / k;
             debug_assert!((node as usize) < 2 * self.max_elements, "index out of range");
@@ -190,13 +225,23 @@ impl ColumnTree {
                 V::set_lane(leaf, (idx % k) as usize, v);
             }
             self.mark_dirty_node(node);
-            dirty.push(node);
+            self.dirty_scratch.push(node);
         }
-        self.rehash(&mut dirty);
+        self.rehash();
     }
 
-    fn rehash(&mut self, dirty: &mut Vec<u32>) {
+    pub fn rehash_unsorted(&mut self) {
+        self.dirty_scratch.sort_unstable();
+        self.rehash();
+    }
+
+    pub fn rehash(&mut self) {
+        debug_assert!(
+            self.dirty_scratch.windows(2).all(|w| w[0] <= w[1]),
+            "rehash needs ascending dirty ids; use rehash_unsorted",
+        );
         let mut level = self.max_elements as u32;
+        let Self { nodes, dirty_scratch: dirty, .. } = self;
         while level > 1 {
             let mut n = 0;
             for i in 0..dirty.len() {
@@ -208,7 +253,7 @@ impl ColumnTree {
             }
             dirty.truncate(n);
 
-            let (parents, children) = self.nodes.split_at_mut(level as usize);
+            let (parents, children) = nodes.split_at_mut(level as usize);
             let mut i = 0;
             while i < dirty.len() {
                 let start = i;
@@ -224,6 +269,7 @@ impl ColumnTree {
             }
             level >>= 1;
         }
+        dirty.clear();
     }
 
     pub fn append_empty<V: ColumnVal>(&mut self) -> u32 {

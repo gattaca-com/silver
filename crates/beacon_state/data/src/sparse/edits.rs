@@ -31,27 +31,14 @@ impl<V> Edits<V> {
         self.inner.clear();
     }
 
-    #[inline]
+    #[cfg(test)]
     pub fn iter(&self) -> std::slice::Iter<'_, (u32, V)> {
         self.inner.iter()
     }
 
     #[inline]
-    pub(crate) fn as_slice(&self) -> &[(u32, V)] {
-        &self.inner
-    }
-
-    #[inline]
     pub fn get(&self, idx: u32) -> Option<&V> {
         self.inner.binary_search_by_key(&idx, |(k, _)| *k).ok().map(|p| &self.inner[p].1)
-    }
-
-    /// `get` for ascending lookups: resumes at `cursor` and gallops, so a
-    /// sorted sweep costs O(log gap) per step instead of a fresh binary
-    /// search. Leaves `cursor` at the first position with index ≥ `idx`.
-    pub(crate) fn get_from(&self, cursor: &mut usize, idx: u32) -> Option<&V> {
-        *cursor = self.position_from(*cursor, idx);
-        self.inner.get(*cursor).filter(|&&(k, _)| k == idx).map(|(_, v)| v)
     }
 
     /// First position ≥ `from` whose index is ≥ `idx`, found by galloping.

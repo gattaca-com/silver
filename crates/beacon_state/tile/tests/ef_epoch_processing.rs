@@ -84,7 +84,7 @@ fn fulu_inactivity_updates() {
     epoch_handler("inactivity_updates", move |s| {
         s.with_view_and_epoch(|view, e| {
             let current_epoch = view.slot.reader().current_epoch();
-            stf::process_inactivity_updates(&cfg, view, e, current_epoch, &mut Vec::new());
+            stf::process_inactivity_updates(&cfg, view, e, current_epoch);
         });
     });
 }
@@ -95,7 +95,7 @@ fn fulu_rewards_and_penalties() {
     epoch_handler("rewards_and_penalties", move |s| {
         s.with_view_and_epoch(|view, e| {
             let current_epoch = view.slot.reader().current_epoch();
-            stf::process_rewards_and_penalties(&cfg, view, e, current_epoch, &mut Vec::new());
+            stf::process_rewards_and_penalties(&cfg, view, e, current_epoch);
         });
     });
 }

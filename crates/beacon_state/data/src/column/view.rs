@@ -56,11 +56,6 @@ impl<'a> Nodes<'a> {
     }
 
     #[inline]
-    fn iter<V: ColumnVal>(self) -> impl Iterator<Item = V> + 'a {
-        (0..self.count()).map(move |i| self.get::<V>(i))
-    }
-
-    #[inline]
     fn hash_root<V: ColumnVal>(&self) -> B256 {
         let list_depth = (VALIDATOR_REGISTRY_LIMIT / V::VALS_PER_CHUNK).trailing_zeros();
         let mut root = *self.node(1);
@@ -109,11 +104,6 @@ impl<'a, C: ColumnSpec> ColumnReader<'a, C> {
     }
 
     #[inline]
-    pub fn iter(self) -> impl Iterator<Item = C::Val> + 'a {
-        self.nodes.iter::<C::Val>()
-    }
-
-    #[inline]
     pub fn hash_root(&self) -> B256 {
         self.nodes.hash_root::<C::Val>()
     }
@@ -159,6 +149,16 @@ impl<'a, C: ColumnSpec> ColumnWriteView<'a, C> {
         self.group.scratch_mut().set_vals::<C::Val>(changes);
     }
 
+    #[timed]
+    pub fn rehash(&mut self) {
+        self.group.scratch_mut().rehash();
+    }
+
+    #[timed]
+    pub fn rehash_unsorted(&mut self) {
+        self.group.scratch_mut().rehash_unsorted();
+    }
+
     #[inline]
     pub fn append_empty(&mut self) -> u32 {
         self.group.scratch_mut().append_empty::<C::Val>()
@@ -189,11 +189,18 @@ impl<'a, C: ColumnSpec> ColumnWriteView<'a, C> {
 
     #[inline]
     pub fn iter(&self) -> impl Iterator<Item = C::Val> + '_ {
-        self.reader().iter()
+        self.group.scratch().iter_vals::<C::Val>()
     }
 
     #[inline]
     pub fn hash_root(&self) -> B256 {
         self.reader().hash_root()
+    }
+}
+
+impl<C: ColumnSpec<Val = u64>> ColumnWriteView<'_, C> {
+    #[inline]
+    pub fn add_at(&mut self, idx: u32, delta: i64) {
+        self.group.scratch_mut().add_at(idx, delta);
     }
 }

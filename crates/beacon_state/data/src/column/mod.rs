@@ -111,3 +111,13 @@ pub type BalancesId = Id<BalancesGroup>;
 
 pub type BalancesReader<'a> = ColumnReader<'a, Balances>;
 pub type BalancesWriteView<'a> = ColumnWriteView<'a, Balances>;
+
+pub struct Inactivity;
+impl ColumnSpec for Inactivity {
+    type Val = u64;
+}
+
+pub type InactivityScoresGroup = ColumnGroup<Inactivity>;
+pub type InactivityId = Id<InactivityScoresGroup>;
+pub type InactivityView<'a> = ColumnReader<'a, Inactivity>;
+pub type InactivityWriteView<'a> = ColumnWriteView<'a, Inactivity>;
