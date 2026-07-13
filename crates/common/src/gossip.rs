@@ -87,7 +87,7 @@ const EXECUTION_BID_SLOT: usize = DATA_COLUMN_BASE + crate::NUMBER_OF_CUSTODY_GR
 /// Dense per-topic slot space for counters/telemetry: subnet topics get one
 /// slot per subnet, everything else one slot. The layout is fixed so
 /// observers label by the same arithmetic (`gossip_topic_for_counter_slot`).
-pub const GOSSIP_TOPIC_COUNTER_SLOTS: usize = EXECUTION_BID_SLOT + 5;
+pub const GOSSIP_TOPIC_COUNTER_SLOTS: usize = EXECUTION_BID_SLOT + 4;
 
 /// Inverse of `GossipTopic::counter_slot`, for observer-side labelling.
 pub fn gossip_topic_for_counter_slot(slot: usize) -> Option<GossipTopic> {
@@ -112,7 +112,6 @@ pub fn gossip_topic_for_counter_slot(slot: usize) -> Option<GossipTopic> {
         s if s == EXECUTION_BID_SLOT + 1 => GossipTopic::ExecutionPayload,
         s if s == EXECUTION_BID_SLOT + 2 => GossipTopic::PayloadAttestationMessage,
         s if s == EXECUTION_BID_SLOT + 3 => GossipTopic::ProposerPreferences,
-        s if s == EXECUTION_BID_SLOT + 4 => GossipTopic::InclusionList,
         _ => return None,
     })
 }
@@ -148,7 +147,6 @@ impl GossipTopic {
             Self::ExecutionPayload => EXECUTION_BID_SLOT + 1,
             Self::PayloadAttestationMessage => EXECUTION_BID_SLOT + 2,
             Self::ProposerPreferences => EXECUTION_BID_SLOT + 3,
-            Self::InclusionList => EXECUTION_BID_SLOT + 4,
         }
     }
 

@@ -102,7 +102,7 @@ impl SlotTicker {
     }
 
     pub fn slot_time_elapsed(&self) -> Duration {
-        Duration::from_millis(self.since_genesis_ms() % self.slot_ms)
+        Duration::from_millis(self.millis_since_genesis() % self.slot_ms)
     }
 
     pub fn current_slot(&self) -> u64 {

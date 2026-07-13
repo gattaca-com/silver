@@ -7,8 +7,9 @@ use std::{
 use flux::{spine::SpineAdapter, tile::Tile};
 use silver_chain_spec::SpecConfig;
 use silver_common::{
-    BeaconStateEvent, P2pSend, PeerControl, PeerEvent, RpcInbound, RpcOutbound, RpcRequestOutbound,
-    SilverSpine, SilverSpineProducers, TCacheProducer, TCacheRead, TMultiProducer, msg_is_backfill,
+    BeaconStateEvent, Nanos, P2pSend, PeerControl, PeerEvent, RpcInbound, RpcOutbound,
+    RpcRequestOutbound, SilverSpine, SilverSpineProducers, TCacheProducer, TCacheRead,
+    TMultiProducer, TRandomAccess, msg_is_backfill,
     ssz_view::{BLOCKS_BY_RANGE_REQ_SIZE, METADATA_SIZE, STATUS_V2_SIZE, StatusView},
 };
 use silver_gossip::{GossipHandler, GossipHandlerEvent};
@@ -155,9 +156,14 @@ impl Tile<SilverSpine> for Controller {
         let fork_digest_changed = self.handle_latest_status(now, latest_status_event);
         if fork_digest_changed {
             tracing::info!("fork digest changed; re-announcing gossip subscriptions");
-            self.peer_manager
-                .fan_out_subscriptions(&mut |evt| handle_peer_control(&mut self.gossip_handler,
-                                        &mut self.rpc_producer, evt, &mut adapter.producers));
+            self.peer_manager.fan_out_subscriptions(&mut |evt| {
+                handle_peer_control(
+                    &mut self.gossip_handler,
+                    &mut self.rpc_producer,
+                    evt,
+                    &mut adapter.producers,
+                )
+            });
         }
 
         adapter.consume(|event: PeerEvent, producers| {
@@ -423,10 +429,9 @@ fn handle_peer_control(
                         &P2pSend::Rpc(RpcOutbound::Request(RpcRequestOutbound {
                             application_id: app_id,
                             peer,
-                            request:
-                                silver_common::RpcRequest::ExecutionPayloadEnvelopesByRoot(
-                                    read,
-                                ),
+                            request: silver_common::RpcRequest::ExecutionPayloadEnvelopesByRoot(
+                                read,
+                            ),
                         }))
                         .into(),
                     );

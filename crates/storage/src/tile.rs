@@ -11,10 +11,10 @@ use flux::{spine::SpineAdapter, tile::Tile};
 use flux_profiler::timed;
 use silver_beacon_state_data::{B256, BeaconStateReader, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
-    BASE_REQUEST_ID, BeaconStateEvent, DataColumnsAvailable, EngineReq, EngineResp, NewGossipMsg,
-    P2pSend, P2pStreamId, PeerControl, PeerEvent, ReplayBlock, RpcInbound, RpcSeverity,
-    SilverSpine, SilverSpineProducers, StreamProtocol, SyncUpdate, SyncingStrategy, TCacheProducer,
-    TMultiProducer, TProducer, TRandomAccess, TRead, Wheel, msg_is_backfill,
+    BASE_REQUEST_ID, BeaconStateEvent, DataColumnsAvailable, EngineReq, EngineResp, GossipTopic,
+    NewGossipMsg, P2pSend, P2pStreamId, PeerControl, PeerEvent, ReplayBlock, RpcInbound,
+    RpcSeverity, SilverSpine, SilverSpineProducers, StreamProtocol, SyncUpdate, SyncingStrategy,
+    TCacheProducer, TMultiProducer, TProducer, TRandomAccess, TRead, Wheel, msg_is_backfill,
     msg_is_column_backfill, msg_is_live_column_request, msg_is_post_gloas,
     ssz_view::{
         DataColumnSidecarFuluView, DataColumnSidecarGloasView, ExecutionPayloadEnvelopeView,
@@ -620,16 +620,6 @@ impl StorageTile {
             }
         }
 
-        if stream_id.protocol() != StreamProtocol::GossipSub && self.store.is_synced() {
-            // Validated from a non-gossip source: the mesh never saw us
-            // deliver it. Hand it to control for re-publish on its subnet.
-            peer(PeerEvent::PublishDataColumn {
-                originator: stream_id,
-                topic: GossipTopic::DataColumnSidecar(column_index),
-                ssz: sidecar.read,
-            });
-        }
-
         let validated = self.validated_columns.entry(block_root).or_default();
         *validated |= column_bitmask;
         let validated = *validated;
@@ -640,7 +630,6 @@ impl StorageTile {
             tracing::info!(
                 block = hex::encode(block_root),
                 slot,
-                is_gossip = matches!(stream_id.protocol(), StreamProtocol::GossipSub),
                 "DataColumnsAvailable: custody set complete"
             );
             emit(DataColumnsAvailable { block_root, slot })
@@ -794,7 +783,26 @@ impl Tile<SilverSpine> for StorageTile {
                     tracing::debug!("data column sidecar over rpc");
                     let t_read = self.rpc_consumer.acquire(ssz);
                     let is_gloas = msg_is_post_gloas(rsp.application_id);
-                    self.handle_data_column_sidecar(t_read, rsp.stream_id, is_gloas, producers);
+
+                    let Ok((buffer, _)) = t_read.buffer() else {
+                        return;
+                    };
+                    let column_index = if is_gloas {
+                        DataColumnSidecarGloasView::index(buffer)
+                    } else {
+                        DataColumnSidecarFuluView::index(buffer)
+                    };
+
+                    if self.handle_data_column_sidecar(t_read, rsp.stream_id, is_gloas, producers) {
+                        if rsp.stream_id.protocol() != StreamProtocol::GossipSub && self.store.is_synced() {
+                            // Publish to gossip
+                            producers.peer_events.produce(&PeerEvent::PublishDataColumn {
+                                originator: rsp.stream_id,
+                                topic: GossipTopic::DataColumnSidecar(column_index),
+                                ssz,
+                            }.into());
+                        }
+                    }
                 }
                 silver_common::RpcResponse::Error { error, msg, len } if msg_is_column_backfill(rsp.application_id)=> {
                     let err_msg = String::from_utf8_lossy(&msg[..len]).to_string();
