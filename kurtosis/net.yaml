@@ -58,8 +58,6 @@ participants:
   # endpoints enabled below.
   - el_type: geth
     cl_type: prysm
-    cl_extra_params:
-      - --enable-debug-rpc-endpoints
     count: 1
 
 network_params:
