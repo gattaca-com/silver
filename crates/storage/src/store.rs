@@ -1211,7 +1211,7 @@ mod tests {
         assert!(matches!(
             &responses[0],
             P2pSend::Rpc(RpcOutbound::Response(RpcResponseOutbound {
-                response: RpcResponse::Complete,
+                response: RpcResponse::Error { error: 3, .. },
                 ..
             }))
         ));
