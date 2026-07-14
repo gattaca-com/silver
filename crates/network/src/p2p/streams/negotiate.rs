@@ -177,13 +177,16 @@ impl NegotiateState {
                 if read >= total {
                     match StreamProtocol::from_multiselect(&buf[..total]) {
                         Some(protocol) => {
+                            if count > 0 {
+                                tracing::warn!(?id, ?protocol, "renegotiated protocol");
+                            }
                             return Ok(Spin::Next(Self::InWriting {
                                 protocol,
                                 written: header_written(count),
                             }));
                         }
                         None => {
-                            tracing::error!(protocol=?str::from_utf8(&buf[..total]),"unrecognized negotiate protocol");
+                            tracing::warn!(?id, protocol=?str::from_utf8(&buf[..total]),"unrecognized negotiate protocol");
                             return Ok(Spin::Next(Self::InWritingReject {
                                 written: header_written(count),
                                 count,
