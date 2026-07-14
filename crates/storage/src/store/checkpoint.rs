@@ -484,7 +484,7 @@ mod tests {
             while store.checkpoint_in_flight() {
                 let section = store.checkpoint_section();
                 let ct = Instant::now();
-                store.file_io(&[0u8; 4], 0, &mut producer, &mut |_: IoEvent| {}).unwrap();
+                store.file_io(|_| [0u8; 4], 0, &mut producer, &mut |_: IoEvent| {}).unwrap();
                 let cdt = ct.elapsed();
                 // Validators spans several turns → all land in its bucket.
                 if i >= WARMUP &&
@@ -585,7 +585,7 @@ mod tests {
         let mut producer = TCache::multi_producer("streamcp_rpc", 1 << 20);
         let mut turns = 0;
         while store.checkpoint_in_flight() {
-            store.file_io(&[0u8; 4], 0, &mut producer, &mut |_: IoEvent| {}).unwrap();
+            store.file_io(|_| [0u8; 4], 0, &mut producer, &mut |_: IoEvent| {}).unwrap();
             turns += 1;
             assert!(turns <= 64, "checkpoint did not finish");
         }

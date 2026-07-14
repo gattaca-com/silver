@@ -214,7 +214,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         replay_blocks_producer,
         state_reader,
         das_custody_groups,
-        config.fork_digest(),
         spec.clone(),
         config.data_storage_dir().into(),
         booting_from_local_checkpoint,

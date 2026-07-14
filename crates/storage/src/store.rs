@@ -7,11 +7,12 @@ use std::{
 use flux_profiler::timed;
 use fxhash::FxHashMap;
 use silver_common::{
-    Enr, P2pStreamId, PeerEvent, RpcRequestInbound, SyncUpdate, TRandomAccess, TRead,
+    Enr, P2pStreamId, PeerEvent, RpcRequestInbound, SyncUpdate, TCacheRead, TRandomAccess, TRead,
     ssz_hash::B256,
     ssz_view::{
         BeaconBlocksByRangeRequestView, BeaconBlocksByRootRequestView,
         DataColumnSidecarsByRangeRequestView, DataColumnsByRootIdentifierView,
+        ExecutionPayloadEnvelopesByRangeRequestView, ExecutionPayloadEnvelopesByRootRequestView,
     },
 };
 
@@ -193,6 +194,21 @@ enum QueryUnit {
     UnfinalizedBlock { slot: u64, parent_root: [u8; 32], block_root: [u8; 32] },
     Column { slot: u64, column: u64 },
     UnfinalizedColumn { slot: u64, block_root: [u8; 32], column: u64 },
+    Envelope { slot: u64 },
+    UnfinalizedEnvelope { slot: u64, block_root: [u8; 32] },
+}
+
+impl QueryUnit {
+    fn slot(&self) -> u64 {
+        match self {
+            QueryUnit::Block { slot } |
+            QueryUnit::UnfinalizedBlock { slot, .. } |
+            QueryUnit::Column { slot, .. } |
+            QueryUnit::UnfinalizedColumn { slot, .. } |
+            QueryUnit::Envelope { slot } |
+            QueryUnit::UnfinalizedEnvelope { slot, .. } => *slot,
+        }
+    }
 }
 
 /// An in-flight read request: the stream and the ordered chunks still to
@@ -595,39 +611,31 @@ impl Store {
                     let count = DataColumnSidecarsByRangeRequestView::count(&ssz[..len])
                         .min(MAX_REQUEST_BLOCKS);
                     let end = start.saturating_add(count);
-                    let canonical = self.unfinalized.canonical_chain_in_range(
-                        self.head_root,
-                        self.head_slot,
-                        start,
-                        end,
-                    );
                     let columns: Vec<u64> =
                         DataColumnSidecarsByRangeRequestView::columns(&ssz[..len])
                             .chunks_exact(8)
                             .map(|chunk| u64::from_le_bytes(chunk.try_into().unwrap()))
                             .collect();
                     // `(slot, column)` order per fulu p2p-interface: outer slot,
-                    // inner column. Serve the canonical block's column from the
-                    // unfinalized store, else the finalized flat store.
-                    for slot in start..end {
+                    // inner column.
+                    self.resolve_canonical_range(start, end, |slot, canonical| {
                         for &column in &columns {
-                            if let Some(&(_parent_root, block_root)) = canonical.get(&slot) {
-                                units.push_back(QueryUnit::UnfinalizedColumn {
-                                    slot,
-                                    block_root,
-                                    column,
-                                });
-                            } else {
-                                units.push_back(QueryUnit::Column { slot, column });
-                            }
+                            units.push_back(match canonical {
+                                Some((_parent_root, block_root)) => {
+                                    QueryUnit::UnfinalizedColumn { slot, block_root, column }
+                                }
+                                None => QueryUnit::Column { slot, column },
+                            });
                         }
-                    }
+                    });
                 }
             }
-            silver_common::RpcRequest::DataColumnsByRoot(tcache_read) => {
-                let read = rpc_consumer.acquire(tcache_read);
-                if let Ok((buf, _)) = read.buffer() {
-                    if DataColumnsByRootIdentifierView::check_size(buf) {
+            silver_common::RpcRequest::DataColumnsByRoot(read) => {
+                with_root_request(
+                    rpc_consumer,
+                    read,
+                    DataColumnsByRootIdentifierView::check_size,
+                    |buf| {
                         let root = DataColumnsByRootIdentifierView::block_root(buf);
                         let request_columns = DataColumnsByRootIdentifierView::columns(buf)
                             .chunks_exact(8)
@@ -648,38 +656,29 @@ impl Store {
                                 units.push_back(QueryUnit::Column { slot, column });
                             }
                         }
-                    }
-                }
+                    },
+                );
             }
             silver_common::RpcRequest::BlocksByRange(req_bytes) => {
                 let start = BeaconBlocksByRangeRequestView::start_slot(&req_bytes);
                 let count =
                     BeaconBlocksByRangeRequestView::count(&req_bytes).min(MAX_REQUEST_BLOCKS);
                 let end = start.saturating_add(count);
-                // Per slot: the unfinalized canonical block if present, else the
-                // finalized flat store (`serve_file` skips an absent slot).
-                let canonical = self.unfinalized.canonical_chain_in_range(
-                    self.head_root,
-                    self.head_slot,
-                    start,
-                    end,
-                );
-                for slot in start..end {
-                    if let Some(&(parent_root, block_root)) = canonical.get(&slot) {
-                        units.push_back(QueryUnit::UnfinalizedBlock {
-                            slot,
-                            parent_root,
-                            block_root,
-                        });
-                    } else {
-                        units.push_back(QueryUnit::Block { slot });
-                    }
-                }
+                self.resolve_canonical_range(start, end, |slot, canonical| {
+                    units.push_back(match canonical {
+                        Some((parent_root, block_root)) => {
+                            QueryUnit::UnfinalizedBlock { slot, parent_root, block_root }
+                        }
+                        None => QueryUnit::Block { slot },
+                    });
+                });
             }
-            silver_common::RpcRequest::BlockByRoot(tcache_read) => {
-                let read = rpc_consumer.acquire(tcache_read);
-                if let Ok((buf, _)) = read.buffer() {
-                    if BeaconBlocksByRootRequestView::check_size(buf) {
+            silver_common::RpcRequest::BlockByRoot(read) => {
+                with_root_request(
+                    rpc_consumer,
+                    read,
+                    BeaconBlocksByRootRequestView::check_size,
+                    |buf| {
                         let count = BeaconBlocksByRootRequestView::count(buf);
                         for i in 0..count {
                             let root = BeaconBlocksByRootRequestView::root(buf, i);
@@ -696,22 +695,66 @@ impl Store {
                                 units.push_back(QueryUnit::Block { slot });
                             }
                         }
-                    }
-                }
+                    },
+                );
             }
-            // Request-only for envelopes: we don't persist/serve them. Reply
-            // with an empty list (empty `units` drains straight to `Complete`),
-            // giving the peer a clean "none held" rather than a hung stream that
-            // times out and scores us down. `ByRoot` carries a tcache handle —
-            // acquire it so the inbound slot is released.
-            silver_common::RpcRequest::ExecutionPayloadEnvelopesByRange(_) => {}
-            silver_common::RpcRequest::ExecutionPayloadEnvelopesByRoot(tcache_read) => {
-                let _ = rpc_consumer.acquire(tcache_read);
+            silver_common::RpcRequest::ExecutionPayloadEnvelopesByRange(ssz) => {
+                let start = ExecutionPayloadEnvelopesByRangeRequestView::start_slot(&ssz);
+                let count = ExecutionPayloadEnvelopesByRangeRequestView::count(&ssz)
+                    .min(MAX_REQUEST_BLOCKS);
+                let end = start.saturating_add(count);
+                // One envelope per canonical block; `serve_file` skips a slot
+                // with no envelope (pre-Gloas or a missed slot).
+                self.resolve_canonical_range(start, end, |slot, canonical| {
+                    units.push_back(match canonical {
+                        Some((_parent_root, block_root)) => {
+                            QueryUnit::UnfinalizedEnvelope { slot, block_root }
+                        }
+                        None => QueryUnit::Envelope { slot },
+                    });
+                });
+            }
+            silver_common::RpcRequest::ExecutionPayloadEnvelopesByRoot(read) => {
+                with_root_request(
+                    rpc_consumer,
+                    read,
+                    ExecutionPayloadEnvelopesByRootRequestView::check_size,
+                    |buf| {
+                        let count = ExecutionPayloadEnvelopesByRootRequestView::count(buf);
+                        for i in 0..count {
+                            let root = ExecutionPayloadEnvelopesByRootRequestView::root(buf, i);
+                            // Serve a specific block's envelope regardless of
+                            // canonicity: unfinalized (by block_root) first, else
+                            // the finalized flat store.
+                            if let Some(slot) = self.unfinalized_envelopes.slot_of(root) {
+                                units.push_back(QueryUnit::UnfinalizedEnvelope {
+                                    slot,
+                                    block_root: *root,
+                                });
+                            } else if let Some(&slot) = self.root_index.get(root) {
+                                units.push_back(QueryUnit::Envelope { slot });
+                            }
+                        }
+                    },
+                );
             }
             // Unhandled request kind: no response (matches prior behaviour).
             _ => return,
         }
         self.query_queue.push_back(PendingQuery { stream_id, units });
+    }
+
+    fn resolve_canonical_range(
+        &self,
+        start: u64,
+        end: u64,
+        mut push: impl FnMut(u64, Option<([u8; 32], [u8; 32])>),
+    ) {
+        let canonical =
+            self.unfinalized.canonical_chain_in_range(self.head_root, self.head_slot, start, end);
+        for slot in start..end {
+            push(slot, canonical.get(&slot).copied());
+        }
     }
 
     pub(super) fn persist_peer(&mut self, enr: Enr) {
@@ -744,6 +787,20 @@ fn ensure_dir(store_dir: &str, name: &str) -> Result<PathBuf, Error> {
     let dir = Path::new(store_dir).join(name);
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
+}
+
+fn with_root_request(
+    rpc_consumer: &mut TRandomAccess,
+    read: TCacheRead,
+    check_size: fn(&[u8]) -> bool,
+    resolve: impl FnOnce(&[u8]),
+) {
+    let read = rpc_consumer.acquire(read);
+    if let Ok((buf, _)) = read.buffer() &&
+        check_size(buf)
+    {
+        resolve(buf);
+    }
 }
 
 #[cfg(test)]
@@ -857,7 +914,7 @@ mod tests {
         let fork_digest = [1, 2, 3, 4];
         let producer_cache = TCache::multi_producer("fork_rpc_in", 1024 * 1024);
         let mut producer = producer_cache.clone();
-        store.file_io(&fork_digest, 0, &mut producer, &mut |_| {}).unwrap();
+        store.file_io(|_| fork_digest, 0, &mut producer, &mut |_| {}).unwrap();
 
         let path_a = store
             .unfinalized_dir(super::Payload::Block)
@@ -906,7 +963,7 @@ mod tests {
         });
         let mut responses = vec![];
         store
-            .file_io(&fork_digest, 0, &mut producer, &mut |s| match s {
+            .file_io(|_| fork_digest, 0, &mut producer, &mut |s| match s {
                 IoEvent::P2pSend(s) => responses.push(s),
                 _ => {}
             })
@@ -928,7 +985,7 @@ mod tests {
         });
         let mut byroot = vec![];
         store
-            .file_io(&fork_digest, 0, &mut producer, &mut |s| match s {
+            .file_io(|_| fork_digest, 0, &mut producer, &mut |s| match s {
                 IoEvent::P2pSend(s) => byroot.push(s),
                 _ => {}
             })
@@ -942,7 +999,7 @@ mod tests {
         assert!(!store.unfinalized.contains(&root_a));
         assert!(!store.unfinalized.contains(&root_b));
 
-        store.file_io(&fork_digest, 0, &mut producer, &mut |_| {}).unwrap();
+        store.file_io(|_| fork_digest, 0, &mut producer, &mut |_| {}).unwrap();
         let flat_a =
             store.finalized_slot_dir(super::Payload::Block, slot).join(format!("{slot}_block.ssz"));
         assert!(flat_a.exists());
@@ -956,7 +1013,7 @@ mod tests {
         });
         let mut after = vec![];
         store
-            .file_io(&fork_digest, 0, &mut producer, &mut |s| match s {
+            .file_io(|_| fork_digest, 0, &mut producer, &mut |s| match s {
                 IoEvent::P2pSend(s) => after.push(s),
                 _ => {}
             })
@@ -1020,7 +1077,7 @@ mod tests {
         let fork_digest = [1, 2, 3, 4];
         let producer_cache = TCache::multi_producer("env_rpc_in", 1024 * 1024);
         let mut producer = producer_cache.clone();
-        store.file_io(&fork_digest, 0, &mut producer, &mut |_| {}).unwrap();
+        store.file_io(|_| fork_digest, 0, &mut producer, &mut |_| {}).unwrap();
 
         let unf_a = store
             .unfinalized_dir(super::Payload::Envelope)
@@ -1034,7 +1091,7 @@ mod tests {
         // Finalize at slot 42 on A: promote A's envelope, prune orphan B's.
         store.update_head(slot, root_a, slot, root_a);
         assert!(store.unfinalized_envelopes.is_empty());
-        store.file_io(&fork_digest, 0, &mut producer, &mut |_| {}).unwrap();
+        store.file_io(|_| fork_digest, 0, &mut producer, &mut |_| {}).unwrap();
 
         let flat_a = store
             .finalized_slot_dir(super::Payload::Envelope, slot)
@@ -1078,7 +1135,7 @@ mod tests {
         // Drain the staged write so the acquired read is released while its
         // consumer is still alive (`read` is parked in the write queue).
         let mut producer = TCache::multi_producer("cycle_rpc_in", 1024 * 1024).clone();
-        store.file_io(&[0u8; 4], 0, &mut producer, &mut |_| {}).unwrap();
+        store.file_io(|_| [0u8; 4], 0, &mut producer, &mut |_| {}).unwrap();
 
         // A range spanning the self-loop slot must return rather than spin.
         let mut range = [0u8; 24];
@@ -1130,7 +1187,7 @@ mod tests {
         let mut producer = producer_cache.clone();
         let mut responses = vec![];
         store
-            .file_io(&fork_digest, 0, &mut producer, &mut |s| {
+            .file_io(|_| fork_digest, 0, &mut producer, &mut |s| {
                 if let IoEvent::P2pSend(s) = s {
                     responses.push(s);
                 }
@@ -1197,7 +1254,7 @@ mod tests {
         let fork_digest = [9, 9, 9, 9];
         let producer_cache = TCache::multi_producer("colfork_rpc_in", 1 << 20);
         let mut producer = producer_cache.clone();
-        store.file_io(&fork_digest, 0, &mut producer, &mut |_| {}).unwrap();
+        store.file_io(|_| fork_digest, 0, &mut producer, &mut |_| {}).unwrap();
         assert!(ucol_dir.join(super::io::unfinalized_column_name(slot, &root_a, 3)).exists());
         assert!(ucol_dir.join(super::io::unfinalized_column_name(slot, &root_a, 7)).exists());
         assert!(ucol_dir.join(super::io::unfinalized_column_name(slot, &root_b, 3)).exists());
@@ -1236,7 +1293,7 @@ mod tests {
         });
         let mut responses = vec![];
         store
-            .file_io(&fork_digest, 0, &mut producer, &mut |s| match s {
+            .file_io(|_| fork_digest, 0, &mut producer, &mut |s| match s {
                 IoEvent::P2pSend(s) => responses.push(s),
                 _ => {}
             })
@@ -1261,7 +1318,7 @@ mod tests {
         });
         let mut br = vec![];
         store
-            .file_io(&fork_digest, 0, &mut producer, &mut |s| match s {
+            .file_io(|_| fork_digest, 0, &mut producer, &mut |s| match s {
                 IoEvent::P2pSend(s) => br.push(s),
                 _ => {}
             })
@@ -1273,7 +1330,7 @@ mod tests {
         store.update_head(slot, root_a, slot, root_a);
         assert!(store.unfinalized_columns.is_empty());
 
-        store.file_io(&fork_digest, 0, &mut producer, &mut |_| {}).unwrap();
+        store.file_io(|_| fork_digest, 0, &mut producer, &mut |_| {}).unwrap();
         assert!(flat_dir.join(format!("{slot}_3.ssz")).exists());
         assert!(flat_dir.join(format!("{slot}_7.ssz")).exists());
         assert!(!ucol_dir.join(super::io::unfinalized_column_name(slot, &root_a, 3)).exists());
@@ -1286,7 +1343,7 @@ mod tests {
         });
         let mut after = vec![];
         store
-            .file_io(&fork_digest, 0, &mut producer, &mut |s| match s {
+            .file_io(|_| fork_digest, 0, &mut producer, &mut |s| match s {
                 IoEvent::P2pSend(s) => after.push(s),
                 _ => {}
             })
@@ -1334,7 +1391,7 @@ mod tests {
         let fork_digest = [0u8; 4];
         let producer_cache = TCache::multi_producer("backfill_index_rpc", 1 << 20);
         let mut producer = producer_cache.clone();
-        store.file_io(&fork_digest, 0, &mut producer, &mut |_| {}).unwrap();
+        store.file_io(|_| fork_digest, 0, &mut producer, &mut |_| {}).unwrap();
 
         assert_eq!(store.root_index.get(&block_root), Some(&slot));
         assert!(
@@ -1392,7 +1449,7 @@ mod tests {
         let custody_columns = (1u128 << 3) | (1u128 << 7);
         let mut needs = Vec::new();
         store
-            .file_io(&fork_digest, custody_columns, &mut producer, &mut |io| {
+            .file_io(|_| fork_digest, custody_columns, &mut producer, &mut |io| {
                 if let IoEvent::PeerEvent(PeerEvent::ColumnNeed { block_root, missing, .. }) = io {
                     needs.push((missing, block_root));
                 }
@@ -1452,7 +1509,7 @@ mod tests {
         let custody_columns = (1u128 << 3) | (1u128 << 7);
         let mut needs = Vec::new();
         store
-            .file_io(&fork_digest, custody_columns, &mut producer, &mut |io| {
+            .file_io(|_| fork_digest, custody_columns, &mut producer, &mut |io| {
                 if let IoEvent::PeerEvent(PeerEvent::ColumnNeed { block_root, missing, .. }) = io {
                     needs.push((missing, block_root));
                 }
@@ -1500,7 +1557,7 @@ mod tests {
         let fork_digest = [0u8; 4];
         let producer_cache = TCache::multi_producer("fair_rpc_in", 1 << 20);
         let mut producer = producer_cache.clone();
-        store.file_io(&fork_digest, 0, &mut producer, &mut |_| {}).unwrap(); // flush block writes
+        store.file_io(|_| fork_digest, 0, &mut producer, &mut |_| {}).unwrap(); // flush block writes
 
         // Two BlocksByRange [10,12) on distinct streams, queued before draining.
         let mut range = [0u8; 24];
@@ -1523,7 +1580,7 @@ mod tests {
 
         let mut responses = vec![];
         store
-            .file_io(&fork_digest, 0, &mut producer, &mut |s| match s {
+            .file_io(|_| fork_digest, 0, &mut producer, &mut |s| match s {
                 IoEvent::P2pSend(s) => responses.push(s),
                 _ => {}
             })

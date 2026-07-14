@@ -3,7 +3,8 @@ use std::io::{Error, ErrorKind};
 use silver_common::{
     P2pStreamId, RpcRequest, RpcResponse, StreamProtocol, TCacheProducer, TProducer, TReservation,
     ssz_view::{
-        BLOCKS_BY_RANGE_REQ_SIZE, DC_BY_RANGE_REQ_MAX, GOODBYE_SIZE, METADATA_SIZE, PING_SIZE,
+        BLOCKS_BY_RANGE_REQ_SIZE, DC_BY_RANGE_REQ_MAX,
+        EXECUTION_PAYLOAD_ENVELOPES_BY_RANGE_REQ_SIZE, GOODBYE_SIZE, METADATA_SIZE, PING_SIZE,
         STATUS_V1_SIZE, STATUS_V2_SIZE,
     },
 };
@@ -46,6 +47,20 @@ pub fn alloc_incoming_rpc(
                 let reservation = rpc_in.reserve(len, true).ok_or(ErrorKind::FileTooLarge)?;
                 let tcache = reservation.read();
                 (Rpc::Request(RpcRequest::DataColumnsByRoot(tcache)), Some(reservation))
+            }
+            StreamProtocol::ExecutionPayloadEnvelopesByRange => (
+                Rpc::Request(RpcRequest::ExecutionPayloadEnvelopesByRange(
+                    [0u8; EXECUTION_PAYLOAD_ENVELOPES_BY_RANGE_REQ_SIZE],
+                )),
+                None,
+            ),
+            StreamProtocol::ExecutionPayloadEnvelopesByRoot => {
+                let reservation = rpc_in.reserve(len, true).ok_or(ErrorKind::FileTooLarge)?;
+                let tcache = reservation.read();
+                (
+                    Rpc::Request(RpcRequest::ExecutionPayloadEnvelopesByRoot(tcache)),
+                    Some(reservation),
+                )
             }
             _ => return Err(ErrorKind::InvalidInput.into()),
         }

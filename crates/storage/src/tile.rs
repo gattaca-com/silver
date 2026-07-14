@@ -74,7 +74,7 @@ pub struct StorageTile {
     rpc_producer: TMultiProducer,
     beacon_state: BeaconStateReader,
     store: Store,
-    fork_digest: [u8; 4], // fork digest
+    genesis_validators_root: Option<B256>,
 
     spec: Arc<SpecConfig>,
 
@@ -132,7 +132,6 @@ impl StorageTile {
         replay_producer: TProducer,
         beacon_state: BeaconStateReader,
         custody_group_columns: u128,
-        fork_digest: [u8; 4],
         spec: Arc<SpecConfig>,
         data_store_dir: String,
         replay_from_disk: bool,
@@ -159,7 +158,7 @@ impl StorageTile {
             rpc_producer,
             beacon_state,
             store,
-            fork_digest,
+            genesis_validators_root: None,
             spec,
             validated_columns: Wheel::new(EPOCH_DURATION),
             gloas_commitments: Wheel::new(EPOCH_DURATION),
@@ -848,7 +847,6 @@ impl Tile<SilverSpine> for StorageTile {
             let head_root = *StatusView::head_root(&ssz);
             let finalized_epoch = StatusView::finalized_epoch(&ssz);
             let finalized_root = *StatusView::finalized_root(&ssz);
-            self.fork_digest = *StatusView::fork_digest(&ssz);
             self.store.update_head(
                 head_slot,
                 head_root,
@@ -941,9 +939,22 @@ impl Tile<SilverSpine> for StorageTile {
             self.store.begin_checkpoint(self.beacon_state.clone());
         }
 
+        // Genesis validators root is constant post-genesis; latch it once the
+        // reader has a published state. Feeds the per-slot served fork-digest.
+        if self.genesis_validators_root.is_none() {
+            self.genesis_validators_root =
+                self.beacon_state.read(&|v| v.imm.genesis_validators_root);
+        }
+
         // Run store file i/o (also advances any in-flight checkpoint persist).
+        let spec = self.spec.clone();
+        let gvr = self.genesis_validators_root;
+        let fork_digest_at = move |slot: u64| match gvr {
+            Some(gvr) => util::fork_digest_at(&spec, slot, &gvr),
+            None => [0u8; 4],
+        };
         if let Err(e) = self.store.file_io(
-            &self.fork_digest,
+            fork_digest_at,
             self.custody_group_columns,
             &mut self.rpc_producer,
             &mut |io| match io {
@@ -1014,7 +1025,6 @@ mod tests {
             replay_producer,
             beacon_state,
             custody_columns,
-            [1, 2, 3, 4],
             Arc::new(SpecConfig::mainnet()),
             store_dir.clone(),
             false,
@@ -1140,7 +1150,6 @@ mod tests {
             TCache::producer("replay_out", 1 << 20),
             BeaconStateOwner::empty_test(0).reader(),
             custody,
-            [1, 2, 3, 4],
             Arc::new(SpecConfig::mainnet()),
             store_dir.clone(),
             true,

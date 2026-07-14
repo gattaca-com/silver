@@ -52,7 +52,7 @@ impl Store {
     #[timed]
     pub(crate) fn file_io<F>(
         &mut self,
-        fork_digest: &[u8; 4],
+        fork_digest_at: impl Fn(u64) -> [u8; 4],
         custody_group_columns: u128,
         producer: &mut TMultiProducer,
         emit: &mut F,
@@ -260,12 +260,18 @@ impl Store {
             let path = self.unit_path(&unit);
             match Self::serve_file(&path, producer)? {
                 ServeResult::Sent(read) => {
+                    // Context fork-digest for the served object's own slot's fork
+                    // (a request can span a fork boundary).
+                    let fork_digest = fork_digest_at(unit.slot());
                     let response = match unit {
                         QueryUnit::Block { .. } | QueryUnit::UnfinalizedBlock { .. } => {
-                            RpcResponse::BeaconBlock { fork_digest: *fork_digest, ssz: read }
+                            RpcResponse::BeaconBlock { fork_digest, ssz: read }
                         }
                         QueryUnit::Column { .. } | QueryUnit::UnfinalizedColumn { .. } => {
-                            RpcResponse::DataColumnSidecar { fork_digest: *fork_digest, ssz: read }
+                            RpcResponse::DataColumnSidecar { fork_digest, ssz: read }
+                        }
+                        QueryUnit::Envelope { .. } | QueryUnit::UnfinalizedEnvelope { .. } => {
+                            RpcResponse::ExecutionPayloadEnvelope { fork_digest, ssz: read }
                         }
                     };
                     emit(IoEvent::P2pSend(P2pSend::Rpc(RpcOutbound::Response(
@@ -400,6 +406,12 @@ impl Store {
             QueryUnit::UnfinalizedColumn { slot, block_root, column } => self
                 .unfinalized_dir(Payload::Column)
                 .join(unfinalized_column_name(*slot, block_root, *column)),
+            QueryUnit::Envelope { slot } => self
+                .finalized_slot_dir(Payload::Envelope, *slot)
+                .join(format!("{slot}_envelope.ssz")),
+            QueryUnit::UnfinalizedEnvelope { slot, block_root } => self
+                .unfinalized_dir(Payload::Envelope)
+                .join(unfinalized_envelope_name(*slot, block_root)),
         }
     }
 
