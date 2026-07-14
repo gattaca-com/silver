@@ -151,6 +151,7 @@ impl NegotiateState {
                 }
                 let total = buf[0] as usize + 1; // +1 for length byte itself.
                 if total > buf.len() {
+                    tracing::error!(total, "multiselect len > buffer len");
                     return Ok(Spin::Next(Self::InWritingReject { written: 0 }));
                 }
                 if read < total {
@@ -161,7 +162,10 @@ impl NegotiateState {
                         Some(protocol) => {
                             return Ok(Spin::Next(Self::InWriting { protocol, written: 0 }));
                         }
-                        None => return Ok(Spin::Next(Self::InWritingReject { written: 0 })),
+                        None => {
+                            tracing::error!(protocol=?str::from_utf8(&buf[..total]),"unrecognized negotiate protocol");
+                            return Ok(Spin::Next(Self::InWritingReject { written: 0 }));
+                        }
                     }
                 }
 
