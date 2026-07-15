@@ -10,7 +10,7 @@ use super::committee::get_ptc;
 use crate::{
     bls::{self, DOMAIN_PTC_ATTESTER, SigBatch},
     error::PayloadAttestationError as E,
-    ssz_hash::{merkleize, uint64_chunk},
+    merkle::{merkleize, uint64_chunk},
 };
 
 #[inline]

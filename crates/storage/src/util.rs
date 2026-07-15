@@ -4,11 +4,12 @@ use blst::{BLST_ERROR, min_pk::PublicKey};
 use flux_profiler::timed;
 use silver_beacon_state_data::{SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
-    ssz_hash::{
-        B256, hash_concat, hash_list_fixed_elements, hash_tree_root_body_fulu,
-        hash_tree_root_body_gloas, hash_tree_root_fork_data, is_valid_merkle_branch, merkleize,
-        sha256, uint64_chunk,
+    merkle::{
+        B256, hash_concat, hash_list_fixed_elements, is_valid_merkle_branch, merkleize, sha256,
+        uint64_chunk,
     },
+    ssz_hash::{hash_tree_root_body_fulu, hash_tree_root_fork_data},
+    ssz_hash_gloas::hash_tree_root_body_gloas,
     ssz_view::{
         BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF, DATA_COLUMN_SIDECAR_MIN,
         DataColumnSidecarFuluView, DataColumnSidecarGloasView, MAX_BLOB_COMMITMENTS_PER_BLOCK,

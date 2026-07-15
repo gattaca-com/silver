@@ -3,7 +3,7 @@ use blst::min_pk::PublicKey;
 use super::{FinalizedValidators, ValSeed, ValidatorsGroup, validator_hash};
 use crate::{
     Withdrawals,
-    ssz_hash::{hash_concat, hash_fixed_bytes, merkleize, uint64_chunk},
+    merkle::{hash_concat, hash_fixed_bytes, merkleize, uint64_chunk},
     types::{BLSPubkey, FAR_FUTURE_EPOCH, validator_capacity},
 };
 
@@ -154,7 +154,7 @@ fn empty_validators_is_empty_and_well_formed() {
     let f = empty_validators();
     assert_eq!(f.validator_count(), 0);
     assert!(f.find_by_pubkey(&pk(7)).is_none());
-    assert_eq!(f.hash().max_elements(), validator_capacity(0));
+    assert_eq!(f.hash().fulu().max_elements(), validator_capacity(0));
     // Default-init: slashed bitset is all zeros, epochs are FAR_FUTURE.
     assert!(!f.is_slashed(0));
     assert_eq!(f.activation_epoch[0], FAR_FUTURE_EPOCH);
@@ -292,4 +292,106 @@ fn descendant_view_survives_finalize() {
     assert_eq!(wv.activation_epoch(0), 42);
     assert_eq!(wv.effective_balance(0), 1_000);
     assert_eq!(wv.hash_root(), child_before);
+}
+
+/// Spec-default leaf of an appended-then-maybe-edited validator.
+fn default_leaf(pk_byte: u8, effective_balance: u64) -> crate::B256 {
+    validator_hash(
+        &pk(pk_byte),
+        &creds(pk_byte),
+        effective_balance,
+        false,
+        FAR_FUTURE_EPOCH,
+        FAR_FUTURE_EPOCH,
+        FAR_FUTURE_EPOCH,
+        FAR_FUTURE_EPOCH,
+    )
+}
+
+fn gloas_reference_root(leaves: &[crate::B256]) -> crate::B256 {
+    crate::progressive::hash_progressive_list(leaves.iter().copied(), leaves.len(), |l| l)
+}
+
+fn fulu_reference_root(leaves: &[crate::B256]) -> crate::B256 {
+    use crate::{merkle::hash_list, types::VALIDATOR_REGISTRY_LIMIT};
+    hash_list(leaves.iter().copied(), leaves.len(), VALIDATOR_REGISTRY_LIMIT, |l| l)
+}
+
+#[test]
+fn gloas_hash_window_migrates_and_closes() {
+    let mut g = group();
+    let a = {
+        let mut w = g.roll_fresh();
+        for i in 0..5u8 {
+            w.append(pk(i), PublicKey::default(), creds(i));
+        }
+        w.commit()
+    };
+    let fulu_leaves: Vec<_> = (0..5u8).map(|i| default_leaf(i, 0)).collect();
+    assert_eq!(g.view(a).hash_root(), fulu_reference_root(&fulu_leaves));
+
+    // Entering the window changes no fork's root.
+    g.begin_gloas_hash_window();
+    assert_eq!(g.view(a).hash_root(), fulu_reference_root(&fulu_leaves));
+
+    // Fork B crosses the fork: its root flips to the gloas shape; the
+    // pre-fork sibling A keeps producing the fulu root off the shared bases.
+    let b = {
+        let mut w = g.roll_from(a);
+        w.adopt_gloas();
+        w.set_effective_balance(1, 777);
+        w.append(pk(9), PublicKey::default(), creds(9));
+        w.commit()
+    };
+    let mut gloas_leaves = fulu_leaves.clone();
+    gloas_leaves[1] = default_leaf(1, 777);
+    gloas_leaves.push(default_leaf(9, 0));
+    assert_eq!(g.view(b).hash_root(), gloas_reference_root(&gloas_leaves));
+    assert_eq!(g.view(a).hash_root(), fulu_reference_root(&fulu_leaves));
+
+    // Finalizing the crossing fork closes the window; the reanchored
+    // survivor and every later fork are gloas-shaped.
+    let live = g.finalize(b, &[b]);
+    assert_eq!(g.view(live[0]).hash_root(), gloas_reference_root(&gloas_leaves));
+
+    let mut w = g.roll_fresh();
+    w.set_effective_balance(0, 111);
+    gloas_leaves[0] = default_leaf(0, 111);
+    assert_eq!(w.hash_root(), gloas_reference_root(&gloas_leaves));
+}
+
+#[test]
+fn window_survives_pre_fork_winner_finalization() {
+    let mut g = group();
+    let a = {
+        let mut w = g.roll_fresh();
+        for i in 0..4u8 {
+            w.append(pk(i), PublicKey::default(), creds(i));
+        }
+        w.commit()
+    };
+    g.begin_gloas_hash_window();
+
+    let b = {
+        let mut w = g.roll_from(a);
+        w.adopt_gloas();
+        w.set_effective_balance(2, 555);
+        w.commit()
+    };
+
+    // Winner A never crossed: both trees are promoted (window invariant),
+    // the window stays open, and the Dual survivor B is rebased against the
+    // winner's synthesized gloas edits.
+    let live = g.finalize(a, &[a, b]);
+    let fulu_leaves: Vec<_> = (0..4u8).map(|i| default_leaf(i, 0)).collect();
+    let mut gloas_leaves = fulu_leaves.clone();
+    gloas_leaves[2] = default_leaf(2, 555);
+    assert_eq!(g.view(live[0]).hash_root(), fulu_reference_root(&fulu_leaves));
+    assert_eq!(g.view(live[1]).hash_root(), gloas_reference_root(&gloas_leaves));
+
+    // A later crossing finalization still closes the window cleanly.
+    let live = g.finalize(live[1], &[live[1]]);
+    assert_eq!(g.view(live[0]).hash_root(), gloas_reference_root(&gloas_leaves));
+    let w = g.roll_fresh();
+    assert_eq!(w.hash_root(), gloas_reference_root(&gloas_leaves));
 }

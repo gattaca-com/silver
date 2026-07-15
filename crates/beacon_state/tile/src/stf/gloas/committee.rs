@@ -7,11 +7,11 @@ use silver_beacon_state_data::{
 
 use crate::{
     bls::{DOMAIN_BEACON_ATTESTER, DOMAIN_PTC_ATTESTER},
+    merkle::sha256,
     shuffling::{
         MAX_EFFECTIVE_BALANCE, committees_per_slot, get_active_validator_indices_into,
         get_beacon_committee, get_seed_from_state, shuffle_list,
     },
-    ssz_hash::sha256,
 };
 
 /// `2**16 - 1` — the 16-bit acceptance ceiling in balance-weighted selection.

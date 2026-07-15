@@ -3,7 +3,7 @@ use std::io::{self, Write};
 use crate::{
     decompose::u64_le,
     gloas::{BUILDER_PENDING_WITHDRAWALS_LIMIT, BuilderPendingWithdrawal},
-    ssz_hash::{hash_concat, hash_fixed_bytes, merkleize, uint64_chunk},
+    merkle::{hash_concat, hash_fixed_bytes, merkleize, uint64_chunk},
     types::{
         B256, PENDING_CONSOLIDATIONS_LIMIT, PENDING_DEPOSITS_LIMIT,
         PENDING_PARTIAL_WITHDRAWALS_LIMIT, PendingConsolidation, PendingDeposit,

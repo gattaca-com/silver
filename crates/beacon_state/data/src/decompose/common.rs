@@ -7,7 +7,7 @@ use crate::{
     QueueItem, SlotStateFinalized, SlotStateGroup, SpecConfig, ValidatorsDecodeError,
     ValidatorsGroup,
     gloas::BuilderPendingWithdrawal,
-    ssz_hash,
+    merkle,
     types::{
         self, B256, Checkpoint, HISTORICAL_ROOTS_LIMIT, Immutable, PROPOSER_LOOKAHEAD_SIZE,
         PendingConsolidation, PendingDeposit, PendingPartialWithdrawal,
@@ -265,9 +265,9 @@ impl Immutable {
         }
         let hr_chunks: &[B256] =
             unsafe { std::slice::from_raw_parts(hr_bytes.as_ptr().cast::<B256>(), hr_count) };
-        let hr_root = ssz_hash::merkleize_padded(hr_chunks, HISTORICAL_ROOTS_LIMIT);
+        let hr_root = merkle::merkleize_padded(hr_chunks, HISTORICAL_ROOTS_LIMIT);
         self.historical_roots = hr_chunks.into();
-        self.historical_roots_hash = ssz_hash::mix_in_length(&hr_root, hr_count);
+        self.historical_roots_hash = merkle::mix_in_length(&hr_root, hr_count);
         Ok(())
     }
 }

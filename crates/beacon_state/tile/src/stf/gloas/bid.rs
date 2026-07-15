@@ -11,7 +11,7 @@ use super::builders::{
 use crate::{
     bls::{self, DOMAIN_BEACON_BUILDER, G2_POINT_AT_INFINITY, SigBatch},
     error::ExecutionPayloadBidError as E,
-    ssz_hash::hash_execution_payload_bid,
+    ssz_hash_gloas::hash_execution_payload_bid,
     stf::get_beacon_proposer_index,
     tile::get_blob_parameters,
 };

@@ -18,7 +18,7 @@ use silver_common::ssz_view::{
 use crate::{
     bls::{self, SigBatch},
     error::{BlsToExecutionChangeError, Error, Result, VoluntaryExitError},
-    ssz_hash,
+    merkle, ssz_hash,
     stf::{
         MIN_ACTIVATION_BALANCE, compute_consolidation_epoch_and_update_churn,
         compute_exit_epoch_and_update_churn, get_consolidation_churn_limit,
@@ -389,7 +389,7 @@ pub fn process_deposits(view: &mut StateWriterView, data: &[u8]) -> Result<()> {
         let leaf = ssz_hash::hash_tree_root_deposit_data(dd);
         let deposit_index = view.slot.state().eth1_deposit_index;
         let deposit_root = view.slot.state().eth1_data.deposit_root;
-        if !ssz_hash::is_valid_merkle_branch(
+        if !merkle::is_valid_merkle_branch(
             &leaf,
             proof,
             (DEPOSIT_CONTRACT_TREE_DEPTH as u32) + 1,
@@ -562,7 +562,7 @@ mod tests {
     use super::*;
     use crate::{
         error::{Error, Result},
-        ssz_hash,
+        merkle, ssz_hash,
         test_state::TestState,
     };
 
@@ -579,7 +579,7 @@ mod tests {
         let depth = (DEPOSIT_CONTRACT_TREE_DEPTH as u32) + 1;
         let mut bytes = vec![0u8; DEPOSIT_SIZE];
         for i in 0..depth as usize {
-            bytes[i * 32..(i + 1) * 32].copy_from_slice(&ssz_hash::ZERO_HASHES[i]);
+            bytes[i * 32..(i + 1) * 32].copy_from_slice(&merkle::ZERO_HASHES[i]);
         }
         bytes[1056..1240].copy_from_slice(dd_bytes);
 
@@ -588,12 +588,12 @@ mod tests {
         let leaf = ssz_hash::hash_tree_root_deposit_data(dd_bytes);
         let mut value = leaf;
         for i in 0..depth as usize {
-            let sib = ssz_hash::ZERO_HASHES[i];
+            let sib = merkle::ZERO_HASHES[i];
             // index=0 → always left, sibling on the right.
             let mut buf = [0u8; 64];
             buf[..32].copy_from_slice(&value);
             buf[32..].copy_from_slice(&sib);
-            value = ssz_hash::sha256(&buf);
+            value = merkle::sha256(&buf);
         }
         (bytes, value)
     }

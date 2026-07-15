@@ -5,6 +5,7 @@ pub mod error;
 mod fork_choice;
 pub mod shuffling;
 pub mod ssz_hash;
+pub mod ssz_hash_gloas;
 pub mod stf;
 pub mod tile;
 mod validate;
@@ -20,5 +21,5 @@ pub use error::{Error, PrecheckError, Result};
 // access via `BeaconStateTile::ef_fork_choice`.
 #[cfg(feature = "ef_tests")]
 pub use fork_choice::{ExecutionStatus, ForkChoice, ForkChoiceNode};
-pub use silver_common::ticker::SlotTicker;
+pub use silver_common::{merkle, ticker::SlotTicker};
 pub use tile::BeaconStateTile;

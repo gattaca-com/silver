@@ -7,7 +7,7 @@
 use flux_profiler::timed;
 
 use crate::{
-    ssz_hash::{ZERO_HASHES, hash_concat_many},
+    merkle::{ZERO_HASHES, hash_concat_many},
     types::B256,
 };
 

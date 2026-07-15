@@ -4,9 +4,7 @@ use rand::{RngCore, SeedableRng, rngs::StdRng};
 
 use super::{DeltaHashTree, FinalizedHashTree};
 use crate::{
-    ssz_hash::{
-        MerkleStack, ZERO_HASHES, hash_concat, merkle_finalize, merkle_push, mix_in_length,
-    },
+    merkle::{ZERO_HASHES, hash_concat, merkleize_padded, mix_in_length},
     types::B256,
 };
 
@@ -22,11 +20,7 @@ fn random_leaf(rng: &mut StdRng) -> B256 {
 
 /// Reference SSZ `List<B256, 1<<spec_depth>` root via the existing primitives.
 fn reference_root(leaves: &[B256], spec_depth: u8) -> B256 {
-    let mut stack = MerkleStack::new();
-    for l in leaves {
-        merkle_push(&mut stack, *l);
-    }
-    let root = merkle_finalize(stack, spec_depth);
+    let root = merkleize_padded(leaves, 1usize << spec_depth);
     mix_in_length(&root, leaves.len())
 }
 

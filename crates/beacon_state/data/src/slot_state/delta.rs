@@ -1,4 +1,4 @@
-use silver_ssz::ssz_hash;
+use silver_ssz::merkle;
 
 use super::{SlotStateGroup, SlotStateId, finalized::SlotStateFinalized};
 use crate::{
@@ -67,7 +67,7 @@ impl<'a> SlotStateView<'a> {
             return None;
         }
         for (i, c) in commitments.iter().enumerate() {
-            let mut h = ssz_hash::sha256(c);
+            let mut h = merkle::sha256(c);
             h[0] = 0x01;
             out[i] = h;
         }

@@ -21,7 +21,7 @@ use silver_config::{PendingBounds, SyncingConfig};
 use crate::{
     bls,
     fork_choice::{ForkChoice, MAX_FORK_CHOICE_NODES, PayloadStatus},
-    ssz_hash, stf,
+    merkle, ssz_hash, stf,
     tile::{orphan_pool::PendingBlock, shuffling_cache::ShufflingCache},
     weak_subjectivity::{weak_subjectivity_period_fulu, weak_subjectivity_period_gloas},
 };
@@ -742,7 +742,7 @@ fn compute_fork_digest(
     let mut input = [0u8; 16];
     input[..8].copy_from_slice(&bp.epoch.to_le_bytes());
     input[8..].copy_from_slice(&bp.max_blobs_per_block.to_le_bytes());
-    let mix = ssz_hash::sha256(&input);
+    let mix = merkle::sha256(&input);
     [base[0] ^ mix[0], base[1] ^ mix[1], base[2] ^ mix[2], base[3] ^ mix[3]]
 }
 
@@ -913,7 +913,7 @@ mod tests {
                     let sk_idx = i % test_signing::PRIVKEY_HEX.len();
                     let pk_bytes = test_signing::pubkey_pk(sk_idx).to_bytes();
                     // BLS-prefix creds: [0]=0x00, [1..]=hash(pk)[1..].
-                    let mut creds = Withdrawals(ssz_hash::sha256(&pk_bytes));
+                    let mut creds = Withdrawals(merkle::sha256(&pk_bytes));
                     creds.0[0] = 0x00;
                     (pk_bytes, creds)
                 } else {
@@ -1779,11 +1779,8 @@ mod tests {
         let wc = Withdrawals([0xAAu8; 32]);
         let amount = 32_000_000_000u64;
 
-        let msg_root = ssz_hash::merkleize(&[
-            ssz_hash::hash_fixed_bytes(&pk),
-            wc.0,
-            ssz_hash::uint64_chunk(amount),
-        ]);
+        let msg_root =
+            merkle::merkleize(&[merkle::hash_fixed_bytes(&pk), wc.0, merkle::uint64_chunk(amount)]);
         let domain = bls::compute_domain(DOMAIN_DEPOSIT, [0; 4], &[0u8; 32]);
         let signing_root = bls::compute_signing_root(&msg_root, &domain);
         let sig = test_signing::sign(0, &signing_root);

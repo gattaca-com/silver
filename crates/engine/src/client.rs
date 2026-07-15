@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use mio::{Events, Poll};
 use rustc_hash::FxHashMap;
-use silver_common::ssz_hash::B256;
+use silver_common::merkle::B256;
 
 use crate::{
     EngineError, JwtSecret,

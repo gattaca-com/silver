@@ -5,15 +5,17 @@
 
 mod delta;
 mod finalized;
+mod gloas;
 
 #[cfg(test)]
 mod tests;
 
 pub use delta::DeltaHashTree;
 pub use finalized::FinalizedHashTree;
+pub use gloas::{GloasFinalized, GloasOverlay};
 
 use crate::{
-    ssz_hash::{ZERO_HASHES, hash_concat, mix_in_length},
+    merkle::{ZERO_HASHES, hash_concat, mix_in_length},
     types::B256,
 };
 

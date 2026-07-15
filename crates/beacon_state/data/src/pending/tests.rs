@@ -2,8 +2,8 @@ use std::io::{self, Write};
 
 use super::{PendingGroup, QueueItem, delta::QueueView, group::QueueGroup};
 use crate::{
+    merkle::uint64_chunk,
     ring::Id,
-    ssz_hash::uint64_chunk,
     types::{B256, PendingConsolidation},
 };
 
@@ -210,4 +210,38 @@ fn drain_entire_base_then_appended() {
     assert_eq!(effective(&wv.reader()), vec![2]);
     wv.drain(1); // drain everything → empty list
     assert_eq!(effective(&wv.reader()), Vec::<u32>::new());
+}
+
+/// EIP-7688 adoption after in-fork drains/pushes (the fork-block deposit
+/// onboarding shape): the gloas frontier root must match the reference
+/// ProgressiveList root of the effective queue.
+#[test]
+fn adopt_gloas_after_drain_and_push_matches_reference() {
+    use crate::progressive::hash_progressive_list;
+
+    let base: Vec<u8> = [pc(1), pc(2), pc(3)]
+        .iter()
+        .flat_map(|c| {
+            let mut v = Vec::new();
+            c.write_ssz(&mut v).unwrap();
+            v
+        })
+        .collect();
+    let mut g = PendingGroup::from_ssz(&[], &[], &base, &[]);
+
+    let mut wv = g.roll_fresh();
+    wv.consolidations.drain(3);
+    wv.consolidations.push(pc(2));
+    wv.consolidations.push(pc(7));
+    wv.adopt_gloas();
+
+    let expected: Vec<B256> = [pc(2), pc(7)].iter().map(QueueItem::leaf).collect();
+    let want = hash_progressive_list(expected.iter().copied(), expected.len(), |l| l);
+    assert_eq!(wv.consolidations.reader().hash_root(), want);
+
+    // A post-adoption push keeps extending the gloas frontier.
+    wv.consolidations.push(pc(9));
+    let expected: Vec<B256> = [pc(2), pc(7), pc(9)].iter().map(QueueItem::leaf).collect();
+    let want = hash_progressive_list(expected.iter().copied(), expected.len(), |l| l);
+    assert_eq!(wv.consolidations.reader().hash_root(), want);
 }

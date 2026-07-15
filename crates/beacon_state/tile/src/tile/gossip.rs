@@ -20,7 +20,7 @@ use super::{
     ATTESTATION_PROPAGATION_SLOT_RANGE, BY_ROOT_REQUEST_ID, BeaconStateTile, Feedback, Producers,
     orphan_pool::{PendingBlock, has_room},
 };
-use crate::{bls, shuffling, ssz_hash, stf, validate};
+use crate::{bls, merkle, shuffling, ssz_hash, stf, validate};
 
 pub(super) enum EnvelopeCheck {
     Ready { block_root: B256, state_id: StateId },
@@ -478,7 +478,7 @@ impl BeaconStateTile {
         let fv = view.epoch.fork_version_at(parsed.target_epoch);
 
         // (1) selection_proof — signer = aggregator, msg = htr(uint64(slot)).
-        let slot_root = ssz_hash::uint64_chunk(parsed.agg_slot);
+        let slot_root = merkle::uint64_chunk(parsed.agg_slot);
         let domain_sp = bls::compute_domain(bls::DOMAIN_SELECTION_PROOF, fv, &gvr);
         let sr_sp = bls::compute_signing_root(&slot_root, &domain_sp);
 
@@ -487,6 +487,7 @@ impl BeaconStateTile {
             parsed.aggregator_index as u64,
             parsed.aggregate_bytes,
             parsed.selection_proof,
+            fv == view.imm.gloas_fork_version,
         );
         let domain_aap = bls::compute_domain(bls::DOMAIN_AGGREGATE_AND_PROOF, fv, &gvr);
         let sr_aap = bls::compute_signing_root(&agg_proof_root, &domain_aap);
@@ -733,6 +734,6 @@ impl BeaconStateTile {
 pub(super) fn is_aggregator(committee_len: usize, selection_proof: &[u8; 96]) -> bool {
     const TARGET_AGGREGATORS_PER_COMMITTEE: u64 = 16;
     let modulo = (committee_len as u64 / TARGET_AGGREGATORS_PER_COMMITTEE).max(1);
-    let h = ssz_hash::sha256(selection_proof);
+    let h = merkle::sha256(selection_proof);
     u64::from_le_bytes(h[0..8].try_into().unwrap()) % modulo == 0
 }

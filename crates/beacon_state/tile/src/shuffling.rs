@@ -2,7 +2,7 @@ use silver_beacon_state_data::{
     B256, EPOCHS_PER_HISTORICAL_VECTOR, Epoch, EpochView, MIN_SEED_LOOKAHEAD, SLOTS_PER_EPOCH,
     SlotStateView, ValidatorsView, randao_mix_at_epoch,
 };
-use silver_common::ssz_hash::sha256;
+use silver_common::merkle::sha256;
 
 const SHUFFLE_ROUND_COUNT: u8 = 90;
 

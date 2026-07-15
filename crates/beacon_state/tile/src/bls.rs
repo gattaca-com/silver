@@ -9,7 +9,10 @@ use silver_common::ssz_view::{
     SIGNED_BEACON_BLOCK_MIN, SINGLE_ATT_SIZE, SignedBeaconBlockView, SingleAttestationView,
 };
 
-use crate::ssz_hash::{self, hash_attestation_data, hash_tree_root_block_header};
+use crate::{
+    merkle,
+    ssz_hash::{self, hash_attestation_data, hash_tree_root_block_header},
+};
 
 // `verify_batch` casts `&PublicKey -> &blst_p1_affine` and
 // `&Signature -> &blst_p2_affine`. blst-rs declares both as
@@ -60,7 +63,7 @@ pub fn compute_domain(
 }
 
 pub fn compute_signing_root(object_root: &B256, domain: &B256) -> B256 {
-    ssz_hash::hash_concat(object_root, domain)
+    merkle::hash_concat(object_root, domain)
 }
 
 #[inline]
