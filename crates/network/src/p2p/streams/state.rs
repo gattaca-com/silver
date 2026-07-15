@@ -236,7 +236,7 @@ impl StreamState {
                                 if id.is_incoming() {
                                     // TODO identify should always be present post-startup.
                                     let mut identify = context.identify.clone().unwrap();
-                                    tracing::info!(
+                                    tracing::trace!(
                                         "send identify protocols: {:?}",
                                         identify.protocols
                                     );
