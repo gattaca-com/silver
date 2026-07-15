@@ -236,7 +236,10 @@ impl StreamState {
                                 if id.is_incoming() {
                                     // TODO identify should always be present post-startup.
                                     let mut identify = context.identify.clone().unwrap();
-                                    tracing::info!("send identify protocols: {:?}", identify.protocols);
+                                    tracing::info!(
+                                        "send identify protocols: {:?}",
+                                        identify.protocols
+                                    );
                                     identify.observedAddr =
                                         Some(encode_observed_addr(&io.remote_addr()));
                                     let identify_protobuf = identify.encode_to_vec();

@@ -1569,10 +1569,10 @@ mod tests {
 
         let events = collect_events(&mut a);
         assert!(
-            events
-                .iter()
-                .any(|e| matches!(e, DiscoveryEvent::ExternalAddrChanged(sa, 1) if sa.ip() == ipv6)),
-            "expected ExternalAddrChanged with IPv6 address"
+            events.iter().any(
+                |e| matches!(e, DiscoveryEvent::ExternalAddrChanged(sa, seq) if sa.ip() == ipv6 && *seq == 2)
+            ),
+            "expected ExternalAddrChanged with IPv6 address {events:?}"
         );
     }
 
