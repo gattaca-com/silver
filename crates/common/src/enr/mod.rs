@@ -269,7 +269,7 @@ impl Enr {
         self.apply(key, |enr| enr.udp6 = None)
     }
 
-    pub fn set_udp_socket(&mut self, socket: SocketAddr, key: &SecretKey) -> Result<(), Error> {
+    pub fn set_udp_socket(&mut self, socket: SocketAddr, key: &SecretKey) -> Result<u64, Error> {
         self.apply(key, |enr| match socket.ip() {
             IpAddr::V4(addr) => {
                 enr.ip4 = Some(addr);
@@ -483,7 +483,7 @@ impl Enr {
     }
 
     // Clone, apply f, re-sign, check size, commit.
-    fn apply<F>(&mut self, key: &SecretKey, f: F) -> Result<(), Error>
+    fn apply<F>(&mut self, key: &SecretKey, f: F) -> Result<u64, Error>
     where
         F: FnOnce(&mut Self),
     {
@@ -496,7 +496,7 @@ impl Enr {
             return Err(Error::ExceedsMaxSize);
         }
         *self = new;
-        Ok(())
+        Ok(self.seq)
     }
 
     // Encode (seq + k-v pairs) into a flat buffer; signature is prepended only

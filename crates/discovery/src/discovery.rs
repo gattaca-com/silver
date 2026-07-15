@@ -10,7 +10,7 @@ use crate::crypto::MAX_PACKET_SIZE;
 pub enum DiscoveryEvent {
     SendMessage { to: SocketAddr, data: ArrayVec<u8, MAX_PACKET_SIZE> },
     NodeFound(Enr),
-    ExternalAddrChanged(SocketAddr),
+    ExternalAddrChanged(SocketAddr, u64),
 }
 
 // todo @nina - export these

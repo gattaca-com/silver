@@ -145,3 +145,4 @@ yasna = "0.5"
 
 [workspace.lints.clippy]
 too_long_first_doc_paragraph = "allow"
+

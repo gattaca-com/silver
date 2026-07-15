@@ -257,7 +257,9 @@ impl PeerManager {
         self.our_fork_digest = Some(new_digest);
 
         if self.earliest_available_slot != u64::MAX {
-            ssz[84..].copy_from_slice(&self.earliest_available_slot.to_le_bytes());
+            let head_slot = StatusView::head_slot(&ssz);
+            let clamped_earliest = self.earliest_available_slot.min(head_slot);
+            ssz[84..].copy_from_slice(&clamped_earliest.to_le_bytes());
         }
 
         tracing::debug!("set status");
@@ -549,8 +551,9 @@ impl PeerManager {
             PeerEvent::DiscNodeFound { enr } => {
                 self.on_disc_node_found(enr, now, emit);
             }
-            PeerEvent::DiscExternalAddress { address: _ } => {
-                // Informational — network tile handles advertisement.
+            PeerEvent::DiscExternalAddress { address: _, seq } => {
+                // update metadata seq number so that it matches ENR
+                self.metadata[..8].copy_from_slice(&seq.to_le_bytes());
             }
             PeerEvent::NewGossip { p2p_peer, topic, msg_hash, idontwant } => {
                 self.on_new_gossip(p2p_peer, topic, msg_hash, idontwant, emit);

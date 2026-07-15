@@ -149,8 +149,8 @@ impl NetworkTile {
                 DiscoveryEvent::NodeFound(enr) => {
                     adapter.produce(PeerEvent::DiscNodeFound { enr });
                 }
-                DiscoveryEvent::ExternalAddrChanged(socket_addr) => {
-                    adapter.produce(PeerEvent::DiscExternalAddress { address: socket_addr });
+                DiscoveryEvent::ExternalAddrChanged(socket_addr, seq) => {
+                    adapter.produce(PeerEvent::DiscExternalAddress { address: socket_addr, seq });
                 }
                 _ => {} // no-ops
             },
@@ -386,7 +386,7 @@ where
                     })
                 });
             }
-            DiscoveryEvent::ExternalAddrChanged(addr) => {
+            DiscoveryEvent::ExternalAddrChanged(addr, seq) => {
                 did_work = true;
 
                 if let Some(identify) = self.context.identify.as_mut() {
@@ -397,6 +397,7 @@ where
                         }
                     }
                 }
+                on_event(Event::Discovery(DiscoveryEvent::ExternalAddrChanged(addr, seq)));
             }
             other => on_event(Event::Discovery(other)),
         });

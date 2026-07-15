@@ -358,6 +358,7 @@ pub enum PeerEvent {
     },
     DiscExternalAddress {
         address: SocketAddr,
+        seq: u64,
     },
     /// A fully-validated inbound gossip message arrived (post-dedup). Carries
     /// the sending peer, topic, msg id (for promise/score accounting) and a
