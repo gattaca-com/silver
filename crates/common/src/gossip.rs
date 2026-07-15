@@ -73,10 +73,94 @@ impl From<GossipTopic> for String {
     }
 }
 
+pub const ATTESTATION_SUBNETS: usize = 64;
+pub const SYNC_COMMITTEE_SUBNETS: usize = 4;
+
+const ATTESTATION_BASE: usize = 2;
+const VOLUNTARY_EXIT_SLOT: usize = ATTESTATION_BASE + ATTESTATION_SUBNETS;
+const SYNC_CONTRIB_SLOT: usize = VOLUNTARY_EXIT_SLOT + 3;
+const SYNC_COMMITTEE_BASE: usize = SYNC_CONTRIB_SLOT + 1;
+const LC_FINALITY_SLOT: usize = SYNC_COMMITTEE_BASE + SYNC_COMMITTEE_SUBNETS;
+const DATA_COLUMN_BASE: usize = LC_FINALITY_SLOT + 3;
+const EXECUTION_BID_SLOT: usize = DATA_COLUMN_BASE + crate::NUMBER_OF_CUSTODY_GROUPS as usize;
+
+/// Dense per-topic slot space for counters/telemetry: subnet topics get one
+/// slot per subnet, everything else one slot. The layout is fixed so
+/// observers label by the same arithmetic (`gossip_topic_for_counter_slot`).
+pub const GOSSIP_TOPIC_COUNTER_SLOTS: usize = EXECUTION_BID_SLOT + 4;
+
+/// Inverse of `GossipTopic::counter_slot`, for observer-side labelling.
+pub fn gossip_topic_for_counter_slot(slot: usize) -> Option<GossipTopic> {
+    Some(match slot {
+        0 => GossipTopic::BeaconBlock,
+        1 => GossipTopic::BeaconAggregateAndProof,
+        s if s < VOLUNTARY_EXIT_SLOT => {
+            GossipTopic::BeaconAttestation((s - ATTESTATION_BASE) as u64)
+        }
+        s if s == VOLUNTARY_EXIT_SLOT => GossipTopic::VoluntaryExit,
+        s if s == VOLUNTARY_EXIT_SLOT + 1 => GossipTopic::ProposerSlashing,
+        s if s == VOLUNTARY_EXIT_SLOT + 2 => GossipTopic::AttesterSlashing,
+        s if s == SYNC_CONTRIB_SLOT => GossipTopic::SyncCommitteeContributionAndProof,
+        s if s < LC_FINALITY_SLOT => GossipTopic::SyncCommittee((s - SYNC_COMMITTEE_BASE) as u64),
+        s if s == LC_FINALITY_SLOT => GossipTopic::LightClientFinalityUpdate,
+        s if s == LC_FINALITY_SLOT + 1 => GossipTopic::LightClientOptimisticUpdate,
+        s if s == LC_FINALITY_SLOT + 2 => GossipTopic::BlsToExecutionChange,
+        s if s < EXECUTION_BID_SLOT => {
+            GossipTopic::DataColumnSidecar((s - DATA_COLUMN_BASE) as u64)
+        }
+        s if s == EXECUTION_BID_SLOT => GossipTopic::ExecutionPayloadBid,
+        s if s == EXECUTION_BID_SLOT + 1 => GossipTopic::ExecutionPayload,
+        s if s == EXECUTION_BID_SLOT + 2 => GossipTopic::PayloadAttestationMessage,
+        s if s == EXECUTION_BID_SLOT + 3 => GossipTopic::ProposerPreferences,
+        _ => return None,
+    })
+}
+
 impl GossipTopic {
     /// Format the full wire topic `/eth2/{fork_digest_hex}/{name}/ssz_snappy`.
     pub fn to_wire(&self, fork_digest_hex: &str) -> String {
         format!("/eth2/{fork_digest_hex}/{self}/ssz_snappy")
+    }
+
+    /// Slot in the dense counter space; out-of-range subnet ids clamp to
+    /// their kind's last slot.
+    pub fn counter_slot(self) -> usize {
+        fn subnet(base: usize, id: u64, count: usize) -> usize {
+            base + (id as usize).min(count - 1)
+        }
+        match self {
+            Self::BeaconBlock => 0,
+            Self::BeaconAggregateAndProof => 1,
+            Self::BeaconAttestation(id) => subnet(ATTESTATION_BASE, id, ATTESTATION_SUBNETS),
+            Self::VoluntaryExit => VOLUNTARY_EXIT_SLOT,
+            Self::ProposerSlashing => VOLUNTARY_EXIT_SLOT + 1,
+            Self::AttesterSlashing => VOLUNTARY_EXIT_SLOT + 2,
+            Self::SyncCommitteeContributionAndProof => SYNC_CONTRIB_SLOT,
+            Self::SyncCommittee(id) => subnet(SYNC_COMMITTEE_BASE, id, SYNC_COMMITTEE_SUBNETS),
+            Self::LightClientFinalityUpdate => LC_FINALITY_SLOT,
+            Self::LightClientOptimisticUpdate => LC_FINALITY_SLOT + 1,
+            Self::BlsToExecutionChange => LC_FINALITY_SLOT + 2,
+            Self::DataColumnSidecar(id) => {
+                subnet(DATA_COLUMN_BASE, id, crate::NUMBER_OF_CUSTODY_GROUPS as usize)
+            }
+            Self::ExecutionPayloadBid => EXECUTION_BID_SLOT,
+            Self::ExecutionPayload => EXECUTION_BID_SLOT + 1,
+            Self::PayloadAttestationMessage => EXECUTION_BID_SLOT + 2,
+            Self::ProposerPreferences => EXECUTION_BID_SLOT + 3,
+        }
+    }
+
+    pub fn p3_scored(&self) -> bool {
+        matches!(
+            self,
+            Self::BeaconBlock |
+                Self::BeaconAggregateAndProof |
+                Self::BeaconAttestation(_) |
+                Self::SyncCommitteeContributionAndProof |
+                Self::SyncCommittee(_) |
+                Self::ExecutionPayload |
+                Self::PayloadAttestationMessage
+        )
     }
 
     /// Parse the full wire topic `/eth2/{fork_digest_hex}/{name}/ssz_snappy`.
@@ -243,6 +327,22 @@ mod tests {
         assert!(
             GossipTopic::from_wire("/eth2/deadbeef/beacon_block/ssz_snappy", fd).is_err(),
             "fork digest mismatch must fail"
+        );
+    }
+
+    #[test]
+    fn counter_slots_round_trip() {
+        for slot in 0..GOSSIP_TOPIC_COUNTER_SLOTS {
+            let topic = gossip_topic_for_counter_slot(slot)
+                .unwrap_or_else(|| panic!("slot {slot} has no topic"));
+            assert_eq!(topic.counter_slot(), slot, "{topic:?}");
+        }
+        assert!(gossip_topic_for_counter_slot(GOSSIP_TOPIC_COUNTER_SLOTS).is_none());
+
+        // Out-of-range subnets clamp to their kind's last slot.
+        assert_eq!(
+            GossipTopic::BeaconAttestation(9999).counter_slot(),
+            GossipTopic::BeaconAttestation(ATTESTATION_SUBNETS as u64 - 1).counter_slot(),
         );
     }
 }

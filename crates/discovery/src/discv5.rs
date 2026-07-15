@@ -325,11 +325,12 @@ impl DiscV5 {
 
             if changed {
                 let socket = SocketAddr::new(ip, port);
-                let _ = self.local_enr.set_udp_socket(socket, &self.local_key);
-                let mut raw: ArrayVec<u8, ENR_RECORD_MAX> = ArrayVec::new();
-                self.local_enr.encode(&mut raw);
-                self.local_enr_raw = raw;
-                self.event_queue.push(DiscoveryEvent::ExternalAddrChanged(socket));
+                if let Ok(seq) = self.local_enr.set_udp_socket(socket, &self.local_key) {
+                    let mut raw: ArrayVec<u8, ENR_RECORD_MAX> = ArrayVec::new();
+                    self.local_enr.encode(&mut raw);
+                    self.local_enr_raw = raw;
+                    self.event_queue.push(DiscoveryEvent::ExternalAddrChanged(socket, seq));
+                }
             }
         }
     }
@@ -1568,10 +1569,10 @@ mod tests {
 
         let events = collect_events(&mut a);
         assert!(
-            events
-                .iter()
-                .any(|e| matches!(e, DiscoveryEvent::ExternalAddrChanged(sa) if sa.ip() == ipv6)),
-            "expected ExternalAddrChanged with IPv6 address"
+            events.iter().any(
+                |e| matches!(e, DiscoveryEvent::ExternalAddrChanged(sa, seq) if sa.ip() == ipv6 && *seq == 2)
+            ),
+            "expected ExternalAddrChanged with IPv6 address {events:?}"
         );
     }
 

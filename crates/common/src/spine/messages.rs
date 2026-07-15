@@ -358,6 +358,7 @@ pub enum PeerEvent {
     },
     DiscExternalAddress {
         address: SocketAddr,
+        seq: u64,
     },
     /// A fully-validated inbound gossip message arrived (post-dedup). Carries
     /// the sending peer, topic, msg id (for promise/score accounting) and a
@@ -379,6 +380,16 @@ pub enum PeerEvent {
     OutboundIWant {
         p2p_peer: usize,
         iwant: TCacheRead,
+    },
+    /// A data column sidecar validated from a non-gossip source (RPC
+    /// by-root / EL blobs). Control re-publishes it on its subnet: the
+    /// gossip handler wraps the SSZ (a ref into `incoming_rpc`) as
+    /// protobuf and PM fans it out to the topic mesh, excluding
+    /// `originator` (the peer that served it to us).
+    PublishDataColumn {
+        originator: P2pStreamId,
+        topic: GossipTopic,
+        ssz: TCacheRead,
     },
     /// Emitted in order to trigger sending of a gossip message.
     /// Peer manager will generate select peers to send to.

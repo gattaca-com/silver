@@ -60,6 +60,8 @@ impl BeaconStateTile {
             ?source,
             head_slot = self.head_state_slot(),
             block_slot,
+            wall_slot = self.ticker.current_slot(),
+            time_into_slot = ?self.ticker.slot_time_elapsed(),
             "applied block: {:?}",
             f
         );

@@ -5,7 +5,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use silver_common::{GossipTopic, MessageId, MessageIdHasher, TCacheRead, TRandomAccess, TRead};
+use silver_common::{
+    GossipTopic, MessageId, MessageIdHasher, TCacheRead, TRandomAccess, TRead, Wheel,
+};
 
 /// Another rotating bucket cache. Each bucket optionally maps a message id to
 /// TCacheRead. This cache maintains a tail of the TCache containing the cached
@@ -31,6 +33,7 @@ impl Default for Bucket {
 
 pub(crate) struct MessageCache {
     buckets: Box<[Bucket]>,
+    history: Wheel<MessageId, Instant, 64>, // last 64 * 700ms cached messages = ~45seconds
     cache_consumer: TRandomAccess,
     current_bucket: usize,
     last_rotation: Instant,
@@ -41,6 +44,7 @@ impl MessageCache {
     pub(crate) fn new(cache_consumer: TRandomAccess) -> Self {
         Self {
             buckets: vec![Bucket::default(); BUCKETS].into_boxed_slice(),
+            history: Wheel::new(ROTATION_INTERVAL),
             cache_consumer,
             current_bucket: 0,
             last_rotation: Instant::now(),
@@ -56,6 +60,7 @@ impl MessageCache {
         bucket.ihaves.entry(topic).and_modify(|v| v.push(id)).or_insert_with(|| vec![id]);
         bucket.tcache_min_seq = bucket.tcache_min_seq.min(acquired.seq());
         bucket.messages.insert(id, acquired);
+        self.history.insert(id, Instant::now());
     }
 
     pub(crate) fn has(&self, id: &MessageId) -> bool {
@@ -64,6 +69,10 @@ impl MessageCache {
 
     pub(crate) fn get(&self, id: &MessageId) -> Option<TCacheRead> {
         self.buckets.iter().find_map(|b| b.messages.get(id)).map(|a| &a.read).copied()
+    }
+
+    pub(crate) fn history(&self, id: &MessageId) -> Option<&Instant> {
+        self.history.get(id)
     }
 
     pub(crate) fn get_ihaves(
@@ -98,6 +107,7 @@ impl MessageCache {
             self.cache_consumer.free();
 
             self.last_rotation = now;
+            self.history.maybe_rotate(now, &mut |_, _| true);
         }
     }
 }
@@ -115,8 +125,8 @@ struct IHaveIterator<'a> {
 impl<'a> IHaveIterator<'a> {
     fn new(topic: GossipTopic, mcache: &'a MessageCache) -> Self {
         let mut len = 0;
-        for i in 0..3 {
-            let idx = (mcache.current_bucket + i) % BUCKETS;
+        for i in 0..IHAVE_BUCKETS {
+            let idx = (mcache.current_bucket + BUCKETS - i) % BUCKETS;
             len += mcache.buckets[idx].ihaves.get(&topic).map(|v| v.len()).unwrap_or_default();
         }
         let iter = mcache.buckets[mcache.current_bucket].ihaves.get(&topic).map(|v| v.iter());
@@ -146,7 +156,7 @@ impl<'a> Iterator for IHaveIterator<'a> {
                 None if self.buckets_left == 0 => return None,
                 None => {
                     self.buckets_left -= 1;
-                    self.bucket = (self.bucket + 1) % BUCKETS;
+                    self.bucket = (self.bucket + BUCKETS - 1) % BUCKETS;
                     self.iter =
                         self.mcache.buckets[self.bucket].ihaves.get(&self.topic).map(|v| v.iter());
                 }
@@ -188,6 +198,32 @@ mod tests {
         let tc = mk_tcache_read(&mut producer);
         mcache.insert(id, GossipTopic::BeaconBlock, tc);
         assert!(matches!(mcache.get(&id), Some(_)));
+    }
+
+    fn force_rotate(mcache: &mut MessageCache) {
+        mcache.last_rotation -= ROTATION_INTERVAL * 2;
+        mcache.maybe_rotate(Instant::now());
+    }
+
+    #[test]
+    fn ihaves_cover_three_most_recent_buckets() {
+        let (mut mcache, mut producer) = mk_mcache();
+
+        let ids: Vec<_> = (1u8..=4).map(|b| MessageId { id: [b; 20] }).collect();
+        for (i, id) in ids.iter().enumerate() {
+            let tc = mk_tcache_read(&mut producer);
+            mcache.insert(*id, GossipTopic::BeaconBlock, tc);
+            if i < ids.len() - 1 {
+                force_rotate(&mut mcache);
+            }
+        }
+        assert_eq!(mcache.current_bucket, 3);
+
+        let iter = mcache.get_ihaves(&GossipTopic::BeaconBlock);
+        assert_eq!(iter.len(), 3);
+        let mut ihaves: Vec<_> = iter.copied().collect();
+        ihaves.sort_by_key(|m| m.id);
+        assert_eq!(ihaves, ids[1..]);
     }
 
     #[test]

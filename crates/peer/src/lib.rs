@@ -1,3 +1,4 @@
+mod counters;
 mod database;
 mod manager;
 mod scoring;

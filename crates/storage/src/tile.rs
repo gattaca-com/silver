@@ -11,10 +11,10 @@ use flux::{spine::SpineAdapter, tile::Tile};
 use flux_profiler::timed;
 use silver_beacon_state_data::{B256, BeaconStateReader, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
-    BASE_REQUEST_ID, BeaconStateEvent, DataColumnsAvailable, EngineReq, EngineResp, NewGossipMsg,
-    P2pSend, P2pStreamId, PeerControl, PeerEvent, ReplayBlock, RpcInbound, RpcSeverity,
-    SilverSpine, SilverSpineProducers, StreamProtocol, SyncUpdate, SyncingStrategy, TCacheProducer,
-    TMultiProducer, TProducer, TRandomAccess, TRead, Wheel, msg_is_backfill,
+    BASE_REQUEST_ID, BeaconStateEvent, DataColumnsAvailable, EngineReq, EngineResp, GossipTopic,
+    NewGossipMsg, P2pSend, P2pStreamId, PeerControl, PeerEvent, ReplayBlock, RpcInbound,
+    RpcSeverity, SilverSpine, SilverSpineProducers, StreamProtocol, SyncUpdate, SyncingStrategy,
+    TCacheProducer, TMultiProducer, TProducer, TRandomAccess, TRead, Wheel, msg_is_backfill,
     msg_is_column_backfill, msg_is_live_column_request, msg_is_post_gloas,
     ssz_view::{
         DataColumnSidecarFuluView, DataColumnSidecarGloasView, ExecutionPayloadEnvelopeView,
@@ -338,7 +338,7 @@ impl StorageTile {
         gloas_root
     }
 
-    #[inline]
+    #[timed]
     fn data_columns<F>(
         &mut self,
         stream_id: P2pStreamId,
@@ -672,14 +672,15 @@ impl StorageTile {
         stream_id: P2pStreamId,
         is_gloas: bool,
         producers: &mut SilverSpineProducers,
-    ) {
+    ) -> bool {
         let emit_da = &mut |msg: DataColumnsAvailable| {
             producers.data_columns.produce(&msg.into());
         };
 
         let Some((block_root, columns)) = self.data_columns(stream_id, t_read, is_gloas, emit_da)
         else {
-            return;
+            // Validated
+            return true;
         };
 
         // Validation failed - score down the peer and retransmit
@@ -691,6 +692,7 @@ impl StorageTile {
             .into(),
         );
         producers.peer_events.produce(&self.column_request(block_root, columns).into());
+        false
     }
 }
 
@@ -717,9 +719,20 @@ impl Tile<SilverSpine> for StorageTile {
                 tracing::debug!(_custody_group, "data column sidecar over gossip");
 
                 let t_read = self.gossip_consumer.acquire(gossip.ssz);
-                // Gossip is `is_synced`-gated, so head ≈ wall selects the layout.
+
                 let is_gloas = self.spec.is_gloas_at_slot(self.store.head_slot() + 1);
-                self.handle_data_column_sidecar(t_read, gossip.stream_id, is_gloas, producers);
+                if self.handle_data_column_sidecar(t_read, gossip.stream_id, is_gloas, producers) {
+                    producers.peer_events.produce(
+                        &PeerEvent::SendGossip {
+                            originator_stream_id: gossip.stream_id,
+                            topic: gossip.topic,
+                            msg_hash: gossip.msg_hash,
+                            recv_ts: gossip.recv_ts,
+                            protobuf: gossip.protobuf,
+                        }
+                        .into(),
+                    );
+                }
             }
             _ => {}
         });
@@ -770,7 +783,26 @@ impl Tile<SilverSpine> for StorageTile {
                     tracing::debug!("data column sidecar over rpc");
                     let t_read = self.rpc_consumer.acquire(ssz);
                     let is_gloas = msg_is_post_gloas(rsp.application_id);
-                    self.handle_data_column_sidecar(t_read, rsp.stream_id, is_gloas, producers);
+
+                    let Ok((buffer, _)) = t_read.buffer() else {
+                        return;
+                    };
+                    let column_index = if is_gloas {
+                        DataColumnSidecarGloasView::index(buffer)
+                    } else {
+                        DataColumnSidecarFuluView::index(buffer)
+                    };
+
+                    if self.handle_data_column_sidecar(t_read, rsp.stream_id, is_gloas, producers) {
+                        if rsp.stream_id.protocol() != StreamProtocol::GossipSub && self.store.is_synced() {
+                            // Publish to gossip
+                            producers.peer_events.produce(&PeerEvent::PublishDataColumn {
+                                originator: rsp.stream_id,
+                                topic: GossipTopic::DataColumnSidecar(column_index),
+                                ssz,
+                            }.into());
+                        }
+                    }
                 }
                 silver_common::RpcResponse::Error { error, msg, len } if msg_is_column_backfill(rsp.application_id)=> {
                     let err_msg = String::from_utf8_lossy(&msg[..len]).to_string();

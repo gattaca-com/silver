@@ -19,24 +19,43 @@
 participants:
   # Three lighthouse nodes on distinct ELs -> guaranteed QUIC peers + EL
   # diversity. These are silver's reliable counterparties.
+  #
+  # Scoring visibility: `global_log_level: debug` covers lighthouse's peer
+  # manager (score-driven disconnects, bans, goodbyes-with-reason). The
+  # gossipsub-internal penalties (graft-in-backoff, IWANT flood, invalid
+  # message rejects) log under the gossipsub tracing target -- enabled via
+  # RUST_LOG below. Per-peer live scores (incl. silver's) need no flag:
+  # GET /lighthouse/peers on each node's HTTP API.
   - el_type: geth
     cl_type: lighthouse
     cl_extra_params:
       - --target-peers=64
+    cl_extra_env_vars:
+      RUST_LOG: "gossipsub=debug,libp2p_gossipsub=debug"
     count: 1
   - el_type: reth
     cl_type: lighthouse
     cl_extra_params:
       - --target-peers=64
+    cl_extra_env_vars:
+      RUST_LOG: "gossipsub=debug,libp2p_gossipsub=debug"
     count: 1
   - el_type: nethermind
     cl_type: lighthouse
     cl_extra_params:
       - --target-peers=64
+    cl_extra_env_vars:
+      RUST_LOG: "gossipsub=debug,libp2p_gossipsub=debug"
     count: 1
   # One non-lighthouse CL for protocol-diversity in disconnect/scoring/goodbye
   # behaviour. Confirm it advertises QUIC; if not, silver will skip it (which
   # is itself a useful observation in your new logs).
+  #
+  # Prysm at debug logs per-message validation results ("could not
+  # validate...") -- the fastest check that silver's (re)published columns are
+  # accepted -- and its own scorer's "disconnecting bad peer". go-libp2p does
+  # NOT log gossipsub penalties; per-peer scores come from the debug RPC
+  # endpoints enabled below.
   - el_type: geth
     cl_type: prysm
     count: 1
@@ -72,6 +91,10 @@ global_log_level: debug
 additional_services:
   - dora
   - spamoor
+  # prometheus scrapes every CL's metrics endpoint: lighthouse exports
+  # gossipsub score distributions + ban/disconnect counters -- the trend view
+  # that log lines can't give.
+  - prometheus_grafana
 
 # Blob spammer config. NOTE: service name (`spamoor`), scenario (`blobs`), and
 # keys (`throughput`/`sidecars`) are verified against ethereum-package @6.1.0 +

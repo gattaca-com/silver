@@ -730,11 +730,20 @@ impl<T: Clone> OutBuffer<T> {
         seq & (self.len - 1)
     }
 
-    /// Returns `true` if adding the new message overwrote an old message.
+    /// Returns `true` if adding the new message dropped the oldest queued
+    /// message.
     fn add_msg(&mut self, msg: T) -> bool {
-        let old_msg = self.msgs[self.pos(self.head)].replace(msg);
+        let dropped = self.head - self.tail == self.msgs.len();
+        if dropped {
+            // Full: pos(head) == pos(tail), so the overwrite below replaces
+            // the oldest message. Advance tail with it — otherwise head/tail
+            // desync and is_empty() reports non-empty while pop() yields
+            // None, leaving the stream flagged needs_spin forever.
+            self.tail += 1;
+        }
+        self.msgs[self.pos(self.head)].replace(msg);
         self.head += 1;
-        old_msg.is_some()
+        dropped
     }
 
     /// Called when the current read is complete.
@@ -744,7 +753,10 @@ impl<T: Clone> OutBuffer<T> {
                 self.tail += 1;
                 Some(msg)
             }
-            None => None,
+            None => {
+                debug_assert!(self.head == self.tail, "OutBuffer head/tail desync");
+                None
+            }
         }
     }
 
@@ -767,6 +779,29 @@ mod tests {
     use super::*;
 
     const TCACHE_BYTES: usize = 64 * 1024;
+
+    #[test]
+    fn out_buffer_overflow_keeps_ring_consistent() {
+        let mut buf = OutBuffer::new(4);
+        for i in 0..4usize {
+            assert!(!buf.add_msg(i));
+        }
+
+        // Two overwrites drop the two oldest messages.
+        assert!(buf.add_msg(4));
+        assert!(buf.add_msg(5));
+        assert_eq!(buf.len(), 4);
+
+        let drained: Vec<_> = std::iter::from_fn(|| buf.pop()).collect();
+        assert_eq!(drained, vec![2, 3, 4, 5]);
+        assert!(buf.is_empty());
+        assert!(buf.pop().is_none());
+
+        // Buffer must remain usable after an overflow episode.
+        assert!(!buf.add_msg(6));
+        assert_eq!(buf.pop(), Some(6));
+        assert!(buf.is_empty());
+    }
 
     /// Per-peer test plumbing. Owns the four tcaches plus the `Context`
     /// passed into `Peer::spin`.

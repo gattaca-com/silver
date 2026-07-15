@@ -1,9 +1,9 @@
-use std::time::Instant;
+use std::{collections::VecDeque, time::Instant};
 
 use buffa::MessageView;
 use silver_common::{
-    Error, GossipMsgOut, MessageId, P2pStreamId, PeerControl, PeerEvent, TCacheProducer, TConsumer,
-    TProducer, ssz_view::StatusView,
+    Error, GossipMsgOut, GossipTopic, MessageId, P2pStreamId, PeerControl, PeerEvent,
+    TCacheProducer, TCacheRead, TConsumer, TProducer, msg_id_valid_snappy, ssz_view::StatusView,
 };
 
 use crate::{
@@ -15,7 +15,7 @@ use crate::{
     dedup::DedupCache,
     generated::RPCView,
     mcache::MessageCache,
-    message::handle_incoming,
+    message::{copy_compressed_to_protobuf_output, handle_incoming},
 };
 
 /// Reads all incoming gossip protobuf messages (sequential consumer):
@@ -39,6 +39,12 @@ pub struct GossipHandler {
 
     // scratch buffer for iwant meessage ids.
     iwant_buffer: Vec<MessageId>,
+
+    // snappy block-compression for locally published messages.
+    snap_encoder: snap::raw::Encoder,
+    snap_scratch: Vec<u8>,
+
+    events: VecDeque<GossipHandlerEvent>,
 }
 
 impl GossipHandler {
@@ -60,6 +66,9 @@ impl GossipHandler {
             mcache_publish: protobuf_gossip_publish,
             mcache,
             iwant_buffer: Vec::with_capacity(256),
+            snap_encoder: snap::raw::Encoder::new(),
+            snap_scratch: Vec::new(),
+            events: VecDeque::with_capacity(64),
         })
     }
 
@@ -85,11 +94,59 @@ impl GossipHandler {
         }
     }
 
+    /// Publish a locally-obtained, already-validated message on `topic`:
+    /// compress, wrap as protobuf into the outgoing tcache, register with
+    /// dedup + mcache (so gossip copies dedupe and IWANTs can be served).
+    /// Returns `None` when the message was already seen via gossip, or
+    /// pre-Status (no fork digest yet).
+    pub fn publish(&mut self, topic: GossipTopic, ssz: &[u8]) -> Option<(MessageId, TCacheRead)> {
+        if self.fork_digest_hex.is_empty() {
+            return None;
+        }
+        let wire = topic.to_wire(&self.fork_digest_hex);
+        self.snap_scratch.resize(snap::raw::max_compress_len(ssz.len()), 0);
+        let n = match self.snap_encoder.compress(ssz, &mut self.snap_scratch) {
+            Ok(n) => n,
+            Err(e) => {
+                tracing::error!(?e, ?topic, "publish snappy compress failed");
+                return None;
+            }
+        };
+        let msg_id = msg_id_valid_snappy(&wire, ssz);
+        let fast_hash = self.dedup_cache.contains_fast(&self.snap_scratch[..n])?;
+        if !self.dedup_cache.insert(fast_hash, msg_id) {
+            return None;
+        }
+        let read = copy_compressed_to_protobuf_output(
+            &mut self.mcache_publish,
+            &self.snap_scratch[..n],
+            &wire,
+        )
+        .inspect_err(|e| tracing::error!(?e, ?topic, "publish protobuf write failed"))
+        .ok()?;
+        self.mcache.insert(msg_id, topic, read);
+        Some((msg_id, read))
+    }
+
     pub fn set_fork_digest(&mut self, status_ssz: &[u8; 92]) {
         self.fork_digest_hex = hex::encode(StatusView::fork_digest(status_ssz));
     }
 
-    pub fn handle_peer_control(
+    pub fn handle_peer_control(&mut self, peer_control: PeerControl) {
+        let mut events = std::mem::take(&mut self.events);
+        self.handle_peer_control_inner(peer_control, &mut |e| events.push_back(e));
+        self.events = events;
+    }
+
+    pub fn mcache_insert(&mut self, id: MessageId, topic: GossipTopic, protobuf: TCacheRead) {
+        self.mcache.insert(id, topic, protobuf);
+    }
+
+    pub fn pop_event(&mut self) -> Option<GossipHandlerEvent> {
+        self.events.pop_front()
+    }
+
+    fn handle_peer_control_inner(
         &mut self,
         peer_control: PeerControl,
         emit: &mut impl FnMut(GossipHandlerEvent),
@@ -151,7 +208,14 @@ impl GossipHandler {
         }
     }
 
-    pub fn spin(&mut self, emit: &mut impl FnMut(GossipHandlerEvent)) -> bool {
+    pub fn spin(&mut self) -> bool {
+        let mut events = std::mem::take(&mut self.events);
+        let did_work = self.spin_inner(&mut |e| events.push_back(e));
+        self.events = events;
+        did_work
+    }
+
+    fn spin_inner(&mut self, emit: &mut impl FnMut(GossipHandlerEvent)) -> bool {
         let mut did_work = false;
         let now = Instant::now();
         self.dedup_cache.maybe_rotate(now);
@@ -220,7 +284,6 @@ impl GossipHandler {
                             &mut self.dedup_cache,
                             &mut self.incoming_gossip_publish,
                             &mut self.mcache_publish,
-                            &mut self.mcache,
                             emit,
                         ) {
                             tracing::error!(

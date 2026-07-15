@@ -212,6 +212,8 @@ impl PublisherStack {
         // (multipart-RPC) read via `rpc_in_ra`. Regular consumer also
         // attached for keep-alive plus future controller use.
         let rpc_in_producer = TCache::producer("e2e_stack", TCACHE_SIZE);
+        let rpc_in_ctl =
+            rpc_in_producer.cache_ref().random_access("ctl_e2e", true).expect("ctl rpc ra");
         let rpc_in_consumer = rpc_in_producer.cache_ref().consumer("e2e").ok();
         let rpc_in_ra =
             rpc_in_producer.cache_ref().random_access("e2e", true).expect("rpc_in random_access");
@@ -272,6 +274,7 @@ impl PublisherStack {
             .unwrap(),
             TCache::multi_producer("dummy_rpc_out", 32), // dummpy rpc out
             Arc::new(SpecConfig::mainnet()),
+            rpc_in_ctl,
         );
 
         // Spine + per-tile adapters.
@@ -382,6 +385,10 @@ impl EchoStack {
             compression,
             TCache::multi_producer("dummy_rpc_out", 32), // dummpy rpc out
             Arc::new(SpecConfig::mainnet()),
+            TCache::producer("ctl_rpc_in_dummy", 32)
+                .cache_ref()
+                .random_access("ctl_e2e", true)
+                .expect("ctl rpc ra"),
         );
 
         let mut spine = SilverSpine::new_with_base_dir(base_dir, Some(path_suffix));

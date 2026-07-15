@@ -192,7 +192,7 @@ fn pong_ip_vote_triggers_external_addr_changed() {
 
     let final_ev = a.poll();
     assert!(
-        final_ev.iter().any(|e| matches!(e, DiscoveryEvent::ExternalAddrChanged(_))),
+        final_ev.iter().any(|e| matches!(e, DiscoveryEvent::ExternalAddrChanged(_, _))),
         "expected ExternalAddrChanged after 3 Pong votes from distinct peers"
     );
 }

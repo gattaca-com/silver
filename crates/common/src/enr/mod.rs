@@ -155,15 +155,15 @@ impl Enr {
         self.cgc
     }
 
-    pub fn set_eth2(&mut self, eth2: [u8; 16], key: &SecretKey) -> Result<(), Error> {
+    pub fn set_eth2(&mut self, eth2: [u8; 16], key: &SecretKey) -> Result<u64, Error> {
         self.apply(key, |enr| enr.eth2 = Some(eth2))
     }
 
-    pub fn set_attnets(&mut self, attnets: [u8; 8], key: &SecretKey) -> Result<(), Error> {
+    pub fn set_attnets(&mut self, attnets: [u8; 8], key: &SecretKey) -> Result<u64, Error> {
         self.apply(key, |enr| enr.attnets = Some(attnets))
     }
 
-    pub fn set_syncnets(&mut self, syncnets: u8, key: &SecretKey) -> Result<(), Error> {
+    pub fn set_syncnets(&mut self, syncnets: u8, key: &SecretKey) -> Result<u64, Error> {
         self.apply(key, |enr| enr.syncnets = Some(syncnets))
     }
 
@@ -255,7 +255,7 @@ impl Enr {
         Ok(prev)
     }
 
-    pub fn remove_udp4(&mut self, key: &SecretKey) -> Result<(), Error> {
+    pub fn remove_udp4(&mut self, key: &SecretKey) -> Result<u64, Error> {
         self.apply(key, |enr| enr.udp4 = None)
     }
 
@@ -265,11 +265,11 @@ impl Enr {
         Ok(prev)
     }
 
-    pub fn remove_udp6(&mut self, key: &SecretKey) -> Result<(), Error> {
+    pub fn remove_udp6(&mut self, key: &SecretKey) -> Result<u64, Error> {
         self.apply(key, |enr| enr.udp6 = None)
     }
 
-    pub fn set_udp_socket(&mut self, socket: SocketAddr, key: &SecretKey) -> Result<(), Error> {
+    pub fn set_udp_socket(&mut self, socket: SocketAddr, key: &SecretKey) -> Result<u64, Error> {
         self.apply(key, |enr| match socket.ip() {
             IpAddr::V4(addr) => {
                 enr.ip4 = Some(addr);
@@ -282,14 +282,14 @@ impl Enr {
         })
     }
 
-    pub fn remove_udp_socket(&mut self, key: &SecretKey) -> Result<(), Error> {
+    pub fn remove_udp_socket(&mut self, key: &SecretKey) -> Result<u64, Error> {
         self.apply(key, |enr| {
             enr.ip4 = None;
             enr.udp4 = None;
         })
     }
 
-    pub fn remove_udp6_socket(&mut self, key: &SecretKey) -> Result<(), Error> {
+    pub fn remove_udp6_socket(&mut self, key: &SecretKey) -> Result<u64, Error> {
         self.apply(key, |enr| {
             enr.ip6 = None;
             enr.udp6 = None;
@@ -483,7 +483,7 @@ impl Enr {
     }
 
     // Clone, apply f, re-sign, check size, commit.
-    fn apply<F>(&mut self, key: &SecretKey, f: F) -> Result<(), Error>
+    fn apply<F>(&mut self, key: &SecretKey, f: F) -> Result<u64, Error>
     where
         F: FnOnce(&mut Self),
     {
@@ -496,7 +496,7 @@ impl Enr {
             return Err(Error::ExceedsMaxSize);
         }
         *self = new;
-        Ok(())
+        Ok(self.seq)
     }
 
     // Encode (seq + k-v pairs) into a flat buffer; signature is prepended only

@@ -3,8 +3,8 @@ extern crate self as silver_common;
 pub use crate::{
     error::Error,
     gossip::{
-        GossipTopic, MESSAGE_ID_LEN, MessageId, MessageIdHasher, msg_id_invalid_snappy,
-        msg_id_valid_snappy,
+        GOSSIP_TOPIC_COUNTER_SLOTS, GossipTopic, MESSAGE_ID_LEN, MessageId, MessageIdHasher,
+        gossip_topic_for_counter_slot, msg_id_invalid_snappy, msg_id_valid_snappy,
     },
     id::{Keypair, PeerId, decode_protobuf_pubkey, encode_secp256k1_protobuf},
     identity::{

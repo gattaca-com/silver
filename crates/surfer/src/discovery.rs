@@ -66,7 +66,8 @@ pub fn discover(base_dir: &std::path::Path, app_name: &str) -> io::Result<Discov
         }
     }
 
-    counters.sort_by(|a, b| a.name.cmp(&b.name));
+    counters
+        .sort_by(|a, b| crate::schema::sort_key(&a.name).cmp(&crate::schema::sort_key(&b.name)));
     tcaches.sort_by(|a, b| a.name.cmp(&b.name));
     timings.sort_by(|a, b| a.name.cmp(&b.name));
     tilemetrics.sort_by(|a, b| a.name.cmp(&b.name));

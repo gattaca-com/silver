@@ -73,9 +73,9 @@ silver_network = {path = "crates/network" }
 silver_peer = {path = "crates/peer" }
 silver_storage = { path = "crates/storage" }
 silver_engine = { path = "crates/engine"}
-flux = { git = "https://github.com/gattaca-com/flux", rev = "ceddf228cdcda60bd134ddb49cc0a8375a09b853"}
-flux-utils = { git = "https://github.com/gattaca-com/flux", rev = "ceddf228cdcda60bd134ddb49cc0a8375a09b853", features = ["bytes"]}
-flux-profiler = { git = "https://github.com/gattaca-com/flux", rev = "ceddf228cdcda60bd134ddb49cc0a8375a09b853"}
+flux = { git = "https://github.com/gattaca-com/flux", rev = "b7c6d79db3b28cb62865f338cfe33725ada23600"}
+flux-utils = { git = "https://github.com/gattaca-com/flux", rev = "b7c6d79db3b28cb62865f338cfe33725ada23600", features = ["bytes"]}
+flux-profiler = { git = "https://github.com/gattaca-com/flux", rev = "b7c6d79db3b28cb62865f338cfe33725ada23600"}
 
 # External
 backtrace = "0.3"
@@ -145,3 +145,4 @@ yasna = "0.5"
 
 [workspace.lints.clippy]
 too_long_first_doc_paragraph = "allow"
+

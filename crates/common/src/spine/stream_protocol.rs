@@ -108,10 +108,10 @@ impl StreamProtocol {
             Self::BeaconBlocksByRoot |
             Self::ExecutionPayloadEnvelopesByRange |
             Self::ExecutionPayloadEnvelopesByRoot => {
-                Some(RpcQuota::n_every(MAX_BLOCK_RATE_LIMIT_TOKENS, 30)) // 30s appears to be the default period of Prysm. Lighthouse is 10s.
+                Some(RpcQuota::n_every(MAX_BLOCK_RATE_LIMIT_TOKENS, 60)) // TODO lighthouse permits per 10s
             }
             Self::DataColumnSidecarsByRange | Self::DataColumnSidecarsByRoot => {
-                Some(RpcQuota::n_every(MAX_SIDECAR_RATE_LIMIT_TOKENS, 15))
+                Some(RpcQuota::n_every(MAX_SIDECAR_RATE_LIMIT_TOKENS, 120)) // TODO, lighthouse permits per 30s
             }
         }
     }

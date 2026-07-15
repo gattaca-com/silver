@@ -208,6 +208,10 @@ impl Identify {
         (self, keypair).into()
     }
 
+    pub fn user_agent(&self) -> &str {
+        str::from_utf8(&self.user_agent[..self.user_agent_len]).unwrap_or("unknown")
+    }
+
     /// Walk the four eth2-shaped address fields, yielding one `Eth2Addr`
     /// per populated slot.
     fn address_iter(&self) -> impl Iterator<Item = Eth2Addr> + '_ {
