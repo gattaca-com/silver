@@ -155,15 +155,15 @@ impl Enr {
         self.cgc
     }
 
-    pub fn set_eth2(&mut self, eth2: [u8; 16], key: &SecretKey) -> Result<(), Error> {
+    pub fn set_eth2(&mut self, eth2: [u8; 16], key: &SecretKey) -> Result<u64, Error> {
         self.apply(key, |enr| enr.eth2 = Some(eth2))
     }
 
-    pub fn set_attnets(&mut self, attnets: [u8; 8], key: &SecretKey) -> Result<(), Error> {
+    pub fn set_attnets(&mut self, attnets: [u8; 8], key: &SecretKey) -> Result<u64, Error> {
         self.apply(key, |enr| enr.attnets = Some(attnets))
     }
 
-    pub fn set_syncnets(&mut self, syncnets: u8, key: &SecretKey) -> Result<(), Error> {
+    pub fn set_syncnets(&mut self, syncnets: u8, key: &SecretKey) -> Result<u64, Error> {
         self.apply(key, |enr| enr.syncnets = Some(syncnets))
     }
 
@@ -255,7 +255,7 @@ impl Enr {
         Ok(prev)
     }
 
-    pub fn remove_udp4(&mut self, key: &SecretKey) -> Result<(), Error> {
+    pub fn remove_udp4(&mut self, key: &SecretKey) -> Result<u64, Error> {
         self.apply(key, |enr| enr.udp4 = None)
     }
 
@@ -265,7 +265,7 @@ impl Enr {
         Ok(prev)
     }
 
-    pub fn remove_udp6(&mut self, key: &SecretKey) -> Result<(), Error> {
+    pub fn remove_udp6(&mut self, key: &SecretKey) -> Result<u64, Error> {
         self.apply(key, |enr| enr.udp6 = None)
     }
 
@@ -282,14 +282,14 @@ impl Enr {
         })
     }
 
-    pub fn remove_udp_socket(&mut self, key: &SecretKey) -> Result<(), Error> {
+    pub fn remove_udp_socket(&mut self, key: &SecretKey) -> Result<u64, Error> {
         self.apply(key, |enr| {
             enr.ip4 = None;
             enr.udp4 = None;
         })
     }
 
-    pub fn remove_udp6_socket(&mut self, key: &SecretKey) -> Result<(), Error> {
+    pub fn remove_udp6_socket(&mut self, key: &SecretKey) -> Result<u64, Error> {
         self.apply(key, |enr| {
             enr.ip6 = None;
             enr.udp6 = None;
