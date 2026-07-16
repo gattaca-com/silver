@@ -309,10 +309,7 @@ impl StorageTile {
         // custody set IS the sample set; no beyond-custody sampling needed.
         // These by-root requests race gossip and serve as the fallback when a
         // sidecar isn't delivered on the subscribed subnet.
-        let mut to_request = self.custody_group_columns;
-        let validated = self.validated_columns.get(&block_root).copied().unwrap_or(0);
-        to_request &= !validated;
-
+        let to_request = self.columns_to_request(&block_root);
         if to_request == 0 {
             return gloas_root;
         }
@@ -336,6 +333,11 @@ impl StorageTile {
             emit(StorageEmit::Peer(self.column_request(block_root, to_request)));
         }
         gloas_root
+    }
+
+    fn columns_to_request(&self, root: &BlockRoot) -> u128 {
+        let validated = self.validated_columns.get(&root).copied().unwrap_or(0);
+        self.custody_group_columns & !validated
     }
 
     #[timed]
@@ -944,7 +946,7 @@ impl Tile<SilverSpine> for StorageTile {
             }
             request_id += 1;
             wheel_resent += 1;
-            tracing::trace!(
+            tracing::info!(
                 block_root = hex::encode(block_root),
                 "resending outstanding data column request: {columns:b}"
             );
