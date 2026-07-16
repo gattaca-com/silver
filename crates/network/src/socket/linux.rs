@@ -251,7 +251,7 @@ impl TxBatch {
                 tracing::error!(error=?err, "sendmmsg");
                 // Try to avoid any issue with specifc packets
                 self.clear();
-                return false;
+                return true;
             }
             self.send_idx += ret as usize;
         }
