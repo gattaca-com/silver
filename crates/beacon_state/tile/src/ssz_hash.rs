@@ -8,7 +8,7 @@ use silver_beacon_state_data::{
 use silver_common::merkle::*;
 pub use silver_common::ssz_hash::*;
 
-use crate::ssz_hash_gloas::hash_tree_root_state_gloas;
+use crate::ssz_hash_gloas::BeaconStateGloas;
 
 #[timed]
 pub fn hash_tree_root_block_header(hdr: &BeaconBlockHeader) -> B256 {
@@ -57,7 +57,7 @@ impl StateHashScratch {
 #[timed]
 pub fn hash_tree_root_state(rv: &StateReadView, scratch: &mut StateHashScratch) -> B256 {
     if rv.is_gloas() {
-        hash_tree_root_state_gloas(rv, scratch)
+        BeaconStateGloas::hash_tree_root(rv, scratch)
     } else {
         hash_tree_root_state_fulu(rv, scratch)
     }
@@ -145,14 +145,16 @@ fn hash_tree_root_state_fulu(rv: &StateReadView, scratch: &mut StateHashScratch)
 
 #[timed]
 pub fn hash_sync_committee(sc: &SyncCommittee) -> B256 {
-    let pubkeys_root =
-        hash_vector(sc.pubkeys.iter(), SYNC_COMMITTEE_SIZE, |pk| hash_fixed_bytes(pk));
+    let pubkeys_root = hash_vector(
+        MerkleStack::new(SYNC_COMMITTEE_SIZE),
+        sc.pubkeys.iter().map(|pk| hash_fixed_bytes(pk)),
+    );
     hash_concat(&pubkeys_root, &hash_fixed_bytes(&sc.aggregate_pubkey))
 }
 
 #[timed]
 pub fn hash_eth1_votes(eth1: &common::Eth1View) -> B256 {
-    hash_list(eth1.iter(), eth1.len(), MAX_ETH1_VOTES, hash_eth1_data)
+    hash_list(MerkleStack::new(MAX_ETH1_VOTES), eth1.iter().map(hash_eth1_data))
 }
 
 #[timed]
@@ -200,10 +202,11 @@ pub fn hash_execution_payload_header(h: &ExecutionPayloadHeader) -> B256 {
 pub fn hash_historical_summaries(longtail: &LongtailView) -> B256 {
     let n = longtail.historical_summaries_len();
     hash_list(
-        (0..n).map(|i| longtail.historical_summary(i).unwrap()),
-        n,
-        HISTORICAL_ROOTS_LIMIT,
-        |s| hash_concat(&s.block_summary_root, &s.state_summary_root),
+        MerkleStack::new(HISTORICAL_ROOTS_LIMIT),
+        (0..n).map(|i| {
+            let s = longtail.historical_summary(i).unwrap();
+            hash_concat(&s.block_summary_root, &s.state_summary_root)
+        }),
     )
 }
 

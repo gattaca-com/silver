@@ -150,7 +150,9 @@ impl PmBsHarness {
             rpc_c,
             engine_resp_c,
             replay_c,
-            true,
+            // Replays a committed fixture whose anchor is intentionally old; the
+            // weak-subjectivity guard is for live bootstrap, not fixed replay.
+            false,
             state,
         );
         let mut bs_a = SpineAdapter::connect_tile(&bs, &mut *spine);

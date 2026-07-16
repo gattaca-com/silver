@@ -217,7 +217,7 @@ fn drain_entire_base_then_appended() {
 /// ProgressiveList root of the effective queue.
 #[test]
 fn adopt_gloas_after_drain_and_push_matches_reference() {
-    use crate::progressive::hash_progressive_list;
+    use crate::{merkle::hash_list, progressive::ProgressiveHasher};
 
     let base: Vec<u8> = [pc(1), pc(2), pc(3)]
         .iter()
@@ -236,12 +236,12 @@ fn adopt_gloas_after_drain_and_push_matches_reference() {
     wv.adopt_gloas();
 
     let expected: Vec<B256> = [pc(2), pc(7)].iter().map(QueueItem::leaf).collect();
-    let want = hash_progressive_list(expected.iter().copied(), expected.len(), |l| l);
+    let want = hash_list(ProgressiveHasher::new(), expected.iter().copied());
     assert_eq!(wv.consolidations.reader().hash_root(), want);
 
     // A post-adoption push keeps extending the gloas frontier.
     wv.consolidations.push(pc(9));
     let expected: Vec<B256> = [pc(2), pc(7), pc(9)].iter().map(QueueItem::leaf).collect();
-    let want = hash_progressive_list(expected.iter().copied(), expected.len(), |l| l);
+    let want = hash_list(ProgressiveHasher::new(), expected.iter().copied());
     assert_eq!(wv.consolidations.reader().hash_root(), want);
 }

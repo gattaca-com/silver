@@ -2,12 +2,15 @@ use silver_beacon_state_data::{
     Builder, BuilderPendingPayment, Epoch, FAR_FUTURE_EPOCH, SLOTS_PER_EPOCH, StateWriterView,
     Withdrawals,
 };
+use silver_common::ssz_view::{
+    BUILDER_DEPOSIT_REQUEST_SIZE, BUILDER_EXIT_REQUEST_SIZE, BuilderDepositRequestView,
+    BuilderExitRequestView,
+};
 
 use crate::stf::{is_valid_builder_deposit_signature, total_active_balance};
 
-/// `2**13` epochs — delay from exit initiation to a builder's balance becoming
-/// withdrawable.
-const MIN_BUILDER_WITHDRAWABILITY_DELAY: u64 = 1 << 13;
+/// Delay from exit initiation to a builder's balance becoming withdrawable.
+const MIN_BUILDER_WITHDRAWABILITY_DELAY: u64 = 1 << 6;
 /// `UINT64_MAX` — the proposer self-built the payload (no builder, no payment).
 pub(crate) const BUILDER_INDEX_SELF_BUILD: u64 = u64::MAX;
 /// `uint8(0)` — the only builder version permitted to submit bids.
@@ -38,11 +41,8 @@ const BUILDER_PAYMENT_THRESHOLD_NUMERATOR: u64 = 6;
 const BUILDER_PAYMENT_THRESHOLD_DENOMINATOR: u64 = 10;
 const SPE: usize = SLOTS_PER_EPOCH as usize;
 
-// `BuilderDepositRequest`: pubkey(48) + withdrawal_credentials(32) + amount(8)
-// + signature(96).
-pub(crate) const BUILDER_DEPOSIT_SSZ: usize = 184;
-// `BuilderExitRequest`: source_address(20) + pubkey(48).
-pub(crate) const BUILDER_EXIT_SSZ: usize = 68;
+pub(crate) const BUILDER_DEPOSIT_SSZ: usize = BUILDER_DEPOSIT_REQUEST_SIZE;
+pub(crate) const BUILDER_EXIT_SSZ: usize = BUILDER_EXIT_REQUEST_SIZE;
 
 #[inline]
 pub(crate) fn is_active_builder(builder: &Builder, finalized_epoch: u64) -> bool {
@@ -113,11 +113,16 @@ pub fn process_builder_pending_payments(view: &mut StateWriterView, current_epoc
 }
 
 pub fn process_builder_deposit_request(view: &mut StateWriterView, request: &[u8]) {
-    debug_assert_eq!(request.len(), BUILDER_DEPOSIT_SSZ);
-    let pubkey: [u8; 48] = request[0..48].try_into().unwrap();
-    let credentials = Withdrawals(request[48..80].try_into().unwrap());
-    let amount = u64::from_le_bytes(request[80..88].try_into().unwrap());
-    let signature: [u8; 96] = request[88..184].try_into().unwrap();
+    let request: &[u8; BUILDER_DEPOSIT_REQUEST_SIZE] = request.try_into().unwrap();
+    let pubkey = *BuilderDepositRequestView::pubkey(request);
+    let credentials = Withdrawals(*BuilderDepositRequestView::withdrawal_credentials(request));
+    let amount = BuilderDepositRequestView::amount(request);
+    let signature = *BuilderDepositRequestView::signature(request);
+
+    // Deposits with unexpected withdrawal credential prefixes are ignored.
+    if !credentials.has_builder_credential() {
+        return;
+    }
 
     let current_epoch = view.slot.state().slot / SLOTS_PER_EPOCH;
 
@@ -128,16 +133,15 @@ pub fn process_builder_deposit_request(view: &mut StateWriterView, request: &[u8
             }
         }
         Some(builder_index) => {
-            view.builders.add_balance(builder_index, amount);
-            // Reset the withdrawable epoch for a builder that has already exited.
-            let exited = view.builders.reader().get(builder_index).unwrap().withdrawable_epoch !=
-                FAR_FUTURE_EPOCH;
-            if exited {
+            // An exited-and-swept builder re-enters the withdrawal sweep.
+            let b = *view.builders.reader().get(builder_index).unwrap();
+            if b.withdrawable_epoch != FAR_FUTURE_EPOCH && b.balance == 0 {
                 view.builders.set_withdrawable_epoch(
                     builder_index,
                     current_epoch + MIN_BUILDER_WITHDRAWABILITY_DELAY,
                 );
             }
+            view.builders.add_balance(builder_index, amount);
         }
     }
 }
@@ -151,7 +155,7 @@ fn add_builder_to_registry(
 ) {
     let builder = Builder {
         pubkey,
-        version: credentials.0[0],
+        version: PAYLOAD_BUILDER_VERSION,
         execution_address: *credentials.execution_address(),
         balance: amount,
         deposit_epoch: current_epoch,
@@ -176,9 +180,9 @@ pub fn process_builder_exit_request(
     finalized_epoch: u64,
     request: &[u8],
 ) {
-    debug_assert_eq!(request.len(), BUILDER_EXIT_SSZ);
-    let source_address: [u8; 20] = request[0..20].try_into().unwrap();
-    let pubkey: [u8; 48] = request[20..68].try_into().unwrap();
+    let request: &[u8; BUILDER_EXIT_REQUEST_SIZE] = request.try_into().unwrap();
+    let source_address = *BuilderExitRequestView::source_address(request);
+    let pubkey = *BuilderExitRequestView::pubkey(request);
 
     let Some(builder_index) = view.builders.reader().find_by_pubkey(&pubkey) else {
         return;

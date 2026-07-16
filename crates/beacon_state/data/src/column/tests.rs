@@ -1,5 +1,8 @@
 use super::{BalancesGroup, BalancesWriteView};
-use crate::{merkle::hash_uint64_list, types::VALIDATOR_REGISTRY_LIMIT};
+use crate::{
+    merkle::{MerkleStack, hash_uint64_list},
+    types::VALIDATOR_REGISTRY_LIMIT,
+};
 
 pub(super) fn le_bytes(values: &[u64]) -> Vec<u8> {
     values.iter().flat_map(|v| v.to_le_bytes()).collect()
@@ -11,7 +14,11 @@ pub(super) fn group(values: &[u64]) -> BalancesGroup {
 
 fn assert_root_matches(wv: &BalancesWriteView<'_>) {
     let vals: Vec<u64> = wv.iter().collect();
-    let want = hash_uint64_list(&vals, vals.len(), VALIDATOR_REGISTRY_LIMIT);
+    let want = hash_uint64_list(
+        MerkleStack::new(VALIDATOR_REGISTRY_LIMIT.div_ceil(4)),
+        &le_bytes(&vals),
+        vals.len(),
+    );
     assert_eq!(wv.hash_root(), want);
 }
 

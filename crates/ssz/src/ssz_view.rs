@@ -2350,6 +2350,62 @@ impl ConsolidationRequestView {
     }
 }
 
+// -- BuilderDepositRequest (Gloas ExecutionRequests element) ----------
+//
+// All fixed, 184B.
+//   [0..48)    pubkey
+//   [48..80)   withdrawal_credentials
+//   [80..88)   amount
+//   [88..184)  signature
+
+pub const BUILDER_DEPOSIT_REQUEST_SIZE: usize = 184;
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[repr(C)]
+pub struct BuilderDepositRequestView;
+
+impl BuilderDepositRequestView {
+    #[inline]
+    pub fn pubkey(buf: &[u8; BUILDER_DEPOSIT_REQUEST_SIZE]) -> &[u8; 48] {
+        fixed(buf, 0)
+    }
+    #[inline]
+    pub fn withdrawal_credentials(buf: &[u8; BUILDER_DEPOSIT_REQUEST_SIZE]) -> &[u8; 32] {
+        fixed(buf, 48)
+    }
+    #[inline]
+    pub fn amount(buf: &[u8; BUILDER_DEPOSIT_REQUEST_SIZE]) -> u64 {
+        u64_le(buf, 80)
+    }
+    #[inline]
+    pub fn signature(buf: &[u8; BUILDER_DEPOSIT_REQUEST_SIZE]) -> &[u8; 96] {
+        fixed(buf, 88)
+    }
+}
+
+// -- BuilderExitRequest (Gloas ExecutionRequests element) -------------
+//
+// All fixed, 68B.
+//   [0..20)   source_address
+//   [20..68)  pubkey
+
+pub const BUILDER_EXIT_REQUEST_SIZE: usize = 68;
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[repr(C)]
+pub struct BuilderExitRequestView;
+
+impl BuilderExitRequestView {
+    #[inline]
+    pub fn source_address(buf: &[u8; BUILDER_EXIT_REQUEST_SIZE]) -> &[u8; 20] {
+        fixed(buf, 0)
+    }
+    #[inline]
+    pub fn pubkey(buf: &[u8; BUILDER_EXIT_REQUEST_SIZE]) -> &[u8; 48] {
+        fixed(buf, 20)
+    }
+}
+
 // -- ExecutionPayload (variable; in BeaconBlockBody.execution_payload) -
 //
 // Fixed part 528B; trailing variable region holds extra_data, transactions,

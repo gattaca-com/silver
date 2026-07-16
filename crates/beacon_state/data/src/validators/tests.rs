@@ -2,9 +2,10 @@ use blst::min_pk::PublicKey;
 
 use super::{FinalizedValidators, ValSeed, ValidatorsGroup, validator_hash};
 use crate::{
-    Withdrawals,
-    merkle::{hash_concat, hash_fixed_bytes, merkleize, uint64_chunk},
-    types::{BLSPubkey, FAR_FUTURE_EPOCH, validator_capacity},
+    B256, Withdrawals,
+    merkle::{MerkleStack, hash_concat, hash_fixed_bytes, hash_list, merkleize, uint64_chunk},
+    progressive::ProgressiveHasher,
+    types::{BLSPubkey, FAR_FUTURE_EPOCH, VALIDATOR_REGISTRY_LIMIT, validator_capacity},
 };
 
 fn pk(b: u8) -> BLSPubkey {
@@ -295,7 +296,7 @@ fn descendant_view_survives_finalize() {
 }
 
 /// Spec-default leaf of an appended-then-maybe-edited validator.
-fn default_leaf(pk_byte: u8, effective_balance: u64) -> crate::B256 {
+fn default_leaf(pk_byte: u8, effective_balance: u64) -> B256 {
     validator_hash(
         &pk(pk_byte),
         &creds(pk_byte),
@@ -308,13 +309,12 @@ fn default_leaf(pk_byte: u8, effective_balance: u64) -> crate::B256 {
     )
 }
 
-fn gloas_reference_root(leaves: &[crate::B256]) -> crate::B256 {
-    crate::progressive::hash_progressive_list(leaves.iter().copied(), leaves.len(), |l| l)
+fn gloas_reference_root(leaves: &[B256]) -> B256 {
+    hash_list(ProgressiveHasher::new(), leaves.iter().copied())
 }
 
-fn fulu_reference_root(leaves: &[crate::B256]) -> crate::B256 {
-    use crate::{merkle::hash_list, types::VALIDATOR_REGISTRY_LIMIT};
-    hash_list(leaves.iter().copied(), leaves.len(), VALIDATOR_REGISTRY_LIMIT, |l| l)
+fn fulu_reference_root(leaves: &[B256]) -> B256 {
+    hash_list(MerkleStack::new(VALIDATOR_REGISTRY_LIMIT), leaves.iter().copied())
 }
 
 #[test]
