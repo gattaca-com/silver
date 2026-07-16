@@ -32,6 +32,7 @@ pub(crate) struct PeerState {
     pub peer_id: PeerId,
     pub addr: SocketAddr,
     pub ip_prefix: IpPrefix,
+    pub connected_at: Instant,
 
     // Subscriptions observed from the peer's SUBSCRIBE frames.
     pub topics: HashSet<GossipTopic>,
@@ -80,6 +81,7 @@ impl PeerState {
             peer_id,
             addr,
             ip_prefix: IpPrefix::from(addr.ip()),
+            connected_at: now,
             topics: HashSet::with_capacity(TOPICS_PER_PEER_CAP),
             topic_stats: HashMap::with_capacity(TOPICS_PER_PEER_CAP),
             msg_cache: CountingWitherFilter::default(),

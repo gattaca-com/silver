@@ -102,7 +102,8 @@ pub struct PeerManager {
     /// same TTL as `banned_ips` (sliding-window).
     ip_eviction_counts: HashMap<IpAddr, (u32, Instant)>,
 
-    /// PeerIds we've graylist-banned, keyed by ban time. Drives discovery
+    /// PeerIds we've graylist-banned, plus peers whose Goodbye told us *they*
+    /// banned us (dial backoff), keyed by ban time. Drives discovery
     /// filtering and the `Unban` emission once `banned_peer_ttl` elapses.
     banned_peers: HashMap<PeerId, Instant>,
 
@@ -473,7 +474,7 @@ impl PeerManager {
             }
             PeerEvent::P2pDisconnect { p2p_peer, peer_id } => {
                 self.dialing.remove(&peer_id);
-                self.on_disconnected(p2p_peer, now, emit);
+                self.on_disconnected(p2p_peer, now, "transport", emit);
             }
             PeerEvent::P2pCannotCreateStream { p2p_peer, .. } => {
                 self.add_behaviour_penalty(p2p_peer, 1.0, "cannot create stream");
@@ -766,15 +767,21 @@ impl PeerManager {
         &mut self,
         conn: usize,
         now: Instant,
+        reason: &'static str,
         emit: &mut impl FnMut(PeerControl),
     ) -> Option<&PeerRecord> {
         let mut state = self.peers.remove(&conn)?;
 
         let (dc_subscribed, dc_advertised) = self.data_column_overlap(conn, &state);
+        let user_agent =
+            self.database.by_p2p_id(conn).and_then(|r| r.identify.as_ref()).map(|i| i.user_agent());
         tracing::info!(
             p2p_peer = conn,
             peer_id = ?state.peer_id,
             addr = ?state.addr,
+            reason,
+            ?user_agent,
+            age_ms = now.saturating_duration_since(state.connected_at).as_millis(),
             score = state.cached_score,
             dc_subscribed,
             dc_advertised,
@@ -1358,7 +1365,8 @@ impl PeerManager {
         code: u64,
         emit: &mut impl FnMut(PeerControl),
     ) {
-        if let Some(peer_record) = self.on_disconnected(p2p_peer, now, emit) &&
+        if let Some(peer_record) =
+            self.on_disconnected(p2p_peer, now, Self::goodbye_reason(code), emit) &&
             let Some(peer_id) = peer_record.peer_id
         {
             let user_agent = peer_record.identify.as_ref().map(|i| i.user_agent());
@@ -1368,7 +1376,16 @@ impl PeerManager {
                 ?user_agent,
                 "received goodbye"
             );
-            emit(PeerControl::P2pDisconnect { p2p: peer_id, p2p_connection: p2p_peer })
+            emit(PeerControl::P2pDisconnect { p2p: peer_id, p2p_connection: p2p_peer });
+
+            // Remote ban (Banned/BannedIP): redialing is futile until their
+            // ban decays, so back off dialing for `banned_peer_ttl`. No
+            // `PeerControl::Ban` — their inbound stays welcome if the ban
+            // lifts sooner; `gc_banned_peers`'s Unban is a no-op for us.
+            if matches!(code, 128 | 129) {
+                tracing::info!(?peer_id, code, "peer banned us; dial backoff");
+                self.banned_peers.insert(peer_id, now);
+            }
         }
         self.peers.remove(&p2p_peer);
     }
