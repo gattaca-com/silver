@@ -315,6 +315,7 @@ impl RangeKind for ColumnKind {
     }
 
     fn request(request_id: u64, range: &Range, tried: &HashSet<usize>) -> SyncAction {
+        tracing::info!(start=range.start_slot, count=range.count, "request columns by range");
         SyncAction::RequestColumnsByRange {
             request_id,
             peer: 0,
