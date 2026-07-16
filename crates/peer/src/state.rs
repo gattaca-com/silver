@@ -69,6 +69,9 @@ pub(crate) struct PeerState {
     // Cached score value + recomputation timestamp.
     pub cached_score: f64,
     pub score_valid_at: Instant,
+
+    // Graylisted but kept for data-column coverage; dedups the spare log.
+    pub evict_spared: bool,
 }
 
 impl PeerState {
@@ -89,6 +92,7 @@ impl PeerState {
             backoffs: HashMap::new(),
             cached_score: 0.0,
             score_valid_at: now,
+            evict_spared: false,
         }
     }
 

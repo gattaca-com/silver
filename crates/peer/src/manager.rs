@@ -770,6 +770,17 @@ impl PeerManager {
     ) -> Option<&PeerRecord> {
         let mut state = self.peers.remove(&conn)?;
 
+        let (dc_subscribed, dc_advertised) = self.data_column_overlap(conn, &state);
+        tracing::info!(
+            p2p_peer = conn,
+            peer_id = ?state.peer_id,
+            addr = ?state.addr,
+            score = state.cached_score,
+            dc_subscribed,
+            dc_advertised,
+            "peer disconnected"
+        );
+
         // De-index IP colocation.
         if let Some(v) = self.ip_colocations.get_mut(&state.ip_prefix) {
             v.retain(|c| *c != conn);
@@ -1507,31 +1518,87 @@ impl PeerManager {
         }
     }
 
+    /// (subscribed, advertised) overlap with our custody columns:
+    /// `subscribed` counts our data-column topics in the peer's SUBSCRIBEs,
+    /// `advertised` counts custody groups from its ENR/MetaData.
+    fn data_column_overlap(&self, conn: usize, state: &PeerState) -> (u32, u32) {
+        let subscribed = subscribed_column_mask(&state.topics) & self.custody_columns;
+        let advertised =
+            self.database.data_column_custody_groups_intersection(conn, self.custody_columns);
+        (subscribed.count_ones(), advertised.count_ones())
+    }
+
+    fn data_column_peer_count(&self, exclude: usize) -> usize {
+        self.peers
+            .iter()
+            .filter(|(conn, state)| {
+                **conn != exclude && {
+                    let (subscribed, advertised) = self.data_column_overlap(**conn, state);
+                    subscribed > 0 || advertised > 0
+                }
+            })
+            .count()
+    }
+
     fn evict_graylisted(&mut self, now: Instant, emit: &mut impl FnMut(PeerControl)) {
         let threshold = self.params.graylist_threshold;
         // Two-phase: identify + remove (can't mutate self.peers while
         // iterating it); emit is inline in phase 2.
         let mut evict: Vec<(usize, PeerId, IpAddr)> = Vec::new();
+        let mut spared: Vec<usize> = Vec::new();
+        let mut recovered: Vec<usize> = Vec::new();
         for (conn, peer) in &self.peers {
-            if peer.cached_score < threshold {
-                let coloc = self.ip_colocations.get(&peer.ip_prefix).map(|v| v.len()).unwrap_or(1);
-                let b = scoring::score_breakdown(peer, &self.params, coloc, now);
+            if peer.cached_score >= threshold {
+                if peer.evict_spared {
+                    recovered.push(*conn);
+                }
+                continue;
+            }
+            let (dc_subscribed, dc_advertised) = self.data_column_overlap(*conn, peer);
+            if (dc_subscribed > 0 || dc_advertised > 0) &&
+                self.data_column_peer_count(*conn) < self.params.d_low as usize
+            {
+                spared.push(*conn);
+                continue;
+            }
+            let coloc = self.ip_colocations.get(&peer.ip_prefix).map(|v| v.len()).unwrap_or(1);
+            let b = scoring::score_breakdown(peer, &self.params, coloc, now);
+            tracing::warn!(
+                peer_id = ?peer.peer_id,
+                addr = ?peer.addr,
+                total = b.total,
+                threshold,
+                dc_subscribed,
+                dc_advertised,
+                p1_time_in_mesh = b.p1_time_in_mesh,
+                p2_first_deliveries = b.p2_first_deliveries,
+                p3_mesh_deficit = b.p3_mesh_deficit,
+                p3b_mesh_failure = b.p3b_mesh_failure,
+                p4_invalid = b.p4_invalid,
+                p5_application = b.p5_application,
+                p6_ip_colocation = b.p6_ip_colocation,
+                p7_behaviour = b.p7_behaviour,
+                "evicting greylisted peer: {conn}"
+            );
+            evict.push((*conn, peer.peer_id, peer.addr.ip()));
+        }
+        for conn in recovered {
+            if let Some(peer) = self.peers.get_mut(&conn) {
+                peer.evict_spared = false;
+            }
+        }
+        for conn in spared {
+            if let Some(peer) = self.peers.get_mut(&conn) &&
+                !peer.evict_spared
+            {
+                peer.evict_spared = true;
                 tracing::warn!(
+                    p2p_peer = conn,
                     peer_id = ?peer.peer_id,
-                    addr = ?peer.addr,
-                    total = b.total,
+                    score = peer.cached_score,
                     threshold,
-                    p1_time_in_mesh = b.p1_time_in_mesh,
-                    p2_first_deliveries = b.p2_first_deliveries,
-                    p3_mesh_deficit = b.p3_mesh_deficit,
-                    p3b_mesh_failure = b.p3b_mesh_failure,
-                    p4_invalid = b.p4_invalid,
-                    p5_application = b.p5_application,
-                    p6_ip_colocation = b.p6_ip_colocation,
-                    p7_behaviour = b.p7_behaviour,
-                    "evicting greylisted peer: {conn}"
+                    "sparing graylisted data-column peer: few alternatives"
                 );
-                evict.push((*conn, peer.peer_id, peer.addr.ip()));
             }
         }
         for (conn, peer_id, ip) in evict {
@@ -1729,6 +1796,13 @@ impl RejectedRoots {
     pub fn count(&self) -> usize {
         self.set.len()
     }
+}
+
+fn subscribed_column_mask(topics: &HashSet<GossipTopic>) -> u128 {
+    topics.iter().fold(0u128, |mask, t| match t {
+        GossipTopic::DataColumnSidecar(id) if *id < 128 => mask | (1u128 << id),
+        _ => mask,
+    })
 }
 
 /// Build SSZ Bitvector[64] / Bitvector[N≤8] masks from `our_topics`. Each
