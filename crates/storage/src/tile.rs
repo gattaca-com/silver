@@ -101,6 +101,7 @@ pub struct StorageTile {
     // the trigger so we encode at most once per finalized-epoch advance.
     // Advanced when a persist is queued; re-derived from disk on restart.
     checkpointed_epoch: u64,
+    wall_slot: u64,
     // Set by a Status when finality advanced past the last persisted epoch and
     // we are caught up to head; consumed when a persist is started (the
     // in-flight checkpoint then lives on the `Store`, driven by `file_io`).
@@ -166,6 +167,7 @@ impl StorageTile {
             validated_blocks: Wheel::new(EPOCH_DURATION),
             outstanding_requests: Wheel::new(Duration::from_millis(100)),
             checkpointed_epoch,
+            wall_slot: u64::MAX,
             persist_pending: false,
             replay_blocks,
             replay_producer,
@@ -336,7 +338,7 @@ impl StorageTile {
     }
 
     fn columns_to_request(&self, root: &BlockRoot) -> u128 {
-        let validated = self.validated_columns.get(&root).copied().unwrap_or(0);
+        let validated = self.validated_columns.get(root).copied().unwrap_or(0);
         self.custody_group_columns & !validated
     }
 
@@ -401,9 +403,8 @@ impl StorageTile {
         let parent_root = DataColumnSidecarFuluView::parent_root(buffer);
         let slot = DataColumnSidecarFuluView::slot(buffer);
 
-        if self.store.is_synced() && slot > self.store.head_slot() + 1 {
-            // received data columns with parent ahead of current head
-            // data column request will be retried
+        if self.store.is_synced() && slot > self.wall_slot.saturating_add(1) {
+            tracing::debug!(?stream_id, slot, wall_slot = self.wall_slot, "post-wall sidecar");
             return ColumnOutcome::Skip;
         }
 
@@ -562,7 +563,8 @@ impl StorageTile {
         let block_root = *DataColumnSidecarGloasView::beacon_block_root(buffer);
         let slot = DataColumnSidecarGloasView::slot(buffer);
 
-        if self.store.is_synced() && slot > self.store.head_slot() + 1 {
+        if self.store.is_synced() && slot > self.wall_slot.saturating_add(1) {
+            tracing::debug!(?stream_id, slot, wall_slot = self.wall_slot, "post-wall sidecar");
             return ColumnOutcome::Skip;
         }
         if slot <= self.store.finalized_slot() {
@@ -877,6 +879,7 @@ impl Tile<SilverSpine> for StorageTile {
         });
 
         if let Some((ssz, wall_slot)) = latest_status_event {
+            self.wall_slot = wall_slot;
             let head_slot = StatusView::head_slot(&ssz);
             let head_root = *StatusView::head_root(&ssz);
             let finalized_epoch = StatusView::finalized_epoch(&ssz);
