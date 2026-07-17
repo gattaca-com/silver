@@ -318,7 +318,7 @@ fn fulu_reference_root(leaves: &[B256]) -> B256 {
 }
 
 #[test]
-fn gloas_hash_window_migrates_and_closes() {
+fn gloas_hash_transition_migrates_and_closes() {
     let mut g = group();
     let a = {
         let mut w = g.roll_fresh();
@@ -330,8 +330,8 @@ fn gloas_hash_window_migrates_and_closes() {
     let fulu_leaves: Vec<_> = (0..5u8).map(|i| default_leaf(i, 0)).collect();
     assert_eq!(g.view(a).hash_root(), fulu_reference_root(&fulu_leaves));
 
-    // Entering the window changes no fork's root.
-    g.begin_gloas_hash_window();
+    // Entering the transition changes no fork's root.
+    g.begin_gloas_hash_transition();
     assert_eq!(g.view(a).hash_root(), fulu_reference_root(&fulu_leaves));
 
     // Fork B crosses the fork: its root flips to the gloas shape; the
@@ -349,7 +349,7 @@ fn gloas_hash_window_migrates_and_closes() {
     assert_eq!(g.view(b).hash_root(), gloas_reference_root(&gloas_leaves));
     assert_eq!(g.view(a).hash_root(), fulu_reference_root(&fulu_leaves));
 
-    // Finalizing the crossing fork closes the window; the reanchored
+    // Finalizing the crossing fork closes the transition; the reanchored
     // survivor and every later fork are gloas-shaped.
     let live = g.finalize(b, &[b]);
     assert_eq!(g.view(live[0]).hash_root(), gloas_reference_root(&gloas_leaves));
@@ -361,7 +361,7 @@ fn gloas_hash_window_migrates_and_closes() {
 }
 
 #[test]
-fn window_survives_pre_fork_winner_finalization() {
+fn transition_survives_pre_fork_winner_finalization() {
     let mut g = group();
     let a = {
         let mut w = g.roll_fresh();
@@ -370,7 +370,7 @@ fn window_survives_pre_fork_winner_finalization() {
         }
         w.commit()
     };
-    g.begin_gloas_hash_window();
+    g.begin_gloas_hash_transition();
 
     let b = {
         let mut w = g.roll_from(a);
@@ -379,8 +379,8 @@ fn window_survives_pre_fork_winner_finalization() {
         w.commit()
     };
 
-    // Winner A never crossed: both trees are promoted (window invariant),
-    // the window stays open, and the Dual survivor B is rebased against the
+    // Winner A never crossed: both trees are promoted (transition invariant),
+    // the transition stays open, and the Dual survivor B is rebased against the
     // winner's synthesized gloas edits.
     let live = g.finalize(a, &[a, b]);
     let fulu_leaves: Vec<_> = (0..4u8).map(|i| default_leaf(i, 0)).collect();
@@ -389,7 +389,7 @@ fn window_survives_pre_fork_winner_finalization() {
     assert_eq!(g.view(live[0]).hash_root(), fulu_reference_root(&fulu_leaves));
     assert_eq!(g.view(live[1]).hash_root(), gloas_reference_root(&gloas_leaves));
 
-    // A later crossing finalization still closes the window cleanly.
+    // A later crossing finalization still closes the transition cleanly.
     let live = g.finalize(live[1], &[live[1]]);
     assert_eq!(g.view(live[0]).hash_root(), gloas_reference_root(&gloas_leaves));
     let w = g.roll_fresh();

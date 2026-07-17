@@ -2,7 +2,7 @@ use super::{BuildersGroup, builder_hash, finalized::FinalizedBuilders};
 use crate::{
     B256,
     gloas::{BUILDER_REGISTRY_LIMIT, Builder},
-    hash_tree::DeltaHashTree,
+    hash_tree::GloasDeltaHashTree,
     ring::{Reset, Slot},
     sparse::Edits,
 };
@@ -17,13 +17,13 @@ pub(super) struct BuildersDelta {
     base_count: usize,
     appended: Vec<Builder>,
     edits: Edits<Builder>,
-    hash_overlay: DeltaHashTree,
+    hash_delta: GloasDeltaHashTree,
 }
 
 impl BuildersDelta {
     pub(super) fn anchor_at(&mut self, base: &FinalizedBuilders) {
         self.base_count = base.len();
-        self.hash_overlay = DeltaHashTree::new_at(base.hash());
+        self.hash_delta = GloasDeltaHashTree::new_at(base.hash());
     }
 
     pub(super) fn promote_into_base(&self, base: &mut FinalizedBuilders) {
@@ -36,7 +36,7 @@ impl BuildersDelta {
         base.builders[self.base_count..end].copy_from_slice(&self.appended);
         self.edits.scatter(&mut base.builders[..end]);
         base.count = end;
-        base.hash.promote_delta(&self.hash_overlay);
+        base.hash.promote_delta(&self.hash_delta);
     }
 
     pub(super) fn rebase_and_prune_from(
@@ -55,9 +55,9 @@ impl BuildersDelta {
             base.builders[i as usize]
         });
 
-        self.hash_overlay = old.hash_overlay.clone();
-        self.hash_overlay.rebase(base.hash(), &winner.hash_overlay);
-        base.hash().prune_delta_against(&mut self.hash_overlay, &winner.hash_overlay);
+        self.hash_delta = old.hash_delta.clone();
+        self.hash_delta.rebase(base.hash(), &winner.hash_delta);
+        base.hash().prune_delta_against(&mut self.hash_delta, &winner.hash_delta);
     }
 }
 
@@ -66,14 +66,14 @@ impl Reset for BuildersDelta {
         self.base_count = 0;
         self.appended.clear();
         self.edits.clear();
-        self.hash_overlay = DeltaHashTree::default();
+        self.hash_delta = GloasDeltaHashTree::default();
     }
 
     fn reset_from(&mut self, other: &Self) {
         self.base_count = other.base_count;
         self.appended.clone_from(&other.appended);
         self.edits.clone_from(&other.edits);
-        self.hash_overlay = other.hash_overlay.clone();
+        self.hash_delta = other.hash_delta.clone();
     }
 }
 
@@ -128,9 +128,8 @@ impl<'a> BuildersView<'a> {
 
     #[inline]
     pub fn hash_root(&self) -> B256 {
-        const LIST_DEPTH: u32 = BUILDER_REGISTRY_LIMIT.trailing_zeros();
         let len = self.len();
-        self.delta.hash_overlay.ssz_list_root(self.base.hash(), LIST_DEPTH, len)
+        self.delta.hash_delta.ssz_list_root(self.base.hash(), len)
     }
 
     // TODO: replace the linear scan
@@ -185,7 +184,7 @@ impl<'a> BuildersWriteView<'a> {
 
     fn refresh_leaf(&mut self, i: usize) {
         let leaf = self.reader().recompute_leaf(i);
-        self.fork.hash_overlay.set_leaf(self.base.hash(), i, leaf);
+        self.fork.hash_delta.set_leaf(self.base.hash(), i, leaf);
     }
 
     #[inline]

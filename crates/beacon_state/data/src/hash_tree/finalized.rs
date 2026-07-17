@@ -26,6 +26,14 @@ pub struct FinalizedHashTree {
     max_elements: usize,
 }
 
+impl Default for FinalizedHashTree {
+    /// The 1-capacity zero tree — the cheapest valid instance (moved-from
+    /// placeholder).
+    fn default() -> Self {
+        Self::from_leaves(std::iter::empty(), 1)
+    }
+}
+
 impl FinalizedHashTree {
     #[inline]
     pub const fn root() -> u32 {

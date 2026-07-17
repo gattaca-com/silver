@@ -27,7 +27,7 @@ pub use pending::{
 };
 pub use ring::{Id, Reset, Ring};
 pub use silver_chain_spec::{BlobParameters, SpecConfig};
-pub(crate) use silver_ssz::ssz_hash;
+pub(crate) use silver_ssz::{merkle, progressive};
 pub use slot_state::{
     SlotStateFinalized, SlotStateGroup, SlotStateId, SlotStateView, SlotStateWriteView,
 };
@@ -91,6 +91,18 @@ pub struct BeaconState {
 }
 
 impl BeaconState {
+    /// Rebuild every fork-shaped tier's finalized base in the gloas shape
+    /// (post-gloas checkpoint decode, before any fork rolls). The tier
+    /// roster here and the fork-block migration's must stay in sync.
+    pub fn migrate_finalized_to_gloas(&mut self) {
+        self.balances.migrate_finalized_to_gloas();
+        self.inactivity.migrate_finalized_to_gloas();
+        self.previous_participation.migrate_finalized_to_gloas();
+        self.current_participation.migrate_finalized_to_gloas();
+        self.validators.migrate_finalized_to_gloas();
+        self.pending.mark_gloas_base();
+    }
+
     pub fn is_finalized_post_gloas(&self) -> bool {
         self.epoch.finalized().state().fork.current_version == self.immutable.gloas_fork_version
     }

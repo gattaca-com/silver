@@ -12,7 +12,7 @@ mod tests;
 
 pub use delta::DeltaHashTree;
 pub use finalized::FinalizedHashTree;
-pub use gloas::{GloasFinalized, GloasOverlay};
+pub use gloas::{GloasDeltaHashTree, GloasFinalized};
 
 use crate::{
     merkle::{ZERO_HASHES, hash_concat, mix_in_length},

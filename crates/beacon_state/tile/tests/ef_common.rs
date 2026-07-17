@@ -13,9 +13,10 @@ use silver_beacon_state::{
     stf,
 };
 use silver_beacon_state_data::{
-    B256, EpochGroup, EpochView, LongtailGroup, SpecConfig, StateId, StateWriterView,
-    effective_randao_mixes_into, effective_slashings_into,
+    B256, EpochGroup, EpochView, LongtailGroup, SLOTS_PER_EPOCH, SpecConfig, StateId,
+    StateWriterView, effective_randao_mixes_into, effective_slashings_into,
 };
+use silver_common::ssz_view::SignedBeaconBlockView;
 
 #[path = "support/loaded_state.rs"]
 mod loaded_state;
@@ -65,6 +66,13 @@ impl LoadedState {
     /// the (possibly epoch/longtail-rolled) bundle and write it back so the
     /// next block / the post-state comparison sees it.
     pub fn apply_block(&mut self, cfg: &SpecConfig, block_ssz: &[u8]) -> Result<(), String> {
+        // Mirror of the tile's EIP-7688 transition hook (`apply_stf_and_commit`):
+        // opened before any fork's `upgrade_to_gloas` runs.
+        let block_epoch = SignedBeaconBlockView::slot(block_ssz) / SLOTS_PER_EPOCH;
+        if cfg.is_gloas_at(block_epoch + 1) {
+            self.bs.validators.begin_gloas_hash_transition();
+        }
+
         let parent = self.state_id;
         let (mut view, epoch, longtail) = self.view();
         match stf::apply_signed_block_debug(cfg, &mut view, epoch, longtail, parent, block_ssz) {
@@ -140,8 +148,40 @@ pub fn compare_states(label: &str, a: &mut LoadedState, b: &mut LoadedState) -> 
     diff_rings(&mut diffs, &va, &ea, &vb, &eb);
     diff_latest_block_header(&mut diffs, &va, &vb);
     diff_proposer_lookahead(&mut diffs, &ea, &eb);
+    diff_builders_and_pending(&mut diffs, &va, &vb);
 
     diffs
+}
+
+fn diff_builders_and_pending(diffs: &mut Vec<String>, va: &StateWriterView, vb: &StateWriterView) {
+    let (ba, bb) = (va.builders.reader(), vb.builders.reader());
+    if ba.len() != bb.len() {
+        diffs.push(format!("  builders_len: {} vs {}", ba.len(), bb.len()));
+    }
+    for (i, (x, y)) in ba.iter().zip(bb.iter()).enumerate() {
+        if x != y {
+            diffs.push(format!(
+                "  builders[{i}]: pk[0]={} bal={} dep_epoch={} vs pk[0]={} bal={} dep_epoch={}",
+                x.pubkey[0], x.balance, x.deposit_epoch, y.pubkey[0], y.balance, y.deposit_epoch
+            ));
+        }
+    }
+
+    let (da, db) = (va.pending.deposits.reader(), vb.pending.deposits.reader());
+    if da.len() != db.len() {
+        diffs.push(format!("  pending_deposits_len: {} vs {}", da.len(), db.len()));
+    }
+    for i in 0..da.len().min(db.len()) {
+        let (x, y) = (da.get(i), db.get(i));
+        if (x.pubkey, x.amount, x.slot, x.withdrawal_credentials.0) !=
+            (y.pubkey, y.amount, y.slot, y.withdrawal_credentials.0)
+        {
+            diffs.push(format!(
+                "  pending_deposits[{i}]: pk[0]={} amt={} slot={} vs pk[0]={} amt={} slot={}",
+                x.pubkey[0], x.amount, x.slot, y.pubkey[0], y.amount, y.slot
+            ));
+        }
+    }
 }
 
 fn diff_scalars(

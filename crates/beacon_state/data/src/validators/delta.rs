@@ -1,12 +1,14 @@
 use blst::min_pk::PublicKey;
 
-use super::{FinalizedValidators, ValidatorsGroup, ValidatorsId, validator_hash};
+use super::{
+    FinalizedValidators, ValidatorsGroup, ValidatorsId, hash_shape::VersionedDeltaHash,
+    validator_hash,
+};
 use crate::{
     B256, Withdrawals,
-    hash_tree::DeltaHashTree,
     ring::{Reset, Slot as RingSlot},
     sparse::Edits,
-    types::{BLSPubkey, Epoch, FAR_FUTURE_EPOCH, VALIDATOR_REGISTRY_LIMIT},
+    types::{BLSPubkey, Epoch, FAR_FUTURE_EPOCH},
 };
 
 /// A validator appended in this fork. Only the immutable identity fields are
@@ -38,7 +40,7 @@ pub struct ValidatorsDelta {
     activation_epoch_edits: Edits<Epoch>,
     exit_epoch_edits: Edits<Epoch>,
     withdrawable_epoch_edits: Edits<Epoch>,
-    hash_overlay: DeltaHashTree,
+    hash_delta: VersionedDeltaHash,
 }
 
 impl ValidatorsDelta {
@@ -86,7 +88,13 @@ impl ValidatorsDelta {
         self.slashed_edits.scatter_bits(&mut base.slashed);
 
         // 3. Fold the hash overlay into the finalized tree.
-        base.hash.promote_delta(&self.hash_overlay);
+        self.hash_delta.promote_into(&mut base.hash);
+    }
+
+    /// Whether this fork's hash shape is post-EIP-7688 (its finalization
+    /// closes the fork transition).
+    pub(super) fn crossed_fork(&self) -> bool {
+        self.hash_delta.crossed_hardfork()
     }
 
     /// Mirror of [`BalancesDelta::rebase_and_prune_from`] for the multi-column
@@ -149,16 +157,18 @@ impl ValidatorsDelta {
             |i| base.withdrawable_epoch[i as usize],
         );
 
-        self.hash_overlay = old.hash_overlay.clone();
-        self.hash_overlay.rebase(base.hash(), &winner.hash_overlay);
-        base.hash().prune_delta_against(&mut self.hash_overlay, &winner.hash_overlay);
+        self.hash_delta = VersionedDeltaHash::rebased_and_pruned(
+            &old.hash_delta,
+            base.hash(),
+            &winner.hash_delta,
+        );
     }
 
     /// Anchor a freshly-`reset` delta onto `base`: adopt its count and hash
     /// root (edits/appended already empty). Used by `roll_fresh`.
     pub(super) fn anchor_at(&mut self, base: &FinalizedValidators) {
         self.base_count = base.validator_count();
-        self.hash_overlay = DeltaHashTree::new_at(base.hash());
+        self.hash_delta = VersionedDeltaHash::anchor_at(base.hash());
     }
 }
 
@@ -173,7 +183,7 @@ impl Reset for ValidatorsDelta {
         self.activation_epoch_edits.clear();
         self.exit_epoch_edits.clear();
         self.withdrawable_epoch_edits.clear();
-        self.hash_overlay = DeltaHashTree::default();
+        self.hash_delta = VersionedDeltaHash::default();
     }
 
     fn reset_from(&mut self, other: &Self) {
@@ -187,8 +197,8 @@ impl Reset for ValidatorsDelta {
         self.activation_epoch_edits.clone_from(&other.activation_epoch_edits);
         self.exit_epoch_edits.clone_from(&other.exit_epoch_edits);
         self.withdrawable_epoch_edits.clone_from(&other.withdrawable_epoch_edits);
-        // O(1) — `DeltaHashTree::Clone` bumps the Arc refcount.
-        self.hash_overlay = other.hash_overlay.clone();
+        // O(1)/O(segments) — overlay `Clone` bumps `Arc` refcounts.
+        self.hash_delta = other.hash_delta.clone();
     }
 }
 
@@ -329,17 +339,14 @@ impl<'a> ValidatorsView<'a> {
         self.base.find_by_pubkey(pk).map(|i| i as u32)
     }
 
-    /// SSZ `hash_tree_root` of the validators registry
-    /// (`List[Validator, VALIDATOR_REGISTRY_LIMIT]`) from the persistent hash
-    /// overlay: finalized base tree + this fork's cached delta-node hashes,
-    /// zero work for untouched subtrees. The physical tree only spans the
-    /// registry capacity's leaves, so extend its root with zero subtrees up to
-    /// the registry-limit depth, then mix in the validator count.
+    /// SSZ `hash_tree_root` of the validators registry from the persistent
+    /// hash overlay: finalized base tree(s) + this fork's cached delta-node
+    /// hashes, zero work for untouched subtrees — in this fork's own shape
+    /// (fulu `List[Validator, N]` padding vs the gloas `ProgressiveList`).
     #[inline]
     pub fn hash_root(&self) -> B256 {
-        const LIST_DEPTH: u32 = VALIDATOR_REGISTRY_LIMIT.trailing_zeros();
         let len = self.delta.base_count + self.delta.appended.len();
-        self.delta.hash_overlay.ssz_list_root(self.base.hash(), LIST_DEPTH, len)
+        self.delta.hash_delta.ssz_list_root(self.base.hash(), len)
     }
 
     /// Recompute the Validator-container hash leaf for `idx` from the current
@@ -580,7 +587,13 @@ impl<'a> ValidatorsWriteView<'a> {
     /// calls this so the overlay stays consistent with the field edits.
     fn refresh_leaf(&mut self, idx: u32) {
         let leaf = self.reader().recompute_leaf(idx);
-        self.fork.hash_overlay.set_leaf(self.base.hash(), idx as usize, leaf);
+        self.fork.hash_delta.set_leaf(self.base.hash(), idx as usize, leaf);
+    }
+
+    /// The fork block's EIP-7688 hash migration: this fork's registry root
+    /// switches to the gloas `ProgressiveList` shape.
+    pub fn adopt_gloas(&mut self) {
+        self.fork.hash_delta.adopt_gloas(self.base.hash());
     }
 
     /// Append a fresh validator with spec-default Validator-container fields.
@@ -624,7 +637,7 @@ impl<'a> ValidatorsWriteView<'a> {
         self.fork.effective_balance_edits.merge_in_place(changes);
         let leaves: Vec<(u32, B256)> =
             changes.iter().map(|&(ix, _)| (ix, self.reader().recompute_leaf(ix))).collect();
-        self.fork.hash_overlay.set_leaves(self.base.hash(), &leaves);
+        self.fork.hash_delta.set_leaves(self.base.hash(), &leaves);
     }
 
     #[inline]

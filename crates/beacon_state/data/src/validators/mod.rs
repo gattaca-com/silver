@@ -1,5 +1,6 @@
 mod delta;
 mod finalized;
+mod hash_shape;
 
 #[cfg(test)]
 mod tests;
@@ -11,9 +12,9 @@ use flux_profiler::timed;
 
 use crate::{
     Withdrawals,
+    merkle::{hash_fixed_bytes, merkleize, uint64_chunk},
     reanchor::reanchor_survivors,
     ring::{Id, Ring},
-    ssz_hash::{hash_fixed_bytes, merkleize, uint64_chunk},
     types::{B256, BLSPubkey, Epoch, SLOTS_RING_N},
 };
 
@@ -92,11 +93,32 @@ impl ValidatorsGroup {
         let fresh = reanchor_survivors(survivors, |s| self.reanchor(s, winner).commit());
 
         let Self { finalized, deltas } = self;
-        deltas.get(winner).promote_into_base(finalized);
+        let winner_delta = deltas.get(winner);
+        winner_delta.promote_into_base(finalized);
+        if winner_delta.crossed_fork() {
+            finalized.hash.close_transition();
+        }
 
         deltas.free_outdated(&fresh);
 
         fresh
+    }
+
+    /// Enter the EIP-7688 hash transition one epoch early: mirror the fulu hash
+    /// tree into the gloas forest so the fork block's migration is a
+    /// sparse-edit synthesis, not an O(N) rebuild. Owner-thread only; no-op
+    /// once entered.
+    pub fn begin_gloas_hash_transition(&mut self) {
+        let populated = self.finalized.validator_count();
+        self.finalized.hash.begin_transition(populated);
+    }
+
+    /// Post-gloas checkpoint decode: build the gloas forest from the freshly
+    /// decoded fulu tree and drop the fulu side — no transition, no fork ever
+    /// reads the fulu shape.
+    pub fn migrate_finalized_to_gloas(&mut self) {
+        self.begin_gloas_hash_transition();
+        self.finalized.hash.close_transition();
     }
 }
 

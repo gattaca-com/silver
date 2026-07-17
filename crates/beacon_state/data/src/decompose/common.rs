@@ -219,7 +219,7 @@ impl BeaconState {
 
         let pending = decode_pending(ssz, offsets, consolidations_end, builder_withdrawals)?;
 
-        Ok(Self {
+        let mut state = Self {
             immutable,
             validators,
             balances,
@@ -232,7 +232,15 @@ impl BeaconState {
             epoch: EpochGroup::new(epoch),
             longtail,
             builders: BuildersGroup::new(builders),
-        })
+        };
+
+        // A post-gloas checkpoint is past the EIP-7688 fork: every hash
+        // structure is born in the gloas shape (the fork transition never
+        // opens).
+        if state.is_finalized_post_gloas() {
+            state.migrate_finalized_to_gloas();
+        }
+        Ok(state)
     }
 }
 

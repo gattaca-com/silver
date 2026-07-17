@@ -8,7 +8,7 @@ use flux_profiler::timed;
 use parking_lot::RwLock;
 use rustc_hash::FxHashMap;
 
-use super::validator_hash;
+use super::{hash_shape::VersionedFinalizedHash, validator_hash};
 use crate::{
     Withdrawals,
     hash_tree::FinalizedHashTree,
@@ -113,7 +113,7 @@ pub struct FinalizedValidators {
     pub(super) withdrawable_epoch: Box<[Epoch]>,
     pub(super) validator_count: usize,
     pub(super) index: RwLock<PubkeyIndex>,
-    pub(super) hash: FinalizedHashTree,
+    pub(super) hash: VersionedFinalizedHash,
 }
 
 impl FinalizedValidators {
@@ -151,7 +151,7 @@ impl FinalizedValidators {
             index.insert(f.pubkey, i as u32);
         }
 
-        let hash = FinalizedHashTree::from_leaves(
+        let hash = VersionedFinalizedHash::Fulu(FinalizedHashTree::from_leaves(
             (0..n).map(|i| {
                 validator_hash(
                     &val_pubkey[i],
@@ -165,7 +165,7 @@ impl FinalizedValidators {
                 )
             }),
             capacity,
-        );
+        ));
 
         Ok(Self {
             val_pubkey,
@@ -304,7 +304,7 @@ impl FinalizedValidators {
     }
 
     #[inline]
-    pub fn hash(&self) -> &FinalizedHashTree {
+    pub(super) fn hash(&self) -> &VersionedFinalizedHash {
         &self.hash
     }
 

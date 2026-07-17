@@ -4,7 +4,7 @@ use super::builder_hash;
 use crate::{
     DecomposeError,
     gloas::{BUILDER_REGISTRY_LIMIT, Builder, builder_capacity},
-    hash_tree::FinalizedHashTree,
+    hash_tree::GloasFinalized,
 };
 
 /// SSZ-serialised `Builder`: pubkey(48) + version(1) + execution_address(20) +
@@ -14,7 +14,7 @@ const BUILDER_SSZ: usize = 93;
 pub struct FinalizedBuilders {
     pub(super) builders: Box<[Builder]>,
     pub(super) count: usize,
-    pub(super) hash: FinalizedHashTree,
+    pub(super) hash: GloasFinalized,
 }
 
 impl Default for FinalizedBuilders {
@@ -57,7 +57,7 @@ impl FinalizedBuilders {
             };
         }
 
-        let hash = FinalizedHashTree::from_leaves(
+        let hash = GloasFinalized::from_leaf_hashes(
             builders[..count].iter().map(builder_hash),
             builder_capacity(count),
         );
@@ -106,7 +106,7 @@ impl FinalizedBuilders {
     }
 
     #[inline]
-    pub fn hash(&self) -> &FinalizedHashTree {
+    pub fn hash(&self) -> &GloasFinalized {
         &self.hash
     }
 }
