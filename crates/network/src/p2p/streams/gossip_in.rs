@@ -1,7 +1,9 @@
 use std::io::Write;
 
 use flux_profiler::timed;
-use silver_common::{P2pStreamId, TCacheProducer, TProducer, TReservation, decode_varint};
+use silver_common::{
+    MAX_GOSSIP_FRAME_SIZE, P2pStreamId, TCacheProducer, TProducer, TReservation, decode_varint,
+};
 
 use crate::p2p::streams::{StreamError, StreamIo};
 
@@ -68,8 +70,9 @@ impl GossipReadState {
                     if buf[pos] & 0x80 == 0 {
                         // last byte of varint.
                         let (length, offset) = decode_varint(&buf[..read], 0)?;
+                        let length = checked_frame_length(length)?;
                         return Ok(Spin::Next(Self::AllocBody {
-                            length: length as usize,
+                            length,
                             buf,
                             buf_start: offset,
                             buf_end: read,
@@ -77,12 +80,17 @@ impl GossipReadState {
                     }
                 }
 
+                if read == buf.len() {
+                    return Err(StreamError::InvalidGossipFrame);
+                }
+
                 Ok(Spin::Ok(Self::ReadingLength { buf, read }))
             }
             GossipReadState::AllocBody { length, buf, buf_start, buf_end } => {
-                if let Some(mut reservation) =
-                    tcache.reserve(length + size_of::<P2pStreamId>(), true)
-                {
+                let reservation_len = length
+                    .checked_add(size_of::<P2pStreamId>())
+                    .ok_or(StreamError::GossipFrameTooLarge)?;
+                if let Some(mut reservation) = tcache.reserve(reservation_len, true) {
                     // write stream_id as header
                     let _ = reservation.write(p2p_id.as_ref())?;
 
@@ -108,5 +116,30 @@ impl GossipReadState {
             }
             GossipReadState::Closed => Ok(Spin::Ok(Self::Closed)),
         }
+    }
+}
+
+fn checked_frame_length(length: u64) -> Result<usize, StreamError> {
+    if length > MAX_GOSSIP_FRAME_SIZE as u64 {
+        return Err(StreamError::GossipFrameTooLarge);
+    }
+    usize::try_from(length).map_err(|_| StreamError::GossipFrameTooLarge)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frame_length_boundaries() {
+        assert_eq!(
+            checked_frame_length(MAX_GOSSIP_FRAME_SIZE as u64).unwrap(),
+            MAX_GOSSIP_FRAME_SIZE
+        );
+        assert!(matches!(
+            checked_frame_length(MAX_GOSSIP_FRAME_SIZE as u64 + 1),
+            Err(StreamError::GossipFrameTooLarge)
+        ));
+        assert!(matches!(checked_frame_length(u64::MAX), Err(StreamError::GossipFrameTooLarge)));
     }
 }

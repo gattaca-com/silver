@@ -6,8 +6,9 @@ use buffa::{
 };
 use flux::timing::Nanos;
 use silver_common::{
-    Error, GossipTopic, MessageId, NewGossipMsg, P2pStreamId, PeerEvent, TCacheProducer,
-    TCacheRead, TProducer, TReservation, msg_id_invalid_snappy, msg_id_valid_snappy,
+    Error, GossipTopic, MAX_GOSSIP_COMPRESSED_PAYLOAD_SIZE, MAX_GOSSIP_FRAME_SIZE, MessageId,
+    NewGossipMsg, P2pStreamId, PeerEvent, TCacheProducer, TCacheRead, TProducer, TReservation,
+    msg_id_invalid_snappy, msg_id_valid_snappy,
 };
 
 use crate::{GossipHandlerEvent, control::copy_idontwants_to_protobuf_output, dedup::DedupCache};
@@ -24,6 +25,12 @@ pub(super) fn handle_incoming(
     mcache_publish: &mut TProducer,
     emit: &mut impl FnMut(GossipHandlerEvent),
 ) -> Result<(), Error> {
+    validate_compressed_payload_size(snappy_data.len()).inspect_err(|_| {
+        emit(GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipInvalidFrame {
+            p2p_peer: stream_id.peer(),
+        }));
+    })?;
+
     // Fast duplicate check.
     let fast_id = match dedup_cache.contains_fast(topic_string, snappy_data) {
         Some(fast_hash) => fast_hash,
@@ -126,6 +133,8 @@ pub(crate) fn copy_compressed_to_protobuf_output(
     snappy_data: &[u8],
     topic: &str,
 ) -> Result<TCacheRead, Error> {
+    validate_compressed_payload_size(snappy_data.len())?;
+
     // Fields 1..=15 encode as 1-byte tags (varint < 128).
     // RPC.publish = field 2, Message.data = field 2, Message.topic = field 4.
     const TAG_LEN: usize = 1;
@@ -133,6 +142,9 @@ pub(crate) fn copy_compressed_to_protobuf_output(
     let inner_len = TAG_LEN + bytes_encoded_len(snappy_data) + TAG_LEN + string_encoded_len(topic);
 
     let total = TAG_LEN + varint_len(inner_len as u64) + inner_len;
+    if total > MAX_GOSSIP_FRAME_SIZE {
+        return Err(Error::GossipFrameTooLarge);
+    }
 
     let mut reservation = producer.reserve(total, true).ok_or(Error::BufferTooSmall)?;
     let out = producer.reservation_buffer(&mut reservation)?;
@@ -154,8 +166,63 @@ pub(crate) fn copy_compressed_to_protobuf_output(
     Ok(reservation.read())
 }
 
-fn read_message_length(msg: &[u8], _gossip_topic: &GossipTopic) -> Result<usize, Error> {
-    // TODO check per topic message size limits
-    // these are calculated from SSZ type defs.
-    snap::raw::decompress_len(msg).map_err(|_| Error::InvalidSnappy)
+fn validate_compressed_payload_size(len: usize) -> Result<(), Error> {
+    if len > MAX_GOSSIP_COMPRESSED_PAYLOAD_SIZE {
+        return Err(Error::GossipPayloadTooLarge);
+    }
+    Ok(())
+}
+
+fn read_message_length(msg: &[u8], gossip_topic: &GossipTopic) -> Result<usize, Error> {
+    let len = snap::raw::decompress_len(msg).map_err(|_| Error::InvalidSnappy)?;
+    if len > gossip_topic.max_uncompressed_size() {
+        return Err(Error::GossipPayloadTooLarge);
+    }
+    Ok(len)
+}
+
+#[cfg(test)]
+mod tests {
+    use silver_common::encode_varint;
+
+    use super::*;
+
+    fn snappy_length_prefix(len: usize) -> Vec<u8> {
+        let mut buf = [0; 10];
+        let encoded = encode_varint(len as u64, &mut buf).unwrap();
+        buf[..encoded].to_vec()
+    }
+
+    #[test]
+    fn compressed_payload_boundaries() {
+        assert!(validate_compressed_payload_size(MAX_GOSSIP_COMPRESSED_PAYLOAD_SIZE).is_ok());
+        assert!(matches!(
+            validate_compressed_payload_size(MAX_GOSSIP_COMPRESSED_PAYLOAD_SIZE + 1),
+            Err(Error::GossipPayloadTooLarge)
+        ));
+    }
+
+    #[test]
+    fn uncompressed_payload_uses_topic_bound() {
+        let topic = GossipTopic::BeaconAttestation(0);
+        assert_eq!(read_message_length(&snappy_length_prefix(240), &topic).unwrap(), 240);
+        assert!(matches!(
+            read_message_length(&snappy_length_prefix(241), &topic),
+            Err(Error::GossipPayloadTooLarge)
+        ));
+    }
+
+    #[test]
+    fn uncompressed_payload_uses_global_bound() {
+        let topic = GossipTopic::BeaconBlock;
+        assert_eq!(
+            read_message_length(&snappy_length_prefix(topic.max_uncompressed_size()), &topic)
+                .unwrap(),
+            topic.max_uncompressed_size()
+        );
+        assert!(matches!(
+            read_message_length(&snappy_length_prefix(topic.max_uncompressed_size() + 1), &topic),
+            Err(Error::GossipPayloadTooLarge)
+        ));
+    }
 }

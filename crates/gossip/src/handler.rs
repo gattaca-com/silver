@@ -110,6 +110,10 @@ impl GossipHandler {
         if self.fork_digest_hex.is_empty() {
             return None;
         }
+        if ssz.len() > topic.max_uncompressed_size() {
+            tracing::error!(?topic, len = ssz.len(), "outgoing gossip payload too large");
+            return None;
+        }
         let wire = topic.to_wire(&self.fork_digest_hex);
         self.snap_scratch.resize(snap::raw::max_compress_len(ssz.len()), 0);
         let n = match self.snap_encoder.compress(ssz, &mut self.snap_scratch) {

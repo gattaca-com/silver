@@ -27,6 +27,8 @@ pub enum StreamError {
     StreamFinishError(#[from] FinishError),
     InvalidMultiStreamHeader,
     InvalidRpc,
+    InvalidGossipFrame,
+    GossipFrameTooLarge,
     StreamRejected,
     StreamClosed,
     StreamEOF,
