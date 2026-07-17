@@ -138,10 +138,15 @@ impl<'a> StateReadView<'a> {
 }
 
 impl<'a> StateWriterView<'a> {
-    /// Finish the block: consume every held writer and assemble the fork's
-    /// index bundle (for `publish_state_id`) — ids exist only from here on,
-    /// so publication happens publish-last. The boundary tiers' ids come from
-    /// the caller (inherited from the parent or committed at a boundary roll).
+    pub fn adopt_gloas(&mut self) {
+        self.balances.migrate_to_gloas();
+        self.inactivity.migrate_to_gloas();
+        self.previous_participation.migrate_to_gloas();
+        self.current_participation.migrate_to_gloas();
+        self.validators.adopt_gloas();
+        self.pending.adopt_gloas();
+    }
+
     #[inline]
     pub fn commit(self, epoch_idx: Option<EpochId>, longtail_idx: Option<LongtailId>) -> StateId {
         StateId {
@@ -159,10 +164,6 @@ impl<'a> StateWriterView<'a> {
         }
     }
 
-    /// Hand out a read-only [`StateReadView`] over the same fork — mirrors
-    /// `BalancesWriteView::reader`. The boundary tiers are the caller's
-    /// resolved views (`group.view_opt(idx)`) — resolution stays at
-    /// the hub, which knows when a boundary may have re-rolled them.
     #[inline]
     pub fn read<'s>(
         &'s self,

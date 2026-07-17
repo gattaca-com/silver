@@ -181,6 +181,8 @@ pub enum ParentExecutionPayloadError {
         b256_hex(got)
     )]
     RequestsRootMismatch { expected: B256, got: B256 },
+    #[error("{kind} request count {count} over the per-payload limit {max}")]
+    TooManyRequests { kind: &'static str, count: usize, max: usize },
 }
 
 pub type Result<T, E = Error> = core::result::Result<T, E>;
