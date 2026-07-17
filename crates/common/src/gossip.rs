@@ -3,8 +3,14 @@ use std::fmt;
 use crate::{
     Error,
     ssz_view::{
-        AttesterSlashingView, DataColumnSidecarFuluView, LightClientFinalityUpdateView,
-        LightClientOptimisticUpdateView, PayloadAttestationMessageView, ProposerSlashingView,
+        ATTESTER_SLASHING_MAX, AttesterSlashingView, DATA_COLUMN_SIDECAR_MAX,
+        DataColumnSidecarFuluView, LIGHT_CLIENT_FINALITY_UPDATE_MAX,
+        LIGHT_CLIENT_OPTIMISTIC_UPDATE_MAX, LightClientFinalityUpdateView,
+        LightClientOptimisticUpdateView, MAX_PAYLOAD_SIZE, PAYLOAD_ATTESTATION_MESSAGE_SIZE,
+        PROPOSER_SLASHING_SIZE, PayloadAttestationMessageView, ProposerSlashingView,
+        SIGNED_AGG_PROOF_MAX, SIGNED_BLS_CHANGE_SIZE, SIGNED_CONTRIBUTION_AND_PROOF_SIZE,
+        SIGNED_EXECUTION_PAYLOAD_BID_MAX, SIGNED_PROPOSER_PREFERENCES_SIZE,
+        SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE, SYNC_COMMITTEE_MSG_SIZE,
         SignedAggregateAndProofView, SignedBeaconBlockView, SignedBlsToExecutionChangeView,
         SignedContributionAndProofView, SignedExecutionPayloadBidView,
         SignedExecutionPayloadEnvelopeView, SignedProposerPreferencesView, SignedVoluntaryExitView,
@@ -17,6 +23,11 @@ mod hash;
 pub use hash::{
     MESSAGE_ID_LEN, MessageId, MessageIdHasher, msg_id_invalid_snappy, msg_id_valid_snappy,
 };
+
+pub const MAX_GOSSIP_UNCOMPRESSED_PAYLOAD_SIZE: usize = MAX_PAYLOAD_SIZE;
+pub const MAX_GOSSIP_COMPRESSED_PAYLOAD_SIZE: usize =
+    32 + MAX_GOSSIP_UNCOMPRESSED_PAYLOAD_SIZE + MAX_GOSSIP_UNCOMPRESSED_PAYLOAD_SIZE / 6;
+pub const MAX_GOSSIP_FRAME_SIZE: usize = MAX_GOSSIP_COMPRESSED_PAYLOAD_SIZE + 1024;
 
 /// Eth2 gossipsub topic name. Wire topic is
 /// `/eth2/{fork_digest_hex}/{name}/ssz_snappy`; this enum covers the `{name}`
@@ -150,6 +161,26 @@ impl GossipTopic {
         }
     }
 
+    pub fn max_uncompressed_size(self) -> usize {
+        match self {
+            Self::BeaconBlock | Self::ExecutionPayload => MAX_GOSSIP_UNCOMPRESSED_PAYLOAD_SIZE,
+            Self::BeaconAggregateAndProof => SIGNED_AGG_PROOF_MAX,
+            Self::BeaconAttestation(_) => SINGLE_ATT_SIZE,
+            Self::VoluntaryExit => SIGNED_VOLUNTARY_EXIT_SIZE,
+            Self::ProposerSlashing => PROPOSER_SLASHING_SIZE,
+            Self::AttesterSlashing => ATTESTER_SLASHING_MAX,
+            Self::SyncCommitteeContributionAndProof => SIGNED_CONTRIBUTION_AND_PROOF_SIZE,
+            Self::SyncCommittee(_) => SYNC_COMMITTEE_MSG_SIZE,
+            Self::LightClientFinalityUpdate => LIGHT_CLIENT_FINALITY_UPDATE_MAX,
+            Self::LightClientOptimisticUpdate => LIGHT_CLIENT_OPTIMISTIC_UPDATE_MAX,
+            Self::BlsToExecutionChange => SIGNED_BLS_CHANGE_SIZE,
+            Self::DataColumnSidecar(_) => DATA_COLUMN_SIDECAR_MAX,
+            Self::ExecutionPayloadBid => SIGNED_EXECUTION_PAYLOAD_BID_MAX,
+            Self::PayloadAttestationMessage => PAYLOAD_ATTESTATION_MESSAGE_SIZE,
+            Self::ProposerPreferences => SIGNED_PROPOSER_PREFERENCES_SIZE,
+        }
+    }
+
     pub fn p3_scored(&self) -> bool {
         matches!(
             self,
@@ -238,11 +269,23 @@ impl TryFrom<&str> for GossipTopic {
             "proposer_preferences" => Self::ProposerPreferences,
             other => {
                 if let Some(id) = other.strip_prefix("beacon_attestation_") {
-                    Self::BeaconAttestation(id.parse().map_err(|_| Error::ParseTopicError)?)
+                    let subnet = id.parse().map_err(|_| Error::ParseTopicError)?;
+                    if subnet >= 64 {
+                        return Err(Error::ParseTopicError);
+                    }
+                    Self::BeaconAttestation(subnet)
                 } else if let Some(id) = other.strip_prefix("sync_committee_") {
-                    Self::SyncCommittee(id.parse().map_err(|_| Error::ParseTopicError)?)
+                    let subnet = id.parse().map_err(|_| Error::ParseTopicError)?;
+                    if subnet >= 4 {
+                        return Err(Error::ParseTopicError);
+                    }
+                    Self::SyncCommittee(subnet)
                 } else if let Some(id) = other.strip_prefix("data_column_sidecar_") {
-                    Self::DataColumnSidecar(id.parse().map_err(|_| Error::ParseTopicError)?)
+                    let subnet = id.parse().map_err(|_| Error::ParseTopicError)?;
+                    if subnet >= 128 {
+                        return Err(Error::ParseTopicError);
+                    }
+                    Self::DataColumnSidecar(subnet)
                 } else {
                     return Err(Error::ParseTopicError);
                 }
@@ -279,12 +322,19 @@ mod tests {
 
     #[test]
     fn roundtrip_subnets() {
-        for i in [0u64, 1, 63, 127] {
+        for i in [0u64, 1, 3] {
             for t in [
                 GossipTopic::BeaconAttestation(i),
                 GossipTopic::SyncCommittee(i),
                 GossipTopic::DataColumnSidecar(i),
             ] {
+                let s: String = t.into();
+                assert_eq!(GossipTopic::try_from(s.as_str()).unwrap(), t);
+            }
+        }
+
+        for i in [0u64, 1, 3, 42, 63] {
+            for t in [GossipTopic::BeaconAttestation(i), GossipTopic::DataColumnSidecar(i)] {
                 let s: String = t.into();
                 assert_eq!(GossipTopic::try_from(s.as_str()).unwrap(), t);
             }
@@ -344,5 +394,18 @@ mod tests {
             GossipTopic::BeaconAttestation(9999).counter_slot(),
             GossipTopic::BeaconAttestation(ATTESTATION_SUBNETS as u64 - 1).counter_slot(),
         );
+    }
+
+    #[test]
+    fn gossip_size_limits() {
+        assert_eq!(MAX_GOSSIP_UNCOMPRESSED_PAYLOAD_SIZE, 10_485_760);
+        assert_eq!(MAX_GOSSIP_COMPRESSED_PAYLOAD_SIZE, 12_233_418);
+        assert_eq!(MAX_GOSSIP_FRAME_SIZE, 12_234_442);
+
+        assert_eq!(GossipTopic::BeaconBlock.max_uncompressed_size(), 10_485_760);
+        assert_eq!(GossipTopic::BeaconAggregateAndProof.max_uncompressed_size(), 16_829);
+        assert_eq!(GossipTopic::BeaconAttestation(0).max_uncompressed_size(), 240);
+        assert_eq!(GossipTopic::AttesterSlashing.max_uncompressed_size(), 2_097_616);
+        assert_eq!(GossipTopic::DataColumnSidecar(0).max_uncompressed_size(), 8_782_180);
     }
 }

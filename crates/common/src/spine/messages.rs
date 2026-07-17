@@ -323,6 +323,7 @@ pub enum PeerEvent {
     P2pGossipTopicPrune {
         p2p_peer: usize,
         topic: GossipTopic,
+        backoff_seconds: Option<u64>,
     },
     P2pGossipWant {
         p2p_peer: usize,
@@ -355,6 +356,7 @@ pub enum PeerEvent {
     },
     DiscNodeFound {
         enr: Enr,
+        reload: bool,
     },
     DiscExternalAddress {
         address: SocketAddr,

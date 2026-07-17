@@ -16,7 +16,7 @@ const ROTATION_INTERVAL: Duration = Duration::from_millis(700);
 const BUCKETS: usize = 12;
 const IHAVE_BUCKETS: usize = 3;
 const MAX_IHAVES_PER_TOPIC: usize = 500;
-const IHAVE_GENERATION_INTERVAL: Duration = Duration::from_millis(500);
+const IHAVE_GENERATION_INTERVAL: Duration = Duration::from_millis(700);
 
 #[derive(Clone)]
 struct Bucket {

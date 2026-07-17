@@ -61,6 +61,15 @@ enum ColumnOutcome {
     Record { block_root: [u8; 32], column_index: u64, bitmask: u128, slot: u64 },
 }
 
+/// Only `Validated` may be forwarded / republished on gossip: `Ignored`
+/// covers spec-IGNORE cases (dup, post-wall, parent pending, buffered)
+/// whose sidecars must not be relayed and whose senders are not culpable.
+enum ColumnDisposition {
+    Validated,
+    Ignored,
+    Rejected { block_root: [u8; 32], bitmask: u128 },
+}
+
 pub struct StorageTile {
     // bit set of our custody group columns.
     custody_group_columns: u128,
@@ -83,7 +92,7 @@ pub struct StorageTile {
     // Gloas sidecars carry no commitments, so column KZG verifies against these.
     gloas_commitments: Wheel<BlockRoot, Box<[u8]>, 4>,
     // Gloas: columns whose block (hence commitments) hasn't been seen yet.
-    gloas_pending_columns: Wheel<BlockRoot, Vec<(P2pStreamId, TRead)>, 4>,
+    gloas_pending_columns: Wheel<BlockRoot, Vec<(P2pStreamId, TRead, Option<u64>)>, 4>,
     // BLS verify memo: block_root → previously-validated 96-byte
     // proposer signature. On a subsequent sidecar with the same
     // block_root AND matching signature bytes we skip the ~1 ms BLS
@@ -101,6 +110,7 @@ pub struct StorageTile {
     // the trigger so we encode at most once per finalized-epoch advance.
     // Advanced when a persist is queued; re-derived from disk on restart.
     checkpointed_epoch: u64,
+    wall_slot: u64,
     // Set by a Status when finality advanced past the last persisted epoch and
     // we are caught up to head; consumed when a persist is started (the
     // in-flight checkpoint then lives on the `Store`, driven by `file_io`).
@@ -166,6 +176,7 @@ impl StorageTile {
             validated_blocks: Wheel::new(EPOCH_DURATION),
             outstanding_requests: Wheel::new(Duration::from_millis(100)),
             checkpointed_epoch,
+            wall_slot: u64::MAX,
             persist_pending: false,
             replay_blocks,
             replay_producer,
@@ -309,10 +320,7 @@ impl StorageTile {
         // custody set IS the sample set; no beyond-custody sampling needed.
         // These by-root requests race gossip and serve as the fallback when a
         // sidecar isn't delivered on the subscribed subnet.
-        let mut to_request = self.custody_group_columns;
-        let validated = self.validated_columns.get(&block_root).copied().unwrap_or(0);
-        to_request &= !validated;
-
+        let to_request = self.columns_to_request(&block_root);
         if to_request == 0 {
             return gloas_root;
         }
@@ -338,31 +346,37 @@ impl StorageTile {
         gloas_root
     }
 
+    fn columns_to_request(&self, root: &BlockRoot) -> u128 {
+        let validated = self.validated_columns.get(root).copied().unwrap_or(0);
+        self.custody_group_columns & !validated
+    }
+
     #[timed]
     fn data_columns<F>(
         &mut self,
         stream_id: P2pStreamId,
         sidecar: TRead,
         is_gloas: bool,
+        gossip_subnet: Option<u64>,
         emit: &mut F,
-    ) -> Option<([u8; 32], u128)>
+    ) -> ColumnDisposition
     where
         F: FnMut(DataColumnsAvailable),
     {
         let outcome = match sidecar.buffer() {
             Ok((buf, _)) => {
                 if is_gloas {
-                    self.validate_gloas_column(stream_id, buf)
+                    self.validate_gloas_column(stream_id, buf, gossip_subnet)
                 } else {
-                    self.validate_fulu_column(stream_id, buf)
+                    self.validate_fulu_column(stream_id, buf, gossip_subnet)
                 }
             }
             Err(e) => {
                 tracing::error!(?e, ?stream_id, "failed to read data column sidecar buffer");
-                return None;
+                return ColumnDisposition::Ignored;
             }
         };
-        self.handle_column(outcome, stream_id, sidecar, emit)
+        self.handle_column(outcome, stream_id, sidecar, gossip_subnet, emit)
     }
 
     fn handle_column<F>(
@@ -370,43 +384,63 @@ impl StorageTile {
         outcome: ColumnOutcome,
         stream_id: P2pStreamId,
         sidecar: TRead,
+        gossip_subnet: Option<u64>,
         emit: &mut F,
-    ) -> Option<([u8; 32], u128)>
+    ) -> ColumnDisposition
     where
         F: FnMut(DataColumnsAvailable),
     {
         match outcome {
-            ColumnOutcome::Skip => None,
-            ColumnOutcome::Reject { block_root, bitmask } => Some((block_root, bitmask)),
+            ColumnOutcome::Skip => ColumnDisposition::Ignored,
+            ColumnOutcome::Reject { block_root, bitmask } => {
+                ColumnDisposition::Rejected { block_root, bitmask }
+            }
             ColumnOutcome::Buffer { block_root } => {
                 let pending = self.gloas_pending_columns.entry(block_root).or_default();
-                if pending.len() >= NUMBER_OF_COLUMNS {
-                    return None;
+                if pending.len() < NUMBER_OF_COLUMNS {
+                    tracing::debug!(?stream_id, "gloas column before block — buffering");
+                    pending.push((stream_id, sidecar, gossip_subnet));
                 }
-                tracing::debug!(?stream_id, "gloas column before block — buffering");
-                pending.push((stream_id, sidecar));
-                None
+                ColumnDisposition::Ignored
             }
             ColumnOutcome::Record { block_root, column_index, bitmask, slot } => {
-                self.record_validated_column(block_root, column_index, bitmask, slot, sidecar, emit)
+                self.record_validated_column(
+                    block_root,
+                    column_index,
+                    bitmask,
+                    slot,
+                    sidecar,
+                    emit,
+                );
+                ColumnDisposition::Validated
             }
         }
     }
 
     #[timed]
-    fn validate_fulu_column(&mut self, stream_id: P2pStreamId, buffer: &[u8]) -> ColumnOutcome {
+    fn validate_fulu_column(
+        &mut self,
+        stream_id: P2pStreamId,
+        buffer: &[u8],
+        gossip_subnet: Option<u64>,
+    ) -> ColumnOutcome {
         let block_root = util::block_root_from_sidecar(buffer);
         let parent_root = DataColumnSidecarFuluView::parent_root(buffer);
         let slot = DataColumnSidecarFuluView::slot(buffer);
 
-        if self.store.is_synced() && slot > self.store.head_slot() + 1 {
-            // received data columns with parent ahead of current head
-            // data column request will be retried
+        if self.store.is_synced() && slot > self.wall_slot.saturating_add(1) {
+            tracing::debug!(?stream_id, slot, wall_slot = self.wall_slot, "post-wall sidecar");
             return ColumnOutcome::Skip;
         }
 
         let column_index = DataColumnSidecarFuluView::index(buffer);
         let column_bitmask = 1u128 << column_index;
+
+        if let Some(subnet) = gossip_subnet &&
+            subnet != column_index
+        {
+            return ColumnOutcome::Reject { block_root, bitmask: column_bitmask };
+        }
 
         let do_parent_checks = stream_id.protocol() == StreamProtocol::GossipSub;
 
@@ -542,25 +576,31 @@ impl StorageTile {
         F: FnMut(DataColumnsAvailable),
     {
         if let Some(pending) = self.gloas_pending_columns.remove(&block_root) {
-            for (stream_id, sidecar) in pending {
+            for (stream_id, sidecar, gossip_subnet) in pending {
                 let outcome = match sidecar.buffer() {
-                    Ok((buf, _)) => self.validate_gloas_column(stream_id, buf),
+                    Ok((buf, _)) => self.validate_gloas_column(stream_id, buf, gossip_subnet),
                     Err(e) => {
                         tracing::error!(?e, ?stream_id, "failed to read buffered gloas column");
                         continue;
                     }
                 };
-                self.handle_column(outcome, stream_id, sidecar, emit);
+                self.handle_column(outcome, stream_id, sidecar, gossip_subnet, emit);
             }
         }
     }
 
     #[timed]
-    fn validate_gloas_column(&mut self, stream_id: P2pStreamId, buffer: &[u8]) -> ColumnOutcome {
+    fn validate_gloas_column(
+        &mut self,
+        stream_id: P2pStreamId,
+        buffer: &[u8],
+        gossip_subnet: Option<u64>,
+    ) -> ColumnOutcome {
         let block_root = *DataColumnSidecarGloasView::beacon_block_root(buffer);
         let slot = DataColumnSidecarGloasView::slot(buffer);
 
-        if self.store.is_synced() && slot > self.store.head_slot() + 1 {
+        if self.store.is_synced() && slot > self.wall_slot.saturating_add(1) {
+            tracing::debug!(?stream_id, slot, wall_slot = self.wall_slot, "post-wall sidecar");
             return ColumnOutcome::Skip;
         }
         if slot <= self.store.finalized_slot() {
@@ -569,6 +609,12 @@ impl StorageTile {
 
         let column_index = DataColumnSidecarGloasView::index(buffer);
         let column_bitmask = 1u128 << column_index;
+
+        if let Some(subnet) = gossip_subnet &&
+            subnet != column_index
+        {
+            return ColumnOutcome::Reject { block_root, bitmask: column_bitmask };
+        }
 
         if self
             .validated_columns
@@ -603,8 +649,7 @@ impl StorageTile {
         slot: u64,
         sidecar: TRead,
         emit: &mut F,
-    ) -> Option<([u8; 32], u128)>
-    where
+    ) where
         F: FnMut(DataColumnsAvailable),
     {
         let mut completion_check = self.custody_group_columns;
@@ -640,8 +685,6 @@ impl StorageTile {
             // routes to the flat finalized layout once slot <= finalized.
             self.store.add_data_column(block_root, column_index, sidecar, slot);
         }
-
-        None
     }
 
     fn handle_beacon_block(
@@ -671,28 +714,29 @@ impl StorageTile {
         t_read: TRead,
         stream_id: P2pStreamId,
         is_gloas: bool,
+        gossip_subnet: Option<u64>,
         producers: &mut SilverSpineProducers,
     ) -> bool {
         let emit_da = &mut |msg: DataColumnsAvailable| {
             producers.data_columns.produce(&msg.into());
         };
 
-        let Some((block_root, columns)) = self.data_columns(stream_id, t_read, is_gloas, emit_da)
-        else {
-            // Validated
-            return true;
-        };
-
-        // Validation failed - score down the peer and retransmit
-        producers.peer_events.produce(
-            &PeerEvent::RpcMisbehaviour {
-                p2p_peer: stream_id.peer(),
-                severity: RpcSeverity::Fatal,
+        match self.data_columns(stream_id, t_read, is_gloas, gossip_subnet, emit_da) {
+            ColumnDisposition::Validated => true,
+            ColumnDisposition::Ignored => false,
+            ColumnDisposition::Rejected { block_root, bitmask } => {
+                // Score down the peer and retransmit.
+                producers.peer_events.produce(
+                    &PeerEvent::RpcMisbehaviour {
+                        p2p_peer: stream_id.peer(),
+                        severity: RpcSeverity::Fatal,
+                    }
+                    .into(),
+                );
+                producers.peer_events.produce(&self.column_request(block_root, bitmask).into());
+                false
             }
-            .into(),
-        );
-        producers.peer_events.produce(&self.column_request(block_root, columns).into());
-        false
+        }
     }
 }
 
@@ -712,16 +756,21 @@ impl Tile<SilverSpine> for StorageTile {
                 let t_read: TRead = self.gossip_consumer.acquire(gossip.ssz);
                 self.handle_beacon_block(t_read, gossip.stream_id, producers);
             }
-            silver_common::GossipTopic::DataColumnSidecar(_custody_group)
+            silver_common::GossipTopic::DataColumnSidecar(custody_group)
                 if self.store.is_synced() =>
             {
-                // TODO validate that topic group matches sidecar column index
-                tracing::debug!(_custody_group, "data column sidecar over gossip");
+                tracing::debug!(custody_group, "data column sidecar over gossip");
 
                 let t_read = self.gossip_consumer.acquire(gossip.ssz);
 
                 let is_gloas = self.spec.is_gloas_at_slot(self.store.head_slot() + 1);
-                if self.handle_data_column_sidecar(t_read, gossip.stream_id, is_gloas, producers) {
+                if self.handle_data_column_sidecar(
+                    t_read,
+                    gossip.stream_id,
+                    is_gloas,
+                    Some(custody_group),
+                    producers,
+                ) {
                     producers.peer_events.produce(
                         &PeerEvent::SendGossip {
                             originator_stream_id: gossip.stream_id,
@@ -793,7 +842,7 @@ impl Tile<SilverSpine> for StorageTile {
                         DataColumnSidecarFuluView::index(buffer)
                     };
 
-                    if self.handle_data_column_sidecar(t_read, rsp.stream_id, is_gloas, producers) {
+                    if self.handle_data_column_sidecar(t_read, rsp.stream_id, is_gloas, None, producers) {
                         if rsp.stream_id.protocol() != StreamProtocol::GossipSub && self.store.is_synced() {
                             // Publish to gossip
                             producers.peer_events.produce(&PeerEvent::PublishDataColumn {
@@ -875,6 +924,7 @@ impl Tile<SilverSpine> for StorageTile {
         });
 
         if let Some((ssz, wall_slot)) = latest_status_event {
+            self.wall_slot = wall_slot;
             let head_slot = StatusView::head_slot(&ssz);
             let head_root = *StatusView::head_root(&ssz);
             let finalized_epoch = StatusView::finalized_epoch(&ssz);
@@ -944,7 +994,7 @@ impl Tile<SilverSpine> for StorageTile {
             }
             request_id += 1;
             wheel_resent += 1;
-            tracing::trace!(
+            tracing::info!(
                 block_root = hex::encode(block_root),
                 "resending outstanding data column request: {columns:b}"
             );

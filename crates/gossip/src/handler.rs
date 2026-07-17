@@ -2,8 +2,9 @@ use std::{collections::VecDeque, time::Instant};
 
 use buffa::MessageView;
 use silver_common::{
-    Error, GossipMsgOut, GossipTopic, MessageId, P2pStreamId, PeerControl, PeerEvent,
-    TCacheProducer, TCacheRead, TConsumer, TProducer, msg_id_valid_snappy, ssz_view::StatusView,
+    Error, GOSSIP_TOPIC_COUNTER_SLOTS, GossipMsgOut, GossipTopic, MessageId, P2pStreamId,
+    PeerControl, PeerEvent, TCacheProducer, TCacheRead, TConsumer, TProducer, msg_id_valid_snappy,
+    ssz_view::StatusView,
 };
 
 use crate::{
@@ -74,7 +75,13 @@ impl GossipHandler {
 
     fn generate_ihave_messages(&mut self, now: Instant, emit: &mut impl FnMut(GossipHandlerEvent)) {
         if self.mcache.generate_ihaves(now) {
+            let mut seen = [false; GOSSIP_TOPIC_COUNTER_SLOTS];
             for topic in self.mcache.topics() {
+                if seen[topic.counter_slot()] {
+                    continue;
+                }
+                seen[topic.counter_slot()] = true;
+
                 let msgs_iter = self.mcache.get_ihaves(topic);
                 let (msg_count, _) = msgs_iter.size_hint(); // exact size iterator
                 if msg_count > 0 {
@@ -103,6 +110,10 @@ impl GossipHandler {
         if self.fork_digest_hex.is_empty() {
             return None;
         }
+        if ssz.len() > topic.max_uncompressed_size() {
+            tracing::error!(?topic, len = ssz.len(), "outgoing gossip payload too large");
+            return None;
+        }
         let wire = topic.to_wire(&self.fork_digest_hex);
         self.snap_scratch.resize(snap::raw::max_compress_len(ssz.len()), 0);
         let n = match self.snap_encoder.compress(ssz, &mut self.snap_scratch) {
@@ -113,7 +124,7 @@ impl GossipHandler {
             }
         };
         let msg_id = msg_id_valid_snappy(&wire, ssz);
-        let fast_hash = self.dedup_cache.contains_fast(&self.snap_scratch[..n])?;
+        let fast_hash = self.dedup_cache.contains_fast(&wire, &self.snap_scratch[..n])?;
         if !self.dedup_cache.insert(fast_hash, msg_id) {
             return None;
         }

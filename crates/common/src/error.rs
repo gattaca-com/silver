@@ -18,6 +18,8 @@ pub enum Error {
     UnsupportedKeyType,
     PeerIdMismatch,
     BufferTooSmall,
+    GossipFrameTooLarge,
+    GossipPayloadTooLarge,
     ParseTopicError,
     InvalidSnappy,
     IoError(#[from] std::io::Error),

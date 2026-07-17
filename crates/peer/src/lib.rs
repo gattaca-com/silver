@@ -21,6 +21,7 @@ silver_common::declare_counters! {
         // Discovery candidates dropped before dial.
         DiscDroppedForkDigest,
         DiscDroppedBanned,
+        DiscDroppedRemoteBan,
         // Gossip validation failures.
         GossipInvalidFrame,
         GossipInvalidControl,

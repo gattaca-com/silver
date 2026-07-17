@@ -77,11 +77,13 @@ pub(super) fn handle_prunes<'a>(
                 continue;
             };
             tracing::debug!(?stream_id, ?topic, "PRUNE received");
+
             // TODO: prune.peers may contain list of signed peer records of alternate peers
             // but e.g. Lighthouse does not send peer records. So maybe just ignore?
             emit(GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipTopicPrune {
                 p2p_peer: stream_id.peer(),
                 topic,
+                backoff_seconds: prune.backoff,
             }));
         }
     }

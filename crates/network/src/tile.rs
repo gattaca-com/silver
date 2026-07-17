@@ -147,7 +147,7 @@ impl NetworkTile {
             },
             Event::Discovery(disc_event) => match disc_event {
                 DiscoveryEvent::NodeFound(enr) => {
-                    adapter.produce(PeerEvent::DiscNodeFound { enr });
+                    adapter.produce(PeerEvent::DiscNodeFound { enr, reload: false });
                 }
                 DiscoveryEvent::ExternalAddrChanged(socket_addr, seq) => {
                     adapter.produce(PeerEvent::DiscExternalAddress { address: socket_addr, seq });
