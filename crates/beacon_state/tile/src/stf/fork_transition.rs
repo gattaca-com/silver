@@ -4,14 +4,13 @@ use silver_beacon_state_data::{
     gloas::{
         EXECUTION_PAYLOAD_AVAILABILITY_BYTES, PTC_WINDOW_LEN, PtcCommittee, zeroed_ptc_window,
     },
-    types::B256,
 };
+use silver_common::ssz_hash_gloas::EMPTY_EXECUTION_REQUESTS_ROOT;
 
-use super::{epoch::is_valid_deposit_signature, gloas::fill_epoch_ptc};
-use crate::ssz_hash::{ZERO_HASHES, merkleize, mix_in_length};
-
-/// `uint8(0)` — the only builder version (`PAYLOAD_BUILDER_VERSION`).
-const PAYLOAD_BUILDER_VERSION: u8 = 0;
+use super::{
+    epoch::is_valid_deposit_signature,
+    gloas::{PAYLOAD_BUILDER_VERSION, fill_epoch_ptc},
+};
 
 /// Initialise the Gloas-only state on a fork view that has just advanced to the
 /// first slot of `GLOAS_FORK_EPOCH`.
@@ -37,7 +36,7 @@ pub fn upgrade_to_gloas(view: &mut StateWriterView, epoch: &mut EpochWriteView) 
         s.latest_execution_payload_bid = ExecutionPayloadBid {
             block_hash,
             gas_limit,
-            execution_requests_root: empty_execution_requests_root(),
+            execution_requests_root: *EMPTY_EXECUTION_REQUESTS_ROOT,
             ..Default::default()
         };
         // The remaining Gloas slot fields (`next_withdrawal_builder_index`,
@@ -50,6 +49,8 @@ pub fn upgrade_to_gloas(view: &mut StateWriterView, epoch: &mut EpochWriteView) 
     epoch.set_ptc_window(window);
 
     onboard_builders_from_pending_deposits(view);
+
+    view.adopt_gloas();
 }
 
 /// `initialize_ptc_window`: the empty previous epoch followed by the PTCs for
@@ -141,19 +142,4 @@ fn pending_deposit_has_valid_sig(view: &StateWriterView, pubkey: &[u8; 48]) -> b
                 &pd.signature,
             )
     })
-}
-
-/// `hash_tree_root(ExecutionRequests())` — the placeholder bid's
-/// `execution_requests_root`. Five empty `List[_, 2^d]` fields (Gloas adds
-/// `builder_deposits`, `builder_exits`); an empty list root is
-/// `mix_in_length(zeros[d], 0)`.
-fn empty_execution_requests_root() -> B256 {
-    let empty = |depth: usize| mix_in_length(&ZERO_HASHES[depth], 0);
-    merkleize(&[
-        empty(13), // deposits:         MAX_DEPOSIT_REQUESTS_PER_PAYLOAD = 2^13
-        empty(4),  // withdrawals:       MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD = 2^4
-        empty(1),  // consolidations:    MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD = 2
-        empty(8),  // builder_deposits:  MAX_BUILDER_DEPOSIT_REQUESTS_PER_PAYLOAD = 2^8
-        empty(4),  // builder_exits:     MAX_BUILDER_EXIT_REQUESTS_PER_PAYLOAD = 2^4
-    ])
 }

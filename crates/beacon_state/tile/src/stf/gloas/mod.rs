@@ -6,6 +6,7 @@ mod payload_attestation;
 mod withdrawals;
 
 pub use bid::{collect_sigs_execution_payload_bid, process_execution_payload_bid};
+pub(crate) use builders::PAYLOAD_BUILDER_VERSION;
 pub use builders::{
     get_builder_payment_quorum_threshold, process_builder_deposit_request,
     process_builder_exit_request, process_builder_pending_payments,

@@ -130,10 +130,6 @@ impl DeltaHashTree {
         }
     }
 
-    /// Every frozen leaf edit in this overlay as ascending
-    /// `(leaf_index, hash)` — `dom(overlay)` exactly, since `Leaf` is only
-    /// ever created at unit ranges. Feeds the fork-boundary synthesis of a
-    /// gloas overlay from a fulu one.
     pub(crate) fn collect_leaf_edits(&self, lo: u32, hi: u32, out: &mut Vec<(u32, B256)>) {
         match self {
             DeltaHashTree::Base(_) => {}

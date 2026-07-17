@@ -387,8 +387,8 @@ impl Withdrawals {
     pub const ZERO: Self = Self([0u8; 32]);
     pub const ETH1_ADDRESS_PREFIX: u8 = 0x01;
     pub const COMPOUNDING_PREFIX: u8 = 0x02;
-    /// Gloas `BUILDER_WITHDRAWAL_PREFIX`.
-    pub const BUILDER_PREFIX: u8 = 0x03;
+    /// Gloas `BUILDER_WITHDRAWAL_PREFIX` (0xB0 since spec v1.7.0-alpha.12).
+    pub const BUILDER_PREFIX: u8 = 0xB0;
 
     /// Build eth1-prefixed credentials (`0x01 || 11 zero bytes || addr`).
     #[inline]

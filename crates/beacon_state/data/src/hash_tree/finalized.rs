@@ -27,8 +27,6 @@ pub struct FinalizedHashTree {
 }
 
 impl Default for FinalizedHashTree {
-    /// The 1-capacity zero tree — the cheapest valid instance (moved-from
-    /// placeholder).
     fn default() -> Self {
         Self::from_leaves(std::iter::empty(), 1)
     }

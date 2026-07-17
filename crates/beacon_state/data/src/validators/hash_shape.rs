@@ -68,7 +68,7 @@ impl VersionedDeltaHash {
         let VersionedFinalizedHash::Transition { fulu, gloas } = finalized else {
             panic!("EIP-7688 version transition not started before the fork block")
         };
-        *self = VersionedDeltaHash::Gloas(synthesized_gloas(fulu_overlay, fulu, gloas));
+        *self = VersionedDeltaHash::Gloas(build_gloas_from_fulu(fulu_overlay, fulu, gloas));
     }
 
     pub(super) fn crossed_hardfork(&self) -> bool {
@@ -131,35 +131,26 @@ impl VersionedDeltaHash {
                 VersionedFinalizedHash::Gloas(b) |
                 VersionedFinalizedHash::Transition { gloas: b, .. },
             ) => VersionedDeltaHash::Gloas(rebased_and_pruned_gloas(old_g, b, win_g)),
-            // Transition only — pre-fork winner, post-fork survivor: rebase against
-            // the winner's synthesized gloas edits (same leaf domain and values
-            // as its fulu edits).
             (
                 VersionedDeltaHash::Gloas(old_g),
                 VersionedDeltaHash::Fulu(win_f),
                 VersionedFinalizedHash::Transition { fulu, gloas },
             ) => {
-                let win_g = synthesized_gloas(win_f, fulu, gloas);
+                let win_g = build_gloas_from_fulu(win_f, fulu, gloas);
                 VersionedDeltaHash::Gloas(rebased_and_pruned_gloas(old_g, gloas, &win_g))
             }
             _ => unreachable!("overlay shapes incompatible with base shape"),
         }
     }
 
-    /// Fold this winner into `base` at finalization. A `Fulu` winner during
-    /// the transition folds into BOTH sides — that is the transition invariant
-    /// (gloas base values == fulu base values) that keeps later
-    /// adoption/rebase syntheses valid.
     pub(super) fn promote_into(&self, base: &mut VersionedFinalizedHash) {
         match (self, base) {
             (VersionedDeltaHash::Fulu(o), VersionedFinalizedHash::Fulu(b)) => b.promote_delta(o),
             (VersionedDeltaHash::Fulu(o), VersionedFinalizedHash::Transition { fulu, gloas }) => {
-                let synth = synthesized_gloas(o, fulu, gloas);
+                let synth = build_gloas_from_fulu(o, fulu, gloas);
                 fulu.promote_delta(o);
                 gloas.promote_delta(&synth);
             }
-            // Fork-crossing winner: advance only the gloas base — the fulu
-            // side is dropped by the transition close that follows this promote.
             (VersionedDeltaHash::Gloas(o), VersionedFinalizedHash::Transition { gloas, .. }) => {
                 gloas.promote_delta(o)
             }
@@ -171,12 +162,12 @@ impl VersionedDeltaHash {
 
 fn rebased_and_pruned_fulu(
     old: &DeltaHashTree,
-    base: &FinalizedHashTree,
+    finalized: &FinalizedHashTree,
     winner: &DeltaHashTree,
 ) -> DeltaHashTree {
     let mut overlay = old.clone();
-    overlay.rebase(base, winner);
-    base.prune_delta_against(&mut overlay, winner);
+    overlay.rebase(finalized, winner);
+    finalized.prune_delta_against(&mut overlay, winner);
     overlay
 }
 
@@ -191,10 +182,7 @@ fn rebased_and_pruned_gloas(
     overlay
 }
 
-/// A gloas overlay with exactly the fulu overlay's leaf edits — valid
-/// whenever the transition invariant holds. O(edits · log) SHA,
-/// transition-scoped.
-fn synthesized_gloas(
+fn build_gloas_from_fulu(
     fulu_overlay: &DeltaHashTree,
     fulu_base: &FinalizedHashTree,
     gloas_base: &GloasFinalized,

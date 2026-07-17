@@ -91,9 +91,6 @@ pub struct BeaconState {
 }
 
 impl BeaconState {
-    /// Rebuild every fork-shaped tier's finalized base in the gloas shape
-    /// (post-gloas checkpoint decode, before any fork rolls). The tier
-    /// roster here and the fork-block migration's must stay in sync.
     pub fn migrate_finalized_to_gloas(&mut self) {
         self.balances.migrate_finalized_to_gloas();
         self.inactivity.migrate_finalized_to_gloas();
