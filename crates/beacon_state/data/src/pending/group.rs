@@ -19,6 +19,7 @@ pub struct QueueGroup<Q: QueueItem> {
     finalized: Queue<Q>,
     deltas: Ring<Self, QueueDelta<Q>, SLOTS_RING_N>,
     persist_lock: Mutex<()>,
+    base_gloas: bool,
 }
 
 impl<Q: QueueItem> QueueGroup<Q> {
@@ -29,7 +30,14 @@ impl<Q: QueueItem> QueueGroup<Q> {
             finalized: Queue::from_ssz(bytes),
             deltas: Ring::default(),
             persist_lock: Mutex::new(()),
+            base_gloas: false,
         }
+    }
+
+    /// Birth-shape flip for a post-gloas checkpoint: fresh forks anchor
+    /// their hashers in the gloas shape from the start.
+    pub(super) fn mark_gloas_base(&mut self) {
+        self.base_gloas = true;
     }
 
     /// Run `f` over the finalized base under the promote barrier — the
@@ -47,9 +55,9 @@ impl<Q: QueueItem> QueueGroup<Q> {
 
     #[inline]
     pub(super) fn roll_fresh(&mut self) -> QueueWriteView<'_, Q> {
-        let Self { finalized, deltas, .. } = self;
+        let Self { finalized, deltas, base_gloas, .. } = self;
         let mut fork = deltas.roll_fresh();
-        fork.rebuild_frontier(finalized);
+        fork.rebuild_hasher(finalized, *base_gloas);
         QueueWriteView::new(finalized, fork)
     }
 
@@ -88,7 +96,9 @@ impl<Q: QueueItem> QueueGroup<Q> {
 
         {
             let _g = self.persist_lock.lock();
-            self.deltas.get(winner).promote_into(&mut self.finalized);
+            let winner_delta = self.deltas.get(winner);
+            self.base_gloas |= winner_delta.hasher_is_gloas();
+            winner_delta.promote_into(&mut self.finalized);
         }
 
         self.deltas.free_outdated(&fresh);

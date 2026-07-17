@@ -177,14 +177,14 @@ impl<Q: QueueItem> Queue<Q> {
     }
 
     /// Cached leaves, parallel to [`entries`](Self::entries) — fed to the
-    /// delta's frontier rebuild.
+    /// delta's hasher rebuild.
     #[inline]
     pub(super) fn leaves(&self) -> &[B256] {
         &self.leaves
     }
 
     /// Push onto the tail, returning the cached leaf so the caller can fold it
-    /// into a frontier without re-hashing.
+    /// into a hasher without re-hashing.
     #[inline]
     pub(super) fn push(&mut self, e: Q) -> B256 {
         let leaf = e.leaf();
