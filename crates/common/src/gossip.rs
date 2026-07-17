@@ -303,10 +303,7 @@ mod tests {
         }
 
         for i in [0u64, 1, 3, 42, 63] {
-            for t in [
-                GossipTopic::BeaconAttestation(i),
-                GossipTopic::DataColumnSidecar(i),
-            ] {
+            for t in [GossipTopic::BeaconAttestation(i), GossipTopic::DataColumnSidecar(i)] {
                 let s: String = t.into();
                 assert_eq!(GossipTopic::try_from(s.as_str()).unwrap(), t);
             }

@@ -356,6 +356,7 @@ pub enum PeerEvent {
     },
     DiscNodeFound {
         enr: Enr,
+        reload: bool,
     },
     DiscExternalAddress {
         address: SocketAddr,

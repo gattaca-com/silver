@@ -558,8 +558,8 @@ impl PeerManager {
                 crate::PeerCounters::GossipInvalidFrame.inc();
                 self.add_behaviour_penalty(p2p_peer, 1.0, "invalid gossip frame");
             }
-            PeerEvent::DiscNodeFound { enr } => {
-                self.on_disc_node_found(enr, now, emit);
+            PeerEvent::DiscNodeFound { enr, reload } => {
+                self.on_disc_node_found(enr, reload, now, emit);
             }
             PeerEvent::DiscExternalAddress { address: _, seq } => {
                 // update metadata seq number so that it matches ENR
@@ -1181,7 +1181,13 @@ impl PeerManager {
     ///    (priority) and we're under `max_priority_peers`.
     ///
     /// Network tile handles in-flight dial / already-connected dedup.
-    fn on_disc_node_found(&mut self, enr: Enr, now: Instant, emit: &mut impl FnMut(PeerControl)) {
+    fn on_disc_node_found(
+        &mut self,
+        enr: Enr,
+        reload: bool,
+        now: Instant,
+        emit: &mut impl FnMut(PeerControl),
+    ) {
         // 1. Fork-digest gate. Spec-conformant CL nodes always advertise `eth2`;
         //    missing-or-mismatched is a drop (matches lighthouse).
         if let Some(my_digest) = self.our_fork_digest {
@@ -1272,7 +1278,8 @@ impl PeerManager {
             self.required_syncnets,
             self.custody_columns,
         );
-        let dial = connected < self.params.target_peers ||
+        let dial = reload ||
+            connected < self.params.target_peers ||
             (priority && connected < self.params.max_priority_peers);
         if !dial {
             tracing::debug!(connected, "not dialling");
@@ -2754,7 +2761,9 @@ mod tests {
         let enr =
             test_enr_with(7, std::net::Ipv4Addr::new(10, 0, 0, 7), Some([0u8; 16]), None, None);
 
-        mgr.handle_event(PeerEvent::DiscNodeFound { enr }, now, &mut |c| cap.0.push(c));
+        mgr.handle_event(PeerEvent::DiscNodeFound { enr, reload: false }, now, &mut |c| {
+            cap.0.push(c)
+        });
 
         assert!(
             cap.0.iter().any(|e| matches!(e, PeerControl::P2pDial { .. })),
@@ -2783,7 +2792,9 @@ mod tests {
 
         let enr =
             test_enr_with(7, std::net::Ipv4Addr::new(10, 0, 0, 7), Some([0u8; 16]), None, None);
-        mgr.handle_event(PeerEvent::DiscNodeFound { enr }, now, &mut |c| cap.0.push(c));
+        mgr.handle_event(PeerEvent::DiscNodeFound { enr, reload: false }, now, &mut |c| {
+            cap.0.push(c)
+        });
 
         assert!(
             cap.0.iter().any(|e| matches!(e, PeerControl::P2pDial { .. })),
@@ -2804,7 +2815,9 @@ mod tests {
         cap.0.clear();
 
         let enr = test_enr(99, std::net::Ipv4Addr::new(10, 0, 0, 99));
-        mgr.handle_event(PeerEvent::DiscNodeFound { enr }, now, &mut |c| cap.0.push(c));
+        mgr.handle_event(PeerEvent::DiscNodeFound { enr, reload: false }, now, &mut |c| {
+            cap.0.push(c)
+        });
 
         assert!(
             !cap.0.iter().any(|e| matches!(e, PeerControl::P2pDial { .. })),
@@ -2838,7 +2851,9 @@ mod tests {
 
         // Same /32 reappears via discovery — must be dropped.
         let enr = test_enr(42, std::net::Ipv4Addr::new(10, 0, 0, 42));
-        mgr.handle_event(PeerEvent::DiscNodeFound { enr }, now, &mut |c| cap.0.push(c));
+        mgr.handle_event(PeerEvent::DiscNodeFound { enr, reload: false }, now, &mut |c| {
+            cap.0.push(c)
+        });
 
         assert!(
             !cap.0.iter().any(|e| matches!(e, PeerControl::P2pDial { .. })),
@@ -2881,7 +2896,9 @@ mod tests {
         // fork digest (always-on filter since `our_fork_digest` is set).
         let enr =
             test_enr_with(42, std::net::Ipv4Addr::new(10, 0, 0, 42), Some([0u8; 16]), None, None);
-        mgr.handle_event(PeerEvent::DiscNodeFound { enr }, now, &mut |c| cap.0.push(c));
+        mgr.handle_event(PeerEvent::DiscNodeFound { enr, reload: false }, now, &mut |c| {
+            cap.0.push(c)
+        });
         assert!(!cap.0.iter().any(|e| matches!(e, PeerControl::P2pDial { .. })));
 
         // Advance past banned_ip_ttl + tick to GC the ban entry.
@@ -2890,7 +2907,9 @@ mod tests {
 
         // Same IP via discovery now dials.
         cap.0.clear();
-        mgr.handle_event(PeerEvent::DiscNodeFound { enr }, now, &mut |c| cap.0.push(c));
+        mgr.handle_event(PeerEvent::DiscNodeFound { enr, reload: false }, now, &mut |c| {
+            cap.0.push(c)
+        });
         assert!(
             cap.0.iter().any(|e| matches!(e, PeerControl::P2pDial { .. })),
             "post-TTL discovery hit must dial, got {:?}",
@@ -3121,7 +3140,9 @@ mod tests {
         // Even from a different IP, it must drop on banned-peer-id filter.
         now += Duration::from_secs(1);
         let enr = test_enr(7, std::net::Ipv4Addr::new(10, 0, 0, 200));
-        mgr.handle_event(PeerEvent::DiscNodeFound { enr }, now, &mut |c| cap.0.push(c));
+        mgr.handle_event(PeerEvent::DiscNodeFound { enr, reload: false }, now, &mut |c| {
+            cap.0.push(c)
+        });
         assert!(
             !cap.0.iter().any(|e| matches!(e, PeerControl::P2pDial { .. })),
             "banned PeerId discovery hit must not dial, got {:?}",
@@ -3169,7 +3190,9 @@ mod tests {
         let enr =
             test_enr_with(7, std::net::Ipv4Addr::new(10, 0, 0, 7), Some(wrong_eth2), None, None);
 
-        mgr.handle_event(PeerEvent::DiscNodeFound { enr }, now, &mut |c| cap.0.push(c));
+        mgr.handle_event(PeerEvent::DiscNodeFound { enr, reload: false }, now, &mut |c| {
+            cap.0.push(c)
+        });
         assert!(
             !cap.0.iter().any(|e| matches!(e, PeerControl::P2pDial { .. })),
             "wrong-fork ENR must be dropped, got {:?}",
@@ -3187,7 +3210,9 @@ mod tests {
 
         // ENR with no eth2 field — same drop policy as lighthouse.
         let enr = test_enr(7, std::net::Ipv4Addr::new(10, 0, 0, 7));
-        mgr.handle_event(PeerEvent::DiscNodeFound { enr }, now, &mut |c| cap.0.push(c));
+        mgr.handle_event(PeerEvent::DiscNodeFound { enr, reload: false }, now, &mut |c| {
+            cap.0.push(c)
+        });
         assert!(
             !cap.0.iter().any(|e| matches!(e, PeerControl::P2pDial { .. })),
             "ENR without eth2 must be dropped when filter set, got {:?}",
@@ -3219,7 +3244,9 @@ mod tests {
             Some(attnets),
             None,
         );
-        mgr.handle_event(PeerEvent::DiscNodeFound { enr }, now, &mut |c| cap.0.push(c));
+        mgr.handle_event(PeerEvent::DiscNodeFound { enr, reload: false }, now, &mut |c| {
+            cap.0.push(c)
+        });
 
         assert!(
             cap.0.iter().any(|e| matches!(e, PeerControl::P2pDial { .. })),
@@ -3243,7 +3270,9 @@ mod tests {
         attnets[0] = 0x20;
         let enr =
             test_enr_with(99, std::net::Ipv4Addr::new(10, 0, 0, 99), None, Some(attnets), None);
-        mgr.handle_event(PeerEvent::DiscNodeFound { enr }, now, &mut |c| cap.0.push(c));
+        mgr.handle_event(PeerEvent::DiscNodeFound { enr, reload: false }, now, &mut |c| {
+            cap.0.push(c)
+        });
 
         assert!(
             !cap.0.iter().any(|e| matches!(e, PeerControl::P2pDial { .. })),

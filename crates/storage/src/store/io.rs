@@ -228,7 +228,10 @@ impl Store {
                             open_file_read(entry.path())?.read_to_string(&mut enr_string)?;
                             let enr = Enr::from_base64(enr_string.as_str(), false)
                                 .map_err(Error::other)?;
-                            emit(IoEvent::PeerEvent(PeerEvent::DiscNodeFound { enr }));
+                            emit(IoEvent::PeerEvent(PeerEvent::DiscNodeFound {
+                                enr,
+                                reload: true,
+                            }));
                         }
                     }
                 }
