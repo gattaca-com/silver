@@ -238,11 +238,23 @@ impl TryFrom<&str> for GossipTopic {
             "proposer_preferences" => Self::ProposerPreferences,
             other => {
                 if let Some(id) = other.strip_prefix("beacon_attestation_") {
-                    Self::BeaconAttestation(id.parse().map_err(|_| Error::ParseTopicError)?)
+                    let subnet = id.parse().map_err(|_| Error::ParseTopicError)?;
+                    if subnet >= 64 {
+                        return Err(Error::ParseTopicError);
+                    }
+                    Self::BeaconAttestation(subnet)
                 } else if let Some(id) = other.strip_prefix("sync_committee_") {
-                    Self::SyncCommittee(id.parse().map_err(|_| Error::ParseTopicError)?)
+                    let subnet = id.parse().map_err(|_| Error::ParseTopicError)?;
+                    if subnet >= 4 {
+                        return Err(Error::ParseTopicError);
+                    }
+                    Self::SyncCommittee(subnet)
                 } else if let Some(id) = other.strip_prefix("data_column_sidecar_") {
-                    Self::DataColumnSidecar(id.parse().map_err(|_| Error::ParseTopicError)?)
+                    let subnet = id.parse().map_err(|_| Error::ParseTopicError)?;
+                    if subnet >= 128 {
+                        return Err(Error::ParseTopicError);
+                    }
+                    Self::DataColumnSidecar(subnet)
                 } else {
                     return Err(Error::ParseTopicError);
                 }
@@ -279,10 +291,20 @@ mod tests {
 
     #[test]
     fn roundtrip_subnets() {
-        for i in [0u64, 1, 63, 127] {
+        for i in [0u64, 1, 3] {
             for t in [
                 GossipTopic::BeaconAttestation(i),
                 GossipTopic::SyncCommittee(i),
+                GossipTopic::DataColumnSidecar(i),
+            ] {
+                let s: String = t.into();
+                assert_eq!(GossipTopic::try_from(s.as_str()).unwrap(), t);
+            }
+        }
+
+        for i in [0u64, 1, 3, 42, 63] {
+            for t in [
+                GossipTopic::BeaconAttestation(i),
                 GossipTopic::DataColumnSidecar(i),
             ] {
                 let s: String = t.into();

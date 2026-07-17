@@ -5,7 +5,7 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     net::{IpAddr, SocketAddr},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use flux_profiler::timed;
@@ -32,6 +32,10 @@ pub(crate) mod rpc;
 const PEERS_CAP: usize = 256;
 const IP_COLOC_CAP: usize = 128;
 const ARCHIVE_CAP: usize = 512;
+
+const REMOTE_BAN_TTL: Duration = Duration::from_secs(12 * 3600);
+
+const GOODBYE_CLIENT_SHUTDOWN: u64 = 1;
 
 pub struct PeerManager {
     /// Live peers keyed by connection handle.
@@ -102,10 +106,14 @@ pub struct PeerManager {
     /// same TTL as `banned_ips` (sliding-window).
     ip_eviction_counts: HashMap<IpAddr, (u32, Instant)>,
 
-    /// PeerIds we've graylist-banned, plus peers whose Goodbye told us *they*
-    /// banned us (dial backoff), keyed by ban time. Drives discovery
+    /// PeerIds we've graylist-banned, keyed by ban time. Drives discovery
     /// filtering and the `Unban` emission once `banned_peer_ttl` elapses.
     banned_peers: HashMap<PeerId, Instant>,
+
+    /// Peers whose Goodbye carried an error code (anything but
+    /// ClientShutdown): dial backoff for `REMOTE_BAN_TTL`, sized to
+    /// lighthouse's 12h BANNED_BEFORE_DECAY. Their inbound stays welcome.
+    remote_banned_peers: HashMap<PeerId, Instant>,
 
     params: ScoreParams,
 
@@ -209,6 +217,7 @@ impl PeerManager {
             banned_ips: HashMap::with_capacity(64),
             ip_eviction_counts: HashMap::with_capacity(64),
             banned_peers: HashMap::with_capacity(128),
+            remote_banned_peers: HashMap::with_capacity(128),
             our_fork_digest: Some(fork_digest),
             rejected,
             syncing,
@@ -525,8 +534,8 @@ impl PeerManager {
             PeerEvent::P2pGossipTopicGraft { p2p_peer, topic } => {
                 self.on_remote_graft(p2p_peer, topic, now, emit);
             }
-            PeerEvent::P2pGossipTopicPrune { p2p_peer, topic } => {
-                self.on_remote_prune(p2p_peer, topic, now, emit);
+            PeerEvent::P2pGossipTopicPrune { p2p_peer, topic, backoff_seconds } => {
+                self.on_remote_prune(p2p_peer, topic, now, backoff_seconds, emit);
             }
             PeerEvent::P2pGossipHave { p2p_peer, topic: _, hash, already_seen } => {
                 self.on_ihave(p2p_peer, hash, already_seen, now);
@@ -920,6 +929,7 @@ impl PeerManager {
         conn: usize,
         topic: GossipTopic,
         now: Instant,
+        backoff_seconds: Option<u64>,
         emit: &mut impl FnMut(PeerControl),
     ) {
         let mut mesh_size = 0;
@@ -946,7 +956,11 @@ impl PeerManager {
             t.meshed_since = None;
             t.mesh_active = false;
         }
-        peer.backoffs.insert(topic, now + self.params.prune_backoff);
+        let backoff = backoff_seconds
+            .map(|s| 3600.min(s)) // follows libp2p upper bound
+            .map(Duration::from_secs)
+            .unwrap_or(self.params.prune_backoff);
+        peer.backoffs.insert(topic, now + backoff);
         tracing::info!(p2p_peer = conn, ?topic, mesh_size, "PM peer PRUNEd us");
     }
 
@@ -1220,6 +1234,11 @@ impl PeerManager {
             tracing::warn!(?peer_id, "banned peer id");
             return;
         }
+        if self.remote_banned_peers.contains_key(&peer_id) {
+            crate::PeerCounters::DiscDroppedRemoteBan.inc();
+            tracing::debug!(?peer_id, "remote-banned peer id; dial backoff");
+            return;
+        }
         if self.peers.values().any(|p| p.peer_id == peer_id) {
             // Normal high-frequency case: discovery re-surfaces connected peers
             // every poll cycle. trace, not warn — else it floods the log.
@@ -1378,13 +1397,13 @@ impl PeerManager {
             );
             emit(PeerControl::P2pDisconnect { p2p: peer_id, p2p_connection: p2p_peer });
 
-            // Remote ban (Banned/BannedIP): redialing is futile until their
-            // ban decays, so back off dialing for `banned_peer_ttl`. No
-            // `PeerControl::Ban` — their inbound stays welcome if the ban
-            // lifts sooner; `gc_banned_peers`'s Unban is a no-op for us.
-            if matches!(code, 128 | 129) {
-                tracing::info!(?peer_id, code, "peer banned us; dial backoff");
-                self.banned_peers.insert(peer_id, now);
+            if code != GOODBYE_CLIENT_SHUTDOWN {
+                tracing::info!(
+                    ?peer_id,
+                    code = Self::goodbye_reason(code),
+                    "goodbye error; dial backoff"
+                );
+                self.remote_banned_peers.insert(peer_id, now);
             }
         }
         self.peers.remove(&p2p_peer);
@@ -1762,6 +1781,8 @@ impl PeerManager {
                 true
             }
         });
+        // No Unban: remote-banned peers were never network-side banned.
+        self.remote_banned_peers.retain(|_, t| now.saturating_duration_since(*t) < REMOTE_BAN_TTL);
     }
 
     /// Human label for a Goodbye reason code (per eth2 spec).

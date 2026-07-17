@@ -25,7 +25,7 @@ pub(super) fn handle_incoming(
     emit: &mut impl FnMut(GossipHandlerEvent),
 ) -> Result<(), Error> {
     // Fast duplicate check.
-    let fast_id = match dedup_cache.contains_fast(snappy_data) {
+    let fast_id = match dedup_cache.contains_fast(topic_string, snappy_data) {
         Some(fast_hash) => fast_hash,
         None => return Ok(()), // duplicate
     };
