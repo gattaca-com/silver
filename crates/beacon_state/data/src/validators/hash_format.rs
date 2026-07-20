@@ -68,7 +68,11 @@ impl VersionedDeltaHash {
         let VersionedFinalizedHash::Transition { fulu, gloas } = finalized else {
             panic!("EIP-7688 version transition not started before the fork block")
         };
-        *self = VersionedDeltaHash::Gloas(build_gloas_from_fulu(fulu_overlay, fulu, gloas));
+        *self = VersionedDeltaHash::Gloas(GloasDeltaHashTree::from_fulu_overlay(
+            fulu_overlay,
+            fulu,
+            gloas,
+        ));
     }
 
     pub(super) fn crossed_hardfork(&self) -> bool {
@@ -124,22 +128,22 @@ impl VersionedDeltaHash {
                 VersionedDeltaHash::Fulu(win_f),
                 VersionedFinalizedHash::Fulu(b) |
                 VersionedFinalizedHash::Transition { fulu: b, .. },
-            ) => VersionedDeltaHash::Fulu(rebased_and_pruned_fulu(old_f, b, win_f)),
+            ) => VersionedDeltaHash::Fulu(old_f.rebased_and_pruned(b, win_f)),
             (
                 VersionedDeltaHash::Gloas(old_g),
                 VersionedDeltaHash::Gloas(win_g),
                 VersionedFinalizedHash::Gloas(b) |
                 VersionedFinalizedHash::Transition { gloas: b, .. },
-            ) => VersionedDeltaHash::Gloas(rebased_and_pruned_gloas(old_g, b, win_g)),
+            ) => VersionedDeltaHash::Gloas(old_g.rebased_and_pruned(b, win_g)),
             (
                 VersionedDeltaHash::Gloas(old_g),
                 VersionedDeltaHash::Fulu(win_f),
                 VersionedFinalizedHash::Transition { fulu, gloas },
             ) => {
-                let win_g = build_gloas_from_fulu(win_f, fulu, gloas);
-                VersionedDeltaHash::Gloas(rebased_and_pruned_gloas(old_g, gloas, &win_g))
+                let win_g = GloasDeltaHashTree::from_fulu_overlay(win_f, fulu, gloas);
+                VersionedDeltaHash::Gloas(old_g.rebased_and_pruned(gloas, &win_g))
             }
-            _ => unreachable!("overlay shapes incompatible with base shape"),
+            _ => unreachable!("overlay formats incompatible with base format"),
         }
     }
 
@@ -147,7 +151,7 @@ impl VersionedDeltaHash {
         match (self, base) {
             (VersionedDeltaHash::Fulu(o), VersionedFinalizedHash::Fulu(b)) => b.promote_delta(o),
             (VersionedDeltaHash::Fulu(o), VersionedFinalizedHash::Transition { fulu, gloas }) => {
-                let synth = build_gloas_from_fulu(o, fulu, gloas);
+                let synth = GloasDeltaHashTree::from_fulu_overlay(o, fulu, gloas);
                 fulu.promote_delta(o);
                 gloas.promote_delta(&synth);
             }
@@ -155,41 +159,7 @@ impl VersionedDeltaHash {
                 gloas.promote_delta(o)
             }
             (VersionedDeltaHash::Gloas(o), VersionedFinalizedHash::Gloas(b)) => b.promote_delta(o),
-            _ => unreachable!("overlay shape incompatible with base shape"),
+            _ => unreachable!("overlay format incompatible with base format"),
         }
     }
-}
-
-fn rebased_and_pruned_fulu(
-    old: &DeltaHashTree,
-    finalized: &FinalizedHashTree,
-    winner: &DeltaHashTree,
-) -> DeltaHashTree {
-    let mut overlay = old.clone();
-    overlay.rebase(finalized, winner);
-    finalized.prune_delta_against(&mut overlay, winner);
-    overlay
-}
-
-fn rebased_and_pruned_gloas(
-    old: &GloasDeltaHashTree,
-    base: &GloasFinalized,
-    winner: &GloasDeltaHashTree,
-) -> GloasDeltaHashTree {
-    let mut overlay = old.clone();
-    overlay.rebase(base, winner);
-    base.prune_delta_against(&mut overlay, winner);
-    overlay
-}
-
-fn build_gloas_from_fulu(
-    fulu_overlay: &DeltaHashTree,
-    fulu_base: &FinalizedHashTree,
-    gloas_base: &GloasFinalized,
-) -> GloasDeltaHashTree {
-    let mut edits = Vec::new();
-    fulu_overlay.collect_leaf_edits(0, fulu_base.max_elements() as u32, &mut edits);
-    let mut overlay = GloasDeltaHashTree::new_at(gloas_base);
-    overlay.set_leaves(gloas_base, &edits);
-    overlay
 }

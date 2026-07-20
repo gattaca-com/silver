@@ -102,6 +102,25 @@ impl GloasDeltaHashTree {
         }
     }
 
+    pub(crate) fn rebased_and_pruned(&self, base: &GloasFinalized, winner: &Self) -> Self {
+        let mut overlay = self.clone();
+        overlay.rebase(base, winner);
+        base.prune_delta_against(&mut overlay, winner);
+        overlay
+    }
+
+    pub(crate) fn from_fulu_overlay(
+        fulu_overlay: &DeltaHashTree,
+        fulu_base: &FinalizedHashTree,
+        gloas_base: &GloasFinalized,
+    ) -> Self {
+        let mut edits = Vec::new();
+        fulu_overlay.collect_leaf_edits(0, fulu_base.max_elements() as u32, &mut edits);
+        let mut overlay = Self::new_at(gloas_base);
+        overlay.set_leaves(gloas_base, &edits);
+        overlay
+    }
+
     /// EIP-7916 `hash_tree_root` for the `ProgressiveList` backed by
     /// `finalized` + this delta: spine fold over segment roots
     /// (`Bytes32(0)` above the last populated segment), then the length

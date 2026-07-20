@@ -1,6 +1,6 @@
 mod delta;
 mod finalized;
-mod hash_shape;
+mod hash_format;
 
 #[cfg(test)]
 mod tests;
@@ -111,14 +111,6 @@ impl ValidatorsGroup {
     pub fn begin_gloas_hash_transition(&mut self) {
         let populated = self.finalized.validator_count();
         self.finalized.hash.begin_transition(populated);
-    }
-
-    /// Post-gloas checkpoint decode: build the gloas forest from the freshly
-    /// decoded fulu tree and drop the fulu side — no transition, no fork ever
-    /// reads the fulu shape.
-    pub fn migrate_finalized_to_gloas(&mut self) {
-        self.begin_gloas_hash_transition();
-        self.finalized.hash.close_transition();
     }
 }
 

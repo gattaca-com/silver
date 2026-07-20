@@ -8,11 +8,11 @@ use flux_profiler::timed;
 use parking_lot::RwLock;
 use rustc_hash::FxHashMap;
 
-use super::{hash_shape::VersionedFinalizedHash, validator_hash};
+use super::{hash_format::VersionedFinalizedHash, validator_hash};
 use crate::{
     Withdrawals,
-    hash_tree::FinalizedHashTree,
-    types::{BLSPubkey, Epoch, FAR_FUTURE_EPOCH, validator_capacity},
+    hash_tree::{FinalizedHashTree, GloasFinalized},
+    types::{BLSPubkey, Epoch, FAR_FUTURE_EPOCH, HashFormat, validator_capacity},
 };
 
 pub type PubkeyIndex = FxHashMap<BLSPubkey, u32>;
@@ -120,6 +120,7 @@ impl FinalizedValidators {
     fn build<E>(
         capacity: usize,
         n: usize,
+        format: HashFormat,
         mut field_at: impl FnMut(usize) -> Result<ValidatorInit, E>,
     ) -> Result<Self, E> {
         debug_assert!(n <= capacity);
@@ -151,21 +152,27 @@ impl FinalizedValidators {
             index.insert(f.pubkey, i as u32);
         }
 
-        let hash = VersionedFinalizedHash::Fulu(FinalizedHashTree::from_leaves(
-            (0..n).map(|i| {
-                validator_hash(
-                    &val_pubkey[i],
-                    &val_withdrawal_credentials[i],
-                    effective_balance[i],
-                    slashed[i / 8] & (1 << (i % 8)) != 0,
-                    activation_eligibility_epoch[i],
-                    activation_epoch[i],
-                    exit_epoch[i],
-                    withdrawable_epoch[i],
-                )
-            }),
-            capacity,
-        ));
+        let leaf_hashes = (0..n).map(|i| {
+            validator_hash(
+                &val_pubkey[i],
+                &val_withdrawal_credentials[i],
+                effective_balance[i],
+                slashed[i / 8] & (1 << (i % 8)) != 0,
+                activation_eligibility_epoch[i],
+                activation_epoch[i],
+                exit_epoch[i],
+                withdrawable_epoch[i],
+            )
+        });
+        let hash = match format {
+            HashFormat::Fulu => {
+                VersionedFinalizedHash::Fulu(FinalizedHashTree::from_leaves(leaf_hashes, capacity))
+            }
+            HashFormat::Gloas => VersionedFinalizedHash::Gloas(GloasFinalized::from_leaf_hashes(
+                leaf_hashes,
+                capacity,
+            )),
+        };
 
         Ok(Self {
             val_pubkey,
@@ -194,6 +201,7 @@ impl FinalizedValidators {
     pub fn try_new(
         val_bytes: &[u8],
         decompressed: Option<&[PublicKey]>,
+        format: HashFormat,
     ) -> Result<Self, ValidatorsDecodeError> {
         if !val_bytes.len().is_multiple_of(VALIDATOR_SSZ_SIZE) {
             return Err(ValidatorsDecodeError::LenNotMultiple { len: val_bytes.len() });
@@ -208,7 +216,7 @@ impl FinalizedValidators {
             }
         }
 
-        Self::build(validator_capacity(n), n, |i| {
+        Self::build(validator_capacity(n), n, format, |i| {
             let v = &val_bytes[i * VALIDATOR_SSZ_SIZE..];
             let pubkey: BLSPubkey = v[offset::PUBKEY..offset::CREDENTIALS].try_into().unwrap();
             let pubkey_decompressed = match decompressed {
@@ -314,7 +322,7 @@ impl FinalizedValidators {
     /// the one bridge from test seeds to the private `build`; reached from
     /// other crates' tests only through `for_test`.
     pub(crate) fn with_validators(seeds: &[ValSeed]) -> Self {
-        Self::build(validator_capacity(seeds.len()), seeds.len(), |i| {
+        Self::build(validator_capacity(seeds.len()), seeds.len(), HashFormat::Fulu, |i| {
             let s = &seeds[i];
             Ok::<_, Infallible>(ValidatorInit {
                 pubkey: s.pubkey,

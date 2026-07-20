@@ -2,7 +2,7 @@ pub use beacon_block_body::{BlockBodyError, BodyFork, BodyOffsets, OperationKind
 pub use builders::{BuildersGroup, BuildersId, BuildersView, BuildersWriteView, FinalizedBuilders};
 pub use column::{
     Balances, BalancesGroup, BalancesId, BalancesReader, BalancesWriteView, ColumnGroup,
-    ColumnReader, ColumnSpec, ColumnVal, ColumnWriteView, Current, CurrentParticipationGroup,
+    ColumnReader, ColumnSpec, ColumnWriteView, Current, CurrentParticipationGroup,
     CurrentParticipationId, Inactivity, InactivityId, InactivityScoresGroup, InactivityView,
     InactivityWriteView, ParticipationView, ParticipationWriteView, Previous,
     PreviousParticipationGroup, PreviousParticipationId,
@@ -91,15 +91,6 @@ pub struct BeaconState {
 }
 
 impl BeaconState {
-    pub fn migrate_finalized_to_gloas(&mut self) {
-        self.balances.migrate_finalized_to_gloas();
-        self.inactivity.migrate_finalized_to_gloas();
-        self.previous_participation.migrate_finalized_to_gloas();
-        self.current_participation.migrate_finalized_to_gloas();
-        self.validators.migrate_finalized_to_gloas();
-        self.pending.mark_gloas_base();
-    }
-
     pub fn is_finalized_post_gloas(&self) -> bool {
         self.epoch.finalized().state().fork.current_version == self.immutable.gloas_fork_version
     }
@@ -164,12 +155,24 @@ impl BeaconState {
         Self {
             immutable: Immutable::default(),
             validators,
-            balances: BalancesGroup::new(cap, n, &balances).unwrap(),
+            balances: BalancesGroup::new(cap, n, &balances, HashFormat::Fulu).unwrap(),
             eth1: Eth1Group::new(Eth1Votes::default()),
             pending: PendingGroup::from_ssz(&[], &[], &[], &[]),
-            previous_participation: PreviousParticipationGroup::new(cap, n, &zeros(1)).unwrap(),
-            current_participation: CurrentParticipationGroup::new(cap, n, &zeros(1)).unwrap(),
-            inactivity: InactivityScoresGroup::new(cap, n, &zeros(8)).unwrap(),
+            previous_participation: PreviousParticipationGroup::new(
+                cap,
+                n,
+                &zeros(1),
+                HashFormat::Fulu,
+            )
+            .unwrap(),
+            current_participation: CurrentParticipationGroup::new(
+                cap,
+                n,
+                &zeros(1),
+                HashFormat::Fulu,
+            )
+            .unwrap(),
+            inactivity: InactivityScoresGroup::new(cap, n, &zeros(8), HashFormat::Fulu).unwrap(),
             slot_states: SlotStateGroup::new(SlotStateFinalized::from_parts(
                 SlotState { slot, ..Default::default() },
                 zero_roots(),

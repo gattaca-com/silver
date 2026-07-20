@@ -11,7 +11,7 @@ use super::{
 };
 use crate::{
     ring::{Id, RingIndex},
-    types::{ColumnLenMismatch, SLOTS_RING_N},
+    types::{ColumnLenMismatch, HashFormat, SLOTS_RING_N},
 };
 
 pub struct ColumnGroup<C: ColumnSpec> {
@@ -23,15 +23,20 @@ pub struct ColumnGroup<C: ColumnSpec> {
     scratch: ColumnTree,
     /// The committed fork whose content `scratch` currently holds. While it
     /// matches a roll's parent the scratch is reused in place and the full-tree
-    /// gather is skipped; set on commit, cleared on every roll.
+    /// snapshot load is skipped; set on commit, cleared on every roll.
     scratch_at: Option<Id<Self>>,
     index: RingIndex<Self, SLOTS_RING_N>,
     _marker: PhantomData<fn() -> C>,
 }
 
 impl<C: ColumnSpec> ColumnGroup<C> {
-    pub fn new(cap: usize, count: usize, ssz_bytes: &[u8]) -> Result<Self, ColumnLenMismatch> {
-        let flat = ColumnTree::new::<C::Val>(cap, count, ssz_bytes)?;
+    pub fn new(
+        cap: usize,
+        count: usize,
+        ssz_bytes: &[u8],
+        format: HashFormat,
+    ) -> Result<Self, ColumnLenMismatch> {
+        let flat = ColumnTree::new::<C::Val>(cap, count, ssz_bytes, format)?;
         // Grow-hint for the base's pages; the pool grows lazily beyond it.
         let mut pool = PagePool::new(flat.num_pages() * 2);
         let finalized = flat.to_snapshot(&mut pool);
@@ -55,7 +60,7 @@ impl<C: ColumnSpec> ColumnGroup<C> {
     pub fn roll_fresh(&mut self) -> ColumnWriteView<'_, C> {
         let (id, _) = self.index.roll();
         let Self { pool, finalized, scratch, .. } = self;
-        scratch.gather_from(pool, finalized);
+        scratch.load_snapshot(pool, finalized);
         scratch.reset_dirty_mask();
         self.scratch_at = None;
         ColumnWriteView::new(self, None, id)
@@ -67,7 +72,7 @@ impl<C: ColumnSpec> ColumnGroup<C> {
         let parent_pos = self.index.pos(parent);
         let Self { pool, ring, scratch, .. } = self;
         if !reuse_scratch {
-            scratch.gather_from(pool, &ring[parent_pos]);
+            scratch.load_snapshot(pool, &ring[parent_pos]);
         }
         scratch.reset_dirty_mask();
         self.scratch_at = None;

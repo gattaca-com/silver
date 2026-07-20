@@ -4,15 +4,13 @@ use std::{
 };
 
 use flux_profiler::timed;
+use silver_ssz::scalar::SszScalar;
 
 use super::{
-    ColumnGroup, ColumnSpec, ColumnVal, pool::PagePool, snapshot::PageSnapshot, tree::ColumnTree,
+    ColumnGroup, ColumnSpec, format::TreeFormat, pool::PagePool, snapshot::PageSnapshot,
+    tree::ColumnTree,
 };
-use crate::{
-    ring::Id,
-    ssz_hash::{ZERO_HASHES, hash_concat, mix_in_length},
-    types::{B256, VALIDATOR_REGISTRY_LIMIT},
-};
+use crate::{ring::Id, types::B256};
 
 /// The node array a column read walks: the flat scratch (the live, still-
 /// writable head — hot path) or a committed fork's paged snapshot. The read
@@ -40,42 +38,6 @@ impl<'a> Nodes<'a> {
             Nodes::Paged(_, snap) => snap.len(),
         }
     }
-
-    #[inline]
-    fn max_elements(&self) -> usize {
-        match self {
-            Nodes::Flat(t) => t.max_elements(),
-            Nodes::Paged(_, snap) => snap.max_elements(),
-        }
-    }
-
-    #[inline]
-    fn get<V: ColumnVal>(&self, i: usize) -> V {
-        let k = V::VALS_PER_CHUNK;
-        V::lane(self.node(self.max_elements() + i / k), i % k)
-    }
-
-    #[inline]
-    fn hash_root<V: ColumnVal>(&self) -> B256 {
-        let list_depth = (VALIDATOR_REGISTRY_LIMIT / V::VALS_PER_CHUNK).trailing_zeros();
-        let mut root = *self.node(1);
-        for h in self.max_elements().trailing_zeros()..list_depth {
-            root = hash_concat(&root, &ZERO_HASHES[h as usize]);
-        }
-        mix_in_length(&root, self.count())
-    }
-
-    fn write_ssz<V: ColumnVal, W: Write>(&self, w: &mut W) -> io::Result<()> {
-        let (k, size) = (V::VALS_PER_CHUNK, size_of::<V>());
-        let (full, rem) = (self.count() / k, self.count() % k);
-        for chunk in 0..full {
-            w.write_all(self.node(self.max_elements() + chunk))?;
-        }
-        if rem > 0 {
-            w.write_all(&self.node(self.max_elements() + full)[..rem * size])?;
-        }
-        Ok(())
-    }
 }
 
 /// Read handle over a fork's column: value reads (`get`/`iter`) plus the SSZ
@@ -84,33 +46,47 @@ impl<'a> Nodes<'a> {
 #[derive(Clone, Copy)]
 pub struct ColumnReader<'a, C: ColumnSpec> {
     nodes: Nodes<'a>,
+    /// Resolved once at construction so per-element reads pay a single
+    /// layout match, as the pre-fork reader did.
+    format: TreeFormat,
     _marker: PhantomData<fn() -> C>,
 }
 
 impl<'a, C: ColumnSpec> ColumnReader<'a, C> {
     #[inline]
     pub(super) fn flat(tree: &'a ColumnTree) -> Self {
-        Self { nodes: Nodes::Flat(tree), _marker: PhantomData }
+        Self { nodes: Nodes::Flat(tree), format: tree.format(), _marker: PhantomData }
     }
 
     #[inline]
     pub(super) fn paged(pool: &'a PagePool, snap: &'a PageSnapshot) -> Self {
-        Self { nodes: Nodes::Paged(pool, snap), _marker: PhantomData }
+        Self { nodes: Nodes::Paged(pool, snap), format: snap.format(), _marker: PhantomData }
     }
 
     #[inline]
     pub fn get(&self, ix: usize) -> C::Val {
-        self.nodes.get::<C::Val>(ix)
+        let k = <C::Val as SszScalar>::VALS_PER_CHUNK;
+        <C::Val as SszScalar>::lane(self.nodes.node(self.format.leaf_pos(ix / k)), ix % k)
     }
 
     #[inline]
     pub fn hash_root(&self) -> B256 {
-        self.nodes.hash_root::<C::Val>()
+        self.format.hash_root(self.nodes.count(), <C::Val as SszScalar>::VALS_PER_CHUNK, |n| {
+            *self.nodes.node(n)
+        })
     }
 
     #[inline]
     pub(super) fn write_ssz<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        self.nodes.write_ssz::<C::Val, W>(w)
+        let (k, size) = (<C::Val as SszScalar>::VALS_PER_CHUNK, size_of::<C::Val>());
+        let (full, rem) = (self.nodes.count() / k, self.nodes.count() % k);
+        for chunk in 0..full {
+            w.write_all(self.nodes.node(self.format.leaf_pos(chunk)))?;
+        }
+        if rem > 0 {
+            w.write_all(&self.nodes.node(self.format.leaf_pos(full))[..rem * size])?;
+        }
+        Ok(())
     }
 }
 
@@ -175,6 +151,11 @@ impl<'a, C: ColumnSpec> ColumnWriteView<'a, C> {
     #[inline]
     pub fn clear_to_zero(&mut self) {
         self.group.scratch_mut().fill_zero();
+    }
+
+    #[timed]
+    pub fn migrate_to_gloas(&mut self) {
+        self.group.scratch_mut().migrate_to_gloas::<C::Val>();
     }
 
     #[inline]

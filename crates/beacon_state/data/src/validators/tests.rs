@@ -5,7 +5,9 @@ use crate::{
     B256, Withdrawals,
     merkle::{MerkleStack, hash_concat, hash_fixed_bytes, hash_list, merkleize, uint64_chunk},
     progressive::ProgressiveHasher,
-    types::{BLSPubkey, FAR_FUTURE_EPOCH, VALIDATOR_REGISTRY_LIMIT, validator_capacity},
+    types::{
+        BLSPubkey, FAR_FUTURE_EPOCH, HashFormat, VALIDATOR_REGISTRY_LIMIT, validator_capacity,
+    },
 };
 
 fn pk(b: u8) -> BLSPubkey {
@@ -17,7 +19,7 @@ fn creds(b: u8) -> Withdrawals {
 }
 
 fn empty_validators() -> FinalizedValidators {
-    FinalizedValidators::try_new(&[], None).unwrap()
+    FinalizedValidators::try_new(&[], None, HashFormat::Fulu).unwrap()
 }
 
 /// A registry group over an empty base — the entry point for all delta tests,
@@ -315,6 +317,24 @@ fn gloas_reference_root(leaves: &[B256]) -> B256 {
 
 fn fulu_reference_root(leaves: &[B256]) -> B256 {
     hash_list(MerkleStack::new(VALIDATOR_REGISTRY_LIMIT), leaves.iter().copied())
+}
+
+#[test]
+fn gloas_construction() {
+    let mut g =
+        ValidatorsGroup::new(FinalizedValidators::try_new(&[], None, HashFormat::Gloas).unwrap());
+    let a = {
+        let mut w = g.roll_fresh();
+        for i in 0..5u8 {
+            w.append(pk(i), PublicKey::default(), creds(i));
+        }
+        w.commit()
+    };
+    let leaves: Vec<_> = (0..5u8).map(|i| default_leaf(i, 0)).collect();
+    assert_eq!(g.view(a).hash_root(), gloas_reference_root(&leaves));
+
+    let live = g.finalize(a, &[a]);
+    assert_eq!(g.view(live[0]).hash_root(), gloas_reference_root(&leaves));
 }
 
 #[test]

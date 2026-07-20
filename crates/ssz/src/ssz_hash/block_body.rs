@@ -51,9 +51,8 @@ pub fn hash_tree_root_body_fulu(body: &[u8]) -> B256 {
 /// Generate the `kzg_commitments_inclusion_proof` carried by a
 /// `DataColumnSidecar`: the 4-node Merkle branch proving the block's
 /// `blob_kzg_commitments` list root (field 11 of the 13-field → 16-leaf
-/// `BeaconBlockBody` tree) sits under `body_root`. Generator inverse of the
-/// verifier in
-/// `silver_storage::util::verify_data_column_sidecar_inclusion_proof`.
+/// `BeaconBlockBody` tree) sits under `body_root`. Generates the inclusion
+/// branch the data-column-sidecar verifier checks.
 ///
 /// Returns all-zero bytes when `body` is below the fixed prefix size (mirrors
 /// `hash_tree_root_body_fulu`'s fallback).

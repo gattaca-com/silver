@@ -1,7 +1,7 @@
 use blst::min_pk::PublicKey;
 
 use super::{
-    FinalizedValidators, ValidatorsGroup, ValidatorsId, hash_shape::VersionedDeltaHash,
+    FinalizedValidators, ValidatorsGroup, ValidatorsId, hash_format::VersionedDeltaHash,
     validator_hash,
 };
 use crate::{

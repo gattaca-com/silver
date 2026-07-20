@@ -130,6 +130,13 @@ impl DeltaHashTree {
         }
     }
 
+    pub(crate) fn rebased_and_pruned(&self, finalized: &FinalizedHashTree, winner: &Self) -> Self {
+        let mut overlay = self.clone();
+        overlay.rebase(finalized, winner);
+        finalized.prune_delta_against(&mut overlay, winner);
+        overlay
+    }
+
     pub(crate) fn collect_leaf_edits(&self, lo: u32, hi: u32, out: &mut Vec<(u32, B256)>) {
         match self {
             DeltaHashTree::Base(_) => {}

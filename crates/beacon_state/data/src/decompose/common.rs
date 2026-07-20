@@ -9,8 +9,8 @@ use crate::{
     gloas::BuilderPendingWithdrawal,
     merkle,
     types::{
-        self, B256, Checkpoint, HISTORICAL_ROOTS_LIMIT, Immutable, PROPOSER_LOOKAHEAD_SIZE,
-        PendingConsolidation, PendingDeposit, PendingPartialWithdrawal,
+        self, B256, Checkpoint, HISTORICAL_ROOTS_LIMIT, HashFormat, Immutable,
+        PROPOSER_LOOKAHEAD_SIZE, PendingConsolidation, PendingDeposit, PendingPartialWithdrawal,
     },
 };
 
@@ -186,10 +186,17 @@ impl BeaconState {
         builders: FinalizedBuilders,
         cfg: &SpecConfig,
     ) -> Result<Self, DecomposeError> {
+        let format = if epoch.state().fork.current_version == cfg.gloas_fork_version {
+            HashFormat::Gloas
+        } else {
+            HashFormat::Fulu
+        };
+
         let eth1 = Eth1Group::new(Eth1Votes::from_ssz(ssz, offsets)?);
 
         let val_bytes = &ssz[offsets.validators..offsets.balances];
-        let validators = ValidatorsGroup::new(FinalizedValidators::try_new(val_bytes, pubkeys)?);
+        let validators =
+            ValidatorsGroup::new(FinalizedValidators::try_new(val_bytes, pubkeys, format)?);
 
         // Per-validator columns size to the validators' capacity/count; each
         // constructor length-checks against the count (construction =
@@ -197,16 +204,17 @@ impl BeaconState {
         let (cap, n) =
             (validators.finalized().capacity(), validators.finalized().validator_count());
         let balances =
-            BalancesGroup::new(cap, n, &ssz[offsets.balances..offsets.prev_participation])?;
+            BalancesGroup::new(cap, n, &ssz[offsets.balances..offsets.prev_participation], format)?;
 
         let prev_participation_bytes = &ssz[offsets.prev_participation..offsets.cur_participation];
         let previous_participation =
-            PreviousParticipationGroup::new(cap, n, prev_participation_bytes)?;
+            PreviousParticipationGroup::new(cap, n, prev_participation_bytes, format)?;
         let curr_participation_bytes = &ssz[offsets.cur_participation..offsets.inactivity];
         let current_participation =
-            CurrentParticipationGroup::new(cap, n, curr_participation_bytes)?;
+            CurrentParticipationGroup::new(cap, n, curr_participation_bytes, format)?;
 
-        let inactivity = InactivityScoresGroup::new(cap, n, &ssz[offsets.inactivity..offsets.eph])?;
+        let inactivity =
+            InactivityScoresGroup::new(cap, n, &ssz[offsets.inactivity..offsets.eph], format)?;
 
         let mut immutable = Immutable::default();
         immutable.fill_from_ssz(ssz, cfg);
@@ -217,9 +225,12 @@ impl BeaconState {
         let longtail =
             LongtailGroup::new(LongtailState::from_ssz(ssz, offsets, validators.finalized())?);
 
-        let pending = decode_pending(ssz, offsets, consolidations_end, builder_withdrawals)?;
+        let mut pending = decode_pending(ssz, offsets, consolidations_end, builder_withdrawals)?;
+        if format == HashFormat::Gloas {
+            pending.mark_gloas_base();
+        }
 
-        let mut state = Self {
+        let state = Self {
             immutable,
             validators,
             balances,
@@ -233,13 +244,7 @@ impl BeaconState {
             longtail,
             builders: BuildersGroup::new(builders),
         };
-
-        // A post-gloas checkpoint is past the EIP-7688 fork: every hash
-        // structure is born in the gloas shape (the fork transition never
-        // opens).
-        if state.is_finalized_post_gloas() {
-            state.migrate_finalized_to_gloas();
-        }
+        debug_assert_eq!(state.is_finalized_post_gloas(), format == HashFormat::Gloas);
         Ok(state)
     }
 }

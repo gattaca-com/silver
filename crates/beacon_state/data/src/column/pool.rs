@@ -7,7 +7,6 @@ pub(super) const PAGE_NODES: usize = 4096 / size_of::<B256>();
 pub(super) type Page = [B256; PAGE_NODES];
 pub(super) type PageId = u32;
 
-#[derive(Default)]
 pub(super) struct PagePool {
     pages: Vec<Box<Page>>,
     refs: Vec<u32>,
@@ -56,7 +55,7 @@ impl PagePool {
         for &id in &dst.pages {
             self.retain(id);
         }
-        dst.max_elements = src.max_elements;
+        dst.format = src.format;
         dst.count = src.count;
         dst.is_released = false;
     }

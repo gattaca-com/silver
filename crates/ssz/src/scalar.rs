@@ -24,16 +24,6 @@ pub trait SszScalar: Copy + PartialEq + Default + 'static {
 
     fn write_ssz_slice<W: std::io::Write>(data: &[Self], w: &mut W) -> std::io::Result<()>;
 
-    /// SSZ-pack one chunk's `VALS_PER_CHUNK` values into its 32-byte leaf.
-    #[inline]
-    fn pack_leaf(vals: &[Self]) -> B256 {
-        debug_assert_eq!(vals.len(), Self::VALS_PER_CHUNK);
-        let mut leaf = [0u8; 32];
-        let mut w: &mut [u8] = &mut leaf;
-        Self::write_ssz_slice(vals, &mut w).expect("leaf holds exactly one chunk");
-        leaf
-    }
-
     #[inline]
     fn lane(group: &B256, lane: usize) -> Self {
         let sz = size_of::<Self>();

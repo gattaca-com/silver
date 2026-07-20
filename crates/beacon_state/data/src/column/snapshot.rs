@@ -1,4 +1,7 @@
-use super::pool::{PAGE_NODES, PageId, PagePool};
+use super::{
+    format::TreeFormat,
+    pool::{PAGE_NODES, PageId, PagePool},
+};
 use crate::types::B256;
 
 /// A committed fork's whole column tree as a page table: `pages[i]` is the pool
@@ -7,7 +10,7 @@ use crate::types::B256;
 /// [`PagePool`](PagePool) (the refcounts).
 pub struct PageSnapshot {
     pub(super) pages: Vec<PageId>,
-    pub(super) max_elements: usize,
+    pub(super) format: TreeFormat,
     pub(super) count: usize,
     pub(super) is_released: bool,
 }
@@ -15,7 +18,7 @@ pub struct PageSnapshot {
 impl PageSnapshot {
     #[inline]
     pub(super) fn new_released() -> Self {
-        Self { pages: Vec::new(), max_elements: 0, count: 0, is_released: true }
+        Self { pages: Vec::new(), format: TreeFormat::default(), count: 0, is_released: true }
     }
 
     #[inline]
@@ -24,8 +27,8 @@ impl PageSnapshot {
     }
 
     #[inline]
-    pub(super) fn max_elements(&self) -> usize {
-        self.max_elements
+    pub(super) fn format(&self) -> TreeFormat {
+        self.format
     }
 
     #[inline]

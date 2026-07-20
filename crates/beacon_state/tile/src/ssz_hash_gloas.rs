@@ -32,8 +32,8 @@ impl ProgressiveContainer for BeaconStateGloas {
 impl BeaconStateGloas {
     pub(crate) fn hash_tree_root(rv: &StateReadView, scratch: &mut StateHashScratch) -> B256 {
         // [Modified in Gloas] `latest_block_hash` (Hash32) replaces the header.
-        let common = hash_common_fields(rv, scratch, rv.slot.state().latest_block_hash);
         let slot = rv.slot.state();
+        let common = hash_common_fields(rv, scratch, slot.latest_block_hash);
 
         let mut fields = [[0u8; 32]; 46];
         fields[..38].copy_from_slice(&common);
@@ -96,8 +96,8 @@ fn hash_withdrawal(w: &Withdrawal) -> B256 {
 }
 
 /// `ExecutionPayloadBid` over the in-memory state type; must agree with the
-/// byte-driven twin in `silver_common::ssz_hash_gloas` (bid signing roots vs
-/// block hashing), so both root through `ExecutionPayloadBidView`.
+/// byte-driven bid hasher (signing roots vs block hashing), both rooting
+/// through `ExecutionPayloadBidView`.
 pub(crate) fn hash_execution_payload_bid(bid: &ExecutionPayloadBid) -> B256 {
     let kzg_commitments_root = hash_list(
         ProgressiveHasher::new(),
@@ -127,8 +127,6 @@ mod tests {
 
     use super::hash_execution_payload_bid;
 
-    /// The struct-driven bid hasher (signing roots) and the byte-driven twin
-    /// (block hashing) must agree.
     #[test]
     fn bid_twin_hashers_agree() {
         let bid = ExecutionPayloadBid {

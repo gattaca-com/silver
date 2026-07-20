@@ -444,6 +444,12 @@ impl Withdrawals {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum HashFormat {
+    Fulu,
+    Gloas,
+}
+
 /// A sparse column's SSZ byte length disagrees with the expected registry
 /// count — surfaced by the column constructors so construction = validation.
 #[derive(Debug, thiserror::Error)]
