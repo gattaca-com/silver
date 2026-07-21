@@ -16,7 +16,7 @@ pub use group::ColumnGroup;
 pub use silver_ssz::scalar::SszScalar;
 pub use view::{ColumnReader, ColumnWriteView};
 
-use crate::ring::Id;
+use crate::{ring::Id, types::B256};
 
 /// A column's marker: its scalar `Val` plus a distinct type identity, so ring
 /// ids of different columns can't be mixed.
@@ -61,6 +61,16 @@ pub type BalancesWriteView<'a> = ColumnWriteView<'a, Balances>;
 pub struct Inactivity;
 impl ColumnSpec for Inactivity {
     type Val = u64;
+}
+
+pub struct ValidatorsHash;
+impl ColumnSpec for ValidatorsHash {
+    type Val = B256;
+}
+
+pub struct BuildersHash;
+impl ColumnSpec for BuildersHash {
+    type Val = B256;
 }
 
 pub type InactivityScoresGroup = ColumnGroup<Inactivity>;

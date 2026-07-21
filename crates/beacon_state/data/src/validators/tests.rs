@@ -5,9 +5,7 @@ use crate::{
     B256, Withdrawals,
     merkle::{MerkleStack, hash_concat, hash_fixed_bytes, hash_list, merkleize, uint64_chunk},
     progressive::ProgressiveHasher,
-    types::{
-        BLSPubkey, FAR_FUTURE_EPOCH, HashFormat, VALIDATOR_REGISTRY_LIMIT, validator_capacity,
-    },
+    types::{BLSPubkey, FAR_FUTURE_EPOCH, HashFormat, VALIDATOR_REGISTRY_LIMIT},
 };
 
 fn pk(b: u8) -> BLSPubkey {
@@ -19,13 +17,13 @@ fn creds(b: u8) -> Withdrawals {
 }
 
 fn empty_validators() -> FinalizedValidators {
-    FinalizedValidators::try_new(&[], None, HashFormat::Fulu).unwrap()
+    FinalizedValidators::try_new(&[], None).unwrap()
 }
 
 /// A registry group over an empty base — the entry point for all delta tests,
 /// which drive through [`ValidatorsWriteView`] / [`ValidatorsView`] only.
 fn group() -> ValidatorsGroup {
-    ValidatorsGroup::new(empty_validators())
+    ValidatorsGroup::new(empty_validators(), HashFormat::Fulu)
 }
 
 /// Independent reference impl of `validator_hash`: merkleize 8 chunks
@@ -157,7 +155,6 @@ fn empty_validators_is_empty_and_well_formed() {
     let f = empty_validators();
     assert_eq!(f.validator_count(), 0);
     assert!(f.find_by_pubkey(&pk(7)).is_none());
-    assert_eq!(f.hash().fulu().max_elements(), validator_capacity(0));
     // Default-init: slashed bitset is all zeros, epochs are FAR_FUTURE.
     assert!(!f.is_slashed(0));
     assert_eq!(f.activation_epoch[0], FAR_FUTURE_EPOCH);
@@ -239,7 +236,7 @@ fn set_effective_balance_reproduces_independent_root() {
         effective_balance: 32_000_000_000,
         ..ValSeed::default()
     }]);
-    let mut g2 = ValidatorsGroup::new(base);
+    let mut g2 = ValidatorsGroup::new(base, HashFormat::Fulu);
     assert_eq!(wv.hash_root(), g2.roll_fresh().hash_root());
 }
 
@@ -261,7 +258,7 @@ fn finalize_promotes_and_reanchors_winner() {
     let live = g.finalize(winner, &[winner]);
     assert_eq!(g.finalized().validator_count(), 1);
 
-    let wv = g.roll_from(live[0]);
+    let mut wv = g.roll_from(live[0]);
     assert_eq!(wv.pubkey(0), &pk(0xAA));
     assert_eq!(wv.effective_balance(0), 100_000_000);
     assert_eq!(wv.activation_epoch(0), 7);
@@ -289,7 +286,7 @@ fn descendant_view_survives_finalize() {
     let live = g.finalize(parent, &[parent, child]); // [reanchored parent, child]
     assert_eq!(g.finalized().validator_count(), 1);
 
-    let wv = g.roll_from(live[1]);
+    let mut wv = g.roll_from(live[1]);
     // Child still sees activation_epoch = 42 (its divergence) and the balance
     // from the promoted base.
     assert_eq!(wv.activation_epoch(0), 42);
@@ -321,8 +318,7 @@ fn fulu_reference_root(leaves: &[B256]) -> B256 {
 
 #[test]
 fn gloas_construction() {
-    let mut g =
-        ValidatorsGroup::new(FinalizedValidators::try_new(&[], None, HashFormat::Gloas).unwrap());
+    let mut g = ValidatorsGroup::new(empty_validators(), HashFormat::Gloas);
     let a = {
         let mut w = g.roll_fresh();
         for i in 0..5u8 {
@@ -350,12 +346,8 @@ fn gloas_hash_transition_migrates_and_closes() {
     let fulu_leaves: Vec<_> = (0..5u8).map(|i| default_leaf(i, 0)).collect();
     assert_eq!(g.view(a).hash_root(), fulu_reference_root(&fulu_leaves));
 
-    // Entering the transition changes no fork's root.
-    g.begin_gloas_hash_transition();
-    assert_eq!(g.view(a).hash_root(), fulu_reference_root(&fulu_leaves));
-
     // Fork B crosses the fork: its root flips to the gloas shape; the
-    // pre-fork sibling A keeps producing the fulu root off the shared bases.
+    // pre-fork sibling A keeps producing the fulu root off its own snapshot.
     let b = {
         let mut w = g.roll_from(a);
         w.adopt_gloas();
@@ -369,8 +361,8 @@ fn gloas_hash_transition_migrates_and_closes() {
     assert_eq!(g.view(b).hash_root(), gloas_reference_root(&gloas_leaves));
     assert_eq!(g.view(a).hash_root(), fulu_reference_root(&fulu_leaves));
 
-    // Finalizing the crossing fork closes the transition; the reanchored
-    // survivor and every later fork are gloas-shaped.
+    // Finalizing the crossing fork adopts its gloas-format snapshot; the
+    // reanchored survivor and every later fork are gloas-shaped.
     let live = g.finalize(b, &[b]);
     assert_eq!(g.view(live[0]).hash_root(), gloas_reference_root(&gloas_leaves));
 
@@ -390,7 +382,6 @@ fn transition_survives_pre_fork_winner_finalization() {
         }
         w.commit()
     };
-    g.begin_gloas_hash_transition();
 
     let b = {
         let mut w = g.roll_from(a);
@@ -399,9 +390,8 @@ fn transition_survives_pre_fork_winner_finalization() {
         w.commit()
     };
 
-    // Winner A never crossed: both trees are promoted (transition invariant),
-    // the transition stays open, and the Dual survivor B is rebased against the
-    // winner's synthesized gloas edits.
+    // Winner A never crossed: the finalized snapshot stays fulu-shaped while
+    // the crossed survivor B keeps its own gloas-format snapshot.
     let live = g.finalize(a, &[a, b]);
     let fulu_leaves: Vec<_> = (0..4u8).map(|i| default_leaf(i, 0)).collect();
     let mut gloas_leaves = fulu_leaves.clone();
@@ -409,9 +399,9 @@ fn transition_survives_pre_fork_winner_finalization() {
     assert_eq!(g.view(live[0]).hash_root(), fulu_reference_root(&fulu_leaves));
     assert_eq!(g.view(live[1]).hash_root(), gloas_reference_root(&gloas_leaves));
 
-    // A later crossing finalization still closes the transition cleanly.
+    // A later crossing finalization flips the finalized snapshot to gloas.
     let live = g.finalize(live[1], &[live[1]]);
     assert_eq!(g.view(live[0]).hash_root(), gloas_reference_root(&gloas_leaves));
-    let w = g.roll_fresh();
+    let mut w = g.roll_fresh();
     assert_eq!(w.hash_root(), gloas_reference_root(&gloas_leaves));
 }

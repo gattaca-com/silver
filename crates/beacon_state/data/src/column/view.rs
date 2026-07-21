@@ -43,7 +43,6 @@ impl<'a> Nodes<'a> {
 /// Read handle over a fork's column: value reads (`get`/`iter`) plus the SSZ
 /// list root, whether the fork is the live flat head or a committed paged
 /// snapshot.
-#[derive(Clone, Copy)]
 pub struct ColumnReader<'a, C: ColumnSpec> {
     nodes: Nodes<'a>,
     /// Resolved once at construction so per-element reads pay a single
@@ -51,6 +50,15 @@ pub struct ColumnReader<'a, C: ColumnSpec> {
     format: TreeFormat,
     _marker: PhantomData<fn() -> C>,
 }
+
+// Manual impls: deriving would spuriously bind `C: Clone + Copy`, but the
+// reader is borrows + a format regardless of the zero-sized marker.
+impl<C: ColumnSpec> Clone for ColumnReader<'_, C> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<C: ColumnSpec> Copy for ColumnReader<'_, C> {}
 
 impl<'a, C: ColumnSpec> ColumnReader<'a, C> {
     #[inline]
@@ -71,6 +79,9 @@ impl<'a, C: ColumnSpec> ColumnReader<'a, C> {
 
     #[inline]
     pub fn hash_root(&self) -> B256 {
+        if let Nodes::Flat(t) = self.nodes {
+            debug_assert!(!t.has_pending_rehash(), "deferred writes not rehashed before root");
+        }
         self.format.hash_root(self.nodes.count(), <C::Val as SszScalar>::VALS_PER_CHUNK, |n| {
             *self.nodes.node(n)
         })
@@ -123,6 +134,14 @@ impl<'a, C: ColumnSpec> ColumnWriteView<'a, C> {
     #[timed]
     pub fn set_many(&mut self, changes: &[(u32, C::Val)]) {
         self.group.scratch_mut().set_vals::<C::Val>(changes);
+    }
+
+    /// Write without rehashing; the owner must call
+    /// [`rehash_unsorted`](Self::rehash_unsorted) before reading the root or
+    /// committing.
+    #[inline]
+    pub fn set_deferred(&mut self, idx: u32, v: C::Val) {
+        self.group.scratch_mut().set_val_deferred(idx, v);
     }
 
     #[timed]

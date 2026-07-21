@@ -25,10 +25,6 @@ snap.workspace = true
 
 [[bench]]
 harness = false
-name = "hash_tree_build"
-
-[[bench]]
-harness = false
 name = "encode_checkpoint"
 
 [lints]

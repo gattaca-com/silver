@@ -180,15 +180,6 @@ impl BeaconStateTile {
     ) -> crate::Result<AppliedBlock> {
         let block_epoch = parsed.header.slot / SLOTS_PER_EPOCH;
 
-        // EIP-7688 hash-migration transition, opened one epoch early off the
-        // *state* epoch so the fork block's adoption is a sparse-edit
-        // synthesis instead of an O(N) rebuild. Idempotent no-op once open
-        // or closed; must run before any fork's `upgrade_to_gloas` and
-        // outside the held-writer borrow below.
-        if self.spec.is_gloas_at(block_epoch + 1) {
-            self.state.begin_gloas_hash_transition();
-        }
-
         // Per-block attester shuffling against the parent post-state (active
         // set + seed for an epoch are fixed at its prior boundary). The child
         // is a COW copy of the parent pre-STF, so shuffle inputs read identical

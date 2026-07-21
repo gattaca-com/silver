@@ -19,7 +19,6 @@ pub use gloas::{
     Builder, BuilderPendingPayment, BuilderPendingWithdrawal, ExecutionPayloadBid, PtcCommittee,
     Withdrawal,
 };
-pub use hash_tree::{DeltaHashTree, FinalizedHashTree};
 pub use longtail::{LongtailGroup, LongtailId, LongtailState, LongtailView, LongtailWriteView};
 pub use parsed::ParsedAggregateAndProof;
 pub use pending::{
@@ -47,7 +46,6 @@ mod encode;
 mod epoch;
 mod eth1;
 pub mod gloas;
-mod hash_tree;
 mod longtail;
 mod parsed;
 mod pending;
@@ -144,7 +142,8 @@ impl BeaconState {
 impl BeaconState {
     #[doc(hidden)]
     pub fn for_test(epoch_base: EpochStateFinalized, seeds: &[ValSeed], slot: u64) -> Self {
-        let validators = ValidatorsGroup::new(FinalizedValidators::with_validators(seeds));
+        let validators =
+            ValidatorsGroup::new(FinalizedValidators::with_validators(seeds), HashFormat::Fulu);
         let cap = validators.finalized().capacity();
         let n = validators.finalized().validator_count();
         let balances: Vec<u8> = seeds.iter().flat_map(|s| s.balance.to_le_bytes()).collect();

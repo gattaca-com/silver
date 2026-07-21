@@ -1,8 +1,8 @@
 use super::{BuildersGroup, builder_hash, finalized::FinalizedBuilders};
 use crate::{
     B256,
+    column::{BuildersHash, ColumnReader, ColumnWriteView},
     gloas::{BUILDER_REGISTRY_LIMIT, Builder},
-    hash_tree::GloasDeltaHashTree,
     ring::{Reset, Slot},
     sparse::Edits,
 };
@@ -17,13 +17,11 @@ pub(super) struct BuildersDelta {
     base_count: usize,
     appended: Vec<Builder>,
     edits: Edits<Builder>,
-    hash_delta: GloasDeltaHashTree,
 }
 
 impl BuildersDelta {
     pub(super) fn anchor_at(&mut self, base: &FinalizedBuilders) {
         self.base_count = base.len();
-        self.hash_delta = GloasDeltaHashTree::new_at(base.hash());
     }
 
     pub(super) fn promote_into_base(&self, base: &mut FinalizedBuilders) {
@@ -37,7 +35,6 @@ impl BuildersDelta {
         base.builders[self.base_count..end].copy_from_slice(&self.appended);
         self.edits.scatter(&mut base.builders[..end]);
         base.count = end;
-        base.hash.promote_delta(&self.hash_delta);
     }
 
     pub(super) fn rebase_and_prune_from(
@@ -55,10 +52,6 @@ impl BuildersDelta {
         self.edits.rebase_and_prune_from(&old.edits, &winner.edits, new_count as u32, |i| {
             base.builders[i as usize]
         });
-
-        self.hash_delta = old.hash_delta.clone();
-        self.hash_delta.rebase(base.hash(), &winner.hash_delta);
-        base.hash().prune_delta_against(&mut self.hash_delta, &winner.hash_delta);
     }
 }
 
@@ -67,14 +60,12 @@ impl Reset for BuildersDelta {
         self.base_count = 0;
         self.appended.clear();
         self.edits.clear();
-        self.hash_delta = GloasDeltaHashTree::default();
     }
 
     fn reset_from(&mut self, other: &Self) {
         self.base_count = other.base_count;
         self.appended.clone_from(&other.appended);
         self.edits.clone_from(&other.edits);
-        self.hash_delta = other.hash_delta.clone();
     }
 }
 
@@ -82,12 +73,17 @@ impl Reset for BuildersDelta {
 pub struct BuildersView<'a> {
     base: &'a FinalizedBuilders,
     delta: &'a BuildersDelta,
+    hash: ColumnReader<'a, BuildersHash>,
 }
 
 impl<'a> BuildersView<'a> {
     #[inline]
-    pub(super) fn new(base: &'a FinalizedBuilders, delta: &'a BuildersDelta) -> Self {
-        Self { base, delta }
+    pub(super) fn new(
+        base: &'a FinalizedBuilders,
+        delta: &'a BuildersDelta,
+        hash: ColumnReader<'a, BuildersHash>,
+    ) -> Self {
+        Self { base, delta, hash }
     }
 
     #[inline]
@@ -129,8 +125,7 @@ impl<'a> BuildersView<'a> {
 
     #[inline]
     pub fn hash_root(&self) -> B256 {
-        let len = self.len();
-        self.delta.hash_delta.ssz_list_root(self.base.hash(), len)
+        self.hash.hash_root()
     }
 
     // TODO: replace the linear scan
@@ -147,6 +142,7 @@ impl<'a> BuildersView<'a> {
 pub struct BuildersWriteView<'a> {
     base: &'a FinalizedBuilders,
     fork: Slot<'a, BuildersGroup, BuildersDelta>,
+    hash: ColumnWriteView<'a, BuildersHash>,
 }
 
 impl<'a> BuildersWriteView<'a> {
@@ -154,18 +150,20 @@ impl<'a> BuildersWriteView<'a> {
     pub(super) fn new(
         base: &'a FinalizedBuilders,
         fork: Slot<'a, BuildersGroup, BuildersDelta>,
+        hash: ColumnWriteView<'a, BuildersHash>,
     ) -> Self {
-        Self { base, fork }
+        Self { base, fork, hash }
     }
 
     #[inline]
-    pub fn commit(self) -> super::BuildersId {
-        self.fork.commit()
+    pub fn commit(mut self) -> super::BuildersId {
+        self.hash.rehash_unsorted();
+        super::BuildersId { data: self.fork.commit(), hash: self.hash.commit() }
     }
 
     #[inline]
     pub fn reader(&self) -> BuildersView<'_> {
-        BuildersView { base: self.base, delta: &self.fork }
+        BuildersView { base: self.base, delta: &self.fork, hash: self.hash.reader() }
     }
 
     #[inline]
@@ -179,13 +177,22 @@ impl<'a> BuildersWriteView<'a> {
     }
 
     #[inline]
-    pub fn hash_root(&self) -> B256 {
-        self.reader().hash_root()
+    pub fn hash_root(&mut self) -> B256 {
+        self.hashed_reader().hash_root()
+    }
+
+    /// Reader with pending deferred leaf writes folded in — required before
+    /// hashing the in-flight fork; plain [`reader`](Self::reader) suffices for
+    /// value reads.
+    #[inline]
+    pub fn hashed_reader(&mut self) -> BuildersView<'_> {
+        self.hash.rehash_unsorted();
+        self.reader()
     }
 
     fn refresh_leaf(&mut self, i: usize) {
         let leaf = self.reader().recompute_leaf(i);
-        self.fork.hash_delta.set_leaf(self.base.hash(), i, leaf);
+        self.hash.set_deferred(i as u32, leaf);
     }
 
     #[inline]
@@ -193,6 +200,8 @@ impl<'a> BuildersWriteView<'a> {
         assert!(self.len() < BUILDER_REGISTRY_LIMIT, "builders exceeded BUILDER_REGISTRY_LIMIT");
         let idx = self.fork.base_count + self.fork.appended.len();
         self.fork.appended.push(builder);
+        let appended = self.hash.append_empty();
+        debug_assert_eq!(appended as usize, idx, "hash column count out of step with registry");
         self.refresh_leaf(idx);
     }
 

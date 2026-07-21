@@ -76,10 +76,6 @@ impl BeaconStateOwner {
         self.state.get_mut().roll_fresh()
     }
 
-    pub fn begin_gloas_hash_transition(&mut self) {
-        self.state.get_mut().validators.begin_gloas_hash_transition();
-    }
-
     /// Roll an unpublished child off the `parent` bundle, HOLD every tier's
     /// writer, and hand back a `StateWriterView` over the held writers — no
     /// separate publish, no re-open. The STF mutates the view, then `commit`

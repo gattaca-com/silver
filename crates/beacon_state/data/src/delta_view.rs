@@ -166,7 +166,7 @@ impl<'a> StateWriterView<'a> {
 
     #[inline]
     pub fn read<'s>(
-        &'s self,
+        &'s mut self,
         epoch: EpochView<'s>,
         longtail: LongtailView<'s>,
     ) -> StateReadView<'s> {
@@ -181,8 +181,8 @@ impl<'a> StateWriterView<'a> {
             current_participation: self.current_participation.reader(),
             inactivity: self.inactivity.reader(),
             slot: self.slot.reader(),
-            validators: self.validators.reader(),
-            builders: self.builders.reader(),
+            validators: self.validators.hashed_reader(),
+            builders: self.builders.hashed_reader(),
         }
     }
 }
@@ -400,7 +400,7 @@ mod tests {
 
         {
             let sid = state.state_id;
-            let (view, epoch, longtail) = state.view();
+            let (mut view, epoch, longtail) = state.view();
             assert_eq!(
                 view.read(epoch.view_opt(sid.epoch_idx), longtail.view_opt(sid.longtail_idx))
                     .validators
@@ -438,7 +438,7 @@ mod tests {
         state.append([0x22; 48], Default::default());
 
         let sid = state.state_id;
-        let (view, epoch, longtail) = state.view();
+        let (mut view, epoch, longtail) = state.view();
         let validators = view
             .read(epoch.view_opt(sid.epoch_idx), longtail.view_opt(sid.longtail_idx))
             .validators;
@@ -495,7 +495,7 @@ mod tests {
         state.mutate(|v| v.validators.set_credentials(3, edited_appended));
 
         let sid = state.state_id;
-        let (view, epoch, longtail) = state.view();
+        let (mut view, epoch, longtail) = state.view();
         let got: Vec<Withdrawals> = view
             .read(epoch.view_opt(sid.epoch_idx), longtail.view_opt(sid.longtail_idx))
             .validators

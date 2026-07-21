@@ -33,7 +33,7 @@ impl LoadedState {
     /// hash_tree_root of the loaded state (single-leaf merkle-proof checks).
     pub fn state_root(&mut self) -> [u8; 32] {
         let sid = self.state_id;
-        let (view, epoch, longtail) = self.view();
+        let (mut view, epoch, longtail) = self.view();
         let rv = view.read(epoch.view_opt(sid.epoch_idx), longtail.view_opt(sid.longtail_idx));
         hash_tree_root_state(&rv, &mut StateHashScratch::new())
     }
@@ -66,13 +66,6 @@ impl LoadedState {
     /// the (possibly epoch/longtail-rolled) bundle and write it back so the
     /// next block / the post-state comparison sees it.
     pub fn apply_block(&mut self, cfg: &SpecConfig, block_ssz: &[u8]) -> Result<(), String> {
-        // Mirror of the tile's EIP-7688 transition hook (`apply_stf_and_commit`):
-        // opened before any fork's `upgrade_to_gloas` runs.
-        let block_epoch = SignedBeaconBlockView::slot(block_ssz) / SLOTS_PER_EPOCH;
-        if cfg.is_gloas_at(block_epoch + 1) {
-            self.bs.validators.begin_gloas_hash_transition();
-        }
-
         let parent = self.state_id;
         let (mut view, epoch, longtail) = self.view();
         match stf::apply_signed_block_debug(cfg, &mut view, epoch, longtail, parent, block_ssz) {
@@ -118,17 +111,17 @@ pub fn compare_states(label: &str, a: &mut LoadedState, b: &mut LoadedState) -> 
 
     let sid_a = a.state_id;
     let sid_b = b.state_id;
-    let (va, epoch_a, longtail_a) = a.view();
-    let (vb, epoch_b, longtail_b) = b.view();
+    let (mut va, epoch_a, longtail_a) = a.view();
+    let (mut vb, epoch_b, longtail_b) = b.view();
 
     let mut scratch = StateHashScratch::new();
     let mut root_of =
-        |view: &StateWriterView, sid: StateId, epoch: &EpochGroup, longtail: &LongtailGroup| {
+        |view: &mut StateWriterView, sid: StateId, epoch: &EpochGroup, longtail: &LongtailGroup| {
             let rv = view.read(epoch.view_opt(sid.epoch_idx), longtail.view_opt(sid.longtail_idx));
             hash_tree_root_state(&rv, &mut scratch)
         };
-    let root_a = root_of(&va, sid_a, epoch_a, longtail_a);
-    let root_b = root_of(&vb, sid_b, epoch_b, longtail_b);
+    let root_a = root_of(&mut va, sid_a, epoch_a, longtail_a);
+    let root_b = root_of(&mut vb, sid_b, epoch_b, longtail_b);
     if root_a == root_b {
         return diffs;
     }

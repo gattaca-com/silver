@@ -87,6 +87,7 @@ impl<C: ColumnSpec> ColumnGroup<C> {
         let pos = self.index.pos(id);
         let parent_pos = parent.map(|p| self.index.pos(p));
         let Self { pool, finalized, ring, scratch, .. } = self;
+        debug_assert!(!scratch.has_pending_rehash(), "deferred writes not rehashed before commit");
         debug_assert!(ring[pos].is_released, "recycled slot not freed by finalize or clear");
         match parent_pos {
             None => scratch.commit_into(pool, &mut ring[pos], finalized),

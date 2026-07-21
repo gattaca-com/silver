@@ -188,6 +188,30 @@ impl ColumnTree {
         self.seed_write(chunk, data_node);
     }
 
+    /// Write one value without rehashing; queue its chunk for a later
+    /// [`rehash_unsorted`](Self::rehash_unsorted).
+    pub fn set_val_deferred<V: SszScalar>(&mut self, idx: u32, v: V) {
+        let k = V::VALS_PER_CHUNK as u32;
+        let chunk = (idx / k) as usize;
+        let data_node = self.format().leaf_pos(chunk);
+        {
+            let store = self.store_mut();
+            debug_assert!(data_node < store.nodes.len(), "index out of range");
+            let leaf = &mut store.nodes[data_node];
+            let lane = (idx % k) as usize;
+            if V::lane(leaf, lane) == v {
+                return;
+            }
+            V::set_lane(leaf, lane, v);
+        }
+        self.seed_write(chunk, data_node);
+    }
+
+    #[inline]
+    pub(super) fn has_pending_rehash(&self) -> bool {
+        !self.store().dirty_chunks.is_empty()
+    }
+
     pub fn set_vals<V: SszScalar>(&mut self, changes: &[(u32, V)]) {
         if changes.is_empty() {
             return;

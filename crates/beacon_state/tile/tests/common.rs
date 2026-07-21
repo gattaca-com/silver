@@ -337,7 +337,7 @@ impl Harness {
 
         // Hold a fresh fork's writers directly (`roll_fresh` anchors each at
         // the decoded base); epoch/longtail stay lazy (`None` reads the base).
-        let view = StateWriterView {
+        let mut view = StateWriterView {
             imm: &bs.immutable,
             balances: bs.balances.roll_fresh(),
             eth1: bs.eth1.roll_fresh(),

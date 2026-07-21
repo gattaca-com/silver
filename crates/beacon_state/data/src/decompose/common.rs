@@ -196,7 +196,7 @@ impl BeaconState {
 
         let val_bytes = &ssz[offsets.validators..offsets.balances];
         let validators =
-            ValidatorsGroup::new(FinalizedValidators::try_new(val_bytes, pubkeys, format)?);
+            ValidatorsGroup::new(FinalizedValidators::try_new(val_bytes, pubkeys)?, format);
 
         // Per-validator columns size to the validators' capacity/count; each
         // constructor length-checks against the count (construction =

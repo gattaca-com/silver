@@ -1,11 +1,9 @@
 use blst::min_pk::PublicKey;
 
-use super::{
-    FinalizedValidators, ValidatorsGroup, ValidatorsId, hash_format::VersionedDeltaHash,
-    validator_hash,
-};
+use super::{FinalizedValidators, ValidatorsGroup, ValidatorsId, validator_hash};
 use crate::{
     B256, Withdrawals,
+    column::{ColumnReader, ColumnWriteView, ValidatorsHash},
     ring::{Reset, Slot as RingSlot},
     sparse::Edits,
     types::{BLSPubkey, Epoch, FAR_FUTURE_EPOCH},
@@ -40,7 +38,6 @@ pub struct ValidatorsDelta {
     activation_epoch_edits: Edits<Epoch>,
     exit_epoch_edits: Edits<Epoch>,
     withdrawable_epoch_edits: Edits<Epoch>,
-    hash_delta: VersionedDeltaHash,
 }
 
 impl ValidatorsDelta {
@@ -86,15 +83,6 @@ impl ValidatorsDelta {
         self.exit_epoch_edits.scatter(&mut base.exit_epoch);
         self.withdrawable_epoch_edits.scatter(&mut base.withdrawable_epoch);
         self.slashed_edits.scatter_bits(&mut base.slashed);
-
-        // 3. Fold the hash overlay into the finalized tree.
-        self.hash_delta.promote_into(&mut base.hash);
-    }
-
-    /// Whether this fork's hash shape is post-EIP-7688 (its finalization
-    /// closes the fork transition).
-    pub(super) fn crossed_fork(&self) -> bool {
-        self.hash_delta.crossed_hardfork()
     }
 
     /// Mirror of [`BalancesDelta::rebase_and_prune_from`] for the multi-column
@@ -156,19 +144,12 @@ impl ValidatorsDelta {
             new_count,
             |i| base.withdrawable_epoch[i as usize],
         );
-
-        self.hash_delta = VersionedDeltaHash::rebased_and_pruned(
-            &old.hash_delta,
-            base.hash(),
-            &winner.hash_delta,
-        );
     }
 
-    /// Anchor a freshly-`reset` delta onto `base`: adopt its count and hash
-    /// root (edits/appended already empty). Used by `roll_fresh`.
+    /// Anchor a freshly-`reset` delta onto `base`: adopt its count
+    /// (edits/appended already empty). Used by `roll_fresh`.
     pub(super) fn anchor_at(&mut self, base: &FinalizedValidators) {
         self.base_count = base.validator_count();
-        self.hash_delta = VersionedDeltaHash::anchor_at(base.hash());
     }
 }
 
@@ -183,7 +164,6 @@ impl Reset for ValidatorsDelta {
         self.activation_epoch_edits.clear();
         self.exit_epoch_edits.clear();
         self.withdrawable_epoch_edits.clear();
-        self.hash_delta = VersionedDeltaHash::default();
     }
 
     fn reset_from(&mut self, other: &Self) {
@@ -197,8 +177,6 @@ impl Reset for ValidatorsDelta {
         self.activation_epoch_edits.clone_from(&other.activation_epoch_edits);
         self.exit_epoch_edits.clone_from(&other.exit_epoch_edits);
         self.withdrawable_epoch_edits.clone_from(&other.withdrawable_epoch_edits);
-        // O(1)/O(segments) — overlay `Clone` bumps `Arc` refcounts.
-        self.hash_delta = other.hash_delta.clone();
     }
 }
 
@@ -210,12 +188,17 @@ impl Reset for ValidatorsDelta {
 pub struct ValidatorsView<'a> {
     base: &'a FinalizedValidators,
     delta: &'a ValidatorsDelta,
+    hash: ColumnReader<'a, ValidatorsHash>,
 }
 
 impl<'a> ValidatorsView<'a> {
     #[inline]
-    pub(crate) fn new(base: &'a FinalizedValidators, delta: &'a ValidatorsDelta) -> Self {
-        Self { base, delta }
+    pub(crate) fn new(
+        base: &'a FinalizedValidators,
+        delta: &'a ValidatorsDelta,
+        hash: ColumnReader<'a, ValidatorsHash>,
+    ) -> Self {
+        Self { base, delta, hash }
     }
 
     #[inline]
@@ -339,14 +322,12 @@ impl<'a> ValidatorsView<'a> {
         self.base.find_by_pubkey(pk).map(|i| i as u32)
     }
 
-    /// SSZ `hash_tree_root` of the validators registry from the persistent
-    /// hash overlay: finalized base tree(s) + this fork's cached delta-node
-    /// hashes, zero work for untouched subtrees — in this fork's own shape
-    /// (fulu `List[Validator, N]` padding vs the gloas `ProgressiveList`).
+    /// SSZ `hash_tree_root` of the validators registry, in this fork's own
+    /// shape (fulu `List[Validator, N]` padding vs the gloas
+    /// `ProgressiveList`).
     #[inline]
     pub fn hash_root(&self) -> B256 {
-        let len = self.delta.base_count + self.delta.appended.len();
-        self.delta.hash_delta.ssz_list_root(self.base.hash(), len)
+        self.hash.hash_root()
     }
 
     /// Recompute the Validator-container hash leaf for `idx` from the current
@@ -466,6 +447,7 @@ impl<'a> ValidatorsView<'a> {
 pub struct ValidatorsWriteView<'a> {
     base: &'a FinalizedValidators,
     fork: RingSlot<'a, ValidatorsGroup, ValidatorsDelta>,
+    hash: ColumnWriteView<'a, ValidatorsHash>,
 }
 
 impl<'a> ValidatorsWriteView<'a> {
@@ -473,18 +455,29 @@ impl<'a> ValidatorsWriteView<'a> {
     pub(super) fn new(
         base: &'a FinalizedValidators,
         fork: RingSlot<'a, ValidatorsGroup, ValidatorsDelta>,
+        hash: ColumnWriteView<'a, ValidatorsHash>,
     ) -> Self {
-        Self { base, fork }
+        Self { base, fork, hash }
     }
 
     #[inline]
-    pub fn commit(self) -> ValidatorsId {
-        self.fork.commit()
+    pub fn commit(mut self) -> ValidatorsId {
+        self.hash.rehash_unsorted();
+        ValidatorsId { data: self.fork.commit(), hash: self.hash.commit() }
     }
 
     #[inline]
     pub fn reader(&self) -> ValidatorsView<'_> {
-        ValidatorsView { base: self.base, delta: &self.fork }
+        ValidatorsView { base: self.base, delta: &self.fork, hash: self.hash.reader() }
+    }
+
+    /// Reader with pending deferred leaf writes folded in — required before
+    /// hashing the in-flight fork; plain [`reader`](Self::reader) suffices for
+    /// value reads.
+    #[inline]
+    pub fn hashed_reader(&mut self) -> ValidatorsView<'_> {
+        self.hash.rehash_unsorted();
+        self.reader()
     }
 
     // All reads delegate to the read view (`reader()` is a two-pointer `Copy`,
@@ -506,8 +499,8 @@ impl<'a> ValidatorsWriteView<'a> {
     }
 
     #[inline]
-    pub fn hash_root(&self) -> B256 {
-        self.reader().hash_root()
+    pub fn hash_root(&mut self) -> B256 {
+        self.hashed_reader().hash_root()
     }
 
     #[inline]
@@ -583,17 +576,19 @@ impl<'a> ValidatorsWriteView<'a> {
         self.reader().iter_credentials()
     }
 
-    /// Recompute and store the hash overlay leaf for `idx` — every mutator
-    /// calls this so the overlay stays consistent with the field edits.
+    /// Recompute and store the hash leaf for `idx` — every mutator calls this
+    /// so the hash column stays consistent with the field edits.
     fn refresh_leaf(&mut self, idx: u32) {
         let leaf = self.reader().recompute_leaf(idx);
-        self.fork.hash_delta.set_leaf(self.base.hash(), idx as usize, leaf);
+        self.hash.set_deferred(idx, leaf);
     }
 
     /// The fork block's EIP-7688 hash migration: this fork's registry root
-    /// switches to the gloas `ProgressiveList` shape.
+    /// switches to the gloas `ProgressiveList` shape. Pending deferred writes
+    /// fold in first — the migration rebuilds from the leaf bytes.
     pub fn adopt_gloas(&mut self) {
-        self.fork.hash_delta.adopt_gloas(self.base.hash());
+        self.hash.rehash_unsorted();
+        self.hash.migrate_to_gloas();
     }
 
     /// Append a fresh validator with spec-default Validator-container fields.
@@ -606,6 +601,8 @@ impl<'a> ValidatorsWriteView<'a> {
             pubkey_decompressed: pk_decompressed,
             credentials: creds,
         });
+        let appended = self.hash.append_empty();
+        debug_assert_eq!(appended, idx, "hash column count out of step with registry");
         self.refresh_leaf(idx);
         idx
     }
@@ -622,10 +619,9 @@ impl<'a> ValidatorsWriteView<'a> {
         self.refresh_leaf(ix);
     }
 
-    /// Batch effective-balance update — mirrors a column `set_many`: one merge
-    /// into the field edits, then one batched hash-overlay rebuild over all
-    /// touched validator leaves (vs `set_effective_balance` rebuilding the
-    /// shared ancestors per call). `changes` must be ascending and distinct.
+    /// Batch effective-balance update: one merge into the field edits, then
+    /// per-leaf deferred hash writes (rehash stays batched at commit/read).
+    /// `changes` must be ascending and distinct.
     pub fn set_effective_balance_many(&mut self, changes: &[(u32, u64)]) {
         if changes.is_empty() {
             return;
@@ -635,9 +631,10 @@ impl<'a> ValidatorsWriteView<'a> {
             "set_effective_balance_many input must be ascending with distinct indices",
         );
         self.fork.effective_balance_edits.merge_in_place(changes);
-        let leaves: Vec<(u32, B256)> =
-            changes.iter().map(|&(ix, _)| (ix, self.reader().recompute_leaf(ix))).collect();
-        self.fork.hash_delta.set_leaves(self.base.hash(), &leaves);
+        for &(ix, _) in changes {
+            let leaf = self.reader().recompute_leaf(ix);
+            self.hash.set_deferred(ix, leaf);
+        }
     }
 
     #[inline]

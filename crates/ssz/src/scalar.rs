@@ -52,6 +52,18 @@ impl SszScalar for u8 {
     }
 }
 
+impl SszScalar for B256 {
+    #[inline]
+    fn read_ssz_slice(dst: &mut [Self], src: &[u8]) {
+        dst.as_flattened_mut().copy_from_slice(src);
+    }
+
+    #[inline]
+    fn write_ssz_slice<W: std::io::Write>(data: &[Self], w: &mut W) -> std::io::Result<()> {
+        w.write_all(data.as_flattened())
+    }
+}
+
 impl SszScalar for u64 {
     #[inline]
     fn read_ssz_slice(dst: &mut [Self], src: &[u8]) {

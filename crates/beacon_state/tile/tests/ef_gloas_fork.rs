@@ -29,8 +29,6 @@ fn gloas_fork() {
         let mut pre = load_state(&pre_path);
         // The upgrade writes the epoch tier (`fork` + `ptc_window`), so roll its
         // boundary writer — the production `process_slots`-at-boundary shape.
-        // The EIP-7688 transition opens first, as the tile's block path does.
-        pre.bs.validators.begin_gloas_hash_transition();
         let sid = pre.state_id;
         pre.state_id = {
             let (mut view, epoch, _longtail) = pre.view();

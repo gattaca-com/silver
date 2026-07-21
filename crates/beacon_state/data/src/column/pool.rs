@@ -46,15 +46,25 @@ impl PagePool {
 
     /// Re-point `dst` at `src`'s pages, reusing `dst`'s page-table allocation:
     /// release `dst`'s current pages, then adopt `src`'s (bumping their
-    /// refcounts). The finalized base adopting a survivor.
+    /// refcounts). The finalized base adopting a survivor. Identical entries —
+    /// the bulk, since the two differ only in pages dirtied since the last
+    /// finalize — cancel their release+retain and cost only the compare.
     pub(super) fn share_into(&mut self, dst: &mut PageSnapshot, src: &PageSnapshot) {
         debug_assert!(!dst.is_released, "share_into over a released snapshot double-frees");
-        self.release(dst);
+        for i in 0..dst.pages.len().max(src.pages.len()) {
+            let (d, s) = (dst.pages.get(i).copied(), src.pages.get(i).copied());
+            if d == s {
+                continue;
+            }
+            if let Some(d) = d {
+                self.release_page(d);
+            }
+            if let Some(s) = s {
+                self.retain(s);
+            }
+        }
         dst.pages.clear();
         dst.pages.extend_from_slice(&src.pages);
-        for &id in &dst.pages {
-            self.retain(id);
-        }
         dst.format = src.format;
         dst.count = src.count;
         dst.is_released = false;

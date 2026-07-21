@@ -40,7 +40,7 @@ fn base_with(builders: &[Builder]) -> FinalizedBuilders {
 #[test]
 fn empty_registry_root_matches_naive() {
     let mut g = BuildersGroup::new(FinalizedBuilders::default());
-    let wv = g.roll_fresh();
+    let mut wv = g.roll_fresh();
     assert_eq!(wv.len(), 0);
     assert_eq!(wv.hash_root(), naive_root(&wv.reader()));
 }
@@ -49,7 +49,7 @@ fn empty_registry_root_matches_naive() {
 fn base_root_matches_naive() {
     let base: Vec<_> = (0..10).map(builder).collect();
     let mut g = BuildersGroup::new(base_with(&base));
-    let wv = g.roll_fresh();
+    let mut wv = g.roll_fresh();
     assert_eq!(wv.len(), 10);
     assert_eq!(wv.hash_root(), naive_root(&wv.reader()));
 }
@@ -96,7 +96,7 @@ fn finalize_promotes_and_matches_naive() {
     let live = g.finalize(winner, &[winner]);
     assert_eq!(g.finalized().len(), 12);
 
-    let wv = g.roll_from(live[0]);
+    let mut wv = g.roll_from(live[0]);
     assert_eq!(wv.len(), 12);
     assert_eq!(wv.reader().get(1).unwrap().pubkey, [201; 48]);
     assert_eq!(wv.reader().get(4).unwrap().balance, builder(4).balance + 9_000);
@@ -159,7 +159,7 @@ fn descendant_survives_finalize() {
     let live = g.finalize(parent, &[parent, child]);
     assert_eq!(g.finalized().len(), 11);
 
-    let wv = g.roll_from(live[1]);
+    let mut wv = g.roll_from(live[1]);
     assert_eq!(wv.reader().get(5).unwrap().pubkey, [205; 48]);
     assert_eq!(wv.reader().get(3).unwrap().balance, builder(3).balance + 1_000);
     assert_eq!(wv.reader().get(10).unwrap().balance, builder(100).balance + 2_000);

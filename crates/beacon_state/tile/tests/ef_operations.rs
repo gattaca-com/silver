@@ -202,7 +202,7 @@ fn run_attestation(s: &mut LoadedState, op: &[u8]) -> bool {
     let mut prev_active = Vec::new();
     {
         let sid = s.state_id;
-        let (v, epoch, longtail) = s.view();
+        let (mut v, epoch, longtail) = s.view();
         let rv = v.read(epoch.view_opt(sid.epoch_idx), longtail.view_opt(sid.longtail_idx));
         proposer_index =
             rv.epoch.proposer_at((block_slot % SLOTS_PER_EPOCH) as usize).unwrap() as u32;
@@ -340,7 +340,7 @@ fn fulu_sync_aggregate() {
         let mut batch = SigBatch::new();
         {
             let sid = s.state_id;
-            let (p, epoch, longtail) = s.view();
+            let (mut p, epoch, longtail) = s.view();
             let rv = p.read(epoch.view_opt(sid.epoch_idx), longtail.view_opt(sid.longtail_idx));
             proposer_index =
                 rv.epoch.proposer_at((block_slot % SLOTS_PER_EPOCH) as usize).unwrap() as u32;
