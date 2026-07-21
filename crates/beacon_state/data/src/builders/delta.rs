@@ -50,8 +50,14 @@ impl BuildersDelta {
         self.base_count = new_count;
 
         self.edits.rebase_and_prune_from(&old.edits, &winner.edits, new_count as u32, |i| {
-            base.builders[i as usize]
+            winner.unedited(base, i)
         });
+    }
+
+    #[inline]
+    fn unedited(&self, base: &FinalizedBuilders, i: u32) -> Builder {
+        let i = i as usize;
+        if i < self.base_count { base.builders[i] } else { self.appended[i - self.base_count] }
     }
 }
 
@@ -181,9 +187,7 @@ impl<'a> BuildersWriteView<'a> {
         self.hashed_reader().hash_root()
     }
 
-    /// Reader with pending deferred leaf writes folded in — required before
-    /// hashing the in-flight fork; plain [`reader`](Self::reader) suffices for
-    /// value reads.
+    /// Reader with flushed deferred leaf writes
     #[inline]
     pub fn hashed_reader(&mut self) -> BuildersView<'_> {
         self.hash.rehash_unsorted();

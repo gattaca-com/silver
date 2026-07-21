@@ -106,44 +106,59 @@ impl ValidatorsDelta {
             &old.credentials_edits,
             &winner.credentials_edits,
             new_count,
-            |i| base.val_withdrawal_credentials[i as usize],
+            |i| winner.unedited(i, |i| base.val_withdrawal_credentials[i], |a| a.credentials),
         );
         self.effective_balance_edits.rebase_and_prune_from(
             &old.effective_balance_edits,
             &winner.effective_balance_edits,
             new_count,
-            |i| base.effective_balance[i as usize],
+            |i| winner.unedited(i, |i| base.effective_balance[i], |_| 0),
         );
         self.slashed_edits.rebase_and_prune_from(
             &old.slashed_edits,
             &winner.slashed_edits,
             new_count,
-            |i| base.is_slashed(i as usize),
+            |i| winner.unedited(i, |i| base.is_slashed(i), |_| false),
         );
         self.activation_eligibility_epoch_edits.rebase_and_prune_from(
             &old.activation_eligibility_epoch_edits,
             &winner.activation_eligibility_epoch_edits,
             new_count,
-            |i| base.activation_eligibility_epoch[i as usize],
+            |i| winner.unedited(i, |i| base.activation_eligibility_epoch[i], |_| FAR_FUTURE_EPOCH),
         );
         self.activation_epoch_edits.rebase_and_prune_from(
             &old.activation_epoch_edits,
             &winner.activation_epoch_edits,
             new_count,
-            |i| base.activation_epoch[i as usize],
+            |i| winner.unedited(i, |i| base.activation_epoch[i], |_| FAR_FUTURE_EPOCH),
         );
         self.exit_epoch_edits.rebase_and_prune_from(
             &old.exit_epoch_edits,
             &winner.exit_epoch_edits,
             new_count,
-            |i| base.exit_epoch[i as usize],
+            |i| winner.unedited(i, |i| base.exit_epoch[i], |_| FAR_FUTURE_EPOCH),
         );
         self.withdrawable_epoch_edits.rebase_and_prune_from(
             &old.withdrawable_epoch_edits,
             &winner.withdrawable_epoch_edits,
             new_count,
-            |i| base.withdrawable_epoch[i as usize],
+            |i| winner.unedited(i, |i| base.withdrawable_epoch[i], |_| FAR_FUTURE_EPOCH),
         );
+    }
+
+    #[inline]
+    fn unedited<T>(
+        &self,
+        i: u32,
+        from_base: impl Fn(usize) -> T,
+        from_appended: impl Fn(&AppendedValidator) -> T,
+    ) -> T {
+        let i = i as usize;
+        if i < self.base_count {
+            from_base(i)
+        } else {
+            from_appended(&self.appended[i - self.base_count])
+        }
     }
 
     /// Anchor a freshly-`reset` delta onto `base`: adopt its count

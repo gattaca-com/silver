@@ -138,6 +138,32 @@ fn growth_past_initial_headroom() {
 }
 
 #[test]
+fn survivor_edit_past_base_capacity() {
+    // The descendant's edit at 66 rebases while the pre-promote base is
+    // still capacity 64.
+    let mut g = BuildersGroup::new(FinalizedBuilders::default());
+
+    let winner = {
+        let mut wv = g.roll_fresh();
+        for i in 0..70u8 {
+            wv.push(builder(i));
+        }
+        wv.commit()
+    };
+    let child = {
+        let mut wv = g.roll_from(winner);
+        wv.add_balance(66, 1_000);
+        wv.commit()
+    };
+    let child_before = g.view(child).hash_root();
+
+    let live = g.finalize(winner, &[winner, child]);
+    let sv = g.view(live[1]);
+    assert_eq!(sv.get(66).unwrap().balance, builder(66).balance + 1_000);
+    assert_eq!(sv.hash_root(), child_before);
+}
+
+#[test]
 fn descendant_survives_finalize() {
     let base: Vec<_> = (0..10).map(builder).collect();
     let mut g = BuildersGroup::new(base_with(&base));

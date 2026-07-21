@@ -70,9 +70,12 @@ impl PagePool {
         dst.is_released = false;
     }
 
-    /// Drop `snapshot`'s hold on its pages (freeing any that hit refcount 0)
-    /// and empty it, so a later release of the same slot is a no-op.
+    /// Drop `snapshot`'s hold on its pages; no-op if already released.
+    /// The page table stays unchanged so racing readers stay in-bounds and retry via seqlock.
     pub(super) fn release(&mut self, snapshot: &mut PageSnapshot) {
+        if snapshot.is_released {
+            return;
+        }
         for &id in &snapshot.pages {
             self.release_page(id);
         }
