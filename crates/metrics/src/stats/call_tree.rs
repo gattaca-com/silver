@@ -45,6 +45,7 @@ pub(super) fn thread_table(paths: &[PathStat], meta: &FlamegraphMeta) -> String 
         node.count = s.metrics.count;
         node.total_untracked_ns = s.metrics.total_untracked_ns;
         node.tracked_sum_ns = s.metrics.tracked_sum_ns;
+        node.tracked_max_ns = s.metrics.tracked_max_ns;
         node.counters = s.metrics.tracked;
         node.untracked_counters = s.metrics.untracked;
     }
@@ -59,6 +60,7 @@ struct Node {
     count: u64,
     total_untracked_ns: Nanos,
     tracked_sum_ns: Nanos,
+    tracked_max_ns: Nanos,
     counters: Counters,
     untracked_counters: Counters,
     children: FxHashMap<u64, Node>,
@@ -78,6 +80,7 @@ impl Node {
             .map(|(id, c)| Row {
                 label: leaf_name(&meta.names[id]),
                 sum_ns: c.tracked_sum_ns,
+                max_ns: c.tracked_max_ns,
                 count: c.count,
                 counters: c.counters,
                 child: Some(c),
@@ -87,6 +90,7 @@ impl Node {
             rows.push(Row {
                 label: Cow::Borrowed("untracked"),
                 sum_ns: self.total_untracked_ns,
+                max_ns: Nanos::ZERO,
                 count: self.count,
                 counters: self.untracked_counters,
                 child: None,
@@ -115,6 +119,7 @@ impl Node {
             out.push(RenderRow {
                 name: format!("{blank:indent$}{label}", blank = "", label = r.label),
                 avg: r.sum_ns / r.count.max(1),
+                max: r.max_ns,
                 calls: Some(CallCount { total: r.count, per_parent: self.count }),
                 counters: r.counters,
             });
@@ -128,6 +133,7 @@ impl Node {
             out.push(RenderRow {
                 name: format!("{blank:indent$}{label}", blank = ""),
                 avg: rem_sum / self.count.max(1),
+                max: Nanos::ZERO,
                 calls: None,
                 counters: Counters::default(),
             });
@@ -138,6 +144,7 @@ impl Node {
 struct Row<'a> {
     label: Cow<'a, str>,
     sum_ns: Nanos,
+    max_ns: Nanos,
     count: u64,
     counters: Counters,
     /// `None` for the synthetic `untracked` row — no subtree to recurse into.
@@ -152,6 +159,7 @@ struct CallCount {
 struct RenderRow {
     name: String,
     avg: Nanos,
+    max: Nanos,
     calls: Option<CallCount>,
     counters: Counters,
 }
@@ -180,7 +188,12 @@ fn render_table(rows: &[RenderRow], meta: &FlamegraphMeta) -> String {
         .collect();
     let show_ipc = rows.iter().any(|r| meta.schema.ipc(&r.counters.perf.vals) > 0.0);
 
-    let mut columns = vec![Column::left("call path"), Column::right("avg"), Column::left("calls")];
+    let mut columns = vec![
+        Column::left("call path"),
+        Column::right("avg"),
+        Column::right("max"),
+        Column::left("calls"),
+    ];
     if show_alloc {
         columns.push(Column::right("alloc/call"));
         columns.push(Column::right("freed/call"));
@@ -193,7 +206,8 @@ fn render_table(rows: &[RenderRow], meta: &FlamegraphMeta) -> String {
     let mut table = Table::new(columns);
     for r in rows {
         let n = calls(r);
-        let mut cells = vec![r.name.clone(), r.avg.to_string(), calls_cell(&r.calls)];
+        let max = if r.max == Nanos::ZERO { String::new() } else { r.max.to_string() };
+        let mut cells = vec![r.name.clone(), r.avg.to_string(), max, calls_cell(&r.calls)];
         if show_alloc {
             cells.push(per_call(r.counters.alloc.allocated, n, fmt_bytes));
             cells.push(per_call(r.counters.alloc.freed, n, fmt_bytes));
