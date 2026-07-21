@@ -70,8 +70,9 @@ impl PagePool {
         dst.is_released = false;
     }
 
-    /// Drop `snapshot`'s hold on its pages; no-op if already released.
-    /// The page table stays unchanged so racing readers stay in-bounds and retry via seqlock.
+    /// Free the snapshot's pages; does nothing if already released. The page
+    /// table is kept, so parallel readers stay in bounds and retry via
+    /// seqlock.
     pub(super) fn release(&mut self, snapshot: &mut PageSnapshot) {
         if snapshot.is_released {
             return;
@@ -98,5 +99,37 @@ impl PagePool {
         p[..src.len()].copy_from_slice(src);
         p[src.len()..].fill([0u8; 32]);
         id
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{super::format::TreeFormat, PagePool, PageSnapshot};
+
+    fn snapshot(pages: Vec<u32>) -> PageSnapshot {
+        PageSnapshot { pages, format: TreeFormat::default(), count: 1, is_released: false }
+    }
+
+    /// Release the same snapshot twice; between the two calls the page got a
+    /// new owner. The second release must not free it again.
+    #[test]
+    fn double_release_does_not_free_reallocated_page() {
+        let mut pool = PagePool::new(2);
+
+        // Fork a owns one page, then loses and is released.
+        let mut a = snapshot(vec![pool.alloc_from_slice(&[[1u8; 32]])]);
+        let p = a.pages[0];
+        pool.release(&mut a); // p is free now, but a still names it
+
+        // A new fork takes p.
+        let b = snapshot(vec![pool.alloc_from_slice(&[[2u8; 32]])]);
+        assert_eq!(b.pages[0], p, "free page should be reused");
+
+        // Later, finalize releases a's slot a second time (a dropped write
+        // view left it behind).
+        pool.release(&mut a);
+
+        // p belongs to b: a new alloc must not hand it out again.
+        assert_ne!(pool.alloc(), p, "second release freed a live page");
     }
 }
