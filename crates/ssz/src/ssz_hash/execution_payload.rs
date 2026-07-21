@@ -2,13 +2,30 @@ use flux_profiler::timed;
 
 use crate::{
     merkle::{
-        B256, MerkleStack, ZERO_HASH, hash_fixed_bytes, merkleize, merkleize_bytes, mix_in_length,
-        uint64_chunk,
+        B256, FixedContainer, MerkleStack, ZERO_HASH, hash_bytelist, hash_fixed_bytes, merkleize,
+        merkleize_bytes, mix_in_length, uint64_chunk,
     },
     ssz_view::{
         MAX_BYTES_PER_TRANSACTION, MAX_TRANSACTIONS_PER_PAYLOAD, MAX_WITHDRAWALS_PER_PAYLOAD,
+        WITHDRAWAL_SIZE, WithdrawalView,
     },
 };
+
+impl FixedContainer for WithdrawalView {
+    const SSZ_SIZE: usize = WITHDRAWAL_SIZE;
+
+    fn hash_tree_root(bytes: &[u8]) -> B256 {
+        let w: &[u8; WITHDRAWAL_SIZE] = bytes.try_into().unwrap();
+        let mut addr = ZERO_HASH;
+        addr[..20].copy_from_slice(Self::address(w));
+        merkleize(&[
+            uint64_chunk(Self::index(w)),
+            uint64_chunk(Self::validator_index(w)),
+            addr,
+            uint64_chunk(Self::amount(w)),
+        ])
+    }
+}
 
 /// hash_tree_root for ExecutionPayload from raw SSZ bytes.
 /// 17 fields → 32 leaves.
@@ -102,32 +119,17 @@ pub fn hash_transactions(data: &[u8]) -> B256 {
         } else {
             &[]
         };
-        let tx_root = mix_in_length(&merkleize_bytes(tx_bytes, tx_chunk_capacity), tx_bytes.len());
-        outer.push(tx_root);
+        outer.push(hash_bytelist(MerkleStack::new(tx_chunk_capacity), tx_bytes));
     }
 
     let root = outer.finalize();
     mix_in_length(&root, count)
 }
 
-/// hash_tree_root for List[Withdrawal, 16]. Withdrawal fixed 44 bytes.
+/// hash_tree_root for List[Withdrawal, 16].
 #[timed]
 pub fn hash_withdrawals(data: &[u8]) -> B256 {
-    const WITHDRAWAL_SIZE: usize = 44;
-
-    let count = data.len() / WITHDRAWAL_SIZE;
-    let mut stack = MerkleStack::new(MAX_WITHDRAWALS_PER_PAYLOAD);
-    for i in 0..count {
-        let w = &data[i * WITHDRAWAL_SIZE..(i + 1) * WITHDRAWAL_SIZE];
-        let u64at = |off: usize| -> u64 { u64::from_le_bytes(w[off..off + 8].try_into().unwrap()) };
-        let mut addr = ZERO_HASH;
-        addr[..20].copy_from_slice(&w[16..36]);
-        let chunks =
-            [uint64_chunk(u64at(0)), uint64_chunk(u64at(8)), addr, uint64_chunk(u64at(36))];
-        stack.push(merkleize(&chunks));
-    }
-    let root = stack.finalize();
-    mix_in_length(&root, count)
+    WithdrawalView::hash_list(MerkleStack::new(MAX_WITHDRAWALS_PER_PAYLOAD), data)
 }
 
 /// Extract and hash transactions from ExecutionPayload SSZ bytes.

@@ -33,6 +33,7 @@ impl BuildersDelta {
             "promote_into_base: delta.base_count must match the current base count",
         );
         let end = self.base_count + self.appended.len();
+        base.ensure_capacity(end);
         base.builders[self.base_count..end].copy_from_slice(&self.appended);
         self.edits.scatter(&mut base.builders[..end]);
         base.count = end;

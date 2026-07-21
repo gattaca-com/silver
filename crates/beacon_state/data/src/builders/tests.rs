@@ -106,6 +106,38 @@ fn finalize_promotes_and_matches_naive() {
 }
 
 #[test]
+fn growth_past_initial_headroom() {
+    // A gloas-fork-born registry starts empty: builder_capacity(0) = 64. Real
+    // onboarding can exceed that between two finalizations, and 85+ builders
+    // cross the progressive segment-3 boundary (chunk 85) — both must regrow
+    // the base and its hash forest instead of panicking.
+    let mut g = BuildersGroup::new(FinalizedBuilders::default());
+
+    let winner = {
+        let mut wv = g.roll_fresh();
+        for i in 0..100u8 {
+            wv.push(builder(i));
+        }
+        assert_eq!(wv.hash_root(), naive_root(&wv.reader()));
+        wv.commit()
+    };
+    let before = g.view(winner).hash_root();
+
+    let live = g.finalize(winner, &[winner]);
+    assert_eq!(g.finalized().len(), 100);
+
+    let mut wv = g.roll_from(live[0]);
+    assert_eq!(wv.hash_root(), before);
+
+    // Keep growing past the regrown capacity in the next window.
+    for i in 100..200u8 {
+        wv.push(builder(i));
+    }
+    assert_eq!(wv.len(), 200);
+    assert_eq!(wv.hash_root(), naive_root(&wv.reader()));
+}
+
+#[test]
 fn descendant_survives_finalize() {
     let base: Vec<_> = (0..10).map(builder).collect();
     let mut g = BuildersGroup::new(base_with(&base));

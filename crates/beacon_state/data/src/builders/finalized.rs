@@ -109,4 +109,12 @@ impl FinalizedBuilders {
     pub fn hash(&self) -> &GloasFinalized {
         &self.hash
     }
+
+    pub(super) fn ensure_capacity(&mut self, end: usize) {
+        if end > self.builders.len() {
+            let mut grown = vec![Builder::default(); builder_capacity(end)].into_boxed_slice();
+            grown[..self.count].copy_from_slice(&self.builders[..self.count]);
+            self.builders = grown;
+        }
+    }
 }

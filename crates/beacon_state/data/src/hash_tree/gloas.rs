@@ -1,12 +1,28 @@
+use std::{iter, sync::OnceLock};
+
 use super::{DeltaHashTree, FinalizedHashTree};
 use crate::{
     merkle::mix_in_length,
     progressive::{
-        PROGRESSIVE_SEGMENT_START, fold_progressive_spine, progressive_segment_of_chunk,
-        progressive_segments_for,
+        PROGRESSIVE_SEGMENT_START, PROGRESSIVE_SEGMENTS, fold_progressive_spine,
+        progressive_segment_of_chunk, progressive_segments_for,
     },
     types::B256,
 };
+
+/// All-zero segment `k` — the base for delta leaves pushed past the finalized
+/// forest's coverage. Built on first touch, shared forever; segment `k` is
+/// only requested once real elements reach chunk `(4^k - 1) / 3`, so the huge
+/// tail segments never materialize.
+fn empty_seg(k: usize) -> FinalizedHashTree {
+    FinalizedHashTree::from_leaves(iter::empty(), 1 << (2 * k))
+}
+
+fn zero_seg(k: usize) -> &'static FinalizedHashTree {
+    static ZERO_SEGS: [OnceLock<FinalizedHashTree>; PROGRESSIVE_SEGMENTS] =
+        [const { OnceLock::new() }; PROGRESSIVE_SEGMENTS];
+    ZERO_SEGS[k].get_or_init(|| empty_seg(k))
+}
 
 #[derive(Default)]
 pub struct GloasFinalized {
@@ -36,7 +52,27 @@ impl GloasFinalized {
         (k, i - PROGRESSIVE_SEGMENT_START[k])
     }
 
+    /// Segment `k`, falling back to the shared all-zero segment past the
+    /// materialized coverage — deltas may grow beyond the base forest.
+    #[inline]
+    fn seg(&self, k: usize) -> &FinalizedHashTree {
+        self.segs.get(k).unwrap_or_else(|| zero_seg(k))
+    }
+
+    /// Materialize zero segments so the forest owns `count` segments — needed
+    /// before promoting a winner that grew past the current coverage.
+    fn ensure_segs(&mut self, count: usize) {
+        if count > self.segs.len() {
+            let mut segs = std::mem::take(&mut self.segs).into_vec();
+            for k in segs.len()..count {
+                segs.push(empty_seg(k));
+            }
+            self.segs = segs.into_boxed_slice();
+        }
+    }
+
     pub(crate) fn promote_delta(&mut self, winner: &GloasDeltaHashTree) {
+        self.ensure_segs(winner.segs.len());
         for (seg, delta) in self.segs.iter_mut().zip(&winner.segs) {
             seg.promote_delta(delta);
         }
@@ -47,8 +83,8 @@ impl GloasFinalized {
         delta: &mut GloasDeltaHashTree,
         winner: &GloasDeltaHashTree,
     ) {
-        for (k, seg) in self.segs.iter().enumerate() {
-            seg.prune_delta_against(&mut delta.segs[k], &winner.segs[k]);
+        for (k, delta_seg) in delta.segs.iter_mut().enumerate() {
+            self.seg(k).prune_delta_against(delta_seg, winner.seg(k));
         }
     }
 }
@@ -63,10 +99,26 @@ impl GloasDeltaHashTree {
         Self { segs: vec![DeltaHashTree::default(); finalized.segs.len()] }
     }
 
+    /// Segment `k`, falling back to the base-passthrough symlink past the
+    /// segments this delta has touched.
+    #[inline]
+    fn seg(&self, k: usize) -> &DeltaHashTree {
+        static PASSTHROUGH: DeltaHashTree = DeltaHashTree::Base(FinalizedHashTree::root());
+        self.segs.get(k).unwrap_or(&PASSTHROUGH)
+    }
+
+    #[inline]
+    fn seg_mut(&mut self, k: usize) -> &mut DeltaHashTree {
+        if k >= self.segs.len() {
+            self.segs.resize(k + 1, DeltaHashTree::default());
+        }
+        &mut self.segs[k]
+    }
+
     #[inline]
     pub fn set_leaf(&mut self, finalized: &GloasFinalized, i: usize, leaf: B256) {
         let (k, local) = GloasFinalized::leaf_seg(i);
-        self.segs[k].set_leaf(&finalized.segs[k], local, leaf);
+        self.seg_mut(k).set_leaf(finalized.seg(k), local, leaf);
     }
 
     pub fn set_leaves(&mut self, finalized: &GloasFinalized, sorted: &[(u32, B256)]) {
@@ -84,13 +136,15 @@ impl GloasDeltaHashTree {
             let split = rest.partition_point(|(i, _)| *i < seg_end);
 
             let (in_seg, tail) = rest.split_at(split);
-            self.segs[k] = finalized.segs[k].set_delta_leaves(
-                &self.segs[k],
+            let base_seg = finalized.seg(k);
+            let updated = base_seg.set_delta_leaves(
+                self.seg(k),
                 in_seg,
                 FinalizedHashTree::root(),
                 seg_start,
-                seg_start + finalized.segs[k].max_elements() as u32,
+                seg_start + base_seg.max_elements() as u32,
             );
+            *self.seg_mut(k) = updated;
 
             rest = tail;
         }
@@ -98,7 +152,7 @@ impl GloasDeltaHashTree {
 
     pub(crate) fn rebase(&mut self, base: &GloasFinalized, winner: &GloasDeltaHashTree) {
         for (k, seg) in self.segs.iter_mut().enumerate() {
-            seg.rebase(&base.segs[k], &winner.segs[k]);
+            seg.rebase(base.seg(k), winner.seg(k));
         }
     }
 
@@ -127,7 +181,7 @@ impl GloasDeltaHashTree {
     /// mix-in.
     pub fn ssz_list_root(&self, base: &GloasFinalized, len: usize) -> B256 {
         let acc = fold_progressive_spine(progressive_segments_for(len), |k| {
-            self.segs[k].root(&base.segs[k])
+            self.seg(k).root(base.seg(k))
         });
         mix_in_length(&acc, len)
     }

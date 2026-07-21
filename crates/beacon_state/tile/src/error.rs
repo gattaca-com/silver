@@ -170,6 +170,20 @@ pub enum PayloadAttestationError {
 }
 
 #[derive(Debug, Error)]
+pub enum EnvelopeError {
+    #[error("malformed envelope payload")]
+    Malformed,
+    #[error("envelope disagrees with the committed bid: {field}")]
+    BidMismatch { field: &'static str },
+    #[error("envelope payload {field} disagrees with the state")]
+    PayloadMismatch { field: &'static str },
+    #[error("builder index {index} out of range")]
+    BuilderOutOfRange { index: u64 },
+    #[error("invalid builder signature")]
+    BadSignature,
+}
+
+#[derive(Debug, Error)]
 pub enum ParentExecutionPayloadError {
     #[error("malformed parent_execution_requests / block body offsets")]
     Malformed,

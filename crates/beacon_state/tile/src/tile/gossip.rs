@@ -8,11 +8,10 @@ use silver_common::{
     metrics::timed,
     ssz_view::{
         AttestationDataView, AttestationView, AttesterSlashingView,
-        ExecutionPayloadEnvelopeView as Envelope, ExecutionPayloadView as Payload,
-        PROPOSER_SLASHING_SIZE, ProposerSlashingView, SIGNED_BLS_CHANGE_SIZE,
-        SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE, SignedBlsToExecutionChangeView,
-        SignedExecutionPayloadEnvelopeView as SignedPayload, SignedVoluntaryExitView,
-        SingleAttestationView,
+        ExecutionPayloadEnvelopeView as Envelope, PROPOSER_SLASHING_SIZE, ProposerSlashingView,
+        SIGNED_BLS_CHANGE_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE,
+        SignedBlsToExecutionChangeView, SignedExecutionPayloadEnvelopeView as SignedPayload,
+        SignedVoluntaryExitView, SingleAttestationView,
     },
 };
 
@@ -305,11 +304,9 @@ impl BeaconStateTile {
             return EnvelopeCheck::AwaitBlock(block_root);
         };
         let state_id = self.fork_choice.node(idx).state_id;
-        let builder_index = Envelope::builder_index(msg);
-        let payload_block_hash = *Payload::block_hash(Envelope::payload(msg));
         let rv = self.state.read_view(state_id);
-        let bid = &rv.slot.state().latest_execution_payload_bid;
-        if bid.builder_index != builder_index || bid.block_hash != payload_block_hash {
+        if let Err(e) = stf::verify_execution_payload_envelope(&rv, &self.spec, ssz) {
+            tracing::debug!(error = %e, "execution_payload_envelope rejected");
             return EnvelopeCheck::Ignore;
         }
         EnvelopeCheck::Ready { block_root, state_id }

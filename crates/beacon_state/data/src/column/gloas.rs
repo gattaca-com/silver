@@ -312,6 +312,103 @@ mod tests {
         assert_eq!(ssz, le_bytes(&expected));
     }
 
+    fn gloas_group(values: &[u64]) -> BalancesGroup {
+        BalancesGroup::new(values.len() + 4, values.len(), &le_bytes(values), HashFormat::Gloas)
+            .unwrap()
+    }
+
+    #[test]
+    fn reorg_rebuilds_scratch_from_pages_across_growth() {
+        // Base 30 vals → last_seg 2 (84-value capacity). Fork A grows into
+        // segment 3; fork B stays small. A roll whose parent isn't the
+        // just-committed fork rebuilds the flat scratch from the parent's paged
+        // snapshot — here including a segment-forest shrink (A → B, last_seg
+        // 3 → 2) and a regrow (B → A).
+        let base: Vec<u64> = (0..30).map(|i| i * 3 + 7).collect();
+        let mut g = gloas_group(&base);
+
+        let mut wv = g.roll_fresh();
+        wv.set(2, 222);
+        let mut b_vals = base.clone();
+        b_vals[2] = 222;
+        let b = wv.commit();
+
+        // Fork A off the base: the scratch holds B, so this roll rebuilds too.
+        let mut wv = g.roll_fresh();
+        let mut a_vals = base.clone();
+        for i in 30..90u64 {
+            let idx = wv.append_empty();
+            wv.set(idx, i * 11);
+            a_vals.push(i * 11);
+        }
+        wv.set(0, 1_000);
+        a_vals[0] = 1_000;
+        assert_progressive(&wv, &a_vals);
+        let a = wv.commit();
+
+        // Reorg onto B's chain: shrink rebuild, then a child edit.
+        let mut wv = g.roll_from(b);
+        assert_progressive(&wv, &b_vals);
+        wv.set(29, 9_999);
+        let mut c_vals = b_vals.clone();
+        c_vals[29] = 9_999;
+        let c = wv.commit();
+
+        // Reorg back onto A: regrow rebuild, then extend further.
+        let mut wv = g.roll_from(a);
+        assert_progressive(&wv, &a_vals);
+        let idx = wv.append_empty();
+        wv.set(idx, 555);
+        let mut d_vals = a_vals.clone();
+        d_vals.push(555);
+        let d = wv.commit();
+
+        // No committed snapshot was disturbed by the scratch rebuilds.
+        assert_eq!(g.view(a).hash_root(), progressive_u64_root(&a_vals));
+        assert_eq!(g.view(c).hash_root(), progressive_u64_root(&c_vals));
+        assert_eq!(g.view(d).hash_root(), progressive_u64_root(&d_vals));
+
+        // The grown side wins. Freeing the non-survivors (a shares most of its
+        // pages with winner d) must not free pages d and c still reference.
+        g.finalize(d, &[d, c]);
+        let mut ssz = Vec::new();
+        g.write_ssz(&mut ssz).unwrap();
+        assert_eq!(ssz, le_bytes(&d_vals));
+        assert_eq!(g.view(c).hash_root(), progressive_u64_root(&c_vals));
+    }
+
+    #[test]
+    fn abandoned_add_at_batch_does_not_leak_into_next_fork() {
+        // A failed apply can drop the write view between add_at and rehash.
+        // The stale dirty ids must not survive the next roll: after a reorg
+        // onto a fork with a smaller segment forest they would index past it
+        // in rehash.
+        let base: Vec<u64> = (0..30).collect();
+        let mut g = gloas_group(&base);
+
+        let mut wv = g.roll_fresh();
+        wv.set(1, 11);
+        let mut b_vals = base.clone();
+        b_vals[1] = 11;
+        let b = wv.commit();
+
+        // Grown fork abandoned mid-batch: add_at recorded, never rehashed.
+        let mut wv = g.roll_fresh();
+        for i in 30..90 {
+            let idx = wv.append_empty();
+            wv.set(idx, i);
+        }
+        wv.add_at(88, 5); // dirty chunk 22 — segment 3 of the grown forest
+        drop(wv);
+
+        // Reorg roll onto the small fork: the rebuilt scratch has no segment 3.
+        let mut wv = g.roll_from(b);
+        wv.add_at(0, 100);
+        wv.rehash();
+        b_vals[0] += 100;
+        assert_progressive(&wv, &b_vals);
+    }
+
     #[test]
     fn clear_to_zero() {
         let values: Vec<u64> = (0..90).map(|i| i + 1).collect();

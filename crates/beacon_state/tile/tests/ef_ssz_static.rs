@@ -11,16 +11,15 @@ use silver_common::{
     ssz_hash_gloas::ExecutionRequestsView,
     ssz_view::{
         AttestationView, AttesterSlashingView, BeaconBlockBodyGloasView, ExecutionPayloadBidView,
-        IndexedAttestationView, PayloadAttestationView, SignedExecutionPayloadBidView,
+        ExecutionPayloadEnvelopeView, ExecutionPayloadView, IndexedAttestationView,
+        PayloadAttestationView, SignedExecutionPayloadBidView, SignedExecutionPayloadEnvelopeView,
     },
 };
 
 fn run_ssz_static(fork: &str, type_name: &str, hash_fn: impl Fn(&[u8]) -> [u8; 32]) {
     let base = spec_tests_dir().join("tests/mainnet").join(fork).join("ssz_static").join(type_name);
-    let Ok(suites) = fs::read_dir(&base) else {
-        eprintln!("{type_name}: no test dir, skipping");
-        return;
-    };
+    let suites = fs::read_dir(&base)
+        .unwrap_or_else(|e| panic!("{fork}/{type_name}: no ssz_static vectors at {base:?}: {e}"));
 
     let mut pass = 0;
     let mut fail = 0;
@@ -65,6 +64,7 @@ fn run_ssz_static(fork: &str, type_name: &str, hash_fn: impl Fn(&[u8]) -> [u8; 3
     }
     eprintln!("{fork}/{type_name}: {pass} passed, {fail} failed");
     assert_eq!(fail, 0, "{fork}/{type_name}: {fail} test(s) failed");
+    assert!(pass > 0, "{fork}/{type_name}: vector dir exists but no cases ran");
 }
 
 fn parse_root(yaml: &str) -> [u8; 32] {
@@ -144,6 +144,27 @@ fn gloas_execution_payload_bid() {
 fn gloas_signed_execution_payload_bid() {
     run_ssz_static("gloas", "SignedExecutionPayloadBid", move |ssz| {
         SignedExecutionPayloadBidView::hash_tree_root(ssz)
+    });
+}
+
+#[test]
+fn gloas_execution_payload() {
+    run_ssz_static("gloas", "ExecutionPayload", move |ssz| {
+        ExecutionPayloadView::hash_tree_root_gloas(ssz)
+    });
+}
+
+#[test]
+fn gloas_execution_payload_envelope() {
+    run_ssz_static("gloas", "ExecutionPayloadEnvelope", move |ssz| {
+        ExecutionPayloadEnvelopeView::hash_tree_root(ssz)
+    });
+}
+
+#[test]
+fn gloas_signed_execution_payload_envelope() {
+    run_ssz_static("gloas", "SignedExecutionPayloadEnvelope", move |ssz| {
+        SignedExecutionPayloadEnvelopeView::hash_tree_root(ssz)
     });
 }
 

@@ -7,6 +7,7 @@
 
 mod attestation;
 mod block_body;
+mod execution_payload;
 mod execution_payload_bid;
 mod execution_requests;
 mod payload_attestation;

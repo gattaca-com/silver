@@ -96,10 +96,14 @@ impl NodeStore {
         dst.is_released = false;
     }
 
+    /// Start a fresh write session: no dirty pages, and no dirty chunks — an
+    /// abandoned fork can leave an unhashed `add_at` batch behind, and its ids
+    /// may not even be in range of the tree loaded since.
     pub(super) fn reset_dirty_mask(&mut self) {
         let num_pages = self.num_pages();
         self.dirty_pages.clear();
         self.dirty_pages.resize(num_pages, false);
+        self.dirty_chunks.clear();
     }
 
     pub(super) fn mark_all_dirty(&mut self) {

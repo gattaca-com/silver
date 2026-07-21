@@ -119,7 +119,7 @@ pub fn hash_variable_list(
     data: &[u8],
     hash_elem: impl Fn(&[u8]) -> B256,
 ) -> B256 {
-    hash_list(merkleizer, variable_containers(data).map(|e| e.map_or(ZERO_HASH, |b| hash_elem(b))))
+    hash_list(merkleizer, variable_containers(data).map(|e| e.map_or(ZERO_HASH, &hash_elem)))
 }
 
 /// [`hash_list`] for a fixed `Vector[T, len]` — merkleize the leaves with no
@@ -131,14 +131,15 @@ pub fn hash_vector(mut merkleizer: impl Merkleizer, leaves: impl Iterator<Item =
     merkleizer.finalize()
 }
 
-/// hash_tree_root for a Bitlist. Streams content bytes into 32-byte chunks,
-/// masking the delimiter bit on the last content byte. The `merkleizer` fixes
-/// the tree: `MerkleStack::new(max_bits.div_ceil(256).next_power_of_two())` for
-/// `Bitlist[max_bits]`, `ProgressiveHasher` for `ProgressiveBitlist`.
 #[timed]
 pub fn hash_bitlist(mut merkleizer: impl Merkleizer, data: &[u8], bit_len: usize) -> B256 {
     pack_bitlist_chunks(data, bit_len, |c| merkleizer.push(c));
     mix_in_length(&merkleizer.finalize(), bit_len)
+}
+
+pub fn hash_bytelist(mut merkleizer: impl Merkleizer, bytes: &[u8]) -> B256 {
+    pack_byte_chunks(bytes, |c| merkleizer.push(c));
+    mix_in_length(&merkleizer.finalize(), bytes.len())
 }
 
 pub fn bitlist_len(data: &[u8]) -> usize {
