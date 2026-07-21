@@ -4,7 +4,7 @@
 
 use std::process::Command;
 
-const BLOCK_URL_BASE: &str = "https://lodestar-mainnet.chainsafe.io/eth/v2/beacon/blocks";
+const BLOCK_URL_BASE: &str = "https://ethereum-beacon-api.publicnode.com/eth/v2/beacon/blocks";
 
 /// Fetch the canonical post-state root for the block at `slot`. The
 /// `/states/{slot}/root` route isn't available for deep history; block

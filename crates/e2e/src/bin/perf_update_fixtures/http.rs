@@ -6,8 +6,9 @@ use std::{
 
 const STATE_BY_ID_BASE: &str =
     "https://beaconstate-mainnet.chainsafe.io/eth/v2/debug/beacon/states";
-/// lodestar returns binary SSZ for `Accept: application/octet-stream`.
-const BLOCK_URL_BASE: &str = "https://lodestar-mainnet.chainsafe.io/eth/v2/beacon/blocks";
+/// Returns binary SSZ for `Accept: application/octet-stream`. The previous
+/// source, `lodestar-mainnet.chainsafe.io`, has been 503 since 2026-07-21.
+const BLOCK_URL_BASE: &str = "http://testing.mainnet.beacon-api.nimbus.team/eth/v2/beacon/blocks";
 const FINALIZED_HEADER_URL: &str =
     "https://ethereum-beacon-api.publicnode.com/eth/v1/beacon/headers/finalized";
 // 4-byte offset to `message` + signature(96).

@@ -23,7 +23,7 @@ pub(super) struct PathMetrics {
     tracked_avg_ns: Nanos,
     tracked_p50_ns: Nanos,
     tracked_p99_ns: Nanos,
-    tracked_max_ns: Nanos,
+    pub(super) tracked_max_ns: Nanos,
     pub(super) tracked_sum_ns: Nanos,
     pub(super) total_untracked_ns: Nanos,
     /// Summed counter deltas (perf, alloc bytes) over all calls on this path;
