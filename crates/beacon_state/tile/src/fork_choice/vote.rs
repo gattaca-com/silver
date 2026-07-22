@@ -1,7 +1,7 @@
 use flux_profiler::timed;
 use silver_beacon_state_data::{B256, Checkpoint, Epoch, Slot, ValidatorsView};
 
-use super::{ForkChoice, ForkChoiceNode, MAX_FORK_CHOICE_NODES, NodeLookup, PayloadStatus};
+use super::{ForkChoice, ForkChoiceNode, PayloadStatus};
 use crate::stf::{AttestationVote, EFFECTIVE_BALANCE_INCREMENT};
 
 #[repr(C)]
@@ -65,77 +65,101 @@ fn add_vote_weight_changes(d: &mut WeightDelta, branch: PayloadStatus, v: i64) {
     }
 }
 
-#[timed]
-pub fn compute_weight_deltas(
-    votes: &mut [Vote],
-    validator_count: usize,
-    lookup: &NodeLookup,
-    nodes: &[ForkChoiceNode],
-    old_balances: &[u64],
-    new_balances: &[u64],
-    changed: Option<&[u32]>,
-) -> [WeightDelta; MAX_FORK_CHOICE_NODES] {
-    let mut deltas = [WeightDelta::default(); MAX_FORK_CHOICE_NODES];
+impl ForkChoice {
+    /// Fold vote/balance movement into `self.weight_deltas` (staged for
+    /// `apply_score_changes`): a fresh balance snapshot means a full pass
+    /// against the previous snapshot; otherwise only the dirtied votes are
+    /// folded against the unchanged snapshot.
+    #[timed]
+    pub(super) fn compute_weight_deltas(&mut self) {
+        let Self {
+            vote_tracker,
+            lookup,
+            nodes,
+            votes_dirty,
+            justified_balances,
+            prev_justified_balances,
+            justified_balances_full_pass,
+            weight_deltas: deltas,
+            ..
+        } = self;
+        let full_pass = *justified_balances_full_pass;
+        let validator_count = justified_balances.len();
+        let (old_balances, new_balances) = if full_pass {
+            (prev_justified_balances.as_slice(), justified_balances.as_slice())
+        } else {
+            (justified_balances.as_slice(), justified_balances.as_slice())
+        };
+        let changed = (!full_pass).then_some(votes_dirty.as_slice());
+        let votes = &mut vote_tracker.votes;
 
-    let mut apply = |vi: usize, vote: &mut Vote| {
-        // `old_balances` (previous snapshot) may be shorter than the current
-        // validator set; validators added since then carry no prior weight.
-        let old_balance = old_balances.get(vi).copied().unwrap_or(0);
-        let new_balance = new_balances.get(vi).copied().unwrap_or(0);
+        deltas.clear();
+        deltas.resize(nodes.len(), WeightDelta::default());
 
-        // Unchanged only when target, balance, AND payload branch all match — a
-        // re-vote that flips the payload branch must still move weight.
-        if vote.applied_root == vote.latest_root &&
-            vote.applied_slot == vote.latest_slot &&
-            vote.applied_payload_present == vote.latest_payload_present &&
-            old_balance == new_balance
-        {
-            return;
-        }
+        let mut apply = |vi: usize, vote: &mut Vote| {
+            // `old_balances` (previous snapshot) may be shorter than the current
+            // validator set; validators added since then carry no prior weight.
+            let old_balance = old_balances.get(vi).copied().unwrap_or(0);
+            let new_balance = new_balances.get(vi).copied().unwrap_or(0);
 
-        if vote.applied_root != [0u8; 32] &&
-            let Some(old_idx) = lookup.get(&vote.applied_root)
-        {
-            let branch =
-                branch_voted_for(&nodes[old_idx], vote.applied_slot, vote.applied_payload_present);
-            add_vote_weight_changes(&mut deltas[old_idx], branch, -(old_balance as i64));
-        }
+            // Unchanged only when target, balance, AND payload branch all match — a
+            // re-vote that flips the payload branch must still move weight.
+            if vote.applied_root == vote.latest_root &&
+                vote.applied_slot == vote.latest_slot &&
+                vote.applied_payload_present == vote.latest_payload_present &&
+                old_balance == new_balance
+            {
+                return;
+            }
 
-        // Add new balance to new target.
-        if vote.latest_root != [0u8; 32] &&
-            let Some(new_idx) = lookup.get(&vote.latest_root)
-        {
-            let branch =
-                branch_voted_for(&nodes[new_idx], vote.latest_slot, vote.latest_payload_present);
-            add_vote_weight_changes(&mut deltas[new_idx], branch, new_balance as i64);
-        }
+            if vote.applied_root != [0u8; 32] &&
+                let Some(old_idx) = lookup.get(&vote.applied_root)
+            {
+                let branch = branch_voted_for(
+                    &nodes[old_idx],
+                    vote.applied_slot,
+                    vote.applied_payload_present,
+                );
+                add_vote_weight_changes(&mut deltas[old_idx], branch, -(old_balance as i64));
+            }
 
-        // Note: if latest_root is non-zero but unknown (pruned/never-imported),
-        // we still bump applied_root, "consuming" the vote with no delta
-        // contribution. Self-heals on the validator's next attestation.
-        // Matches Lighthouse proto_array.
-        vote.applied_root = vote.latest_root;
-        vote.applied_slot = vote.latest_slot;
-        vote.applied_payload_present = vote.latest_payload_present;
-    };
+            // Add new balance to new target.
+            if vote.latest_root != [0u8; 32] &&
+                let Some(new_idx) = lookup.get(&vote.latest_root)
+            {
+                let branch = branch_voted_for(
+                    &nodes[new_idx],
+                    vote.latest_slot,
+                    vote.latest_payload_present,
+                );
+                add_vote_weight_changes(&mut deltas[new_idx], branch, new_balance as i64);
+            }
 
-    match changed {
-        Some(dirty) => {
-            for &vi in dirty {
-                let vi = vi as usize;
-                if vi < validator_count {
-                    apply(vi, &mut votes[vi]);
+            // Note: if latest_root is non-zero but unknown (pruned/never-imported),
+            // we still bump applied_root, "consuming" the vote with no delta
+            // contribution. Self-heals on the validator's next attestation.
+            // Matches Lighthouse proto_array.
+            vote.applied_root = vote.latest_root;
+            vote.applied_slot = vote.latest_slot;
+            vote.applied_payload_present = vote.latest_payload_present;
+        };
+
+        match changed {
+            Some(dirty) => {
+                for &vi in dirty {
+                    let vi = vi as usize;
+                    if vi < validator_count {
+                        apply(vi, &mut votes[vi]);
+                    }
+                }
+            }
+            None => {
+                for (vi, vote) in votes.iter_mut().enumerate().take(validator_count) {
+                    apply(vi, vote);
                 }
             }
         }
-        None => {
-            for (vi, vote) in votes.iter_mut().enumerate().take(validator_count) {
-                apply(vi, vote);
-            }
-        }
     }
-
-    deltas
 }
 
 impl ForkChoice {

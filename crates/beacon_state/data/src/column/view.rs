@@ -107,23 +107,17 @@ impl<'a, C: ColumnSpec> ColumnReader<'a, C> {
 pub struct ColumnWriteView<'a, C: ColumnSpec> {
     group: &'a mut ColumnGroup<C>,
     parent: Option<Id<ColumnGroup<C>>>,
-    id: Id<ColumnGroup<C>>,
 }
 
 impl<'a, C: ColumnSpec> ColumnWriteView<'a, C> {
     #[inline]
-    pub(super) fn new(
-        group: &'a mut ColumnGroup<C>,
-        parent: Option<Id<ColumnGroup<C>>>,
-        id: Id<ColumnGroup<C>>,
-    ) -> Self {
-        Self { group, parent, id }
+    pub(super) fn new(group: &'a mut ColumnGroup<C>, parent: Option<Id<ColumnGroup<C>>>) -> Self {
+        Self { group, parent }
     }
 
     #[inline]
     pub fn commit(self) -> Id<ColumnGroup<C>> {
-        self.group.commit_scratch(self.id, self.parent);
-        self.id
+        self.group.commit_scratch(self.parent)
     }
 
     #[inline]

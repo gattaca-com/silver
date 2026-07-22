@@ -20,7 +20,7 @@ use silver_config::{PendingBounds, SyncingConfig};
 
 use crate::{
     bls,
-    fork_choice::{ForkChoice, MAX_FORK_CHOICE_NODES, PayloadStatus},
+    fork_choice::{FORK_CHOICE_NODES_HINT, ForkChoice, PayloadStatus},
     merkle, ssz_hash, stf,
     tile::{orphan_pool::PendingBlock, shuffling_cache::ShufflingCache},
     weak_subjectivity::{weak_subjectivity_period_fulu, weak_subjectivity_period_gloas},
@@ -179,7 +179,7 @@ pub struct BeaconStateTile {
 type Producers = <SilverSpine as FluxSpine>::Producers;
 
 fn root_map<V>() -> FxHashMap<B256, V> {
-    FxHashMap::with_capacity_and_hasher(MAX_FORK_CHOICE_NODES, Default::default())
+    FxHashMap::with_capacity_and_hasher(FORK_CHOICE_NODES_HINT, Default::default())
 }
 
 impl BeaconStateTile {
@@ -228,7 +228,7 @@ impl BeaconStateTile {
             payload_pending_blocks: root_map(),
             dc_available: root_map(),
             pending_envelopes: root_map(),
-            envelope_request_queue: Vec::with_capacity(MAX_FORK_CHOICE_NODES),
+            envelope_request_queue: Vec::with_capacity(FORK_CHOICE_NODES_HINT),
             envelope_requested: root_map(),
             pending_bounds: syncing.pending,
             max_pending_per_parent: (syncing.head_lag_threshold_slots * 2) as usize,
@@ -1022,6 +1022,23 @@ mod tests {
         assert_eq!(tile.head_state_slot(), 34);
         // Crossing into epoch 1 allocated the head fork its own epoch delta.
         assert!(tile.last_applied.epoch_idx.is_some());
+    }
+
+    /// Sustained non-finality: slot advances far past the rings' initial
+    /// capacity (slot tiers past `SLOTS_RING_N` twice over, the epoch tier
+    /// past `EPOCHS_RING_N`) must grow the rings instead of panicking on
+    /// wrap, with the head still resolving after every advance.
+    #[test]
+    fn slot_advance_grows_rings_under_non_finality() {
+        use silver_beacon_state_data::{SLOTS_PER_EPOCH, SLOTS_RING_N};
+
+        let mut tile = make_tile();
+        seed_tile(&mut tile, 4, 0);
+        let target = SLOTS_RING_N as u64 * 2 + 3 * SLOTS_PER_EPOCH;
+        for s in 1..=target {
+            tile.on_slot_start(s);
+            assert_eq!(tile.head_state_slot(), s);
+        }
     }
 
     /// Regression: advancing the head over an empty epoch-boundary slot must

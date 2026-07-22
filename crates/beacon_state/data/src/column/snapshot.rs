@@ -21,6 +21,19 @@ impl PageSnapshot {
         Self { pages: Vec::new(), format: TreeFormat::default(), count: 0, is_released: true }
     }
 
+    /// Copy that points at the same pool pages without bumping their
+    /// refcounts. This is only correct during the ring's copy-grow: the
+    /// original is retired and never released again, so the pages' single
+    /// reference effectively moves over to the copy.
+    pub(super) fn clone_for_grow(&self) -> Self {
+        Self {
+            pages: self.pages.clone(),
+            format: self.format,
+            count: self.count,
+            is_released: self.is_released,
+        }
+    }
+
     #[inline]
     pub(super) fn len(&self) -> usize {
         self.count

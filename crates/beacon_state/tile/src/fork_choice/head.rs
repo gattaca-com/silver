@@ -1,33 +1,22 @@
 use flux_profiler::timed;
 use silver_beacon_state_data::{B256, SLOTS_PER_EPOCH, Slot};
 
-use super::{
-    ExecutionStatus, ForkChoice, GENESIS_EPOCH, MAX_FORK_CHOICE_NODES, NULL, NodeLookup,
-    PayloadStatus, WeightDelta, node::PTC_SIZE,
-};
+use super::{ExecutionStatus, ForkChoice, GENESIS_EPOCH, NULL, PayloadStatus, node::PTC_SIZE};
 
 impl ForkChoice {
+    /// Fold `self.weight_deltas` (staged by the caller) into the node weights.
     #[timed]
-    pub fn apply_score_changes(&mut self, deltas: &mut [WeightDelta; MAX_FORK_CHOICE_NODES]) {
-        Self::add_proposer_boost(
-            deltas,
-            &self.lookup,
-            &self.applied_boost_root,
-            -(self.applied_boost_score as i64),
-        );
-        Self::add_proposer_boost(
-            deltas,
-            &self.lookup,
-            &self.proposer_boost_root,
-            self.proposer_boost_score as i64,
-        );
+    pub fn apply_score_changes(&mut self) {
+        debug_assert!(self.weight_deltas.len() >= self.nodes.len());
+        self.add_proposer_boost(self.applied_boost_root, -(self.applied_boost_score as i64));
+        self.add_proposer_boost(self.proposer_boost_root, self.proposer_boost_score as i64);
 
         self.applied_boost_root = self.proposer_boost_root;
         self.applied_boost_score = self.proposer_boost_score;
 
         let len = self.nodes.len();
         for i in (0..len).rev() {
-            let d = deltas[i];
+            let d = self.weight_deltas[i];
             let total = d.total();
             let parent;
             let edge;
@@ -42,9 +31,9 @@ impl ForkChoice {
 
             if parent != NULL {
                 if edge == PayloadStatus::Full {
-                    deltas[parent].full += total;
+                    self.weight_deltas[parent].full += total;
                 } else {
-                    deltas[parent].empty += total;
+                    self.weight_deltas[parent].empty += total;
                 }
             }
         }
@@ -57,16 +46,11 @@ impl ForkChoice {
         }
     }
 
-    fn add_proposer_boost(
-        deltas: &mut [WeightDelta; MAX_FORK_CHOICE_NODES],
-        lookup: &NodeLookup,
-        root: &B256,
-        score: i64,
-    ) {
-        if *root != [0u8; 32] &&
-            let Some(i) = lookup.get(root)
+    fn add_proposer_boost(&mut self, root: B256, score: i64) {
+        if root != [0u8; 32] &&
+            let Some(i) = self.lookup.get(&root)
         {
-            deltas[i].pending = deltas[i].pending.saturating_add(score);
+            self.weight_deltas[i].pending = self.weight_deltas[i].pending.saturating_add(score);
         }
     }
 

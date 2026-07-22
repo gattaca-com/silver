@@ -10,14 +10,14 @@ use super::{
     tree::ColumnTree,
 };
 use crate::{
-    ring::{Id, RingIndex},
+    ring::{Id, Ring},
     types::{ColumnLenMismatch, HashFormat, SLOTS_RING_N},
 };
 
 pub struct ColumnGroup<C: ColumnSpec> {
     pool: PagePool,
     finalized: PageSnapshot,
-    ring: Box<[PageSnapshot]>,
+    ring: Ring<Self, PageSnapshot>,
     /// Flat writable head — the hot write path stays flat; committed forks are
     /// paged.
     scratch: ColumnTree,
@@ -25,7 +25,6 @@ pub struct ColumnGroup<C: ColumnSpec> {
     /// matches a roll's parent the scratch is reused in place and the full-tree
     /// snapshot load is skipped; set on commit, cleared on every roll.
     scratch_at: Option<Id<Self>>,
-    index: RingIndex<Self, SLOTS_RING_N>,
     _marker: PhantomData<fn() -> C>,
 }
 
@@ -40,63 +39,50 @@ impl<C: ColumnSpec> ColumnGroup<C> {
         // Grow-hint for the base's pages; the pool grows lazily beyond it.
         let mut pool = PagePool::new(flat.num_pages() * 2);
         let finalized = flat.to_snapshot(&mut pool);
-        let ring = (0..SLOTS_RING_N).map(|_| PageSnapshot::new_released()).collect();
         Ok(Self {
             pool,
             finalized,
-            ring,
+            ring: Ring::filled(SLOTS_RING_N, PageSnapshot::new_released),
             scratch: flat,
             scratch_at: None,
-            index: RingIndex::default(),
             _marker: PhantomData,
         })
     }
 
     #[inline]
     pub fn view(&self, id: Id<Self>) -> ColumnReader<'_, C> {
-        ColumnReader::paged(&self.pool, &self.ring[self.index.pos(id)])
+        ColumnReader::paged(&self.pool, self.ring.get(id))
     }
 
     pub fn roll_fresh(&mut self) -> ColumnWriteView<'_, C> {
-        let (id, _) = self.index.roll();
         let Self { pool, finalized, scratch, .. } = self;
         scratch.load_snapshot(pool, finalized);
         scratch.reset_dirty_mask();
         self.scratch_at = None;
-        ColumnWriteView::new(self, None, id)
+        ColumnWriteView::new(self, None)
     }
 
     pub fn roll_from(&mut self, parent: Id<Self>) -> ColumnWriteView<'_, C> {
-        let (id, _) = self.index.roll();
-        let reuse_scratch = self.scratch_at == Some(parent);
-        let parent_pos = self.index.pos(parent);
         let Self { pool, ring, scratch, .. } = self;
-        if !reuse_scratch {
-            scratch.load_snapshot(pool, &ring[parent_pos]);
+        if self.scratch_at != Some(parent) {
+            scratch.load_snapshot(pool, ring.get(parent));
         }
         scratch.reset_dirty_mask();
         self.scratch_at = None;
-        ColumnWriteView::new(self, Some(parent), id)
+        ColumnWriteView::new(self, Some(parent))
     }
 
-    /// Commit the flat scratch into the new fork's ring slot: a paged snapshot
-    /// sharing the parent's pages except the ones this block dirtied. `parent`
-    /// is `None` for a fork rolled off the base. Called by the write view's
-    /// `commit`.
-    pub(super) fn commit_scratch(&mut self, id: Id<Self>, parent: Option<Id<Self>>) {
-        let pos = self.index.pos(id);
-        let parent_pos = parent.map(|p| self.index.pos(p));
+    pub(super) fn commit_scratch(&mut self, parent: Option<Id<Self>>) -> Id<Self> {
         let Self { pool, finalized, ring, scratch, .. } = self;
         debug_assert!(!scratch.has_pending_rehash(), "deferred writes not rehashed before commit");
-        debug_assert!(ring[pos].is_released, "recycled slot not freed by finalize or clear");
-        match parent_pos {
-            None => scratch.commit_into(pool, &mut ring[pos], finalized),
-            Some(ppos) => {
-                let [dst, parent] = ring.get_disjoint_mut([pos, ppos]).expect("distinct slots");
-                scratch.commit_into(pool, dst, parent);
-            }
-        }
+
+        ring.grow_if_full_with(PageSnapshot::new_released, |src, dst| *dst = src.clone_for_grow());
+        let (id, dst, parent_snap) = ring.roll_deriving(parent);
+
+        debug_assert!(dst.is_released, "recycled slot not freed by finalize or clear");
+        scratch.commit_into(pool, dst, parent_snap.unwrap_or(finalized));
         self.scratch_at = Some(id);
+        id
     }
 
     #[inline]
@@ -109,19 +95,18 @@ impl<C: ColumnSpec> ColumnGroup<C> {
         &mut self.scratch
     }
 
+    /// Promote the winner into the base and free everything below the oldest
+    /// survivor. Survivor ids stay valid unchanged — columns never reanchor.
     #[timed]
-    pub fn finalize(&mut self, winner: Id<Self>, survivors: &[Id<Self>]) -> Vec<Id<Self>> {
-        debug_assert!(survivors.contains(&winner), "winner must be among the survivors");
-        let winner_pos = self.index.pos(winner);
-        {
-            let Self { pool, finalized, ring, .. } = self;
-            pool.share_into(finalized, &ring[winner_pos]);
-        }
-        for seq in self.index.free_outdated(survivors) {
-            let pos = self.index.slot(seq);
-            self.pool.release(&mut self.ring[pos]);
-        }
-        survivors.to_vec()
+    pub fn finalize<S>(&mut self, promoted: &S, survivors: &[S], idx: impl Fn(&S) -> Id<Self>) {
+        let winner = idx(promoted);
+        debug_assert!(
+            survivors.iter().any(|s| idx(s) == winner),
+            "winner must be among the survivors"
+        );
+        let Self { pool, finalized, ring, .. } = self;
+        pool.share_into(finalized, ring.get(winner));
+        ring.free_outdated_with(survivors.iter().map(idx), |snapshot| pool.release(snapshot));
     }
 
     #[inline]

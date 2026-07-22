@@ -186,7 +186,7 @@ fn mixed_formats_coexist() {
     assert_eq!(g.view(child_id).hash_root(), progressive_u64_root(&expected));
 
     // Finalizing the gloas winner flips the base format by data flow.
-    g.finalize(child_id, &[child_id]);
+    g.finalize(&child_id, &[child_id], |&id| id);
     let mut ssz = Vec::new();
     g.write_ssz(&mut ssz).unwrap();
     assert_eq!(ssz, le_bytes(&expected));
@@ -250,7 +250,7 @@ fn reorg_rebuilds_scratch_from_pages_across_growth() {
 
     // The grown side wins. Freeing the non-survivors (a shares most of its
     // pages with winner d) must not free pages d and c still reference.
-    g.finalize(d, &[d, c]);
+    g.finalize(&d, &[d, c], |&id| id);
     let mut ssz = Vec::new();
     g.write_ssz(&mut ssz).unwrap();
     assert_eq!(ssz, le_bytes(&d_vals));
@@ -306,7 +306,7 @@ fn abandoned_roll_slot_released_once() {
         let mut wv = g.roll_from(head);
         wv.set(0, i as u64);
         let id = wv.commit();
-        g.finalize(id, &[id]);
+        g.finalize(&id, &[id], |&id| id);
         head = id;
     }
     assert_eq!(g.view(head).get(0), (SLOTS_RING_N + 7) as u64);

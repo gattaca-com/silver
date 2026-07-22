@@ -5,7 +5,7 @@ use std::{
 
 use silver_beacon_state_data::B256;
 
-use super::MAX_FORK_CHOICE_NODES;
+use super::FORK_CHOICE_NODES_HINT;
 
 /// Identity hasher for block roots: a `block_root` is already a 32-byte
 /// cryptographic hash, so its leading 8 bytes are a ready-made uniform key —
@@ -34,7 +34,7 @@ pub struct NodeLookup(HashMap<B256, u32, BuildHasherDefault<RootHasher>>);
 impl Default for NodeLookup {
     fn default() -> Self {
         Self(HashMap::with_capacity_and_hasher(
-            MAX_FORK_CHOICE_NODES,
+            FORK_CHOICE_NODES_HINT,
             BuildHasherDefault::default(),
         ))
     }

@@ -17,7 +17,7 @@ use crate::{
 /// read by the checkpoint-persist thread, so it's guarded by `persist_lock`.
 pub struct QueueGroup<Q: QueueItem> {
     finalized: Queue<Q>,
-    deltas: Ring<Self, QueueDelta<Q>, SLOTS_RING_N>,
+    deltas: Ring<Self, QueueDelta<Q>>,
     persist_lock: Mutex<()>,
     base_gloas: bool,
 }
@@ -28,7 +28,7 @@ impl<Q: QueueItem> QueueGroup<Q> {
     pub(super) fn from_ssz(bytes: &[u8]) -> Self {
         Self {
             finalized: Queue::from_ssz(bytes),
-            deltas: Ring::default(),
+            deltas: Ring::new(SLOTS_RING_N),
             persist_lock: Mutex::new(()),
             base_gloas: false,
         }
