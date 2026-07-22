@@ -134,15 +134,20 @@ fn fuzz_ring_vec_payloads_concurrent() {
 
     start.wait();
     for _ in 0..ITERATIONS {
-        // Finalize is eligible only past the initial capacity, so every
-        // window first exercises a windowless in-roll copy-grow.
-        if rolls_in_window <= RING_N as u32 || rng.next_u32() % 8 != 0 {
-            let mut w = state.ring.roll_from(head);
-            let end = w.start + w.vals.len() as u64;
-            for k in 0..1 + (rng.next_u32() as u64 % 5) {
-                w.vals.push(tag(end + k));
-            }
-            head = w.commit();
+        // Finalize is eligible only past the CURRENT capacity (capped so
+        // windows stay short and finalize races stay frequent): the first
+        // windows deterministically grow 16 -> 32 -> 64 -> 128, with readers
+        // racing every swap.
+        let forced_rolls = (state.ring.capacity() as u32).min(4 * RING_N as u32);
+        if rolls_in_window <= forced_rolls || rng.next_u32() % 8 != 0 {
+            head = {
+                let mut w = state.ring.roll_from(head);
+                let end = w.start + w.vals.len() as u64;
+                for k in 0..1 + (rng.next_u32() as u64 % 5) {
+                    w.vals.push(tag(end + k));
+                }
+                w.commit()
+            };
             rolls_in_window += 1;
             publish(&ctrl, Ctrl { version, published: Some(head) });
         } else {
@@ -154,9 +159,11 @@ fn fuzz_ring_vec_payloads_concurrent() {
             let winner = state.ring.get(head).clone();
             assert_eq!(winner.start as usize, state.base.len());
             state.base.extend_from_slice(&winner.vals);
-            let mut w = state.ring.roll_fresh();
-            w.start = state.base.len() as u64;
-            head = w.commit();
+            head = {
+                let mut w = state.ring.roll_fresh();
+                w.start = state.base.len() as u64;
+                w.commit()
+            };
             state.ring.free_outdated(&[head]);
             rolls_in_window = 0;
 

@@ -1,99 +1,18 @@
+mod id;
+mod slot;
+
 use std::{
-    cmp::Ordering,
-    fmt,
     marker::PhantomData,
-    ops::{Deref, DerefMut},
     sync::atomic::{AtomicPtr, Ordering as AtomicOrdering},
 };
 
-/// Handle to a ring slot. Only `G`'s [`Ring`] can create one, so ids from
-/// different groups can't be mixed up.
-pub struct Id<G> {
-    seq: usize,
-    _group: PhantomData<fn() -> G>,
-}
-
-impl<G> Id<G> {
-    #[inline]
-    fn new(seq: usize) -> Self {
-        Self { seq, _group: PhantomData }
-    }
-
-    #[inline]
-    fn index(self) -> usize {
-        self.seq
-    }
-}
-
-// Implemented by hand because derive would demand `G` implement each trait,
-// even though the id is just a number and `G` is only a marker.
-impl<G> Clone for Id<G> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-impl<G> Copy for Id<G> {}
-impl<G> PartialEq for Id<G> {
-    fn eq(&self, other: &Self) -> bool {
-        self.seq == other.seq
-    }
-}
-impl<G> Eq for Id<G> {}
-impl<G> PartialOrd for Id<G> {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-impl<G> Ord for Id<G> {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.seq.cmp(&other.seq)
-    }
-}
-impl<G> Default for Id<G> {
-    fn default() -> Self {
-        Self::new(0)
-    }
-}
-impl<G> fmt::Debug for Id<G> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Id({})", self.seq)
-    }
-}
+pub use id::Id;
+pub use slot::Slot;
 
 pub trait Reset {
     fn reset(&mut self);
 
     fn reset_from(&mut self, other: &Self);
-}
-
-/// Write handle for a fresh slot. The only way to get the slot's id is
-/// [`commit`](Self::commit), which consumes the handle — nobody can hold an
-/// id to a slot that is still being written.
-pub struct Slot<'a, G, T> {
-    value: &'a mut T,
-    id: Id<G>,
-}
-
-impl<G, T> Slot<'_, G, T> {
-    #[inline]
-    pub fn commit(self) -> Id<G> {
-        self.id
-    }
-}
-
-impl<G, T> Deref for Slot<'_, G, T> {
-    type Target = T;
-    #[inline]
-    fn deref(&self) -> &T {
-        self.value
-    }
-}
-
-impl<G, T> DerefMut for Slot<'_, G, T> {
-    #[inline]
-    fn deref_mut(&mut self) -> &mut T {
-        self.value
-    }
 }
 
 struct RingBuf<T> {
@@ -307,14 +226,14 @@ impl<G, T: Reset + Default> Ring<G, T> {
         let (id, pos) = self.roll();
         let value = &mut self.buf_mut().entries[pos];
         value.reset();
-        Slot { value, id }
+        Slot::new(value, id)
     }
 
     pub fn roll_from(&mut self, parent: Id<G>) -> Slot<'_, G, T> {
         self.grow_if_full();
         let (id, new, src) = self.mint_from(parent);
         new.reset_from(src);
-        Slot { value: new, id }
+        Slot::new(new, id)
     }
 
     pub fn roll_fresh_deriving(&mut self, a: Id<G>, b: Id<G>) -> (Slot<'_, G, T>, &T, &T) {
@@ -322,7 +241,7 @@ impl<G, T: Reset + Default> Ring<G, T> {
         if a == b {
             let (id, new, src) = self.mint_from(a);
             new.reset();
-            return (Slot { value: new, id }, src, src);
+            return (Slot::new(new, id), src, src);
         }
 
         let (a_pos, b_pos) = (self.pos(a), self.pos(b));
@@ -333,7 +252,7 @@ impl<G, T: Reset + Default> Ring<G, T> {
             .get_disjoint_mut([pos, a_pos, b_pos])
             .expect("fresh slot aliases a source");
         new.reset();
-        (Slot { value: new, id }, &*av, &*bv)
+        (Slot::new(new, id), &*av, &*bv)
     }
 }
 
@@ -382,15 +301,20 @@ mod tests {
         let mut ring: Ring<G, E> = Ring::new(4);
         let mut ids = Vec::new();
         for v in 0..4u64 {
-            let mut slot = ring.roll_fresh();
-            slot.0 = v;
-            ids.push(slot.commit());
+            ids.push({
+                let mut slot = ring.roll_fresh();
+                slot.0 = v;
+                slot.commit()
+            });
         }
         ring.free_outdated(&ids[2..]); // tail at seq 2
         for v in 4..8u64 {
-            let mut slot = ring.roll_fresh(); // seqs 4,5 wrap; 6 forces a grow
-            slot.0 = v;
-            ids.push(slot.commit());
+            // seqs 4,5 wrap; 6 forces a grow
+            ids.push({
+                let mut slot = ring.roll_fresh();
+                slot.0 = v;
+                slot.commit()
+            });
         }
 
         assert_eq!(ring.capacity(), 8);
