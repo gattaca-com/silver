@@ -53,18 +53,29 @@ impl NodeStore {
         &mut self.nodes[pi * PAGE_NODES..end]
     }
 
-    pub(super) fn load_snapshot(
+    /// Copy in only the pages that differ from `target`. `loaded` is the
+    /// table our nodes already match: an equal page id with a clean dirty
+    /// bit means the bytes are already right (pool pages never change while
+    /// referenced). Everything else — mismatched, dirtied, or past the old
+    /// table after a resize — gets copied.
+    pub(super) fn load_diff(
         &mut self,
         pool: &PagePool,
-        snapshot: &PageSnapshot,
+        loaded: &PageSnapshot,
+        target: &PageSnapshot,
         num_nodes: usize,
     ) {
         self.nodes.resize(num_nodes, [0u8; 32]);
-        self.count = snapshot.len();
-        for pi in 0..snapshot.num_pages() {
-            let dst = self.page_mut(pi);
-            dst.copy_from_slice(&snapshot.page(pool, pi)[..dst.len()]);
+        self.count = target.len();
+        for pi in 0..target.num_pages() {
+            let same = self.dirty_pages.get(pi).is_some_and(|&dirty| !dirty) &&
+                loaded.pages.get(pi) == Some(&target.pages[pi]);
+            if !same {
+                let dst = self.page_mut(pi);
+                dst.copy_from_slice(&target.page(pool, pi)[..dst.len()]);
+            }
         }
+        self.reset_dirty_mask();
     }
 
     pub(super) fn to_snapshot(&self, pool: &mut PagePool, format: TreeFormat) -> PageSnapshot {

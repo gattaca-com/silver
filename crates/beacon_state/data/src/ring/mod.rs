@@ -6,6 +6,7 @@ use std::{
     sync::atomic::{AtomicPtr, Ordering as AtomicOrdering},
 };
 
+use flux_profiler::timed;
 pub use id::Id;
 pub use slot::Slot;
 
@@ -221,6 +222,7 @@ impl<G, T: Reset + Default> Ring<G, T> {
         self.grow_if_full_with(T::default, |src, dst| dst.reset_from(src));
     }
 
+    #[timed]
     pub fn roll_fresh(&mut self) -> Slot<'_, G, T> {
         self.grow_if_full();
         let (id, pos) = self.roll();
@@ -229,6 +231,7 @@ impl<G, T: Reset + Default> Ring<G, T> {
         Slot::new(value, id)
     }
 
+    #[timed]
     pub fn roll_from(&mut self, parent: Id<G>) -> Slot<'_, G, T> {
         self.grow_if_full();
         let (id, new, src) = self.mint_from(parent);
@@ -236,6 +239,7 @@ impl<G, T: Reset + Default> Ring<G, T> {
         Slot::new(new, id)
     }
 
+    #[timed]
     pub fn roll_fresh_deriving(&mut self, a: Id<G>, b: Id<G>) -> (Slot<'_, G, T>, &T, &T) {
         self.grow_if_full();
         if a == b {

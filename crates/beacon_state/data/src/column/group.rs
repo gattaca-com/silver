@@ -21,10 +21,10 @@ pub struct ColumnGroup<C: ColumnSpec> {
     /// Flat writable head — the hot write path stays flat; committed forks are
     /// paged.
     scratch: ColumnTree,
-    /// The committed fork whose content `scratch` currently holds. While it
-    /// matches a roll's parent the scratch is reused in place and the full-tree
-    /// snapshot load is skipped; set on commit, cleared on every roll.
-    scratch_at: Option<Id<Self>>,
+    /// What `scratch` currently holds (up to its dirty mask), so a roll only
+    /// reloads the pages that differ. Keeps its own refcounts — finalize
+    /// releasing the fork it mirrors doesn't invalidate it.
+    scratch_snapshot: PageSnapshot,
     _marker: PhantomData<fn() -> C>,
 }
 
@@ -39,12 +39,14 @@ impl<C: ColumnSpec> ColumnGroup<C> {
         // Grow-hint for the base's pages; the pool grows lazily beyond it.
         let mut pool = PagePool::new(flat.num_pages() * 2);
         let finalized = flat.to_snapshot(&mut pool);
+        let mut scratch_snapshot = PageSnapshot::new_released();
+        pool.share_into(&mut scratch_snapshot, &finalized);
         Ok(Self {
             pool,
             finalized,
             ring: Ring::filled(SLOTS_RING_N, PageSnapshot::new_released),
             scratch: flat,
-            scratch_at: None,
+            scratch_snapshot,
             _marker: PhantomData,
         })
     }
@@ -54,26 +56,25 @@ impl<C: ColumnSpec> ColumnGroup<C> {
         ColumnReader::paged(&self.pool, self.ring.get(id))
     }
 
+    #[timed]
     pub fn roll_fresh(&mut self) -> ColumnWriteView<'_, C> {
-        let Self { pool, finalized, scratch, .. } = self;
-        scratch.load_snapshot(pool, finalized);
-        scratch.reset_dirty_mask();
-        self.scratch_at = None;
+        let Self { pool, finalized, scratch, scratch_snapshot, .. } = self;
+        scratch.load(pool, scratch_snapshot, finalized);
+        pool.share_into(scratch_snapshot, finalized);
         ColumnWriteView::new(self, None)
     }
 
+    #[timed]
     pub fn roll_from(&mut self, parent: Id<Self>) -> ColumnWriteView<'_, C> {
-        let Self { pool, ring, scratch, .. } = self;
-        if self.scratch_at != Some(parent) {
-            scratch.load_snapshot(pool, ring.get(parent));
-        }
-        scratch.reset_dirty_mask();
-        self.scratch_at = None;
+        let Self { pool, ring, scratch, scratch_snapshot, .. } = self;
+        let target = ring.get(parent);
+        scratch.load(pool, scratch_snapshot, target);
+        pool.share_into(scratch_snapshot, target);
         ColumnWriteView::new(self, Some(parent))
     }
 
     pub(super) fn commit_scratch(&mut self, parent: Option<Id<Self>>) -> Id<Self> {
-        let Self { pool, finalized, ring, scratch, .. } = self;
+        let Self { pool, finalized, ring, scratch, scratch_snapshot, .. } = self;
         debug_assert!(!scratch.has_pending_rehash(), "deferred writes not rehashed before commit");
 
         ring.grow_if_full_with(PageSnapshot::new_released, |src, dst| *dst = src.clone_for_grow());
@@ -81,7 +82,10 @@ impl<C: ColumnSpec> ColumnGroup<C> {
 
         debug_assert!(dst.is_released, "recycled slot not freed by finalize or clear");
         scratch.commit_into(pool, dst, parent_snap.unwrap_or(finalized));
-        self.scratch_at = Some(id);
+        // Scratch now matches the committed fork: adopt its table for the
+        // next roll's diff.
+        pool.share_into(scratch_snapshot, dst);
+        scratch.reset_dirty_mask();
         id
     }
 

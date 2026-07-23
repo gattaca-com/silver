@@ -258,7 +258,7 @@ fn reorg_rebuilds_scratch_from_pages_across_growth() {
 }
 
 #[test]
-fn abandoned_add_at_batch_does_not_leak_into_next_fork() {
+fn rejected_add_at_batch_dont_leak() {
     // A failed apply can drop the write view between add_at and rehash.
     // The stale dirty ids must not survive the next roll: after a reorg
     // onto a fork with a smaller segment forest they would index past it

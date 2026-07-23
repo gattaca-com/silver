@@ -48,11 +48,13 @@ impl PagePool {
     /// release `dst`'s current pages, then adopt `src`'s (bumping their
     /// refcounts). The finalized base adopting a survivor. Identical entries —
     /// the bulk, since the two differ only in pages dirtied since the last
-    /// finalize — cancel their release+retain and cost only the compare.
+    /// finalize — cancel their release+retain and cost only the compare. A
+    /// released `dst` comes back live: its refs are already gone, so its
+    /// table counts as empty and everything in `src` is retained.
     pub(super) fn share_into(&mut self, dst: &mut PageSnapshot, src: &PageSnapshot) {
-        debug_assert!(!dst.is_released, "share_into over a released snapshot double-frees");
-        for i in 0..dst.pages.len().max(src.pages.len()) {
-            let (d, s) = (dst.pages.get(i).copied(), src.pages.get(i).copied());
+        let owned = if dst.is_released { &[] } else { dst.pages.as_slice() };
+        for i in 0..owned.len().max(src.pages.len()) {
+            let (d, s) = (owned.get(i).copied(), src.pages.get(i).copied());
             if d == s {
                 continue;
             }

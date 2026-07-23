@@ -338,3 +338,29 @@ fn root_matches_reference_random_batches() {
         }
     }
 }
+
+/// A rejected block abandons its rolled write view without committing. The
+/// next roll must see none of it: dirtied pages (including an un-rehashed
+/// deferred batch) reload from the new parent.
+#[test]
+fn rejected_writes_dont_leak() {
+    let mut g = group(&[1, 2, 3, 4, 5]);
+    let a = {
+        let mut wv = g.roll_fresh();
+        wv.set(0, 10);
+        wv.commit()
+    };
+
+    // Rejected block: roll, write, drop without committing.
+    {
+        let mut wv = g.roll_from(a);
+        wv.set(0, 777);
+        wv.set(4, 888);
+        wv.set_deferred(2, 999);
+    }
+
+    let wv = g.roll_from(a);
+    assert_eq!(wv.iter().collect::<Vec<_>>(), vec![10, 2, 3, 4, 5]);
+    assert_root_matches(&wv);
+    assert_ne!(a, wv.commit());
+}
