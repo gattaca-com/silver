@@ -44,15 +44,12 @@ impl<'a> LongtailView<'a> {
 
 pub struct LongtailWriteView<'a> {
     base: &'a LongtailState,
-    fork: RingSlot<'a, LongtailGroup, LongtailState>,
+    fork: RingSlot<'a, LongtailGroup>,
 }
 
 impl<'a> LongtailWriteView<'a> {
     #[inline]
-    pub(super) fn new(
-        base: &'a LongtailState,
-        fork: RingSlot<'a, LongtailGroup, LongtailState>,
-    ) -> Self {
+    pub(super) fn new(base: &'a LongtailState, fork: RingSlot<'a, LongtailGroup>) -> Self {
         Self { base, fork }
     }
 

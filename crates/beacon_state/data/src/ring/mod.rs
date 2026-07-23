@@ -1,19 +1,25 @@
 mod id;
 mod slot;
+#[cfg(test)]
+mod vec_fuzz;
 
-use std::{
-    marker::PhantomData,
-    sync::atomic::{AtomicPtr, Ordering as AtomicOrdering},
-};
+use std::sync::atomic::{AtomicPtr, Ordering as AtomicOrdering};
 
 use flux_profiler::timed;
 pub use id::Id;
-pub use slot::Slot;
+pub(crate) use slot::Slot;
 
 pub trait Reset {
     fn reset(&mut self);
 
     fn reset_from(&mut self, other: &Self);
+}
+
+/// A ring's owning group and the per-fork entry its [`Ring`] stores. Carrying
+/// the entry as an associated type — not a second `Ring` parameter — keeps a
+/// ring's ids group-typed while its type name stays single-parameter.
+pub(crate) trait RingGroup {
+    type Entry;
 }
 
 struct RingBuf<T> {
@@ -33,28 +39,27 @@ impl<T> RingBuf<T> {
 /// whenever a roll wouldn't fit. `next_seq - 1` is the live head, and
 /// `tail_seq` (the oldest live seq) advances on
 /// [`free_outdated`](Self::free_outdated).
-pub struct Ring<G, T> {
+pub(crate) struct Ring<G: RingGroup> {
     next_seq: usize,
     tail_seq: usize,
     /// The live generation. Atomic so the grow swap pairs a `Release` store
     /// with the readers' `Acquire` loads — a reader that observes the new
     /// generation is guaranteed to see its copied contents.
-    buf: AtomicPtr<RingBuf<T>>,
+    buf: AtomicPtr<RingBuf<G::Entry>>,
     /// Old generations, never freed or touched again until `Ring` drops: a
     /// reader that started before a grow still reads correct data from
     /// whichever one it resolved. All of them together stay smaller than the
     /// live buffer. Raw pointers (not `Box`) because a racing reader may
     /// still hold references into them.
-    retired: Vec<*mut RingBuf<T>>,
-    _owner: PhantomData<fn() -> G>,
+    retired: Vec<*mut RingBuf<G::Entry>>,
 }
 
 // SAFETY: the raw pointers are uniquely owned by this struct (created from
 // `Box` and freed only in `Drop`) — same threading rules as owning boxes.
-unsafe impl<G, T: Send> Send for Ring<G, T> {}
-unsafe impl<G, T: Send + Sync> Sync for Ring<G, T> {}
+unsafe impl<G: RingGroup> Send for Ring<G> where G::Entry: Send {}
+unsafe impl<G: RingGroup> Sync for Ring<G> where G::Entry: Send + Sync {}
 
-impl<G, T> Drop for Ring<G, T> {
+impl<G: RingGroup> Drop for Ring<G> {
     fn drop(&mut self) {
         // No reader can outlive the `Ring`: readers hold the state alive
         // through `Arc` (see `StateCell`).
@@ -67,20 +72,22 @@ impl<G, T> Drop for Ring<G, T> {
     }
 }
 
-impl<G, T: Default> Ring<G, T> {
+impl<G: RingGroup> Ring<G>
+where
+    G::Entry: Default,
+{
     pub fn new(capacity: usize) -> Self {
-        Self::filled(capacity, T::default)
+        Self::filled(capacity, <G::Entry as Default>::default)
     }
 }
 
-impl<G, T> Ring<G, T> {
-    pub(crate) fn filled(capacity: usize, fill: impl FnMut() -> T) -> Self {
+impl<G: RingGroup> Ring<G> {
+    pub(crate) fn filled(capacity: usize, fill: impl FnMut() -> G::Entry) -> Self {
         Self {
             next_seq: 0,
             tail_seq: 0,
             buf: AtomicPtr::new(Box::into_raw(RingBuf::filled(capacity.next_power_of_two(), fill))),
             retired: Vec::new(),
-            _owner: PhantomData,
         }
     }
 
@@ -88,7 +95,7 @@ impl<G, T> Ring<G, T> {
     /// `Release`, so the generation's contents are visible to whoever loads
     /// the pointer.
     #[inline]
-    fn buf(&self) -> &RingBuf<T> {
+    fn buf(&self) -> &RingBuf<G::Entry> {
         // SAFETY: the pointer is always a live allocation — generations are
         // freed only in `Drop`, when no reader exists.
         unsafe { &*self.buf.load(AtomicOrdering::Acquire) }
@@ -98,7 +105,7 @@ impl<G, T> Ring<G, T> {
     /// mutator (racing readers only ever look at slots the writer isn't
     /// touching — the optimistic-reader discipline, see `StateCell`).
     #[inline]
-    fn buf_mut(&mut self) -> &mut RingBuf<T> {
+    fn buf_mut(&mut self) -> &mut RingBuf<G::Entry> {
         // SAFETY: as in `buf`, plus `&mut self` excludes other writers.
         unsafe { &mut *self.buf.load(AtomicOrdering::Relaxed) }
     }
@@ -113,8 +120,8 @@ impl<G, T> Ring<G, T> {
         self.slot(id.index())
     }
 
-    #[inline]
-    pub fn capacity(&self) -> usize {
+    #[cfg(test)]
+    fn capacity(&self) -> usize {
         self.buf().mask + 1
     }
 
@@ -124,7 +131,7 @@ impl<G, T> Ring<G, T> {
     }
 
     #[inline]
-    pub fn get(&self, id: Id<G>) -> &T {
+    pub fn get(&self, id: Id<G>) -> &G::Entry {
         let buf = self.buf();
         &buf.entries[id.index() & buf.mask]
     }
@@ -132,7 +139,10 @@ impl<G, T> Ring<G, T> {
     /// Allocate the next slot and hand back read access to `parent`'s — for
     /// callers that build content elsewhere and write the slot only at
     /// commit time.
-    pub(crate) fn roll_deriving(&mut self, parent: Option<Id<G>>) -> (Id<G>, &mut T, Option<&T>) {
+    pub(crate) fn roll_deriving(
+        &mut self,
+        parent: Option<Id<G>>,
+    ) -> (Id<G>, &mut G::Entry, Option<&G::Entry>) {
         if let Some(p) = parent {
             let (id, new, src) = self.mint_from(p);
             (id, new, Some(src))
@@ -143,7 +153,7 @@ impl<G, T> Ring<G, T> {
     }
 
     /// Allocate the next slot, with read access to `parent`'s.
-    fn mint_from(&mut self, parent: Id<G>) -> (Id<G>, &mut T, &T) {
+    fn mint_from(&mut self, parent: Id<G>) -> (Id<G>, &mut G::Entry, &G::Entry) {
         let parent_pos = self.pos(parent);
         let (id, pos) = self.roll();
         let [new, src] = self
@@ -157,8 +167,8 @@ impl<G, T> Ring<G, T> {
     #[inline]
     pub(crate) fn grow_if_full_with(
         &mut self,
-        fill: impl FnMut() -> T,
-        copy: impl FnMut(&T, &mut T),
+        fill: impl FnMut() -> G::Entry,
+        copy: impl FnMut(&G::Entry, &mut G::Entry),
     ) {
         if self.is_full() {
             self.grow_with(fill, copy);
@@ -166,7 +176,11 @@ impl<G, T> Ring<G, T> {
     }
 
     #[cold]
-    fn grow_with(&mut self, fill: impl FnMut() -> T, mut copy: impl FnMut(&T, &mut T)) {
+    fn grow_with(
+        &mut self,
+        fill: impl FnMut() -> G::Entry,
+        mut copy: impl FnMut(&G::Entry, &mut G::Entry),
+    ) {
         let old = self.buf();
         let mut next = RingBuf::filled(old.entries.len() * 2, fill);
         for seq in self.tail_seq..self.next_seq {
@@ -204,7 +218,7 @@ impl<G, T> Ring<G, T> {
     pub(crate) fn free_outdated_with(
         &mut self,
         live: impl IntoIterator<Item = Id<G>>,
-        mut release: impl FnMut(&mut T),
+        mut release: impl FnMut(&mut G::Entry),
     ) {
         let old_tail = self.tail_seq;
         if let Some(oldest) = live.into_iter().min() {
@@ -217,13 +231,16 @@ impl<G, T> Ring<G, T> {
     }
 }
 
-impl<G, T: Reset + Default> Ring<G, T> {
+impl<G: RingGroup> Ring<G>
+where
+    G::Entry: Reset + Default,
+{
     fn grow_if_full(&mut self) {
-        self.grow_if_full_with(T::default, |src, dst| dst.reset_from(src));
+        self.grow_if_full_with(<G::Entry as Default>::default, |src, dst| dst.reset_from(src));
     }
 
     #[timed]
-    pub fn roll_fresh(&mut self) -> Slot<'_, G, T> {
+    pub fn roll_fresh(&mut self) -> Slot<'_, G> {
         self.grow_if_full();
         let (id, pos) = self.roll();
         let value = &mut self.buf_mut().entries[pos];
@@ -232,7 +249,7 @@ impl<G, T: Reset + Default> Ring<G, T> {
     }
 
     #[timed]
-    pub fn roll_from(&mut self, parent: Id<G>) -> Slot<'_, G, T> {
+    pub fn roll_from(&mut self, parent: Id<G>) -> Slot<'_, G> {
         self.grow_if_full();
         let (id, new, src) = self.mint_from(parent);
         new.reset_from(src);
@@ -240,7 +257,11 @@ impl<G, T: Reset + Default> Ring<G, T> {
     }
 
     #[timed]
-    pub fn roll_fresh_deriving(&mut self, a: Id<G>, b: Id<G>) -> (Slot<'_, G, T>, &T, &T) {
+    pub fn roll_fresh_deriving(
+        &mut self,
+        a: Id<G>,
+        b: Id<G>,
+    ) -> (Slot<'_, G>, &G::Entry, &G::Entry) {
         self.grow_if_full();
         if a == b {
             let (id, new, src) = self.mint_from(a);
@@ -266,6 +287,10 @@ mod tests {
 
     enum G {}
 
+    impl RingGroup for G {
+        type Entry = E;
+    }
+
     #[derive(Clone, Default)]
     struct E(u64);
 
@@ -283,7 +308,7 @@ mod tests {
     /// resolving to its exact pre-grow contents.
     #[test]
     fn roll_past_capacity_grows_and_preserves_entries() {
-        let mut ring: Ring<G, E> = Ring::new(4);
+        let mut ring: Ring<G> = Ring::new(4);
         let ids: Vec<_> = (0..10u64)
             .map(|v| {
                 let mut slot = ring.roll_fresh();
@@ -302,7 +327,7 @@ mod tests {
     /// differ are copied over; freed seqs below the tail are not.
     #[test]
     fn grow_with_wrapped_tail() {
-        let mut ring: Ring<G, E> = Ring::new(4);
+        let mut ring: Ring<G> = Ring::new(4);
         let mut ids = Vec::new();
         for v in 0..4u64 {
             ids.push({
@@ -331,7 +356,7 @@ mod tests {
     /// instead of growing.
     #[test]
     fn free_outdated_makes_room_for_reanchor_rolls() {
-        let mut ring: Ring<G, E> = Ring::new(2);
+        let mut ring: Ring<G> = Ring::new(2);
         let a = ring.roll_fresh().commit();
         let b = ring.roll_from(a).commit();
         ring.free_outdated(&[b]); // `a` is outdated; tail moves to `b`

@@ -152,15 +152,12 @@ impl<'a> SlotStateView<'a> {
 
 pub struct SlotStateWriteView<'a> {
     base: &'a SlotStateFinalized,
-    fork: RingSlot<'a, SlotStateGroup, SlotStateDelta>,
+    fork: RingSlot<'a, SlotStateGroup>,
 }
 
 impl<'a> SlotStateWriteView<'a> {
     #[inline]
-    pub(super) fn new(
-        base: &'a SlotStateFinalized,
-        fork: RingSlot<'a, SlotStateGroup, SlotStateDelta>,
-    ) -> Self {
+    pub(super) fn new(base: &'a SlotStateFinalized, fork: RingSlot<'a, SlotStateGroup>) -> Self {
         Self { base, fork }
     }
 

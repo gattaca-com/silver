@@ -12,9 +12,14 @@ use std::sync::{
 
 use flux::communication::Seqlock;
 use rand::{RngCore, SeedableRng, rngs::StdRng};
-use silver_beacon_state_data::{Id, Reset, Ring};
+
+use super::{Id, Reset, Ring, RingGroup};
 
 enum Payloads {}
+
+impl RingGroup for Payloads {
+    type Entry = VecDelta;
+}
 
 const RING_N: usize = 16;
 const ITERATIONS: u32 = if cfg!(miri) { 60 } else { 4000 };
@@ -41,7 +46,7 @@ impl Reset for VecDelta {
 
 struct State {
     base: Vec<u64>,
-    ring: Ring<Payloads, VecDelta>,
+    ring: Ring<Payloads>,
 }
 
 /// Mirrors `ControlInner`: `version` odd = finalize window open.

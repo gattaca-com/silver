@@ -14,7 +14,7 @@ use crate::{
     gloas::Builder,
     merkle::{hash_fixed_bytes, merkleize, uint64_chunk},
     reanchor::reanchor_survivors,
-    ring::{Id, Ring},
+    ring::{Id, Ring, RingGroup},
     types::{B256, HashFormat, SLOTS_RING_N},
 };
 
@@ -29,8 +29,12 @@ pub struct BuildersId {
 
 pub struct BuildersGroup {
     finalized: FinalizedBuilders,
-    deltas: Ring<Self, BuildersDelta>,
+    deltas: Ring<Self>,
     hash: ColumnGroup<BuildersHash>,
+}
+
+impl RingGroup for BuildersGroup {
+    type Entry = BuildersDelta;
 }
 
 impl BuildersGroup {

@@ -10,7 +10,7 @@ use parking_lot::Mutex;
 
 use crate::{
     reanchor::reanchor_survivors,
-    ring::{Id, Reset, Ring},
+    ring::{Id, Reset, Ring, RingGroup},
     types::LONGTAILS_RING_N,
 };
 
@@ -18,12 +18,16 @@ pub type LongtailId = Id<LongtailGroup>;
 
 pub struct LongtailGroup {
     finalized: LongtailState,
-    deltas: Ring<Self, LongtailState>,
+    deltas: Ring<Self>,
     /// Promote barrier: the finalized state's `historical_summaries` log grows
     /// on promote, so the checkpoint persist (storage thread) must not read it
     /// mid-`finalize` (realloc would dangle the read). Writer-thread view
     /// reads never race promote (same thread) and stay lock-free.
     persist_lock: Mutex<()>,
+}
+
+impl RingGroup for LongtailGroup {
+    type Entry = LongtailState;
 }
 
 impl LongtailGroup {

@@ -24,7 +24,7 @@ pub use parsed::ParsedAggregateAndProof;
 pub use pending::{
     PendingGroup, PendingId, PendingView, PendingWriteView, QueueItem, QueueView, QueueWriteView,
 };
-pub use ring::{Id, Reset, Ring};
+pub use ring::{Id, Reset};
 pub use silver_chain_spec::{BlobParameters, SpecConfig};
 pub(crate) use silver_ssz::{merkle, progressive};
 pub use slot_state::{

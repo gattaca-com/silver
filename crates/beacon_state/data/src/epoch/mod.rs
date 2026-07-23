@@ -10,7 +10,7 @@ use flux_profiler::timed;
 
 use crate::{
     reanchor::reanchor_survivors,
-    ring::{Id, Reset, Ring},
+    ring::{Id, Reset, Ring, RingGroup},
     types::EPOCHS_RING_N,
 };
 
@@ -18,7 +18,11 @@ pub type EpochId = Id<EpochGroup>;
 
 pub struct EpochGroup {
     finalized: EpochStateFinalized,
-    deltas: Ring<Self, EpochStateDelta>,
+    deltas: Ring<Self>,
+}
+
+impl RingGroup for EpochGroup {
+    type Entry = EpochStateDelta;
 }
 
 impl EpochGroup {

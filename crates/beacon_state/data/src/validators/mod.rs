@@ -14,7 +14,7 @@ use crate::{
     column::{ColumnGroup, ValidatorsHash},
     merkle::{hash_fixed_bytes, merkleize, uint64_chunk},
     reanchor::reanchor_survivors,
-    ring::{Id, Ring},
+    ring::{Id, Ring, RingGroup},
     types::{B256, BLSPubkey, Epoch, HashFormat, SLOTS_RING_N},
 };
 
@@ -38,8 +38,12 @@ pub struct ValidatorsId {
 /// [`BalancesGroup`]: crate::BalancesGroup
 pub struct ValidatorsGroup {
     finalized: FinalizedValidators,
-    deltas: Ring<Self, ValidatorsDelta>,
+    deltas: Ring<Self>,
     hash: ColumnGroup<ValidatorsHash>,
+}
+
+impl RingGroup for ValidatorsGroup {
+    type Entry = ValidatorsDelta;
 }
 
 impl ValidatorsGroup {

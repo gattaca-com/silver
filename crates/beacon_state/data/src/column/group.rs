@@ -10,14 +10,14 @@ use super::{
     tree::ColumnTree,
 };
 use crate::{
-    ring::{Id, Ring},
+    ring::{Id, Ring, RingGroup},
     types::{ColumnLenMismatch, HashFormat, SLOTS_RING_N},
 };
 
 pub struct ColumnGroup<C: ColumnSpec> {
     pool: PagePool,
     finalized: PageSnapshot,
-    ring: Ring<Self, PageSnapshot>,
+    ring: Ring<Self>,
     /// Flat writable head — the hot write path stays flat; committed forks are
     /// paged.
     scratch: ColumnTree,
@@ -26,6 +26,10 @@ pub struct ColumnGroup<C: ColumnSpec> {
     /// releasing the fork it mirrors doesn't invalidate it.
     scratch_snapshot: PageSnapshot,
     _marker: PhantomData<fn() -> C>,
+}
+
+impl<C: ColumnSpec> RingGroup for ColumnGroup<C> {
+    type Entry = PageSnapshot;
 }
 
 impl<C: ColumnSpec> ColumnGroup<C> {

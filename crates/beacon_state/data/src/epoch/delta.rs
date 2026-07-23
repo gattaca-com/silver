@@ -163,15 +163,12 @@ fn ring_overlay_at<T: Copy>(base_ring: &[T], delta_log: &[T], epoch: Epoch, fin_
 
 pub struct EpochWriteView<'a> {
     base: &'a EpochStateFinalized,
-    fork: RingSlot<'a, EpochGroup, EpochStateDelta>,
+    fork: RingSlot<'a, EpochGroup>,
 }
 
 impl<'a> EpochWriteView<'a> {
     #[inline]
-    pub(super) fn new(
-        base: &'a EpochStateFinalized,
-        fork: RingSlot<'a, EpochGroup, EpochStateDelta>,
-    ) -> Self {
+    pub(super) fn new(base: &'a EpochStateFinalized, fork: RingSlot<'a, EpochGroup>) -> Self {
         Self { base, fork }
     }
 
