@@ -22,10 +22,10 @@ const COLS: [&str; 9] = [
     "src",
     "received time",
     "into slot",
-    "att margin",
     "validate",
     "stf ‖ el",
     "total",
+    "attestation deadline",
 ];
 
 /// The Events tab: a spine data source plus its own scroll/selection state.
@@ -93,9 +93,6 @@ impl EventsPane {
                     }),
                     Text::raw(t.received_at.with_fmt_utc("%H:%M:%S%.3f")),
                     Text::raw(dur(t.received)),
-                    // Applied into-slot = arrival + validate + stf; that's when
-                    // the head is importable, i.e. when we could attest.
-                    margin_text(t.stf.map(|stf| t.received + t.validate + stf), deadline),
                     Text::raw(dur(t.validate)),
                     // stf and el stacked, coloured differently, so it reads as
                     // "these two run in parallel".
@@ -104,6 +101,9 @@ impl EventsPane {
                         stage_line("el", t.el, el_color(t.verdict)),
                     ]),
                     Text::raw(dur(t.total)),
+                    // Applied into-slot = arrival + validate + stf; that's when
+                    // the head is importable, i.e. when we could attest.
+                    margin_text(t.stf.map(|stf| t.received + t.validate + stf), deadline),
                 ]
             })
             .collect();
