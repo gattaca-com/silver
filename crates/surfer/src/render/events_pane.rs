@@ -4,7 +4,6 @@ use ratatui::{
     Frame,
     layout::{Constraint, Rect},
     style::{Color, Modifier, Style},
-    text::{Line, Text},
     widgets::{Block, BorderType, Borders, Cell, Paragraph, Row, Table, TableState},
 };
 use silver_beacon_state_data::SLOTS_PER_EPOCH;
@@ -12,9 +11,13 @@ use silver_common::{BlockSource, Nanos, PayloadValidationStatus};
 
 use crate::sources::events::Events;
 
-/// Descriptive title suffix. `stf ‖ el` are stacked in one column to show they
-/// run concurrently.
-const HINT: &str = "recv into slot, per-step Δ";
+/// Descriptive title suffix. `stf` and `el` run concurrently (both start at
+/// EL-sent), so `total` is not their sum.
+const HINT: &str = "recv into slot, per-step Δ (stf ‖ el)";
+
+const COLS: [&str; 9] =
+    ["slot", "block root", "src", "time (utc)", "into slot", "validate", "stf", "el", "total"];
+const COL_WIDTHS: [u16; 9] = [8, 9, 6, 12, 8, 10, 10, 10, 9];
 
 /// The Events tab: a spine data source plus its own scroll/selection state.
 /// `App` holds one of these and only calls `sample`/`move_selection`/`draw`.
@@ -64,64 +67,32 @@ impl EventsPane {
             return;
         }
 
-        let header = Row::new([
-            "slot",
-            "time (utc)",
-            "block root",
-            "src",
-            "into slot",
-            "validate",
-            "stf ‖ el",
-            "total",
-        ])
-        .style(Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan))
-        .bottom_margin(1);
+        let header =
+            Row::new(with_separators(COLS.map(Cell::from))).style(Style::default().fg(Color::Cyan));
 
         let body: Vec<Row> = rows
             .iter()
             .rev()
             .map(|r| {
                 let t = r.timeline();
-                // Slowest step is the bottleneck — bold it (concurrent el and
-                // stf compete on the same clock, so comparing them is fair).
-                let peak = t.validate.max(t.stf.unwrap_or_default()).max(t.el.unwrap_or_default());
-                let bottleneck = |d: Nanos| d == peak && peak.0 > 0;
-
-                // stf and el stacked in one cell, coloured differently, to show
-                // they run in parallel (both start at EL-sent).
-                let parallel = Cell::from(Text::from(vec![
-                    stage_line("stf", t.stf, Color::Blue, t.stf.is_some_and(bottleneck)),
-                    stage_line("el", t.el, el_color(t.verdict), t.el.is_some_and(bottleneck)),
-                ]));
-
-                Row::new(vec![
+                Row::new(with_separators([
                     slot_cell(r.slot),
-                    Cell::from(t.received_at.with_fmt_utc("%H:%M:%S%.3f")),
                     Cell::from(root_prefix(&r.block_root)),
                     Cell::from(match r.source {
                         BlockSource::Gossip => "gossip",
                         BlockSource::Rpc => "rpc",
                     }),
+                    Cell::from(t.received_at.with_fmt_utc("%H:%M:%S%.3f")),
                     Cell::from(dur(t.received)),
-                    dur_cell(t.validate, bottleneck(t.validate)),
-                    parallel,
+                    dur_cell(Some(t.validate), None),
+                    dur_cell(t.stf, None),
+                    dur_cell(t.el, Some(el_color(t.verdict))),
                     Cell::from(dur(t.total)),
-                ])
-                .height(2)
+                ]))
             })
             .collect();
 
-        let widths = [
-            Constraint::Length(9),
-            Constraint::Length(12),
-            Constraint::Length(11),
-            Constraint::Length(7),
-            Constraint::Length(9),
-            Constraint::Length(9),
-            Constraint::Length(12),
-            Constraint::Length(9),
-        ];
-        let table = Table::new(body, widths)
+        let table = Table::new(body, column_widths())
             .header(header)
             .block(block)
             .column_spacing(1)
@@ -129,6 +100,31 @@ impl EventsPane {
             .highlight_symbol("▶ ");
         f.render_stateful_widget(table, area, &mut self.table);
     }
+}
+
+/// Interleave a dim `│` divider between adjacent cells for a ruled table.
+fn with_separators(cells: [Cell<'static>; 9]) -> Vec<Cell<'static>> {
+    let mut out = Vec::with_capacity(cells.len() * 2 - 1);
+    for (i, cell) in cells.into_iter().enumerate() {
+        if i > 0 {
+            out.push(Cell::from("│").style(Style::default().fg(Color::DarkGray)));
+        }
+        out.push(cell);
+    }
+    out
+}
+
+/// `COL_WIDTHS` with a 1-wide divider column interleaved to match
+/// [`with_separators`].
+fn column_widths() -> Vec<Constraint> {
+    let mut out = Vec::with_capacity(COL_WIDTHS.len() * 2 - 1);
+    for (i, &w) in COL_WIDTHS.iter().enumerate() {
+        if i > 0 {
+            out.push(Constraint::Length(1));
+        }
+        out.push(Constraint::Length(w));
+    }
+    out
 }
 
 /// Auto-unit duration via flux's `Nanos` Display ("2.345s", "12.5ms", "910μs"),
@@ -142,41 +138,28 @@ fn root_prefix(root: &[u8; 32]) -> String {
     format!("{:02x}{:02x}{:02x}{:02x}", root[0], root[1], root[2], root[3])
 }
 
-/// The first slot of an epoch is highlighted so epoch boundaries stand out.
-/// Cosmetic only — assumes the mainnet epoch length.
+/// The first slot of an epoch is highlighted (cyan) so epoch boundaries stand
+/// out. Cosmetic only — assumes the mainnet epoch length.
 fn slot_cell(slot: u64) -> Cell<'static> {
     let cell = Cell::from(slot.to_string());
     if slot.is_multiple_of(SLOTS_PER_EPOCH) {
-        cell.style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+        cell.style(Style::default().fg(Color::Cyan))
     } else {
         cell
     }
 }
 
-fn dur_cell(d: Nanos, bottleneck: bool) -> Cell<'static> {
-    let style = if bottleneck {
-        Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
-    } else {
-        Style::default()
+fn dur_cell(d: Option<Nanos>, color: Option<Color>) -> Cell<'static> {
+    let Some(d) = d else {
+        return Cell::from("-");
     };
-    Cell::from(dur(d)).style(style)
-}
-
-/// One line of the stacked `stf ‖ el` cell: `"<label> <dur>"`, coloured, bold
-/// when it is the block's bottleneck. `-` while the stage hasn't happened.
-fn stage_line(label: &str, d: Option<Nanos>, color: Color, bottleneck: bool) -> Line<'static> {
-    let text = match d {
-        Some(d) => format!("{label:<3} {}", dur(d)),
-        None => format!("{label:<3} -"),
-    };
-    let mut style = Style::default().fg(color);
-    if bottleneck {
-        style = style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+    match color {
+        Some(c) => Cell::from(dur(d)).style(Style::default().fg(c)),
+        None => Cell::from(dur(d)),
     }
-    Line::styled(text, style)
 }
 
-/// Colour for the `el` line, carrying the EL verdict: green valid, red invalid,
+/// Colour for the `el` cell, carrying the EL verdict: green valid, red invalid,
 /// yellow syncing/accepted, grey while the EL has not responded.
 fn el_color(status: Option<PayloadValidationStatus>) -> Color {
     match status {
