@@ -17,28 +17,66 @@
 use std::{collections::VecDeque, path::Path};
 
 use flux::{spine::SpineAdapter, tile::Tile, timing::InternalMessage};
-use silver_common::{BlockSource, EngineReq, EngineResp, PayloadValidationStatus, SilverSpine};
+use silver_common::{
+    BlockSource, EngineReq, EngineResp, Nanos, PayloadValidationStatus, SilverSpine,
+};
 
 pub const MAINNET_GENESIS_UNIX_SECS: u64 = 1_606_824_023;
 pub const MAINNET_SLOT_MS: u64 = 12_000;
 
 const ROWS_CAP: usize = 64;
 
+/// Absolute stage times as offsets from this block's slot start (may exceed
+/// the slot duration for a late arrival or a previous-slot verdict). The view
+/// turns these into `Timeline` durations.
 pub struct BlockRow {
     pub slot: u64,
     pub block_root: [u8; 32],
     pub source: BlockSource,
-    /// ms from this block's slot start; may exceed the slot duration (late
-    /// arrival, or a verdict for a previous-slot block).
-    pub received_ms: u32,
-    pub el_sent_ms: u32,
-    pub applied_ms: Option<u32>,
-    pub verdict: Option<(PayloadValidationStatus, u32)>,
+    received: Nanos,
+    el_sent: Nanos,
+    applied: Option<Nanos>,
+    verdict: Option<(PayloadValidationStatus, Nanos)>,
+}
+
+/// One slot-start anchor plus a duration per step. `stf` and `el` both begin at
+/// EL-sent and run concurrently, so they overlap rather than sum into `total`.
+pub struct Timeline {
+    /// Slot start → block arrival: the single anchor.
+    pub received: Nanos,
+    /// arrival → EL-sent: CL validation up to dispatching `newPayload`.
+    pub validate: Nanos,
+    /// EL-sent → applied: state transition + commit.
+    pub stf: Option<Nanos>,
+    /// EL-sent → verdict: `newPayload` round-trip (concurrent with stf).
+    pub el: Option<Nanos>,
+    pub verdict: Option<PayloadValidationStatus>,
+    /// arrival → last observed event.
+    pub total: Nanos,
+}
+
+impl BlockRow {
+    pub fn timeline(&self) -> Timeline {
+        let last = self
+            .applied
+            .into_iter()
+            .chain(self.verdict.map(|(_, ts)| ts))
+            .max()
+            .unwrap_or(self.el_sent);
+        Timeline {
+            received: self.received,
+            validate: self.el_sent.saturating_sub(self.received),
+            stf: self.applied.map(|ts| ts.saturating_sub(self.el_sent)),
+            el: self.verdict.map(|(_, ts)| ts.saturating_sub(self.el_sent)),
+            verdict: self.verdict.map(|(status, _)| status),
+            total: last.saturating_sub(self.received),
+        }
+    }
 }
 
 pub struct EventsTile {
-    genesis_ns: u64,
-    slot_ns: u64,
+    genesis: Nanos,
+    slot: Nanos,
     /// Joined per-block rows, newest at the back.
     rows: VecDeque<BlockRow>,
 }
@@ -46,26 +84,25 @@ pub struct EventsTile {
 impl EventsTile {
     fn new(genesis_unix_secs: u64, slot_ms: u64) -> Self {
         Self {
-            genesis_ns: genesis_unix_secs * 1_000_000_000,
-            slot_ns: slot_ms.max(1) * 1_000_000,
+            genesis: Nanos(genesis_unix_secs * 1_000_000_000),
+            slot: Nanos(slot_ms.max(1) * 1_000_000),
             rows: VecDeque::with_capacity(ROWS_CAP),
         }
     }
 
-    fn slot_of(&self, unix_ns: u64) -> u64 {
-        unix_ns.saturating_sub(self.genesis_ns) / self.slot_ns
+    fn slot_of(&self, t: Nanos) -> u64 {
+        t.saturating_sub(self.genesis).0 / self.slot.0
     }
 
-    fn ms_into_slot(&self, unix_ns: u64, slot: u64) -> u32 {
-        let ms = unix_ns.saturating_sub(self.genesis_ns + slot * self.slot_ns) / 1_000_000;
-        ms.min(u32::MAX as u64) as u32
+    fn offset_in_slot(&self, t: Nanos, slot: u64) -> Nanos {
+        t.saturating_sub(self.genesis + self.slot * slot)
     }
 
     fn on_engine_req(&mut self, m: &InternalMessage<EngineReq>) {
         match *m.data() {
             EngineReq::NewPayload(req) => {
-                let received_ns = m.ingestion_time().real().0;
-                let slot = self.slot_of(received_ns);
+                let received = m.ingestion_time().real();
+                let slot = self.slot_of(received);
                 if self.rows.len() == ROWS_CAP {
                     self.rows.pop_front();
                 }
@@ -73,20 +110,21 @@ impl EventsTile {
                     slot,
                     block_root: req.block_root,
                     source: req.block_source,
-                    received_ms: self.ms_into_slot(received_ns, slot),
-                    el_sent_ms: self.ms_into_slot(publish_ns(m), slot),
-                    applied_ms: None,
+                    received: self.offset_in_slot(received, slot),
+                    el_sent: self.offset_in_slot(m.tracking_timestamp().publish_t(), slot),
+                    applied: None,
                     verdict: None,
                 });
             }
             // The FCU right after a successful STF names the new head; ignore
             // tick-driven / repeat-head FCUs by filling `applied` only once.
             EngineReq::Fcu(req) => {
-                if let Some(i) = self.row_idx(&req.block_root) {
-                    if self.rows[i].applied_ms.is_none() {
-                        self.rows[i].applied_ms =
-                            Some(self.ms_into_slot(publish_ns(m), self.rows[i].slot));
-                    }
+                if let Some(i) = self.row_idx(&req.block_root) &&
+                    self.rows[i].applied.is_none()
+                {
+                    self.rows[i].applied = Some(
+                        self.offset_in_slot(m.tracking_timestamp().publish_t(), self.rows[i].slot),
+                    );
                 }
             }
             _ => {}
@@ -98,8 +136,10 @@ impl EventsTile {
             return;
         };
         if let Some(i) = self.row_idx(&resp.block_root) {
-            self.rows[i].verdict =
-                Some((resp.status, self.ms_into_slot(publish_ns(m), self.rows[i].slot)));
+            self.rows[i].verdict = Some((
+                resp.status,
+                self.offset_in_slot(m.tracking_timestamp().publish_t(), self.rows[i].slot),
+            ));
         }
     }
 
@@ -124,7 +164,6 @@ impl Tile<SilverSpine> for EventsTile {
 pub struct Events {
     tile: EventsTile,
     adapter: SpineAdapter<SilverSpine>,
-    slot_ms: u64,
 }
 
 impl Events {
@@ -134,7 +173,7 @@ impl Events {
         // once the adapter has attached.
         let mut spine = SilverSpine::new_with_base_dir(base_dir, None);
         let adapter = SpineAdapter::connect_tile(&tile, &mut spine);
-        Self { tile, adapter, slot_ms }
+        Self { tile, adapter }
     }
 
     pub fn sample(&mut self) {
@@ -146,20 +185,13 @@ impl Events {
     }
 
     pub fn slot_ms(&self) -> u64 {
-        self.slot_ms
+        self.tile.slot.0 / 1_000_000
     }
-}
-
-/// Wall time a message was produced: pipeline ingestion + the producer's
-/// recorded rdtsc delta.
-fn publish_ns<T>(m: &InternalMessage<T>) -> u64 {
-    let ts = m.tracking_timestamp();
-    ts.ingestion_t.real().0 + ts.publish_delta.delta().as_delta_nanos().0
 }
 
 #[cfg(test)]
 mod tests {
-    use flux::timing::{IngestionTime, Instant, Nanos, PublishDelta, TrackingTimestamp};
+    use flux::timing::{IngestionTime, Instant, PublishDelta, TrackingTimestamp};
     use silver_common::{
         EngineFcuReq, EngineNewPayloadReq, EngineNewPayloadResp, TCache, TCacheProducer, TCacheRead,
     };
@@ -168,16 +200,18 @@ mod tests {
 
     const GENESIS_SECS: u64 = 1_000;
     const SLOT_MS: u64 = 12_000;
+    const MS: u64 = 1_000_000;
 
-    fn unix_ns(slot: u64, ms_into_slot: u64) -> u64 {
-        (GENESIS_SECS * 1_000 + slot * SLOT_MS + ms_into_slot) * 1_000_000
+    /// Wall time at `ms_into_slot` of `slot`.
+    fn at(slot: u64, ms_into_slot: u64) -> Nanos {
+        Nanos((GENESIS_SECS * 1_000 + slot * SLOT_MS + ms_into_slot) * MS)
     }
 
     /// Envelope with a controlled ingestion wall time and zero publish delta,
     /// so publish time == ingestion time.
-    fn msg<T>(data: T, ingestion_ns: u64) -> InternalMessage<T> {
+    fn msg<T>(data: T, ingestion: Nanos) -> InternalMessage<T> {
         let ts = TrackingTimestamp {
-            ingestion_t: IngestionTime::new(Nanos(ingestion_ns), Instant(0)),
+            ingestion_t: IngestionTime::new(ingestion, Instant(0)),
             publish_delta: PublishDelta::new(0),
         };
         InternalMessage::new(ts, data)
@@ -193,7 +227,7 @@ mod tests {
     fn new_payload(
         root: [u8; 32],
         source: BlockSource,
-        ingestion_ns: u64,
+        ingestion: Nanos,
     ) -> InternalMessage<EngineReq> {
         msg(
             EngineReq::NewPayload(EngineNewPayloadReq {
@@ -201,11 +235,11 @@ mod tests {
                 block_root: root,
                 block_source: source,
             }),
-            ingestion_ns,
+            ingestion,
         )
     }
 
-    fn fcu(root: [u8; 32], ingestion_ns: u64) -> InternalMessage<EngineReq> {
+    fn fcu(root: [u8; 32], ingestion: Nanos) -> InternalMessage<EngineReq> {
         msg(
             EngineReq::Fcu(EngineFcuReq {
                 block_root: root,
@@ -213,14 +247,14 @@ mod tests {
                 safe_block_hash: [0; 32],
                 finalized_block_hash: [0; 32],
             }),
-            ingestion_ns,
+            ingestion,
         )
     }
 
     fn verdict(
         root: [u8; 32],
         status: PayloadValidationStatus,
-        ingestion_ns: u64,
+        ingestion: Nanos,
     ) -> InternalMessage<EngineResp> {
         msg(
             EngineResp::NewPayload(EngineNewPayloadResp {
@@ -228,48 +262,50 @@ mod tests {
                 status,
                 latest_valid_hash: [0; 32],
             }),
-            ingestion_ns,
+            ingestion,
         )
     }
 
-    /// Full lifecycle: received from ingestion time, every later stage as an
-    /// offset from the block's own slot start.
+    /// Full lifecycle: the anchor plus a duration per step, with el concurrent
+    /// with stf. Stage times are encoded via each message's ingestion (publish
+    /// delta is zero), so `validate` is zero here.
     #[test]
     fn block_timeline() {
         let mut tile = EventsTile::new(GENESIS_SECS, SLOT_MS);
         let root = [1u8; 32];
 
-        // NewPayload: ingestion at +300ms, published at +305ms.
-        tile.on_engine_req(&new_payload(root, BlockSource::Gossip, unix_ns(2, 300)));
-        // Publish delta is zero, so publish == ingestion: encode stage time in
-        // the ingestion timestamp.
-        tile.on_engine_req(&fcu(root, unix_ns(2, 460)));
-        tile.on_engine_resp(&verdict(root, PayloadValidationStatus::Valid, unix_ns(2, 520)));
+        tile.on_engine_req(&new_payload(root, BlockSource::Gossip, at(2, 300)));
+        tile.on_engine_req(&fcu(root, at(2, 460)));
+        tile.on_engine_resp(&verdict(root, PayloadValidationStatus::Valid, at(2, 520)));
 
         assert_eq!(tile.rows.len(), 1);
-        let row = &tile.rows[0];
-        assert_eq!(row.slot, 2);
-        assert_eq!(row.received_ms, 300);
-        assert_eq!(row.el_sent_ms, 300);
-        assert_eq!(row.applied_ms, Some(460));
-        assert_eq!(row.verdict, Some((PayloadValidationStatus::Valid, 520)));
+        assert_eq!(tile.rows[0].slot, 2);
+        let t = tile.rows[0].timeline();
+        assert_eq!(t.received, Nanos(300 * MS));
+        assert_eq!(t.validate, Nanos(0));
+        assert_eq!(t.stf, Some(Nanos(160 * MS)));
+        assert_eq!(t.el, Some(Nanos(220 * MS)));
+        assert_eq!(t.total, Nanos(220 * MS));
+        assert_eq!(t.verdict, Some(PayloadValidationStatus::Valid));
     }
 
-    /// A repeat-head FCU must not overwrite `applied`; a late verdict stays
-    /// relative to the block's own slot, exceeding the slot duration.
+    /// A repeat-head FCU must not overwrite `applied` (stf stays 100ms, not
+    /// 1100ms); a late verdict stays relative to the block's own slot,
+    /// exceeding the slot duration.
     #[test]
     fn fcu_dedup_and_late_verdict() {
         let mut tile = EventsTile::new(GENESIS_SECS, SLOT_MS);
         let root = [2u8; 32];
 
-        tile.on_engine_req(&new_payload(root, BlockSource::Rpc, unix_ns(7, 11_900)));
-        tile.on_engine_req(&fcu(root, unix_ns(7, 12_000)));
-        tile.on_engine_req(&fcu(root, unix_ns(8, 0)));
-        tile.on_engine_resp(&verdict(root, PayloadValidationStatus::Syncing, unix_ns(8, 500)));
+        tile.on_engine_req(&new_payload(root, BlockSource::Rpc, at(7, 11_900)));
+        tile.on_engine_req(&fcu(root, at(7, 12_000)));
+        tile.on_engine_req(&fcu(root, at(7, 13_000)));
+        tile.on_engine_resp(&verdict(root, PayloadValidationStatus::Syncing, at(8, 500)));
 
-        let row = &tile.rows[0];
-        assert_eq!(row.slot, 7);
-        assert_eq!(row.applied_ms, Some(12_000));
-        assert_eq!(row.verdict, Some((PayloadValidationStatus::Syncing, 12_500)));
+        assert_eq!(tile.rows[0].slot, 7);
+        let t = tile.rows[0].timeline();
+        assert_eq!(t.stf, Some(Nanos(100 * MS)));
+        assert_eq!(t.el, Some(Nanos(600 * MS)));
+        assert_eq!(t.verdict, Some(PayloadValidationStatus::Syncing));
     }
 }
