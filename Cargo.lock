@@ -4747,6 +4747,7 @@ dependencies = [
  "hdrhistogram",
  "libc",
  "ratatui",
+ "silver_beacon_state_data",
  "silver_common",
  "silver_metrics",
  "silver_network",

@@ -26,13 +26,16 @@ pub const MAINNET_SLOT_MS: u64 = 12_000;
 
 const ROWS_CAP: usize = 64;
 
-/// Absolute stage times as offsets from this block's slot start (may exceed
-/// the slot duration for a late arrival or a previous-slot verdict). The view
-/// turns these into `Timeline` durations.
+/// Stage wall-clock times (unix epoch), plus `received` as the slot-relative
+/// arrival anchor for display. `Timeline` turns these into durations; since the
+/// stage times are absolute, its deltas are plain differences.
 pub struct BlockRow {
     pub slot: u64,
     pub block_root: [u8; 32],
     pub source: BlockSource,
+    /// Absolute arrival, for correlating with logs and as the delta baseline.
+    received_at: Nanos,
+    /// Arrival offset into the slot — the displayed anchor.
     received: Nanos,
     el_sent: Nanos,
     applied: Option<Nanos>,
@@ -42,6 +45,8 @@ pub struct BlockRow {
 /// One slot-start anchor plus a duration per step. `stf` and `el` both begin at
 /// EL-sent and run concurrently, so they overlap rather than sum into `total`.
 pub struct Timeline {
+    /// Absolute wall-clock arrival (unix epoch).
+    pub received_at: Nanos,
     /// Slot start → block arrival: the single anchor.
     pub received: Nanos,
     /// arrival → EL-sent: CL validation up to dispatching `newPayload`.
@@ -64,19 +69,20 @@ impl BlockRow {
             .max()
             .unwrap_or(self.el_sent);
         Timeline {
+            received_at: self.received_at,
             received: self.received,
-            validate: self.el_sent.saturating_sub(self.received),
+            validate: self.el_sent.saturating_sub(self.received_at),
             stf: self.applied.map(|ts| ts.saturating_sub(self.el_sent)),
             el: self.verdict.map(|(_, ts)| ts.saturating_sub(self.el_sent)),
             verdict: self.verdict.map(|(status, _)| status),
-            total: last.saturating_sub(self.received),
+            total: last.saturating_sub(self.received_at),
         }
     }
 }
 
 pub struct EventsTile {
     genesis: Nanos,
-    slot: Nanos,
+    slot_dur: Nanos,
     /// Joined per-block rows, newest at the back.
     rows: VecDeque<BlockRow>,
 }
@@ -85,17 +91,17 @@ impl EventsTile {
     fn new(genesis_unix_secs: u64, slot_ms: u64) -> Self {
         Self {
             genesis: Nanos(genesis_unix_secs * 1_000_000_000),
-            slot: Nanos(slot_ms.max(1) * 1_000_000),
+            slot_dur: Nanos(slot_ms.max(1) * 1_000_000),
             rows: VecDeque::with_capacity(ROWS_CAP),
         }
     }
 
     fn slot_of(&self, t: Nanos) -> u64 {
-        t.saturating_sub(self.genesis).0 / self.slot.0
+        t.saturating_sub(self.genesis).0 / self.slot_dur.0
     }
 
     fn offset_in_slot(&self, t: Nanos, slot: u64) -> Nanos {
-        t.saturating_sub(self.genesis + self.slot * slot)
+        t.saturating_sub(self.genesis + self.slot_dur * slot)
     }
 
     fn on_engine_req(&mut self, m: &InternalMessage<EngineReq>) {
@@ -110,8 +116,9 @@ impl EventsTile {
                     slot,
                     block_root: req.block_root,
                     source: req.block_source,
+                    received_at: received,
                     received: self.offset_in_slot(received, slot),
-                    el_sent: self.offset_in_slot(m.tracking_timestamp().publish_t(), slot),
+                    el_sent: m.tracking_timestamp().publish_t(),
                     applied: None,
                     verdict: None,
                 });
@@ -122,9 +129,7 @@ impl EventsTile {
                 if let Some(i) = self.row_idx(&req.block_root) &&
                     self.rows[i].applied.is_none()
                 {
-                    self.rows[i].applied = Some(
-                        self.offset_in_slot(m.tracking_timestamp().publish_t(), self.rows[i].slot),
-                    );
+                    self.rows[i].applied = Some(m.tracking_timestamp().publish_t());
                 }
             }
             _ => {}
@@ -136,10 +141,7 @@ impl EventsTile {
             return;
         };
         if let Some(i) = self.row_idx(&resp.block_root) {
-            self.rows[i].verdict = Some((
-                resp.status,
-                self.offset_in_slot(m.tracking_timestamp().publish_t(), self.rows[i].slot),
-            ));
+            self.rows[i].verdict = Some((resp.status, m.tracking_timestamp().publish_t()));
         }
     }
 
@@ -182,10 +184,6 @@ impl Events {
 
     pub fn rows(&self) -> &VecDeque<BlockRow> {
         &self.tile.rows
-    }
-
-    pub fn slot_ms(&self) -> u64 {
-        self.tile.slot.0 / 1_000_000
     }
 }
 
@@ -281,6 +279,7 @@ mod tests {
         assert_eq!(tile.rows.len(), 1);
         assert_eq!(tile.rows[0].slot, 2);
         let t = tile.rows[0].timeline();
+        assert_eq!(t.received_at, at(2, 300));
         assert_eq!(t.received, Nanos(300 * MS));
         assert_eq!(t.validate, Nanos(0));
         assert_eq!(t.stf, Some(Nanos(160 * MS)));
