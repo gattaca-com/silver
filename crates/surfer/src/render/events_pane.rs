@@ -16,8 +16,17 @@ use crate::sources::events::Events;
 /// they run concurrently — both start at EL-sent, so `total` is not their sum.
 const HINT: &str = "recv into slot, per-step Δ (stf ‖ el)";
 
-const COLS: [&str; 8] =
-    ["slot", "block root", "src", "time (utc)", "into slot", "validate", "stf ‖ el", "total"];
+const COLS: [&str; 9] = [
+    "slot",
+    "block root",
+    "src",
+    "received time",
+    "into slot",
+    "att margin",
+    "validate",
+    "stf ‖ el",
+    "total",
+];
 
 /// The Events tab: a spine data source plus its own scroll/selection state.
 /// `App` holds one of these and only calls `sample`/`move_selection`/`draw`.
@@ -69,12 +78,13 @@ impl EventsPane {
 
         // Build the styled cell content first so column widths can be sized to
         // the widest cell (like the builder's DataTable), newest row first.
-        let grid: Vec<[Text; 8]> = rows
+        let deadline = self.data.attestation_deadline();
+        let grid: Vec<Vec<Text>> = rows
             .iter()
             .rev()
             .map(|r| {
                 let t = r.timeline();
-                [
+                vec![
                     slot_text(r.slot),
                     Text::raw(root_prefix(&r.block_root)),
                     Text::raw(match r.source {
@@ -83,11 +93,14 @@ impl EventsPane {
                     }),
                     Text::raw(t.received_at.with_fmt_utc("%H:%M:%S%.3f")),
                     Text::raw(dur(t.received)),
+                    // Applied into-slot = arrival + validate + stf; that's when
+                    // the head is importable, i.e. when we could attest.
+                    margin_text(t.stf.map(|stf| t.received + t.validate + stf), deadline),
                     Text::raw(dur(t.validate)),
                     // stf and el stacked, coloured differently, so it reads as
                     // "these two run in parallel".
                     Text::from(vec![
-                        stage_line("stf", t.stf, Color::Blue),
+                        stage_line("stf", t.stf, Color::LightBlue),
                         stage_line("el", t.el, el_color(t.verdict)),
                     ]),
                     Text::raw(dur(t.total)),
@@ -95,21 +108,24 @@ impl EventsPane {
             })
             .collect();
 
-        let col_widths: [u16; 8] = std::array::from_fn(|c| {
-            let widest = grid.iter().map(|row| row[c].width()).max().unwrap_or(0);
-            Text::raw(COLS[c]).width().max(widest) as u16
-        });
+        let col_widths: Vec<u16> = (0..COLS.len())
+            .map(|c| {
+                let widest = grid.iter().map(|row| row[c].width()).max().unwrap_or(0);
+                Text::raw(COLS[c]).width().max(widest) as u16
+            })
+            .collect();
 
-        let header = Row::new(with_separators(COLS.map(Cell::from), 1))
+        let header = Row::new(with_separators(COLS.iter().map(|s| Cell::from(*s)).collect(), 1))
             .style(Style::default().fg(Color::Cyan));
-        let body =
-            grid.into_iter().map(|row| Row::new(with_separators(row.map(Cell::from), 2)).height(2));
+        let body = grid.into_iter().map(|row| {
+            Row::new(with_separators(row.into_iter().map(Cell::from).collect(), 2)).height(2)
+        });
 
         let table = Table::new(body, interleave_widths(&col_widths))
             .header(header)
             .block(block)
             .column_spacing(1)
-            .row_highlight_style(Style::default().bg(Color::DarkGray))
+            .row_highlight_style(Style::default().bg(Color::Indexed(236)))
             .highlight_symbol("▶ ");
         f.render_stateful_widget(table, area, &mut self.table);
     }
@@ -117,7 +133,7 @@ impl EventsPane {
 
 /// Interleave a dim, `lines`-tall `│` divider between adjacent cells so the
 /// rules span the full height of two-line rows.
-fn with_separators(cells: [Cell<'static>; 8], lines: usize) -> Vec<Cell<'static>> {
+fn with_separators(cells: Vec<Cell<'static>>, lines: usize) -> Vec<Cell<'static>> {
     let mut out = Vec::with_capacity(cells.len() * 2 - 1);
     for (i, cell) in cells.into_iter().enumerate() {
         if i > 0 {
@@ -131,7 +147,7 @@ fn with_separators(cells: [Cell<'static>; 8], lines: usize) -> Vec<Cell<'static>
 
 /// Column widths with a 1-wide divider column interleaved to match
 /// [`with_separators`].
-fn interleave_widths(widths: &[u16; 8]) -> Vec<Constraint> {
+fn interleave_widths(widths: &[u16]) -> Vec<Constraint> {
     let mut out = Vec::with_capacity(widths.len() * 2 - 1);
     for (i, &w) in widths.iter().enumerate() {
         if i > 0 {
@@ -146,6 +162,21 @@ fn interleave_widths(widths: &[u16; 8]) -> Vec<Constraint> {
 /// with a plain "0" for the zero it would otherwise render blank.
 fn dur(d: Nanos) -> String {
     if d.0 == 0 { "0".to_string() } else { d.to_string() }
+}
+
+/// Margin against the attestation deadline at the point the block became
+/// importable (applied): green when we beat it (time to spare), red (`-…`) when
+/// we missed it. `-` until the block is applied.
+fn margin_text(applied_into_slot: Option<Nanos>, deadline: Nanos) -> Text<'static> {
+    let Some(applied) = applied_into_slot else {
+        return Text::raw("-");
+    };
+    let (text, color) = if applied <= deadline {
+        (dur(deadline.saturating_sub(applied)), Color::Green)
+    } else {
+        (format!("-{}", dur(applied.saturating_sub(deadline))), Color::Red)
+    };
+    Text::styled(text, Style::default().fg(color))
 }
 
 /// One line of the stacked `stf ‖ el` cell: `"<label> <dur>"`, coloured; `-`
@@ -181,6 +212,6 @@ fn el_color(status: Option<PayloadValidationStatus>) -> Color {
         Some(PayloadValidationStatus::Valid) => Color::Green,
         Some(PayloadValidationStatus::Invalid) => Color::Red,
         Some(PayloadValidationStatus::Syncing | PayloadValidationStatus::Accepted) => Color::Yellow,
-        None => Color::DarkGray,
+        None => Color::Gray,
     }
 }

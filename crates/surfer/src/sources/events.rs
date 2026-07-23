@@ -185,6 +185,13 @@ impl Events {
     pub fn rows(&self) -> &VecDeque<BlockRow> {
         &self.tile.rows
     }
+
+    /// Attestation deadline as an offset into the slot: 1/3 of the slot (4s on
+    /// mainnet), when validators are expected to have attested. Assumes the
+    /// pre-Gloas fraction.
+    pub fn attestation_deadline(&self) -> Nanos {
+        self.tile.slot_dur / 3u64
+    }
 }
 
 #[cfg(test)]
