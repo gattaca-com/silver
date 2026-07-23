@@ -172,7 +172,7 @@ fn margin_text(applied_into_slot: Option<Nanos>, deadline: Nanos) -> Text<'stati
         return Text::raw("-");
     };
     let (text, color) = if applied <= deadline {
-        (dur(deadline.saturating_sub(applied)), Color::Green)
+        (format!("+{}", dur(deadline.saturating_sub(applied))), Color::Green)
     } else {
         (format!("-{}", dur(applied.saturating_sub(deadline))), Color::Red)
     };
