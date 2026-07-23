@@ -3,7 +3,8 @@ use std::path::Path;
 use ratatui::{
     Frame,
     layout::{Constraint, Rect},
-    style::{Color, Modifier, Style},
+    style::{Color, Style},
+    text::{Line, Text},
     widgets::{Block, BorderType, Borders, Cell, Paragraph, Row, Table, TableState},
 };
 use silver_beacon_state_data::SLOTS_PER_EPOCH;
@@ -11,13 +12,12 @@ use silver_common::{BlockSource, Nanos, PayloadValidationStatus};
 
 use crate::sources::events::Events;
 
-/// Descriptive title suffix. `stf` and `el` run concurrently (both start at
-/// EL-sent), so `total` is not their sum.
+/// Descriptive title suffix. `stf` and `el` share one cell (stacked) because
+/// they run concurrently — both start at EL-sent, so `total` is not their sum.
 const HINT: &str = "recv into slot, per-step Δ (stf ‖ el)";
 
-const COLS: [&str; 9] =
-    ["slot", "block root", "src", "time (utc)", "into slot", "validate", "stf", "el", "total"];
-const COL_WIDTHS: [u16; 9] = [8, 9, 6, 12, 8, 10, 10, 10, 9];
+const COLS: [&str; 8] =
+    ["slot", "block root", "src", "time (utc)", "into slot", "validate", "stf ‖ el", "total"];
 
 /// The Events tab: a spine data source plus its own scroll/selection state.
 /// `App` holds one of these and only calls `sample`/`move_selection`/`draw`.
@@ -67,58 +67,73 @@ impl EventsPane {
             return;
         }
 
-        let header =
-            Row::new(with_separators(COLS.map(Cell::from))).style(Style::default().fg(Color::Cyan));
-
-        let body: Vec<Row> = rows
+        // Build the styled cell content first so column widths can be sized to
+        // the widest cell (like the builder's DataTable), newest row first.
+        let grid: Vec<[Text; 8]> = rows
             .iter()
             .rev()
             .map(|r| {
                 let t = r.timeline();
-                Row::new(with_separators([
-                    slot_cell(r.slot),
-                    Cell::from(root_prefix(&r.block_root)),
-                    Cell::from(match r.source {
+                [
+                    slot_text(r.slot),
+                    Text::raw(root_prefix(&r.block_root)),
+                    Text::raw(match r.source {
                         BlockSource::Gossip => "gossip",
                         BlockSource::Rpc => "rpc",
                     }),
-                    Cell::from(t.received_at.with_fmt_utc("%H:%M:%S%.3f")),
-                    Cell::from(dur(t.received)),
-                    dur_cell(Some(t.validate), None),
-                    dur_cell(t.stf, None),
-                    dur_cell(t.el, Some(el_color(t.verdict))),
-                    Cell::from(dur(t.total)),
-                ]))
+                    Text::raw(t.received_at.with_fmt_utc("%H:%M:%S%.3f")),
+                    Text::raw(dur(t.received)),
+                    Text::raw(dur(t.validate)),
+                    // stf and el stacked, coloured differently, so it reads as
+                    // "these two run in parallel".
+                    Text::from(vec![
+                        stage_line("stf", t.stf, Color::Blue),
+                        stage_line("el", t.el, el_color(t.verdict)),
+                    ]),
+                    Text::raw(dur(t.total)),
+                ]
             })
             .collect();
 
-        let table = Table::new(body, column_widths())
+        let col_widths: [u16; 8] = std::array::from_fn(|c| {
+            let widest = grid.iter().map(|row| row[c].width()).max().unwrap_or(0);
+            Text::raw(COLS[c]).width().max(widest) as u16
+        });
+
+        let header = Row::new(with_separators(COLS.map(Cell::from), 1))
+            .style(Style::default().fg(Color::Cyan));
+        let body =
+            grid.into_iter().map(|row| Row::new(with_separators(row.map(Cell::from), 2)).height(2));
+
+        let table = Table::new(body, interleave_widths(&col_widths))
             .header(header)
             .block(block)
             .column_spacing(1)
-            .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+            .row_highlight_style(Style::default().bg(Color::DarkGray))
             .highlight_symbol("▶ ");
         f.render_stateful_widget(table, area, &mut self.table);
     }
 }
 
-/// Interleave a dim `│` divider between adjacent cells for a ruled table.
-fn with_separators(cells: [Cell<'static>; 9]) -> Vec<Cell<'static>> {
+/// Interleave a dim, `lines`-tall `│` divider between adjacent cells so the
+/// rules span the full height of two-line rows.
+fn with_separators(cells: [Cell<'static>; 8], lines: usize) -> Vec<Cell<'static>> {
     let mut out = Vec::with_capacity(cells.len() * 2 - 1);
     for (i, cell) in cells.into_iter().enumerate() {
         if i > 0 {
-            out.push(Cell::from("│").style(Style::default().fg(Color::DarkGray)));
+            let bar = Text::from(vec![Line::from("│"); lines]);
+            out.push(Cell::from(bar).style(Style::default().fg(Color::DarkGray)));
         }
         out.push(cell);
     }
     out
 }
 
-/// `COL_WIDTHS` with a 1-wide divider column interleaved to match
+/// Column widths with a 1-wide divider column interleaved to match
 /// [`with_separators`].
-fn column_widths() -> Vec<Constraint> {
-    let mut out = Vec::with_capacity(COL_WIDTHS.len() * 2 - 1);
-    for (i, &w) in COL_WIDTHS.iter().enumerate() {
+fn interleave_widths(widths: &[u16; 8]) -> Vec<Constraint> {
+    let mut out = Vec::with_capacity(widths.len() * 2 - 1);
+    for (i, &w) in widths.iter().enumerate() {
         if i > 0 {
             out.push(Constraint::Length(1));
         }
@@ -133,6 +148,16 @@ fn dur(d: Nanos) -> String {
     if d.0 == 0 { "0".to_string() } else { d.to_string() }
 }
 
+/// One line of the stacked `stf ‖ el` cell: `"<label> <dur>"`, coloured; `-`
+/// while the stage hasn't happened.
+fn stage_line(label: &str, d: Option<Nanos>, color: Color) -> Line<'static> {
+    let text = match d {
+        Some(d) => format!("{label:<3} {}", dur(d)),
+        None => format!("{label:<3} -"),
+    };
+    Line::styled(text, Style::default().fg(color))
+}
+
 /// First 4 bytes of the block root as 8 hex chars.
 fn root_prefix(root: &[u8; 32]) -> String {
     format!("{:02x}{:02x}{:02x}{:02x}", root[0], root[1], root[2], root[3])
@@ -140,26 +165,16 @@ fn root_prefix(root: &[u8; 32]) -> String {
 
 /// The first slot of an epoch is highlighted (cyan) so epoch boundaries stand
 /// out. Cosmetic only — assumes the mainnet epoch length.
-fn slot_cell(slot: u64) -> Cell<'static> {
-    let cell = Cell::from(slot.to_string());
+fn slot_text(slot: u64) -> Text<'static> {
+    let text = slot.to_string();
     if slot.is_multiple_of(SLOTS_PER_EPOCH) {
-        cell.style(Style::default().fg(Color::Cyan))
+        Text::styled(text, Style::default().fg(Color::Cyan))
     } else {
-        cell
+        Text::raw(text)
     }
 }
 
-fn dur_cell(d: Option<Nanos>, color: Option<Color>) -> Cell<'static> {
-    let Some(d) = d else {
-        return Cell::from("-");
-    };
-    match color {
-        Some(c) => Cell::from(dur(d)).style(Style::default().fg(c)),
-        None => Cell::from(dur(d)),
-    }
-}
-
-/// Colour for the `el` cell, carrying the EL verdict: green valid, red invalid,
+/// Colour for the `el` line, carrying the EL verdict: green valid, red invalid,
 /// yellow syncing/accepted, grey while the EL has not responded.
 fn el_color(status: Option<PayloadValidationStatus>) -> Color {
     match status {
