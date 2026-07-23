@@ -32,7 +32,13 @@ mod sources;
 use crate::{
     app::App,
     flamegraph::Flamegraph,
-    sources::{counters::CounterSet, tilemetrics::TileMetricsSet, timings::TimingSet},
+    render::events_pane::EventsPane,
+    sources::{
+        counters::CounterSet,
+        events::{MAINNET_GENESIS_UNIX_SECS, MAINNET_SLOT_MS},
+        tilemetrics::TileMetricsSet,
+        timings::TimingSet,
+    },
 };
 
 const TICK: Duration = Duration::from_millis(100);
@@ -108,8 +114,17 @@ fn main() -> io::Result<()> {
         t.drain();
     }
 
+    // Events pane reads the node's spine directly (app name baked in as
+    // `silver`, so a custom APP_NAME only affects the file sources above).
+    // Slot timing is chain config surfer can't discover — env-overridable.
+    let events = EventsPane::open(
+        &base_dir,
+        env_u64("SURFER_GENESIS_UNIX_SECS", MAINNET_GENESIS_UNIX_SECS),
+        env_u64("SURFER_SLOT_MS", MAINNET_SLOT_MS),
+    );
+
     let flamegraph = Flamegraph::attach(&app_name);
-    let mut app = App::new(counter_sets, tcache_sets, timing_sets, tile_sets, flamegraph);
+    let mut app = App::new(counter_sets, tcache_sets, timing_sets, tile_sets, events, flamegraph);
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -124,6 +139,10 @@ fn main() -> io::Result<()> {
     term.show_cursor()?;
 
     result
+}
+
+fn env_u64(name: &str, default: u64) -> u64 {
+    std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
 }
 
 fn run<B: ratatui::backend::Backend>(
