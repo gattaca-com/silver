@@ -5,6 +5,7 @@ use ratatui::widgets::TableState;
 use crate::{
     discovery::DiscoveredSources,
     flamegraph::Flamegraph,
+    render::events_pane::EventsPane,
     sources::{counters::CounterSet, tilemetrics::TileMetricsSet, timings::TimingSet},
 };
 
@@ -14,11 +15,12 @@ pub enum Pane {
     TCaches,
     Timings,
     Tiles,
+    Events,
     Flamegraph,
 }
 
-pub const PANES: [Pane; 5] =
-    [Pane::Counters, Pane::TCaches, Pane::Timings, Pane::Tiles, Pane::Flamegraph];
+pub const PANES: [Pane; 6] =
+    [Pane::Counters, Pane::TCaches, Pane::Timings, Pane::Tiles, Pane::Events, Pane::Flamegraph];
 
 impl Pane {
     pub fn label(self) -> &'static str {
@@ -27,6 +29,7 @@ impl Pane {
             Pane::TCaches => "TCaches",
             Pane::Timings => "Timings",
             Pane::Tiles => "Tiles",
+            Pane::Events => "Events",
             Pane::Flamegraph => "Flamegraph",
         }
     }
@@ -36,7 +39,8 @@ impl Pane {
             Pane::Counters => Pane::TCaches,
             Pane::TCaches => Pane::Timings,
             Pane::Timings => Pane::Tiles,
-            Pane::Tiles => Pane::Flamegraph,
+            Pane::Tiles => Pane::Events,
+            Pane::Events => Pane::Flamegraph,
             Pane::Flamegraph => Pane::Counters,
         }
     }
@@ -54,6 +58,7 @@ pub struct App {
     pub timings_selection: usize,
     pub tilemetrics: Vec<TileMetricsSet>,
     pub tiles_selection: usize,
+    pub events: EventsPane,
     /// When true, the active pane renders only the plot for the
     /// selected row, full-area. Toggled by Enter; Esc exits.
     pub drilled_in: bool,
@@ -85,6 +90,7 @@ impl App {
         tcaches: Vec<CounterSet>,
         timings: Vec<TimingSet>,
         tilemetrics: Vec<TileMetricsSet>,
+        events: EventsPane,
         flamegraph: Flamegraph,
     ) -> Self {
         Self {
@@ -97,6 +103,7 @@ impl App {
             timings_selection: 0,
             tilemetrics,
             tiles_selection: 0,
+            events,
             drilled_in: false,
             split_pct: SPLIT_DEFAULT,
             counters_table_state: TableState::default(),
@@ -221,6 +228,7 @@ impl App {
         for t in &mut self.tilemetrics {
             t.drain();
         }
+        self.events.sample();
         self.flamegraph.sample();
     }
 
@@ -252,6 +260,7 @@ impl App {
             Pane::TCaches => self.move_tcache_selection(dir),
             Pane::Timings => self.move_timing_selection(dir),
             Pane::Tiles => self.move_tile_selection(dir),
+            Pane::Events => self.events.move_selection(dir),
             Pane::Flamegraph => self.flamegraph.scroll_by(dir),
         }
     }

@@ -1,4 +1,5 @@
 pub mod counters_pane;
+pub mod events_pane;
 pub mod flamegraph_pane;
 pub mod fmt;
 pub mod tcaches_pane;
@@ -27,6 +28,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Pane::TCaches => tcaches_pane::draw(f, chunks[1], app),
         Pane::Timings => timings_pane::draw(f, chunks[1], app),
         Pane::Tiles => tiles_pane::draw(f, chunks[1], app),
+        Pane::Events => app.events.draw(f, chunks[1]),
         Pane::Flamegraph => flamegraph_pane::draw(f, chunks[1], app),
     }
     draw_footer(f, chunks[2], app);
