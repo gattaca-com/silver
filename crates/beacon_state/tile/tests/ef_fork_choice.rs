@@ -212,3 +212,8 @@ fn gloas_fork_choice_get_head() {
 fn gloas_fork_choice_on_block() {
     run_handler("gloas", "on_block");
 }
+
+#[test]
+fn gloas_fork_choice_on_execution_payload_envelope() {
+    run_handler("gloas", "on_execution_payload_envelope");
+}

@@ -8,7 +8,7 @@ use silver_common::ssz_view::{AttestationDataView, AttestationView};
 use crate::{
     bls::{self, SigBatch},
     error::{AttestationError, Result},
-    shuffling, ssz_hash,
+    merkle, shuffling, ssz_hash,
     stf::{
         AttestationVote, BASE_REWARD_FACTOR, EFFECTIVE_BALANCE_INCREMENT, PROPOSER_WEIGHT,
         ShufflingRef, WEIGHT_DENOMINATOR, for_each_ssz_list_item, integer_sqrt,
@@ -470,7 +470,7 @@ fn collect_attestation_participants(
         agg_offset += committee.len();
     }
 
-    let bitlist_len = ssz_hash::bitlist_len(agg_bits);
+    let bitlist_len = merkle::bitlist_len(agg_bits);
     if bitlist_len != agg_offset {
         return Err(AttestationError::BitlistLenMismatch { expected: agg_offset, got: bitlist_len });
     }

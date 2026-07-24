@@ -16,7 +16,7 @@ use silver_common::ssz_view::{
 };
 
 use crate::{
-    bls,
+    bls, merkle,
     ssz_hash::{self, hash_tree_root_block_header},
 };
 
@@ -327,7 +327,7 @@ pub fn sign_aggregate_and_proof(
     buf[340..436].copy_from_slice(&inner_sig);
 
     // Selection proof: signer = aggregator, msg = htr(uint64(slot)).
-    let slot_root = ssz_hash::uint64_chunk(slot);
+    let slot_root = merkle::uint64_chunk(slot);
     let domain_sp =
         bls::compute_domain(bls::DOMAIN_SELECTION_PROOF, fv, &imm.genesis_validators_root);
     let sr_sp = bls::compute_signing_root(&slot_root, &domain_sp);
@@ -340,6 +340,7 @@ pub fn sign_aggregate_and_proof(
         aggregator_index,
         aggregate_bytes,
         &selection_proof,
+        fv == imm.gloas_fork_version,
     );
     let domain_aap =
         bls::compute_domain(bls::DOMAIN_AGGREGATE_AND_PROOF, fv, &imm.genesis_validators_root);

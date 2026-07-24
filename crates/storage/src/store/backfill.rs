@@ -3,7 +3,7 @@ use std::{collections::VecDeque, ops::Range};
 use fxhash::FxHashMap;
 use silver_common::{
     PeerEvent, TRead,
-    ssz_hash::B256,
+    merkle::B256,
     ssz_view::{DataColumnSidecarFuluView, SignedBeaconBlockView},
 };
 

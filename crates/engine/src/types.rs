@@ -148,6 +148,7 @@ pub struct Withdrawal {
 }
 
 const PAYLOAD_FIXED_LEN: usize = 528;
+const PAYLOAD_FIXED_LEN_GLOAS: usize = 540;
 
 const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
 
@@ -301,7 +302,7 @@ pub(crate) fn write_new_payload_params_fulu(
 
     // params array open
     out.push(b'[');
-    write_execution_payload_obj(execution_payload, out)?;
+    write_execution_payload_obj(execution_payload, out, false)?;
 
     // versionedHashes — derived from blob_kzg_commitments
     let blob_kzg_off: usize = BeaconBlockBodyFuluView::blob_kzg_commitments_offset(body) as usize;
@@ -329,14 +330,14 @@ pub(crate) fn write_new_payload_params_fulu(
     append_hex(SignedBeaconBlockView::parent_root(data), out);
     out.push(b'"');
 
-    write_execution_requests_json(&body[execution_requests_offset..], out)?;
+    write_execution_requests_json::<3>(&body[execution_requests_offset..], out)?;
 
     out.push(b']');
 
     Ok(())
 }
 
-/// `engine_newPayloadV4` params for a Gloas `SignedExecutionPayloadEnvelope`:
+/// `engine_newPayloadV5` params for a Gloas `SignedExecutionPayloadEnvelope`:
 /// `[executionPayload, versionedHashes, parentBeaconBlockRoot,
 /// executionRequests]`. The payload / parent root / requests come from the
 /// envelope; the versioned hashes are supplied by the caller (derived from the
@@ -356,7 +357,7 @@ pub(crate) fn write_new_payload_params_gloas(
     let execution_payload = ExecutionPayloadEnvelopeView::payload(envelope);
 
     out.push(b'[');
-    write_execution_payload_obj(execution_payload, out)?;
+    write_execution_payload_obj(execution_payload, out, true)?;
 
     write_versioned_hashes_json(out, versioned_hashes.iter().copied());
 
@@ -364,7 +365,10 @@ pub(crate) fn write_new_payload_params_gloas(
     append_hex(ExecutionPayloadEnvelopeView::parent_beacon_block_root(envelope), out);
     out.push(b'"');
 
-    write_execution_requests_json(ExecutionPayloadEnvelopeView::execution_requests(envelope), out)?;
+    write_execution_requests_json::<5>(
+        ExecutionPayloadEnvelopeView::execution_requests(envelope),
+        out,
+    )?;
 
     out.push(b']');
 
@@ -372,28 +376,38 @@ pub(crate) fn write_new_payload_params_gloas(
 }
 
 /// The EL `ExecutionPayload` JSON object (field order matches serde
-/// declaration order). Shared by the block and envelope newPayload encoders.
+/// declaration order). Shared by the block and envelope newPayload encoders;
+/// `gloas` selects the 540-byte fixed layout with the trailing
+/// `blockAccessList` / `slotNumber` fields (EIP-7928 / EIP-7843).
 fn write_execution_payload_obj(
     execution_payload: &[u8],
     out: &mut Vec<u8>,
+    gloas: bool,
 ) -> Result<(), crate::EngineError> {
-    if execution_payload.len() < PAYLOAD_FIXED_LEN {
+    let fixed_len = if gloas { PAYLOAD_FIXED_LEN_GLOAS } else { PAYLOAD_FIXED_LEN };
+    if execution_payload.len() < fixed_len {
         return Err(crate::EngineError::Ssz(format!(
-            "execution_payload too short: {} < {PAYLOAD_FIXED_LEN}",
+            "execution_payload too short: {} < {fixed_len}",
             execution_payload.len()
         )));
     }
     let extra_off: usize = ExecutionPayloadView::extra_data_offset(execution_payload) as usize;
     let txs_off: usize = ExecutionPayloadView::transactions_offset(execution_payload) as usize;
     let wd_off: usize = ExecutionPayloadView::withdrawals_offset(execution_payload) as usize;
-    if extra_off < PAYLOAD_FIXED_LEN ||
+    let wd_end: usize = if gloas {
+        ExecutionPayloadView::block_access_list_offset(execution_payload) as usize
+    } else {
+        execution_payload.len()
+    };
+    if extra_off < fixed_len ||
         txs_off < extra_off ||
         wd_off < txs_off ||
-        execution_payload.len() < wd_off
+        wd_end < wd_off ||
+        execution_payload.len() < wd_end
     {
         return Err(crate::EngineError::Ssz("invalid execution_payload variable offsets".into()));
     }
-    if !execution_payload[wd_off..].len().is_multiple_of(44) {
+    if !(wd_end - wd_off).is_multiple_of(44) {
         return Err(crate::EngineError::Ssz("withdrawals length not multiple of 44".into()));
     }
 
@@ -426,36 +440,48 @@ fn write_execution_payload_obj(
     out.extend_from_slice(b"\",\"transactions\":[");
     write_txs_json(&execution_payload[txs_off..wd_off], out)?;
     out.extend_from_slice(b"],\"withdrawals\":[");
-    write_withdrawals_json(&execution_payload[wd_off..], out)?;
+    write_withdrawals_json(&execution_payload[wd_off..wd_end], out)?;
     out.extend_from_slice(b"],\"blobGasUsed\":");
     append_quantity_u64(ExecutionPayloadView::blob_gas_used(execution_payload), out);
     out.extend_from_slice(b",\"excessBlobGas\":");
     append_quantity_u64(ExecutionPayloadView::excess_blob_gas(execution_payload), out);
+    if gloas {
+        out.extend_from_slice(b",\"blockAccessList\":\"0x");
+        append_hex(&execution_payload[wd_end..], out);
+        out.extend_from_slice(b"\",\"slotNumber\":");
+        append_quantity_u64(ExecutionPayloadView::slot_number(execution_payload), out);
+    }
     out.push(b'}');
     Ok(())
 }
 
 /// The EIP-7685 `executionRequests` JSON array (per EIP-7685: only non-empty
 /// request types included, type byte prepended). Shared by the block and
-/// envelope newPayload encoders.
-fn write_execution_requests_json(er: &[u8], out: &mut Vec<u8>) -> Result<(), crate::EngineError> {
-    if er.len() < 12 {
+/// envelope newPayload encoders. `N` is the request-list count — the type
+/// byte is the list's position: fulu has 3 (deposits 0x00, withdrawals 0x01,
+/// consolidations 0x02), gloas 5 (EIP-8282 adds builder_deposits 0x03 and
+/// builder_exits 0x04).
+fn write_execution_requests_json<const N: usize>(
+    er: &[u8],
+    out: &mut Vec<u8>,
+) -> Result<(), crate::EngineError> {
+    if er.len() < 4 * N {
         return Err(crate::EngineError::Ssz("execution_requests too short".into()));
     }
-    let dep_off = u32::from_le_bytes(er[0..4].try_into().unwrap()) as usize;
-    let wd_off = u32::from_le_bytes(er[4..8].try_into().unwrap()) as usize;
-    let cons_off = u32::from_le_bytes(er[8..12].try_into().unwrap()) as usize;
-    if dep_off > wd_off || wd_off > cons_off || cons_off > er.len() {
+    let mut offs = [0usize; N];
+    for (i, off) in offs.iter_mut().enumerate() {
+        *off = u32::from_le_bytes(er[4 * i..4 * i + 4].try_into().unwrap()) as usize;
+    }
+    let in_order = offs.windows(2).all(|w| w[0] <= w[1]);
+    if offs[0] < 4 * N || !in_order || offs[N - 1] > er.len() {
         return Err(crate::EngineError::Ssz("invalid execution_requests offsets".into()));
     }
 
-    // Type 0x00 = deposit requests, 0x01 = withdrawal requests, 0x02 =
-    // consolidation requests.
-    let slices: [(u8, &[u8]); 3] =
-        [(0x00, &er[dep_off..wd_off]), (0x01, &er[wd_off..cons_off]), (0x02, &er[cons_off..])];
     out.extend_from_slice(b",[");
     let mut first = true;
-    for (type_byte, data) in &slices {
+    for i in 0..N {
+        let type_byte = i as u8;
+        let data = &er[offs[i]..offs.get(i + 1).copied().unwrap_or(er.len())];
         if data.is_empty() {
             continue;
         }
@@ -464,7 +490,7 @@ fn write_execution_requests_json(er: &[u8], out: &mut Vec<u8>) -> Result<(), cra
         }
         first = false;
         out.extend_from_slice(b"\"0x");
-        append_hex(&[*type_byte], out);
+        append_hex(&[type_byte], out);
         append_hex(data, out);
         out.push(b'"');
     }
@@ -901,6 +927,52 @@ mod tests {
         out
     }
 
+    // Gloas ExecutionPayload SSZ: fulu's 528-byte fixed part extended by the
+    // block_access_list offset (EIP-7928) and slot_number (EIP-7843) to 540,
+    // then the extra_data / transactions / withdrawals / BAL tails
+    // (extra_data and transactions kept empty).
+    fn make_gloas_payload(withdrawals: &[u8], bal: &[u8], slot_number: u64) -> Vec<u8> {
+        const GLOAS_PAYLOAD_FIXED: u32 = 540;
+        let mut out = vec![0u8; GLOAS_PAYLOAD_FIXED as usize];
+        let bal_off = GLOAS_PAYLOAD_FIXED + withdrawals.len() as u32;
+        for (pos, val) in [
+            (436, GLOAS_PAYLOAD_FIXED), // extra_data
+            (504, GLOAS_PAYLOAD_FIXED), // transactions
+            (508, GLOAS_PAYLOAD_FIXED), // withdrawals
+            (528, bal_off),             // block_access_list
+        ] {
+            out[pos..pos + 4].copy_from_slice(&val.to_le_bytes());
+        }
+        out[532..540].copy_from_slice(&slot_number.to_le_bytes());
+        out.extend_from_slice(withdrawals);
+        out.extend_from_slice(bal);
+        out
+    }
+
+    // Wraps a payload + 5-list gloas ExecutionRequests in a
+    // SignedExecutionPayloadEnvelope (zeroed signature and roots).
+    fn make_signed_envelope(payload: &[u8], requests: [&[u8]; 5]) -> Vec<u8> {
+        let mut out = vec![0u8; 100];
+        out[0..4].copy_from_slice(&100u32.to_le_bytes());
+
+        let msg = out.len();
+        out.resize(msg + 80, 0);
+        out[msg..msg + 4].copy_from_slice(&80u32.to_le_bytes());
+        let requests_off = 80 + payload.len() as u32;
+        out[msg + 4..msg + 8].copy_from_slice(&requests_off.to_le_bytes());
+        out.extend_from_slice(payload);
+
+        let mut off = 20u32;
+        for r in &requests {
+            out.extend_from_slice(&off.to_le_bytes());
+            off += r.len() as u32;
+        }
+        for r in &requests {
+            out.extend_from_slice(r);
+        }
+        out
+    }
+
     // Constructs the getPayload JSON whose TCache encoding is
     // get_payload_tcache.bin.
     fn get_payload_json() -> Vec<u8> {
@@ -1310,6 +1382,70 @@ mod tests {
         assert_eq!(reqs.len(), 2);
         assert_eq!(reqs[0].as_str(), Some("0x0102"));
         assert_eq!(reqs[1].as_str(), Some("0x0203"));
+    }
+
+    #[test]
+    fn write_new_payload_params_gloas_bal_payload() {
+        // A real gloas payload always carries the BAL offset and slot_number;
+        // the encoder must not fold the BAL bytes into the withdrawals slice.
+        let mut wd = Vec::new();
+        wd.extend_from_slice(&1u64.to_le_bytes());
+        wd.extend_from_slice(&42u64.to_le_bytes());
+        wd.extend_from_slice(&[0x99u8; 20]);
+        wd.extend_from_slice(&1000u64.to_le_bytes());
+        let payload = make_gloas_payload(&wd, &[0xAA, 0xBB, 0xCC], 12345);
+        let envelope = make_signed_envelope(&payload, [&[], &[], &[], &[], &[]]);
+
+        let mut out = Vec::new();
+        write_new_payload_params_gloas(&envelope, &[], &mut out).unwrap();
+
+        let val = simd_json::to_borrowed_value(&mut out).unwrap();
+        let ep = &val.as_array().unwrap()[0];
+        assert_eq!(ep.get("transactions").and_then(|v| v.as_array()).map(|a| a.len()), Some(0));
+        let wds = ep.get("withdrawals").and_then(|v| v.as_array()).unwrap();
+        assert_eq!(wds.len(), 1);
+        assert_eq!(wds[0].get("validatorIndex").and_then(|v| v.as_str()), Some("0x2a"));
+        assert_eq!(wds[0].get("amount").and_then(|v| v.as_str()), Some("0x3e8"));
+        // engine_newPayloadV5 (Amsterdam): RLP BAL as DATA, slotNumber as QUANTITY.
+        assert_eq!(ep.get("blockAccessList").and_then(|v| v.as_str()), Some("0xaabbcc"));
+        assert_eq!(ep.get("slotNumber").and_then(|v| v.as_str()), Some("0x3039"));
+    }
+
+    #[test]
+    fn write_new_payload_params_gloas_five_request_types() {
+        // Gloas ExecutionRequests has five lists (EIP-8282 adds
+        // builder_deposits 0x03 and builder_exits 0x04); each non-empty list
+        // becomes its own type-prefixed entry.
+        let payload = make_gloas_payload(&[], &[], 1);
+        let envelope =
+            make_signed_envelope(&payload, [&[0x11], &[0x22], &[0x33], &[0x44], &[0x55]]);
+
+        let mut out = Vec::new();
+        write_new_payload_params_gloas(&envelope, &[], &mut out).unwrap();
+
+        let val = simd_json::to_borrowed_value(&mut out).unwrap();
+        let reqs = val.as_array().unwrap()[3].as_array().unwrap();
+        assert_eq!(reqs.len(), 5);
+        assert_eq!(reqs[0].as_str(), Some("0x0011"));
+        assert_eq!(reqs[1].as_str(), Some("0x0122"));
+        assert_eq!(reqs[2].as_str(), Some("0x0233"));
+        assert_eq!(reqs[3].as_str(), Some("0x0344"));
+        assert_eq!(reqs[4].as_str(), Some("0x0455"));
+    }
+
+    #[test]
+    fn write_new_payload_params_gloas_empty_builder_requests_skipped() {
+        let payload = make_gloas_payload(&[], &[], 1);
+        let envelope = make_signed_envelope(&payload, [&[0x11], &[], &[], &[], &[0x55]]);
+
+        let mut out = Vec::new();
+        write_new_payload_params_gloas(&envelope, &[], &mut out).unwrap();
+
+        let val = simd_json::to_borrowed_value(&mut out).unwrap();
+        let reqs = val.as_array().unwrap()[3].as_array().unwrap();
+        assert_eq!(reqs.len(), 2);
+        assert_eq!(reqs[0].as_str(), Some("0x0011"));
+        assert_eq!(reqs[1].as_str(), Some("0x0455"));
     }
 
     #[test]

@@ -2,8 +2,14 @@ use silver_beacon_state_data::{
     BuilderPendingWithdrawal, EpochView, SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT, SpecConfig,
     StateWriterView,
 };
-use silver_common::ssz_view::{
-    BeaconBlockBodyGloasView, ExecutionPayloadBidView, SignedExecutionPayloadBidView,
+use silver_common::{
+    ssz_hash_gloas::{EMPTY_EXECUTION_REQUESTS_ROOT, ExecutionRequestsView},
+    ssz_view::{
+        BeaconBlockBodyGloasView, CONSOLIDATION_REQUEST_SIZE, ExecutionPayloadBidView,
+        MAX_BUILDER_DEPOSIT_REQUESTS_PER_PAYLOAD, MAX_BUILDER_EXIT_REQUESTS_PER_PAYLOAD,
+        MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD, MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD,
+        SignedExecutionPayloadBidView, WITHDRAWAL_REQUEST_SIZE,
+    },
 };
 
 use super::builders::{
@@ -12,7 +18,6 @@ use super::builders::{
 };
 use crate::{
     error::ParentExecutionPayloadError as E,
-    ssz_hash::hash_execution_requests_gloas,
     stf::{process_consolidation_requests, process_deposit_requests, process_withdrawal_requests},
 };
 
@@ -36,7 +41,7 @@ pub fn process_parent_execution_payload(
 
     if bid_parent_block_hash != parent_bid_block_hash {
         // Parent was EMPTY: no execution requests may be carried.
-        if hash_execution_requests_gloas(requests) != hash_execution_requests_gloas(&[]) {
+        if ExecutionRequestsView::hash_tree_root(requests) != *EMPTY_EXECUTION_REQUESTS_ROOT {
             return Err(E::EmptyParentHasRequests);
         }
         return Ok(());
@@ -44,12 +49,38 @@ pub fn process_parent_execution_payload(
 
     // Parent was FULL: the carried requests must match the parent bid's commitment.
     let expected = view.slot.state().latest_execution_payload_bid.execution_requests_root;
-    let got = hash_execution_requests_gloas(requests);
+    let got = ExecutionRequestsView::hash_tree_root(requests);
     if got != expected {
         return Err(E::RequestsRootMismatch { expected, got });
     }
+    check_request_counts(requests)?;
     apply_parent_execution_payload(view, epoch, cfg, requests);
     Ok(())
+}
+
+/// Per-type request-count limits — runtime checks since EIP-7688 removed them
+/// from the type layer (deposits are unbounded per #5436).
+fn check_request_counts(requests: &[u8]) -> Result<(), E> {
+    let [_deposits, withdrawals, consolidations, builder_deposits, builder_exits] =
+        ExecutionRequestsView::sections(requests);
+    let check = |kind, bytes: &[u8], size: usize, max: usize| {
+        let count = bytes.len() / size;
+        if count > max { Err(E::TooManyRequests { kind, count, max }) } else { Ok(()) }
+    };
+    check("withdrawal", withdrawals, WITHDRAWAL_REQUEST_SIZE, MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD)?;
+    check(
+        "consolidation",
+        consolidations,
+        CONSOLIDATION_REQUEST_SIZE,
+        MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD,
+    )?;
+    check(
+        "builder_deposit",
+        builder_deposits,
+        BUILDER_DEPOSIT_SSZ,
+        MAX_BUILDER_DEPOSIT_REQUESTS_PER_PAYLOAD,
+    )?;
+    check("builder_exit", builder_exits, BUILDER_EXIT_SSZ, MAX_BUILDER_EXIT_REQUESTS_PER_PAYLOAD)
 }
 
 fn apply_parent_execution_payload(
@@ -68,7 +99,7 @@ fn apply_parent_execution_payload(
 
     // The parent's deferred execution requests apply at this (child) slot.
     let [deposits, withdrawals, consolidations, builder_deposits, builder_exits] =
-        request_sections(requests);
+        ExecutionRequestsView::sections(requests);
     process_deposit_requests(view, deposits);
     process_withdrawal_requests(view, cfg, withdrawals);
     process_consolidation_requests(view, cfg, consolidations);
@@ -121,22 +152,4 @@ fn body_sections(body: &[u8]) -> Result<(&[u8], &[u8]), E> {
         return Err(E::Malformed);
     }
     Ok((signed_bid, &body[req_off..]))
-}
-
-/// Split a serialized `ExecutionRequests` container into its five list bodies.
-fn request_sections(data: &[u8]) -> [&[u8]; 5] {
-    let mut out: [&[u8]; 5] = [&[]; 5];
-    if data.len() < 20 {
-        return out;
-    }
-    let off = |pos: usize| u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
-    let bounds = [off(0), off(4), off(8), off(12), off(16)];
-    for i in 0..5 {
-        let start = bounds[i];
-        let end = if i + 1 < 5 { bounds[i + 1] } else { data.len() };
-        if start <= end && end <= data.len() {
-            out[i] = &data[start..end];
-        }
-    }
-    out
 }

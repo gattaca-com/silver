@@ -13,6 +13,7 @@ use silver_common::ssz_view::{
 use crate::{
     bls::{self, SigBatch},
     error::{BlockError, Error, Result},
+    merkle,
     ssz_hash::{self, hash_tree_root_block_header},
     stf::{
         AttestationVote, EPOCHS_PER_ETH1_VOTING_PERIOD, ShufflingRef, StfScratch,
@@ -693,7 +694,7 @@ pub fn collect_sigs_randao(
 /// in pass 1; if it failed, we never reach here.
 fn process_randao(slot: &mut SlotStateWriteView, body: &[u8]) {
     let reveal: &[u8; 96] = body[0..96].try_into().unwrap();
-    let reveal_hash = ssz_hash::sha256(reveal);
+    let reveal_hash = merkle::sha256(reveal);
     let mix = &mut slot.state_mut().randao_mix_current;
     for (b, &r) in mix.iter_mut().zip(reveal_hash.iter()) {
         *b ^= r;

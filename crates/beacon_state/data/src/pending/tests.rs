@@ -2,14 +2,14 @@ use std::io::{self, Write};
 
 use super::{PendingGroup, QueueItem, delta::QueueView, group::QueueGroup};
 use crate::{
+    merkle::uint64_chunk,
     ring::Id,
-    ssz_hash::uint64_chunk,
     types::{B256, PendingConsolidation},
 };
 
 /// A lightweight `QueueItem` for the drain/rebase arithmetic tests — a 4-byte
 /// LE element with a shallow list limit, so the tests assert on queue contents
-/// (and frontier-root consistency) without a real 192-byte container.
+/// (and hasher-root consistency) without a real 192-byte container.
 impl QueueItem for u32 {
     const SSZ_LIMIT: usize = 1 << 10;
     const SSZ_SIZE: usize = 4;
@@ -76,7 +76,7 @@ fn effective(v: &QueueView<'_, u32>) -> Vec<u32> {
 }
 
 /// The reanchored fork's effective queue equals an independent group seeded
-/// with those same elements — i.e. the cached frontier root stays honest
+/// with those same elements — i.e. the cached hasher root stays honest
 /// across rebase + promote.
 fn assert_consistent(g: &U32Group, id: U32Id) {
     let got = effective(&g.view(id));
@@ -196,7 +196,7 @@ fn rebase_plain_base_drains() {
 }
 
 /// Drain the whole base (and into appended): reads fall through to `appended`,
-/// the frontier rebuild sees an empty base slice, and the root stays correct.
+/// the hasher rebuild sees an empty base slice, and the root stays correct.
 #[test]
 fn drain_entire_base_then_appended() {
     let mut g = group_from(&[10, 11, 12]);
@@ -210,4 +210,38 @@ fn drain_entire_base_then_appended() {
     assert_eq!(effective(&wv.reader()), vec![2]);
     wv.drain(1); // drain everything → empty list
     assert_eq!(effective(&wv.reader()), Vec::<u32>::new());
+}
+
+/// EIP-7688 adoption after in-fork drains/pushes (the fork-block deposit
+/// onboarding shape): the gloas hasher root must match the reference
+/// ProgressiveList root of the effective queue.
+#[test]
+fn adopt_gloas_after_drain_and_push_matches_reference() {
+    use crate::{merkle::hash_list, progressive::ProgressiveHasher};
+
+    let base: Vec<u8> = [pc(1), pc(2), pc(3)]
+        .iter()
+        .flat_map(|c| {
+            let mut v = Vec::new();
+            c.write_ssz(&mut v).unwrap();
+            v
+        })
+        .collect();
+    let mut g = PendingGroup::from_ssz(&[], &[], &base, &[]);
+
+    let mut wv = g.roll_fresh();
+    wv.consolidations.drain(3);
+    wv.consolidations.push(pc(2));
+    wv.consolidations.push(pc(7));
+    wv.adopt_gloas();
+
+    let expected: Vec<B256> = [pc(2), pc(7)].iter().map(QueueItem::leaf).collect();
+    let want = hash_list(ProgressiveHasher::new(), expected.iter().copied());
+    assert_eq!(wv.consolidations.reader().hash_root(), want);
+
+    // A post-adoption push keeps extending the gloas hasher.
+    wv.consolidations.push(pc(9));
+    let expected: Vec<B256> = [pc(2), pc(7), pc(9)].iter().map(QueueItem::leaf).collect();
+    let want = hash_list(ProgressiveHasher::new(), expected.iter().copied());
+    assert_eq!(wv.consolidations.reader().hash_root(), want);
 }

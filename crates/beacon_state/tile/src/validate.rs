@@ -11,7 +11,7 @@ use crate::{
         AttestationError, BlsToExecutionChangeError, ExecutionPayloadError, ProposerSlashingError,
         Result, VoluntaryExitError,
     },
-    ssz_hash,
+    merkle,
 };
 
 /// Attestation `data.index` gossip rule: pre-Gloas the committee is encoded in
@@ -137,7 +137,7 @@ pub fn validate_bls_to_execution_change(
             prefix,
         });
     }
-    let pubkey_hash = ssz_hash::sha256(from_pubkey);
+    let pubkey_hash = merkle::sha256(from_pubkey);
     if creds.0[1..] != pubkey_hash[1..] {
         let mut expected = [0u8; 32];
         expected[1..].copy_from_slice(&creds.0[1..]);

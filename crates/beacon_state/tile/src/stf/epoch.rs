@@ -9,7 +9,7 @@ use silver_beacon_state_data::{
 };
 
 use crate::{
-    bls,
+    bls, merkle,
     shuffling::{self, DOMAIN_BEACON_PROPOSER},
     ssz_hash,
     stf::{
@@ -689,11 +689,11 @@ fn verify_deposit_signature(
 ) -> bool {
     let mut pk_chunk = [0u8; 64];
     pk_chunk[..48].copy_from_slice(pubkey);
-    let pubkey_root = ssz_hash::sha256(&pk_chunk);
+    let pubkey_root = merkle::sha256(&pk_chunk);
     let mut amount_chunk = [0u8; 32];
     amount_chunk[..8].copy_from_slice(&amount.to_le_bytes());
     let deposit_msg_root =
-        ssz_hash::merkleize(&[pubkey_root, withdrawal_credentials.0, amount_chunk]);
+        merkle::merkleize(&[pubkey_root, withdrawal_credentials.0, amount_chunk]);
 
     let domain = {
         let fork_data_root = ssz_hash::hash_tree_root_fork_data([0; 4], &[0u8; 32]);
@@ -702,7 +702,7 @@ fn verify_deposit_signature(
         d[4..32].copy_from_slice(&fork_data_root[..28]);
         d
     };
-    let signing_root = ssz_hash::merkleize(&[deposit_msg_root, domain]);
+    let signing_root = merkle::merkleize(&[deposit_msg_root, domain]);
     bls::verify_deposit_signature(pubkey, signature, &signing_root)
 }
 
@@ -750,9 +750,9 @@ pub fn process_historical_summaries_update(
     view.slot.reader().effective_state_roots_into(&mut scratch.state_roots);
 
     let block_summary_root =
-        ssz_hash::merkleize_padded(&scratch.block_roots, SLOTS_PER_HISTORICAL_ROOT);
+        merkle::merkleize_padded(&scratch.block_roots, SLOTS_PER_HISTORICAL_ROOT);
     let state_summary_root =
-        ssz_hash::merkleize_padded(&scratch.state_roots, SLOTS_PER_HISTORICAL_ROOT);
+        merkle::merkleize_padded(&scratch.state_roots, SLOTS_PER_HISTORICAL_ROOT);
     longtail.push_historical_summary(HistoricalSummary { block_summary_root, state_summary_root });
 }
 
@@ -1031,16 +1031,16 @@ mod tests {
     fn deposit_signing_root(pubkey: &[u8; 48], wc: &Withdrawals, amount: u64) -> B256 {
         let mut pk_chunk = [0u8; 64];
         pk_chunk[..48].copy_from_slice(pubkey);
-        let pubkey_root = ssz_hash::sha256(&pk_chunk);
+        let pubkey_root = merkle::sha256(&pk_chunk);
         let mut amt = [0u8; 32];
         amt[..8].copy_from_slice(&amount.to_le_bytes());
-        let msg_root = ssz_hash::merkleize(&[pubkey_root, wc.0, amt]);
+        let msg_root = merkle::merkleize(&[pubkey_root, wc.0, amt]);
 
         let fork_data_root = ssz_hash::hash_tree_root_fork_data([0; 4], &[0u8; 32]);
         let mut domain = [0u8; 32];
         domain[0..4].copy_from_slice(&0x03u32.to_le_bytes());
         domain[4..32].copy_from_slice(&fork_data_root[..28]);
-        ssz_hash::merkleize(&[msg_root, domain])
+        merkle::merkleize(&[msg_root, domain])
     }
 
     /// Epoch-tier base anchored at `current_epoch` with `finalized_checkpoint`

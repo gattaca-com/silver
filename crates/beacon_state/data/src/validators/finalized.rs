@@ -11,8 +11,7 @@ use rustc_hash::FxHashMap;
 use super::validator_hash;
 use crate::{
     Withdrawals,
-    hash_tree::FinalizedHashTree,
-    types::{BLSPubkey, Epoch, FAR_FUTURE_EPOCH, validator_capacity},
+    types::{B256, BLSPubkey, Epoch, FAR_FUTURE_EPOCH, validator_capacity},
 };
 
 pub type PubkeyIndex = FxHashMap<BLSPubkey, u32>;
@@ -113,7 +112,6 @@ pub struct FinalizedValidators {
     pub(super) withdrawable_epoch: Box<[Epoch]>,
     pub(super) validator_count: usize,
     pub(super) index: RwLock<PubkeyIndex>,
-    pub(super) hash: FinalizedHashTree,
 }
 
 impl FinalizedValidators {
@@ -151,22 +149,6 @@ impl FinalizedValidators {
             index.insert(f.pubkey, i as u32);
         }
 
-        let hash = FinalizedHashTree::from_leaves(
-            (0..n).map(|i| {
-                validator_hash(
-                    &val_pubkey[i],
-                    &val_withdrawal_credentials[i],
-                    effective_balance[i],
-                    slashed[i / 8] & (1 << (i % 8)) != 0,
-                    activation_eligibility_epoch[i],
-                    activation_epoch[i],
-                    exit_epoch[i],
-                    withdrawable_epoch[i],
-                )
-            }),
-            capacity,
-        );
-
         Ok(Self {
             val_pubkey,
             val_pubkey_decompressed,
@@ -179,7 +161,6 @@ impl FinalizedValidators {
             withdrawable_epoch,
             validator_count: n,
             index: RwLock::new(index),
-            hash,
         })
     }
 }
@@ -303,9 +284,18 @@ impl FinalizedValidators {
         self.index.read().len()
     }
 
-    #[inline]
-    pub fn hash(&self) -> &FinalizedHashTree {
-        &self.hash
+    /// The Validator-container hash leaf for finalized index `i`.
+    pub(super) fn leaf_hash(&self, i: usize) -> B256 {
+        validator_hash(
+            &self.val_pubkey[i],
+            &self.val_withdrawal_credentials[i],
+            self.effective_balance[i],
+            self.is_slashed(i),
+            self.activation_eligibility_epoch[i],
+            self.activation_epoch[i],
+            self.exit_epoch[i],
+            self.withdrawable_epoch[i],
+        )
     }
 
     /// Harness-seeding constructor: builds a registry from `ValSeed`s whose

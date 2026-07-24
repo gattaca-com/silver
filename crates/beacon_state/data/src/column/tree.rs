@@ -1,212 +1,218 @@
+use silver_ssz::scalar::SszScalar;
+
 use super::{
-    ColumnVal,
-    pool::{PAGE_NODES, PagePool},
+    format::{TreeFormat, gloas_internal_parent},
+    fulu::FuluTree,
+    gloas::GloasTree,
+    pool::PagePool,
     snapshot::PageSnapshot,
+    store::NodeStore,
 };
 use crate::{
     ColumnLenMismatch,
-    ssz_hash::{ZERO_HASHES, hash_concat_many},
-    types::B256,
+    types::{B256, HashFormat},
 };
 
-#[derive(Default)]
-pub struct ColumnTree {
-    nodes: Vec<B256>,
-    max_elements: usize,
-    count: usize,
-    dirty_mark: Vec<bool>,
-    dirty_scratch: Vec<u32>,
+pub enum ColumnTree {
+    Fulu(FuluTree),
+    Gloas(GloasTree),
+}
+
+impl Default for ColumnTree {
+    fn default() -> Self {
+        ColumnTree::Fulu(FuluTree::default())
+    }
 }
 
 impl ColumnTree {
-    pub fn new<V: ColumnVal>(
+    pub fn new<V: SszScalar>(
         cap: usize,
         count: usize,
         ssz_bytes: &[u8],
+        format: HashFormat,
     ) -> Result<Self, ColumnLenMismatch> {
         if ssz_bytes.len() != count * size_of::<V>() {
             return Err(ColumnLenMismatch { bytes: ssz_bytes.len(), expected: count });
         }
-        let cap = cap.next_multiple_of(V::VALS_PER_CHUNK);
-        let max_elements = (cap / V::VALS_PER_CHUNK).next_power_of_two().max(1);
-
-        let mut nodes = vec![[0u8; 32]; 2 * max_elements];
-        nodes[max_elements..].as_flattened_mut()[..ssz_bytes.len()].copy_from_slice(ssz_bytes);
-
-        let mut level = max_elements;
-        while level > 1 {
-            let parent = level >> 1;
-            let (parents, children) = nodes.split_at_mut(level);
-            hash_concat_many(&mut parents[parent..level], &children[..level]);
-            level = parent;
-        }
-        let num_pages = (2 * max_elements).div_ceil(PAGE_NODES).max(1);
-        Ok(Self {
-            nodes,
-            max_elements,
-            count,
-            dirty_mark: vec![false; num_pages],
-            dirty_scratch: Vec::new(),
+        Ok(match format {
+            HashFormat::Fulu => ColumnTree::Fulu(FuluTree::new::<V>(cap, count, ssz_bytes)),
+            HashFormat::Gloas => {
+                ColumnTree::Gloas(GloasTree::from_leaves::<V>(cap, count, ssz_bytes))
+            }
         })
     }
 
+    pub fn migrate_to_gloas<V: SszScalar>(&mut self) {
+        let ColumnTree::Fulu(fulu) = self else { return };
+        *self = ColumnTree::Gloas(GloasTree::from_fulu::<V>(fulu));
+    }
+
     #[inline]
-    pub(super) fn max_elements(&self) -> usize {
-        self.max_elements
+    fn store(&self) -> &NodeStore {
+        match self {
+            ColumnTree::Fulu(t) => &t.store,
+            ColumnTree::Gloas(t) => &t.store,
+        }
+    }
+
+    #[inline]
+    fn store_mut(&mut self) -> &mut NodeStore {
+        match self {
+            ColumnTree::Fulu(t) => &mut t.store,
+            ColumnTree::Gloas(t) => &mut t.store,
+        }
+    }
+
+    #[inline]
+    pub(super) fn format(&self) -> TreeFormat {
+        match self {
+            ColumnTree::Fulu(t) => t.format(),
+            ColumnTree::Gloas(t) => t.format(),
+        }
     }
 
     #[inline]
     pub(super) fn count(&self) -> usize {
-        self.count
+        self.store().count
     }
 
     #[inline]
     pub(super) fn num_pages(&self) -> usize {
-        (2 * self.max_elements).div_ceil(PAGE_NODES).max(1)
+        self.store().num_pages()
     }
 
     #[inline]
     pub(super) fn node(&self, n: usize) -> &B256 {
-        &self.nodes[n]
+        self.store().node(n)
     }
 
-    #[inline]
-    fn page(&self, pi: usize) -> &[B256] {
-        let end = ((pi + 1) * PAGE_NODES).min(self.nodes.len());
-        &self.nodes[pi * PAGE_NODES..end]
-    }
-
-    #[inline]
-    fn page_mut(&mut self, pi: usize) -> &mut [B256] {
-        let end = ((pi + 1) * PAGE_NODES).min(self.nodes.len());
-        &mut self.nodes[pi * PAGE_NODES..end]
-    }
-
-    fn reset_to(&mut self, max_elements: usize, count: usize) {
-        self.nodes.resize(2 * max_elements, [0u8; 32]);
-        self.max_elements = max_elements;
-        self.count = count;
-    }
-
-    pub(super) fn gather_from(&mut self, pool: &PagePool, snapshot: &PageSnapshot) {
-        self.reset_to(snapshot.max_elements(), snapshot.len());
-        for pi in 0..snapshot.num_pages() {
-            let dst = self.page_mut(pi);
-            dst.copy_from_slice(&snapshot.page(pool, pi)[..dst.len()]);
+    /// Adopt `snapshot`'s content, switching tree variant when the snapshot's
+    /// format differs (a roll whose parent sits on the other side of the
+    /// EIP-7688 fork boundary).
+    pub(super) fn load_snapshot(&mut self, pool: &PagePool, snapshot: &PageSnapshot) {
+        let format = snapshot.format();
+        if self.format() != format {
+            let store = std::mem::take(self.store_mut());
+            *self = match format {
+                TreeFormat::Fulu { max_elements } => {
+                    ColumnTree::Fulu(FuluTree { store, max_elements })
+                }
+                TreeFormat::Gloas { last_seg } => ColumnTree::Gloas(GloasTree { store, last_seg }),
+            };
         }
+        self.store_mut().load_snapshot(pool, snapshot, format.num_nodes());
     }
 
     pub(super) fn to_snapshot(&self, pool: &mut PagePool) -> PageSnapshot {
-        let pages = (0..self.num_pages()).map(|pi| pool.alloc_from_slice(self.page(pi))).collect();
-        PageSnapshot {
-            pages,
-            max_elements: self.max_elements,
-            count: self.count,
-            is_released: false,
-        }
+        self.store().to_snapshot(pool, self.format())
     }
 
-    /// Commit the scratch into `dst`, reusing `dst`'s page-table allocation: it
-    /// shares `parent`'s clean pages (bumping their refcounts) and claims fresh
-    /// pages for the ones this block dirtied.
     pub(super) fn commit_into(
         &self,
         pool: &mut PagePool,
         dst: &mut PageSnapshot,
         parent: &PageSnapshot,
     ) {
-        dst.pages.clear();
-        dst.pages.extend(parent.pages.iter().enumerate().map(|(pi, &id)| {
-            if self.dirty_mark[pi] {
-                pool.alloc_from_slice(self.page(pi))
-            } else {
-                pool.retain(id);
-                id
-            }
-        }));
-        dst.max_elements = self.max_elements;
-        dst.count = self.count;
-        dst.is_released = false;
+        self.store().commit_into(pool, dst, parent, self.format());
     }
 
     pub(super) fn reset_dirty_mask(&mut self) {
-        let num_pages = self.num_pages();
-        self.dirty_mark.clear();
-        self.dirty_mark.resize(num_pages, false);
+        self.store_mut().reset_dirty_mask();
     }
 
     pub(super) fn mark_all_dirty(&mut self) {
-        self.dirty_mark.fill(true);
+        self.store_mut().mark_all_dirty();
     }
 
     pub(super) fn copy_changed_pages_from(&mut self, src: &ColumnTree) {
-        debug_assert_eq!(self.max_elements, src.max_elements, "rotate needs a same-shape source");
-        debug_assert_eq!(self.count, src.count, "rotate needs a same-length source");
-        let len = self.nodes.len();
-        let Self { nodes, dirty_mark, .. } = self;
-        for (pi, dirty) in dirty_mark.iter_mut().enumerate() {
-            let range = pi * PAGE_NODES..((pi + 1) * PAGE_NODES).min(len);
-            if nodes[range.clone()].as_flattened() != src.nodes[range.clone()].as_flattened() {
-                nodes[range.clone()].copy_from_slice(&src.nodes[range]);
-                *dirty = true;
-            }
-        }
+        debug_assert_eq!(self.format(), src.format(), "rotate needs a same-format source");
+        self.store_mut().copy_changed_pages_from(src.store());
     }
 
     pub fn fill_zero(&mut self) {
-        let mut level = self.max_elements;
-        let mut depth = 0;
-        while level >= 1 {
-            self.nodes[level..2 * level].fill(ZERO_HASHES[depth]);
-            level >>= 1;
-            depth += 1;
+        match self {
+            ColumnTree::Fulu(t) => t.fill_zero(),
+            ColumnTree::Gloas(t) => t.fill_zero(),
         }
         self.mark_all_dirty();
     }
 
-    #[inline]
-    fn mark_dirty_node(&mut self, leaf: u32) {
-        let mut node = leaf as usize;
-        debug_assert!(PAGE_NODES.is_power_of_two(), "PAGE_NODES must be a power of two");
-        // We can skip already marked pages as top bids will always be the same after
-        // division by 2 Example (top bits | last PAGE_NODES bits):
-        // Leaf1 110|0101011 -> 11|0010101
-        // Leaf2 110|1010100 -> 11|0101010
-        while node >= 1 && !self.dirty_mark[node / PAGE_NODES] {
-            self.dirty_mark[node / PAGE_NODES] = true;
-            node >>= 1;
-        }
-    }
-
-    pub fn iter_vals<V: ColumnVal>(&self) -> impl Iterator<Item = V> + '_ {
+    pub fn iter_vals<V: SszScalar>(&self) -> impl Iterator<Item = V> + '_ {
         let sz = size_of::<V>();
-        let bytes = &self.nodes[self.max_elements..].as_flattened()[..self.count * sz];
-        (0..self.count).map(move |i| {
+        let count = self.count();
+        let data_start = self.format().data_start();
+        let bytes = &self.store().nodes[data_start..].as_flattened()[..count * sz];
+        (0..count).map(move |i| {
             let mut out = [V::default()];
             V::read_ssz_slice(&mut out, &bytes[i * sz..i * sz + sz]);
             out[0]
         })
     }
 
-    pub fn add_at(&mut self, idx: u32, delta: i64) {
-        let k = u64::VALS_PER_CHUNK as u32;
-        let node = self.max_elements as u32 + idx / k;
-        debug_assert!((node as usize) < 2 * self.max_elements, "index out of range");
-        let leaf = &mut self.nodes[node as usize];
-        let lane = (idx % k) as usize;
-        let old = u64::lane(leaf, lane);
-        let new = old.saturating_add_signed(delta);
-        if new == old {
-            return;
-        }
-        u64::set_lane(leaf, lane, new);
-        self.mark_dirty_node(node);
-        if self.dirty_scratch.last() != Some(&node) {
-            self.dirty_scratch.push(node);
+    /// Record chunk `chunk` as dirty and mark the pages its rehash will touch.
+    /// Fulu's leaf is an in-tree node, so its page walk starts there; gloas's
+    /// leaf is flat data, so its data page is marked plus the internal
+    /// ancestors in its segment block (segment 0's lone leaf is its own
+    /// root — no internal pages).
+    fn seed_write(&mut self, chunk: usize, data_node: usize) {
+        let format = self.format();
+        let store = self.store_mut();
+        store.push_dirty(chunk as u32);
+        match format {
+            TreeFormat::Fulu { .. } => store.mark_dirty_node(data_node, 0),
+            TreeFormat::Gloas { .. } => {
+                store.mark_dirty_page(data_node);
+                if let Some((parent, seg_off)) = gloas_internal_parent(chunk) {
+                    store.mark_dirty_node(parent, seg_off);
+                }
+            }
         }
     }
 
-    pub fn set_vals<V: ColumnVal>(&mut self, changes: &[(u32, V)]) {
+    pub fn add_at(&mut self, idx: u32, delta: i64) {
+        let k = u64::VALS_PER_CHUNK as u32;
+        let chunk = (idx / k) as usize;
+        let data_node = self.format().leaf_pos(chunk);
+        {
+            let store = self.store_mut();
+            debug_assert!(data_node < store.nodes.len(), "index out of range");
+            let leaf = &mut store.nodes[data_node];
+            let lane = (idx % k) as usize;
+            let old = u64::lane(leaf, lane);
+            let new = old.saturating_add_signed(delta);
+            if new == old {
+                return;
+            }
+            u64::set_lane(leaf, lane, new);
+        }
+        self.seed_write(chunk, data_node);
+    }
+
+    /// Write one value without rehashing; queue its chunk for a later
+    /// [`rehash_unsorted`](Self::rehash_unsorted).
+    pub fn set_val_deferred<V: SszScalar>(&mut self, idx: u32, v: V) {
+        let k = V::VALS_PER_CHUNK as u32;
+        let chunk = (idx / k) as usize;
+        let data_node = self.format().leaf_pos(chunk);
+        {
+            let store = self.store_mut();
+            debug_assert!(data_node < store.nodes.len(), "index out of range");
+            let leaf = &mut store.nodes[data_node];
+            let lane = (idx % k) as usize;
+            if V::lane(leaf, lane) == v {
+                return;
+            }
+            V::set_lane(leaf, lane, v);
+        }
+        self.seed_write(chunk, data_node);
+    }
+
+    #[inline]
+    pub(super) fn has_pending_rehash(&self) -> bool {
+        !self.store().dirty_chunks.is_empty()
+    }
+
+    pub fn set_vals<V: SszScalar>(&mut self, changes: &[(u32, V)]) {
         if changes.is_empty() {
             return;
         }
@@ -214,76 +220,57 @@ impl ColumnTree {
             changes.windows(2).all(|w| w[0].0 < w[1].0),
             "set_vals needs ascending, distinct indices",
         );
+        debug_assert!(self.store().dirty_chunks.is_empty(), "unhashed add_at batch pending");
         let k = V::VALS_PER_CHUNK as u32;
-
-        debug_assert!(self.dirty_scratch.is_empty(), "unhashed add_at batch pending");
+        let format = self.format();
         for group in changes.chunk_by(|a, b| a.0 / k == b.0 / k) {
-            let node = self.max_elements as u32 + group[0].0 / k;
-            debug_assert!((node as usize) < 2 * self.max_elements, "index out of range");
-            let leaf = &mut self.nodes[node as usize];
-            for &(idx, v) in group {
-                V::set_lane(leaf, (idx % k) as usize, v);
+            let chunk = (group[0].0 / k) as usize;
+            let data_node = format.leaf_pos(chunk);
+            {
+                let store = self.store_mut();
+                debug_assert!(data_node < store.nodes.len(), "index out of range");
+                let leaf = &mut store.nodes[data_node];
+                for &(idx, v) in group {
+                    V::set_lane(leaf, (idx % k) as usize, v);
+                }
             }
-            self.mark_dirty_node(node);
-            self.dirty_scratch.push(node);
+            self.seed_write(chunk, data_node);
         }
         self.rehash();
     }
 
     pub fn rehash_unsorted(&mut self) {
-        self.dirty_scratch.sort_unstable();
+        self.store_mut().dirty_chunks.sort_unstable();
         self.rehash();
     }
 
     pub fn rehash(&mut self) {
         debug_assert!(
-            self.dirty_scratch.windows(2).all(|w| w[0] <= w[1]),
+            self.store().dirty_chunks.windows(2).all(|w| w[0] <= w[1]),
             "rehash needs ascending dirty ids; use rehash_unsorted",
         );
-        let mut level = self.max_elements as u32;
-        let Self { nodes, dirty_scratch: dirty, .. } = self;
-        while level > 1 {
-            let mut n = 0;
-            for i in 0..dirty.len() {
-                let parent = dirty[i] >> 1;
-                if n == 0 || dirty[n - 1] != parent {
-                    dirty[n] = parent;
-                    n += 1;
-                }
-            }
-            dirty.truncate(n);
-
-            let (parents, children) = nodes.split_at_mut(level as usize);
-            let mut i = 0;
-            while i < dirty.len() {
-                let start = i;
-                while i + 1 < dirty.len() && dirty[i + 1] == dirty[i] + 1 {
-                    i += 1;
-                }
-                i += 1;
-                let (lo, hi) = (dirty[start], dirty[i - 1] + 1);
-                hash_concat_many(
-                    &mut parents[lo as usize..hi as usize],
-                    &children[(2 * lo - level) as usize..(2 * hi - level) as usize],
-                );
-            }
-            level >>= 1;
+        match self {
+            ColumnTree::Fulu(t) => t.rehash(),
+            ColumnTree::Gloas(t) => t.rehash(),
         }
-        dirty.clear();
     }
 
-    pub fn append_empty<V: ColumnVal>(&mut self) -> u32 {
-        let idx = self.count as u32;
-        self.count += 1;
-        debug_assert!(
-            self.count <= self.max_elements * V::VALS_PER_CHUNK,
-            "append past leaf capacity — cap headroom exhausted",
-        );
+    pub fn append_empty<V: SszScalar>(&mut self) -> u32 {
+        let idx = self.count() as u32;
+        self.store_mut().count += 1;
+        if self.count().div_ceil(V::VALS_PER_CHUNK) > self.format().data_capacity() {
+            match self {
+                ColumnTree::Fulu(_) => {
+                    debug_assert!(false, "append past leaf capacity — cap headroom exhausted")
+                }
+                ColumnTree::Gloas(t) => t.append_progressive_segment(),
+            }
+        }
 
         let k = V::VALS_PER_CHUNK;
+        let data_node = self.format().leaf_pos(idx as usize / k);
         debug_assert!(
-            V::lane(&self.nodes[self.max_elements + idx as usize / k], idx as usize % k) ==
-                V::default(),
+            V::lane(self.node(data_node), idx as usize % k) == V::default(),
             "append over a non-zero leaf slot",
         );
 

@@ -13,7 +13,7 @@ use std::{
 use flux_profiler::timed;
 use silver_common::{
     Enr, P2pSend, PeerEvent, RpcOutbound, RpcResponse, RpcResponseOutbound, TCacheProducer,
-    TCacheRead, TMultiProducer, hex32, ssz_hash::B256, ssz_view::SignedBeaconBlockView,
+    TCacheRead, TMultiProducer, hex32, merkle::B256, ssz_view::SignedBeaconBlockView,
 };
 
 use super::{

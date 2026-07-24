@@ -1,6 +1,7 @@
 mod delta;
 mod finalized;
 mod group;
+mod hasher;
 #[cfg(test)]
 mod tests;
 
@@ -57,6 +58,13 @@ impl PendingGroup {
             consolidations: QueueGroup::from_ssz(consolidations),
             builder_withdrawals: QueueGroup::from_ssz(builder_withdrawals),
         }
+    }
+
+    pub fn mark_gloas_base(&mut self) {
+        self.deposits.mark_gloas_base();
+        self.partial_withdrawals.mark_gloas_base();
+        self.consolidations.mark_gloas_base();
+        self.builder_withdrawals.mark_gloas_base();
     }
 
     #[inline]

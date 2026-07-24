@@ -2,7 +2,7 @@ pub use beacon_block_body::{BlockBodyError, BodyFork, BodyOffsets, OperationKind
 pub use builders::{BuildersGroup, BuildersId, BuildersView, BuildersWriteView, FinalizedBuilders};
 pub use column::{
     Balances, BalancesGroup, BalancesId, BalancesReader, BalancesWriteView, ColumnGroup,
-    ColumnReader, ColumnSpec, ColumnVal, ColumnWriteView, Current, CurrentParticipationGroup,
+    ColumnReader, ColumnSpec, ColumnWriteView, Current, CurrentParticipationGroup,
     CurrentParticipationId, Inactivity, InactivityId, InactivityScoresGroup, InactivityView,
     InactivityWriteView, ParticipationView, ParticipationWriteView, Previous,
     PreviousParticipationGroup, PreviousParticipationId,
@@ -19,7 +19,6 @@ pub use gloas::{
     Builder, BuilderPendingPayment, BuilderPendingWithdrawal, ExecutionPayloadBid, PtcCommittee,
     Withdrawal,
 };
-pub use hash_tree::{DeltaHashTree, FinalizedHashTree};
 pub use longtail::{LongtailGroup, LongtailId, LongtailState, LongtailView, LongtailWriteView};
 pub use parsed::ParsedAggregateAndProof;
 pub use pending::{
@@ -27,7 +26,7 @@ pub use pending::{
 };
 pub use ring::{Id, Reset, Ring};
 pub use silver_chain_spec::{BlobParameters, SpecConfig};
-pub(crate) use silver_ssz::ssz_hash;
+pub(crate) use silver_ssz::{merkle, progressive};
 pub use slot_state::{
     SlotStateFinalized, SlotStateGroup, SlotStateId, SlotStateView, SlotStateWriteView,
 };
@@ -47,7 +46,6 @@ mod encode;
 mod epoch;
 mod eth1;
 pub mod gloas;
-mod hash_tree;
 mod longtail;
 mod parsed;
 mod pending;
@@ -144,7 +142,8 @@ impl BeaconState {
 impl BeaconState {
     #[doc(hidden)]
     pub fn for_test(epoch_base: EpochStateFinalized, seeds: &[ValSeed], slot: u64) -> Self {
-        let validators = ValidatorsGroup::new(FinalizedValidators::with_validators(seeds));
+        let validators =
+            ValidatorsGroup::new(FinalizedValidators::with_validators(seeds), HashFormat::Fulu);
         let cap = validators.finalized().capacity();
         let n = validators.finalized().validator_count();
         let balances: Vec<u8> = seeds.iter().flat_map(|s| s.balance.to_le_bytes()).collect();
@@ -155,12 +154,24 @@ impl BeaconState {
         Self {
             immutable: Immutable::default(),
             validators,
-            balances: BalancesGroup::new(cap, n, &balances).unwrap(),
+            balances: BalancesGroup::new(cap, n, &balances, HashFormat::Fulu).unwrap(),
             eth1: Eth1Group::new(Eth1Votes::default()),
             pending: PendingGroup::from_ssz(&[], &[], &[], &[]),
-            previous_participation: PreviousParticipationGroup::new(cap, n, &zeros(1)).unwrap(),
-            current_participation: CurrentParticipationGroup::new(cap, n, &zeros(1)).unwrap(),
-            inactivity: InactivityScoresGroup::new(cap, n, &zeros(8)).unwrap(),
+            previous_participation: PreviousParticipationGroup::new(
+                cap,
+                n,
+                &zeros(1),
+                HashFormat::Fulu,
+            )
+            .unwrap(),
+            current_participation: CurrentParticipationGroup::new(
+                cap,
+                n,
+                &zeros(1),
+                HashFormat::Fulu,
+            )
+            .unwrap(),
+            inactivity: InactivityScoresGroup::new(cap, n, &zeros(8), HashFormat::Fulu).unwrap(),
             slot_states: SlotStateGroup::new(SlotStateFinalized::from_parts(
                 SlotState { slot, ..Default::default() },
                 zero_roots(),

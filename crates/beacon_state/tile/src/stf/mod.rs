@@ -41,7 +41,7 @@ pub use gloas::{
     get_builder_payment_quorum_threshold, process_builder_deposit_request,
     process_builder_exit_request, process_builder_pending_payments, process_execution_payload_bid,
     process_parent_execution_payload, process_payload_attestations, process_ptc_window,
-    process_withdrawals_gloas,
+    process_withdrawals_gloas, verify_execution_payload_envelope,
 };
 pub(crate) use operations::process_execution_requests;
 pub use operations::{

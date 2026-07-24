@@ -4,15 +4,15 @@ use blst::{BLST_ERROR, min_pk::PublicKey};
 use flux_profiler::timed;
 use silver_beacon_state_data::{SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
-    ssz_hash::{
-        B256, hash_concat, hash_list_fixed_elements, hash_tree_root_body_fulu,
-        hash_tree_root_body_gloas, hash_tree_root_fork_data, is_valid_merkle_branch, merkleize,
-        sha256, uint64_chunk,
+    merkle::{
+        B256, MerkleStack, hash_concat, hash_fixed_bytes, hash_list, is_valid_merkle_branch,
+        merkleize, sha256, uint64_chunk,
     },
+    ssz_hash::{hash_tree_root_body_fulu, hash_tree_root_fork_data},
     ssz_view::{
-        BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF, DATA_COLUMN_SIDECAR_MIN,
-        DataColumnSidecarFuluView, DataColumnSidecarGloasView, MAX_BLOB_COMMITMENTS_PER_BLOCK,
-        NUMBER_OF_COLUMNS, SignedBeaconBlockView,
+        BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF, BeaconBlockBodyGloasView,
+        DATA_COLUMN_SIDECAR_MIN, DataColumnSidecarFuluView, DataColumnSidecarGloasView,
+        MAX_BLOB_COMMITMENTS_PER_BLOCK, NUMBER_OF_COLUMNS, SignedBeaconBlockView,
     },
 };
 
@@ -78,7 +78,7 @@ pub fn block_root_fulu(signed_block: &[u8]) -> B256 {
 pub fn block_root_gloas(signed_block: &[u8]) -> B256 {
     block_root_from_body(
         signed_block,
-        hash_tree_root_body_gloas(SignedBeaconBlockView::body(signed_block)),
+        BeaconBlockBodyGloasView::hash_tree_root(SignedBeaconBlockView::body(signed_block)),
     )
 }
 
@@ -160,10 +160,9 @@ pub fn verify_data_column_sidecar_gloas(sidecar: &[u8], commitments: &[u8]) -> b
 /// inclusion-proof bytes).
 pub fn verify_data_column_sidecar_inclusion_proof(sidecar: &[u8]) -> bool {
     let commitments = DataColumnSidecarFuluView::kzg_commitments(sidecar);
-    let leaf = hash_list_fixed_elements(
-        commitments,
-        BYTES_PER_KZG_COMMITMENT,
-        MAX_BLOB_COMMITMENTS_PER_BLOCK,
+    let leaf = hash_list(
+        MerkleStack::new(MAX_BLOB_COMMITMENTS_PER_BLOCK),
+        commitments.chunks_exact(BYTES_PER_KZG_COMMITMENT).map(hash_fixed_bytes),
     );
     let branch = DataColumnSidecarFuluView::inclusion_proof(sidecar);
     let body_root = DataColumnSidecarFuluView::body_root(sidecar);

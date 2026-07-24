@@ -86,7 +86,7 @@ pub const MAX_BYTES_PER_TRANSACTION: usize = 1 << 30;
 pub const MAX_DEPOSIT_REQUESTS_PER_PAYLOAD: usize = 8192;
 pub const MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD: usize = 16;
 pub const MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD: usize = 2;
-pub const MAX_BUILDER_DEPOSIT_REQUESTS_PER_PAYLOAD: usize = 256;
+pub const MAX_BUILDER_DEPOSIT_REQUESTS_PER_PAYLOAD: usize = 64;
 pub const MAX_BUILDER_EXIT_REQUESTS_PER_PAYLOAD: usize = 16;
 pub const DEPOSIT_CONTRACT_TREE_DEPTH: usize = 32;
 pub const SYNC_COMMITTEE_SIZE: usize = 512;
@@ -2350,6 +2350,62 @@ impl ConsolidationRequestView {
     }
 }
 
+// -- BuilderDepositRequest (Gloas ExecutionRequests element) ----------
+//
+// All fixed, 184B.
+//   [0..48)    pubkey
+//   [48..80)   withdrawal_credentials
+//   [80..88)   amount
+//   [88..184)  signature
+
+pub const BUILDER_DEPOSIT_REQUEST_SIZE: usize = 184;
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[repr(C)]
+pub struct BuilderDepositRequestView;
+
+impl BuilderDepositRequestView {
+    #[inline]
+    pub fn pubkey(buf: &[u8; BUILDER_DEPOSIT_REQUEST_SIZE]) -> &[u8; 48] {
+        fixed(buf, 0)
+    }
+    #[inline]
+    pub fn withdrawal_credentials(buf: &[u8; BUILDER_DEPOSIT_REQUEST_SIZE]) -> &[u8; 32] {
+        fixed(buf, 48)
+    }
+    #[inline]
+    pub fn amount(buf: &[u8; BUILDER_DEPOSIT_REQUEST_SIZE]) -> u64 {
+        u64_le(buf, 80)
+    }
+    #[inline]
+    pub fn signature(buf: &[u8; BUILDER_DEPOSIT_REQUEST_SIZE]) -> &[u8; 96] {
+        fixed(buf, 88)
+    }
+}
+
+// -- BuilderExitRequest (Gloas ExecutionRequests element) -------------
+//
+// All fixed, 68B.
+//   [0..20)   source_address
+//   [20..68)  pubkey
+
+pub const BUILDER_EXIT_REQUEST_SIZE: usize = 68;
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[repr(C)]
+pub struct BuilderExitRequestView;
+
+impl BuilderExitRequestView {
+    #[inline]
+    pub fn source_address(buf: &[u8; BUILDER_EXIT_REQUEST_SIZE]) -> &[u8; 20] {
+        fixed(buf, 0)
+    }
+    #[inline]
+    pub fn pubkey(buf: &[u8; BUILDER_EXIT_REQUEST_SIZE]) -> &[u8; 48] {
+        fixed(buf, 20)
+    }
+}
+
 // -- ExecutionPayload (variable; in BeaconBlockBody.execution_payload) -
 //
 // Fixed part 528B; trailing variable region holds extra_data, transactions,
@@ -2372,8 +2428,14 @@ impl ConsolidationRequestView {
 //   [512..520) blob_gas_used
 //   [520..528) excess_blob_gas
 //   [528..)    extra_data | transactions | withdrawals
+//
+// Gloas appends to the fixed part (EIP-7928 / EIP-7843):
+//   [528..532) offset to block_access_list
+//   [532..540) slot_number
+//   [540..)    extra_data | transactions | withdrawals | block_access_list
 
 pub const EXECUTION_PAYLOAD_FIXED: usize = 528;
+pub const EXECUTION_PAYLOAD_FIXED_GLOAS: usize = 540;
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 #[repr(C)]
@@ -2439,6 +2501,14 @@ impl ExecutionPayloadView {
     #[inline]
     pub fn withdrawals_offset(buf: &[u8]) -> u32 {
         u32_le(buf, 508)
+    }
+    #[inline]
+    pub fn block_access_list_offset(buf: &[u8]) -> u32 {
+        u32_le(buf, 528)
+    }
+    #[inline]
+    pub fn slot_number(buf: &[u8]) -> u64 {
+        u64_le(buf, 532)
     }
     #[inline]
     pub fn blob_gas_used(buf: &[u8]) -> u64 {

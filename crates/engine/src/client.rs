@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use mio::{Events, Poll};
 use rustc_hash::FxHashMap;
-use silver_common::ssz_hash::B256;
+use silver_common::merkle::B256;
 
 use crate::{
     EngineError, JwtSecret,
@@ -23,6 +23,7 @@ const SCRATCH_CAPACITY: usize = 10 * 1024 * 1024;
 const OUR_CAPABILITIES: &[&str] = &[
     "engine_forkchoiceUpdatedV3",
     "engine_newPayloadV4",
+    "engine_newPayloadV5",
     "engine_getPayloadV3",
     "engine_getPayloadV4",
     "engine_getBlobsV2",
@@ -136,7 +137,9 @@ pub fn send_new_payload(
     data: &[u8],
     block_root: [u8; 32],
 ) -> Result<(), EngineError> {
-    send_new_payload_request_impl(c, block_root, |out| write_new_payload_params_fulu(data, out))
+    send_new_payload_request_impl(c, block_root, "engine_newPayloadV4", |out| {
+        write_new_payload_params_fulu(data, out)
+    })
 }
 
 pub fn send_new_payload_envelope(
@@ -145,7 +148,7 @@ pub fn send_new_payload_envelope(
     versioned_hashes: &[[u8; 32]],
     block_root: [u8; 32],
 ) -> Result<(), EngineError> {
-    send_new_payload_request_impl(c, block_root, |out| {
+    send_new_payload_request_impl(c, block_root, "engine_newPayloadV5", |out| {
         write_new_payload_params_gloas(data, versioned_hashes, out)
     })
 }
@@ -153,12 +156,14 @@ pub fn send_new_payload_envelope(
 fn send_new_payload_request_impl(
     c: &mut EngineClient,
     block_root: [u8; 32],
+    method: &str,
     write_params: impl FnOnce(&mut Vec<u8>) -> Result<(), EngineError>,
 ) -> Result<(), EngineError> {
     let rpc_id = next_id(&mut c.id);
     c.scratch.clear();
-    c.scratch
-        .extend_from_slice(b"{\"jsonrpc\":\"2.0\",\"method\":\"engine_newPayloadV4\",\"params\":");
+    c.scratch.extend_from_slice(b"{\"jsonrpc\":\"2.0\",\"method\":\"");
+    c.scratch.extend_from_slice(method.as_bytes());
+    c.scratch.extend_from_slice(b"\",\"params\":");
     write_params(&mut c.scratch)?;
     c.scratch.extend_from_slice(b",\"id\":");
     append_decimal_u64(rpc_id, &mut c.scratch);

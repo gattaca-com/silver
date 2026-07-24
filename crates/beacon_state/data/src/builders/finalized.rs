@@ -1,10 +1,8 @@
 use std::io::{self, Write};
 
-use super::builder_hash;
 use crate::{
     DecomposeError,
     gloas::{BUILDER_REGISTRY_LIMIT, Builder, builder_capacity},
-    hash_tree::FinalizedHashTree,
 };
 
 /// SSZ-serialised `Builder`: pubkey(48) + version(1) + execution_address(20) +
@@ -14,7 +12,6 @@ const BUILDER_SSZ: usize = 93;
 pub struct FinalizedBuilders {
     pub(super) builders: Box<[Builder]>,
     pub(super) count: usize,
-    pub(super) hash: FinalizedHashTree,
 }
 
 impl Default for FinalizedBuilders {
@@ -57,11 +54,7 @@ impl FinalizedBuilders {
             };
         }
 
-        let hash = FinalizedHashTree::from_leaves(
-            builders[..count].iter().map(builder_hash),
-            builder_capacity(count),
-        );
-        Ok(Self { builders, count, hash })
+        Ok(Self { builders, count })
     }
 
     pub(crate) fn ssz_len(&self) -> usize {
@@ -105,8 +98,11 @@ impl FinalizedBuilders {
         self.builders.len()
     }
 
-    #[inline]
-    pub fn hash(&self) -> &FinalizedHashTree {
-        &self.hash
+    pub(super) fn ensure_capacity(&mut self, end: usize) {
+        if end > self.builders.len() {
+            let mut grown = vec![Builder::default(); builder_capacity(end)].into_boxed_slice();
+            grown[..self.count].copy_from_slice(&self.builders[..self.count]);
+            self.builders = grown;
+        }
     }
 }

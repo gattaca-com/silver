@@ -1,10 +1,7 @@
-use silver_ssz::ssz_hash::hash_list;
+use silver_ssz::{merkle::hash_list, progressive::ProgressiveHasher};
 
 use super::{BuildersGroup, BuildersView, FinalizedBuilders, builder_hash};
-use crate::{
-    B256,
-    gloas::{BUILDER_REGISTRY_LIMIT, Builder},
-};
+use crate::{B256, gloas::Builder};
 
 fn builder(seed: u8) -> Builder {
     Builder {
@@ -17,9 +14,10 @@ fn builder(seed: u8) -> Builder {
     }
 }
 
-/// Independent full-recompute over the same effective builders.
+/// Independent full-recompute over the same effective builders — the gloas
+/// `ProgressiveList` shape (the registry is gloas-born, never fulu).
 fn naive_root(view: &BuildersView) -> B256 {
-    hash_list(view.iter(), view.len(), BUILDER_REGISTRY_LIMIT, |b| builder_hash(&b))
+    hash_list(ProgressiveHasher::new(), view.iter().map(|b| builder_hash(&b)))
 }
 
 fn ssz_bytes(builders: &[Builder]) -> Vec<u8> {
@@ -42,7 +40,7 @@ fn base_with(builders: &[Builder]) -> FinalizedBuilders {
 #[test]
 fn empty_registry_root_matches_naive() {
     let mut g = BuildersGroup::new(FinalizedBuilders::default());
-    let wv = g.roll_fresh();
+    let mut wv = g.roll_fresh();
     assert_eq!(wv.len(), 0);
     assert_eq!(wv.hash_root(), naive_root(&wv.reader()));
 }
@@ -51,7 +49,7 @@ fn empty_registry_root_matches_naive() {
 fn base_root_matches_naive() {
     let base: Vec<_> = (0..10).map(builder).collect();
     let mut g = BuildersGroup::new(base_with(&base));
-    let wv = g.roll_fresh();
+    let mut wv = g.roll_fresh();
     assert_eq!(wv.len(), 10);
     assert_eq!(wv.hash_root(), naive_root(&wv.reader()));
 }
@@ -98,13 +96,71 @@ fn finalize_promotes_and_matches_naive() {
     let live = g.finalize(winner, &[winner]);
     assert_eq!(g.finalized().len(), 12);
 
-    let wv = g.roll_from(live[0]);
+    let mut wv = g.roll_from(live[0]);
     assert_eq!(wv.len(), 12);
     assert_eq!(wv.reader().get(1).unwrap().pubkey, [201; 48]);
     assert_eq!(wv.reader().get(4).unwrap().balance, builder(4).balance + 9_000);
     assert_eq!(wv.reader().get(10).unwrap().pubkey, [100; 48]);
     assert_eq!(wv.hash_root(), before);
     assert_eq!(wv.hash_root(), naive_root(&wv.reader()));
+}
+
+#[test]
+fn growth_past_initial_headroom() {
+    // A gloas-fork-born registry starts empty: builder_capacity(0) = 64. Real
+    // onboarding can exceed that between two finalizations, and 85+ builders
+    // cross the progressive segment-3 boundary (chunk 85) — both must regrow
+    // the base and its hash forest instead of panicking.
+    let mut g = BuildersGroup::new(FinalizedBuilders::default());
+
+    let winner = {
+        let mut wv = g.roll_fresh();
+        for i in 0..100u8 {
+            wv.push(builder(i));
+        }
+        assert_eq!(wv.hash_root(), naive_root(&wv.reader()));
+        wv.commit()
+    };
+    let before = g.view(winner).hash_root();
+
+    let live = g.finalize(winner, &[winner]);
+    assert_eq!(g.finalized().len(), 100);
+
+    let mut wv = g.roll_from(live[0]);
+    assert_eq!(wv.hash_root(), before);
+
+    // Keep growing past the regrown capacity in the next window.
+    for i in 100..200u8 {
+        wv.push(builder(i));
+    }
+    assert_eq!(wv.len(), 200);
+    assert_eq!(wv.hash_root(), naive_root(&wv.reader()));
+}
+
+#[test]
+fn survivor_edit_past_base_capacity() {
+    // The descendant's edit at 66 rebases while the pre-promote base is
+    // still capacity 64.
+    let mut g = BuildersGroup::new(FinalizedBuilders::default());
+
+    let winner = {
+        let mut wv = g.roll_fresh();
+        for i in 0..70u8 {
+            wv.push(builder(i));
+        }
+        wv.commit()
+    };
+    let child = {
+        let mut wv = g.roll_from(winner);
+        wv.add_balance(66, 1_000);
+        wv.commit()
+    };
+    let child_before = g.view(child).hash_root();
+
+    let live = g.finalize(winner, &[winner, child]);
+    let sv = g.view(live[1]);
+    assert_eq!(sv.get(66).unwrap().balance, builder(66).balance + 1_000);
+    assert_eq!(sv.hash_root(), child_before);
 }
 
 #[test]
@@ -129,7 +185,7 @@ fn descendant_survives_finalize() {
     let live = g.finalize(parent, &[parent, child]);
     assert_eq!(g.finalized().len(), 11);
 
-    let wv = g.roll_from(live[1]);
+    let mut wv = g.roll_from(live[1]);
     assert_eq!(wv.reader().get(5).unwrap().pubkey, [205; 48]);
     assert_eq!(wv.reader().get(3).unwrap().balance, builder(3).balance + 1_000);
     assert_eq!(wv.reader().get(10).unwrap().balance, builder(100).balance + 2_000);

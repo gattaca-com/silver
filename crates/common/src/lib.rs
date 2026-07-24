@@ -48,7 +48,7 @@ mod gossip;
 mod id;
 mod identity;
 mod spine;
-pub use silver_ssz::{ssz_hash, ssz_view};
+pub use silver_ssz::{merkle, progressive, ssz_hash, ssz_hash_gloas, ssz_view};
 pub mod ticker;
 pub mod tracing;
 mod util;

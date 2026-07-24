@@ -5,7 +5,7 @@ use std::fs;
 mod ef_common;
 
 use ef_common::{load_state, snappy_decode, spec_tests_dir};
-use silver_beacon_state::ssz_hash::{self, sha256};
+use silver_beacon_state::{merkle::sha256, ssz_hash};
 
 #[test]
 fn fulu_single_merkle_proof() {

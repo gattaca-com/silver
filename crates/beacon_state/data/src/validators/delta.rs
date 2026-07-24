@@ -3,10 +3,10 @@ use blst::min_pk::PublicKey;
 use super::{FinalizedValidators, ValidatorsGroup, ValidatorsId, validator_hash};
 use crate::{
     B256, Withdrawals,
-    hash_tree::DeltaHashTree,
+    column::{ColumnReader, ColumnWriteView, ValidatorsHash},
     ring::{Reset, Slot as RingSlot},
     sparse::Edits,
-    types::{BLSPubkey, Epoch, FAR_FUTURE_EPOCH, VALIDATOR_REGISTRY_LIMIT},
+    types::{BLSPubkey, Epoch, FAR_FUTURE_EPOCH},
 };
 
 /// A validator appended in this fork. Only the immutable identity fields are
@@ -38,7 +38,6 @@ pub struct ValidatorsDelta {
     activation_epoch_edits: Edits<Epoch>,
     exit_epoch_edits: Edits<Epoch>,
     withdrawable_epoch_edits: Edits<Epoch>,
-    hash_overlay: DeltaHashTree,
 }
 
 impl ValidatorsDelta {
@@ -84,9 +83,6 @@ impl ValidatorsDelta {
         self.exit_epoch_edits.scatter(&mut base.exit_epoch);
         self.withdrawable_epoch_edits.scatter(&mut base.withdrawable_epoch);
         self.slashed_edits.scatter_bits(&mut base.slashed);
-
-        // 3. Fold the hash overlay into the finalized tree.
-        base.hash.promote_delta(&self.hash_overlay);
     }
 
     /// Mirror of [`BalancesDelta::rebase_and_prune_from`] for the multi-column
@@ -110,55 +106,65 @@ impl ValidatorsDelta {
             &old.credentials_edits,
             &winner.credentials_edits,
             new_count,
-            |i| base.val_withdrawal_credentials[i as usize],
+            |i| winner.unedited(i, |i| base.val_withdrawal_credentials[i], |a| a.credentials),
         );
         self.effective_balance_edits.rebase_and_prune_from(
             &old.effective_balance_edits,
             &winner.effective_balance_edits,
             new_count,
-            |i| base.effective_balance[i as usize],
+            |i| winner.unedited(i, |i| base.effective_balance[i], |_| 0),
         );
         self.slashed_edits.rebase_and_prune_from(
             &old.slashed_edits,
             &winner.slashed_edits,
             new_count,
-            |i| base.is_slashed(i as usize),
+            |i| winner.unedited(i, |i| base.is_slashed(i), |_| false),
         );
         self.activation_eligibility_epoch_edits.rebase_and_prune_from(
             &old.activation_eligibility_epoch_edits,
             &winner.activation_eligibility_epoch_edits,
             new_count,
-            |i| base.activation_eligibility_epoch[i as usize],
+            |i| winner.unedited(i, |i| base.activation_eligibility_epoch[i], |_| FAR_FUTURE_EPOCH),
         );
         self.activation_epoch_edits.rebase_and_prune_from(
             &old.activation_epoch_edits,
             &winner.activation_epoch_edits,
             new_count,
-            |i| base.activation_epoch[i as usize],
+            |i| winner.unedited(i, |i| base.activation_epoch[i], |_| FAR_FUTURE_EPOCH),
         );
         self.exit_epoch_edits.rebase_and_prune_from(
             &old.exit_epoch_edits,
             &winner.exit_epoch_edits,
             new_count,
-            |i| base.exit_epoch[i as usize],
+            |i| winner.unedited(i, |i| base.exit_epoch[i], |_| FAR_FUTURE_EPOCH),
         );
         self.withdrawable_epoch_edits.rebase_and_prune_from(
             &old.withdrawable_epoch_edits,
             &winner.withdrawable_epoch_edits,
             new_count,
-            |i| base.withdrawable_epoch[i as usize],
+            |i| winner.unedited(i, |i| base.withdrawable_epoch[i], |_| FAR_FUTURE_EPOCH),
         );
-
-        self.hash_overlay = old.hash_overlay.clone();
-        self.hash_overlay.rebase(base.hash(), &winner.hash_overlay);
-        base.hash().prune_delta_against(&mut self.hash_overlay, &winner.hash_overlay);
     }
 
-    /// Anchor a freshly-`reset` delta onto `base`: adopt its count and hash
-    /// root (edits/appended already empty). Used by `roll_fresh`.
+    #[inline]
+    fn unedited<T>(
+        &self,
+        i: u32,
+        from_base: impl Fn(usize) -> T,
+        from_appended: impl Fn(&AppendedValidator) -> T,
+    ) -> T {
+        let i = i as usize;
+        if i < self.base_count {
+            from_base(i)
+        } else {
+            from_appended(&self.appended[i - self.base_count])
+        }
+    }
+
+    /// Anchor a freshly-`reset` delta onto `base`: adopt its count
+    /// (edits/appended already empty). Used by `roll_fresh`.
     pub(super) fn anchor_at(&mut self, base: &FinalizedValidators) {
         self.base_count = base.validator_count();
-        self.hash_overlay = DeltaHashTree::new_at(base.hash());
     }
 }
 
@@ -173,7 +179,6 @@ impl Reset for ValidatorsDelta {
         self.activation_epoch_edits.clear();
         self.exit_epoch_edits.clear();
         self.withdrawable_epoch_edits.clear();
-        self.hash_overlay = DeltaHashTree::default();
     }
 
     fn reset_from(&mut self, other: &Self) {
@@ -187,8 +192,6 @@ impl Reset for ValidatorsDelta {
         self.activation_epoch_edits.clone_from(&other.activation_epoch_edits);
         self.exit_epoch_edits.clone_from(&other.exit_epoch_edits);
         self.withdrawable_epoch_edits.clone_from(&other.withdrawable_epoch_edits);
-        // O(1) — `DeltaHashTree::Clone` bumps the Arc refcount.
-        self.hash_overlay = other.hash_overlay.clone();
     }
 }
 
@@ -200,12 +203,17 @@ impl Reset for ValidatorsDelta {
 pub struct ValidatorsView<'a> {
     base: &'a FinalizedValidators,
     delta: &'a ValidatorsDelta,
+    hash: ColumnReader<'a, ValidatorsHash>,
 }
 
 impl<'a> ValidatorsView<'a> {
     #[inline]
-    pub(crate) fn new(base: &'a FinalizedValidators, delta: &'a ValidatorsDelta) -> Self {
-        Self { base, delta }
+    pub(crate) fn new(
+        base: &'a FinalizedValidators,
+        delta: &'a ValidatorsDelta,
+        hash: ColumnReader<'a, ValidatorsHash>,
+    ) -> Self {
+        Self { base, delta, hash }
     }
 
     #[inline]
@@ -329,17 +337,12 @@ impl<'a> ValidatorsView<'a> {
         self.base.find_by_pubkey(pk).map(|i| i as u32)
     }
 
-    /// SSZ `hash_tree_root` of the validators registry
-    /// (`List[Validator, VALIDATOR_REGISTRY_LIMIT]`) from the persistent hash
-    /// overlay: finalized base tree + this fork's cached delta-node hashes,
-    /// zero work for untouched subtrees. The physical tree only spans the
-    /// registry capacity's leaves, so extend its root with zero subtrees up to
-    /// the registry-limit depth, then mix in the validator count.
+    /// SSZ `hash_tree_root` of the validators registry, in this fork's own
+    /// shape (fulu `List[Validator, N]` padding vs the gloas
+    /// `ProgressiveList`).
     #[inline]
     pub fn hash_root(&self) -> B256 {
-        const LIST_DEPTH: u32 = VALIDATOR_REGISTRY_LIMIT.trailing_zeros();
-        let len = self.delta.base_count + self.delta.appended.len();
-        self.delta.hash_overlay.ssz_list_root(self.base.hash(), LIST_DEPTH, len)
+        self.hash.hash_root()
     }
 
     /// Recompute the Validator-container hash leaf for `idx` from the current
@@ -459,6 +462,7 @@ impl<'a> ValidatorsView<'a> {
 pub struct ValidatorsWriteView<'a> {
     base: &'a FinalizedValidators,
     fork: RingSlot<'a, ValidatorsGroup, ValidatorsDelta>,
+    hash: ColumnWriteView<'a, ValidatorsHash>,
 }
 
 impl<'a> ValidatorsWriteView<'a> {
@@ -466,18 +470,29 @@ impl<'a> ValidatorsWriteView<'a> {
     pub(super) fn new(
         base: &'a FinalizedValidators,
         fork: RingSlot<'a, ValidatorsGroup, ValidatorsDelta>,
+        hash: ColumnWriteView<'a, ValidatorsHash>,
     ) -> Self {
-        Self { base, fork }
+        Self { base, fork, hash }
     }
 
     #[inline]
-    pub fn commit(self) -> ValidatorsId {
-        self.fork.commit()
+    pub fn commit(mut self) -> ValidatorsId {
+        self.hash.rehash_unsorted();
+        ValidatorsId { data: self.fork.commit(), hash: self.hash.commit() }
     }
 
     #[inline]
     pub fn reader(&self) -> ValidatorsView<'_> {
-        ValidatorsView { base: self.base, delta: &self.fork }
+        ValidatorsView { base: self.base, delta: &self.fork, hash: self.hash.reader() }
+    }
+
+    /// Reader with pending deferred leaf writes folded in — required before
+    /// hashing the in-flight fork; plain [`reader`](Self::reader) suffices for
+    /// value reads.
+    #[inline]
+    pub fn hashed_reader(&mut self) -> ValidatorsView<'_> {
+        self.hash.rehash_unsorted();
+        self.reader()
     }
 
     // All reads delegate to the read view (`reader()` is a two-pointer `Copy`,
@@ -499,8 +514,8 @@ impl<'a> ValidatorsWriteView<'a> {
     }
 
     #[inline]
-    pub fn hash_root(&self) -> B256 {
-        self.reader().hash_root()
+    pub fn hash_root(&mut self) -> B256 {
+        self.hashed_reader().hash_root()
     }
 
     #[inline]
@@ -576,11 +591,19 @@ impl<'a> ValidatorsWriteView<'a> {
         self.reader().iter_credentials()
     }
 
-    /// Recompute and store the hash overlay leaf for `idx` — every mutator
-    /// calls this so the overlay stays consistent with the field edits.
+    /// Recompute and store the hash leaf for `idx` — every mutator calls this
+    /// so the hash column stays consistent with the field edits.
     fn refresh_leaf(&mut self, idx: u32) {
         let leaf = self.reader().recompute_leaf(idx);
-        self.fork.hash_overlay.set_leaf(self.base.hash(), idx as usize, leaf);
+        self.hash.set_deferred(idx, leaf);
+    }
+
+    /// The fork block's EIP-7688 hash migration: this fork's registry root
+    /// switches to the gloas `ProgressiveList` shape. Pending deferred writes
+    /// fold in first — the migration rebuilds from the leaf bytes.
+    pub fn adopt_gloas(&mut self) {
+        self.hash.rehash_unsorted();
+        self.hash.migrate_to_gloas();
     }
 
     /// Append a fresh validator with spec-default Validator-container fields.
@@ -593,6 +616,8 @@ impl<'a> ValidatorsWriteView<'a> {
             pubkey_decompressed: pk_decompressed,
             credentials: creds,
         });
+        let appended = self.hash.append_empty();
+        debug_assert_eq!(appended, idx, "hash column count out of step with registry");
         self.refresh_leaf(idx);
         idx
     }
@@ -609,10 +634,9 @@ impl<'a> ValidatorsWriteView<'a> {
         self.refresh_leaf(ix);
     }
 
-    /// Batch effective-balance update — mirrors a column `set_many`: one merge
-    /// into the field edits, then one batched hash-overlay rebuild over all
-    /// touched validator leaves (vs `set_effective_balance` rebuilding the
-    /// shared ancestors per call). `changes` must be ascending and distinct.
+    /// Batch effective-balance update: one merge into the field edits, then
+    /// per-leaf deferred hash writes (rehash stays batched at commit/read).
+    /// `changes` must be ascending and distinct.
     pub fn set_effective_balance_many(&mut self, changes: &[(u32, u64)]) {
         if changes.is_empty() {
             return;
@@ -622,9 +646,10 @@ impl<'a> ValidatorsWriteView<'a> {
             "set_effective_balance_many input must be ascending with distinct indices",
         );
         self.fork.effective_balance_edits.merge_in_place(changes);
-        let leaves: Vec<(u32, B256)> =
-            changes.iter().map(|&(ix, _)| (ix, self.reader().recompute_leaf(ix))).collect();
-        self.fork.hash_overlay.set_leaves(self.base.hash(), &leaves);
+        for &(ix, _) in changes {
+            let leaf = self.reader().recompute_leaf(ix);
+            self.hash.set_deferred(ix, leaf);
+        }
     }
 
     #[inline]

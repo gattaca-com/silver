@@ -2,12 +2,12 @@ use super::{
     PendingId,
     finalized::{Queue, QueueItem},
     group::QueueGroup,
+    hasher::QueueHasher,
 };
 use crate::{
     B256,
     gloas::BuilderPendingWithdrawal,
     ring::{Id, Reset, Slot},
-    ssz_hash::{MerkleStack, merkle_finalize, merkle_push, mix_in_length},
     types::{PendingConsolidation, PendingDeposit, PendingPartialWithdrawal},
 };
 
@@ -18,7 +18,7 @@ use crate::{
 /// off `appended` physically) so [`rebase`](Self::rebase) can recover how much
 /// of an inherited prefix this fork already drained.
 ///
-/// `frontier` is the [`MerkleStack`] of the effective queue's leaves
+/// `hasher` is the [`QueueHasher`] over the effective queue's leaves
 /// (`base[drain..] ++ appended`): appends extend it in place and the root
 /// finalizes a clone (both O(log n)); only a front drain forces an O(n)
 /// rebuild. Keyed by the leaf *sequence* — not base position — it's
@@ -28,41 +28,58 @@ use crate::{
 pub(super) struct QueueDelta<Q> {
     pub(super) drain_offset: u32,
     appended: Queue<Q>,
-    frontier: MerkleStack,
+    hasher: QueueHasher,
 }
 
-// Manual impl: the derive would spuriously bind `Q: Default`.
-impl<Q> Default for QueueDelta<Q> {
+// Manual impl (not derived, which would spuriously bind `Q: Default`); the
+// `QueueItem` bound is real — an empty fulu hasher needs `Q::SSZ_LIMIT`.
+impl<Q: QueueItem> Default for QueueDelta<Q> {
     fn default() -> Self {
-        Self { drain_offset: 0, appended: Queue::default(), frontier: MerkleStack::new() }
+        Self {
+            drain_offset: 0,
+            appended: Queue::default(),
+            hasher: QueueHasher::empty(false, Q::SSZ_LIMIT),
+        }
     }
 }
 
 impl<Q: QueueItem> QueueDelta<Q> {
-    /// (Re)build the frontier from `base[drain..] ++ appended`'s cached leaves.
+    /// (Re)build the hasher from `base[drain..] ++ appended`'s cached leaves.
     /// Called only when the front moves (a fresh anchor or a drain); appends
-    /// extend it in place. The frontier parks one subtree root per set bit of
+    /// extend it in place. The hasher parks one subtree root per set bit of
     /// the length, so [`root`](Self::root) is O(log n).
-    pub(super) fn rebuild_frontier(&mut self, base: &Queue<Q>) {
+    pub(super) fn rebuild_hasher(&mut self, base: &Queue<Q>, gloas: bool) {
         let start = (self.drain_offset as usize).min(base.len());
-        let mut frontier = MerkleStack::new();
+        let mut hasher = QueueHasher::empty(gloas, Q::SSZ_LIMIT);
         for &leaf in base.leaves()[start..].iter().chain(self.appended.leaves()) {
-            merkle_push(&mut frontier, leaf);
+            hasher.push(leaf);
         }
-        self.frontier = frontier;
+        self.hasher = hasher;
+    }
+
+    /// The fork block's EIP-7688 migration: rebuild this fork's hasher in
+    /// the gloas shape. No-op if already gloas.
+    pub(super) fn adopt_gloas(&mut self, base: &Queue<Q>) {
+        if !self.hasher.is_gloas() {
+            self.rebuild_hasher(base, true);
+        }
+    }
+
+    pub(super) fn hasher_is_gloas(&self) -> bool {
+        self.hasher.is_gloas()
     }
 
     #[inline]
     pub(super) fn push(&mut self, e: Q) {
         let leaf = self.appended.push(e);
-        merkle_push(&mut self.frontier, leaf);
+        self.hasher.push(leaf);
     }
 
     /// Drop the first `n` items from the effective queue. `drain_offset` takes
     /// the full `n` (uncapped); the part past the base comes off `appended`
-    /// physically. The front moved, so the frontier is rebuilt — skipped for a
+    /// physically. The front moved, so the hasher is rebuilt — skipped for a
     /// no-op drain (the common case: deposits too recent to process leave the
-    /// front, and hence the frontier, untouched).
+    /// front, and hence the hasher, untouched).
     pub(super) fn drain(&mut self, base: &Queue<Q>, n: usize) {
         if n == 0 {
             return;
@@ -73,21 +90,20 @@ impl<Q: QueueItem> QueueDelta<Q> {
         if from_appended > 0 {
             self.appended.drain_front(from_appended);
         }
-        self.rebuild_frontier(base);
+        self.rebuild_hasher(base, self.hasher.is_gloas());
     }
 
-    /// SSZ `hash_tree_root` of a `List[Q, SSZ_LIMIT]` of `len` items: finalize
-    /// a clone of the frontier (≤ 48 parked roots, so the cache survives),
+    /// SSZ `hash_tree_root` of the queue at `len` items, in this fork's
+    /// hasher shape (see [`QueueHasher::root`]),
     /// pad to the list depth, and mix in the length.
     pub(super) fn root(&self, len: usize) -> B256 {
-        let depth = Q::SSZ_LIMIT.next_power_of_two().trailing_zeros() as u8;
-        mix_in_length(&merkle_finalize(self.frontier, depth), len)
+        self.hasher.root(len)
     }
 
     /// Re-base onto a freshly-promoted base: subtract the `winner`'s drain
     /// (now folded into the base), and drop the inherited promoted-`appended`
     /// prefix this delta hasn't already drained from its own copy. The
-    /// effective queue is unchanged, so the frontier needs no touch.
+    /// effective queue is unchanged, so the hasher needs no touch.
     pub(super) fn rebase(&mut self, winner: &Self, old_base_len: usize) {
         debug_assert!(
             self.drain_offset >= winner.drain_offset,
@@ -120,13 +136,13 @@ impl<Q: QueueItem> Reset for QueueDelta<Q> {
     fn reset(&mut self) {
         self.drain_offset = 0;
         self.appended.clear();
-        self.frontier.clear();
+        self.hasher = QueueHasher::empty(false, Q::SSZ_LIMIT);
     }
 
     fn reset_from(&mut self, other: &Self) {
         self.drain_offset = other.drain_offset;
         self.appended.clone_from(&other.appended);
-        self.frontier.clone_from(&other.frontier);
+        self.hasher.clone_from(&other.hasher);
     }
 }
 
@@ -169,7 +185,7 @@ impl<'a, Q: QueueItem> QueueView<'a, Q> {
         self.len() == 0
     }
 
-    /// SSZ `hash_tree_root` — folds the cached frontier, padding + length only
+    /// SSZ `hash_tree_root` — folds the cached hasher, padding + length only
     /// (no per-element hashing).
     #[inline]
     pub fn hash_root(&self) -> B256 {
@@ -178,7 +194,7 @@ impl<'a, Q: QueueItem> QueueView<'a, Q> {
 }
 
 /// Write view over one queue: the appends/drains, each keeping the delta's
-/// frontier consistent, plus `commit` of the ring slot. Mirror of
+/// hasher consistent, plus `commit` of the ring slot. Mirror of
 /// [`ColumnWriteView`](crate::ColumnWriteView); held per queue by
 /// [`PendingWriteView`].
 pub struct QueueWriteView<'a, Q: QueueItem> {
@@ -195,6 +211,10 @@ impl<'a, Q: QueueItem> QueueWriteView<'a, Q> {
     #[inline]
     pub(super) fn commit(self) -> Id<QueueGroup<Q>> {
         self.fork.commit()
+    }
+
+    pub fn adopt_gloas(&mut self) {
+        self.fork.adopt_gloas(self.base);
     }
 
     #[inline]
@@ -243,6 +263,14 @@ pub struct PendingWriteView<'a> {
 }
 
 impl PendingWriteView<'_> {
+    /// EIP-7688 hash migration of all four queues' hashers.
+    pub fn adopt_gloas(&mut self) {
+        self.deposits.adopt_gloas();
+        self.partial_withdrawals.adopt_gloas();
+        self.consolidations.adopt_gloas();
+        self.builder_withdrawals.adopt_gloas();
+    }
+
     #[inline]
     pub fn commit(self) -> PendingId {
         PendingId {

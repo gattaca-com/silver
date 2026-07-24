@@ -8,7 +8,7 @@ use flux_profiler::timed;
 use fxhash::FxHashMap;
 use silver_common::{
     Enr, P2pStreamId, PeerEvent, RpcRequestInbound, SyncUpdate, TCacheRead, TRandomAccess, TRead,
-    ssz_hash::B256,
+    merkle::B256,
     ssz_view::{
         BeaconBlocksByRangeRequestView, BeaconBlocksByRootRequestView,
         DataColumnSidecarsByRangeRequestView, DataColumnsByRootIdentifierView,

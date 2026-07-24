@@ -13,9 +13,10 @@ use silver_beacon_state::{
     stf,
 };
 use silver_beacon_state_data::{
-    B256, EpochGroup, EpochView, LongtailGroup, SpecConfig, StateId, StateWriterView,
-    effective_randao_mixes_into, effective_slashings_into,
+    B256, EpochGroup, EpochView, LongtailGroup, SLOTS_PER_EPOCH, SpecConfig, StateId,
+    StateWriterView, effective_randao_mixes_into, effective_slashings_into,
 };
+use silver_common::ssz_view::SignedBeaconBlockView;
 
 #[path = "support/loaded_state.rs"]
 mod loaded_state;
@@ -32,7 +33,7 @@ impl LoadedState {
     /// hash_tree_root of the loaded state (single-leaf merkle-proof checks).
     pub fn state_root(&mut self) -> [u8; 32] {
         let sid = self.state_id;
-        let (view, epoch, longtail) = self.view();
+        let (mut view, epoch, longtail) = self.view();
         let rv = view.read(epoch.view_opt(sid.epoch_idx), longtail.view_opt(sid.longtail_idx));
         hash_tree_root_state(&rv, &mut StateHashScratch::new())
     }
@@ -110,17 +111,17 @@ pub fn compare_states(label: &str, a: &mut LoadedState, b: &mut LoadedState) -> 
 
     let sid_a = a.state_id;
     let sid_b = b.state_id;
-    let (va, epoch_a, longtail_a) = a.view();
-    let (vb, epoch_b, longtail_b) = b.view();
+    let (mut va, epoch_a, longtail_a) = a.view();
+    let (mut vb, epoch_b, longtail_b) = b.view();
 
     let mut scratch = StateHashScratch::new();
     let mut root_of =
-        |view: &StateWriterView, sid: StateId, epoch: &EpochGroup, longtail: &LongtailGroup| {
+        |view: &mut StateWriterView, sid: StateId, epoch: &EpochGroup, longtail: &LongtailGroup| {
             let rv = view.read(epoch.view_opt(sid.epoch_idx), longtail.view_opt(sid.longtail_idx));
             hash_tree_root_state(&rv, &mut scratch)
         };
-    let root_a = root_of(&va, sid_a, epoch_a, longtail_a);
-    let root_b = root_of(&vb, sid_b, epoch_b, longtail_b);
+    let root_a = root_of(&mut va, sid_a, epoch_a, longtail_a);
+    let root_b = root_of(&mut vb, sid_b, epoch_b, longtail_b);
     if root_a == root_b {
         return diffs;
     }
@@ -140,8 +141,40 @@ pub fn compare_states(label: &str, a: &mut LoadedState, b: &mut LoadedState) -> 
     diff_rings(&mut diffs, &va, &ea, &vb, &eb);
     diff_latest_block_header(&mut diffs, &va, &vb);
     diff_proposer_lookahead(&mut diffs, &ea, &eb);
+    diff_builders_and_pending(&mut diffs, &va, &vb);
 
     diffs
+}
+
+fn diff_builders_and_pending(diffs: &mut Vec<String>, va: &StateWriterView, vb: &StateWriterView) {
+    let (ba, bb) = (va.builders.reader(), vb.builders.reader());
+    if ba.len() != bb.len() {
+        diffs.push(format!("  builders_len: {} vs {}", ba.len(), bb.len()));
+    }
+    for (i, (x, y)) in ba.iter().zip(bb.iter()).enumerate() {
+        if x != y {
+            diffs.push(format!(
+                "  builders[{i}]: pk[0]={} bal={} dep_epoch={} vs pk[0]={} bal={} dep_epoch={}",
+                x.pubkey[0], x.balance, x.deposit_epoch, y.pubkey[0], y.balance, y.deposit_epoch
+            ));
+        }
+    }
+
+    let (da, db) = (va.pending.deposits.reader(), vb.pending.deposits.reader());
+    if da.len() != db.len() {
+        diffs.push(format!("  pending_deposits_len: {} vs {}", da.len(), db.len()));
+    }
+    for i in 0..da.len().min(db.len()) {
+        let (x, y) = (da.get(i), db.get(i));
+        if (x.pubkey, x.amount, x.slot, x.withdrawal_credentials.0) !=
+            (y.pubkey, y.amount, y.slot, y.withdrawal_credentials.0)
+        {
+            diffs.push(format!(
+                "  pending_deposits[{i}]: pk[0]={} amt={} slot={} vs pk[0]={} amt={} slot={}",
+                x.pubkey[0], x.amount, x.slot, y.pubkey[0], y.amount, y.slot
+            ));
+        }
+    }
 }
 
 fn diff_scalars(
