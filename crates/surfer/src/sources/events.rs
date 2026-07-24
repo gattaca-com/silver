@@ -2,8 +2,7 @@
 //! joins the spine as a broadcast consumer (its own cursor; the tiles are
 //! untouched) and derives each stage's wall time from the `InternalMessage`
 //! envelope: `ingestion_t` is copied verbatim as a block flows tile→tile, and
-//! `publish_delta` records how long after ingestion each stage published. No
-//! producer-side changes.
+//! `publish_delta` records how long after ingestion each stage published.
 //!
 //! Two queues carry everything, keyed by block root:
 //! - `EngineReq::NewPayload` — ingestion time ≈ gossip arrival (received),
@@ -26,29 +25,32 @@ pub const MAINNET_SLOT_MS: u64 = 12_000;
 
 const ROWS_CAP: usize = 64;
 
-/// Stage wall-clock times (unix epoch), plus `received` as the slot-relative
-/// arrival anchor for display. `Timeline` turns these into durations; since the
-/// stage times are absolute, its deltas are plain differences.
+/// Replay and backfill ingest historical blocks at the current wall clock, so
+/// beyond this much slack the arrival says nothing about the block's slot. The
+/// second slot keeps genuinely late arrivals.
+const LIVE_ARRIVAL_SLOTS: u64 = 2;
+
 pub struct BlockRow {
     pub slot: u64,
     pub block_root: [u8; 32],
     pub source: BlockSource,
     /// Absolute arrival, for correlating with logs and as the delta baseline.
     received_at: Nanos,
-    /// Arrival offset into the slot — the displayed anchor.
-    received: Nanos,
+    /// Arrival offset into the block's own slot.
+    received: Option<Nanos>,
     el_sent: Nanos,
     applied: Option<Nanos>,
     verdict: Option<(PayloadValidationStatus, Nanos)>,
 }
 
-/// One slot-start anchor plus a duration per step. `stf` and `el` both begin at
-/// EL-sent and run concurrently, so they overlap rather than sum into `total`.
+/// `stf` and `el` both begin at EL-sent and run concurrently, so they overlap
+/// rather than sum into `total`.
 pub struct Timeline {
     /// Absolute wall-clock arrival (unix epoch).
     pub received_at: Nanos,
-    /// Slot start → block arrival: the single anchor.
-    pub received: Nanos,
+    /// Slot start → block arrival; `None` once the arrival clock no longer
+    /// belongs to the block's slot.
+    pub received: Option<Nanos>,
     /// arrival → EL-sent: CL validation up to dispatching `newPayload`.
     pub validate: Nanos,
     /// EL-sent → applied: state transition + commit.
@@ -96,28 +98,25 @@ impl EventsTile {
         }
     }
 
-    fn slot_of(&self, t: Nanos) -> u64 {
-        t.saturating_sub(self.genesis).0 / self.slot_dur.0
-    }
-
-    fn offset_in_slot(&self, t: Nanos, slot: u64) -> Nanos {
-        t.saturating_sub(self.genesis + self.slot_dur * slot)
+    fn offset_in_slot(&self, t: Nanos, slot: u64) -> Option<Nanos> {
+        let start = self.genesis + self.slot_dur * slot;
+        let live = start..start + self.slot_dur * LIVE_ARRIVAL_SLOTS;
+        live.contains(&t).then(|| t - start)
     }
 
     fn on_engine_req(&mut self, m: &InternalMessage<EngineReq>) {
         match *m.data() {
             EngineReq::NewPayload(req) => {
                 let received = m.ingestion_time().real();
-                let slot = self.slot_of(received);
                 if self.rows.len() == ROWS_CAP {
                     self.rows.pop_front();
                 }
                 self.rows.push_back(BlockRow {
-                    slot,
+                    slot: req.slot,
                     block_root: req.block_root,
                     source: req.block_source,
                     received_at: received,
-                    received: self.offset_in_slot(received, slot),
+                    received: self.offset_in_slot(received, req.slot),
                     el_sent: m.tracking_timestamp().publish_t(),
                     applied: None,
                     verdict: None,
@@ -186,9 +185,8 @@ impl Events {
         &self.tile.rows
     }
 
-    /// Attestation deadline as an offset into the slot: 1/3 of the slot (4s on
-    /// mainnet), when validators are expected to have attested. Assumes the
-    /// pre-Gloas fraction.
+    /// Offset into the slot by which validators are expected to have attested.
+    /// Assumes the pre-Gloas fraction.
     pub fn attestation_deadline(&self) -> Nanos {
         self.tile.slot_dur / 3u64
     }
@@ -231,6 +229,7 @@ mod tests {
 
     fn new_payload(
         root: [u8; 32],
+        slot: u64,
         source: BlockSource,
         ingestion: Nanos,
     ) -> InternalMessage<EngineReq> {
@@ -238,6 +237,7 @@ mod tests {
             EngineReq::NewPayload(EngineNewPayloadReq {
                 data: tcache_read(),
                 block_root: root,
+                slot,
                 block_source: source,
             }),
             ingestion,
@@ -271,15 +271,14 @@ mod tests {
         )
     }
 
-    /// Full lifecycle: the anchor plus a duration per step, with el concurrent
-    /// with stf. Stage times are encoded via each message's ingestion (publish
-    /// delta is zero), so `validate` is zero here.
+    /// Stage times are encoded via each message's ingestion (publish delta is
+    /// zero), so `validate` is zero here.
     #[test]
     fn block_timeline() {
         let mut tile = EventsTile::new(GENESIS_SECS, SLOT_MS);
         let root = [1u8; 32];
 
-        tile.on_engine_req(&new_payload(root, BlockSource::Gossip, at(2, 300)));
+        tile.on_engine_req(&new_payload(root, 2, BlockSource::Gossip, at(2, 300)));
         tile.on_engine_req(&fcu(root, at(2, 460)));
         tile.on_engine_resp(&verdict(root, PayloadValidationStatus::Valid, at(2, 520)));
 
@@ -287,7 +286,7 @@ mod tests {
         assert_eq!(tile.rows[0].slot, 2);
         let t = tile.rows[0].timeline();
         assert_eq!(t.received_at, at(2, 300));
-        assert_eq!(t.received, Nanos(300 * MS));
+        assert_eq!(t.received, Some(Nanos(300 * MS)));
         assert_eq!(t.validate, Nanos(0));
         assert_eq!(t.stf, Some(Nanos(160 * MS)));
         assert_eq!(t.el, Some(Nanos(220 * MS)));
@@ -303,7 +302,7 @@ mod tests {
         let mut tile = EventsTile::new(GENESIS_SECS, SLOT_MS);
         let root = [2u8; 32];
 
-        tile.on_engine_req(&new_payload(root, BlockSource::Rpc, at(7, 11_900)));
+        tile.on_engine_req(&new_payload(root, 7, BlockSource::Rpc, at(7, 11_900)));
         tile.on_engine_req(&fcu(root, at(7, 12_000)));
         tile.on_engine_req(&fcu(root, at(7, 13_000)));
         tile.on_engine_resp(&verdict(root, PayloadValidationStatus::Syncing, at(8, 500)));
@@ -313,5 +312,21 @@ mod tests {
         assert_eq!(t.stf, Some(Nanos(100 * MS)));
         assert_eq!(t.el, Some(Nanos(600 * MS)));
         assert_eq!(t.verdict, Some(PayloadValidationStatus::Syncing));
+    }
+
+    /// The stage deltas, being differences between the block's own stamps, hold
+    /// even once the arrival clock is unrelated to the slot.
+    #[test]
+    fn replayed_block_has_no_slot_offset() {
+        let mut tile = EventsTile::new(GENESIS_SECS, SLOT_MS);
+        let root = [3u8; 32];
+
+        tile.on_engine_req(&new_payload(root, 7, BlockSource::Rpc, at(900, 4_000)));
+        tile.on_engine_req(&fcu(root, at(900, 4_050)));
+
+        assert_eq!(tile.rows[0].slot, 7);
+        let t = tile.rows[0].timeline();
+        assert_eq!(t.received, None);
+        assert_eq!(t.stf, Some(Nanos(50 * MS)));
     }
 }

@@ -764,6 +764,7 @@ pub struct EngineFcuReq {
 pub struct EngineNewPayloadReq {
     pub data: TCacheRead,
     pub block_root: [u8; 32],
+    pub slot: u64,
     pub block_source: BlockSource,
 }
 
