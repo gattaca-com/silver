@@ -25,7 +25,7 @@ use crate::{
 /// base-swap-invariant: `rebase`/`promote` preserve the effective queue, so it
 /// survives finalization untouched.
 #[derive(Clone)]
-pub(super) struct QueueDelta<Q> {
+pub(crate) struct QueueDelta<Q> {
     pub(super) drain_offset: u32,
     appended: Queue<Q>,
     hasher: QueueHasher,
@@ -199,12 +199,12 @@ impl<'a, Q: QueueItem> QueueView<'a, Q> {
 /// [`PendingWriteView`].
 pub struct QueueWriteView<'a, Q: QueueItem> {
     base: &'a Queue<Q>,
-    fork: Slot<'a, QueueGroup<Q>, QueueDelta<Q>>,
+    fork: Slot<'a, QueueGroup<Q>>,
 }
 
 impl<'a, Q: QueueItem> QueueWriteView<'a, Q> {
     #[inline]
-    pub(super) fn new(base: &'a Queue<Q>, fork: Slot<'a, QueueGroup<Q>, QueueDelta<Q>>) -> Self {
+    pub(super) fn new(base: &'a Queue<Q>, fork: Slot<'a, QueueGroup<Q>>) -> Self {
         Self { base, fork }
     }
 

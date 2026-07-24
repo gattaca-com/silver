@@ -6,7 +6,7 @@ use super::{
 };
 use crate::{
     reanchor::reanchor_survivors,
-    ring::{Id, Reset, Ring},
+    ring::{Id, Reset, Ring, RingGroup},
     types::SLOTS_RING_N,
 };
 
@@ -17,9 +17,13 @@ use crate::{
 /// read by the checkpoint-persist thread, so it's guarded by `persist_lock`.
 pub struct QueueGroup<Q: QueueItem> {
     finalized: Queue<Q>,
-    deltas: Ring<Self, QueueDelta<Q>, SLOTS_RING_N>,
+    deltas: Ring<Self>,
     persist_lock: Mutex<()>,
     base_gloas: bool,
+}
+
+impl<Q: QueueItem> RingGroup for QueueGroup<Q> {
+    type Entry = QueueDelta<Q>;
 }
 
 impl<Q: QueueItem> QueueGroup<Q> {
@@ -28,7 +32,7 @@ impl<Q: QueueItem> QueueGroup<Q> {
     pub(super) fn from_ssz(bytes: &[u8]) -> Self {
         Self {
             finalized: Queue::from_ssz(bytes),
-            deltas: Ring::default(),
+            deltas: Ring::new(SLOTS_RING_N),
             persist_lock: Mutex::new(()),
             base_gloas: false,
         }

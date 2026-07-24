@@ -10,7 +10,7 @@ use flux_profiler::timed;
 
 use crate::{
     reanchor::reanchor_survivors,
-    ring::{Id, Reset, Ring},
+    ring::{Id, Reset, Ring, RingGroup},
     types::SLOTS_RING_N,
 };
 
@@ -21,12 +21,16 @@ pub type Eth1Id = Id<Eth1Group>;
 /// read can't dangle); forks carry only their appends since finalization.
 pub struct Eth1Group {
     finalized: Eth1Votes,
-    deltas: Ring<Self, Eth1VotesDelta, SLOTS_RING_N>,
+    deltas: Ring<Self>,
+}
+
+impl RingGroup for Eth1Group {
+    type Entry = Eth1VotesDelta;
 }
 
 impl Eth1Group {
     pub fn new(finalized: Eth1Votes) -> Self {
-        Self { finalized, deltas: Ring::default() }
+        Self { finalized, deltas: Ring::new(SLOTS_RING_N) }
     }
 
     #[inline]

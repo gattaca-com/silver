@@ -11,7 +11,7 @@ use crate::{
 /// the clears — non-zero means the finalized list is out of scope for this
 /// fork.
 #[derive(Clone, Default)]
-pub(super) struct Eth1VotesDelta {
+pub(crate) struct Eth1VotesDelta {
     resets: u32,
     appended: Vec<Eth1Data>,
 }
@@ -102,12 +102,12 @@ impl<'a> Eth1View<'a> {
 
 pub struct Eth1WriteView<'a> {
     base: &'a Eth1Votes,
-    fork: Slot<'a, Eth1Group, Eth1VotesDelta>,
+    fork: Slot<'a, Eth1Group>,
 }
 
 impl<'a> Eth1WriteView<'a> {
     #[inline]
-    pub(super) fn new(base: &'a Eth1Votes, fork: Slot<'a, Eth1Group, Eth1VotesDelta>) -> Self {
+    pub(super) fn new(base: &'a Eth1Votes, fork: Slot<'a, Eth1Group>) -> Self {
         Self { base, fork }
     }
 

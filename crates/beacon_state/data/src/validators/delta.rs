@@ -461,7 +461,7 @@ impl<'a> ValidatorsView<'a> {
 /// freezes the id.
 pub struct ValidatorsWriteView<'a> {
     base: &'a FinalizedValidators,
-    fork: RingSlot<'a, ValidatorsGroup, ValidatorsDelta>,
+    fork: RingSlot<'a, ValidatorsGroup>,
     hash: ColumnWriteView<'a, ValidatorsHash>,
 }
 
@@ -469,7 +469,7 @@ impl<'a> ValidatorsWriteView<'a> {
     #[inline]
     pub(super) fn new(
         base: &'a FinalizedValidators,
-        fork: RingSlot<'a, ValidatorsGroup, ValidatorsDelta>,
+        fork: RingSlot<'a, ValidatorsGroup>,
         hash: ColumnWriteView<'a, ValidatorsHash>,
     ) -> Self {
         Self { base, fork, hash }

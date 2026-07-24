@@ -26,11 +26,12 @@ use std::{
 
 use silver_beacon_state_data::{B256, BeaconStateOwner, StateId};
 
-// Strictly below the slot-group ring capacity (256), which both the visibility
-// forks (one per iteration) and the finalize-winner forks (one per 8) draw
-// from. The publish-state-id protocol does NOT guard against wrap-around:
-// rolling past N would overwrite a slot the reader may still be inspecting.
-const ITERATIONS: u64 = 200;
+// The first phase rolls with no finalize, so the slot ring outgrows its
+// initial capacity (256) mid-run — copy-grows race the live reader through
+// the real owner/reader stack (before growable rings this would panic with
+// "would trample head"). Finalization then resumes for the rest of the run.
+const ITERATIONS: u64 = 600;
+const FINALIZE_FROM: u64 = 300;
 
 // Two adjacent cells in the finalized `block_roots` circular buffer. The base
 // slot is held at 0, so `promote` always writes the delta's two roots to cells
@@ -152,7 +153,7 @@ fn concurrent_reads_observe_consistent_state() {
         // two roots painted with the same tag (cells 0,1 — base slot stays 0).
         // Both cells land under one `WriteGuard`; readers must see them matched
         // on every snapshot or the seqlock is broken.
-        if s % 8 == 7 {
+        if s >= FINALIZE_FROM && s % 8 == 7 {
             let tag = slot_tag(s);
             let winner = {
                 let mut g = control.write();
@@ -170,9 +171,10 @@ fn concurrent_reads_observe_consistent_state() {
     }
 
     // The reader self-terminates once it has observed both invariants; join
-    // blocks until then. The final published state is stable and satisfies them
-    // (last iter s=199 is a finalize: base cells 0,1 and the head delta all
-    // tagged slot_tag(199)), so this converges with no timing assumptions.
+    // blocks until then. The final published state is stable and satisfies
+    // them (the last iteration is a finalize: base cells 0,1 and the head
+    // delta all tagged with the same slot tag), so this converges with no
+    // timing assumptions.
     reader.join().expect("reader thread panicked");
 
     let r = reads.load(Ordering::Relaxed);

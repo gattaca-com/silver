@@ -14,7 +14,7 @@ use crate::{
     column::{ColumnGroup, ValidatorsHash},
     merkle::{hash_fixed_bytes, merkleize, uint64_chunk},
     reanchor::reanchor_survivors,
-    ring::{Id, Ring},
+    ring::{Id, Ring, RingGroup},
     types::{B256, BLSPubkey, Epoch, HashFormat, SLOTS_RING_N},
 };
 
@@ -38,8 +38,12 @@ pub struct ValidatorsId {
 /// [`BalancesGroup`]: crate::BalancesGroup
 pub struct ValidatorsGroup {
     finalized: FinalizedValidators,
-    deltas: Ring<Self, ValidatorsDelta, SLOTS_RING_N>,
+    deltas: Ring<Self>,
     hash: ColumnGroup<ValidatorsHash>,
+}
+
+impl RingGroup for ValidatorsGroup {
+    type Entry = ValidatorsDelta;
 }
 
 impl ValidatorsGroup {
@@ -48,7 +52,7 @@ impl ValidatorsGroup {
         let leaf_bytes: Vec<u8> = (0..n).flat_map(|i| finalized.leaf_hash(i)).collect();
         let hash = ColumnGroup::new(finalized.capacity(), n, &leaf_bytes, format)
             .expect("leaf bytes sized from the registry");
-        Self { finalized, deltas: Ring::default(), hash }
+        Self { finalized, deltas: Ring::new(SLOTS_RING_N), hash }
     }
 
     #[inline]
@@ -111,8 +115,7 @@ impl ValidatorsGroup {
         let Self { finalized, deltas, hash } = self;
         deltas.get(winner.data).promote_into_base(finalized);
 
-        let hash_ids: Vec<_> = survivors.iter().map(|s| s.hash).collect();
-        hash.finalize(winner.hash, &hash_ids);
+        hash.finalize(&winner, survivors, |s| s.hash);
 
         let fresh_data: Vec<_> = fresh.iter().map(|f| f.data).collect();
         deltas.free_outdated(&fresh_data);

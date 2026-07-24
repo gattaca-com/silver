@@ -54,12 +54,10 @@ pub const PROPOSER_LOOKAHEAD_SIZE: usize =
 pub const BYTES_PER_LOGS_BLOOM: usize = 256;
 pub const MAX_EXTRA_DATA_BYTES: usize = 32;
 
-// Finalize reanchors by fresh roll, so a ring must hold the old ids plus one
-// fresh slot per distinct survivor at once — sized for forks crossing a
-// rotation / epoch boundary under delayed finality, not just the steady state.
+// Initial per-tier ring capacities; rings double on demand under sustained
+// non-finality, so these size the steady state, not the worst case.
 pub const LONGTAILS_RING_N: usize = 8;
 pub const EPOCHS_RING_N: usize = 16;
-/// Bounds the number of simultaneously live forks; sizes the per-tier rings.
 pub const SLOTS_RING_N: usize = 256;
 
 // No `Default`: a bundle must not exist before its per-tier

@@ -1,26 +1,9 @@
-//! Fuzz-style single-writer / concurrent-reader stress for the
-//! finalized-base + delta-ring design with HEAP-BACKED (`Vec`) payloads — the
-//! realloc hazard class (pending / validators / longtail).
-//!
-//! Miniature of the exact production protocol, isolated from the beacon types:
-//! - the writer rolls copy-on-write deltas (`Ring::roll_from`), mutates ONLY
-//!   the unpublished head (append-only: a published slot is never written),
-//!   then publishes its id through the control seqlock;
-//! - finalization promotes the head delta into the base (GROWING the base `Vec`
-//!   — a realloc) inside an odd-version write window, reanchors a fresh head on
-//!   the new base, and frees everything older;
-//! - readers run the optimistic-read protocol (spin on odd version, re-check
-//!   the version after reading, retry on change) and assert every ACCEPTED read
-//!   is consistent.
-//!
-//! Cell `i` always holds `tag(i)`, so any torn / stale / dangling read that
-//! survives version validation trips the invariant. A plain `cargo test` run
-//! catches materialized corruption; run under `cargo +nightly miri test` to
-//! turn a latent use-after-free (reader dereferencing a `Vec` buffer freed by
-//! a concurrent realloc, even when the value is later discarded by the retry)
-//! into a hard error.
-//!
-//! Seeded like `hash_tree`'s fuzz: set `FUZZ_SEED` to reproduce a failure.
+//! One writer races optimistic readers through the production protocol:
+//! append-only rolls with publish-last, copy-grows with no write window, and
+//! odd/even finalize windows. Every cell `i` holds `tag(i)`, so the moment a
+//! reader accepts a wrong value the test fails. Run under miri to turn a
+//! latent use-after-free into a hard error; set `FUZZ_SEED` to reproduce a
+//! failure.
 
 use std::sync::{
     Arc, Barrier,
@@ -29,19 +12,20 @@ use std::sync::{
 
 use flux::communication::Seqlock;
 use rand::{RngCore, SeedableRng, rngs::StdRng};
-use silver_beacon_state_data::{Id, Reset, Ring};
 
-/// Ring group marker (the typed-id discipline, same as the beacon tiers).
+use super::{Id, Reset, Ring, RingGroup};
+
 enum Payloads {}
 
+impl RingGroup for Payloads {
+    type Entry = VecDelta;
+}
+
 const RING_N: usize = 16;
-/// Force a finalize before the ring can wrap (tail = last finalize anchor).
-const MAX_ROLLS_PER_WINDOW: u32 = RING_N as u32 - 2;
 const ITERATIONS: u32 = if cfg!(miri) { 60 } else { 4000 };
 
-/// One fork's delta: values appended since finalization, heap-backed so every
-/// growth step is realloc pressure. `vals[k]` is the value at absolute index
-/// `start + k`; the base owns `[0, start)`.
+/// `vals[k]` is the value at absolute index `start + k`; the base owns
+/// `[0, start)`. Heap-backed so every mutation is realloc pressure.
 #[derive(Clone, Default)]
 struct VecDelta {
     start: u64,
@@ -60,26 +44,20 @@ impl Reset for VecDelta {
     }
 }
 
-/// Whole shared state: finalized base + the delta ring (mirrors
-/// `BeaconState`'s base-groups + rings, one tier, one column).
 struct State {
     base: Vec<u64>,
-    ring: Ring<Payloads, VecDelta, RING_N>,
+    ring: Ring<Payloads>,
 }
 
-/// Control word published through the seqlock — mirrors `ControlInner`:
-/// `version` odd ⇒ finalize in progress; `published` is the head fork id.
+/// Mirrors `ControlInner`: `version` odd = finalize window open.
 #[derive(Clone, Copy, Default)]
 struct Ctrl {
     version: u64,
     published: Option<Id<Payloads>>,
 }
 
-/// Reader-side handle: raw pointer + control seqlock, exactly the
-/// `BeaconStateReader` shape.
-///
-/// SAFETY: the writer keeps the `State` allocation alive for the readers'
-/// lifetime and mutates it only per the publish / write-window protocol.
+// SAFETY: the writer keeps the allocation alive for the readers' lifetime
+// and mutates it only per the publish / write-window protocol.
 struct SharedState(*const State);
 unsafe impl Send for SharedState {}
 unsafe impl Sync for SharedState {}
@@ -97,7 +75,7 @@ fn fuzz_ring_vec_payloads_concurrent() {
         });
     println!("fuzz_ring_vec_payloads_concurrent seed = {seed} (set FUZZ_SEED to reproduce)");
 
-    let mut state = Box::new(State { base: Vec::new(), ring: Ring::default() });
+    let mut state = Box::new(State { base: Vec::new(), ring: Ring::new(RING_N) });
     let ctrl = Arc::new(Seqlock::new(Ctrl::default()));
     let shared = Arc::new(SharedState(&*state as *const State));
 
@@ -122,8 +100,8 @@ fn fuzz_ring_vec_payloads_concurrent() {
                     }
                     let Some(id) = c.published else { continue };
 
-                    // Optimistic read: every value must carry its index tag,
-                    // and the delta must sit exactly on the base's end.
+                    // Every value must carry its index tag, and the delta
+                    // must sit exactly on the base's end.
                     let state = unsafe { &*shared.0 };
                     let delta = state.ring.get(id);
                     let mut ok = delta.start as usize == state.base.len();
@@ -150,7 +128,6 @@ fn fuzz_ring_vec_payloads_concurrent() {
 
     let mut rng = StdRng::seed_from_u64(seed);
 
-    // Seed the first head and publish it (version stays even).
     let mut head = state.ring.roll_fresh().commit();
     let publish = |ctrl: &Seqlock<Ctrl>, c: Ctrl| {
         let (_, v) = ctrl.read_copy().expect("ctrl never empty");
@@ -162,32 +139,37 @@ fn fuzz_ring_vec_payloads_concurrent() {
 
     start.wait();
     for _ in 0..ITERATIONS {
-        if rolls_in_window < MAX_ROLLS_PER_WINDOW && rng.next_u32() % 8 != 0 {
-            // Append-only block: COW-roll a child of the published head and
-            // grow its heap payload BEFORE publishing the new id. The slot the
-            // readers are on is never touched.
-            let mut w = state.ring.roll_from(head);
-            let end = w.start + w.vals.len() as u64;
-            for k in 0..1 + (rng.next_u32() as u64 % 5) {
-                w.vals.push(tag(end + k));
-            }
-            head = w.commit();
+        // Finalize is eligible only past the CURRENT capacity (capped so
+        // windows stay short and finalize races stay frequent): the first
+        // windows deterministically grow 16 -> 32 -> 64 -> 128, with readers
+        // racing every swap.
+        let forced_rolls = (state.ring.capacity() as u32).min(4 * RING_N as u32);
+        if rolls_in_window <= forced_rolls || rng.next_u32() % 8 != 0 {
+            head = {
+                let mut w = state.ring.roll_from(head);
+                let end = w.start + w.vals.len() as u64;
+                for k in 0..1 + (rng.next_u32() as u64 % 5) {
+                    w.vals.push(tag(end + k));
+                }
+                w.commit()
+            };
             rolls_in_window += 1;
             publish(&ctrl, Ctrl { version, published: Some(head) });
         } else {
-            // Finalize: odd version opens the write window, the base Vec
-            // grows (realloc), the survivor reanchors on the new base, older
-            // slots free. Readers spin or retry across this whole window.
+            // Finalize window: promote into the base (realloc), reanchor a
+            // fresh head, free the rest.
             version += 1;
             publish(&ctrl, Ctrl { version, published: Some(head) });
 
             let winner = state.ring.get(head).clone();
             assert_eq!(winner.start as usize, state.base.len());
-            state.base.extend_from_slice(&winner.vals); // promote (realloc)
-            let mut w = state.ring.roll_fresh();
-            w.start = state.base.len() as u64;
-            head = w.commit();
-            state.ring.free_outdated(&[head]); // tail = reanchored head
+            state.base.extend_from_slice(&winner.vals);
+            head = {
+                let mut w = state.ring.roll_fresh();
+                w.start = state.base.len() as u64;
+                w.commit()
+            };
+            state.ring.free_outdated(&[head]);
             rolls_in_window = 0;
 
             version += 1;
@@ -204,4 +186,5 @@ fn fuzz_ring_vec_payloads_concurrent() {
     println!("accepted reads: {accepted}, inconsistent: {bad}");
     assert_eq!(bad, 0, "reader accepted an inconsistent view (seed {seed})");
     assert!(accepted > 0, "readers never observed a stable view");
+    assert!(state.ring.capacity() > RING_N, "run never exercised a ring grow (seed {seed})");
 }

@@ -1,7 +1,5 @@
 use flux_profiler::timed;
-use silver_beacon_state_data::{
-    B256, Checkpoint, Epoch, SLOTS_PER_EPOCH, SLOTS_RING_N, Slot, StateId,
-};
+use silver_beacon_state_data::{B256, Checkpoint, Epoch, SLOTS_PER_EPOCH, Slot, StateId};
 
 use crate::stf::AttestationVote;
 
@@ -16,12 +14,11 @@ mod vote;
 pub use lookup::NodeLookup;
 use node::{Branch, NodeCheckpoints, PayloadAxis, PtcVotes};
 pub use node::{ExecutionStatus, ForkChoiceNode, PayloadStatus};
-pub use vote::{VoteTracker, WeightDelta, compute_weight_deltas};
+pub use vote::{VoteTracker, WeightDelta};
 
-// TODO(stalls): ~8 epochs of unpruned mainnet activity fills the ring. The May
-// 2023 incident lasted ~25 epochs. Surviving that needs the ring and node table
-// to grow or shed together.
-pub const MAX_FORK_CHOICE_NODES: usize = SLOTS_RING_N;
+/// Pre-allocation hint only — the node table and the state rings both grow
+/// under sustained non-finality.
+pub const FORK_CHOICE_NODES_HINT: usize = 256;
 
 pub(super) const NULL: usize = usize::MAX;
 pub(super) const GENESIS_EPOCH: Epoch = 0;
@@ -65,6 +62,10 @@ pub struct ForkChoice {
     pub(super) justified_total_active_balance: u64,
 
     pub(super) current_slot: Slot,
+
+    /// `recompute_head` scratch, reused so the per-attestation path stays
+    /// allocation-free once warm.
+    weight_deltas: Vec<WeightDelta>,
 }
 
 pub struct BlockImport {
@@ -95,7 +96,7 @@ impl ForkChoice {
         state_id: StateId,
         capacity: usize,
     ) -> Self {
-        let mut nodes = Vec::with_capacity(MAX_FORK_CHOICE_NODES);
+        let mut nodes = Vec::with_capacity(FORK_CHOICE_NODES_HINT);
         let mut lookup = NodeLookup::default();
 
         nodes.push(ForkChoiceNode {
@@ -145,6 +146,7 @@ impl ForkChoice {
             justified_balances_full_pass: false,
             justified_total_active_balance: 0,
             current_slot: 0,
+            weight_deltas: Vec::with_capacity(FORK_CHOICE_NODES_HINT),
         }
     }
 
@@ -229,24 +231,8 @@ impl ForkChoice {
     /// the unchanged snapshot.
     #[timed]
     pub fn recompute_head(&mut self) {
-        let full_pass = self.justified_balances_full_pass;
-        let n = self.justified_balances.len();
-        let (old, new) = if full_pass {
-            (&self.prev_justified_balances, &self.justified_balances)
-        } else {
-            (&self.justified_balances, &self.justified_balances)
-        };
-        let changed = (!full_pass).then_some(self.votes_dirty.as_slice());
-        let mut deltas = compute_weight_deltas(
-            &mut self.vote_tracker.votes,
-            n,
-            &self.lookup,
-            &self.nodes,
-            old,
-            new,
-            changed,
-        );
-        self.apply_score_changes(&mut deltas);
+        self.compute_weight_deltas();
+        self.apply_score_changes();
         self.votes_dirty.clear();
         self.justified_balances_full_pass = false;
     }

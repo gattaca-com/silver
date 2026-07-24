@@ -14,7 +14,7 @@ use crate::{
     gloas::Builder,
     merkle::{hash_fixed_bytes, merkleize, uint64_chunk},
     reanchor::reanchor_survivors,
-    ring::{Id, Ring},
+    ring::{Id, Ring, RingGroup},
     types::{B256, HashFormat, SLOTS_RING_N},
 };
 
@@ -29,8 +29,12 @@ pub struct BuildersId {
 
 pub struct BuildersGroup {
     finalized: FinalizedBuilders,
-    deltas: Ring<Self, BuildersDelta, SLOTS_RING_N>,
+    deltas: Ring<Self>,
     hash: ColumnGroup<BuildersHash>,
+}
+
+impl RingGroup for BuildersGroup {
+    type Entry = BuildersDelta;
 }
 
 impl BuildersGroup {
@@ -39,7 +43,7 @@ impl BuildersGroup {
         let hash =
             ColumnGroup::new(finalized.capacity(), finalized.len(), &leaf_bytes, HashFormat::Gloas)
                 .expect("leaf bytes sized from the registry");
-        Self { finalized, deltas: Ring::default(), hash }
+        Self { finalized, deltas: Ring::new(SLOTS_RING_N), hash }
     }
 
     #[inline]
@@ -91,8 +95,7 @@ impl BuildersGroup {
         let Self { finalized, deltas, hash } = self;
         deltas.get(winner.data).promote_into_base(finalized);
 
-        let hash_ids: Vec<_> = survivors.iter().map(|s| s.hash).collect();
-        hash.finalize(winner.hash, &hash_ids);
+        hash.finalize(&winner, survivors, |s| s.hash);
 
         let fresh_data: Vec<_> = fresh.iter().map(|f| f.data).collect();
         deltas.free_outdated(&fresh_data);

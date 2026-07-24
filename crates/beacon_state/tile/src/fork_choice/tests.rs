@@ -76,6 +76,24 @@ fn gloas_block(
     }
 }
 
+/// Stage synthetic votes/balances on `fc` and fold them into
+/// `fc.weight_deltas`: `changed: None` is a full pass against `old`→`new`;
+/// `Some(dirty)` folds only those votes against `new`.
+fn compute_deltas(
+    fc: &mut ForkChoice,
+    votes: Vec<Vote>,
+    old: &[u64],
+    new: &[u64],
+    changed: Option<&[u32]>,
+) {
+    fc.vote_tracker.votes = votes.into_boxed_slice();
+    fc.prev_justified_balances = old.to_vec();
+    fc.justified_balances = new.to_vec();
+    fc.votes_dirty = changed.unwrap_or_default().to_vec();
+    fc.justified_balances_full_pass = changed.is_none();
+    fc.compute_weight_deltas();
+}
+
 #[test]
 fn single_chain_head() {
     let fin = cp(0, 1);
@@ -97,9 +115,10 @@ fn fork_heavier_wins() {
     fc.on_block(block(1, root(2), root(1), jus, fin));
     fc.on_block(block(1, root(3), root(1), jus, fin));
 
-    let mut deltas = [WeightDelta::default(); MAX_FORK_CHOICE_NODES];
+    let mut deltas = vec![WeightDelta::default(); fc.nodes.len()];
     deltas[2].pending = 100; // root(3) is node index 2
-    fc.apply_score_changes(&mut deltas);
+    fc.weight_deltas = deltas;
+    fc.apply_score_changes();
 
     assert_eq!(fc.find_head(), root(3));
 }
@@ -118,16 +137,18 @@ fn two_pass_weight_correctness() {
     fc.on_block(block(1, root(3), root(1), jus, fin));
 
     // Give root(2) initial weight.
-    let mut deltas = [WeightDelta::default(); MAX_FORK_CHOICE_NODES];
+    let mut deltas = vec![WeightDelta::default(); fc.nodes.len()];
     deltas[1].pending = 200;
-    fc.apply_score_changes(&mut deltas);
+    fc.weight_deltas = deltas;
+    fc.apply_score_changes();
     assert_eq!(fc.find_head(), root(2));
 
     // Now root(2) loses weight, root(3) gains → root(3) should win.
-    let mut deltas = [WeightDelta::default(); MAX_FORK_CHOICE_NODES];
+    let mut deltas = vec![WeightDelta::default(); fc.nodes.len()];
     deltas[1].pending = -150; // root(2): 200 - 150 = 50
     deltas[2].pending = 100; // root(3): 0 + 100 = 100
-    fc.apply_score_changes(&mut deltas);
+    fc.weight_deltas = deltas;
+    fc.apply_score_changes();
     assert_eq!(fc.find_head(), root(3));
 }
 
@@ -171,22 +192,14 @@ fn deltas_moving_votes() {
         balances[i] = 42;
     }
 
-    let deltas = compute_weight_deltas(
-        &mut votes,
-        16,
-        &fc.lookup,
-        &fc.nodes,
-        &balances[..],
-        &balances[..],
-        None,
-    );
+    compute_deltas(&mut fc, votes, &balances, &balances, None);
 
     let total = 42i64 * 16;
-    assert_eq!(deltas[0].pending, -total);
-    assert_eq!(deltas[1].pending, total);
+    assert_eq!(fc.weight_deltas[0].pending, -total);
+    assert_eq!(fc.weight_deltas[1].pending, total);
 
     for i in 0..16 {
-        assert_eq!(votes[i].applied_root, root(2));
+        assert_eq!(fc.vote_tracker.votes[i].applied_root, root(2));
     }
 }
 
@@ -214,19 +227,11 @@ fn deltas_different_votes() {
         balances[i] = 42;
     }
 
-    let deltas = compute_weight_deltas(
-        &mut votes,
-        16,
-        &fc.lookup,
-        &fc.nodes,
-        &balances[..],
-        &balances[..],
-        None,
-    );
+    compute_deltas(&mut fc, votes, &balances, &balances, None);
 
     // Each block should get exactly one validator's balance.
     for i in 1..=16 {
-        assert_eq!(deltas[i].pending, 42);
+        assert_eq!(fc.weight_deltas[i].pending, 42);
     }
 }
 
@@ -234,7 +239,7 @@ fn deltas_different_votes() {
 fn deltas_move_out_of_tree() {
     let fin = cp(0, 1);
     let jus = cp(0, 1);
-    let fc = ForkChoice::init(fin, jus, 0, root(1), [0u8; 32], false, test_state_id(), 0);
+    let mut fc = ForkChoice::init(fin, jus, 0, root(1), [0u8; 32], false, test_state_id(), 0);
 
     let mut votes = vec![Vote::default(); 16];
     let mut balances = vec![0u64; 16];
@@ -257,18 +262,10 @@ fn deltas_move_out_of_tree() {
     };
     balances[1] = 42;
 
-    let deltas = compute_weight_deltas(
-        &mut votes,
-        2,
-        &fc.lookup,
-        &fc.nodes,
-        &balances[..],
-        &balances[..],
-        None,
-    );
+    compute_deltas(&mut fc, votes, &balances[..2], &balances[..2], None);
 
     // root(1) should lose both balances.
-    assert_eq!(deltas[0].pending, -(42 * 2));
+    assert_eq!(fc.weight_deltas[0].pending, -(42 * 2));
 }
 
 #[test]
@@ -294,19 +291,11 @@ fn deltas_changing_balances() {
         new_bal[i] = 84;
     }
 
-    let deltas = compute_weight_deltas(
-        &mut votes,
-        16,
-        &fc.lookup,
-        &fc.nodes,
-        &old_bal[..],
-        &new_bal[..],
-        None,
-    );
+    compute_deltas(&mut fc, votes, &old_bal, &new_bal, None);
 
     // Old balance subtracted from old target, new balance added to new.
-    assert_eq!(deltas[0].pending, -(42i64 * 16));
-    assert_eq!(deltas[1].pending, 84i64 * 16);
+    assert_eq!(fc.weight_deltas[0].pending, -(42i64 * 16));
+    assert_eq!(fc.weight_deltas[1].pending, 84i64 * 16);
 }
 
 #[test]
@@ -314,7 +303,7 @@ fn deltas_balance_change_no_vote_change() {
     // Balances change but votes don't — still need deltas.
     let fin = cp(0, 1);
     let jus = cp(0, 1);
-    let fc = ForkChoice::init(fin, jus, 0, root(1), [0u8; 32], false, test_state_id(), 0);
+    let mut fc = ForkChoice::init(fin, jus, 0, root(1), [0u8; 32], false, test_state_id(), 0);
 
     let mut votes = vec![Vote::default(); 16];
     let mut old_bal = vec![0u64; 16];
@@ -326,18 +315,10 @@ fn deltas_balance_change_no_vote_change() {
     old_bal[0] = 42;
     new_bal[0] = 84;
 
-    let deltas = compute_weight_deltas(
-        &mut votes,
-        1,
-        &fc.lookup,
-        &fc.nodes,
-        &old_bal[..],
-        &new_bal[..],
-        None,
-    );
+    compute_deltas(&mut fc, votes, &old_bal[..1], &new_bal[..1], None);
 
     // Net delta = new - old = +42.
-    assert_eq!(deltas[0].pending, 42);
+    assert_eq!(fc.weight_deltas[0].pending, 42);
 }
 
 /// Tiebreaker: equal-weight siblings → higher block root wins (spec: >=).
@@ -372,9 +353,10 @@ fn shorter_chain_but_heavier_weight() {
 
     // Without weight, long chain wins (deeper best_descendant, higher root
     // tiebreak). Give root(5) more weight to flip.
-    let mut deltas = [WeightDelta::default(); MAX_FORK_CHOICE_NODES];
+    let mut deltas = vec![WeightDelta::default(); fc.nodes.len()];
     deltas[4].pending = 1000; // root(5) is node 4
-    fc.apply_score_changes(&mut deltas);
+    fc.weight_deltas = deltas;
+    fc.apply_score_changes();
 
     assert_eq!(fc.find_head(), root(5));
 }
@@ -442,21 +424,24 @@ fn proposer_boost_flips_then_expires() {
     fc.on_block(block(1, root(3), root(1), jus, fin)); // idx 2
 
     // root(3) is the heavier (vote-weighted) sibling.
-    let mut deltas = [WeightDelta::default(); MAX_FORK_CHOICE_NODES];
+    let mut deltas = vec![WeightDelta::default(); fc.nodes.len()];
     deltas[2].pending = 100;
-    fc.apply_score_changes(&mut deltas);
+    fc.weight_deltas = deltas;
+    fc.apply_score_changes();
     assert_eq!(fc.find_head(), root(3));
 
     // Boost root(2) above root(3): head flips.
     fc.proposer_boost_root = root(2);
     fc.proposer_boost_score = 150;
-    fc.apply_score_changes(&mut [WeightDelta::default(); MAX_FORK_CHOICE_NODES]);
+    fc.weight_deltas = vec![WeightDelta::default(); fc.nodes.len()];
+    fc.apply_score_changes();
     assert_eq!(fc.find_head(), root(2));
 
     // Next slot zeroes the boost root: the applied boost is subtracted and
     // the head reverts to the vote-heavier sibling.
     fc.proposer_boost_root = [0u8; 32];
-    fc.apply_score_changes(&mut [WeightDelta::default(); MAX_FORK_CHOICE_NODES]);
+    fc.weight_deltas = vec![WeightDelta::default(); fc.nodes.len()];
+    fc.apply_score_changes();
     assert_eq!(fc.find_head(), root(3));
 }
 
@@ -491,22 +476,16 @@ fn compute_deltas_dirty_matches_full() {
             *v = Vote { applied_root: r, latest_root: r, latest_epoch: 0, ..Default::default() };
         }
     }
-    let mut votes_dirty = votes_full.clone();
+    let votes_dirty = votes_full.clone();
 
-    let d_full =
-        compute_weight_deltas(&mut votes_full, 32, &fc.lookup, &fc.nodes, &bal, &bal, None);
-    let d_dirty = compute_weight_deltas(
-        &mut votes_dirty,
-        32,
-        &fc.lookup,
-        &fc.nodes,
-        &bal,
-        &bal,
-        Some(&dirty),
-    );
-    assert_eq!(d_full, d_dirty);
+    compute_deltas(&mut fc, votes_full, &bal, &bal, None);
+    let d_full = fc.weight_deltas.clone();
+    let applied_full: Vec<_> = fc.vote_tracker.votes.iter().map(|v| v.applied_root).collect();
+
+    compute_deltas(&mut fc, votes_dirty, &bal, &bal, Some(&dirty));
+    assert_eq!(d_full, fc.weight_deltas);
     for i in 0..32 {
-        assert_eq!(votes_full[i].applied_root, votes_dirty[i].applied_root);
+        assert_eq!(applied_full[i], fc.vote_tracker.votes[i].applied_root);
     }
 }
 
@@ -522,7 +501,8 @@ fn viability_genesis_exception() {
     let a = fc.find_node_idx(&root(2)).unwrap();
     fc.nodes[a].checkpoints.unrealized_justified = cp(1, 9);
     fc.set_current_slot(10 * SLOTS_PER_EPOCH); // +2 would filter cp(1, ..), but store is at genesis
-    fc.apply_score_changes(&mut [WeightDelta::default(); MAX_FORK_CHOICE_NODES]);
+    fc.weight_deltas = vec![WeightDelta::default(); fc.nodes.len()];
+    fc.apply_score_changes();
     assert_eq!(fc.find_head(), root(2));
 }
 
@@ -545,18 +525,21 @@ fn viability_unrealized_justified_and_plus_two() {
     // justified. Caught up to epoch 2 -> viable -> head = C.
     fc.set_current_slot(4 * SLOTS_PER_EPOCH);
     fc.nodes[c].checkpoints.unrealized_justified = cp(2, 2);
-    fc.apply_score_changes(&mut [WeightDelta::default(); MAX_FORK_CHOICE_NODES]);
+    fc.weight_deltas = vec![WeightDelta::default(); fc.nodes.len()];
+    fc.apply_score_changes();
     assert_eq!(fc.find_head(), root(3));
 
     // Stale unrealized (epoch 1): 1 != 2 and 1 + 2 < 4 -> filtered -> head
     // falls back to A.
     fc.nodes[c].checkpoints.unrealized_justified = cp(1, 9);
-    fc.apply_score_changes(&mut [WeightDelta::default(); MAX_FORK_CHOICE_NODES]);
+    fc.weight_deltas = vec![WeightDelta::default(); fc.nodes.len()];
+    fc.apply_score_changes();
     assert_eq!(fc.find_head(), root(2));
 
     // +2 boundary: at current_epoch 3, 1 + 2 >= 3 -> viable again.
     fc.set_current_slot(3 * SLOTS_PER_EPOCH);
-    fc.apply_score_changes(&mut [WeightDelta::default(); MAX_FORK_CHOICE_NODES]);
+    fc.weight_deltas = vec![WeightDelta::default(); fc.nodes.len()];
+    fc.apply_score_changes();
     assert_eq!(fc.find_head(), root(3));
 }
 
@@ -593,16 +576,18 @@ fn gloas_resolves_heavier_payload_branch() {
     fc.on_block(gloas_block(2, root(4), root(2), g, g, PayloadStatus::Empty, true));
 
     // C_f heavier → A resolves FULL → head is C_f.
-    let mut d = [WeightDelta::default(); MAX_FORK_CHOICE_NODES];
+    let mut d = vec![WeightDelta::default(); fc.nodes.len()];
     d[2].pending = 100;
     d[3].pending = 50;
-    fc.apply_score_changes(&mut d);
+    fc.weight_deltas = d;
+    fc.apply_score_changes();
     assert_eq!(fc.find_head(), root(3));
 
     // Flip: C_e now heavier → A resolves EMPTY → head is C_e.
-    let mut d = [WeightDelta::default(); MAX_FORK_CHOICE_NODES];
+    let mut d = vec![WeightDelta::default(); fc.nodes.len()];
     d[3].pending = 100;
-    fc.apply_score_changes(&mut d);
+    fc.weight_deltas = d;
+    fc.apply_score_changes();
     assert_eq!(fc.find_head(), root(4));
 }
 
@@ -621,17 +606,19 @@ fn gloas_tie_broken_by_should_extend_payload() {
     fc.set_current_slot(2);
 
     // Equal weight on both branchs → tie.
-    let mut d = [WeightDelta::default(); MAX_FORK_CHOICE_NODES];
+    let mut d = vec![WeightDelta::default(); fc.nodes.len()];
     d[2].pending = 100;
     d[3].pending = 100;
-    fc.apply_score_changes(&mut d);
+    fc.weight_deltas = d;
+    fc.apply_score_changes();
     // No boost → extend FULL → C_f.
     assert_eq!(fc.find_head(), root(3));
 
     // Boost the EMPTY-extending child C_e (score 0: tiebreak only, no weight
     // shift) → should_extend false → A resolves EMPTY → C_e.
     fc.proposer_boost_root = root(4);
-    fc.apply_score_changes(&mut [WeightDelta::default(); MAX_FORK_CHOICE_NODES]);
+    fc.weight_deltas = vec![WeightDelta::default(); fc.nodes.len()];
+    fc.apply_score_changes();
     assert_eq!(fc.find_head(), root(4));
 }
 
@@ -647,15 +634,17 @@ fn gloas_unverified_payload_forces_empty() {
     fc.on_block(gloas_block(2, root(4), root(2), g, g, PayloadStatus::Empty, true)); // C_e
 
     // C_f far heavier — but A's FULL branch is unverified, so head is C_e.
-    let mut d = [WeightDelta::default(); MAX_FORK_CHOICE_NODES];
+    let mut d = vec![WeightDelta::default(); fc.nodes.len()];
     d[2].pending = 100;
     d[3].pending = 1;
-    fc.apply_score_changes(&mut d);
+    fc.weight_deltas = d;
+    fc.apply_score_changes();
     assert_eq!(fc.find_head(), root(4));
 
     // Once the envelope is verified, the heavier FULL branch wins.
     fc.mark_payload_verified(&root(2));
-    fc.apply_score_changes(&mut [WeightDelta::default(); MAX_FORK_CHOICE_NODES]);
+    fc.weight_deltas = vec![WeightDelta::default(); fc.nodes.len()];
+    fc.apply_score_changes();
     assert_eq!(fc.find_head(), root(3));
 }
 
@@ -671,17 +660,19 @@ fn gloas_empty_survives_full_invalid() {
     fc.on_block(gloas_block(2, root(4), root(2), g, g, PayloadStatus::Empty, true)); // C_e
 
     // C_f heavier → A would resolve FULL → head C_f, present.
-    let mut d = [WeightDelta::default(); MAX_FORK_CHOICE_NODES];
+    let mut d = vec![WeightDelta::default(); fc.nodes.len()];
     d[2].pending = 100;
     d[3].pending = 50;
-    fc.apply_score_changes(&mut d);
+    fc.weight_deltas = d;
+    fc.apply_score_changes();
     assert_eq!(fc.find_head(), root(3));
     assert!(fc.head_payload_present());
 
     // EL invalidates A's envelope → FULL branch dead → A resolves EMPTY → C_e,
     // and A itself stays viable (not sunk like a pre-Gloas invalid block).
     fc.on_payload_invalid(&root(2), &[0u8; 32]);
-    fc.apply_score_changes(&mut [WeightDelta::default(); MAX_FORK_CHOICE_NODES]);
+    fc.weight_deltas = vec![WeightDelta::default(); fc.nodes.len()];
+    fc.apply_score_changes();
     assert_eq!(fc.find_head(), root(4));
 }
 
@@ -697,7 +688,8 @@ fn gloas_boost_is_pending_not_empty() {
     fc.on_block(gloas_block(1, root(2), root(1), g, g, PayloadStatus::Full, false));
     fc.proposer_boost_root = root(2);
     fc.proposer_boost_score = 1000;
-    fc.apply_score_changes(&mut [WeightDelta::default(); MAX_FORK_CHOICE_NODES]);
+    fc.weight_deltas = vec![WeightDelta::default(); fc.nodes.len()];
+    fc.apply_score_changes();
     // Unverified → EMPTY; the heavy boost (pending) does not force a branch.
     assert_eq!(fc.find_head(), root(2));
     assert!(!fc.head_payload_present());
@@ -705,6 +697,7 @@ fn gloas_boost_is_pending_not_empty() {
     // Envelope verified → resolves FULL. With boost wrongly in `empty` this
     // would stay EMPTY.
     fc.mark_payload_verified(&root(2));
-    fc.apply_score_changes(&mut [WeightDelta::default(); MAX_FORK_CHOICE_NODES]);
+    fc.weight_deltas = vec![WeightDelta::default(); fc.nodes.len()];
+    fc.apply_score_changes();
     assert!(fc.head_payload_present());
 }

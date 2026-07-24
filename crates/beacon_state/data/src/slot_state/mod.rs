@@ -10,7 +10,7 @@ use flux_profiler::timed;
 
 use crate::{
     reanchor::reanchor_survivors,
-    ring::{Id, Reset, Ring},
+    ring::{Id, Reset, Ring, RingGroup},
     types::SLOTS_RING_N,
 };
 
@@ -18,7 +18,11 @@ pub type SlotStateId = Id<SlotStateGroup>;
 
 pub struct SlotStateGroup {
     finalized: SlotStateFinalized,
-    deltas: Ring<Self, SlotStateDelta, SLOTS_RING_N>,
+    deltas: Ring<Self>,
+}
+
+impl RingGroup for SlotStateGroup {
+    type Entry = SlotStateDelta;
 }
 
 impl SlotStateGroup {
@@ -28,7 +32,7 @@ impl SlotStateGroup {
     }
 
     pub fn new(finalized: SlotStateFinalized) -> Self {
-        Self { finalized, deltas: Ring::default() }
+        Self { finalized, deltas: Ring::new(SLOTS_RING_N) }
     }
 
     #[inline]

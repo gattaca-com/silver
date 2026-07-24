@@ -13,7 +13,7 @@ use crate::{
 /// appended). All mutation routes through `edits` so the winner-prefix drop in
 /// `rebase_and_prune_from` stays safe.
 #[derive(Clone, Default)]
-pub(super) struct BuildersDelta {
+pub(crate) struct BuildersDelta {
     base_count: usize,
     appended: Vec<Builder>,
     edits: Edits<Builder>,
@@ -147,7 +147,7 @@ impl<'a> BuildersView<'a> {
 
 pub struct BuildersWriteView<'a> {
     base: &'a FinalizedBuilders,
-    fork: Slot<'a, BuildersGroup, BuildersDelta>,
+    fork: Slot<'a, BuildersGroup>,
     hash: ColumnWriteView<'a, BuildersHash>,
 }
 
@@ -155,7 +155,7 @@ impl<'a> BuildersWriteView<'a> {
     #[inline]
     pub(super) fn new(
         base: &'a FinalizedBuilders,
-        fork: Slot<'a, BuildersGroup, BuildersDelta>,
+        fork: Slot<'a, BuildersGroup>,
         hash: ColumnWriteView<'a, BuildersHash>,
     ) -> Self {
         Self { base, fork, hash }

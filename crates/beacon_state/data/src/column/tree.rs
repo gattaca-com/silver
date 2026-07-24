@@ -1,3 +1,4 @@
+use flux_profiler::timed;
 use silver_ssz::scalar::SszScalar;
 
 use super::{
@@ -86,11 +87,12 @@ impl ColumnTree {
         self.store().node(n)
     }
 
-    /// Adopt `snapshot`'s content, switching tree variant when the snapshot's
-    /// format differs (a roll whose parent sits on the other side of the
-    /// EIP-7688 fork boundary).
-    pub(super) fn load_snapshot(&mut self, pool: &PagePool, snapshot: &PageSnapshot) {
-        let format = snapshot.format();
+    /// Load `target`'s content, switching tree variant if its format differs.
+    /// `loaded` is the table our content already matches, so only mismatched
+    /// or dirtied pages get copied. Clears the dirty mask.
+    #[timed]
+    pub(super) fn load(&mut self, pool: &PagePool, loaded: &PageSnapshot, target: &PageSnapshot) {
+        let format = target.format();
         if self.format() != format {
             let store = std::mem::take(self.store_mut());
             *self = match format {
@@ -100,7 +102,7 @@ impl ColumnTree {
                 TreeFormat::Gloas { last_seg } => ColumnTree::Gloas(GloasTree { store, last_seg }),
             };
         }
-        self.store_mut().load_snapshot(pool, snapshot, format.num_nodes());
+        self.store_mut().load_diff(pool, loaded, target, format.num_nodes());
     }
 
     pub(super) fn to_snapshot(&self, pool: &mut PagePool) -> PageSnapshot {

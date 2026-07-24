@@ -1,21 +1,19 @@
-use flux::utils::ArrayVec;
 use flux_profiler::timed;
-use silver_beacon_state_data::{
-    EPOCHS_RING_N, EpochId, LONGTAILS_RING_N, LongtailId, SLOTS_PER_EPOCH, StateId,
-};
+use silver_beacon_state_data::{EpochId, LongtailId, SLOTS_PER_EPOCH, StateId};
 
 use super::BeaconStateTile;
-use crate::fork_choice::MAX_FORK_CHOICE_NODES;
 
 /// Re-anchor one always-rolled tier: collect each survivor's id for the tier
 /// (`proj`), run the group's `finalize`, and write the fresh ids back 1:1.
 fn rebase_tier<I: Copy>(
+    mut promoted: StateId,
     survivors: &mut [StateId],
     proj: impl Fn(&mut StateId) -> &mut I,
-    finalize: impl FnOnce(&ArrayVec<I, MAX_SURVIVORS>) -> Vec<I>,
+    finalize: impl FnOnce(I, &[I]) -> Vec<I>,
 ) {
-    let ids: ArrayVec<I, MAX_SURVIVORS> = survivors.iter_mut().map(|s| *proj(s)).collect();
-    let new = finalize(&ids);
+    let winner = *proj(&mut promoted);
+    let ids: Vec<I> = survivors.iter_mut().map(|s| *proj(s)).collect();
+    let new = finalize(winner, &ids);
     for (sid, &n) in survivors.iter_mut().zip(&new) {
         *proj(sid) = n;
     }
@@ -26,12 +24,18 @@ fn rebase_tier<I: Copy>(
 /// group's `finalize` returns the fresh ids 1:1, mapped old→new onto every
 /// bundle referencing an old entry.
 fn rebase_lazy_tier<I: Copy + PartialEq>(
+    mut promoted: StateId,
     survivors: &mut [StateId],
     old_idxs: &[I],
     proj: impl Fn(&mut StateId) -> &mut Option<I>,
-    finalize: impl FnOnce() -> Vec<I>,
+    finalize: impl FnOnce(I) -> Vec<I>,
 ) {
-    let new = finalize();
+    // Forks roll this tier lazily: no delta on the winner means nothing to
+    // promote or re-anchor.
+    let Some(winner) = *proj(&mut promoted) else {
+        return;
+    };
+    let new = finalize(winner);
     for sid in survivors.iter_mut() {
         if let Some(old) = *proj(sid) &&
             let Some(pos) = old_idxs.iter().position(|&e| e == old)
@@ -40,10 +44,6 @@ fn rebase_lazy_tier<I: Copy + PartialEq>(
         }
     }
 }
-
-/// Survivor set re-anchored at finalization: every fork-choice node's bundle
-/// plus the (possibly node-less) slot-advanced head.
-const MAX_SURVIVORS: usize = MAX_FORK_CHOICE_NODES + 1;
 
 impl BeaconStateTile {
     /// Promote the fork-choice-finalized node's `StateId` tiers into the
@@ -80,15 +80,13 @@ impl BeaconStateTile {
         // Drop non-descendants of the finalized block; the survivors (node 0
         // is now the finalized block) are exactly the deltas to re-base.
         self.fork_choice.prune();
-        let mut survivors: ArrayVec<StateId, MAX_SURVIVORS> = ArrayVec::new();
-        survivors.extend(self.fork_choice.live_state_ids());
+        let mut survivors: Vec<StateId> = self.fork_choice.live_state_ids().collect();
 
         // `on_slot_start` advances the head onto a fresh bundle that is never
         // registered as a fork-choice node. It is still a live descendant of
         // the finalized base, so it must be re-based too — otherwise its
         // `base_count` goes stale and the next `apply_block_view` on it (or a
-        // roll from it) trips the base-mirror assert. `MAX_SURVIVORS` covers
-        // every node plus this extra head bundle.
+        // roll from it) trips the base-mirror assert.
         let head_pos = match survivors.iter().position(|&s| s == self.last_applied) {
             Some(p) => p,
             None => {
@@ -99,8 +97,8 @@ impl BeaconStateTile {
 
         // Unique epoch / longtail ring entries referenced by survivors, so
         // each cumulative log is re-based exactly once when siblings share it.
-        let mut epoch_idxs: ArrayVec<EpochId, EPOCHS_RING_N> = ArrayVec::new();
-        let mut longtail_idxs: ArrayVec<LongtailId, LONGTAILS_RING_N> = ArrayVec::new();
+        let mut epoch_idxs: Vec<EpochId> = Vec::new();
+        let mut longtail_idxs: Vec<LongtailId> = Vec::new();
         for sid in survivors.iter() {
             if let Some(e) = sid.epoch_idx &&
                 !epoch_idxs.as_slice().contains(&e)
@@ -165,45 +163,38 @@ impl BeaconStateTile {
         // snapshots `old_base_lens` internally from the still-old base; the
         // slot tier prunes survivors' root tails of the promoted prefix.
         rebase_tier(
+            promoted,
             survivors,
             |s| &mut s.validators_idx,
-            |ids| bs.validators.finalize(promoted.validators_idx, ids),
+            |winner, ids| bs.validators.finalize(winner, ids),
         );
+        bs.balances.finalize(&promoted, survivors, |s| s.balances_idx);
         rebase_tier(
+            promoted,
             survivors,
-            |s| &mut s.balances_idx,
-            |ids| bs.balances.finalize(promoted.balances_idx, ids),
+            |s| &mut s.eth1_idx,
+            |winner, ids| bs.eth1.finalize(winner, ids),
         );
-        rebase_tier(survivors, |s| &mut s.eth1_idx, |ids| bs.eth1.finalize(promoted.eth1_idx, ids));
+        bs.previous_participation.finalize(&promoted, survivors, |s| s.previous_participation_idx);
+        bs.current_participation.finalize(&promoted, survivors, |s| s.current_participation_idx);
+        bs.inactivity.finalize(&promoted, survivors, |s| s.inactivity_idx);
         rebase_tier(
-            survivors,
-            |s| &mut s.previous_participation_idx,
-            |ids| bs.previous_participation.finalize(promoted.previous_participation_idx, ids),
-        );
-        rebase_tier(
-            survivors,
-            |s| &mut s.current_participation_idx,
-            |ids| bs.current_participation.finalize(promoted.current_participation_idx, ids),
-        );
-        rebase_tier(
-            survivors,
-            |s| &mut s.inactivity_idx,
-            |ids| bs.inactivity.finalize(promoted.inactivity_idx, ids),
-        );
-        rebase_tier(
+            promoted,
             survivors,
             |s| &mut s.pending_idx,
-            |ids| bs.pending.finalize(promoted.pending_idx, ids),
+            |winner, ids| bs.pending.finalize(winner, ids),
         );
         rebase_tier(
+            promoted,
             survivors,
             |s| &mut s.slot_idx,
-            |ids| bs.slot_states.finalize(promoted.slot_idx, ids),
+            |winner, ids| bs.slot_states.finalize(winner, ids),
         );
         rebase_tier(
+            promoted,
             survivors,
             |s| &mut s.builders_idx,
-            |ids| bs.builders.finalize(promoted.builders_idx, ids),
+            |winner, ids| bs.builders.finalize(winner, ids),
         );
 
         // Epoch + longtail finalize in their own groups, but — unlike the
@@ -212,22 +203,20 @@ impl BeaconStateTile {
         // are pre-deduped (one cumulative log re-based once when siblings share
         // it); the group returns the fresh ids 1:1, which we map old→new and
         // write back onto every bundle referencing the old entry.
-        if let Some(winner_epoch) = promoted.epoch_idx {
-            rebase_lazy_tier(
-                survivors,
-                epoch_idxs,
-                |s| &mut s.epoch_idx,
-                || bs.epoch.finalize(winner_epoch, epoch_idxs, old_fin_epoch),
-            );
-        }
-        if let Some(winner_longtail) = promoted.longtail_idx {
-            rebase_lazy_tier(
-                survivors,
-                longtail_idxs,
-                |s| &mut s.longtail_idx,
-                || bs.longtail.finalize(winner_longtail, longtail_idxs),
-            );
-        }
+        rebase_lazy_tier(
+            promoted,
+            survivors,
+            epoch_idxs,
+            |s| &mut s.epoch_idx,
+            |winner| bs.epoch.finalize(winner, epoch_idxs, old_fin_epoch),
+        );
+        rebase_lazy_tier(
+            promoted,
+            survivors,
+            longtail_idxs,
+            |s| &mut s.longtail_idx,
+            |winner| bs.longtail.finalize(winner, longtail_idxs),
+        );
 
         // Publish-with-the-guard: the head's rewritten bundle replaces the
         // stale published one atomically at guard drop.
