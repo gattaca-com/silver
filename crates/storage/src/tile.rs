@@ -46,6 +46,8 @@ const EPOCH_DURATION: Duration = Duration::from_secs(32 * 12);
 /// lookups and head-update integration are direct lookups.
 type BlockRoot = [u8; 32];
 
+type PendingColumn = (P2pStreamId, TRead, Option<u64>);
+
 /// `EngineReq` is large but short-lived here, so
 /// boxing it would only add an alloc on the block path.
 #[allow(clippy::large_enum_variant)]
@@ -58,6 +60,7 @@ enum ColumnOutcome {
     Skip,
     Reject { block_root: [u8; 32], bitmask: u128 },
     Buffer { block_root: [u8; 32] },
+    AwaitParent { parent_root: [u8; 32] },
     Record { block_root: [u8; 32], column_index: u64, bitmask: u128, slot: u64 },
 }
 
@@ -92,7 +95,11 @@ pub struct StorageTile {
     // Gloas sidecars carry no commitments, so column KZG verifies against these.
     gloas_commitments: Wheel<BlockRoot, Box<[u8]>, 4>,
     // Gloas: columns whose block (hence commitments) hasn't been seen yet.
-    gloas_pending_columns: Wheel<BlockRoot, Vec<(P2pStreamId, TRead, Option<u64>)>, 4>,
+    gloas_pending_columns: Wheel<BlockRoot, Vec<PendingColumn>, 4>,
+    // Fulu: columns held until their parent block validates. Keyed by the
+    // sidecar's parent_root; drained on Status head advances and on block
+    // arrivals (the arriving block's own parent_root).
+    parent_pending_columns: Wheel<BlockRoot, Vec<PendingColumn>, 4>,
     // BLS verify memo: block_root → previously-validated 96-byte
     // proposer signature. On a subsequent sidecar with the same
     // block_root AND matching signature bytes we skip the ~1 ms BLS
@@ -173,6 +180,7 @@ impl StorageTile {
             validated_columns: Wheel::new(EPOCH_DURATION),
             gloas_commitments: Wheel::new(EPOCH_DURATION),
             gloas_pending_columns: Wheel::new(EPOCH_DURATION),
+            parent_pending_columns: Wheel::new(EPOCH_DURATION),
             validated_blocks: Wheel::new(EPOCH_DURATION),
             outstanding_requests: Wheel::new(Duration::from_millis(100)),
             checkpointed_epoch,
@@ -281,7 +289,7 @@ impl StorageTile {
         stream_id: P2pStreamId,
         block: TRead,
         emit: &mut F,
-    ) -> Option<B256>
+    ) -> Option<(B256, bool)>
     where
         F: FnMut(StorageEmit),
     {
@@ -310,10 +318,8 @@ impl StorageTile {
             self.cache_gloas_commitments(block_root, buffer);
         }
         // idk
-        let gloas_root = is_gloas.then_some(block_root);
-
         if self.outstanding_requests.contains(&block_root) {
-            return gloas_root;
+            return Some((block_root, is_gloas));
         }
 
         // Custody columns only — silver floors cgc at SAMPLES_PER_SLOT, so the
@@ -322,7 +328,7 @@ impl StorageTile {
         // sidecar isn't delivered on the subscribed subnet.
         let to_request = self.columns_to_request(&block_root);
         if to_request == 0 {
-            return gloas_root;
+            return Some((block_root, is_gloas));
         }
 
         self.outstanding_requests.insert(block_root, (to_request, to_request, MAX_RETRIES));
@@ -343,7 +349,7 @@ impl StorageTile {
         if stream_id.protocol() != StreamProtocol::GossipSub {
             emit(StorageEmit::Peer(self.column_request(block_root, to_request)));
         }
-        gloas_root
+        Some((block_root, is_gloas))
     }
 
     fn columns_to_request(&self, root: &BlockRoot) -> u128 {
@@ -399,6 +405,14 @@ impl StorageTile {
                 let pending = self.gloas_pending_columns.entry(block_root).or_default();
                 if pending.len() < NUMBER_OF_COLUMNS {
                     tracing::debug!(?stream_id, "gloas column before block — buffering");
+                    pending.push((stream_id, sidecar, gossip_subnet));
+                }
+                ColumnDisposition::Ignored
+            }
+            ColumnOutcome::AwaitParent { parent_root } => {
+                let pending = self.parent_pending_columns.entry(parent_root).or_default();
+                if pending.len() < NUMBER_OF_COLUMNS {
+                    tracing::debug!(?stream_id, "column parent pending — buffering");
                     pending.push((stream_id, sidecar, gossip_subnet));
                 }
                 ColumnDisposition::Ignored
@@ -534,7 +548,7 @@ impl StorageTile {
                 parent_root = hex::encode(parent_root),
                 "sidecar parent_root not yet validated — ignoring (not penalized)"
             );
-            return ColumnOutcome::Skip;
+            return ColumnOutcome::AwaitParent { parent_root: *parent_root };
         }
         if !proposer_matches {
             tracing::warn!(?stream_id, "sidecar proposer_index mismatch");
@@ -575,17 +589,44 @@ impl StorageTile {
     where
         F: FnMut(DataColumnsAvailable),
     {
-        if let Some(pending) = self.gloas_pending_columns.remove(&block_root) {
-            for (stream_id, sidecar, gossip_subnet) in pending {
-                let outcome = match sidecar.buffer() {
-                    Ok((buf, _)) => self.validate_gloas_column(stream_id, buf, gossip_subnet),
-                    Err(e) => {
-                        tracing::error!(?e, ?stream_id, "failed to read buffered gloas column");
-                        continue;
+        let pending = self.gloas_pending_columns.remove(&block_root);
+        self.drain_entries(pending, true, emit);
+    }
+
+    fn drain_parent_pending_columns<F>(&mut self, parent_root: [u8; 32], emit: &mut F)
+    where
+        F: FnMut(DataColumnsAvailable),
+    {
+        let pending = self.parent_pending_columns.remove(&parent_root);
+        self.drain_entries(pending, false, emit);
+    }
+
+    fn drain_entries<F>(
+        &mut self,
+        pending: Option<Vec<PendingColumn>>,
+        is_gloas: bool,
+        emit: &mut F,
+    ) where
+        F: FnMut(DataColumnsAvailable),
+    {
+        let Some(pending) = pending else {
+            return;
+        };
+        for (stream_id, sidecar, gossip_subnet) in pending {
+            let outcome = match sidecar.buffer() {
+                Ok((buf, _)) => {
+                    if is_gloas {
+                        self.validate_gloas_column(stream_id, buf, gossip_subnet)
+                    } else {
+                        self.validate_fulu_column(stream_id, buf, gossip_subnet)
                     }
-                };
-                self.handle_column(outcome, stream_id, sidecar, gossip_subnet, emit);
-            }
+                }
+                Err(e) => {
+                    tracing::error!(?e, ?stream_id, "failed to read buffered column");
+                    continue;
+                }
+            };
+            self.handle_column(outcome, stream_id, sidecar, gossip_subnet, emit);
         }
     }
 
@@ -693,7 +734,13 @@ impl StorageTile {
         stream_id: P2pStreamId,
         producers: &mut SilverSpineProducers,
     ) {
-        let gloas_root = self.beacon_block(stream_id, t_read, &mut |emit| match emit {
+        let parent_root = t_read
+            .buffer()
+            .ok()
+            .filter(|(buf, _)| SignedBeaconBlockView::check_size(buf))
+            .map(|(buf, _)| *SignedBeaconBlockView::parent_root(buf));
+
+        let root = self.beacon_block(stream_id, t_read, &mut |emit| match emit {
             StorageEmit::Peer(evt) => {
                 producers.peer_events.produce(&evt.into());
             }
@@ -702,8 +749,15 @@ impl StorageTile {
             }
         });
 
-        if let Some(block_root) = gloas_root {
+        if let Some((block_root, is_gloas)) = root &&
+            is_gloas
+        {
             self.drain_pending_gloas_columns(block_root, &mut |msg| {
+                producers.data_columns.produce(&msg.into());
+            });
+        }
+        if let Some(parent_root) = parent_root {
+            self.drain_parent_pending_columns(parent_root, &mut |msg| {
                 producers.data_columns.produce(&msg.into());
             });
         }
@@ -810,12 +864,18 @@ impl Tile<SilverSpine> for StorageTile {
                 silver_common::RpcResponse::BeaconBlock { fork_digest: _, ssz } => {
                     let t_read = self.rpc_consumer.acquire(ssz);
                     if let Ok((buf, _)) = t_read.buffer() &&
-                        self.spec.is_gloas_at_slot(SignedBeaconBlockView::slot(buf)) &&
                         SignedBeaconBlockView::check_size(buf)
                     {
-                        let block_root = util::block_root_gloas(buf);
-                        self.cache_gloas_commitments(block_root, buf);
-                        self.drain_pending_gloas_columns(block_root, &mut |msg| {
+                        let is_gloas = self.spec.is_gloas_at_slot(SignedBeaconBlockView::slot(buf));
+                        let parent_root = *SignedBeaconBlockView::parent_root(buf);
+                        if is_gloas {
+                            let block_root = util::block_root(buf, is_gloas);
+                            self.cache_gloas_commitments(block_root, buf);
+                            self.drain_pending_gloas_columns(block_root, &mut |msg| {
+                                producers.data_columns.produce(&msg.into());
+                            });
+                        }
+                        self.drain_parent_pending_columns(parent_root, &mut |msg| {
                             producers.data_columns.produce(&msg.into());
                         });
                     }
@@ -878,8 +938,14 @@ impl Tile<SilverSpine> for StorageTile {
 
         let mut latest_status_event = None;
 
-        adapter.consume(|beacon_event: BeaconStateEvent, _| match beacon_event {
+        adapter.consume(|beacon_event: BeaconStateEvent, producers| match beacon_event {
             BeaconStateEvent::Status { ssz, wall_slot, .. } => {
+                // Per-event (not latest-only): BS emits one Status per accepted
+                // block, and each newly validated root may unblock buffered
+                // children.
+                self.drain_parent_pending_columns(*StatusView::head_root(&ssz), &mut |msg| {
+                    producers.data_columns.produce(&msg.into());
+                });
                 latest_status_event = Some((ssz, wall_slot));
             }
             BeaconStateEvent::PersistBlock {
