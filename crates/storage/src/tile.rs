@@ -538,11 +538,11 @@ impl StorageTile {
         };
 
         if !above_finalized {
-            tracing::debug!(?stream_id, "sidecar slot at or below finalized — ignoring");
+            tracing::warn!(?stream_id, "sidecar slot at or below finalized — ignoring");
             return ColumnOutcome::Skip;
         }
         if !parent_validated {
-            tracing::debug!(
+            tracing::warn!(
                 ?stream_id,
                 block_slot,
                 parent_root = hex::encode(parent_root),
@@ -598,6 +598,9 @@ impl StorageTile {
         F: FnMut(DataColumnsAvailable),
     {
         let pending = self.parent_pending_columns.remove(&parent_root);
+        if pending.is_some() {
+            tracing::info!(root=hex::encode(&parent_root), "draining data columns for parrent root");
+        }
         self.drain_entries(pending, false, emit);
     }
 
