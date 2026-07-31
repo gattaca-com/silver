@@ -412,7 +412,7 @@ impl StorageTile {
             ColumnOutcome::AwaitParent { parent_root } => {
                 let pending = self.parent_pending_columns.entry(parent_root).or_default();
                 if pending.len() < NUMBER_OF_COLUMNS {
-                    tracing::debug!(?stream_id, "column parent pending — buffering");
+                    tracing::info!(?stream_id, "column parent pending — buffering");
                     pending.push((stream_id, sidecar, gossip_subnet));
                 }
                 ColumnDisposition::Ignored
