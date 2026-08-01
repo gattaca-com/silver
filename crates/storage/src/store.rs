@@ -401,10 +401,7 @@ impl Store {
         // settled — finalized blocks already live in the flat store and
         // anything else is an orphan. Dedup repeats. Canonicity is resolved
         // by the head walk at query time and by finalization promotion.
-        if slot <= self.finalized_slot ||
-            self.unfinalized.contains(&block_root) ||
-            self.root_index.contains_key(&block_root)
-        {
+        if slot <= self.finalized_slot || self.has_block(&block_root) {
             return;
         }
         self.unfinalized.insert(block_root, slot, parent_root);
@@ -535,6 +532,13 @@ impl Store {
 
     pub(super) fn head_slot(&self) -> u64 {
         self.head_slot
+    }
+
+    /// BS-accepted block, any fork: every `PersistBlock` lands in
+    /// `unfinalized` (or `root_index` once promoted), so membership here is
+    /// "validated", independent of the current head chain.
+    pub(super) fn has_block(&self, root: &[u8; 32]) -> bool {
+        self.unfinalized.contains(root) || self.root_index.contains_key(root)
     }
 
     pub(super) fn finalized_slot(&self) -> u64 {

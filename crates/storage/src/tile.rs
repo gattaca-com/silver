@@ -541,6 +541,10 @@ impl StorageTile {
             tracing::warn!(?stream_id, "sidecar slot at or below finalized — ignoring");
             return ColumnOutcome::Skip;
         }
+        // The state view sees only the head fork's chain; the store holds
+        // every BS-accepted block (all forks, incl. validated children of the
+        // head that aren't head yet).
+        let parent_validated = parent_validated || self.store.has_block(parent_root);
         if !parent_validated {
             tracing::warn!(
                 ?stream_id,
@@ -599,7 +603,10 @@ impl StorageTile {
     {
         let pending = self.parent_pending_columns.remove(&parent_root);
         if pending.is_some() {
-            tracing::info!(root=hex::encode(&parent_root), "draining data columns for parrent root");
+            tracing::info!(
+                root = hex::encode(parent_root),
+                "draining data columns for parent root"
+            );
         }
         self.drain_entries(pending, false, emit);
     }
@@ -966,6 +973,11 @@ impl Tile<SilverSpine> for StorageTile {
                         let parent_root = *SignedBeaconBlockView::parent_root(buf);
                         let block_root = util::block_root_fulu(buf);
                         self.store.add_block(block_root, t_read, slot, parent_root);
+                        // This block just got BS-accepted: it may be the
+                        // missing parent of buffered columns.
+                        self.drain_parent_pending_columns(block_root, &mut |msg| {
+                            producers.data_columns.produce(&msg.into());
+                        });
                     }
                     Err(e) => {
                         tracing::error!(?e, seq=t_read.seq(), consumer=?self.persist_gossip_consumer, "persist consumer buffer acquire failed");
