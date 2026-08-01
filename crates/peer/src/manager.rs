@@ -485,10 +485,16 @@ impl PeerManager {
                 self.dialing.remove(&peer_id);
                 self.on_disconnected(p2p_peer, now, "transport", emit);
             }
-            PeerEvent::P2pCannotCreateStream { p2p_peer, .. } => {
+            PeerEvent::P2pCannotCreateStream { p2p_peer, protocol, rpc_request } => {
+                if rpc_request {
+                    self.release_outbound_in_flight(p2p_peer, protocol);
+                }
                 self.add_behaviour_penalty(p2p_peer, 1.0, "cannot create stream");
             }
-            PeerEvent::P2pOutboundMessageDropped { p2p_peer, .. } => {
+            PeerEvent::P2pOutboundMessageDropped { p2p_peer, protocol, rpc_request } => {
+                if rpc_request {
+                    self.release_outbound_in_flight(p2p_peer, protocol);
+                }
                 self.add_behaviour_penalty(p2p_peer, 1.0, "outbound message dropped");
             }
             PeerEvent::P2pStreamClosed { stream_id } => {
@@ -1307,6 +1313,24 @@ impl PeerManager {
         if let Some(peer) = self.peers.get_mut(&conn) {
             let t = peer.topic_stats.entry(topic).or_default();
             t.invalid_deliveries += 1.0;
+        }
+    }
+
+    /// A request admitted by `admit_outbound_request` never reached the wire:
+    /// no response terminator or stream close will ever fire for it, so the
+    /// in-flight slot must be released here or it leaks until disconnect
+    /// (2 leaks brick the peer for that protocol —
+    /// `MAX_RPC_PROTOCOL_IN_FLIGHT`).
+    fn release_outbound_in_flight(&mut self, conn: usize, protocol: StreamProtocol) {
+        if let Some(peer) = self.peers.get_mut(&conn) {
+            let ord = protocol.ordinal() as usize;
+            peer.outbound_in_flight[ord] = peer.outbound_in_flight[ord].saturating_sub(1);
+            tracing::debug!(
+                conn,
+                ?protocol,
+                in_flight = peer.outbound_in_flight[ord],
+                "released in-flight slot for failed send"
+            );
         }
     }
 

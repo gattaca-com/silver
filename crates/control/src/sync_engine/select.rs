@@ -28,6 +28,18 @@ pub(super) fn select_target(ctx: &Ctx, current: SyncUpdate, force_resync: bool) 
         if !reached && !ctx.peers.is_rejected(&head_root) && ctx.peers.backs_head(&head_root) {
             return SyncUpdate::SyncingHead { head_root, head_slot };
         }
+        // Pin reached (or lost its backers) while still behind the wall: the
+        // pin was stale the moment the chain moved on. Chase a fresh peer head
+        // with the lag gate suppressed — falling through would land in
+        // Following inside the `head_lag_threshold_slots` dead band, leaving
+        // the gap to gossip recovery. Head sync ends only when no backed peer
+        // head is ahead of us.
+        if local_head_slot < wall_slot &&
+            let Some((head_root, head_slot)) =
+                ctx.peers.best_head_target(local_head_slot, wall_slot, &ctx.cfg, true)
+        {
+            return SyncUpdate::SyncingHead { head_root, head_slot };
+        }
     }
 
     if let Some((epoch, root)) = ctx.peers.best_finalized_target(
