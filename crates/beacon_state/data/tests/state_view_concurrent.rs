@@ -1,20 +1,10 @@
-//! Concurrent reader / single writer stress for `BeaconStateOwner` +
-//! the fork rings. Exercises the seqlock protecting finalized writes and
-//! the publish-state-id protocol for slot-delta visibility, using only
-//! the public `StateReadView` surface — no test-only escape
-//! hatches.
-//!
-//! Seqlock test (finalized tier): writer promotes a slot fork carrying two
-//! block roots painted with the SAME tag into the slot group's base under one
-//! `WriteGuard` (via `SlotStateGroup::finalize`). The base slot is held at 0 so
-//! the promote always writes the same two adjacent cells (`FIN_CELL_A/B`).
-//! Reader reads both via `finalized_block_roots()` and asserts they match — a
-//! tear would surface as `old != new`.
-//!
-//! Delta-publish test (slot tier): writer rolls a slot-group fork tagged
-//! `slot_tag(s)` (slot `s`, `block_roots[0] = slot_tag(s)`), records it on a
-//! fresh `StateId` bundle via `slot_idx`, then `publish_state_id`. Reader sees
-//! `delta_block_roots()[0] == slot_tag(view.slot())`.
+//! One writer races optimistic readers through the production surface, on a
+//! seeded random schedule: block rolls via `apply_block_view` (publish-last, no
+//! write window), finalize windows via `write()` + `SlotStateGroup::finalize`,
+//! and the slot-ring copy-grow that a long non-finality stretch forces. Every
+//! block root for slot `s` is `slot_tag(s)`, so the moment a reader accepts a
+//! wrong root — in a fork's delta tail or in the promoted base — the test
+//! fails. Set `FUZZ_SEED` to reproduce a failure.
 
 use std::{
     ops::DerefMut,
@@ -24,166 +14,172 @@ use std::{
     },
 };
 
-use silver_beacon_state_data::{B256, BeaconStateOwner, StateId};
+use rand::{RngCore, SeedableRng, rngs::StdRng};
+use silver_beacon_state_data::{
+    B256, BeaconState, BeaconStateOwner, EpochStateFinalized, SLOTS_RING_N, StateId, ValSeed,
+};
 
-// The first phase rolls with no finalize, so the slot ring outgrows its
-// initial capacity (256) mid-run — copy-grows race the live reader through
-// the real owner/reader stack (before growable rings this would panic with
-// "would trample head"). Finalization then resumes for the rest of the run.
-const ITERATIONS: u64 = 600;
-const FINALIZE_FROM: u64 = 300;
+// Finalize stays ineligible until the slot ring has been rolled past its
+// capacity, so every run copy-grows the ring under a live reader (before
+// growable rings this panicked with "would trample head"). The remaining
+// iterations finalize at random, keeping windows short and races frequent.
+const FORCED_ROLLS: u32 = SLOTS_RING_N as u32 + 8;
+const ITERATIONS: u32 = FORCED_ROLLS + 240;
 
-// Two adjacent cells in the finalized `block_roots` circular buffer. The base
-// slot is held at 0, so `promote` always writes the delta's two roots to cells
-// 0 and 1 — both painted with the same tag inside one `WriteGuard`. The slot-
-// delta path writes the fork's own (separate) `block_roots`, so no collision.
-const FIN_CELL_A: usize = 0;
-const FIN_CELL_B: usize = 1;
-
+/// Mixed rather than the plain slot number so no tag is zero — a tag can never
+/// be confused with the zero-initialised base.
 fn slot_tag(slot: u64) -> B256 {
     let mut tag = [0u8; 32];
-    tag[..8].copy_from_slice(&slot.to_le_bytes());
+    tag[..8].copy_from_slice(&(slot.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1).to_le_bytes());
     tag
 }
 
 #[test]
-fn concurrent_reads_observe_consistent_state() {
-    let mut control = BeaconStateOwner::empty_test(0);
+fn fuzz_concurrent_reads_observe_consistent_state() {
+    let seed: u64 =
+        std::env::var("FUZZ_SEED").ok().and_then(|s| s.parse().ok()).unwrap_or_else(|| {
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+                as u64
+        });
+    println!("fuzz_concurrent_reads_observe_consistent_state seed = {seed} (set FUZZ_SEED)");
 
-    // Reader and writer rendezvous here so the reader is live and reading while
-    // the writer mutates — the writer loop is microsecond-cheap on its own, so
-    // without this it can finish before the reader is even scheduled.
-    let start = Arc::new(Barrier::new(2));
-    let reads = Arc::new(AtomicUsize::new(0));
+    // One validator: `apply_block_view` refuses to operate on an empty
+    // finalized state.
+    let mut control = BeaconStateOwner::new(BeaconState::for_test(
+        EpochStateFinalized::default(),
+        &[ValSeed::default()],
+        0,
+    ));
+
+    let start = Arc::new(Barrier::new(3));
+    let stop = Arc::new(AtomicBool::new(false));
+    let accepted = Arc::new(AtomicUsize::new(0));
     let bad = Arc::new(AtomicUsize::new(0));
     let saw_delta = Arc::new(AtomicBool::new(false));
-    let saw_finalized_advance = Arc::new(AtomicBool::new(false));
+    let saw_promoted = Arc::new(AtomicBool::new(false));
 
-    let reader = {
-        let r_control = control.reader();
-        let r_start = Arc::clone(&start);
-        let r_reads = Arc::clone(&reads);
-        let r_bad = Arc::clone(&bad);
-        let r_saw_delta = Arc::clone(&saw_delta);
-        let r_saw_finalized_advance = Arc::clone(&saw_finalized_advance);
-        std::thread::spawn(move || {
-            // Pre-publish scenario, deterministic: the writer publishes only
-            // after the barrier, so this read must observe "no snapshot yet".
-            assert!(
-                r_control.read(&|_| ()).is_none(),
-                "read returned a view before the first publish"
-            );
-            r_start.wait();
-            // Read until every invariant the assertions check has been observed.
-            // This is guaranteed reachable: after the writer's first finalize
-            // (s=7) the base cell is non-zero, and every published state carries
-            // a head delta — and the final state is stable, so even a slow reader
-            // converges. No timing assumptions.
-            loop {
-                let read = r_control.read(&|v| {
-                    let fin_roots = v.slot.finalized_block_roots();
-                    let fin_a = fin_roots[FIN_CELL_A];
-                    let fin_b = fin_roots[FIN_CELL_B];
-                    let merged_slot = v.slot.slot_number();
-                    let delta_roots = v.slot.delta_block_roots();
-                    let delta_root0 = delta_roots.first().copied();
-                    let has_delta = !delta_roots.is_empty();
-                    (fin_a, fin_b, merged_slot, delta_root0, has_delta)
-                });
-                // `None` until the writer's first publish lands.
-                let Some((fin_a, fin_b, merged_slot, delta_root0, has_delta)) = read else {
-                    continue;
-                };
+    let readers: Vec<_> = (0..2)
+        .map(|_| {
+            let reader = control.reader();
+            let (start, stop) = (start.clone(), stop.clone());
+            let (accepted, bad) = (accepted.clone(), bad.clone());
+            let (saw_delta, saw_promoted) = (saw_delta.clone(), saw_promoted.clone());
+            std::thread::spawn(move || {
+                // Deterministic: the writer publishes only after the barrier.
+                assert!(
+                    reader.read(&|_| ()).is_none(),
+                    "read returned a view before the first publish"
+                );
+                start.wait();
 
-                let mut errs = 0usize;
+                // Honouring `stop` alone lets a loaded machine deschedule a
+                // reader for the writer's whole run and validate nothing. The
+                // last published state is stable and passes every check below,
+                // so waiting for one accepted read always converges.
+                let mut validated = false;
+                while !validated || !stop.load(Ordering::Acquire) {
+                    let Some((errs, has_delta, promoted)) = reader.read(&|v| {
+                        let fin_slot = v.slot.base_state().slot;
+                        let fin_roots = v.slot.finalized_block_roots();
+                        let delta_roots = v.slot.delta_block_roots();
+                        let mut errs = 0usize;
 
-                // Seqlock invariant: writer paints both cells to the same
-                // tag inside one guard. Reader must see them matched.
-                if fin_a != fin_b {
-                    errs += 1;
-                }
+                        // The fork's tail: `delta_roots[k]` is slot `fin_slot + k`.
+                        for (k, root) in delta_roots.iter().enumerate() {
+                            if *root != slot_tag(fin_slot + k as u64) {
+                                errs += 1;
+                            }
+                        }
+                        if let Some(last) = delta_roots.len().checked_sub(1) {
+                            if v.slot.slot_number() != fin_slot + last as u64 {
+                                errs += 1;
+                            }
+                        }
 
-                if has_delta {
-                    r_saw_delta.store(true, Ordering::Relaxed);
-                    // Slot-delta self-consistency: `block_roots[0]` tags
-                    // the delta's slot, which is what `view.slot()`
-                    // returns when a delta is present.
-                    if delta_root0 != Some(slot_tag(merged_slot)) {
-                        errs += 1;
+                        // Promote writes each root at `slot % cap`; a torn
+                        // finalize window surfaces as a root that isn't its
+                        // slot's tag. Zeroed until the first promote lands.
+                        if fin_slot > 0 {
+                            let cap = fin_roots.len() as u64;
+                            for s in fin_slot.saturating_sub(7)..=fin_slot {
+                                if fin_roots[(s % cap) as usize] != slot_tag(s) {
+                                    errs += 1;
+                                }
+                            }
+                        }
+
+                        (errs, !delta_roots.is_empty(), fin_slot > 0)
+                    }) else {
+                        continue;
+                    };
+
+                    accepted.fetch_add(1, Ordering::Relaxed);
+                    bad.fetch_add(errs, Ordering::Relaxed);
+                    validated = true;
+                    if has_delta {
+                        saw_delta.store(true, Ordering::Relaxed);
+                    }
+                    if promoted {
+                        saw_promoted.store(true, Ordering::Relaxed);
                     }
                 }
-                if fin_a != [0u8; 32] {
-                    r_saw_finalized_advance.store(true, Ordering::Relaxed);
-                }
-
-                r_bad.fetch_add(errs, Ordering::Relaxed);
-                r_reads.fetch_add(1, Ordering::Relaxed);
-
-                if r_saw_delta.load(Ordering::Relaxed) &&
-                    r_saw_finalized_advance.load(Ordering::Relaxed)
-                {
-                    break;
-                }
-            }
+            })
         })
-    };
+        .collect();
 
-    // Real committed entries for the tiers this test never re-rolls — the
-    // bundle is assembled from honest per-tier ids, not defaults.
-    let anchor = control.roll_fresh();
+    let mut rng = StdRng::seed_from_u64(seed);
+    let mut head = control.roll_fresh();
+    let mut rolls_in_window = 0u32;
 
-    // Writer = main thread. Release the reader so both run concurrently.
+    // Writer = main thread. Release the readers so both run concurrently.
     start.wait();
-    for s in 0..ITERATIONS {
-        // Roll a slot-group fork tagged for slot `s`, then record it on the
-        // bundle via `slot_idx` — the index the reader resolves (the other
-        // tiers keep their setup-committed entries).
-        let slot_idx = {
-            let mut g = control.write();
-            let mut sv = g.slot_states.roll_fresh();
-            sv.state_mut().slot = s;
-            sv.push_block_root(slot_tag(s));
-            sv.commit()
-        };
+    for i in 0..ITERATIONS {
+        // The first finalize is forced (so every seed promotes at least once);
+        // the last iteration is always a roll, so a reader scheduled only at
+        // the very end still observes a delta over a promoted base.
+        let finalize = i >= FORCED_ROLLS &&
+            i + 1 < ITERATIONS &&
+            rolls_in_window > 0 &&
+            (i == FORCED_ROLLS || rng.next_u32() % 8 == 0);
 
-        // Now visible to readers.
-        control.publish_state_id(StateId { slot_idx, ..anchor });
-
-        // Periodically advance the finalized base by promoting a fork carrying
-        // two roots painted with the same tag (cells 0,1 — base slot stays 0).
-        // Both cells land under one `WriteGuard`; readers must see them matched
-        // on every snapshot or the seqlock is broken.
-        if s >= FINALIZE_FROM && s % 8 == 7 {
-            let tag = slot_tag(s);
-            let winner = {
-                let mut g = control.write();
-                let mut sv = g.slot_states.roll_fresh();
-                sv.push_block_root(tag);
-                sv.push_block_root(tag);
-                sv.commit()
+        if finalize {
+            // Promote the head, reanchor the survivors, and publish the
+            // reanchored bundle in the SAME window — readers must never
+            // resolve a bundle whose slot id was already re-anchored.
+            let mut guard = control.write();
+            let fresh = guard.deref_mut().slot_states.finalize(head.slot_idx, &[head.slot_idx]);
+            head = StateId { slot_idx: fresh[0], ..head };
+            guard.set_state_id(head);
+            rolls_in_window = 0;
+        } else {
+            // Where this fork's tail starts, read through the same public
+            // surface the readers use — never recomputed here.
+            let (fin_slot, tail_len) = {
+                let view = control.read_view(head);
+                (view.slot.base_state().slot, view.slot.delta_block_roots().len() as u64)
             };
-            let mut g = control.write();
-            g.deref_mut().slot_states.finalize(winner, &[winner]);
-        }
+            let slot = fin_slot + tail_len;
 
-        // Encourage interleaving.
-        std::thread::yield_now();
+            head = {
+                let (mut view, _epoch, _longtail) = control.apply_block_view(head);
+                view.slot.state_mut().slot = slot;
+                view.slot.push_block_root(slot_tag(slot));
+                view.commit(head.epoch_idx, head.longtail_idx)
+            };
+            control.publish_state_id(head);
+            rolls_in_window += 1;
+        }
     }
 
-    // The reader self-terminates once it has observed both invariants; join
-    // blocks until then. The final published state is stable and satisfies
-    // them (the last iteration is a finalize: base cells 0,1 and the head
-    // delta all tagged with the same slot tag), so this converges with no
-    // timing assumptions.
-    reader.join().expect("reader thread panicked");
+    stop.store(true, Ordering::Release);
+    for reader in readers {
+        reader.join().expect("reader thread panicked");
+    }
 
-    let r = reads.load(Ordering::Relaxed);
-    let b = bad.load(Ordering::Relaxed);
-    assert!(r > 0, "reader did not get to run");
+    let (accepted, bad) = (accepted.load(Ordering::Relaxed), bad.load(Ordering::Relaxed));
+    println!("accepted reads: {accepted}, inconsistent: {bad}");
+    assert_eq!(bad, 0, "reader accepted an inconsistent view (seed {seed})");
+    assert!(accepted > 0, "readers never observed a stable view");
     assert!(saw_delta.load(Ordering::Relaxed), "reader never observed a published slot delta");
-    assert!(
-        saw_finalized_advance.load(Ordering::Relaxed),
-        "reader never observed finalized advance"
-    );
-    assert_eq!(b, 0, "{b} of {r} reads observed inconsistent state");
+    assert!(saw_promoted.load(Ordering::Relaxed), "reader never observed a promoted base");
 }
