@@ -47,11 +47,15 @@ impl RingGroup for ValidatorsGroup {
 }
 
 impl ValidatorsGroup {
+    #[timed]
     pub fn new(finalized: FinalizedValidators, format: HashFormat) -> Self {
         let n = finalized.validator_count();
-        let leaf_bytes: Vec<u8> = (0..n).flat_map(|i| finalized.leaf_hash(i)).collect();
-        let hash = ColumnGroup::new(finalized.capacity(), n, &leaf_bytes, format)
-            .expect("leaf bytes sized from the registry");
+        let hash = ColumnGroup::from_leaves(
+            finalized.capacity(),
+            n,
+            (0..n).map(|i| finalized.leaf_hash(i)),
+            format,
+        );
         Self { finalized, deltas: Ring::new(SLOTS_RING_N), hash }
     }
 

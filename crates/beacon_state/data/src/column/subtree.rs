@@ -3,6 +3,38 @@ use crate::{
     types::B256,
 };
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct NodeRange {
+    pub(super) start: u32,
+    pub(super) end: u32,
+}
+
+impl NodeRange {
+    #[inline]
+    pub(super) fn single(id: u32) -> Self {
+        Self { start: id, end: id + 1 }
+    }
+
+    #[inline]
+    pub(super) fn contains(self, id: u32) -> bool {
+        (self.start..self.end).contains(&id)
+    }
+
+    #[inline]
+    fn parent(self, base: u32) -> Self {
+        Self { start: base + (self.start >> 1), end: base + ((self.end - 1) >> 1) + 1 }
+    }
+
+    #[inline]
+    pub(super) fn try_merge(&mut self, later: Self) -> bool {
+        if later.start > self.end {
+            return false;
+        }
+        self.end = self.end.max(later.end);
+        true
+    }
+}
+
 pub(super) fn build_subtree_hashes(internal: &mut [B256], leaves: &[B256], non_zero: usize) {
     let cap = internal.len();
     if cap <= 1 {
@@ -33,33 +65,27 @@ pub(super) fn build_subtree_hashes(internal: &mut [B256], leaves: &[B256], non_z
     }
 }
 
-pub(super) fn rehash_subtree(internal: &mut [B256], leaves: &[B256], dirty: &mut [u32]) {
+pub(super) fn rehash_subtree(internal: &mut [B256], leaves: &[B256], dirty: &mut [NodeRange]) {
     let cap = internal.len();
     if cap <= 1 || dirty.is_empty() {
         return;
     }
     let bottom = cap >> 1;
-    let mut len = dedup_parents(dirty, bottom as u32);
-    hash_runs(internal, leaves, &dirty[..len], bottom);
+    let mut dirty = dedup_parents(dirty, bottom as u32);
+    hash_runs(internal, leaves, dirty, bottom);
 
     let mut level = bottom;
     while level > 1 {
-        len = dedup_parents(&mut dirty[..len], 0);
+        dirty = dedup_parents(dirty, 0);
         level >>= 1;
         let (parents, children) = internal.split_at_mut(2 * level);
-        hash_runs(parents, children, &dirty[..len], level);
+        hash_runs(parents, children, dirty, level);
     }
 }
 
-fn hash_runs(parents: &mut [B256], children: &[B256], dirty: &[u32], child_base: usize) {
-    let mut i = 0;
-    while i < dirty.len() {
-        let start = i;
-        while i + 1 < dirty.len() && dirty[i + 1] == dirty[i] + 1 {
-            i += 1;
-        }
-        i += 1;
-        let (lo, hi) = (dirty[start] as usize, dirty[i - 1] as usize + 1);
+fn hash_runs(parents: &mut [B256], children: &[B256], dirty: &[NodeRange], child_base: usize) {
+    for r in dirty {
+        let (lo, hi) = (r.start as usize, r.end as usize);
         hash_concat_many(
             &mut parents[lo..hi],
             &children[2 * (lo - child_base)..2 * (hi - child_base)],
@@ -67,14 +93,15 @@ fn hash_runs(parents: &mut [B256], children: &[B256], dirty: &[u32], child_base:
     }
 }
 
-fn dedup_parents(dirty: &mut [u32], base: u32) -> usize {
+fn dedup_parents(dirty: &mut [NodeRange], base: u32) -> &mut [NodeRange] {
     let mut n = 0;
     for j in 0..dirty.len() {
-        let parent = base + (dirty[j] >> 1);
-        if n == 0 || dirty[n - 1] != parent {
-            dirty[n] = parent;
-            n += 1;
+        let parent = dirty[j].parent(base);
+        if n > 0 && dirty[n - 1].try_merge(parent) {
+            continue;
         }
+        dirty[n] = parent;
+        n += 1;
     }
-    n
+    &mut dirty[..n]
 }

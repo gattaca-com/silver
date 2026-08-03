@@ -5,7 +5,7 @@ use super::{
     store::NodeStore,
     subtree::{build_subtree_hashes, rehash_subtree},
 };
-use crate::merkle::ZERO_HASHES;
+use crate::{merkle::ZERO_HASHES, types::B256};
 
 #[derive(Default)]
 pub(super) struct FuluTree {
@@ -14,10 +14,13 @@ pub(super) struct FuluTree {
 }
 
 impl FuluTree {
-    pub(super) fn new<V: SszScalar>(cap: usize, count: usize, ssz_bytes: &[u8]) -> Self {
-        debug_assert_eq!(ssz_bytes.len(), count * size_of::<V>());
+    pub(super) fn new<V: SszScalar>(
+        cap: usize,
+        count: usize,
+        leaves: impl Iterator<Item = B256>,
+    ) -> Self {
         let max_elements = cap.div_ceil(V::VALS_PER_CHUNK).next_power_of_two().max(1);
-        let store = NodeStore::with_leaves(2 * max_elements, count, max_elements, ssz_bytes);
+        let store = NodeStore::with_leaves(2 * max_elements, count, max_elements, leaves);
         let mut tree = Self { store, max_elements };
         tree.build(count.div_ceil(V::VALS_PER_CHUNK));
         tree

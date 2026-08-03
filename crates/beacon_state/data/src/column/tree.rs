@@ -9,10 +9,7 @@ use super::{
     snapshot::PageSnapshot,
     store::NodeStore,
 };
-use crate::{
-    ColumnLenMismatch,
-    types::{B256, HashFormat},
-};
+use crate::types::{B256, HashFormat};
 
 pub enum ColumnTree {
     Fulu(FuluTree),
@@ -26,21 +23,17 @@ impl Default for ColumnTree {
 }
 
 impl ColumnTree {
-    pub fn new<V: SszScalar>(
+    #[timed]
+    pub fn from_leaves<V: SszScalar>(
         cap: usize,
         count: usize,
-        ssz_bytes: &[u8],
+        leaves: impl Iterator<Item = B256>,
         format: HashFormat,
-    ) -> Result<Self, ColumnLenMismatch> {
-        if ssz_bytes.len() != count * size_of::<V>() {
-            return Err(ColumnLenMismatch { bytes: ssz_bytes.len(), expected: count });
+    ) -> Self {
+        match format {
+            HashFormat::Fulu => ColumnTree::Fulu(FuluTree::new::<V>(cap, count, leaves)),
+            HashFormat::Gloas => ColumnTree::Gloas(GloasTree::from_leaves::<V>(cap, count, leaves)),
         }
-        Ok(match format {
-            HashFormat::Fulu => ColumnTree::Fulu(FuluTree::new::<V>(cap, count, ssz_bytes)),
-            HashFormat::Gloas => {
-                ColumnTree::Gloas(GloasTree::from_leaves::<V>(cap, count, ssz_bytes))
-            }
-        })
     }
 
     pub fn migrate_to_gloas<V: SszScalar>(&mut self) {
@@ -105,6 +98,7 @@ impl ColumnTree {
         self.store_mut().load_diff(pool, loaded, target, format.num_nodes());
     }
 
+    #[timed]
     pub(super) fn to_snapshot(&self, pool: &mut PagePool) -> PageSnapshot {
         self.store().to_snapshot(pool, self.format())
     }
@@ -242,14 +236,15 @@ impl ColumnTree {
     }
 
     pub fn rehash_unsorted(&mut self) {
-        self.store_mut().dirty_chunks.sort_unstable();
+        self.store_mut().sort_merge_dirty();
         self.rehash();
     }
 
     pub fn rehash(&mut self) {
         debug_assert!(
-            self.store().dirty_chunks.windows(2).all(|w| w[0] <= w[1]),
-            "rehash needs ascending dirty ids; use rehash_unsorted",
+            self.store().dirty_chunks.iter().all(|r| r.start < r.end) &&
+                self.store().dirty_chunks.windows(2).all(|w| w[0].end <= w[1].start),
+            "rehash needs sorted disjoint dirty ranges; use rehash_unsorted",
         );
         match self {
             ColumnTree::Fulu(t) => t.rehash(),

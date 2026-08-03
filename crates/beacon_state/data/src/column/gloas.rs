@@ -4,7 +4,7 @@ use super::{
     format::{SEG_OFF, TreeFormat, gloas_last_seg_for_chunks},
     fulu::FuluTree,
     store::NodeStore,
-    subtree::{build_subtree_hashes, rehash_subtree},
+    subtree::{NodeRange, build_subtree_hashes, rehash_subtree},
 };
 use crate::{
     merkle::ZERO_HASHES,
@@ -18,12 +18,14 @@ pub(super) struct GloasTree {
 }
 
 impl GloasTree {
-    pub(super) fn from_leaves<V: SszScalar>(cap: usize, count: usize, ssz_bytes: &[u8]) -> Self {
-        debug_assert_eq!(ssz_bytes.len(), count * size_of::<V>());
+    pub(super) fn from_leaves<V: SszScalar>(
+        cap: usize,
+        count: usize,
+        leaves: impl Iterator<Item = B256>,
+    ) -> Self {
         let last_seg = gloas_last_seg_for_chunks(cap.div_ceil(V::VALS_PER_CHUNK).max(1));
         let format = TreeFormat::Gloas { last_seg };
-        let store =
-            NodeStore::with_leaves(format.num_nodes(), count, format.data_start(), ssz_bytes);
+        let store = NodeStore::with_leaves(format.num_nodes(), count, format.data_start(), leaves);
         let mut tree = Self { store, last_seg };
         tree.rebuild_segments(count.div_ceil(V::VALS_PER_CHUNK));
         tree
@@ -40,10 +42,10 @@ impl GloasTree {
     pub(super) fn from_fulu<V: SszScalar>(fulu: &FuluTree) -> Self {
         debug_assert!(fulu.store.dirty_chunks.is_empty(), "unhashed batch pending at migration",);
         let count = fulu.store.count;
-        let leaf_bytes =
-            &fulu.store.nodes[fulu.max_elements..].as_flattened()[..count * size_of::<V>()];
-        let mut tree =
-            Self::from_leaves::<V>(fulu.max_elements * V::VALS_PER_CHUNK, count, leaf_bytes);
+        let chunks = count.div_ceil(V::VALS_PER_CHUNK);
+        let leaves =
+            fulu.store.nodes[fulu.max_elements..fulu.max_elements + chunks].iter().copied();
+        let mut tree = Self::from_leaves::<V>(fulu.max_elements * V::VALS_PER_CHUNK, count, leaves);
         tree.store.mark_all_dirty();
         tree
     }
@@ -59,14 +61,24 @@ impl GloasTree {
         let (internals, data) = nodes.split_at_mut(data_start);
         let mut start = 0;
         while start < dirty_chunks.len() {
-            let k = progressive_segment_of_chunk(dirty_chunks[start] as usize) as usize;
+            let k = progressive_segment_of_chunk(dirty_chunks[start].start as usize) as usize;
             let seg_start = PROGRESSIVE_SEGMENT_START[k];
-            let end = start +
-                dirty_chunks[start..]
-                    .partition_point(|&c| (c as usize) < PROGRESSIVE_SEGMENT_START[k + 1]);
+            let seg_end = PROGRESSIVE_SEGMENT_START[k + 1] as u32;
+            let end = start + dirty_chunks[start..].partition_point(|r| r.start < seg_end);
 
-            for c in &mut dirty_chunks[start..end] {
-                *c -= seg_start as u32;
+            // A range crossing the segment boundary is split: this pass
+            // rehashes its head, and the tail re-enters the loop as the next
+            // segment's first range (rehash_subtree only scrambles the
+            // processed window, so the slot it lands in is free).
+            let tail = (dirty_chunks[end - 1].end > seg_end).then(|| {
+                let tail = NodeRange { start: seg_end, end: dirty_chunks[end - 1].end };
+                dirty_chunks[end - 1].end = seg_end;
+                tail
+            });
+
+            for r in &mut dirty_chunks[start..end] {
+                r.start -= seg_start as u32;
+                r.end -= seg_start as u32;
             }
             rehash_subtree(
                 &mut internals[SEG_OFF[k]..SEG_OFF[k] + (1 << (2 * k))],
@@ -74,6 +86,10 @@ impl GloasTree {
                 &mut dirty_chunks[start..end],
             );
             start = end;
+            if let Some(tail) = tail {
+                start -= 1;
+                dirty_chunks[start] = tail;
+            }
         }
         dirty_chunks.clear();
     }

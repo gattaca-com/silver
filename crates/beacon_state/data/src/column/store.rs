@@ -2,6 +2,7 @@ use super::{
     format::TreeFormat,
     pool::{PAGE_NODES, PagePool},
     snapshot::PageSnapshot,
+    subtree::NodeRange,
 };
 use crate::types::B256;
 
@@ -10,7 +11,7 @@ pub(super) struct NodeStore {
     pub(super) nodes: Vec<B256>,
     pub(super) count: usize,
     pub(super) dirty_pages: Vec<bool>,
-    pub(super) dirty_chunks: Vec<u32>,
+    pub(super) dirty_chunks: Vec<NodeRange>,
 }
 
 impl NodeStore {
@@ -18,7 +19,7 @@ impl NodeStore {
         num_nodes: usize,
         count: usize,
         data_start: usize,
-        leaf_bytes: &[u8],
+        leaves: impl Iterator<Item = B256>,
     ) -> Self {
         let mut store = Self {
             nodes: vec![[0u8; 32]; num_nodes],
@@ -26,8 +27,9 @@ impl NodeStore {
             dirty_pages: vec![false; num_pages_for(num_nodes)],
             dirty_chunks: Vec::new(),
         };
-        store.nodes[data_start..].as_flattened_mut()[..leaf_bytes.len()]
-            .copy_from_slice(leaf_bytes);
+        for (slot, leaf) in store.nodes[data_start..].iter_mut().zip(leaves) {
+            *slot = leaf;
+        }
         store
     }
 
@@ -143,9 +145,27 @@ impl NodeStore {
 
     #[inline]
     pub(super) fn push_dirty(&mut self, chunk: u32) {
-        if self.dirty_chunks.last() != Some(&chunk) {
-            self.dirty_chunks.push(chunk);
+        match self.dirty_chunks.last_mut() {
+            Some(last) if last.contains(chunk) => {}
+            Some(last) if chunk == last.end => last.end += 1,
+            _ => self.dirty_chunks.push(NodeRange::single(chunk)),
         }
+    }
+
+    /// Sort the dirty ranges and merge any that touch, restoring the
+    /// ascending-disjoint invariant `rehash` relies on.
+    pub(super) fn sort_merge_dirty(&mut self) {
+        self.dirty_chunks.sort_unstable_by_key(|r| r.start);
+        let mut n = 0;
+        for j in 0..self.dirty_chunks.len() {
+            let r = self.dirty_chunks[j];
+            if n > 0 && self.dirty_chunks[n - 1].try_merge(r) {
+                continue;
+            }
+            self.dirty_chunks[n] = r;
+            n += 1;
+        }
+        self.dirty_chunks.truncate(n);
     }
 
     /// `seg_off` is the internal node's subtree block offset (0 for fulu's

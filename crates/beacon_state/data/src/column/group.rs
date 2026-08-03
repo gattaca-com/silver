@@ -11,8 +11,17 @@ use super::{
 };
 use crate::{
     ring::{Id, Ring, RingGroup},
-    types::{ColumnLenMismatch, HashFormat, SLOTS_RING_N},
+    types::{B256, ColumnLenMismatch, HashFormat, SLOTS_RING_N},
 };
+
+/// SSZ leaf bytes as zero-padded 32-byte chunks.
+fn byte_chunks(bytes: &[u8]) -> impl Iterator<Item = B256> + '_ {
+    bytes.chunks(32).map(|c| {
+        let mut chunk = [0u8; 32];
+        chunk[..c.len()].copy_from_slice(c);
+        chunk
+    })
+}
 
 pub struct ColumnGroup<C: ColumnSpec> {
     pool: PagePool,
@@ -39,20 +48,32 @@ impl<C: ColumnSpec> ColumnGroup<C> {
         ssz_bytes: &[u8],
         format: HashFormat,
     ) -> Result<Self, ColumnLenMismatch> {
-        let flat = ColumnTree::new::<C::Val>(cap, count, ssz_bytes, format)?;
+        if ssz_bytes.len() != count * size_of::<C::Val>() {
+            return Err(ColumnLenMismatch { bytes: ssz_bytes.len(), expected: count });
+        }
+        Ok(Self::from_leaves(cap, count, byte_chunks(ssz_bytes), format))
+    }
+
+    pub fn from_leaves(
+        cap: usize,
+        count: usize,
+        leaves: impl Iterator<Item = B256>,
+        format: HashFormat,
+    ) -> Self {
+        let flat = ColumnTree::from_leaves::<C::Val>(cap, count, leaves, format);
         // Grow-hint for the base's pages; the pool grows lazily beyond it.
         let mut pool = PagePool::new(flat.num_pages() * 2);
         let finalized = flat.to_snapshot(&mut pool);
         let mut scratch_snapshot = PageSnapshot::new_released();
         pool.share_into(&mut scratch_snapshot, &finalized);
-        Ok(Self {
+        Self {
             pool,
             finalized,
             ring: Ring::filled(SLOTS_RING_N, PageSnapshot::new_released),
             scratch: flat,
             scratch_snapshot,
             _marker: PhantomData,
-        })
+        }
     }
 
     #[inline]
