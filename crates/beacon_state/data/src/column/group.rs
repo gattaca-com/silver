@@ -14,7 +14,6 @@ use crate::{
     types::{B256, ColumnLenMismatch, HashFormat, SLOTS_RING_N},
 };
 
-/// SSZ leaf bytes as zero-padded 32-byte chunks.
 fn byte_chunks(bytes: &[u8]) -> impl Iterator<Item = B256> + '_ {
     bytes.chunks(32).map(|c| {
         let mut chunk = [0u8; 32];

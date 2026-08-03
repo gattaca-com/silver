@@ -152,8 +152,6 @@ impl NodeStore {
         }
     }
 
-    /// Sort the dirty ranges and merge any that touch, restoring the
-    /// ascending-disjoint invariant `rehash` relies on.
     pub(super) fn sort_merge_dirty(&mut self) {
         self.dirty_chunks.sort_unstable_by_key(|r| r.start);
         let mut n = 0;

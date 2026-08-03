@@ -66,10 +66,10 @@ impl GloasTree {
             let seg_end = PROGRESSIVE_SEGMENT_START[k + 1] as u32;
             let end = start + dirty_chunks[start..].partition_point(|r| r.start < seg_end);
 
-            // A range crossing the segment boundary is split: this pass
-            // rehashes its head, and the tail re-enters the loop as the next
-            // segment's first range (rehash_subtree only scrambles the
-            // processed window, so the slot it lands in is free).
+            // The last range may spill into the next segment, so cut it at the
+            // boundary and hash only the head here. The tail goes back into the
+            // head's slot afterwards, where the next pass picks it up as its
+            // own first range.
             let tail = (dirty_chunks[end - 1].end > seg_end).then(|| {
                 let tail = NodeRange { start: seg_end, end: dirty_chunks[end - 1].end };
                 dirty_chunks[end - 1].end = seg_end;
