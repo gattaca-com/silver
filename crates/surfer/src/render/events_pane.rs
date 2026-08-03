@@ -92,18 +92,21 @@ impl EventsPane {
                         BlockSource::Rpc => "rpc",
                     }),
                     Text::raw(t.received_at.with_fmt_utc("%H:%M:%S%.3f")),
-                    Text::raw(dur(t.received)),
+                    Text::raw(t.received.map_or_else(|| "-".to_string(), dur)),
                     Text::raw(dur(t.validate)),
                     // stf and el stacked, coloured differently, so it reads as
                     // "these two run in parallel".
                     Text::from(vec![
-                        stage_line("stf", t.stf, Color::LightBlue),
-                        stage_line("el", t.el, el_color(t.verdict)),
+                        stage_line("stf", t.stf, None, Color::LightBlue),
+                        stage_line("el", t.el, t.verdict.map(status_label), el_color(t.verdict)),
                     ]),
                     Text::raw(dur(t.total)),
                     // Applied into-slot = arrival + validate + stf; that's when
                     // the head is importable, i.e. when we could attest.
-                    margin_text(t.stf.map(|stf| t.received + t.validate + stf), deadline),
+                    margin_text(
+                        t.received.zip(t.stf).map(|(recv, stf)| recv + t.validate + stf),
+                        deadline,
+                    ),
                 ]
             })
             .collect();
@@ -166,7 +169,7 @@ fn dur(d: Nanos) -> String {
 
 /// Margin against the attestation deadline at the point the block became
 /// importable (applied): green when we beat it (time to spare), red (`-…`) when
-/// we missed it. `-` until the block is applied.
+/// we missed it. `-` when there is no applied-into-slot to compare.
 fn margin_text(applied_into_slot: Option<Nanos>, deadline: Nanos) -> Text<'static> {
     let Some(applied) = applied_into_slot else {
         return Text::raw("-");
@@ -179,14 +182,30 @@ fn margin_text(applied_into_slot: Option<Nanos>, deadline: Nanos) -> Text<'stati
     Text::styled(text, Style::default().fg(color))
 }
 
-/// One line of the stacked `stf ‖ el` cell: `"<label> <dur>"`, coloured; `-`
-/// while the stage hasn't happened.
-fn stage_line(label: &str, d: Option<Nanos>, color: Color) -> Line<'static> {
-    let text = match d {
+/// One line of the stacked `stf ‖ el` cell: `"<label> <dur> [note]"`, coloured;
+/// `-` while the stage hasn't happened.
+fn stage_line(label: &str, d: Option<Nanos>, note: Option<&str>, color: Color) -> Line<'static> {
+    let mut text = match d {
         Some(d) => format!("{label:<3} {}", dur(d)),
         None => format!("{label:<3} -"),
     };
+    if let Some(note) = note {
+        text.push(' ');
+        text.push_str(note);
+    }
     Line::styled(text, Style::default().fg(color))
+}
+
+/// Spelled out next to the `el` duration: a syncing or accepted EL answers in a
+/// few ms without executing the payload, so the round-trip alone reads as a
+/// fast success.
+fn status_label(status: PayloadValidationStatus) -> &'static str {
+    match status {
+        PayloadValidationStatus::Valid => "valid",
+        PayloadValidationStatus::Invalid => "invalid",
+        PayloadValidationStatus::Syncing => "syncing",
+        PayloadValidationStatus::Accepted => "accepted",
+    }
 }
 
 /// First 4 bytes of the block root as 8 hex chars.

@@ -49,6 +49,7 @@ impl BeaconStateTile {
             producers.produce(EngineReq::NewPayload(EngineNewPayloadReq {
                 data: read,
                 block_root: root,
+                slot: block_slot,
                 block_source: source,
             }));
         });
