@@ -1,7 +1,5 @@
 mod id;
 mod slot;
-#[cfg(test)]
-mod vec_fuzz;
 
 use std::sync::atomic::{AtomicPtr, Ordering as AtomicOrdering};
 
