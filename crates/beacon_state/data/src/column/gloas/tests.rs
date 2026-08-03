@@ -99,6 +99,33 @@ fn rehash_unsorted_scrambled_add_at() {
 }
 
 #[test]
+fn contiguous_range_straddles_segments() {
+    // An epoch-style pass touches every index in order, so the dirty set is a
+    // single range spanning all segments (chunk boundaries at 1, 5, 21);
+    // rehash must split it at each progressive segment boundary.
+    let mut values: Vec<u64> = (0..333).collect();
+    let mut g = group(&values);
+    let mut wv = g.roll_fresh();
+    wv.migrate_to_gloas();
+
+    for (i, v) in values.iter_mut().enumerate() {
+        wv.add_at(i as u32, 3);
+        *v += 3;
+    }
+    wv.rehash();
+    assert_progressive(&wv, &values);
+
+    // A range starting mid-segment and ending mid-segment (chunks 3..26,
+    // segments 1..=3) splits on both sides.
+    for i in 12..104u32 {
+        wv.add_at(i, 1);
+        values[i as usize] += 1;
+    }
+    wv.rehash();
+    assert_progressive(&wv, &values);
+}
+
+#[test]
 fn random_batches_match_reference() {
     use rand::{Rng, SeedableRng, rngs::StdRng, seq::SliceRandom};
 

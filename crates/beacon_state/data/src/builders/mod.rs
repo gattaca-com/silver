@@ -39,10 +39,13 @@ impl RingGroup for BuildersGroup {
 
 impl BuildersGroup {
     pub fn new(finalized: FinalizedBuilders) -> Self {
-        let leaf_bytes: Vec<u8> = finalized.as_slice().iter().flat_map(builder_hash).collect();
-        let hash =
-            ColumnGroup::new(finalized.capacity(), finalized.len(), &leaf_bytes, HashFormat::Gloas)
-                .expect("leaf bytes sized from the registry");
+        let builders = finalized.as_slice();
+        let hash = ColumnGroup::from_leaves(
+            finalized.capacity(),
+            builders.len(),
+            builders.iter().map(builder_hash),
+            HashFormat::Gloas,
+        );
         Self { finalized, deltas: Ring::new(SLOTS_RING_N), hash }
     }
 
