@@ -50,17 +50,14 @@ enum ServeResult {
 
 impl Store {
     #[timed]
-    pub(crate) fn file_io<F>(
+    fn drain_pending_writes<F>(
         &mut self,
-        fork_digest_at: impl Fn(u64) -> [u8; 4],
         custody_group_columns: u128,
-        producer: &mut TMultiProducer,
         emit: &mut F,
     ) -> Result<(), Error>
     where
         F: FnMut(IoEvent),
     {
-        // Pending writes.
         let mut writes = 0;
         while writes < MAX_WRITES_PER_LOOP &&
             let Some(pending) = self.write_queue.front()
@@ -237,7 +234,19 @@ impl Store {
                 }
             }
         }
+        Ok(())
+    }
 
+    #[timed]
+    fn serve_pending_reads<F>(
+        &mut self,
+        fork_digest_at: impl Fn(u64) -> [u8; 4],
+        producer: &mut TMultiProducer,
+        emit: &mut F,
+    ) -> Result<(), Error>
+    where
+        F: FnMut(IoEvent),
+    {
         // Pending reads. Round-robin across in-flight requests: serve one
         // chunk, then rotate the request to the back so a large range can't
         // block other peers' queries (head-of-line fairness). `Complete` is
@@ -300,10 +309,31 @@ impl Store {
                 }
             }
         }
+        Ok(())
+    }
+
+    pub(crate) fn file_io<F>(
+        &mut self,
+        fork_digest_at: impl Fn(u64) -> [u8; 4],
+        custody_group_columns: u128,
+        producer: &mut TMultiProducer,
+        emit: &mut F,
+    ) -> Result<(), Error>
+    where
+        F: FnMut(IoEvent),
+    {
+        if !self.write_queue.is_empty() {
+            self.drain_pending_writes(custody_group_columns, emit)?;
+        }
+        if !self.query_queue.is_empty() {
+            self.serve_pending_reads(&fork_digest_at, producer, emit)?;
+        }
 
         // Column backfill runs first: advance the disk scan (set 1), reporting
         // missing columns via `ColumnNeed`. Re-request/retry is the engine's.
-        self.scan_columns_step(custody_group_columns, &mut |evt| emit(IoEvent::PeerEvent(evt)));
+        if self.column_scan.is_some() {
+            self.scan_columns_step(custody_group_columns, &mut |evt| emit(IoEvent::PeerEvent(evt)));
+        }
 
         // Promote to block backfill once the disk scan finished and its set-1
         // column requests drained — block backfill then feeds set 2 back in.
@@ -345,6 +375,7 @@ impl Store {
     /// For each persisted block carrying blob commitments whose custody columns
     /// aren't all on disk, seed `column_backfill` with the missing set. Marks
     /// the scan complete on reaching the retention floor.
+    #[timed]
     fn scan_columns_step<F>(&mut self, custody: u128, emit: &mut F)
     where
         F: FnMut(PeerEvent),
