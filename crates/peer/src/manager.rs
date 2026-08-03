@@ -469,7 +469,6 @@ impl PeerManager {
     }
 
     // ── Hot path: counter updates only ──────────────────────────────────
-    #[timed]
     pub fn handle_event(
         &mut self,
         event: PeerEvent,
@@ -713,6 +712,7 @@ impl PeerManager {
     // ── Lifecycle ───────────────────────────────────────────────────────
 
     #[allow(clippy::too_many_arguments)]
+    #[timed]
     fn on_connected(
         &mut self,
         conn: usize,
@@ -772,6 +772,7 @@ impl PeerManager {
         }
     }
 
+    #[timed]
     fn on_disconnected(
         &mut self,
         conn: usize,
@@ -839,6 +840,7 @@ impl PeerManager {
 
     // ── Gossip event handlers ───────────────────────────────────────────
 
+    #[timed]
     fn on_subscribe(
         &mut self,
         conn: usize,
@@ -868,6 +870,7 @@ impl PeerManager {
         }
     }
 
+    #[timed]
     fn on_unsubscribe(
         &mut self,
         conn: usize,
@@ -893,6 +896,7 @@ impl PeerManager {
         }
     }
 
+    #[timed]
     fn on_remote_graft(
         &mut self,
         conn: usize,
@@ -924,6 +928,7 @@ impl PeerManager {
         }
     }
 
+    #[timed]
     fn on_remote_prune(
         &mut self,
         conn: usize,
@@ -1003,6 +1008,7 @@ impl PeerManager {
 
     /// Peer sent us an IWANT that hit our mcache. Check retransmission
     /// threshold and apply the score gate.
+    #[timed]
     fn on_iwant_received(
         &mut self,
         conn: usize,
@@ -1038,6 +1044,7 @@ impl PeerManager {
     /// actually reached us first), credit P2/P3 on the delivering peer, and
     /// fan out the pre-encoded IDONTWANT frame to every mesh peer except
     /// the sender so they stop racing this id toward us.
+    #[timed]
     fn on_new_gossip(
         &mut self,
         sender_conn: usize,
@@ -1087,6 +1094,7 @@ impl PeerManager {
     /// Compression tile has prepared a batched IHAVE frame for `topic`.
     /// Fan it out: one `P2pGossipSend` per non-mesh subscriber whose score
     /// clears `gossip_threshold`, capped at `d_lazy`.
+    #[timed]
     fn on_outbound_ihave(
         &mut self,
         topic: GossipTopic,
@@ -1122,6 +1130,7 @@ impl PeerManager {
     /// still live and scoring above `gossip_threshold` (mirrors rust-libp2p,
     /// which ignores IHAVE — and therefore doesn't send the IWANT reply —
     /// for peers below that threshold).
+    #[timed]
     fn on_outbound_iwant(
         &mut self,
         conn: usize,
@@ -1137,6 +1146,7 @@ impl PeerManager {
         emit(PeerControl::P2pSend(P2pSend::Gossip(GossipMsgOut { peer_id: conn, tcache })));
     }
 
+    #[timed]
     fn on_send_gossip(
         &mut self,
         sender: usize,
@@ -1181,6 +1191,7 @@ impl PeerManager {
     ///    (priority) and we're under `max_priority_peers`.
     ///
     /// Network tile handles in-flight dial / already-connected dedup.
+    #[timed]
     fn on_disc_node_found(
         &mut self,
         enr: Enr,

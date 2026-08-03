@@ -1,6 +1,5 @@
 use std::io::Write;
 
-use flux_profiler::timed;
 use silver_common::{
     MAX_GOSSIP_FRAME_SIZE, P2pStreamId, TCacheProducer, TProducer, TReservation, decode_varint,
 };
@@ -33,7 +32,6 @@ enum Spin {
 }
 
 impl GossipReadState {
-    #[timed]
     pub(crate) fn spin<S: StreamIo>(
         mut self,
         io: &mut S,

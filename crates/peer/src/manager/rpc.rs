@@ -12,6 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use flux_profiler::timed;
 use silver_common::{
     P2pSend, PeerControl, PeerEvent, PeerStatus, RequestCategory, RpcInbound, RpcOutbound,
     RpcRequest, RpcRequestInbound, RpcRequestOutbound, RpcResponse, RpcResponseInbound,
@@ -1012,6 +1013,7 @@ impl PeerManager {
     /// If no peer qualifies for some columns, kick discovery. Storage owns
     /// live/backfill DataColumnsByRoot retry timing via its outstanding
     /// request wheels.
+    #[timed]
     pub fn on_request_data_columns_by_root(
         &mut self,
         request_id: u64,
@@ -1086,6 +1088,7 @@ impl PeerManager {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[timed]
     pub(crate) fn on_request_by_root(
         &mut self,
         kind: RootReqKind,
@@ -1113,6 +1116,7 @@ impl PeerManager {
         }
     }
 
+    #[timed]
     pub fn on_rpc_request(
         &mut self,
         request_id: u64,

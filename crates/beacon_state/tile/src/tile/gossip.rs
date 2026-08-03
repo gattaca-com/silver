@@ -28,6 +28,7 @@ pub(super) enum EnvelopeCheck {
 }
 
 impl BeaconStateTile {
+    #[timed]
     pub(super) fn handle_attestation(&mut self, data: &[u8]) -> Feedback {
         if data.len() < SINGLE_ATT_SIZE {
             return Feedback::Reject(None);
@@ -181,6 +182,7 @@ impl BeaconStateTile {
         Feedback::Accept(None)
     }
 
+    #[timed]
     pub(super) fn handle_aggregate_and_proof(&mut self, data: &[u8]) -> Feedback {
         let Some(parsed) = ParsedAggregateAndProof::try_from(data) else {
             return Feedback::Reject(None);

@@ -45,7 +45,6 @@ impl ShufflingCache {
     /// against the post-state named by `state_id`. Maintains the 2-epoch
     /// window so attestations with `target_epoch ∈ {epoch, epoch - 1}` resolve.
     /// `scratch` is a reusable active-index buffer (cleared on entry).
-    #[timed]
     pub fn ensure_window(
         &mut self,
         state: &BeaconStateOwner,
@@ -73,7 +72,18 @@ impl ShufflingCache {
         if self.entries.iter().any(|e| e.is_valid && e.epoch == epoch && e.mix == mix) {
             return;
         }
+        self.compute_and_cache(state, state_id, epoch, mix, scratch);
+    }
 
+    #[timed]
+    fn compute_and_cache(
+        &mut self,
+        state: &BeaconStateOwner,
+        state_id: StateId,
+        epoch: Epoch,
+        mix: B256,
+        scratch: &mut Vec<u32>,
+    ) {
         scratch.clear();
         {
             let view = state.read_view(state_id);
