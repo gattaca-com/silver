@@ -216,6 +216,7 @@ impl Write for Reservation {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let buffer = self.cache.write(self.seq).map_err(std::io::Error::other)?;
         if buf.len() + self.offset > buffer.len() {
+            tracing::error!(reservation_len=buffer.len(), offset=self.offset, data_len=buf.len(), "tried to write > reservation");
             return Err(std::io::ErrorKind::FileTooLarge.into());
         }
         buffer[self.offset..self.offset + buf.len()].copy_from_slice(buf);

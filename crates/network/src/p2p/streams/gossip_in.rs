@@ -104,7 +104,9 @@ impl GossipReadState {
                 Ok(Spin::Ok(Self::AllocBody { length, buf, buf_start, buf_end }))
             }
             GossipReadState::ReadingBody { mut reservation, mut remaining } => {
-                let n = io.read_from_stream(p2p_id.stream_id(), reservation.remaining_buffer()?)?;
+                let n = io.read_from_stream(p2p_id.stream_id(), reservation.remaining_buffer()?).inspect_err(|e| {
+                    tracing::error!(?e, ?p2p_id, remaining, "reservation write failed");
+                })?;
                 reservation.increment_offset(n);
                 remaining -= n;
                 if remaining == 0 {
