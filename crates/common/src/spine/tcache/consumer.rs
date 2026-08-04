@@ -166,9 +166,9 @@ impl RandomAccessConsumer {
                     );
                     tail = if self.last_head > tail { self.last_head } else { head };
                     self.active.roll_to(tail);
+                    self.last_read = Nanos::now();
                 }
                 self.last_head = head;
-                self.last_read = Nanos::now();
             }
 
             cache_head.tails[self.index].store(tail, Ordering::Release);
