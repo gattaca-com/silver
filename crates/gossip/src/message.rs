@@ -26,6 +26,7 @@ pub(super) fn handle_incoming(
     emit: &mut impl FnMut(GossipHandlerEvent),
 ) -> Result<(), Error> {
     validate_compressed_payload_size(snappy_data.len()).inspect_err(|_| {
+        tracing::warn!(?stream_id, topic_string, "invalid gossip frame");
         emit(GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipInvalidFrame {
             p2p_peer: stream_id.peer(),
         }));
@@ -57,7 +58,7 @@ pub(super) fn handle_incoming(
         .reserve(len, false)
         .ok_or(Error::BufferTooSmall)
         .inspect_err(|e| {
-            tracing::error!(?e, len, "failed to reserve incoming gossip SSZ");
+            tracing::error!(?e, len, topic_string, "failed to reserve incoming gossip SSZ");
         })?;
 
     let msg_id = decompress_to_reservation(
@@ -65,7 +66,10 @@ pub(super) fn handle_incoming(
         snappy_data,
         &mut reservation,
         topic_string,
-    )?;
+    )
+    .inspect_err(|e| {
+        tracing::error!(?stream_id, ?e, topic_string, "failed to decompress gossip msg")
+    })?;
 
     if !dedup_cache.insert(fast_id, msg_id) {
         // Second dedup check. Different snappy bytes can decompress to the same message

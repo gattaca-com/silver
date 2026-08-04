@@ -301,18 +301,28 @@ impl StorageTile {
             }
         };
 
-        let is_gloas = self.spec.is_gloas_at_slot(SignedBeaconBlockView::slot(buffer));
+        let slot = SignedBeaconBlockView::slot(buffer);
+        let is_gloas = self.spec.is_gloas_at_slot(slot);
+        let block_root = util::block_root(buffer, is_gloas);
 
         let has_columns = SignedBeaconBlockView::has_data_columns(buffer, is_gloas);
+
+        tracing::info!(
+            slot,
+            has_columns,
+            block_root = hex::encode(block_root),
+            "beacon block recv"
+        );
+
         if !has_columns {
             return None;
         }
 
-        if SignedBeaconBlockView::slot(buffer) <= self.store.finalized_slot() {
+        if slot <= self.store.finalized_slot() {
             return None;
         }
 
-        let block_root = util::block_root(buffer, is_gloas);
+        //let block_root = util::block_root(buffer, is_gloas);
 
         if is_gloas {
             self.cache_gloas_commitments(block_root, buffer);
