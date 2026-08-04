@@ -66,7 +66,7 @@ impl TCacheProducer for Producer {
     fn reserve(&mut self, len: usize, auto_commit: bool) -> Option<Reservation> {
         let tcache = unsafe { &*self.cache };
         if tcache.reserve_len(self.seq, len) > self.space as usize ||
-            self.seq - self.published_seq > (tcache.len >> 1) as u64
+            self.seq - self.published_seq > (tcache.len >> 4) as u64 // for 32MB buffer, publish head for every 2MB reserved
         {
             // try reclaim space.
             self.publish_head();
