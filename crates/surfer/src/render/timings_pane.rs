@@ -55,7 +55,7 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
         .iter()
         .enumerate()
         .map(|(i, t)| {
-            let last_bucket = t.latency.last_bucket().unwrap_or_default();
+            let last_bucket = t.channel.last_bucket().unwrap_or_default();
             let style = if i == app.timings_selection {
                 Style::default().bg(Color::DarkGray).fg(Color::White).add_modifier(Modifier::BOLD)
             } else {
@@ -63,7 +63,7 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
             };
             Row::new(vec![
                 Cell::from(t.name.clone()),
-                Cell::from(format_ns(t.latency.last_ns)),
+                Cell::from(format_ns(t.channel.last_ns)),
                 Cell::from(format_ns(last_bucket.p50_ns)),
                 Cell::from(format_ns(last_bucket.p99_ns)),
                 Cell::from(format!("{:>10}", last_bucket.count)),
@@ -90,14 +90,12 @@ fn draw_charts(f: &mut Frame, area: Rect, app: &App) {
         f.render_widget(Block::default().borders(Borders::ALL).title(" history "), area);
         return;
     };
-    draw_channel_chart(f, area, &timer.name, &timer.latency);
+    draw_channel_chart(f, area, &timer.name, &timer.channel);
 }
 
 fn draw_channel_chart(f: &mut Frame, area: Rect, name: &str, ch: &TimingChannel) {
-    let title = format!(
-        " {name} — latency p50 / p99 over {}s buckets ",
-        crate::sources::counters::BUCKET_SECS
-    );
+    let title =
+        format!(" {name} — p50 / p99 over {}s buckets ", crate::sources::counters::BUCKET_SECS);
     let block = Block::default().borders(Borders::ALL).title(title);
 
     let buckets = &ch.history;

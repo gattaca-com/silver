@@ -184,8 +184,17 @@ impl App {
         let sel_name = self.timings.get(self.timings_selection).map(|t| t.name.clone());
         let existing: HashSet<String> = self.timings.iter().map(|t| t.name.clone()).collect();
         for f in &sources.timings {
-            if !existing.contains(&f.name) {
-                if let Ok(t) = TimingSet::open(f) {
+            if !existing.contains(&TimingSet::display_name(f)) {
+                if let Ok(mut t) = TimingSet::open(f) {
+                    // Every Timer creates its `timing-` queue but only spine
+                    // consumers emit on it: admit a processing entry once it
+                    // has traffic, else re-probe on the next discovery pass.
+                    if f.processing {
+                        t.channel.drain();
+                        if t.channel.total_count == 0 {
+                            continue;
+                        }
+                    }
                     self.timings.push(t);
                 }
             }
@@ -223,7 +232,7 @@ impl App {
             c.sample();
         }
         for t in &mut self.timings {
-            t.latency.drain();
+            t.channel.drain();
         }
         for t in &mut self.tilemetrics {
             t.drain();
@@ -243,7 +252,7 @@ impl App {
             c.roll_bucket();
         }
         for t in &mut self.timings {
-            t.latency.roll_bucket();
+            t.channel.roll_bucket();
         }
         for t in &mut self.tilemetrics {
             t.roll_bucket();

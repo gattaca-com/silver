@@ -6,7 +6,9 @@
 //! Files of interest:
 //! - `counters-{name}` — shmem-mapped `[AtomicU64; N]` (read-only).
 //! - `latency-{name}` — flux MPMC `TimingMessage` queue (tcache consumer
-//!   latency).
+//!   latency / spine consumer ingestion→consume gap).
+//! - `timing-{name}` — the same Timer's processing side (consume handler
+//!   duration). Created eagerly for every Timer; only spine consumers emit.
 //! - `tilemetrics-{name}` — flux SPMC `TileSample` queue.
 
 use std::{fs, io, path::PathBuf};
@@ -28,9 +30,11 @@ pub struct CounterFile {
 }
 
 pub struct TimingFile {
-    /// The `{name}` suffix from `latency-{name}`.
+    /// The `{name}` suffix from `latency-{name}` / `timing-{name}`.
     pub name: String,
     pub path: PathBuf,
+    /// `timing-{name}` (processing duration) vs `latency-{name}`.
+    pub processing: bool,
 }
 
 pub struct TileMetricsFile {
@@ -59,7 +63,9 @@ pub fn discover(base_dir: &std::path::Path, app_name: &str) -> io::Result<Discov
                     counters.push(file);
                 }
             } else if let Some(name) = fname.strip_prefix("latency-") {
-                timings.push(TimingFile { name: name.to_string(), path });
+                timings.push(TimingFile { name: name.to_string(), path, processing: false });
+            } else if let Some(name) = fname.strip_prefix("timing-") {
+                timings.push(TimingFile { name: name.to_string(), path, processing: true });
             } else if let Some(name) = fname.strip_prefix("tilemetrics-") {
                 tilemetrics.push(TileMetricsFile { name: name.to_string(), path });
             }

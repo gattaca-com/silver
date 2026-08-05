@@ -1,7 +1,8 @@
-//! Consumer for flux `latency-{name}` shmem queues — the latency side
-//! of a flux `Timer`, emitted by tcache consumers (reserve→first-read
-//! gap). The processing side is no longer produced: `#[timed]` records
-//! into the flamegraph rings now, not flux Timer queues.
+//! Consumer for flux `latency-{name}` / `timing-{name}` shmem queues —
+//! the two sides of a flux `Timer`. Latency: tcache reserve→first-read
+//! gap, or spine ingestion→consume gap. Processing (`timing-`, shown as
+//! `{name} (proc)`): the consume handler's duration; emitted by spine
+//! consumers only, so a `timing-` queue may exist yet stay empty.
 //!
 //! On `roll_bucket` the running histogram is snapshotted into its
 //! 240-deep ring and reset.
@@ -94,13 +95,19 @@ impl TimingChannel {
 
 pub struct TimingSet {
     pub name: String,
-    pub latency: TimingChannel,
+    pub channel: TimingChannel,
 }
 
 impl TimingSet {
+    pub fn display_name(file: &TimingFile) -> String {
+        if file.processing { format!("{} (proc)", file.name) } else { file.name.clone() }
+    }
+
     pub fn open(file: &TimingFile) -> Result<Self, String> {
-        let label: &'static str = Box::leak(format!("surfer-l-{}", file.name).into_boxed_str());
-        let latency = TimingChannel::open(&file.path, label)?;
-        Ok(Self { name: file.name.clone(), latency })
+        let prefix = if file.processing { "p" } else { "l" };
+        let label: &'static str =
+            Box::leak(format!("surfer-{prefix}-{}", file.name).into_boxed_str());
+        let channel = TimingChannel::open(&file.path, label)?;
+        Ok(Self { name: Self::display_name(file), channel })
     }
 }
