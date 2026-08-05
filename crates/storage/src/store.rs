@@ -390,6 +390,7 @@ impl Store {
         });
     }
 
+    #[timed]
     pub(super) fn add_block(
         &mut self,
         block_root: [u8; 32],

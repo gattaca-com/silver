@@ -11,9 +11,15 @@ use flux::{spine::SpineAdapter, tile::Tile};
 use flux_profiler::timed;
 use silver_beacon_state_data::{B256, BeaconStateReader, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
-    msg_is_backfill, msg_is_column_backfill, msg_is_live_column_request, msg_is_post_gloas, ssz_view::{
-        DataColumnSidecarFuluView, DataColumnSidecarGloasView, ExecutionPayloadEnvelopeView, SignedBeaconBlockView, SignedExecutionPayloadEnvelopeView, StatusView, NUMBER_OF_COLUMNS
-    }, BeaconStateEvent, DataColumnsAvailable, EngineReq, EngineResp, GossipTopic, Nanos, NewGossipMsg, P2pSend, P2pStreamId, PeerControl, PeerEvent, ReplayBlock, RpcInbound, RpcSeverity, SilverSpine, SilverSpineProducers, StreamProtocol, SyncUpdate, SyncingStrategy, TCacheProducer, TMultiProducer, TProducer, TRandomAccess, TRead, Wheel, BASE_REQUEST_ID
+    BASE_REQUEST_ID, BeaconStateEvent, DataColumnsAvailable, EngineReq, EngineResp, GossipTopic,
+    Nanos, NewGossipMsg, P2pSend, P2pStreamId, PeerControl, PeerEvent, ReplayBlock, RpcInbound,
+    RpcSeverity, SilverSpine, SilverSpineProducers, StreamProtocol, SyncUpdate, SyncingStrategy,
+    TCacheProducer, TMultiProducer, TProducer, TRandomAccess, TRead, Wheel, msg_is_backfill,
+    msg_is_column_backfill, msg_is_live_column_request, msg_is_post_gloas,
+    ssz_view::{
+        DataColumnSidecarFuluView, DataColumnSidecarGloasView, ExecutionPayloadEnvelopeView,
+        NUMBER_OF_COLUMNS, SignedBeaconBlockView, SignedExecutionPayloadEnvelopeView, StatusView,
+    },
 };
 
 use crate::{StorageCounters, el_blobs::ElBlobFetcher, store::Store, util};
@@ -615,6 +621,7 @@ impl StorageTile {
         self.drain_entries(pending, true, emit);
     }
 
+    #[timed]
     fn drain_parent_pending_columns<F>(&mut self, parent_root: [u8; 32], emit: &mut F)
     where
         F: FnMut(DataColumnsAvailable),
@@ -823,6 +830,70 @@ impl StorageTile {
     }
 }
 
+impl StorageTile {
+    #[timed]
+    fn handle_beacon_state_event(
+        &mut self,
+        event: BeaconStateEvent,
+        producers: &mut SilverSpineProducers,
+    ) -> Option<([u8; 92], u64)> {
+        let mut latest_status_event: Option<([u8; 92], u64)> = None;
+        match event {
+            BeaconStateEvent::Status { ssz, wall_slot, .. } => {
+                // Per-event (not latest-only): BS emits one Status per accepted
+                // block, and each newly validated root may unblock buffered
+                // children.
+                self.drain_parent_pending_columns(*StatusView::head_root(&ssz), &mut |msg| {
+                    producers.data_columns.produce(&msg.into());
+                });
+                latest_status_event = Some((ssz, wall_slot));
+            }
+            BeaconStateEvent::PersistBlock { ssz, source } => {
+                let t_read = match source {
+                    silver_common::BlockSource::Gossip => self.persist_gossip_consumer.acquire(ssz),
+                    silver_common::BlockSource::Rpc => self.persist_rpc_consumer.acquire(ssz),
+                };
+
+                match t_read.buffer() {
+                    Ok((buf, _)) => {
+                        let slot = SignedBeaconBlockView::slot(buf);
+                        let parent_root = *SignedBeaconBlockView::parent_root(buf);
+                        let block_root = util::block_root_fulu(buf);
+                        self.store.add_block(block_root, t_read, slot, parent_root);
+                        // This block just got BS-accepted: it may be the
+                        // missing parent of buffered columns.
+                        self.drain_parent_pending_columns(block_root, &mut |msg| {
+                            producers.data_columns.produce(&msg.into());
+                        });
+                    }
+                    Err(e) => {
+                        tracing::error!(?e, seq=t_read.seq(), consumer=?self.persist_gossip_consumer, "persist consumer buffer acquire failed");
+                    }
+                }
+            }
+            BeaconStateEvent::PersistEnvelope { ssz, source } => {
+                let t_read = match source {
+                    silver_common::BlockSource::Gossip => self.persist_gossip_consumer.acquire(ssz),
+                    silver_common::BlockSource::Rpc => self.persist_rpc_consumer.acquire(ssz),
+                };
+                match t_read.buffer() {
+                    Ok((buf, _)) if SignedExecutionPayloadEnvelopeView::check_size(buf) => {
+                        let msg = SignedExecutionPayloadEnvelopeView::message(buf);
+                        let block_root = *ExecutionPayloadEnvelopeView::beacon_block_root(msg);
+                        self.store.add_envelope(block_root, t_read);
+                    }
+                    Ok(_) => tracing::error!("persist envelope: bad ssz size"),
+                    Err(e) => {
+                        tracing::error!(?e, "persist envelope consumer buffer acquire failed");
+                    }
+                }
+            }
+            _ => {}
+        }
+        latest_status_event
+    }
+}
+
 impl Tile<SilverSpine> for StorageTile {
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         adapter.consume(|d: SyncingStrategy, _| self.syncing_strategy = Some(d));
@@ -966,62 +1037,10 @@ impl Tile<SilverSpine> for StorageTile {
             },
         });
 
-        let mut latest_status_event = None;
+        let mut latest_status_event: Option<([u8; 92], u64)> = None;
 
-        adapter.consume(|beacon_event: BeaconStateEvent, producers| match beacon_event {
-            BeaconStateEvent::Status { ssz, wall_slot, .. } => {
-                // Per-event (not latest-only): BS emits one Status per accepted
-                // block, and each newly validated root may unblock buffered
-                // children.
-                self.drain_parent_pending_columns(*StatusView::head_root(&ssz), &mut |msg| {
-                    producers.data_columns.produce(&msg.into());
-                });
-                latest_status_event = Some((ssz, wall_slot));
-            }
-            BeaconStateEvent::PersistBlock {
-                ssz,
-                source,
-            } => {
-                let t_read = match source {
-                    silver_common::BlockSource::Gossip => self.persist_gossip_consumer.acquire(ssz),
-                    silver_common::BlockSource::Rpc => self.persist_rpc_consumer.acquire(ssz),
-                };
-
-                match t_read.buffer() {
-                    Ok((buf, _)) => {
-                        let slot = SignedBeaconBlockView::slot(buf);
-                        let parent_root = *SignedBeaconBlockView::parent_root(buf);
-                        let block_root = util::block_root_fulu(buf);
-                        self.store.add_block(block_root, t_read, slot, parent_root);
-                        // This block just got BS-accepted: it may be the
-                        // missing parent of buffered columns.
-                        self.drain_parent_pending_columns(block_root, &mut |msg| {
-                            producers.data_columns.produce(&msg.into());
-                        });
-                    }
-                    Err(e) => {
-                        tracing::error!(?e, seq=t_read.seq(), consumer=?self.persist_gossip_consumer, "persist consumer buffer acquire failed");
-                    }
-                }
-            }
-            BeaconStateEvent::PersistEnvelope { ssz, source } => {
-                let t_read = match source {
-                    silver_common::BlockSource::Gossip => self.persist_gossip_consumer.acquire(ssz),
-                    silver_common::BlockSource::Rpc => self.persist_rpc_consumer.acquire(ssz),
-                };
-                match t_read.buffer() {
-                    Ok((buf, _)) if SignedExecutionPayloadEnvelopeView::check_size(buf) => {
-                        let msg = SignedExecutionPayloadEnvelopeView::message(buf);
-                        let block_root = *ExecutionPayloadEnvelopeView::beacon_block_root(msg);
-                        self.store.add_envelope(block_root, t_read);
-                    }
-                    Ok(_) => tracing::error!("persist envelope: bad ssz size"),
-                    Err(e) => {
-                        tracing::error!(?e, "persist envelope consumer buffer acquire failed");
-                    }
-                }
-            }
-            _ => {}
+        adapter.consume(|beacon_event: BeaconStateEvent, producers| {
+            latest_status_event = self.handle_beacon_state_event(beacon_event, producers);
         });
 
         if let Some((ssz, wall_slot)) = latest_status_event {
