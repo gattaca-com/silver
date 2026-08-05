@@ -1,8 +1,8 @@
 //! Consumer for flux `latency-{name}` / `timing-{name}` shmem queues —
 //! the two sides of a flux `Timer`. Latency: tcache reserve→first-read
-//! gap, or spine ingestion→consume gap. Processing (`timing-`, shown as
-//! `{name} (proc)`): the consume handler's duration; emitted by spine
-//! consumers only, so a `timing-` queue may exist yet stay empty.
+//! gap, or spine ingestion→consume gap. Processing (`timing-`): the
+//! consume handler's duration; emitted by spine consumers only, so a
+//! `timing-` queue may exist yet stay empty.
 //!
 //! On `roll_bucket` the running histogram is snapshotted into its
 //! 240-deep ring and reset.
@@ -95,19 +95,32 @@ impl TimingChannel {
 
 pub struct TimingSet {
     pub name: String,
-    pub channel: TimingChannel,
+    pub latency: TimingChannel,
+    pub processing: Option<TimingChannel>,
 }
 
 impl TimingSet {
-    pub fn display_name(file: &TimingFile) -> String {
-        if file.processing { format!("{} (proc)", file.name) } else { file.name.clone() }
+    pub fn open(file: &TimingFile) -> Result<Self, String> {
+        let label: &'static str = Box::leak(format!("surfer-l-{}", file.name).into_boxed_str());
+        let latency = TimingChannel::open(&file.path, label)?;
+        let processing = file.processing_path.as_ref().and_then(|path| {
+            let label: &'static str = Box::leak(format!("surfer-p-{}", file.name).into_boxed_str());
+            TimingChannel::open(path, label).ok()
+        });
+        Ok(Self { name: file.name.clone(), latency, processing })
     }
 
-    pub fn open(file: &TimingFile) -> Result<Self, String> {
-        let prefix = if file.processing { "p" } else { "l" };
-        let label: &'static str =
-            Box::leak(format!("surfer-{prefix}-{}", file.name).into_boxed_str());
-        let channel = TimingChannel::open(&file.path, label)?;
-        Ok(Self { name: Self::display_name(file), channel })
+    pub fn drain(&mut self) {
+        self.latency.drain();
+        if let Some(p) = &mut self.processing {
+            p.drain();
+        }
+    }
+
+    pub fn roll_bucket(&mut self) {
+        self.latency.roll_bucket();
+        if let Some(p) = &mut self.processing {
+            p.roll_bucket();
+        }
     }
 }
