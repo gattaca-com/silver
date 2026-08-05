@@ -760,6 +760,7 @@ impl StorageTile {
         }
     }
 
+    #[timed]
     fn handle_beacon_block(
         &mut self,
         t_read: TRead,
@@ -795,6 +796,7 @@ impl StorageTile {
         }
     }
 
+    #[timed]
     fn handle_data_column_sidecar(
         &mut self,
         t_read: TRead,
