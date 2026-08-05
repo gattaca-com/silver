@@ -453,7 +453,13 @@ impl StorageTile {
         let slot = DataColumnSidecarFuluView::slot(buffer);
 
         if gossip_subnet.is_some() {
-            tracing::info!(slot, block_root=hex::encode(block_root), parent_root=hex::encode(parent_root), ?gossip_subnet, "data column recv");
+            tracing::info!(
+                slot,
+                block_root = hex::encode(block_root),
+                parent_root = hex::encode(parent_root),
+                ?gossip_subnet,
+                "data column recv"
+            );
         }
 
         if self.store.is_synced() && slot > self.wall_slot.saturating_add(1) {
