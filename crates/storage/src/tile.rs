@@ -303,14 +303,11 @@ impl StorageTile {
 
         let slot = SignedBeaconBlockView::slot(buffer);
         let is_gloas = self.spec.is_gloas_at_slot(slot);
-        let block_root = util::block_root(buffer, is_gloas);
-
         let has_columns = SignedBeaconBlockView::has_data_columns(buffer, is_gloas);
 
         tracing::info!(
             slot,
             has_columns,
-            block_root = hex::encode(block_root),
             "beacon block recv"
         );
 
@@ -322,12 +319,12 @@ impl StorageTile {
             return None;
         }
 
-        //let block_root = util::block_root(buffer, is_gloas);
+        let block_root = util::block_root(buffer, is_gloas);
 
         if is_gloas {
             self.cache_gloas_commitments(block_root, buffer);
         }
-        // idk
+
         if self.outstanding_requests.contains(&block_root) {
             return Some((block_root, is_gloas));
         }
@@ -1040,7 +1037,9 @@ impl Tile<SilverSpine> for StorageTile {
         let mut latest_status_event: Option<([u8; 92], u64)> = None;
 
         adapter.consume(|beacon_event: BeaconStateEvent, producers| {
-            latest_status_event = self.handle_beacon_state_event(beacon_event, producers);
+            if let Some(latest) = self.handle_beacon_state_event(beacon_event, producers) {
+                latest_status_event.replace(latest);
+            }
         });
 
         if let Some((ssz, wall_slot)) = latest_status_event {
@@ -1101,6 +1100,11 @@ impl Tile<SilverSpine> for StorageTile {
         self.validated_blocks.maybe_rotate(now, &mut |_, _| true);
         // Age out validated columns.
         self.validated_columns.maybe_rotate(now, &mut |_, _| true);
+        // Age out cached columns and commitments
+        self.parent_pending_columns.maybe_rotate(now, &mut |_, _| true);
+        self.gloas_pending_columns.maybe_rotate(now, &mut |_, _| true);
+        self.gloas_commitments.maybe_rotate(now, &mut |_, _| true);
+
         // Age out EL blob fetches the engine never answered (the p2p race
         // covers those columns); answered ones are removed on response.
         self.el_fetcher.rotate(now);
