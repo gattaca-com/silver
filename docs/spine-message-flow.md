@@ -77,12 +77,12 @@ queues are broadcast, so Storage sees every `EngineResp` and ignores the rest.
 
 | Queue | Message | Producer(s) | Consumer(s) | Carries |
 |-------|---------|-------------|-------------|---------|
-| `new_gossip` | `NewGossipMsg` | Control _(gossip)_ | BeaconState, Storage | refs → `incoming_gossip`, `ssz_gossip` |
+| `new_gossip` | `NewGossipMsg` | Control _(gossip)_ | BeaconState, Storage | refs → `outgoing_gossip` (mcache copy), `ssz_gossip` |
 | `p2p_send` | `P2pSend` | Control, Storage | Network | refs → `outgoing_gossip` / `outgoing_rpc` |
 | `rpc_inbound` | `RpcInbound` | Network | Control, BeaconState, Storage | ref → `incoming_rpc` |
-| `peer_events` | `PeerEvent` | Network, Storage, BeaconState | Control | inline |
+| `peer_events` | `PeerEvent` | Network, Storage, BeaconState | Control | mostly inline; `SendGossip` ref → `outgoing_gossip`, `PublishDataColumn` ref → `incoming_rpc` |
 | `peer_control` | `PeerControl` | Control | Network, Storage | inline |
-| `beacon_events` | `BeaconStateEvent` | BeaconState | Control, Storage | inline |
+| `beacon_events` | `BeaconStateEvent` | BeaconState | Control, Storage | mostly inline; `PersistBlock`/`PersistEnvelope` refs → `ssz_gossip` / `incoming_rpc` (by source) |
 | `data_columns` | `DataColumnsAvailable` | Storage | BeaconState | inline |
 | `sync_target` | `SyncUpdate` | Control | BeaconState, Storage | inline |
 | `replay_blocks` | `ReplayBlock` | Storage | BeaconState | ref → `replay_blocks` tcache |
@@ -99,8 +99,8 @@ Bulk-byte rings that the queue messages reference, so payloads cross tiles witho
 |--------|----------|-------------|---------|
 | `incoming_gossip` | Network | Control _(gossip)_ | raw gossipsub protobuf from the wire |
 | `ssz_gossip` | Control _(gossip)_ | BeaconState, Storage (live + persist), Engine | decompressed gossip SSZ |
-| `outgoing_gossip` | Control _(gossip)_ | Network | protobuf to publish / re-broadcast |
-| `incoming_rpc` | Network | BeaconState, Storage (live + persist), Engine | RPC response bodies (BeaconBlock / DataColumnSidecar) |
+| `outgoing_gossip` | Control _(gossip)_ | Network | gossip protobuf: mcache copies of incoming messages, local publishes, IDONTWANT/IWANT control frames |
+| `incoming_rpc` | Network | BeaconState, Storage (live + persist), Engine, Control (column republish) | RPC response bodies (BeaconBlock / DataColumnSidecar) |
 | `outgoing_rpc` _(multi-producer)_ | Control, Storage | Network | RPC request bodies (we ask) + served response bodies (we answer) |
 | `replay_blocks` | Storage | BeaconState | persisted block SSZ replayed at startup |
 | `incoming_engine_resp` | Engine | BeaconState, Storage (GetBlobs) | EL responses (payloads, blobs, bodies) |

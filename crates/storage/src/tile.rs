@@ -11,15 +11,9 @@ use flux::{spine::SpineAdapter, tile::Tile};
 use flux_profiler::timed;
 use silver_beacon_state_data::{B256, BeaconStateReader, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
-    BASE_REQUEST_ID, BeaconStateEvent, DataColumnsAvailable, EngineReq, EngineResp, GossipTopic,
-    NewGossipMsg, P2pSend, P2pStreamId, PeerControl, PeerEvent, ReplayBlock, RpcInbound,
-    RpcSeverity, SilverSpine, SilverSpineProducers, StreamProtocol, SyncUpdate, SyncingStrategy,
-    TCacheProducer, TMultiProducer, TProducer, TRandomAccess, TRead, Wheel, msg_is_backfill,
-    msg_is_column_backfill, msg_is_live_column_request, msg_is_post_gloas,
-    ssz_view::{
-        DataColumnSidecarFuluView, DataColumnSidecarGloasView, ExecutionPayloadEnvelopeView,
-        NUMBER_OF_COLUMNS, SignedBeaconBlockView, SignedExecutionPayloadEnvelopeView, StatusView,
-    },
+    msg_is_backfill, msg_is_column_backfill, msg_is_live_column_request, msg_is_post_gloas, ssz_view::{
+        DataColumnSidecarFuluView, DataColumnSidecarGloasView, ExecutionPayloadEnvelopeView, SignedBeaconBlockView, SignedExecutionPayloadEnvelopeView, StatusView, NUMBER_OF_COLUMNS
+    }, BeaconStateEvent, DataColumnsAvailable, EngineReq, EngineResp, GossipTopic, Nanos, NewGossipMsg, P2pSend, P2pStreamId, PeerControl, PeerEvent, ReplayBlock, RpcInbound, RpcSeverity, SilverSpine, SilverSpineProducers, StreamProtocol, SyncUpdate, SyncingStrategy, TCacheProducer, TMultiProducer, TProducer, TRandomAccess, TRead, Wheel, BASE_REQUEST_ID
 };
 
 use crate::{StorageCounters, el_blobs::ElBlobFetcher, store::Store, util};
@@ -374,6 +368,7 @@ impl StorageTile {
         sidecar: TRead,
         is_gloas: bool,
         gossip_subnet: Option<u64>,
+        recv_ts: Option<Nanos>,
         emit: &mut F,
     ) -> ColumnDisposition
     where
@@ -384,7 +379,7 @@ impl StorageTile {
                 if is_gloas {
                     self.validate_gloas_column(stream_id, buf, gossip_subnet)
                 } else {
-                    self.validate_fulu_column(stream_id, buf, gossip_subnet)
+                    self.validate_fulu_column(stream_id, buf, gossip_subnet, recv_ts)
                 }
             }
             Err(e) => {
@@ -447,17 +442,20 @@ impl StorageTile {
         stream_id: P2pStreamId,
         buffer: &[u8],
         gossip_subnet: Option<u64>,
+        recv_ts: Option<Nanos>,
     ) -> ColumnOutcome {
         let block_root = util::block_root_from_sidecar(buffer);
         let parent_root = DataColumnSidecarFuluView::parent_root(buffer);
         let slot = DataColumnSidecarFuluView::slot(buffer);
 
         if gossip_subnet.is_some() {
+            let elapsed_ms = recv_ts.map(|r| r.elapsed().as_millis_u64());
             tracing::info!(
                 slot,
                 block_root = hex::encode(block_root),
                 parent_root = hex::encode(parent_root),
                 ?gossip_subnet,
+                ?elapsed_ms,
                 "data column recv"
             );
         }
@@ -648,7 +646,7 @@ impl StorageTile {
                     if is_gloas {
                         self.validate_gloas_column(stream_id, buf, gossip_subnet)
                     } else {
-                        self.validate_fulu_column(stream_id, buf, gossip_subnet)
+                        self.validate_fulu_column(stream_id, buf, gossip_subnet, None)
                     }
                 }
                 Err(e) => {
@@ -799,13 +797,14 @@ impl StorageTile {
         stream_id: P2pStreamId,
         is_gloas: bool,
         gossip_subnet: Option<u64>,
+        recv_ts: Option<Nanos>,
         producers: &mut SilverSpineProducers,
     ) -> bool {
         let emit_da = &mut |msg: DataColumnsAvailable| {
             producers.data_columns.produce(&msg.into());
         };
 
-        match self.data_columns(stream_id, t_read, is_gloas, gossip_subnet, emit_da) {
+        match self.data_columns(stream_id, t_read, is_gloas, gossip_subnet, recv_ts, emit_da) {
             ColumnDisposition::Validated => true,
             ColumnDisposition::Ignored => false,
             ColumnDisposition::Rejected { block_root, bitmask } => {
@@ -853,6 +852,7 @@ impl Tile<SilverSpine> for StorageTile {
                     gossip.stream_id,
                     is_gloas,
                     Some(custody_group),
+                    Some(gossip.recv_ts),
                     producers,
                 ) {
                     producers.peer_events.produce(
@@ -932,7 +932,7 @@ impl Tile<SilverSpine> for StorageTile {
                         DataColumnSidecarFuluView::index(buffer)
                     };
 
-                    if self.handle_data_column_sidecar(t_read, rsp.stream_id, is_gloas, None, producers) {
+                    if self.handle_data_column_sidecar(t_read, rsp.stream_id, is_gloas, None, None, producers) {
                         if rsp.stream_id.protocol() != StreamProtocol::GossipSub && self.store.is_synced() {
                             // Publish to gossip
                             producers.peer_events.produce(&PeerEvent::PublishDataColumn {
