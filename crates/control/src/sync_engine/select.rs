@@ -23,10 +23,20 @@ pub(super) fn select_target(ctx: &Ctx, current: SyncUpdate, force_resync: bool) 
         }
     }
 
+    let mut force_head_resync = force_resync;
     if let SyncUpdate::SyncingHead { head_root, head_slot } = current {
         let reached = local_head_slot >= head_slot;
         if !reached && !ctx.peers.is_rejected(&head_root) && ctx.peers.backs_head(&head_root) {
             return SyncUpdate::SyncingHead { head_root, head_slot };
+        }
+        // Pin reached (or lost its backers) while still behind the wall: the
+        // pin was stale the moment the chain moved on. Chase a fresh peer head
+        // with the lag gate suppressed — falling through would land in
+        // Following inside the `head_lag_threshold_slots` dead band, leaving
+        // the gap to gossip recovery. Head sync ends only when no backed peer
+        // head is ahead of us.
+        if local_head_slot < wall_slot {
+            force_head_resync = true;
         }
     }
 
@@ -41,7 +51,7 @@ pub(super) fn select_target(ctx: &Ctx, current: SyncUpdate, force_resync: bool) 
     }
 
     if let Some((head_root, head_slot)) =
-        ctx.peers.best_head_target(local_head_slot, wall_slot, &ctx.cfg, force_resync)
+        ctx.peers.best_head_target(local_head_slot, wall_slot, &ctx.cfg, force_head_resync)
     {
         return SyncUpdate::SyncingHead { head_root, head_slot };
     }

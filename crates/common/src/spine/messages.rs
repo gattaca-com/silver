@@ -300,6 +300,9 @@ pub enum PeerEvent {
     P2pCannotCreateStream {
         p2p_peer: usize,
         protocol: StreamProtocol,
+        /// Failed send was an outbound RPC request: the PM must release the
+        /// `outbound_in_flight` slot admitted for it, else it leaks.
+        rpc_request: bool,
     },
     P2pStreamClosed {
         stream_id: P2pStreamId,
@@ -307,6 +310,7 @@ pub enum PeerEvent {
     P2pOutboundMessageDropped {
         p2p_peer: usize,
         protocol: StreamProtocol,
+        rpc_request: bool,
     },
     P2pGossipTopicSubscribe {
         p2p_peer: usize,

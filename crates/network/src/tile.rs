@@ -166,6 +166,7 @@ impl NetworkTile {
             }
 
             if !adapter.consume_one(|msg: P2pSend, producers| {
+                let rpc_request = matches!(&msg, P2pSend::Rpc(RpcOutbound::Request(_)));
                 let result = match msg {
                     P2pSend::Gossip(gossip_msg_out) => {
                         gossips += 1;
@@ -187,6 +188,7 @@ impl NetworkTile {
                             &(PeerEvent::P2pCannotCreateStream {
                                 p2p_peer: msg.peer_id(),
                                 protocol: msg.protocol(),
+                                rpc_request,
                             }
                             .into()),
                         );
@@ -196,6 +198,7 @@ impl NetworkTile {
                             &(PeerEvent::P2pOutboundMessageDropped {
                                 p2p_peer: msg.peer_id(),
                                 protocol: msg.protocol(),
+                                rpc_request,
                             }
                             .into()),
                         );
