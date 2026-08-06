@@ -6,10 +6,12 @@
 //! Files of interest:
 //! - `counters-{name}` — shmem-mapped `[AtomicU64; N]` (read-only).
 //! - `latency-{name}` — flux MPMC `TimingMessage` queue (tcache consumer
-//!   latency).
+//!   latency / spine consumer ingestion→consume gap).
+//! - `timing-{name}` — the same Timer's processing side (consume handler
+//!   duration). Created eagerly for every Timer; only spine consumers emit.
 //! - `tilemetrics-{name}` — flux SPMC `TileSample` queue.
 
-use std::{fs, io, path::PathBuf};
+use std::{collections::HashMap, fs, io, path::PathBuf};
 
 pub struct DiscoveredSources {
     pub counters: Vec<CounterFile>,
@@ -31,6 +33,8 @@ pub struct TimingFile {
     /// The `{name}` suffix from `latency-{name}`.
     pub name: String,
     pub path: PathBuf,
+    /// Sibling `timing-{name}` queue (processing duration), when present.
+    pub processing_path: Option<PathBuf>,
 }
 
 pub struct TileMetricsFile {
@@ -42,7 +46,8 @@ pub struct TileMetricsFile {
 pub fn discover(base_dir: &std::path::Path, app_name: &str) -> io::Result<DiscoveredSources> {
     let mut counters = Vec::new();
     let mut tcaches = Vec::new();
-    let mut timings = Vec::new();
+    let mut timings: Vec<TimingFile> = Vec::new();
+    let mut processing: HashMap<String, PathBuf> = HashMap::new();
     let mut tilemetrics = Vec::new();
 
     let dir = flux::utils::directories::shmem_dir_queues_with_base(base_dir, app_name);
@@ -59,11 +64,17 @@ pub fn discover(base_dir: &std::path::Path, app_name: &str) -> io::Result<Discov
                     counters.push(file);
                 }
             } else if let Some(name) = fname.strip_prefix("latency-") {
-                timings.push(TimingFile { name: name.to_string(), path });
+                timings.push(TimingFile { name: name.to_string(), path, processing_path: None });
+            } else if let Some(name) = fname.strip_prefix("timing-") {
+                processing.insert(name.to_string(), path);
             } else if let Some(name) = fname.strip_prefix("tilemetrics-") {
                 tilemetrics.push(TileMetricsFile { name: name.to_string(), path });
             }
         }
+    }
+
+    for t in &mut timings {
+        t.processing_path = processing.remove(&t.name);
     }
 
     counters

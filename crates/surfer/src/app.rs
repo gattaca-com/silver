@@ -223,7 +223,7 @@ impl App {
             c.sample();
         }
         for t in &mut self.timings {
-            t.latency.drain();
+            t.drain();
         }
         for t in &mut self.tilemetrics {
             t.drain();
@@ -243,7 +243,7 @@ impl App {
             c.roll_bucket();
         }
         for t in &mut self.timings {
-            t.latency.roll_bucket();
+            t.roll_bucket();
         }
         for t in &mut self.tilemetrics {
             t.roll_bucket();
