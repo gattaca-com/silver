@@ -305,11 +305,7 @@ impl StorageTile {
         let is_gloas = self.spec.is_gloas_at_slot(slot);
         let has_columns = SignedBeaconBlockView::has_data_columns(buffer, is_gloas);
 
-        tracing::info!(
-            slot,
-            has_columns,
-            "beacon block recv"
-        );
+        tracing::info!(slot, has_columns, "beacon block recv");
 
         if !has_columns {
             return None;
