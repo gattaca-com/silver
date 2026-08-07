@@ -169,7 +169,7 @@ impl TraceCollector {
     /// holds the marks from 14:00 onwards.
     fn segment_path(&self) -> PathBuf {
         let stamp = self.segment_start.with_fmt_utc("%Y-%m-%d_%H-%M-%S");
-        self.dir.join(format!("{APP_NAME}-{}_{stamp}{SEGMENT_SUFFIX}", self.reader.pid()))
+        self.dir.join(format!("{APP_NAME}_{stamp}_pid{}{SEGMENT_SUFFIX}", self.reader.pid()))
     }
 
     fn dump(&mut self, path: &Path) -> io::Result<File> {
@@ -303,8 +303,8 @@ mod tests {
         assert_eq!(
             names(&dir),
             [
-                format!("{APP_NAME}-{pid}_2001-09-09_01-00-00.fxt.gz"),
-                format!("{APP_NAME}-{pid}_2001-09-09_02-00-00.fxt.gz"),
+                format!("{APP_NAME}_2001-09-09_01-00-00_pid{pid}.fxt.gz"),
+                format!("{APP_NAME}_2001-09-09_02-00-00_pid{pid}.fxt.gz"),
             ],
             "the idle second interval is a file too, named for its own start"
         );
@@ -317,7 +317,7 @@ mod tests {
     }
 
     fn segment(hour: u64) -> String {
-        format!("{APP_NAME}-7_2001-09-09_0{hour}-00-00.fxt.gz")
+        format!("{APP_NAME}_2001-09-09_0{hour}-00-00_pid7.fxt.gz")
     }
 
     /// Three equal segments, oldest first, and an older file that is not ours:
