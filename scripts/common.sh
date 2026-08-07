@@ -13,5 +13,5 @@ start_telemetry() {
         --dir /home/ubuntu/profiler-traces \
         --retain "20Gb" \
         --period "15m" \
-        --config "$CONFIG" &
+        --config "$CONFIG" > logs/telemetry_stdout.log 2>&1 &
 }

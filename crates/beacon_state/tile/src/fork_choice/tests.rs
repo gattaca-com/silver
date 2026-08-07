@@ -172,6 +172,32 @@ fn prune_below_finalized() {
 }
 
 #[test]
+fn prune_drops_later_imported_siblings() {
+    // Regression: index-order pruning kept branches imported after the
+    // finalized block, handing finalization survivors that don't descend from
+    // the promoted delta.
+    let fin = cp(0, 1);
+    let jus = cp(0, 1);
+    let mut fc = ForkChoice::init(fin, jus, 0, root(1), [0u8; 32], false, test_state_id(), 0);
+
+    fc.on_block(block(1, root(2), root(1), jus, fin)); // finalized-to-be
+    fc.on_block(block(1, root(3), root(1), jus, fin)); // sibling, imported after
+    fc.on_block(block(2, root(4), root(3), jus, fin)); // sibling's child
+    fc.on_block(block(2, root(5), root(2), jus, fin)); // descendant
+
+    fc.finalized_checkpoint = cp(1, 2);
+    fc.prune();
+
+    assert_eq!(fc.nodes.len(), 2);
+    assert_eq!(fc.nodes[0].block_root, root(2));
+    assert_eq!(fc.nodes[0].parent_ix, NULL);
+    assert_eq!(fc.find_node_idx(&root(5)), Some(1));
+    assert_eq!(fc.nodes[1].parent_ix, 0);
+    assert_eq!(fc.find_node_idx(&root(3)), None);
+    assert_eq!(fc.find_node_idx(&root(4)), None);
+}
+
+#[test]
 fn deltas_moving_votes() {
     let fin = cp(0, 1);
     let jus = cp(0, 1);
