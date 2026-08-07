@@ -196,8 +196,8 @@ impl Default for ScoreParams {
 
             prune_backoff: Duration::from_secs(60),
 
-            target_peers: 100,       // TODO for testing, 100+ in prod
-            max_priority_peers: 130, // ~30% headroom, matches lighthouse PRIORITY_PEER_EXCESS
+            target_peers: 250,       // TODO for testing, 100+ in prod
+            max_priority_peers: 300, // ~30% headroom, matches lighthouse PRIORITY_PEER_EXCESS
             discovery_query_interval: Duration::from_secs(5),
             banned_ip_ttl: Duration::from_secs(3600),
             ip_ban_threshold: 5,
