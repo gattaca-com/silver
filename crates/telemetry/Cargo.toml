@@ -1,0 +1,29 @@
+[package]
+name = "silver_telemetry"
+edition.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+bytesize.workspace = true
+clap.workspace = true
+flux.workspace = true
+flux-profiler.workspace = true
+hex.workspace = true
+humantime.workspace = true
+libc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+silver_common.workspace = true
+silver_config.workspace = true
+tracing.workspace = true
+ureq.workspace = true
+zstd.workspace = true
+
+[dev-dependencies]
+flux-profiler = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true

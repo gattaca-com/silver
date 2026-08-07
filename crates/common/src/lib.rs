@@ -64,3 +64,5 @@ pub use enr::{
 };
 pub use flux::timing::Nanos;
 pub use generated::{Identify as ProtoIdentify, IdentifyView as ProtoIdentifyView};
+
+pub const APP_NAME: &str = "silver";

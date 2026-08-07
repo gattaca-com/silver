@@ -1,6 +1,6 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 
-use chain_config::ChainConfig;
+pub use chain_config::ChainConfig;
 pub use discovery_config::DiscoveryConfig;
 pub use engine_config::EngineConfig;
 pub use peer_score_params::ScoreParams;
