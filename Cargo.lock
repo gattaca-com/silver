@@ -4784,6 +4784,7 @@ version = "0.0.1"
 dependencies = [
  "bytesize",
  "clap",
+ "flate2",
  "flux",
  "flux-profiler",
  "hex",
@@ -4796,7 +4797,6 @@ dependencies = [
  "toml",
  "tracing",
  "ureq",
- "zstd",
 ]
 
 [[package]]

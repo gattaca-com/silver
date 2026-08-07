@@ -13,6 +13,7 @@ use std::{
     time::Duration,
 };
 
+use flate2::{Compression, write::GzEncoder};
 use flux::{spine::SpineAdapter, tile::Tile};
 use flux_profiler::{CrossProcessReader, Loss, published_pid};
 use silver_common::{APP_NAME, Nanos, SilverSpine};
@@ -25,7 +26,11 @@ use crate::{block_events::BlockEventsInserter, config::Args};
 const PID_CHECK_EVERY: u32 = 100;
 
 /// Also what `prune` treats as ours, so a shared directory keeps the rest.
-const SEGMENT_SUFFIX: &str = ".fxt.zst";
+/// Gzip and not a denser codec because it is the only compression Perfetto
+/// unwraps before sniffing the trace format.
+const SEGMENT_SUFFIX: &str = ".fxt.gz";
+
+const ATTACH_POLL: Duration = Duration::from_millis(100);
 
 pub struct TraceCollector {
     reader: CrossProcessReader,
@@ -42,11 +47,14 @@ impl TraceCollector {
         let file_config = args.file_config()?;
         fs::create_dir_all(&args.dir).map_err(|e| format!("{}: {e}", args.dir.display()))?;
 
+        // Block events are only consumed once the tile is up, so this wait is
+        // the window in which a starting node's first ones go unseen.
+        info!("waiting for the node's rings");
         let mut reader = loop {
             if let Some(reader) = CrossProcessReader::attach(APP_NAME) {
                 break reader;
             }
-            thread::sleep(Duration::from_secs(1));
+            thread::sleep(ATTACH_POLL);
         };
         info!(pid = reader.pid(), "attached");
 
@@ -170,7 +178,7 @@ impl TraceCollector {
         };
 
         let file = File::create(path).map_err(at("create"))?;
-        let mut encoder = zstd::Encoder::new(file, 3).map_err(at("zstd init"))?;
+        let mut encoder = GzEncoder::new(file, Compression::default());
         self.reader.dump_and_release(&mut encoder).map_err(at("dump"))?;
         encoder.finish().map_err(at("finish"))
     }
@@ -295,8 +303,8 @@ mod tests {
         assert_eq!(
             names(&dir),
             [
-                format!("{APP_NAME}-{pid}_2001-09-09_01-00-00.fxt.zst"),
-                format!("{APP_NAME}-{pid}_2001-09-09_02-00-00.fxt.zst"),
+                format!("{APP_NAME}-{pid}_2001-09-09_01-00-00.fxt.gz"),
+                format!("{APP_NAME}-{pid}_2001-09-09_02-00-00.fxt.gz"),
             ],
             "the idle second interval is a file too, named for its own start"
         );
@@ -309,7 +317,7 @@ mod tests {
     }
 
     fn segment(hour: u64) -> String {
-        format!("{APP_NAME}-7_2001-09-09_0{hour}-00-00.fxt.zst")
+        format!("{APP_NAME}-7_2001-09-09_0{hour}-00-00.fxt.gz")
     }
 
     /// Three equal segments, oldest first, and an older file that is not ours:

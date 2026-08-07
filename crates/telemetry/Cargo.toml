@@ -8,6 +8,7 @@ version.workspace = true
 [dependencies]
 bytesize.workspace = true
 clap.workspace = true
+flate2.workspace = true
 flux.workspace = true
 flux-profiler.workspace = true
 hex.workspace = true
@@ -20,7 +21,6 @@ silver_common.workspace = true
 silver_config.workspace = true
 tracing.workspace = true
 ureq.workspace = true
-zstd.workspace = true
 
 [dev-dependencies]
 flux-profiler = { workspace = true, features = ["test-util"] }

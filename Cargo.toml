@@ -101,6 +101,7 @@ crc32c = "0.6"
 criterion = { version = "0.5.1", features = ["async_std", "async_tokio"] }
 crossterm = "0.28"
 ctr = "0.9"
+flate2 = "1"
 fxhash = "0.2.1"
 hashtree-rs = "0.2"
 hdrhistogram = "7.5.4"
@@ -148,7 +149,6 @@ uint = "0.9"
 ureq = { version = "2", default-features = false }
 x509-parser = { version = "0.17", features = ["verify"] }
 yasna = "0.5"
-zstd = "0.13"
 
 [workspace.lints.clippy]
 too_long_first_doc_paragraph = "allow"

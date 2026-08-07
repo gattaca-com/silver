@@ -14,5 +14,5 @@ pgrep -f 'ethrex --network mainnet' > /dev/null || systemd-run --scope -p Memory
   --network mainnet --datadir /home/ubuntu/.ethrex \
   --authrpc.jwtsecret "$JWT" > logs/ethrex.log 2>&1 &
 
-start_silver
 start_telemetry
+start_silver

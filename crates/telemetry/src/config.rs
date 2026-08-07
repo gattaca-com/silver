@@ -9,7 +9,7 @@ use clap::Parser;
 use silver_config::ChainConfig;
 
 #[derive(Parser)]
-#[command(about = "Rotate silver's #[timed] marks into .fxt.zst segment files")]
+#[command(about = "Rotate silver's #[timed] marks into .fxt.gz segment files")]
 pub struct Args {
     /// Directory the profiler trace segments are written to.
     #[arg(long, default_value = "profiler-traces")]
