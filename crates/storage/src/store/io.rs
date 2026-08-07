@@ -91,7 +91,8 @@ impl Store {
                 PendingWrite::WriteUnfinalized { slot, key, ssz } => {
                     let path =
                         self.unfinalized_dir(key.payload()).join(key.unfinalized_name(*slot));
-                    open_file_write(&path, false)?.write_all(ssz.bytes()?)?;
+                    let (buffer, _) = ssz.buffer().map_err(Error::other)?;
+                    open_file_write(&path, false)?.write_all(buffer)?;
                     key.payload().record_written();
                     self.write_queue.pop_front();
                 }

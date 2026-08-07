@@ -9,7 +9,7 @@ use silver_beacon_state::{
 };
 use silver_beacon_state_data::{BeaconBlockHeader, BeaconState, SpecConfig};
 use silver_common::{
-    BeaconStateEvent, DataColumnsAvailable, IpBytes, Keypair, P2pSend, P2pStreamId, PeerControl,
+    BeaconStateEvent, DataColumnsEvent, IpBytes, Keypair, P2pSend, P2pStreamId, PeerControl,
     PeerEvent, PeerId, RpcInbound, RpcOutbound, RpcRequest, RpcRequestOutbound, RpcResponse,
     RpcResponseInbound, SilverSpine, StreamProtocol, TCache, TCacheProducer, TCacheRead, TProducer,
     ssz_view::{
@@ -35,7 +35,7 @@ pub fn block_slot(ssz: &[u8]) -> u64 {
     SignedBeaconBlockView::slot(ssz)
 }
 
-pub fn data_columns_available(block: &[u8]) -> Option<DataColumnsAvailable> {
+pub fn data_columns_available(block: &[u8]) -> Option<DataColumnsEvent> {
     if !SignedBeaconBlockView::has_data_columns_fulu(block) {
         return None;
     }
@@ -46,7 +46,7 @@ pub fn data_columns_available(block: &[u8]) -> Option<DataColumnsAvailable> {
         state_root: *SignedBeaconBlockView::state_root(block),
         body_root: hash_tree_root_body_fulu(SignedBeaconBlockView::body(block)),
     });
-    Some(DataColumnsAvailable { block_root, slot: SignedBeaconBlockView::slot(block) })
+    Some(DataColumnsEvent::Available { block_root, slot: SignedBeaconBlockView::slot(block) })
 }
 
 pub fn scan_checkpoint_fixtures(
@@ -303,7 +303,7 @@ impl PmBsHarness {
         }));
     }
 
-    pub fn emit_data_columns_available(&mut self, sig: DataColumnsAvailable) {
+    pub fn emit_data_columns_available(&mut self, sig: DataColumnsEvent) {
         self.inj_a.produce(sig);
     }
 

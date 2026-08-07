@@ -14,9 +14,9 @@ pub use crate::{
     },
     spine::{
         ALL_PROTOCOLS, AcquiredRead as TRead, BACKFILL_REQUEST_ID, BASE_REQUEST_ID,
-        BeaconStateEvent, BlockSource, COLUMN_BACKFILL_REQUEST_ID, Consumer as TConsumer,
-        DataColumnsAvailable, ELSyncStatus, ENVELOPE_REQUEST_ID, EngineFcuReq, EngineFcuResp,
-        EngineGetBlobsReq, EngineGetBlobsResp, EngineGetPayloadBodiesByHashReq,
+        BeaconStateEvent, BlockSource, COLUMN_BACKFILL_REQUEST_ID, ColumnSource,
+        Consumer as TConsumer, DataColumnsEvent, ELSyncStatus, ENVELOPE_REQUEST_ID, EngineFcuReq,
+        EngineFcuResp, EngineGetBlobsReq, EngineGetBlobsResp, EngineGetPayloadBodiesByHashReq,
         EngineGetPayloadBodiesByRangeReq, EngineGetPayloadBodiesResp, EngineGetPayloadReq,
         EngineGetPayloadResp, EngineHealthEvent, EngineNewPayloadEnvelopeReq, EngineNewPayloadReq,
         EngineNewPayloadResp, EnginePreparePayloadReq, EngineReq, EngineResp, Error as TCacheError,

@@ -20,7 +20,7 @@ use silver_beacon_state::{
 };
 use silver_beacon_state_data::{BeaconBlockHeader, BeaconState, SpecConfig, StateWriterView};
 use silver_common::{
-    BeaconStateEvent, DataColumnsAvailable, GossipTopic, MessageId, NewGossipMsg, P2pStreamId,
+    BeaconStateEvent, DataColumnsEvent, GossipTopic, MessageId, NewGossipMsg, P2pStreamId,
     PeerEvent, RpcInbound, RpcResponseInbound, SilverSpine, StreamProtocol, SyncUpdate, TCache,
     TCacheProducer, TProducer, TRandomAccess, hex32,
     ssz_view::{STATUS_V2_SIZE, SignedBeaconBlockView},
@@ -303,8 +303,10 @@ impl Harness {
             state_root: *SignedBeaconBlockView::state_root(block),
             body_root: hash_tree_root_body_fulu(SignedBeaconBlockView::body(block)),
         });
-        self.inj_adapter
-            .produce(DataColumnsAvailable { block_root, slot: SignedBeaconBlockView::slot(block) });
+        self.inj_adapter.produce(DataColumnsEvent::Available {
+            block_root,
+            slot: SignedBeaconBlockView::slot(block),
+        });
     }
 
     pub fn inject_status(

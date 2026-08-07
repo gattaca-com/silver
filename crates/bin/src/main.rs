@@ -9,6 +9,7 @@ use quinn_proto::{Endpoint, EndpointConfig};
 use rand::RngCore;
 use silver_beacon_state::{BeaconStateTile, SlotTicker};
 use silver_beacon_state_data::BeaconState;
+use silver_columns::tile::DataColumnsTile;
 #[cfg(feature = "alloc-profile")]
 use silver_common::metrics::CountingAllocator;
 use silver_common::{
@@ -55,6 +56,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         ssz_gossip_producer.cache_ref().random_access("ds_ssz_gossip", true)?;
     let ssz_persist_gossip_consumer_ds =
         ssz_gossip_producer.cache_ref().random_access("ds_persist_ssz_gossip", true)?;
+    let ssz_persist_gossip_consumer_dc =
+        ssz_gossip_producer.cache_ref().random_access("dc_persist_ssz_gossip", true)?;
     let ssz_gossip_consumer_eng =
         ssz_gossip_producer.cache_ref().random_access("eng_ssz_gossip", true)?;
     let outgoing_gossip_producer =
@@ -64,8 +67,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         incoming_rpc_producer.cache_ref().random_access("bs_incoming_rpc", true)?;
     let incoming_rpc_consumer_ds =
         incoming_rpc_producer.cache_ref().random_access("ds_incoming_rpc", true)?;
+    let incoming_rpc_consumer_dc =
+        incoming_rpc_producer.cache_ref().random_access("dc_incoming_rpc", true)?;
     let persist_rpc_consumer_ds =
         incoming_rpc_producer.cache_ref().random_access("ds_persist_incoming_rpc", true)?;
+    let persist_rpc_consumer_dc =
+        incoming_rpc_producer.cache_ref().random_access("dc_persist_incoming_rpc", true)?;
     let incoming_rpc_consumer_eng =
         incoming_rpc_producer.cache_ref().random_access("eng_incoming_rpc", true)?;
     let incoming_rpc_consumer_ctl =
@@ -85,6 +92,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let replay_blocks_producer = TCache::producer("replay_blocks", 1 << 25);
     let replay_blocks_consumer =
         replay_blocks_producer.cache_ref().random_access("bs_replay", true)?;
+
+    // engine producer
+    let el_producer = TCache::producer("el_data_columns", 1 << 25);
+    let el_columns_consumer = el_producer.cache_ref().random_access("el_data_columns", true)?;
 
     // Tiles.
     let keypair = config.keypair()?;
@@ -209,10 +220,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let state_reader = beacon_state_tile.reader();
 
     let storage_tile = StorageTile::new(
-        ssz_gossip_consumer_ds,
         ssz_persist_gossip_consumer_ds,
         incoming_rpc_consumer_ds,
         persist_rpc_consumer_ds,
+        el_columns_consumer,
         outgoing_rpc_producer,
         replay_blocks_producer,
         state_reader,
@@ -220,7 +231,19 @@ fn main() -> Result<(), Box<dyn Error>> {
         spec.clone(),
         config.data_storage_dir().into(),
         booting_from_local_checkpoint,
+    );
+
+    let state_reader = beacon_state_tile.reader();
+    let data_columns_tile = DataColumnsTile::new(
+        ssz_gossip_consumer_ds,
+        ssz_persist_gossip_consumer_dc,
+        incoming_rpc_consumer_dc,
+        persist_rpc_consumer_dc,
+        state_reader,
+        das_custody_groups,
+        spec.clone(),
         incoming_engine_resp_consumer_ds,
+        el_producer,
     );
 
     let engine_tile = EngineTile::new(
@@ -240,6 +263,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         attach_tile(beacon_state_tile, scoped_spine, TileConfig::new(3, ThreadPriority::OSDefault));
         attach_tile(storage_tile, scoped_spine, TileConfig::new(4, ThreadPriority::OSDefault));
         attach_tile(engine_tile, scoped_spine, TileConfig::new(5, ThreadPriority::OSDefault));
+        attach_tile(data_columns_tile, scoped_spine, TileConfig::new(6, ThreadPriority::OSDefault));
     });
 
     Ok(())

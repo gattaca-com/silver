@@ -1,7 +1,5 @@
 use std::{fs::create_dir_all, io::Error, path::Path};
 
-use silver_common::TRead;
-
 use super::{Payload, io};
 
 mod blocks;
@@ -11,21 +9,6 @@ mod envelopes;
 pub(super) use blocks::UnfinalizedBlocks;
 pub(super) use columns::{UnfinalizedColumns, columns_of};
 pub(super) use envelopes::UnfinalizedEnvelopes;
-
-#[derive(Debug)]
-pub(super) enum PayloadSsz {
-    Ref(TRead),
-    Owned(Vec<u8>),
-}
-
-impl PayloadSsz {
-    pub(super) fn bytes(&self) -> Result<&[u8], Error> {
-        match self {
-            PayloadSsz::Ref(ssz) => Ok(ssz.buffer().map_err(Error::other)?.0),
-            PayloadSsz::Owned(ssz) => Ok(ssz),
-        }
-    }
-}
 
 #[derive(Debug)]
 pub(super) enum PayloadKey {

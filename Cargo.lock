@@ -4429,6 +4429,7 @@ dependencies = [
  "rand 0.8.6",
  "silver_beacon_state",
  "silver_beacon_state_data",
+ "silver_columns",
  "silver_common",
  "silver_config",
  "silver_control",
@@ -4490,6 +4491,22 @@ version = "0.0.1"
 dependencies = [
  "hex",
  "serde",
+]
+
+[[package]]
+name = "silver_columns"
+version = "0.0.1"
+dependencies = [
+ "blst",
+ "c-kzg",
+ "flux",
+ "flux-profiler",
+ "fxhash",
+ "hex",
+ "rand 0.8.6",
+ "silver_beacon_state_data",
+ "silver_common",
+ "tracing",
 ]
 
 [[package]]

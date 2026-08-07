@@ -8,6 +8,7 @@ version.workspace = true
 [dependencies]
 silver_beacon_state.workspace = true
 silver_beacon_state_data.workspace = true
+silver_columns.workspace = true
 silver_common.workspace = true
 silver_config.workspace = true
 silver_control.workspace = true
