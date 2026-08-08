@@ -132,7 +132,7 @@ impl DataColumnsTile {
             validated_columns: Wheel::new(EPOCH_DURATION),
             gloas_commitments: Wheel::new(EPOCH_DURATION),
             gloas_pending_columns: Wheel::new(EPOCH_DURATION),
-            parent_pending_columns: Wheel::new(EPOCH_DURATION),
+            parent_pending_columns: Wheel::new(Duration::from_secs(24)),
             validated_blocks: Wheel::new(EPOCH_DURATION),
             persisted_block_roots: Wheel::new(EPOCH_DURATION),
             outstanding_requests: Wheel::new(Duration::from_millis(100)),

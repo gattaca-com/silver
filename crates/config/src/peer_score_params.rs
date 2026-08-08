@@ -146,7 +146,7 @@ impl Default for ScoreParams {
             // data-column subnets — silver's whole subscription set). Enable
             // only once a healthy multi-peer mesh exists; in a 1-2 peer mesh
             // legit peers deliver via first, not mesh, deliveries.
-            mesh_message_deliveries_threshold: 0.0,
+            mesh_message_deliveries_threshold: 0.685,
             mesh_message_deliveries_weight: -1.0,
             mesh_message_deliveries_decay: 0.971,
             // 1 epoch grace after graft before P3 activates (matches
