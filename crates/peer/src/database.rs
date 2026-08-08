@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use fxhash::{FxHashMap, FxHashSet};
 use silver_common::{
     ALL_PROTOCOLS, Enr, Identify, NUMBER_OF_CUSTODY_GROUPS, NodeId, PeerId, PeerStatus,
@@ -69,6 +71,7 @@ impl PeerDatabase {
         if let Some(record) = self.peers.get_mut(index) {
             record.peer_id.replace(peer_id);
             record.node_id.replace(node_id);
+            record.dial_backoff_until = None;
         };
         self.by_node_id.insert(node_id, index);
         self.by_peer_id.insert(peer_id, index);
@@ -100,6 +103,41 @@ impl PeerDatabase {
 
     pub fn peer_disconnected(&mut self, p2p_id: usize) -> Option<&PeerRecord> {
         self.by_p2p_id.remove(&p2p_id).and_then(|idx| self.peers.get(idx))
+    }
+
+    pub fn dial_backoff_active(&self, peer_id: &PeerId, now: Instant) -> bool {
+        self.by_peer_id
+            .get(peer_id)
+            .and_then(|idx| self.peers.get(*idx))
+            .and_then(|r| r.dial_backoff_until)
+            .is_some_and(|t| t > now)
+    }
+
+    pub fn dial_failed(&mut self, peer_id: &PeerId, until: Instant) {
+        if let Some(record) = self.by_peer_id.get(peer_id).and_then(|idx| self.peers.get_mut(*idx))
+        {
+            record.dial_backoff_until = Some(until);
+        }
+    }
+
+    /// Disconnected records that are structurally dialable: known peer id and
+    /// an ENR with a QUIC endpoint, no live connection, dial backoff expired.
+    /// The caller applies its own gates (bans, in-flight dials, fork digest).
+    pub fn redial_candidates(&self, now: Instant) -> impl Iterator<Item = &PeerRecord> + '_ {
+        self.peers.iter().filter_map(move |(idx, record)| {
+            record.peer_id.as_ref()?;
+            let enr = record.enr.as_ref()?;
+            if enr.quic4_socket().is_none() && enr.quic6_socket().is_none() {
+                return None;
+            }
+            if record.dial_backoff_until.is_some_and(|t| t > now) {
+                return None;
+            }
+            if self.by_p2p_id.values().any(|i| *i == idx) {
+                return None;
+            }
+            Some(record)
+        })
     }
 
     pub fn p2p_status(&mut self, p2p_id: usize, status: PeerStatus, earliest_slot: Option<u64>) {
@@ -216,4 +254,6 @@ pub struct PeerRecord {
     pub metadata: Option<[u8; METADATA_SIZE]>,
     /// Identify record
     pub identify: Option<Identify>,
+    /// Not a redial candidate until this instant (dial failed / timed out).
+    pub dial_backoff_until: Option<Instant>,
 }

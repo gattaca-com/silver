@@ -292,6 +292,16 @@ impl Tile<SilverSpine> for Controller {
 
         if self.last_tick.elapsed() > Duration::from_millis(700) {
             self.last_tick = now;
+            // Before tick: redials shrink the peer deficit so tick's
+            // discovery request only backfills what the database can't.
+            self.peer_manager.redial_known_peers(now, &mut |evt| {
+                handle_peer_control(
+                    &mut self.gossip_handler,
+                    &mut self.rpc_producer,
+                    evt,
+                    &mut adapter.producers,
+                )
+            });
             self.peer_manager.tick(now, &mut |evt| {
                 handle_peer_control(
                     &mut self.gossip_handler,

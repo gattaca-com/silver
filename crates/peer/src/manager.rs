@@ -35,6 +35,8 @@ const ARCHIVE_CAP: usize = 512;
 
 const REMOTE_BAN_TTL: Duration = Duration::from_secs(12 * 3600);
 
+const DIAL_FAILURE_BACKOFF: Duration = Duration::from_secs(3600);
+
 const GOODBYE_CLIENT_SHUTDOWN: u64 = 1;
 
 pub struct PeerManager {
@@ -706,9 +708,17 @@ impl PeerManager {
 
         self.sweep_backfill_range_attempts(now, emit);
 
-        // 9) Prune stale dials (older than 15 seconds)
-        self.dialing.retain(|_, &mut time| {
-            now.saturating_duration_since(time) < std::time::Duration::from_secs(15)
+        // 9) Prune stale dials (older than 15 seconds); an entry expiring here means
+        //    the dial failed or timed out (successful connects leave `dialing` in
+        //    `on_connected`) — back the peer off.
+        let database = &mut self.database;
+        self.dialing.retain(|peer_id, &mut time| {
+            if now.saturating_duration_since(time) < std::time::Duration::from_secs(15) {
+                true
+            } else {
+                database.dial_failed(peer_id, now + DIAL_FAILURE_BACKOFF);
+                false
+            }
         });
 
         crate::PeerCounters::PeersConnected.set(self.peers.len() as u64);
@@ -1261,6 +1271,10 @@ impl PeerManager {
             tracing::debug!(?peer_id, "remote-banned peer id; dial backoff");
             return;
         }
+        if self.database.dial_backoff_active(&peer_id, now) {
+            tracing::debug!(?peer_id, "dial-failure backoff active");
+            return;
+        }
         if self.peers.values().any(|p| p.peer_id == peer_id) {
             // Normal high-frequency case: discovery re-surfaces connected peers
             // every poll cycle. trace, not warn — else it floods the log.
@@ -1307,6 +1321,37 @@ impl PeerManager {
 
     /// On every tick, if we're below `target_peers` and the throttle has
     /// elapsed, ask discovery to surface more candidates.
+    /// Dial disconnected-but-known peers from the database until connected +
+    /// in-flight dials reach `target_peers`. Warmer and faster than a discv5
+    /// walk; discovery backfills when the database runs dry.
+    pub fn redial_known_peers(&mut self, now: Instant, emit: &mut impl FnMut(PeerControl)) {
+        let mut needed =
+            self.params.target_peers.saturating_sub(self.peers.len() + self.dialing.len());
+        for record in self.database.redial_candidates(now) {
+            if needed == 0 {
+                break;
+            }
+            let (Some(peer_id), Some(enr)) = (record.peer_id, record.enr.as_ref()) else {
+                continue;
+            };
+            if self.dialing.contains_key(&peer_id) ||
+                self.banned_peers.contains_key(&peer_id) ||
+                self.remote_banned_peers.contains_key(&peer_id)
+            {
+                continue;
+            }
+            if let Some(digest) = self.our_fork_digest &&
+                enr.eth2().is_none_or(|e| e[..4] != digest)
+            {
+                continue;
+            }
+            tracing::debug!(?peer_id, "redialing known peer");
+            self.dialing.insert(peer_id, now);
+            emit(PeerControl::P2pDial { p2p: peer_id, enr: *enr });
+            needed -= 1;
+        }
+    }
+
     fn maybe_request_discovery(&mut self, now: Instant, emit: &mut impl FnMut(PeerControl)) {
         if self.peers.len() >= self.params.target_peers {
             return;
@@ -2754,6 +2799,52 @@ mod tests {
             vec![3],
             "expected only peer 3 to receive the broadcast, got {recipients:?}"
         );
+    }
+
+    fn dials(cap: &Captured) -> usize {
+        cap.0.iter().filter(|c| matches!(c, PeerControl::P2pDial { .. })).count()
+    }
+
+    #[test]
+    fn redial_known_peer_after_disconnect_with_failure_backoff() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
+        let enr =
+            test_enr_with(5, std::net::Ipv4Addr::new(10, 0, 0, 5), Some([0u8; 16]), None, None);
+        mgr.database.add_enr(enr);
+
+        // Connected peers are not redial candidates.
+        connect(&mut mgr, &mut cap, 1, 5, now);
+        cap.0.clear();
+        mgr.redial_known_peers(now, &mut |c| cap.0.push(c));
+        assert_eq!(dials(&cap), 0, "live peer must not be redialed");
+
+        mgr.handle_event(
+            PeerEvent::P2pDisconnect { p2p_peer: 1, peer_id: peer_id(5) },
+            now,
+            &mut |c| cap.0.push(c),
+        );
+        cap.0.clear();
+        mgr.redial_known_peers(now, &mut |c| cap.0.push(c));
+        assert_eq!(dials(&cap), 1, "disconnected known peer should be dialed");
+
+        // In-flight dial is not repeated.
+        cap.0.clear();
+        mgr.redial_known_peers(now, &mut |c| cap.0.push(c));
+        assert_eq!(dials(&cap), 0, "in-flight dial must not repeat");
+
+        // Dial times out via the stale-dial sweep -> 1h backoff.
+        let after_sweep = now + Duration::from_secs(16);
+        mgr.tick(after_sweep, &mut |c| cap.0.push(c));
+        cap.0.clear();
+        mgr.redial_known_peers(after_sweep, &mut |c| cap.0.push(c));
+        assert_eq!(dials(&cap), 0, "failed dial must back off");
+
+        // Backoff expires -> dialable again.
+        let after_backoff = after_sweep + DIAL_FAILURE_BACKOFF + Duration::from_secs(1);
+        cap.0.clear();
+        mgr.redial_known_peers(after_backoff, &mut |c| cap.0.push(c));
+        assert_eq!(dials(&cap), 1, "peer should be redialed after backoff expiry");
     }
 
     /// Same key derivation as `peer_id(seed)` so an ENR built with this
