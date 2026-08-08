@@ -37,6 +37,12 @@ const REMOTE_BAN_TTL: Duration = Duration::from_secs(12 * 3600);
 
 const DIAL_FAILURE_BACKOFF: Duration = Duration::from_secs(3600);
 
+/// Disconnect reason for a QUIC-level close with no Goodbye received.
+const TRANSPORT_DISCONNECT: &str = "transport";
+
+const SHORT_LIVED_CONNECTION: Duration = Duration::from_secs(30);
+const SHORT_LIVED_DIAL_BACKOFF: Duration = Duration::from_secs(15 * 60);
+
 const GOODBYE_CLIENT_SHUTDOWN: u64 = 1;
 
 pub struct PeerManager {
@@ -507,7 +513,7 @@ impl PeerManager {
             }
             PeerEvent::P2pDisconnect { p2p_peer, peer_id } => {
                 self.dialing.remove(&peer_id);
-                self.on_disconnected(p2p_peer, now, "transport", emit);
+                self.on_disconnected(p2p_peer, now, TRANSPORT_DISCONNECT, emit);
             }
             PeerEvent::P2pCannotCreateStream { p2p_peer, protocol, rpc_request } => {
                 if rpc_request {
@@ -821,6 +827,7 @@ impl PeerManager {
     ) -> Option<&PeerRecord> {
         let mut state = self.peers.remove(&conn)?;
 
+        let age = now.saturating_duration_since(state.connected_at);
         let (dc_subscribed, dc_advertised) = self.data_column_overlap(conn, &state);
         let user_agent =
             self.database.by_p2p_id(conn).and_then(|r| r.identify.as_ref()).map(|i| i.user_agent());
@@ -830,12 +837,20 @@ impl PeerManager {
             addr = ?state.addr,
             reason,
             ?user_agent,
-            age_ms = now.saturating_duration_since(state.connected_at).as_millis(),
+            age_ms = age.as_millis(),
             score = state.cached_score,
             dc_subscribed,
             dc_advertised,
             "peer disconnected"
         );
+
+        // A connection dying young without a Goodbye is a failed dial in
+        // all but name (remote gater denial, instant crash). The completed
+        // handshake cleared any dial backoff, so re-arm a short one or the
+        // redial loop re-knocks every tick.
+        if reason == TRANSPORT_DISCONNECT && age < SHORT_LIVED_CONNECTION {
+            self.database.dial_failed(&state.peer_id, now + SHORT_LIVED_DIAL_BACKOFF);
+        }
 
         // De-index IP colocation.
         if let Some(v) = self.ip_colocations.get_mut(&state.ip_prefix) {
@@ -2843,22 +2858,24 @@ mod tests {
         mgr.redial_known_peers(now, &mut |c| cap.0.push(c));
         assert_eq!(dials(&cap), 0, "live peer must not be redialed");
 
+        // Disconnect past the short-lived window: an ordinary drop.
+        let t_drop = now + SHORT_LIVED_CONNECTION + Duration::from_secs(1);
         mgr.handle_event(
             PeerEvent::P2pDisconnect { p2p_peer: 1, peer_id: peer_id(5) },
-            now,
+            t_drop,
             &mut |c| cap.0.push(c),
         );
         cap.0.clear();
-        mgr.redial_known_peers(now, &mut |c| cap.0.push(c));
+        mgr.redial_known_peers(t_drop, &mut |c| cap.0.push(c));
         assert_eq!(dials(&cap), 1, "disconnected known peer should be dialed");
 
         // In-flight dial is not repeated.
         cap.0.clear();
-        mgr.redial_known_peers(now, &mut |c| cap.0.push(c));
+        mgr.redial_known_peers(t_drop, &mut |c| cap.0.push(c));
         assert_eq!(dials(&cap), 0, "in-flight dial must not repeat");
 
         // Dial times out via the stale-dial sweep -> 1h backoff.
-        let after_sweep = now + Duration::from_secs(16);
+        let after_sweep = t_drop + Duration::from_secs(16);
         mgr.tick(after_sweep, &mut |c| cap.0.push(c));
         cap.0.clear();
         mgr.redial_known_peers(after_sweep, &mut |c| cap.0.push(c));
@@ -2869,6 +2886,34 @@ mod tests {
         cap.0.clear();
         mgr.redial_known_peers(after_backoff, &mut |c| cap.0.push(c));
         assert_eq!(dials(&cap), 1, "peer should be redialed after backoff expiry");
+    }
+
+    #[test]
+    fn short_lived_transport_disconnect_backs_off_redial() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
+        let enr =
+            test_enr_with(5, std::net::Ipv4Addr::new(10, 0, 0, 5), Some([0u8; 16]), None, None);
+        mgr.database.add_enr(enr);
+
+        // Connect then die within the short-lived window (remote gater
+        // denial pattern: handshake ok, closed moments later).
+        connect(&mut mgr, &mut cap, 1, 5, now);
+        let t_drop = now + Duration::from_secs(1);
+        mgr.handle_event(
+            PeerEvent::P2pDisconnect { p2p_peer: 1, peer_id: peer_id(5) },
+            t_drop,
+            &mut |c| cap.0.push(c),
+        );
+
+        cap.0.clear();
+        mgr.redial_known_peers(t_drop, &mut |c| cap.0.push(c));
+        assert_eq!(dials(&cap), 0, "short-lived drop must arm a dial backoff");
+
+        let after = t_drop + SHORT_LIVED_DIAL_BACKOFF + Duration::from_secs(1);
+        cap.0.clear();
+        mgr.redial_known_peers(after, &mut |c| cap.0.push(c));
+        assert_eq!(dials(&cap), 1, "redial resumes after the short backoff");
     }
 
     /// Same key derivation as `peer_id(seed)` so an ENR built with this
@@ -2947,9 +2992,12 @@ mod tests {
         let (mut mgr, mut cap) = fixture(vec![], params, false);
 
         connect(&mut mgr, &mut cap, 1, 7, now);
+        // Age the connection past the short-lived window first: an instant
+        // drop would (correctly) arm the short-lived dial backoff instead.
+        let t_drop = now + SHORT_LIVED_CONNECTION + Duration::from_secs(1);
         mgr.handle_event(
             PeerEvent::P2pDisconnect { p2p_peer: 1, peer_id: peer_id(7) },
-            now,
+            t_drop,
             &mut |c| cap.0.push(c),
         );
         assert_eq!(mgr.archived_count(), 1);
@@ -2957,7 +3005,7 @@ mod tests {
 
         let enr =
             test_enr_with(7, std::net::Ipv4Addr::new(10, 0, 0, 7), Some([0u8; 16]), None, None);
-        mgr.handle_event(PeerEvent::DiscNodeFound { enr, reload: false }, now, &mut |c| {
+        mgr.handle_event(PeerEvent::DiscNodeFound { enr, reload: false }, t_drop, &mut |c| {
             cap.0.push(c)
         });
 
