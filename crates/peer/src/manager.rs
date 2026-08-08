@@ -416,6 +416,30 @@ impl PeerManager {
     }
 
     /// Announce our topic subscriptions to every currently-connected peer.
+    /// Add topics at runtime (deferred long-lived subnets): extends
+    /// `our_topics` + mesh bookkeeping + subnet masks, and announces
+    /// SUBSCRIBE to every connected peer. New connections pick the
+    /// topics up via the normal `on_connected` fan-out.
+    pub fn activate_topics(&mut self, topics: &[GossipTopic], emit: &mut impl FnMut(PeerControl)) {
+        for &topic in topics {
+            if self.our_topics.contains(&topic) {
+                continue;
+            }
+            self.our_topics.push(topic);
+            self.mesh.insert(topic, Vec::with_capacity(self.params.d_high as usize));
+            for (&conn, peer) in &self.peers {
+                emit(PeerControl::P2pGossipSubscribe {
+                    p2p: peer.peer_id,
+                    p2p_connection: conn,
+                    topic,
+                });
+            }
+        }
+        let (attnets, syncnets) = build_subnet_masks(&self.our_topics);
+        self.required_attnets = attnets;
+        self.required_syncnets = syncnets;
+    }
+
     pub fn fan_out_subscriptions(&mut self, emit: &mut impl FnMut(PeerControl)) {
         for (&conn, peer) in &self.peers {
             for &topic in &self.our_topics {
@@ -1947,8 +1971,8 @@ fn subscribed_column_mask(topics: &HashSet<GossipTopic>) -> u128 {
 
 /// Build SSZ Bitvector[64] / Bitvector[N≤8] masks from `our_topics`. Each
 /// `BeaconAttestation(N)` flips bit N in the 64-bit attnet mask; each
-/// `SyncCommittee(N)` flips bit N in the syncnet byte. Computed once at
-/// construction — `our_topics` is immutable for the manager's lifetime.
+/// `SyncCommittee(N)` flips bit N in the syncnet byte. Computed at
+/// construction and recomputed by `activate_topics`.
 fn build_subnet_masks(our_topics: &[GossipTopic]) -> ([u8; 8], u8) {
     let mut attnets = [0u8; 8];
     let mut syncnets = 0u8;

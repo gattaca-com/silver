@@ -8,7 +8,7 @@ use mimalloc::MiMalloc;
 use quinn_proto::{Endpoint, EndpointConfig};
 use rand::RngCore;
 use silver_beacon_state::{BeaconStateTile, SlotTicker};
-use silver_beacon_state_data::BeaconState;
+use silver_beacon_state_data::{BeaconState, SLOTS_PER_EPOCH};
 use silver_columns::tile::DataColumnsTile;
 #[cfg(feature = "alloc-profile")]
 use silver_common::metrics::CountingAllocator;
@@ -99,7 +99,25 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Tiles.
     let keypair = config.keypair()?;
-    let local_enr = config.enr()?;
+    let mut local_enr = config.enr()?;
+
+    let chain_config = config.chain_config();
+    let ticker = SlotTicker::new(
+        chain_config.genesis_unix_secs,
+        chain_config.slot_duration(),
+        chain_config.playload_lookahead(),
+    );
+
+    // Long-lived attnets: advertised from boot (peer retention exempts us
+    // from excess-peer pruning); the gossip subscriptions themselves
+    // activate once Following — see `Controller::pending_subnet_topics`.
+    let boot_epoch = ticker.current_slot() / SLOTS_PER_EPOCH;
+    let subnets = local_enr.node_id().attestation_subnets(boot_epoch);
+    let mut attnets = [0u8; 8];
+    for s in subnets {
+        attnets[(s / 8) as usize] |= 1 << (s % 8);
+    }
+    local_enr.set_attnets(attnets, keypair.secret_key())?;
 
     let discv5_addr = config.discovery_bind_addr().expect("no discovery port");
     let p2p_addr = config.p2p_bind_addr().expect("no p2p port");
@@ -164,13 +182,6 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let network_tile = NetworkTile::new(discv5_addr, discv5, p2p_addr, p2p_endpoint, p2p_context)?;
 
-    let chain_config = config.chain_config();
-    let ticker = SlotTicker::new(
-        chain_config.genesis_unix_secs,
-        chain_config.slot_duration(),
-        chain_config.playload_lookahead(),
-    );
-
     let (checkpoint, checkpoint_pubkeys) = load_checkpoint(&config)?;
     let booting_from_local_checkpoint = !checkpoint.is_empty();
 
@@ -185,7 +196,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         hex::encode(config.fork_digest()),
     )?;
 
-    let control_tile = Controller::new(
+    let mut control_tile = Controller::new(
         PeerManager::new(
             gossip_topics,
             config.peer_score_params(),
@@ -199,6 +210,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         outgoing_rpc_producer.clone(),
         spec.clone(),
         incoming_rpc_consumer_ctl,
+    );
+    control_tile.set_pending_subnet_topics(
+        subnets.iter().map(|&s| silver_common::GossipTopic::BeaconAttestation(s as u64)).collect(),
     );
 
     // A finalized checkpoint state is mandatory (no genesis or runtime sync):
