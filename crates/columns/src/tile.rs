@@ -314,6 +314,10 @@ impl DataColumnsTile {
         let parent_root = DataColumnSidecarFuluView::parent_root(buffer);
         let slot = DataColumnSidecarFuluView::slot(buffer);
 
+        if slot < self.sync_state.head_slot() {
+            return ColumnOutcome::Skip;
+        }
+
         if gossip_subnet.is_some() {
             let elapsed_ms = recv_ts.map(|r| r.elapsed().as_millis_u64());
             tracing::info!(
