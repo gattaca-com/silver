@@ -315,7 +315,7 @@ impl DataColumnsTile {
         let slot = DataColumnSidecarFuluView::slot(buffer);
 
         if slot < self.sync_state.head_slot() {
-            tracing::info!(block_root=hex::encode(block_root), slot, "skip old data column");
+            tracing::info!(block_root = hex::encode(block_root), slot, "skip old data column");
             return ColumnOutcome::Skip;
         }
 

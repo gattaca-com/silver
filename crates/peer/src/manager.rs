@@ -110,9 +110,8 @@ pub struct PeerManager {
     /// filtering and the `Unban` emission once `banned_peer_ttl` elapses.
     banned_peers: HashMap<PeerId, Instant>,
 
-    /// Peers whose Goodbye carried an error code (anything but
-    /// ClientShutdown): dial backoff for `REMOTE_BAN_TTL`, sized to
-    /// lighthouse's 12h BANNED_BEFORE_DECAY. Their inbound stays welcome.
+    /// Dial backoff from a received Goodbye, keyed to the expiry instant;
+    /// tier per code via `goodbye_dial_backoff`. Their inbound stays welcome.
     remote_banned_peers: HashMap<PeerId, Instant>,
 
     params: ScoreParams,
@@ -1439,13 +1438,14 @@ impl PeerManager {
             );
             emit(PeerControl::P2pDisconnect { p2p: peer_id, p2p_connection: p2p_peer });
 
-            if code != GOODBYE_CLIENT_SHUTDOWN {
+            if let Some(backoff) = Self::goodbye_dial_backoff(code) {
                 tracing::info!(
                     ?peer_id,
                     code = Self::goodbye_reason(code),
-                    "goodbye error; dial backoff"
+                    ?backoff,
+                    "goodbye; dial backoff"
                 );
-                self.remote_banned_peers.insert(peer_id, now);
+                self.remote_banned_peers.insert(peer_id, now + backoff);
             }
         }
         self.peers.remove(&p2p_peer);
@@ -1824,20 +1824,35 @@ impl PeerManager {
             }
         });
         // No Unban: remote-banned peers were never network-side banned.
-        self.remote_banned_peers.retain(|_, t| now.saturating_duration_since(*t) < REMOTE_BAN_TTL);
+        self.remote_banned_peers.retain(|_, expiry| *expiry > now);
     }
 
-    /// Human label for a Goodbye reason code (per eth2 spec).
+    /// Human label for a Goodbye reason code (spec codes 1-3, plus the
+    /// 128+ extensions lighthouse and prysm share).
     fn goodbye_reason(code: u64) -> &'static str {
         match code {
             1 => "ClientShutdown",
             2 => "IrrelevantNetwork",
-            3 => "Error",
-            128 => "Banned",
-            129 => "BannedIP",
-            250 => "ScoreTooLow",
-            251 => "Fault",
+            3 => "Fault",
+            128 => "UnableToVerifyNetwork",
+            129 => "TooManyPeers",
+            250 => "BadScore",
+            251 => "Banned",
+            252 => "BannedIP",
             _ => "Unknown",
+        }
+    }
+
+    /// Dial backoff earned by a Goodbye, `None` = stay dialable. The
+    /// score-ban family matches lighthouse's 12h `BANNED_BEFORE_DECAY`;
+    /// TooManyPeers is a routine excess-peer shed that expects us back;
+    /// wrong-network codes are futile to redial until a fork change.
+    fn goodbye_dial_backoff(code: u64) -> Option<Duration> {
+        match code {
+            GOODBYE_CLIENT_SHUTDOWN => None,
+            129 => Some(Duration::from_secs(5 * 60)),
+            3 => Some(Duration::from_secs(3600)),
+            _ => Some(REMOTE_BAN_TTL),
         }
     }
 }

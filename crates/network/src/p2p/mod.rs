@@ -123,6 +123,13 @@ impl P2p {
         Ok(())
     }
 
+    // TODO supply disconnect reason
+    pub fn disconnect(&mut self, peer: usize, now: Instant) {
+        if let Some(mut p) = self.peers.remove(&ConnectionHandle(peer)) {
+            p.shutdown(now);
+        }
+    }
+
     // /// Open a new bidirectional stream on the given peer connection with the
     // /// specified protocol. Multistream-select negotiation runs internally;
     // /// `NetEvent::StreamReady` is delivered via the event callback once it
