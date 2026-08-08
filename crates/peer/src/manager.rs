@@ -1807,9 +1807,8 @@ impl PeerManager {
         emit: &mut impl FnMut(PeerControl),
     ) {
         let current = self.mesh.get(&topic).map(|m| m.len()).unwrap_or(0);
-        let d_low = self.params.d_low as usize;
         let d = self.params.d as usize;
-        if current >= d_low {
+        if current >= d {
             return;
         }
         let needed = d - current;
