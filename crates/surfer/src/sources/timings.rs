@@ -30,6 +30,8 @@ pub struct TimingChannel {
     consumer: ConsumerBare<TimingMessage>,
     hist: Histogram<u64>,
     pub last_ns: u64,
+    /// Largest sample seen since surfer attached (never reset).
+    pub max_ns: u64,
     pub total_count: u64,
     pub history: VecDeque<TimingBucket>,
 }
@@ -43,6 +45,7 @@ impl TimingChannel {
             consumer,
             hist: Histogram::<u64>::new_with_bounds(1, 60_000_000_000, 3).expect("hdrhist bounds"),
             last_ns: 0,
+            max_ns: 0,
             total_count: 0,
             history: VecDeque::with_capacity(BUCKET_HISTORY_LEN),
         })
@@ -56,6 +59,7 @@ impl TimingChannel {
             }
             let ns = msg.elapsed().0;
             self.last_ns = ns;
+            self.max_ns = self.max_ns.max(ns);
             self.total_count += 1;
             self.hist.saturating_record(ns);
         }
