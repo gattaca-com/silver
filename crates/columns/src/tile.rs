@@ -764,6 +764,11 @@ impl DataColumnsTile {
 }
 
 impl Tile<SilverSpine> for DataColumnsTile {
+    fn try_init(&mut self, _adapter: &mut SpineAdapter<SilverSpine>) -> bool {
+        util::warm_kzg_settings();
+        true
+    }
+
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         adapter.consume(|d: SyncingStrategy, _| self.syncing_strategy = Some(d));
 
