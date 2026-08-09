@@ -113,19 +113,28 @@ impl P2p {
         addr: SocketAddr,
         now: Instant,
     ) -> Result<(), Error> {
-        if self.dialled.insert(peer_id) {
+        if !self.dialled.contains(&peer_id) {
             let client_config = create_client_config(&self.keypair, Some(peer_id))?;
             let (handle, connection) =
                 self.endpoint.connect(now, client_config, addr, "x").map_err(Error::other)?;
-            let peer = Peer::new(handle, connection);
+            // The dialed identity goes on the peer immediately: a dial that
+            // dies pre-handshake must still reap its `dialled` entry (keyed
+            // by real id) and report a real id in `PeerDisconnected`, else
+            // the peer becomes permanently undialable at this layer.
+            let peer = Peer::new(handle, connection, peer_id);
             self.peers.insert(handle, peer);
+            self.dialled.insert(peer_id);
         }
         Ok(())
     }
 
     // TODO supply disconnect reason
     pub fn disconnect(&mut self, peer: usize, now: Instant) {
-        if let Some(mut p) = self.peers.remove(&ConnectionHandle(peer)) {
+        // Close but keep the peer: the poll loop drives the drain and the
+        // drained reap does the removal — that's the only place `dialled`
+        // is released, so removing here leaks the entry and the peer id
+        // becomes permanently undialable.
+        if let Some(p) = self.peers.get_mut(&ConnectionHandle(peer)) {
             p.shutdown(now);
         }
     }
@@ -170,7 +179,7 @@ impl P2p {
                 match self.endpoint.accept(incoming, now, scratch, None) {
                     Ok((handle, conn)) => {
                         crate::NetworkCounters::InboundAccepted.inc();
-                        let peer = Peer::new(handle, conn);
+                        let peer = Peer::new(handle, conn, PeerId::default());
 
                         self.peers.insert(handle, peer);
                     }

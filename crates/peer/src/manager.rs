@@ -512,8 +512,14 @@ impl PeerManager {
                 self.on_connected(p2p_peer_id, peer_id_full, ip, port, now, emit, local_dial);
             }
             PeerEvent::P2pDisconnect { p2p_peer, peer_id } => {
-                self.dialing.remove(&peer_id);
-                self.on_disconnected(p2p_peer, now, TRANSPORT_DISCONNECT, emit);
+                let was_dialing = self.dialing.remove(&peer_id).is_some();
+                let was_connected =
+                    self.on_disconnected(p2p_peer, now, TRANSPORT_DISCONNECT, emit).is_some();
+                // Dial died pre-handshake (zombie): the sweep won't see the
+                // removed `dialing` entry, so arm the failure backoff here.
+                if was_dialing && !was_connected {
+                    self.database.dial_failed(&peer_id, now + DIAL_FAILURE_BACKOFF);
+                }
             }
             PeerEvent::P2pCannotCreateStream { p2p_peer, protocol, rpc_request } => {
                 if rpc_request {
@@ -2885,6 +2891,35 @@ mod tests {
         cap.0.clear();
         mgr.redial_known_peers(after_backoff, &mut |c| cap.0.push(c));
         assert_eq!(dials(&cap), 1, "peer should be redialed after backoff expiry");
+    }
+
+    #[test]
+    fn failed_dial_zombie_disconnect_backs_off() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
+        let enr =
+            test_enr_with(5, std::net::Ipv4Addr::new(10, 0, 0, 5), Some([0u8; 16]), None, None);
+        mgr.database.add_enr(enr);
+
+        mgr.redial_known_peers(now, &mut |c| cap.0.push(c));
+        assert_eq!(dials(&cap), 1);
+
+        // Dial dies pre-handshake: P2pDisconnect with no prior
+        // P2pNewConnection. Must arm the dial-failure backoff even though
+        // the `dialing` entry is gone before the stale-dial sweep.
+        mgr.handle_event(
+            PeerEvent::P2pDisconnect { p2p_peer: 999, peer_id: peer_id(5) },
+            now + Duration::from_secs(1),
+            &mut |c| cap.0.push(c),
+        );
+        cap.0.clear();
+        mgr.redial_known_peers(now + Duration::from_secs(2), &mut |c| cap.0.push(c));
+        assert_eq!(dials(&cap), 0, "zombie dial must back off");
+
+        let after = now + DIAL_FAILURE_BACKOFF + Duration::from_secs(3);
+        cap.0.clear();
+        mgr.redial_known_peers(after, &mut |c| cap.0.push(c));
+        assert_eq!(dials(&cap), 1, "redial resumes after backoff");
     }
 
     #[test]

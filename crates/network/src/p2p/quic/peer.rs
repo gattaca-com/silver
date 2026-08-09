@@ -48,13 +48,12 @@ pub(crate) struct Peer {
 }
 
 impl Peer {
-    pub(crate) fn new(handle: ConnectionHandle, connection: Connection) -> Self {
+    /// `peer_id`: the dialed identity for outbound connections (known
+    /// up-front and TLS-pinned); `PeerId::default()` for inbound until the
+    /// handshake reveals it.
+    pub(crate) fn new(handle: ConnectionHandle, connection: Connection, peer_id: PeerId) -> Self {
         Self {
-            id: RemotePeer {
-                peer_id: PeerId::default(),
-                connection: handle.0,
-                addr: connection.remote_address(),
-            },
+            id: RemotePeer { peer_id, connection: handle.0, addr: connection.remote_address() },
             handle,
             connection,
             streams: FxHashMap::with_capacity_and_hasher(16, BuildHasherDefault::default()),
@@ -160,6 +159,7 @@ impl Peer {
     }
 
     pub(crate) fn shutdown(&mut self, now: Instant) {
+        self.dirty = true;
         self.connection.close(now, VarInt::from_u32(0), Bytes::new());
     }
 
@@ -901,7 +901,7 @@ mod tests {
                 super::super::create_client_config(&client_kp, Some(server_kp.peer_id())).unwrap();
             let (client_handle, client_conn) =
                 client_ep.connect(now, client_config, server_addr, "x").unwrap();
-            let mut client_peer = Peer::new(client_handle, client_conn);
+            let mut client_peer = Peer::new(client_handle, client_conn, PeerId::default());
 
             let mut buf = Vec::new();
             let mut scratch = vec![0u8; 2048];
@@ -917,7 +917,7 @@ mod tests {
                         DatagramEvent::NewConnection(incoming) => {
                             let (handle, conn) =
                                 server_ep.accept(incoming, now, &mut scratch, None).unwrap();
-                            server_peer = Some(Peer::new(handle, conn));
+                            server_peer = Some(Peer::new(handle, conn, PeerId::default()));
                         }
                         DatagramEvent::ConnectionEvent(_, ce) => {
                             if let Some(ref mut p) = server_peer {
