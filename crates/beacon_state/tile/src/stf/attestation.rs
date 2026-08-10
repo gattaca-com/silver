@@ -216,7 +216,8 @@ pub fn collect_sigs_single_attestation(
         return Ok(());
     }
 
-    // Usually there are many more missed than attested, so we can subtract them from sum
+    // Usually there are many more missed than attested, so we can subtract them
+    // from sum
     let pubkey = |vi: u32| validators.pubkey_decompressed(vi as usize);
     let attesters_are_majority = attested * 2 > members;
     match committees.shuffling.committee_aggs.filter(|_| attesters_are_majority) {
