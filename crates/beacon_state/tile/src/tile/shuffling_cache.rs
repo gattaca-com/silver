@@ -1,10 +1,12 @@
+use blst::min_pk::PublicKey;
 use flux_profiler::timed;
 use silver_beacon_state_data::{
-    B256, BeaconStateOwner, EPOCHS_PER_HISTORICAL_VECTOR, Epoch, MIN_SEED_LOOKAHEAD, StateId,
-    StateReadView, randao_mix_at_epoch,
+    B256, EPOCHS_PER_HISTORICAL_VECTOR, Epoch, MIN_SEED_LOOKAHEAD, SLOTS_PER_EPOCH, StateReadView,
+    randao_mix_at_epoch,
 };
 
 use crate::{
+    bls,
     shuffling::{self, DOMAIN_BEACON_ATTESTER},
     stf,
 };
@@ -13,22 +15,87 @@ const MAX_SHUFFLING_CACHE: usize = 4;
 
 pub struct ShufflingCache {
     entries: [ShufflingEntry; MAX_SHUFFLING_CACHE],
+    pk_ptrs: bls::PkPtrScratch,
 }
 
 struct ShufflingEntry {
     epoch: Epoch,
     mix: B256,
     shuffled_indices: Vec<u32>,
+    /// Registry size at shuffle time — see
+    /// [`stf::EpochShuffling::built_against`].
+    built_against: usize,
+    /// One aggregate pubkey per beacon committee of the epoch, indexed
+    /// `slot_in_epoch * committees_per_slot + committee_index`. Empty until
+    /// [`ShufflingCache::try_cache_committee_aggs`] fills it off the block
+    /// critical path; sig collection falls back to direct summation until
+    /// then.
+    committee_aggs: Vec<PublicKey>,
     is_valid: bool,
+}
+
+impl ShufflingEntry {
+    fn committee_aggs_opt(&self) -> Option<&[PublicKey]> {
+        (!self.committee_aggs.is_empty()).then_some(self.committee_aggs.as_slice())
+    }
+
+    fn is_valid_for(&self, epoch: Epoch, mix: B256) -> bool {
+        self.is_valid && self.epoch == epoch && self.mix == mix
+    }
+
+    /// Reshuffle in place for `(epoch, mix)`, replacing whatever this slot
+    /// held. Stays invalid until the shuffle completes, so a half-filled
+    /// entry is never readable.
+    fn make_valid_for(&mut self, view: &StateReadView, epoch: Epoch, mix: B256) {
+        self.is_valid = false;
+        self.shuffled_indices.clear();
+        self.committee_aggs.clear();
+
+        shuffling::get_active_validator_indices_into(
+            &view.validators,
+            epoch,
+            &mut self.shuffled_indices,
+        );
+        let seed = shuffling::get_seed(&mix, epoch, DOMAIN_BEACON_ATTESTER);
+        shuffling::shuffle_list(&mut self.shuffled_indices, &seed);
+
+        self.epoch = epoch;
+        self.mix = mix;
+        self.built_against = view.validators.count();
+        self.is_valid = true;
+    }
+
+    /// One aggregate pubkey per beacon committee of the epoch. No-op once
+    /// filled, or while the entry holds no shuffling.
+    fn fill_committee_aggs(&mut self, view: &StateReadView, pk_ptrs: &mut bls::PkPtrScratch) {
+        if !self.committee_aggs.is_empty() || self.shuffled_indices.is_empty() {
+            return;
+        }
+        let sh = stf::EpochShuffling::new(&self.shuffled_indices, self.built_against);
+        for slot_in_epoch in 0..SLOTS_PER_EPOCH {
+            for ci in 0..sh.committees_per_slot {
+                self.committee_aggs.push(
+                    pk_ptrs.aggregate_or_identity(
+                        sh.committee(slot_in_epoch, ci)
+                            .iter()
+                            .map(|&vi| view.validators.pubkey_decompressed(vi as usize)),
+                    ),
+                );
+            }
+        }
+    }
 }
 
 impl ShufflingCache {
     pub fn with_capacity(capacity: usize) -> Box<Self> {
         Box::new(Self {
+            pk_ptrs: bls::PkPtrScratch::default(),
             entries: std::array::from_fn(|_| ShufflingEntry {
                 epoch: 0,
                 mix: [0u8; 32],
                 shuffled_indices: Vec::with_capacity(capacity),
+                built_against: 0,
+                committee_aggs: Vec::new(),
                 is_valid: false,
             }),
         })
@@ -44,61 +111,47 @@ impl ShufflingCache {
     /// Compute and cache the attester shuffling for `epoch` and `epoch - 1`
     /// against the post-state named by `state_id`. Maintains the 2-epoch
     /// window so attestations with `target_epoch ∈ {epoch, epoch - 1}` resolve.
-    /// `scratch` is a reusable active-index buffer (cleared on entry).
-    pub fn ensure_window(
-        &mut self,
-        state: &BeaconStateOwner,
-        state_id: StateId,
-        epoch: Epoch,
-        scratch: &mut Vec<u32>,
-    ) {
-        self.ensure(state, state_id, epoch, scratch);
+    pub fn ensure_window(&mut self, view: &StateReadView, epoch: Epoch) {
+        self.ensure(view, epoch);
         if epoch > 0 {
-            self.ensure(state, state_id, epoch - 1, scratch);
+            self.ensure(view, epoch - 1);
         }
     }
 
-    fn ensure(
-        &mut self,
-        state: &BeaconStateOwner,
-        state_id: StateId,
-        epoch: Epoch,
-        scratch: &mut Vec<u32>,
-    ) {
-        let mix = {
-            let view = state.read_view(state_id);
-            Self::mix(&view, epoch)
-        };
-        if self.entries.iter().any(|e| e.is_valid && e.epoch == epoch && e.mix == mix) {
+    fn ensure(&mut self, view: &StateReadView, epoch: Epoch) {
+        let mix = Self::mix(view, epoch);
+        if self.entries.iter().any(|e| e.is_valid_for(epoch, mix)) {
             return;
         }
-        self.compute_and_cache(state, state_id, epoch, mix, scratch);
+        self.compute_and_cache(view, epoch, mix);
     }
 
     #[timed]
-    fn compute_and_cache(
-        &mut self,
-        state: &BeaconStateOwner,
-        state_id: StateId,
-        epoch: Epoch,
-        mix: B256,
-        scratch: &mut Vec<u32>,
-    ) {
-        scratch.clear();
-        {
-            let view = state.read_view(state_id);
-            shuffling::get_active_validator_indices_into(&view.validators, epoch, scratch);
-        }
-        let seed = shuffling::get_seed(&mix, epoch, DOMAIN_BEACON_ATTESTER);
-        shuffling::shuffle_list(scratch, &seed);
-
+    fn compute_and_cache(&mut self, view: &StateReadView, epoch: Epoch, mix: B256) {
         let slot = self.find_slot();
-        let entry = &mut self.entries[slot];
-        entry.epoch = epoch;
-        entry.mix = mix;
-        entry.is_valid = true;
-        entry.shuffled_indices.clear();
-        entry.shuffled_indices.extend_from_slice(scratch);
+        self.entries[slot].make_valid_for(view, epoch, mix);
+    }
+
+    /// Aggregates stay valid for the whole epoch, so real work happens at most
+    /// once per cached `(epoch, mix)` — ~150ns per active validator — and every
+    /// other block of that epoch is a no-op. Covers `epoch` and `epoch - 1`;
+    /// callers keep it off the apply critical path, so sig collection for the
+    /// following blocks can subtract the missing members from a committee
+    /// aggregate instead of summing every participant.
+    #[timed]
+    pub fn try_cache_committee_aggs(&mut self, view: &StateReadView, epoch: Epoch) {
+        self.try_cache_aggs_for(view, epoch);
+        if epoch > 0 {
+            self.try_cache_aggs_for(view, epoch - 1);
+        }
+    }
+
+    fn try_cache_aggs_for(&mut self, view: &StateReadView, epoch: Epoch) {
+        let mix = Self::mix(view, epoch);
+        let pk_ptrs = &mut self.pk_ptrs;
+        if let Some(entry) = self.entries.iter_mut().find(|e| e.is_valid_for(epoch, mix)) {
+            entry.fill_committee_aggs(view, pk_ptrs);
+        }
     }
 
     /// Empty slot first, otherwise lowest-epoch among live entries. Mix is
@@ -121,7 +174,7 @@ impl ShufflingCache {
     }
 
     fn get(&self, epoch: Epoch, mix: B256) -> Option<&ShufflingEntry> {
-        self.entries.iter().find(|e| e.is_valid && e.epoch == epoch && e.mix == mix)
+        self.entries.iter().find(|e| e.is_valid_for(epoch, mix))
     }
 
     /// First cached shuffled active-index slice for `epoch`, mix-agnostic.
@@ -134,36 +187,33 @@ impl ShufflingCache {
             .map(|e| e.shuffled_indices.as_slice())
     }
 
-    /// Cached shuffled active-index slice for `epoch` against `view`'s state,
-    /// or `None` if not cached (caller should have run [`ensure_window`]
-    /// first).
-    pub fn lookup<'a>(&'a self, view: &StateReadView, epoch: Epoch) -> Option<&'a [u32]> {
+    /// Cached shuffling for `epoch` against `view`'s state, or `None` if not
+    /// cached (caller should have run [`ensure_window`] first).
+    pub fn lookup<'a>(
+        &'a self,
+        view: &StateReadView,
+        epoch: Epoch,
+    ) -> Option<stf::EpochShuffling<'a>> {
         let mix = Self::mix(view, epoch);
-        self.get(epoch, mix).map(|e| e.shuffled_indices.as_slice())
+        self.get(epoch, mix).map(|e| stf::EpochShuffling::new(&e.shuffled_indices, e.built_against))
     }
 
     /// Assemble a [`stf::ShufflingRef`] over the cached current+previous epoch
     /// shufflings for `block_epoch`. Panics if either is uncached.
     pub fn build_ref<'a>(
         &'a self,
-        state: &BeaconStateOwner,
-        state_id: StateId,
+        view: &StateReadView,
         block_epoch: Epoch,
     ) -> stf::ShufflingRef<'a> {
         let prev_epoch = block_epoch.saturating_sub(1);
-        let (curr_mix, prev_mix) = {
-            let view = state.read_view(state_id);
-            (Self::mix(&view, block_epoch), Self::mix(&view, prev_epoch))
-        };
+        let (curr_mix, prev_mix) = (Self::mix(view, block_epoch), Self::mix(view, prev_epoch));
         let curr = self.get(block_epoch, curr_mix).expect("ensure_window cached current epoch");
         let prev = self.get(prev_epoch, prev_mix).expect("ensure_window cached previous epoch");
         stf::ShufflingRef {
-            curr_epoch: block_epoch,
-            curr_shuffled: curr.shuffled_indices.as_slice(),
-            curr_committees_per_slot: shuffling::committees_per_slot(curr.shuffled_indices.len()),
-            prev_epoch,
-            prev_shuffled: prev.shuffled_indices.as_slice(),
-            prev_committees_per_slot: shuffling::committees_per_slot(prev.shuffled_indices.len()),
+            curr: stf::EpochShuffling::new(&curr.shuffled_indices, curr.built_against)
+                .with_committee_aggs(curr.committee_aggs_opt()),
+            prev: stf::EpochShuffling::new(&prev.shuffled_indices, prev.built_against)
+                .with_committee_aggs(prev.committee_aggs_opt()),
         }
     }
 }

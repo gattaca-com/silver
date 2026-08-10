@@ -6,12 +6,10 @@ use silver_beacon_state_data::{
 };
 
 use crate::{
-    bls::{DOMAIN_BEACON_ATTESTER, DOMAIN_PTC_ATTESTER},
+    bls::DOMAIN_PTC_ATTESTER,
     merkle::sha256,
-    shuffling::{
-        MAX_EFFECTIVE_BALANCE, committees_per_slot, get_active_validator_indices_into,
-        get_beacon_committee, get_seed_from_state, shuffle_list,
-    },
+    shuffling::{MAX_EFFECTIVE_BALANCE, get_seed_from_state},
+    stf::EpochShuffling,
 };
 
 /// `2**16 - 1` — the 16-bit acceptance ceiling in balance-weighted selection.
@@ -46,19 +44,10 @@ pub(crate) fn fill_epoch_ptc(
     target_epoch: u64,
     active: &mut Vec<u32>,
 ) {
-    get_active_validator_indices_into(validators, target_epoch, active);
-    let committee_seed = get_seed_from_state(epoch, slot, target_epoch, DOMAIN_BEACON_ATTESTER);
-    shuffle_list(active, &committee_seed);
-    let cps = committees_per_slot(active.len());
+    let sh = EpochShuffling::build(validators, slot, epoch, target_epoch, active);
     let ptc_seed = get_seed_from_state(epoch, slot, target_epoch, DOMAIN_PTC_ATTESTER);
     for (i, dst) in out.iter_mut().enumerate() {
-        *dst = compute_ptc(
-            validators,
-            active,
-            cps,
-            &ptc_seed,
-            target_epoch * SLOTS_PER_EPOCH + i as u64,
-        );
+        *dst = compute_ptc(validators, &sh, &ptc_seed, target_epoch * SLOTS_PER_EPOCH + i as u64);
     }
 }
 
@@ -66,20 +55,14 @@ pub(crate) fn fill_epoch_ptc(
 /// duplicates) over the concatenation of `slot`'s committees.
 pub(crate) fn compute_ptc(
     validators: &ValidatorsView,
-    shuffled_active: &[u32],
-    committees_per_slot: usize,
+    sh: &EpochShuffling<'_>,
     epoch_seed: &B256,
     slot: u64,
 ) -> PtcCommittee {
     let mut committee = [0u64; PTC_SIZE];
     let mut indices = Vec::new();
-    for ci in 0..committees_per_slot {
-        indices.extend_from_slice(get_beacon_committee(
-            shuffled_active,
-            slot,
-            ci,
-            committees_per_slot,
-        ));
+    for ci in 0..sh.committees_per_slot {
+        indices.extend_from_slice(sh.committee(slot, ci));
     }
     if indices.is_empty() {
         return committee;

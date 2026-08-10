@@ -19,7 +19,7 @@ use super::{
     ATTESTATION_PROPAGATION_SLOT_RANGE, BY_ROOT_REQUEST_ID, BeaconStateTile, Feedback, Producers,
     orphan_pool::{PendingBlock, has_room},
 };
-use crate::{bls, merkle, shuffling, ssz_hash, stf, validate};
+use crate::{bls, merkle, ssz_hash, stf, validate};
 
 pub(super) enum EnvelopeCheck {
     Ready { block_root: B256, state_id: StateId },
@@ -70,29 +70,16 @@ impl BeaconStateTile {
 
         let canon_id = self.canonical_state_id();
         let att_epoch = att_slot / SLOTS_PER_EPOCH;
-        self.shuffling_cache.ensure_window(
-            &self.state,
-            canon_id,
-            att_epoch,
-            &mut self.stf_scratch.active,
-        );
-
         // Validate committee membership + signature against the canonical head.
         let view = self.state.read_view(canon_id);
-        let shuffled = match self.shuffling_cache.lookup(&view, att_epoch) {
-            Some(s) => s,
-            None => return Feedback::Ignore,
+        self.shuffling_cache.ensure_window(&view, att_epoch);
+        let Some(sh) = self.shuffling_cache.lookup(&view, att_epoch) else {
+            return Feedback::Ignore;
         };
-        let committees_per_slot = shuffling::committees_per_slot(shuffled.len());
-        if committee_index >= committees_per_slot {
+        if committee_index >= sh.committees_per_slot {
             return Feedback::Reject(None);
         }
-        let committee = shuffling::get_beacon_committee(
-            shuffled,
-            att_slot,
-            committee_index,
-            committees_per_slot,
-        );
+        let committee = sh.committee(att_slot, committee_index);
         if !committee.contains(&(attester_index as u32)) {
             return Feedback::Reject(None);
         }
@@ -141,28 +128,16 @@ impl BeaconStateTile {
 
         let canon_id = self.canonical_state_id();
         let att_epoch = att_slot / SLOTS_PER_EPOCH;
-        self.shuffling_cache.ensure_window(
-            &self.state,
-            canon_id,
-            att_epoch,
-            &mut self.stf_scratch.active,
-        );
         let n = self.head_validator_count();
         {
             let view = self.state.read_view(canon_id);
-            let Some(shuffled) = self.shuffling_cache.lookup(&view, att_epoch) else {
+            self.shuffling_cache.ensure_window(&view, att_epoch);
+            let Some(sh) = self.shuffling_cache.lookup(&view, att_epoch) else {
                 return Feedback::Ignore;
             };
-            let cps = shuffling::committees_per_slot(shuffled.len());
-            if stf::attesting_indices_from_shuffled(
-                att,
-                shuffled,
-                cps,
-                n,
-                &mut self.stf_scratch.active,
-            )
-            .is_err()
-            {
+            let attesters = stf::AttestedCommittees::new(att, &sh)
+                .and_then(|c| c.members_into(true, n, &mut self.stf_scratch.active));
+            if attesters.is_err() {
                 return Feedback::Reject(None);
             }
         }
@@ -228,33 +203,20 @@ impl BeaconStateTile {
         }
 
         let canon_id = self.canonical_state_id();
-        self.shuffling_cache.ensure_window(
-            &self.state,
-            canon_id,
-            parsed.att_epoch,
-            &mut self.stf_scratch.active,
-        );
-
         let view = self.state.read_view(canon_id);
+        self.shuffling_cache.ensure_window(&view, parsed.att_epoch);
         let count = view.validators.count();
         if parsed.aggregator_index >= count {
             return Feedback::Ignore;
         }
 
-        let shuffled = match self.shuffling_cache.lookup(&view, parsed.att_epoch) {
-            Some(s) => s,
-            None => return Feedback::Ignore,
+        let Some(sh) = self.shuffling_cache.lookup(&view, parsed.att_epoch) else {
+            return Feedback::Ignore;
         };
-        let committees_per_slot = shuffling::committees_per_slot(shuffled.len());
-        if committee_index >= committees_per_slot {
+        if committee_index >= sh.committees_per_slot {
             return Feedback::Reject(None);
         }
-        let committee = shuffling::get_beacon_committee(
-            shuffled,
-            parsed.agg_slot,
-            committee_index,
-            committees_per_slot,
-        );
+        let committee = sh.committee(parsed.agg_slot, committee_index);
         if !committee.contains(&(parsed.aggregator_index as u32)) {
             return Feedback::Reject(None);
         }

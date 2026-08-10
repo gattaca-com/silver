@@ -5,20 +5,21 @@ mod epoch;
 mod fork_transition;
 mod gloas;
 mod operations;
+mod shuffling;
 mod slashings;
 mod sync_aggregate;
 mod validator;
 mod withdrawals;
 
 pub use attestation::{
-    attesting_indices_from_shuffled, collect_sigs_attestations, collect_sigs_single_attestation,
+    AttestedCommittees, collect_sigs_attestations, collect_sigs_single_attestation,
     process_attestations, process_single_attestation,
 };
 pub use block::{
     apply_block, apply_signed_block_debug, collect_sigs_randao, process_block_body,
     process_block_header, process_slot, process_slots,
 };
-pub use common::{AttestationVote, ShufflingRef, StfScratch};
+pub use common::{AttestationVote, StfScratch};
 pub(crate) use common::{MIN_ACTIVATION_BALANCE, for_each_ssz_list_item};
 pub(crate) use epoch::{
     BASE_REWARD_FACTOR, EFFECTIVE_BALANCE_INCREMENT, PROPOSER_WEIGHT, WEIGHT_DENOMINATOR,
@@ -49,6 +50,7 @@ pub use operations::{
     process_bls_to_execution_changes, process_consolidation_requests, process_deposit_requests,
     process_deposits, process_voluntary_exits, process_withdrawal_requests,
 };
+pub use shuffling::{EpochShuffling, ShufflingRef};
 pub(crate) use slashings::signing_root_for_block_header;
 pub use slashings::{
     collect_sigs_attester_slashings, collect_sigs_proposer_slashings, process_attester_slashings,

@@ -13,9 +13,10 @@ use silver_beacon_state::{
     shuffling,
     ssz_hash::hash_attestation_data,
     stf::{
-        self, ShufflingRef, collect_sigs_attestations, collect_sigs_attester_slashings,
-        collect_sigs_bls_to_execution_changes, collect_sigs_proposer_slashings,
-        collect_sigs_randao, collect_sigs_sync_aggregate, collect_sigs_voluntary_exits,
+        self, EpochShuffling, ShufflingRef, collect_sigs_attestations,
+        collect_sigs_attester_slashings, collect_sigs_bls_to_execution_changes,
+        collect_sigs_proposer_slashings, collect_sigs_randao, collect_sigs_sync_aggregate,
+        collect_sigs_voluntary_exits,
     },
 };
 use silver_beacon_state_data::{B256, SLOTS_PER_EPOCH, SpecConfig, StateReadView};
@@ -128,20 +129,6 @@ fn load_pre_at(dir: &Path) -> loaded_state::LoadedState {
     load_state(&dir.join("pre.ssz_snappy"))
 }
 
-fn shuffle_for_epoch(view: &StateReadView, e: u64) -> (Vec<u32>, usize) {
-    let seed = shuffling::get_seed_from_state(
-        &view.epoch,
-        &view.slot,
-        e,
-        shuffling::DOMAIN_BEACON_ATTESTER,
-    );
-    let mut active = Vec::new();
-    shuffling::get_active_validator_indices_into(&view.validators, e, &mut active);
-    let committees_per_slot = shuffling::committees_per_slot(active.len());
-    shuffling::shuffle_list(&mut active, &seed);
-    (active, committees_per_slot)
-}
-
 fn build_ef_block() -> SigBatch {
     let dir = spec_tests_dir().join("tests/mainnet/fulu/sanity/blocks/pyspec_tests/attestation");
     let mut s = load_pre_at(&dir);
@@ -174,17 +161,9 @@ fn build_ef_block() -> SigBatch {
     let validators = rv.validators;
 
     let curr_epoch = block_slot / SLOTS_PER_EPOCH;
-    let prev_epoch = curr_epoch.saturating_sub(1);
-    let (curr_shuffled, curr_committees_per_slot) = shuffle_for_epoch(&rv, curr_epoch);
-    let (prev_shuffled, prev_committees_per_slot) = shuffle_for_epoch(&rv, prev_epoch);
-    let sref = ShufflingRef {
-        curr_epoch,
-        curr_shuffled: &curr_shuffled,
-        curr_committees_per_slot,
-        prev_epoch,
-        prev_shuffled: &prev_shuffled,
-        prev_committees_per_slot,
-    };
+    let mut curr_shuffled = Vec::new();
+    let mut prev_shuffled = Vec::new();
+    let sref = ShufflingRef::build(&rv, curr_epoch, &mut curr_shuffled, &mut prev_shuffled);
 
     let ps = BeaconBlockBodyFuluView::proposer_slashings_offset(body) as usize;
     let at_s = BeaconBlockBodyFuluView::attester_slashings_offset(body) as usize;
@@ -218,7 +197,6 @@ fn build_ef_block() -> SigBatch {
         &body[att..dep],
         block_slot,
         Some(&sref),
-        &mut scratch,
         &mut batch,
     );
 

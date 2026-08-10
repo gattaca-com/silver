@@ -622,7 +622,6 @@ fn collect_sigs_block_body(
             section,
             block_slot,
             shuffling,
-            active_scratch,
             sig_batch,
         )?;
     }
