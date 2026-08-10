@@ -111,15 +111,10 @@ impl P2p {
         addr: SocketAddr,
         now: Instant,
     ) -> Result<(), Error> {
-        // Dial dedup is the peer manager's (`dialing` + backoffs) — no
-        // second gate here: a silent no-op dial is undebuggable, a rare
-        // duplicate connection is visible and harmless.
         let client_config = create_client_config(&self.keypair, Some(peer_id))?;
         let (handle, connection) =
             self.endpoint.connect(now, client_config, addr, "x").map_err(Error::other)?;
-        // The dialed identity goes on the peer immediately so a dial that
-        // dies pre-handshake still reports a real id in `PeerDisconnected`
-        // (the PM keys its dial-failure backoff on it).
+
         let peer = Peer::new(handle, connection, peer_id);
         self.peers.insert(handle, peer);
         Ok(())

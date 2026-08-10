@@ -13,10 +13,9 @@ use silver_beacon_state::{
     stf,
 };
 use silver_beacon_state_data::{
-    B256, EpochGroup, EpochView, LongtailGroup, SLOTS_PER_EPOCH, SpecConfig, StateId,
+    B256, EpochGroup, EpochView, LongtailGroup, SpecConfig, StateId,
     StateWriterView, effective_randao_mixes_into, effective_slashings_into,
 };
-use silver_common::ssz_view::SignedBeaconBlockView;
 
 #[path = "support/loaded_state.rs"]
 mod loaded_state;
