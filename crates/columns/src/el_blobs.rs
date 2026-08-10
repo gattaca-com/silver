@@ -11,6 +11,7 @@ use std::{
 use silver_common::{
     BASE_REQUEST_ID, ColumnSource, DataColumnsEvent, EngineGetBlobsReq, EngineGetBlobsResp,
     EngineReq, MAX_BLOBS_PER_BLOCK, TCacheProducer, TProducer, TRandomAccess, Wheel,
+    column_util as util,
     ssz_hash::kzg_commitments_inclusion_proof,
     ssz_view::{
         BEACON_BLOCK_BODY_FIXED, BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF,
@@ -18,7 +19,7 @@ use silver_common::{
     },
 };
 
-use crate::{StorageCounters, sync::SyncStatus, tile::StorageEmit, util};
+use crate::{DataColumnCounters, sync::SyncStatus, tile::StorageEmit};
 
 type BlockRoot = [u8; 32];
 
@@ -129,7 +130,7 @@ impl ElBlobFetcher {
             inclusion_proof: kzg_commitments_inclusion_proof(body),
             commitments: commitments_buf,
         });
-        StorageCounters::ElBlobsFetched.inc();
+        DataColumnCounters::ElBlobsFetched.inc();
         emit(StorageEmit::Engine(EngineReq::GetBlobs(req)));
     }
 
@@ -269,7 +270,7 @@ impl ElBlobFetcher {
         if built == 0 {
             return;
         }
-        StorageCounters::ElColumnsBuilt.inc();
+        DataColumnCounters::ElColumnsBuilt.inc();
 
         let validated = validated_columns.entry(pending.block_root).or_default();
         *validated |= built;
@@ -286,7 +287,7 @@ impl ElBlobFetcher {
         }
 
         if validated & custody_group_columns == custody_group_columns {
-            StorageCounters::DataColumnsAvailableEmitted.inc();
+            DataColumnCounters::DataColumnsAvailableEmitted.inc();
             tracing::info!(
                 block = hex::encode(pending.block_root),
                 slot = pending.slot,

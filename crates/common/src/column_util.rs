@@ -187,9 +187,11 @@ pub fn verify_data_column_sidecar_inclusion_proof(sidecar: &[u8]) -> bool {
 /// Empty-list sidecars (N = 0) trivially pass.
 ///
 /// Uses the mainnet Ethereum trusted setup statically bundled by
-/// c-kzg's `ethereum_kzg_settings` feature; no runtime initialisation
-/// required. `precompute = 0` — verification doesn't benefit from the
-/// precomputation table (only proof generation does).
+/// c-kzg's `ethereum_kzg_settings` feature. The settings *object* is
+/// lazily built on first use (~2s of point deserialisation + subgroup
+/// checks) — `warm_kzg_settings` pays that at tile init so no live
+/// sidecar absorbs it. `precompute = 0` — verification doesn't benefit
+/// from the precomputation table (only proof generation does).
 #[timed]
 pub fn verify_data_column_sidecar_kzg_proofs_fulu(sidecar: &[u8]) -> bool {
     kzg_verify_batch(
@@ -217,6 +219,13 @@ pub fn verify_data_column_sidecar_kzg_proofs_gloas(sidecar: &[u8], commitments: 
 /// Preconditions (caller-verified via `verify_data_column_sidecar{,_gloas}`):
 /// `column`/`commitments`/`proofs` carry the same element count and are clean
 /// multiples of their element sizes — the raw-slice casts rely on it.
+/// Force c-kzg's lazy trusted-setup construction. Without this the first
+/// sidecar verified after boot absorbs the ~2s load inside its own
+/// validation, delaying that block's DA right after sync.
+pub fn warm_kzg_settings() {
+    c_kzg::ethereum_kzg_settings(0);
+}
+
 #[timed]
 fn kzg_verify_batch(column: &[u8], commits: &[u8], proofs: &[u8], index: u64) -> bool {
     let n = column.len() / BYTES_PER_CELL;

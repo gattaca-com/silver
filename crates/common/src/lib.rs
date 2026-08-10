@@ -36,6 +36,7 @@ pub use crate::{
     wither::{CountingWitherFilter, WitherFilter},
 };
 
+pub mod column_util;
 mod enr;
 mod error;
 pub mod rpc_rate_limit;

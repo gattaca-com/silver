@@ -600,8 +600,8 @@ impl PeerManager {
                 crate::PeerCounters::GossipInvalidFrame.inc();
                 self.add_behaviour_penalty(p2p_peer, 1.0, "invalid gossip frame");
             }
-            PeerEvent::DiscNodeFound { enr, reload } => {
-                self.on_disc_node_found(enr, reload, now, emit);
+            PeerEvent::DiscNodeFound { enr, reload: _ } => {
+                self.on_disc_node_found(enr, now, emit);
             }
             PeerEvent::DiscExternalAddress { address: _, seq } => {
                 // update metadata seq number so that it matches ENR
@@ -1244,21 +1244,11 @@ impl PeerManager {
         }
     }
 
-    /// Discovery surfaced a candidate peer. Filter chain:
-    /// 1. Fork-digest match (if `our_fork_digest` is set).
-    /// 2. IP not in our recent ban set.
-    /// 3. Capacity — under `target_peers`, OR the peer covers a subnet we need
-    ///    (priority) and we're under `max_priority_peers`.
-    ///
-    /// Network tile handles in-flight dial / already-connected dedup.
+    /// Discovery surfaced a candidate peer: filter (fork digest, bans,
+    /// backoffs, QUIC support) and ingest into the database. Dialing is
+    /// `redial_known_peers`'s — the next tick picks the record up.
     #[timed]
-    fn on_disc_node_found(
-        &mut self,
-        enr: Enr,
-        reload: bool,
-        now: Instant,
-        emit: &mut impl FnMut(PeerControl),
-    ) {
+    fn on_disc_node_found(&mut self, enr: Enr, now: Instant, emit: &mut impl FnMut(PeerControl)) {
         // 1. Fork-digest gate. Spec-conformant CL nodes always advertise `eth2`;
         //    missing-or-mismatched is a drop (matches lighthouse).
         if let Some(my_digest) = self.our_fork_digest {
@@ -1339,43 +1329,19 @@ impl PeerManager {
 
         tracing::debug!(id=?enr.node_id(), ?enr, "new node");
 
-        // Add to peer database.
         self.database.add_enr(enr);
-
-        // 4. Capacity gate. Priority match: ENR's attnets/syncnets bitfield intersects
-        //    ours, meaning the peer can fill a subnet we care about. Lets us go past
-        //    `target_peers` up to `max_priority_peers` for under-meshed validator
-        //    subnets.
-        let connected = self.peers.len() + self.dialing.len();
-        let priority = enr_matches_subnets(
-            &enr,
-            self.required_attnets,
-            self.required_syncnets,
-            self.custody_columns,
-        );
-        let dial = reload ||
-            connected < self.params.target_peers ||
-            (priority && connected < self.params.max_priority_peers);
-        if !dial {
-            tracing::debug!(connected, "not dialling");
-            return;
-        }
-        self.dialing.insert(peer_id, now);
-        emit(PeerControl::P2pDial { p2p: peer_id, enr });
     }
 
-    /// On every tick, if we're below `target_peers` and the throttle has
-    /// elapsed, ask discovery to surface more candidates.
-    /// Dial disconnected-but-known peers from the database until connected +
-    /// in-flight dials reach `target_peers`. Warmer and faster than a discv5
-    /// walk; discovery backfills when the database runs dry.
+    /// The sole dial issuer: connects disconnected-but-known peers from the
+    /// database up to `target_peers`, or `max_priority_peers` for candidates
+    /// covering a subnet/custody column we need. Discovery only feeds the
+    /// database; this loop dials on the next tick.
     pub fn redial_known_peers(&mut self, now: Instant, emit: &mut impl FnMut(PeerControl)) {
-        let mut needed =
-            self.params.target_peers.saturating_sub(self.peers.len() + self.dialing.len());
+        let mut connected = self.peers.len() + self.dialing.len();
+        if connected >= self.params.max_priority_peers {
+            return;
+        }
         for record in self.database.redial_candidates(now) {
-            if needed == 0 {
-                break;
-            }
             let (Some(peer_id), Some(enr)) = (record.peer_id, record.enr.as_ref()) else {
                 continue;
             };
@@ -1385,15 +1351,35 @@ impl PeerManager {
             {
                 continue;
             }
+            let ip = enr.ip4().map(IpAddr::V4).or_else(|| enr.ip6().map(IpAddr::V6));
+            if ip.is_some_and(|ip| self.banned_ips.contains_key(&ip)) {
+                continue;
+            }
             if let Some(digest) = self.our_fork_digest &&
                 enr.eth2().is_none_or(|e| e[..4] != digest)
             {
                 continue;
             }
+            let cap = if enr_matches_subnets(
+                enr,
+                self.required_attnets,
+                self.required_syncnets,
+                self.custody_columns,
+            ) {
+                self.params.max_priority_peers
+            } else {
+                self.params.target_peers
+            };
+            if connected >= cap {
+                continue;
+            }
             tracing::debug!(?peer_id, "redialing known peer");
             self.dialing.insert(peer_id, now);
             emit(PeerControl::P2pDial { p2p: peer_id, enr: *enr });
-            needed -= 1;
+            connected += 1;
+            if connected >= self.params.max_priority_peers {
+                break;
+            }
         }
     }
 
@@ -1790,9 +1776,7 @@ impl PeerManager {
                 crate::PeerCounters::IpsBanned.inc();
                 self.banned_ips.insert(ip, now);
             }
-            // Archived copy is written on the normal disconnect path fired
-            // downstream once the Ban takes ffect; here we just drop live.
-            self.peers.remove(&conn);
+            self.on_disconnected(conn, now, "evicted", emit);
         }
     }
 
@@ -3008,6 +2992,7 @@ mod tests {
         mgr.handle_event(PeerEvent::DiscNodeFound { enr, reload: false }, now, &mut |c| {
             cap.0.push(c)
         });
+        mgr.redial_known_peers(now, &mut |c| cap.0.push(c));
 
         assert!(
             cap.0.iter().any(|e| matches!(e, PeerControl::P2pDial { .. })),
@@ -3042,6 +3027,7 @@ mod tests {
         mgr.handle_event(PeerEvent::DiscNodeFound { enr, reload: false }, t_drop, &mut |c| {
             cap.0.push(c)
         });
+        mgr.redial_known_peers(t_drop, &mut |c| cap.0.push(c));
 
         assert!(
             cap.0.iter().any(|e| matches!(e, PeerControl::P2pDial { .. })),
@@ -3065,6 +3051,7 @@ mod tests {
         mgr.handle_event(PeerEvent::DiscNodeFound { enr, reload: false }, now, &mut |c| {
             cap.0.push(c)
         });
+        mgr.redial_known_peers(now, &mut |c| cap.0.push(c));
 
         assert!(
             !cap.0.iter().any(|e| matches!(e, PeerControl::P2pDial { .. })),
@@ -3101,6 +3088,7 @@ mod tests {
         mgr.handle_event(PeerEvent::DiscNodeFound { enr, reload: false }, now, &mut |c| {
             cap.0.push(c)
         });
+        mgr.redial_known_peers(now, &mut |c| cap.0.push(c));
 
         assert!(
             !cap.0.iter().any(|e| matches!(e, PeerControl::P2pDial { .. })),
@@ -3157,6 +3145,7 @@ mod tests {
         mgr.handle_event(PeerEvent::DiscNodeFound { enr, reload: false }, now, &mut |c| {
             cap.0.push(c)
         });
+        mgr.redial_known_peers(now, &mut |c| cap.0.push(c));
         assert!(
             cap.0.iter().any(|e| matches!(e, PeerControl::P2pDial { .. })),
             "post-TTL discovery hit must dial, got {:?}",
@@ -3390,6 +3379,7 @@ mod tests {
         mgr.handle_event(PeerEvent::DiscNodeFound { enr, reload: false }, now, &mut |c| {
             cap.0.push(c)
         });
+        mgr.redial_known_peers(now, &mut |c| cap.0.push(c));
         assert!(
             !cap.0.iter().any(|e| matches!(e, PeerControl::P2pDial { .. })),
             "banned PeerId discovery hit must not dial, got {:?}",
@@ -3440,6 +3430,7 @@ mod tests {
         mgr.handle_event(PeerEvent::DiscNodeFound { enr, reload: false }, now, &mut |c| {
             cap.0.push(c)
         });
+        mgr.redial_known_peers(now, &mut |c| cap.0.push(c));
         assert!(
             !cap.0.iter().any(|e| matches!(e, PeerControl::P2pDial { .. })),
             "wrong-fork ENR must be dropped, got {:?}",
@@ -3460,6 +3451,7 @@ mod tests {
         mgr.handle_event(PeerEvent::DiscNodeFound { enr, reload: false }, now, &mut |c| {
             cap.0.push(c)
         });
+        mgr.redial_known_peers(now, &mut |c| cap.0.push(c));
         assert!(
             !cap.0.iter().any(|e| matches!(e, PeerControl::P2pDial { .. })),
             "ENR without eth2 must be dropped when filter set, got {:?}",
@@ -3494,6 +3486,7 @@ mod tests {
         mgr.handle_event(PeerEvent::DiscNodeFound { enr, reload: false }, now, &mut |c| {
             cap.0.push(c)
         });
+        mgr.redial_known_peers(now, &mut |c| cap.0.push(c));
 
         assert!(
             cap.0.iter().any(|e| matches!(e, PeerControl::P2pDial { .. })),
@@ -3515,11 +3508,17 @@ mod tests {
 
         let mut attnets = [0u8; 8];
         attnets[0] = 0x20;
-        let enr =
-            test_enr_with(99, std::net::Ipv4Addr::new(10, 0, 0, 99), None, Some(attnets), None);
+        let enr = test_enr_with(
+            99,
+            std::net::Ipv4Addr::new(10, 0, 0, 99),
+            Some([0u8; 16]),
+            Some(attnets),
+            None,
+        );
         mgr.handle_event(PeerEvent::DiscNodeFound { enr, reload: false }, now, &mut |c| {
             cap.0.push(c)
         });
+        mgr.redial_known_peers(now, &mut |c| cap.0.push(c));
 
         assert!(
             !cap.0.iter().any(|e| matches!(e, PeerControl::P2pDial { .. })),

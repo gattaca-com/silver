@@ -13,7 +13,7 @@ use std::{
 use flux_profiler::timed;
 use silver_common::{
     Enr, P2pSend, PeerEvent, RpcOutbound, RpcResponse, RpcResponseOutbound, TCacheProducer,
-    TCacheRead, TMultiProducer, hex32, merkle::B256, ssz_view::SignedBeaconBlockView,
+    TCacheRead, TMultiProducer, column_util, hex32, merkle::B256, ssz_view::SignedBeaconBlockView,
 };
 
 use super::{
@@ -24,7 +24,6 @@ use crate::{
     StorageCounters,
     store::{BLOCK_SLOTS_RETAINED, Backfill, COLUMN_SLOTS_RETAINED, ColumnBackfill, SLOTS_PER_DIR},
     tile::IoEvent,
-    util,
 };
 
 /// Slots scanned per `file_io` turn during the column-backfill disk scan.
@@ -409,7 +408,7 @@ impl Store {
                 continue;
             }
             if let Some(cb) = self.column_backfill.as_mut() {
-                let block_root = util::block_root_fulu(&ssz);
+                let block_root = column_util::block_root_fulu(&ssz);
                 cb.seed_block(block_root, slot, &ssz, missing, emit);
             }
         }

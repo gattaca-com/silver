@@ -13,14 +13,14 @@ use silver_beacon_state_data::{B256, BeaconStateReader, SLOTS_PER_EPOCH, SpecCon
 use silver_common::{
     BeaconStateEvent, ColumnSource, DataColumnsEvent, P2pSend, PeerControl, PeerEvent, ReplayBlock,
     RpcInbound, SilverSpine, SyncUpdate, SyncingStrategy, TCacheProducer, TMultiProducer,
-    TProducer, TRandomAccess, msg_is_backfill, msg_is_column_backfill,
+    TProducer, TRandomAccess, column_util, msg_is_backfill, msg_is_column_backfill,
     ssz_view::{
         ExecutionPayloadEnvelopeView, SignedBeaconBlockView, SignedExecutionPayloadEnvelopeView,
         StatusView,
     },
 };
 
-use crate::{store::Store, util};
+use crate::store::Store;
 
 /// Fallback: if control's replay-vs-sync decision is never received, default
 /// `drive_replay` to replaying the on-disk chain after this long.
@@ -219,7 +219,7 @@ impl StorageTile {
                     Ok((buf, _)) => {
                         let slot = SignedBeaconBlockView::slot(buf);
                         let parent_root = *SignedBeaconBlockView::parent_root(buf);
-                        let block_root = util::block_root_fulu(buf);
+                        let block_root = column_util::block_root_fulu(buf);
                         self.store.add_block(block_root, t_read, slot, parent_root);
                     }
                     Err(e) => {
@@ -366,7 +366,7 @@ impl Tile<SilverSpine> for StorageTile {
         let spec = self.spec.clone();
         let gvr = self.genesis_validators_root;
         let fork_digest_at = move |slot: u64| match gvr {
-            Some(gvr) => util::fork_digest_at(&spec, slot, &gvr),
+            Some(gvr) => column_util::fork_digest_at(&spec, slot, &gvr),
             None => [0u8; 4],
         };
         if let Err(e) = self.store.file_io(

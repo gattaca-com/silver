@@ -7,33 +7,9 @@
 //! not reorder.
 
 silver_common::declare_counters! {
-    pub StorageCounters => "storage" {
-        // gossip ingest
-        GossipSidecarsReceived,
-        GossipSidecarsRejected,
-        // rpc ingest
-        RpcSidecarsReceived,
-        RpcSidecarsRejected,
-        // per-block validation outcomes
-        SidecarsAccepted,
-        InclusionProofFailures,
-        KzgVerifyFailures,
-        // block-level checks (state-driven)
-        BelowFinalized,
-        ParentUnknown,
-        ProposerIndexMismatch,
-        ProposerSignatureInvalid,
+    pub DataColumnCounters => "columns" {
         // store side
         DataColumnsAvailableEmitted,
-        StoreWrites,
-        UnfinalizedBlocksWritten,
-        UnfinalizedColumnsWritten,
-        BlocksPromoted,
-        BlocksPruned,
-        ColumnsPromoted,
-        ColumnsPruned,
-        BackfillBlocksWritten,
-        BackfillColumnsWritten,
         // EL-mempool blob fetch (engine_getBlobsV2)
         ElBlobsFetched,
         ElColumnsBuilt,

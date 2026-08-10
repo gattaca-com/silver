@@ -10,14 +10,15 @@ use silver_common::{
     BASE_REQUEST_ID, BeaconStateEvent, ColumnSource, DataColumnsEvent, EngineReq, EngineResp,
     GossipTopic, Nanos, NewGossipMsg, P2pStreamId, PeerEvent, RpcInbound, RpcSeverity, SilverSpine,
     SilverSpineProducers, StreamProtocol, SyncUpdate, SyncingStrategy, TProducer, TRandomAccess,
-    TRead, Wheel, msg_is_backfill, msg_is_live_column_request, msg_is_post_gloas,
+    TRead, Wheel, column_util as util, msg_is_backfill, msg_is_live_column_request,
+    msg_is_post_gloas,
     ssz_view::{
         DataColumnSidecarFuluView, DataColumnSidecarGloasView, NUMBER_OF_COLUMNS,
         SignedBeaconBlockView, StatusView,
     },
 };
 
-use crate::{StorageCounters, el_blobs::ElBlobFetcher, sync::SyncStatus, util};
+use crate::{DataColumnCounters, el_blobs::ElBlobFetcher, sync::SyncStatus};
 const MAX_RETRIES: u8 = 5;
 
 /// Mainnet epoch: 32 slots × 12s. Wheel bucket width for the
@@ -624,7 +625,7 @@ impl DataColumnsTile {
 
         if validated & completion_check == completion_check {
             // have all validated data columns for the block.
-            StorageCounters::DataColumnsAvailableEmitted.inc();
+            DataColumnCounters::DataColumnsAvailableEmitted.inc();
             tracing::info!(
                 block = hex::encode(block_root),
                 slot,

@@ -13,8 +13,8 @@ use silver_beacon_state::{
     stf,
 };
 use silver_beacon_state_data::{
-    B256, EpochGroup, EpochView, LongtailGroup, SpecConfig, StateId,
-    StateWriterView, effective_randao_mixes_into, effective_slashings_into,
+    B256, EpochGroup, EpochView, LongtailGroup, SpecConfig, StateId, StateWriterView,
+    effective_randao_mixes_into, effective_slashings_into,
 };
 
 #[path = "support/loaded_state.rs"]

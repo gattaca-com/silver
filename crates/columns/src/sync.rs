@@ -8,7 +8,6 @@ pub(crate) struct SyncStatus {
     wall_slot: u64,
     head_root: B256,
     finalized_slot: u64,
-    finalized_root: B256,
 }
 
 impl SyncStatus {
@@ -37,7 +36,6 @@ impl SyncStatus {
         self.head_slot = StatusView::head_slot(&ssz);
         self.head_root = *StatusView::head_root(&ssz);
         self.finalized_slot = StatusView::finalized_epoch(&ssz) * SLOTS_PER_EPOCH;
-        self.finalized_root = *StatusView::finalized_root(&ssz);
     }
 
     pub(crate) fn update_synced(&mut self, synced: bool) {
