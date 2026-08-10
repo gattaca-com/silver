@@ -4768,6 +4768,7 @@ dependencies = [
  "libc",
  "ratatui",
  "silver_beacon_state_data",
+ "silver_columns",
  "silver_common",
  "silver_metrics",
  "silver_network",
