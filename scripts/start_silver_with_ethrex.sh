@@ -9,7 +9,8 @@ fi
 
 [ -f "$JWT" ] || openssl rand -hex 32 > "$JWT"
 
-pgrep -f 'ethrex --network mainnet' > /dev/null || nohup ethrex --network mainnet --datadir /home/ubuntu/.ethrex \
+pgrep -f 'ethrex --network mainnet' > /dev/null || systemd-run --scope -p MemoryMax=48G --user nohup ethrex \
+  --network mainnet --datadir /home/ubuntu/.ethrex \
   --authrpc.jwtsecret "$JWT" > logs/ethrex.log 2>&1 &
 
 LOG_PATH=/home/ubuntu/logs RUST_LOG=info nohup ./silver --config /home/ubuntu/config/config.toml > logs/stdout.log 2>&1 &
