@@ -48,6 +48,7 @@ pub(crate) struct ElBlobFetcher {
     /// In-flight fetches, keyed by request id. 4 buckets × 500ms ⇒ entries age
     /// out after ~1.5–2s if the EL never responds.
     pending: Wheel<u64, PendingBlobFetch, 4>,
+    sidecar_buffer: Vec<u8>,
 }
 
 impl ElBlobFetcher {
@@ -56,6 +57,7 @@ impl ElBlobFetcher {
             engine_resp_consumer,
             next_req_id: BASE_REQUEST_ID,
             pending: Wheel::new(Duration::from_millis(500)),
+            sidecar_buffer: Vec::with_capacity(8 * 1024),
         }
     }
 
@@ -217,9 +219,9 @@ impl ElBlobFetcher {
             let proof_lo = j as usize * BYTES_PER_KZG_PROOF;
             let proof_hi = proof_lo + BYTES_PER_KZG_PROOF;
 
-            let mut sidecar = Vec::with_capacity(util::data_column_sidecar_len(n));
+            self.sidecar_buffer.clear();
             util::push_data_column_sidecar_prefix(
-                &mut sidecar,
+                &mut self.sidecar_buffer,
                 j,
                 n,
                 &pending.header,
@@ -231,18 +233,18 @@ impl ElBlobFetcher {
                 // SAFETY: `c_kzg::Cell` is `#[repr(C)]` over `[u8; BYTES_PER_CELL]`;
                 // cast avoids the array copy `Cell::to_bytes()` makes.
                 let bytes: &[u8; BYTES_PER_CELL] = unsafe { &*std::ptr::from_ref(cell).cast() };
-                sidecar.extend_from_slice(bytes);
+                self.sidecar_buffer.extend_from_slice(bytes);
             }
             // kzg_commitments (shared) then kzg_proofs: proof j of every blob.
-            sidecar.extend_from_slice(commitments);
+            self.sidecar_buffer.extend_from_slice(commitments);
             for (_, proofs) in blobs[..n].iter() {
-                sidecar.extend_from_slice(&proofs[proof_lo..proof_hi]);
+                self.sidecar_buffer.extend_from_slice(&proofs[proof_lo..proof_hi]);
             }
-            debug_assert_eq!(sidecar.len(), util::data_column_sidecar_len(n));
+            debug_assert_eq!(self.sidecar_buffer.len(), util::data_column_sidecar_len(n));
 
             // TODO(republish): maybe gossip these EL-reconstructed columns to peers?
-            match column_producer.reserve(sidecar.len(), true) {
-                Some(mut reservation) => match reservation.write(&sidecar) {
+            match column_producer.reserve(self.sidecar_buffer.len(), true) {
+                Some(mut reservation) => match reservation.write(&self.sidecar_buffer) {
                     Ok(_) => {
                         let ssz = reservation.read();
                         emit(DataColumnsEvent::Persist {
@@ -259,10 +261,6 @@ impl ElBlobFetcher {
                     tracing::error!("failed to allocation cache space for el data column");
                 }
             }
-
-            // @@VE
-            //store.add_unfinalized_data_column(pending.block_root, j, sidecar,
-            // pending.slot);
 
             built |= bit;
         }

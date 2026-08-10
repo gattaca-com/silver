@@ -311,12 +311,11 @@ impl DataColumnsTile {
         gossip_subnet: Option<u64>,
         recv_ts: Option<Nanos>,
     ) -> ColumnOutcome {
-        let block_root = util::block_root_from_sidecar(buffer);
         let parent_root = DataColumnSidecarFuluView::parent_root(buffer);
         let slot = DataColumnSidecarFuluView::slot(buffer);
 
         if slot < self.sync_state.head_slot() {
-            tracing::info!(block_root = hex::encode(block_root), slot, "skip old data column");
+            tracing::info!(slot, "skip old data column");
             return ColumnOutcome::Skip;
         }
 
@@ -324,7 +323,6 @@ impl DataColumnsTile {
             let elapsed_ms = recv_ts.map(|r| r.elapsed().as_millis_u64());
             tracing::info!(
                 slot,
-                block_root = hex::encode(block_root),
                 parent_root = hex::encode(parent_root),
                 ?gossip_subnet,
                 ?elapsed_ms,
@@ -342,6 +340,7 @@ impl DataColumnsTile {
             return ColumnOutcome::Skip;
         }
 
+        let block_root = util::block_root_from_sidecar(buffer);
         let column_index = DataColumnSidecarFuluView::index(buffer);
         let column_bitmask = 1u128 << column_index;
 
@@ -382,7 +381,6 @@ impl DataColumnsTile {
         // State-driven validations: pull every input in one seqlock pass.
         // BLS verify runs OUTSIDE the closure (slow; would hold the
         // notional read lock too long otherwise).
-        let block_slot = DataColumnSidecarFuluView::slot(buffer);
         let claimed_proposer_index = DataColumnSidecarFuluView::proposer_index(buffer);
         let checks = self.beacon_state.read(&|v| {
             let state_epoch = v.slot.current_epoch();
@@ -391,7 +389,7 @@ impl DataColumnsTile {
                 // proposer_lookahead is anchored to `state_epoch` and covers
                 // current+next epochs (PROPOSER_LOOKAHEAD_SIZE = 64). Slots
                 // outside that window we cannot resolve here.
-                let lookahead_idx = block_slot.wrapping_sub(state_epoch * SLOTS_PER_EPOCH) as usize;
+                let lookahead_idx = slot.wrapping_sub(state_epoch * SLOTS_PER_EPOCH) as usize;
                 let expected_proposer = v.epoch.proposer_at(lookahead_idx);
                 let parent_validated = util::parent_validated(
                     buffer,
@@ -443,7 +441,7 @@ impl DataColumnsTile {
         if !parent_validated {
             tracing::warn!(
                 ?stream_id,
-                block_slot,
+                slot,
                 parent_root = hex::encode(parent_root),
                 "sidecar parent_root not yet validated — ignoring (not penalized)"
             );
@@ -543,7 +541,6 @@ impl DataColumnsTile {
         buffer: &[u8],
         gossip_subnet: Option<u64>,
     ) -> ColumnOutcome {
-        let block_root = *DataColumnSidecarGloasView::beacon_block_root(buffer);
         let slot = DataColumnSidecarGloasView::slot(buffer);
 
         if self.sync_state.is_synced() && slot > self.sync_state.wall_slot().saturating_add(1) {
@@ -559,6 +556,7 @@ impl DataColumnsTile {
             return ColumnOutcome::Skip;
         }
 
+        let block_root = *DataColumnSidecarGloasView::beacon_block_root(buffer);
         let column_index = DataColumnSidecarGloasView::index(buffer);
         let column_bitmask = 1u128 << column_index;
 
