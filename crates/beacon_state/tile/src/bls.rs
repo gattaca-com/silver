@@ -30,10 +30,10 @@ const _: () = {
 /// inside the single `sum` call that fills the table (cleared on entry), so
 /// moving the idle buffer across threads is sound despite the raw pointers.
 #[derive(Default)]
-pub(crate) struct PkPtrScratch(Vec<*const blst_p1_affine>);
-unsafe impl Send for PkPtrScratch {}
+pub(crate) struct PubkeyAggregator(Vec<*const blst_p1_affine>);
+unsafe impl Send for PubkeyAggregator {}
 
-impl PkPtrScratch {
+impl PubkeyAggregator {
     /// Batched affine addition — one shared inversion for the whole set,
     /// ~1.8× the serial `AggregatePublicKey::add_public_key` loop. `None`
     /// for an empty set (no identity element to report).
@@ -166,7 +166,7 @@ pub struct SigBatch {
     rand_bytes: Vec<u8>,
     /// Multi-pairing accumulator.
     pairing: Pairing,
-    pk_ptrs: PkPtrScratch,
+    aggregator: PubkeyAggregator,
     poisoned: bool,
 }
 
@@ -190,7 +190,7 @@ impl SigBatch {
             sigs: Vec::with_capacity(SIG_BATCH_CAP),
             rand_bytes: Vec::with_capacity(SIG_BATCH_CAP * 8),
             pairing: Pairing::new(true, DST),
-            pk_ptrs: PkPtrScratch::default(),
+            aggregator: PubkeyAggregator::default(),
             poisoned: false,
         }
     }
@@ -232,14 +232,14 @@ impl SigBatch {
     where
         I: IntoIterator<Item = &'a PublicKey>,
     {
-        match self.pk_ptrs.aggregate(participants) {
+        match self.aggregator.aggregate(participants) {
             Some(pk) => self.push_one(&pk, sig, signing_root),
             None => self.poisoned = true,
         }
     }
 
     /// Subtracts the missing members from the committee aggregates rather than
-    /// summing every attester — see [`PkPtrScratch::aggregate_subtracted`].
+    /// summing every attester — see [`PubkeyAggregator::aggregate_subtracted`].
     /// Poisons when nobody attested.
     #[timed]
     pub fn push_aggregate_subtracted<'a>(
@@ -249,7 +249,7 @@ impl SigBatch {
         sig: &[u8; 96],
         signing_root: B256,
     ) {
-        match self.pk_ptrs.aggregate_subtracted(committees, missing) {
+        match self.aggregator.aggregate_subtracted(committees, missing) {
             Some(pk) => self.push_one(&pk, sig, signing_root),
             None => self.poisoned = true,
         }

@@ -1465,10 +1465,10 @@ mod tests {
     /// validator 0 in epoch 0. The seed arms exactly one cache entry per epoch.
     fn find_committee_for_vi0(tile: &BeaconStateTile) -> (Slot, usize, usize, usize) {
         let shuffled = tile.shuffling_cache.shuffled_by_epoch(0).expect("shuffling for epoch 0");
-        let sh = stf::EpochShuffling::new(shuffled, tile.head_validator_count());
+        let shuffling = stf::EpochShuffling::new(shuffled, tile.head_validator_count());
         for s in 0..SLOTS_PER_EPOCH {
-            for ci in 0..sh.committees_per_slot {
-                let c = sh.committee(s, ci);
+            for ci in 0..shuffling.committees_per_slot {
+                let c = shuffling.committee(s, ci);
                 if let Some(pos) = c.iter().position(|&v| v == 0) {
                     return (s, ci, pos, c.len());
                 }

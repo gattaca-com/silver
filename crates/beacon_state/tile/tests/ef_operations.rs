@@ -8,8 +8,7 @@ use ef_common::{
 };
 use silver_beacon_state::{
     bls::SigBatch,
-    shuffling,
-    stf::{self, EpochShuffling, ShufflingRef},
+    stf::{self, ShufflingRef},
 };
 use silver_beacon_state_data::SLOTS_PER_EPOCH;
 

@@ -44,10 +44,15 @@ pub(crate) fn fill_epoch_ptc(
     target_epoch: u64,
     active: &mut Vec<u32>,
 ) {
-    let sh = EpochShuffling::build(validators, slot, epoch, target_epoch, active);
+    let shuffling = EpochShuffling::from_views(validators, slot, epoch, target_epoch, active);
     let ptc_seed = get_seed_from_state(epoch, slot, target_epoch, DOMAIN_PTC_ATTESTER);
     for (i, dst) in out.iter_mut().enumerate() {
-        *dst = compute_ptc(validators, &sh, &ptc_seed, target_epoch * SLOTS_PER_EPOCH + i as u64);
+        *dst = compute_ptc(
+            validators,
+            &shuffling,
+            &ptc_seed,
+            target_epoch * SLOTS_PER_EPOCH + i as u64,
+        );
     }
 }
 
@@ -55,14 +60,14 @@ pub(crate) fn fill_epoch_ptc(
 /// duplicates) over the concatenation of `slot`'s committees.
 pub(crate) fn compute_ptc(
     validators: &ValidatorsView,
-    sh: &EpochShuffling<'_>,
+    shuffling: &EpochShuffling<'_>,
     epoch_seed: &B256,
     slot: u64,
 ) -> PtcCommittee {
     let mut committee = [0u64; PTC_SIZE];
     let mut indices = Vec::new();
-    for ci in 0..sh.committees_per_slot {
-        indices.extend_from_slice(sh.committee(slot, ci));
+    for ci in 0..shuffling.committees_per_slot {
+        indices.extend_from_slice(shuffling.committee(slot, ci));
     }
     if indices.is_empty() {
         return committee;

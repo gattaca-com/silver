@@ -2,10 +2,10 @@ mod attestation;
 mod block;
 mod common;
 mod epoch;
+mod epoch_shuffling;
 mod fork_transition;
 mod gloas;
 mod operations;
-mod shuffling;
 mod slashings;
 mod sync_aggregate;
 mod validator;
@@ -35,6 +35,7 @@ pub use epoch::{
     process_randao_mixes_reset, process_registry_updates, process_rewards_and_penalties,
     process_slashings, process_slashings_reset, process_sync_committee_updates,
 };
+pub use epoch_shuffling::{EpochShuffling, ShufflingRef};
 pub use fork_transition::upgrade_to_gloas;
 pub(crate) use gloas::get_ptc;
 pub use gloas::{
@@ -50,7 +51,6 @@ pub use operations::{
     process_bls_to_execution_changes, process_consolidation_requests, process_deposit_requests,
     process_deposits, process_voluntary_exits, process_withdrawal_requests,
 };
-pub use shuffling::{EpochShuffling, ShufflingRef};
 pub(crate) use slashings::signing_root_for_block_header;
 pub use slashings::{
     collect_sigs_attester_slashings, collect_sigs_proposer_slashings, process_attester_slashings,

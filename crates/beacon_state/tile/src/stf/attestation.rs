@@ -23,7 +23,6 @@ const GLOAS_PAYLOAD_PRESENT: u64 = 1;
 
 const TIMELY_HEAD_FLAG_INDEX: usize = 2;
 
-#[allow(clippy::too_many_arguments)]
 pub fn collect_sigs_attestations(
     imm: &Immutable,
     epoch: &EpochView,
@@ -55,23 +54,20 @@ pub fn collect_sigs_attestations(
     )
 }
 
-/// The committees one attestation names, resolved against an epoch's
-/// shuffling: which committees it covers (`committee_bits`) and which of
-/// their members attested (`aggregation_bits`).
 pub struct AttestedCommittees<'a> {
-    sh: &'a EpochShuffling<'a>,
+    shuffling: &'a EpochShuffling<'a>,
     slot: Slot,
     committee_bits: u64,
     agg_bits: &'a [u8],
 }
 
 impl<'a> AttestedCommittees<'a> {
-    pub fn new(att: &'a [u8], sh: &'a EpochShuffling<'a>) -> Result<Self, AttestationError> {
+    pub fn new(att: &'a [u8], shuffling: &'a EpochShuffling<'a>) -> Result<Self, AttestationError> {
         let committee_bits = u64::from_le_bytes(*AttestationView::committee_bits(att));
         if committee_bits == 0 {
             return Err(AttestationError::EmptyCommitteeBits);
         }
-        let committees_per_slot = sh.committees_per_slot;
+        let committees_per_slot = shuffling.committees_per_slot;
         if committees_per_slot < u64::BITS as usize && (committee_bits >> committees_per_slot) != 0
         {
             return Err(AttestationError::CommitteeBitsOverflow {
@@ -80,16 +76,32 @@ impl<'a> AttestedCommittees<'a> {
             });
         }
         Ok(Self {
-            sh,
+            shuffling,
             slot: AttestationDataView::slot(AttestationView::data(att)),
             committee_bits,
             agg_bits: AttestationView::aggregation_bits(att),
         })
     }
 
+    pub fn resolve(
+        att: &'a [u8],
+        shuffling: Option<&'a ShufflingRef<'a>>,
+        is_current: bool,
+        validators_count: usize,
+    ) -> Result<Self, AttestationError> {
+        let epoch_shuffling =
+            shuffling.ok_or(AttestationError::MissingShuffling)?.for_target(is_current);
+        if epoch_shuffling.is_empty() {
+            return Err(AttestationError::EmptyShuffling);
+        }
+        let committees = Self::new(att, epoch_shuffling)?;
+        committees.check_indices_addressable(validators_count)?;
+        Ok(committees)
+    }
+
     fn indices(&self) -> impl Iterator<Item = usize> + use<'_> {
         let bits = self.committee_bits;
-        (0..self.sh.committees_per_slot).filter(move |ci| bits & (1u64 << ci) != 0)
+        (0..self.shuffling.committees_per_slot).filter(move |ci| bits & (1u64 << ci) != 0)
     }
 
     fn attested(&self, bit_pos: usize) -> bool {
@@ -102,15 +114,13 @@ impl<'a> AttestedCommittees<'a> {
     fn committees(&self) -> impl Iterator<Item = (&'a [u32], usize)> + use<'_, 'a> {
         let mut agg_offset = 0usize;
         self.indices().map(move |ci| {
-            let committee = self.sh.committee(self.slot, ci);
+            let committee = self.shuffling.committee(self.slot, ci);
             let base = agg_offset;
             agg_offset += committee.len();
             (committee, base)
         })
     }
 
-    /// Members whose aggregation bit equals `attested`, in committee order.
-    /// Only addressable once [`Self::check_indices_addressable`] has passed.
     fn members(&self, attested: bool) -> impl Iterator<Item = u32> + use<'_, 'a> {
         self.committees().flat_map(move |(committee, base)| {
             committee
@@ -120,33 +130,37 @@ impl<'a> AttestedCommittees<'a> {
         })
     }
 
-    /// Members whose aggregation bit equals `attested`, in committee order.
+    fn attesters(&self) -> impl Iterator<Item = u32> + use<'_, 'a> {
+        self.members(true)
+    }
+
+    fn missed(&self) -> impl Iterator<Item = u32> + use<'_, 'a> {
+        self.members(false)
+    }
+
     /// Errors if the shuffling outlived the registry it was taken against, so
     /// callers may index the validator columns with what lands in `out`.
-    pub fn members_into(
+    pub fn attesters_into(
         &self,
-        attested: bool,
         validators_count: usize,
         out: &mut Vec<u32>,
     ) -> Result<(), AttestationError> {
         self.check_indices_addressable(validators_count)?;
         out.clear();
-        out.extend(self.members(attested));
+        out.extend(self.attesters());
         Ok(())
     }
 
     fn check_indices_addressable(&self, validators_count: usize) -> Result<(), AttestationError> {
-        if self.sh.indices_in_range(validators_count) {
+        if self.shuffling.indices_in_range(validators_count) {
             return Ok(());
         }
         Err(AttestationError::ValidatorOutOfRange {
-            vi: self.sh.built_against - 1,
+            vi: self.shuffling.built_against - 1,
             count: validators_count,
         })
     }
 
-    /// Total members across the named committees — the bitlist length a
-    /// well-formed attestation declares.
     fn member_count(&self) -> usize {
         self.committees().map(|(committee, _)| committee.len()).sum()
     }
@@ -164,14 +178,12 @@ impl<'a> AttestedCommittees<'a> {
         (head + tail) as usize
     }
 
-    /// The precomputed aggregate of each committee this attestation names.
     fn aggregates<'b>(&self, epoch_aggs: &'b [PublicKey]) -> impl Iterator<Item = &'b PublicKey> {
-        let offset = (self.slot % SLOTS_PER_EPOCH) as usize * self.sh.committees_per_slot;
+        let offset = (self.slot % SLOTS_PER_EPOCH) as usize * self.shuffling.committees_per_slot;
         self.indices().map(move |ci| &epoch_aggs[offset + ci])
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn collect_sigs_single_attestation(
     imm: &Immutable,
     epoch: &EpochView,
@@ -185,10 +197,7 @@ pub fn collect_sigs_single_attestation(
     let data = AttestationView::data(att);
     let target_epoch = AttestationDataView::target_epoch(data);
     let is_current = target_epoch == current_epoch;
-    let sh = shuffling.ok_or(AttestationError::MissingShuffling)?.for_target(is_current);
-    if sh.is_empty() {
-        return Err(AttestationError::EmptyShuffling);
-    }
+    let committees = AttestedCommittees::resolve(att, shuffling, is_current, validators.count())?;
 
     let fork_version = bls::fork_version_at_epoch(fork_epoch, prev_v, curr_v, target_epoch);
     let sig = AttestationView::signature(att);
@@ -200,8 +209,6 @@ pub fn collect_sigs_single_attestation(
     );
     let signing_root = bls::compute_signing_root(&object_root, &domain);
 
-    let committees = AttestedCommittees::new(att, sh)?;
-    committees.check_indices_addressable(validators.count())?;
     let members = committees.member_count();
     let attested = committees.attested_count(members);
     if attested == 0 {
@@ -209,16 +216,17 @@ pub fn collect_sigs_single_attestation(
         return Ok(());
     }
 
-    // Usually there are much more missing than attested, so we can subtract them from sum
+    // Usually there are many more missed than attested, so we can subtract them from sum
     let pubkey = |vi: u32| validators.pubkey_decompressed(vi as usize);
-    match sh.committee_aggs.filter(|_| attested * 2 > members) {
+    let attesters_are_majority = attested * 2 > members;
+    match committees.shuffling.committee_aggs.filter(|_| attesters_are_majority) {
         Some(aggs) => sig_batch.push_aggregate_subtracted(
             committees.aggregates(aggs),
-            committees.members(false).map(pubkey),
+            committees.missed().map(pubkey),
             sig,
             signing_root,
         ),
-        None => sig_batch.push_aggregate(committees.members(true).map(pubkey), sig, signing_root),
+        None => sig_batch.push_aggregate(committees.attesters().map(pubkey), sig, signing_root),
     }
     Ok(())
 }
@@ -500,12 +508,7 @@ fn collect_attestation_participants(
     is_current: bool,
     active_scratch: &mut Vec<u32>,
 ) -> Result<(), AttestationError> {
-    let sh = shuffling.ok_or(AttestationError::MissingShuffling)?.for_target(is_current);
-    if sh.is_empty() {
-        return Err(AttestationError::EmptyShuffling);
-    }
-    let committees = AttestedCommittees::new(att, sh)?;
-    committees.check_indices_addressable(validators.count())?;
+    let committees = AttestedCommittees::resolve(att, shuffling, is_current, validators.count())?;
 
     active_scratch.clear();
     let mut agg_offset = 0usize;
@@ -583,12 +586,7 @@ mod tests {
     #[test]
     fn attested_count_matches_walk() {
         let shuffled: Vec<u32> = (0..640).collect();
-        let sh = EpochShuffling {
-            shuffled: &shuffled,
-            committees_per_slot: 2,
-            built_against: 640,
-            committee_aggs: None,
-        };
+        let shuffling = EpochShuffling::with_committees_per_slot(&shuffled, 2);
 
         for agg_bits in [
             vec![0xFF, 0xFF, 0xFF],
@@ -598,12 +596,16 @@ mod tests {
             vec![0xFF],
             vec![],
         ] {
-            let committees =
-                AttestedCommittees { sh: &sh, slot: 0, committee_bits: 0b11, agg_bits: &agg_bits };
+            let committees = AttestedCommittees {
+                shuffling: &shuffling,
+                slot: 0,
+                committee_bits: 0b11,
+                agg_bits: &agg_bits,
+            };
             let members = committees.member_count();
             assert_eq!(members, 20, "two 10-member committees");
 
-            let walked = committees.members(true).count();
+            let walked = committees.attesters().count();
             assert_eq!(committees.attested_count(members), walked, "bits {agg_bits:?}");
         }
     }

@@ -73,13 +73,13 @@ impl BeaconStateTile {
         // Validate committee membership + signature against the canonical head.
         let view = self.state.read_view(canon_id);
         self.shuffling_cache.ensure_window(&view, att_epoch);
-        let Some(sh) = self.shuffling_cache.lookup(&view, att_epoch) else {
+        let Some(shuffling) = self.shuffling_cache.lookup(&view, att_epoch) else {
             return Feedback::Ignore;
         };
-        if committee_index >= sh.committees_per_slot {
+        if committee_index >= shuffling.committees_per_slot {
             return Feedback::Reject(None);
         }
-        let committee = sh.committee(att_slot, committee_index);
+        let committee = shuffling.committee(att_slot, committee_index);
         if !committee.contains(&(attester_index as u32)) {
             return Feedback::Reject(None);
         }
@@ -132,12 +132,13 @@ impl BeaconStateTile {
         {
             let view = self.state.read_view(canon_id);
             self.shuffling_cache.ensure_window(&view, att_epoch);
-            let Some(sh) = self.shuffling_cache.lookup(&view, att_epoch) else {
+            let Some(shuffling) = self.shuffling_cache.lookup(&view, att_epoch) else {
                 return Feedback::Ignore;
             };
-            let attesters = stf::AttestedCommittees::new(att, &sh)
-                .and_then(|c| c.members_into(true, n, &mut self.stf_scratch.active));
-            if attesters.is_err() {
+            if stf::AttestedCommittees::new(att, &shuffling)
+                .and_then(|c| c.attesters_into(n, &mut self.stf_scratch.active))
+                .is_err()
+            {
                 return Feedback::Reject(None);
             }
         }
@@ -210,13 +211,13 @@ impl BeaconStateTile {
             return Feedback::Ignore;
         }
 
-        let Some(sh) = self.shuffling_cache.lookup(&view, parsed.att_epoch) else {
+        let Some(shuffling) = self.shuffling_cache.lookup(&view, parsed.att_epoch) else {
             return Feedback::Ignore;
         };
-        if committee_index >= sh.committees_per_slot {
+        if committee_index >= shuffling.committees_per_slot {
             return Feedback::Reject(None);
         }
-        let committee = sh.committee(parsed.agg_slot, committee_index);
+        let committee = shuffling.committee(parsed.agg_slot, committee_index);
         if !committee.contains(&(parsed.aggregator_index as u32)) {
             return Feedback::Reject(None);
         }

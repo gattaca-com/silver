@@ -10,11 +10,11 @@ use crate::shuffling::{
 
 /// One epoch's attester shuffling and the committee split it implies.
 pub struct EpochShuffling<'a> {
-    pub shuffled: &'a [u32],
+    shuffled: &'a [u32],
     pub committees_per_slot: usize,
-    /// Registry size the shuffle was taken against. `get_active_validator_
-    /// indices_into` only emits indices below it, so one comparison against a
-    /// later count proves every index in `shuffled` is still addressable.
+    /// Registry size the shuffle was taken against. Every index in `shuffled`
+    /// is below it, so one comparison against a later count proves the whole
+    /// shuffling is still addressable.
     pub built_against: usize,
     /// One aggregate pubkey per beacon committee, indexed
     /// `slot_in_epoch * committees_per_slot + committee_index`; `None` until
@@ -25,12 +25,10 @@ pub struct EpochShuffling<'a> {
 impl<'a> EpochShuffling<'a> {
     /// Attester shuffling for `epoch`, seeded from the state's randao ring.
     pub fn from_state(rv: &StateReadView, epoch: Epoch, buf: &'a mut Vec<u32>) -> Self {
-        Self::build(&rv.validators, &rv.slot, &rv.epoch, epoch, buf)
+        Self::from_views(&rv.validators, &rv.slot, &rv.epoch, epoch, buf)
     }
 
-    /// As [`Self::from_state`], for callers holding the state's views
-    /// separately rather than a whole [`StateReadView`].
-    pub fn build(
+    pub fn from_views(
         validators: &ValidatorsView,
         slot: &SlotStateView,
         state_epoch: &EpochView,
@@ -51,6 +49,14 @@ impl<'a> EpochShuffling<'a> {
             built_against,
             committee_aggs: None,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_committees_per_slot(
+        shuffled: &'a [u32],
+        committees_per_slot: usize,
+    ) -> Self {
+        Self { shuffled, committees_per_slot, built_against: shuffled.len(), committee_aggs: None }
     }
 
     pub fn indices_in_range(&self, validators_count: usize) -> bool {
@@ -86,8 +92,6 @@ pub struct ShufflingRef<'a> {
 }
 
 impl<'a> ShufflingRef<'a> {
-    /// Populate `curr_buf`/`prev_buf` with the current+previous epoch's
-    /// shuffled active-index lists, then bind them into a `ShufflingRef`.
     pub fn build(
         rv: &StateReadView,
         current_epoch: Epoch,
@@ -113,21 +117,16 @@ mod tests {
     #[test]
     fn committee_slicing() {
         let shuffled: Vec<u32> = (0..640).collect();
-        let sh = EpochShuffling {
-            shuffled: &shuffled,
-            committees_per_slot: 2,
-            built_against: 640,
-            committee_aggs: None,
-        };
+        let shuffling = EpochShuffling::with_committees_per_slot(&shuffled, 2);
 
-        let c = sh.committee(0, 0);
+        let c = shuffling.committee(0, 0);
         assert_eq!(c.len(), 10);
 
-        let c1 = sh.committee(0, 1);
+        let c1 = shuffling.committee(0, 1);
         assert_eq!(c1.len(), 10);
         assert_ne!(c[0], c1[0]);
 
-        let c_last = sh.committee(31, 1);
+        let c_last = shuffling.committee(31, 1);
         assert_eq!(c_last.len(), 10);
     }
 }

@@ -28,9 +28,8 @@ impl BeaconStateTile {
         self.apply_and_publish(data, false, false, |_block_root| {})
     }
 
-    /// `apply_and_publish` plus the post-import work: persist the block, send
-    /// the engine FCU, fill committee aggregates. The timer covers all of it —
-    /// for the latency-critical part alone, measure `apply_and_publish`.
+    /// The timer spans the post-publication work too, so it is not the
+    /// tick-to-attestable latency.
     #[timed]
     pub(super) fn apply_block(
         &mut self,
@@ -80,8 +79,6 @@ impl BeaconStateTile {
             finalized_block_hash: fin,
         }));
 
-        // Caches one pubkey sum per committee, making later signature checks cheap.
-        // Caching is once per epoch, on other slots of epoch it's a no-op.
         let view = self.state.read_view(self.last_applied);
         self.shuffling_cache.try_cache_committee_aggs(&view, block_slot / SLOTS_PER_EPOCH);
 
@@ -116,9 +113,8 @@ impl BeaconStateTile {
         }
     }
 
-    /// Ingest → published: the tick-to-attestable window. Ends when
-    /// `publish_state_id` makes the new head visible to readers, so anything
-    /// that may run after publication belongs in the caller, not here.
+    /// Ingest → published: the tick-to-attestable window. Work that may run
+    /// after the new head is visible to readers belongs in the caller.
     #[timed]
     pub(super) fn apply_and_publish<F: FnMut([u8; 32])>(
         &mut self,

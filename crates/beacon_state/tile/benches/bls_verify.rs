@@ -10,16 +10,14 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use rand::{RngCore, SeedableRng, rngs::StdRng};
 use silver_beacon_state::{
     bls::{self, DOMAIN_BEACON_ATTESTER, DST, SigBatch},
-    shuffling,
     ssz_hash::hash_attestation_data,
     stf::{
-        self, EpochShuffling, ShufflingRef, collect_sigs_attestations,
-        collect_sigs_attester_slashings, collect_sigs_bls_to_execution_changes,
-        collect_sigs_proposer_slashings, collect_sigs_randao, collect_sigs_sync_aggregate,
-        collect_sigs_voluntary_exits,
+        self, ShufflingRef, collect_sigs_attestations, collect_sigs_attester_slashings,
+        collect_sigs_bls_to_execution_changes, collect_sigs_proposer_slashings,
+        collect_sigs_randao, collect_sigs_sync_aggregate, collect_sigs_voluntary_exits,
     },
 };
-use silver_beacon_state_data::{B256, SLOTS_PER_EPOCH, SpecConfig, StateReadView};
+use silver_beacon_state_data::{B256, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::ssz_view::{
     BLOCK_SYNC_AGGREGATE_SIZE, BeaconBlockBodyFuluView, SINGLE_ATT_SIZE, SignedBeaconBlockView,
 };

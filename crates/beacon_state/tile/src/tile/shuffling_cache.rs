@@ -15,21 +15,14 @@ const MAX_SHUFFLING_CACHE: usize = 4;
 
 pub struct ShufflingCache {
     entries: [ShufflingEntry; MAX_SHUFFLING_CACHE],
-    pk_ptrs: bls::PkPtrScratch,
+    aggregator: bls::PubkeyAggregator,
 }
 
 struct ShufflingEntry {
     epoch: Epoch,
     mix: B256,
     shuffled_indices: Vec<u32>,
-    /// Registry size at shuffle time — see
-    /// [`stf::EpochShuffling::built_against`].
     built_against: usize,
-    /// One aggregate pubkey per beacon committee of the epoch, indexed
-    /// `slot_in_epoch * committees_per_slot + committee_index`. Empty until
-    /// [`ShufflingCache::try_cache_committee_aggs`] fills it off the block
-    /// critical path; sig collection falls back to direct summation until
-    /// then.
     committee_aggs: Vec<PublicKey>,
     is_valid: bool,
 }
@@ -37,6 +30,10 @@ struct ShufflingEntry {
 impl ShufflingEntry {
     fn committee_aggs_opt(&self) -> Option<&[PublicKey]> {
         (!self.committee_aggs.is_empty()).then_some(self.committee_aggs.as_slice())
+    }
+
+    fn shuffling(&self) -> stf::EpochShuffling<'_> {
+        stf::EpochShuffling::new(&self.shuffled_indices, self.built_against)
     }
 
     fn is_valid_for(&self, epoch: Epoch, mix: B256) -> bool {
@@ -67,16 +64,21 @@ impl ShufflingEntry {
 
     /// One aggregate pubkey per beacon committee of the epoch. No-op once
     /// filled, or while the entry holds no shuffling.
-    fn fill_committee_aggs(&mut self, view: &StateReadView, pk_ptrs: &mut bls::PkPtrScratch) {
+    fn fill_committee_aggs(
+        &mut self,
+        view: &StateReadView,
+        aggregator: &mut bls::PubkeyAggregator,
+    ) {
         if !self.committee_aggs.is_empty() || self.shuffled_indices.is_empty() {
             return;
         }
-        let sh = stf::EpochShuffling::new(&self.shuffled_indices, self.built_against);
+        let shuffling = stf::EpochShuffling::new(&self.shuffled_indices, self.built_against);
         for slot_in_epoch in 0..SLOTS_PER_EPOCH {
-            for ci in 0..sh.committees_per_slot {
+            for ci in 0..shuffling.committees_per_slot {
                 self.committee_aggs.push(
-                    pk_ptrs.aggregate_or_identity(
-                        sh.committee(slot_in_epoch, ci)
+                    aggregator.aggregate_or_identity(
+                        shuffling
+                            .committee(slot_in_epoch, ci)
                             .iter()
                             .map(|&vi| view.validators.pubkey_decompressed(vi as usize)),
                     ),
@@ -89,7 +91,7 @@ impl ShufflingEntry {
 impl ShufflingCache {
     pub fn with_capacity(capacity: usize) -> Box<Self> {
         Box::new(Self {
-            pk_ptrs: bls::PkPtrScratch::default(),
+            aggregator: bls::PubkeyAggregator::default(),
             entries: std::array::from_fn(|_| ShufflingEntry {
                 epoch: 0,
                 mix: [0u8; 32],
@@ -108,13 +110,15 @@ impl ShufflingCache {
         randao_mix_at_epoch(&view.epoch, &view.slot, mix_epoch)
     }
 
-    /// Compute and cache the attester shuffling for `epoch` and `epoch - 1`
-    /// against the post-state named by `state_id`. Maintains the 2-epoch
-    /// window so attestations with `target_epoch ∈ {epoch, epoch - 1}` resolve.
+    fn window(epoch: Epoch) -> impl Iterator<Item = Epoch> {
+        [Some(epoch), epoch.checked_sub(1)].into_iter().flatten()
+    }
+
+    /// Maintains the 2-epoch window so attestations with
+    /// `target_epoch ∈ {epoch, epoch - 1}` resolve.
     pub fn ensure_window(&mut self, view: &StateReadView, epoch: Epoch) {
-        self.ensure(view, epoch);
-        if epoch > 0 {
-            self.ensure(view, epoch - 1);
+        for cached_epoch in Self::window(epoch) {
+            self.ensure(view, cached_epoch);
         }
     }
 
@@ -132,25 +136,19 @@ impl ShufflingCache {
         self.entries[slot].make_valid_for(view, epoch, mix);
     }
 
-    /// Aggregates stay valid for the whole epoch, so real work happens at most
-    /// once per cached `(epoch, mix)` — ~150ns per active validator — and every
-    /// other block of that epoch is a no-op. Covers `epoch` and `epoch - 1`;
-    /// callers keep it off the apply critical path, so sig collection for the
-    /// following blocks can subtract the missing members from a committee
-    /// aggregate instead of summing every participant.
+    /// Real work at most once per cached `(epoch, mix)` — ~150ns per active
+    /// validator — so every other block of the epoch is a no-op.
     #[timed]
     pub fn try_cache_committee_aggs(&mut self, view: &StateReadView, epoch: Epoch) {
-        self.try_cache_aggs_for(view, epoch);
-        if epoch > 0 {
-            self.try_cache_aggs_for(view, epoch - 1);
+        for cached_epoch in Self::window(epoch) {
+            self.try_cache_aggs_for(view, cached_epoch);
         }
     }
 
     fn try_cache_aggs_for(&mut self, view: &StateReadView, epoch: Epoch) {
         let mix = Self::mix(view, epoch);
-        let pk_ptrs = &mut self.pk_ptrs;
         if let Some(entry) = self.entries.iter_mut().find(|e| e.is_valid_for(epoch, mix)) {
-            entry.fill_committee_aggs(view, pk_ptrs);
+            entry.fill_committee_aggs(view, &mut self.aggregator);
         }
     }
 
@@ -195,7 +193,7 @@ impl ShufflingCache {
         epoch: Epoch,
     ) -> Option<stf::EpochShuffling<'a>> {
         let mix = Self::mix(view, epoch);
-        self.get(epoch, mix).map(|e| stf::EpochShuffling::new(&e.shuffled_indices, e.built_against))
+        self.get(epoch, mix).map(ShufflingEntry::shuffling)
     }
 
     /// Assemble a [`stf::ShufflingRef`] over the cached current+previous epoch
@@ -210,10 +208,8 @@ impl ShufflingCache {
         let curr = self.get(block_epoch, curr_mix).expect("ensure_window cached current epoch");
         let prev = self.get(prev_epoch, prev_mix).expect("ensure_window cached previous epoch");
         stf::ShufflingRef {
-            curr: stf::EpochShuffling::new(&curr.shuffled_indices, curr.built_against)
-                .with_committee_aggs(curr.committee_aggs_opt()),
-            prev: stf::EpochShuffling::new(&prev.shuffled_indices, prev.built_against)
-                .with_committee_aggs(prev.committee_aggs_opt()),
+            curr: curr.shuffling().with_committee_aggs(curr.committee_aggs_opt()),
+            prev: prev.shuffling().with_committee_aggs(prev.committee_aggs_opt()),
         }
     }
 }
