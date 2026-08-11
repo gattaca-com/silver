@@ -9,7 +9,7 @@ use silver_common::{
 
 use crate::p2p::streams::{StreamError, StreamIo};
 
-pub(crate) const GOSSIP_BODY_STALL_TIMEOUT: Duration = Duration::from_secs(2);
+pub(crate) const GOSSIP_BODY_STALL_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Read-side state for gossipsub: varint length prefix then body.
 #[derive(Debug)]
