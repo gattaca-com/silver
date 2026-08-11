@@ -51,6 +51,8 @@ impl Socket {
         if bind_addr.is_ipv6() {
             socket2.set_only_v6(false)?;
         }
+        socket2.set_recv_buffer_size(4 * 1024 * 1024)?;
+        socket2.set_send_buffer_size(4 * 1024 * 1024)?;
         socket2.bind(&bind_addr.into())?;
         socket2.set_nonblocking(true)?;
 
