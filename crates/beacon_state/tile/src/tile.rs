@@ -340,6 +340,11 @@ impl BeaconStateTile {
         self.state.publish_state_id(anchor);
 
         self.assert_within_weak_subjectivity();
+
+        let anchor_epoch = slot / SLOTS_PER_EPOCH;
+        let view = self.state.read_view(anchor);
+        self.shuffling_cache.ensure_window(&view, anchor_epoch);
+        self.shuffling_cache.try_cache_committee_aggs(&view, anchor_epoch);
     }
 
     fn fork_digest(&mut self) -> [u8; 4] {
@@ -785,7 +790,6 @@ mod tests {
     use super::*;
     use crate::{
         fork_choice::{BlockImport, PayloadStatus},
-        shuffling,
         stf::AttestationVote,
         test_signing,
     };
@@ -958,6 +962,7 @@ mod tests {
         owner.publish_state_id(anchor);
 
         tile.state = owner;
+        tile.shuffling_cache = ShufflingCache::with_capacity(seeds.len());
         tile.last_applied = anchor;
         tile.last_applied_block_root = ANCHOR_ROOT;
         tile.mode = Mode::Following;
@@ -974,12 +979,8 @@ mod tests {
             seeds.len(),
         );
 
-        tile.shuffling_cache.ensure_window(
-            &tile.state,
-            anchor,
-            start_slot / SLOTS_PER_EPOCH,
-            &mut tile.stf_scratch.active,
-        );
+        let view = tile.state.read_view(anchor);
+        tile.shuffling_cache.ensure_window(&view, start_slot / SLOTS_PER_EPOCH);
     }
 
     fn seed_tile(tile: &mut BeaconStateTile, n: usize, start_slot: Slot) {
@@ -1104,7 +1105,7 @@ mod tests {
 
         let head_before = tile.last_applied;
         let nodes_before = tile.fork_choice.nodes.len();
-        tile.apply_block_impl(&buf, true, false, |_block_root| {});
+        tile.apply_and_publish(&buf, true, false, |_block_root| {});
 
         assert_eq!(tile.last_applied, head_before, "head must be unchanged");
         assert_eq!(tile.fork_choice.nodes.len(), nodes_before, "no node added");
@@ -1456,7 +1457,7 @@ mod tests {
         buf[108..116].copy_from_slice(&0u64.to_le_bytes()); // proposer_index
         buf[116..148].copy_from_slice(&parent_root); // parent_root
 
-        tile.apply_block_impl(&buf, true, false, |_block_root| {});
+        tile.apply_and_publish(&buf, true, false, |_block_root| {});
         assert_eq!(tile.fork_choice.nodes.len(), 1);
     }
 
@@ -1466,10 +1467,10 @@ mod tests {
     /// validator 0 in epoch 0. The seed arms exactly one cache entry per epoch.
     fn find_committee_for_vi0(tile: &BeaconStateTile) -> (Slot, usize, usize, usize) {
         let shuffled = tile.shuffling_cache.shuffled_by_epoch(0).expect("shuffling for epoch 0");
-        let committees_per_slot = shuffling::committees_per_slot(shuffled.len());
+        let shuffling = stf::EpochShuffling::new(shuffled, tile.head_validator_count());
         for s in 0..SLOTS_PER_EPOCH {
-            for ci in 0..committees_per_slot {
-                let c = shuffling::get_beacon_committee(shuffled, s, ci, committees_per_slot);
+            for ci in 0..shuffling.committees_per_slot {
+                let c = shuffling.committee(s, ci);
                 if let Some(pos) = c.iter().position(|&v| v == 0) {
                     return (s, ci, pos, c.len());
                 }

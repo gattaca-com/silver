@@ -102,23 +102,6 @@ pub fn committees_per_slot(active_validator_count: usize) -> usize {
     per_slot.clamp(1, MAX_COMMITTEES_PER_SLOT)
 }
 
-#[inline]
-pub fn get_beacon_committee(
-    shuffled: &[u32],
-    slot: u64,
-    committee_index: usize,
-    committees_per_slot: usize,
-) -> &[u32] {
-    let epoch_committee_count = committees_per_slot * SLOTS_PER_EPOCH as usize;
-    let slot_in_epoch = (slot % SLOTS_PER_EPOCH) as usize;
-    let index_in_epoch = slot_in_epoch * committees_per_slot + committee_index;
-
-    let start = shuffled.len() * index_in_epoch / epoch_committee_count;
-    let end = shuffled.len() * (index_in_epoch + 1) / epoch_committee_count;
-
-    &shuffled[start..end]
-}
-
 /// `effective_balances[vi]` must be indexable for every `vi` that appears in
 /// `active_indices` (i.e. supply the materialised per-validator column).
 pub fn compute_proposer_index(
@@ -281,22 +264,6 @@ mod tests {
         assert_eq!(committees_per_slot(100), 1);
         assert_eq!(committees_per_slot(1_000_000), 64);
         assert_eq!(committees_per_slot(8192), 2);
-    }
-
-    #[test]
-    fn committee_slicing() {
-        let shuffled: Vec<u32> = (0..640).collect();
-        let committees_per_slot = 2;
-
-        let c = get_beacon_committee(&shuffled, 0, 0, committees_per_slot);
-        assert_eq!(c.len(), 10);
-
-        let c1 = get_beacon_committee(&shuffled, 0, 1, committees_per_slot);
-        assert_eq!(c1.len(), 10);
-        assert_ne!(c[0], c1[0]);
-
-        let c_last = get_beacon_committee(&shuffled, 31, 1, committees_per_slot);
-        assert_eq!(c_last.len(), 10);
     }
 
     /// Hardcoded test vector: compute_shuffled_index(i, 10, [0;32]) for

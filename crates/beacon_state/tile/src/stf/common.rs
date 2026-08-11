@@ -1,11 +1,7 @@
-use silver_beacon_state_data::{B256, Epoch, PendingDeposit, Slot, StateReadView};
+use silver_beacon_state_data::{B256, Epoch, PendingDeposit, Slot};
 use silver_ssz::ssz_view::MAX_ATTESTING_INDICES;
 
-use crate::{
-    shuffling::{self, DOMAIN_BEACON_ATTESTER},
-    ssz_hash,
-    stf::MAX_PENDING_DEPOSITS_PER_EPOCH,
-};
+use crate::{ssz_hash, stf::MAX_PENDING_DEPOSITS_PER_EPOCH};
 
 pub(crate) const MIN_ACTIVATION_BALANCE: u64 = 32_000_000_000;
 
@@ -77,57 +73,4 @@ pub(crate) fn for_each_ssz_list_item<E>(
         f(&data[start..end])?;
     }
     Ok(())
-}
-
-/// Shuffled indices for current and previous epoch, needed for attestation
-/// processing.
-pub struct ShufflingRef<'a> {
-    pub curr_epoch: Epoch,
-    pub curr_shuffled: &'a [u32],
-    pub curr_committees_per_slot: usize,
-    pub prev_epoch: Epoch,
-    pub prev_shuffled: &'a [u32],
-    pub prev_committees_per_slot: usize,
-}
-
-impl<'a> ShufflingRef<'a> {
-    /// Populate `curr_buf`/`prev_buf` with the current+previous epoch's
-    /// shuffled active-index lists, then bind them into a `ShufflingRef`.
-    pub fn build(
-        rv: &StateReadView,
-        current_epoch: Epoch,
-        curr_buf: &'a mut Vec<u32>,
-        prev_buf: &'a mut Vec<u32>,
-    ) -> Self {
-        let (epoch, slot) = (&rv.epoch, &rv.slot);
-        let previous_epoch = current_epoch.saturating_sub(1);
-        let curr_seed =
-            shuffling::get_seed_from_state(epoch, slot, current_epoch, DOMAIN_BEACON_ATTESTER);
-        let prev_seed =
-            shuffling::get_seed_from_state(epoch, slot, previous_epoch, DOMAIN_BEACON_ATTESTER);
-        shuffling::get_active_validator_indices_into(&rv.validators, current_epoch, curr_buf);
-        shuffling::get_active_validator_indices_into(&rv.validators, previous_epoch, prev_buf);
-        shuffling::shuffle_list(curr_buf, &curr_seed);
-        shuffling::shuffle_list(prev_buf, &prev_seed);
-        let curr_committees_per_slot = shuffling::committees_per_slot(curr_buf.len());
-        let prev_committees_per_slot = shuffling::committees_per_slot(prev_buf.len());
-        Self {
-            curr_epoch: current_epoch,
-            curr_shuffled: curr_buf,
-            curr_committees_per_slot,
-            prev_epoch: previous_epoch,
-            prev_shuffled: prev_buf,
-            prev_committees_per_slot,
-        }
-    }
-
-    /// The (shuffled indices, committees-per-slot) pair for the current or
-    /// previous epoch.
-    pub(crate) fn epoch_slice(&self, is_current: bool) -> (&'a [u32], usize) {
-        if is_current {
-            (self.curr_shuffled, self.curr_committees_per_slot)
-        } else {
-            (self.prev_shuffled, self.prev_committees_per_slot)
-        }
-    }
 }

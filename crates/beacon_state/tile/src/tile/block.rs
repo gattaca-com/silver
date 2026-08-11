@@ -25,12 +25,11 @@ struct AppliedBlock {
 
 impl BeaconStateTile {
     pub fn try_apply_block(&mut self, data: &[u8]) -> Feedback {
-        self.apply_block_impl(data, false, false, |_block_root| {})
+        self.apply_and_publish(data, false, false, |_block_root| {})
     }
 
-    /// Post-import emission: PersistBlock (for storage) + Status (head and
-    /// possibly finalized just moved). Called after `handle_block` returns
-    /// `GossipFeedback::Accept` from gossip or RPC range/root response paths.
+    /// The timer spans the post-publication work too, so it is not the
+    /// tick-to-attestable latency.
     #[timed]
     pub(super) fn apply_block(
         &mut self,
@@ -45,7 +44,7 @@ impl BeaconStateTile {
             // Pre-finalization block - either backfill or irrelevant.
             return Feedback::Ignore;
         }
-        let f = self.apply_block_impl(data, true, pre_verified, |root| {
+        let f = self.apply_and_publish(data, true, pre_verified, |root| {
             producers.produce(EngineReq::NewPayload(EngineNewPayloadReq {
                 data: read,
                 block_root: root,
@@ -80,6 +79,9 @@ impl BeaconStateTile {
             finalized_block_hash: fin,
         }));
 
+        let view = self.state.read_view(self.last_applied);
+        self.shuffling_cache.try_cache_committee_aggs(&view, block_slot / SLOTS_PER_EPOCH);
+
         f
     }
 
@@ -95,7 +97,7 @@ impl BeaconStateTile {
         }
 
         let block_slot = SignedBeaconBlockView::slot(data);
-        let feedback = self.apply_block_impl(data, false, false, |_block_root| {});
+        let feedback = self.apply_and_publish(data, false, false, |_block_root| {});
         match feedback {
             Feedback::Reject(block_root) => tracing::error!(
                 block_slot,
@@ -111,8 +113,10 @@ impl BeaconStateTile {
         }
     }
 
+    /// Ingest → published: the tick-to-attestable window. Work that may run
+    /// after the new head is visible to readers belongs in the caller.
     #[timed]
-    pub(super) fn apply_block_impl<F: FnMut([u8; 32])>(
+    pub(super) fn apply_and_publish<F: FnMut([u8; 32])>(
         &mut self,
         data: &[u8],
         gate_da: bool,
@@ -165,6 +169,7 @@ impl BeaconStateTile {
         };
 
         self.publish_applied_block(&parsed, data, applied);
+
         Feedback::Accept(Some(parsed.block_root))
     }
 
@@ -187,13 +192,11 @@ impl BeaconStateTile {
         // off `parent_state_id` — done before the held-writer view takes the
         // `&mut self.state` borrow. Reuse the `(epoch, mix)`-keyed cache so
         // consecutive same-epoch blocks skip the O(rounds·n) shuffle.
-        self.shuffling_cache.ensure_window(
-            &self.state,
-            parsed.parent_state_id,
-            block_epoch,
-            &mut self.stf_scratch.active,
-        );
-        let sref = self.shuffling_cache.build_ref(&self.state, parsed.parent_state_id, block_epoch);
+        let sref = {
+            let view = self.state.read_view(parsed.parent_state_id);
+            self.shuffling_cache.ensure_window(&view, block_epoch);
+            self.shuffling_cache.build_ref(&view, block_epoch)
+        };
 
         // COW: an unpublished child off the parent post-state. The view HOLDS
         // every rolled per-slot writer for the whole transition (the boundary

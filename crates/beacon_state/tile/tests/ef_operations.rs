@@ -8,7 +8,6 @@ use ef_common::{
 };
 use silver_beacon_state::{
     bls::SigBatch,
-    shuffling,
     stf::{self, ShufflingRef},
 };
 use silver_beacon_state_data::SLOTS_PER_EPOCH;
@@ -193,46 +192,17 @@ fn run_attestation(s: &mut LoadedState, op: &[u8]) -> bool {
     list.extend_from_slice(op);
     let block_slot = s.slot();
     let curr_epoch = block_slot / SLOTS_PER_EPOCH;
-    let prev_epoch = curr_epoch.saturating_sub(1);
 
     let proposer_index;
-    let curr_seed;
-    let prev_seed;
     let mut curr_active = Vec::new();
     let mut prev_active = Vec::new();
-    {
+    let sref = {
         let sid = s.state_id;
         let (mut v, epoch, longtail) = s.view();
         let rv = v.read(epoch.view_opt(sid.epoch_idx), longtail.view_opt(sid.longtail_idx));
         proposer_index =
             rv.epoch.proposer_at((block_slot % SLOTS_PER_EPOCH) as usize).unwrap() as u32;
-        curr_seed = shuffling::get_seed_from_state(
-            &rv.epoch,
-            &rv.slot,
-            curr_epoch,
-            shuffling::DOMAIN_BEACON_ATTESTER,
-        );
-        prev_seed = shuffling::get_seed_from_state(
-            &rv.epoch,
-            &rv.slot,
-            prev_epoch,
-            shuffling::DOMAIN_BEACON_ATTESTER,
-        );
-        shuffling::get_active_validator_indices_into(&rv.validators, curr_epoch, &mut curr_active);
-        shuffling::get_active_validator_indices_into(&rv.validators, prev_epoch, &mut prev_active);
-    }
-    let curr_committees_per_slot = shuffling::committees_per_slot(curr_active.len());
-    let prev_committees_per_slot = shuffling::committees_per_slot(prev_active.len());
-    shuffling::shuffle_list(&mut curr_active, &curr_seed);
-    shuffling::shuffle_list(&mut prev_active, &prev_seed);
-
-    let sref = ShufflingRef {
-        curr_epoch,
-        curr_shuffled: &curr_active,
-        curr_committees_per_slot,
-        prev_epoch,
-        prev_shuffled: &prev_active,
-        prev_committees_per_slot,
+        ShufflingRef::build(&rv, curr_epoch, &mut curr_active, &mut prev_active)
     };
     let mut votes_sink = Vec::new();
     let mut active_scratch = Vec::new();
@@ -248,7 +218,6 @@ fn run_attestation(s: &mut LoadedState, op: &[u8]) -> bool {
             &list,
             block_slot,
             Some(&sref),
-            &mut active_scratch,
             &mut batch,
         )
         .is_err()
