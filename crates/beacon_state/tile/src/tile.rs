@@ -676,6 +676,8 @@ impl Tile<SilverSpine> for BeaconStateTile {
             self.initial_status_emitted = true;
         }
 
+        adapter.consume(|target: SyncUpdate, _producers| self.on_sync_update(target));
+
         let following = self.mode.is_following();
         if following {
             match self.ticker.tick() {
@@ -699,8 +701,6 @@ impl Tile<SilverSpine> for BeaconStateTile {
 
         adapter.consume(|m: NewGossipMsg, producers| self.on_gossip(m, following, producers));
         self.gossip_consumer.free();
-
-        adapter.consume(|target: SyncUpdate, _producers| self.on_sync_update(target));
 
         adapter.consume(|m: RpcInbound, producers| self.on_rpc_inbound(m, producers));
         self.rpc_consumer.free();
