@@ -118,7 +118,10 @@ impl ForkChoice {
     /// Spec `get_checkpoint_block(store, root, epoch)`: nearest ancestor of
     /// `root` with `slot <= epoch_start_slot`.
     pub fn get_checkpoint_block(&self, root: &B256, epoch_start_slot: Slot) -> Option<B256> {
-        let mut idx = self.find_node_idx(root)?;
+        self.checkpoint_block_of(self.find_node_idx(root)?, epoch_start_slot)
+    }
+
+    pub fn checkpoint_block_of(&self, mut idx: usize, epoch_start_slot: Slot) -> Option<B256> {
         loop {
             let n = &self.nodes[idx];
             if n.slot <= epoch_start_slot {

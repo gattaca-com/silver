@@ -205,9 +205,9 @@ pub fn collect_sigs_attester_slashings(
                     }
                     active_scratch.push(vi as u32);
                 }
-                let data_chunk: &[u8; 128] = IndexedAttestationView::data(ia);
+                let data = IndexedAttestationView::data(ia);
                 let sig: &[u8; 96] = IndexedAttestationView::signature(ia);
-                let object_root = ssz_hash::hash_attestation_data(data_chunk);
+                let object_root = ssz_hash::hash_attestation_data(data.as_bytes());
                 let domain = bls::compute_domain(bls::DOMAIN_BEACON_ATTESTER, fv, &gvr);
                 let signing_root = bls::compute_signing_root(&object_root, &domain);
                 sig_batch.push_aggregate(
@@ -379,9 +379,9 @@ pub fn validate_attester_slashing_for_gossip(
                 return false;
             }
         }
-        let data_chunk: &[u8; 128] = IndexedAttestationView::data(ia);
+        let data = IndexedAttestationView::data(ia);
         let sig: &[u8; 96] = IndexedAttestationView::signature(ia);
-        let object_root = ssz_hash::hash_attestation_data(data_chunk);
+        let object_root = ssz_hash::hash_attestation_data(data.as_bytes());
         let domain = bls::compute_domain(bls::DOMAIN_BEACON_ATTESTER, fv, &gvr);
         let signing_root = bls::compute_signing_root(&object_root, &domain);
         sig_batch.push_aggregate(
@@ -448,12 +448,12 @@ pub(crate) fn is_slashable_attestation_data(d1: &[u8], d2: &[u8]) -> bool {
     if d1.len() < ATTESTATION_DATA_SIZE || d2.len() < ATTESTATION_DATA_SIZE {
         return false;
     }
-    let d1f: &[u8; ATTESTATION_DATA_SIZE] = d1[..ATTESTATION_DATA_SIZE].try_into().unwrap();
-    let d2f: &[u8; ATTESTATION_DATA_SIZE] = d2[..ATTESTATION_DATA_SIZE].try_into().unwrap();
-    let s1 = AttestationDataView::source_epoch(d1f);
-    let t1 = AttestationDataView::target_epoch(d1f);
-    let s2 = AttestationDataView::source_epoch(d2f);
-    let t2 = AttestationDataView::target_epoch(d2f);
+    let d1f = AttestationDataView::new(d1[..ATTESTATION_DATA_SIZE].try_into().unwrap());
+    let d2f = AttestationDataView::new(d2[..ATTESTATION_DATA_SIZE].try_into().unwrap());
+    let s1 = d1f.source_epoch();
+    let t1 = d1f.target_epoch();
+    let s2 = d2f.source_epoch();
+    let t2 = d2f.target_epoch();
 
     // Double vote: distinct data, same target epoch.
     if d1 != d2 && t1 == t2 {

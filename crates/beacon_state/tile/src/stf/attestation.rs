@@ -4,7 +4,7 @@ use silver_beacon_state_data::{
     B256, ColumnSpec, Epoch, EpochView, Immutable, ParticipationWriteView, SLOTS_PER_EPOCH,
     SLOTS_PER_HISTORICAL_ROOT, Slot, SlotStateWriteView, StateWriterView, ValidatorsView,
 };
-use silver_common::ssz_view::{AttestationDataView, AttestationView};
+use silver_common::ssz_view::AttestationView;
 
 use crate::{
     bls::{self, SigBatch},
@@ -77,7 +77,7 @@ impl<'a> AttestedCommittees<'a> {
         }
         Ok(Self {
             shuffling,
-            slot: AttestationDataView::slot(AttestationView::data(att)),
+            slot: AttestationView::data(att).slot(),
             committee_bits,
             agg_bits: AttestationView::aggregation_bits(att),
         })
@@ -182,6 +182,35 @@ impl<'a> AttestedCommittees<'a> {
         let offset = (self.slot % SLOTS_PER_EPOCH) as usize * self.shuffling.committees_per_slot;
         self.indices().map(move |ci| &epoch_aggs[offset + ci])
     }
+
+    pub fn push_aggregate_sig(
+        &self,
+        validators: &ValidatorsView,
+        sig: &[u8; 96],
+        signing_root: B256,
+        sig_batch: &mut SigBatch,
+    ) {
+        let members = self.member_count();
+        let attested = self.attested_count(members);
+        if attested == 0 {
+            sig_batch.poison();
+            return;
+        }
+
+        // Usually there are many more attested than missed, so we can subtract it from
+        // sum
+        let pubkey = |vi: u32| validators.pubkey_decompressed(vi as usize);
+        let attesters_are_majority = attested * 2 > members;
+        match self.shuffling.committee_aggs.filter(|_| attesters_are_majority) {
+            Some(aggs) => sig_batch.push_aggregate_subtracted(
+                self.aggregates(aggs),
+                self.missed().map(pubkey),
+                sig,
+                signing_root,
+            ),
+            None => sig_batch.push_aggregate(self.attesters().map(pubkey), sig, signing_root),
+        }
+    }
 }
 
 pub fn collect_sigs_single_attestation(
@@ -195,13 +224,13 @@ pub fn collect_sigs_single_attestation(
 ) -> Result<(), AttestationError> {
     let (fork_epoch, prev_v, curr_v) = epoch.fork_descriptor();
     let data = AttestationView::data(att);
-    let target_epoch = AttestationDataView::target_epoch(data);
+    let target_epoch = data.target_epoch();
     let is_current = target_epoch == current_epoch;
     let committees = AttestedCommittees::resolve(att, shuffling, is_current, validators.count())?;
 
     let fork_version = bls::fork_version_at_epoch(fork_epoch, prev_v, curr_v, target_epoch);
     let sig = AttestationView::signature(att);
-    let object_root = ssz_hash::hash_attestation_data(data);
+    let object_root = ssz_hash::hash_attestation_data(data.as_bytes());
     let domain = bls::compute_domain(
         bls::DOMAIN_BEACON_ATTESTER,
         fork_version,
@@ -209,26 +238,7 @@ pub fn collect_sigs_single_attestation(
     );
     let signing_root = bls::compute_signing_root(&object_root, &domain);
 
-    let members = committees.member_count();
-    let attested = committees.attested_count(members);
-    if attested == 0 {
-        sig_batch.poison();
-        return Ok(());
-    }
-
-    // Usually there are many more missed than attested, so we can subtract them
-    // from sum
-    let pubkey = |vi: u32| validators.pubkey_decompressed(vi as usize);
-    let attesters_are_majority = attested * 2 > members;
-    match committees.shuffling.committee_aggs.filter(|_| attesters_are_majority) {
-        Some(aggs) => sig_batch.push_aggregate_subtracted(
-            committees.aggregates(aggs),
-            committees.missed().map(pubkey),
-            sig,
-            signing_root,
-        ),
-        None => sig_batch.push_aggregate(committees.attesters().map(pubkey), sig, signing_root),
-    }
+    committees.push_aggregate_sig(validators, sig, signing_root, sig_batch);
     Ok(())
 }
 
@@ -394,7 +404,7 @@ fn gloas_payload_vote_is_same_slot(
     parsed: &ParsedAttestationData,
     flag_weights: &mut [bool; 3],
 ) -> Result<bool, AttestationError> {
-    let index = AttestationDataView::index(AttestationView::data(att));
+    let index = AttestationView::data(att).index();
     if index > GLOAS_PAYLOAD_PRESENT {
         return Err(AttestationError::InvalidPayloadIndex { index });
     }
@@ -414,7 +424,7 @@ fn gloas_payload_vote_is_same_slot(
 }
 
 fn gloas_payload_is_present(att: &[u8]) -> bool {
-    AttestationDataView::index(AttestationView::data(att)) == GLOAS_PAYLOAD_PRESENT
+    AttestationView::data(att).index() == GLOAS_PAYLOAD_PRESENT
 }
 
 fn is_attestation_same_slot(slot: &SlotStateWriteView, parsed: &ParsedAttestationData) -> bool {
@@ -444,12 +454,12 @@ impl ParsedAttestationData {
     fn parse(att: &[u8]) -> Self {
         let data = AttestationView::data(att);
         Self {
-            att_slot: AttestationDataView::slot(data),
-            beacon_block_root: *AttestationDataView::beacon_block_root(data),
-            source_epoch: AttestationDataView::source_epoch(data),
-            source_root: *AttestationDataView::source_root(data),
-            target_epoch: AttestationDataView::target_epoch(data),
-            target_root: *AttestationDataView::target_root(data),
+            att_slot: data.slot(),
+            beacon_block_root: *data.beacon_block_root(),
+            source_epoch: data.source_epoch(),
+            source_root: *data.source_root(),
+            target_epoch: data.target_epoch(),
+            target_root: *data.target_root(),
         }
     }
 }

@@ -34,6 +34,7 @@ impl ShufflingEntry {
 
     fn shuffling(&self) -> stf::EpochShuffling<'_> {
         stf::EpochShuffling::new(&self.shuffled_indices, self.built_against)
+            .with_committee_aggs(self.committee_aggs_opt())
     }
 
     fn is_valid_for(&self, epoch: Epoch, mix: B256) -> bool {
@@ -207,9 +208,6 @@ impl ShufflingCache {
         let (curr_mix, prev_mix) = (Self::mix(view, block_epoch), Self::mix(view, prev_epoch));
         let curr = self.get(block_epoch, curr_mix).expect("ensure_window cached current epoch");
         let prev = self.get(prev_epoch, prev_mix).expect("ensure_window cached previous epoch");
-        stf::ShufflingRef {
-            curr: curr.shuffling().with_committee_aggs(curr.committee_aggs_opt()),
-            prev: prev.shuffling().with_committee_aggs(prev.committee_aggs_opt()),
-        }
+        stf::ShufflingRef { curr: curr.shuffling(), prev: prev.shuffling() }
     }
 }
