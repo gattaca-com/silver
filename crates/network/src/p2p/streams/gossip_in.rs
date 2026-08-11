@@ -1,10 +1,15 @@
-use std::io::Write;
+use std::{
+    io::Write,
+    time::{Duration, Instant},
+};
 
 use silver_common::{
     MAX_GOSSIP_FRAME_SIZE, P2pStreamId, TCacheProducer, TProducer, TReservation, decode_varint,
 };
 
 use crate::p2p::streams::{StreamError, StreamIo};
+
+pub(crate) const GOSSIP_BODY_STALL_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Read-side state for gossipsub: varint length prefix then body.
 #[derive(Debug)]
@@ -14,9 +19,9 @@ pub(crate) enum GossipReadState {
     /// buffer even the next frame's start.
     ReadingLength { buf: [u8; 10], read: usize },
     /// Have read length but buffer needs to be allocated.
-    AllocBody { length: usize, buf: [u8; 10], buf_start: usize, buf_end: usize },
+    AllocBody { length: usize, buf: [u8; 10], buf_start: usize, buf_end: usize, fail_count: usize },
     /// Reading message body. `remaining` bytes left.
-    ReadingBody { reservation: TReservation, remaining: usize },
+    ReadingBody { reservation: TReservation, remaining: usize, last_read: Instant },
     /// It is possible for the incoming half of the stream to be closed and
     /// stream still valid for an outbound gossip stream.
     Closed,
@@ -39,10 +44,19 @@ impl GossipReadState {
         io: &mut S,
         tcache: &mut TProducer,
         p2p_id: &P2pStreamId,
+        now: Instant,
     ) -> Result<Self, StreamError> {
         loop {
-            match self.spin_inner(io, tcache, p2p_id)? {
-                Spin::Ok(gossip_read_state) => return Ok(gossip_read_state),
+            match self.spin_inner(io, tcache, p2p_id, now)? {
+                Spin::Ok(gossip_read_state) => {
+                    if let Self::ReadingBody { last_read, remaining, .. } = &gossip_read_state &&
+                        now.saturating_duration_since(*last_read) > GOSSIP_BODY_STALL_TIMEOUT
+                    {
+                        tracing::warn!(?p2p_id, remaining, "gossip body read stalled");
+                        return Err(StreamError::GossipReadStall);
+                    }
+                    return Ok(gossip_read_state);
+                }
                 Spin::Next(gossip_read_state) => {
                     self = gossip_read_state;
                 }
@@ -55,6 +69,7 @@ impl GossipReadState {
         io: &mut S,
         tcache: &mut TProducer,
         p2p_id: &P2pStreamId,
+        now: Instant,
     ) -> Result<Spin, StreamError> {
         match self {
             GossipReadState::ReadingLength { mut buf, mut read } => {
@@ -76,6 +91,7 @@ impl GossipReadState {
                             buf,
                             buf_start: offset,
                             buf_end: read,
+                            fail_count: 0,
                         }));
                     }
                 }
@@ -86,7 +102,7 @@ impl GossipReadState {
 
                 Ok(Spin::Ok(Self::ReadingLength { buf, read }))
             }
-            GossipReadState::AllocBody { length, buf, buf_start, buf_end } => {
+            GossipReadState::AllocBody { length, buf, buf_start, buf_end, fail_count } => {
                 let reservation_len = length
                     .checked_add(size_of::<P2pStreamId>())
                     .ok_or(StreamError::GossipFrameTooLarge)?;
@@ -114,11 +130,24 @@ impl GossipReadState {
                         next[..excess].copy_from_slice(&buf[buf_start + take..buf_end]);
                         return Ok(Spin::Next(Self::ReadingLength { buf: next, read: excess }));
                     }
-                    return Ok(Spin::Next(Self::ReadingBody { reservation, remaining }));
+                    return Ok(Spin::Next(Self::ReadingBody {
+                        reservation,
+                        remaining,
+                        last_read: now,
+                    }));
                 }
-                Ok(Spin::Ok(Self::AllocBody { length, buf, buf_start, buf_end }))
+                if fail_count == 0 {
+                    tracing::warn!(reservation_len, "failed to allocate incoming gossip");
+                }
+                Ok(Spin::Ok(Self::AllocBody {
+                    length,
+                    buf,
+                    buf_start,
+                    buf_end,
+                    fail_count: fail_count + 1,
+                }))
             }
-            GossipReadState::ReadingBody { mut reservation, mut remaining } => {
+            GossipReadState::ReadingBody { mut reservation, mut remaining, mut last_read } => {
                 let n = io
                     .read_from_stream(p2p_id.stream_id(), reservation.remaining_buffer()?)
                     .inspect_err(|e| {
@@ -126,12 +155,15 @@ impl GossipReadState {
                     })?;
                 reservation.increment_offset(n);
                 remaining -= n;
+                if n > 0 {
+                    last_read = now;
+                }
                 if remaining == 0 {
                     assert!(reservation.is_committed());
                     // Continue into the next frame.
                     return Ok(Spin::Next(Self::ReadingLength { buf: [0u8; 10], read: 0 }));
                 }
-                Ok(Spin::Ok(Self::ReadingBody { reservation, remaining }))
+                Ok(Spin::Ok(Self::ReadingBody { reservation, remaining, last_read }))
             }
             GossipReadState::Closed => Ok(Spin::Ok(Self::Closed)),
         }
@@ -211,7 +243,7 @@ mod tests {
         let mut io = MockIo { data: wire, pos: 0 };
 
         let state = GossipReadState::default()
-            .spin(&mut io, &mut producer, &p2p_id)
+            .spin(&mut io, &mut producer, &p2p_id, Instant::now())
             .expect("pipelined small frame must not error");
         assert!(matches!(state, GossipReadState::ReadingLength { read: 0, .. }));
 
@@ -221,6 +253,87 @@ mod tests {
         consumer.free();
         let (frame, _) = consumer.read().expect("second frame");
         assert_eq!(&frame[header..], b"bbbbbbbbbbbb");
+    }
+
+    #[test]
+    fn stalled_body_times_out() {
+        let mut wire = vec![100u8];
+        wire.extend_from_slice(&[0xaa; 10]);
+
+        let mut producer = TCache::producer("test_gossip_stall", 1 << 16);
+        let p2p_id = P2pStreamId::new(0, 4, StreamProtocol::GossipSub, true);
+        let mut io = MockIo { data: wire, pos: 0 };
+
+        let t0 = Instant::now();
+        let state = GossipReadState::default()
+            .spin(&mut io, &mut producer, &p2p_id, t0)
+            .expect("partial body parks");
+        assert!(matches!(state, GossipReadState::ReadingBody { remaining: 90, .. }));
+
+        let state = state
+            .spin(&mut io, &mut producer, &p2p_id, t0 + GOSSIP_BODY_STALL_TIMEOUT)
+            .expect("at the deadline is not past it");
+        let err = state
+            .spin(
+                &mut io,
+                &mut producer,
+                &p2p_id,
+                t0 + GOSSIP_BODY_STALL_TIMEOUT + Duration::from_millis(1),
+            )
+            .expect_err("stalled past deadline");
+        assert!(matches!(err, StreamError::GossipReadStall));
+    }
+
+    #[test]
+    fn progressing_body_does_not_time_out() {
+        let mut wire = vec![100u8];
+        wire.extend_from_slice(&[0xaa; 10]);
+
+        let mut producer = TCache::producer("test_gossip_progress", 1 << 16);
+        let p2p_id = P2pStreamId::new(0, 4, StreamProtocol::GossipSub, true);
+        let mut io = MockIo { data: wire, pos: 0 };
+
+        let t0 = Instant::now();
+        let state = GossipReadState::default()
+            .spin(&mut io, &mut producer, &p2p_id, t0)
+            .expect("partial body parks");
+
+        io.data.extend_from_slice(&[0xbb; 10]);
+        let late = t0 + GOSSIP_BODY_STALL_TIMEOUT + Duration::from_millis(1);
+        let state = state
+            .spin(&mut io, &mut producer, &p2p_id, late)
+            .expect("progress refreshes the deadline");
+        assert!(
+            matches!(state, GossipReadState::ReadingBody { remaining: 80, last_read, .. } if last_read == late)
+        );
+    }
+
+    #[test]
+    fn aborted_body_reservation_is_skipped_by_consumer() {
+        let mut wire = vec![100u8];
+        wire.extend_from_slice(&[0xaa; 10]);
+
+        let mut producer = TCache::producer("test_gossip_abort_skip", 1 << 16);
+        let mut consumer = producer.cache_ref().consumer("t").expect("consumer");
+        let p2p_id = P2pStreamId::new(0, 4, StreamProtocol::GossipSub, true);
+        let mut io = MockIo { data: wire, pos: 0 };
+
+        let state = GossipReadState::default()
+            .spin(&mut io, &mut producer, &p2p_id, Instant::now())
+            .expect("partial body parks");
+        drop(state);
+
+        let mut whole = vec![6u8];
+        whole.extend_from_slice(b"cccccc");
+        let mut io = MockIo { data: whole, pos: 0 };
+        let state = GossipReadState::default()
+            .spin(&mut io, &mut producer, &p2p_id, Instant::now())
+            .expect("complete frame");
+        assert!(matches!(state, GossipReadState::ReadingLength { read: 0, .. }));
+
+        let header = size_of::<P2pStreamId>();
+        let (frame, _) = consumer.read().expect("skips aborted slot to next frame");
+        assert_eq!(&frame[header..], b"cccccc");
     }
 
     #[test]

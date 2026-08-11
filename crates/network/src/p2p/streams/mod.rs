@@ -41,6 +41,7 @@ pub enum StreamError {
     InvalidPubkey(#[from] TryFromSliceError),
     IdentifyTooBig,
     ReadResponseTimeout,
+    GossipReadStall,
 }
 
 impl fmt::Display for StreamError {

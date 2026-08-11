@@ -31,6 +31,11 @@ impl DedupCache {
         self.dedup_sets[self.current_bucket].insert(msg_id)
     }
 
+    pub(crate) fn remove(&mut self, fast_hash: u64, msg_id: &MessageId) {
+        self.fast_sets[self.current_fast_bucket].remove(&fast_hash);
+        self.dedup_sets[self.current_bucket].remove(msg_id);
+    }
+
     /// Returns `Some(fh)` if the hash was NOT found (i.e. message is new
     /// and the caller should proceed with processing), `None` if the hash
     /// was already present across any rotation bucket (= duplicate).

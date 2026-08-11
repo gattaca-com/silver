@@ -158,7 +158,7 @@ impl TCacheProducer for MultiProducer {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Reservation {
     pub(super) cache: TCacheRef,
     pub(super) seq: u64,
@@ -246,6 +246,7 @@ impl Write for Reservation {
 impl Drop for Reservation {
     fn drop(&mut self) {
         if !self.committed {
+            tracing::warn!(seq = self.seq, offset = self.offset, "aborting reservation");
             self.cache.commit(self.seq, false);
         }
     }

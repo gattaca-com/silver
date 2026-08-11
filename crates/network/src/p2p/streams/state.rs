@@ -7,7 +7,10 @@ use silver_common::{
     rpc_rate_limit::{RpcRateLimit, RpcRateLimitSet},
 };
 
-use super::{gossip_in::GossipReadState, gossip_out::GossipWriteState};
+use super::{
+    gossip_in::{GOSSIP_BODY_STALL_TIMEOUT, GossipReadState},
+    gossip_out::GossipWriteState,
+};
 use crate::{
     NetEvent,
     p2p::{
@@ -165,6 +168,9 @@ impl StreamState {
             StreamState::OutgoingRpc { rpc: RpcOut::ReadResponse(read_response), .. } => {
                 read_response.deadline()
             }
+            StreamState::Gossip {
+                read: GossipReadState::ReadingBody { last_read, .. }, ..
+            } => Some(*last_read + GOSSIP_BODY_STALL_TIMEOUT),
             _ => None,
         }
     }
@@ -319,7 +325,7 @@ impl StreamState {
                 }
             }
             StreamState::Gossip { mut read, mut write } => {
-                read = read.spin(io, &mut context.gossip_producer, id)?;
+                read = read.spin(io, &mut context.gossip_producer, id, now)?;
                 write = write.spin(io, id)?;
 
                 if matches!(read, GossipReadState::Closed) && id.is_incoming() {

@@ -81,13 +81,20 @@ pub(super) fn handle_incoming(
     let mcache_read = copy_compressed_to_protobuf_output(mcache_publish, snappy_data, topic_string)
         .inspect_err(|e| {
             tracing::error!(?e, "failed to write incoming gossip protobuf");
-            let hash = msg_id_invalid_snappy(topic_string, snappy_data);
-            if dedup_cache.insert(fast_id, hash) {
-                emit(GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipInvalidMsg {
-                    p2p_peer: stream_id.peer(),
-                    topic,
-                    hash,
-                }));
+            match e {
+                Error::BufferTooSmall => {
+                    dedup_cache.remove(fast_id, &msg_id);
+                }
+                _ => {
+                    let hash = msg_id_invalid_snappy(topic_string, snappy_data);
+                    if dedup_cache.insert(fast_id, hash) {
+                        emit(GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipInvalidMsg {
+                            p2p_peer: stream_id.peer(),
+                            topic,
+                            hash,
+                        }));
+                    }
+                }
             }
         })?;
 
