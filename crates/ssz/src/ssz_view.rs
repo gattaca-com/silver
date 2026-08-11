@@ -154,8 +154,8 @@ impl SingleAttestationView {
         fixed(buf, 144)
     }
     #[inline]
-    pub fn data(buf: &[u8; SINGLE_ATT_SIZE]) -> &[u8; 128] {
-        fixed(buf, 16)
+    pub fn data(buf: &[u8; SINGLE_ATT_SIZE]) -> AttestationDataView<'_> {
+        AttestationDataView(fixed(buf, 16))
     }
 }
 
@@ -186,8 +186,8 @@ pub struct IndexedAttestationView;
 
 impl IndexedAttestationView {
     #[inline]
-    pub fn data(buf: &[u8]) -> &[u8; 128] {
-        fixed(buf, 4)
+    pub fn data(buf: &[u8]) -> AttestationDataView<'_> {
+        AttestationDataView(fixed(buf, 4))
     }
     #[inline]
     pub fn signature(buf: &[u8]) -> &[u8; 96] {
@@ -228,8 +228,8 @@ pub struct AttestationView;
 
 impl AttestationView {
     #[inline]
-    pub fn data(buf: &[u8]) -> &[u8; 128] {
-        fixed(buf, 4)
+    pub fn data(buf: &[u8]) -> AttestationDataView<'_> {
+        AttestationDataView(fixed(buf, 4))
     }
     #[inline]
     pub fn signature(buf: &[u8]) -> &[u8; 96] {
@@ -782,8 +782,8 @@ impl SignedAggregateAndProofView {
         fixed(buf, 436)
     }
     #[inline]
-    pub fn agg_data(buf: &[u8]) -> &[u8; 128] {
-        fixed(buf, 212)
+    pub fn agg_data(buf: &[u8]) -> AttestationDataView<'_> {
+        AttestationDataView(fixed(buf, 212))
     }
     #[inline]
     pub fn agg_aggregation_bits(buf: &[u8]) -> &[u8] {
@@ -866,8 +866,8 @@ impl AttesterSlashingView {
         fixed(buf, 140)
     }
     #[inline]
-    pub fn att1_data(buf: &[u8]) -> &[u8; 128] {
-        fixed(buf, 12)
+    pub fn att1_data(buf: &[u8]) -> AttestationDataView<'_> {
+        AttestationDataView(fixed(buf, 12))
     }
     #[inline]
     pub fn att1_attesting_indices(buf: &[u8]) -> &[u8] {
@@ -915,8 +915,8 @@ impl AttesterSlashingView {
         fixed(buf, Self::att2_off(buf) + 132)
     }
     #[inline]
-    pub fn att2_data(buf: &[u8]) -> &[u8; 128] {
-        fixed(buf, Self::att2_off(buf) + 4)
+    pub fn att2_data(buf: &[u8]) -> AttestationDataView<'_> {
+        AttestationDataView(fixed(buf, Self::att2_off(buf) + 4))
     }
     #[inline]
     pub fn att2_attesting_indices(buf: &[u8]) -> &[u8] {
@@ -2062,38 +2062,48 @@ impl BeaconBlockBodyGloasView {
 
 pub const ATTESTATION_DATA_SIZE: usize = 128;
 
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-#[repr(C)]
-pub struct AttestationDataView;
+/// Unlike its buf-per-call siblings, holds the data: `AttestationData` is the
+/// one record passed between functions, and the wrapper proves the bytes came
+/// from a checked accessor.
+#[derive(Clone, Copy)]
+pub struct AttestationDataView<'a>(&'a [u8; ATTESTATION_DATA_SIZE]);
 
-impl AttestationDataView {
+impl<'a> AttestationDataView<'a> {
     #[inline]
-    pub fn slot(buf: &[u8; ATTESTATION_DATA_SIZE]) -> u64 {
-        u64_le(buf, 0)
+    pub fn new(buf: &'a [u8; ATTESTATION_DATA_SIZE]) -> Self {
+        Self(buf)
     }
     #[inline]
-    pub fn index(buf: &[u8; ATTESTATION_DATA_SIZE]) -> u64 {
-        u64_le(buf, 8)
+    pub fn as_bytes(self) -> &'a [u8; ATTESTATION_DATA_SIZE] {
+        self.0
     }
     #[inline]
-    pub fn beacon_block_root(buf: &[u8; ATTESTATION_DATA_SIZE]) -> &[u8; 32] {
-        fixed(buf, 16)
+    pub fn slot(self) -> u64 {
+        u64_le(self.0, 0)
     }
     #[inline]
-    pub fn source_epoch(buf: &[u8; ATTESTATION_DATA_SIZE]) -> u64 {
-        u64_le(buf, 48)
+    pub fn index(self) -> u64 {
+        u64_le(self.0, 8)
     }
     #[inline]
-    pub fn source_root(buf: &[u8; ATTESTATION_DATA_SIZE]) -> &[u8; 32] {
-        fixed(buf, 56)
+    pub fn beacon_block_root(self) -> &'a [u8; 32] {
+        fixed(self.0, 16)
     }
     #[inline]
-    pub fn target_epoch(buf: &[u8; ATTESTATION_DATA_SIZE]) -> u64 {
-        u64_le(buf, 88)
+    pub fn source_epoch(self) -> u64 {
+        u64_le(self.0, 48)
     }
     #[inline]
-    pub fn target_root(buf: &[u8; ATTESTATION_DATA_SIZE]) -> &[u8; 32] {
-        fixed(buf, 96)
+    pub fn source_root(self) -> &'a [u8; 32] {
+        fixed(self.0, 56)
+    }
+    #[inline]
+    pub fn target_epoch(self) -> u64 {
+        u64_le(self.0, 88)
+    }
+    #[inline]
+    pub fn target_root(self) -> &'a [u8; 32] {
+        fixed(self.0, 96)
     }
 }
 

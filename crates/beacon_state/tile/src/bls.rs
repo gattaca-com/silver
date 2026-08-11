@@ -119,7 +119,10 @@ pub fn compute_domain(
     genesis_validators_root: &B256,
 ) -> B256 {
     let fork_data_root = ssz_hash::hash_tree_root_fork_data(fork_version, genesis_validators_root);
+    domain_from_fork_data(domain_type, &fork_data_root)
+}
 
+pub fn domain_from_fork_data(domain_type: u32, fork_data_root: &B256) -> B256 {
     let mut domain = [0u8; 32];
     domain[0..4].copy_from_slice(&domain_type.to_le_bytes());
     domain[4..32].copy_from_slice(&fork_data_root[..28]);
@@ -421,7 +424,7 @@ pub fn verify_single_attestation(
     let data = SingleAttestationView::data(att);
     let sig = SingleAttestationView::signature(att);
 
-    let object_root = hash_attestation_data(data);
+    let object_root = hash_attestation_data(data.as_bytes());
     let domain = compute_domain(DOMAIN_BEACON_ATTESTER, fork_version, genesis_validators_root);
     let signing_root = compute_signing_root(&object_root, &domain);
 

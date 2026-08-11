@@ -1,6 +1,6 @@
 use flux::spine::SpineProducers;
 use silver_beacon_state_data::{
-    B256, Epoch, ParsedAggregateAndProof, SLOTS_PER_EPOCH, Slot, StateId, StateReadView,
+    B256, ParsedAggregateAndProof, SLOTS_PER_EPOCH, Slot, StateId, StateReadView,
 };
 use silver_common::{
     BeaconStateEvent, BlockSource, EngineNewPayloadEnvelopeReq, EngineReq, GossipTopic,
@@ -39,7 +39,6 @@ impl BeaconStateTile {
         let target_epoch = SingleAttestationView::target_epoch(buf);
         let att_slot = SingleAttestationView::slot(buf);
         let committee_index = SingleAttestationView::committee_index(buf) as usize;
-        let target_root = *SingleAttestationView::target_root(buf);
 
         let wall = self.ticker.current_slot();
         if att_slot > wall || att_slot.saturating_add(ATTESTATION_PROPAGATION_SLOT_RANGE) < wall {
@@ -54,9 +53,7 @@ impl BeaconStateTile {
         if !validate::attestation_index_ok(is_gloas, data_index) {
             return Feedback::Reject(None);
         }
-        if let Err(f) =
-            self.validate_attestation_target(&block_root, &target_root, target_epoch, att_slot)
-        {
+        if let Err(f) = self.validate_attestation_target(SingleAttestationView::data(buf)) {
             return f;
         }
         let payload_present = if is_gloas {
@@ -112,22 +109,12 @@ impl BeaconStateTile {
 
     pub(super) fn apply_attestation(&mut self, att: &[u8]) -> Feedback {
         let data = AttestationView::data(att);
-        let att_slot = AttestationDataView::slot(data);
-        let target_epoch = AttestationDataView::target_epoch(data);
-        let target_root = *AttestationDataView::target_root(data);
-        let beacon_block_root = *AttestationDataView::beacon_block_root(data);
-
-        if let Err(f) = self.validate_attestation_target(
-            &beacon_block_root,
-            &target_root,
-            target_epoch,
-            att_slot,
-        ) {
+        if let Err(f) = self.validate_attestation_target(data) {
             return f;
         }
 
         let canon_id = self.canonical_state_id();
-        let att_epoch = att_slot / SLOTS_PER_EPOCH;
+        let att_epoch = data.slot() / SLOTS_PER_EPOCH;
         let n = self.head_validator_count();
         {
             let view = self.state.read_view(canon_id);
@@ -143,19 +130,22 @@ impl BeaconStateTile {
             }
         }
 
-        let payload_present = AttestationDataView::index(data) == 1;
+        self.record_attester_votes(data);
+        Feedback::Accept(None)
+    }
+
+    fn record_attester_votes(&mut self, data: AttestationDataView<'_>) {
+        let validator_count = self.head_validator_count();
         for i in 0..self.stf_scratch.active.len() {
             let vote = stf::AttestationVote {
                 validator: self.stf_scratch.active[i],
-                block_root: beacon_block_root,
-                target_epoch,
-                attestation_slot: att_slot,
-                payload_present,
+                block_root: *data.beacon_block_root(),
+                target_epoch: data.target_epoch(),
+                attestation_slot: data.slot(),
+                payload_present: data.index() == 1,
             };
-            self.record_or_defer_vote(vote, n);
+            self.record_or_defer_vote(vote, validator_count);
         }
-
-        Feedback::Accept(None)
     }
 
     #[timed]
@@ -182,17 +172,9 @@ impl BeaconStateTile {
         }
         let committee_index = parsed.committee_bits.trailing_zeros() as usize;
 
-        // Fork-choice: block known + target.root ancestor at target-epoch start.
-        match self
-            .fork_choice
-            .get_checkpoint_block(&parsed.beacon_block_root, parsed.target_epoch * SLOTS_PER_EPOCH)
-        {
-            Some(r) if r == parsed.target_root => {}
-            Some(_) => return Feedback::Reject(None),
-            None => return Feedback::Ignore,
+        if let Err(f) = self.validate_attestation_target(parsed.agg_data) {
+            return f;
         }
-        // `payload_present` is re-derived from the index in `apply_attestation`;
-        // here we only enforce the Gloas index==1 gossip rules.
         if is_gloas {
             if let Err(f) = self.gloas_payload_present(
                 &parsed.beacon_block_root,
@@ -223,21 +205,13 @@ impl BeaconStateTile {
         }
         let committee_len = committee.len();
 
-        self.stf_scratch.active.clear();
-        for (j, &vi32) in committee.iter().enumerate() {
-            let byte_idx = j / 8;
-            let bit_idx = j % 8;
-            if byte_idx >= parsed.aggregation_bits.len() ||
-                parsed.aggregation_bits[byte_idx] & (1 << bit_idx) == 0
-            {
-                continue;
-            }
-            if vi32 as usize >= count {
-                return Feedback::Reject(None);
-            }
-            self.stf_scratch.active.push(vi32);
-        }
-        if self.stf_scratch.active.is_empty() {
+        let Ok(committees) = stf::AttestedCommittees::new(parsed.aggregate_bytes, &shuffling)
+        else {
+            return Feedback::Reject(None);
+        };
+        if committees.attesters_into(count, &mut self.stf_scratch.active).is_err() ||
+            self.stf_scratch.active.is_empty()
+        {
             return Feedback::Reject(None);
         }
 
@@ -245,17 +219,14 @@ impl BeaconStateTile {
             return Feedback::Reject(None);
         }
 
-        if !Self::verify_aggregate_and_proof_sigs(
-            &view,
-            &parsed,
-            &self.stf_scratch.active,
-            &mut self.sig_batch,
-        ) {
+        if !Self::verify_aggregate_and_proof_sigs(&view, &parsed, &committees, &mut self.sig_batch)
+        {
             return Feedback::Reject(None);
         }
 
-        // Record the votes (validates target/ancestry + slot+1 deferral, derives
-        // the committee again). The inner attestation is the aggregate field.
+        // Record the votes (re-validates target/ancestry + slot+1 deferral and
+        // derives the committee again — cheap next to the verify above). The
+        // inner attestation is the aggregate field.
         self.apply_attestation(parsed.aggregate_bytes)
     }
 
@@ -400,25 +371,26 @@ impl BeaconStateTile {
         self.envelope_request_queue = queue;
     }
 
-    fn validate_attestation_target(
-        &self,
-        block_root: &B256,
-        target_root: &B256,
-        target_epoch: Epoch,
-        att_slot: Slot,
-    ) -> Result<(), Feedback> {
+    /// Fork-choice checks for an `AttestationData`: block known, not from the
+    /// future, `target.root` its ancestor at target-epoch start.
+    fn validate_attestation_target(&self, data: AttestationDataView<'_>) -> Result<(), Feedback> {
+        let att_slot = data.slot();
+        let target_epoch = data.target_epoch();
         if target_epoch != att_slot / SLOTS_PER_EPOCH {
             return Err(Feedback::Reject(None));
         }
-        match self.fork_choice.get_checkpoint_block(block_root, target_epoch * SLOTS_PER_EPOCH) {
-            Some(r) if r == *target_root => {}
+        let Some(idx) = self.fork_choice.find_node_idx(data.beacon_block_root()) else {
+            return Err(Feedback::Ignore);
+        };
+        match self.fork_choice.checkpoint_block_of(idx, target_epoch * SLOTS_PER_EPOCH) {
+            Some(r) if r == *data.target_root() => {}
             Some(_) => return Err(Feedback::Reject(None)),
             None => return Err(Feedback::Ignore),
         }
-        match self.fork_choice.find_node_idx(block_root) {
-            Some(idx) if self.fork_choice.node(idx).slot <= att_slot => Ok(()),
-            Some(_) => Err(Feedback::Reject(None)),
-            None => Err(Feedback::Ignore),
+        if self.fork_choice.node(idx).slot <= att_slot {
+            Ok(())
+        } else {
+            Err(Feedback::Reject(None))
         }
     }
 
@@ -433,16 +405,17 @@ impl BeaconStateTile {
     fn verify_aggregate_and_proof_sigs(
         view: &StateReadView,
         parsed: &ParsedAggregateAndProof<'_>,
-        active_scratch: &[u32],
+        committees: &stf::AttestedCommittees<'_>,
         sig_batch: &mut bls::SigBatch,
     ) -> bool {
-        let gvr = view.imm.genesis_validators_root;
         let fv = view.epoch.fork_version_at(parsed.target_epoch);
+        let fork_data_root =
+            ssz_hash::hash_tree_root_fork_data(fv, &view.imm.genesis_validators_root);
+        let domain = |ty| bls::domain_from_fork_data(ty, &fork_data_root);
 
         // (1) selection_proof — signer = aggregator, msg = htr(uint64(slot)).
         let slot_root = merkle::uint64_chunk(parsed.agg_slot);
-        let domain_sp = bls::compute_domain(bls::DOMAIN_SELECTION_PROOF, fv, &gvr);
-        let sr_sp = bls::compute_signing_root(&slot_root, &domain_sp);
+        let sr_sp = bls::compute_signing_root(&slot_root, &domain(bls::DOMAIN_SELECTION_PROOF));
 
         // (2) outer AggregateAndProof signature.
         let agg_proof_root = ssz_hash::hash_tree_root_aggregate_and_proof(
@@ -451,23 +424,18 @@ impl BeaconStateTile {
             parsed.selection_proof,
             fv == view.imm.gloas_fork_version,
         );
-        let domain_aap = bls::compute_domain(bls::DOMAIN_AGGREGATE_AND_PROOF, fv, &gvr);
-        let sr_aap = bls::compute_signing_root(&agg_proof_root, &domain_aap);
+        let sr_aap =
+            bls::compute_signing_root(&agg_proof_root, &domain(bls::DOMAIN_AGGREGATE_AND_PROOF));
 
         // (3) inner aggregate signature over AttestationData.
-        let data_root = ssz_hash::hash_attestation_data(parsed.agg_data);
-        let domain_att = bls::compute_domain(bls::DOMAIN_BEACON_ATTESTER, fv, &gvr);
-        let sr_att = bls::compute_signing_root(&data_root, &domain_att);
+        let data_root = ssz_hash::hash_attestation_data(parsed.agg_data.as_bytes());
+        let sr_att = bls::compute_signing_root(&data_root, &domain(bls::DOMAIN_BEACON_ATTESTER));
 
         sig_batch.clear();
         let aggregator_pk = view.validators.pubkey_decompressed(parsed.aggregator_index);
         sig_batch.push_one(aggregator_pk, parsed.selection_proof, sr_sp);
         sig_batch.push_one(aggregator_pk, parsed.outer_sig, sr_aap);
-        sig_batch.push_aggregate(
-            active_scratch.iter().map(|&vi| view.validators.pubkey_decompressed(vi as usize)),
-            parsed.agg_sig,
-            sr_att,
-        );
+        committees.push_aggregate_sig(&view.validators, parsed.agg_sig, sr_att, sig_batch);
         sig_batch.verify_all()
     }
 

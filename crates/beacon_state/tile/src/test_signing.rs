@@ -350,7 +350,7 @@ pub fn sign_aggregate_and_proof(
 
     debug_assert_eq!(SignedAggregateAndProofView::signature(&buf), &outer_sig);
     debug_assert_eq!(
-        AttestationDataView::target_epoch(buf[212..340].try_into().unwrap()),
+        AttestationDataView::new(buf[212..340].try_into().unwrap()).target_epoch(),
         target_epoch
     );
     buf
