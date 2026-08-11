@@ -246,6 +246,12 @@ impl ElBlobFetcher {
             match column_producer.reserve(self.sidecar_buffer.len(), true) {
                 Some(mut reservation) => match reservation.write(&self.sidecar_buffer) {
                     Ok(_) => {
+                        tracing::info!(
+                            block_root = hex::encode(pending.block_root),
+                            slot = pending.slot,
+                            column_index = j,
+                            "EL data column recv"
+                        );
                         let ssz = reservation.read();
                         emit(DataColumnsEvent::Persist {
                             ssz,
