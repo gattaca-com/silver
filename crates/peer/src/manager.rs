@@ -35,6 +35,14 @@ const ARCHIVE_CAP: usize = 512;
 
 const REMOTE_BAN_TTL: Duration = Duration::from_secs(12 * 3600);
 
+const DIAL_FAILURE_BACKOFF: Duration = Duration::from_secs(3600);
+
+/// Disconnect reason for a QUIC-level close with no Goodbye received.
+const TRANSPORT_DISCONNECT: &str = "transport";
+
+const SHORT_LIVED_CONNECTION: Duration = Duration::from_secs(30);
+const SHORT_LIVED_DIAL_BACKOFF: Duration = Duration::from_secs(15 * 60);
+
 const GOODBYE_CLIENT_SHUTDOWN: u64 = 1;
 
 pub struct PeerManager {
@@ -110,9 +118,8 @@ pub struct PeerManager {
     /// filtering and the `Unban` emission once `banned_peer_ttl` elapses.
     banned_peers: HashMap<PeerId, Instant>,
 
-    /// Peers whose Goodbye carried an error code (anything but
-    /// ClientShutdown): dial backoff for `REMOTE_BAN_TTL`, sized to
-    /// lighthouse's 12h BANNED_BEFORE_DECAY. Their inbound stays welcome.
+    /// Dial backoff from a received Goodbye, keyed to the expiry instant;
+    /// tier per code via `goodbye_dial_backoff`. Their inbound stays welcome.
     remote_banned_peers: HashMap<PeerId, Instant>,
 
     params: ScoreParams,
@@ -415,6 +422,30 @@ impl PeerManager {
     }
 
     /// Announce our topic subscriptions to every currently-connected peer.
+    /// Add topics at runtime (deferred long-lived subnets): extends
+    /// `our_topics` + mesh bookkeeping + subnet masks, and announces
+    /// SUBSCRIBE to every connected peer. New connections pick the
+    /// topics up via the normal `on_connected` fan-out.
+    pub fn activate_topics(&mut self, topics: &[GossipTopic], emit: &mut impl FnMut(PeerControl)) {
+        for &topic in topics {
+            if self.our_topics.contains(&topic) {
+                continue;
+            }
+            self.our_topics.push(topic);
+            self.mesh.insert(topic, Vec::with_capacity(self.params.d_high as usize));
+            for (&conn, peer) in &self.peers {
+                emit(PeerControl::P2pGossipSubscribe {
+                    p2p: peer.peer_id,
+                    p2p_connection: conn,
+                    topic,
+                });
+            }
+        }
+        let (attnets, syncnets) = build_subnet_masks(&self.our_topics);
+        self.required_attnets = attnets;
+        self.required_syncnets = syncnets;
+    }
+
     pub fn fan_out_subscriptions(&mut self, emit: &mut impl FnMut(PeerControl)) {
         for (&conn, peer) in &self.peers {
             for &topic in &self.our_topics {
@@ -481,8 +512,14 @@ impl PeerManager {
                 self.on_connected(p2p_peer_id, peer_id_full, ip, port, now, emit, local_dial);
             }
             PeerEvent::P2pDisconnect { p2p_peer, peer_id } => {
-                self.dialing.remove(&peer_id);
-                self.on_disconnected(p2p_peer, now, "transport", emit);
+                let was_dialing = self.dialing.remove(&peer_id).is_some();
+                let was_connected =
+                    self.on_disconnected(p2p_peer, now, TRANSPORT_DISCONNECT, emit).is_some();
+                // Dial died pre-handshake (zombie): the sweep won't see the
+                // removed `dialing` entry, so arm the failure backoff here.
+                if was_dialing && !was_connected {
+                    self.database.dial_failed(&peer_id, now + DIAL_FAILURE_BACKOFF);
+                }
             }
             PeerEvent::P2pCannotCreateStream { p2p_peer, protocol, rpc_request } => {
                 if rpc_request {
@@ -563,8 +600,8 @@ impl PeerManager {
                 crate::PeerCounters::GossipInvalidFrame.inc();
                 self.add_behaviour_penalty(p2p_peer, 1.0, "invalid gossip frame");
             }
-            PeerEvent::DiscNodeFound { enr, reload } => {
-                self.on_disc_node_found(enr, reload, now, emit);
+            PeerEvent::DiscNodeFound { enr, reload: _ } => {
+                self.on_disc_node_found(enr, now, emit);
             }
             PeerEvent::DiscExternalAddress { address: _, seq } => {
                 // update metadata seq number so that it matches ENR
@@ -707,9 +744,17 @@ impl PeerManager {
 
         self.sweep_backfill_range_attempts(now, emit);
 
-        // 9) Prune stale dials (older than 15 seconds)
-        self.dialing.retain(|_, &mut time| {
-            now.saturating_duration_since(time) < std::time::Duration::from_secs(15)
+        // 9) Prune stale dials (older than 15 seconds); an entry expiring here means
+        //    the dial failed or timed out (successful connects leave `dialing` in
+        //    `on_connected`) — back the peer off.
+        let database = &mut self.database;
+        self.dialing.retain(|peer_id, &mut time| {
+            if now.saturating_duration_since(time) < std::time::Duration::from_secs(15) {
+                true
+            } else {
+                database.dial_failed(peer_id, now + DIAL_FAILURE_BACKOFF);
+                false
+            }
         });
 
         crate::PeerCounters::PeersConnected.set(self.peers.len() as u64);
@@ -788,6 +833,7 @@ impl PeerManager {
     ) -> Option<&PeerRecord> {
         let mut state = self.peers.remove(&conn)?;
 
+        let age = now.saturating_duration_since(state.connected_at);
         let (dc_subscribed, dc_advertised) = self.data_column_overlap(conn, &state);
         let user_agent =
             self.database.by_p2p_id(conn).and_then(|r| r.identify.as_ref()).map(|i| i.user_agent());
@@ -797,12 +843,20 @@ impl PeerManager {
             addr = ?state.addr,
             reason,
             ?user_agent,
-            age_ms = now.saturating_duration_since(state.connected_at).as_millis(),
+            age_ms = age.as_millis(),
             score = state.cached_score,
             dc_subscribed,
             dc_advertised,
             "peer disconnected"
         );
+
+        // A connection dying young without a Goodbye is a failed dial in
+        // all but name (remote gater denial, instant crash). The completed
+        // handshake cleared any dial backoff, so re-arm a short one or the
+        // redial loop re-knocks every tick.
+        if reason == TRANSPORT_DISCONNECT && age < SHORT_LIVED_CONNECTION {
+            self.database.dial_failed(&state.peer_id, now + SHORT_LIVED_DIAL_BACKOFF);
+        }
 
         // De-index IP colocation.
         if let Some(v) = self.ip_colocations.get_mut(&state.ip_prefix) {
@@ -1190,21 +1244,11 @@ impl PeerManager {
         }
     }
 
-    /// Discovery surfaced a candidate peer. Filter chain:
-    /// 1. Fork-digest match (if `our_fork_digest` is set).
-    /// 2. IP not in our recent ban set.
-    /// 3. Capacity — under `target_peers`, OR the peer covers a subnet we need
-    ///    (priority) and we're under `max_priority_peers`.
-    ///
-    /// Network tile handles in-flight dial / already-connected dedup.
+    /// Discovery surfaced a candidate peer: filter (fork digest, bans,
+    /// backoffs, QUIC support) and ingest into the database. Dialing is
+    /// `redial_known_peers`'s — the next tick picks the record up.
     #[timed]
-    fn on_disc_node_found(
-        &mut self,
-        enr: Enr,
-        reload: bool,
-        now: Instant,
-        emit: &mut impl FnMut(PeerControl),
-    ) {
+    fn on_disc_node_found(&mut self, enr: Enr, now: Instant, emit: &mut impl FnMut(PeerControl)) {
         // 1. Fork-digest gate. Spec-conformant CL nodes always advertise `eth2`;
         //    missing-or-mismatched is a drop (matches lighthouse).
         if let Some(my_digest) = self.our_fork_digest {
@@ -1262,6 +1306,10 @@ impl PeerManager {
             tracing::debug!(?peer_id, "remote-banned peer id; dial backoff");
             return;
         }
+        if self.database.dial_backoff_active(&peer_id, now) {
+            tracing::debug!(?peer_id, "dial-failure backoff active");
+            return;
+        }
         if self.peers.values().any(|p| p.peer_id == peer_id) {
             // Normal high-frequency case: discovery re-surfaces connected peers
             // every poll cycle. trace, not warn — else it floods the log.
@@ -1281,33 +1329,60 @@ impl PeerManager {
 
         tracing::debug!(id=?enr.node_id(), ?enr, "new node");
 
-        // Add to peer database.
         self.database.add_enr(enr);
-
-        // 4. Capacity gate. Priority match: ENR's attnets/syncnets bitfield intersects
-        //    ours, meaning the peer can fill a subnet we care about. Lets us go past
-        //    `target_peers` up to `max_priority_peers` for under-meshed validator
-        //    subnets.
-        let connected = self.peers.len() + self.dialing.len();
-        let priority = enr_matches_subnets(
-            &enr,
-            self.required_attnets,
-            self.required_syncnets,
-            self.custody_columns,
-        );
-        let dial = reload ||
-            connected < self.params.target_peers ||
-            (priority && connected < self.params.max_priority_peers);
-        if !dial {
-            tracing::debug!(connected, "not dialling");
-            return;
-        }
-        self.dialing.insert(peer_id, now);
-        emit(PeerControl::P2pDial { p2p: peer_id, enr });
     }
 
-    /// On every tick, if we're below `target_peers` and the throttle has
-    /// elapsed, ask discovery to surface more candidates.
+    /// The sole dial issuer: connects disconnected-but-known peers from the
+    /// database up to `target_peers`, or `max_priority_peers` for candidates
+    /// covering a subnet/custody column we need. Discovery only feeds the
+    /// database; this loop dials on the next tick.
+    pub fn redial_known_peers(&mut self, now: Instant, emit: &mut impl FnMut(PeerControl)) {
+        let mut connected = self.peers.len() + self.dialing.len();
+        if connected >= self.params.max_priority_peers {
+            return;
+        }
+        for record in self.database.redial_candidates(now) {
+            let (Some(peer_id), Some(enr)) = (record.peer_id, record.enr.as_ref()) else {
+                continue;
+            };
+            if self.dialing.contains_key(&peer_id) ||
+                self.banned_peers.contains_key(&peer_id) ||
+                self.remote_banned_peers.contains_key(&peer_id)
+            {
+                continue;
+            }
+            let ip = enr.ip4().map(IpAddr::V4).or_else(|| enr.ip6().map(IpAddr::V6));
+            if ip.is_some_and(|ip| self.banned_ips.contains_key(&ip)) {
+                continue;
+            }
+            if let Some(digest) = self.our_fork_digest &&
+                enr.eth2().is_none_or(|e| e[..4] != digest)
+            {
+                continue;
+            }
+            let cap = if enr_matches_subnets(
+                enr,
+                self.required_attnets,
+                self.required_syncnets,
+                self.custody_columns,
+            ) {
+                self.params.max_priority_peers
+            } else {
+                self.params.target_peers
+            };
+            if connected >= cap {
+                continue;
+            }
+            tracing::debug!(?peer_id, "redialing known peer");
+            self.dialing.insert(peer_id, now);
+            emit(PeerControl::P2pDial { p2p: peer_id, enr: *enr });
+            connected += 1;
+            if connected >= self.params.max_priority_peers {
+                break;
+            }
+        }
+    }
+
     fn maybe_request_discovery(&mut self, now: Instant, emit: &mut impl FnMut(PeerControl)) {
         if self.peers.len() >= self.params.target_peers {
             return;
@@ -1439,13 +1514,14 @@ impl PeerManager {
             );
             emit(PeerControl::P2pDisconnect { p2p: peer_id, p2p_connection: p2p_peer });
 
-            if code != GOODBYE_CLIENT_SHUTDOWN {
+            if let Some(backoff) = Self::goodbye_dial_backoff(code) {
                 tracing::info!(
                     ?peer_id,
                     code = Self::goodbye_reason(code),
-                    "goodbye error; dial backoff"
+                    ?backoff,
+                    "goodbye; dial backoff"
                 );
-                self.remote_banned_peers.insert(peer_id, now);
+                self.remote_banned_peers.insert(peer_id, now + backoff);
             }
         }
         self.peers.remove(&p2p_peer);
@@ -1700,9 +1776,7 @@ impl PeerManager {
                 crate::PeerCounters::IpsBanned.inc();
                 self.banned_ips.insert(ip, now);
             }
-            // Archived copy is written on the normal disconnect path fired
-            // downstream once the Ban takes ffect; here we just drop live.
-            self.peers.remove(&conn);
+            self.on_disconnected(conn, now, "evicted", emit);
         }
     }
 
@@ -1723,9 +1797,8 @@ impl PeerManager {
         emit: &mut impl FnMut(PeerControl),
     ) {
         let current = self.mesh.get(&topic).map(|m| m.len()).unwrap_or(0);
-        let d_low = self.params.d_low as usize;
         let d = self.params.d as usize;
-        if current >= d_low {
+        if current >= d {
             return;
         }
         let needed = d - current;
@@ -1824,20 +1897,35 @@ impl PeerManager {
             }
         });
         // No Unban: remote-banned peers were never network-side banned.
-        self.remote_banned_peers.retain(|_, t| now.saturating_duration_since(*t) < REMOTE_BAN_TTL);
+        self.remote_banned_peers.retain(|_, expiry| *expiry > now);
     }
 
-    /// Human label for a Goodbye reason code (per eth2 spec).
+    /// Human label for a Goodbye reason code (spec codes 1-3, plus the
+    /// 128+ extensions lighthouse and prysm share).
     fn goodbye_reason(code: u64) -> &'static str {
         match code {
             1 => "ClientShutdown",
             2 => "IrrelevantNetwork",
-            3 => "Error",
-            128 => "Banned",
-            129 => "BannedIP",
-            250 => "ScoreTooLow",
-            251 => "Fault",
+            3 => "Fault",
+            128 => "UnableToVerifyNetwork",
+            129 => "TooManyPeers",
+            250 => "BadScore",
+            251 => "Banned",
+            252 => "BannedIP",
             _ => "Unknown",
+        }
+    }
+
+    /// Dial backoff earned by a Goodbye, `None` = stay dialable. The
+    /// score-ban family matches lighthouse's 12h `BANNED_BEFORE_DECAY`;
+    /// TooManyPeers is a routine excess-peer shed that expects us back;
+    /// wrong-network codes are futile to redial until a fork change.
+    fn goodbye_dial_backoff(code: u64) -> Option<Duration> {
+        match code {
+            GOODBYE_CLIENT_SHUTDOWN => None,
+            129 => Some(Duration::from_secs(5 * 60)),
+            3 => Some(Duration::from_secs(3600)),
+            _ => Some(REMOTE_BAN_TTL),
         }
     }
 }
@@ -1887,8 +1975,8 @@ fn subscribed_column_mask(topics: &HashSet<GossipTopic>) -> u128 {
 
 /// Build SSZ Bitvector[64] / Bitvector[N≤8] masks from `our_topics`. Each
 /// `BeaconAttestation(N)` flips bit N in the 64-bit attnet mask; each
-/// `SyncCommittee(N)` flips bit N in the syncnet byte. Computed once at
-/// construction — `our_topics` is immutable for the manager's lifetime.
+/// `SyncCommittee(N)` flips bit N in the syncnet byte. Computed at
+/// construction and recomputed by `activate_topics`.
 fn build_subnet_masks(our_topics: &[GossipTopic]) -> ([u8; 8], u8) {
     let mut attnets = [0u8; 8];
     let mut syncnets = 0u8;
@@ -2741,6 +2829,111 @@ mod tests {
         );
     }
 
+    fn dials(cap: &Captured) -> usize {
+        cap.0.iter().filter(|c| matches!(c, PeerControl::P2pDial { .. })).count()
+    }
+
+    #[test]
+    fn redial_known_peer_after_disconnect_with_failure_backoff() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
+        let enr =
+            test_enr_with(5, std::net::Ipv4Addr::new(10, 0, 0, 5), Some([0u8; 16]), None, None);
+        mgr.database.add_enr(enr);
+
+        // Connected peers are not redial candidates.
+        connect(&mut mgr, &mut cap, 1, 5, now);
+        cap.0.clear();
+        mgr.redial_known_peers(now, &mut |c| cap.0.push(c));
+        assert_eq!(dials(&cap), 0, "live peer must not be redialed");
+
+        // Disconnect past the short-lived window: an ordinary drop.
+        let t_drop = now + SHORT_LIVED_CONNECTION + Duration::from_secs(1);
+        mgr.handle_event(
+            PeerEvent::P2pDisconnect { p2p_peer: 1, peer_id: peer_id(5) },
+            t_drop,
+            &mut |c| cap.0.push(c),
+        );
+        cap.0.clear();
+        mgr.redial_known_peers(t_drop, &mut |c| cap.0.push(c));
+        assert_eq!(dials(&cap), 1, "disconnected known peer should be dialed");
+
+        // In-flight dial is not repeated.
+        cap.0.clear();
+        mgr.redial_known_peers(t_drop, &mut |c| cap.0.push(c));
+        assert_eq!(dials(&cap), 0, "in-flight dial must not repeat");
+
+        // Dial times out via the stale-dial sweep -> 1h backoff.
+        let after_sweep = t_drop + Duration::from_secs(16);
+        mgr.tick(after_sweep, &mut |c| cap.0.push(c));
+        cap.0.clear();
+        mgr.redial_known_peers(after_sweep, &mut |c| cap.0.push(c));
+        assert_eq!(dials(&cap), 0, "failed dial must back off");
+
+        // Backoff expires -> dialable again.
+        let after_backoff = after_sweep + DIAL_FAILURE_BACKOFF + Duration::from_secs(1);
+        cap.0.clear();
+        mgr.redial_known_peers(after_backoff, &mut |c| cap.0.push(c));
+        assert_eq!(dials(&cap), 1, "peer should be redialed after backoff expiry");
+    }
+
+    #[test]
+    fn failed_dial_zombie_disconnect_backs_off() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
+        let enr =
+            test_enr_with(5, std::net::Ipv4Addr::new(10, 0, 0, 5), Some([0u8; 16]), None, None);
+        mgr.database.add_enr(enr);
+
+        mgr.redial_known_peers(now, &mut |c| cap.0.push(c));
+        assert_eq!(dials(&cap), 1);
+
+        // Dial dies pre-handshake: P2pDisconnect with no prior
+        // P2pNewConnection. Must arm the dial-failure backoff even though
+        // the `dialing` entry is gone before the stale-dial sweep.
+        mgr.handle_event(
+            PeerEvent::P2pDisconnect { p2p_peer: 999, peer_id: peer_id(5) },
+            now + Duration::from_secs(1),
+            &mut |c| cap.0.push(c),
+        );
+        cap.0.clear();
+        mgr.redial_known_peers(now + Duration::from_secs(2), &mut |c| cap.0.push(c));
+        assert_eq!(dials(&cap), 0, "zombie dial must back off");
+
+        let after = now + DIAL_FAILURE_BACKOFF + Duration::from_secs(3);
+        cap.0.clear();
+        mgr.redial_known_peers(after, &mut |c| cap.0.push(c));
+        assert_eq!(dials(&cap), 1, "redial resumes after backoff");
+    }
+
+    #[test]
+    fn short_lived_transport_disconnect_backs_off_redial() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default(), false);
+        let enr =
+            test_enr_with(5, std::net::Ipv4Addr::new(10, 0, 0, 5), Some([0u8; 16]), None, None);
+        mgr.database.add_enr(enr);
+
+        // Connect then die within the short-lived window (remote gater
+        // denial pattern: handshake ok, closed moments later).
+        connect(&mut mgr, &mut cap, 1, 5, now);
+        let t_drop = now + Duration::from_secs(1);
+        mgr.handle_event(
+            PeerEvent::P2pDisconnect { p2p_peer: 1, peer_id: peer_id(5) },
+            t_drop,
+            &mut |c| cap.0.push(c),
+        );
+
+        cap.0.clear();
+        mgr.redial_known_peers(t_drop, &mut |c| cap.0.push(c));
+        assert_eq!(dials(&cap), 0, "short-lived drop must arm a dial backoff");
+
+        let after = t_drop + SHORT_LIVED_DIAL_BACKOFF + Duration::from_secs(1);
+        cap.0.clear();
+        mgr.redial_known_peers(after, &mut |c| cap.0.push(c));
+        assert_eq!(dials(&cap), 1, "redial resumes after the short backoff");
+    }
+
     /// Same key derivation as `peer_id(seed)` so an ENR built with this
     /// helper has a `public_key()` whose derived `PeerId` matches what
     /// `connect(...)` registers. Critical for `banned_peers` /
@@ -2799,6 +2992,7 @@ mod tests {
         mgr.handle_event(PeerEvent::DiscNodeFound { enr, reload: false }, now, &mut |c| {
             cap.0.push(c)
         });
+        mgr.redial_known_peers(now, &mut |c| cap.0.push(c));
 
         assert!(
             cap.0.iter().any(|e| matches!(e, PeerControl::P2pDial { .. })),
@@ -2817,9 +3011,12 @@ mod tests {
         let (mut mgr, mut cap) = fixture(vec![], params, false);
 
         connect(&mut mgr, &mut cap, 1, 7, now);
+        // Age the connection past the short-lived window first: an instant
+        // drop would (correctly) arm the short-lived dial backoff instead.
+        let t_drop = now + SHORT_LIVED_CONNECTION + Duration::from_secs(1);
         mgr.handle_event(
             PeerEvent::P2pDisconnect { p2p_peer: 1, peer_id: peer_id(7) },
-            now,
+            t_drop,
             &mut |c| cap.0.push(c),
         );
         assert_eq!(mgr.archived_count(), 1);
@@ -2827,9 +3024,10 @@ mod tests {
 
         let enr =
             test_enr_with(7, std::net::Ipv4Addr::new(10, 0, 0, 7), Some([0u8; 16]), None, None);
-        mgr.handle_event(PeerEvent::DiscNodeFound { enr, reload: false }, now, &mut |c| {
+        mgr.handle_event(PeerEvent::DiscNodeFound { enr, reload: false }, t_drop, &mut |c| {
             cap.0.push(c)
         });
+        mgr.redial_known_peers(t_drop, &mut |c| cap.0.push(c));
 
         assert!(
             cap.0.iter().any(|e| matches!(e, PeerControl::P2pDial { .. })),
@@ -2853,6 +3051,7 @@ mod tests {
         mgr.handle_event(PeerEvent::DiscNodeFound { enr, reload: false }, now, &mut |c| {
             cap.0.push(c)
         });
+        mgr.redial_known_peers(now, &mut |c| cap.0.push(c));
 
         assert!(
             !cap.0.iter().any(|e| matches!(e, PeerControl::P2pDial { .. })),
@@ -2889,6 +3088,7 @@ mod tests {
         mgr.handle_event(PeerEvent::DiscNodeFound { enr, reload: false }, now, &mut |c| {
             cap.0.push(c)
         });
+        mgr.redial_known_peers(now, &mut |c| cap.0.push(c));
 
         assert!(
             !cap.0.iter().any(|e| matches!(e, PeerControl::P2pDial { .. })),
@@ -2945,6 +3145,7 @@ mod tests {
         mgr.handle_event(PeerEvent::DiscNodeFound { enr, reload: false }, now, &mut |c| {
             cap.0.push(c)
         });
+        mgr.redial_known_peers(now, &mut |c| cap.0.push(c));
         assert!(
             cap.0.iter().any(|e| matches!(e, PeerControl::P2pDial { .. })),
             "post-TTL discovery hit must dial, got {:?}",
@@ -3178,6 +3379,7 @@ mod tests {
         mgr.handle_event(PeerEvent::DiscNodeFound { enr, reload: false }, now, &mut |c| {
             cap.0.push(c)
         });
+        mgr.redial_known_peers(now, &mut |c| cap.0.push(c));
         assert!(
             !cap.0.iter().any(|e| matches!(e, PeerControl::P2pDial { .. })),
             "banned PeerId discovery hit must not dial, got {:?}",
@@ -3228,6 +3430,7 @@ mod tests {
         mgr.handle_event(PeerEvent::DiscNodeFound { enr, reload: false }, now, &mut |c| {
             cap.0.push(c)
         });
+        mgr.redial_known_peers(now, &mut |c| cap.0.push(c));
         assert!(
             !cap.0.iter().any(|e| matches!(e, PeerControl::P2pDial { .. })),
             "wrong-fork ENR must be dropped, got {:?}",
@@ -3248,6 +3451,7 @@ mod tests {
         mgr.handle_event(PeerEvent::DiscNodeFound { enr, reload: false }, now, &mut |c| {
             cap.0.push(c)
         });
+        mgr.redial_known_peers(now, &mut |c| cap.0.push(c));
         assert!(
             !cap.0.iter().any(|e| matches!(e, PeerControl::P2pDial { .. })),
             "ENR without eth2 must be dropped when filter set, got {:?}",
@@ -3282,6 +3486,7 @@ mod tests {
         mgr.handle_event(PeerEvent::DiscNodeFound { enr, reload: false }, now, &mut |c| {
             cap.0.push(c)
         });
+        mgr.redial_known_peers(now, &mut |c| cap.0.push(c));
 
         assert!(
             cap.0.iter().any(|e| matches!(e, PeerControl::P2pDial { .. })),
@@ -3303,11 +3508,17 @@ mod tests {
 
         let mut attnets = [0u8; 8];
         attnets[0] = 0x20;
-        let enr =
-            test_enr_with(99, std::net::Ipv4Addr::new(10, 0, 0, 99), None, Some(attnets), None);
+        let enr = test_enr_with(
+            99,
+            std::net::Ipv4Addr::new(10, 0, 0, 99),
+            Some([0u8; 16]),
+            Some(attnets),
+            None,
+        );
         mgr.handle_event(PeerEvent::DiscNodeFound { enr, reload: false }, now, &mut |c| {
             cap.0.push(c)
         });
+        mgr.redial_known_peers(now, &mut |c| cap.0.push(c));
 
         assert!(
             !cap.0.iter().any(|e| matches!(e, PeerControl::P2pDial { .. })),

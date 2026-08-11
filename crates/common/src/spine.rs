@@ -3,7 +3,7 @@
 use flux::{communication::ShmemData, spine::SpineQueue, spine_derive::from_spine, tile::TileInfo};
 pub use messages::{
     BACKFILL_REQUEST_ID, BASE_REQUEST_ID, BeaconStateEvent, BlockSource,
-    COLUMN_BACKFILL_REQUEST_ID, DataColumnsAvailable, ELSyncStatus, ENVELOPE_REQUEST_ID,
+    COLUMN_BACKFILL_REQUEST_ID, ColumnSource, DataColumnsEvent, ELSyncStatus, ENVELOPE_REQUEST_ID,
     EngineFcuReq, EngineFcuResp, EngineGetBlobsReq, EngineGetBlobsResp,
     EngineGetPayloadBodiesByHashReq, EngineGetPayloadBodiesByRangeReq, EngineGetPayloadBodiesResp,
     EngineGetPayloadReq, EngineGetPayloadResp, EngineHealthEvent, EngineNewPayloadEnvelopeReq,
@@ -50,7 +50,7 @@ pub struct SilverSpine {
     #[queue(size(2usize.pow(14)))]
     pub beacon_events: SpineQueue<BeaconStateEvent>,
     #[queue(size(2usize.pow(12)))]
-    pub data_columns: SpineQueue<DataColumnsAvailable>,
+    pub data_columns: SpineQueue<DataColumnsEvent>,
     #[queue(size(2usize.pow(10)))]
     pub sync_target: SpineQueue<SyncUpdate>,
     #[queue(size(2usize.pow(12)))]

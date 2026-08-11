@@ -87,7 +87,6 @@ pub struct P2p {
     keypair: Keypair,
     endpoint: Endpoint,
     peers: FxHashMap<ConnectionHandle, Peer>,
-    dialled: FxHashSet<PeerId>,
     banned: FxHashSet<PeerId>,
     timeout: Option<Duration>,
     recv_count: usize,
@@ -99,7 +98,6 @@ impl P2p {
             keypair,
             endpoint,
             peers: FxHashMap::default(),
-            dialled: FxHashSet::default(),
             banned: FxHashSet::default(),
             timeout: Some(Duration::ZERO),
             recv_count: 0,
@@ -113,14 +111,23 @@ impl P2p {
         addr: SocketAddr,
         now: Instant,
     ) -> Result<(), Error> {
-        if self.dialled.insert(peer_id) {
-            let client_config = create_client_config(&self.keypair, Some(peer_id))?;
-            let (handle, connection) =
-                self.endpoint.connect(now, client_config, addr, "x").map_err(Error::other)?;
-            let peer = Peer::new(handle, connection);
-            self.peers.insert(handle, peer);
-        }
+        let client_config = create_client_config(&self.keypair, Some(peer_id))?;
+        let (handle, connection) =
+            self.endpoint.connect(now, client_config, addr, "x").map_err(Error::other)?;
+
+        let peer = Peer::new(handle, connection, peer_id);
+        self.peers.insert(handle, peer);
         Ok(())
+    }
+
+    // TODO supply disconnect reason
+    pub fn disconnect(&mut self, peer: usize, now: Instant) {
+        // Close but keep the peer: the poll loop must keep driving the
+        // connection through its drain (CONNECTION_CLOSE retransmits,
+        // endpoint events) until the drained reap removes it.
+        if let Some(p) = self.peers.get_mut(&ConnectionHandle(peer)) {
+            p.shutdown(now);
+        }
     }
 
     // /// Open a new bidirectional stream on the given peer connection with the
@@ -163,7 +170,7 @@ impl P2p {
                 match self.endpoint.accept(incoming, now, scratch, None) {
                     Ok((handle, conn)) => {
                         crate::NetworkCounters::InboundAccepted.inc();
-                        let peer = Peer::new(handle, conn);
+                        let peer = Peer::new(handle, conn, PeerId::default());
 
                         self.peers.insert(handle, peer);
                     }
@@ -236,7 +243,6 @@ impl P2p {
 
         for dead_peer in dead_peers {
             self.peers.remove(&ConnectionHandle(dead_peer.connection));
-            self.dialled.remove(&dead_peer.peer_id);
         }
 
         // Still-dirty peers need an immediate re-poll; otherwise sleep until

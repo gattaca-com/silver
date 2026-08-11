@@ -14,9 +14,9 @@ pub use crate::{
     },
     spine::{
         ALL_PROTOCOLS, AcquiredRead as TRead, BACKFILL_REQUEST_ID, BASE_REQUEST_ID,
-        BeaconStateEvent, BlockSource, COLUMN_BACKFILL_REQUEST_ID, Consumer as TConsumer,
-        DataColumnsAvailable, ELSyncStatus, ENVELOPE_REQUEST_ID, EngineFcuReq, EngineFcuResp,
-        EngineGetBlobsReq, EngineGetBlobsResp, EngineGetPayloadBodiesByHashReq,
+        BeaconStateEvent, BlockSource, COLUMN_BACKFILL_REQUEST_ID, ColumnSource,
+        Consumer as TConsumer, DataColumnsEvent, ELSyncStatus, ENVELOPE_REQUEST_ID, EngineFcuReq,
+        EngineFcuResp, EngineGetBlobsReq, EngineGetBlobsResp, EngineGetPayloadBodiesByHashReq,
         EngineGetPayloadBodiesByRangeReq, EngineGetPayloadBodiesResp, EngineGetPayloadReq,
         EngineGetPayloadResp, EngineHealthEvent, EngineNewPayloadEnvelopeReq, EngineNewPayloadReq,
         EngineNewPayloadResp, EnginePreparePayloadReq, EngineReq, EngineResp, Error as TCacheError,
@@ -36,6 +36,7 @@ pub use crate::{
     wither::{CountingWitherFilter, WitherFilter},
 };
 
+pub mod column_util;
 mod enr;
 mod error;
 pub mod rpc_rate_limit;
@@ -55,6 +56,9 @@ mod util;
 mod wheel;
 mod wither;
 
-pub use enr::{Enr, NUMBER_OF_CUSTODY_GROUPS, NodeId, SAMPLES_PER_SLOT};
+pub use enr::{
+    EPOCHS_PER_SUBNET_SUBSCRIPTION, Enr, NUMBER_OF_CUSTODY_GROUPS, NodeId, SAMPLES_PER_SLOT,
+    SUBNETS_PER_NODE,
+};
 pub use flux::timing::Nanos;
 pub use generated::{Identify as ProtoIdentify, IdentifyView as ProtoIdentifyView};

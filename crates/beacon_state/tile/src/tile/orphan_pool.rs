@@ -2,8 +2,8 @@ use flux::spine::SpineProducers;
 use rustc_hash::FxHashMap;
 use silver_beacon_state_data::{B256, SLOTS_PER_EPOCH, Slot};
 use silver_common::{
-    BeaconStateEvent, BlockSource, DataColumnsAvailable, NewGossipMsg, P2pStreamId, PeerEvent,
-    RpcSeverity, TCacheRead, TRandomAccess, hex32, metrics::timed, ssz_view::SignedBeaconBlockView,
+    BeaconStateEvent, BlockSource, NewGossipMsg, P2pStreamId, PeerEvent, RpcSeverity, TCacheRead,
+    TRandomAccess, hex32, metrics::timed, ssz_view::SignedBeaconBlockView,
 };
 
 use super::{BY_ROOT_REQUEST_ID, BeaconStateTile, Feedback, Producers};
@@ -168,20 +168,21 @@ impl BeaconStateTile {
 
     pub(super) fn handle_data_columns_available(
         &mut self,
-        m: DataColumnsAvailable,
+        block_root: B256,
+        slot: u64,
         producers: &mut Producers,
     ) {
-        if m.slot > self.da_boundary() {
-            self.dc_available.insert(m.block_root, m.slot);
+        if slot > self.da_boundary() {
+            self.dc_available.insert(block_root, slot);
         }
         tracing::debug!(
-            block = hex32(&m.block_root),
-            slot = m.slot,
-            is_buffered = self.dc_pending_blocks.contains_key(&m.block_root),
+            block = hex32(&block_root),
+            slot = slot,
+            is_buffered = self.dc_pending_blocks.contains_key(&block_root),
             dc_pending = self.dc_pending_blocks.len(),
             "DataColumnsAvailable received"
         );
-        if let Some(pending) = self.dc_pending_blocks.remove(&m.block_root) {
+        if let Some(pending) = self.dc_pending_blocks.remove(&block_root) {
             // Already relayed and BLS-verified when first seen (it reached the
             // DA gate, which is past the signature check).
             self.replay_pending_block(pending, false, true, producers);

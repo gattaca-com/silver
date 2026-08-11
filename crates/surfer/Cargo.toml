@@ -12,6 +12,7 @@ hdrhistogram.workspace = true
 libc.workspace = true
 ratatui.workspace = true
 silver_beacon_state_data.workspace = true
+silver_columns.workspace = true
 silver_common.workspace = true
 silver_metrics.workspace = true
 silver_network.workspace = true

@@ -4429,6 +4429,7 @@ dependencies = [
  "rand 0.8.6",
  "silver_beacon_state",
  "silver_beacon_state_data",
+ "silver_columns",
  "silver_common",
  "silver_config",
  "silver_control",
@@ -4493,6 +4494,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "silver_columns"
+version = "0.0.1"
+dependencies = [
+ "blst",
+ "c-kzg",
+ "flux",
+ "flux-profiler",
+ "fxhash",
+ "hex",
+ "rand 0.8.6",
+ "silver_beacon_state_data",
+ "silver_common",
+ "tracing",
+]
+
+[[package]]
 name = "silver_common"
 version = "0.0.1"
 dependencies = [
@@ -4503,7 +4520,9 @@ dependencies = [
  "buffa",
  "buffa-build",
  "bytes",
+ "c-kzg",
  "flux",
+ "flux-profiler",
  "flux-utils",
  "fxhash",
  "hex",
@@ -4518,6 +4537,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha3",
+ "silver_beacon_state_data",
  "silver_chain_spec",
  "silver_metrics",
  "silver_ssz",
@@ -4748,6 +4768,7 @@ dependencies = [
  "libc",
  "ratatui",
  "silver_beacon_state_data",
+ "silver_columns",
  "silver_common",
  "silver_metrics",
  "silver_network",

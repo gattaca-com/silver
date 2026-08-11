@@ -28,9 +28,7 @@ mod unfinalized;
 
 use checkpoint::CheckpointWriter;
 pub use checkpoint::latest_local_checkpoint;
-use unfinalized::{
-    PayloadKey, PayloadSsz, UnfinalizedBlocks, UnfinalizedColumns, UnfinalizedEnvelopes,
-};
+use unfinalized::{PayloadKey, UnfinalizedBlocks, UnfinalizedColumns, UnfinalizedEnvelopes};
 
 /// `DataColumnSidecarsByRange` is bounded by
 /// `count * NUMBER_OF_COLUMNS <= MAX_REQUEST_DATA_COLUMN_SIDECARS`
@@ -126,7 +124,7 @@ enum PendingWrite {
     WriteUnfinalized {
         slot: u64,
         key: PayloadKey,
-        ssz: PayloadSsz,
+        ssz: TRead,
     },
     /// Finalized: rename the unfinalized file into the flat slot store (a block
     /// additionally appends its index record).
@@ -342,27 +340,9 @@ impl Store {
             self.write_queue.push_back(PendingWrite::WriteUnfinalized {
                 slot,
                 key: PayloadKey::Column { block_root, column: column_index },
-                ssz: PayloadSsz::Ref(sidecar_ssz),
+                ssz: sidecar_ssz,
             });
         }
-    }
-
-    /// Store a data column sidecar whose bytes are owned by the tile (built
-    /// in-tile from EL blobs, not borrowed from a tcache). Always unfinalized:
-    /// the caller only reconstructs columns for blocks above finality.
-    pub(super) fn add_unfinalized_data_column(
-        &mut self,
-        block_root: [u8; 32],
-        column_index: u64,
-        sidecar_ssz: Vec<u8>,
-        slot: u64,
-    ) {
-        self.unfinalized_columns.record(block_root, slot, column_index);
-        self.write_queue.push_back(PendingWrite::WriteUnfinalized {
-            slot,
-            key: PayloadKey::Column { block_root, column: column_index },
-            ssz: PayloadSsz::Owned(sidecar_ssz),
-        });
     }
 
     pub(super) fn add_envelope(&mut self, block_root: [u8; 32], envelope_ssz: TRead) {
@@ -386,7 +366,7 @@ impl Store {
         self.write_queue.push_back(PendingWrite::WriteUnfinalized {
             slot,
             key: PayloadKey::Envelope { block_root },
-            ssz: PayloadSsz::Ref(envelope_ssz),
+            ssz: envelope_ssz,
         });
     }
 
@@ -409,7 +389,7 @@ impl Store {
         self.write_queue.push_back(PendingWrite::WriteUnfinalized {
             slot,
             key: PayloadKey::Block { parent_root, block_root },
-            ssz: PayloadSsz::Ref(block_ssz),
+            ssz: block_ssz,
         });
     }
 
@@ -471,10 +451,6 @@ impl Store {
         }
     }
 
-    pub(super) fn is_synced(&self) -> bool {
-        self.is_synced
-    }
-
     /// Update fork-choice head and finalization watermark from a Status. On a
     /// finalization advance, promote the finalized chain (blocks and their
     /// columns) to the flat store and prune orphaned forks.
@@ -531,10 +507,6 @@ impl Store {
         }
     }
 
-    pub(super) fn head_slot(&self) -> u64 {
-        self.head_slot
-    }
-
     /// BS-accepted block, any fork: every `PersistBlock` lands in
     /// `unfinalized` (or `root_index` once promoted), so membership here is
     /// "validated", independent of the current head chain.
@@ -542,16 +514,8 @@ impl Store {
         self.unfinalized.contains(root) || self.root_index.contains_key(root)
     }
 
-    pub(super) fn finalized_slot(&self) -> u64 {
-        self.finalized_slot
-    }
-
     pub(super) fn store_dir(&self) -> &str {
         &self.store_dir
-    }
-
-    pub(super) fn head_root(&self) -> &[u8; 32] {
-        &self.head_root
     }
 
     pub(super) fn replay_block_paths(&self, custody: u128) -> Vec<(u64, PathBuf, bool)> {
@@ -833,7 +797,9 @@ mod tests {
         time::{Duration, Instant},
     };
 
-    use crate::{tile::IoEvent, util};
+    use silver_common::column_util;
+
+    use crate::tile::IoEvent;
 
     #[test]
     fn concurrent_read_write() {
@@ -1394,7 +1360,7 @@ mod tests {
         block[108..116].copy_from_slice(&7u64.to_le_bytes());
         block[116..148].copy_from_slice(&parent_root);
         block[148..180].copy_from_slice(&state_root);
-        let block_root = util::block_root_fulu(&block);
+        let block_root = column_util::block_root_fulu(&block);
 
         let mut blocks = TCache::producer("backfill_index_blocks", 1 << 20);
         let mut res = blocks.reserve(block.len(), true).unwrap();
@@ -1445,7 +1411,7 @@ mod tests {
         block[148..180].copy_from_slice(&state_root);
         block[body_start + 388..body_start + 392].copy_from_slice(&396u32.to_le_bytes());
         block[body_start + 392..body_start + 396].copy_from_slice(&404u32.to_le_bytes());
-        let block_root = util::block_root_fulu(&block);
+        let block_root = column_util::block_root_fulu(&block);
 
         let mut blocks = TCache::producer("column_backfill_blocks", 1 << 20);
         let mut res = blocks.reserve(block.len(), true).unwrap();
@@ -1507,7 +1473,7 @@ mod tests {
         block[148..180].copy_from_slice(&state_root);
         block[body_start + 388..body_start + 392].copy_from_slice(&396u32.to_le_bytes());
         block[body_start + 392..body_start + 396].copy_from_slice(&404u32.to_le_bytes());
-        let block_root = util::block_root_fulu(&block);
+        let block_root = column_util::block_root_fulu(&block);
 
         // Block on disk, no columns — exactly the post-sync state.
         let dir = store.finalized_slot_dir(super::Payload::Block, slot);

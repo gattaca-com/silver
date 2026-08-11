@@ -51,9 +51,11 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
         Cell::from("last").style(lat_hdr),
         Cell::from("p50").style(lat_hdr),
         Cell::from("p99").style(lat_hdr),
+        Cell::from("max").style(lat_hdr),
         Cell::from("last").style(proc_hdr),
         Cell::from("p50").style(proc_hdr),
         Cell::from("p99").style(proc_hdr),
+        Cell::from("max").style(proc_hdr),
         Cell::from("count").style(Style::default().add_modifier(Modifier::BOLD)),
     ])
     .height(1);
@@ -64,9 +66,9 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
         .enumerate()
         .map(|(i, t)| {
             let lat = t.latency.last_bucket().unwrap_or_default();
-            let (proc_last, proc_bucket) = match &t.processing {
-                Some(p) => (p.last_ns, p.last_bucket().unwrap_or_default()),
-                None => (0, Default::default()),
+            let (proc_last, proc_max, proc_bucket) = match &t.processing {
+                Some(p) => (p.last_ns, p.max_ns, p.last_bucket().unwrap_or_default()),
+                None => (0, 0, Default::default()),
             };
             let style = if i == app.timings_selection {
                 Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD)
@@ -80,9 +82,11 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
                 lat_cell(t.latency.last_ns),
                 lat_cell(lat.p50_ns),
                 lat_cell(lat.p99_ns),
+                lat_cell(t.latency.max_ns),
                 proc_cell(proc_last),
                 proc_cell(proc_bucket.p50_ns),
                 proc_cell(proc_bucket.p99_ns),
+                proc_cell(proc_max),
                 Cell::from(format!("{:>8}", lat.count)),
             ])
             .height(1)
@@ -91,7 +95,9 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
         .collect();
 
     let widths = [
-        Constraint::Percentage(30),
+        Constraint::Percentage(26),
+        Constraint::Length(10),
+        Constraint::Length(10),
         Constraint::Length(10),
         Constraint::Length(10),
         Constraint::Length(10),

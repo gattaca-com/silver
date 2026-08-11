@@ -88,6 +88,9 @@ impl NetworkTile {
                     tracing::warn!(?enr, "cannot dial peer with no quic endpoint");
                 }
             }
+            PeerControl::P2pDisconnect { p2p: _, p2p_connection } => {
+                self.inner.p2p_endpoint.disconnect(p2p_connection, now);
+            }
             _ => {} // no-ops for this tile
         }
     }

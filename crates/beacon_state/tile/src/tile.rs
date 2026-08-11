@@ -10,7 +10,7 @@ use silver_beacon_state_data::{
     Checkpoint, Epoch, SLOTS_PER_EPOCH, Slot, SlotState, SpecConfig, StateId, Version,
 };
 use silver_common::{
-    BeaconStateEvent, BlockSource, DataColumnsAvailable, EngineResp, NewGossipMsg, ReplayBlock,
+    BeaconStateEvent, BlockSource, DataColumnsEvent, EngineResp, NewGossipMsg, ReplayBlock,
     RpcInbound, RpcResponse, RpcResponseInbound, SilverSpine, SyncUpdate, TRandomAccess, TRead,
     hex32,
     ssz_view::{MAX_ATTESTATIONS_ELECTRA, MAX_ATTESTING_INDICES, STATUS_V2_SIZE},
@@ -705,8 +705,10 @@ impl Tile<SilverSpine> for BeaconStateTile {
         adapter.consume(|m: RpcInbound, producers| self.on_rpc_inbound(m, producers));
         self.rpc_consumer.free();
 
-        adapter.consume(|m: DataColumnsAvailable, producers| {
-            self.handle_data_columns_available(m, producers);
+        adapter.consume(|m: DataColumnsEvent, producers| {
+            if let DataColumnsEvent::Available { block_root, slot } = m {
+                self.handle_data_columns_available(block_root, slot, producers);
+            }
         });
 
         adapter.consume(|eng_resp: EngineResp, producers| {

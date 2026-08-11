@@ -671,6 +671,14 @@ pub enum BlockSource {
     Rpc,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ColumnSource {
+    Gossip,
+    Rpc,
+    El,
+}
+
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
@@ -969,13 +977,20 @@ impl BeaconStateEvent {
     }
 }
 
-/// Message sent by the data column tile when all custody data columns for a
-/// block have been received and KZG-validated.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
-pub struct DataColumnsAvailable {
-    pub block_root: [u8; 32],
-    pub slot: u64,
+pub enum DataColumnsEvent {
+    /// Message sent by the data column tile when all custody data columns for a
+    /// block have been received and KZG-validated.
+    Available { block_root: [u8; 32], slot: u64 },
+    /// Message sent when a data column has been validated.
+    Persist {
+        ssz: TCacheRead,
+        source: ColumnSource,
+        block_root: [u8; 32],
+        column_index: u64,
+        slot: u64,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -2,12 +2,12 @@ use std::{collections::VecDeque, ops::Range};
 
 use fxhash::FxHashMap;
 use silver_common::{
-    PeerEvent, TRead,
+    PeerEvent, TRead, column_util,
     merkle::B256,
     ssz_view::{DataColumnSidecarFuluView, SignedBeaconBlockView},
 };
 
-use crate::{store::PendingWrite, util};
+use crate::store::PendingWrite;
 
 /// Block-history backfill **tracker**. Issuance moved to the control-tile
 /// `SyncEngine`; storage reports the gap via `PeerEvent::BackfillState` and
@@ -54,7 +54,7 @@ impl Backfill {
             }
         };
 
-        let new_block_root = util::block_root_fulu(buffer);
+        let new_block_root = column_util::block_root_fulu(buffer);
         let slot = SignedBeaconBlockView::slot(buffer);
         let new_parent_root = *SignedBeaconBlockView::parent_root(buffer);
 
@@ -128,7 +128,7 @@ impl ColumnBackfill {
             proposer_index: SignedBeaconBlockView::proposer_index(block),
             parent_root: *SignedBeaconBlockView::parent_root(block),
             state_root: *SignedBeaconBlockView::state_root(block),
-            body_root: util::body_root(SignedBeaconBlockView::body(block)),
+            body_root: column_util::body_root(SignedBeaconBlockView::body(block)),
             signature: *SignedBeaconBlockView::signature(block),
             requested: missing,
             received: 0,
@@ -150,20 +150,20 @@ impl ColumnBackfill {
             }
         };
 
-        if !util::verify_data_column_sidecar_fulu(buffer) {
+        if !column_util::verify_data_column_sidecar_fulu(buffer) {
             tracing::warn!("badly formed backfill data column sidecar");
             return None;
         }
-        if !util::verify_data_column_sidecar_kzg_proofs_fulu(buffer) {
+        if !column_util::verify_data_column_sidecar_kzg_proofs_fulu(buffer) {
             tracing::warn!("failed to verify backfill sidecar kzg proof");
             return None;
         }
-        if !util::verify_data_column_sidecar_inclusion_proof(buffer) {
+        if !column_util::verify_data_column_sidecar_inclusion_proof(buffer) {
             tracing::warn!("failed to verify backfill sidecar inclusion proof");
             return None;
         }
 
-        let block_root = util::block_root_from_sidecar(buffer);
+        let block_root = column_util::block_root_from_sidecar(buffer);
         let column_index = DataColumnSidecarFuluView::index(buffer);
         let column_bitmask = 1u128 << column_index;
         let (slot, complete) = {

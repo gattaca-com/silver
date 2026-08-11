@@ -3,11 +3,15 @@
 //! request. Whichever fills the custody set first wins; the loser dedups via
 //! `validated_columns`.
 
-use std::time::{Duration, Instant};
+use std::{
+    io::Write,
+    time::{Duration, Instant},
+};
 
 use silver_common::{
-    BASE_REQUEST_ID, DataColumnsAvailable, EngineGetBlobsReq, EngineGetBlobsResp, EngineReq,
-    MAX_BLOBS_PER_BLOCK, TRandomAccess, Wheel,
+    BASE_REQUEST_ID, ColumnSource, DataColumnsEvent, EngineGetBlobsReq, EngineGetBlobsResp,
+    EngineReq, MAX_BLOBS_PER_BLOCK, TCacheProducer, TProducer, TRandomAccess, Wheel,
+    column_util as util,
     ssz_hash::kzg_commitments_inclusion_proof,
     ssz_view::{
         BEACON_BLOCK_BODY_FIXED, BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF,
@@ -15,7 +19,7 @@ use silver_common::{
     },
 };
 
-use crate::{StorageCounters, store::Store, tile::StorageEmit, util};
+use crate::{DataColumnCounters, sync::SyncStatus, tile::StorageEmit};
 
 type BlockRoot = [u8; 32];
 
@@ -44,6 +48,7 @@ pub(crate) struct ElBlobFetcher {
     /// In-flight fetches, keyed by request id. 4 buckets × 500ms ⇒ entries age
     /// out after ~1.5–2s if the EL never responds.
     pending: Wheel<u64, PendingBlobFetch, 4>,
+    sidecar_buffer: Vec<u8>,
 }
 
 impl ElBlobFetcher {
@@ -52,6 +57,7 @@ impl ElBlobFetcher {
             engine_resp_consumer,
             next_req_id: BASE_REQUEST_ID,
             pending: Wheel::new(Duration::from_millis(500)),
+            sidecar_buffer: Vec::with_capacity(8 * 1024),
         }
     }
 
@@ -126,7 +132,7 @@ impl ElBlobFetcher {
             inclusion_proof: kzg_commitments_inclusion_proof(body),
             commitments: commitments_buf,
         });
-        StorageCounters::ElBlobsFetched.inc();
+        DataColumnCounters::ElBlobsFetched.inc();
         emit(StorageEmit::Engine(EngineReq::GetBlobs(req)));
     }
 
@@ -135,16 +141,18 @@ impl ElBlobFetcher {
     /// same availability path as p2p sidecars. Bails (leaving the p2p race to
     /// fill them) on any incompleteness — `ok == false`, a missing blob, a
     /// decode/KZG error, or a now-finalized block.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn handle_response<F>(
         &mut self,
         resp: EngineGetBlobsResp,
-        store: &mut Store,
         validated_columns: &mut Wheel<BlockRoot, u128, 4>,
         outstanding_requests: &mut Wheel<BlockRoot, (u128, u128, u8), 16>,
+        sync_state: &SyncStatus,
         custody_group_columns: u128,
+        column_producer: &mut TProducer,
         emit: &mut F,
     ) where
-        F: FnMut(DataColumnsAvailable),
+        F: FnMut(DataColumnsEvent),
     {
         let Some(pending) = self.pending.remove(&resp.id) else {
             return; // unknown / expired request
@@ -152,7 +160,7 @@ impl ElBlobFetcher {
         if !resp.ok {
             return;
         }
-        if pending.slot <= store.finalized_slot() {
+        if pending.slot <= sync_state.finalized_slot() {
             return; // block finalized while in flight — availability is moot
         }
 
@@ -211,9 +219,9 @@ impl ElBlobFetcher {
             let proof_lo = j as usize * BYTES_PER_KZG_PROOF;
             let proof_hi = proof_lo + BYTES_PER_KZG_PROOF;
 
-            let mut sidecar = Vec::with_capacity(util::data_column_sidecar_len(n));
+            self.sidecar_buffer.clear();
             util::push_data_column_sidecar_prefix(
-                &mut sidecar,
+                &mut self.sidecar_buffer,
                 j,
                 n,
                 &pending.header,
@@ -225,24 +233,42 @@ impl ElBlobFetcher {
                 // SAFETY: `c_kzg::Cell` is `#[repr(C)]` over `[u8; BYTES_PER_CELL]`;
                 // cast avoids the array copy `Cell::to_bytes()` makes.
                 let bytes: &[u8; BYTES_PER_CELL] = unsafe { &*std::ptr::from_ref(cell).cast() };
-                sidecar.extend_from_slice(bytes);
+                self.sidecar_buffer.extend_from_slice(bytes);
             }
             // kzg_commitments (shared) then kzg_proofs: proof j of every blob.
-            sidecar.extend_from_slice(commitments);
+            self.sidecar_buffer.extend_from_slice(commitments);
             for (_, proofs) in blobs[..n].iter() {
-                sidecar.extend_from_slice(&proofs[proof_lo..proof_hi]);
+                self.sidecar_buffer.extend_from_slice(&proofs[proof_lo..proof_hi]);
             }
-            debug_assert_eq!(sidecar.len(), util::data_column_sidecar_len(n));
+            debug_assert_eq!(self.sidecar_buffer.len(), util::data_column_sidecar_len(n));
 
             // TODO(republish): maybe gossip these EL-reconstructed columns to peers?
-            store.add_unfinalized_data_column(pending.block_root, j, sidecar, pending.slot);
+            match column_producer.reserve(self.sidecar_buffer.len(), true) {
+                Some(mut reservation) => match reservation.write(&self.sidecar_buffer) {
+                    Ok(_) => {
+                        let ssz = reservation.read();
+                        emit(DataColumnsEvent::Persist {
+                            ssz,
+                            source: ColumnSource::El,
+                            block_root: pending.block_root,
+                            column_index: j,
+                            slot: pending.slot,
+                        });
+                    }
+                    Err(e) => tracing::error!(?e, "failed to write el sidecar to tcache"),
+                },
+                None => {
+                    tracing::error!("failed to allocation cache space for el data column");
+                }
+            }
+
             built |= bit;
         }
 
         if built == 0 {
             return;
         }
-        StorageCounters::ElColumnsBuilt.inc();
+        DataColumnCounters::ElColumnsBuilt.inc();
 
         let validated = validated_columns.entry(pending.block_root).or_default();
         *validated |= built;
@@ -259,13 +285,16 @@ impl ElBlobFetcher {
         }
 
         if validated & custody_group_columns == custody_group_columns {
-            StorageCounters::DataColumnsAvailableEmitted.inc();
+            DataColumnCounters::DataColumnsAvailableEmitted.inc();
             tracing::info!(
                 block = hex::encode(pending.block_root),
                 slot = pending.slot,
                 "DataColumnsAvailable: custody set complete (EL blobs)"
             );
-            emit(DataColumnsAvailable { block_root: pending.block_root, slot: pending.slot });
+            emit(DataColumnsEvent::Available {
+                block_root: pending.block_root,
+                slot: pending.slot,
+            });
         }
     }
 }

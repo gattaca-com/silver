@@ -7,8 +7,8 @@ use std::{
 use flux::{spine::SpineAdapter, tile::Tile};
 use silver_chain_spec::SpecConfig;
 use silver_common::{
-    BeaconStateEvent, Nanos, P2pSend, PeerControl, PeerEvent, RpcInbound, RpcOutbound,
-    RpcRequestOutbound, SilverSpine, SilverSpineProducers, TCacheProducer, TCacheRead,
+    BeaconStateEvent, GossipTopic, Nanos, P2pSend, PeerControl, PeerEvent, RpcInbound, RpcOutbound,
+    RpcRequestOutbound, SilverSpine, SilverSpineProducers, SyncUpdate, TCacheProducer, TCacheRead,
     TMultiProducer, TRandomAccess, msg_is_backfill,
     ssz_view::{BLOCKS_BY_RANGE_REQ_SIZE, METADATA_SIZE, STATUS_V2_SIZE, StatusView},
 };
@@ -42,6 +42,12 @@ pub struct Controller {
     /// generating background Ping traffic that would interfere with
     /// targeted RPC assertions.
     auto_ping: bool,
+
+    /// Long-lived subnet topics advertised (ENR/MetaData) from boot but
+    /// subscribed only once the node is Following — grafted-while-syncing
+    /// meshes would earn P3 deficit at peers since nothing validates or
+    /// forwards until then. Drained into the PM on the first transition.
+    pending_subnet_topics: Vec<GossipTopic>,
 }
 
 impl Controller {
@@ -73,7 +79,12 @@ impl Controller {
             last_drain: Instant::now(),
             last_peer_persist: Instant::now(),
             auto_ping: true,
+            pending_subnet_topics: Vec::new(),
         }
+    }
+
+    pub fn set_pending_subnet_topics(&mut self, topics: Vec<GossipTopic>) {
+        self.pending_subnet_topics = topics;
     }
 
     pub fn set_status(&mut self, status: [u8; STATUS_V2_SIZE]) {
@@ -247,6 +258,21 @@ impl Tile<SilverSpine> for Controller {
             adapter.produce(strategy);
         }
 
+        if !self.pending_subnet_topics.is_empty() &&
+            matches!(self.sync_engine.current_target(), SyncUpdate::Following)
+        {
+            let topics = std::mem::take(&mut self.pending_subnet_topics);
+            tracing::info!(?topics, "activating long-lived subnet subscriptions");
+            self.peer_manager.activate_topics(&topics, &mut |evt| {
+                handle_peer_control(
+                    &mut self.gossip_handler,
+                    &mut self.rpc_producer,
+                    evt,
+                    &mut adapter.producers,
+                )
+            });
+        }
+
         // Catchup → Following edge: fan out Status to every peer
         // so they reciprocate with their fresh head — primes the head-sync
         // set — and announce our topic subscriptions so peers connected
@@ -292,6 +318,16 @@ impl Tile<SilverSpine> for Controller {
 
         if self.last_tick.elapsed() > Duration::from_millis(700) {
             self.last_tick = now;
+            // Before tick: redials shrink the peer deficit so tick's
+            // discovery request only backfills what the database can't.
+            self.peer_manager.redial_known_peers(now, &mut |evt| {
+                handle_peer_control(
+                    &mut self.gossip_handler,
+                    &mut self.rpc_producer,
+                    evt,
+                    &mut adapter.producers,
+                )
+            });
             self.peer_manager.tick(now, &mut |evt| {
                 handle_peer_control(
                     &mut self.gossip_handler,
