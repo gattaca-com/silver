@@ -22,7 +22,7 @@ use crate::{
     bls,
     fork_choice::{FORK_CHOICE_NODES_HINT, ForkChoice, PayloadStatus},
     merkle, ssz_hash, stf,
-    tile::{orphan_pool::PendingBlock, shuffling_cache::ShufflingCache},
+    tile::{gossip::SeenAttesters, orphan_pool::PendingBlock, shuffling_cache::ShufflingCache},
     weak_subjectivity::{weak_subjectivity_period_fulu, weak_subjectivity_period_gloas},
 };
 
@@ -115,6 +115,7 @@ pub struct BeaconStateTile {
 
     fork_choice: ForkChoice,
     shuffling_cache: Box<ShufflingCache>,
+    seen_attesters: SeenAttesters,
 
     /// Highest finalized slot PM has announced as a sync target — bounds the
     /// data-availability requirement while range sync back-fills.
@@ -213,6 +214,7 @@ impl BeaconStateTile {
             state: owner,
             fork_choice: ForkChoice::default(),
             shuffling_cache: ShufflingCache::with_capacity(val_cap),
+            seen_attesters: SeenAttesters::new(val_cap),
             last_applied: anchor,
             last_applied_block_root: [0u8; 32],
             initial_status_emitted: false,
@@ -1252,7 +1254,7 @@ mod tests {
         let mut tile = make_tile();
         seed_tile(&mut tile, 4, 10);
         let buf = [0u8; 100];
-        tile.handle_attestation(&buf);
+        tile.handle_attestation(&buf, 0);
         assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_epoch, 0);
     }
 
@@ -1479,6 +1481,18 @@ mod tests {
         panic!("validator 0 in some committee")
     }
 
+    /// Spec `compute_subnet_for_attestation`, recomputed independently of the
+    /// production helper.
+    fn expected_subnet(tile: &BeaconStateTile, slot: Slot, ci: usize) -> u64 {
+        let shuffled = tile
+            .shuffling_cache
+            .shuffled_by_epoch(slot / SLOTS_PER_EPOCH)
+            .expect("shuffling for epoch");
+        let cps =
+            stf::EpochShuffling::new(shuffled, tile.head_validator_count()).committees_per_slot;
+        (cps as u64 * (slot % SLOTS_PER_EPOCH) + ci as u64) % 64
+    }
+
     fn build_agg_for_vi0(tile: &BeaconStateTile) -> Vec<u8> {
         let imm = seed_immutable(tile);
         let beacon_block_root = tile.last_applied_block_root;
@@ -1503,6 +1517,7 @@ mod tests {
         let mut tile = make_tile_at_wall_slot(31);
         seed_tile_with_keys(&mut tile, 128, 0);
         let (slot, ci, _, _) = find_committee_for_vi0(&tile);
+        let subnet = expected_subnet(&tile, slot, ci);
         let imm = seed_immutable(&tile);
         // Vote for the (known) anchor block; target is the anchor's checkpoint
         // block, so the spec target/ancestor checks accept.
@@ -1521,7 +1536,7 @@ mod tests {
         // the offsets), verifying the vote fold self-consistently.
         let want_root = *SingleAttestationView::beacon_block_root(&buf);
         let want_epoch = SingleAttestationView::target_epoch(&buf);
-        assert_eq!(tile.handle_attestation(&buf), Feedback::Accept(None));
+        assert_eq!(tile.handle_attestation(&buf, subnet), Feedback::Accept(None));
         assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_root, want_root);
         assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_epoch, want_epoch);
     }
@@ -1534,6 +1549,7 @@ mod tests {
         let mut tile = make_tile_at_wall_slot(31);
         seed_tile_with_keys(&mut tile, 128, 0);
         let (slot, ci, _, _) = find_committee_for_vi0(&tile);
+        let subnet = expected_subnet(&tile, slot, ci);
         let imm = seed_immutable(&tile);
         let unknown = [0xAAu8; 32];
         let buf = test_signing::sign_single_attestation(
@@ -1546,7 +1562,7 @@ mod tests {
             unknown,
             &imm,
         );
-        assert_eq!(tile.handle_attestation(&buf), Feedback::Ignore);
+        assert_eq!(tile.handle_attestation(&buf, subnet), Feedback::Ignore);
     }
 
     /// Spec `validate_on_attestation`: a known-block vote whose target does not
@@ -1556,6 +1572,7 @@ mod tests {
         let mut tile = make_tile_at_wall_slot(31);
         seed_tile_with_keys(&mut tile, 128, 0);
         let (slot, ci, _, _) = find_committee_for_vi0(&tile);
+        let subnet = expected_subnet(&tile, slot, ci);
         let imm = seed_immutable(&tile);
         let bbr = tile.last_applied_block_root; // known anchor
         let wrong_target = [0x77u8; 32];
@@ -1569,7 +1586,7 @@ mod tests {
             wrong_target,
             &imm,
         );
-        assert_eq!(tile.handle_attestation(&buf), Feedback::Reject(None));
+        assert_eq!(tile.handle_attestation(&buf, subnet), Feedback::Reject(None));
     }
 
     /// Fulu: a single attestation with a non-zero `AttestationData.index` is
@@ -1580,6 +1597,7 @@ mod tests {
         let mut tile = make_tile_at_wall_slot(31);
         seed_tile_with_keys(&mut tile, 128, 0);
         let (slot, ci, _, _) = find_committee_for_vi0(&tile);
+        let subnet = expected_subnet(&tile, slot, ci);
         let imm = seed_immutable(&tile);
         let bbr = tile.last_applied_block_root;
         let mut buf = test_signing::sign_single_attestation(
@@ -1594,7 +1612,7 @@ mod tests {
         );
         // AttestationData.index @ buf[24..32]; non-zero is illegal post-Electra.
         buf[24] = 1;
-        assert_eq!(tile.handle_attestation(&buf), Feedback::Reject(None));
+        assert_eq!(tile.handle_attestation(&buf, subnet), Feedback::Reject(None));
     }
 
     /// Spec `validate_on_attestation`: a current-slot vote is held until the
@@ -1604,6 +1622,7 @@ mod tests {
         let mut tile = make_tile_at_wall_slot(31);
         seed_tile_with_keys(&mut tile, 128, 0);
         let (slot, ci, _, _) = find_committee_for_vi0(&tile);
+        let subnet = expected_subnet(&tile, slot, ci);
         // Make the committee slot the current slot → the vote must defer.
         tile.ticker.set_current_slot(slot);
         let imm = seed_immutable(&tile);
@@ -1618,12 +1637,96 @@ mod tests {
             bbr,
             &imm,
         );
-        assert_eq!(tile.handle_attestation(&buf), Feedback::Accept(None));
+        assert_eq!(tile.handle_attestation(&buf, subnet), Feedback::Accept(None));
         // Deferred: not yet folded into the tracker.
         assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_root, [0u8; 32]);
         let n = tile.head_validator_count();
         tile.fork_choice.drain_pending_votes(n);
         assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_root, bbr);
+    }
+
+    /// Spec [REJECT]: an attestation must arrive on the subnet its committee
+    /// maps to.
+    #[test]
+    fn single_att_wrong_subnet_rejected() {
+        let mut tile = make_tile_at_wall_slot(31);
+        seed_tile_with_keys(&mut tile, 128, 0);
+        let (slot, ci, _, _) = find_committee_for_vi0(&tile);
+        let subnet = expected_subnet(&tile, slot, ci);
+        let imm = seed_immutable(&tile);
+        let bbr = tile.last_applied_block_root;
+        let buf = test_signing::sign_single_attestation(
+            0,
+            0,
+            ci as u64,
+            slot,
+            bbr,
+            slot / SLOTS_PER_EPOCH,
+            bbr,
+            &imm,
+        );
+        assert_eq!(tile.handle_attestation(&buf, (subnet + 1) % 64), Feedback::Reject(None));
+        // The reject must not have marked the attester seen.
+        assert_eq!(tile.handle_attestation(&buf, subnet), Feedback::Accept(None));
+    }
+
+    /// Spec [IGNORE]: at most one attestation per (attester, target epoch).
+    #[test]
+    fn single_att_repeat_attester_epoch_ignored() {
+        let mut tile = make_tile_at_wall_slot(31);
+        seed_tile_with_keys(&mut tile, 128, 0);
+        let (slot, ci, _, _) = find_committee_for_vi0(&tile);
+        let subnet = expected_subnet(&tile, slot, ci);
+        let imm = seed_immutable(&tile);
+        let bbr = tile.last_applied_block_root;
+        let buf = test_signing::sign_single_attestation(
+            0,
+            0,
+            ci as u64,
+            slot,
+            bbr,
+            slot / SLOTS_PER_EPOCH,
+            bbr,
+            &imm,
+        );
+        assert_eq!(tile.handle_attestation(&buf, subnet), Feedback::Accept(None));
+        assert_eq!(tile.handle_attestation(&buf, subnet), Feedback::Ignore);
+    }
+
+    /// A rejected attestation must not mark the attester seen, or a forged
+    /// message would censor the validator's honest vote for the epoch.
+    #[test]
+    fn single_att_failed_validation_does_not_mark_seen() {
+        let mut tile = make_tile_at_wall_slot(31);
+        seed_tile_with_keys(&mut tile, 128, 0);
+        let (slot, ci, _, _) = find_committee_for_vi0(&tile);
+        let subnet = expected_subnet(&tile, slot, ci);
+        let imm = seed_immutable(&tile);
+        let bbr = tile.last_applied_block_root;
+        // Signed with sk 1; validator 0's registry key is pubkey_pk(0).
+        let bad = test_signing::sign_single_attestation(
+            1,
+            0,
+            ci as u64,
+            slot,
+            bbr,
+            slot / SLOTS_PER_EPOCH,
+            bbr,
+            &imm,
+        );
+        assert_eq!(tile.handle_attestation(&bad, subnet), Feedback::Reject(None));
+
+        let honest = test_signing::sign_single_attestation(
+            0,
+            0,
+            ci as u64,
+            slot,
+            bbr,
+            slot / SLOTS_PER_EPOCH,
+            bbr,
+            &imm,
+        );
+        assert_eq!(tile.handle_attestation(&honest, subnet), Feedback::Accept(None));
     }
 
     /// Marking a validator equivocating zeroes its live vote and blocks future

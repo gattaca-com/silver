@@ -1,10 +1,10 @@
 use flux::spine::SpineProducers;
 use silver_beacon_state_data::{
-    B256, ParsedAggregateAndProof, SLOTS_PER_EPOCH, Slot, StateId, StateReadView,
+    B256, Epoch, ParsedAggregateAndProof, SLOTS_PER_EPOCH, Slot, StateId, StateReadView,
 };
 use silver_common::{
-    BeaconStateEvent, BlockSource, EngineNewPayloadEnvelopeReq, EngineReq, GossipTopic,
-    MAX_BLOBS_PER_BLOCK, NewGossipMsg, PeerEvent, TCacheRead, TRead,
+    ATTESTATION_SUBNETS, BeaconStateEvent, BlockSource, EngineNewPayloadEnvelopeReq, EngineReq,
+    GossipTopic, MAX_BLOBS_PER_BLOCK, NewGossipMsg, PeerEvent, TCacheRead, TRead,
     metrics::timed,
     ssz_view::{
         AttestationDataView, AttestationView, AttesterSlashingView,
@@ -27,9 +27,53 @@ pub(super) enum EnvelopeCheck {
     Ignore,
 }
 
+/// Lanes are indexed by epoch parity, so the {wall, wall-1} window maps each
+/// epoch to a stable lane and rotation is a re-arm of whichever lane expired.
+pub(super) struct SeenAttesters {
+    epochs: [Epoch; 2],
+    bits: [Vec<u64>; 2],
+}
+
+impl SeenAttesters {
+    pub(super) fn new(validator_capacity: usize) -> Self {
+        let words = validator_capacity.div_ceil(64);
+        // Sentinels above any wall epoch, parities matching their lanes.
+        Self { epochs: [u64::MAX - 1, u64::MAX], bits: [vec![0; words], vec![0; words]] }
+    }
+
+    pub(super) fn rotate_to(&mut self, wall_epoch: Epoch) {
+        for epoch in [wall_epoch.saturating_sub(1), wall_epoch] {
+            let lane = (epoch % 2) as usize;
+            if self.epochs[lane] != epoch {
+                self.epochs[lane] = epoch;
+                self.bits[lane].fill(0);
+            }
+        }
+    }
+
+    pub(super) fn contains(&self, target_epoch: Epoch, validator: usize) -> bool {
+        let lane = (target_epoch % 2) as usize;
+        self.epochs[lane] == target_epoch &&
+            self.bits[lane].get(validator / 64).is_some_and(|w| w & (1 << (validator % 64)) != 0)
+    }
+
+    pub(super) fn mark(&mut self, target_epoch: Epoch, validator: usize) {
+        let lane = (target_epoch % 2) as usize;
+        debug_assert!(self.epochs[lane] == target_epoch);
+        if self.epochs[lane] != target_epoch {
+            return;
+        }
+        let bits = &mut self.bits[lane];
+        if validator / 64 >= bits.len() {
+            bits.resize(validator / 64 + 1, 0);
+        }
+        bits[validator / 64] |= 1 << (validator % 64);
+    }
+}
+
 impl BeaconStateTile {
     #[timed]
-    pub(super) fn handle_attestation(&mut self, data: &[u8]) -> Feedback {
+    pub(super) fn handle_attestation(&mut self, data: &[u8], subnet: u64) -> Feedback {
         if data.len() < SINGLE_ATT_SIZE {
             return Feedback::Reject(None);
         }
@@ -42,6 +86,11 @@ impl BeaconStateTile {
 
         let wall = self.ticker.current_slot();
         if att_slot > wall || att_slot.saturating_add(ATTESTATION_PROPAGATION_SLOT_RANGE) < wall {
+            return Feedback::Ignore;
+        }
+
+        self.seen_attesters.rotate_to(wall / SLOTS_PER_EPOCH);
+        if self.seen_attesters.contains(target_epoch, attester_index) {
             return Feedback::Ignore;
         }
 
@@ -76,6 +125,15 @@ impl BeaconStateTile {
         if committee_index >= shuffling.committees_per_slot {
             return Feedback::Reject(None);
         }
+        if subnet !=
+            compute_subnet_for_attestation(
+                shuffling.committees_per_slot,
+                att_slot,
+                committee_index,
+            )
+        {
+            return Feedback::Reject(None);
+        }
         let committee = shuffling.committee(att_slot, committee_index);
         if !committee.contains(&(attester_index as u32)) {
             return Feedback::Reject(None);
@@ -104,6 +162,8 @@ impl BeaconStateTile {
         };
         let n = self.head_validator_count();
         self.record_or_defer_vote(vote, n);
+
+        self.seen_attesters.mark(target_epoch, attester_index);
 
         Feedback::Accept(None)
     }
@@ -607,7 +667,7 @@ impl BeaconStateTile {
             GossipTopic::BeaconBlock => {
                 self.apply_block(data, read, BlockSource::Gossip, pre_verified, producers)
             }
-            GossipTopic::BeaconAttestation(_) => self.handle_attestation(data),
+            GossipTopic::BeaconAttestation(subnet) => self.handle_attestation(data, subnet),
             GossipTopic::BeaconAggregateAndProof => self.handle_aggregate_and_proof(data),
             GossipTopic::VoluntaryExit => self.handle_voluntary_exit(data),
             GossipTopic::ProposerSlashing => self.handle_proposer_slashing(data),
@@ -667,4 +727,13 @@ pub(super) fn is_aggregator(committee_len: usize, selection_proof: &[u8; 96]) ->
     let modulo = (committee_len as u64 / TARGET_AGGREGATORS_PER_COMMITTEE).max(1);
     let h = merkle::sha256(selection_proof);
     u64::from_le_bytes(h[0..8].try_into().unwrap()) % modulo == 0
+}
+
+pub(super) fn compute_subnet_for_attestation(
+    committees_per_slot: usize,
+    slot: Slot,
+    committee_index: usize,
+) -> u64 {
+    let committees_since_epoch_start = committees_per_slot as u64 * (slot % SLOTS_PER_EPOCH);
+    (committees_since_epoch_start + committee_index as u64) % ATTESTATION_SUBNETS as u64
 }
