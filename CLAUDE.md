@@ -21,13 +21,6 @@ reason about and faster to run.
 
 - Binary is `crates/bin`; everything else is a `silver_*` library crate.
 - Crates are organised as **tiles** — independent components that communicate over channels.
-- Key crates:
-  - `silver_common` — shared types, identity, gossip/p2p plumbing, spine, allocator.
-  - `silver_beacon_state` (`beacon_state/tile`) — the beacon-state tile.
-  - `silver_beacon_state_data` (`beacon_state/data`) — the state storage model itself.
-  - `silver_control`, `silver_storage`, `silver_engine`, `silver_network`, `silver_gossip`,
-    `silver_discovery`, `silver_peer`, `silver_ssz`, `silver_config`, `silver_surfer`,
-    `silver_metrics`.
 - The beacon state is **not** a monolith: it's a bag of per-tier *groups* (validators,
   balances, participation, …), each a finalized base + a ring of per-fork deltas.
 - Read `docs/beacon-state-architecture.md` and `docs/delta-rebase-invariant.md` before
