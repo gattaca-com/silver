@@ -159,7 +159,7 @@ struct StackKeepAlive {
     ssz_consumer: Option<TConsumer>,
     // Inbound gossip-bytes cache consumer (kept alive; compression owns the
     // consumer in the echo stack).
-    gossip_in_consumer: Option<TConsumer>,
+    gossip_in_consumer: Option<TRandomAccess>,
     // Publisher-side dummy RPC caches.
     rpc_in_consumer: Option<TConsumer>,
     rpc_out_producer: Option<TProducer>,
@@ -199,8 +199,9 @@ impl PublisherStack {
         // TCaches needed by the network tile on the publisher side.
         // gossip_in: network writes raw inbound gossip here; nobody reads.
         let gossip_in_producer = TCache::producer("e2e_stack", TCACHE_SIZE);
-        let gossip_in_consumer = gossip_in_producer.cache_ref().consumer("e2e").ok();
-        let gossip_in_consumer_2 = gossip_in_producer.cache_ref().consumer("e2e_2").unwrap();
+        let gossip_in_consumer = gossip_in_producer.cache_ref().random_access("e2e", true).ok();
+        let gossip_in_consumer_2 =
+            gossip_in_producer.cache_ref().random_access("e2e_2", true).unwrap();
 
         // gossip_out: network reads outbound bytes from here via random-access.
         // The publisher's mcache TCache IS the gossip_out source — same cache.
@@ -320,7 +321,8 @@ impl EchoStack {
 
         // Inbound gossip raw bytes: network writes, compression consumes.
         let gossip_in_producer = TCache::producer("e2e_stack", TCACHE_SIZE);
-        let gossip_in_consumer = gossip_in_producer.cache_ref().consumer("e2e").expect("consumer");
+        let gossip_in_consumer =
+            gossip_in_producer.cache_ref().random_access("e2e", true).expect("consumer");
 
         // SSZ output: compression writes, stats-sink reads.
         let ssz_producer = TCache::producer("e2e_stack", TCACHE_SIZE);

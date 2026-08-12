@@ -8,12 +8,12 @@ pub use messages::{
     EngineGetPayloadBodiesByHashReq, EngineGetPayloadBodiesByRangeReq, EngineGetPayloadBodiesResp,
     EngineGetPayloadReq, EngineGetPayloadResp, EngineHealthEvent, EngineNewPayloadEnvelopeReq,
     EngineNewPayloadReq, EngineNewPayloadResp, EnginePreparePayloadReq, EngineReq, EngineResp,
-    GLOAS_ERA_FLAG, GossipMsgOut, IpBytes, MAX_BLOBS_PER_BLOCK, MAX_PAYLOAD_BODIES_PER_REQ,
-    NewGossipMsg, P2pSend, PayloadValidationStatus, PeerControl, PeerEvent, PeerStatus,
-    ReplayBlock, RequestCategory, RpcInbound, RpcOutbound, RpcRequest, RpcRequestInbound,
-    RpcRequestOutbound, RpcResponse, RpcResponseInbound, RpcResponseOutbound, RpcSeverity,
-    SyncUpdate, SyncingStrategy, WithdrawalInline, msg_is_backfill, msg_is_column_backfill,
-    msg_is_envelope_request, msg_is_live_column_request, msg_is_post_gloas,
+    GLOAS_ERA_FLAG, GossipMsgIn, GossipMsgOut, IpBytes, MAX_BLOBS_PER_BLOCK,
+    MAX_PAYLOAD_BODIES_PER_REQ, NewGossipMsg, P2pSend, PayloadValidationStatus, PeerControl,
+    PeerEvent, PeerStatus, ReplayBlock, RequestCategory, RpcInbound, RpcOutbound, RpcRequest,
+    RpcRequestInbound, RpcRequestOutbound, RpcResponse, RpcResponseInbound, RpcResponseOutbound,
+    RpcSeverity, SyncUpdate, SyncingStrategy, WithdrawalInline, msg_is_backfill,
+    msg_is_column_backfill, msg_is_envelope_request, msg_is_live_column_request, msg_is_post_gloas,
 };
 pub use stream_id::P2pStreamId;
 pub use stream_protocol::{
@@ -34,6 +34,9 @@ mod tcache;
 pub struct SilverSpine {
     pub tile_info: ShmemData<TileInfo>,
 
+    /// New incoming network gossip messages
+    #[queue(size(2usize.pow(16)))]
+    pub gossip_in: SpineQueue<GossipMsgIn>,
     /// New incoming gossip messages
     #[queue(size(2usize.pow(16)))]
     pub new_gossip: SpineQueue<NewGossipMsg>,

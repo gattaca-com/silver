@@ -325,7 +325,7 @@ impl StreamState {
                 }
             }
             StreamState::Gossip { mut read, mut write } => {
-                read = read.spin(io, &mut context.gossip_producer, id, now)?;
+                read = read.spin(io, &mut context.gossip_producer, id, now, emit)?;
                 write = write.spin(io, id)?;
 
                 if matches!(read, GossipReadState::Closed) && id.is_incoming() {

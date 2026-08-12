@@ -18,7 +18,7 @@ pub use quic::{SendResult, create_endpoint, create_server_config};
 use quinn_proto::{ConnectionHandle, DatagramEvent, Endpoint};
 use silver_common::{
     GossipMsgOut, Identify, Keypair, P2pStreamId, PeerId, ProtoIdentify, ProtoIdentifyView,
-    RpcOutbound, RpcRequestOutbound,
+    RpcOutbound, RpcRequestOutbound, TCacheRead,
 };
 
 use crate::{
@@ -58,17 +58,30 @@ pub fn p2p_spin<F: FnMut(NetEvent)>(
 #[allow(clippy::large_enum_variant)]
 pub enum NetEvent {
     /// A peer connection has been established and its PeerId verified.
-    PeerConnected { peer: RemotePeer, addr: SocketAddr, local_dialler: bool },
+    PeerConnected {
+        peer: RemotePeer,
+        addr: SocketAddr,
+        local_dialler: bool,
+    },
     /// Peer Identify response
-    PeerIdentify { peer: usize, identify: Identify },
+    PeerIdentify {
+        peer: usize,
+        identify: Identify,
+    },
     /// A peer connection has been lost or the underlying QUIC connection
     /// drained.
-    PeerDisconnected { peer: RemotePeer },
+    PeerDisconnected {
+        peer: RemotePeer,
+    },
     /// A stream has completed multistream-select negotiation and is ready
     /// for application traffic.
-    StreamReady { stream: P2pStreamId },
+    StreamReady {
+        stream: P2pStreamId,
+    },
     /// A stream was closed or rejected.
-    StreamClosed { stream: P2pStreamId },
+    StreamClosed {
+        stream: P2pStreamId,
+    },
     /// A complete inbound RPC chunk has been decoded into a typed
     /// `RpcInbound`. Network tile produces this onto the `rpc_inbound`
     /// spine queue. Inline-payload variants (every `RpcRequest` variant
@@ -80,7 +93,14 @@ pub enum NetEvent {
     /// SSZ-shape / chunk-framing violation observed on an RPC stream.
     /// Network tile translates this into `PeerEvent::RpcMisbehaviour`
     /// onto `peer_events`. The peer manager applies the P5 score delta.
-    RpcMisbehaviour { p2p_peer: usize, severity: silver_common::RpcSeverity },
+    RpcMisbehaviour {
+        p2p_peer: usize,
+        severity: silver_common::RpcSeverity,
+    },
+    Gossip {
+        stream: P2pStreamId,
+        msg: TCacheRead,
+    },
 }
 
 pub struct P2p {

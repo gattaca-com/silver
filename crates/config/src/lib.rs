@@ -108,11 +108,11 @@ pub struct Config {
     peer_score_params: ScoreParams,
     #[serde(default)]
     syncing: SyncingConfig,
-    #[serde(default = "default_usize::<33554432>")] // 2 << 24
+    #[serde(default = "default_usize::<268435456>")] // 2 << 27
     incoming_gossip_tcache_size: usize,
-    #[serde(default = "default_usize::<33554432>")] // 2 << 24
+    #[serde(default = "default_usize::<268435456>")] // 2 << 27
     outgoing_gossip_tcache_size: usize,
-    #[serde(default = "default_usize::<33554432>")] // 2 << 24
+    #[serde(default = "default_usize::<268435456>")] // 2 << 27
     incoming_gossip_ssz_tcache_size: usize,
     #[serde(default = "default_usize::<67108864>")] // 2 << 25
     incoming_rpc_tcache_size: usize,
@@ -149,9 +149,9 @@ impl Config {
             discovery_config: DiscoveryConfig::default(),
             peer_score_params: ScoreParams::default(),
             syncing: SyncingConfig::default(),
-            incoming_gossip_tcache_size: 2 << 24,     // protobuf
-            outgoing_gossip_tcache_size: 2 << 24,     // protobuf
-            incoming_gossip_ssz_tcache_size: 2 << 24, // ssz
+            incoming_gossip_tcache_size: 2 << 27,     // protobuf
+            outgoing_gossip_tcache_size: 2 << 27,     // protobuf
+            incoming_gossip_ssz_tcache_size: 2 << 27, // ssz
             incoming_rpc_tcache_size: 2 << 27,        // ssz
             outgoing_rpc_tcache_size: 2 << 24,        // ssz
             data_storage_dir: default_data_dir(),
