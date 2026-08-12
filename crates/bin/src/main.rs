@@ -47,7 +47,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let incoming_gossip_producer =
         TCache::producer("incoming_gossip", config.incoming_gossip_tcache_size());
     let incoming_gossip_consumer =
-        incoming_gossip_producer.cache_ref().consumer("incoming_gossip")?;
+        incoming_gossip_producer.cache_ref().random_access("incoming_gossip", true)?; //.consumer("incoming_gossip")?;
     let ssz_gossip_producer =
         TCache::producer("ssz_gossip", config.incoming_gossip_ssz_tcache_size());
     let ssz_gossip_consumer =

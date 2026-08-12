@@ -382,7 +382,7 @@ impl Tile<SilverSpine> for Controller {
             });
         }
 
-        if self.gossip_handler.spin() {
+        if self.gossip_handler.spin(adapter) {
             adapter.mark_work();
         }
         while let Some(event) = self.gossip_handler.pop_event() {

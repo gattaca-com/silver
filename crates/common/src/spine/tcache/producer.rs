@@ -246,7 +246,12 @@ impl Write for Reservation {
 impl Drop for Reservation {
     fn drop(&mut self) {
         if !self.committed {
-            tracing::debug!(seq = self.seq, offset = self.offset, tcache=self.cache.name, "aborting reservation");
+            tracing::debug!(
+                seq = self.seq,
+                offset = self.offset,
+                tcache = self.cache.name,
+                "aborting reservation"
+            );
             self.cache.commit(self.seq, false);
         }
     }

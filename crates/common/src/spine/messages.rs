@@ -23,6 +23,14 @@ pub struct GossipMsgOut {
     pub tcache: TCacheRead,
 }
 
+// Consumed by controller tile.
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct GossipMsgIn {
+    pub p2p_id: P2pStreamId,
+    pub tcache: TCacheRead,
+}
+
 /// New inbound, decoded gossip message. Consumed by beacon state tile. The
 /// `protobuf` message can be broadcast by producing `PeerEvent::SendGossip`
 /// with details from this message.

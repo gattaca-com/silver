@@ -1,10 +1,11 @@
 use std::{collections::VecDeque, time::Instant};
 
 use buffa::MessageView;
+use flux::spine::SpineAdapter;
 use silver_common::{
-    Error, GOSSIP_TOPIC_COUNTER_SLOTS, GossipMsgOut, GossipTopic, MessageId, P2pStreamId,
-    PeerControl, PeerEvent, TCacheProducer, TCacheRead, TConsumer, TProducer, msg_id_valid_snappy,
-    ssz_view::StatusView,
+    Error, GOSSIP_TOPIC_COUNTER_SLOTS, GossipMsgIn, GossipMsgOut, GossipTopic, MessageId,
+    P2pStreamId, PeerControl, PeerEvent, SilverSpine, TCacheProducer, TCacheRead, TProducer,
+    TRandomAccess, msg_id_valid_snappy, ssz_view::StatusView,
 };
 
 use crate::{
@@ -29,7 +30,7 @@ use crate::{
 ///  - periodically generates new IHAVE messages
 ///    - produces `NewIHaveMsg`s on spine
 pub struct GossipHandler {
-    incoming_gossip: TConsumer,
+    incoming_gossip: TRandomAccess,
     incoming_gossip_publish: TProducer,
     pub fork_digest_hex: String,
     dedup_cache: DedupCache,
@@ -50,7 +51,7 @@ pub struct GossipHandler {
 
 impl GossipHandler {
     pub fn new(
-        incoming_gossip: TConsumer,
+        incoming_gossip: TRandomAccess,
         ssz_gossip_publish: TProducer,
         protobuf_gossip_publish: TProducer,
         fork_digest_hex: String,
@@ -219,22 +220,32 @@ impl GossipHandler {
         }
     }
 
-    pub fn spin(&mut self) -> bool {
+    pub fn spin(&mut self, adapter: &mut SpineAdapter<SilverSpine>) -> bool {
         let mut events = std::mem::take(&mut self.events);
-        let did_work = self.spin_inner(&mut |e| events.push_back(e));
+        let did_work = self.spin_inner(adapter, &mut |e| events.push_back(e));
         self.events = events;
         did_work
     }
 
-    fn spin_inner(&mut self, emit: &mut impl FnMut(GossipHandlerEvent)) -> bool {
+    fn spin_inner(
+        &mut self,
+        adapter: &mut SpineAdapter<SilverSpine>,
+        emit: &mut impl FnMut(GossipHandlerEvent),
+    ) -> bool {
         let mut did_work = false;
         let now = Instant::now();
         self.dedup_cache.maybe_rotate(now);
         self.mcache.maybe_rotate(now);
         self.generate_ihave_messages(now, emit);
+        self.incoming_gossip.free();
 
-        while let Ok((mut buffer, recv_ts)) = self.incoming_gossip.read() {
+        adapter.consume(|msg: GossipMsgIn, _producers| {
             did_work = true;
+
+            let acquired = self.incoming_gossip.acquire(msg.tcache);
+            let Ok((mut buffer, recv_ts)) = acquired.buffer() else {
+                return;
+            };
 
             // Incoming gossip messages are prefixed with P2pStreamId
             let stream_id: &P2pStreamId = buffer.into();
@@ -307,10 +318,90 @@ impl GossipHandler {
                     }
                 }
             }
+        });
 
-            // Free read data.
-            self.incoming_gossip.free();
-        }
+        // Free read data.
+        self.incoming_gossip.free();
+
+        // while let Ok((mut buffer, recv_ts)) = self.incoming_gossip.read() {
+        //     did_work = true;
+
+        //     // Incoming gossip messages are prefixed with P2pStreamId
+        //     let stream_id: &P2pStreamId = buffer.into();
+        //     tracing::trace!(?stream_id, len = buffer.len(), "gossip protobuf recv");
+
+        //     buffer = &buffer[size_of::<P2pStreamId>()..];
+
+        //     let gossip_proto = match RPCView::decode_view(buffer) {
+        //         Ok(p) => Some(p),
+        //         Err(e) => {
+        //             tracing::warn!(?stream_id, len = buffer.len(), ?e, "RPC decode
+        // failed");             None
+        //         }
+        //     };
+        //     if let Some(gossip_proto) = gossip_proto {
+        //         handle_subscriptions(
+        //             stream_id,
+        //             gossip_proto.subscriptions,
+        //             &self.fork_digest_hex,
+        //             emit,
+        //         );
+
+        //         if let Some(control) = gossip_proto.control.as_option() {
+        //             handle_grafts(stream_id, &control.graft, &self.fork_digest_hex,
+        // emit);             handle_prunes(stream_id, &control.prune,
+        // &self.fork_digest_hex, emit);             handle_iwants(stream_id,
+        // &control.iwant, &mut self.mcache, emit);             
+        // handle_idontwants(stream_id, &control.idontwant, emit);             
+        // handle_ihaves(                 stream_id,
+        //                 &control.ihave,
+        //                 &self.fork_digest_hex,
+        //                 &self.mcache,
+        //                 &mut self.mcache_publish,
+        //                 emit,
+        //                 &mut self.iwant_buffer,
+        //             );
+        //         }
+
+        //         for gossip_msg in &gossip_proto.publish {
+        //             if gossip_msg.key.is_some() ||
+        //                 gossip_msg.signature.is_some() ||
+        //                 gossip_msg.seqno.is_some() ||
+        //                 gossip_msg.from.is_some()
+        //             {
+        //                 // Spec violation
+        //                 
+        // emit(GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipInvalidFrame {
+        //                     p2p_peer: stream_id.peer(),
+        //                 }));
+        //                 continue;
+        //             }
+        //             if let Some(snappy_data) = gossip_msg.data {
+        //                 if let Err(e) = handle_incoming(
+        //                     gossip_msg.topic,
+        //                     snappy_data,
+        //                     stream_id,
+        //                     &self.fork_digest_hex,
+        //                     recv_ts,
+        //                     &mut self.dedup_cache,
+        //                     &mut self.incoming_gossip_publish,
+        //                     &mut self.mcache_publish,
+        //                     emit,
+        //                 ) {
+        //                     tracing::error!(
+        //                         ?e,
+        //                         ?stream_id,
+        //                         topic = gossip_msg.topic,
+        //                         "error handling incoming gossip message"
+        //                     );
+        //                 }
+        //             }
+        //         }
+        //     }
+
+        //     // Free read data.
+        //     self.incoming_gossip.free();
+        // }
         did_work
     }
 }

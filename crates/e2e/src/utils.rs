@@ -172,7 +172,8 @@ impl PmBsHarness {
         );
 
         let dummy_gossip_in = TCache::producer("dummy gossip in", 32);
-        let dummy_gossip_c = dummy_gossip_in.cache_ref().consumer("dummy  gossip c").unwrap();
+        let dummy_gossip_c =
+            dummy_gossip_in.cache_ref().random_access("dummy  gossip c", true).unwrap();
 
         let gossip_handler = GossipHandler::new(
             dummy_gossip_c,

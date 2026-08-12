@@ -10,8 +10,8 @@ use mio::{Events, Poll, Token};
 use quinn_proto::Transmit;
 use secp256k1::PublicKey;
 use silver_common::{
-    BeaconStateEvent, GossipMsgOut, P2pSend, PeerControl, PeerEvent, RpcInbound, RpcOutbound,
-    SilverSpine,
+    BeaconStateEvent, GossipMsgIn, GossipMsgOut, P2pSend, PeerControl, PeerEvent, RpcInbound,
+    RpcOutbound, SilverSpine,
 };
 use silver_discovery::{DiscV5, Discovery, DiscoveryEvent};
 
@@ -145,6 +145,9 @@ impl NetworkTile {
                 }
                 NetEvent::RpcMisbehaviour { p2p_peer, severity } => {
                     adapter.produce(PeerEvent::RpcMisbehaviour { p2p_peer, severity });
+                }
+                NetEvent::Gossip { stream, msg } => {
+                    adapter.produce(GossipMsgIn { p2p_id: stream, tcache: msg });
                 }
             },
             Event::Discovery(disc_event) => match disc_event {

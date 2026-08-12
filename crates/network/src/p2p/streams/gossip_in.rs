@@ -7,7 +7,10 @@ use silver_common::{
     MAX_GOSSIP_FRAME_SIZE, P2pStreamId, TCacheProducer, TProducer, TReservation, decode_varint,
 };
 
-use crate::p2p::streams::{StreamError, StreamIo};
+use crate::{
+    NetEvent,
+    p2p::streams::{StreamError, StreamIo},
+};
 
 pub(crate) const GOSSIP_BODY_STALL_TIMEOUT: Duration = Duration::from_secs(1);
 
@@ -39,15 +42,19 @@ enum Spin {
 }
 
 impl GossipReadState {
-    pub(crate) fn spin<S: StreamIo>(
+    pub(crate) fn spin<S: StreamIo, F>(
         mut self,
         io: &mut S,
         tcache: &mut TProducer,
         p2p_id: &P2pStreamId,
         now: Instant,
-    ) -> Result<Self, StreamError> {
+        emit: &mut F,
+    ) -> Result<Self, StreamError>
+    where
+        F: FnMut(NetEvent),
+    {
         loop {
-            match self.spin_inner(io, tcache, p2p_id, now)? {
+            match self.spin_inner(io, tcache, p2p_id, now, emit)? {
                 Spin::Ok(gossip_read_state) => {
                     if let Self::ReadingBody { last_read, remaining, .. } = &gossip_read_state &&
                         now.saturating_duration_since(*last_read) > GOSSIP_BODY_STALL_TIMEOUT
@@ -64,13 +71,17 @@ impl GossipReadState {
         }
     }
 
-    fn spin_inner<S: StreamIo>(
+    fn spin_inner<S: StreamIo, F>(
         self,
         io: &mut S,
         tcache: &mut TProducer,
         p2p_id: &P2pStreamId,
         now: Instant,
-    ) -> Result<Spin, StreamError> {
+        emit: &mut F,
+    ) -> Result<Spin, StreamError>
+    where
+        F: FnMut(NetEvent),
+    {
         match self {
             GossipReadState::ReadingLength { mut buf, mut read } => {
                 match io.read_from_stream(p2p_id.stream_id(), &mut buf[read..]) {
@@ -160,6 +171,7 @@ impl GossipReadState {
                 }
                 if remaining == 0 {
                     assert!(reservation.is_committed());
+                    emit(NetEvent::Gossip { stream: *p2p_id, msg: reservation.read() });
                     // Continue into the next frame.
                     return Ok(Spin::Next(Self::ReadingLength { buf: [0u8; 10], read: 0 }));
                 }
@@ -243,7 +255,7 @@ mod tests {
         let mut io = MockIo { data: wire, pos: 0 };
 
         let state = GossipReadState::default()
-            .spin(&mut io, &mut producer, &p2p_id, Instant::now())
+            .spin(&mut io, &mut producer, &p2p_id, Instant::now(), &mut |_| {})
             .expect("pipelined small frame must not error");
         assert!(matches!(state, GossipReadState::ReadingLength { read: 0, .. }));
 
@@ -266,12 +278,12 @@ mod tests {
 
         let t0 = Instant::now();
         let state = GossipReadState::default()
-            .spin(&mut io, &mut producer, &p2p_id, t0)
+            .spin(&mut io, &mut producer, &p2p_id, t0, &mut |_| {})
             .expect("partial body parks");
         assert!(matches!(state, GossipReadState::ReadingBody { remaining: 90, .. }));
 
         let state = state
-            .spin(&mut io, &mut producer, &p2p_id, t0 + GOSSIP_BODY_STALL_TIMEOUT)
+            .spin(&mut io, &mut producer, &p2p_id, t0 + GOSSIP_BODY_STALL_TIMEOUT, &mut |_| {})
             .expect("at the deadline is not past it");
         let err = state
             .spin(
@@ -279,6 +291,7 @@ mod tests {
                 &mut producer,
                 &p2p_id,
                 t0 + GOSSIP_BODY_STALL_TIMEOUT + Duration::from_millis(1),
+                &mut |_| {},
             )
             .expect_err("stalled past deadline");
         assert!(matches!(err, StreamError::GossipReadStall));
@@ -295,13 +308,13 @@ mod tests {
 
         let t0 = Instant::now();
         let state = GossipReadState::default()
-            .spin(&mut io, &mut producer, &p2p_id, t0)
+            .spin(&mut io, &mut producer, &p2p_id, t0, &mut |_| {})
             .expect("partial body parks");
 
         io.data.extend_from_slice(&[0xbb; 10]);
         let late = t0 + GOSSIP_BODY_STALL_TIMEOUT + Duration::from_millis(1);
         let state = state
-            .spin(&mut io, &mut producer, &p2p_id, late)
+            .spin(&mut io, &mut producer, &p2p_id, late, &mut |_| {})
             .expect("progress refreshes the deadline");
         assert!(
             matches!(state, GossipReadState::ReadingBody { remaining: 80, last_read, .. } if last_read == late)
@@ -319,7 +332,7 @@ mod tests {
         let mut io = MockIo { data: wire, pos: 0 };
 
         let state = GossipReadState::default()
-            .spin(&mut io, &mut producer, &p2p_id, Instant::now())
+            .spin(&mut io, &mut producer, &p2p_id, Instant::now(), &mut |_| {})
             .expect("partial body parks");
         drop(state);
 
@@ -327,7 +340,7 @@ mod tests {
         whole.extend_from_slice(b"cccccc");
         let mut io = MockIo { data: whole, pos: 0 };
         let state = GossipReadState::default()
-            .spin(&mut io, &mut producer, &p2p_id, Instant::now())
+            .spin(&mut io, &mut producer, &p2p_id, Instant::now(), &mut |_| {})
             .expect("complete frame");
         assert!(matches!(state, GossipReadState::ReadingLength { read: 0, .. }));
 
