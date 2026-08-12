@@ -84,13 +84,14 @@ impl BeaconStateTile {
             return Feedback::Reject(None);
         }
         let fork_version = view.epoch.fork_version_at(target_epoch);
-        let ok = bls::verify_single_attestation(
+        if bls::verify_single_attestation(
             buf,
             view.validators.pubkey_decompressed(attester_index),
             fork_version,
             &view.imm.genesis_validators_root,
-        );
-        if !ok {
+        )
+        .is_none()
+        {
             return Feedback::Reject(None);
         }
 
