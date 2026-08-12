@@ -1,9 +1,12 @@
 use blst::min_pk::{AggregateSignature, Signature};
 use rustc_hash::FxHashMap;
 use silver_beacon_state_data::{B256, Slot};
-use silver_common::ssz_view::{
-    ATTESTATION_DATA_SIZE, ATTESTATION_FIXED, MAX_COMMITTEES_PER_SLOT, SINGLE_ATT_SIZE,
-    SingleAttestationView,
+use silver_common::{
+    metrics::timed,
+    ssz_view::{
+        ATTESTATION_DATA_SIZE, ATTESTATION_FIXED, MAX_COMMITTEES_PER_SLOT, SINGLE_ATT_SIZE,
+        SingleAttestationView,
+    },
 };
 
 use crate::bls::VerifiedSingleAttestation;
@@ -54,6 +57,7 @@ impl AttestationPool {
         }
     }
 
+    #[timed]
     pub(super) fn insert_verified(
         &mut self,
         att: &[u8; SINGLE_ATT_SIZE],
@@ -94,6 +98,7 @@ impl AttestationPool {
     }
 
     #[allow(dead_code)] // retrieval interface for the aggregate_attestation API milestone
+    #[timed]
     pub(super) fn aggregate_ssz(
         &self,
         slot: Slot,
@@ -113,6 +118,7 @@ impl AttestationPool {
         Some(out)
     }
 
+    #[timed]
     pub(super) fn prune_before(&mut self, floor: Slot) {
         self.floor = floor;
         self.entries.retain(|key, _| key.slot >= floor);

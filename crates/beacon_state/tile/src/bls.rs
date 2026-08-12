@@ -426,6 +426,7 @@ pub struct VerifiedSingleAttestation {
 /// Verify a single-attester `SingleAttestation` (gossip subnet form). Used
 /// on the gossip hot path; the body-included aggregate path goes through
 /// `stf::validate_attestations` + `SigBatch`.
+#[timed]
 pub fn verify_single_attestation(
     att: &[u8; SINGLE_ATT_SIZE],
     attester_pubkey: &PublicKey,
