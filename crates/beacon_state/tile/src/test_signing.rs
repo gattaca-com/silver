@@ -9,10 +9,10 @@ use silver_beacon_state_data::{
     B256, BLSPubkey, BeaconBlockHeader, Fork, Immutable, SLOTS_PER_EPOCH,
 };
 use silver_common::ssz_view::{
-    AttestationView, IndexedAttestationView, PROPOSER_SLASHING_SIZE, ProposerSlashingView,
-    SIGNED_BLS_CHANGE_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE,
-    SignedAggregateAndProofView, SignedBlsToExecutionChangeView, SignedVoluntaryExitView,
-    SingleAttestationView,
+    ATTESTATION_FIXED, AttestationView, IndexedAttestationView, PROPOSER_SLASHING_SIZE,
+    ProposerSlashingView, SIGNED_AGG_PROOF_MIN, SIGNED_BLS_CHANGE_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE,
+    SINGLE_ATT_SIZE, SignedAggregateAndProofView, SignedBlsToExecutionChangeView,
+    SignedVoluntaryExitView, SingleAttestationView,
 };
 
 use crate::{
@@ -278,13 +278,12 @@ pub fn build_attestation(
     committee_size: usize,
     imm: &Immutable,
 ) -> Vec<u8> {
-    // Fixed part 236B; trailing Bitlist[committee_size] with terminator bit
-    // at position `committee_size` → length = ceil((committee_size+1)/8).
+    // Trailing Bitlist[committee_size] with terminator bit at position
+    // `committee_size` → length = ceil((committee_size+1)/8).
     let bl_len = (committee_size + 1).div_ceil(8);
-    let mut buf = vec![0u8; 236 + bl_len];
+    let mut buf = vec![0u8; ATTESTATION_FIXED + bl_len];
 
-    // offset to aggregation_bits(4) = 236.
-    buf[0..4].copy_from_slice(&236u32.to_le_bytes());
+    buf[0..4].copy_from_slice(&(ATTESTATION_FIXED as u32).to_le_bytes());
 
     // AttestationData[4..132]: slot, index(=0), beacon_block_root, source,
     // target.
@@ -296,9 +295,9 @@ pub fn build_attestation(
     // committee_bits[228..236]: single bit at `committee_index`.
     buf[228 + committee_index / 8] |= 1 << (committee_index % 8);
 
-    // aggregation_bits at [236..]: participant bit, then terminator.
-    buf[236 + participant_pos / 8] |= 1 << (participant_pos % 8);
-    buf[236 + committee_size / 8] |= 1 << (committee_size % 8);
+    // aggregation_bits: participant bit, then terminator.
+    buf[ATTESTATION_FIXED + participant_pos / 8] |= 1 << (participant_pos % 8);
+    buf[ATTESTATION_FIXED + committee_size / 8] |= 1 << (committee_size % 8);
 
     let fv = test_fork_version(target_epoch);
     let data: &[u8; 128] = buf[4..132].try_into().unwrap();
@@ -323,14 +322,16 @@ pub fn wrap_aggregate_and_proof(
     attestation: &[u8],
     imm: &Immutable,
 ) -> Vec<u8> {
+    const PREFIX: usize = SIGNED_AGG_PROOF_MIN - ATTESTATION_FIXED;
+
     // Outer fixed: offset to message(4) = 100, signature(96) = [4..100).
     // AggregateAndProof: aggregator_index(8) at 100, offset to aggregate(4)
     // = 108 (relative-to-message = 108), selection_proof(96) at 112.
-    let mut buf = vec![0u8; 208 + attestation.len()];
+    let mut buf = vec![0u8; PREFIX + attestation.len()];
     buf[0..4].copy_from_slice(&100u32.to_le_bytes());
     buf[100..108].copy_from_slice(&aggregator_index.to_le_bytes());
     buf[108..112].copy_from_slice(&108u32.to_le_bytes());
-    buf[208..].copy_from_slice(attestation);
+    buf[PREFIX..].copy_from_slice(attestation);
 
     let data = AttestationView::data(attestation);
     let fv = test_fork_version(data.target_epoch());
@@ -344,7 +345,7 @@ pub fn wrap_aggregate_and_proof(
 
     let agg_proof_root = ssz_hash::hash_tree_root_aggregate_and_proof(
         aggregator_index,
-        &buf[208..],
+        &buf[PREFIX..],
         &selection_proof,
         fv == imm.gloas_fork_version,
     );

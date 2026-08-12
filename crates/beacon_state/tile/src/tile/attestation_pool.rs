@@ -141,9 +141,9 @@ impl AggregateEntry {
         if self.participant_bits[byte] & bit != 0 {
             return InsertOutcome::Duplicate;
         }
-        // No group check: the signature passed `verify(true, ..)` at gossip
-        // admission, and BLS addition is not idempotent so the bit test above
-        // must gate it.
+        // No group check: `VerifiedSingleAttestation` guarantees a
+        // subgroup-checked signature. BLS addition is not idempotent, so the
+        // bit test above must gate it.
         self.signature.add_signature(signature, false).expect("infallible without groupcheck");
         self.participant_bits[byte] |= bit;
         InsertOutcome::Inserted
