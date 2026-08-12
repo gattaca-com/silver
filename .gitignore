@@ -18,9 +18,10 @@ target/
 # VSCode
 .local
 .vscode
+# LLMs
 .cursor
 .claude
-.local
+.memsearch
 
 *.ssz
 *.fxt
