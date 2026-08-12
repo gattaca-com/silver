@@ -1,6 +1,8 @@
 use silver_ssz::merkle;
 
-use super::{SlotStateGroup, SlotStateId, finalized::SlotStateFinalized};
+use super::{
+    SlotStateGroup, SlotStateId, epoch_balances::EpochBalances, finalized::SlotStateFinalized,
+};
 use crate::{
     SLOTS_PER_EPOCH,
     reanchor::drain_promoted_prefix,
@@ -13,6 +15,7 @@ use crate::{
 #[derive(Clone, Default)]
 pub(crate) struct SlotStateDelta {
     pub(super) slot: SlotState,
+    pub(super) epoch_balances: EpochBalances,
     pub(super) block_roots: Vec<B256>,
     pub(super) state_roots: Vec<B256>,
 }
@@ -29,12 +32,14 @@ impl SlotStateDelta {
 impl Reset for SlotStateDelta {
     fn reset(&mut self) {
         self.slot = Default::default();
+        self.epoch_balances = Default::default();
         self.block_roots.clear();
         self.state_roots.clear();
     }
 
     fn reset_from(&mut self, other: &Self) {
         self.slot.clone_from(&other.slot);
+        self.epoch_balances = other.epoch_balances;
         self.block_roots.clone_from(&other.block_roots);
         self.state_roots.clone_from(&other.state_roots);
     }
@@ -184,6 +189,24 @@ impl<'a> SlotStateWriteView<'a> {
     #[inline]
     pub fn state_mut(&mut self) -> &mut SlotState {
         &mut self.fork.slot
+    }
+
+    #[inline]
+    pub fn epoch_balances(&self) -> EpochBalances {
+        self.fork.epoch_balances
+    }
+
+    #[inline]
+    pub fn epoch_balances_mut(&mut self) -> &mut EpochBalances {
+        &mut self.fork.epoch_balances
+    }
+
+    /// Cached spec `get_total_active_balance` — constant within an epoch
+    /// (reseeded at each transition), so callers name the epoch they expect.
+    #[inline]
+    pub fn total_active_balance(&self, current_epoch: Epoch) -> u64 {
+        debug_assert_eq!(self.fork.slot.slot / SLOTS_PER_EPOCH, current_epoch);
+        self.fork.epoch_balances.total_active
     }
 
     #[inline]

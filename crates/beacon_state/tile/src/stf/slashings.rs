@@ -1,9 +1,9 @@
 use core::cmp::max;
 
 use silver_beacon_state_data::{
-    B256, BalancesWriteView, BeaconBlockHeader, BuilderPendingPayment, EPOCHS_PER_SLASHINGS_VECTOR,
+    B256, BeaconBlockHeader, BuilderPendingPayment, EPOCHS_PER_SLASHINGS_VECTOR, EpochBalancesRow,
     EpochView, Immutable, SLOTS_PER_EPOCH, SlotStateWriteView, SpecConfig, StateReadView,
-    StateWriterView, ValidatorsView, ValidatorsWriteView,
+    StateWriterView, ValidatorsView,
 };
 use silver_common::ssz_view::{
     ATTESTATION_DATA_SIZE, AttestationDataView, BEACON_BLOCK_HEADER_SIZE, BeaconBlockHeaderView,
@@ -91,13 +91,10 @@ pub fn process_proposer_slashings(
     data: &[u8],
 ) -> Result<(), ProposerSlashingError> {
     let is_gloas = epoch.is_gloas(view.imm.gloas_fork_version);
-    let slot = &mut view.slot;
-    let validators = &mut view.validators;
-    let balances = &mut view.balances;
     let count = data.len() / PROPOSER_SLASHING_SIZE;
-    let n = validators.count();
-    let proposer_index = get_beacon_proposer_index(slot, epoch);
-    let current_epoch = slot.state().slot / SLOTS_PER_EPOCH;
+    let n = view.validators.count();
+    let proposer_index = get_beacon_proposer_index(&view.slot, epoch);
+    let current_epoch = view.slot.state().slot / SLOTS_PER_EPOCH;
     for i in 0..count {
         let s: &[u8; PROPOSER_SLASHING_SIZE] =
             data[i * PROPOSER_SLASHING_SIZE..(i + 1) * PROPOSER_SLASHING_SIZE].try_into().unwrap();
@@ -106,22 +103,22 @@ pub fn process_proposer_slashings(
         if (vi as usize) >= n {
             return Err(ProposerSlashingError::ValidatorOutOfRange { vi: vi as usize, count: n });
         }
-        if !is_slashable_validator(&validators.reader(), vi, current_epoch) {
+        if !is_slashable_validator(&view.validators.reader(), vi, current_epoch) {
             return Err(ProposerSlashingError::NotSlashable {
                 vi: vi as usize,
-                pubkey: *validators.pubkey(vi as usize),
+                pubkey: *view.validators.pubkey(vi as usize),
                 epoch: current_epoch,
             });
         }
         if is_gloas {
             clear_builder_payment_on_slash(
-                slot,
+                &mut view.slot,
                 ProposerSlashingView::h1_slot(s),
                 vi,
                 current_epoch,
             );
         }
-        slash_validator(cfg, slot, validators, balances, vi, proposer_index);
+        slash_validator(cfg, view, vi, proposer_index);
     }
     Ok(())
 }
@@ -262,12 +259,9 @@ pub fn process_attester_slashings(
     if data.is_empty() {
         return Ok(());
     }
-    let slot = &mut view.slot;
-    let validators = &mut view.validators;
-    let balances = &mut view.balances;
-    let proposer_index = get_beacon_proposer_index(slot, epoch);
-    let n = validators.count();
-    let current_epoch = slot.state().slot / SLOTS_PER_EPOCH;
+    let proposer_index = get_beacon_proposer_index(&view.slot, epoch);
+    let n = view.validators.count();
+    let current_epoch = view.slot.state().slot / SLOTS_PER_EPOCH;
 
     for_each_ssz_list_item(
         data,
@@ -292,7 +286,7 @@ pub fn process_attester_slashings(
             // calling the mutating `slash_validator`.
             scratch.clear();
             {
-                let v = validators.reader();
+                let v = view.validators.reader();
                 for_each_sorted_intersection(i1, i2, |vi| {
                     let vi32 = vi as u32;
                     if vi < n && is_slashable_validator(&v, vi32, current_epoch) {
@@ -304,8 +298,8 @@ pub fn process_attester_slashings(
             for &vi in scratch.iter() {
                 // Re-check slashability after each prior slash mutation in the
                 // loop.
-                if is_slashable_validator(&validators.reader(), vi, current_epoch) {
-                    slash_validator(cfg, slot, validators, balances, vi, proposer_index);
+                if is_slashable_validator(&view.validators.reader(), vi, current_epoch) {
+                    slash_validator(cfg, view, vi, proposer_index);
                     slashed_sink.push(vi);
                     slashed_any = true;
                 }
@@ -408,31 +402,37 @@ pub(crate) fn attesting_indices_bytes(data: &[u8], start: usize, end: usize) -> 
     &slice[..whole]
 }
 
-fn slash_validator(
-    cfg: &SpecConfig,
-    slot: &mut SlotStateWriteView,
-    validators: &mut ValidatorsWriteView,
-    balances: &mut BalancesWriteView,
-    vi: u32,
-    proposer_index: u32,
-) {
-    let current_epoch = slot.state().slot / SLOTS_PER_EPOCH;
-    let effective_balance = validators.effective_balance(vi as usize);
+fn slash_validator(cfg: &SpecConfig, view: &mut StateWriterView, vi: u32, proposer_index: u32) {
+    let current_epoch = view.slot.state().slot / SLOTS_PER_EPOCH;
+    let effective_balance = view.validators.effective_balance(vi as usize);
 
-    initiate_validator_exit(cfg, slot, validators, vi, current_epoch);
-    validators.set_slashed(vi, true);
-    let prev_wd = validators.withdrawable_epoch(vi as usize);
+    // The justification target sums count only unslashed attesters — drop the
+    // contributions this validator already earned.
+    let validators = view.validators.reader();
+    let row = EpochBalancesRow {
+        activation_epoch: validators.activation_epoch(vi as usize),
+        exit_epoch: validators.exit_epoch(vi as usize),
+        slashed: validators.is_slashed(vi as usize),
+        effective_balance,
+        previous_participation: view.previous_participation.get(vi as usize),
+        current_participation: view.current_participation.get(vi as usize),
+    };
+    view.slot.epoch_balances_mut().remove_slashed(row, current_epoch);
+
+    initiate_validator_exit(cfg, view, vi, current_epoch);
+    view.validators.set_slashed(vi, true);
+    let prev_wd = view.validators.withdrawable_epoch(vi as usize);
     let new_wd = max(prev_wd, current_epoch + EPOCHS_PER_SLASHINGS_VECTOR as u64);
-    validators.set_withdrawable_epoch(vi, new_wd);
+    view.validators.set_withdrawable_epoch(vi, new_wd);
 
     // Per-block accumulator for the in-progress epoch (flushed at the boundary
     // by process_slashings_reset into `epoch.slashings`).
-    let acc = slot.state_mut().current_epoch_slashings.saturating_add(effective_balance);
-    slot.state_mut().current_epoch_slashings = acc;
+    let acc = view.slot.state_mut().current_epoch_slashings.saturating_add(effective_balance);
+    view.slot.state_mut().current_epoch_slashings = acc;
 
     let penalty = effective_balance / cfg.min_slashing_penalty_quotient;
-    let bal_vi = balances.get(vi as usize);
-    balances.set(vi, bal_vi.saturating_sub(penalty));
+    let bal_vi = view.balances.get(vi as usize);
+    view.balances.set(vi, bal_vi.saturating_sub(penalty));
 
     // Spec: increase_balance(proposer, proposer_reward); increase_balance(
     // whistleblower, whistleblower_reward - proposer_reward). With no
@@ -440,8 +440,8 @@ fn slash_validator(
     // defaults to proposer_index, so the proposer receives the full
     // whistleblower_reward.
     let whistleblower_reward = effective_balance / WHISTLEBLOWER_REWARD_QUOTIENT;
-    let bal_pi = balances.get(proposer_index as usize);
-    balances.set(proposer_index, bal_pi.saturating_add(whistleblower_reward));
+    let bal_pi = view.balances.get(proposer_index as usize);
+    view.balances.set(proposer_index, bal_pi.saturating_add(whistleblower_reward));
 }
 
 pub(crate) fn is_slashable_attestation_data(d1: &[u8], d2: &[u8]) -> bool {

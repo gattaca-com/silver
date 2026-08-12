@@ -7,11 +7,11 @@ use silver_common::{
     MAX_BLOBS_PER_BLOCK, NewGossipMsg, PeerEvent, TCacheRead, TRead,
     metrics::timed,
     ssz_view::{
-        AttestationDataView, AttestationView, AttesterSlashingView,
-        ExecutionPayloadEnvelopeView as Envelope, PROPOSER_SLASHING_SIZE, ProposerSlashingView,
-        SIGNED_BLS_CHANGE_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE,
-        SignedBlsToExecutionChangeView, SignedExecutionPayloadEnvelopeView as SignedPayload,
-        SignedVoluntaryExitView, SingleAttestationView,
+        AttestationDataView, AttesterSlashingView, ExecutionPayloadEnvelopeView as Envelope,
+        PROPOSER_SLASHING_SIZE, ProposerSlashingView, SIGNED_BLS_CHANGE_SIZE,
+        SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE, SignedBlsToExecutionChangeView,
+        SignedExecutionPayloadEnvelopeView as SignedPayload, SignedVoluntaryExitView,
+        SingleAttestationView,
     },
 };
 
@@ -107,7 +107,13 @@ impl BeaconStateTile {
         Feedback::Accept(None)
     }
 
+    /// EF `fork_choice` vector path only: production gossip reaches the same
+    /// work through `handle_attestation` / `handle_aggregate_and_proof`, which
+    /// have already resolved the committee by the time votes are recorded.
+    #[cfg(feature = "ef_tests")]
     pub(super) fn apply_attestation(&mut self, att: &[u8]) -> Feedback {
+        use silver_common::ssz_view::AttestationView;
+
         let data = AttestationView::data(att);
         if let Err(f) = self.validate_attestation_target(data) {
             return f;
@@ -130,19 +136,22 @@ impl BeaconStateTile {
             }
         }
 
-        self.record_attester_votes(data);
+        self.record_attester_votes(data, n);
         Feedback::Accept(None)
     }
 
-    fn record_attester_votes(&mut self, data: AttestationDataView<'_>) {
-        let validator_count = self.head_validator_count();
+    fn record_attester_votes(&mut self, data: AttestationDataView<'_>, validator_count: usize) {
+        let block_root = *data.beacon_block_root();
+        let target_epoch = data.target_epoch();
+        let attestation_slot = data.slot();
+        let payload_present = data.index() == 1;
         for i in 0..self.stf_scratch.active.len() {
             let vote = stf::AttestationVote {
                 validator: self.stf_scratch.active[i],
-                block_root: *data.beacon_block_root(),
-                target_epoch: data.target_epoch(),
-                attestation_slot: data.slot(),
-                payload_present: data.index() == 1,
+                block_root,
+                target_epoch,
+                attestation_slot,
+                payload_present,
             };
             self.record_or_defer_vote(vote, validator_count);
         }
@@ -158,7 +167,7 @@ impl BeaconStateTile {
         // Gloas widens it to the payload-status bit (`index < 2`).
         let is_gloas = self.spec.is_gloas_at(parsed.att_epoch);
         let index_ok = validate::attestation_index_ok(is_gloas, parsed.agg_data_index);
-        if !index_ok || parsed.target_epoch != parsed.att_epoch {
+        if !index_ok || parsed.agg_data.target_epoch() != parsed.att_epoch {
             return Feedback::Reject(None);
         }
         let wall = self.ticker.current_slot();
@@ -177,7 +186,7 @@ impl BeaconStateTile {
         }
         if is_gloas {
             if let Err(f) = self.gloas_payload_present(
-                &parsed.beacon_block_root,
+                parsed.agg_data.beacon_block_root(),
                 parsed.agg_slot,
                 parsed.agg_data_index,
             ) {
@@ -224,10 +233,8 @@ impl BeaconStateTile {
             return Feedback::Reject(None);
         }
 
-        // Record the votes (re-validates target/ancestry + slot+1 deferral and
-        // derives the committee again — cheap next to the verify above). The
-        // inner attestation is the aggregate field.
-        self.apply_attestation(parsed.aggregate_bytes)
+        self.record_attester_votes(parsed.agg_data, count);
+        Feedback::Accept(None)
     }
 
     pub(super) fn validate_execution_payload_envelope(&self, ssz: &[u8]) -> EnvelopeCheck {
@@ -371,8 +378,6 @@ impl BeaconStateTile {
         self.envelope_request_queue = queue;
     }
 
-    /// Fork-choice checks for an `AttestationData`: block known, not from the
-    /// future, `target.root` its ancestor at target-epoch start.
     fn validate_attestation_target(&self, data: AttestationDataView<'_>) -> Result<(), Feedback> {
         let att_slot = data.slot();
         let target_epoch = data.target_epoch();
@@ -408,7 +413,7 @@ impl BeaconStateTile {
         committees: &stf::AttestedCommittees<'_>,
         sig_batch: &mut bls::SigBatch,
     ) -> bool {
-        let fv = view.epoch.fork_version_at(parsed.target_epoch);
+        let fv = view.epoch.fork_version_at(parsed.agg_data.target_epoch());
         let fork_data_root =
             ssz_hash::hash_tree_root_fork_data(fv, &view.imm.genesis_validators_root);
         let domain = |ty| bls::domain_from_fork_data(ty, &fork_data_root);

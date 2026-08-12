@@ -11,6 +11,7 @@ use rustc_hash::FxHashMap;
 use super::validator_hash;
 use crate::{
     Withdrawals,
+    slot_state::{EpochBalances, EpochBalancesRow},
     types::{B256, BLSPubkey, Epoch, FAR_FUTURE_EPOCH, validator_capacity},
 };
 
@@ -270,6 +271,28 @@ impl FinalizedValidators {
     #[inline]
     pub(super) fn is_slashed(&self, i: usize) -> bool {
         self.slashed[i / 8] & (1u8 << (i % 8)) != 0
+    }
+
+    pub(crate) fn sweep_epoch_balances(
+        &self,
+        prev_participation: &[u8],
+        curr_participation: &[u8],
+        current_epoch: Epoch,
+    ) -> EpochBalances {
+        let n = self.validator_count;
+        debug_assert_eq!(prev_participation.len(), n);
+        debug_assert_eq!(curr_participation.len(), n);
+        EpochBalances::sweep(
+            current_epoch,
+            (0..n).map(|i| EpochBalancesRow {
+                activation_epoch: self.activation_epoch[i],
+                exit_epoch: self.exit_epoch[i],
+                slashed: self.is_slashed(i),
+                effective_balance: self.effective_balance[i],
+                previous_participation: prev_participation[i],
+                current_participation: curr_participation[i],
+            }),
+        )
     }
 
     #[inline]

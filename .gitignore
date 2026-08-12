@@ -23,7 +23,7 @@ target/
 .local
 
 *.ssz
-*.fxt
+*.fxt*
 # Perf-regression fixtures are committed via git-lfs (see .gitattributes
 # and crates/e2e/data/perf/README.md) — they need to escape the blanket
 # *.ssz ignore.

@@ -1,8 +1,9 @@
 use blst::min_pk::PublicKey;
 use flux_profiler::timed;
 use silver_beacon_state_data::{
-    B256, ColumnSpec, Epoch, EpochView, Immutable, ParticipationWriteView, SLOTS_PER_EPOCH,
-    SLOTS_PER_HISTORICAL_ROOT, Slot, SlotStateWriteView, StateWriterView, ValidatorsView,
+    B256, ColumnSpec, Epoch, EpochView, Immutable, PARTICIPATION_WEIGHTS, ParticipationWriteView,
+    SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT, Slot, SlotStateWriteView, StateWriterView,
+    TIMELY_TARGET_FLAG, ValidatorsView,
 };
 use silver_common::ssz_view::AttestationView;
 
@@ -13,7 +14,6 @@ use crate::{
     stf::{
         AttestationVote, BASE_REWARD_FACTOR, EFFECTIVE_BALANCE_INCREMENT, EpochShuffling,
         PROPOSER_WEIGHT, ShufflingRef, WEIGHT_DENOMINATOR, for_each_ssz_list_item, integer_sqrt,
-        total_active_balance,
     },
     validate,
 };
@@ -262,7 +262,7 @@ pub fn process_attestations(
     let current_epoch = block_slot / SLOTS_PER_EPOCH;
     let previous_epoch = current_epoch.saturating_sub(1);
 
-    let total_active = total_active_balance(&view.validators.reader(), current_epoch);
+    let total_active = view.slot.total_active_balance(current_epoch);
     for_each_ssz_list_item(
         attestation_data,
         |start, end| AttestationError::BadOffsets {
@@ -359,7 +359,7 @@ pub fn process_single_attestation(
     // Distinct `Previous`/`Current` types can't share one binding, so branch
     // and let each arm monomorphise the generic helper for its column.
     let validators = view.validators.reader();
-    let (reward, new_flag_eb) = if is_current {
+    let flags = if is_current {
         apply_attestation_participation_flags(
             &validators,
             &mut view.current_participation,
@@ -377,11 +377,18 @@ pub fn process_single_attestation(
         )
     };
 
-    if same_slot && new_flag_eb > 0 {
-        accrue_builder_payment_weight(&mut view.slot, parsed.att_slot, is_current, new_flag_eb);
+    view.slot.epoch_balances_mut().add_target_attesters(is_current, flags.new_target_eb);
+
+    if same_slot && flags.new_flag_eb > 0 {
+        accrue_builder_payment_weight(
+            &mut view.slot,
+            parsed.att_slot,
+            is_current,
+            flags.new_flag_eb,
+        );
     }
 
-    Ok(reward)
+    Ok(flags.proposer_reward_numerator)
 }
 
 fn accrue_builder_payment_weight(
@@ -543,20 +550,24 @@ fn collect_attestation_participants(
     Ok(())
 }
 
-/// Returns `(proposer_reward_numerator, effective_balance_sum)` — the latter
-/// over attesters that set at least one new flag, for the Gloas builder-payment
-/// weight.
+struct AppliedFlags {
+    proposer_reward_numerator: u64,
+    /// Gloas builder-payment weight: attesters that set at least one new flag.
+    new_flag_eb: u64,
+    /// Unslashed attesters that newly earned TIMELY_TARGET.
+    new_target_eb: u64,
+}
+
 fn apply_attestation_participation_flags<M: ColumnSpec<Val = u8>>(
     validators: &ValidatorsView,
     participation: &mut ParticipationWriteView<M>,
     active_scratch: &[u32],
     total_active: u64,
     flag_weights: [bool; 3],
-) -> (u64, u64) {
+) -> AppliedFlags {
     let sqrt_total = integer_sqrt(total_active);
     let base_reward_per_increment = EFFECTIVE_BALANCE_INCREMENT * BASE_REWARD_FACTOR / sqrt_total;
 
-    const PARTICIPATION_WEIGHTS: [u64; 3] = [14, 26, 14];
     let mut proposer_reward_numerator = 0u64;
     // Collect changed flags, then apply them in one sorted merge. A committee's
     // participants are distinct validator indices, so the batch is dup-free; a
@@ -564,6 +575,7 @@ fn apply_attestation_participation_flags<M: ColumnSpec<Val = u8>>(
     // over an epoch's accumulated participation edits).
     let mut updates: Vec<(u32, u8)> = Vec::with_capacity(active_scratch.len());
     let mut new_flag_eb = 0u64;
+    let mut new_target_eb = 0u64;
     for &vi in active_scratch {
         let prev_p = participation.get(vi as usize);
         let mut p = prev_p;
@@ -575,6 +587,9 @@ fn apply_attestation_participation_flags<M: ColumnSpec<Val = u8>>(
             if flag_weights[fi] && p & flag_bit == 0 {
                 p |= flag_bit;
                 proposer_reward_numerator += base_reward * weight;
+                if flag_bit == TIMELY_TARGET_FLAG && !validators.is_slashed(vi as usize) {
+                    new_target_eb += effective_balance;
+                }
             }
         }
         if p != prev_p {
@@ -584,7 +599,7 @@ fn apply_attestation_participation_flags<M: ColumnSpec<Val = u8>>(
     }
     updates.sort_unstable_by_key(|(idx, _)| *idx);
     participation.set_many(&updates);
-    (proposer_reward_numerator, new_flag_eb)
+    AppliedFlags { proposer_reward_numerator, new_flag_eb, new_target_eb }
 }
 
 #[cfg(test)]

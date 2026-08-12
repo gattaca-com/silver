@@ -85,11 +85,8 @@ pub fn process_voluntary_exits(
     cfg: &SpecConfig,
     data: &[u8],
 ) -> Result<(), VoluntaryExitError> {
-    let slot = &mut view.slot;
-    let validators = &mut view.validators;
-    let pending = &view.pending;
     let count = data.len() / SIGNED_VOLUNTARY_EXIT_SIZE;
-    let current_epoch = slot.state().slot / SLOTS_PER_EPOCH;
+    let current_epoch = view.slot.state().slot / SLOTS_PER_EPOCH;
     for i in 0..count {
         let exit: &[u8; SIGNED_VOLUNTARY_EXIT_SIZE] = data
             [i * SIGNED_VOLUNTARY_EXIT_SIZE..(i + 1) * SIGNED_VOLUNTARY_EXIT_SIZE]
@@ -99,18 +96,18 @@ pub fn process_voluntary_exits(
         let vi = SignedVoluntaryExitView::validator_index(exit) as u32;
         validate::validate_voluntary_exit(
             cfg,
-            &validators.reader(),
+            &view.validators.reader(),
             vi,
             exit_epoch_msg,
             current_epoch,
         )?;
-        if get_pending_balance_to_withdraw(&pending.reader(), vi) != 0 {
+        if get_pending_balance_to_withdraw(&view.pending.reader(), vi) != 0 {
             return Err(VoluntaryExitError::HasPendingBalance {
                 vi: vi as usize,
-                pubkey: *validators.pubkey(vi as usize),
+                pubkey: *view.validators.pubkey(vi as usize),
             });
         }
-        initiate_validator_exit(cfg, slot, validators, vi, current_epoch);
+        initiate_validator_exit(cfg, view, vi, current_epoch);
     }
     Ok(())
 }
@@ -194,69 +191,59 @@ fn process_withdrawal_request(
     current_epoch: Epoch,
     r: &[u8; WITHDRAWAL_REQUEST_SIZE],
 ) {
-    let slot = &mut view.slot;
-    let validators = &mut view.validators;
-    let balances = &view.balances;
-    let pending = &mut view.pending;
-
     let source_address = WithdrawalRequestView::source_address(r);
     let validator_pubkey = WithdrawalRequestView::validator_pubkey(r);
     let amount = WithdrawalRequestView::amount(r);
     let is_full_exit = amount == FULL_EXIT_REQUEST_AMOUNT;
 
-    let ppw_len = pending.partial_withdrawals.reader().len();
+    let ppw_len = view.pending.partial_withdrawals.reader().len();
     if ppw_len >= PENDING_PARTIAL_WITHDRAWALS_LIMIT && !is_full_exit {
         return;
     }
 
-    let vi = match validators.find_by_pubkey(validator_pubkey) {
+    let vi = match view.validators.find_by_pubkey(validator_pubkey) {
         Some(idx) => idx,
         None => return,
     };
 
-    let creds = *validators.credentials(vi as usize);
+    let creds = *view.validators.credentials(vi as usize);
     if !creds.has_execution_credential() {
         return;
     }
     if creds.execution_address() != source_address {
         return;
     }
-    if !is_active(&validators.reader(), vi, current_epoch) {
+    if !is_active(&view.validators.reader(), vi, current_epoch) {
         return;
     }
-    if validators.exit_epoch(vi as usize) != u64::MAX {
+    if view.validators.exit_epoch(vi as usize) != u64::MAX {
         return;
     }
-    let act = validators.activation_epoch(vi as usize);
+    let act = view.validators.activation_epoch(vi as usize);
     if current_epoch < act + cfg.shard_committee_period {
         return;
     }
 
-    let pending_balance = get_pending_balance_to_withdraw(&pending.reader(), vi);
+    let pending_balance = get_pending_balance_to_withdraw(&view.pending.reader(), vi);
 
     if is_full_exit {
         if pending_balance == 0 {
-            initiate_validator_exit(cfg, slot, validators, vi, current_epoch);
+            initiate_validator_exit(cfg, view, vi, current_epoch);
         }
         return;
     }
 
-    let effective_balance = validators.effective_balance(vi as usize);
-    let balance = balances.get(vi as usize);
+    let effective_balance = view.validators.effective_balance(vi as usize);
+    let balance = view.balances.get(vi as usize);
     let has_sufficient_eff = effective_balance >= MIN_ACTIVATION_BALANCE;
     let has_excess = balance > MIN_ACTIVATION_BALANCE + pending_balance;
 
     if creds.has_compounding_credential() && has_sufficient_eff && has_excess {
         let to_withdraw = min(balance - MIN_ACTIVATION_BALANCE - pending_balance, amount);
-        let exit_queue_epoch = compute_exit_epoch_and_update_churn(
-            cfg,
-            slot,
-            &validators.reader(),
-            to_withdraw,
-            current_epoch,
-        );
+        let exit_queue_epoch =
+            compute_exit_epoch_and_update_churn(cfg, &mut view.slot, to_withdraw, current_epoch);
         let withdrawable_epoch = exit_queue_epoch + cfg.min_validator_withdrawability_delay;
-        pending.partial_withdrawals.push(PendingPartialWithdrawal {
+        view.pending.partial_withdrawals.push(PendingPartialWithdrawal {
             index: vi as u64,
             amount: to_withdraw,
             withdrawable_epoch,
@@ -315,7 +302,8 @@ fn process_consolidation_request(
     if pc_len >= PENDING_CONSOLIDATIONS_LIMIT {
         return;
     }
-    let churn_limit = get_consolidation_churn_limit(cfg, &validators.reader(), current_epoch);
+    let total_active = slot.total_active_balance(current_epoch);
+    let churn_limit = get_consolidation_churn_limit(cfg, total_active, current_epoch);
     if churn_limit <= MIN_ACTIVATION_BALANCE {
         return;
     }
@@ -358,13 +346,8 @@ fn process_consolidation_request(
     }
 
     let src_eff = validators.effective_balance(source_idx as usize);
-    let exit_epoch = compute_consolidation_epoch_and_update_churn(
-        cfg,
-        slot,
-        &validators.reader(),
-        src_eff,
-        current_epoch,
-    );
+    let exit_epoch =
+        compute_consolidation_epoch_and_update_churn(cfg, slot, src_eff, current_epoch);
     validators.set_exit_epoch(source_idx, exit_epoch);
     validators
         .set_withdrawable_epoch(source_idx, exit_epoch + cfg.min_validator_withdrawability_delay);

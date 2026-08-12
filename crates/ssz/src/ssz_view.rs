@@ -2062,9 +2062,6 @@ impl BeaconBlockBodyGloasView {
 
 pub const ATTESTATION_DATA_SIZE: usize = 128;
 
-/// Unlike its buf-per-call siblings, holds the data: `AttestationData` is the
-/// one record passed between functions, and the wrapper proves the bytes came
-/// from a checked accessor.
 #[derive(Clone, Copy)]
 pub struct AttestationDataView<'a>(&'a [u8; ATTESTATION_DATA_SIZE]);
 

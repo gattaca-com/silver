@@ -31,6 +31,11 @@ impl<V> Edits<V> {
         self.inner.clear();
     }
 
+    #[inline]
+    pub fn as_slice(&self) -> &[(u32, V)] {
+        &self.inner
+    }
+
     #[cfg(test)]
     pub fn iter(&self) -> std::slice::Iter<'_, (u32, V)> {
         self.inner.iter()
