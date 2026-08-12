@@ -248,15 +248,20 @@ pub fn sign_single_attestation(
     buf[104..112].copy_from_slice(&target_epoch.to_le_bytes());
     buf[112..144].copy_from_slice(&target_root);
 
-    let fv = test_fork_version(target_epoch);
-    let data: &[u8; 128] = buf[16..144].try_into().unwrap();
-    let object_root = ssz_hash::hash_attestation_data(data);
+    resign_single_attestation(sk_idx, &mut buf, imm);
+    buf
+}
+
+/// Recompute the signature over the buffer's current `AttestationData`, for
+/// tests that mutate data fields after `sign_single_attestation`.
+pub fn resign_single_attestation(sk_idx: usize, buf: &mut [u8; SINGLE_ATT_SIZE], imm: &Immutable) {
+    let data: [u8; 128] = buf[16..144].try_into().unwrap();
+    let fv = test_fork_version(SingleAttestationView::target_epoch(buf));
     let domain = bls::compute_domain(bls::DOMAIN_BEACON_ATTESTER, fv, &imm.genesis_validators_root);
-    let signing_root = bls::compute_signing_root(&object_root, &domain);
+    let signing_root = bls::compute_signing_root(&ssz_hash::hash_attestation_data(&data), &domain);
     let sig = sign(sk_idx, &signing_root);
     buf[144..240].copy_from_slice(&sig);
-    debug_assert_eq!(SingleAttestationView::signature(&buf), &sig);
-    buf
+    debug_assert_eq!(SingleAttestationView::signature(buf), &sig);
 }
 
 /// Build a fully signed `SignedAggregateAndProof` from a single-signer

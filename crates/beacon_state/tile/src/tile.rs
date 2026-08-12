@@ -22,10 +22,14 @@ use crate::{
     bls,
     fork_choice::{FORK_CHOICE_NODES_HINT, ForkChoice, PayloadStatus},
     merkle, ssz_hash, stf,
-    tile::{gossip::SeenAttesters, orphan_pool::PendingBlock, shuffling_cache::ShufflingCache},
+    tile::{
+        attestation_pool::AttestationPool, gossip::SeenAttesters, orphan_pool::PendingBlock,
+        shuffling_cache::ShufflingCache,
+    },
     weak_subjectivity::{weak_subjectivity_period_fulu, weak_subjectivity_period_gloas},
 };
 
+mod attestation_pool;
 mod block;
 mod finalize;
 mod fork_choice;
@@ -116,6 +120,7 @@ pub struct BeaconStateTile {
     fork_choice: ForkChoice,
     shuffling_cache: Box<ShufflingCache>,
     seen_attesters: SeenAttesters,
+    attestation_pool: AttestationPool,
 
     /// Highest finalized slot PM has announced as a sync target — bounds the
     /// data-availability requirement while range sync back-fills.
@@ -215,6 +220,7 @@ impl BeaconStateTile {
             fork_choice: ForkChoice::default(),
             shuffling_cache: ShufflingCache::with_capacity(val_cap),
             seen_attesters: SeenAttesters::new(val_cap),
+            attestation_pool: AttestationPool::new(),
             last_applied: anchor,
             last_applied_block_root: [0u8; 32],
             initial_status_emitted: false,
@@ -513,6 +519,7 @@ impl BeaconStateTile {
     fn slot_tick(&mut self, slot: Slot) -> bool {
         let advanced = self.on_slot_start(slot);
         self.fork_choice_tick();
+        self.attestation_pool.prune_before(slot.saturating_sub(1));
         advanced
     }
 
@@ -784,7 +791,7 @@ mod tests {
     use silver_common::{
         GossipTopic, MessageId, P2pStreamId, StreamProtocol, TCache, TCacheProducer, TProducer,
         ssz_view::{
-            PROPOSER_SLASHING_SIZE, SIGNED_AGG_PROOF_MIN, SIGNED_BLS_CHANGE_SIZE,
+            AttestationView, PROPOSER_SLASHING_SIZE, SIGNED_AGG_PROOF_MIN, SIGNED_BLS_CHANGE_SIZE,
             SIGNED_VOLUNTARY_EXIT_SIZE, SignedAggregateAndProofView, SingleAttestationView,
         },
     };
@@ -1670,7 +1677,8 @@ mod tests {
         assert_eq!(tile.handle_attestation(&buf, subnet), Feedback::Accept(None));
     }
 
-    /// Spec [IGNORE]: at most one attestation per (attester, target epoch).
+    /// Spec [IGNORE]: at most one attestation per (attester, target epoch) —
+    /// byte-identical or not — and the ignored resend never reaches the pool.
     #[test]
     fn single_att_repeat_attester_epoch_ignored() {
         let mut tile = make_tile_at_wall_slot(31);
@@ -1679,7 +1687,7 @@ mod tests {
         let subnet = expected_subnet(&tile, slot, ci);
         let imm = seed_immutable(&tile);
         let bbr = tile.last_applied_block_root;
-        let buf = test_signing::sign_single_attestation(
+        let mut buf = test_signing::sign_single_attestation(
             0,
             0,
             ci as u64,
@@ -1690,7 +1698,22 @@ mod tests {
             &imm,
         );
         assert_eq!(tile.handle_attestation(&buf, subnet), Feedback::Accept(None));
+        let data_root =
+            ssz_hash::hash_attestation_data(SingleAttestationView::data(&buf).as_bytes());
+        let first = tile.attestation_pool.aggregate_ssz(slot, ci as u64, data_root).unwrap();
+
         assert_eq!(tile.handle_attestation(&buf, subnet), Feedback::Ignore);
+        assert_eq!(tile.attestation_pool.aggregate_ssz(slot, ci as u64, data_root).unwrap(), first);
+
+        // Same attester+epoch, different source epoch (the one AttestationData
+        // field the handler doesn't validate): first-seen keys on the pair,
+        // not the content, so the variant must not open a new pool entry.
+        buf[64..72].copy_from_slice(&1u64.to_le_bytes());
+        test_signing::resign_single_attestation(0, &mut buf, &imm);
+        assert_eq!(tile.handle_attestation(&buf, subnet), Feedback::Ignore);
+        let new_root =
+            ssz_hash::hash_attestation_data(SingleAttestationView::data(&buf).as_bytes());
+        assert_eq!(tile.attestation_pool.aggregate_ssz(slot, ci as u64, new_root), None);
     }
 
     /// A rejected attestation must not mark the attester seen, or a forged
@@ -1727,6 +1750,44 @@ mod tests {
             &imm,
         );
         assert_eq!(tile.handle_attestation(&honest, subnet), Feedback::Accept(None));
+    }
+
+    /// An accepted single attestation lands in the pool: participant bit at
+    /// the attester's committee position, bitlist sized to the real committee,
+    /// data bytes carried over verbatim.
+    #[test]
+    fn single_att_accept_inserts_into_pool() {
+        let mut tile = make_tile_at_wall_slot(31);
+        seed_tile_with_keys(&mut tile, 128, 0);
+        let (slot, ci, pos, csize) = find_committee_for_vi0(&tile);
+        let subnet = expected_subnet(&tile, slot, ci);
+        let imm = seed_immutable(&tile);
+        let bbr = tile.last_applied_block_root;
+        let buf = test_signing::sign_single_attestation(
+            0,
+            0,
+            ci as u64,
+            slot,
+            bbr,
+            slot / SLOTS_PER_EPOCH,
+            bbr,
+            &imm,
+        );
+        assert_eq!(tile.handle_attestation(&buf, subnet), Feedback::Accept(None));
+
+        let data_root =
+            ssz_hash::hash_attestation_data(SingleAttestationView::data(&buf).as_bytes());
+        let out = tile
+            .attestation_pool
+            .aggregate_ssz(slot, ci as u64, data_root)
+            .expect("pooled aggregate");
+        let bits = AttestationView::aggregation_bits(&out);
+        assert!(bits[pos / 8] & (1 << (pos % 8)) != 0);
+        assert_eq!(merkle::bitlist_len(bits), csize);
+        assert_eq!(
+            AttestationView::data(&out).as_bytes(),
+            SingleAttestationView::data(&buf).as_bytes()
+        );
     }
 
     /// Marking a validator equivocating zeroes its live vote and blocks future

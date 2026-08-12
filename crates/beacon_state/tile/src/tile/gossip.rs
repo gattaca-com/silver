@@ -17,6 +17,7 @@ use silver_common::{
 
 use super::{
     ATTESTATION_PROPAGATION_SLOT_RANGE, BY_ROOT_REQUEST_ID, BeaconStateTile, Feedback, Producers,
+    attestation_pool::InsertOutcome,
     orphan_pool::{PendingBlock, has_room},
 };
 use crate::{bls, merkle, ssz_hash, stf, validate};
@@ -135,22 +136,33 @@ impl BeaconStateTile {
             return Feedback::Reject(None);
         }
         let committee = shuffling.committee(att_slot, committee_index);
-        if !committee.contains(&(attester_index as u32)) {
+        let Some(committee_position) = committee.iter().position(|&v| v == attester_index as u32)
+        else {
             return Feedback::Reject(None);
-        }
+        };
+        let committee_len = committee.len();
         if attester_index >= view.validators.count() {
             return Feedback::Reject(None);
         }
         let fork_version = view.epoch.fork_version_at(target_epoch);
-        if bls::verify_single_attestation(
+        let Some(verified) = bls::verify_single_attestation(
             buf,
             view.validators.pubkey_decompressed(attester_index),
             fork_version,
             &view.imm.genesis_validators_root,
-        )
-        .is_none()
-        {
+        ) else {
             return Feedback::Reject(None);
+        };
+
+        let outcome = self.attestation_pool.insert_verified(
+            buf,
+            committee_position,
+            committee_len,
+            &verified,
+        );
+        debug_assert!(outcome != InsertOutcome::Inconsistent);
+        if outcome == InsertOutcome::Full {
+            tracing::debug!(slot = att_slot, committee = committee_index, "attestation pool full");
         }
 
         let vote = stf::AttestationVote {
