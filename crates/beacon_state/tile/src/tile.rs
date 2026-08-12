@@ -1953,6 +1953,68 @@ mod tests {
         assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Reject(None));
     }
 
+    /// First committee (skipping the wall slot) holding two members whose
+    /// registry keys differ (vi % 3), so the aggregate is genuinely multi-key.
+    fn find_committee_with_two_signers(tile: &BeaconStateTile) -> (Slot, usize, u32, u32) {
+        let shuffled = tile.shuffling_cache.shuffled_by_epoch(0).expect("shuffling for epoch 0");
+        let shuffling = stf::EpochShuffling::new(shuffled, tile.head_validator_count());
+        for s in 0..SLOTS_PER_EPOCH - 1 {
+            for ci in 0..shuffling.committees_per_slot {
+                let c = shuffling.committee(s, ci);
+                for (i, &a) in c.iter().enumerate() {
+                    if let Some(&b) = c[i + 1..].iter().find(|&&b| b % 3 != a % 3) {
+                        return (s, ci, a, b);
+                    }
+                }
+            }
+        }
+        panic!("two distinct-key members in some committee")
+    }
+
+    #[test]
+    fn pool_aggregate_accepted_by_aggregate_and_proof_path() {
+        let mut tile = make_tile_at_wall_slot(31);
+        seed_tile_with_keys(&mut tile, 128, 0);
+        let imm = seed_immutable(&tile);
+        let bbr = tile.last_applied_block_root;
+        let (slot, ci, vi_a, vi_b) = find_committee_with_two_signers(&tile);
+        let subnet = expected_subnet(&tile, slot, ci);
+
+        let single = |vi: u32| {
+            test_signing::sign_single_attestation(
+                vi as usize % 3,
+                vi as u64,
+                ci as u64,
+                slot,
+                bbr,
+                slot / SLOTS_PER_EPOCH,
+                bbr,
+                &imm,
+            )
+        };
+        let a = single(vi_a);
+        let data_root = ssz_hash::hash_attestation_data(SingleAttestationView::data(&a).as_bytes());
+        assert_eq!(tile.handle_attestation(&a, subnet), Feedback::Accept(None));
+        assert_eq!(tile.handle_attestation(&single(vi_b), subnet), Feedback::Accept(None));
+
+        let aggregate = tile
+            .attestation_pool
+            .aggregate_ssz(slot, ci as u64, data_root)
+            .expect("pooled aggregate");
+
+        // Committee of 4 < 16 ⇒ any member trivially passes is_aggregator.
+        let wrapped = test_signing::wrap_aggregate_and_proof(
+            vi_a as usize % 3,
+            vi_a as u64,
+            &aggregate,
+            &imm,
+        );
+        // Accept requires verify_aggregate_and_proof_sigs: selection proof,
+        // outer signature, and the pooled aggregate signature against the two
+        // participants' aggregated registry pubkeys.
+        assert_eq!(tile.handle_aggregate_and_proof(&wrapped), Feedback::Accept(None));
+    }
+
     // ── finalization (deposit append lands on the delta, not the base) ──
 
     /// A `PendingDeposit` for a brand-new validator (spec key 0), signed under
