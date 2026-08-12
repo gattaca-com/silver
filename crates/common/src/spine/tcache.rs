@@ -402,6 +402,7 @@ impl TCache {
         };
         if success {
             slot.skip = 0;
+            slot.reserve_ns = Nanos::now();
         }
         let new_head = seq + slot.reservation_len as u64;
         slot.seq = AtomicU64::new(seq);
