@@ -36,8 +36,7 @@ pub(crate) fn compute_exit_epoch_and_update_churn(
     let activation_exit_epoch = current_epoch + 1 + cfg.max_seed_lookahead;
     let prev_earliest = slot.state().earliest_exit_epoch;
     let mut earliest = max(prev_earliest, activation_exit_epoch);
-    let total_active = slot.total_active_balance(current_epoch);
-    let per_epoch_churn = get_exit_churn_limit(cfg, total_active, current_epoch);
+    let per_epoch_churn = get_exit_churn_limit(cfg, slot, current_epoch);
 
     let mut balance_to_consume = if prev_earliest < earliest {
         per_epoch_churn
@@ -66,8 +65,7 @@ pub(crate) fn compute_consolidation_epoch_and_update_churn(
     let activation_exit_epoch = current_epoch + 1 + cfg.max_seed_lookahead;
     let prev_earliest = slot.state().earliest_consolidation_epoch;
     let mut earliest = max(prev_earliest, activation_exit_epoch);
-    let total_active = slot.total_active_balance(current_epoch);
-    let per_epoch_churn = get_consolidation_churn_limit(cfg, total_active, current_epoch);
+    let per_epoch_churn = get_consolidation_churn_limit(cfg, slot, current_epoch);
 
     let mut balance_to_consume = if prev_earliest < earliest {
         per_epoch_churn
@@ -89,7 +87,7 @@ pub(crate) fn compute_consolidation_epoch_and_update_churn(
 
 pub(crate) fn get_balance_churn_limit(
     cfg: &SpecConfig,
-    total_active: u64,
+    slot: &SlotStateWriteView,
     current_epoch: Epoch,
 ) -> u64 {
     let quotient = if cfg.is_gloas_at(current_epoch) {
@@ -97,25 +95,26 @@ pub(crate) fn get_balance_churn_limit(
     } else {
         cfg.churn_limit_quotient
     };
+    let total_active = slot.total_active_balance(current_epoch);
     let churn = max(cfg.min_per_epoch_churn_limit, total_active / quotient);
     churn - churn % EFFECTIVE_BALANCE_INCREMENT
 }
 
 fn get_activation_exit_churn_limit(
     cfg: &SpecConfig,
-    total_active: u64,
+    slot: &SlotStateWriteView,
     current_epoch: Epoch,
 ) -> u64 {
     min(
         cfg.max_per_epoch_activation_exit_churn_limit,
-        get_balance_churn_limit(cfg, total_active, current_epoch),
+        get_balance_churn_limit(cfg, slot, current_epoch),
     )
 }
 
 /// EIP-8061 (Gloas): exit churn is the uncapped base churn; pre-Gloas it
 /// shares the activation/exit cap.
-fn get_exit_churn_limit(cfg: &SpecConfig, total_active: u64, current_epoch: Epoch) -> u64 {
-    let base = get_balance_churn_limit(cfg, total_active, current_epoch);
+fn get_exit_churn_limit(cfg: &SpecConfig, slot: &SlotStateWriteView, current_epoch: Epoch) -> u64 {
+    let base = get_balance_churn_limit(cfg, slot, current_epoch);
     if cfg.is_gloas_at(current_epoch) {
         base
     } else {
@@ -125,16 +124,17 @@ fn get_exit_churn_limit(cfg: &SpecConfig, total_active: u64, current_epoch: Epoc
 
 pub(crate) fn get_consolidation_churn_limit(
     cfg: &SpecConfig,
-    total_active: u64,
+    slot: &SlotStateWriteView,
     current_epoch: Epoch,
 ) -> u64 {
     // EIP-8061 (Gloas): independently derived from total active balance.
     if cfg.is_gloas_at(current_epoch) {
+        let total_active = slot.total_active_balance(current_epoch);
         let churn = total_active / cfg.consolidation_churn_limit_quotient;
         return churn - churn % EFFECTIVE_BALANCE_INCREMENT;
     }
-    get_balance_churn_limit(cfg, total_active, current_epoch) -
-        get_activation_exit_churn_limit(cfg, total_active, current_epoch)
+    get_balance_churn_limit(cfg, slot, current_epoch) -
+        get_activation_exit_churn_limit(cfg, slot, current_epoch)
 }
 
 /// Debug-only oracle: recomputes the cache from scratch.

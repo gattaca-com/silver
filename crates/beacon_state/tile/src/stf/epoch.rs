@@ -6,8 +6,8 @@ use silver_beacon_state_data::{
     self as common, Checkpoint, EPOCHS_PER_SLASHINGS_VECTOR, Epoch, EpochBalances, EpochView,
     EpochWriteView, Eth1WriteView, HistoricalSummary, LongtailGroup, LongtailId, LongtailWriteView,
     MIN_SEED_LOOKAHEAD, PARTICIPATION_FLAGS, PARTICIPATION_WEIGHTS, PROPOSER_LOOKAHEAD_SIZE,
-    SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT, SYNC_COMMITTEE_SIZE, SpecConfig, StateWriterView,
-    TIMELY_TARGET_FLAG, ValidatorsView,
+    SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT, SYNC_COMMITTEE_SIZE, SlotStateWriteView,
+    SpecConfig, StateWriterView, TIMELY_TARGET_FLAG, ValidatorsView,
 };
 
 use crate::{
@@ -571,7 +571,8 @@ pub fn process_pending_deposits(
     let current_epoch = view.slot.state().slot / SLOTS_PER_EPOCH;
     let next_epoch = current_epoch + 1;
     let dep_balance_to_consume = epoch.state_mut().deposit_balance_to_consume;
-    let available = dep_balance_to_consume + get_deposit_churn_limit(cfg, view, current_epoch);
+    let available =
+        dep_balance_to_consume + get_deposit_churn_limit(cfg, &view.slot, current_epoch);
     let finalized_slot = epoch.state_mut().finalized_checkpoint.epoch * SLOTS_PER_EPOCH;
 
     postponed.clear();
@@ -874,14 +875,17 @@ fn retain_unslashed(indices: &mut Vec<u32>, validators: &ValidatorsView) {
 
 #[inline]
 #[timed]
-fn get_deposit_churn_limit(cfg: &SpecConfig, view: &StateWriterView, current_epoch: Epoch) -> u64 {
+fn get_deposit_churn_limit(
+    cfg: &SpecConfig,
+    slot: &SlotStateWriteView,
+    current_epoch: Epoch,
+) -> u64 {
     let cap = if cfg.is_gloas_at(current_epoch) {
         cfg.max_per_epoch_activation_churn_limit_gloas
     } else {
         cfg.max_per_epoch_activation_exit_churn_limit
     };
-    let total_active = view.slot.total_active_balance(current_epoch);
-    min(cap, get_balance_churn_limit(cfg, total_active, current_epoch))
+    min(cap, get_balance_churn_limit(cfg, slot, current_epoch))
 }
 
 /// Inactivity-leak predicate: the chain hasn't finalized for more than

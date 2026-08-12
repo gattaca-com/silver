@@ -302,8 +302,7 @@ fn process_consolidation_request(
     if pc_len >= PENDING_CONSOLIDATIONS_LIMIT {
         return;
     }
-    let total_active = slot.total_active_balance(current_epoch);
-    let churn_limit = get_consolidation_churn_limit(cfg, total_active, current_epoch);
+    let churn_limit = get_consolidation_churn_limit(cfg, slot, current_epoch);
     if churn_limit <= MIN_ACTIVATION_BALANCE {
         return;
     }
