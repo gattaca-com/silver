@@ -23,7 +23,7 @@ pub const NUMBER_OF_CUSTODY_GROUPS: u8 = 128;
 pub const SAMPLES_PER_SLOT: u8 = 8;
 
 /// Long-lived attestation subnets every node subscribes to (phase0 p2p).
-pub const SUBNETS_PER_NODE: usize = 64;
+pub const SUBNETS_PER_NODE: usize = 2;
 
 pub const EPOCHS_PER_SUBNET_SUBSCRIPTION: u64 = 256;
 
@@ -367,15 +367,15 @@ mod tests {
         assert_ne!(a.custody_groups(16), b.custody_groups(16));
     }
 
-    // #[test]
-    // fn attestation_subnets_in_range_and_consecutive() {
-    //     for _ in 0..64 {
-    //         let id = NodeId::random();
-    //         let [a, b] = id.attestation_subnets(12345);
-    //         assert!((a as u64) < ATTESTATION_SUBNET_COUNT);
-    //         assert_eq!(b as u64, (a as u64 + 1) % ATTESTATION_SUBNET_COUNT);
-    //     }
-    // }
+    #[test]
+    fn attestation_subnets_in_range_and_consecutive() {
+        for _ in 0..64 {
+            let id = NodeId::random();
+            let [a, b] = id.attestation_subnets(12345);
+            assert!((a as u64) < ATTESTATION_SUBNET_COUNT);
+            assert_eq!(b as u64, (a as u64 + 1) % ATTESTATION_SUBNET_COUNT);
+        }
+    }
 
     #[test]
     fn attestation_subnets_stable_within_period_rotate_across() {
