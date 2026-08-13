@@ -28,7 +28,8 @@ pub use ring::{Id, Reset};
 pub use silver_chain_spec::{BlobParameters, SpecConfig};
 pub(crate) use silver_ssz::{merkle, progressive};
 pub use slot_state::{
-    SlotStateFinalized, SlotStateGroup, SlotStateId, SlotStateView, SlotStateWriteView,
+    EpochBalances, EpochBalancesRow, SlotStateFinalized, SlotStateGroup, SlotStateId,
+    SlotStateView, SlotStateWriteView,
 };
 pub use types::*;
 pub use validators::{
@@ -151,6 +152,11 @@ impl BeaconState {
         // the column's element width (participation flags 1 B, scores 8 B).
         let zeros = |width: usize| vec![0u8; n * width];
         let zero_roots = || vec![[0u8; 32]; SLOTS_PER_HISTORICAL_ROOT].into_boxed_slice();
+        let epoch_balances = validators.finalized().sweep_epoch_balances(
+            &zeros(1),
+            &zeros(1),
+            slot / SLOTS_PER_EPOCH,
+        );
         Self {
             immutable: Immutable::default(),
             validators,
@@ -172,11 +178,14 @@ impl BeaconState {
             )
             .unwrap(),
             inactivity: InactivityScoresGroup::new(cap, n, &zeros(8), HashFormat::Fulu).unwrap(),
-            slot_states: SlotStateGroup::new(SlotStateFinalized::from_parts(
-                SlotState { slot, ..Default::default() },
-                zero_roots(),
-                zero_roots(),
-            )),
+            slot_states: SlotStateGroup::new(
+                SlotStateFinalized::from_parts(
+                    SlotState { slot, ..Default::default() },
+                    zero_roots(),
+                    zero_roots(),
+                )
+                .with_epoch_balances(epoch_balances),
+            ),
             epoch: EpochGroup::new(epoch_base),
             longtail: LongtailGroup::new(LongtailState::default()),
             builders: BuildersGroup::new(FinalizedBuilders::default()),

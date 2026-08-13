@@ -1,6 +1,6 @@
 use std::io::{self, Write};
 
-use super::delta::SlotStateDelta;
+use super::{delta::SlotStateDelta, epoch_balances::EpochBalances};
 use crate::{
     DecomposeError, EpochStateFinalized,
     decompose::{
@@ -36,6 +36,7 @@ const BUILDER_PENDING_PAYMENT_SSZ: usize = 52;
 #[derive(Clone)]
 pub struct SlotStateFinalized {
     pub(super) slot: SlotState,
+    pub(super) epoch_balances: EpochBalances,
     pub(super) block_roots: Box<[B256]>,
     pub(super) state_roots: Box<[B256]>,
 }
@@ -44,6 +45,7 @@ impl Default for SlotStateFinalized {
     fn default() -> Self {
         Self {
             slot: Default::default(),
+            epoch_balances: Default::default(),
             block_roots: vec![[0u8; 32]; SLOTS_PER_HISTORICAL_ROOT].into_boxed_slice(),
             state_roots: vec![[0u8; 32]; SLOTS_PER_HISTORICAL_ROOT].into_boxed_slice(),
         }
@@ -57,12 +59,17 @@ impl SlotStateFinalized {
     pub fn from_parts(slot: SlotState, block_roots: Box<[B256]>, state_roots: Box<[B256]>) -> Self {
         debug_assert_eq!(block_roots.len(), SLOTS_PER_HISTORICAL_ROOT);
         debug_assert_eq!(state_roots.len(), SLOTS_PER_HISTORICAL_ROOT);
-        Self { slot, block_roots, state_roots }
+        Self { slot, epoch_balances: Default::default(), block_roots, state_roots }
     }
 
     #[inline]
     pub(crate) fn state(&self) -> &SlotState {
         &self.slot
+    }
+
+    pub(crate) fn with_epoch_balances(mut self, epoch_balances: EpochBalances) -> Self {
+        self.epoch_balances = epoch_balances;
+        self
     }
 
     /// SSZ-encode the `block_roots` then `state_roots` circular buffers
@@ -79,6 +86,7 @@ impl SlotStateFinalized {
     pub(super) fn promote(&mut self, delta: &SlotStateDelta) {
         let old_fin_slot = self.slot.slot as usize;
         self.slot.clone_from(&delta.slot);
+        self.epoch_balances = delta.epoch_balances;
 
         write_ring_window(&mut self.block_roots, old_fin_slot, &delta.block_roots);
         write_ring_window(&mut self.state_roots, old_fin_slot, &delta.state_roots);

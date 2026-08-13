@@ -2,8 +2,8 @@ use core::cmp::{max, min};
 
 use flux_profiler::timed;
 use silver_beacon_state_data::{
-    Epoch, EpochView, PendingView, SLOTS_PER_EPOCH, SlotStateWriteView, SpecConfig, ValidatorsView,
-    ValidatorsWriteView,
+    Epoch, EpochBalances, EpochBalancesRow, EpochView, PendingView, SLOTS_PER_EPOCH,
+    SlotStateWriteView, SpecConfig, StateWriterView, ValidatorsView,
 };
 
 use crate::stf::EFFECTIVE_BALANCE_INCREMENT;
@@ -11,38 +11,32 @@ use crate::stf::EFFECTIVE_BALANCE_INCREMENT;
 #[timed]
 pub(crate) fn initiate_validator_exit(
     cfg: &SpecConfig,
-    slot: &mut SlotStateWriteView,
-    validators: &mut ValidatorsWriteView,
+    view: &mut StateWriterView,
     vi: u32,
     current_epoch: Epoch,
 ) {
-    if validators.exit_epoch(vi as usize) != u64::MAX {
+    if view.validators.exit_epoch(vi as usize) != u64::MAX {
         return;
     }
-    let effective_balance = validators.effective_balance(vi as usize);
-    let exit_epoch = compute_exit_epoch_and_update_churn(
-        cfg,
-        slot,
-        &validators.reader(),
-        effective_balance,
-        current_epoch,
-    );
-    validators.set_exit_epoch(vi, exit_epoch);
-    validators.set_withdrawable_epoch(vi, exit_epoch + cfg.min_validator_withdrawability_delay);
+    let effective_balance = view.validators.effective_balance(vi as usize);
+    let exit_epoch =
+        compute_exit_epoch_and_update_churn(cfg, &mut view.slot, effective_balance, current_epoch);
+    view.validators.set_exit_epoch(vi, exit_epoch);
+    view.validators
+        .set_withdrawable_epoch(vi, exit_epoch + cfg.min_validator_withdrawability_delay);
 }
 
 #[timed]
 pub(crate) fn compute_exit_epoch_and_update_churn(
     cfg: &SpecConfig,
     slot: &mut SlotStateWriteView,
-    validators: &ValidatorsView,
     exit_balance: u64,
     current_epoch: Epoch,
 ) -> Epoch {
     let activation_exit_epoch = current_epoch + 1 + cfg.max_seed_lookahead;
     let prev_earliest = slot.state().earliest_exit_epoch;
     let mut earliest = max(prev_earliest, activation_exit_epoch);
-    let per_epoch_churn = get_exit_churn_limit(cfg, validators, current_epoch);
+    let per_epoch_churn = get_exit_churn_limit(cfg, slot, current_epoch);
 
     let mut balance_to_consume = if prev_earliest < earliest {
         per_epoch_churn
@@ -65,14 +59,13 @@ pub(crate) fn compute_exit_epoch_and_update_churn(
 pub(crate) fn compute_consolidation_epoch_and_update_churn(
     cfg: &SpecConfig,
     slot: &mut SlotStateWriteView,
-    validators: &ValidatorsView,
     consolidation_balance: u64,
     current_epoch: Epoch,
 ) -> Epoch {
     let activation_exit_epoch = current_epoch + 1 + cfg.max_seed_lookahead;
     let prev_earliest = slot.state().earliest_consolidation_epoch;
     let mut earliest = max(prev_earliest, activation_exit_epoch);
-    let per_epoch_churn = get_consolidation_churn_limit(cfg, validators, current_epoch);
+    let per_epoch_churn = get_consolidation_churn_limit(cfg, slot, current_epoch);
 
     let mut balance_to_consume = if prev_earliest < earliest {
         per_epoch_churn
@@ -92,41 +85,36 @@ pub(crate) fn compute_consolidation_epoch_and_update_churn(
     earliest
 }
 
-#[timed]
 pub(crate) fn get_balance_churn_limit(
     cfg: &SpecConfig,
-    validators: &ValidatorsView,
+    slot: &SlotStateWriteView,
     current_epoch: Epoch,
 ) -> u64 {
-    let total = total_active_balance(validators, current_epoch);
     let quotient = if cfg.is_gloas_at(current_epoch) {
         cfg.churn_limit_quotient_gloas
     } else {
         cfg.churn_limit_quotient
     };
-    let churn = max(cfg.min_per_epoch_churn_limit, total / quotient);
+    let total_active = slot.total_active_balance(current_epoch);
+    let churn = max(cfg.min_per_epoch_churn_limit, total_active / quotient);
     churn - churn % EFFECTIVE_BALANCE_INCREMENT
 }
 
 fn get_activation_exit_churn_limit(
     cfg: &SpecConfig,
-    validators: &ValidatorsView,
+    slot: &SlotStateWriteView,
     current_epoch: Epoch,
 ) -> u64 {
     min(
         cfg.max_per_epoch_activation_exit_churn_limit,
-        get_balance_churn_limit(cfg, validators, current_epoch),
+        get_balance_churn_limit(cfg, slot, current_epoch),
     )
 }
 
 /// EIP-8061 (Gloas): exit churn is the uncapped base churn; pre-Gloas it
 /// shares the activation/exit cap.
-fn get_exit_churn_limit(
-    cfg: &SpecConfig,
-    validators: &ValidatorsView,
-    current_epoch: Epoch,
-) -> u64 {
-    let base = get_balance_churn_limit(cfg, validators, current_epoch);
+fn get_exit_churn_limit(cfg: &SpecConfig, slot: &SlotStateWriteView, current_epoch: Epoch) -> u64 {
+    let base = get_balance_churn_limit(cfg, slot, current_epoch);
     if cfg.is_gloas_at(current_epoch) {
         base
     } else {
@@ -136,35 +124,38 @@ fn get_exit_churn_limit(
 
 pub(crate) fn get_consolidation_churn_limit(
     cfg: &SpecConfig,
-    validators: &ValidatorsView,
+    slot: &SlotStateWriteView,
     current_epoch: Epoch,
 ) -> u64 {
     // EIP-8061 (Gloas): independently derived from total active balance.
     if cfg.is_gloas_at(current_epoch) {
-        let total = total_active_balance(validators, current_epoch);
-        let churn = total / cfg.consolidation_churn_limit_quotient;
+        let total_active = slot.total_active_balance(current_epoch);
+        let churn = total_active / cfg.consolidation_churn_limit_quotient;
         return churn - churn % EFFECTIVE_BALANCE_INCREMENT;
     }
-    get_balance_churn_limit(cfg, validators, current_epoch) -
-        get_activation_exit_churn_limit(cfg, validators, current_epoch)
+    get_balance_churn_limit(cfg, slot, current_epoch) -
+        get_activation_exit_churn_limit(cfg, slot, current_epoch)
 }
 
-/// O(N + |edits|): single sweep over activation/exit/effective_balance columns.
-pub(crate) fn total_active_balance(validators: &ValidatorsView, current_epoch: Epoch) -> u64 {
+/// Debug-only oracle: recomputes the cache from scratch.
+pub(crate) fn sweep_epoch_balances(view: &StateWriterView, current_epoch: Epoch) -> EpochBalances {
+    let validators = view.validators.reader();
     let n = validators.count();
-    let mut act = validators.iter_activation_epochs();
+    let mut activation = validators.iter_activation_epochs();
     let mut exit = validators.iter_exit_epochs();
+    let mut slashed = validators.iter_slashed();
     let mut effective_balance = validators.iter_effective_balances();
-    let mut total: u64 = 0;
-    for _ in 0..n {
-        let a = act.next().unwrap();
-        let x = exit.next().unwrap();
-        let b = effective_balance.next().unwrap();
-        if a <= current_epoch && current_epoch < x {
-            total += b;
-        }
-    }
-    total.max(EFFECTIVE_BALANCE_INCREMENT)
+    let mut previous_participation = view.previous_participation.iter();
+    let mut current_participation = view.current_participation.iter();
+    let rows = (0..n).map(|_| EpochBalancesRow {
+        activation_epoch: activation.next().unwrap(),
+        exit_epoch: exit.next().unwrap(),
+        slashed: slashed.next().unwrap(),
+        effective_balance: effective_balance.next().unwrap(),
+        previous_participation: previous_participation.next().unwrap(),
+        current_participation: current_participation.next().unwrap(),
+    });
+    EpochBalances::sweep(current_epoch, rows)
 }
 
 pub(crate) fn get_pending_balance_to_withdraw(pending: &PendingView, vi: u32) -> u64 {

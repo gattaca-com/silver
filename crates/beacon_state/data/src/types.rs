@@ -46,6 +46,12 @@ pub const PENDING_PARTIAL_WITHDRAWALS_LIMIT: usize = 1 << 27;
 pub const PENDING_CONSOLIDATIONS_LIMIT: usize = 1 << 18;
 
 pub const SLOTS_PER_EPOCH: u64 = 32;
+pub const EFFECTIVE_BALANCE_INCREMENT: u64 = 1_000_000_000;
+pub const TIMELY_SOURCE_FLAG: u8 = 1 << 0;
+pub const TIMELY_TARGET_FLAG: u8 = 1 << 1;
+pub const TIMELY_HEAD_FLAG: u8 = 1 << 2;
+pub const PARTICIPATION_FLAGS: [u8; 3] = [TIMELY_SOURCE_FLAG, TIMELY_TARGET_FLAG, TIMELY_HEAD_FLAG];
+pub const PARTICIPATION_WEIGHTS: [u64; 3] = [14, 26, 14];
 pub const SYNC_COMMITTEE_SIZE: usize = 512;
 pub const MAX_ETH1_VOTES: usize = 2048;
 pub const MIN_SEED_LOOKAHEAD: u64 = 1;
@@ -432,8 +438,8 @@ impl Withdrawals {
     /// caps at 2048 ETH, eth1/bls cap at 32 ETH.
     #[inline]
     pub fn max_effective_balance(&self) -> u64 {
-        const MIN_ACTIVATION_BALANCE: u64 = 32_000_000_000;
-        const MAX_EFFECTIVE_BALANCE_COMPOUNDING: u64 = 2048 * 1_000_000_000;
+        const MIN_ACTIVATION_BALANCE: u64 = 32 * EFFECTIVE_BALANCE_INCREMENT;
+        const MAX_EFFECTIVE_BALANCE_COMPOUNDING: u64 = 2048 * EFFECTIVE_BALANCE_INCREMENT;
         if self.has_compounding_credential() {
             MAX_EFFECTIVE_BALANCE_COMPOUNDING
         } else {

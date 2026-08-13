@@ -11,6 +11,7 @@ use crate::{
     types::{
         self, B256, Checkpoint, HISTORICAL_ROOTS_LIMIT, HashFormat, Immutable,
         PROPOSER_LOOKAHEAD_SIZE, PendingConsolidation, PendingDeposit, PendingPartialWithdrawal,
+        SLOTS_PER_EPOCH,
     },
 };
 
@@ -229,6 +230,14 @@ impl BeaconState {
         if format == HashFormat::Gloas {
             pending.mark_gloas_base();
         }
+
+        let current_epoch = slot.state().slot / SLOTS_PER_EPOCH;
+        let epoch_balances = validators.finalized().sweep_epoch_balances(
+            prev_participation_bytes,
+            curr_participation_bytes,
+            current_epoch,
+        );
+        let slot = slot.with_epoch_balances(epoch_balances);
 
         let state = Self {
             immutable,

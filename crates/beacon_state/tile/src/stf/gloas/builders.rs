@@ -7,7 +7,7 @@ use silver_common::ssz_view::{
     BuilderExitRequestView,
 };
 
-use crate::stf::{is_valid_builder_deposit_signature, total_active_balance};
+use crate::stf::is_valid_builder_deposit_signature;
 
 /// Delay from exit initiation to a builder's balance becoming withdrawable.
 const MIN_BUILDER_WITHDRAWABILITY_DELAY: u64 = 1 << 6;
@@ -81,7 +81,7 @@ pub(crate) fn can_builder_cover_bid(
 }
 
 pub fn get_builder_payment_quorum_threshold(view: &StateWriterView, current_epoch: Epoch) -> u64 {
-    let per_slot = total_active_balance(&view.validators.reader(), current_epoch) / SLOTS_PER_EPOCH;
+    let per_slot = view.slot.total_active_balance(current_epoch) / SLOTS_PER_EPOCH;
     per_slot * BUILDER_PAYMENT_THRESHOLD_NUMERATOR / BUILDER_PAYMENT_THRESHOLD_DENOMINATOR
 }
 

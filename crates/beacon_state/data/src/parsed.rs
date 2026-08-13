@@ -1,6 +1,6 @@
 use silver_ssz::ssz_view::{AttestationDataView, SignedAggregateAndProofView};
 
-use crate::{B256, Epoch, SLOTS_PER_EPOCH};
+use crate::{Epoch, SLOTS_PER_EPOCH};
 
 pub struct ParsedAggregateAndProof<'a> {
     pub outer_sig: &'a [u8; 96],
@@ -8,8 +8,6 @@ pub struct ParsedAggregateAndProof<'a> {
     pub selection_proof: &'a [u8; 96],
     pub agg_slot: u64,
     pub agg_data_index: u64,
-    pub beacon_block_root: B256,
-    pub target_epoch: Epoch,
     pub committee_bits: u64,
     pub agg_sig: &'a [u8; 96],
     pub agg_data: AttestationDataView<'a>,
@@ -30,8 +28,6 @@ impl<'a> ParsedAggregateAndProof<'a> {
             selection_proof: SignedAggregateAndProofView::selection_proof(data),
             agg_slot,
             agg_data_index: SignedAggregateAndProofView::agg_data_index(data),
-            beacon_block_root: *SignedAggregateAndProofView::agg_beacon_block_root(data),
-            target_epoch: SignedAggregateAndProofView::agg_target_epoch(data),
             committee_bits: u64::from_le_bytes(*SignedAggregateAndProofView::agg_committee_bits(
                 data,
             )),

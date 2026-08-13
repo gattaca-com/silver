@@ -9,7 +9,7 @@ use crate::{
     error::{Result, SyncAggregateError},
     stf::{
         BASE_REWARD_FACTOR, EFFECTIVE_BALANCE_INCREMENT, PROPOSER_WEIGHT, WEIGHT_DENOMINATOR,
-        integer_sqrt, total_active_balance,
+        integer_sqrt,
     },
 };
 
@@ -88,7 +88,7 @@ pub fn process_sync_aggregate(
     let bits = SyncAggregateView::sync_committee_bits(sync_agg_fixed);
 
     let current_epoch = slot.state().slot / SLOTS_PER_EPOCH;
-    let total_active = total_active_balance(&validators.reader(), current_epoch);
+    let total_active = slot.total_active_balance(current_epoch);
     let sqrt_total = integer_sqrt(total_active);
     let base_reward_per_increment = EFFECTIVE_BALANCE_INCREMENT * BASE_REWARD_FACTOR / sqrt_total;
     let total_active_increments = total_active / EFFECTIVE_BALANCE_INCREMENT;
