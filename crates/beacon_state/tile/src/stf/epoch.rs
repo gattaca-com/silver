@@ -1,11 +1,13 @@
 use core::cmp::min;
 
 use flux_profiler::timed;
+pub(crate) use silver_beacon_state_data::EFFECTIVE_BALANCE_INCREMENT;
 use silver_beacon_state_data::{
-    self as common, Checkpoint, EPOCHS_PER_SLASHINGS_VECTOR, Epoch, EpochView, EpochWriteView,
-    Eth1WriteView, HistoricalSummary, LongtailGroup, LongtailId, LongtailWriteView,
-    MIN_SEED_LOOKAHEAD, PROPOSER_LOOKAHEAD_SIZE, SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT,
-    SYNC_COMMITTEE_SIZE, SpecConfig, StateWriterView, ValidatorsView,
+    self as common, Checkpoint, EPOCHS_PER_SLASHINGS_VECTOR, Epoch, EpochBalances, EpochView,
+    EpochWriteView, Eth1WriteView, HistoricalSummary, LongtailGroup, LongtailId, LongtailWriteView,
+    MIN_SEED_LOOKAHEAD, PARTICIPATION_FLAGS, PARTICIPATION_WEIGHTS, PROPOSER_LOOKAHEAD_SIZE,
+    SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT, SYNC_COMMITTEE_SIZE, SlotStateWriteView,
+    SpecConfig, StateWriterView, TIMELY_TARGET_FLAG, ValidatorsView,
 };
 
 use crate::{
@@ -16,7 +18,8 @@ use crate::{
         common::StfScratch,
         process_builder_pending_payments, process_ptc_window,
         validator::{
-            ActiveStatus, get_balance_churn_limit, initiate_validator_exit, total_active_balance,
+            ActiveStatus, get_balance_churn_limit, initiate_validator_exit, is_active,
+            sweep_epoch_balances,
         },
     },
 };
@@ -24,17 +27,10 @@ use crate::{
 pub const EPOCHS_PER_ETH1_VOTING_PERIOD: u64 = 64;
 pub const EPOCHS_PER_SYNC_COMMITTEE_PERIOD: u64 = 256;
 
-// Participation flag bits and weights (Altair+).
-const TIMELY_SOURCE_FLAG: u8 = 1 << 0;
-const TIMELY_TARGET_FLAG: u8 = 1 << 1;
-const TIMELY_HEAD_FLAG: u8 = 1 << 2;
-const PARTICIPATION_FLAGS: [u8; 3] = [TIMELY_SOURCE_FLAG, TIMELY_TARGET_FLAG, TIMELY_HEAD_FLAG];
-const PARTICIPATION_WEIGHTS: [u64; 3] = [14, 26, 14];
 pub(crate) const WEIGHT_DENOMINATOR: u64 = 64;
 pub(crate) const PROPOSER_WEIGHT: u64 = 8;
 
 // Balance constants (gwei).
-pub(crate) const EFFECTIVE_BALANCE_INCREMENT: u64 = 1_000_000_000;
 const MIN_ACTIVATION_BALANCE: u64 = 32 * EFFECTIVE_BALANCE_INCREMENT;
 const HYSTERESIS_QUOTIENT: u64 = 4;
 const HYSTERESIS_DOWNWARD_MULTIPLIER: u64 = 1;
@@ -111,6 +107,10 @@ pub fn process_epoch(
         process_ptc_window(view, epoch, current_epoch);
     }
 
+    // Last: until this runs, `total_active_balance` still answers for
+    // `current_epoch`, which is what every pass above asks for.
+    reseed_epoch_balances(view, next_epoch);
+
     // Commit the boundary-rolled longtail entry: its id surfaces only here,
     // after the rotation leaves are done mutating it.
     if let Some(w) = longtail_w {
@@ -170,49 +170,18 @@ pub(crate) fn unrealized_checkpoints(
 }
 
 /// Target-vote supermajority roots for the previous / current epoch (spec 2/3
-/// threshold). `None` when the threshold isn't met. Single zipped read sweep
-/// over merged validator rows.
+/// threshold). `None` when the threshold isn't met.
 fn justification_target_roots(
     view: &StateWriterView,
     current_epoch: Epoch,
 ) -> (Option<common::B256>, Option<common::B256>) {
     let previous_epoch = current_epoch - 1;
-    let (mut total_active, mut curr_target, mut prev_target) = (0u64, 0u64, 0u64);
-    let validators = view.validators.reader();
-    let n = validators.count();
-    let mut act = validators.iter_activation_epochs();
-    let mut exit = validators.iter_exit_epochs();
-    let mut slashed_col = validators.iter_slashed();
-    let mut eff = validators.iter_effective_balances();
-    let mut prev_p = view.previous_participation.iter();
-    let mut curr_p = view.current_participation.iter();
-    for _ in 0..n {
-        let status = ActiveStatus {
-            activation_epoch: act.next().unwrap(),
-            exit_epoch: exit.next().unwrap(),
-            slashed: slashed_col.next().unwrap(),
-        };
-        let effective_balance = eff.next().unwrap();
-        let previous_participation = prev_p.next().unwrap();
-        let current_participation = curr_p.next().unwrap();
-        if status.active_at(current_epoch) {
-            total_active += effective_balance;
-            if !status.slashed && current_participation & TIMELY_TARGET_FLAG != 0 {
-                curr_target += effective_balance;
-            }
-        }
-        if status.active_at(previous_epoch) &&
-            !status.slashed &&
-            previous_participation & TIMELY_TARGET_FLAG != 0
-        {
-            prev_target += effective_balance;
-        }
-    }
-    total_active = total_active.max(EFFECTIVE_BALANCE_INCREMENT);
+    let balances = view.slot.epoch_balances();
+    debug_assert_eq!(balances, sweep_epoch_balances(view, current_epoch));
 
-    let prev_root = (prev_target * 3 >= total_active * 2)
+    let prev_root = (balances.previous_target * 3 >= balances.total_active * 2)
         .then(|| view.slot.block_root_at_slot(previous_epoch * SLOTS_PER_EPOCH));
-    let curr_root = (curr_target * 3 >= total_active * 2)
+    let curr_root = (balances.current_target * 3 >= balances.total_active * 2)
         .then(|| view.slot.block_root_at_slot(current_epoch * SLOTS_PER_EPOCH));
     (prev_root, curr_root)
 }
@@ -318,7 +287,7 @@ pub fn process_rewards_and_penalties(
     if current_epoch == 0 {
         return;
     }
-    let total_active = total_active_balance(&view.validators.reader(), current_epoch);
+    let total_active = view.slot.total_active_balance(current_epoch);
     let sqrt_total = integer_sqrt(total_active);
     let base_reward_per_increment = EFFECTIVE_BALANCE_INCREMENT * BASE_REWARD_FACTOR / sqrt_total;
     let is_leak = is_inactivity_leak(cfg, epoch, current_epoch);
@@ -451,7 +420,7 @@ pub fn process_registry_updates(
         view.validators.set_activation_eligibility_epoch(vi, v);
     }
     for &vi in &to_eject {
-        initiate_validator_exit(cfg, &mut view.slot, &mut view.validators, vi, current_epoch);
+        initiate_validator_exit(cfg, view, vi, current_epoch);
     }
     for &(vi, v) in &act_updates {
         view.validators.set_activation_epoch(vi, v);
@@ -465,7 +434,7 @@ pub fn process_slashings(
     epoch: &EpochView,
     current_epoch: Epoch,
 ) {
-    let total_balance = total_active_balance(&view.validators.reader(), current_epoch);
+    let total_balance = view.slot.total_active_balance(current_epoch);
 
     let mut sum_slashings: u64 = 0;
     for off in 0..EPOCHS_PER_SLASHINGS_VECTOR as u64 {
@@ -518,6 +487,8 @@ pub fn process_slashings_reset(view: &mut StateWriterView, epoch: &mut EpochWrit
     view.slot.state_mut().current_epoch_slashings = 0;
 }
 
+/// Also re-weights `current_target`: a changed target-flagged attester
+/// re-contributes at its new effective balance.
 #[timed]
 pub fn process_effective_balance_updates(
     view: &mut StateWriterView,
@@ -526,6 +497,8 @@ pub fn process_effective_balance_updates(
     let hys_down =
         EFFECTIVE_BALANCE_INCREMENT * HYSTERESIS_DOWNWARD_MULTIPLIER / HYSTERESIS_QUOTIENT;
     let hys_up = EFFECTIVE_BALANCE_INCREMENT * HYSTERESIS_UPWARD_MULTIPLIER / HYSTERESIS_QUOTIENT;
+    let current_epoch = view.slot.state().slot / SLOTS_PER_EPOCH;
+    let mut current_target_delta = 0i64;
     scratch.clear();
     {
         let validators = view.validators.reader();
@@ -544,16 +517,41 @@ pub fn process_effective_balance_updates(
             };
             if new != effective_balance {
                 scratch.push((i as u32, new));
+                if view.current_participation.get(i) & TIMELY_TARGET_FLAG != 0 &&
+                    !validators.is_slashed(i) &&
+                    is_active(&validators, i as u32, current_epoch)
+                {
+                    current_target_delta += new as i64 - effective_balance as i64;
+                }
             }
         }
     }
     view.validators.set_effective_balance_many(scratch);
+    let target = &mut view.slot.epoch_balances_mut().current_target;
+    *target = target.checked_add_signed(current_target_delta).expect("current_target underflow");
 }
 
 #[timed]
 pub fn process_participation_flag_updates(view: &mut StateWriterView) {
     view.previous_participation.copy_changed_from(&view.current_participation);
     view.current_participation.clear_to_zero();
+}
+
+/// The cache's epoch advances with the boundary: the target sums rotate with
+/// their columns, and only the active-balance total refolds — its changes ride
+/// activation/exit epochs set in past epochs, which no boundary pass revisits.
+fn reseed_epoch_balances(view: &mut StateWriterView, next_epoch: Epoch) {
+    let reseeded = EpochBalances {
+        total_active: view
+            .validators
+            .reader()
+            .total_active_at(next_epoch)
+            .max(EFFECTIVE_BALANCE_INCREMENT),
+        previous_target: view.slot.epoch_balances().current_target,
+        current_target: 0,
+    };
+    debug_assert_eq!(reseeded, sweep_epoch_balances(view, next_epoch));
+    *view.slot.epoch_balances_mut() = reseeded;
 }
 
 pub fn process_eth1_data_reset(eth1: &mut Eth1WriteView, current_epoch: Epoch) {
@@ -573,7 +571,8 @@ pub fn process_pending_deposits(
     let current_epoch = view.slot.state().slot / SLOTS_PER_EPOCH;
     let next_epoch = current_epoch + 1;
     let dep_balance_to_consume = epoch.state_mut().deposit_balance_to_consume;
-    let available = dep_balance_to_consume + get_deposit_churn_limit(cfg, view, current_epoch);
+    let available =
+        dep_balance_to_consume + get_deposit_churn_limit(cfg, &view.slot, current_epoch);
     let finalized_slot = epoch.state_mut().finalized_checkpoint.epoch * SLOTS_PER_EPOCH;
 
     postponed.clear();
@@ -876,13 +875,17 @@ fn retain_unslashed(indices: &mut Vec<u32>, validators: &ValidatorsView) {
 
 #[inline]
 #[timed]
-fn get_deposit_churn_limit(cfg: &SpecConfig, view: &StateWriterView, current_epoch: Epoch) -> u64 {
+fn get_deposit_churn_limit(
+    cfg: &SpecConfig,
+    slot: &SlotStateWriteView,
+    current_epoch: Epoch,
+) -> u64 {
     let cap = if cfg.is_gloas_at(current_epoch) {
         cfg.max_per_epoch_activation_churn_limit_gloas
     } else {
         cfg.max_per_epoch_activation_exit_churn_limit
     };
-    min(cap, get_balance_churn_limit(cfg, &view.validators.reader(), current_epoch))
+    min(cap, get_balance_churn_limit(cfg, slot, current_epoch))
 }
 
 /// Inactivity-leak predicate: the chain hasn't finalized for more than

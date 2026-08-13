@@ -28,13 +28,10 @@ struct ShufflingEntry {
 }
 
 impl ShufflingEntry {
-    fn committee_aggs_opt(&self) -> Option<&[PublicKey]> {
-        (!self.committee_aggs.is_empty()).then_some(self.committee_aggs.as_slice())
-    }
-
     fn shuffling(&self) -> stf::EpochShuffling<'_> {
+        let aggs = (!self.committee_aggs.is_empty()).then_some(self.committee_aggs.as_slice());
         stf::EpochShuffling::new(&self.shuffled_indices, self.built_against)
-            .with_committee_aggs(self.committee_aggs_opt())
+            .with_committee_aggs(aggs)
     }
 
     fn is_valid_for(&self, epoch: Epoch, mix: B256) -> bool {

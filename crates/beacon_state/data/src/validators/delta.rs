@@ -1,4 +1,5 @@
 use blst::min_pk::PublicKey;
+use flux_profiler::timed;
 
 use super::{FinalizedValidators, ValidatorsGroup, ValidatorsId, validator_hash};
 use crate::{
@@ -383,6 +384,64 @@ impl<'a> ValidatorsView<'a> {
     #[inline]
     fn appended(&self) -> &'a [AppendedValidator] {
         &self.delta.appended
+    }
+
+    /// Spec `get_total_active_balance` numerator: Σ effective balance over
+    /// validators active at `epoch`, unfloored. A dense fold over the base
+    /// slices alone (the whole-column iterators pay a per-element cursor
+    /// merge), then each edited index swaps its base contribution for the
+    /// merged one. Unedited appends are spec-default — never active.
+    #[timed]
+    pub fn total_active_at(self, epoch: Epoch) -> u64 {
+        fn take<V: Copy>(edits: &mut &[(u32, V)], j: usize) -> Option<V> {
+            match edits.first() {
+                Some(&(k, v)) if k as usize == j => {
+                    *edits = &edits[1..];
+                    Some(v)
+                }
+                _ => None,
+            }
+        }
+
+        let active = |activation: Epoch, exit: Epoch| activation <= epoch && epoch < exit;
+        let base_count = self.base_count();
+        let activation = &self.base.activation_epoch[..base_count];
+        let exit = &self.base.exit_epoch[..base_count];
+        let effective = &self.base.effective_balance[..base_count];
+
+        let mut sum = 0u64;
+        for j in 0..base_count {
+            if active(activation[j], exit[j]) {
+                sum += effective[j];
+            }
+        }
+
+        let mut activation_edits = self.delta.activation_epoch_edits.as_slice();
+        let mut exit_edits = self.delta.exit_epoch_edits.as_slice();
+        let mut effective_edits = self.delta.effective_balance_edits.as_slice();
+        loop {
+            let next = [activation_edits.first(), exit_edits.first(), effective_edits.first()]
+                .into_iter()
+                .flatten()
+                .map(|&(k, _)| k as usize)
+                .min();
+            let Some(j) = next else { break };
+            let edit_activation = take(&mut activation_edits, j);
+            let edit_exit = take(&mut exit_edits, j);
+            let edit_effective = take(&mut effective_edits, j);
+            let (base_activation, base_exit, base_effective) = if j < base_count {
+                if active(activation[j], exit[j]) {
+                    sum -= effective[j];
+                }
+                (activation[j], exit[j], effective[j])
+            } else {
+                (FAR_FUTURE_EPOCH, FAR_FUTURE_EPOCH, 0)
+            };
+            if active(edit_activation.unwrap_or(base_activation), edit_exit.unwrap_or(base_exit)) {
+                sum += edit_effective.unwrap_or(base_effective);
+            }
+        }
+        sum
     }
 
     pub fn iter_activation_epochs(self) -> impl Iterator<Item = Epoch> + 'a {

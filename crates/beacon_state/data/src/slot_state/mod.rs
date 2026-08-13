@@ -1,10 +1,12 @@
 mod delta;
+mod epoch_balances;
 mod finalized;
 #[cfg(test)]
 mod tests;
 
 use delta::SlotStateDelta;
 pub use delta::{SlotStateView, SlotStateWriteView};
+pub use epoch_balances::{EpochBalances, EpochBalancesRow};
 pub use finalized::SlotStateFinalized;
 use flux_profiler::timed;
 
@@ -57,6 +59,7 @@ impl SlotStateGroup {
         // fork would shadow the finalized state with zeros; block/state-root
         // tails stay empty.
         fork.slot.clone_from(&finalized.slot);
+        fork.epoch_balances = finalized.epoch_balances;
         SlotStateWriteView::new(finalized, fork)
     }
 

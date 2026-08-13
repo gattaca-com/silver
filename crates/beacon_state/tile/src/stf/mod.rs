@@ -60,7 +60,7 @@ pub use sync_aggregate::{collect_sigs_sync_aggregate, process_sync_aggregate};
 pub(crate) use validator::{
     compute_consolidation_epoch_and_update_churn, compute_exit_epoch_and_update_churn,
     get_beacon_proposer_index, get_consolidation_churn_limit, get_pending_balance_to_withdraw,
-    initiate_validator_exit, is_active, is_slashable_validator, total_active_balance,
+    initiate_validator_exit, is_active, is_slashable_validator,
 };
 pub(crate) use withdrawals::{
     get_pending_partial_withdrawals, get_validators_sweep_withdrawals,
