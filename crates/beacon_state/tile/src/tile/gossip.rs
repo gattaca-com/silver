@@ -196,6 +196,12 @@ impl BeaconStateTile {
         {
             return Feedback::Ignore;
         }
+
+        self.seen_aggregators.rotate_to(wall / SLOTS_PER_EPOCH);
+        if self.seen_aggregators.contains(parsed.target_epoch, parsed.aggregator_index) {
+            return Feedback::Ignore;
+        }
+
         if parsed.committee_bits.count_ones() != 1 {
             return Feedback::Reject(None);
         }
@@ -256,7 +262,11 @@ impl BeaconStateTile {
         // Record the votes (re-validates target/ancestry + slot+1 deferral and
         // derives the committee again — cheap next to the verify above). The
         // inner attestation is the aggregate field.
-        self.apply_attestation(parsed.aggregate_bytes)
+        let feedback = self.apply_attestation(parsed.aggregate_bytes);
+        if let Feedback::Accept(_) = feedback {
+            self.seen_aggregators.mark(parsed.target_epoch, parsed.aggregator_index);
+        }
+        feedback
     }
 
     pub(super) fn validate_execution_payload_envelope(&self, ssz: &[u8]) -> EnvelopeCheck {

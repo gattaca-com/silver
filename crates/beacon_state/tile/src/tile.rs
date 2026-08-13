@@ -24,7 +24,7 @@ use crate::{
     merkle, ssz_hash, stf,
     tile::{
         attestation_pool::AttestationPool, orphan_pool::PendingBlock,
-        seen_attesters::SeenAttesters, shuffling_cache::ShufflingCache,
+        seen_validators::SeenValidators, shuffling_cache::ShufflingCache,
     },
     weak_subjectivity::{weak_subjectivity_period_fulu, weak_subjectivity_period_gloas},
 };
@@ -35,7 +35,7 @@ mod finalize;
 mod fork_choice;
 mod gossip;
 mod orphan_pool;
-mod seen_attesters;
+mod seen_validators;
 mod shuffling_cache;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -120,7 +120,8 @@ pub struct BeaconStateTile {
 
     fork_choice: ForkChoice,
     shuffling_cache: Box<ShufflingCache>,
-    seen_attesters: SeenAttesters,
+    seen_attesters: SeenValidators,
+    seen_aggregators: SeenValidators,
     attestation_pool: AttestationPool,
 
     /// Highest finalized slot PM has announced as a sync target — bounds the
@@ -220,7 +221,8 @@ impl BeaconStateTile {
             state: owner,
             fork_choice: ForkChoice::default(),
             shuffling_cache: ShufflingCache::with_capacity(val_cap),
-            seen_attesters: SeenAttesters::new(val_cap),
+            seen_attesters: SeenValidators::new(val_cap),
+            seen_aggregators: SeenValidators::new(val_cap),
             attestation_pool: AttestationPool::new(),
             last_applied: anchor,
             last_applied_block_root: [0u8; 32],
@@ -1954,6 +1956,30 @@ mod tests {
         assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Reject(None));
     }
 
+    /// Spec [IGNORE]: at most one aggregate per (aggregator, target epoch) —
+    /// a byte-identical resend dies on the seen probe.
+    #[test]
+    fn agg_repeat_aggregator_epoch_ignored() {
+        let mut tile = make_tile_at_wall_slot(31);
+        seed_tile_with_keys(&mut tile, 128, 0);
+        let buf = build_agg_for_vi0(&tile);
+        assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Accept(None));
+        assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Ignore);
+    }
+
+    /// A rejected aggregate must not mark the aggregator seen, or a forged
+    /// message would censor the aggregator's real aggregate for the epoch.
+    #[test]
+    fn agg_failed_validation_does_not_mark_aggregator() {
+        let mut tile = make_tile_at_wall_slot(31);
+        seed_tile_with_keys(&mut tile, 128, 0);
+        let buf = build_agg_for_vi0(&tile);
+        let mut forged = buf.clone();
+        forged[50] ^= 0xFF; // outer signature = buf[4..100)
+        assert_eq!(tile.handle_aggregate_and_proof(&forged), Feedback::Reject(None));
+        assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Accept(None));
+    }
+
     /// First committee (skipping the wall slot) holding two members whose
     /// registry keys differ (vi % 3), so the aggregate is genuinely multi-key.
     fn find_committee_with_two_signers(tile: &BeaconStateTile) -> (Slot, usize, u32, u32) {
@@ -1972,36 +1998,42 @@ mod tests {
         panic!("two distinct-key members in some committee")
     }
 
+    /// Sign `vi`'s single attestation for the anchor at `(slot, ci)`, feed it
+    /// through `handle_attestation`, and return the grown pooled aggregate.
+    fn pool_single_then_aggregate(
+        tile: &mut BeaconStateTile,
+        vi: u32,
+        slot: Slot,
+        ci: usize,
+    ) -> Vec<u8> {
+        let imm = seed_immutable(tile);
+        let bbr = tile.last_applied_block_root;
+        let buf = test_signing::sign_single_attestation(
+            vi as usize % 3,
+            vi as u64,
+            ci as u64,
+            slot,
+            bbr,
+            slot / SLOTS_PER_EPOCH,
+            bbr,
+            &imm,
+        );
+        let data_root =
+            ssz_hash::hash_attestation_data(SingleAttestationView::data(&buf).as_bytes());
+        let subnet = expected_subnet(tile, slot, ci);
+        assert_eq!(tile.handle_attestation(&buf, subnet), Feedback::Accept(None));
+        tile.attestation_pool.aggregate_ssz(slot, ci as u64, data_root).expect("pooled aggregate")
+    }
+
     #[test]
     fn pool_aggregate_accepted_by_aggregate_and_proof_path() {
         let mut tile = make_tile_at_wall_slot(31);
         seed_tile_with_keys(&mut tile, 128, 0);
         let imm = seed_immutable(&tile);
-        let bbr = tile.last_applied_block_root;
         let (slot, ci, vi_a, vi_b) = find_committee_with_two_signers(&tile);
-        let subnet = expected_subnet(&tile, slot, ci);
 
-        let single = |vi: u32| {
-            test_signing::sign_single_attestation(
-                vi as usize % 3,
-                vi as u64,
-                ci as u64,
-                slot,
-                bbr,
-                slot / SLOTS_PER_EPOCH,
-                bbr,
-                &imm,
-            )
-        };
-        let a = single(vi_a);
-        let data_root = ssz_hash::hash_attestation_data(SingleAttestationView::data(&a).as_bytes());
-        assert_eq!(tile.handle_attestation(&a, subnet), Feedback::Accept(None));
-        assert_eq!(tile.handle_attestation(&single(vi_b), subnet), Feedback::Accept(None));
-
-        let aggregate = tile
-            .attestation_pool
-            .aggregate_ssz(slot, ci as u64, data_root)
-            .expect("pooled aggregate");
+        pool_single_then_aggregate(&mut tile, vi_a, slot, ci);
+        let aggregate = pool_single_then_aggregate(&mut tile, vi_b, slot, ci);
 
         // Committee of 4 < 16 ⇒ any member trivially passes is_aggregator.
         let wrapped = test_signing::wrap_aggregate_and_proof(
@@ -2014,6 +2046,48 @@ mod tests {
         // outer signature, and the pooled aggregate signature against the two
         // participants' aggregated registry pubkeys.
         assert_eq!(tile.handle_aggregate_and_proof(&wrapped), Feedback::Accept(None));
+    }
+
+    /// First-seen keys on (aggregator, target epoch), not message bytes: a
+    /// second, different-but-valid aggregate from the same aggregator is
+    /// still ignored.
+    #[test]
+    fn agg_repeat_keys_on_aggregator_not_bytes() {
+        let mut tile = make_tile_at_wall_slot(31);
+        seed_tile_with_keys(&mut tile, 128, 0);
+        let imm = seed_immutable(&tile);
+        let (slot, ci, vi_a, vi_b) = find_committee_with_two_signers(&tile);
+
+        let agg_one = pool_single_then_aggregate(&mut tile, vi_a, slot, ci);
+        let wrapped =
+            test_signing::wrap_aggregate_and_proof(vi_a as usize % 3, vi_a as u64, &agg_one, &imm);
+        assert_eq!(tile.handle_aggregate_and_proof(&wrapped), Feedback::Accept(None));
+
+        // A second participant grows the pooled aggregate: different bytes,
+        // fully valid, same (aggregator, target epoch).
+        let agg_two = pool_single_then_aggregate(&mut tile, vi_b, slot, ci);
+        assert_ne!(agg_two, agg_one);
+        let wrapped =
+            test_signing::wrap_aggregate_and_proof(vi_a as usize % 3, vi_a as u64, &agg_two, &imm);
+        assert_eq!(tile.handle_aggregate_and_proof(&wrapped), Feedback::Ignore);
+    }
+
+    /// The first-seen rule is per aggregator, not per attestation data: the
+    /// same aggregate wrapped by two distinct committee members both accept.
+    #[test]
+    fn agg_distinct_aggregators_same_data_both_accept() {
+        let mut tile = make_tile_at_wall_slot(31);
+        seed_tile_with_keys(&mut tile, 128, 0);
+        let imm = seed_immutable(&tile);
+        let (slot, ci, vi_a, vi_b) = find_committee_with_two_signers(&tile);
+
+        let aggregate = pool_single_then_aggregate(&mut tile, vi_a, slot, ci);
+        // Committee of 4 < 16 ⇒ any member trivially passes is_aggregator.
+        let wrap = |vi: u32| {
+            test_signing::wrap_aggregate_and_proof(vi as usize % 3, vi as u64, &aggregate, &imm)
+        };
+        assert_eq!(tile.handle_aggregate_and_proof(&wrap(vi_a)), Feedback::Accept(None));
+        assert_eq!(tile.handle_aggregate_and_proof(&wrap(vi_b)), Feedback::Accept(None));
     }
 
     // ── finalization (deposit append lands on the delta, not the base) ──

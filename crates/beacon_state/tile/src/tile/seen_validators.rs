@@ -2,12 +2,12 @@ use silver_beacon_state_data::Epoch;
 
 /// Lanes are indexed by epoch parity, so the {wall, wall-1} window maps each
 /// epoch to a stable lane and rotation is a re-arm of whichever lane expired.
-pub(super) struct SeenAttesters {
+pub(super) struct SeenValidators {
     epochs: [Epoch; 2],
     bits: [Vec<u64>; 2],
 }
 
-impl SeenAttesters {
+impl SeenValidators {
     pub(super) fn new(validator_capacity: usize) -> Self {
         let words = validator_capacity.div_ceil(64);
         // Sentinels above any wall epoch, parities matching their lanes.
@@ -50,14 +50,14 @@ mod tests {
 
     #[test]
     fn fresh_lanes_contain_nothing() {
-        let seen = SeenAttesters::new(128);
+        let seen = SeenValidators::new(128);
         assert!(!seen.contains(0, 0));
         assert!(!seen.contains(1, 127));
     }
 
     #[test]
     fn mark_then_contains_within_window() {
-        let mut seen = SeenAttesters::new(128);
+        let mut seen = SeenValidators::new(128);
         seen.rotate_to(1);
         seen.mark(0, 7);
         seen.mark(1, 7);
@@ -71,7 +71,7 @@ mod tests {
 
     #[test]
     fn rotation_clears_only_the_expired_lane() {
-        let mut seen = SeenAttesters::new(128);
+        let mut seen = SeenValidators::new(128);
         seen.rotate_to(0);
         seen.mark(0, 3);
 
@@ -80,7 +80,7 @@ mod tests {
         assert!(seen.contains(0, 3));
 
         // Window {1, 2}: epoch 0's lane is re-armed for epoch 2, so the
-        // attester becomes markable again.
+        // validator becomes markable again.
         seen.rotate_to(2);
         assert!(!seen.contains(0, 3));
         assert!(!seen.contains(2, 3));
@@ -90,7 +90,7 @@ mod tests {
 
     #[test]
     fn out_of_window_epochs_read_empty() {
-        let mut seen = SeenAttesters::new(128);
+        let mut seen = SeenValidators::new(128);
         seen.rotate_to(5);
         seen.mark(5, 9);
         seen.mark(4, 9);
@@ -102,7 +102,7 @@ mod tests {
 
     #[test]
     fn rotation_within_an_epoch_keeps_marks() {
-        let mut seen = SeenAttesters::new(128);
+        let mut seen = SeenValidators::new(128);
         seen.rotate_to(4);
         seen.mark(4, 11);
         seen.rotate_to(4);
@@ -111,7 +111,7 @@ mod tests {
 
     #[test]
     fn marks_grow_past_construction_capacity() {
-        let mut seen = SeenAttesters::new(0);
+        let mut seen = SeenValidators::new(0);
         seen.rotate_to(0);
         assert!(!seen.contains(0, 200));
         seen.mark(0, 200);
