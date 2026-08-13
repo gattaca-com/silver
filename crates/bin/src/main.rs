@@ -1,9 +1,6 @@
 use std::{error::Error, str::FromStr, sync::Arc, time::Instant};
 
-use flux::{
-    tile::{TileConfig, attach_tile},
-    utils::ThreadPriority,
-};
+use flux::tile::{TileConfig, attach_tile};
 use mimalloc::MiMalloc;
 use quinn_proto::{Endpoint, EndpointConfig};
 use rand::RngCore;
@@ -272,12 +269,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     // TODO panic handler
     spine.start(None, None, |scoped_spine| {
         // TODO core config
-        attach_tile(control_tile, scoped_spine, TileConfig::new(1, ThreadPriority::OSDefault));
-        attach_tile(network_tile, scoped_spine, TileConfig::new(2, ThreadPriority::OSDefault));
-        attach_tile(beacon_state_tile, scoped_spine, TileConfig::new(3, ThreadPriority::OSDefault));
-        attach_tile(storage_tile, scoped_spine, TileConfig::new(4, ThreadPriority::OSDefault));
-        attach_tile(engine_tile, scoped_spine, TileConfig::new(5, ThreadPriority::OSDefault));
-        attach_tile(data_columns_tile, scoped_spine, TileConfig::new(6, ThreadPriority::OSDefault));
+        attach_tile(control_tile, scoped_spine, TileConfig::new(1, None));
+        attach_tile(network_tile, scoped_spine, TileConfig::new(2, None));
+        attach_tile(beacon_state_tile, scoped_spine, TileConfig::new(3, None));
+        attach_tile(storage_tile, scoped_spine, TileConfig::new(4, None));
+        attach_tile(engine_tile, scoped_spine, TileConfig::new(5, None));
+        attach_tile(data_columns_tile, scoped_spine, TileConfig::new(6, None));
     });
 
     Ok(())

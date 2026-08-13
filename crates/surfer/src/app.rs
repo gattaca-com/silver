@@ -312,12 +312,18 @@ impl App {
         }
     }
 
+    /// Indices of timing sets that have recorded at least one value.
+    pub fn visible_timings(&self) -> Vec<usize> {
+        self.timings.iter().enumerate().filter(|(_, t)| t.has_values()).map(|(i, _)| i).collect()
+    }
+
     fn move_timing_selection(&mut self, dir: i32) {
-        if self.timings.is_empty() {
+        let visible = self.visible_timings();
+        if visible.is_empty() {
             return;
         }
-        let n = self.timings.len() as i32;
-        let new = (self.timings_selection as i32 + dir).rem_euclid(n);
-        self.timings_selection = new as usize;
+        let n = visible.len() as i32;
+        let pos = visible.iter().position(|&i| i == self.timings_selection).unwrap_or(0) as i32;
+        self.timings_selection = visible[(pos + dir).rem_euclid(n) as usize];
     }
 }

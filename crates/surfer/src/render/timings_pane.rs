@@ -60,11 +60,24 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
     ])
     .height(1);
 
-    let rows: Vec<Row> = app
-        .timings
+    let visible = app.visible_timings();
+    if visible.is_empty() {
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        f.render_widget(
+            Paragraph::new("no timers with values yet").style(Style::default().fg(Color::DarkGray)),
+            inner,
+        );
+        return;
+    }
+    if !visible.contains(&app.timings_selection) {
+        app.timings_selection = visible[0];
+    }
+
+    let rows: Vec<Row> = visible
         .iter()
-        .enumerate()
-        .map(|(i, t)| {
+        .map(|&i| {
+            let t = &app.timings[i];
             let lat = t.latency.last_bucket().unwrap_or_default();
             let (proc_last, proc_max, proc_bucket) = match &t.processing {
                 Some(p) => (p.last_ns, p.max_ns, p.last_bucket().unwrap_or_default()),
@@ -107,7 +120,8 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
         Constraint::Length(10),
     ];
     let table = Table::new(rows, widths).header(header).block(block);
-    app.timings_table_state.select(Some(app.timings_selection));
+    let row_pos = visible.iter().position(|&i| i == app.timings_selection).unwrap_or(0);
+    app.timings_table_state.select(Some(row_pos));
     f.render_stateful_widget(table, area, &mut app.timings_table_state);
 }
 
