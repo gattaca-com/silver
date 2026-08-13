@@ -23,8 +23,8 @@ use crate::{
     fork_choice::{FORK_CHOICE_NODES_HINT, ForkChoice, PayloadStatus},
     merkle, ssz_hash, stf,
     tile::{
-        attestation_pool::AttestationPool, gossip::SeenAttesters, orphan_pool::PendingBlock,
-        shuffling_cache::ShufflingCache,
+        attestation_pool::AttestationPool, orphan_pool::PendingBlock,
+        seen_attesters::SeenAttesters, shuffling_cache::ShufflingCache,
     },
     weak_subjectivity::{weak_subjectivity_period_fulu, weak_subjectivity_period_gloas},
 };
@@ -35,6 +35,7 @@ mod finalize;
 mod fork_choice;
 mod gossip;
 mod orphan_pool;
+mod seen_attesters;
 mod shuffling_cache;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

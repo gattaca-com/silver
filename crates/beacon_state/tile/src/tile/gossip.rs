@@ -1,6 +1,6 @@
 use flux::spine::SpineProducers;
 use silver_beacon_state_data::{
-    B256, Epoch, ParsedAggregateAndProof, SLOTS_PER_EPOCH, Slot, StateId, StateReadView,
+    B256, ParsedAggregateAndProof, SLOTS_PER_EPOCH, Slot, StateId, StateReadView,
 };
 use silver_common::{
     ATTESTATION_SUBNETS, BeaconStateEvent, BlockSource, EngineNewPayloadEnvelopeReq, EngineReq,
@@ -26,50 +26,6 @@ pub(super) enum EnvelopeCheck {
     Ready { block_root: B256, state_id: StateId },
     AwaitBlock(B256),
     Ignore,
-}
-
-/// Lanes are indexed by epoch parity, so the {wall, wall-1} window maps each
-/// epoch to a stable lane and rotation is a re-arm of whichever lane expired.
-pub(super) struct SeenAttesters {
-    epochs: [Epoch; 2],
-    bits: [Vec<u64>; 2],
-}
-
-impl SeenAttesters {
-    pub(super) fn new(validator_capacity: usize) -> Self {
-        let words = validator_capacity.div_ceil(64);
-        // Sentinels above any wall epoch, parities matching their lanes.
-        Self { epochs: [u64::MAX - 1, u64::MAX], bits: [vec![0; words], vec![0; words]] }
-    }
-
-    pub(super) fn rotate_to(&mut self, wall_epoch: Epoch) {
-        for epoch in [wall_epoch.saturating_sub(1), wall_epoch] {
-            let lane = (epoch % 2) as usize;
-            if self.epochs[lane] != epoch {
-                self.epochs[lane] = epoch;
-                self.bits[lane].fill(0);
-            }
-        }
-    }
-
-    pub(super) fn contains(&self, target_epoch: Epoch, validator: usize) -> bool {
-        let lane = (target_epoch % 2) as usize;
-        self.epochs[lane] == target_epoch &&
-            self.bits[lane].get(validator / 64).is_some_and(|w| w & (1 << (validator % 64)) != 0)
-    }
-
-    pub(super) fn mark(&mut self, target_epoch: Epoch, validator: usize) {
-        let lane = (target_epoch % 2) as usize;
-        debug_assert!(self.epochs[lane] == target_epoch);
-        if self.epochs[lane] != target_epoch {
-            return;
-        }
-        let bits = &mut self.bits[lane];
-        if validator / 64 >= bits.len() {
-            bits.resize(validator / 64 + 1, 0);
-        }
-        bits[validator / 64] |= 1 << (validator % 64);
-    }
 }
 
 impl BeaconStateTile {
