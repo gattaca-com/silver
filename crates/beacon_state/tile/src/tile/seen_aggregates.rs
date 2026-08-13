@@ -2,6 +2,8 @@ use rustc_hash::FxHashMap;
 use silver_beacon_state_data::{B256, Slot};
 use silver_common::{metrics::timed, ssz_view::MAX_COMMITTEES_PER_SLOT};
 
+use crate::counters::BeaconStateCounters;
+
 /// Same derivation as the pool cap: two retained slots at
 /// ≤ MAX_COMMITTEES_PER_SLOT committees each, ×4 headroom for competing
 /// data_root variants.
@@ -105,6 +107,7 @@ impl SeenAggregates {
             return;
         }
         if self.entries.len() >= MAX_ENTRIES {
+            BeaconStateCounters::SeenAggregatesFull.inc();
             tracing::debug!(slot, committee = committee_index, "seen-aggregates full");
             return;
         }

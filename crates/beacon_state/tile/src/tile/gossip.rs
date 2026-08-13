@@ -21,7 +21,7 @@ use super::{
     orphan_pool::{PendingBlock, has_room},
     seen_aggregates::Coverage,
 };
-use crate::{bls, merkle, ssz_hash, stf, validate};
+use crate::{bls, counters::BeaconStateCounters, merkle, ssz_hash, stf, validate};
 
 pub(super) enum EnvelopeCheck {
     Ready { block_root: B256, state_id: StateId },
@@ -119,6 +119,7 @@ impl BeaconStateTile {
         );
         debug_assert!(outcome != InsertOutcome::Inconsistent);
         if outcome == InsertOutcome::Full {
+            BeaconStateCounters::AttestationPoolFull.inc();
             tracing::debug!(slot = att_slot, committee = committee_index, "attestation pool full");
         }
 
