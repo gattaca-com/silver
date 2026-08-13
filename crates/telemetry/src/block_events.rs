@@ -160,6 +160,9 @@ impl BlockEventsInserter {
         let events = BlockEvents::new(BlockEvents::hostname(), chain.genesis_unix_secs, slot_ms);
         let (batches, rx) = sync_channel::<String>(256);
         let mut table = ChTable::new(clickhouse_url, TABLE, DDL);
+        // TODO: the only reason the daemon runs a second thread. `ureq` blocks
+        // for up to its read timeout, which the drain loop cannot afford; a
+        // non-blocking send would let this run inline like everything else.
         thread::spawn(move || {
             for batch in rx {
                 table.insert(&batch);

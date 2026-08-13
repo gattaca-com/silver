@@ -44,7 +44,7 @@ fn block(paused: bool) -> Block<'static> {
             Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
         )
     } else {
-        Span::raw(" Flamegraph (cumulative) — p pause · e export · c clear ")
+        Span::raw(" Flamegraph (cumulative) — p pause · c clear ")
     };
     Block::default().borders(Borders::ALL).title(Line::from(title))
 }

@@ -13,5 +13,6 @@ start_telemetry() {
         --dir /home/ubuntu/profiler-traces \
         --retain "20Gb" \
         --period "15m" \
+        --filter-short-frames "1us" \
         --config "$CONFIG" > logs/telemetry_stdout.log 2>&1 &
 }

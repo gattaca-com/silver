@@ -7,7 +7,7 @@
 use std::{error::Error, time::Duration};
 
 use clap::Parser;
-use flux::tile::{TileConfig, attach_tile};
+use flux::tile::{TileConfig, tile_runner};
 use silver_common::{SilverSpine, tracing::initialise_tracing_log};
 
 use crate::{collector::TraceCollector, config::Args};
@@ -25,7 +25,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     spine.start_no_persist(None, None, |scoped_spine| {
         let config =
             TileConfig::background(None, Some(Duration::from_millis(10).into())).without_metrics();
-        attach_tile(collector, scoped_spine, config);
+        tile_runner(collector, scoped_spine, config)();
     });
     Ok(())
 }

@@ -5,14 +5,13 @@
 //! script brings up a fresh one alongside the next.
 
 use std::{
-    fs,
-    fs::File,
-    io,
+    fs, io,
     path::{Path, PathBuf},
     thread,
     time::Duration,
 };
 
+use bytesize::ByteSize;
 use flate2::{Compression, write::GzEncoder};
 use flux::{spine::SpineAdapter, tile::Tile};
 use flux_profiler::{CrossProcessReader, Loss, published_pid};
@@ -32,12 +31,21 @@ const SEGMENT_SUFFIX: &str = ".fxt.gz";
 
 const ATTACH_POLL: Duration = Duration::from_millis(100);
 
+/// How often completed frames are appended to the current segment. Each append
+/// restates that segment's string table, so a much shorter one pays more in
+/// preamble than it carries in events.
+const DUMP_INTERVAL: Nanos = Nanos::from_secs(30);
+
+/// Retained marks past this append ahead of the interval — a ceiling on the
+/// daemon's own memory, not a tuning knob.
+const MAX_BUFFERED: u64 = ByteSize::gib(2).as_u64();
+
 pub struct TraceCollector {
     reader: CrossProcessReader,
     dir: PathBuf,
     period: Nanos,
-    segment_start: Nanos,
     retain_bytes: u64,
+    next_dump: Nanos,
     db_inserter: Option<BlockEventsInserter>,
     polls: u32,
 }
@@ -58,18 +66,16 @@ impl TraceCollector {
         };
         info!(pid = reader.pid(), "attached");
 
-        if let Some(min) = args.filter_short_frames {
-            reader.filter_short_frames(min);
-        }
+        reader.filter_short_frames(args.filter_short_frames);
 
         let db_inserter = file_config
             .telemetry
             .clickhouse_url
             .map(|url| BlockEventsInserter::open(&url, &file_config.chain_config));
 
-        // Floored at a second: `round_to_interval` divides by it.
+        // Floored at a second: `round_to_interval` divides by the period.
         let period = Nanos::from_secs(args.period.as_secs().max(1));
-        Ok(Self::new(reader, args.dir, period, args.retain.as_u64(), db_inserter, Nanos::now()))
+        Ok(Self::new(reader, args.dir, period, args.retain.as_u64(), db_inserter))
     }
 
     fn new(
@@ -78,27 +84,17 @@ impl TraceCollector {
         period: Nanos,
         retain_bytes: u64,
         db_inserter: Option<BlockEventsInserter>,
-        now: Nanos,
     ) -> Self {
-        let segment_start = now.round_to_interval(period);
-        Self { reader, dir, period, segment_start, retain_bytes, db_inserter, polls: 0 }
+        Self { reader, dir, period, retain_bytes, next_dump: Nanos::now(), db_inserter, polls: 0 }
     }
 
-    fn next_cut(&self) -> Nanos {
-        self.segment_start + self.period
-    }
-
-    /// Opens the interval we are now in, which a stalled loop can wake several
-    /// boundaries past — never the one that just closed.
-    fn dump_segment(&mut self) {
-        self.write_segment();
-        Self::prune(&self.dir, self.retain_bytes);
-        self.segment_start = Nanos::now().round_to_interval(self.period);
+    fn buffered_over_budget(&self) -> bool {
+        self.reader.events().retained_bytes() as u64 > MAX_BUFFERED
     }
 
     /// Drops the oldest segments until the directory fits `retain_bytes`. The
-    /// newest survives any budget: an over-budget cut keeps the spike it
-    /// just recorded rather than trading it for the history.
+    /// newest survives any budget: the segment being appended to keeps the
+    /// spike it is recording rather than trading it for the history.
     fn prune(dir: &Path, retain_bytes: u64) {
         let mut segments: Vec<_> = fs::read_dir(dir)
             .into_iter()
@@ -127,7 +123,7 @@ impl TraceCollector {
         }
     }
 
-    fn write_segment(&mut self) {
+    fn append(&mut self, now: Nanos) {
         let mut loss = Loss::default();
         let mut retained = 0;
         for thread in self.reader.events().threads() {
@@ -145,42 +141,48 @@ impl TraceCollector {
                 );
             }
         }
-        let path = self.segment_path();
+        let path = self.segment_path(now);
         match self.dump(&path) {
-            Ok(file) => info!(
+            Ok(bytes) => info!(
                 path = %path.display(),
-                bytes = file.metadata().map(|m| m.len()).unwrap_or(0),
+                bytes,
                 marks = retained,
                 missed = loss.missed,
                 dropped = loss.dropped,
-                "wrote segment"
+                "appended to segment"
             ),
             Err(e) => warn!(
                 path = %path.display(),
                 %e,
                 marks = retained,
-                partial_removed = std::fs::remove_file(&path).is_ok(),
-                "segment write failed; marks held for the next one"
+                "append failed; marks held for the next one"
             ),
         }
+        Self::prune(&self.dir, self.retain_bytes);
     }
 
-    /// Stamped with the interval's start, so a `1h` segment named `14-00-00`
-    /// holds the marks from 14:00 onwards.
-    fn segment_path(&self) -> PathBuf {
-        let stamp = self.segment_start.with_fmt_utc("%Y-%m-%d_%H-%M-%S");
+    /// Rotation is nothing but this name changing, so marks within one append
+    /// interval of a boundary land in whichever file the append falls in.
+    fn segment_path(&self, now: Nanos) -> PathBuf {
+        let stamp = now.round_to_interval(self.period).with_fmt_utc("%Y-%m-%d_%H-%M-%S");
         self.dir.join(format!("{APP_NAME}_{stamp}_pid{}{SEGMENT_SUFFIX}", self.reader.pid()))
     }
 
-    fn dump(&mut self, path: &Path) -> io::Result<File> {
+    /// One gzip member per append, finalised in place, so the segment is a
+    /// complete `.gz` at every point between appends. Level 1 because this runs
+    /// on the drain loop and every second spent is a second of ring overrun:
+    /// 8x faster than level 6 for ~18% more bytes.
+    fn dump(&mut self, path: &Path) -> io::Result<u64> {
         let at = |step: &'static str| {
             move |e: io::Error| io::Error::new(e.kind(), format!("{step}: {e}"))
         };
 
-        let file = File::create(path).map_err(at("create"))?;
-        let mut encoder = GzEncoder::new(file, Compression::default());
+        let file =
+            fs::OpenOptions::new().create(true).append(true).open(path).map_err(at("open"))?;
+        let mut encoder = GzEncoder::new(file, Compression::new(1));
         self.reader.dump_and_release(&mut encoder).map_err(at("dump"))?;
-        encoder.finish().map_err(at("finish"))
+        let file = encoder.finish().map_err(at("finish"))?;
+        file.metadata().map(|m| m.len()).map_err(at("size"))
     }
 
     /// A restarted node publishes a new pid, so a mismatch means the node we
@@ -197,8 +199,10 @@ impl Tile<SilverSpine> for TraceCollector {
         }
 
         while self.reader.poll() {}
-        if Nanos::now() >= self.next_cut() {
-            self.dump_segment();
+        let now = Nanos::now();
+        if now >= self.next_dump || self.buffered_over_budget() {
+            self.append(now);
+            self.next_dump = now + DUMP_INTERVAL;
         }
 
         self.polls += 1;
@@ -214,17 +218,20 @@ impl Tile<SilverSpine> for TraceCollector {
     }
 
     fn teardown(mut self, _adapter: &mut SpineAdapter<SilverSpine>) {
-        self.write_segment();
+        self.append(Nanos::now());
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::time::SystemTime;
+    use std::{io::Read, time::SystemTime};
 
+    use flate2::read::MultiGzDecoder;
     use flux_profiler::{enable_profiler, test_shmem::ShmemGuard, timed};
 
     use super::*;
+
+    const MAGIC: &[u8] = b"\x10\x00\x04FxT\x16\x00";
 
     #[timed]
     fn traced_work() {
@@ -237,14 +244,7 @@ mod tests {
     const STARTED_AT: u64 = HOUR_START + 2_800;
 
     fn collector(reader: CrossProcessReader, dir: PathBuf) -> TraceCollector {
-        TraceCollector::new(
-            reader,
-            dir,
-            Nanos::from_hours(1),
-            u64::MAX,
-            None,
-            Nanos::from_secs(STARTED_AT),
-        )
+        TraceCollector::new(reader, dir, Nanos::from_hours(1), u64::MAX, None)
     }
 
     /// Prune sorts by mtime, so fixtures need distinct ones — set, not slept
@@ -252,7 +252,7 @@ mod tests {
     fn backdate(path: &Path, bytes: usize, hours_old: u64) {
         std::fs::write(path, vec![0u8; bytes]).unwrap();
         let modified = SystemTime::now() - Duration::from_secs(hours_old * 3600);
-        File::options().write(true).open(path).unwrap().set_modified(modified).unwrap();
+        std::fs::File::options().write(true).open(path).unwrap().set_modified(modified).unwrap();
     }
 
     fn names(dir: &Path) -> Vec<String> {
@@ -265,7 +265,7 @@ mod tests {
     }
 
     #[test]
-    fn writes_a_segment_every_interval() {
+    fn the_clock_alone_decides_which_segment_an_append_lands_in() {
         let guard = ShmemGuard::new();
         enable_profiler(guard.app());
 
@@ -281,23 +281,17 @@ mod tests {
             .unwrap();
 
         let mut reader = CrossProcessReader::attach(guard.app()).expect("pid published");
-        reader.poll();
+        while reader.poll() {}
 
         let dir = std::env::temp_dir().join(format!("segments-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let mut collector = collector(reader, dir.clone());
 
-        let hour = Nanos::from_hours(1);
-        assert_eq!(
-            collector.segment_start,
-            Nanos::from_secs(HOUR_START),
-            "a mid-hour start rounds down to the hour it is in"
-        );
-
-        collector.write_segment();
-        collector.reader.poll();
-        collector.segment_start += hour;
-        collector.write_segment();
+        let started_at = Nanos::from_secs(STARTED_AT);
+        collector.append(started_at);
+        collector.append(started_at + Nanos::from_secs(60));
+        collector.append(Nanos::from_secs(HOUR_START) + Nanos::from_hours(1));
 
         let pid = collector.reader.pid();
         assert_eq!(
@@ -306,12 +300,49 @@ mod tests {
                 format!("{APP_NAME}_2001-09-09_01-00-00_pid{pid}.fxt.gz"),
                 format!("{APP_NAME}_2001-09-09_02-00-00_pid{pid}.fxt.gz"),
             ],
-            "the idle second interval is a file too, named for its own start"
+            "both mid-hour appends share 01-00-00; the one an hour on opens 02-00-00"
         );
-        collector.dump_segment();
-        let start = collector.segment_start;
-        assert_eq!(start, start.round_to_interval(collector.period), "next segment on the grid");
-        assert_eq!(collector.next_cut(), start + hour);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn appends_share_one_segment_and_stay_readable() {
+        let guard = ShmemGuard::new();
+        enable_profiler(guard.app());
+
+        let mut reader = CrossProcessReader::attach(guard.app()).expect("pid published");
+        let dir = std::env::temp_dir().join(format!("appends-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        traced_work();
+        while reader.poll() {}
+        let mut collector = collector(reader, dir.clone());
+
+        let at = Nanos::from_secs(STARTED_AT);
+        collector.append(at);
+        let path = collector.segment_path(at);
+        let after_first = std::fs::metadata(&path).unwrap().len();
+
+        traced_work();
+        while collector.reader.poll() {}
+        collector.append(at);
+        assert_eq!(names(&dir).len(), 1, "both appends went to the interval's own file");
+        assert!(
+            std::fs::metadata(&path).unwrap().len() > after_first,
+            "the second append extended the file"
+        );
+
+        let mut trace = Vec::new();
+        MultiGzDecoder::new(std::fs::File::open(&path).unwrap())
+            .read_to_end(&mut trace)
+            .expect("every member is finalised, so the whole file decodes");
+        assert_eq!(
+            trace.windows(MAGIC.len()).filter(|w| *w == MAGIC).count(),
+            2,
+            "one self-contained trace per append"
+        );
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
