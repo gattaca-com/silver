@@ -104,6 +104,10 @@ pub struct TimingSet {
 }
 
 impl TimingSet {
+    pub fn has_values(&self) -> bool {
+        self.latency.total_count > 0 || self.processing.as_ref().is_some_and(|p| p.total_count > 0)
+    }
+
     pub fn open(file: &TimingFile) -> Result<Self, String> {
         let label: &'static str = Box::leak(format!("surfer-l-{}", file.name).into_boxed_str());
         let latency = TimingChannel::open(&file.path, label)?;
