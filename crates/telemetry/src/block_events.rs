@@ -5,8 +5,9 @@
 //! dedup (repeat-head FCUs) and deadline checks are ClickHouse queries over
 //! the events, not collector logic.
 //!
-//! Only `NewPayload` messages carry a slot; FCU/verdict rows are keyed by
-//! `block_root` alone and get their slot from the query's join.
+//! Only `NewPayload` messages carry a slot, so the roots they name are kept
+//! for the FCU and verdict rows that follow; a block whose `NewPayload`
+//! predates attach records no slot and is left to the query's join.
 //!
 //! Stages, from the node's spine envelopes:
 //! - `received` — `EngineReq::NewPayload` ingestion ≈ gossip arrival.
@@ -21,6 +22,7 @@ use std::{
 };
 
 use flux::{spine::SpineAdapter, timing::InternalMessage};
+use rustc_hash::FxHashMap;
 use silver_common::{EngineReq, EngineResp, Nanos, SilverSpine};
 use silver_config::ChainConfig;
 use tracing::{info, warn};
@@ -45,12 +47,14 @@ ORDER BY (meta_client_name, event_date_time)";
 /// late arrivals.
 const LIVE_ARRIVAL_SLOTS: u64 = 2;
 
-/// Serializes spine envelopes into pending JSONEachRow lines. Stateless
-/// beyond the pending batch.
+/// Past this many slots a root is dropped, and an FCU naming it records none.
+const TRACKED_SLOTS: u64 = 64;
+
 struct BlockEvents {
     node: String,
     genesis: Nanos,
     slot_dur: Nanos,
+    slots: FxHashMap<[u8; 32], u64>,
     pending: Vec<String>,
 }
 
@@ -71,6 +75,7 @@ impl BlockEvents {
             node,
             genesis: Nanos::from_secs(genesis_unix_secs),
             slot_dur: Nanos::from_millis(slot_ms.max(1)),
+            slots: FxHashMap::default(),
             pending: Vec::new(),
         }
     }
@@ -106,7 +111,6 @@ impl BlockEvents {
         );
     }
 
-    /// Everything serialized since the last call, as one JSONEachRow body.
     fn take_batch(&mut self) -> Option<String> {
         (!self.pending.is_empty()).then(|| take(&mut self.pending).join("\n"))
     }
@@ -114,6 +118,8 @@ impl BlockEvents {
     fn on_engine_req(&mut self, m: &InternalMessage<EngineReq>) {
         match *m.data() {
             EngineReq::NewPayload(req) => {
+                self.slots.retain(|_, slot| req.slot.saturating_sub(*slot) < TRACKED_SLOTS);
+                self.slots.insert(req.block_root, req.slot);
                 let source = format!("{:?}", req.block_source);
                 let attrs = Attrs { source: Some(&source), verdict: None };
                 let received = m.ingestion_time().real();
@@ -122,8 +128,9 @@ impl BlockEvents {
                 self.push("el_sent", Some(req.slot), req.block_root, el_sent, attrs);
             }
             EngineReq::Fcu(req) => {
+                let slot = self.slots.get(&req.block_root).copied();
                 let ts = m.tracking_timestamp().publish_t();
-                self.push("applied", None, req.block_root, ts, Attrs::default());
+                self.push("applied", slot, req.block_root, ts, Attrs::default());
             }
             _ => {}
         }
@@ -135,8 +142,9 @@ impl BlockEvents {
         };
         let verdict = format!("{:?}", resp.status);
         let attrs = Attrs { source: None, verdict: Some(&verdict) };
+        let slot = self.slots.get(&resp.block_root).copied();
         let ts = m.tracking_timestamp().publish_t();
-        self.push("el_verdict", None, resp.block_root, ts, attrs);
+        self.push("el_verdict", slot, resp.block_root, ts, attrs);
     }
 }
 
@@ -202,7 +210,6 @@ mod tests {
     /// against the ingestion time, not an exact value.
     const PUBLISH_TICKS: u64 = 10_000_000;
 
-    /// Wall time at `ms_into_slot` of `slot`.
     fn at(slot: u64, ms_into_slot: u64) -> Nanos {
         Nanos::from_secs(GENESIS_SECS) + Nanos::from_millis(slot * SLOT_MS + ms_into_slot)
     }
@@ -253,7 +260,6 @@ mod tests {
         BlockEvents::new("test-node".into(), GENESIS_SECS, SLOT_MS)
     }
 
-    /// The batch as it reaches ClickHouse, one JSON value per line.
     fn json_rows(events: &mut BlockEvents) -> Vec<serde_json::Value> {
         let batch = events.take_batch().expect("rows pending");
         batch.lines().map(|line| serde_json::from_str(line).unwrap()).collect()
@@ -298,7 +304,9 @@ mod tests {
         after("applied", at(2, 460));
         after("el_verdict", at(2, 520));
 
-        assert_eq!(row(&rows, "applied")["slot"], serde_json::Value::Null, "fcu joins by root");
+        assert_eq!(row(&rows, "applied")["slot"], 2);
+        assert_eq!(row(&rows, "el_verdict")["slot"], 2);
+        assert!(row(&rows, "applied")["propagation_slot_start_diff"].as_f64().unwrap() > 300.0);
         assert_eq!(row(&rows, "el_verdict")["verdict"], "Valid");
     }
 
@@ -329,5 +337,6 @@ mod tests {
         let rows = json_rows(&mut ev);
         assert_eq!(stages(&rows), ["applied"]);
         assert_eq!(row(&rows, "applied")["block_root"], hex::encode([9u8; 32]));
+        assert_eq!(row(&rows, "applied")["slot"], serde_json::Value::Null);
     }
 }
