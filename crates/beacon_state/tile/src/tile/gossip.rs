@@ -19,6 +19,7 @@ use super::{
     ATTESTATION_PROPAGATION_SLOT_RANGE, BY_ROOT_REQUEST_ID, BeaconStateTile, Feedback, Producers,
     attestation_pool::InsertOutcome,
     orphan_pool::{PendingBlock, has_room},
+    seen_aggregates::Coverage,
 };
 use crate::{bls, merkle, ssz_hash, stf, validate};
 
@@ -207,6 +208,17 @@ impl BeaconStateTile {
         }
         let committee_index = parsed.committee_bits.trailing_zeros() as usize;
 
+        let data_root = ssz_hash::hash_attestation_data(parsed.agg_data.as_bytes());
+        let coverage = self.seen_aggregates.coverage(
+            parsed.agg_slot,
+            committee_index as u64,
+            data_root,
+            parsed.aggregation_bits,
+        );
+        if coverage == Coverage::BySuperset {
+            return Feedback::Ignore;
+        }
+
         if let Err(f) = self.validate_attestation_target(parsed.agg_data) {
             return f;
         }
@@ -254,16 +266,33 @@ impl BeaconStateTile {
             return Feedback::Reject(None);
         }
 
-        if !Self::verify_aggregate_and_proof_sigs(&view, &parsed, &committees, &mut self.sig_batch)
-        {
+        if !Self::verify_aggregate_and_proof_sigs(
+            &view,
+            &parsed,
+            &committees,
+            data_root,
+            &mut self.sig_batch,
+        ) {
             return Feedback::Reject(None);
         }
 
-        // Record the votes (re-validates target/ancestry + slot+1 deferral and
-        // derives the committee again — cheap next to the verify above). The
-        // inner attestation is the aggregate field.
-        let feedback = self.apply_attestation(parsed.aggregate_bytes);
+        let feedback = if coverage == Coverage::ByUnion {
+            // Every vote it carries is already folded; the verified message
+            // still relays — union coverage must never gate forwarding.
+            Feedback::Accept(None)
+        } else {
+            // Record the votes (re-validates target/ancestry + slot+1
+            // deferral and derives the committee again — cheap next to the
+            // verify above). The inner attestation is the aggregate field.
+            self.apply_attestation(parsed.aggregate_bytes)
+        };
         if let Feedback::Accept(_) = feedback {
+            self.seen_aggregates.record(
+                parsed.agg_slot,
+                committee_index as u64,
+                data_root,
+                parsed.aggregation_bits,
+            );
             self.seen_aggregators.mark(parsed.target_epoch, parsed.aggregator_index);
         }
         feedback
@@ -445,6 +474,7 @@ impl BeaconStateTile {
         view: &StateReadView,
         parsed: &ParsedAggregateAndProof<'_>,
         committees: &stf::AttestedCommittees<'_>,
+        data_root: B256,
         sig_batch: &mut bls::SigBatch,
     ) -> bool {
         let fv = view.epoch.fork_version_at(parsed.target_epoch);
@@ -467,7 +497,6 @@ impl BeaconStateTile {
             bls::compute_signing_root(&agg_proof_root, &domain(bls::DOMAIN_AGGREGATE_AND_PROOF));
 
         // (3) inner aggregate signature over AttestationData.
-        let data_root = ssz_hash::hash_attestation_data(parsed.agg_data.as_bytes());
         let sr_att = bls::compute_signing_root(&data_root, &domain(bls::DOMAIN_BEACON_ATTESTER));
 
         sig_batch.clear();

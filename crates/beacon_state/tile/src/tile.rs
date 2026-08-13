@@ -24,7 +24,8 @@ use crate::{
     merkle, ssz_hash, stf,
     tile::{
         attestation_pool::AttestationPool, orphan_pool::PendingBlock,
-        seen_validators::SeenValidators, shuffling_cache::ShufflingCache,
+        seen_aggregates::SeenAggregates, seen_validators::SeenValidators,
+        shuffling_cache::ShufflingCache,
     },
     weak_subjectivity::{weak_subjectivity_period_fulu, weak_subjectivity_period_gloas},
 };
@@ -35,6 +36,7 @@ mod finalize;
 mod fork_choice;
 mod gossip;
 mod orphan_pool;
+mod seen_aggregates;
 mod seen_validators;
 mod shuffling_cache;
 
@@ -122,6 +124,7 @@ pub struct BeaconStateTile {
     shuffling_cache: Box<ShufflingCache>,
     seen_attesters: SeenValidators,
     seen_aggregators: SeenValidators,
+    seen_aggregates: SeenAggregates,
     attestation_pool: AttestationPool,
 
     /// Highest finalized slot PM has announced as a sync target — bounds the
@@ -223,6 +226,7 @@ impl BeaconStateTile {
             shuffling_cache: ShufflingCache::with_capacity(val_cap),
             seen_attesters: SeenValidators::new(val_cap),
             seen_aggregators: SeenValidators::new(val_cap),
+            seen_aggregates: SeenAggregates::new(),
             attestation_pool: AttestationPool::new(),
             last_applied: anchor,
             last_applied_block_root: [0u8; 32],
@@ -522,7 +526,9 @@ impl BeaconStateTile {
     fn slot_tick(&mut self, slot: Slot) -> bool {
         let advanced = self.on_slot_start(slot);
         self.fork_choice_tick();
-        self.attestation_pool.prune_before(slot.saturating_sub(1));
+        let floor = slot.saturating_sub(1);
+        self.attestation_pool.prune_before(floor);
+        self.seen_aggregates.prune_before(floor);
         advanced
     }
 
@@ -1998,6 +2004,20 @@ mod tests {
         panic!("two distinct-key members in some committee")
     }
 
+    fn committee_of(tile: &BeaconStateTile, slot: Slot, ci: usize) -> Vec<u32> {
+        let shuffled = tile
+            .shuffling_cache
+            .shuffled_by_epoch(slot / SLOTS_PER_EPOCH)
+            .expect("shuffling for epoch");
+        stf::EpochShuffling::new(shuffled, tile.head_validator_count()).committee(slot, ci).to_vec()
+    }
+
+    /// Wrap an inner aggregate with `vi` as aggregator (registry keys cycle
+    /// `vi % 3`).
+    fn wrap_by(imm: &Immutable, vi: u32, aggregate: &[u8]) -> Vec<u8> {
+        test_signing::wrap_aggregate_and_proof(vi as usize % 3, vi as u64, aggregate, imm)
+    }
+
     /// Sign `vi`'s single attestation for the anchor at `(slot, ci)`, feed it
     /// through `handle_attestation`, and return the grown pooled aggregate.
     fn pool_single_then_aggregate(
@@ -2036,12 +2056,7 @@ mod tests {
         let aggregate = pool_single_then_aggregate(&mut tile, vi_b, slot, ci);
 
         // Committee of 4 < 16 ⇒ any member trivially passes is_aggregator.
-        let wrapped = test_signing::wrap_aggregate_and_proof(
-            vi_a as usize % 3,
-            vi_a as u64,
-            &aggregate,
-            &imm,
-        );
+        let wrapped = wrap_by(&imm, vi_a, &aggregate);
         // Accept requires verify_aggregate_and_proof_sigs: selection proof,
         // outer signature, and the pooled aggregate signature against the two
         // participants' aggregated registry pubkeys.
@@ -2059,21 +2074,24 @@ mod tests {
         let (slot, ci, vi_a, vi_b) = find_committee_with_two_signers(&tile);
 
         let agg_one = pool_single_then_aggregate(&mut tile, vi_a, slot, ci);
-        let wrapped =
-            test_signing::wrap_aggregate_and_proof(vi_a as usize % 3, vi_a as u64, &agg_one, &imm);
-        assert_eq!(tile.handle_aggregate_and_proof(&wrapped), Feedback::Accept(None));
+        assert_eq!(
+            tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_a, &agg_one)),
+            Feedback::Accept(None)
+        );
 
         // A second participant grows the pooled aggregate: different bytes,
         // fully valid, same (aggregator, target epoch).
         let agg_two = pool_single_then_aggregate(&mut tile, vi_b, slot, ci);
         assert_ne!(agg_two, agg_one);
-        let wrapped =
-            test_signing::wrap_aggregate_and_proof(vi_a as usize % 3, vi_a as u64, &agg_two, &imm);
-        assert_eq!(tile.handle_aggregate_and_proof(&wrapped), Feedback::Ignore);
+        assert_eq!(
+            tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_a, &agg_two)),
+            Feedback::Ignore
+        );
     }
 
-    /// The first-seen rule is per aggregator, not per attestation data: the
-    /// same aggregate wrapped by two distinct committee members both accept.
+    /// Neither admission rule keys on the attestation data alone: aggregates
+    /// over the same data from two distinct aggregators both accept, provided
+    /// the second grows bit coverage (equal bits die on the superset rule).
     #[test]
     fn agg_distinct_aggregators_same_data_both_accept() {
         let mut tile = make_tile_at_wall_slot(31);
@@ -2081,13 +2099,112 @@ mod tests {
         let imm = seed_immutable(&tile);
         let (slot, ci, vi_a, vi_b) = find_committee_with_two_signers(&tile);
 
-        let aggregate = pool_single_then_aggregate(&mut tile, vi_a, slot, ci);
-        // Committee of 4 < 16 ⇒ any member trivially passes is_aggregator.
-        let wrap = |vi: u32| {
-            test_signing::wrap_aggregate_and_proof(vi as usize % 3, vi as u64, &aggregate, &imm)
-        };
-        assert_eq!(tile.handle_aggregate_and_proof(&wrap(vi_a)), Feedback::Accept(None));
-        assert_eq!(tile.handle_aggregate_and_proof(&wrap(vi_b)), Feedback::Accept(None));
+        let agg_one = pool_single_then_aggregate(&mut tile, vi_a, slot, ci);
+        assert_eq!(
+            tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_a, &agg_one)),
+            Feedback::Accept(None)
+        );
+
+        let agg_two = pool_single_then_aggregate(&mut tile, vi_b, slot, ci);
+        assert_eq!(
+            tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_b, &agg_two)),
+            Feedback::Accept(None)
+        );
+    }
+
+    /// Spec [IGNORE]: bits ⊆ an already-seen valid aggregate's — equal or
+    /// strictly smaller — die on the coverage probe regardless of who
+    /// aggregated them.
+    #[test]
+    fn agg_subset_from_other_aggregator_ignored() {
+        let mut tile = make_tile_at_wall_slot(31);
+        seed_tile_with_keys(&mut tile, 128, 0);
+        let imm = seed_immutable(&tile);
+        let (slot, ci, vi_a, vi_b) = find_committee_with_two_signers(&tile);
+
+        let agg_one = pool_single_then_aggregate(&mut tile, vi_a, slot, ci);
+        let agg_two = pool_single_then_aggregate(&mut tile, vi_b, slot, ci);
+        assert_eq!(
+            tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_a, &agg_two)),
+            Feedback::Accept(None)
+        );
+
+        // Both from an aggregator the epoch has not seen, so only the
+        // coverage rule can be what ignores them.
+        assert_eq!(
+            tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_b, &agg_two)),
+            Feedback::Ignore
+        );
+        assert_eq!(
+            tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_b, &agg_one)),
+            Feedback::Ignore
+        );
+    }
+
+    /// The superset gate fires before signature verification: a covered
+    /// message with a corrupted outer signature probes Ignore instead of
+    /// reaching the Reject the signature would earn. Skipping that ~1 ms
+    /// batch verify is the point of the coverage rule.
+    #[test]
+    fn agg_superset_gate_precedes_signature_verify() {
+        let mut tile = make_tile_at_wall_slot(31);
+        seed_tile_with_keys(&mut tile, 128, 0);
+        let imm = seed_immutable(&tile);
+        let (slot, ci, vi_a, vi_b) = find_committee_with_two_signers(&tile);
+
+        let agg_one = pool_single_then_aggregate(&mut tile, vi_a, slot, ci);
+        let agg_two = pool_single_then_aggregate(&mut tile, vi_b, slot, ci);
+        assert_eq!(
+            tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_a, &agg_two)),
+            Feedback::Accept(None)
+        );
+
+        let mut forged = wrap_by(&imm, vi_b, &agg_one);
+        forged[50] ^= 0xFF; // outer signature = buf[4..100)
+        assert_eq!(tile.handle_aggregate_and_proof(&forged), Feedback::Ignore);
+    }
+
+    /// Union-covered bits (inside the OR of seen patterns, ⊆ none singly)
+    /// must still verify and relay: union coverage sheds only the local vote
+    /// fold, never forwarding.
+    #[test]
+    fn agg_union_covered_still_relays() {
+        let mut tile = make_tile_at_wall_slot(31);
+        seed_tile_with_keys(&mut tile, 128, 0);
+        let imm = seed_immutable(&tile);
+        let bbr = tile.last_applied_block_root;
+        let (slot, ci, vi_a, vi_b) = find_committee_with_two_signers(&tile);
+        let committee = committee_of(&tile, slot, ci);
+        let vi_c = *committee.iter().find(|&&v| v != vi_a && v != vi_b).expect("committee of 4");
+        let pos_b = committee.iter().position(|&v| v == vi_b).unwrap();
+
+        // {a} from aggregator a, then {b} alone from aggregator b: disjoint
+        // patterns whose union is {a, b}.
+        let agg_a = pool_single_then_aggregate(&mut tile, vi_a, slot, ci);
+        assert_eq!(
+            tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_a, &agg_a)),
+            Feedback::Accept(None)
+        );
+        let agg_b_only = test_signing::sign_aggregate_and_proof(
+            vi_b as usize % 3,
+            vi_b as u64,
+            slot,
+            slot / SLOTS_PER_EPOCH,
+            bbr,
+            bbr,
+            ci,
+            pos_b,
+            committee.len(),
+            &imm,
+        );
+        assert_eq!(tile.handle_aggregate_and_proof(&agg_b_only), Feedback::Accept(None));
+
+        // {a, b} from a third aggregator: within the union, inside neither.
+        let agg_ab = pool_single_then_aggregate(&mut tile, vi_b, slot, ci);
+        assert_eq!(
+            tile.handle_aggregate_and_proof(&wrap_by(&imm, vi_c, &agg_ab)),
+            Feedback::Accept(None)
+        );
     }
 
     // ── finalization (deposit append lands on the delta, not the base) ──
