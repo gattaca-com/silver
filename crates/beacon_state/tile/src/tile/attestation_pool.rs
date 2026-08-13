@@ -142,6 +142,7 @@ impl AggregateEntry {
         }
     }
 
+    #[timed]
     fn add(&mut self, position: usize, signature: &Signature) -> InsertOutcome {
         let (byte, bit) = (position / 8, 1u8 << (position % 8));
         if self.participant_bits[byte] & bit != 0 {
