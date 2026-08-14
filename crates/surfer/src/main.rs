@@ -123,8 +123,11 @@ fn main() -> io::Result<()> {
         env_u64("SURFER_SLOT_MS", MAINNET_SLOT_MS),
     );
 
+    let peers = sources::peers::Peers::open(&base_dir);
+
     let flamegraph = Flamegraph::attach(&app_name);
-    let mut app = App::new(counter_sets, tcache_sets, timing_sets, tile_sets, events, flamegraph);
+    let mut app =
+        App::new(counter_sets, tcache_sets, timing_sets, tile_sets, peers, events, flamegraph);
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -197,6 +200,11 @@ fn handle_key(app: &mut App, code: KeyCode, app_name: &str) {
         }
         KeyCode::Down => app.move_selection(1),
         KeyCode::Up => app.move_selection(-1),
+        KeyCode::Left if app.pane == app::Pane::Peers => app.adjust_peers_sort(-1),
+        KeyCode::Right if app.pane == app::Pane::Peers => app.adjust_peers_sort(1),
+        KeyCode::Char('r') if app.pane == app::Pane::Peers => {
+            app.peers_sort_desc = !app.peers_sort_desc
+        }
         KeyCode::Char('[') => app.adjust_split(-1),
         KeyCode::Char(']') => app.adjust_split(1),
         KeyCode::Char('p') => app.flamegraph.toggle_pause(),

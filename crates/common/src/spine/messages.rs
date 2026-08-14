@@ -1,4 +1,7 @@
-use std::net::{IpAddr, SocketAddr};
+use std::{
+    net::{IpAddr, SocketAddr},
+    time::Duration,
+};
 
 use flux::timing::Nanos;
 
@@ -1020,4 +1023,19 @@ impl RequestCategory {
     pub fn is_backfill(self) -> bool {
         matches!(self, RequestCategory::ColumnBackfill | RequestCategory::BlockBackfill)
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct P2pConnectionStats {
+    pub id: PeerId,
+    pub connection: usize,
+    pub addr: SocketAddr,
+    pub connected: Duration,
+    pub rtt: Duration,
+    pub lost_packets: u64,
+    pub rx_blocking: u64,
+    pub tx_blocking: u64,
+    pub rx_datagrams: u64,
+    pub tx_datagrams: u64,
 }

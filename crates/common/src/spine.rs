@@ -9,11 +9,12 @@ pub use messages::{
     EngineGetPayloadReq, EngineGetPayloadResp, EngineHealthEvent, EngineNewPayloadEnvelopeReq,
     EngineNewPayloadReq, EngineNewPayloadResp, EnginePreparePayloadReq, EngineReq, EngineResp,
     GLOAS_ERA_FLAG, GossipMsgIn, GossipMsgOut, IpBytes, MAX_BLOBS_PER_BLOCK,
-    MAX_PAYLOAD_BODIES_PER_REQ, NewGossipMsg, P2pSend, PayloadValidationStatus, PeerControl,
-    PeerEvent, PeerStatus, ReplayBlock, RequestCategory, RpcInbound, RpcOutbound, RpcRequest,
-    RpcRequestInbound, RpcRequestOutbound, RpcResponse, RpcResponseInbound, RpcResponseOutbound,
-    RpcSeverity, SyncUpdate, SyncingStrategy, WithdrawalInline, msg_is_backfill,
-    msg_is_column_backfill, msg_is_envelope_request, msg_is_live_column_request, msg_is_post_gloas,
+    MAX_PAYLOAD_BODIES_PER_REQ, NewGossipMsg, P2pConnectionStats, P2pSend, PayloadValidationStatus,
+    PeerControl, PeerEvent, PeerStatus, ReplayBlock, RequestCategory, RpcInbound, RpcOutbound,
+    RpcRequest, RpcRequestInbound, RpcRequestOutbound, RpcResponse, RpcResponseInbound,
+    RpcResponseOutbound, RpcSeverity, SyncUpdate, SyncingStrategy, WithdrawalInline,
+    msg_is_backfill, msg_is_column_backfill, msg_is_envelope_request, msg_is_live_column_request,
+    msg_is_post_gloas,
 };
 pub use stream_id::P2pStreamId;
 pub use stream_protocol::{
@@ -67,4 +68,7 @@ pub struct SilverSpine {
     pub engine_resps: SpineQueue<EngineResp>,
     #[queue(size(2usize.pow(8)))]
     pub engine_health: SpineQueue<EngineHealthEvent>,
+
+    #[queue(size(2usize.pow(10)))]
+    pub peer_stats: SpineQueue<P2pConnectionStats>,
 }
