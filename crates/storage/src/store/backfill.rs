@@ -1,55 +1,51 @@
 use std::{collections::VecDeque, ops::Range};
 
-use flux::timing::{Duration, Instant};
 use fxhash::FxHashMap;
 use silver_common::{
-    PeerEvent,
-    RpcRequest::BlocksByRange,
-    TRead,
-    ssz_hash::B256,
-    ssz_view::{BLOCKS_BY_RANGE_REQ_SIZE, SignedBeaconBlockView},
+    PeerEvent, TRead, column_util,
+    merkle::B256,
+    ssz_view::{DataColumnSidecarFuluView, SignedBeaconBlockView},
 };
 
-use crate::{
-    store::{MAX_REQUEST_BLOCKS, PendingWrite},
-    tile::BACKFILL_REQUEST_ID,
-    util,
-};
+use crate::store::PendingWrite;
 
+/// Block-history backfill **tracker**. Issuance moved to the control-tile
+/// `SyncEngine`; storage reports the gap via `PeerEvent::BackfillState` and
+/// here only links + writes arriving blocks and detects completion (the chain
+/// has been filled down to the gap floor). Block backfill emits no
+/// `EarliestSlot`: the advertised earliest-available slot tracks data columns,
+/// not blocks.
 pub(super) struct Backfill {
     range: Range<u64>,
     // buffered blocks keyed by block root
     buffered_blocks: FxHashMap<B256, (u64, B256, TRead)>,
     next_parent: B256,
-    request_id: u64,
-    in_flight: Option<(Range<u64>, u64, Instant)>,
     earliest_written: u64,
+    blocks_complete: bool,
+}
+
+pub(super) struct AcceptedColumn {
+    pub(super) block_root: B256,
+    pub(super) slot: u64,
+    pub(super) column_index: u64,
 }
 
 impl Backfill {
     pub(super) fn new(range: Range<u64>, next_parent: B256) -> Self {
+        let range_end = range.end;
         Self {
-            earliest_written: range.end + 1,
             range,
-            buffered_blocks: FxHashMap::with_capacity_and_hasher(
-                MAX_REQUEST_BLOCKS as usize,
-                Default::default(),
-            ),
+            buffered_blocks: FxHashMap::default(),
             next_parent,
-            request_id: BACKFILL_REQUEST_ID,
-            in_flight: None,
+            earliest_written: range_end + 1,
+            blocks_complete: false,
         }
     }
 
-    pub(super) fn start<F>(&mut self, emit: &mut F)
-    where
-        F: FnMut(PeerEvent),
-    {
-        self.range_request(emit);
-    }
-
+    /// Link an arriving backfill block to the chain and queue it for write.
+    /// Blocks arrive child-first; each links to `next_parent` and drains the
+    /// buffer downward. Complete once the chain reaches the gap floor.
     pub(super) fn add_block(&mut self, ssz: TRead, write_queue: &mut VecDeque<PendingWrite>) {
-        // is this the next parent block we are waiting for?
         let buffer = match ssz.buffer() {
             Ok((buffer, _)) => buffer,
             Err(e) => {
@@ -58,71 +54,170 @@ impl Backfill {
             }
         };
 
-        let new_block_root = util::block_root(buffer);
+        let new_block_root = column_util::block_root_fulu(buffer);
         let slot = SignedBeaconBlockView::slot(buffer);
         let new_parent_root = *SignedBeaconBlockView::parent_root(buffer);
 
         self.buffered_blocks.insert(new_block_root, (slot, new_parent_root, ssz));
 
         while let Some((slot, parent_root, ssz)) = self.buffered_blocks.remove(&self.next_parent) {
-            write_queue.push_back(PendingWrite::BackfillBlock { slot, ssz });
+            let block_root = self.next_parent;
+            write_queue.push_back(PendingWrite::BackfillBlock { block_root, slot, ssz });
             self.earliest_written = self.earliest_written.min(slot);
             self.next_parent = parent_root;
         }
+
+        if self.earliest_written <= self.range.start {
+            self.blocks_complete = true;
+        }
     }
 
-    /// Returns `true` if backfilling is complete.
-    pub(super) fn query_complete<F>(&mut self, id: u64, emit: &mut F) -> bool
+    pub(super) fn is_complete(&self) -> bool {
+        self.blocks_complete
+    }
+}
+
+/// Data-column backfill **tracker**, independent of block backfill. Seeded by
+/// an on-disk scan of persisted blocks in the column-retention window (set 1)
+/// and by block backfill pulling blob-carrying blocks in (set 2). For each such
+/// block it reports the missing custody columns via `PeerEvent::ColumnNeed`;
+/// the `SyncEngine` fetches them by-root. Storage tracks per-block completeness
+/// (it sees the sidecars) and clears the need (`ColumnNeed { missing: 0 }`)
+/// once a block's columns are all on disk.
+pub(super) struct ColumnBackfill {
+    range: Range<u64>,
+    // Every block awaiting columns, keyed by block root.
+    pending: FxHashMap<B256, PendingColumnBlock>,
+    scan_complete: bool,
+}
+
+struct PendingColumnBlock {
+    slot: u64,
+    proposer_index: u64,
+    parent_root: B256,
+    state_root: B256,
+    body_root: B256,
+    signature: [u8; 96],
+    requested: u128,
+    received: u128,
+}
+
+impl ColumnBackfill {
+    pub(super) fn new(range: Range<u64>) -> Self {
+        Self { range, pending: FxHashMap::default(), scan_complete: false }
+    }
+
+    /// Seed a block found by the disk scan / block backfill. `missing` is the
+    /// custody columns not already on disk; reports the need to the engine.
+    pub(super) fn seed_block<F>(
+        &mut self,
+        block_root: B256,
+        slot: u64,
+        block: &[u8],
+        missing: u128,
+        emit: &mut F,
+    ) where
+        F: FnMut(PeerEvent),
+    {
+        if missing == 0 || !self.range.contains(&slot) || self.pending.contains_key(&block_root) {
+            return;
+        }
+
+        self.pending.insert(block_root, PendingColumnBlock {
+            slot,
+            proposer_index: SignedBeaconBlockView::proposer_index(block),
+            parent_root: *SignedBeaconBlockView::parent_root(block),
+            state_root: *SignedBeaconBlockView::state_root(block),
+            body_root: column_util::body_root(SignedBeaconBlockView::body(block)),
+            signature: *SignedBeaconBlockView::signature(block),
+            requested: missing,
+            received: 0,
+        });
+        emit(PeerEvent::ColumnNeed { block_root, slot, missing });
+    }
+
+    /// Validate + record a received backfill sidecar. On the block's final
+    /// column, clears the need (`ColumnNeed { missing: 0 }`).
+    pub(super) fn add_sidecar<F>(&mut self, sidecar: &TRead, emit: &mut F) -> Option<AcceptedColumn>
     where
         F: FnMut(PeerEvent),
     {
-        if self.in_flight.as_ref().map(|(_, request_id, _)| *request_id != id).unwrap_or_default() {
-            return false;
-        }
-        if let Some((in_flight, _, _)) = self.in_flight.take() {
-            if self.earliest_written < in_flight.end {
-                // the previous request returned something,
-                self.range.end = self.earliest_written.max(in_flight.start);
-                emit(PeerEvent::EarliestSlot(self.earliest_written));
+        let buffer = match sidecar.buffer() {
+            Ok((buffer, _)) => buffer,
+            Err(e) => {
+                tracing::error!(?e, "failed to read backfill data column sidecar cache buffer");
+                return None;
             }
-        }
-        if self.range.end == self.range.start {
-            tracing::info!("backfill complete");
-            return true;
-        }
-        self.buffered_blocks.clear();
-        self.range_request(emit);
-        false
-    }
+        };
 
-    pub(super) fn tick<F>(&mut self, emit: &mut F)
-    where
-        F: FnMut(PeerEvent),
-    {
-        if let Some((_, request_id, start)) = self.in_flight.as_ref() {
-            if start.elapsed() > Duration::from_secs(10) {
-                self.query_complete(*request_id, emit);
+        if !column_util::verify_data_column_sidecar_fulu(buffer) {
+            tracing::warn!("badly formed backfill data column sidecar");
+            return None;
+        }
+        if !column_util::verify_data_column_sidecar_kzg_proofs_fulu(buffer) {
+            tracing::warn!("failed to verify backfill sidecar kzg proof");
+            return None;
+        }
+        if !column_util::verify_data_column_sidecar_inclusion_proof(buffer) {
+            tracing::warn!("failed to verify backfill sidecar inclusion proof");
+            return None;
+        }
+
+        let block_root = column_util::block_root_from_sidecar(buffer);
+        let column_index = DataColumnSidecarFuluView::index(buffer);
+        let column_bitmask = 1u128 << column_index;
+        let (slot, complete) = {
+            let expected = match self.pending.get_mut(&block_root) {
+                Some(expected) => expected,
+                None => {
+                    tracing::warn!(
+                        block_root = hex::encode(block_root),
+                        "unrequested backfill data column sidecar"
+                    );
+                    return None;
+                }
+            };
+            if expected.requested & column_bitmask == 0 {
+                tracing::warn!(column_index, "backfill sidecar column was not requested");
+                return None;
             }
+            if expected.received & column_bitmask != 0 {
+                return None;
+            }
+            if DataColumnSidecarFuluView::slot(buffer) != expected.slot ||
+                DataColumnSidecarFuluView::proposer_index(buffer) != expected.proposer_index ||
+                DataColumnSidecarFuluView::parent_root(buffer) != &expected.parent_root ||
+                DataColumnSidecarFuluView::state_root(buffer) != &expected.state_root ||
+                DataColumnSidecarFuluView::body_root(buffer) != &expected.body_root ||
+                DataColumnSidecarFuluView::block_signature(buffer) != &expected.signature
+            {
+                tracing::warn!(
+                    block_root = hex::encode(block_root),
+                    column_index,
+                    "backfill sidecar header does not match block"
+                );
+                return None;
+            }
+
+            expected.received |= column_bitmask;
+            let complete = expected.received & expected.requested == expected.requested;
+            (expected.slot, complete)
+        };
+
+        if complete {
+            self.pending.remove(&block_root);
+            emit(PeerEvent::ColumnNeed { block_root, slot, missing: 0 });
         }
+
+        Some(AcceptedColumn { block_root, slot, column_index })
     }
 
-    fn range_request<F>(&mut self, emit: &mut F)
-    where
-        F: FnMut(PeerEvent),
-    {
-        let next_start_slot =
-            (self.range.end.saturating_sub(MAX_REQUEST_BLOCKS)).max(self.range.start);
-        let count = self.range.end - next_start_slot;
-        let request_id = self.request_id;
-        self.request_id += 1;
+    /// Complete = disk scan finished AND no block awaiting columns.
+    pub(super) fn is_complete(&self) -> bool {
+        self.scan_complete && self.pending.is_empty()
+    }
 
-        let mut request = [0u8; BLOCKS_BY_RANGE_REQ_SIZE];
-        request[..8].copy_from_slice(&next_start_slot.to_le_bytes());
-        request[8..16].copy_from_slice(&count.to_le_bytes());
-        request[16..].copy_from_slice(&1u64.to_le_bytes());
-
-        emit(PeerEvent::SendRpcRequest { request_id, rpc: BlocksByRange(request) });
-        self.in_flight =
-            Some((next_start_slot..next_start_slot + count, request_id, Instant::now()));
+    pub(super) fn mark_scan_complete(&mut self) {
+        self.scan_complete = true;
     }
 }

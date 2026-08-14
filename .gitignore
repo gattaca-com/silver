@@ -18,12 +18,13 @@ target/
 # VSCode
 .local
 .vscode
+# LLMs
 .cursor
 .claude
-.local
-CLAUDE.md
+.memsearch
 
 *.ssz
+*.fxt*
 # Perf-regression fixtures are committed via git-lfs (see .gitattributes
 # and crates/e2e/data/perf/README.md) — they need to escape the blanket
 # *.ssz ignore.
@@ -31,3 +32,9 @@ CLAUDE.md
 !crates/engine/testdata/*.ssz
 # kurtosis generated files
 kurtosis/silver-devnet.toml
+kurtosis/silver-gloas.toml
+# ethereum consensus-spec-tests
+crates/beacon_state/consensus-spec-tests/
+kurtosis/el/
+
+crates/beacon_state/tile/tests/sync_scenarios/gloas_fork_transition/fixtures/

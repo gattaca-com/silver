@@ -10,7 +10,7 @@ use crate::crypto::MAX_PACKET_SIZE;
 pub enum DiscoveryEvent {
     SendMessage { to: SocketAddr, data: ArrayVec<u8, MAX_PACKET_SIZE> },
     NodeFound(Enr),
-    ExternalAddrChanged(SocketAddr),
+    ExternalAddrChanged(SocketAddr, u64),
 }
 
 // todo @nina - export these
@@ -38,6 +38,8 @@ pub trait Discovery {
     fn handle(&mut self, src_addr: SocketAddr, data: &[u8], now: Instant);
 
     fn poll<F: FnMut(DiscoveryEvent)>(&mut self, f: F);
+
+    fn update_enr_fork_id(&mut self, _eth2: [u8; 16]) {}
 
     fn teardown(&self);
 }

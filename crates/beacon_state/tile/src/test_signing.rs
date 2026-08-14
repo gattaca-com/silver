@@ -5,7 +5,9 @@
 #![allow(clippy::too_many_arguments)]
 
 use blst::min_pk::{PublicKey, SecretKey};
-use silver_beacon_state_data::{B256, BLSPubkey, BeaconBlockHeader, Immutable, SLOTS_PER_EPOCH};
+use silver_beacon_state_data::{
+    B256, BLSPubkey, BeaconBlockHeader, Fork, Immutable, SLOTS_PER_EPOCH,
+};
 use silver_common::ssz_view::{
     AttestationDataView, IndexedAttestationView, PROPOSER_SLASHING_SIZE, ProposerSlashingView,
     SIGNED_AGG_PROOF_MIN, SIGNED_BLS_CHANGE_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE,
@@ -14,7 +16,7 @@ use silver_common::ssz_view::{
 };
 
 use crate::{
-    bls,
+    bls, merkle,
     ssz_hash::{self, hash_tree_root_block_header},
 };
 
@@ -42,6 +44,11 @@ pub fn pubkey_bytes(idx: usize) -> BLSPubkey {
 
 pub fn sign(sk_idx: usize, message: &[u8]) -> [u8; 96] {
     privkey(sk_idx).sign(message, DST, &[]).to_bytes()
+}
+
+fn test_fork_version(target_epoch: u64) -> [u8; 4] {
+    let f = Fork::default();
+    bls::fork_version_at_epoch(f.epoch, f.previous_version, f.current_version, target_epoch)
 }
 
 pub fn hex_to_bytes(hex: &str) -> [u8; 32] {
@@ -95,12 +102,7 @@ pub fn sign_proposer_slashing(
     let h1 = mk_header([0xAA; 32]);
     let h2 = mk_header([0xBB; 32]);
 
-    let fv = bls::fork_version_at_epoch(
-        imm.fork.epoch,
-        imm.fork.previous_version,
-        imm.fork.current_version,
-        slot / SLOTS_PER_EPOCH,
-    );
+    let fv = test_fork_version(slot / SLOTS_PER_EPOCH);
     let domain = bls::compute_domain(bls::DOMAIN_BEACON_PROPOSER, fv, &imm.genesis_validators_root);
     let sr1 = bls::compute_signing_root(&hash_tree_root_block_header(&h1), &domain);
     let sr2 = bls::compute_signing_root(&hash_tree_root_block_header(&h2), &domain);
@@ -181,12 +183,7 @@ pub fn build_indexed_attestation(
     buf[92..100].copy_from_slice(&target_epoch.to_le_bytes());
 
     // Sign the AttestationData under DOMAIN_BEACON_ATTESTER for target_epoch.
-    let fv = bls::fork_version_at_epoch(
-        imm.fork.epoch,
-        imm.fork.previous_version,
-        imm.fork.current_version,
-        target_epoch,
-    );
+    let fv = test_fork_version(target_epoch);
     let data: &[u8; 128] = buf[4..132].try_into().unwrap();
     let object_root = ssz_hash::hash_attestation_data(data);
     let domain = bls::compute_domain(bls::DOMAIN_BEACON_ATTESTER, fv, &imm.genesis_validators_root);
@@ -230,6 +227,7 @@ pub fn sign_attester_slashing_double_vote(
 /// Build a `SingleAttestation` (gossip subnet form) signed by `sk_idx`.
 /// Caller resolves `(slot, committee_index)` so `attester_index` is in the
 /// resolved committee.
+#[allow(clippy::too_many_arguments)]
 pub fn sign_single_attestation(
     sk_idx: usize,
     attester_index: u64,
@@ -237,23 +235,20 @@ pub fn sign_single_attestation(
     slot: u64,
     beacon_block_root: B256,
     target_epoch: u64,
+    target_root: B256,
     imm: &Immutable,
 ) -> [u8; SINGLE_ATT_SIZE] {
     let mut buf = [0u8; SINGLE_ATT_SIZE];
     buf[0..8].copy_from_slice(&committee_index.to_le_bytes());
     buf[8..16].copy_from_slice(&attester_index.to_le_bytes());
+    // AttestationData @ buf[16..144]: slot, index=0 (Fulu), beacon_block_root,
+    // source (zero), target — written at the view's spec offsets.
     buf[16..24].copy_from_slice(&slot.to_le_bytes());
-    // AttestationData.index = 0 (Fulu); source/target left mostly zero,
-    // target_epoch matters for sig.
-    buf[24..56].copy_from_slice(&beacon_block_root);
-    buf[96..104].copy_from_slice(&target_epoch.to_le_bytes());
+    buf[32..64].copy_from_slice(&beacon_block_root);
+    buf[104..112].copy_from_slice(&target_epoch.to_le_bytes());
+    buf[112..144].copy_from_slice(&target_root);
 
-    let fv = bls::fork_version_at_epoch(
-        imm.fork.epoch,
-        imm.fork.previous_version,
-        imm.fork.current_version,
-        target_epoch,
-    );
+    let fv = test_fork_version(target_epoch);
     let data: &[u8; 128] = buf[16..144].try_into().unwrap();
     let object_root = ssz_hash::hash_attestation_data(data);
     let domain = bls::compute_domain(bls::DOMAIN_BEACON_ATTESTER, fv, &imm.genesis_validators_root);
@@ -322,12 +317,7 @@ pub fn sign_aggregate_and_proof(
     buf[444..444 + bl_len].copy_from_slice(&agg_bits);
 
     // Sign the inner aggregate (single signer = aggregator).
-    let fv = bls::fork_version_at_epoch(
-        imm.fork.epoch,
-        imm.fork.previous_version,
-        imm.fork.current_version,
-        target_epoch,
-    );
+    let fv = test_fork_version(target_epoch);
     let data: &[u8; 128] = buf[212..340].try_into().unwrap();
     let data_root = ssz_hash::hash_attestation_data(data);
     let domain_att =
@@ -337,7 +327,7 @@ pub fn sign_aggregate_and_proof(
     buf[340..436].copy_from_slice(&inner_sig);
 
     // Selection proof: signer = aggregator, msg = htr(uint64(slot)).
-    let slot_root = ssz_hash::uint64_chunk(slot);
+    let slot_root = merkle::uint64_chunk(slot);
     let domain_sp =
         bls::compute_domain(bls::DOMAIN_SELECTION_PROOF, fv, &imm.genesis_validators_root);
     let sr_sp = bls::compute_signing_root(&slot_root, &domain_sp);
@@ -350,6 +340,7 @@ pub fn sign_aggregate_and_proof(
         aggregator_index,
         aggregate_bytes,
         &selection_proof,
+        fv == imm.gloas_fork_version,
     );
     let domain_aap =
         bls::compute_domain(bls::DOMAIN_AGGREGATE_AND_PROOF, fv, &imm.genesis_validators_root);
@@ -359,7 +350,7 @@ pub fn sign_aggregate_and_proof(
 
     debug_assert_eq!(SignedAggregateAndProofView::signature(&buf), &outer_sig);
     debug_assert_eq!(
-        AttestationDataView::target_epoch(buf[212..340].try_into().unwrap()),
+        AttestationDataView::new(buf[212..340].try_into().unwrap()).target_epoch(),
         target_epoch
     );
     buf

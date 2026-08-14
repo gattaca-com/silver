@@ -4,6 +4,8 @@ use ratatui::widgets::TableState;
 
 use crate::{
     discovery::DiscoveredSources,
+    flamegraph::Flamegraph,
+    render::events_pane::EventsPane,
     sources::{counters::CounterSet, tilemetrics::TileMetricsSet, timings::TimingSet},
 };
 
@@ -13,7 +15,12 @@ pub enum Pane {
     TCaches,
     Timings,
     Tiles,
+    Events,
+    Flamegraph,
 }
+
+pub const PANES: [Pane; 6] =
+    [Pane::Counters, Pane::TCaches, Pane::Timings, Pane::Tiles, Pane::Events, Pane::Flamegraph];
 
 impl Pane {
     pub fn label(self) -> &'static str {
@@ -22,6 +29,8 @@ impl Pane {
             Pane::TCaches => "TCaches",
             Pane::Timings => "Timings",
             Pane::Tiles => "Tiles",
+            Pane::Events => "Events",
+            Pane::Flamegraph => "Flamegraph",
         }
     }
 
@@ -30,7 +39,9 @@ impl Pane {
             Pane::Counters => Pane::TCaches,
             Pane::TCaches => Pane::Timings,
             Pane::Timings => Pane::Tiles,
-            Pane::Tiles => Pane::Counters,
+            Pane::Tiles => Pane::Events,
+            Pane::Events => Pane::Flamegraph,
+            Pane::Flamegraph => Pane::Counters,
         }
     }
 }
@@ -47,6 +58,7 @@ pub struct App {
     pub timings_selection: usize,
     pub tilemetrics: Vec<TileMetricsSet>,
     pub tiles_selection: usize,
+    pub events: EventsPane,
     /// When true, the active pane renders only the plot for the
     /// selected row, full-area. Toggled by Enter; Esc exits.
     pub drilled_in: bool,
@@ -63,6 +75,7 @@ pub struct App {
     pub tcaches_table_state: TableState,
     pub timings_table_state: TableState,
     pub tiles_table_state: TableState,
+    pub flamegraph: Flamegraph,
     pub quit: bool,
 }
 
@@ -77,6 +90,8 @@ impl App {
         tcaches: Vec<CounterSet>,
         timings: Vec<TimingSet>,
         tilemetrics: Vec<TileMetricsSet>,
+        events: EventsPane,
+        flamegraph: Flamegraph,
     ) -> Self {
         Self {
             pane: Pane::Counters,
@@ -88,12 +103,14 @@ impl App {
             timings_selection: 0,
             tilemetrics,
             tiles_selection: 0,
+            events,
             drilled_in: false,
             split_pct: SPLIT_DEFAULT,
             counters_table_state: TableState::default(),
             tcaches_table_state: TableState::default(),
             timings_table_state: TableState::default(),
             tiles_table_state: TableState::default(),
+            flamegraph,
             quit: false,
         }
     }
@@ -106,9 +123,10 @@ impl App {
         let mut idx = 0;
         for (i, set) in self.counters.iter().enumerate() {
             if i == sel_set {
-                return idx + 1 + sel_slot;
+                let visible_before = (0..sel_slot).filter(|&s| set.slot_visible(s)).count();
+                return idx + 1 + visible_before;
             }
-            idx += 1 + set.slot_count();
+            idx += 1 + set.visible_slots();
         }
         idx
     }
@@ -136,7 +154,9 @@ impl App {
                 }
             }
         }
-        self.counters.sort_by(|a, b| a.name.cmp(&b.name));
+        self.counters.sort_by(|a, b| {
+            crate::schema::sort_key(&a.name).cmp(&crate::schema::sort_key(&b.name))
+        });
         if let Some(n) = sel_name {
             if let Some(idx) = self.counters.iter().position(|c| c.name == n) {
                 self.counters_selection.0 = idx;
@@ -208,6 +228,8 @@ impl App {
         for t in &mut self.tilemetrics {
             t.drain();
         }
+        self.events.sample();
+        self.flamegraph.sample();
     }
 
     pub fn roll_bucket(&mut self) {
@@ -223,6 +245,10 @@ impl App {
         for t in &mut self.timings {
             t.roll_bucket();
         }
+        for t in &mut self.tilemetrics {
+            t.roll_bucket();
+        }
+        self.flamegraph.roll_bucket();
     }
 
     /// Scroll the selection within the active pane. `dir = +1`
@@ -234,6 +260,8 @@ impl App {
             Pane::TCaches => self.move_tcache_selection(dir),
             Pane::Timings => self.move_timing_selection(dir),
             Pane::Tiles => self.move_tile_selection(dir),
+            Pane::Events => self.events.move_selection(dir),
+            Pane::Flamegraph => self.flamegraph.scroll_by(dir),
         }
     }
 
@@ -261,26 +289,41 @@ impl App {
         }
         let (mut set, mut slot) = self.counters_selection;
         let n_sets = self.counters.len();
-        let cur_len = self.counters[set].slot_count() as i32;
-        let new_slot = slot as i32 + dir;
-        if new_slot < 0 {
-            set = (set + n_sets - 1) % n_sets;
-            slot = self.counters[set].slot_count().saturating_sub(1);
-        } else if new_slot >= cur_len {
-            set = (set + 1) % n_sets;
-            slot = 0;
-        } else {
-            slot = new_slot as usize;
+        let total: usize = self.counters.iter().map(|s| s.slot_count()).sum();
+        // Step one slot at a time (wrapping across sets), skipping hidden
+        // zero-valued slots; bounded by the total slot count.
+        for _ in 0..total {
+            if dir > 0 {
+                slot += 1;
+                if slot >= self.counters[set].slot_count() {
+                    set = (set + 1) % n_sets;
+                    slot = 0;
+                }
+            } else if slot == 0 {
+                set = (set + n_sets - 1) % n_sets;
+                slot = self.counters[set].slot_count().saturating_sub(1);
+            } else {
+                slot -= 1;
+            }
+            if self.counters[set].slot_visible(slot) {
+                self.counters_selection = (set, slot);
+                return;
+            }
         }
-        self.counters_selection = (set, slot);
+    }
+
+    /// Indices of timing sets that have recorded at least one value.
+    pub fn visible_timings(&self) -> Vec<usize> {
+        self.timings.iter().enumerate().filter(|(_, t)| t.has_values()).map(|(i, _)| i).collect()
     }
 
     fn move_timing_selection(&mut self, dir: i32) {
-        if self.timings.is_empty() {
+        let visible = self.visible_timings();
+        if visible.is_empty() {
             return;
         }
-        let n = self.timings.len() as i32;
-        let new = (self.timings_selection as i32 + dir).rem_euclid(n);
-        self.timings_selection = new as usize;
+        let n = visible.len() as i32;
+        let pos = visible.iter().position(|&i| i == self.timings_selection).unwrap_or(0) as i32;
+        self.timings_selection = visible[(pos + dir).rem_euclid(n) as usize];
     }
 }

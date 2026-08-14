@@ -26,15 +26,20 @@ pub struct Thresholds {
     #[serde(deserialize_with = "de_duration")]
     pub max_decompose: Option<Nanos>,
     #[serde(deserialize_with = "de_duration")]
-    pub max_apply_block_avg: Option<Nanos>,
-    /// Slowest single `apply_block` call in the run — guards worst-case
-    /// latency, not just the average.
+    pub max_apply_and_commit_p50: Option<Nanos>,
     #[serde(deserialize_with = "de_duration")]
-    pub max_apply_block_max: Option<Nanos>,
+    pub max_apply_and_commit_max: Option<Nanos>,
+    /// Average wall time of one `process_epoch` (epoch-transition) call.
+    #[serde(deserialize_with = "de_duration")]
+    pub max_process_epoch_avg: Option<Nanos>,
     /// Average wall time of one `hash_tree_root_state` call (sum across all
     /// call sites — `process_slots` and direct).
     #[serde(deserialize_with = "de_duration")]
     pub max_hash_tree_root_state_avg: Option<Nanos>,
+    /// Average wall time of one `finalize` call — the delta-window → base
+    /// promotion, fired once per finality advance during the replay.
+    #[serde(deserialize_with = "de_duration")]
+    pub max_finalize_avg: Option<Nanos>,
 }
 
 /// Accepts `"2.5s" | "500ms" | "100us" | "100µs" | "100ns"` (or `null`).

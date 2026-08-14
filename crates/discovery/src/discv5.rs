@@ -1,7 +1,7 @@
 use std::{
     io::{BufRead, BufWriter, Write},
     net::{IpAddr, SocketAddr},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use alloy_rlp::{Decodable, Encodable};
@@ -9,9 +9,9 @@ use flux::utils::ArrayVec;
 use rand::RngCore as _;
 use rustc_hash::{FxHashMap, FxHashSet};
 use secp256k1::{SECP256K1, SecretKey};
-use silver_common::{Enr, NodeId};
+use silver_common::{Enr, NodeId, metrics::timed};
 use silver_config::DiscoveryConfig;
-use tracing::{info, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 use crate::{
     crypto::{
@@ -30,14 +30,12 @@ const NONCE_RING_SIZE: usize = 64;
 const PENDING_PROBES_CAPACITY: usize = 64;
 const BANNED_NODES_CAPACITY: usize = 32;
 
-const PRE_FULU_FORK_DIGESTS: &[[u8; 4]] = &[
-    [0xb5, 0x30, 0x3f, 0x2a], // Phase 0
-    [0xaf, 0xca, 0xab, 0xa0], // Altair
-    [0x4a, 0x26, 0xc5, 0x8b], // Bellatrix
-    [0xbb, 0xa4, 0xda, 0x96], // Capella
-    [0x6a, 0x95, 0xa1, 0xa9], // Deneb
-    [0x9f, 0xed, 0x6b, 0x22], // Electra
-];
+const MAX_LOGGED_FORK_DIGESTS: usize = 20;
+const TABLE_LOG_INTERVAL: Duration = Duration::from_secs(12);
+
+fn fork_digest_hex(d: &[u8; 4]) -> String {
+    format!("0x{:02x}{:02x}{:02x}{:02x}", d[0], d[1], d[2], d[3])
+}
 
 pub struct DiscV5 {
     config: DiscoveryConfig,
@@ -63,6 +61,10 @@ pub struct DiscV5 {
 
     banned_nodes: FxHashSet<NodeId>,
 
+    seen_fork_digests: FxHashMap<[u8; 4], u64>,
+
+    seen_scratch: Vec<(String, u64, &'static str)>,
+
     whoareyou_per_ip: FxHashMap<IpAddr, (u32, Instant)>,
     whoareyou_global: (u32, Instant),
 
@@ -70,6 +72,7 @@ pub struct DiscV5 {
     last_ping: Instant,
     last_lookup: Instant,
     last_cleanup: Instant,
+    last_table_log: Instant,
 
     ping_cursor: usize,
     lookup_requested: bool,
@@ -118,12 +121,17 @@ impl DiscV5 {
                 BANNED_NODES_CAPACITY,
                 Default::default(),
             ),
+            seen_fork_digests: FxHashMap::with_capacity_and_hasher(128, Default::default()),
+            seen_scratch: Vec::with_capacity(128),
             whoareyou_per_ip: FxHashMap::with_capacity_and_hasher(target, Default::default()),
             whoareyou_global: (0, Instant::now()),
             next_request_id: 0,
             last_ping: Instant::now(),
             last_lookup: Instant::now(),
             last_cleanup: Instant::now(),
+            last_table_log: Instant::now()
+                .checked_sub(TABLE_LOG_INTERVAL)
+                .unwrap_or_else(Instant::now),
             ping_cursor: 0,
             lookup_requested: false,
             metrics: Default::default(),
@@ -317,11 +325,12 @@ impl DiscV5 {
 
             if changed {
                 let socket = SocketAddr::new(ip, port);
-                let _ = self.local_enr.set_udp_socket(socket, &self.local_key);
-                let mut raw: ArrayVec<u8, ENR_RECORD_MAX> = ArrayVec::new();
-                self.local_enr.encode(&mut raw);
-                self.local_enr_raw = raw;
-                self.event_queue.push(DiscoveryEvent::ExternalAddrChanged(socket));
+                if let Ok(seq) = self.local_enr.set_udp_socket(socket, &self.local_key) {
+                    let mut raw: ArrayVec<u8, ENR_RECORD_MAX> = ArrayVec::new();
+                    self.local_enr.encode(&mut raw);
+                    self.local_enr_raw = raw;
+                    self.event_queue.push(DiscoveryEvent::ExternalAddrChanged(socket, seq));
+                }
             }
         }
     }
@@ -334,9 +343,10 @@ impl DiscV5 {
     ) {
         for raw in nodes.iter() {
             let Ok(enr) = Enr::decode(&mut raw.as_slice()) else { continue };
-            if !self.keep_for_routing(&enr) {
+            if self.banned_nodes.contains(&enr.node_id()) {
                 continue;
             }
+            self.record_fork_digest(&enr);
 
             let addr = if let (Some(ip4), Some(udp4)) = (enr.ip4(), enr.udp4()) {
                 SocketAddr::new(IpAddr::V4(ip4), udp4)
@@ -354,7 +364,15 @@ impl DiscV5 {
                 NodeEntry { addr, enr_seq: enr.seq(), pubkey: pk_bytes, enr_raw: Some(*raw) },
                 now,
             );
-            let is_new = matches!(result, InsertResult::Inserted) || prev_raw != Some(*raw);
+            if matches!(result, InsertResult::Inserted) {
+                self.log_table_state(now);
+            }
+
+            let is_new = match result {
+                InsertResult::Inserted => true,
+                InsertResult::Updated => prev_raw != Some(*raw),
+                InsertResult::Pending { .. } | InsertResult::Failed(_) => false,
+            };
             if is_new {
                 self.metrics.nodes_discovered += 1;
                 self.emit_node_found(enr);
@@ -442,7 +460,24 @@ impl DiscV5 {
         if enr.node_id() == self.local_id {
             return;
         }
+
+        if !self.emit_to_pm(&enr) {
+            return;
+        }
         self.event_queue.push(DiscoveryEvent::NodeFound(enr));
+    }
+
+    /// Drop all per-peer state for a node evicted from the routing table so it
+    /// does not outlive its kbuckets entry. Called whenever an insert displaces
+    /// the bucket LRU — both forced session inserts and pending promotions.
+    fn evict_peer(&mut self, id: NodeId) {
+        if self.sessions.remove(&id).is_some() {
+            debug!(%id, "evicted live peer from routing table");
+        }
+        self.pending_findnodes.remove(&id);
+        self.pending_probe_nonces.remove(&id);
+        self.challenges.remove(&id);
+        self.pending_pings.retain(|_, (nid, _)| *nid != id);
     }
 
     fn handle_message(&mut self, src_id: NodeId, src_addr: SocketAddr, bytes: &[u8], now: Instant) {
@@ -512,7 +547,7 @@ impl DiscV5 {
         {
             Some(v) => v,
             None => {
-                warn!(%src_addr, peer_enr_seq, "WhoAreYou from unknown addr, no kbuckets entry");
+                debug!(%src_addr, peer_enr_seq, "WhoAreYou from unknown addr, no kbuckets entry");
                 return;
             }
         };
@@ -630,8 +665,9 @@ impl DiscV5 {
         };
 
         let existing_entry = self.kbuckets.get(&Key::from(src_id)).map(|n| n.value);
-        let (remote_pubkey, stored_enr_raw) = match existing_entry {
-            Some(e) => (e.pubkey, e.enr_raw),
+
+        let (remote_pubkey, stored_enr_raw, new_peer) = match existing_entry {
+            Some(e) => (e.pubkey, e.enr_raw, None),
             None => {
                 // If we don't have the node's record, Handshake must contain it.
                 let raw = match enr_record {
@@ -658,21 +694,40 @@ impl DiscV5 {
                 }
 
                 let pk_bytes = enr.public_key().serialize();
-
-                self.kbuckets.insert_or_update(
-                    &Key::from(src_id),
-                    NodeEntry {
-                        addr: src_addr,
-                        enr_seq: enr.seq(),
-                        pubkey: pk_bytes,
-                        enr_raw: Some(raw),
-                    },
-                    now,
-                );
-
-                (pk_bytes, Some(raw))
+                (pk_bytes, Some(raw), Some((pk_bytes, enr.seq(), raw)))
             }
         };
+
+        if !verify_id_nonce_sig(
+            &remote_pubkey,
+            &challenge.data,
+            &ephem_pubkey,
+            &self.local_id,
+            &id_nonce_sig,
+        ) {
+            warn!(%src_id, %src_addr, "handshake id-nonce signature verification failed");
+            self.metrics.failed_nodes += 1;
+            return;
+        }
+
+        if let Some((pk_bytes, enr_seq, raw)) = new_peer {
+            match self.kbuckets.insert_or_update_evicting(
+                &Key::from(src_id),
+                NodeEntry { addr: src_addr, enr_seq, pubkey: pk_bytes, enr_raw: Some(raw) },
+                now,
+            ) {
+                Ok(evicted) => {
+                    if let Some(node) = evicted {
+                        self.evict_peer(*node.key.preimage());
+                    }
+                    self.log_table_state(now);
+                }
+                Err(_) => {
+                    warn!(%src_id, %src_addr, "handshake carries local node id; dropping");
+                    return;
+                }
+            }
+        }
 
         // Update enr_raw if a fresher record was provided in this Handshake.
         if let Some(raw) = enr_record {
@@ -692,18 +747,6 @@ impl DiscV5 {
                     }
                 }
             }
-        }
-
-        if !verify_id_nonce_sig(
-            &remote_pubkey,
-            &challenge.data,
-            &ephem_pubkey,
-            &self.local_id,
-            &id_nonce_sig,
-        ) {
-            warn!(%src_id, %src_addr, "handshake id-nonce signature verification failed");
-            self.metrics.failed_nodes += 1;
-            return;
         }
 
         let (initiator_key, recipient_key) = match ecdh_and_derive_keys_responder(
@@ -745,12 +788,40 @@ impl DiscV5 {
         Enr::decode(&mut raw.as_slice()).ok()
     }
 
-    fn keep_for_routing(&self, enr: &Enr) -> bool {
+    fn record_fork_digest(&mut self, enr: &Enr) {
         let Some(eth2) = enr.eth2() else {
-            return true;
+            return;
         };
         let digest: [u8; 4] = eth2[..4].try_into().expect("eth2 field >= 4 bytes");
-        digest == self.fork_digest || PRE_FULU_FORK_DIGESTS.contains(&digest)
+        *self.seen_fork_digests.entry(digest).or_default() += 1;
+    }
+
+    fn log_table_state(&mut self, now: Instant) {
+        if now.saturating_duration_since(self.last_table_log) < TABLE_LOG_INTERVAL {
+            return;
+        }
+        self.last_table_log = now;
+        // Disjoint field borrows so the scratch buffer can be filled from the
+        // tally without re-borrowing `self`.
+        let Self { seen_fork_digests, seen_scratch, fork_digest, kbuckets, sessions, .. } = self;
+        seen_scratch.clear();
+
+        for (d, n) in seen_fork_digests.iter() {
+            // "current" = peered with; "other" = kept for routing only.
+            let label = if *d == *fork_digest { "current" } else { "other" };
+            seen_scratch.push((fork_digest_hex(d), *n, label));
+        }
+
+        // Highest counts first, capped to avoid log spam.
+        seen_scratch.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+        seen_scratch.truncate(MAX_LOGGED_FORK_DIGESTS);
+        info!(
+            buckets = ?kbuckets.bucket_sizes(),
+            sessions = sessions.len(),
+            fork_digests_total = seen_fork_digests.len(),
+            seen_fork_digests = ?seen_scratch,
+            "kbuckets insertion",
+        );
     }
 
     fn emit_to_pm(&self, enr: &Enr) -> bool {
@@ -833,26 +904,9 @@ impl DiscV5 {
     }
 
     fn load_persisted(&mut self, now: Instant) {
-        if let Some(path) = self.config.persisted_kbuckets_path.clone() {
-            if let Ok(file) = std::fs::File::open(&path) {
-                let mut i = 0usize;
-                for line in std::io::BufReader::new(file).lines() {
-                    let Ok(line) = line else { continue };
-                    let line = line.trim();
-                    if line.is_empty() {
-                        continue;
-                    }
-
-                    if let Ok(enr) = line.parse::<Enr>() {
-                        self.add_enr(&enr, now);
-                        i += 1;
-                    }
-                }
-
-                info!("loaded {i} persisted kbuckets from {}", path.display());
-            }
-        }
-
+        // Load bans before kbuckets: `add_enr` skips banned nodes, so the ban
+        // set must be populated first or a persisted-banned node could be
+        // re-added to the routing table.
         if let Some(path) = self.config.persisted_banned_nodes_path.clone() {
             if let Ok(file) = std::fs::File::open(&path) {
                 let mut i = 0usize;
@@ -883,6 +937,26 @@ impl DiscV5 {
                 }
 
                 info!("loaded {i} banned nodes from {}", path.display());
+            }
+        }
+
+        if let Some(path) = self.config.persisted_kbuckets_path.clone() {
+            if let Ok(file) = std::fs::File::open(&path) {
+                let mut i = 0usize;
+                for line in std::io::BufReader::new(file).lines() {
+                    let Ok(line) = line else { continue };
+                    let line = line.trim();
+                    if line.is_empty() {
+                        continue;
+                    }
+
+                    if let Ok(enr) = line.parse::<Enr>() {
+                        self.add_enr(&enr, now);
+                        i += 1;
+                    }
+                }
+
+                info!("loaded {i} persisted kbuckets from {}", path.display());
             }
         }
     }
@@ -945,9 +1019,10 @@ impl Discovery for DiscV5 {
     }
 
     fn add_enr(&mut self, enr: &Enr, now: Instant) {
-        if !self.keep_for_routing(enr) {
+        if self.banned_nodes.contains(&enr.node_id()) {
             return;
         }
+        self.record_fork_digest(enr);
         let addr = if let (Some(ip4), Some(udp4)) = (enr.ip4(), enr.udp4()) {
             SocketAddr::new(IpAddr::V4(ip4), udp4)
         } else if let (Some(ip6), Some(udp6)) = (enr.ip6(), enr.udp6()) {
@@ -962,12 +1037,15 @@ impl Discovery for DiscV5 {
         let mut enr_raw: ArrayVec<u8, ENR_RECORD_MAX> = ArrayVec::new();
         enr.encode(&mut enr_raw);
 
-        if let InsertResult::Failed(reason) = self.kbuckets.insert_or_update(
+        let result = self.kbuckets.insert_or_update(
             &Key::from(enr.node_id()),
             NodeEntry { addr, enr_seq: enr.seq(), pubkey, enr_raw: Some(enr_raw) },
             now,
-        ) {
-            tracing::error!(?reason, "add enr failed");
+        );
+        match result {
+            InsertResult::Failed(reason) => tracing::error!(?reason, "add enr failed"),
+            InsertResult::Inserted => self.log_table_state(now),
+            _ => {}
         }
     }
 
@@ -975,11 +1053,29 @@ impl Discovery for DiscV5 {
         self.lookup_requested = true;
     }
 
+    fn update_enr_fork_id(&mut self, eth2: [u8; 16]) {
+        if self.local_enr.eth2() == Some(eth2) {
+            return;
+        }
+        self.fork_digest = eth2[..4].try_into().expect("slice is 4 bytes");
+
+        if let Err(e) = self.local_enr.set_eth2(eth2, &self.local_key) {
+            tracing::error!(?e, "failed to update local ENR eth2 field");
+            return;
+        }
+        let mut raw: ArrayVec<u8, ENR_RECORD_MAX> = ArrayVec::new();
+        self.local_enr.encode(&mut raw);
+        self.local_enr_raw = raw;
+        tracing::info!("advanced local ENR fork digest to {}", fork_digest_hex(&self.fork_digest));
+    }
+
     fn ban_node(&mut self, id: NodeId) {
         self.banned_nodes.insert(id);
+        self.kbuckets.remove(&Key::from(id));
         self.sessions.remove(&id);
         self.pending_findnodes.remove(&id);
         self.pending_probe_nonces.remove(&id);
+        self.pending_pings.retain(|_, (nid, _)| *nid != id);
     }
 
     fn unban_node(&mut self, id: NodeId) {
@@ -991,6 +1087,7 @@ impl Discovery for DiscV5 {
         self.persist_banned_nodes();
     }
 
+    #[timed]
     fn poll<F>(&mut self, mut f: F)
     where
         F: FnMut(DiscoveryEvent),
@@ -1000,6 +1097,11 @@ impl Discovery for DiscV5 {
         }
 
         while let Some(applied) = self.kbuckets.take_applied_pending() {
+            if let Some(evicted) = &applied.evicted {
+                // Pending promotion displaced the LRU: drop its per-peer state
+                // so it doesn't outlive the routing-table entry.
+                self.evict_peer(*evicted.key.preimage());
+            }
             if let Some(enr) = self.decode_enr_for(*applied.inserted.preimage()) {
                 // Drop our own record (peers echo it back; promoting it here
                 // would otherwise surface us as a dial target → self-dial).
@@ -1467,11 +1569,42 @@ mod tests {
 
         let events = collect_events(&mut a);
         assert!(
-            events
-                .iter()
-                .any(|e| matches!(e, DiscoveryEvent::ExternalAddrChanged(sa) if sa.ip() == ipv6)),
-            "expected ExternalAddrChanged with IPv6 address"
+            events.iter().any(
+                |e| matches!(e, DiscoveryEvent::ExternalAddrChanged(sa, seq) if sa.ip() == ipv6 && *seq == 2)
+            ),
+            "expected ExternalAddrChanged with IPv6 address {events:?}"
         );
+    }
+
+    #[test]
+    fn update_enr_fork_id_rewrites_enr_and_filter() {
+        let old = [0x01, 0x02, 0x03, 0x04u8];
+        let sk = SecretKey::new(&mut rand::thread_rng());
+        let mut old_eth2 = [0u8; 16];
+        old_eth2[..4].copy_from_slice(&old);
+        let mut enr = Enr::builder().ip4(Ipv4Addr::LOCALHOST).udp4(20000u16).build(&sk).unwrap();
+        enr.set_eth2(old_eth2, &sk).unwrap();
+        let mut d = DiscV5::new(DiscoveryConfig::default(), sk, enr, old);
+
+        // Ready-made ENRForkID for the new fork: digest + next-fork fields.
+        let mut new_eth2 = [0u8; 16];
+        new_eth2[..4].copy_from_slice(&[0x0a, 0x0b, 0x0c, 0x0du8]);
+        new_eth2[4..8].copy_from_slice(&[0x0a, 0x0b, 0x0c, 0x0du8]);
+        new_eth2[8..].copy_from_slice(&u64::MAX.to_le_bytes());
+
+        let seq_before = d.local_enr.seq();
+        d.update_enr_fork_id(new_eth2);
+
+        assert_eq!(&d.fork_digest, &new_eth2[..4], "peer-filter digest advanced");
+        assert_eq!(d.local_enr.eth2().unwrap(), new_eth2, "full ENRForkID installed");
+        assert!(d.local_enr.seq() > seq_before, "seq bumped so peers refresh");
+        assert!(d.local_enr.verify(), "re-signed");
+        assert!(!d.local_enr_raw.is_empty(), "raw re-encoded");
+
+        // Same ENRForkID is a no-op (no seq churn).
+        let seq_after = d.local_enr.seq();
+        d.update_enr_fork_id(new_eth2);
+        assert_eq!(d.local_enr.seq(), seq_after);
     }
 
     #[test]
@@ -1487,8 +1620,8 @@ mod tests {
         do_handshake(&mut a, a_addr, &mut b, b_addr, now);
 
         // Build two ENRs:
-        // - good: no eth2 field (passes the filter)
-        // - bad: eth2 with wrong fork_digest (dropped)
+        // - good: no eth2 field (surfaced to PM)
+        // - bad: eth2 with wrong fork_digest (kept for routing, not surfaced)
         let sk_good = SecretKey::new(&mut rand::thread_rng());
         let enr_good =
             Enr::builder().ip4(Ipv4Addr::new(10, 0, 0, 1)).udp4(19053u16).build(&sk_good).unwrap();
@@ -1517,15 +1650,51 @@ mod tests {
             Message::Nodes { request_id: RequestId::from(20u64), total: 1, nodes },
             now,
         );
-        collect_events(&mut a);
+        let events = collect_events(&mut a);
 
+        // Fork-agnostic routing: both nodes are kept in the table.
         assert!(
             a.kbuckets.iter_ref().any(|n| *n.key.preimage() == id_good),
             "good (no-eth2) node should be in kbuckets"
         );
         assert!(
-            !a.kbuckets.iter_ref().any(|n| *n.key.preimage() == id_bad),
-            "bad (wrong fork_digest) node should be filtered"
+            a.kbuckets.iter_ref().any(|n| *n.key.preimage() == id_bad),
+            "bad (wrong fork_digest) node should still be kept for routing"
+        );
+
+        // PM gating happens at NodeFound emission: only the matching-fork
+        // (here no-eth2 → allowed) node is surfaced.
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, DiscoveryEvent::NodeFound(enr) if enr.node_id() == id_good)),
+            "good (no-eth2) node should be surfaced to PM"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, DiscoveryEvent::NodeFound(enr) if enr.node_id() == id_bad)),
+            "bad (wrong fork_digest) node should not be surfaced to PM"
+        );
+    }
+
+    #[test]
+    fn ban_evicts_from_kbuckets_and_blocks_readd() {
+        let now = Instant::now();
+        let (mut a, _) = make_node(19071);
+        let (b, _) = make_node(19072);
+
+        a.add_enr(&b.local_enr, now);
+        assert!(a.kbuckets.get(&Key::from(b.local_id)).is_some(), "node added to kbuckets");
+
+        a.ban_node(b.local_id);
+        assert!(a.kbuckets.get(&Key::from(b.local_id)).is_none(), "ban should evict from kbuckets");
+
+        // A banned node must not be re-added by a later add_enr / NODES response.
+        a.add_enr(&b.local_enr, now);
+        assert!(
+            a.kbuckets.get(&Key::from(b.local_id)).is_none(),
+            "banned node should not be re-added"
         );
     }
 
@@ -1923,5 +2092,74 @@ mod tests {
         let events = collect_sends(&mut a);
         let whoareyou_count = events.len();
         assert_eq!(whoareyou_count, limit as usize, "should cap WhoAreYou at global limit");
+    }
+
+    #[test]
+    fn test_handshake_bad_signature_does_not_mutate_table() {
+        // An unknown peer must not be admitted to the routing table (and must not
+        // evict an incumbent) until its id-nonce signature verifies. Tamper B's
+        // stored challenge so A's otherwise-valid handshake fails verification.
+        let now = Instant::now();
+        let (mut a, a_addr) = make_node(19171);
+        let (mut b, b_addr) = make_node(19172);
+
+        // A learns B and probes it; B replies WhoAreYou and records a challenge.
+        a.add_enr(&b.local_enr, now);
+        a.find_nodes();
+        let a_sends = collect_sends(&mut a);
+        let probe = a_sends.iter().find(|(to, _)| *to == b_addr).map(|(_, d)| d.clone()).unwrap();
+
+        b.handle(a_addr, &probe, now);
+        let b_sends = collect_sends(&mut b);
+        let wru = b_sends.iter().find(|(to, _)| *to == a_addr).map(|(_, d)| d.clone()).unwrap();
+        assert!(
+            b.kbuckets.get(&Key::from(a.local_id)).is_none(),
+            "B must not know A pre-handshake"
+        );
+
+        // Corrupt B's stored challenge: A signs over the original nonce, so
+        // verification against the tampered copy fails.
+        b.challenges.get_mut(&a.local_id).unwrap().data[0] ^= 0xff;
+
+        // A produces a validly-signed Handshake in response to the WhoAreYou.
+        a.handle(b_addr, &wru, now);
+        let a_sends = collect_sends(&mut a);
+        let failed_before = b.metrics.failed_nodes;
+        for (to, data) in &a_sends {
+            if *to == b_addr {
+                b.handle(a_addr, data, now);
+            }
+        }
+
+        assert!(
+            b.metrics.failed_nodes > failed_before,
+            "signature verification should have failed"
+        );
+        assert!(
+            b.kbuckets.get(&Key::from(a.local_id)).is_none(),
+            "unverified handshake must not insert into kbuckets"
+        );
+        assert!(!b.sessions.contains_key(&a.local_id), "no session for unverified peer");
+    }
+
+    #[test]
+    fn test_evict_and_ban_drop_pending_pings() {
+        let now = Instant::now();
+        let (mut a, _) = make_node(19181);
+        let (b, _) = make_node(19182);
+        let (c, _) = make_node(19183);
+        let (bid, cid) = (b.local_id, c.local_id);
+
+        // Two in-flight pings for b, one for c (an unrelated node).
+        a.pending_pings.insert(RequestId::from(1u64), (bid, now));
+        a.pending_pings.insert(RequestId::from(2u64), (bid, now));
+        a.pending_pings.insert(RequestId::from(3u64), (cid, now));
+
+        a.evict_peer(bid);
+        assert!(!a.pending_pings.values().any(|(id, _)| *id == bid), "evict left pings for b");
+        assert!(a.pending_pings.values().any(|(id, _)| *id == cid), "evict dropped unrelated ping");
+
+        a.ban_node(cid);
+        assert!(!a.pending_pings.values().any(|(id, _)| *id == cid), "ban left pings for c");
     }
 }

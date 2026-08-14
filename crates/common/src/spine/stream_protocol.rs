@@ -1,5 +1,10 @@
+use crate::rpc_rate_limit::RpcQuota;
+
 pub const MULTISTREAM_V1: &[u8] = b"\x13/multistream/1.0.0\n";
 pub const REJECT_RESPONSE: &[u8] = b"\x13/multistream/1.0.0\n\x03na\n";
+
+const MAX_SIDECAR_RATE_LIMIT_TOKENS: u64 = 16384;
+const MAX_BLOCK_RATE_LIMIT_TOKENS: u64 = 128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
@@ -15,6 +20,8 @@ pub enum StreamProtocol {
     BeaconBlocksByRoot,
     DataColumnSidecarsByRange,
     DataColumnSidecarsByRoot,
+    ExecutionPayloadEnvelopesByRange,
+    ExecutionPayloadEnvelopesByRoot,
     Unset,
 }
 
@@ -30,6 +37,8 @@ pub const ALL_PROTOCOLS: &[StreamProtocol] = &[
     StreamProtocol::BeaconBlocksByRoot,
     StreamProtocol::DataColumnSidecarsByRange,
     StreamProtocol::DataColumnSidecarsByRoot,
+    StreamProtocol::ExecutionPayloadEnvelopesByRange,
+    StreamProtocol::ExecutionPayloadEnvelopesByRoot,
 ];
 
 pub const RPC_PROTOCOLS: &[StreamProtocol] = &[
@@ -42,6 +51,8 @@ pub const RPC_PROTOCOLS: &[StreamProtocol] = &[
     StreamProtocol::BeaconBlocksByRoot,
     StreamProtocol::DataColumnSidecarsByRange,
     StreamProtocol::DataColumnSidecarsByRoot,
+    StreamProtocol::ExecutionPayloadEnvelopesByRange,
+    StreamProtocol::ExecutionPayloadEnvelopesByRoot,
 ];
 
 impl StreamProtocol {
@@ -55,8 +66,54 @@ impl StreamProtocol {
             Self::BeaconBlocksByRange |
                 Self::BeaconBlocksByRoot |
                 Self::DataColumnSidecarsByRange |
-                Self::DataColumnSidecarsByRoot
+                Self::DataColumnSidecarsByRoot |
+                Self::ExecutionPayloadEnvelopesByRange |
+                Self::ExecutionPayloadEnvelopesByRoot
         )
+    }
+
+    /// Inbound quotas bound the work we are willing to do for a peer. These
+    /// mirror Lighthouse's default RPC limiter quotas.
+    pub const fn inbound_rpc_quota(self) -> Option<RpcQuota> {
+        match self {
+            Self::GossipSub | Self::Identity | Self::Unset => None,
+            Self::StatusV1 | Self::StatusV2 => Some(RpcQuota::n_every(5, 15)),
+            Self::Ping => Some(RpcQuota::n_every(2, 10)),
+            Self::Goodbye => Some(RpcQuota::one_every(10)),
+            Self::Metadata => Some(RpcQuota::n_every(2, 5)),
+            Self::BeaconBlocksByRange |
+            Self::BeaconBlocksByRoot |
+            Self::ExecutionPayloadEnvelopesByRange |
+            Self::ExecutionPayloadEnvelopesByRoot => {
+                Some(RpcQuota::n_every(MAX_BLOCK_RATE_LIMIT_TOKENS, 10))
+            }
+            Self::DataColumnSidecarsByRange | Self::DataColumnSidecarsByRoot => {
+                Some(RpcQuota::n_every(MAX_SIDECAR_RATE_LIMIT_TOKENS, 10))
+            }
+        }
+    }
+
+    /// Outbound quotas self-throttle requests we send to one peer. Keep these
+    /// more conservative than inbound quotas so Silver does not trip remote
+    /// peer scoring while still allowing a max-sized legal request as one
+    /// burst.
+    pub const fn outbound_rpc_quota(self) -> Option<RpcQuota> {
+        match self {
+            Self::GossipSub | Self::Identity | Self::Unset => None,
+            Self::StatusV1 | Self::StatusV2 => Some(RpcQuota::n_every(5, 15)),
+            Self::Ping => Some(RpcQuota::n_every(2, 10)),
+            Self::Goodbye => Some(RpcQuota::one_every(10)),
+            Self::Metadata => Some(RpcQuota::n_every(2, 5)),
+            Self::BeaconBlocksByRange |
+            Self::BeaconBlocksByRoot |
+            Self::ExecutionPayloadEnvelopesByRange |
+            Self::ExecutionPayloadEnvelopesByRoot => {
+                Some(RpcQuota::n_every(MAX_BLOCK_RATE_LIMIT_TOKENS, 60)) // TODO lighthouse permits per 10s
+            }
+            Self::DataColumnSidecarsByRange | Self::DataColumnSidecarsByRoot => {
+                Some(RpcQuota::n_every(MAX_SIDECAR_RATE_LIMIT_TOKENS, 120)) // TODO, lighthouse permits per 30s
+            }
+        }
     }
 
     /// Next protocol to try if the initial proposal is rejected.
@@ -89,6 +146,12 @@ impl StreamProtocol {
             }
             StreamProtocol::DataColumnSidecarsByRoot => {
                 b"\x41/eth2/beacon_chain/req/data_column_sidecars_by_root/1/ssz_snappy\n"
+            }
+            StreamProtocol::ExecutionPayloadEnvelopesByRange => {
+                b"\x49/eth2/beacon_chain/req/execution_payload_envelopes_by_range/1/ssz_snappy\n"
+            }
+            StreamProtocol::ExecutionPayloadEnvelopesByRoot => {
+                b"\x48/eth2/beacon_chain/req/execution_payload_envelopes_by_root/1/ssz_snappy\n"
             }
         }
     }
@@ -167,6 +230,14 @@ mod tests {
         assert_eq!(
             StreamProtocol::DataColumnSidecarsByRoot.multiselect().len(),
             (StreamProtocol::DataColumnSidecarsByRoot.multiselect()[0] + 1) as usize
+        );
+        assert_eq!(
+            StreamProtocol::ExecutionPayloadEnvelopesByRange.multiselect().len(),
+            (StreamProtocol::ExecutionPayloadEnvelopesByRange.multiselect()[0] + 1) as usize
+        );
+        assert_eq!(
+            StreamProtocol::ExecutionPayloadEnvelopesByRoot.multiselect().len(),
+            (StreamProtocol::ExecutionPayloadEnvelopesByRoot.multiselect()[0] + 1) as usize
         );
     }
 

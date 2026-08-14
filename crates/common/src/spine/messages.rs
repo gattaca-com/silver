@@ -3,13 +3,14 @@ use std::net::{IpAddr, SocketAddr};
 use flux::timing::Nanos;
 
 use crate::{
-    Enr, GossipTopic, Identify, MessageId, P2pStreamId, PeerId, StreamProtocol, TCacheRead,
+    Enr, GossipTopic, Identify, MessageId, P2pStreamId, PeerId, StreamProtocol, TCacheError,
+    TCacheRead,
     ssz_view::{
-        BLOCKS_BY_RANGE_REQ_SIZE, BeaconBlocksByRangeRequestView, BeaconBlocksByRootRequestView,
-        BlobIdentifierView, DC_BY_RANGE_REQ_MAX, DataColumnSidecarView,
-        DataColumnSidecarsByRangeRequestView, DataColumnsByRootIdentifierView, GOODBYE_SIZE,
-        GoodbyeView, METADATA_SIZE, MetadataView, PING_SIZE, PingView, STATUS_V1_SIZE,
-        STATUS_V2_SIZE, SignedBeaconBlockView, SszView, StatusView,
+        BLOCKS_BY_RANGE_REQ_SIZE, BeaconBlocksByRangeRequestView, DC_BY_RANGE_REQ_MAX,
+        DataColumnSidecarsByRangeRequestView, EXECUTION_PAYLOAD_ENVELOPES_BY_RANGE_REQ_SIZE,
+        ExecutionPayloadEnvelopesByRangeRequestView, GOODBYE_SIZE, METADATA_SIZE, PING_SIZE,
+        STATUS_V1_SIZE, STATUS_V2_SIZE, SignedBeaconBlockView, SignedExecutionPayloadEnvelopeView,
+        SszView, StatusView,
     },
 };
 
@@ -19,6 +20,14 @@ use crate::{
 #[repr(C)]
 pub struct GossipMsgOut {
     pub peer_id: usize,
+    pub tcache: TCacheRead,
+}
+
+// Consumed by controller tile.
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct GossipMsgIn {
+    pub p2p_id: P2pStreamId,
     pub tcache: TCacheRead,
 }
 
@@ -52,6 +61,8 @@ pub enum RpcRequest {
     BlockByRoot(TCacheRead),
     DataColumnsByRange { ssz: [u8; DC_BY_RANGE_REQ_MAX], len: usize },
     DataColumnsByRoot(TCacheRead),
+    ExecutionPayloadEnvelopesByRange([u8; EXECUTION_PAYLOAD_ENVELOPES_BY_RANGE_REQ_SIZE]),
+    ExecutionPayloadEnvelopesByRoot(TCacheRead),
 }
 
 impl RpcRequest {
@@ -66,11 +77,60 @@ impl RpcRequest {
             RpcRequest::BlockByRoot { .. } => StreamProtocol::BeaconBlocksByRoot,
             RpcRequest::DataColumnsByRange { .. } => StreamProtocol::DataColumnSidecarsByRange,
             RpcRequest::DataColumnsByRoot { .. } => StreamProtocol::DataColumnSidecarsByRoot,
+            RpcRequest::ExecutionPayloadEnvelopesByRange(_) => {
+                StreamProtocol::ExecutionPayloadEnvelopesByRange
+            }
+            RpcRequest::ExecutionPayloadEnvelopesByRoot { .. } => {
+                StreamProtocol::ExecutionPayloadEnvelopesByRoot
+            }
         }
+    }
+
+    pub fn rate_limit_tokens(&self) -> Result<u64, TCacheError> {
+        let tokens = match self {
+            RpcRequest::StatusV1(_) |
+            RpcRequest::StatusV2(_) |
+            RpcRequest::Ping(_) |
+            RpcRequest::Goodbye(_) |
+            RpcRequest::MetaData => 1,
+            RpcRequest::BlocksByRange(ssz) => BeaconBlocksByRangeRequestView::count(ssz),
+            RpcRequest::BlockByRoot(read) => fixed_width_list_tokens(read.len()?, 32),
+            RpcRequest::DataColumnsByRange { ssz, len } => {
+                let Some(buf) = ssz.get(..*len) else { return Ok(1) };
+                if !DataColumnSidecarsByRangeRequestView::check_size(buf) {
+                    1
+                } else {
+                    let count = DataColumnSidecarsByRangeRequestView::count(buf);
+                    let columns = DataColumnSidecarsByRangeRequestView::columns(buf).len() / 8;
+                    count.saturating_mul(columns as u64)
+                }
+            }
+            RpcRequest::DataColumnsByRoot(read) => {
+                data_columns_by_root_tokens_from_len(read.len()?)
+            }
+            RpcRequest::ExecutionPayloadEnvelopesByRange(ssz) => {
+                ExecutionPayloadEnvelopesByRangeRequestView::count(ssz)
+            }
+            RpcRequest::ExecutionPayloadEnvelopesByRoot(read) => {
+                fixed_width_list_tokens(read.len()?, 32)
+            }
+        };
+        Ok(tokens.max(1))
     }
 }
 
-/// An RPC request recevied from a peer.
+fn fixed_width_list_tokens(len: usize, width: usize) -> u64 {
+    len.div_ceil(width) as u64
+}
+
+fn data_columns_by_root_tokens_from_len(len: usize) -> u64 {
+    // Silver currently emits one DataColumnsByRootIdentifier per request:
+    // 4B outer-list offset + 32B block root + 4B inner-list offset + N*8B columns.
+    // Length-derived accounting avoids acquiring the TCache payload in the hot
+    // path.
+    len.saturating_sub(4 + 32 + 4).div_ceil(8) as u64
+}
+
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct RpcRequestInbound {
@@ -78,7 +138,6 @@ pub struct RpcRequestInbound {
     pub request: RpcRequest,
 }
 
-/// An RPC request to be sent to a peer.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct RpcRequestOutbound {
@@ -102,6 +161,10 @@ pub enum RpcResponse {
         fork_digest: [u8; 4],
         ssz: TCacheRead,
     },
+    ExecutionPayloadEnvelope {
+        fork_digest: [u8; 4],
+        ssz: TCacheRead,
+    },
     Error {
         error: u8,
         msg: [u8; 256],
@@ -113,7 +176,54 @@ pub enum RpcResponse {
     Complete,
 }
 
-/// RPC response received from a peer.
+/// High word of `application_id` tagging an RPC request issued by the storage
+/// tile's historical backfill. Block responses are broadcast to every tile, not
+/// routed by issuer, so non-storage tiles use this to recognise and skip
+/// backfill traffic.
+pub const REQUEST_ID_PREFIX_MASK: u64 = 0xffff_ffff_0000_0000 & !GLOAS_ERA_FLAG;
+pub const BACKFILL_REQUEST_ID: u64 = 0xbacc_f111 << 32;
+pub const COLUMN_BACKFILL_REQUEST_ID: u64 = 0xc01b_accf << 32;
+pub const BASE_REQUEST_ID: u64 = 0x00da_5da5 << 32; // DAS prefix.
+pub const ENVELOPE_REQUEST_ID: u64 = 0x0e0e_10be << 32; // envelope prefix.
+/// OR'd into a live data-column range request id when the range is Gloas-era,
+/// so storage picks the Gloas sidecar layout on the response — the sidecar's
+/// own `slot` sits at a layout-dependent offset and can't be read before the
+/// layout is chosen. Only the column-response path consumes it. Carved out of
+/// `REQUEST_ID_PREFIX_MASK` so request-category matching ignores it.
+pub const GLOAS_ERA_FLAG: u64 = 1 << 56;
+
+const _: () = assert!(
+    (BACKFILL_REQUEST_ID | COLUMN_BACKFILL_REQUEST_ID | BASE_REQUEST_ID | ENVELOPE_REQUEST_ID) &
+        GLOAS_ERA_FLAG ==
+        0,
+    "GLOAS_ERA_FLAG must not collide with any request-id prefix",
+);
+
+#[inline]
+pub fn msg_is_backfill(id: u64) -> bool {
+    id & REQUEST_ID_PREFIX_MASK == BACKFILL_REQUEST_ID
+}
+
+#[inline]
+pub fn msg_is_column_backfill(id: u64) -> bool {
+    id & REQUEST_ID_PREFIX_MASK == COLUMN_BACKFILL_REQUEST_ID
+}
+
+#[inline]
+pub fn msg_is_live_column_request(id: u64) -> bool {
+    id & REQUEST_ID_PREFIX_MASK == BASE_REQUEST_ID
+}
+
+#[inline]
+pub fn msg_is_envelope_request(id: u64) -> bool {
+    id & REQUEST_ID_PREFIX_MASK == ENVELOPE_REQUEST_ID
+}
+
+#[inline]
+pub fn msg_is_post_gloas(id: u64) -> bool {
+    id & GLOAS_ERA_FLAG != 0
+}
+
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct RpcResponseInbound {
@@ -122,7 +232,6 @@ pub struct RpcResponseInbound {
     pub response: RpcResponse,
 }
 
-/// RPC response to send to a peer.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct RpcResponseOutbound {
@@ -166,11 +275,13 @@ impl RpcOutbound {
             RpcOutbound::Request(req) => match &req.request {
                 RpcRequest::BlockByRoot(tcache_read) => Some(tcache_read),
                 RpcRequest::DataColumnsByRoot(tcache_read) => Some(tcache_read),
+                RpcRequest::ExecutionPayloadEnvelopesByRoot(tcache_read) => Some(tcache_read),
                 _ => None,
             },
             RpcOutbound::Response(rsp) => match &rsp.response {
                 RpcResponse::BeaconBlock { fork_digest: _, ssz } => Some(ssz),
                 RpcResponse::DataColumnSidecar { fork_digest: _, ssz } => Some(ssz),
+                RpcResponse::ExecutionPayloadEnvelope { fork_digest: _, ssz } => Some(ssz),
                 _ => None,
             },
         }
@@ -197,6 +308,9 @@ pub enum PeerEvent {
     P2pCannotCreateStream {
         p2p_peer: usize,
         protocol: StreamProtocol,
+        /// Failed send was an outbound RPC request: the PM must release the
+        /// `outbound_in_flight` slot admitted for it, else it leaks.
+        rpc_request: bool,
     },
     P2pStreamClosed {
         stream_id: P2pStreamId,
@@ -204,6 +318,7 @@ pub enum PeerEvent {
     P2pOutboundMessageDropped {
         p2p_peer: usize,
         protocol: StreamProtocol,
+        rpc_request: bool,
     },
     P2pGossipTopicSubscribe {
         p2p_peer: usize,
@@ -220,6 +335,7 @@ pub enum PeerEvent {
     P2pGossipTopicPrune {
         p2p_peer: usize,
         topic: GossipTopic,
+        backoff_seconds: Option<u64>,
     },
     P2pGossipWant {
         p2p_peer: usize,
@@ -252,9 +368,11 @@ pub enum PeerEvent {
     },
     DiscNodeFound {
         enr: Enr,
+        reload: bool,
     },
     DiscExternalAddress {
         address: SocketAddr,
+        seq: u64,
     },
     /// A fully-validated inbound gossip message arrived (post-dedup). Carries
     /// the sending peer, topic, msg id (for promise/score accounting) and a
@@ -276,6 +394,16 @@ pub enum PeerEvent {
     OutboundIWant {
         p2p_peer: usize,
         iwant: TCacheRead,
+    },
+    /// A data column sidecar validated from a non-gossip source (RPC
+    /// by-root / EL blobs). Control re-publishes it on its subnet: the
+    /// gossip handler wraps the SSZ (a ref into `incoming_rpc`) as
+    /// protobuf and PM fans it out to the topic mesh, excluding
+    /// `originator` (the peer that served it to us).
+    PublishDataColumn {
+        originator: P2pStreamId,
+        topic: GossipTopic,
+        ssz: TCacheRead,
     },
     /// Emitted in order to trigger sending of a gossip message.
     /// Peer manager will generate select peers to send to.
@@ -331,11 +459,31 @@ pub enum PeerEvent {
         p2p_peer: Option<usize>,
         block_root: [u8; 32],
     },
+    SendEnvelopesByRootRequest {
+        request_id: u64,
+        p2p_peer: Option<usize>,
+        block_root: [u8; 32],
+    },
     SendRpcRequest {
         request_id: u64,
         rpc: RpcRequest,
     },
     EarliestSlot(u64),
+    /// Storage's startup-scan backfill report: the block gap to fill backward
+    /// (`[block_floor, earliest_present)`) + the column-retention floor.
+    BackfillState {
+        block_floor: u64,
+        earliest_present: u64,
+        column_floor: u64,
+    },
+    /// A persisted block whose custody columns aren't all on disk (`missing`),
+    /// found by the scan or pulled in by block backfill. `missing == 0` clears
+    /// a previously-reported need (the block's columns are now complete).
+    ColumnNeed {
+        block_root: [u8; 32],
+        slot: u64,
+        missing: u128,
+    },
 }
 
 /// Sync target chosen by the peer manager.
@@ -358,15 +506,7 @@ pub enum SyncUpdate {
 
 impl core::fmt::Debug for SyncUpdate {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        fn hex32(b: &[u8; 32]) -> String {
-            let mut s = String::with_capacity(64);
-            const HEX: &[u8; 16] = b"0123456789abcdef";
-            for &x in b {
-                s.push(HEX[(x >> 4) as usize] as char);
-                s.push(HEX[(x & 0x0f) as usize] as char);
-            }
-            s
-        }
+        use crate::util::hex32;
         match self {
             Self::SyncingFinalized { target_epoch, target_root } => f
                 .debug_struct("SyncingFinalized")
@@ -443,7 +583,6 @@ impl P2pSend {
 pub enum PeerControl {
     Ban {
         p2p: PeerId,
-        p2p_connection: usize,
     },
     BanIp {
         ip: IpAddr,
@@ -477,15 +616,18 @@ pub enum PeerControl {
         enr: Enr,
     },
     P2pSend(P2pSend),
-    /// Generate a data columns by root request.
     P2pDataColumnsRequest {
         app_id: u64,
         peer: usize,
         block_root: [u8; 32],
         columns: u128,
     },
-    /// Generate a blocks by root request.
     P2pBlockByRootRequest {
+        app_id: u64,
+        peer: usize,
+        block_root: [u8; 32],
+    },
+    P2pEnvelopeByRootRequest {
         app_id: u64,
         peer: usize,
         block_root: [u8; 32],
@@ -506,6 +648,9 @@ pub enum PeerControl {
     UnbanIp {
         ip: IpAddr,
     },
+    PersistPeer {
+        enr: Enr,
+    },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -524,65 +669,6 @@ impl From<IpAddr> for IpBytes {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-#[repr(C)]
-pub enum RpcMsg {
-    // Status v2 and MetaData v3 are symmetric: same view for req and resp.
-    Status(StatusView),
-    /// `Ping` request and `Pong` response share wire shape (uint64 seq).
-    Ping(PingView),
-    /// `Goodbye` is request-only (uint64 reason).
-    Goodbye(GoodbyeView),
-    /// `MetaData` request body is empty; this carries the response only.
-    MetaData(MetadataView),
-    BlocksRangeReq(BeaconBlocksByRangeRequestView),
-    BlocksRootReq(BeaconBlocksByRootRequestView),
-    BlobId(BlobIdentifierView),
-    DataColumnRangeReq(DataColumnSidecarsByRangeRequestView),
-    DataColumnByRoot(DataColumnsByRootIdentifierView),
-    // rpc response chunks (one per successful response_chunk)
-    BlocksRangeResp(SignedBeaconBlockView),
-    BlocksRootResp(SignedBeaconBlockView),
-    DataColumnRangeResp(DataColumnSidecarView),
-    DataColumnByRootResp(DataColumnSidecarView),
-    Empty,
-}
-
-impl From<&RpcInbound> for RpcMsg {
-    fn from(value: &RpcInbound) -> Self {
-        match value {
-            RpcInbound::Request(req) => match req.request {
-                RpcRequest::StatusV1(_) => RpcMsg::Status(StatusView),
-                RpcRequest::StatusV2(_) => RpcMsg::Status(StatusView),
-                RpcRequest::Ping(_) => RpcMsg::Ping(PingView),
-                RpcRequest::Goodbye(_) => RpcMsg::Goodbye(GoodbyeView),
-                RpcRequest::MetaData => RpcMsg::Empty,
-                RpcRequest::BlocksByRange(_) => {
-                    RpcMsg::BlocksRangeReq(BeaconBlocksByRangeRequestView)
-                }
-                RpcRequest::BlockByRoot(_) => RpcMsg::BlocksRootReq(BeaconBlocksByRootRequestView),
-                RpcRequest::DataColumnsByRange { .. } => {
-                    RpcMsg::DataColumnRangeReq(DataColumnSidecarsByRangeRequestView)
-                }
-                RpcRequest::DataColumnsByRoot(_) => {
-                    RpcMsg::DataColumnByRoot(DataColumnsByRootIdentifierView)
-                }
-            },
-            RpcInbound::Response(rsp) => match rsp.response {
-                RpcResponse::StatusV1(_) => RpcMsg::Status(StatusView),
-                RpcResponse::StatusV2(_) => RpcMsg::Status(StatusView),
-                RpcResponse::Ping(_) => RpcMsg::Ping(PingView),
-                RpcResponse::MetaData(_) => RpcMsg::MetaData(MetadataView),
-                RpcResponse::BeaconBlock { .. } => RpcMsg::BlocksRangeResp(SignedBeaconBlockView),
-                RpcResponse::DataColumnSidecar { .. } => {
-                    RpcMsg::DataColumnByRootResp(DataColumnSidecarView)
-                }
-                _ => RpcMsg::Empty,
-            },
-        }
-    }
-}
-
 /// Origin of a rejected block. PM treats RPC rejects as evidence that the
 /// active catchup target is bad (chain poisoning); gossip rejects are not
 /// chain-attributable and only blacklist the individual block_root.
@@ -593,13 +679,52 @@ pub enum BlockSource {
     Rpc,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ColumnSource {
+    Gossip,
+    Rpc,
+    El,
+}
+
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub enum BeaconStateEvent {
-    Status { ssz: [u8; STATUS_V2_SIZE], latest_block_slot: u64, wall_slot: u64 },
-    PersistBlock { ssz: TCacheRead, source: BlockSource },
-    BlockRejected { block_root: [u8; 32], source: BlockSource },
+    Status {
+        ssz: [u8; STATUS_V2_SIZE],
+        latest_block_slot: u64,
+        wall_slot: u64,
+        enr_fork_id: [u8; 16],
+    },
+    PersistBlock {
+        ssz: TCacheRead,
+        source: BlockSource,
+    },
+    PersistEnvelope {
+        ssz: TCacheRead,
+        source: BlockSource,
+    },
+    BlockRejected {
+        block_root: [u8; 32],
+        source: BlockSource,
+    },
+    ReplayComplete,
+    BacktrackStall,
+}
+
+#[derive(Clone, Copy, Debug)]
+#[repr(C, u8)]
+pub enum ReplayBlock {
+    Block { ssz: TCacheRead },
+    Done,
+}
+
+#[derive(Clone, Copy, Debug)]
+#[repr(u8)]
+pub enum SyncingStrategy {
+    SyncFromPeers,
+    ReplayDisk,
 }
 
 /// Maximum blob commitments per block (Fulu target; increase as the spec
@@ -633,13 +758,13 @@ pub struct WithdrawalInline {
 
 /// `engine_forkchoiceUpdatedV3` request.  Fully inline — no TCache needed.
 ///
-/// When `has_attrs` is false the `attrs_*` fields are ignored.
-/// `attrs_withdrawal_count` gives the number of valid entries in
-/// `attrs_withdrawals`; the remainder are zero-filled.
+/// `block_root` is the beacon root of the `head_block_hash` block. The EL
+/// response carries no beacon identity, so the engine tile echoes it in
+/// `EngineFcuResp` to let fork choice apply the verdict.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct EngineFcuReq {
-    pub id: u64,
+    pub block_root: [u8; 32],
     pub head_block_hash: [u8; 32],
     pub safe_block_hash: [u8; 32],
     pub finalized_block_hash: [u8; 32],
@@ -657,21 +782,37 @@ pub struct EngineFcuReq {
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct EngineNewPayloadReq {
-    pub id: u64,
     pub data: TCacheRead,
-    pub parent_beacon_block_root: [u8; 32],
-    pub versioned_hash_count: u8,
+    pub block_root: [u8; 32],
+    pub slot: u64,
+    pub block_source: BlockSource,
+}
+
+/// `engine_newPayloadV4` for a Gloas `SignedExecutionPayloadEnvelope`. Unlike a
+/// pre-Gloas block, the payload / `parent_beacon_block_root` / execution
+/// requests live in the envelope (`data`), but the blob KZG commitments do not
+/// — so the caller derives `versioned_hashes[..hash_count]` from the committed
+/// bid in state and passes them here.
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct EngineNewPayloadEnvelopeReq {
+    pub data: TCacheRead,
+    pub block_root: [u8; 32],
+    pub block_source: BlockSource,
+    pub hash_count: u8,
     pub versioned_hashes: [[u8; 32]; MAX_BLOBS_PER_BLOCK],
 }
 
 /// Response to `engine_forkchoiceUpdatedV3`.  Fully inline.
 ///
-/// `latest_valid_hash` is all-zeros when the EL did not return one.
-/// `payload_id` is meaningful only when `has_payload_id` is true.
+/// `block_root` echoes the request's head beacon root (zeros for the
+/// prepare-payload path). `latest_valid_hash` is all-zeros when the EL did
+/// not return one. `payload_id` is meaningful only when `has_payload_id` is
+/// true.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct EngineFcuResp {
-    pub id: u64,
+    pub block_root: [u8; 32],
     pub status: PayloadValidationStatus,
     pub latest_valid_hash: [u8; 32],
     pub has_payload_id: bool,
@@ -684,7 +825,7 @@ pub struct EngineFcuResp {
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct EngineNewPayloadResp {
-    pub id: u64,
+    pub block_root: [u8; 32],
     pub status: PayloadValidationStatus,
     pub latest_valid_hash: [u8; 32],
 }
@@ -790,6 +931,7 @@ pub struct EngineGetPayloadBodiesResp {
 pub enum EngineReq {
     Fcu(EngineFcuReq),
     NewPayload(EngineNewPayloadReq),
+    NewPayloadEnvelope(EngineNewPayloadEnvelopeReq),
     PreparePayload(EnginePreparePayloadReq),
     GetPayload(EngineGetPayloadReq),
     GetBlobs(EngineGetBlobsReq),
@@ -833,21 +975,49 @@ impl BeaconStateEvent {
         match self {
             Self::Status { .. } => SszView::Status(StatusView {}),
             Self::PersistBlock { .. } => SszView::SignedBeaconBlock(SignedBeaconBlockView {}),
-            Self::BlockRejected { .. } => SszView::None,
+            Self::PersistEnvelope { .. } => {
+                SszView::SignedExecutionPayloadEnvelope(SignedExecutionPayloadEnvelopeView {})
+            }
+            Self::BlockRejected { .. } | Self::ReplayComplete | Self::BacktrackStall => {
+                SszView::None
+            }
         }
     }
 }
 
-/// Message sent by the data column tile when all block data columns have
-/// been received and validated. The proposer signature HAS NOT been validated.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
-pub struct DataColumnsAvailable {
-    pub slot: u64,
-    pub proposer_index: u64,
-    pub parent_root: [u8; 32],
-    pub state_root: [u8; 32],
-    pub body_root: [u8; 32],
-    // Proposer sugnature over the fields above.
-    pub signature: [u8; 96],
+pub enum DataColumnsEvent {
+    /// Message sent by the data column tile when all custody data columns for a
+    /// block have been received and KZG-validated.
+    Available { block_root: [u8; 32], slot: u64 },
+    /// Message sent when a data column has been validated.
+    Persist {
+        ssz: TCacheRead,
+        source: ColumnSource,
+        block_root: [u8; 32],
+        column_index: u64,
+        slot: u64,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestCategory {
+    LiveSync,
+    BlockBackfill,
+    ColumnBackfill,
+}
+
+impl RequestCategory {
+    pub fn from_request_id(request_id: u64) -> Self {
+        match request_id & REQUEST_ID_PREFIX_MASK {
+            COLUMN_BACKFILL_REQUEST_ID => RequestCategory::ColumnBackfill,
+            BACKFILL_REQUEST_ID => RequestCategory::BlockBackfill,
+            _ => RequestCategory::LiveSync,
+        }
+    }
+
+    pub fn is_backfill(self) -> bool {
+        matches!(self, RequestCategory::ColumnBackfill | RequestCategory::BlockBackfill)
+    }
 }

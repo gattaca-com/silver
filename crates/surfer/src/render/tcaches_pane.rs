@@ -16,6 +16,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Axis, Block, Borders, Cell, Chart, Dataset, GraphType, Paragraph, Row, Table},
 };
+use silver_metrics::fmt_bytes;
 
 use crate::{app::App, render::fmt::fmt_span_ago, sources::counters::CounterSet};
 
@@ -75,14 +76,22 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
     let rows: Vec<Row> = app
         .tcaches
         .iter()
-        .map(|set| {
+        .enumerate()
+        .map(|(i, set)| {
             let view = TCacheView::from(set);
             let display_name = view.display_name();
 
             let bar_line = bar_line(view.capacity, view.head_seq, view.min_tail_seq, bar_w);
 
+            // Highlight the selected tcache's name, mirroring the timings pane.
+            let name_style = if i == app.tcaches_selection {
+                Style::default().bg(Color::DarkGray).fg(Color::White).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+
             Row::new(vec![
-                Cell::from(display_name),
+                Cell::from(Span::styled(display_name, name_style)),
                 Cell::from(bar_line),
                 Cell::from(Span::raw(format!("{:>10}", fmt_bytes(view.head_seq)))),
                 Cell::from(Span::raw(format!("{:>10}", fmt_bytes(view.min_tail_seq)))),
@@ -200,6 +209,10 @@ fn draw_chart(f: &mut Frame, area: Rect, app: &App) {
 
     let chart = Chart::new(datasets)
         .block(block)
+        // Consumer names (e.g. `p2p_outgoing_gossip`) overflow the default
+        // 1/4-width legend cap and get hidden/clipped. Allow the legend to
+        // size to the longest name so names render in full.
+        .hidden_legend_constraints((Constraint::Ratio(1, 1), Constraint::Ratio(1, 1)))
         .x_axis(
             Axis::default()
                 .bounds([0.0, x_max])
@@ -312,21 +325,4 @@ fn bar_line(capacity: u64, head_seq: u64, min_tail_seq: u64, width: usize) -> Li
         Span::styled(bar, Style::default().fg(Color::Cyan)),
         Span::raw("]"),
     ])
-}
-
-fn fmt_bytes(bytes: u64) -> String {
-    const KB: u64 = 1 << 10;
-    const MB: u64 = 1 << 20;
-    const GB: u64 = 1 << 30;
-    if bytes == 0 {
-        "0B".to_string()
-    } else if bytes >= GB {
-        format!("{:.2}GB", bytes as f64 / GB as f64)
-    } else if bytes >= MB {
-        format!("{:.2}MB", bytes as f64 / MB as f64)
-    } else if bytes >= KB {
-        format!("{:.2}KB", bytes as f64 / KB as f64)
-    } else {
-        format!("{bytes}B")
-    }
 }

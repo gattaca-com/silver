@@ -3,7 +3,18 @@
 
 use std::path::PathBuf;
 
+use mimalloc::MiMalloc;
+#[cfg(feature = "alloc-profile")]
+use silver_common::metrics::CountingAllocator;
 use silver_e2e::perf::{PerfConfig, run_perf_pipeline};
+
+#[cfg(not(feature = "alloc-profile"))]
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
+
+#[cfg(feature = "alloc-profile")]
+#[global_allocator]
+static GLOBAL: CountingAllocator<MiMalloc> = CountingAllocator(MiMalloc);
 
 #[test]
 #[ignore = "perf harness — run explicitly with `cargo test ... -- --ignored --nocapture`"]

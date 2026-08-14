@@ -4,14 +4,129 @@ mod finalized;
 #[cfg(test)]
 mod tests;
 
-pub use delta::{AppendedValidator, ValidatorsDelta};
+use delta::ValidatorsDelta;
+pub use delta::{ValidatorsView, ValidatorsWriteView};
 pub use finalized::{FinalizedValidators, ValSeed, ValidatorsDecodeError};
+use flux_profiler::timed;
 
 use crate::{
     Withdrawals,
-    ssz_hash::{hash_fixed_bytes, merkleize, uint64_chunk},
-    types::{B256, BLSPubkey, Epoch},
+    column::{ColumnGroup, ValidatorsHash},
+    merkle::{hash_fixed_bytes, merkleize, uint64_chunk},
+    reanchor::reanchor_survivors,
+    ring::{Id, Ring, RingGroup},
+    types::{B256, BLSPubkey, Epoch, HashFormat, SLOTS_RING_N},
 };
+
+/// The data ring reanchors survivors into fresh slots at finalize while the
+/// paged hash column keeps survivor ids stable, so the two rings can't share
+/// one seq — a fork's id is the pair.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct ValidatorsId {
+    data: Id<ValidatorsGroup>,
+    hash: Id<ColumnGroup<ValidatorsHash>>,
+}
+
+/// The validator registry as one coupled unit: the finalized columns + pubkey
+/// index + persistent hash tree ([`FinalizedValidators`]) plus a per-fork delta
+/// ([`ValidatorsDelta`]) ring. Logically identical to [`BalancesGroup`] —
+/// finalized columns + sparse edits + a hash overlay — so finalization uses the
+/// same reanchor-against-the-winner model. Read by both views; its finalized
+/// index/hash grow, so the checkpoint-persist snapshot read on the storage
+/// thread must be lock-guarded.
+///
+/// [`BalancesGroup`]: crate::BalancesGroup
+pub struct ValidatorsGroup {
+    finalized: FinalizedValidators,
+    deltas: Ring<Self>,
+    hash: ColumnGroup<ValidatorsHash>,
+}
+
+impl RingGroup for ValidatorsGroup {
+    type Entry = ValidatorsDelta;
+}
+
+impl ValidatorsGroup {
+    #[timed]
+    pub fn new(finalized: FinalizedValidators, format: HashFormat) -> Self {
+        let n = finalized.validator_count();
+        let hash = ColumnGroup::from_leaves(
+            finalized.capacity(),
+            n,
+            (0..n).map(|i| finalized.leaf_hash(i)),
+            format,
+        );
+        Self { finalized, deltas: Ring::new(SLOTS_RING_N), hash }
+    }
+
+    #[inline]
+    pub fn finalized(&self) -> &FinalizedValidators {
+        &self.finalized
+    }
+
+    /// Read-only view over a fork — for the read views.
+    #[inline]
+    pub fn view(&self, id: ValidatorsId) -> ValidatorsView<'_> {
+        ValidatorsView::new(&self.finalized, self.deltas.get(id.data), self.hash.view(id.hash))
+    }
+
+    #[inline]
+    pub fn roll_fresh(&mut self) -> ValidatorsWriteView<'_> {
+        let Self { finalized, deltas, hash } = self;
+        let mut fork = deltas.roll_fresh();
+        fork.anchor_at(finalized);
+        ValidatorsWriteView::new(finalized, fork, hash.roll_fresh())
+    }
+
+    #[inline]
+    pub fn roll_from(&mut self, parent: ValidatorsId) -> ValidatorsWriteView<'_> {
+        let Self { finalized, deltas, hash } = self;
+        ValidatorsWriteView::new(
+            finalized,
+            deltas.roll_from(parent.data),
+            hash.roll_from(parent.hash),
+        )
+    }
+
+    /// Re-anchor a survivor against the promoted `winner` into a fresh slot,
+    /// pre-promotion (mirror of `BalancesGroup::reanchor`). Data ring only —
+    /// the paged hash column finalizes by page adoption, no rebase.
+    fn reanchor(&mut self, survivor: Id<Self>, winner: Id<Self>) -> Id<Self> {
+        let Self { finalized, deltas, .. } = self;
+        let (mut fork, old, winner_delta) = deltas.roll_fresh_deriving(survivor, winner);
+        fork.rebase_and_prune_from(old, finalized, winner_delta);
+        fork.commit()
+    }
+
+    /// Re-anchor each survivor against the promoted `winner` into fresh slots
+    /// (deduped), promote the winner into the finalized state, then free the
+    /// oldest. Mirrors [`BalancesGroup::finalize`](crate::BalancesGroup).
+    #[timed]
+    pub fn finalize(
+        &mut self,
+        winner: ValidatorsId,
+        survivors: &[ValidatorsId],
+    ) -> Vec<ValidatorsId> {
+        debug_assert!(survivors.contains(&winner), "winner must be among the survivors");
+        let data_ids: Vec<_> = survivors.iter().map(|s| s.data).collect();
+        self.deltas.free_outdated(&data_ids);
+
+        let fresh = reanchor_survivors(survivors, |s| ValidatorsId {
+            data: self.reanchor(s.data, winner.data),
+            hash: s.hash,
+        });
+
+        let Self { finalized, deltas, hash } = self;
+        deltas.get(winner.data).promote_into_base(finalized);
+
+        hash.finalize(&winner, survivors, |s| s.hash);
+
+        let fresh_data: Vec<_> = fresh.iter().map(|f| f.data).collect();
+        deltas.free_outdated(&fresh_data);
+
+        fresh
+    }
+}
 
 #[allow(clippy::too_many_arguments)]
 #[inline]

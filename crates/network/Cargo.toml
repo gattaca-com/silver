@@ -10,22 +10,26 @@ buffa.workspace = true
 bytes.workspace = true
 crc32c.workspace = true
 flux.workspace = true
+flux-profiler.workspace = true
 fxhash.workspace = true
 libc.workspace = true
 mio.workspace = true
 quinn-proto.workspace = true
+socket2.workspace = true
 rcgen.workspace = true
 ring.workspace = true
 secp256k1.workspace = true
 rustls.workspace = true
 silver_common.workspace = true
-silver_metrics.workspace = true
 silver_discovery.workspace = true
 snap.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 x509-parser.workspace = true
 yasna.workspace = true
+
+[features]
+thread_park = ["flux/park"]
 
 [dev-dependencies]
 criterion.workspace = true

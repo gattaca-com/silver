@@ -26,5 +26,16 @@ silver_common::declare_counters! {
         // store side
         DataColumnsAvailableEmitted,
         StoreWrites,
+        UnfinalizedBlocksWritten,
+        UnfinalizedColumnsWritten,
+        BlocksPromoted,
+        BlocksPruned,
+        ColumnsPromoted,
+        ColumnsPruned,
+        BackfillBlocksWritten,
+        BackfillColumnsWritten,
+        // EL-mempool blob fetch (engine_getBlobsV2)
+        ElBlobsFetched,
+        ElColumnsBuilt,
     }
 }

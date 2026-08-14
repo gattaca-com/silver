@@ -49,6 +49,9 @@ tokio = { version = "1", features = ["rt", "time", "macros"], optional = true }
 default = []
 lh-client = ["dep:futures", "dep:libp2p", "dep:tokio", "dep:async-trait"]
 alloc-profile = ["silver_common/alloc-profile"]
+# Adds a hardware-counter column (LLC-miss/call, IPC) to the perf call tree
+# via #[timed]'s rdpmc dimension. Needs kernel.perf_event_paranoid <= 2.
+perf-counters = ["silver_metrics/perf"]
 
 [[example]]
 name = "gossip_oneway"

@@ -27,6 +27,8 @@ pub enum StreamError {
     StreamFinishError(#[from] FinishError),
     InvalidMultiStreamHeader,
     InvalidRpc,
+    InvalidGossipFrame,
+    GossipFrameTooLarge,
     StreamRejected,
     StreamClosed,
     StreamEOF,
@@ -38,6 +40,8 @@ pub enum StreamError {
     ProtobufDecodeError(#[from] DecodeError),
     InvalidPubkey(#[from] TryFromSliceError),
     IdentifyTooBig,
+    ReadResponseTimeout,
+    GossipReadStall,
 }
 
 impl fmt::Display for StreamError {

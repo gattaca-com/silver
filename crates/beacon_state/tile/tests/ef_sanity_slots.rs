@@ -4,18 +4,31 @@ use std::fs;
 
 mod ef_common;
 
-use ef_common::{compare_states, iter_test_cases, load_state, spec_tests_dir};
-use silver_beacon_state::{ssz_hash::StateHashScratch, state_transition};
+use ef_common::{compare_states, iter_test_cases, load_state, load_state_gloas, spec_tests_dir};
+use silver_beacon_state::stf;
+use silver_beacon_state_data::SpecConfig;
 
 #[test]
-fn sanity_slots() {
+fn fulu_sanity_slots() {
+    sanity_slots_fork("fulu", SpecConfig::mainnet());
+}
+
+#[test]
+fn gloas_sanity_slots() {
+    let mut cfg = SpecConfig::mainnet();
+    cfg.gloas_fork_epoch = 0;
+    sanity_slots_fork("gloas", cfg);
+}
+
+fn sanity_slots_fork(fork: &str, cfg: SpecConfig) {
     let base =
-        spec_tests_dir().join("tests").join("mainnet").join("fulu").join("sanity").join("slots");
+        spec_tests_dir().join("tests").join("mainnet").join(fork).join("sanity").join("slots");
     let cases = iter_test_cases(&base);
     if cases.is_empty() {
-        eprintln!("sanity_slots: no test cases at {}, skipping", base.display());
+        eprintln!("sanity_slots[{fork}]: no test cases at {}, skipping", base.display());
         return;
     }
+    let loader = if fork == "gloas" { load_state_gloas } else { load_state };
 
     let mut pass = 0;
     let mut fail = 0;
@@ -34,27 +47,17 @@ fn sanity_slots() {
             .parse()
             .unwrap_or_else(|e| panic!("{name}: bad slots value '{slots_str}': {e}"));
 
-        let mut pre = load_state(&pre_path);
-        let target_slot = pre.delta.slot.slot.slot + target_slots;
-        let mut scratch = Vec::new();
-        let mut postponed = Vec::new();
-        let mut replace_u64 = Vec::new();
-        let mut replace_u8 = Vec::new();
-        let mut eff = Vec::new();
-        let mut state_hash = StateHashScratch::new();
-        let mut view = pre.view();
-        state_transition::process_slots(
-            &silver_beacon_state_data::SpecConfig::mainnet(),
-            &mut view,
-            target_slot,
-            &mut scratch,
-            &mut postponed,
-            &mut replace_u64,
-            &mut replace_u8,
-            &mut eff,
-            &mut state_hash,
-        );
-        let mut post = load_state(&post_path);
+        let mut pre = loader(&pre_path);
+        let target_slot = pre.slot() + target_slots;
+        let mut scratch = stf::StfScratch::new(0);
+        let sid = pre.state_id;
+        let (mut v, epoch, longtail) = pre.view();
+        let (epoch_idx, longtail_idx) =
+            stf::process_slots(&cfg, &mut v, epoch, longtail, sid, target_slot, &mut scratch);
+        // Write the (possibly epoch/longtail-rolled) bundle back for the
+        // post-state comparison.
+        pre.state_id = v.commit(epoch_idx, longtail_idx);
+        let mut post = loader(&post_path);
 
         let diffs = compare_states(name, &mut pre, &mut post);
         if diffs.is_empty() {
@@ -66,6 +69,9 @@ fn sanity_slots() {
             }
         }
     }
-    eprintln!("sanity_slots: {pass} passed, {fail} failed, {} skipped", cases.len() - pass - fail);
-    assert_eq!(fail, 0, "sanity_slots: {fail} test(s) failed");
+    eprintln!(
+        "sanity_slots[{fork}]: {pass} passed, {fail} failed, {} skipped",
+        cases.len() - pass - fail
+    );
+    assert_eq!(fail, 0, "sanity_slots[{fork}]: {fail} test(s) failed");
 }

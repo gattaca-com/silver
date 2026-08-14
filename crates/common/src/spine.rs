@@ -2,15 +2,18 @@
 
 use flux::{communication::ShmemData, spine::SpineQueue, spine_derive::from_spine, tile::TileInfo};
 pub use messages::{
-    BeaconStateEvent, BlockSource, DataColumnsAvailable, ELSyncStatus, EngineFcuReq, EngineFcuResp,
-    EngineGetBlobsReq, EngineGetBlobsResp, EngineGetPayloadBodiesByHashReq,
-    EngineGetPayloadBodiesByRangeReq, EngineGetPayloadBodiesResp, EngineGetPayloadReq,
-    EngineGetPayloadResp, EngineHealthEvent, EngineNewPayloadReq, EngineNewPayloadResp,
-    EnginePreparePayloadReq, EngineReq, EngineResp, GossipMsgOut, IpBytes, MAX_BLOBS_PER_BLOCK,
+    BACKFILL_REQUEST_ID, BASE_REQUEST_ID, BeaconStateEvent, BlockSource,
+    COLUMN_BACKFILL_REQUEST_ID, ColumnSource, DataColumnsEvent, ELSyncStatus, ENVELOPE_REQUEST_ID,
+    EngineFcuReq, EngineFcuResp, EngineGetBlobsReq, EngineGetBlobsResp,
+    EngineGetPayloadBodiesByHashReq, EngineGetPayloadBodiesByRangeReq, EngineGetPayloadBodiesResp,
+    EngineGetPayloadReq, EngineGetPayloadResp, EngineHealthEvent, EngineNewPayloadEnvelopeReq,
+    EngineNewPayloadReq, EngineNewPayloadResp, EnginePreparePayloadReq, EngineReq, EngineResp,
+    GLOAS_ERA_FLAG, GossipMsgIn, GossipMsgOut, IpBytes, MAX_BLOBS_PER_BLOCK,
     MAX_PAYLOAD_BODIES_PER_REQ, NewGossipMsg, P2pSend, PayloadValidationStatus, PeerControl,
-    PeerEvent, PeerStatus, RpcInbound, RpcMsg, RpcOutbound, RpcRequest, RpcRequestInbound,
-    RpcRequestOutbound, RpcResponse, RpcResponseInbound, RpcResponseOutbound, RpcSeverity,
-    SyncUpdate, WithdrawalInline,
+    PeerEvent, PeerStatus, ReplayBlock, RequestCategory, RpcInbound, RpcOutbound, RpcRequest,
+    RpcRequestInbound, RpcRequestOutbound, RpcResponse, RpcResponseInbound, RpcResponseOutbound,
+    RpcSeverity, SyncUpdate, SyncingStrategy, WithdrawalInline, msg_is_backfill,
+    msg_is_column_backfill, msg_is_envelope_request, msg_is_live_column_request, msg_is_post_gloas,
 };
 pub use stream_id::P2pStreamId;
 pub use stream_protocol::{
@@ -31,6 +34,9 @@ mod tcache;
 pub struct SilverSpine {
     pub tile_info: ShmemData<TileInfo>,
 
+    /// New incoming network gossip messages
+    #[queue(size(2usize.pow(16)))]
+    pub gossip_in: SpineQueue<GossipMsgIn>,
     /// New incoming gossip messages
     #[queue(size(2usize.pow(16)))]
     pub new_gossip: SpineQueue<NewGossipMsg>,
@@ -47,9 +53,13 @@ pub struct SilverSpine {
     #[queue(size(2usize.pow(14)))]
     pub beacon_events: SpineQueue<BeaconStateEvent>,
     #[queue(size(2usize.pow(12)))]
-    pub data_columns: SpineQueue<DataColumnsAvailable>,
+    pub data_columns: SpineQueue<DataColumnsEvent>,
     #[queue(size(2usize.pow(10)))]
     pub sync_target: SpineQueue<SyncUpdate>,
+    #[queue(size(2usize.pow(12)))]
+    pub replay_blocks: SpineQueue<ReplayBlock>,
+    #[queue(size(2usize.pow(1)))]
+    pub syncing_strategy: SpineQueue<SyncingStrategy>,
 
     #[queue(size(2usize.pow(10)))]
     pub engine_reqs: SpineQueue<EngineReq>,

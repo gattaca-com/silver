@@ -5,7 +5,10 @@
 //!
 //! Files of interest:
 //! - `counters-{name}` — shmem-mapped `[AtomicU64; N]` (read-only).
-//! - `timing-{name}` / `latency-{name}` — flux MPMC `TimingMessage` queues.
+//! - `latency-{name}` — flux MPMC `TimingMessage` queue (tcache consumer
+//!   latency / spine consumer ingestion→consume gap).
+//! - `timing-{name}` — the same Timer's processing side (consume handler
+//!   duration). Created eagerly for every Timer; only spine consumers emit.
 //! - `tilemetrics-{name}` — flux SPMC `TileSample` queue.
 
 use std::{collections::HashMap, fs, io, path::PathBuf};
@@ -27,12 +30,11 @@ pub struct CounterFile {
 }
 
 pub struct TimingFile {
-    /// The `{name}` shared by `timing-{name}` and `latency-{name}`.
+    /// The `{name}` suffix from `latency-{name}`.
     pub name: String,
-    /// Path to `timing-{name}` if the file exists.
-    pub timing_path: Option<PathBuf>,
-    /// Path to `latency-{name}` if the file exists.
-    pub latency_path: Option<PathBuf>,
+    pub path: PathBuf,
+    /// Sibling `timing-{name}` queue (processing duration), when present.
+    pub processing_path: Option<PathBuf>,
 }
 
 pub struct TileMetricsFile {
@@ -44,9 +46,8 @@ pub struct TileMetricsFile {
 pub fn discover(base_dir: &std::path::Path, app_name: &str) -> io::Result<DiscoveredSources> {
     let mut counters = Vec::new();
     let mut tcaches = Vec::new();
-    // timing-{name} and latency-{name} are flux Timer file pairs.
-    // Group by name so a single TimingFile carries both paths.
-    let mut timing_map: HashMap<String, TimingFile> = HashMap::new();
+    let mut timings: Vec<TimingFile> = Vec::new();
+    let mut processing: HashMap<String, PathBuf> = HashMap::new();
     let mut tilemetrics = Vec::new();
 
     let dir = flux::utils::directories::shmem_dir_queues_with_base(base_dir, app_name);
@@ -62,30 +63,22 @@ pub fn discover(base_dir: &std::path::Path, app_name: &str) -> io::Result<Discov
                 } else {
                     counters.push(file);
                 }
-            } else if let Some(name) = fname.strip_prefix("timing-") {
-                let key = name.to_string();
-                let entry = timing_map.entry(key.clone()).or_insert_with(|| TimingFile {
-                    name: key,
-                    timing_path: None,
-                    latency_path: None,
-                });
-                entry.timing_path = Some(path);
             } else if let Some(name) = fname.strip_prefix("latency-") {
-                let key = name.to_string();
-                let entry = timing_map.entry(key.clone()).or_insert_with(|| TimingFile {
-                    name: key,
-                    timing_path: None,
-                    latency_path: None,
-                });
-                entry.latency_path = Some(path);
+                timings.push(TimingFile { name: name.to_string(), path, processing_path: None });
+            } else if let Some(name) = fname.strip_prefix("timing-") {
+                processing.insert(name.to_string(), path);
             } else if let Some(name) = fname.strip_prefix("tilemetrics-") {
                 tilemetrics.push(TileMetricsFile { name: name.to_string(), path });
             }
         }
     }
 
-    let mut timings: Vec<TimingFile> = timing_map.into_values().collect();
-    counters.sort_by(|a, b| a.name.cmp(&b.name));
+    for t in &mut timings {
+        t.processing_path = processing.remove(&t.name);
+    }
+
+    counters
+        .sort_by(|a, b| crate::schema::sort_key(&a.name).cmp(&crate::schema::sort_key(&b.name)));
     tcaches.sort_by(|a, b| a.name.cmp(&b.name));
     timings.sort_by(|a, b| a.name.cmp(&b.name));
     tilemetrics.sort_by(|a, b| a.name.cmp(&b.name));

@@ -41,6 +41,7 @@ trait SealedProducer {
 pub struct Producer {
     pub(super) cache: *const TCache,
     pub(super) seq: u64,
+    pub(super) published_seq: u64,
     pub(super) space: u32,
 }
 
@@ -64,9 +65,13 @@ impl TCacheProducer for Producer {
     /// filled. otherwise it must ber manually committed by calling `flush`.
     fn reserve(&mut self, len: usize, auto_commit: bool) -> Option<Reservation> {
         let tcache = unsafe { &*self.cache };
-        if tcache.reserve_len(self.seq, len) > self.space as usize {
+        if tcache.reserve_len(self.seq, len) > self.space as usize ||
+            self.seq - self.published_seq > (tcache.len >> 4) as u64
+        // for 32MB buffer, publish head for every 2MB reserved
+        {
             // try reclaim space.
             self.publish_head();
+            self.published_seq = self.seq;
             self.space = tcache.space(self.seq);
         }
         tcache.reserve(self.seq, self.space, len as u32).map(|(seq, reservation_len)| {
@@ -153,7 +158,7 @@ impl TCacheProducer for MultiProducer {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Reservation {
     pub(super) cache: TCacheRef,
     pub(super) seq: u64,
@@ -212,6 +217,12 @@ impl Write for Reservation {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let buffer = self.cache.write(self.seq).map_err(std::io::Error::other)?;
         if buf.len() + self.offset > buffer.len() {
+            tracing::error!(
+                reservation_len = buffer.len(),
+                offset = self.offset,
+                data_len = buf.len(),
+                "tried to write > reservation"
+            );
             return Err(std::io::ErrorKind::FileTooLarge.into());
         }
         buffer[self.offset..self.offset + buf.len()].copy_from_slice(buf);
@@ -235,6 +246,12 @@ impl Write for Reservation {
 impl Drop for Reservation {
     fn drop(&mut self) {
         if !self.committed {
+            tracing::debug!(
+                seq = self.seq,
+                offset = self.offset,
+                tcache = self.cache.name,
+                "aborting reservation"
+            );
             self.cache.commit(self.seq, false);
         }
     }

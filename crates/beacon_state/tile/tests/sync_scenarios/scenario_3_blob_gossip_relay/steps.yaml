@@ -1,0 +1,35 @@
+# Scenario 3: in Following mode a blob-carrying gossip block is relayed
+# immediately (gossip validation == precheck; DA gates fork-choice import, not
+# propagation), but withheld from fork choice until its data columns arrive.
+#
+# Source: EF's sanity/blocks/one_blob case — same fixtures as scenario 2.
+
+startup_checkpoint: tests/mainnet/fulu/sanity/blocks/pyspec_tests/one_blob/pre.ssz_snappy
+# checkpoint at slot 32; block is slot 33. wall_slot = 35 is the minimum the
+# harness allows (>= cp+3) and keeps the block within the propagation window.
+slots_missing: 3
+
+steps:
+  # Flip to Following so gossip is processed (Syncing drops gossip).
+  - kind: sync_target
+    target: following
+  - kind: step
+
+  # Blob block over gossip: valid (BLS, parent known) but its columns are not
+  # yet available. Relayed at once (send_gossip) yet not imported (no
+  # persist_block).
+  - kind: gossip_block
+    from: tests/mainnet/fulu/sanity/blocks/pyspec_tests/one_blob/blocks_0.ssz_snappy
+  - kind: step
+  - kind: check
+    outbound_has: [send_gossip]
+    outbound_lacks: [persist_block]
+
+  # Columns validated → the buffered block enters fork choice and is persisted.
+  # The DA-driven replay must NOT re-publish (it was already relayed above).
+  - kind: data_columns_available
+    from: tests/mainnet/fulu/sanity/blocks/pyspec_tests/one_blob/blocks_0.ssz_snappy
+  - kind: step
+  - kind: check
+    outbound_has: [persist_block]
+    outbound_lacks: [send_gossip]

@@ -17,7 +17,6 @@ pub enum RpcWriteRequest {
     },
     WritingRequest {
         app_id: u64,
-        encoder: Box<SnappyEncoder>,
         request: AcquiredRpcRequest,
         written: usize,
     },
@@ -43,9 +42,14 @@ enum Spin {
 }
 
 impl RpcWriteRequest {
-    pub fn spin<S: StreamIo>(mut self, id: &P2pStreamId, io: &mut S) -> Result<Self, StreamError> {
+    pub fn spin<S: StreamIo>(
+        mut self,
+        id: &P2pStreamId,
+        io: &mut S,
+        encoder: &mut SnappyEncoder,
+    ) -> Result<Self, StreamError> {
         loop {
-            match self.spin_inner(id, io)? {
+            match self.spin_inner(id, io, encoder)? {
                 Spin::Ok(rpc_write_request) => return Ok(rpc_write_request),
                 Spin::Next(rpc_write_request) => {
                     self = rpc_write_request;
@@ -54,18 +58,23 @@ impl RpcWriteRequest {
         }
     }
 
-    fn spin_inner<S: StreamIo>(self, id: &P2pStreamId, io: &mut S) -> Result<Spin, StreamError> {
+    fn spin_inner<S: StreamIo>(
+        self,
+        id: &P2pStreamId,
+        io: &mut S,
+        encoder: &mut SnappyEncoder,
+    ) -> Result<Spin, StreamError> {
         match self {
             RpcWriteRequest::WritingPrefix { app_id, buf, length, mut written, request } => {
                 written += io.write_to_stream(id.stream_id(), &buf[written..length])?;
                 if written == length {
-                    let encoder = Box::new(SnappyEncoder::new());
-                    Ok(Spin::Next(Self::WritingRequest { app_id, encoder, request, written: 0 }))
+                    encoder.reset();
+                    Ok(Spin::Next(Self::WritingRequest { app_id, request, written: 0 }))
                 } else {
                     Ok(Spin::Ok(Self::WritingPrefix { app_id, buf, length, written, request }))
                 }
             }
-            RpcWriteRequest::WritingRequest { app_id, mut encoder, request, mut written } => {
+            RpcWriteRequest::WritingRequest { app_id, request, mut written } => {
                 // write bytes -> encoder -> stream.
                 let buffer = request_buffer(&request, written)?;
                 let buffer_len = buffer.len();
@@ -75,9 +84,10 @@ impl RpcWriteRequest {
                 written += wrote;
 
                 if wrote == buffer_len && pending == 0 {
+                    tracing::debug!(?id, "wrote rpc request");
                     Ok(Spin::Ok(Self::Complete(app_id)))
                 } else {
-                    Ok(Spin::Ok(Self::WritingRequest { app_id, encoder, request, written }))
+                    Ok(Spin::Ok(Self::WritingRequest { app_id, request, written }))
                 }
             }
             RpcWriteRequest::Complete(app_id) => Ok(Spin::Ok(Self::Complete(app_id))),
@@ -85,63 +95,33 @@ impl RpcWriteRequest {
     }
 }
 
+#[inline]
+fn slice_from(buf: &[u8], offset: usize) -> &[u8] {
+    if offset < buf.len() { &buf[offset..] } else { &[] }
+}
+
+#[inline]
 fn request_buffer(request: &AcquiredRpcRequest, offset: usize) -> Result<&[u8], StreamError> {
     let buf = match request {
-        AcquiredRpcRequest::StatusV1(buffer) => {
-            if offset < buffer.len() {
-                &buffer[offset..]
-            } else {
-                &[]
-            }
-        }
-        AcquiredRpcRequest::StatusV2(buffer) => {
-            if offset < buffer.len() {
-                &buffer[offset..]
-            } else {
-                &[]
-            }
-        }
-        AcquiredRpcRequest::Ping(buffer) => {
-            if offset < buffer.len() {
-                &buffer[offset..]
-            } else {
-                &[]
-            }
-        }
-        AcquiredRpcRequest::Goodbye(buffer) => {
-            if offset < buffer.len() {
-                &buffer[offset..]
-            } else {
-                &[]
-            }
-        }
+        AcquiredRpcRequest::StatusV1(buffer) => slice_from(buffer, offset),
+        AcquiredRpcRequest::StatusV2(buffer) => slice_from(buffer, offset),
+        AcquiredRpcRequest::Ping(buffer) => slice_from(buffer, offset),
+        AcquiredRpcRequest::Goodbye(buffer) => slice_from(buffer, offset),
         AcquiredRpcRequest::MetaData => &[],
-        AcquiredRpcRequest::BlocksByRange(buffer) => {
-            if offset < buffer.len() {
-                &buffer[offset..]
-            } else {
-                &[]
-            }
-        }
-        AcquiredRpcRequest::BlockByRoot(read) => {
+        AcquiredRpcRequest::BlocksByRange(buffer) => slice_from(buffer, offset),
+        AcquiredRpcRequest::ExecutionPayloadEnvelopesByRange(buffer) => slice_from(buffer, offset),
+        AcquiredRpcRequest::DataColumnsByRange { ssz, len } => slice_from(&ssz[..*len], offset),
+        AcquiredRpcRequest::BlockByRoot(read) |
+        AcquiredRpcRequest::DataColumnsByRoot(read) |
+        AcquiredRpcRequest::ExecutionPayloadEnvelopesByRoot(read) => {
             let (buf, _) = read.buffer()?;
-            if offset < buf.len() { &buf[offset..] } else { &[] }
-        }
-        AcquiredRpcRequest::DataColumnsByRange { ssz, len } => {
-            if offset < *len {
-                &ssz[offset..*len]
-            } else {
-                &[]
-            }
-        }
-        AcquiredRpcRequest::DataColumnsByRoot(read) => {
-            let (buf, _) = read.buffer()?;
-            if offset < buf.len() { &buf[offset..] } else { &[] }
+            slice_from(buf, offset)
         }
     };
     Ok(buf)
 }
 
+#[inline]
 fn request_length(request: &AcquiredRpcRequest) -> Result<usize, StreamError> {
     let len = match request {
         AcquiredRpcRequest::StatusV1(b) => b.len(),
@@ -153,6 +133,8 @@ fn request_length(request: &AcquiredRpcRequest) -> Result<usize, StreamError> {
         AcquiredRpcRequest::BlockByRoot(tcache_read) => tcache_read.len()?,
         AcquiredRpcRequest::DataColumnsByRange { ssz: _, len } => *len,
         AcquiredRpcRequest::DataColumnsByRoot(tcache_read) => tcache_read.len()?,
+        AcquiredRpcRequest::ExecutionPayloadEnvelopesByRange(b) => b.len(),
+        AcquiredRpcRequest::ExecutionPayloadEnvelopesByRoot(tcache_read) => tcache_read.len()?,
     };
     Ok(len)
 }

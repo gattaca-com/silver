@@ -1,7 +1,8 @@
 use silver_beacon_state_data::{
-    B256, EPOCHS_PER_HISTORICAL_VECTOR, Epoch, MIN_SEED_LOOKAHEAD, SLOTS_PER_EPOCH, StateDeltaView,
+    B256, EPOCHS_PER_HISTORICAL_VECTOR, Epoch, EpochView, MIN_SEED_LOOKAHEAD, SLOTS_PER_EPOCH,
+    SlotStateView, ValidatorsView, randao_mix_at_epoch,
 };
-use silver_common::ssz_hash::sha256;
+use silver_common::merkle::sha256;
 
 const SHUFFLE_ROUND_COUNT: u8 = 90;
 
@@ -25,11 +26,11 @@ pub fn get_seed(mix: &B256, e: Epoch, domain: u32) -> B256 {
     sha256(&preimage)
 }
 
-/// Convenience for callers holding a state view: resolves the seed-epoch's
-/// randao mix via the view layer.
-pub fn get_seed_from_state(view: &StateDeltaView, e: Epoch, domain: u32) -> B256 {
+/// Convenience for callers holding the tier views: resolves the seed-epoch's
+/// randao mix (epoch overlay, slot-anchored offset).
+pub fn get_seed_from_state(epoch: &EpochView, slot: &SlotStateView, e: Epoch, domain: u32) -> B256 {
     let mix_epoch = e + EPOCHS_PER_HISTORICAL_VECTOR as u64 - MIN_SEED_LOOKAHEAD - 1;
-    let mix = view.randao_mix_at_epoch(mix_epoch);
+    let mix = randao_mix_at_epoch(epoch, slot, mix_epoch);
     get_seed(&mix, e, domain)
 }
 
@@ -99,23 +100,6 @@ pub fn shuffle_list(indices: &mut [u32], seed: &B256) {
 pub fn committees_per_slot(active_validator_count: usize) -> usize {
     let per_slot = active_validator_count / SLOTS_PER_EPOCH as usize / TARGET_COMMITTEE_SIZE;
     per_slot.clamp(1, MAX_COMMITTEES_PER_SLOT)
-}
-
-#[inline]
-pub fn get_beacon_committee(
-    shuffled: &[u32],
-    slot: u64,
-    committee_index: usize,
-    committees_per_slot: usize,
-) -> &[u32] {
-    let epoch_committee_count = committees_per_slot * SLOTS_PER_EPOCH as usize;
-    let slot_in_epoch = (slot % SLOTS_PER_EPOCH) as usize;
-    let index_in_epoch = slot_in_epoch * committees_per_slot + committee_index;
-
-    let start = shuffled.len() * index_in_epoch / epoch_committee_count;
-    let end = shuffled.len() * (index_in_epoch + 1) / epoch_committee_count;
-
-    &shuffled[start..end]
 }
 
 /// `effective_balances[vi]` must be indexable for every `vi` that appears in
@@ -242,11 +226,15 @@ fn compute_shuffled_index_with_pivots(
 
 /// Append active validator indices for `epoch` into `out`. Single sweep over
 /// activation/exit epoch columns — O(N + |edits|).
-pub fn get_active_validator_indices_into(view: &StateDeltaView, epoch: Epoch, out: &mut Vec<u32>) {
+pub fn get_active_validator_indices_into(
+    validators: &ValidatorsView,
+    epoch: Epoch,
+    out: &mut Vec<u32>,
+) {
     out.clear();
-    let n = view.validators_count();
-    let mut act = view.iter_activation_epochs();
-    let mut exit = view.iter_exit_epochs();
+    let n = validators.count();
+    let mut act = validators.iter_activation_epochs();
+    let mut exit = validators.iter_exit_epochs();
     for i in 0..n {
         let a = act.next().unwrap();
         let x = exit.next().unwrap();
@@ -276,22 +264,6 @@ mod tests {
         assert_eq!(committees_per_slot(100), 1);
         assert_eq!(committees_per_slot(1_000_000), 64);
         assert_eq!(committees_per_slot(8192), 2);
-    }
-
-    #[test]
-    fn committee_slicing() {
-        let shuffled: Vec<u32> = (0..640).collect();
-        let committees_per_slot = 2;
-
-        let c = get_beacon_committee(&shuffled, 0, 0, committees_per_slot);
-        assert_eq!(c.len(), 10);
-
-        let c1 = get_beacon_committee(&shuffled, 0, 1, committees_per_slot);
-        assert_eq!(c1.len(), 10);
-        assert_ne!(c[0], c1[0]);
-
-        let c_last = get_beacon_committee(&shuffled, 31, 1, committees_per_slot);
-        assert_eq!(c_last.len(), 10);
     }
 
     /// Hardcoded test vector: compute_shuffled_index(i, 10, [0;32]) for

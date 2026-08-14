@@ -1,4 +1,9 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use silver_common::ssz_view::{
+    BEACON_BLOCK_BODY_FIXED, BeaconBlockBodyFuluView, ExecutionPayloadEnvelopeView,
+    ExecutionPayloadView, SIGNED_BEACON_BLOCK_MIN, SignedBeaconBlockView,
+    SignedExecutionPayloadEnvelopeView,
+};
 
 pub type B256 = [u8; 32];
 pub type ExecutionAddress = [u8; 20];
@@ -143,6 +148,7 @@ pub struct Withdrawal {
 }
 
 const PAYLOAD_FIXED_LEN: usize = 528;
+const PAYLOAD_FIXED_LEN_GLOAS: usize = 540;
 
 const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
 
@@ -246,130 +252,248 @@ fn write_withdrawals_json(data: &[u8], out: &mut Vec<u8>) -> Result<(), crate::E
     Ok(())
 }
 
-pub(crate) fn write_new_payload_params(
+/// Emit the `,[ "0x..", .. ]` versionedHashes JSON array element.
+fn write_versioned_hashes_json(out: &mut Vec<u8>, hashes: impl Iterator<Item = [u8; 32]>) {
+    out.extend_from_slice(b",[");
+    for (i, h) in hashes.enumerate() {
+        if i > 0 {
+            out.push(b',');
+        }
+        out.extend_from_slice(b"\"0x");
+        append_hex(&h, out);
+        out.push(b'"');
+    }
+    out.push(b']');
+}
+
+pub(crate) fn write_new_payload_params_fulu(
     data: &[u8],
-    versioned_hashes: &[[u8; 32]],
-    parent_beacon_block_root: &[u8; 32],
     out: &mut Vec<u8>,
 ) -> Result<(), crate::EngineError> {
-    if data.len() < 5 {
-        return Err(crate::EngineError::Ssz("new-payload data too short".into()));
-    }
-    let payload_len = u32::from_le_bytes(data[0..4].try_into().unwrap()) as usize;
-    if data.len() < 4 + payload_len + 1 {
-        return Err(crate::EngineError::Ssz("new-payload data truncated".into()));
-    }
-    let ssz = &data[4..4 + payload_len];
-
-    // Collect exec-request slices without allocating.
-    let mut pos = 4 + payload_len;
-    let req_count = data[pos] as usize;
-    pos += 1;
-    // u8 count, so max 255; stack array of (start, end) indices into `data`.
-    let mut req_spans = [(0usize, 0usize); 256];
-    for span in req_spans.iter_mut().take(req_count) {
-        if data.len() < pos + 4 {
-            return Err(crate::EngineError::Ssz("exec-request length truncated".into()));
-        }
-        let req_len = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
-        pos += 4;
-        if data.len() < pos + req_len {
-            return Err(crate::EngineError::Ssz("exec-request body truncated".into()));
-        }
-        *span = (pos, pos + req_len);
-        pos += req_len;
-    }
-
-    if ssz.len() < PAYLOAD_FIXED_LEN {
+    if data.len() < SIGNED_BEACON_BLOCK_MIN {
         return Err(crate::EngineError::Ssz(format!(
-            "payload too short: {} < {PAYLOAD_FIXED_LEN}",
-            ssz.len()
+            "block too short: {} < {SIGNED_BEACON_BLOCK_MIN}",
+            data.len()
         )));
     }
-    let extra_off = u32::from_le_bytes(ssz[436..440].try_into().unwrap()) as usize;
-    let txs_off = u32::from_le_bytes(ssz[504..508].try_into().unwrap()) as usize;
-    let wd_off = u32::from_le_bytes(ssz[508..512].try_into().unwrap()) as usize;
-    if extra_off < PAYLOAD_FIXED_LEN ||
-        txs_off < extra_off ||
-        wd_off < txs_off ||
-        ssz.len() < wd_off
+    let body = SignedBeaconBlockView::body(data);
+    if body.len() < BEACON_BLOCK_BODY_FIXED {
+        return Err(crate::EngineError::Ssz(format!(
+            "body too short: {} < {BEACON_BLOCK_BODY_FIXED}",
+            body.len()
+        )));
+    }
+    let execution_payload_offset: usize =
+        BeaconBlockBodyFuluView::execution_payload_offset(body) as usize;
+    let bls_to_execution_changes: usize =
+        BeaconBlockBodyFuluView::bls_to_execution_changes_offset(body) as usize;
+    let blob_kzg_off: usize = BeaconBlockBodyFuluView::blob_kzg_commitments_offset(body) as usize;
+    let execution_requests_offset: usize =
+        BeaconBlockBodyFuluView::execution_requests_offset(body) as usize;
+    if execution_payload_offset < BEACON_BLOCK_BODY_FIXED ||
+        bls_to_execution_changes < execution_payload_offset ||
+        blob_kzg_off < bls_to_execution_changes ||
+        execution_requests_offset < blob_kzg_off ||
+        body.len() < execution_requests_offset
     {
-        return Err(crate::EngineError::Ssz("invalid variable offsets".into()));
+        return Err(crate::EngineError::Ssz("invalid body variable offsets".into()));
     }
-    let wd_data = &ssz[wd_off..];
-    if !wd_data.len().is_multiple_of(44) {
-        return Err(crate::EngineError::Ssz("withdrawals length not multiple of 44".into()));
-    }
+    let execution_payload = &body[execution_payload_offset..bls_to_execution_changes];
 
     // params array open
     out.push(b'[');
+    write_execution_payload_obj(execution_payload, out, false)?;
 
-    // ExecutionPayload object — field order matches serde declaration order.
-    out.extend_from_slice(b"{\"parentHash\":\"0x");
-    append_hex(&ssz[0..32], out);
-    out.extend_from_slice(b"\",\"feeRecipient\":\"0x");
-    append_hex(&ssz[32..52], out);
-    out.extend_from_slice(b"\",\"stateRoot\":\"0x");
-    append_hex(&ssz[52..84], out);
-    out.extend_from_slice(b"\",\"receiptsRoot\":\"0x");
-    append_hex(&ssz[84..116], out);
-    out.extend_from_slice(b"\",\"logsBloom\":\"0x");
-    append_hex(&ssz[116..372], out);
-    out.extend_from_slice(b"\",\"prevRandao\":\"0x");
-    append_hex(&ssz[372..404], out);
-    out.extend_from_slice(b"\",\"blockNumber\":");
-    append_quantity_u64(u64::from_le_bytes(ssz[404..412].try_into().unwrap()), out);
-    out.extend_from_slice(b",\"gasLimit\":");
-    append_quantity_u64(u64::from_le_bytes(ssz[412..420].try_into().unwrap()), out);
-    out.extend_from_slice(b",\"gasUsed\":");
-    append_quantity_u64(u64::from_le_bytes(ssz[420..428].try_into().unwrap()), out);
-    out.extend_from_slice(b",\"timestamp\":");
-    append_quantity_u64(u64::from_le_bytes(ssz[428..436].try_into().unwrap()), out);
-    out.extend_from_slice(b",\"extraData\":\"0x");
-    append_hex(&ssz[extra_off..txs_off], out);
-    out.extend_from_slice(b"\",\"baseFeePerGas\":");
-    append_u256_le_quantity(ssz[440..472].try_into().unwrap(), out);
-    out.extend_from_slice(b",\"blockHash\":\"0x");
-    append_hex(&ssz[472..504], out);
-    out.extend_from_slice(b"\",\"transactions\":[");
-    write_txs_json(&ssz[txs_off..wd_off], out)?;
-    out.extend_from_slice(b"],\"withdrawals\":[");
-    write_withdrawals_json(wd_data, out)?;
-    out.extend_from_slice(b"],\"blobGasUsed\":");
-    append_quantity_u64(u64::from_le_bytes(ssz[512..520].try_into().unwrap()), out);
-    out.extend_from_slice(b",\"excessBlobGas\":");
-    append_quantity_u64(u64::from_le_bytes(ssz[520..528].try_into().unwrap()), out);
-    out.push(b'}');
-
-    // versionedHashes
-    out.extend_from_slice(b",[");
-    for (i, h) in versioned_hashes.iter().enumerate() {
-        if i > 0 {
-            out.push(b',');
-        }
-        out.extend_from_slice(b"\"0x");
-        append_hex(h, out);
-        out.push(b'"');
+    // versionedHashes — derived from blob_kzg_commitments
+    let blob_kzg_off: usize = BeaconBlockBodyFuluView::blob_kzg_commitments_offset(body) as usize;
+    let blob_kzg_data = &body[blob_kzg_off..execution_requests_offset];
+    // blob_kzg_data is a flat list of 48-byte KZG commitments (no SSZ list offsets,
+    // because each element is fixed-size, so SSZ encodes it as a plain
+    // concatenation).
+    if !blob_kzg_data.len().is_multiple_of(48) {
+        return Err(crate::EngineError::Ssz(
+            "blob_kzg_commitments length not multiple of 48".into(),
+        ));
     }
-    out.push(b']');
+    write_versioned_hashes_json(
+        out,
+        blob_kzg_data.chunks(48).map(|commitment| {
+            use sha2::{Digest, Sha256};
+            let mut h = [0u8; 32];
+            h.copy_from_slice(&Sha256::digest(commitment));
+            h[0] = 0x01;
+            h
+        }),
+    );
 
-    // parentBeaconBlockRoot
     out.extend_from_slice(b",\"0x");
-    append_hex(parent_beacon_block_root, out);
+    append_hex(SignedBeaconBlockView::parent_root(data), out);
     out.push(b'"');
 
-    // executionRequests
-    out.extend_from_slice(b",[");
-    for (i, &(start, end)) in req_spans[..req_count].iter().enumerate() {
-        if i > 0 {
-            out.push(b',');
-        }
-        out.extend_from_slice(b"\"0x");
-        append_hex(&data[start..end], out);
-        out.push(b'"');
-    }
+    write_execution_requests_json::<3>(&body[execution_requests_offset..], out)?;
+
     out.push(b']');
 
+    Ok(())
+}
+
+/// `engine_newPayloadV5` params for a Gloas `SignedExecutionPayloadEnvelope`:
+/// `[executionPayload, versionedHashes, parentBeaconBlockRoot,
+/// executionRequests]`. The payload / parent root / requests come from the
+/// envelope; the versioned hashes are supplied by the caller (derived from the
+/// committed bid, which the envelope does not carry).
+pub(crate) fn write_new_payload_params_gloas(
+    data: &[u8],
+    versioned_hashes: &[[u8; 32]],
+    out: &mut Vec<u8>,
+) -> Result<(), crate::EngineError> {
+    if !SignedExecutionPayloadEnvelopeView::check_size(data) {
+        return Err(crate::EngineError::Ssz("execution payload envelope malformed".into()));
+    }
+    let envelope = SignedExecutionPayloadEnvelopeView::message(data);
+    if !ExecutionPayloadEnvelopeView::check_size(envelope) {
+        return Err(crate::EngineError::Ssz("execution payload envelope malformed".into()));
+    }
+    let execution_payload = ExecutionPayloadEnvelopeView::payload(envelope);
+
+    out.push(b'[');
+    write_execution_payload_obj(execution_payload, out, true)?;
+
+    write_versioned_hashes_json(out, versioned_hashes.iter().copied());
+
+    out.extend_from_slice(b",\"0x");
+    append_hex(ExecutionPayloadEnvelopeView::parent_beacon_block_root(envelope), out);
+    out.push(b'"');
+
+    write_execution_requests_json::<5>(
+        ExecutionPayloadEnvelopeView::execution_requests(envelope),
+        out,
+    )?;
+
+    out.push(b']');
+
+    Ok(())
+}
+
+/// The EL `ExecutionPayload` JSON object (field order matches serde
+/// declaration order). Shared by the block and envelope newPayload encoders;
+/// `gloas` selects the 540-byte fixed layout with the trailing
+/// `blockAccessList` / `slotNumber` fields (EIP-7928 / EIP-7843).
+fn write_execution_payload_obj(
+    execution_payload: &[u8],
+    out: &mut Vec<u8>,
+    gloas: bool,
+) -> Result<(), crate::EngineError> {
+    let fixed_len = if gloas { PAYLOAD_FIXED_LEN_GLOAS } else { PAYLOAD_FIXED_LEN };
+    if execution_payload.len() < fixed_len {
+        return Err(crate::EngineError::Ssz(format!(
+            "execution_payload too short: {} < {fixed_len}",
+            execution_payload.len()
+        )));
+    }
+    let extra_off: usize = ExecutionPayloadView::extra_data_offset(execution_payload) as usize;
+    let txs_off: usize = ExecutionPayloadView::transactions_offset(execution_payload) as usize;
+    let wd_off: usize = ExecutionPayloadView::withdrawals_offset(execution_payload) as usize;
+    let wd_end: usize = if gloas {
+        ExecutionPayloadView::block_access_list_offset(execution_payload) as usize
+    } else {
+        execution_payload.len()
+    };
+    if extra_off < fixed_len ||
+        txs_off < extra_off ||
+        wd_off < txs_off ||
+        wd_end < wd_off ||
+        execution_payload.len() < wd_end
+    {
+        return Err(crate::EngineError::Ssz("invalid execution_payload variable offsets".into()));
+    }
+    if !(wd_end - wd_off).is_multiple_of(44) {
+        return Err(crate::EngineError::Ssz("withdrawals length not multiple of 44".into()));
+    }
+
+    out.extend_from_slice(b"{\"parentHash\":\"0x");
+    append_hex(ExecutionPayloadView::parent_hash(execution_payload), out);
+    out.extend_from_slice(b"\",\"feeRecipient\":\"0x");
+    append_hex(ExecutionPayloadView::fee_recipient(execution_payload), out);
+    out.extend_from_slice(b"\",\"stateRoot\":\"0x");
+    append_hex(ExecutionPayloadView::state_root(execution_payload), out);
+    out.extend_from_slice(b"\",\"receiptsRoot\":\"0x");
+    append_hex(ExecutionPayloadView::receipts_root(execution_payload), out);
+    out.extend_from_slice(b"\",\"logsBloom\":\"0x");
+    append_hex(ExecutionPayloadView::logs_bloom(execution_payload), out);
+    out.extend_from_slice(b"\",\"prevRandao\":\"0x");
+    append_hex(ExecutionPayloadView::prev_randao(execution_payload), out);
+    out.extend_from_slice(b"\",\"blockNumber\":");
+    append_quantity_u64(ExecutionPayloadView::block_number(execution_payload), out);
+    out.extend_from_slice(b",\"gasLimit\":");
+    append_quantity_u64(ExecutionPayloadView::gas_limit(execution_payload), out);
+    out.extend_from_slice(b",\"gasUsed\":");
+    append_quantity_u64(ExecutionPayloadView::gas_used(execution_payload), out);
+    out.extend_from_slice(b",\"timestamp\":");
+    append_quantity_u64(ExecutionPayloadView::timestamp(execution_payload), out);
+    out.extend_from_slice(b",\"extraData\":\"0x");
+    append_hex(&execution_payload[extra_off..txs_off], out);
+    out.extend_from_slice(b"\",\"baseFeePerGas\":");
+    append_u256_le_quantity(ExecutionPayloadView::base_fee_per_gas(execution_payload), out);
+    out.extend_from_slice(b",\"blockHash\":\"0x");
+    append_hex(ExecutionPayloadView::block_hash(execution_payload), out);
+    out.extend_from_slice(b"\",\"transactions\":[");
+    write_txs_json(&execution_payload[txs_off..wd_off], out)?;
+    out.extend_from_slice(b"],\"withdrawals\":[");
+    write_withdrawals_json(&execution_payload[wd_off..wd_end], out)?;
+    out.extend_from_slice(b"],\"blobGasUsed\":");
+    append_quantity_u64(ExecutionPayloadView::blob_gas_used(execution_payload), out);
+    out.extend_from_slice(b",\"excessBlobGas\":");
+    append_quantity_u64(ExecutionPayloadView::excess_blob_gas(execution_payload), out);
+    if gloas {
+        out.extend_from_slice(b",\"blockAccessList\":\"0x");
+        append_hex(&execution_payload[wd_end..], out);
+        out.extend_from_slice(b"\",\"slotNumber\":");
+        append_quantity_u64(ExecutionPayloadView::slot_number(execution_payload), out);
+    }
+    out.push(b'}');
+    Ok(())
+}
+
+/// The EIP-7685 `executionRequests` JSON array (per EIP-7685: only non-empty
+/// request types included, type byte prepended). Shared by the block and
+/// envelope newPayload encoders. `N` is the request-list count — the type
+/// byte is the list's position: fulu has 3 (deposits 0x00, withdrawals 0x01,
+/// consolidations 0x02), gloas 5 (EIP-8282 adds builder_deposits 0x03 and
+/// builder_exits 0x04).
+fn write_execution_requests_json<const N: usize>(
+    er: &[u8],
+    out: &mut Vec<u8>,
+) -> Result<(), crate::EngineError> {
+    if er.len() < 4 * N {
+        return Err(crate::EngineError::Ssz("execution_requests too short".into()));
+    }
+    let mut offs = [0usize; N];
+    for (i, off) in offs.iter_mut().enumerate() {
+        *off = u32::from_le_bytes(er[4 * i..4 * i + 4].try_into().unwrap()) as usize;
+    }
+    let in_order = offs.windows(2).all(|w| w[0] <= w[1]);
+    if offs[0] < 4 * N || !in_order || offs[N - 1] > er.len() {
+        return Err(crate::EngineError::Ssz("invalid execution_requests offsets".into()));
+    }
+
+    out.extend_from_slice(b",[");
+    let mut first = true;
+    for i in 0..N {
+        let type_byte = i as u8;
+        let data = &er[offs[i]..offs.get(i + 1).copied().unwrap_or(er.len())];
+        if data.is_empty() {
+            continue;
+        }
+        if !first {
+            out.push(b',');
+        }
+        first = false;
+        out.extend_from_slice(b"\"0x");
+        append_hex(&[type_byte], out);
+        append_hex(data, out);
+        out.push(b'"');
+    }
     out.push(b']');
     Ok(())
 }
@@ -742,6 +866,12 @@ mod tests {
     use super::*;
 
     const SAMPLE_PAYLOAD_SSZ: &[u8] = include_bytes!("../testdata/sample_payload.ssz");
+    // EF spec-test fixture (decompressed):
+    // mainnet/fulu/ssz_static/SignedBeaconBlock/ssz_random/case_4.
+    const SIGNED_BLOCK_SSZ: &[u8] = include_bytes!("../testdata/signed_block.ssz");
+    // Expected newPayload params for the block above, derived independently
+    // from the case's value.yaml.
+    const SIGNED_BLOCK_PARAMS: &[u8] = include_bytes!("../testdata/signed_block_params.json");
     const EMPTY_VAR_PAYLOAD_SSZ: &[u8] = include_bytes!("../testdata/empty_var_payload.ssz");
     const MANY_TX_PAYLOAD_SSZ: &[u8] = include_bytes!("../testdata/many_tx_payload.ssz");
     const TX_SINGLE: &[u8] = include_bytes!("../testdata/tx_single.bin");
@@ -749,16 +879,98 @@ mod tests {
     const WITHDRAWALS: &[u8] = include_bytes!("../testdata/withdrawals.bin");
     const GET_PAYLOAD_TCACHE: &[u8] = include_bytes!("../testdata/get_payload_tcache.bin");
 
-    fn make_new_payload_frame(ssz: &[u8], exec_reqs: &[&[u8]]) -> Vec<u8> {
-        let mut frame = Vec::new();
-        frame.extend_from_slice(&(ssz.len() as u32).to_le_bytes());
-        frame.extend_from_slice(ssz);
-        frame.push(exec_reqs.len() as u8);
-        for req in exec_reqs {
-            frame.extend_from_slice(&(req.len() as u32).to_le_bytes());
-            frame.extend_from_slice(req);
+    // Wraps a bare ExecutionPayload SSZ in a minimal SignedBeaconBlock SSZ:
+    // zeroed fixed fields, the five early body lists empty, empty
+    // bls_to_execution_changes. `requests` are the raw bytes of the three
+    // ExecutionRequests lists (deposits, withdrawals, consolidations).
+    fn make_signed_block(
+        payload_ssz: &[u8],
+        kzg_commitments: &[[u8; 48]],
+        requests: [&[u8]; 3],
+        parent_root: [u8; 32],
+    ) -> Vec<u8> {
+        let mut out = vec![0u8; 184 + BEACON_BLOCK_BODY_FIXED];
+        out[0..4].copy_from_slice(&100u32.to_le_bytes()); // message offset
+        out[116..148].copy_from_slice(&parent_root);
+        out[180..184].copy_from_slice(&84u32.to_le_bytes()); // body offset
+
+        let fixed = BEACON_BLOCK_BODY_FIXED as u32;
+        let ep_off = fixed;
+        let bls_off = ep_off + payload_ssz.len() as u32;
+        let kzg_off = bls_off;
+        let er_off = kzg_off + 48 * kzg_commitments.len() as u32;
+        for (pos, val) in [
+            (200, fixed),
+            (204, fixed),
+            (208, fixed),
+            (212, fixed),
+            (216, fixed),
+            (380, ep_off),
+            (384, bls_off),
+            (388, kzg_off),
+            (392, er_off),
+        ] {
+            out[184 + pos..184 + pos + 4].copy_from_slice(&val.to_le_bytes());
         }
-        frame
+        out.extend_from_slice(payload_ssz);
+        for c in kzg_commitments {
+            out.extend_from_slice(c);
+        }
+        let mut off = 12u32;
+        for r in &requests {
+            out.extend_from_slice(&off.to_le_bytes());
+            off += r.len() as u32;
+        }
+        for r in &requests {
+            out.extend_from_slice(r);
+        }
+        out
+    }
+
+    // Gloas ExecutionPayload SSZ: fulu's 528-byte fixed part extended by the
+    // block_access_list offset (EIP-7928) and slot_number (EIP-7843) to 540,
+    // then the extra_data / transactions / withdrawals / BAL tails
+    // (extra_data and transactions kept empty).
+    fn make_gloas_payload(withdrawals: &[u8], bal: &[u8], slot_number: u64) -> Vec<u8> {
+        const GLOAS_PAYLOAD_FIXED: u32 = 540;
+        let mut out = vec![0u8; GLOAS_PAYLOAD_FIXED as usize];
+        let bal_off = GLOAS_PAYLOAD_FIXED + withdrawals.len() as u32;
+        for (pos, val) in [
+            (436, GLOAS_PAYLOAD_FIXED), // extra_data
+            (504, GLOAS_PAYLOAD_FIXED), // transactions
+            (508, GLOAS_PAYLOAD_FIXED), // withdrawals
+            (528, bal_off),             // block_access_list
+        ] {
+            out[pos..pos + 4].copy_from_slice(&val.to_le_bytes());
+        }
+        out[532..540].copy_from_slice(&slot_number.to_le_bytes());
+        out.extend_from_slice(withdrawals);
+        out.extend_from_slice(bal);
+        out
+    }
+
+    // Wraps a payload + 5-list gloas ExecutionRequests in a
+    // SignedExecutionPayloadEnvelope (zeroed signature and roots).
+    fn make_signed_envelope(payload: &[u8], requests: [&[u8]; 5]) -> Vec<u8> {
+        let mut out = vec![0u8; 100];
+        out[0..4].copy_from_slice(&100u32.to_le_bytes());
+
+        let msg = out.len();
+        out.resize(msg + 80, 0);
+        out[msg..msg + 4].copy_from_slice(&80u32.to_le_bytes());
+        let requests_off = 80 + payload.len() as u32;
+        out[msg + 4..msg + 8].copy_from_slice(&requests_off.to_le_bytes());
+        out.extend_from_slice(payload);
+
+        let mut off = 20u32;
+        for r in &requests {
+            out.extend_from_slice(&off.to_le_bytes());
+            off += r.len() as u32;
+        }
+        for r in &requests {
+            out.extend_from_slice(r);
+        }
+        out
     }
 
     // Constructs the getPayload JSON whose TCache encoding is
@@ -1095,11 +1307,14 @@ mod tests {
 
     #[test]
     fn write_new_payload_params_sample_fields() {
-        let frame = make_new_payload_frame(SAMPLE_PAYLOAD_SSZ, &[]);
-        let vhashes = [[0xaau8; 32], [0xbbu8; 32]];
-        let pbbr = [0xccu8; 32];
+        let block = make_signed_block(
+            SAMPLE_PAYLOAD_SSZ,
+            &[[0xaau8; 48], [0xbbu8; 48]],
+            [&[], &[], &[]],
+            [0xccu8; 32],
+        );
         let mut out = Vec::new();
-        write_new_payload_params(&frame, &vhashes, &pbbr, &mut out).unwrap();
+        write_new_payload_params_fulu(&block, &mut out).unwrap();
 
         let val = simd_json::to_borrowed_value(&mut out).unwrap();
         let params = val.as_array().unwrap();
@@ -1134,15 +1349,16 @@ mod tests {
         assert_eq!(wds[1].get("index").and_then(|v| v.as_str()), Some("0x2"));
         assert_eq!(wds[1].get("amount").and_then(|v| v.as_str()), Some("0x7d0"));
 
+        // sha256 of 48×0xaa / 48×0xbb with first byte forced to 0x01
         let vh = params[1].as_array().unwrap();
         assert_eq!(vh.len(), 2);
         assert_eq!(
             vh[0].as_str(),
-            Some("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+            Some("0x01659f8a49133759d495ee5d15262cdc0050f9027e20c7bed3e0599e27adec4b")
         );
         assert_eq!(
             vh[1].as_str(),
-            Some("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+            Some("0x018fc9d98c32189fe8232b46db86446b16895b4e2a911803d4b9c1d229838914")
         );
 
         assert_eq!(
@@ -1156,22 +1372,96 @@ mod tests {
 
     #[test]
     fn write_new_payload_params_exec_requests() {
-        let frame = make_new_payload_frame(SAMPLE_PAYLOAD_SSZ, &[&[0x01, 0x02], &[0x03]]);
+        let block = make_signed_block(SAMPLE_PAYLOAD_SSZ, &[], [&[], &[0x02], &[0x03]], [0u8; 32]);
         let mut out = Vec::new();
-        write_new_payload_params(&frame, &[], &[0u8; 32], &mut out).unwrap();
+        write_new_payload_params_fulu(&block, &mut out).unwrap();
+
+        let val = simd_json::to_borrowed_value(&mut out).unwrap();
+        let reqs = val.as_array().unwrap()[3].as_array().unwrap();
+        // empty deposit list skipped; type byte prepended to the others
+        assert_eq!(reqs.len(), 2);
+        assert_eq!(reqs[0].as_str(), Some("0x0102"));
+        assert_eq!(reqs[1].as_str(), Some("0x0203"));
+    }
+
+    #[test]
+    fn write_new_payload_params_gloas_bal_payload() {
+        // A real gloas payload always carries the BAL offset and slot_number;
+        // the encoder must not fold the BAL bytes into the withdrawals slice.
+        let mut wd = Vec::new();
+        wd.extend_from_slice(&1u64.to_le_bytes());
+        wd.extend_from_slice(&42u64.to_le_bytes());
+        wd.extend_from_slice(&[0x99u8; 20]);
+        wd.extend_from_slice(&1000u64.to_le_bytes());
+        let payload = make_gloas_payload(&wd, &[0xAA, 0xBB, 0xCC], 12345);
+        let envelope = make_signed_envelope(&payload, [&[], &[], &[], &[], &[]]);
+
+        let mut out = Vec::new();
+        write_new_payload_params_gloas(&envelope, &[], &mut out).unwrap();
+
+        let val = simd_json::to_borrowed_value(&mut out).unwrap();
+        let ep = &val.as_array().unwrap()[0];
+        assert_eq!(ep.get("transactions").and_then(|v| v.as_array()).map(|a| a.len()), Some(0));
+        let wds = ep.get("withdrawals").and_then(|v| v.as_array()).unwrap();
+        assert_eq!(wds.len(), 1);
+        assert_eq!(wds[0].get("validatorIndex").and_then(|v| v.as_str()), Some("0x2a"));
+        assert_eq!(wds[0].get("amount").and_then(|v| v.as_str()), Some("0x3e8"));
+        // engine_newPayloadV5 (Amsterdam): RLP BAL as DATA, slotNumber as QUANTITY.
+        assert_eq!(ep.get("blockAccessList").and_then(|v| v.as_str()), Some("0xaabbcc"));
+        assert_eq!(ep.get("slotNumber").and_then(|v| v.as_str()), Some("0x3039"));
+    }
+
+    #[test]
+    fn write_new_payload_params_gloas_five_request_types() {
+        // Gloas ExecutionRequests has five lists (EIP-8282 adds
+        // builder_deposits 0x03 and builder_exits 0x04); each non-empty list
+        // becomes its own type-prefixed entry.
+        let payload = make_gloas_payload(&[], &[], 1);
+        let envelope =
+            make_signed_envelope(&payload, [&[0x11], &[0x22], &[0x33], &[0x44], &[0x55]]);
+
+        let mut out = Vec::new();
+        write_new_payload_params_gloas(&envelope, &[], &mut out).unwrap();
+
+        let val = simd_json::to_borrowed_value(&mut out).unwrap();
+        let reqs = val.as_array().unwrap()[3].as_array().unwrap();
+        assert_eq!(reqs.len(), 5);
+        assert_eq!(reqs[0].as_str(), Some("0x0011"));
+        assert_eq!(reqs[1].as_str(), Some("0x0122"));
+        assert_eq!(reqs[2].as_str(), Some("0x0233"));
+        assert_eq!(reqs[3].as_str(), Some("0x0344"));
+        assert_eq!(reqs[4].as_str(), Some("0x0455"));
+    }
+
+    #[test]
+    fn write_new_payload_params_gloas_empty_builder_requests_skipped() {
+        let payload = make_gloas_payload(&[], &[], 1);
+        let envelope = make_signed_envelope(&payload, [&[0x11], &[], &[], &[], &[0x55]]);
+
+        let mut out = Vec::new();
+        write_new_payload_params_gloas(&envelope, &[], &mut out).unwrap();
 
         let val = simd_json::to_borrowed_value(&mut out).unwrap();
         let reqs = val.as_array().unwrap()[3].as_array().unwrap();
         assert_eq!(reqs.len(), 2);
-        assert_eq!(reqs[0].as_str(), Some("0x0102"));
-        assert_eq!(reqs[1].as_str(), Some("0x03"));
+        assert_eq!(reqs[0].as_str(), Some("0x0011"));
+        assert_eq!(reqs[1].as_str(), Some("0x0455"));
+    }
+
+    #[test]
+    fn write_new_payload_params_spec_block() {
+        let mut json = Vec::new();
+        write_new_payload_params_fulu(SIGNED_BLOCK_SSZ, &mut json).unwrap();
+        let actual = simd_json::to_owned_value(&mut json).unwrap();
+        let expected = simd_json::to_owned_value(&mut SIGNED_BLOCK_PARAMS.to_vec()).unwrap();
+        assert_eq!(actual, expected);
     }
 
     #[test]
     fn write_new_payload_params_empty_variable_fields() {
-        let frame = make_new_payload_frame(EMPTY_VAR_PAYLOAD_SSZ, &[]);
+        let block = make_signed_block(EMPTY_VAR_PAYLOAD_SSZ, &[], [&[], &[], &[]], [0u8; 32]);
         let mut out = Vec::new();
-        write_new_payload_params(&frame, &[], &[0u8; 32], &mut out).unwrap();
+        write_new_payload_params_fulu(&block, &mut out).unwrap();
 
         let val = simd_json::to_borrowed_value(&mut out).unwrap();
         let ep = &val.as_array().unwrap()[0];
@@ -1182,9 +1472,9 @@ mod tests {
 
     #[test]
     fn write_new_payload_params_many_txs() {
-        let frame = make_new_payload_frame(MANY_TX_PAYLOAD_SSZ, &[]);
+        let block = make_signed_block(MANY_TX_PAYLOAD_SSZ, &[], [&[], &[], &[]], [0u8; 32]);
         let mut out = Vec::new();
-        write_new_payload_params(&frame, &[], &[0u8; 32], &mut out).unwrap();
+        write_new_payload_params_fulu(&block, &mut out).unwrap();
 
         let val = simd_json::to_borrowed_value(&mut out).unwrap();
         let txs =
@@ -1196,15 +1486,15 @@ mod tests {
 
     #[test]
     fn write_new_payload_params_too_short() {
-        assert!(write_new_payload_params(&[0u8; 4], &[], &[0u8; 32], &mut Vec::new()).is_err());
+        assert!(write_new_payload_params_fulu(&[0u8; 4], &mut Vec::new()).is_err());
     }
 
     #[test]
     fn write_new_payload_params_truncated_payload() {
-        // length claims 100 bytes but only 10 are available
-        let mut frame = vec![100u8, 0, 0, 0];
-        frame.extend_from_slice(&[0u8; 10]);
-        assert!(write_new_payload_params(&frame, &[], &[0u8; 32], &mut Vec::new()).is_err());
+        // body offsets point past the truncated end
+        let block = make_signed_block(SAMPLE_PAYLOAD_SSZ, &[], [&[], &[], &[]], [0u8; 32]);
+        let truncated = &block[..block.len() - 200];
+        assert!(write_new_payload_params_fulu(truncated, &mut Vec::new()).is_err());
     }
 
     // ---------------------------------------------------------------------------

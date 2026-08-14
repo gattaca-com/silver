@@ -3,18 +3,26 @@
 
 use std::time::{Duration, Instant};
 
-use silver_common::{
-    flamegraph_timer::{collect::enable, report::TimingStats},
-    ssz_view::StatusView,
-};
+use silver_common::{profiler::InProcessReader, ssz_view::StatusView};
+use silver_metrics::{TimingStats, fold_stats};
 
 use crate::{
     perf::Fixtures,
-    utils::{PmBsHarness, SYNTH_PEER_CONN_ID, block_slot},
+    utils::{PmBsHarness, SYNTH_PEER_CONN_ID, block_slot, data_columns_available},
 };
+
+/// Destination for the FXT trace, from `PERF_FXT` (empty/unset ⇒ no dump).
+pub fn fxt_path() -> Option<std::path::PathBuf> {
+    std::env::var_os("PERF_FXT").filter(|s| !s.is_empty()).map(Into::into)
+}
+
+fn fxt_requested() -> bool {
+    fxt_path().is_some()
+}
 
 pub struct ReplayOutcome {
     pub stats: TimingStats,
+    pub fxt: Option<Vec<u8>>,
     pub validator_count: usize,
     pub wall_elapsed: Duration,
     pub final_slot: u64,
@@ -32,26 +40,45 @@ pub fn replay(fixtures: &Fixtures) -> ReplayOutcome {
     let final_slot = block_slot(blocks.last().expect("non-empty blocks"));
     eprintln!("perf: applying {n_blocks} blocks up to slot {final_slot}");
 
-    // Enable before harness construction — `new_heap` already runs `#[timed]` STF
+    let da_events: Vec<_> = blocks.iter().filter_map(|b| data_columns_available(b)).collect();
+
+    // Start before harness construction — `new_heap` already runs `#[timed]` STF
     // code.
-    enable();
+    let recorder = InProcessReader::start();
 
     let mut harness = PmBsHarness::new(&fixtures.state_ssz, n_blocks, blocks.len());
+    let anchor_finalized_epoch = harness.fork_choice_finalized_epoch();
     let first_block_slot = block_slot(&blocks[0]);
     assert_eq!(StatusView::head_slot(harness.local_status()) + 1, first_block_slot);
 
     harness.connect_peer(final_slot);
 
-    let (start, count, peer) = harness.next_range_request();
-    assert_eq!((start, count, peer), (first_block_slot, n_blocks, SYNTH_PEER_CONN_ID));
-    for b in blocks {
-        harness.inject_block(start, b);
+    for event in &da_events {
+        harness.emit_data_columns_available(*event);
+    }
+
+    // Max blocks by range for syncing head is 32
+    let mut injected = 0;
+
+    // Start before injection: `pump_bs` applies each batch inside this loop, so
+    // timing only the tail catch-up would exclude most block applies.
+    let wall_start = Instant::now();
+    while injected < n_blocks {
+        let (start, count, peer, request_id) = harness.next_range_request();
+        assert_eq!((start, count, peer), (first_block_slot + injected, 32, SYNTH_PEER_CONN_ID));
+
+        harness.pump_bs();
+        for b in &blocks[injected as usize..injected as usize + 32] {
+            harness.inject_block(start, b);
+        }
+        harness.inject_response_complete(request_id);
+        harness.pump_ctl();
+        injected += 32;
     }
 
     // Stay in Syncing (no Controller tick) — Following mode would let
     // `ticker.tick()` advance head_state_root over wall-clock time and
     // diverge from canonical.
-    let wall_start = Instant::now();
     let max_passes = n_blocks * 2 + 8;
     let mut passes = 0;
     loop {
@@ -77,8 +104,28 @@ pub fn replay(fixtures: &Fixtures) -> ReplayOutcome {
     );
     eprintln!("perf: state_root matches expected ✓");
 
+    // Finalization is representation-only (promote delta window → base), so the
+    // state_root check above also proves it stayed behavior-preserving. Assert
+    // it actually fired: a fixture set too short to advance finality would make
+    // the `finalize` frame a silent no-op and hide its cost.
+    let finalized_epoch = harness.fork_choice_finalized_epoch();
+    assert!(
+        finalized_epoch > anchor_finalized_epoch,
+        "replay never finalized: fork-choice finalized epoch stayed at {anchor_finalized_epoch} \
+         — need more blocks (≥4 epochs) for finality to advance past the anchor",
+    );
+    eprintln!(
+        "perf: finalized epoch {anchor_finalized_epoch} → {finalized_epoch} \
+         ({} promotions) ✓",
+        finalized_epoch - anchor_finalized_epoch,
+    );
+
+    let drainer = recorder.collect();
+    let fxt = fxt_requested().then(|| drainer.fxt_trace());
+
     ReplayOutcome {
-        stats: TimingStats::collect(),
+        stats: fold_stats(&drainer),
+        fxt,
         validator_count: harness.head_validator_count(),
         wall_elapsed,
         final_slot,

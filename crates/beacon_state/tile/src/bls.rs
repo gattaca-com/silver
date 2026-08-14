@@ -1,17 +1,19 @@
 use blst::{
-    BLST_ERROR, Pairing, blst_p1_affine, blst_p2_affine,
+    BLST_ERROR, Pairing, blst_p1, blst_p1_add_or_double, blst_p1_affine, blst_p1_cneg,
+    blst_p1_to_affine, blst_p1s_add, blst_p2_affine,
     min_pk::{AggregatePublicKey, PublicKey, Signature},
 };
+use flux_profiler::timed;
 use ring::rand::{SecureRandom, SystemRandom};
 use silver_beacon_state_data::{B256, BLSPubkey, BeaconBlockHeader, SYNC_COMMITTEE_SIZE};
-use silver_common::{
-    metrics::timed,
-    ssz_view::{
-        SIGNED_BEACON_BLOCK_MIN, SINGLE_ATT_SIZE, SignedBeaconBlockView, SingleAttestationView,
-    },
+use silver_common::ssz_view::{
+    SIGNED_BEACON_BLOCK_MIN, SINGLE_ATT_SIZE, SignedBeaconBlockView, SingleAttestationView,
 };
 
-use crate::ssz_hash::{self, hash_attestation_data, hash_tree_root_block_header};
+use crate::{
+    merkle,
+    ssz_hash::{self, hash_attestation_data, hash_tree_root_block_header},
+};
 
 // `verify_batch` casts `&PublicKey -> &blst_p1_affine` and
 // `&Signature -> &blst_p2_affine`. blst-rs declares both as
@@ -24,11 +26,74 @@ const _: () = {
     assert!(align_of::<Signature>() == align_of::<blst_p2_affine>());
 };
 
+/// Reusable pointer table for `blst_p1s_add`. The pointers are only live
+/// inside the single `sum` call that fills the table (cleared on entry), so
+/// moving the idle buffer across threads is sound despite the raw pointers.
+#[derive(Default)]
+pub(crate) struct PubkeyAggregator(Vec<*const blst_p1_affine>);
+unsafe impl Send for PubkeyAggregator {}
+
+impl PubkeyAggregator {
+    /// Batched affine addition — one shared inversion for the whole set,
+    /// ~1.8× the serial `AggregatePublicKey::add_public_key` loop. `None`
+    /// for an empty set (no identity element to report).
+    fn sum<'a>(&mut self, pks: impl IntoIterator<Item = &'a PublicKey>) -> Option<blst_p1> {
+        self.0.clear();
+        self.0.extend(pks.into_iter().map(|pk| pk as *const PublicKey as *const blst_p1_affine));
+        (!self.0.is_empty()).then(|| {
+            let mut sum = blst_p1::default();
+            unsafe { blst_p1s_add(&mut sum, self.0.as_ptr(), self.0.len()) };
+            sum
+        })
+    }
+
+    fn to_public_key(sum: blst_p1) -> PublicKey {
+        let mut affine = blst_p1_affine::default();
+        unsafe { blst_p1_to_affine(&mut affine, &sum) };
+        unsafe { std::mem::transmute::<blst_p1_affine, PublicKey>(affine) }
+    }
+
+    pub(crate) fn aggregate<'a>(
+        &mut self,
+        pks: impl IntoIterator<Item = &'a PublicKey>,
+    ) -> Option<PublicKey> {
+        self.sum(pks).map(Self::to_public_key)
+    }
+
+    /// `Σ committees − Σ missing = Σ present`: the same group element as
+    /// summing the attesters directly, but the point work scales with the
+    /// (typically 2-5%) missing fraction. Both iterators must cover the same
+    /// committees.
+    pub(crate) fn aggregate_subtracted<'a>(
+        &mut self,
+        committees: impl IntoIterator<Item = &'a PublicKey>,
+        missing: impl IntoIterator<Item = &'a PublicKey>,
+    ) -> Option<PublicKey> {
+        let mut sum = self.sum(committees)?;
+        if let Some(mut missing) = self.sum(missing) {
+            unsafe {
+                blst_p1_cneg(&mut missing, true);
+                blst_p1_add_or_double(&mut sum, &sum, &missing);
+            }
+        }
+        Some(Self::to_public_key(sum))
+    }
+
+    /// Identity for an empty set, for position-indexed tables where every
+    /// entry must hold a valid point.
+    pub(crate) fn aggregate_or_identity<'a>(
+        &mut self,
+        pks: impl IntoIterator<Item = &'a PublicKey>,
+    ) -> PublicKey {
+        Self::to_public_key(self.sum(pks).unwrap_or_default())
+    }
+}
+
 pub const DST: &[u8] = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_";
 
 /// G2 point at infinity (compressed). Spec: a sync_aggregate over an empty
 /// participant set verifies iff the signature is this value.
-const G2_POINT_AT_INFINITY: [u8; 96] = {
+pub(crate) const G2_POINT_AT_INFINITY: [u8; 96] = {
     let mut s = [0u8; 96];
     s[0] = 0xc0;
     s
@@ -37,19 +102,28 @@ const G2_POINT_AT_INFINITY: [u8; 96] = {
 pub const DOMAIN_BEACON_PROPOSER: u32 = 0x0000_0000;
 pub const DOMAIN_BEACON_ATTESTER: u32 = 0x0000_0001;
 pub const DOMAIN_RANDAO: u32 = 0x0000_0002;
+pub const DOMAIN_DEPOSIT: u32 = 0x0000_0003;
 pub const DOMAIN_VOLUNTARY_EXIT: u32 = 0x0000_0004;
 pub const DOMAIN_SELECTION_PROOF: u32 = 0x0000_0005;
 pub const DOMAIN_AGGREGATE_AND_PROOF: u32 = 0x0000_0006;
 pub const DOMAIN_SYNC_COMMITTEE: u32 = 0x0000_0007;
 pub const DOMAIN_BLS_TO_EXECUTION_CHANGE: u32 = 0x0000_000a;
+// Gloas
+pub const DOMAIN_BEACON_BUILDER: u32 = 0x0000_000b;
+pub const DOMAIN_PTC_ATTESTER: u32 = 0x0000_000c;
+pub const DOMAIN_BUILDER_DEPOSIT: u32 = 0x0000_000e;
 
+#[timed]
 pub fn compute_domain(
     domain_type: u32,
     fork_version: [u8; 4],
     genesis_validators_root: &B256,
 ) -> B256 {
     let fork_data_root = ssz_hash::hash_tree_root_fork_data(fork_version, genesis_validators_root);
+    domain_from_fork_data(domain_type, &fork_data_root)
+}
 
+pub fn domain_from_fork_data(domain_type: u32, fork_data_root: &B256) -> B256 {
     let mut domain = [0u8; 32];
     domain[0..4].copy_from_slice(&domain_type.to_le_bytes());
     domain[4..32].copy_from_slice(&fork_data_root[..28]);
@@ -57,7 +131,7 @@ pub fn compute_domain(
 }
 
 pub fn compute_signing_root(object_root: &B256, domain: &B256) -> B256 {
-    ssz_hash::hash_concat(object_root, domain)
+    merkle::hash_concat(object_root, domain)
 }
 
 #[inline]
@@ -96,6 +170,7 @@ pub struct SigBatch {
     rand_bytes: Vec<u8>,
     /// Multi-pairing accumulator.
     pairing: Pairing,
+    aggregator: PubkeyAggregator,
     poisoned: bool,
 }
 
@@ -119,6 +194,7 @@ impl SigBatch {
             sigs: Vec::with_capacity(SIG_BATCH_CAP),
             rand_bytes: Vec::with_capacity(SIG_BATCH_CAP * 8),
             pairing: Pairing::new(true, DST),
+            aggregator: PubkeyAggregator::default(),
             poisoned: false,
         }
     }
@@ -160,25 +236,27 @@ impl SigBatch {
     where
         I: IntoIterator<Item = &'a PublicKey>,
     {
-        let mut iter = participants.into_iter();
-        let Some(first) = iter.next() else {
-            self.poisoned = true;
-            return;
-        };
-        let mut agg = AggregatePublicKey::from_public_key(first);
-        for pk in iter {
-            if agg.add_public_key(pk, false).is_err() {
-                self.poisoned = true;
-                return;
-            }
+        match self.aggregator.aggregate(participants) {
+            Some(pk) => self.push_one(&pk, sig, signing_root),
+            None => self.poisoned = true,
         }
-        let Ok(sig) = Signature::from_bytes(sig) else {
-            self.poisoned = true;
-            return;
-        };
-        self.msgs.push(signing_root);
-        self.pks.push(agg.to_public_key());
-        self.sigs.push(sig);
+    }
+
+    /// Subtracts the missing members from the committee aggregates rather than
+    /// summing every attester — see [`PubkeyAggregator::aggregate_subtracted`].
+    /// Poisons when nobody attested.
+    #[timed]
+    pub fn push_aggregate_subtracted<'a>(
+        &mut self,
+        committees: impl IntoIterator<Item = &'a PublicKey>,
+        missing: impl IntoIterator<Item = &'a PublicKey>,
+        sig: &[u8; 96],
+        signing_root: B256,
+    ) {
+        match self.aggregator.aggregate_subtracted(committees, missing) {
+            Some(pk) => self.push_one(&pk, sig, signing_root),
+            None => self.poisoned = true,
+        }
     }
 
     /// Sync-aggregate semantics: empty participants accepted iff sig is
@@ -306,8 +384,7 @@ pub fn verify_block_signature(
     block_ssz: &[u8],
     proposer_pubkey: &PublicKey,
     body_root: &B256,
-    fork_version: [u8; 4],
-    genesis_validators_root: &B256,
+    domain: &B256,
 ) -> bool {
     if block_ssz.len() < SIGNED_BEACON_BLOCK_MIN {
         return false;
@@ -322,9 +399,7 @@ pub fn verify_block_signature(
         body_root: *body_root,
     };
     let object_root = hash_tree_root_block_header(&header);
-
-    let domain = compute_domain(DOMAIN_BEACON_PROPOSER, fork_version, genesis_validators_root);
-    let signing_root = compute_signing_root(&object_root, &domain);
+    let signing_root = compute_signing_root(&object_root, domain);
 
     verify_one(proposer_pubkey, sig, &signing_root)
 }
@@ -337,19 +412,17 @@ pub fn verify_deposit_signature(pubkey: &BLSPubkey, sig: &[u8; 96], signing_root
 
 /// Verify a single-attester `SingleAttestation` (gossip subnet form). Used
 /// on the gossip hot path; the body-included aggregate path goes through
-/// `state_transition::validate_attestations` + `SigBatch`.
+/// `stf::validate_attestations` + `SigBatch`.
 pub fn verify_single_attestation(
     att: &[u8; SINGLE_ATT_SIZE],
     attester_pubkey: &PublicKey,
-    fork_version: [u8; 4],
-    genesis_validators_root: &B256,
+    domain: &B256,
 ) -> bool {
     let data = SingleAttestationView::data(att);
     let sig = SingleAttestationView::signature(att);
 
-    let object_root = hash_attestation_data(data);
-    let domain = compute_domain(DOMAIN_BEACON_ATTESTER, fork_version, genesis_validators_root);
-    let signing_root = compute_signing_root(&object_root, &domain);
+    let object_root = hash_attestation_data(data.as_bytes());
+    let signing_root = compute_signing_root(&object_root, domain);
 
     verify_one(attester_pubkey, sig, &signing_root)
 }

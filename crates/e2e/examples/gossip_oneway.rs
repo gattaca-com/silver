@@ -40,6 +40,8 @@ use std::{
 use flux::{tile::Tile, timing::Nanos};
 use mimalloc::MiMalloc;
 use rand::{Rng, RngCore};
+#[cfg(feature = "alloc-profile")]
+use silver_common::metrics::CountingAllocator;
 use silver_common::{GossipMsgOut, GossipTopic, NewGossipMsg, P2pSend, PeerEvent, TRandomAccess};
 use silver_e2e::{
     EchoCompressionHalf, EchoNetworkHalf, EchoStack, PublisherStack, Stats,
@@ -60,10 +62,11 @@ const DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
-fn main() {
-    #[cfg(feature = "alloc-profile")]
-    let _alloc_profile_guard = silver_common::allocator::init_allocator_trace();
+#[cfg(feature = "alloc-profile")]
+#[global_allocator]
+static GLOBAL: CountingAllocator<MiMalloc> = CountingAllocator(MiMalloc);
 
+fn main() {
     tracing_subscriber::fmt().with_max_level(tracing::Level::WARN).try_init().ok();
     let args = parse_args();
     assert!(args.payload_size >= 8, "payload-size must be >= 8 for the timestamp prefix");
@@ -236,7 +239,6 @@ fn compression_thread(
 ) {
     let mut drain_deadline: Option<Instant> = None;
     loop {
-        comp.compression.loop_body(&mut comp.compression_adapter);
         drain_compression_stats(&mut comp);
         if publisher_done.load(Ordering::Acquire) {
             let expected = expected_count.load(Ordering::Acquire);

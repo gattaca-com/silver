@@ -1,4 +1,6 @@
 pub mod counters_pane;
+pub mod events_pane;
+pub mod flamegraph_pane;
 pub mod fmt;
 pub mod tcaches_pane;
 pub mod tiles_pane;
@@ -12,7 +14,7 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use crate::app::{App, Pane};
+use crate::app::{App, PANES, Pane};
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
@@ -26,12 +28,14 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Pane::TCaches => tcaches_pane::draw(f, chunks[1], app),
         Pane::Timings => timings_pane::draw(f, chunks[1], app),
         Pane::Tiles => tiles_pane::draw(f, chunks[1], app),
+        Pane::Events => app.events.draw(f, chunks[1]),
+        Pane::Flamegraph => flamegraph_pane::draw(f, chunks[1], app),
     }
     draw_footer(f, chunks[2], app);
 }
 
 fn draw_header(f: &mut Frame, area: Rect, app: &App) {
-    let spans: Vec<Span> = [Pane::Counters, Pane::TCaches, Pane::Timings, Pane::Tiles]
+    let mut spans: Vec<Span> = PANES
         .iter()
         .flat_map(|&p| {
             let style = if p == app.pane {
@@ -42,6 +46,11 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
             [Span::styled(format!(" {} ", p.label()), style), Span::raw(" ")]
         })
         .collect();
+    if app.pane == Pane::Flamegraph {
+        if let Some(note) = app.flamegraph.last_export() {
+            spans.push(Span::styled(note.to_owned(), Style::default().fg(Color::DarkGray)));
+        }
+    }
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
@@ -53,7 +62,12 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
         Span::styled("↑/↓", bold),
         Span::raw(" select  "),
     ];
-    if app.drilled_in {
+    if app.pane == Pane::Flamegraph {
+        for (key, action) in [("p", " pause  "), ("e", " export  "), ("c", " clear  ")] {
+            spans.push(Span::styled(key, bold));
+            spans.push(Span::raw(action));
+        }
+    } else if app.drilled_in {
         spans.push(Span::styled("Esc", bold));
         spans.push(Span::raw(" close plot  "));
     } else {

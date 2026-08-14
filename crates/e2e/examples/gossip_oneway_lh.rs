@@ -13,6 +13,8 @@
 //!   cargo run -p silver_e2e --features lh-client --example \
 //!     gossip_oneway_lh -- --duration 5 --rate 500 --payload-size 1024
 
+#[cfg(feature = "alloc-profile")]
+use std::alloc::System;
 use std::{
     env, io,
     net::{IpAddr, Ipv4Addr, SocketAddr},
@@ -27,6 +29,8 @@ use std::{
 
 use flux::{tile::Tile, timing::Nanos};
 use rand::{Rng, RngCore};
+#[cfg(feature = "alloc-profile")]
+use silver_common::metrics::CountingAllocator;
 use silver_common::{GossipMsgOut, GossipTopic, P2pSend, PeerEvent, PeerId};
 use silver_e2e::{
     LhGossipClient, PublisherStack, Stats,
@@ -43,10 +47,11 @@ const FORK_DIGEST_HEX: &str = "abcd1234";
 const TOPIC: GossipTopic = GossipTopic::BeaconBlock;
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 
-fn main() {
-    #[cfg(feature = "alloc-profile")]
-    let _alloc_profile_guard = silver_common::allocator::init_allocator_trace();
+#[cfg(feature = "alloc-profile")]
+#[global_allocator]
+static GLOBAL: CountingAllocator<System> = CountingAllocator(System);
 
+fn main() {
     tracing_subscriber::fmt().with_max_level(tracing::Level::WARN).try_init().ok();
     let args = parse_args();
     assert!(args.payload_size >= 8, "payload-size must be >= 8 for the timestamp prefix");

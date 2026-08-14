@@ -97,17 +97,23 @@ impl SlotTicker {
         }
     }
 
-    fn since_genesis_ms(&self) -> u64 {
+    pub fn millis_since_genesis(&self) -> u64 {
         self.anchor_genesis_ms + self.anchor.elapsed().as_millis() as u64
     }
 
-    /// Current wall-clock slot.
-    pub fn current_slot(&self) -> u64 {
-        self.since_genesis_ms() / self.slot_ms
+    pub fn slot_time_elapsed(&self) -> Duration {
+        Duration::from_millis(self.millis_since_genesis() % self.slot_ms)
     }
 
-    /// Force `current_slot()` to return `slot` at this moment and reset
-    /// the in-slot phase state.
+    pub fn current_slot(&self) -> u64 {
+        self.millis_since_genesis() / self.slot_ms
+    }
+
+    pub fn is_before_attesting_interval(&self, is_gloas: bool) -> bool {
+        let fraction = if is_gloas { 4 } else { 3 };
+        self.millis_since_genesis() % self.slot_ms < self.slot_ms / fraction
+    }
+
     #[cfg(any(test, feature = "test-util"))]
     pub fn set_current_slot(&mut self, slot: u64) {
         self.anchor = Instant::now();
@@ -115,8 +121,20 @@ impl SlotTicker {
         self.last = None;
     }
 
+    /// Force `since_genesis_ms()` to `ms` at this moment, fixing both the slot
+    /// and the sub-slot offset (so `is_before_attesting_interval` reflects a
+    /// precise within-slot time). For EF fork-choice vectors that pin proposer
+    /// boost to a `tick`. Reads drift by the elapsed call latency (negligible
+    /// vs the 12s slot / 4s deadline).
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn set_since_genesis_ms(&mut self, ms: u64) {
+        self.anchor = Instant::now();
+        self.anchor_genesis_ms = ms;
+        self.last = None;
+    }
+
     pub fn tick(&mut self) -> TickEvent {
-        let ms = self.since_genesis_ms();
+        let ms = self.millis_since_genesis();
         let slot = ms / self.slot_ms;
         let into = ms % self.slot_ms;
 

@@ -1,16 +1,19 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 
+use chain_config::ChainConfig;
 pub use discovery_config::DiscoveryConfig;
+pub use engine_config::EngineConfig;
 pub use peer_score_params::ScoreParams;
 use secp256k1::PublicKey;
 use serde::{Deserialize, Serialize};
-use silver_common::{Enr, Error, GossipTopic, Identify, Keypair, NodeId, PeerId, StreamProtocol};
-pub use syncing_config::SyncingConfig;
-
-use crate::chain_config::ChainConfig;
+use silver_common::{
+    Enr, Error, GossipTopic, Identify, Keypair, NodeId, PeerId, SAMPLES_PER_SLOT, StreamProtocol,
+};
+pub use syncing_config::{PendingBounds, SyncingConfig};
 
 mod chain_config;
 mod discovery_config;
+mod engine_config;
 mod peer_score_params;
 mod syncing_config;
 
@@ -56,7 +59,16 @@ fn default_supported_protocols() -> Vec<String> {
 }
 
 fn default_gossip_topics() -> Vec<String> {
-    vec![GossipTopic::BeaconBlock.to_string()]
+    vec![
+        GossipTopic::BeaconBlock.to_string(),
+        GossipTopic::BeaconAggregateAndProof.to_string(),
+        GossipTopic::VoluntaryExit.to_string(),
+        GossipTopic::ProposerSlashing.to_string(),
+        GossipTopic::AttesterSlashing.to_string(),
+        GossipTopic::BlsToExecutionChange.to_string(),
+        GossipTopic::ExecutionPayload.to_string(),
+        GossipTopic::PayloadAttestationMessage.to_string(),
+    ]
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -79,7 +91,9 @@ pub struct Config {
     discovery_port: Option<u16>,
     #[serde(default)]
     quic_port: Option<u16>,
-    #[serde(default = "default_u8::<4>")]
+    // Floored at `SAMPLES_PER_SLOT` (8) in `enr()`: silver custodies the full
+    // sample set, so cgc < 8 is unsupported (see `enr`).
+    #[serde(default = "default_u8::<8>")]
     data_column_custody_group_count: u8,
     /// Full multiselect protocol strings.
     #[serde(default = "default_supported_protocols")]
@@ -94,11 +108,11 @@ pub struct Config {
     peer_score_params: ScoreParams,
     #[serde(default)]
     syncing: SyncingConfig,
-    #[serde(default = "default_usize::<33554432>")] // 2 << 24
+    #[serde(default = "default_usize::<268435456>")] // 2 << 27
     incoming_gossip_tcache_size: usize,
-    #[serde(default = "default_usize::<33554432>")] // 2 << 24
+    #[serde(default = "default_usize::<268435456>")] // 2 << 27
     outgoing_gossip_tcache_size: usize,
-    #[serde(default = "default_usize::<33554432>")] // 2 << 24
+    #[serde(default = "default_usize::<268435456>")] // 2 << 27
     incoming_gossip_ssz_tcache_size: usize,
     #[serde(default = "default_usize::<67108864>")] // 2 << 25
     incoming_rpc_tcache_size: usize,
@@ -106,6 +120,10 @@ pub struct Config {
     outgoing_rpc_tcache_size: usize,
     #[serde(default = "default_data_dir")]
     data_storage_dir: String,
+    #[serde(default)]
+    engine_config: EngineConfig,
+    #[serde(default)]
+    disable_weak_subjectivity_check: bool,
 }
 
 impl Config {
@@ -124,19 +142,21 @@ impl Config {
             external_ip_v6: None,
             discovery_port: None,
             quic_port: None,
-            data_column_custody_group_count: 4,
+            data_column_custody_group_count: SAMPLES_PER_SLOT,
             supported_protocols: default_supported_protocols(),
             gossip_topics: default_gossip_topics(),
             chain_config: ChainConfig::default(),
             discovery_config: DiscoveryConfig::default(),
             peer_score_params: ScoreParams::default(),
             syncing: SyncingConfig::default(),
-            incoming_gossip_tcache_size: 2 << 24,     // protobuf
-            outgoing_gossip_tcache_size: 2 << 24,     // protobuf
-            incoming_gossip_ssz_tcache_size: 2 << 24, // ssz
-            incoming_rpc_tcache_size: 2 << 25,        // ssz
+            incoming_gossip_tcache_size: 2 << 27,     // protobuf
+            outgoing_gossip_tcache_size: 2 << 27,     // protobuf
+            incoming_gossip_ssz_tcache_size: 2 << 27, // ssz
+            incoming_rpc_tcache_size: 2 << 27,        // ssz
             outgoing_rpc_tcache_size: 2 << 24,        // ssz
             data_storage_dir: default_data_dir(),
+            engine_config: Default::default(),
+            disable_weak_subjectivity_check: false,
         }
     }
 
@@ -173,6 +193,21 @@ impl Config {
         self
     }
 
+    pub fn with_checkpoint_pubkeys(mut self, path: String) -> Self {
+        self.chain_config.checkpoint_pubkeys_file = Some(path);
+        self
+    }
+
+    pub fn with_disable_weak_subjectivity_check(mut self, disable: bool) -> Self {
+        self.disable_weak_subjectivity_check = disable;
+        self
+    }
+
+    pub fn with_unsafe_no_el(mut self, unsafe_no_el: bool) -> Self {
+        self.engine_config.unsafe_no_el = unsafe_no_el;
+        self
+    }
+
     pub fn keypair(&self) -> Result<Keypair, Error> {
         Keypair::from_secret(&self.secret_key)
     }
@@ -197,7 +232,8 @@ impl Config {
         eth2[8..].copy_from_slice(&self.next_fork_epoch.to_le_bytes());
 
         builder.eth2(eth2);
-        builder.cgc(self.data_column_custody_group_count as u64);
+        // Floor at SAMPLES_PER_SLOT: custody set must cover the sample set.
+        builder.cgc(self.data_column_custody_group_count.max(SAMPLES_PER_SLOT) as u64);
 
         if let Some(ip) = self.external_ip_v4 {
             builder.ip4(ip);
@@ -248,8 +284,8 @@ impl Config {
         Ok(identify)
     }
 
-    pub fn chain_config(&self) -> ChainConfig {
-        self.chain_config.clone()
+    pub fn chain_config(&self) -> &ChainConfig {
+        &self.chain_config
     }
 
     pub fn discovery_config(&self) -> DiscoveryConfig {
@@ -260,7 +296,7 @@ impl Config {
         self.peer_score_params.clone()
     }
 
-    pub fn syncing(&self) -> SyncingConfig {
+    pub fn syncing_config(&self) -> SyncingConfig {
         self.syncing.clone()
     }
 
@@ -295,6 +331,14 @@ impl Config {
     pub fn data_storage_dir(&self) -> &str {
         &self.data_storage_dir
     }
+
+    pub fn engine_config(&self) -> EngineConfig {
+        self.engine_config.clone()
+    }
+
+    pub fn disable_weak_subjectivity_check(&self) -> bool {
+        self.disable_weak_subjectivity_check
+    }
 }
 
 #[cfg(test)]
@@ -321,7 +365,7 @@ mod tests {
         assert_eq!(cfg.fork_digest(), [0x8c, 0x9f, 0x62, 0xfe]);
         assert_eq!(cfg.next_fork_epoch, u64::MAX);
         assert_eq!(cfg.supported_protocols().unwrap().len(), 11);
-        assert_eq!(cfg.gossip_topics().unwrap().len(), 1);
+        assert_eq!(cfg.gossip_topics().unwrap().len(), 8);
     }
 
     #[test]

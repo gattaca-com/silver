@@ -9,6 +9,7 @@ version.workspace = true
 silver_beacon_api.workspace = true
 silver_beacon_state.workspace = true
 silver_beacon_state_data.workspace = true
+silver_columns.workspace = true
 silver_common.workspace = true
 silver_config.workspace = true
 silver_control.workspace = true
@@ -17,6 +18,7 @@ silver_gossip.workspace = true
 silver_network.workspace = true
 silver_peer.workspace = true
 silver_storage.workspace = true
+silver_engine.workspace = true
 
 clap.workspace = true
 flux.workspace = true
@@ -25,10 +27,14 @@ mimalloc.workspace = true
 quinn-proto.workspace = true
 rand.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
 
 [lints]
 workspace = true
 
 [features]
 alloc-profile = ["silver_common/alloc-profile"]
+# Hardware-counter dimension for `#[timed]`: per-call counters via rdpmc on
+# perf-{fn} queues (dev; needs `sudo sysctl kernel.perf_event_paranoid=2`).
+# Surfer picks the queues up when present; non-perf builds are unaffected.
+perf = ["silver_common/perf"]
+thread_park = ["flux/park", "silver_common/thread_park"]

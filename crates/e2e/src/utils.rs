@@ -1,14 +1,17 @@
 //! Shared PM + BS harness for the `sync_pm_bs*` integration tests.
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use flux::{spine::SpineAdapter, tile::Tile};
-use silver_beacon_state::tile::BeaconStateTile;
-use silver_beacon_state_data::{BeaconState, BeaconStateOwner, SpecConfig};
+use silver_beacon_state::{
+    ssz_hash::{hash_tree_root_block_header, hash_tree_root_body_fulu},
+    tile::BeaconStateTile,
+};
+use silver_beacon_state_data::{BeaconBlockHeader, BeaconState, SpecConfig};
 use silver_common::{
-    BeaconStateEvent, IpBytes, Keypair, P2pSend, P2pStreamId, PeerControl, PeerEvent, PeerId,
-    RpcInbound, RpcOutbound, RpcRequest, RpcRequestOutbound, RpcResponse, RpcResponseInbound,
-    SilverSpine, StreamProtocol, TCache, TCacheProducer, TCacheRead, TProducer,
+    BeaconStateEvent, DataColumnsEvent, IpBytes, Keypair, P2pSend, P2pStreamId, PeerControl,
+    PeerEvent, PeerId, RpcInbound, RpcOutbound, RpcRequest, RpcRequestOutbound, RpcResponse,
+    RpcResponseInbound, SilverSpine, StreamProtocol, TCache, TCacheProducer, TCacheRead, TProducer,
     ssz_view::{
         BeaconBlocksByRangeRequestView, METADATA_SIZE, STATUS_V2_SIZE, SignedBeaconBlockView,
         StatusView,
@@ -17,6 +20,7 @@ use silver_common::{
 };
 use silver_config::{ScoreParams, SyncingConfig};
 use silver_control::Controller;
+use silver_gossip::GossipHandler;
 use silver_peer::PeerManager;
 use tempfile::TempDir;
 
@@ -29,6 +33,20 @@ pub const SYNTH_PEER_CONN_ID: usize = 1;
 
 pub fn block_slot(ssz: &[u8]) -> u64 {
     SignedBeaconBlockView::slot(ssz)
+}
+
+pub fn data_columns_available(block: &[u8]) -> Option<DataColumnsEvent> {
+    if !SignedBeaconBlockView::has_data_columns_fulu(block) {
+        return None;
+    }
+    let block_root = hash_tree_root_block_header(&BeaconBlockHeader {
+        slot: SignedBeaconBlockView::slot(block),
+        proposer_index: SignedBeaconBlockView::proposer_index(block),
+        parent_root: *SignedBeaconBlockView::parent_root(block),
+        state_root: *SignedBeaconBlockView::state_root(block),
+        body_root: hash_tree_root_body_fulu(SignedBeaconBlockView::body(block)),
+    });
+    Some(DataColumnsEvent::Available { block_root, slot: SignedBeaconBlockView::slot(block) })
 }
 
 pub fn scan_checkpoint_fixtures(
@@ -114,12 +132,29 @@ impl PmBsHarness {
         let gossip_p = TCache::producer("gossip_in", 1 << 20);
         let rpc_cap = (n_blocks * 300 * 1024).next_power_of_two().max(1 << 22);
         let rpc_p = TCache::producer("rpc_in", rpc_cap);
+        let engine_resp_p = TCache::producer("engine_resp", 1 << 24);
+        let replay_p = TCache::producer("replay_in", 1 << 20);
         let gossip_c = gossip_p.cache_ref().random_access("test", true).expect("gossip ra");
         let rpc_c = rpc_p.cache_ref().random_access("test", true).expect("rpc ra");
+        let engine_resp_c =
+            engine_resp_p.cache_ref().random_access("test", true).expect("engine resp ra");
+        let replay_c = replay_p.cache_ref().random_access("test", true).expect("replay ra");
 
-        let state = BeaconStateOwner::new(BeaconState::empty());
-        let mut bs =
-            BeaconStateTile::new(ticker, SpecConfig::mainnet(), state, gossip_c, rpc_c, checkpoint);
+        let state = BeaconState::from_checkpoint(checkpoint, &SpecConfig::mainnet(), &[])
+            .unwrap_or_else(|e| panic!("decompose checkpoint: {e}"));
+        let mut bs = BeaconStateTile::new(
+            ticker,
+            Arc::new(SpecConfig::mainnet()),
+            &SyncingConfig::default(),
+            gossip_c,
+            rpc_c,
+            engine_resp_c,
+            replay_c,
+            // Replays a committed fixture whose anchor is intentionally old; the
+            // weak-subjectivity guard is for live bootstrap, not fixed replay.
+            false,
+            state,
+        );
         let mut bs_a = SpineAdapter::connect_tile(&bs, &mut *spine);
 
         let pm = PeerManager::new(
@@ -132,8 +167,28 @@ impl PmBsHarness {
             },
             [0u8; 4], // overwritten via set_status from BS's first emission
             [0u8; METADATA_SIZE],
+            0,
+            false,
         );
-        let mut ctl = Controller::new(pm, TCache::multi_producer("rpc_out_dummy", 32));
+
+        let dummy_gossip_in = TCache::producer("dummy gossip in", 32);
+        let dummy_gossip_c =
+            dummy_gossip_in.cache_ref().random_access("dummy  gossip c", true).unwrap();
+
+        let gossip_handler = GossipHandler::new(
+            dummy_gossip_c,
+            TCache::producer("g ssz", 32),
+            TCache::producer("g proto", 32),
+            String::new(),
+        )
+        .unwrap();
+        let mut ctl = Controller::new(
+            pm,
+            gossip_handler,
+            TCache::multi_producer("rpc_out_dummy", 32),
+            Arc::new(SpecConfig::mainnet()),
+            rpc_p.cache_ref().random_access("ctl_test", true).expect("ctl rpc ra"),
+        );
         let mut ctl_a = SpineAdapter::connect_tile(&ctl, &mut spine);
 
         let mut inj_a = SpineAdapter::connect_tile(&Injector, &mut spine);
@@ -200,20 +255,21 @@ impl PmBsHarness {
 
     /// Next `BlocksByRange` request on `p2p_send` as `(start_slot, count,
     /// peer)`; panics if none was emitted.
-    pub fn next_range_request(&mut self) -> (u64, u64, usize) {
+    pub fn next_range_request(&mut self) -> (u64, u64, usize, u64) {
         let mut hit = None;
         self.inj_a.consume::<P2pSend, _>(|ev, _| {
             if hit.is_none() &&
                 let P2pSend::Rpc(RpcOutbound::Request(RpcRequestOutbound {
                     peer,
                     request: RpcRequest::BlocksByRange(ssz),
-                    ..
+                    application_id,
                 })) = ev
             {
                 hit = Some((
                     BeaconBlocksByRangeRequestView::start_slot(&ssz),
                     BeaconBlocksByRangeRequestView::count(&ssz),
                     peer,
+                    application_id,
                 ));
             }
         });
@@ -235,14 +291,49 @@ impl PmBsHarness {
         }));
     }
 
+    pub fn inject_response_complete(&mut self, application_id: u64) {
+        self.inj_a.produce(RpcInbound::Response(RpcResponseInbound {
+            application_id,
+            stream_id: P2pStreamId::new(
+                SYNTH_PEER_CONN_ID,
+                0,
+                StreamProtocol::BeaconBlocksByRange,
+                true,
+            ),
+            response: RpcResponse::Complete,
+        }));
+    }
+
+    pub fn emit_data_columns_available(&mut self, sig: DataColumnsEvent) {
+        self.inj_a.produce(sig);
+    }
+
     /// Assert the next `BlocksByRange` request matches `expected = (start,
-    /// count)`, feed all `blocks`, and pump BS once.
+    /// count)`, mark data columns available, feed all `blocks`, and pump BS.
     pub fn drive_batch(&mut self, expected: (u64, u64), blocks: &[Vec<u8>]) {
-        let (start, count, peer) = self.next_range_request();
+        let (start, count, peer, _request_id) = self.next_range_request();
         assert_eq!((start, count, peer), (expected.0, expected.1, SYNTH_PEER_CONN_ID));
+        // DA events first so blob-carrying blocks aren't held in
+        // dc_pending_blocks (same ordering as perf::replay).
+        for sig in blocks.iter().filter_map(|b| data_columns_available(b)) {
+            self.emit_data_columns_available(sig);
+        }
+        self.pump_bs();
         for b in blocks {
             self.inject_block(start, b);
         }
+        // Stream terminator: SyncReq completion is terminator-driven, so PM
+        // won't issue the next batch without it.
+        self.inj_a.produce(RpcInbound::Response(RpcResponseInbound {
+            application_id: start,
+            stream_id: P2pStreamId::new(
+                SYNTH_PEER_CONN_ID,
+                0,
+                StreamProtocol::BeaconBlocksByRange,
+                true,
+            ),
+            response: RpcResponse::Complete,
+        }));
         self.pump_bs();
     }
 
@@ -264,5 +355,9 @@ impl PmBsHarness {
 
     pub fn head_validator_count(&self) -> usize {
         self.bs.head_validator_count()
+    }
+
+    pub fn fork_choice_finalized_epoch(&self) -> u64 {
+        self.bs.fork_choice_finalized_epoch()
     }
 }

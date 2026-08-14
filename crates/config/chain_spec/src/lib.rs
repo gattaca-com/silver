@@ -4,6 +4,9 @@ const fn default_u64<const V: u64>() -> u64 {
     V
 }
 
+/// Mainnet preset; every network we support uses it.
+const SLOTS_PER_EPOCH: u64 = 32;
+
 /// Fulu `BLOB_SCHEDULE` entry (EIP-7892). Per-epoch override on
 /// `max_blobs_per_block`. Network-specific.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -32,11 +35,16 @@ pub struct SpecConfig {
     #[serde(default = "default_capella_fork_version", with = "hex_0x")]
     pub capella_fork_version: [u8; 4],
     /// Fulu fork version. Mixed into every Fulu
-    /// fork digest. We target Fulu only — no `FULU_FORK_EPOCH` field
-    /// because no code path gates on "is current epoch ≥ Fulu activation?":
-    /// we always apply Fulu rules.
+    /// fork digest.
     #[serde(default = "default_fulu_fork_version", with = "hex_0x")]
     pub fulu_fork_version: [u8; 4],
+    /// Gloas (EIP-7732) fork version, compared against
+    /// `state.fork.current_version` to gate Gloas state logic.
+    #[serde(default = "default_gloas_fork_version", with = "hex_0x")]
+    pub gloas_fork_version: [u8; 4],
+    /// Gloas activation epoch.
+    #[serde(default = "default_gloas_fork_epoch")]
+    pub gloas_fork_epoch: u64,
     /// Per-epoch override on `max_blobs_per_block` (EIP-7892). Sorted by
     /// `epoch`; the active entry is the highest-epoch entry whose epoch
     /// <= the queried epoch. Empty ⇒ always fall back to the Electra
@@ -74,6 +82,18 @@ pub struct SpecConfig {
     /// churn_limit_quotient)`. `1<<16` mainnet.
     #[serde(default = "default_u64::<65536>")]
     pub churn_limit_quotient: u64,
+    /// EIP-8061: Gloas replaces `churn_limit_quotient` for the base churn
+    /// (`1<<15`, double the Electra rate). Deposit/exit churn split off it.
+    #[serde(default = "default_u64::<32768>")]
+    pub churn_limit_quotient_gloas: u64,
+    /// EIP-8061: Gloas consolidation churn is independently derived as
+    /// `total_stake / this`, rounded. `1<<16` mainnet.
+    #[serde(default = "default_u64::<65536>")]
+    pub consolidation_churn_limit_quotient: u64,
+    /// EIP-8061: Gloas cap on per-epoch *activation* (deposit) churn, in Gwei.
+    /// Exit churn is uncapped in Gloas.
+    #[serde(default = "default_u64::<256_000_000_000>")]
+    pub max_per_epoch_activation_churn_limit_gloas: u64,
     /// Per-validator inactivity score increment for missed-target epochs.
     #[serde(default = "default_u64::<4>")]
     pub inactivity_score_bias: u64,
@@ -114,6 +134,14 @@ fn default_fulu_fork_version() -> [u8; 4] {
     [0x06, 0x00, 0x00, 0x00]
 }
 
+fn default_gloas_fork_version() -> [u8; 4] {
+    [0x07, 0x00, 0x00, 0x00]
+}
+
+fn default_gloas_fork_epoch() -> u64 {
+    u64::MAX
+}
+
 fn default_blob_schedule() -> Vec<BlobParameters> {
     vec![BlobParameters { epoch: 412672, max_blobs_per_block: 15 }, BlobParameters {
         epoch: 419072,
@@ -151,6 +179,44 @@ impl SpecConfig {
         }
     }
 
+    /// Whether `epoch` is at or past the Gloas activation.
+    #[inline]
+    pub fn is_gloas_at(&self, epoch: u64) -> bool {
+        epoch >= self.gloas_fork_epoch
+    }
+
+    #[inline]
+    pub fn is_gloas_at_slot(&self, slot: u64) -> bool {
+        self.is_gloas_at(slot / SLOTS_PER_EPOCH)
+    }
+
+    #[inline]
+    pub fn is_gloas_activation_epoch(&self, epoch: u64) -> bool {
+        epoch == self.gloas_fork_epoch
+    }
+
+    /// First Gloas slot, or `u64::MAX` if Gloas isn't scheduled.
+    #[inline]
+    pub fn gloas_fork_slot(&self) -> u64 {
+        self.gloas_fork_epoch.saturating_mul(SLOTS_PER_EPOCH)
+    }
+
+    #[inline]
+    pub fn fork_version_at(&self, epoch: u64) -> [u8; 4] {
+        if self.is_gloas_at(epoch) { self.gloas_fork_version } else { self.fulu_fork_version }
+    }
+
+    /// `(next_fork_version, next_fork_epoch)` for the ENR `eth2` field at
+    /// `epoch`: the scheduled Gloas activation until it passes, then
+    /// FAR_FUTURE.
+    pub fn next_fork(&self, epoch: u64) -> ([u8; 4], u64) {
+        if self.gloas_fork_epoch != u64::MAX && epoch < self.gloas_fork_epoch {
+            (self.gloas_fork_version, self.gloas_fork_epoch)
+        } else {
+            (self.fork_version_at(epoch), u64::MAX)
+        }
+    }
+
     /// Hoodi testnet (launched 2025-03-17). Differs from mainnet in fork
     /// versions and a few fork epochs only — preset dimensions, validator
     /// lifecycle, inactivity, slashing, and churn scalars are all identical
@@ -169,6 +235,8 @@ impl SpecConfig {
             genesis_fork_version: [0x10, 0x00, 0x09, 0x10],
             capella_fork_version: [0x40, 0x00, 0x09, 0x10],
             fulu_fork_version: [0x70, 0x00, 0x09, 0x10],
+            gloas_fork_version: [0x80, 0x00, 0x09, 0x10],
+            gloas_fork_epoch: u64::MAX,
             // No BPO entries spec'd on Hoodi at time of writing. Empty ⇒
             // always fall back to (`electra_fork_epoch`,
             // `max_blobs_per_block_electra`).
@@ -183,6 +251,9 @@ impl SpecConfig {
             min_per_epoch_churn_limit: 128_000_000_000,
             max_per_epoch_activation_exit_churn_limit: 256_000_000_000,
             churn_limit_quotient: 1 << 16,
+            churn_limit_quotient_gloas: 1 << 15,
+            consolidation_churn_limit_quotient: 1 << 16,
+            max_per_epoch_activation_churn_limit_gloas: 256_000_000_000,
             inactivity_score_bias: 4,
             inactivity_score_recovery_rate: 16,
             inactivity_penalty_quotient: 1 << 24,
@@ -198,6 +269,8 @@ impl SpecConfig {
             genesis_fork_version: default_genesis_fork_version(),
             capella_fork_version: default_capella_fork_version(),
             fulu_fork_version: default_fulu_fork_version(),
+            gloas_fork_version: default_gloas_fork_version(),
+            gloas_fork_epoch: default_gloas_fork_epoch(),
             blob_schedule: default_blob_schedule(),
             electra_fork_epoch: 364032,
             max_blobs_per_block_electra: 9,
@@ -208,6 +281,9 @@ impl SpecConfig {
             min_per_epoch_churn_limit: 128_000_000_000,
             max_per_epoch_activation_exit_churn_limit: 256_000_000_000,
             churn_limit_quotient: 1 << 16,
+            churn_limit_quotient_gloas: 1 << 15,
+            consolidation_churn_limit_quotient: 1 << 16,
+            max_per_epoch_activation_churn_limit_gloas: 256_000_000_000,
             inactivity_score_bias: 4,
             inactivity_score_recovery_rate: 16,
             inactivity_penalty_quotient: 1 << 24,

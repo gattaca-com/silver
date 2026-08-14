@@ -4,10 +4,14 @@
 //! compression) bound to its own `path_suffix` on the shared flux base_dir so
 //! two stacks coexist in one process.
 
-use std::{net::SocketAddr, sync::atomic::AtomicUsize};
+use std::{
+    net::SocketAddr,
+    sync::{Arc, atomic::AtomicUsize},
+};
 
 use flux::{spine::SpineAdapter, tile::Tile};
 use quinn_proto::Endpoint;
+use silver_beacon_state_data::SpecConfig;
 use silver_common::{
     Enr, Identify, Keypair, PeerId, ProtoIdentify, SilverSpine, TCache, TCacheProducer, TConsumer,
     TProducer, TRandomAccess, ssz_view::METADATA_SIZE,
@@ -75,10 +79,8 @@ pub struct EchoStack {
     pub spine: SilverSpine,
     pub network: NetworkTile,
     pub ssz_consumer: TRandomAccess,
-    pub compression: GossipHandler,
     pub controller: Controller,
     pub network_adapter: SpineAdapter<SilverSpine>,
-    pub compression_adapter: SpineAdapter<SilverSpine>,
     pub controller_adapter: SpineAdapter<SilverSpine>,
     /// Auxiliary adapter for the harness to inject `PeerControl` events
     /// (e.g. `P2pGossipSubscribe`) onto the spine. Required by lh_gossip
@@ -117,8 +119,6 @@ pub struct EchoNetworkHalf {
 /// TCache; this half reads them, decodes/decompresses, emits
 /// `NewGossipMsg` onto the spine.
 pub struct EchoCompressionHalf {
-    pub compression: GossipHandler,
-    pub compression_adapter: SpineAdapter<SilverSpine>,
     pub stats_adapter: SpineAdapter<SilverSpine>,
     pub ssz_consumer: TRandomAccess,
     pub stats: Stats,
@@ -142,8 +142,6 @@ impl EchoStack {
                 _keep_alive: self._keep_alive,
             },
             EchoCompressionHalf {
-                compression: self.compression,
-                compression_adapter: self.compression_adapter,
                 stats_adapter: self.stats_adapter,
                 ssz_consumer: self.ssz_consumer,
                 stats: self.stats,
@@ -161,7 +159,7 @@ struct StackKeepAlive {
     ssz_consumer: Option<TConsumer>,
     // Inbound gossip-bytes cache consumer (kept alive; compression owns the
     // consumer in the echo stack).
-    gossip_in_consumer: Option<TConsumer>,
+    gossip_in_consumer: Option<TRandomAccess>,
     // Publisher-side dummy RPC caches.
     rpc_in_consumer: Option<TConsumer>,
     rpc_out_producer: Option<TProducer>,
@@ -201,7 +199,9 @@ impl PublisherStack {
         // TCaches needed by the network tile on the publisher side.
         // gossip_in: network writes raw inbound gossip here; nobody reads.
         let gossip_in_producer = TCache::producer("e2e_stack", TCACHE_SIZE);
-        let gossip_in_consumer = gossip_in_producer.cache_ref().consumer("e2e").ok();
+        let gossip_in_consumer = gossip_in_producer.cache_ref().random_access("e2e", true).ok();
+        let gossip_in_consumer_2 =
+            gossip_in_producer.cache_ref().random_access("e2e_2", true).unwrap();
 
         // gossip_out: network reads outbound bytes from here via random-access.
         // The publisher's mcache TCache IS the gossip_out source — same cache.
@@ -213,6 +213,8 @@ impl PublisherStack {
         // (multipart-RPC) read via `rpc_in_ra`. Regular consumer also
         // attached for keep-alive plus future controller use.
         let rpc_in_producer = TCache::producer("e2e_stack", TCACHE_SIZE);
+        let rpc_in_ctl =
+            rpc_in_producer.cache_ref().random_access("ctl_e2e", true).expect("ctl rpc ra");
         let rpc_in_consumer = rpc_in_producer.cache_ref().consumer("e2e").ok();
         let rpc_in_ra =
             rpc_in_producer.cache_ref().random_access("e2e", true).expect("rpc_in random_access");
@@ -261,8 +263,19 @@ impl PublisherStack {
                 SyncingConfig::default(),
                 [0u8; 4],
                 [0u8; METADATA_SIZE],
+                0,
+                false,
             ),
+            GossipHandler::new(
+                gossip_in_consumer_2,
+                TCache::producer("g_ssz", 32),
+                TCache::producer("g_proto", 32),
+                String::new(),
+            )
+            .unwrap(),
             TCache::multi_producer("dummy_rpc_out", 32), // dummpy rpc out
+            Arc::new(SpecConfig::mainnet()),
+            rpc_in_ctl,
         );
 
         // Spine + per-tile adapters.
@@ -308,7 +321,8 @@ impl EchoStack {
 
         // Inbound gossip raw bytes: network writes, compression consumes.
         let gossip_in_producer = TCache::producer("e2e_stack", TCACHE_SIZE);
-        let gossip_in_consumer = gossip_in_producer.cache_ref().consumer("e2e").expect("consumer");
+        let gossip_in_consumer =
+            gossip_in_producer.cache_ref().random_access("e2e", true).expect("consumer");
 
         // SSZ output: compression writes, stats-sink reads.
         let ssz_producer = TCache::producer("e2e_stack", TCACHE_SIZE);
@@ -367,13 +381,20 @@ impl EchoStack {
                 SyncingConfig::default(),
                 [0u8; 4],
                 [0u8; METADATA_SIZE],
+                0,
+                false,
             ),
+            compression,
             TCache::multi_producer("dummy_rpc_out", 32), // dummpy rpc out
+            Arc::new(SpecConfig::mainnet()),
+            TCache::producer("ctl_rpc_in_dummy", 32)
+                .cache_ref()
+                .random_access("ctl_e2e", true)
+                .expect("ctl rpc ra"),
         );
 
         let mut spine = SilverSpine::new_with_base_dir(base_dir, Some(path_suffix));
         let network_adapter = SpineAdapter::connect_tile(&network, &mut spine);
-        let compression_adapter = SpineAdapter::connect_tile(&compression, &mut spine);
         let controller_adapter = SpineAdapter::connect_tile(&controller, &mut spine);
         let injector_tile = Injector;
         let injector_adapter = SpineAdapter::connect_tile(&injector_tile, &mut spine);
@@ -385,11 +406,9 @@ impl EchoStack {
             peer_id,
             spine,
             network,
-            compression,
             controller,
             ssz_consumer,
             network_adapter,
-            compression_adapter,
             controller_adapter,
             injector_adapter,
             stats_adapter,

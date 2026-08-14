@@ -1,7 +1,4 @@
-use flux::{
-    tile::{TileConfig, attach_tile},
-    utils::ThreadPriority,
-};
+use flux::tile::{TileConfig, attach_tile};
 use silver_beacon_api::BeaconApiTile;
 use silver_common::{Enr, Identify, Keypair, SilverSpine};
 
@@ -14,7 +11,7 @@ fn main() {
         attach_tile(
             BeaconApiTile::new(&keypair, local_enr, &identify),
             scoped_spine,
-            TileConfig::new(1, ThreadPriority::OSDefault),
+            TileConfig::new(1, None),
         );
     });
 }

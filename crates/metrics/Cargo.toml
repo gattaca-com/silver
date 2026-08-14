@@ -6,11 +6,19 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
-silver_common_macros.workspace = true
 flux.workspace = true
+flux-profiler.workspace = true
 libc.workspace = true
+rustc-hash.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
+[dev-dependencies]
+flux-profiler = { workspace = true, features = ["test-util"] }
+
 [lints]
 workspace = true
+
+[features]
+perf = ["flux-profiler/perf"]
+alloc-profile = ["flux-profiler/alloc-profile"]

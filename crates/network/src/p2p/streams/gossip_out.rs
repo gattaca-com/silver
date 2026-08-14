@@ -1,4 +1,4 @@
-use silver_common::{P2pStreamId, TRead};
+use silver_common::{MAX_GOSSIP_FRAME_SIZE, P2pStreamId, TRead};
 
 use crate::p2p::streams::{StreamError, StreamIo};
 
@@ -51,7 +51,15 @@ impl GossipWriteState {
             GossipWriteState::Idle => match io.gossip_next() {
                 Some(tcache) => {
                     let mut buffer = [0u8; 10];
-                    let limit = silver_common::encode_varint(tcache.len()? as u64, &mut buffer)?;
+                    let len = tcache.len()?;
+                    if len > MAX_GOSSIP_FRAME_SIZE {
+                        return Err(StreamError::GossipFrameTooLarge);
+                    }
+                    let len = len as u64;
+                    let limit =
+                        silver_common::encode_varint(len, &mut buffer).inspect_err(|e| {
+                            tracing::error!(?e, len, "network gossiip write failed");
+                        })?;
                     Ok(Spin::Next(Self::WritingLength { buffer, limit, written: 0, tcache }))
                 }
                 None => Ok(Spin::Ok(Self::Idle)),

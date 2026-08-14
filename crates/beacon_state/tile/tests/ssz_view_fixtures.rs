@@ -238,16 +238,6 @@ fn signed_bls_to_execution_change() {
 }
 
 #[test]
-fn blob_identifier() {
-    for (case, bytes, v) in cases_for("BlobIdentifier") {
-        let buf: &[u8; BLOB_IDENTIFIER_SIZE] =
-            bytes.as_slice().try_into().unwrap_or_else(|_| panic!("{}: wrong len", case.display()));
-        assert_eq!(*BlobIdentifierView::block_root(buf), b32(&v["block_root"]));
-        assert_eq!(BlobIdentifierView::index(buf), u(&v["index"]));
-    }
-}
-
-#[test]
 fn signed_beacon_block() {
     for (_case, bytes, v) in cases_for("SignedBeaconBlock") {
         let buf = bytes.as_slice();
@@ -366,29 +356,29 @@ fn data_column_sidecar() {
         let sbh = &v["signed_block_header"];
         let m = &sbh["message"];
 
-        assert_eq!(DataColumnSidecarView::index(buf), u(&v["index"]));
-        assert_eq!(DataColumnSidecarView::slot(buf), u(&m["slot"]));
-        assert_eq!(DataColumnSidecarView::proposer_index(buf), u(&m["proposer_index"]));
-        assert_eq!(*DataColumnSidecarView::parent_root(buf), b32(&m["parent_root"]));
-        assert_eq!(*DataColumnSidecarView::state_root(buf), b32(&m["state_root"]));
-        assert_eq!(*DataColumnSidecarView::body_root(buf), b32(&m["body_root"]));
-        assert_eq!(*DataColumnSidecarView::block_signature(buf), b96(&sbh["signature"]));
+        assert_eq!(DataColumnSidecarFuluView::index(buf), u(&v["index"]));
+        assert_eq!(DataColumnSidecarFuluView::slot(buf), u(&m["slot"]));
+        assert_eq!(DataColumnSidecarFuluView::proposer_index(buf), u(&m["proposer_index"]));
+        assert_eq!(*DataColumnSidecarFuluView::parent_root(buf), b32(&m["parent_root"]));
+        assert_eq!(*DataColumnSidecarFuluView::state_root(buf), b32(&m["state_root"]));
+        assert_eq!(*DataColumnSidecarFuluView::body_root(buf), b32(&m["body_root"]));
+        assert_eq!(*DataColumnSidecarFuluView::block_signature(buf), b96(&sbh["signature"]));
         let inc_proof = hex_list_concat(&v["kzg_commitments_inclusion_proof"], 32);
         assert_eq!(inc_proof.len(), 128);
-        assert_eq!(DataColumnSidecarView::inclusion_proof(buf)[..], inc_proof[..]);
+        assert_eq!(DataColumnSidecarFuluView::inclusion_proof(buf)[..], inc_proof[..]);
 
         // Variable: column is a List[Cell=2048B]; kzg_commitments / kzg_proofs are
         // Lists of 48B.
         assert_eq!(
-            DataColumnSidecarView::column(buf),
+            DataColumnSidecarFuluView::column(buf),
             hex_list_concat(&v["column"], BYTES_PER_CELL)
         );
         assert_eq!(
-            DataColumnSidecarView::kzg_commitments(buf),
+            DataColumnSidecarFuluView::kzg_commitments(buf),
             hex_list_concat(&v["kzg_commitments"], BYTES_PER_KZG_COMMITMENT)
         );
         assert_eq!(
-            DataColumnSidecarView::kzg_proofs(buf),
+            DataColumnSidecarFuluView::kzg_proofs(buf),
             hex_list_concat(&v["kzg_proofs"], BYTES_PER_KZG_PROOF)
         );
     }
@@ -401,33 +391,6 @@ fn data_columns_by_root_identifier() {
         assert_eq!(*DataColumnsByRootIdentifierView::block_root(buf), b32(&v["block_root"]));
         // columns: List[ColumnIndex (u64)]; raw bytes == LE concatenation.
         assert_eq!(DataColumnsByRootIdentifierView::columns(buf), u64_list_le(&v["columns"]));
-    }
-}
-
-#[test]
-fn blob_sidecar() {
-    for (case, bytes, v) in cases_for("BlobSidecar") {
-        let buf: &[u8; BLOB_SIDECAR_SIZE] = bytes
-            .as_slice()
-            .try_into()
-            .unwrap_or_else(|_| panic!("{}: wrong len {}", case.display(), bytes.len()));
-        let sbh = &v["signed_block_header"];
-        let m = &sbh["message"];
-
-        assert_eq!(BlobSidecarView::index(buf), u(&v["index"]));
-        assert_eq!(BlobSidecarView::blob(buf)[..], b(&v["blob"], BYTES_PER_BLOB)[..]);
-        assert_eq!(*BlobSidecarView::kzg_commitment(buf), b48(&v["kzg_commitment"]));
-        assert_eq!(*BlobSidecarView::kzg_proof(buf), b48(&v["kzg_proof"]));
-        assert_eq!(BlobSidecarView::slot(buf), u(&m["slot"]));
-        assert_eq!(BlobSidecarView::proposer_index(buf), u(&m["proposer_index"]));
-        assert_eq!(*BlobSidecarView::parent_root(buf), b32(&m["parent_root"]));
-        assert_eq!(*BlobSidecarView::state_root(buf), b32(&m["state_root"]));
-        assert_eq!(*BlobSidecarView::body_root(buf), b32(&m["body_root"]));
-        assert_eq!(*BlobSidecarView::block_signature(buf), b96(&sbh["signature"]));
-        assert_eq!(
-            BlobSidecarView::kzg_commitment_inclusion_proof(buf)[..],
-            hex_list_concat(&v["kzg_commitment_inclusion_proof"], 32)[..]
-        );
     }
 }
 

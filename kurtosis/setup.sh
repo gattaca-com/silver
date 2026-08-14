@@ -11,7 +11,8 @@
 # Generates silver-devnet.toml from scratch each run (derived fields harvested
 # from the CL; static fields — secret_key, ports, next_fork_version — taken
 # from the env-overridable vars below). Also writes genesis.ssz (the sync
-# anchor) alongside it.
+# anchor) and el/ (genesis + bootnodes + JWT for silver's dedicated local
+# reth — start it with run-reth.sh).
 #
 # Requires: kurtosis, docker, curl, jq. Linux only — silver runs as a host
 # process joining the Docker bridge, and external_ip_v4 detection is
@@ -19,19 +20,32 @@
 set -euo pipefail
 
 RECREATE=0
-ENCLAVE="silver-dev"
+GLOAS=0
+ENCLAVE=""
 for arg in "$@"; do
   case "$arg" in
     --recreate) RECREATE=1 ;;
+    --gloas) GLOAS=1 ;;
     -*) echo "unknown flag: $arg" >&2; exit 1 ;;
     *) ENCLAVE="$arg" ;;
   esac
 done
+[ -n "$ENCLAVE" ] || { [ "$GLOAS" -eq 1 ] && ENCLAVE="silver-gloas" || ENCLAVE="silver-dev"; }
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ARGS_FILE="$HERE/net.yaml"
-CONFIG="$HERE/silver-devnet.toml"
-GENESIS_SSZ="$HERE/genesis.ssz"
+# Gloas: separate args/config/anchor so the Fulu devnet files are untouched. The
+# anchor is a recent *finalized* (post-Gloas) state, not genesis — silver then
+# anchors already in Gloas and follows live, sidestepping the from-genesis DA
+# wedge and the Fulu→Gloas digest transition.
+if [ "$GLOAS" -eq 1 ]; then
+  ARGS_FILE="$HERE/net-gloas.yaml"
+  CONFIG="$HERE/silver-gloas.toml"
+  GENESIS_SSZ="$HERE/gloas-anchor.ssz"
+else
+  ARGS_FILE="$HERE/net.yaml"
+  CONFIG="$HERE/silver-devnet.toml"
+  GENESIS_SSZ="$HERE/genesis.ssz"
+fi
 
 # Static (non-harvested) config values — override via env if needed. A fixed
 # secret_key gives silver a stable peer-id/ENR across restarts. next_fork_epoch
@@ -40,6 +54,15 @@ SECRET_KEY="${SECRET_KEY:-111111111111111111111111111111111111111111111111111111
 DISCOVERY_PORT="${DISCOVERY_PORT:-31133}"
 QUIC_PORT="${QUIC_PORT:-31123}"
 NEXT_FORK_VERSION="${NEXT_FORK_VERSION:-06000000}"
+# Custody groups silver subscribes to / advertises (ENR cgc). 8 = silver's
+# floor (SAMPLES_PER_SLOT): custody set covers the full sample set, so values
+# below 8 are raised to 8. Bump to custody/serve more columns.
+CUSTODY_GROUP_COUNT="${CUSTODY_GROUP_COUNT:-8}"
+# silver <-> local reth engine API (see run-reth.sh). Any 32-byte hex JWT
+# works — both sides read the same generated file.
+ENGINE_PORT="${ENGINE_PORT:-8551}"
+JWT_SECRET="${JWT_SECRET:-2222222222222222222222222222222222222222222222222222222222222222}"
+UNSAFE_NO_EL="${UNSAFE_NO_EL:-1}"
 
 # Pin a known-good release — the bare locator pulls the default branch (HEAD),
 # which periodically breaks (e.g. the zkboost `GpuConfig` regression). Bump the
@@ -47,6 +70,9 @@ NEXT_FORK_VERSION="${NEXT_FORK_VERSION:-06000000}"
 #   PACKAGE='github.com/ethpandaops/ethereum-package@<tag>' kurtosis/setup.sh
 # Discover tags:
 #   git ls-remote --tags https://github.com/ethpandaops/ethereum-package
+# 6.1.0 already exposes `gloas_fork_epoch`, and its Starlark is compatible with
+# the installed Kurtosis CLI (HEAD trips an `undefined: GpuConfig` regression),
+# so both Fulu and Gloas pin 6.1.0.
 PACKAGE="${PACKAGE:-github.com/ethpandaops/ethereum-package@6.1.0}"
 
 for bin in kurtosis docker curl jq; do
@@ -133,9 +159,15 @@ echo "external_ip_v4: ${GATEWAY:-<unresolved>}"
 # 7b. Genesis state — silver's sync anchor. It bootstraps fork choice from
 #     this so block 1's parent (the genesis block) resolves; without it sync
 #     fails the parent precheck at slot 1.
-echo "fetching genesis state -> $GENESIS_SSZ"
-curl -fsS -H 'Accept: application/octet-stream' \
-  "$PRIMARY_URL/eth/v2/debug/beacon/states/genesis" -o "$GENESIS_SSZ"
+if [ "$GLOAS" -eq 1 ]; then
+  echo "fetching finalized (post-Gloas) anchor state -> $GENESIS_SSZ"
+  curl -fsS -H 'Accept: application/octet-stream' \
+    "$PRIMARY_URL/eth/v2/debug/beacon/states/finalized" -o "$GENESIS_SSZ"
+else
+  echo "fetching genesis state -> $GENESIS_SSZ"
+  curl -fsS -H 'Accept: application/octet-stream' \
+    "$PRIMARY_URL/eth/v2/debug/beacon/states/genesis" -o "$GENESIS_SSZ"
+fi
 
 # 7c. Spec — devnet fork versions + blob schedule. silver derives the fork
 #     digest AND BLS signing domains from these; mainnet defaults mismatch on
@@ -145,10 +177,55 @@ SPEC="$(curl -fsS "$PRIMARY_URL/eth/v1/config/spec" | jq '.data')"
 gfv="$(jq -r '.GENESIS_FORK_VERSION' <<<"$SPEC")"
 cfv="$(jq -r '.CAPELLA_FORK_VERSION' <<<"$SPEC")"
 ffv="$(jq -r '.FULU_FORK_VERSION' <<<"$SPEC")"
+gloasfv="$(jq -r '.GLOAS_FORK_VERSION' <<<"$SPEC")"
+gloasfe="$(jq -r '.GLOAS_FORK_EPOCH | tonumber' <<<"$SPEC")"
 efe="$(jq -r '.ELECTRA_FORK_EPOCH | tonumber' <<<"$SPEC")"
 mbe="$(jq -r '.MAX_BLOBS_PER_BLOCK_ELECTRA | tonumber' <<<"$SPEC")"
 sps="$(jq -r '.SECONDS_PER_SLOT | tonumber' <<<"$SPEC")"
 echo "spec: fulu_fork_version=$ffv"
+
+# 7d. Local EL — silver drives its own dedicated reth over the engine API
+#     (newPayload / forkchoiceUpdated). A dedicated EL, not a shared enclave
+#     one: two CLs driving one EL fight over its fork choice. Harvest what a
+#     host reth needs — the EL genesis, the devnet EL enodes, and a JWT —
+#     into el/; run-reth.sh consumes them.
+EL_DIR="$HERE/el"
+mkdir -p "$EL_DIR"
+
+echo "fetching EL genesis -> $EL_DIR/genesis"
+rm -rf "$EL_DIR/genesis"
+kurtosis files download "$ENCLAVE" el_cl_genesis_data "$EL_DIR/genesis" >/dev/null
+GENESIS_JSON="$(find "$EL_DIR/genesis" -name genesis.json | head -1)"
+[ -n "$GENESIS_JSON" ] && [ -s "$GENESIS_JSON" ] || {
+  echo "no genesis.json in el_cl_genesis_data artifact" >&2; exit 1;
+}
+
+# A new enclave means a new EL chain: drop the reth datadir when the
+# downloaded genesis changes, else reth refuses the mismatched chain.
+GENESIS_SUM="$(sha256sum "$GENESIS_JSON" | awk '{print $1}')"
+if [ "$(cat "$EL_DIR/genesis.sha256" 2>/dev/null)" != "$GENESIS_SUM" ]; then
+  rm -rf "$EL_DIR/datadir"
+  echo "$GENESIS_SUM" > "$EL_DIR/genesis.sha256"
+fi
+
+# enodes of the devnet ELs -> reth bootnodes/trusted peers. Container IPs in
+# the enodes are host-routable on Linux (same model as the CL dialing).
+# admin_nodeInfo failures are skipped (client without the admin namespace).
+ENODES=()
+for svc in $(kurtosis enclave inspect "$ENCLAVE" \
+  | grep -oE 'el-[0-9]+-[a-z]+-[a-z]+' | sort -u); do
+  url="$(kurtosis port print "$ENCLAVE" "$svc" rpc)" || continue
+  [[ "$url" == http* ]] || url="http://$url"
+  enode="$(curl -fsS -X POST -H 'Content-Type: application/json' \
+    --data '{"jsonrpc":"2.0","method":"admin_nodeInfo","params":[],"id":1}' \
+    "$url" | jq -r '.result.enode // empty')" || continue
+  [ -n "$enode" ] && ENODES+=("$enode")
+done
+[ "${#ENODES[@]}" -gt 0 ] || { echo "no EL enodes harvested" >&2; exit 1; }
+printf '%s\n' "${ENODES[@]}" > "$EL_DIR/bootnodes.txt"
+echo "EL bootnodes: ${#ENODES[@]} harvested"
+
+echo "$JWT_SECRET" > "$EL_DIR/jwt.hex"
 
 # 8. Write the config TOML. Static fields from the vars above; derived fields
 #    harvested. external_ip_v4 omitted if unresolved (outbound-only).
@@ -160,6 +237,14 @@ echo "spec: fulu_fork_version=$ffv"
   [ -n "$GATEWAY" ] && echo "external_ip_v4 = \"$GATEWAY\""
   echo "discovery_port = $DISCOVERY_PORT"
   echo "quic_port = $QUIC_PORT"
+  echo "data_column_custody_group_count = $CUSTODY_GROUP_COUNT"
+  echo
+  echo "[engine_config]"
+  echo "execution_endpoint = \"http://127.0.0.1:$ENGINE_PORT\""
+  echo "jwt_secret = \"$EL_DIR/jwt.hex\""
+  # Unsafe no-EL testing mode: set UNSAFE_NO_EL=1 to run silver without a local
+  # reth — the engine tile answers every request VALID (CL-only testing).
+  [ -n "${UNSAFE_NO_EL:-}" ] && echo "unsafe_no_el = true"
   echo
   echo "[chain_config]"
   echo "genesis_unix_secs = $GENESIS"
@@ -172,6 +257,12 @@ echo "spec: fulu_fork_version=$ffv"
   echo "GENESIS_FORK_VERSION = \"$gfv\""
   echo "CAPELLA_FORK_VERSION = \"$cfv\""
   echo "FULU_FORK_VERSION = \"$ffv\""
+  # Only emit Gloas keys for --gloas: the spec's default GLOAS_FORK_EPOCH is
+  # FAR_FUTURE (u64 max), which exceeds TOML's i64 range and fails to parse.
+  if [ "$GLOAS" -eq 1 ]; then
+    echo "GLOAS_FORK_VERSION = \"$gloasfv\""
+    echo "GLOAS_FORK_EPOCH = $gloasfe"
+  fi
   echo "ELECTRA_FORK_EPOCH = $efe"
   echo "MAX_BLOBS_PER_BLOCK_ELECTRA = $mbe"
   echo "SECONDS_PER_SLOT = $sps"
@@ -182,6 +273,9 @@ echo "spec: fulu_fork_version=$ffv"
 } > "$CONFIG"
 
 echo "wrote -> $CONFIG"
+echo
+echo "start silver's local reth (separate terminal):"
+echo "  kurtosis/run-reth.sh"
 echo
 echo "run silver:"
 echo "  RUST_LOG=info,silver_network=info,silver_peer=info \\"

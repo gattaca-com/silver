@@ -1,5 +1,6 @@
 use std::io::{Error, Write};
 
+use flux_profiler::timed;
 use quinn_proto::{Connection, StreamId, WriteError};
 
 use crate::p2p::{
@@ -13,6 +14,7 @@ pub struct StreamIoImpl<'a> {
 }
 
 impl<'a> StreamIo for StreamIoImpl<'a> {
+    #[timed]
     fn write_to_stream(&mut self, id: StreamId, data: &[u8]) -> Result<usize, StreamError> {
         let mut stream = self.connection.send_stream(id);
         match stream.write(data) {
@@ -22,6 +24,7 @@ impl<'a> StreamIo for StreamIoImpl<'a> {
         }
     }
 
+    #[timed]
     fn read_from_stream(&mut self, id: StreamId, data: &mut [u8]) -> Result<usize, StreamError> {
         let mut stream = self.connection.recv_stream(id);
         let mut chunks = stream.read(true)?;
@@ -34,11 +37,21 @@ impl<'a> StreamIo for StreamIoImpl<'a> {
                     offset += len;
                 }
                 Ok(None) => {
-                    // strem complete
-                    return Err(StreamError::StreamEOF);
+                    // Stream finished. Bytes already copied were consumed
+                    // from quinn's reassembly buffer — erroring here would
+                    // drop them. Deliver them; EOF surfaces on the next
+                    // call (offset == 0).
+                    if offset == 0 {
+                        let _ = chunks.finalize();
+                        return Err(StreamError::StreamEOF);
+                    }
+                    break;
                 }
                 Err(quinn_proto::ReadError::Blocked) => break,
-                Err(e) => return Err(e.into()),
+                Err(e) => {
+                    let _ = chunks.finalize();
+                    return Err(e.into());
+                }
             }
         }
         let _ = chunks.finalize();

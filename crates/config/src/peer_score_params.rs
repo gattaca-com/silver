@@ -49,6 +49,13 @@ pub struct ScoreParams {
     pub ip_colocation_threshold: usize,
     pub ip_colocation_weight: f64,
 
+    // ── P5: application score (RPC-misbehaviour penalties) ──────────────
+    /// Per-`score_decay_interval` decay applied to the P5 application score.
+    /// RPC faults (timeouts, premature closes) add negative deltas here;
+    /// decaying them toward zero lets a peer that hiccups transiently on a
+    /// flaky network recover instead of accumulating to permanent eviction.
+    pub application_score_decay: f64,
+
     // ── P7: behaviour penalty ───────────────────────────────────────────
     pub behaviour_penalty_threshold: f64,
     pub behaviour_penalty_weight: f64,
@@ -139,7 +146,7 @@ impl Default for ScoreParams {
             // data-column subnets — silver's whole subscription set). Enable
             // only once a healthy multi-peer mesh exists; in a 1-2 peer mesh
             // legit peers deliver via first, not mesh, deliveries.
-            mesh_message_deliveries_threshold: 0.0,
+            mesh_message_deliveries_threshold: 0.685,
             mesh_message_deliveries_weight: -1.0,
             mesh_message_deliveries_decay: 0.971,
             // 1 epoch grace after graft before P3 activates (matches
@@ -157,6 +164,11 @@ impl Default for ScoreParams {
             // P6 — IP colocation
             ip_colocation_threshold: 10,
             ip_colocation_weight: -1.0,
+
+            // P5 — application score. ~0.95/slot ⇒ a one-off RPC fault (−5)
+            // fades to noise in ~1 min; a peer must fault faster than roughly
+            // once per slot to accumulate toward the −80 graylist floor.
+            application_score_decay: 0.95,
 
             // P7 — behaviour penalty
             behaviour_penalty_threshold: 0.0,
@@ -184,8 +196,8 @@ impl Default for ScoreParams {
 
             prune_backoff: Duration::from_secs(60),
 
-            target_peers: 4,         // TODO for testing, 100+ in prod
-            max_priority_peers: 130, // ~30% headroom, matches lighthouse PRIORITY_PEER_EXCESS
+            target_peers: 250,
+            max_priority_peers: 300,
             discovery_query_interval: Duration::from_secs(5),
             banned_ip_ttl: Duration::from_secs(3600),
             ip_ban_threshold: 5,

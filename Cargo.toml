@@ -7,7 +7,6 @@ members = [
   "crates/common",
   "crates/config",
   "crates/config/chain_spec",
-  "crates/common_macros",
   "crates/control",
   "crates/storage",
   "crates/discovery",
@@ -18,7 +17,8 @@ members = [
   "crates/network",
   "crates/peer",
   "crates/ssz",
-  "crates/surfer",
+  "crates/surfer", 
+  "crates/columns",
 ]
 resolver = "2"
 
@@ -65,6 +65,7 @@ silver_beacon_api = { path = "crates/beacon_api" }
 silver_beacon_state = { path = "crates/beacon_state/tile" }
 silver_beacon_state_data = { path = "crates/beacon_state/data" }
 silver_chain_spec = { path = "crates/config/chain_spec" }
+silver_columns = { path = "crates/columns" }
 silver_common = { path = "crates/common" }
 silver_config = { path = "crates/config" }
 silver_metrics = { path = "crates/metrics" }
@@ -74,10 +75,11 @@ silver_discovery = {path = "crates/discovery" }
 silver_gossip = {path = "crates/gossip" }
 silver_network = {path = "crates/network" }
 silver_peer = {path = "crates/peer" }
-silver_common_macros = { path = "crates/common_macros" }
 silver_storage = { path = "crates/storage" }
-flux = { git = "https://github.com/gattaca-com/flux", rev = "f902769fe25915d8e58b50469f4a8b76f6045870"}
-flux-utils = { git = "https://github.com/gattaca-com/flux", rev = "f902769fe25915d8e58b50469f4a8b76f6045870", features = ["bytes"]}
+silver_engine = { path = "crates/engine"}
+flux = { git = "https://github.com/gattaca-com/flux", rev = "d6785f1af35336002476c3d97721fcc67fe76dfd"}
+flux-utils = { git = "https://github.com/gattaca-com/flux", rev = "d6785f1af35336002476c3d97721fcc67fe76dfd", features = ["bytes"]}
+flux-profiler = { git = "https://github.com/gattaca-com/flux", rev = "d6785f1af35336002476c3d97721fcc67fe76dfd"}
 
 # External
 backtrace = "0.3"
@@ -107,8 +109,12 @@ hkdf = "0.12"
 hmac = "0.12"
 httparse = "1"
 libc = "0.2"
-mimalloc = "0.1.52"
+# v2: pin the stable mimalloc 2.x line. The crate defaults to v3, whose
+# exit-time `mi_process_done` force-collect races mimalloc's background purge
+# thread on the shared arena → SIGSEGV on shutdown. v2 has no such race.
+mimalloc = { version = "0.1.52", features = ["v2"] }
 mio = { version = "1.0.4", features = ["net", "os-poll"] }
+parking_lot = "0.12"
 pprof = { version = "0.13", features = ["criterion", "flamegraph"] }
 proc-macro2 = "1"
 quinn-proto = "0.11.14"
@@ -131,9 +137,11 @@ sha2-const-stable = "0.1"
 sha3 = "0.10"
 slab = "0.4.12"
 snap = "1.1.1"
+socket2 = "0.5.10"
 syn = { version = "2", features = ["full"] }
 thiserror = "1.0.58"
 tracing = "0.1.40"
+tracing-appender = "0.2.5"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 uint = "0.9"
 x509-parser = { version = "0.17", features = ["verify"] }
@@ -141,3 +149,4 @@ yasna = "0.5"
 
 [workspace.lints.clippy]
 too_long_first_doc_paragraph = "allow"
+

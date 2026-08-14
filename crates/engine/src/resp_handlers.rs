@@ -158,7 +158,7 @@ pub(crate) fn handle_sync_response(
 
 #[inline]
 pub(crate) fn handle_fcu_response(
-    spine_id: u64,
+    block_root: [u8; 32],
     response: Result<&mut [u8], EngineError>,
     adapter: &mut SpineAdapter<SilverSpine>,
 ) {
@@ -166,7 +166,7 @@ pub(crate) fn handle_fcu_response(
         let raw = match response {
             Err(e) => {
                 tracing::warn!("forkchoiceUpdated error: {e}");
-                break 'parse fcu_error(spine_id);
+                break 'parse fcu_error(block_root);
             }
             Ok(b) => b,
         };
@@ -183,24 +183,17 @@ pub(crate) fn handle_fcu_response(
                     latest_valid_hash = %r.payload_status.latest_valid_hash
                         .map(|h| hex::encode(&h[..4]))
                         .unwrap_or_else(|| "null".into()),
-                    id = spine_id,
                     "FCU → Reth"
                 );
-                EngineFcuResp {
-                    id: spine_id,
-                    status,
-                    latest_valid_hash,
-                    has_payload_id,
-                    payload_id,
-                }
+                EngineFcuResp { block_root, status, latest_valid_hash, has_payload_id, payload_id }
             }
             Ok(RpcResult { error: Some(e), .. }) => {
                 tracing::warn!("forkchoiceUpdated rpc error: {}", e.message);
-                break 'parse fcu_error(spine_id);
+                break 'parse fcu_error(block_root);
             }
             Ok(_) | Err(_) => {
                 tracing::warn!("forkchoiceUpdated: missing result");
-                break 'parse fcu_error(spine_id);
+                break 'parse fcu_error(block_root);
             }
         }
     };
@@ -209,7 +202,7 @@ pub(crate) fn handle_fcu_response(
 
 #[inline]
 pub(crate) fn handle_new_payload_response(
-    spine_id: u64,
+    block_root: [u8; 32],
     response: Result<&mut [u8], EngineError>,
     adapter: &mut SpineAdapter<SilverSpine>,
 ) {
@@ -217,7 +210,7 @@ pub(crate) fn handle_new_payload_response(
         let raw = match response {
             Err(e) => {
                 tracing::warn!("newPayload error: {e}");
-                break 'parse new_payload_error(spine_id);
+                break 'parse new_payload_error(block_root);
             }
             Ok(b) => b,
         };
@@ -226,15 +219,15 @@ pub(crate) fn handle_new_payload_response(
                 let status = status_from_str(&ps.status);
                 let latest_valid_hash = ps.latest_valid_hash.unwrap_or([0u8; 32]);
                 tracing::info!("newPayload → {:?}", status);
-                EngineNewPayloadResp { id: spine_id, status, latest_valid_hash }
+                EngineNewPayloadResp { block_root, status, latest_valid_hash }
             }
             Ok(RpcResult { error: Some(e), .. }) => {
                 tracing::warn!("newPayload rpc error: {}", e.message);
-                break 'parse new_payload_error(spine_id);
+                break 'parse new_payload_error(block_root);
             }
             Ok(_) | Err(_) => {
                 tracing::warn!("newPayload: missing result");
-                break 'parse new_payload_error(spine_id);
+                break 'parse new_payload_error(block_root);
             }
         }
     };
@@ -373,7 +366,7 @@ fn status_from_str(s: &str) -> PayloadValidationStatus {
 }
 
 #[inline]
-fn write_tcache(producer: &mut TProducer, data: &[u8]) -> Option<TCacheRead> {
+pub(crate) fn write_tcache(producer: &mut TProducer, data: &[u8]) -> Option<TCacheRead> {
     use std::io::Write as _;
     let mut res =
         producer.reserve(data.len(), false).or_else(|| producer.reserve(data.len(), false))?;
@@ -398,9 +391,9 @@ fn get_payload_bodies_error(id: u64) -> EngineGetPayloadBodiesResp {
 }
 
 #[inline]
-fn fcu_error(id: u64) -> EngineFcuResp {
+fn fcu_error(block_root: [u8; 32]) -> EngineFcuResp {
     EngineFcuResp {
-        id,
+        block_root,
         status: PayloadValidationStatus::Syncing,
         latest_valid_hash: [0u8; 32],
         has_payload_id: false,
@@ -409,9 +402,9 @@ fn fcu_error(id: u64) -> EngineFcuResp {
 }
 
 #[inline]
-fn new_payload_error(id: u64) -> EngineNewPayloadResp {
+fn new_payload_error(block_root: [u8; 32]) -> EngineNewPayloadResp {
     EngineNewPayloadResp {
-        id,
+        block_root,
         status: PayloadValidationStatus::Syncing,
         latest_valid_hash: [0u8; 32],
     }

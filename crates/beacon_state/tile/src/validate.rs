@@ -1,40 +1,42 @@
-use silver_beacon_state_data::{Epoch, SLOTS_PER_EPOCH, Slot, SpecConfig, StateDeltaView};
+use silver_beacon_state_data::{
+    Epoch, SLOTS_PER_EPOCH, Slot, SlotStateView, SpecConfig, ValidatorsView,
+};
 use silver_common::ssz_view::{
-    ATTESTATION_FIXED, AttestationDataView, AttestationView, EXECUTION_PAYLOAD_FIXED,
-    ExecutionPayloadView, PROPOSER_SLASHING_SIZE, ProposerSlashingView,
+    ATTESTATION_FIXED, AttestationView, EXECUTION_PAYLOAD_FIXED, ExecutionPayloadView,
+    PROPOSER_SLASHING_SIZE, ProposerSlashingView,
 };
 
 use crate::{
     error::{
-        AttestationError, BlockError, BlsToExecutionChangeError, ExecutionPayloadError,
-        OperationKind, ProposerSlashingError, Result, VoluntaryExitError,
+        AttestationError, BlsToExecutionChangeError, ExecutionPayloadError, ProposerSlashingError,
+        Result, VoluntaryExitError,
     },
-    ssz_hash,
+    merkle,
 };
 
-// Spec operation limits — `_ELECTRA` suffixed constants retain the spec
-// name; values are unchanged in Fulu.
-pub const MAX_PROPOSER_SLASHINGS: usize = 16;
-pub const MAX_ATTESTER_SLASHINGS_ELECTRA: usize = 1;
-pub const MAX_ATTESTATIONS_ELECTRA: usize = 8;
-pub const MAX_DEPOSITS: usize = 16;
-pub const MAX_VOLUNTARY_EXITS: usize = 16;
-pub const MAX_BLS_TO_EXECUTION_CHANGES: usize = 16;
+/// Attestation `data.index` gossip rule: pre-Gloas the committee is encoded in
+/// `committee_index` so `index` must be 0; Gloas repurposes it as the
+/// payload-presence bit.
+#[inline]
+pub fn attestation_index_ok(is_gloas: bool, index: u64) -> bool {
+    if is_gloas { index < 2 } else { index == 0 }
+}
 
 pub fn validate_attestation_data(
     att: &[u8],
     state_slot: Slot,
     current_epoch: Epoch,
     previous_epoch: Epoch,
+    is_gloas: bool,
 ) -> Result<(), AttestationError> {
     if att.len() < ATTESTATION_FIXED {
         return Err(AttestationError::TooShort { len: att.len(), min: ATTESTATION_FIXED });
     }
 
     let data = AttestationView::data(att);
-    let att_slot = AttestationDataView::slot(data);
-    let att_index = AttestationDataView::index(data);
-    let target_epoch = AttestationDataView::target_epoch(data);
+    let att_slot = data.slot();
+    let att_index = data.index();
+    let target_epoch = data.target_epoch();
 
     if att_slot >= state_slot {
         return Err(AttestationError::SlotNotPast { att_slot, state_slot });
@@ -53,7 +55,7 @@ pub fn validate_attestation_data(
         });
     }
 
-    if att_index != 0 {
+    if !attestation_index_ok(is_gloas, att_index) {
         return Err(AttestationError::IndexNonZero { idx: att_index });
     }
 
@@ -87,18 +89,18 @@ pub fn validate_proposer_slashing(data: &[u8]) -> Result<(), ProposerSlashingErr
 
 pub fn validate_voluntary_exit(
     cfg: &SpecConfig,
-    view: &StateDeltaView,
+    validators: &ValidatorsView,
     vi: u32,
     exit_epoch: Epoch,
     current_epoch: Epoch,
 ) -> Result<(), VoluntaryExitError> {
-    let count = view.validators_count();
+    let count = validators.count();
     if (vi as usize) >= count {
         return Err(VoluntaryExitError::ValidatorOutOfRange { vi: vi as usize, count });
     }
-    let pubkey = view.validator_pubkey(vi as usize);
-    let act = view.validator_activation_epoch(vi as usize);
-    let exit = view.validator_exit_epoch(vi as usize);
+    let pubkey = *validators.pubkey(vi as usize);
+    let act = validators.activation_epoch(vi as usize);
+    let exit = validators.exit_epoch(vi as usize);
     if act > current_epoch || current_epoch >= exit {
         return Err(VoluntaryExitError::NotActive { vi: vi as usize, pubkey, epoch: current_epoch });
     }
@@ -118,24 +120,24 @@ pub fn validate_voluntary_exit(
 }
 
 pub fn validate_bls_to_execution_change(
-    view: &StateDeltaView,
+    validators: &ValidatorsView,
     vi: u32,
     from_pubkey: &[u8; 48],
 ) -> Result<(), BlsToExecutionChangeError> {
-    let count = view.validators_count();
+    let count = validators.count();
     if (vi as usize) >= count {
         return Err(BlsToExecutionChangeError::ValidatorOutOfRange { vi: vi as usize, count });
     }
-    let creds = view.validator_credentials(vi as usize);
+    let creds = *validators.credentials(vi as usize);
     let prefix = creds.0[0];
     if prefix != 0x00 {
         return Err(BlsToExecutionChangeError::BadCredentialPrefix {
             vi: vi as usize,
-            pubkey: view.validator_pubkey(vi as usize),
+            pubkey: *validators.pubkey(vi as usize),
             prefix,
         });
     }
-    let pubkey_hash = ssz_hash::sha256(from_pubkey);
+    let pubkey_hash = merkle::sha256(from_pubkey);
     if creds.0[1..] != pubkey_hash[1..] {
         let mut expected = [0u8; 32];
         expected[1..].copy_from_slice(&creds.0[1..]);
@@ -150,7 +152,8 @@ pub fn validate_bls_to_execution_change(
 
 pub fn validate_execution_payload(
     cfg: &SpecConfig,
-    view: &StateDeltaView,
+    slot: &SlotStateView,
+    genesis_time: u64,
     payload: &[u8],
     block_slot: Slot,
 ) -> Result<(), ExecutionPayloadError> {
@@ -160,9 +163,8 @@ pub fn validate_execution_payload(
             min: EXECUTION_PAYLOAD_FIXED,
         });
     }
-    let header = view.latest_execution_payload_header();
-    let genesis_time = view.genesis_time();
-    let randao_mix_current = view.randao_mix_current();
+    let header = &slot.state().latest_execution_payload_header;
+    let randao_mix_current = slot.state().randao_mix_current;
 
     let got_parent = *ExecutionPayloadView::parent_hash(payload);
     let expected_parent = header.block_hash;
@@ -189,103 +191,6 @@ pub fn validate_execution_payload(
             got: got_randao,
         });
     }
-
-    // TODO(EL): full payload acceptance is determined by engine_newPayloadV4
-    // (VALID/INVALID/SYNCING). See process_block_body — flag block as
-    // optimistic on SYNCING, reject on INVALID.
-
-    Ok(())
-}
-
-pub fn validate_operation_counts(body: &[u8]) -> Result<(), BlockError> {
-    if body.len() < 396 {
-        return Err(BlockError::BodyTooShort { len: body.len(), min: 396 });
-    }
-    let off = |pos: usize| u32::from_le_bytes(body[pos..pos + 4].try_into().unwrap()) as usize;
-
-    // Variable field offsets in SSZ field order (skipping fixed fields).
-    let ps_off = off(200); // proposer_slashings
-    let as_off = off(204); // attester_slashings
-    let att_off = off(208); // attestations
-    let dep_off = off(212); // deposits
-    let ve_off = off(216); // voluntary_exits
-    let ep_off = off(380); // execution_payload (next variable after voluntary_exits)
-    let bls_off = off(384); // bls_to_execution_changes
-    let blob_off = off(388); // blob_kzg_commitments
-    let exec_req_off = off(392); // execution_requests
-
-    let offsets: &[(usize, &'static str, usize)] = &[
-        (200, "proposer_slashings", ps_off),
-        (204, "attester_slashings", as_off),
-        (208, "attestations", att_off),
-        (212, "deposits", dep_off),
-        (216, "voluntary_exits", ve_off),
-        (380, "execution_payload", ep_off),
-        (384, "bls_to_execution_changes", bls_off),
-        (388, "blob_kzg_commitments", blob_off),
-        (392, "execution_requests", exec_req_off),
-    ];
-    let body_len = body.len();
-    for (i, &(at, field, off_val)) in offsets.iter().enumerate() {
-        let next_off = offsets.get(i + 1).map(|(_, _, o)| *o);
-        let exceeds_body = off_val > body_len;
-        let non_monotone = next_off.is_some_and(|n| n < off_val);
-        if exceeds_body || non_monotone {
-            return Err(BlockError::BodyOffsetOutOfRange {
-                at,
-                field,
-                off: off_val,
-                next_off,
-                body_len,
-            });
-        }
-    }
-
-    // Fixed-size element counts from region sizes.
-    let safe_count = |start: usize, end: usize, elem_size: usize| -> usize {
-        if end >= start && elem_size > 0 { (end - start) / elem_size } else { 0 }
-    };
-
-    let check = |op: OperationKind, count: usize, max: usize| -> Result<(), BlockError> {
-        if count > max {
-            Err(BlockError::OperationCountOutOfBounds { op, count, max })
-        } else {
-            Ok(())
-        }
-    };
-
-    check(
-        OperationKind::ProposerSlashings,
-        safe_count(ps_off, as_off, 416),
-        MAX_PROPOSER_SLASHINGS,
-    )?;
-    check(OperationKind::Deposits, safe_count(dep_off, ve_off, 1240), MAX_DEPOSITS)?;
-    check(OperationKind::VoluntaryExits, safe_count(ve_off, ep_off, 112), MAX_VOLUNTARY_EXITS)?;
-    check(
-        OperationKind::BlsToExecutionChanges,
-        safe_count(bls_off, blob_off, 172),
-        MAX_BLS_TO_EXECUTION_CHANGES,
-    )?;
-
-    // Variable-size element counts from offset tables.
-    let var_count = |start: usize, end: usize| -> usize {
-        if end <= start || start >= body.len() {
-            return 0;
-        }
-        let data = &body[start..end.min(body.len())];
-        if data.len() < 4 {
-            return 0;
-        }
-        let first = u32::from_le_bytes(data[..4].try_into().unwrap()) as usize;
-        if first > 0 && first.is_multiple_of(4) { first / 4 } else { 0 }
-    };
-
-    check(
-        OperationKind::AttesterSlashings,
-        var_count(as_off, att_off),
-        MAX_ATTESTER_SLASHINGS_ELECTRA,
-    )?;
-    check(OperationKind::Attestations, var_count(att_off, dep_off), MAX_ATTESTATIONS_ELECTRA)?;
 
     Ok(())
 }

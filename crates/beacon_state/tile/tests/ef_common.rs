@@ -4,68 +4,76 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
-use silver_beacon_state::ssz_hash::{StateHashScratch, hash_tree_root_state};
+use silver_beacon_state::{
+    BeaconStateTile,
+    ssz_hash::{StateHashScratch, hash_tree_root_state},
+    stf,
+};
 use silver_beacon_state_data::{
-    DeltaBuffer, EPOCHS_RING_N, EpochStateDelta, Finalized, LONGTAILS_RING_N, LongtailState,
-    SlotStateDelta, SpecConfig, StateDelta, StateDeltaView, ValidatorsDelta,
+    B256, EpochGroup, EpochView, LongtailGroup, SpecConfig, StateId, StateWriterView,
+    effective_randao_mixes_into, effective_slashings_into,
 };
 
-pub type EpochRing = DeltaBuffer<EpochStateDelta, EPOCHS_RING_N>;
-pub type LongtailRing = DeltaBuffer<LongtailState, LONGTAILS_RING_N>;
-
-/// Snappy-decompress a file.
-pub fn snappy_decode(path: &Path) -> Vec<u8> {
-    let compressed = fs::read(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    snap::Decoder::new()
-        .decompress_vec(&compressed)
-        .unwrap_or_else(|e| panic!("{}: snappy: {e}", path.display()))
-}
-
-/// EF test state: a `Finalized` snapshot decoded from SSZ + an empty
-/// `StateDelta` anchored on top, plus this fork's epoch/longtail rings.
-/// State-transition runs mutate the delta; post-state comparison hashes via
-/// `hash_tree_root_state` over a `StateDeltaView`.
-pub struct LoadedState {
-    pub finalized: Box<Finalized>,
-    pub delta: StateDelta,
-    pub epochs: EpochRing,
-    pub longtails: LongtailRing,
-}
-
-fn anchored_delta(f: &Finalized) -> StateDelta {
-    StateDelta {
-        validators: ValidatorsDelta::new_at(&f.validators),
-        // The delta carries a full working `SlotState`, seeded from the
-        // finalized base (the tile does this via cow-from-parent). Copying
-        // only the slot number would leave every other scalar
-        // (`eth1_deposit_index`, `earliest_exit_epoch`, `randao_mix_current`,
-        // …) at its default, which the view reads back as zero.
-        slot: SlotStateDelta { slot: f.slot.slot, ..Default::default() },
-        ..StateDelta::default()
-    }
-}
+#[path = "support/loaded_state.rs"]
+mod loaded_state;
+#[allow(unused_imports)]
+pub use loaded_state::{LoadedState, load_state, load_state_gloas, snappy_decode};
 
 impl LoadedState {
-    /// Merged read+write view over this loaded state.
-    pub fn view(&mut self) -> StateDeltaView<'_> {
-        StateDeltaView::new(&self.finalized, &mut self.delta, &mut self.epochs, &mut self.longtails)
+    /// The loaded state's working slot number (resolved through the slot
+    /// group, keyed by the bundle's `slot_idx`).
+    pub fn slot(&self) -> u64 {
+        self.bs.slot_states.view(self.state_id.slot_idx).slot_number()
     }
-}
 
-pub fn load_state(path: &Path) -> LoadedState {
-    let ssz = snappy_decode(path);
-    let mut finalized = Box::new(Finalized::empty());
-    finalized
-        .decompose(&ssz, &SpecConfig::mainnet())
-        .unwrap_or_else(|e| panic!("{}: decompose failed: {e}", path.display()));
-    let delta = anchored_delta(&finalized);
-    LoadedState {
-        finalized,
-        delta,
-        epochs: DeltaBuffer::default(),
-        longtails: DeltaBuffer::default(),
+    /// hash_tree_root of the loaded state (single-leaf merkle-proof checks).
+    pub fn state_root(&mut self) -> [u8; 32] {
+        let sid = self.state_id;
+        let (mut view, epoch, longtail) = self.view();
+        let rv = view.read(epoch.view_opt(sid.epoch_idx), longtail.view_opt(sid.longtail_idx));
+        hash_tree_root_state(&rv, &mut StateHashScratch::new())
+    }
+
+    /// Roll a fork, run `f` over its writer view, then commit with the
+    /// inherited epoch/longtail ids and write the bundle back.
+    pub fn with_view<R>(&mut self, f: impl FnOnce(&mut StateWriterView<'_>) -> R) -> R {
+        let sid = self.state_id;
+        let (mut view, _, _) = self.view();
+        let r = f(&mut view);
+        self.state_id = view.commit(sid.epoch_idx, sid.longtail_idx);
+        r
+    }
+
+    /// [`with_view`](Self::with_view) with the inherited epoch view resolved
+    /// alongside.
+    pub fn with_view_and_epoch<R>(
+        &mut self,
+        f: impl FnOnce(&mut StateWriterView<'_>, &EpochView<'_>) -> R,
+    ) -> R {
+        let sid = self.state_id;
+        let (mut view, epoch, _) = self.view();
+        let epoch_view = epoch.view_opt(sid.epoch_idx);
+        let r = f(&mut view, &epoch_view);
+        self.state_id = view.commit(sid.epoch_idx, sid.longtail_idx);
+        r
+    }
+
+    /// Roll a fork, apply a signed block (slot advance + STF), then commit
+    /// the (possibly epoch/longtail-rolled) bundle and write it back so the
+    /// next block / the post-state comparison sees it.
+    pub fn apply_block(&mut self, cfg: &SpecConfig, block_ssz: &[u8]) -> Result<(), String> {
+        let parent = self.state_id;
+        let (mut view, epoch, longtail) = self.view();
+        match stf::apply_signed_block_debug(cfg, &mut view, epoch, longtail, parent, block_ssz) {
+            Ok((epoch_idx, longtail_idx)) => {
+                self.state_id = view.commit(epoch_idx, longtail_idx);
+                Ok(())
+            }
+            Err(e) => Err(e.to_string()),
+        }
     }
 }
 
@@ -100,12 +108,19 @@ fn diff_iter<T, I, J>(
 pub fn compare_states(label: &str, a: &mut LoadedState, b: &mut LoadedState) -> Vec<String> {
     let mut diffs = Vec::new();
 
-    let va = a.view();
-    let vb = b.view();
+    let sid_a = a.state_id;
+    let sid_b = b.state_id;
+    let (mut va, epoch_a, longtail_a) = a.view();
+    let (mut vb, epoch_b, longtail_b) = b.view();
 
     let mut scratch = StateHashScratch::new();
-    let root_a = hash_tree_root_state(&va, &mut scratch);
-    let root_b = hash_tree_root_state(&vb, &mut scratch);
+    let mut root_of =
+        |view: &mut StateWriterView, sid: StateId, epoch: &EpochGroup, longtail: &LongtailGroup| {
+            let rv = view.read(epoch.view_opt(sid.epoch_idx), longtail.view_opt(sid.longtail_idx));
+            hash_tree_root_state(&rv, &mut scratch)
+        };
+    let root_a = root_of(&mut va, sid_a, epoch_a, longtail_a);
+    let root_b = root_of(&mut vb, sid_b, epoch_b, longtail_b);
     if root_a == root_b {
         return diffs;
     }
@@ -115,28 +130,69 @@ pub fn compare_states(label: &str, a: &mut LoadedState, b: &mut LoadedState) -> 
         hex(&root_b)
     ));
 
-    diff_scalars(&mut diffs, &va, &vb);
+    let ea = epoch_a.view_opt(sid_a.epoch_idx);
+    let eb = epoch_b.view_opt(sid_b.epoch_idx);
 
-    let n = va.validators_count().min(vb.validators_count());
+    diff_scalars(&mut diffs, &va, &ea, &vb, &eb);
+
+    let n = va.validators.count().min(vb.validators.count());
     diff_validator_columns(&mut diffs, &va, &vb, n);
-    diff_rings(&mut diffs, &va, &vb);
+    diff_rings(&mut diffs, &va, &ea, &vb, &eb);
     diff_latest_block_header(&mut diffs, &va, &vb);
-    diff_proposer_lookahead(&mut diffs, &va, &vb);
+    diff_proposer_lookahead(&mut diffs, &ea, &eb);
+    diff_builders_and_pending(&mut diffs, &va, &vb);
 
     diffs
 }
 
-fn diff_scalars(diffs: &mut Vec<String>, va: &StateDeltaView, vb: &StateDeltaView) {
-    if va.slot() != vb.slot() {
-        diffs.push(format!("  slot: {} vs {}", va.slot(), vb.slot()));
+fn diff_builders_and_pending(diffs: &mut Vec<String>, va: &StateWriterView, vb: &StateWriterView) {
+    let (ba, bb) = (va.builders.reader(), vb.builders.reader());
+    if ba.len() != bb.len() {
+        diffs.push(format!("  builders_len: {} vs {}", ba.len(), bb.len()));
     }
-    let a_cnt = va.validators_count();
-    let b_cnt = vb.validators_count();
+    for (i, (x, y)) in ba.iter().zip(bb.iter()).enumerate() {
+        if x != y {
+            diffs.push(format!(
+                "  builders[{i}]: pk[0]={} bal={} dep_epoch={} vs pk[0]={} bal={} dep_epoch={}",
+                x.pubkey[0], x.balance, x.deposit_epoch, y.pubkey[0], y.balance, y.deposit_epoch
+            ));
+        }
+    }
+
+    let (da, db) = (va.pending.deposits.reader(), vb.pending.deposits.reader());
+    if da.len() != db.len() {
+        diffs.push(format!("  pending_deposits_len: {} vs {}", da.len(), db.len()));
+    }
+    for i in 0..da.len().min(db.len()) {
+        let (x, y) = (da.get(i), db.get(i));
+        if (x.pubkey, x.amount, x.slot, x.withdrawal_credentials.0) !=
+            (y.pubkey, y.amount, y.slot, y.withdrawal_credentials.0)
+        {
+            diffs.push(format!(
+                "  pending_deposits[{i}]: pk[0]={} amt={} slot={} vs pk[0]={} amt={} slot={}",
+                x.pubkey[0], x.amount, x.slot, y.pubkey[0], y.amount, y.slot
+            ));
+        }
+    }
+}
+
+fn diff_scalars(
+    diffs: &mut Vec<String>,
+    va: &StateWriterView,
+    ea: &EpochView,
+    vb: &StateWriterView,
+    eb: &EpochView,
+) {
+    if va.slot.state().slot != vb.slot.state().slot {
+        diffs.push(format!("  slot: {} vs {}", va.slot.state().slot, vb.slot.state().slot));
+    }
+    let a_cnt = va.validators.count();
+    let b_cnt = vb.validators.count();
     if a_cnt != b_cnt {
         diffs.push(format!("  validator_count: {a_cnt} vs {b_cnt}"));
     }
-    let a_epoch = va.epoch_state();
-    let b_epoch = vb.epoch_state();
+    let a_epoch = ea.state();
+    let b_epoch = eb.state();
     if a_epoch.justification_bits != b_epoch.justification_bits {
         diffs.push(format!(
             "  justification_bits: {:#06b} vs {:#06b}",
@@ -162,84 +218,98 @@ fn diff_scalars(diffs: &mut Vec<String>, va: &StateDeltaView, vb: &StateDeltaVie
             b_epoch.previous_justified_checkpoint.epoch
         ));
     }
-    if va.earliest_exit_epoch() != vb.earliest_exit_epoch() {
+    let a_slot = va.slot.state();
+    let b_slot = vb.slot.state();
+    if a_slot.earliest_exit_epoch != b_slot.earliest_exit_epoch {
         diffs.push(format!(
             "  earliest_exit_epoch: {} vs {}",
-            va.earliest_exit_epoch(),
-            vb.earliest_exit_epoch()
+            a_slot.earliest_exit_epoch, b_slot.earliest_exit_epoch
         ));
     }
-    if va.exit_balance_to_consume() != vb.exit_balance_to_consume() {
+    if a_slot.exit_balance_to_consume != b_slot.exit_balance_to_consume {
         diffs.push(format!(
             "  exit_balance_to_consume: {} vs {}",
-            va.exit_balance_to_consume(),
-            vb.exit_balance_to_consume()
+            a_slot.exit_balance_to_consume, b_slot.exit_balance_to_consume
         ));
     }
-    if va.randao_mix_current() != vb.randao_mix_current() {
+    if a_slot.randao_mix_current != b_slot.randao_mix_current {
         diffs.push(format!(
             "  randao_mix_current: {} vs {}",
-            hex(&va.randao_mix_current()),
-            hex(&vb.randao_mix_current()),
+            hex(&a_slot.randao_mix_current),
+            hex(&b_slot.randao_mix_current),
         ));
     }
 }
 
 fn diff_validator_columns(
     diffs: &mut Vec<String>,
-    va: &StateDeltaView,
-    vb: &StateDeltaView,
+    va: &StateWriterView,
+    vb: &StateWriterView,
     n: usize,
 ) {
-    diff_iter(diffs, n, va.iter_validator_balances(), vb.iter_validator_balances(), |i, av, bv| {
+    diff_iter(diffs, n, va.balances.iter(), vb.balances.iter(), |i, av, bv| {
         format!("  balance[{i}]: {av} vs {bv}")
     });
-    diff_iter(diffs, n, va.iter_inactivity_scores(), vb.iter_inactivity_scores(), |i, av, bv| {
+    diff_iter(diffs, n, va.inactivity.iter(), vb.inactivity.iter(), |i, av, bv| {
         format!("  inactivity[{i}]: {av} vs {bv}")
     });
     diff_iter(
         diffs,
         n,
-        va.iter_current_epoch_participants(),
-        vb.iter_current_epoch_participants(),
+        va.current_participation.iter(),
+        vb.current_participation.iter(),
         |i, av, bv| format!("  curr_participation[{i}]: {av:#04x} vs {bv:#04x}"),
     );
     diff_iter(
         diffs,
         n,
-        va.iter_previous_epoch_participants(),
-        vb.iter_previous_epoch_participants(),
+        va.previous_participation.iter(),
+        vb.previous_participation.iter(),
         |i, av, bv| format!("  prev_participation[{i}]: {av:#04x} vs {bv:#04x}"),
     );
     diff_iter(
         diffs,
         n,
-        va.iter_validator_effective_balances(),
-        vb.iter_validator_effective_balances(),
+        va.validators.iter_effective_balances(),
+        vb.validators.iter_effective_balances(),
         |i, av, bv| format!("  effective_balance[{i}]: {av} vs {bv}"),
     );
-    diff_iter(diffs, n, va.iter_exit_epochs(), vb.iter_exit_epochs(), |i, av, bv| {
-        format!("  exit_epoch[{i}]: {av} vs {bv}")
-    });
     diff_iter(
         diffs,
         n,
-        va.iter_withdrawable_epochs(),
-        vb.iter_withdrawable_epochs(),
+        va.validators.iter_exit_epochs(),
+        vb.validators.iter_exit_epochs(),
+        |i, av, bv| format!("  exit_epoch[{i}]: {av} vs {bv}"),
+    );
+    diff_iter(
+        diffs,
+        n,
+        va.validators.iter_withdrawable_epochs(),
+        vb.validators.iter_withdrawable_epochs(),
         |i, av, bv| format!("  withdrawable_epoch[{i}]: {av} vs {bv}"),
     );
-    diff_iter(diffs, n, va.iter_activation_epochs(), vb.iter_activation_epochs(), |i, av, bv| {
-        format!("  activation_epoch[{i}]: {av} vs {bv}")
-    });
-    diff_iter(diffs, n, va.iter_slashed(), vb.iter_slashed(), |i, av, bv| {
+    diff_iter(
+        diffs,
+        n,
+        va.validators.iter_activation_epochs(),
+        vb.validators.iter_activation_epochs(),
+        |i, av, bv| format!("  activation_epoch[{i}]: {av} vs {bv}"),
+    );
+    diff_iter(diffs, n, va.validators.iter_slashed(), vb.validators.iter_slashed(), |i, av, bv| {
         format!("  slashed[{i}]: {av} vs {bv}")
     });
 }
 
-fn diff_rings(diffs: &mut Vec<String>, va: &StateDeltaView, vb: &StateDeltaView) {
+fn diff_rings(
+    diffs: &mut Vec<String>,
+    va: &StateWriterView,
+    ea: &EpochView,
+    vb: &StateWriterView,
+    eb: &EpochView,
+) {
     let (mut sa, mut sb) = (Vec::new(), Vec::new());
-    va.effective_slashings_into(&mut sa);
-    vb.effective_slashings_into(&mut sb);
+    effective_slashings_into(ea, &va.slot.reader(), &mut sa);
+    effective_slashings_into(eb, &vb.slot.reader(), &mut sb);
     diff_iter(
         diffs,
         sa.len().min(sb.len()),
@@ -248,8 +318,8 @@ fn diff_rings(diffs: &mut Vec<String>, va: &StateDeltaView, vb: &StateDeltaView)
         |i, av, bv| format!("  slashings[{i}]: {av} vs {bv}"),
     );
     let (mut ra, mut rb) = (Vec::new(), Vec::new());
-    va.effective_randao_mixes_into(&mut ra);
-    vb.effective_randao_mixes_into(&mut rb);
+    effective_randao_mixes_into(ea, &va.slot.reader(), &mut ra);
+    effective_randao_mixes_into(eb, &vb.slot.reader(), &mut rb);
     diff_iter(
         diffs,
         ra.len().min(rb.len()),
@@ -259,9 +329,9 @@ fn diff_rings(diffs: &mut Vec<String>, va: &StateDeltaView, vb: &StateDeltaView)
     );
 }
 
-fn diff_latest_block_header(diffs: &mut Vec<String>, va: &StateDeltaView, vb: &StateDeltaView) {
-    let alh = va.latest_block_header();
-    let blh = vb.latest_block_header();
+fn diff_latest_block_header(diffs: &mut Vec<String>, va: &StateWriterView, vb: &StateWriterView) {
+    let alh = va.slot.state().latest_block_header;
+    let blh = vb.slot.state().latest_block_header;
     if alh.slot == blh.slot &&
         alh.proposer_index == blh.proposer_index &&
         alh.parent_root == blh.parent_root &&
@@ -287,9 +357,9 @@ fn diff_latest_block_header(diffs: &mut Vec<String>, va: &StateDeltaView, vb: &S
     }
 }
 
-fn diff_proposer_lookahead(diffs: &mut Vec<String>, va: &StateDeltaView, vb: &StateDeltaView) {
-    let a = &va.epoch_state().proposer_lookahead;
-    let b = &vb.epoch_state().proposer_lookahead;
+fn diff_proposer_lookahead(diffs: &mut Vec<String>, ea: &EpochView, eb: &EpochView) {
+    let a = &ea.state().proposer_lookahead;
+    let b = &eb.state().proposer_lookahead;
     if a == b {
         return;
     }
@@ -331,4 +401,56 @@ fn hex(b: &[u8; 32]) -> String {
 
 pub fn spec_tests_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("consensus-spec-tests")
+}
+
+/// Parse a `0x`-prefixed 32-byte hex root (fork_choice / sync vectors).
+pub fn parse_root(s: &str) -> B256 {
+    let h = s.strip_prefix("0x").unwrap_or(s);
+    let mut out = [0u8; 32];
+    for (i, b) in out.iter_mut().enumerate() {
+        *b = u8::from_str_radix(&h[i * 2..i * 2 + 2], 16).expect("hex root");
+    }
+    out
+}
+
+/// Snappy-decode a `<stem>.ssz_snappy` object referenced from a steps file.
+pub fn case_file(dir: &Path, stem: &str) -> Vec<u8> {
+    snappy_decode(&dir.join(format!("{}.ssz_snappy", stem.trim())))
+}
+
+/// Anchor a tile on a decomposed EF state with in-memory stub channels, for the
+/// fork_choice / sync vector harnesses. Genesis-relative time is driven by the
+/// harness via `ef_tick`; weak-subjectivity is skipped (the anchor is the test
+/// genesis).
+pub fn ef_tile(state: silver_beacon_state_data::BeaconState) -> BeaconStateTile {
+    use silver_beacon_state::{BeaconStateTile, SlotTicker};
+    use silver_common::{TCache, TCacheProducer};
+    use silver_config::SyncingConfig;
+
+    let ticker =
+        SlotTicker::new(0, std::time::Duration::from_secs(12), std::time::Duration::from_secs(4));
+    // Producers stay bound through `new`; the tile's consumers keep their caches
+    // alive afterward (mirrors the `make_tile` unit-test harness).
+    let (gp, rp, ep, yp) = (
+        TCache::producer("ef_gossip", 1 << 16),
+        TCache::producer("ef_rpc", 1 << 16),
+        TCache::producer("ef_engine", 1 << 16),
+        TCache::producer("ef_replay", 1 << 16),
+    );
+
+    let mut spec = SpecConfig::mainnet();
+    if state.is_finalized_post_gloas() {
+        spec.gloas_fork_epoch = 0;
+    }
+    BeaconStateTile::new(
+        ticker,
+        Arc::new(spec),
+        &SyncingConfig::default(),
+        gp.cache_ref().random_access("ef_gossip", true).unwrap(),
+        rp.cache_ref().random_access("ef_rpc", true).unwrap(),
+        ep.cache_ref().random_access("ef_engine", true).unwrap(),
+        yp.cache_ref().random_access("ef_replay", true).unwrap(),
+        false,
+        state,
+    )
 }

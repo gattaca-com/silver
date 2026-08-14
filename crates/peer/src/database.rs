@@ -1,6 +1,9 @@
+use std::time::Instant;
+
 use fxhash::{FxHashMap, FxHashSet};
 use silver_common::{
-    ALL_PROTOCOLS, Enr, Identify, NodeId, PeerId, PeerStatus, StreamProtocol,
+    ALL_PROTOCOLS, Enr, Identify, NUMBER_OF_CUSTODY_GROUPS, NodeId, PeerId, PeerStatus,
+    StreamProtocol,
     ssz_view::{METADATA_SIZE, MetadataView},
 };
 use slab::Slab;
@@ -68,6 +71,7 @@ impl PeerDatabase {
         if let Some(record) = self.peers.get_mut(index) {
             record.peer_id.replace(peer_id);
             record.node_id.replace(node_id);
+            record.dial_backoff_until = None;
         };
         self.by_node_id.insert(node_id, index);
         self.by_peer_id.insert(peer_id, index);
@@ -97,13 +101,49 @@ impl PeerDatabase {
         }
     }
 
-    pub fn peer_disconnected(&mut self, p2p_id: usize) {
-        self.by_p2p_id.remove(&p2p_id);
+    pub fn peer_disconnected(&mut self, p2p_id: usize) -> Option<&PeerRecord> {
+        self.by_p2p_id.remove(&p2p_id).and_then(|idx| self.peers.get(idx))
     }
 
-    pub fn p2p_status(&mut self, p2p_id: usize, status: PeerStatus) {
+    pub fn dial_backoff_active(&self, peer_id: &PeerId, now: Instant) -> bool {
+        self.by_peer_id
+            .get(peer_id)
+            .and_then(|idx| self.peers.get(*idx))
+            .and_then(|r| r.dial_backoff_until)
+            .is_some_and(|t| t > now)
+    }
+
+    pub fn dial_failed(&mut self, peer_id: &PeerId, until: Instant) {
+        if let Some(record) = self.by_peer_id.get(peer_id).and_then(|idx| self.peers.get_mut(*idx))
+        {
+            record.dial_backoff_until = Some(until);
+        }
+    }
+
+    /// Disconnected records that are structurally dialable: known peer id and
+    /// an ENR with a QUIC endpoint, no live connection, dial backoff expired.
+    /// The caller applies its own gates (bans, in-flight dials, fork digest).
+    pub fn redial_candidates(&self, now: Instant) -> impl Iterator<Item = &PeerRecord> + '_ {
+        self.peers.iter().filter_map(move |(idx, record)| {
+            record.peer_id.as_ref()?;
+            let enr = record.enr.as_ref()?;
+            if enr.quic4_socket().is_none() && enr.quic6_socket().is_none() {
+                return None;
+            }
+            if record.dial_backoff_until.is_some_and(|t| t > now) {
+                return None;
+            }
+            if self.by_p2p_id.values().any(|i| *i == idx) {
+                return None;
+            }
+            Some(record)
+        })
+    }
+
+    pub fn p2p_status(&mut self, p2p_id: usize, status: PeerStatus, earliest_slot: Option<u64>) {
         if let Some(record) = self.by_p2p_id.get(&p2p_id).and_then(|idx| self.peers.get_mut(*idx)) {
             record.status.replace(status);
+            record.earliest_slot = earliest_slot;
         }
     }
 
@@ -137,15 +177,32 @@ impl PeerDatabase {
             .map(MetadataView::seq_number)
     }
 
-    pub fn data_column_custody_groups_intersection(&self, peer: usize, columns: u128) -> u128 {
-        let custody_groups = self
-            .by_p2p_id
-            .get(&peer)
+    pub fn earliest_available_slot(&self, p2p_id: usize) -> Option<u64> {
+        self.by_p2p_id
+            .get(&p2p_id)
             .and_then(|idx| self.peers.get(*idx))
-            .and_then(|r| r.node_id.zip(r.enr.as_ref().and_then(|enr| enr.cgc())))
-            .map(|(id, count)| id.custody_groups(count as u8))
-            .unwrap_or_default();
-        custody_groups & columns
+            .and_then(|r| r.earliest_slot)
+    }
+
+    pub fn data_column_custody_groups_intersection(&self, peer: usize, columns: u128) -> u128 {
+        let Some(record) = self.by_p2p_id.get(&peer).and_then(|idx| self.peers.get(*idx)) else {
+            return 0;
+        };
+
+        let Some(node_id) = record.node_id else {
+            return 0;
+        };
+        // Count: take the larger of the ENR `cgc` and the MetaData v3
+        // `custody_group_count`. A node promoted to supernode (e.g. by validator
+        // count) bumps its MetaData cgc immediately but can carry a stale lower
+        // `cgc` in its ENR.
+        let enr_cgc = record.enr.as_ref().and_then(|enr| enr.cgc()).unwrap_or(0);
+        let meta_cgc = record.metadata.as_ref().map(MetadataView::custody_group_count).unwrap_or(0);
+        let count = enr_cgc.max(meta_cgc).min(NUMBER_OF_CUSTODY_GROUPS as u64) as u8;
+        if count == 0 {
+            return 0;
+        }
+        node_id.custody_groups(count) & columns
     }
 
     /// Live connection ids whose identify advertises `protocol`. A peer is
@@ -160,6 +217,18 @@ impl PeerDatabase {
         self.by_p2p_id
             .iter()
             .filter_map(move |(p2p_id, idx)| proto?.contains(idx).then_some(*p2p_id))
+    }
+
+    /// Live peers with a valid status.
+    pub fn live_peers_with_status(&self) -> impl Iterator<Item = &PeerRecord> {
+        self.by_p2p_id
+            .iter()
+            .filter_map(|(_, idx)| self.peers.get(*idx))
+            .filter(|record| record.status.is_some())
+    }
+
+    pub fn by_p2p_id(&self, p2p: usize) -> Option<&PeerRecord> {
+        self.by_p2p_id.get(&p2p).and_then(|idx| self.peers.get(*idx))
     }
 }
 
@@ -180,8 +249,11 @@ pub struct PeerRecord {
     pub enr: Option<Enr>,
     /// Latest peer status
     pub status: Option<PeerStatus>,
+    pub earliest_slot: Option<u64>,
     /// Latest peer metadata
     pub metadata: Option<[u8; METADATA_SIZE]>,
     /// Identify record
     pub identify: Option<Identify>,
+    /// Not a redial candidate until this instant (dial failed / timed out).
+    pub dial_backoff_until: Option<Instant>,
 }

@@ -33,7 +33,7 @@ jobs:
           setup_only: true
 
       - name: Download consensus-spec-tests
-        run: make -C crates/beacon_state/tile ./consensus-spec-tests
+        run: make -C crates/beacon_state/tile
 
       - name: Run tests
         run: cargo test --features "silver_beacon_state/ef_tests,silver_e2e/lh-client" --no-fail-fast

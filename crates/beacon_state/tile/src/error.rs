@@ -1,4 +1,4 @@
-use silver_beacon_state_data::{B256, BLSPubkey, Epoch, Slot};
+use silver_beacon_state_data::{B256, BLSPubkey, BlockBodyError, Epoch, Slot};
 use thiserror::Error;
 
 use crate::tile::Feedback;
@@ -12,7 +12,13 @@ pub enum PrecheckError {
          block_slot={block_slot}",
         b256_hex(parent_root)
     )]
-    ParentMissing { parent_root: B256, last_applied_slot: Slot, block_slot: Slot },
+    ParentMissing { parent_root: B256, block_root: B256, last_applied_slot: Slot, block_slot: Slot },
+    #[error(
+        "block parent invalid: parent_root=0x{} block_root=0x{}",
+        b256_hex(parent_root),
+        b256_hex(block_root)
+    )]
+    ParentInvalid { parent_root: B256, block_root: B256 },
     #[error("past block: block_epoch={block_epoch} finalized_epoch={finalized_epoch}")]
     PreFinalized { block_epoch: Epoch, finalized_epoch: Epoch },
     #[error("block past-slot precheck failed: block_slot={block_slot} parent_slot={parent_slot}")]
@@ -36,26 +42,30 @@ pub enum PrecheckError {
     )]
     ProposerIndexTooBig { got: u64, validator_count: usize, block_root: B256 },
     #[error(
-        "block signature precheck failed: proposer_index={proposer_index} pubkey=0x{} \
-         block_root=0x{}",
-        pubkey_hex(pubkey),
+        "block extends parent's unverified FULL payload: parent_root=0x{} block_root=0x{}",
+        b256_hex(parent_root),
         b256_hex(block_root)
     )]
-    InvalidBls { proposer_index: u64, pubkey: BLSPubkey, block_root: B256 },
+    UnverifiedParentPayload { parent_root: B256, block_root: B256 },
 }
 
 impl PrecheckError {
     pub fn feedback(self) -> Feedback {
         match self {
             Self::SizeMismatch { .. } => Feedback::Reject(None),
-            Self::ParentMissing { parent_root, .. } => Feedback::RequestParent(parent_root),
+            Self::ParentMissing { parent_root, block_root, .. } => {
+                Feedback::RequestParent { parent_root, block_root }
+            }
             Self::PreFinalized { .. } |
             Self::PastSlot { .. } |
             Self::FutureSlot { .. } |
             Self::AlreadyKnown { .. } => Feedback::Ignore,
+            Self::UnverifiedParentPayload { parent_root, block_root } => {
+                Feedback::AwaitParentPayload { parent_root, block_root }
+            }
+            Self::ParentInvalid { block_root, .. } |
             Self::ProposerLookaheadMismatch { block_root, .. } |
-            Self::ProposerIndexTooBig { block_root, .. } |
-            Self::InvalidBls { block_root, .. } => Feedback::Reject(Some(block_root)),
+            Self::ProposerIndexTooBig { block_root, .. } => Feedback::Reject(Some(block_root)),
         }
     }
 }
@@ -86,6 +96,12 @@ pub enum Error {
     InvalidWithdrawals(#[from] WithdrawalsError),
     #[error("invalid execution payload: {0}")]
     InvalidExecutionPayload(#[from] ExecutionPayloadError),
+    #[error("invalid execution payload bid: {0}")]
+    InvalidExecutionPayloadBid(#[from] ExecutionPayloadBidError),
+    #[error("invalid parent execution payload: {0}")]
+    InvalidParentExecutionPayload(#[from] ParentExecutionPayloadError),
+    #[error("invalid payload attestation: {0}")]
+    InvalidPayloadAttestation(#[from] PayloadAttestationError),
     #[error("invalid deposit Merkle branch at leaf index {index}")]
     InvalidDepositProof { index: u64 },
 
@@ -109,6 +125,80 @@ impl Error {
     }
 }
 
+#[derive(Debug, Error)]
+pub enum ExecutionPayloadBidError {
+    #[error("malformed SignedExecutionPayloadBid SSZ (len {len})")]
+    Malformed { len: usize },
+    #[error("self-build bid value must be zero, got {value}")]
+    SelfBuildNonZeroValue { value: u64 },
+    #[error("self-build bid signature must be the infinity point")]
+    SelfBuildSignature,
+    #[error("builder index {index} out of range (count {count})")]
+    BuilderOutOfRange { index: u64, count: usize },
+    #[error("builder {index} pubkey is not a valid BLS point")]
+    BadBuilderPubkey { index: u64 },
+    #[error("builder {index} is not active")]
+    BuilderInactive { index: u64 },
+    #[error("builder {index} version {version} != PAYLOAD_BUILDER_VERSION")]
+    BuilderVersion { index: u64, version: u8 },
+    #[error("builder {index} cannot cover bid value {value}")]
+    InsufficientBalance { index: u64, value: u64 },
+    #[error("{got} blob commitments exceeds max {max}")]
+    TooManyBlobCommitments { got: usize, max: usize },
+    #[error("bid slot {bid} != state slot {state}")]
+    SlotMismatch { bid: u64, state: u64 },
+    #[error("bid at genesis slot")]
+    GenesisSlot,
+    #[error("bid parent_block_hash does not match latest_block_hash")]
+    ParentBlockHashMismatch,
+    #[error("bid parent_block_root does not match block root at slot-1")]
+    ParentBlockRootMismatch,
+    #[error("bid prev_randao does not match the current randao mix")]
+    PrevRandaoMismatch,
+}
+
+#[derive(Debug, Error)]
+pub enum PayloadAttestationError {
+    #[error("malformed PayloadAttestation SSZ (len {len})")]
+    Malformed { len: usize },
+    #[error("payload attestation beacon_block_root != parent block root")]
+    BadBeaconBlockRoot,
+    #[error("payload attestation slot {slot} is not state slot {state} - 1")]
+    BadSlot { slot: u64, state: u64 },
+    #[error("payload attestation has no attesting indices")]
+    NoAttestingIndices,
+}
+
+#[derive(Debug, Error)]
+pub enum EnvelopeError {
+    #[error("malformed envelope payload")]
+    Malformed,
+    #[error("envelope disagrees with the committed bid: {field}")]
+    BidMismatch { field: &'static str },
+    #[error("envelope payload {field} disagrees with the state")]
+    PayloadMismatch { field: &'static str },
+    #[error("builder index {index} out of range")]
+    BuilderOutOfRange { index: u64 },
+    #[error("invalid builder signature")]
+    BadSignature,
+}
+
+#[derive(Debug, Error)]
+pub enum ParentExecutionPayloadError {
+    #[error("malformed parent_execution_requests / block body offsets")]
+    Malformed,
+    #[error("parent declared EMPTY but carries non-empty execution requests")]
+    EmptyParentHasRequests,
+    #[error(
+        "parent_execution_requests root mismatch: expected=0x{} got=0x{}",
+        b256_hex(expected),
+        b256_hex(got)
+    )]
+    RequestsRootMismatch { expected: B256, got: B256 },
+    #[error("{kind} request count {count} over the per-payload limit {max}")]
+    TooManyRequests { kind: &'static str, count: usize, max: usize },
+}
+
 pub type Result<T, E = Error> = core::result::Result<T, E>;
 
 #[derive(Debug, Error)]
@@ -129,51 +219,16 @@ pub enum BlockError {
     ParentRootMismatch { expected: B256, got: B256 },
     #[error("post-state root mismatch: expected=0x{} got=0x{}", b256_hex(expected), b256_hex(got))]
     PostStateRootMismatch { expected: B256, got: B256 },
-    #[error("block body too short: len={len} min={min}")]
-    BodyTooShort { len: usize, min: usize },
-    #[error("{op} count {count} exceeds max {max}")]
-    OperationCountOutOfBounds { op: OperationKind, count: usize, max: usize },
-    #[error(
-        "body offsets malformed at fixed position {at}: {field} off={off} body_len={body_len} \
-         (next_field_off={next_off:?})"
-    )]
-    BodyOffsetOutOfRange {
-        at: usize,
-        field: &'static str,
-        off: usize,
-        next_off: Option<usize>,
-        body_len: usize,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OperationKind {
-    ProposerSlashings,
-    AttesterSlashings,
-    Attestations,
-    Deposits,
-    VoluntaryExits,
-    BlsToExecutionChanges,
-}
-
-impl core::fmt::Display for OperationKind {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let s = match self {
-            Self::ProposerSlashings => "proposer_slashings",
-            Self::AttesterSlashings => "attester_slashings",
-            Self::Attestations => "attestations",
-            Self::Deposits => "deposits",
-            Self::VoluntaryExits => "voluntary_exits",
-            Self::BlsToExecutionChanges => "bls_to_execution_changes",
-        };
-        f.write_str(s)
-    }
+    #[error(transparent)]
+    Body(#[from] BlockBodyError),
 }
 
 #[derive(Debug, Error)]
 pub enum AttestationError {
     #[error("attestation too short: len={len} min={min}")]
     TooShort { len: usize, min: usize },
+    #[error("Gloas attestation payload-vote index invalid: {index}")]
+    InvalidPayloadIndex { index: u64 },
     #[error("att_slot {att_slot} not before state slot {state_slot}")]
     SlotNotPast { att_slot: u64, state_slot: u64 },
     #[error("target_epoch mismatch: expected={att} got={target}")]
@@ -317,29 +372,9 @@ pub enum WithdrawalsError {
     #[error("withdrawals payload count {count} > max {max}")]
     TooMany { count: usize, max: usize },
     #[error(
-        "partial-withdrawal mismatch at payload index {payload_index}: expected ({expected}) got ({got})"
+        "withdrawal mismatch at payload index {payload_index}: expected ({expected}) got ({got})"
     )]
-    PartialMismatch { payload_index: usize, expected: WithdrawalRecord, got: WithdrawalRecord },
-    #[error(
-        "sweep full-withdrawal mismatch at vi={vi} (pubkey=0x{}): expected ({expected}) got ({got})",
-        pubkey_hex(pubkey)
-    )]
-    SweepMismatchFull {
-        vi: u64,
-        pubkey: BLSPubkey,
-        expected: WithdrawalRecord,
-        got: WithdrawalRecord,
-    },
-    #[error(
-        "sweep excess-withdrawal mismatch at vi={vi} (pubkey=0x{}): expected ({expected}) got ({got})",
-        pubkey_hex(pubkey)
-    )]
-    SweepMismatchExcess {
-        vi: u64,
-        pubkey: BLSPubkey,
-        expected: WithdrawalRecord,
-        got: WithdrawalRecord,
-    },
+    Mismatch { payload_index: usize, expected: WithdrawalRecord, got: WithdrawalRecord },
     #[error("withdrawal count mismatch: expected={expected} got={actual}")]
     CountMismatch { expected: usize, actual: usize },
 }

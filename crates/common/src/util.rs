@@ -6,6 +6,18 @@ pub fn create_self_signed_certificate(label: &str) -> Result<CertifiedKey<KeyPai
     rcgen::generate_simple_self_signed(&[label.into()])
 }
 
+/// Lowercase hex of a 32-byte root/hash, no `0x` prefix (callers prepend one
+/// where wanted). Branch-free table lookup.
+pub fn hex32(b: &[u8; 32]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut s = String::with_capacity(64);
+    for &x in b {
+        s.push(HEX[(x >> 4) as usize] as char);
+        s.push(HEX[(x & 0x0f) as usize] as char);
+    }
+    s
+}
+
 /// Encode a varint into `buf`. Returns the number of bytes written.
 pub fn encode_varint(mut val: u64, buf: &mut [u8]) -> Result<usize, Error> {
     let mut i = 0;

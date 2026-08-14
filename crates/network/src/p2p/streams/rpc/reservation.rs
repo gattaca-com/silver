@@ -3,7 +3,8 @@ use std::io::{Error, ErrorKind};
 use silver_common::{
     P2pStreamId, RpcRequest, RpcResponse, StreamProtocol, TCacheProducer, TProducer, TReservation,
     ssz_view::{
-        BLOCKS_BY_RANGE_REQ_SIZE, DC_BY_RANGE_REQ_MAX, GOODBYE_SIZE, METADATA_SIZE, PING_SIZE,
+        BLOCKS_BY_RANGE_REQ_SIZE, DC_BY_RANGE_REQ_MAX,
+        EXECUTION_PAYLOAD_ENVELOPES_BY_RANGE_REQ_SIZE, GOODBYE_SIZE, METADATA_SIZE, PING_SIZE,
         STATUS_V1_SIZE, STATUS_V2_SIZE,
     },
 };
@@ -46,6 +47,20 @@ pub fn alloc_incoming_rpc(
                 let reservation = rpc_in.reserve(len, true).ok_or(ErrorKind::FileTooLarge)?;
                 let tcache = reservation.read();
                 (Rpc::Request(RpcRequest::DataColumnsByRoot(tcache)), Some(reservation))
+            }
+            StreamProtocol::ExecutionPayloadEnvelopesByRange => (
+                Rpc::Request(RpcRequest::ExecutionPayloadEnvelopesByRange(
+                    [0u8; EXECUTION_PAYLOAD_ENVELOPES_BY_RANGE_REQ_SIZE],
+                )),
+                None,
+            ),
+            StreamProtocol::ExecutionPayloadEnvelopesByRoot => {
+                let reservation = rpc_in.reserve(len, true).ok_or(ErrorKind::FileTooLarge)?;
+                let tcache = reservation.read();
+                (
+                    Rpc::Request(RpcRequest::ExecutionPayloadEnvelopesByRoot(tcache)),
+                    Some(reservation),
+                )
             }
             _ => return Err(ErrorKind::InvalidInput.into()),
         }
@@ -99,6 +114,18 @@ pub fn alloc_incoming_rpc(
                     Some(reservation),
                 )
             }
+            StreamProtocol::ExecutionPayloadEnvelopesByRange |
+            StreamProtocol::ExecutionPayloadEnvelopesByRoot => {
+                let reservation = rpc_in.reserve(len, true).ok_or(ErrorKind::FileTooLarge)?;
+                let tcache = reservation.read();
+                (
+                    Rpc::Response(RpcResponse::ExecutionPayloadEnvelope {
+                        fork_digest: [0u8; 4],
+                        ssz: tcache,
+                    }),
+                    Some(reservation),
+                )
+            }
             _ => return Err(ErrorKind::InvalidInput.into()),
         }
     };
@@ -106,9 +133,12 @@ pub fn alloc_incoming_rpc(
     Ok(RpcReservation { inbound, offset: 0, tcache })
 }
 
-pub fn alloc_error_response(error: u8) -> RpcReservation {
+/// `length` is the chunk's varint payload length — the decoded error
+/// message lands in `msg`, capped at the spec's 256-byte ErrorMessage
+/// limit.
+pub fn alloc_error_response(error: u8, length: usize) -> RpcReservation {
     RpcReservation {
-        inbound: Rpc::Response(RpcResponse::Error { error, msg: [0u8; 256], len: 0 }),
+        inbound: Rpc::Response(RpcResponse::Error { error, msg: [0u8; 256], len: length.min(256) }),
         offset: 0,
         tcache: None,
     }
@@ -119,7 +149,9 @@ pub fn rpc_response_context_length(protocol: StreamProtocol) -> usize {
         StreamProtocol::BeaconBlocksByRange |
         StreamProtocol::BeaconBlocksByRoot |
         StreamProtocol::DataColumnSidecarsByRange |
-        StreamProtocol::DataColumnSidecarsByRoot => 4,
+        StreamProtocol::DataColumnSidecarsByRoot |
+        StreamProtocol::ExecutionPayloadEnvelopesByRange |
+        StreamProtocol::ExecutionPayloadEnvelopesByRoot => 4,
         _ => 0,
     }
 }
@@ -157,23 +189,20 @@ impl RpcReservation {
                     Some(reservation) => reservation.remaining_buffer()?,
                     None => return Err(ErrorKind::InvalidData.into()), // uses reservation
                 },
+                RpcRequest::ExecutionPayloadEnvelopesByRange(b) => &mut b[self.offset..],
+                RpcRequest::ExecutionPayloadEnvelopesByRoot(_) => match &mut self.tcache {
+                    Some(reservation) => reservation.remaining_buffer()?,
+                    None => return Err(ErrorKind::InvalidData.into()), // uses reservation
+                },
             },
             Rpc::Response(rsp) => match rsp {
                 RpcResponse::StatusV1(s) => &mut s[self.offset..],
                 RpcResponse::StatusV2(s) => &mut s[self.offset..],
                 RpcResponse::Ping(p) => &mut p[self.offset..],
                 RpcResponse::MetaData(m) => &mut m[self.offset..],
-                RpcResponse::BeaconBlock { fork_digest, ssz: _ } => {
-                    if self.offset < fork_digest.len() {
-                        &mut fork_digest[self.offset..]
-                    } else {
-                        match &mut self.tcache {
-                            Some(reservation) => reservation.remaining_buffer()?,
-                            None => return Err(ErrorKind::InvalidData.into()), // uses reservation
-                        }
-                    }
-                }
-                RpcResponse::DataColumnSidecar { fork_digest, ssz: _ } => {
+                RpcResponse::BeaconBlock { fork_digest, ssz: _ } |
+                RpcResponse::DataColumnSidecar { fork_digest, ssz: _ } |
+                RpcResponse::ExecutionPayloadEnvelope { fork_digest, ssz: _ } => {
                     if self.offset < fork_digest.len() {
                         &mut fork_digest[self.offset..]
                     } else {
@@ -199,18 +228,9 @@ impl RpcReservation {
                 None => self.offset += written,
             },
             Rpc::Response(rsp) => match rsp {
-                RpcResponse::BeaconBlock { fork_digest: _, ssz: _ } => {
-                    if self.offset < 4 {
-                        self.offset += written;
-                        debug_assert!(self.offset <= 4);
-                    } else {
-                        match &mut self.tcache {
-                            Some(reservation) => reservation.increment_offset(written),
-                            None => return Err(ErrorKind::InvalidData.into()), // uses reservation
-                        }
-                    }
-                }
-                RpcResponse::DataColumnSidecar { fork_digest: _, ssz: _ } => {
+                RpcResponse::BeaconBlock { .. } |
+                RpcResponse::DataColumnSidecar { .. } |
+                RpcResponse::ExecutionPayloadEnvelope { .. } => {
                     if self.offset < 4 {
                         self.offset += written;
                         debug_assert!(self.offset <= 4);

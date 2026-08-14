@@ -1,7 +1,8 @@
 //! Terminal metrics viewer for silver. Reads `counters-*`,
-//! `timing-*`, `tilemetrics-*` files from flux's shmem queues
-//! directory — `{base_dir}/{app_name}/shmem/queues/` — and renders
-//! them in a ratatui-based TUI.
+//! `latency-*`, `tilemetrics-*` files from flux's shmem
+//! queues directory — `{base_dir}/{app_name}/shmem/queues/` — and
+//! renders them in a ratatui-based TUI. `#[timed]` perf counters are
+//! folded into the flamegraph pane, not surfaced as a separate source.
 //!
 //! Usage: `surfer [BASE_DIR] [APP_NAME]`.
 //! Defaults: `BASE_DIR = flux::utils::directories::local_share_dir()`
@@ -23,13 +24,21 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 
 mod app;
 mod discovery;
+mod flamegraph;
 mod render;
 mod schema;
 mod sources;
 
 use crate::{
     app::App,
-    sources::{counters::CounterSet, tilemetrics::TileMetricsSet, timings::TimingSet},
+    flamegraph::Flamegraph,
+    render::events_pane::EventsPane,
+    sources::{
+        counters::CounterSet,
+        events::{MAINNET_GENESIS_UNIX_SECS, MAINNET_SLOT_MS},
+        tilemetrics::TileMetricsSet,
+        timings::TimingSet,
+    },
 };
 
 const TICK: Duration = Duration::from_millis(100);
@@ -104,7 +113,18 @@ fn main() -> io::Result<()> {
     for t in &mut tile_sets {
         t.drain();
     }
-    let mut app = App::new(counter_sets, tcache_sets, timing_sets, tile_sets);
+
+    // Events pane reads the node's spine directly (app name baked in as
+    // `silver`, so a custom APP_NAME only affects the file sources above).
+    // Slot timing is chain config surfer can't discover — env-overridable.
+    let events = EventsPane::open(
+        &base_dir,
+        env_u64("SURFER_GENESIS_UNIX_SECS", MAINNET_GENESIS_UNIX_SECS),
+        env_u64("SURFER_SLOT_MS", MAINNET_SLOT_MS),
+    );
+
+    let flamegraph = Flamegraph::attach(&app_name);
+    let mut app = App::new(counter_sets, tcache_sets, timing_sets, tile_sets, events, flamegraph);
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -119,6 +139,10 @@ fn main() -> io::Result<()> {
     term.show_cursor()?;
 
     result
+}
+
+fn env_u64(name: &str, default: u64) -> u64 {
+    std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
 }
 
 fn run<B: ratatui::backend::Backend>(
@@ -137,7 +161,7 @@ fn run<B: ratatui::backend::Backend>(
         if event::poll(timeout)? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
-                    handle_key(app, key.code);
+                    handle_key(app, key.code, app_name);
                 }
             }
         }
@@ -153,6 +177,7 @@ fn run<B: ratatui::backend::Backend>(
             if let Ok(s) = discovery::discover(base_dir, app_name) {
                 app.merge_new_sources(s);
             }
+            app.flamegraph.reattach_if_restarted(app_name);
             last_discover = Instant::now();
         }
         if app.quit {
@@ -161,7 +186,7 @@ fn run<B: ratatui::backend::Backend>(
     }
 }
 
-fn handle_key(app: &mut App, code: KeyCode) {
+fn handle_key(app: &mut App, code: KeyCode, app_name: &str) {
     match code {
         KeyCode::Char('q') => app.quit = true,
         KeyCode::Esc | KeyCode::Backspace if app.drilled_in => app.drilled_in = false,
@@ -174,6 +199,9 @@ fn handle_key(app: &mut App, code: KeyCode) {
         KeyCode::Up => app.move_selection(-1),
         KeyCode::Char('[') => app.adjust_split(-1),
         KeyCode::Char(']') => app.adjust_split(1),
+        KeyCode::Char('p') => app.flamegraph.toggle_pause(),
+        KeyCode::Char('e') => app.flamegraph.export_trace(),
+        KeyCode::Char('c') => app.flamegraph.clear(app_name),
         _ => {}
     }
 }

@@ -13,76 +13,36 @@
 extern crate self as silver_metrics;
 
 use std::{
-    cell::RefCell,
     fs::OpenOptions,
     io,
     os::fd::AsRawFd,
     path::Path,
-    sync::{
-        OnceLock,
-        atomic::{AtomicPtr, AtomicU64, Ordering},
-    },
-    thread::LocalKey,
+    sync::atomic::{AtomicPtr, AtomicU64, Ordering},
 };
 
-use flux::{Timer, timing::Instant};
-pub use silver_common_macros::timed;
+pub use flux_profiler::{self as profiler, timed};
 
-pub mod flamegraph_timer;
+mod stats;
+pub mod table;
+#[cfg(feature = "alloc-profile")]
+pub use flux_profiler::allocator::CountingAllocator;
+pub use stats::{TimingStats, fold_stats};
 
-/// App name used as the parent directory for per-function `Timer`
-/// shmem queues. Falls back to `"silver"` if `init_app` is not called.
-static APP_NAME: OnceLock<String> = OnceLock::new();
-
-/// Publish the app name used by `#[timed]`-created `Timer`s. Must be
-/// called at process startup, before any `#[timed]` function fires.
-/// Repeat calls are no-ops (first set wins).
-pub fn init_app(app_name: &str) {
-    let _ = APP_NAME.set(app_name.to_owned());
-}
-
-/// Internal: construct a flux `Timer` under the app namespace published
-/// by `init_app`. Used by `TimerGuard` on first hit.
-#[doc(hidden)]
-pub fn new_timer(name: &str) -> Timer {
-    Timer::new(APP_NAME.get().map(String::as_str).unwrap_or("silver"), name)
-}
-
-/// Drop-based timer scope used by the `#[timed]` macro expansion.
-/// Records processing time on every exit path — normal return, `?`,
-/// early `return`, panic-unwind.
-#[doc(hidden)]
-pub struct TimerGuard {
-    key: &'static LocalKey<RefCell<Option<Timer>>>,
-    name: &'static str,
-    start: Instant,
-}
-
-impl TimerGuard {
-    #[inline]
-    pub fn new(key: &'static LocalKey<RefCell<Option<Timer>>>, name: &'static str) -> Self {
-        let start = Instant::now();
-        flamegraph_timer::stack_enter(name, start);
-        Self { key, name, start }
+pub fn fmt_bytes(bytes: u64) -> String {
+    const KIB: u64 = 1 << 10;
+    const MIB: u64 = 1 << 20;
+    const GIB: u64 = 1 << 30;
+    match bytes {
+        0 => "0 B".to_string(),
+        b if b >= GIB => format!("{:.2} GiB", b as f64 / GIB as f64),
+        b if b >= MIB => format!("{:.2} MiB", b as f64 / MIB as f64),
+        b if b >= KIB => format!("{:.2} KiB", b as f64 / KIB as f64),
+        b => format!("{b} B"),
     }
 }
-
-impl Drop for TimerGuard {
-    fn drop(&mut self) {
-        // Bench/test mode replaces flux emission: record the call tree and
-        // skip the shmem write entirely.
-        if flamegraph_timer::is_enabled() {
-            flamegraph_timer::stack_exit();
-            return;
-        }
-        self.key.with(|cell| {
-            let mut opt = cell.borrow_mut();
-            let timer = opt.get_or_insert_with(|| new_timer(self.name));
-            timer.set_start(self.start);
-            timer.record_processing();
-        });
-    }
-}
+pub use flux_profiler::TimerGuard;
+#[cfg(test)]
+pub(crate) use flux_profiler::test_shmem;
 
 /// Open / create the counters file, ftruncate to `bytes`, mmap shared,
 /// and return the base pointer. Counter files land in flux's standard
@@ -319,28 +279,5 @@ mod tests {
         assert_eq!(TestCounters::COUNT, 3);
 
         std::fs::remove_dir_all(&tmp).ok();
-    }
-
-    use crate::timed;
-
-    #[timed]
-    fn timed_default_name(x: u64) -> u64 {
-        x * 2
-    }
-
-    #[timed("custom_label")]
-    fn timed_custom_name(x: u64) -> Result<u64, &'static str> {
-        if x == 0 { Err("zero") } else { Ok(x + 1) }
-    }
-
-    #[test]
-    fn timed_macro_expands_and_runs() {
-        // Sets the app namespace so the per-fn shmem queues land somewhere
-        // predictable for the test run.
-        super::init_app("silver_test");
-
-        assert_eq!(timed_default_name(7), 14);
-        assert_eq!(timed_custom_name(0), Err("zero"));
-        assert_eq!(timed_custom_name(41), Ok(42));
     }
 }

@@ -4,21 +4,34 @@ use silver_common::{MULTISTREAM_V1, REJECT_RESPONSE, StreamProtocol};
 use super::StreamError;
 use crate::p2p::streams::StreamIo;
 
+const MAX_RETRY: usize = 2;
+
+/// The multistream header goes on the wire exactly once per direction: the
+/// first inbound response (echo or reject) carries it, later ones start
+/// `written` past it. `REJECT_RESPONSE` and the `InWriting` sequence both
+/// lay out header-then-line, so the offset skips the header for count > 0.
+fn header_written(rejects: usize) -> usize {
+    if rejects == 0 { 0 } else { MULTISTREAM_V1.len() }
+}
+
 /// Multistream-select negotiation state for a single QUIC stream.
 #[derive(Debug)]
 pub(crate) enum NegotiateState {
-    /// Outbound: writing multistream header + protocol proposal.
-    OutWriting { protocol: StreamProtocol, written: usize },
+    /// Outbound: writing multistream header + protocol proposal. `header`
+    /// is false on reject-retry rounds — the header is exchanged only once
+    /// per stream, in both directions.
+    OutWriting { protocol: StreamProtocol, written: usize, header: bool },
     /// Outbound: reading back multistream header + protocol echo.
-    OutReading { protocol: StreamProtocol, buf: [u8; 96], read: usize },
+    OutReading { protocol: StreamProtocol, buf: [u8; 96], read: usize, header: bool },
     /// Inbound: reading multistream header (fixed size).
     InReadingHeader { buf: [u8; 20], read: usize },
-    /// Inbound: header matched, reading protocol varint + string.
-    InReadingProtocol { buf: [u8; 68], read: usize },
+    /// Inbound: header matched, reading protocol varint + string. Sized for
+    /// the longest protocol line (`execution_payload_envelopes_by_range`, 74B).
+    InReadingProtocol { buf: [u8; 96], read: usize, count: usize },
     /// Inbound: matched protocol, writing multistream header + protocol echo.
     InWriting { protocol: StreamProtocol, written: usize },
     /// Inbound: unrecognized protocol, writing reject (header + na).
-    InWritingReject { written: usize },
+    InWritingReject { written: usize, count: usize },
     /// Negotiation complete.
     Done(StreamProtocol),
 }
@@ -31,7 +44,7 @@ enum Spin {
 impl NegotiateState {
     /// Create state for an outbound stream (we are the dialer).
     pub(crate) fn new_outbound(protocol: StreamProtocol) -> Self {
-        Self::OutWriting { protocol, written: 0 }
+        Self::OutWriting { protocol, written: 0, header: true }
     }
 
     /// Create state for an inbound stream (we are the listener).
@@ -57,9 +70,10 @@ impl NegotiateState {
 
     fn spin_inner<S: StreamIo>(self, id: StreamId, io: &mut S) -> Result<Spin, StreamError> {
         match self {
-            NegotiateState::OutWriting { protocol, mut written } => {
+            NegotiateState::OutWriting { protocol, mut written, header } => {
                 // try to write any remaining negotiate bytes: MULTISELECT_V1 ++
                 // protocol.multiselect()
+                let before = written;
                 if written < MULTISTREAM_V1.len() {
                     written += io.write_to_stream(id, &MULTISTREAM_V1[written..])?;
                 } else {
@@ -72,13 +86,22 @@ impl NegotiateState {
                             protocol,
                             buf: [0u8; 96],
                             read: 0,
+                            header,
                         }));
                     }
                 }
-                Ok(Spin::Ok(Self::OutWriting { protocol, written }))
+                // Park only on zero progress (quinn write-blocked, Writable
+                // armed); a completed header write must continue to the
+                // proposal in this spin — no event fires for it.
+                let next = Self::OutWriting { protocol, written, header };
+                Ok(if written > before { Spin::Next(next) } else { Spin::Ok(next) })
             }
-            NegotiateState::OutReading { protocol, mut buf, mut read } => {
-                let total = MULTISTREAM_V1.len() + protocol.multiselect().len();
+            NegotiateState::OutReading { protocol, mut buf, mut read, header } => {
+                // The responder sends the multistream header once per
+                // stream; reject-retry responses carry only the echo or
+                // another na.
+                let hdr_len = if header { MULTISTREAM_V1.len() } else { 0 };
+                let total = hdr_len + protocol.multiselect().len();
                 // Cap read at `total` so we don't consume bytes that
                 // belong to the next protocol (e.g. an identify varint
                 // arriving in the same packet as the multistream
@@ -87,18 +110,17 @@ impl NegotiateState {
                 read += io.read_from_stream(id, &mut buf[read..total])?;
 
                 // check for reject
-                if read >= MULTISTREAM_V1.len() + REJECT_RESPONSE.len() {
-                    if &buf[..MULTISTREAM_V1.len()] != MULTISTREAM_V1 {
+                if read >= hdr_len + REJECT_RESPONSE.len() {
+                    if header && &buf[..hdr_len] != MULTISTREAM_V1 {
                         return Err(StreamError::InvalidMultiStreamHeader);
                     }
-                    if &buf[MULTISTREAM_V1.len()..MULTISTREAM_V1.len() + REJECT_RESPONSE.len()] ==
-                        REJECT_RESPONSE
-                    {
+                    if &buf[hdr_len..hdr_len + REJECT_RESPONSE.len()] == REJECT_RESPONSE {
                         match protocol.next() {
                             Some(next_protocol) => {
                                 return Ok(Spin::Next(Self::OutWriting {
                                     protocol: next_protocol,
                                     written: MULTISTREAM_V1.len(),
+                                    header: false,
                                 }));
                             }
                             None => return Err(StreamError::StreamRejected),
@@ -107,16 +129,16 @@ impl NegotiateState {
                 }
 
                 if read >= total {
-                    if &buf[..MULTISTREAM_V1.len()] != MULTISTREAM_V1 {
+                    if header && &buf[..hdr_len] != MULTISTREAM_V1 {
                         return Err(StreamError::InvalidMultiStreamHeader);
                     }
-                    if &buf[MULTISTREAM_V1.len()..total] != protocol.multiselect() {
+                    if &buf[hdr_len..total] != protocol.multiselect() {
                         return Err(StreamError::InvalidMultiStreamProtocol);
                     }
                     return Ok(Spin::Ok(Self::Done(protocol)));
                 }
 
-                Ok(Spin::Ok(Self::OutReading { protocol, buf, read }))
+                Ok(Spin::Ok(Self::OutReading { protocol, buf, read, header }))
             }
             NegotiateState::InReadingHeader { mut buf, mut read } => {
                 read += io.read_from_stream(id, &mut buf[read..])?;
@@ -125,34 +147,58 @@ impl NegotiateState {
                     if buf[..] != MULTISTREAM_V1[..] {
                         return Err(StreamError::InvalidMultiStreamHeader);
                     }
-                    return Ok(Spin::Next(Self::InReadingProtocol { buf: [0u8; 68], read: 0 }));
+                    return Ok(Spin::Next(Self::InReadingProtocol {
+                        buf: [0u8; 96],
+                        read: 0,
+                        count: 0,
+                    }));
                 }
 
                 Ok(Spin::Ok(Self::InReadingHeader { buf, read }))
             }
-            NegotiateState::InReadingProtocol { mut buf, mut read } => {
+            NegotiateState::InReadingProtocol { mut buf, mut read, count } => {
                 if read == 0 {
                     read += io.read_from_stream(id, &mut buf[..1])?;
                     if read == 0 {
-                        return Ok(Spin::Ok(Self::InReadingProtocol { buf, read }));
+                        return Ok(Spin::Ok(Self::InReadingProtocol { buf, read, count }));
                     }
                 }
                 let total = buf[0] as usize + 1; // +1 for length byte itself.
+                if total > buf.len() {
+                    tracing::error!(total, "multiselect len > buffer len");
+                    return Ok(Spin::Next(Self::InWritingReject {
+                        written: header_written(count),
+                        count,
+                    }));
+                }
                 if read < total {
                     read += io.read_from_stream(id, &mut buf[read..total])?;
                 }
                 if read >= total {
                     match StreamProtocol::from_multiselect(&buf[..total]) {
                         Some(protocol) => {
-                            return Ok(Spin::Next(Self::InWriting { protocol, written: 0 }));
+                            if count > 0 {
+                                tracing::warn!(?id, ?protocol, "renegotiated protocol");
+                            }
+                            return Ok(Spin::Next(Self::InWriting {
+                                protocol,
+                                written: header_written(count),
+                            }));
                         }
-                        None => return Ok(Spin::Next(Self::InWritingReject { written: 0 })),
+                        None => {
+                            tracing::warn!(?id, protocol=?str::from_utf8(&buf[..total]),"unrecognized negotiate protocol");
+                            return Ok(Spin::Next(Self::InWritingReject {
+                                written: header_written(count),
+                                count,
+                            }));
+                        }
                     }
                 }
 
-                Ok(Spin::Ok(Self::InReadingProtocol { buf, read }))
+                Ok(Spin::Ok(Self::InReadingProtocol { buf, read, count }))
             }
             NegotiateState::InWriting { protocol, mut written } => {
+                let before = written;
                 if written < MULTISTREAM_V1.len() {
                     written += io.write_to_stream(id, &MULTISTREAM_V1[written..])?;
                 } else {
@@ -164,14 +210,25 @@ impl NegotiateState {
                         return Ok(Spin::Ok(Self::Done(protocol)));
                     }
                 }
-                Ok(Spin::Ok(Self::InWriting { protocol, written }))
+                // As `OutWriting`: header-complete must roll into the echo
+                // write in this spin; park only when write-blocked.
+                let next = Self::InWriting { protocol, written };
+                Ok(if written > before { Spin::Next(next) } else { Spin::Ok(next) })
             }
-            NegotiateState::InWritingReject { mut written } => {
+            NegotiateState::InWritingReject { mut written, count } => {
                 written += io.write_to_stream(id, &REJECT_RESPONSE[written..])?;
                 if written >= REJECT_RESPONSE.len() {
-                    return Err(StreamError::StreamRejected);
+                    if count >= MAX_RETRY {
+                        return Err(StreamError::StreamRejected);
+                    } else {
+                        return Ok(Spin::Next(Self::InReadingProtocol {
+                            buf: [0u8; 96],
+                            read: 0,
+                            count: count + 1,
+                        }));
+                    }
                 }
-                Ok(Spin::Ok(Self::InWritingReject { written }))
+                Ok(Spin::Ok(Self::InWritingReject { written, count }))
             }
             NegotiateState::Done(protocol) => Ok(Spin::Ok(NegotiateState::Done(protocol))),
         }
@@ -342,10 +399,26 @@ mod tests {
         let mut state = drive(NegotiateState::new_outbound(StreamProtocol::StatusV2), &mut io)
             .unwrap_or_else(|_| panic!("expected fallback path, not error"));
 
-        // After fallback the dialler proposes StatusV1; feed back the matching echo.
-        io.in_buf.extend_from_slice(&echo_for(StreamProtocol::StatusV1));
+        // After fallback the dialler proposes StatusV1; the responder echoes
+        // only the protocol — the multistream header is sent once per stream.
+        io.in_buf.extend_from_slice(StreamProtocol::StatusV1.multiselect());
         state = drive(state, &mut io).unwrap();
         assert!(matches!(state, NegotiateState::Done(p) if p == StreamProtocol::StatusV1));
+    }
+
+    #[test]
+    fn outbound_reject_on_retry_fails() {
+        let mut input = Vec::new();
+        input.extend_from_slice(MULTISTREAM_V1);
+        input.extend_from_slice(REJECT_RESPONSE);
+        let mut io = MockIo::with_input(&input);
+        let state = drive(NegotiateState::new_outbound(StreamProtocol::StatusV2), &mut io)
+            .unwrap_or_else(|_| panic!("expected fallback path, not error"));
+
+        // Second reject is a bare na — no header, no protocols left.
+        io.in_buf.extend_from_slice(REJECT_RESPONSE);
+        let err = expect_err(drive(state, &mut io));
+        assert!(matches!(err, StreamError::StreamRejected));
     }
 
     #[test]
@@ -399,9 +472,47 @@ mod tests {
         // \x0d = 13 = len("/unknown/1.0\n")
         input.extend_from_slice(b"\x0d/unknown/1.0\n");
         let mut io = MockIo::with_input(&input);
+        // One unknown proposal: na goes out, the stream stays open awaiting
+        // the dialer's next proposal.
+        let neg = drive(NegotiateState::new_inbound(), &mut io).unwrap();
+        assert!(matches!(neg, NegotiateState::InReadingProtocol { .. }));
+        assert_eq!(io.out_buf, REJECT_RESPONSE);
+    }
+
+    /// The version-fallback walk: dialer proposes an unsupported version,
+    /// gets na, proposes a supported one on the same stream. The responder
+    /// header goes out exactly once (with the na), the echo is bare.
+    #[test]
+    fn inbound_unknown_then_known_negotiates() {
+        let proto = StreamProtocol::GossipSub;
+        let mut input = MULTISTREAM_V1.to_vec();
+        input.extend_from_slice(b"\x0f/meshsub/1.3.0\n");
+        input.extend_from_slice(proto.multiselect());
+        let mut io = MockIo::with_input(&input);
+        let neg = drive(NegotiateState::new_inbound(), &mut io).unwrap();
+        assert!(matches!(neg, NegotiateState::Done(p) if p == proto));
+        let mut expected = REJECT_RESPONSE.to_vec();
+        expected.extend_from_slice(proto.multiselect());
+        assert_eq!(io.out_buf, expected);
+    }
+
+    /// Rejects are capped: MAX_RETRY re-reads after the first, then the
+    /// stream errors. Later nas carry no header.
+    #[test]
+    fn inbound_reject_cap_errors() {
+        let mut input = MULTISTREAM_V1.to_vec();
+        for _ in 0..=MAX_RETRY {
+            input.extend_from_slice(b"\x0d/unknown/1.0\n");
+        }
+        let mut io = MockIo::with_input(&input);
         let err = expect_err(drive(NegotiateState::new_inbound(), &mut io));
         assert!(matches!(err, StreamError::StreamRejected));
-        assert_eq!(io.out_buf, REJECT_RESPONSE);
+        let na = &REJECT_RESPONSE[MULTISTREAM_V1.len()..];
+        let mut expected = REJECT_RESPONSE.to_vec();
+        for _ in 0..MAX_RETRY {
+            expected.extend_from_slice(na);
+        }
+        assert_eq!(io.out_buf, expected);
     }
 
     #[test]

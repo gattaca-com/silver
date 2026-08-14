@@ -1,9 +1,11 @@
+mod counters;
 mod database;
 mod manager;
 mod scoring;
 mod state;
 
 pub use manager::PeerManager;
+pub use silver_config::SyncingConfig;
 
 silver_common::declare_counters! {
     pub PeerCounters => "peer" {
@@ -19,6 +21,7 @@ silver_common::declare_counters! {
         // Discovery candidates dropped before dial.
         DiscDroppedForkDigest,
         DiscDroppedBanned,
+        DiscDroppedRemoteBan,
         // Gossip validation failures.
         GossipInvalidFrame,
         GossipInvalidControl,
