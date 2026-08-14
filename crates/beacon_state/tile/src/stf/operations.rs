@@ -51,8 +51,10 @@ pub fn collect_sigs_voluntary_exits(
     data: &[u8],
     sig_batch: &mut SigBatch,
 ) {
-    let capella_fv = imm.capella_fork_version;
-    let gvr = imm.genesis_validators_root;
+    let domain = bls::domain_from_fork_data(
+        bls::DOMAIN_VOLUNTARY_EXIT,
+        &imm.fork_data_root(imm.capella_fork_version),
+    );
     let count = data.len() / SIGNED_VOLUNTARY_EXIT_SIZE;
     let validator_count = validators.count();
     for i in 0..count {
@@ -68,7 +70,6 @@ pub fn collect_sigs_voluntary_exits(
             return;
         }
         let object_root = ssz_hash::hash_tree_root_voluntary_exit(exit_epoch_msg, vi_u);
-        let domain = bls::compute_domain(bls::DOMAIN_VOLUNTARY_EXIT, capella_fv, &gvr);
         let signing_root = bls::compute_signing_root(&object_root, &domain);
         let sig = SignedVoluntaryExitView::signature(exit);
         let pk = validators.pubkey_decompressed(vi as usize);
@@ -415,8 +416,10 @@ pub fn collect_sigs_bls_to_execution_changes(
     data: &[u8],
     sig_batch: &mut SigBatch,
 ) -> Result<(), BlsToExecutionChangeError> {
-    let genesis_fv = imm.genesis_fork_version;
-    let gvr = imm.genesis_validators_root;
+    let domain = bls::domain_from_fork_data(
+        bls::DOMAIN_BLS_TO_EXECUTION_CHANGE,
+        &imm.fork_data_root(imm.genesis_fork_version),
+    );
     let count = data.len() / SIGNED_BLS_CHANGE_SIZE;
     let validator_count = validators.count();
     for i in 0..count {
@@ -440,7 +443,6 @@ pub fn collect_sigs_bls_to_execution_changes(
             from_bls_pubkey,
             to_execution_address,
         );
-        let domain = bls::compute_domain(bls::DOMAIN_BLS_TO_EXECUTION_CHANGE, genesis_fv, &gvr);
         let signing_root = bls::compute_signing_root(&object_root, &domain);
         let Ok(from_pk) = PublicKey::from_bytes(from_bls_pubkey) else {
             return Err(BlsToExecutionChangeError::BadPubkey { from_pubkey: *from_bls_pubkey });

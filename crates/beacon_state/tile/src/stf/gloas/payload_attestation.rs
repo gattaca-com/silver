@@ -1,4 +1,5 @@
 use blst::min_pk::PublicKey;
+use flux_profiler::timed;
 use silver_beacon_state_data::{
     EpochView, Immutable, SLOTS_PER_EPOCH, StateWriterView, ValidatorsView, gloas::PTC_SIZE,
 };
@@ -67,6 +68,7 @@ pub fn collect_sigs_payload_attestations(
     Ok(())
 }
 
+#[timed]
 fn collect_sigs_payload_attestation(
     imm: &Immutable,
     validators: &ValidatorsView,
@@ -93,8 +95,7 @@ fn collect_sigs_payload_attestation(
         .collect();
 
     let fork_version = epoch.fork_version_at(pa_slot / SLOTS_PER_EPOCH);
-    let domain =
-        bls::compute_domain(DOMAIN_PTC_ATTESTER, fork_version, &imm.genesis_validators_root);
+    let domain = bls::domain_from_fork_data(DOMAIN_PTC_ATTESTER, &imm.fork_data_root(fork_version));
     let signing_root = bls::compute_signing_root(&hash_payload_attestation_data(data), &domain);
     batch.push_aggregate(pubkeys, signature, signing_root);
     Ok(())

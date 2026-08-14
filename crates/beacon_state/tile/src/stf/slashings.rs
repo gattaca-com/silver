@@ -1,5 +1,6 @@
 use core::cmp::max;
 
+use flux_profiler::timed;
 use silver_beacon_state_data::{
     B256, BeaconBlockHeader, BuilderPendingPayment, EPOCHS_PER_SLASHINGS_VECTOR, EpochBalancesRow,
     EpochView, Immutable, SLOTS_PER_EPOCH, SlotStateWriteView, SpecConfig, StateReadView,
@@ -52,7 +53,6 @@ pub fn collect_sigs_proposer_slashings(
     data: &[u8],
     sig_batch: &mut SigBatch,
 ) -> Result<(), ProposerSlashingError> {
-    let gvr = imm.genesis_validators_root;
     let (fork_epoch, prev_ver, cur_ver) = epoch.fork_descriptor();
     let count = data.len() / PROPOSER_SLASHING_SIZE;
     let n = validators.count();
@@ -64,13 +64,12 @@ pub fn collect_sigs_proposer_slashings(
             return Err(ProposerSlashingError::ValidatorOutOfRange { vi: vi as usize, count: n });
         }
         let h1_slot = ProposerSlashingView::h1_slot(s);
-        let h2_slot = ProposerSlashingView::h2_slot(s);
-        let fv1 =
+        let fv =
             bls::fork_version_at_epoch(fork_epoch, prev_ver, cur_ver, h1_slot / SLOTS_PER_EPOCH);
-        let fv2 =
-            bls::fork_version_at_epoch(fork_epoch, prev_ver, cur_ver, h2_slot / SLOTS_PER_EPOCH);
-        let sr1 = signing_root_for_block_header(&s[0..208], fv1, &gvr);
-        let sr2 = signing_root_for_block_header(&s[208..416], fv2, &gvr);
+        let domain =
+            bls::domain_from_fork_data(bls::DOMAIN_BEACON_PROPOSER, &imm.fork_data_root(fv));
+        let sr1 = signing_root_for_block_header(&s[0..208], &domain);
+        let sr2 = signing_root_for_block_header(&s[208..416], &domain);
         let sig1 = ProposerSlashingView::h1_signature(s);
         let sig2 = ProposerSlashingView::h2_signature(s);
         let pk = validators.pubkey_decompressed(vi as usize);
@@ -146,11 +145,8 @@ fn clear_builder_payment_on_slash(
 
 /// Compute signing root for a `BeaconBlockHeader` (208-byte SSZ): slot,
 /// proposer_index, parent_root, state_root, body_root.
-pub(crate) fn signing_root_for_block_header(
-    header: &[u8],
-    fork_version: [u8; 4],
-    genesis_validators_root: &B256,
-) -> B256 {
+#[timed]
+pub(crate) fn signing_root_for_block_header(header: &[u8], domain: &B256) -> B256 {
     let hb: &[u8; BEACON_BLOCK_HEADER_SIZE] =
         header[..BEACON_BLOCK_HEADER_SIZE].try_into().unwrap();
     let h = BeaconBlockHeader {
@@ -161,12 +157,11 @@ pub(crate) fn signing_root_for_block_header(
         body_root: *BeaconBlockHeaderView::body_root(hb),
     };
     let object_root = hash_tree_root_block_header(&h);
-    let domain =
-        bls::compute_domain(bls::DOMAIN_BEACON_PROPOSER, fork_version, genesis_validators_root);
-    bls::compute_signing_root(&object_root, &domain)
+    bls::compute_signing_root(&object_root, domain)
 }
 
 /// Pass 1 — push both IndexedAttestation aggregate sigs per slashing entry.
+#[timed]
 pub fn collect_sigs_attester_slashings(
     imm: &Immutable,
     epoch: &EpochView,
@@ -175,7 +170,6 @@ pub fn collect_sigs_attester_slashings(
     active_scratch: &mut Vec<u32>,
     sig_batch: &mut SigBatch,
 ) -> Result<(), AttesterSlashingError> {
-    let gvr = imm.genesis_validators_root;
     let (fork_epoch, prev_ver, cur_ver) = epoch.fork_descriptor();
     for_each_ssz_list_item(
         data,
@@ -205,7 +199,10 @@ pub fn collect_sigs_attester_slashings(
                 let data = IndexedAttestationView::data(ia);
                 let sig: &[u8; 96] = IndexedAttestationView::signature(ia);
                 let object_root = ssz_hash::hash_attestation_data(data.as_bytes());
-                let domain = bls::compute_domain(bls::DOMAIN_BEACON_ATTESTER, fv, &gvr);
+                let domain = bls::domain_from_fork_data(
+                    bls::DOMAIN_BEACON_ATTESTER,
+                    &imm.fork_data_root(fv),
+                );
                 let signing_root = bls::compute_signing_root(&object_root, &domain);
                 sig_batch.push_aggregate(
                     active_scratch.iter().map(|&vi| validators.pubkey_decompressed(vi as usize)),
@@ -317,13 +314,13 @@ pub fn process_attester_slashings(
 /// On success, `equivocating_out` is filled with the in-range intersection of
 /// the two attestations' indices (the validators to mark equivocating in fork
 /// choice). Its contents are meaningless when this returns `false`.
+#[timed]
 pub fn validate_attester_slashing_for_gossip(
     view: &StateReadView,
     slashing: &[u8],
     equivocating_out: &mut Vec<u32>,
     sig_batch: &mut SigBatch,
 ) -> bool {
-    let gvr = view.imm.genesis_validators_root;
     let (fork_epoch, prev_ver, cur_ver) = view.epoch.fork_descriptor();
     let Ok((off1, off2)) = attester_slashing_inner_offsets(slashing) else {
         return false;
@@ -376,7 +373,8 @@ pub fn validate_attester_slashing_for_gossip(
         let data = IndexedAttestationView::data(ia);
         let sig: &[u8; 96] = IndexedAttestationView::signature(ia);
         let object_root = ssz_hash::hash_attestation_data(data.as_bytes());
-        let domain = bls::compute_domain(bls::DOMAIN_BEACON_ATTESTER, fv, &gvr);
+        let domain =
+            bls::domain_from_fork_data(bls::DOMAIN_BEACON_ATTESTER, &view.imm.fork_data_root(fv));
         let signing_root = bls::compute_signing_root(&object_root, &domain);
         sig_batch.push_aggregate(
             (0..n_idx).map(|k| {

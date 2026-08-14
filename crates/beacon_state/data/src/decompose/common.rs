@@ -266,6 +266,9 @@ impl Immutable {
         self.genesis_fork_version = cfg.genesis_fork_version;
         self.capella_fork_version = cfg.capella_fork_version;
         self.gloas_fork_version = cfg.gloas_fork_version;
+
+        let fork = read_fork(ssz);
+        self.refresh_fork_data_roots(fork.previous_version, fork.current_version);
     }
 
     #[timed]
