@@ -48,7 +48,7 @@ fn bench_verify_single_attestation(c: &mut Criterion) {
     buf[144..240].copy_from_slice(&sk.sign(&signing_root, DST, &[]).to_bytes());
 
     c.bench_function("verify_single_attestation", |b| {
-        b.iter(|| bls::verify_single_attestation(&buf, &pk, fork_version, &gvr))
+        b.iter(|| bls::verify_single_attestation(&buf, &pk, &domain))
     });
 }
 

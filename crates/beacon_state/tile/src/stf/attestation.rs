@@ -232,11 +232,8 @@ pub fn collect_sigs_single_attestation(
     let fork_version = bls::fork_version_at_epoch(fork_epoch, prev_v, curr_v, target_epoch);
     let sig = AttestationView::signature(att);
     let object_root = ssz_hash::hash_attestation_data(data.as_bytes());
-    let domain = bls::compute_domain(
-        bls::DOMAIN_BEACON_ATTESTER,
-        fork_version,
-        &imm.genesis_validators_root,
-    );
+    let domain =
+        bls::domain_from_fork_data(bls::DOMAIN_BEACON_ATTESTER, &imm.fork_data_root(fork_version));
     let signing_root = bls::compute_signing_root(&object_root, &domain);
 
     committees.push_aggregate_sig(validators, sig, signing_root, sig_batch);

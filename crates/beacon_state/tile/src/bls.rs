@@ -384,8 +384,7 @@ pub fn verify_block_signature(
     block_ssz: &[u8],
     proposer_pubkey: &PublicKey,
     body_root: &B256,
-    fork_version: [u8; 4],
-    genesis_validators_root: &B256,
+    domain: &B256,
 ) -> bool {
     if block_ssz.len() < SIGNED_BEACON_BLOCK_MIN {
         return false;
@@ -400,9 +399,7 @@ pub fn verify_block_signature(
         body_root: *body_root,
     };
     let object_root = hash_tree_root_block_header(&header);
-
-    let domain = compute_domain(DOMAIN_BEACON_PROPOSER, fork_version, genesis_validators_root);
-    let signing_root = compute_signing_root(&object_root, &domain);
+    let signing_root = compute_signing_root(&object_root, domain);
 
     verify_one(proposer_pubkey, sig, &signing_root)
 }
@@ -419,15 +416,13 @@ pub fn verify_deposit_signature(pubkey: &BLSPubkey, sig: &[u8; 96], signing_root
 pub fn verify_single_attestation(
     att: &[u8; SINGLE_ATT_SIZE],
     attester_pubkey: &PublicKey,
-    fork_version: [u8; 4],
-    genesis_validators_root: &B256,
+    domain: &B256,
 ) -> bool {
     let data = SingleAttestationView::data(att);
     let sig = SingleAttestationView::signature(att);
 
     let object_root = hash_attestation_data(data.as_bytes());
-    let domain = compute_domain(DOMAIN_BEACON_ATTESTER, fork_version, genesis_validators_root);
-    let signing_root = compute_signing_root(&object_root, &domain);
+    let signing_root = compute_signing_root(&object_root, domain);
 
     verify_one(attester_pubkey, sig, &signing_root)
 }

@@ -1,8 +1,8 @@
 //! Envelope verification minus the EL call — the engine verdict arrives
 //! asynchronously, not inline.
 
-use silver_beacon_state_data::{SpecConfig, StateReadView};
 use flux_profiler::timed;
+use silver_beacon_state_data::{SpecConfig, StateReadView};
 use silver_common::{
     ssz_hash_gloas::ExecutionRequestsView,
     ssz_view::{
@@ -102,7 +102,7 @@ fn verify_envelope_signature(
     let message_root = ExecutionPayloadEnvelopeView::hash_tree_root(envelope);
     let fork_version = rv.epoch.fork_version_at(rv.slot.current_epoch());
     let domain =
-        bls::compute_domain(DOMAIN_BEACON_BUILDER, fork_version, &rv.imm.genesis_validators_root);
+        bls::domain_from_fork_data(DOMAIN_BEACON_BUILDER, &rv.imm.fork_data_root(fork_version));
     let signing_root = bls::compute_signing_root(&message_root, &domain);
     let sig = SignedExecutionPayloadEnvelopeView::signature(signed);
 
