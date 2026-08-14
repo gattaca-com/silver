@@ -113,6 +113,7 @@ pub const DOMAIN_BEACON_BUILDER: u32 = 0x0000_000b;
 pub const DOMAIN_PTC_ATTESTER: u32 = 0x0000_000c;
 pub const DOMAIN_BUILDER_DEPOSIT: u32 = 0x0000_000e;
 
+#[timed]
 pub fn compute_domain(
     domain_type: u32,
     fork_version: [u8; 4],

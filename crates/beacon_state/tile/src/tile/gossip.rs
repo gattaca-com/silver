@@ -444,6 +444,7 @@ impl BeaconStateTile {
         sig_batch.verify_all()
     }
 
+    #[timed]
     pub(super) fn handle_voluntary_exit(&mut self, data: &[u8]) -> Feedback {
         if data.len() != SIGNED_VOLUNTARY_EXIT_SIZE {
             return Feedback::Reject(None);
@@ -557,6 +558,7 @@ impl BeaconStateTile {
         Feedback::Accept(None)
     }
 
+    #[timed]
     pub(super) fn handle_bls_to_execution_change(&mut self, data: &[u8]) -> Feedback {
         if data.len() != SIGNED_BLS_CHANGE_SIZE {
             return Feedback::Reject(None);

@@ -667,6 +667,7 @@ fn collect_sigs_block_body(
     Ok(())
 }
 
+#[timed]
 pub fn collect_sigs_randao(
     imm: &Immutable,
     epoch: &EpochView,

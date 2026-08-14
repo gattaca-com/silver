@@ -1,4 +1,5 @@
 use blst::min_pk::PublicKey;
+use flux_profiler::timed;
 use silver_beacon_state_data::{
     EpochView, Immutable, SLOTS_PER_EPOCH, StateWriterView, ValidatorsView, gloas::PTC_SIZE,
 };
@@ -67,6 +68,7 @@ pub fn collect_sigs_payload_attestations(
     Ok(())
 }
 
+#[timed]
 fn collect_sigs_payload_attestation(
     imm: &Immutable,
     validators: &ValidatorsView,

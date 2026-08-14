@@ -16,6 +16,7 @@ use crate::{
 /// Pass 1 — resolve sync committee participants from
 /// `sync_committee_indices` × bits, push aggregate sig (eth_aggregate
 /// semantics — empty + G2-∞ ok).
+#[timed]
 pub fn collect_sigs_sync_aggregate(
     view: &StateReadView,
     sync_agg: &[u8],

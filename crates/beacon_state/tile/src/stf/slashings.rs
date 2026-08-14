@@ -1,4 +1,5 @@
-use core::cmp::max;
+use core::{cmp::max, time};
+use flux_profiler::timed;
 
 use silver_beacon_state_data::{
     B256, BeaconBlockHeader, BuilderPendingPayment, EPOCHS_PER_SLASHINGS_VECTOR, EpochBalancesRow,
@@ -146,6 +147,7 @@ fn clear_builder_payment_on_slash(
 
 /// Compute signing root for a `BeaconBlockHeader` (208-byte SSZ): slot,
 /// proposer_index, parent_root, state_root, body_root.
+#[timed]
 pub(crate) fn signing_root_for_block_header(
     header: &[u8],
     fork_version: [u8; 4],
@@ -167,6 +169,7 @@ pub(crate) fn signing_root_for_block_header(
 }
 
 /// Pass 1 — push both IndexedAttestation aggregate sigs per slashing entry.
+#[timed]
 pub fn collect_sigs_attester_slashings(
     imm: &Immutable,
     epoch: &EpochView,
@@ -317,6 +320,7 @@ pub fn process_attester_slashings(
 /// On success, `equivocating_out` is filled with the in-range intersection of
 /// the two attestations' indices (the validators to mark equivocating in fork
 /// choice). Its contents are meaningless when this returns `false`.
+#[timed]
 pub fn validate_attester_slashing_for_gossip(
     view: &StateReadView,
     slashing: &[u8],

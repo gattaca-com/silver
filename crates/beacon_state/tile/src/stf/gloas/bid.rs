@@ -1,4 +1,5 @@
 use blst::min_pk::PublicKey;
+use flux_profiler::timed;
 use silver_beacon_state_data::{
     BuilderPendingPayment, BuilderPendingWithdrawal, BuildersView, Epoch, EpochView,
     ExecutionPayloadBid, Immutable, SLOTS_PER_EPOCH, SpecConfig, StateWriterView,
@@ -99,6 +100,7 @@ pub fn process_execution_payload_bid(
 /// Push an external builder's bid signature onto `batch`
 /// (`DOMAIN_BEACON_BUILDER`). Self-builds carry the infinity signature, checked
 /// in [`process_execution_payload_bid`].
+#[timed]
 pub fn collect_sigs_execution_payload_bid(
     imm: &Immutable,
     epoch: &EpochView,

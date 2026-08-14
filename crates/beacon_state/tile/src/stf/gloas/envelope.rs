@@ -2,6 +2,7 @@
 //! asynchronously, not inline.
 
 use silver_beacon_state_data::{SpecConfig, StateReadView};
+use flux_profiler::timed;
 use silver_common::{
     ssz_hash_gloas::ExecutionRequestsView,
     ssz_view::{
@@ -91,6 +92,7 @@ pub fn verify_execution_payload_envelope(
     verify_envelope_signature(rv, envelope, signed, builder_index)
 }
 
+#[timed]
 fn verify_envelope_signature(
     rv: &StateReadView,
     envelope: &[u8],

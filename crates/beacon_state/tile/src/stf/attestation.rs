@@ -213,6 +213,7 @@ impl<'a> AttestedCommittees<'a> {
     }
 }
 
+#[timed]
 pub fn collect_sigs_single_attestation(
     imm: &Immutable,
     epoch: &EpochView,
