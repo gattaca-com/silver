@@ -658,6 +658,7 @@ mod tests {
         // `immutable.gloas_fork_version`; hold both at the cfg version so decode
         // routes to Gloas too.
         bs.immutable.gloas_fork_version = cfg.gloas_fork_version;
+        bs.immutable.refresh_fork_data_roots(Default::default(), cfg.gloas_fork_version);
         let mut epoch = EpochStateFinalized::default();
         epoch.state.fork.current_version = cfg.gloas_fork_version;
         bs.epoch = EpochGroup::new(epoch);
