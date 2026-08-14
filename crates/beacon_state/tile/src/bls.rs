@@ -113,6 +113,7 @@ pub const DOMAIN_BEACON_BUILDER: u32 = 0x0000_000b;
 pub const DOMAIN_PTC_ATTESTER: u32 = 0x0000_000c;
 pub const DOMAIN_BUILDER_DEPOSIT: u32 = 0x0000_000e;
 
+#[timed]
 pub fn compute_domain(
     domain_type: u32,
     fork_version: [u8; 4],
@@ -387,8 +388,7 @@ pub fn verify_block_signature(
     block_ssz: &[u8],
     proposer_pubkey: &PublicKey,
     body_root: &B256,
-    fork_version: [u8; 4],
-    genesis_validators_root: &B256,
+    domain: &B256,
 ) -> bool {
     if block_ssz.len() < SIGNED_BEACON_BLOCK_MIN {
         return false;
@@ -403,9 +403,7 @@ pub fn verify_block_signature(
         body_root: *body_root,
     };
     let object_root = hash_tree_root_block_header(&header);
-
-    let domain = compute_domain(DOMAIN_BEACON_PROPOSER, fork_version, genesis_validators_root);
-    let signing_root = compute_signing_root(&object_root, &domain);
+    let signing_root = compute_signing_root(&object_root, domain);
 
     verify_one(proposer_pubkey, sig, &signing_root)
 }
@@ -430,15 +428,13 @@ pub struct VerifiedSingleAttestation {
 pub fn verify_single_attestation(
     att: &[u8; SINGLE_ATT_SIZE],
     attester_pubkey: &PublicKey,
-    fork_version: [u8; 4],
-    genesis_validators_root: &B256,
+    domain: &B256,
 ) -> Option<VerifiedSingleAttestation> {
     let data = SingleAttestationView::data(att);
     let signature = Signature::from_bytes(SingleAttestationView::signature(att)).ok()?;
 
     let data_root = hash_attestation_data(data.as_bytes());
-    let domain = compute_domain(DOMAIN_BEACON_ATTESTER, fork_version, genesis_validators_root);
-    let signing_root = compute_signing_root(&data_root, &domain);
+    let signing_root = compute_signing_root(&data_root, domain);
 
     verify_one_parsed(attester_pubkey, &signature, &signing_root)
         .then_some(VerifiedSingleAttestation { data_root, signature })

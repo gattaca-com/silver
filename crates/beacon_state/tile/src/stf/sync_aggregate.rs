@@ -16,6 +16,7 @@ use crate::{
 /// Pass 1 — resolve sync committee participants from
 /// `sync_committee_indices` × bits, push aggregate sig (eth_aggregate
 /// semantics — empty + G2-∞ ok).
+#[timed]
 pub fn collect_sigs_sync_aggregate(
     view: &StateReadView,
     sync_agg: &[u8],
@@ -55,7 +56,7 @@ pub fn collect_sigs_sync_aggregate(
         }
     }
     let domain =
-        bls::compute_domain(bls::DOMAIN_SYNC_COMMITTEE, fork_version, &imm.genesis_validators_root);
+        bls::domain_from_fork_data(bls::DOMAIN_SYNC_COMMITTEE, &imm.fork_data_root(fork_version));
     let signing_root = bls::compute_signing_root(&previous_block_root, &domain);
     sig_batch.push_eth_aggregate(
         active_scratch.len(),

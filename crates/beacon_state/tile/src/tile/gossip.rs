@@ -102,11 +102,14 @@ impl BeaconStateTile {
             return Feedback::Reject(None);
         }
         let fork_version = view.epoch.fork_version_at(target_epoch);
+        let domain = bls::domain_from_fork_data(
+            bls::DOMAIN_BEACON_ATTESTER,
+            &view.imm.fork_data_root(fork_version),
+        );
         let Some(verified) = bls::verify_single_attestation(
             buf,
             view.validators.pubkey_decompressed(attester_index),
-            fork_version,
-            &view.imm.genesis_validators_root,
+            &domain,
         ) else {
             return Feedback::Reject(None);
         };
@@ -479,8 +482,7 @@ impl BeaconStateTile {
         sig_batch: &mut bls::SigBatch,
     ) -> bool {
         let fv = view.epoch.fork_version_at(parsed.agg_data.target_epoch());
-        let fork_data_root =
-            ssz_hash::hash_tree_root_fork_data(fv, &view.imm.genesis_validators_root);
+        let fork_data_root = view.imm.fork_data_root(fv);
         let domain = |ty| bls::domain_from_fork_data(ty, &fork_data_root);
 
         // (1) selection_proof — signer = aggregator, msg = htr(uint64(slot)).
@@ -508,6 +510,7 @@ impl BeaconStateTile {
         sig_batch.verify_all()
     }
 
+    #[timed]
     pub(super) fn handle_voluntary_exit(&mut self, data: &[u8]) -> Feedback {
         if data.len() != SIGNED_VOLUNTARY_EXIT_SIZE {
             return Feedback::Reject(None);
@@ -541,10 +544,9 @@ impl BeaconStateTile {
 
         let object_root = ssz_hash::hash_tree_root_voluntary_exit(exit_epoch, vi_u);
         let imm = view.imm;
-        let domain = bls::compute_domain(
+        let domain = bls::domain_from_fork_data(
             bls::DOMAIN_VOLUNTARY_EXIT,
-            imm.capella_fork_version,
-            &imm.genesis_validators_root,
+            &imm.fork_data_root(imm.capella_fork_version),
         );
         let signing_root = bls::compute_signing_root(&object_root, &domain);
         let sig = SignedVoluntaryExitView::signature(buf);
@@ -576,12 +578,11 @@ impl BeaconStateTile {
         }
 
         let h1_epoch = ProposerSlashingView::h1_slot(buf) / SLOTS_PER_EPOCH;
-        let h2_epoch = ProposerSlashingView::h2_slot(buf) / SLOTS_PER_EPOCH;
-        let gvr = view.imm.genesis_validators_root;
-        let fv1 = view.epoch.fork_version_at(h1_epoch);
-        let fv2 = view.epoch.fork_version_at(h2_epoch);
-        let sr1 = stf::signing_root_for_block_header(&buf[0..208], fv1, &gvr);
-        let sr2 = stf::signing_root_for_block_header(&buf[208..416], fv2, &gvr);
+        let fv = view.epoch.fork_version_at(h1_epoch);
+        let domain =
+            bls::domain_from_fork_data(bls::DOMAIN_BEACON_PROPOSER, &view.imm.fork_data_root(fv));
+        let sr1 = stf::signing_root_for_block_header(&buf[0..208], &domain);
+        let sr2 = stf::signing_root_for_block_header(&buf[208..416], &domain);
         let sig1 = ProposerSlashingView::h1_signature(buf);
         let sig2 = ProposerSlashingView::h2_signature(buf);
         let pubkey = view.validators.pubkey_decompressed(proposer_index);
@@ -621,6 +622,7 @@ impl BeaconStateTile {
         Feedback::Accept(None)
     }
 
+    #[timed]
     pub(super) fn handle_bls_to_execution_change(&mut self, data: &[u8]) -> Feedback {
         if data.len() != SIGNED_BLS_CHANGE_SIZE {
             return Feedback::Reject(None);
@@ -646,10 +648,9 @@ impl BeaconStateTile {
 
         let object_root = ssz_hash::hash_tree_root_bls_change(vi_u, from_pubkey, to_address);
         let imm = view.imm;
-        let domain = bls::compute_domain(
+        let domain = bls::domain_from_fork_data(
             bls::DOMAIN_BLS_TO_EXECUTION_CHANGE,
-            imm.genesis_fork_version,
-            &imm.genesis_validators_root,
+            &imm.fork_data_root(imm.genesis_fork_version),
         );
         let signing_root = bls::compute_signing_root(&object_root, &domain);
         let sig = SignedBlsToExecutionChangeView::signature(buf);

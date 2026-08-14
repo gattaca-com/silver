@@ -450,13 +450,11 @@ impl BeaconStateTile {
         let fork_version = self.spec.fork_version_at(block_epoch);
         let proposer_pubkey =
             rv.validators.pubkey_decompressed(parsed.header.proposer_index as usize);
-        bls::verify_block_signature(
-            data,
-            proposer_pubkey,
-            &parsed.header.body_root,
-            fork_version,
-            &rv.imm.genesis_validators_root,
-        )
+        let domain = bls::domain_from_fork_data(
+            bls::DOMAIN_BEACON_PROPOSER,
+            &rv.imm.fork_data_root(fork_version),
+        );
+        bls::verify_block_signature(data, proposer_pubkey, &parsed.header.body_root, &domain)
     }
 
     fn gloas_parent_payload_status(

@@ -274,13 +274,9 @@ fn verify_block_sig(
 ) -> bool {
     let fork_version = epoch.fork_version_at(block_epoch);
     let pk = validators.pubkey_decompressed(proposer_index as usize);
-    bls::verify_block_signature(
-        block_bytes,
-        pk,
-        body_root,
-        fork_version,
-        &imm.genesis_validators_root,
-    )
+    let domain =
+        bls::domain_from_fork_data(bls::DOMAIN_BEACON_PROPOSER, &imm.fork_data_root(fork_version));
+    bls::verify_block_signature(block_bytes, pk, body_root, &domain)
 }
 
 /// Advance state from `view.slot`'s slot to `target_slot`, processing empty
@@ -667,6 +663,7 @@ fn collect_sigs_block_body(
     Ok(())
 }
 
+#[timed]
 pub fn collect_sigs_randao(
     imm: &Immutable,
     epoch: &EpochView,
@@ -683,8 +680,7 @@ pub fn collect_sigs_randao(
     let fork_version = epoch.fork_version_at(block_epoch);
     let mut epoch_chunk = [0u8; 32];
     epoch_chunk[..8].copy_from_slice(&block_epoch.to_le_bytes());
-    let domain =
-        bls::compute_domain(bls::DOMAIN_RANDAO, fork_version, &imm.genesis_validators_root);
+    let domain = bls::domain_from_fork_data(bls::DOMAIN_RANDAO, &imm.fork_data_root(fork_version));
     let signing_root = bls::compute_signing_root(&epoch_chunk, &domain);
     sig_batch.push_one(proposer_pubkey, reveal, signing_root);
 }
