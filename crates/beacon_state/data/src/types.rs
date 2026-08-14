@@ -189,10 +189,6 @@ pub struct Immutable {
     pub genesis_fork_version: Version,
     pub capella_fork_version: Version,
     pub gloas_fork_version: Version,
-    // Closed at boot: fork version lookups only ever yield the loaded Fork
-    // pair or one of the pinned versions above, and the gloas upgrade rotates
-    // current→previous and installs the pinned gloas version — so no version
-    // outside this set can appear later.
     fork_data_roots: [(Version, B256); 5],
 }
 
