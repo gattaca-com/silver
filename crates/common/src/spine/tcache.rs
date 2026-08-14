@@ -9,7 +9,7 @@ use std::{
 };
 
 pub use consumer::{AcquiredRead, Consumer, RandomAccessConsumer, TCacheRead};
-use flux::{timing::Nanos, tracing};
+use flux::{Timer, timing::Nanos, tracing};
 pub use producer::{MultiProducer, Producer, Reservation, TCacheProducer};
 use thiserror::Error;
 
@@ -58,6 +58,8 @@ pub struct TCache {
     /// `None` when name is empty, or if mmap'ing the metrics file
     /// fails (tile continues to function without surfer visibility).
     metrics: Option<TCacheMetrics>,
+    /// Write latency timer
+    timer: Option<Timer>,
 }
 
 unsafe impl Send for TCache {}
@@ -151,7 +153,7 @@ impl TCache {
     /// Either side (producer or consumer) may start first. `n` must be
     /// identical on both sides.
     #[cfg(unix)]
-    pub fn shm_producer(name: &str, n: usize) -> Producer {
+    pub fn shm_producer(name: &'static str, n: usize) -> Producer {
         let tcache = Self::attach_shmem(name, n);
         let space = tcache.len;
         Producer { cache: Box::into_raw(tcache), seq: 0, published_seq: 0, space }
@@ -401,6 +403,13 @@ impl TCache {
             slice::from_raw_parts_mut(mut_ptr, size_of::<Slot>()).into()
         };
         if success {
+            let now = Nanos::now();
+            if let Some(timer) = self.timer.as_ref() {
+                timer.emit_latency_from_nanos_without_first(slot.reserve_ns, now);
+            }
+
+            // Update the slot ts - used in the consumer to measure queue latency.
+            slot.reserve_ns = now;
             slot.skip = 0;
         }
         let new_head = seq + slot.reservation_len as u64;
@@ -446,12 +455,15 @@ impl TCache {
         );
         let total = DATA_OFFSET + size;
         let layout = Layout::from_size_align(total, ALIGN).unwrap();
-        let metrics = if name.is_empty() {
-            None
+        let (metrics, timer) = if name.is_empty() {
+            (None, None)
         } else {
-            TCacheMetrics::new(name, MAX_CONSUMERS, size as u64)
+            let label = format!("tcache-write-{}", name);
+            let timer = Some(flux::Timer::new("silver", &label));
+            let metrics = TCacheMetrics::new(name, MAX_CONSUMERS, size as u64)
                 .map_err(|e| tracing::warn!(?name, ?e, "TCacheMetrics::new failed"))
-                .ok()
+                .ok();
+            (metrics, timer)
         };
         let ptr = unsafe {
             let p = alloc::alloc_zeroed(layout);
@@ -461,7 +473,14 @@ impl TCache {
             p
         };
         Self::init_head(ptr);
-        Box::new(Self { name, ptr, len: size as u32, backing: Backing::Heap { layout }, metrics })
+        Box::new(Self {
+            name,
+            ptr,
+            len: size as u32,
+            backing: Backing::Heap { layout },
+            metrics,
+            timer,
+        })
     }
 
     /// Attach to a named shmem segment, creating it if it doesn't exist yet.
@@ -523,6 +542,7 @@ impl TCache {
                 len: size as u32,
                 backing: Backing::Shmem { fd, total_len: total, owner: true, name: cname },
                 metrics: None,
+                timer: None,
             })
         } else {
             // Joiner: open existing, wait for creator to finish sizing + init.
@@ -576,6 +596,7 @@ impl TCache {
                 len: size as u32,
                 backing: Backing::Shmem { fd, total_len: total, owner: false, name: cname },
                 metrics: None,
+                timer: None,
             })
         }
     }

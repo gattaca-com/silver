@@ -1,7 +1,7 @@
 use std::io::Write;
 
 use backtrace::Backtrace;
-use flux::utils::{ThreadPriority, thread_boot};
+use flux::utils::thread_boot;
 use tracing::{error, level_filters::LevelFilter};
 use tracing_appender::{non_blocking::WorkerGuard, rolling::Rotation};
 use tracing_subscriber::EnvFilter;
@@ -33,7 +33,7 @@ impl<W> PinnedAppenderWriter<W> {
             return;
         }
         self.booted = true;
-        thread_boot(self.log_core, ThreadPriority::OSDefault);
+        thread_boot(self.log_core, None);
     }
 }
 
