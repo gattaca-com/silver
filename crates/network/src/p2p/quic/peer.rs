@@ -171,7 +171,7 @@ impl Peer {
 
     /// Returns connection stats for peers connected > 30 seconds.
     pub(crate) fn stats(&self, now: Instant) -> Option<P2pConnectionStats> {
-        (now - self.created_at > Duration::from_secs(30)).then(|| {
+        (now - self.created_at > Duration::from_secs(10)).then(|| {
             let stats = self.connection.stats();
             P2pConnectionStats {
                 id: self.id.peer_id,
@@ -463,6 +463,9 @@ impl Peer {
     }
 
     fn remove_stream(&mut self, id: StreamId) {
+        let _ = self.connection.send_stream(id).finish();
+        let _ = self.connection.recv_stream(id).stop(VarInt::from_u32(0));
+
         if let Some(in_id) = self.inbound_gossip &&
             in_id == id
         {

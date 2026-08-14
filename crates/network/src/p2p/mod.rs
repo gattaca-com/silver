@@ -186,8 +186,15 @@ impl P2p {
     // self.peers.get_mut(&ConnectionHandle(peer))?;     peer_obj.
     // open_stream(protocol) }
 
-    pub fn ban_peer(&mut self, peer_id: PeerId) {
+    /// Ban means no session: the deny set covers future handshakes (checked
+    /// at `Event::Connected` only), so any live connection must be shut down
+    /// here or it survives the ban untouched.
+    pub fn ban_peer(&mut self, peer_id: PeerId, now: Instant) {
         self.banned.insert(peer_id);
+        if let Some(peer) = self.peers.values_mut().find(|p| p.id().peer_id == peer_id) {
+            tracing::info!(?peer_id, "closing connection: peer banned");
+            peer.shutdown(now);
+        }
     }
 
     pub fn unban_peer(&mut self, peer_id: PeerId) {

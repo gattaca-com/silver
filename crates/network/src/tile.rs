@@ -10,8 +10,8 @@ use mio::{Events, Poll, Token};
 use quinn_proto::Transmit;
 use secp256k1::PublicKey;
 use silver_common::{
-    BeaconStateEvent, GossipMsgIn, GossipMsgOut, P2pSend, PeerControl, PeerEvent, RpcInbound,
-    RpcOutbound, SilverSpine,
+    BeaconStateEvent, GossipMsgIn, GossipMsgOut, P2pSend, PeerControl, PeerEvent, PeerStats,
+    RpcInbound, RpcOutbound, SilverSpine,
 };
 use silver_discovery::{DiscV5, Discovery, DiscoveryEvent};
 
@@ -63,7 +63,7 @@ impl NetworkTile {
                 if let Ok(pubkey) = PublicKey::from_slice(p2p.pubkey()) {
                     self.inner.discovery.ban_node(pubkey.into());
                 }
-                self.inner.p2p_endpoint.ban_peer(p2p);
+                self.inner.p2p_endpoint.ban_peer(p2p, now);
             }
             PeerControl::Unban { p2p } => {
                 if let Ok(pubkey) = PublicKey::from_slice(p2p.pubkey()) {
@@ -115,7 +115,7 @@ impl NetworkTile {
         if now.duration_since(self.last_peer_stats) >= PEER_STATS_INTERVAL {
             self.last_peer_stats = now;
             self.inner.p2p_endpoint.sample_stats(now, PEER_STATS_BATCH, &mut |stats| {
-                adapter.produce(stats);
+                adapter.produce(PeerStats::P2p(stats));
             });
         }
 

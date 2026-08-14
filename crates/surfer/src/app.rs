@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
 use ratatui::widgets::TableState;
+use silver_common::PeerId;
 
 use crate::{
     discovery::DiscoveredSources,
@@ -71,7 +72,11 @@ pub struct App {
     pub tilemetrics: Vec<TileMetricsSet>,
     pub tiles_selection: usize,
     pub peers: Peers,
-    pub peers_selection: usize,
+    /// Selection is by identity: the highlight and gossip expansion follow
+    /// this peer as live re-sorting moves its row.
+    pub peers_selected: Option<PeerId>,
+    /// Row order as last drawn; navigation moves relative to it.
+    pub peers_display_order: Vec<PeerId>,
     pub peers_sort_col: usize,
     pub peers_sort_desc: bool,
     pub events: EventsPane,
@@ -122,8 +127,9 @@ impl App {
             tilemetrics,
             tiles_selection: 0,
             peers,
-            peers_selection: 0,
-            peers_sort_col: 3,
+            peers_selected: None,
+            peers_display_order: Vec::new(),
+            peers_sort_col: 10,
             peers_sort_desc: true,
             events,
             drilled_in: false,
@@ -284,12 +290,22 @@ impl App {
             Pane::TCaches => self.move_tcache_selection(dir),
             Pane::Timings => self.move_timing_selection(dir),
             Pane::Tiles => self.move_tile_selection(dir),
-            Pane::Peers => {
-                self.peers_selection = self.peers_selection.saturating_add_signed(dir as isize);
-            }
+            Pane::Peers => self.move_peer_selection(dir),
             Pane::Events => self.events.move_selection(dir),
             Pane::Flamegraph => self.flamegraph.scroll_by(dir),
         }
+    }
+
+    fn move_peer_selection(&mut self, dir: i32) {
+        if self.peers_display_order.is_empty() {
+            return;
+        }
+        let pos = self
+            .peers_selected
+            .and_then(|id| self.peers_display_order.iter().position(|p| *p == id))
+            .unwrap_or(0);
+        let new = pos.saturating_add_signed(dir as isize).min(self.peers_display_order.len() - 1);
+        self.peers_selected = Some(self.peers_display_order[new]);
     }
 
     /// Peers pane: move the sort column left/right, wrapping.

@@ -36,16 +36,23 @@ impl DedupCache {
         self.dedup_sets[self.current_bucket].remove(msg_id);
     }
 
-    /// Returns `Some(fh)` if the hash was NOT found (i.e. message is new
-    /// and the caller should proceed with processing), `None` if the hash
-    /// was already present across any rotation bucket (= duplicate).
-    pub(crate) fn contains_fast(&self, topic: &str, data: &[u8]) -> Option<u64> {
+    /// Returns `Ok(fh)` if the hash was NOT found (i.e. message is new
+    /// and the caller should proceed with processing), `Err(msg_id)` with
+    /// the stored canonical id if it was already present across any
+    /// rotation bucket (= duplicate).
+    pub(crate) fn contains_fast(&self, topic: &str, data: &[u8]) -> Result<u64, MessageId> {
         let mut hasher = FxHasher::default();
         topic.hash(&mut hasher);
         data.hash(&mut hasher);
         let fh = hasher.finish();
-        let hit = self.fast_sets.iter().any(|fs| fs.contains_key(&fh));
-        (!hit).then_some(fh)
+        match self.fast_sets.iter().find_map(|fs| fs.get(&fh)) {
+            Some(msg_id) => Err(*msg_id),
+            None => Ok(fh),
+        }
+    }
+
+    pub(crate) fn has(&self, msg_id: &MessageId) -> bool {
+        self.dedup_sets.iter().any(|s| s.contains(msg_id))
     }
 
     pub(crate) fn maybe_rotate(&mut self, now: Instant) {

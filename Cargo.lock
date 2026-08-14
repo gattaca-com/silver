@@ -4725,6 +4725,7 @@ dependencies = [
  "flux-profiler",
  "fxhash",
  "hex",
+ "rand 0.8.6",
  "silver_common",
  "silver_config",
  "slab",

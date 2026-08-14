@@ -129,6 +129,15 @@ fn main() -> io::Result<()> {
     let mut app =
         App::new(counter_sets, tcache_sets, timing_sets, tile_sets, peers, events, flamegraph);
 
+    // Restore the terminal before the panic message prints, else it lands
+    // on top of the raw-mode alternate screen and leaves the shell broken.
+    let default_panic = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), LeaveAlternateScreen);
+        default_panic(info);
+    }));
+
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
