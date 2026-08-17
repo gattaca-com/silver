@@ -1,6 +1,7 @@
 #![allow(clippy::result_large_err)]
 
 pub mod bls;
+pub mod counters;
 pub mod error;
 mod fork_choice;
 pub mod shuffling;
@@ -16,6 +17,7 @@ pub(crate) mod test_signing;
 #[cfg(test)]
 pub(crate) mod test_state;
 
+pub use counters::BeaconStateCounters;
 pub use error::{Error, PrecheckError, Result};
 // Fork-choice store types, exposed only for the EF vector harnesses' read
 // access via `BeaconStateTile::ef_fork_choice`.

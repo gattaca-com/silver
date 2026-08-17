@@ -3,8 +3,8 @@ use silver_beacon_state_data::{
     B256, ParsedAggregateAndProof, SLOTS_PER_EPOCH, Slot, StateId, StateReadView,
 };
 use silver_common::{
-    BeaconStateEvent, BlockSource, EngineNewPayloadEnvelopeReq, EngineReq, GossipTopic,
-    MAX_BLOBS_PER_BLOCK, NewGossipMsg, PeerEvent, TCacheRead, TRead,
+    ATTESTATION_SUBNETS, BeaconStateEvent, BlockSource, EngineNewPayloadEnvelopeReq, EngineReq,
+    GossipTopic, MAX_BLOBS_PER_BLOCK, NewGossipMsg, PeerEvent, TCacheRead, TRead,
     metrics::timed,
     ssz_view::{
         AttestationDataView, AttesterSlashingView, ExecutionPayloadEnvelopeView as Envelope,
@@ -17,9 +17,11 @@ use silver_common::{
 
 use super::{
     ATTESTATION_PROPAGATION_SLOT_RANGE, BY_ROOT_REQUEST_ID, BeaconStateTile, Feedback, Producers,
+    attestation_pool::InsertOutcome,
     orphan_pool::{PendingBlock, has_room},
+    seen_aggregates::Coverage,
 };
-use crate::{bls, merkle, ssz_hash, stf, validate};
+use crate::{bls, counters::BeaconStateCounters, merkle, ssz_hash, stf, validate};
 
 pub(super) enum EnvelopeCheck {
     Ready { block_root: B256, state_id: StateId },
@@ -29,7 +31,7 @@ pub(super) enum EnvelopeCheck {
 
 impl BeaconStateTile {
     #[timed]
-    pub(super) fn handle_attestation(&mut self, data: &[u8]) -> Feedback {
+    pub(super) fn handle_attestation(&mut self, data: &[u8], subnet: u64) -> Feedback {
         if data.len() < SINGLE_ATT_SIZE {
             return Feedback::Reject(None);
         }
@@ -42,6 +44,11 @@ impl BeaconStateTile {
 
         let wall = self.ticker.current_slot();
         if att_slot > wall || att_slot.saturating_add(ATTESTATION_PROPAGATION_SLOT_RANGE) < wall {
+            return Feedback::Ignore;
+        }
+
+        self.seen_attesters.rotate_to(wall / SLOTS_PER_EPOCH);
+        if self.seen_attesters.contains(target_epoch, attester_index) {
             return Feedback::Ignore;
         }
 
@@ -76,10 +83,21 @@ impl BeaconStateTile {
         if committee_index >= shuffling.committees_per_slot {
             return Feedback::Reject(None);
         }
-        let committee = shuffling.committee(att_slot, committee_index);
-        if !committee.contains(&(attester_index as u32)) {
+        if subnet !=
+            compute_subnet_for_attestation(
+                shuffling.committees_per_slot,
+                att_slot,
+                committee_index,
+            )
+        {
             return Feedback::Reject(None);
         }
+        let committee = shuffling.committee(att_slot, committee_index);
+        let Some(committee_position) = committee.iter().position(|&v| v == attester_index as u32)
+        else {
+            return Feedback::Reject(None);
+        };
+        let committee_len = committee.len();
         if attester_index >= view.validators.count() {
             return Feedback::Reject(None);
         }
@@ -88,13 +106,24 @@ impl BeaconStateTile {
             bls::DOMAIN_BEACON_ATTESTER,
             &view.imm.fork_data_root(fork_version),
         );
-        let ok = bls::verify_single_attestation(
+        let Some(verified) = bls::verify_single_attestation(
             buf,
             view.validators.pubkey_decompressed(attester_index),
             &domain,
-        );
-        if !ok {
+        ) else {
             return Feedback::Reject(None);
+        };
+
+        let outcome = self.attestation_pool.insert_verified(
+            buf,
+            committee_position,
+            committee_len,
+            &verified,
+        );
+        debug_assert!(outcome != InsertOutcome::Inconsistent);
+        if outcome == InsertOutcome::Full {
+            BeaconStateCounters::AttestationPoolFull.inc();
+            tracing::debug!(slot = att_slot, committee = committee_index, "attestation pool full");
         }
 
         let vote = stf::AttestationVote {
@@ -106,6 +135,8 @@ impl BeaconStateTile {
         };
         let n = self.head_validator_count();
         self.record_or_defer_vote(vote, n);
+
+        self.seen_attesters.mark(target_epoch, attester_index);
 
         Feedback::Accept(None)
     }
@@ -179,10 +210,27 @@ impl BeaconStateTile {
         {
             return Feedback::Ignore;
         }
+
+        self.seen_aggregators.rotate_to(wall / SLOTS_PER_EPOCH);
+        if self.seen_aggregators.contains(parsed.att_epoch, parsed.aggregator_index) {
+            return Feedback::Ignore;
+        }
+
         if parsed.committee_bits.count_ones() != 1 {
             return Feedback::Reject(None);
         }
         let committee_index = parsed.committee_bits.trailing_zeros() as usize;
+
+        let data_root = ssz_hash::hash_attestation_data(parsed.agg_data.as_bytes());
+        let coverage = self.seen_aggregates.coverage(
+            parsed.agg_slot,
+            committee_index as u64,
+            data_root,
+            parsed.aggregation_bits,
+        );
+        if coverage == Coverage::BySuperset {
+            return Feedback::Ignore;
+        }
 
         if let Err(f) = self.validate_attestation_target(parsed.agg_data) {
             return f;
@@ -231,12 +279,28 @@ impl BeaconStateTile {
             return Feedback::Reject(None);
         }
 
-        if !Self::verify_aggregate_and_proof_sigs(&view, &parsed, &committees, &mut self.sig_batch)
-        {
+        if !Self::verify_aggregate_and_proof_sigs(
+            &view,
+            &parsed,
+            &committees,
+            data_root,
+            &mut self.sig_batch,
+        ) {
             return Feedback::Reject(None);
         }
 
-        self.record_attester_votes(parsed.agg_data, count);
+        // A union-covered aggregate's votes are all already folded; it still
+        // relays — union coverage must never gate forwarding.
+        if coverage != Coverage::ByUnion {
+            self.record_attester_votes(parsed.agg_data, count);
+        }
+        self.seen_aggregates.record(
+            parsed.agg_slot,
+            committee_index as u64,
+            data_root,
+            parsed.aggregation_bits,
+        );
+        self.seen_aggregators.mark(parsed.att_epoch, parsed.aggregator_index);
         Feedback::Accept(None)
     }
 
@@ -414,6 +478,7 @@ impl BeaconStateTile {
         view: &StateReadView,
         parsed: &ParsedAggregateAndProof<'_>,
         committees: &stf::AttestedCommittees<'_>,
+        data_root: B256,
         sig_batch: &mut bls::SigBatch,
     ) -> bool {
         let fv = view.epoch.fork_version_at(parsed.agg_data.target_epoch());
@@ -435,7 +500,6 @@ impl BeaconStateTile {
             bls::compute_signing_root(&agg_proof_root, &domain(bls::DOMAIN_AGGREGATE_AND_PROOF));
 
         // (3) inner aggregate signature over AttestationData.
-        let data_root = ssz_hash::hash_attestation_data(parsed.agg_data.as_bytes());
         let sr_att = bls::compute_signing_root(&data_root, &domain(bls::DOMAIN_BEACON_ATTESTER));
 
         sig_batch.clear();
@@ -612,7 +676,7 @@ impl BeaconStateTile {
             GossipTopic::BeaconBlock => {
                 self.apply_block(data, read, BlockSource::Gossip, pre_verified, producers)
             }
-            GossipTopic::BeaconAttestation(_) => self.handle_attestation(data),
+            GossipTopic::BeaconAttestation(subnet) => self.handle_attestation(data, subnet),
             GossipTopic::BeaconAggregateAndProof => self.handle_aggregate_and_proof(data),
             GossipTopic::VoluntaryExit => self.handle_voluntary_exit(data),
             GossipTopic::ProposerSlashing => self.handle_proposer_slashing(data),
@@ -672,4 +736,13 @@ pub(super) fn is_aggregator(committee_len: usize, selection_proof: &[u8; 96]) ->
     let modulo = (committee_len as u64 / TARGET_AGGREGATORS_PER_COMMITTEE).max(1);
     let h = merkle::sha256(selection_proof);
     u64::from_le_bytes(h[0..8].try_into().unwrap()) % modulo == 0
+}
+
+pub(super) fn compute_subnet_for_attestation(
+    committees_per_slot: usize,
+    slot: Slot,
+    committee_index: usize,
+) -> u64 {
+    let committees_since_epoch_start = committees_per_slot as u64 * (slot % SLOTS_PER_EPOCH);
+    (committees_since_epoch_start + committee_index as u64) % ATTESTATION_SUBNETS as u64
 }

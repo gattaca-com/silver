@@ -9,10 +9,10 @@ use silver_beacon_state_data::{
     B256, BLSPubkey, BeaconBlockHeader, Fork, Immutable, SLOTS_PER_EPOCH,
 };
 use silver_common::ssz_view::{
-    AttestationDataView, IndexedAttestationView, PROPOSER_SLASHING_SIZE, ProposerSlashingView,
-    SIGNED_AGG_PROOF_MIN, SIGNED_BLS_CHANGE_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE,
-    SignedAggregateAndProofView, SignedBlsToExecutionChangeView, SignedVoluntaryExitView,
-    SingleAttestationView,
+    ATTESTATION_FIXED, AttestationView, IndexedAttestationView, PROPOSER_SLASHING_SIZE,
+    ProposerSlashingView, SIGNED_AGG_PROOF_MIN, SIGNED_BLS_CHANGE_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE,
+    SINGLE_ATT_SIZE, SignedAggregateAndProofView, SignedBlsToExecutionChangeView,
+    SignedVoluntaryExitView, SingleAttestationView,
 };
 
 use crate::{
@@ -248,22 +248,119 @@ pub fn sign_single_attestation(
     buf[104..112].copy_from_slice(&target_epoch.to_le_bytes());
     buf[112..144].copy_from_slice(&target_root);
 
-    let fv = test_fork_version(target_epoch);
-    let data: &[u8; 128] = buf[16..144].try_into().unwrap();
-    let object_root = ssz_hash::hash_attestation_data(data);
+    resign_single_attestation(sk_idx, &mut buf, imm);
+    buf
+}
+
+/// Recompute the signature over the buffer's current `AttestationData`, for
+/// tests that mutate data fields after `sign_single_attestation`.
+pub fn resign_single_attestation(sk_idx: usize, buf: &mut [u8; SINGLE_ATT_SIZE], imm: &Immutable) {
+    let data: [u8; 128] = buf[16..144].try_into().unwrap();
+    let fv = test_fork_version(SingleAttestationView::target_epoch(buf));
     let domain = bls::compute_domain(bls::DOMAIN_BEACON_ATTESTER, fv, &imm.genesis_validators_root);
-    let signing_root = bls::compute_signing_root(&object_root, &domain);
+    let signing_root = bls::compute_signing_root(&ssz_hash::hash_attestation_data(&data), &domain);
     let sig = sign(sk_idx, &signing_root);
     buf[144..240].copy_from_slice(&sig);
-    debug_assert_eq!(SingleAttestationView::signature(&buf), &sig);
+    debug_assert_eq!(SingleAttestationView::signature(buf), &sig);
+}
+
+/// Build a single-signer `Attestation`: `committee_index` is the (single)
+/// bit in `committee_bits`; the bit at `participant_pos` is the only set bit
+/// in `aggregation_bits` — that participant signs the aggregate.
+pub fn build_attestation(
+    sk_idx: usize,
+    slot: u64,
+    target_epoch: u64,
+    beacon_block_root: B256,
+    target_root: B256,
+    committee_index: usize,
+    participant_pos: usize,
+    committee_size: usize,
+    imm: &Immutable,
+) -> Vec<u8> {
+    // Trailing Bitlist[committee_size] with terminator bit at position
+    // `committee_size` → length = ceil((committee_size+1)/8).
+    let bl_len = (committee_size + 1).div_ceil(8);
+    let mut buf = vec![0u8; ATTESTATION_FIXED + bl_len];
+
+    buf[0..4].copy_from_slice(&(ATTESTATION_FIXED as u32).to_le_bytes());
+
+    // AttestationData[4..132]: slot, index(=0), beacon_block_root, source,
+    // target.
+    buf[4..12].copy_from_slice(&slot.to_le_bytes());
+    buf[20..52].copy_from_slice(&beacon_block_root);
+    buf[92..100].copy_from_slice(&target_epoch.to_le_bytes());
+    buf[100..132].copy_from_slice(&target_root);
+
+    // committee_bits[228..236]: single bit at `committee_index`.
+    buf[228 + committee_index / 8] |= 1 << (committee_index % 8);
+
+    // aggregation_bits: participant bit, then terminator.
+    buf[ATTESTATION_FIXED + participant_pos / 8] |= 1 << (participant_pos % 8);
+    buf[ATTESTATION_FIXED + committee_size / 8] |= 1 << (committee_size % 8);
+
+    let fv = test_fork_version(target_epoch);
+    let data: &[u8; 128] = buf[4..132].try_into().unwrap();
+    let data_root = ssz_hash::hash_attestation_data(data);
+    let domain_att =
+        bls::compute_domain(bls::DOMAIN_BEACON_ATTESTER, fv, &imm.genesis_validators_root);
+    let sig = sign(sk_idx, &bls::compute_signing_root(&data_root, &domain_att));
+    buf[132..228].copy_from_slice(&sig);
+
+    debug_assert_eq!(AttestationView::signature(&buf), &sig);
+    debug_assert_eq!(AttestationView::data(&buf).target_epoch(), target_epoch);
+    buf
+}
+
+/// Wrap an existing inner `Attestation` SSZ buffer in a fully signed
+/// `SignedAggregateAndProof`: `sk_idx` (the aggregator's key) signs the
+/// selection proof over the attestation's slot and the outer signature;
+/// the inner aggregate keeps whatever signature it carries.
+pub fn wrap_aggregate_and_proof(
+    sk_idx: usize,
+    aggregator_index: u64,
+    attestation: &[u8],
+    imm: &Immutable,
+) -> Vec<u8> {
+    const PREFIX: usize = SIGNED_AGG_PROOF_MIN - ATTESTATION_FIXED;
+
+    // Outer fixed: offset to message(4) = 100, signature(96) = [4..100).
+    // AggregateAndProof: aggregator_index(8) at 100, offset to aggregate(4)
+    // = 108 (relative-to-message = 108), selection_proof(96) at 112.
+    let mut buf = vec![0u8; PREFIX + attestation.len()];
+    buf[0..4].copy_from_slice(&100u32.to_le_bytes());
+    buf[100..108].copy_from_slice(&aggregator_index.to_le_bytes());
+    buf[108..112].copy_from_slice(&108u32.to_le_bytes());
+    buf[PREFIX..].copy_from_slice(attestation);
+
+    let data = AttestationView::data(attestation);
+    let fv = test_fork_version(data.target_epoch());
+
+    // Selection proof: signer = aggregator, msg = htr(uint64(slot)).
+    let slot_root = merkle::uint64_chunk(data.slot());
+    let domain_sp =
+        bls::compute_domain(bls::DOMAIN_SELECTION_PROOF, fv, &imm.genesis_validators_root);
+    let selection_proof = sign(sk_idx, &bls::compute_signing_root(&slot_root, &domain_sp));
+    buf[112..208].copy_from_slice(&selection_proof);
+
+    let agg_proof_root = ssz_hash::hash_tree_root_aggregate_and_proof(
+        aggregator_index,
+        &buf[PREFIX..],
+        &selection_proof,
+        fv == imm.gloas_fork_version,
+    );
+    let domain_aap =
+        bls::compute_domain(bls::DOMAIN_AGGREGATE_AND_PROOF, fv, &imm.genesis_validators_root);
+    let outer_sig = sign(sk_idx, &bls::compute_signing_root(&agg_proof_root, &domain_aap));
+    buf[4..100].copy_from_slice(&outer_sig);
+
+    debug_assert_eq!(SignedAggregateAndProofView::signature(&buf), &outer_sig);
     buf
 }
 
 /// Build a fully signed `SignedAggregateAndProof` from a single-signer
-/// committee. `committee_index` is the (single) bit in `committee_bits`;
-/// the bit at position `aggregator_pos_in_committee` is the only set bit in
-/// `aggregation_bits` — that participant signs the inner aggregate, the same
-/// validator is the aggregator.
+/// committee — the participant at `aggregator_pos_in_committee` signs the
+/// inner aggregate, and the same validator is the aggregator.
 #[allow(clippy::too_many_arguments)]
 pub fn sign_aggregate_and_proof(
     sk_idx: usize,
@@ -277,81 +374,16 @@ pub fn sign_aggregate_and_proof(
     committee_size: usize,
     imm: &Immutable,
 ) -> Vec<u8> {
-    // Bitlist[committee_size] with a single set bit at pos
-    // `aggregator_pos_in_committee`, plus terminator bit at position
-    // `committee_size`. Length = ceil((committee_size+1)/8).
-    let bl_len = (committee_size + 1).div_ceil(8);
-    let mut agg_bits = vec![0u8; bl_len];
-    let pos = aggregator_pos_in_committee;
-    agg_bits[pos / 8] |= 1 << (pos % 8);
-    // Terminator.
-    let term = committee_size;
-    agg_bits[term / 8] |= 1 << (term % 8);
-
-    // SignedAggregateAndProof fixed part = 444B; aggregation_bits trail.
-    let mut buf = vec![0u8; SIGNED_AGG_PROOF_MIN + bl_len];
-
-    // Outer fixed: offset to message (4) = 100, signature (96) = [4..100).
-    buf[0..4].copy_from_slice(&100u32.to_le_bytes());
-
-    // AggregateAndProof: aggregator_index(8) at 100, offset to aggregate(4)
-    // = 108 (relative-to-message = 108), selection_proof(96) at 112.
-    buf[100..108].copy_from_slice(&aggregator_index.to_le_bytes());
-    buf[108..112].copy_from_slice(&108u32.to_le_bytes());
-
-    // Attestation (variable, starts at 208):
-    // offset to aggregation_bits(4) = 236 (rel-to-attestation = 236, absolute 444).
-    buf[208..212].copy_from_slice(&236u32.to_le_bytes());
-
-    // AttestationData[212..340]: slot, index(=0), beacon_block_root, source,
-    // target.
-    buf[212..220].copy_from_slice(&slot.to_le_bytes());
-    buf[228..260].copy_from_slice(&beacon_block_root);
-    buf[300..308].copy_from_slice(&target_epoch.to_le_bytes());
-    buf[308..340].copy_from_slice(&target_root);
-
-    // committee_bits[436..444]: single bit at `committee_index`.
-    buf[436 + committee_index / 8] |= 1 << (committee_index % 8);
-
-    // aggregation_bits at [444..444+bl_len].
-    buf[444..444 + bl_len].copy_from_slice(&agg_bits);
-
-    // Sign the inner aggregate (single signer = aggregator).
-    let fv = test_fork_version(target_epoch);
-    let data: &[u8; 128] = buf[212..340].try_into().unwrap();
-    let data_root = ssz_hash::hash_attestation_data(data);
-    let domain_att =
-        bls::compute_domain(bls::DOMAIN_BEACON_ATTESTER, fv, &imm.genesis_validators_root);
-    let sr_att = bls::compute_signing_root(&data_root, &domain_att);
-    let inner_sig = sign(sk_idx, &sr_att);
-    buf[340..436].copy_from_slice(&inner_sig);
-
-    // Selection proof: signer = aggregator, msg = htr(uint64(slot)).
-    let slot_root = merkle::uint64_chunk(slot);
-    let domain_sp =
-        bls::compute_domain(bls::DOMAIN_SELECTION_PROOF, fv, &imm.genesis_validators_root);
-    let sr_sp = bls::compute_signing_root(&slot_root, &domain_sp);
-    let selection_proof = sign(sk_idx, &sr_sp);
-    buf[112..208].copy_from_slice(&selection_proof);
-
-    // Outer AggregateAndProof sig.
-    let aggregate_bytes = SignedAggregateAndProofView::aggregate(&buf);
-    let agg_proof_root = ssz_hash::hash_tree_root_aggregate_and_proof(
-        aggregator_index,
-        aggregate_bytes,
-        &selection_proof,
-        fv == imm.gloas_fork_version,
+    let att = build_attestation(
+        sk_idx,
+        slot,
+        target_epoch,
+        beacon_block_root,
+        target_root,
+        committee_index,
+        aggregator_pos_in_committee,
+        committee_size,
+        imm,
     );
-    let domain_aap =
-        bls::compute_domain(bls::DOMAIN_AGGREGATE_AND_PROOF, fv, &imm.genesis_validators_root);
-    let sr_aap = bls::compute_signing_root(&agg_proof_root, &domain_aap);
-    let outer_sig = sign(sk_idx, &sr_aap);
-    buf[4..100].copy_from_slice(&outer_sig);
-
-    debug_assert_eq!(SignedAggregateAndProofView::signature(&buf), &outer_sig);
-    debug_assert_eq!(
-        AttestationDataView::new(buf[212..340].try_into().unwrap()).target_epoch(),
-        target_epoch
-    );
-    buf
+    wrap_aggregate_and_proof(sk_idx, aggregator_index, &att, imm)
 }
