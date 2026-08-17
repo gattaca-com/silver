@@ -1336,9 +1336,10 @@ impl PeerManager {
             if *peer == sender {
                 continue;
             }
-            let Some(peer_state) = self.peers.get(peer) else {
+            let Some(peer_state) = self.peers.get_mut(peer) else {
                 continue;
             };
+            peer_state.topic_stats.entry(topic).or_default().fanout_total += 1;
             if peer_state.cached_score < self.params.gossip_threshold {
                 continue;
             }
@@ -1346,6 +1347,7 @@ impl PeerManager {
                 // dontwant
                 continue;
             }
+            peer_state.topic_stats.entry(topic).or_default().fanout_sent += 1;
             crate::counters::GossipTopicCounters::sent(topic);
             emit(PeerControl::P2pSend(P2pSend::Gossip(GossipMsgOut { peer_id: *peer, tcache })));
         }
@@ -1838,6 +1840,8 @@ impl PeerManager {
                     mesh_deliveries: t.mesh_deliveries,
                     p3_scored: scoring::p3_scored(topic),
                     mesh_active: t.mesh_active,
+                    fanout_total: t.fanout_total,
+                    fanout_sent: t.fanout_sent,
                     mesh_failure_penalty: t.mesh_failure_penalty,
                     invalid_deliveries: t.invalid_deliveries,
                 });

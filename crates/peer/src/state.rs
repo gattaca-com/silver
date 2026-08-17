@@ -115,6 +115,10 @@ impl PeerState {
         self.application_score = archive.application_score;
         self.behaviour_penalty = archive.behaviour_penalty;
         self.topic_stats = archive.topic_stats;
+        for t in self.topic_stats.values_mut() {
+            t.fanout_total = 0;
+            t.fanout_sent = 0;
+        }
     }
 
     /// Inserts or updates msg cache entry, returning previous count
@@ -144,6 +148,12 @@ pub(crate) struct TopicScore {
     pub mesh_failure_penalty: f64,
     // P4
     pub invalid_deliveries: f64,
+    // Fan-out ledger: messages we sent on the topic while this peer was
+    // meshed, and how many were actually forwarded to it (the rest were
+    // suppressed — IDONTWANT or score gate). Not decayed; zeroed on
+    // reconnect so the ratio is per-connection.
+    pub fanout_total: u64,
+    pub fanout_sent: u64,
 }
 
 /// Archived counters kept for `archived_ttl` after a peer disconnects. Lets
