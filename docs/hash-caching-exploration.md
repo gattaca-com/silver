@@ -381,5 +381,23 @@ it unnecessary.
    does not fit the 50k budget (1.90 s of 2 s, zero headroom); batching fits with >10×
    headroom. The AttestationData memo's real role there is the batcher's group index.
 
+## Design outcome (agreed with Bronek)
+
+**Per-owner private FxHashMap memo — a plain field on the tile struct** (the tile owns its
+thread; no TLS, no locks, no `Sync`). Key: the full 128-byte `AttestationData` (fast-hash
+prefilter, full equality on hit) → `(data_root, signing_root)`. Capped entries +
+slot-floor rotation, matching the `AttestationPool` idiom; a capped memo under adversarial
+spray degrades to recompute, which costs 1.3–20 ms/burst — harmless. Measured headroom:
+one core absorbs the 50k burst in **0.31 ms** cold (6.25 ns/msg warm, ~160M lookups/s);
+even D=5000 spray is 2.4 ms.
+
+Scope: this closes the *hashing* question. The tile's real capacity limit is the BLS batch
+itself — 45.1 µs/tuple × 50k = 2.25 s CPU does not fit 1–2 s on one core — which is
+CL-112's surviving motivation for `subnet % tile_count` shard tiles; the memo replicates
+per shard as another private field, no sharing, exactly the regime where the shootout says
+single-owner wins. With compute fitted, the remaining engineering moves to **not dropping
+messages**: pending-queue sizing (240 B × 50k ≈ 12 MB), verdict latency under the batch
+window, backpressure through the gossip rings — queueing design, not cryptography.
+
 Benchmark crates (scratchpad, re-runnable): `hashbench` (primitives), `burstbench`
 (strategy grid, results.tsv), `blsbench` (BLS split + MSM table).
