@@ -47,6 +47,8 @@ pub enum PrecheckError {
         b256_hex(block_root)
     )]
     UnverifiedParentPayload { parent_root: B256, block_root: B256 },
+    #[error("invalid block signature: block_root=0x{}", b256_hex(block_root))]
+    InvalidSignature { block_root: B256 },
 }
 
 impl PrecheckError {
@@ -66,6 +68,7 @@ impl PrecheckError {
             Self::ParentInvalid { block_root, .. } |
             Self::ProposerLookaheadMismatch { block_root, .. } |
             Self::ProposerIndexTooBig { block_root, .. } => Feedback::Reject(Some(block_root)),
+            Self::InvalidSignature { block_root } => Feedback::Reject(Some(block_root)),
         }
     }
 }

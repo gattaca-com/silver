@@ -25,7 +25,10 @@ struct AppliedBlock {
 
 impl BeaconStateTile {
     pub fn try_apply_block(&mut self, data: &[u8]) -> Feedback {
-        self.apply_and_publish(data, false, false, |_block_root| {})
+        match self.parse_and_verify_block(data, false) {
+            Ok(parsed) => self.apply_and_publish(parsed, data, false, |_block_root| {}),
+            Err(err) => err.feedback(),
+        }
     }
 
     /// The timer spans the post-publication work too, so it is not the
@@ -38,13 +41,18 @@ impl BeaconStateTile {
         source: BlockSource,
         pre_verified: bool,
         producers: &mut Producers,
+        mut send_gossip: impl FnMut(&mut Producers),
     ) -> Feedback {
         let block_slot = SignedBeaconBlockView::slot(data);
-        if block_slot < (self.head_finalized_checkpoint().epoch * SLOTS_PER_EPOCH) {
-            // Pre-finalization block - either backfill or irrelevant.
-            return Feedback::Ignore;
-        }
-        let f = self.apply_and_publish(data, true, pre_verified, |root| {
+        let parsed = match self.parse_and_verify_block(data, pre_verified) {
+            Ok(parsed) => {
+                send_gossip(producers);
+                parsed
+            }
+            Err(e) => return e.feedback(),
+        };
+
+        let f = self.apply_and_publish(parsed, data, true, |root| {
             producers.produce(EngineReq::NewPayload(EngineNewPayloadReq {
                 data: read,
                 block_root: root,
@@ -97,7 +105,11 @@ impl BeaconStateTile {
         }
 
         let block_slot = SignedBeaconBlockView::slot(data);
-        let feedback = self.apply_and_publish(data, false, false, |_block_root| {});
+        let feedback = match self.parse_and_verify_block(data, false) {
+            Ok(parsed) => self.apply_and_publish(parsed, data, false, |_block_root| {}),
+            Err(err) => err.feedback(),
+        };
+
         match feedback {
             Feedback::Reject(block_root) => tracing::error!(
                 block_slot,
@@ -113,21 +125,17 @@ impl BeaconStateTile {
         }
     }
 
-    /// Ingest → published: the tick-to-attestable window. Work that may run
-    /// after the new head is visible to readers belongs in the caller.
     #[timed]
-    pub(super) fn apply_and_publish<F: FnMut([u8; 32])>(
+    pub(super) fn parse_and_verify_block(
         &mut self,
         data: &[u8],
-        gate_da: bool,
         pre_verified: bool,
-        mut notify_el: F,
-    ) -> Feedback {
+    ) -> Result<ParsedBlock, PrecheckError> {
         let parsed = match self.precheck_block(data) {
             Ok(p) => p,
             Err(err) => {
                 tracing::warn!(head_slot = self.head_state_slot(), "{err}");
-                return err.feedback();
+                return Err(err);
             }
         };
 
@@ -137,9 +145,22 @@ impl BeaconStateTile {
                 block_root = ?hex32(&parsed.block_root),
                 "block BLS proposer signature invalid"
             );
-            return Feedback::Reject(Some(parsed.block_root));
+            return Err(PrecheckError::InvalidSignature { block_root: parsed.block_root });
         }
 
+        Ok(parsed)
+    }
+
+    /// Ingest → published: the tick-to-attestable window. Work that may run
+    /// after the new head is visible to readers belongs in the caller.
+    #[timed]
+    pub(super) fn apply_and_publish<F: FnMut([u8; 32])>(
+        &mut self,
+        parsed: ParsedBlock,
+        data: &[u8],
+        gate_da: bool,
+        mut notify_el: F,
+    ) -> Feedback {
         // Data availability is only required above the finalized boundary.
         if gate_da &&
             parsed.header.slot > self.da_boundary() &&

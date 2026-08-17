@@ -665,7 +665,7 @@ impl BeaconStateTile {
         &mut self,
         read: TCacheRead,
         m: NewGossipMsg,
-        do_relay: bool,
+        mut do_relay: bool,
         pre_verified: bool,
         producers: &mut Producers,
     ) {
@@ -674,7 +674,20 @@ impl BeaconStateTile {
 
         let feedback = match m.topic {
             GossipTopic::BeaconBlock => {
-                self.apply_block(data, read, BlockSource::Gossip, pre_verified, producers)
+                let feedback = self.apply_block(
+                    data,
+                    read,
+                    BlockSource::Gossip,
+                    pre_verified,
+                    producers,
+                    |p| {
+                        if do_relay {
+                            Self::relay_gossip(&m, p);
+                        }
+                    },
+                );
+                do_relay = false; // relayed on callback.
+                feedback
             }
             GossipTopic::BeaconAttestation(subnet) => self.handle_attestation(data, subnet),
             GossipTopic::BeaconAggregateAndProof => self.handle_aggregate_and_proof(data),
