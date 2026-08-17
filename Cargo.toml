@@ -13,7 +13,7 @@ members = [
   "crates/e2e",
   "crates/gossip",
   "crates/httpcore",
-  "crates/engine",
+  "crates/engine_api",
   "crates/metrics",
   "crates/network",
   "crates/peer",
@@ -78,7 +78,7 @@ silver_httpcore = { path = "crates/httpcore" }
 silver_network = {path = "crates/network" }
 silver_peer = {path = "crates/peer" }
 silver_storage = { path = "crates/storage" }
-silver_engine = { path = "crates/engine"}
+silver_engine_api = { path = "crates/engine_api" }
 flux = { git = "https://github.com/gattaca-com/flux", rev = "d6785f1af35336002476c3d97721fcc67fe76dfd"}
 flux-utils = { git = "https://github.com/gattaca-com/flux", rev = "d6785f1af35336002476c3d97721fcc67fe76dfd", features = ["bytes"]}
 flux-profiler = { git = "https://github.com/gattaca-com/flux", rev = "d6785f1af35336002476c3d97721fcc67fe76dfd"}

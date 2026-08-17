@@ -175,7 +175,7 @@ mod tests {
         conn.commit_read(n)
     }
 
-    // Captured verbatim from silver_engine's `build_request_into` before the
+    // Captured verbatim from the engine crate's `build_request_into` before the
     // extraction (2026-08-17); the framed request must stay byte-identical.
     #[test]
     fn golden_request_bytes_keep_alive() {

@@ -16,7 +16,7 @@ use silver_common::{
 use silver_config::Config;
 use silver_control::Controller;
 use silver_discovery::{DiscV5, Discovery};
-use silver_engine::EngineTile;
+use silver_engine_api::EngineTile;
 use silver_gossip::GossipHandler;
 use silver_network::{Context, NetworkTile, P2p};
 use silver_peer::PeerManager;

@@ -4435,7 +4435,7 @@ dependencies = [
  "silver_config",
  "silver_control",
  "silver_discovery",
- "silver_engine",
+ "silver_engine_api",
  "silver_gossip",
  "silver_network",
  "silver_peer",
@@ -4647,7 +4647,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "silver_engine"
+name = "silver_engine_api"
 version = "0.0.1"
 dependencies = [
  "base64 0.22.1",
