@@ -179,7 +179,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    let beacon_api_tile = BeaconApiTile::new(&keypair, local_enr, &identify);
     let network_tile = NetworkTile::new(discv5_addr, discv5, p2p_addr, p2p_endpoint, p2p_context)?;
 
     let (checkpoint, checkpoint_pubkeys) = load_checkpoint(&config)?;
@@ -231,6 +230,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         !config.disable_weak_subjectivity_check(),
         state,
     );
+    let beacon_api_tile =
+        BeaconApiTile::new(&keypair, local_enr, &identify, beacon_state_tile.reader());
+
     let state_reader = beacon_state_tile.reader();
 
     let storage_tile = StorageTile::new(

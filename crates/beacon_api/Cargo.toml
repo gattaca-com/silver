@@ -9,6 +9,7 @@ version.workspace = true
 flux.workspace = true
 hex.workspace = true
 mio.workspace = true
+silver_beacon_state_data.workspace = true
 silver_common.workspace = true
 silver_httpcore.workspace = true
 serde.workspace = true

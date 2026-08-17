@@ -4452,6 +4452,7 @@ dependencies = [
  "mio",
  "serde",
  "serde_json",
+ "silver_beacon_state_data",
  "silver_common",
  "silver_httpcore",
  "tracing",
