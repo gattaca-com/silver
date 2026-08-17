@@ -23,14 +23,16 @@ use crate::{
     fork_choice::{FORK_CHOICE_NODES_HINT, ForkChoice, PayloadStatus},
     merkle, ssz_hash, stf,
     tile::{
-        attestation_pool::AttestationPool, orphan_pool::PendingBlock,
-        seen_aggregates::SeenAggregates, seen_validators::SeenValidators,
-        shuffling_cache::ShufflingCache,
+        attestation_pool::AttestationPool, attestation_root_memo::AttestationRootMemo,
+        orphan_pool::PendingBlock, seen_aggregates::SeenAggregates,
+        seen_validators::SeenValidators, shuffling_cache::ShufflingCache,
     },
     weak_subjectivity::{weak_subjectivity_period_fulu, weak_subjectivity_period_gloas},
 };
 
 mod attestation_pool;
+// `pub` for the crate's `attestation_root_memo` criterion bench.
+pub mod attestation_root_memo;
 mod block;
 mod finalize;
 mod fork_choice;
@@ -126,6 +128,7 @@ pub struct BeaconStateTile {
     seen_aggregators: SeenValidators,
     seen_aggregates: SeenAggregates,
     attestation_pool: AttestationPool,
+    attestation_root_memo: AttestationRootMemo,
 
     /// Highest finalized slot PM has announced as a sync target — bounds the
     /// data-availability requirement while range sync back-fills.
@@ -228,6 +231,7 @@ impl BeaconStateTile {
             seen_aggregators: SeenValidators::new(val_cap),
             seen_aggregates: SeenAggregates::new(),
             attestation_pool: AttestationPool::new(),
+            attestation_root_memo: AttestationRootMemo::default(),
             last_applied: anchor,
             last_applied_block_root: [0u8; 32],
             initial_status_emitted: false,
@@ -529,6 +533,7 @@ impl BeaconStateTile {
         let floor = slot.saturating_sub(1);
         self.attestation_pool.prune_before(floor);
         self.seen_aggregates.prune_before(floor);
+        self.attestation_root_memo.prune_before(floor);
         advanced
     }
 

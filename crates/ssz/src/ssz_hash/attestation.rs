@@ -13,6 +13,11 @@ pub fn hash_attestation(d: &[u8]) -> B256 {
     if d.len() < 236 {
         return ZERO_HASH;
     }
+    hash_attestation_with_data_root(d, hash_attestation_data(&d[4..132]))
+}
+
+fn hash_attestation_with_data_root(d: &[u8], data_root: B256) -> B256 {
+    debug_assert_eq!(data_root, hash_attestation_data(&d[4..132]));
     let agg_off = u32::from_le_bytes(d[0..4].try_into().unwrap()) as usize;
     let agg_bits = if agg_off <= d.len() { &d[agg_off..] } else { &[] };
 
@@ -24,7 +29,6 @@ pub fn hash_attestation(d: &[u8]) -> B256 {
         bit_len,
     );
 
-    let data_root = hash_attestation_data(&d[4..132]);
     let sig_root = hash_fixed_bytes(&d[132..228]);
     let mut cb = ZERO_HASH;
     cb[..8].copy_from_slice(&d[228..236]);
@@ -35,18 +39,23 @@ pub fn hash_attestation(d: &[u8]) -> B256 {
 /// SSZ root of `AggregateAndProof { aggregator_index, aggregate,
 /// selection_proof }` — itself a plain 3-field container in both forks; only
 /// the inner `aggregate` switches shape at the EIP-7688 boundary.
+/// `attestation_data_root` is the caller-held root of the aggregate's inner
+/// AttestationData, sparing its re-hash.
 #[timed]
 pub fn hash_tree_root_aggregate_and_proof(
     aggregator_index: u64,
     aggregate: &[u8],
+    attestation_data_root: B256,
     selection_proof: &[u8; 96],
     is_gloas: bool,
 ) -> B256 {
     let idx_root = uint64_chunk(aggregator_index);
-    let agg_root = if is_gloas {
-        AttestationView::hash_tree_root_gloas(aggregate)
+    let agg_root = if aggregate.len() < 236 {
+        ZERO_HASH
+    } else if is_gloas {
+        AttestationView::hash_tree_root_gloas_with_data_root(aggregate, attestation_data_root)
     } else {
-        hash_attestation(aggregate)
+        hash_attestation_with_data_root(aggregate, attestation_data_root)
     };
     let sp_root = hash_fixed_bytes(selection_proof);
     merkleize(&[idx_root, agg_root, sp_root])

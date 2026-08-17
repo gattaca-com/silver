@@ -22,13 +22,17 @@ impl AttestationView {
         if d.len() < 236 {
             return ZERO_HASH;
         }
+        Self::hash_tree_root_gloas_with_data_root(d, hash_attestation_data(&d[4..132]))
+    }
+
+    pub(crate) fn hash_tree_root_gloas_with_data_root(d: &[u8], data_root: B256) -> B256 {
+        debug_assert_eq!(data_root, hash_attestation_data(&d[4..132]));
         let agg_off = u32::from_le_bytes(d[0..4].try_into().unwrap()) as usize;
         let agg_bits = if agg_off <= d.len() { &d[agg_off..] } else { &[] };
 
         let bit_len = bitlist_len(agg_bits);
         let agg_root = hash_bitlist(ProgressiveHasher::new(), agg_bits, bit_len);
 
-        let data_root = hash_attestation_data(&d[4..132]);
         let sig_root = hash_fixed_bytes(&d[132..228]);
         let mut cb = ZERO_HASH;
         cb[..8].copy_from_slice(&d[228..236]);

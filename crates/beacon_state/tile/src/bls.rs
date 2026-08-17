@@ -12,7 +12,7 @@ use silver_common::ssz_view::{
 
 use crate::{
     merkle,
-    ssz_hash::{self, hash_attestation_data, hash_tree_root_block_header},
+    ssz_hash::{self, hash_tree_root_block_header},
 };
 
 // `verify_batch` casts `&PublicKey -> &blst_p1_affine` and
@@ -421,22 +421,20 @@ pub struct VerifiedSingleAttestation {
     pub signature: Signature,
 }
 
-/// Verify a single-attester `SingleAttestation` (gossip subnet form). Used
-/// on the gossip hot path; the body-included aggregate path goes through
+/// Verify a single-attester `SingleAttestation` (gossip subnet form) against
+/// caller-derived roots (they repeat across a slot's attestations, so the
+/// caller memoizes them). The body-included aggregate path goes through
 /// `stf::validate_attestations` + `SigBatch`.
 #[timed]
 pub fn verify_single_attestation(
     att: &[u8; SINGLE_ATT_SIZE],
     attester_pubkey: &PublicKey,
-    domain: &B256,
+    data_root: B256,
+    signing_root: &B256,
 ) -> Option<VerifiedSingleAttestation> {
-    let data = SingleAttestationView::data(att);
     let signature = Signature::from_bytes(SingleAttestationView::signature(att)).ok()?;
 
-    let data_root = hash_attestation_data(data.as_bytes());
-    let signing_root = compute_signing_root(&data_root, domain);
-
-    verify_one_parsed(attester_pubkey, &signature, &signing_root)
+    verify_one_parsed(attester_pubkey, &signature, signing_root)
         .then_some(VerifiedSingleAttestation { data_root, signature })
 }
 
