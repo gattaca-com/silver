@@ -12,6 +12,7 @@ members = [
   "crates/discovery",
   "crates/e2e",
   "crates/gossip",
+  "crates/httpcore",
   "crates/engine",
   "crates/metrics",
   "crates/network",
@@ -73,6 +74,7 @@ silver_ssz = { path = "crates/ssz" }
 silver_control = { path = "crates/control" }
 silver_discovery = {path = "crates/discovery" }
 silver_gossip = {path = "crates/gossip" }
+silver_httpcore = { path = "crates/httpcore" }
 silver_network = {path = "crates/network" }
 silver_peer = {path = "crates/peer" }
 silver_storage = { path = "crates/storage" }

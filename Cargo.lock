@@ -4449,11 +4449,11 @@ version = "0.0.1"
 dependencies = [
  "flux",
  "hex",
- "httparse",
  "mio",
  "serde",
  "serde_json",
  "silver_common",
+ "silver_httpcore",
  "tracing",
 ]
 
@@ -4684,6 +4684,14 @@ dependencies = [
  "snap 1.1.1",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "silver_httpcore"
+version = "0.0.1"
+dependencies = [
+ "httparse",
+ "tracing",
 ]
 
 [[package]]

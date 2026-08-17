@@ -11,29 +11,12 @@ use mio::{
 };
 use serde::{Deserialize, Serialize};
 use silver_common::{Enr, Eth2Addr, Identify, Keypair, SilverSpine};
+use silver_httpcore::{AfterResponse, ParsedRequest, ServerConnection, frame_response};
 
 const LISTENER: Token = Token(0);
 const IDENTITY_PATH: &str = "/eth/v1/node/identity";
 const METRICS_PATH: &str = "/metrics";
-const NOT_FOUND: &[u8] = b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
-const VERSION_NOT_SUPPORTED: &[u8] =
-    b"HTTP/1.1 505 HTTP Version Not Supported\r\nContent-Length: 0\r\n\r\n";
-const METRICS_EMPTY: &[u8] =
-    b"HTTP/1.1 200 OK\r\nContent-Type: text/plain; version=0.0.4; charset=utf-8\r\nContent-Length: 0\r\n\r\n";
-// Hard cap on the read buffer. Raw SSZ, uncompressed. 16 MiB matches observed
-// production maximums (21 blobs × 128 KiB plus block fields).
-const READ_BUF_MAX: usize = 16 << 20;
-const WRITE_BUF_INIT: usize = 4096;
-
-#[allow(dead_code)]
-struct ParsedRequest<'a> {
-    method: &'a str,
-    path: &'a str,
-    query: &'a str,
-    body: &'a [u8],
-    version: u8,
-    keep_alive: bool,
-}
+const METRICS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
 
 #[derive(Debug, Serialize)]
 struct IdentityResponse<'a> {
@@ -57,33 +40,9 @@ struct Metadata {
     custody_group_count: String,
 }
 
-struct HttpConnection {
+struct Connection {
     stream: TcpStream,
-    read_buf: Box<[u8; READ_BUF_MAX]>,
-    read_pos: usize,
-    read_end: usize,
-    write_buf: Vec<u8>,
-    write_pos: usize,
-    keep_alive: bool,
-}
-
-impl HttpConnection {
-    fn new(stream: TcpStream) -> Self {
-        Self {
-            stream,
-            read_buf: Box::new([0u8; READ_BUF_MAX]),
-            read_pos: 0,
-            read_end: 0,
-            write_buf: Vec::with_capacity(WRITE_BUF_INIT),
-            write_pos: 0,
-            keep_alive: true,
-        }
-    }
-
-    fn reset(&mut self) {
-        self.write_buf.clear();
-        self.write_pos = 0;
-    }
+    http: ServerConnection,
 }
 
 pub struct BeaconApiTile {
@@ -91,7 +50,7 @@ pub struct BeaconApiTile {
     events: Events,
     listener: TcpListener,
     current_token: Token,
-    connections: HashMap<Token, HttpConnection>,
+    connections: HashMap<Token, Connection>,
     identity_response: Vec<u8>,
 }
 
@@ -133,9 +92,15 @@ impl Tile<SilverSpine> for BeaconApiTile {
                     tracing::info!("accepted connection from {address}");
                     let token = next(&mut self.current_token);
                     self.poll.registry().register(&mut stream, token, Interest::READABLE).unwrap();
-                    self.connections.insert(token, HttpConnection::new(stream));
+                    self.connections
+                        .insert(token, Connection { stream, http: ServerConnection::new() });
                 }
                 token => {
+                    // TODO: path routing here is exact-match only. Most beacon
+                    // API paths are parameterised
+                    // (/eth/v1/beacon/states/{state_id}/...). Add
+                    // prefix/pattern matching before implementing any
+                    // parameterised routes.
                     if let Some(conn) = self.connections.get_mut(&token) {
                         match handle_event(self.poll.registry(), conn, event, &|req, out| match req
                             .path
@@ -167,58 +132,48 @@ fn handle_identity(response: &[u8], out: &mut Vec<u8>) {
 }
 
 fn handle_metrics(out: &mut Vec<u8>) {
-    out.extend_from_slice(METRICS_EMPTY);
+    frame_response(out, "200 OK", Some(METRICS_CONTENT_TYPE), b"");
 }
 
 fn handle_unknown(path: &str, out: &mut Vec<u8>) {
     tracing::warn!("unknown path: {path}");
-    out.extend_from_slice(NOT_FOUND);
+    frame_response(out, "404 Not Found", None, b"");
 }
 
-// TODO: write_buf materialises the full response in heap memory. For large
-// payloads (beacon states >200 MiB, blocks, blobs) replace with scatter-gather
-// streaming: hold a tcache snapshot reference and write headers + body via
-// write_vectored without copying. The write loop already drains by position so
-// the structure supports a multi-part write state without changes to the outer
-// logic.
-//
-// TODO: path routing here is exact-match only. Most beacon API paths are
-// parameterised (/eth/v1/beacon/states/{state_id}/...). Add prefix/pattern
-// matching before implementing any parameterised routes.
 fn handle_event<F: Fn(&ParsedRequest<'_>, &mut Vec<u8>)>(
     registry: &mio::Registry,
-    conn: &mut HttpConnection,
+    conn: &mut Connection,
     event: &mio::event::Event,
     request_handler: &F,
 ) -> io::Result<bool> {
     if event.is_readable() {
         loop {
-            if conn.read_end == READ_BUF_MAX {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "request too large"));
-            }
-            match conn.stream.read(&mut conn.read_buf[conn.read_end..]) {
+            let space = conn.http.read_space()?;
+            match conn.stream.read(space) {
                 Ok(0) => return Err(io::Error::from(io::ErrorKind::UnexpectedEof)),
-                Ok(n) => conn.read_end += n,
+                Ok(n) => conn.http.commit_read(n),
                 Err(e) if would_block(&e) => break,
                 Err(e) if interrupted(&e) => continue,
                 Err(e) => return Err(e),
             }
         }
 
-        dispatch(registry, conn, event.token(), request_handler)?;
+        if conn.http.dispatch(request_handler) {
+            registry.reregister(&mut conn.stream, event.token(), Interest::WRITABLE)?;
+        }
         return Ok(false);
     }
 
     if event.is_writable() {
-        if conn.write_pos < conn.write_buf.len() {
+        if !conn.http.pending_write().is_empty() {
             loop {
-                match conn.stream.write(&conn.write_buf[conn.write_pos..]) {
+                match conn.stream.write(conn.http.pending_write()) {
                     Ok(0) => {
                         return Err(io::Error::new(io::ErrorKind::WriteZero, "write returned 0"))
                     }
                     Ok(n) => {
-                        conn.write_pos += n;
-                        if conn.write_pos == conn.write_buf.len() {
+                        conn.http.commit_write(n);
+                        if conn.http.pending_write().is_empty() {
                             break;
                         }
                     }
@@ -227,85 +182,20 @@ fn handle_event<F: Fn(&ParsedRequest<'_>, &mut Vec<u8>)>(
                     Err(e) => return Err(e),
                 }
             }
-            if conn.keep_alive {
-                conn.reset();
-                // Serve any pipelined request buffered while we were writing.
-                // Without this, edge-triggered epoll won't re-fire for data
-                // that's already in read_buf.
-                if !dispatch(registry, conn, event.token(), request_handler)? {
-                    registry.reregister(&mut conn.stream, event.token(), Interest::READABLE)?;
+            match conn.http.after_response(request_handler) {
+                AfterResponse::Close => return Ok(true),
+                AfterResponse::ResponsePending => {
+                    registry.reregister(&mut conn.stream, event.token(), Interest::WRITABLE)?
                 }
-            } else {
-                return Ok(true);
+                AfterResponse::AwaitRequest => {
+                    registry.reregister(&mut conn.stream, event.token(), Interest::READABLE)?
+                }
             }
         }
         return Ok(false);
     }
 
     Ok(false)
-}
-
-fn dispatch<F: Fn(&ParsedRequest<'_>, &mut Vec<u8>)>(
-    registry: &mio::Registry,
-    conn: &mut HttpConnection,
-    token: Token,
-    handler: &F,
-) -> io::Result<bool> {
-    let Some((consumed, req)) = try_parse_request(&conn.read_buf[conn.read_pos..conn.read_end])
-    else {
-        return Ok(false);
-    };
-    if req.version != 1 {
-        tracing::warn!("rejecting HTTP/1.0 request");
-        conn.keep_alive = false;
-        conn.write_buf.extend_from_slice(VERSION_NOT_SUPPORTED);
-    } else {
-        conn.keep_alive = req.keep_alive;
-        handler(&req, &mut conn.write_buf);
-    }
-    conn.read_pos += consumed;
-    //TODO: check if we actually need to support pipeling. If not, we can simplify
-    // this.
-    if conn.read_pos == conn.read_end {
-        conn.read_pos = 0;
-        conn.read_end = 0;
-    }
-    registry.reregister(&mut conn.stream, token, Interest::WRITABLE)?;
-    Ok(true)
-}
-
-fn try_parse_request(buf: &[u8]) -> Option<(usize, ParsedRequest<'_>)> {
-    let mut headers = [httparse::EMPTY_HEADER; 64];
-    let mut req = httparse::Request::new(&mut headers);
-    let headers_end = match req.parse(buf) {
-        Ok(httparse::Status::Complete(n)) => n,
-        _ => return None,
-    };
-    let method = req.method?;
-    let raw_path = req.path?;
-    let (path, query) = raw_path.split_once('?').unwrap_or((raw_path, ""));
-    let version = req.version?;
-    let keep_alive = version == 1 &&
-        !headers.iter().any(|h| {
-            h.name.eq_ignore_ascii_case("connection") && h.value.eq_ignore_ascii_case(b"close")
-        });
-    let content_length: usize =
-        match headers.iter().find(|h| h.name.eq_ignore_ascii_case("content-length")) {
-            None => 0,
-            Some(h) => std::str::from_utf8(h.value).ok().and_then(|v| v.trim().parse().ok())?,
-        };
-    let total = headers_end + content_length;
-    if buf.len() < total {
-        return None;
-    }
-    Some((total, ParsedRequest {
-        method,
-        path,
-        query,
-        body: &buf[headers_end..total],
-        version,
-        keep_alive,
-    }))
 }
 
 fn build_identity_response(keypair: &Keypair, local_enr: &Enr, identify: &Identify) -> Vec<u8> {
@@ -358,12 +248,9 @@ fn build_identity_response(keypair: &Keypair, local_enr: &Enr, identify: &Identi
     };
 
     let body = serde_json::to_string(&IdentityResponse { data: &identity }).unwrap();
-    format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-        body.len(),
-        body
-    )
-    .into_bytes()
+    let mut response = Vec::new();
+    frame_response(&mut response, "200 OK", Some("application/json"), body.as_bytes());
+    response
 }
 
 fn next(current: &mut Token) -> Token {
@@ -387,76 +274,6 @@ mod tests {
     use silver_common::{Enr, Identify, Keypair};
 
     use super::*;
-
-    fn get_req(path: &str, version: &str) -> Vec<u8> {
-        format!("GET {path} {version}\r\nHost: localhost\r\n\r\n").into_bytes()
-    }
-
-    #[test]
-    fn parse_http11_defaults_keep_alive() {
-        let req = get_req("/eth/v1/node/identity", "HTTP/1.1");
-        let (_, r) = try_parse_request(&req).unwrap();
-        assert_eq!(r.path, "/eth/v1/node/identity");
-        assert!(r.keep_alive);
-    }
-
-    #[test]
-    fn parse_http11_connection_close() {
-        let req = b"GET /metrics HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
-        let (_, r) = try_parse_request(req).unwrap();
-        assert_eq!(r.path, "/metrics");
-        assert!(!r.keep_alive);
-    }
-
-    #[test]
-    fn parse_http10_defaults_close() {
-        let req = get_req("/", "HTTP/1.0");
-        let (_, r) = try_parse_request(&req).unwrap();
-        assert!(!r.keep_alive);
-    }
-
-    #[test]
-    fn parse_partial_returns_none() {
-        assert!(try_parse_request(b"GET /eth/v1/node/identity HTTP/1.1\r\n").is_none());
-    }
-
-    #[test]
-    fn parse_query_string_split() {
-        let req = get_req("/eth/v1/beacon/states/head/validators?status=active", "HTTP/1.1");
-        let (_, r) = try_parse_request(&req).unwrap();
-        assert_eq!(r.path, "/eth/v1/beacon/states/head/validators");
-        assert_eq!(r.query, "status=active");
-    }
-
-    #[test]
-    fn parse_post_body_buffered() {
-        let body = b"{\"slot\":\"1\"}";
-        let req = format!(
-            "POST /eth/v1/beacon/blocks HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n",
-            body.len()
-        );
-        let mut buf = req.into_bytes();
-        // incomplete — body not yet arrived
-        assert!(try_parse_request(&buf).is_none());
-        buf.extend_from_slice(body);
-        let (consumed, r) = try_parse_request(&buf).unwrap();
-        assert_eq!(r.method, "POST");
-        assert_eq!(r.body, body.as_ref());
-        assert_eq!(consumed, buf.len());
-    }
-
-    #[test]
-    fn parse_returns_consumed_byte_count() {
-        let req1 = b"GET /metrics HTTP/1.1\r\nHost: localhost\r\n\r\n";
-        let req2 = b"GET /eth/v1/node/identity HTTP/1.1\r\nHost: localhost\r\n\r\n";
-        let mut buf = req1.to_vec();
-        buf.extend_from_slice(req2);
-        let (consumed, r) = try_parse_request(&buf).unwrap();
-        assert_eq!(r.path, "/metrics");
-        assert_eq!(consumed, req1.len());
-        let (_, r2) = try_parse_request(&buf[consumed..]).unwrap();
-        assert_eq!(r2.path, "/eth/v1/node/identity");
-    }
 
     #[test]
     fn metrics_response_valid_prometheus_format() {
@@ -528,42 +345,6 @@ mod tests {
         assert_eq!(addrs.len(), 1);
         let addr = addrs[0].as_str().unwrap();
         assert!(addr.starts_with("/ip4/1.2.3.4/tcp/9000/p2p/"), "bad format: {addr}");
-    }
-
-    #[test]
-    fn parse_invalid_content_length_returns_none() {
-        let req = b"POST /foo HTTP/1.1\r\nHost: localhost\r\nContent-Length: abc\r\n\r\n";
-        assert!(try_parse_request(req).is_none());
-    }
-
-    #[test]
-    fn dispatch_http10_writes_version_not_supported() {
-        let std_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = std_listener.local_addr().unwrap();
-        let _client = std::net::TcpStream::connect(addr).unwrap();
-        let (server, _) = std_listener.accept().unwrap();
-        server.set_nonblocking(true).unwrap();
-
-        let poll = Poll::new().unwrap();
-        let token = Token(1);
-        let mut stream = mio::net::TcpStream::from_std(server);
-        poll.registry().register(&mut stream, token, Interest::READABLE).unwrap();
-
-        let mut conn = HttpConnection::new(stream);
-        let req = b"GET /metrics HTTP/1.0\r\nHost: localhost\r\n\r\n";
-        conn.read_buf[..req.len()].copy_from_slice(req);
-        conn.read_end = req.len();
-
-        dispatch(poll.registry(), &mut conn, token, &|_, out| {
-            out.extend_from_slice(b"should not appear");
-        })
-        .unwrap();
-
-        assert!(
-            conn.write_buf.starts_with(b"HTTP/1.1 505"),
-            "expected 505, got: {:?}",
-            String::from_utf8_lossy(&conn.write_buf)
-        );
     }
 
     #[test]
