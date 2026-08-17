@@ -10,5 +10,8 @@ httparse.workspace = true
 mio.workspace = true
 tracing.workspace = true
 
+[dev-dependencies]
+tempfile = "3"
+
 [lints]
 workspace = true

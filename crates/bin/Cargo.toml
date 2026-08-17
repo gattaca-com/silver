@@ -9,6 +9,7 @@ version.workspace = true
 silver_beacon_api.workspace = true
 silver_beacon_state.workspace = true
 silver_beacon_state_data.workspace = true
+silver_client_server.workspace = true
 silver_columns.workspace = true
 silver_common.workspace = true
 silver_config.workspace = true
@@ -19,6 +20,7 @@ silver_network.workspace = true
 silver_peer.workspace = true
 silver_storage.workspace = true
 silver_engine_api.workspace = true
+silver_httpcore.workspace = true
 
 clap.workspace = true
 flux.workspace = true

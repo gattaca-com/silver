@@ -4,9 +4,10 @@ use flux::tile::{TileConfig, attach_tile};
 use mimalloc::MiMalloc;
 use quinn_proto::{Endpoint, EndpointConfig};
 use rand::RngCore;
-use silver_beacon_api::BeaconApiTile;
+use silver_beacon_api::BeaconApi;
 use silver_beacon_state::{BeaconStateTile, SlotTicker};
 use silver_beacon_state_data::{BeaconState, SLOTS_PER_EPOCH};
+use silver_client_server::ClientServerTile;
 use silver_columns::tile::DataColumnsTile;
 #[cfg(feature = "alloc-profile")]
 use silver_common::metrics::CountingAllocator;
@@ -16,8 +17,9 @@ use silver_common::{
 use silver_config::Config;
 use silver_control::Controller;
 use silver_discovery::{DiscV5, Discovery};
-use silver_engine_api::EngineTile;
+use silver_engine_api::EngineApi;
 use silver_gossip::GossipHandler;
+use silver_httpcore::Bind;
 use silver_network::{Context, NetworkTile, P2p};
 use silver_peer::PeerManager;
 use silver_storage::{latest_local_checkpoint, tile::StorageTile};
@@ -230,8 +232,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         !config.disable_weak_subjectivity_check(),
         state,
     );
-    let beacon_api_tile =
-        BeaconApiTile::new(&keypair, local_enr, &identify, beacon_state_tile.reader());
+    let beacon_api = BeaconApi::new(
+        &Bind::parse(config.beacon_api_bind()),
+        &keypair,
+        local_enr,
+        &identify,
+        beacon_state_tile.reader(),
+    );
 
     let state_reader = beacon_state_tile.reader();
 
@@ -262,12 +269,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         el_producer,
     );
 
-    let engine_tile = EngineTile::new(
+    let engine_api = EngineApi::new(
         config.engine_config(),
         ssz_gossip_consumer_eng,
         incoming_rpc_consumer_eng,
         incoming_engine_resp_producer,
     );
+    let client_server_tile = ClientServerTile { beacon: beacon_api, engine: engine_api };
 
     // Spine
     let spine = SilverSpine::new(None);
@@ -278,9 +286,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         attach_tile(network_tile, scoped_spine, TileConfig::new(2, None));
         attach_tile(beacon_state_tile, scoped_spine, TileConfig::new(3, None));
         attach_tile(storage_tile, scoped_spine, TileConfig::new(4, None));
-        attach_tile(engine_tile, scoped_spine, TileConfig::new(5, None));
+        attach_tile(client_server_tile, scoped_spine, TileConfig::new(5, None));
         attach_tile(data_columns_tile, scoped_spine, TileConfig::new(6, None));
-        attach_tile(beacon_api_tile, scoped_spine, TileConfig::new(7, None));
     });
 
     Ok(())
@@ -321,6 +328,11 @@ fn load_config() -> Result<Config, silver_common::Error> {
     }
     if args.iter().any(|a| a == "--unsafe-no-el") {
         config = config.with_unsafe_no_el(true);
+    }
+    if let Some(bind) =
+        args.iter().position(|a| a == "--beacon-api-bind").and_then(|i| args.get(i + 1))
+    {
+        config = config.with_beacon_api_bind(bind.clone());
     }
 
     tracing::info!("loaded config: {config:#?}");

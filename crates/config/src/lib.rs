@@ -33,6 +33,10 @@ const fn default_u64<const V: u64>() -> u64 {
     V
 }
 
+fn default_beacon_api_bind() -> String {
+    "0.0.0.0:5051".into()
+}
+
 fn default_data_dir() -> String {
     std::env::home_dir()
         .and_then(|mut b| {
@@ -122,6 +126,9 @@ pub struct Config {
     data_storage_dir: String,
     #[serde(default)]
     engine_config: EngineConfig,
+    /// TCP `addr:port` or a unix socket path.
+    #[serde(default = "default_beacon_api_bind")]
+    beacon_api_bind: String,
     #[serde(default)]
     disable_weak_subjectivity_check: bool,
 }
@@ -156,6 +163,7 @@ impl Config {
             outgoing_rpc_tcache_size: 2 << 24,        // ssz
             data_storage_dir: default_data_dir(),
             engine_config: Default::default(),
+            beacon_api_bind: default_beacon_api_bind(),
             disable_weak_subjectivity_check: false,
         }
     }
@@ -205,6 +213,11 @@ impl Config {
 
     pub fn with_unsafe_no_el(mut self, unsafe_no_el: bool) -> Self {
         self.engine_config.unsafe_no_el = unsafe_no_el;
+        self
+    }
+
+    pub fn with_beacon_api_bind(mut self, bind: String) -> Self {
+        self.beacon_api_bind = bind;
         self
     }
 
@@ -336,6 +349,10 @@ impl Config {
         self.engine_config.clone()
     }
 
+    pub fn beacon_api_bind(&self) -> &str {
+        &self.beacon_api_bind
+    }
+
     pub fn disable_weak_subjectivity_check(&self) -> bool {
         self.disable_weak_subjectivity_check
     }
@@ -366,6 +383,15 @@ mod tests {
         assert_eq!(cfg.next_fork_epoch, u64::MAX);
         assert_eq!(cfg.supported_protocols().unwrap().len(), 11);
         assert_eq!(cfg.gossip_topics().unwrap().len(), 8);
+        assert_eq!(cfg.beacon_api_bind(), "0.0.0.0:5051");
+    }
+
+    #[test]
+    fn builder_sets_beacon_api_bind() {
+        let cfg = Config::new([1u8; 32], [0u8; 4], [0u8; 4], 0);
+        assert_eq!(cfg.beacon_api_bind(), "0.0.0.0:5051");
+        let cfg = cfg.with_beacon_api_bind("/run/beacon.sock".into());
+        assert_eq!(cfg.beacon_api_bind(), "/run/beacon.sock");
     }
 
     #[test]

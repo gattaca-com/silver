@@ -1,14 +1,106 @@
 use std::{
     io::{self, Read, Write},
     net::SocketAddr,
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 use mio::{
     Interest, Registry, Token,
     event::Source,
-    net::{TcpStream, UnixStream},
+    net::{TcpListener, TcpStream, UnixListener, UnixStream},
 };
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Bind {
+    Tcp(SocketAddr),
+    Unix(PathBuf),
+}
+
+impl Bind {
+    pub fn parse(text: &str) -> Self {
+        match text.parse() {
+            Ok(addr) => Self::Tcp(addr),
+            Err(_) => Self::Unix(PathBuf::from(text)),
+        }
+    }
+}
+
+pub enum Listener {
+    Tcp(TcpListener),
+    Unix(UnixListener),
+}
+
+impl Listener {
+    pub fn bind(bind: &Bind) -> io::Result<Self> {
+        match bind {
+            Bind::Tcp(addr) => TcpListener::bind(*addr).map(Self::Tcp),
+            Bind::Unix(path) => UnixListener::bind(path).map(Self::Unix),
+        }
+    }
+
+    pub fn accept(&self) -> io::Result<Stream> {
+        match self {
+            Self::Tcp(listener) => {
+                let (stream, peer) = listener.accept()?;
+                tracing::info!("accepted connection from {peer}");
+                Ok(Stream::Tcp(stream))
+            }
+            Self::Unix(listener) => {
+                let (stream, _) = listener.accept()?;
+                tracing::info!("accepted connection on unix socket");
+                Ok(Stream::Uds(stream))
+            }
+        }
+    }
+
+    /// The resolved bind: for TCP the actual listening address (a port-0 bind
+    /// reports the ephemeral port the OS assigned), for Unix the socket path.
+    pub fn local_addr(&self) -> Bind {
+        match self {
+            Self::Tcp(listener) => Bind::Tcp(listener.local_addr().expect("tcp local_addr")),
+            Self::Unix(listener) => Bind::Unix(
+                listener
+                    .local_addr()
+                    .ok()
+                    .and_then(|addr| addr.as_pathname().map(Path::to_path_buf))
+                    .expect("unix listener bound to a path"),
+            ),
+        }
+    }
+}
+
+impl Source for Listener {
+    fn register(
+        &mut self,
+        registry: &Registry,
+        token: Token,
+        interests: Interest,
+    ) -> io::Result<()> {
+        match self {
+            Self::Tcp(l) => l.register(registry, token, interests),
+            Self::Unix(l) => l.register(registry, token, interests),
+        }
+    }
+
+    fn reregister(
+        &mut self,
+        registry: &Registry,
+        token: Token,
+        interests: Interest,
+    ) -> io::Result<()> {
+        match self {
+            Self::Tcp(l) => l.reregister(registry, token, interests),
+            Self::Unix(l) => l.reregister(registry, token, interests),
+        }
+    }
+
+    fn deregister(&mut self, registry: &Registry) -> io::Result<()> {
+        match self {
+            Self::Tcp(l) => l.deregister(registry),
+            Self::Unix(l) => l.deregister(registry),
+        }
+    }
+}
 
 pub enum Stream {
     Tcp(TcpStream),
@@ -101,6 +193,37 @@ impl Source for Stream {
 mod tests {
     use super::*;
     use crate::client::{ClientConnection, frame_request};
+
+    #[test]
+    fn parse_socket_addr_is_tcp() {
+        assert_eq!(Bind::parse("0.0.0.0:5051"), Bind::Tcp("0.0.0.0:5051".parse().unwrap()));
+        assert_eq!(Bind::parse("127.0.0.1:0"), Bind::Tcp("127.0.0.1:0".parse().unwrap()));
+        assert_eq!(Bind::parse("[::1]:5051"), Bind::Tcp("[::1]:5051".parse().unwrap()));
+    }
+
+    #[test]
+    fn parse_non_addr_is_unix_path() {
+        assert_eq!(Bind::parse("/run/beacon.sock"), Bind::Unix("/run/beacon.sock".into()));
+        assert_eq!(Bind::parse("beacon.sock"), Bind::Unix("beacon.sock".into()));
+        // Hostnames don't parse as SocketAddr (no resolution here), so they
+        // fall through to a path.
+        assert_eq!(Bind::parse("localhost:5051"), Bind::Unix("localhost:5051".into()));
+    }
+
+    #[test]
+    fn tcp_listener_reports_ephemeral_port() {
+        let listener = Listener::bind(&Bind::parse("127.0.0.1:0")).unwrap();
+        let Bind::Tcp(addr) = listener.local_addr() else { panic!("tcp bind") };
+        assert_ne!(addr.port(), 0);
+    }
+
+    #[test]
+    fn unix_listener_reports_bound_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("api.sock");
+        let listener = Listener::bind(&Bind::Unix(path.clone())).unwrap();
+        assert_eq!(listener.local_addr(), Bind::Unix(path));
+    }
 
     #[test]
     fn uds_pair_round_trip_through_client_connection() {

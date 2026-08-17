@@ -7,9 +7,9 @@ use std::{
 
 use simd_json::prelude::{ValueAsScalar, ValueObjectAccess};
 
-pub(crate) const FCU_VALID_RESULT: &str = r#"{"payloadStatus":{"status":"VALID","latestValidHash":null,"validationError":null},"payloadId":null}"#;
+pub const FCU_VALID_RESULT: &str = r#"{"payloadStatus":{"status":"VALID","latestValidHash":null,"validationError":null},"payloadId":null}"#;
 
-pub(crate) fn write_jwt(dir: &Path) -> PathBuf {
+pub fn write_jwt(dir: &Path) -> PathBuf {
     let path = dir.join("jwt.hex");
     std::fs::write(&path, "0000000000000000000000000000000000000000000000000000000000000000")
         .unwrap();
@@ -51,32 +51,32 @@ impl Write for ElStream {
     }
 }
 
-pub(crate) struct ElRequest {
+pub struct ElRequest {
     conn: usize,
-    pub(crate) id: u64,
-    pub(crate) method: String,
-    pub(crate) authorization: Option<String>,
-    pub(crate) body: String,
+    pub id: u64,
+    pub method: String,
+    pub authorization: Option<String>,
+    pub body: String,
 }
 
 /// Deterministic single-threaded fake execution client: accepts connections
 /// and buffers requests on `pump`, answers only when the test says so.
-pub(crate) struct FakeEl {
+pub struct FakeEl {
     listener: ElListener,
     conns: Vec<Option<ElStream>>,
     read_bufs: Vec<Vec<u8>>,
-    pub(crate) requests: Vec<ElRequest>,
+    pub requests: Vec<ElRequest>,
 }
 
 impl FakeEl {
-    pub(crate) fn tcp() -> (Self, String) {
+    pub fn tcp() -> (Self, String) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
         (Self::new(ElListener::Tcp(listener)), endpoint)
     }
 
-    pub(crate) fn uds(path: &Path) -> Self {
+    pub fn uds(path: &Path) -> Self {
         let listener = UnixListener::bind(path).unwrap();
         listener.set_nonblocking(true).unwrap();
         Self::new(ElListener::Uds(listener))
@@ -86,7 +86,7 @@ impl FakeEl {
         Self { listener, conns: Vec::new(), read_bufs: Vec::new(), requests: Vec::new() }
     }
 
-    pub(crate) fn pump(&mut self) {
+    pub fn pump(&mut self) {
         loop {
             let accepted = match &self.listener {
                 ElListener::Tcp(l) => l.accept().map(|(s, _)| {
@@ -133,7 +133,7 @@ impl FakeEl {
         }
     }
 
-    pub(crate) fn respond(&mut self, request_index: usize, result_json: &str) {
+    pub fn respond(&mut self, request_index: usize, result_json: &str) {
         let request = &self.requests[request_index];
         let body = format!(r#"{{"jsonrpc":"2.0","id":{},"result":{result_json}}}"#, request.id);
         let response = format!(
@@ -151,7 +151,7 @@ impl FakeEl {
         }
     }
 
-    pub(crate) fn close_connection_of(&mut self, request_index: usize) {
+    pub fn close_connection_of(&mut self, request_index: usize) {
         self.conns[self.requests[request_index].conn] = None;
     }
 }

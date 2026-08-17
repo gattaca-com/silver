@@ -4430,6 +4430,7 @@ dependencies = [
  "silver_beacon_api",
  "silver_beacon_state",
  "silver_beacon_state_data",
+ "silver_client_server",
  "silver_columns",
  "silver_common",
  "silver_config",
@@ -4437,6 +4438,7 @@ dependencies = [
  "silver_discovery",
  "silver_engine_api",
  "silver_gossip",
+ "silver_httpcore",
  "silver_network",
  "silver_peer",
  "silver_storage",
@@ -4447,7 +4449,6 @@ dependencies = [
 name = "silver_beacon_api"
 version = "0.0.1"
 dependencies = [
- "flux",
  "hex",
  "mio",
  "serde",
@@ -4507,6 +4508,22 @@ version = "0.0.1"
 dependencies = [
  "hex",
  "serde",
+]
+
+[[package]]
+name = "silver_client_server"
+version = "0.0.1"
+dependencies = [
+ "flux",
+ "hex",
+ "serde_json",
+ "silver_beacon_api",
+ "silver_beacon_state_data",
+ "silver_common",
+ "silver_config",
+ "silver_engine_api",
+ "silver_httpcore",
+ "tempfile",
 ]
 
 [[package]]
@@ -4695,6 +4712,7 @@ version = "0.0.1"
 dependencies = [
  "httparse",
  "mio",
+ "tempfile",
  "tracing",
 ]
 

@@ -2,6 +2,6 @@ mod identity;
 mod response;
 mod router;
 mod routes;
-mod tile;
+mod server;
 
-pub use tile::BeaconApiTile;
+pub use server::BeaconApi;

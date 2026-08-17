@@ -55,8 +55,8 @@ pub struct EngineClient {
 }
 
 impl EngineClient {
-    pub fn new(endpoint: impl Into<String>, jwt: &str, max_connections: usize) -> Self {
-        Self::with_endpoint(Endpoint::Http(endpoint.into()), jwt, max_connections)
+    pub fn new(endpoint: &str, jwt: &str, max_connections: usize) -> Self {
+        Self::with_endpoint(parse_endpoint(endpoint), jwt, max_connections)
     }
 
     pub fn new_uds(path: impl Into<PathBuf>, jwt: &str, max_connections: usize) -> Self {
@@ -78,6 +78,19 @@ impl EngineClient {
 
     pub fn has_capacity(&self) -> bool {
         self.pool.has_capacity()
+    }
+}
+
+fn parse_endpoint(endpoint: &str) -> Endpoint {
+    if endpoint.starts_with("http://") {
+        Endpoint::Http(endpoint.to_string())
+    } else if endpoint.contains("://") {
+        panic!(
+            "unsupported execution_endpoint scheme (only http:// or a unix socket path): \
+             {endpoint}"
+        )
+    } else {
+        Endpoint::Uds(PathBuf::from(endpoint))
     }
 }
 
@@ -263,6 +276,28 @@ mod tests {
     use simd_json::prelude::ValueAsScalar;
 
     use super::*;
+
+    #[test]
+    fn endpoint_http_scheme_parses_to_http() {
+        assert!(matches!(
+            parse_endpoint("http://localhost:8551"),
+            Endpoint::Http(e) if e == "http://localhost:8551"
+        ));
+    }
+
+    #[test]
+    fn endpoint_bare_path_parses_to_uds() {
+        assert!(matches!(
+            parse_endpoint("/run/reth/engine.sock"),
+            Endpoint::Uds(p) if p == std::path::Path::new("/run/reth/engine.sock")
+        ));
+    }
+
+    #[test]
+    #[should_panic(expected = "unsupported execution_endpoint scheme")]
+    fn endpoint_unknown_scheme_panics() {
+        parse_endpoint("https://localhost:8551");
+    }
 
     #[test]
     fn next_id_returns_current_then_increments() {

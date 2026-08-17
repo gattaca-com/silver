@@ -4,14 +4,10 @@ use std::{
     time::Duration,
 };
 
-use flux::{spine::SpineAdapter, tile::Tile};
-use mio::{
-    Events, Interest, Poll, Token,
-    net::{TcpListener, TcpStream},
-};
+use mio::{Events, Interest, Poll, Token};
 use silver_beacon_state_data::BeaconStateReader;
-use silver_common::{Enr, Identify, Keypair, SilverSpine};
-use silver_httpcore::{AfterResponse, ParsedRequest, ServerConnection};
+use silver_common::{Enr, Identify, Keypair};
+use silver_httpcore::{AfterResponse, Bind, Listener, ParsedRequest, ServerConnection, Stream};
 
 use crate::{
     router::Router,
@@ -21,30 +17,31 @@ use crate::{
 const LISTENER: Token = Token(0);
 
 struct Connection {
-    stream: TcpStream,
+    stream: Stream,
     http: ServerConnection,
 }
 
-pub struct BeaconApiTile {
+pub struct BeaconApi {
     poll: Poll,
     events: Events,
-    listener: TcpListener,
+    listener: Listener,
     current_token: Token,
     connections: HashMap<Token, Connection>,
     router: Router,
     ctx: ApiCtx,
 }
 
-impl BeaconApiTile {
+impl BeaconApi {
     pub fn new(
+        bind: &Bind,
         keypair: &Keypair,
         local_enr: Enr,
         identify: &Identify,
         state: BeaconStateReader,
     ) -> Self {
         let poll = Poll::new().unwrap();
-        let addr = "0.0.0.0:5051".parse().unwrap();
-        let mut listener = TcpListener::bind(addr).unwrap();
+        let mut listener =
+            Listener::bind(bind).unwrap_or_else(|e| panic!("beacon api bind {bind:?}: {e}"));
         poll.registry().register(&mut listener, LISTENER, Interest::READABLE).unwrap();
 
         Self {
@@ -57,31 +54,36 @@ impl BeaconApiTile {
             ctx: ApiCtx::new(keypair, &local_enr, identify, state),
         }
     }
-}
 
-impl Tile<SilverSpine> for BeaconApiTile {
-    fn loop_body(&mut self, _adapter: &mut SpineAdapter<SilverSpine>) {
-        self.poll.poll(&mut self.events, Some(Duration::from_millis(100))).unwrap();
+    pub fn local_addr(&self) -> Bind {
+        self.listener.local_addr()
+    }
 
+    pub fn pump(&mut self) -> bool {
+        self.poll.poll(&mut self.events, Some(Duration::ZERO)).unwrap();
+
+        let mut did_work = false;
         for event in &self.events {
             match event.token() {
-                LISTENER => {
-                    let (mut stream, address) = match self.listener.accept() {
-                        Ok(conn) => conn,
+                LISTENER => loop {
+                    let mut stream = match self.listener.accept() {
+                        Ok(stream) => stream,
+                        Err(e) if would_block(&e) => break,
                         Err(e) => {
                             tracing::warn!("accept failed: {e}");
-                            continue;
+                            break;
                         }
                     };
 
-                    tracing::info!("accepted connection from {address}");
+                    did_work = true;
                     let token = next(&mut self.current_token);
                     self.poll.registry().register(&mut stream, token, Interest::READABLE).unwrap();
                     self.connections
                         .insert(token, Connection { stream, http: ServerConnection::new() });
-                }
+                },
                 token => {
                     if let Some(conn) = self.connections.get_mut(&token) {
+                        did_work = true;
                         match handle_event(self.poll.registry(), conn, event, &|req, out| {
                             self.router.dispatch(req, &self.ctx, out)
                         }) {
@@ -100,6 +102,8 @@ impl Tile<SilverSpine> for BeaconApiTile {
                 }
             }
         }
+
+        did_work
     }
 }
 

@@ -1,20 +1,21 @@
-use flux::tile::{TileConfig, attach_tile};
-use silver_beacon_api::BeaconApiTile;
+use std::time::Duration;
+
+use silver_beacon_api::BeaconApi;
 use silver_beacon_state_data::BeaconStateOwner;
-use silver_common::{Enr, Identify, Keypair, SilverSpine};
+use silver_common::{Enr, Identify, Keypair};
+use silver_httpcore::Bind;
 
 fn main() {
+    let bind = Bind::parse(&std::env::args().nth(1).unwrap_or_else(|| "0.0.0.0:5051".into()));
     let keypair = Keypair::from_secret(&[1u8; 32]).unwrap();
     let local_enr = Enr::empty(keypair.secret_key()).unwrap();
-    let identify = Identify::default();
     // Never-published reader: state endpoints answer 503, as pre-bootstrap.
     let state = BeaconStateOwner::empty_test(0).reader();
-    let spine = SilverSpine::new(None);
-    spine.start(None, None, |scoped_spine| {
-        attach_tile(
-            BeaconApiTile::new(&keypair, local_enr, &identify, state),
-            scoped_spine,
-            TileConfig::new(1, None),
-        );
-    });
+
+    let mut api = BeaconApi::new(&bind, &keypair, local_enr, &Identify::default(), state);
+    println!("serving on {:?}", api.local_addr());
+    loop {
+        api.pump();
+        std::thread::sleep(Duration::from_millis(1));
+    }
 }

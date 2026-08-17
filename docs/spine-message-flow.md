@@ -8,7 +8,8 @@ them (see [tcaches](#tcaches)).
 The tiles: **Network** (QUIC + discv5), **Control** (`PeerManager` + `SyncEngine` +
 `GossipHandler` — gossipsub decode/encode runs in-tile, not as its own tile),
 **BeaconState** (state transition + fork choice), **Storage** (disk + backfill),
-**Engine** (EL / engine API).
+**ClientServer** (hosting the `engine_api` client and the `beacon_api` server; the
+server talks HTTP only, so it has no spine edges of its own).
 
 ```mermaid
 flowchart LR
@@ -16,7 +17,7 @@ flowchart LR
   CTL["Control<br/><i>PeerManager + SyncEngine + GossipHandler</i>"]
   BS["BeaconState<br/><i>state · fork choice</i>"]
   ST["Storage<br/><i>disk · backfill</i>"]
-  EN["Engine<br/><i>EL / engine API</i>"]
+  EN["ClientServer<br/><i>engine_api client · beacon_api server</i>"]
 
   %% ---- inbound ----
   NET -.->|"incoming_gossip (tcache)"| CTL
@@ -69,8 +70,8 @@ output is `new_gossip`). The gossip handler's other traffic is in-tile, not on t
 spine: its `PeerEvent`s (gossipsub scoring/misbehaviour) go straight to the
 `PeerManager`, `PeerControl` is forwarded to the handler directly, and its fork digest
 is set from the `Status` Control already consumes. `engine_health` is omitted
-from the diagram: Engine produces it but no tile currently consumes it. Both
-Storage↔Engine edges carry only the `GetBlobs` variants (EL-mempool blob fetch); the
+from the diagram: ClientServer produces it but no tile currently consumes it. Both
+Storage↔ClientServer edges carry only the `GetBlobs` variants (EL-mempool blob fetch); the
 queues are broadcast, so Storage sees every `EngineResp` and ignores the rest.
 
 ## Spine queues
@@ -87,9 +88,9 @@ queues are broadcast, so Storage sees every `EngineResp` and ignores the rest.
 | `sync_target` | `SyncUpdate` | Control | BeaconState, Storage | inline |
 | `replay_blocks` | `ReplayBlock` | Storage | BeaconState | ref → `replay_blocks` tcache |
 | `syncing_strategy` | `SyncingStrategy` | Control | Storage | inline |
-| `engine_reqs` | `EngineReq` | BeaconState, Storage _(GetBlobs)_ | Engine | refs → `ssz_gossip` / `incoming_rpc`; GetBlobs inline |
-| `engine_resps` | `EngineResp` | Engine | BeaconState, Storage _(GetBlobs)_ | ref → `incoming_engine_resp` |
-| `engine_health` | `EngineHealthEvent` | Engine | _none (currently unconsumed)_ | inline |
+| `engine_reqs` | `EngineReq` | BeaconState, Storage _(GetBlobs)_ | ClientServer | refs → `ssz_gossip` / `incoming_rpc`; GetBlobs inline |
+| `engine_resps` | `EngineResp` | ClientServer | BeaconState, Storage _(GetBlobs)_ | ref → `incoming_engine_resp` |
+| `engine_health` | `EngineHealthEvent` | ClientServer | _none (currently unconsumed)_ | inline |
 
 ## TCaches
 
@@ -98,12 +99,12 @@ Bulk-byte rings that the queue messages reference, so payloads cross tiles witho
 | TCache | Producer | Consumer(s) | Payload |
 |--------|----------|-------------|---------|
 | `incoming_gossip` | Network | Control _(gossip)_ | raw gossipsub protobuf from the wire |
-| `ssz_gossip` | Control _(gossip)_ | BeaconState, Storage (live + persist), Engine | decompressed gossip SSZ |
+| `ssz_gossip` | Control _(gossip)_ | BeaconState, Storage (live + persist), ClientServer | decompressed gossip SSZ |
 | `outgoing_gossip` | Control _(gossip)_ | Network | gossip protobuf: mcache copies of incoming messages, local publishes, IDONTWANT/IWANT control frames |
-| `incoming_rpc` | Network | BeaconState, Storage (live + persist), Engine, Control (column republish) | RPC response bodies (BeaconBlock / DataColumnSidecar) |
+| `incoming_rpc` | Network | BeaconState, Storage (live + persist), ClientServer, Control (column republish) | RPC response bodies (BeaconBlock / DataColumnSidecar) |
 | `outgoing_rpc` _(multi-producer)_ | Control, Storage | Network | RPC request bodies (we ask) + served response bodies (we answer) |
 | `replay_blocks` | Storage | BeaconState | persisted block SSZ replayed at startup |
-| `incoming_engine_resp` | Engine | BeaconState, Storage (GetBlobs) | EL responses (payloads, blobs, bodies) |
+| `incoming_engine_resp` | ClientServer | BeaconState, Storage (GetBlobs) | EL responses (payloads, blobs, bodies) |
 
 ---
 
