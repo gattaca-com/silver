@@ -181,19 +181,6 @@ impl GossipTopic {
         }
     }
 
-    pub fn p3_scored(&self) -> bool {
-        matches!(
-            self,
-            Self::BeaconBlock |
-                Self::BeaconAggregateAndProof |
-                Self::BeaconAttestation(_) |
-                Self::SyncCommitteeContributionAndProof |
-                Self::SyncCommittee(_) |
-                Self::ExecutionPayload |
-                Self::PayloadAttestationMessage
-        )
-    }
-
     /// Parse the full wire topic `/eth2/{fork_digest_hex}/{name}/ssz_snappy`.
     /// Verifies the envelope and that the fork digest matches
     /// `fork_digest_hex`.

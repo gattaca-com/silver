@@ -258,6 +258,7 @@ impl PublisherStack {
         // exercise only the connection / RPC paths.
         let controller = Controller::new(
             PeerManager::new(
+                PeerId::default(),
                 Vec::new(),
                 ScoreParams::default(),
                 SyncingConfig::default(),
@@ -376,6 +377,7 @@ impl EchoStack {
 
         let controller = Controller::new(
             PeerManager::new(
+                PeerId::default(),
                 Vec::new(),
                 ScoreParams::default(),
                 SyncingConfig::default(),

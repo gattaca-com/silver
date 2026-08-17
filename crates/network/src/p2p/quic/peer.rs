@@ -1,4 +1,8 @@
-use std::{cell::Cell, hash::BuildHasherDefault, time::Instant};
+use std::{
+    cell::Cell,
+    hash::BuildHasherDefault,
+    time::{Duration, Instant},
+};
 
 use bytes::Bytes;
 use flux::utils::ArrayVec;
@@ -8,7 +12,9 @@ use quinn_proto::{
     Connection, ConnectionEvent, ConnectionHandle, Dir, EndpointEvent, Side, StreamId, Transmit,
     VarInt,
 };
-use silver_common::{P2pStreamId, PeerId, StreamProtocol, TRead, rpc_rate_limit::RpcRateLimitSet};
+use silver_common::{
+    P2pConnectionStats, P2pStreamId, PeerId, StreamProtocol, TRead, rpc_rate_limit::RpcRateLimitSet,
+};
 
 use crate::{
     RemotePeer,
@@ -161,6 +167,25 @@ impl Peer {
     pub(crate) fn shutdown(&mut self, now: Instant) {
         self.dirty = true;
         self.connection.close(now, VarInt::from_u32(0), Bytes::new());
+    }
+
+    /// Returns connection stats for peers connected > 30 seconds.
+    pub(crate) fn stats(&self, now: Instant) -> Option<P2pConnectionStats> {
+        (now - self.created_at > Duration::from_secs(10)).then(|| {
+            let stats = self.connection.stats();
+            P2pConnectionStats {
+                id: self.id.peer_id,
+                connection: self.id.connection,
+                addr: self.id.addr,
+                connected: self.created_at.elapsed(),
+                rtt: stats.path.rtt,
+                lost_packets: stats.path.lost_packets,
+                rx_blocking: stats.frame_rx.data_blocked,
+                tx_blocking: stats.frame_tx.data_blocked,
+                rx_datagrams: stats.udp_rx.datagrams,
+                tx_datagrams: stats.udp_tx.datagrams,
+            }
+        })
     }
 
     /// Open an outbound stream with the given protocol. Returns `None` if
@@ -438,6 +463,9 @@ impl Peer {
     }
 
     fn remove_stream(&mut self, id: StreamId) {
+        let _ = self.connection.send_stream(id).finish();
+        let _ = self.connection.recv_stream(id).stop(VarInt::from_u32(0));
+
         if let Some(in_id) = self.inbound_gossip &&
             in_id == id
         {

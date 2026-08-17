@@ -10,6 +10,7 @@ use silver_common::{
 
 use crate::{
     GossipHandlerEvent,
+    dedup::DedupCache,
     generated::{
         ControlGraftView, ControlIDontWantView, ControlIHaveView, ControlIWantView,
         ControlPruneView, rpc::SubOptsView,
@@ -139,11 +140,13 @@ pub(super) fn handle_idontwants<'a>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn handle_ihaves<'a>(
     stream_id: &P2pStreamId,
     haves: &RepeatedView<'a, ControlIHaveView<'a>>,
     fork_digest_hex: &str,
     mcache: &MessageCache,
+    dedup: &DedupCache,
     mcache_publish: &mut TProducer,
     emit: &mut impl FnMut(GossipHandlerEvent),
     scratch_buffer: &mut Vec<MessageId>,
@@ -161,7 +164,7 @@ pub(super) fn handle_ihaves<'a>(
                 // Emit for every id, including ones we already have — the
                 // peer manager uses the total count for rate/flood scoring.
                 // `already_seen` tells it whether an IWANT is implied.
-                let already_seen = mcache.has(&hash);
+                let already_seen = mcache.has(&hash) || dedup.has(&hash);
                 emit(GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipHave {
                     p2p_peer: stream_id.peer(),
                     hash,

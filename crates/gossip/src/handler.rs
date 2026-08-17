@@ -125,7 +125,7 @@ impl GossipHandler {
             }
         };
         let msg_id = msg_id_valid_snappy(&wire, ssz);
-        let fast_hash = self.dedup_cache.contains_fast(&wire, &self.snap_scratch[..n])?;
+        let fast_hash = self.dedup_cache.contains_fast(&wire, &self.snap_scratch[..n]).ok()?;
         if !self.dedup_cache.insert(fast_hash, msg_id) {
             return None;
         }
@@ -278,6 +278,7 @@ impl GossipHandler {
                         &control.ihave,
                         &self.fork_digest_hex,
                         &self.mcache,
+                        &self.dedup_cache,
                         &mut self.mcache_publish,
                         emit,
                         &mut self.iwant_buffer,

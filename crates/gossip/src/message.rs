@@ -34,8 +34,17 @@ pub(super) fn handle_incoming(
 
     // Fast duplicate check.
     let fast_id = match dedup_cache.contains_fast(topic_string, snappy_data) {
-        Some(fast_hash) => fast_hash,
-        None => return Ok(()), // duplicate
+        Ok(fast_hash) => fast_hash,
+        Err(msg_id) => {
+            let topic = GossipTopic::from_wire(topic_string, fork_digest_hex)?;
+            emit(GossipHandlerEvent::PeerEvent(PeerEvent::GossipDuplicate {
+                p2p_peer: stream_id.peer(),
+                topic,
+                hash: msg_id,
+                recv_ts,
+            }));
+            return Ok(());
+        }
     };
 
     let topic = GossipTopic::from_wire(topic_string, fork_digest_hex)?;
@@ -74,6 +83,12 @@ pub(super) fn handle_incoming(
     if !dedup_cache.insert(fast_id, msg_id) {
         // Second dedup check. Different snappy bytes can decompress to the same message
         // bytes so this second check is required.
+        emit(GossipHandlerEvent::PeerEvent(PeerEvent::GossipDuplicate {
+            p2p_peer: stream_id.peer(),
+            topic,
+            hash: msg_id,
+            recv_ts,
+        }));
         return Ok(());
     }
 
@@ -118,6 +133,7 @@ pub(super) fn handle_incoming(
         p2p_peer: stream_id.peer(),
         topic,
         msg_hash: msg_id,
+        recv_ts,
         idontwant,
     }));
     Ok(())

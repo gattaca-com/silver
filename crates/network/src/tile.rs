@@ -10,8 +10,8 @@ use mio::{Events, Poll, Token};
 use quinn_proto::Transmit;
 use secp256k1::PublicKey;
 use silver_common::{
-    BeaconStateEvent, GossipMsgIn, GossipMsgOut, P2pSend, PeerControl, PeerEvent, RpcInbound,
-    RpcOutbound, SilverSpine,
+    BeaconStateEvent, GossipMsgIn, GossipMsgOut, P2pSend, PeerControl, PeerEvent, PeerStats,
+    RpcInbound, RpcOutbound, SilverSpine,
 };
 use silver_discovery::{DiscV5, Discovery, DiscoveryEvent};
 
@@ -31,8 +31,12 @@ const POLL_TIMEOUT: Duration = Duration::from_millis(10);
 #[cfg(not(feature = "thread_park"))]
 const POLL_TIMEOUT: Duration = Duration::ZERO;
 
+const PEER_STATS_INTERVAL: Duration = Duration::from_millis(100);
+const PEER_STATS_BATCH: usize = 8;
+
 pub struct NetworkTile {
     inner: NetworkTileInner<DiscV5>,
+    last_peer_stats: Instant,
 }
 
 impl NetworkTile {
@@ -45,7 +49,7 @@ impl NetworkTile {
     ) -> Result<Self, Error> {
         let inner =
             NetworkTileInner::new(p2p_addr, p2p_endpoint, p2p_context, discv5_addr, discv5)?;
-        Ok(Self { inner })
+        Ok(Self { inner, last_peer_stats: Instant::now() })
     }
 
     pub fn p2p_mut(&mut self) -> &mut P2p {
@@ -59,7 +63,7 @@ impl NetworkTile {
                 if let Ok(pubkey) = PublicKey::from_slice(p2p.pubkey()) {
                     self.inner.discovery.ban_node(pubkey.into());
                 }
-                self.inner.p2p_endpoint.ban_peer(p2p);
+                self.inner.p2p_endpoint.ban_peer(p2p, now);
             }
             PeerControl::Unban { p2p } => {
                 if let Ok(pubkey) = PublicKey::from_slice(p2p.pubkey()) {
@@ -107,6 +111,13 @@ impl NetworkTile {
                 self.inner.update_enr_fork_id(enr_fork_id);
             }
         });
+
+        if now.duration_since(self.last_peer_stats) >= PEER_STATS_INTERVAL {
+            self.last_peer_stats = now;
+            self.inner.p2p_endpoint.sample_stats(now, PEER_STATS_BATCH, &mut |stats| {
+                adapter.produce(PeerStats::P2p(stats));
+            });
+        }
 
         let mut on_event = |event| match event {
             Event::P2pNet(net_event) => match net_event {

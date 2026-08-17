@@ -17,8 +17,8 @@ pub(crate) use quic::{Peer, create_client_config};
 pub use quic::{SendResult, create_endpoint, create_server_config};
 use quinn_proto::{ConnectionHandle, DatagramEvent, Endpoint};
 use silver_common::{
-    GossipMsgOut, Identify, Keypair, P2pStreamId, PeerId, ProtoIdentify, ProtoIdentifyView,
-    RpcOutbound, RpcRequestOutbound, TCacheRead,
+    GossipMsgOut, Identify, Keypair, P2pConnectionStats, P2pStreamId, PeerId, ProtoIdentify,
+    ProtoIdentifyView, RpcOutbound, RpcRequestOutbound, TCacheRead,
 };
 
 use crate::{
@@ -110,6 +110,7 @@ pub struct P2p {
     banned: FxHashSet<PeerId>,
     timeout: Option<Duration>,
     recv_count: usize,
+    stats_cursor: usize,
 }
 
 impl P2p {
@@ -121,6 +122,32 @@ impl P2p {
             banned: FxHashSet::default(),
             timeout: Some(Duration::ZERO),
             recv_count: 0,
+            stats_cursor: 0,
+        }
+    }
+
+    /// Round-robin by connection handle from the last sampled position, so
+    /// periodic small batches cover every peer without a full sweep.
+    pub fn sample_stats(
+        &mut self,
+        now: Instant,
+        batch: usize,
+        emit: &mut impl FnMut(P2pConnectionStats),
+    ) {
+        for _ in 0..batch.min(self.peers.len()) {
+            let next = self
+                .peers
+                .iter()
+                .filter(|(h, _)| h.0 > self.stats_cursor)
+                .min_by_key(|(h, _)| h.0)
+                .or_else(|| self.peers.iter().min_by_key(|(h, _)| h.0));
+            let Some((handle, peer)) = next else {
+                return;
+            };
+            self.stats_cursor = handle.0;
+            if let Some(stats) = peer.stats(now) {
+                emit(stats);
+            }
         }
     }
 
@@ -159,8 +186,15 @@ impl P2p {
     // self.peers.get_mut(&ConnectionHandle(peer))?;     peer_obj.
     // open_stream(protocol) }
 
-    pub fn ban_peer(&mut self, peer_id: PeerId) {
+    /// Ban means no session: the deny set covers future handshakes (checked
+    /// at `Event::Connected` only), so any live connection must be shut down
+    /// here or it survives the ban untouched.
+    pub fn ban_peer(&mut self, peer_id: PeerId, now: Instant) {
         self.banned.insert(peer_id);
+        if let Some(peer) = self.peers.values_mut().find(|p| p.id().peer_id == peer_id) {
+            tracing::info!(?peer_id, "closing connection: peer banned");
+            peer.shutdown(now);
+        }
     }
 
     pub fn unban_peer(&mut self, peer_id: PeerId) {
