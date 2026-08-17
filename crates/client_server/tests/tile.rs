@@ -31,6 +31,7 @@ fn beacon(bind: &Bind) -> BeaconApi {
     let local_enr = Enr::empty(keypair.secret_key()).unwrap();
     BeaconApi::new(
         bind,
+        64,
         &keypair,
         local_enr,
         &Identify::default(),

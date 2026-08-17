@@ -3,6 +3,7 @@ use std::io::{self, Write};
 // Hard cap on the read buffer. Raw SSZ, uncompressed. 16 MiB matches observed
 // production maximums (21 blobs × 128 KiB plus block fields).
 const READ_BUF_MAX: usize = 16 << 20;
+const READ_BUF_INIT: usize = 4096;
 const WRITE_BUF_INIT: usize = 4096;
 
 pub struct ParsedRequest<'a> {
@@ -59,7 +60,7 @@ pub enum AfterResponse {
 }
 
 pub struct ServerConnection {
-    read_buf: Box<[u8; READ_BUF_MAX]>,
+    read_buf: Vec<u8>,
     read_pos: usize,
     read_end: usize,
     write_buf: Vec<u8>,
@@ -70,7 +71,7 @@ pub struct ServerConnection {
 impl ServerConnection {
     pub fn new() -> Self {
         Self {
-            read_buf: Box::new([0u8; READ_BUF_MAX]),
+            read_buf: vec![0u8; READ_BUF_INIT],
             read_pos: 0,
             read_end: 0,
             write_buf: Vec::with_capacity(WRITE_BUF_INIT),
@@ -80,14 +81,25 @@ impl ServerConnection {
     }
 
     pub fn read_space(&mut self) -> io::Result<&mut [u8]> {
+        // Compact the partial tail to the front: without this, a long-lived
+        // pipelined keep-alive connection whose buffer never fully drains
+        // creeps read_end toward the cap and spuriously rejects small requests.
+        if self.read_pos > 0 {
+            self.read_buf.copy_within(self.read_pos..self.read_end, 0);
+            self.read_end -= self.read_pos;
+            self.read_pos = 0;
+        }
         if self.read_end == READ_BUF_MAX {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "request too large"));
+        }
+        if self.read_end == self.read_buf.len() {
+            self.read_buf.resize((self.read_buf.len() * 2).min(READ_BUF_MAX), 0);
         }
         Ok(&mut self.read_buf[self.read_end..])
     }
 
     pub fn commit_read(&mut self, n: usize) {
-        debug_assert!(self.read_end + n <= READ_BUF_MAX);
+        debug_assert!(self.read_end + n <= self.read_buf.len());
         self.read_end += n;
     }
 
@@ -176,6 +188,32 @@ mod tests {
         let space = conn.read_space().unwrap();
         space[..bytes.len()].copy_from_slice(bytes);
         conn.commit_read(bytes.len());
+    }
+
+    fn feed_all(conn: &mut ServerConnection, mut bytes: &[u8]) {
+        while !bytes.is_empty() {
+            let space = conn.read_space().unwrap();
+            let n = space.len().min(bytes.len());
+            space[..n].copy_from_slice(&bytes[..n]);
+            conn.commit_read(n);
+            bytes = &bytes[n..];
+        }
+    }
+
+    fn fill_with_junk_until_reject(conn: &mut ServerConnection) -> io::Error {
+        loop {
+            match conn.read_space() {
+                Ok(space) => {
+                    let n = space.len();
+                    space.fill(b'j');
+                    conn.commit_read(n);
+                }
+                Err(e) => return e,
+            }
+            assert!(!conn.dispatch(&|_, _: &mut Vec<u8>| {
+                panic!("incomplete request must not dispatch")
+            }));
+        }
     }
 
     fn drain(conn: &mut ServerConnection) -> Vec<u8> {
@@ -367,17 +405,96 @@ mod tests {
     #[test]
     fn read_space_exhausted_rejects_request_too_large() {
         let mut conn = ServerConnection::new();
-        let space = conn.read_space().unwrap();
-        let header = b"POST /big HTTP/1.1\r\nHost: localhost\r\nContent-Length: 33554432\r\n\r\n";
-        space[..header.len()].copy_from_slice(header);
-        let n = space.len();
-        conn.commit_read(n);
+        feed(
+            &mut conn,
+            b"POST /big HTTP/1.1\r\nHost: localhost\r\nContent-Length: 33554432\r\n\r\n",
+        );
 
+        let err = fill_with_junk_until_reject(&mut conn);
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(err.to_string(), "request too large");
+    }
+
+    #[test]
+    fn body_just_over_cap_rejects_with_identical_error() {
+        let mut conn = ServerConnection::new();
+        let header = format!(
+            "POST /big HTTP/1.1\r\nHost: localhost\r\nContent-Length: {READ_BUF_MAX}\r\n\r\n"
+        );
+        feed(&mut conn, header.as_bytes());
+
+        let err = fill_with_junk_until_reject(&mut conn);
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(err.to_string(), "request too large");
+    }
+
+    #[test]
+    fn body_near_cap_dispatches() {
+        let mut conn = ServerConnection::new();
+        let body_len = READ_BUF_MAX - 128;
+        let header =
+            format!("POST /big HTTP/1.1\r\nHost: localhost\r\nContent-Length: {body_len}\r\n\r\n");
+        feed_all(&mut conn, header.as_bytes());
+        let chunk = vec![b'b'; 1 << 16];
+        let mut remaining = body_len;
+        while remaining > 0 {
+            let n = remaining.min(chunk.len());
+            feed_all(&mut conn, &chunk[..n]);
+            remaining -= n;
+        }
+
+        let seen = RefCell::new(0usize);
+        assert!(conn.dispatch(&|req: &ParsedRequest<'_>, out: &mut Vec<u8>| {
+            *seen.borrow_mut() = req.body.len();
+            assert!(req.body.iter().all(|&b| b == b'b'));
+            frame_response(out, "200 OK", None, b"");
+        }));
+        assert_eq!(*seen.borrow(), body_len);
+    }
+
+    #[test]
+    fn pipelined_keep_alive_partial_tails_never_creep_into_cap() {
+        let mut conn = ServerConnection::new();
+        let mut request = b"POST /r HTTP/1.1\r\nHost: x\r\nContent-Length: 65536\r\n\r\n".to_vec();
+        request.extend_from_slice(&vec![b'p'; 65536]);
+        let split = 16;
+
+        // Feed twice the cap in total; every dispatch leaves a partial
+        // successor in the buffer, so the pre-compaction offsets would reach
+        // READ_BUF_MAX about halfway through and reject with "request too
+        // large".
+        let rounds = 2 * READ_BUF_MAX / request.len();
+        feed_all(&mut conn, &request[..split]);
+        for _ in 0..rounds {
+            feed_all(&mut conn, &request[split..]);
+            feed_all(&mut conn, &request[..split]);
+            assert!(conn.dispatch(&echo_path));
+            drain(&mut conn);
+            assert_eq!(conn.after_response(&echo_path), AfterResponse::AwaitRequest);
+        }
+    }
+
+    #[test]
+    fn request_split_across_growth_boundary_not_corrupted() {
+        let mut conn = ServerConnection::new();
+        let body: Vec<u8> = (0..6000u32).map(|i| (i % 251) as u8).collect();
+        let mut request =
+            format!("POST /grow HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\n\r\n", body.len())
+                .into_bytes();
+        let header_len = request.len();
+        request.extend_from_slice(&body);
+
+        feed_all(&mut conn, &request[..READ_BUF_INIT]);
         assert!(
             !conn.dispatch(&|_, _: &mut Vec<u8>| panic!("incomplete request must not dispatch"))
         );
-        let err = conn.read_space().unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
-        assert_eq!(err.to_string(), "request too large");
+        feed_all(&mut conn, &request[READ_BUF_INIT..]);
+
+        let seen = RefCell::new(Vec::new());
+        assert!(conn.dispatch(&|req: &ParsedRequest<'_>, out: &mut Vec<u8>| {
+            seen.borrow_mut().extend_from_slice(req.body);
+            frame_response(out, "200 OK", None, b"");
+        }));
+        assert_eq!(*seen.borrow(), request[header_len..]);
     }
 }

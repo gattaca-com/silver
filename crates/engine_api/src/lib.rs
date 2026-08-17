@@ -11,5 +11,7 @@ mod types;
 
 pub use api::EngineApi;
 pub use client::EngineClient;
+#[cfg(feature = "test-el")]
+pub use client::{ReqKind, poll, send_new_payload};
 pub use error::EngineError;
 pub use jwt::JwtSecret;

@@ -4678,6 +4678,7 @@ dependencies = [
  "sha2",
  "silver_common",
  "silver_config",
+ "silver_engine_api",
  "silver_httpcore",
  "simd-json",
  "tempfile",

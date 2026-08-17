@@ -12,7 +12,7 @@ fn main() {
     // Never-published reader: state endpoints answer 503, as pre-bootstrap.
     let state = BeaconStateOwner::empty_test(0).reader();
 
-    let mut api = BeaconApi::new(&bind, &keypair, local_enr, &Identify::default(), state);
+    let mut api = BeaconApi::new(&bind, 64, &keypair, local_enr, &Identify::default(), state);
     println!("serving on {:?}", api.local_addr());
     loop {
         api.pump();

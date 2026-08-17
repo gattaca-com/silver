@@ -28,6 +28,7 @@ test-el = ["dep:httparse"]
 
 [dev-dependencies]
 httparse.workspace = true
+silver_engine_api = { workspace = true, features = ["test-el"] }
 tempfile = "3"
 tracing-subscriber.workspace = true
 

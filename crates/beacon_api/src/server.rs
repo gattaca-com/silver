@@ -25,6 +25,7 @@ pub struct BeaconApi {
     poll: Poll,
     events: Events,
     listener: Listener,
+    max_connections: usize,
     current_token: Token,
     connections: HashMap<Token, Connection>,
     router: Router,
@@ -34,6 +35,7 @@ pub struct BeaconApi {
 impl BeaconApi {
     pub fn new(
         bind: &Bind,
+        max_connections: usize,
         keypair: &Keypair,
         local_enr: Enr,
         identify: &Identify,
@@ -48,6 +50,7 @@ impl BeaconApi {
             poll,
             events: Events::with_capacity(1024),
             listener,
+            max_connections,
             current_token: Token(LISTENER.0 + 1),
             connections: HashMap::new(),
             router: Router::new(ROUTES),
@@ -76,6 +79,16 @@ impl BeaconApi {
                     };
 
                     did_work = true;
+                    // Accept-and-close at the cap: with edge-triggered
+                    // registration, leaving the stream in the backlog would go
+                    // silent until the next SYN retriggers the listener.
+                    if self.connections.len() >= self.max_connections {
+                        tracing::warn!(
+                            "beacon api connection cap {} reached, dropping new connection",
+                            self.max_connections
+                        );
+                        continue;
+                    }
                     let token = next(&mut self.current_token);
                     self.poll.registry().register(&mut stream, token, Interest::READABLE).unwrap();
                     self.connections
@@ -183,6 +196,14 @@ fn interrupted(err: &io::Error) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        net::{SocketAddr, TcpStream},
+        thread::JoinHandle,
+        time::Instant,
+    };
+
+    use silver_beacon_state_data::BeaconStateOwner;
+
     use super::*;
 
     #[test]
@@ -192,5 +213,91 @@ mod tests {
         assert_ne!(assigned, LISTENER, "returned token must not alias LISTENER");
         assert_ne!(cur, LISTENER, "next token must not alias LISTENER after wrap");
         assert_eq!(cur.0, LISTENER.0 + 1);
+    }
+
+    fn pump_until<T>(api: &mut BeaconApi, client: JoinHandle<T>, msg: &str) -> T {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !client.is_finished() {
+            assert!(Instant::now() < deadline, "timeout: {msg}");
+            api.pump();
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        client.join().unwrap()
+    }
+
+    fn connect(addr: SocketAddr) -> TcpStream {
+        let stream = TcpStream::connect(addr).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        stream
+    }
+
+    #[test]
+    fn connection_cap_drops_excess_then_recovers() {
+        let keypair = Keypair::from_secret(&[1u8; 32]).unwrap();
+        let local_enr = Enr::empty(keypair.secret_key()).unwrap();
+        let mut api = BeaconApi::new(
+            &Bind::parse("127.0.0.1:0"),
+            1,
+            &keypair,
+            local_enr,
+            &Identify::default(),
+            BeaconStateOwner::empty_test(0).reader(),
+        );
+        let Bind::Tcp(addr) = api.local_addr() else { panic!("expected tcp bind") };
+
+        let held_open = pump_until(
+            &mut api,
+            std::thread::spawn(move || {
+                let mut stream = connect(addr);
+                write!(stream, "GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+                let mut response = Vec::new();
+                let mut chunk = [0u8; 1024];
+                while !response.windows(4).any(|w| w == b"\r\n\r\n") {
+                    let n = stream.read(&mut chunk).unwrap();
+                    assert!(n > 0, "server closed the first connection");
+                    response.extend_from_slice(&chunk[..n]);
+                }
+                assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
+                stream
+            }),
+            "first client served",
+        );
+
+        let denied = pump_until(
+            &mut api,
+            std::thread::spawn(move || {
+                let mut stream = connect(addr);
+                let _ = write!(stream, "GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n");
+                let mut chunk = [0u8; 1024];
+                stream.read(&mut chunk)
+            }),
+            "second client dropped at cap",
+        );
+        assert!(
+            !matches!(denied, Ok(n) if n > 0),
+            "connection over the cap must not be served: {denied:?}"
+        );
+
+        drop(held_open);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !api.connections.is_empty() {
+            assert!(Instant::now() < deadline, "timeout: closed connection reaped");
+            api.pump();
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
+        let response = pump_until(
+            &mut api,
+            std::thread::spawn(move || {
+                let mut stream = connect(addr);
+                write!(stream, "GET /metrics HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+                    .unwrap();
+                let mut response = Vec::new();
+                stream.read_to_end(&mut response).unwrap();
+                response
+            }),
+            "third client served after the slot freed",
+        );
+        assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
     }
 }

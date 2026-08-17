@@ -129,6 +129,8 @@ pub struct Config {
     /// TCP `addr:port` or a unix socket path.
     #[serde(default = "default_beacon_api_bind")]
     beacon_api_bind: String,
+    #[serde(default = "default_usize::<64>")]
+    beacon_api_max_connections: usize,
     #[serde(default)]
     disable_weak_subjectivity_check: bool,
 }
@@ -164,6 +166,7 @@ impl Config {
             data_storage_dir: default_data_dir(),
             engine_config: Default::default(),
             beacon_api_bind: default_beacon_api_bind(),
+            beacon_api_max_connections: 64,
             disable_weak_subjectivity_check: false,
         }
     }
@@ -218,6 +221,11 @@ impl Config {
 
     pub fn with_beacon_api_bind(mut self, bind: String) -> Self {
         self.beacon_api_bind = bind;
+        self
+    }
+
+    pub fn with_beacon_api_max_connections(mut self, max: usize) -> Self {
+        self.beacon_api_max_connections = max;
         self
     }
 
@@ -353,6 +361,10 @@ impl Config {
         &self.beacon_api_bind
     }
 
+    pub fn beacon_api_max_connections(&self) -> usize {
+        self.beacon_api_max_connections
+    }
+
     pub fn disable_weak_subjectivity_check(&self) -> bool {
         self.disable_weak_subjectivity_check
     }
@@ -384,6 +396,7 @@ mod tests {
         assert_eq!(cfg.supported_protocols().unwrap().len(), 11);
         assert_eq!(cfg.gossip_topics().unwrap().len(), 8);
         assert_eq!(cfg.beacon_api_bind(), "0.0.0.0:5051");
+        assert_eq!(cfg.beacon_api_max_connections(), 64);
     }
 
     #[test]
@@ -392,6 +405,14 @@ mod tests {
         assert_eq!(cfg.beacon_api_bind(), "0.0.0.0:5051");
         let cfg = cfg.with_beacon_api_bind("/run/beacon.sock".into());
         assert_eq!(cfg.beacon_api_bind(), "/run/beacon.sock");
+    }
+
+    #[test]
+    fn builder_sets_beacon_api_max_connections() {
+        let cfg = Config::new([1u8; 32], [0u8; 4], [0u8; 4], 0);
+        assert_eq!(cfg.beacon_api_max_connections(), 64);
+        let cfg = cfg.with_beacon_api_max_connections(2);
+        assert_eq!(cfg.beacon_api_max_connections(), 2);
     }
 
     #[test]

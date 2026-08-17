@@ -142,6 +142,13 @@ mod tests {
         assert_eq!(resp, b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
     }
 
+    #[test]
+    fn events_returns_404_v1_defers_sse_clients_poll() {
+        let router = Router::new(ROUTES);
+        let resp = get(&router, &preboot_ctx(), "/eth/v1/events");
+        assert_eq!(resp, b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
+    }
+
     fn genesis_root(_req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
         let Some(root) = ctx.read_state_or_503(resp, |view| view.imm.genesis_validators_root)
         else {
