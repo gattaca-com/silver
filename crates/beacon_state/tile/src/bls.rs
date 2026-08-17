@@ -151,6 +151,10 @@ pub fn fork_version_at_epoch(
 /// available (e.g. `verify_deposit_signature`), use `verify_one_compressed`.
 pub(crate) fn verify_one(pk: &PublicKey, sig: &[u8; 96], message: &B256) -> bool {
     let Ok(sig) = Signature::from_bytes(sig) else { return false };
+    verify_one_parsed(pk, &sig, message)
+}
+
+fn verify_one_parsed(pk: &PublicKey, sig: &Signature, message: &B256) -> bool {
     sig.verify(true, message, DST, &[], pk, false) == BLST_ERROR::BLST_SUCCESS
 }
 
@@ -410,21 +414,30 @@ pub fn verify_deposit_signature(pubkey: &BLSPubkey, sig: &[u8; 96], signing_root
     verify_one_compressed(pubkey, sig, signing_root)
 }
 
+/// Signature is subgroup-checked by the verify, so downstream aggregation
+/// may add it without a second group check.
+pub struct VerifiedSingleAttestation {
+    pub data_root: B256,
+    pub signature: Signature,
+}
+
 /// Verify a single-attester `SingleAttestation` (gossip subnet form). Used
 /// on the gossip hot path; the body-included aggregate path goes through
 /// `stf::validate_attestations` + `SigBatch`.
+#[timed]
 pub fn verify_single_attestation(
     att: &[u8; SINGLE_ATT_SIZE],
     attester_pubkey: &PublicKey,
     domain: &B256,
-) -> bool {
+) -> Option<VerifiedSingleAttestation> {
     let data = SingleAttestationView::data(att);
-    let sig = SingleAttestationView::signature(att);
+    let signature = Signature::from_bytes(SingleAttestationView::signature(att)).ok()?;
 
-    let object_root = hash_attestation_data(data.as_bytes());
-    let signing_root = compute_signing_root(&object_root, domain);
+    let data_root = hash_attestation_data(data.as_bytes());
+    let signing_root = compute_signing_root(&data_root, domain);
 
-    verify_one(attester_pubkey, sig, &signing_root)
+    verify_one_parsed(attester_pubkey, &signature, &signing_root)
+        .then_some(VerifiedSingleAttestation { data_root, signature })
 }
 
 #[cfg(test)]

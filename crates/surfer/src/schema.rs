@@ -8,6 +8,7 @@
 /// enums via `silver_common::declare_counters!`.
 pub fn lookup(file_name: &str) -> Option<&'static [&'static str]> {
     match file_name {
+        "beacon_state" => Some(silver_beacon_state::BeaconStateCounters::NAMES),
         "storage" => Some(silver_storage::StorageCounters::NAMES),
         "columns" => Some(silver_columns::DataColumnCounters::NAMES),
         "network" => Some(silver_network::NetworkCounters::NAMES),
