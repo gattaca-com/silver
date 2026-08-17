@@ -1,10 +1,11 @@
 mod client;
 mod error;
-mod http;
-mod ipc;
 mod jwt;
+mod pool;
 mod req_handlers;
 mod resp_handlers;
+#[cfg(test)]
+mod test_el;
 pub mod tile;
 mod types;
 

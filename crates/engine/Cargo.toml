@@ -11,17 +11,19 @@ base64.workspace = true
 flux.workspace = true
 hex.workspace = true
 hmac.workspace = true
-httparse.workspace = true
 mio.workspace = true
 rustc-hash.workspace = true
 serde.workspace = true
 simd-json.workspace = true
 sha2.workspace = true
 silver_common.workspace = true
+silver_httpcore.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+httparse.workspace = true
+tempfile = "3"
 tracing-subscriber.workspace = true
 
 [lints]

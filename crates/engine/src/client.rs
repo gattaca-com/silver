@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 
 use mio::{Events, Poll};
 use rustc_hash::FxHashMap;
@@ -6,8 +6,7 @@ use silver_common::merkle::B256;
 
 use crate::{
     EngineError, JwtSecret,
-    http::{HttpPool, http_pool_enqueue, poll_http_pool},
-    ipc::{IpcPool, ipc_pool_enqueue, poll_ipc_pool},
+    pool::{Endpoint, HttpPool},
     types::{
         ForkchoiceState, PayloadAttributesV3, write_new_payload_params_fulu,
         write_new_payload_params_gloas,
@@ -45,13 +44,8 @@ pub enum ReqKind {
     GetPayloadBodiesByRange(u64),
 }
 
-enum Transport {
-    Http(HttpPool),
-    Ipc(IpcPool),
-}
-
 pub struct EngineClient {
-    transport: Transport,
+    pool: HttpPool,
     poll: Poll,
     events: Events,
     id: u64,
@@ -61,10 +55,18 @@ pub struct EngineClient {
 }
 
 impl EngineClient {
-    pub fn new(endpoint: impl Into<String>, jwt: &str) -> Self {
+    pub fn new(endpoint: impl Into<String>, jwt: &str, max_connections: usize) -> Self {
+        Self::with_endpoint(Endpoint::Http(endpoint.into()), jwt, max_connections)
+    }
+
+    pub fn new_uds(path: impl Into<PathBuf>, jwt: &str, max_connections: usize) -> Self {
+        Self::with_endpoint(Endpoint::Uds(path.into()), jwt, max_connections)
+    }
+
+    fn with_endpoint(endpoint: Endpoint, jwt: &str, max_connections: usize) -> Self {
         let jwt = JwtSecret::from_file(jwt).unwrap_or_else(|e| panic!("invalid JWT secret: {e}"));
         Self {
-            transport: Transport::Http(HttpPool::new(endpoint.into(), jwt)),
+            pool: HttpPool::new(endpoint, jwt, max_connections),
             poll: Poll::new().expect("mio Poll::new failed"),
             events: Events::with_capacity(EVENTS_CAPACITY),
             id: 1,
@@ -74,16 +76,8 @@ impl EngineClient {
         }
     }
 
-    pub fn new_ipc(path: impl Into<String>) -> Self {
-        Self {
-            transport: Transport::Ipc(IpcPool::new(path.into())),
-            poll: Poll::new().expect("mio Poll::new failed"),
-            events: Events::with_capacity(EVENTS_CAPACITY),
-            id: 1,
-            pending_requests: FxHashMap::default(),
-            get_payload_method: "engine_getPayloadV3",
-            scratch: Vec::with_capacity(SCRATCH_CAPACITY),
-        }
+    pub fn has_capacity(&self) -> bool {
+        self.pool.has_capacity()
     }
 }
 
@@ -114,10 +108,7 @@ fn enqueue(c: &mut EngineClient, rpc_id: u64, body: &simd_json::OwnedValue) {
         tracing::warn!("failed to serialize RPC body: {e}");
         return;
     }
-    match &mut c.transport {
-        Transport::Http(p) => http_pool_enqueue(p, rpc_id, &c.scratch, &mut c.poll),
-        Transport::Ipc(p) => ipc_pool_enqueue(p, rpc_id, &c.scratch, &mut c.poll),
-    }
+    c.pool.enqueue(rpc_id, &c.scratch, &mut c.poll);
 }
 
 pub fn send_fcu(
@@ -168,10 +159,7 @@ fn send_new_payload_request_impl(
     c.scratch.extend_from_slice(b",\"id\":");
     append_decimal_u64(rpc_id, &mut c.scratch);
     c.scratch.push(b'}');
-    match &mut c.transport {
-        Transport::Http(p) => http_pool_enqueue(p, rpc_id, &c.scratch, &mut c.poll),
-        Transport::Ipc(p) => ipc_pool_enqueue(p, rpc_id, &c.scratch, &mut c.poll),
-    }
+    c.pool.enqueue(rpc_id, &c.scratch, &mut c.poll);
     c.pending_requests.insert(rpc_id, ReqKind::NewPayload(block_root));
     Ok(())
 }
@@ -256,26 +244,18 @@ pub fn get_client_version(c: &mut EngineClient) {
 }
 
 /// Drive I/O, calling `on_complete(req_kind, raw_body)` for each finished RPC.
-/// Raw bytes are the full HTTP/IPC response body; handlers parse them as
-/// needed.
+/// Raw bytes are the full HTTP response body; handlers parse them as needed.
 pub fn poll<F>(c: &mut EngineClient, mut on_complete: F)
 where
     F: FnMut(ReqKind, Result<&mut [u8], EngineError>),
 {
     c.poll.poll(&mut c.events, Some(Duration::ZERO)).ok();
-    let EngineClient { transport, events, poll, pending_requests, .. } = c;
-    match transport {
-        Transport::Http(p) => poll_http_pool(p, events, poll, &mut |rpc_id, res| {
-            if let Some(req_kind) = pending_requests.remove(&rpc_id) {
-                on_complete(req_kind, res);
-            }
-        }),
-        Transport::Ipc(p) => poll_ipc_pool(p, events, poll, &mut |rpc_id, res| {
-            if let Some(req_kind) = pending_requests.remove(&rpc_id) {
-                on_complete(req_kind, res);
-            }
-        }),
-    }
+    let EngineClient { pool, events, poll, pending_requests, .. } = c;
+    pool.poll_events(events, poll, &mut |rpc_id, res| {
+        if let Some(req_kind) = pending_requests.remove(&rpc_id) {
+            on_complete(req_kind, res);
+        }
+    });
 }
 
 #[cfg(test)]

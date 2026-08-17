@@ -4,6 +4,10 @@ fn default_tcache_size() -> usize {
     2 << 24
 }
 
+fn default_max_connections() -> usize {
+    32
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct EngineConfig {
     pub execution_endpoint: String,
@@ -11,6 +15,8 @@ pub struct EngineConfig {
     pub jwt_secret: String,
     #[serde(default = "default_tcache_size")]
     pub incoming_engine_resp_tcache_size: usize,
+    #[serde(default = "default_max_connections")]
+    pub max_connections: usize,
     /// Unsafe testing mode: do not connect to the EL. The engine tile answers
     /// every spine request with a synthetic VALID response. Lets the CL run
     /// without an execution client. Never enable in production.
@@ -24,6 +30,7 @@ impl Default for EngineConfig {
             execution_endpoint: "http://localhost:8551".into(),
             jwt_secret: "0".into(),
             incoming_engine_resp_tcache_size: 2 << 24,
+            max_connections: 32,
             unsafe_no_el: false,
         }
     }

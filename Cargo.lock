@@ -4660,7 +4660,9 @@ dependencies = [
  "sha2",
  "silver_common",
  "silver_config",
+ "silver_httpcore",
  "simd-json",
+ "tempfile",
  "thiserror 1.0.69",
  "tracing",
  "tracing-subscriber",
@@ -4691,6 +4693,7 @@ name = "silver_httpcore"
 version = "0.0.1"
 dependencies = [
  "httparse",
+ "mio",
  "tracing",
 ]
 
