@@ -1085,6 +1085,8 @@ pub struct PeerTopicScores {
     /// case `mesh_active` never becomes true.
     pub p3_scored: bool,
     pub mesh_active: bool,
+    pub fanout_total: u64,
+    pub fanout_sent: u64,
     pub mesh_failure_penalty: f64,
     pub invalid_deliveries: f64,
 }

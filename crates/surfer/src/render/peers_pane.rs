@@ -205,7 +205,9 @@ pub fn draw(f: &mut Frame, area: Rect, app: &mut App) {
 
 /// Expansion sub-row for one meshed topic of the selected peer. The raw
 /// counters sit under the score columns they feed: first deliveries → p2,
-/// mesh deliveries → p3, failure penalty → p3b, invalid → p4.
+/// mesh deliveries → p3, failure penalty → p3b, invalid → p4; the fan-out
+/// forward ratio (sent/total, suppressions being IDONTWANT or score gate)
+/// sits under p5.
 fn topic_row(t: &silver_common::PeerTopicScores) -> Row<'static> {
     let val = |v: f64| Cell::from(format!("{v:.1}"));
     let mut cells = vec![
@@ -234,6 +236,11 @@ fn topic_row(t: &silver_common::PeerTopicScores) -> Row<'static> {
         val(t.mesh_failure_penalty),
         val(t.invalid_deliveries),
     ]);
+    cells.push(Cell::from(if t.fanout_total == 0 {
+        "·".to_string()
+    } else {
+        format!("{:.0}%", t.fanout_sent as f64 * 100.0 / t.fanout_total as f64)
+    }));
     Row::new(cells).height(1).style(Style::default().fg(Color::Green))
 }
 
