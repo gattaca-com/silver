@@ -2103,18 +2103,29 @@ impl PeerManager {
         if excess == 0 {
             return;
         }
+        // Victims come from settled members only: inside the activation
+        // window a member's score is noise, and an opportunistic graft would
+        // otherwise land straight in the eviction pool of the prune wave it
+        // triggers. Excess beyond the settled pool waits.
+        let settle = self.params.mesh_message_deliveries_activation_s;
         // Sort requires a buffer; the emit isn't what forces it.
-        let mut ranked: Vec<(usize, f64, PeerId)> = self
-            .mesh
-            .get(&topic)
-            .map(|mesh| {
-                mesh.iter()
-                    .filter_map(|conn| {
-                        self.peers.get(conn).map(|p| (*conn, p.cached_score, p.peer_id))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        let mut ranked: Vec<(usize, f64, PeerId)> =
+            self.mesh
+                .get(&topic)
+                .map(|mesh| {
+                    mesh.iter()
+                        .filter_map(|conn| {
+                            let p = self.peers.get(conn)?;
+                            let since = p.topic_stats.get(&topic)?.meshed_since?;
+                            (now.saturating_duration_since(since).as_secs_f64() >= settle)
+                                .then_some((*conn, p.cached_score, p.peer_id))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+        if ranked.is_empty() {
+            return;
+        }
         let mut rng = rand::thread_rng();
         ranked.shuffle(&mut rng);
         ranked.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
@@ -2136,9 +2147,19 @@ impl PeerManager {
         if mesh.len() <= 1 {
             return;
         }
+        // Median over established members only: peers meshed for less than
+        // the P3 activation window score near zero structurally, so counting
+        // them reads a freshly-built mesh as underperforming and re-grafts
+        // (then prunes) before anyone has a chance to establish.
+        let activation = self.params.mesh_message_deliveries_activation_s;
         let mut mesh_scores: Vec<_> = mesh
             .iter()
-            .filter_map(|conn| self.peers.get(conn).map(|peer| peer.cached_score))
+            .filter_map(|conn| {
+                let peer = self.peers.get(conn)?;
+                let since = peer.topic_stats.get(&topic)?.meshed_since?;
+                (now.saturating_duration_since(since).as_secs_f64() >= activation)
+                    .then_some(peer.cached_score)
+            })
             .collect();
         if mesh_scores.len() <= 1 {
             return;
@@ -2577,7 +2598,14 @@ mod tests {
         mgr.peers.get_mut(&13).unwrap().cached_score = 13.0;
         cap.0.clear();
 
+        // Over cap, but no member has settled yet: no victims.
         mgr.ensure_mesh_capped(topic, now, &mut |event| cap.0.push(event));
+        assert_eq!(mgr.mesh[&topic].len(), 13);
+        assert!(cap.0.is_empty());
+
+        let settled =
+            now + Duration::from_secs_f64(mgr.params.mesh_message_deliveries_activation_s);
+        mgr.ensure_mesh_capped(topic, settled, &mut |event| cap.0.push(event));
 
         let mesh = &mgr.mesh[&topic];
         assert_eq!(mesh.len(), 8);
@@ -2618,14 +2646,22 @@ mod tests {
         mgr.manage_mesh(due - Duration::from_nanos(1), &mut |event| cap.0.push(event));
         assert_eq!(mgr.mesh_size(topic), 2);
 
+        // Due, but both members are inside the activation window: no median,
+        // no graft.
         mgr.manage_mesh(due, &mut |event| cap.0.push(event));
+        assert_eq!(mgr.mesh_size(topic), 2);
+        assert_eq!(mgr.last_opportunistic_graft, due);
+
+        // Past the activation window the members' scores count.
+        let established =
+            due + Duration::from_secs_f64(mgr.params.mesh_message_deliveries_activation_s);
+        mgr.manage_mesh(established, &mut |event| cap.0.push(event));
 
         let mesh = &mgr.mesh[&topic];
         assert_eq!(mesh.len(), 4);
         assert!(mesh.contains(&3));
         assert!(mesh.contains(&4));
         assert!(!mesh.contains(&5));
-        assert_eq!(mgr.last_opportunistic_graft, due);
     }
 
     #[test]
