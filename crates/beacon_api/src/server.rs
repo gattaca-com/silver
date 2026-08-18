@@ -14,8 +14,6 @@ use crate::{
     routes::{ApiCtx, ROUTES},
 };
 
-const LISTENER: Token = Token(0);
-
 const MAX_SWEEP_INTERVAL: Duration = Duration::from_secs(1);
 
 struct Connection {
@@ -50,7 +48,7 @@ impl IdleSweep {
 pub struct BeaconApi {
     poll: Poll,
     events: Events,
-    listener: Listener,
+    listeners: Vec<Listener>,
     max_connections: usize,
     idle: IdleSweep,
     current_token: Token,
@@ -61,7 +59,7 @@ pub struct BeaconApi {
 
 impl BeaconApi {
     pub fn new(
-        bind: &Bind,
+        binds: &[Bind],
         max_connections: usize,
         idle_timeout: Duration,
         keypair: &Keypair,
@@ -69,26 +67,34 @@ impl BeaconApi {
         identify: &Identify,
         state: BeaconStateReader,
     ) -> Self {
+        assert!(!binds.is_empty(), "beacon api needs at least one bind");
         let poll = Poll::new().unwrap();
-        let mut listener =
-            Listener::bind(bind).unwrap_or_else(|e| panic!("beacon api bind {bind:?}: {e}"));
-        poll.registry().register(&mut listener, LISTENER, Interest::READABLE).unwrap();
+        let listeners = binds
+            .iter()
+            .enumerate()
+            .map(|(index, bind)| {
+                let mut listener = Listener::bind(bind)
+                    .unwrap_or_else(|e| panic!("beacon api bind {bind:?}: {e}"));
+                poll.registry().register(&mut listener, Token(index), Interest::READABLE).unwrap();
+                listener
+            })
+            .collect::<Vec<_>>();
 
         Self {
             poll,
             events: Events::with_capacity(1024),
-            listener,
             max_connections,
             idle: IdleSweep::new(idle_timeout),
-            current_token: Token(LISTENER.0 + 1),
+            current_token: Token(listeners.len()),
+            listeners,
             connections: HashMap::new(),
             router: Router::new(ROUTES),
             ctx: ApiCtx::new(keypair, &local_enr, identify, state),
         }
     }
 
-    pub fn local_addr(&self) -> Bind {
-        self.listener.local_addr()
+    pub fn local_addrs(&self) -> Vec<Bind> {
+        self.listeners.iter().map(Listener::local_addr).collect()
     }
 
     pub fn pump(&mut self) -> bool {
@@ -97,9 +103,9 @@ impl BeaconApi {
 
         let mut did_work = false;
         for event in &self.events {
-            match event.token() {
-                LISTENER => loop {
-                    let mut stream = match self.listener.accept() {
+            match self.listeners.get(event.token().0) {
+                Some(listener) => loop {
+                    let mut stream = match listener.accept() {
                         Ok(stream) => stream,
                         Err(e) if would_block(&e) => break,
                         Err(e) => {
@@ -119,7 +125,7 @@ impl BeaconApi {
                         );
                         continue;
                     }
-                    let token = next(&mut self.current_token);
+                    let token = next(&mut self.current_token, self.listeners.len());
                     self.poll.registry().register(&mut stream, token, Interest::READABLE).unwrap();
                     self.connections.insert(token, Connection {
                         stream,
@@ -127,7 +133,8 @@ impl BeaconApi {
                         last_activity: now,
                     });
                 },
-                token => {
+                None => {
+                    let token = event.token();
                     if let Some(conn) = self.connections.get_mut(&token) {
                         did_work = true;
                         match handle_event(self.poll.registry(), conn, event, now, &|req, out| {
@@ -235,11 +242,12 @@ fn handle_event<F: Fn(&ParsedRequest<'_>, &mut Vec<u8>)>(
     Ok(false)
 }
 
-fn next(current: &mut Token) -> Token {
+/// Connection tokens sit above the listener range `0..reserved`, which the
+/// wrap must skip to avoid aliasing an accept socket.
+fn next(current: &mut Token, reserved: usize) -> Token {
     let tok = Token(current.0);
     let n = current.0.wrapping_add(1);
-    // Skip Token(0) == LISTENER on wrap to avoid aliasing the accept socket.
-    current.0 = if n == LISTENER.0 { LISTENER.0 + 1 } else { n };
+    current.0 = if n < reserved { reserved } else { n };
     tok
 }
 
@@ -255,6 +263,8 @@ fn interrupted(err: &io::Error) -> bool {
 mod tests {
     use std::{
         net::{SocketAddr, TcpStream},
+        os::unix::net::UnixStream,
+        path::Path,
         thread::JoinHandle,
         time::Instant,
     };
@@ -264,22 +274,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn token_wrap_skips_listener() {
+    fn token_wrap_skips_the_listener_range() {
+        let reserved = 3;
+
         let mut cur = Token(usize::MAX);
-        let assigned = next(&mut cur);
-        assert_ne!(assigned, LISTENER, "returned token must not alias LISTENER");
-        assert_ne!(cur, LISTENER, "next token must not alias LISTENER after wrap");
-        assert_eq!(cur.0, LISTENER.0 + 1);
+        let assigned = next(&mut cur, reserved);
+        assert!(assigned.0 >= reserved, "returned token must not alias a listener");
+        assert_eq!(cur, Token(reserved), "the wrap must land above the listener range");
+
+        let mut cur = Token(reserved);
+        assert_eq!(next(&mut cur, reserved), Token(reserved));
+        assert_eq!(cur, Token(reserved + 1));
     }
 
     /// Longer than any test's 10 s spin deadline: the idle sweep never reaps.
     const LONG_TIMEOUT: Duration = Duration::from_secs(60);
 
-    fn api_with(max_connections: usize, idle_timeout: Duration) -> BeaconApi {
+    fn api_bound_to(binds: &[Bind], max_connections: usize, idle_timeout: Duration) -> BeaconApi {
         let keypair = Keypair::from_secret(&[1u8; 32]).unwrap();
         let local_enr = Enr::empty(keypair.secret_key()).unwrap();
         BeaconApi::new(
-            &Bind::parse("127.0.0.1:0"),
+            binds,
             max_connections,
             idle_timeout,
             &keypair,
@@ -289,9 +304,22 @@ mod tests {
         )
     }
 
+    fn api_with(max_connections: usize, idle_timeout: Duration) -> BeaconApi {
+        api_bound_to(&[Bind::parse("127.0.0.1:0")], max_connections, idle_timeout)
+    }
+
+    fn tcp_addrs(api: &BeaconApi) -> Vec<SocketAddr> {
+        api.local_addrs()
+            .into_iter()
+            .map(|bind| {
+                let Bind::Tcp(addr) = bind else { panic!("expected tcp bind") };
+                addr
+            })
+            .collect()
+    }
+
     fn tcp_addr(api: &BeaconApi) -> SocketAddr {
-        let Bind::Tcp(addr) = api.local_addr() else { panic!("expected tcp bind") };
-        addr
+        tcp_addrs(api)[0]
     }
 
     fn pump_until(api: &mut BeaconApi, msg: &str, mut done: impl FnMut(&BeaconApi) -> bool) {
@@ -308,10 +336,43 @@ mod tests {
         client.join().unwrap()
     }
 
+    fn serve_both<T>(
+        api: &mut BeaconApi,
+        first: JoinHandle<T>,
+        second: JoinHandle<T>,
+        msg: &str,
+    ) -> (T, T) {
+        pump_until(api, msg, |_| first.is_finished() && second.is_finished());
+        (first.join().unwrap(), second.join().unwrap())
+    }
+
     fn connect(addr: SocketAddr) -> TcpStream {
         let stream = TcpStream::connect(addr).unwrap();
         stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
         stream
+    }
+
+    fn connect_uds(path: &Path) -> UnixStream {
+        let stream = UnixStream::connect(path).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        stream
+    }
+
+    fn get_identity(mut stream: impl Read + Write) -> Vec<u8> {
+        write!(
+            stream,
+            "GET /eth/v1/node/identity HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+        )
+        .unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).unwrap();
+        response
+    }
+
+    fn assert_identity_ok(response: &[u8]) {
+        let text = String::from_utf8_lossy(response);
+        assert!(text.starts_with("HTTP/1.1 200 OK\r\n"), "unexpected response: {text}");
+        assert!(text.contains("\"peer_id\""), "identity body missing: {text}");
     }
 
     fn read_to_eof(mut stream: TcpStream) -> Vec<u8> {
@@ -324,6 +385,125 @@ mod tests {
                 Err(e) => panic!("client read: {e}"),
             }
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "at least one bind")]
+    fn an_empty_bind_list_is_rejected() {
+        api_bound_to(&[], 64, LONG_TIMEOUT);
+    }
+
+    #[test]
+    fn every_tcp_listener_serves_the_api() {
+        let mut api = api_bound_to(
+            &[Bind::parse("127.0.0.1:0"), Bind::parse("127.0.0.1:0")],
+            64,
+            LONG_TIMEOUT,
+        );
+
+        let addrs = tcp_addrs(&api);
+        assert_eq!(addrs.len(), 2, "one resolved address per bind");
+        assert_ne!(addrs[0], addrs[1], "each bind resolves to its own port");
+        assert!(addrs.iter().all(|addr| addr.port() != 0), "port-0 binds resolve: {addrs:?}");
+
+        let (first_addr, second_addr) = (addrs[0], addrs[1]);
+        let (first, second) = serve_both(
+            &mut api,
+            std::thread::spawn(move || get_identity(connect(first_addr))),
+            std::thread::spawn(move || get_identity(connect(second_addr))),
+            "both tcp listeners served",
+        );
+        assert_identity_ok(&first);
+        assert_identity_ok(&second);
+    }
+
+    #[test]
+    fn tcp_and_uds_listeners_serve_side_by_side() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("api.sock");
+        let mut api = api_bound_to(
+            &[Bind::parse("127.0.0.1:0"), Bind::Unix(socket.clone())],
+            64,
+            LONG_TIMEOUT,
+        );
+
+        let addrs = api.local_addrs();
+        let [Bind::Tcp(tcp_addr), Bind::Unix(uds_path)] = &addrs[..] else {
+            panic!("expected a tcp bind and a uds bind: {addrs:?}")
+        };
+        assert_eq!(uds_path, &socket);
+
+        let tcp_addr = *tcp_addr;
+        let (over_tcp, over_uds) = serve_both(
+            &mut api,
+            std::thread::spawn(move || get_identity(connect(tcp_addr))),
+            std::thread::spawn(move || get_identity(connect_uds(&socket))),
+            "tcp and uds listeners served",
+        );
+        assert_identity_ok(&over_tcp);
+        assert_identity_ok(&over_uds);
+    }
+
+    /// The cap counts connections, not listeners: a slot held through one
+    /// listener refuses clients arriving on any other.
+    #[test]
+    fn connection_cap_is_shared_across_listeners() {
+        let mut api = api_bound_to(
+            &[Bind::parse("127.0.0.1:0"), Bind::parse("127.0.0.1:0")],
+            1,
+            LONG_TIMEOUT,
+        );
+        let addrs = tcp_addrs(&api);
+        let (held, other) = (addrs[0], addrs[1]);
+
+        let held_open = serve(
+            &mut api,
+            std::thread::spawn(move || {
+                let mut stream = connect(held);
+                write!(stream, "GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+                let mut response = Vec::new();
+                let mut chunk = [0u8; 1024];
+                while !response.windows(4).any(|w| w == b"\r\n\r\n") {
+                    let n = stream.read(&mut chunk).unwrap();
+                    assert!(n > 0, "server closed the held connection");
+                    response.extend_from_slice(&chunk[..n]);
+                }
+                stream
+            }),
+            "first listener's client took the only slot",
+        );
+
+        assert_eq!(api.connections.len(), 1);
+        assert!(
+            api.connections.keys().all(|token| token.0 >= 2),
+            "connection tokens must clear the listener range: {:?}",
+            api.connections.keys().collect::<Vec<_>>()
+        );
+
+        let denied = serve(
+            &mut api,
+            std::thread::spawn(move || {
+                let mut stream = connect(other);
+                let _ = write!(stream, "GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n");
+                let mut chunk = [0u8; 1024];
+                stream.read(&mut chunk)
+            }),
+            "second listener's client refused at the cap",
+        );
+        assert!(
+            !matches!(denied, Ok(n) if n > 0),
+            "a slot held on one listener must refuse the other: {denied:?}"
+        );
+
+        drop(held_open);
+        pump_until(&mut api, "closed connection reaped", |api| api.connections.is_empty());
+
+        let response = serve(
+            &mut api,
+            std::thread::spawn(move || get_identity(connect(other))),
+            "second listener served once the slot freed",
+        );
+        assert_identity_ok(&response);
     }
 
     #[test]

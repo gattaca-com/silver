@@ -30,7 +30,7 @@ fn beacon(bind: &Bind) -> BeaconApi {
     let keypair = Keypair::from_secret(&[1u8; 32]).unwrap();
     let local_enr = Enr::empty(keypair.secret_key()).unwrap();
     BeaconApi::new(
-        bind,
+        std::slice::from_ref(bind),
         64,
         Duration::from_secs(75),
         &keypair,
@@ -96,7 +96,7 @@ fn serves_identity_over_tcp() {
     };
     let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
 
-    let Bind::Tcp(addr) = tile.beacon.local_addr() else { panic!("expected tcp bind") };
+    let [Bind::Tcp(addr)] = tile.beacon.local_addrs()[..] else { panic!("expected one tcp bind") };
     assert_ne!(addr.port(), 0, "port-0 bind must resolve to an ephemeral port");
 
     let client = std::thread::spawn(move || {
@@ -125,7 +125,7 @@ fn serves_identity_over_uds() {
     };
     let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
 
-    assert_eq!(tile.beacon.local_addr(), Bind::Unix(socket.clone()));
+    assert_eq!(tile.beacon.local_addrs(), [Bind::Unix(socket.clone())]);
 
     let client = std::thread::spawn(move || {
         let stream = UnixStream::connect(&socket).unwrap();
@@ -190,7 +190,7 @@ fn serves_beacon_api_while_engine_call_in_flight() {
 
     // The FCU (and the startup healthcheck trio) sit unanswered on the EL;
     // the API request must be served anyway.
-    let Bind::Tcp(addr) = tile.beacon.local_addr() else { panic!("expected tcp bind") };
+    let [Bind::Tcp(addr)] = tile.beacon.local_addrs()[..] else { panic!("expected one tcp bind") };
     let client = std::thread::spawn(move || {
         let stream = TcpStream::connect(addr).unwrap();
         stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();

@@ -20,7 +20,14 @@ impl Bind {
     pub fn parse(text: &str) -> Self {
         match text.parse() {
             Ok(addr) => Self::Tcp(addr),
-            Err(_) => Self::Unix(PathBuf::from(text)),
+            Err(_) => {
+                assert!(
+                    !text.contains(':'),
+                    "bind {text:?}: not a valid socket address (hostnames are not resolved), \
+                     and a unix socket path containing ':' is almost certainly a typo"
+                );
+                Self::Unix(PathBuf::from(text))
+            }
         }
     }
 }
@@ -205,9 +212,18 @@ mod tests {
     fn parse_non_addr_is_unix_path() {
         assert_eq!(Bind::parse("/run/beacon.sock"), Bind::Unix("/run/beacon.sock".into()));
         assert_eq!(Bind::parse("beacon.sock"), Bind::Unix("beacon.sock".into()));
-        // Hostnames don't parse as SocketAddr (no resolution here), so they
-        // fall through to a path.
-        assert_eq!(Bind::parse("localhost:5051"), Bind::Unix("localhost:5051".into()));
+    }
+
+    #[test]
+    #[should_panic(expected = "not a valid socket address")]
+    fn parse_rejects_hostname_with_port() {
+        Bind::parse("localhost:5051");
+    }
+
+    #[test]
+    #[should_panic(expected = "not a valid socket address")]
+    fn parse_rejects_typoed_socket_addr() {
+        Bind::parse("127.0.0.1:505x");
     }
 
     #[test]

@@ -232,8 +232,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         !config.disable_weak_subjectivity_check(),
         state,
     );
+    let beacon_api_binds =
+        config.beacon_api_bind().iter().map(String::as_str).map(Bind::parse).collect::<Vec<_>>();
     let beacon_api = BeaconApi::new(
-        &Bind::parse(config.beacon_api_bind()),
+        &beacon_api_binds,
         config.beacon_api_max_connections(),
         config.beacon_api_idle_timeout(),
         &keypair,
@@ -331,15 +333,22 @@ fn load_config() -> Result<Config, silver_common::Error> {
     if args.iter().any(|a| a == "--unsafe-no-el") {
         config = config.with_unsafe_no_el(true);
     }
-    if let Some(bind) =
+    if let Some(binds) =
         args.iter().position(|a| a == "--beacon-api-bind").and_then(|i| args.get(i + 1))
     {
-        config = config.with_beacon_api_bind(bind.clone());
+        config = config.with_beacon_api_bind(comma_separated(binds));
     }
 
     tracing::info!("loaded config: {config:#?}");
 
     Ok(config)
+}
+
+/// List form for CLI flags whose config counterpart is a TOML array. A comma
+/// is neither valid in a `SocketAddr` nor sane in a socket path, so it can
+/// never be part of one value.
+fn comma_separated(value: &str) -> Vec<String> {
+    value.split(',').map(str::to_owned).collect()
 }
 
 fn load_checkpoint(config: &Config) -> Result<(Vec<u8>, Vec<u8>), std::io::Error> {
@@ -374,5 +383,26 @@ fn load_checkpoint(config: &Config) -> Result<(Vec<u8>, Vec<u8>), std::io::Error
                 );
             }
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn beacon_api_bind_flag_takes_one_value_or_a_comma_separated_list() {
+        assert_eq!(comma_separated("0.0.0.0:5051"), ["0.0.0.0:5051"]);
+
+        let binds = comma_separated("0.0.0.0:5051,[::1]:5052,/run/silver/beacon.sock")
+            .iter()
+            .map(String::as_str)
+            .map(Bind::parse)
+            .collect::<Vec<_>>();
+        assert_eq!(binds, [
+            Bind::Tcp("0.0.0.0:5051".parse().unwrap()),
+            Bind::Tcp("[::1]:5052".parse().unwrap()),
+            Bind::Unix("/run/silver/beacon.sock".into()),
+        ]);
     }
 }

@@ -4456,6 +4456,7 @@ dependencies = [
  "silver_beacon_state_data",
  "silver_common",
  "silver_httpcore",
+ "tempfile",
  "tracing",
 ]
 

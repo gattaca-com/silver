@@ -36,8 +36,8 @@ const fn default_u64<const V: u64>() -> u64 {
     V
 }
 
-fn default_beacon_api_bind() -> String {
-    "0.0.0.0:5051".into()
+fn default_beacon_api_bind() -> Vec<String> {
+    vec!["0.0.0.0:5051".into()]
 }
 
 fn default_data_dir() -> String {
@@ -129,9 +129,10 @@ pub struct Config {
     data_storage_dir: String,
     #[serde(default)]
     engine_config: EngineConfig,
-    /// TCP `addr:port` or a unix socket path.
+    /// Each entry is a TCP `addr:port` or a unix socket path; the API serves
+    /// all of them at once.
     #[serde(default = "default_beacon_api_bind")]
-    beacon_api_bind: String,
+    beacon_api_bind: Vec<String>,
     #[serde(default = "default_usize::<64>")]
     beacon_api_max_connections: usize,
     /// Refreshed by any byte read or written, so a slow but progressing
@@ -227,8 +228,8 @@ impl Config {
         self
     }
 
-    pub fn with_beacon_api_bind(mut self, bind: String) -> Self {
-        self.beacon_api_bind = bind;
+    pub fn with_beacon_api_bind(mut self, binds: Vec<String>) -> Self {
+        self.beacon_api_bind = binds;
         self
     }
 
@@ -370,7 +371,7 @@ impl Config {
         self.engine_config.clone()
     }
 
-    pub fn beacon_api_bind(&self) -> &str {
+    pub fn beacon_api_bind(&self) -> &[String] {
         &self.beacon_api_bind
     }
 
@@ -412,17 +413,33 @@ mod tests {
         assert_eq!(cfg.next_fork_epoch, u64::MAX);
         assert_eq!(cfg.supported_protocols().unwrap().len(), 11);
         assert_eq!(cfg.gossip_topics().unwrap().len(), 8);
-        assert_eq!(cfg.beacon_api_bind(), "0.0.0.0:5051");
+        assert_eq!(cfg.beacon_api_bind(), ["0.0.0.0:5051"]);
         assert_eq!(cfg.beacon_api_max_connections(), 64);
         assert_eq!(cfg.beacon_api_idle_timeout(), Duration::from_secs(75));
     }
 
     #[test]
+    fn beacon_api_bind_toml_array_keeps_every_entry() {
+        let toml_str = r#"
+            secret_key = "1111111111111111111111111111111111111111111111111111111111111111"
+            fork_digest = "8c9f62fe"
+            next_fork_version = "06000000"
+            beacon_api_bind = ["0.0.0.0:5051", "127.0.0.1:5052", "/run/silver/beacon.sock"]
+        "#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.beacon_api_bind(), [
+            "0.0.0.0:5051",
+            "127.0.0.1:5052",
+            "/run/silver/beacon.sock"
+        ]);
+    }
+
+    #[test]
     fn builder_sets_beacon_api_bind() {
         let cfg = Config::new([1u8; 32], [0u8; 4], [0u8; 4], 0);
-        assert_eq!(cfg.beacon_api_bind(), "0.0.0.0:5051");
-        let cfg = cfg.with_beacon_api_bind("/run/beacon.sock".into());
-        assert_eq!(cfg.beacon_api_bind(), "/run/beacon.sock");
+        assert_eq!(cfg.beacon_api_bind(), ["0.0.0.0:5051"]);
+        let cfg = cfg.with_beacon_api_bind(vec!["/run/beacon.sock".into()]);
+        assert_eq!(cfg.beacon_api_bind(), ["/run/beacon.sock"]);
     }
 
     #[test]
