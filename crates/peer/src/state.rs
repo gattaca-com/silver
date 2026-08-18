@@ -13,9 +13,11 @@ use std::{
 };
 
 use silver_common::{
-    CountingWitherFilter, GossipTopic, MessageId, MessageIdHasher, PeerId,
+    AgentString, CountingWitherFilter, GossipTopic, MessageId, MessageIdHasher, PeerId,
     rpc_rate_limit::{N_STREAM_PROTOCOLS, RpcRateLimitSet},
 };
+
+use crate::scoring::ScoreBreakdown;
 
 /// Max topics an honest eth2 peer can reasonably subscribe to (64 attnets +
 /// 4 syncnets + 6 blobs + aggregates + blocks + slashings + exits + bls-
@@ -33,6 +35,9 @@ pub(crate) struct PeerState {
     pub addr: SocketAddr,
     pub ip_prefix: IpPrefix,
     pub connected_at: Instant,
+    pub local_dialler: bool,
+    // From the identify exchange; default-empty until it completes.
+    pub user_agent: AgentString,
 
     // Subscriptions observed from the peer's SUBSCRIBE frames.
     pub topics: HashSet<GossipTopic>,
@@ -67,9 +72,12 @@ pub(crate) struct PeerState {
     // Prune backoff deadlines per topic
     pub backoffs: HashMap<GossipTopic, Instant>,
 
-    // Cached score value + recomputation timestamp.
+    // Cached score value + recomputation timestamp. `last_breakdown.total ==
+    // cached_score`; both refreshed together by `rescore_all` so decisions
+    // and the emitted `PeerScores` read the same numbers.
     pub cached_score: f64,
     pub score_valid_at: Instant,
+    pub last_breakdown: ScoreBreakdown,
 
     // Graylisted but kept for data-column coverage; dedups the spare log.
     pub evict_spared: bool,
@@ -82,6 +90,8 @@ impl PeerState {
             addr,
             ip_prefix: IpPrefix::from(addr.ip()),
             connected_at: now,
+            local_dialler: false,
+            user_agent: AgentString::default(),
             topics: HashSet::with_capacity(TOPICS_PER_PEER_CAP),
             topic_stats: HashMap::with_capacity(TOPICS_PER_PEER_CAP),
             msg_cache: CountingWitherFilter::default(),
@@ -94,6 +104,7 @@ impl PeerState {
             backoffs: HashMap::new(),
             cached_score: 0.0,
             score_valid_at: now,
+            last_breakdown: ScoreBreakdown::default(),
             evict_spared: false,
         }
     }
@@ -104,6 +115,10 @@ impl PeerState {
         self.application_score = archive.application_score;
         self.behaviour_penalty = archive.behaviour_penalty;
         self.topic_stats = archive.topic_stats;
+        for t in self.topic_stats.values_mut() {
+            t.fanout_total = 0;
+            t.fanout_sent = 0;
+        }
     }
 
     /// Inserts or updates msg cache entry, returning previous count
@@ -133,6 +148,12 @@ pub(crate) struct TopicScore {
     pub mesh_failure_penalty: f64,
     // P4
     pub invalid_deliveries: f64,
+    // Fan-out ledger: messages we sent on the topic while this peer was
+    // meshed, and how many were actually forwarded to it (the rest were
+    // suppressed — IDONTWANT or score gate). Not decayed; zeroed on
+    // reconnect so the ratio is per-connection.
+    pub fanout_total: u64,
+    pub fanout_sent: u64,
 }
 
 /// Archived counters kept for `archived_ttl` after a peer disconnects. Lets

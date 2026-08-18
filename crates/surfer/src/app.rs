@@ -1,12 +1,15 @@
 use std::collections::HashSet;
 
 use ratatui::widgets::TableState;
+use silver_common::{GossipTopic, PeerId};
 
 use crate::{
     discovery::DiscoveredSources,
     flamegraph::Flamegraph,
     render::events_pane::EventsPane,
-    sources::{counters::CounterSet, tilemetrics::TileMetricsSet, timings::TimingSet},
+    sources::{
+        counters::CounterSet, peers::Peers, tilemetrics::TileMetricsSet, timings::TimingSet,
+    },
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -15,12 +18,22 @@ pub enum Pane {
     TCaches,
     Timings,
     Tiles,
+    Peers,
+    Gossip,
     Events,
     Flamegraph,
 }
 
-pub const PANES: [Pane; 6] =
-    [Pane::Counters, Pane::TCaches, Pane::Timings, Pane::Tiles, Pane::Events, Pane::Flamegraph];
+pub const PANES: [Pane; 8] = [
+    Pane::Counters,
+    Pane::TCaches,
+    Pane::Timings,
+    Pane::Tiles,
+    Pane::Peers,
+    Pane::Gossip,
+    Pane::Events,
+    Pane::Flamegraph,
+];
 
 impl Pane {
     pub fn label(self) -> &'static str {
@@ -29,6 +42,8 @@ impl Pane {
             Pane::TCaches => "TCaches",
             Pane::Timings => "Timings",
             Pane::Tiles => "Tiles",
+            Pane::Peers => "Peers",
+            Pane::Gossip => "Gossip",
             Pane::Events => "Events",
             Pane::Flamegraph => "Flamegraph",
         }
@@ -39,7 +54,9 @@ impl Pane {
             Pane::Counters => Pane::TCaches,
             Pane::TCaches => Pane::Timings,
             Pane::Timings => Pane::Tiles,
-            Pane::Tiles => Pane::Events,
+            Pane::Tiles => Pane::Peers,
+            Pane::Peers => Pane::Gossip,
+            Pane::Gossip => Pane::Events,
             Pane::Events => Pane::Flamegraph,
             Pane::Flamegraph => Pane::Counters,
         }
@@ -58,6 +75,17 @@ pub struct App {
     pub timings_selection: usize,
     pub tilemetrics: Vec<TileMetricsSet>,
     pub tiles_selection: usize,
+    pub peers: Peers,
+    /// Selection is by identity: the highlight and gossip expansion follow
+    /// this peer as live re-sorting moves its row.
+    pub peers_selected: Option<PeerId>,
+    /// Row order as last drawn; navigation moves relative to it.
+    pub peers_display_order: Vec<PeerId>,
+    pub peers_sort_col: usize,
+    pub peers_sort_desc: bool,
+    /// Topic selection by identity, mirroring the peers pane.
+    pub gossip_selected: Option<GossipTopic>,
+    pub gossip_display_order: Vec<GossipTopic>,
     pub events: EventsPane,
     /// When true, the active pane renders only the plot for the
     /// selected row, full-area. Toggled by Enter; Esc exits.
@@ -75,6 +103,8 @@ pub struct App {
     pub tcaches_table_state: TableState,
     pub timings_table_state: TableState,
     pub tiles_table_state: TableState,
+    pub peers_table_state: TableState,
+    pub gossip_table_state: TableState,
     pub flamegraph: Flamegraph,
     pub quit: bool,
 }
@@ -90,6 +120,7 @@ impl App {
         tcaches: Vec<CounterSet>,
         timings: Vec<TimingSet>,
         tilemetrics: Vec<TileMetricsSet>,
+        peers: Peers,
         events: EventsPane,
         flamegraph: Flamegraph,
     ) -> Self {
@@ -103,6 +134,13 @@ impl App {
             timings_selection: 0,
             tilemetrics,
             tiles_selection: 0,
+            peers,
+            peers_selected: None,
+            peers_display_order: Vec::new(),
+            peers_sort_col: 10,
+            peers_sort_desc: true,
+            gossip_selected: None,
+            gossip_display_order: Vec::new(),
             events,
             drilled_in: false,
             split_pct: SPLIT_DEFAULT,
@@ -110,6 +148,8 @@ impl App {
             tcaches_table_state: TableState::default(),
             timings_table_state: TableState::default(),
             tiles_table_state: TableState::default(),
+            peers_table_state: TableState::default(),
+            gossip_table_state: TableState::default(),
             flamegraph,
             quit: false,
         }
@@ -228,6 +268,7 @@ impl App {
         for t in &mut self.tilemetrics {
             t.drain();
         }
+        self.peers.sample();
         self.events.sample();
         self.flamegraph.sample();
     }
@@ -260,9 +301,41 @@ impl App {
             Pane::TCaches => self.move_tcache_selection(dir),
             Pane::Timings => self.move_timing_selection(dir),
             Pane::Tiles => self.move_tile_selection(dir),
+            Pane::Peers => self.move_peer_selection(dir),
+            Pane::Gossip => self.move_gossip_selection(dir),
             Pane::Events => self.events.move_selection(dir),
             Pane::Flamegraph => self.flamegraph.scroll_by(dir),
         }
+    }
+
+    fn move_peer_selection(&mut self, dir: i32) {
+        if self.peers_display_order.is_empty() {
+            return;
+        }
+        let pos = self
+            .peers_selected
+            .and_then(|id| self.peers_display_order.iter().position(|p| *p == id))
+            .unwrap_or(0);
+        let new = pos.saturating_add_signed(dir as isize).min(self.peers_display_order.len() - 1);
+        self.peers_selected = Some(self.peers_display_order[new]);
+    }
+
+    fn move_gossip_selection(&mut self, dir: i32) {
+        if self.gossip_display_order.is_empty() {
+            return;
+        }
+        let pos = self
+            .gossip_selected
+            .and_then(|t| self.gossip_display_order.iter().position(|x| *x == t))
+            .unwrap_or(0);
+        let new = pos.saturating_add_signed(dir as isize).min(self.gossip_display_order.len() - 1);
+        self.gossip_selected = Some(self.gossip_display_order[new]);
+    }
+
+    /// Peers pane: move the sort column left/right, wrapping.
+    pub fn adjust_peers_sort(&mut self, dir: i32) {
+        let n = crate::render::peers_pane::COLUMNS.len() as i32;
+        self.peers_sort_col = (self.peers_sort_col as i32 + dir).rem_euclid(n) as usize;
     }
 
     fn move_tcache_selection(&mut self, dir: i32) {

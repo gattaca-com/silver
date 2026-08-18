@@ -7,9 +7,9 @@ use std::{
 use flux::{spine::SpineAdapter, tile::Tile};
 use silver_chain_spec::SpecConfig;
 use silver_common::{
-    BeaconStateEvent, GossipTopic, Nanos, P2pSend, PeerControl, PeerEvent, RpcInbound, RpcOutbound,
-    RpcRequestOutbound, SilverSpine, SilverSpineProducers, SyncUpdate, TCacheProducer, TCacheRead,
-    TMultiProducer, TRandomAccess, msg_is_backfill,
+    BeaconStateEvent, GossipTopic, Nanos, P2pSend, PeerControl, PeerEvent, PeerStats, RpcInbound,
+    RpcOutbound, RpcRequestOutbound, SilverSpine, SilverSpineProducers, SyncUpdate, TCacheProducer,
+    TCacheRead, TMultiProducer, TRandomAccess, msg_is_backfill,
     ssz_view::{BLOCKS_BY_RANGE_REQ_SIZE, METADATA_SIZE, STATUS_V2_SIZE, StatusView},
 };
 use silver_gossip::{GossipHandler, GossipHandlerEvent};
@@ -335,6 +335,13 @@ impl Tile<SilverSpine> for Controller {
                     evt,
                     &mut adapter.producers,
                 )
+            });
+
+            self.peer_manager.peer_scores(&mut |scores| {
+                adapter.produce(PeerStats::Scores(scores));
+            });
+            self.peer_manager.peer_topic_scores(now, &mut |topic_scores| {
+                adapter.produce(PeerStats::Topic(topic_scores));
             });
 
             if self.auto_ping && self.last_ping.elapsed() > Duration::from_secs(17) {

@@ -1,4 +1,7 @@
-use std::net::{IpAddr, SocketAddr};
+use std::{
+    net::{IpAddr, SocketAddr},
+    time::Duration,
+};
 
 use flux::timing::Nanos;
 
@@ -355,6 +358,12 @@ pub enum PeerEvent {
         /// `false` if the id is new-to-us — an IWANT is implied.
         already_seen: bool,
     },
+    GossipDuplicate {
+        p2p_peer: usize,
+        topic: GossipTopic,
+        hash: MessageId,
+        recv_ts: Nanos,
+    },
     P2pGossipInvalidMsg {
         p2p_peer: usize,
         topic: GossipTopic,
@@ -382,6 +391,7 @@ pub enum PeerEvent {
         p2p_peer: usize,
         topic: GossipTopic,
         msg_hash: MessageId,
+        recv_ts: Nanos,
         idontwant: TCacheRead,
     },
     /// Compression tile has prepared a batched IHAVE frame for `topic`.
@@ -1021,4 +1031,95 @@ impl RequestCategory {
     pub fn is_backfill(self) -> bool {
         matches!(self, RequestCategory::ColumnBackfill | RequestCategory::BlockBackfill)
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub enum PeerStats {
+    P2p(P2pConnectionStats),
+    Scores(PeerScores),
+    Topic(PeerTopicScores),
+}
+
+/// Fixed-size copy of an identify user-agent, sized to match
+/// `Identify::user_agent`.
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct AgentString {
+    bytes: [u8; 64],
+    len: u8,
+}
+
+impl Default for AgentString {
+    fn default() -> Self {
+        Self { bytes: [0u8; 64], len: 0 }
+    }
+}
+
+impl AgentString {
+    pub fn new(s: &str) -> Self {
+        let mut len = s.len().min(64);
+        while !s.is_char_boundary(len) {
+            len -= 1;
+        }
+        let mut bytes = [0u8; 64];
+        bytes[..len].copy_from_slice(&s.as_bytes()[..len]);
+        Self { bytes, len: len as u8 }
+    }
+
+    pub fn as_str(&self) -> &str {
+        str::from_utf8(&self.bytes[..self.len as usize]).unwrap_or("")
+    }
+}
+
+/// One meshed (peer, topic) pair's raw gossipsub counters — the per-topic
+/// inputs behind the P1–P4 components in [`PeerScores`].
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct PeerTopicScores {
+    pub id: PeerId,
+    pub topic: GossipTopic,
+    pub meshed_secs: u64,
+    pub first_deliveries: f64,
+    pub mesh_deliveries: f64,
+    /// `false` when the topic class is not delivery-scored at all, in which
+    /// case `mesh_active` never becomes true.
+    pub p3_scored: bool,
+    pub mesh_active: bool,
+    pub fanout_total: u64,
+    pub fanout_sent: u64,
+    pub mesh_failure_penalty: f64,
+    pub invalid_deliveries: f64,
+}
+
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct P2pConnectionStats {
+    pub id: PeerId,
+    pub connection: usize,
+    pub addr: SocketAddr,
+    pub connected: Duration,
+    pub rtt: Duration,
+    pub lost_packets: u64,
+    pub rx_blocking: u64,
+    pub tx_blocking: u64,
+    pub rx_datagrams: u64,
+    pub tx_datagrams: u64,
+}
+
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct PeerScores {
+    pub id: PeerId,
+    pub user_agent: AgentString,
+    pub mesh_count: u32,
+    pub p1_time_in_mesh: f64,
+    pub p2_first_deliveries: f64,
+    pub p3_mesh_deficit: f64,
+    pub p3b_mesh_failure: f64,
+    pub p4_invalid: f64,
+    pub p5_application: f64,
+    pub p6_ip_colocation: f64,
+    pub p7_behaviour: f64,
+    pub total: f64,
 }

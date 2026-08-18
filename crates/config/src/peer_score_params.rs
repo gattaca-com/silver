@@ -25,12 +25,11 @@ pub struct ScoreParams {
     pub time_in_mesh_weight: f64,
 
     // ── P2: first-message deliveries ────────────────────────────────────
-    pub first_message_deliveries_cap: f64,
-    pub first_message_deliveries_weight: f64,
+    // Cap and weight are per-topic-class: `silver_peer::scoring::topic_params`.
     pub first_message_deliveries_decay: f64,
 
-    // ── P3: mesh-message deliveries (rate threshold) ────────────────────
-    pub mesh_message_deliveries_threshold: f64,
+    // ── P3: mesh-message deliveries ─────────────────────────────────────
+    // The rate threshold is per-topic-class: `scoring::topic_params`.
     pub mesh_message_deliveries_weight: f64,
     pub mesh_message_deliveries_decay: f64,
     /// Seconds after graft before P3 tracking becomes active.
@@ -136,17 +135,9 @@ impl Default for ScoreParams {
             time_in_mesh_weight: 0.00027, // ~1.0 per hour in mesh
 
             // P2 — larger positive reward for low-latency relaying
-            first_message_deliveries_cap: 1000.0,
-            first_message_deliveries_weight: 1.0,
             first_message_deliveries_decay: 0.998,
 
-            // P3 — deficit below expected delivery rate, squared.
-            // Disabled (threshold 0). Canonical eth2 value is ~0.685 for
-            // topics with expected_message_rate ≈ 1/slot (block + all Fulu
-            // data-column subnets — silver's whole subscription set). Enable
-            // only once a healthy multi-peer mesh exists; in a 1-2 peer mesh
-            // legit peers deliver via first, not mesh, deliveries.
-            mesh_message_deliveries_threshold: 0.685,
+            // P3 — deficit below the class threshold, squared.
             mesh_message_deliveries_weight: -1.0,
             mesh_message_deliveries_decay: 0.971,
             // 1 epoch grace after graft before P3 activates (matches

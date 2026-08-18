@@ -10,6 +10,7 @@ flux.workspace = true
 flux-profiler.workspace = true
 fxhash.workspace = true
 hex.workspace = true
+rand.workspace = true
 silver_common.workspace = true
 silver_config.workspace = true
 slab.workspace = true

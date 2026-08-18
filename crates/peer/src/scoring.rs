@@ -7,9 +7,50 @@
 
 use std::time::Instant;
 
+use silver_common::GossipTopic;
 use silver_config::ScoreParams;
 
 use crate::state::PeerState;
+
+/// Per-class P2 caps and weights bound each topic's maximum contribution
+/// (`p2_cap × p2_weight`) so high-rate topics can't mint unbounded goodwill
+/// that shields penalties: with the global cap, one attestation subnet was
+/// worth 1000 points against a −80 graylist. P3 thresholds are per-class
+/// because expected delivery rates differ by orders of magnitude.
+///
+/// Budget shape (max P2 per topic): block/envelope 20, aggregates 20, sync
+/// contributions 10, payload attestations and bids 5, columns 2.5/subnet,
+/// attestation and sync subnets 1/subnet, misc 1. Caps sit below a good
+/// peer's steady-state counter (rate × ~500 slots at the 0.998 decay), so
+/// strong deliverers saturate their class rather than outgrow it.
+pub(crate) struct TopicClassParams {
+    pub p2_cap: f64,
+    pub p2_weight: f64,
+    pub p3_threshold: f64,
+}
+
+pub(crate) fn topic_params(topic: &GossipTopic) -> TopicClassParams {
+    use GossipTopic::*;
+    // `p3_threshold` is the single source of P3 policy: 0.0 = the topic is
+    // not delivery-scored (columns stay off until the meshes are healthy);
+    // non-zero keeps the previous global value (0.685, ~1 msg/slot).
+    let (p2_cap, p2_weight, p3_threshold) = match topic {
+        BeaconBlock | ExecutionPayload => (50.0, 0.4, 0.685),
+        BeaconAggregateAndProof => (1000.0, 0.02, 0.685),
+        BeaconAttestation(_) => (1000.0, 0.001, 0.685),
+        SyncCommitteeContributionAndProof => (200.0, 0.05, 0.685),
+        SyncCommittee(_) => (100.0, 0.01, 0.685),
+        DataColumnSidecar(_) => (200.0, 0.0125, 0.0),
+        PayloadAttestationMessage => (100.0, 0.05, 0.685),
+        ExecutionPayloadBid => (500.0, 0.01, 0.0),
+        _ => (5.0, 0.2, 0.0),
+    };
+    TopicClassParams { p2_cap, p2_weight, p3_threshold }
+}
+
+pub(crate) fn p3_scored(topic: &GossipTopic) -> bool {
+    topic_params(topic).p3_threshold > 0.0
+}
 
 /// Per-component score contributions. P1–P4 are summed across topics; total
 /// is the sum of all fields and matches `compute_score`. Used for eviction
@@ -32,6 +73,7 @@ pub(crate) struct ScoreBreakdown {
 /// `ip_colocation_peers` is the count of currently-connected peers sharing
 /// this peer's /24 (v4) or /64 (v6) prefix (including this peer). The
 /// manager supplies this value at call time; the scoring fn has no state.
+#[cfg(test)]
 pub(crate) fn compute_score(
     state: &PeerState,
     params: &ScoreParams,
@@ -50,19 +92,19 @@ pub(crate) fn score_breakdown(
 ) -> ScoreBreakdown {
     let mut b = ScoreBreakdown::default();
 
-    for t in state.topic_stats.values() {
+    for (topic, t) in &state.topic_stats {
+        let tp = topic_params(topic);
         // P1 — time in mesh (linear, capped).
         if let Some(since) = t.meshed_since {
             let age = now.saturating_duration_since(since).as_secs_f64();
             b.p1_time_in_mesh += age.min(params.time_in_mesh_cap_s) * params.time_in_mesh_weight;
         }
-        // P2 — first-message deliveries (linear, capped).
-        b.p2_first_deliveries += t.first_deliveries.min(params.first_message_deliveries_cap) *
-            params.first_message_deliveries_weight;
+        // P2 — first-message deliveries (linear, class-capped and -weighted).
+        b.p2_first_deliveries += t.first_deliveries.min(tp.p2_cap) * tp.p2_weight;
         // P3 — mesh delivery deficit, squared. Only active after the grace
         // window, and only penalises below threshold (weight is negative).
-        if t.mesh_active && t.mesh_deliveries < params.mesh_message_deliveries_threshold {
-            let deficit = params.mesh_message_deliveries_threshold - t.mesh_deliveries;
+        if t.mesh_active && t.mesh_deliveries < tp.p3_threshold {
+            let deficit = tp.p3_threshold - t.mesh_deliveries;
             b.p3_mesh_deficit += deficit * deficit * params.mesh_message_deliveries_weight;
         }
         // P3b — carried forward from prior mesh pruning.
@@ -238,17 +280,42 @@ mod tests {
     #[test]
     fn mesh_delivery_deficit_quadratic_below_threshold() {
         let mut params = ScoreParams::default();
-        params.mesh_message_deliveries_threshold = 10.0;
         params.mesh_message_deliveries_weight = -2.0;
         let now = Instant::now();
         let mut state = mk_state(now);
         let mut t = TopicScore::default();
         t.mesh_active = true;
-        t.mesh_deliveries = 3.0; // deficit = 7
+        t.mesh_deliveries = 0.0;
         state.topic_stats.insert(GossipTopic::BeaconBlock, t);
-        // 7^2 * -2 = -98
+        let threshold = topic_params(&GossipTopic::BeaconBlock).p3_threshold;
+        let expected = threshold * threshold * -2.0;
         let s = compute_score(&state, &params, 1, now);
-        assert!((s - -98.0).abs() < 1e-9, "got {s}");
+        assert!((s - expected).abs() < 1e-9, "got {s}, expected {expected}");
+    }
+
+    #[test]
+    fn first_deliveries_capped_and_weighted_per_class() {
+        let params = ScoreParams::default();
+        let now = Instant::now();
+
+        // Both counters far past their class caps: each topic contributes
+        // exactly cap × weight, so the attestation subnet cannot outgrow
+        // its class budget no matter the message rate.
+        for (topic, saturated) in
+            [(GossipTopic::BeaconBlock, 1e6), (GossipTopic::BeaconAttestation(7), 1e6)]
+        {
+            let mut state = mk_state(now);
+            let mut t = TopicScore::default();
+            t.first_deliveries = saturated;
+            state.topic_stats.insert(topic, t);
+            let tp = topic_params(&topic);
+            let s = compute_score(&state, &params, 1, now);
+            assert!(
+                (s - tp.p2_cap * tp.p2_weight).abs() < 1e-9,
+                "{topic:?}: got {s}, expected {}",
+                tp.p2_cap * tp.p2_weight
+            );
+        }
     }
 
     #[test]

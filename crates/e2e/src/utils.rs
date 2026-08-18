@@ -158,6 +158,7 @@ impl PmBsHarness {
         let mut bs_a = SpineAdapter::connect_tile(&bs, &mut *spine);
 
         let pm = PeerManager::new(
+            PeerId::default(),
             Vec::new(),
             ScoreParams::default(),
             SyncingConfig {

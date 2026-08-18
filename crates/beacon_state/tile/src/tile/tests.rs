@@ -321,7 +321,11 @@ fn block_unknown_parent_rejected() {
 
     let head_before = tile.last_applied;
     let nodes_before = tile.fork_choice.nodes.len();
-    tile.apply_and_publish(&buf, true, false, |_block_root| {});
+
+    let _ = match tile.parse_and_verify_block(&buf, false) {
+        Ok(parsed) => tile.apply_and_publish(parsed, &buf, false, |_block_root| {}),
+        Err(err) => err.feedback(),
+    };
 
     assert_eq!(tile.last_applied, head_before, "head must be unchanged");
     assert_eq!(tile.fork_choice.nodes.len(), nodes_before, "no node added");
@@ -673,7 +677,11 @@ fn block_known_parent_bad_sig_rejected() {
     buf[108..116].copy_from_slice(&0u64.to_le_bytes()); // proposer_index
     buf[116..148].copy_from_slice(&parent_root); // parent_root
 
-    tile.apply_and_publish(&buf, true, false, |_block_root| {});
+    let _ = match tile.parse_and_verify_block(&buf, false) {
+        Ok(parsed) => tile.apply_and_publish(parsed, &buf, false, |_block_root| {}),
+        Err(err) => err.feedback(),
+    };
+
     assert_eq!(tile.fork_choice.nodes.len(), 1);
 }
 

@@ -199,6 +199,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut control_tile = Controller::new(
         PeerManager::new(
+            keypair.peer_id(),
             gossip_topics,
             config.peer_score_params(),
             config.syncing_config(),
