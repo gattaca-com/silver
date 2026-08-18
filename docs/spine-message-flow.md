@@ -9,8 +9,8 @@ The tiles: **Network** (QUIC + discv5), **Control** (`PeerManager` + `SyncEngine
 `GossipHandler` — gossipsub decode/encode runs in-tile, not as its own tile),
 **BeaconState** (state transition + fork choice), **Storage** (disk + backfill),
 **ClientServer** (hosting the `engine_api` client and the `beacon_api` server; the
-server talks HTTP only, so it has no spine edges of its own), **DataColumns** (column
-validation, DA tracking, EL blob fetch — split out of Storage).
+server side consumes `beacon_events` and `sync_target` to report node status),
+**DataColumns** (column validation, DA tracking, EL blob fetch — split out of Storage).
 
 ```mermaid
 flowchart LR
@@ -46,6 +46,7 @@ flowchart LR
   BS -->|beacon_events : BeaconStateEvent| CTL
   BS -->|beacon_events : BeaconStateEvent| ST
   BS -->|beacon_events : BeaconStateEvent| DC
+  BS -->|beacon_events : BeaconStateEvent| EN
   DC -->|"data_columns : DataColumnsEvent (Available)"| BS
   DC -->|"data_columns : DataColumnsEvent (Persist)"| ST
   ST -->|replay_blocks : ReplayBlock| BS
@@ -54,6 +55,7 @@ flowchart LR
   CTL -->|sync_target : SyncUpdate| BS
   CTL -->|sync_target : SyncUpdate| ST
   CTL -->|sync_target : SyncUpdate| DC
+  CTL -->|sync_target : SyncUpdate| EN
   CTL -->|syncing_strategy : SyncingStrategy| ST
   CTL -->|syncing_strategy : SyncingStrategy| DC
 
@@ -94,9 +96,9 @@ rest.
 | `rpc_inbound` | `RpcInbound` | Network | Control, BeaconState, Storage, DataColumns | ref → `incoming_rpc` |
 | `peer_events` | `PeerEvent` | Network, BeaconState, Storage, DataColumns | Control | mostly inline; `SendGossip` ref → `outgoing_gossip`, `PublishDataColumn` ref → `incoming_rpc` |
 | `peer_control` | `PeerControl` | Control | Network, Storage | inline |
-| `beacon_events` | `BeaconStateEvent` | BeaconState | Control, Storage, DataColumns | mostly inline; `PersistBlock`/`PersistEnvelope` refs → `ssz_gossip` / `incoming_rpc` (by source) |
+| `beacon_events` | `BeaconStateEvent` | BeaconState | Control, Storage, DataColumns, ClientServer | mostly inline; `PersistBlock`/`PersistEnvelope` refs → `ssz_gossip` / `incoming_rpc` (by source) |
 | `data_columns` | `DataColumnsEvent` | DataColumns | BeaconState _(Available)_, Storage _(Persist)_ | `Available` inline; `Persist` ref → `ssz_gossip` / `incoming_rpc` / `el_data_columns` (by `ColumnSource`) |
-| `sync_target` | `SyncUpdate` | Control | BeaconState, Storage, DataColumns | inline |
+| `sync_target` | `SyncUpdate` | Control | BeaconState, Storage, DataColumns, ClientServer | inline |
 | `replay_blocks` | `ReplayBlock` | Storage | BeaconState | ref → `replay_blocks` tcache |
 | `syncing_strategy` | `SyncingStrategy` | Control | Storage, DataColumns | inline |
 | `engine_reqs` | `EngineReq` | BeaconState, DataColumns _(GetBlobs)_ | ClientServer | refs → `ssz_gossip` / `incoming_rpc`; GetBlobs inline |
