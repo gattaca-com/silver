@@ -2,6 +2,8 @@ use std::{borrow::Cow, fmt::Write};
 
 use silver_httpcore::frame_response_with_headers;
 
+use crate::json::json_safe;
+
 const JSON_CONTENT_TYPE: &str = "application/json";
 
 pub(crate) struct Response<'a> {
@@ -90,10 +92,6 @@ fn status_line(code: u16) -> Option<&'static str> {
         503 => "503 Service Unavailable",
         _ => return None,
     })
-}
-
-fn json_safe(text: &str) -> bool {
-    !text.contains(['"', '\\'])
 }
 
 #[cfg(test)]
