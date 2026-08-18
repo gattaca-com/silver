@@ -244,12 +244,12 @@ fn topic_row(t: &silver_common::PeerTopicScores) -> Row<'static> {
     Row::new(cells).height(1).style(Style::default().fg(Color::Green))
 }
 
-fn short_id(bytes: &[u8]) -> String {
+pub(crate) fn short_id(bytes: &[u8]) -> String {
     let tail = &bytes[bytes.len().saturating_sub(4)..];
     tail.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn format_secs(secs: u64) -> String {
+pub(crate) fn format_secs(secs: u64) -> String {
     if secs < 60 {
         format!("{secs}s")
     } else if secs < 3600 {
