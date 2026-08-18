@@ -47,6 +47,7 @@ impl EngineApi {
                 &config.execution_endpoint,
                 &config.jwt_secret,
                 config.max_connections,
+                Duration::from_secs(config.request_timeout_secs),
             ))
         };
         Self {

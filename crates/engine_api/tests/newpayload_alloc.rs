@@ -82,7 +82,8 @@ fn warm_new_payload_send_allocates_nothing() {
     let jwt_path = write_jwt(dir.path());
     let socket = dir.path().join("engine.sock");
     let mut el = FakeEl::uds(&socket);
-    let mut client = EngineClient::new_uds(&socket, jwt_path.to_str().unwrap(), 4);
+    let mut client =
+        EngineClient::new_uds(&socket, jwt_path.to_str().unwrap(), 4, Duration::from_secs(60));
 
     send_new_payload(&mut client, SIGNED_BLOCK_SSZ, [0u8; 32]).unwrap();
     complete_round_trip(&mut client, &mut el, 0);

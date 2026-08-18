@@ -32,6 +32,7 @@ fn beacon(bind: &Bind) -> BeaconApi {
     BeaconApi::new(
         bind,
         64,
+        Duration::from_secs(75),
         &keypair,
         local_enr,
         &Identify::default(),

@@ -55,18 +55,33 @@ pub struct EngineClient {
 }
 
 impl EngineClient {
-    pub fn new(endpoint: &str, jwt: &str, max_connections: usize) -> Self {
-        Self::with_endpoint(parse_endpoint(endpoint), jwt, max_connections)
+    pub fn new(
+        endpoint: &str,
+        jwt: &str,
+        max_connections: usize,
+        request_timeout: Duration,
+    ) -> Self {
+        Self::with_endpoint(parse_endpoint(endpoint), jwt, max_connections, request_timeout)
     }
 
-    pub fn new_uds(path: impl Into<PathBuf>, jwt: &str, max_connections: usize) -> Self {
-        Self::with_endpoint(Endpoint::Uds(path.into()), jwt, max_connections)
+    pub fn new_uds(
+        path: impl Into<PathBuf>,
+        jwt: &str,
+        max_connections: usize,
+        request_timeout: Duration,
+    ) -> Self {
+        Self::with_endpoint(Endpoint::Uds(path.into()), jwt, max_connections, request_timeout)
     }
 
-    fn with_endpoint(endpoint: Endpoint, jwt: &str, max_connections: usize) -> Self {
+    fn with_endpoint(
+        endpoint: Endpoint,
+        jwt: &str,
+        max_connections: usize,
+        request_timeout: Duration,
+    ) -> Self {
         let jwt = JwtSecret::from_file(jwt).unwrap_or_else(|e| panic!("invalid JWT secret: {e}"));
         Self {
-            pool: HttpPool::new(endpoint, jwt, max_connections),
+            pool: HttpPool::new(endpoint, jwt, max_connections, request_timeout),
             poll: Poll::new().expect("mio Poll::new failed"),
             events: Events::with_capacity(EVENTS_CAPACITY),
             id: 1,

@@ -1,4 +1,7 @@
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
+use std::{
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
+    time::Duration,
+};
 
 use chain_config::ChainConfig;
 pub use discovery_config::DiscoveryConfig;
@@ -131,6 +134,10 @@ pub struct Config {
     beacon_api_bind: String,
     #[serde(default = "default_usize::<64>")]
     beacon_api_max_connections: usize,
+    /// Refreshed by any byte read or written, so a slow but progressing
+    /// transfer never trips it.
+    #[serde(default = "default_u64::<75>")]
+    beacon_api_idle_timeout_secs: u64,
     #[serde(default)]
     disable_weak_subjectivity_check: bool,
 }
@@ -167,6 +174,7 @@ impl Config {
             engine_config: Default::default(),
             beacon_api_bind: default_beacon_api_bind(),
             beacon_api_max_connections: 64,
+            beacon_api_idle_timeout_secs: 75,
             disable_weak_subjectivity_check: false,
         }
     }
@@ -226,6 +234,11 @@ impl Config {
 
     pub fn with_beacon_api_max_connections(mut self, max: usize) -> Self {
         self.beacon_api_max_connections = max;
+        self
+    }
+
+    pub fn with_beacon_api_idle_timeout_secs(mut self, secs: u64) -> Self {
+        self.beacon_api_idle_timeout_secs = secs;
         self
     }
 
@@ -365,6 +378,10 @@ impl Config {
         self.beacon_api_max_connections
     }
 
+    pub fn beacon_api_idle_timeout(&self) -> Duration {
+        Duration::from_secs(self.beacon_api_idle_timeout_secs)
+    }
+
     pub fn disable_weak_subjectivity_check(&self) -> bool {
         self.disable_weak_subjectivity_check
     }
@@ -397,6 +414,7 @@ mod tests {
         assert_eq!(cfg.gossip_topics().unwrap().len(), 8);
         assert_eq!(cfg.beacon_api_bind(), "0.0.0.0:5051");
         assert_eq!(cfg.beacon_api_max_connections(), 64);
+        assert_eq!(cfg.beacon_api_idle_timeout(), Duration::from_secs(75));
     }
 
     #[test]
@@ -413,6 +431,14 @@ mod tests {
         assert_eq!(cfg.beacon_api_max_connections(), 64);
         let cfg = cfg.with_beacon_api_max_connections(2);
         assert_eq!(cfg.beacon_api_max_connections(), 2);
+    }
+
+    #[test]
+    fn builder_sets_beacon_api_idle_timeout() {
+        let cfg = Config::new([1u8; 32], [0u8; 4], [0u8; 4], 0);
+        assert_eq!(cfg.beacon_api_idle_timeout(), Duration::from_secs(75));
+        let cfg = cfg.with_beacon_api_idle_timeout_secs(5);
+        assert_eq!(cfg.beacon_api_idle_timeout(), Duration::from_secs(5));
     }
 
     #[test]

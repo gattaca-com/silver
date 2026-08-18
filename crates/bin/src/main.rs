@@ -235,6 +235,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let beacon_api = BeaconApi::new(
         &Bind::parse(config.beacon_api_bind()),
         config.beacon_api_max_connections(),
+        config.beacon_api_idle_timeout(),
         &keypair,
         local_enr,
         &identify,

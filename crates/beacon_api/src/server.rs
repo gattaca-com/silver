@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     io::{self, Read, Write},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use mio::{Events, Interest, Poll, Token};
@@ -16,9 +16,35 @@ use crate::{
 
 const LISTENER: Token = Token(0);
 
+const MAX_SWEEP_INTERVAL: Duration = Duration::from_secs(1);
+
 struct Connection {
     stream: Stream,
     http: ServerConnection,
+    last_activity: Instant,
+}
+
+/// Schedules the idle scan so that `pump` walks the connection map at most
+/// once per `interval` instead of on every busy-poll iteration.
+struct IdleSweep {
+    timeout: Duration,
+    interval: Duration,
+    next: Instant,
+}
+
+impl IdleSweep {
+    fn new(timeout: Duration) -> Self {
+        let interval = MAX_SWEEP_INTERVAL.min(timeout / 4);
+        Self { timeout, interval, next: Instant::now() + interval }
+    }
+
+    fn due(&mut self, now: Instant) -> bool {
+        if now < self.next {
+            return false;
+        }
+        self.next = now + self.interval;
+        true
+    }
 }
 
 pub struct BeaconApi {
@@ -26,6 +52,7 @@ pub struct BeaconApi {
     events: Events,
     listener: Listener,
     max_connections: usize,
+    idle: IdleSweep,
     current_token: Token,
     connections: HashMap<Token, Connection>,
     router: Router,
@@ -36,6 +63,7 @@ impl BeaconApi {
     pub fn new(
         bind: &Bind,
         max_connections: usize,
+        idle_timeout: Duration,
         keypair: &Keypair,
         local_enr: Enr,
         identify: &Identify,
@@ -51,6 +79,7 @@ impl BeaconApi {
             events: Events::with_capacity(1024),
             listener,
             max_connections,
+            idle: IdleSweep::new(idle_timeout),
             current_token: Token(LISTENER.0 + 1),
             connections: HashMap::new(),
             router: Router::new(ROUTES),
@@ -64,6 +93,7 @@ impl BeaconApi {
 
     pub fn pump(&mut self) -> bool {
         self.poll.poll(&mut self.events, Some(Duration::ZERO)).unwrap();
+        let now = Instant::now();
 
         let mut did_work = false;
         for event in &self.events {
@@ -91,13 +121,16 @@ impl BeaconApi {
                     }
                     let token = next(&mut self.current_token);
                     self.poll.registry().register(&mut stream, token, Interest::READABLE).unwrap();
-                    self.connections
-                        .insert(token, Connection { stream, http: ServerConnection::new() });
+                    self.connections.insert(token, Connection {
+                        stream,
+                        http: ServerConnection::new(),
+                        last_activity: now,
+                    });
                 },
                 token => {
                     if let Some(conn) = self.connections.get_mut(&token) {
                         did_work = true;
-                        match handle_event(self.poll.registry(), conn, event, &|req, out| {
+                        match handle_event(self.poll.registry(), conn, event, now, &|req, out| {
                             self.router.dispatch(req, &self.ctx, out)
                         }) {
                             Ok(true) => {
@@ -116,7 +149,26 @@ impl BeaconApi {
             }
         }
 
+        if self.idle.due(now) {
+            did_work |= self.close_idle(now);
+        }
+
         did_work
+    }
+
+    fn close_idle(&mut self, now: Instant) -> bool {
+        let Self { connections, poll, idle, .. } = self;
+        let before = connections.len();
+        connections.retain(|_, conn| {
+            let idle_for = now.duration_since(conn.last_activity);
+            if idle_for <= idle.timeout {
+                return true;
+            }
+            tracing::warn!("beacon api connection idle for {idle_for:?}, closing");
+            let _ = poll.registry().deregister(&mut conn.stream);
+            false
+        });
+        connections.len() != before
     }
 }
 
@@ -124,6 +176,7 @@ fn handle_event<F: Fn(&ParsedRequest<'_>, &mut Vec<u8>)>(
     registry: &mio::Registry,
     conn: &mut Connection,
     event: &mio::event::Event,
+    now: Instant,
     request_handler: &F,
 ) -> io::Result<bool> {
     if event.is_readable() {
@@ -131,7 +184,10 @@ fn handle_event<F: Fn(&ParsedRequest<'_>, &mut Vec<u8>)>(
             let space = conn.http.read_space()?;
             match conn.stream.read(space) {
                 Ok(0) => return Err(io::Error::from(io::ErrorKind::UnexpectedEof)),
-                Ok(n) => conn.http.commit_read(n),
+                Ok(n) => {
+                    conn.last_activity = now;
+                    conn.http.commit_read(n);
+                }
                 Err(e) if would_block(&e) => break,
                 Err(e) if interrupted(&e) => continue,
                 Err(e) => return Err(e),
@@ -152,6 +208,7 @@ fn handle_event<F: Fn(&ParsedRequest<'_>, &mut Vec<u8>)>(
                         return Err(io::Error::new(io::ErrorKind::WriteZero, "write returned 0"))
                     }
                     Ok(n) => {
+                        conn.last_activity = now;
                         conn.http.commit_write(n);
                         if conn.http.pending_write().is_empty() {
                             break;
@@ -215,13 +272,39 @@ mod tests {
         assert_eq!(cur.0, LISTENER.0 + 1);
     }
 
-    fn pump_until<T>(api: &mut BeaconApi, client: JoinHandle<T>, msg: &str) -> T {
+    /// Longer than any test's 10 s spin deadline: the idle sweep never reaps.
+    const LONG_TIMEOUT: Duration = Duration::from_secs(60);
+
+    fn api_with(max_connections: usize, idle_timeout: Duration) -> BeaconApi {
+        let keypair = Keypair::from_secret(&[1u8; 32]).unwrap();
+        let local_enr = Enr::empty(keypair.secret_key()).unwrap();
+        BeaconApi::new(
+            &Bind::parse("127.0.0.1:0"),
+            max_connections,
+            idle_timeout,
+            &keypair,
+            local_enr,
+            &Identify::default(),
+            BeaconStateOwner::empty_test(0).reader(),
+        )
+    }
+
+    fn tcp_addr(api: &BeaconApi) -> SocketAddr {
+        let Bind::Tcp(addr) = api.local_addr() else { panic!("expected tcp bind") };
+        addr
+    }
+
+    fn pump_until(api: &mut BeaconApi, msg: &str, mut done: impl FnMut(&BeaconApi) -> bool) {
         let deadline = Instant::now() + Duration::from_secs(10);
-        while !client.is_finished() {
+        while !done(api) {
             assert!(Instant::now() < deadline, "timeout: {msg}");
             api.pump();
             std::thread::sleep(Duration::from_millis(1));
         }
+    }
+
+    fn serve<T>(api: &mut BeaconApi, client: JoinHandle<T>, msg: &str) -> T {
+        pump_until(api, msg, |_| client.is_finished());
         client.join().unwrap()
     }
 
@@ -231,21 +314,24 @@ mod tests {
         stream
     }
 
+    fn read_to_eof(mut stream: TcpStream) -> Vec<u8> {
+        let mut received = Vec::new();
+        let mut chunk = [0u8; 1024];
+        loop {
+            match stream.read(&mut chunk) {
+                Ok(0) => return received,
+                Ok(n) => received.extend_from_slice(&chunk[..n]),
+                Err(e) => panic!("client read: {e}"),
+            }
+        }
+    }
+
     #[test]
     fn connection_cap_drops_excess_then_recovers() {
-        let keypair = Keypair::from_secret(&[1u8; 32]).unwrap();
-        let local_enr = Enr::empty(keypair.secret_key()).unwrap();
-        let mut api = BeaconApi::new(
-            &Bind::parse("127.0.0.1:0"),
-            1,
-            &keypair,
-            local_enr,
-            &Identify::default(),
-            BeaconStateOwner::empty_test(0).reader(),
-        );
-        let Bind::Tcp(addr) = api.local_addr() else { panic!("expected tcp bind") };
+        let mut api = api_with(1, LONG_TIMEOUT);
+        let addr = tcp_addr(&api);
 
-        let held_open = pump_until(
+        let held_open = serve(
             &mut api,
             std::thread::spawn(move || {
                 let mut stream = connect(addr);
@@ -263,7 +349,7 @@ mod tests {
             "first client served",
         );
 
-        let denied = pump_until(
+        let denied = serve(
             &mut api,
             std::thread::spawn(move || {
                 let mut stream = connect(addr);
@@ -279,14 +365,9 @@ mod tests {
         );
 
         drop(held_open);
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while !api.connections.is_empty() {
-            assert!(Instant::now() < deadline, "timeout: closed connection reaped");
-            api.pump();
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        pump_until(&mut api, "closed connection reaped", |api| api.connections.is_empty());
 
-        let response = pump_until(
+        let response = serve(
             &mut api,
             std::thread::spawn(move || {
                 let mut stream = connect(addr);
@@ -297,6 +378,126 @@ mod tests {
                 response
             }),
             "third client served after the slot freed",
+        );
+        assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
+    }
+
+    /// CL-115: a request that never completes holds its slot forever. Partial
+    /// and malformed input are treated alike — neither dispatches, so both are
+    /// reaped by the same idle deadline.
+    #[test]
+    fn partial_request_is_reaped_after_the_idle_deadline() {
+        let mut api = api_with(64, Duration::from_millis(200));
+        let addr = tcp_addr(&api);
+
+        let received = serve(
+            &mut api,
+            std::thread::spawn(move || {
+                let mut stream = connect(addr);
+                write!(stream, "GET /metrics HTTP/1.1\r\nHost: x\r\n").unwrap();
+                read_to_eof(stream)
+            }),
+            "partial request reaped",
+        );
+
+        assert!(received.is_empty(), "half a request must not be answered: {received:?}");
+        assert!(api.connections.is_empty(), "reaped connection must leave the map");
+    }
+
+    #[test]
+    fn idle_keep_alive_connection_is_reaped_after_the_idle_deadline() {
+        let idle_timeout = Duration::from_millis(200);
+        let mut api = api_with(64, idle_timeout);
+        let addr = tcp_addr(&api);
+
+        let (received, alive_for) = serve(
+            &mut api,
+            std::thread::spawn(move || {
+                let mut stream = connect(addr);
+                // Timed from before the request: the server's activity stamp
+                // cannot predate it, so the deadline it enforces is at least
+                // this long.
+                let sent_at = Instant::now();
+                write!(stream, "GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+                (read_to_eof(stream), sent_at.elapsed())
+            }),
+            "idle keep-alive connection reaped",
+        );
+
+        assert!(received.starts_with(b"HTTP/1.1 200 OK\r\n"));
+        assert!(alive_for >= idle_timeout, "closed before the deadline, after {alive_for:?}");
+        assert!(api.connections.is_empty(), "reaped connection must leave the map");
+    }
+
+    #[test]
+    fn traffic_refreshes_the_idle_deadline() {
+        let idle_timeout = Duration::from_millis(400);
+        let mut api = api_with(64, idle_timeout);
+        let addr = tcp_addr(&api);
+
+        // Five requests spaced a quarter of the deadline apart run well past it
+        // in total; each read/write must push the deadline out.
+        let _still_open = serve(
+            &mut api,
+            std::thread::spawn(move || {
+                let mut stream = connect(addr);
+                let mut chunk = [0u8; 1024];
+                for i in 0..5 {
+                    write!(stream, "GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+                    let n = stream.read(&mut chunk).unwrap();
+                    assert!(n > 0, "server closed a connection that kept transferring (#{i})");
+                    std::thread::sleep(idle_timeout / 4);
+                }
+                stream
+            }),
+            "keep-alive client kept alive by its own traffic",
+        );
+
+        assert_eq!(api.connections.len(), 1, "an active connection must survive the sweep");
+    }
+
+    /// The CL-115 exhaustion scenario end to end: a hung client owns the only
+    /// slot, so every other client is refused until the sweep frees it.
+    #[test]
+    fn idle_sweep_frees_a_slot_held_at_the_cap() {
+        let mut api = api_with(1, Duration::from_millis(800));
+        let addr = tcp_addr(&api);
+
+        let hung = std::thread::spawn(move || {
+            let mut stream = connect(addr);
+            write!(stream, "GET /metrics HTTP/1.1\r\nHost: x\r\n").unwrap();
+            read_to_eof(stream)
+        });
+        pump_until(&mut api, "hung client holds the only slot", |api| api.connections.len() == 1);
+
+        let denied = serve(
+            &mut api,
+            std::thread::spawn(move || {
+                let mut stream = connect(addr);
+                let _ = write!(stream, "GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n");
+                let mut chunk = [0u8; 1024];
+                stream.read(&mut chunk)
+            }),
+            "second client refused while the slot is held",
+        );
+        assert!(
+            !matches!(denied, Ok(n) if n > 0),
+            "the held slot must refuse other clients: {denied:?}"
+        );
+
+        assert!(serve(&mut api, hung, "hung client reaped").is_empty());
+
+        let response = serve(
+            &mut api,
+            std::thread::spawn(move || {
+                let mut stream = connect(addr);
+                write!(stream, "GET /metrics HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+                    .unwrap();
+                let mut response = Vec::new();
+                stream.read_to_end(&mut response).unwrap();
+                response
+            }),
+            "fresh client served once the sweep freed the slot",
         );
         assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
     }

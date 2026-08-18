@@ -2,6 +2,7 @@ use std::{
     io::{self, Read, Write},
     net::{SocketAddr, ToSocketAddrs},
     path::PathBuf,
+    time::{Duration, Instant},
 };
 
 use mio::{Events, Interest, Poll, Token};
@@ -54,6 +55,7 @@ struct PooledConnection {
     machine: ClientConnection,
     in_flight: Option<u64>,
     pending_id: Option<u64>,
+    request_started: Option<Instant>,
 }
 
 impl PooledConnection {
@@ -69,6 +71,7 @@ impl PooledConnection {
             machine: ClientConnection::with_capacity(READ_BUF_CAPACITY, WRITE_BUF_CAPACITY),
             in_flight: None,
             pending_id: None,
+            request_started: None,
         }
     }
 
@@ -76,11 +79,18 @@ impl PooledConnection {
         self.in_flight.is_none() && self.pending_id.is_none()
     }
 
+    /// Age is measured from enqueue rather than from the write hitting the
+    /// wire, so a connect that never completes expires on the same deadline.
+    fn expired(&self, now: Instant, timeout: Duration) -> bool {
+        self.request_started.is_some_and(|started| now.duration_since(started) > timeout)
+    }
+
     fn enqueue(&mut self, rpc_id: u64, body: &[u8], poll: &mut Poll) {
         debug_assert!(self.is_free(), "enqueue on busy connection");
         let out = self.machine.begin_request();
         frame_request(out, &self.host, body, Some(self.jwt.bearer_token()), true);
         self.pending_id = Some(rpc_id);
+        self.request_started = Some(Instant::now());
 
         match self.conn {
             Conn::Disconnected => self.connect(poll),
@@ -213,11 +223,12 @@ impl PooledConnection {
     where
         F: FnMut(u64, Result<&mut [u8], EngineError>),
     {
-        let Self { conn, machine, in_flight, .. } = self;
+        let Self { conn, machine, in_flight, request_started, .. } = self;
         let Conn::Connected(stream) = conn else { return Ok(()) };
         loop {
             while let Some(body) = machine.take_response() {
                 if let Some(rpc_id) = in_flight.take() {
+                    *request_started = None;
                     on_complete(rpc_id, Ok(body));
                 }
             }
@@ -243,6 +254,7 @@ impl PooledConnection {
         if let Some(rpc_id) = self.pending_id.take() {
             on_complete(rpc_id, Err(EngineError::Http(err.clone())));
         }
+        self.request_started = None;
         self.machine.reset();
         let old = std::mem::replace(&mut self.conn, Conn::Disconnected);
         if let Conn::Connecting(mut stream) | Conn::Connected(mut stream) = old {
@@ -277,12 +289,18 @@ pub(crate) struct HttpPool {
     endpoint: Endpoint,
     jwt: JwtSecret,
     max_connections: usize,
+    request_timeout: Duration,
 }
 
 impl HttpPool {
-    pub(crate) fn new(endpoint: Endpoint, jwt: JwtSecret, max_connections: usize) -> Self {
+    pub(crate) fn new(
+        endpoint: Endpoint,
+        jwt: JwtSecret,
+        max_connections: usize,
+        request_timeout: Duration,
+    ) -> Self {
         let connections = vec![PooledConnection::new(endpoint.clone(), jwt.clone(), Token(0))];
-        Self { connections, endpoint, jwt, max_connections }
+        Self { connections, endpoint, jwt, max_connections, request_timeout }
     }
 
     /// `enqueue` never refuses work; every caller gates on this before
@@ -312,12 +330,15 @@ impl HttpPool {
     where
         F: FnMut(u64, Result<&mut [u8], EngineError>),
     {
+        let now = Instant::now();
         for conn in &mut self.connections {
             // Disconnected with a request pending means connect() could not
             // even start (resolve/connect/register error): no event will ever
             // arrive for it, so fail the rpc here or it is stranded forever.
             if matches!(conn.conn, Conn::Disconnected) && conn.pending_id.is_some() {
                 conn.fail(poll, on_complete, "connect failed to start");
+            } else if conn.expired(now, self.request_timeout) {
+                conn.fail(poll, on_complete, "request timed out");
             }
             conn.handle_events(events, poll, on_complete);
         }
@@ -326,16 +347,20 @@ impl HttpPool {
 
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, Instant};
+    use std::os::unix::net::UnixListener;
 
     use tempfile::TempDir;
 
+    use super::*;
     use crate::{
         EngineClient,
         client::{ReqKind, poll, send_fcu},
         test_el::{FCU_VALID_RESULT, FakeEl, write_jwt},
         types::ForkchoiceState,
     };
+
+    /// Longer than any test's 10 s spin deadline: the sweep never fires.
+    const LONG_TIMEOUT: Duration = Duration::from_secs(60);
 
     fn fcu_state(byte: u8) -> ForkchoiceState {
         ForkchoiceState {
@@ -360,7 +385,8 @@ mod tests {
         let socket = dir.path().join("engine.sock");
         let mut el = FakeEl::uds(&socket);
 
-        let mut client = EngineClient::new_uds(&socket, jwt_path.to_str().unwrap(), 32);
+        let mut client =
+            EngineClient::new_uds(&socket, jwt_path.to_str().unwrap(), 32, LONG_TIMEOUT);
         let block_root = [7u8; 32];
         send_fcu(&mut client, block_root, fcu_state(1), None);
 
@@ -400,7 +426,8 @@ mod tests {
 
         // max_connections = 1: after the failure, has_capacity() can only be
         // true again if the zombie connection was actually freed.
-        let mut client = EngineClient::new_uds(&missing_socket, jwt_path.to_str().unwrap(), 1);
+        let mut client =
+            EngineClient::new_uds(&missing_socket, jwt_path.to_str().unwrap(), 1, LONG_TIMEOUT);
         let block_root = [3u8; 32];
         send_fcu(&mut client, block_root, fcu_state(3), None);
         assert!(!client.has_capacity(), "request occupies the only connection");
@@ -426,7 +453,8 @@ mod tests {
         let socket = dir.path().join("engine.sock");
         let mut el = FakeEl::uds(&socket);
 
-        let mut client = EngineClient::new_uds(&socket, jwt_path.to_str().unwrap(), 32);
+        let mut client =
+            EngineClient::new_uds(&socket, jwt_path.to_str().unwrap(), 32, LONG_TIMEOUT);
         let block_root = [9u8; 32];
         send_fcu(&mut client, block_root, fcu_state(2), None);
 
@@ -447,5 +475,117 @@ mod tests {
         });
 
         assert_eq!(failure.unwrap(), block_root);
+    }
+
+    /// CL-114: an EL that accepts a request and never answers used to wedge the
+    /// connection — and with `max_connections` reached, the gated spine intake
+    /// behind it — for the lifetime of the process.
+    #[test]
+    fn unanswered_request_times_out_and_frees_connection() {
+        let dir = TempDir::new().unwrap();
+        let jwt_path = write_jwt(dir.path());
+        let socket = dir.path().join("engine.sock");
+        let mut el = FakeEl::uds(&socket);
+
+        let mut client = EngineClient::new_uds(
+            &socket,
+            jwt_path.to_str().unwrap(),
+            1,
+            Duration::from_millis(200),
+        );
+        send_fcu(&mut client, [1u8; 32], fcu_state(1), None);
+
+        let mut timed_out: Option<[u8; 32]> = None;
+        spin_until("unanswered request times out", || {
+            poll(&mut client, |kind, response| {
+                let ReqKind::Fcu(root) = kind else { panic!("unexpected completion") };
+                assert!(response.is_err(), "unanswered request must fail the rpc");
+                timed_out = Some(root);
+            });
+            el.pump();
+            timed_out.is_some()
+        });
+
+        assert_eq!(timed_out.unwrap(), [1u8; 32]);
+        assert_eq!(el.requests.len(), 1, "the EL received the request it never answered");
+        assert!(client.has_capacity(), "timed-out connection must be reusable");
+
+        send_fcu(&mut client, [2u8; 32], fcu_state(2), None);
+        let mut answered = false;
+        let mut completed: Option<[u8; 32]> = None;
+        spin_until("next request served on the freed connection", || {
+            poll(&mut client, |kind, response| {
+                let ReqKind::Fcu(root) = kind else { panic!("unexpected completion") };
+                assert!(response.is_ok(), "answered request must succeed");
+                completed = Some(root);
+            });
+            el.pump();
+            if !answered && el.requests.len() == 2 {
+                el.respond(1, FCU_VALID_RESULT);
+                answered = true;
+            }
+            completed.is_some()
+        });
+        assert_eq!(completed.unwrap(), [2u8; 32]);
+    }
+
+    #[test]
+    fn request_answered_within_the_deadline_does_not_time_out() {
+        let dir = TempDir::new().unwrap();
+        let jwt_path = write_jwt(dir.path());
+        let socket = dir.path().join("engine.sock");
+        let mut el = FakeEl::uds(&socket);
+
+        let mut client =
+            EngineClient::new_uds(&socket, jwt_path.to_str().unwrap(), 1, Duration::from_secs(2));
+        send_fcu(&mut client, [4u8; 32], fcu_state(4), None);
+
+        let answer_at = Instant::now() + Duration::from_millis(400);
+        let mut answered = false;
+        let mut completed: Option<[u8; 32]> = None;
+        spin_until("slow but in-deadline response succeeds", || {
+            poll(&mut client, |kind, response| {
+                let ReqKind::Fcu(root) = kind else { panic!("unexpected completion") };
+                assert!(response.is_ok(), "response inside the deadline must not fail");
+                completed = Some(root);
+            });
+            el.pump();
+            if !answered && !el.requests.is_empty() && Instant::now() >= answer_at {
+                el.respond(0, FCU_VALID_RESULT);
+                answered = true;
+            }
+            completed.is_some()
+        });
+        assert_eq!(completed.unwrap(), [4u8; 32]);
+    }
+
+    /// A blackholed connect (SYN dropped) is not cheaply reproducible in a unit
+    /// test, so the pool is driven directly: with no events ever delivered the
+    /// connection stays in `Connecting`, which is the state such a connect is
+    /// stuck in, and the deadline must still fire.
+    #[test]
+    fn pending_request_times_out_while_still_connecting() {
+        let dir = TempDir::new().unwrap();
+        let jwt_path = write_jwt(dir.path());
+        let socket = dir.path().join("engine.sock");
+        let _listener = UnixListener::bind(&socket).unwrap();
+
+        let jwt = JwtSecret::from_file(jwt_path.to_str().unwrap()).unwrap();
+        let mut pool = HttpPool::new(Endpoint::Uds(socket), jwt, 1, Duration::from_millis(100));
+        let mut poll = Poll::new().unwrap();
+        let events = Events::with_capacity(1);
+
+        pool.enqueue(7, b"{}", &mut poll);
+        assert!(matches!(pool.connections[0].conn, Conn::Connecting(_)));
+        assert!(!pool.has_capacity());
+
+        std::thread::sleep(Duration::from_millis(150));
+        let mut failed: Option<(u64, bool)> = None;
+        pool.poll_events(&events, &mut poll, &mut |rpc_id, response| {
+            failed = Some((rpc_id, response.is_err()));
+        });
+
+        assert_eq!(failed, Some((7, true)), "a stuck connect must fail its rpc");
+        assert!(pool.has_capacity(), "timed-out connection must be reusable");
     }
 }
