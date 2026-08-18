@@ -1,9 +1,8 @@
-//! One ClickHouse row per stage observation, Xatu-style: no joining at
-//! collection time, every row carries the wall-clock event time and its offset
-//! into the slot (`propagation_slot_start_diff`, NULL while syncing/replaying,
-//! when the wall clock says nothing about the slot). Per-block timelines,
-//! dedup (repeat-head FCUs) and deadline checks are ClickHouse queries over
-//! the events, not collector logic.
+//! One ClickHouse row per stage observation: no joining at collection time,
+//! every row carries the wall-clock event time and its offset into the slot
+//! (`time_into_slot_ms`, NULL while syncing/replaying, when the wall clock says
+//! nothing about the slot). Per-block timelines, dedup (repeat-head FCUs) and
+//! deadline checks are ClickHouse queries over the events, not collector logic.
 //!
 //! Only `NewPayload` messages carry a slot, so the roots they name are kept
 //! for the FCU and verdict rows that follow; a block whose `NewPayload`
@@ -14,6 +13,10 @@
 //! - `el_sent` — the same message's publish: CL validated, dispatched to EL.
 //! - `applied` — `EngineReq::Fcu` publish: state transition + commit.
 //! - `el_verdict` — `EngineResp::NewPayload` publish, carries the verdict.
+//!
+//! The `block_events_xatu` view renames the one comparable stage onto
+//! ethPandaOps' Xatu columns, so these rows and Xatu's published parquet can be
+//! read as one dataset.
 
 use std::{
     mem::take,
@@ -30,17 +33,38 @@ use tracing::{info, warn};
 use crate::clickhouse::ChTable;
 
 const TABLE: &str = "block_events";
-const DDL: &str = "CREATE TABLE IF NOT EXISTS block_events (
-    event_date_time             DateTime64(9),
-    stage                       LowCardinality(String),
-    slot                        Nullable(UInt64),
-    propagation_slot_start_diff Nullable(Float64),
-    block_root                  String,
-    source                      LowCardinality(String),
-    verdict                     LowCardinality(Nullable(String)),
-    meta_client_name            LowCardinality(String)
+const DDL: &[&str] = &[TABLE_DDL, XATU_VIEW_DDL];
+
+const TABLE_DDL: &str = "CREATE TABLE IF NOT EXISTS block_events (
+    event_date_time      DateTime64(9)                    COMMENT 'Node-local wall clock at the observation',
+    stage                LowCardinality(String)           COMMENT 'Point in the block path through the node this row observes',
+    slot                 Nullable(UInt64)                 COMMENT 'NULL when the root was first seen before the collector attached',
+    slot_start_date_time Nullable(DateTime)               COMMENT 'Wall clock the slot started at',
+    time_into_slot_ms    Nullable(Float64)                COMMENT 'Milliseconds from slot start; NULL outside the live window (replay or backfill)',
+    block_root           FixedString(66)                  COMMENT '0x-prefixed beacon block root',
+    source               LowCardinality(String)           COMMENT 'How the node obtained the block',
+    verdict              LowCardinality(Nullable(String)) COMMENT 'Execution payload status; set on el_verdict rows only',
+    meta_client_name     LowCardinality(String)           COMMENT 'Hostname of the node that produced the row',
+    meta_network_name    LowCardinality(String)           COMMENT 'Ethereum network the node is running'
 ) ENGINE = MergeTree
 ORDER BY (meta_client_name, event_date_time)";
+
+/// The mapping onto Xatu's `beacon_api_eth_v1_events_block` columns, so a query
+/// can union these rows with ethPandaOps' parquet. Only `received` is an
+/// observation of the network; the other stages time silver's own pipeline, and
+/// Xatu's `propagation_slot_start_diff` — arrival at a sentry — has no
+/// counterpart for them.
+const XATU_VIEW_DDL: &str = "CREATE OR REPLACE VIEW block_events_xatu AS
+SELECT
+    event_date_time,
+    slot,
+    slot_start_date_time,
+    time_into_slot_ms AS propagation_slot_start_diff,
+    block_root        AS block,
+    meta_client_name,
+    meta_network_name
+FROM block_events
+WHERE stage = 'received' AND time_into_slot_ms IS NOT NULL";
 
 /// Beyond this many slots past the slot start, the wall clock says nothing
 /// about the block's slot (replay/backfill); the second slot keeps genuinely
@@ -52,6 +76,7 @@ const TRACKED_SLOTS: u64 = 64;
 
 struct BlockEvents {
     node: String,
+    network: String,
     genesis: Nanos,
     slot_dur: Nanos,
     slots: FxHashMap<[u8; 32], u64>,
@@ -70,9 +95,10 @@ impl BlockEvents {
         String::from_utf8_lossy(&buf[..len]).into_owned()
     }
 
-    fn new(node: String, genesis_unix_secs: u64, slot_ms: u64) -> Self {
+    fn new(node: String, network: String, genesis_unix_secs: u64, slot_ms: u64) -> Self {
         Self {
             node,
+            network,
             genesis: Nanos::from_secs(genesis_unix_secs),
             slot_dur: Nanos::from_millis(slot_ms.max(1)),
             slots: FxHashMap::default(),
@@ -89,8 +115,12 @@ impl BlockEvents {
         });
     }
 
+    fn slot_start(&self, slot: u64) -> Nanos {
+        self.genesis + self.slot_dur * slot
+    }
+
     fn offset_ms(&self, t: Nanos, slot: u64) -> Option<f64> {
-        let start = self.genesis + self.slot_dur * slot;
+        let start = self.slot_start(slot);
         let live = start..start + self.slot_dur * LIVE_ARRIVAL_SLOTS;
         live.contains(&t).then(|| (t - start).0 as f64 / 1e6)
     }
@@ -101,11 +131,13 @@ impl BlockEvents {
                 "event_date_time": ts.0,
                 "stage": stage,
                 "slot": slot,
-                "propagation_slot_start_diff": slot.and_then(|s| self.offset_ms(ts, s)),
-                "block_root": hex::encode(root),
+                "slot_start_date_time": slot.map(|s| self.slot_start(s).as_secs_u64()),
+                "time_into_slot_ms": slot.and_then(|s| self.offset_ms(ts, s)),
+                "block_root": format!("0x{}", hex::encode(root)),
                 "source": attrs.source,
                 "verdict": attrs.verdict,
                 "meta_client_name": self.node,
+                "meta_network_name": self.network,
             })
             .to_string(),
         );
@@ -163,9 +195,11 @@ pub struct BlockEventsInserter {
 }
 
 impl BlockEventsInserter {
-    pub fn open(clickhouse_url: &str, chain: &ChainConfig) -> Self {
+    pub fn open(clickhouse_url: &str, network: Option<&str>, chain: &ChainConfig) -> Self {
         let slot_ms = chain.slot_duration().as_millis() as u64;
-        let events = BlockEvents::new(BlockEvents::hostname(), chain.genesis_unix_secs, slot_ms);
+        let network = network.unwrap_or("unknown").to_owned();
+        let node = BlockEvents::hostname();
+        let events = BlockEvents::new(node, network, chain.genesis_unix_secs, slot_ms);
         let (batches, rx) = sync_channel::<String>(256);
         let mut table = ChTable::new(clickhouse_url, TABLE, DDL);
         // TODO: the only reason the daemon runs a second thread. `ureq` blocks
@@ -176,7 +210,12 @@ impl BlockEventsInserter {
                 table.insert(&batch);
             }
         });
-        info!(node = events.node, url = clickhouse_url, "block-events inserter open");
+        info!(
+            node = events.node,
+            network = events.network,
+            url = clickhouse_url,
+            "block-events inserter open"
+        );
         Self { events, batches }
     }
 
@@ -257,7 +296,11 @@ mod tests {
     }
 
     fn events() -> BlockEvents {
-        BlockEvents::new("test-node".into(), GENESIS_SECS, SLOT_MS)
+        BlockEvents::new("test-node".into(), "test-net".into(), GENESIS_SECS, SLOT_MS)
+    }
+
+    fn root_hex(root: [u8; 32]) -> String {
+        format!("0x{}", hex::encode(root))
     }
 
     fn json_rows(events: &mut BlockEvents) -> Vec<serde_json::Value> {
@@ -286,12 +329,14 @@ mod tests {
 
         let rows = json_rows(&mut ev);
         assert_eq!(stages(&rows), ["applied", "el_sent", "el_verdict", "received"]);
-        assert!(rows.iter().all(|r| r["block_root"] == hex::encode(root)));
+        assert!(rows.iter().all(|r| r["block_root"] == root_hex(root)));
+        assert!(rows.iter().all(|r| r["meta_network_name"] == "test-net"));
 
         let received = row(&rows, "received");
         assert_eq!(received["slot"], 2);
         assert_eq!(received["source"], "Gossip");
-        assert_eq!(received["propagation_slot_start_diff"], 300.0);
+        assert_eq!(received["time_into_slot_ms"], 300.0);
+        assert_eq!(received["slot_start_date_time"], at(2, 0).as_secs_u64());
         assert_eq!(received["event_date_time"], at(2, 300).0, "arrival is the ingestion clock");
 
         // The remaining stages are publish observations of their message, so
@@ -306,7 +351,7 @@ mod tests {
 
         assert_eq!(row(&rows, "applied")["slot"], 2);
         assert_eq!(row(&rows, "el_verdict")["slot"], 2);
-        assert!(row(&rows, "applied")["propagation_slot_start_diff"].as_f64().unwrap() > 300.0);
+        assert!(row(&rows, "applied")["time_into_slot_ms"].as_f64().unwrap() > 300.0);
         assert_eq!(row(&rows, "el_verdict")["verdict"], "Valid");
     }
 
@@ -322,9 +367,12 @@ mod tests {
 
         let rows = json_rows(&mut ev);
         let null = serde_json::Value::Null;
-        assert!(rows.iter().all(|r| r["propagation_slot_start_diff"] == null), "no slot offset");
+        assert!(rows.iter().all(|r| r["time_into_slot_ms"] == null), "no slot offset");
         assert_eq!(row(&rows, "received")["event_date_time"], at(900, 4_000).0);
         assert_eq!(row(&rows, "received")["slot"], 7);
+        // The slot is known, so its start is too — only the offset between the
+        // two is meaningless here.
+        assert_eq!(row(&rows, "received")["slot_start_date_time"], at(7, 0).as_secs_u64());
     }
 
     /// FCUs for roots whose NewPayload predates attach are still recorded —
@@ -336,7 +384,8 @@ mod tests {
 
         let rows = json_rows(&mut ev);
         assert_eq!(stages(&rows), ["applied"]);
-        assert_eq!(row(&rows, "applied")["block_root"], hex::encode([9u8; 32]));
+        assert_eq!(row(&rows, "applied")["block_root"], root_hex([9u8; 32]));
         assert_eq!(row(&rows, "applied")["slot"], serde_json::Value::Null);
+        assert_eq!(row(&rows, "applied")["slot_start_date_time"], serde_json::Value::Null);
     }
 }

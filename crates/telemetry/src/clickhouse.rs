@@ -3,19 +3,20 @@ use std::time::Duration;
 use tracing::warn;
 
 /// A single ClickHouse table over the blocking HTTP interface: statements go
-/// in the `query` parameter, rows in the body. Creates itself on first use and
+/// in the `query` parameter, rows in the body. Runs its DDL on first use and
 /// again after any failure, so a ClickHouse that appears late still gets its
-/// schema.
+/// schema. Each `ddl` statement is posted on its own — the HTTP endpoint takes
+/// one per request — and every one must be re-runnable against a live table.
 pub struct ChTable {
     agent: ureq::Agent,
     url: String,
     name: &'static str,
-    ddl: &'static str,
+    ddl: &'static [&'static str],
     created: bool,
 }
 
 impl ChTable {
-    pub fn new(url: &str, name: &'static str, ddl: &'static str) -> Self {
+    pub fn new(url: &str, name: &'static str, ddl: &'static [&'static str]) -> Self {
         let agent = ureq::AgentBuilder::new()
             .timeout_connect(Duration::from_millis(150))
             .timeout(Duration::from_secs(250))
@@ -25,7 +26,7 @@ impl ChTable {
 
     pub fn insert(&mut self, json_lines: &str) {
         if !self.created {
-            self.created = self.post(self.ddl, None).is_ok();
+            self.created = self.ddl.iter().all(|stmt| self.post(stmt, None).is_ok());
         }
 
         let query = format!("INSERT INTO {} FORMAT JSONEachRow", self.name);
