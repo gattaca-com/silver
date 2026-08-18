@@ -5,31 +5,24 @@ use std::{
 
 use flux::{spine::SpineAdapter, tile::Tile};
 use flux_profiler::timed;
-use silver_beacon_state_data::{B256, BeaconStateReader, SLOTS_PER_EPOCH, SpecConfig};
+use silver_beacon_state_data::{B256, BeaconStateReader, SpecConfig};
 use silver_common::{
     BASE_REQUEST_ID, BeaconStateEvent, ColumnSource, DataColumnsEvent, EngineReq, EngineResp,
     GossipTopic, Nanos, NewGossipMsg, P2pStreamId, PeerEvent, RpcInbound, RpcSeverity, SilverSpine,
     SilverSpineProducers, StreamProtocol, SyncUpdate, SyncingStrategy, TProducer, TRandomAccess,
     TRead, Wheel, column_util as util, msg_is_backfill, msg_is_live_column_request,
     msg_is_post_gloas,
-    ssz_view::{
-        DataColumnSidecarFuluView, DataColumnSidecarGloasView, NUMBER_OF_COLUMNS,
-        SignedBeaconBlockView, StatusView,
-    },
+    ssz_view::{NUMBER_OF_COLUMNS, SignedBeaconBlockView, StatusView},
 };
 
-use crate::{DataColumnCounters, el_blobs::ElBlobFetcher, sync::SyncStatus};
+use crate::{
+    BlockRoot, DataColumnCounters, EPOCH_DURATION,
+    batch::{self, KzgBatch, PendingKzg, RelayMeta},
+    el_blobs::ElBlobFetcher,
+    sync::SyncStatus,
+    validate::{ColumnOutcome, ColumnValidator},
+};
 const MAX_RETRIES: u8 = 5;
-
-/// Mainnet epoch: 32 slots × 12s. Wheel bucket width for the
-/// block-level validation cache.
-const EPOCH_DURATION: Duration = Duration::from_secs(32 * 12);
-
-/// SSZ `hash_tree_root(BeaconBlockHeader)` — the same value carried as
-/// `head_root` in Status RPC and `block_root` in
-/// `DataColumnsByRootIdentifier`. Keys `validated_columns` so ByRoot
-/// lookups and head-update integration are direct lookups.
-type BlockRoot = [u8; 32];
 
 type PendingColumn = (P2pStreamId, TRead, Option<u64>);
 
@@ -41,19 +34,12 @@ pub(crate) enum StorageEmit {
     Engine(EngineReq),
 }
 
-enum ColumnOutcome {
-    Skip,
-    Reject { block_root: [u8; 32], bitmask: u128 },
-    Buffer { block_root: [u8; 32] },
-    AwaitParent { parent_root: [u8; 32] },
-    Record { block_root: [u8; 32], column_index: u64, bitmask: u128, slot: u64 },
-}
-
-/// Only `Validated` may be forwarded / republished on gossip: `Ignored`
-/// covers spec-IGNORE cases (dup, post-wall, parent pending, buffered)
-/// whose sidecars must not be relayed and whose senders are not culpable.
+/// Only `Batched` sidecars can end up forwarded / republished on gossip
+/// (their relay fires at flush if KZG passes): `Ignored` covers spec-IGNORE
+/// cases (dup, post-wall, parent pending, buffered) whose sidecars must not
+/// be relayed and whose senders are not culpable.
 enum ColumnDisposition {
-    Validated,
+    Batched,
     Ignored,
     Rejected { block_root: [u8; 32], bitmask: u128 },
 }
@@ -68,34 +54,25 @@ pub struct DataColumnsTile {
     persist_gossip_consumer: TRandomAccess,
     rpc_consumer: TRandomAccess,
     persist_rpc_consumer: TRandomAccess,
-    beacon_state: BeaconStateReader,
 
     spec: Arc<SpecConfig>,
 
+    validator: ColumnValidator,
+    // Sidecars past every per-sidecar check, KZG-verified together at the
+    // end of the pass.
+    kzg_batch: KzgBatch,
+
     // keyed by block body root
     validated_columns: Wheel<BlockRoot, u128, 4>,
-    // Gloas sidecars carry no commitments, so column KZG verifies against these.
-    gloas_commitments: Wheel<BlockRoot, Box<[u8]>, 4>,
     // Gloas: columns whose block (hence commitments) hasn't been seen yet.
     gloas_pending_columns: Wheel<BlockRoot, Vec<PendingColumn>, 4>,
     // Fulu: columns held until their parent block validates. Keyed by the
     // sidecar's parent_root; drained on Status head advances and on block
     // arrivals (the arriving block's own parent_root).
     parent_pending_columns: Wheel<BlockRoot, Vec<PendingColumn>, 4>,
-    // BLS verify memo: block_root → previously-validated 96-byte
-    // proposer signature. On a subsequent sidecar with the same
-    // block_root AND matching signature bytes we skip the ~1 ms BLS
-    // verify; with a different signature we re-verify. block_root
-    // alone is not safe to cache by — it does not cover the
-    // signature, kzg_commitments, or inclusion proof, all of which
-    // remain verified on every sidecar. Time-bounded: 4 buckets × 1
-    // epoch ⇒ entries age out after 3–4 epochs.
-    validated_blocks: Wheel<BlockRoot, [u8; 96], 4>,
     // outstanding requests - keyed by block body root
     // 16 x 500 millisecond buckets.
     outstanding_requests: Wheel<BlockRoot, (u128, u128, u8), 16>,
-    // roots of peristed blocks - tracked for use in checking for seen parent blocks
-    persisted_block_roots: Wheel<BlockRoot, (), 16>,
 
     sync_state: SyncStatus,
 
@@ -128,14 +105,12 @@ impl DataColumnsTile {
             persist_gossip_consumer,
             rpc_consumer,
             persist_rpc_consumer,
-            beacon_state,
             spec,
+            validator: ColumnValidator::new(beacon_state),
+            kzg_batch: KzgBatch::new(),
             validated_columns: Wheel::new(EPOCH_DURATION),
-            gloas_commitments: Wheel::new(EPOCH_DURATION),
             gloas_pending_columns: Wheel::new(EPOCH_DURATION),
             parent_pending_columns: Wheel::new(Duration::from_secs(24)),
-            validated_blocks: Wheel::new(EPOCH_DURATION),
-            persisted_block_roots: Wheel::new(EPOCH_DURATION),
             outstanding_requests: Wheel::new(Duration::from_millis(100)),
             sync_state: SyncStatus::default(),
             syncing_strategy: None,
@@ -185,7 +160,7 @@ impl DataColumnsTile {
         let block_root = util::block_root(buffer, is_gloas);
 
         if is_gloas {
-            self.cache_gloas_commitments(block_root, buffer);
+            self.validator.cache_gloas_commitments(block_root, buffer);
         }
 
         if self.outstanding_requests.contains(&block_root) {
@@ -228,24 +203,34 @@ impl DataColumnsTile {
     }
 
     #[timed]
-    fn data_columns<F>(
+    fn data_columns(
         &mut self,
         stream_id: P2pStreamId,
         sidecar: TRead,
         is_gloas: bool,
         gossip_subnet: Option<u64>,
         recv_ts: Option<Nanos>,
-        emit: &mut F,
-    ) -> ColumnDisposition
-    where
-        F: FnMut(DataColumnsEvent),
-    {
+        relay: RelayMeta,
+    ) -> ColumnDisposition {
         let outcome = match sidecar.buffer() {
             Ok((buf, _)) => {
                 if is_gloas {
-                    self.validate_gloas_column(stream_id, buf, gossip_subnet)
+                    self.validator.validate_gloas(
+                        stream_id,
+                        buf,
+                        gossip_subnet,
+                        &self.sync_state,
+                        &self.validated_columns,
+                    )
                 } else {
-                    self.validate_fulu_column(stream_id, buf, gossip_subnet, recv_ts)
+                    self.validator.validate_fulu(
+                        stream_id,
+                        buf,
+                        gossip_subnet,
+                        recv_ts,
+                        &self.sync_state,
+                        &self.validated_columns,
+                    )
                 }
             }
             Err(e) => {
@@ -253,20 +238,18 @@ impl DataColumnsTile {
                 return ColumnDisposition::Ignored;
             }
         };
-        self.handle_column(outcome, stream_id, sidecar, gossip_subnet, emit)
+        self.handle_column(outcome, stream_id, sidecar, gossip_subnet, is_gloas, relay)
     }
 
-    fn handle_column<F>(
+    fn handle_column(
         &mut self,
         outcome: ColumnOutcome,
         stream_id: P2pStreamId,
         sidecar: TRead,
         gossip_subnet: Option<u64>,
-        emit: &mut F,
-    ) -> ColumnDisposition
-    where
-        F: FnMut(DataColumnsEvent),
-    {
+        is_gloas: bool,
+        relay: RelayMeta,
+    ) -> ColumnDisposition {
         match outcome {
             ColumnOutcome::Skip => ColumnDisposition::Ignored,
             ColumnOutcome::Reject { block_root, bitmask } => {
@@ -289,212 +272,28 @@ impl DataColumnsTile {
                 ColumnDisposition::Ignored
             }
             ColumnOutcome::Record { block_root, column_index, bitmask, slot } => {
-                self.record_validated_column(
+                let queued = self.kzg_batch.push(PendingKzg {
+                    sidecar,
+                    stream_id,
                     block_root,
                     column_index,
                     bitmask,
                     slot,
-                    sidecar,
-                    stream_id.protocol() == StreamProtocol::GossipSub,
-                    emit,
-                );
-                ColumnDisposition::Validated
+                    is_gloas,
+                    relay,
+                });
+                if queued { ColumnDisposition::Batched } else { ColumnDisposition::Ignored }
             }
         }
     }
 
-    #[timed]
-    fn validate_fulu_column(
-        &mut self,
-        stream_id: P2pStreamId,
-        buffer: &[u8],
-        gossip_subnet: Option<u64>,
-        recv_ts: Option<Nanos>,
-    ) -> ColumnOutcome {
-        let parent_root = DataColumnSidecarFuluView::parent_root(buffer);
-        let slot = DataColumnSidecarFuluView::slot(buffer);
-
-        if slot < self.sync_state.head_slot() {
-            tracing::info!(slot, "skip old data column");
-            return ColumnOutcome::Skip;
-        }
-
-        if gossip_subnet.is_some() {
-            let elapsed_ms = recv_ts.map(|r| r.elapsed().as_millis_u64());
-            tracing::info!(
-                slot,
-                parent_root = hex::encode(parent_root),
-                ?gossip_subnet,
-                ?elapsed_ms,
-                "data column recv"
-            );
-        }
-
-        if self.sync_state.is_synced() && slot > self.sync_state.wall_slot().saturating_add(1) {
-            tracing::debug!(
-                ?stream_id,
-                slot,
-                wall_slot = self.sync_state.wall_slot(),
-                "post-wall sidecar"
-            );
-            return ColumnOutcome::Skip;
-        }
-
-        let block_root = util::block_root_from_sidecar(buffer);
-        let column_index = DataColumnSidecarFuluView::index(buffer);
-        let column_bitmask = 1u128 << column_index;
-
-        if let Some(subnet) = gossip_subnet &&
-            subnet != column_index
-        {
-            return ColumnOutcome::Reject { block_root, bitmask: column_bitmask };
-        }
-
-        let do_parent_checks = stream_id.protocol() == StreamProtocol::GossipSub;
-
-        if self
-            .validated_columns
-            .get(&block_root)
-            .map(|c| c & column_bitmask != 0)
-            .unwrap_or_default()
-        {
-            return ColumnOutcome::Skip;
-        }
-
-        if !util::verify_data_column_sidecar_fulu(buffer) {
-            tracing::warn!(?stream_id, "badly formed data column sidecar");
-            return ColumnOutcome::Reject { block_root, bitmask: column_bitmask };
-        }
-        if !util::verify_data_column_sidecar_kzg_proofs_fulu(buffer) {
-            tracing::warn!(?stream_id, "failed to verify sidecar kzg proof");
-            return ColumnOutcome::Reject { block_root, bitmask: column_bitmask };
-        }
-
-        // Inclusion proof binds the sidecar's `kzg_commitments` to the
-        // block's `body_root` — neither input is pinned by block_root, so
-        // it must run on every sidecar.
-        if !util::verify_data_column_sidecar_inclusion_proof(buffer) {
-            tracing::warn!(?stream_id, "failed to verify sidecar inclusion proof");
-            return ColumnOutcome::Reject { block_root, bitmask: column_bitmask };
-        }
-
-        // State-driven validations: pull every input in one seqlock pass.
-        // BLS verify runs OUTSIDE the closure (slow; would hold the
-        // notional read lock too long otherwise).
-        let claimed_proposer_index = DataColumnSidecarFuluView::proposer_index(buffer);
-        let checks = self.beacon_state.read(&|v| {
-            let state_epoch = v.slot.current_epoch();
-
-            let (proposer_matches, parent_validated, is_above_finalized) = if do_parent_checks {
-                // proposer_lookahead is anchored to `state_epoch` and covers
-                // current+next epochs (PROPOSER_LOOKAHEAD_SIZE = 64). Slots
-                // outside that window we cannot resolve here.
-                let lookahead_idx = slot.wrapping_sub(state_epoch * SLOTS_PER_EPOCH) as usize;
-                let expected_proposer = v.epoch.proposer_at(lookahead_idx);
-                let parent_validated = util::parent_validated(
-                    buffer,
-                    v.slot.finalized_block_roots(),
-                    v.slot.delta_block_roots(),
-                    self.sync_state.head_root(),
-                );
-                let is_above_finalized =
-                    util::is_above_finalized(buffer, v.epoch.state().finalized_checkpoint.epoch);
-                (
-                    expected_proposer == Some(claimed_proposer_index),
-                    parent_validated,
-                    is_above_finalized,
-                )
-            } else {
-                // Sync / RPC blocks cannot validate proposer shuffling.
-                (true, true, true)
-            };
-
-            let idx = claimed_proposer_index as usize;
-            let pubkey =
-                (idx < v.validators.count()).then(|| *v.validators.pubkey_decompressed(idx));
-
-            (
-                is_above_finalized,
-                parent_validated,
-                proposer_matches,
-                pubkey,
-                v.epoch.fork().current_version, // TODO for backfill
-                v.imm.genesis_validators_root,
-            )
-        });
-        // No snapshot yet (pre-bootstrap): nothing can be validated.
-        let Some((above_finalized, parent_validated, proposer_matches, pubkey, fork_version, gvr)) =
-            checks
-        else {
-            tracing::warn!(?stream_id, "sidecar before first beacon state snapshot");
-            return ColumnOutcome::Reject { block_root, bitmask: column_bitmask };
-        };
-
-        if !above_finalized {
-            tracing::warn!(?stream_id, "sidecar slot at or below finalized — ignoring");
-            return ColumnOutcome::Skip;
-        }
-        // The state view sees only the head fork's chain; the store holds
-        // every BS-accepted block (all forks, incl. validated children of the
-        // head that aren't head yet).
-        let parent_validated = parent_validated || self.persisted_block_roots.contains(parent_root);
-        if !parent_validated {
-            tracing::warn!(
-                ?stream_id,
-                slot,
-                parent_root = hex::encode(parent_root),
-                "sidecar parent_root not yet validated — ignoring (not penalized)"
-            );
-            return ColumnOutcome::AwaitParent { parent_root: *parent_root };
-        }
-        if !proposer_matches {
-            tracing::warn!(?stream_id, "sidecar proposer_index mismatch");
-            return ColumnOutcome::Reject { block_root, bitmask: column_bitmask };
-        }
-
-        // BLS verify cache: skip the ~1 ms verify iff the sidecar's
-        // signature bytes match a previously-validated signature for
-        // this block_root. block_root does not pin the signature, so
-        // bytes-equality is required.
-        let sig_bytes = *DataColumnSidecarFuluView::block_signature(buffer);
-        if self.validated_blocks.get(&block_root) != Some(&sig_bytes) {
-            let Some(pubkey) = pubkey else {
-                tracing::warn!(?stream_id, "sidecar proposer_index out of range");
-                return ColumnOutcome::Reject { block_root, bitmask: column_bitmask };
-            };
-            if !util::verify_proposer_signature(buffer, &pubkey, fork_version, &gvr) {
-                tracing::warn!(?stream_id, "sidecar proposer signature invalid");
-                return ColumnOutcome::Reject { block_root, bitmask: column_bitmask };
-            }
-            self.validated_blocks.insert(block_root, sig_bytes);
-        }
-
-        ColumnOutcome::Record { block_root, column_index, bitmask: column_bitmask, slot }
-    }
-
-    fn cache_gloas_commitments(&mut self, block_root: [u8; 32], buffer: &[u8]) {
-        if self.gloas_commitments.contains(&block_root) {
-            return;
-        }
-        let commitments = SignedBeaconBlockView::gloas_block_commitments(buffer);
-        if !commitments.is_empty() {
-            self.gloas_commitments.insert(block_root, commitments.to_vec().into_boxed_slice());
-        }
-    }
-
-    fn drain_pending_gloas_columns<F>(&mut self, block_root: [u8; 32], emit: &mut F)
-    where
-        F: FnMut(DataColumnsEvent),
-    {
+    fn drain_pending_gloas_columns(&mut self, block_root: [u8; 32]) {
         let pending = self.gloas_pending_columns.remove(&block_root);
-        self.drain_entries(pending, true, emit);
+        self.drain_entries(pending, true);
     }
 
     #[timed]
-    fn drain_parent_pending_columns<F>(&mut self, parent_root: [u8; 32], emit: &mut F)
-    where
-        F: FnMut(DataColumnsEvent),
-    {
+    fn drain_parent_pending_columns(&mut self, parent_root: [u8; 32]) {
         let pending = self.parent_pending_columns.remove(&parent_root);
         if pending.is_some() {
             tracing::info!(
@@ -502,93 +301,18 @@ impl DataColumnsTile {
                 "draining data columns for parent root"
             );
         }
-        self.drain_entries(pending, false, emit);
+        self.drain_entries(pending, false);
     }
 
-    fn drain_entries<F>(
-        &mut self,
-        pending: Option<Vec<PendingColumn>>,
-        is_gloas: bool,
-        emit: &mut F,
-    ) where
-        F: FnMut(DataColumnsEvent),
-    {
+    /// Re-validated rejects from buffered columns are not penalized — the
+    /// disposition is dropped, matching the pre-batch behaviour.
+    fn drain_entries(&mut self, pending: Option<Vec<PendingColumn>>, is_gloas: bool) {
         let Some(pending) = pending else {
             return;
         };
         for (stream_id, sidecar, gossip_subnet) in pending {
-            let outcome = match sidecar.buffer() {
-                Ok((buf, _)) => {
-                    if is_gloas {
-                        self.validate_gloas_column(stream_id, buf, gossip_subnet)
-                    } else {
-                        self.validate_fulu_column(stream_id, buf, gossip_subnet, None)
-                    }
-                }
-                Err(e) => {
-                    tracing::error!(?e, ?stream_id, "failed to read buffered column");
-                    continue;
-                }
-            };
-            self.handle_column(outcome, stream_id, sidecar, gossip_subnet, emit);
+            self.data_columns(stream_id, sidecar, is_gloas, gossip_subnet, None, RelayMeta::None);
         }
-    }
-
-    #[timed]
-    fn validate_gloas_column(
-        &mut self,
-        stream_id: P2pStreamId,
-        buffer: &[u8],
-        gossip_subnet: Option<u64>,
-    ) -> ColumnOutcome {
-        let slot = DataColumnSidecarGloasView::slot(buffer);
-
-        if self.sync_state.is_synced() && slot > self.sync_state.wall_slot().saturating_add(1) {
-            tracing::debug!(
-                ?stream_id,
-                slot,
-                wall_slot = self.sync_state.wall_slot(),
-                "post-wall sidecar"
-            );
-            return ColumnOutcome::Skip;
-        }
-        if slot <= self.sync_state.finalized_slot() {
-            return ColumnOutcome::Skip;
-        }
-
-        let block_root = *DataColumnSidecarGloasView::beacon_block_root(buffer);
-        let column_index = DataColumnSidecarGloasView::index(buffer);
-        let column_bitmask = 1u128 << column_index;
-
-        if let Some(subnet) = gossip_subnet &&
-            subnet != column_index
-        {
-            return ColumnOutcome::Reject { block_root, bitmask: column_bitmask };
-        }
-
-        if self
-            .validated_columns
-            .get(&block_root)
-            .map(|c| c & column_bitmask != 0)
-            .unwrap_or_default()
-        {
-            return ColumnOutcome::Skip;
-        }
-
-        let Some(commitments) = self.gloas_commitments.get(&block_root) else {
-            return ColumnOutcome::Buffer { block_root };
-        };
-
-        if !util::verify_data_column_sidecar_gloas(buffer, commitments) {
-            tracing::warn!(?stream_id, "badly formed gloas data column sidecar");
-            return ColumnOutcome::Reject { block_root, bitmask: column_bitmask };
-        }
-        if !util::verify_data_column_sidecar_kzg_proofs_gloas(buffer, commitments) {
-            tracing::warn!(?stream_id, "failed to verify gloas sidecar kzg proof");
-            return ColumnOutcome::Reject { block_root, bitmask: column_bitmask };
-        }
-
-        ColumnOutcome::Record { block_root, column_index, bitmask: column_bitmask, slot }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -670,18 +394,15 @@ impl DataColumnsTile {
         if let Some((block_root, is_gloas)) = root &&
             is_gloas
         {
-            self.drain_pending_gloas_columns(block_root, &mut |msg| {
-                producers.data_columns.produce(&msg.into());
-            });
+            self.drain_pending_gloas_columns(block_root);
         }
         if let Some(parent_root) = parent_root {
-            self.drain_parent_pending_columns(parent_root, &mut |msg| {
-                producers.data_columns.produce(&msg.into());
-            });
+            self.drain_parent_pending_columns(parent_root);
         }
     }
 
     #[timed]
+    #[allow(clippy::too_many_arguments)]
     fn handle_data_column_sidecar(
         &mut self,
         t_read: TRead,
@@ -689,47 +410,127 @@ impl DataColumnsTile {
         is_gloas: bool,
         gossip_subnet: Option<u64>,
         recv_ts: Option<Nanos>,
+        relay: RelayMeta,
         producers: &mut SilverSpineProducers,
-    ) -> bool {
-        let emit_da = &mut |msg: DataColumnsEvent| {
-            producers.data_columns.produce(&msg.into());
+    ) {
+        if let ColumnDisposition::Rejected { block_root, bitmask } =
+            self.data_columns(stream_id, t_read, is_gloas, gossip_subnet, recv_ts, relay)
+        {
+            // Score down the peer and retransmit.
+            producers.peer_events.produce(
+                &PeerEvent::RpcMisbehaviour {
+                    p2p_peer: stream_id.peer(),
+                    severity: RpcSeverity::Fatal,
+                }
+                .into(),
+            );
+            producers.peer_events.produce(&self.column_request(block_root, bitmask).into());
+        }
+    }
+
+    /// End-of-pass KZG verification of every batched sidecar in one
+    /// `verify_cell_kzg_proof_batch` call. On a combined failure each sidecar
+    /// re-verifies alone so the reject lands on the culpable peer only —
+    /// honest traffic never pays the fallback.
+    #[timed]
+    fn flush_kzg_batch(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
+        if self.kzg_batch.is_empty() {
+            return;
+        }
+        let mut pending = self.kzg_batch.take();
+        DataColumnCounters::KzgBatchesVerified.inc();
+        DataColumnCounters::KzgBatchColumns.add(pending.len() as u64);
+
+        let all_ok = {
+            let validator = &self.validator;
+            util::kzg_verify_batch_multi(
+                pending.iter().filter_map(|p| batch::kzg_entry(p, validator)),
+                &mut self.kzg_batch.scratch,
+            )
         };
 
-        match self.data_columns(stream_id, t_read, is_gloas, gossip_subnet, recv_ts, emit_da) {
-            ColumnDisposition::Validated => true,
-            ColumnDisposition::Ignored => false,
-            ColumnDisposition::Rejected { block_root, bitmask } => {
-                // Score down the peer and retransmit.
-                producers.peer_events.produce(
-                    &PeerEvent::RpcMisbehaviour {
-                        p2p_peer: stream_id.peer(),
-                        severity: RpcSeverity::Fatal,
-                    }
-                    .into(),
-                );
-                producers.peer_events.produce(&self.column_request(block_root, bitmask).into());
-                false
+        for p in pending.drain(..) {
+            if batch::kzg_entry(&p, &self.validator).is_none() {
+                tracing::error!(stream_id = ?p.stream_id, "batched sidecar inputs unavailable at flush");
+                continue;
+            }
+            if all_ok || self.reverify_single(&p) {
+                self.resolve_validated(p, adapter);
+            } else {
+                self.resolve_rejected(&p, adapter);
             }
         }
+        self.kzg_batch.restore(pending);
+    }
+
+    fn reverify_single(&self, p: &PendingKzg) -> bool {
+        let Ok((buf, _)) = p.sidecar.buffer() else { return false };
+        if p.is_gloas {
+            self.validator
+                .gloas_commitments(&p.block_root)
+                .is_some_and(|c| util::verify_data_column_sidecar_kzg_proofs_gloas(buf, c))
+        } else {
+            util::verify_data_column_sidecar_kzg_proofs_fulu(buf)
+        }
+    }
+
+    fn resolve_validated(&mut self, p: PendingKzg, adapter: &mut SpineAdapter<SilverSpine>) {
+        let PendingKzg {
+            sidecar, stream_id, block_root, column_index, bitmask, slot, relay, ..
+        } = p;
+        match relay {
+            RelayMeta::Gossip { topic, msg_hash, recv_ts, protobuf } => {
+                adapter.produce(PeerEvent::SendGossip {
+                    originator_stream_id: stream_id,
+                    topic,
+                    msg_hash,
+                    recv_ts,
+                    protobuf,
+                });
+            }
+            RelayMeta::Rpc { ssz } if self.sync_state.is_synced() => {
+                adapter.produce(PeerEvent::PublishDataColumn {
+                    originator: stream_id,
+                    topic: GossipTopic::DataColumnSidecar(column_index),
+                    ssz,
+                });
+            }
+            _ => {}
+        }
+        let is_gossip = stream_id.protocol() == StreamProtocol::GossipSub;
+        self.record_validated_column(
+            block_root,
+            column_index,
+            bitmask,
+            slot,
+            sidecar,
+            is_gossip,
+            &mut |msg| adapter.produce(msg),
+        );
+    }
+
+    fn resolve_rejected(&mut self, p: &PendingKzg, adapter: &mut SpineAdapter<SilverSpine>) {
+        tracing::warn!(stream_id = ?p.stream_id, "failed to verify sidecar kzg proof");
+        DataColumnCounters::KzgBatchRejects.inc();
+        adapter.produce(PeerEvent::RpcMisbehaviour {
+            p2p_peer: p.stream_id.peer(),
+            severity: RpcSeverity::Fatal,
+        });
+        let request = self.column_request(p.block_root, p.bitmask);
+        adapter.produce(request);
     }
 }
 
 impl DataColumnsTile {
     #[timed]
-    fn handle_beacon_state_event(
-        &mut self,
-        event: BeaconStateEvent,
-        producers: &mut SilverSpineProducers,
-    ) -> Option<([u8; 92], u64)> {
+    fn handle_beacon_state_event(&mut self, event: BeaconStateEvent) -> Option<([u8; 92], u64)> {
         let mut latest_status_event: Option<([u8; 92], u64)> = None;
         match event {
             BeaconStateEvent::Status { ssz, wall_slot, .. } => {
                 // Per-event (not latest-only): BS emits one Status per accepted
                 // block, and each newly validated root may unblock buffered
                 // children.
-                self.drain_parent_pending_columns(*StatusView::head_root(&ssz), &mut |msg| {
-                    producers.data_columns.produce(&msg.into());
-                });
+                self.drain_parent_pending_columns(*StatusView::head_root(&ssz));
                 latest_status_event = Some((ssz, wall_slot));
             }
             BeaconStateEvent::PersistBlock { ssz, source } => {
@@ -743,13 +544,11 @@ impl DataColumnsTile {
                         let block_root = util::block_root_fulu(buf);
 
                         // record persisted block roots for use in parent check
-                        self.persisted_block_roots.insert(block_root, ());
+                        self.validator.note_persisted(block_root);
 
                         // This block just got BS-accepted: it may be the
                         // missing parent of buffered columns.
-                        self.drain_parent_pending_columns(block_root, &mut |msg| {
-                            producers.data_columns.produce(&msg.into());
-                        });
+                        self.drain_parent_pending_columns(block_root);
                     }
                     Err(e) => {
                         tracing::error!(?e, seq=t_read.seq(), consumer=?self.persist_gossip_consumer, "persist consumer buffer acquire failed");
@@ -790,25 +589,21 @@ impl Tile<SilverSpine> for DataColumnsTile {
                 let t_read = self.gossip_consumer.acquire(gossip.ssz);
 
                 let is_gloas = self.spec.is_gloas_at_slot(self.sync_state.head_slot() + 1);
-                if self.handle_data_column_sidecar(
+                let relay = RelayMeta::Gossip {
+                    topic: gossip.topic,
+                    msg_hash: gossip.msg_hash,
+                    recv_ts: gossip.recv_ts,
+                    protobuf: gossip.protobuf,
+                };
+                self.handle_data_column_sidecar(
                     t_read,
                     gossip.stream_id,
                     is_gloas,
                     Some(custody_group),
                     Some(gossip.recv_ts),
+                    relay,
                     producers,
-                ) {
-                    producers.peer_events.produce(
-                        &PeerEvent::SendGossip {
-                            originator_stream_id: gossip.stream_id,
-                            topic: gossip.topic,
-                            msg_hash: gossip.msg_hash,
-                            recv_ts: gossip.recv_ts,
-                            protobuf: gossip.protobuf,
-                        }
-                        .into(),
-                    );
-                }
+                );
             }
             _ => {}
         });
@@ -835,14 +630,10 @@ impl Tile<SilverSpine> for DataColumnsTile {
                         let parent_root = *SignedBeaconBlockView::parent_root(buf);
                         if is_gloas {
                             let block_root = util::block_root(buf, is_gloas);
-                            self.cache_gloas_commitments(block_root, buf);
-                            self.drain_pending_gloas_columns(block_root, &mut |msg| {
-                                producers.data_columns.produce(&msg.into());
-                            });
+                            self.validator.cache_gloas_commitments(block_root, buf);
+                            self.drain_pending_gloas_columns(block_root);
                         }
-                        self.drain_parent_pending_columns(parent_root, &mut |msg| {
-                            producers.data_columns.produce(&msg.into());
-                        });
+                        self.drain_parent_pending_columns(parent_root);
                     }
                 }
                 silver_common::RpcResponse::DataColumnSidecar { fork_digest: _, ssz } if msg_is_live_column_request(rsp.application_id) => {
@@ -850,26 +641,15 @@ impl Tile<SilverSpine> for DataColumnsTile {
                     tracing::debug!("data column sidecar over rpc");
                     let t_read = self.rpc_consumer.acquire(ssz);
                     let is_gloas = msg_is_post_gloas(rsp.application_id);
-
-                    let Ok((buffer, _)) = t_read.buffer() else {
-                        return;
-                    };
-                    let column_index = if is_gloas {
-                        DataColumnSidecarGloasView::index(buffer)
-                    } else {
-                        DataColumnSidecarFuluView::index(buffer)
-                    };
-
-                    if self.handle_data_column_sidecar(t_read, rsp.stream_id, is_gloas, None, None, producers) {
-                        if self.sync_state.is_synced() {
-                            // Publish to gossip
-                            producers.peer_events.produce(&PeerEvent::PublishDataColumn {
-                                originator: rsp.stream_id,
-                                topic: GossipTopic::DataColumnSidecar(column_index),
-                                ssz,
-                            }.into());
-                        }
-                    }
+                    self.handle_data_column_sidecar(
+                        t_read,
+                        rsp.stream_id,
+                        is_gloas,
+                        None,
+                        None,
+                        RelayMeta::Rpc { ssz },
+                        producers,
+                    );
                 }
                 silver_common::RpcResponse::Error { error, msg, len } if msg_is_live_column_request(rsp.application_id) => {
                     let err_msg = String::from_utf8_lossy(&msg[..len]).to_string();
@@ -881,9 +661,8 @@ impl Tile<SilverSpine> for DataColumnsTile {
             },
         });
 
-        adapter.consume(|beacon_event: BeaconStateEvent, producers| {
-            if let Some((ssz, wall_slot)) = self.handle_beacon_state_event(beacon_event, producers)
-            {
+        adapter.consume(|beacon_event: BeaconStateEvent, _| {
+            if let Some((ssz, wall_slot)) = self.handle_beacon_state_event(beacon_event) {
                 self.sync_state.update(ssz, wall_slot);
             }
         });
@@ -912,17 +691,18 @@ impl Tile<SilverSpine> for DataColumnsTile {
         });
         self.el_fetcher.free();
 
+        // Everything this pass delivered is collected; verify in one call.
+        self.flush_kzg_batch(adapter);
+
         let now = Instant::now();
 
-        // Age out per-block validation memo.
-        self.validated_blocks.maybe_rotate(now, &mut |_, _| true);
-        // Age out validated columns.
+        // Age out validation caches (BLS memo, gloas commitments, persisted
+        // roots) and validated columns.
+        self.validator.rotate(now);
         self.validated_columns.maybe_rotate(now, &mut |_, _| true);
-        // Age out cached columns and commitments
+        // Age out cached columns.
         self.parent_pending_columns.maybe_rotate(now, &mut |_, _| true);
         self.gloas_pending_columns.maybe_rotate(now, &mut |_, _| true);
-        self.gloas_commitments.maybe_rotate(now, &mut |_, _| true);
-        self.persisted_block_roots.maybe_rotate(now, &mut |_, _| true);
 
         // Age out EL blob fetches the engine never answered (the p2p race
         // covers those columns); answered ones are removed on response.

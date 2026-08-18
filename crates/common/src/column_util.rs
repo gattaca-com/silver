@@ -158,6 +158,7 @@ pub fn verify_data_column_sidecar_gloas(sidecar: &[u8], commitments: &[u8]) -> b
 /// Caller MUST have already passed `verify_data_column_sidecar_fulu`
 /// (relies on the size invariants for `kzg_commitments` and the
 /// inclusion-proof bytes).
+#[timed]
 pub fn verify_data_column_sidecar_inclusion_proof(sidecar: &[u8]) -> bool {
     let commitments = DataColumnSidecarFuluView::kzg_commitments(sidecar);
     let leaf = hash_list(
@@ -252,6 +253,68 @@ fn kzg_verify_batch(column: &[u8], commits: &[u8], proofs: &[u8], index: u64) ->
     let settings = c_kzg::ethereum_kzg_settings(0);
     matches!(
         settings.verify_cell_kzg_proof_batch(commitments, cell_indices, cells, kzg_proofs),
+        Ok(true)
+    )
+}
+
+/// KZG inputs of one sidecar for `kzg_verify_batch_multi`. Same
+/// preconditions as `kzg_verify_batch`: slice lengths are caller-verified
+/// clean multiples carrying one commitment/proof per cell.
+pub struct KzgBatchEntry<'a> {
+    pub column: &'a [u8],
+    pub commitments: &'a [u8],
+    pub proofs: &'a [u8],
+    pub index: u64,
+}
+
+/// Staging buffers for `kzg_verify_batch_multi` — cells of distinct sidecars
+/// are not contiguous and the c-kzg FFI wants flat arrays. Capacity is
+/// retained across calls.
+#[derive(Default)]
+pub struct KzgScratch {
+    cells: Vec<u8>,
+    commitments: Vec<u8>,
+    proofs: Vec<u8>,
+    indices: Vec<u64>,
+}
+
+/// Folds every entry's cells into a single `verify_cell_kzg_proof_batch`
+/// call: one pairing check for the whole batch, and same-block sidecars
+/// (identical commitment sets) amortise the per-commitment scalar work.
+/// An empty batch trivially passes.
+#[timed]
+pub fn kzg_verify_batch_multi<'a>(
+    entries: impl Iterator<Item = KzgBatchEntry<'a>>,
+    scratch: &mut KzgScratch,
+) -> bool {
+    scratch.cells.clear();
+    scratch.commitments.clear();
+    scratch.proofs.clear();
+    scratch.indices.clear();
+    for e in entries {
+        scratch.cells.extend_from_slice(e.column);
+        scratch.commitments.extend_from_slice(e.commitments);
+        scratch.proofs.extend_from_slice(e.proofs);
+        scratch.indices.extend(std::iter::repeat_n(e.index, e.column.len() / BYTES_PER_CELL));
+    }
+    let n = scratch.indices.len();
+    if n == 0 {
+        return true;
+    }
+
+    // Casts as in `kzg_verify_batch`: `Cell`/`Bytes48` are `#[repr(C)]` byte
+    // arrays (align 1) and each buffer holds exactly `n` elements.
+    let cells: &[c_kzg::Cell] =
+        unsafe { std::slice::from_raw_parts(scratch.cells.as_ptr() as *const c_kzg::Cell, n) };
+    let commitments: &[c_kzg::Bytes48] = unsafe {
+        std::slice::from_raw_parts(scratch.commitments.as_ptr() as *const c_kzg::Bytes48, n)
+    };
+    let proofs: &[c_kzg::Bytes48] =
+        unsafe { std::slice::from_raw_parts(scratch.proofs.as_ptr() as *const c_kzg::Bytes48, n) };
+
+    let settings = c_kzg::ethereum_kzg_settings(0);
+    matches!(
+        settings.verify_cell_kzg_proof_batch(commitments, &scratch.indices, cells, proofs),
         Ok(true)
     )
 }
