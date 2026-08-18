@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use ratatui::widgets::TableState;
-use silver_common::PeerId;
+use silver_common::{GossipTopic, PeerId};
 
 use crate::{
     discovery::DiscoveredSources,
@@ -19,16 +19,18 @@ pub enum Pane {
     Timings,
     Tiles,
     Peers,
+    Gossip,
     Events,
     Flamegraph,
 }
 
-pub const PANES: [Pane; 7] = [
+pub const PANES: [Pane; 8] = [
     Pane::Counters,
     Pane::TCaches,
     Pane::Timings,
     Pane::Tiles,
     Pane::Peers,
+    Pane::Gossip,
     Pane::Events,
     Pane::Flamegraph,
 ];
@@ -41,6 +43,7 @@ impl Pane {
             Pane::Timings => "Timings",
             Pane::Tiles => "Tiles",
             Pane::Peers => "Peers",
+            Pane::Gossip => "Gossip",
             Pane::Events => "Events",
             Pane::Flamegraph => "Flamegraph",
         }
@@ -52,7 +55,8 @@ impl Pane {
             Pane::TCaches => Pane::Timings,
             Pane::Timings => Pane::Tiles,
             Pane::Tiles => Pane::Peers,
-            Pane::Peers => Pane::Events,
+            Pane::Peers => Pane::Gossip,
+            Pane::Gossip => Pane::Events,
             Pane::Events => Pane::Flamegraph,
             Pane::Flamegraph => Pane::Counters,
         }
@@ -79,6 +83,9 @@ pub struct App {
     pub peers_display_order: Vec<PeerId>,
     pub peers_sort_col: usize,
     pub peers_sort_desc: bool,
+    /// Topic selection by identity, mirroring the peers pane.
+    pub gossip_selected: Option<GossipTopic>,
+    pub gossip_display_order: Vec<GossipTopic>,
     pub events: EventsPane,
     /// When true, the active pane renders only the plot for the
     /// selected row, full-area. Toggled by Enter; Esc exits.
@@ -97,6 +104,7 @@ pub struct App {
     pub timings_table_state: TableState,
     pub tiles_table_state: TableState,
     pub peers_table_state: TableState,
+    pub gossip_table_state: TableState,
     pub flamegraph: Flamegraph,
     pub quit: bool,
 }
@@ -131,6 +139,8 @@ impl App {
             peers_display_order: Vec::new(),
             peers_sort_col: 10,
             peers_sort_desc: true,
+            gossip_selected: None,
+            gossip_display_order: Vec::new(),
             events,
             drilled_in: false,
             split_pct: SPLIT_DEFAULT,
@@ -139,6 +149,7 @@ impl App {
             timings_table_state: TableState::default(),
             tiles_table_state: TableState::default(),
             peers_table_state: TableState::default(),
+            gossip_table_state: TableState::default(),
             flamegraph,
             quit: false,
         }
@@ -291,6 +302,7 @@ impl App {
             Pane::Timings => self.move_timing_selection(dir),
             Pane::Tiles => self.move_tile_selection(dir),
             Pane::Peers => self.move_peer_selection(dir),
+            Pane::Gossip => self.move_gossip_selection(dir),
             Pane::Events => self.events.move_selection(dir),
             Pane::Flamegraph => self.flamegraph.scroll_by(dir),
         }
@@ -306,6 +318,18 @@ impl App {
             .unwrap_or(0);
         let new = pos.saturating_add_signed(dir as isize).min(self.peers_display_order.len() - 1);
         self.peers_selected = Some(self.peers_display_order[new]);
+    }
+
+    fn move_gossip_selection(&mut self, dir: i32) {
+        if self.gossip_display_order.is_empty() {
+            return;
+        }
+        let pos = self
+            .gossip_selected
+            .and_then(|t| self.gossip_display_order.iter().position(|x| *x == t))
+            .unwrap_or(0);
+        let new = pos.saturating_add_signed(dir as isize).min(self.gossip_display_order.len() - 1);
+        self.gossip_selected = Some(self.gossip_display_order[new]);
     }
 
     /// Peers pane: move the sort column left/right, wrapping.

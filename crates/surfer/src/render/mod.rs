@@ -2,6 +2,7 @@ pub mod counters_pane;
 pub mod events_pane;
 pub mod flamegraph_pane;
 pub mod fmt;
+pub mod gossip_pane;
 pub mod peers_pane;
 pub mod tcaches_pane;
 pub mod tiles_pane;
@@ -30,6 +31,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Pane::Timings => timings_pane::draw(f, chunks[1], app),
         Pane::Tiles => tiles_pane::draw(f, chunks[1], app),
         Pane::Peers => peers_pane::draw(f, chunks[1], app),
+        Pane::Gossip => gossip_pane::draw(f, chunks[1], app),
         Pane::Events => app.events.draw(f, chunks[1]),
         Pane::Flamegraph => flamegraph_pane::draw(f, chunks[1], app),
     }
