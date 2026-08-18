@@ -87,6 +87,9 @@ mod tests {
             path,
             query: "",
             body: b"",
+            accept: None,
+            content_type: None,
+            eth_consensus_version: None,
             version: 1,
             keep_alive: true,
         };

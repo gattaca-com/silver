@@ -165,7 +165,17 @@ mod tests {
     use crate::routes::preboot_ctx;
 
     fn request<'a>(method: &'a str, path: &'a str) -> ParsedRequest<'a> {
-        ParsedRequest { method, path, query: "", body: b"", version: 1, keep_alive: true }
+        ParsedRequest {
+            method,
+            path,
+            query: "",
+            body: b"",
+            accept: None,
+            content_type: None,
+            eth_consensus_version: None,
+            version: 1,
+            keep_alive: true,
+        }
     }
 
     fn dispatch(router: &Router, method: &str, path: &str) -> Vec<u8> {
@@ -252,6 +262,9 @@ mod tests {
             path: "/submit",
             query: "k=v",
             body: b"payload",
+            accept: None,
+            content_type: None,
+            eth_consensus_version: None,
             version: 1,
             keep_alive: true,
         };

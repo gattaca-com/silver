@@ -477,9 +477,6 @@ mod tests {
         assert_eq!(failure.unwrap(), block_root);
     }
 
-    /// CL-114: an EL that accepts a request and never answers used to wedge the
-    /// connection — and with `max_connections` reached, the gated spine intake
-    /// behind it — for the lifetime of the process.
     #[test]
     fn unanswered_request_times_out_and_frees_connection() {
         let dir = TempDir::new().unwrap();

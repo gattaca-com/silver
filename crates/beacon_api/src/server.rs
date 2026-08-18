@@ -562,9 +562,9 @@ mod tests {
         assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
     }
 
-    /// CL-115: a request that never completes holds its slot forever. Partial
-    /// and malformed input are treated alike — neither dispatches, so both are
-    /// reaped by the same idle deadline.
+    /// A partial request that never completes holds its slot until the idle
+    /// deadline reaps it. Definitively malformed input gets 400-and-close
+    /// at parse time.
     #[test]
     fn partial_request_is_reaped_after_the_idle_deadline() {
         let mut api = api_with(64, Duration::from_millis(200));
@@ -636,7 +636,7 @@ mod tests {
         assert_eq!(api.connections.len(), 1, "an active connection must survive the sweep");
     }
 
-    /// The CL-115 exhaustion scenario end to end: a hung client owns the only
+    /// Connection exhaustion scenario end to end: a hung client owns the only
     /// slot, so every other client is refused until the sweep frees it.
     #[test]
     fn idle_sweep_frees_a_slot_held_at_the_cap() {

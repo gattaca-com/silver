@@ -11,44 +11,82 @@ pub struct ParsedRequest<'a> {
     pub path: &'a str,
     pub query: &'a str,
     pub body: &'a [u8],
+    pub accept: Option<&'a str>,
+    pub content_type: Option<&'a str>,
+    pub eth_consensus_version: Option<&'a str>,
     pub version: u8,
     pub keep_alive: bool,
 }
 
+/// `Incomplete` means "no verdict yet, feed me more bytes"; `Malformed` means
+/// the bytes can never become a request, so no amount of waiting helps.
+enum ParseOutcome<'a> {
+    Complete { consumed: usize, request: ParsedRequest<'a> },
+    Incomplete,
+    Malformed,
+}
+
 impl<'a> ParsedRequest<'a> {
-    fn parse(buf: &'a [u8]) -> Option<(usize, Self)> {
+    fn parse(buf: &'a [u8]) -> ParseOutcome<'a> {
         let mut headers = [httparse::EMPTY_HEADER; 64];
         let mut req = httparse::Request::new(&mut headers);
         let headers_end = match req.parse(buf) {
             Ok(httparse::Status::Complete(n)) => n,
-            _ => return None,
+            Ok(httparse::Status::Partial) => return ParseOutcome::Incomplete,
+            Err(e) => {
+                tracing::warn!("unparseable request: {e}");
+                return ParseOutcome::Malformed;
+            }
         };
-        let method = req.method?;
-        let raw_path = req.path?;
+        let (Some(method), Some(raw_path), Some(version)) = (req.method, req.path, req.version)
+        else {
+            return ParseOutcome::Malformed;
+        };
         let (path, query) = raw_path.split_once('?').unwrap_or((raw_path, ""));
-        let version = req.version?;
         let keep_alive = version == 1 &&
             !headers.iter().any(|h| {
                 h.name.eq_ignore_ascii_case("connection") && h.value.eq_ignore_ascii_case(b"close")
             });
-        let content_length: usize =
-            match headers.iter().find(|h| h.name.eq_ignore_ascii_case("content-length")) {
-                None => 0,
-                Some(h) => std::str::from_utf8(h.value).ok().and_then(|v| v.trim().parse().ok())?,
-            };
-        let total = headers_end + content_length;
+
+        let header = |name: &str| {
+            headers.iter().find(|h| h.name.eq_ignore_ascii_case(name)).map(|h| h.value)
+        };
+        let content_length = match header("content-length") {
+            None => 0,
+            Some(value) => match trimmed_utf8(value).and_then(|v| v.parse().ok()) {
+                Some(length) => length,
+                None => {
+                    tracing::warn!("unusable Content-Length: {:?}", String::from_utf8_lossy(value));
+                    return ParseOutcome::Malformed;
+                }
+            },
+        };
+        let Some(total) = headers_end.checked_add(content_length) else {
+            return ParseOutcome::Malformed;
+        };
         if buf.len() < total {
-            return None;
+            return ParseOutcome::Incomplete;
         }
-        Some((total, Self {
-            method,
-            path,
-            query,
-            body: &buf[headers_end..total],
-            version,
-            keep_alive,
-        }))
+
+        ParseOutcome::Complete {
+            consumed: total,
+            request: Self {
+                method,
+                path,
+                query,
+                body: &buf[headers_end..total],
+                accept: header("accept").and_then(trimmed_utf8),
+                content_type: header("content-type").and_then(trimmed_utf8),
+                eth_consensus_version: header("eth-consensus-version").and_then(trimmed_utf8),
+                version,
+                keep_alive,
+            },
+        }
     }
+}
+
+fn trimmed_utf8(value: &[u8]) -> Option<&str> {
+    std::str::from_utf8(value).ok().map(str::trim)
 }
 
 #[derive(Debug, PartialEq)]
@@ -104,11 +142,20 @@ impl ServerConnection {
     }
 
     pub fn dispatch<F: Fn(&ParsedRequest<'_>, &mut Vec<u8>)>(&mut self, handler: &F) -> bool {
-        let Some((consumed, req)) =
-            ParsedRequest::parse(&self.read_buf[self.read_pos..self.read_end])
-        else {
-            return false;
-        };
+        let (consumed, req) =
+            match ParsedRequest::parse(&self.read_buf[self.read_pos..self.read_end]) {
+                ParseOutcome::Complete { consumed, request } => (consumed, request),
+                ParseOutcome::Incomplete => return false,
+                // Framing is lost, so there is nothing left to resynchronise
+                // on: answer, drop the whole buffer and let the caller close.
+                ParseOutcome::Malformed => {
+                    self.keep_alive = false;
+                    frame_response(&mut self.write_buf, "400 Bad Request", None, b"");
+                    self.read_pos = 0;
+                    self.read_end = 0;
+                    return true;
+                }
+            };
         if req.version != 1 {
             tracing::warn!("rejecting HTTP/1.0 request");
             self.keep_alive = false;
@@ -184,6 +231,16 @@ mod tests {
         format!("GET {path} {version}\r\nHost: localhost\r\n\r\n").into_bytes()
     }
 
+    /// One header more than `parse`'s fixed slot array holds.
+    fn overlong_header_req() -> Vec<u8> {
+        let mut req = b"GET /metrics HTTP/1.1\r\n".to_vec();
+        for i in 0..65 {
+            req.extend_from_slice(format!("X-Pad-{i}: v\r\n").as_bytes());
+        }
+        req.extend_from_slice(b"\r\n");
+        req
+    }
+
     fn feed(conn: &mut ServerConnection, bytes: &[u8]) {
         let space = conn.read_space().unwrap();
         space[..bytes.len()].copy_from_slice(bytes);
@@ -226,10 +283,31 @@ mod tests {
         frame_response(out, "200 OK", None, req.path.as_bytes());
     }
 
+    fn parsed(buf: &[u8]) -> (usize, ParsedRequest<'_>) {
+        match ParsedRequest::parse(buf) {
+            ParseOutcome::Complete { consumed, request } => (consumed, request),
+            ParseOutcome::Incomplete => panic!("expected a complete request, got Incomplete"),
+            ParseOutcome::Malformed => panic!("expected a complete request, got Malformed"),
+        }
+    }
+
+    fn reject_and_close(request: &[u8]) {
+        let mut conn = ServerConnection::new();
+        feed(&mut conn, request);
+
+        assert!(conn.dispatch(&|_, _: &mut Vec<u8>| {
+            panic!("malformed request must not reach the handler")
+        }));
+        assert_eq!(conn.pending_write(), b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n");
+
+        drain(&mut conn);
+        assert_eq!(conn.after_response(&echo_path), AfterResponse::Close);
+    }
+
     #[test]
     fn parse_http11_defaults_keep_alive() {
         let req = get_req("/eth/v1/node/identity", "HTTP/1.1");
-        let (_, r) = ParsedRequest::parse(&req).unwrap();
+        let (_, r) = parsed(&req);
         assert_eq!(r.path, "/eth/v1/node/identity");
         assert!(r.keep_alive);
     }
@@ -237,7 +315,7 @@ mod tests {
     #[test]
     fn parse_http11_connection_close() {
         let req = b"GET /metrics HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
-        let (_, r) = ParsedRequest::parse(req).unwrap();
+        let (_, r) = parsed(req);
         assert_eq!(r.path, "/metrics");
         assert!(!r.keep_alive);
     }
@@ -245,19 +323,20 @@ mod tests {
     #[test]
     fn parse_http10_defaults_close() {
         let req = get_req("/", "HTTP/1.0");
-        let (_, r) = ParsedRequest::parse(&req).unwrap();
+        let (_, r) = parsed(&req);
         assert!(!r.keep_alive);
     }
 
     #[test]
-    fn parse_partial_returns_none() {
-        assert!(ParsedRequest::parse(b"GET /eth/v1/node/identity HTTP/1.1\r\n").is_none());
+    fn parse_partial_is_incomplete() {
+        let outcome = ParsedRequest::parse(b"GET /eth/v1/node/identity HTTP/1.1\r\n");
+        assert!(matches!(outcome, ParseOutcome::Incomplete));
     }
 
     #[test]
     fn parse_query_string_split() {
         let req = get_req("/eth/v1/beacon/states/head/validators?status=active", "HTTP/1.1");
-        let (_, r) = ParsedRequest::parse(&req).unwrap();
+        let (_, r) = parsed(&req);
         assert_eq!(r.path, "/eth/v1/beacon/states/head/validators");
         assert_eq!(r.query, "status=active");
     }
@@ -270,10 +349,9 @@ mod tests {
             body.len()
         );
         let mut buf = req.into_bytes();
-        // incomplete — body not yet arrived
-        assert!(ParsedRequest::parse(&buf).is_none());
+        assert!(matches!(ParsedRequest::parse(&buf), ParseOutcome::Incomplete), "body not arrived");
         buf.extend_from_slice(body);
-        let (consumed, r) = ParsedRequest::parse(&buf).unwrap();
+        let (consumed, r) = parsed(&buf);
         assert_eq!(r.method, "POST");
         assert_eq!(r.body, body.as_ref());
         assert_eq!(consumed, buf.len());
@@ -285,17 +363,136 @@ mod tests {
         let req2 = b"GET /eth/v1/node/identity HTTP/1.1\r\nHost: localhost\r\n\r\n";
         let mut buf = req1.to_vec();
         buf.extend_from_slice(req2);
-        let (consumed, r) = ParsedRequest::parse(&buf).unwrap();
+        let (consumed, r) = parsed(&buf);
         assert_eq!(r.path, "/metrics");
         assert_eq!(consumed, req1.len());
-        let (_, r2) = ParsedRequest::parse(&buf[consumed..]).unwrap();
+        let (_, r2) = parsed(&buf[consumed..]);
         assert_eq!(r2.path, "/eth/v1/node/identity");
     }
 
     #[test]
-    fn parse_invalid_content_length_returns_none() {
+    fn parse_negotiation_headers() {
+        let req = b"POST /eth/v2/beacon/blocks HTTP/1.1\r\nHost: x\r\nAccept: application/octet-stream;q=1.0,application/json;q=0.9\r\nContent-Type: application/octet-stream\r\nEth-Consensus-Version: fulu\r\n\r\n";
+        let (_, r) = parsed(req);
+        assert_eq!(r.accept, Some("application/octet-stream;q=1.0,application/json;q=0.9"));
+        assert_eq!(r.content_type, Some("application/octet-stream"));
+        assert_eq!(r.eth_consensus_version, Some("fulu"));
+    }
+
+    #[test]
+    fn parse_negotiation_headers_absent_are_none() {
+        let req = get_req("/metrics", "HTTP/1.1");
+        let (_, r) = parsed(&req);
+        assert_eq!(r.accept, None);
+        assert_eq!(r.content_type, None);
+        assert_eq!(r.eth_consensus_version, None);
+    }
+
+    #[test]
+    fn parse_negotiation_header_names_are_case_insensitive() {
+        let req = b"POST /p HTTP/1.1\r\nACCEPT: application/json\r\ncontent-type: application/json\r\neTh-CoNsEnSuS-vErSiOn: gloas\r\n\r\n";
+        let (_, r) = parsed(req);
+        assert_eq!(r.accept, Some("application/json"));
+        assert_eq!(r.content_type, Some("application/json"));
+        assert_eq!(r.eth_consensus_version, Some("gloas"));
+    }
+
+    #[test]
+    fn parse_unparseable_request_line_is_malformed() {
+        assert!(matches!(
+            ParsedRequest::parse(b"NOT A VALID REQUEST\r\n\r\n"),
+            ParseOutcome::Malformed
+        ));
+    }
+
+    #[test]
+    fn parse_more_headers_than_fit_is_malformed() {
+        assert!(matches!(ParsedRequest::parse(&overlong_header_req()), ParseOutcome::Malformed));
+    }
+
+    #[test]
+    fn parse_invalid_content_length_is_malformed() {
         let req = b"POST /foo HTTP/1.1\r\nHost: localhost\r\nContent-Length: abc\r\n\r\n";
-        assert!(ParsedRequest::parse(req).is_none());
+        assert!(matches!(ParsedRequest::parse(req), ParseOutcome::Malformed));
+    }
+
+    #[test]
+    fn parse_content_length_beyond_usize_is_malformed() {
+        let req = b"POST /foo HTTP/1.1\r\nHost: localhost\r\nContent-Length: 99999999999999999999\r\n\r\n";
+        assert!(matches!(ParsedRequest::parse(req), ParseOutcome::Malformed));
+    }
+
+    #[test]
+    fn parse_content_length_overflowing_the_header_end_is_malformed() {
+        let req = format!(
+            "POST /foo HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n",
+            usize::MAX
+        );
+        assert!(matches!(ParsedRequest::parse(req.as_bytes()), ParseOutcome::Malformed));
+    }
+
+    #[test]
+    fn dispatch_unparseable_request_line_writes_400_then_closes() {
+        reject_and_close(b"NOT A VALID REQUEST\r\n\r\n");
+    }
+
+    #[test]
+    fn dispatch_more_headers_than_fit_writes_400_then_closes() {
+        reject_and_close(&overlong_header_req());
+    }
+
+    #[test]
+    fn dispatch_invalid_content_length_writes_400_then_closes() {
+        reject_and_close(b"POST /foo HTTP/1.1\r\nHost: x\r\nContent-Length: abc\r\n\r\n");
+    }
+
+    #[test]
+    fn dispatch_content_length_beyond_usize_writes_400_then_closes() {
+        reject_and_close(
+            b"POST /foo HTTP/1.1\r\nHost: x\r\nContent-Length: 99999999999999999999\r\n\r\n",
+        );
+    }
+
+    #[test]
+    fn dispatch_partial_request_writes_nothing() {
+        let mut conn = ServerConnection::new();
+        feed(&mut conn, b"GET /eth/v1/node/identity HTTP/1.1\r\nHost: local");
+
+        assert!(
+            !conn.dispatch(&|_, _: &mut Vec<u8>| panic!("incomplete request must not dispatch"))
+        );
+        assert!(conn.pending_write().is_empty(), "an unfinished request is not a bad one");
+
+        feed(&mut conn, b"host\r\n\r\n");
+        assert!(conn.dispatch(&echo_path));
+        assert_eq!(
+            conn.pending_write(),
+            b"HTTP/1.1 200 OK\r\nContent-Length: 21\r\n\r\n/eth/v1/node/identity"
+        );
+    }
+
+    #[test]
+    fn dispatch_partial_body_writes_nothing() {
+        let mut conn = ServerConnection::new();
+        feed(&mut conn, b"POST /p HTTP/1.1\r\nHost: x\r\nContent-Length: 8\r\n\r\nhalf");
+
+        assert!(!conn.dispatch(&|_, _: &mut Vec<u8>| panic!("incomplete body must not dispatch")));
+        assert!(conn.pending_write().is_empty());
+    }
+
+    #[test]
+    fn pipelined_garbage_after_valid_request_answers_first_then_rejects() {
+        let mut conn = ServerConnection::new();
+        feed(&mut conn, b"GET /first HTTP/1.1\r\nHost: x\r\n\r\nNOT A VALID REQUEST\r\n\r\n");
+
+        assert!(conn.dispatch(&echo_path));
+        assert_eq!(drain(&mut conn), b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\n/first");
+
+        assert_eq!(conn.after_response(&echo_path), AfterResponse::ResponsePending);
+        assert_eq!(conn.pending_write(), b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n");
+
+        drain(&mut conn);
+        assert_eq!(conn.after_response(&echo_path), AfterResponse::Close);
     }
 
     #[test]
