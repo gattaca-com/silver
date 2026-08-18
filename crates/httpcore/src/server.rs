@@ -209,15 +209,26 @@ impl Default for ServerConnection {
 }
 
 pub fn frame_response(out: &mut Vec<u8>, status: &str, content_type: Option<&str>, body: &[u8]) {
-    match content_type {
-        Some(ct) => write!(
-            out,
-            "HTTP/1.1 {status}\r\nContent-Type: {ct}\r\nContent-Length: {}\r\n\r\n",
-            body.len()
-        ),
-        None => write!(out, "HTTP/1.1 {status}\r\nContent-Length: {}\r\n\r\n", body.len()),
+    frame_response_with_headers(out, status, content_type, &[], body);
+}
+
+/// `headers` are emitted in the given order, after `Content-Type` and before
+/// `Content-Length`.
+pub fn frame_response_with_headers(
+    out: &mut Vec<u8>,
+    status: &str,
+    content_type: Option<&str>,
+    headers: &[(&str, &str)],
+    body: &[u8],
+) {
+    write!(out, "HTTP/1.1 {status}\r\n").unwrap();
+    if let Some(ct) = content_type {
+        write!(out, "Content-Type: {ct}\r\n").unwrap();
     }
-    .unwrap();
+    for (name, value) in headers {
+        write!(out, "{name}: {value}\r\n").unwrap();
+    }
+    write!(out, "Content-Length: {}\r\n\r\n", body.len()).unwrap();
     out.extend_from_slice(body);
 }
 
@@ -510,6 +521,47 @@ mod tests {
             out,
             b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 10\r\n\r\n{\"data\":1}"
         );
+    }
+
+    #[test]
+    fn extra_headers_sit_between_content_type_and_content_length() {
+        let mut out = Vec::new();
+        frame_response_with_headers(
+            &mut out,
+            "200 OK",
+            Some("application/octet-stream"),
+            &[("Eth-Consensus-Version", "fulu")],
+            b"\x01\x02",
+        );
+        assert_eq!(
+            out,
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nEth-Consensus-Version: fulu\r\nContent-Length: 2\r\n\r\n\x01\x02"
+        );
+    }
+
+    #[test]
+    fn extra_headers_keep_their_given_order() {
+        let mut out = Vec::new();
+        frame_response_with_headers(
+            &mut out,
+            "200 OK",
+            None,
+            &[("B-Header", "2"), ("A-Header", "1"), ("C-Header", "3")],
+            b"",
+        );
+        assert_eq!(
+            out,
+            b"HTTP/1.1 200 OK\r\nB-Header: 2\r\nA-Header: 1\r\nC-Header: 3\r\nContent-Length: 0\r\n\r\n"
+        );
+    }
+
+    #[test]
+    fn no_extra_headers_frames_exactly_as_frame_response() {
+        let mut with_headers = Vec::new();
+        frame_response_with_headers(&mut with_headers, "503 Service Unavailable", None, &[], b"x");
+        let mut plain = Vec::new();
+        frame_response(&mut plain, "503 Service Unavailable", None, b"x");
+        assert_eq!(with_headers, plain);
     }
 
     #[test]
