@@ -1,6 +1,6 @@
 use flux::{spine::SpineAdapter, tile::Tile};
-use silver_beacon_api::BeaconApi;
-use silver_common::SilverSpine;
+use silver_beacon_api::{BeaconApi, SlotStatus};
+use silver_common::{BeaconStateEvent, SilverSpine, SyncUpdate};
 use silver_engine_api::EngineApi;
 
 pub struct ClientServerTile {
@@ -12,8 +12,30 @@ impl Tile<SilverSpine> for ClientServerTile {
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         self.engine.intake(adapter);
         self.engine.spin(adapter);
+        self.refresh_node_status(adapter);
         if self.beacon.pump() {
             adapter.mark_work();
         }
+    }
+}
+
+impl ClientServerTile {
+    /// Unconditional every iteration, and never behind the engine's capacity
+    /// gate: a consumer's first `consume` jumps its cursor to the producer's
+    /// write head, so a queue left unread while the pool is saturated loses
+    /// everything published in the meantime.
+    fn refresh_node_status(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
+        let status = self.beacon.node_status_mut();
+
+        adapter.consume(|event: BeaconStateEvent, _| {
+            if let BeaconStateEvent::Status { latest_block_slot, wall_slot, .. } = event {
+                status.slots = Some(SlotStatus { head_slot: latest_block_slot, wall_slot });
+            }
+        });
+        adapter.consume(|update: SyncUpdate, _| {
+            status.syncing = !matches!(update, SyncUpdate::Following);
+        });
+
+        status.el = self.engine.sync_status();
     }
 }

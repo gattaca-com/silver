@@ -25,7 +25,7 @@ pub use pending::{
     PendingGroup, PendingId, PendingView, PendingWriteView, QueueItem, QueueView, QueueWriteView,
 };
 pub use ring::{Id, Reset};
-pub use silver_chain_spec::{BlobParameters, SpecConfig};
+pub use silver_chain_spec::{BlobParameters, ForkName, SpecConfig};
 pub(crate) use silver_ssz::{merkle, progressive};
 pub use slot_state::{
     EpochBalances, EpochBalancesRow, SlotStateFinalized, SlotStateGroup, SlotStateId,

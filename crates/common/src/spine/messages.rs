@@ -952,9 +952,10 @@ pub enum EngineResp {
 }
 
 /// Sync status of the attached execution layer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(u8)]
 pub enum ELSyncStatus {
+    #[default]
     Unknown = 0,
     Syncing = 1,
     Synced = 2,

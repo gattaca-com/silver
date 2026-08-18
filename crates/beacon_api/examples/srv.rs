@@ -1,7 +1,7 @@
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use silver_beacon_api::BeaconApi;
-use silver_beacon_state_data::BeaconStateOwner;
+use silver_beacon_state_data::{BeaconStateOwner, SpecConfig};
 use silver_common::{Enr, Identify, Keypair};
 use silver_httpcore::Bind;
 
@@ -20,6 +20,7 @@ fn main() {
         &keypair,
         local_enr,
         &Identify::default(),
+        Arc::new(SpecConfig::mainnet()),
         state,
     );
     println!("serving on {:?}", api.local_addrs());

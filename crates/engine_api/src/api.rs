@@ -64,6 +64,12 @@ impl EngineApi {
         }
     }
 
+    /// Last status the EL reported to `eth_syncing`; `Unknown` until the
+    /// first healthcheck completes.
+    pub fn sync_status(&self) -> ELSyncStatus {
+        self.sync_status
+    }
+
     pub fn intake(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         self.rpc_consumer.free();
         self.gossip_consumer.free();
@@ -73,6 +79,7 @@ impl EngineApi {
             // gate on EL liveness, then answer every request with VALID.
             if self.first_run {
                 adapter.produce(EngineHealthEvent { sync_status: ELSyncStatus::Synced });
+                self.sync_status = ELSyncStatus::Synced;
                 self.first_run = false;
             }
             let resp_producer = &mut self.resp_producer;

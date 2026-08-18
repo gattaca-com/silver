@@ -1,15 +1,17 @@
 use std::{
     collections::HashMap,
     io::{self, Read, Write},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
 use mio::{Events, Interest, Poll, Token};
-use silver_beacon_state_data::BeaconStateReader;
+use silver_beacon_state_data::{BeaconStateReader, SpecConfig};
 use silver_common::{Enr, Identify, Keypair};
 use silver_httpcore::{AfterResponse, Bind, Listener, ParsedRequest, ServerConnection, Stream};
 
 use crate::{
+    NodeStatus,
     router::Router,
     routes::{ApiCtx, ROUTES},
 };
@@ -58,6 +60,7 @@ pub struct BeaconApi {
 }
 
 impl BeaconApi {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         binds: &[Bind],
         max_connections: usize,
@@ -65,6 +68,7 @@ impl BeaconApi {
         keypair: &Keypair,
         local_enr: Enr,
         identify: &Identify,
+        spec: Arc<SpecConfig>,
         state: BeaconStateReader,
     ) -> Self {
         assert!(!binds.is_empty(), "beacon api needs at least one bind");
@@ -89,12 +93,17 @@ impl BeaconApi {
             listeners,
             connections: HashMap::new(),
             router: Router::new(ROUTES),
-            ctx: ApiCtx::new(keypair, &local_enr, identify, state),
+            ctx: ApiCtx::new(keypair, &local_enr, identify, spec, state),
         }
     }
 
     pub fn local_addrs(&self) -> Vec<Bind> {
         self.listeners.iter().map(Listener::local_addr).collect()
+    }
+
+    /// In-place update seam for the status's single writer.
+    pub fn node_status_mut(&mut self) -> &mut NodeStatus {
+        &mut self.ctx.node_status
     }
 
     pub fn pump(&mut self) -> bool {
@@ -300,6 +309,7 @@ mod tests {
             &keypair,
             local_enr,
             &Identify::default(),
+            Arc::new(SpecConfig::mainnet()),
             BeaconStateOwner::empty_test(0).reader(),
         )
     }

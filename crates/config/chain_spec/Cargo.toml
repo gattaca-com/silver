@@ -9,5 +9,8 @@ version.workspace = true
 serde.workspace = true
 hex.workspace = true
 
+[dev-dependencies]
+toml.workspace = true
+
 [lints]
 workspace = true

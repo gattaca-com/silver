@@ -2,16 +2,17 @@ use std::{
     io::{Read, Write},
     net::TcpStream,
     os::unix::net::UnixStream,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
 use flux::{spine::SpineAdapter, tile::Tile};
-use silver_beacon_api::BeaconApi;
-use silver_beacon_state_data::BeaconStateOwner;
+use silver_beacon_api::{BeaconApi, SlotStatus};
+use silver_beacon_state_data::{BeaconStateOwner, SpecConfig};
 use silver_client_server::ClientServerTile;
 use silver_common::{
-    EngineFcuReq, EngineReq, EngineResp, Enr, Identify, Keypair, SilverSpine, TCache,
-    TCacheProducer,
+    BeaconStateEvent, ELSyncStatus, EngineFcuReq, EngineReq, EngineResp, Enr, Identify, Keypair,
+    SilverSpine, SyncUpdate, TCache, TCacheProducer, ssz_view::STATUS_V2_SIZE,
 };
 use silver_config::EngineConfig;
 use silver_engine_api::{
@@ -36,6 +37,7 @@ fn beacon(bind: &Bind) -> BeaconApi {
         &keypair,
         local_enr,
         &Identify::default(),
+        Arc::new(SpecConfig::mainnet()),
         BeaconStateOwner::empty_test(0).reader(),
     )
 }
@@ -84,6 +86,15 @@ fn fcu_req(byte: u8) -> EngineReq {
 
 fn head_block_hash_json(byte: u8) -> String {
     format!("\"headBlockHash\":\"0x{}\"", hex::encode([byte; 32]))
+}
+
+fn status_event(head_slot: u64, wall_slot: u64) -> BeaconStateEvent {
+    BeaconStateEvent::Status {
+        ssz: [0u8; STATUS_V2_SIZE],
+        latest_block_slot: head_slot,
+        wall_slot,
+        enr_fork_id: [0u8; 16],
+    }
 }
 
 #[test]
@@ -298,4 +309,107 @@ fn pool_cap_gates_spine_intake() {
         }
     });
     assert_eq!(completed, vec![[12u8; 32]], "out-of-order completion correlated");
+}
+
+/// A broadcast consumer's cursor jumps to the producer's write head on its
+/// first read, so anything published before the tile's first `loop_body` is
+/// gone — which is why the tile reads these queues unconditionally from that
+/// first iteration on.
+#[test]
+fn node_status_tracks_the_spine_once_the_cursor_snaps() {
+    let base = TempDir::new().unwrap();
+    let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
+    let mut tile = ClientServerTile {
+        beacon: beacon(&Bind::parse("127.0.0.1:0")),
+        engine: engine(no_el(), ["cs_status_gossip", "cs_status_rpc", "cs_status_resp"]),
+    };
+    let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
+    let mut inj = SpineAdapter::connect_tile(&Injector, &mut *spine);
+
+    inj.produce(status_event(1, 1));
+    tile.loop_body(&mut adapter);
+    assert!(
+        tile.beacon.node_status_mut().slots.is_none(),
+        "a status published before the first consume is skipped, not delivered"
+    );
+
+    inj.produce(status_event(7, 9));
+    inj.produce(SyncUpdate::SyncingHead { head_root: [3u8; 32], head_slot: 9 });
+    tile.loop_body(&mut adapter);
+
+    let status = *tile.beacon.node_status_mut();
+    assert_eq!(status.slots, Some(SlotStatus { head_slot: 7, wall_slot: 9 }));
+    assert_eq!(status.slots.unwrap().sync_distance(), 2);
+    assert!(status.syncing);
+
+    inj.produce(SyncUpdate::Following);
+    tile.loop_body(&mut adapter);
+    assert!(!tile.beacon.node_status_mut().syncing, "reaching the target clears the syncing flag");
+}
+
+/// The engine's spine intake is gated on free pool connections; node status
+/// must not be. A queue left unread for a few iterations does not stall — it
+/// loses its whole backlog.
+#[test]
+fn node_status_updates_while_the_engine_pool_is_at_cap() {
+    let base = TempDir::new().unwrap();
+    let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
+    let (mut el, endpoint) = FakeEl::tcp();
+    let jwt_path = write_jwt(base.path());
+
+    let config = EngineConfig {
+        execution_endpoint: endpoint,
+        jwt_secret: jwt_path.to_str().unwrap().to_string(),
+        max_connections: 3,
+        ..EngineConfig::default()
+    };
+    let mut tile = ClientServerTile {
+        beacon: beacon(&Bind::parse("127.0.0.1:0")),
+        engine: engine(config, ["cs_sat_gossip", "cs_sat_rpc", "cs_sat_resp"]),
+    };
+    let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
+    let mut inj = SpineAdapter::connect_tile(&Injector, &mut *spine);
+    inj.consume(|_: EngineResp, _| {});
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut crank = |tile: &mut ClientServerTile, el: &mut FakeEl, msg: &str| {
+        assert!(Instant::now() < deadline, "timeout: {msg}");
+        tile.loop_body(&mut adapter);
+        el.pump();
+        std::thread::sleep(Duration::from_millis(1));
+    };
+
+    while el.requests.len() < 3 {
+        crank(&mut tile, &mut el, "startup healthcheck trio");
+    }
+    // `eth_syncing: false` is the EL reporting itself synced; the trio also
+    // frees all three pooled connections.
+    for i in 0..3 {
+        el.respond(i, "false");
+    }
+    while tile.beacon.node_status_mut().el != ELSyncStatus::Synced {
+        crank(&mut tile, &mut el, "EL sync status reaches the api");
+    }
+
+    for byte in [11u8, 12, 13, 14] {
+        inj.produce(fcu_req(byte));
+    }
+    let fcu_count = |el: &FakeEl| {
+        el.requests.iter().filter(|r| r.method == "engine_forkchoiceUpdatedV3").count()
+    };
+    while fcu_count(&el) < 3 {
+        crank(&mut tile, &mut el, "pool saturated with unanswered FCUs");
+    }
+
+    inj.produce(status_event(7, 9));
+    inj.produce(SyncUpdate::Following);
+    while tile.beacon.node_status_mut().slots.is_none() {
+        crank(&mut tile, &mut el, "status consumed while the pool is at cap");
+        assert_eq!(fcu_count(&el), 3, "the 4th request must stay gated on the spine");
+    }
+
+    let status = *tile.beacon.node_status_mut();
+    assert_eq!(status.slots, Some(SlotStatus { head_slot: 7, wall_slot: 9 }));
+    assert!(!status.syncing);
+    assert_eq!(status.el, ELSyncStatus::Synced);
 }

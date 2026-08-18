@@ -1,9 +1,12 @@
+use std::sync::Arc;
+
 #[cfg(test)]
 use silver_beacon_state_data::BeaconStateOwner;
-use silver_beacon_state_data::{BeaconStateReader, StateReadView};
+use silver_beacon_state_data::{BeaconStateReader, SpecConfig, StateReadView};
 use silver_common::{Enr, Identify, Keypair};
 
 use crate::{
+    NodeStatus,
     identity::build_identity_json,
     response::Response,
     router::{Handler, Method, Request},
@@ -17,6 +20,12 @@ pub(crate) const ROUTES: &[(Method, &str, Handler)] =
 pub(crate) struct ApiCtx {
     pub(crate) identity_json: Vec<u8>,
     pub(crate) state: BeaconStateReader,
+    // The config and node-status endpoints land after this; until then only
+    // the owning tile writes `node_status`.
+    #[allow(dead_code)]
+    pub(crate) spec: Arc<SpecConfig>,
+    #[allow(dead_code)]
+    pub(crate) node_status: NodeStatus,
 }
 
 impl ApiCtx {
@@ -24,9 +33,15 @@ impl ApiCtx {
         keypair: &Keypair,
         local_enr: &Enr,
         identify: &Identify,
+        spec: Arc<SpecConfig>,
         state: BeaconStateReader,
     ) -> Self {
-        Self { identity_json: build_identity_json(keypair, local_enr, identify), state }
+        Self {
+            identity_json: build_identity_json(keypair, local_enr, identify),
+            state,
+            spec,
+            node_status: NodeStatus::default(),
+        }
     }
 
     #[allow(dead_code)]
@@ -55,7 +70,17 @@ fn metrics(_req: &Request<'_>, _ctx: &ApiCtx, resp: &mut Response<'_>) {
 /// bootstrap.
 #[cfg(test)]
 pub(crate) fn preboot_ctx() -> ApiCtx {
-    ApiCtx { identity_json: Vec::new(), state: BeaconStateOwner::empty_test(0).reader() }
+    test_ctx(Vec::new(), BeaconStateOwner::empty_test(0).reader())
+}
+
+#[cfg(test)]
+fn test_ctx(identity_json: Vec<u8>, state: BeaconStateReader) -> ApiCtx {
+    ApiCtx {
+        identity_json,
+        state,
+        spec: Arc::new(SpecConfig::mainnet()),
+        node_status: NodeStatus::default(),
+    }
 }
 
 #[cfg(test)]
@@ -77,7 +102,13 @@ mod tests {
         let enr = Enr::builder().build(kp.secret_key()).unwrap();
         let mut identify = Identify::default();
         identify.tcp_ipv4 = Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)), 9000));
-        ApiCtx::new(&kp, &enr, &identify, BeaconStateOwner::empty_test(0).reader())
+        ApiCtx::new(
+            &kp,
+            &enr,
+            &identify,
+            Arc::new(SpecConfig::mainnet()),
+            BeaconStateOwner::empty_test(0).reader(),
+        )
     }
 
     fn get(router: &Router, ctx: &ApiCtx, path: &str) -> Vec<u8> {
@@ -173,7 +204,7 @@ mod tests {
         let mut owner = BeaconStateOwner::new(BeaconState::empty_test(0));
         let anchor = owner.roll_fresh();
         owner.publish_state_id(anchor);
-        let ctx = ApiCtx { identity_json: Vec::new(), state: owner.reader() };
+        let ctx = test_ctx(Vec::new(), owner.reader());
 
         let router = Router::new(&[(Method::Get, "/test/genesis_root", genesis_root)]);
         let resp = get(&router, &ctx, "/test/genesis_root");
