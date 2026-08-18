@@ -2092,7 +2092,11 @@ impl PeerManager {
         let d_high = self.params.d_high as usize;
         let d = self.params.d as usize;
         let current = self.mesh.get(&topic).map(|m| m.len()).unwrap_or(0);
-        if current < d_high {
+        // Strictly above d_high (spec heartbeat rule): remote grafts are
+        // accepted only while below d_high, so a mesh sitting at the cap is
+        // steady state — firing at the cap turns every graft that fills the
+        // last slot into a prune wave.
+        if current <= d_high {
             return;
         }
         let excess = current.saturating_sub(d);
@@ -2565,16 +2569,25 @@ mod tests {
         cap.0.clear();
 
         mgr.ensure_mesh_capped(topic, now, &mut |event| cap.0.push(event));
+        assert_eq!(mgr.mesh[&topic].len(), 12);
+        assert!(cap.0.is_empty());
+
+        connect(&mut mgr, &mut cap, 13, 13, now);
+        mgr.do_graft(13, peer_id(13), topic, now, &mut |event| cap.0.push(event));
+        mgr.peers.get_mut(&13).unwrap().cached_score = 13.0;
+        cap.0.clear();
+
+        mgr.ensure_mesh_capped(topic, now, &mut |event| cap.0.push(event));
 
         let mesh = &mgr.mesh[&topic];
         assert_eq!(mesh.len(), 8);
-        assert!((9..=12).all(|conn| mesh.contains(&conn)));
+        assert!((10..=13).all(|conn| mesh.contains(&conn)));
         assert_eq!(
             cap.0
                 .iter()
                 .filter(|event| matches!(event, PeerControl::P2pGossipPrune { .. }))
                 .count(),
-            4
+            5
         );
     }
 
