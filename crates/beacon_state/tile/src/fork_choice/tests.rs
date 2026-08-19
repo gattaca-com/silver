@@ -16,6 +16,7 @@ fn test_state_id() -> StateId {
         previous_participation_idx: Default::default(),
         current_participation_idx: Default::default(),
         inactivity_idx: Default::default(),
+        slashings_idx: Default::default(),
         slot_idx: Default::default(),
         builders_idx: Default::default(),
     }

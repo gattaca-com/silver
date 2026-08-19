@@ -18,7 +18,7 @@ pub use view::{ColumnReader, ColumnWriteView};
 
 use crate::{
     ring::Id,
-    types::{B256, EPOCHS_PER_SLASHINGS_VECTOR, HashFormat, VALIDATOR_REGISTRY_LIMIT},
+    types::{B256, EPOCHS_PER_SLASHINGS_VECTOR, VALIDATOR_REGISTRY_LIMIT},
 };
 
 /// A column's marker: its scalar `Val` plus a distinct type identity, so ring
@@ -106,22 +106,6 @@ impl ColumnSpec for Slashings {
 }
 
 pub type SlashingsGroup = ColumnGroup<Slashings>;
-
-impl SlashingsGroup {
-    /// A vector is fork-invariant, so the geometry is always the binary one —
-    /// `HashFormat::Gloas` never applies here.
-    pub fn from_ring(ring: &[u64]) -> Self {
-        debug_assert_eq!(ring.len(), EPOCHS_PER_SLASHINGS_VECTOR);
-        Self::new(
-            EPOCHS_PER_SLASHINGS_VECTOR,
-            EPOCHS_PER_SLASHINGS_VECTOR,
-            &<u64 as SszScalar>::as_ssz_bytes(ring),
-            HashFormat::Fulu,
-        )
-        .expect("slashings ring is exactly the vector length")
-    }
-}
-
 pub type SlashingsId = Id<SlashingsGroup>;
 pub type SlashingsView<'a> = ColumnReader<'a, Slashings>;
 pub type SlashingsWriteView<'a> = ColumnWriteView<'a, Slashings>;

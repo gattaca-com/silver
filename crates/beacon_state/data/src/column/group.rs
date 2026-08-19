@@ -53,6 +53,16 @@ impl<C: ColumnSpec> ColumnGroup<C> {
         Ok(Self::from_leaves(cap, count, byte_chunks(ssz_bytes), format))
     }
 
+    pub fn vector(ssz_bytes: &[u8]) -> Result<Self, ColumnLenMismatch> {
+        debug_assert!(!C::IS_LIST, "vector constructor on a list column");
+        Self::new(C::SSZ_LIMIT, C::SSZ_LIMIT, ssz_bytes, HashFormat::Fulu)
+    }
+
+    pub fn zeroed_vector() -> Self {
+        Self::vector(&vec![0u8; C::SSZ_LIMIT * size_of::<C::Val>()])
+            .expect("a zeroed buffer is exactly the vector length")
+    }
+
     pub fn from_leaves(
         cap: usize,
         count: usize,

@@ -22,8 +22,8 @@ use crate::{
     },
     reanchor::write_ring_window,
     types::{
-        B256, BeaconBlockHeader, EPOCHS_PER_HISTORICAL_VECTOR, EPOCHS_PER_SLASHINGS_VECTOR,
-        Eth1Data, ExecutionPayloadHeader, SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT, SlotState,
+        B256, BeaconBlockHeader, EPOCHS_PER_HISTORICAL_VECTOR, Eth1Data, ExecutionPayloadHeader,
+        SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT, SlotState,
     },
 };
 
@@ -115,12 +115,10 @@ impl SlotStateFinalized {
         slot.latest_execution_payload_header =
             ExecutionPayloadHeader::from_ssz(&ssz[o.eph..o.hist_summaries])?;
 
-        // Derived per-block accumulators: seed from the current epoch's bucket.
+        // Derived per-block accumulator: seed from the current epoch's bucket.
         let current_epoch = slot.slot / SLOTS_PER_EPOCH;
         slot.randao_mix_current =
             epoch.randao_mixes[current_epoch as usize % EPOCHS_PER_HISTORICAL_VECTOR];
-        slot.current_epoch_slashings =
-            epoch.slashings[current_epoch as usize % EPOCHS_PER_SLASHINGS_VECTOR];
 
         Ok(Self::from_parts(slot, read_roots(ssz, F5), read_roots(ssz, F6)))
     }
@@ -157,7 +155,6 @@ impl SlotStateFinalized {
 
         let current_epoch = (slot.slot / SLOTS_PER_EPOCH) as usize;
         slot.randao_mix_current = epoch.randao_mixes[current_epoch % EPOCHS_PER_HISTORICAL_VECTOR];
-        slot.current_epoch_slashings = epoch.slashings[current_epoch % EPOCHS_PER_SLASHINGS_VECTOR];
 
         Ok(Self::from_parts(slot, read_roots(ssz, F5), read_roots(ssz, F6)))
     }

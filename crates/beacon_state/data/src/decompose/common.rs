@@ -2,10 +2,10 @@ use flux_profiler::timed;
 
 use crate::{
     BalancesGroup, BeaconState, BuildersGroup, ColumnLenMismatch, CurrentParticipationGroup,
-    EpochGroup, EpochStateFinalized, Eth1Group, Eth1Votes, FinalizedBuilders, FinalizedValidators,
-    InactivityScoresGroup, LongtailGroup, LongtailState, PendingGroup, PreviousParticipationGroup,
-    QueueItem, SlotStateFinalized, SlotStateGroup, SpecConfig, ValidatorsDecodeError,
-    ValidatorsGroup,
+    EPOCHS_PER_SLASHINGS_VECTOR, EpochGroup, EpochStateFinalized, Eth1Group, Eth1Votes,
+    FinalizedBuilders, FinalizedValidators, InactivityScoresGroup, LongtailGroup, LongtailState,
+    PendingGroup, PreviousParticipationGroup, QueueItem, SlashingsGroup, SlotStateFinalized,
+    SlotStateGroup, SpecConfig, ValidatorsDecodeError, ValidatorsGroup,
     gloas::BuilderPendingWithdrawal,
     merkle,
     types::{
@@ -248,6 +248,9 @@ impl BeaconState {
             previous_participation,
             current_participation,
             inactivity,
+            slashings: SlashingsGroup::vector(
+                &ssz[F14..F14 + EPOCHS_PER_SLASHINGS_VECTOR * size_of::<u64>()],
+            )?,
             slot_states: SlotStateGroup::new(slot),
             epoch: EpochGroup::new(epoch),
             longtail,

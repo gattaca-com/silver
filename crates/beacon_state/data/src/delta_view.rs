@@ -4,7 +4,8 @@ use crate::{
     BalancesReader, BalancesWriteView, BuildersView, BuildersWriteView, Current, EpochId,
     EpochView, Eth1View, Eth1WriteView, InactivityView, InactivityWriteView, LongtailId,
     LongtailView, ParticipationView, ParticipationWriteView, PendingView, PendingWriteView,
-    Previous, SlotStateView, SlotStateWriteView, ValidatorsView, ValidatorsWriteView, Withdrawals,
+    Previous, SlashingsView, SlashingsWriteView, SlotStateView, SlotStateWriteView, ValidatorsView,
+    ValidatorsWriteView, Withdrawals,
     types::{B256, BLSPubkey, Epoch, Immutable, SLOTS_PER_EPOCH, StateId},
 };
 
@@ -27,6 +28,7 @@ pub struct StateReadView<'a> {
     pub previous_participation: ParticipationView<'a, Previous>,
     pub current_participation: ParticipationView<'a, Current>,
     pub inactivity: InactivityView<'a>,
+    pub slashings: SlashingsView<'a>,
     pub slot: SlotStateView<'a>,
     pub validators: ValidatorsView<'a>,
     pub builders: BuildersView<'a>,
@@ -56,29 +58,6 @@ pub fn effective_randao_mixes_into(
     }
     let current_idx = (slot.state().slot / SLOTS_PER_EPOCH) as usize % cap;
     out[current_idx] = slot.state().randao_mix_current;
-}
-
-/// Merged `slashings` ring. Overlays per-completed-epoch delta entries
-/// (`e % SV` = running total, `(e+1) % SV` = 0 reset), then folds the
-/// in-progress epoch's accumulator at the current bucket.
-pub fn effective_slashings_into(
-    epoch: &EpochView<'_>,
-    slot: &SlotStateView<'_>,
-    out: &mut Vec<u64>,
-) {
-    out.clear();
-    out.extend_from_slice(epoch.finalized_slashings());
-    let cap = out.len();
-    let fin_epoch = (slot.base_state().slot / SLOTS_PER_EPOCH) as usize;
-    for (k, s) in epoch.delta_slashings().iter().enumerate() {
-        let e = fin_epoch + k;
-        out[e % cap] = *s;
-        out[(e + 1) % cap] = 0;
-    }
-    // `current_epoch_slashings` caches the *full* current-bucket value, so it
-    // replaces the bucket rather than adding to the stale finalized snapshot.
-    let current = (slot.state().slot / SLOTS_PER_EPOCH) as usize % cap;
-    out[current] = slot.state().current_epoch_slashings;
 }
 
 /// `randao_mix(epoch)` with the epoch-delta overlay; the circular-buffer
@@ -125,6 +104,7 @@ pub struct StateWriterView<'a> {
     pub previous_participation: ParticipationWriteView<'a, Previous>,
     pub current_participation: ParticipationWriteView<'a, Current>,
     pub inactivity: InactivityWriteView<'a>,
+    pub slashings: SlashingsWriteView<'a>,
     pub slot: SlotStateWriteView<'a>,
     pub validators: ValidatorsWriteView<'a>,
     pub builders: BuildersWriteView<'a>,
@@ -159,6 +139,7 @@ impl<'a> StateWriterView<'a> {
             previous_participation_idx: self.previous_participation.commit(),
             current_participation_idx: self.current_participation.commit(),
             inactivity_idx: self.inactivity.commit(),
+            slashings_idx: self.slashings.commit(),
             slot_idx: self.slot.commit(),
             builders_idx: self.builders.commit(),
         }
@@ -180,6 +161,7 @@ impl<'a> StateWriterView<'a> {
             previous_participation: self.previous_participation.reader(),
             current_participation: self.current_participation.reader(),
             inactivity: self.inactivity.reader(),
+            slashings: self.slashings.reader(),
             slot: self.slot.reader(),
             validators: self.validators.hashed_reader(),
             builders: self.builders.hashed_reader(),
@@ -240,6 +222,7 @@ mod tests {
                     .current_participation
                     .roll_from(sid.current_participation_idx),
                 inactivity: bs.inactivity.roll_from(sid.inactivity_idx),
+                slashings: bs.slashings.roll_from(sid.slashings_idx),
                 slot: bs.slot_states.roll_from(sid.slot_idx),
                 validators: bs.validators.roll_from(sid.validators_idx),
                 builders: bs.builders.roll_from(sid.builders_idx),
