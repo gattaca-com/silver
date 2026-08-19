@@ -155,6 +155,7 @@ pub(crate) fn verify_one(pk: &PublicKey, sig: &[u8; 96], message: &B256) -> bool
     verify_one_parsed(pk, &sig, message)
 }
 
+#[timed]
 fn verify_one_parsed(pk: &PublicKey, sig: &Signature, message: &B256) -> bool {
     sig.verify(true, message, DST, &[], pk, false) == BLST_ERROR::BLST_SUCCESS
 }
