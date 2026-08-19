@@ -662,7 +662,7 @@ impl<'a> ValidatorsWriteView<'a> {
     /// fold in first — the migration rebuilds from the leaf bytes.
     pub fn adopt_gloas(&mut self) {
         self.hash.rehash_unsorted();
-        self.hash.migrate_to_gloas();
+        self.hash.migrate_to_progressive();
     }
 
     /// Append a fresh validator with spec-default Validator-container fields.

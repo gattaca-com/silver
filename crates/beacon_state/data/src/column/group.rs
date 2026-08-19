@@ -55,7 +55,7 @@ impl<C: ColumnSpec> ColumnGroup<C> {
 
     pub fn vector(ssz_bytes: &[u8]) -> Result<Self, ColumnLenMismatch> {
         debug_assert!(!C::IS_LIST, "vector constructor on a list column");
-        Self::new(C::SSZ_LIMIT, C::SSZ_LIMIT, ssz_bytes, HashFormat::Fulu)
+        Self::new(C::SSZ_LIMIT, C::SSZ_LIMIT, ssz_bytes, HashFormat::Fixed)
     }
 
     pub fn zeroed_vector() -> Self {

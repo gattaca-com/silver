@@ -151,7 +151,7 @@ impl BeaconState {
     #[doc(hidden)]
     pub fn for_test(epoch_base: EpochStateFinalized, seeds: &[ValSeed], slot: u64) -> Self {
         let validators =
-            ValidatorsGroup::new(FinalizedValidators::with_validators(seeds), HashFormat::Fulu);
+            ValidatorsGroup::new(FinalizedValidators::with_validators(seeds), HashFormat::Fixed);
         let cap = validators.finalized().capacity();
         let n = validators.finalized().validator_count();
         let balances: Vec<u8> = seeds.iter().flat_map(|s| s.balance.to_le_bytes()).collect();
@@ -167,24 +167,24 @@ impl BeaconState {
         Self {
             immutable: Immutable::default(),
             validators,
-            balances: BalancesGroup::new(cap, n, &balances, HashFormat::Fulu).unwrap(),
+            balances: BalancesGroup::new(cap, n, &balances, HashFormat::Fixed).unwrap(),
             eth1: Eth1Group::new(Eth1Votes::default()),
             pending: PendingGroup::from_ssz(&[], &[], &[], &[]),
             previous_participation: PreviousParticipationGroup::new(
                 cap,
                 n,
                 &zeros(1),
-                HashFormat::Fulu,
+                HashFormat::Fixed,
             )
             .unwrap(),
             current_participation: CurrentParticipationGroup::new(
                 cap,
                 n,
                 &zeros(1),
-                HashFormat::Fulu,
+                HashFormat::Fixed,
             )
             .unwrap(),
-            inactivity: InactivityScoresGroup::new(cap, n, &zeros(8), HashFormat::Fulu).unwrap(),
+            inactivity: InactivityScoresGroup::new(cap, n, &zeros(8), HashFormat::Fixed).unwrap(),
             slashings: SlashingsGroup::zeroed_vector(),
             slot_states: SlotStateGroup::new(
                 SlotStateFinalized::from_parts(

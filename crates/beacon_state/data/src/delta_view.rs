@@ -119,10 +119,10 @@ impl<'a> StateReadView<'a> {
 
 impl<'a> StateWriterView<'a> {
     pub fn adopt_gloas(&mut self) {
-        self.balances.migrate_to_gloas();
-        self.inactivity.migrate_to_gloas();
-        self.previous_participation.migrate_to_gloas();
-        self.current_participation.migrate_to_gloas();
+        self.balances.migrate_to_progressive();
+        self.inactivity.migrate_to_progressive();
+        self.previous_participation.migrate_to_progressive();
+        self.current_participation.migrate_to_progressive();
         self.validators.adopt_gloas();
         self.pending.adopt_gloas();
     }

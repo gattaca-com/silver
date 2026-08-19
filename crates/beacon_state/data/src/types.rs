@@ -449,8 +449,8 @@ impl Withdrawals {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum HashFormat {
-    Fulu,
-    Gloas,
+    Fixed,
+    Progressive,
 }
 
 /// A sparse column's SSZ byte length disagrees with the expected registry

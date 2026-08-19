@@ -44,7 +44,7 @@ impl BuildersGroup {
             finalized.capacity(),
             builders.len(),
             builders.iter().map(builder_hash),
-            HashFormat::Gloas,
+            HashFormat::Progressive,
         );
         Self { finalized, deltas: Ring::new(SLOTS_RING_N), hash }
     }

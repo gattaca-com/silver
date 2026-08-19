@@ -187,11 +187,8 @@ impl BeaconState {
         builders: FinalizedBuilders,
         cfg: &SpecConfig,
     ) -> Result<Self, DecomposeError> {
-        let format = if epoch.state().fork.current_version == cfg.gloas_fork_version {
-            HashFormat::Gloas
-        } else {
-            HashFormat::Fulu
-        };
+        let is_gloas = epoch.state().fork.current_version == cfg.gloas_fork_version;
+        let format = if is_gloas { HashFormat::Progressive } else { HashFormat::Fixed };
 
         let eth1 = Eth1Group::new(Eth1Votes::from_ssz(ssz, offsets)?);
 
@@ -227,7 +224,7 @@ impl BeaconState {
             LongtailGroup::new(LongtailState::from_ssz(ssz, offsets, validators.finalized())?);
 
         let mut pending = decode_pending(ssz, offsets, consolidations_end, builder_withdrawals)?;
-        if format == HashFormat::Gloas {
+        if is_gloas {
             pending.mark_gloas_base();
         }
 
@@ -256,7 +253,7 @@ impl BeaconState {
             longtail,
             builders: BuildersGroup::new(builders),
         };
-        debug_assert_eq!(state.is_finalized_post_gloas(), format == HashFormat::Gloas);
+        debug_assert_eq!(state.is_finalized_post_gloas(), is_gloas);
         Ok(state)
     }
 }

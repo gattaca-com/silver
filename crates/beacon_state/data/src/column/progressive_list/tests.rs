@@ -14,7 +14,7 @@ fn progressive_u64_root(vals: &[u64]) -> B256 {
     hash_uint64_list(ProgressiveHasher::new(), &SszScalar::as_ssz_bytes(vals), vals.len())
 }
 
-fn fulu_u64_root(vals: &[u64]) -> B256 {
+fn fixed_u64_root(vals: &[u64]) -> B256 {
     hash_uint64_list(
         MerkleStack::new(VALIDATOR_REGISTRY_LIMIT.div_ceil(4)),
         &SszScalar::as_ssz_bytes(vals),
@@ -42,8 +42,8 @@ fn migrate_across_counts() {
         let mut g = group(&values);
         let mut wv = g.roll_fresh();
 
-        assert_eq!(wv.hash_root(), fulu_u64_root(&values));
-        wv.migrate_to_gloas();
+        assert_eq!(wv.hash_root(), fixed_u64_root(&values));
+        wv.migrate_to_progressive();
         assert_progressive(&wv, &values);
         assert_eq!(wv.get(n - 1), values[n - 1]);
     }
@@ -54,7 +54,7 @@ fn rehash_matches_full_rebuild() {
     let mut values: Vec<u64> = (0..333).collect();
     let mut g = group(&values);
     let mut wv = g.roll_fresh();
-    wv.migrate_to_gloas();
+    wv.migrate_to_progressive();
 
     // Sparse set_many landing in every segment: chunk-0 root-leaf (seg 0),
     // seg 1 (idx 17), seg 2 (idx 50), seg 3 (idx 100/332).
@@ -80,7 +80,7 @@ fn rehash_unsorted_scrambled_add_at() {
     let mut values: Vec<u64> = (0..333).collect();
     let mut g = group(&values);
     let mut wv = g.roll_fresh();
-    wv.migrate_to_gloas();
+    wv.migrate_to_progressive();
 
     // Deltas out of index order across segments, with a repeated leaf (idx 3);
     // rehash_unsorted sorts the dirty ids before the per-segment rehash.
@@ -106,7 +106,7 @@ fn contiguous_range_straddles_segments() {
     let mut values: Vec<u64> = (0..333).collect();
     let mut g = group(&values);
     let mut wv = g.roll_fresh();
-    wv.migrate_to_gloas();
+    wv.migrate_to_progressive();
 
     for (i, v) in values.iter_mut().enumerate() {
         wv.add_at(i as u32, 3);
@@ -135,7 +135,7 @@ fn random_batches_match_reference() {
         let mut values: Vec<u64> = (0..n).map(|_| rng.gen_range(0..=u64::MAX)).collect();
         let mut g = group(&values);
         let mut wv = g.roll_fresh();
-        wv.migrate_to_gloas();
+        wv.migrate_to_progressive();
         assert_progressive(&wv, &values);
 
         for _ in 0..8 {
@@ -160,7 +160,7 @@ fn append_grows_segments() {
     let values: Vec<u64> = (0..16).collect();
     let mut g = group(&values); // list cap 20 vals -> 5 chunks, seg 1
     let mut wv = g.roll_fresh();
-    wv.migrate_to_gloas();
+    wv.migrate_to_progressive();
 
     // Append past the migrated capacity: seg 1 -> 2 -> 3, no rebuild of existing.
     for i in 16..120u64 {
@@ -171,11 +171,15 @@ fn append_grows_segments() {
 }
 
 #[test]
-fn direct_gloas_construction() {
+fn direct_progressive_construction() {
     let values: Vec<u64> = (0..100).map(|i| i * 7 + 1).collect();
-    let mut g =
-        BalancesGroup::new(values.len() + 4, values.len(), &le_bytes(&values), HashFormat::Gloas)
-            .unwrap();
+    let mut g = BalancesGroup::new(
+        values.len() + 4,
+        values.len(),
+        &le_bytes(&values),
+        HashFormat::Progressive,
+    )
+    .unwrap();
 
     let mut wv = g.roll_fresh();
     assert_progressive(&wv, &values);
@@ -192,35 +196,35 @@ fn mixed_formats_coexist() {
     let values: Vec<u64> = (0..50).map(|i| i + 10).collect();
     let mut g = group(&values);
 
-    let fulu_id = g.roll_fresh().commit();
+    let fixed_id = g.roll_fresh().commit();
 
-    let mut wv = g.roll_from(fulu_id);
-    wv.migrate_to_gloas();
+    let mut wv = g.roll_from(fixed_id);
+    wv.migrate_to_progressive();
     wv.set(7, 777);
-    let gloas_id = wv.commit();
+    let progressive_id = wv.commit();
 
     let mut expected = values.clone();
     expected[7] = 777;
-    assert_eq!(g.view(fulu_id).hash_root(), fulu_u64_root(&values));
-    assert_eq!(g.view(gloas_id).hash_root(), progressive_u64_root(&expected));
-    assert_eq!(g.view(gloas_id).get(7), 777);
+    assert_eq!(g.view(fixed_id).hash_root(), fixed_u64_root(&values));
+    assert_eq!(g.view(progressive_id).hash_root(), progressive_u64_root(&expected));
+    assert_eq!(g.view(progressive_id).get(7), 777);
 
-    // A child of the gloas fork shares its clean pages.
-    let mut wv = g.roll_from(gloas_id);
+    // A child of the migrated fork shares its clean pages.
+    let mut wv = g.roll_from(progressive_id);
     wv.set(30, 1);
     let child_id = wv.commit();
     expected[30] = 1;
     assert_eq!(g.view(child_id).hash_root(), progressive_u64_root(&expected));
 
-    // Finalizing the gloas winner flips the base format by data flow.
+    // Finalizing the migrated winner flips the base format by data flow.
     g.finalize(&child_id, &[child_id], |&id| id);
     let mut ssz = Vec::new();
     g.write_ssz(&mut ssz).unwrap();
     assert_eq!(ssz, le_bytes(&expected));
 }
 
-fn gloas_group(values: &[u64]) -> BalancesGroup {
-    BalancesGroup::new(values.len() + 4, values.len(), &le_bytes(values), HashFormat::Gloas)
+fn progressive_group(values: &[u64]) -> BalancesGroup {
+    BalancesGroup::new(values.len() + 4, values.len(), &le_bytes(values), HashFormat::Progressive)
         .unwrap()
 }
 
@@ -232,7 +236,7 @@ fn reorg_rebuilds_scratch_from_pages_across_growth() {
     // snapshot — here including a segment-forest shrink (A → B, last_seg
     // 3 → 2) and a regrow (B → A).
     let base: Vec<u64> = (0..30).map(|i| i * 3 + 7).collect();
-    let mut g = gloas_group(&base);
+    let mut g = progressive_group(&base);
 
     let mut wv = g.roll_fresh();
     wv.set(2, 222);
@@ -291,7 +295,7 @@ fn rejected_add_at_batch_dont_leak() {
     // onto a fork with a smaller segment forest they would index past it
     // in rehash.
     let base: Vec<u64> = (0..30).collect();
-    let mut g = gloas_group(&base);
+    let mut g = progressive_group(&base);
 
     let mut wv = g.roll_fresh();
     wv.set(1, 11);
@@ -321,7 +325,7 @@ fn abandoned_roll_slot_released_once() {
     use crate::types::SLOTS_RING_N;
 
     let base: Vec<u64> = (0..10).collect();
-    let mut g = gloas_group(&base);
+    let mut g = progressive_group(&base);
 
     // Go around the ring more than once so slots get reused.
     let mut head = g.roll_fresh().commit();
@@ -344,7 +348,7 @@ fn clear_to_zero() {
     let values: Vec<u64> = (0..90).map(|i| i + 1).collect();
     let mut g = group(&values);
     let mut wv = g.roll_fresh();
-    wv.migrate_to_gloas();
+    wv.migrate_to_progressive();
     wv.clear_to_zero();
     assert_progressive(&wv, &vec![0; values.len()]);
 }
@@ -353,10 +357,10 @@ fn clear_to_zero() {
 fn u8_column_migrate_and_rehash() {
     let values: Vec<u8> = (0..77u8).collect();
     let mut g =
-        ColumnGroup::<Previous>::new(values.len() + 4, values.len(), &values, HashFormat::Fulu)
+        ColumnGroup::<Previous>::new(values.len() + 4, values.len(), &values, HashFormat::Fixed)
             .unwrap();
     let mut wv = g.roll_fresh();
-    wv.migrate_to_gloas();
+    wv.migrate_to_progressive();
     assert_eq!(wv.hash_root(), progressive_u8_root(&values));
 
     wv.set_many(&[(0, 7u8), (40, 9)]);

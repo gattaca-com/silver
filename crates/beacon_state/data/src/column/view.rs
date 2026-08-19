@@ -166,7 +166,7 @@ impl<'a, C: ColumnSpec> ColumnWriteView<'a, C> {
     }
 
     #[timed]
-    pub fn migrate_to_gloas(&mut self) {
+    pub fn migrate_to_progressive(&mut self) {
         debug_assert!(C::IS_LIST, "vectors are fork-invariant under EIP-7688");
         self.group.scratch_mut().migrate_to_progressive::<C::Val>();
     }

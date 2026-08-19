@@ -31,8 +31,8 @@ impl ColumnTree {
         format: HashFormat,
     ) -> Self {
         match format {
-            HashFormat::Fulu => ColumnTree::List(ListTree::new::<V>(cap, count, leaves)),
-            HashFormat::Gloas => ColumnTree::ProgressiveList(
+            HashFormat::Fixed => ColumnTree::List(ListTree::new::<V>(cap, count, leaves)),
+            HashFormat::Progressive => ColumnTree::ProgressiveList(
                 ProgressiveListTree::from_leaves::<V>(cap, count, leaves),
             ),
         }

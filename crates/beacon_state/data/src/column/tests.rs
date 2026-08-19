@@ -14,7 +14,7 @@ impl ColumnSpec for U64Vector {
 }
 
 fn vector_group(values: &[u64]) -> ColumnGroup<U64Vector> {
-    ColumnGroup::new(values.len(), values.len(), &le_bytes(values), HashFormat::Fulu).unwrap()
+    ColumnGroup::new(values.len(), values.len(), &le_bytes(values), HashFormat::Fixed).unwrap()
 }
 
 pub(super) fn le_bytes(values: &[u64]) -> Vec<u8> {
@@ -22,7 +22,7 @@ pub(super) fn le_bytes(values: &[u64]) -> Vec<u8> {
 }
 
 pub(super) fn group(values: &[u64]) -> BalancesGroup {
-    BalancesGroup::new(values.len().max(1) + 4, values.len(), &le_bytes(values), HashFormat::Fulu)
+    BalancesGroup::new(values.len().max(1) + 4, values.len(), &le_bytes(values), HashFormat::Fixed)
         .unwrap()
 }
 
@@ -202,7 +202,7 @@ fn finalize_returns_survivor_ids_unchanged() {
 
 #[test]
 fn new_decodes_le_u64s() {
-    let mut g = BalancesGroup::new(4, 3, &le_bytes(&[7, 8, 9]), HashFormat::Fulu).unwrap();
+    let mut g = BalancesGroup::new(4, 3, &le_bytes(&[7, 8, 9]), HashFormat::Fixed).unwrap();
     let wv = g.roll_fresh();
 
     assert_eq!([wv.get(0), wv.get(1), wv.get(2)], [7, 8, 9]);
@@ -211,7 +211,7 @@ fn new_decodes_le_u64s() {
 
 #[test]
 fn new_rejects_len_mismatch() {
-    assert!(BalancesGroup::new(4, 2, &[0u8; 12], HashFormat::Fulu).is_err());
+    assert!(BalancesGroup::new(4, 2, &[0u8; 12], HashFormat::Fixed).is_err());
 }
 
 // ---- hash tree ----
@@ -300,7 +300,7 @@ fn aba_finalize_keeps_reverted_value() {
 fn append_within_cap_headroom() {
     // Appends stay inside the leaf row sized from the headroomed cap; reads and
     // root track the appended values.
-    let mut g = BalancesGroup::new(16, 1, &le_bytes(&[5]), HashFormat::Fulu).unwrap();
+    let mut g = BalancesGroup::new(16, 1, &le_bytes(&[5]), HashFormat::Fixed).unwrap();
     let mut wv = g.roll_fresh();
     for v in [6, 7, 8, 9, 10] {
         let idx = wv.append_empty();
@@ -335,7 +335,7 @@ fn root_matches_reference_random_batches() {
     let mut rng = StdRng::seed_from_u64(0xB0BA);
     for n in [1usize, 7, 64, 500, 4096] {
         let values: Vec<u64> = (0..n as u64).map(|_| rng.gen_range(0..=u64::MAX)).collect();
-        let mut g = BalancesGroup::new(n + 4, n, &le_bytes(&values), HashFormat::Fulu).unwrap();
+        let mut g = BalancesGroup::new(n + 4, n, &le_bytes(&values), HashFormat::Fixed).unwrap();
         let mut wv = g.roll_fresh();
 
         for _ in 0..8 {
