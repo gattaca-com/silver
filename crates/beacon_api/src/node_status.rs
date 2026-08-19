@@ -22,6 +22,18 @@ pub(crate) enum Health {
 }
 
 impl NodeStatus {
+    /// A node-wide stand-in for the spec's per-head bit: a node that is behind,
+    /// or whose EL does not report itself synced, may serve wrong data. It
+    /// under-reports — a head whose payload the EL never verified reads
+    /// non-optimistic while `eth_syncing` stays healthy through failing
+    /// `newPayload` calls, as does the branch replayed from disk after a
+    /// restart until a `VALID` verdict lifts its ancestors. The per-head
+    /// truth is the head's `ExecutionStatus`, which
+    /// `BeaconStateEvent::Status` does not carry.
+    pub(crate) fn execution_optimistic(&self) -> bool {
+        self.health() != Health::Ready
+    }
+
     /// The spec puts an optimistic or offline execution layer on the same
     /// footing as a syncing beacon node — both mean "data served may be
     /// incorrect" — and an EL we have not heard from yet is no better

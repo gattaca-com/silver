@@ -9,6 +9,7 @@ use silver_httpcore::Query;
 
 use crate::{
     NodeStatus,
+    json::{FinalityCheckpoints, GenesisData, Json, StateFlags},
     node_status::Health,
     response::Response,
     router::{Handler, Method, Request},
@@ -21,6 +22,13 @@ const METRICS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
 const DEFAULT_SYNCING_STATUS: u16 = 206;
 
 pub(crate) const ROUTES: &[(Method, &str, Handler)] = &[
+    (Method::Get, "/eth/v1/beacon/genesis", genesis),
+    (
+        Method::Get,
+        "/eth/v1/beacon/states/{state_id}/finality_checkpoints",
+        state_finality_checkpoints,
+    ),
+    (Method::Get, "/eth/v1/beacon/states/{state_id}/fork", state_fork),
     (Method::Get, "/eth/v1/config/deposit_contract", deposit_contract),
     (Method::Get, "/eth/v1/config/fork_schedule", fork_schedule),
     (Method::Get, "/eth/v1/config/spec", spec),
@@ -51,19 +59,120 @@ impl ApiCtx {
         }
     }
 
-    // Live with the first endpoint that reads the published state.
-    #[allow(dead_code)]
-    pub(crate) fn read_state_or_503<R>(
+    /// The published state, or a 404 carrying `not_found` while the node has
+    /// published none — the schemas of these endpoints declare no 503.
+    pub(crate) fn read_state_or_404<R>(
         &self,
         resp: &mut Response<'_>,
+        not_found: &str,
         read: impl Fn(StateReadView<'_>) -> R,
     ) -> Option<R> {
         let result = self.state.read(&read);
         if result.is_none() {
-            resp.error(503, "beacon node not initialized");
+            resp.error(404, not_found);
         }
         result
     }
+
+    /// Answers a `{state_id}` read in the envelope its schema requires. `read`
+    /// runs under the seqlock and is re-run on retry, so it lifts scalars out
+    /// and `render` writes them once, afterwards.
+    pub(crate) fn state_response<R>(
+        &self,
+        req: &Request<'_>,
+        resp: &mut Response<'_>,
+        read: impl Fn(StateReadView<'_>) -> R,
+        render: impl FnOnce(&mut Json<'_>, &R),
+    ) {
+        let state_id = req.params.get("state_id").expect("{state_id} in the route pattern");
+        if state_id != "head" {
+            if is_recognized_state_id(state_id) {
+                resp.error(404, "state not found");
+            } else {
+                resp.error(400, "invalid state_id");
+            }
+            return;
+        }
+
+        let execution_optimistic = self.node_status.execution_optimistic();
+        let read = |view: StateReadView<'_>| StateRead {
+            flags: StateFlags {
+                execution_optimistic,
+                // Genesis is the only state that is its own finalized history:
+                // finalization trails the current epoch, so past genesis the
+                // finalized checkpoint is always behind the state's own slot.
+                finalized: view.slot.state().slot == 0,
+            },
+            data: read(view),
+        };
+        let Some(state) = self.read_state_or_404(resp, "state not found", read) else {
+            return;
+        };
+
+        resp.json_body(|json| json.state_envelope(state.flags, |json| render(json, &state.data)));
+    }
+}
+
+/// One state read: the flags describe the snapshot `data` came from.
+struct StateRead<R> {
+    flags: StateFlags,
+    data: R,
+}
+
+/// Whether `state_id` is one of the forms the schemas define — the `head`,
+/// `genesis`, `justified` and `finalized` keywords, a slot, or a state root.
+/// Anything else identifies no state at all, which the schemas answer 400,
+/// where a recognized form silver cannot serve is a 404.
+fn is_recognized_state_id(state_id: &str) -> bool {
+    matches!(state_id, "head" | "genesis" | "justified" | "finalized") ||
+        is_slot(state_id) ||
+        state_id
+            .strip_prefix("0x")
+            .is_some_and(|root| root.len() == 64 && root.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+/// `u64::from_str` alone also accepts a leading `+`, which the schemas call an
+/// invalid `state_id` rather than a slot.
+fn is_slot(state_id: &str) -> bool {
+    state_id.bytes().all(|byte| byte.is_ascii_digit()) && state_id.parse::<u64>().is_ok()
+}
+
+fn genesis(_req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
+    let Some(genesis) =
+        ctx.read_state_or_404(resp, "Chain genesis info is not yet known", |view| GenesisData {
+            genesis_time: view.imm.genesis_time,
+            genesis_validators_root: view.imm.genesis_validators_root,
+            genesis_fork_version: view.imm.genesis_fork_version,
+        })
+    else {
+        return;
+    };
+    resp.json_body(|json| {
+        json.begin_object();
+        json.key("data");
+        json.genesis(&genesis);
+        json.end_object();
+    });
+}
+
+fn state_fork(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
+    ctx.state_response(req, resp, |view| *view.epoch.fork(), |json, fork| json.fork(fork));
+}
+
+fn state_finality_checkpoints(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
+    ctx.state_response(
+        req,
+        resp,
+        |view| {
+            let epoch = view.epoch.state();
+            FinalityCheckpoints {
+                previous_justified: epoch.previous_justified_checkpoint,
+                current_justified: epoch.current_justified_checkpoint,
+                finalized: epoch.finalized_checkpoint,
+            }
+        },
+        |json, checkpoints| json.finality_checkpoints(checkpoints),
+    );
 }
 
 fn identity(_req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
@@ -135,7 +244,10 @@ fn test_ctx(spec: &SpecConfig, state: BeaconStateReader) -> ApiCtx {
 
 #[cfg(test)]
 mod tests {
-    use silver_beacon_state_data::BeaconState;
+    use silver_beacon_state_data::{
+        BeaconState, Checkpoint, EPOCHS_PER_HISTORICAL_VECTOR, EPOCHS_PER_SLASHINGS_VECTOR,
+        EpochState, EpochStateFinalized, Fork, SLOTS_PER_EPOCH,
+    };
     use silver_common::{AGENT_VERSION, ELSyncStatus};
     use silver_httpcore::ParsedRequest;
 
@@ -333,32 +445,218 @@ mod tests {
         assert_eq!(resp, b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
     }
 
-    fn genesis_root(_req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
-        let Some(root) = ctx.read_state_or_503(resp, |view| view.imm.genesis_validators_root)
-        else {
-            return;
-        };
-        resp.json(hex::encode(root).as_bytes());
+    /// First slot of the epoch two past [`epoch_state`]'s finalized
+    /// checkpoint — normal operation, where head is not the finalized state.
+    const HEAD_SLOT: u64 = 12_345 * SLOTS_PER_EPOCH;
+
+    fn epoch_state() -> EpochState {
+        EpochState {
+            fork: Fork {
+                previous_version: [0x05, 0x00, 0x00, 0x00],
+                current_version: [0x06, 0x00, 0x00, 0x00],
+                epoch: 269_568,
+            },
+            previous_justified_checkpoint: Checkpoint { epoch: 12_344, root: [0x01; 32] },
+            current_justified_checkpoint: Checkpoint { epoch: 12_345, root: [0x02; 32] },
+            finalized_checkpoint: Checkpoint { epoch: 12_343, root: [0x03; 32] },
+            ..Default::default()
+        }
     }
 
-    #[test]
-    fn state_route_503_before_bootstrap() {
-        let router = Router::new(&[(Method::Get, "/test/genesis_root", genesis_root)]);
-        let resp = get(&router, &preboot_ctx(), "/test/genesis_root");
-        assert!(resp.starts_with(b"HTTP/1.1 503 Service Unavailable\r\n"));
-        assert_eq!(body(&resp), br#"{"code":503,"message":"beacon node not initialized"}"#);
-    }
+    /// A synced node with its one state published — every distinct value these
+    /// endpoints read is set, so a golden catches a swapped field.
+    fn published_ctx(epoch: EpochState, slot: u64) -> ApiCtx {
+        let base = EpochStateFinalized::from_parts(
+            epoch,
+            vec![[0u8; 32]; EPOCHS_PER_HISTORICAL_VECTOR].into_boxed_slice(),
+            vec![0; EPOCHS_PER_SLASHINGS_VECTOR].into_boxed_slice(),
+        );
+        let mut state = BeaconState::for_test(base, &[], slot);
+        state.immutable.genesis_time = 1_606_824_023;
+        state.immutable.genesis_validators_root = [0x4b; 32];
+        state.immutable.genesis_fork_version = [0x00, 0x00, 0x00, 0x01];
 
-    #[test]
-    fn state_route_reads_published_state() {
-        let mut owner = BeaconStateOwner::new(BeaconState::empty_test(0));
+        let mut owner = BeaconStateOwner::new(state);
         let anchor = owner.roll_fresh();
         owner.publish_state_id(anchor);
-        let ctx = test_ctx(&SpecConfig::mainnet(), owner.reader());
 
-        let router = Router::new(&[(Method::Get, "/test/genesis_root", genesis_root)]);
-        let resp = get(&router, &ctx, "/test/genesis_root");
-        assert!(resp.starts_with(b"HTTP/1.1 200 OK\r\n"));
-        assert_eq!(body(&resp), hex::encode([0u8; 32]).as_bytes());
+        let mut ctx = test_ctx(&SpecConfig::mainnet(), owner.reader());
+        ctx.node_status = ready();
+        ctx
+    }
+
+    fn state_paths(state_id: &str) -> [String; 2] {
+        [
+            format!("/eth/v1/beacon/states/{state_id}/fork"),
+            format!("/eth/v1/beacon/states/{state_id}/finality_checkpoints"),
+        ]
+    }
+
+    fn state_body(ctx: &ApiCtx, path: &str) -> String {
+        let resp = get(&Router::new(ROUTES), ctx, path);
+        assert!(
+            resp.starts_with(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"),
+            "{path}: {}",
+            String::from_utf8_lossy(&resp)
+        );
+        String::from_utf8(body(&resp).to_vec()).unwrap()
+    }
+
+    /// Body shape: `apis/beacon/genesis.yaml` — a bare `data` wrapper, the one
+    /// state read that carries no envelope flags.
+    #[test]
+    fn genesis_body_is_a_bare_data_wrapper() {
+        let ctx = published_ctx(epoch_state(), HEAD_SLOT);
+        assert_eq!(
+            state_body(&ctx, "/eth/v1/beacon/genesis"),
+            "{\"data\":{\"genesis_time\":\"1606824023\",\
+             \"genesis_validators_root\":\"0x4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b\",\
+             \"genesis_fork_version\":\"0x00000001\"}}"
+        );
+    }
+
+    /// Body shape: `apis/beacon/states/fork.yaml`.
+    #[test]
+    fn state_fork_body_is_the_envelope_around_the_fork() {
+        let ctx = published_ctx(epoch_state(), HEAD_SLOT);
+        assert_eq!(
+            state_body(&ctx, "/eth/v1/beacon/states/head/fork"),
+            "{\"execution_optimistic\":false,\"finalized\":false,\
+             \"data\":{\"previous_version\":\"0x05000000\",\"current_version\":\"0x06000000\",\
+             \"epoch\":\"269568\"}}"
+        );
+    }
+
+    /// Body shape: `apis/beacon/states/finality_checkpoints.yaml`.
+    #[test]
+    fn finality_checkpoints_body_is_the_envelope_around_three_checkpoints() {
+        let ctx = published_ctx(epoch_state(), HEAD_SLOT);
+        assert_eq!(
+            state_body(&ctx, "/eth/v1/beacon/states/head/finality_checkpoints"),
+            "{\"execution_optimistic\":false,\"finalized\":false,\"data\":{\
+             \"previous_justified\":{\"epoch\":\"12344\",\
+             \"root\":\"0x0101010101010101010101010101010101010101010101010101010101010101\"},\
+             \"current_justified\":{\"epoch\":\"12345\",\
+             \"root\":\"0x0202020202020202020202020202020202020202020202020202020202020202\"},\
+             \"finalized\":{\"epoch\":\"12343\",\
+             \"root\":\"0x0303030303030303030303030303030303030303030303030303030303030303\"}}}"
+        );
+    }
+
+    fn assert_state_not_found(ctx: &ApiCtx, state_id: &str) {
+        for path in state_paths(state_id) {
+            let resp = get(&Router::new(ROUTES), ctx, &path);
+            assert!(resp.starts_with(b"HTTP/1.1 404 Not Found\r\n"), "{path}");
+            assert_eq!(body(&resp), br#"{"code":404,"message":"state not found"}"#, "{path}");
+        }
+    }
+
+    /// Silver publishes one state, the head. `justified` and `finalized` name
+    /// states it does not keep, and their checkpoints differ from the head's,
+    /// so answering them with head data would be a wrong answer rather than a
+    /// missing one.
+    #[test]
+    fn only_head_reads_the_published_state() {
+        let ctx = published_ctx(epoch_state(), HEAD_SLOT);
+        for path in state_paths("head") {
+            assert!(state_body(&ctx, &path).starts_with("{\"execution_optimistic\":false,"));
+        }
+        assert_state_not_found(&ctx, "justified");
+        assert_state_not_found(&ctx, "finalized");
+    }
+
+    /// A state silver does not keep — no historical states, and the head is
+    /// the only one published; a slot or root form is 404 even when it is the
+    /// published state's own, which nothing here can check.
+    #[test]
+    fn a_state_id_naming_a_state_silver_does_not_keep_is_404() {
+        let ctx = published_ctx(epoch_state(), HEAD_SLOT);
+        let head_slot = HEAD_SLOT.to_string();
+        for state_id in ["genesis", "0", &head_slot, &format!("0x{}", "ab".repeat(32))] {
+            assert_state_not_found(&ctx, state_id);
+        }
+    }
+
+    /// `Invalid state ID` in the schemas: a value that identifies no state at
+    /// all is a 400, not the 404 an unavailable state gets.
+    #[test]
+    fn a_state_id_naming_no_state_at_all_is_400() {
+        let ctx = published_ctx(epoch_state(), HEAD_SLOT);
+        let short_root = format!("0x{}", "ab".repeat(31));
+        let unhex_root = format!("0x{}", "zz".repeat(32));
+        for state_id in
+            ["current", "banana", "", "-1", "+5", "0x", "1.5", &short_root, &unhex_root, "HEAD"]
+        {
+            for path in state_paths(state_id) {
+                let resp = get(&Router::new(ROUTES), &ctx, &path);
+                assert!(resp.starts_with(b"HTTP/1.1 400 Bad Request\r\n"), "{path}");
+                assert_eq!(body(&resp), br#"{"code":400,"message":"invalid state_id"}"#, "{path}");
+            }
+        }
+    }
+
+    /// Neither endpoint's schema declares a 503, so a node with no state
+    /// published answers 404 — genesis with the phrase its own schema names.
+    #[test]
+    fn state_reads_are_404_before_bootstrap() {
+        let ctx = preboot_ctx();
+        let resp = get(&Router::new(ROUTES), &ctx, "/eth/v1/beacon/genesis");
+        assert!(resp.starts_with(b"HTTP/1.1 404 Not Found\r\n"));
+        assert_eq!(body(&resp), br#"{"code":404,"message":"Chain genesis info is not yet known"}"#);
+        assert_state_not_found(&ctx, "head");
+    }
+
+    /// The `state_id` verdict does not depend on there being a state to read.
+    #[test]
+    fn an_invalid_state_id_is_answered_before_the_state_is_read() {
+        for path in state_paths("banana") {
+            let resp = get(&Router::new(ROUTES), &preboot_ctx(), &path);
+            assert!(resp.starts_with(b"HTTP/1.1 400 Bad Request\r\n"), "{path}");
+        }
+    }
+
+    /// Silver reports no per-head execution status, so a node behind on either
+    /// layer serves its head as optimistic.
+    #[test]
+    fn execution_optimistic_while_either_layer_is_unsynced() {
+        let mut ctx = published_ctx(epoch_state(), HEAD_SLOT);
+        for status in [
+            NodeStatus { el: ELSyncStatus::Unknown, ..ready() },
+            NodeStatus { el: ELSyncStatus::Syncing, ..ready() },
+            NodeStatus { el: ELSyncStatus::Offline, ..ready() },
+            NodeStatus { syncing: true, ..ready() },
+        ] {
+            ctx.node_status = status;
+            for path in state_paths("head") {
+                assert!(
+                    state_body(&ctx, &path).starts_with("{\"execution_optimistic\":true,"),
+                    "{status:?} {path}"
+                );
+            }
+        }
+
+        ctx.node_status = ready();
+        for path in state_paths("head") {
+            assert!(state_body(&ctx, &path).starts_with("{\"execution_optimistic\":false,"));
+        }
+    }
+
+    /// `finalized` describes the state served, and genesis is the only state
+    /// that is its own finalized history.
+    #[test]
+    fn finalized_is_true_only_for_the_genesis_state() {
+        let genesis_epoch = EpochState {
+            previous_justified_checkpoint: Checkpoint::default(),
+            current_justified_checkpoint: Checkpoint::default(),
+            finalized_checkpoint: Checkpoint::default(),
+            ..epoch_state()
+        };
+        let at_genesis = published_ctx(genesis_epoch, 0);
+        let past_genesis = published_ctx(epoch_state(), HEAD_SLOT);
+        for path in state_paths("head") {
+            let flags = "{\"execution_optimistic\":false,\"finalized\":";
+            assert!(state_body(&at_genesis, &path).starts_with(&format!("{flags}true,")));
+            assert!(state_body(&past_genesis, &path).starts_with(&format!("{flags}false,")));
+        }
     }
 }

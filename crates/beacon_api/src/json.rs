@@ -4,13 +4,14 @@
 //! `serde_json` is reserved for bodies built once at startup (`identity.rs`).
 
 use silver_beacon_state_data::{
-    BLSPubkey, BLSSignature, BeaconBlockHeader, Checkpoint, Fork, Immutable, ValidatorsView,
+    B256, BLSPubkey, BLSSignature, BeaconBlockHeader, Checkpoint, Fork, ValidatorsView, Version,
 };
 
 const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
 
-/// Appends JSON to a caller-owned buffer, so a handler can render into a
-/// reused response scratch rather than a fresh allocation per request.
+/// Appends JSON to a buffer the caller owns — fresh or reused is the caller's
+/// affair. `start` is where this body begins, so bytes already in the buffer
+/// are not siblings of the first value written.
 pub(crate) struct Json<'a> {
     out: &'a mut Vec<u8>,
     start: usize,
@@ -115,8 +116,54 @@ impl<'a> Json<'a> {
     }
 }
 
+/// The three scalars `getGenesis` answers with (`apis/beacon/genesis.yaml`).
+pub(crate) struct GenesisData {
+    pub(crate) genesis_time: u64,
+    pub(crate) genesis_validators_root: B256,
+    pub(crate) genesis_fork_version: Version,
+}
+
+/// The three `EpochState` checkpoints `getStateFinalityCheckpoints` answers
+/// with (`apis/beacon/states/finality_checkpoints.yaml`), split out so a read
+/// copies these and not `EpochState`'s 512-byte `proposer_lookahead`.
+pub(crate) struct FinalityCheckpoints {
+    pub(crate) previous_justified: Checkpoint,
+    pub(crate) current_justified: Checkpoint,
+    pub(crate) finalized: Checkpoint,
+}
+
+/// What a state read reports about the snapshot it came from; both flags are
+/// required beside `data` by every `states/{state_id}` schema.
+#[derive(Clone, Copy)]
+pub(crate) struct StateFlags {
+    pub(crate) execution_optimistic: bool,
+    pub(crate) finalized: bool,
+}
+
 /// Containers, in the field order the beacon-API schemas declare.
 impl Json<'_> {
+    pub(crate) fn state_envelope(&mut self, flags: StateFlags, data: impl FnOnce(&mut Self)) {
+        self.begin_object();
+        self.key("execution_optimistic");
+        self.bool(flags.execution_optimistic);
+        self.key("finalized");
+        self.bool(flags.finalized);
+        self.key("data");
+        data(self);
+        self.end_object();
+    }
+
+    pub(crate) fn genesis(&mut self, genesis: &GenesisData) {
+        self.begin_object();
+        self.key("genesis_time");
+        self.quoted_u64(genesis.genesis_time);
+        self.key("genesis_validators_root");
+        self.hex(&genesis.genesis_validators_root);
+        self.key("genesis_fork_version");
+        self.hex(&genesis.genesis_fork_version);
+        self.end_object();
+    }
+
     pub(crate) fn fork(&mut self, fork: &Fork) {
         self.begin_object();
         self.key("previous_version");
@@ -125,23 +172,6 @@ impl Json<'_> {
         self.hex(&fork.current_version);
         self.key("epoch");
         self.quoted_u64(fork.epoch);
-        self.end_object();
-    }
-}
-
-/// The containers no endpoint calls yet, in the same schema field order. Each
-/// lands ahead of the endpoint commit that calls it; the allow stops here so
-/// dead-code checking stays real for the writers already wired up.
-#[allow(dead_code)]
-impl Json<'_> {
-    pub(crate) fn genesis(&mut self, imm: &Immutable) {
-        self.begin_object();
-        self.key("genesis_time");
-        self.quoted_u64(imm.genesis_time);
-        self.key("genesis_validators_root");
-        self.hex(&imm.genesis_validators_root);
-        self.key("genesis_fork_version");
-        self.hex(&imm.genesis_fork_version);
         self.end_object();
     }
 
@@ -154,6 +184,23 @@ impl Json<'_> {
         self.end_object();
     }
 
+    pub(crate) fn finality_checkpoints(&mut self, checkpoints: &FinalityCheckpoints) {
+        self.begin_object();
+        self.key("previous_justified");
+        self.checkpoint(&checkpoints.previous_justified);
+        self.key("current_justified");
+        self.checkpoint(&checkpoints.current_justified);
+        self.key("finalized");
+        self.checkpoint(&checkpoints.finalized);
+        self.end_object();
+    }
+}
+
+/// The containers no endpoint calls yet, in the same schema field order. Each
+/// lands ahead of the endpoint commit that calls it; the allow stops here so
+/// dead-code checking stays real for the writers already wired up.
+#[allow(dead_code)]
+impl Json<'_> {
     pub(crate) fn block_header(&mut self, header: &BeaconBlockHeader) {
         self.begin_object();
         self.key("slot");
@@ -412,12 +459,13 @@ mod tests {
     /// Field names/order: `GenesisData`, `apis/beacon/genesis.yaml`.
     #[test]
     fn genesis_golden() {
-        let mut imm = Immutable::default();
-        imm.genesis_time = 1_606_824_023;
-        imm.genesis_validators_root = [0x4b; 32];
-        imm.genesis_fork_version = [0x00, 0x00, 0x00, 0x01];
+        let genesis = GenesisData {
+            genesis_time: 1_606_824_023,
+            genesis_validators_root: [0x4b; 32],
+            genesis_fork_version: [0x00, 0x00, 0x00, 0x01],
+        };
         assert_body(
-            |j| j.genesis(&imm),
+            |j| j.genesis(&genesis),
             "{\"genesis_time\":\"1606824023\",\"genesis_validators_root\":\"0x4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b\",\"genesis_fork_version\":\"0x00000001\"}",
         );
     }
@@ -449,28 +497,51 @@ mod tests {
         );
     }
 
-    /// The three-checkpoint body of `getStateFinalityCheckpoints` — the one
-    /// place a container writer is called more than once per body.
+    fn checkpoints() -> FinalityCheckpoints {
+        FinalityCheckpoints {
+            previous_justified: Checkpoint { epoch: 12_344, root: [0x01; 32] },
+            current_justified: Checkpoint { epoch: 12_345, root: [0x02; 32] },
+            finalized: Checkpoint { epoch: 12_343, root: [0x03; 32] },
+        }
+    }
+
+    /// Field names/order: `apis/beacon/states/finality_checkpoints.yaml` — the
+    /// one body that calls a container writer more than once.
     #[test]
-    fn finality_checkpoints_body_reuses_the_checkpoint_writer() {
-        let previous = Checkpoint { epoch: 12_344, root: [0x01; 32] };
-        let current = Checkpoint { epoch: 12_345, root: [0x02; 32] };
-        let finalized = Checkpoint { epoch: 12_343, root: [0x03; 32] };
-        let body = write(|j| {
-            j.begin_object();
-            j.key("previous_justified");
-            j.checkpoint(&previous);
-            j.key("current_justified");
-            j.checkpoint(&current);
-            j.key("finalized");
-            j.checkpoint(&finalized);
-            j.end_object()
-        });
+    fn finality_checkpoints_golden() {
+        assert_body(
+            |j| j.finality_checkpoints(&checkpoints()),
+            "{\"previous_justified\":{\"epoch\":\"12344\",\
+             \"root\":\"0x0101010101010101010101010101010101010101010101010101010101010101\"},\
+             \"current_justified\":{\"epoch\":\"12345\",\
+             \"root\":\"0x0202020202020202020202020202020202020202020202020202020202020202\"},\
+             \"finalized\":{\"epoch\":\"12343\",\
+             \"root\":\"0x0303030303030303030303030303030303030303030303030303030303030303\"}}",
+        );
+    }
+
+    /// Field names/order: `GetStateForkResponse` and its siblings, which
+    /// require both flags beside `data`.
+    #[test]
+    fn state_envelope_golden() {
+        let flags = StateFlags { execution_optimistic: false, finalized: true };
+        assert_body(
+            |j| j.state_envelope(flags, |j| j.checkpoint(&Checkpoint::default())),
+            "{\"execution_optimistic\":false,\"finalized\":true,\"data\":{\"epoch\":\"0\",\
+             \"root\":\"0x0000000000000000000000000000000000000000000000000000000000000000\"}}",
+        );
+    }
+
+    /// The envelope's `finalized` is its own flag: a `data` field of the same
+    /// name must not overwrite or be overwritten by it.
+    #[test]
+    fn envelope_flags_and_data_of_the_same_name_both_survive() {
+        let flags = StateFlags { execution_optimistic: true, finalized: false };
+        let body = write(|j| j.state_envelope(flags, |j| j.finality_checkpoints(&checkpoints())));
         let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
-        assert_eq!(parsed["previous_justified"]["epoch"], "12344");
-        assert_eq!(parsed["current_justified"]["epoch"], "12345");
-        assert_eq!(parsed["finalized"]["epoch"], "12343");
-        assert!(body.starts_with("{\"previous_justified\":{\"epoch\":\"12344\","));
+        assert_eq!(parsed["execution_optimistic"], true);
+        assert_eq!(parsed["finalized"], false);
+        assert_eq!(parsed["data"]["finalized"]["epoch"], "12343");
     }
 
     /// Field names/order: SSZ `BeaconBlockHeader` / `SignedBeaconBlockHeader`,

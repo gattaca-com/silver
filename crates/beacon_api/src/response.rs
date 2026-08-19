@@ -2,7 +2,7 @@ use std::{fmt::Write, str};
 
 use silver_httpcore::frame_response_with_headers;
 
-use crate::json::json_safe;
+use crate::json::{Json, json_safe};
 
 const JSON_CONTENT_TYPE: &str = "application/json";
 
@@ -24,6 +24,14 @@ impl<'a> Response<'a> {
 
     pub(crate) fn json(&mut self, body: &[u8]) {
         self.send(200, Some(JSON_CONTENT_TYPE), &[], body);
+    }
+
+    /// Renders a body, then frames it: `Content-Length` precedes the body on
+    /// the wire, so the render cannot go straight into the response buffer.
+    pub(crate) fn json_body(&mut self, render: impl FnOnce(&mut Json<'_>)) {
+        let mut body = Vec::new();
+        render(&mut Json::new(&mut body));
+        self.json(&body);
     }
 
     pub(crate) fn empty(&mut self, content_type: &str) {

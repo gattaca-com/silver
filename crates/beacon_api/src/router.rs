@@ -22,8 +22,9 @@ impl Method {
 
 pub(crate) type Handler = fn(&Request<'_>, &ApiCtx, &mut Response<'_>);
 
-// Everything but `query` becomes live with the first parameterised and first
-// POST endpoints; until then only tests read those fields.
+// `body` becomes live with the first POST endpoint, `method` and `path` with a
+// handler that answers on more than the route it was dispatched by; until then
+// only tests read those three.
 #[allow(dead_code)]
 pub(crate) struct Request<'a> {
     pub(crate) method: Method,
@@ -39,7 +40,6 @@ pub(crate) struct Params<'a> {
 }
 
 impl<'a> Params<'a> {
-    #[allow(dead_code)]
     pub(crate) fn get(&self, name: &str) -> Option<&'a str> {
         self.entries[..self.len].iter().find(|(n, _)| *n == name).map(|&(_, value)| value)
     }
