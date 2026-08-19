@@ -10,8 +10,9 @@ use silver_common::{
     BASE_REQUEST_ID, BeaconStateEvent, ColumnSource, DataColumnsEvent, EngineReq, EngineResp,
     GossipTopic, Nanos, NewGossipMsg, P2pStreamId, PeerEvent, RpcInbound, RpcSeverity, SilverSpine,
     SilverSpineProducers, StreamProtocol, SyncUpdate, SyncingStrategy, TProducer, TRandomAccess,
-    TRead, Wheel, column_util as util, msg_is_backfill, msg_is_live_column_request,
-    msg_is_post_gloas,
+    TRead, Wheel,
+    column_util::{self as util, KzgScratch},
+    msg_is_backfill, msg_is_live_column_request, msg_is_post_gloas,
     ssz_view::{NUMBER_OF_COLUMNS, SignedBeaconBlockView, StatusView},
 };
 
@@ -83,6 +84,8 @@ pub struct DataColumnsTile {
 
     el_fetcher: ElBlobFetcher,
     el_column_producer: TProducer,
+
+    kzg_scratch: KzgScratch,
 }
 
 impl DataColumnsTile {
@@ -117,6 +120,7 @@ impl DataColumnsTile {
             syncing_strategy: None,
             el_fetcher: ElBlobFetcher::new(engine_resp_consumer),
             el_column_producer,
+            kzg_scratch: KzgScratch::default(),
         }
     }
 
@@ -438,19 +442,21 @@ impl DataColumnsTile {
         if self.kzg_batch.is_empty() {
             return;
         }
-        let mut pending = self.kzg_batch.take();
+
+        let pending_len = self.kzg_batch.pending.len();
         DataColumnCounters::KzgBatchesVerified.inc();
-        DataColumnCounters::KzgBatchColumns.add(pending.len() as u64);
+        DataColumnCounters::KzgBatchColumns.add(pending_len as u64);
 
         let all_ok = {
             let validator = &self.validator;
             util::kzg_verify_batch_multi(
-                pending.iter().filter_map(|p| batch::kzg_entry(p, validator)),
-                &mut self.kzg_batch.scratch,
+                self.kzg_batch.pending.iter().filter_map(|p| batch::kzg_entry(p, validator)),
+                &mut self.kzg_scratch,
             )
         };
 
-        for p in pending.drain(..) {
+        for _ in 0..pending_len {
+            let p = self.kzg_batch.pending.swap_remove(0);
             if batch::kzg_entry(&p, &self.validator).is_none() {
                 tracing::error!(stream_id = ?p.stream_id, "batched sidecar inputs unavailable at flush");
                 continue;
@@ -461,7 +467,6 @@ impl DataColumnsTile {
                 self.resolve_rejected(&p, adapter);
             }
         }
-        self.kzg_batch.restore(pending);
     }
 
     fn reverify_single(&self, p: &PendingKzg) -> bool {

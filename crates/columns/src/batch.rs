@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use silver_common::{
     GossipTopic, MessageId, Nanos, P2pStreamId, TCacheRead, TRead,
-    column_util::{KzgBatchEntry, KzgScratch},
+    column_util::KzgBatchEntry,
     ssz_view::{DataColumnSidecarFuluView, DataColumnSidecarGloasView, NUMBER_OF_COLUMNS},
 };
 
@@ -34,20 +34,15 @@ pub(crate) struct PendingKzg {
 /// `verify_cell_kzg_proof_batch` call — one pairing check per pass instead
 /// of one per sidecar.
 pub(crate) struct KzgBatch {
-    pending: Vec<PendingKzg>,
+    pub pending: Vec<PendingKzg>,
     /// `validated_columns` only records at flush, so gossip and RPC copies
     /// of the same column arriving in one pass dedup here.
     queued: HashMap<BlockRoot, u128>,
-    pub scratch: KzgScratch,
 }
 
 impl KzgBatch {
     pub fn new() -> Self {
-        Self {
-            pending: Vec::with_capacity(NUMBER_OF_COLUMNS),
-            queued: HashMap::new(),
-            scratch: KzgScratch::default(),
-        }
+        Self { pending: Vec::with_capacity(NUMBER_OF_COLUMNS), queued: HashMap::new() }
     }
 
     /// False = a copy of this column is already queued this pass.
@@ -63,18 +58,6 @@ impl KzgBatch {
 
     pub fn is_empty(&self) -> bool {
         self.pending.is_empty()
-    }
-
-    /// Hand the queued entries to the flush; return the drained Vec via
-    /// `restore` so its capacity survives.
-    pub fn take(&mut self) -> Vec<PendingKzg> {
-        self.queued.clear();
-        std::mem::take(&mut self.pending)
-    }
-
-    pub fn restore(&mut self, mut pending: Vec<PendingKzg>) {
-        pending.clear();
-        self.pending = pending;
     }
 }
 
