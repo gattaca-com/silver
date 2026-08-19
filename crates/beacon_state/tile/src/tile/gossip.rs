@@ -104,7 +104,7 @@ impl BeaconStateTile {
         let fork_version = view.epoch.fork_version_at(target_epoch);
         let domain = bls::domain_from_fork_data(
             bls::DOMAIN_BEACON_ATTESTER,
-            &view.imm.fork_data_root(fork_version),
+            &self.fork_data_roots.root(fork_version, &view.imm.genesis_validators_root),
         );
         let (data_root, signing_root) =
             self.attestation_root_memo.roots(SingleAttestationView::data(buf).as_bytes(), &domain);
@@ -485,7 +485,8 @@ impl BeaconStateTile {
         sig_batch: &mut bls::SigBatch,
     ) -> bool {
         let fv = view.epoch.fork_version_at(parsed.agg_data.target_epoch());
-        let fork_data_root = view.imm.fork_data_root(fv);
+        let fork_data_root =
+            ssz_hash::hash_tree_root_fork_data(fv, &view.imm.genesis_validators_root);
         let domain = |ty| bls::domain_from_fork_data(ty, &fork_data_root);
 
         // (1) selection_proof — signer = aggregator, msg = htr(uint64(slot)).
@@ -548,9 +549,10 @@ impl BeaconStateTile {
 
         let object_root = ssz_hash::hash_tree_root_voluntary_exit(exit_epoch, vi_u);
         let imm = view.imm;
-        let domain = bls::domain_from_fork_data(
+        let domain = bls::compute_domain(
             bls::DOMAIN_VOLUNTARY_EXIT,
-            &imm.fork_data_root(imm.capella_fork_version),
+            imm.capella_fork_version,
+            &imm.genesis_validators_root,
         );
         let signing_root = bls::compute_signing_root(&object_root, &domain);
         let sig = SignedVoluntaryExitView::signature(buf);
@@ -584,7 +586,7 @@ impl BeaconStateTile {
         let h1_epoch = ProposerSlashingView::h1_slot(buf) / SLOTS_PER_EPOCH;
         let fv = view.epoch.fork_version_at(h1_epoch);
         let domain =
-            bls::domain_from_fork_data(bls::DOMAIN_BEACON_PROPOSER, &view.imm.fork_data_root(fv));
+            bls::compute_domain(bls::DOMAIN_BEACON_PROPOSER, fv, &view.imm.genesis_validators_root);
         let sr1 = stf::signing_root_for_block_header(&buf[0..208], &domain);
         let sr2 = stf::signing_root_for_block_header(&buf[208..416], &domain);
         let sig1 = ProposerSlashingView::h1_signature(buf);
@@ -652,9 +654,10 @@ impl BeaconStateTile {
 
         let object_root = ssz_hash::hash_tree_root_bls_change(vi_u, from_pubkey, to_address);
         let imm = view.imm;
-        let domain = bls::domain_from_fork_data(
+        let domain = bls::compute_domain(
             bls::DOMAIN_BLS_TO_EXECUTION_CHANGE,
-            &imm.fork_data_root(imm.genesis_fork_version),
+            imm.genesis_fork_version,
+            &imm.genesis_validators_root,
         );
         let signing_root = bls::compute_signing_root(&object_root, &domain);
         let sig = SignedBlsToExecutionChangeView::signature(buf);

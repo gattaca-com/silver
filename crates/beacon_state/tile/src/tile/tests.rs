@@ -179,7 +179,18 @@ fn arm_tile(
     // Test-built state: epoch base from `epoch_base`, registry + balances
     // column from `seeds`, slot base anchored at `start_slot`, the rest
     // empty.
-    let mut bs = BeaconState::for_test(epoch_base, seeds, start_slot);
+    let bs = BeaconState::for_test(epoch_base, seeds, start_slot);
+    arm_tile_state(tile, bs, seeds, start_slot);
+}
+
+/// As `arm_tile`, for tests that mutate the built state (e.g. its immutable
+/// tier) before the owner wraps it.
+fn arm_tile_state(
+    tile: &mut BeaconStateTile,
+    mut bs: BeaconState,
+    seeds: &[ValSeed],
+    start_slot: Slot,
+) {
     // Anchor each tier's fork at the base (the slot tier at `start_slot`);
     // epoch/longtail stay lazy. Rolled before the owner wraps the state.
     let anchor = bs.roll_fresh();
@@ -1087,6 +1098,53 @@ fn agg_accept() {
     assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Accept(None));
     assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_root, beacon_block_root);
     assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_epoch, slot / SLOTS_PER_EPOCH);
+}
+
+/// `handle_attestation` derives the attester domain from the state's
+/// `genesis_validators_root` (through the tile's `ForkDataRoots`). Every
+/// other signing test runs with gvr = 0 (`seed_immutable`), so this is the
+/// only pin on that wiring: a wrong or stale gvr rejects the attestation.
+#[test]
+fn single_att_accept_with_nonzero_genesis_validators_root() {
+    const GVR: B256 = [0x77; 32];
+    let mut tile = make_tile_at_wall_slot(31);
+    let (epoch_base, seeds) = build_seed_finalized(128, true);
+    let mut bs = BeaconState::for_test(epoch_base, &seeds, 0);
+    bs.immutable.genesis_validators_root = GVR;
+    arm_tile_state(&mut tile, bs, &seeds, 0);
+
+    let (slot, ci, _, _) = find_committee_for_vi0(&tile);
+    let subnet = expected_subnet(&tile, slot, ci);
+    let bbr = tile.last_applied_block_root;
+
+    // Signed against the wrong gvr (= the zero one every other test uses),
+    // the attestation must not verify. Runs first: a Reject leaves the
+    // attester unseen.
+    let bad = test_signing::sign_single_attestation(
+        0,
+        0,
+        ci as u64,
+        slot,
+        bbr,
+        slot / SLOTS_PER_EPOCH,
+        bbr,
+        &Immutable::default(),
+    );
+    assert_eq!(tile.handle_attestation(&bad, subnet), Feedback::Reject(None));
+
+    let mut imm = Immutable::default();
+    imm.genesis_validators_root = GVR;
+    let good = test_signing::sign_single_attestation(
+        0,
+        0,
+        ci as u64,
+        slot,
+        bbr,
+        slot / SLOTS_PER_EPOCH,
+        bbr,
+        &imm,
+    );
+    assert_eq!(tile.handle_attestation(&good, subnet), Feedback::Accept(None));
 }
 
 /// The root memo is keyed on AttestationData alone, so the single and

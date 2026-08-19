@@ -24,7 +24,7 @@ use crate::{
     merkle, ssz_hash, stf,
     tile::{
         attestation_pool::AttestationPool, attestation_root_memo::AttestationRootMemo,
-        orphan_pool::PendingBlock, seen_aggregates::SeenAggregates,
+        fork_data_roots::ForkDataRoots, orphan_pool::PendingBlock, seen_aggregates::SeenAggregates,
         seen_validators::SeenValidators, shuffling_cache::ShufflingCache,
     },
     weak_subjectivity::{weak_subjectivity_period_fulu, weak_subjectivity_period_gloas},
@@ -36,6 +36,7 @@ pub mod attestation_root_memo;
 mod block;
 mod finalize;
 mod fork_choice;
+mod fork_data_roots;
 mod gossip;
 mod orphan_pool;
 mod seen_aggregates;
@@ -129,6 +130,7 @@ pub struct BeaconStateTile {
     seen_aggregates: SeenAggregates,
     attestation_pool: AttestationPool,
     attestation_root_memo: AttestationRootMemo,
+    fork_data_roots: ForkDataRoots,
 
     /// Highest finalized slot PM has announced as a sync target — bounds the
     /// data-availability requirement while range sync back-fills.
@@ -232,6 +234,7 @@ impl BeaconStateTile {
             seen_aggregates: SeenAggregates::new(),
             attestation_pool: AttestationPool::new(),
             attestation_root_memo: AttestationRootMemo::default(),
+            fork_data_roots: ForkDataRoots::default(),
             last_applied: anchor,
             last_applied_block_root: [0u8; 32],
             initial_status_emitted: false,

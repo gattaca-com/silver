@@ -67,7 +67,7 @@ pub fn collect_sigs_proposer_slashings(
         let fv =
             bls::fork_version_at_epoch(fork_epoch, prev_ver, cur_ver, h1_slot / SLOTS_PER_EPOCH);
         let domain =
-            bls::domain_from_fork_data(bls::DOMAIN_BEACON_PROPOSER, &imm.fork_data_root(fv));
+            bls::compute_domain(bls::DOMAIN_BEACON_PROPOSER, fv, &imm.genesis_validators_root);
         let sr1 = signing_root_for_block_header(&s[0..208], &domain);
         let sr2 = signing_root_for_block_header(&s[208..416], &domain);
         let sig1 = ProposerSlashingView::h1_signature(s);
@@ -199,9 +199,10 @@ pub fn collect_sigs_attester_slashings(
                 let data = IndexedAttestationView::data(ia);
                 let sig: &[u8; 96] = IndexedAttestationView::signature(ia);
                 let object_root = ssz_hash::hash_attestation_data(data.as_bytes());
-                let domain = bls::domain_from_fork_data(
+                let domain = bls::compute_domain(
                     bls::DOMAIN_BEACON_ATTESTER,
-                    &imm.fork_data_root(fv),
+                    fv,
+                    &imm.genesis_validators_root,
                 );
                 let signing_root = bls::compute_signing_root(&object_root, &domain);
                 sig_batch.push_aggregate(
@@ -374,7 +375,7 @@ pub fn validate_attester_slashing_for_gossip(
         let sig: &[u8; 96] = IndexedAttestationView::signature(ia);
         let object_root = ssz_hash::hash_attestation_data(data.as_bytes());
         let domain =
-            bls::domain_from_fork_data(bls::DOMAIN_BEACON_ATTESTER, &view.imm.fork_data_root(fv));
+            bls::compute_domain(bls::DOMAIN_BEACON_ATTESTER, fv, &view.imm.genesis_validators_root);
         let signing_root = bls::compute_signing_root(&object_root, &domain);
         sig_batch.push_aggregate(
             (0..n_idx).map(|k| {

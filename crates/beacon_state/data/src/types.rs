@@ -1,5 +1,3 @@
-use silver_ssz::ssz_hash::hash_tree_root_fork_data;
-
 use crate::{
     BalancesId, BuildersId, CurrentParticipationId, DecomposeError, EpochId, Eth1Id, InactivityId,
     LongtailId, PendingId, PreviousParticipationId, SlotStateId, ValidatorsId,
@@ -189,12 +187,11 @@ pub struct Immutable {
     pub genesis_fork_version: Version,
     pub capella_fork_version: Version,
     pub gloas_fork_version: Version,
-    fork_data_roots: [(Version, B256); 5],
 }
 
 impl Default for Immutable {
     fn default() -> Self {
-        let mut imm = Self {
+        Self {
             genesis_time: 0,
             genesis_validators_root: B256::default(),
             historical_roots: Box::default(),
@@ -202,38 +199,7 @@ impl Default for Immutable {
             genesis_fork_version: Version::default(),
             capella_fork_version: Version::default(),
             gloas_fork_version: GLOAS_FORK_VERSION,
-            fork_data_roots: [(Version::default(), B256::default()); 5],
-        };
-        imm.refresh_fork_data_roots(Version::default(), Version::default());
-        imm
-    }
-}
-
-impl Immutable {
-    pub fn fork_data_root(&self, version: Version) -> B256 {
-        for (v, root) in &self.fork_data_roots {
-            if *v == version {
-                return *root;
-            }
         }
-        tracing::debug!(?version, "fork_data_root miss; computing directly");
-        hash_tree_root_fork_data(version, &self.genesis_validators_root)
-    }
-
-    pub(crate) fn refresh_fork_data_roots(
-        &mut self,
-        previous_version: Version,
-        current_version: Version,
-    ) {
-        let versions = [
-            self.genesis_fork_version,
-            self.capella_fork_version,
-            self.gloas_fork_version,
-            previous_version,
-            current_version,
-        ];
-        self.fork_data_roots =
-            versions.map(|v| (v, hash_tree_root_fork_data(v, &self.genesis_validators_root)));
     }
 }
 
@@ -495,64 +461,4 @@ pub enum HashFormat {
 pub struct ColumnLenMismatch {
     pub bytes: usize,
     pub expected: usize,
-}
-
-#[cfg(test)]
-mod tests {
-    use silver_ssz::ssz_hash::hash_tree_root_fork_data;
-
-    use super::{GLOAS_FORK_VERSION, Immutable, Version};
-    use crate::{BeaconState, EpochGroup, EpochStateFinalized, SpecConfig};
-
-    fn assert_precomputed(imm: &Immutable, version: Version) {
-        let expected = hash_tree_root_fork_data(version, &imm.genesis_validators_root);
-        assert!(imm.fork_data_roots.contains(&(version, expected)));
-        assert_eq!(imm.fork_data_root(version), expected);
-    }
-
-    #[test]
-    fn default_roots_are_precomputed() {
-        let imm = Immutable::default();
-        for version in [Version::default(), GLOAS_FORK_VERSION] {
-            assert_precomputed(&imm, version);
-        }
-    }
-
-    #[test]
-    fn unknown_version_is_computed() {
-        let imm = Immutable::default();
-        let version = [9, 9, 9, 9];
-        assert!(imm.fork_data_roots.iter().all(|(v, _)| *v != version));
-        assert_eq!(
-            imm.fork_data_root(version),
-            hash_tree_root_fork_data(version, &imm.genesis_validators_root)
-        );
-    }
-
-    #[test]
-    fn decompose_precomputes_fork_pair_roots() {
-        let cfg = SpecConfig::mainnet();
-        let mut bs = BeaconState::empty_test(0);
-        bs.immutable.genesis_validators_root = [7; 32];
-        let mut epoch = EpochStateFinalized::default();
-        epoch.state.fork.previous_version = [1, 2, 3, 4];
-        epoch.state.fork.current_version = [5, 6, 7, 8];
-        bs.epoch = EpochGroup::new(epoch);
-
-        let mut ssz = Vec::with_capacity(bs.ssz_len());
-        bs.encode_ssz(&mut ssz).expect("encode");
-        let reloaded = BeaconState::decompose(&ssz, &cfg, None).expect("decompose");
-
-        let imm = &reloaded.immutable;
-        assert_eq!(imm.genesis_validators_root, [7u8; 32]);
-        for version in [
-            cfg.genesis_fork_version,
-            cfg.capella_fork_version,
-            cfg.gloas_fork_version,
-            [1, 2, 3, 4],
-            [5, 6, 7, 8],
-        ] {
-            assert_precomputed(imm, version);
-        }
-    }
 }
