@@ -1069,10 +1069,10 @@ impl PeerManager {
             !self.is_backed_off(conn, topic, now);
         if accept {
             self.do_graft(conn, peer_id, topic, now, emit);
-            tracing::info!(p2p_peer = conn, ?topic, mesh_size, "PM peer GRAFTed us: accepted");
+            tracing::debug!(p2p_peer = conn, ?topic, mesh_size, "PM peer GRAFTed us: accepted");
         } else {
             self.do_prune(conn, peer_id, topic, now, emit);
-            tracing::info!(p2p_peer = conn, ?topic, mesh_size, "PM peer GRAFTed us: refused");
+            tracing::debug!(p2p_peer = conn, ?topic, mesh_size, "PM peer GRAFTed us: refused");
         }
     }
 
@@ -1097,7 +1097,7 @@ impl PeerManager {
         }
         let backoff = backoff_seconds.map(Duration::from_secs).unwrap_or(self.params.prune_backoff);
         self.set_backoff(conn, topic, now, backoff);
-        tracing::info!(p2p_peer = conn, ?topic, mesh_size, "PM peer PRUNEd us");
+        tracing::debug!(p2p_peer = conn, ?topic, mesh_size, "PM peer PRUNEd us");
     }
 
     fn on_ihave(&mut self, conn: usize, hash: MessageId, already_seen: bool, now: Instant) {

@@ -687,17 +687,24 @@ impl Stream {
         E: FnMut(crate::NetEvent),
     {
         let _ = connection.send_stream(self.p2p_id.stream_id()).reset(VarInt::from_u32(0));
-        if !self.state.get_mut().is_receive_only(self.p2p_id.protocol()) {
-            tracing::warn!(
-                error_code = error_code.into_inner(),
-                protocol = ?self.p2p_id.protocol(),
-                state = ?self.state.get_mut(),
-                "Stop send called in non-receive only state."
-            );
-            on_event(NetEvent::StreamClosed { stream: self.p2p_id });
+        if self.state.get_mut().is_receive_only(self.p2p_id.protocol()) {
+            return SpinResult::Ok;
+        }
+        // Fully-responded incoming stream: the requester tears down with a
+        // (possibly spurious — quinn sends one when the app never read the
+        // FIN) STOP_SENDING once it has the response. Normal completion,
+        // not misbehaviour; also reclaims the otherwise-leaked Idle stream.
+        if self.p2p_id.is_incoming() && self.is_complete() && self.out_buffer.is_empty() {
             return SpinResult::End;
         }
-        SpinResult::Ok
+        tracing::warn!(
+            error_code = error_code.into_inner(),
+            protocol = ?self.p2p_id.protocol(),
+            state = ?self.state.get_mut(),
+            "Stop send called in non-receive only state."
+        );
+        on_event(NetEvent::StreamClosed { stream: self.p2p_id });
+        SpinResult::End
     }
 
     // Unused — see `StreamState::on_close` / `is_complete` for the
@@ -710,7 +717,6 @@ impl Stream {
         self.state.get_mut().on_close(&self.p2p_id, emit);
     }
 
-    #[allow(dead_code)]
     fn is_complete(&mut self) -> bool {
         self.state.get_mut().is_complete()
     }
@@ -1292,5 +1298,87 @@ mod tests {
         assert_eq!(all.len(), msg1.len() + msg2.len());
         assert_eq!(&all[..msg1.len()], &msg1[..]);
         assert_eq!(&all[msg1.len()..], &msg2[..]);
+    }
+
+    /// A completed single-chunk exchange: the requester tears down after
+    /// reading the response without consuming the FIN, so quinn sends a
+    /// spurious STOP_SENDING. The responder must treat it as clean
+    /// completion — no `StreamClosed` (which costs the requester a PM
+    /// misbehaviour penalty) — and reclaim the stream.
+    #[test]
+    fn requester_teardown_after_response_is_clean() {
+        use silver_common::{
+            RpcInbound, RpcOutbound, RpcRequest, RpcRequestOutbound, RpcResponse,
+            RpcResponseOutbound, ssz_view::STATUS_V2_SIZE,
+        };
+
+        let mut pair = PeerPair::new();
+        let mut client_h = PeerHarness::new();
+        let mut server_h = PeerHarness::new();
+        let now = Instant::now();
+
+        let request = RpcOutbound::Request(RpcRequestOutbound {
+            application_id: 7,
+            peer: pair.client_peer.id.connection,
+            request: RpcRequest::StatusV2([1u8; STATUS_V2_SIZE]),
+        });
+        let msg = AcquiredRpcOutbound::from((request, &mut client_h.context.rpc_consumer));
+        assert!(matches!(pair.client_peer.send_rpc(msg), SendResult::Ok));
+
+        let mut request_stream = None;
+        let mut server_closed = false;
+        let mut client_got_response = false;
+        let mut responded = false;
+        for _ in 0..300 {
+            {
+                let mut ccb = |e: NetEvent| {
+                    if matches!(e, NetEvent::RpcInbound(RpcInbound::Response(_))) {
+                        client_got_response = true;
+                    }
+                };
+                let mut scb = |e: NetEvent| match e {
+                    NetEvent::RpcInbound(RpcInbound::Request(req)) => {
+                        request_stream = Some(req.stream_id);
+                    }
+                    NetEvent::StreamClosed { .. } => server_closed = true,
+                    _ => {}
+                };
+                pair.step(now, &mut client_h, &mut server_h, &mut ccb, &mut scb);
+            }
+
+            if let Some(stream_id) = request_stream &&
+                !responded
+            {
+                responded = true;
+                let response = RpcOutbound::Response(RpcResponseOutbound {
+                    stream_id,
+                    response: RpcResponse::StatusV2([2u8; STATUS_V2_SIZE]),
+                });
+                let msg = AcquiredRpcOutbound::from((response, &mut server_h.context.rpc_consumer));
+                assert!(matches!(pair.server_peer.send_rpc(msg), SendResult::Ok));
+            }
+
+            if client_got_response && pair.client_peer.streams.is_empty() {
+                break;
+            }
+        }
+
+        // Let the requester's STOP_SENDING land. Whether the responder sees
+        // `Stopped` (and reclaims the stream) races its own FIN-ack — quinn
+        // frees the acked send half and then discards the late STOP_SENDING —
+        // so only the no-misbehaviour outcome is guaranteed, not the reclaim.
+        let mut noop_c = |_: NetEvent| {};
+        let mut scb = |e: NetEvent| {
+            if matches!(e, NetEvent::StreamClosed { .. }) {
+                server_closed = true;
+            }
+        };
+        for _ in 0..50 {
+            pair.step(now, &mut client_h, &mut server_h, &mut noop_c, &mut scb);
+        }
+
+        assert!(client_got_response, "client never received the status response");
+        assert!(!server_closed, "clean requester teardown must not report StreamClosed");
+        assert!(pair.client_peer.streams.is_empty(), "requester stream should be torn down");
     }
 }

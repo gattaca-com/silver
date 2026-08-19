@@ -95,7 +95,7 @@ impl PeerDatabase {
                 }
             }
             if let Some(record) = self.peers.get_mut(*idx) {
-                tracing::info!(p2p_id, ?identify, "setting peer identify");
+                tracing::debug!(p2p_id, ?identify, "setting peer identify");
                 record.identify.replace(identify);
             }
         }
