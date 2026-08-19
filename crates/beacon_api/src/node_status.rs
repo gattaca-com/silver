@@ -5,8 +5,8 @@ use silver_common::ELSyncStatus;
 /// writer; handlers read one consistent snapshot per dispatch.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NodeStatus {
-    /// `None` until the beacon-state tile publishes its first per-slot
-    /// status, i.e. while the node has nothing to report a head against.
+    /// `None` until the beacon-state tile publishes its first status,
+    /// i.e. while the node has nothing to report a head against.
     pub slots: Option<SlotStatus>,
     pub syncing: bool,
     pub el: ELSyncStatus,
@@ -22,16 +22,10 @@ pub(crate) enum Health {
 }
 
 impl NodeStatus {
-    /// A node-wide stand-in for the spec's per-head bit: a node that is behind,
-    /// or whose EL does not report itself synced, may serve wrong data. It
-    /// under-reports — a head whose payload the EL never verified reads
-    /// non-optimistic while `eth_syncing` stays healthy through failing
-    /// `newPayload` calls, as does the branch replayed from disk after a
-    /// restart until a `VALID` verdict lifts its ancestors. The per-head
-    /// truth is the head's `ExecutionStatus`, which
-    /// `BeaconStateEvent::Status` does not carry.
+    /// The head's own execution status: true until an EL verdict has verified
+    /// the head block's payload.
     pub(crate) fn execution_optimistic(&self) -> bool {
-        self.health() != Health::Ready
+        self.slots.is_none_or(|slots| slots.head_optimistic)
     }
 
     /// The spec puts an optimistic or offline execution layer on the same
@@ -49,12 +43,14 @@ impl NodeStatus {
     }
 }
 
-/// Announced once per slot, not once per block, so `head_slot` trails the
-/// imported head by up to a slot.
+/// `head_slot` is the highest imported block's slot, so a `sync_distance` of
+/// one is ordinary on a synced node — the current slot's block lands partway
+/// into it, and an empty slot never produces one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SlotStatus {
     pub head_slot: u64,
     pub wall_slot: u64,
+    pub head_optimistic: bool,
 }
 
 impl SlotStatus {

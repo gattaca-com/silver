@@ -28,8 +28,12 @@ impl ClientServerTile {
         let status = self.beacon.node_status_mut();
 
         adapter.consume(|event: BeaconStateEvent, _| {
-            if let BeaconStateEvent::Status { latest_block_slot, wall_slot, .. } = event {
-                status.slots = Some(SlotStatus { head_slot: latest_block_slot, wall_slot });
+            if let BeaconStateEvent::Status {
+                latest_block_slot, wall_slot, head_optimistic, ..
+            } = event
+            {
+                status.slots =
+                    Some(SlotStatus { head_slot: latest_block_slot, wall_slot, head_optimistic });
             }
         });
         adapter.consume(|update: SyncUpdate, _| {

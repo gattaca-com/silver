@@ -345,7 +345,7 @@ mod tests {
 
     fn ready() -> NodeStatus {
         NodeStatus {
-            slots: Some(SlotStatus { head_slot: 100, wall_slot: 100 }),
+            slots: Some(SlotStatus { head_slot: 100, wall_slot: 100, head_optimistic: false }),
             syncing: false,
             el: ELSyncStatus::Synced,
         }
@@ -615,29 +615,35 @@ mod tests {
         }
     }
 
-    /// Silver reports no per-head execution status, so a node behind on either
-    /// layer serves its head as optimistic.
+    fn with_head_optimistic(head_optimistic: bool) -> NodeStatus {
+        let ready = ready();
+        NodeStatus { slots: Some(SlotStatus { head_optimistic, ..ready.slots.unwrap() }), ..ready }
+    }
+
+    /// The envelope flag is the head's own execution status, not a reading of
+    /// how far behind the node is: an unverified head is optimistic with both
+    /// layers reporting themselves synced, and a verified one is not while they
+    /// do not. A state read served before the first status announces a head is
+    /// optimistic — nothing has vouched for that head's payload yet.
     #[test]
-    fn execution_optimistic_while_either_layer_is_unsynced() {
+    fn execution_optimistic_is_the_head_s_own_status() {
         let mut ctx = published_ctx(epoch_state(), HEAD_SLOT);
-        for status in [
-            NodeStatus { el: ELSyncStatus::Unknown, ..ready() },
-            NodeStatus { el: ELSyncStatus::Syncing, ..ready() },
-            NodeStatus { el: ELSyncStatus::Offline, ..ready() },
-            NodeStatus { syncing: true, ..ready() },
+        for (status, want) in [
+            (with_head_optimistic(true), "true"),
+            (with_head_optimistic(false), "false"),
+            (NodeStatus { syncing: true, ..with_head_optimistic(false) }, "false"),
+            (NodeStatus { el: ELSyncStatus::Offline, ..with_head_optimistic(false) }, "false"),
+            (NodeStatus { syncing: true, ..with_head_optimistic(true) }, "true"),
+            (NodeStatus::default(), "true"),
         ] {
             ctx.node_status = status;
             for path in state_paths("head") {
                 assert!(
-                    state_body(&ctx, &path).starts_with("{\"execution_optimistic\":true,"),
+                    state_body(&ctx, &path)
+                        .starts_with(&format!("{{\"execution_optimistic\":{want},")),
                     "{status:?} {path}"
                 );
             }
-        }
-
-        ctx.node_status = ready();
-        for path in state_paths("head") {
-            assert!(state_body(&ctx, &path).starts_with("{\"execution_optimistic\":false,"));
         }
     }
 

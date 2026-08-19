@@ -705,6 +705,7 @@ pub enum BeaconStateEvent {
         ssz: [u8; STATUS_V2_SIZE],
         latest_block_slot: u64,
         wall_slot: u64,
+        head_optimistic: bool,
         enr_fork_id: [u8; 16],
     },
     PersistBlock {

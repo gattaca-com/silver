@@ -87,9 +87,10 @@ fn head_block_hash_json(byte: u8) -> String {
     format!("\"headBlockHash\":\"0x{}\"", hex::encode([byte; 32]))
 }
 
-fn status_event(head_slot: u64, wall_slot: u64) -> BeaconStateEvent {
+fn status_event(head_slot: u64, wall_slot: u64, head_optimistic: bool) -> BeaconStateEvent {
     BeaconStateEvent::Status {
         ssz: [0u8; STATUS_V2_SIZE],
+        head_optimistic,
         latest_block_slot: head_slot,
         wall_slot,
         enr_fork_id: [0u8; 16],
@@ -325,25 +326,35 @@ fn node_status_tracks_the_spine_once_the_cursor_snaps() {
     let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
     let mut inj = SpineAdapter::connect_tile(&Injector, &mut *spine);
 
-    inj.produce(status_event(1, 1));
+    inj.produce(status_event(1, 1, true));
     tile.loop_body(&mut adapter);
     assert!(
         tile.beacon.node_status_mut().slots.is_none(),
         "a status published before the first consume is skipped, not delivered"
     );
 
-    inj.produce(status_event(7, 9));
+    inj.produce(status_event(7, 9, true));
     inj.produce(SyncUpdate::SyncingHead { head_root: [3u8; 32], head_slot: 9 });
     tile.loop_body(&mut adapter);
 
     let status = *tile.beacon.node_status_mut();
-    assert_eq!(status.slots, Some(SlotStatus { head_slot: 7, wall_slot: 9 }));
+    assert_eq!(
+        status.slots,
+        Some(SlotStatus { head_slot: 7, wall_slot: 9, head_optimistic: true })
+    );
     assert_eq!(status.slots.unwrap().sync_distance(), 2);
     assert!(status.syncing);
 
+    inj.produce(status_event(9, 9, false));
     inj.produce(SyncUpdate::Following);
     tile.loop_body(&mut adapter);
-    assert!(!tile.beacon.node_status_mut().syncing, "reaching the target clears the syncing flag");
+    let status = *tile.beacon.node_status_mut();
+    assert_eq!(
+        status.slots,
+        Some(SlotStatus { head_slot: 9, wall_slot: 9, head_optimistic: false }),
+        "each status replaces the last, execution status included"
+    );
+    assert!(!status.syncing, "reaching the target clears the syncing flag");
 }
 
 /// The engine's spine intake is gated on free pool connections; node status
@@ -400,7 +411,7 @@ fn node_status_updates_while_the_engine_pool_is_at_cap() {
         crank(&mut tile, &mut el, "pool saturated with unanswered FCUs");
     }
 
-    inj.produce(status_event(7, 9));
+    inj.produce(status_event(7, 9, false));
     inj.produce(SyncUpdate::Following);
     while tile.beacon.node_status_mut().slots.is_none() {
         crank(&mut tile, &mut el, "status consumed while the pool is at cap");
@@ -408,7 +419,10 @@ fn node_status_updates_while_the_engine_pool_is_at_cap() {
     }
 
     let status = *tile.beacon.node_status_mut();
-    assert_eq!(status.slots, Some(SlotStatus { head_slot: 7, wall_slot: 9 }));
+    assert_eq!(
+        status.slots,
+        Some(SlotStatus { head_slot: 7, wall_slot: 9, head_optimistic: false })
+    );
     assert!(!status.syncing);
     assert_eq!(status.el, ELSyncStatus::Synced);
 }

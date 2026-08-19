@@ -10,7 +10,7 @@ use silver_common::{
     GossipTopic, MessageId, P2pStreamId, StreamProtocol, TCache, TCacheProducer, TProducer,
     ssz_view::{
         AttestationView, PROPOSER_SLASHING_SIZE, SIGNED_AGG_PROOF_MIN, SIGNED_BLS_CHANGE_SIZE,
-        SIGNED_VOLUNTARY_EXIT_SIZE, SignedAggregateAndProofView, SingleAttestationView,
+        SIGNED_VOLUNTARY_EXIT_SIZE, SignedAggregateAndProofView, SingleAttestationView, StatusView,
     },
 };
 
@@ -304,6 +304,48 @@ fn slot_advance_crosses_two_epoch_boundaries() {
     seed_tile(&mut tile, 4, 30);
     tile.on_slot_start(66);
     assert_eq!(tile.head_state_slot(), 66);
+}
+
+/// Every status event carries the execution status of the head its `ssz`
+/// names: an imported block is optimistic until an EL verdict lifts it, while
+/// the checkpoint anchor is valid before any EL exchange.
+#[test]
+fn status_event_carries_the_head_s_execution_status() {
+    const CHILD_ROOT: B256 = [0x0C; 32];
+
+    let head_optimistic = |tile: &mut BeaconStateTile| match tile.status_event() {
+        BeaconStateEvent::Status { ssz, head_optimistic, .. } => {
+            assert_eq!(*StatusView::head_root(&ssz), tile.fork_choice.find_head());
+            head_optimistic
+        }
+        ev => panic!("status_event produced {ev:?}"),
+    };
+
+    let mut tile = make_tile();
+    seed_tile(&mut tile, 4, 10);
+    assert!(!head_optimistic(&mut tile), "the trusted anchor is valid");
+
+    let anchor_cp = Checkpoint { epoch: 0, root: ANCHOR_ROOT };
+    tile.fork_choice.on_block(BlockImport {
+        slot: 11,
+        block_root: CHILD_ROOT,
+        parent_root: ANCHOR_ROOT,
+        execution_block_hash: [0u8; 32],
+        justified: anchor_cp,
+        finalized: anchor_cp,
+        unrealized_justified: anchor_cp,
+        unrealized_finalized: anchor_cp,
+        state_id: tile.last_applied,
+        bid_block_hash: [0u8; 32],
+        parent_payload_status: PayloadStatus::Full,
+        payload_verified: true,
+        is_gloas: false,
+    });
+    assert_eq!(tile.fork_choice.find_head(), CHILD_ROOT);
+    assert!(head_optimistic(&mut tile));
+
+    tile.fork_choice.on_payload_valid(&CHILD_ROOT);
+    assert!(!head_optimistic(&mut tile));
 }
 
 #[test]
