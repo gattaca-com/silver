@@ -1,4 +1,5 @@
 #!/bin/bash
+source "$(dirname "$0")"/common.sh
 JWT=/home/ubuntu/config/jwt.hex
 
 if ! command -v ethrex > /dev/null; then
@@ -13,4 +14,5 @@ pgrep -f 'ethrex --network mainnet' > /dev/null || systemd-run --scope -p Memory
   --network mainnet --datadir /home/ubuntu/.ethrex \
   --authrpc.jwtsecret "$JWT" > logs/ethrex.log 2>&1 &
 
-LOG_PATH=/home/ubuntu/logs RUST_LOG=info nohup ./silver --config /home/ubuntu/config/config.toml > logs/stdout.log 2>&1 &
+start_telemetry
+start_silver

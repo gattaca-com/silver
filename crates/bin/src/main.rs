@@ -1,6 +1,9 @@
 use std::{error::Error, str::FromStr, sync::Arc, time::Instant};
 
-use flux::tile::{TileConfig, attach_tile};
+use flux::{
+    tile::{TileConfig, attach_tile},
+    utils::ThreadNiceness,
+};
 use mimalloc::MiMalloc;
 use quinn_proto::{Endpoint, EndpointConfig};
 use rand::RngCore;
@@ -10,7 +13,8 @@ use silver_columns::tile::DataColumnsTile;
 #[cfg(feature = "alloc-profile")]
 use silver_common::metrics::CountingAllocator;
 use silver_common::{
-    Enr, ProtoIdentify, SilverSpine, TCache, TCacheProducer, tracing::initialise_tracing_log,
+    APP_NAME, Enr, ProtoIdentify, SilverSpine, TCache, TCacheProducer, profiler::enable_profiler,
+    tracing::initialise_tracing_log,
 };
 use silver_config::Config;
 use silver_control::Controller;
@@ -34,7 +38,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     tracing::debug!("start");
 
     // `#[timed]` is inert until a process opts in.
-    silver_common::profiler::enable_profiler("silver");
+    enable_profiler(APP_NAME);
 
     let config = load_config()?;
 
@@ -267,15 +271,22 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Spine
     let spine = SilverSpine::new(None);
-    // TODO panic handler
     spine.start(None, None, |scoped_spine| {
         // TODO core config
-        attach_tile(control_tile, scoped_spine, TileConfig::new(1, None));
-        attach_tile(network_tile, scoped_spine, TileConfig::new(2, None));
-        attach_tile(beacon_state_tile, scoped_spine, TileConfig::new(3, None));
-        attach_tile(storage_tile, scoped_spine, TileConfig::new(4, None));
-        attach_tile(engine_tile, scoped_spine, TileConfig::new(5, None));
-        attach_tile(data_columns_tile, scoped_spine, TileConfig::new(6, None));
+        attach_tile(control_tile, scoped_spine, TileConfig::new(1, Some(ThreadNiceness::Highest)));
+        attach_tile(network_tile, scoped_spine, TileConfig::new(2, Some(ThreadNiceness::Highest)));
+        attach_tile(
+            beacon_state_tile,
+            scoped_spine,
+            TileConfig::new(3, Some(ThreadNiceness::Highest)),
+        );
+        attach_tile(storage_tile, scoped_spine, TileConfig::new(4, Some(ThreadNiceness::Highest)));
+        attach_tile(engine_tile, scoped_spine, TileConfig::new(5, Some(ThreadNiceness::Highest)));
+        attach_tile(
+            data_columns_tile,
+            scoped_spine,
+            TileConfig::new(6, Some(ThreadNiceness::Highest)),
+        );
     });
 
     Ok(())

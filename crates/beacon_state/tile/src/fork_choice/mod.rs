@@ -198,8 +198,10 @@ impl ForkChoice {
         }
     }
 
-    /// Remove all nodes below the current finalized root. Callers re-anchor
-    /// the survivors via `live_state_ids` after pruning.
+    /// Keep only the finalized block and its descendants. Callers re-anchor
+    /// the survivors via `live_state_ids` after pruning — a survivor that does
+    /// not descend from the finalized block would be re-based against a
+    /// promoted delta that is not its ancestor.
     #[timed]
     pub fn prune(&mut self) {
         let Some(fin_idx) = self.find_node_idx(&self.finalized_checkpoint.root) else {
@@ -209,14 +211,30 @@ impl ForkChoice {
             return;
         }
 
-        self.nodes.drain(..fin_idx);
+        let mut new_idx = vec![NULL; self.nodes.len()];
+        let mut kept = 0;
+        for i in fin_idx..self.nodes.len() {
+            let parent = self.nodes[i].parent_ix;
+            debug_assert!(
+                parent == NULL || parent < i,
+                "on_block must append children after parents"
+            );
+            if i != fin_idx && (parent == NULL || new_idx[parent] == NULL) {
+                continue;
+            }
+            new_idx[i] = kept;
+            self.nodes.swap(kept, i);
+            kept += 1;
+        }
+        self.nodes.truncate(kept);
 
+        let remap = |ix: usize| if ix == NULL { NULL } else { new_idx[ix] };
         for n in self.nodes.iter_mut() {
-            n.parent_ix = offset_idx(n.parent_ix, fin_idx);
-            n.full.best_child = offset_idx(n.full.best_child, fin_idx);
-            n.full.best_desc = offset_idx(n.full.best_desc, fin_idx);
-            n.empty.best_child = offset_idx(n.empty.best_child, fin_idx);
-            n.empty.best_desc = offset_idx(n.empty.best_desc, fin_idx);
+            n.parent_ix = remap(n.parent_ix);
+            n.full.best_child = remap(n.full.best_child);
+            n.full.best_desc = remap(n.full.best_desc);
+            n.empty.best_child = remap(n.empty.best_child);
+            n.empty.best_desc = remap(n.empty.best_desc);
         }
 
         self.lookup.clear();
@@ -280,9 +298,4 @@ impl ForkChoice {
     pub fn live_state_ids(&self) -> impl Iterator<Item = StateId> + '_ {
         self.nodes.iter().map(|n| n.state_id)
     }
-}
-
-#[inline]
-fn offset_idx(idx: usize, offset: usize) -> usize {
-    if idx == NULL || idx < offset { NULL } else { idx - offset }
 }

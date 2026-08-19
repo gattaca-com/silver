@@ -217,6 +217,15 @@ impl SpecConfig {
         }
     }
 
+    pub fn network_name(&self) -> String {
+        match self.genesis_fork_version {
+            [0x00, 0x00, 0x00, 0x00] => "mainnet".to_owned(),
+            [0x90, 0x00, 0x00, 0x69] => "sepolia".to_owned(),
+            [0x10, 0x00, 0x09, 0x10] => "hoodi".to_owned(),
+            version => format!("0x{}", hex::encode(version)),
+        }
+    }
+
     /// Hoodi testnet (launched 2025-03-17). Differs from mainnet in fork
     /// versions and a few fork epochs only — preset dimensions, validator
     /// lifecycle, inactivity, slashing, and churn scalars are all identical
@@ -298,5 +307,25 @@ impl SpecConfig {
 impl Default for SpecConfig {
     fn default() -> Self {
         Self::mainnet()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The constructors and the lookup read `genesis_fork_version` from
+    /// opposite ends; a typo in either shows up here.
+    #[test]
+    fn known_networks_are_named() {
+        assert_eq!(SpecConfig::mainnet().network_name(), "mainnet");
+        assert_eq!(SpecConfig::hoodi().network_name(), "hoodi");
+    }
+
+    #[test]
+    fn a_devnet_is_named_by_its_fork_version() {
+        let devnet =
+            SpecConfig { genesis_fork_version: [0x10, 0x00, 0x00, 0x38], ..SpecConfig::mainnet() };
+        assert_eq!(devnet.network_name(), "0x10000038");
     }
 }

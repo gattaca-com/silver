@@ -21,8 +21,9 @@ pub(super) struct PathStat {
 pub(super) struct PathMetrics {
     pub(super) count: u64,
     tracked_avg_ns: Nanos,
-    tracked_p50_ns: Nanos,
-    tracked_p99_ns: Nanos,
+    /// `None` once merged: percentiles need the samples a live consumer drops.
+    tracked_p50_ns: Option<Nanos>,
+    tracked_p99_ns: Option<Nanos>,
     pub(super) tracked_max_ns: Nanos,
     pub(super) tracked_sum_ns: Nanos,
     pub(super) total_untracked_ns: Nanos,
@@ -47,14 +48,26 @@ impl PathMetrics {
             } else {
                 Nanos::ZERO
             },
-            tracked_p50_ns: Nanos(percentile(&times, 0.50)),
-            tracked_p99_ns: Nanos(percentile(&times, 0.99)),
+            tracked_p50_ns: Some(Nanos(percentile(&times, 0.50))),
+            tracked_p99_ns: Some(Nanos(percentile(&times, 0.99))),
             tracked_max_ns: Nanos(times.last().copied().unwrap_or(0)),
             tracked_sum_ns: Nanos(u64::try_from(sum).unwrap_or(u64::MAX)),
             total_untracked_ns: Nanos(samples.total_untracked_ns),
             tracked: samples.tracked,
             untracked: samples.total_untracked,
         }
+    }
+
+    fn merge(&mut self, later: &Self) {
+        self.count += later.count;
+        self.tracked_sum_ns += later.tracked_sum_ns;
+        self.total_untracked_ns += later.total_untracked_ns;
+        self.tracked_max_ns = self.tracked_max_ns.max(later.tracked_max_ns);
+        self.tracked = self.tracked.add(&later.tracked);
+        self.untracked = self.untracked.add(&later.untracked);
+        self.tracked_avg_ns = Nanos(self.tracked_sum_ns.0 / self.count.max(1));
+        self.tracked_p50_ns = None;
+        self.tracked_p99_ns = None;
     }
 }
 
@@ -101,6 +114,21 @@ impl ThreadTimings {
         });
         Self { name, paths, loss }
     }
+
+    fn merge(&mut self, later: Self, meta: &FlamegraphMeta) {
+        self.loss.missed += later.loss.missed;
+        self.loss.dropped += later.loss.dropped;
+
+        for stat in later.paths {
+            match self.paths.iter_mut().find(|held| held.path == stat.path) {
+                Some(held) => held.metrics.merge(&stat.metrics),
+                None => self.paths.push(stat),
+            }
+        }
+        self.paths.sort_by(|a, b| {
+            a.path.iter().map(|id| &meta.names[id]).cmp(b.path.iter().map(|id| &meta.names[id]))
+        });
+    }
 }
 
 /// Per-thread `#[timed]` stats for one run. Frame ids stay opaque in each
@@ -116,6 +144,17 @@ impl TimingStats {
         // Ring discovery order is nondeterministic, so sort for a stable report.
         threads.sort_by(|a, b| a.name.cmp(&b.name));
         Self { threads, meta }
+    }
+
+    pub fn merge(&mut self, later: Self) {
+        self.meta.names.extend(later.meta.names);
+        for thread in later.threads {
+            match self.threads.iter_mut().find(|held| held.name == thread.name) {
+                Some(held) => held.merge(thread, &self.meta),
+                None => self.threads.push(thread),
+            }
+        }
+        self.threads.sort_by(|a, b| a.name.cmp(&b.name));
     }
 
     /// Any thread's mark stream was unreliable, so the run is incomplete and
@@ -150,7 +189,7 @@ impl TimingStats {
     /// for a single-call-site leaf (e.g. the top-level `apply_block`). `None`
     /// if no such path.
     pub fn aggregate_leaf_p50(&self, leaf: &str) -> Option<Nanos> {
-        self.matching_paths(leaf).map(|s| s.metrics.tracked_p50_ns).max()
+        self.matching_paths(leaf).filter_map(|s| s.metrics.tracked_p50_ns).max()
     }
 
     /// One call tree per producing thread, each under a centered `thread: name`
@@ -269,6 +308,31 @@ mod tests {
         assert!(tree.contains("×3"), "parent should render plain ×3: {tree}");
         assert!(tree.contains("×2  (6 total)"), "leaf split missing: {tree}");
         assert!(tree.contains("untracked"), "untracked row missing: {tree}");
+    }
+
+    #[test]
+    fn merging_adds_the_totals_and_drops_the_percentiles() {
+        let drain = |count, ns| PathMetrics {
+            count,
+            tracked_avg_ns: Nanos(ns / count),
+            tracked_p50_ns: Some(Nanos(ns)),
+            tracked_p99_ns: Some(Nanos(ns)),
+            tracked_max_ns: Nanos(ns),
+            tracked_sum_ns: Nanos(ns),
+            total_untracked_ns: Nanos(1),
+            tracked: Counters::default(),
+            untracked: Counters::default(),
+        };
+
+        let mut merged = drain(2, 10);
+        merged.merge(&drain(3, 30));
+
+        assert_eq!(merged.count, 5);
+        assert_eq!(merged.tracked_sum_ns, Nanos(40));
+        assert_eq!(merged.total_untracked_ns, Nanos(2));
+        assert_eq!(merged.tracked_max_ns, Nanos(30), "the worst call survives");
+        assert_eq!(merged.tracked_avg_ns, Nanos(8), "recovered from the totals, not averaged");
+        assert_eq!(merged.tracked_p50_ns, None);
     }
 
     #[timed]

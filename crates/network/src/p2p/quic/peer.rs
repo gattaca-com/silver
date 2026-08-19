@@ -89,10 +89,12 @@ impl Peer {
         self.connection.is_drained()
     }
 
-    /// Needs a transmit+spin cycle now: un-polled inputs, or the wake
-    /// deadline (quinn timer / rpc read-response timeout) has lapsed.
+    /// Needs a transmit+spin cycle now: un-polled inputs, a lapsed wake
+    /// deadline (quinn timer / rpc read-response timeout), or a drained
+    /// connection to reap. A missing deadline is quiescent, not due — treating
+    /// it as due pinned `P2p::poll` at `Duration::ZERO`.
     pub(crate) fn due(&self, now: Instant) -> bool {
-        self.dirty || self.wake_at.is_none_or(|t| t <= now)
+        self.dirty || self.wake_at.is_some_and(|t| t <= now) || self.is_drained()
     }
 
     pub(crate) fn wake_at(&self) -> Option<Instant> {
@@ -217,7 +219,6 @@ impl Peer {
         Some(id)
     }
 
-    #[timed]
     pub(crate) fn transmit(
         &mut self,
         now: Instant,
