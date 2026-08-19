@@ -1,20 +1,31 @@
+use std::marker::PhantomData;
+
 use super::{
-    format::TreeFormat,
-    pool::{PAGE_NODES, PagePool},
-    snapshot::PageSnapshot,
-    subtree::NodeRange,
+    ColumnSpec, format::TreeFormat, pool::PagePool, snapshot::PageSnapshot, subtree::NodeRange,
 };
 use crate::types::B256;
 
-#[derive(Default)]
-pub(super) struct NodeStore {
+pub(super) struct NodeStore<C: ColumnSpec> {
     pub(super) nodes: Vec<B256>,
     pub(super) count: usize,
     pub(super) dirty_pages: Vec<bool>,
     pub(super) dirty_chunks: Vec<NodeRange>,
+    _marker: PhantomData<fn() -> C>,
 }
 
-impl NodeStore {
+impl<C: ColumnSpec> Default for NodeStore<C> {
+    fn default() -> Self {
+        Self {
+            nodes: Vec::new(),
+            count: 0,
+            dirty_pages: Vec::new(),
+            dirty_chunks: Vec::new(),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<C: ColumnSpec> NodeStore<C> {
     pub(super) fn with_leaves(
         num_nodes: usize,
         count: usize,
@@ -24,8 +35,9 @@ impl NodeStore {
         let mut store = Self {
             nodes: vec![[0u8; 32]; num_nodes],
             count,
-            dirty_pages: vec![false; num_pages_for(num_nodes)],
+            dirty_pages: vec![false; num_pages_for::<C>(num_nodes)],
             dirty_chunks: Vec::new(),
+            _marker: PhantomData,
         };
         for (slot, leaf) in store.nodes[data_start..].iter_mut().zip(leaves) {
             *slot = leaf;
@@ -35,7 +47,7 @@ impl NodeStore {
 
     #[inline]
     pub(super) fn num_pages(&self) -> usize {
-        num_pages_for(self.nodes.len())
+        num_pages_for::<C>(self.nodes.len())
     }
 
     #[inline]
@@ -45,14 +57,16 @@ impl NodeStore {
 
     #[inline]
     pub(super) fn page(&self, pi: usize) -> &[B256] {
-        let end = ((pi + 1) * PAGE_NODES).min(self.nodes.len());
-        &self.nodes[pi * PAGE_NODES..end]
+        let p = C::PAGE_NODES;
+        let end = ((pi + 1) * p).min(self.nodes.len());
+        &self.nodes[pi * p..end]
     }
 
     #[inline]
     fn page_mut(&mut self, pi: usize) -> &mut [B256] {
-        let end = ((pi + 1) * PAGE_NODES).min(self.nodes.len());
-        &mut self.nodes[pi * PAGE_NODES..end]
+        let p = C::PAGE_NODES;
+        let end = ((pi + 1) * p).min(self.nodes.len());
+        &mut self.nodes[pi * p..end]
     }
 
     /// Copy in only the pages that differ from `target`. `loaded` is the
@@ -62,7 +76,7 @@ impl NodeStore {
     /// table after a resize — gets copied.
     pub(super) fn load_diff(
         &mut self,
-        pool: &PagePool,
+        pool: &PagePool<C::Page>,
         loaded: &PageSnapshot,
         target: &PageSnapshot,
         num_nodes: usize,
@@ -80,7 +94,11 @@ impl NodeStore {
         self.reset_dirty_mask();
     }
 
-    pub(super) fn to_snapshot(&self, pool: &mut PagePool, format: TreeFormat) -> PageSnapshot {
+    pub(super) fn to_snapshot(
+        &self,
+        pool: &mut PagePool<C::Page>,
+        format: TreeFormat,
+    ) -> PageSnapshot {
         let pages = (0..self.num_pages()).map(|pi| pool.alloc_from_slice(self.page(pi))).collect();
         PageSnapshot { pages, format, count: self.count, is_released: false }
     }
@@ -91,7 +109,7 @@ impl NodeStore {
     /// table when this block changed the format (migration or segment growth).
     pub(super) fn commit_into(
         &self,
-        pool: &mut PagePool,
+        pool: &mut PagePool<C::Page>,
         dst: &mut PageSnapshot,
         parent: &PageSnapshot,
         format: TreeFormat,
@@ -125,12 +143,16 @@ impl NodeStore {
         self.dirty_pages.resize(num_pages, true);
     }
 
-    pub(super) fn copy_changed_pages_from(&mut self, src: &NodeStore) {
+    pub(super) fn copy_changed_pages_from<D>(&mut self, src: &NodeStore<D>)
+    where
+        D: ColumnSpec<Val = C::Val, Page = C::Page>,
+    {
         debug_assert_eq!(self.count, src.count, "rotate needs a same-length source");
         let len = self.nodes.len();
         let Self { nodes, dirty_pages, .. } = self;
         for (pi, dirty) in dirty_pages.iter_mut().enumerate() {
-            let range = pi * PAGE_NODES..((pi + 1) * PAGE_NODES).min(len);
+            let p = C::PAGE_NODES;
+            let range = pi * p..((pi + 1) * p).min(len);
             if nodes[range.clone()].as_flattened() != src.nodes[range.clone()].as_flattened() {
                 nodes[range.clone()].copy_from_slice(&src.nodes[range]);
                 *dirty = true;
@@ -140,7 +162,7 @@ impl NodeStore {
 
     #[inline]
     pub(super) fn mark_dirty_page(&mut self, node: usize) {
-        self.dirty_pages[node / PAGE_NODES] = true;
+        self.dirty_pages[node / C::PAGE_NODES] = true;
     }
 
     #[inline]
@@ -171,20 +193,24 @@ impl NodeStore {
     #[inline]
     pub(super) fn mark_dirty_node(&mut self, node: usize, seg_off: usize) {
         let mut local = node - seg_off;
-        debug_assert!(seg_off.is_multiple_of(PAGE_NODES), "subtree regions must be page-aligned");
+        debug_assert!(
+            seg_off.is_multiple_of(C::PAGE_NODES),
+            "subtree regions must be page-aligned",
+        );
         // We can skip already-marked pages: local top bits (the page) halve the
         // same way for every node on a page, so a dirty page means every page
         // above it is dirty too. Example (top bits | last PAGE_NODES bits):
         // Node1 110|0101011 -> 11|0010101
         // Node2 110|1010100 -> 11|0101010
         // The page-aligned seg_off only shifts pages by a constant.
-        while local >= 1 && !self.dirty_pages[(seg_off + local) / PAGE_NODES] {
-            self.dirty_pages[(seg_off + local) / PAGE_NODES] = true;
+        let p = C::PAGE_NODES;
+        while local >= 1 && !self.dirty_pages[(seg_off + local) / p] {
+            self.dirty_pages[(seg_off + local) / p] = true;
             local >>= 1;
         }
     }
 }
 
-fn num_pages_for(num_nodes: usize) -> usize {
-    num_nodes.div_ceil(PAGE_NODES).max(1)
+fn num_pages_for<C: ColumnSpec>(num_nodes: usize) -> usize {
+    num_nodes.div_ceil(C::PAGE_NODES).max(1)
 }

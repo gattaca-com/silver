@@ -12,7 +12,9 @@ mod view;
 #[cfg(test)]
 mod tests;
 
+use format::{MAX_SEGS, seg_off};
 pub use group::ColumnGroup;
+pub use pool::PageArray;
 pub use silver_ssz::scalar::SszScalar;
 pub use view::{ColumnReader, ColumnWriteView};
 
@@ -25,38 +27,45 @@ use crate::{
 /// ids of different columns can't be mixed.
 pub trait ColumnSpec {
     type Val: SszScalar;
+    /// This column's COW page. Tunable per column: pointwise-written trees want
+    /// fewer nodes per page (less copied per dirty leaf), densely swept ones
+    /// want more (smaller page tables to diff every roll).
+    type Page: PageArray;
     /// The SSZ type's capacity: `N` for `Vector[T, N]`, the limit for
     /// `List[T, N]`. Roots pad to its chunk depth regardless of how much the
-    /// tree currently materializes.
-    const SSZ_LIMIT: usize;
+    /// tree currently materializes. Defaults to the registry limit — most
+    /// columns are registry-aligned.
+    const SSZ_LIMIT: usize = VALIDATOR_REGISTRY_LIMIT;
     /// A list mixes its length into the root and can grow; a vector does
     /// neither.
-    const IS_LIST: bool;
+    const IS_LIST: bool = true;
+
+    /// Geometry derived from `Val`/`Page` at compile time — these defaults
+    /// *are* the definition; columns never override them.
+    const VALS_PER_CHUNK: usize = <Self::Val as SszScalar>::VALS_PER_CHUNK;
+    const PAGE_NODES: usize = <Self::Page as PageArray>::LEN;
+    const SEG_OFF: [usize; MAX_SEGS + 1] = seg_off(Self::PAGE_NODES);
 }
 
-/// Column markers — one zero-sized type per registry-aligned column. Distinct
-/// named types (rather than a discriminated `Col<V, ID>`) so ring ids of
-/// different columns can't mix *and* `type_name` reads cleanly in perf frames
-/// (`Balances`, not `Col<u64, 3>`).
+/// Column markers — one zero-sized type per registry-aligned column, named
+/// (rather than a discriminated `Col<V, ID>`) so `type_name` reads cleanly in
+/// perf frames (`Balances`, not `Col<u64, 3>`).
 pub struct Previous;
 impl ColumnSpec for Previous {
     type Val = u8;
-    const SSZ_LIMIT: usize = VALIDATOR_REGISTRY_LIMIT;
-    const IS_LIST: bool = true;
+    type Page = [B256; 32];
 }
 
 pub struct Current;
 impl ColumnSpec for Current {
     type Val = u8;
-    const SSZ_LIMIT: usize = VALIDATOR_REGISTRY_LIMIT;
-    const IS_LIST: bool = true;
+    type Page = [B256; 32];
 }
 
 pub struct Balances;
 impl ColumnSpec for Balances {
     type Val = u64;
-    const SSZ_LIMIT: usize = VALIDATOR_REGISTRY_LIMIT;
-    const IS_LIST: bool = true;
+    type Page = [B256; 32];
 }
 
 pub type PreviousParticipationGroup = ColumnGroup<Previous>;
@@ -77,30 +86,28 @@ pub type BalancesWriteView<'a> = ColumnWriteView<'a, Balances>;
 pub struct Inactivity;
 impl ColumnSpec for Inactivity {
     type Val = u64;
-    const SSZ_LIMIT: usize = VALIDATOR_REGISTRY_LIMIT;
-    const IS_LIST: bool = true;
+    type Page = [B256; 256];
 }
 
 pub struct ValidatorsHash;
 impl ColumnSpec for ValidatorsHash {
     type Val = B256;
-    const SSZ_LIMIT: usize = VALIDATOR_REGISTRY_LIMIT;
-    const IS_LIST: bool = true;
+    type Page = [B256; 1024];
 }
 
 pub struct BuildersHash;
 impl ColumnSpec for BuildersHash {
     type Val = B256;
-    const SSZ_LIMIT: usize = VALIDATOR_REGISTRY_LIMIT;
-    const IS_LIST: bool = true;
+    type Page = [B256; 32];
 }
 
-/// `Vector[Gwei, EPOCHS_PER_SLASHINGS_VECTOR]` — the first vector column, and
-/// the only one written pointwise rather than swept: one bucket per epoch, plus
-/// the running total as slashings land inside the current epoch.
+/// `Vector[Gwei, EPOCHS_PER_SLASHINGS_VECTOR]`, written pointwise rather than
+/// swept: one bucket per epoch, plus the running total as slashings land
+/// inside the current epoch.
 pub struct Slashings;
 impl ColumnSpec for Slashings {
     type Val = u64;
+    type Page = [B256; 32];
     const SSZ_LIMIT: usize = EPOCHS_PER_SLASHINGS_VECTOR;
     const IS_LIST: bool = false;
 }

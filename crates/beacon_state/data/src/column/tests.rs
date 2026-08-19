@@ -1,14 +1,15 @@
 use super::{BalancesGroup, BalancesWriteView, ColumnGroup, ColumnSpec};
 use crate::{
     merkle::{MerkleStack, hash_uint64_list, hash_uint64_vector},
-    types::{HashFormat, VALIDATOR_REGISTRY_LIMIT},
+    types::{B256, HashFormat, VALIDATOR_REGISTRY_LIMIT},
 };
 
-/// `Vector[uint64, 8192]` — `slashings`' shape, the one track-A pilot, so the
-/// vector root path has a caller before a production column sets `IS_LIST`.
+/// `Vector[uint64, 8192]` — covers the vector root path (fixed depth, no
+/// length mix-in) independently of the production columns.
 struct U64Vector;
 impl ColumnSpec for U64Vector {
     type Val = u64;
+    type Page = [B256; 32];
     const SSZ_LIMIT: usize = 8192;
     const IS_LIST: bool = false;
 }
@@ -213,8 +214,6 @@ fn new_decodes_le_u64s() {
 fn new_rejects_len_mismatch() {
     assert!(BalancesGroup::new(4, 2, &[0u8; 12], HashFormat::Fixed).is_err());
 }
-
-// ---- hash tree ----
 
 #[test]
 fn root_matches_reference_across_counts() {
