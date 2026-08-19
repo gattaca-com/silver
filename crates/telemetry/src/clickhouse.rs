@@ -26,7 +26,13 @@ impl ChTable {
 
     pub fn insert(&mut self, json_lines: &str) {
         if !self.created {
-            self.created = self.ddl.iter().all(|stmt| self.post(stmt, None).is_ok());
+            self.created = self.ddl.iter().all(|stmt| match self.post(stmt, None) {
+                Ok(()) => true,
+                Err(e) => {
+                    warn!(%e, stmt, table = self.name, "DDL statement failed");
+                    false
+                }
+            });
         }
 
         let query = format!("INSERT INTO {} FORMAT JSONEachRow", self.name);

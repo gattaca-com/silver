@@ -33,7 +33,20 @@ use tracing::{info, warn};
 use crate::clickhouse::ChTable;
 
 const TABLE: &str = "block_events";
-const DDL: &[&str] = &[TABLE_DDL, XATU_VIEW_DDL];
+
+/// Run in order on every start, so a table an older build created catches up:
+/// `CREATE TABLE IF NOT EXISTS` alone would no-op and leave the new columns
+/// missing, which `input_format_skip_unknown_fields` then drops from each row
+/// without failing the insert. Every statement has to be a no-op the second
+/// time it runs, and a new one goes after the last `ALTER` but ahead of the
+/// views, which read the columns the alters produce.
+const DDL: &[&str] = &[
+    TABLE_DDL,
+    "ALTER TABLE block_events RENAME COLUMN IF EXISTS propagation_slot_start_diff TO time_into_slot_ms",
+    "ALTER TABLE block_events ADD COLUMN IF NOT EXISTS slot_start_date_time Nullable(DateTime) AFTER slot",
+    "ALTER TABLE block_events ADD COLUMN IF NOT EXISTS meta_network_name LowCardinality(String)",
+    XATU_VIEW_DDL,
+];
 
 const TABLE_DDL: &str = "CREATE TABLE IF NOT EXISTS block_events (
     event_date_time      DateTime64(9)                    COMMENT 'Node-local wall clock at the observation',
@@ -41,7 +54,7 @@ const TABLE_DDL: &str = "CREATE TABLE IF NOT EXISTS block_events (
     slot                 Nullable(UInt64)                 COMMENT 'NULL when the root was first seen before the collector attached',
     slot_start_date_time Nullable(DateTime)               COMMENT 'Wall clock the slot started at',
     time_into_slot_ms    Nullable(Float64)                COMMENT 'Milliseconds from slot start; NULL outside the live window (replay or backfill)',
-    block_root           FixedString(66)                  COMMENT '0x-prefixed beacon block root',
+    block_root           String                           COMMENT '0x-prefixed beacon block root; rows written before 2026-08-18 lack the prefix',
     source               LowCardinality(String)           COMMENT 'How the node obtained the block',
     verdict              LowCardinality(Nullable(String)) COMMENT 'Execution payload status; set on el_verdict rows only',
     meta_client_name     LowCardinality(String)           COMMENT 'Hostname of the node that produced the row',
@@ -195,10 +208,10 @@ pub struct BlockEventsInserter {
 }
 
 impl BlockEventsInserter {
-    pub fn open(clickhouse_url: &str, network: Option<&str>, chain: &ChainConfig) -> Self {
+    pub fn open(clickhouse_url: &str, chain: &ChainConfig) -> Self {
         let slot_ms = chain.slot_duration().as_millis() as u64;
-        let network = network.unwrap_or("unknown").to_owned();
         let node = BlockEvents::hostname();
+        let network = chain.spec.network_name();
         let events = BlockEvents::new(node, network, chain.genesis_unix_secs, slot_ms);
         let (batches, rx) = sync_channel::<String>(256);
         let mut table = ChTable::new(clickhouse_url, TABLE, DDL);

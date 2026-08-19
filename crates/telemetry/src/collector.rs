@@ -68,10 +68,11 @@ impl TraceCollector {
 
         reader.filter_short_frames(args.filter_short_frames);
 
-        let telemetry = &file_config.telemetry;
-        let db_inserter = telemetry.clickhouse_url.as_deref().map(|url| {
-            BlockEventsInserter::open(url, telemetry.network.as_deref(), &file_config.chain_config)
-        });
+        let db_inserter = file_config
+            .telemetry
+            .clickhouse_url
+            .as_deref()
+            .map(|url| BlockEventsInserter::open(url, &file_config.chain_config));
 
         // Floored at a second: `round_to_interval` divides by the period.
         let period = Nanos::from_secs(args.period.as_secs().max(1));

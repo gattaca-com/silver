@@ -58,7 +58,4 @@ pub struct FileConfig {
 #[derive(serde::Deserialize, Default)]
 pub struct TelemetrySection {
     pub clickhouse_url: Option<String>,
-    /// Tags every row's `meta_network_name`, which is what keeps a devnet's
-    /// rows from being compared against mainnet's. Unset records `unknown`.
-    pub network: Option<String>,
 }
