@@ -221,7 +221,6 @@ impl SpecConfig {
         match self.genesis_fork_version {
             [0x00, 0x00, 0x00, 0x00] => "mainnet".to_owned(),
             [0x90, 0x00, 0x00, 0x69] => "sepolia".to_owned(),
-            [0x01, 0x01, 0x70, 0x00] => "holesky".to_owned(),
             [0x10, 0x00, 0x09, 0x10] => "hoodi".to_owned(),
             version => format!("0x{}", hex::encode(version)),
         }
