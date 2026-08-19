@@ -51,9 +51,10 @@ pub fn collect_sigs_voluntary_exits(
     data: &[u8],
     sig_batch: &mut SigBatch,
 ) {
-    let domain = bls::domain_from_fork_data(
+    let domain = bls::compute_domain(
         bls::DOMAIN_VOLUNTARY_EXIT,
-        &imm.fork_data_root(imm.capella_fork_version),
+        imm.capella_fork_version,
+        &imm.genesis_validators_root,
     );
     let count = data.len() / SIGNED_VOLUNTARY_EXIT_SIZE;
     let validator_count = validators.count();
@@ -416,9 +417,10 @@ pub fn collect_sigs_bls_to_execution_changes(
     data: &[u8],
     sig_batch: &mut SigBatch,
 ) -> Result<(), BlsToExecutionChangeError> {
-    let domain = bls::domain_from_fork_data(
+    let domain = bls::compute_domain(
         bls::DOMAIN_BLS_TO_EXECUTION_CHANGE,
-        &imm.fork_data_root(imm.genesis_fork_version),
+        imm.genesis_fork_version,
+        &imm.genesis_validators_root,
     );
     let count = data.len() / SIGNED_BLS_CHANGE_SIZE;
     let validator_count = validators.count();
