@@ -211,7 +211,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         incoming_rpc_consumer_ctl,
     );
     control_tile.set_pending_subnet_topics(
-        subnets.iter().map(|&s| silver_common::GossipTopic::BeaconAttestation(s as u64)).collect(),
+        silver_common::attnet_subnets(subnets)
+            .map(silver_common::GossipTopic::BeaconAttestation)
+            .collect(),
     );
 
     // A finalized checkpoint state is mandatory (no genesis or runtime sync):

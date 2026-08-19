@@ -60,7 +60,7 @@ mod wither;
 
 pub use enr::{
     EPOCHS_PER_SUBNET_SUBSCRIPTION, Enr, NUMBER_OF_CUSTODY_GROUPS, NodeId, SAMPLES_PER_SLOT,
-    SUBNETS_PER_NODE,
+    SUBNETS_PER_NODE, attnet_subnets,
 };
 pub use flux::timing::Nanos;
 pub use generated::{Identify as ProtoIdentify, IdentifyView as ProtoIdentifyView};

@@ -119,6 +119,11 @@ impl NodeId {
     }
 }
 
+/// Subnet indices set in an attnets bitfield, ascending.
+pub fn attnet_subnets(attnets: [u8; 8]) -> impl Iterator<Item = u64> {
+    (0..ATTESTATION_SUBNET_COUNT).filter(move |s| attnets[(s / 8) as usize] & (1 << (s % 8)) != 0)
+}
+
 /// Spec phase0 `compute_shuffled_index` — single-index swap-or-not.
 fn compute_shuffled_index(mut index: u64, index_count: u64, seed: &[u8; 32]) -> u64 {
     debug_assert!(index < index_count);
@@ -373,11 +378,8 @@ mod tests {
         assert_ne!(a.custody_groups(16), b.custody_groups(16));
     }
 
-    /// Set subnet indices in an attnets bitfield, ascending.
     fn set_subnets(attnets: [u8; 8]) -> Vec<u8> {
-        (0u8..ATTESTATION_SUBNET_COUNT as u8)
-            .filter(|s| attnets[(s / 8) as usize] & (1 << (s % 8)) != 0)
-            .collect()
+        attnet_subnets(attnets).map(|s| s as u8).collect()
     }
 
     #[test]
