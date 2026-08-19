@@ -44,6 +44,19 @@ pub enum ForkName {
 }
 
 impl ForkName {
+    /// Activation order: every cascade over the fork table walks it from the
+    /// end, and the beacon-API fork schedule is served in this order.
+    pub const ALL: [Self; 8] = [
+        Self::Phase0,
+        Self::Altair,
+        Self::Bellatrix,
+        Self::Capella,
+        Self::Deneb,
+        Self::Electra,
+        Self::Fulu,
+        Self::Gloas,
+    ];
+
     /// Lowercase spec spelling, as the wire wants it in
     /// `Eth-Consensus-Version` and in the `version` field of a beacon-API
     /// body.
@@ -70,11 +83,25 @@ impl ForkName {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub struct SpecConfig {
+    /// The network's own name for itself. Silver derives nothing from it; it
+    /// is carried because a validator client builds its runtime config from
+    /// the spec this node serves and labels its logs with this string.
+    #[serde(default = "default_config_name")]
+    pub config_name: String,
     /// Genesis (phase-0) fork version. Used as the `current_version` in the
     /// genesis fork-data root, which is the domain mixed into deposit
     /// signatures (`DOMAIN_DEPOSIT`). 0x00000000 mainnet, 0x10000910 Hoodi.
     #[serde(default = "default_fork_version::<0x00000000>", with = "hex_0x")]
     pub genesis_fork_version: [u8; 4],
+    /// Genesis generation parameters. Silver starts from a checkpoint and
+    /// never derives a genesis state, so it reads none of these; they are
+    /// carried so the config it serves describes the network a client joined.
+    #[serde(default = "default_u64::<16_384>")]
+    pub min_genesis_active_validator_count: u64,
+    #[serde(default = "default_u64::<1_606_824_000>")]
+    pub min_genesis_time: u64,
+    #[serde(default = "default_u64::<604_800>")]
+    pub genesis_delay: u64,
     /// Altair through Electra gate none of silver's own consensus — it runs
     /// Fulu and Gloas only. They are carried because a validator client
     /// derives signing domains for historical epochs from the fork schedule
@@ -87,6 +114,16 @@ pub struct SpecConfig {
     pub bellatrix_fork_version: [u8; 4],
     #[serde(default = "default_u64::<144896>")]
     pub bellatrix_fork_epoch: u64,
+    /// Merge transition parameters. Every network silver can join is already
+    /// past its merge, so these gate nothing here; they are carried because a
+    /// client that builds its whole runtime spec from the served config aborts
+    /// on a missing key.
+    #[serde(default = "default_terminal_total_difficulty", with = "quoted_u128")]
+    pub terminal_total_difficulty: u128,
+    #[serde(default, with = "hex_0x")]
+    pub terminal_block_hash: [u8; 32],
+    #[serde(default = "unscheduled")]
+    pub terminal_block_hash_activation_epoch: u64,
     /// Capella fork version. Withdrawal-credential domain on Capella+.
     /// 0x03000000 mainnet, 0x40000910 Hoodi.
     #[serde(default = "default_fork_version::<0x03000000>", with = "hex_0x")]
@@ -126,6 +163,20 @@ pub struct SpecConfig {
     /// activation and the first BPO upgrade. 9 mainnet.
     #[serde(default = "default_u64::<9>")]
     pub max_blobs_per_block_electra: u64,
+    /// Blob-sidecar gossip and req/resp limits. Fulu replaced sidecars with
+    /// data columns, so silver's own networking uses the column parameters
+    /// instead; these describe the pre-Fulu topics a client may still ask
+    /// about.
+    #[serde(default = "default_u64::<6>")]
+    pub blob_sidecar_subnet_count: u64,
+    #[serde(default = "default_u64::<9>")]
+    pub blob_sidecar_subnet_count_electra: u64,
+    #[serde(default = "default_u64::<768>")]
+    pub max_request_blob_sidecars: u64,
+    #[serde(default = "default_u64::<1152>")]
+    pub max_request_blob_sidecars_electra: u64,
+    #[serde(default = "default_u64::<4096>")]
+    pub min_epochs_for_blob_sidecars_requests: u64,
     /// Deposit contract identity. Silver follows no eth1 deposit stream, so
     /// nothing here is verified against; it is carried so the node can tell a
     /// validator client which contract the network it joined deposits to.
@@ -138,6 +189,13 @@ pub struct SpecConfig {
     /// Seconds per beacon chain slot. 12 mainnet; testnets may use shorter.
     #[serde(default = "default_u64::<12>")]
     pub seconds_per_slot: u64,
+    /// Eth1 following parameters. Silver follows no eth1 deposit stream, so
+    /// nothing here is used; they are carried so a client can tell which eth1
+    /// chain the network it joined votes on.
+    #[serde(default = "default_u64::<14>")]
+    pub seconds_per_eth1_block: u64,
+    #[serde(default = "default_u64::<2048>")]
+    pub eth1_follow_distance: u64,
     /// Minimum activation period before a validator may voluntarily exit.
     #[serde(default = "default_u64::<256>")]
     pub shard_committee_period: u64,
@@ -197,6 +255,15 @@ pub struct SpecConfig {
     pub ejection_balance: u64,
 }
 
+fn default_config_name() -> String {
+    "mainnet".to_owned()
+}
+
+/// Mainnet's merge threshold, crossed 2022-09-15.
+const fn default_terminal_total_difficulty() -> u128 {
+    58_750_000_000_000_000_000_000
+}
+
 /// Mainnet deposit contract, live since 2020-11-04. Hoodi reuses the very
 /// same address.
 fn default_deposit_contract_address() -> [u8; 20] {
@@ -237,6 +304,31 @@ mod hex_0x {
     }
 }
 
+/// Serde adapter for a decimal too wide for the `i64` a TOML integer holds
+/// (mainnet's `TERMINAL_TOTAL_DIFFICULTY` needs 76 bits), so it is written
+/// quoted — as the beacon-API also serves it. A testnet's small value is
+/// accepted either quoted or bare.
+mod quoted_u128 {
+    use serde::{Deserialize, Deserializer, Serializer, de::Error};
+
+    pub fn serialize<S: Serializer>(value: &u128, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&value.to_string())
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<u128, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Written {
+            Quoted(String),
+            Bare(u64),
+        }
+        match Written::deserialize(d)? {
+            Written::Quoted(text) => text.parse().map_err(D::Error::custom),
+            Written::Bare(value) => Ok(value.into()),
+        }
+    }
+}
+
 impl SpecConfig {
     /// Active blob params when no `blob_schedule` entry covers `epoch`.
     /// Built from the Electra activation epoch + Electra-era blob count
@@ -274,6 +366,33 @@ impl SpecConfig {
         self.fork_at(slot / SLOTS_PER_EPOCH)
     }
 
+    pub fn fork_version(&self, fork: ForkName) -> [u8; 4] {
+        match fork {
+            ForkName::Phase0 => self.genesis_fork_version,
+            ForkName::Altair => self.altair_fork_version,
+            ForkName::Bellatrix => self.bellatrix_fork_version,
+            ForkName::Capella => self.capella_fork_version,
+            ForkName::Deneb => self.deneb_fork_version,
+            ForkName::Electra => self.electra_fork_version,
+            ForkName::Fulu => self.fulu_fork_version,
+            ForkName::Gloas => self.gloas_fork_version,
+        }
+    }
+
+    /// `u64::MAX` for a fork this network has not scheduled.
+    pub fn fork_epoch(&self, fork: ForkName) -> u64 {
+        match fork {
+            ForkName::Phase0 => 0,
+            ForkName::Altair => self.altair_fork_epoch,
+            ForkName::Bellatrix => self.bellatrix_fork_epoch,
+            ForkName::Capella => self.capella_fork_epoch,
+            ForkName::Deneb => self.deneb_fork_epoch,
+            ForkName::Electra => self.electra_fork_epoch,
+            ForkName::Fulu => self.fulu_fork_epoch,
+            ForkName::Gloas => self.gloas_fork_epoch,
+        }
+    }
+
     /// Whether `epoch` is at or past the Gloas activation.
     #[inline]
     pub fn is_gloas_at(&self, epoch: u64) -> bool {
@@ -298,7 +417,7 @@ impl SpecConfig {
 
     #[inline]
     pub fn fork_version_at(&self, epoch: u64) -> [u8; 4] {
-        if self.is_gloas_at(epoch) { self.gloas_fork_version } else { self.fulu_fork_version }
+        self.fork_version(self.fork_at(epoch))
     }
 
     /// `(next_fork_version, next_fork_epoch)` for the ENR `eth2` field at
@@ -312,24 +431,29 @@ impl SpecConfig {
         }
     }
 
-    /// Hoodi testnet (launched 2025-03-17). Differs from mainnet in fork
-    /// versions and a few fork epochs only — preset dimensions, validator
-    /// lifecycle, inactivity, slashing, and churn scalars are all identical
-    /// to mainnet (see `eth-clients/hoodi/metadata/config.yaml`).
-    ///
-    /// Diffs from mainnet:
-    ///   - `*_FORK_VERSION` pattern is `0xN0000910` (N = fork ordinal) instead
-    ///     of mainnet's `0x0N000000`.
-    ///   - Hoodi-specific `BLOB_SCHEDULE` entries should be cross-checked
-    ///     against the upstream config file before long-running use.
+    /// Hoodi testnet (launched 2025-03-17), transcribed from
+    /// `eth-clients/hoodi/metadata/config.yaml` as of 2026-08-19. Preset
+    /// dimensions, validator lifecycle, inactivity, slashing and churn
+    /// scalars are all mainnet's; what differs is the `0xN0000910`
+    /// fork-version pattern (N = fork ordinal), the fork epochs, genesis time
+    /// and delay, `SECONDS_PER_ETH1_BLOCK`, a `TERMINAL_TOTAL_DIFFICULTY` of
+    /// 0 (Hoodi merged at genesis), the deposit chain/network ids, and its own
+    /// `BLOB_SCHEDULE`.
     pub fn hoodi() -> Self {
         Self {
+            config_name: "hoodi".to_owned(),
             // Hoodi fork-version pattern is `0xN0000910`.
             genesis_fork_version: default_fork_version::<0x10000910>(),
+            min_genesis_active_validator_count: 16_384,
+            min_genesis_time: 1_742_212_800,
+            genesis_delay: 600,
             altair_fork_version: default_fork_version::<0x20000910>(),
             altair_fork_epoch: 0,
             bellatrix_fork_version: default_fork_version::<0x30000910>(),
             bellatrix_fork_epoch: 0,
+            terminal_total_difficulty: 0,
+            terminal_block_hash: [0; 32],
+            terminal_block_hash_activation_epoch: unscheduled(),
             capella_fork_version: default_fork_version::<0x40000910>(),
             capella_fork_epoch: 0,
             deneb_fork_version: default_fork_version::<0x50000910>(),
@@ -340,16 +464,23 @@ impl SpecConfig {
             fulu_fork_epoch: 50688,
             gloas_fork_version: default_fork_version::<0x80000910>(),
             gloas_fork_epoch: unscheduled(),
-            // No BPO entries spec'd on Hoodi at time of writing. Empty ⇒
-            // always fall back to (`electra_fork_epoch`,
-            // `max_blobs_per_block_electra`).
-            blob_schedule: vec![],
+            blob_schedule: vec![
+                BlobParameters { epoch: 52480, max_blobs_per_block: 15 },
+                BlobParameters { epoch: 54016, max_blobs_per_block: 21 },
+            ],
             max_blobs_per_block_electra: 9,
+            blob_sidecar_subnet_count: 6,
+            blob_sidecar_subnet_count_electra: 9,
+            max_request_blob_sidecars: 768,
+            max_request_blob_sidecars_electra: 1152,
+            min_epochs_for_blob_sidecars_requests: 4096,
             deposit_chain_id: 560048,
             deposit_network_id: 560048,
             deposit_contract_address: default_deposit_contract_address(),
-            // Identical to mainnet preset / config below this line.
             seconds_per_slot: 12,
+            seconds_per_eth1_block: 12,
+            eth1_follow_distance: 2048,
+            // Identical to mainnet preset / config below this line.
             shard_committee_period: 256,
             min_validator_withdrawability_delay: 256,
             max_seed_lookahead: 4,
@@ -371,11 +502,18 @@ impl SpecConfig {
 
     pub fn mainnet() -> Self {
         Self {
+            config_name: default_config_name(),
             genesis_fork_version: default_fork_version::<0x00000000>(),
+            min_genesis_active_validator_count: 16_384,
+            min_genesis_time: 1_606_824_000,
+            genesis_delay: 604_800,
             altair_fork_version: default_fork_version::<0x01000000>(),
             altair_fork_epoch: 74240,
             bellatrix_fork_version: default_fork_version::<0x02000000>(),
             bellatrix_fork_epoch: 144896,
+            terminal_total_difficulty: default_terminal_total_difficulty(),
+            terminal_block_hash: [0; 32],
+            terminal_block_hash_activation_epoch: unscheduled(),
             capella_fork_version: default_fork_version::<0x03000000>(),
             capella_fork_epoch: 194048,
             deneb_fork_version: default_fork_version::<0x04000000>(),
@@ -388,10 +526,17 @@ impl SpecConfig {
             gloas_fork_epoch: unscheduled(),
             blob_schedule: default_blob_schedule(),
             max_blobs_per_block_electra: 9,
+            blob_sidecar_subnet_count: 6,
+            blob_sidecar_subnet_count_electra: 9,
+            max_request_blob_sidecars: 768,
+            max_request_blob_sidecars_electra: 1152,
+            min_epochs_for_blob_sidecars_requests: 4096,
             deposit_chain_id: 1,
             deposit_network_id: 1,
             deposit_contract_address: default_deposit_contract_address(),
             seconds_per_slot: 12,
+            seconds_per_eth1_block: 14,
+            eth1_follow_distance: 2048,
             shard_committee_period: 256,
             min_validator_withdrawability_delay: 256,
             max_seed_lookahead: 4,
@@ -441,6 +586,41 @@ mod tests {
         assert_eq!(spec.gloas_fork_epoch, u64::MAX);
         assert_eq!(spec.deposit_chain_id, 1);
         assert_eq!(spec.deposit_network_id, 1);
+        assert_eq!(spec.config_name, "mainnet");
+        assert_eq!(spec.min_genesis_time, 1_606_824_000);
+        assert_eq!(spec.genesis_delay, 604_800);
+        assert_eq!(spec.seconds_per_eth1_block, 14);
+        assert_eq!(spec.terminal_total_difficulty, 58_750_000_000_000_000_000_000);
+        assert_eq!(spec.terminal_block_hash, [0; 32]);
+        assert_eq!(spec.terminal_block_hash_activation_epoch, u64::MAX);
+    }
+
+    /// `TERMINAL_TOTAL_DIFFICULTY` outgrows the `i64` a TOML integer holds, so
+    /// the wide value has to survive being written as a string.
+    #[test]
+    fn terminal_total_difficulty_parses_quoted_or_bare() {
+        let quoted: SpecConfig =
+            toml::from_str(r#"TERMINAL_TOTAL_DIFFICULTY = "58750000000000000000000""#).unwrap();
+        assert_eq!(quoted.terminal_total_difficulty, 58_750_000_000_000_000_000_000);
+
+        let bare: SpecConfig = toml::from_str("TERMINAL_TOTAL_DIFFICULTY = 0").unwrap();
+        assert_eq!(bare.terminal_total_difficulty, 0);
+    }
+
+    #[test]
+    fn hoodi_matches_its_upstream_config_file() {
+        let spec = SpecConfig::hoodi();
+        assert_eq!(spec.config_name, "hoodi");
+        assert_eq!(spec.min_genesis_time, 1_742_212_800);
+        assert_eq!(spec.genesis_delay, 600);
+        assert_eq!(spec.seconds_per_eth1_block, 12);
+        assert_eq!(spec.terminal_total_difficulty, 0);
+        assert_eq!(spec.blob_schedule, [
+            BlobParameters { epoch: 52480, max_blobs_per_block: 15 },
+            BlobParameters { epoch: 54016, max_blobs_per_block: 21 },
+        ]);
+        assert_eq!(spec.min_genesis_active_validator_count, 16_384, "mainnet's value");
+        assert_eq!(spec.eth1_follow_distance, 2048, "mainnet's value");
     }
 
     #[test]
@@ -492,6 +672,84 @@ mod tests {
         }
 
         assert_eq!(spec.fork_at(u64::MAX - 1), ForkName::Fulu, "Gloas is unscheduled on mainnet");
+    }
+
+    /// A validator client derives signing domains for historical epochs from
+    /// the versions this node reports, so every fork in the table — not just
+    /// the two silver's own consensus runs — must map to its own version.
+    #[test]
+    fn fork_version_at_returns_the_version_of_the_fork_active_then() {
+        let spec = SpecConfig::mainnet();
+        for (epoch, version) in [
+            (0, spec.genesis_fork_version),
+            (spec.altair_fork_epoch, spec.altair_fork_version),
+            (spec.bellatrix_fork_epoch, spec.bellatrix_fork_version),
+            (spec.capella_fork_epoch, spec.capella_fork_version),
+            (spec.deneb_fork_epoch, spec.deneb_fork_version),
+            (spec.deneb_fork_epoch + 1, spec.deneb_fork_version),
+            (spec.electra_fork_epoch - 1, spec.deneb_fork_version),
+            (spec.electra_fork_epoch, spec.electra_fork_version),
+            (spec.fulu_fork_epoch, spec.fulu_fork_version),
+            (u64::MAX - 1, spec.fulu_fork_version),
+        ] {
+            assert_eq!(spec.fork_version_at(epoch), version, "epoch {epoch}");
+        }
+    }
+
+    /// Hoodi activates altair through deneb all at epoch 0, so the genesis
+    /// version is never the active one and the cascade must report the
+    /// highest fork sharing that epoch.
+    #[test]
+    fn fork_version_at_on_hoodi_reports_the_highest_fork_sharing_an_epoch() {
+        let spec = SpecConfig::hoodi();
+        for (epoch, version) in [
+            (0, spec.deneb_fork_version),
+            (spec.electra_fork_epoch - 1, spec.deneb_fork_version),
+            (spec.electra_fork_epoch, spec.electra_fork_version),
+            (spec.fulu_fork_epoch - 1, spec.electra_fork_version),
+            (spec.fulu_fork_epoch, spec.fulu_fork_version),
+        ] {
+            assert_eq!(spec.fork_version_at(epoch), version, "epoch {epoch}");
+        }
+    }
+
+    #[test]
+    fn every_fork_maps_to_its_own_version_and_epoch() {
+        let spec = SpecConfig::mainnet();
+        assert_eq!(ForkName::ALL.map(|fork| spec.fork_version(fork)), [
+            spec.genesis_fork_version,
+            spec.altair_fork_version,
+            spec.bellatrix_fork_version,
+            spec.capella_fork_version,
+            spec.deneb_fork_version,
+            spec.electra_fork_version,
+            spec.fulu_fork_version,
+            spec.gloas_fork_version,
+        ]);
+        assert_eq!(ForkName::ALL.map(|fork| spec.fork_epoch(fork)), [
+            0,
+            spec.altair_fork_epoch,
+            spec.bellatrix_fork_epoch,
+            spec.capella_fork_epoch,
+            spec.deneb_fork_epoch,
+            spec.electra_fork_epoch,
+            spec.fulu_fork_epoch,
+            u64::MAX,
+        ]);
+        assert!(ForkName::ALL.is_sorted(), "ALL is in activation order");
+    }
+
+    #[test]
+    fn next_fork_still_announces_the_scheduled_gloas_activation() {
+        let scheduled = SpecConfig { gloas_fork_epoch: 500_000, ..SpecConfig::mainnet() };
+        assert_eq!(scheduled.next_fork(499_999), (scheduled.gloas_fork_version, 500_000));
+        assert_eq!(scheduled.next_fork(500_000), (scheduled.gloas_fork_version, u64::MAX));
+
+        let mainnet = SpecConfig::mainnet();
+        assert_eq!(
+            mainnet.next_fork(mainnet.fulu_fork_epoch),
+            (mainnet.fulu_fork_version, u64::MAX)
+        );
     }
 
     #[test]

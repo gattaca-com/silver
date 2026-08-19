@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
 use silver_beacon_api::BeaconApi;
 use silver_beacon_state_data::{BeaconStateOwner, SpecConfig};
@@ -20,7 +20,7 @@ fn main() {
         &keypair,
         local_enr,
         &Identify::default(),
-        Arc::new(SpecConfig::mainnet()),
+        &SpecConfig::mainnet(),
         state,
     );
     println!("serving on {:?}", api.local_addrs());

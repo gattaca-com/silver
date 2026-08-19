@@ -2,7 +2,6 @@ use std::{
     io::{Read, Write},
     net::TcpStream,
     os::unix::net::UnixStream,
-    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -37,7 +36,7 @@ fn beacon(bind: &Bind) -> BeaconApi {
         &keypair,
         local_enr,
         &Identify::default(),
-        Arc::new(SpecConfig::mainnet()),
+        &SpecConfig::mainnet(),
         BeaconStateOwner::empty_test(0).reader(),
     )
 }

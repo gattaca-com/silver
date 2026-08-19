@@ -12,6 +12,31 @@ pub struct NodeStatus {
     pub el: ELSyncStatus,
 }
 
+/// What `getHealth` answers with: 200, the syncing code (206 unless the
+/// request names another), or 503.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Health {
+    Ready,
+    Syncing,
+    Uninitialized,
+}
+
+impl NodeStatus {
+    /// The spec puts an optimistic or offline execution layer on the same
+    /// footing as a syncing beacon node — both mean "data served may be
+    /// incorrect" — and an EL we have not heard from yet is no better
+    /// evidence of readiness than one that is syncing.
+    pub(crate) fn health(&self) -> Health {
+        if self.slots.is_none() {
+            Health::Uninitialized
+        } else if self.syncing || self.el != ELSyncStatus::Synced {
+            Health::Syncing
+        } else {
+            Health::Ready
+        }
+    }
+}
+
 /// Announced once per slot, not once per block, so `head_slot` trails the
 /// imported head by up to a slot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

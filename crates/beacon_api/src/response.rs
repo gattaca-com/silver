@@ -1,4 +1,4 @@
-use std::{borrow::Cow, fmt::Write};
+use std::{fmt::Write, str};
 
 use silver_httpcore::frame_response_with_headers;
 
@@ -37,14 +37,37 @@ impl<'a> Response<'a> {
         headers: &[(&str, &str)],
         body: &[u8],
     ) {
-        let status = match status_line(code) {
-            Some(status) => Cow::Borrowed(status),
-            None => {
-                tracing::warn!("no reason phrase for status {code}");
-                Cow::Owned(format!("{code} "))
-            }
-        };
-        frame_response_with_headers(self.out, &status, content_type, headers, body);
+        if status_line(code).is_none() {
+            tracing::warn!("no reason phrase for status {code}");
+        }
+        self.frame(code, content_type, headers, body);
+    }
+
+    /// Bodyless response under a status silver did not choose: `syncing_status`
+    /// lets a client name any code the schema allows, so an unmapped one is
+    /// legal input polled every slot rather than the gap in [`status_line`]
+    /// that [`Response::send`] warns about.
+    pub(crate) fn status_only(&mut self, code: u16) {
+        self.frame(code, None, &[], b"");
+    }
+
+    fn frame(
+        &mut self,
+        code: u16,
+        content_type: Option<&str>,
+        headers: &[(&str, &str)],
+        body: &[u8],
+    ) {
+        debug_assert!((100..=599).contains(&code), "not an HTTP status code: {code}");
+        let bare = [
+            b'0' + (code / 100) as u8,
+            b'0' + (code / 10 % 10) as u8,
+            b'0' + (code % 10) as u8,
+            b' ',
+        ];
+        let status = status_line(code)
+            .unwrap_or_else(|| str::from_utf8(&bare).expect("three digits and a space"));
+        frame_response_with_headers(self.out, status, content_type, headers, body);
     }
 
     /// Beacon-API error shape: `{"code":<status>,"message":"..."}`.
@@ -82,6 +105,7 @@ fn status_line(code: u16) -> Option<&'static str> {
     Some(match code {
         200 => "200 OK",
         202 => "202 Accepted",
+        206 => "206 Partial Content",
         400 => "400 Bad Request",
         404 => "404 Not Found",
         405 => "405 Method Not Allowed",
@@ -165,6 +189,29 @@ mod tests {
     fn unmapped_status_frames_with_an_empty_reason_phrase() {
         let out = framed(|resp| resp.send(599, None, &[], b""));
         assert_eq!(out, b"HTTP/1.1 599 \r\nContent-Length: 0\r\n\r\n");
+    }
+
+    /// A `syncing_status` a client picked reaches the wire whether or not this
+    /// API has a phrase for it, and without the warning a mapped-code gap
+    /// deserves.
+    #[test]
+    fn status_only_frames_a_mapped_or_unmapped_code_the_same_way() {
+        assert_eq!(
+            framed(|resp| resp.status_only(206)),
+            b"HTTP/1.1 206 Partial Content\r\nContent-Length: 0\r\n\r\n"
+        );
+        assert_eq!(
+            framed(|resp| resp.status_only(250)),
+            b"HTTP/1.1 250 \r\nContent-Length: 0\r\n\r\n"
+        );
+        assert_eq!(
+            framed(|resp| resp.status_only(100)),
+            b"HTTP/1.1 100 \r\nContent-Length: 0\r\n\r\n"
+        );
+        assert_eq!(
+            framed(|resp| resp.status_only(599)),
+            b"HTTP/1.1 599 \r\nContent-Length: 0\r\n\r\n"
+        );
     }
 
     #[test]

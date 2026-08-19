@@ -22,8 +22,8 @@ impl Method {
 
 pub(crate) type Handler = fn(&Request<'_>, &ApiCtx, &mut Response<'_>);
 
-// Fields become live with the first parameterised endpoints; until then only
-// tests read them.
+// Everything but `query` becomes live with the first parameterised and first
+// POST endpoints; until then only tests read those fields.
 #[allow(dead_code)]
 pub(crate) struct Request<'a> {
     pub(crate) method: Method,

@@ -136,14 +136,22 @@ impl OutboundKind {
     }
 }
 
+/// EF fixtures are generated with the fork under test active from genesis,
+/// so the config must activate it there too: a block's signature is verified
+/// against the fork version the config says is active at the block's epoch,
+/// and these fixtures sit in the first epochs.
+fn fulu_from_genesis() -> SpecConfig {
+    SpecConfig { fulu_fork_epoch: 0, ..SpecConfig::mainnet() }
+}
+
 impl Harness {
     pub fn new(wall_slot: u64, checkpoint_ssz: &[u8]) -> Self {
         Self::build(wall_slot, |ticker, gc, rc, ec, repc| {
-            let state = BeaconState::from_checkpoint(checkpoint_ssz, &SpecConfig::mainnet(), &[])
+            let state = BeaconState::from_checkpoint(checkpoint_ssz, &fulu_from_genesis(), &[])
                 .unwrap_or_else(|e| panic!("decompose checkpoint: {e}"));
             BeaconStateTile::new(
                 ticker,
-                Arc::new(SpecConfig::mainnet()),
+                Arc::new(fulu_from_genesis()),
                 &SyncingConfig::default(),
                 gc,
                 rc,
@@ -334,7 +342,7 @@ impl Harness {
         // Decompose the EF post-state into per-tier finalized bases with an
         // empty anchored delta, then hash via `StateWriterView` (mirrors
         // ef_common).
-        let mut bs = BeaconState::decompose(post_ssz, &SpecConfig::mainnet(), None)
+        let mut bs = BeaconState::decompose(post_ssz, &fulu_from_genesis(), None)
             .expect("decompose post.ssz");
 
         // Hold a fresh fork's writers directly (`roll_fresh` anchors each at

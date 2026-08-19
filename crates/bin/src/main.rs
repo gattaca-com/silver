@@ -242,7 +242,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         &keypair,
         local_enr,
         &identify,
-        spec.clone(),
+        &spec,
         beacon_state_tile.reader(),
     );
 

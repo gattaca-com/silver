@@ -2,8 +2,6 @@
 //! decimal string and every byte array as lowercase `0x`-hex, and the
 //! SSZ-backed containers have no Rust struct to hang `Serialize` on.
 //! `serde_json` is reserved for bodies built once at startup (`identity.rs`).
-// Each writer lands ahead of the endpoint commit that calls it.
-#![allow(dead_code)]
 
 use silver_beacon_state_data::{
     BLSPubkey, BLSSignature, BeaconBlockHeader, Checkpoint, Fork, Immutable, ValidatorsView,
@@ -119,17 +117,6 @@ impl<'a> Json<'a> {
 
 /// Containers, in the field order the beacon-API schemas declare.
 impl Json<'_> {
-    pub(crate) fn genesis(&mut self, imm: &Immutable) {
-        self.begin_object();
-        self.key("genesis_time");
-        self.quoted_u64(imm.genesis_time);
-        self.key("genesis_validators_root");
-        self.hex(&imm.genesis_validators_root);
-        self.key("genesis_fork_version");
-        self.hex(&imm.genesis_fork_version);
-        self.end_object();
-    }
-
     pub(crate) fn fork(&mut self, fork: &Fork) {
         self.begin_object();
         self.key("previous_version");
@@ -138,6 +125,23 @@ impl Json<'_> {
         self.hex(&fork.current_version);
         self.key("epoch");
         self.quoted_u64(fork.epoch);
+        self.end_object();
+    }
+}
+
+/// The containers no endpoint calls yet, in the same schema field order. Each
+/// lands ahead of the endpoint commit that calls it; the allow stops here so
+/// dead-code checking stays real for the writers already wired up.
+#[allow(dead_code)]
+impl Json<'_> {
+    pub(crate) fn genesis(&mut self, imm: &Immutable) {
+        self.begin_object();
+        self.key("genesis_time");
+        self.quoted_u64(imm.genesis_time);
+        self.key("genesis_validators_root");
+        self.hex(&imm.genesis_validators_root);
+        self.key("genesis_fork_version");
+        self.hex(&imm.genesis_fork_version);
         self.end_object();
     }
 

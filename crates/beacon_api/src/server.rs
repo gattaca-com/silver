@@ -1,7 +1,6 @@
 use std::{
     collections::HashMap,
     io::{self, Read, Write},
-    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -68,7 +67,7 @@ impl BeaconApi {
         keypair: &Keypair,
         local_enr: Enr,
         identify: &Identify,
-        spec: Arc<SpecConfig>,
+        spec: &SpecConfig,
         state: BeaconStateReader,
     ) -> Self {
         assert!(!binds.is_empty(), "beacon api needs at least one bind");
@@ -309,7 +308,7 @@ mod tests {
             &keypair,
             local_enr,
             &Identify::default(),
-            Arc::new(SpecConfig::mainnet()),
+            &SpecConfig::mainnet(),
             BeaconStateOwner::empty_test(0).reader(),
         )
     }
