@@ -101,15 +101,6 @@ impl StreamState {
         }
     }
 
-    // TODO `is_complete` + `on_close` are unused pending a recv-EOF
-    // hook. The multipart RPC terminator is "peer FIN on recv half";
-    // there is currently no event-driven trigger for that —
-    // `StreamEvent::{Finished,Stopped}` from quinn are send-half only.
-    // When recv-EOF detection lands, the caller should consult
-    // `is_complete` to decide between clean teardown and emitting
-    // `NetEvent::StreamClosed`, and call `on_close` to emit the
-    // synthetic `RpcResponse::Complete`.
-    #[allow(dead_code)]
     pub fn is_complete(&self) -> bool {
         match self {
             StreamState::Negotiate(_) => false,
@@ -191,6 +182,9 @@ impl StreamState {
         }
     }
 
+    // TODO unused pending a recv-EOF hook (`StreamEvent::{Finished,Stopped}`
+    // are send-half only): on recv-EOF this emits the synthetic
+    // `RpcResponse::Complete` terminator.
     #[allow(dead_code)]
     pub fn on_close<F>(&self, p2p_id: &P2pStreamId, emit: &mut F)
     where
