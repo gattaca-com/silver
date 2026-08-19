@@ -78,6 +78,7 @@ impl PendingGroup {
     }
 
     #[inline]
+    #[timed]
     pub fn roll_fresh(&mut self) -> PendingWriteView<'_> {
         PendingWriteView {
             deposits: self.deposits.roll_fresh(),
@@ -88,6 +89,7 @@ impl PendingGroup {
     }
 
     #[inline]
+    #[timed]
     pub fn roll_from(&mut self, parent: PendingId) -> PendingWriteView<'_> {
         PendingWriteView {
             deposits: self.deposits.roll_from(parent.deposits),

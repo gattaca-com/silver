@@ -1,8 +1,11 @@
 use super::snapshot::PageSnapshot;
 use crate::types::B256;
 
-/// 4 KiB page = one OS virtual page (128 × 32-byte nodes).
+/// 4 KiB page = one OS virtual page (128 × 32-byte nodes). Page-relative
+/// addressing is shift/mask, and `SEG_OFF` aligns progressive segment blocks to
+/// it, so a power of two is load-bearing rather than incidental.
 pub(super) const PAGE_NODES: usize = 4096 / size_of::<B256>();
+const _: () = assert!(PAGE_NODES.is_power_of_two());
 
 pub(super) type Page = [B256; PAGE_NODES];
 pub(super) type PageId = u32;

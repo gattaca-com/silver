@@ -158,7 +158,7 @@ fn random_batches_match_reference() {
 #[test]
 fn append_grows_segments() {
     let values: Vec<u64> = (0..16).collect();
-    let mut g = group(&values); // fulu cap 20 vals -> 5 chunks, seg 1
+    let mut g = group(&values); // list cap 20 vals -> 5 chunks, seg 1
     let mut wv = g.roll_fresh();
     wv.migrate_to_gloas();
 

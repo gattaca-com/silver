@@ -1,11 +1,13 @@
-use super::pool::PAGE_NODES;
+use silver_ssz::scalar::SszScalar;
+
+use super::{ColumnSpec, pool::PAGE_NODES};
 use crate::{
     merkle::{ZERO_HASHES, hash_concat, mix_in_length},
     progressive::{
         PROGRESSIVE_SEGMENT_START, fold_progressive_spine, progressive_segment_of_chunk,
         progressive_segments_for,
     },
-    types::{B256, VALIDATOR_REGISTRY_LIMIT},
+    types::B256,
 };
 
 pub(super) const MAX_SEGS: usize = 16;
@@ -25,42 +27,46 @@ pub(super) const SEG_OFF: [usize; MAX_SEGS + 1] = {
 /// Node ids are `u32` (`dirty_chunks`), so the node array must fit `u32`;
 const _: () = assert!(SEG_OFF[MAX_SEGS] <= u32::MAX as usize);
 
-pub(super) fn gloas_last_seg_for_chunks(cap_chunks: usize) -> u32 {
+pub(super) fn progressive_last_seg_for_chunks(cap_chunks: usize) -> u32 {
     progressive_segment_of_chunk(cap_chunks.saturating_sub(1))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TreeFormat {
-    Fulu { max_elements: usize },
-    Gloas { last_seg: u32 },
+    Fixed { max_elements: usize },
+    Progressive { last_seg: u32 },
 }
 
 impl Default for TreeFormat {
     fn default() -> Self {
-        TreeFormat::Fulu { max_elements: 0 }
+        TreeFormat::Fixed { max_elements: 0 }
     }
 }
 
 impl TreeFormat {
+    #[inline]
     pub(super) fn num_nodes(self) -> usize {
         match self {
-            TreeFormat::Fulu { max_elements } => 2 * max_elements,
-            TreeFormat::Gloas { .. } => self.data_start() + self.data_capacity(),
+            TreeFormat::Fixed { max_elements } => 2 * max_elements,
+            TreeFormat::Progressive { .. } => self.data_start() + self.data_capacity(),
         }
     }
 
+    #[inline]
     pub(super) fn data_capacity(self) -> usize {
         match self {
-            TreeFormat::Fulu { max_elements } => max_elements,
-            TreeFormat::Gloas { last_seg } => PROGRESSIVE_SEGMENT_START[last_seg as usize + 1],
+            TreeFormat::Fixed { max_elements } => max_elements,
+            TreeFormat::Progressive { last_seg } => {
+                PROGRESSIVE_SEGMENT_START[last_seg as usize + 1]
+            }
         }
     }
 
     #[inline]
     pub(super) fn data_start(self) -> usize {
         match self {
-            TreeFormat::Fulu { max_elements } => max_elements,
-            TreeFormat::Gloas { last_seg } => SEG_OFF[last_seg as usize + 1],
+            TreeFormat::Fixed { max_elements } => max_elements,
+            TreeFormat::Progressive { last_seg } => SEG_OFF[last_seg as usize + 1],
         }
     }
 
@@ -69,22 +75,22 @@ impl TreeFormat {
         self.data_start() + chunk
     }
 
-    pub(super) fn hash_root(
+    pub(super) fn hash_root<C: ColumnSpec>(
         self,
         count: usize,
-        vals_per_chunk: usize,
         node: impl Fn(usize) -> B256,
     ) -> B256 {
+        let vals_per_chunk = <C::Val as SszScalar>::VALS_PER_CHUNK;
         let root = match self {
-            TreeFormat::Fulu { max_elements } => {
-                let list_depth = (VALIDATOR_REGISTRY_LIMIT / vals_per_chunk).trailing_zeros();
+            TreeFormat::Fixed { max_elements } => {
+                let padded_chunks = C::SSZ_LIMIT.div_ceil(vals_per_chunk).next_power_of_two();
                 let mut root = node(1);
-                for h in max_elements.trailing_zeros()..list_depth {
+                for h in max_elements.trailing_zeros()..padded_chunks.trailing_zeros() {
                     root = hash_concat(&root, &ZERO_HASHES[h as usize]);
                 }
                 root
             }
-            TreeFormat::Gloas { .. } => {
+            TreeFormat::Progressive { .. } => {
                 let num_chunks = count.div_ceil(vals_per_chunk);
                 let data_start = self.data_start();
                 fold_progressive_spine(progressive_segments_for(num_chunks), |k| {
@@ -92,12 +98,12 @@ impl TreeFormat {
                 })
             }
         };
-        mix_in_length(&root, count)
+        if C::IS_LIST { mix_in_length(&root, count) } else { root }
     }
 }
 
 #[inline]
-pub(super) fn gloas_internal_parent(chunk: usize) -> Option<(usize, usize)> {
+pub(super) fn progressive_internal_parent(chunk: usize) -> Option<(usize, usize)> {
     let k = progressive_segment_of_chunk(chunk) as usize;
     if k == 0 {
         return None;
@@ -121,7 +127,7 @@ mod tests {
 
     #[test]
     fn leaf_pos_flat_and_contiguous() {
-        let format = TreeFormat::Gloas { last_seg: 5 };
+        let format = TreeFormat::Progressive { last_seg: 5 };
         let data_start = format.data_start();
         for chunk in 0..format.data_capacity() {
             assert_eq!(format.leaf_pos(chunk), data_start + chunk, "chunk {chunk} not flat");
@@ -132,11 +138,11 @@ mod tests {
 
     #[test]
     fn internal_parent_in_block() {
-        let format = TreeFormat::Gloas { last_seg: 5 };
-        assert_eq!(gloas_internal_parent(0), None, "segment 0 leaf has no internal parent");
+        let format = TreeFormat::Progressive { last_seg: 5 };
+        assert_eq!(progressive_internal_parent(0), None, "segment 0 leaf has no internal parent");
         for chunk in 1..format.data_capacity() {
             let k = progressive_segment_of_chunk(chunk) as usize;
-            let (parent, seg_off) = gloas_internal_parent(chunk).unwrap();
+            let (parent, seg_off) = progressive_internal_parent(chunk).unwrap();
             assert_eq!(seg_off, SEG_OFF[k]);
             let local = parent - seg_off;
             assert!((1 << (2 * k - 1)..1 << (2 * k)).contains(&local), "chunk {chunk} parent");
@@ -145,10 +151,10 @@ mod tests {
 
     #[test]
     fn progressive_capacity_rounds_to_segment_boundary() {
-        assert_eq!(gloas_last_seg_for_chunks(1), 0);
-        assert_eq!(gloas_last_seg_for_chunks(2), 1);
-        assert_eq!(gloas_last_seg_for_chunks(5), 1);
-        assert_eq!(gloas_last_seg_for_chunks(6), 2);
-        assert_eq!(TreeFormat::Gloas { last_seg: 2 }.data_capacity(), 21);
+        assert_eq!(progressive_last_seg_for_chunks(1), 0);
+        assert_eq!(progressive_last_seg_for_chunks(2), 1);
+        assert_eq!(progressive_last_seg_for_chunks(5), 1);
+        assert_eq!(progressive_last_seg_for_chunks(6), 2);
+        assert_eq!(TreeFormat::Progressive { last_seg: 2 }.data_capacity(), 21);
     }
 }

@@ -1,8 +1,21 @@
-use super::{BalancesGroup, BalancesWriteView};
+use super::{BalancesGroup, BalancesWriteView, ColumnGroup, ColumnSpec};
 use crate::{
-    merkle::{MerkleStack, hash_uint64_list},
+    merkle::{MerkleStack, hash_uint64_list, hash_uint64_vector},
     types::{HashFormat, VALIDATOR_REGISTRY_LIMIT},
 };
+
+/// `Vector[uint64, 8192]` — `slashings`' shape, the one track-A pilot, so the
+/// vector root path has a caller before a production column sets `IS_LIST`.
+struct U64Vector;
+impl ColumnSpec for U64Vector {
+    type Val = u64;
+    const SSZ_LIMIT: usize = 8192;
+    const IS_LIST: bool = false;
+}
+
+fn vector_group(values: &[u64]) -> ColumnGroup<U64Vector> {
+    ColumnGroup::new(values.len(), values.len(), &le_bytes(values), HashFormat::Fulu).unwrap()
+}
 
 pub(super) fn le_bytes(values: &[u64]) -> Vec<u8> {
     values.iter().flat_map(|v| v.to_le_bytes()).collect()
@@ -363,4 +376,29 @@ fn rejected_writes_dont_leak() {
     assert_eq!(wv.iter().collect::<Vec<_>>(), vec![10, 2, 3, 4, 5]);
     assert_root_matches(&wv);
     assert_ne!(a, wv.commit());
+}
+
+#[test]
+fn vector_root_omits_the_length_mix_in() {
+    let values: Vec<u64> = (0..U64Vector::SSZ_LIMIT as u64).collect();
+    let mut g = vector_group(&values);
+    let mut wv = g.roll_fresh();
+
+    assert_eq!(wv.hash_root(), hash_uint64_vector(&values));
+
+    wv.set(4_095, 12_345);
+    let mut edited = values.clone();
+    edited[4_095] = 12_345;
+    assert_eq!(wv.hash_root(), hash_uint64_vector(&edited));
+}
+
+#[test]
+fn vector_root_pads_an_under_materialized_tree() {
+    let values: Vec<u64> = (1..=1_024).collect();
+    let g = &mut vector_group(&values);
+    let wv = g.roll_fresh();
+
+    let mut full = values.clone();
+    full.resize(U64Vector::SSZ_LIMIT, 0);
+    assert_eq!(wv.hash_root(), hash_uint64_vector(&full));
 }

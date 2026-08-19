@@ -8,12 +8,12 @@ use super::{
 use crate::{merkle::ZERO_HASHES, types::B256};
 
 #[derive(Default)]
-pub(super) struct FuluTree {
+pub(super) struct ListTree {
     pub(super) store: NodeStore,
     pub(super) max_elements: usize,
 }
 
-impl FuluTree {
+impl ListTree {
     pub(super) fn new<V: SszScalar>(
         cap: usize,
         count: usize,
@@ -33,7 +33,7 @@ impl FuluTree {
 
     #[inline]
     pub(super) fn format(&self) -> TreeFormat {
-        TreeFormat::Fulu { max_elements: self.max_elements }
+        TreeFormat::Fixed { max_elements: self.max_elements }
     }
 
     pub(super) fn rehash(&mut self) {
