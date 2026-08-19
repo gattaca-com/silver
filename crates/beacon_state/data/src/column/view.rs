@@ -16,18 +16,26 @@ use crate::{ring::Id, types::B256};
 /// writable head — hot path) or a committed fork's paged snapshot. The read
 /// algorithms (`get`/`iter`/`hash_root`/`write_ssz`) are written once here over
 /// [`node`](Self::node); only node addressing differs between backings.
-#[derive(Clone, Copy)]
-enum Nodes<'a> {
-    Flat(&'a ColumnTree),
-    Paged(&'a PagePool, &'a PageSnapshot),
+enum Nodes<'a, C: ColumnSpec> {
+    Flat(&'a ColumnTree<C>),
+    Paged(&'a PagePool<C::Page>, &'a PageSnapshot),
 }
 
-impl<'a> Nodes<'a> {
+// Derived by hand: `#[derive]` would demand `C: Clone + Copy`, and a column
+// marker is a zero-sized tag that need not be either.
+impl<C: ColumnSpec> Clone for Nodes<'_, C> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<C: ColumnSpec> Copy for Nodes<'_, C> {}
+
+impl<'a, C: ColumnSpec> Nodes<'a, C> {
     #[inline]
     fn node(&self, n: usize) -> &B256 {
         match self {
             Nodes::Flat(t) => t.node(n),
-            Nodes::Paged(pool, snap) => snap.node(pool, n),
+            Nodes::Paged(pool, snap) => snap.node::<C>(pool, n),
         }
     }
 
@@ -44,15 +52,14 @@ impl<'a> Nodes<'a> {
 /// list root, whether the fork is the live flat head or a committed paged
 /// snapshot.
 pub struct ColumnReader<'a, C: ColumnSpec> {
-    nodes: Nodes<'a>,
+    nodes: Nodes<'a, C>,
     /// Resolved once at construction so per-element reads pay a single
-    /// layout match, as the pre-fork reader did.
+    /// layout match.
     format: TreeFormat,
     _marker: PhantomData<fn() -> C>,
 }
 
-// Manual impls: deriving would spuriously bind `C: Clone + Copy`, but the
-// reader is borrows + a format regardless of the zero-sized marker.
+// By hand for the same reason as `Nodes`.
 impl<C: ColumnSpec> Clone for ColumnReader<'_, C> {
     fn clone(&self) -> Self {
         *self
@@ -62,19 +69,24 @@ impl<C: ColumnSpec> Copy for ColumnReader<'_, C> {}
 
 impl<'a, C: ColumnSpec> ColumnReader<'a, C> {
     #[inline]
-    pub(super) fn flat(tree: &'a ColumnTree) -> Self {
+    pub(super) fn flat(tree: &'a ColumnTree<C>) -> Self {
         Self { nodes: Nodes::Flat(tree), format: tree.format(), _marker: PhantomData }
     }
 
     #[inline]
-    pub(super) fn paged(pool: &'a PagePool, snap: &'a PageSnapshot) -> Self {
+    pub(super) fn paged(pool: &'a PagePool<C::Page>, snap: &'a PageSnapshot) -> Self {
         Self { nodes: Nodes::Paged(pool, snap), format: snap.format(), _marker: PhantomData }
     }
 
     #[inline]
+    fn leaf_pos(&self, chunk: usize) -> usize {
+        self.format.leaf_pos::<C>(chunk)
+    }
+
+    #[inline]
     pub fn get(&self, ix: usize) -> C::Val {
-        let k = <C::Val as SszScalar>::VALS_PER_CHUNK;
-        <C::Val as SszScalar>::lane(self.nodes.node(self.format.leaf_pos(ix / k)), ix % k)
+        let k = C::VALS_PER_CHUNK;
+        <C::Val>::lane(self.nodes.node(self.leaf_pos(ix / k)), ix % k)
     }
 
     #[inline]
@@ -87,13 +99,13 @@ impl<'a, C: ColumnSpec> ColumnReader<'a, C> {
 
     #[inline]
     pub(super) fn write_ssz<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        let (k, size) = (<C::Val as SszScalar>::VALS_PER_CHUNK, size_of::<C::Val>());
+        let (k, size) = (C::VALS_PER_CHUNK, size_of::<C::Val>());
         let (full, rem) = (self.nodes.count() / k, self.nodes.count() % k);
         for chunk in 0..full {
-            w.write_all(self.nodes.node(self.format.leaf_pos(chunk)))?;
+            w.write_all(self.nodes.node(self.leaf_pos(chunk)))?;
         }
         if rem > 0 {
-            w.write_all(&self.nodes.node(self.format.leaf_pos(full))[..rem * size])?;
+            w.write_all(&self.nodes.node(self.leaf_pos(full))[..rem * size])?;
         }
         Ok(())
     }
@@ -125,7 +137,7 @@ impl<'a, C: ColumnSpec> ColumnWriteView<'a, C> {
 
     #[timed]
     pub fn set_many(&mut self, changes: &[(u32, C::Val)]) {
-        self.group.scratch_mut().set_vals::<C::Val>(changes);
+        self.group.scratch_mut().set_vals(changes);
     }
 
     /// Write without rehashing; the owner must call
@@ -149,10 +161,10 @@ impl<'a, C: ColumnSpec> ColumnWriteView<'a, C> {
     #[inline]
     pub fn append_empty(&mut self) -> u32 {
         debug_assert!(C::IS_LIST, "a vector column has fixed length");
-        self.group.scratch_mut().append_empty::<C::Val>()
+        self.group.scratch_mut().append_empty()
     }
 
-    pub fn copy_changed_from<D: ColumnSpec<Val = C::Val>>(
+    pub fn copy_changed_from<D: ColumnSpec<Val = C::Val, Page = C::Page>>(
         &mut self,
         other: &ColumnWriteView<'_, D>,
     ) {
@@ -168,7 +180,7 @@ impl<'a, C: ColumnSpec> ColumnWriteView<'a, C> {
     #[timed]
     pub fn migrate_to_progressive(&mut self) {
         debug_assert!(C::IS_LIST, "vectors are fork-invariant under EIP-7688");
-        self.group.scratch_mut().migrate_to_progressive::<C::Val>();
+        self.group.scratch_mut().migrate_to_progressive();
     }
 
     #[inline]
@@ -183,7 +195,7 @@ impl<'a, C: ColumnSpec> ColumnWriteView<'a, C> {
 
     #[inline]
     pub fn iter(&self) -> impl Iterator<Item = C::Val> + '_ {
-        self.group.scratch().iter_vals::<C::Val>()
+        self.group.scratch().iter_vals()
     }
 
     #[inline]

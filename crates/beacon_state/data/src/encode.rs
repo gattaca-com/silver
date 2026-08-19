@@ -684,7 +684,7 @@ mod tests {
     /// Regression: a checkpoint persisted mid-epoch must encode the *live*
     /// current-epoch randao mix (the `randao_mix_current` cache), not the stale
     /// array bucket — that bucket is only refreshed at the epoch boundary.
-    /// `slashings` no longer has an accumulator: its column is the live state.
+    /// (`slashings` has no such hazard: its column holds the live values.)
     #[test]
     fn encode_uses_live_current_epoch_randao_mix() {
         let cur = 3usize;
