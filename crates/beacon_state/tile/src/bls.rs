@@ -1,7 +1,7 @@
+pub(crate) use blst::min_pk::{PublicKey, Signature};
 use blst::{
     BLST_ERROR, Pairing, blst_p1, blst_p1_add_or_double, blst_p1_affine, blst_p1_cneg,
-    blst_p1_to_affine, blst_p1s_add, blst_p2_affine,
-    min_pk::{AggregatePublicKey, PublicKey, Signature},
+    blst_p1_to_affine, blst_p1s_add, blst_p2_affine, min_pk::AggregatePublicKey,
 };
 use flux_profiler::timed;
 use ring::rand::{SecureRandom, SystemRandom};
@@ -156,7 +156,7 @@ pub(crate) fn verify_one(pk: &PublicKey, sig: &[u8; 96], message: &B256) -> bool
 }
 
 #[timed]
-fn verify_one_parsed(pk: &PublicKey, sig: &Signature, message: &B256) -> bool {
+pub(crate) fn verify_one_parsed(pk: &PublicKey, sig: &Signature, message: &B256) -> bool {
     sig.verify(true, message, DST, &[], pk, false) == BLST_ERROR::BLST_SUCCESS
 }
 
@@ -233,6 +233,10 @@ impl SigBatch {
             self.poisoned = true;
             return;
         };
+        self.push_parsed(pubkey, sig, signing_root);
+    }
+
+    pub fn push_parsed(&mut self, pubkey: &PublicKey, sig: Signature, signing_root: B256) {
         self.msgs.push(signing_root);
         self.pks.push(*pubkey);
         self.sigs.push(sig);

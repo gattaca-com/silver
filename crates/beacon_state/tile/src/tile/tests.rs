@@ -10,8 +10,8 @@ use silver_common::{
     GossipTopic, MessageId, P2pStreamId, StreamProtocol, TCache, TCacheProducer, TProducer,
     ssz_view::{
         ATTESTATION_DATA_SIZE, AttestationView, PROPOSER_SLASHING_SIZE, SIGNED_AGG_PROOF_MIN,
-        SIGNED_BLS_CHANGE_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE, SignedAggregateAndProofView,
-        SingleAttestationView,
+        SIGNED_BLS_CHANGE_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE,
+        SignedAggregateAndProofView, SingleAttestationView,
     },
 };
 
@@ -696,19 +696,23 @@ fn block_known_parent_bad_sig_rejected() {
 // ── attestation / aggregate (committee resolution via shuffling cache) ──
 
 /// Locate `(slot, committee_index, pos_in_committee, committee_size)` for
-/// validator 0 in epoch 0. The seed arms exactly one cache entry per epoch.
-fn find_committee_for_vi0(tile: &BeaconStateTile) -> (Slot, usize, usize, usize) {
+/// `validator` in epoch 0. The seed arms exactly one cache entry per epoch.
+fn find_committee_for(tile: &BeaconStateTile, validator: u32) -> (Slot, usize, usize, usize) {
     let shuffled = tile.shuffling_cache.shuffled_by_epoch(0).expect("shuffling for epoch 0");
     let shuffling = stf::EpochShuffling::new(shuffled, tile.head_validator_count());
     for s in 0..SLOTS_PER_EPOCH {
         for ci in 0..shuffling.committees_per_slot {
             let c = shuffling.committee(s, ci);
-            if let Some(pos) = c.iter().position(|&v| v == 0) {
+            if let Some(pos) = c.iter().position(|&v| v == validator) {
                 return (s, ci, pos, c.len());
             }
         }
     }
-    panic!("validator 0 in some committee")
+    panic!("validator {validator} in some committee")
+}
+
+fn find_committee_for_vi0(tile: &BeaconStateTile) -> (Slot, usize, usize, usize) {
+    find_committee_for(tile, 0)
 }
 
 /// Spec `compute_subnet_for_attestation`, recomputed independently of the
@@ -768,6 +772,109 @@ fn attestation_updates_vote_tracker() {
     assert_eq!(tile.handle_attestation(&buf, subnet), Feedback::Accept(None));
     assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_root, want_root);
     assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_epoch, want_epoch);
+}
+
+fn gossip_att_msg(
+    producer: &mut TProducer,
+    att: &[u8; SINGLE_ATT_SIZE],
+    subnet: u64,
+) -> NewGossipMsg {
+    let mut r = producer.reserve(att.len(), true).expect("reserve");
+    r.buffer().unwrap()[..att.len()].copy_from_slice(att);
+    r.increment_offset(att.len());
+    let read = r.read();
+    producer.publish_head();
+    NewGossipMsg {
+        stream_id: P2pStreamId::new(0, 0, StreamProtocol::Unset, false),
+        topic: GossipTopic::BeaconAttestation(subnet),
+        msg_hash: MessageId { id: [0u8; 20] },
+        recv_ts: Nanos(0),
+        ssz: read,
+        protobuf: read,
+    }
+}
+
+/// Build a signed single attestation for `validator` voting the anchor,
+/// signed with `sk_idx` (== validator for a genuine one).
+fn batched_att(
+    tile: &BeaconStateTile,
+    sk_idx: usize,
+    validator: u32,
+) -> ([u8; SINGLE_ATT_SIZE], u64) {
+    let imm = seed_immutable(tile);
+    let bbr = tile.last_applied_block_root;
+    let (slot, ci, _, _) = find_committee_for(tile, validator);
+    let subnet = expected_subnet(tile, slot, ci);
+    let buf = test_signing::sign_single_attestation(
+        sk_idx,
+        validator as u64,
+        ci as u64,
+        slot,
+        bbr,
+        slot / SLOTS_PER_EPOCH,
+        bbr,
+        &imm,
+    );
+    (buf, subnet)
+}
+
+#[test]
+fn attestation_batch_flush_applies_all() {
+    let (mut tile, mut gp, _spine, mut adapter) = tile_with_producers(31);
+    seed_tile_with_keys(&mut tile, 128, 0);
+    let bbr = tile.last_applied_block_root;
+
+    for vi in [0u32, 1] {
+        let (buf, subnet) = batched_att(&tile, vi as usize, vi);
+        let m = gossip_att_msg(&mut gp, &buf, subnet);
+        tile.defer_attestation(m, &mut adapter.producers);
+    }
+    assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_root, [0u8; 32], "vote before flush");
+
+    tile.flush_attestations(&mut adapter.producers);
+    assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_root, bbr);
+    assert_eq!(tile.fork_choice.vote_tracker.votes[1].latest_root, bbr);
+    assert!(tile.att_batch.is_empty());
+    assert!(tile.att_pending.is_empty());
+}
+
+/// A forged signature (valid G2 point, wrong key) fails the batch verify;
+/// the fallback must reject only the forgery.
+#[test]
+fn attestation_batch_fallback_rejects_only_forged() {
+    let (mut tile, mut gp, _spine, mut adapter) = tile_with_producers(31);
+    seed_tile_with_keys(&mut tile, 128, 0);
+    let bbr = tile.last_applied_block_root;
+
+    let (good, good_subnet) = batched_att(&tile, 0, 0);
+    let (forged, forged_subnet) = batched_att(&tile, 2, 1);
+    let m = gossip_att_msg(&mut gp, &good, good_subnet);
+    tile.defer_attestation(m, &mut adapter.producers);
+    let m = gossip_att_msg(&mut gp, &forged, forged_subnet);
+    tile.defer_attestation(m, &mut adapter.producers);
+
+    tile.flush_attestations(&mut adapter.producers);
+    assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_root, bbr);
+    assert_eq!(tile.fork_choice.vote_tracker.votes[1].latest_root, [0u8; 32], "forged vote");
+}
+
+/// A non-attestation gossip message flushes the pending batch first, so
+/// queue order is preserved.
+#[test]
+fn attestation_batch_flushed_before_other_gossip() {
+    let (mut tile, mut gp, _spine, mut adapter) = tile_with_producers(31);
+    seed_tile_with_keys(&mut tile, 128, 0);
+    let bbr = tile.last_applied_block_root;
+
+    let (buf, subnet) = batched_att(&tile, 0, 0);
+    let m = gossip_att_msg(&mut gp, &buf, subnet);
+    tile.defer_attestation(m, &mut adapter.producers);
+    assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_root, [0u8; 32]);
+
+    let mut exit = gossip_att_msg(&mut gp, &[0u8; SINGLE_ATT_SIZE], 0);
+    exit.topic = GossipTopic::VoluntaryExit;
+    tile.on_gossip(exit, true, &mut adapter.producers);
+    assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_root, bbr);
 }
 
 /// Spec `validate_on_attestation`: a single attestation for a block we
