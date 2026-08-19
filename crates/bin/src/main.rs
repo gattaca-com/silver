@@ -113,12 +113,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     // from excess-peer pruning); the gossip subscriptions themselves
     // activate once Following — see `Controller::pending_subnet_topics`.
     let boot_epoch = ticker.current_slot() / SLOTS_PER_EPOCH;
-    let subnets = local_enr.node_id().attestation_subnets(boot_epoch);
-    let mut attnets = [0u8; 8];
-    for s in subnets {
-        attnets[(s / 8) as usize] |= 1 << (s % 8);
-    }
-    local_enr.set_attnets(attnets, keypair.secret_key())?;
+    let attnet_count = config.attestation_subnet_count();
+    let subnets = local_enr.node_id().attestation_subnets(boot_epoch, attnet_count);
+    local_enr.set_attnets(subnets, keypair.secret_key())?;
 
     let discv5_addr = config.discovery_bind_addr().expect("no discovery port");
     let p2p_addr = config.p2p_bind_addr().expect("no p2p port");

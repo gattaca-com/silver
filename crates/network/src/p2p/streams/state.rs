@@ -108,7 +108,7 @@ impl StreamState {
                 matches!(read, GossipReadState::Closed) && matches!(write, GossipWriteState::Idle)
             }
             StreamState::IncomingRpc { rpc, .. } => {
-                matches!(rpc, RpcIn::WriteResponse(RpcWriteResponse::Idle))
+                matches!(rpc, RpcIn::WriteResponse(RpcWriteResponse::Idle | RpcWriteResponse::Done))
             }
             StreamState::OutgoingRpc { rpc, .. } => {
                 matches!(rpc, RpcOut::ReadResponse(RpcReadResponse::ReadingPrefix { read, .. }) if *read == 0)
@@ -360,6 +360,9 @@ impl StreamState {
                 }
                 RpcIn::WriteResponse(mut write_response) => {
                     write_response = write_response.spin(id, io, &mut codec.enc)?;
+                    if matches!(write_response, RpcWriteResponse::Done) {
+                        return Ok(Self::Finished);
+                    }
                     Ok(Self::IncomingRpc { rpc: RpcIn::WriteResponse(write_response), codec })
                 }
             },

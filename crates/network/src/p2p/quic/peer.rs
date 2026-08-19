@@ -1363,10 +1363,6 @@ mod tests {
             }
         }
 
-        // Let the requester's STOP_SENDING land. Whether the responder sees
-        // `Stopped` (and reclaims the stream) races its own FIN-ack — quinn
-        // frees the acked send half and then discards the late STOP_SENDING —
-        // so only the no-misbehaviour outcome is guaranteed, not the reclaim.
         let mut noop_c = |_: NetEvent| {};
         let mut scb = |e: NetEvent| {
             if matches!(e, NetEvent::StreamClosed { .. }) {
@@ -1380,5 +1376,9 @@ mod tests {
         assert!(client_got_response, "client never received the status response");
         assert!(!server_closed, "clean requester teardown must not report StreamClosed");
         assert!(pair.client_peer.streams.is_empty(), "requester stream should be torn down");
+        assert!(
+            pair.server_peer.streams.is_empty(),
+            "responder must close its stream after the final response chunk"
+        );
     }
 }

@@ -15,6 +15,7 @@ pub enum RpcWriteResponse {
     Idle,
     WritingPrefix { buf: [u8; 15], length: usize, written: usize, response: AcquiredRpcResponse },
     WritingResponse { response: AcquiredRpcResponse, written: usize },
+    Done,
 }
 
 impl RpcWriteResponse {
@@ -58,11 +59,12 @@ impl RpcWriteResponse {
         encoder: &mut SnappyEncoder,
     ) -> Result<Spin, StreamError> {
         match self {
+            RpcWriteResponse::Done => Ok(Spin::Ok(Self::Done)),
             RpcWriteResponse::Idle => match io.rpc_next() {
                 Some(AcquiredRpcOutbound::Response(rsp)) => match &rsp.response {
                     AcquiredRpcResponse::Complete => {
                         io.close_write(id.stream_id())?;
-                        Ok(Spin::Ok(Self::Idle))
+                        Ok(Spin::Ok(Self::Done))
                     }
                     _ => Ok(Spin::Next(Self::new(rsp.response)?)),
                 },
@@ -90,17 +92,20 @@ impl RpcWriteResponse {
                 if wrote == buffer_len && pending == 0 {
                     // FIN the write side for any single-chunk response
                     // shape — receivers detect end-of-response from FIN,
-                    // not from a sentinel chunk. Multi-chunk shapes
-                    // (BeaconBlock / DataColumnSidecar) keep the stream
-                    // open until the explicit `Complete` sentinel.
-                    if !matches!(
+                    // not from a sentinel chunk. Multi-chunk shapes keep
+                    // the stream open until the explicit `Complete`
+                    // sentinel.
+                    if matches!(
                         response,
                         AcquiredRpcResponse::BeaconBlock { .. } |
-                            AcquiredRpcResponse::DataColumnSidecar { .. }
+                            AcquiredRpcResponse::DataColumnSidecar { .. } |
+                            AcquiredRpcResponse::ExecutionPayloadEnvelope { .. }
                     ) {
+                        Ok(Spin::Ok(Self::Idle))
+                    } else {
                         io.close_write(id.stream_id())?;
+                        Ok(Spin::Ok(Self::Done))
                     }
-                    Ok(Spin::Ok(Self::Idle))
                 } else {
                     Ok(Spin::Ok(Self::WritingResponse { response, written }))
                 }

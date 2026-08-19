@@ -7,7 +7,8 @@ pub use peer_score_params::ScoreParams;
 use secp256k1::PublicKey;
 use serde::{Deserialize, Serialize};
 use silver_common::{
-    Enr, Error, GossipTopic, Identify, Keypair, NodeId, PeerId, SAMPLES_PER_SLOT, StreamProtocol,
+    Enr, Error, GossipTopic, Identify, Keypair, NodeId, PeerId, SAMPLES_PER_SLOT, SUBNETS_PER_NODE,
+    StreamProtocol,
 };
 pub use syncing_config::{PendingBounds, SyncingConfig};
 
@@ -95,6 +96,8 @@ pub struct Config {
     // sample set, so cgc < 8 is unsupported (see `enr`).
     #[serde(default = "default_u8::<8>")]
     data_column_custody_group_count: u8,
+    #[serde(default = "default_u8::<2>")]
+    attestation_subnet_count: u8,
     /// Full multiselect protocol strings.
     #[serde(default = "default_supported_protocols")]
     supported_protocols: Vec<String>,
@@ -143,6 +146,7 @@ impl Config {
             discovery_port: None,
             quic_port: None,
             data_column_custody_group_count: SAMPLES_PER_SLOT,
+            attestation_subnet_count: SUBNETS_PER_NODE as u8,
             supported_protocols: default_supported_protocols(),
             gossip_topics: default_gossip_topics(),
             chain_config: ChainConfig::default(),
@@ -338,6 +342,10 @@ impl Config {
 
     pub fn disable_weak_subjectivity_check(&self) -> bool {
         self.disable_weak_subjectivity_check
+    }
+
+    pub fn attestation_subnet_count(&self) -> u8 {
+        self.attestation_subnet_count
     }
 }
 
