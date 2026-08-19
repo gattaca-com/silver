@@ -1,6 +1,6 @@
 use crate::{
     BalancesId, BuildersId, CurrentParticipationId, DecomposeError, EpochId, Eth1Id, InactivityId,
-    LongtailId, PendingId, PreviousParticipationId, SlotStateId, ValidatorsId,
+    LongtailId, PendingId, PreviousParticipationId, SlashingsId, SlotStateId, ValidatorsId,
     decompose::common::{b256, u32_le, u64_le},
     gloas::{
         BUILDER_PENDING_PAYMENTS_LEN, BuilderPendingPayment, EXECUTION_PAYLOAD_AVAILABILITY_BYTES,
@@ -83,6 +83,7 @@ pub struct StateId {
     pub previous_participation_idx: PreviousParticipationId,
     pub current_participation_idx: CurrentParticipationId,
     pub inactivity_idx: InactivityId,
+    pub slashings_idx: SlashingsId,
     pub slot_idx: SlotStateId,
     /// Empty until the Gloas fork.
     pub builders_idx: BuildersId,
@@ -93,7 +94,6 @@ pub struct StateId {
 #[derive(Clone)]
 pub struct SlotState {
     pub randao_mix_current: B256,
-    pub current_epoch_slashings: u64,
     pub eth1_data: Eth1Data,
     pub eth1_deposit_index: u64,
     pub slot: Slot,
@@ -120,7 +120,6 @@ impl Default for SlotState {
     fn default() -> Self {
         Self {
             randao_mix_current: B256::default(),
-            current_epoch_slashings: 0,
             eth1_data: Eth1Data::default(),
             eth1_deposit_index: 0,
             slot: 0,
@@ -450,8 +449,8 @@ impl Withdrawals {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum HashFormat {
-    Fulu,
-    Gloas,
+    Fixed,
+    Progressive,
 }
 
 /// A sparse column's SSZ byte length disagrees with the expected registry

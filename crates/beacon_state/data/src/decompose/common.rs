@@ -2,10 +2,10 @@ use flux_profiler::timed;
 
 use crate::{
     BalancesGroup, BeaconState, BuildersGroup, ColumnLenMismatch, CurrentParticipationGroup,
-    EpochGroup, EpochStateFinalized, Eth1Group, Eth1Votes, FinalizedBuilders, FinalizedValidators,
-    InactivityScoresGroup, LongtailGroup, LongtailState, PendingGroup, PreviousParticipationGroup,
-    QueueItem, SlotStateFinalized, SlotStateGroup, SpecConfig, ValidatorsDecodeError,
-    ValidatorsGroup,
+    EPOCHS_PER_SLASHINGS_VECTOR, EpochGroup, EpochStateFinalized, Eth1Group, Eth1Votes,
+    FinalizedBuilders, FinalizedValidators, InactivityScoresGroup, LongtailGroup, LongtailState,
+    PendingGroup, PreviousParticipationGroup, QueueItem, SlashingsGroup, SlotStateFinalized,
+    SlotStateGroup, SpecConfig, ValidatorsDecodeError, ValidatorsGroup,
     gloas::BuilderPendingWithdrawal,
     merkle,
     types::{
@@ -187,11 +187,8 @@ impl BeaconState {
         builders: FinalizedBuilders,
         cfg: &SpecConfig,
     ) -> Result<Self, DecomposeError> {
-        let format = if epoch.state().fork.current_version == cfg.gloas_fork_version {
-            HashFormat::Gloas
-        } else {
-            HashFormat::Fulu
-        };
+        let is_gloas = epoch.state().fork.current_version == cfg.gloas_fork_version;
+        let format = if is_gloas { HashFormat::Progressive } else { HashFormat::Fixed };
 
         let eth1 = Eth1Group::new(Eth1Votes::from_ssz(ssz, offsets)?);
 
@@ -227,7 +224,7 @@ impl BeaconState {
             LongtailGroup::new(LongtailState::from_ssz(ssz, offsets, validators.finalized())?);
 
         let mut pending = decode_pending(ssz, offsets, consolidations_end, builder_withdrawals)?;
-        if format == HashFormat::Gloas {
+        if is_gloas {
             pending.mark_gloas_base();
         }
 
@@ -248,12 +245,15 @@ impl BeaconState {
             previous_participation,
             current_participation,
             inactivity,
+            slashings: SlashingsGroup::vector(
+                &ssz[F14..F14 + EPOCHS_PER_SLASHINGS_VECTOR * size_of::<u64>()],
+            )?,
             slot_states: SlotStateGroup::new(slot),
             epoch: EpochGroup::new(epoch),
             longtail,
             builders: BuildersGroup::new(builders),
         };
-        debug_assert_eq!(state.is_finalized_post_gloas(), format == HashFormat::Gloas);
+        debug_assert_eq!(state.is_finalized_post_gloas(), is_gloas);
         Ok(state)
     }
 }

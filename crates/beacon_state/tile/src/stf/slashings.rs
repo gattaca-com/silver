@@ -424,10 +424,10 @@ fn slash_validator(cfg: &SpecConfig, view: &mut StateWriterView, vi: u32, propos
     let new_wd = max(prev_wd, current_epoch + EPOCHS_PER_SLASHINGS_VECTOR as u64);
     view.validators.set_withdrawable_epoch(vi, new_wd);
 
-    // Per-block accumulator for the in-progress epoch (flushed at the boundary
-    // by process_slashings_reset into `epoch.slashings`).
-    let acc = view.slot.state_mut().current_epoch_slashings.saturating_add(effective_balance);
-    view.slot.state_mut().current_epoch_slashings = acc;
+    // Spec: `state.slashings[current_epoch % SV] += effective_balance`.
+    let bucket = (current_epoch % EPOCHS_PER_SLASHINGS_VECTOR as u64) as u32;
+    let total = view.slashings.get(bucket as usize).saturating_add(effective_balance);
+    view.slashings.set(bucket, total);
 
     let penalty = effective_balance / cfg.min_slashing_penalty_quotient;
     let bal_vi = view.balances.get(vi as usize);

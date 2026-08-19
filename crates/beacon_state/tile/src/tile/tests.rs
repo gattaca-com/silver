@@ -2,9 +2,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use flux::timing::Nanos;
 use silver_beacon_state_data::{
-    BLSPubkey, BeaconBlockHeader, BeaconState, EPOCHS_PER_HISTORICAL_VECTOR,
-    EPOCHS_PER_SLASHINGS_VECTOR, EpochState, EpochStateFinalized, Immutable,
-    PROPOSER_LOOKAHEAD_SIZE, PendingDeposit, SlotStateId, ValSeed, Withdrawals,
+    BLSPubkey, BeaconBlockHeader, BeaconState, EPOCHS_PER_HISTORICAL_VECTOR, EpochState,
+    EpochStateFinalized, Immutable, PROPOSER_LOOKAHEAD_SIZE, PendingDeposit, SlotStateId, ValSeed,
+    Withdrawals,
 };
 use silver_common::{
     GossipTopic, MessageId, P2pStreamId, StreamProtocol, TCache, TCacheProducer, TProducer,
@@ -127,7 +127,6 @@ fn epoch_base_with(justified: Checkpoint, finalized: Checkpoint) -> EpochStateFi
             ..Default::default()
         },
         vec![[0u8; 32]; EPOCHS_PER_HISTORICAL_VECTOR].into_boxed_slice(),
-        vec![0u64; EPOCHS_PER_SLASHINGS_VECTOR].into_boxed_slice(),
     )
 }
 

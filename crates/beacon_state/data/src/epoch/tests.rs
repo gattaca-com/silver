@@ -36,25 +36,20 @@ fn randao_diverged_hits_delta_then_base() {
 }
 
 #[test]
-fn finalize_overlays_rings_and_replaces_state() {
+fn finalize_overlays_randao_ring_and_replaces_state() {
     let mut base = EpochStateFinalized::default();
     let hv = base.randao_mixes.len();
-    let sv = base.slashings.len();
     let old = FIN_EPOCH as usize;
 
     // Plant baselines to confirm they get overwritten where delta entries land.
     base.randao_mixes[old % hv] = [0x01; 32];
     base.randao_mixes[(old + 1) % hv] = [0x02; 32];
-    base.slashings[old % sv] = 100;
-    base.slashings[(old + 1) % sv] = 200;
 
     let mut g = EpochGroup::new(base);
     let winner = {
         let mut wv = g.roll_fresh();
         wv.push_randao_mix([0xAA; 32]);
         wv.push_randao_mix([0xBB; 32]);
-        wv.push_slashings(123);
-        wv.push_slashings(456);
         // Set a recognizable scalar state on the winner.
         wv.state_mut().justification_bits = 0x0F;
         wv.state_mut().deposit_balance_to_consume = 999;
@@ -66,8 +61,6 @@ fn finalize_overlays_rings_and_replaces_state() {
     let base = g.finalized();
     assert_eq!(base.randao_mixes[old % hv], [0xAA; 32]);
     assert_eq!(base.randao_mixes[(old + 1) % hv], [0xBB; 32]);
-    assert_eq!(base.slashings[old % sv], 123);
-    assert_eq!(base.slashings[(old + 1) % sv], 456);
     assert_eq!(base.state.justification_bits, 0x0F);
     assert_eq!(base.state.deposit_balance_to_consume, 999);
 }
@@ -104,19 +97,11 @@ fn finalize_reanchors_survivor_dropping_promoted_prefix() {
 // arithmetic directly (the survivor copy path uses it via `reanchor`).
 #[test]
 fn prune_to_base_drops_min_prefix() {
-    let mut survivor = EpochStateDelta {
-        randao_mixes: vec![[1; 32], [2; 32], [3; 32]],
-        slashings: vec![10, 20],
-        ..Default::default()
-    };
-    let promoted = EpochStateDelta {
-        randao_mixes: vec![[1; 32], [2; 32]],
-        slashings: vec![10],
-        ..Default::default()
-    };
+    let mut survivor =
+        EpochStateDelta { randao_mixes: vec![[1; 32], [2; 32], [3; 32]], ..Default::default() };
+    let promoted = EpochStateDelta { randao_mixes: vec![[1; 32], [2; 32]], ..Default::default() };
     survivor.prune_to_base(&promoted);
     assert_eq!(survivor.randao_mixes, vec![[3; 32]]);
-    assert_eq!(survivor.slashings, vec![20]);
 }
 
 /// `ptc_window` rides the epoch tier as a sibling of `EpochState`: a fresh fork

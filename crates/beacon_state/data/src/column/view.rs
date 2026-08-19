@@ -82,9 +82,7 @@ impl<'a, C: ColumnSpec> ColumnReader<'a, C> {
         if let Nodes::Flat(t) = self.nodes {
             debug_assert!(!t.has_pending_rehash(), "deferred writes not rehashed before root");
         }
-        self.format.hash_root(self.nodes.count(), <C::Val as SszScalar>::VALS_PER_CHUNK, |n| {
-            *self.nodes.node(n)
-        })
+        self.format.hash_root::<C>(self.nodes.count(), |n| *self.nodes.node(n))
     }
 
     #[inline]
@@ -150,6 +148,7 @@ impl<'a, C: ColumnSpec> ColumnWriteView<'a, C> {
 
     #[inline]
     pub fn append_empty(&mut self) -> u32 {
+        debug_assert!(C::IS_LIST, "a vector column has fixed length");
         self.group.scratch_mut().append_empty::<C::Val>()
     }
 
@@ -167,8 +166,9 @@ impl<'a, C: ColumnSpec> ColumnWriteView<'a, C> {
     }
 
     #[timed]
-    pub fn migrate_to_gloas(&mut self) {
-        self.group.scratch_mut().migrate_to_gloas::<C::Val>();
+    pub fn migrate_to_progressive(&mut self) {
+        debug_assert!(C::IS_LIST, "vectors are fork-invariant under EIP-7688");
+        self.group.scratch_mut().migrate_to_progressive::<C::Val>();
     }
 
     #[inline]

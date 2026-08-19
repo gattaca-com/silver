@@ -1,3 +1,5 @@
+use flux_profiler::timed;
+
 use super::{
     PendingId,
     finalized::{Queue, QueueItem},
@@ -48,6 +50,7 @@ impl<Q: QueueItem> QueueDelta<Q> {
     /// Called only when the front moves (a fresh anchor or a drain); appends
     /// extend it in place. The hasher parks one subtree root per set bit of
     /// the length, so [`root`](Self::root) is O(log n).
+    #[timed]
     pub(super) fn rebuild_hasher(&mut self, base: &Queue<Q>, gloas: bool) {
         let start = (self.drain_offset as usize).min(base.len());
         let mut hasher = QueueHasher::empty(gloas, Q::SSZ_LIMIT);
