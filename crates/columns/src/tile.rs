@@ -5,7 +5,7 @@ use std::{
 
 use flux::{spine::SpineAdapter, tile::Tile};
 use flux_profiler::timed;
-use silver_beacon_state_data::{B256, BeaconStateReader, SpecConfig};
+use silver_beacon_state_data::{B256, BeaconStateReader, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
     BASE_REQUEST_ID, BeaconStateEvent, ColumnSource, DataColumnsEvent, EngineReq, EngineResp,
     GossipTopic, Nanos, NewGossipMsg, P2pStreamId, PeerEvent, RpcInbound, RpcSeverity, SilverSpine,
@@ -16,7 +16,7 @@ use silver_common::{
 };
 
 use crate::{
-    BlockRoot, DataColumnCounters, EPOCH_DURATION,
+    BlockRoot, DataColumnCounters,
     batch::{self, KzgBatch, PendingKzg, RelayMeta},
     el_blobs::ElBlobFetcher,
     sync::SyncStatus,
@@ -98,6 +98,7 @@ impl DataColumnsTile {
         engine_resp_consumer: TRandomAccess,
         el_column_producer: TProducer,
     ) -> Self {
+        let epoch_duration = Duration::from_secs(spec.seconds_per_slot) * SLOTS_PER_EPOCH as u32;
         Self {
             custody_group_columns,
             request_id: BASE_REQUEST_ID,
@@ -106,10 +107,10 @@ impl DataColumnsTile {
             rpc_consumer,
             persist_rpc_consumer,
             spec,
-            validator: ColumnValidator::new(beacon_state),
+            validator: ColumnValidator::new(beacon_state, epoch_duration),
             kzg_batch: KzgBatch::new(),
-            validated_columns: Wheel::new(EPOCH_DURATION),
-            gloas_pending_columns: Wheel::new(EPOCH_DURATION),
+            validated_columns: Wheel::new(epoch_duration),
+            gloas_pending_columns: Wheel::new(epoch_duration),
             parent_pending_columns: Wheel::new(Duration::from_secs(24)),
             outstanding_requests: Wheel::new(Duration::from_millis(100)),
             sync_state: SyncStatus::default(),

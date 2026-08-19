@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use flux_profiler::timed;
 use silver_beacon_state_data::{BeaconStateReader, SLOTS_PER_EPOCH};
@@ -7,7 +7,7 @@ use silver_common::{
     ssz_view::{DataColumnSidecarFuluView, DataColumnSidecarGloasView, SignedBeaconBlockView},
 };
 
-use crate::{BlockRoot, EPOCH_DURATION, sync::SyncStatus};
+use crate::{BlockRoot, sync::SyncStatus};
 
 pub(crate) enum ColumnOutcome {
     Skip,
@@ -38,12 +38,12 @@ pub(crate) struct ColumnValidator {
 }
 
 impl ColumnValidator {
-    pub fn new(beacon_state: BeaconStateReader) -> Self {
+    pub fn new(beacon_state: BeaconStateReader, epoch_duration: Duration) -> Self {
         Self {
             beacon_state,
-            validated_blocks: Wheel::new(EPOCH_DURATION),
-            gloas_commitments: Wheel::new(EPOCH_DURATION),
-            persisted_block_roots: Wheel::new(EPOCH_DURATION),
+            validated_blocks: Wheel::new(epoch_duration),
+            gloas_commitments: Wheel::new(epoch_duration),
+            persisted_block_roots: Wheel::new(epoch_duration),
         }
     }
 
