@@ -83,6 +83,30 @@ pub(crate) fn compute_score(
     score_breakdown(state, params, ip_colocation_peers, now).total
 }
 
+/// Score for per-topic mesh decisions (opportunistic grafting, capped-prune
+/// retention): the global score with P1 re-attributed to this topic only —
+/// tenure in other meshes is not evidence about this one, and a flat
+/// +1/hour per meshed topic lets wide subnet membership impersonate merit.
+/// P2..P7 stay global: deliveries elsewhere are real work and correlate,
+/// and the misbehaviour components should follow the peer everywhere.
+pub(crate) fn selection_score(
+    state: &PeerState,
+    topic: &GossipTopic,
+    params: &ScoreParams,
+    now: Instant,
+) -> f64 {
+    let p1_topic = state
+        .topic_stats
+        .get(topic)
+        .and_then(|t| t.meshed_since)
+        .map(|since| {
+            let age = now.saturating_duration_since(since).as_secs_f64();
+            age.min(params.time_in_mesh_cap_s) * params.time_in_mesh_weight
+        })
+        .unwrap_or(0.0);
+    state.cached_score - state.last_breakdown.p1_time_in_mesh + p1_topic
+}
+
 /// Per-component score breakdown. `compute_score` delegates to this.
 pub(crate) fn score_breakdown(
     state: &PeerState,

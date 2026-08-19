@@ -148,10 +148,10 @@ pub(crate) struct TopicScore {
     pub mesh_failure_penalty: f64,
     // P4
     pub invalid_deliveries: f64,
-    // Fan-out ledger: messages we sent on the topic while this peer was
-    // meshed, and how many were actually forwarded to it (the rest were
-    // suppressed — IDONTWANT or score gate). Not decayed; zeroed on
-    // reconnect so the ratio is per-connection.
+    // Fan-out ledger: every message we gossiped on the topic while this
+    // peer was meshed, and how many were actually forwarded to it (the
+    // rest: it was the originator, sent IDONTWANT, or is score-gated).
+    // Not decayed; zeroed on reconnect so the ratio is per-connection.
     pub fanout_total: u64,
     pub fanout_sent: u64,
 }
