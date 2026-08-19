@@ -106,10 +106,13 @@ impl BeaconStateTile {
             bls::DOMAIN_BEACON_ATTESTER,
             &view.imm.fork_data_root(fork_version),
         );
+        let (data_root, signing_root) =
+            self.attestation_root_memo.roots(SingleAttestationView::data(buf).as_bytes(), &domain);
         let Some(verified) = bls::verify_single_attestation(
             buf,
             view.validators.pubkey_decompressed(attester_index),
-            &domain,
+            data_root,
+            &signing_root,
         ) else {
             return Feedback::Reject(None);
         };
@@ -221,7 +224,7 @@ impl BeaconStateTile {
         }
         let committee_index = parsed.committee_bits.trailing_zeros() as usize;
 
-        let data_root = ssz_hash::hash_attestation_data(parsed.agg_data.as_bytes());
+        let data_root = self.attestation_root_memo.data_root(parsed.agg_data.as_bytes());
         let coverage = self.seen_aggregates.coverage(
             parsed.agg_slot,
             committee_index as u64,
@@ -493,6 +496,7 @@ impl BeaconStateTile {
         let agg_proof_root = ssz_hash::hash_tree_root_aggregate_and_proof(
             parsed.aggregator_index as u64,
             parsed.aggregate_bytes,
+            data_root,
             parsed.selection_proof,
             fv == view.imm.gloas_fork_version,
         );

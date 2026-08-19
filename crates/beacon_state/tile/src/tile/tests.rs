@@ -9,8 +9,9 @@ use silver_beacon_state_data::{
 use silver_common::{
     GossipTopic, MessageId, P2pStreamId, StreamProtocol, TCache, TCacheProducer, TProducer,
     ssz_view::{
-        AttestationView, PROPOSER_SLASHING_SIZE, SIGNED_AGG_PROOF_MIN, SIGNED_BLS_CHANGE_SIZE,
-        SIGNED_VOLUNTARY_EXIT_SIZE, SignedAggregateAndProofView, SingleAttestationView,
+        ATTESTATION_DATA_SIZE, AttestationView, PROPOSER_SLASHING_SIZE, SIGNED_AGG_PROOF_MIN,
+        SIGNED_BLS_CHANGE_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE, SignedAggregateAndProofView,
+        SingleAttestationView,
     },
 };
 
@@ -1086,6 +1087,53 @@ fn agg_accept() {
     assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Accept(None));
     assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_root, beacon_block_root);
     assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_epoch, slot / SLOTS_PER_EPOCH);
+}
+
+/// The root memo is keyed on AttestationData alone, so the single and
+/// aggregate paths deduplicate into one entry when they carry the same vote.
+#[test]
+fn att_root_memo_dedups_across_single_and_aggregate_paths() {
+    let mut tile = make_tile_at_wall_slot(31);
+    seed_tile_with_keys(&mut tile, 128, 0);
+    let (slot, ci, _, _) = find_committee_for_vi0(&tile);
+    let subnet = expected_subnet(&tile, slot, ci);
+    let imm = seed_immutable(&tile);
+    let bbr = tile.last_applied_block_root;
+    let single = test_signing::sign_single_attestation(
+        0,
+        0,
+        ci as u64,
+        slot,
+        bbr,
+        slot / SLOTS_PER_EPOCH,
+        bbr,
+        &imm,
+    );
+    assert_eq!(tile.handle_attestation(&single, subnet), Feedback::Accept(None));
+    assert_eq!(tile.attestation_root_memo.len(), 1);
+
+    let agg = build_agg_for_vi0(&tile);
+    assert_eq!(tile.handle_aggregate_and_proof(&agg), Feedback::Accept(None));
+    assert_eq!(tile.attestation_root_memo.len(), 1);
+}
+
+/// The slot tick prunes the memo through the same floor as the pool.
+#[test]
+fn att_root_memo_pruned_on_slot_tick() {
+    let mut tile = make_tile();
+    seed_tile(&mut tile, 4, 30);
+    let domain = [0xD0u8; 32];
+    let mut expired = [0u8; ATTESTATION_DATA_SIZE];
+    expired[..8].copy_from_slice(&30u64.to_le_bytes());
+    let mut kept = [0u8; ATTESTATION_DATA_SIZE];
+    kept[..8].copy_from_slice(&33u64.to_le_bytes());
+    kept[16] = 1;
+    tile.attestation_root_memo.roots(&expired, &domain);
+    tile.attestation_root_memo.roots(&kept, &domain);
+    assert_eq!(tile.attestation_root_memo.len(), 2);
+
+    tile.slot_tick(34);
+    assert_eq!(tile.attestation_root_memo.len(), 1);
 }
 
 #[test]
