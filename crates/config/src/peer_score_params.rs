@@ -187,8 +187,8 @@ impl Default for ScoreParams {
 
             prune_backoff: Duration::from_secs(60),
 
-            target_peers: 250,
-            max_priority_peers: 300,
+            target_peers: 300,
+            max_priority_peers: 500,
             discovery_query_interval: Duration::from_secs(5),
             banned_ip_ttl: Duration::from_secs(3600),
             ip_ban_threshold: 5,
