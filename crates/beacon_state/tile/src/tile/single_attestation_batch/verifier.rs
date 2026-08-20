@@ -128,6 +128,24 @@ mod tests {
         (key.sk_to_pk(), key.sign(&message, DST, &[]).to_bytes())
     }
 
+    /// An on-curve G2 point outside the r-order subgroup: it deserializes but
+    /// fails `validate`. Found by perturbing a valid signature's x-coordinate
+    /// until it lands back on the curve (the cofactor makes the subgroup a
+    /// negligible fraction of those hits).
+    fn out_of_subgroup_signature() -> Signature {
+        let (_, valid) = signed(1, [0u8; 32]);
+        let mut bytes = valid;
+        for delta in 1..=u8::MAX {
+            bytes[95] = valid[95].wrapping_add(delta);
+            if let Ok(signature) = Signature::from_bytes(&bytes) {
+                if signature.validate(true).is_err() {
+                    return signature;
+                }
+            }
+        }
+        unreachable!("no out-of-subgroup point near the valid signature");
+    }
+
     #[test]
     fn attributes_one_bad_signature() {
         let message = [7u8; 32];
@@ -150,6 +168,29 @@ mod tests {
         batch.push(pk0, Signature::from_bytes(&sig1).unwrap());
         batch.push(pk1, Signature::from_bytes(&sig0).unwrap());
         assert_eq!(batch.verify(&message), [false, false]);
+    }
+
+    #[test]
+    fn subgroup_invalid_member_does_not_evict_weighted_fast_path() {
+        let message = [14u8; 32];
+        let invalid_position = 2;
+        let mut batch = SameMessageBatch::default();
+        for seed in 1..=8 {
+            let (public_key, signature) = signed(seed, message);
+            let signature = if usize::from(seed) - 1 == invalid_position {
+                out_of_subgroup_signature()
+            } else {
+                Signature::from_bytes(&signature).unwrap()
+            };
+            batch.push(public_key, signature);
+        }
+
+        let mut expected = vec![true; 8];
+        expected[invalid_position] = false;
+        assert_eq!(batch.verify(&message), expected);
+        // The seven remaining signatures still verify as one weighted
+        // aggregate rather than falling back to singleton checks.
+        assert_eq!(batch.operation_counts(), (8, 0, 1));
     }
 
     #[test]

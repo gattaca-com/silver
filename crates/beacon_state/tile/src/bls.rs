@@ -384,6 +384,7 @@ pub struct SameMessageBatch {
     public_keys: Vec<PublicKey>,
     signatures: Vec<Signature>,
     subgroup_valid: Vec<bool>,
+    compact_from: Vec<usize>,
     verdicts: Vec<bool>,
     rand_bytes: Vec<u8>,
     #[cfg(test)]
@@ -408,6 +409,7 @@ impl SameMessageBatch {
         self.public_keys.clear();
         self.signatures.clear();
         self.subgroup_valid.clear();
+        self.compact_from.clear();
         self.verdicts.clear();
         self.rand_bytes.clear();
         #[cfg(test)]
@@ -429,7 +431,38 @@ impl SameMessageBatch {
         }));
         self.verdicts.clear();
         self.verdicts.resize(self.public_keys.len(), false);
-        self.verify_range(message, 0, self.public_keys.len(), 0);
+        if self.subgroup_valid.iter().all(|&valid| valid) {
+            self.verify_range(message, 0, self.public_keys.len(), 0);
+            return &self.verdicts;
+        }
+
+        // A failed group check is already a final verdict, so compact the
+        // remaining entries to the front: one invalid point must not evict
+        // its group from the weighted fast path.
+        self.compact_from.clear();
+        let mut write = 0;
+        for read in 0..self.public_keys.len() {
+            if self.subgroup_valid[read] {
+                self.public_keys.swap(write, read);
+                self.signatures.swap(write, read);
+                self.compact_from.push(read);
+                write += 1;
+            }
+        }
+        self.subgroup_valid.clear();
+        self.subgroup_valid.resize(write, true);
+        self.verify_range(message, 0, write, 0);
+        // Reversed so each verdict moves before its slot is overwritten
+        // (targets are >= k), while the same walk undoes the swaps above to
+        // restore push order.
+        for k in (0..write).rev() {
+            let read = self.compact_from[k];
+            let verdict = self.verdicts[k];
+            self.verdicts[k] = false;
+            self.verdicts[read] = verdict;
+            self.public_keys.swap(k, read);
+            self.signatures.swap(k, read);
+        }
         &self.verdicts
     }
 
@@ -438,10 +471,6 @@ impl SameMessageBatch {
             return;
         }
         if end - start == 1 {
-            self.verify_sequential(message, start, end);
-            return;
-        }
-        if self.subgroup_valid[start..end].iter().any(|&valid| !valid) {
             self.verify_sequential(message, start, end);
             return;
         }
@@ -461,18 +490,17 @@ impl SameMessageBatch {
 
     fn verify_sequential(&mut self, message: &B256, start: usize, end: usize) {
         for index in start..end {
-            if self.subgroup_valid[index] {
-                #[cfg(test)]
-                self.singleton_verifies.set(self.singleton_verifies.get() + 1);
-                self.verdicts[index] = self.signatures[index].verify(
-                    false,
-                    message,
-                    DST,
-                    &[],
-                    &self.public_keys[index],
-                    false,
-                ) == BLST_ERROR::BLST_SUCCESS;
-            }
+            debug_assert!(self.subgroup_valid[index]);
+            #[cfg(test)]
+            self.singleton_verifies.set(self.singleton_verifies.get() + 1);
+            self.verdicts[index] = self.signatures[index].verify(
+                false,
+                message,
+                DST,
+                &[],
+                &self.public_keys[index],
+                false,
+            ) == BLST_ERROR::BLST_SUCCESS;
         }
     }
 
