@@ -32,7 +32,9 @@ impl SeenValidators {
 
     pub(super) fn mark(&mut self, target_epoch: Epoch, validator: usize) {
         let lane = (target_epoch % 2) as usize;
-        debug_assert!(self.epochs[lane] == target_epoch);
+        // A deferred verdict can land after a rotation re-armed its lane (the
+        // wall advances between a message's admission and its batch flush);
+        // the mark must drop rather than poison the lane's new epoch.
         if self.epochs[lane] != target_epoch {
             return;
         }
@@ -98,6 +100,18 @@ mod tests {
         assert!(!seen.contains(7, 9));
         assert!(!seen.contains(3, 9));
         assert!(!seen.contains(6, 9));
+    }
+
+    #[test]
+    fn mark_after_rotation_drops_instead_of_poisoning() {
+        let mut seen = SeenValidators::new(128);
+        seen.rotate_to(1);
+        assert!(!seen.contains(0, 9));
+        // The wall advances before the deferred epoch-0 verdict lands.
+        seen.rotate_to(2);
+        seen.mark(0, 9);
+        assert!(!seen.contains(0, 9));
+        assert!(!seen.contains(2, 9));
     }
 
     #[test]
