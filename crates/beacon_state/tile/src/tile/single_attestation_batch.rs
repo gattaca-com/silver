@@ -94,6 +94,7 @@ mod tests {
         super::super::bls::DST, BATCH_CHUNK, PendingAttestation, SingleAttestationBatch,
         verifier::EntryVerifier,
     };
+    use crate::tile::attestation_root_memo::AttestationRootGroup;
 
     fn signed(seed: u8, message: [u8; 32]) -> (PublicKey, [u8; 96]) {
         let mut ikm = [0u8; 32];
@@ -165,6 +166,20 @@ mod tests {
     fn verification_groups_entries_by_fork_bound_signing_root() {
         let entries = vec![pending(8, 1, 0, [4u8; 32]), pending(9, 1, 1, [5u8; 32])];
         assert_eq!(EntryVerifier::default().verify(&entries), [true, true]);
+    }
+
+    #[test]
+    fn memo_group_partitions_entries_by_fork_bound_signing_root() {
+        let group = Some(AttestationRootGroup::for_test(0));
+        let mut entries = vec![
+            PendingAttestation { root_group: group, ..pending(12, 1, 0, [7u8; 32]) },
+            PendingAttestation { root_group: group, ..pending(13, 1, 1, [7u8; 32]) },
+            PendingAttestation { root_group: group, ..pending(14, 1, 2, [8u8; 32]) },
+            PendingAttestation { root_group: group, ..pending(15, 1, 3, [8u8; 32]) },
+        ];
+        entries[3].signature = pending(16, 1, 4, [8u8; 32]).signature;
+
+        assert_eq!(EntryVerifier::default().verify(&entries), [true, true, true, false]);
     }
 
     #[test]

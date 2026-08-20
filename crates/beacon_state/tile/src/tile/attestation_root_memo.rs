@@ -41,6 +41,11 @@ impl AttestationRootGroup {
     pub(crate) fn index(self) -> usize {
         usize::from(self.0)
     }
+
+    #[cfg(test)]
+    pub(crate) const fn for_test(index: u8) -> Self {
+        Self(index)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

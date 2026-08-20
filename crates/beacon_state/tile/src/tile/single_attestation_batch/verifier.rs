@@ -40,7 +40,12 @@ impl EntryVerifier {
             }
         }
         for &group in &self.touched {
-            Self::verify_group(&mut self.batch, &mut self.verdicts, entries, &self.buckets[group]);
+            Self::verify_group(
+                &mut self.batch,
+                &mut self.verdicts,
+                entries,
+                &mut self.buckets[group],
+            );
         }
         Self::verify_fallback(&mut self.batch, &mut self.verdicts, entries, &mut self.fallback);
         std::mem::take(&mut self.verdicts)
@@ -64,12 +69,15 @@ impl EntryVerifier {
         batch: &mut SameMessageBatch,
         verdicts: &mut [bool],
         entries: &[PendingAttestation],
-        indices: &[usize],
+        indices: &mut [usize],
     ) {
         let Some(&first) = indices.first() else { return };
         let signing_root = entries[first].signing_root;
-        debug_assert!(indices.iter().all(|&index| entries[index].signing_root == signing_root));
-        Self::verify_indices(batch, verdicts, entries, indices, &signing_root);
+        if indices.iter().all(|&index| entries[index].signing_root == signing_root) {
+            Self::verify_indices(batch, verdicts, entries, indices, &signing_root);
+        } else {
+            Self::verify_fallback(batch, verdicts, entries, indices);
+        }
     }
 
     fn verify_fallback(

@@ -792,11 +792,13 @@ impl BeaconStateTile {
         if matches!(
             m.topic,
             GossipTopic::BeaconBlock |
+                GossipTopic::BeaconAggregateAndProof |
+                GossipTopic::AttesterSlashing |
                 GossipTopic::ExecutionPayload |
                 GossipTopic::PayloadAttestationMessage
         ) {
-            // These topics can recompute the canonical head and change the
-            // fork domain used by later attestations in this gossip drain.
+            // Apply a queued verdict against the same canonical head used for
+            // admission before another gossip changes fork choice or state.
             self.flush_single_attestations(producers);
         }
         let acquired = self.gossip_consumer.acquire(read);

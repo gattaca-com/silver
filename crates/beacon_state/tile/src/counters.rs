@@ -17,6 +17,9 @@ silver_common::declare_counters! {
         // aggregates inflate Miss without ever becoming votes.
         AttestationRootMemoHit,
         AttestationRootMemoMiss,
+        // Positional slot retained: the pending queue flushes at its fixed
+        // batch size, so this can no longer be reached.
+        PendingSingleAttestationFull,
         PendingSingleAttestationDuplicate,
         SingleAttestationBatchRuns,
         SingleAttestationBatchItems,
