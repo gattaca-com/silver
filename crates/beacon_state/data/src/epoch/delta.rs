@@ -1,29 +1,23 @@
-use super::{EpochGroup, EpochId, finalized::EpochStateFinalized};
+use super::{EpochGroup, EpochId, finalized::EpochStateFinalized, ptc_window::PtcWindow};
 use crate::{
-    gloas::{PTC_WINDOW_LEN, PtcCommittee, zeroed_ptc_window},
+    gloas::{PTC_WINDOW_LEN, PtcCommittee},
     ring::{Reset, Slot as RingSlot},
-    types::{Epoch, EpochState, Fork, SLOTS_PER_EPOCH, Version},
+    types::{Epoch, EpochState, Fork, Version},
 };
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub(crate) struct EpochStateDelta {
     pub(super) state: EpochState,
     // [New in Gloas]
-    pub(super) ptc_window: Box<[PtcCommittee; PTC_WINDOW_LEN]>,
-}
-
-impl Default for EpochStateDelta {
-    fn default() -> Self {
-        Self { state: EpochState::default(), ptc_window: zeroed_ptc_window() }
-    }
+    pub(super) ptc_window: PtcWindow,
 }
 
 impl Reset for EpochStateDelta {
     fn reset(&mut self) {
         self.state = Default::default();
-        // `ptc_window` is left as-is: every roll re-seeds it via
-        // `seed_from_base` (roll_fresh) or `reset_from`, so zeroing the 393 KB
-        // box here would be redundant work.
+        // `ptc_window` is left as-is: every roll overwrites it (`fresh` copies
+        // the base's, `reset_from` the parent's), so zeroing the 393 KB box
+        // here would be redundant work.
     }
 
     fn reset_from(&mut self, other: &Self) {
@@ -53,7 +47,7 @@ impl<'a> EpochView<'a> {
     }
 
     #[inline]
-    pub fn ptc_window(&self) -> &'a [PtcCommittee; PTC_WINDOW_LEN] {
+    pub fn ptc_window(&self) -> &'a PtcWindow {
         self.delta.map_or(&self.base.ptc_window, |d| &d.ptc_window)
     }
 
@@ -94,8 +88,17 @@ pub struct EpochWriteView<'a> {
 }
 
 impl<'a> EpochWriteView<'a> {
+    /// Fresh fork: a full working copy of the base's scalars and PTC window.
     #[inline]
-    pub(super) fn new(base: &'a EpochStateFinalized, fork: RingSlot<'a, EpochGroup>) -> Self {
+    pub(super) fn fresh(base: &'a EpochStateFinalized, mut fork: RingSlot<'a, EpochGroup>) -> Self {
+        fork.state = base.state;
+        fork.ptc_window.clone_from(&base.ptc_window);
+        Self { base, fork }
+    }
+
+    /// Fork whose delta already carries its state (roll_from).
+    #[inline]
+    pub(super) fn derived(base: &'a EpochStateFinalized, fork: RingSlot<'a, EpochGroup>) -> Self {
         Self { base, fork }
     }
 
@@ -115,23 +118,12 @@ impl<'a> EpochWriteView<'a> {
     }
 
     #[inline]
-    pub fn set_ptc_window(&mut self, window: Box<[PtcCommittee; PTC_WINDOW_LEN]>) {
-        self.fork.ptc_window = window;
+    pub fn set_ptc_window(&mut self, committees: Box<[PtcCommittee; PTC_WINDOW_LEN]>) {
+        self.fork.ptc_window = PtcWindow::new(committees);
     }
 
     #[inline]
     pub fn rotate_ptc_window(&mut self, new_last_epoch: &[PtcCommittee]) {
-        const SPE: usize = SLOTS_PER_EPOCH as usize;
-        debug_assert_eq!(new_last_epoch.len(), SPE);
-        self.fork.ptc_window.copy_within(SPE.., 0);
-        self.fork.ptc_window[PTC_WINDOW_LEN - SPE..].copy_from_slice(new_last_epoch);
-    }
-
-    /// Seed the fresh fork's scalar `EpochState` + `ptc_window` from the
-    /// finalized base.
-    #[inline]
-    pub(super) fn seed_from_base(&mut self) {
-        self.fork.state = self.base.state;
-        self.fork.ptc_window.clone_from(&self.base.ptc_window);
+        self.fork.ptc_window.rotate(new_last_epoch);
     }
 }

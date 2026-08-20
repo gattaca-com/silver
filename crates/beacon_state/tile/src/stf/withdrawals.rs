@@ -29,14 +29,7 @@ pub fn process_execution_payload(
         return Err(ExecutionPayloadError::TooShort { len: payload_bytes.len(), min: 528 });
     }
 
-    validate::validate_execution_payload(
-        cfg,
-        &view.slot.reader(),
-        &view.randao_mixes.reader(),
-        view.imm.genesis_time,
-        payload_bytes,
-        block_slot,
-    )?;
+    validate::validate_execution_payload(cfg, view, payload_bytes, block_slot)?;
 
     let slot = &mut view.slot;
 

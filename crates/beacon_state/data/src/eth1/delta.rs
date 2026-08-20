@@ -2,18 +2,31 @@ use flux::utils::ArrayVec;
 
 use super::{Eth1Group, Eth1Id, finalized::Eth1Votes};
 use crate::{
+    merkle::MerkleStack,
     ring::{Reset, Slot},
-    types::{Eth1Data, MAX_ETH1_VOTES},
+    types::{B256, Eth1Data, MAX_ETH1_VOTES},
 };
 
 /// One fork's vote-list delta: `appended` holds the votes pushed since the
 /// fork base (or since the fork's last voting-period clear); `resets` counts
 /// the clears — non-zero means the finalized list is out of scope for this
 /// fork.
-#[derive(Clone, Default)]
+///
+/// `hasher` folds the effective vote sequence's element roots (the kept base
+/// then `appended`), so a root costs one O(log n) finalize. Keyed by the
+/// sequence rather than by base position, it survives finalization untouched:
+/// [`rebase`](Self::rebase) leaves the effective votes unchanged.
+#[derive(Clone)]
 pub(crate) struct Eth1VotesDelta {
     resets: u32,
     appended: Vec<Eth1Data>,
+    hasher: MerkleStack,
+}
+
+impl Default for Eth1VotesDelta {
+    fn default() -> Self {
+        Self { resets: 0, appended: Vec::new(), hasher: MerkleStack::new(MAX_ETH1_VOTES) }
+    }
 }
 
 impl Eth1VotesDelta {
@@ -21,6 +34,24 @@ impl Eth1VotesDelta {
     #[inline]
     fn keeps_base(&self) -> bool {
         self.resets == 0
+    }
+
+    #[inline]
+    fn push(&mut self, vote: Eth1Data) {
+        self.hasher.push(vote.leaf());
+        self.appended.push(vote);
+    }
+
+    #[inline]
+    fn clear(&mut self) {
+        self.resets += 1;
+        self.appended.clear();
+        self.hasher = MerkleStack::new(MAX_ETH1_VOTES);
+    }
+
+    #[inline]
+    pub(super) fn hasher(&self) -> MerkleStack {
+        self.hasher
     }
 
     /// Re-base onto a freshly-promoted base: drop the inherited prefix the
@@ -56,13 +87,14 @@ impl Eth1VotesDelta {
 
 impl Reset for Eth1VotesDelta {
     fn reset(&mut self) {
+        self.clear();
         self.resets = 0;
-        self.appended.clear();
     }
 
     fn reset_from(&mut self, other: &Self) {
         self.resets = other.resets;
         self.appended.clone_from(&other.appended);
+        self.hasher = other.hasher;
     }
 }
 
@@ -98,6 +130,13 @@ impl<'a> Eth1View<'a> {
     pub fn iter(&self) -> impl Iterator<Item = &'a Eth1Data> + use<'a> {
         self.kept_base().iter().chain(self.delta.appended.iter())
     }
+
+    /// SSZ `hash_tree_root` of `List[Eth1Data, MAX_ETH1_VOTES]` — folds the
+    /// cached hasher, padding + length only (no per-vote hashing).
+    #[inline]
+    pub fn hash_root(&self) -> B256 {
+        self.delta.hasher.list_root(self.len())
+    }
 }
 
 pub struct Eth1WriteView<'a> {
@@ -106,8 +145,19 @@ pub struct Eth1WriteView<'a> {
 }
 
 impl<'a> Eth1WriteView<'a> {
+    /// Fresh fork on the finalized base: the delta is empty, so the base's
+    /// folded votes *are* its effective sequence and its hasher starts as a
+    /// copy of the base's.
     #[inline]
-    pub(super) fn new(base: &'a Eth1Votes, fork: Slot<'a, Eth1Group>) -> Self {
+    pub(super) fn fresh(base: &'a Eth1Votes, mut fork: Slot<'a, Eth1Group>) -> Self {
+        debug_assert!(fork.keeps_base() && fork.appended.is_empty(), "not a fresh delta");
+        fork.hasher = base.hasher();
+        Self { base, fork }
+    }
+
+    /// Fork whose delta already carries its state (roll_from / reanchor).
+    #[inline]
+    pub(super) fn derived(base: &'a Eth1Votes, fork: Slot<'a, Eth1Group>) -> Self {
         Self { base, fork }
     }
 
@@ -142,13 +192,12 @@ impl<'a> Eth1WriteView<'a> {
     #[inline]
     pub fn push(&mut self, vote: Eth1Data) {
         assert!(self.len() < MAX_ETH1_VOTES, "eth1_votes exceeded MAX_ETH1_VOTES");
-        self.fork.appended.push(vote);
+        self.fork.push(vote);
     }
 
     /// Voting-period boundary: drop every effective vote.
     #[inline]
     pub fn clear(&mut self) {
-        self.fork.resets += 1;
-        self.fork.appended.clear();
+        self.fork.clear();
     }
 }

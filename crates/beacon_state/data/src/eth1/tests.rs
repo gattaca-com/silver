@@ -1,5 +1,8 @@
-use super::{Eth1Group, Eth1Votes};
-use crate::types::{Eth1Data, MAX_ETH1_VOTES};
+use super::{Eth1Group, Eth1View, Eth1Votes};
+use crate::{
+    merkle::{MerkleStack, hash_list},
+    types::{B256, Eth1Data, MAX_ETH1_VOTES},
+};
 
 fn vote(i: u8) -> Eth1Data {
     Eth1Data { deposit_root: [i; 32], deposit_count: i as u64, block_hash: [i; 32] }
@@ -118,5 +121,110 @@ fn push_past_cap_panics() {
     let mut wv = g.roll_fresh();
     for i in 0..=MAX_ETH1_VOTES {
         wv.push(vote((i % 251) as u8));
+    }
+}
+
+/// Re-merkleize the effective votes from scratch — what `hash_root` replaces.
+fn oracle_root(v: Eth1View) -> B256 {
+    hash_list(MerkleStack::new(MAX_ETH1_VOTES), v.iter().map(Eth1Data::leaf))
+}
+
+/// The incremental hasher tracks appends, a voting-period clear, and appends
+/// after the clear.
+#[test]
+fn hash_root_matches_oracle_through_push_and_clear() {
+    let mut g = Eth1Group::new(base(&[vote(1), vote(2)]));
+    let mut wv = g.roll_fresh();
+    assert_eq!(wv.reader().hash_root(), oracle_root(wv.reader()));
+
+    for i in 3..40 {
+        wv.push(vote(i));
+        assert_eq!(wv.reader().hash_root(), oracle_root(wv.reader()));
+    }
+
+    wv.clear();
+    assert_eq!(wv.reader().hash_root(), oracle_root(wv.reader()));
+
+    for i in 40..50 {
+        wv.push(vote(i));
+        assert_eq!(wv.reader().hash_root(), oracle_root(wv.reader()));
+    }
+}
+
+/// A fork derived from a parent inherits its hasher, and both keep hashing
+/// their own effective sequences.
+#[test]
+fn hash_root_matches_oracle_across_roll_from() {
+    let mut g = Eth1Group::new(base(&[vote(1)]));
+    let parent = {
+        let mut wv = g.roll_fresh();
+        wv.push(vote(2));
+        wv.push(vote(3));
+        wv.commit()
+    };
+    let child = {
+        let mut wv = g.roll_from(parent);
+        wv.push(vote(4));
+        wv.commit()
+    };
+
+    assert_eq!(g.view(parent).hash_root(), oracle_root(g.view(parent)));
+    assert_eq!(g.view(child).hash_root(), oracle_root(g.view(child)));
+}
+
+/// Finalization swaps the base under every fork: the winner's promoted list
+/// and each re-anchored survivor still hash their unchanged effective votes.
+#[test]
+fn hash_root_survives_finalize() {
+    for survivor_clears in [false, true] {
+        let mut g = Eth1Group::new(base(&[vote(1)]));
+        let winner = {
+            let mut wv = g.roll_fresh();
+            wv.push(vote(2));
+            wv.push(vote(3));
+            wv.commit()
+        };
+        let survivor = {
+            let mut wv = g.roll_from(winner);
+            if survivor_clears {
+                wv.clear();
+            }
+            wv.push(vote(4));
+            wv.commit()
+        };
+        let before: Vec<_> = [winner, survivor].iter().map(|&id| g.view(id).hash_root()).collect();
+
+        let fresh = g.finalize(winner, &[winner, survivor]);
+
+        for (id, was) in fresh.iter().zip(before) {
+            assert_eq!(g.view(*id).hash_root(), oracle_root(g.view(*id)));
+            assert_eq!(g.view(*id).hash_root(), was);
+        }
+        // A fresh fork on the promoted base hashes it without re-folding.
+        let after = g.roll_fresh();
+        assert_eq!(after.reader().hash_root(), oracle_root(after.reader()));
+    }
+}
+
+/// A winner that cleared replaces the base, hasher included.
+#[test]
+fn hash_root_after_winner_clear() {
+    let mut g = Eth1Group::new(base(&[vote(1), vote(2)]));
+    let winner = {
+        let mut wv = g.roll_fresh();
+        wv.clear();
+        wv.push(vote(3));
+        wv.commit()
+    };
+    let survivor = {
+        let mut wv = g.roll_from(winner);
+        wv.push(vote(4));
+        wv.commit()
+    };
+
+    let fresh = g.finalize(winner, &[winner, survivor]);
+
+    for id in fresh {
+        assert_eq!(g.view(id).hash_root(), oracle_root(g.view(id)));
     }
 }

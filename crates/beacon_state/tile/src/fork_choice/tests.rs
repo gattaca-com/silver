@@ -19,7 +19,7 @@ fn test_state_id() -> StateId {
         slashings_idx: Default::default(),
         block_roots_idx: Default::default(),
         state_roots_idx: Default::default(),
-        randao_idx: Default::default(),
+        randao_mixes_idx: Default::default(),
         slot_idx: Default::default(),
         builders_idx: Default::default(),
     }

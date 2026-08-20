@@ -1,5 +1,6 @@
 mod delta;
 mod finalized;
+mod ptc_window;
 #[cfg(test)]
 mod tests;
 
@@ -7,9 +8,10 @@ pub(crate) use delta::EpochStateDelta;
 pub use delta::{EpochView, EpochWriteView};
 pub use finalized::EpochStateFinalized;
 use flux_profiler::timed;
+pub use ptc_window::PtcWindow;
 
 use crate::{
-    reanchor::reanchor_survivors,
+    reanchor::finalize_full_copies,
     ring::{Id, Ring, RingGroup},
     types::EPOCHS_RING_N,
 };
@@ -60,15 +62,13 @@ impl EpochGroup {
     #[inline]
     pub fn roll_fresh(&mut self) -> EpochWriteView<'_> {
         let Self { finalized, deltas } = self;
-        let mut wv = EpochWriteView::new(finalized, deltas.roll_fresh());
-        wv.seed_from_base();
-        wv
+        EpochWriteView::fresh(finalized, deltas.roll_fresh())
     }
 
     #[inline]
     pub fn roll_from(&mut self, parent: EpochId) -> EpochWriteView<'_> {
         let Self { finalized, deltas } = self;
-        EpochWriteView::new(finalized, deltas.roll_from(parent))
+        EpochWriteView::derived(finalized, deltas.roll_from(parent))
     }
 
     #[inline]
@@ -79,28 +79,9 @@ impl EpochGroup {
         }
     }
 
-    /// Copy a survivor into a fresh slot so finalization can free the ring
-    /// below it. The delta is a full working copy of the scalars, so nothing
-    /// rebases against the new base.
-    fn reanchor(&mut self, survivor: EpochId) -> EpochWriteView<'_> {
-        let Self { finalized, deltas } = self;
-        EpochWriteView::new(finalized, deltas.roll_from(survivor))
-    }
-
-    /// Re-anchor each survivor into a fresh slot (deduped), then adopt the
-    /// winner's scalars as the finalized base.
     #[timed]
     pub fn finalize(&mut self, winner: EpochId, survivors: &[EpochId]) -> Vec<EpochId> {
-        debug_assert!(survivors.contains(&winner), "winner must be among the survivors");
-        self.deltas.free_outdated(survivors);
-
-        let fresh = reanchor_survivors(survivors, |s| self.reanchor(s).commit());
-
         let Self { finalized, deltas } = self;
-        finalized.promote(deltas.get(winner));
-
-        deltas.free_outdated(&fresh);
-
-        fresh
+        finalize_full_copies(deltas, winner, survivors, |w| finalized.promote(w))
     }
 }
