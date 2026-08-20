@@ -5,8 +5,7 @@ use silver_beacon_state_data::{
 };
 use silver_common::{
     ATTESTATION_SUBNETS, BeaconStateEvent, BlockSource, EngineNewPayloadEnvelopeReq, EngineReq,
-    GossipTopic, MAX_BLOBS_PER_BLOCK, MessageId, NewGossipMsg, P2pStreamId, PeerEvent, TCacheRead,
-    TRead,
+    GossipTopic, MAX_BLOBS_PER_BLOCK, NewGossipMsg, PeerEvent, TCacheRead, TRead,
     metrics::timed,
     ssz_view::{
         AttestationDataView, AttesterSlashingView, ExecutionPayloadEnvelopeView as Envelope,
@@ -20,6 +19,7 @@ use silver_common::{
 use super::{
     ATTESTATION_PROPAGATION_SLOT_RANGE, BY_ROOT_REQUEST_ID, BeaconStateTile, Feedback, Producers,
     attestation_pool::InsertOutcome,
+    gossip_relay::RelayMetadata,
     orphan_pool::{PendingBlock, has_room},
     seen_aggregates::Coverage,
     single_attestation_batch::{PendingAttestation, verify_entries},
@@ -43,37 +43,10 @@ pub(super) enum AttestationAdmission {
     Queued,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub(super) struct RelayMetadata {
-    pub(super) stream_id: P2pStreamId,
-    pub(super) topic: GossipTopic,
-    pub(super) msg_hash: MessageId,
-    pub(super) recv_ts: flux::timing::Nanos,
-    pub(super) protobuf: TCacheRead,
-}
-
-impl RelayMetadata {
-    fn relay(&self, producers: &mut Producers) {
-        producers.produce(PeerEvent::SendGossip {
-            originator_stream_id: self.stream_id,
-            topic: self.topic,
-            msg_hash: self.msg_hash,
-            recv_ts: self.recv_ts,
-            protobuf: self.protobuf,
-        });
-    }
-}
-
-impl From<&NewGossipMsg> for RelayMetadata {
-    fn from(message: &NewGossipMsg) -> Self {
-        Self {
-            stream_id: message.stream_id,
-            topic: message.topic,
-            msg_hash: message.msg_hash,
-            recv_ts: message.recv_ts,
-            protobuf: message.protobuf,
-        }
-    }
+#[derive(Clone, Copy)]
+pub(super) enum FlushMode {
+    Due,
+    All,
 }
 
 impl BeaconStateTile {
@@ -242,9 +215,9 @@ impl BeaconStateTile {
         self.seen_attesters.mark(target_epoch, attester_index);
     }
 
-    pub(super) fn flush_single_attestations(&mut self, producers: &mut Producers, force: bool) {
+    pub(super) fn flush_single_attestations(&mut self, producers: &mut Producers, mode: FlushMode) {
         while !self.single_attestation_batch.is_empty() &&
-            (force || self.single_attestation_batch.should_flush())
+            (matches!(mode, FlushMode::All) || self.single_attestation_batch.should_flush())
         {
             let entries = self.single_attestation_batch.take_chunk();
             let verdicts = verify_entries(&entries);
@@ -845,7 +818,7 @@ impl BeaconStateTile {
                 match self.admit_attestation(data, subnet, Some(m)) {
                     AttestationAdmission::Verdict(feedback) => feedback,
                     AttestationAdmission::Queued => {
-                        self.flush_single_attestations(producers, false);
+                        self.flush_single_attestations(producers, FlushMode::Due);
                         return;
                     }
                 }

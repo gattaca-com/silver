@@ -39,6 +39,7 @@ mod finalize;
 mod fork_choice;
 mod fork_data_roots;
 mod gossip;
+mod gossip_relay;
 mod orphan_pool;
 mod seen_aggregates;
 mod seen_validators;
@@ -733,7 +734,7 @@ impl Tile<SilverSpine> for BeaconStateTile {
         }
 
         adapter.consume(|m: NewGossipMsg, producers| self.on_gossip(m, following, producers));
-        self.flush_single_attestations(&mut adapter.producers, true);
+        self.flush_single_attestations(&mut adapter.producers, gossip::FlushMode::All);
         self.gossip_consumer.free();
 
         adapter.consume(|target: SyncUpdate, _producers| self.on_sync_update(target));

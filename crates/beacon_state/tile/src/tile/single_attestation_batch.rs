@@ -8,7 +8,7 @@ use rustc_hash::FxHashSet;
 use silver_beacon_state_data::B256;
 use silver_common::ssz_view::SINGLE_ATT_SIZE;
 
-use super::gossip::RelayMetadata;
+use super::gossip_relay::RelayMetadata;
 use crate::counters::BeaconStateCounters;
 
 mod verifier;
