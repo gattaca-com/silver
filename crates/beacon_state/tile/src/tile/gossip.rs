@@ -44,7 +44,7 @@ pub(super) enum AttestationAdmission {
 }
 
 impl BeaconStateTile {
-    #[timed]
+    #[cfg(test)]
     pub(super) fn handle_attestation(&mut self, data: &[u8], subnet: u64) -> Feedback {
         match self.admit_attestation(data, subnet, None) {
             AttestationAdmission::Verdict(feedback) => feedback,
@@ -52,6 +52,7 @@ impl BeaconStateTile {
         }
     }
 
+    #[timed]
     pub(super) fn admit_attestation(
         &mut self,
         data: &[u8],
@@ -258,7 +259,7 @@ impl BeaconStateTile {
     }
 
     /// EF `fork_choice` vector path only: production gossip reaches the same
-    /// work through `handle_attestation` / `handle_aggregate_and_proof`, which
+    /// work through `admit_attestation` / `handle_aggregate_and_proof`, which
     /// have already resolved the committee by the time votes are recorded.
     #[cfg(feature = "ef_tests")]
     pub(super) fn apply_attestation(&mut self, att: &[u8]) -> Feedback {
