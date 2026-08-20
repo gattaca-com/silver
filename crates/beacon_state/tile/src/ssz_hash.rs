@@ -31,23 +31,17 @@ pub fn hash_eth1_data(e: &Eth1Data) -> B256 {
     merkleize(&chunks)
 }
 
-/// Reusable buffers for the four merged circular-buffer fields, so repeated
-/// `hash_tree_root_state` calls (one per `process_slot`) don't re-allocate the
-/// full rings (randao alone is `EPOCHS_PER_HISTORICAL_VECTOR * 32` = 2 MB).
+/// Reusable buffer for the merged `randao_mixes` ring, so repeated
+/// `hash_tree_root_state` calls (one per `process_slot`) don't re-allocate
+/// `EPOCHS_PER_HISTORICAL_VECTOR * 32` = 2 MB every time.
 pub struct StateHashScratch {
-    pub(crate) block_roots: Vec<B256>,
-    pub(crate) state_roots: Vec<B256>,
     randao_mixes: Vec<B256>,
 }
 
 impl StateHashScratch {
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
-        Self {
-            block_roots: Vec::with_capacity(SLOTS_PER_HISTORICAL_ROOT),
-            state_roots: Vec::with_capacity(SLOTS_PER_HISTORICAL_ROOT),
-            randao_mixes: Vec::with_capacity(EPOCHS_PER_HISTORICAL_VECTOR),
-        }
+        Self { randao_mixes: Vec::with_capacity(EPOCHS_PER_HISTORICAL_VECTOR) }
     }
 }
 
@@ -81,11 +75,7 @@ pub(crate) fn hash_common_fields(
     let es = rv.epoch.state();
     let lt = rv.longtail.state();
 
-    rv.slot.effective_block_roots_into(&mut scratch.block_roots);
-    rv.slot.effective_state_roots_into(&mut scratch.state_roots);
     effective_randao_mixes_into(&rv.epoch, &rv.slot, &mut scratch.randao_mixes);
-    let block_roots = scratch.block_roots.as_slice();
-    let state_roots = scratch.state_roots.as_slice();
     let randao_mixes = scratch.randao_mixes.as_slice();
 
     [
@@ -94,8 +84,8 @@ pub(crate) fn hash_common_fields(
         uint64_chunk(slot.slot),
         hash_fork(rv.epoch.fork()),
         hash_tree_root_block_header(&slot.latest_block_header),
-        hash_b256_vector(block_roots),
-        hash_b256_vector(state_roots),
+        rv.block_roots.hash_root(),
+        rv.state_roots.hash_root(),
         imm.historical_roots_hash,
         hash_eth1_data(&slot.eth1_data),
         hash_eth1_votes(&rv.eth1),
@@ -206,8 +196,8 @@ pub fn hash_historical_summaries(longtail: &LongtailView) -> B256 {
     )
 }
 
-// Compile-time sanity: spec circular buffer sizes match the slice lengths
-// callers actually pass in.
+// Compile-time sanity: the spec ring sizes the STF indexes with `%` are powers
+// of two, so the bucket arithmetic folds to a mask.
 const _: () = {
     assert!(EPOCHS_PER_HISTORICAL_VECTOR.is_power_of_two());
     assert!(EPOCHS_PER_SLASHINGS_VECTOR.is_power_of_two());

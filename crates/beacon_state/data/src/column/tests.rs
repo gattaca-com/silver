@@ -1,7 +1,7 @@
-use super::{BalancesGroup, BalancesWriteView, ColumnGroup, ColumnSpec};
+use super::{BalancesGroup, BalancesWriteView, BlockRootsGroup, ColumnGroup, ColumnSpec};
 use crate::{
-    merkle::{MerkleStack, hash_uint64_list, hash_uint64_vector},
-    types::{B256, HashFormat, VALIDATOR_REGISTRY_LIMIT},
+    merkle::{MerkleStack, hash_b256_vector, hash_uint64_list, hash_uint64_vector},
+    types::{B256, HashFormat, SLOTS_PER_HISTORICAL_ROOT, VALIDATOR_REGISTRY_LIMIT},
 };
 
 /// `Vector[uint64, 8192]` — covers the vector root path (fixed depth, no
@@ -400,4 +400,48 @@ fn vector_root_pads_an_under_materialized_tree() {
     let mut full = values.clone();
     full.resize(U64Vector::SSZ_LIMIT, 0);
     assert_eq!(wv.hash_root(), hash_uint64_vector(&full));
+}
+
+/// The `block_roots` ring is `Vector[Root, 8192]`: its root carries no length
+/// mix-in, and `at_slot` wraps at the ring's own length.
+#[test]
+fn block_roots_ring_wraps_and_hashes_as_a_vector() {
+    let mut g = BlockRootsGroup::zeroed_vector();
+    let mut wv = g.roll_fresh();
+
+    let tag = |slot: u64| {
+        let mut r = [0u8; 32];
+        r[..8].copy_from_slice(&slot.to_le_bytes());
+        r
+    };
+    let wrapped = SLOTS_PER_HISTORICAL_ROOT as u64 + 3;
+    wv.set(7, tag(7));
+    wv.set((wrapped % SLOTS_PER_HISTORICAL_ROOT as u64) as u32, tag(wrapped));
+
+    assert_eq!(wv.at_slot(7), tag(7));
+    assert_eq!(wv.at_slot(wrapped), tag(wrapped));
+    assert_eq!(wv.at_slot(3), tag(wrapped), "slot 3's bucket was overwritten by the wrap");
+
+    let mut expected = vec![[0u8; 32]; SLOTS_PER_HISTORICAL_ROOT];
+    expected[7] = tag(7);
+    expected[3] = tag(wrapped);
+    assert_eq!(wv.hash_root(), hash_b256_vector(&expected));
+}
+
+/// `contains` walks back from `from_slot`, so it sees every written bucket but
+/// nothing written above the slot it is asked about.
+#[test]
+fn block_roots_contains_scans_back_from_the_given_slot() {
+    let mut g = BlockRootsGroup::zeroed_vector();
+    let id = {
+        let mut wv = g.roll_fresh();
+        wv.set(100, [0xAA; 32]);
+        wv.set(101, [0xBB; 32]);
+        wv.commit()
+    };
+    let reader = g.view(id);
+
+    assert!(reader.contains(&[0xAA; 32], 101));
+    assert!(reader.contains(&[0xBB; 32], 101));
+    assert!(!reader.contains(&[0xCC; 32], 101));
 }

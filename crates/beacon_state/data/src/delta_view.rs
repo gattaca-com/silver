@@ -1,11 +1,11 @@
 use blst::min_pk::PublicKey;
 
 use crate::{
-    BalancesReader, BalancesWriteView, BuildersView, BuildersWriteView, Current, EpochId,
-    EpochView, Eth1View, Eth1WriteView, InactivityView, InactivityWriteView, LongtailId,
+    BalancesReader, BalancesWriteView, BlockRoots, BuildersView, BuildersWriteView, Current,
+    EpochId, EpochView, Eth1View, Eth1WriteView, InactivityView, InactivityWriteView, LongtailId,
     LongtailView, ParticipationView, ParticipationWriteView, PendingView, PendingWriteView,
-    Previous, SlashingsView, SlashingsWriteView, SlotStateView, SlotStateWriteView, ValidatorsView,
-    ValidatorsWriteView, Withdrawals,
+    Previous, RootsView, RootsWriteView, SlashingsView, SlashingsWriteView, SlotStateView,
+    SlotStateWriteView, StateRoots, ValidatorsView, ValidatorsWriteView, Withdrawals,
     types::{B256, BLSPubkey, Epoch, Immutable, SLOTS_PER_EPOCH, StateId},
 };
 
@@ -29,6 +29,8 @@ pub struct StateReadView<'a> {
     pub current_participation: ParticipationView<'a, Current>,
     pub inactivity: InactivityView<'a>,
     pub slashings: SlashingsView<'a>,
+    pub block_roots: RootsView<'a, BlockRoots>,
+    pub state_roots: RootsView<'a, StateRoots>,
     pub slot: SlotStateView<'a>,
     pub validators: ValidatorsView<'a>,
     pub builders: BuildersView<'a>,
@@ -105,6 +107,8 @@ pub struct StateWriterView<'a> {
     pub current_participation: ParticipationWriteView<'a, Current>,
     pub inactivity: InactivityWriteView<'a>,
     pub slashings: SlashingsWriteView<'a>,
+    pub block_roots: RootsWriteView<'a, BlockRoots>,
+    pub state_roots: RootsWriteView<'a, StateRoots>,
     pub slot: SlotStateWriteView<'a>,
     pub validators: ValidatorsWriteView<'a>,
     pub builders: BuildersWriteView<'a>,
@@ -140,6 +144,8 @@ impl<'a> StateWriterView<'a> {
             current_participation_idx: self.current_participation.commit(),
             inactivity_idx: self.inactivity.commit(),
             slashings_idx: self.slashings.commit(),
+            block_roots_idx: self.block_roots.commit(),
+            state_roots_idx: self.state_roots.commit(),
             slot_idx: self.slot.commit(),
             builders_idx: self.builders.commit(),
         }
@@ -162,6 +168,8 @@ impl<'a> StateWriterView<'a> {
             current_participation: self.current_participation.reader(),
             inactivity: self.inactivity.reader(),
             slashings: self.slashings.reader(),
+            block_roots: self.block_roots.reader(),
+            state_roots: self.state_roots.reader(),
             slot: self.slot.reader(),
             validators: self.validators.hashed_reader(),
             builders: self.builders.hashed_reader(),
@@ -208,26 +216,7 @@ mod tests {
         }
 
         fn view(&mut self) -> (StateWriterView<'_>, &mut EpochGroup, &mut LongtailGroup) {
-            let sid = self.state_id;
-            let bs = &mut self.bs;
-            let view = StateWriterView {
-                imm: &bs.immutable,
-                balances: bs.balances.roll_from(sid.balances_idx),
-                eth1: bs.eth1.roll_from(sid.eth1_idx),
-                pending: bs.pending.roll_from(sid.pending_idx),
-                previous_participation: bs
-                    .previous_participation
-                    .roll_from(sid.previous_participation_idx),
-                current_participation: bs
-                    .current_participation
-                    .roll_from(sid.current_participation_idx),
-                inactivity: bs.inactivity.roll_from(sid.inactivity_idx),
-                slashings: bs.slashings.roll_from(sid.slashings_idx),
-                slot: bs.slot_states.roll_from(sid.slot_idx),
-                validators: bs.validators.roll_from(sid.validators_idx),
-                builders: bs.builders.roll_from(sid.builders_idx),
-            };
-            (view, &mut bs.epoch, &mut bs.longtail)
+            self.bs.roll_from(self.state_id)
         }
 
         /// Roll → mutate → commit → write the new bundle back: the production

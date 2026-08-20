@@ -2,9 +2,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use flux::timing::Nanos;
 use silver_beacon_state_data::{
-    BLSPubkey, BeaconBlockHeader, BeaconState, EPOCHS_PER_HISTORICAL_VECTOR, EpochState,
-    EpochStateFinalized, Immutable, PROPOSER_LOOKAHEAD_SIZE, PendingDeposit, SlotStateId, ValSeed,
-    Withdrawals,
+    BLSPubkey, BeaconBlockHeader, BeaconState, BlockRootsId, EPOCHS_PER_HISTORICAL_VECTOR,
+    EpochState, EpochStateFinalized, Immutable, PROPOSER_LOOKAHEAD_SIZE, PendingDeposit,
+    SLOTS_PER_HISTORICAL_ROOT, SlotStateId, ValSeed, Withdrawals,
 };
 use silver_common::{
     GossipTopic, MessageId, P2pStreamId, StreamProtocol, TCache, TCacheProducer, TProducer,
@@ -1560,10 +1560,10 @@ fn epoch_transition_keeps_base_until_finality() {
 
 /// `maybe_finalize` with `fin_idx > 0` must (a) promote the finalized
 /// delta into the base, (b) prune non-descendant siblings from fork
-/// choice, (c) re-base the surviving descendant's cumulative edits against
-/// the new base, and (d) hand the survivor its re-anchored bundle. This is
-/// the only place the survivor re-base path is exercised — single-fork
-/// tests take the no-promote branch (`fin_idx == 0`).
+/// choice, (c) leave the surviving descendant reading the same values it
+/// read before the promote, and (d) hand the survivor its re-anchored
+/// bundle. This is the only place the survivor re-base path is exercised —
+/// single-fork tests take the no-promote branch (`fin_idx == 0`).
 #[test]
 fn multi_fork_finalize_promotes_and_rebases() {
     let mut tile = make_tile();
@@ -1576,43 +1576,51 @@ fn multi_fork_finalize_promotes_and_rebases() {
     const ZERO_CP: Checkpoint = Checkpoint { epoch: 0, root: [0u8; 32] };
     let f_cp = Checkpoint { epoch: 0, root: F_ROOT };
 
-    // Roll a slot-group fork off `parent` with a slot number + one
-    // cumulative block root set on the writer, then commit — the
-    // writer→commit path (no in-place re-open). `reset_from` carries the
-    // parent's root tail, so a child appends onto it.
-    let roll_slot = |st: &mut BeaconStateOwner, parent: SlotStateId, slot: Slot, root: B256| {
+    // Roll a slot-group fork off `parent` with a slot number, then commit —
+    // the writer→commit path (no in-place re-open).
+    let roll_slot = |st: &mut BeaconStateOwner, parent: SlotStateId, slot: Slot| {
         let mut g = st.write();
         let mut sw = g.slot_states.roll_from(parent);
         sw.state_mut().slot = slot;
-        sw.push_block_root(root);
         sw.commit()
     };
+    // The block-roots column, written where `process_slot` writes it.
+    let roll_block_roots =
+        |st: &mut BeaconStateOwner, parent: BlockRootsId, slot: Slot, root: B256| {
+            let mut g = st.write();
+            let mut w = g.block_roots.roll_from(parent);
+            w.set((slot % SLOTS_PER_HISTORICAL_ROOT as u64) as u32, root);
+            w.commit()
+        };
     let roll_balances = |st: &mut BeaconStateOwner, parent| {
         let mut g = st.write();
         g.balances.roll_from(parent).commit()
     };
 
-    // F: child of anchor (to be finalized). One cumulative `block_root`.
-    // Each fork's bundle copies its parent's and re-points the rolled
-    // tiers (slot + balances here, the others shared for this test).
+    // F: child of anchor (to be finalized). Each fork's bundle copies its
+    // parent's and re-points the rolled tiers (slot + balances + block roots
+    // here, the others shared for this test).
     let f_id = StateId {
         balances_idx: roll_balances(&mut tile.state, anchor_id.balances_idx),
-        slot_idx: roll_slot(&mut tile.state, anchor_id.slot_idx, 1, F_ROOT),
+        slot_idx: roll_slot(&mut tile.state, anchor_id.slot_idx, 1),
+        block_roots_idx: roll_block_roots(&mut tile.state, anchor_id.block_roots_idx, 1, F_ROOT),
         ..anchor_id
     };
 
-    // D: child of F (head, survives). Inherits F's block_roots via
-    // `reset_from`, appends its own → [F_ROOT, D_ROOT].
+    // D: child of F (head, survives). Shares F's pages for slot 1 and writes
+    // its own bucket for slot 2.
     let d_id = StateId {
         balances_idx: roll_balances(&mut tile.state, f_id.balances_idx),
-        slot_idx: roll_slot(&mut tile.state, f_id.slot_idx, 2, D_ROOT),
+        slot_idx: roll_slot(&mut tile.state, f_id.slot_idx, 2),
+        block_roots_idx: roll_block_roots(&mut tile.state, f_id.block_roots_idx, 2, D_ROOT),
         ..f_id
     };
 
     // F2: sibling of F (will be pruned by fork choice).
     let f2_id = StateId {
         balances_idx: roll_balances(&mut tile.state, anchor_id.balances_idx),
-        slot_idx: roll_slot(&mut tile.state, anchor_id.slot_idx, 1, F2_ROOT),
+        slot_idx: roll_slot(&mut tile.state, anchor_id.slot_idx, 1),
+        block_roots_idx: roll_block_roots(&mut tile.state, anchor_id.block_roots_idx, 1, F2_ROOT),
         ..anchor_id
     };
 
@@ -1674,30 +1682,27 @@ fn multi_fork_finalize_promotes_and_rebases() {
 
     // Sanity: pre-finalize state.
     assert_eq!(tile.state.state().slot_states.finalized_view().slot_number(), 0);
-    let d_slot_view = tile.state.state().slot_states.view(d_id.slot_idx);
-    assert_eq!(d_slot_view.delta_block_roots(), [F_ROOT, D_ROOT]);
+    let d_roots = tile.state.state().block_roots.view(d_id.block_roots_idx);
+    assert_eq!([d_roots.at_slot(1), d_roots.at_slot(2)], [F_ROOT, D_ROOT]);
     assert!(tile.fork_choice.find_node_idx(&F2_ROOT).is_some());
 
     tile.maybe_finalize();
 
-    // (a) Base advanced to F's slot scalars; F's block_root landed in the
-    //     circular buffer at the old finalized slot offset.
+    // (a) Base advanced to F's slot scalars.
     let base = tile.state.state().slot_states.finalized_view();
     assert_eq!(base.slot_number(), 1, "base slot promoted to F's slot");
-    assert_eq!(base.finalized_block_roots()[0], F_ROOT, "F's block_root in base circular buffer");
 
     // (b) F2 pruned from fork choice; F is now node 0 (anchor); D survives.
     assert!(tile.fork_choice.find_node_idx(&F2_ROOT).is_none(), "F2 dropped");
     assert_eq!(tile.fork_choice.find_node_idx(&F_ROOT), Some(0), "F is the new anchor");
     let d_node = tile.fork_choice.find_node_idx(&D_ROOT).expect("D survives");
 
-    // (c) D's cumulative `block_roots` log re-based against the new base:
-    //     F's prefix drained, only D's incremental entry remains. Finalize
-    //     re-anchored D into a fresh slot fork, so re-read its bundle from
-    //     the fork-choice node.
+    // (c) D still reads both roots: F's through the pages the promote moved
+    //     into the base, D's through its own. Finalize re-anchored D into a
+    //     fresh slot fork, so re-read its bundle from the fork-choice node.
     let d_rebased = tile.fork_choice.node(d_node).state_id;
-    let d_slot_view = tile.state.state().slot_states.view(d_rebased.slot_idx);
-    assert_eq!(d_slot_view.delta_block_roots(), [D_ROOT], "D's block_roots drained of F's prefix");
+    let d_roots = tile.state.state().block_roots.view(d_rebased.block_roots_idx);
+    assert_eq!([d_roots.at_slot(1), d_roots.at_slot(2)], [F_ROOT, D_ROOT], "D's roots survive");
 
     // (d) D was the head, so `last_applied` got the same re-anchored
     //     bundle (not the stale pre-finalize one).

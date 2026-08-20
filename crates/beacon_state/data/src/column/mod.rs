@@ -3,6 +3,7 @@ mod group;
 mod list;
 mod pool;
 mod progressive_list;
+mod roots;
 mod snapshot;
 mod store;
 mod subtree;
@@ -15,6 +16,10 @@ mod tests;
 use format::{MAX_SEGS, seg_off};
 pub use group::ColumnGroup;
 pub use pool::PageArray;
+pub use roots::{
+    BlockRoots, BlockRootsGroup, BlockRootsId, RootsView, RootsWriteView, StateRoots,
+    StateRootsGroup, StateRootsId,
+};
 pub use silver_ssz::scalar::SszScalar;
 pub use view::{ColumnReader, ColumnWriteView};
 

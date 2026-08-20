@@ -339,32 +339,6 @@ pub fn check_proposer_index(sidecar: &[u8], expected_proposer_index: u64) -> boo
     DataColumnSidecarFuluView::proposer_index(sidecar) == expected_proposer_index
 }
 
-/// Validations 4 + 5: sidecar's `parent_root` has been seen AND validated.
-///
-/// Silver's design pushes a block root into the slot delta's
-/// `block_roots` only after fork choice has validated the block, so
-/// membership in the union of (finalized canonical block_roots) ∪
-/// (post-finalization delta block_roots) is equivalent to "seen and
-/// validated". `not present` means either not-yet-seen or invalid; the
-/// caller resolves IGNORE vs REJECT severity from external context.
-///
-/// `finalized_block_roots` is the slot-indexed circular buffer (length
-/// `SLOTS_PER_HISTORICAL_ROOT`). `delta_block_roots` is the appended
-/// post-finalization set. Delta is checked first — virtually every live
-/// sidecar's parent resolves there; the finalized scan is a defensive
-/// fall-through.
-pub fn parent_validated(
-    sidecar: &[u8],
-    finalized_block_roots: &[B256],
-    delta_block_roots: &[B256],
-    store_head_root: &B256,
-) -> bool {
-    let parent_root = DataColumnSidecarFuluView::parent_root(sidecar);
-    parent_root == store_head_root ||
-        delta_block_roots.iter().any(|r| r == parent_root) ||
-        finalized_block_roots.iter().any(|r| r == parent_root)
-}
-
 /// Validation: BLS signature on the embedded `signed_block_header` is
 /// valid under the proposer pubkey.
 ///

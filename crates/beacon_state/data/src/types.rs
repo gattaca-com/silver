@@ -1,6 +1,7 @@
 use crate::{
-    BalancesId, BuildersId, CurrentParticipationId, DecomposeError, EpochId, Eth1Id, InactivityId,
-    LongtailId, PendingId, PreviousParticipationId, SlashingsId, SlotStateId, ValidatorsId,
+    BalancesId, BlockRootsId, BuildersId, CurrentParticipationId, DecomposeError, EpochId, Eth1Id,
+    InactivityId, LongtailId, PendingId, PreviousParticipationId, SlashingsId, SlotStateId,
+    StateRootsId, ValidatorsId,
     decompose::common::{b256, u32_le, u64_le},
     gloas::{
         BUILDER_PENDING_PAYMENTS_LEN, BuilderPendingPayment, EXECUTION_PAYLOAD_AVAILABILITY_BYTES,
@@ -84,6 +85,8 @@ pub struct StateId {
     pub current_participation_idx: CurrentParticipationId,
     pub inactivity_idx: InactivityId,
     pub slashings_idx: SlashingsId,
+    pub block_roots_idx: BlockRootsId,
+    pub state_roots_idx: StateRootsId,
     pub slot_idx: SlotStateId,
     /// Empty until the Gloas fork.
     pub builders_idx: BuildersId,

@@ -152,12 +152,8 @@ impl ColumnValidator {
                 // outside that window we cannot resolve here.
                 let lookahead_idx = slot.wrapping_sub(state_epoch * SLOTS_PER_EPOCH) as usize;
                 let expected_proposer = v.epoch.proposer_at(lookahead_idx);
-                let parent_validated = util::parent_validated(
-                    buffer,
-                    v.slot.finalized_block_roots(),
-                    v.slot.delta_block_roots(),
-                    sync_state.head_root(),
-                );
+                let parent_validated = parent_root == sync_state.head_root() ||
+                    v.block_roots.contains(parent_root, v.slot.slot_number());
                 let is_above_finalized =
                     util::is_above_finalized(buffer, v.epoch.state().finalized_checkpoint.epoch);
                 (
