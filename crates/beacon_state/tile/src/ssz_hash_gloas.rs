@@ -18,7 +18,7 @@ use crate::{
         B256, MerkleStack, ZERO_HASH, hash_fixed_bytes, hash_list, hash_uint64_vector, hash_vector,
         merkleize, uint64_chunk,
     },
-    ssz_hash::{StateHashScratch, hash_common_fields},
+    ssz_hash::hash_common_fields,
 };
 
 /// The gloas `BeaconState` ProgressiveContainer; the in-memory state has no
@@ -30,10 +30,10 @@ impl ProgressiveContainer for BeaconStateGloas {
 }
 
 impl BeaconStateGloas {
-    pub(crate) fn hash_tree_root(rv: &StateReadView, scratch: &mut StateHashScratch) -> B256 {
+    pub(crate) fn hash_tree_root(rv: &StateReadView) -> B256 {
         // [Modified in Gloas] `latest_block_hash` (Hash32) replaces the header.
         let slot = rv.slot.state();
-        let common = hash_common_fields(rv, scratch, slot.latest_block_hash);
+        let common = hash_common_fields(rv, slot.latest_block_hash);
 
         let mut fields = [[0u8; 32]; 46];
         fields[..38].copy_from_slice(&common);

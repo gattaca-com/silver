@@ -10,7 +10,7 @@ use flux_profiler::timed;
 
 use crate::{
     reanchor::reanchor_survivors,
-    ring::{Id, Reset, Ring, RingGroup},
+    ring::{Id, Ring, RingGroup},
     types::EPOCHS_RING_N,
 };
 
@@ -79,35 +79,25 @@ impl EpochGroup {
         }
     }
 
-    /// Copy a survivor into a fresh slot and drop the promoted log prefix
-    /// (pre-promotion). The survivor stays frozen — append-only.
-    fn reanchor(&mut self, survivor: EpochId, winner: EpochId) -> EpochWriteView<'_> {
+    /// Copy a survivor into a fresh slot so finalization can free the ring
+    /// below it. The delta is a full working copy of the scalars, so nothing
+    /// rebases against the new base.
+    fn reanchor(&mut self, survivor: EpochId) -> EpochWriteView<'_> {
         let Self { finalized, deltas } = self;
-        let (mut fork, old, winner_delta) = deltas.roll_fresh_deriving(survivor, winner);
-        fork.reset_from(old);
-        fork.prune_to_base(winner_delta);
-        EpochWriteView::new(finalized, fork)
+        EpochWriteView::new(finalized, deltas.roll_from(survivor))
     }
 
-    /// Re-anchor each survivor against the promoted `winner` into fresh slots
-    /// (deduped), then promote the winner into the finalized state
-    /// (circular-buffer write at `old_fin_epoch`). Mirrors
-    /// [`SlotStateGroup::finalize`](crate:: SlotStateGroup), with the extra
-    /// `old_fin_epoch` offset the epoch circular buffers need.
+    /// Re-anchor each survivor into a fresh slot (deduped), then adopt the
+    /// winner's scalars as the finalized base.
     #[timed]
-    pub fn finalize(
-        &mut self,
-        winner: EpochId,
-        survivors: &[EpochId],
-        old_fin_epoch: usize,
-    ) -> Vec<EpochId> {
+    pub fn finalize(&mut self, winner: EpochId, survivors: &[EpochId]) -> Vec<EpochId> {
         debug_assert!(survivors.contains(&winner), "winner must be among the survivors");
         self.deltas.free_outdated(survivors);
 
-        let fresh = reanchor_survivors(survivors, |s| self.reanchor(s, winner).commit());
+        let fresh = reanchor_survivors(survivors, |s| self.reanchor(s).commit());
 
         let Self { finalized, deltas } = self;
-        finalized.promote(deltas.get(winner), old_fin_epoch);
+        finalized.promote(deltas.get(winner));
 
         deltas.free_outdated(&fresh);
 

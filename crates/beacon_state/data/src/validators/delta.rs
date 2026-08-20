@@ -444,6 +444,19 @@ impl<'a> ValidatorsView<'a> {
         sum
     }
 
+    pub fn active_indices_into(self, epoch: Epoch, out: &mut Vec<u32>) {
+        out.clear();
+        let mut act = self.iter_activation_epochs();
+        let mut exit = self.iter_exit_epochs();
+        for i in 0..self.count() {
+            let a = act.next().unwrap();
+            let x = exit.next().unwrap();
+            if a <= epoch && epoch < x {
+                out.push(i as u32);
+            }
+        }
+    }
+
     pub fn iter_activation_epochs(self) -> impl Iterator<Item = Epoch> + 'a {
         let base_count = self.base_count();
         self.delta.activation_epoch_edits.sweep(

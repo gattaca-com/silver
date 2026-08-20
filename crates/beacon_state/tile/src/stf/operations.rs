@@ -6,7 +6,7 @@ use silver_beacon_state_data::{
     BalancesWriteView, Epoch, Immutable, PENDING_CONSOLIDATIONS_LIMIT,
     PENDING_PARTIAL_WITHDRAWALS_LIMIT, PendingConsolidation, PendingDeposit,
     PendingPartialWithdrawal, PendingWriteView, SLOTS_PER_EPOCH, SpecConfig, StateWriterView,
-    ValidatorsView, ValidatorsWriteView, Withdrawals, append_validator,
+    ValidatorsView, ValidatorsWriteView, Withdrawals,
 };
 use silver_common::ssz_view::{
     CONSOLIDATION_REQUEST_SIZE, ConsolidationRequestView, DEPOSIT_CONTRACT_TREE_DEPTH,
@@ -527,7 +527,7 @@ fn apply_deposit(
             return Err(Error::SkipDepositBadSig { index: view.slot.state().eth1_deposit_index });
         }
         let pubkey_decompressed = PublicKey::from_bytes(pubkey).unwrap_or_default();
-        append_validator(view, *pubkey, pubkey_decompressed, *credentials);
+        view.append_validator(*pubkey, pubkey_decompressed, *credentials);
     }
 
     view.pending.deposits.push(PendingDeposit {

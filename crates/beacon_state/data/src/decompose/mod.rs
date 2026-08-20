@@ -101,13 +101,6 @@ mod tests {
         assert!(est.previous_justified_checkpoint.epoch <= est.current_justified_checkpoint.epoch);
         assert!(est.current_justified_checkpoint.epoch <= cur_epoch);
 
-        // The derived cache matches the resolved circular-buffer entry.
-        let hv = epoch.randao_mixes.len();
-        assert_eq!(
-            slot_view.state().randao_mix_current,
-            epoch.randao_mixes[cur_epoch as usize % hv]
-        );
-
         // Sync-committee indices either resolve to a real validator or are
         // sentinel u32::MAX (committee pubkey not in the registry).
         for (i, idx) in longtail.sync_committee_indices.iter().enumerate() {

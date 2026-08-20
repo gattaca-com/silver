@@ -1,6 +1,6 @@
 use silver_beacon_state_data::{
-    Builder, EpochView, EpochWriteView, ExecutionPayloadBid, FAR_FUTURE_EPOCH, Fork,
-    MIN_SEED_LOOKAHEAD, PendingDeposit, SLOTS_PER_EPOCH, StateWriterView,
+    Builder, EpochWriteView, ExecutionPayloadBid, FAR_FUTURE_EPOCH, Fork, MIN_SEED_LOOKAHEAD,
+    PendingDeposit, SLOTS_PER_EPOCH, StateWriterView,
     gloas::{
         EXECUTION_PAYLOAD_AVAILABILITY_BYTES, PTC_WINDOW_LEN, PtcCommittee, zeroed_ptc_window,
     },
@@ -45,7 +45,7 @@ pub fn upgrade_to_gloas(view: &mut StateWriterView, epoch: &mut EpochWriteView) 
         // which is the inherited slot state's default.
     }
 
-    let window = build_ptc_window(view, &epoch.reader());
+    let window = build_ptc_window(view);
     epoch.set_ptc_window(window);
 
     onboard_builders_from_pending_deposits(view);
@@ -55,14 +55,11 @@ pub fn upgrade_to_gloas(view: &mut StateWriterView, epoch: &mut EpochWriteView) 
 
 /// `initialize_ptc_window`: the empty previous epoch followed by the PTCs for
 /// the current and lookahead epochs.
-fn build_ptc_window(
-    view: &StateWriterView,
-    epoch: &EpochView,
-) -> Box<[PtcCommittee; PTC_WINDOW_LEN]> {
+fn build_ptc_window(view: &StateWriterView) -> Box<[PtcCommittee; PTC_WINDOW_LEN]> {
     let mut window = zeroed_ptc_window();
-    let slot = view.slot.reader();
+    let randao = view.randao_mixes.reader();
     let validators = view.validators.reader();
-    let current_epoch = slot.state().slot / SLOTS_PER_EPOCH;
+    let current_epoch = view.slot.state().slot / SLOTS_PER_EPOCH;
 
     // window[0..SLOTS_PER_EPOCH] is the empty previous epoch (left zero); the
     // current + lookahead epochs follow.
@@ -72,8 +69,7 @@ fn build_ptc_window(
         fill_epoch_ptc(
             &mut window[out..out + SLOTS_PER_EPOCH as usize],
             &validators,
-            &slot,
-            epoch,
+            &randao,
             current_epoch + e,
             &mut active,
         );

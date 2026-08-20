@@ -1,16 +1,12 @@
 use super::{EpochGroup, EpochId, finalized::EpochStateFinalized};
 use crate::{
     gloas::{PTC_WINDOW_LEN, PtcCommittee, zeroed_ptc_window},
-    reanchor::drain_promoted_prefix,
     ring::{Reset, Slot as RingSlot},
-    types::{B256, Epoch, EpochState, Fork, SLOTS_PER_EPOCH, Version},
+    types::{Epoch, EpochState, Fork, SLOTS_PER_EPOCH, Version},
 };
 
 #[derive(Clone)]
 pub(crate) struct EpochStateDelta {
-    // one entry per completed epoch since finalization
-    pub(super) randao_mixes: Vec<B256>,
-    // one entry per completed epoch since finalization
     pub(super) state: EpochState,
     // [New in Gloas]
     pub(super) ptc_window: Box<[PtcCommittee; PTC_WINDOW_LEN]>,
@@ -18,26 +14,12 @@ pub(crate) struct EpochStateDelta {
 
 impl Default for EpochStateDelta {
     fn default() -> Self {
-        Self {
-            randao_mixes: Vec::new(),
-            state: EpochState::default(),
-            ptc_window: zeroed_ptc_window(),
-        }
-    }
-}
-
-impl EpochStateDelta {
-    /// Drop the promoted prefix of the per-completed-epoch logs (now folded
-    /// into the base) — the reanchor half of finalization, run on a fresh copy
-    /// of a survivor.
-    pub(super) fn prune_to_base(&mut self, promoted: &EpochStateDelta) {
-        drain_promoted_prefix(&mut self.randao_mixes, promoted.randao_mixes.len());
+        Self { state: EpochState::default(), ptc_window: zeroed_ptc_window() }
     }
 }
 
 impl Reset for EpochStateDelta {
     fn reset(&mut self) {
-        self.randao_mixes.clear();
         self.state = Default::default();
         // `ptc_window` is left as-is: every roll re-seeds it via
         // `seed_from_base` (roll_fresh) or `reset_from`, so zeroing the 393 KB
@@ -45,7 +27,6 @@ impl Reset for EpochStateDelta {
     }
 
     fn reset_from(&mut self, other: &Self) {
-        self.randao_mixes.clone_from(&other.randao_mixes);
         self.state = other.state;
         self.ptc_window.clone_from(&other.ptc_window);
     }
@@ -53,9 +34,7 @@ impl Reset for EpochStateDelta {
 
 /// Value-layer read over the epoch tier (base + optional per-fork delta). The
 /// delta is `Some` for a fork that crossed an epoch boundary, else `None` and
-/// reads fall through to the base. The circular-buffer overlay needs the
-/// finalized epoch (`fin_epoch`) from the slot tier, so the relevant reads take
-/// it as an argument.
+/// reads fall through to the base.
 #[derive(Clone, Copy)]
 pub struct EpochView<'a> {
     base: &'a EpochStateFinalized,
@@ -87,22 +66,6 @@ impl<'a> EpochView<'a> {
     }
 
     #[inline]
-    pub fn finalized_randao_mixes(&self) -> &'a [B256] {
-        &self.base.randao_mixes
-    }
-
-    #[inline]
-    pub fn delta_randao_mixes(&self) -> &'a [B256] {
-        self.delta.map_or(&[][..], |d| &d.randao_mixes)
-    }
-
-    /// `randao_mix(epoch)` with the epoch-delta overlay (see
-    /// [`ring_overlay_at`]).
-    pub fn randao_mix_at_epoch(&self, epoch: Epoch, fin_epoch: Epoch) -> B256 {
-        ring_overlay_at(&self.base.randao_mixes, self.delta_randao_mixes(), epoch, fin_epoch)
-    }
-
-    #[inline]
     pub fn fork(&self) -> &'a Fork {
         &self.state().fork
     }
@@ -123,21 +86,6 @@ impl<'a> EpochView<'a> {
         let f = &self.state().fork;
         (f.epoch, f.previous_version, f.current_version)
     }
-}
-
-/// Circular-buffer read at `epoch` with the fork-delta overlay, walked in
-/// reverse so a wrapped position hits the most recent override. Convention:
-/// delta entry `k` is the final value for epoch `fin_epoch + k`, at position
-/// `(fin_epoch + k) % cap`.
-fn ring_overlay_at<T: Copy>(base_ring: &[T], delta_log: &[T], epoch: Epoch, fin_epoch: Epoch) -> T {
-    let cap = base_ring.len();
-    let target_pos = epoch as usize % cap;
-    for (k, v) in delta_log.iter().enumerate().rev() {
-        if (fin_epoch as usize + k) % cap == target_pos {
-            return *v;
-        }
-    }
-    base_ring[target_pos]
 }
 
 pub struct EpochWriteView<'a> {
@@ -180,16 +128,10 @@ impl<'a> EpochWriteView<'a> {
     }
 
     /// Seed the fresh fork's scalar `EpochState` + `ptc_window` from the
-    /// finalized base; the per-completed-epoch logs stay empty (cleared by
-    /// `reset`).
+    /// finalized base.
     #[inline]
     pub(super) fn seed_from_base(&mut self) {
         self.fork.state = self.base.state;
         self.fork.ptc_window.clone_from(&self.base.ptc_window);
-    }
-
-    #[inline]
-    pub fn push_randao_mix(&mut self, m: B256) {
-        self.fork.randao_mixes.push(m);
     }
 }

@@ -149,12 +149,6 @@ impl BeaconStateTile {
         let mut guard = self.state.write();
         let bs = &mut *guard;
 
-        // Old finalized epoch — the epoch tier overlays its ring at
-        // `(old_fin_epoch + k) % …`. Read from the (still-old) slot-group
-        // base before its finalize.
-        let old_fin_epoch =
-            (bs.slot_states.finalized_view().slot_number() / SLOTS_PER_EPOCH) as usize;
-
         // The always-rolled tiers finalize in their own groups — re-anchor
         // each survivor against the winner (pin pre-promote values + prune
         // redundancy), then promote the winner into the base. Each base is
@@ -179,6 +173,7 @@ impl BeaconStateTile {
         bs.inactivity.finalize(&promoted, survivors, |s| s.inactivity_idx);
         bs.block_roots.finalize(&promoted, survivors, |s| s.block_roots_idx);
         bs.state_roots.finalize(&promoted, survivors, |s| s.state_roots_idx);
+        bs.randao_mixes.finalize(&promoted, survivors, |s| s.randao_idx);
         rebase_tier(
             promoted,
             survivors,
@@ -209,7 +204,7 @@ impl BeaconStateTile {
             survivors,
             epoch_idxs,
             |s| &mut s.epoch_idx,
-            |winner| bs.epoch.finalize(winner, epoch_idxs, old_fin_epoch),
+            |winner| bs.epoch.finalize(winner, epoch_idxs),
         );
         rebase_lazy_tier(
             promoted,

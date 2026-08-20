@@ -1,9 +1,6 @@
 use blst::min_pk::PublicKey;
 use flux_profiler::timed;
-use silver_beacon_state_data::{
-    B256, EPOCHS_PER_HISTORICAL_VECTOR, Epoch, MIN_SEED_LOOKAHEAD, SLOTS_PER_EPOCH, StateReadView,
-    randao_mix_at_epoch,
-};
+use silver_beacon_state_data::{B256, Epoch, SLOTS_PER_EPOCH, StateReadView};
 
 use crate::{
     bls,
@@ -46,13 +43,9 @@ impl ShufflingEntry {
         self.shuffled_indices.clear();
         self.committee_aggs.clear();
 
-        shuffling::get_active_validator_indices_into(
-            &view.validators,
-            epoch,
-            &mut self.shuffled_indices,
-        );
-        let seed = shuffling::get_seed(&mix, epoch, DOMAIN_BEACON_ATTESTER);
-        shuffling::shuffle_list(&mut self.shuffled_indices, &seed);
+        view.validators.active_indices_into(epoch, &mut self.shuffled_indices);
+        shuffling::Seed::new(&mix, epoch, DOMAIN_BEACON_ATTESTER)
+            .shuffle(&mut self.shuffled_indices);
 
         self.epoch = epoch;
         self.mix = mix;
@@ -101,11 +94,10 @@ impl ShufflingCache {
         })
     }
 
-    /// The effective randao mix epoch driving `get_seed(_, epoch, ATTESTER)`
-    /// (one `randao_mixes[]` slot, `MIN_SEED_LOOKAHEAD` ahead of the boundary).
+    /// Cached alongside the shuffling because it is the validity key: a
+    /// different mix for the same epoch means the shuffle must be redone.
     fn mix(view: &StateReadView, epoch: Epoch) -> B256 {
-        let mix_epoch = epoch + EPOCHS_PER_HISTORICAL_VECTOR as u64 - MIN_SEED_LOOKAHEAD - 1;
-        randao_mix_at_epoch(&view.epoch, &view.slot, mix_epoch)
+        view.randao_mixes.seed_mix(epoch)
     }
 
     fn window(epoch: Epoch) -> impl Iterator<Item = Epoch> {

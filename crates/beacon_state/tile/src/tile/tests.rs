@@ -2,9 +2,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use flux::timing::Nanos;
 use silver_beacon_state_data::{
-    BLSPubkey, BeaconBlockHeader, BeaconState, BlockRootsId, EPOCHS_PER_HISTORICAL_VECTOR,
-    EpochState, EpochStateFinalized, Immutable, PROPOSER_LOOKAHEAD_SIZE, PendingDeposit,
-    SLOTS_PER_HISTORICAL_ROOT, SlotStateId, ValSeed, Withdrawals,
+    BLSPubkey, BeaconBlockHeader, BeaconState, BlockRootsId, EpochState, EpochStateFinalized,
+    Immutable, PROPOSER_LOOKAHEAD_SIZE, PendingDeposit, SLOTS_PER_HISTORICAL_ROOT, SlotStateId,
+    ValSeed, Withdrawals,
 };
 use silver_common::{
     GossipTopic, MessageId, P2pStreamId, StreamProtocol, TCache, TCacheProducer, TProducer,
@@ -117,17 +117,14 @@ fn placeholder_pubkey(i: usize) -> BLSPubkey {
     pk
 }
 
-/// Epoch-tier base with zeroed rings and the given checkpoints seeded —
-/// the harness analog of a decomposed anchor.
+/// Epoch-tier base with the given checkpoints seeded — the harness analog of
+/// a decomposed anchor.
 fn epoch_base_with(justified: Checkpoint, finalized: Checkpoint) -> EpochStateFinalized {
-    EpochStateFinalized::from_parts(
-        EpochState {
-            current_justified_checkpoint: justified,
-            finalized_checkpoint: finalized,
-            ..Default::default()
-        },
-        vec![[0u8; 32]; EPOCHS_PER_HISTORICAL_VECTOR].into_boxed_slice(),
-    )
+    EpochStateFinalized::from_state(EpochState {
+        current_justified_checkpoint: justified,
+        finalized_checkpoint: finalized,
+        ..Default::default()
+    })
 }
 
 /// Build seed bases with `n` active validators (MAX effective balance,

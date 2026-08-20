@@ -1,6 +1,6 @@
 use super::{delta::SlotStateDelta, epoch_balances::EpochBalances};
 use crate::{
-    DecomposeError, EpochStateFinalized,
+    DecomposeError,
     decompose::{
         common::{F2, F4, F8, F10, F25, F26, F28, F30, F31, F32, F33, Offsets, b256, u64_le},
         gloas::{
@@ -15,10 +15,7 @@ use crate::{
         BUILDER_PENDING_PAYMENTS_LEN, BuilderPendingPayment, EXECUTION_PAYLOAD_AVAILABILITY_BYTES,
         ExecutionPayloadBid, MAX_WITHDRAWALS_PER_PAYLOAD, Withdrawal,
     },
-    types::{
-        BeaconBlockHeader, EPOCHS_PER_HISTORICAL_VECTOR, Eth1Data, ExecutionPayloadHeader,
-        SLOTS_PER_EPOCH, SlotState,
-    },
+    types::{BeaconBlockHeader, Eth1Data, ExecutionPayloadHeader, SlotState},
 };
 
 // SSZ-serialised sizes of the Gloas fixed-width records.
@@ -53,11 +50,7 @@ impl SlotStateFinalized {
         self.epoch_balances = delta.epoch_balances;
     }
 
-    pub(crate) fn from_ssz_fulu(
-        ssz: &[u8],
-        o: &Offsets,
-        epoch: &EpochStateFinalized,
-    ) -> Result<Self, DecomposeError> {
+    pub(crate) fn from_ssz_fulu(ssz: &[u8], o: &Offsets) -> Result<Self, DecomposeError> {
         let mut slot = SlotState {
             slot: u64_le(ssz, F2),
             latest_block_header: BeaconBlockHeader::from_ssz(&ssz[F4..]),
@@ -76,20 +69,11 @@ impl SlotStateFinalized {
         slot.latest_execution_payload_header =
             ExecutionPayloadHeader::from_ssz(&ssz[o.eph..o.hist_summaries])?;
 
-        // Derived per-block accumulator: seed from the current epoch's bucket.
-        let current_epoch = slot.slot / SLOTS_PER_EPOCH;
-        slot.randao_mix_current =
-            epoch.randao_mixes[current_epoch as usize % EPOCHS_PER_HISTORICAL_VECTOR];
-
         Ok(Self::new(slot))
     }
 
-    pub(crate) fn from_ssz_gloas(
-        ssz: &[u8],
-        off: &GloasOffsets,
-        epoch: &EpochStateFinalized,
-    ) -> Result<Self, DecomposeError> {
-        let mut slot = SlotState {
+    pub(crate) fn from_ssz_gloas(ssz: &[u8], off: &GloasOffsets) -> Result<Self, DecomposeError> {
+        let slot = SlotState {
             slot: u64_le(ssz, F2),
             latest_block_header: BeaconBlockHeader::from_ssz(&ssz[F4..]),
             eth1_data: Eth1Data::from_ssz(&ssz[F8..]),
@@ -109,13 +93,9 @@ impl SlotStateFinalized {
                 &ssz[off.latest_execution_payload_bid..off.payload_expected_withdrawals],
             )?,
             payload_expected_withdrawals: read_expected_withdrawals(ssz, off)?,
-            // `latest_execution_payload_header` has no Gloas SSZ field (default);
-            // the two `*_current` accumulators seed from the epoch base below.
+            // `latest_execution_payload_header` has no Gloas SSZ field.
             ..Default::default()
         };
-
-        let current_epoch = (slot.slot / SLOTS_PER_EPOCH) as usize;
-        slot.randao_mix_current = epoch.randao_mixes[current_epoch % EPOCHS_PER_HISTORICAL_VECTOR];
 
         Ok(Self::new(slot))
     }

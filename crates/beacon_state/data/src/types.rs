@@ -1,7 +1,7 @@
 use crate::{
     BalancesId, BlockRootsId, BuildersId, CurrentParticipationId, DecomposeError, EpochId, Eth1Id,
-    InactivityId, LongtailId, PendingId, PreviousParticipationId, SlashingsId, SlotStateId,
-    StateRootsId, ValidatorsId,
+    InactivityId, LongtailId, PendingId, PreviousParticipationId, RandaoMixesId, SlashingsId,
+    SlotStateId, StateRootsId, ValidatorsId,
     decompose::common::{b256, u32_le, u64_le},
     gloas::{
         BUILDER_PENDING_PAYMENTS_LEN, BuilderPendingPayment, EXECUTION_PAYLOAD_AVAILABILITY_BYTES,
@@ -87,6 +87,7 @@ pub struct StateId {
     pub slashings_idx: SlashingsId,
     pub block_roots_idx: BlockRootsId,
     pub state_roots_idx: StateRootsId,
+    pub randao_idx: RandaoMixesId,
     pub slot_idx: SlotStateId,
     /// Empty until the Gloas fork.
     pub builders_idx: BuildersId,
@@ -96,7 +97,6 @@ pub struct StateId {
 // ([`crate::Eth1Group`]).
 #[derive(Clone)]
 pub struct SlotState {
-    pub randao_mix_current: B256,
     pub eth1_data: Eth1Data,
     pub eth1_deposit_index: u64,
     pub slot: Slot,
@@ -122,7 +122,6 @@ pub struct SlotState {
 impl Default for SlotState {
     fn default() -> Self {
         Self {
-            randao_mix_current: B256::default(),
             eth1_data: Eth1Data::default(),
             eth1_deposit_index: 0,
             slot: 0,

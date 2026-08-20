@@ -3,6 +3,7 @@ mod group;
 mod list;
 mod pool;
 mod progressive_list;
+mod randao;
 mod roots;
 mod snapshot;
 mod store;
@@ -16,6 +17,9 @@ mod tests;
 use format::{MAX_SEGS, seg_off};
 pub use group::ColumnGroup;
 pub use pool::PageArray;
+pub use randao::{
+    RandaoMixes, RandaoMixesGroup, RandaoMixesId, RandaoMixesView, RandaoMixesWriteView,
+};
 pub use roots::{
     BlockRoots, BlockRootsGroup, BlockRootsId, RootsView, RootsWriteView, StateRoots,
     StateRootsGroup, StateRootsId,

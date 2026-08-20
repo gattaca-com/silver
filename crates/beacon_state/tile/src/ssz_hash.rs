@@ -3,7 +3,7 @@ use silver_beacon_state_data::{
     self as common, BeaconBlockHeader, Checkpoint, EPOCHS_PER_HISTORICAL_VECTOR,
     EPOCHS_PER_SLASHINGS_VECTOR, Eth1Data, ExecutionPayloadHeader, Fork, HISTORICAL_ROOTS_LIMIT,
     LongtailView, MAX_ETH1_VOTES, SLOTS_PER_HISTORICAL_ROOT, SYNC_COMMITTEE_SIZE, StateReadView,
-    SyncCommittee, effective_randao_mixes_into,
+    SyncCommittee,
 };
 use silver_common::merkle::*;
 pub use silver_common::ssz_hash::*;
@@ -31,28 +31,10 @@ pub fn hash_eth1_data(e: &Eth1Data) -> B256 {
     merkleize(&chunks)
 }
 
-/// Reusable buffer for the merged `randao_mixes` ring, so repeated
-/// `hash_tree_root_state` calls (one per `process_slot`) don't re-allocate
-/// `EPOCHS_PER_HISTORICAL_VECTOR * 32` = 2 MB every time.
-pub struct StateHashScratch {
-    randao_mixes: Vec<B256>,
-}
-
-impl StateHashScratch {
-    #[allow(clippy::new_without_default)]
-    pub fn new() -> Self {
-        Self { randao_mixes: Vec::with_capacity(EPOCHS_PER_HISTORICAL_VECTOR) }
-    }
-}
-
 #[inline]
 #[timed]
-pub fn hash_tree_root_state(rv: &StateReadView, scratch: &mut StateHashScratch) -> B256 {
-    if rv.is_gloas() {
-        BeaconStateGloas::hash_tree_root(rv, scratch)
-    } else {
-        hash_tree_root_state_fulu(rv, scratch)
-    }
+pub fn hash_tree_root_state(rv: &StateReadView) -> B256 {
+    if rv.is_gloas() { BeaconStateGloas::hash_tree_root(rv) } else { hash_tree_root_state_fulu(rv) }
 }
 
 // TODO(perf): full re-merkleization every block + every process_slot.
@@ -65,18 +47,11 @@ pub fn hash_tree_root_state(rv: &StateReadView, scratch: &mut StateHashScratch) 
 /// Pure read over a fork's [`StateReadView`] — the caller resolves the bundle
 /// (including the boundary tiers, fresh at each call: a boundary
 /// `process_epoch` re-rolls them mid-`process_slots`).
-pub(crate) fn hash_common_fields(
-    rv: &StateReadView,
-    scratch: &mut StateHashScratch,
-    execution_field: B256,
-) -> [B256; 38] {
+pub(crate) fn hash_common_fields(rv: &StateReadView, execution_field: B256) -> [B256; 38] {
     let imm = rv.imm;
     let slot = rv.slot.state();
     let es = rv.epoch.state();
     let lt = rv.longtail.state();
-
-    effective_randao_mixes_into(&rv.epoch, &rv.slot, &mut scratch.randao_mixes);
-    let randao_mixes = scratch.randao_mixes.as_slice();
 
     [
         uint64_chunk(imm.genesis_time),
@@ -92,7 +67,7 @@ pub(crate) fn hash_common_fields(
         uint64_chunk(slot.eth1_deposit_index),
         rv.validators.hash_root(),
         rv.balances.hash_root(),
-        hash_b256_vector(randao_mixes),
+        rv.randao_mixes.hash_root(),
         rv.slashings.hash_root(),
         rv.previous_participation.hash_root(),
         rv.current_participation.hash_root(),
@@ -120,9 +95,9 @@ pub(crate) fn hash_common_fields(
     ]
 }
 
-fn hash_tree_root_state_fulu(rv: &StateReadView, scratch: &mut StateHashScratch) -> B256 {
+fn hash_tree_root_state_fulu(rv: &StateReadView) -> B256 {
     let header = hash_execution_payload_header(&rv.slot.state().latest_execution_payload_header);
-    merkleize(&hash_common_fields(rv, scratch, header))
+    merkleize(&hash_common_fields(rv, header))
 }
 
 // ---------------------------------------------------------------------------

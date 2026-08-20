@@ -6,14 +6,12 @@ pub use column::{
     CurrentParticipationGroup, CurrentParticipationId, Inactivity, InactivityId,
     InactivityScoresGroup, InactivityView, InactivityWriteView, ParticipationView,
     ParticipationWriteView, Previous, PreviousParticipationGroup, PreviousParticipationId,
-    RootsView, RootsWriteView, Slashings, SlashingsGroup, SlashingsId, SlashingsView,
-    SlashingsWriteView, StateRoots, StateRootsGroup, StateRootsId,
+    RandaoMixes, RandaoMixesGroup, RandaoMixesId, RandaoMixesView, RandaoMixesWriteView, RootsView,
+    RootsWriteView, Slashings, SlashingsGroup, SlashingsId, SlashingsView, SlashingsWriteView,
+    StateRoots, StateRootsGroup, StateRootsId,
 };
 pub use decompose::DecomposeError;
-pub use delta_view::{
-    StateReadView, StateWriterView, append_validator, effective_randao_mixes_into,
-    randao_mix_at_epoch,
-};
+pub use delta_view::{StateReadView, StateWriterView};
 pub use encode::{FULU_CHECKPOINT_SECTIONS, PubkeysDecodeError, decode_checkpoint_pubkeys};
 pub use epoch::{EpochGroup, EpochId, EpochStateFinalized, EpochView, EpochWriteView};
 pub use eth1::{Eth1Group, Eth1Id, Eth1View, Eth1Votes, Eth1WriteView};
@@ -86,10 +84,13 @@ pub struct BeaconState {
     /// `process_slot` overwrites one bucket in each per slot.
     pub block_roots: BlockRootsGroup,
     pub state_roots: StateRootsGroup,
+    /// `randao_mixes` — `Vector[Bytes32, 65536]` at slot cadence: the current
+    /// epoch's bucket absorbs one reveal per block.
+    pub randao_mixes: RandaoMixesGroup,
     /// Slot tier (`SlotState` scalars) — own ring, rolled every slot; its base
     /// holds the canonical finalized slot.
     pub slot_states: SlotStateGroup,
-    /// Epoch tier (`EpochState` + randao/slashings rings) and longtail tier
+    /// Epoch tier (`EpochState` + Gloas' PTC window) and longtail tier
     /// (sync committees + historical summaries) — own rings, rolled lazily at
     /// epoch / rotation boundaries; their bases hold the canonical finalized
     /// state.
@@ -120,6 +121,7 @@ impl BeaconState {
             slashings_idx: self.slashings.roll_fresh().commit(),
             block_roots_idx: self.block_roots.roll_fresh().commit(),
             state_roots_idx: self.state_roots.roll_fresh().commit(),
+            randao_idx: self.randao_mixes.roll_fresh().commit(),
             slot_idx: self.slot_states.roll_fresh().commit(),
             validators_idx: self.validators.roll_fresh().commit(),
             builders_idx: self.builders.roll_fresh().commit(),
@@ -148,6 +150,7 @@ impl BeaconState {
             slashings: self.slashings.roll_from(parent.slashings_idx),
             block_roots: self.block_roots.roll_from(parent.block_roots_idx),
             state_roots: self.state_roots.roll_from(parent.state_roots_idx),
+            randao_mixes: self.randao_mixes.roll_from(parent.randao_idx),
             slot: self.slot_states.roll_from(parent.slot_idx),
             validators: self.validators.roll_from(parent.validators_idx),
             builders: self.builders.roll_from(parent.builders_idx),
@@ -175,6 +178,7 @@ impl BeaconState {
             slashings: self.slashings.view(state_id.slashings_idx),
             block_roots: self.block_roots.view(state_id.block_roots_idx),
             state_roots: self.state_roots.view(state_id.state_roots_idx),
+            randao_mixes: self.randao_mixes.view(state_id.randao_idx),
             inactivity: self.inactivity.view(state_id.inactivity_idx),
             slot: self.slot_states.view(state_id.slot_idx),
             validators: self.validators.view(state_id.validators_idx),
@@ -225,6 +229,7 @@ impl BeaconState {
             slashings: SlashingsGroup::zeroed_vector(),
             block_roots: BlockRootsGroup::zeroed_vector(),
             state_roots: StateRootsGroup::zeroed_vector(),
+            randao_mixes: RandaoMixesGroup::zeroed_vector(),
             slot_states: SlotStateGroup::new(
                 SlotStateFinalized::new(SlotState { slot, ..Default::default() })
                     .with_epoch_balances(epoch_balances),

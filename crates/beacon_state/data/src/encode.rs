@@ -13,7 +13,7 @@ use blst::min_pk::PublicKey;
 use crate::{
     BeaconState,
     decompose::{FULU_FIXED_PART, gloas::GLOAS_FIXED_PART},
-    types::{B256, Checkpoint, Eth1Data, SLOTS_PER_EPOCH, SyncCommittee},
+    types::{B256, Checkpoint, Eth1Data, SyncCommittee},
 };
 
 // SSZ-serialised sizes of the fixed-width records (Fulu); mirror `decompose`.
@@ -385,15 +385,8 @@ impl BeaconState {
         w_u32(w, off[2])?;
         w_u32(w, off[3])?;
 
-        // F13 randao_mixes — the current epoch's bucket reaches the array tier
-        // only at the epoch boundary, so mid-epoch the live value is
-        // `randao_mix_current` (as `effective_randao_mixes_into` substitutes it
-        // for hashing).
-        let current_epoch = (sl.slot / SLOTS_PER_EPOCH) as usize;
-        let randao_curr = current_epoch % epoch_base.randao_mixes.len();
-        write_b256_slice(w, &epoch_base.randao_mixes[..randao_curr])?;
-        w.write_all(&sl.randao_mix_current)?;
-        write_b256_slice(w, &epoch_base.randao_mixes[randao_curr + 1..])?;
+        // F13 randao_mixes.
+        self.randao_mixes.write_ssz(w)?;
         // F14 slashings.
         self.slashings.write_ssz(w)?;
 
@@ -610,8 +603,8 @@ pub fn decode_checkpoint_pubkeys(bytes: &[u8]) -> Result<Vec<PublicKey>, Pubkeys
 #[cfg(test)]
 mod tests {
     use crate::{
-        BeaconState, EpochGroup, EpochStateFinalized, SlotState, SlotStateFinalized,
-        SlotStateGroup, SpecConfig, decode_checkpoint_pubkeys, encode::Section,
+        BeaconState, EpochGroup, EpochStateFinalized, SpecConfig, decode_checkpoint_pubkeys,
+        encode::Section,
     };
 
     /// `encode → decompose → encode` must be a byte-exact fixed point, and the
@@ -679,38 +672,6 @@ mod tests {
             }
         }
         assert_eq!(once, streamed, "gloas chunk-streamed SSZ differs from one-pass");
-    }
-
-    /// Regression: a checkpoint persisted mid-epoch must encode the *live*
-    /// current-epoch randao mix (the `randao_mix_current` cache), not the stale
-    /// array bucket — that bucket is only refreshed at the epoch boundary.
-    /// (`slashings` has no such hazard: its column holds the live values.)
-    #[test]
-    fn encode_uses_live_current_epoch_randao_mix() {
-        let cur = 3usize;
-        let mut bs = BeaconState::empty_test(0);
-
-        // A stale ring bucket, distinct from the live `randao_mix_current` the
-        // encode path must emit instead.
-        let mut epoch = EpochStateFinalized::default();
-        epoch.randao_mixes[cur] = [0xAA; 32];
-        bs.epoch = EpochGroup::new(epoch);
-
-        let slot = SlotState {
-            slot: 96, // epoch 3
-            randao_mix_current: [0xBB; 32],
-            ..Default::default()
-        };
-        bs.slot_states = SlotStateGroup::new(SlotStateFinalized::new(slot));
-
-        let mut ssz = Vec::with_capacity(bs.ssz_len());
-        bs.encode_ssz(&mut ssz).unwrap();
-        let decoded = BeaconState::decompose(&ssz, &SpecConfig::mainnet(), None).unwrap();
-
-        let de = decoded.epoch.finalized();
-        let ds = decoded.slot_states.finalized().state();
-        assert_eq!(de.randao_mixes[cur], [0xBB; 32], "randao current bucket = live");
-        assert_eq!(ds.randao_mix_current, [0xBB; 32]);
     }
 
     /// Write the decompressed-pubkey sidecar, decode it, rebuild the validators

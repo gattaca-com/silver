@@ -1,12 +1,9 @@
 use blst::min_pk::PublicKey;
 use silver_beacon_state_data::{
-    Epoch, EpochView, SLOTS_PER_EPOCH, Slot, SlotStateView, StateReadView, ValidatorsView,
+    Epoch, RandaoMixesView, SLOTS_PER_EPOCH, Slot, StateReadView, ValidatorsView,
 };
 
-use crate::shuffling::{
-    DOMAIN_BEACON_ATTESTER, committees_per_slot, get_active_validator_indices_into,
-    get_seed_from_state, shuffle_list,
-};
+use crate::shuffling::{DOMAIN_BEACON_ATTESTER, Seed, committees_per_slot};
 
 /// One epoch's attester shuffling and the committee split it implies.
 pub struct EpochShuffling<'a> {
@@ -25,20 +22,19 @@ pub struct EpochShuffling<'a> {
 impl<'a> EpochShuffling<'a> {
     /// Attester shuffling for `epoch`, seeded from the state's randao ring.
     pub fn from_state(rv: &StateReadView, epoch: Epoch, buf: &'a mut Vec<u32>) -> Self {
-        Self::from_views(&rv.validators, &rv.slot, &rv.epoch, epoch, buf)
+        Self::from_views(&rv.validators, &rv.randao_mixes, epoch, buf)
     }
 
     pub fn from_views(
         validators: &ValidatorsView,
-        slot: &SlotStateView,
-        state_epoch: &EpochView,
+        randao: &RandaoMixesView,
         epoch: Epoch,
         buf: &'a mut Vec<u32>,
     ) -> Self {
-        let seed = get_seed_from_state(state_epoch, slot, epoch, DOMAIN_BEACON_ATTESTER);
+        let seed = Seed::from_randao(randao, epoch, DOMAIN_BEACON_ATTESTER);
         let built_against = validators.count();
-        get_active_validator_indices_into(validators, epoch, buf);
-        shuffle_list(buf, &seed);
+        validators.active_indices_into(epoch, buf);
+        seed.shuffle(buf);
         Self::new(buf, built_against)
     }
 

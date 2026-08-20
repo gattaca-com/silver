@@ -1,6 +1,6 @@
 use silver_beacon_state_data::{SLOTS_PER_EPOCH, SpecConfig, StateReadView};
 
-use crate::{shuffling, stf::EFFECTIVE_BALANCE_INCREMENT};
+use crate::stf::EFFECTIVE_BALANCE_INCREMENT;
 
 const SAFETY_DECAY: u64 = 10;
 const MIN_WITHDRAWABILITY_DELAY: u64 = 256;
@@ -19,7 +19,7 @@ const CHURN_LIMIT_QUOTIENT: u64 = 1 << 16;
 pub(crate) fn weak_subjectivity_period_fulu(view: &StateReadView, scratch: &mut Vec<u32>) -> u64 {
     let epoch = view.slot.state().slot / SLOTS_PER_EPOCH;
     scratch.clear();
-    shuffling::get_active_validator_indices_into(&view.validators, epoch, scratch);
+    view.validators.active_indices_into(epoch, scratch);
     let n = scratch.len() as u64;
     if n == 0 {
         return MIN_WITHDRAWABILITY_DELAY;
@@ -58,7 +58,7 @@ pub(crate) fn weak_subjectivity_period_gloas(
 ) -> u64 {
     let epoch = view.slot.state().slot / SLOTS_PER_EPOCH;
     scratch.clear();
-    shuffling::get_active_validator_indices_into(&view.validators, epoch, scratch);
+    view.validators.active_indices_into(epoch, scratch);
     if scratch.is_empty() {
         return MIN_WITHDRAWABILITY_DELAY;
     }
