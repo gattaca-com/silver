@@ -18,7 +18,7 @@ silver_common::declare_counters! {
         AttestationRootMemoHit,
         AttestationRootMemoMiss,
         // Positional slot retained: the pending queue flushes at its fixed
-        // batch size, so this can no longer be reached.
+        // batch size, so it is never reached.
         PendingSingleAttestationFull,
         PendingSingleAttestationDuplicate,
         SingleAttestationBatchRuns,

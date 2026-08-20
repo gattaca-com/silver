@@ -246,8 +246,9 @@ mod tests {
         let mut memo = AttestationRootMemo::default();
         let d = data(5, 3);
         let sr_a = memo.roots(&d, &DOMAIN_A);
-        assert_roots(&mut memo, &d, &DOMAIN_B);
-        assert_ne!(memo.roots(&d, &DOMAIN_B).signing_root, sr_a.signing_root);
+        let sr_b = assert_roots(&mut memo, &d, &DOMAIN_B);
+        assert_eq!(sr_b.group, sr_a.group);
+        assert_ne!(sr_b.signing_root, sr_a.signing_root);
         // Flipping back re-derives rather than serving DOMAIN_A's stale cache.
         assert_roots(&mut memo, &d, &DOMAIN_A);
         // Domain churn updates the entry in place, never grows the map.

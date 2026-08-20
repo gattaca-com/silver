@@ -547,11 +547,7 @@ pub struct VerifiedSingleAttestation {
     pub signature: Signature,
 }
 
-/// Verify a single-attester `SingleAttestation` (gossip subnet form) against
-/// caller-derived roots (they repeat across a slot's attestations, so the
-/// caller memoizes them). The body-included aggregate path goes through
-/// `stf::validate_attestations` + `SigBatch`.
-#[timed]
+/// Single-verification baseline used to compare batching performance.
 pub fn verify_single_attestation(
     att: &[u8; SINGLE_ATT_SIZE],
     attester_pubkey: &PublicKey,

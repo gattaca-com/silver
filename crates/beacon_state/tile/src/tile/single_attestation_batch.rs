@@ -163,7 +163,7 @@ mod tests {
     }
 
     #[test]
-    fn verification_groups_entries_by_fork_bound_signing_root() {
+    fn fallback_entries_group_by_fork_bound_signing_root() {
         let entries = vec![pending(8, 1, 0, [4u8; 32]), pending(9, 1, 1, [5u8; 32])];
         assert_eq!(EntryVerifier::default().verify(&entries), [true, true]);
     }

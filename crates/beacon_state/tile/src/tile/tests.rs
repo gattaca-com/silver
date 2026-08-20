@@ -91,11 +91,23 @@ fn make_tile_with_gossip(wall_slot: u64) -> (BeaconStateTile, TProducer) {
     (tile, gossip_p)
 }
 
-/// Publish a minimal block (slot at offset 100) into `producer` and wrap it
-/// as a buffered gossip orphan whose slot the tile can read back.
+fn minimal_signed_block(slot: Slot, parent_root: &B256) -> Vec<u8> {
+    const MESSAGE_OFFSET: usize = 4 + 96;
+    const SLOT_SIZE: usize = 8;
+    const PROPOSER_INDEX_SIZE: usize = 8;
+    const PARENT_ROOT_SIZE: usize = 32;
+
+    let parent_root_offset = MESSAGE_OFFSET + SLOT_SIZE + PROPOSER_INDEX_SIZE;
+    let mut block = vec![0u8; 200];
+    block[MESSAGE_OFFSET..MESSAGE_OFFSET + SLOT_SIZE].copy_from_slice(&slot.to_le_bytes());
+    block[parent_root_offset..parent_root_offset + PARENT_ROOT_SIZE].copy_from_slice(parent_root);
+    block
+}
+
+/// Publish a minimal block and wrap it as a buffered gossip orphan whose slot
+/// the tile can read back.
 fn gossip_pending(producer: &mut TProducer, slot: u64) -> PendingBlock {
-    let mut bytes = vec![0u8; 200];
-    bytes[100..108].copy_from_slice(&slot.to_le_bytes());
+    let bytes = minimal_signed_block(slot, &[0u8; 32]);
     let mut r = producer.reserve(bytes.len(), true).expect("reserve");
     if let Ok(buf) = r.buffer() {
         buf[..bytes.len()].copy_from_slice(&bytes);
@@ -324,13 +336,10 @@ fn block_unknown_parent_rejected() {
     let mut tile = make_tile();
     seed_tile(&mut tile, 4, 10);
 
-    // Minimal SignedBeaconBlock: message at fixed offset 100 (4-byte
-    // offset + 96-byte signature), parent_root @ 116 set to an unknown
-    // root so precheck bails with ParentMissing before any state change.
-    let mut buf = vec![0u8; 200];
-    buf[100..108].copy_from_slice(&11u64.to_le_bytes()); // slot
-    buf[108..116].copy_from_slice(&0u64.to_le_bytes()); // proposer_index
-    buf[116] = 0xFF; // parent_root[0]
+    // An unknown parent makes precheck bail before any state change.
+    let mut unknown_parent = [0u8; 32];
+    unknown_parent[0] = 0xFF;
+    let buf = minimal_signed_block(11, &unknown_parent);
 
     let head_before = tile.last_applied;
     let nodes_before = tile.fork_choice.nodes.len();
@@ -685,10 +694,7 @@ fn block_known_parent_bad_sig_rejected() {
 
     // Valid structure, zeroed BLS signature → precheck reaches and fails
     // signature verification, so no fork-choice node is added.
-    let mut buf = vec![0u8; 200];
-    buf[100..108].copy_from_slice(&11u64.to_le_bytes()); // slot
-    buf[108..116].copy_from_slice(&0u64.to_le_bytes()); // proposer_index
-    buf[116..148].copy_from_slice(&parent_root); // parent_root
+    let buf = minimal_signed_block(11, &parent_root);
 
     let _ = match tile.parse_and_verify_block(&buf, false) {
         Ok(parsed) => tile.apply_and_publish(parsed, &buf, false, |_block_root| {}),
@@ -1035,6 +1041,86 @@ fn deferred_single_attestation_marks_seen_and_routes_feedback_only_at_verdict() 
     assert_eq!(relay_metadata.msg_hash, message.msg_hash);
     assert_eq!(relay_metadata.recv_ts, message.recv_ts);
     assert_eq!(relay_metadata.protobuf.seq(), message.protobuf.seq());
+}
+
+#[test]
+fn beacon_block_dispatch_flushes_queued_attestation_before_feedback() {
+    struct EventSink;
+    impl Tile<SilverSpine> for EventSink {
+        fn loop_body(&mut self, _: &mut SpineAdapter<SilverSpine>) {}
+    }
+
+    let (mut tile, mut producer, mut spine, mut adapter) = tile_with_producers(31);
+    seed_tile_with_keys(&mut tile, 128, 0);
+    let (slot, committee_index, _, _) = find_committee_for_vi0(&tile);
+    let subnet = expected_subnet(&tile, slot, committee_index);
+    let block_root = tile.last_applied_block_root;
+    let attestation = test_signing::sign_single_attestation(
+        0,
+        0,
+        committee_index as u64,
+        slot,
+        block_root,
+        slot / SLOTS_PER_EPOCH,
+        block_root,
+        &seed_immutable(&tile),
+    );
+    let mut reservation = producer.reserve(attestation.len(), true).unwrap();
+    reservation.buffer().unwrap().copy_from_slice(&attestation);
+    reservation.increment_offset(attestation.len());
+    let attestation_read = reservation.read();
+    producer.publish_head();
+    let attestation_hash = MessageId { id: [0xA1; 20] };
+    let attestation_message = NewGossipMsg {
+        stream_id: P2pStreamId::new(77, 9, StreamProtocol::Unset, true),
+        topic: GossipTopic::BeaconAttestation(subnet),
+        msg_hash: attestation_hash,
+        recv_ts: Nanos(123),
+        ssz: attestation_read,
+        protobuf: attestation_read,
+    };
+    assert!(matches!(
+        tile.admit_attestation(&attestation, subnet, Some(attestation_message)),
+        AttestationAdmission::Queued
+    ));
+
+    let block = minimal_signed_block(slot + 1, &block_root);
+    let mut reservation = producer.reserve(block.len(), true).unwrap();
+    reservation.buffer().unwrap().copy_from_slice(&block);
+    reservation.increment_offset(block.len());
+    let block_read = reservation.read();
+    producer.publish_head();
+
+    let sink = EventSink;
+    let mut sink_adapter = SpineAdapter::connect_tile(&sink, &mut spine);
+    sink_adapter.consume(|_: PeerEvent, _| {});
+    tile.handle_gossip(
+        block_read,
+        NewGossipMsg {
+            stream_id: P2pStreamId::new(78, 10, StreamProtocol::Unset, true),
+            topic: GossipTopic::BeaconBlock,
+            msg_hash: MessageId { id: [0xB2; 20] },
+            recv_ts: Nanos(124),
+            ssz: block_read,
+            protobuf: block_read,
+        },
+        true,
+        false,
+        &mut adapter.producers,
+    );
+
+    assert!(tile.single_attestation_batch.is_empty());
+    assert!(tile.seen_attesters.contains(slot / SLOTS_PER_EPOCH, 0));
+    let mut peer_events = Vec::new();
+    sink_adapter.consume(|event: PeerEvent, _| peer_events.push(event));
+    let PeerEvent::SendGossip { msg_hash, .. } = peer_events.first().unwrap() else {
+        panic!("attestation relay must precede block feedback");
+    };
+    assert_eq!(*msg_hash, attestation_hash);
+    let PeerEvent::P2pGossipInvalidMsg { hash, .. } = &peer_events[1] else {
+        panic!("bad block must emit invalid feedback after the attestation relay");
+    };
+    assert_eq!(hash.id, [0xB2; 20]);
 }
 
 #[test]
