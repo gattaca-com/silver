@@ -1,5 +1,3 @@
-use std::collections::VecDeque;
-
 use blst::min_pk::{PublicKey, Signature};
 use rustc_hash::FxHashSet;
 use silver_beacon_state_data::B256;
@@ -32,7 +30,7 @@ pub(super) struct PendingAttestation {
 }
 
 pub(super) struct SingleAttestationBatch {
-    pending: VecDeque<PendingAttestation>,
+    pending: Vec<PendingAttestation>,
     keys: FxHashSet<(u64, usize)>,
     verifier: verifier::EntryVerifier,
 }
@@ -40,7 +38,7 @@ pub(super) struct SingleAttestationBatch {
 impl Default for SingleAttestationBatch {
     fn default() -> Self {
         Self {
-            pending: VecDeque::with_capacity(BATCH_CHUNK),
+            pending: Vec::with_capacity(BATCH_CHUNK),
             keys: FxHashSet::default(),
             verifier: verifier::EntryVerifier::default(),
         }
@@ -55,7 +53,7 @@ impl SingleAttestationBatch {
             return false;
         }
         debug_assert!(self.pending.len() < BATCH_CHUNK);
-        self.pending.push_back(entry);
+        self.pending.push(entry);
         true
     }
 
@@ -67,13 +65,15 @@ impl SingleAttestationBatch {
         self.pending.len() == BATCH_CHUNK
     }
 
-    pub(super) fn take_chunk(&mut self) -> Vec<PendingAttestation> {
-        let count = self.pending.len().min(BATCH_CHUNK);
-        let entries: Vec<_> = self.pending.drain(..count).collect();
-        for entry in &entries {
-            self.keys.remove(&(entry.target_epoch, entry.attester_index));
-        }
+    pub(super) fn take_pending(&mut self) -> Vec<PendingAttestation> {
+        let entries = std::mem::take(&mut self.pending);
+        self.keys.clear();
         entries
+    }
+
+    pub(super) fn restore_pending_buffer(&mut self, mut entries: Vec<PendingAttestation>) {
+        entries.clear();
+        self.pending = entries;
     }
 
     pub(super) fn verify(&mut self, entries: &[PendingAttestation]) -> Vec<bool> {
@@ -94,7 +94,6 @@ mod tests {
         super::super::bls::DST, BATCH_CHUNK, PendingAttestation, SingleAttestationBatch,
         verifier::EntryVerifier,
     };
-    use crate::tile::attestation_root_memo::AttestationRootGroup;
 
     fn signed(seed: u8, message: [u8; 32]) -> (PublicKey, [u8; 96]) {
         let mut ikm = [0u8; 32];
@@ -147,31 +146,25 @@ mod tests {
             let entry = PendingAttestation { attester_index, ..template.clone() };
             assert!(batch.enqueue(entry));
         }
-        assert_eq!(batch.take_chunk().len(), BATCH_CHUNK);
+        assert_eq!(batch.take_pending().len(), BATCH_CHUNK);
+    }
+
+    #[test]
+    fn pending_chunk_storage_is_reused() {
+        let mut batch = SingleAttestationBatch::default();
+        batch.enqueue(pending(7, 5, 0, [3u8; 32]));
+        let entries = batch.take_pending();
+        let capacity = entries.capacity();
+        batch.restore_pending_buffer(entries);
+
+        batch.enqueue(pending(8, 5, 1, [3u8; 32]));
+        assert_eq!(batch.take_pending().capacity(), capacity);
     }
 
     #[test]
     fn verification_groups_entries_by_fork_bound_signing_root() {
-        let group = Some(AttestationRootGroup::for_test(0));
-        let entries = vec![
-            PendingAttestation { root_group: group, ..pending(8, 1, 0, [4u8; 32]) },
-            PendingAttestation { root_group: group, ..pending(9, 1, 1, [5u8; 32]) },
-        ];
+        let entries = vec![pending(8, 1, 0, [4u8; 32]), pending(9, 1, 1, [5u8; 32])];
         assert_eq!(EntryVerifier::default().verify(&entries), [true, true]);
-    }
-
-    #[test]
-    fn one_memo_group_partitions_multiple_entries_by_signing_root() {
-        let group = Some(AttestationRootGroup::for_test(0));
-        let mut entries = vec![
-            PendingAttestation { root_group: group, ..pending(12, 1, 0, [7u8; 32]) },
-            PendingAttestation { root_group: group, ..pending(13, 1, 1, [7u8; 32]) },
-            PendingAttestation { root_group: group, ..pending(14, 1, 2, [8u8; 32]) },
-            PendingAttestation { root_group: group, ..pending(15, 1, 3, [8u8; 32]) },
-        ];
-        entries[3].signature = pending(16, 1, 4, [8u8; 32]).signature;
-
-        assert_eq!(EntryVerifier::default().verify(&entries), [true, true, true, false]);
     }
 
     #[test]

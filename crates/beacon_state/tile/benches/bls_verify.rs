@@ -94,7 +94,7 @@ fn verify_sequential(entries: &[(PublicKey, Signature)], message: &B256) -> usiz
 fn bench_same_message_attribution(c: &mut Criterion) {
     let message = [0x42u8; 32];
     let mut group = c.benchmark_group("same_message_128");
-    for invalid in [0, 1, 8, 16, 128] {
+    for invalid in [0, 1, 2, 4, 8, 16, 128] {
         let SameMessageCase { mut batch, entries } = same_message_case(invalid);
         group.bench_function(format!("invalid_{invalid}"), |b| {
             b.iter(|| {

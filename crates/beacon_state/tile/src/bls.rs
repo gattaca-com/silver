@@ -192,6 +192,8 @@ fn fill_nonzero_scalars(bytes: &mut Vec<u8>, count: usize) -> bool {
     if SystemRandom::new().fill(bytes).is_err() {
         return false;
     }
+    // A zero weight removes its tuple from the pairing sum, leaving that
+    // signature unchecked even when the aggregate verifies.
     for scalar in bytes.chunks_exact_mut(8) {
         if scalar.iter().all(|&byte| byte == 0) {
             scalar[0] = 1;
@@ -392,7 +394,9 @@ pub struct SameMessageBatch {
     weighted_verifies: Cell<usize>,
 }
 
-const MAX_WEIGHTED_ATTRIBUTION_DEPTH: usize = 1;
+// Three split levels keep sparse failures near the uncapped fast path while
+// bounding an all-invalid batch to 15 weighted checks plus exact attribution.
+const MAX_WEIGHTED_ATTRIBUTION_DEPTH: usize = 3;
 
 impl SameMessageBatch {
     pub fn push(&mut self, public_key: PublicKey, signature: Signature) {
@@ -415,6 +419,8 @@ impl SameMessageBatch {
     }
 
     pub fn verify(&mut self, message: &B256) -> &[bool] {
+        // Validate every signature once so all verification below can disable
+        // group checks, including weighted aggregates of these same points.
         self.subgroup_valid.clear();
         self.subgroup_valid.extend(self.signatures.iter().map(|signature| {
             #[cfg(test)]

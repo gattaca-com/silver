@@ -40,14 +40,9 @@ impl EntryVerifier {
             }
         }
         for &group in &self.touched {
-            Self::verify_groups(
-                &mut self.batch,
-                &mut self.verdicts,
-                entries,
-                &mut self.buckets[group],
-            );
+            Self::verify_group(&mut self.batch, &mut self.verdicts, entries, &self.buckets[group]);
         }
-        Self::verify_groups(&mut self.batch, &mut self.verdicts, entries, &mut self.fallback);
+        Self::verify_fallback(&mut self.batch, &mut self.verdicts, entries, &mut self.fallback);
         std::mem::take(&mut self.verdicts)
     }
 
@@ -65,7 +60,19 @@ impl EntryVerifier {
         self.verdicts.resize(len, false);
     }
 
-    fn verify_groups(
+    fn verify_group(
+        batch: &mut SameMessageBatch,
+        verdicts: &mut [bool],
+        entries: &[PendingAttestation],
+        indices: &[usize],
+    ) {
+        let Some(&first) = indices.first() else { return };
+        let signing_root = entries[first].signing_root;
+        debug_assert!(indices.iter().all(|&index| entries[index].signing_root == signing_root));
+        Self::verify_indices(batch, verdicts, entries, indices, &signing_root);
+    }
+
+    fn verify_fallback(
         batch: &mut SameMessageBatch,
         verdicts: &mut [bool],
         entries: &[PendingAttestation],
@@ -78,16 +85,24 @@ impl EntryVerifier {
             let end = start +
                 indices[start..]
                     .partition_point(|&index| entries[index].signing_root == signing_root);
-            batch.clear();
-            for &index in &indices[start..end] {
-                batch.push(entries[index].public_key, entries[index].signature);
-            }
-            for (&index, valid) in
-                indices[start..end].iter().zip(batch.verify(&signing_root).iter().copied())
-            {
-                verdicts[index] = valid;
-            }
+            Self::verify_indices(batch, verdicts, entries, &indices[start..end], &signing_root);
             start = end;
+        }
+    }
+
+    fn verify_indices(
+        batch: &mut SameMessageBatch,
+        verdicts: &mut [bool],
+        entries: &[PendingAttestation],
+        indices: &[usize],
+        signing_root: &[u8; 32],
+    ) {
+        batch.clear();
+        for &index in indices {
+            batch.push(entries[index].public_key, entries[index].signature);
+        }
+        for (&index, valid) in indices.iter().zip(batch.verify(signing_root).iter().copied()) {
+            verdicts[index] = valid;
         }
     }
 }
@@ -138,11 +153,11 @@ mod tests {
             batch.push(pairs[index].0, Signature::from_bytes(&pairs[(index + 1) % 128].1).unwrap());
         }
         assert_eq!(batch.verify(&message), vec![false; 128]);
-        assert_eq!(batch.operation_counts(), (128, 128, 3));
+        assert_eq!(batch.operation_counts(), (128, 128, 15));
     }
 
     #[test]
-    fn invalid_signatures_in_both_halves_are_attributed_at_the_bound() {
+    fn sparse_invalid_signatures_only_fall_back_in_failed_subtrees() {
         let message = [13u8; 32];
         let pairs: Vec<_> = (0..128u8).map(|index| signed(index + 1, message)).collect();
         let invalid_indices = [10, 100];
@@ -157,6 +172,6 @@ mod tests {
             expected[index] = false;
         }
         assert_eq!(batch.verify(&message), expected);
-        assert_eq!(batch.operation_counts(), (128, 128, 3));
+        assert_eq!(batch.operation_counts(), (128, 32, 11));
     }
 }

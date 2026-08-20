@@ -1014,7 +1014,7 @@ fn deferred_single_attestation_marks_seen_and_routes_feedback_only_at_verdict() 
         AttestationAdmission::Queued
     ));
     assert!(!tile.seen_attesters.contains(slot / SLOTS_PER_EPOCH, 0));
-    let pending = tile.single_attestation_batch.take_chunk().pop().unwrap();
+    let pending = tile.single_attestation_batch.take_pending().pop().unwrap();
 
     let invalid = tile.apply_single_attestation_verdict(pending.clone(), false);
     assert!(!tile.seen_attesters.contains(slot / SLOTS_PER_EPOCH, 0));

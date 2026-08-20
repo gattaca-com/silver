@@ -211,31 +211,32 @@ impl BeaconStateTile {
     }
 
     pub(super) fn flush_single_attestations(&mut self, producers: &mut Producers) {
-        while !self.single_attestation_batch.is_empty() {
-            let entries = self.single_attestation_batch.take_chunk();
-            let verdicts = self.single_attestation_batch.verify(&entries);
-            BeaconStateCounters::SingleAttestationBatchRuns.inc();
-            BeaconStateCounters::SingleAttestationBatchItems.add(entries.len() as u64);
-            if verdicts.iter().any(|&valid| !valid) {
-                BeaconStateCounters::SingleAttestationBatchFailures.inc();
-            }
-            for (entry, &valid) in entries.into_iter().zip(&verdicts) {
-                match self.apply_single_attestation_verdict(entry, valid) {
-                    SingleAttestationVerdict::Relay(relay) => {
-                        relay.relay(producers);
-                        self.on_accept(None, producers);
-                    }
-                    SingleAttestationVerdict::Invalid(relay) => {
-                        producers.produce(PeerEvent::P2pGossipInvalidMsg {
-                            p2p_peer: relay.stream_id.peer(),
-                            topic: relay.topic,
-                            hash: relay.msg_hash,
-                        });
-                    }
+        if self.single_attestation_batch.is_empty() {
+            return;
+        }
+        let mut entries = self.single_attestation_batch.take_pending();
+        let verdicts = self.single_attestation_batch.verify(&entries);
+        BeaconStateCounters::SingleAttestationBatchRuns.inc();
+        BeaconStateCounters::SingleAttestationBatchItems.add(entries.len() as u64);
+        let invalid = verdicts.iter().filter(|&&valid| !valid).count();
+        BeaconStateCounters::SingleAttestationBatchFailures.add(invalid as u64);
+        for (entry, &valid) in entries.drain(..).zip(&verdicts) {
+            match self.apply_single_attestation_verdict(entry, valid) {
+                SingleAttestationVerdict::Relay(relay) => {
+                    relay.relay(producers);
+                    self.on_accept(None, producers);
+                }
+                SingleAttestationVerdict::Invalid(relay) => {
+                    producers.produce(PeerEvent::P2pGossipInvalidMsg {
+                        p2p_peer: relay.stream_id.peer(),
+                        topic: relay.topic,
+                        hash: relay.msg_hash,
+                    });
                 }
             }
-            self.single_attestation_batch.recycle_verdicts(verdicts);
         }
+        self.single_attestation_batch.restore_pending_buffer(entries);
+        self.single_attestation_batch.recycle_verdicts(verdicts);
     }
 
     pub(super) fn apply_single_attestation_verdict(
@@ -788,6 +789,16 @@ impl BeaconStateTile {
         pre_verified: bool,
         producers: &mut Producers,
     ) {
+        if matches!(
+            m.topic,
+            GossipTopic::BeaconBlock |
+                GossipTopic::ExecutionPayload |
+                GossipTopic::PayloadAttestationMessage
+        ) {
+            // These topics can recompute the canonical head and change the
+            // fork domain used by later attestations in this gossip drain.
+            self.flush_single_attestations(producers);
+        }
         let acquired = self.gossip_consumer.acquire(read);
         let Some(data) = acquired.buffer().ok().map(|(d, _)| d) else { return };
 

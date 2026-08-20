@@ -541,6 +541,8 @@ impl BeaconStateTile {
         let floor = slot.saturating_sub(1);
         self.attestation_pool.prune_before(floor);
         self.seen_aggregates.prune_before(floor);
+        // Pruning recycles dense root-group IDs, so no queued entry may retain
+        // an ID across this boundary.
         debug_assert!(self.single_attestation_batch.is_empty());
         self.attestation_root_memo.prune_before(floor);
         advanced

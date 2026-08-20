@@ -8,6 +8,7 @@ use crate::{bls, counters::BeaconStateCounters, ssz_hash};
 /// floor retains two slots; the rest is headroom. Adversarial distinct-value
 /// spray past the cap only costs the recompute it would cost without a memo.
 const MAX_ENTRIES: usize = 64;
+const _: () = assert!(MAX_ENTRIES <= u64::BITS as usize);
 
 struct Roots {
     data_root: B256,
@@ -39,11 +40,6 @@ impl AttestationRootGroup {
 
     pub(crate) fn index(self) -> usize {
         usize::from(self.0)
-    }
-
-    #[cfg(test)]
-    pub(crate) const fn for_test(index: u8) -> Self {
-        Self(index)
     }
 }
 
@@ -231,6 +227,16 @@ mod tests {
     }
 
     #[test]
+    fn repeated_data_keeps_group_and_signing_root() {
+        let mut memo = AttestationRootMemo::default();
+        let d = data(5, 3);
+        let first = memo.roots(&d, &DOMAIN_A);
+        let repeated = memo.roots(&d, &DOMAIN_A);
+        assert_eq!(repeated, first);
+        assert_eq!(memo.len(), 1);
+    }
+
+    #[test]
     fn domain_change_never_serves_stale_signing_root() {
         let mut memo = AttestationRootMemo::default();
         let d = data(5, 3);
@@ -310,8 +316,13 @@ mod tests {
         let mut memo = AttestationRootMemo::default();
         let first = data(5, 1);
         let second = data(5, 2);
-        let first_group = assert_roots(&mut memo, &first, &DOMAIN_A).group.unwrap();
-        assert_eq!(assert_roots(&mut memo, &first, &DOMAIN_B).group, Some(first_group));
+        let first_lookup = assert_roots(&mut memo, &first, &DOMAIN_A);
+        let first_group = first_lookup.group.unwrap();
+        let repeated = assert_roots(&mut memo, &first, &DOMAIN_A);
+        assert_eq!(
+            (repeated.group, repeated.signing_root),
+            (Some(first_group), first_lookup.signing_root)
+        );
         assert_ne!(assert_roots(&mut memo, &second, &DOMAIN_A).group, Some(first_group));
 
         memo.prune_before(6);

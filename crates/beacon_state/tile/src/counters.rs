@@ -17,7 +17,6 @@ silver_common::declare_counters! {
         // aggregates inflate Miss without ever becoming votes.
         AttestationRootMemoHit,
         AttestationRootMemoMiss,
-        PendingSingleAttestationFull,
         PendingSingleAttestationDuplicate,
         SingleAttestationBatchRuns,
         SingleAttestationBatchItems,
