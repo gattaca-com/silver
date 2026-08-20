@@ -205,11 +205,11 @@ impl BeaconStateTile {
         }
         BeaconStateCounters::AttestationBatchSize.set(self.att_batch.len() as u64);
 
-        let batch = std::mem::take(&mut self.att_batch);
         self.att_sig_batch.clear();
         debug_assert!(self.att_pending.is_empty());
 
-        for m in &batch {
+        while !self.att_batch.is_empty() {
+            let m = self.att_batch.swap_remove(0);
             let GossipTopic::BeaconAttestation(subnet) = m.topic else { continue };
             let acquired = self.gossip_consumer.acquire(m.ssz);
             let Some(data) = acquired.buffer().ok().map(|(d, _)| d) else { continue };
@@ -223,7 +223,7 @@ impl BeaconStateTile {
                         continue;
                     }
                     self.att_sig_batch.push_parsed(&p.pubkey, p.signature, p.signing_root);
-                    self.att_pending.push((*m, p));
+                    self.att_pending.push((m, p));
                 }
                 Err(Feedback::Reject(_)) => producers.produce(PeerEvent::P2pGossipInvalidMsg {
                     p2p_peer: m.stream_id.peer(),
@@ -233,22 +233,22 @@ impl BeaconStateTile {
                 Err(_) => {}
             }
         }
-        self.att_batch = batch;
-        self.att_batch.clear();
 
         let batch_ok = self.att_sig_batch.verify_all();
         if !batch_ok && !self.att_pending.is_empty() {
             BeaconStateCounters::AttestationBatchFallback.inc();
         }
 
-        let pending = std::mem::take(&mut self.att_pending);
+        //let pending = std::mem::take(&mut self.att_pending);
         let mut accepted = false;
-        for (m, p) in &pending {
+        while !self.att_pending.is_empty() {
+        //for (m, p) in &pending {
+            let (m, p) = self.att_pending.swap_remove(0);
             let valid =
                 batch_ok || bls::verify_one_parsed(&p.pubkey, &p.signature, &p.signing_root);
             if valid {
-                self.commit_attestation(p);
-                Self::relay_gossip(m, producers);
+                self.commit_attestation(&p);
+                Self::relay_gossip(&m, producers);
                 accepted = true;
             } else {
                 producers.produce(PeerEvent::P2pGossipInvalidMsg {
@@ -258,8 +258,6 @@ impl BeaconStateTile {
                 });
             }
         }
-        self.att_pending = pending;
-        self.att_pending.clear();
 
         if accepted {
             self.on_accept(None, producers);
