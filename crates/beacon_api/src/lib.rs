@@ -1,5 +1,7 @@
+mod blocks;
 mod config;
 mod identity;
+mod ids;
 mod json;
 mod node_status;
 mod response;

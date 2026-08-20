@@ -149,10 +149,11 @@ pub(crate) struct PeerCountData {
     pub(crate) connecting: u64,
 }
 
-/// What a state read reports about the snapshot it came from; both flags are
-/// required beside `data` by every `states/{state_id}` schema.
+/// What a read reports about the data it answers with; both flags are
+/// required beside `data` by the `states/{state_id}` schemas and by the block
+/// reads.
 #[derive(Clone, Copy)]
-pub(crate) struct StateFlags {
+pub(crate) struct ReadFlags {
     pub(crate) execution_optimistic: bool,
     pub(crate) finalized: bool,
 }
@@ -166,7 +167,7 @@ impl Json<'_> {
         self.end_object();
     }
 
-    pub(crate) fn state_envelope(&mut self, flags: StateFlags, data: impl FnOnce(&mut Self)) {
+    pub(crate) fn flagged_envelope(&mut self, flags: ReadFlags, data: impl FnOnce(&mut Self)) {
         self.begin_object();
         self.key("execution_optimistic");
         self.bool(flags.execution_optimistic);
@@ -248,6 +249,58 @@ impl Json<'_> {
         self.end_object();
     }
 
+    pub(crate) fn block_root(&mut self, root: &B256) {
+        self.begin_object();
+        self.key("root");
+        self.hex(root);
+        self.end_object();
+    }
+
+    pub(crate) fn block_header(&mut self, header: &BeaconBlockHeader) {
+        self.begin_object();
+        self.key("slot");
+        self.quoted_u64(header.slot);
+        self.key("proposer_index");
+        self.quoted_u64(header.proposer_index);
+        self.key("parent_root");
+        self.hex(&header.parent_root);
+        self.key("state_root");
+        self.hex(&header.state_root);
+        self.key("body_root");
+        self.hex(&header.body_root);
+        self.end_object();
+    }
+
+    pub(crate) fn signed_block_header(
+        &mut self,
+        header: &BeaconBlockHeader,
+        signature: &BLSSignature,
+    ) {
+        self.begin_object();
+        self.key("message");
+        self.block_header(header);
+        self.key("signature");
+        self.hex(signature);
+        self.end_object();
+    }
+
+    pub(crate) fn block_header_data(
+        &mut self,
+        root: &B256,
+        canonical: bool,
+        header: &BeaconBlockHeader,
+        signature: &BLSSignature,
+    ) {
+        self.begin_object();
+        self.key("root");
+        self.hex(root);
+        self.key("canonical");
+        self.bool(canonical);
+        self.key("header");
+        self.signed_block_header(header, signature);
+        self.end_object();
+    }
+
     pub(crate) fn validator(&mut self, validator: &Validator) {
         self.begin_object();
         self.key("pubkey");
@@ -297,34 +350,6 @@ impl Json<'_> {
 /// dead-code checking stays real for the writers already wired up.
 #[allow(dead_code)]
 impl Json<'_> {
-    pub(crate) fn block_header(&mut self, header: &BeaconBlockHeader) {
-        self.begin_object();
-        self.key("slot");
-        self.quoted_u64(header.slot);
-        self.key("proposer_index");
-        self.quoted_u64(header.proposer_index);
-        self.key("parent_root");
-        self.hex(&header.parent_root);
-        self.key("state_root");
-        self.hex(&header.state_root);
-        self.key("body_root");
-        self.hex(&header.body_root);
-        self.end_object();
-    }
-
-    pub(crate) fn signed_block_header(
-        &mut self,
-        header: &BeaconBlockHeader,
-        signature: &BLSSignature,
-    ) {
-        self.begin_object();
-        self.key("message");
-        self.block_header(header);
-        self.key("signature");
-        self.hex(signature);
-        self.end_object();
-    }
-
     pub(crate) fn proposer_duty(&mut self, pubkey: &BLSPubkey, validator_index: u64, slot: u64) {
         self.begin_object();
         self.key("pubkey");
@@ -577,10 +602,10 @@ mod tests {
     /// Field names/order: `GetStateForkResponse` and its siblings, which
     /// require both flags beside `data`.
     #[test]
-    fn state_envelope_golden() {
-        let flags = StateFlags { execution_optimistic: false, finalized: true };
+    fn flagged_envelope_golden() {
+        let flags = ReadFlags { execution_optimistic: false, finalized: true };
         assert_body(
-            |j| j.state_envelope(flags, |j| j.checkpoint(&Checkpoint::default())),
+            |j| j.flagged_envelope(flags, |j| j.checkpoint(&Checkpoint::default())),
             "{\"execution_optimistic\":false,\"finalized\":true,\"data\":{\"epoch\":\"0\",\
              \"root\":\"0x0000000000000000000000000000000000000000000000000000000000000000\"}}",
         );
@@ -590,8 +615,8 @@ mod tests {
     /// name must not overwrite or be overwritten by it.
     #[test]
     fn envelope_flags_and_data_of_the_same_name_both_survive() {
-        let flags = StateFlags { execution_optimistic: true, finalized: false };
-        let body = write(|j| j.state_envelope(flags, |j| j.finality_checkpoints(&checkpoints())));
+        let flags = ReadFlags { execution_optimistic: true, finalized: false };
+        let body = write(|j| j.flagged_envelope(flags, |j| j.finality_checkpoints(&checkpoints())));
         let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
         assert_eq!(parsed["execution_optimistic"], true);
         assert_eq!(parsed["finalized"], false);

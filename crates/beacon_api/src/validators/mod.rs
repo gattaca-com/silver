@@ -44,8 +44,9 @@ pub(crate) fn get_state_validator(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Re
         return;
     };
     match &state.data {
-        Some(entry) => resp
-            .json_body(|json| json.state_envelope(state.flags, |json| json.validator_entry(entry))),
+        Some(entry) => resp.json_body(|json| {
+            json.flagged_envelope(state.flags, |json| json.validator_entry(entry))
+        }),
         None => resp.error(404, "validator not found"),
     }
 }
@@ -55,7 +56,7 @@ fn respond_with_matches(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>
     else {
         return;
     };
-    resp.json_body(|json| json.state_envelope(state.flags, |json| json.validators(&state.data)));
+    resp.json_body(|json| json.flagged_envelope(state.flags, |json| json.validators(&state.data)));
 }
 
 #[cfg(test)]

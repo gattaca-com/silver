@@ -3,13 +3,15 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 #[cfg(test)]
 use silver_beacon_state_data::BeaconStateOwner;
-use silver_beacon_state_data::{BeaconStateReader, SpecConfig, StateReadView};
+use silver_beacon_state_data::{B256, BeaconStateReader, SpecConfig, StateReadView};
 use silver_common::{Enr, Identify, Keypair};
 use silver_httpcore::Query;
 
 use crate::{
     NodeStatus,
-    json::{FinalityCheckpoints, GenesisData, Json, StateFlags},
+    blocks::{get_block_header, get_block_root},
+    ids::{parse_root, parse_slot},
+    json::{FinalityCheckpoints, GenesisData, Json, ReadFlags},
     node_status::Health,
     response::Response,
     router::{Handler, Method, Request},
@@ -23,7 +25,9 @@ const METRICS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
 const DEFAULT_SYNCING_STATUS: u16 = 206;
 
 pub(crate) const ROUTES: &[(Method, &str, Handler)] = &[
+    (Method::Get, "/eth/v1/beacon/blocks/{block_id}/root", get_block_root),
     (Method::Get, "/eth/v1/beacon/genesis", genesis),
+    (Method::Get, "/eth/v1/beacon/headers/{block_id}", get_block_header),
     (
         Method::Get,
         "/eth/v1/beacon/states/{state_id}/finality_checkpoints",
@@ -69,15 +73,16 @@ impl ApiCtx {
         }
     }
 
-    /// The published state, or a 404 carrying `not_found` while the node has
-    /// published none — the schemas of these endpoints declare no 503.
+    /// The published state and the root of the block it was applied from, or a
+    /// 404 carrying `not_found` while the node has published none — the schemas
+    /// of these endpoints declare no 503.
     pub(crate) fn read_state_or_404<R>(
         &self,
         resp: &mut Response<'_>,
         not_found: &str,
-        read: impl Fn(StateReadView<'_>) -> R,
+        read: impl Fn(StateReadView<'_>, B256) -> R,
     ) -> Option<R> {
-        let result = self.state.read(&read);
+        let result = self.state.read_head(&read);
         if result.is_none() {
             resp.error(404, not_found);
         }
@@ -105,8 +110,8 @@ impl ApiCtx {
         }
 
         let execution_optimistic = self.node_status.execution_optimistic();
-        let read = |view: StateReadView<'_>| StateRead {
-            flags: StateFlags {
+        let read = |view: StateReadView<'_>, _| StateRead {
+            flags: ReadFlags {
                 execution_optimistic,
                 // Genesis is the only state that is its own finalized history:
                 // finalization trails the current epoch, so past genesis the
@@ -130,13 +135,13 @@ impl ApiCtx {
         let Some(state) = self.state_read(req, resp, read) else {
             return;
         };
-        resp.json_body(|json| json.state_envelope(state.flags, |json| render(json, &state.data)));
+        resp.json_body(|json| json.flagged_envelope(state.flags, |json| render(json, &state.data)));
     }
 }
 
 /// One state read: the flags describe the snapshot `data` came from.
 pub(crate) struct StateRead<R> {
-    pub(crate) flags: StateFlags,
+    pub(crate) flags: ReadFlags,
     pub(crate) data: R,
 }
 
@@ -146,21 +151,13 @@ pub(crate) struct StateRead<R> {
 /// where a recognized form silver cannot serve is a 404.
 fn is_recognized_state_id(state_id: &str) -> bool {
     matches!(state_id, "head" | "genesis" | "justified" | "finalized") ||
-        is_slot(state_id) ||
-        state_id
-            .strip_prefix("0x")
-            .is_some_and(|root| root.len() == 64 && root.bytes().all(|b| b.is_ascii_hexdigit()))
-}
-
-/// `u64::from_str` alone also accepts a leading `+`, which the schemas call an
-/// invalid `state_id` rather than a slot.
-fn is_slot(state_id: &str) -> bool {
-    state_id.bytes().all(|byte| byte.is_ascii_digit()) && state_id.parse::<u64>().is_ok()
+        parse_slot(state_id).is_some() ||
+        parse_root(state_id).is_some()
 }
 
 fn genesis(_req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
     let Some(genesis) =
-        ctx.read_state_or_404(resp, "Chain genesis info is not yet known", |view| GenesisData {
+        ctx.read_state_or_404(resp, "Chain genesis info is not yet known", |view, _| GenesisData {
             genesis_time: view.imm.genesis_time,
             genesis_validators_root: view.imm.genesis_validators_root,
             genesis_fork_version: view.imm.genesis_fork_version,
