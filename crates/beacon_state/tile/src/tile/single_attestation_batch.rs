@@ -47,12 +47,17 @@ impl Default for SingleAttestationBatch {
 
 impl SingleAttestationBatch {
     pub(super) fn enqueue(&mut self, entry: PendingAttestation) -> bool {
+        // Checked before the dedup insert so a refused entry stays admissible
+        // on retransmission.
+        if self.pending.len() == BATCH_CHUNK {
+            BeaconStateCounters::PendingSingleAttestationFull.inc();
+            return false;
+        }
         let key = (entry.target_epoch, entry.attester_index);
         if !self.keys.insert(key) {
             BeaconStateCounters::PendingSingleAttestationDuplicate.inc();
             return false;
         }
-        debug_assert!(self.pending.len() < BATCH_CHUNK);
         self.pending.push(entry);
         true
     }
@@ -147,6 +152,8 @@ mod tests {
             let entry = PendingAttestation { attester_index, ..template.clone() };
             assert!(batch.enqueue(entry));
         }
+        assert!(batch.is_full());
+        assert!(!batch.enqueue(PendingAttestation { attester_index: BATCH_CHUNK, ..template }));
         assert_eq!(batch.take_pending().len(), BATCH_CHUNK);
     }
 
