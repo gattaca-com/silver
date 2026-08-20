@@ -22,9 +22,8 @@ impl Method {
 
 pub(crate) type Handler = fn(&Request<'_>, &ApiCtx, &mut Response<'_>);
 
-// `body` becomes live with the first POST endpoint, `method` and `path` with a
-// handler that answers on more than the route it was dispatched by; until then
-// only tests read those three.
+// `method` and `path` become live with a handler that answers on more than the
+// route it was dispatched by; until then only tests read them.
 #[allow(dead_code)]
 pub(crate) struct Request<'a> {
     pub(crate) method: Method,

@@ -7,6 +7,7 @@ mod router;
 mod routes;
 mod server;
 mod statics;
+mod validators;
 
 pub use node_status::{NodeStatus, PeerCounts, SlotStatus};
 pub use server::BeaconApi;

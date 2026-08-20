@@ -14,6 +14,7 @@ use crate::{
     response::Response,
     router::{Handler, Method, Request},
     statics::StaticBodies,
+    validators::{get_state_validator, get_state_validators, post_state_validators},
 };
 
 const METRICS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
@@ -29,6 +30,13 @@ pub(crate) const ROUTES: &[(Method, &str, Handler)] = &[
         state_finality_checkpoints,
     ),
     (Method::Get, "/eth/v1/beacon/states/{state_id}/fork", state_fork),
+    (Method::Get, "/eth/v1/beacon/states/{state_id}/validators", get_state_validators),
+    (Method::Post, "/eth/v1/beacon/states/{state_id}/validators", post_state_validators),
+    (
+        Method::Get,
+        "/eth/v1/beacon/states/{state_id}/validators/{validator_id}",
+        get_state_validator,
+    ),
     (Method::Get, "/eth/v1/config/deposit_contract", deposit_contract),
     (Method::Get, "/eth/v1/config/fork_schedule", fork_schedule),
     (Method::Get, "/eth/v1/config/spec", spec),
@@ -76,16 +84,16 @@ impl ApiCtx {
         result
     }
 
-    /// Answers a `{state_id}` read in the envelope its schema requires. `read`
-    /// runs under the seqlock and is re-run on retry, so it lifts scalars out
-    /// and `render` writes them once, afterwards.
-    pub(crate) fn state_response<R>(
+    /// Resolves `{state_id}` and reads from the state it names, alongside the
+    /// flags those schemas require beside `data`. `read` runs under the seqlock
+    /// and is re-run whole on retry, so it lifts out what the body needs and
+    /// rendering happens afterwards.
+    pub(crate) fn state_read<R>(
         &self,
         req: &Request<'_>,
         resp: &mut Response<'_>,
         read: impl Fn(StateReadView<'_>) -> R,
-        render: impl FnOnce(&mut Json<'_>, &R),
-    ) {
+    ) -> Option<StateRead<R>> {
         let state_id = req.params.get("state_id").expect("{state_id} in the route pattern");
         if state_id != "head" {
             if is_recognized_state_id(state_id) {
@@ -93,7 +101,7 @@ impl ApiCtx {
             } else {
                 resp.error(400, "invalid state_id");
             }
-            return;
+            return None;
         }
 
         let execution_optimistic = self.node_status.execution_optimistic();
@@ -107,18 +115,29 @@ impl ApiCtx {
             },
             data: read(view),
         };
-        let Some(state) = self.read_state_or_404(resp, "state not found", read) else {
+        self.read_state_or_404(resp, "state not found", read)
+    }
+
+    /// A `{state_id}` read whose body is the envelope around `render`, for the
+    /// endpoints that answer whatever the state holds.
+    pub(crate) fn state_response<R>(
+        &self,
+        req: &Request<'_>,
+        resp: &mut Response<'_>,
+        read: impl Fn(StateReadView<'_>) -> R,
+        render: impl FnOnce(&mut Json<'_>, &R),
+    ) {
+        let Some(state) = self.state_read(req, resp, read) else {
             return;
         };
-
         resp.json_body(|json| json.state_envelope(state.flags, |json| render(json, &state.data)));
     }
 }
 
 /// One state read: the flags describe the snapshot `data` came from.
-struct StateRead<R> {
-    flags: StateFlags,
-    data: R,
+pub(crate) struct StateRead<R> {
+    pub(crate) flags: StateFlags,
+    pub(crate) data: R,
 }
 
 /// Whether `state_id` is one of the forms the schemas define — the `head`,
@@ -243,7 +262,7 @@ pub(crate) fn preboot_ctx() -> ApiCtx {
 }
 
 #[cfg(test)]
-fn test_ctx(spec: &SpecConfig, state: BeaconStateReader) -> ApiCtx {
+pub(crate) fn test_ctx(spec: &SpecConfig, state: BeaconStateReader) -> ApiCtx {
     let keypair = Keypair::from_secret(&[1u8; 32]).unwrap();
     let enr = Enr::builder().build(keypair.secret_key()).unwrap();
     let mut identify = Identify::default();

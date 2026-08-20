@@ -4,8 +4,10 @@
 //! `serde_json` is reserved for bodies built once at startup (`identity.rs`).
 
 use silver_beacon_state_data::{
-    B256, BLSPubkey, BLSSignature, BeaconBlockHeader, Checkpoint, Fork, ValidatorsView, Version,
+    B256, BLSPubkey, BLSSignature, BeaconBlockHeader, Checkpoint, Fork, Version,
 };
+
+use crate::validators::entry::{Validator, ValidatorEntry};
 
 const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
 
@@ -245,6 +247,49 @@ impl Json<'_> {
         self.checkpoint(&checkpoints.finalized);
         self.end_object();
     }
+
+    pub(crate) fn validator(&mut self, validator: &Validator) {
+        self.begin_object();
+        self.key("pubkey");
+        self.hex(&validator.pubkey);
+        self.key("withdrawal_credentials");
+        self.hex(&validator.withdrawal_credentials.0);
+        self.key("effective_balance");
+        self.quoted_u64(validator.effective_balance);
+        let lifecycle = &validator.lifecycle;
+        self.key("slashed");
+        self.bool(lifecycle.slashed);
+        self.key("activation_eligibility_epoch");
+        self.quoted_u64(lifecycle.activation_eligibility_epoch);
+        self.key("activation_epoch");
+        self.quoted_u64(lifecycle.activation_epoch);
+        self.key("exit_epoch");
+        self.quoted_u64(lifecycle.exit_epoch);
+        self.key("withdrawable_epoch");
+        self.quoted_u64(lifecycle.withdrawable_epoch);
+        self.end_object();
+    }
+
+    pub(crate) fn validator_entry(&mut self, entry: &ValidatorEntry) {
+        self.begin_object();
+        self.key("index");
+        self.quoted_u64(entry.index);
+        self.key("balance");
+        self.quoted_u64(entry.balance);
+        self.key("status");
+        self.string(entry.status.name());
+        self.key("validator");
+        self.validator(&entry.validator);
+        self.end_object();
+    }
+
+    pub(crate) fn validators(&mut self, entries: &[ValidatorEntry]) {
+        self.begin_array();
+        for entry in entries {
+            self.validator_entry(entry);
+        }
+        self.end_array();
+    }
 }
 
 /// The containers no endpoint calls yet, in the same schema field order. Each
@@ -277,46 +322,6 @@ impl Json<'_> {
         self.block_header(header);
         self.key("signature");
         self.hex(signature);
-        self.end_object();
-    }
-
-    pub(crate) fn validator(&mut self, validators: &ValidatorsView<'_>, index: usize) {
-        self.begin_object();
-        self.key("pubkey");
-        self.hex(validators.pubkey(index));
-        self.key("withdrawal_credentials");
-        self.hex(&validators.credentials(index).0);
-        self.key("effective_balance");
-        self.quoted_u64(validators.effective_balance(index));
-        self.key("slashed");
-        self.bool(validators.is_slashed(index));
-        self.key("activation_eligibility_epoch");
-        self.quoted_u64(validators.activation_eligibility_epoch(index));
-        self.key("activation_epoch");
-        self.quoted_u64(validators.activation_epoch(index));
-        self.key("exit_epoch");
-        self.quoted_u64(validators.exit_epoch(index));
-        self.key("withdrawable_epoch");
-        self.quoted_u64(validators.withdrawable_epoch(index));
-        self.end_object();
-    }
-
-    pub(crate) fn validator_entry(
-        &mut self,
-        validators: &ValidatorsView<'_>,
-        index: usize,
-        balance: u64,
-        status: &str,
-    ) {
-        self.begin_object();
-        self.key("index");
-        self.quoted_u64(index as u64);
-        self.key("balance");
-        self.quoted_u64(balance);
-        self.key("status");
-        self.string(status);
-        self.key("validator");
-        self.validator(validators, index);
         self.end_object();
     }
 
@@ -370,12 +375,10 @@ pub(crate) fn json_safe(text: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use silver_beacon_state_data::{
-        BeaconState, BeaconStateOwner, EpochStateFinalized, FAR_FUTURE_EPOCH, StateId, ValSeed,
-        Withdrawals,
-    };
+    use silver_beacon_state_data::{FAR_FUTURE_EPOCH, Withdrawals};
 
     use super::*;
+    use crate::validators::status::{Lifecycle, Status};
 
     fn write(render: impl FnOnce(&mut Json<'_>)) -> String {
         let mut out = Vec::new();
@@ -618,37 +621,35 @@ mod tests {
 
     /// One validator with every field distinct, so a golden catches a
     /// swapped pair as well as a renamed key.
-    fn state_with_one_validator() -> (BeaconStateOwner, StateId) {
+    fn one_validator() -> ValidatorEntry {
         let mut pubkey = [0u8; 48];
         pubkey[0] = 0x93;
         pubkey[47] = 0x07;
-        let seeds = [ValSeed {
-            pubkey,
-            withdrawal_credentials: Withdrawals::eth1(&[0xab; 20]),
-            effective_balance: 32_000_000_000,
+        ValidatorEntry {
+            index: 0,
             balance: 32_500_000_000,
-            activation_epoch: 10,
-            exit_epoch: FAR_FUTURE_EPOCH,
-        }];
-        let mut owner =
-            BeaconStateOwner::new(BeaconState::for_test(EpochStateFinalized::default(), &seeds, 0));
-        let anchor = owner.roll_fresh();
-        let (mut writer, _, _) = owner.apply_block_view(anchor);
-        writer.validators.set_slashed(0, true);
-        writer.validators.set_activation_eligibility_epoch(0, 9);
-        writer.validators.set_withdrawable_epoch(0, 8_192);
-        let head = writer.commit(None, None);
-        (owner, head)
+            status: Status::ActiveSlashed,
+            validator: Validator {
+                pubkey,
+                withdrawal_credentials: Withdrawals::eth1(&[0xab; 20]),
+                effective_balance: 32_000_000_000,
+                lifecycle: Lifecycle {
+                    slashed: true,
+                    activation_eligibility_epoch: 9,
+                    activation_epoch: 10,
+                    exit_epoch: FAR_FUTURE_EPOCH,
+                    withdrawable_epoch: 8_192,
+                },
+            },
+        }
     }
 
     /// Field names/order: SSZ `Validator` container, as inlined by
     /// `apis/beacon/states/validators.yaml`.
     #[test]
     fn validator_golden() {
-        let (owner, head) = state_with_one_validator();
-        let view = owner.read_view(head);
         assert_body(
-            |j| j.validator(&view.validators, 0),
+            |j| j.validator(&one_validator().validator),
             "{\"pubkey\":\"0x930000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007\",\
              \"withdrawal_credentials\":\"0x010000000000000000000000abababababababababababababababababababab\",\
              \"effective_balance\":\"32000000000\",\"slashed\":true,\
@@ -661,10 +662,7 @@ mod tests {
     /// `apis/beacon/states/validators.yaml`.
     #[test]
     fn validator_entry_golden() {
-        let (owner, head) = state_with_one_validator();
-        let view = owner.read_view(head);
-        let body =
-            write(|j| j.validator_entry(&view.validators, 0, 32_500_000_000, "active_slashed"));
+        let body = write(|j| j.validator_entry(&one_validator()));
         let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
         assert_eq!(parsed["index"], "0");
         assert_eq!(parsed["balance"], "32500000000");
@@ -673,6 +671,21 @@ mod tests {
         assert!(body.starts_with(
             "{\"index\":\"0\",\"balance\":\"32500000000\",\"status\":\"active_slashed\",\"validator\":{"
         ));
+    }
+
+    /// The `data` array of `GetStateValidatorsResponse`: siblings separated,
+    /// and an empty result set still an array.
+    #[test]
+    fn validators_array_golden() {
+        assert_body(|j| j.validators(&[]), "[]");
+        let entry = one_validator();
+        let second = ValidatorEntry { index: 1, ..entry.clone() };
+        let body = write(|j| j.validators(&[entry, second]));
+        let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
+        let entries = parsed.as_array().expect("an array");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["index"], "0");
+        assert_eq!(entries[1]["index"], "1");
     }
 
     /// Field names/order: `ProposerDuty` of

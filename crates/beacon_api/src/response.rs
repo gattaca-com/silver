@@ -118,6 +118,7 @@ fn status_line(code: u16) -> Option<&'static str> {
         404 => "404 Not Found",
         405 => "405 Method Not Allowed",
         406 => "406 Not Acceptable",
+        414 => "414 URI Too Long",
         415 => "415 Unsupported Media Type",
         500 => "500 Internal Server Error",
         501 => "501 Not Implemented",

@@ -190,6 +190,10 @@ impl ServerConnection {
             return AfterResponse::Close;
         }
         self.write_buf.clear();
+        // A keep-alive connection lives for the idle timeout, refreshed by
+        // every request, so retaining the largest body it ever framed would
+        // pin that much per connection for as long as a client keeps polling.
+        self.write_buf.shrink_to(WRITE_BUF_INIT);
         self.write_pos = 0;
         // A request pipelined behind the one just answered is already in
         // read_buf — the transport will never feed those bytes again, so it
@@ -721,6 +725,24 @@ mod tests {
             drain(&mut conn);
             assert_eq!(conn.after_response(&echo_path), AfterResponse::AwaitRequest);
         }
+    }
+
+    #[test]
+    fn a_large_response_does_not_leave_the_connection_inflated() {
+        let mut conn = ServerConnection::new();
+        let big = vec![b'x'; 4 << 20];
+        feed(&mut conn, &get_req("/big", "HTTP/1.1"));
+
+        assert!(conn.dispatch(&|_, out: &mut Vec<u8>| frame_response(out, "200 OK", None, &big)));
+        drain(&mut conn);
+        assert!(conn.write_buf.capacity() >= big.len(), "the body was framed whole");
+
+        assert_eq!(conn.after_response(&echo_path), AfterResponse::AwaitRequest);
+        assert!(
+            conn.write_buf.capacity() <= WRITE_BUF_INIT,
+            "{} bytes still held",
+            conn.write_buf.capacity()
+        );
     }
 
     #[test]
