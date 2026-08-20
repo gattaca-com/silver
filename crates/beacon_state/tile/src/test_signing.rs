@@ -255,8 +255,24 @@ pub fn sign_single_attestation(
 /// Recompute the signature over the buffer's current `AttestationData`, for
 /// tests that mutate data fields after `sign_single_attestation`.
 pub fn resign_single_attestation(sk_idx: usize, buf: &mut [u8; SINGLE_ATT_SIZE], imm: &Immutable) {
+    resign_single_attestation_forked(sk_idx, buf, imm, &Fork::default());
+}
+
+/// As `resign_single_attestation`, deriving the attester-domain version from
+/// `fork` rather than the default all-zero schedule.
+pub fn resign_single_attestation_forked(
+    sk_idx: usize,
+    buf: &mut [u8; SINGLE_ATT_SIZE],
+    imm: &Immutable,
+    fork: &Fork,
+) {
     let data: [u8; 128] = buf[16..144].try_into().unwrap();
-    let fv = test_fork_version(SingleAttestationView::target_epoch(buf));
+    let fv = bls::fork_version_at_epoch(
+        fork.epoch,
+        fork.previous_version,
+        fork.current_version,
+        SingleAttestationView::target_epoch(buf),
+    );
     let domain = bls::compute_domain(bls::DOMAIN_BEACON_ATTESTER, fv, &imm.genesis_validators_root);
     let signing_root = bls::compute_signing_root(&ssz_hash::hash_attestation_data(&data), &domain);
     let sig = sign(sk_idx, &signing_root);

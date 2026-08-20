@@ -3,8 +3,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use flux::timing::Nanos;
 use silver_beacon_state_data::{
     BLSPubkey, BeaconBlockHeader, BeaconState, EPOCHS_PER_HISTORICAL_VECTOR, EpochState,
-    EpochStateFinalized, Immutable, PROPOSER_LOOKAHEAD_SIZE, PendingDeposit, SlotStateId, ValSeed,
-    Withdrawals,
+    EpochStateFinalized, Fork, Immutable, PROPOSER_LOOKAHEAD_SIZE, PendingDeposit, SlotStateId,
+    ValSeed, Withdrawals,
 };
 use silver_common::{
     GossipTopic, MessageId, P2pStreamId, PeerEvent, StreamProtocol, TCache, TCacheProducer,
@@ -134,10 +134,19 @@ fn placeholder_pubkey(i: usize) -> BLSPubkey {
 /// Epoch-tier base with zeroed rings and the given checkpoints seeded —
 /// the harness analog of a decomposed anchor.
 fn epoch_base_with(justified: Checkpoint, finalized: Checkpoint) -> EpochStateFinalized {
+    epoch_base_with_fork(justified, finalized, Fork::default())
+}
+
+fn epoch_base_with_fork(
+    justified: Checkpoint,
+    finalized: Checkpoint,
+    fork: Fork,
+) -> EpochStateFinalized {
     EpochStateFinalized::from_parts(
         EpochState {
             current_justified_checkpoint: justified,
             finalized_checkpoint: finalized,
+            fork,
             ..Default::default()
         },
         vec![[0u8; 32]; EPOCHS_PER_HISTORICAL_VECTOR].into_boxed_slice(),
@@ -1236,6 +1245,101 @@ fn loop_body_batches_single_attestations_and_emits_only_their_verdict_events() {
             attester as usize != invalid_attester,
         );
     }
+}
+
+#[test]
+fn batch_straddling_fork_transition_verifies_per_domain() {
+    const FORK: Fork = Fork { previous_version: [0; 4], current_version: [1, 0, 0, 0], epoch: 1 };
+    let (mut tile, mut producer) = make_tile_with_gossip(SLOTS_PER_EPOCH);
+    let (_, seeds) = build_seed_finalized(128, true);
+    let cp = Checkpoint { epoch: 0, root: ANCHOR_ROOT };
+    let bs = BeaconState::for_test(epoch_base_with_fork(cp, cp, FORK), &seeds, 0);
+    arm_tile_state(&mut tile, bs, &seeds, 0);
+    let view = tile.state.read_view(tile.last_applied);
+    tile.shuffling_cache.ensure_window(&view, 1);
+
+    let imm = seed_immutable(&tile);
+    let block_root = tile.last_applied_block_root;
+    let (previous_slot, previous_ci, _, _) = find_committee_for_vi0(&tile);
+    let shuffled = tile.shuffling_cache.shuffled_by_epoch(1).unwrap();
+    let committee = stf::EpochShuffling::new(shuffled, tile.head_validator_count())
+        .committee(SLOTS_PER_EPOCH, 0)
+        .to_vec();
+
+    let mut queue = |tile: &mut BeaconStateTile, bytes: &[u8; SINGLE_ATT_SIZE], subnet, tag| {
+        let mut reservation = producer.reserve(bytes.len(), true).unwrap();
+        reservation.buffer().unwrap().copy_from_slice(bytes);
+        reservation.increment_offset(bytes.len());
+        let read = reservation.read();
+        producer.publish_head();
+        let message = NewGossipMsg {
+            stream_id: P2pStreamId::new(700 + tag as usize, tag, StreamProtocol::Unset, true),
+            topic: GossipTopic::BeaconAttestation(subnet),
+            msg_hash: MessageId { id: [tag as u8; 20] },
+            recv_ts: Nanos(tag),
+            ssz: read,
+            protobuf: read,
+        };
+        matches!(tile.admit_attestation(bytes, subnet, Some(message)), AttestationAdmission::Queued)
+    };
+
+    // Previous-fork side: target epoch 0 signs under `previous_version`,
+    // which the default schedule already produces.
+    let previous = test_signing::sign_single_attestation(
+        0,
+        0,
+        previous_ci as u64,
+        previous_slot,
+        block_root,
+        0,
+        block_root,
+        &imm,
+    );
+    let previous_subnet = expected_subnet(&tile, previous_slot, previous_ci);
+    let subnet = expected_subnet(&tile, SLOTS_PER_EPOCH, 0);
+    assert!(queue(&mut tile, &previous, previous_subnet, 1));
+
+    // Current-fork side: target epoch 1 must sign under `current_version`.
+    let current_signer = committee[0] as usize % test_signing::PRIVKEY_HEX.len();
+    let mut current = test_signing::sign_single_attestation(
+        current_signer,
+        committee[0] as u64,
+        0,
+        SLOTS_PER_EPOCH,
+        block_root,
+        1,
+        block_root,
+        &imm,
+    );
+    test_signing::resign_single_attestation_forked(current_signer, &mut current, &imm, &FORK);
+    assert!(queue(&mut tile, &current, subnet, 2));
+
+    // Same data as `current` but signed under the pre-fork domain: admission
+    // must queue it (no signature work at arrival) and the batch must reject
+    // it against the current-fork signing root.
+    let stale_domain = test_signing::sign_single_attestation(
+        committee[1] as usize % test_signing::PRIVKEY_HEX.len(),
+        committee[1] as u64,
+        0,
+        SLOTS_PER_EPOCH,
+        block_root,
+        1,
+        block_root,
+        &imm,
+    );
+    assert!(queue(&mut tile, &stale_domain, subnet, 3));
+
+    let entries = tile.single_attestation_batch.take_pending();
+    assert_eq!(entries.len(), 3);
+    // The straddle exercises the grouped path: both epoch-1 entries share a
+    // memo group the epoch-0 entry is not part of.
+    assert!(entries[1].root_group.is_some());
+    assert_eq!(entries[1].root_group, entries[2].root_group);
+    assert_ne!(entries[0].root_group, entries[1].root_group);
+    assert_ne!(entries[0].signing_root, entries[1].signing_root);
+
+    let verdicts = tile.single_attestation_batch.verify(&entries);
+    assert_eq!(verdicts, [true, true, false]);
 }
 
 /// An accepted single attestation lands in the pool: participant bit at
