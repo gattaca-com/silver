@@ -242,7 +242,7 @@ impl BeaconStateTile {
         //let pending = std::mem::take(&mut self.att_pending);
         let mut accepted = false;
         while !self.att_pending.is_empty() {
-        //for (m, p) in &pending {
+            //for (m, p) in &pending {
             let (m, p) = self.att_pending.swap_remove(0);
             let valid =
                 batch_ok || bls::verify_one_parsed(&p.pubkey, &p.signature, &p.signing_root);
