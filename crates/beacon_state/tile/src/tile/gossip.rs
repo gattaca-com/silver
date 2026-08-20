@@ -22,7 +22,7 @@ use super::{
     seen_aggregates::Coverage,
 };
 use crate::{
-    bls::{self, PublicKey, Signature, VerifiedSingleAttestation},
+    bls::{self, CheckedSignature, PublicKey, VerifiedSingleAttestation},
     counters::BeaconStateCounters,
     merkle, ssz_hash, stf, validate,
 };
@@ -36,7 +36,7 @@ pub(super) struct PreparedAttestation {
     pubkey: PublicKey,
     signing_root: B256,
     data_root: B256,
-    signature: Signature,
+    signature: CheckedSignature,
     vote: stf::AttestationVote,
 }
 
@@ -53,7 +53,7 @@ impl BeaconStateTile {
             Ok(prepared) => prepared,
             Err(feedback) => return feedback,
         };
-        if !bls::verify_one_parsed(&prepared.pubkey, &prepared.signature, &prepared.signing_root) {
+        if !bls::verify_one_checked(&prepared.pubkey, &prepared.signature, &prepared.signing_root) {
             return Feedback::Reject(None);
         }
         self.commit_attestation(&prepared);
@@ -61,7 +61,8 @@ impl BeaconStateTile {
     }
 
     /// Everything up to (but excluding) the pairing: structural checks,
-    /// dedup, committee membership, roots, signature parse. The pairing runs
+    /// dedup, committee membership, roots, signature parse + subgroup
+    /// check. The pairing runs
     /// either singly (`handle_attestation`) or batched
     /// (`flush_attestations`).
     fn prepare_attestation(
@@ -140,7 +141,7 @@ impl BeaconStateTile {
         );
         let (data_root, signing_root) =
             self.attestation_root_memo.roots(SingleAttestationView::data(buf).as_bytes(), &domain);
-        let Ok(signature) = Signature::from_bytes(SingleAttestationView::signature(buf)) else {
+        let Some(signature) = CheckedSignature::parse(SingleAttestationView::signature(buf)) else {
             return Err(Feedback::Reject(None));
         };
 
@@ -163,7 +164,8 @@ impl BeaconStateTile {
     }
 
     fn commit_attestation(&mut self, p: &PreparedAttestation) {
-        let verified = VerifiedSingleAttestation { data_root: p.data_root, signature: p.signature };
+        let verified =
+            VerifiedSingleAttestation { data_root: p.data_root, signature: *p.signature.as_sig() };
         let outcome = self.attestation_pool.insert_verified(
             &p.buf,
             p.committee_position,
@@ -245,7 +247,7 @@ impl BeaconStateTile {
             //for (m, p) in &pending {
             let (m, p) = self.att_pending.swap_remove(0);
             let valid =
-                batch_ok || bls::verify_one_parsed(&p.pubkey, &p.signature, &p.signing_root);
+                batch_ok || bls::verify_one_checked(&p.pubkey, &p.signature, &p.signing_root);
             if valid {
                 self.commit_attestation(&p);
                 Self::relay_gossip(&m, producers);

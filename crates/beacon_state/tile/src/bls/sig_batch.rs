@@ -9,7 +9,7 @@ use ring::rand::{SecureRandom, SystemRandom};
 use silver_beacon_state_data::B256;
 
 use super::{
-    DST, G2_POINT_AT_INFINITY, PublicKey, Signature,
+    CheckedSignature, DST, G2_POINT_AT_INFINITY, PublicKey, Signature,
     aggregator::{PubkeyAggregator, pk_affine, sig_affine},
 };
 
@@ -85,17 +85,17 @@ impl SigBatch {
     }
 
     pub fn push_one(&mut self, pubkey: &PublicKey, sig: &[u8; 96], signing_root: B256) {
-        let Ok(sig) = Signature::from_bytes(sig) else {
+        let Some(sig) = CheckedSignature::parse(sig) else {
             self.poisoned = true;
             return;
         };
         self.push_parsed(pubkey, sig, signing_root);
     }
 
-    pub fn push_parsed(&mut self, pubkey: &PublicKey, sig: Signature, signing_root: B256) {
+    pub fn push_parsed(&mut self, pubkey: &PublicKey, sig: CheckedSignature, signing_root: B256) {
         self.msgs.push(signing_root);
         self.pks.push(*pubkey);
-        self.sigs.push(sig);
+        self.sigs.push(*sig.as_sig());
     }
 
     pub fn push_aggregate<'a, I>(&mut self, participants: I, sig: &[u8; 96], signing_root: B256)
@@ -160,8 +160,9 @@ impl SigBatch {
         match self.msgs.len() {
             0 => true,
             1 => {
+                // No sig group check: entries enter via `CheckedSignature`.
                 self.sigs[0].fast_aggregate_verify_pre_aggregated(
-                    true,
+                    false,
                     &self.msgs[0],
                     DST,
                     &self.pks[0],
@@ -197,11 +198,14 @@ impl SigBatch {
     ///
     /// Random per-tuple scalars defend against rogue-aggregate attacks:
     /// without them, an adversary could split one invalid sig across two
-    /// crafted sigs that cancel in the pairing sum. They also let the G2
-    /// subgroup check run once on the weighted signature sum instead of
-    /// per sig: a rogue-subgroup component survives the unknown weighting
-    /// except with ~2⁻⁶⁴ probability. `pks` are admission-time validated,
-    /// so no G1 checks.
+    /// crafted sigs that cancel in the pairing sum. Every entry was
+    /// subgroup-checked at construction (`CheckedSignature`) — a check on
+    /// the weighted sum would not do: it misses a rogue component of order
+    /// d whenever d | rᵢ, and the G2 cofactor has small factors
+    /// (h₂ = 13²·23²·2713·11953·262069·p₄₄₈), so an order-13 component
+    /// slips through ~1/13 of the time — retryable, and the raw sig points
+    /// are reused downstream in aggregates. `pks` are admission-time
+    /// validated, so no G1 checks.
     fn verify_batch(&mut self) -> bool {
         let n = self.msgs.len();
 
@@ -219,9 +223,6 @@ impl SigBatch {
         }
 
         let sig_sum = self.sigs.mult(&self.rand_bytes, 64).to_signature();
-        if !sig_sum.subgroup_check() {
-            return false;
-        }
 
         let SigBatch {
             msgs, pks, rand_bytes, order, grouped_pks, grouped_scalars, pairing, ..
@@ -271,8 +272,103 @@ fn hash_to_g2_affine(msg: &B256) -> blst_p2_affine {
 
 #[cfg(test)]
 mod tests {
+    use blst::{
+        blst_p2_add_or_double_affine, blst_p2_affine_in_g2, blst_p2_compress, blst_p2_from_affine,
+        blst_p2_is_inf, blst_p2_mult, blst_p2_uncompress,
+    };
+
     use super::*;
     use crate::test_signing::{pubkey_pk, sign};
+
+    fn hex(s: &str) -> Vec<u8> {
+        (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
+    }
+
+    /// Big-endian long division by 13; returns (quotient, remainder).
+    fn div13(be: &[u8]) -> (Vec<u8>, u32) {
+        let mut rem = 0u32;
+        let q = be
+            .iter()
+            .map(|&b| {
+                let cur = rem * 256 + b as u32;
+                rem = cur % 13;
+                (cur / 13) as u8
+            })
+            .collect();
+        (q, rem)
+    }
+
+    /// h₂'s smallest factor is 13: a signature carrying an order-13 rogue
+    /// component on top of a valid r-torsion part cancels out of a
+    /// weighted-sum subgroup check whenever 13 | rᵢ (~1/13 of runs, so this
+    /// test flaked green against the old sum-only check). Per-sig subgroup
+    /// checks must reject it deterministically.
+    #[test]
+    fn sig_batch_rejects_low_order_rogue_component() {
+        // Deterministic non-subgroup point on the twist: scan x = (i, 0)
+        // compressed encodings until one lands on the curve.
+        let mut cand = [0u8; 96];
+        cand[0] = 0x80;
+        let mut aff = blst_p2_affine::default();
+        let found = (1..=255u8).any(|i| {
+            cand[95] = i;
+            unsafe {
+                blst_p2_uncompress(&mut aff, cand.as_ptr()) == BLST_ERROR::BLST_SUCCESS &&
+                    !blst_p2_affine_in_g2(&aff)
+            }
+        });
+        assert!(found);
+
+        let r_be = hex("73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001");
+        let h2_be = hex(
+            "05d543a95414e7f1091d50792876a202cd91de4547085abaa68a205b2e5a7ddfa628f1cb4d9e82ef2\
+             1537e293a6691ae1616ec6e786f0c70cf1c38e31c7238e5",
+        );
+        // 13² | h₂, so divide both factors out — (h₂/13)·r would still
+        // annihilate an order-13 component.
+        let (q1, rem1) = div13(&h2_be);
+        let (k_be, rem2) = div13(&q1);
+        assert_eq!((rem1, rem2), (0, 0), "13² must divide the G2 cofactor");
+        let r_le: Vec<u8> = r_be.iter().rev().copied().collect();
+        let k_le: Vec<u8> = k_be.iter().rev().copied().collect();
+
+        // u = (h₂/13²)·r·P: order divides 13². Take u or 13·u, whichever
+        // has order exactly 13.
+        let mut p = blst_p2::default();
+        let mut t = blst_p2::default();
+        let mut u = blst_p2::default();
+        let mut u13 = blst_p2::default();
+        let mut u169 = blst_p2::default();
+        let rogue;
+        unsafe {
+            blst_p2_from_affine(&mut p, &aff);
+            blst_p2_mult(&mut t, &p, r_le.as_ptr(), r_le.len() * 8);
+            blst_p2_mult(&mut u, &t, k_le.as_ptr(), k_le.len() * 8);
+            blst_p2_mult(&mut u13, &u, [13u8].as_ptr(), 8);
+            blst_p2_mult(&mut u169, &u13, [13u8].as_ptr(), 8);
+            assert!(!blst_p2_is_inf(&u), "13-part vanished; pick another x");
+            assert!(blst_p2_is_inf(&u169), "constants wrong: order does not divide 13²");
+            rogue = if blst_p2_is_inf(&u13) { u } else { u13 };
+        }
+
+        let msg0 = [0x01u8; 32];
+        let sig0 = sign(0, &msg0);
+        let mut sig0_aff = blst_p2_affine::default();
+        let mut tampered = blst_p2::default();
+        let mut tampered_bytes = [0u8; 96];
+        unsafe {
+            assert_eq!(blst_p2_uncompress(&mut sig0_aff, sig0.as_ptr()), BLST_ERROR::BLST_SUCCESS);
+            blst_p2_add_or_double_affine(&mut tampered, &rogue, &sig0_aff);
+            blst_p2_compress(tampered_bytes.as_mut_ptr(), &tampered);
+        }
+
+        let msg1 = [0x02u8; 32];
+        let sig1 = sign(1, &msg1);
+        let mut batch = SigBatch::new();
+        batch.push_one(&pubkey_pk(0), &tampered_bytes, msg0);
+        batch.push_one(&pubkey_pk(1), &sig1, msg1);
+        assert!(!batch.verify_all());
+    }
 
     /// SigBatch eth-aggregate — empty participants accepted iff sig is
     /// G2 infinity (sync-aggregate semantics).

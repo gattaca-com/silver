@@ -138,6 +138,31 @@ pub fn verify_deposit_signature(pubkey: &BLSPubkey, sig: &[u8; 96], signing_root
     verify_one_compressed(pubkey, sig, signing_root)
 }
 
+/// Signature parsed and G2-subgroup-checked at construction — the only way
+/// in is `parse` — so batch verify and downstream aggregation need no
+/// re-check. Constructing it at gossip arrival keeps the ~27µs/sig check
+/// off the batched-flush critical path.
+#[derive(Clone, Copy)]
+pub struct CheckedSignature(Signature);
+
+impl CheckedSignature {
+    pub fn parse(bytes: &[u8; 96]) -> Option<Self> {
+        let sig = Signature::from_bytes(bytes).ok()?;
+        sig.subgroup_check().then_some(Self(sig))
+    }
+
+    pub(crate) fn as_sig(&self) -> &Signature {
+        &self.0
+    }
+}
+
+/// Same contract as `verify_one_parsed`, minus the group check the
+/// `CheckedSignature` constructor already ran.
+#[timed]
+pub(crate) fn verify_one_checked(pk: &PublicKey, sig: &CheckedSignature, message: &B256) -> bool {
+    sig.0.verify(false, message, DST, &[], pk, false) == BLST_ERROR::BLST_SUCCESS
+}
+
 /// Signature is subgroup-checked by the verify, so downstream aggregation
 /// may add it without a second group check.
 pub struct VerifiedSingleAttestation {
