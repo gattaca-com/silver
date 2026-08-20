@@ -1333,10 +1333,10 @@ fn batch_straddling_fork_transition_verifies_per_domain() {
     assert_eq!(entries.len(), 3);
     // The straddle exercises the grouped path: both epoch-1 entries share a
     // memo group the epoch-0 entry is not part of.
-    assert!(entries[1].root_group.is_some());
-    assert_eq!(entries[1].root_group, entries[2].root_group);
-    assert_ne!(entries[0].root_group, entries[1].root_group);
-    assert_ne!(entries[0].signing_root, entries[1].signing_root);
+    assert!(entries[1].pending.root_group.is_some());
+    assert_eq!(entries[1].pending.root_group, entries[2].pending.root_group);
+    assert_ne!(entries[0].pending.root_group, entries[1].pending.root_group);
+    assert_ne!(entries[0].pending.signing_root, entries[1].pending.signing_root);
 
     let verdicts = tile.single_attestation_batch.verify(&entries);
     assert_eq!(verdicts, [true, true, false]);

@@ -21,7 +21,7 @@ use super::{
     attestation_pool::InsertOutcome,
     orphan_pool::{PendingBlock, has_room},
     seen_aggregates::Coverage,
-    single_attestation_batch::PendingAttestation,
+    single_attestation_batch::{PendingAttestation, QueuedAttestation},
 };
 use crate::{bls, counters::BeaconStateCounters, merkle, ssz_hash, stf, validate};
 
@@ -144,18 +144,20 @@ impl BeaconStateTile {
             signing_root: roots.signing_root,
             root_group: roots.group,
             data_root: roots.data_root,
-            target_epoch,
-            attester_index,
+            vote: stf::AttestationVote {
+                validator: attester_index as u32,
+                block_root,
+                target_epoch,
+                attestation_slot: att_slot,
+                payload_present,
+            },
             committee_position,
             committee_len,
-            block_root,
-            attestation_slot: att_slot,
             committee_index,
-            payload_present,
-            relay: gossip,
         };
-        if pending.relay.is_some() {
-            return if self.single_attestation_batch.enqueue(pending) {
+        if let Some(gossip) = gossip {
+            let entry = QueuedAttestation { pending, gossip };
+            return if self.single_attestation_batch.enqueue(entry) {
                 AttestationAdmission::Queued
             } else {
                 AttestationAdmission::Verdict(Feedback::Ignore)
@@ -179,14 +181,8 @@ impl BeaconStateTile {
         pending: PendingAttestation,
         verified: &bls::VerifiedSingleAttestation,
     ) {
-        let buf = &pending.bytes;
-        let attester_index = pending.attester_index;
-        let target_epoch = pending.target_epoch;
-        let att_slot = pending.attestation_slot;
-        let committee_index = pending.committee_index;
-
         let outcome = self.attestation_pool.insert_verified(
-            buf,
+            &pending.bytes,
             pending.committee_position,
             pending.committee_len,
             verified,
@@ -194,20 +190,17 @@ impl BeaconStateTile {
         debug_assert!(outcome != InsertOutcome::Inconsistent);
         if outcome == InsertOutcome::Full {
             BeaconStateCounters::AttestationPoolFull.inc();
-            tracing::debug!(slot = att_slot, committee = committee_index, "attestation pool full");
+            tracing::debug!(
+                slot = pending.vote.attestation_slot,
+                committee = pending.committee_index,
+                "attestation pool full"
+            );
         }
 
-        let vote = stf::AttestationVote {
-            validator: attester_index as u32,
-            block_root: pending.block_root,
-            target_epoch,
-            attestation_slot: att_slot,
-            payload_present: pending.payload_present,
-        };
         let n = self.head_validator_count();
-        self.record_or_defer_vote(vote, n);
+        self.record_or_defer_vote(pending.vote, n);
 
-        self.seen_attesters.mark(target_epoch, attester_index);
+        self.seen_attesters.mark(pending.vote.target_epoch, pending.vote.validator as usize);
     }
 
     pub(super) fn flush_single_attestations(&mut self, producers: &mut Producers) {
@@ -241,19 +234,19 @@ impl BeaconStateTile {
 
     pub(super) fn apply_single_attestation_verdict(
         &mut self,
-        entry: PendingAttestation,
+        entry: QueuedAttestation,
         valid: bool,
     ) -> SingleAttestationVerdict {
-        let relay = entry.relay.expect("gossip batch entry has relay metadata");
+        let QueuedAttestation { pending, gossip } = entry;
         if valid {
             let verified = bls::VerifiedSingleAttestation {
-                data_root: entry.data_root,
-                signature: entry.signature,
+                data_root: pending.data_root,
+                signature: pending.signature,
             };
-            self.apply_verified_attestation(entry, &verified);
-            SingleAttestationVerdict::Relay(relay)
+            self.apply_verified_attestation(pending, &verified);
+            SingleAttestationVerdict::Relay(gossip)
         } else {
-            SingleAttestationVerdict::Invalid(relay)
+            SingleAttestationVerdict::Invalid(gossip)
         }
     }
 

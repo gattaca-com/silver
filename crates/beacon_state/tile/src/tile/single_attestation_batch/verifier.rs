@@ -1,6 +1,6 @@
 use silver_common::metrics::timed;
 
-use super::PendingAttestation;
+use super::QueuedAttestation;
 use crate::{bls::SameMessageBatch, tile::attestation_root_memo::AttestationRootGroup};
 
 pub(super) struct EntryVerifier {
@@ -25,10 +25,10 @@ impl Default for EntryVerifier {
 
 impl EntryVerifier {
     #[timed]
-    pub(super) fn verify(&mut self, entries: &[PendingAttestation]) -> Vec<bool> {
+    pub(super) fn verify(&mut self, entries: &[QueuedAttestation]) -> Vec<bool> {
         self.clear(entries.len());
         for (index, entry) in entries.iter().enumerate() {
-            match entry.root_group {
+            match entry.pending.root_group {
                 Some(group) => {
                     let group = group.index();
                     if self.buckets[group].is_empty() {
@@ -68,12 +68,12 @@ impl EntryVerifier {
     fn verify_group(
         batch: &mut SameMessageBatch,
         verdicts: &mut [bool],
-        entries: &[PendingAttestation],
+        entries: &[QueuedAttestation],
         indices: &mut [usize],
     ) {
         let Some(&first) = indices.first() else { return };
-        let signing_root = entries[first].signing_root;
-        if indices.iter().all(|&index| entries[index].signing_root == signing_root) {
+        let signing_root = entries[first].pending.signing_root;
+        if indices.iter().all(|&index| entries[index].pending.signing_root == signing_root) {
             Self::verify_indices(batch, verdicts, entries, indices, &signing_root);
         } else {
             Self::verify_fallback(batch, verdicts, entries, indices);
@@ -83,16 +83,17 @@ impl EntryVerifier {
     fn verify_fallback(
         batch: &mut SameMessageBatch,
         verdicts: &mut [bool],
-        entries: &[PendingAttestation],
+        entries: &[QueuedAttestation],
         indices: &mut [usize],
     ) {
-        indices.sort_unstable_by_key(|&index| entries[index].signing_root);
+        indices.sort_unstable_by_key(|&index| entries[index].pending.signing_root);
         let mut start = 0;
         while start < indices.len() {
-            let signing_root = entries[indices[start]].signing_root;
+            let signing_root = entries[indices[start]].pending.signing_root;
             let end = start +
-                indices[start..]
-                    .partition_point(|&index| entries[index].signing_root == signing_root);
+                indices[start..].partition_point(|&index| {
+                    entries[index].pending.signing_root == signing_root
+                });
             Self::verify_indices(batch, verdicts, entries, &indices[start..end], &signing_root);
             start = end;
         }
@@ -101,13 +102,13 @@ impl EntryVerifier {
     fn verify_indices(
         batch: &mut SameMessageBatch,
         verdicts: &mut [bool],
-        entries: &[PendingAttestation],
+        entries: &[QueuedAttestation],
         indices: &[usize],
         signing_root: &[u8; 32],
     ) {
         batch.clear();
         for &index in indices {
-            batch.push(entries[index].public_key, entries[index].signature);
+            batch.push(entries[index].pending.public_key, entries[index].pending.signature);
         }
         for (&index, valid) in indices.iter().zip(batch.verify(signing_root).iter().copied()) {
             verdicts[index] = valid;

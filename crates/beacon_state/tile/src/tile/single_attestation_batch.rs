@@ -3,7 +3,10 @@ use rustc_hash::FxHashSet;
 use silver_beacon_state_data::B256;
 use silver_common::{NewGossipMsg, ssz_view::SINGLE_ATT_SIZE};
 
-use crate::{counters::BeaconStateCounters, tile::attestation_root_memo::AttestationRootGroup};
+use crate::{
+    counters::BeaconStateCounters, stf::AttestationVote,
+    tile::attestation_root_memo::AttestationRootGroup,
+};
 
 mod verifier;
 
@@ -17,20 +20,21 @@ pub(super) struct PendingAttestation {
     pub(super) signing_root: B256,
     pub(super) root_group: Option<AttestationRootGroup>,
     pub(super) data_root: B256,
-    pub(super) target_epoch: u64,
-    pub(super) attester_index: usize,
+    pub(super) vote: AttestationVote,
     pub(super) committee_position: usize,
     pub(super) committee_len: usize,
-    pub(super) block_root: B256,
-    pub(super) attestation_slot: u64,
     pub(super) committee_index: usize,
-    pub(super) payload_present: bool,
-    pub(super) relay: Option<NewGossipMsg>,
+}
+
+#[derive(Clone)]
+pub(super) struct QueuedAttestation {
+    pub(super) pending: PendingAttestation,
+    pub(super) gossip: NewGossipMsg,
 }
 
 pub(super) struct SingleAttestationBatch {
-    pending: Vec<PendingAttestation>,
-    keys: FxHashSet<(u64, usize)>,
+    pending: Vec<QueuedAttestation>,
+    keys: FxHashSet<(u64, u32)>,
     verifier: verifier::EntryVerifier,
 }
 
@@ -45,14 +49,14 @@ impl Default for SingleAttestationBatch {
 }
 
 impl SingleAttestationBatch {
-    pub(super) fn enqueue(&mut self, entry: PendingAttestation) -> bool {
+    pub(super) fn enqueue(&mut self, entry: QueuedAttestation) -> bool {
         // Checked before the dedup insert so a refused entry stays admissible
         // on retransmission.
         if self.pending.len() == BATCH_CHUNK {
             BeaconStateCounters::PendingSingleAttestationFull.inc();
             return false;
         }
-        let key = (entry.target_epoch, entry.attester_index);
+        let key = (entry.pending.vote.target_epoch, entry.pending.vote.validator);
         if !self.keys.insert(key) {
             BeaconStateCounters::PendingSingleAttestationDuplicate.inc();
             return false;
@@ -69,18 +73,18 @@ impl SingleAttestationBatch {
         self.pending.len() == BATCH_CHUNK
     }
 
-    pub(super) fn take_pending(&mut self) -> Vec<PendingAttestation> {
+    pub(super) fn take_pending(&mut self) -> Vec<QueuedAttestation> {
         let entries = std::mem::take(&mut self.pending);
         self.keys.clear();
         entries
     }
 
-    pub(super) fn restore_pending_buffer(&mut self, mut entries: Vec<PendingAttestation>) {
+    pub(super) fn restore_pending_buffer(&mut self, mut entries: Vec<QueuedAttestation>) {
         entries.clear();
         self.pending = entries;
     }
 
-    pub(super) fn verify(&mut self, entries: &[PendingAttestation]) -> Vec<bool> {
+    pub(super) fn verify(&mut self, entries: &[QueuedAttestation]) -> Vec<bool> {
         self.verifier.verify(entries)
     }
 
@@ -92,13 +96,17 @@ impl SingleAttestationBatch {
 #[cfg(test)]
 mod tests {
     use blst::min_pk::{PublicKey, SecretKey, Signature};
-    use silver_common::{NewGossipMsg, ssz_view::SINGLE_ATT_SIZE};
+    use flux::timing::Nanos;
+    use silver_common::{
+        GossipTopic, MessageId, NewGossipMsg, P2pStreamId, StreamProtocol, TCache, TCacheProducer,
+        TProducer, ssz_view::SINGLE_ATT_SIZE,
+    };
 
     use super::{
-        super::super::bls::DST, BATCH_CHUNK, PendingAttestation, SingleAttestationBatch,
-        verifier::EntryVerifier,
+        super::super::bls::DST, BATCH_CHUNK, PendingAttestation, QueuedAttestation,
+        SingleAttestationBatch, verifier::EntryVerifier,
     };
-    use crate::tile::attestation_root_memo::AttestationRootGroup;
+    use crate::{stf::AttestationVote, tile::attestation_root_memo::AttestationRootGroup};
 
     fn signed(seed: u8, message: [u8; 32]) -> (PublicKey, [u8; 96]) {
         let mut ikm = [0u8; 32];
@@ -107,10 +115,30 @@ mod tests {
         (key.sk_to_pk(), key.sign(&message, DST, &[]).to_bytes())
     }
 
+    fn gossip_producer() -> TProducer {
+        TCache::producer("single_att_batch_test", 1 << 12)
+    }
+
+    fn gossip(producer: &mut TProducer) -> NewGossipMsg {
+        let mut reservation = producer.reserve(1, true).unwrap();
+        reservation.buffer().unwrap()[0] = 0;
+        reservation.increment_offset(1);
+        let read = reservation.read();
+        producer.publish_head();
+        NewGossipMsg {
+            stream_id: P2pStreamId::new(1, 0, StreamProtocol::Unset, true),
+            topic: GossipTopic::BeaconAttestation(0),
+            msg_hash: MessageId { id: [0; 20] },
+            recv_ts: Nanos(0),
+            ssz: read,
+            protobuf: read,
+        }
+    }
+
     fn pending(
         seed: u8,
         target_epoch: u64,
-        attester_index: usize,
+        attester_index: u32,
         message: [u8; 32],
     ) -> PendingAttestation {
         let (public_key, signature) = signed(seed, message);
@@ -123,78 +151,102 @@ mod tests {
             signing_root: message,
             root_group: None,
             data_root: [0u8; 32],
-            target_epoch,
-            attester_index,
+            vote: AttestationVote {
+                validator: attester_index,
+                block_root: [0u8; 32],
+                target_epoch,
+                attestation_slot: 0,
+                payload_present: false,
+            },
             committee_position: 0,
             committee_len: 1,
-            block_root: [0u8; 32],
-            attestation_slot: 0,
             committee_index: 0,
-            payload_present: false,
-            relay: None,
+        }
+    }
+
+    fn queued(
+        producer: &mut TProducer,
+        seed: u8,
+        target_epoch: u64,
+        attester_index: u32,
+        message: [u8; 32],
+    ) -> QueuedAttestation {
+        QueuedAttestation {
+            pending: pending(seed, target_epoch, attester_index, message),
+            gossip: gossip(producer),
         }
     }
 
     #[test]
     fn pending_deduplicates_attester_within_target_epoch() {
+        let mut producer = gossip_producer();
         let mut batch = SingleAttestationBatch::default();
-        assert!(batch.enqueue(pending(6, 3, 42, [1u8; 32])));
-        assert!(!batch.enqueue(pending(6, 3, 42, [2u8; 32])));
-        assert!(batch.enqueue(pending(6, 4, 42, [2u8; 32])));
+        assert!(batch.enqueue(queued(&mut producer, 6, 3, 42, [1u8; 32])));
+        assert!(!batch.enqueue(queued(&mut producer, 6, 3, 42, [2u8; 32])));
+        assert!(batch.enqueue(queued(&mut producer, 6, 4, 42, [2u8; 32])));
     }
 
     #[test]
     fn pending_chunk_is_bounded_by_batch_size() {
-        let template = pending(7, 5, 0, [3u8; 32]);
+        let mut producer = gossip_producer();
         let mut batch = SingleAttestationBatch::default();
         for attester_index in 0..BATCH_CHUNK {
-            let entry = PendingAttestation { attester_index, ..template.clone() };
-            assert!(batch.enqueue(entry));
+            assert!(batch.enqueue(queued(&mut producer, 7, 5, attester_index as u32, [3u8; 32])));
         }
         assert!(batch.is_full());
-        assert!(!batch.enqueue(PendingAttestation { attester_index: BATCH_CHUNK, ..template }));
+        assert!(!batch.enqueue(queued(&mut producer, 7, 5, BATCH_CHUNK as u32, [3u8; 32])));
         assert_eq!(batch.take_pending().len(), BATCH_CHUNK);
     }
 
     #[test]
     fn pending_chunk_storage_is_reused() {
+        let mut producer = gossip_producer();
         let mut batch = SingleAttestationBatch::default();
-        batch.enqueue(pending(7, 5, 0, [3u8; 32]));
+        batch.enqueue(queued(&mut producer, 7, 5, 0, [3u8; 32]));
         let entries = batch.take_pending();
         let capacity = entries.capacity();
         batch.restore_pending_buffer(entries);
 
-        batch.enqueue(pending(8, 5, 1, [3u8; 32]));
+        batch.enqueue(queued(&mut producer, 8, 5, 1, [3u8; 32]));
         assert_eq!(batch.take_pending().capacity(), capacity);
     }
 
     #[test]
     fn fallback_entries_group_by_fork_bound_signing_root() {
-        let entries = vec![pending(8, 1, 0, [4u8; 32]), pending(9, 1, 1, [5u8; 32])];
+        let mut producer = gossip_producer();
+        let entries = vec![
+            queued(&mut producer, 8, 1, 0, [4u8; 32]),
+            queued(&mut producer, 9, 1, 1, [5u8; 32]),
+        ];
         assert_eq!(EntryVerifier::default().verify(&entries), [true, true]);
     }
 
     #[test]
     fn memo_group_partitions_entries_by_fork_bound_signing_root() {
+        let mut producer = gossip_producer();
         let group = Some(AttestationRootGroup::for_test(0));
         let mut entries = vec![
-            PendingAttestation { root_group: group, ..pending(12, 1, 0, [7u8; 32]) },
-            PendingAttestation { root_group: group, ..pending(13, 1, 1, [7u8; 32]) },
-            PendingAttestation { root_group: group, ..pending(14, 1, 2, [8u8; 32]) },
-            PendingAttestation { root_group: group, ..pending(15, 1, 3, [8u8; 32]) },
+            queued(&mut producer, 12, 1, 0, [7u8; 32]),
+            queued(&mut producer, 13, 1, 1, [7u8; 32]),
+            queued(&mut producer, 14, 1, 2, [8u8; 32]),
+            queued(&mut producer, 15, 1, 3, [8u8; 32]),
         ];
-        entries[3].signature = pending(16, 1, 4, [8u8; 32]).signature;
+        for entry in &mut entries {
+            entry.pending.root_group = group;
+        }
+        entries[3].pending.signature = pending(16, 1, 4, [8u8; 32]).signature;
 
         assert_eq!(EntryVerifier::default().verify(&entries), [true, true, true, false]);
     }
 
     #[test]
     fn singleton_verification_checks_the_signature_directly() {
-        let valid = pending(10, 1, 0, [6u8; 32]);
-        assert_eq!(EntryVerifier::default().verify(&[valid.clone()]), [true]);
+        let mut producer = gossip_producer();
+        let valid = queued(&mut producer, 10, 1, 0, [6u8; 32]);
+        assert_eq!(EntryVerifier::default().verify(std::slice::from_ref(&valid)), [true]);
 
-        let wrong_signature = pending(11, 1, 1, [6u8; 32]).signature;
-        let invalid = PendingAttestation { signature: wrong_signature, ..valid };
+        let mut invalid = valid;
+        invalid.pending.signature = pending(11, 1, 1, [6u8; 32]).signature;
         assert_eq!(EntryVerifier::default().verify(&[invalid]), [false]);
     }
 }
