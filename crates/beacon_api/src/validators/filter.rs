@@ -3,19 +3,13 @@ use silver_beacon_state_data::{BLSPubkey, ValidatorsView};
 use silver_httpcore::Query;
 
 use crate::{
+    ids::MAX_BODY_IDS,
     response::Response,
     validators::status::{Status, StatusMask},
 };
 
 /// `maxItems` on the GET `id` array (`apis/beacon/states/validators.yaml`).
 const MAX_QUERY_IDS: usize = 64;
-
-/// The POST variant carries lists a query string cannot and declares no
-/// `maxItems`, but an unbounded one turns a 16 MiB body into millions of ids
-/// that [`Filter::resolve_ids`] then sorts inside the seqlock read. A quarter
-/// of a million keys is an order of magnitude past the largest single
-/// validator client in production, against a mainnet registry of ~2M.
-const MAX_BODY_IDS: usize = 256 * 1024;
 
 pub(crate) enum ValidatorId {
     Index(u64),

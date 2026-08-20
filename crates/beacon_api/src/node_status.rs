@@ -1,3 +1,4 @@
+use silver_beacon_state_data::{Epoch, SLOTS_PER_EPOCH};
 use silver_common::ELSyncStatus;
 
 use crate::json::{PeerCountData, SyncingData};
@@ -64,6 +65,14 @@ impl NodeStatus {
 
     pub(crate) fn peer_count_data(&self) -> PeerCountData {
         PeerCountData { connected: self.peers.connected, connecting: self.peers.connecting }
+    }
+
+    /// The epoch the chain is in, whatever epoch this node's head has reached:
+    /// what a duties endpoint tells a request that arrives before the head
+    /// does from one no chain schedules duties for. `None` until the first
+    /// status, which leaves nothing to judge either by.
+    pub(crate) fn wall_epoch(&self) -> Option<Epoch> {
+        self.slots.map(|slots| slots.wall_slot / SLOTS_PER_EPOCH)
     }
 
     /// `syncing` alone would answer for the head this node is chasing, not the

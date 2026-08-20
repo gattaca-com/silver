@@ -126,19 +126,23 @@ impl<'a> SlotStateView<'a> {
         )
     }
 
+    /// `get_block_root_at_slot(state, slot)` while `block_roots` still records
+    /// that slot. An empty slot's entry repeats the last block's root, as the
+    /// spec accessor's own does.
+    pub fn recorded_block_root_at(&self, slot: Slot) -> Option<B256> {
+        self.records_slot(slot).then(|| self.block_root_at_slot(slot))
+    }
+
     /// The root of the block proposed at `slot`, when `block_roots` proves one
     /// was: `process_slot` repeats the previous entry through a slot that
     /// carried no block, so an entry differing from its predecessor is the mark
     /// of a block of the slot's own.
     pub fn block_root_proposed_at(&self, slot: Slot) -> Option<B256> {
-        if !self.records_slot(slot) {
-            return None;
-        }
-        let root = self.block_root_at_slot(slot);
+        let root = self.recorded_block_root_at(slot)?;
         let Some(previous) = slot.checked_sub(1) else {
             return Some(root);
         };
-        (self.records_slot(previous) && self.block_root_at_slot(previous) != root).then_some(root)
+        (self.recorded_block_root_at(previous)? != root).then_some(root)
     }
 
     /// Whether `block_roots` holds the entry for `slot`: the ring covers the

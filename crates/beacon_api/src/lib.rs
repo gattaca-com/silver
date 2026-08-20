@@ -1,5 +1,6 @@
 mod blocks;
 mod config;
+mod duties;
 mod identity;
 mod ids;
 mod json;

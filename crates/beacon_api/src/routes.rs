@@ -3,14 +3,17 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 #[cfg(test)]
 use silver_beacon_state_data::BeaconStateOwner;
-use silver_beacon_state_data::{B256, BeaconStateReader, SpecConfig, StateReadView};
+use silver_beacon_state_data::{
+    B256, BeaconStateReader, Epoch, ForkName, SpecConfig, StateReadView,
+};
 use silver_common::{Enr, Identify, Keypair};
 use silver_httpcore::Query;
 
 use crate::{
     NodeStatus,
     blocks::{get_block_header, get_block_root},
-    ids::{parse_root, parse_slot},
+    duties::{get_proposer_duties, get_proposer_duties_v2, post_sync_duties},
+    ids::{parse_root, parse_uint64},
     json::{FinalityCheckpoints, GenesisData, Json, ReadFlags},
     node_status::Health,
     response::Response,
@@ -49,6 +52,9 @@ pub(crate) const ROUTES: &[(Method, &str, Handler)] = &[
     (Method::Get, "/eth/v1/node/peer_count", peer_count),
     (Method::Get, "/eth/v1/node/syncing", syncing),
     (Method::Get, "/eth/v1/node/version", version),
+    (Method::Get, "/eth/v1/validator/duties/proposer/{epoch}", get_proposer_duties),
+    (Method::Post, "/eth/v1/validator/duties/sync/{epoch}", post_sync_duties),
+    (Method::Get, "/eth/v2/validator/duties/proposer/{epoch}", get_proposer_duties_v2),
     (Method::Get, "/metrics", metrics),
 ];
 
@@ -56,6 +62,10 @@ pub(crate) struct ApiCtx {
     pub(crate) statics: StaticBodies,
     pub(crate) state: BeaconStateReader,
     pub(crate) node_status: NodeStatus,
+    /// Read per request rather than baked into `statics`: the proposer duties'
+    /// v2 dependent root is defined against the epoch from which EIP-7917's
+    /// deterministic lookahead schedules an epoch a boundary in advance.
+    pub(crate) fulu_fork_epoch: Epoch,
 }
 
 impl ApiCtx {
@@ -70,21 +80,24 @@ impl ApiCtx {
             statics: StaticBodies::new(keypair, local_enr, identify, spec),
             state,
             node_status: NodeStatus::default(),
+            fulu_fork_epoch: spec.fork_epoch(ForkName::Fulu),
         }
     }
 
-    /// The published state and the root of the block it was applied from, or a
-    /// 404 carrying `not_found` while the node has published none — the schemas
-    /// of these endpoints declare no 503.
-    pub(crate) fn read_state_or_404<R>(
+    /// The published state and the root of the block it was applied from, or
+    /// `code`/`message` while the node has published none. Which code that is
+    /// belongs to the endpoint: the state reads' schemas declare no 503, the
+    /// duties' no 404.
+    pub(crate) fn read_state_or<R>(
         &self,
         resp: &mut Response<'_>,
-        not_found: &str,
+        code: u16,
+        message: &str,
         read: impl Fn(StateReadView<'_>, B256) -> R,
     ) -> Option<R> {
         let result = self.state.read_head(&read);
         if result.is_none() {
-            resp.error(404, not_found);
+            resp.error(code, message);
         }
         result
     }
@@ -120,7 +133,7 @@ impl ApiCtx {
             },
             data: read(view),
         };
-        self.read_state_or_404(resp, "state not found", read)
+        self.read_state_or(resp, 404, "state not found", read)
     }
 
     /// A `{state_id}` read whose body is the envelope around `render`, for the
@@ -151,16 +164,18 @@ pub(crate) struct StateRead<R> {
 /// where a recognized form silver cannot serve is a 404.
 fn is_recognized_state_id(state_id: &str) -> bool {
     matches!(state_id, "head" | "genesis" | "justified" | "finalized") ||
-        parse_slot(state_id).is_some() ||
+        parse_uint64(state_id).is_some() ||
         parse_root(state_id).is_some()
 }
 
 fn genesis(_req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
     let Some(genesis) =
-        ctx.read_state_or_404(resp, "Chain genesis info is not yet known", |view, _| GenesisData {
-            genesis_time: view.imm.genesis_time,
-            genesis_validators_root: view.imm.genesis_validators_root,
-            genesis_fork_version: view.imm.genesis_fork_version,
+        ctx.read_state_or(resp, 404, "Chain genesis info is not yet known", |view, _| {
+            GenesisData {
+                genesis_time: view.imm.genesis_time,
+                genesis_validators_root: view.imm.genesis_validators_root,
+                genesis_fork_version: view.imm.genesis_fork_version,
+            }
         })
     else {
         return;

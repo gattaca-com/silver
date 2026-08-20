@@ -58,7 +58,7 @@ fn finalize_advances_base_slot_and_writes_roots() {
 /// A chain older than `SLOTS_PER_HISTORICAL_ROOT`, so `slot % cap` is the
 /// wrapped index rather than the slot, and the base ring is what answers for
 /// everything below the fork's own delta.
-mod proposed_at {
+mod ring_reads {
     use super::*;
     use crate::types::{B256, SLOTS_PER_HISTORICAL_ROOT};
 
@@ -129,5 +129,26 @@ mod proposed_at {
         assert_eq!(view.block_root_proposed_at(floor - 1), None, "below the floor");
         assert_eq!(view.block_root_proposed_at(STATE_SLOT), None, "the state's own slot");
         assert_eq!(view.block_root_proposed_at(STATE_SLOT + 1), None, "past it");
+    }
+
+    /// Reading the entry itself asks only that the ring still cover the slot,
+    /// so the floor answers where naming a block there cannot, and an empty
+    /// slot answers with the root it repeats.
+    #[test]
+    fn a_recorded_entry_reads_back_wherever_the_ring_covers_its_slot() {
+        let empty = WRAPPED_FIN_SLOT - 1;
+        let mut g = wrapped_group(Some(empty));
+        let mut wv = g.roll_fresh();
+        wv.push_block_root(root_of(WRAPPED_FIN_SLOT));
+        wv.state_mut().slot = WRAPPED_FIN_SLOT + 1;
+        let view = wv.reader();
+
+        let state_slot = view.state().slot;
+        let floor = state_slot - view.finalized_block_roots().len() as u64;
+        assert_eq!(view.recorded_block_root_at(empty), Some(root_of(empty - 1)));
+        assert_eq!(view.recorded_block_root_at(WRAPPED_FIN_SLOT), Some(root_of(WRAPPED_FIN_SLOT)));
+        assert_eq!(view.recorded_block_root_at(floor), Some(root_of(floor)));
+        assert_eq!(view.recorded_block_root_at(floor - 1), None, "below the floor");
+        assert_eq!(view.recorded_block_root_at(state_slot), None, "the state's own slot");
     }
 }

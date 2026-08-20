@@ -1,7 +1,7 @@
 use silver_beacon_state_data::{B256, BLSSignature, BeaconBlockHeader, Slot, StateReadView};
 
 use crate::{
-    ids::{parse_root, parse_slot},
+    ids::{parse_root, parse_uint64},
     json::ReadFlags,
     response::Response,
     router::Request,
@@ -56,8 +56,9 @@ fn read_block(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) -> Optio
         resp.error(400, "invalid block_id");
         return None;
     };
-    let block = ctx
-        .read_state_or_404(resp, NOT_FOUND, |view, head_root| block_id.resolve(&view, head_root))?;
+    let block = ctx.read_state_or(resp, 404, NOT_FOUND, |view, head_root| {
+        block_id.resolve(&view, head_root)
+    })?;
     if block.is_none() {
         resp.error(404, NOT_FOUND);
     }
@@ -95,7 +96,7 @@ impl BlockId {
             "head" => Self::Head,
             "genesis" => Self::Slot(0),
             "finalized" => Self::Finalized,
-            _ => match parse_slot(text) {
+            _ => match parse_uint64(text) {
                 Some(slot) => Self::Slot(slot),
                 None => Self::Root(parse_root(text)?),
             },

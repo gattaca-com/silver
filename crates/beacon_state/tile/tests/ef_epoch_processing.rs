@@ -7,8 +7,9 @@ use ef_common::{
 };
 use silver_beacon_state::{
     ssz_hash::StateHashScratch,
-    stf::{self, EPOCHS_PER_SYNC_COMMITTEE_PERIOD, HISTORICAL_SUMMARY_PERIOD},
+    stf::{self, HISTORICAL_SUMMARY_PERIOD},
 };
+use silver_beacon_state_data::EPOCHS_PER_SYNC_COMMITTEE_PERIOD;
 /// Gloas EF config: mainnet preset with Gloas active from genesis, so the
 /// `cfg.is_gloas_at(epoch)`-gated STF branches fire on the loaded Gloas states.
 fn gloas_cfg() -> silver_beacon_state_data::SpecConfig {
