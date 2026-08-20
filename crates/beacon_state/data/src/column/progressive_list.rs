@@ -1,8 +1,8 @@
 use silver_ssz::scalar::SszScalar;
 
 use super::{
-    format::{SEG_OFF, TreeFormat, gloas_last_seg_for_chunks},
-    fulu::FuluTree,
+    format::{SEG_OFF, TreeFormat, progressive_last_seg_for_chunks},
+    list::ListTree,
     store::NodeStore,
     subtree::{NodeRange, build_subtree_hashes, rehash_subtree},
 };
@@ -12,19 +12,19 @@ use crate::{
     types::B256,
 };
 
-pub(super) struct GloasTree {
+pub(super) struct ProgressiveListTree {
     pub(super) store: NodeStore,
     pub(super) last_seg: u32,
 }
 
-impl GloasTree {
+impl ProgressiveListTree {
     pub(super) fn from_leaves<V: SszScalar>(
         cap: usize,
         count: usize,
         leaves: impl Iterator<Item = B256>,
     ) -> Self {
-        let last_seg = gloas_last_seg_for_chunks(cap.div_ceil(V::VALS_PER_CHUNK).max(1));
-        let format = TreeFormat::Gloas { last_seg };
+        let last_seg = progressive_last_seg_for_chunks(cap.div_ceil(V::VALS_PER_CHUNK).max(1));
+        let format = TreeFormat::Progressive { last_seg };
         let store = NodeStore::with_leaves(format.num_nodes(), count, format.data_start(), leaves);
         let mut tree = Self { store, last_seg };
         tree.rebuild_segments(count.div_ceil(V::VALS_PER_CHUNK));
@@ -39,20 +39,20 @@ impl GloasTree {
         }
     }
 
-    pub(super) fn from_fulu<V: SszScalar>(fulu: &FuluTree) -> Self {
-        debug_assert!(fulu.store.dirty_chunks.is_empty(), "unhashed batch pending at migration",);
-        let count = fulu.store.count;
+    pub(super) fn from_list<V: SszScalar>(list: &ListTree) -> Self {
+        debug_assert!(list.store.dirty_chunks.is_empty(), "unhashed batch pending at migration",);
+        let count = list.store.count;
         let chunks = count.div_ceil(V::VALS_PER_CHUNK);
         let leaves =
-            fulu.store.nodes[fulu.max_elements..fulu.max_elements + chunks].iter().copied();
-        let mut tree = Self::from_leaves::<V>(fulu.max_elements * V::VALS_PER_CHUNK, count, leaves);
+            list.store.nodes[list.max_elements..list.max_elements + chunks].iter().copied();
+        let mut tree = Self::from_leaves::<V>(list.max_elements * V::VALS_PER_CHUNK, count, leaves);
         tree.store.mark_all_dirty();
         tree
     }
 
     #[inline]
     pub(super) fn format(&self) -> TreeFormat {
-        TreeFormat::Gloas { last_seg: self.last_seg }
+        TreeFormat::Progressive { last_seg: self.last_seg }
     }
 
     pub(super) fn rehash(&mut self) {

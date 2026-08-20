@@ -385,21 +385,17 @@ impl BeaconState {
         w_u32(w, off[2])?;
         w_u32(w, off[3])?;
 
-        // The current epoch's bucket is only
-        // flushed to the array tier at the epoch boundary, so mid-epoch the live
-        // value lives in the `*_current` caches (the hashing path substitutes
-        // them in `effective_{randao_mixes,slashings}_into`).
-        // F13 randao_mixes
+        // F13 randao_mixes — the current epoch's bucket reaches the array tier
+        // only at the epoch boundary, so mid-epoch the live value is
+        // `randao_mix_current` (as `effective_randao_mixes_into` substitutes it
+        // for hashing).
         let current_epoch = (sl.slot / SLOTS_PER_EPOCH) as usize;
         let randao_curr = current_epoch % epoch_base.randao_mixes.len();
         write_b256_slice(w, &epoch_base.randao_mixes[..randao_curr])?;
         w.write_all(&sl.randao_mix_current)?;
         write_b256_slice(w, &epoch_base.randao_mixes[randao_curr + 1..])?;
         // F14 slashings.
-        let slashings_curr = current_epoch % epoch_base.slashings.len();
-        for (i, s) in epoch_base.slashings.iter().enumerate() {
-            w_u64(w, if i == slashings_curr { sl.current_epoch_slashings } else { *s })?;
-        }
+        self.slashings.write_ssz(w)?;
 
         // F15_OFF/F16_OFF previous/current participation
         w_u32(w, off[4])?;
@@ -658,7 +654,6 @@ mod tests {
         // `immutable.gloas_fork_version`; hold both at the cfg version so decode
         // routes to Gloas too.
         bs.immutable.gloas_fork_version = cfg.gloas_fork_version;
-        bs.immutable.refresh_fork_data_roots(Default::default(), cfg.gloas_fork_version);
         let mut epoch = EpochStateFinalized::default();
         epoch.state.fork.current_version = cfg.gloas_fork_version;
         bs.epoch = EpochGroup::new(epoch);
@@ -687,26 +682,24 @@ mod tests {
     }
 
     /// Regression: a checkpoint persisted mid-epoch must encode the *live*
-    /// current-epoch randao mix / slashings (the `*_current` caches), not the
-    /// stale array bucket — that bucket is only refreshed at the epoch
-    /// boundary.
+    /// current-epoch randao mix (the `randao_mix_current` cache), not the stale
+    /// array bucket — that bucket is only refreshed at the epoch boundary.
+    /// `slashings` no longer has an accumulator: its column is the live state.
     #[test]
-    fn encode_uses_live_current_epoch_caches() {
+    fn encode_uses_live_current_epoch_randao_mix() {
         let cur = 3usize;
         let mut bs = BeaconState::empty_test(0);
 
-        // Stale ring buckets, distinct from the live `*_current` caches the
+        // A stale ring bucket, distinct from the live `randao_mix_current` the
         // encode path must emit instead.
         let mut epoch = EpochStateFinalized::default();
         epoch.randao_mixes[cur] = [0xAA; 32];
-        epoch.slashings[cur] = 111;
         bs.epoch = EpochGroup::new(epoch);
 
         let zero_roots = || vec![[0u8; 32]; SLOTS_PER_HISTORICAL_ROOT].into_boxed_slice();
         let slot = SlotState {
             slot: 96, // epoch 3
             randao_mix_current: [0xBB; 32],
-            current_epoch_slashings: 222,
             ..Default::default()
         };
         bs.slot_states =
@@ -720,8 +713,6 @@ mod tests {
         let ds = decoded.slot_states.finalized().state();
         assert_eq!(de.randao_mixes[cur], [0xBB; 32], "randao current bucket = live");
         assert_eq!(ds.randao_mix_current, [0xBB; 32]);
-        assert_eq!(de.slashings[cur], 222, "slashings current bucket = live");
-        assert_eq!(ds.current_epoch_slashings, 222);
     }
 
     /// Write the decompressed-pubkey sidecar, decode it, rebuild the validators

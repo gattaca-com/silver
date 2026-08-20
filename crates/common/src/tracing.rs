@@ -1,4 +1,4 @@
-use std::io::Write;
+use std::{io::Write, sync::Once};
 
 use backtrace::Backtrace;
 use flux::utils::thread_boot;
@@ -66,6 +66,7 @@ pub fn initialise_tracing_log_on_core(
     use_stdout: bool,
     log_core: Option<usize>,
 ) -> Option<WorkerGuard> {
+    log_panics();
     let use_stdout = use_stdout || std::env::var("LOG_STDOUT").map(|_| true).unwrap_or(false);
 
     if use_stdout {
@@ -97,16 +98,23 @@ pub fn initialise_tracing_log_on_core(
     }
 }
 
+fn log_panics() {
+    static INSTALLED: Once = Once::new();
+    INSTALLED.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            error!("{info}\nFull backtrace:\n{:?}", Backtrace::new());
+            previous(info);
+        }));
+    });
+}
+
 pub fn initialise_test_tracing_logger() {
     initialise_test_tracing_logger_with_level(LevelFilter::DEBUG);
 }
 
 pub fn initialise_test_tracing_logger_with_level(level: LevelFilter) {
-    std::panic::set_hook(Box::new(|info| {
-        let backtrace = Backtrace::new();
-        let crash_log = format!("Panic: {info}\nFull backtrace:\n{backtrace:?}\n");
-        error!("{crash_log}");
-    }));
+    log_panics();
 
     // Use try_init() to avoid panicking if the subscriber is already set
     // This allows multiple tests to call this function without failing
@@ -122,7 +130,10 @@ pub fn initialise_test_tracing_logger_with_level(level: LevelFilter) {
 /// Builds an environment filter for logging. Uses a default set of filters plus
 /// some optional extras.
 pub fn build_env_filter(env_filters: Option<Vec<&str>>) -> EnvFilter {
-    let mut env_filter = EnvFilter::builder().from_env_lossy();
+    // Without a default an unset `RUST_LOG` enables nothing, so a panicking
+    // process would leave no record of why it stopped.
+    let mut env_filter =
+        EnvFilter::builder().with_default_directive(LevelFilter::ERROR.into()).from_env_lossy();
 
     for directive in DEFAULT_TRACING_ENV_FILTERS {
         env_filter = env_filter.add_directive(directive.parse().unwrap());

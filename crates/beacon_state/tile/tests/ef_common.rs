@@ -13,8 +13,8 @@ use silver_beacon_state::{
     stf,
 };
 use silver_beacon_state_data::{
-    B256, EpochGroup, EpochView, LongtailGroup, SpecConfig, StateId, StateWriterView,
-    effective_randao_mixes_into, effective_slashings_into,
+    B256, EPOCHS_PER_SLASHINGS_VECTOR, EpochGroup, EpochView, LongtailGroup, SpecConfig, StateId,
+    StateWriterView, effective_randao_mixes_into,
 };
 
 #[path = "support/loaded_state.rs"]
@@ -307,14 +307,11 @@ fn diff_rings(
     vb: &StateWriterView,
     eb: &EpochView,
 ) {
-    let (mut sa, mut sb) = (Vec::new(), Vec::new());
-    effective_slashings_into(ea, &va.slot.reader(), &mut sa);
-    effective_slashings_into(eb, &vb.slot.reader(), &mut sb);
     diff_iter(
         diffs,
-        sa.len().min(sb.len()),
-        sa.iter().copied(),
-        sb.iter().copied(),
+        EPOCHS_PER_SLASHINGS_VECTOR,
+        va.slashings.iter(),
+        vb.slashings.iter(),
         |i, av, bv| format!("  slashings[{i}]: {av} vs {bv}"),
     );
     let (mut ra, mut rb) = (Vec::new(), Vec::new());

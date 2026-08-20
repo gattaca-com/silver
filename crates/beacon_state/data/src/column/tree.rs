@@ -2,23 +2,23 @@ use flux_profiler::timed;
 use silver_ssz::scalar::SszScalar;
 
 use super::{
-    format::{TreeFormat, gloas_internal_parent},
-    fulu::FuluTree,
-    gloas::GloasTree,
+    format::{TreeFormat, progressive_internal_parent},
+    list::ListTree,
     pool::PagePool,
+    progressive_list::ProgressiveListTree,
     snapshot::PageSnapshot,
     store::NodeStore,
 };
 use crate::types::{B256, HashFormat};
 
 pub enum ColumnTree {
-    Fulu(FuluTree),
-    Gloas(GloasTree),
+    List(ListTree),
+    ProgressiveList(ProgressiveListTree),
 }
 
 impl Default for ColumnTree {
     fn default() -> Self {
-        ColumnTree::Fulu(FuluTree::default())
+        ColumnTree::List(ListTree::default())
     }
 }
 
@@ -31,37 +31,39 @@ impl ColumnTree {
         format: HashFormat,
     ) -> Self {
         match format {
-            HashFormat::Fulu => ColumnTree::Fulu(FuluTree::new::<V>(cap, count, leaves)),
-            HashFormat::Gloas => ColumnTree::Gloas(GloasTree::from_leaves::<V>(cap, count, leaves)),
+            HashFormat::Fixed => ColumnTree::List(ListTree::new::<V>(cap, count, leaves)),
+            HashFormat::Progressive => ColumnTree::ProgressiveList(
+                ProgressiveListTree::from_leaves::<V>(cap, count, leaves),
+            ),
         }
     }
 
-    pub fn migrate_to_gloas<V: SszScalar>(&mut self) {
-        let ColumnTree::Fulu(fulu) = self else { return };
-        *self = ColumnTree::Gloas(GloasTree::from_fulu::<V>(fulu));
+    pub fn migrate_to_progressive<V: SszScalar>(&mut self) {
+        let ColumnTree::List(list) = self else { return };
+        *self = ColumnTree::ProgressiveList(ProgressiveListTree::from_list::<V>(list));
     }
 
     #[inline]
     fn store(&self) -> &NodeStore {
         match self {
-            ColumnTree::Fulu(t) => &t.store,
-            ColumnTree::Gloas(t) => &t.store,
+            ColumnTree::List(t) => &t.store,
+            ColumnTree::ProgressiveList(t) => &t.store,
         }
     }
 
     #[inline]
     fn store_mut(&mut self) -> &mut NodeStore {
         match self {
-            ColumnTree::Fulu(t) => &mut t.store,
-            ColumnTree::Gloas(t) => &mut t.store,
+            ColumnTree::List(t) => &mut t.store,
+            ColumnTree::ProgressiveList(t) => &mut t.store,
         }
     }
 
     #[inline]
     pub(super) fn format(&self) -> TreeFormat {
         match self {
-            ColumnTree::Fulu(t) => t.format(),
-            ColumnTree::Gloas(t) => t.format(),
+            ColumnTree::List(t) => t.format(),
+            ColumnTree::ProgressiveList(t) => t.format(),
         }
     }
 
@@ -89,10 +91,12 @@ impl ColumnTree {
         if self.format() != format {
             let store = std::mem::take(self.store_mut());
             *self = match format {
-                TreeFormat::Fulu { max_elements } => {
-                    ColumnTree::Fulu(FuluTree { store, max_elements })
+                TreeFormat::Fixed { max_elements } => {
+                    ColumnTree::List(ListTree { store, max_elements })
                 }
-                TreeFormat::Gloas { last_seg } => ColumnTree::Gloas(GloasTree { store, last_seg }),
+                TreeFormat::Progressive { last_seg } => {
+                    ColumnTree::ProgressiveList(ProgressiveListTree { store, last_seg })
+                }
             };
         }
         self.store_mut().load_diff(pool, loaded, target, format.num_nodes());
@@ -127,8 +131,8 @@ impl ColumnTree {
 
     pub fn fill_zero(&mut self) {
         match self {
-            ColumnTree::Fulu(t) => t.fill_zero(),
-            ColumnTree::Gloas(t) => t.fill_zero(),
+            ColumnTree::List(t) => t.fill_zero(),
+            ColumnTree::ProgressiveList(t) => t.fill_zero(),
         }
         self.mark_all_dirty();
     }
@@ -146,19 +150,19 @@ impl ColumnTree {
     }
 
     /// Record chunk `chunk` as dirty and mark the pages its rehash will touch.
-    /// Fulu's leaf is an in-tree node, so its page walk starts there; gloas's
-    /// leaf is flat data, so its data page is marked plus the internal
-    /// ancestors in its segment block (segment 0's lone leaf is its own
-    /// root — no internal pages).
+    /// A list's leaf is an in-tree node, so its page walk starts there; a
+    /// progressive list's leaf is flat data, so its data page is marked plus
+    /// the internal ancestors in its segment block (segment 0's lone leaf is
+    /// its own root — no internal pages).
     fn seed_write(&mut self, chunk: usize, data_node: usize) {
         let format = self.format();
         let store = self.store_mut();
         store.push_dirty(chunk as u32);
         match format {
-            TreeFormat::Fulu { .. } => store.mark_dirty_node(data_node, 0),
-            TreeFormat::Gloas { .. } => {
+            TreeFormat::Fixed { .. } => store.mark_dirty_node(data_node, 0),
+            TreeFormat::Progressive { .. } => {
                 store.mark_dirty_page(data_node);
-                if let Some((parent, seg_off)) = gloas_internal_parent(chunk) {
+                if let Some((parent, seg_off)) = progressive_internal_parent(chunk) {
                     store.mark_dirty_node(parent, seg_off);
                 }
             }
@@ -247,8 +251,8 @@ impl ColumnTree {
             "rehash needs sorted disjoint dirty ranges; use rehash_unsorted",
         );
         match self {
-            ColumnTree::Fulu(t) => t.rehash(),
-            ColumnTree::Gloas(t) => t.rehash(),
+            ColumnTree::List(t) => t.rehash(),
+            ColumnTree::ProgressiveList(t) => t.rehash(),
         }
     }
 
@@ -257,10 +261,10 @@ impl ColumnTree {
         self.store_mut().count += 1;
         if self.count().div_ceil(V::VALS_PER_CHUNK) > self.format().data_capacity() {
             match self {
-                ColumnTree::Fulu(_) => {
+                ColumnTree::List(_) => {
                     debug_assert!(false, "append past leaf capacity — cap headroom exhausted")
                 }
-                ColumnTree::Gloas(t) => t.append_progressive_segment(),
+                ColumnTree::ProgressiveList(t) => t.append_progressive_segment(),
             }
         }
 

@@ -166,12 +166,11 @@ impl NodeStore {
         self.dirty_chunks.truncate(n);
     }
 
-    /// `seg_off` is the internal node's subtree block offset (0 for fulu's
+    /// `seg_off` is the internal node's subtree block offset (0 for a list's
     /// single tree); the walk is subtree-local.
     #[inline]
     pub(super) fn mark_dirty_node(&mut self, node: usize, seg_off: usize) {
         let mut local = node - seg_off;
-        debug_assert!(PAGE_NODES.is_power_of_two(), "PAGE_NODES must be a power of two");
         debug_assert!(seg_off.is_multiple_of(PAGE_NODES), "subtree regions must be page-aligned");
         // We can skip already-marked pages: local top bits (the page) halve the
         // same way for every node on a page, so a dirty page means every page

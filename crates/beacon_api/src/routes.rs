@@ -245,8 +245,8 @@ fn test_ctx(spec: &SpecConfig, state: BeaconStateReader) -> ApiCtx {
 #[cfg(test)]
 mod tests {
     use silver_beacon_state_data::{
-        BeaconState, Checkpoint, EPOCHS_PER_HISTORICAL_VECTOR, EPOCHS_PER_SLASHINGS_VECTOR,
-        EpochState, EpochStateFinalized, Fork, SLOTS_PER_EPOCH,
+        BeaconState, Checkpoint, EPOCHS_PER_HISTORICAL_VECTOR, EpochState, EpochStateFinalized,
+        Fork, SLOTS_PER_EPOCH,
     };
     use silver_common::{AGENT_VERSION, ELSyncStatus};
     use silver_httpcore::ParsedRequest;
@@ -469,7 +469,6 @@ mod tests {
         let base = EpochStateFinalized::from_parts(
             epoch,
             vec![[0u8; 32]; EPOCHS_PER_HISTORICAL_VECTOR].into_boxed_slice(),
-            vec![0; EPOCHS_PER_SLASHINGS_VECTOR].into_boxed_slice(),
         );
         let mut state = BeaconState::for_test(base, &[], slot);
         state.immutable.genesis_time = 1_606_824_023;

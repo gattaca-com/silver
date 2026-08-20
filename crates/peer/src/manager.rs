@@ -1069,10 +1069,10 @@ impl PeerManager {
             !self.is_backed_off(conn, topic, now);
         if accept {
             self.do_graft(conn, peer_id, topic, now, emit);
-            tracing::info!(p2p_peer = conn, ?topic, mesh_size, "PM peer GRAFTed us: accepted");
+            tracing::debug!(p2p_peer = conn, ?topic, mesh_size, "PM peer GRAFTed us: accepted");
         } else {
             self.do_prune(conn, peer_id, topic, now, emit);
-            tracing::info!(p2p_peer = conn, ?topic, mesh_size, "PM peer GRAFTed us: refused");
+            tracing::debug!(p2p_peer = conn, ?topic, mesh_size, "PM peer GRAFTed us: refused");
         }
     }
 
@@ -1097,7 +1097,7 @@ impl PeerManager {
         }
         let backoff = backoff_seconds.map(Duration::from_secs).unwrap_or(self.params.prune_backoff);
         self.set_backoff(conn, topic, now, backoff);
-        tracing::info!(p2p_peer = conn, ?topic, mesh_size, "PM peer PRUNEd us");
+        tracing::debug!(p2p_peer = conn, ?topic, mesh_size, "PM peer PRUNEd us");
     }
 
     fn on_ihave(&mut self, conn: usize, hash: MessageId, already_seen: bool, now: Instant) {
@@ -1333,13 +1333,13 @@ impl PeerManager {
             return;
         };
         for peer in meshed_peers {
-            if *peer == sender {
-                continue;
-            }
             let Some(peer_state) = self.peers.get_mut(peer) else {
                 continue;
             };
             peer_state.topic_stats.entry(topic).or_default().fanout_total += 1;
+            if *peer == sender {
+                continue;
+            }
             if peer_state.cached_score < self.params.gossip_threshold {
                 continue;
             }
@@ -2109,20 +2109,23 @@ impl PeerManager {
         // triggers. Excess beyond the settled pool waits.
         let settle = self.params.mesh_message_deliveries_activation_s;
         // Sort requires a buffer; the emit isn't what forces it.
-        let mut ranked: Vec<(usize, f64, PeerId)> =
-            self.mesh
-                .get(&topic)
-                .map(|mesh| {
-                    mesh.iter()
-                        .filter_map(|conn| {
-                            let p = self.peers.get(conn)?;
-                            let since = p.topic_stats.get(&topic)?.meshed_since?;
-                            (now.saturating_duration_since(since).as_secs_f64() >= settle)
-                                .then_some((*conn, p.cached_score, p.peer_id))
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
+        let mut ranked: Vec<(usize, f64, PeerId)> = self
+            .mesh
+            .get(&topic)
+            .map(|mesh| {
+                mesh.iter()
+                    .filter_map(|conn| {
+                        let p = self.peers.get(conn)?;
+                        let since = p.topic_stats.get(&topic)?.meshed_since?;
+                        (now.saturating_duration_since(since).as_secs_f64() >= settle).then_some((
+                            *conn,
+                            scoring::selection_score(p, &topic, &self.params, now),
+                            p.peer_id,
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         if ranked.is_empty() {
             return;
         }
@@ -2158,7 +2161,7 @@ impl PeerManager {
                 let peer = self.peers.get(conn)?;
                 let since = peer.topic_stats.get(&topic)?.meshed_since?;
                 (now.saturating_duration_since(since).as_secs_f64() >= activation)
-                    .then_some(peer.cached_score)
+                    .then_some(scoring::selection_score(peer, &topic, &self.params, now))
             })
             .collect();
         if mesh_scores.len() <= 1 {
@@ -2181,7 +2184,7 @@ impl PeerManager {
             .filter_map(|(conn, peer)| {
                 if !peer.topics.contains(&topic) ||
                     mesh.contains(conn) ||
-                    peer.cached_score <= median ||
+                    scoring::selection_score(peer, &topic, &self.params, now) <= median ||
                     self.is_backed_off(*conn, topic, now)
                 {
                     return None;

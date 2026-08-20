@@ -5,12 +5,13 @@ pub use column::{
     ColumnReader, ColumnSpec, ColumnWriteView, Current, CurrentParticipationGroup,
     CurrentParticipationId, Inactivity, InactivityId, InactivityScoresGroup, InactivityView,
     InactivityWriteView, ParticipationView, ParticipationWriteView, Previous,
-    PreviousParticipationGroup, PreviousParticipationId,
+    PreviousParticipationGroup, PreviousParticipationId, Slashings, SlashingsGroup, SlashingsId,
+    SlashingsView, SlashingsWriteView,
 };
 pub use decompose::DecomposeError;
 pub use delta_view::{
     StateReadView, StateWriterView, append_validator, effective_randao_mixes_into,
-    effective_slashings_into, randao_mix_at_epoch,
+    randao_mix_at_epoch,
 };
 pub use encode::{FULU_CHECKPOINT_SECTIONS, PubkeysDecodeError, decode_checkpoint_pubkeys};
 pub use epoch::{EpochGroup, EpochId, EpochStateFinalized, EpochView, EpochWriteView};
@@ -76,6 +77,10 @@ pub struct BeaconState {
     pub previous_participation: PreviousParticipationGroup,
     pub current_participation: CurrentParticipationGroup,
     pub inactivity: InactivityScoresGroup,
+    /// `slashings` — `Vector[Gwei, 8192]` at slot cadence: the effective ring
+    /// changes at one bucket per epoch (and again as slashings land within it),
+    /// which is the dirty-leaf write shape.
+    pub slashings: SlashingsGroup,
     /// Slot tier (`SlotState` scalars + root rings) — own ring, rolled every
     /// slot; its base holds the canonical finalized slot.
     pub slot_states: SlotStateGroup,
@@ -107,6 +112,7 @@ impl BeaconState {
             previous_participation_idx: self.previous_participation.roll_fresh().commit(),
             current_participation_idx: self.current_participation.roll_fresh().commit(),
             inactivity_idx: self.inactivity.roll_fresh().commit(),
+            slashings_idx: self.slashings.roll_fresh().commit(),
             slot_idx: self.slot_states.roll_fresh().commit(),
             validators_idx: self.validators.roll_fresh().commit(),
             builders_idx: self.builders.roll_fresh().commit(),
@@ -130,6 +136,7 @@ impl BeaconState {
             current_participation: self
                 .current_participation
                 .view(state_id.current_participation_idx),
+            slashings: self.slashings.view(state_id.slashings_idx),
             inactivity: self.inactivity.view(state_id.inactivity_idx),
             slot: self.slot_states.view(state_id.slot_idx),
             validators: self.validators.view(state_id.validators_idx),
@@ -144,7 +151,7 @@ impl BeaconState {
     #[doc(hidden)]
     pub fn for_test(epoch_base: EpochStateFinalized, seeds: &[ValSeed], slot: u64) -> Self {
         let validators =
-            ValidatorsGroup::new(FinalizedValidators::with_validators(seeds), HashFormat::Fulu);
+            ValidatorsGroup::new(FinalizedValidators::with_validators(seeds), HashFormat::Fixed);
         let cap = validators.finalized().capacity();
         let n = validators.finalized().validator_count();
         let balances: Vec<u8> = seeds.iter().flat_map(|s| s.balance.to_le_bytes()).collect();
@@ -160,24 +167,25 @@ impl BeaconState {
         Self {
             immutable: Immutable::default(),
             validators,
-            balances: BalancesGroup::new(cap, n, &balances, HashFormat::Fulu).unwrap(),
+            balances: BalancesGroup::new(cap, n, &balances, HashFormat::Fixed).unwrap(),
             eth1: Eth1Group::new(Eth1Votes::default()),
             pending: PendingGroup::from_ssz(&[], &[], &[], &[]),
             previous_participation: PreviousParticipationGroup::new(
                 cap,
                 n,
                 &zeros(1),
-                HashFormat::Fulu,
+                HashFormat::Fixed,
             )
             .unwrap(),
             current_participation: CurrentParticipationGroup::new(
                 cap,
                 n,
                 &zeros(1),
-                HashFormat::Fulu,
+                HashFormat::Fixed,
             )
             .unwrap(),
-            inactivity: InactivityScoresGroup::new(cap, n, &zeros(8), HashFormat::Fulu).unwrap(),
+            inactivity: InactivityScoresGroup::new(cap, n, &zeros(8), HashFormat::Fixed).unwrap(),
+            slashings: SlashingsGroup::zeroed_vector(),
             slot_states: SlotStateGroup::new(
                 SlotStateFinalized::from_parts(
                     SlotState { slot, ..Default::default() },

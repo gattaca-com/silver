@@ -11,7 +11,6 @@ pub(crate) struct EpochStateDelta {
     // one entry per completed epoch since finalization
     pub(super) randao_mixes: Vec<B256>,
     // one entry per completed epoch since finalization
-    pub(super) slashings: Vec<u64>,
     pub(super) state: EpochState,
     // [New in Gloas]
     pub(super) ptc_window: Box<[PtcCommittee; PTC_WINDOW_LEN]>,
@@ -21,7 +20,6 @@ impl Default for EpochStateDelta {
     fn default() -> Self {
         Self {
             randao_mixes: Vec::new(),
-            slashings: Vec::new(),
             state: EpochState::default(),
             ptc_window: zeroed_ptc_window(),
         }
@@ -34,14 +32,12 @@ impl EpochStateDelta {
     /// of a survivor.
     pub(super) fn prune_to_base(&mut self, promoted: &EpochStateDelta) {
         drain_promoted_prefix(&mut self.randao_mixes, promoted.randao_mixes.len());
-        drain_promoted_prefix(&mut self.slashings, promoted.slashings.len());
     }
 }
 
 impl Reset for EpochStateDelta {
     fn reset(&mut self) {
         self.randao_mixes.clear();
-        self.slashings.clear();
         self.state = Default::default();
         // `ptc_window` is left as-is: every roll re-seeds it via
         // `seed_from_base` (roll_fresh) or `reset_from`, so zeroing the 393 KB
@@ -50,7 +46,6 @@ impl Reset for EpochStateDelta {
 
     fn reset_from(&mut self, other: &Self) {
         self.randao_mixes.clone_from(&other.randao_mixes);
-        self.slashings.clone_from(&other.slashings);
         self.state = other.state;
         self.ptc_window.clone_from(&other.ptc_window);
     }
@@ -97,30 +92,14 @@ impl<'a> EpochView<'a> {
     }
 
     #[inline]
-    pub fn finalized_slashings(&self) -> &'a [u64] {
-        &self.base.slashings
-    }
-
-    #[inline]
     pub fn delta_randao_mixes(&self) -> &'a [B256] {
         self.delta.map_or(&[][..], |d| &d.randao_mixes)
-    }
-
-    #[inline]
-    pub fn delta_slashings(&self) -> &'a [u64] {
-        self.delta.map_or(&[][..], |d| &d.slashings)
     }
 
     /// `randao_mix(epoch)` with the epoch-delta overlay (see
     /// [`ring_overlay_at`]).
     pub fn randao_mix_at_epoch(&self, epoch: Epoch, fin_epoch: Epoch) -> B256 {
         ring_overlay_at(&self.base.randao_mixes, self.delta_randao_mixes(), epoch, fin_epoch)
-    }
-
-    /// Per-completed-epoch slashings sum, with the delta overlay (see
-    /// [`ring_overlay_at`]).
-    pub fn slashings_at(&self, epoch: Epoch, fin_epoch: Epoch) -> u64 {
-        ring_overlay_at(&self.base.slashings, self.delta_slashings(), epoch, fin_epoch)
     }
 
     #[inline]
@@ -212,10 +191,5 @@ impl<'a> EpochWriteView<'a> {
     #[inline]
     pub fn push_randao_mix(&mut self, m: B256) {
         self.fork.randao_mixes.push(m);
-    }
-
-    #[inline]
-    pub fn push_slashings(&mut self, s: u64) {
-        self.fork.slashings.push(s);
     }
 }

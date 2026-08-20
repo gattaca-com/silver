@@ -346,6 +346,7 @@ pub fn wrap_aggregate_and_proof(
     let agg_proof_root = ssz_hash::hash_tree_root_aggregate_and_proof(
         aggregator_index,
         &buf[PREFIX..],
+        ssz_hash::hash_attestation_data(data.as_bytes()),
         &selection_proof,
         fv == imm.gloas_fork_version,
     );

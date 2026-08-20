@@ -23,7 +23,7 @@ fn empty_validators() -> FinalizedValidators {
 /// A registry group over an empty base — the entry point for all delta tests,
 /// which drive through [`ValidatorsWriteView`] / [`ValidatorsView`] only.
 fn group() -> ValidatorsGroup {
-    ValidatorsGroup::new(empty_validators(), HashFormat::Fulu)
+    ValidatorsGroup::new(empty_validators(), HashFormat::Fixed)
 }
 
 /// Independent reference impl of `validator_hash`: merkleize 8 chunks
@@ -236,7 +236,7 @@ fn set_effective_balance_reproduces_independent_root() {
         effective_balance: 32_000_000_000,
         ..ValSeed::default()
     }]);
-    let mut g2 = ValidatorsGroup::new(base, HashFormat::Fulu);
+    let mut g2 = ValidatorsGroup::new(base, HashFormat::Fixed);
     assert_eq!(wv.hash_root(), g2.roll_fresh().hash_root());
 }
 
@@ -318,7 +318,7 @@ fn fulu_reference_root(leaves: &[B256]) -> B256 {
 
 #[test]
 fn gloas_construction() {
-    let mut g = ValidatorsGroup::new(empty_validators(), HashFormat::Gloas);
+    let mut g = ValidatorsGroup::new(empty_validators(), HashFormat::Progressive);
     let a = {
         let mut w = g.roll_fresh();
         for i in 0..5u8 {

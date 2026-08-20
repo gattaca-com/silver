@@ -43,6 +43,7 @@ impl TestState {
                 .current_participation
                 .roll_from(sid.current_participation_idx),
             inactivity: bs.inactivity.roll_from(sid.inactivity_idx),
+            slashings: bs.slashings.roll_from(sid.slashings_idx),
             slot: bs.slot_states.roll_from(sid.slot_idx),
             validators: bs.validators.roll_from(sid.validators_idx),
             builders: bs.builders.roll_from(sid.builders_idx),

@@ -95,7 +95,8 @@ fn collect_sigs_payload_attestation(
         .collect();
 
     let fork_version = epoch.fork_version_at(pa_slot / SLOTS_PER_EPOCH);
-    let domain = bls::domain_from_fork_data(DOMAIN_PTC_ATTESTER, &imm.fork_data_root(fork_version));
+    let domain =
+        bls::compute_domain(DOMAIN_PTC_ATTESTER, fork_version, &imm.genesis_validators_root);
     let signing_root = bls::compute_signing_root(&hash_payload_attestation_data(data), &domain);
     batch.push_aggregate(pubkeys, signature, signing_root);
     Ok(())

@@ -56,8 +56,8 @@ impl Eth1Votes {
     }
 }
 
-// `epoch` must already be filled — the derived `randao_mix_current` /
-// `current_epoch_slashings` read the current bucket from its rings.
+// `epoch` must already be filled — the derived `randao_mix_current` reads the
+// current bucket from its ring.
 impl Eth1Votes {
     pub(crate) fn from_ssz(ssz: &[u8], o: &Offsets) -> Result<Self, DecomposeError> {
         let votes_bytes = &ssz[o.eth1_votes..o.validators];

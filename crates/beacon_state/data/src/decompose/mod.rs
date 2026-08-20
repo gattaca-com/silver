@@ -101,16 +101,11 @@ mod tests {
         assert!(est.previous_justified_checkpoint.epoch <= est.current_justified_checkpoint.epoch);
         assert!(est.current_justified_checkpoint.epoch <= cur_epoch);
 
-        // Derived caches match the resolved circular-buffer entries.
+        // The derived cache matches the resolved circular-buffer entry.
         let hv = epoch.randao_mixes.len();
         assert_eq!(
             slot_view.state().randao_mix_current,
             epoch.randao_mixes[cur_epoch as usize % hv]
-        );
-        let sv = epoch.slashings.len();
-        assert_eq!(
-            slot_view.state().current_epoch_slashings,
-            epoch.slashings[cur_epoch as usize % sv]
         );
 
         // Sync-committee indices either resolve to a real validator or are

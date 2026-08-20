@@ -3,7 +3,7 @@ use std::{
     time::Duration,
 };
 
-use chain_config::ChainConfig;
+pub use chain_config::ChainConfig;
 pub use discovery_config::DiscoveryConfig;
 pub use engine_config::EngineConfig;
 pub use peer_score_params::ScoreParams;

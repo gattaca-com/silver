@@ -128,7 +128,10 @@ echo "genesis_unix_secs: $GENESIS"
 echo "resolving fork_digest from $PRIMARY logs ..."
 FORK_DIGEST=""
 for _ in $(seq 1 30); do
-  FORK_DIGEST="$(kurtosis service logs "$ENCLAVE" "$PRIMARY" 2>/dev/null \
+  # -a: the topics are logged at startup, and the CLI's default 200-line tail
+  # is pure gossip spam on a debug-level client.
+  FORK_DIGEST="$(kurtosis service logs -a --regex-match '/eth2/[0-9a-f]{8}/' \
+    "$ENCLAVE" "$PRIMARY" 2>/dev/null \
     | grep -oE '/eth2/[0-9a-f]{8}/' | grep -oE '[0-9a-f]{8}' \
     | sort | uniq -c | sort -rn | head -1 | awk '{print $2}')"
   [ -n "$FORK_DIGEST" ] && break

@@ -37,3 +37,7 @@ snap = "0.1"
 harness = false
 name = "bls_verify"
 required-features = ["ef_tests"]
+
+[[bench]]
+harness = false
+name = "attestation_root_memo"

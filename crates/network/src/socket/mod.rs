@@ -107,7 +107,6 @@ impl Socket {
         }
     }
 
-    #[timed]
     pub(crate) fn send<F>(&mut self, poll: &Poll, mut f: F) -> bool
     where
         F: FnMut(&mut Vec<u8>) -> Option<Transmit>,

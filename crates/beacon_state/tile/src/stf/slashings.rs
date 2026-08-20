@@ -67,7 +67,7 @@ pub fn collect_sigs_proposer_slashings(
         let fv =
             bls::fork_version_at_epoch(fork_epoch, prev_ver, cur_ver, h1_slot / SLOTS_PER_EPOCH);
         let domain =
-            bls::domain_from_fork_data(bls::DOMAIN_BEACON_PROPOSER, &imm.fork_data_root(fv));
+            bls::compute_domain(bls::DOMAIN_BEACON_PROPOSER, fv, &imm.genesis_validators_root);
         let sr1 = signing_root_for_block_header(&s[0..208], &domain);
         let sr2 = signing_root_for_block_header(&s[208..416], &domain);
         let sig1 = ProposerSlashingView::h1_signature(s);
@@ -199,9 +199,10 @@ pub fn collect_sigs_attester_slashings(
                 let data = IndexedAttestationView::data(ia);
                 let sig: &[u8; 96] = IndexedAttestationView::signature(ia);
                 let object_root = ssz_hash::hash_attestation_data(data.as_bytes());
-                let domain = bls::domain_from_fork_data(
+                let domain = bls::compute_domain(
                     bls::DOMAIN_BEACON_ATTESTER,
-                    &imm.fork_data_root(fv),
+                    fv,
+                    &imm.genesis_validators_root,
                 );
                 let signing_root = bls::compute_signing_root(&object_root, &domain);
                 sig_batch.push_aggregate(
@@ -374,7 +375,7 @@ pub fn validate_attester_slashing_for_gossip(
         let sig: &[u8; 96] = IndexedAttestationView::signature(ia);
         let object_root = ssz_hash::hash_attestation_data(data.as_bytes());
         let domain =
-            bls::domain_from_fork_data(bls::DOMAIN_BEACON_ATTESTER, &view.imm.fork_data_root(fv));
+            bls::compute_domain(bls::DOMAIN_BEACON_ATTESTER, fv, &view.imm.genesis_validators_root);
         let signing_root = bls::compute_signing_root(&object_root, &domain);
         sig_batch.push_aggregate(
             (0..n_idx).map(|k| {
@@ -423,10 +424,10 @@ fn slash_validator(cfg: &SpecConfig, view: &mut StateWriterView, vi: u32, propos
     let new_wd = max(prev_wd, current_epoch + EPOCHS_PER_SLASHINGS_VECTOR as u64);
     view.validators.set_withdrawable_epoch(vi, new_wd);
 
-    // Per-block accumulator for the in-progress epoch (flushed at the boundary
-    // by process_slashings_reset into `epoch.slashings`).
-    let acc = view.slot.state_mut().current_epoch_slashings.saturating_add(effective_balance);
-    view.slot.state_mut().current_epoch_slashings = acc;
+    // Spec: `state.slashings[current_epoch % SV] += effective_balance`.
+    let bucket = (current_epoch % EPOCHS_PER_SLASHINGS_VECTOR as u64) as u32;
+    let total = view.slashings.get(bucket as usize).saturating_add(effective_balance);
+    view.slashings.set(bucket, total);
 
     let penalty = effective_balance / cfg.min_slashing_penalty_quotient;
     let bal_vi = view.balances.get(vi as usize);

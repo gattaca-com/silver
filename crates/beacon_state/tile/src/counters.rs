@@ -10,5 +10,12 @@ silver_common::declare_counters! {
         // accepted and relayed; aggregation/shedding coverage degrades)
         AttestationPoolFull,
         SeenAggregatesFull,
+        AttestationRootMemoFull,
+        // attestation-root memo effectiveness (hit rate is the memo's
+        // whole premise; a miss storm plus Full = distinct-data spray).
+        // Aggregate-path probes land before full validation, so invalid
+        // aggregates inflate Miss without ever becoming votes.
+        AttestationRootMemoHit,
+        AttestationRootMemoMiss,
     }
 }

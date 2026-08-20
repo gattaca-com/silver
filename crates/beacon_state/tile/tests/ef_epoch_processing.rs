@@ -115,9 +115,9 @@ fn fulu_registry_updates() {
 fn fulu_slashings() {
     let cfg = silver_beacon_state_data::SpecConfig::mainnet();
     epoch_handler("slashings", move |s| {
-        s.with_view_and_epoch(|view, e| {
+        s.with_view_and_epoch(|view, _e| {
             let current_epoch = view.slot.reader().current_epoch();
-            stf::process_slashings(&cfg, view, e, current_epoch);
+            stf::process_slashings(&cfg, view, current_epoch);
         });
     });
 }
@@ -161,11 +161,7 @@ fn fulu_effective_balance_updates() {
 #[test]
 fn fulu_slashings_reset() {
     epoch_handler("slashings_reset", |s| {
-        let sid = s.state_id;
-        let (mut view, epoch, _) = s.view();
-        let mut epoch_w = epoch.roll_inheriting(sid.epoch_idx);
-        stf::process_slashings_reset(&mut view, &mut epoch_w);
-        s.state_id = view.commit(Some(epoch_w.commit()), sid.longtail_idx);
+        s.with_view(|view| stf::process_slashings_reset(view));
     });
 }
 

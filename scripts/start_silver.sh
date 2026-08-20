@@ -1,2 +1,5 @@
 #!/bin/bash
-LOG_PATH=/home/ubuntu/logs RUST_LOG=info nohup ./silver --unsafe-no-el --config /home/ubuntu/config/config.toml & 
+source "$(dirname "$0")"/common.sh
+
+start_telemetry
+start_silver --unsafe-no-el

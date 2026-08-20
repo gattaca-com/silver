@@ -355,6 +355,7 @@ impl Harness {
             previous_participation: bs.previous_participation.roll_fresh(),
             current_participation: bs.current_participation.roll_fresh(),
             inactivity: bs.inactivity.roll_fresh(),
+            slashings: bs.slashings.roll_fresh(),
             slot: bs.slot_states.roll_fresh(),
             validators: bs.validators.roll_fresh(),
             builders: bs.builders.roll_fresh(),

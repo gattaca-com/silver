@@ -13,5 +13,10 @@ silver_common::declare_counters! {
         // EL-mempool blob fetch (engine_getBlobsV2)
         ElBlobsFetched,
         ElColumnsBuilt,
+        // Batched KZG verification: calls, sidecars per call (ratio = batch
+        // size), and sidecars rejected via the per-sidecar fallback.
+        KzgBatchesVerified,
+        KzgBatchColumns,
+        KzgBatchRejects,
     }
 }

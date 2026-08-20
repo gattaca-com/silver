@@ -3,7 +3,7 @@ use silver_beacon_state_data::{
     self as common, BeaconBlockHeader, Checkpoint, EPOCHS_PER_HISTORICAL_VECTOR,
     EPOCHS_PER_SLASHINGS_VECTOR, Eth1Data, ExecutionPayloadHeader, Fork, HISTORICAL_ROOTS_LIMIT,
     LongtailView, MAX_ETH1_VOTES, SLOTS_PER_HISTORICAL_ROOT, SYNC_COMMITTEE_SIZE, StateReadView,
-    SyncCommittee, effective_randao_mixes_into, effective_slashings_into,
+    SyncCommittee, effective_randao_mixes_into,
 };
 use silver_common::merkle::*;
 pub use silver_common::ssz_hash::*;
@@ -38,7 +38,6 @@ pub struct StateHashScratch {
     pub(crate) block_roots: Vec<B256>,
     pub(crate) state_roots: Vec<B256>,
     randao_mixes: Vec<B256>,
-    slashings: Vec<u64>,
 }
 
 impl StateHashScratch {
@@ -48,7 +47,6 @@ impl StateHashScratch {
             block_roots: Vec::with_capacity(SLOTS_PER_HISTORICAL_ROOT),
             state_roots: Vec::with_capacity(SLOTS_PER_HISTORICAL_ROOT),
             randao_mixes: Vec::with_capacity(EPOCHS_PER_HISTORICAL_VECTOR),
-            slashings: Vec::with_capacity(EPOCHS_PER_SLASHINGS_VECTOR),
         }
     }
 }
@@ -86,11 +84,9 @@ pub(crate) fn hash_common_fields(
     rv.slot.effective_block_roots_into(&mut scratch.block_roots);
     rv.slot.effective_state_roots_into(&mut scratch.state_roots);
     effective_randao_mixes_into(&rv.epoch, &rv.slot, &mut scratch.randao_mixes);
-    effective_slashings_into(&rv.epoch, &rv.slot, &mut scratch.slashings);
     let block_roots = scratch.block_roots.as_slice();
     let state_roots = scratch.state_roots.as_slice();
     let randao_mixes = scratch.randao_mixes.as_slice();
-    let slashings = scratch.slashings.as_slice();
 
     [
         uint64_chunk(imm.genesis_time),
@@ -107,7 +103,7 @@ pub(crate) fn hash_common_fields(
         rv.validators.hash_root(),
         rv.balances.hash_root(),
         hash_b256_vector(randao_mixes),
-        hash_uint64_vector(slashings),
+        rv.slashings.hash_root(),
         rv.previous_participation.hash_root(),
         rv.current_participation.hash_root(),
         uint64_chunk(es.justification_bits as u64),

@@ -76,7 +76,7 @@ pub fn process_epoch(
     process_inactivity_updates(cfg, view, &epoch.reader(), current_epoch);
     process_rewards_and_penalties(cfg, view, &epoch.reader(), current_epoch);
     process_registry_updates(cfg, view, &epoch.reader(), current_epoch);
-    process_slashings(cfg, view, &epoch.reader(), current_epoch);
+    process_slashings(cfg, view, current_epoch);
     process_eth1_data_reset(&mut view.eth1, current_epoch);
     process_pending_deposits(cfg, view, epoch, &mut scratch.postponed);
     process_pending_consolidations(view);
@@ -84,7 +84,7 @@ pub fn process_epoch(
         process_builder_pending_payments(view, current_epoch);
     }
     process_effective_balance_updates(view, &mut scratch.replace_u64);
-    process_slashings_reset(view, epoch);
+    process_slashings_reset(view);
     process_randao_mixes_reset(view, epoch);
     if rotates_summary {
         let lt = longtail_w.as_mut().expect("longtail rolled at boundary");
@@ -428,30 +428,13 @@ pub fn process_registry_updates(
 }
 
 #[timed]
-pub fn process_slashings(
-    cfg: &SpecConfig,
-    view: &mut StateWriterView,
-    epoch: &EpochView,
-    current_epoch: Epoch,
-) {
+pub fn process_slashings(cfg: &SpecConfig, view: &mut StateWriterView, current_epoch: Epoch) {
     let total_balance = view.slot.total_active_balance(current_epoch);
 
-    let mut sum_slashings: u64 = 0;
-    for off in 0..EPOCHS_PER_SLASHINGS_VECTOR as u64 {
-        let e =
-            current_epoch + off - (EPOCHS_PER_SLASHINGS_VECTOR as u64 / 2 - 1).min(current_epoch);
-        // The current epoch's bucket holds its live total in the accumulator;
-        // it isn't flushed into the ring until `process_slashings_reset` (runs
-        // after us), so `slashings_at` would return the stale finalized
-        // baseline. Mirrors `effective_slashings`' overlay of this bucket.
-        let bucket = if e == current_epoch {
-            view.slot.state().current_epoch_slashings
-        } else {
-            let fin_epoch = view.slot.finalized_state().slot / SLOTS_PER_EPOCH;
-            epoch.slashings_at(e, fin_epoch)
-        };
-        sum_slashings = sum_slashings.saturating_add(bucket);
-    }
+    // Spec: `sum(state.slashings)` over the whole vector. The column is indexed
+    // by `epoch % SV` with every bucket live, so there is no spec-position
+    // remapping and no current-bucket overlay to reproduce.
+    let sum_slashings = view.slashings.iter().fold(0u64, |acc, bucket| acc.saturating_add(bucket));
 
     let adjusted =
         sum_slashings.saturating_mul(cfg.proportional_slashing_multiplier).min(total_balance);
@@ -475,16 +458,13 @@ pub fn process_slashings(
     view.balances.rehash();
 }
 
-/// At epoch boundary: flush the per-block `current_epoch_slashings`
-/// accumulator into `epoch_state.slashings` (one entry per completed epoch
-/// since fin) and reset the accumulator. The entry stores the *total*
-/// slashings for the completed epoch (loaded baseline + new slashings) so
-/// `effective_slashings` can overwrite the spec-position directly.
 #[timed]
-pub fn process_slashings_reset(view: &mut StateWriterView, epoch: &mut EpochWriteView) {
-    let total = view.slot.state().current_epoch_slashings;
-    epoch.push_slashings(total);
-    view.slot.state_mut().current_epoch_slashings = 0;
+pub fn process_slashings_reset(view: &mut StateWriterView) {
+    // Spec: `state.slashings[(current_epoch + 1) % SV] = 0`. `process_epoch`
+    // runs before `advance_slot`, so the current epoch is still the completing
+    // one and the bucket to clear is the next.
+    let next_epoch = view.slot.state().slot / SLOTS_PER_EPOCH + 1;
+    view.slashings.set((next_epoch % EPOCHS_PER_SLASHINGS_VECTOR as u64) as u32, 0);
 }
 
 /// Also re-weights `current_target`: a changed target-flagged attester
@@ -1059,7 +1039,6 @@ mod tests {
                 ..Default::default()
             },
             vec![[0u8; 32]; EPOCHS_PER_HISTORICAL_VECTOR].into_boxed_slice(),
-            vec![0u64; EPOCHS_PER_SLASHINGS_VECTOR].into_boxed_slice(),
         )
     }
 
@@ -1125,18 +1104,11 @@ mod tests {
         assert_eq!(view.pending.deposits.reader().len(), 0);
     }
 
+    /// EF's `slashings_reset` vector has a zero current bucket, so it cannot
+    /// catch a reset that clears the wrong one.
     #[test]
-    fn slashings_reset_does_not_double_count_baseline() {
-        // Boot epoch with a non-zero loaded slashings bucket and no new
-        // slashings this session. `decompose` seeds the accumulator
-        // (`current_epoch_slashings`) = `slashings[current]`, so the flush must
-        // push that value directly — adding `slashings_at(current)` again would
-        // double the baseline (200 instead of 100). EF's `slashings_reset`
-        // vector has a zero current bucket and so cannot catch this.
+    fn slashings_reset_clears_only_the_next_bucket() {
         let current_epoch = 5u64;
-        let bucket = current_epoch as usize % EPOCHS_PER_SLASHINGS_VECTOR;
-        let mut slashings = vec![0u64; EPOCHS_PER_SLASHINGS_VECTOR].into_boxed_slice();
-        slashings[bucket] = 100;
         let epoch_base = EpochStateFinalized::from_parts(
             EpochState {
                 finalized_checkpoint: checkpoint(current_epoch, 0x01),
@@ -1144,27 +1116,22 @@ mod tests {
                 ..Default::default()
             },
             vec![[0u8; 32]; EPOCHS_PER_HISTORICAL_VECTOR].into_boxed_slice(),
-            slashings,
         );
 
         let mut st = TestState::new(epoch_base, &[]);
-        // Pre-seed the accumulator append-only: roll, set, write the id back.
-        let mut sw = st.bs.slot_states.roll_from(st.state_id.slot_idx);
-        sw.state_mut().current_epoch_slashings = 100;
-        st.state_id.slot_idx = sw.commit();
-        let sid = st.state_id;
-        let (mut view, epoch, _) = st.view();
+        let (mut view, _, _) = st.view();
 
-        let eid =
-            at_boundary(&mut view, epoch, sid.epoch_idx, |v, e| process_slashings_reset(v, e));
+        let cur = (current_epoch % EPOCHS_PER_SLASHINGS_VECTOR as u64) as u32;
+        let next = ((current_epoch + 1) % EPOCHS_PER_SLASHINGS_VECTOR as u64) as u32;
+        view.slashings.set(cur, 100);
+        view.slashings.set(next, 77);
 
-        let ev = epoch.view(eid);
-        let fin_epoch = view.slot.finalized_state().slot / SLOTS_PER_EPOCH;
-        assert_eq!(
-            ev.slashings_at(current_epoch, fin_epoch),
-            100,
-            "must not double-count baseline"
-        );
+        process_slashings_reset(&mut view);
+
+        // Spec: only the next epoch's bucket is cleared; the completing epoch's
+        // total stays put for `process_slashings` in the epochs that follow.
+        assert_eq!(view.slashings.get(cur as usize), 100, "completing epoch's total must survive");
+        assert_eq!(view.slashings.get(next as usize), 0, "next epoch's bucket must be cleared");
     }
 
     #[test]

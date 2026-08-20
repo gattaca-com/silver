@@ -19,8 +19,9 @@ members = [
   "crates/network",
   "crates/peer",
   "crates/ssz",
-  "crates/surfer", 
+  "crates/surfer",
   "crates/columns",
+  "crates/telemetry",
 ]
 resolver = "2"
 
@@ -81,12 +82,13 @@ silver_network = {path = "crates/network" }
 silver_peer = {path = "crates/peer" }
 silver_storage = { path = "crates/storage" }
 silver_engine_api = { path = "crates/engine_api" }
-flux = { git = "https://github.com/gattaca-com/flux", rev = "d6785f1af35336002476c3d97721fcc67fe76dfd"}
-flux-utils = { git = "https://github.com/gattaca-com/flux", rev = "d6785f1af35336002476c3d97721fcc67fe76dfd", features = ["bytes"]}
-flux-profiler = { git = "https://github.com/gattaca-com/flux", rev = "d6785f1af35336002476c3d97721fcc67fe76dfd"}
+flux = { git = "https://github.com/gattaca-com/flux", rev = "b5fbdf6f3e52feb785a527d5c3bba90fee2a56e4"}
+flux-utils = { git = "https://github.com/gattaca-com/flux", rev = "b5fbdf6f3e52feb785a527d5c3bba90fee2a56e4", features = ["bytes"]}
+flux-profiler = { git = "https://github.com/gattaca-com/flux", rev = "b5fbdf6f3e52feb785a527d5c3bba90fee2a56e4"}
 
 # External
 backtrace = "0.3"
+bytesize = "1.3"
 aes = "0.8"
 aes-gcm = "0.10"
 alloy-rlp = { version = "0.3.12", default-features = false, features = ["derive", "std"] }
@@ -105,11 +107,13 @@ crc32c = "0.6"
 criterion = { version = "0.5.1", features = ["async_std", "async_tokio"] }
 crossterm = "0.28"
 ctr = "0.9"
+flate2 = "1"
 fxhash = "0.2.1"
 hashtree-rs = "0.2"
 hdrhistogram = "7.5.4"
 hex = { version = "0.4", features = ["serde"] }
 hkdf = "0.12"
+humantime = "2"
 hmac = "0.12"
 httparse = "1"
 libc = "0.2"
@@ -148,9 +152,9 @@ tracing = "0.1.40"
 tracing-appender = "0.2.5"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 uint = "0.9"
+ureq = { version = "2", default-features = false }
 x509-parser = { version = "0.17", features = ["verify"] }
 yasna = "0.5"
 
 [workspace.lints.clippy]
 too_long_first_doc_paragraph = "allow"
-

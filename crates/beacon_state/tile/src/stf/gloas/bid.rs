@@ -123,7 +123,7 @@ pub fn collect_sigs_execution_payload_bid(
 
     let fork_version = epoch.fork_version_at(current_epoch);
     let domain =
-        bls::domain_from_fork_data(DOMAIN_BEACON_BUILDER, &imm.fork_data_root(fork_version));
+        bls::compute_domain(DOMAIN_BEACON_BUILDER, fork_version, &imm.genesis_validators_root);
     let signing_root = bls::compute_signing_root(&hash_execution_payload_bid(&bid), &domain);
     batch.push_one(&pubkey, SignedExecutionPayloadBidView::signature(signed_bid), signing_root);
     Ok(())

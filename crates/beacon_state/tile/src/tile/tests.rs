@@ -2,15 +2,16 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use flux::timing::Nanos;
 use silver_beacon_state_data::{
-    BLSPubkey, BeaconBlockHeader, BeaconState, EPOCHS_PER_HISTORICAL_VECTOR,
-    EPOCHS_PER_SLASHINGS_VECTOR, EpochState, EpochStateFinalized, Immutable,
-    PROPOSER_LOOKAHEAD_SIZE, PendingDeposit, SlotStateId, ValSeed, Withdrawals,
+    BLSPubkey, BeaconBlockHeader, BeaconState, EPOCHS_PER_HISTORICAL_VECTOR, EpochState,
+    EpochStateFinalized, Immutable, PROPOSER_LOOKAHEAD_SIZE, PendingDeposit, SlotStateId, ValSeed,
+    Withdrawals,
 };
 use silver_common::{
     GossipTopic, MessageId, P2pStreamId, StreamProtocol, TCache, TCacheProducer, TProducer,
     ssz_view::{
-        AttestationView, PROPOSER_SLASHING_SIZE, SIGNED_AGG_PROOF_MIN, SIGNED_BLS_CHANGE_SIZE,
-        SIGNED_VOLUNTARY_EXIT_SIZE, SignedAggregateAndProofView, SingleAttestationView, StatusView,
+        ATTESTATION_DATA_SIZE, AttestationView, PROPOSER_SLASHING_SIZE, SIGNED_AGG_PROOF_MIN,
+        SIGNED_BLS_CHANGE_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE, SignedAggregateAndProofView,
+        SingleAttestationView, StatusView,
     },
 };
 
@@ -126,7 +127,6 @@ fn epoch_base_with(justified: Checkpoint, finalized: Checkpoint) -> EpochStateFi
             ..Default::default()
         },
         vec![[0u8; 32]; EPOCHS_PER_HISTORICAL_VECTOR].into_boxed_slice(),
-        vec![0u64; EPOCHS_PER_SLASHINGS_VECTOR].into_boxed_slice(),
     )
 }
 
@@ -178,7 +178,18 @@ fn arm_tile(
     // Test-built state: epoch base from `epoch_base`, registry + balances
     // column from `seeds`, slot base anchored at `start_slot`, the rest
     // empty.
-    let mut bs = BeaconState::for_test(epoch_base, seeds, start_slot);
+    let bs = BeaconState::for_test(epoch_base, seeds, start_slot);
+    arm_tile_state(tile, bs, seeds, start_slot);
+}
+
+/// As `arm_tile`, for tests that mutate the built state (e.g. its immutable
+/// tier) before the owner wraps it.
+fn arm_tile_state(
+    tile: &mut BeaconStateTile,
+    mut bs: BeaconState,
+    seeds: &[ValSeed],
+    start_slot: Slot,
+) {
     // Anchor each tier's fork at the base (the slot tier at `start_slot`);
     // epoch/longtail stay lazy. Rolled before the owner wraps the state.
     let anchor = bs.roll_fresh();
@@ -1128,6 +1139,100 @@ fn agg_accept() {
     assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Accept(None));
     assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_root, beacon_block_root);
     assert_eq!(tile.fork_choice.vote_tracker.votes[0].latest_epoch, slot / SLOTS_PER_EPOCH);
+}
+
+/// `handle_attestation` derives the attester domain from the state's
+/// `genesis_validators_root` (through the tile's `ForkDataRoots`). Every
+/// other signing test runs with gvr = 0 (`seed_immutable`), so this is the
+/// only pin on that wiring: a wrong or stale gvr rejects the attestation.
+#[test]
+fn single_att_accept_with_nonzero_genesis_validators_root() {
+    const GVR: B256 = [0x77; 32];
+    let mut tile = make_tile_at_wall_slot(31);
+    let (epoch_base, seeds) = build_seed_finalized(128, true);
+    let mut bs = BeaconState::for_test(epoch_base, &seeds, 0);
+    bs.immutable.genesis_validators_root = GVR;
+    arm_tile_state(&mut tile, bs, &seeds, 0);
+
+    let (slot, ci, _, _) = find_committee_for_vi0(&tile);
+    let subnet = expected_subnet(&tile, slot, ci);
+    let bbr = tile.last_applied_block_root;
+
+    // Signed against the wrong gvr (= the zero one every other test uses),
+    // the attestation must not verify. Runs first: a Reject leaves the
+    // attester unseen.
+    let bad = test_signing::sign_single_attestation(
+        0,
+        0,
+        ci as u64,
+        slot,
+        bbr,
+        slot / SLOTS_PER_EPOCH,
+        bbr,
+        &Immutable::default(),
+    );
+    assert_eq!(tile.handle_attestation(&bad, subnet), Feedback::Reject(None));
+
+    let mut imm = Immutable::default();
+    imm.genesis_validators_root = GVR;
+    let good = test_signing::sign_single_attestation(
+        0,
+        0,
+        ci as u64,
+        slot,
+        bbr,
+        slot / SLOTS_PER_EPOCH,
+        bbr,
+        &imm,
+    );
+    assert_eq!(tile.handle_attestation(&good, subnet), Feedback::Accept(None));
+}
+
+/// The root memo is keyed on AttestationData alone, so the single and
+/// aggregate paths deduplicate into one entry when they carry the same vote.
+#[test]
+fn att_root_memo_dedups_across_single_and_aggregate_paths() {
+    let mut tile = make_tile_at_wall_slot(31);
+    seed_tile_with_keys(&mut tile, 128, 0);
+    let (slot, ci, _, _) = find_committee_for_vi0(&tile);
+    let subnet = expected_subnet(&tile, slot, ci);
+    let imm = seed_immutable(&tile);
+    let bbr = tile.last_applied_block_root;
+    let single = test_signing::sign_single_attestation(
+        0,
+        0,
+        ci as u64,
+        slot,
+        bbr,
+        slot / SLOTS_PER_EPOCH,
+        bbr,
+        &imm,
+    );
+    assert_eq!(tile.handle_attestation(&single, subnet), Feedback::Accept(None));
+    assert_eq!(tile.attestation_root_memo.len(), 1);
+
+    let agg = build_agg_for_vi0(&tile);
+    assert_eq!(tile.handle_aggregate_and_proof(&agg), Feedback::Accept(None));
+    assert_eq!(tile.attestation_root_memo.len(), 1);
+}
+
+/// The slot tick prunes the memo through the same floor as the pool.
+#[test]
+fn att_root_memo_pruned_on_slot_tick() {
+    let mut tile = make_tile();
+    seed_tile(&mut tile, 4, 30);
+    let domain = [0xD0u8; 32];
+    let mut expired = [0u8; ATTESTATION_DATA_SIZE];
+    expired[..8].copy_from_slice(&30u64.to_le_bytes());
+    let mut kept = [0u8; ATTESTATION_DATA_SIZE];
+    kept[..8].copy_from_slice(&33u64.to_le_bytes());
+    kept[16] = 1;
+    tile.attestation_root_memo.roots(&expired, &domain);
+    tile.attestation_root_memo.roots(&kept, &domain);
+    assert_eq!(tile.attestation_root_memo.len(), 2);
+
+    tile.slot_tick(34);
+    assert_eq!(tile.attestation_root_memo.len(), 1);
 }
 
 #[test]
