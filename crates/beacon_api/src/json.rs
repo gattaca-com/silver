@@ -132,6 +132,21 @@ pub(crate) struct FinalityCheckpoints {
     pub(crate) finalized: Checkpoint,
 }
 
+/// The five flags and slots `getSyncingStatus` answers with
+/// (`apis/node/syncing.yaml`).
+pub(crate) struct SyncingData {
+    pub(crate) head_slot: u64,
+    pub(crate) sync_distance: u64,
+    pub(crate) is_syncing: bool,
+    pub(crate) is_optimistic: bool,
+    pub(crate) el_offline: bool,
+}
+
+pub(crate) struct PeerCountData {
+    pub(crate) connected: u64,
+    pub(crate) connecting: u64,
+}
+
 /// What a state read reports about the snapshot it came from; both flags are
 /// required beside `data` by every `states/{state_id}` schema.
 #[derive(Clone, Copy)]
@@ -142,6 +157,13 @@ pub(crate) struct StateFlags {
 
 /// Containers, in the field order the beacon-API schemas declare.
 impl Json<'_> {
+    pub(crate) fn data_envelope(&mut self, data: impl FnOnce(&mut Self)) {
+        self.begin_object();
+        self.key("data");
+        data(self);
+        self.end_object();
+    }
+
     pub(crate) fn state_envelope(&mut self, flags: StateFlags, data: impl FnOnce(&mut Self)) {
         self.begin_object();
         self.key("execution_optimistic");
@@ -181,6 +203,35 @@ impl Json<'_> {
         self.quoted_u64(checkpoint.epoch);
         self.key("root");
         self.hex(&checkpoint.root);
+        self.end_object();
+    }
+
+    pub(crate) fn syncing(&mut self, syncing: &SyncingData) {
+        self.begin_object();
+        self.key("head_slot");
+        self.quoted_u64(syncing.head_slot);
+        self.key("sync_distance");
+        self.quoted_u64(syncing.sync_distance);
+        self.key("is_syncing");
+        self.bool(syncing.is_syncing);
+        self.key("is_optimistic");
+        self.bool(syncing.is_optimistic);
+        self.key("el_offline");
+        self.bool(syncing.el_offline);
+        self.end_object();
+    }
+
+    /// All four buckets are required.
+    pub(crate) fn peer_count(&mut self, peers: &PeerCountData) {
+        self.begin_object();
+        self.key("disconnected");
+        self.quoted_u64(0);
+        self.key("connecting");
+        self.quoted_u64(peers.connecting);
+        self.key("connected");
+        self.quoted_u64(peers.connected);
+        self.key("disconnecting");
+        self.quoted_u64(0);
         self.end_object();
     }
 

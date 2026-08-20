@@ -26,5 +26,7 @@ silver_common::declare_counters! {
         GossipInvalidFrame,
         GossipInvalidControl,
         GossipInvalidMsg,
+        // Live in-flight dial count (set each tick).
+        PeersConnecting,
     }
 }

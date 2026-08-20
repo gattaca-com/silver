@@ -258,6 +258,11 @@ impl PeerManager {
         custody_columns: u128,
         awaiting_local_replay: bool,
     ) -> Self {
+        // The counters file is mapped, never truncated: until the first tick
+        // these gauges still read the last run's peer counts.
+        crate::PeerCounters::PeersConnected.set(0);
+        crate::PeerCounters::PeersConnecting.set(0);
+
         let now = Instant::now();
         let mesh =
             our_topics.iter().map(|t| (*t, Vec::with_capacity(params.d_high as usize))).collect();
@@ -818,6 +823,7 @@ impl PeerManager {
         });
 
         crate::PeerCounters::PeersConnected.set(self.peers.len() as u64);
+        crate::PeerCounters::PeersConnecting.set(self.dialing.len() as u64);
     }
 
     // ── Lifecycle ───────────────────────────────────────────────────────
@@ -2402,6 +2408,15 @@ mod tests {
         params: ScoreParams,
         awaiting_replay: bool,
     ) -> (PeerManager, Captured) {
+        // `PeerManager::new` and `tick` write the peer gauges; left at the
+        // default base that is the counter file a node running on this
+        // machine is serving from.
+        crate::PeerCounters::init_with_base(
+            std::env::temp_dir().join(format!("silver_peer_test_{}", std::process::id())),
+            "silver",
+        )
+        .unwrap();
+
         (
             PeerManager::new(
                 peer_id(99),
@@ -3682,9 +3697,13 @@ mod tests {
         mgr.redial_known_peers(t_drop, &mut |c| cap.0.push(c));
         assert_eq!(dials(&cap), 0, "in-flight dial must not repeat");
 
+        mgr.tick(t_drop, &mut |c| cap.0.push(c));
+        assert_eq!(crate::PeerCounters::PeersConnecting.get(), 1, "the dial is in flight");
+
         // Dial times out via the stale-dial sweep -> 1h backoff.
         let after_sweep = t_drop + Duration::from_secs(16);
         mgr.tick(after_sweep, &mut |c| cap.0.push(c));
+        assert_eq!(crate::PeerCounters::PeersConnecting.get(), 0, "the sweep dropped the dial");
         cap.0.clear();
         mgr.redial_known_peers(after_sweep, &mut |c| cap.0.push(c));
         assert_eq!(dials(&cap), 0, "failed dial must back off");

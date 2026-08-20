@@ -34,6 +34,8 @@ pub(crate) const ROUTES: &[(Method, &str, Handler)] = &[
     (Method::Get, "/eth/v1/config/spec", spec),
     (Method::Get, "/eth/v1/node/health", health),
     (Method::Get, "/eth/v1/node/identity", identity),
+    (Method::Get, "/eth/v1/node/peer_count", peer_count),
+    (Method::Get, "/eth/v1/node/syncing", syncing),
     (Method::Get, "/eth/v1/node/version", version),
     (Method::Get, "/metrics", metrics),
 ];
@@ -147,12 +149,19 @@ fn genesis(_req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
     else {
         return;
     };
-    resp.json_body(|json| {
-        json.begin_object();
-        json.key("data");
-        json.genesis(&genesis);
-        json.end_object();
-    });
+    resp.json_body(|json| json.data_envelope(|json| json.genesis(&genesis)));
+}
+
+/// This reads no beacon state, and its schema declares no code but 200, so a
+/// node before bootstrap answers out of the status it has.
+fn syncing(_req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
+    let syncing = ctx.node_status.syncing_data();
+    resp.json_body(|json| json.data_envelope(|json| json.syncing(&syncing)));
+}
+
+fn peer_count(_req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
+    let peers = ctx.node_status.peer_count_data();
+    resp.json_body(|json| json.data_envelope(|json| json.peer_count(&peers)));
 }
 
 fn state_fork(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
@@ -252,7 +261,7 @@ mod tests {
     use silver_httpcore::ParsedRequest;
 
     use super::*;
-    use crate::{SlotStatus, router::Router};
+    use crate::{PeerCounts, SlotStatus, router::Router};
 
     /// Wire bytes the pre-table implementation produced for these exact
     /// inputs (captured before the table dispatch landed).
@@ -348,6 +357,14 @@ mod tests {
             slots: Some(SlotStatus { head_slot: 100, wall_slot: 100, head_optimistic: false }),
             syncing: false,
             el: ELSyncStatus::Synced,
+            peers: PeerCounts::default(),
+        }
+    }
+
+    fn head_at(head_slot: u64, wall_slot: u64) -> NodeStatus {
+        NodeStatus {
+            slots: Some(SlotStatus { head_slot, wall_slot, head_optimistic: false }),
+            ..ready()
         }
     }
 
@@ -419,6 +436,129 @@ mod tests {
                 "{query}"
             );
         }
+    }
+
+    /// Both node-status endpoints answer from `NodeStatus` alone, so a
+    /// never-published reader is the whole context they need.
+    fn status_body(status: NodeStatus, path: &str) -> String {
+        let mut ctx = preboot_ctx();
+        ctx.node_status = status;
+        let resp = get(&Router::new(ROUTES), &ctx, path);
+        assert!(
+            resp.starts_with(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"),
+            "{path}: {}",
+            String::from_utf8_lossy(&resp)
+        );
+        String::from_utf8(body(&resp).to_vec()).unwrap()
+    }
+
+    fn syncing_data(status: NodeStatus) -> serde_json::Value {
+        let body = status_body(status, "/eth/v1/node/syncing");
+        let mut parsed: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
+        parsed["data"].take()
+    }
+
+    /// Body shape: `apis/node/syncing.yaml` — five required fields, slots
+    /// quoted and flags bare.
+    #[test]
+    fn syncing_body_reports_the_head_and_both_layers() {
+        assert_eq!(
+            status_body(ready(), "/eth/v1/node/syncing"),
+            "{\"data\":{\"head_slot\":\"100\",\"sync_distance\":\"0\",\"is_syncing\":false,\
+             \"is_optimistic\":false,\"el_offline\":false}}"
+        );
+    }
+
+    /// `syncing.yaml` declares no 503, and a node with nothing published has
+    /// an answer: no head, the farthest distance the schema can carry, and
+    /// every flag in the not-usable direction.
+    #[test]
+    fn syncing_answers_before_bootstrap_as_a_node_with_no_head() {
+        assert_eq!(
+            status_body(NodeStatus::default(), "/eth/v1/node/syncing"),
+            "{\"data\":{\"head_slot\":\"0\",\"sync_distance\":\"18446744073709551615\",\
+             \"is_syncing\":true,\"is_optimistic\":true,\"el_offline\":true}}"
+        );
+    }
+
+    /// The sync flag answers for the head this node is *chasing*: the control
+    /// tile publishes a `SyncUpdate` only when its target changes, so a node
+    /// that has found no peer to sync from carries `syncing: false` however
+    /// far behind the chain it falls.
+    #[test]
+    fn is_syncing_is_true_past_the_head_tolerance_whatever_the_sync_flag() {
+        assert_eq!(syncing_data(NodeStatus { syncing: true, ..ready() })["is_syncing"], true);
+        let within = syncing_data(head_at(992, 1_000));
+        assert_eq!(within["is_syncing"], false, "within the head tolerance");
+        assert_eq!(syncing_data(head_at(991, 1_000))["is_syncing"], true, "past the tolerance");
+        assert_eq!(
+            syncing_data(head_at(10, 1_000_000))["is_syncing"],
+            true,
+            "a node that never found a peer to sync from is still syncing"
+        );
+    }
+
+    /// One node, one answer: a validator client gating on `/node/health` and
+    /// reading the head from `/node/syncing` must not see the two disagree.
+    #[test]
+    fn health_reports_syncing_wherever_the_syncing_endpoint_does() {
+        let far_behind = head_at(10, 1_000_000);
+        assert_eq!(syncing_data(far_behind)["is_syncing"], true);
+        assert!(health_response(far_behind, "").starts_with(b"HTTP/1.1 206 Partial Content\r\n"));
+    }
+
+    /// The same flag the state envelopes carry: the head's own execution
+    /// status, not a constant and not a reading of the node's sync state.
+    #[test]
+    fn syncing_is_optimistic_is_the_head_s_own_status() {
+        assert_eq!(syncing_data(with_head_optimistic(true))["is_optimistic"], true);
+        assert_eq!(syncing_data(with_head_optimistic(false))["is_optimistic"], false);
+        let syncing_node = NodeStatus { syncing: true, ..with_head_optimistic(false) };
+        assert_eq!(syncing_data(syncing_node)["is_optimistic"], false);
+        let offline_el = NodeStatus { el: ELSyncStatus::Offline, ..with_head_optimistic(false) };
+        assert_eq!(syncing_data(offline_el)["is_optimistic"], false);
+    }
+
+    /// An EL that answered a healthcheck is reachable whatever it answered;
+    /// one that has never answered is no more reachable than a failed one.
+    #[test]
+    fn el_offline_is_true_only_while_the_el_has_answered_nothing() {
+        for (el, offline) in [
+            (ELSyncStatus::Unknown, true),
+            (ELSyncStatus::Offline, true),
+            (ELSyncStatus::Syncing, false),
+            (ELSyncStatus::Synced, false),
+        ] {
+            let data = syncing_data(NodeStatus { el, ..ready() });
+            assert_eq!(data["el_offline"], offline, "{el:?}");
+            assert_eq!(data["is_syncing"], false, "{el:?}: the EL is not the node's own sync");
+        }
+    }
+
+    #[test]
+    fn sync_distance_is_the_wall_clock_gap_and_never_underflows() {
+        assert_eq!(syncing_data(head_at(90, 100))["sync_distance"], "10");
+        assert_eq!(syncing_data(head_at(100, 100))["sync_distance"], "0");
+        let head_ahead = syncing_data(head_at(101, 100));
+        assert_eq!(head_ahead["sync_distance"], "0", "head ahead of the wall slot");
+        assert_eq!(syncing_data(head_at(0, u64::MAX))["sync_distance"], "18446744073709551615");
+    }
+
+    /// Body shape: `apis/node/peer_count.yaml` — all four buckets required,
+    /// so the two silver does not track are zero rather than absent.
+    #[test]
+    fn peer_count_body_carries_all_four_buckets() {
+        let peers = PeerCounts { connected: 56, connecting: 34 };
+        assert_eq!(
+            status_body(NodeStatus { peers, ..ready() }, "/eth/v1/node/peer_count"),
+            "{\"data\":{\"disconnected\":\"0\",\"connecting\":\"34\",\"connected\":\"56\",\
+             \"disconnecting\":\"0\"}}"
+        );
+        assert_eq!(
+            status_body(NodeStatus::default(), "/eth/v1/node/peer_count"),
+            "{\"data\":{\"disconnected\":\"0\",\"connecting\":\"0\",\"connected\":\"0\",\
+             \"disconnecting\":\"0\"}}"
+        );
     }
 
     #[test]

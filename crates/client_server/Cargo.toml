@@ -10,6 +10,7 @@ flux.workspace = true
 silver_beacon_api.workspace = true
 silver_common.workspace = true
 silver_engine_api.workspace = true
+silver_peer.workspace = true
 
 [dev-dependencies]
 hex.workspace = true

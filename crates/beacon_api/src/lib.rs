@@ -8,5 +8,5 @@ mod routes;
 mod server;
 mod statics;
 
-pub use node_status::{NodeStatus, SlotStatus};
+pub use node_status::{NodeStatus, PeerCounts, SlotStatus};
 pub use server::BeaconApi;
