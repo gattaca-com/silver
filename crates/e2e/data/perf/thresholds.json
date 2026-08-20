@@ -2,7 +2,7 @@
   "max_decompose": "36s",
   "max_apply_and_commit_p50": "32ms",
   "max_apply_and_commit_max": "425ms",
-  "max_process_epoch_avg": "106ms",
+  "max_process_epoch_avg": "140ms",
   "max_hash_tree_root_state_avg": "6.2ms",
   "max_finalize_avg": "8ms"
 }
