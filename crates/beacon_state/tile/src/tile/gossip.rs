@@ -22,7 +22,7 @@ use super::{
     gossip_relay::RelayMetadata,
     orphan_pool::{PendingBlock, has_room},
     seen_aggregates::Coverage,
-    single_attestation_batch::{PendingAttestation, verify_entries},
+    single_attestation_batch::PendingAttestation,
 };
 use crate::{bls, counters::BeaconStateCounters, merkle, ssz_hash, stf, validate};
 
@@ -132,7 +132,7 @@ impl BeaconStateTile {
             bls::DOMAIN_BEACON_ATTESTER,
             &self.fork_data_roots.root(fork_version, &view.imm.genesis_validators_root),
         );
-        let (data_root, signing_root) =
+        let roots =
             self.attestation_root_memo.roots(SingleAttestationView::data(buf).as_bytes(), &domain);
         let Ok(signature) = Signature::from_bytes(SingleAttestationView::signature(buf)) else {
             return AttestationAdmission::Verdict(Feedback::Reject(None));
@@ -141,8 +141,9 @@ impl BeaconStateTile {
             bytes: *buf,
             public_key: *view.validators.pubkey_decompressed(attester_index),
             signature,
-            signing_root,
-            data_root,
+            signing_root: roots.signing_root,
+            root_group: roots.group,
+            data_root: roots.data_root,
             target_epoch,
             attester_index,
             committee_position,
@@ -212,13 +213,13 @@ impl BeaconStateTile {
     pub(super) fn flush_single_attestations(&mut self, producers: &mut Producers) {
         while !self.single_attestation_batch.is_empty() {
             let entries = self.single_attestation_batch.take_chunk();
-            let verdicts = verify_entries(&entries);
+            let verdicts = self.single_attestation_batch.verify(&entries);
             BeaconStateCounters::SingleAttestationBatchRuns.inc();
             BeaconStateCounters::SingleAttestationBatchItems.add(entries.len() as u64);
             if verdicts.iter().any(|&valid| !valid) {
                 BeaconStateCounters::SingleAttestationBatchFailures.inc();
             }
-            for (entry, valid) in entries.into_iter().zip(verdicts) {
+            for (entry, &valid) in entries.into_iter().zip(&verdicts) {
                 match self.apply_single_attestation_verdict(entry, valid) {
                     SingleAttestationVerdict::Relay(relay) => {
                         relay.relay(producers);
@@ -233,6 +234,7 @@ impl BeaconStateTile {
                     }
                 }
             }
+            self.single_attestation_batch.recycle_verdicts(verdicts);
         }
     }
 

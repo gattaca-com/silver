@@ -11,6 +11,7 @@ const MAX_ENTRIES: usize = 64;
 
 struct Roots {
     data_root: B256,
+    group: AttestationRootGroup,
     /// Signing root paired with the exact domain it was derived under: the
     /// attester domain changes across fork versions, so the cached root is
     /// served only when the caller's domain matches, else re-derived from
@@ -27,6 +28,30 @@ struct Roots {
 pub struct AttestationRootMemo {
     entries: FxHashMap<[u8; ATTESTATION_DATA_SIZE], Roots>,
     floor: Slot,
+    free_groups: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AttestationRootGroup(u8);
+
+impl AttestationRootGroup {
+    pub(crate) const COUNT: usize = MAX_ENTRIES;
+
+    pub(crate) fn index(self) -> usize {
+        usize::from(self.0)
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn for_test(index: u8) -> Self {
+        Self(index)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RootLookup {
+    pub data_root: B256,
+    pub signing_root: B256,
+    pub group: Option<AttestationRootGroup>,
 }
 
 impl Default for AttestationRootMemo {
@@ -34,13 +59,15 @@ impl Default for AttestationRootMemo {
         Self {
             entries: FxHashMap::with_capacity_and_hasher(MAX_ENTRIES, Default::default()),
             floor: 0,
+            free_groups: u64::MAX,
         }
     }
 }
 
 impl AttestationRootMemo {
-    /// `(data_root, signing_root)` for `data` under the attester `domain`.
-    pub fn roots(&mut self, data: &[u8; ATTESTATION_DATA_SIZE], domain: &B256) -> (B256, B256) {
+    /// Roots and a dense identity for memo-admitted `data` under the attester
+    /// `domain`.
+    pub fn roots(&mut self, data: &[u8; ATTESTATION_DATA_SIZE], domain: &B256) -> RootLookup {
         if let Some(entry) = self.entries.get_mut(data) {
             BeaconStateCounters::AttestationRootMemoHit.inc();
             let signing_root = match entry.signing {
@@ -51,14 +78,18 @@ impl AttestationRootMemo {
                     signing_root
                 }
             };
-            return (entry.data_root, signing_root);
+            return RootLookup {
+                data_root: entry.data_root,
+                signing_root,
+                group: Some(entry.group),
+            };
         }
 
         BeaconStateCounters::AttestationRootMemoMiss.inc();
         let data_root = ssz_hash::hash_attestation_data(data);
         let signing_root = bls::compute_signing_root(&data_root, domain);
-        self.insert(data, Roots { data_root, signing: Some((*domain, signing_root)) });
-        (data_root, signing_root)
+        let group = self.insert(data, data_root, Some((*domain, signing_root)));
+        RootLookup { data_root, signing_root, group }
     }
 
     /// Data-root-only lookup for callers with no domain in hand (the aggregate
@@ -72,24 +103,41 @@ impl AttestationRootMemo {
 
         BeaconStateCounters::AttestationRootMemoMiss.inc();
         let data_root = ssz_hash::hash_attestation_data(data);
-        self.insert(data, Roots { data_root, signing: None });
+        self.insert(data, data_root, None);
         data_root
     }
 
-    fn insert(&mut self, data: &[u8; ATTESTATION_DATA_SIZE], roots: Roots) {
+    fn insert(
+        &mut self,
+        data: &[u8; ATTESTATION_DATA_SIZE],
+        data_root: B256,
+        signing: Option<(B256, B256)>,
+    ) -> Option<AttestationRootGroup> {
         if slot_of(data) < self.floor {
-            return;
+            return None;
         }
         if self.entries.len() >= MAX_ENTRIES {
             BeaconStateCounters::AttestationRootMemoFull.inc();
-            return;
+            return None;
         }
-        self.entries.insert(*data, roots);
+        let index = self.free_groups.trailing_zeros() as u8;
+        debug_assert!(usize::from(index) < MAX_ENTRIES);
+        self.free_groups &= !(1u64 << index);
+        let group = AttestationRootGroup(index);
+        self.entries.insert(*data, Roots { data_root, group, signing });
+        Some(group)
     }
 
     pub fn prune_before(&mut self, floor: Slot) {
         self.floor = floor;
-        self.entries.retain(|data, _| slot_of(data) >= floor);
+        let free_groups = &mut self.free_groups;
+        self.entries.retain(|data, roots| {
+            let retain = slot_of(data) >= floor;
+            if !retain {
+                *free_groups |= 1u64 << roots.group.0;
+            }
+            retain
+        });
     }
 
     #[cfg(test)]
@@ -121,13 +169,24 @@ mod tests {
         (data_root, bls::compute_signing_root(&data_root, domain))
     }
 
+    fn assert_roots(
+        memo: &mut AttestationRootMemo,
+        d: &[u8; ATTESTATION_DATA_SIZE],
+        domain: &B256,
+    ) -> RootLookup {
+        let lookup = memo.roots(d, domain);
+        let (data_root, signing_root) = direct(d, domain);
+        assert_eq!((lookup.data_root, lookup.signing_root), (data_root, signing_root));
+        lookup
+    }
+
     #[test]
     fn miss_then_hit_agree_with_direct() {
         let mut memo = AttestationRootMemo::default();
         let d = data(5, 1);
-        assert_eq!(memo.roots(&d, &DOMAIN_A), direct(&d, &DOMAIN_A));
+        assert_roots(&mut memo, &d, &DOMAIN_A);
         assert_eq!(memo.len(), 1);
-        assert_eq!(memo.roots(&d, &DOMAIN_A), direct(&d, &DOMAIN_A));
+        assert_roots(&mut memo, &d, &DOMAIN_A);
         assert_eq!(memo.len(), 1);
     }
 
@@ -143,11 +202,11 @@ mod tests {
             inputs.push(d);
         }
         for d in &inputs {
-            assert_eq!(memo.roots(d, &DOMAIN_A), direct(d, &DOMAIN_A));
+            assert_roots(&mut memo, d, &DOMAIN_A);
         }
         assert_eq!(memo.len(), inputs.len());
         for d in &inputs {
-            assert_eq!(memo.roots(d, &DOMAIN_A), direct(d, &DOMAIN_A));
+            assert_roots(&mut memo, d, &DOMAIN_A);
         }
         assert_eq!(memo.len(), inputs.len());
     }
@@ -157,7 +216,7 @@ mod tests {
         let mut memo = AttestationRootMemo::default();
         let d = data(5, 2);
         assert_eq!(memo.data_root(&d), direct(&d, &DOMAIN_A).0);
-        assert_eq!(memo.roots(&d, &DOMAIN_A), direct(&d, &DOMAIN_A));
+        assert_roots(&mut memo, &d, &DOMAIN_A);
         assert_eq!(memo.len(), 1);
         assert_eq!(memo.data_root(&d), direct(&d, &DOMAIN_A).0);
     }
@@ -166,7 +225,7 @@ mod tests {
     fn roots_then_data_root_reuses_entry() {
         let mut memo = AttestationRootMemo::default();
         let d = data(5, 4);
-        assert_eq!(memo.roots(&d, &DOMAIN_A), direct(&d, &DOMAIN_A));
+        assert_roots(&mut memo, &d, &DOMAIN_A);
         assert_eq!(memo.data_root(&d), direct(&d, &DOMAIN_A).0);
         assert_eq!(memo.len(), 1);
     }
@@ -175,11 +234,11 @@ mod tests {
     fn domain_change_never_serves_stale_signing_root() {
         let mut memo = AttestationRootMemo::default();
         let d = data(5, 3);
-        let (_, sr_a) = memo.roots(&d, &DOMAIN_A);
-        assert_eq!(memo.roots(&d, &DOMAIN_B), direct(&d, &DOMAIN_B));
-        assert_ne!(memo.roots(&d, &DOMAIN_B).1, sr_a);
+        let sr_a = memo.roots(&d, &DOMAIN_A);
+        assert_roots(&mut memo, &d, &DOMAIN_B);
+        assert_ne!(memo.roots(&d, &DOMAIN_B).signing_root, sr_a.signing_root);
         // Flipping back re-derives rather than serving DOMAIN_A's stale cache.
-        assert_eq!(memo.roots(&d, &DOMAIN_A), direct(&d, &DOMAIN_A));
+        assert_roots(&mut memo, &d, &DOMAIN_A);
         // Domain churn updates the entry in place, never grows the map.
         assert_eq!(memo.len(), 1);
     }
@@ -193,12 +252,12 @@ mod tests {
         assert_eq!(memo.len(), MAX_ENTRIES);
 
         let overflow = data(6, 0xFF);
-        assert_eq!(memo.roots(&overflow, &DOMAIN_A), direct(&overflow, &DOMAIN_A));
+        assert_eq!(assert_roots(&mut memo, &overflow, &DOMAIN_A).group, None);
         assert_eq!(memo.len(), MAX_ENTRIES);
         assert!(!memo.entries.contains_key(&overflow));
 
         // Capped-out values keep computing correctly on repeat misses.
-        assert_eq!(memo.roots(&overflow, &DOMAIN_A), direct(&overflow, &DOMAIN_A));
+        assert_roots(&mut memo, &overflow, &DOMAIN_A);
         assert_eq!(memo.data_root(&overflow), direct(&overflow, &DOMAIN_A).0);
     }
 
@@ -208,7 +267,7 @@ mod tests {
         for i in 0..1000u64 {
             let mut d = data(5, 0);
             d[24..32].copy_from_slice(&i.to_le_bytes());
-            assert_eq!(memo.roots(&d, &DOMAIN_A), direct(&d, &DOMAIN_A));
+            assert_roots(&mut memo, &d, &DOMAIN_A);
         }
         assert_eq!(memo.len(), MAX_ENTRIES);
     }
@@ -226,7 +285,7 @@ mod tests {
         assert!(memo.entries.contains_key(&kept));
 
         // Below-floor values still compute correctly but are not re-admitted.
-        assert_eq!(memo.roots(&old, &DOMAIN_A), direct(&old, &DOMAIN_A));
+        assert_roots(&mut memo, &old, &DOMAIN_A);
         assert_eq!(memo.len(), 1);
     }
 
@@ -244,6 +303,20 @@ mod tests {
         assert_eq!(memo.len(), 0);
         memo.roots(&refused, &DOMAIN_A);
         assert!(memo.entries.contains_key(&refused));
+    }
+
+    #[test]
+    fn group_identity_is_stable_distinct_and_reused_after_prune() {
+        let mut memo = AttestationRootMemo::default();
+        let first = data(5, 1);
+        let second = data(5, 2);
+        let first_group = assert_roots(&mut memo, &first, &DOMAIN_A).group.unwrap();
+        assert_eq!(assert_roots(&mut memo, &first, &DOMAIN_B).group, Some(first_group));
+        assert_ne!(assert_roots(&mut memo, &second, &DOMAIN_A).group, Some(first_group));
+
+        memo.prune_before(6);
+        let replacement = data(6, 3);
+        assert_eq!(assert_roots(&mut memo, &replacement, &DOMAIN_A).group, Some(first_group));
     }
 
     #[test]

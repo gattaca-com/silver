@@ -6,10 +6,9 @@ use silver_beacon_state_data::B256;
 use silver_common::ssz_view::SINGLE_ATT_SIZE;
 
 use super::gossip_relay::RelayMetadata;
-use crate::counters::BeaconStateCounters;
+use crate::{counters::BeaconStateCounters, tile::attestation_root_memo::AttestationRootGroup};
 
 mod verifier;
-pub(super) use verifier::verify_entries;
 
 pub(super) const BATCH_CHUNK: usize = 128;
 
@@ -19,6 +18,7 @@ pub(super) struct PendingAttestation {
     pub(super) public_key: PublicKey,
     pub(super) signature: Signature,
     pub(super) signing_root: B256,
+    pub(super) root_group: Option<AttestationRootGroup>,
     pub(super) data_root: B256,
     pub(super) target_epoch: u64,
     pub(super) attester_index: usize,
@@ -34,11 +34,16 @@ pub(super) struct PendingAttestation {
 pub(super) struct SingleAttestationBatch {
     pending: VecDeque<PendingAttestation>,
     keys: FxHashSet<(u64, usize)>,
+    verifier: verifier::EntryVerifier,
 }
 
 impl Default for SingleAttestationBatch {
     fn default() -> Self {
-        Self { pending: VecDeque::with_capacity(BATCH_CHUNK), keys: FxHashSet::default() }
+        Self {
+            pending: VecDeque::with_capacity(BATCH_CHUNK),
+            keys: FxHashSet::default(),
+            verifier: verifier::EntryVerifier::default(),
+        }
     }
 }
 
@@ -70,6 +75,14 @@ impl SingleAttestationBatch {
         }
         entries
     }
+
+    pub(super) fn verify(&mut self, entries: &[PendingAttestation]) -> Vec<bool> {
+        self.verifier.verify(entries)
+    }
+
+    pub(super) fn recycle_verdicts(&mut self, verdicts: Vec<bool>) {
+        self.verifier.recycle_verdicts(verdicts);
+    }
 }
 
 #[cfg(test)]
@@ -79,8 +92,9 @@ mod tests {
 
     use super::{
         super::super::bls::DST, BATCH_CHUNK, PendingAttestation, SingleAttestationBatch,
-        verifier::verify_entries,
+        verifier::EntryVerifier,
     };
+    use crate::tile::attestation_root_memo::AttestationRootGroup;
 
     fn signed(seed: u8, message: [u8; 32]) -> (PublicKey, [u8; 96]) {
         let mut ikm = [0u8; 32];
@@ -103,6 +117,7 @@ mod tests {
             public_key,
             signature: Signature::from_bytes(&signature).unwrap(),
             signing_root: message,
+            root_group: None,
             data_root: [0u8; 32],
             target_epoch,
             attester_index,
@@ -137,17 +152,35 @@ mod tests {
 
     #[test]
     fn verification_groups_entries_by_fork_bound_signing_root() {
-        let entries = vec![pending(8, 1, 0, [4u8; 32]), pending(9, 1, 1, [5u8; 32])];
-        assert_eq!(verify_entries(&entries), vec![true, true]);
+        let group = Some(AttestationRootGroup::for_test(0));
+        let entries = vec![
+            PendingAttestation { root_group: group, ..pending(8, 1, 0, [4u8; 32]) },
+            PendingAttestation { root_group: group, ..pending(9, 1, 1, [5u8; 32]) },
+        ];
+        assert_eq!(EntryVerifier::default().verify(&entries), [true, true]);
+    }
+
+    #[test]
+    fn one_memo_group_partitions_multiple_entries_by_signing_root() {
+        let group = Some(AttestationRootGroup::for_test(0));
+        let mut entries = vec![
+            PendingAttestation { root_group: group, ..pending(12, 1, 0, [7u8; 32]) },
+            PendingAttestation { root_group: group, ..pending(13, 1, 1, [7u8; 32]) },
+            PendingAttestation { root_group: group, ..pending(14, 1, 2, [8u8; 32]) },
+            PendingAttestation { root_group: group, ..pending(15, 1, 3, [8u8; 32]) },
+        ];
+        entries[3].signature = pending(16, 1, 4, [8u8; 32]).signature;
+
+        assert_eq!(EntryVerifier::default().verify(&entries), [true, true, true, false]);
     }
 
     #[test]
     fn singleton_verification_checks_the_signature_directly() {
         let valid = pending(10, 1, 0, [6u8; 32]);
-        assert_eq!(verify_entries(&[valid.clone()]), vec![true]);
+        assert_eq!(EntryVerifier::default().verify(&[valid.clone()]), [true]);
 
         let wrong_signature = pending(11, 1, 1, [6u8; 32]).signature;
         let invalid = PendingAttestation { signature: wrong_signature, ..valid };
-        assert_eq!(verify_entries(&[invalid]), vec![false]);
+        assert_eq!(EntryVerifier::default().verify(&[invalid]), [false]);
     }
 }
