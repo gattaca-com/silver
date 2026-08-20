@@ -1,9 +1,9 @@
 use blst::min_pk::PublicKey;
 use flux_profiler::timed;
 use silver_beacon_state_data::{
-    B256, ColumnSpec, Epoch, EpochView, Immutable, PARTICIPATION_WEIGHTS, ParticipationWriteView,
-    SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT, Slot, SlotStateWriteView, StateWriterView,
-    TIMELY_TARGET_FLAG, ValidatorsView,
+    B256, BlockRoots, ColumnSpec, Epoch, EpochView, Immutable, PARTICIPATION_WEIGHTS,
+    ParticipationWriteView, RootsWriteView, SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT, Slot,
+    SlotStateWriteView, StateWriterView, TIMELY_TARGET_FLAG, ValidatorsView,
 };
 use silver_common::ssz_view::AttestationView;
 
@@ -325,11 +325,11 @@ pub fn process_single_attestation(
         check_attestation_target_window(parsed.target_epoch, current_epoch, previous_epoch)?;
     check_attestation_source(epoch, is_current, parsed.source_epoch, parsed.source_root)?;
 
-    let mut flag_weights = compute_attestation_flags(&view.slot, &parsed, current_slot);
+    let mut flag_weights = compute_attestation_flags(&view.block_roots, &parsed, current_slot);
 
     let (same_slot, payload_present) = if is_gloas {
         (
-            gloas_payload_vote_is_same_slot(&view.slot, att, &parsed, &mut flag_weights)?,
+            gloas_payload_vote_is_same_slot(view, att, &parsed, &mut flag_weights)?,
             gloas_payload_is_present(att),
         )
     } else {
@@ -407,7 +407,7 @@ fn accrue_builder_payment_weight(
 }
 
 fn gloas_payload_vote_is_same_slot(
-    slot: &SlotStateWriteView,
+    view: &StateWriterView,
     att: &[u8],
     parsed: &ParsedAttestationData,
     flag_weights: &mut [bool; 3],
@@ -416,7 +416,7 @@ fn gloas_payload_vote_is_same_slot(
     if index > GLOAS_PAYLOAD_PRESENT {
         return Err(AttestationError::InvalidPayloadIndex { index });
     }
-    let same_slot = is_attestation_same_slot(slot, parsed);
+    let same_slot = is_attestation_same_slot(&view.block_roots, parsed);
     let payload_matches = if same_slot {
         // The payload is revealed after the block, so a same-slot vote must
         // claim "absent".
@@ -425,7 +425,7 @@ fn gloas_payload_vote_is_same_slot(
         }
         true
     } else {
-        index == payload_availability_bit(slot, parsed.att_slot)
+        index == payload_availability_bit(&view.slot, parsed.att_slot)
     };
     flag_weights[TIMELY_HEAD_FLAG_INDEX] &= payload_matches;
     Ok(same_slot)
@@ -435,13 +435,15 @@ fn gloas_payload_is_present(att: &[u8]) -> bool {
     AttestationView::data(att).index() == GLOAS_PAYLOAD_PRESENT
 }
 
-fn is_attestation_same_slot(slot: &SlotStateWriteView, parsed: &ParsedAttestationData) -> bool {
+fn is_attestation_same_slot(
+    block_roots: &RootsWriteView<BlockRoots>,
+    parsed: &ParsedAttestationData,
+) -> bool {
     if parsed.att_slot == 0 {
         return true;
     }
     let root = parsed.beacon_block_root;
-    root == slot.block_root_at_slot(parsed.att_slot) &&
-        root != slot.block_root_at_slot(parsed.att_slot - 1)
+    root == block_roots.at_slot(parsed.att_slot) && root != block_roots.at_slot(parsed.att_slot - 1)
 }
 
 fn payload_availability_bit(slot: &SlotStateWriteView, att_slot: Slot) -> u64 {
@@ -507,13 +509,13 @@ fn check_attestation_source(
 }
 
 fn compute_attestation_flags(
-    slot: &SlotStateWriteView,
+    block_roots: &RootsWriteView<BlockRoots>,
     parsed: &ParsedAttestationData,
     current_slot: Slot,
 ) -> [bool; 3] {
-    let expected_target_root = slot.block_root_at_slot(parsed.target_epoch * SLOTS_PER_EPOCH);
+    let expected_target_root = block_roots.at_slot(parsed.target_epoch * SLOTS_PER_EPOCH);
     let is_matching_target = parsed.target_root == expected_target_root;
-    let expected_head_root = slot.block_root_at_slot(parsed.att_slot);
+    let expected_head_root = block_roots.at_slot(parsed.att_slot);
     let is_matching_head = is_matching_target && parsed.beacon_block_root == expected_head_root;
     let inclusion_delay = current_slot.saturating_sub(parsed.att_slot);
 

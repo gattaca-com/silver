@@ -25,7 +25,6 @@ pub fn collect_sigs_sync_aggregate(
     sig_batch: &mut SigBatch,
 ) {
     let imm = view.imm;
-    let slot = &view.slot;
     let validators = &view.validators;
     let longtail = &view.longtail;
     if sync_agg.len() < BLOCK_SYNC_AGGREGATE_SIZE {
@@ -37,7 +36,7 @@ pub fn collect_sigs_sync_aggregate(
     let sig = SyncAggregateView::sync_committee_signature(sync_agg_fixed);
 
     let previous_slot = block_slot.saturating_sub(1);
-    let previous_block_root = slot.block_root_at_slot(previous_slot);
+    let previous_block_root = view.block_roots.at_slot(previous_slot);
     let previous_epoch = previous_slot / SLOTS_PER_EPOCH;
     let fork_version = view.epoch.fork_version_at(previous_epoch);
 

@@ -120,7 +120,7 @@ fn w_u32<W: Write>(w: &mut W, v: u32) -> io::Result<()> {
 
 /// Bulk-write a contiguous `[B256]` as raw bytes. `B256` is `[u8; 32]`
 /// (align 1), so the reinterpret is sound and endianness-agnostic — matching
-/// the inverse cast in `decompose::fill_block_state_roots`.
+/// the inverse casts in `decompose`.
 #[inline]
 pub(crate) fn write_b256_slice<W: Write>(w: &mut W, s: &[B256]) -> io::Result<()> {
     let bytes = unsafe { std::slice::from_raw_parts(s.as_ptr().cast::<u8>(), s.len() * 32) };
@@ -350,8 +350,7 @@ impl BeaconState {
     /// variable offsets (historical_roots..inactivity_scores).
     fn write_fixed_prefix<W: Write>(&self, w: &mut W, off: &[u32]) -> io::Result<()> {
         let imm = &self.immutable;
-        let slot_base = self.slot_states.finalized();
-        let sl = slot_base.state();
+        let sl = self.slot_states.finalized().state();
         let epoch_base = self.epoch.finalized();
         let est = epoch_base.state();
         let lt = self.longtail.finalized();
@@ -370,8 +369,9 @@ impl BeaconState {
         w.write_all(&h.state_root)?;
         w.write_all(&h.body_root)?;
 
-        // F5/F6 block_roots, state_roots (rings stored in spec index order).
-        slot_base.write_roots_ssz(w)?;
+        // F5/F6 block_roots, state_roots.
+        self.block_roots.write_ssz(w)?;
+        self.state_roots.write_ssz(w)?;
 
         // F7_OFF historical_roots
         w_u32(w, off[0])?;
@@ -610,8 +610,8 @@ pub fn decode_checkpoint_pubkeys(bytes: &[u8]) -> Result<Vec<PublicKey>, Pubkeys
 #[cfg(test)]
 mod tests {
     use crate::{
-        BeaconState, EpochGroup, EpochStateFinalized, SLOTS_PER_HISTORICAL_ROOT, SlotState,
-        SlotStateFinalized, SlotStateGroup, SpecConfig, decode_checkpoint_pubkeys, encode::Section,
+        BeaconState, EpochGroup, EpochStateFinalized, SlotState, SlotStateFinalized,
+        SlotStateGroup, SpecConfig, decode_checkpoint_pubkeys, encode::Section,
     };
 
     /// `encode → decompose → encode` must be a byte-exact fixed point, and the
@@ -696,14 +696,12 @@ mod tests {
         epoch.randao_mixes[cur] = [0xAA; 32];
         bs.epoch = EpochGroup::new(epoch);
 
-        let zero_roots = || vec![[0u8; 32]; SLOTS_PER_HISTORICAL_ROOT].into_boxed_slice();
         let slot = SlotState {
             slot: 96, // epoch 3
             randao_mix_current: [0xBB; 32],
             ..Default::default()
         };
-        bs.slot_states =
-            SlotStateGroup::new(SlotStateFinalized::from_parts(slot, zero_roots(), zero_roots()));
+        bs.slot_states = SlotStateGroup::new(SlotStateFinalized::new(slot));
 
         let mut ssz = Vec::with_capacity(bs.ssz_len());
         bs.encode_ssz(&mut ssz).unwrap();

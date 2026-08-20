@@ -3,8 +3,8 @@ use flux_profiler::timed;
 use silver_beacon_state_data::{
     B256, BeaconBlockHeader, BlockBodyError, BodyFork, BodyOffsets, Epoch, EpochGroup, EpochId,
     EpochView, EpochWriteView, Eth1Data, Eth1WriteView, Immutable, LongtailGroup, LongtailId,
-    LongtailView, SLOTS_PER_EPOCH, Slot, SlotStateView, SlotStateWriteView, SpecConfig, StateId,
-    StateReadView, StateWriterView, ValidatorsView,
+    LongtailView, SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT, Slot, SlotStateView,
+    SlotStateWriteView, SpecConfig, StateId, StateReadView, StateWriterView, ValidatorsView,
 };
 use silver_common::ssz_view::{
     BEACON_BLOCK_BODY_FIXED, Eth1DataView, SIGNED_BEACON_BLOCK_MIN, SignedBeaconBlockView,
@@ -366,13 +366,12 @@ pub fn process_slot(
     // before the first boundary, the held boundary writer's reader after).
     let rv = view.read(*epoch, longtail.view_opt(longtail_idx));
     let prev_state_root = ssz_hash::hash_tree_root_state(&rv, state_hash_scratch);
-    let slot = &mut view.slot;
-    slot.push_state_root(prev_state_root);
+    let bucket = (view.slot.state().slot % SLOTS_PER_HISTORICAL_ROOT as u64) as u32;
+    view.state_roots.set(bucket, prev_state_root);
 
-    slot.fill_latest_block_header_state_root(prev_state_root);
-    let header = slot.state().latest_block_header;
-    let block_root = hash_tree_root_block_header(&header);
-    slot.push_block_root(block_root);
+    view.slot.fill_latest_block_header_state_root(prev_state_root);
+    let header = view.slot.state().latest_block_header;
+    view.block_roots.set(bucket, hash_tree_root_block_header(&header));
 
     if epoch.is_gloas(view.imm.gloas_fork_version) {
         view.slot.unset_next_payload_availability();

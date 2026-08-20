@@ -88,7 +88,7 @@ pub fn process_epoch(
     process_randao_mixes_reset(view, epoch);
     if rotates_summary {
         let lt = longtail_w.as_mut().expect("longtail rolled at boundary");
-        process_historical_summaries_update(view, lt, &mut scratch.state_hash);
+        process_historical_summaries_update(view, lt);
     }
     process_participation_flag_updates(view);
     if rotates_sync_committee {
@@ -180,9 +180,9 @@ fn justification_target_roots(
     debug_assert_eq!(balances, sweep_epoch_balances(view, current_epoch));
 
     let prev_root = (balances.previous_target * 3 >= balances.total_active * 2)
-        .then(|| view.slot.block_root_at_slot(previous_epoch * SLOTS_PER_EPOCH));
+        .then(|| view.block_roots.at_slot(previous_epoch * SLOTS_PER_EPOCH));
     let curr_root = (balances.current_target * 3 >= balances.total_active * 2)
-        .then(|| view.slot.block_root_at_slot(current_epoch * SLOTS_PER_EPOCH));
+        .then(|| view.block_roots.at_slot(current_epoch * SLOTS_PER_EPOCH));
     (prev_root, curr_root)
 }
 
@@ -718,21 +718,13 @@ pub fn process_pending_consolidations(view: &mut StateWriterView) {
 /// `HISTORICAL_SUMMARY_PERIOD` multiple (which is what rolled `longtail`).
 #[timed]
 pub fn process_historical_summaries_update(
-    view: &mut StateWriterView,
+    view: &StateWriterView,
     longtail: &mut LongtailWriteView,
-    scratch: &mut ssz_hash::StateHashScratch,
 ) {
-    // Effective `block_roots` / `state_roots` circular vectors with delta
-    // entries overlaid on the finalized ring (SLOTS_PER_HISTORICAL_ROOT = 8192
-    // entries).
-    view.slot.reader().effective_block_roots_into(&mut scratch.block_roots);
-    view.slot.reader().effective_state_roots_into(&mut scratch.state_roots);
-
-    let block_summary_root =
-        merkle::merkleize_padded(&scratch.block_roots, SLOTS_PER_HISTORICAL_ROOT);
-    let state_summary_root =
-        merkle::merkleize_padded(&scratch.state_roots, SLOTS_PER_HISTORICAL_ROOT);
-    longtail.push_historical_summary(HistoricalSummary { block_summary_root, state_summary_root });
+    longtail.push_historical_summary(HistoricalSummary {
+        block_summary_root: view.block_roots.hash_root(),
+        state_summary_root: view.state_roots.hash_root(),
+    });
 }
 
 /// At epoch boundary: publish the per-block `randao_mix_current` accumulator

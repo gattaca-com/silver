@@ -9,48 +9,36 @@ fn anchored_base() -> SlotStateFinalized {
 }
 
 #[test]
-fn block_root_anchored_reads_base() {
-    let mut base = anchored_base();
-    let target_slot = 50;
-    let idx = target_slot as usize % base.block_roots.len();
-    base.block_roots[idx] = [0xEE; 32];
-
-    let mut g = SlotStateGroup::new(base);
-    let wv = g.roll_fresh();
-    // slot < fin_slot → falls through to the finalized circular buffer.
-    assert_eq!(wv.reader().block_root_at_slot(target_slot), [0xEE; 32]);
-}
-
-#[test]
-fn block_root_diverged_hits_delta_then_base() {
-    let mut base = anchored_base();
-    let post_idx = (FIN_SLOT + 1) as usize % base.block_roots.len();
-    base.block_roots[post_idx] = [0x22; 32];
-
-    let mut g = SlotStateGroup::new(base);
-    let mut wv = g.roll_fresh();
-    wv.push_block_root([0xDD; 32]); // entry 0 = slot FIN_SLOT
-    let view = wv.reader();
-    assert_eq!(view.block_root_at_slot(FIN_SLOT), [0xDD; 32]);
-    assert_eq!(view.block_root_at_slot(FIN_SLOT + 1), [0x22; 32]);
-}
-
-/// Finalization promotes the winner fork's `SlotState` into the base and writes
-/// its appended block roots into the circular buffer at the slots they cover
-/// (entry 0 → old finalized slot).
-#[test]
-fn finalize_advances_base_slot_and_writes_roots() {
+fn finalize_adopts_the_winners_slot_state() {
     let mut g = SlotStateGroup::new(anchored_base());
     let winner = {
         let mut wv = g.roll_fresh();
         wv.state_mut().slot = 105;
-        wv.push_block_root([0x55; 32]);
         wv.commit()
     };
     g.finalize(winner, &[winner]);
 
-    let base = g.finalized_view();
-    assert_eq!(base.slot_number(), 105);
-    let roots = base.finalized_block_roots();
-    assert_eq!(roots[FIN_SLOT as usize % roots.len()], [0x55; 32]);
+    assert_eq!(g.finalized_view().slot_number(), 105);
+}
+
+/// A reanchored survivor keeps reading its own `SlotState`, not the newly
+/// promoted base's.
+#[test]
+fn reanchored_survivor_keeps_its_own_state() {
+    let mut g = SlotStateGroup::new(anchored_base());
+    let winner = {
+        let mut wv = g.roll_fresh();
+        wv.state_mut().slot = 105;
+        wv.commit()
+    };
+    let sibling = {
+        let mut wv = g.roll_from(winner);
+        wv.state_mut().slot = 106;
+        wv.commit()
+    };
+
+    let fresh = g.finalize(winner, &[winner, sibling]);
+
+    assert_eq!(g.view(fresh[0]).slot_number(), 105);
+    assert_eq!(g.view(fresh[1]).slot_number(), 106);
 }

@@ -30,26 +30,7 @@ impl LoadedState {
     /// production `apply_block_view` shape. Mutations persist only via
     /// `s.state_id = view.commit(epoch_idx, longtail_idx)` writeback.
     pub fn view(&mut self) -> (StateWriterView<'_>, &mut EpochGroup, &mut LongtailGroup) {
-        let sid = self.state_id;
-        let bs = &mut self.bs;
-        let view = StateWriterView {
-            imm: &bs.immutable,
-            balances: bs.balances.roll_from(sid.balances_idx),
-            eth1: bs.eth1.roll_from(sid.eth1_idx),
-            pending: bs.pending.roll_from(sid.pending_idx),
-            previous_participation: bs
-                .previous_participation
-                .roll_from(sid.previous_participation_idx),
-            current_participation: bs
-                .current_participation
-                .roll_from(sid.current_participation_idx),
-            inactivity: bs.inactivity.roll_from(sid.inactivity_idx),
-            slashings: bs.slashings.roll_from(sid.slashings_idx),
-            slot: bs.slot_states.roll_from(sid.slot_idx),
-            validators: bs.validators.roll_from(sid.validators_idx),
-            builders: bs.builders.roll_from(sid.builders_idx),
-        };
-        (view, &mut bs.epoch, &mut bs.longtail)
+        self.bs.roll_from(self.state_id)
     }
 }
 

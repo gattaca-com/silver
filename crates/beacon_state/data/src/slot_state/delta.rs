@@ -5,43 +5,26 @@ use super::{
 };
 use crate::{
     SLOTS_PER_EPOCH,
-    reanchor::drain_promoted_prefix,
     ring::{Reset, Slot as RingSlot},
     types::{B256, Epoch, SLOTS_PER_HISTORICAL_ROOT, Slot, SlotState},
 };
 
-// size: ~1 KB inline (SlotState scalars + Vec headers); root tails on the
-// heap.
+// size: ~1 KB inline — the `SlotState` scalars.
 #[derive(Clone, Default)]
 pub(crate) struct SlotStateDelta {
     pub(super) slot: SlotState,
     pub(super) epoch_balances: EpochBalances,
-    pub(super) block_roots: Vec<B256>,
-    pub(super) state_roots: Vec<B256>,
-}
-
-impl SlotStateDelta {
-    /// Drop the promoted prefix of the root tails (now folded into the base) —
-    /// the reanchor half of finalization, run on a fresh copy of a survivor.
-    pub(super) fn prune_to_base(&mut self, promoted: &SlotStateDelta) {
-        drain_promoted_prefix(&mut self.block_roots, promoted.block_roots.len());
-        drain_promoted_prefix(&mut self.state_roots, promoted.state_roots.len());
-    }
 }
 
 impl Reset for SlotStateDelta {
     fn reset(&mut self) {
         self.slot = Default::default();
         self.epoch_balances = Default::default();
-        self.block_roots.clear();
-        self.state_roots.clear();
     }
 
     fn reset_from(&mut self, other: &Self) {
         self.slot.clone_from(&other.slot);
         self.epoch_balances = other.epoch_balances;
-        self.block_roots.clone_from(&other.block_roots);
-        self.state_roots.clone_from(&other.state_roots);
     }
 }
 
@@ -92,66 +75,6 @@ impl<'a> SlotStateView<'a> {
     #[inline]
     pub fn current_epoch(&self) -> Epoch {
         self.state().slot / SLOTS_PER_EPOCH
-    }
-
-    #[inline]
-    pub fn finalized_block_roots(&self) -> &'a [B256] {
-        &self.base.block_roots
-    }
-
-    #[inline]
-    pub fn finalized_state_roots(&self) -> &'a [B256] {
-        &self.base.state_roots
-    }
-
-    #[inline]
-    pub fn delta_block_roots(&self) -> &'a [B256] {
-        self.delta.map_or(&[][..], |d| &d.block_roots)
-    }
-
-    #[inline]
-    pub fn delta_state_roots(&self) -> &'a [B256] {
-        self.delta.map_or(&[][..], |d| &d.state_roots)
-    }
-
-    /// Block root at `slot`: prefer the fork delta tail (entry `slot -
-    /// fin_slot`), else the finalized circular buffer (`slot % cap`).
-    #[inline]
-    pub fn block_root_at_slot(&self, slot: Slot) -> B256 {
-        Self::root_at_slot(
-            self.base_state().slot,
-            self.delta_block_roots(),
-            self.finalized_block_roots(),
-            slot,
-        )
-    }
-
-    fn root_at_slot(fin_slot: Slot, delta_roots: &[B256], fin_roots: &[B256], slot: Slot) -> B256 {
-        if slot >= fin_slot {
-            let i = (slot - fin_slot) as usize;
-            if i < delta_roots.len() {
-                return delta_roots[i];
-            }
-        }
-        fin_roots[slot as usize % fin_roots.len()]
-    }
-
-    pub fn effective_block_roots_into(&self, out: &mut Vec<B256>) {
-        self.overlay_ring_into(self.finalized_block_roots(), self.delta_block_roots(), out);
-    }
-
-    pub fn effective_state_roots_into(&self, out: &mut Vec<B256>) {
-        self.overlay_ring_into(self.finalized_state_roots(), self.delta_state_roots(), out);
-    }
-
-    fn overlay_ring_into(&self, fin: &[B256], delta: &[B256], out: &mut Vec<B256>) {
-        out.clear();
-        out.extend_from_slice(fin);
-        let cap = out.len();
-        let fin_slot = self.base_state().slot as usize;
-        for (k, r) in delta.iter().enumerate() {
-            out[(fin_slot + k) % cap] = *r;
-        }
     }
 }
 
@@ -228,30 +151,5 @@ impl<'a> SlotStateWriteView<'a> {
         if header.state_root == [0u8; 32] {
             header.state_root = state_root;
         }
-    }
-
-    #[inline]
-    pub fn finalized_block_roots(&self) -> &[B256] {
-        &self.base.block_roots
-    }
-
-    #[inline]
-    pub fn finalized_state_roots(&self) -> &[B256] {
-        &self.base.state_roots
-    }
-
-    #[inline]
-    pub fn push_block_root(&mut self, r: B256) {
-        self.fork.block_roots.push(r);
-    }
-
-    #[inline]
-    pub fn push_state_root(&mut self, r: B256) {
-        self.fork.state_roots.push(r);
-    }
-
-    #[inline]
-    pub fn block_root_at_slot(&self, slot: Slot) -> B256 {
-        self.reader().block_root_at_slot(slot)
     }
 }

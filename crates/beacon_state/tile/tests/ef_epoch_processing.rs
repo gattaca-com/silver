@@ -5,10 +5,7 @@ mod ef_common;
 use ef_common::{
     LoadedState, compare_states, iter_test_cases, load_state, load_state_gloas, spec_tests_dir,
 };
-use silver_beacon_state::{
-    ssz_hash::StateHashScratch,
-    stf::{self, EPOCHS_PER_SYNC_COMMITTEE_PERIOD, HISTORICAL_SUMMARY_PERIOD},
-};
+use silver_beacon_state::stf::{self, EPOCHS_PER_SYNC_COMMITTEE_PERIOD, HISTORICAL_SUMMARY_PERIOD};
 /// Gloas EF config: mainnet preset with Gloas active from genesis, so the
 /// `cfg.is_gloas_at(epoch)`-gated STF branches fire on the loaded Gloas states.
 fn gloas_cfg() -> silver_beacon_state_data::SpecConfig {
@@ -180,15 +177,14 @@ fn fulu_randao_mixes_reset() {
 fn fulu_historical_summaries_update() {
     epoch_handler("historical_summaries_update", move |s| {
         let sid = s.state_id;
-        let (mut view, _, longtail) = s.view();
+        let (view, _, longtail) = s.view();
         let current_epoch = view.slot.reader().current_epoch();
         // The hub's rotation gate: no-op vectors never roll the longtail.
         if !(current_epoch + 1).is_multiple_of(HISTORICAL_SUMMARY_PERIOD) {
             return;
         }
         let mut longtail_w = longtail.roll_inheriting(sid.longtail_idx);
-        let mut scratch = StateHashScratch::new();
-        stf::process_historical_summaries_update(&mut view, &mut longtail_w, &mut scratch);
+        stf::process_historical_summaries_update(&view, &mut longtail_w);
         s.state_id = view.commit(sid.epoch_idx, Some(longtail_w.commit()));
     });
 }

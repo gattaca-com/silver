@@ -1,12 +1,8 @@
-use std::io::{self, Write};
-
 use super::{delta::SlotStateDelta, epoch_balances::EpochBalances};
 use crate::{
     DecomposeError, EpochStateFinalized,
     decompose::{
-        common::{
-            F2, F4, F5, F6, F8, F10, F25, F26, F28, F30, F31, F32, F33, Offsets, b256, u64_le,
-        },
+        common::{F2, F4, F8, F10, F25, F26, F28, F30, F31, F32, F33, Offsets, b256, u64_le},
         gloas::{
             G_BUILDER_PENDING_PAYMENTS, G_CONSOLIDATION_BALANCE_TO_CONSUME,
             G_DEPOSIT_REQUESTS_START_INDEX, G_EARLIEST_CONSOLIDATION_EPOCH, G_EARLIEST_EXIT_EPOCH,
@@ -15,15 +11,13 @@ use crate::{
             G_NEXT_WITHDRAWAL_VALIDATOR_INDEX, GloasOffsets,
         },
     },
-    encode::write_b256_slice,
     gloas::{
         BUILDER_PENDING_PAYMENTS_LEN, BuilderPendingPayment, EXECUTION_PAYLOAD_AVAILABILITY_BYTES,
         ExecutionPayloadBid, MAX_WITHDRAWALS_PER_PAYLOAD, Withdrawal,
     },
-    reanchor::write_ring_window,
     types::{
-        B256, BeaconBlockHeader, EPOCHS_PER_HISTORICAL_VECTOR, Eth1Data, ExecutionPayloadHeader,
-        SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT, SlotState,
+        BeaconBlockHeader, EPOCHS_PER_HISTORICAL_VECTOR, Eth1Data, ExecutionPayloadHeader,
+        SLOTS_PER_EPOCH, SlotState,
     },
 };
 
@@ -31,35 +25,16 @@ use crate::{
 const WITHDRAWAL_SSZ: usize = 44;
 const BUILDER_PENDING_PAYMENT_SSZ: usize = 52;
 
-// size: ~1 KB inline (SlotState scalars + 2 × Box headers); heap 512 KB
-// (2 × HR × 32 B root rings).
-#[derive(Clone)]
+// size: ~1 KB inline — the `SlotState` scalars.
+#[derive(Clone, Default)]
 pub struct SlotStateFinalized {
     pub(super) slot: SlotState,
     pub(super) epoch_balances: EpochBalances,
-    pub(super) block_roots: Box<[B256]>,
-    pub(super) state_roots: Box<[B256]>,
-}
-
-impl Default for SlotStateFinalized {
-    fn default() -> Self {
-        Self {
-            slot: Default::default(),
-            epoch_balances: Default::default(),
-            block_roots: vec![[0u8; 32]; SLOTS_PER_HISTORICAL_ROOT].into_boxed_slice(),
-            state_roots: vec![[0u8; 32]; SLOTS_PER_HISTORICAL_ROOT].into_boxed_slice(),
-        }
-    }
 }
 
 impl SlotStateFinalized {
-    /// Length-checked constructor over already-parsed parts.
-    /// `block_roots`/`state_roots` must each be `SLOTS_PER_HISTORICAL_ROOT`
-    /// long.
-    pub fn from_parts(slot: SlotState, block_roots: Box<[B256]>, state_roots: Box<[B256]>) -> Self {
-        debug_assert_eq!(block_roots.len(), SLOTS_PER_HISTORICAL_ROOT);
-        debug_assert_eq!(state_roots.len(), SLOTS_PER_HISTORICAL_ROOT);
-        Self { slot, epoch_balances: Default::default(), block_roots, state_roots }
+    pub fn new(slot: SlotState) -> Self {
+        Self { slot, epoch_balances: Default::default() }
     }
 
     #[inline]
@@ -72,24 +47,10 @@ impl SlotStateFinalized {
         self
     }
 
-    /// SSZ-encode the `block_roots` then `state_roots` circular buffers
-    /// (consecutive fixed-part fields, spec index order) — checkpoint
-    /// encoding.
-    pub(crate) fn write_roots_ssz<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        write_b256_slice(w, &self.block_roots)?;
-        write_b256_slice(w, &self.state_roots)
-    }
-
-    /// Fold a fork's delta into the base: adopt its `SlotState`, then write its
-    /// appended block/state roots into the circular buffers at the slots they
-    /// cover (`(old_fin_slot + i) % cap`). The data half of finalization.
+    /// Adopt a fork's delta as the base — the data half of finalization.
     pub(super) fn promote(&mut self, delta: &SlotStateDelta) {
-        let old_fin_slot = self.slot.slot as usize;
         self.slot.clone_from(&delta.slot);
         self.epoch_balances = delta.epoch_balances;
-
-        write_ring_window(&mut self.block_roots, old_fin_slot, &delta.block_roots);
-        write_ring_window(&mut self.state_roots, old_fin_slot, &delta.state_roots);
     }
 
     pub(crate) fn from_ssz_fulu(
@@ -120,7 +81,7 @@ impl SlotStateFinalized {
         slot.randao_mix_current =
             epoch.randao_mixes[current_epoch as usize % EPOCHS_PER_HISTORICAL_VECTOR];
 
-        Ok(Self::from_parts(slot, read_roots(ssz, F5), read_roots(ssz, F6)))
+        Ok(Self::new(slot))
     }
 
     pub(crate) fn from_ssz_gloas(
@@ -156,17 +117,8 @@ impl SlotStateFinalized {
         let current_epoch = (slot.slot / SLOTS_PER_EPOCH) as usize;
         slot.randao_mix_current = epoch.randao_mixes[current_epoch % EPOCHS_PER_HISTORICAL_VECTOR];
 
-        Ok(Self::from_parts(slot, read_roots(ssz, F5), read_roots(ssz, F6)))
+        Ok(Self::new(slot))
     }
-}
-
-// block/state roots — B256 is align-1, so the region reinterprets as `&[B256]`
-// and copies straight into a fresh box (no zero-init).
-fn read_roots(ssz: &[u8], at: usize) -> Box<[B256]> {
-    let src: &[B256] = unsafe {
-        std::slice::from_raw_parts(ssz[at..].as_ptr().cast::<B256>(), SLOTS_PER_HISTORICAL_ROOT)
-    };
-    src.to_vec().into_boxed_slice()
 }
 
 fn read_availability(ssz: &[u8]) -> [u8; EXECUTION_PAYLOAD_AVAILABILITY_BYTES] {
