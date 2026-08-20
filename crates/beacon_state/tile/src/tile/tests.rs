@@ -21,7 +21,7 @@ use crate::{
     fork_choice::{BlockImport, PayloadStatus},
     stf::AttestationVote,
     test_signing,
-    tile::gossip::SingleAttestationVerdict,
+    tile::gossip::{AttestationAdmission, SingleAttestationVerdict},
 };
 
 const MAX_EFFECTIVE_BALANCE: u64 = 32_000_000_000;
@@ -1009,7 +1009,10 @@ fn deferred_single_attestation_marks_seen_and_routes_feedback_only_at_verdict() 
         protobuf: read,
     };
 
-    assert!(tile.admit_attestation(&buf, subnet, Some(message)).is_err());
+    assert!(matches!(
+        tile.admit_attestation(&buf, subnet, Some(message)),
+        AttestationAdmission::Queued
+    ));
     assert!(!tile.seen_attesters.contains(slot / SLOTS_PER_EPOCH, 0));
     let pending = tile.single_attestation_batch.take_chunk().pop().unwrap();
 
