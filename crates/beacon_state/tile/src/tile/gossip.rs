@@ -774,6 +774,20 @@ impl BeaconStateTile {
         Feedback::Accept(None)
     }
 
+    /// Topics whose handlers can move the canonical head or fork choice, so
+    /// queued attestation verdicts must be applied against the head their
+    /// admission used before the handler runs.
+    fn moves_canonical_state(topic: GossipTopic) -> bool {
+        matches!(
+            topic,
+            GossipTopic::BeaconBlock |
+                GossipTopic::BeaconAggregateAndProof |
+                GossipTopic::AttesterSlashing |
+                GossipTopic::ExecutionPayload |
+                GossipTopic::PayloadAttestationMessage
+        )
+    }
+
     pub(super) fn handle_gossip(
         &mut self,
         read: TCacheRead,
@@ -782,16 +796,7 @@ impl BeaconStateTile {
         pre_verified: bool,
         producers: &mut Producers,
     ) {
-        if matches!(
-            m.topic,
-            GossipTopic::BeaconBlock |
-                GossipTopic::BeaconAggregateAndProof |
-                GossipTopic::AttesterSlashing |
-                GossipTopic::ExecutionPayload |
-                GossipTopic::PayloadAttestationMessage
-        ) {
-            // Apply a queued verdict against the same canonical head used for
-            // admission before another gossip changes fork choice or state.
+        if Self::moves_canonical_state(m.topic) {
             self.flush_single_attestations(producers);
         }
         let acquired = self.gossip_consumer.acquire(read);
