@@ -91,6 +91,26 @@ fn verify_sequential(entries: &[(PublicKey, Signature)], message: &B256) -> usiz
     invalid
 }
 
+/// The CL-112 acceptance-table shape: all-valid groups at the sizes a slot's
+/// 1-3 distinct `AttestationData` values produce.
+fn bench_same_message_group_sizes(c: &mut Criterion) {
+    let message = [0x42u8; 32];
+    let mut group = c.benchmark_group("same_message_valid");
+    for signers in [8usize, 32, 128] {
+        let mut batch = SameMessageBatch::default();
+        for index in 0..signers as u64 {
+            let (key, public_key) = keypair(index);
+            batch.push(public_key, key.sign(&message, DST, &[]));
+        }
+        assert!(batch.verify(&message).iter().all(|&valid| valid));
+        group.bench_function(format!("signers_{signers}"), |b| {
+            b.iter(|| {
+                black_box(batch.verify(black_box(&message)).iter().filter(|&&valid| valid).count())
+            })
+        });
+    }
+}
+
 fn bench_same_message_attribution(c: &mut Criterion) {
     let message = [0x42u8; 32];
     let mut group = c.benchmark_group("same_message_128");
@@ -294,6 +314,7 @@ fn bench_envelopes(c: &mut Criterion) {
 criterion_group!(
     benches,
     bench_verify_single_attestation,
+    bench_same_message_group_sizes,
     bench_same_message_attribution,
     bench_envelopes
 );
