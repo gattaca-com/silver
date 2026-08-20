@@ -39,7 +39,6 @@ mod finalize;
 mod fork_choice;
 mod fork_data_roots;
 mod gossip;
-mod gossip_relay;
 mod orphan_pool;
 mod seen_aggregates;
 mod seen_validators;

@@ -19,7 +19,6 @@ use silver_common::{
 use super::{
     ATTESTATION_PROPAGATION_SLOT_RANGE, BY_ROOT_REQUEST_ID, BeaconStateTile, Feedback, Producers,
     attestation_pool::InsertOutcome,
-    gossip_relay::RelayMetadata,
     orphan_pool::{PendingBlock, has_room},
     seen_aggregates::Coverage,
     single_attestation_batch::PendingAttestation,
@@ -34,8 +33,8 @@ pub(super) enum EnvelopeCheck {
 
 #[derive(Debug)]
 pub(super) enum SingleAttestationVerdict {
-    Relay(RelayMetadata),
-    Invalid(RelayMetadata),
+    Relay(NewGossipMsg),
+    Invalid(NewGossipMsg),
 }
 
 pub(super) enum AttestationAdmission {
@@ -153,7 +152,7 @@ impl BeaconStateTile {
             attestation_slot: att_slot,
             committee_index,
             payload_present,
-            relay: gossip.as_ref().map(RelayMetadata::from),
+            relay: gossip,
         };
         if pending.relay.is_some() {
             return if self.single_attestation_batch.enqueue(pending) {
@@ -224,7 +223,7 @@ impl BeaconStateTile {
         for (entry, &valid) in entries.drain(..).zip(&verdicts) {
             match self.apply_single_attestation_verdict(entry, valid) {
                 SingleAttestationVerdict::Relay(relay) => {
-                    relay.relay(producers);
+                    Self::relay_gossip(&relay, producers);
                     self.on_accept(None, producers);
                 }
                 SingleAttestationVerdict::Invalid(relay) => {
@@ -815,7 +814,7 @@ impl BeaconStateTile {
                     producers,
                     |p| {
                         if do_relay {
-                            RelayMetadata::from(&m).relay(p);
+                            Self::relay_gossip(&m, p);
                         }
                     },
                 );
@@ -863,7 +862,7 @@ impl BeaconStateTile {
             }),
             Feedback::Accept(block_root) => {
                 if do_relay {
-                    RelayMetadata::from(&m).relay(producers);
+                    Self::relay_gossip(&m, producers);
                 }
                 self.on_accept(block_root, producers);
             }
@@ -872,13 +871,23 @@ impl BeaconStateTile {
             }
             Feedback::AwaitData(_) | Feedback::AwaitParentPayload { .. } => {
                 if do_relay {
-                    RelayMetadata::from(&m).relay(producers);
+                    Self::relay_gossip(&m, producers);
                 }
                 self.park_block(feedback, PendingBlock::Gossip(m), data, producers);
             }
             Feedback::Ignore => {}
         }
         self.drain_envelope_requests(producers);
+    }
+
+    fn relay_gossip(m: &NewGossipMsg, producers: &mut Producers) {
+        producers.produce(PeerEvent::SendGossip {
+            originator_stream_id: m.stream_id,
+            topic: m.topic,
+            msg_hash: m.msg_hash,
+            recv_ts: m.recv_ts,
+            protobuf: m.protobuf,
+        });
     }
 }
 

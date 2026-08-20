@@ -1,9 +1,8 @@
 use blst::min_pk::{PublicKey, Signature};
 use rustc_hash::FxHashSet;
 use silver_beacon_state_data::B256;
-use silver_common::ssz_view::SINGLE_ATT_SIZE;
+use silver_common::{NewGossipMsg, ssz_view::SINGLE_ATT_SIZE};
 
-use super::gossip_relay::RelayMetadata;
 use crate::{counters::BeaconStateCounters, tile::attestation_root_memo::AttestationRootGroup};
 
 mod verifier;
@@ -26,7 +25,7 @@ pub(super) struct PendingAttestation {
     pub(super) attestation_slot: u64,
     pub(super) committee_index: usize,
     pub(super) payload_present: bool,
-    pub(super) relay: Option<RelayMetadata>,
+    pub(super) relay: Option<NewGossipMsg>,
 }
 
 pub(super) struct SingleAttestationBatch {
@@ -93,7 +92,7 @@ impl SingleAttestationBatch {
 #[cfg(test)]
 mod tests {
     use blst::min_pk::{PublicKey, SecretKey, Signature};
-    use silver_common::ssz_view::SINGLE_ATT_SIZE;
+    use silver_common::{NewGossipMsg, ssz_view::SINGLE_ATT_SIZE};
 
     use super::{
         super::super::bls::DST, BATCH_CHUNK, PendingAttestation, SingleAttestationBatch,
