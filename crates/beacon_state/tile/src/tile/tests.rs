@@ -27,6 +27,13 @@ use crate::{
 const MAX_EFFECTIVE_BALANCE: u64 = 32_000_000_000;
 const ANCHOR_ROOT: B256 = [0x01u8; 32];
 
+/// Consumer-side tile stub: joins the spine so tests can drain the
+/// PeerEvents the tile under test produced.
+struct EventSink;
+impl Tile<SilverSpine> for EventSink {
+    fn loop_body(&mut self, _: &mut SpineAdapter<SilverSpine>) {}
+}
+
 fn make_tile() -> BeaconStateTile {
     make_tile_at_wall_slot(1)
 }
@@ -1054,11 +1061,6 @@ fn deferred_single_attestation_marks_seen_and_routes_feedback_only_at_verdict() 
 
 #[test]
 fn beacon_block_dispatch_flushes_queued_attestation_before_feedback() {
-    struct EventSink;
-    impl Tile<SilverSpine> for EventSink {
-        fn loop_body(&mut self, _: &mut SpineAdapter<SilverSpine>) {}
-    }
-
     let (mut tile, mut producer, mut spine, mut adapter) = tile_with_producers(31);
     seed_tile_with_keys(&mut tile, 128, 0);
     let (slot, committee_index, _, _) = find_committee_for_vi0(&tile);
@@ -1134,11 +1136,6 @@ fn beacon_block_dispatch_flushes_queued_attestation_before_feedback() {
 
 #[test]
 fn loop_body_batches_single_attestations_and_emits_only_their_verdict_events() {
-    struct EventSink;
-    impl Tile<SilverSpine> for EventSink {
-        fn loop_body(&mut self, _: &mut SpineAdapter<SilverSpine>) {}
-    }
-
     enum Observed {
         Relay { peer: usize, hash: MessageId, protobuf: TCacheRead },
         Invalid { peer: usize, topic: GossipTopic, hash: MessageId },

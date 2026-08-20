@@ -46,6 +46,15 @@ pub fn sign(sk_idx: usize, message: &[u8]) -> [u8; 96] {
     privkey(sk_idx).sign(message, DST, &[]).to_bytes()
 }
 
+/// Deterministic keypair from `seed`, signing `message` under the attester
+/// DST — for batch tests needing more distinct keys than `PRIVKEY_HEX`.
+pub fn seeded_signed(seed: u8, message: [u8; 32]) -> (PublicKey, [u8; 96]) {
+    let mut ikm = [0u8; 32];
+    ikm[0] = seed;
+    let key = SecretKey::key_gen(&ikm, &[]).unwrap();
+    (key.sk_to_pk(), key.sign(&message, DST, &[]).to_bytes())
+}
+
 fn test_fork_version(target_epoch: u64) -> [u8; 4] {
     let f = Fork::default();
     bls::fork_version_at_epoch(f.epoch, f.previous_version, f.current_version, target_epoch)

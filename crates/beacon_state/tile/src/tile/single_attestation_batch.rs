@@ -95,7 +95,7 @@ impl SingleAttestationBatch {
 
 #[cfg(test)]
 mod tests {
-    use blst::min_pk::{PublicKey, SecretKey, Signature};
+    use blst::min_pk::Signature;
     use flux::timing::Nanos;
     use silver_common::{
         GossipTopic, MessageId, NewGossipMsg, P2pStreamId, StreamProtocol, TCache, TCacheProducer,
@@ -103,17 +103,13 @@ mod tests {
     };
 
     use super::{
-        super::super::bls::DST, BATCH_CHUNK, PendingAttestation, QueuedAttestation,
-        SingleAttestationBatch, verifier::EntryVerifier,
+        BATCH_CHUNK, PendingAttestation, QueuedAttestation, SingleAttestationBatch,
+        verifier::EntryVerifier,
     };
-    use crate::{stf::AttestationVote, tile::attestation_root_memo::AttestationRootGroup};
-
-    fn signed(seed: u8, message: [u8; 32]) -> (PublicKey, [u8; 96]) {
-        let mut ikm = [0u8; 32];
-        ikm[0] = seed;
-        let key = SecretKey::key_gen(&ikm, &[]).unwrap();
-        (key.sk_to_pk(), key.sign(&message, DST, &[]).to_bytes())
-    }
+    use crate::{
+        stf::AttestationVote, test_signing::seeded_signed,
+        tile::attestation_root_memo::AttestationRootGroup,
+    };
 
     fn gossip_producer() -> TProducer {
         TCache::producer("single_att_batch_test", 1 << 12)
@@ -141,7 +137,7 @@ mod tests {
         attester_index: u32,
         message: [u8; 32],
     ) -> PendingAttestation {
-        let (public_key, signature) = signed(seed, message);
+        let (public_key, signature) = seeded_signed(seed, message);
         let mut bytes = [0u8; SINGLE_ATT_SIZE];
         bytes[144..].copy_from_slice(&signature);
         PendingAttestation {

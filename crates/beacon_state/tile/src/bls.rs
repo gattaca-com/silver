@@ -600,7 +600,7 @@ pub(crate) fn verify_single_attestation_parsed(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_signing::{pubkey_pk, sign};
+    use crate::test_signing::{pubkey_pk, seeded_signed, sign};
 
     /// SigBatch eth-aggregate — empty participants accepted iff sig is
     /// G2 infinity (sync-aggregate semantics).
@@ -661,5 +661,101 @@ mod tests {
         batch.push_one(&pubkey_pk(1), &bad_sig1, msg1);
         batch.push_one(&pubkey_pk(2), &sig2, msg2);
         assert!(!batch.verify_all());
+    }
+
+    /// An on-curve G2 point outside the r-order subgroup: it deserializes but
+    /// fails `validate`. Found by perturbing a valid signature's x-coordinate
+    /// until it lands back on the curve (the cofactor makes the subgroup a
+    /// negligible fraction of those hits).
+    fn out_of_subgroup_signature() -> Signature {
+        let (_, valid) = seeded_signed(1, [0u8; 32]);
+        let mut bytes = valid;
+        for delta in 1..=u8::MAX {
+            bytes[95] = valid[95].wrapping_add(delta);
+            if let Ok(signature) = Signature::from_bytes(&bytes) {
+                if signature.validate(true).is_err() {
+                    return signature;
+                }
+            }
+        }
+        unreachable!("no out-of-subgroup point near the valid signature");
+    }
+
+    #[test]
+    fn attributes_one_bad_signature() {
+        let message = [7u8; 32];
+        let (pk0, sig0) = seeded_signed(1, message);
+        let (pk1, _) = seeded_signed(2, message);
+        let (_, wrong_sig) = seeded_signed(3, message);
+        let mut batch = SameMessageBatch::default();
+        batch.push(pk0, Signature::from_bytes(&sig0).unwrap());
+        batch.push(pk1, Signature::from_bytes(&wrong_sig).unwrap());
+        assert_eq!(batch.verify(&message), [true, false]);
+    }
+
+    #[test]
+    fn rejects_signatures_that_only_verify_as_an_unweighted_sum() {
+        let message = [11u8; 32];
+        let (pk0, _) = seeded_signed(4, message);
+        let (pk1, sig1) = seeded_signed(5, message);
+        let (_, sig0) = seeded_signed(4, message);
+        let mut batch = SameMessageBatch::default();
+        batch.push(pk0, Signature::from_bytes(&sig1).unwrap());
+        batch.push(pk1, Signature::from_bytes(&sig0).unwrap());
+        assert_eq!(batch.verify(&message), [false, false]);
+    }
+
+    #[test]
+    fn subgroup_invalid_member_does_not_evict_weighted_fast_path() {
+        let message = [14u8; 32];
+        let invalid_position = 2;
+        let mut batch = SameMessageBatch::default();
+        for seed in 1..=8 {
+            let (public_key, signature) = seeded_signed(seed, message);
+            let signature = if usize::from(seed) - 1 == invalid_position {
+                out_of_subgroup_signature()
+            } else {
+                Signature::from_bytes(&signature).unwrap()
+            };
+            batch.push(public_key, signature);
+        }
+
+        let mut expected = vec![true; 8];
+        expected[invalid_position] = false;
+        assert_eq!(batch.verify(&message), expected);
+        // The seven remaining signatures still verify as one weighted
+        // aggregate rather than falling back to singleton checks.
+        assert_eq!(batch.operation_counts(), (8, 0, 1));
+    }
+
+    #[test]
+    fn all_invalid_checks_each_subgroup_and_leaf_once() {
+        let message = [12u8; 32];
+        let pairs: Vec<_> = (0..128u8).map(|index| seeded_signed(index + 1, message)).collect();
+        let mut batch = SameMessageBatch::default();
+        for index in 0..pairs.len() {
+            batch.push(pairs[index].0, Signature::from_bytes(&pairs[(index + 1) % 128].1).unwrap());
+        }
+        assert_eq!(batch.verify(&message), vec![false; 128]);
+        assert_eq!(batch.operation_counts(), (128, 128, 15));
+    }
+
+    #[test]
+    fn sparse_invalid_signatures_only_fall_back_in_failed_subtrees() {
+        let message = [13u8; 32];
+        let pairs: Vec<_> = (0..128u8).map(|index| seeded_signed(index + 1, message)).collect();
+        let invalid_indices = [10, 100];
+        let mut batch = SameMessageBatch::default();
+        for index in 0..pairs.len() {
+            let signature_index =
+                if invalid_indices.contains(&index) { (index + 1) % 128 } else { index };
+            batch.push(pairs[index].0, Signature::from_bytes(&pairs[signature_index].1).unwrap());
+        }
+        let mut expected = vec![true; 128];
+        for index in invalid_indices {
+            expected[index] = false;
+        }
+        assert_eq!(batch.verify(&message), expected);
+        assert_eq!(batch.operation_counts(), (128, 32, 11));
     }
 }
