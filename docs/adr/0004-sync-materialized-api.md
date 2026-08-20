@@ -28,3 +28,16 @@ is no longer the plan of record. Everything else stays materialized in a
 bounded buffer by construction — the SSE carve-out is the single
 sanctioned exception, and its design round amends this ADR with the
 concrete mechanism.
+
+Amended 2026-08-20: the bounded-buffer claim is not universal. A validator
+registry response is bounded only by the registry — ~1GiB at mainnet scale —
+because the beacon-APIs schema requires an empty filter to return every
+validator, and refusing that answer is a compatibility wall: validator
+clients submit their whole key set in one request, and go-eth2-client
+deactivates a beacon node that answers 5xx. Serving it costs ~0.9s of
+synchronous render on the tile, so the interleaving guarantee above holds
+for I/O but not for compute: a handler that materializes a large body does
+delay engine traffic, however non-blocking the transport beneath it. Both
+follow from serving a request/response API on the thread that drives the
+execution client, not from any one endpoint, and neither is bounded by the
+connection write buffer, which releases its capacity after each response.
