@@ -126,6 +126,30 @@ impl<'a> SlotStateView<'a> {
         )
     }
 
+    /// The root of the block proposed at `slot`, when `block_roots` proves one
+    /// was: `process_slot` repeats the previous entry through a slot that
+    /// carried no block, so an entry differing from its predecessor is the mark
+    /// of a block of the slot's own.
+    pub fn block_root_proposed_at(&self, slot: Slot) -> Option<B256> {
+        if !self.records_slot(slot) {
+            return None;
+        }
+        let root = self.block_root_at_slot(slot);
+        let Some(previous) = slot.checked_sub(1) else {
+            return Some(root);
+        };
+        (self.records_slot(previous) && self.block_root_at_slot(previous) != root).then_some(root)
+    }
+
+    /// Whether `block_roots` holds the entry for `slot`: the ring covers the
+    /// `SLOTS_PER_HISTORICAL_ROOT` slots below the state's own, and the entry
+    /// for the state's own slot is written by the `process_slot` that leaves
+    /// it.
+    fn records_slot(&self, slot: Slot) -> bool {
+        let state_slot = self.state().slot;
+        slot < state_slot && state_slot <= slot + SLOTS_PER_HISTORICAL_ROOT as u64
+    }
+
     fn root_at_slot(fin_slot: Slot, delta_roots: &[B256], fin_roots: &[B256], slot: Slot) -> B256 {
         if slot >= fin_slot {
             let i = (slot - fin_slot) as usize;

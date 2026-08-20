@@ -14,13 +14,13 @@ use crate::{
     ssz_hash, stf,
 };
 
-struct AppliedBlock {
-    id: StateId,
-    justified: Checkpoint,
-    finalized: Checkpoint,
-    unrealized: (Checkpoint, Checkpoint),
-    execution_block_hash: B256,
-    bid_block_hash: B256,
+pub(super) struct AppliedBlock {
+    pub(super) id: StateId,
+    pub(super) justified: Checkpoint,
+    pub(super) finalized: Checkpoint,
+    pub(super) unrealized: (Checkpoint, Checkpoint),
+    pub(super) execution_block_hash: B256,
+    pub(super) bid_block_hash: B256,
 }
 
 impl BeaconStateTile {
@@ -265,7 +265,7 @@ impl BeaconStateTile {
     }
 
     #[timed]
-    fn publish_applied_block(
+    pub(super) fn publish_applied_block(
         &mut self,
         parsed: &ParsedBlock,
         block_data: &[u8],
@@ -340,6 +340,7 @@ impl BeaconStateTile {
         // advance lands this import, not one recompute later.
         self.last_applied = new_id;
         self.last_applied_block_root = parsed.block_root;
+        self.state.set_head_block_root(parsed.block_root);
 
         if is_gloas {
             self.notify_ptc_from_block(block_data);

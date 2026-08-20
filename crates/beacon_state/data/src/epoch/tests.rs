@@ -1,5 +1,8 @@
 use super::{EpochGroup, EpochStateFinalized, delta::EpochStateDelta};
-use crate::{gloas::zeroed_ptc_window, types::SLOTS_PER_EPOCH};
+use crate::{
+    gloas::zeroed_ptc_window,
+    types::{Checkpoint, SLOTS_PER_EPOCH},
+};
 
 const FIN_SLOT: u64 = 100;
 const FIN_EPOCH: u64 = FIN_SLOT / SLOTS_PER_EPOCH;
@@ -151,4 +154,29 @@ fn ptc_window_carried_by_roll_from() {
     };
     let child = g.roll_from(parent).commit();
     assert_eq!(g.view(child).ptc_window()[0][0], 5);
+}
+
+/// Finalization covers every slot up to the checkpoint epoch's first: the
+/// checkpoint names the newest block at or before it, so a block anywhere
+/// below is that one or an ancestor. The epoch is state-derived, so its
+/// boundary is computed without overflowing.
+#[test]
+fn finalization_covers_the_slots_up_to_the_checkpoint_epoch_s_first() {
+    const BOUNDARY: u64 = FIN_EPOCH * SLOTS_PER_EPOCH;
+
+    let mut base = EpochStateFinalized::default();
+    base.state.finalized_checkpoint = Checkpoint { epoch: FIN_EPOCH, root: [0x77; 32] };
+    let g = EpochGroup::new(base);
+    let view = g.finalized_view();
+
+    assert!(view.finalizes_slot(0));
+    assert!(view.finalizes_slot(BOUNDARY));
+    assert!(!view.finalizes_slot(BOUNDARY + 1));
+    assert_eq!(view.finalized_block_root(), Some([0x77; 32]));
+
+    let mut unfinalized = EpochStateFinalized::default();
+    unfinalized.state.finalized_checkpoint.epoch = u64::MAX;
+    let g = EpochGroup::new(unfinalized);
+    assert!(g.finalized_view().finalizes_slot(u64::MAX), "no epoch may overflow the boundary");
+    assert_eq!(g.finalized_view().finalized_block_root(), None, "the pre-finalization zero");
 }

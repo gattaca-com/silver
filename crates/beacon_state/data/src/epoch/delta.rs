@@ -3,7 +3,7 @@ use crate::{
     gloas::{PTC_WINDOW_LEN, PtcCommittee, zeroed_ptc_window},
     reanchor::drain_promoted_prefix,
     ring::{Reset, Slot as RingSlot},
-    types::{B256, Epoch, EpochState, Fork, SLOTS_PER_EPOCH, Version},
+    types::{B256, Epoch, EpochState, Fork, SLOTS_PER_EPOCH, Slot, Version},
 };
 
 #[derive(Clone)]
@@ -71,6 +71,21 @@ impl<'a> EpochView<'a> {
     #[inline]
     pub fn state(&self) -> &'a EpochState {
         self.delta.map_or(&self.base.state, |d| &d.state)
+    }
+
+    /// The block the finalized checkpoint names. Zero is the placeholder a
+    /// chain carries until its first finalization, and names none.
+    pub fn finalized_block_root(&self) -> Option<B256> {
+        let root = self.state().finalized_checkpoint.root;
+        (root != [0u8; 32]).then_some(root)
+    }
+
+    /// Whether finalization covers a block of this chain at `slot`: the
+    /// finalized checkpoint names the newest block at or before its epoch's
+    /// first slot, so every block at or below that slot is that one or an
+    /// ancestor.
+    pub fn finalizes_slot(&self, slot: Slot) -> bool {
+        slot <= self.state().finalized_checkpoint.epoch.saturating_mul(SLOTS_PER_EPOCH)
     }
 
     #[inline]
