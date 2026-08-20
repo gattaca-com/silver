@@ -6,10 +6,10 @@
 use std::path::{Path, PathBuf};
 
 use blst::min_pk::{AggregatePublicKey, AggregateSignature, PublicKey, SecretKey, Signature};
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use rand::{RngCore, SeedableRng, rngs::StdRng};
 use silver_beacon_state::{
-    bls::{self, DOMAIN_BEACON_ATTESTER, DST, SigBatch},
+    bls::{self, DOMAIN_BEACON_ATTESTER, DST, SameMessageBatch, SigBatch},
     ssz_hash::hash_attestation_data,
     stf::{
         self, ShufflingRef, collect_sigs_attestations, collect_sigs_attester_slashings,
@@ -50,6 +50,61 @@ fn bench_verify_single_attestation(c: &mut Criterion) {
     c.bench_function("verify_single_attestation", |b| {
         b.iter(|| bls::verify_single_attestation(&buf, &pk, object_root, &signing_root))
     });
+}
+
+struct SameMessageCase {
+    batch: SameMessageBatch,
+    entries: Vec<(PublicKey, Signature)>,
+}
+
+fn same_message_case(invalid: usize) -> SameMessageCase {
+    let message = [0x42u8; 32];
+    let pairs: Vec<_> = (0..128u64).map(keypair).collect();
+    let signatures: Vec<_> = pairs.iter().map(|(key, _)| key.sign(&message, DST, &[])).collect();
+    let mut invalid_at = [false; 128];
+    for index in 0..invalid {
+        invalid_at[index * 128 / invalid.max(1)] = true;
+    }
+    let mut batch = SameMessageBatch::default();
+    let mut entries = Vec::with_capacity(128);
+    for index in 0..128 {
+        let signature =
+            if invalid_at[index] { signatures[(index + 1) % 128] } else { signatures[index] };
+        batch.push(pairs[index].1, signature);
+        entries.push((pairs[index].1, signature));
+    }
+    let verdicts = batch.verify(&message);
+    assert_eq!(verdicts.iter().filter(|&&valid| !valid).count(), invalid);
+    assert_eq!(verify_sequential(&entries, &message), invalid);
+    SameMessageCase { batch, entries }
+}
+
+fn verify_sequential(entries: &[(PublicKey, Signature)], message: &B256) -> usize {
+    let mut invalid = 0;
+    for (public_key, signature) in entries {
+        if signature.verify(true, message, DST, &[], public_key, false) !=
+            blst::BLST_ERROR::BLST_SUCCESS
+        {
+            invalid += 1;
+        }
+    }
+    invalid
+}
+
+fn bench_same_message_attribution(c: &mut Criterion) {
+    let message = [0x42u8; 32];
+    let mut group = c.benchmark_group("same_message_128");
+    for invalid in [0, 1, 8, 16, 128] {
+        let SameMessageCase { mut batch, entries } = same_message_case(invalid);
+        group.bench_function(format!("invalid_{invalid}"), |b| {
+            b.iter(|| {
+                black_box(batch.verify(black_box(&message)).iter().filter(|&&valid| valid).count())
+            })
+        });
+        group.bench_function(format!("sequential_invalid_{invalid}"), |b| {
+            b.iter(|| black_box(verify_sequential(black_box(&entries), black_box(&message))))
+        });
+    }
 }
 
 // ---- (2) Synthetic worst-case envelope ------------------------------------
@@ -236,5 +291,10 @@ fn bench_envelopes(c: &mut Criterion) {
     }
 }
 
-criterion_group!(benches, bench_verify_single_attestation, bench_envelopes);
+criterion_group!(
+    benches,
+    bench_verify_single_attestation,
+    bench_same_message_attribution,
+    bench_envelopes
+);
 criterion_main!(benches);

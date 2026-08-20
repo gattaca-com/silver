@@ -43,12 +43,6 @@ pub(super) enum AttestationAdmission {
     Queued,
 }
 
-#[derive(Clone, Copy)]
-pub(super) enum FlushMode {
-    Due,
-    All,
-}
-
 impl BeaconStateTile {
     #[timed]
     pub(super) fn handle_attestation(&mut self, data: &[u8], subnet: u64) -> Feedback {
@@ -215,10 +209,8 @@ impl BeaconStateTile {
         self.seen_attesters.mark(target_epoch, attester_index);
     }
 
-    pub(super) fn flush_single_attestations(&mut self, producers: &mut Producers, mode: FlushMode) {
-        while !self.single_attestation_batch.is_empty() &&
-            (matches!(mode, FlushMode::All) || self.single_attestation_batch.should_flush())
-        {
+    pub(super) fn flush_single_attestations(&mut self, producers: &mut Producers) {
+        while !self.single_attestation_batch.is_empty() {
             let entries = self.single_attestation_batch.take_chunk();
             let verdicts = verify_entries(&entries);
             BeaconStateCounters::SingleAttestationBatchRuns.inc();
@@ -812,33 +804,40 @@ impl BeaconStateTile {
                     },
                 );
                 do_relay = false; // relayed on callback.
-                feedback
+                Some(feedback)
             }
             GossipTopic::BeaconAttestation(subnet) => {
                 match self.admit_attestation(data, subnet, Some(m)) {
-                    AttestationAdmission::Verdict(feedback) => feedback,
+                    AttestationAdmission::Verdict(feedback) => Some(feedback),
                     AttestationAdmission::Queued => {
-                        self.flush_single_attestations(producers, FlushMode::Due);
-                        return;
+                        debug_assert!(do_relay);
+                        if self.single_attestation_batch.is_full() {
+                            self.flush_single_attestations(producers);
+                        }
+                        None
                     }
                 }
             }
-            GossipTopic::BeaconAggregateAndProof => self.handle_aggregate_and_proof(data),
-            GossipTopic::VoluntaryExit => self.handle_voluntary_exit(data),
-            GossipTopic::ProposerSlashing => self.handle_proposer_slashing(data),
-            GossipTopic::AttesterSlashing => self.handle_attester_slashing(data),
-            GossipTopic::BlsToExecutionChange => self.handle_bls_to_execution_change(data),
-            GossipTopic::ExecutionPayload => self.handle_execution_payload_envelope(
+            GossipTopic::BeaconAggregateAndProof => Some(self.handle_aggregate_and_proof(data)),
+            GossipTopic::VoluntaryExit => Some(self.handle_voluntary_exit(data)),
+            GossipTopic::ProposerSlashing => Some(self.handle_proposer_slashing(data)),
+            GossipTopic::AttesterSlashing => Some(self.handle_attester_slashing(data)),
+            GossipTopic::BlsToExecutionChange => Some(self.handle_bls_to_execution_change(data)),
+            GossipTopic::ExecutionPayload => Some(self.handle_execution_payload_envelope(
                 acquired.clone(),
                 data,
                 BlockSource::Gossip,
                 producers,
-            ),
-            GossipTopic::PayloadAttestationMessage => self.handle_payload_attestation(data),
+            )),
+            GossipTopic::PayloadAttestationMessage => Some(self.handle_payload_attestation(data)),
             _ => {
                 self.drain_envelope_requests(producers);
                 return;
             }
+        };
+        let Some(feedback) = feedback else {
+            self.drain_envelope_requests(producers);
+            return;
         };
         match feedback {
             Feedback::Reject(_) => producers.produce(PeerEvent::P2pGossipInvalidMsg {

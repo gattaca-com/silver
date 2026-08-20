@@ -1,7 +1,4 @@
-use std::{
-    collections::VecDeque,
-    time::{Duration, Instant},
-};
+use std::collections::VecDeque;
 
 use blst::min_pk::{PublicKey, Signature};
 use rustc_hash::FxHashSet;
@@ -15,8 +12,6 @@ mod verifier;
 pub(super) use verifier::verify_entries;
 
 pub(super) const BATCH_CHUNK: usize = 128;
-const PENDING_CAP: usize = 4096;
-const MAX_WINDOW: Duration = Duration::from_millis(2);
 
 #[derive(Clone)]
 pub(super) struct PendingAttestation {
@@ -39,42 +34,32 @@ pub(super) struct PendingAttestation {
 pub(super) struct SingleAttestationBatch {
     pending: VecDeque<PendingAttestation>,
     keys: FxHashSet<(u64, usize)>,
-    opened_at: Option<Instant>,
 }
 
 impl Default for SingleAttestationBatch {
     fn default() -> Self {
-        Self {
-            pending: VecDeque::with_capacity(BATCH_CHUNK),
-            keys: FxHashSet::default(),
-            opened_at: None,
-        }
+        Self { pending: VecDeque::with_capacity(BATCH_CHUNK), keys: FxHashSet::default() }
     }
 }
 
 impl SingleAttestationBatch {
     pub(super) fn enqueue(&mut self, entry: PendingAttestation) -> bool {
         let key = (entry.target_epoch, entry.attester_index);
-        if self.pending.len() == PENDING_CAP {
-            BeaconStateCounters::PendingSingleAttestationFull.inc();
-            return false;
-        }
         if !self.keys.insert(key) {
             BeaconStateCounters::PendingSingleAttestationDuplicate.inc();
             return false;
         }
-        self.opened_at.get_or_insert_with(Instant::now);
+        debug_assert!(self.pending.len() < BATCH_CHUNK);
         self.pending.push_back(entry);
         true
     }
 
-    pub(super) fn should_flush(&self) -> bool {
-        self.pending.len() >= BATCH_CHUNK ||
-            self.opened_at.is_some_and(|opened| opened.elapsed() >= MAX_WINDOW)
-    }
-
     pub(super) fn is_empty(&self) -> bool {
         self.pending.is_empty()
+    }
+
+    pub(super) fn is_full(&self) -> bool {
+        self.pending.len() == BATCH_CHUNK
     }
 
     pub(super) fn take_chunk(&mut self) -> Vec<PendingAttestation> {
@@ -83,21 +68,18 @@ impl SingleAttestationBatch {
         for entry in &entries {
             self.keys.remove(&(entry.target_epoch, entry.attester_index));
         }
-        self.opened_at = if self.pending.is_empty() { None } else { Some(Instant::now()) };
         entries
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::time::Instant;
-
     use blst::min_pk::{PublicKey, SecretKey, Signature};
     use silver_common::ssz_view::SINGLE_ATT_SIZE;
 
     use super::{
-        super::super::bls::DST, BATCH_CHUNK, MAX_WINDOW, PENDING_CAP, PendingAttestation,
-        SingleAttestationBatch, verifier::verify_entries,
+        super::super::bls::DST, BATCH_CHUNK, PendingAttestation, SingleAttestationBatch,
+        verifier::verify_entries,
     };
 
     fn signed(seed: u8, message: [u8; 32]) -> (PublicKey, [u8; 96]) {
@@ -143,18 +125,14 @@ mod tests {
     }
 
     #[test]
-    fn pending_cap_and_window_bound_queueing() {
+    fn pending_chunk_is_bounded_by_batch_size() {
         let template = pending(7, 5, 0, [3u8; 32]);
         let mut batch = SingleAttestationBatch::default();
-        for attester_index in 0..PENDING_CAP {
+        for attester_index in 0..BATCH_CHUNK {
             let entry = PendingAttestation { attester_index, ..template.clone() };
             assert!(batch.enqueue(entry));
         }
-        assert!(!batch.enqueue(PendingAttestation { attester_index: PENDING_CAP, ..template }));
         assert_eq!(batch.take_chunk().len(), BATCH_CHUNK);
-
-        batch.opened_at = Some(Instant::now() - MAX_WINDOW);
-        assert!(batch.should_flush());
     }
 
     #[test]

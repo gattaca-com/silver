@@ -734,7 +734,7 @@ impl Tile<SilverSpine> for BeaconStateTile {
         }
 
         adapter.consume(|m: NewGossipMsg, producers| self.on_gossip(m, following, producers));
-        self.flush_single_attestations(&mut adapter.producers, gossip::FlushMode::All);
+        self.flush_single_attestations(&mut adapter.producers);
         self.gossip_consumer.free();
 
         adapter.consume(|target: SyncUpdate, _producers| self.on_sync_update(target));

@@ -1,5 +1,8 @@
+#[cfg(test)]
+use std::cell::Cell;
+
 use blst::{
-    BLST_ERROR, Pairing, blst_p1, blst_p1_add_or_double, blst_p1_affine, blst_p1_cneg,
+    BLST_ERROR, MultiPoint, Pairing, blst_p1, blst_p1_add_or_double, blst_p1_affine, blst_p1_cneg,
     blst_p1_to_affine, blst_p1s_add, blst_p2_affine,
     min_pk::{AggregatePublicKey, PublicKey, Signature},
 };
@@ -184,6 +187,19 @@ pub struct SigBatch {
 /// 16 (bls_changes) + 1 (sync_aggregate) = 77. Round up.
 const SIG_BATCH_CAP: usize = 128;
 
+fn fill_nonzero_scalars(bytes: &mut Vec<u8>, count: usize) -> bool {
+    bytes.resize(count * 8, 0);
+    if SystemRandom::new().fill(bytes).is_err() {
+        return false;
+    }
+    for scalar in bytes.chunks_exact_mut(8) {
+        if scalar.iter().all(|&byte| byte == 0) {
+            scalar[0] = 1;
+        }
+    }
+    true
+}
+
 impl Default for SigBatch {
     fn default() -> Self {
         Self::new()
@@ -335,17 +351,8 @@ impl SigBatch {
     fn verify_batch(&mut self) -> bool {
         let n = self.msgs.len();
 
-        self.rand_bytes.resize(n * 8, 0);
-        if SystemRandom::new().fill(&mut self.rand_bytes).is_err() {
+        if !fill_nonzero_scalars(&mut self.rand_bytes, n) {
             return false;
-        }
-        // Patch any all-zero chunk: a zero scalar would null this tuple's
-        // contribution to the pairing sum, so the tuple wouldn't actually be
-        // checked. Probability is ~n·2⁻⁶⁴ but the scan is free.
-        for c in self.rand_bytes.chunks_exact_mut(8) {
-            if c.iter().all(|&b| b == 0) {
-                c[0] = 1;
-            }
         }
 
         // Re-init the existing pairing buffer.
@@ -367,6 +374,119 @@ impl SigBatch {
         }
         pairing.commit();
         pairing.finalverify(None)
+    }
+}
+
+#[derive(Default)]
+pub struct SameMessageBatch {
+    public_keys: Vec<PublicKey>,
+    signatures: Vec<Signature>,
+    subgroup_valid: Vec<bool>,
+    verdicts: Vec<bool>,
+    rand_bytes: Vec<u8>,
+    #[cfg(test)]
+    subgroup_checks: Cell<usize>,
+    #[cfg(test)]
+    singleton_verifies: Cell<usize>,
+    #[cfg(test)]
+    weighted_verifies: Cell<usize>,
+}
+
+const MAX_WEIGHTED_ATTRIBUTION_DEPTH: usize = 1;
+
+impl SameMessageBatch {
+    pub fn push(&mut self, public_key: PublicKey, signature: Signature) {
+        self.public_keys.push(public_key);
+        self.signatures.push(signature);
+    }
+
+    pub fn clear(&mut self) {
+        self.public_keys.clear();
+        self.signatures.clear();
+        self.subgroup_valid.clear();
+        self.verdicts.clear();
+        self.rand_bytes.clear();
+        #[cfg(test)]
+        {
+            self.subgroup_checks.set(0);
+            self.singleton_verifies.set(0);
+            self.weighted_verifies.set(0);
+        }
+    }
+
+    pub fn verify(&mut self, message: &B256) -> &[bool] {
+        self.subgroup_valid.clear();
+        self.subgroup_valid.extend(self.signatures.iter().map(|signature| {
+            #[cfg(test)]
+            self.subgroup_checks.set(self.subgroup_checks.get() + 1);
+            signature.validate(true).is_ok()
+        }));
+        self.verdicts.clear();
+        self.verdicts.resize(self.public_keys.len(), false);
+        self.verify_range(message, 0, self.public_keys.len(), 0);
+        &self.verdicts
+    }
+
+    fn verify_range(&mut self, message: &B256, start: usize, end: usize, depth: usize) {
+        if start == end {
+            return;
+        }
+        if end - start == 1 {
+            self.verify_sequential(message, start, end);
+            return;
+        }
+        if self.subgroup_valid[start..end].iter().any(|&valid| !valid) {
+            self.verify_sequential(message, start, end);
+            return;
+        }
+        match self.verify_weighted(message, start, end) {
+            Some(true) => self.verdicts[start..end].fill(true),
+            None => self.verify_sequential(message, start, end),
+            Some(false) if depth == MAX_WEIGHTED_ATTRIBUTION_DEPTH => {
+                self.verify_sequential(message, start, end)
+            }
+            Some(false) => {
+                let middle = start + (end - start) / 2;
+                self.verify_range(message, start, middle, depth + 1);
+                self.verify_range(message, middle, end, depth + 1);
+            }
+        }
+    }
+
+    fn verify_sequential(&mut self, message: &B256, start: usize, end: usize) {
+        for index in start..end {
+            if self.subgroup_valid[index] {
+                #[cfg(test)]
+                self.singleton_verifies.set(self.singleton_verifies.get() + 1);
+                self.verdicts[index] = self.signatures[index].verify(
+                    false,
+                    message,
+                    DST,
+                    &[],
+                    &self.public_keys[index],
+                    false,
+                ) == BLST_ERROR::BLST_SUCCESS;
+            }
+        }
+    }
+
+    fn verify_weighted(&mut self, message: &B256, start: usize, end: usize) -> Option<bool> {
+        #[cfg(test)]
+        self.weighted_verifies.set(self.weighted_verifies.get() + 1);
+        if !fill_nonzero_scalars(&mut self.rand_bytes, end - start) {
+            return None;
+        }
+        let public_key = self.public_keys[start..end].mult(&self.rand_bytes, 64).to_public_key();
+        let signature = self.signatures[start..end].mult(&self.rand_bytes, 64).to_signature();
+        Some(
+            signature.fast_aggregate_verify_pre_aggregated(false, message, DST, &public_key) ==
+                BLST_ERROR::BLST_SUCCESS,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn operation_counts(&self) -> (usize, usize, usize) {
+        (self.subgroup_checks.get(), self.singleton_verifies.get(), self.weighted_verifies.get())
     }
 }
 
