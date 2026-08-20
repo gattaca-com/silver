@@ -116,7 +116,7 @@ impl<'a> StateWriterView<'a> {
             slashings_idx: self.slashings.commit(),
             block_roots_idx: self.block_roots.commit(),
             state_roots_idx: self.state_roots.commit(),
-            randao_idx: self.randao_mixes.commit(),
+            randao_mixes_idx: self.randao_mixes.commit(),
             slot_idx: self.slot.commit(),
             builders_idx: self.builders.commit(),
         }

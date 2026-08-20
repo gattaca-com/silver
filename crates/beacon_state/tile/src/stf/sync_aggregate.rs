@@ -42,7 +42,7 @@ pub fn collect_sigs_sync_aggregate(
 
     active_scratch.clear();
     let count = validators.count();
-    let sync_indices = longtail.state().sync_committee_indices;
+    let sync_indices = *longtail.sync_committees().indices();
     for (i, &vi) in sync_indices.iter().enumerate() {
         let byte_idx = i / 8;
         let bit_idx = i % 8;
@@ -107,7 +107,7 @@ pub fn process_sync_aggregate(
     let proposer_reward_per =
         participant_reward * PROPOSER_WEIGHT / (WEIGHT_DENOMINATOR - PROPOSER_WEIGHT);
 
-    let sync_indices: [u32; SYNC_COMMITTEE_SIZE] = longtail.state().sync_committee_indices;
+    let sync_indices: [u32; SYNC_COMMITTEE_SIZE] = *longtail.sync_committees().indices();
 
     let mut proposer_reward_sum = 0u64;
     #[allow(clippy::needless_range_loop)]

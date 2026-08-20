@@ -173,7 +173,7 @@ impl BeaconStateTile {
         bs.inactivity.finalize(&promoted, survivors, |s| s.inactivity_idx);
         bs.block_roots.finalize(&promoted, survivors, |s| s.block_roots_idx);
         bs.state_roots.finalize(&promoted, survivors, |s| s.state_roots_idx);
-        bs.randao_mixes.finalize(&promoted, survivors, |s| s.randao_idx);
+        bs.randao_mixes.finalize(&promoted, survivors, |s| s.randao_mixes_idx);
         rebase_tier(
             promoted,
             survivors,

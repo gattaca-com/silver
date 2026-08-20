@@ -13,13 +13,15 @@ pub use column::{
 pub use decompose::DecomposeError;
 pub use delta_view::{StateReadView, StateWriterView};
 pub use encode::{FULU_CHECKPOINT_SECTIONS, PubkeysDecodeError, decode_checkpoint_pubkeys};
-pub use epoch::{EpochGroup, EpochId, EpochStateFinalized, EpochView, EpochWriteView};
+pub use epoch::{EpochGroup, EpochId, EpochStateFinalized, EpochView, EpochWriteView, PtcWindow};
 pub use eth1::{Eth1Group, Eth1Id, Eth1View, Eth1Votes, Eth1WriteView};
 pub use gloas::{
     Builder, BuilderPendingPayment, BuilderPendingWithdrawal, ExecutionPayloadBid, PtcCommittee,
     Withdrawal,
 };
-pub use longtail::{LongtailGroup, LongtailId, LongtailState, LongtailView, LongtailWriteView};
+pub use longtail::{
+    LongtailGroup, LongtailId, LongtailState, LongtailView, LongtailWriteView, SyncCommittees,
+};
 pub use parsed::ParsedAggregateAndProof;
 pub use pending::{
     PendingGroup, PendingId, PendingView, PendingWriteView, QueueItem, QueueView, QueueWriteView,
@@ -121,7 +123,7 @@ impl BeaconState {
             slashings_idx: self.slashings.roll_fresh().commit(),
             block_roots_idx: self.block_roots.roll_fresh().commit(),
             state_roots_idx: self.state_roots.roll_fresh().commit(),
-            randao_idx: self.randao_mixes.roll_fresh().commit(),
+            randao_mixes_idx: self.randao_mixes.roll_fresh().commit(),
             slot_idx: self.slot_states.roll_fresh().commit(),
             validators_idx: self.validators.roll_fresh().commit(),
             builders_idx: self.builders.roll_fresh().commit(),
@@ -150,7 +152,7 @@ impl BeaconState {
             slashings: self.slashings.roll_from(parent.slashings_idx),
             block_roots: self.block_roots.roll_from(parent.block_roots_idx),
             state_roots: self.state_roots.roll_from(parent.state_roots_idx),
-            randao_mixes: self.randao_mixes.roll_from(parent.randao_idx),
+            randao_mixes: self.randao_mixes.roll_from(parent.randao_mixes_idx),
             slot: self.slot_states.roll_from(parent.slot_idx),
             validators: self.validators.roll_from(parent.validators_idx),
             builders: self.builders.roll_from(parent.builders_idx),
@@ -178,7 +180,7 @@ impl BeaconState {
             slashings: self.slashings.view(state_id.slashings_idx),
             block_roots: self.block_roots.view(state_id.block_roots_idx),
             state_roots: self.state_roots.view(state_id.state_roots_idx),
-            randao_mixes: self.randao_mixes.view(state_id.randao_idx),
+            randao_mixes: self.randao_mixes.view(state_id.randao_mixes_idx),
             inactivity: self.inactivity.view(state_id.inactivity_idx),
             slot: self.slot_states.view(state_id.slot_idx),
             validators: self.validators.view(state_id.validators_idx),

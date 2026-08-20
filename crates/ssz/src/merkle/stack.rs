@@ -3,7 +3,7 @@
 
 use flux::utils::ArrayVec;
 
-use super::hash::{B256, ZERO_HASHES, ZERO_HASHES_LEN, hash_concat};
+use super::hash::{B256, ZERO_HASHES, ZERO_HASHES_LEN, hash_concat, mix_in_length};
 
 #[inline]
 const fn depth_for(capacity: usize) -> u8 {
@@ -70,6 +70,11 @@ impl MerkleStack {
             h += 1;
         }
         cur
+    }
+
+    #[inline]
+    pub fn list_root(self, len: usize) -> B256 {
+        mix_in_length(&self.finalize(), len)
     }
 }
 

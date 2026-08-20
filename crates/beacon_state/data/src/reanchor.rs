@@ -5,6 +5,30 @@
 
 use flux_profiler::timed;
 
+use crate::ring::{Id, Reset, Ring, RingGroup};
+
+/// Finalize a full-working-copy group: copy each survivor into a fresh slot
+/// (the delta shadows the whole base, so nothing rebases), promote the winner
+/// into the base, and free the vacated slots.
+pub(crate) fn finalize_full_copies<G: RingGroup>(
+    deltas: &mut Ring<G>,
+    winner: Id<G>,
+    survivors: &[Id<G>],
+    promote: impl FnOnce(&G::Entry),
+) -> Vec<Id<G>>
+where
+    G::Entry: Reset + Default,
+{
+    debug_assert!(survivors.contains(&winner), "winner must be among the survivors");
+    deltas.free_outdated(survivors);
+
+    let fresh = reanchor_survivors(survivors, |s| deltas.roll_from(s).commit());
+    promote(deltas.get(winner));
+
+    deltas.free_outdated(&fresh);
+    fresh
+}
+
 /// Drop the prefix of a per-fork append log that a promoted winner already
 /// folded into the base — the reanchor invariant for log-style deltas.
 pub(crate) fn drain_promoted_prefix<T>(log: &mut Vec<T>, promoted_len: usize) {

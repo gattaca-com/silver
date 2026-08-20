@@ -1,5 +1,6 @@
 mod delta;
 mod finalized;
+mod sync_committees;
 #[cfg(test)]
 mod tests;
 
@@ -7,6 +8,7 @@ pub use delta::{LongtailView, LongtailWriteView};
 pub use finalized::LongtailState;
 use flux_profiler::timed;
 use parking_lot::Mutex;
+pub use sync_committees::SyncCommittees;
 
 use crate::{
     reanchor::reanchor_survivors,
@@ -74,15 +76,13 @@ impl LongtailGroup {
     #[inline]
     pub fn roll_fresh(&mut self) -> LongtailWriteView<'_> {
         let Self { finalized, deltas, .. } = self;
-        let mut wv = LongtailWriteView::new(finalized, deltas.roll_fresh());
-        wv.seed_from_base();
-        wv
+        LongtailWriteView::fresh(finalized, deltas.roll_fresh())
     }
 
     #[inline]
     pub fn roll_from(&mut self, parent: LongtailId) -> LongtailWriteView<'_> {
         let Self { finalized, deltas, .. } = self;
-        LongtailWriteView::new(finalized, deltas.roll_from(parent))
+        LongtailWriteView::derived(finalized, deltas.roll_from(parent))
     }
 
     /// Roll derived from the inherited `parent` entry, or fresh off the
@@ -103,7 +103,7 @@ impl LongtailGroup {
         let (mut fork, old, winner_delta) = deltas.roll_fresh_deriving(survivor, winner);
         fork.reset_from(old);
         fork.prune_to_base(winner_delta);
-        LongtailWriteView::new(finalized, fork)
+        LongtailWriteView::derived(finalized, fork)
     }
 
     /// Re-anchor each survivor against the promoted `winner` into fresh slots

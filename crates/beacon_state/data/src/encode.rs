@@ -134,7 +134,7 @@ impl BeaconState {
         let dep = self.pending.deposits.with_finalized_locked(|q| q.len());
         let wdr = self.pending.partial_withdrawals.with_finalized_locked(|q| q.len());
         let con = self.pending.consolidations.with_finalized_locked(|q| q.len());
-        let summaries = self.longtail.with_finalized_locked(|lt| lt.historical_summaries.len());
+        let summaries = self.longtail.with_finalized_locked(|lt| lt.historical_summaries_len());
         let sl = self.slot_states.finalized().state();
         [
             self.immutable.historical_roots.len() * 32,
@@ -161,7 +161,7 @@ impl BeaconState {
         let wdr = self.pending.partial_withdrawals.with_finalized_locked(|q| q.len());
         let con = self.pending.consolidations.with_finalized_locked(|q| q.len());
         let bpw = self.pending.builder_withdrawals.with_finalized_locked(|q| q.len());
-        let summaries = self.longtail.with_finalized_locked(|lt| lt.historical_summaries.len());
+        let summaries = self.longtail.with_finalized_locked(|lt| lt.historical_summaries_len());
         let sl = self.slot_states.finalized().state();
         [
             self.immutable.historical_roots.len() * 32,
@@ -402,8 +402,8 @@ impl BeaconState {
         // F21_OFF inactivity_scores
         w_u32(w, off[6])?;
         // F22/F23 sync committees
-        write_sync_committee(w, &lt.current_sync_committee)?;
-        write_sync_committee(w, &lt.next_sync_committee)
+        write_sync_committee(w, lt.sync_committees().current())?;
+        write_sync_committee(w, lt.sync_committees().next())
     }
 
     /// Fixed-part fields shared by both forks' tails.
@@ -471,7 +471,7 @@ impl BeaconState {
         w_u32(w, offs[13])?;
         w_u32(w, offs[14])?;
         // ptc_window (Vector[Vector[ValidatorIndex, PTC_SIZE], PTC_WINDOW_LEN])
-        for committee in epoch_base.ptc_window.iter() {
+        for committee in epoch_base.ptc_window.committees().iter() {
             for v in committee.iter() {
                 w_u64(w, *v)?;
             }

@@ -103,10 +103,11 @@ mod tests {
 
         // Sync-committee indices either resolve to a real validator or are
         // sentinel u32::MAX (committee pubkey not in the registry).
-        for (i, idx) in longtail.sync_committee_indices.iter().enumerate() {
+        let committees = longtail.sync_committees();
+        for (i, idx) in committees.indices().iter().enumerate() {
             if *idx != u32::MAX {
                 assert!((*idx as usize) < n);
-                let pk = &longtail.current_sync_committee.pubkeys[i];
+                let pk = &committees.current().pubkeys[i];
                 assert_eq!(validators.find_by_pubkey(pk).map(|i| i as u32), Some(*idx));
             }
         }

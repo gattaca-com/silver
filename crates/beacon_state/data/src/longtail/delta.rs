@@ -1,5 +1,13 @@
-use super::{LongtailGroup, LongtailId, finalized::LongtailState};
-use crate::{ring::Slot as RingSlot, types::HistoricalSummary};
+use super::{
+    LongtailGroup, LongtailId,
+    finalized::{LongtailState, hash_summaries},
+    sync_committees::SyncCommittees,
+};
+use crate::{
+    merkle::B256,
+    ring::Slot as RingSlot,
+    types::{HistoricalSummary, SYNC_COMMITTEE_SIZE, SyncCommittee},
+};
 
 /// The delta is `Some` for a fork that crossed a sync-committee / historical
 /// rotation, else `None` and reads fall through to the base.
@@ -21,6 +29,18 @@ impl<'a> LongtailView<'a> {
     #[inline]
     pub fn state(&self) -> &'a LongtailState {
         self.delta.unwrap_or(self.base)
+    }
+
+    #[inline]
+    pub fn sync_committees(&self) -> &'a SyncCommittees {
+        self.state().sync_committees()
+    }
+
+    /// SSZ `hash_tree_root` of the merged `historical_summaries` list — stored
+    /// at the append, so this is a read.
+    #[inline]
+    pub fn historical_summaries_root(&self) -> B256 {
+        self.state().historical_summaries_root
     }
 
     /// `historical_summaries[ix]` merged: the base's full log, then the delta's
@@ -48,8 +68,19 @@ pub struct LongtailWriteView<'a> {
 }
 
 impl<'a> LongtailWriteView<'a> {
+    /// Fresh fork: copy the base's sync committees (roots included) and
+    /// summaries root; the `historical_summaries` log itself stays empty
+    /// (cleared by `reset`), and the base's root already covers it.
     #[inline]
-    pub(super) fn new(base: &'a LongtailState, fork: RingSlot<'a, LongtailGroup>) -> Self {
+    pub(super) fn fresh(base: &'a LongtailState, mut fork: RingSlot<'a, LongtailGroup>) -> Self {
+        fork.committees.clone_from(&base.committees);
+        fork.historical_summaries_root = base.historical_summaries_root;
+        Self { base, fork }
+    }
+
+    /// Fork whose delta already carries its state (roll_from / reanchor).
+    #[inline]
+    pub(super) fn derived(base: &'a LongtailState, fork: RingSlot<'a, LongtailGroup>) -> Self {
         Self { base, fork }
     }
 
@@ -64,21 +95,21 @@ impl<'a> LongtailWriteView<'a> {
     }
 
     #[inline]
-    pub fn state_mut(&mut self) -> &mut LongtailState {
-        &mut self.fork
+    pub fn rotate_sync_committees(
+        &mut self,
+        new_next: &SyncCommittee,
+        indices: [u32; SYNC_COMMITTEE_SIZE],
+    ) {
+        self.fork.committees.rotate(new_next, indices);
     }
 
-    /// Seed the fresh fork's sync committees + indices from the finalized base;
-    /// the `historical_summaries` log stays empty (cleared by `reset`).
-    #[inline]
-    pub(super) fn seed_from_base(&mut self) {
-        self.fork.current_sync_committee = self.base.current_sync_committee;
-        self.fork.next_sync_committee = self.base.next_sync_committee;
-        self.fork.sync_committee_indices = self.base.sync_committee_indices;
-    }
-
+    /// Append one summary and re-root the merged list — once per 8192 slots,
+    /// so the O(len) fold stays off the state-root path.
     #[inline]
     pub fn push_historical_summary(&mut self, h: HistoricalSummary) {
         self.fork.historical_summaries.push(h);
+        self.fork.historical_summaries_root = hash_summaries(
+            self.base.historical_summaries.iter().chain(&self.fork.historical_summaries),
+        );
     }
 }

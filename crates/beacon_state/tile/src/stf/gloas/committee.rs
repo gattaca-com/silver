@@ -4,14 +4,8 @@ use silver_beacon_state_data::{
     gloas::{PTC_SIZE, PtcCommittee},
 };
 
-use crate::{
-    bls::DOMAIN_PTC_ATTESTER,
-    shuffling::{MAX_EFFECTIVE_BALANCE, Seed},
-    stf::EpochShuffling,
-};
+use crate::{bls::DOMAIN_PTC_ATTESTER, shuffling::Seed, stf::EpochShuffling};
 
-/// `2**16 - 1` — the 16-bit acceptance ceiling in balance-weighted selection.
-const MAX_RANDOM_16: u64 = 0xFFFF;
 const SPE: usize = SLOTS_PER_EPOCH as usize;
 
 pub(crate) fn get_ptc<'a>(
@@ -31,7 +25,7 @@ pub(crate) fn get_ptc<'a>(
         }
         (target_epoch - state_epoch + 1) * SLOTS_PER_EPOCH + slot % SLOTS_PER_EPOCH
     };
-    epoch.ptc_window().get(idx as usize)
+    epoch.ptc_window().committees().get(idx as usize)
 }
 
 pub(crate) fn fill_epoch_ptc(
@@ -89,10 +83,7 @@ fn balance_weighted_select(
     let mut draws = seed.draws();
     while filled < out.len() {
         let next = (i % total) as usize;
-        let candidate = indices[next] as usize;
-        let random = draws.at(i);
-        if validators.effective_balance(candidate) * MAX_RANDOM_16 >= MAX_EFFECTIVE_BALANCE * random
-        {
+        if draws.accept(i, validators.effective_balance(indices[next] as usize)) {
             out[filled] = indices[next] as u64;
             filled += 1;
         }

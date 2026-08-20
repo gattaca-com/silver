@@ -7,6 +7,7 @@ use crate::{
     DecomposeError,
     decompose::common::{ETH1_DATA_SSZ_SIZE, Offsets},
     encode::write_eth1_data,
+    merkle::MerkleStack,
     types::{Eth1Data, MAX_ETH1_VOTES},
 };
 
@@ -14,9 +15,18 @@ use crate::{
 /// structural, and the buffer never moves, so the checkpoint encoder's
 /// cross-thread read can't dangle — torn bytes are discarded by its version
 /// re-check.
-#[derive(Default)]
+///
+/// `hasher` accumulates the votes' element roots in order, so a fork's delta
+/// starts from it instead of re-folding the whole list.
 pub struct Eth1Votes {
     votes: ArrayVec<Eth1Data, MAX_ETH1_VOTES>,
+    hasher: MerkleStack,
+}
+
+impl Default for Eth1Votes {
+    fn default() -> Self {
+        Self { votes: ArrayVec::new(), hasher: MerkleStack::new(MAX_ETH1_VOTES) }
+    }
 }
 
 impl Eth1Votes {
@@ -35,9 +45,15 @@ impl Eth1Votes {
         self.votes.as_slice()
     }
 
+    #[inline]
+    pub(super) fn hasher(&self) -> MerkleStack {
+        self.hasher
+    }
+
     /// Seed one vote — checkpoint decompose only.
     #[inline]
     pub(crate) fn push(&mut self, vote: Eth1Data) {
+        self.hasher.push(vote.leaf());
         self.votes.push(vote);
     }
 
@@ -50,9 +66,11 @@ impl Eth1Votes {
     }
 
     /// Fold a fork's delta in: apply its voting-period clear, append its
-    /// votes. The data half of finalization.
+    /// votes, and adopt its hasher — a delta folds exactly the effective vote
+    /// sequence that promoting makes this list's, so nothing is re-hashed.
     pub(super) fn promote(&mut self, delta: &Eth1VotesDelta) {
         delta.promote_into(&mut self.votes);
+        self.hasher = delta.hasher();
     }
 }
 

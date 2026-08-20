@@ -43,7 +43,12 @@ impl Seed {
     /// balance.
     #[inline]
     pub fn sampler(&self, active_count: usize) -> WeightedSampler {
-        WeightedSampler::new(self, active_count)
+        WeightedSampler {
+            pivots: self.pivots(active_count),
+            n: active_count,
+            i: 0,
+            draws: self.draws(),
+        }
     }
 
     /// Spec `compute_proposer_index`. `effective_balances[vi]` must be
@@ -135,79 +140,7 @@ impl Seed {
             }
         }
     }
-}
 
-#[inline]
-pub fn committees_per_slot(active_validator_count: usize) -> usize {
-    let per_slot = active_validator_count / SLOTS_PER_EPOCH as usize / TARGET_COMMITTEE_SIZE;
-    per_slot.clamp(1, MAX_COMMITTEES_PER_SLOT)
-}
-
-/// One seed's 16-bit random draws, which the spec packs 16 to a SHA256 block —
-/// so a sequential sweep rehashes only every 16th draw. Holds the block it
-/// last hashed; every weighted selection walks `i` upward, so that is the
-/// whole cache.
-pub struct RandomDraws {
-    seed: Seed,
-    block: usize,
-    hash: B256,
-}
-
-impl RandomDraws {
-    #[inline]
-    pub fn at(&mut self, i: u64) -> u64 {
-        let block = i as usize / 16;
-        if block != self.block {
-            let mut buf = [0u8; 40];
-            buf[..32].copy_from_slice(&self.seed.0);
-            buf[32..40].copy_from_slice(&(block as u64).to_le_bytes());
-            (self.block, self.hash) = (block, sha256(&buf));
-        }
-        let offset = (i as usize % 16) * 2;
-        u16::from_le_bytes([self.hash[offset], self.hash[offset + 1]]) as u64
-    }
-}
-
-/// Weighted random sampler shared by proposer and sync committee selection.
-/// Shuffles candidate index `i`, draws a 16-bit random value, and accepts
-/// with probability proportional to `effective_balance /
-/// MAX_EFFECTIVE_BALANCE`.
-pub struct WeightedSampler {
-    seed: Seed,
-    pivots: [usize; SHUFFLE_ROUND_COUNT as usize],
-    n: usize,
-    i: usize,
-    draws: RandomDraws,
-}
-
-pub const MAX_EFFECTIVE_BALANCE: u64 = 2_048_000_000_000;
-const MAX_RANDOM_16: u64 = 0xFFFF;
-
-impl WeightedSampler {
-    fn new(seed: &Seed, active_count: usize) -> Self {
-        Self {
-            seed: *seed,
-            pivots: seed.pivots(active_count),
-            n: active_count,
-            i: 0,
-            draws: seed.draws(),
-        }
-    }
-
-    pub fn next(&mut self, active_indices: &[u32], effective_balances: &[u64]) -> (usize, bool) {
-        let shuffled = self.seed.shuffled_index(self.i % self.n, self.n, &self.pivots);
-        let candidate = active_indices[shuffled] as usize;
-        let random_value = self.draws.at(self.i as u64);
-
-        self.i += 1;
-
-        let accepted =
-            effective_balances[candidate] * MAX_RANDOM_16 >= MAX_EFFECTIVE_BALANCE * random_value;
-        (candidate, accepted)
-    }
-}
-
-impl Seed {
     /// Pivots for all 90 rounds up front, so `shuffled_index` doesn't rehash
     /// one per call per index.
     fn pivots(&self, list_size: usize) -> [usize; SHUFFLE_ROUND_COUNT as usize] {
@@ -248,6 +181,66 @@ impl Seed {
             }
         }
         index
+    }
+}
+
+#[inline]
+pub fn committees_per_slot(active_validator_count: usize) -> usize {
+    let per_slot = active_validator_count / SLOTS_PER_EPOCH as usize / TARGET_COMMITTEE_SIZE;
+    per_slot.clamp(1, MAX_COMMITTEES_PER_SLOT)
+}
+
+/// One seed's 16-bit random draws, which the spec packs 16 to a SHA256 block —
+/// so a sequential sweep rehashes only every 16th draw. Holds the block it
+/// last hashed; every weighted selection walks `i` upward, so that is the
+/// whole cache.
+pub struct RandomDraws {
+    seed: Seed,
+    block: usize,
+    hash: B256,
+}
+
+impl RandomDraws {
+    #[inline]
+    pub fn at(&mut self, i: u64) -> u64 {
+        let block = i as usize / 16;
+        if block != self.block {
+            (self.block, self.hash) = (block, self.seed.for_slot(block as u64).0);
+        }
+        let offset = (i as usize % 16) * 2;
+        u16::from_le_bytes([self.hash[offset], self.hash[offset + 1]]) as u64
+    }
+
+    /// Accept draw `i` with probability `effective_balance /
+    /// MAX_EFFECTIVE_BALANCE` — the spec's balance-weighted rejection rule.
+    #[inline]
+    pub fn accept(&mut self, i: u64, effective_balance: u64) -> bool {
+        effective_balance * MAX_RANDOM_16 >= MAX_EFFECTIVE_BALANCE * self.at(i)
+    }
+}
+
+/// Weighted random sampler shared by proposer and sync committee selection.
+/// Shuffles candidate index `i`, draws a 16-bit random value, and accepts
+/// with probability proportional to `effective_balance /
+/// MAX_EFFECTIVE_BALANCE`.
+pub struct WeightedSampler {
+    pivots: [usize; SHUFFLE_ROUND_COUNT as usize],
+    n: usize,
+    i: usize,
+    draws: RandomDraws,
+}
+
+pub const MAX_EFFECTIVE_BALANCE: u64 = 2_048_000_000_000;
+const MAX_RANDOM_16: u64 = 0xFFFF;
+
+impl WeightedSampler {
+    pub fn next(&mut self, active_indices: &[u32], effective_balances: &[u64]) -> (usize, bool) {
+        let shuffled = self.draws.seed.shuffled_index(self.i % self.n, self.n, &self.pivots);
+        let candidate = active_indices[shuffled] as usize;
+        let accepted = self.draws.accept(self.i as u64, effective_balances[candidate]);
+
+        self.i += 1;
+        (candidate, accepted)
     }
 }
 

@@ -34,7 +34,7 @@ impl QueueHasher {
 
     pub(super) fn root(&self, len: usize) -> B256 {
         match self {
-            QueueHasher::Fulu(stack) => mix_in_length(&stack.finalize(), len),
+            QueueHasher::Fulu(stack) => stack.list_root(len),
             QueueHasher::Gloas(hasher) => mix_in_length(&hasher.root(), len),
         }
     }

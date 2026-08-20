@@ -5,8 +5,7 @@
 
 use silver_beacon_state_data::{
     BuilderPendingPayment, BuilderPendingWithdrawal, ExecutionPayloadBid, StateReadView,
-    Withdrawal,
-    gloas::{BUILDER_PENDING_PAYMENTS_LEN, PTC_WINDOW_LEN},
+    Withdrawal, gloas::BUILDER_PENDING_PAYMENTS_LEN,
 };
 use silver_common::{
     progressive::{ProgressiveContainer, ProgressiveHasher, packed_active_fields},
@@ -15,8 +14,8 @@ use silver_common::{
 
 use crate::{
     merkle::{
-        B256, MerkleStack, ZERO_HASH, hash_fixed_bytes, hash_list, hash_uint64_vector, hash_vector,
-        merkleize, uint64_chunk,
+        B256, MerkleStack, ZERO_HASH, hash_fixed_bytes, hash_list, hash_vector, merkleize,
+        uint64_chunk,
     },
     ssz_hash::hash_common_fields,
 };
@@ -51,11 +50,7 @@ impl BeaconStateGloas {
                 ProgressiveHasher::new(),
                 slot.payload_expected_withdrawals.iter().map(hash_withdrawal),
             ),
-            // `ptc_window`: each committee is a `Vector[ValidatorIndex, PTC_SIZE]`.
-            hash_vector(
-                MerkleStack::new(PTC_WINDOW_LEN),
-                rv.epoch.ptc_window().iter().map(|c| hash_uint64_vector(c)),
-            ),
+            rv.epoch.ptc_window().hash_root(),
         ]);
 
         Self::progressive_root(&fields)

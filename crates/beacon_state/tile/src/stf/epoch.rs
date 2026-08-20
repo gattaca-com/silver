@@ -753,14 +753,17 @@ pub fn process_sync_committee_updates(
     eff_scratch.clear();
     eff_scratch.extend(view.validators.iter_effective_balances());
 
-    let lt = longtail.state_mut();
+    // The committee `next` holds now becomes current at the rotation below.
+    let mut new_committee = *longtail.reader().sync_committees().next();
 
-    // Rotate: current <- next.
-    let next_committee = lt.next_sync_committee;
-    lt.current_sync_committee = next_committee;
+    // Indices for the promoted current committee, before the sampler
+    // overwrites its pubkeys. Match spec: look up against the finalized
+    // validator index only (the committee pubkeys were committed at a prior
+    // boundary).
+    let indices = std::array::from_fn(|i| {
+        view.validators.find_by_finalized_pubkey(&new_committee.pubkeys[i]).unwrap_or(u32::MAX)
+    });
 
-    // Compute new next committee.
-    let mut new_committee = lt.next_sync_committee;
     let mut sampler = seed.sampler(active_scratch.len());
     let mut selected = 0usize;
     while selected < SYNC_COMMITTEE_SIZE {
@@ -771,19 +774,8 @@ pub fn process_sync_committee_updates(
         }
     }
     new_committee.aggregate_pubkey = bls::aggregate_pubkeys(&new_committee.pubkeys);
-    lt.next_sync_committee = new_committee;
 
-    // Rebuild sync_committee_indices for the rotated current committee.
-    // Match spec: look up against the finalized validator index only (the
-    // committee pubkeys were committed at a prior boundary).
-    let curr_pubkeys = lt.current_sync_committee.pubkeys;
-    let mut indices = [u32::MAX; SYNC_COMMITTEE_SIZE];
-    for i in 0..SYNC_COMMITTEE_SIZE {
-        if let Some(idx) = view.validators.find_by_finalized_pubkey(&curr_pubkeys[i]) {
-            indices[i] = idx;
-        }
-    }
-    lt.sync_committee_indices = indices;
+    longtail.rotate_sync_committees(&new_committee, indices);
 }
 
 #[timed]
