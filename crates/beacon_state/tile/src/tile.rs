@@ -26,6 +26,7 @@ use crate::{
         attestation_pool::AttestationPool, attestation_root_memo::AttestationRootMemo,
         fork_data_roots::ForkDataRoots, orphan_pool::PendingBlock, seen_aggregates::SeenAggregates,
         seen_validators::SeenValidators, shuffling_cache::ShufflingCache,
+        single_attestation_batch::SingleAttestationBatch,
     },
     weak_subjectivity::{weak_subjectivity_period_fulu, weak_subjectivity_period_gloas},
 };
@@ -42,6 +43,7 @@ mod orphan_pool;
 mod seen_aggregates;
 mod seen_validators;
 mod shuffling_cache;
+mod single_attestation_batch;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Mode {
@@ -161,6 +163,7 @@ pub struct BeaconStateTile {
     /// Pre-validation pass collects every BLS sig in the block here, then
     /// runs `verify_all` once before pass 2 mutates state.
     sig_batch: bls::SigBatch,
+    single_attestation_batch: SingleAttestationBatch,
     /// Pending blocks - blocks we have received for which we do not have a
     /// parent block. Keyed by the parent block_hash.
     pending_blocks: FxHashMap<B256, Vec<(B256, PendingBlock)>>,
@@ -245,6 +248,7 @@ impl BeaconStateTile {
             ),
             slashed_indices_scratch: Vec::with_capacity(MAX_ATTESTING_INDICES),
             sig_batch: bls::SigBatch::new(),
+            single_attestation_batch: SingleAttestationBatch::default(),
             pending_blocks: root_map(),
             dc_pending_blocks: root_map(),
             payload_pending_blocks: root_map(),
@@ -729,6 +733,7 @@ impl Tile<SilverSpine> for BeaconStateTile {
         }
 
         adapter.consume(|m: NewGossipMsg, producers| self.on_gossip(m, following, producers));
+        self.flush_single_attestations(&mut adapter.producers, true);
         self.gossip_consumer.free();
 
         adapter.consume(|target: SyncUpdate, _producers| self.on_sync_update(target));

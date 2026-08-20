@@ -20,6 +20,7 @@ use super::{
     attestation_pool::InsertOutcome,
     orphan_pool::{PendingBlock, has_room},
     seen_aggregates::Coverage,
+    single_attestation_batch::{PendingAttestation, RelayMetadata, SingleAttestationBatch},
 };
 use crate::{bls, counters::BeaconStateCounters, merkle, ssz_hash, stf, validate};
 
@@ -29,11 +30,26 @@ pub(super) enum EnvelopeCheck {
     Ignore,
 }
 
+#[derive(Debug)]
+pub(super) enum SingleAttestationVerdict {
+    Relay(RelayMetadata),
+    Invalid(RelayMetadata),
+}
+
 impl BeaconStateTile {
     #[timed]
     pub(super) fn handle_attestation(&mut self, data: &[u8], subnet: u64) -> Feedback {
+        self.admit_attestation(data, subnet, None).unwrap_or(Feedback::Ignore)
+    }
+
+    pub(super) fn admit_attestation(
+        &mut self,
+        data: &[u8],
+        subnet: u64,
+        gossip: Option<NewGossipMsg>,
+    ) -> Result<Feedback, ()> {
         if data.len() < SINGLE_ATT_SIZE {
-            return Feedback::Reject(None);
+            return Ok(Feedback::Reject(None));
         }
         let buf: &[u8; SINGLE_ATT_SIZE] = data[..SINGLE_ATT_SIZE].try_into().unwrap();
         let attester_index = SingleAttestationView::attester_index(buf) as usize;
@@ -44,12 +60,12 @@ impl BeaconStateTile {
 
         let wall = self.ticker.current_slot();
         if att_slot > wall || att_slot.saturating_add(ATTESTATION_PROPAGATION_SLOT_RANGE) < wall {
-            return Feedback::Ignore;
+            return Ok(Feedback::Ignore);
         }
 
         self.seen_attesters.rotate_to(wall / SLOTS_PER_EPOCH);
         if self.seen_attesters.contains(target_epoch, attester_index) {
-            return Feedback::Ignore;
+            return Ok(Feedback::Ignore);
         }
 
         // Pre-Gloas single attestations encode the committee in
@@ -58,15 +74,15 @@ impl BeaconStateTile {
         let data_index = SingleAttestationView::data_index(buf);
         let is_gloas = self.spec.is_gloas_at(target_epoch);
         if !validate::attestation_index_ok(is_gloas, data_index) {
-            return Feedback::Reject(None);
+            return Ok(Feedback::Reject(None));
         }
         if let Err(f) = self.validate_attestation_target(SingleAttestationView::data(buf)) {
-            return f;
+            return Ok(f);
         }
         let payload_present = if is_gloas {
             match self.gloas_payload_present(&block_root, att_slot, data_index) {
                 Ok(present) => present,
-                Err(f) => return f,
+                Err(f) => return Ok(f),
             }
         } else {
             false
@@ -78,10 +94,10 @@ impl BeaconStateTile {
         let view = self.state.read_view(canon_id);
         self.shuffling_cache.ensure_window(&view, att_epoch);
         let Some(shuffling) = self.shuffling_cache.lookup(&view, att_epoch) else {
-            return Feedback::Ignore;
+            return Ok(Feedback::Ignore);
         };
         if committee_index >= shuffling.committees_per_slot {
-            return Feedback::Reject(None);
+            return Ok(Feedback::Reject(None));
         }
         if subnet !=
             compute_subnet_for_attestation(
@@ -90,16 +106,16 @@ impl BeaconStateTile {
                 committee_index,
             )
         {
-            return Feedback::Reject(None);
+            return Ok(Feedback::Reject(None));
         }
         let committee = shuffling.committee(att_slot, committee_index);
         let Some(committee_position) = committee.iter().position(|&v| v == attester_index as u32)
         else {
-            return Feedback::Reject(None);
+            return Ok(Feedback::Reject(None));
         };
         let committee_len = committee.len();
         if attester_index >= view.validators.count() {
-            return Feedback::Reject(None);
+            return Ok(Feedback::Reject(None));
         }
         let fork_version = view.epoch.fork_version_at(target_epoch);
         let domain = bls::domain_from_fork_data(
@@ -108,20 +124,63 @@ impl BeaconStateTile {
         );
         let (data_root, signing_root) =
             self.attestation_root_memo.roots(SingleAttestationView::data(buf).as_bytes(), &domain);
-        let Some(verified) = bls::verify_single_attestation(
-            buf,
-            view.validators.pubkey_decompressed(attester_index),
-            data_root,
-            &signing_root,
-        ) else {
-            return Feedback::Reject(None);
+        let Ok(signature) =
+            blst::min_pk::Signature::from_bytes(SingleAttestationView::signature(buf))
+        else {
+            return Ok(Feedback::Reject(None));
         };
+        let pending = PendingAttestation {
+            bytes: *buf,
+            public_key: *view.validators.pubkey_decompressed(attester_index),
+            signature,
+            signing_root,
+            data_root,
+            target_epoch,
+            attester_index,
+            committee_position,
+            committee_len,
+            block_root,
+            attestation_slot: att_slot,
+            committee_index,
+            payload_present,
+            relay: gossip.as_ref().map(RelayMetadata::from),
+        };
+        if pending.relay.is_some() {
+            return if self.single_attestation_batch.enqueue(pending) {
+                Err(())
+            } else {
+                Ok(Feedback::Ignore)
+            };
+        }
+        let Some(verified) = bls::verify_single_attestation_parsed(
+            &pending.public_key,
+            pending.signature,
+            pending.data_root,
+            &pending.signing_root,
+        ) else {
+            return Ok(Feedback::Reject(None));
+        };
+
+        self.apply_verified_attestation(pending, &verified);
+        Ok(Feedback::Accept(None))
+    }
+
+    fn apply_verified_attestation(
+        &mut self,
+        pending: PendingAttestation,
+        verified: &bls::VerifiedSingleAttestation,
+    ) {
+        let buf = &pending.bytes;
+        let attester_index = pending.attester_index;
+        let target_epoch = pending.target_epoch;
+        let att_slot = pending.attestation_slot;
+        let committee_index = pending.committee_index;
 
         let outcome = self.attestation_pool.insert_verified(
             buf,
-            committee_position,
-            committee_len,
-            &verified,
+            pending.committee_position,
+            pending.committee_len,
+            verified,
         );
         debug_assert!(outcome != InsertOutcome::Inconsistent);
         if outcome == InsertOutcome::Full {
@@ -131,17 +190,62 @@ impl BeaconStateTile {
 
         let vote = stf::AttestationVote {
             validator: attester_index as u32,
-            block_root,
+            block_root: pending.block_root,
             target_epoch,
             attestation_slot: att_slot,
-            payload_present,
+            payload_present: pending.payload_present,
         };
         let n = self.head_validator_count();
         self.record_or_defer_vote(vote, n);
 
         self.seen_attesters.mark(target_epoch, attester_index);
+    }
 
-        Feedback::Accept(None)
+    pub(super) fn flush_single_attestations(&mut self, producers: &mut Producers, force: bool) {
+        while !self.single_attestation_batch.is_empty() &&
+            (force || self.single_attestation_batch.should_flush())
+        {
+            let entries = self.single_attestation_batch.take_chunk();
+            let verdicts = SingleAttestationBatch::verify(&entries);
+            BeaconStateCounters::SingleAttestationBatchRuns.inc();
+            BeaconStateCounters::SingleAttestationBatchItems.add(entries.len() as u64);
+            if verdicts.iter().any(|&valid| !valid) {
+                BeaconStateCounters::SingleAttestationBatchFailures.inc();
+            }
+            for (entry, valid) in entries.into_iter().zip(verdicts) {
+                match self.apply_single_attestation_verdict(entry, valid) {
+                    SingleAttestationVerdict::Relay(relay) => {
+                        Self::relay_metadata(&relay, producers);
+                        self.on_accept(None, producers);
+                    }
+                    SingleAttestationVerdict::Invalid(relay) => {
+                        producers.produce(PeerEvent::P2pGossipInvalidMsg {
+                            p2p_peer: relay.stream_id.peer(),
+                            topic: relay.topic,
+                            hash: relay.msg_hash,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    pub(super) fn apply_single_attestation_verdict(
+        &mut self,
+        entry: PendingAttestation,
+        valid: bool,
+    ) -> SingleAttestationVerdict {
+        let relay = entry.relay.expect("gossip batch entry has relay metadata");
+        if valid {
+            let verified = bls::VerifiedSingleAttestation {
+                data_root: entry.data_root,
+                signature: entry.signature,
+            };
+            self.apply_verified_attestation(entry, &verified);
+            SingleAttestationVerdict::Relay(relay)
+        } else {
+            SingleAttestationVerdict::Invalid(relay)
+        }
     }
 
     /// EF `fork_choice` vector path only: production gossip reaches the same
@@ -696,7 +800,15 @@ impl BeaconStateTile {
                 do_relay = false; // relayed on callback.
                 feedback
             }
-            GossipTopic::BeaconAttestation(subnet) => self.handle_attestation(data, subnet),
+            GossipTopic::BeaconAttestation(subnet) => {
+                match self.admit_attestation(data, subnet, Some(m)) {
+                    Ok(feedback) => feedback,
+                    Err(()) => {
+                        self.flush_single_attestations(producers, false);
+                        return;
+                    }
+                }
+            }
             GossipTopic::BeaconAggregateAndProof => self.handle_aggregate_and_proof(data),
             GossipTopic::VoluntaryExit => self.handle_voluntary_exit(data),
             GossipTopic::ProposerSlashing => self.handle_proposer_slashing(data),
@@ -741,6 +853,10 @@ impl BeaconStateTile {
     }
 
     fn relay_gossip(m: &NewGossipMsg, producers: &mut Producers) {
+        Self::relay_metadata(&RelayMetadata::from(m), producers);
+    }
+
+    fn relay_metadata(m: &RelayMetadata, producers: &mut Producers) {
         producers.produce(PeerEvent::SendGossip {
             originator_stream_id: m.stream_id,
             topic: m.topic,

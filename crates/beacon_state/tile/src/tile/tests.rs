@@ -7,11 +7,12 @@ use silver_beacon_state_data::{
     Withdrawals,
 };
 use silver_common::{
-    GossipTopic, MessageId, P2pStreamId, StreamProtocol, TCache, TCacheProducer, TProducer,
+    GossipTopic, MessageId, P2pStreamId, PeerEvent, StreamProtocol, TCache, TCacheProducer,
+    TCacheRead, TProducer,
     ssz_view::{
         ATTESTATION_DATA_SIZE, AttestationView, PROPOSER_SLASHING_SIZE, SIGNED_AGG_PROOF_MIN,
-        SIGNED_BLS_CHANGE_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE, SignedAggregateAndProofView,
-        SingleAttestationView,
+        SIGNED_BLS_CHANGE_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE,
+        SignedAggregateAndProofView, SingleAttestationView,
     },
 };
 
@@ -20,6 +21,7 @@ use crate::{
     fork_choice::{BlockImport, PayloadStatus},
     stf::AttestationVote,
     test_signing,
+    tile::gossip::SingleAttestationVerdict,
 };
 
 const MAX_EFFECTIVE_BALANCE: u64 = 32_000_000_000;
@@ -973,6 +975,178 @@ fn single_att_failed_validation_does_not_mark_seen() {
         &imm,
     );
     assert_eq!(tile.handle_attestation(&honest, subnet), Feedback::Accept(None));
+}
+
+#[test]
+fn deferred_single_attestation_marks_seen_and_routes_feedback_only_at_verdict() {
+    let (mut tile, mut producer) = make_tile_with_gossip(31);
+    seed_tile_with_keys(&mut tile, 128, 0);
+    let (slot, ci, _, _) = find_committee_for_vi0(&tile);
+    let subnet = expected_subnet(&tile, slot, ci);
+    let imm = seed_immutable(&tile);
+    let bbr = tile.last_applied_block_root;
+    let buf = test_signing::sign_single_attestation(
+        0,
+        0,
+        ci as u64,
+        slot,
+        bbr,
+        slot / SLOTS_PER_EPOCH,
+        bbr,
+        &imm,
+    );
+    let mut reservation = producer.reserve(buf.len(), true).expect("reserve gossip");
+    reservation.buffer().unwrap().copy_from_slice(&buf);
+    reservation.increment_offset(buf.len());
+    let read = reservation.read();
+    producer.publish_head();
+    let message = NewGossipMsg {
+        stream_id: P2pStreamId::new(77, 9, StreamProtocol::Unset, true),
+        topic: GossipTopic::BeaconAttestation(subnet),
+        msg_hash: MessageId { id: [0xabu8; 20] },
+        recv_ts: Nanos(123),
+        ssz: read,
+        protobuf: read,
+    };
+
+    assert!(tile.admit_attestation(&buf, subnet, Some(message)).is_err());
+    assert!(!tile.seen_attesters.contains(slot / SLOTS_PER_EPOCH, 0));
+    let pending = tile.single_attestation_batch.take_chunk().pop().unwrap();
+
+    let invalid = tile.apply_single_attestation_verdict(pending.clone(), false);
+    assert!(!tile.seen_attesters.contains(slot / SLOTS_PER_EPOCH, 0));
+    let SingleAttestationVerdict::Invalid(invalid_metadata) = invalid else {
+        panic!("invalid verdict must emit invalid feedback");
+    };
+    assert_eq!(invalid_metadata.stream_id.peer(), 77);
+    assert_eq!(invalid_metadata.topic, message.topic);
+    assert_eq!(invalid_metadata.msg_hash, message.msg_hash);
+
+    let valid = tile.apply_single_attestation_verdict(pending, true);
+    assert!(tile.seen_attesters.contains(slot / SLOTS_PER_EPOCH, 0));
+    let SingleAttestationVerdict::Relay(relay_metadata) = valid else {
+        panic!("valid verdict must emit relay feedback");
+    };
+    assert_eq!(relay_metadata.stream_id.peer(), 77);
+    assert_eq!(relay_metadata.topic, message.topic);
+    assert_eq!(relay_metadata.msg_hash, message.msg_hash);
+    assert_eq!(relay_metadata.recv_ts, message.recv_ts);
+    assert_eq!(relay_metadata.protobuf.seq(), message.protobuf.seq());
+}
+
+#[test]
+fn loop_body_batches_single_attestations_and_emits_only_their_verdict_events() {
+    struct EventSink;
+    impl Tile<SilverSpine> for EventSink {
+        fn loop_body(&mut self, _: &mut SpineAdapter<SilverSpine>) {}
+    }
+
+    enum Observed {
+        Relay { peer: usize, hash: MessageId, protobuf: TCacheRead },
+        Invalid { peer: usize, topic: GossipTopic, hash: MessageId },
+    }
+
+    let (mut tile, mut producer, mut spine, mut adapter) = tile_with_producers(31);
+    seed_tile_with_keys(&mut tile, 4096, 0);
+    let (slot, committee_index, _, committee_len) = find_committee_for_vi0(&tile);
+    assert_eq!(committee_len, 128);
+    let shuffled = tile.shuffling_cache.shuffled_by_epoch(0).unwrap();
+    let shuffling = stf::EpochShuffling::new(shuffled, tile.head_validator_count());
+    let committee = shuffling.committee(slot, committee_index).to_vec();
+    let subnet = expected_subnet(&tile, slot, committee_index);
+    let topic = GossipTopic::BeaconAttestation(subnet);
+    let imm = seed_immutable(&tile);
+    let block_root = tile.last_applied_block_root;
+    let invalid_position = committee.len() / 2;
+    let invalid_attester = committee[invalid_position] as usize;
+
+    let sink = EventSink;
+    let mut sink_adapter = SpineAdapter::connect_tile(&sink, &mut spine);
+    sink_adapter.consume(|_: PeerEvent, _| {});
+    adapter.consume(|_: NewGossipMsg, _| {});
+
+    for (position, &attester) in committee.iter().enumerate() {
+        let registered_signer = attester as usize % test_signing::PRIVKEY_HEX.len();
+        let signer = if position == invalid_position {
+            (registered_signer + 1) % test_signing::PRIVKEY_HEX.len()
+        } else {
+            registered_signer
+        };
+        let bytes = test_signing::sign_single_attestation(
+            signer,
+            attester as u64,
+            committee_index as u64,
+            slot,
+            block_root,
+            0,
+            block_root,
+            &imm,
+        );
+        let mut reservation = producer.reserve(bytes.len(), true).unwrap();
+        reservation.buffer().unwrap().copy_from_slice(&bytes);
+        reservation.increment_offset(bytes.len());
+        let read = reservation.read();
+        producer.publish_head();
+        let mut id = [0u8; 20];
+        id[..8].copy_from_slice(&(position as u64).to_le_bytes());
+        sink_adapter.produce(NewGossipMsg {
+            stream_id: P2pStreamId::new(
+                1000 + position,
+                position as u64,
+                StreamProtocol::Unset,
+                true,
+            ),
+            topic,
+            msg_hash: MessageId { id },
+            recv_ts: Nanos(position as u64),
+            ssz: read,
+            protobuf: read,
+        });
+    }
+
+    tile.loop_body(&mut adapter);
+    let mut observed = Vec::new();
+    sink_adapter.consume(|event: PeerEvent, _| match event {
+        PeerEvent::SendGossip { originator_stream_id, msg_hash, protobuf, .. } => {
+            observed.push(Observed::Relay {
+                peer: originator_stream_id.peer(),
+                hash: msg_hash,
+                protobuf,
+            });
+        }
+        PeerEvent::P2pGossipInvalidMsg { p2p_peer, topic, hash } => {
+            observed.push(Observed::Invalid { peer: p2p_peer, topic, hash });
+        }
+        unexpected => panic!("unexpected peer event: {unexpected:?}"),
+    });
+
+    assert_eq!(observed.len(), committee.len());
+    let mut relayed = 0;
+    let mut invalid = 0;
+    for event in observed {
+        match event {
+            Observed::Relay { peer, hash, protobuf } => {
+                relayed += 1;
+                assert_ne!(peer, 1000 + invalid_position);
+                assert_ne!(hash.id[..8], (invalid_position as u64).to_le_bytes());
+                assert_eq!(protobuf.len().unwrap(), SINGLE_ATT_SIZE);
+            }
+            Observed::Invalid { peer, topic: invalid_topic, hash } => {
+                invalid += 1;
+                assert_eq!(peer, 1000 + invalid_position);
+                assert_eq!(invalid_topic, topic);
+                assert_eq!(hash.id[..8], (invalid_position as u64).to_le_bytes());
+            }
+        }
+    }
+    assert_eq!(relayed, committee.len() - 1);
+    assert_eq!(invalid, 1);
+    for &attester in &committee {
+        assert_eq!(
+            tile.seen_attesters.contains(0, attester as usize),
+            attester as usize != invalid_attester,
+        );
+    }
 }
 
 /// An accepted single attestation lands in the pool: participant bit at

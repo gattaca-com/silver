@@ -434,6 +434,15 @@ pub fn verify_single_attestation(
 ) -> Option<VerifiedSingleAttestation> {
     let signature = Signature::from_bytes(SingleAttestationView::signature(att)).ok()?;
 
+    verify_single_attestation_parsed(attester_pubkey, signature, data_root, signing_root)
+}
+
+pub(crate) fn verify_single_attestation_parsed(
+    attester_pubkey: &PublicKey,
+    signature: Signature,
+    data_root: B256,
+    signing_root: &B256,
+) -> Option<VerifiedSingleAttestation> {
     verify_one_parsed(attester_pubkey, &signature, signing_root)
         .then_some(VerifiedSingleAttestation { data_root, signature })
 }
