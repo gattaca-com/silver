@@ -165,11 +165,10 @@ fn fulu_slashings_reset() {
 #[test]
 fn fulu_randao_mixes_reset() {
     epoch_handler("randao_mixes_reset", |s| {
-        let sid = s.state_id;
-        let (view, epoch, _) = s.view();
-        let mut epoch_w = epoch.roll_inheriting(sid.epoch_idx);
-        stf::process_randao_mixes_reset(&view, &mut epoch_w);
-        s.state_id = view.commit(Some(epoch_w.commit()), sid.longtail_idx);
+        s.with_view(|view| {
+            let current_epoch = view.slot.reader().current_epoch();
+            stf::process_randao_mixes_reset(view, current_epoch);
+        });
     });
 }
 
@@ -202,19 +201,17 @@ fn fulu_participation_flag_updates() {
 fn fulu_sync_committee_updates() {
     epoch_handler("sync_committee_updates", |s| {
         let sid = s.state_id;
-        let (mut view, epoch, longtail) = s.view();
+        let (mut view, _, longtail) = s.view();
         let current_epoch = view.slot.reader().current_epoch();
         // The hub's rotation gate: no-op vectors never roll the longtail.
         if !(current_epoch + 1).is_multiple_of(EPOCHS_PER_SYNC_COMMITTEE_PERIOD) {
             return;
         }
         let mut longtail_w = longtail.roll_inheriting(sid.longtail_idx);
-        let epoch_view = epoch.view_opt(sid.epoch_idx);
         let mut active = Vec::new();
         let mut eff = Vec::new();
         stf::process_sync_committee_updates(
             &mut view,
-            &epoch_view,
             &mut longtail_w,
             current_epoch,
             &mut active,

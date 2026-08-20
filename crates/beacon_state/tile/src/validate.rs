@@ -1,5 +1,5 @@
 use silver_beacon_state_data::{
-    Epoch, SLOTS_PER_EPOCH, Slot, SlotStateView, SpecConfig, ValidatorsView,
+    Epoch, RandaoMixesView, SLOTS_PER_EPOCH, Slot, SlotStateView, SpecConfig, ValidatorsView,
 };
 use silver_common::ssz_view::{
     ATTESTATION_FIXED, AttestationView, EXECUTION_PAYLOAD_FIXED, ExecutionPayloadView,
@@ -153,6 +153,7 @@ pub fn validate_bls_to_execution_change(
 pub fn validate_execution_payload(
     cfg: &SpecConfig,
     slot: &SlotStateView,
+    randao: &RandaoMixesView,
     genesis_time: u64,
     payload: &[u8],
     block_slot: Slot,
@@ -164,7 +165,7 @@ pub fn validate_execution_payload(
         });
     }
     let header = &slot.state().latest_execution_payload_header;
-    let randao_mix_current = slot.state().randao_mix_current;
+    let expected_randao = randao.at_epoch(block_slot / SLOTS_PER_EPOCH);
 
     let got_parent = *ExecutionPayloadView::parent_hash(payload);
     let expected_parent = header.block_hash;
@@ -185,9 +186,9 @@ pub fn validate_execution_payload(
     }
 
     let got_randao = *ExecutionPayloadView::prev_randao(payload);
-    if got_randao != randao_mix_current {
+    if got_randao != expected_randao {
         return Err(ExecutionPayloadError::RandaoMismatch {
-            expected: randao_mix_current,
+            expected: expected_randao,
             got: got_randao,
         });
     }

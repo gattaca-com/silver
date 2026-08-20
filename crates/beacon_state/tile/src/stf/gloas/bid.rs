@@ -76,7 +76,7 @@ pub fn process_execution_payload_bid(
     if bid.parent_block_root != view.block_roots.at_slot(slot - 1) {
         return Err(E::ParentBlockRootMismatch);
     }
-    if bid.prev_randao != view.slot.state().randao_mix_current {
+    if bid.prev_randao != view.randao_mixes.at_epoch(slot / SLOTS_PER_EPOCH) {
         return Err(E::PrevRandaoMismatch);
     }
 

@@ -1,7 +1,4 @@
-use silver_beacon_state_data::{
-    B256, EPOCHS_PER_HISTORICAL_VECTOR, Epoch, EpochView, MIN_SEED_LOOKAHEAD, SLOTS_PER_EPOCH,
-    SlotStateView, ValidatorsView, randao_mix_at_epoch,
-};
+use silver_beacon_state_data::{B256, Epoch, RandaoMixesView, SLOTS_PER_EPOCH};
 use silver_common::merkle::sha256;
 
 const SHUFFLE_ROUND_COUNT: u8 = 90;
@@ -14,83 +11,127 @@ pub const DOMAIN_SYNC_COMMITTEE: u32 = 7;
 const TARGET_COMMITTEE_SIZE: usize = 128;
 const MAX_COMMITTEES_PER_SLOT: usize = 64;
 
-/// seed = SHA256(domain_bytes || epoch_bytes || randao_mix). Caller supplies
-/// the already-resolved randao mix for `e + EPOCHS_PER_HISTORICAL_VECTOR -
-/// MIN_SEED_LOOKAHEAD - 1`.
-pub fn get_seed(mix: &B256, e: Epoch, domain: u32) -> B256 {
-    let mut preimage = [0u8; 4 + 8 + 32];
-    preimage[0..4].copy_from_slice(&domain.to_le_bytes());
-    preimage[4..12].copy_from_slice(&e.to_le_bytes());
-    preimage[12..44].copy_from_slice(mix);
+#[derive(Clone, Copy)]
+pub struct Seed(B256);
 
-    sha256(&preimage)
-}
+impl Seed {
+    /// `SHA256(domain || epoch || mix)`.
+    pub fn new(mix: &B256, e: Epoch, domain: u32) -> Self {
+        let mut preimage = [0u8; 4 + 8 + 32];
+        preimage[0..4].copy_from_slice(&domain.to_le_bytes());
+        preimage[4..12].copy_from_slice(&e.to_le_bytes());
+        preimage[12..44].copy_from_slice(mix);
 
-/// Convenience for callers holding the tier views: resolves the seed-epoch's
-/// randao mix (epoch overlay, slot-anchored offset).
-pub fn get_seed_from_state(epoch: &EpochView, slot: &SlotStateView, e: Epoch, domain: u32) -> B256 {
-    let mix_epoch = e + EPOCHS_PER_HISTORICAL_VECTOR as u64 - MIN_SEED_LOOKAHEAD - 1;
-    let mix = randao_mix_at_epoch(epoch, slot, mix_epoch);
-    get_seed(&mix, e, domain)
-}
-
-/// Shuffle a list of indices in place using the swap-or-not algorithm.
-/// Backwards iteration (rounds 89→0) to match the spec's committee
-/// derivation: `result[i] = original[compute_shuffled_index(i)]`.
-pub fn shuffle_list(indices: &mut [u32], seed: &B256) {
-    let n = indices.len();
-    if n <= 1 {
-        return;
+        Self(sha256(&preimage))
     }
 
-    let mut buf = [0u8; 37]; // seed(32) + round(1) + position/256(4)
-    buf[..32].copy_from_slice(seed);
+    /// [`Self::new`] over the mix the randao column resolves for `e`.
+    #[inline]
+    pub fn from_randao(randao: &RandaoMixesView, e: Epoch, domain: u32) -> Self {
+        Self::new(&randao.seed_mix(e), e, domain)
+    }
 
-    for r in 0..SHUFFLE_ROUND_COUNT as usize {
-        let round = SHUFFLE_ROUND_COUNT - 1 - r as u8;
-        buf[32] = round;
+    /// The per-slot seed the proposer and PTC selections sample against.
+    pub fn for_slot(&self, slot: u64) -> Self {
+        let mut input = [0u8; 40];
+        input[..32].copy_from_slice(&self.0);
+        input[32..40].copy_from_slice(&slot.to_le_bytes());
+        Self(sha256(&input))
+    }
 
-        let pivot_hash = sha256(&buf[..33]);
-        let pivot = u64::from_le_bytes(pivot_hash[..8].try_into().unwrap()) as usize % n;
+    /// Rejection-sampling stream over `active_indices`, weighted by effective
+    /// balance.
+    #[inline]
+    pub fn sampler(&self, active_count: usize) -> WeightedSampler {
+        WeightedSampler::new(self, active_count)
+    }
 
-        // First half: pairs (i, pivot - i).
-        let mirror1 = (pivot + 1) >> 1;
-        buf[33..37].copy_from_slice(&((pivot >> 8) as u32).to_le_bytes());
-        let mut source = sha256(&buf);
-        let mut byte_v = source[(pivot & 0xff) >> 3];
-
-        for i in 0..mirror1 {
-            let j = pivot - i;
-            if j & 0xff == 0xff {
-                buf[33..37].copy_from_slice(&((j >> 8) as u32).to_le_bytes());
-                source = sha256(&buf);
-            }
-            if j & 0x07 == 0x07 {
-                byte_v = source[(j & 0xff) >> 3];
-            }
-            if (byte_v >> (j & 0x07)) & 1 == 1 {
-                indices.swap(i, j);
+    /// Spec `compute_proposer_index`. `effective_balances[vi]` must be
+    /// indexable for every `vi` in `active_indices` (i.e. the materialised
+    /// per-validator column).
+    pub fn proposer_index(
+        &self,
+        active_indices: &[u32],
+        effective_balances: &[u64],
+        slot: u64,
+    ) -> usize {
+        if active_indices.is_empty() {
+            return 0;
+        }
+        let mut sampler = self.for_slot(slot).sampler(active_indices.len());
+        loop {
+            let (candidate, accepted) = sampler.next(active_indices, effective_balances);
+            if accepted {
+                return candidate;
             }
         }
+    }
 
-        // Second half: pairs (i, end - loop_iter).
-        let mirror2 = (pivot + n + 1) >> 1;
-        let end = n - 1;
-        buf[33..37].copy_from_slice(&((end >> 8) as u32).to_le_bytes());
-        source = sha256(&buf);
-        byte_v = source[(end & 0xff) >> 3];
+    /// Cursor over this seed's random draws, 16 to a hash.
+    #[inline]
+    pub fn draws(&self) -> RandomDraws {
+        RandomDraws { seed: *self, block: usize::MAX, hash: [0u8; 32] }
+    }
 
-        for (loop_iter, i) in ((pivot + 1)..mirror2).enumerate() {
-            let j = end - loop_iter;
-            if j & 0xff == 0xff {
-                buf[33..37].copy_from_slice(&((j >> 8) as u32).to_le_bytes());
-                source = sha256(&buf);
+    /// Shuffle a list of indices in place using the swap-or-not algorithm.
+    /// Backwards iteration (rounds 89→0) to match the spec's committee
+    /// derivation: `result[i] = original[compute_shuffled_index(i)]`.
+    pub fn shuffle(&self, indices: &mut [u32]) {
+        let seed = &self.0;
+        let n = indices.len();
+        if n <= 1 {
+            return;
+        }
+
+        let mut buf = [0u8; 37]; // seed(32) + round(1) + position/256(4)
+        buf[..32].copy_from_slice(seed);
+
+        for r in 0..SHUFFLE_ROUND_COUNT as usize {
+            let round = SHUFFLE_ROUND_COUNT - 1 - r as u8;
+            buf[32] = round;
+
+            let pivot_hash = sha256(&buf[..33]);
+            let pivot = u64::from_le_bytes(pivot_hash[..8].try_into().unwrap()) as usize % n;
+
+            // First half: pairs (i, pivot - i).
+            let mirror1 = (pivot + 1) >> 1;
+            buf[33..37].copy_from_slice(&((pivot >> 8) as u32).to_le_bytes());
+            let mut source = sha256(&buf);
+            let mut byte_v = source[(pivot & 0xff) >> 3];
+
+            for i in 0..mirror1 {
+                let j = pivot - i;
+                if j & 0xff == 0xff {
+                    buf[33..37].copy_from_slice(&((j >> 8) as u32).to_le_bytes());
+                    source = sha256(&buf);
+                }
+                if j & 0x07 == 0x07 {
+                    byte_v = source[(j & 0xff) >> 3];
+                }
+                if (byte_v >> (j & 0x07)) & 1 == 1 {
+                    indices.swap(i, j);
+                }
             }
-            if j & 0x07 == 0x07 {
-                byte_v = source[(j & 0xff) >> 3];
-            }
-            if (byte_v >> (j & 0x07)) & 1 == 1 {
-                indices.swap(i, j);
+
+            // Second half: pairs (i, end - loop_iter).
+            let mirror2 = (pivot + n + 1) >> 1;
+            let end = n - 1;
+            buf[33..37].copy_from_slice(&((end >> 8) as u32).to_le_bytes());
+            source = sha256(&buf);
+            byte_v = source[(end & 0xff) >> 3];
+
+            for (loop_iter, i) in ((pivot + 1)..mirror2).enumerate() {
+                let j = end - loop_iter;
+                if j & 0xff == 0xff {
+                    buf[33..37].copy_from_slice(&((j >> 8) as u32).to_le_bytes());
+                    source = sha256(&buf);
+                }
+                if j & 0x07 == 0x07 {
+                    byte_v = source[(j & 0xff) >> 3];
+                }
+                if (byte_v >> (j & 0x07)) & 1 == 1 {
+                    indices.swap(i, j);
+                }
             }
         }
     }
@@ -102,30 +143,28 @@ pub fn committees_per_slot(active_validator_count: usize) -> usize {
     per_slot.clamp(1, MAX_COMMITTEES_PER_SLOT)
 }
 
-/// `effective_balances[vi]` must be indexable for every `vi` that appears in
-/// `active_indices` (i.e. supply the materialised per-validator column).
-pub fn compute_proposer_index(
-    active_indices: &[u32],
-    effective_balances: &[u64],
-    slot: u64,
-    seed: &B256,
-) -> usize {
-    if active_indices.is_empty() {
-        return 0;
-    }
+/// One seed's 16-bit random draws, which the spec packs 16 to a SHA256 block —
+/// so a sequential sweep rehashes only every 16th draw. Holds the block it
+/// last hashed; every weighted selection walks `i` upward, so that is the
+/// whole cache.
+pub struct RandomDraws {
+    seed: Seed,
+    block: usize,
+    hash: B256,
+}
 
-    // Proposer seed = SHA256(epoch_seed || slot_bytes).
-    let mut input = [0u8; 40];
-    input[..32].copy_from_slice(seed);
-    input[32..40].copy_from_slice(&slot.to_le_bytes());
-    let proposer_seed = sha256(&input);
-
-    let mut sampler = WeightedSampler::new(&proposer_seed, active_indices.len());
-    loop {
-        let (candidate, accepted) = sampler.next(active_indices, effective_balances);
-        if accepted {
-            return candidate;
+impl RandomDraws {
+    #[inline]
+    pub fn at(&mut self, i: u64) -> u64 {
+        let block = i as usize / 16;
+        if block != self.block {
+            let mut buf = [0u8; 40];
+            buf[..32].copy_from_slice(&self.seed.0);
+            buf[32..40].copy_from_slice(&(block as u64).to_le_bytes());
+            (self.block, self.hash) = (block, sha256(&buf));
         }
+        let offset = (i as usize % 16) * 2;
+        u16::from_le_bytes([self.hash[offset], self.hash[offset + 1]]) as u64
     }
 }
 
@@ -134,45 +173,31 @@ pub fn compute_proposer_index(
 /// with probability proportional to `effective_balance /
 /// MAX_EFFECTIVE_BALANCE`.
 pub struct WeightedSampler {
-    seed: B256,
+    seed: Seed,
     pivots: [usize; SHUFFLE_ROUND_COUNT as usize],
     n: usize,
     i: usize,
-    cached_hash: [u8; 32],
-    cached_hash_block: usize,
+    draws: RandomDraws,
 }
 
 pub const MAX_EFFECTIVE_BALANCE: u64 = 2_048_000_000_000;
 const MAX_RANDOM_16: u64 = 0xFFFF;
 
 impl WeightedSampler {
-    pub fn new(seed: &B256, active_count: usize) -> Self {
+    fn new(seed: &Seed, active_count: usize) -> Self {
         Self {
             seed: *seed,
-            pivots: precompute_pivots(seed, active_count),
+            pivots: seed.pivots(active_count),
             n: active_count,
             i: 0,
-            cached_hash: [0u8; 32],
-            cached_hash_block: usize::MAX,
+            draws: seed.draws(),
         }
     }
 
     pub fn next(&mut self, active_indices: &[u32], effective_balances: &[u64]) -> (usize, bool) {
-        let shuffled =
-            compute_shuffled_index_with_pivots(self.i % self.n, self.n, &self.seed, &self.pivots);
+        let shuffled = self.seed.shuffled_index(self.i % self.n, self.n, &self.pivots);
         let candidate = active_indices[shuffled] as usize;
-
-        let hash_block = self.i / 16;
-        if hash_block != self.cached_hash_block {
-            let mut buf = [0u8; 40];
-            buf[..32].copy_from_slice(&self.seed);
-            buf[32..40].copy_from_slice(&hash_block.to_le_bytes());
-            self.cached_hash = sha256(&buf);
-            self.cached_hash_block = hash_block;
-        }
-        let offset = (self.i % 16) * 2;
-        let random_value =
-            u16::from_le_bytes([self.cached_hash[offset], self.cached_hash[offset + 1]]) as u64;
+        let random_value = self.draws.at(self.i as u64);
 
         self.i += 1;
 
@@ -182,65 +207,47 @@ impl WeightedSampler {
     }
 }
 
-/// Precompute pivots for all 90 rounds (avoids recomputing in
-/// compute_shuffled_index).
-fn precompute_pivots(seed: &[u8; 32], list_size: usize) -> [usize; SHUFFLE_ROUND_COUNT as usize] {
-    let mut pivots = [0usize; SHUFFLE_ROUND_COUNT as usize];
-    let mut input = [0u8; 33];
-    input[..32].copy_from_slice(seed);
-    for round in 0..SHUFFLE_ROUND_COUNT {
-        input[32] = round;
-        let h = sha256(&input);
-        pivots[round as usize] =
-            u64::from_le_bytes(h[..8].try_into().unwrap()) as usize % list_size;
-    }
-    pivots
-}
-
-fn compute_shuffled_index_with_pivots(
-    mut index: usize,
-    list_size: usize,
-    seed: &[u8; 32],
-    pivots: &[usize; SHUFFLE_ROUND_COUNT as usize],
-) -> usize {
-    let mut hash_input = [0u8; 37];
-    hash_input[..32].copy_from_slice(seed);
-
-    for round in 0..SHUFFLE_ROUND_COUNT {
-        let pivot = pivots[round as usize];
-        let flip = (pivot + list_size - index) % list_size;
-        let position = core::cmp::max(index, flip);
-
-        hash_input[32] = round;
-        hash_input[33..37].copy_from_slice(&((position / 256) as u32).to_le_bytes());
-        let source = sha256(&hash_input);
-
-        let byte = source[(position % 256) / 8];
-        let bit = (byte >> (position % 8)) & 1;
-        if bit == 1 {
-            index = flip;
+impl Seed {
+    /// Pivots for all 90 rounds up front, so `shuffled_index` doesn't rehash
+    /// one per call per index.
+    fn pivots(&self, list_size: usize) -> [usize; SHUFFLE_ROUND_COUNT as usize] {
+        let mut pivots = [0usize; SHUFFLE_ROUND_COUNT as usize];
+        let mut input = [0u8; 33];
+        input[..32].copy_from_slice(&self.0);
+        for round in 0..SHUFFLE_ROUND_COUNT {
+            input[32] = round;
+            let h = sha256(&input);
+            pivots[round as usize] =
+                u64::from_le_bytes(h[..8].try_into().unwrap()) as usize % list_size;
         }
+        pivots
     }
-    index
-}
 
-/// Append active validator indices for `epoch` into `out`. Single sweep over
-/// activation/exit epoch columns — O(N + |edits|).
-pub fn get_active_validator_indices_into(
-    validators: &ValidatorsView,
-    epoch: Epoch,
-    out: &mut Vec<u32>,
-) {
-    out.clear();
-    let n = validators.count();
-    let mut act = validators.iter_activation_epochs();
-    let mut exit = validators.iter_exit_epochs();
-    for i in 0..n {
-        let a = act.next().unwrap();
-        let x = exit.next().unwrap();
-        if a <= epoch && epoch < x {
-            out.push(i as u32);
+    fn shuffled_index(
+        &self,
+        mut index: usize,
+        list_size: usize,
+        pivots: &[usize; SHUFFLE_ROUND_COUNT as usize],
+    ) -> usize {
+        let mut hash_input = [0u8; 37];
+        hash_input[..32].copy_from_slice(&self.0);
+
+        for round in 0..SHUFFLE_ROUND_COUNT {
+            let pivot = pivots[round as usize];
+            let flip = (pivot + list_size - index) % list_size;
+            let position = core::cmp::max(index, flip);
+
+            hash_input[32] = round;
+            hash_input[33..37].copy_from_slice(&((position / 256) as u32).to_le_bytes());
+            let source = sha256(&hash_input);
+
+            let byte = source[(position % 256) / 8];
+            let bit = (byte >> (position % 8)) & 1;
+            if bit == 1 {
+                index = flip;
+            }
         }
+        index
     }
 }
 
@@ -250,9 +257,9 @@ mod tests {
 
     #[test]
     fn shuffle_preserves_elements() {
-        let seed = [0xAB; 32];
+        let seed = Seed([0xAB; 32]);
         let mut indices: Vec<u32> = (0..100).collect();
-        shuffle_list(&mut indices, &seed);
+        seed.shuffle(&mut indices);
 
         let mut sorted = indices.clone();
         sorted.sort();
@@ -271,36 +278,36 @@ mod tests {
     /// implementation.
     #[test]
     fn hardcoded_shuffle_vector() {
-        let seed = [0u8; 32];
+        let seed = Seed([0u8; 32]);
         let expected: &[u32] = &[9, 7, 4, 1, 8, 0, 5, 6, 3, 2];
         let n = expected.len();
 
-        // Verify compute_shuffled_index produces the expected mapping.
-        let pivots = precompute_pivots(&seed, n);
+        // Verify shuffled_index produces the expected mapping.
+        let pivots = seed.pivots(n);
         for i in 0..n {
-            let s = compute_shuffled_index_with_pivots(i, n, &seed, &pivots);
-            assert_eq!(s, expected[i] as usize, "compute_shuffled_index({i})");
+            let s = seed.shuffled_index(i, n, &pivots);
+            assert_eq!(s, expected[i] as usize, "shuffled_index({i})");
         }
 
-        // Verify backwards shuffle_list matches: result[i] = csi(i).
+        // Verify the backwards shuffle matches: result[i] = csi(i).
         let mut list: Vec<u32> = (0..n as u32).collect();
-        shuffle_list(&mut list, &seed);
+        seed.shuffle(&mut list);
         assert_eq!(&list, expected);
     }
 
     #[test]
     fn shuffled_index_matches_full_shuffle() {
-        let seed = [0x99u8; 32];
+        let seed = Seed([0x99u8; 32]);
         let n = 64;
 
-        // Backwards shuffle: result[i] = original[compute_shuffled_index(i)].
-        // With identity input, result[i] = compute_shuffled_index(i).
+        // Backwards shuffle: result[i] = original[shuffled_index(i)].
+        // With identity input, result[i] = shuffled_index(i).
         let mut full: Vec<u32> = (0..n as u32).collect();
-        shuffle_list(&mut full, &seed);
+        seed.shuffle(&mut full);
 
-        let pivots = precompute_pivots(&seed, n);
+        let pivots = seed.pivots(n);
         for i in 0..n {
-            let shuffled_pos = compute_shuffled_index_with_pivots(i, n, &seed, &pivots);
+            let shuffled_pos = seed.shuffled_index(i, n, &pivots);
             assert_eq!(
                 full[i], shuffled_pos as u32,
                 "backwards shuffle: result[{i}] should be compute_shuffled_index({i})"

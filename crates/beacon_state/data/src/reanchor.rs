@@ -5,16 +5,6 @@
 
 use flux_profiler::timed;
 
-/// Overlay a fork's append `log` onto a circular `ring`, entry `i` landing at
-/// position `(start + i) % ring.len()` (wrapping).
-pub(crate) fn write_ring_window<T: Copy>(ring: &mut [T], start: usize, log: &[T]) {
-    let cap = ring.len();
-    debug_assert!(log.len() <= cap, "delta log exceeds ring cap");
-    for (i, x) in log.iter().enumerate() {
-        ring[(start + i) % cap] = *x;
-    }
-}
-
 /// Drop the prefix of a per-fork append log that a promoted winner already
 /// folded into the base — the reanchor invariant for log-style deltas.
 pub(crate) fn drain_promoted_prefix<T>(log: &mut Vec<T>, promoted_len: usize) {

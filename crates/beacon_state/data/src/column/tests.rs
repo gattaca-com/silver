@@ -1,7 +1,12 @@
-use super::{BalancesGroup, BalancesWriteView, BlockRootsGroup, ColumnGroup, ColumnSpec};
+use super::{
+    BalancesGroup, BalancesWriteView, BlockRootsGroup, ColumnGroup, ColumnSpec, RandaoMixesGroup,
+};
 use crate::{
     merkle::{MerkleStack, hash_b256_vector, hash_uint64_list, hash_uint64_vector},
-    types::{B256, HashFormat, SLOTS_PER_HISTORICAL_ROOT, VALIDATOR_REGISTRY_LIMIT},
+    types::{
+        B256, EPOCHS_PER_HISTORICAL_VECTOR, HashFormat, SLOTS_PER_HISTORICAL_ROOT,
+        VALIDATOR_REGISTRY_LIMIT,
+    },
 };
 
 /// `Vector[uint64, 8192]` — covers the vector root path (fixed depth, no
@@ -444,4 +449,39 @@ fn block_roots_contains_scans_back_from_the_given_slot() {
     assert!(reader.contains(&[0xAA; 32], 101));
     assert!(reader.contains(&[0xBB; 32], 101));
     assert!(!reader.contains(&[0xCC; 32], 101));
+}
+
+/// A block's reveal accumulates into the current epoch's bucket; the boundary
+/// copy seeds the next epoch from it, and the next epoch's reveals accumulate
+/// on top without disturbing the finished epoch.
+#[test]
+fn randao_mixes_accumulate_then_carry_to_the_next_epoch() {
+    let mut g = RandaoMixesGroup::zeroed_vector();
+    let mut wv = g.roll_fresh();
+
+    wv.mix_in_reveal(5, &[0b0011; 32]);
+    wv.mix_in_reveal(5, &[0b0101; 32]);
+    assert_eq!(wv.at_epoch(5), [0b0110; 32]);
+
+    wv.copy_to_next_epoch(5);
+    assert_eq!(wv.at_epoch(6), [0b0110; 32]);
+    wv.mix_in_reveal(6, &[0b0010; 32]);
+    assert_eq!(wv.at_epoch(6), [0b0100; 32]);
+    assert_eq!(wv.at_epoch(5), [0b0110; 32], "the finished epoch's mix is frozen");
+
+    let mut expected = vec![[0u8; 32]; EPOCHS_PER_HISTORICAL_VECTOR];
+    expected[5] = [0b0110; 32];
+    expected[6] = [0b0100; 32];
+    assert_eq!(wv.hash_root(), hash_b256_vector(&expected));
+}
+
+/// The ring wraps at `EPOCHS_PER_HISTORICAL_VECTOR`, so an epoch a full period
+/// on shares its bucket.
+#[test]
+fn randao_mixes_wrap_at_the_ring_length() {
+    let mut g = RandaoMixesGroup::zeroed_vector();
+    let mut wv = g.roll_fresh();
+
+    wv.mix_in_reveal(2, &[0xAB; 32]);
+    assert_eq!(wv.at_epoch(2 + EPOCHS_PER_HISTORICAL_VECTOR as u64), [0xAB; 32]);
 }

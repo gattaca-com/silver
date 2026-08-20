@@ -1,7 +1,7 @@
 use silver_beacon_state_data::{B256, Epoch, PendingDeposit, Slot};
 use silver_ssz::ssz_view::MAX_ATTESTING_INDICES;
 
-use crate::{ssz_hash, stf::MAX_PENDING_DEPOSITS_PER_EPOCH};
+use crate::stf::MAX_PENDING_DEPOSITS_PER_EPOCH;
 
 pub(crate) const MIN_ACTIVATION_BALANCE: u64 = 32_000_000_000;
 
@@ -28,8 +28,6 @@ pub struct StfScratch {
     /// epoch-transition passes.
     pub replace_u64: Vec<(u32, u64)>,
     pub eff: Vec<u64>,
-    /// Merged-ring buffers for `hash_tree_root_state`.
-    pub state_hash: ssz_hash::StateHashScratch,
 }
 
 impl StfScratch {
@@ -39,7 +37,6 @@ impl StfScratch {
             postponed: Vec::with_capacity(MAX_PENDING_DEPOSITS_PER_EPOCH),
             replace_u64: Vec::with_capacity(validator_cap),
             eff: Vec::with_capacity(validator_cap),
-            state_hash: ssz_hash::StateHashScratch::new(),
         }
     }
 }

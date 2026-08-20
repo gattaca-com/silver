@@ -57,7 +57,7 @@ pub(super) fn decompose(
     }
     let off = read_offsets(ssz)?;
     let epoch = EpochStateFinalized::from_ssz_gloas(ssz);
-    let slot = SlotStateFinalized::from_ssz_gloas(ssz, &off, &epoch)?;
+    let slot = SlotStateFinalized::from_ssz_gloas(ssz, &off)?;
     let builders =
         FinalizedBuilders::from_ssz(&ssz[off.builders..off.builder_pending_withdrawals])?;
 

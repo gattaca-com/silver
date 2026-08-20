@@ -12,10 +12,7 @@ use std::{
 use flux::{spine::SpineAdapter, tile::Tile, timing::Nanos};
 use serde::Deserialize;
 use silver_beacon_state::{
-    ssz_hash::{
-        StateHashScratch, hash_tree_root_block_header, hash_tree_root_body_fulu,
-        hash_tree_root_state,
-    },
+    ssz_hash::{hash_tree_root_block_header, hash_tree_root_body_fulu, hash_tree_root_state},
     tile::BeaconStateTile,
 };
 use silver_beacon_state_data::{BeaconBlockHeader, BeaconState, SpecConfig};
@@ -342,11 +339,9 @@ impl Harness {
         let anchor = bs.roll_fresh();
         let (mut view, epoch, longtail) = bs.roll_from(anchor);
 
-        let mut scratch = StateHashScratch::new();
-
         let expected = {
             let rv = view.read(epoch.view_opt(None), longtail.view_opt(None));
-            hash_tree_root_state(&rv, &mut scratch)
+            hash_tree_root_state(&rv)
         };
         let got = self.tile.head_state_root();
         assert_eq!(

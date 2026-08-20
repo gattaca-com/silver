@@ -25,19 +25,20 @@ pub fn process_execution_payload(
     payload_bytes: &[u8],
     block_slot: Slot,
 ) -> Result<(), ExecutionPayloadError> {
-    let imm = view.imm;
-    let slot = &mut view.slot;
     if payload_bytes.len() < 528 {
         return Err(ExecutionPayloadError::TooShort { len: payload_bytes.len(), min: 528 });
     }
 
     validate::validate_execution_payload(
         cfg,
-        &slot.reader(),
-        imm.genesis_time,
+        &view.slot.reader(),
+        &view.randao_mixes.reader(),
+        view.imm.genesis_time,
         payload_bytes,
         block_slot,
     )?;
+
+    let slot = &mut view.slot;
 
     let extra_data_off = ExecutionPayloadView::extra_data_offset(payload_bytes) as usize;
     let transactions_off = ExecutionPayloadView::transactions_offset(payload_bytes) as usize;

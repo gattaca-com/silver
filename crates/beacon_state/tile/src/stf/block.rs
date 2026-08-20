@@ -101,7 +101,7 @@ pub fn apply_block(
     )?;
 
     let rv = view.read(epoch_view, longtail_view);
-    let actual = ssz_hash::hash_tree_root_state(&rv, &mut scratch.state_hash);
+    let actual = ssz_hash::hash_tree_root_state(&rv);
     if actual != block_state_root {
         return Err(wrap(BlockError::PostStateRootMismatch {
             expected: block_state_root,
@@ -221,7 +221,7 @@ pub fn apply_signed_block_debug(
     )?;
 
     let rv = view.read(epoch_view, longtail_view);
-    let actual = ssz_hash::hash_tree_root_state(&rv, &mut scratch.state_hash);
+    let actual = ssz_hash::hash_tree_root_state(&rv);
     if actual != state_root {
         return Err(wrap(BlockError::PostStateRootMismatch { expected: state_root, got: actual }));
     }
@@ -307,7 +307,7 @@ pub fn process_slots(
     // Pre-boundary slots: epoch tier read straight off the group.
     while view.slot.state().slot < target_slot {
         let epoch_view = epoch.view_opt(epoch_idx);
-        process_slot(view, &epoch_view, longtail, longtail_idx, &mut scratch.state_hash);
+        process_slot(view, &epoch_view, longtail, longtail_idx);
         if (view.slot.state().slot + 1).is_multiple_of(SLOTS_PER_EPOCH) {
             break;
         }
@@ -328,7 +328,7 @@ pub fn process_slots(
 
         maybe_upgrade_to_gloas(cfg, view, &mut epoch_w);
         while view.slot.state().slot < target_slot {
-            process_slot(view, &epoch_w.reader(), longtail, longtail_idx, &mut scratch.state_hash);
+            process_slot(view, &epoch_w.reader(), longtail, longtail_idx);
             if (view.slot.state().slot + 1).is_multiple_of(SLOTS_PER_EPOCH) {
                 break;
             }
@@ -358,14 +358,13 @@ pub fn process_slot(
     epoch: &EpochView,
     longtail: &LongtailGroup,
     longtail_idx: Option<LongtailId>,
-    state_hash_scratch: &mut ssz_hash::StateHashScratch,
 ) {
     // Longtail resolved fresh each slot: a boundary `process_epoch` may roll
     // the fork a new entry mid-`process_slots` (the caller threads the
     // updated id). The epoch view comes from the caller (group resolution
     // before the first boundary, the held boundary writer's reader after).
     let rv = view.read(*epoch, longtail.view_opt(longtail_idx));
-    let prev_state_root = ssz_hash::hash_tree_root_state(&rv, state_hash_scratch);
+    let prev_state_root = ssz_hash::hash_tree_root_state(&rv);
     let bucket = (view.slot.state().slot % SLOTS_PER_HISTORICAL_ROOT as u64) as u32;
     view.state_roots.set(bucket, prev_state_root);
 
@@ -535,7 +534,7 @@ fn apply_block_body(
         process_execution_payload(&mut *view, cfg, payload, block_slot)?;
     }
 
-    process_randao(&mut view.slot, body);
+    process_randao(view, body, block_slot / SLOTS_PER_EPOCH);
     process_eth1_data(&mut view.slot, &mut view.eth1, body);
 
     if let Some(section) = offsets.proposer_slashings() {
@@ -688,15 +687,11 @@ pub fn collect_sigs_randao(
     sig_batch.push_one(proposer_pubkey, reveal, signing_root);
 }
 
-/// Pass 2 — XOR reveal hash into the mix accumulator. BLS already verified
-/// in pass 1; if it failed, we never reach here.
-fn process_randao(slot: &mut SlotStateWriteView, body: &[u8]) {
+/// Pass 2 — XOR the reveal's hash into the current epoch's mix. BLS already
+/// verified in pass 1; if it failed, we never reach here.
+fn process_randao(view: &mut StateWriterView, body: &[u8], block_epoch: Epoch) {
     let reveal: &[u8; 96] = body[0..96].try_into().unwrap();
-    let reveal_hash = merkle::sha256(reveal);
-    let mix = &mut slot.state_mut().randao_mix_current;
-    for (b, &r) in mix.iter_mut().zip(reveal_hash.iter()) {
-        *b ^= r;
-    }
+    view.randao_mixes.mix_in_reveal(block_epoch, &merkle::sha256(reveal));
 }
 
 fn process_eth1_data(slot: &mut SlotStateWriteView, eth1: &mut Eth1WriteView, body: &[u8]) {
