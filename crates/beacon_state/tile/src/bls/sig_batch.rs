@@ -13,6 +13,10 @@ use super::{
     aggregator::{PubkeyAggregator, pk_affine, sig_affine},
 };
 
+// N.B. batching is only safe where NBITS < 144-bit GLS threshold.
+const NBITS: usize = 64;
+const RAND_BYTES: usize = NBITS / 8;
+
 pub struct SigBatch {
     msgs: Vec<B256>,
     pks: Vec<PublicKey>,
@@ -51,7 +55,7 @@ impl SigBatch {
             msgs: Vec::with_capacity(SIG_BATCH_CAP),
             pks: Vec::with_capacity(SIG_BATCH_CAP),
             sigs: Vec::with_capacity(SIG_BATCH_CAP),
-            rand_bytes: Vec::with_capacity(SIG_BATCH_CAP * 8),
+            rand_bytes: Vec::with_capacity(SIG_BATCH_CAP * RAND_BYTES),
             order: Vec::with_capacity(SIG_BATCH_CAP),
             grouped_pks: Vec::with_capacity(SIG_BATCH_CAP),
             grouped_scalars: Vec::with_capacity(SIG_BATCH_CAP * 8),
@@ -209,20 +213,20 @@ impl SigBatch {
     fn verify_batch(&mut self) -> bool {
         let n = self.msgs.len();
 
-        self.rand_bytes.resize(n * 8, 0);
+        self.rand_bytes.resize(n * RAND_BYTES, 0);
         if SystemRandom::new().fill(&mut self.rand_bytes).is_err() {
             return false;
         }
         // Patch any all-zero chunk: a zero scalar would null this tuple's
         // contribution to the pairing sum, so the tuple wouldn't actually be
         // checked. Probability is ~n·2⁻⁶⁴ but the scan is free.
-        for c in self.rand_bytes.chunks_exact_mut(8) {
+        for c in self.rand_bytes.chunks_exact_mut(RAND_BYTES) {
             if c.iter().all(|&b| b == 0) {
                 c[0] = 1;
             }
         }
 
-        let sig_sum = self.sigs.mult(&self.rand_bytes, 64).to_signature();
+        let sig_sum = self.sigs.mult(&self.rand_bytes, NBITS).to_signature();
 
         let SigBatch {
             msgs, pks, rand_bytes, order, grouped_pks, grouped_scalars, pairing, ..
@@ -248,7 +252,7 @@ impl SigBatch {
             while end < n && msgs[order[end] as usize] == *msg {
                 end += 1;
             }
-            let pk_sum = grouped_pks[start..end].mult(&grouped_scalars[start * 8..end * 8], 64);
+            let pk_sum = grouped_pks[start..end].mult(&grouped_scalars[start * 8..end * 8], NBITS);
             pairing.raw_aggregate(&hash_to_g2_affine(msg), pk_affine(&pk_sum.to_public_key()));
             start = end;
         }
