@@ -264,6 +264,7 @@ impl BeaconStateTile {
         if accepted {
             self.on_accept(None, producers);
         }
+        self.drain_envelope_requests(producers);
     }
 
     /// EF `fork_choice` vector path only: production gossip reaches the same
