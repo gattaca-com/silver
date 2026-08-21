@@ -100,8 +100,19 @@ fn trimmed_utf8(value: &[u8]) -> Option<&str> {
 #[must_use]
 pub enum AfterResponse {
     Close,
+    /// Half-close, then read and discard until the peer stops: the response
+    /// was framed while inbound bytes this connection will never read were
+    /// still arriving, and dropping the socket with them unread costs the peer
+    /// the very response it was just sent.
+    Linger,
     ResponsePending,
     AwaitRequest,
+}
+
+enum Continuation {
+    KeepAlive,
+    Close,
+    Linger,
 }
 
 pub struct ServerConnection {
@@ -110,7 +121,7 @@ pub struct ServerConnection {
     read_end: usize,
     write_buf: Vec<u8>,
     write_pos: usize,
-    keep_alive: bool,
+    continuation: Continuation,
 }
 
 impl ServerConnection {
@@ -121,7 +132,7 @@ impl ServerConnection {
             read_end: 0,
             write_buf: Vec::with_capacity(WRITE_BUF_INIT),
             write_pos: 0,
-            keep_alive: true,
+            continuation: Continuation::KeepAlive,
         }
     }
 
@@ -150,14 +161,28 @@ impl ServerConnection {
 
     /// Framing is lost — either never established, or declared past what the
     /// read buffer holds so the body bytes are unreadable — and there is
-    /// nothing left to resynchronise on: answer, drop the whole buffer and let
-    /// the caller close once the answer has drained.
+    /// nothing left to resynchronise on: answer, drop the whole buffer and
+    /// linger, since whatever the peer is still sending would otherwise cost
+    /// it the answer.
     fn reject(&mut self, status: &str) -> bool {
-        self.keep_alive = false;
-        frame_response(&mut self.write_buf, status, None, b"");
+        self.continuation = Continuation::Linger;
+        frame_response_with_headers(
+            &mut self.write_buf,
+            status,
+            None,
+            &[("Connection", "close")],
+            b"",
+        );
         self.read_pos = 0;
         self.read_end = 0;
         true
+    }
+
+    /// Scratch for a lingering connection's drain: the bytes are read only to
+    /// be dropped, so the buffer is reused as it stands and never grows.
+    pub fn discard_space(&mut self) -> &mut [u8] {
+        debug_assert!(matches!(self.continuation, Continuation::Linger));
+        &mut self.read_buf
     }
 
     pub fn dispatch<F: Fn(&ParsedRequest<'_>, &mut Vec<u8>)>(&mut self, handler: &F) -> bool {
@@ -170,10 +195,11 @@ impl ServerConnection {
             };
         if req.version != 1 {
             tracing::warn!("rejecting HTTP/1.0 request");
-            self.keep_alive = false;
+            self.continuation = Continuation::Close;
             frame_response(&mut self.write_buf, "505 HTTP Version Not Supported", None, b"");
         } else {
-            self.keep_alive = req.keep_alive;
+            self.continuation =
+                if req.keep_alive { Continuation::KeepAlive } else { Continuation::Close };
             handler(&req, &mut self.write_buf);
         }
         self.read_pos += consumed;
@@ -198,22 +224,26 @@ impl ServerConnection {
         handler: &F,
     ) -> AfterResponse {
         debug_assert!(self.write_pos == self.write_buf.len());
-        if !self.keep_alive {
-            return AfterResponse::Close;
-        }
-        self.write_buf.clear();
-        // A keep-alive connection lives for the idle timeout, refreshed by
-        // every request, so retaining the largest body it ever framed would
-        // pin that much per connection for as long as a client keeps polling.
-        self.write_buf.shrink_to(WRITE_BUF_INIT);
-        self.write_pos = 0;
-        // A request pipelined behind the one just answered is already in
-        // read_buf — the transport will never feed those bytes again, so it
-        // must be dispatched here or it never will be.
-        if self.dispatch(handler) {
-            AfterResponse::ResponsePending
-        } else {
-            AfterResponse::AwaitRequest
+        match self.continuation {
+            Continuation::Close => AfterResponse::Close,
+            Continuation::Linger => AfterResponse::Linger,
+            Continuation::KeepAlive => {
+                self.write_buf.clear();
+                // A keep-alive connection lives for the idle timeout, refreshed
+                // by every request, so retaining the largest body it ever framed
+                // would pin that much per connection for as long as a client
+                // keeps polling.
+                self.write_buf.shrink_to(WRITE_BUF_INIT);
+                self.write_pos = 0;
+                // A request pipelined behind the one just answered is already in
+                // read_buf — the transport will never feed those bytes again, so
+                // it must be dispatched here or it never will be.
+                if self.dispatch(handler) {
+                    AfterResponse::ResponsePending
+                } else {
+                    AfterResponse::AwaitRequest
+                }
+            }
         }
     }
 }
@@ -324,7 +354,7 @@ mod tests {
             .into_bytes()
     }
 
-    fn reject_and_close(request: &[u8], status: &str) {
+    fn reject_and_linger(request: &[u8], status: &str) -> ServerConnection {
         let mut conn = ServerConnection::new();
         feed(&mut conn, request);
 
@@ -333,11 +363,13 @@ mod tests {
         }));
         assert_eq!(
             conn.pending_write(),
-            format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\n\r\n").as_bytes()
+            format!("HTTP/1.1 {status}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
+                .as_bytes()
         );
 
         drain(&mut conn);
-        assert_eq!(conn.after_response(&echo_path), AfterResponse::Close);
+        assert_eq!(conn.after_response(&echo_path), AfterResponse::Linger);
+        conn
     }
 
     #[test]
@@ -478,26 +510,26 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_unparseable_request_line_writes_400_then_closes() {
-        reject_and_close(b"NOT A VALID REQUEST\r\n\r\n", "400 Bad Request");
+    fn dispatch_unparseable_request_line_writes_400_then_lingers() {
+        reject_and_linger(b"NOT A VALID REQUEST\r\n\r\n", "400 Bad Request");
     }
 
     #[test]
-    fn dispatch_more_headers_than_fit_writes_400_then_closes() {
-        reject_and_close(&overlong_header_req(), "400 Bad Request");
+    fn dispatch_more_headers_than_fit_writes_400_then_lingers() {
+        reject_and_linger(&overlong_header_req(), "400 Bad Request");
     }
 
     #[test]
-    fn dispatch_invalid_content_length_writes_400_then_closes() {
-        reject_and_close(
+    fn dispatch_invalid_content_length_writes_400_then_lingers() {
+        reject_and_linger(
             b"POST /foo HTTP/1.1\r\nHost: x\r\nContent-Length: abc\r\n\r\n",
             "400 Bad Request",
         );
     }
 
     #[test]
-    fn dispatch_content_length_beyond_usize_writes_400_then_closes() {
-        reject_and_close(
+    fn dispatch_content_length_beyond_usize_writes_400_then_lingers() {
+        reject_and_linger(
             b"POST /foo HTTP/1.1\r\nHost: x\r\nContent-Length: 99999999999999999999\r\n\r\n",
             "400 Bad Request",
         );
@@ -507,10 +539,26 @@ mod tests {
     /// size up front, so the headers alone are enough to answer: the body
     /// bytes that would not fit never have to arrive.
     #[test]
-    fn dispatch_content_length_past_the_read_cap_writes_413_then_closes() {
+    fn dispatch_content_length_past_the_read_cap_writes_413_then_lingers() {
         for declared in [READ_BUF_MAX, READ_BUF_MAX + 1, usize::MAX - 1024] {
-            reject_and_close(&oversized_post(declared), "413 Payload Too Large");
+            reject_and_linger(&oversized_post(declared), "413 Payload Too Large");
         }
+    }
+
+    /// The body the client is still sending is read for one reason only — to
+    /// keep the answer from being lost — so it must cost nothing to read.
+    #[test]
+    fn a_lingering_connection_discards_without_growing() {
+        let mut conn = reject_and_linger(&oversized_post(READ_BUF_MAX), "413 Payload Too Large");
+        let scratch = conn.read_buf.len();
+
+        for round in 0..64 {
+            let space = conn.discard_space();
+            assert_eq!(space.len(), scratch, "round {round} grew the scratch buffer");
+            space.fill(b'b');
+        }
+        assert!(conn.pending_write().is_empty(), "the answer stays sent, not re-framed");
+        assert_eq!(conn.after_response(&echo_path), AfterResponse::Linger, "nothing leaves Linger");
     }
 
     #[test]
@@ -549,10 +597,13 @@ mod tests {
         assert_eq!(drain(&mut conn), b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\n/first");
 
         assert_eq!(conn.after_response(&echo_path), AfterResponse::ResponsePending);
-        assert_eq!(conn.pending_write(), b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n");
+        assert_eq!(
+            conn.pending_write(),
+            b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+        );
 
         drain(&mut conn);
-        assert_eq!(conn.after_response(&echo_path), AfterResponse::Close);
+        assert_eq!(conn.after_response(&echo_path), AfterResponse::Linger);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use std::{
     io::{self, Read, Write},
-    net::SocketAddr,
+    net::{Shutdown, SocketAddr},
     path::{Path, PathBuf},
 };
 
@@ -134,6 +134,15 @@ impl Stream {
                 Some(e) => Err(e),
                 None => Ok(()),
             },
+        }
+    }
+
+    /// Ends this side's stream while leaving the peer's readable: everything
+    /// written so far is delivered, terminated by the peer's end-of-file.
+    pub fn shutdown_write(&self) -> io::Result<()> {
+        match self {
+            Self::Tcp(s) => s.shutdown(Shutdown::Write),
+            Self::Uds(s) => s.shutdown(Shutdown::Write),
         }
     }
 }
@@ -283,6 +292,29 @@ mod tests {
                 Err(e) => panic!("read: {e}"),
             }
         }
+    }
+
+    /// Unix sockets carry the half-close the linger path needs: the peer reads
+    /// what was written before it and then sees end-of-file, so the answer
+    /// survives a shutdown taken while the peer is still sending.
+    #[test]
+    fn uds_shutdown_write_delivers_the_answer_then_eof() {
+        let (mut client, server_half) = UnixStream::pair().unwrap();
+        let mut server = Stream::Uds(server_half);
+
+        server.write_all(b"HTTP/1.1 413 Payload Too Large\r\n\r\n").unwrap();
+        server.shutdown_write().unwrap();
+
+        let mut answer = vec![0u8; 64];
+        let n = blocking_read(&mut client, &mut answer);
+        assert_eq!(&answer[..n], b"HTTP/1.1 413 Payload Too Large\r\n\r\n");
+        assert_eq!(blocking_read(&mut client, &mut answer), 0, "the half-close reads as eof");
+
+        assert_eq!(
+            server.read(&mut answer).unwrap_err().kind(),
+            io::ErrorKind::WouldBlock,
+            "the read half outlives the write half"
+        );
     }
 
     fn blocking_read(stream: &mut UnixStream, buf: &mut [u8]) -> usize {

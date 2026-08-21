@@ -17,10 +17,54 @@ use crate::{
 
 const MAX_SWEEP_INTERVAL: Duration = Duration::from_secs(1);
 
+/// nginx's `lingering_close` caps: how long a connection that has already
+/// answered may wait between the peer's bytes, and how long the whole drain
+/// may run before the slot is taken back.
+struct Linger {
+    idle: Duration,
+    total: Duration,
+}
+
+impl Default for Linger {
+    fn default() -> Self {
+        Self { idle: Duration::from_secs(5), total: Duration::from_secs(30) }
+    }
+}
+
 struct Connection {
     stream: Stream,
     http: ServerConnection,
     last_activity: Instant,
+    linger_since: Option<Instant>,
+}
+
+impl Connection {
+    /// Reads what the peer is still sending only to drop it: nothing on this
+    /// connection will be parsed again, and the reading is what keeps the
+    /// answer already written from dying with the socket.
+    fn drain_discarded(&mut self, now: Instant) -> io::Result<bool> {
+        loop {
+            match self.stream.read(self.http.discard_space()) {
+                Ok(0) => return Ok(true),
+                Ok(_) => self.last_activity = now,
+                Err(e) if would_block(&e) => return Ok(false),
+                Err(e) if interrupted(&e) => continue,
+                // However the peer ended it, the connection is over.
+                Err(_) => return Ok(true),
+            }
+        }
+    }
+
+    /// A lingering connection has answered already, so it lives by the linger
+    /// caps rather than by the idle deadline that holds a served connection
+    /// open for its client's next request.
+    fn expired(&self, now: Instant, idle_timeout: Duration, linger: &Linger) -> bool {
+        let quiet_for = now.duration_since(self.last_activity);
+        match self.linger_since {
+            Some(since) => quiet_for > linger.idle || now.duration_since(since) > linger.total,
+            None => quiet_for > idle_timeout,
+        }
+    }
 }
 
 /// Schedules the idle scan so that `pump` walks the connection map at most
@@ -52,6 +96,7 @@ pub struct BeaconApi {
     listeners: Vec<Listener>,
     max_connections: usize,
     idle: IdleSweep,
+    linger: Linger,
     current_token: Token,
     connections: HashMap<Token, Connection>,
     router: Router,
@@ -88,6 +133,7 @@ impl BeaconApi {
             events: Events::with_capacity(1024),
             max_connections,
             idle: IdleSweep::new(idle_timeout),
+            linger: Linger::default(),
             current_token: Token(listeners.len()),
             listeners,
             connections: HashMap::new(),
@@ -139,6 +185,7 @@ impl BeaconApi {
                         stream,
                         http: ServerConnection::new(),
                         last_activity: now,
+                        linger_since: None,
                     });
                 },
                 None => {
@@ -165,21 +212,29 @@ impl BeaconApi {
         }
 
         if self.idle.due(now) {
-            did_work |= self.close_idle(now);
+            did_work |= self.close_expired(now);
         }
 
         did_work
     }
 
-    fn close_idle(&mut self, now: Instant) -> bool {
-        let Self { connections, poll, idle, .. } = self;
+    fn close_expired(&mut self, now: Instant) -> bool {
+        let Self { connections, poll, idle, linger, .. } = self;
         let before = connections.len();
         connections.retain(|_, conn| {
-            let idle_for = now.duration_since(conn.last_activity);
-            if idle_for <= idle.timeout {
+            if !conn.expired(now, idle.timeout, linger) {
                 return true;
             }
-            tracing::warn!("beacon api connection idle for {idle_for:?}, closing");
+            match conn.linger_since {
+                Some(since) => tracing::warn!(
+                    "beacon api connection still sending {:?} after its answer, closing",
+                    now.duration_since(since)
+                ),
+                None => tracing::warn!(
+                    "beacon api connection idle for {:?}, closing",
+                    now.duration_since(conn.last_activity)
+                ),
+            }
             let _ = poll.registry().deregister(&mut conn.stream);
             false
         });
@@ -194,6 +249,10 @@ fn handle_event<F: Fn(&ParsedRequest<'_>, &mut Vec<u8>)>(
     now: Instant,
     request_handler: &F,
 ) -> io::Result<bool> {
+    if conn.linger_since.is_some() {
+        return conn.drain_discarded(now);
+    }
+
     if event.is_readable() {
         // A full buffer is not yet a verdict: a body declared past the cap is
         // answered from headers already buffered. Exhaustion ends the
@@ -248,6 +307,16 @@ fn handle_event<F: Fn(&ParsedRequest<'_>, &mut Vec<u8>)>(
             }
             match conn.http.after_response(request_handler) {
                 AfterResponse::Close => return Ok(true),
+                AfterResponse::Linger => {
+                    // The FIN tells the peer its answer is whole while the
+                    // socket stays readable, so a body still on its way is
+                    // drained instead of resetting the connection that
+                    // carried the answer.
+                    conn.stream.shutdown_write()?;
+                    conn.linger_since = Some(now);
+                    registry.reregister(&mut conn.stream, event.token(), Interest::READABLE)?;
+                    return conn.drain_discarded(now);
+                }
                 AfterResponse::ResponsePending => {
                     registry.reregister(&mut conn.stream, event.token(), Interest::WRITABLE)?
                 }
@@ -396,7 +465,7 @@ mod tests {
         assert!(text.contains("\"peer_id\""), "identity body missing: {text}");
     }
 
-    fn read_to_eof(mut stream: TcpStream) -> Vec<u8> {
+    fn read_to_eof(mut stream: impl Read) -> Vec<u8> {
         let mut received = Vec::new();
         let mut chunk = [0u8; 1024];
         loop {
@@ -406,6 +475,38 @@ mod tests {
                 Err(e) => panic!("client read: {e}"),
             }
         }
+    }
+
+    const PAYLOAD_TOO_LARGE: &[u8] =
+        b"HTTP/1.1 413 Payload Too Large\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
+
+    /// go-eth2-client and Prysm post a whole validator set unchunked, so the
+    /// declared length is on the wire long before the body is.
+    fn declare_oversized_body(stream: &mut impl Write) {
+        write!(
+            stream,
+            "POST /eth/v1/validator/register_validator HTTP/1.1\r\nHost: x\r\n\
+             Content-Length: {}\r\n\r\n",
+            64 << 20
+        )
+        .unwrap();
+    }
+
+    /// Keeps the body coming after the answer must already have been framed,
+    /// slowly enough that the server is answering mid-stream rather than after
+    /// the last byte. Every write and the final read has to succeed: a peer
+    /// that hangs up on the unread body breaks the send long before the answer
+    /// can be read back.
+    fn stream_body_past_the_answer(mut stream: impl Read + Write) -> io::Result<Vec<u8>> {
+        declare_oversized_body(&mut stream);
+        let chunk = vec![b'b'; 64 << 10];
+        for _ in 0..64 {
+            stream.write_all(&chunk)?;
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let mut answer = Vec::new();
+        stream.read_to_end(&mut answer)?;
+        Ok(answer)
     }
 
     #[test]
@@ -605,9 +706,8 @@ mod tests {
         assert!(api.connections.is_empty(), "reaped connection must leave the map");
     }
 
-    /// go-eth2-client and Prysm post a whole validator set unchunked, so an
-    /// operator large enough to declare more body than the read buffer holds
-    /// gets a status back rather than a connection that goes quiet.
+    /// An operator large enough to declare more body than the read buffer
+    /// holds gets a status back rather than a connection that goes quiet.
     #[test]
     fn a_body_declared_past_the_read_cap_is_answered_with_413() {
         let mut api = api_with(64, LONG_TIMEOUT);
@@ -617,24 +717,131 @@ mod tests {
             &mut api,
             std::thread::spawn(move || {
                 let mut stream = connect(addr);
-                write!(
-                    stream,
-                    "POST /eth/v1/validator/register_validator HTTP/1.1\r\nHost: x\r\n\
-                     Content-Length: {}\r\n\r\n",
-                    64 << 20
-                )
-                .unwrap();
+                declare_oversized_body(&mut stream);
                 read_to_eof(stream)
             }),
-            "oversized declaration answered",
+            "oversized declaration accepted",
         );
 
-        assert!(
-            received.starts_with(b"HTTP/1.1 413 Payload Too Large\r\n"),
-            "unexpected response: {}",
-            String::from_utf8_lossy(&received)
+        assert_eq!(received, PAYLOAD_TOO_LARGE, "{}", String::from_utf8_lossy(&received));
+        pump_until(&mut api, "answered connection closed on the peer's own close", |api| {
+            api.connections.is_empty()
+        });
+    }
+
+    /// The reason the answer outlives the request: a client still pushing a
+    /// body the server has already refused must be left to finish and read the
+    /// whole status. A connection broken under it is a transport error to its
+    /// caller and costs the node its place in the rotation, where a 413 costs
+    /// nothing.
+    #[test]
+    fn a_client_still_streaming_when_the_413_is_framed_reads_all_of_it() {
+        let mut api = api_with(64, LONG_TIMEOUT);
+        let addr = tcp_addr(&api);
+
+        let received = serve(
+            &mut api,
+            std::thread::spawn(move || stream_body_past_the_answer(connect(addr))),
+            "413 delivered to a client still sending",
         );
-        assert!(api.connections.is_empty(), "the answered connection must close");
+
+        assert_answer_survived(received);
+        pump_until(&mut api, "lingering connection closed once the peer went away", |api| {
+            api.connections.is_empty()
+        });
+    }
+
+    /// Unix sockets take the same half-close, so the drain ends on the peer's
+    /// own close there too rather than running to the linger cap.
+    #[test]
+    fn a_client_still_streaming_over_uds_reads_all_of_the_413() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("api.sock");
+        let mut api = api_bound_to(&[Bind::Unix(socket.clone())], 64, LONG_TIMEOUT);
+
+        let received = serve(
+            &mut api,
+            std::thread::spawn(move || stream_body_past_the_answer(connect_uds(&socket))),
+            "413 delivered over uds to a client still sending",
+        );
+
+        assert_answer_survived(received);
+        pump_until(&mut api, "lingering uds connection closed once the peer went away", |api| {
+            api.connections.is_empty()
+        });
+    }
+
+    fn assert_answer_survived(received: io::Result<Vec<u8>>) {
+        match received {
+            Ok(answer) => {
+                assert_eq!(answer, PAYLOAD_TOO_LARGE, "{}", String::from_utf8_lossy(&answer))
+            }
+            Err(e) => panic!("the client's connection did not survive its answer: {e}"),
+        }
+    }
+
+    /// Draining an answered connection is bounded: one client cannot hold a
+    /// slot for as long as it cares to keep sending.
+    #[test]
+    fn a_client_that_never_stops_sending_is_dropped_at_the_linger_cap() {
+        let mut api = api_with(64, Duration::from_millis(800));
+        // A peer that never pauses keeps the wait between reads at zero, so the
+        // total cap is the only one that can end it.
+        api.linger = Linger { idle: Duration::from_millis(400), total: Duration::from_millis(200) };
+        let addr = tcp_addr(&api);
+
+        let flooding = std::thread::spawn(move || {
+            let mut stream = connect(addr);
+            declare_oversized_body(&mut stream);
+            let chunk = vec![b'b'; 64 << 10];
+            let deadline = Instant::now() + Duration::from_secs(9);
+            while Instant::now() < deadline {
+                if stream.write_all(&chunk).is_err() {
+                    return true;
+                }
+            }
+            false
+        });
+
+        let midway = Instant::now() + Duration::from_millis(100);
+        pump_until(&mut api, "server pumped past the answer", |_| Instant::now() >= midway);
+        assert_eq!(api.connections.len(), 1, "the answered connection must drain, not close");
+
+        pump_until(&mut api, "flooding client dropped at the linger cap", |api| {
+            api.connections.is_empty()
+        });
+        assert!(flooding.join().unwrap(), "the server must be the one to end it");
+    }
+
+    /// A peer that neither sends nor closes after its answer holds a slot for
+    /// the wait between reads, not for the whole draining window — and not for
+    /// the far longer deadline that keeps a served connection available.
+    #[test]
+    fn a_lingering_connection_that_goes_quiet_is_dropped_at_the_idle_cap() {
+        let idle_timeout = Duration::from_secs(2);
+        let mut api = api_with(64, idle_timeout);
+        api.linger = Linger { idle: Duration::from_millis(100), total: Duration::from_secs(30) };
+        let addr = tcp_addr(&api);
+
+        let (release, on_release) = std::sync::mpsc::channel::<()>();
+        let holding = std::thread::spawn(move || {
+            let mut stream = connect(addr);
+            declare_oversized_body(&mut stream);
+            let answer = read_to_eof(&mut stream);
+            let _ = on_release.recv();
+            answer
+        });
+
+        pump_until(&mut api, "oversized declaration accepted", |api| api.connections.len() == 1);
+        let answered = Instant::now();
+        pump_until(&mut api, "quiet lingering connection dropped at the idle cap", |api| {
+            api.connections.is_empty()
+        });
+        let held_for = answered.elapsed();
+        assert!(held_for < idle_timeout / 2, "held for {held_for:?}, as if it were still serving");
+
+        release.send(()).unwrap();
+        assert_eq!(holding.join().unwrap(), PAYLOAD_TOO_LARGE);
     }
 
     #[test]
