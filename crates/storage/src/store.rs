@@ -689,10 +689,7 @@ impl Store {
                 with_root_request(
                     rpc_consumer,
                     read,
-                    |buf| {
-                        tracing::info!("BeaconBlocksByRoot len {}", buf.len());
-                        BeaconBlocksByRootRequestView::check_size(buf)
-                    },
+                    BeaconBlocksByRootRequestView::check_size,
                     |buf| {
                         let count = BeaconBlocksByRootRequestView::count(buf);
 
@@ -704,22 +701,12 @@ impl Store {
                             // canonicity: unfinalized fork tree first, then the
                             // finalized flat store.
                             if let Some((slot, parent_root)) = self.unfinalized.get(root) {
-                                tracing::info!(
-                                    block_root = hex::encode(root),
-                                    slot,
-                                    "serve unfinalized block"
-                                );
                                 units.push_back(QueryUnit::UnfinalizedBlock {
                                     slot,
                                     parent_root,
                                     block_root: *root,
                                 });
                             } else if let Some(&slot) = self.root_index.get(root) {
-                                tracing::info!(
-                                    block_root = hex::encode(root),
-                                    slot,
-                                    "serve finalized block"
-                                );
                                 units.push_back(QueryUnit::Block { slot });
                             } else {
                                 tracing::warn!(
