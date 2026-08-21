@@ -33,13 +33,13 @@ pub struct SilverSpine {
     pub tile_info: ShmemData<TileInfo>,
 
     /// New incoming network gossip messages
-    #[queue(size(2usize.pow(16)))]
+    #[queue(size(2usize.pow(24)))]
     pub gossip_in: SpineQueue<GossipMsgIn>,
     /// New incoming gossip messages
-    #[queue(size(2usize.pow(16)))]
+    #[queue(size(2usize.pow(20)))]
     pub new_gossip: SpineQueue<NewGossipMsg>,
     /// P2p send messages.
-    #[queue(size(2usize.pow(16)))]
+    #[queue(size(2usize.pow(24)))]
     pub p2p_send: SpineQueue<P2pSend>,
     /// RPC recv messages.
     #[queue(size(2usize.pow(14)))]
