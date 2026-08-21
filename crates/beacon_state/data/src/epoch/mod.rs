@@ -1,5 +1,6 @@
 mod delta;
 mod finalized;
+mod ptc_window;
 #[cfg(test)]
 mod tests;
 
@@ -7,10 +8,11 @@ pub(crate) use delta::EpochStateDelta;
 pub use delta::{EpochView, EpochWriteView};
 pub use finalized::EpochStateFinalized;
 use flux_profiler::timed;
+pub use ptc_window::PtcWindow;
 
 use crate::{
-    reanchor::reanchor_survivors,
-    ring::{Id, Reset, Ring, RingGroup},
+    reanchor::finalize_full_copies,
+    ring::{Id, Ring, RingGroup},
     types::EPOCHS_RING_N,
 };
 
@@ -60,15 +62,13 @@ impl EpochGroup {
     #[inline]
     pub fn roll_fresh(&mut self) -> EpochWriteView<'_> {
         let Self { finalized, deltas } = self;
-        let mut wv = EpochWriteView::new(finalized, deltas.roll_fresh());
-        wv.seed_from_base();
-        wv
+        EpochWriteView::fresh(finalized, deltas.roll_fresh())
     }
 
     #[inline]
     pub fn roll_from(&mut self, parent: EpochId) -> EpochWriteView<'_> {
         let Self { finalized, deltas } = self;
-        EpochWriteView::new(finalized, deltas.roll_from(parent))
+        EpochWriteView::derived(finalized, deltas.roll_from(parent))
     }
 
     #[inline]
@@ -79,38 +79,9 @@ impl EpochGroup {
         }
     }
 
-    /// Copy a survivor into a fresh slot and drop the promoted log prefix
-    /// (pre-promotion). The survivor stays frozen — append-only.
-    fn reanchor(&mut self, survivor: EpochId, winner: EpochId) -> EpochWriteView<'_> {
-        let Self { finalized, deltas } = self;
-        let (mut fork, old, winner_delta) = deltas.roll_fresh_deriving(survivor, winner);
-        fork.reset_from(old);
-        fork.prune_to_base(winner_delta);
-        EpochWriteView::new(finalized, fork)
-    }
-
-    /// Re-anchor each survivor against the promoted `winner` into fresh slots
-    /// (deduped), then promote the winner into the finalized state
-    /// (circular-buffer write at `old_fin_epoch`). Mirrors
-    /// [`SlotStateGroup::finalize`](crate:: SlotStateGroup), with the extra
-    /// `old_fin_epoch` offset the epoch circular buffers need.
     #[timed]
-    pub fn finalize(
-        &mut self,
-        winner: EpochId,
-        survivors: &[EpochId],
-        old_fin_epoch: usize,
-    ) -> Vec<EpochId> {
-        debug_assert!(survivors.contains(&winner), "winner must be among the survivors");
-        self.deltas.free_outdated(survivors);
-
-        let fresh = reanchor_survivors(survivors, |s| self.reanchor(s, winner).commit());
-
+    pub fn finalize(&mut self, winner: EpochId, survivors: &[EpochId]) -> Vec<EpochId> {
         let Self { finalized, deltas } = self;
-        finalized.promote(deltas.get(winner), old_fin_epoch);
-
-        deltas.free_outdated(&fresh);
-
-        fresh
+        finalize_full_copies(deltas, winner, survivors, |w| finalized.promote(w))
     }
 }

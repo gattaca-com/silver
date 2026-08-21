@@ -25,7 +25,6 @@ pub fn collect_sigs_sync_aggregate(
     sig_batch: &mut SigBatch,
 ) {
     let imm = view.imm;
-    let slot = &view.slot;
     let validators = &view.validators;
     let longtail = &view.longtail;
     if sync_agg.len() < BLOCK_SYNC_AGGREGATE_SIZE {
@@ -37,13 +36,13 @@ pub fn collect_sigs_sync_aggregate(
     let sig = SyncAggregateView::sync_committee_signature(sync_agg_fixed);
 
     let previous_slot = block_slot.saturating_sub(1);
-    let previous_block_root = slot.block_root_at_slot(previous_slot);
+    let previous_block_root = view.block_roots.at_slot(previous_slot);
     let previous_epoch = previous_slot / SLOTS_PER_EPOCH;
     let fork_version = view.epoch.fork_version_at(previous_epoch);
 
     active_scratch.clear();
     let count = validators.count();
-    let sync_indices = longtail.state().sync_committee_indices;
+    let sync_indices = *longtail.sync_committees().indices();
     for (i, &vi) in sync_indices.iter().enumerate() {
         let byte_idx = i / 8;
         let bit_idx = i % 8;
@@ -108,7 +107,7 @@ pub fn process_sync_aggregate(
     let proposer_reward_per =
         participant_reward * PROPOSER_WEIGHT / (WEIGHT_DENOMINATOR - PROPOSER_WEIGHT);
 
-    let sync_indices: [u32; SYNC_COMMITTEE_SIZE] = longtail.state().sync_committee_indices;
+    let sync_indices: [u32; SYNC_COMMITTEE_SIZE] = *longtail.sync_committees().indices();
 
     let mut proposer_reward_sum = 0u64;
     #[allow(clippy::needless_range_loop)]

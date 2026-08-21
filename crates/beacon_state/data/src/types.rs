@@ -1,11 +1,13 @@
 use crate::{
-    BalancesId, BuildersId, CurrentParticipationId, DecomposeError, EpochId, Eth1Id, InactivityId,
-    LongtailId, PendingId, PreviousParticipationId, SlashingsId, SlotStateId, ValidatorsId,
+    BalancesId, BlockRootsId, BuildersId, CurrentParticipationId, DecomposeError, EpochId, Eth1Id,
+    InactivityId, LongtailId, PendingId, PreviousParticipationId, RandaoMixesId, SlashingsId,
+    SlotStateId, StateRootsId, ValidatorsId,
     decompose::common::{b256, u32_le, u64_le},
     gloas::{
         BUILDER_PENDING_PAYMENTS_LEN, BuilderPendingPayment, EXECUTION_PAYLOAD_AVAILABILITY_BYTES,
         ExecutionPayloadBid, GLOAS_FORK_VERSION, Withdrawal,
     },
+    merkle::{MerkleStack, hash_concat, hash_fixed_bytes, hash_vector, merkleize, uint64_chunk},
 };
 
 const EPH_FIXED_PART: usize = 584;
@@ -85,6 +87,9 @@ pub struct StateId {
     pub current_participation_idx: CurrentParticipationId,
     pub inactivity_idx: InactivityId,
     pub slashings_idx: SlashingsId,
+    pub block_roots_idx: BlockRootsId,
+    pub state_roots_idx: StateRootsId,
+    pub randao_mixes_idx: RandaoMixesId,
     pub slot_idx: SlotStateId,
     /// Empty until the Gloas fork.
     pub builders_idx: BuildersId,
@@ -94,7 +99,6 @@ pub struct StateId {
 // ([`crate::Eth1Group`]).
 #[derive(Clone)]
 pub struct SlotState {
-    pub randao_mix_current: B256,
     pub eth1_data: Eth1Data,
     pub eth1_deposit_index: u64,
     pub slot: Slot,
@@ -120,7 +124,6 @@ pub struct SlotState {
 impl Default for SlotState {
     fn default() -> Self {
         Self {
-            randao_mix_current: B256::default(),
             eth1_data: Eth1Data::default(),
             eth1_deposit_index: 0,
             slot: 0,
@@ -226,6 +229,11 @@ pub struct Eth1Data {
 impl Eth1Data {
     pub(crate) fn from_ssz(s: &[u8]) -> Self {
         Self { deposit_root: b256(s, 0), deposit_count: u64_le(s, 32), block_hash: b256(s, 40) }
+    }
+
+    #[inline]
+    pub fn leaf(&self) -> B256 {
+        merkleize(&[self.deposit_root, uint64_chunk(self.deposit_count), self.block_hash])
     }
 }
 
@@ -370,11 +378,28 @@ pub struct HistoricalSummary {
     pub state_summary_root: B256,
 }
 
+impl HistoricalSummary {
+    #[inline]
+    pub fn leaf(&self) -> B256 {
+        hash_concat(&self.block_summary_root, &self.state_summary_root)
+    }
+}
+
 // size: ~24 KB (48 B × 512 + 48 B)
 #[derive(Clone, Copy)]
 pub struct SyncCommittee {
     pub pubkeys: [BLSPubkey; SYNC_COMMITTEE_SIZE],
     pub aggregate_pubkey: BLSPubkey,
+}
+
+impl SyncCommittee {
+    pub fn hash_root(&self) -> B256 {
+        let pubkeys_root = hash_vector(
+            MerkleStack::new(SYNC_COMMITTEE_SIZE),
+            self.pubkeys.iter().map(|pk| hash_fixed_bytes(pk)),
+        );
+        hash_concat(&pubkeys_root, &hash_fixed_bytes(&self.aggregate_pubkey))
+    }
 }
 
 impl Default for SyncCommittee {

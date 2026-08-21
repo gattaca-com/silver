@@ -46,13 +46,13 @@ impl Eth1Group {
     #[inline]
     pub fn roll_fresh(&mut self) -> Eth1WriteView<'_> {
         let Self { finalized, deltas } = self;
-        Eth1WriteView::new(finalized, deltas.roll_fresh())
+        Eth1WriteView::fresh(finalized, deltas.roll_fresh())
     }
 
     #[inline]
     pub fn roll_from(&mut self, parent: Eth1Id) -> Eth1WriteView<'_> {
         let Self { finalized, deltas } = self;
-        Eth1WriteView::new(finalized, deltas.roll_from(parent))
+        Eth1WriteView::derived(finalized, deltas.roll_from(parent))
     }
 
     /// Copy a survivor into a fresh slot and re-base it against the promoted
@@ -62,7 +62,7 @@ impl Eth1Group {
         let (mut fork, old, winner_delta) = deltas.roll_fresh_deriving(survivor, winner);
         fork.reset_from(old);
         fork.rebase(winner_delta);
-        Eth1WriteView::new(finalized, fork)
+        Eth1WriteView::derived(finalized, fork)
     }
 
     /// Re-anchor each survivor against the promoted `winner` into fresh slots

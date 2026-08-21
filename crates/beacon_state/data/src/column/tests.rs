@@ -1,14 +1,21 @@
-use super::{BalancesGroup, BalancesWriteView, ColumnGroup, ColumnSpec};
+use super::{
+    BalancesGroup, BalancesWriteView, BlockRootsGroup, BlockRootsId, ColumnGroup, ColumnSpec,
+    RandaoMixesGroup,
+};
 use crate::{
-    merkle::{MerkleStack, hash_uint64_list, hash_uint64_vector},
-    types::{HashFormat, VALIDATOR_REGISTRY_LIMIT},
+    merkle::{MerkleStack, hash_b256_vector, hash_uint64_list, hash_uint64_vector},
+    types::{
+        B256, EPOCHS_PER_HISTORICAL_VECTOR, HashFormat, SLOTS_PER_HISTORICAL_ROOT,
+        VALIDATOR_REGISTRY_LIMIT,
+    },
 };
 
-/// `Vector[uint64, 8192]` — `slashings`' shape, the one track-A pilot, so the
-/// vector root path has a caller before a production column sets `IS_LIST`.
+/// `Vector[uint64, 8192]` — covers the vector root path (fixed depth, no
+/// length mix-in) independently of the production columns.
 struct U64Vector;
 impl ColumnSpec for U64Vector {
     type Val = u64;
+    type Page = [B256; 32];
     const SSZ_LIMIT: usize = 8192;
     const IS_LIST: bool = false;
 }
@@ -214,8 +221,6 @@ fn new_rejects_len_mismatch() {
     assert!(BalancesGroup::new(4, 2, &[0u8; 12], HashFormat::Fixed).is_err());
 }
 
-// ---- hash tree ----
-
 #[test]
 fn root_matches_reference_across_counts() {
     // Empty, partial trailing chunk, exact multiple of 4, and beyond.
@@ -401,4 +406,150 @@ fn vector_root_pads_an_under_materialized_tree() {
     let mut full = values.clone();
     full.resize(U64Vector::SSZ_LIMIT, 0);
     assert_eq!(wv.hash_root(), hash_uint64_vector(&full));
+}
+
+/// The `block_roots` ring is `Vector[Root, 8192]`: its root carries no length
+/// mix-in, and `at_slot` wraps at the ring's own length.
+#[test]
+fn block_roots_ring_wraps_and_hashes_as_a_vector() {
+    let mut g = BlockRootsGroup::zeroed_vector();
+    let mut wv = g.roll_fresh();
+
+    let tag = |slot: u64| {
+        let mut r = [0u8; 32];
+        r[..8].copy_from_slice(&slot.to_le_bytes());
+        r
+    };
+    let wrapped = SLOTS_PER_HISTORICAL_ROOT as u64 + 3;
+    wv.set(7, tag(7));
+    wv.set((wrapped % SLOTS_PER_HISTORICAL_ROOT as u64) as u32, tag(wrapped));
+
+    assert_eq!(wv.at_slot(7), tag(7));
+    assert_eq!(wv.at_slot(wrapped), tag(wrapped));
+    assert_eq!(wv.at_slot(3), tag(wrapped), "slot 3's bucket was overwritten by the wrap");
+
+    let mut expected = vec![[0u8; 32]; SLOTS_PER_HISTORICAL_ROOT];
+    expected[7] = tag(7);
+    expected[3] = tag(wrapped);
+    assert_eq!(wv.hash_root(), hash_b256_vector(&expected));
+}
+
+/// `contains` walks back from `from_slot`, so it sees every written bucket but
+/// nothing written above the slot it is asked about.
+#[test]
+fn block_roots_contains_scans_back_from_the_given_slot() {
+    let mut g = BlockRootsGroup::zeroed_vector();
+    let id = {
+        let mut wv = g.roll_fresh();
+        wv.set(100, [0xAA; 32]);
+        wv.set(101, [0xBB; 32]);
+        wv.commit()
+    };
+    let reader = g.view(id);
+
+    assert!(reader.contains(&[0xAA; 32], 101));
+    assert!(reader.contains(&[0xBB; 32], 101));
+    assert!(!reader.contains(&[0xCC; 32], 101));
+}
+
+/// Slot the ring fixtures leave their state at: high enough that
+/// `slot % SLOTS_PER_HISTORICAL_ROOT` is a wrapped index rather than the slot.
+const RECORDED_STATE_SLOT: u64 = SLOTS_PER_HISTORICAL_ROOT as u64 + 500;
+
+fn root_of(slot: u64) -> B256 {
+    let mut root = [0xA0; 32];
+    root[24..].copy_from_slice(&slot.to_be_bytes());
+    root
+}
+
+/// A ring filled the way `process_slot` fills it: every slot below
+/// `RECORDED_STATE_SLOT` records the newest block's root, and `empty` repeats
+/// its predecessor's the way a slot that carried no block does.
+fn recorded_ring(empty: Option<u64>) -> (BlockRootsGroup, BlockRootsId) {
+    let mut g = BlockRootsGroup::zeroed_vector();
+    let mut wv = g.roll_fresh();
+    for slot in RECORDED_STATE_SLOT - SLOTS_PER_HISTORICAL_ROOT as u64..RECORDED_STATE_SLOT {
+        let named = if empty == Some(slot) { slot - 1 } else { slot };
+        wv.set((slot % SLOTS_PER_HISTORICAL_ROOT as u64) as u32, root_of(named));
+    }
+    let id = wv.commit();
+    (g, id)
+}
+
+/// An entry differing from its predecessor is a block of the slot's own; a
+/// repeated one is a slot that carried none. Reading the entry itself asks
+/// only that the ring still cover the slot, so an empty slot answers with the
+/// root it repeats.
+#[test]
+fn block_roots_name_the_slots_that_carried_a_block() {
+    let empty = RECORDED_STATE_SLOT - 2;
+    let (g, id) = recorded_ring(Some(empty));
+    let reader = g.view(id);
+    let state_slot = RECORDED_STATE_SLOT;
+
+    assert_eq!(reader.at_slot(empty), root_of(empty - 1), "the ring answers at the wrapped index");
+
+    assert_eq!(reader.proposed_at(empty - 1, state_slot), Some(root_of(empty - 1)));
+    assert_eq!(reader.proposed_at(empty, state_slot), None);
+    assert_eq!(reader.proposed_at(empty + 1, state_slot), Some(root_of(empty + 1)));
+
+    assert_eq!(reader.recorded_at(empty, state_slot), Some(root_of(empty - 1)));
+    assert_eq!(reader.recorded_at(empty + 1, state_slot), Some(root_of(empty + 1)));
+}
+
+/// The ring covers the `SLOTS_PER_HISTORICAL_ROOT` slots below the state's own,
+/// and naming a block needs its predecessor's entry too — so the floor itself
+/// cannot be named however distinct its entry is, and the state's own slot has
+/// no entry until the `process_slot` that leaves it.
+#[test]
+fn block_roots_bound_which_slots_can_be_named() {
+    let (g, id) = recorded_ring(None);
+    let reader = g.view(id);
+    let state_slot = RECORDED_STATE_SLOT;
+    let floor = state_slot - SLOTS_PER_HISTORICAL_ROOT as u64;
+
+    assert_eq!(reader.proposed_at(floor + 1, state_slot), Some(root_of(floor + 1)));
+    assert_eq!(reader.proposed_at(floor, state_slot), None, "the floor has no predecessor");
+    assert_eq!(reader.proposed_at(floor - 1, state_slot), None, "below the floor");
+    assert_eq!(reader.proposed_at(state_slot, state_slot), None, "the state's own slot");
+    assert_eq!(reader.proposed_at(state_slot + 1, state_slot), None, "past it");
+
+    assert_eq!(reader.recorded_at(floor, state_slot), Some(root_of(floor)));
+    assert_eq!(reader.recorded_at(floor - 1, state_slot), None, "below the floor");
+    assert_eq!(reader.recorded_at(state_slot, state_slot), None, "the state's own slot");
+}
+
+/// A block's reveal accumulates into the current epoch's bucket; the boundary
+/// copy seeds the next epoch from it, and the next epoch's reveals accumulate
+/// on top without disturbing the finished epoch.
+#[test]
+fn randao_mixes_accumulate_then_carry_to_the_next_epoch() {
+    let mut g = RandaoMixesGroup::zeroed_vector();
+    let mut wv = g.roll_fresh();
+
+    wv.mix_in_reveal(5, &[0b0011; 32]);
+    wv.mix_in_reveal(5, &[0b0101; 32]);
+    assert_eq!(wv.at_epoch(5), [0b0110; 32]);
+
+    wv.copy_to_next_epoch(5);
+    assert_eq!(wv.at_epoch(6), [0b0110; 32]);
+    wv.mix_in_reveal(6, &[0b0010; 32]);
+    assert_eq!(wv.at_epoch(6), [0b0100; 32]);
+    assert_eq!(wv.at_epoch(5), [0b0110; 32], "the finished epoch's mix is frozen");
+
+    let mut expected = vec![[0u8; 32]; EPOCHS_PER_HISTORICAL_VECTOR];
+    expected[5] = [0b0110; 32];
+    expected[6] = [0b0100; 32];
+    assert_eq!(wv.hash_root(), hash_b256_vector(&expected));
+}
+
+/// The ring wraps at `EPOCHS_PER_HISTORICAL_VECTOR`, so an epoch a full period
+/// on shares its bucket.
+#[test]
+fn randao_mixes_wrap_at_the_ring_length() {
+    let mut g = RandaoMixesGroup::zeroed_vector();
+    let mut wv = g.roll_fresh();
+
+    wv.mix_in_reveal(2, &[0xAB; 32]);
+    assert_eq!(wv.at_epoch(2 + EPOCHS_PER_HISTORICAL_VECTOR as u64), [0xAB; 32]);
 }

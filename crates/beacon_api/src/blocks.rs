@@ -113,9 +113,10 @@ impl BlockId {
         let (root, finalized) = match self {
             Self::Head => (head_root, view.epoch.finalizes_slot(head.slot)),
             Self::Slot(slot) if slot == head.slot => (head_root, view.epoch.finalizes_slot(slot)),
-            Self::Slot(slot) => {
-                (view.slot.block_root_proposed_at(slot)?, view.epoch.finalizes_slot(slot))
-            }
+            Self::Slot(slot) => (
+                view.block_roots.proposed_at(slot, view.slot.slot_number())?,
+                view.epoch.finalizes_slot(slot),
+            ),
             Self::Finalized => (view.epoch.finalized_block_root()?, true),
             Self::Root(root) if root == head_root => (root, view.epoch.finalizes_slot(head.slot)),
             // Every other root is a block this crate has no read path to.
@@ -129,8 +130,8 @@ impl BlockId {
 #[cfg(test)]
 mod tests {
     use silver_beacon_state_data::{
-        BeaconState, BeaconStateOwner, Checkpoint, EPOCHS_PER_HISTORICAL_VECTOR, EpochState,
-        EpochStateFinalized, SLOTS_PER_EPOCH, SpecConfig, ValSeed,
+        BeaconState, BeaconStateOwner, Checkpoint, EpochState, EpochStateFinalized,
+        SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT, SpecConfig, ValSeed,
     };
     use silver_common::ELSyncStatus;
     use silver_httpcore::ParsedRequest;
@@ -149,11 +150,10 @@ mod tests {
     const STATE_SLOT: Slot = HEAD_BLOCK_SLOT + 1;
     const EMPTY_SLOT: Slot = HEAD_BLOCK_SLOT - 1;
 
-    /// How far back the fixture chains are recorded: the slot tier's base sits
-    /// there and the head fork's delta holds an entry per slot from it up. A
-    /// real base ring also carries the `SLOTS_PER_HISTORICAL_ROOT` slots below
-    /// it, whose wrap arithmetic belongs to — and is tested with —
-    /// `SlotStateView::block_root_proposed_at`.
+    /// How far back the fixture chains are recorded: the ring holds an entry
+    /// per slot from there up, and zeros below. A real ring holds all
+    /// `SLOTS_PER_HISTORICAL_ROOT` slots below the state's own, whose wrap
+    /// arithmetic belongs to — and is tested with — `RootsView::proposed_at`.
     const RECORDED_SLOTS: Slot = 64;
 
     /// A chain young enough that its first slot is still recorded, and too
@@ -191,10 +191,10 @@ mod tests {
     }
 
     fn epoch_base(finalized: Checkpoint) -> EpochStateFinalized {
-        EpochStateFinalized::from_parts(
-            EpochState { finalized_checkpoint: finalized, ..Default::default() },
-            vec![[0u8; 32]; EPOCHS_PER_HISTORICAL_VECTOR].into_boxed_slice(),
-        )
+        EpochStateFinalized::from_state(EpochState {
+            finalized_checkpoint: finalized,
+            ..Default::default()
+        })
     }
 
     /// A published head state grown a slot at a time the way the tile grows
@@ -230,7 +230,8 @@ mod tests {
             }
             writer.slot.fill_latest_block_header_state_root(state_root_of(slot));
             let latest_block = writer.slot.state().latest_block_header.slot;
-            writer.slot.push_block_root(block_root_of(latest_block));
+            let bucket = (slot % SLOTS_PER_HISTORICAL_ROOT as u64) as u32;
+            writer.block_roots.set(bucket, block_root_of(latest_block));
             writer.slot.advance_slot();
         }
         let head = writer.commit(None, None);

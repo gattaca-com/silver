@@ -303,8 +303,7 @@ pub(crate) fn test_ctx(spec: &SpecConfig, state: BeaconStateReader) -> ApiCtx {
 #[cfg(test)]
 mod tests {
     use silver_beacon_state_data::{
-        BeaconState, Checkpoint, EPOCHS_PER_HISTORICAL_VECTOR, EpochState, EpochStateFinalized,
-        Fork, SLOTS_PER_EPOCH,
+        BeaconState, Checkpoint, EpochState, EpochStateFinalized, Fork, SLOTS_PER_EPOCH,
     };
     use silver_common::{AGENT_VERSION, ELSyncStatus};
     use silver_httpcore::ParsedRequest;
@@ -655,11 +654,7 @@ mod tests {
     /// A synced node with its one state published — every distinct value these
     /// endpoints read is set, so a golden catches a swapped field.
     fn published_ctx(epoch: EpochState, slot: u64) -> ApiCtx {
-        let base = EpochStateFinalized::from_parts(
-            epoch,
-            vec![[0u8; 32]; EPOCHS_PER_HISTORICAL_VECTOR].into_boxed_slice(),
-        );
-        let mut state = BeaconState::for_test(base, &[], slot);
+        let mut state = BeaconState::for_test(EpochStateFinalized::from_state(epoch), &[], slot);
         state.immutable.genesis_time = 1_606_824_023;
         state.immutable.genesis_validators_root = [0x4b; 32];
         state.immutable.genesis_fork_version = [0x00, 0x00, 0x00, 0x01];

@@ -23,12 +23,12 @@ fn byte_chunks(bytes: &[u8]) -> impl Iterator<Item = B256> + '_ {
 }
 
 pub struct ColumnGroup<C: ColumnSpec> {
-    pool: PagePool,
+    pool: PagePool<C::Page>,
     finalized: PageSnapshot,
     ring: Ring<Self>,
     /// Flat writable head — the hot write path stays flat; committed forks are
     /// paged.
-    scratch: ColumnTree,
+    scratch: ColumnTree<C>,
     /// What `scratch` currently holds (up to its dirty mask), so a roll only
     /// reloads the pages that differ. Keeps its own refcounts — finalize
     /// releasing the fork it mirrors doesn't invalidate it.
@@ -69,7 +69,7 @@ impl<C: ColumnSpec> ColumnGroup<C> {
         leaves: impl Iterator<Item = B256>,
         format: HashFormat,
     ) -> Self {
-        let flat = ColumnTree::from_leaves::<C::Val>(cap, count, leaves, format);
+        let flat = ColumnTree::from_leaves(cap, count, leaves, format);
         // Grow-hint for the base's pages; the pool grows lazily beyond it.
         let mut pool = PagePool::new(flat.num_pages() * 2);
         let finalized = flat.to_snapshot(&mut pool);
@@ -124,12 +124,12 @@ impl<C: ColumnSpec> ColumnGroup<C> {
     }
 
     #[inline]
-    pub(super) fn scratch(&self) -> &ColumnTree {
+    pub(super) fn scratch(&self) -> &ColumnTree<C> {
         &self.scratch
     }
 
     #[inline]
-    pub(super) fn scratch_mut(&mut self) -> &mut ColumnTree {
+    pub(super) fn scratch_mut(&mut self) -> &mut ColumnTree<C> {
         &mut self.scratch
     }
 

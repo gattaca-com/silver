@@ -11,8 +11,8 @@ pub use finalized::SlotStateFinalized;
 use flux_profiler::timed;
 
 use crate::{
-    reanchor::reanchor_survivors,
-    ring::{Id, Reset, Ring, RingGroup},
+    reanchor::finalize_full_copies,
+    ring::{Id, Ring, RingGroup},
     types::SLOTS_RING_N,
 };
 
@@ -69,31 +69,9 @@ impl SlotStateGroup {
         SlotStateWriteView::new(finalized, deltas.roll_from(parent))
     }
 
-    /// Copy a survivor into a fresh slot and drop the promoted root prefix
-    /// (pre-promotion). The survivor stays frozen — append-only.
-    fn reanchor(&mut self, survivor: SlotStateId, winner: SlotStateId) -> SlotStateWriteView<'_> {
-        let Self { finalized, deltas } = self;
-        let (mut fork, old, winner_delta) = deltas.roll_fresh_deriving(survivor, winner);
-        fork.reset_from(old);
-        fork.prune_to_base(winner_delta);
-        SlotStateWriteView::new(finalized, fork)
-    }
-
-    /// Re-anchor each survivor against the promoted `winner` into fresh slots
-    /// (deduped), then promote the winner into the finalized state
-    /// (circular-buffer write).
     #[timed]
     pub fn finalize(&mut self, winner: SlotStateId, survivors: &[SlotStateId]) -> Vec<SlotStateId> {
-        debug_assert!(survivors.contains(&winner), "winner must be among the survivors");
-        self.deltas.free_outdated(survivors);
-
-        let fresh = reanchor_survivors(survivors, |s| self.reanchor(s, winner).commit());
-
         let Self { finalized, deltas } = self;
-        finalized.promote(deltas.get(winner));
-
-        deltas.free_outdated(&fresh);
-
-        fresh
+        finalize_full_copies(deltas, winner, survivors, |w| finalized.promote(w))
     }
 }

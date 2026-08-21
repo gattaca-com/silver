@@ -318,7 +318,7 @@ impl BeaconStateTile {
     /// STF output against EF post-state vectors.
     pub fn head_state_root(&mut self) -> B256 {
         let rv = self.state.read_view(self.last_applied);
-        ssz_hash::hash_tree_root_state(&rv, &mut self.stf_scratch.state_hash)
+        ssz_hash::hash_tree_root_state(&rv)
     }
 
     /// Seed fork choice from the freshly-anchored real state and publish the
@@ -333,7 +333,7 @@ impl BeaconStateTile {
         // patched value would shift the result.
         let (block_root, execution_block_hash) = {
             let rv = self.state.read_view(anchor);
-            let state_root = ssz_hash::hash_tree_root_state(&rv, &mut self.stf_scratch.state_hash);
+            let state_root = ssz_hash::hash_tree_root_state(&rv);
             let mut header = rv.slot.state().latest_block_header;
             if header.state_root == [0u8; 32] {
                 header.state_root = state_root;

@@ -149,19 +149,12 @@ impl BeaconStateTile {
         let mut guard = self.state.write();
         let bs = &mut *guard;
 
-        // Old finalized epoch — the epoch tier overlays its ring at
-        // `(old_fin_epoch + k) % …`. Read from the (still-old) slot-group
-        // base before its finalize.
-        let old_fin_epoch =
-            (bs.slot_states.finalized_view().slot_number() / SLOTS_PER_EPOCH) as usize;
-
         // The always-rolled tiers finalize in their own groups — re-anchor
         // each survivor against the winner (pin pre-promote values + prune
         // redundancy), then promote the winner into the base. Each base is
         // untouched until its own group's finalize, so it still holds the old
         // count its rebase bounds read. Pending's drain-offset rebase
-        // snapshots `old_base_lens` internally from the still-old base; the
-        // slot tier prunes survivors' root tails of the promoted prefix.
+        // snapshots `old_base_lens` internally from the still-old base.
         rebase_tier(
             promoted,
             survivors,
@@ -178,6 +171,9 @@ impl BeaconStateTile {
         bs.previous_participation.finalize(&promoted, survivors, |s| s.previous_participation_idx);
         bs.current_participation.finalize(&promoted, survivors, |s| s.current_participation_idx);
         bs.inactivity.finalize(&promoted, survivors, |s| s.inactivity_idx);
+        bs.block_roots.finalize(&promoted, survivors, |s| s.block_roots_idx);
+        bs.state_roots.finalize(&promoted, survivors, |s| s.state_roots_idx);
+        bs.randao_mixes.finalize(&promoted, survivors, |s| s.randao_mixes_idx);
         rebase_tier(
             promoted,
             survivors,
@@ -208,7 +204,7 @@ impl BeaconStateTile {
             survivors,
             epoch_idxs,
             |s| &mut s.epoch_idx,
-            |winner| bs.epoch.finalize(winner, epoch_idxs, old_fin_epoch),
+            |winner| bs.epoch.finalize(winner, epoch_idxs),
         );
         rebase_lazy_tier(
             promoted,

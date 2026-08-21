@@ -1,6 +1,6 @@
 use silver_beacon_state_data::{
-    B256, BLSPubkey, BeaconBlockHeader, BeaconState, BeaconStateOwner,
-    EPOCHS_PER_HISTORICAL_VECTOR, EpochState, EpochStateFinalized, LongtailGroup, LongtailState,
+    B256, BLSPubkey, BeaconBlockHeader, BeaconState, BeaconStateOwner, EpochState,
+    EpochStateFinalized, LongtailGroup, LongtailState, SLOTS_PER_HISTORICAL_ROOT,
     SYNC_COMMITTEE_SIZE, Slot, SpecConfig, SyncCommittee, ValSeed,
 };
 use silver_common::ELSyncStatus;
@@ -91,10 +91,10 @@ fn root_text(root: B256) -> String {
 /// `i`, so the entries of the head epoch name validators 0..32 and those
 /// of the next name 32..64.
 fn epoch_base() -> EpochStateFinalized {
-    EpochStateFinalized::from_parts(
-        EpochState { proposer_lookahead: std::array::from_fn(|i| i as u64), ..Default::default() },
-        vec![[0u8; 32]; EPOCHS_PER_HISTORICAL_VECTOR].into_boxed_slice(),
-    )
+    EpochStateFinalized::from_state(EpochState {
+        proposer_lookahead: std::array::from_fn(|i| i as u64),
+        ..Default::default()
+    })
 }
 
 fn committee(seats: &[(usize, u64)], filler: u64) -> SyncCommittee {
@@ -108,26 +108,35 @@ fn committee(seats: &[(usize, u64)], filler: u64) -> SyncCommittee {
     committee
 }
 
-/// Both committees seated, with the current one's pubkeys resolved to
-/// indices the way the rotation that installed it leaves them.
-fn longtail() -> LongtailState {
-    let mut sync_committee_indices = [CURRENT_FILLER as u32; SYNC_COMMITTEE_SIZE];
+/// The current committee's pubkeys resolved to validator indices, the way the
+/// rotation that installed the committee leaves them.
+fn seated_indices() -> [u32; SYNC_COMMITTEE_SIZE] {
+    let mut indices = [CURRENT_FILLER as u32; SYNC_COMMITTEE_SIZE];
     for &(position, validator) in CURRENT_SEATS {
-        sync_committee_indices[position] = validator as u32;
+        indices[position] = validator as u32;
     }
-    LongtailState {
-        current_sync_committee: committee(CURRENT_SEATS, CURRENT_FILLER),
-        next_sync_committee: committee(NEXT_SEATS, NEXT_FILLER),
-        sync_committee_indices,
-        historical_summaries: Vec::new(),
-    }
+    indices
+}
+
+/// Both committees seated the way two period rotations seat them: the second
+/// promotes the current committee out of `next`, carrying `indices` with it.
+fn seated_longtail(indices: [u32; SYNC_COMMITTEE_SIZE]) -> LongtailGroup {
+    let mut group = LongtailGroup::new(LongtailState::default());
+    let seated = {
+        let mut wv = group.roll_fresh();
+        wv.rotate_sync_committees(&committee(CURRENT_SEATS, CURRENT_FILLER), indices);
+        wv.rotate_sync_committees(&committee(NEXT_SEATS, NEXT_FILLER), indices);
+        wv.commit()
+    };
+    group.finalize(seated, &[seated]);
+    group
 }
 
 struct Fixture {
     state_slot: Slot,
     empty_slots: Vec<Slot>,
     validator_count: usize,
-    longtail: LongtailState,
+    sync_committee_indices: [u32; SYNC_COMMITTEE_SIZE],
     /// Silver holds Fulu states and later ones only — it has no Electra state
     /// transition and no upgrade into Fulu — so the default fixture is a chain
     /// that has been Fulu throughout.
@@ -140,7 +149,7 @@ impl Default for Fixture {
             state_slot: HEAD_SLOT,
             empty_slots: Vec::new(),
             validator_count: VALIDATOR_COUNT,
-            longtail: longtail(),
+            sync_committee_indices: seated_indices(),
             fulu_fork_epoch: 0,
         }
     }
@@ -159,7 +168,7 @@ impl Fixture {
             .collect();
         let base_slot = self.state_slot.saturating_sub(RECORDED_SLOTS);
         let mut state = BeaconState::for_test(epoch_base(), &seeds, base_slot);
-        state.longtail = LongtailGroup::new(self.longtail);
+        state.longtail = seated_longtail(self.sync_committee_indices);
 
         let mut owner = BeaconStateOwner::new(state);
         let anchor = owner.roll_fresh();
@@ -176,7 +185,8 @@ impl Fixture {
             }
             writer.slot.fill_latest_block_header_state_root(state_root_of(slot));
             let latest_block = writer.slot.state().latest_block_header.slot;
-            writer.slot.push_block_root(block_root_of(latest_block));
+            let bucket = (slot % SLOTS_PER_HISTORICAL_ROOT as u64) as u32;
+            writer.block_roots.set(bucket, block_root_of(latest_block));
             writer.slot.advance_slot();
         }
         let head = writer.commit(None, None);
@@ -725,9 +735,9 @@ fn the_period_and_not_the_epoch_picks_the_committee() {
 /// leaves `u32::MAX` behind — is still served to the validator sitting in it.
 #[test]
 fn a_member_the_finalized_registry_did_not_hold_still_gets_its_duty() {
-    let mut longtail = longtail();
-    longtail.sync_committee_indices[CURRENT_SEATS[0].0] = u32::MAX;
-    let ctx = Fixture { longtail, ..Default::default() }.published();
+    let mut sync_committee_indices = seated_indices();
+    sync_committee_indices[CURRENT_SEATS[0].0] = u32::MAX;
+    let ctx = Fixture { sync_committee_indices, ..Default::default() }.published();
     assert_eq!(
         ok_body(&post_sync(&ctx, &HEAD_EPOCH.to_string(), &format!("[\"{SEATED_ONCE}\"]"))),
         format!(

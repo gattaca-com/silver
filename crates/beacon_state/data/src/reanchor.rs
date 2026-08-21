@@ -5,14 +5,28 @@
 
 use flux_profiler::timed;
 
-/// Overlay a fork's append `log` onto a circular `ring`, entry `i` landing at
-/// position `(start + i) % ring.len()` (wrapping).
-pub(crate) fn write_ring_window<T: Copy>(ring: &mut [T], start: usize, log: &[T]) {
-    let cap = ring.len();
-    debug_assert!(log.len() <= cap, "delta log exceeds ring cap");
-    for (i, x) in log.iter().enumerate() {
-        ring[(start + i) % cap] = *x;
-    }
+use crate::ring::{Id, Reset, Ring, RingGroup};
+
+/// Finalize a full-working-copy group: copy each survivor into a fresh slot
+/// (the delta shadows the whole base, so nothing rebases), promote the winner
+/// into the base, and free the vacated slots.
+pub(crate) fn finalize_full_copies<G: RingGroup>(
+    deltas: &mut Ring<G>,
+    winner: Id<G>,
+    survivors: &[Id<G>],
+    promote: impl FnOnce(&G::Entry),
+) -> Vec<Id<G>>
+where
+    G::Entry: Reset + Default,
+{
+    debug_assert!(survivors.contains(&winner), "winner must be among the survivors");
+    deltas.free_outdated(survivors);
+
+    let fresh = reanchor_survivors(survivors, |s| deltas.roll_from(s).commit());
+    promote(deltas.get(winner));
+
+    deltas.free_outdated(&fresh);
+    fresh
 }
 
 /// Drop the prefix of a per-fork append log that a promoted winner already

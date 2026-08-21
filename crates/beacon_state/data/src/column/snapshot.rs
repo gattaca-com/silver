@@ -1,13 +1,12 @@
 use super::{
+    ColumnSpec,
     format::TreeFormat,
-    pool::{PAGE_NODES, PageId, PagePool},
+    pool::{PageArray, PageId, PagePool},
 };
 use crate::types::B256;
 
 /// A committed fork's whole column tree as a page table: `pages[i]` is the pool
-/// id of node-page `i`. Built and read by
-/// [`ColumnTree`](super::tree::ColumnTree) (the data), shared/released by
-/// [`PagePool`](PagePool) (the refcounts).
+/// id of node-page `i`.
 pub struct PageSnapshot {
     pub(super) pages: Vec<PageId>,
     pub(super) format: TreeFormat,
@@ -50,12 +49,17 @@ impl PageSnapshot {
     }
 
     #[inline]
-    pub(super) fn page<'a>(&self, pool: &'a PagePool, pi: usize) -> &'a [B256] {
+    pub(super) fn page<'a, P: PageArray>(&self, pool: &'a PagePool<P>, pi: usize) -> &'a [B256] {
         pool.page(self.pages[pi])
     }
 
     #[inline]
-    pub(super) fn node<'a>(&self, pool: &'a PagePool, n: usize) -> &'a B256 {
-        &pool.page(self.pages[n / PAGE_NODES])[n % PAGE_NODES]
+    pub(super) fn node<'a, C: ColumnSpec>(
+        &self,
+        pool: &'a PagePool<C::Page>,
+        n: usize,
+    ) -> &'a B256 {
+        let p = C::PAGE_NODES;
+        &pool.page(self.pages[n / p])[n % p]
     }
 }

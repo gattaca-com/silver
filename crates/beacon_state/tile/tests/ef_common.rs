@@ -7,14 +7,10 @@ use std::{
     sync::Arc,
 };
 
-use silver_beacon_state::{
-    BeaconStateTile,
-    ssz_hash::{StateHashScratch, hash_tree_root_state},
-    stf,
-};
+use silver_beacon_state::{BeaconStateTile, ssz_hash::hash_tree_root_state, stf};
 use silver_beacon_state_data::{
-    B256, EPOCHS_PER_SLASHINGS_VECTOR, EpochGroup, EpochView, LongtailGroup, SpecConfig, StateId,
-    StateWriterView, effective_randao_mixes_into,
+    B256, EPOCHS_PER_HISTORICAL_VECTOR, EPOCHS_PER_SLASHINGS_VECTOR, EpochGroup, EpochView,
+    LongtailGroup, SpecConfig, StateId, StateWriterView,
 };
 
 #[path = "support/loaded_state.rs"]
@@ -34,7 +30,7 @@ impl LoadedState {
         let sid = self.state_id;
         let (mut view, epoch, longtail) = self.view();
         let rv = view.read(epoch.view_opt(sid.epoch_idx), longtail.view_opt(sid.longtail_idx));
-        hash_tree_root_state(&rv, &mut StateHashScratch::new())
+        hash_tree_root_state(&rv)
     }
 
     /// Roll a fork, run `f` over its writer view, then commit with the
@@ -113,11 +109,10 @@ pub fn compare_states(label: &str, a: &mut LoadedState, b: &mut LoadedState) -> 
     let (mut va, epoch_a, longtail_a) = a.view();
     let (mut vb, epoch_b, longtail_b) = b.view();
 
-    let mut scratch = StateHashScratch::new();
-    let mut root_of =
+    let root_of =
         |view: &mut StateWriterView, sid: StateId, epoch: &EpochGroup, longtail: &LongtailGroup| {
             let rv = view.read(epoch.view_opt(sid.epoch_idx), longtail.view_opt(sid.longtail_idx));
-            hash_tree_root_state(&rv, &mut scratch)
+            hash_tree_root_state(&rv)
         };
     let root_a = root_of(&mut va, sid_a, epoch_a, longtail_a);
     let root_b = root_of(&mut vb, sid_b, epoch_b, longtail_b);
@@ -137,7 +132,7 @@ pub fn compare_states(label: &str, a: &mut LoadedState, b: &mut LoadedState) -> 
 
     let n = va.validators.count().min(vb.validators.count());
     diff_validator_columns(&mut diffs, &va, &vb, n);
-    diff_rings(&mut diffs, &va, &ea, &vb, &eb);
+    diff_rings(&mut diffs, &va, &vb);
     diff_latest_block_header(&mut diffs, &va, &vb);
     diff_proposer_lookahead(&mut diffs, &ea, &eb);
     diff_builders_and_pending(&mut diffs, &va, &vb);
@@ -232,13 +227,6 @@ fn diff_scalars(
             a_slot.exit_balance_to_consume, b_slot.exit_balance_to_consume
         ));
     }
-    if a_slot.randao_mix_current != b_slot.randao_mix_current {
-        diffs.push(format!(
-            "  randao_mix_current: {} vs {}",
-            hex(&a_slot.randao_mix_current),
-            hex(&b_slot.randao_mix_current),
-        ));
-    }
 }
 
 fn diff_validator_columns(
@@ -300,13 +288,7 @@ fn diff_validator_columns(
     });
 }
 
-fn diff_rings(
-    diffs: &mut Vec<String>,
-    va: &StateWriterView,
-    ea: &EpochView,
-    vb: &StateWriterView,
-    eb: &EpochView,
-) {
+fn diff_rings(diffs: &mut Vec<String>, va: &StateWriterView, vb: &StateWriterView) {
     diff_iter(
         diffs,
         EPOCHS_PER_SLASHINGS_VECTOR,
@@ -314,14 +296,11 @@ fn diff_rings(
         vb.slashings.iter(),
         |i, av, bv| format!("  slashings[{i}]: {av} vs {bv}"),
     );
-    let (mut ra, mut rb) = (Vec::new(), Vec::new());
-    effective_randao_mixes_into(ea, &va.slot.reader(), &mut ra);
-    effective_randao_mixes_into(eb, &vb.slot.reader(), &mut rb);
     diff_iter(
         diffs,
-        ra.len().min(rb.len()),
-        ra.iter().copied(),
-        rb.iter().copied(),
+        EPOCHS_PER_HISTORICAL_VECTOR,
+        va.randao_mixes.iter(),
+        vb.randao_mixes.iter(),
         |i, av, bv| format!("  randao[{i}]: {} vs {}", hex(&av), hex(&bv)),
     );
 }

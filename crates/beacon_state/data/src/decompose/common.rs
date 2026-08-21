@@ -1,11 +1,12 @@
 use flux_profiler::timed;
 
 use crate::{
-    BalancesGroup, BeaconState, BuildersGroup, ColumnLenMismatch, CurrentParticipationGroup,
-    EPOCHS_PER_SLASHINGS_VECTOR, EpochGroup, EpochStateFinalized, Eth1Group, Eth1Votes,
-    FinalizedBuilders, FinalizedValidators, InactivityScoresGroup, LongtailGroup, LongtailState,
-    PendingGroup, PreviousParticipationGroup, QueueItem, SlashingsGroup, SlotStateFinalized,
-    SlotStateGroup, SpecConfig, ValidatorsDecodeError, ValidatorsGroup,
+    BalancesGroup, BeaconState, BlockRootsGroup, BuildersGroup, ColumnLenMismatch,
+    CurrentParticipationGroup, EPOCHS_PER_HISTORICAL_VECTOR, EPOCHS_PER_SLASHINGS_VECTOR,
+    EpochGroup, EpochStateFinalized, Eth1Group, Eth1Votes, FinalizedBuilders, FinalizedValidators,
+    InactivityScoresGroup, LongtailGroup, LongtailState, PendingGroup, PreviousParticipationGroup,
+    QueueItem, RandaoMixesGroup, SLOTS_PER_HISTORICAL_ROOT, SlashingsGroup, SlotStateFinalized,
+    SlotStateGroup, SpecConfig, StateRootsGroup, ValidatorsDecodeError, ValidatorsGroup,
     gloas::BuilderPendingWithdrawal,
     merkle,
     types::{
@@ -20,6 +21,8 @@ pub(crate) const HISTORICAL_SUMMARY_SSZ_SIZE: usize = 64;
 const PENDING_DEPOSIT_SSZ_SIZE: usize = 192;
 const PENDING_PARTIAL_WITHDRAWAL_SSZ_SIZE: usize = 24;
 const PENDING_CONSOLIDATION_SSZ_SIZE: usize = 16;
+const ROOT_RING_SSZ: usize = SLOTS_PER_HISTORICAL_ROOT * size_of::<B256>();
+const RANDAO_RING_SSZ: usize = EPOCHS_PER_HISTORICAL_VECTOR * size_of::<B256>();
 
 // Fixed-part byte offsets (Fulu).
 pub(super) const F0: usize = 0; // genesis_time: 8
@@ -248,6 +251,9 @@ impl BeaconState {
             slashings: SlashingsGroup::vector(
                 &ssz[F14..F14 + EPOCHS_PER_SLASHINGS_VECTOR * size_of::<u64>()],
             )?,
+            block_roots: BlockRootsGroup::vector(&ssz[F5..F5 + ROOT_RING_SSZ])?,
+            state_roots: StateRootsGroup::vector(&ssz[F6..F6 + ROOT_RING_SSZ])?,
+            randao_mixes: RandaoMixesGroup::vector(&ssz[F13..F13 + RANDAO_RING_SSZ])?,
             slot_states: SlotStateGroup::new(slot),
             epoch: EpochGroup::new(epoch),
             longtail,

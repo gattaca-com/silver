@@ -5,10 +5,7 @@ mod ef_common;
 use ef_common::{
     LoadedState, compare_states, iter_test_cases, load_state, load_state_gloas, spec_tests_dir,
 };
-use silver_beacon_state::{
-    ssz_hash::StateHashScratch,
-    stf::{self, HISTORICAL_SUMMARY_PERIOD},
-};
+use silver_beacon_state::stf::{self, HISTORICAL_SUMMARY_PERIOD};
 use silver_beacon_state_data::EPOCHS_PER_SYNC_COMMITTEE_PERIOD;
 /// Gloas EF config: mainnet preset with Gloas active from genesis, so the
 /// `cfg.is_gloas_at(epoch)`-gated STF branches fire on the loaded Gloas states.
@@ -169,11 +166,10 @@ fn fulu_slashings_reset() {
 #[test]
 fn fulu_randao_mixes_reset() {
     epoch_handler("randao_mixes_reset", |s| {
-        let sid = s.state_id;
-        let (view, epoch, _) = s.view();
-        let mut epoch_w = epoch.roll_inheriting(sid.epoch_idx);
-        stf::process_randao_mixes_reset(&view, &mut epoch_w);
-        s.state_id = view.commit(Some(epoch_w.commit()), sid.longtail_idx);
+        s.with_view(|view| {
+            let current_epoch = view.slot.reader().current_epoch();
+            stf::process_randao_mixes_reset(view, current_epoch);
+        });
     });
 }
 
@@ -181,15 +177,14 @@ fn fulu_randao_mixes_reset() {
 fn fulu_historical_summaries_update() {
     epoch_handler("historical_summaries_update", move |s| {
         let sid = s.state_id;
-        let (mut view, _, longtail) = s.view();
+        let (view, _, longtail) = s.view();
         let current_epoch = view.slot.reader().current_epoch();
         // The hub's rotation gate: no-op vectors never roll the longtail.
         if !(current_epoch + 1).is_multiple_of(HISTORICAL_SUMMARY_PERIOD) {
             return;
         }
         let mut longtail_w = longtail.roll_inheriting(sid.longtail_idx);
-        let mut scratch = StateHashScratch::new();
-        stf::process_historical_summaries_update(&mut view, &mut longtail_w, &mut scratch);
+        stf::process_historical_summaries_update(&view, &mut longtail_w);
         s.state_id = view.commit(sid.epoch_idx, Some(longtail_w.commit()));
     });
 }
@@ -207,19 +202,17 @@ fn fulu_participation_flag_updates() {
 fn fulu_sync_committee_updates() {
     epoch_handler("sync_committee_updates", |s| {
         let sid = s.state_id;
-        let (mut view, epoch, longtail) = s.view();
+        let (mut view, _, longtail) = s.view();
         let current_epoch = view.slot.reader().current_epoch();
         // The hub's rotation gate: no-op vectors never roll the longtail.
         if !(current_epoch + 1).is_multiple_of(EPOCHS_PER_SYNC_COMMITTEE_PERIOD) {
             return;
         }
         let mut longtail_w = longtail.roll_inheriting(sid.longtail_idx);
-        let epoch_view = epoch.view_opt(sid.epoch_idx);
         let mut active = Vec::new();
         let mut eff = Vec::new();
         stf::process_sync_committee_updates(
             &mut view,
-            &epoch_view,
             &mut longtail_w,
             current_epoch,
             &mut active,

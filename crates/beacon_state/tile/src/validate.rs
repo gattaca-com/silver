@@ -1,5 +1,5 @@
 use silver_beacon_state_data::{
-    Epoch, SLOTS_PER_EPOCH, Slot, SlotStateView, SpecConfig, ValidatorsView,
+    Epoch, SLOTS_PER_EPOCH, Slot, SpecConfig, StateWriterView, ValidatorsView,
 };
 use silver_common::ssz_view::{
     ATTESTATION_FIXED, AttestationView, EXECUTION_PAYLOAD_FIXED, ExecutionPayloadView,
@@ -152,8 +152,7 @@ pub fn validate_bls_to_execution_change(
 
 pub fn validate_execution_payload(
     cfg: &SpecConfig,
-    slot: &SlotStateView,
-    genesis_time: u64,
+    view: &StateWriterView,
     payload: &[u8],
     block_slot: Slot,
 ) -> Result<(), ExecutionPayloadError> {
@@ -163,8 +162,9 @@ pub fn validate_execution_payload(
             min: EXECUTION_PAYLOAD_FIXED,
         });
     }
+    let slot = view.slot.reader();
     let header = &slot.state().latest_execution_payload_header;
-    let randao_mix_current = slot.state().randao_mix_current;
+    let expected_randao = view.randao_mixes.reader().at_epoch(block_slot / SLOTS_PER_EPOCH);
 
     let got_parent = *ExecutionPayloadView::parent_hash(payload);
     let expected_parent = header.block_hash;
@@ -175,7 +175,7 @@ pub fn validate_execution_payload(
         });
     }
 
-    let expected_timestamp = genesis_time + block_slot * cfg.seconds_per_slot;
+    let expected_timestamp = view.imm.genesis_time + block_slot * cfg.seconds_per_slot;
     let got_timestamp = ExecutionPayloadView::timestamp(payload);
     if got_timestamp != expected_timestamp {
         return Err(ExecutionPayloadError::TimestampMismatch {
@@ -185,9 +185,9 @@ pub fn validate_execution_payload(
     }
 
     let got_randao = *ExecutionPayloadView::prev_randao(payload);
-    if got_randao != randao_mix_current {
+    if got_randao != expected_randao {
         return Err(ExecutionPayloadError::RandaoMismatch {
-            expected: randao_mix_current,
+            expected: expected_randao,
             got: got_randao,
         });
     }

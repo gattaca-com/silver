@@ -1,28 +1,28 @@
-use silver_ssz::scalar::SszScalar;
-
 use super::{
+    ColumnSpec,
     format::TreeFormat,
     store::NodeStore,
     subtree::{build_subtree_hashes, rehash_subtree},
 };
 use crate::{merkle::ZERO_HASHES, types::B256};
 
-#[derive(Default)]
-pub(super) struct ListTree {
-    pub(super) store: NodeStore,
+pub(super) struct ListTree<C: ColumnSpec> {
+    pub(super) store: NodeStore<C>,
     pub(super) max_elements: usize,
 }
 
-impl ListTree {
-    pub(super) fn new<V: SszScalar>(
-        cap: usize,
-        count: usize,
-        leaves: impl Iterator<Item = B256>,
-    ) -> Self {
-        let max_elements = cap.div_ceil(V::VALS_PER_CHUNK).next_power_of_two().max(1);
+impl<C: ColumnSpec> Default for ListTree<C> {
+    fn default() -> Self {
+        Self { store: NodeStore::default(), max_elements: 0 }
+    }
+}
+
+impl<C: ColumnSpec> ListTree<C> {
+    pub(super) fn new(cap: usize, count: usize, leaves: impl Iterator<Item = B256>) -> Self {
+        let max_elements = cap.div_ceil(C::VALS_PER_CHUNK).next_power_of_two().max(1);
         let store = NodeStore::with_leaves(2 * max_elements, count, max_elements, leaves);
         let mut tree = Self { store, max_elements };
-        tree.build(count.div_ceil(V::VALS_PER_CHUNK));
+        tree.build(count.div_ceil(C::VALS_PER_CHUNK));
         tree
     }
 

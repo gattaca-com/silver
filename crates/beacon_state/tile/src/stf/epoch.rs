@@ -85,17 +85,16 @@ pub fn process_epoch(
     }
     process_effective_balance_updates(view, &mut scratch.replace_u64);
     process_slashings_reset(view);
-    process_randao_mixes_reset(view, epoch);
+    process_randao_mixes_reset(view, current_epoch);
     if rotates_summary {
         let lt = longtail_w.as_mut().expect("longtail rolled at boundary");
-        process_historical_summaries_update(view, lt, &mut scratch.state_hash);
+        process_historical_summaries_update(view, lt);
     }
     process_participation_flag_updates(view);
     if rotates_sync_committee {
         let lt = longtail_w.as_mut().expect("longtail rolled at boundary");
         process_sync_committee_updates(
             view,
-            &epoch.reader(),
             lt,
             current_epoch,
             &mut scratch.active,
@@ -180,9 +179,9 @@ fn justification_target_roots(
     debug_assert_eq!(balances, sweep_epoch_balances(view, current_epoch));
 
     let prev_root = (balances.previous_target * 3 >= balances.total_active * 2)
-        .then(|| view.slot.block_root_at_slot(previous_epoch * SLOTS_PER_EPOCH));
+        .then(|| view.block_roots.at_slot(previous_epoch * SLOTS_PER_EPOCH));
     let curr_root = (balances.current_target * 3 >= balances.total_active * 2)
-        .then(|| view.slot.block_root_at_slot(current_epoch * SLOTS_PER_EPOCH));
+        .then(|| view.block_roots.at_slot(current_epoch * SLOTS_PER_EPOCH));
     (prev_root, curr_root)
 }
 
@@ -619,12 +618,8 @@ fn apply_pending_deposit(view: &mut StateWriterView, deposit: &common::PendingDe
         return;
     }
     let pk_decompressed = blst::min_pk::PublicKey::from_bytes(&deposit.pubkey).unwrap_or_default();
-    let idx = common::append_validator(
-        view,
-        deposit.pubkey,
-        pk_decompressed,
-        deposit.withdrawal_credentials,
-    );
+    let idx =
+        view.append_validator(deposit.pubkey, pk_decompressed, deposit.withdrawal_credentials);
     let initial_eff = min(
         deposit.amount - deposit.amount % EFFECTIVE_BALANCE_INCREMENT,
         deposit.withdrawal_credentials.max_effective_balance(),
@@ -718,30 +713,18 @@ pub fn process_pending_consolidations(view: &mut StateWriterView) {
 /// `HISTORICAL_SUMMARY_PERIOD` multiple (which is what rolled `longtail`).
 #[timed]
 pub fn process_historical_summaries_update(
-    view: &mut StateWriterView,
+    view: &StateWriterView,
     longtail: &mut LongtailWriteView,
-    scratch: &mut ssz_hash::StateHashScratch,
 ) {
-    // Effective `block_roots` / `state_roots` circular vectors with delta
-    // entries overlaid on the finalized ring (SLOTS_PER_HISTORICAL_ROOT = 8192
-    // entries).
-    view.slot.reader().effective_block_roots_into(&mut scratch.block_roots);
-    view.slot.reader().effective_state_roots_into(&mut scratch.state_roots);
-
-    let block_summary_root =
-        merkle::merkleize_padded(&scratch.block_roots, SLOTS_PER_HISTORICAL_ROOT);
-    let state_summary_root =
-        merkle::merkleize_padded(&scratch.state_roots, SLOTS_PER_HISTORICAL_ROOT);
-    longtail.push_historical_summary(HistoricalSummary { block_summary_root, state_summary_root });
+    longtail.push_historical_summary(HistoricalSummary {
+        block_summary_root: view.block_roots.hash_root(),
+        state_summary_root: view.state_roots.hash_root(),
+    });
 }
 
-/// At epoch boundary: publish the per-block `randao_mix_current` accumulator
-/// to the epoch tier. `randao_mix_current` is NOT reset — spec carries the
-/// previous epoch's final mix forward as the starting value for next epoch.
 #[timed]
-pub fn process_randao_mixes_reset(view: &StateWriterView, epoch: &mut EpochWriteView) {
-    let mix = view.slot.state().randao_mix_current;
-    epoch.push_randao_mix(mix);
+pub fn process_randao_mixes_reset(view: &mut StateWriterView, current_epoch: Epoch) {
+    view.randao_mixes.copy_to_next_epoch(current_epoch);
 }
 
 /// Gated by the hub: runs only when `current_epoch + 1` is an
@@ -750,7 +733,6 @@ pub fn process_randao_mixes_reset(view: &StateWriterView, epoch: &mut EpochWrite
 #[timed]
 pub fn process_sync_committee_updates(
     view: &mut StateWriterView,
-    epoch: &EpochView,
     longtail: &mut LongtailWriteView,
     current_epoch: Epoch,
     active_scratch: &mut Vec<u32>,
@@ -759,32 +741,30 @@ pub fn process_sync_committee_updates(
     // Read seed/active-indices/effective-balances into locals FIRST,
     // then take &mut longtail.
     let sync_epoch = current_epoch + 1;
-    let seed = shuffling::get_seed_from_state(
-        epoch,
-        &view.slot.reader(),
+    let seed = shuffling::Seed::from_randao(
+        &view.randao_mixes.reader(),
         sync_epoch,
         shuffling::DOMAIN_SYNC_COMMITTEE,
     );
-    shuffling::get_active_validator_indices_into(
-        &view.validators.reader(),
-        sync_epoch,
-        active_scratch,
-    );
+    view.validators.reader().active_indices_into(sync_epoch, active_scratch);
     if active_scratch.is_empty() {
         return;
     }
     eff_scratch.clear();
     eff_scratch.extend(view.validators.iter_effective_balances());
 
-    let lt = longtail.state_mut();
+    // The committee `next` holds now becomes current at the rotation below.
+    let mut new_committee = *longtail.reader().sync_committees().next();
 
-    // Rotate: current <- next.
-    let next_committee = lt.next_sync_committee;
-    lt.current_sync_committee = next_committee;
+    // Indices for the promoted current committee, before the sampler
+    // overwrites its pubkeys. Match spec: look up against the finalized
+    // validator index only (the committee pubkeys were committed at a prior
+    // boundary).
+    let indices = std::array::from_fn(|i| {
+        view.validators.find_by_finalized_pubkey(&new_committee.pubkeys[i]).unwrap_or(u32::MAX)
+    });
 
-    // Compute new next committee.
-    let mut new_committee = lt.next_sync_committee;
-    let mut sampler = shuffling::WeightedSampler::new(&seed, active_scratch.len());
+    let mut sampler = seed.sampler(active_scratch.len());
     let mut selected = 0usize;
     while selected < SYNC_COMMITTEE_SIZE {
         let (candidate, accepted) = sampler.next(active_scratch, eff_scratch);
@@ -794,19 +774,8 @@ pub fn process_sync_committee_updates(
         }
     }
     new_committee.aggregate_pubkey = bls::aggregate_pubkeys(&new_committee.pubkeys);
-    lt.next_sync_committee = new_committee;
 
-    // Rebuild sync_committee_indices for the rotated current committee.
-    // Match spec: look up against the finalized validator index only (the
-    // committee pubkeys were committed at a prior boundary).
-    let curr_pubkeys = lt.current_sync_committee.pubkeys;
-    let mut indices = [u32::MAX; SYNC_COMMITTEE_SIZE];
-    for i in 0..SYNC_COMMITTEE_SIZE {
-        if let Some(idx) = view.validators.find_by_finalized_pubkey(&curr_pubkeys[i]) {
-            indices[i] = idx;
-        }
-    }
-    lt.sync_committee_indices = indices;
+    longtail.rotate_sync_committees(&new_committee, indices);
 }
 
 #[timed]
@@ -822,17 +791,12 @@ pub fn process_proposer_lookahead(
     let target_epoch = current_epoch + MIN_SEED_LOOKAHEAD + 1;
 
     // Read seed/active-indices into locals FIRST, then take &mut epoch.
-    let seed = shuffling::get_seed_from_state(
-        &epoch.reader(),
-        &view.slot.reader(),
+    let seed = shuffling::Seed::from_randao(
+        &view.randao_mixes.reader(),
         target_epoch,
         DOMAIN_BEACON_PROPOSER,
     );
-    shuffling::get_active_validator_indices_into(
-        &view.validators.reader(),
-        target_epoch,
-        active_scratch,
-    );
+    view.validators.reader().active_indices_into(target_epoch, active_scratch);
     if epoch.reader().is_gloas(view.imm.gloas_fork_version) {
         retain_unslashed(active_scratch, &view.validators.reader());
     }
@@ -843,7 +807,7 @@ pub fn process_proposer_lookahead(
     es.proposer_lookahead.copy_within(slots_per_epoch.., 0);
     for i in 0..slots_per_epoch {
         let slot = target_epoch * SLOTS_PER_EPOCH + i as u64;
-        let proposer = shuffling::compute_proposer_index(active_scratch, eff_scratch, slot, &seed);
+        let proposer = seed.proposer_index(active_scratch, eff_scratch, slot);
         es.proposer_lookahead[last_epoch_start + i] = proposer as u64;
     }
 }
@@ -898,9 +862,7 @@ mod tests {
 
     const MAX_EFFECTIVE_BALANCE: u64 = 32 * EFFECTIVE_BALANCE_INCREMENT;
 
-    use silver_beacon_state_data::{
-        EPOCHS_PER_HISTORICAL_VECTOR, EpochGroup, EpochId, EpochState, EpochStateFinalized,
-    };
+    use silver_beacon_state_data::{EpochGroup, EpochId, EpochState, EpochStateFinalized};
 
     fn checkpoint(epoch: Epoch, tag: u8) -> Checkpoint {
         let mut root = [0u8; 32];
@@ -1032,14 +994,11 @@ mod tests {
     /// its own group; `TestState::new` builds the group from this base and
     /// derives the anchor slot from it.
     fn fresh(current_epoch: u64) -> EpochStateFinalized {
-        EpochStateFinalized::from_parts(
-            EpochState {
-                finalized_checkpoint: checkpoint(current_epoch, 0x01),
-                deposit_balance_to_consume: u64::MAX / 2,
-                ..Default::default()
-            },
-            vec![[0u8; 32]; EPOCHS_PER_HISTORICAL_VECTOR].into_boxed_slice(),
-        )
+        EpochStateFinalized::from_state(EpochState {
+            finalized_checkpoint: checkpoint(current_epoch, 0x01),
+            deposit_balance_to_consume: u64::MAX / 2,
+            ..Default::default()
+        })
     }
 
     /// Roll the boundary epoch writer off the inherited `epoch_idx` and run
@@ -1109,14 +1068,11 @@ mod tests {
     #[test]
     fn slashings_reset_clears_only_the_next_bucket() {
         let current_epoch = 5u64;
-        let epoch_base = EpochStateFinalized::from_parts(
-            EpochState {
-                finalized_checkpoint: checkpoint(current_epoch, 0x01),
-                deposit_balance_to_consume: u64::MAX / 2,
-                ..Default::default()
-            },
-            vec![[0u8; 32]; EPOCHS_PER_HISTORICAL_VECTOR].into_boxed_slice(),
-        );
+        let epoch_base = EpochStateFinalized::from_state(EpochState {
+            finalized_checkpoint: checkpoint(current_epoch, 0x01),
+            deposit_balance_to_consume: u64::MAX / 2,
+            ..Default::default()
+        });
 
         let mut st = TestState::new(epoch_base, &[]);
         let (mut view, _, _) = st.view();

@@ -1,9 +1,7 @@
 use flux_profiler::timed;
 use silver_beacon_state_data::{
-    self as common, BeaconBlockHeader, Checkpoint, EPOCHS_PER_HISTORICAL_VECTOR,
-    EPOCHS_PER_SLASHINGS_VECTOR, Eth1Data, ExecutionPayloadHeader, Fork, HISTORICAL_ROOTS_LIMIT,
-    LongtailView, MAX_ETH1_VOTES, SLOTS_PER_HISTORICAL_ROOT, SYNC_COMMITTEE_SIZE, StateReadView,
-    SyncCommittee, effective_randao_mixes_into,
+    BeaconBlockHeader, Checkpoint, EPOCHS_PER_HISTORICAL_VECTOR, EPOCHS_PER_SLASHINGS_VECTOR,
+    ExecutionPayloadHeader, Fork, SLOTS_PER_HISTORICAL_ROOT, StateReadView,
 };
 use silver_common::merkle::*;
 pub use silver_common::ssz_hash::*;
@@ -26,43 +24,11 @@ pub fn hash_checkpoint(cp: &Checkpoint) -> B256 {
     hash_concat(&uint64_chunk(cp.epoch), &cp.root)
 }
 
-pub fn hash_eth1_data(e: &Eth1Data) -> B256 {
-    let chunks = [e.deposit_root, uint64_chunk(e.deposit_count), e.block_hash];
-    merkleize(&chunks)
-}
-
-/// Reusable buffers for the four merged circular-buffer fields, so repeated
-/// `hash_tree_root_state` calls (one per `process_slot`) don't re-allocate the
-/// full rings (randao alone is `EPOCHS_PER_HISTORICAL_VECTOR * 32` = 2 MB).
-pub struct StateHashScratch {
-    pub(crate) block_roots: Vec<B256>,
-    pub(crate) state_roots: Vec<B256>,
-    randao_mixes: Vec<B256>,
-}
-
-impl StateHashScratch {
-    #[allow(clippy::new_without_default)]
-    pub fn new() -> Self {
-        Self {
-            block_roots: Vec::with_capacity(SLOTS_PER_HISTORICAL_ROOT),
-            state_roots: Vec::with_capacity(SLOTS_PER_HISTORICAL_ROOT),
-            randao_mixes: Vec::with_capacity(EPOCHS_PER_HISTORICAL_VECTOR),
-        }
-    }
-}
-
 #[inline]
 #[timed]
-pub fn hash_tree_root_state(rv: &StateReadView, scratch: &mut StateHashScratch) -> B256 {
-    if rv.is_gloas() {
-        BeaconStateGloas::hash_tree_root(rv, scratch)
-    } else {
-        hash_tree_root_state_fulu(rv, scratch)
-    }
+pub fn hash_tree_root_state(rv: &StateReadView) -> B256 {
+    if rv.is_gloas() { BeaconStateGloas::hash_tree_root(rv) } else { hash_tree_root_state_fulu(rv) }
 }
-
-// TODO(perf): full re-merkleization every block + every process_slot.
-// Replace with milhouse-style persistent trees with per-leaf dirty bits.
 
 /// State fields 0..=37, shared by the Fulu and Gloas layouts. Field 24 is the
 /// sole divergence — Fulu hashes `latest_execution_payload_header`, Gloas
@@ -71,22 +37,11 @@ pub fn hash_tree_root_state(rv: &StateReadView, scratch: &mut StateHashScratch) 
 /// Pure read over a fork's [`StateReadView`] — the caller resolves the bundle
 /// (including the boundary tiers, fresh at each call: a boundary
 /// `process_epoch` re-rolls them mid-`process_slots`).
-pub(crate) fn hash_common_fields(
-    rv: &StateReadView,
-    scratch: &mut StateHashScratch,
-    execution_field: B256,
-) -> [B256; 38] {
+pub(crate) fn hash_common_fields(rv: &StateReadView, execution_field: B256) -> [B256; 38] {
     let imm = rv.imm;
     let slot = rv.slot.state();
     let es = rv.epoch.state();
     let lt = rv.longtail.state();
-
-    rv.slot.effective_block_roots_into(&mut scratch.block_roots);
-    rv.slot.effective_state_roots_into(&mut scratch.state_roots);
-    effective_randao_mixes_into(&rv.epoch, &rv.slot, &mut scratch.randao_mixes);
-    let block_roots = scratch.block_roots.as_slice();
-    let state_roots = scratch.state_roots.as_slice();
-    let randao_mixes = scratch.randao_mixes.as_slice();
 
     [
         uint64_chunk(imm.genesis_time),
@@ -94,15 +49,15 @@ pub(crate) fn hash_common_fields(
         uint64_chunk(slot.slot),
         hash_fork(rv.epoch.fork()),
         hash_tree_root_block_header(&slot.latest_block_header),
-        hash_b256_vector(block_roots),
-        hash_b256_vector(state_roots),
+        rv.block_roots.hash_root(),
+        rv.state_roots.hash_root(),
         imm.historical_roots_hash,
-        hash_eth1_data(&slot.eth1_data),
-        hash_eth1_votes(&rv.eth1),
+        slot.eth1_data.leaf(),
+        rv.eth1.hash_root(),
         uint64_chunk(slot.eth1_deposit_index),
         rv.validators.hash_root(),
         rv.balances.hash_root(),
-        hash_b256_vector(randao_mixes),
+        rv.randao_mixes.hash_root(),
         rv.slashings.hash_root(),
         rv.previous_participation.hash_root(),
         rv.current_participation.hash_root(),
@@ -111,12 +66,12 @@ pub(crate) fn hash_common_fields(
         hash_checkpoint(&es.current_justified_checkpoint),
         hash_checkpoint(&es.finalized_checkpoint),
         rv.inactivity.hash_root(),
-        hash_sync_committee(&lt.current_sync_committee),
-        hash_sync_committee(&lt.next_sync_committee),
+        lt.sync_committees().current_root(),
+        lt.sync_committees().next_root(),
         execution_field,
         uint64_chunk(slot.next_withdrawal_index),
         uint64_chunk(slot.next_withdrawal_validator_index),
-        hash_historical_summaries(&rv.longtail),
+        rv.longtail.historical_summaries_root(),
         uint64_chunk(slot.deposit_requests_start_index),
         uint64_chunk(es.deposit_balance_to_consume),
         uint64_chunk(slot.exit_balance_to_consume),
@@ -130,28 +85,14 @@ pub(crate) fn hash_common_fields(
     ]
 }
 
-fn hash_tree_root_state_fulu(rv: &StateReadView, scratch: &mut StateHashScratch) -> B256 {
+fn hash_tree_root_state_fulu(rv: &StateReadView) -> B256 {
     let header = hash_execution_payload_header(&rv.slot.state().latest_execution_payload_header);
-    merkleize(&hash_common_fields(rv, scratch, header))
+    merkleize(&hash_common_fields(rv, header))
 }
 
 // ---------------------------------------------------------------------------
 // Tier hashers
 // ---------------------------------------------------------------------------
-
-#[timed]
-pub fn hash_sync_committee(sc: &SyncCommittee) -> B256 {
-    let pubkeys_root = hash_vector(
-        MerkleStack::new(SYNC_COMMITTEE_SIZE),
-        sc.pubkeys.iter().map(|pk| hash_fixed_bytes(pk)),
-    );
-    hash_concat(&pubkeys_root, &hash_fixed_bytes(&sc.aggregate_pubkey))
-}
-
-#[timed]
-pub fn hash_eth1_votes(eth1: &common::Eth1View) -> B256 {
-    hash_list(MerkleStack::new(MAX_ETH1_VOTES), eth1.iter().map(hash_eth1_data))
-}
 
 #[timed]
 pub fn hash_fork(f: &Fork) -> B256 {
@@ -194,20 +135,8 @@ pub fn hash_execution_payload_header(h: &ExecutionPayloadHeader) -> B256 {
     merkleize(&fields)
 }
 
-#[timed]
-pub fn hash_historical_summaries(longtail: &LongtailView) -> B256 {
-    let n = longtail.historical_summaries_len();
-    hash_list(
-        MerkleStack::new(HISTORICAL_ROOTS_LIMIT),
-        (0..n).map(|i| {
-            let s = longtail.historical_summary(i).unwrap();
-            hash_concat(&s.block_summary_root, &s.state_summary_root)
-        }),
-    )
-}
-
-// Compile-time sanity: spec circular buffer sizes match the slice lengths
-// callers actually pass in.
+// Compile-time sanity: the spec ring sizes the STF indexes with `%` are powers
+// of two, so the bucket arithmetic folds to a mask.
 const _: () = {
     assert!(EPOCHS_PER_HISTORICAL_VECTOR.is_power_of_two());
     assert!(EPOCHS_PER_SLASHINGS_VECTOR.is_power_of_two());

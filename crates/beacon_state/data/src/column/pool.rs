@@ -1,22 +1,40 @@
 use super::snapshot::PageSnapshot;
 use crate::types::B256;
 
-/// 4 KiB page = one OS virtual page (128 × 32-byte nodes). Page-relative
-/// addressing is shift/mask, and `SEG_OFF` aligns progressive segment blocks to
-/// it, so a power of two is load-bearing rather than incidental.
-pub(super) const PAGE_NODES: usize = 4096 / size_of::<B256>();
-const _: () = assert!(PAGE_NODES.is_power_of_two());
+pub type PageId = u32;
 
-pub(super) type Page = [B256; PAGE_NODES];
-pub(super) type PageId = u32;
+/// A column's page, carried as a type rather than a `const PAGE_NODES` because
+/// an associated const may not be an array length in a generic context
+/// (`error: generic parameters may not be used in const operations`).
+pub trait PageArray: AsRef<[B256]> + AsMut<[B256]> + 'static {
+    const LEN: usize;
+    fn zeroed() -> Box<Self>;
+}
 
-pub(super) struct PagePool {
-    pages: Vec<Box<Page>>,
+impl<const N: usize> PageArray for [B256; N] {
+    /// The check sits inside the value so any use of `LEN` const-evals it —
+    /// an assert in its own associated const is never evaluated unless forced.
+    /// Power-of-two keeps page-relative `/` and `%` folding to shift/mask.
+    const LEN: usize = {
+        assert!(N.is_power_of_two(), "PageArray: page size must be a power of two");
+        N
+    };
+
+    fn zeroed() -> Box<Self> {
+        Box::new([[0u8; 32]; N])
+    }
+}
+
+pub(super) struct PagePool<P: PageArray> {
+    /// Boxed per page: a flat `Vec<Page>` would memcpy the whole arena on
+    /// every grow. (`clippy::vec_box` misses this once a page is small.)
+    #[allow(clippy::vec_box)]
+    pages: Vec<Box<P>>,
     refs: Vec<u32>,
     free: Vec<PageId>,
 }
 
-impl PagePool {
+impl<P: PageArray> PagePool<P> {
     pub(super) fn new(hint: usize) -> Self {
         Self { pages: Vec::with_capacity(hint), refs: Vec::with_capacity(hint), free: Vec::new() }
     }
@@ -28,7 +46,7 @@ impl PagePool {
             return id;
         }
         let id = self.pages.len();
-        self.pages.push(Box::new([[0u8; 32]; PAGE_NODES]));
+        self.pages.push(P::zeroed());
         self.refs.push(1);
         id as PageId
     }
@@ -49,11 +67,10 @@ impl PagePool {
 
     /// Re-point `dst` at `src`'s pages, reusing `dst`'s page-table allocation:
     /// release `dst`'s current pages, then adopt `src`'s (bumping their
-    /// refcounts). The finalized base adopting a survivor. Identical entries —
-    /// the bulk, since the two differ only in pages dirtied since the last
-    /// finalize — cancel their release+retain and cost only the compare. A
-    /// released `dst` comes back live: its refs are already gone, so its
-    /// table counts as empty and everything in `src` is retained.
+    /// refcounts). Identical entries — typically the bulk — cancel their
+    /// release+retain and cost only the compare. A released `dst` comes back
+    /// live: its refs are already gone, so its table counts as empty and
+    /// everything in `src` is retained.
     pub(super) fn share_into(&mut self, dst: &mut PageSnapshot, src: &PageSnapshot) {
         let owned = if dst.is_released { &[] } else { dst.pages.as_slice() };
         for i in 0..owned.len().max(src.pages.len()) {
@@ -89,8 +106,8 @@ impl PagePool {
     }
 
     #[inline]
-    pub(super) fn page(&self, id: PageId) -> &Page {
-        &self.pages[id as usize]
+    pub(super) fn page(&self, id: PageId) -> &[B256] {
+        (*self.pages[id as usize]).as_ref()
     }
 
     /// Claim a fresh private page seeded from a flat node slice (the writable
@@ -98,9 +115,9 @@ impl PagePool {
     /// page of a small tree); the remainder is zeroed.
     #[inline]
     pub(super) fn alloc_from_slice(&mut self, src: &[B256]) -> PageId {
-        debug_assert!(src.len() <= PAGE_NODES);
+        debug_assert!(src.len() <= P::LEN);
         let id = self.alloc();
-        let p = &mut self.pages[id as usize];
+        let p: &mut [B256] = (*self.pages[id as usize]).as_mut();
         p[..src.len()].copy_from_slice(src);
         p[src.len()..].fill([0u8; 32]);
         id
@@ -109,7 +126,7 @@ impl PagePool {
 
 #[cfg(test)]
 mod tests {
-    use super::{super::format::TreeFormat, PagePool, PageSnapshot};
+    use super::{super::format::TreeFormat, B256, PagePool, PageSnapshot};
 
     fn snapshot(pages: Vec<u32>) -> PageSnapshot {
         PageSnapshot { pages, format: TreeFormat::default(), count: 1, is_released: false }
@@ -119,7 +136,7 @@ mod tests {
     /// new owner. The second release must not free it again.
     #[test]
     fn double_release_does_not_free_reallocated_page() {
-        let mut pool = PagePool::new(2);
+        let mut pool = PagePool::<[B256; 32]>::new(2);
 
         // Fork a owns one page, then loses and is released.
         let mut a = snapshot(vec![pool.alloc_from_slice(&[[1u8; 32]])]);

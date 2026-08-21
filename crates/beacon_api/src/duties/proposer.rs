@@ -122,7 +122,8 @@ impl DependentEpoch {
         if dependent > view.slot.current_epoch() {
             return Some(head_root);
         }
-        view.slot.recorded_block_root_at((dependent * SLOTS_PER_EPOCH).saturating_sub(1))
+        view.block_roots
+            .recorded_at((dependent * SLOTS_PER_EPOCH).saturating_sub(1), view.slot.slot_number())
     }
 
     fn of(self, epoch: Epoch) -> Epoch {

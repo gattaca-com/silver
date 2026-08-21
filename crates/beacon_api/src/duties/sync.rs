@@ -64,12 +64,8 @@ impl<'a> CommitteeSeats<'a> {
     fn serving(view: &StateReadView<'a>, requested: RequestedEpoch) -> Result<Self, OutOfWindow> {
         let periods_ahead =
             DutyWindow::SeatedSyncCommittees.units_ahead(requested, view.slot.current_epoch())?;
-        let longtail = view.longtail.state();
-        let committee = if periods_ahead == 0 {
-            &longtail.current_sync_committee
-        } else {
-            &longtail.next_sync_committee
-        };
+        let committees = view.longtail.sync_committees();
+        let committee = if periods_ahead == 0 { committees.current() } else { committees.next() };
 
         let pubkeys = &committee.pubkeys;
         let mut by_pubkey: Vec<u32> = (0..SYNC_COMMITTEE_SIZE as u32).collect();

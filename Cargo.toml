@@ -31,6 +31,11 @@ repository = "https://github.com/gattaca-com/silver"
 rust-version = "1.91.0"
 version = "0.0.1"
 
+[profile.release]
+codegen-units = 1
+lto = "fat"
+opt-level = 3
+
 [profile.release-prod]
 codegen-units = 1
 debug = false

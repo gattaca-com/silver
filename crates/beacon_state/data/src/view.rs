@@ -102,26 +102,7 @@ impl BeaconStateOwner {
             s.validators.finalized().validator_count() > 0,
             "apply_block_view: operating on empty finalized state",
         );
-        // Hold the always-written tiers' writers (rolled from the parent's
-        // idx); their ids surface only at `commit`.
-        let view = StateWriterView {
-            imm: &s.immutable,
-            balances: s.balances.roll_from(parent.balances_idx),
-            eth1: s.eth1.roll_from(parent.eth1_idx),
-            pending: s.pending.roll_from(parent.pending_idx),
-            previous_participation: s
-                .previous_participation
-                .roll_from(parent.previous_participation_idx),
-            current_participation: s
-                .current_participation
-                .roll_from(parent.current_participation_idx),
-            inactivity: s.inactivity.roll_from(parent.inactivity_idx),
-            slashings: s.slashings.roll_from(parent.slashings_idx),
-            slot: s.slot_states.roll_from(parent.slot_idx),
-            validators: s.validators.roll_from(parent.validators_idx),
-            builders: s.builders.roll_from(parent.builders_idx),
-        };
-        (view, &mut s.epoch, &mut s.longtail)
+        s.roll_from(parent)
     }
 
     /// Read-only view over the fork named by `state_id` for the writer

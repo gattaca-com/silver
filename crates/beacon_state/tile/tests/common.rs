@@ -12,13 +12,10 @@ use std::{
 use flux::{spine::SpineAdapter, tile::Tile, timing::Nanos};
 use serde::Deserialize;
 use silver_beacon_state::{
-    ssz_hash::{
-        StateHashScratch, hash_tree_root_block_header, hash_tree_root_body_fulu,
-        hash_tree_root_state,
-    },
+    ssz_hash::{hash_tree_root_block_header, hash_tree_root_body_fulu, hash_tree_root_state},
     tile::BeaconStateTile,
 };
-use silver_beacon_state_data::{BeaconBlockHeader, BeaconState, SpecConfig, StateWriterView};
+use silver_beacon_state_data::{BeaconBlockHeader, BeaconState, SpecConfig};
 use silver_common::{
     BeaconStateEvent, DataColumnsEvent, GossipTopic, MessageId, NewGossipMsg, P2pStreamId,
     PeerEvent, RpcInbound, RpcResponseInbound, SilverSpine, StreamProtocol, SyncUpdate, TCache,
@@ -345,27 +342,14 @@ impl Harness {
         let mut bs = BeaconState::decompose(post_ssz, &fulu_from_genesis(), None)
             .expect("decompose post.ssz");
 
-        // Hold a fresh fork's writers directly (`roll_fresh` anchors each at
-        // the decoded base); epoch/longtail stay lazy (`None` reads the base).
-        let mut view = StateWriterView {
-            imm: &bs.immutable,
-            balances: bs.balances.roll_fresh(),
-            eth1: bs.eth1.roll_fresh(),
-            pending: bs.pending.roll_fresh(),
-            previous_participation: bs.previous_participation.roll_fresh(),
-            current_participation: bs.current_participation.roll_fresh(),
-            inactivity: bs.inactivity.roll_fresh(),
-            slashings: bs.slashings.roll_fresh(),
-            slot: bs.slot_states.roll_fresh(),
-            validators: bs.validators.roll_fresh(),
-            builders: bs.builders.roll_fresh(),
-        };
-
-        let mut scratch = StateHashScratch::new();
+        // Anchor a fresh fork at the decoded base and hold its writers;
+        // epoch/longtail stay lazy (`None` reads the base).
+        let anchor = bs.roll_fresh();
+        let (mut view, epoch, longtail) = bs.roll_from(anchor);
 
         let expected = {
-            let rv = view.read(bs.epoch.view_opt(None), bs.longtail.view_opt(None));
-            hash_tree_root_state(&rv, &mut scratch)
+            let rv = view.read(epoch.view_opt(None), longtail.view_opt(None));
+            hash_tree_root_state(&rv)
         };
         let got = self.tile.head_state_root();
         assert_eq!(

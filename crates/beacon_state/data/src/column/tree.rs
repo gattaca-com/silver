@@ -2,6 +2,7 @@ use flux_profiler::timed;
 use silver_ssz::scalar::SszScalar;
 
 use super::{
+    ColumnSpec,
     format::{TreeFormat, progressive_internal_parent},
     list::ListTree,
     pool::PagePool,
@@ -11,40 +12,40 @@ use super::{
 };
 use crate::types::{B256, HashFormat};
 
-pub enum ColumnTree {
-    List(ListTree),
-    ProgressiveList(ProgressiveListTree),
+pub enum ColumnTree<C: ColumnSpec> {
+    List(ListTree<C>),
+    ProgressiveList(ProgressiveListTree<C>),
 }
 
-impl Default for ColumnTree {
+impl<C: ColumnSpec> Default for ColumnTree<C> {
     fn default() -> Self {
         ColumnTree::List(ListTree::default())
     }
 }
 
-impl ColumnTree {
+impl<C: ColumnSpec> ColumnTree<C> {
     #[timed]
-    pub fn from_leaves<V: SszScalar>(
+    pub fn from_leaves(
         cap: usize,
         count: usize,
         leaves: impl Iterator<Item = B256>,
         format: HashFormat,
     ) -> Self {
         match format {
-            HashFormat::Fixed => ColumnTree::List(ListTree::new::<V>(cap, count, leaves)),
-            HashFormat::Progressive => ColumnTree::ProgressiveList(
-                ProgressiveListTree::from_leaves::<V>(cap, count, leaves),
-            ),
+            HashFormat::Fixed => ColumnTree::List(ListTree::new(cap, count, leaves)),
+            HashFormat::Progressive => {
+                ColumnTree::ProgressiveList(ProgressiveListTree::from_leaves(cap, count, leaves))
+            }
         }
     }
 
-    pub fn migrate_to_progressive<V: SszScalar>(&mut self) {
+    pub fn migrate_to_progressive(&mut self) {
         let ColumnTree::List(list) = self else { return };
-        *self = ColumnTree::ProgressiveList(ProgressiveListTree::from_list::<V>(list));
+        *self = ColumnTree::ProgressiveList(ProgressiveListTree::from_list(list));
     }
 
     #[inline]
-    fn store(&self) -> &NodeStore {
+    fn store(&self) -> &NodeStore<C> {
         match self {
             ColumnTree::List(t) => &t.store,
             ColumnTree::ProgressiveList(t) => &t.store,
@@ -52,11 +53,21 @@ impl ColumnTree {
     }
 
     #[inline]
-    fn store_mut(&mut self) -> &mut NodeStore {
+    fn store_mut(&mut self) -> &mut NodeStore<C> {
         match self {
             ColumnTree::List(t) => &mut t.store,
             ColumnTree::ProgressiveList(t) => &mut t.store,
         }
+    }
+
+    #[inline]
+    fn data_start(&self) -> usize {
+        self.format().data_start::<C>()
+    }
+
+    #[inline]
+    fn leaf_pos(&self, chunk: usize) -> usize {
+        self.format().leaf_pos::<C>(chunk)
     }
 
     #[inline]
@@ -86,7 +97,12 @@ impl ColumnTree {
     /// `loaded` is the table our content already matches, so only mismatched
     /// or dirtied pages get copied. Clears the dirty mask.
     #[timed]
-    pub(super) fn load(&mut self, pool: &PagePool, loaded: &PageSnapshot, target: &PageSnapshot) {
+    pub(super) fn load(
+        &mut self,
+        pool: &PagePool<C::Page>,
+        loaded: &PageSnapshot,
+        target: &PageSnapshot,
+    ) {
         let format = target.format();
         if self.format() != format {
             let store = std::mem::take(self.store_mut());
@@ -99,17 +115,17 @@ impl ColumnTree {
                 }
             };
         }
-        self.store_mut().load_diff(pool, loaded, target, format.num_nodes());
+        self.store_mut().load_diff(pool, loaded, target, format.num_nodes::<C>());
     }
 
     #[timed]
-    pub(super) fn to_snapshot(&self, pool: &mut PagePool) -> PageSnapshot {
+    pub(super) fn to_snapshot(&self, pool: &mut PagePool<C::Page>) -> PageSnapshot {
         self.store().to_snapshot(pool, self.format())
     }
 
     pub(super) fn commit_into(
         &self,
-        pool: &mut PagePool,
+        pool: &mut PagePool<C::Page>,
         dst: &mut PageSnapshot,
         parent: &PageSnapshot,
     ) {
@@ -124,7 +140,10 @@ impl ColumnTree {
         self.store_mut().mark_all_dirty();
     }
 
-    pub(super) fn copy_changed_pages_from(&mut self, src: &ColumnTree) {
+    pub(super) fn copy_changed_pages_from<D>(&mut self, src: &ColumnTree<D>)
+    where
+        D: ColumnSpec<Val = C::Val, Page = C::Page>,
+    {
         debug_assert_eq!(self.format(), src.format(), "rotate needs a same-format source");
         self.store_mut().copy_changed_pages_from(src.store());
     }
@@ -137,14 +156,14 @@ impl ColumnTree {
         self.mark_all_dirty();
     }
 
-    pub fn iter_vals<V: SszScalar>(&self) -> impl Iterator<Item = V> + '_ {
-        let sz = size_of::<V>();
+    pub fn iter_vals(&self) -> impl Iterator<Item = C::Val> + '_ {
+        let sz = size_of::<C::Val>();
         let count = self.count();
-        let data_start = self.format().data_start();
+        let data_start = self.data_start();
         let bytes = &self.store().nodes[data_start..].as_flattened()[..count * sz];
         (0..count).map(move |i| {
-            let mut out = [V::default()];
-            V::read_ssz_slice(&mut out, &bytes[i * sz..i * sz + sz]);
+            let mut out = [C::Val::default()];
+            <C::Val>::read_ssz_slice(&mut out, &bytes[i * sz..i * sz + sz]);
             out[0]
         })
     }
@@ -162,47 +181,28 @@ impl ColumnTree {
             TreeFormat::Fixed { .. } => store.mark_dirty_node(data_node, 0),
             TreeFormat::Progressive { .. } => {
                 store.mark_dirty_page(data_node);
-                if let Some((parent, seg_off)) = progressive_internal_parent(chunk) {
+                if let Some((parent, seg_off)) = progressive_internal_parent::<C>(chunk) {
                     store.mark_dirty_node(parent, seg_off);
                 }
             }
         }
     }
 
-    pub fn add_at(&mut self, idx: u32, delta: i64) {
-        let k = u64::VALS_PER_CHUNK as u32;
-        let chunk = (idx / k) as usize;
-        let data_node = self.format().leaf_pos(chunk);
-        {
-            let store = self.store_mut();
-            debug_assert!(data_node < store.nodes.len(), "index out of range");
-            let leaf = &mut store.nodes[data_node];
-            let lane = (idx % k) as usize;
-            let old = u64::lane(leaf, lane);
-            let new = old.saturating_add_signed(delta);
-            if new == old {
-                return;
-            }
-            u64::set_lane(leaf, lane, new);
-        }
-        self.seed_write(chunk, data_node);
-    }
-
     /// Write one value without rehashing; queue its chunk for a later
     /// [`rehash_unsorted`](Self::rehash_unsorted).
-    pub fn set_val_deferred<V: SszScalar>(&mut self, idx: u32, v: V) {
-        let k = V::VALS_PER_CHUNK as u32;
+    pub fn set_val_deferred(&mut self, idx: u32, v: C::Val) {
+        let k = C::VALS_PER_CHUNK as u32;
         let chunk = (idx / k) as usize;
-        let data_node = self.format().leaf_pos(chunk);
+        let data_node = self.leaf_pos(chunk);
         {
             let store = self.store_mut();
             debug_assert!(data_node < store.nodes.len(), "index out of range");
             let leaf = &mut store.nodes[data_node];
             let lane = (idx % k) as usize;
-            if V::lane(leaf, lane) == v {
+            if <C::Val>::lane(leaf, lane) == v {
                 return;
             }
-            V::set_lane(leaf, lane, v);
+            <C::Val>::set_lane(leaf, lane, v);
         }
         self.seed_write(chunk, data_node);
     }
@@ -212,7 +212,7 @@ impl ColumnTree {
         !self.store().dirty_chunks.is_empty()
     }
 
-    pub fn set_vals<V: SszScalar>(&mut self, changes: &[(u32, V)]) {
+    pub fn set_vals(&mut self, changes: &[(u32, C::Val)]) {
         if changes.is_empty() {
             return;
         }
@@ -221,17 +221,17 @@ impl ColumnTree {
             "set_vals needs ascending, distinct indices",
         );
         debug_assert!(self.store().dirty_chunks.is_empty(), "unhashed add_at batch pending");
-        let k = V::VALS_PER_CHUNK as u32;
+        let k = C::VALS_PER_CHUNK as u32;
         let format = self.format();
         for group in changes.chunk_by(|a, b| a.0 / k == b.0 / k) {
             let chunk = (group[0].0 / k) as usize;
-            let data_node = format.leaf_pos(chunk);
+            let data_node = format.leaf_pos::<C>(chunk);
             {
                 let store = self.store_mut();
                 debug_assert!(data_node < store.nodes.len(), "index out of range");
                 let leaf = &mut store.nodes[data_node];
                 for &(idx, v) in group {
-                    V::set_lane(leaf, (idx % k) as usize, v);
+                    <C::Val>::set_lane(leaf, (idx % k) as usize, v);
                 }
             }
             self.seed_write(chunk, data_node);
@@ -256,10 +256,10 @@ impl ColumnTree {
         }
     }
 
-    pub fn append_empty<V: SszScalar>(&mut self) -> u32 {
+    pub fn append_empty(&mut self) -> u32 {
         let idx = self.count() as u32;
         self.store_mut().count += 1;
-        if self.count().div_ceil(V::VALS_PER_CHUNK) > self.format().data_capacity() {
+        if self.count().div_ceil(C::VALS_PER_CHUNK) > self.format().data_capacity() {
             match self {
                 ColumnTree::List(_) => {
                     debug_assert!(false, "append past leaf capacity — cap headroom exhausted")
@@ -268,13 +268,34 @@ impl ColumnTree {
             }
         }
 
-        let k = V::VALS_PER_CHUNK;
-        let data_node = self.format().leaf_pos(idx as usize / k);
+        let k = C::VALS_PER_CHUNK;
+        let data_node = self.leaf_pos(idx as usize / k);
         debug_assert!(
-            V::lane(self.node(data_node), idx as usize % k) == V::default(),
+            <C::Val>::lane(self.node(data_node), idx as usize % k) == C::Val::default(),
             "append over a non-zero leaf slot",
         );
 
         idx
+    }
+}
+
+impl<C: ColumnSpec<Val = u64>> ColumnTree<C> {
+    pub fn add_at(&mut self, idx: u32, delta: i64) {
+        let k = C::VALS_PER_CHUNK as u32;
+        let chunk = (idx / k) as usize;
+        let data_node = self.leaf_pos(chunk);
+        {
+            let store = self.store_mut();
+            debug_assert!(data_node < store.nodes.len(), "index out of range");
+            let leaf = &mut store.nodes[data_node];
+            let lane = (idx % k) as usize;
+            let old = u64::lane(leaf, lane);
+            let new = old.saturating_add_signed(delta);
+            if new == old {
+                return;
+            }
+            u64::set_lane(leaf, lane, new);
+        }
+        self.seed_write(chunk, data_node);
     }
 }

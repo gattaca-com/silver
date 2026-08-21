@@ -13,7 +13,7 @@ use blst::min_pk::PublicKey;
 use crate::{
     BeaconState,
     decompose::{FULU_FIXED_PART, gloas::GLOAS_FIXED_PART},
-    types::{B256, Checkpoint, Eth1Data, SLOTS_PER_EPOCH, SyncCommittee},
+    types::{B256, Checkpoint, Eth1Data, SyncCommittee},
 };
 
 // SSZ-serialised sizes of the fixed-width records (Fulu); mirror `decompose`.
@@ -120,7 +120,7 @@ fn w_u32<W: Write>(w: &mut W, v: u32) -> io::Result<()> {
 
 /// Bulk-write a contiguous `[B256]` as raw bytes. `B256` is `[u8; 32]`
 /// (align 1), so the reinterpret is sound and endianness-agnostic — matching
-/// the inverse cast in `decompose::fill_block_state_roots`.
+/// the inverse casts in `decompose`.
 #[inline]
 pub(crate) fn write_b256_slice<W: Write>(w: &mut W, s: &[B256]) -> io::Result<()> {
     let bytes = unsafe { std::slice::from_raw_parts(s.as_ptr().cast::<u8>(), s.len() * 32) };
@@ -134,7 +134,7 @@ impl BeaconState {
         let dep = self.pending.deposits.with_finalized_locked(|q| q.len());
         let wdr = self.pending.partial_withdrawals.with_finalized_locked(|q| q.len());
         let con = self.pending.consolidations.with_finalized_locked(|q| q.len());
-        let summaries = self.longtail.with_finalized_locked(|lt| lt.historical_summaries.len());
+        let summaries = self.longtail.with_finalized_locked(|lt| lt.historical_summaries_len());
         let sl = self.slot_states.finalized().state();
         [
             self.immutable.historical_roots.len() * 32,
@@ -161,7 +161,7 @@ impl BeaconState {
         let wdr = self.pending.partial_withdrawals.with_finalized_locked(|q| q.len());
         let con = self.pending.consolidations.with_finalized_locked(|q| q.len());
         let bpw = self.pending.builder_withdrawals.with_finalized_locked(|q| q.len());
-        let summaries = self.longtail.with_finalized_locked(|lt| lt.historical_summaries.len());
+        let summaries = self.longtail.with_finalized_locked(|lt| lt.historical_summaries_len());
         let sl = self.slot_states.finalized().state();
         [
             self.immutable.historical_roots.len() * 32,
@@ -350,8 +350,7 @@ impl BeaconState {
     /// variable offsets (historical_roots..inactivity_scores).
     fn write_fixed_prefix<W: Write>(&self, w: &mut W, off: &[u32]) -> io::Result<()> {
         let imm = &self.immutable;
-        let slot_base = self.slot_states.finalized();
-        let sl = slot_base.state();
+        let sl = self.slot_states.finalized().state();
         let epoch_base = self.epoch.finalized();
         let est = epoch_base.state();
         let lt = self.longtail.finalized();
@@ -370,8 +369,9 @@ impl BeaconState {
         w.write_all(&h.state_root)?;
         w.write_all(&h.body_root)?;
 
-        // F5/F6 block_roots, state_roots (rings stored in spec index order).
-        slot_base.write_roots_ssz(w)?;
+        // F5/F6 block_roots, state_roots.
+        self.block_roots.write_ssz(w)?;
+        self.state_roots.write_ssz(w)?;
 
         // F7_OFF historical_roots
         w_u32(w, off[0])?;
@@ -385,15 +385,8 @@ impl BeaconState {
         w_u32(w, off[2])?;
         w_u32(w, off[3])?;
 
-        // F13 randao_mixes — the current epoch's bucket reaches the array tier
-        // only at the epoch boundary, so mid-epoch the live value is
-        // `randao_mix_current` (as `effective_randao_mixes_into` substitutes it
-        // for hashing).
-        let current_epoch = (sl.slot / SLOTS_PER_EPOCH) as usize;
-        let randao_curr = current_epoch % epoch_base.randao_mixes.len();
-        write_b256_slice(w, &epoch_base.randao_mixes[..randao_curr])?;
-        w.write_all(&sl.randao_mix_current)?;
-        write_b256_slice(w, &epoch_base.randao_mixes[randao_curr + 1..])?;
+        // F13 randao_mixes.
+        self.randao_mixes.write_ssz(w)?;
         // F14 slashings.
         self.slashings.write_ssz(w)?;
 
@@ -409,8 +402,8 @@ impl BeaconState {
         // F21_OFF inactivity_scores
         w_u32(w, off[6])?;
         // F22/F23 sync committees
-        write_sync_committee(w, &lt.current_sync_committee)?;
-        write_sync_committee(w, &lt.next_sync_committee)
+        write_sync_committee(w, lt.sync_committees().current())?;
+        write_sync_committee(w, lt.sync_committees().next())
     }
 
     /// Fixed-part fields shared by both forks' tails.
@@ -478,7 +471,7 @@ impl BeaconState {
         w_u32(w, offs[13])?;
         w_u32(w, offs[14])?;
         // ptc_window (Vector[Vector[ValidatorIndex, PTC_SIZE], PTC_WINDOW_LEN])
-        for committee in epoch_base.ptc_window.iter() {
+        for committee in epoch_base.ptc_window.committees().iter() {
             for v in committee.iter() {
                 w_u64(w, *v)?;
             }
@@ -610,8 +603,8 @@ pub fn decode_checkpoint_pubkeys(bytes: &[u8]) -> Result<Vec<PublicKey>, Pubkeys
 #[cfg(test)]
 mod tests {
     use crate::{
-        BeaconState, EpochGroup, EpochStateFinalized, SLOTS_PER_HISTORICAL_ROOT, SlotState,
-        SlotStateFinalized, SlotStateGroup, SpecConfig, decode_checkpoint_pubkeys, encode::Section,
+        BeaconState, EpochGroup, EpochStateFinalized, SpecConfig, decode_checkpoint_pubkeys,
+        encode::Section,
     };
 
     /// `encode → decompose → encode` must be a byte-exact fixed point, and the
@@ -679,40 +672,6 @@ mod tests {
             }
         }
         assert_eq!(once, streamed, "gloas chunk-streamed SSZ differs from one-pass");
-    }
-
-    /// Regression: a checkpoint persisted mid-epoch must encode the *live*
-    /// current-epoch randao mix (the `randao_mix_current` cache), not the stale
-    /// array bucket — that bucket is only refreshed at the epoch boundary.
-    /// `slashings` no longer has an accumulator: its column is the live state.
-    #[test]
-    fn encode_uses_live_current_epoch_randao_mix() {
-        let cur = 3usize;
-        let mut bs = BeaconState::empty_test(0);
-
-        // A stale ring bucket, distinct from the live `randao_mix_current` the
-        // encode path must emit instead.
-        let mut epoch = EpochStateFinalized::default();
-        epoch.randao_mixes[cur] = [0xAA; 32];
-        bs.epoch = EpochGroup::new(epoch);
-
-        let zero_roots = || vec![[0u8; 32]; SLOTS_PER_HISTORICAL_ROOT].into_boxed_slice();
-        let slot = SlotState {
-            slot: 96, // epoch 3
-            randao_mix_current: [0xBB; 32],
-            ..Default::default()
-        };
-        bs.slot_states =
-            SlotStateGroup::new(SlotStateFinalized::from_parts(slot, zero_roots(), zero_roots()));
-
-        let mut ssz = Vec::with_capacity(bs.ssz_len());
-        bs.encode_ssz(&mut ssz).unwrap();
-        let decoded = BeaconState::decompose(&ssz, &SpecConfig::mainnet(), None).unwrap();
-
-        let de = decoded.epoch.finalized();
-        let ds = decoded.slot_states.finalized().state();
-        assert_eq!(de.randao_mixes[cur], [0xBB; 32], "randao current bucket = live");
-        assert_eq!(ds.randao_mix_current, [0xBB; 32]);
     }
 
     /// Write the decompressed-pubkey sidecar, decode it, rebuild the validators

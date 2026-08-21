@@ -1,12 +1,13 @@
 use blst::min_pk::PublicKey;
 
 use crate::{
-    BalancesReader, BalancesWriteView, BuildersView, BuildersWriteView, Current, EpochId,
-    EpochView, Eth1View, Eth1WriteView, InactivityView, InactivityWriteView, LongtailId,
+    BalancesReader, BalancesWriteView, BlockRoots, BuildersView, BuildersWriteView, Current,
+    EpochId, EpochView, Eth1View, Eth1WriteView, InactivityView, InactivityWriteView, LongtailId,
     LongtailView, ParticipationView, ParticipationWriteView, PendingView, PendingWriteView,
-    Previous, SlashingsView, SlashingsWriteView, SlotStateView, SlotStateWriteView, ValidatorsView,
+    Previous, RandaoMixesView, RandaoMixesWriteView, RootsView, RootsWriteView, SlashingsView,
+    SlashingsWriteView, SlotStateView, SlotStateWriteView, StateRoots, ValidatorsView,
     ValidatorsWriteView, Withdrawals,
-    types::{B256, BLSPubkey, Epoch, Immutable, SLOTS_PER_EPOCH, StateId},
+    types::{BLSPubkey, Immutable, StateId},
 };
 
 /// Per-tier read-view bundle over a fork at a published slot id, for the
@@ -29,66 +30,12 @@ pub struct StateReadView<'a> {
     pub current_participation: ParticipationView<'a, Current>,
     pub inactivity: InactivityView<'a>,
     pub slashings: SlashingsView<'a>,
+    pub block_roots: RootsView<'a, BlockRoots>,
+    pub state_roots: RootsView<'a, StateRoots>,
+    pub randao_mixes: RandaoMixesView<'a>,
     pub slot: SlotStateView<'a>,
     pub validators: ValidatorsView<'a>,
     pub builders: BuildersView<'a>,
-}
-
-// The base+delta merge for the cross-tier reads (the circular-buffer rings
-// hashed by `hash_tree_root_state`) lives here as free fns over the individual
-// tier read views, so a leaf can call them with the subset of views it holds.
-
-/// Merged `randao_mixes` ring. Overlays per-completed-epoch delta entries
-/// (written to both `e % EHV` and `(e+1) % EHV`), then substitutes the
-/// per-block accumulator at the current epoch's bucket. `epoch`/`slot` are the
-/// tier read views.
-pub fn effective_randao_mixes_into(
-    epoch: &EpochView<'_>,
-    slot: &SlotStateView<'_>,
-    out: &mut Vec<B256>,
-) {
-    out.clear();
-    out.extend_from_slice(epoch.finalized_randao_mixes());
-    let cap = out.len();
-    let fin_epoch = (slot.base_state().slot / SLOTS_PER_EPOCH) as usize;
-    for (k, m) in epoch.delta_randao_mixes().iter().enumerate() {
-        let e = fin_epoch + k;
-        out[e % cap] = *m;
-        out[(e + 1) % cap] = *m;
-    }
-    let current_idx = (slot.state().slot / SLOTS_PER_EPOCH) as usize % cap;
-    out[current_idx] = slot.state().randao_mix_current;
-}
-
-/// `randao_mix(epoch)` with the epoch-delta overlay; the circular-buffer
-/// offset comes from the slot tier's finalized base.
-pub fn randao_mix_at_epoch(epoch: &EpochView<'_>, slot: &SlotStateView<'_>, e: Epoch) -> B256 {
-    let fin_epoch = slot.base_state().slot / SLOTS_PER_EPOCH;
-    epoch.randao_mix_at_epoch(e, fin_epoch)
-}
-
-/// Append a validator across the lockstep tiers (registry + balances +
-/// participation + inactivity all grow together so every column stays the same
-/// length). New validator → balance/participation/inactivity 0. Returns the
-/// new validator index.
-#[inline]
-pub fn append_validator(
-    view: &mut StateWriterView<'_>,
-    pubkey: BLSPubkey,
-    pubkey_decompressed: PublicKey,
-    credentials: Withdrawals,
-) -> u32 {
-    let idx = view.validators.append(pubkey, pubkey_decompressed, credentials);
-    let bal_idx = view.balances.append_empty();
-    debug_assert_eq!(idx, bal_idx, "validator/balance append indices must agree");
-    let prev_idx = view.previous_participation.append_empty();
-    let cur_idx = view.current_participation.append_empty();
-    let inact_idx = view.inactivity.append_empty();
-    debug_assert!(
-        idx == prev_idx && idx == cur_idx && idx == inact_idx,
-        "validator/participation/inactivity append indices must agree",
-    );
-    idx
 }
 
 /// Holder of a fork's per-slot tier writers (by value) — what the STF takes.
@@ -105,6 +52,9 @@ pub struct StateWriterView<'a> {
     pub current_participation: ParticipationWriteView<'a, Current>,
     pub inactivity: InactivityWriteView<'a>,
     pub slashings: SlashingsWriteView<'a>,
+    pub block_roots: RootsWriteView<'a, BlockRoots>,
+    pub state_roots: RootsWriteView<'a, StateRoots>,
+    pub randao_mixes: RandaoMixesWriteView<'a>,
     pub slot: SlotStateWriteView<'a>,
     pub validators: ValidatorsWriteView<'a>,
     pub builders: BuildersWriteView<'a>,
@@ -118,6 +68,30 @@ impl<'a> StateReadView<'a> {
 }
 
 impl<'a> StateWriterView<'a> {
+    /// Append a validator across the lockstep tiers (registry + balances +
+    /// participation + inactivity all grow together so every column stays the
+    /// same length). New validator → balance/participation/inactivity 0.
+    /// Returns the new validator index.
+    #[inline]
+    pub fn append_validator(
+        &mut self,
+        pubkey: BLSPubkey,
+        pubkey_decompressed: PublicKey,
+        credentials: Withdrawals,
+    ) -> u32 {
+        let idx = self.validators.append(pubkey, pubkey_decompressed, credentials);
+        let bal_idx = self.balances.append_empty();
+        debug_assert_eq!(idx, bal_idx, "validator/balance append indices must agree");
+        let prev_idx = self.previous_participation.append_empty();
+        let cur_idx = self.current_participation.append_empty();
+        let inact_idx = self.inactivity.append_empty();
+        debug_assert!(
+            idx == prev_idx && idx == cur_idx && idx == inact_idx,
+            "validator/participation/inactivity append indices must agree",
+        );
+        idx
+    }
+
     pub fn adopt_gloas(&mut self) {
         self.balances.migrate_to_progressive();
         self.inactivity.migrate_to_progressive();
@@ -140,6 +114,9 @@ impl<'a> StateWriterView<'a> {
             current_participation_idx: self.current_participation.commit(),
             inactivity_idx: self.inactivity.commit(),
             slashings_idx: self.slashings.commit(),
+            block_roots_idx: self.block_roots.commit(),
+            state_roots_idx: self.state_roots.commit(),
+            randao_mixes_idx: self.randao_mixes.commit(),
             slot_idx: self.slot.commit(),
             builders_idx: self.builders.commit(),
         }
@@ -162,6 +139,9 @@ impl<'a> StateWriterView<'a> {
             current_participation: self.current_participation.reader(),
             inactivity: self.inactivity.reader(),
             slashings: self.slashings.reader(),
+            block_roots: self.block_roots.reader(),
+            state_roots: self.state_roots.reader(),
+            randao_mixes: self.randao_mixes.reader(),
             slot: self.slot.reader(),
             validators: self.validators.hashed_reader(),
             builders: self.builders.hashed_reader(),
@@ -208,26 +188,7 @@ mod tests {
         }
 
         fn view(&mut self) -> (StateWriterView<'_>, &mut EpochGroup, &mut LongtailGroup) {
-            let sid = self.state_id;
-            let bs = &mut self.bs;
-            let view = StateWriterView {
-                imm: &bs.immutable,
-                balances: bs.balances.roll_from(sid.balances_idx),
-                eth1: bs.eth1.roll_from(sid.eth1_idx),
-                pending: bs.pending.roll_from(sid.pending_idx),
-                previous_participation: bs
-                    .previous_participation
-                    .roll_from(sid.previous_participation_idx),
-                current_participation: bs
-                    .current_participation
-                    .roll_from(sid.current_participation_idx),
-                inactivity: bs.inactivity.roll_from(sid.inactivity_idx),
-                slashings: bs.slashings.roll_from(sid.slashings_idx),
-                slot: bs.slot_states.roll_from(sid.slot_idx),
-                validators: bs.validators.roll_from(sid.validators_idx),
-                builders: bs.builders.roll_from(sid.builders_idx),
-            };
-            (view, &mut bs.epoch, &mut bs.longtail)
+            self.bs.roll_from(self.state_id)
         }
 
         /// Roll → mutate → commit → write the new bundle back: the production
@@ -248,7 +209,7 @@ mod tests {
         fn append(&mut self, pubkey: BLSPubkey, credentials: Withdrawals) -> u32 {
             let sid = self.state_id;
             let (mut v, _, _) = self.view();
-            let idx = append_validator(&mut v, pubkey, Default::default(), credentials);
+            let idx = v.append_validator(pubkey, Default::default(), credentials);
             self.state_id = v.commit(sid.epoch_idx, sid.longtail_idx);
             idx
         }

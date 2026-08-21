@@ -1,19 +1,11 @@
 use silver_beacon_state_data::{
-    EpochView, EpochWriteView, MIN_SEED_LOOKAHEAD, SLOTS_PER_EPOCH, SlotStateView, StateWriterView,
-    ValidatorsView,
+    EpochView, EpochWriteView, MIN_SEED_LOOKAHEAD, RandaoMixesView, SLOTS_PER_EPOCH,
+    StateWriterView, ValidatorsView,
     gloas::{PTC_SIZE, PtcCommittee},
-    types::B256,
 };
 
-use crate::{
-    bls::DOMAIN_PTC_ATTESTER,
-    merkle::sha256,
-    shuffling::{MAX_EFFECTIVE_BALANCE, get_seed_from_state},
-    stf::EpochShuffling,
-};
+use crate::{bls::DOMAIN_PTC_ATTESTER, shuffling::Seed, stf::EpochShuffling};
 
-/// `2**16 - 1` — the 16-bit acceptance ceiling in balance-weighted selection.
-const MAX_RANDOM_16: u64 = 0xFFFF;
 const SPE: usize = SLOTS_PER_EPOCH as usize;
 
 pub(crate) fn get_ptc<'a>(
@@ -33,19 +25,18 @@ pub(crate) fn get_ptc<'a>(
         }
         (target_epoch - state_epoch + 1) * SLOTS_PER_EPOCH + slot % SLOTS_PER_EPOCH
     };
-    epoch.ptc_window().get(idx as usize)
+    epoch.ptc_window().committees().get(idx as usize)
 }
 
 pub(crate) fn fill_epoch_ptc(
     out: &mut [PtcCommittee],
     validators: &ValidatorsView,
-    slot: &SlotStateView,
-    epoch: &EpochView,
+    randao: &RandaoMixesView,
     target_epoch: u64,
     active: &mut Vec<u32>,
 ) {
-    let shuffling = EpochShuffling::from_views(validators, slot, epoch, target_epoch, active);
-    let ptc_seed = get_seed_from_state(epoch, slot, target_epoch, DOMAIN_PTC_ATTESTER);
+    let shuffling = EpochShuffling::from_views(validators, randao, target_epoch, active);
+    let ptc_seed = Seed::from_randao(randao, target_epoch, DOMAIN_PTC_ATTESTER);
     for (i, dst) in out.iter_mut().enumerate() {
         *dst = compute_ptc(
             validators,
@@ -61,7 +52,7 @@ pub(crate) fn fill_epoch_ptc(
 pub(crate) fn compute_ptc(
     validators: &ValidatorsView,
     shuffling: &EpochShuffling<'_>,
-    epoch_seed: &B256,
+    epoch_seed: &Seed,
     slot: u64,
 ) -> PtcCommittee {
     let mut committee = [0u64; PTC_SIZE];
@@ -73,12 +64,7 @@ pub(crate) fn compute_ptc(
         return committee;
     }
 
-    let mut seed_input = [0u8; 40];
-    seed_input[..32].copy_from_slice(epoch_seed);
-    seed_input[32..40].copy_from_slice(&slot.to_le_bytes());
-    let seed = sha256(&seed_input);
-
-    balance_weighted_select(validators, &indices, &seed, &mut committee);
+    balance_weighted_select(validators, &indices, &epoch_seed.for_slot(slot), &mut committee);
     committee
 }
 
@@ -88,29 +74,16 @@ pub(crate) fn compute_ptc(
 fn balance_weighted_select(
     validators: &ValidatorsView,
     indices: &[u32],
-    seed: &B256,
+    seed: &Seed,
     out: &mut [u64],
 ) {
     let total = indices.len() as u64;
     let mut i: u64 = 0;
     let mut filled = 0;
-    let mut block_no = u64::MAX;
-    let mut block_hash = [0u8; 32];
+    let mut draws = seed.draws();
     while filled < out.len() {
         let next = (i % total) as usize;
-        let candidate = indices[next] as usize;
-        let block = i / 16;
-        if block != block_no {
-            let mut buf = [0u8; 40];
-            buf[..32].copy_from_slice(seed);
-            buf[32..40].copy_from_slice(&block.to_le_bytes());
-            block_hash = sha256(&buf);
-            block_no = block;
-        }
-        let offset = ((i % 16) * 2) as usize;
-        let random = u16::from_le_bytes([block_hash[offset], block_hash[offset + 1]]) as u64;
-        if validators.effective_balance(candidate) * MAX_RANDOM_16 >= MAX_EFFECTIVE_BALANCE * random
-        {
+        if draws.accept(i, validators.effective_balance(indices[next] as usize)) {
             out[filled] = indices[next] as u64;
             filled += 1;
         }
@@ -125,8 +98,7 @@ pub fn process_ptc_window(view: &StateWriterView, epoch: &mut EpochWriteView, cu
     fill_epoch_ptc(
         &mut new_epoch,
         &view.validators.reader(),
-        &view.slot.reader(),
-        &epoch.reader(),
+        &view.randao_mixes.reader(),
         target_epoch,
         &mut active,
     );
