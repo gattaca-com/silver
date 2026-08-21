@@ -122,6 +122,15 @@ impl PeerState {
     }
 
     /// Inserts or updates msg cache entry, returning previous count
+    /// Score for gossip-domain gates (`gossip_threshold` comparisons):
+    /// excludes P5 — an RPC-domain penalty must not silence our gossip
+    /// toward the peer, which starves their P3 view of us and gets us
+    /// pruned/disconnected in return. Gossip-domain offences (P4, P7)
+    /// still count.
+    pub fn gossip_gate_score(&self) -> f64 {
+        self.cached_score - self.last_breakdown.p5_application
+    }
+
     pub fn msg_cache_insert(&mut self, msg_id: MessageId) -> u32 {
         self.msg_cache.upsert(msg_id)
     }

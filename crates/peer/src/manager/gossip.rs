@@ -278,7 +278,7 @@ impl PeerManager {
             //    below it — a promise without a sent IWANT can only ever expire).
             let should_iwant = !already_seen &&
                 peer.ihaves_received <= self.params.max_ihave_length &&
-                peer.cached_score >= self.params.gossip_threshold &&
+                peer.gossip_gate_score() >= self.params.gossip_threshold &&
                 peer.iwant_ids_sent < self.params.max_ihave_length;
             if should_iwant {
                 peer.iwant_ids_sent = peer.iwant_ids_sent.saturating_add(1);
@@ -314,7 +314,7 @@ impl PeerManager {
             // exceeds retransmission threshold
             return;
         }
-        if peer.cached_score < self.params.gossip_threshold {
+        if peer.gossip_gate_score() < self.params.gossip_threshold {
             return;
         }
         emit(PeerControl::P2pSend(P2pSend::Gossip(GossipMsgOut { peer_id: conn, tcache })));
@@ -411,7 +411,7 @@ impl PeerManager {
             let Some(peer) = self.peers.get(conn) else {
                 continue;
             };
-            if peer.cached_score < self.params.gossip_threshold {
+            if peer.gossip_gate_score() < self.params.gossip_threshold {
                 continue;
             }
             emit(PeerControl::P2pSend(P2pSend::Gossip(GossipMsgOut {
@@ -444,7 +444,7 @@ impl PeerManager {
             if mesh_for_topic.is_some_and(|m| m.contains(conn)) {
                 continue; // mesh peers get full-body forwards, not IHAVE
             }
-            if peer.cached_score < self.params.gossip_threshold {
+            if peer.gossip_gate_score() < self.params.gossip_threshold {
                 continue;
             }
             emit(PeerControl::P2pSend(P2pSend::Gossip(GossipMsgOut {
@@ -470,7 +470,7 @@ impl PeerManager {
         let Some(peer) = self.peers.get(&conn) else {
             return;
         };
-        if peer.cached_score < self.params.gossip_threshold {
+        if peer.gossip_gate_score() < self.params.gossip_threshold {
             return;
         }
         emit(PeerControl::P2pSend(P2pSend::Gossip(GossipMsgOut { peer_id: conn, tcache })));
@@ -496,7 +496,7 @@ impl PeerManager {
             if *peer == sender {
                 continue;
             }
-            if peer_state.cached_score < self.params.gossip_threshold {
+            if peer_state.gossip_gate_score() < self.params.gossip_threshold {
                 continue;
             }
             if peer_state.msg_cache_contains(&msg_hash) {
@@ -1661,6 +1661,8 @@ mod tests {
         let mut params = ScoreParams::default();
         params.iwant_followup = Duration::from_secs(3);
         params.heartbeat_interval = Duration::from_millis(100);
+        // Zero free budget so a single broken promise shows in the score.
+        params.behaviour_penalty_threshold = 0.0;
         let (mut mgr, mut cap) = fixture(vec![], params);
         connect(&mut mgr, &mut cap, 1, 1, now);
         connect(&mut mgr, &mut cap, 2, 2, now);
@@ -1796,7 +1798,7 @@ mod tests {
             now,
             &mut |c| cap.0.push(c),
         );
-        for _ in 0..5 {
+        for _ in 0..7 {
             mgr.handle_event(PeerEvent::P2pGossipInvalidFrame { p2p_peer: 1 }, now, &mut |c| {
                 cap.0.push(c)
             });
@@ -1862,7 +1864,7 @@ mod tests {
         let (mut mgr, mut cap) = fixture(vec![], params);
         connect(&mut mgr, &mut cap, 1, 1, now);
 
-        for _ in 0..5 {
+        for _ in 0..7 {
             mgr.handle_event(PeerEvent::P2pGossipInvalidFrame { p2p_peer: 1 }, now, &mut |c| {
                 cap.0.push(c)
             });
@@ -1983,7 +1985,7 @@ mod tests {
         for i in 1..=2usize {
             mgr.mesh.entry(GossipTopic::BeaconBlock).or_default().push(i);
         }
-        for _ in 0..5 {
+        for _ in 0..7 {
             mgr.handle_event(PeerEvent::P2pGossipInvalidFrame { p2p_peer: 2 }, now, &mut |c| {
                 cap.0.push(c)
             });

@@ -400,14 +400,14 @@ impl PeerManager {
                 if rpc_request {
                     self.release_outbound_in_flight(p2p_peer, protocol);
                 }
-                let offence = if stream_gone {
+                if stream_gone {
+                    // Their teardown raced our (possibly late) response —
+                    // not peer misbehaviour. Counted, not penalised.
                     crate::PeerCounters::ResponseStreamGone.inc();
-                    "response stream gone"
                 } else {
                     crate::PeerCounters::StreamCreditExhausted.inc();
-                    "stream credit exhausted"
-                };
-                self.add_behaviour_penalty(p2p_peer, 1.0, offence);
+                    self.add_behaviour_penalty(p2p_peer, 1.0, "stream credit exhausted");
+                }
             }
             PeerEvent::P2pOutboundMessageDropped { p2p_peer, protocol, rpc_request } => {
                 // Local outbound-ring overflow — a backpressure signal, often
@@ -1904,7 +1904,9 @@ pub(crate) mod tests {
     #[test]
     fn disconnect_archives_and_reconnect_restores() {
         let now = Instant::now();
-        let params = ScoreParams::default();
+        let mut params = ScoreParams::default();
+        // Zero free budget so the archived penalty shows in the score.
+        params.behaviour_penalty_threshold = 0.0;
         let (mut mgr, mut cap) = fixture(vec![], params);
         connect(&mut mgr, &mut cap, 1, 1, now);
 
