@@ -168,7 +168,6 @@ Rules:
   - Use a list if the content does not fit in one sentence.
 - Do not split a sentence into fragments to meet the limit.
 - One main clause per sentence. Subordinate clauses are fine.
-- Use the active voice.
 - Use no more than three nouns in a noun cluster.
 - Use one term per concept, and one concept per term.
 - State uncertainty and untested assumptions in reviews, issues, and pull request descriptions.
